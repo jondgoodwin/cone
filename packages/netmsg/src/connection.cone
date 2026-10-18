@@ -62,7 +62,7 @@ pub actor Connection {
     }
     if kind == connDirect {
       match &partner {
-        case imm p &Some[Connection] { p.inMessage(data); }
+        case let p &Some[Connection] { p.inMessage(data); }
         else {}
       }
       return;
@@ -86,7 +86,7 @@ pub actor Connection {
     }
     if kind == connDirect {
       match &partner {
-        case imm p &Some[Connection] { p.inUpdate(stream, data); }
+        case let p &Some[Connection] { p.inUpdate(stream, data); }
         else {}
       }
       return;
@@ -137,7 +137,7 @@ pub actor Connection {
   // A datagram for this connection arrived
   async do packet(self, data List[u8]) {
     if not open {return;}
-    mut evs = List[CoreEvent].empty();
+    var evs = List[CoreEvent].empty();
     peer.receive(data.view(), Instant.now(), &mut evs);
     self.dispatch(evs);
     self.run();
@@ -183,7 +183,7 @@ pub actor Connection {
     if not open {return;}
     if kind == connDirect {
       match &partner {
-        case imm p &Some[Connection] { p.inClosed(); }
+        case let p &Some[Connection] { p.inClosed(); }
         else {}
       }
       self.finish(CloseReason.Local);
@@ -205,25 +205,25 @@ pub actor Connection {
   // Poll the protocol: send what it has, tell the application what happened
   fn run(self) {
     if not open {return;}
-    imm now = Instant.now();
-    mut pk = List[List[u8]].empty();
-    mut evs = List[CoreEvent].empty();
+    let now = Instant.now();
+    var pk = List[List[u8]].empty();
+    var evs = List[CoreEvent].empty();
     peer.poll(now, &mut pk, &mut evs);
     each p in pk.drain() {
       if kind == connSim {
         sim.send(now, p);
       } else {
         match &ep {
-          case imm e &Some[Endpoint] { e.send(addr, p); }
+          case let e &Some[Endpoint] { e.send(addr, p); }
           else {}
         }
       }
     }
     if kind == connSim {
-      mut arrived = List[List[u8]].empty();
+      var arrived = List[List[u8]].empty();
       sim.deliver(now, &mut arrived);
       match &partner {
-        case imm q &Some[Connection] {
+        case let q &Some[Connection] {
           each d in arrived.drain() { q.packet(d); }
         }
         else {}
@@ -234,20 +234,20 @@ pub actor Connection {
   }
 
   // Give the application the events the protocol produced
-  fn dispatch(self, mut evs List[CoreEvent]) {
+  fn dispatch(self, var evs List[CoreEvent]) {
     each e in evs.drain() {
       match e {
-        case mut r Reliable {
-          mut d = List[u8].empty();
+        case var r Reliable {
+          var d = List[u8].empty();
           d <=> r.data;
           if open {(&mut *handler).call(NetEvent.Message(id, d));}
         }
-        case mut l Latest {
-          mut d = List[u8].empty();
+        case var l Latest {
+          var d = List[u8].empty();
           d <=> l.data;
           if open {(&mut *handler).call(NetEvent.Update(id, l.stream, d));}
         }
-        case imm c Closed {
+        case let c Closed {
           if forced {
             self.finish(forcedReason);
           } else {
@@ -261,11 +261,11 @@ pub actor Connection {
   // Tell the endpoint when the connection next needs a tick
   fn reschedule(self) {
     if kind != connUdp or not open {return;}
-    imm at = peer.nextDeadline().nanos();
+    let at = peer.nextDeadline().nanos();
     if at != reported {
       reported = at;
       match &ep {
-        case imm e &Some[Endpoint] { e.deadline(id, at); }
+        case let e &Some[Endpoint] { e.deadline(id, at); }
         else {}
       }
     }
@@ -277,7 +277,7 @@ pub actor Connection {
     open = false;
     (&mut *handler).call(NetEvent.Left(id, reason));
     match &ep {
-      case imm e &Some[Endpoint] { e.gone(id); }
+      case let e &Some[Endpoint] { e.gone(id); }
       else {}
     }
     ep = None[Endpoint];
@@ -299,10 +299,10 @@ pub struct ConnectionPair {
 // id a's events carry (the server numbers its clients; a server's handler
 // shared by several pairs gives each a different id), 'idB' b's.
 pub fn pairInProcess(ha EventHandler, idA u32, hb EventHandler, idB u32) ConnectionPair {
-  imm cfg = NetConfig.defaults();
-  imm none = SocketAddr.localhost(0u16);
-  imm a = new Connection(connDirect, idA, ha, cfg, 0u64, none, None[Endpoint], LinkConfig.perfect(), 0u64);
-  imm b = new Connection(connDirect, idB, hb, cfg, 0u64, none, None[Endpoint], LinkConfig.perfect(), 0u64);
+  let cfg = NetConfig.defaults();
+  let none = SocketAddr.localhost(0u16);
+  let a = new Connection(connDirect, idA, ha, cfg, 0u64, none, None[Endpoint], LinkConfig.perfect(), 0u64);
+  let b = new Connection(connDirect, idB, hb, cfg, 0u64, none, None[Endpoint], LinkConfig.perfect(), 0u64);
   a.link(b);
   b.link(a);
   new ConnectionPair(a, b);
@@ -331,10 +331,10 @@ struct SimArgs is Sendable {
   pub done Sender[u32];
 }
 
-fn simMain(mut x SimArgs) u32 {
+fn simMain(var x SimArgs) u32 {
   while true {
     match x.stop.tryRecv() {
-      case imm s Some { break; }
+      case let s Some { break; }
       case is None[u32] {}
     }
     thread.sleep(Duration.fromMillis(1i64));
@@ -351,19 +351,19 @@ fn simMain(mut x SimArgs) u32 {
 // both ends, so the link's delays are real time (millisecond resolution).
 // Call stop() when done.
 pub fn pairSimulated(cfg NetConfig, toB LinkConfig, toA LinkConfig, seed u64, ha EventHandler, idA u32, hb EventHandler, idB u32) SimulatedPair {
-  imm none = SocketAddr.localhost(0u16);
-  imm session = 0x5151515151515151u64;
-  imm a = new Connection(connSim, idA, ha, cfg, session, none, None[Endpoint], toB, seed);
-  imm b = new Connection(connSim, idB, hb, cfg, session, none, None[Endpoint], toA, seed ^ 0xA5A5A5A5A5A5A5A5u64);
+  let none = SocketAddr.localhost(0u16);
+  let session = 0x5151515151515151u64;
+  let a = new Connection(connSim, idA, ha, cfg, session, none, None[Endpoint], toB, seed);
+  let b = new Connection(connSim, idB, hb, cfg, session, none, None[Endpoint], toA, seed ^ 0xA5A5A5A5A5A5A5A5u64);
   a.link(b);
   b.link(a);
-  mut stopTx Sender[u32];
-  mut stopRx Receiver[u32];
+  var stopTx Sender[u32];
+  var stopRx Receiver[u32];
   stopTx, stopRx = Channel[u32].make();
-  mut doneTx Sender[u32];
-  mut doneRx Receiver[u32];
+  var doneTx Sender[u32];
+  var doneRx Receiver[u32];
   doneTx, doneRx = Channel[u32].make();
-  imm th = thread.start(new SimArgs(a, b, stopRx, doneTx), &simMain);
+  let th = thread.start(new SimArgs(a, b, stopRx, doneTx), &simMain);
   th.detach();
   new SimulatedPair(a, b, stopTx, doneRx);
 }

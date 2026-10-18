@@ -22,7 +22,7 @@ static int flowIsBorrowedRef(INode *exp) {
 
 // The value a match binds this variable to -- the matched value, which the
 // match holds in a variable of its own -- or NULL for any other variable.
-// 'case imm c Circle' binds 'c' to the matched value converted to its variant,
+// 'case let c Circle' binds 'c' to the matched value converted to its variant,
 // which is the same value under the variant's name, not a second one: the
 // matched value's variable owns it, and is what releases it as its scope ends,
 // as the enum, so that whichever arm runs it is finalized once. So the binding
@@ -1603,7 +1603,7 @@ void flowAddVar(VarDclNode *varnode) {
     varnode->flowdepth = flowDepth;
     varnode->flowlend |= VarLendSeen;
     // A match's binding by value may be the matched variable's own storage
-    // (flowMatchInPlace), which one declared 'mut' writes: so the matched
+    // (flowMatchInPlace), which one declared 'var' writes: so the matched
     // variable is noted as if borrowed to write
     INode *matched = flowMatchBound((INode *)varnode);
     if (matched && ((NameUseNode *)matched)->dclnode && ((NameUseNode *)matched)->dclnode->tag == VarDclTag)
@@ -2180,7 +2180,7 @@ void flowGateShapeAsk(FlowState *fstate, INode *node) {
             if (dcl && dcl->tag == VarDclTag) {
                 VarDclNode *var = (VarDclNode *)dcl;
                 INode *vt = ((IExpNode *)dcl)->vtype ? flowGateTypeDcl(((IExpNode *)dcl)->vtype) : NULL;
-                // A 'mut' global is no plain local: any call may write it by its name
+                // A 'var' global is no plain local: any call may write it by its name
                 if ((var->scope == 0 || (var->flags & FlagStatic)) && var->perm && (permGetFlags(var->perm) & MayWrite))
                     fstate->shapeglobal = 1;
                 // (an actor's 'self' is a value that is reached through its handle)
@@ -2190,7 +2190,7 @@ void flowGateShapeAsk(FlowState *fstate, INode *node) {
             }
         }
     }
-    // Reached through a reference, of a type some 'mut' global reaches: the reference may be that
+    // Reached through a reference, of a type some 'var' global reaches: the reference may be that
     // global, so the borrow is asked of every call (loanShapeGlobalView)
     if (reshapeMutGlobalsReach(container))
         fstate->shapeglobal = 1;

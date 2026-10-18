@@ -28,7 +28,7 @@ const tokReq = 2u64;
 const tokBlock = 7u64;
 
 fn certs(name &str) Path {
-  mut p = String.from("../../../../tests/certs/");
+  var p = String.from("../../../../tests/certs/");
   p.append(name);
   Path.fromString(p);
 }
@@ -56,9 +56,9 @@ struct Seen {
 
 fn step(drv &mut Driver, lp &mut Loop, seen &mut Seen, events &mut List[Event]) {
   drv.poll(lp, Instant.now() + Duration.fromMillis(10i64), events);
-  mut k = 0usize;
+  var k = 0usize;
   while k < events.len() {
-    imm e = &mut events[k];
+    let e = &mut events[k];
     k = k + 1usize;
     if e.token == tokReq and e.isTerminal() {
       seen.finals = seen.finals + 1u64;
@@ -75,7 +75,7 @@ fn step(drv &mut Driver, lp &mut Loop, seen &mut Seen, events &mut List[Event]) 
 
 // Drive until the request's final answer and its connection's Closed
 fn settle(drv &mut Driver, lp &mut Loop, seen &mut Seen, events &mut List[Event], finals u64, closed u64) {
-  imm giveUp = Instant.now() + Duration.fromSeconds(10i64);
+  let giveUp = Instant.now() + Duration.fromSeconds(10i64);
   while (seen.finals < finals or seen.closed < closed) and Instant.now() < giveUp {step(drv, lp, seen, events);}
   requireUInt(seen.finals, finals, "the request has its final answer");
   requireUInt(seen.closed, closed, "its connection has closed");
@@ -83,12 +83,12 @@ fn settle(drv &mut Driver, lp &mut Loop, seen &mut Seen, events &mut List[Event]
 
 // Drive for a while
 fn idle(drv &mut Driver, lp &mut Loop, seen &mut Seen, events &mut List[Event], ms i64) {
-  imm until = Instant.now() + Duration.fromMillis(ms);
+  let until = Instant.now() + Duration.fromMillis(ms);
   while Instant.now() < until {step(drv, lp, seen, events);}
 }
 
 fn report(label &str, seen &Seen, want EventKind, asked Instant) {
-  imm took = Instant.now() - asked;
+  let took = Instant.now() - asked;
   printStr(label);
   printStr(": ");
   printStr(eventName(seen.last));
@@ -98,36 +98,36 @@ fn report(label &str, seen &Seen, want EventKind, asked Instant) {
 }
 
 fn main() i32 {
-  imm pool = Pool.make();
-  mut lp = Loop.mustMake();
-  mut drv = Driver.make(Config.make(), pool);
-  mut events = List[Event].empty();
-  mut seen = new Seen(EventKind.Done, 0u64, 0u64, 0u64, 0u64);
-  mut roots = tls.ClientConfig.make();
+  let pool = Pool.make();
+  var lp = Loop.mustMake();
+  var drv = Driver.make(Config.make(), pool);
+  var events = List[Event].empty();
+  var seen = new Seen(EventKind.Done, 0u64, 0u64, 0u64, 0u64);
+  var roots = tls.ClientConfig.make();
   roots.verify = tls.Verifier.roots(readText("ca.pem").view());
-  imm rootsClient = mustClient(roots);
-  imm before = tls.stats();
+  let rootsClient = mustClient(roots);
+  let before = tls.stats();
 
   // A server that never answers: a socket that listens on another loop and
   // never accepts, so the kernel completes the connection and holds the
   // ClientHello
-  mut quiet = Loop.mustMake();
-  mut silentPort = 0u16;
+  var quiet = Loop.mustMake();
+  var silentPort = 0u16;
   match quiet.listen(SocketAddr.localhost(0u16)) {
-    case imm h Ok {
+    case let h Ok {
       match quiet.localAddr(h) {
-        case imm a Ok {silentPort = a.port();}
-        case imm e Error {}
+        case let a Ok {silentPort = a.port();}
+        case let e Error {}
       }
     }
-    case imm e Error {}
+    case let e Error {}
   }
   require(silentPort != 0u16, "the silent server listens");
 
   // A deadline during the handshake
-  mut c = drv.connectWith(&mut lp, "127.0.0.1", silentPort, new Uni[tls.Stream](rootsClient.stream("localhost", pool)),
+  var c = drv.connectWith(&mut lp, "127.0.0.1", silentPort, new Uni[tls.Stream](rootsClient.stream("localhost", pool)),
     Sink.Here(tokConn));
-  mut asked = Instant.now();
+  var asked = Instant.now();
   drv.requestBy(&mut lp, c, RequestHead.get("/", "localhost"), BodyLength.empty(), Sink.Here(tokReq),
     asked + Duration.fromMillis(150i64));
   settle(&mut drv, &mut lp, &mut seen, &mut events, 1u64, 1u64);
@@ -137,7 +137,7 @@ fn main() i32 {
   // A cancel during the handshake
   c = drv.connectWith(&mut lp, "127.0.0.1", silentPort, new Uni[tls.Stream](rootsClient.stream("localhost", pool)),
     Sink.Here(tokConn));
-  imm r2 = drv.request(&mut lp, c, RequestHead.get("/", "localhost"), BodyLength.empty(), Sink.Here(tokReq));
+  let r2 = drv.request(&mut lp, c, RequestHead.get("/", "localhost"), BodyLength.empty(), Sink.Here(tokReq));
   idle(&mut drv, &mut lp, &mut seen, &mut events, 50i64);
   asked = Instant.now();
   expect(drv.cancel(&mut lp, r2), "the cancel is taken");
@@ -147,7 +147,7 @@ fn main() i32 {
   // A cancel group's cancel during the handshake
   c = drv.connectWith(&mut lp, "127.0.0.1", silentPort, new Uni[tls.Stream](rootsClient.stream("localhost", pool)),
     Sink.Here(tokConn));
-  imm group = CancelGroup.make();
+  let group = CancelGroup.make();
   drv.requestIn(&mut lp, c, RequestHead.get("/", "localhost"), BodyLength.empty(), Sink.Here(tokReq), group, forever());
   idle(&mut drv, &mut lp, &mut seen, &mut events, 50i64);
   asked = Instant.now();
@@ -157,33 +157,33 @@ fn main() i32 {
   expectUInt(tls.stats().handshakes - before.handshakes, 0u64, "no handshake finished");
 
   // The OS's verifier on a lane of one thread, held by other work
-  imm serverPem = certs("server.pem");
-  imm serverKey = certs("server.key");
+  let serverPem = certs("server.pem");
+  let serverKey = certs("server.key");
   match tls.Server.make(tls.ServerConfig.make(&serverPem, &serverKey)) {
-    case imm r Ok {
-      imm srv = r;
+    case let r Ok {
+      let srv = r;
       match drv.listenWith(&mut lp, SocketAddr.localhost(0u16), new Uni[TlsMaker](new TlsMaker(srv, pool)),
           Sink.Here(tokServer)) {
-        case imm l Ok {
+        case let l Ok {
           match drv.localAddr(&lp, l) {
-            case imm a Ok {silentPort = a.port();}
-            case imm e Error {}
+            case let a Ok {silentPort = a.port();}
+            case let e Error {}
           }
         }
-        case imm e Error {}
+        case let e Error {}
       }
     }
-    case imm e Error {printStr(e.message().view());}
+    case let e Error {printStr(e.message().view());}
   }
-  imm lane = addLane(new LaneConfig(name: "test verify", maxThreads: 1u32, queueBound: 16u32));
-  mut platform = tls.ClientConfig.make();
+  let lane = addLane(new LaneConfig(name: "test verify", maxThreads: 1u32, queueBound: 16u32));
+  var platform = tls.ClientConfig.make();
   platform.offline = true;
   platform.verifyLane = lane;
-  imm platformClient = mustClient(platform);
+  let platformClient = mustClient(platform);
 
   // A deadline while the verification waits for the lane
   lp.submit(Op.Call(lane, &holdWork, 400u64, IoBuf.empty()), Target.Here(tokBlock));
-  imm v0 = tls.stats().verifications;
+  let v0 = tls.stats().verifications;
   c = drv.connectWith(&mut lp, "127.0.0.1", silentPort, new Uni[tls.Stream](platformClient.stream("localhost", pool)),
     Sink.Here(tokConn));
   asked = Instant.now();
@@ -199,8 +199,8 @@ fn main() i32 {
   lp.submit(Op.Call(lane, &holdWork, 400u64, IoBuf.empty()), Target.Here(tokBlock));
   c = drv.connectWith(&mut lp, "127.0.0.1", silentPort, new Uni[tls.Stream](platformClient.stream("localhost", pool)),
     Sink.Here(tokConn));
-  imm r5 = drv.request(&mut lp, c, RequestHead.get("/", "localhost"), BodyLength.empty(), Sink.Here(tokReq));
-  imm giveUp = Instant.now() + Duration.fromSeconds(5i64);
+  let r5 = drv.request(&mut lp, c, RequestHead.get("/", "localhost"), BodyLength.empty(), Sink.Here(tokReq));
+  let giveUp = Instant.now() + Duration.fromSeconds(5i64);
   while tls.stats().verifications - v0 < 2u64 and Instant.now() < giveUp {step(&mut drv, &mut lp, &mut seen, &mut events);}
   requireUInt(tls.stats().verifications - v0, 2u64, "the verification is handed to the pool");
   asked = Instant.now();
@@ -212,7 +212,7 @@ fn main() i32 {
 
   expectUInt(seen.clean, 0u64, "each connection was reset, none closed cleanly");
   expectUInt(tls.stats().handshakes - before.handshakes, 0u64, "still no handshake finished");
-  imm giveUp2 = Instant.now() + Duration.fromSeconds(5i64);
+  let giveUp2 = Instant.now() + Duration.fromSeconds(5i64);
   while drv.live() > 0u32 and Instant.now() < giveUp2 {step(&mut drv, &mut lp, &mut seen, &mut events);}
   expectUInt(u64.from(drv.live()), 0u64, "no connection left");
   drv.abortAll(&mut lp);
@@ -221,22 +221,22 @@ fn main() i32 {
 }
 
 fn readText(name &str) String {
-  mut out = String.empty();
-  imm file = certs(name);
+  var out = String.empty();
+  let file = certs(name);
   match fs.readFile(&file) {
-    case mut r Ok {out <=> r;}
-    case imm e Error {}
+    case var r Ok {out <=> r;}
+    case let e Error {}
   }
   out;
 }
 
 fn mustClient(cfg tls.ClientConfig) tls.Client {
   match tls.Client.make(cfg) {
-    case imm r Ok {
-      imm c = r;
+    case let r Ok {
+      let c = r;
       return c;
     }
-    case imm e Error {printStr(e.message().view());}
+    case let e Error {printStr(e.message().view());}
   }
   panic("no client");
 }

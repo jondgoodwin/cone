@@ -30,9 +30,9 @@ struct Cand {
 // The rotation of o (a tangent at n) by a quarter turn that lies nearest r, and
 // its negative: o, n x o, -o or -(n x o)
 fn alignRot(r Vec3, o Vec3, n Vec3) Vec3 {
-  imm t = n.cross(o);
-  imm d0 = r.dot(o);
-  imm d1 = r.dot(t);
+  let t = n.cross(o);
+  let d0 = r.dot(o);
+  let d1 = r.dot(t);
   if absf(d0) >= absf(d1) {
     if d0 >= 0. { o; } else { -o; };
   } else {
@@ -42,23 +42,23 @@ fn alignRot(r Vec3, o Vec3, n Vec3) Vec3 {
 
 // The next, coarser level, pairs of vertices merged by the best scores
 fn coarsen(l &Level, ups &mut List[List[u32]]) Level {
-  imm n = l.count();
-  mut cands = List[Cand].withCapacity(l.g.nbr.len() / 2usize);
-  mut i = 0usize;
+  let n = l.count();
+  var cands = List[Cand].withCapacity(l.g.nbr.len() / 2usize);
+  var i = 0usize;
   while i < n {
-    mut k = usize.from(*l.g.start[i]);
-    imm hi = usize.from(*l.g.start[i + 1usize]);
+    var k = usize.from(*l.g.start[i]);
+    let hi = usize.from(*l.g.start[i + 1usize]);
     while k < hi {
-      imm j = usize.from(*l.g.nbr[k]);
+      let j = usize.from(*l.g.nbr[k]);
       if j > i {
-        mut ok = true;
+        var ok = true;
         // Two lines that disagree are not merged
         if *l.ckind[i] > 0u32 and *l.ckind[j] > 0u32 and !isZero3(*l.cori[i]) and !isZero3(*l.cori[j]) {
-          imm oj = alignRot(*l.cori[i], *l.cori[j], *l.nrm[j]);
+          let oj = alignRot(*l.cori[i], *l.cori[j], *l.nrm[j]);
           if oj.dot(*l.cori[i]) < 0.8 { ok = false; }
         }
         if ok {
-          imm s = l.nrm[i].dot(*l.nrm[j]) / (*l.area[i] + *l.area[j] + 0.0000000001);
+          let s = l.nrm[i].dot(*l.nrm[j]) / (*l.area[i] + *l.area[j] + 0.0000000001);
           cands.push(new Cand(s, u32.from(i), u32.from(j)));
         }
       }
@@ -69,23 +69,23 @@ fn coarsen(l &Level, ups &mut List[List[u32]]) Level {
   cands.sortBy(fn(a &Cand, b &Cand) i32 {
     if a.s > b.s {-1i32;} elif a.s < b.s {1i32;} else {0i32;}
   });
-  mut mate = List[u32].withCapacity(n);
+  var mate = List[u32].withCapacity(n);
   i = 0usize;
   while i < n { mate.push(NoVertex); i = i + 1usize; }
   i = 0usize;
   while i < cands.len() {
-    imm a = usize.from(cands[i].a);
-    imm b = usize.from(cands[i].b);
+    let a = usize.from(cands[i].a);
+    let b = usize.from(cands[i].b);
     if *mate[a] == NoVertex and *mate[b] == NoVertex {
       mate.set(a, cands[i].b);
       mate.set(b, cands[i].a);
     }
     i = i + 1usize;
   }
-  mut up = List[u32].withCapacity(n);
+  var up = List[u32].withCapacity(n);
   i = 0usize;
   while i < n { up.push(NoVertex); i = i + 1usize; }
-  mut m = 0u32;
+  var m = 0u32;
   i = 0usize;
   while i < n {
     if *up[i] == NoVertex {
@@ -95,29 +95,29 @@ fn coarsen(l &Level, ups &mut List[List[u32]]) Level {
     }
     i = i + 1usize;
   }
-  imm nc = usize.from(m);
-  mut c = new Level(List[Vec3].withCapacity(nc), List[Vec3].withCapacity(nc), List[f32].withCapacity(nc),
+  let nc = usize.from(m);
+  var c = new Level(List[Vec3].withCapacity(nc), List[Vec3].withCapacity(nc), List[f32].withCapacity(nc),
     List[f32].withCapacity(nc), new Graph(List[u32].empty(), List[u32].empty(), List[f32].empty()),
     List[Vec3].withCapacity(nc), List[u32].withCapacity(nc));
   i = 0usize;
   while i < n {
-    imm a = i;
+    let a = i;
     if *mate[i] == NoVertex {
       c.pos.push(*l.pos[a]); c.nrm.push(*l.nrm[a]); c.area.push(*l.area[a]); c.rho.push(*l.rho[a]);
       c.cori.push(*l.cori[a]); c.ckind.push(*l.ckind[a]);
     } elif usize.from(*mate[i]) > i {
-      imm b = usize.from(*mate[i]);
-      imm wa = *l.area[a];
-      imm wb = *l.area[b];
-      imm ws = wa + wb + 0.0000000001;
+      let b = usize.from(*mate[i]);
+      let wa = *l.area[a];
+      let wb = *l.area[b];
+      let ws = wa + wb + 0.0000000001;
       c.pos.push((*l.pos[a] * wa + *l.pos[b] * wb) * (1. / ws));
-      imm nn = unit(*l.nrm[a] * wa + *l.nrm[b] * wb);
+      let nn = unit(*l.nrm[a] * wa + *l.nrm[b] * wb);
       c.nrm.push(if isZero3(nn) { *l.nrm[a]; } else { nn; });
       c.area.push(wa + wb);
       c.rho.push((*l.rho[a] * wa + *l.rho[b] * wb) / ws);
       // The constraint: the lines added with their quarter turns matched
-      imm kd = if *l.ckind[a] > *l.ckind[b] { *l.ckind[a]; } else { *l.ckind[b]; };
-      mut co = zero3();
+      let kd = if *l.ckind[a] > *l.ckind[b] { *l.ckind[a]; } else { *l.ckind[b]; };
+      var co = zero3();
       if !isZero3(*l.cori[a]) { co = *l.cori[a]; }
       if !isZero3(*l.cori[b]) {
         if isZero3(co) { co = *l.cori[b]; }
@@ -132,24 +132,24 @@ fn coarsen(l &Level, ups &mut List[List[u32]]) Level {
   i = 0usize;
   while i < nc {
     if !isZero3(*c.cori[i]) {
-      imm t = toTangent(*c.nrm[i], *c.cori[i]);
+      let t = toTangent(*c.nrm[i], *c.cori[i]);
       c.cori.set(i, t);
       if isZero3(t) and *c.ckind[i] == 1u32 { c.ckind.set(i, 0u32); }
     }
     i = i + 1usize;
   }
   // The coarse graph
-  mut ca = List[u32].withCapacity(l.g.nbr.len());
-  mut cb = List[u32].withCapacity(l.g.nbr.len());
-  mut cw = List[f32].withCapacity(l.g.nbr.len());
+  var ca = List[u32].withCapacity(l.g.nbr.len());
+  var cb = List[u32].withCapacity(l.g.nbr.len());
+  var cw = List[f32].withCapacity(l.g.nbr.len());
   i = 0usize;
   while i < n {
-    mut k = usize.from(*l.g.start[i]);
-    imm hi = usize.from(*l.g.start[i + 1usize]);
+    var k = usize.from(*l.g.start[i]);
+    let hi = usize.from(*l.g.start[i + 1usize]);
     while k < hi {
-      imm j = usize.from(*l.g.nbr[k]);
-      imm pi = *up[i];
-      imm pj = *up[j];
+      let j = usize.from(*l.g.nbr[k]);
+      let pi = *up[i];
+      let pj = *up[j];
       if pi != pj { ca.push(pi); cb.push(pj); cw.push(*l.g.wt[k]); }
       k = k + 1usize;
     }
@@ -163,8 +163,8 @@ fn coarsen(l &Level, ups &mut List[List[u32]]) Level {
 // ---------------------------------------------------------------- orientation
 
 fn initOrientation(l &Level) List[Vec3] {
-  mut o = List[Vec3].withCapacity(l.count());
-  mut i = 0usize;
+  var o = List[Vec3].withCapacity(l.count());
+  var i = 0usize;
   while i < l.count() {
     if !isZero3(*l.cori[i]) { o.push(*l.cori[i]); }
     else { o.push(anyTangent(*l.nrm[i], u32.from(i))); }
@@ -176,22 +176,22 @@ fn initOrientation(l &Level) List[Vec3] {
 // Gauss-Seidel: each vertex takes the weighted sum of its neighbours' vectors,
 // each turned by the quarter turns that put it nearest, then made tangent
 fn smoothOrientation(l &Level, o &mut List[Vec3], iters u32) {
-  mut it = 0u32;
+  var it = 0u32;
   while it < iters {
-    mut i = 0usize;
+    var i = 0usize;
     while i < l.count() {
       if isZero3(*l.cori[i]) {
-        imm n = *l.nrm[i];
-        imm oi = *o[i];
-        mut sum = zero3();
-        mut k = usize.from(*l.g.start[i]);
-        imm hi = usize.from(*l.g.start[i + 1usize]);
+        let n = *l.nrm[i];
+        let oi = *o[i];
+        var sum = zero3();
+        var k = usize.from(*l.g.start[i]);
+        let hi = usize.from(*l.g.start[i + 1usize]);
         while k < hi {
-          imm j = usize.from(*l.g.nbr[k]);
+          let j = usize.from(*l.g.nbr[k]);
           sum = sum + alignRot(oi, *o[j], *l.nrm[j]) * *l.g.wt[k];
           k = k + 1usize;
         }
-        imm t = toTangent(n, sum);
+        let t = toTangent(n, sum);
         if !isZero3(t) { o.set(i, t); }
       }
       i = i + 1usize;
@@ -202,12 +202,12 @@ fn smoothOrientation(l &Level, o &mut List[Vec3], iters u32) {
 
 // A finer level's field from its parents', made tangent
 fn upsampleOrientation(fine &Level, up &List[u32], coarse &List[Vec3]) List[Vec3] {
-  mut o = List[Vec3].withCapacity(fine.count());
-  mut i = 0usize;
+  var o = List[Vec3].withCapacity(fine.count());
+  var i = 0usize;
   while i < fine.count() {
     if !isZero3(*fine.cori[i]) { o.push(*fine.cori[i]); }
     else {
-      imm t = toTangent(*fine.nrm[i], *coarse[usize.from(*up[i])]);
+      let t = toTangent(*fine.nrm[i], *coarse[usize.from(*up[i])]);
       o.push(if isZero3(t) { anyTangent(*fine.nrm[i], u32.from(i)); } else { t; });
     }
     i = i + 1usize;
@@ -221,26 +221,26 @@ fn upsampleOrientation(fine &Level, up &List[u32], coarse &List[Vec3]) List[Vec3
 // nearest p; a line constraint keeps only the step along o, a pinned one is p
 fn reduceQ(q Vec3, p Vec3, n Vec3, o Vec3, rho f32, kind u32) Vec3 {
   if kind == 2u32 { return p; }
-  imm dd = q - p;
-  imm d = dd - n * dd.dot(n);
-  imm t = n.cross(o);
-  imm u = d.dot(o) / rho;
-  imm v = d.dot(t) / rho;
+  let dd = q - p;
+  let d = dd - n * dd.dot(n);
+  let t = n.cross(o);
+  let u = d.dot(o) / rho;
+  let v = d.dot(t) / rho;
   if kind == 1u32 { return p + o * ((u - rnd(u)) * rho); }
   p + o * ((u - rnd(u)) * rho) + t * ((v - rnd(v)) * rho);
 }
 
 // The lattice point (q, o, n, rho) nearest m
 fn latticeNear(q Vec3, o Vec3, n Vec3, rho f32, m Vec3) Vec3 {
-  imm dd = m - q;
-  imm d = dd - n * dd.dot(n);
-  imm t = n.cross(o);
+  let dd = m - q;
+  let d = dd - n * dd.dot(n);
+  let t = n.cross(o);
   q + o * (rnd(d.dot(o) / rho) * rho) + t * (rnd(d.dot(t) / rho) * rho);
 }
 
 fn initPosition(l &Level, o &List[Vec3]) List[Vec3] {
-  mut q = List[Vec3].withCapacity(l.count());
-  mut i = 0usize;
+  var q = List[Vec3].withCapacity(l.count());
+  var i = 0usize;
   while i < l.count() {
     q.push(*l.pos[i]);
     i = i + 1usize;
@@ -249,8 +249,8 @@ fn initPosition(l &Level, o &List[Vec3]) List[Vec3] {
 }
 
 fn upsamplePosition(fine &Level, up &List[u32], coarse &List[Vec3], o &List[Vec3]) List[Vec3] {
-  mut q = List[Vec3].withCapacity(fine.count());
-  mut i = 0usize;
+  var q = List[Vec3].withCapacity(fine.count());
+  var i = 0usize;
   while i < fine.count() {
     q.push(reduceQ(*coarse[usize.from(*up[i])], *fine.pos[i], *fine.nrm[i], *o[i], *fine.rho[i], *fine.ckind[i]));
     i = i + 1usize;
@@ -262,19 +262,19 @@ fn upsamplePosition(fine &Level, up &List[u32], coarse &List[Vec3], o &List[Vec3
 // vertex's orientation and its neighbours' (radians, after the quarter turns),
 // and the mean disagreement of the lattices at an edge's middle, in steps
 fn fieldError(l &Level, o &List[Vec3], q &List[Vec3], angle &mut f32, lattice &mut f32) {
-  mut sa = 0.;
-  mut sl = 0.;
-  mut cnt = 0.;
-  mut i = 0usize;
+  var sa = 0.;
+  var sl = 0.;
+  var cnt = 0.;
+  var i = 0usize;
   while i < l.count() {
-    mut k = usize.from(*l.g.start[i]);
-    imm hi = usize.from(*l.g.start[i + 1usize]);
+    var k = usize.from(*l.g.start[i]);
+    let hi = usize.from(*l.g.start[i + 1usize]);
     while k < hi {
-      imm j = usize.from(*l.g.nbr[k]);
+      let j = usize.from(*l.g.nbr[k]);
       if j > i {
-        imm oj = alignRot(*o[i], *o[j], *l.nrm[j]);
+        let oj = alignRot(*o[i], *o[j], *l.nrm[j]);
         sa = sa + acos(clampf(o[i].dot(oj), -1., 1.));
-        imm d = latticeOffset(*q[i], *l.pos[j], *q[j], *o[j], *l.nrm[j], *l.rho[j]);
+        let d = latticeOffset(*q[i], *l.pos[j], *q[j], *o[j], *l.nrm[j], *l.rho[j]);
         sl = sl + d.length() / *l.rho[i];
         cnt = cnt + 1.;
       }
@@ -290,7 +290,7 @@ fn fieldError(l &Level, o &List[Vec3], q &List[Vec3], angle &mut f32, lattice &m
 // (origin qj, axis oj, normal nj, spacing rj, standing at pj): what moving the
 // first lattice by it would make of the two
 fn latticeOffset(qi Vec3, pj Vec3, qj Vec3, oj Vec3, nj Vec3, rj f32) Vec3 {
-  imm qp = qi - nj * (qi - pj).dot(nj);
+  let qp = qi - nj * (qi - pj).dot(nj);
   latticeNear(qj, oj, nj, rj, qp) - qp;
 }
 
@@ -299,25 +299,25 @@ fn latticeOffset(qi Vec3, pj Vec3, qj Vec3, oj Vec3, nj Vec3, rj f32) Vec3 {
 // neighbour's lattice (the energy of Jakob et al. (2015): the least distance
 // between a point of one lattice and a point of the other)
 fn smoothPosition(l &Level, o &List[Vec3], q &mut List[Vec3], iters u32) {
-  mut it = 0u32;
+  var it = 0u32;
   while it < iters {
-    mut i = 0usize;
+    var i = 0usize;
     while i < l.count() {
-      imm kind = *l.ckind[i];
+      let kind = *l.ckind[i];
       if kind != 2u32 {
-        imm p = *l.pos[i];
-        imm n = *l.nrm[i];
-        imm oi = *o[i];
-        imm ri = *l.rho[i];
-        imm qi = *q[i];
-        mut sum = zero3();
-        mut wsum = 0.;
-        mut k = usize.from(*l.g.start[i]);
-        imm hi = usize.from(*l.g.start[i + 1usize]);
+        let p = *l.pos[i];
+        let n = *l.nrm[i];
+        let oi = *o[i];
+        let ri = *l.rho[i];
+        let qi = *q[i];
+        var sum = zero3();
+        var wsum = 0.;
+        var k = usize.from(*l.g.start[i]);
+        let hi = usize.from(*l.g.start[i + 1usize]);
         while k < hi {
-          imm j = usize.from(*l.g.nbr[k]);
-          imm d = latticeOffset(qi, *l.pos[j], *q[j], *o[j], *l.nrm[j], *l.rho[j]);
-          imm w = *l.g.wt[k];
+          let j = usize.from(*l.g.nbr[k]);
+          let d = latticeOffset(qi, *l.pos[j], *q[j], *o[j], *l.nrm[j], *l.rho[j]);
+          let w = *l.g.wt[k];
           sum = sum + (d - n * d.dot(n)) * w;
           wsum = wsum + w;
           k = k + 1usize;

@@ -11,28 +11,28 @@ import gltfimport use *;
 
 fn parse(text &str) Json {
   match parseJson(text) {
-    case mut ok Ok {
-      mut j = new Json(List[JNode].empty(), List[u32].empty());
+    case var ok Ok {
+      var j = new Json(List[JNode].empty(), List[u32].empty());
       j <=> ok;
       return j;
     }
-    case imm e Error { return new Json(List[JNode].empty(), List[u32].empty()); }
+    case let e Error { return new Json(List[JNode].empty(), List[u32].empty()); }
   }
 }
 
 fn number(text &str, want f64, label &str) {
-  imm j = parse(text);
+  let j = parse(text);
   if not require(j.nodes.len() > 0usize, label) { return; }
-  imm got = j.num(0u32, -999.);
+  let got = j.num(0u32, -999.);
   // Relative to the size, to a few units in the last place
-  imm tol = if want < 0. {-want;} else {want;} * 0.000000000001;
+  let tol = if want < 0. {-want;} else {want;} * 0.000000000001;
   expectFloat(got, want, if tol > 0.000000000001 {tol;} else {0.000000000001;}, label);
 }
 
 fn refused(text &str, line u32, col u32, label &str) {
   match parseJson(text) {
-    case imm j Ok { expect(false, label); }
-    case imm e Error {
+    case let j Ok { expect(false, label); }
+    case let e Error {
       expectUInt(u64.from(e.line), u64.from(line), label);
       expectUInt(u64.from(e.column), u64.from(col), label);
     }
@@ -54,20 +54,20 @@ fn main() i32 {
   number("  \n 7 \t", 7d, "white space around");
 
   // Strings
-  imm j = parse("{\"s\":\"a\\\"b\\\\c\\/d\\b\\f\\n\\r\\t\\u00e9\\ud83d\\ude00z\"}");
-  imm s = j.getStr(0u32, "s", "");
-  imm want Array[u8, 20] = [97u8, 34u8, 98u8, 92u8, 99u8, 47u8, 100u8, 8u8, 12u8, 10u8, 13u8, 9u8, 0xC3u8, 0xA9u8,
+  let j = parse("{\"s\":\"a\\\"b\\\\c\\/d\\b\\f\\n\\r\\t\\u00e9\\ud83d\\ude00z\"}");
+  let s = j.getStr(0u32, "s", "");
+  let want Array[u8, 20] = [97u8, 34u8, 98u8, 92u8, 99u8, 47u8, 100u8, 8u8, 12u8, 10u8, 13u8, 9u8, 0xC3u8, 0xA9u8,
     0xF0u8, 0x9Fu8, 0x98u8, 0x80u8, 122u8, 0u8];
   expectInt(i64.from(s.len()), 19i64, "decoded string length");
-  mut same = true;
-  mut i = 0usize;
+  var same = true;
+  var i = 0usize;
   while i < 19usize and i < s.len() { if s[i] != want[i] { same = false; } i += 1usize; }
   expect(same, "every escape decoded, e acute as two bytes, the emoji as four");
 
   // Structure
-  imm k = parse("{\"a\":[1,2,{\"b\":true}],\"c\":null,\"d\":{},\"e\":[],\"a\":99}");
+  let k = parse("{\"a\":[1,2,{\"b\":true}],\"c\":null,\"d\":{},\"e\":[],\"a\":99}");
   expect(k.isObject(0u32), "root is an object");
-  imm a = k.get(0u32, "a");
+  let a = k.get(0u32, "a");
   expectInt(i64.from(k.len(a)), 3i64, "array length");
   expectFloat(k.num(k.at(a, 1usize), 0.), 2., 0.0001, "second element");
   expect(k.flag(k.get(k.at(a, 2usize), "b"), false), "nested true");
@@ -80,10 +80,10 @@ fn main() i32 {
   expectInt(i64.from(k.len(0u32)), 5i64, "five entries including the duplicate");
 
   // A byte-order mark is allowed
-  imm bom Array[u8, 5] = [0xEFu8, 0xBBu8, 0xBFu8, '4', '2'];
+  let bom Array[u8, 5] = [0xEFu8, 0xBBu8, 0xBFu8, '4', '2'];
   match parseJson(&bom) {
-    case imm ok Ok { expectFloat(ok.num(0u32, 0.), 42., 0.0001, "a BOM is skipped"); }
-    case imm e Error { expect(false, "a BOM is skipped"); }
+    case let ok Ok { expectFloat(ok.num(0u32, 0.), 42., 0.0001, "a BOM is skipped"); }
+    case let e Error { expect(false, "a BOM is skipped"); }
   }
 
   // Refusals, with where
@@ -101,12 +101,12 @@ fn main() i32 {
   refused("\"\\x\"", 1u32, 4u32, "a bad escape");
   refused("", 1u32, 1u32, "an empty text");
   // Nesting too deep is an error, not a crash
-  mut deep = String.empty();
-  mut n = 0;
+  var deep = String.empty();
+  var n = 0;
   while n < 300 { deep.append("["); n += 1; }
   match parseJson(deep.view()) {
-    case imm ok Ok { expect(false, "300 levels deep"); }
-    case imm e Error { expect(e.reason.contains("deeply"), "300 levels deep is refused"); }
+    case let ok Ok { expect(false, "300 levels deep"); }
+    case let e Error { expect(e.reason.contains("deeply"), "300 levels deep is refused"); }
   }
   done();
 }

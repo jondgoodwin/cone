@@ -24,19 +24,19 @@ fn reasonText(r CloseReason) &str {
 
 // An event as text: J1, L1:reason, M1:text, U1:stream:text
 fn describe(e NetEvent) String {
-  mut s = String.empty();
+  var s = String.empty();
   match e {
-    case imm j Joined { s.append("J"); s.appendUInt(u64.from(j.id)); }
-    case imm l Left { s.append("L"); s.appendUInt(u64.from(l.id)); s.append(":"); s.append(reasonText(l.reason)); }
-    case imm m Message {
+    case let j Joined { s.append("J"); s.appendUInt(u64.from(j.id)); }
+    case let l Left { s.append("L"); s.appendUInt(u64.from(l.id)); s.append(":"); s.append(reasonText(l.reason)); }
+    case let m Message {
       s.append("M"); s.appendUInt(u64.from(m.id)); s.append(":");
       s.append(String.fromBytes(m.data.view()).view());
     }
-    case imm u Update {
+    case let u Update {
       s.append("U"); s.appendUInt(u64.from(u.id)); s.append(":"); s.appendUInt(u64.from(u.stream));
       s.append(":"); s.append(String.fromBytes(u.data.view()).view());
     }
-    case imm r Refused {
+    case let r Refused {
       s.append("R"); s.appendUInt(u64.from(r.id)); s.append(if r.reliable {":message";} else {":value";});
       s.append(match r.why {
         case is TooLarge {":large";}
@@ -51,15 +51,15 @@ fn describe(e NetEvent) String {
 // The next event as text, or "none" if none comes in a second
 fn next(rx &mut Receiver[NetEvent]) String {
   match rx.recvTimeout(Duration.fromSeconds(1i64)) {
-    case imm e Some { return describe(e); }
+    case let e Some { return describe(e); }
     case is None[NetEvent] {}
   }
   String.from("none");
 }
 
 fn filled(n usize) List[u8] {
-  mut b = List[u8].empty();
-  mut i = 0usize;
+  var b = List[u8].empty();
+  var i = 0usize;
   while i < n {
     b.push(120u8);
     i = i + 1usize;
@@ -68,20 +68,20 @@ fn filled(n usize) List[u8] {
 }
 
 fn bytes(s &str) List[u8] {
-  mut b = List[u8].empty();
+  var b = List[u8].empty();
   putBytes(&mut b, s);
   b;
 }
 
 fn main() i32 {
-  mut txA Sender[NetEvent];
-  mut rxA Receiver[NetEvent];
+  var txA Sender[NetEvent];
+  var rxA Receiver[NetEvent];
   txA, rxA = Channel[NetEvent].make();
-  mut txB Sender[NetEvent];
-  mut rxB Receiver[NetEvent];
+  var txB Sender[NetEvent];
+  var rxB Receiver[NetEvent];
   txB, rxB = Channel[NetEvent].make();
   {
-    imm pair = pairInProcess(channelHandler(txA), 1u32, channelHandler(txB), 7u32);
+    let pair = pairInProcess(channelHandler(txA), 1u32, channelHandler(txB), 7u32);
     expectStr(next(&mut rxA).view(), "J1", "a hears it is joined, under its id");
     expectStr(next(&mut rxB).view(), "J7", "so does b, under its own");
 
@@ -108,7 +108,7 @@ fn main() i32 {
     expectStr(next(&mut rxB).view(), "M7:ok", "the other end heard nothing of them, and the connection goes on");
     pair.a.sendReliable(filled(1173usize));
     pair.a.sendReliable(bytes("after"));
-    imm big = next(&mut rxB);
+    let big = next(&mut rxB);
     expect(big.view().startsWith("M7:xxxx") and big.len() == 1176usize, "the largest message is carried whole");
     expectStr(next(&mut rxB).view(), "M7:after", "and the next follows");
 

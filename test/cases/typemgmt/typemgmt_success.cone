@@ -58,7 +58,7 @@ fn twice(n i32) i32 {
 
 // A global's initializer must be a literal, so a conversion can only reach one
 // by assignment. The receiving end of that assignment is tested below.
-mut @threadlocal total i32 = 0;
+var @threadlocal total i32 = 0;
 
 fn conversions() {
   // A float converts to an integer by truncating toward zero, in both
@@ -70,17 +70,17 @@ fn conversions() {
   // a typed variable rather than a literal, because a literal would have
   // coerced to a float on its own and would establish nothing about crossing
   // between the integer and float kinds -- which coercion refuses.
-  mut count i32 = 7;
+  var count i32 = 7;
   showF("i32-to-f64", f64.from(count));
   showF("i32-to-f32", f64.from(f32.from(count)));
 
   // Narrowing keeps the low bits: 300 is 0x12C, and an i8 keeps 0x2C
-  mut wide i64 = 300i64;
+  var wide i64 = 300i64;
   show("i64-to-i8-wraps", i8.from(wide));
 
   // Crossing between signed and unsigned reinterprets the two's-complement
   // encoding rather than clamping or raising
-  mut minusOne i32 = -1;
+  var minusOne i32 = -1;
   showU("i32-to-u8-negative", u8.from(minusOne));
   showU("i32-to-u32-negative", u32.from(minusOne));
 
@@ -89,18 +89,18 @@ fn conversions() {
   // return the value that went in, while a round trip through f64 does. The
   // 'd' suffix matters: an unsuffixed float literal is f32, so writing the
   // value without it would lose the precision before any conversion did.
-  mut exact f64 = 16777217.0d;
+  var exact f64 = 16777217.0d;
   show("f64-round-trip", i32.from(exact));
   show("f64-to-f32-loses-precision", i32.from(f32.from(exact)));
 
   // The same distinction seen from the literal's side
-  mut unsuffixed f64 = 16777217.0;
+  var unsuffixed f64 = 16777217.0;
   show("unsuffixed-float-literal-is-f32", i32.from(unsuffixed));
-  mut suffixed f64 = 16777217.0d;
+  var suffixed f64 = 16777217.0d;
   show("suffixed-float-literal-is-f64", i32.from(suffixed));
 
   // bool converts to and from the number types
-  mut flag bool = true;
+  var flag bool = true;
   show("bool-to-i32", i32.from(flag));
   if bool.from(5) {
     show("nonzero-to-bool", 1);
@@ -125,7 +125,7 @@ fn literalForm() {
   show("literal-to-i32", i32.from(2.75));
 
   // Including the coercion to bool that a condition would have done anyway
-  mut n i32 = 5;
+  var n i32 = 5;
   if bool.from(n) {
     show("variable-to-bool", 1);
   }
@@ -159,10 +159,10 @@ enum Extense {
 use Extense;
 
 fn structInLoop() {
-  mut e Extense = Variant2(20, 3, 4);
-  mut i = 0;
+  var e Extense = Variant2(20, 3, 4);
+  var i = 0;
   while i < 400000 {
-    mut one = Variant1(10, i);
+    var one = Variant1(10, i);
     e = one;
     i = i + 1;
   }
@@ -175,9 +175,9 @@ fn referenceToBool() {
   // A reference and a pointer each convert to bool. 'ref' owns references and
   // 'safety' owns pointers; what is claimed here is only that the conversion
   // exists and produces the right value.
-  mut n i32 = 7;
-  imm r &i32 = &n;
-  imm p *i32 = &n;
+  var n i32 = 7;
+  let r &i32 = &n;
+  let p *i32 = &n;
   showB("ref-to-bool", bool.from(r));
   showB("ptr-to-bool", bool.from(p));
 
@@ -185,9 +185,9 @@ fn referenceToBool() {
   // addresses is non-zero. A reference to a zero is the case that tells those
   // two readings apart, and it is true. The compiler offers no way to spell a
   // null reference or pointer, so the false side cannot be reached from here.
-  mut zero i32 = 0;
-  imm rz &i32 = &zero;
-  imm pz *i32 = &zero;
+  var zero i32 = 0;
+  let rz &i32 = &zero;
+  let pz *i32 = &zero;
   showB("ref-to-zero-is-true", bool.from(rz));
   showB("ptr-to-zero-is-true", bool.from(pz));
 }
@@ -207,23 +207,23 @@ struct Whole {
 fn reinterpretation() {
   // 'as' does not convert: the bits are unchanged and only their reading
   // changes. 1.0f32 is 0x3F800000, which read as an i32 is 1065353216.
-  mut one f32 = 1.0;
+  var one f32 = 1.0;
   show("f32-bits-as-i32", one as i32);
 
   // The same bits an i32 reads as -1 an u32 reads as 4294967295
-  mut minusOne i32 = -1;
+  var minusOne i32 = -1;
   showU("i32-bits-as-u32", minusOne as u32);
 
   // A struct target is allowed when the sizes agree, which is the rule
   // safe-trust.html states. Two i32 fields and one i64 field occupy the same
   // eight bytes, so the halves of the i64 are the two i32s.
   // typemgmt_genllvm_recast holds the sizes that do not agree.
-  mut halves = new Halves(1, 2);
-  imm whole = halves as Whole;
+  var halves = new Halves(1, 2);
+  let whole = halves as Whole;
   show("struct-recast-same-size", if whole.n == 0i64 {0;} else {1;});
 
   // ... and back again, which is what makes the reinterpretation faithful
-  imm back = whole as Halves;
+  let back = whole as Halves;
   show("struct-recast-round-trip-low", back.lo);
   show("struct-recast-round-trip-high", back.hi);
 
@@ -235,8 +235,8 @@ fn reinterpretation() {
   show("as-then-from", i64.from(minusOne as u32));
   showU("from-then-as", i64.from(minusOne) as u64);
   // A reference reaches an address only through a pointer
-  imm addr = &minusOne as *i32 as usize;
-  imm ptr = &minusOne as *i32;
+  let addr = &minusOne as *i32 as usize;
+  let ptr = &minusOne as *i32;
   showB("chained-as-through-pointer", addr == ptr as usize);
 }
 
@@ -291,9 +291,9 @@ struct Span {
 // 0.5 and -0.25 are exact in f32, so the values printed do not depend on the
 // precision the literal is built at; 0.1 is not, and its global must hold what
 // the same literal gives a local.
-imm widenedGlobal f64 = 0.5;
-mut @threadlocal widenedMutGlobal f64 = -0.25;
-imm widenedTenth f64 = 0.1;
+let widenedGlobal f64 = 0.5;
+var @threadlocal widenedMutGlobal f64 = -0.25;
+let widenedTenth f64 = 0.1;
 const WidenedConst f64 = 0.5;
 
 fn widenedStatic() f64 {
@@ -318,11 +318,11 @@ const LowestByte i8 = -128;
 const AllOnesByte u8 = -1;
 const FiveAgain = Five;
 const FiveWide i64 = Five;
-imm constGlobal i64 = Five;
-imm constFloatGlobal f64 = Half;
-imm constLowest i64 = LowestByte;
-imm constAllOnes u32 = AllOnesByte;
-imm constOfConst i64 = FiveAgain;
+let constGlobal i64 = Five;
+let constFloatGlobal f64 = Half;
+let constLowest i64 = LowestByte;
+let constAllOnes u32 = AllOnesByte;
+let constOfConst i64 = FiveAgain;
 
 fn constStatic() i64 {
   static s i64 = Five;
@@ -335,21 +335,21 @@ fn constDefault(x i64 = LowestByte) i64 {
 
 fn coercions() {
   // A narrower number widens into a wider one of the same kind, silently
-  mut small i16 = 300;
+  var small i16 = 300;
   show("signed-widens", wantI64(small));
-  mut byteVal u8 = 200;
+  var byteVal u8 = 200;
   showU("unsigned-widens", wantU64(byteVal));
-  mut single f32 = 1.5;
+  var single f32 = 1.5;
   showF("float-widens", wantF64(single));
 
   // An unsuffixed integer literal has no settled type yet, so it takes on
   // whatever number type it meets -- unlike a typed value, which would need a
   // conversion to cross between integer and float or between signed and
   // unsigned
-  mut asByte u8 = 5;
-  mut asLong i64 = 5;
-  mut asSingle f32 = 5;
-  mut asDouble f64 = 5;
+  var asByte u8 = 5;
+  var asLong i64 = 5;
+  var asSingle f32 = 5;
+  var asDouble f64 = 5;
   showU("literal-to-u8", asByte);
   show("literal-to-i64", asLong);
   showF("literal-to-f32", asSingle);
@@ -360,13 +360,13 @@ fn coercions() {
   // the default would drop every bit above the low 32 and then widen the
   // remainder back, which is how i64's maximum came out as -1 and its minimum
   // as 0. None of these carries a suffix.
-  mut widest i64 = 9223372036854775807;
+  var widest i64 = 9223372036854775807;
   show("literal-fills-i64", widest);
-  mut lowest i64 = -9223372036854775808;
+  var lowest i64 = -9223372036854775808;
   show("literal-fills-i64-negative", lowest);
-  mut unsignedWidest u64 = 18446744073709551615;
+  var unsignedWidest u64 = 18446744073709551615;
   showU("literal-fills-u64", unsignedWidest);
-  mut aboveI32 i64 = 5000000000;
+  var aboveI32 i64 = 5000000000;
   show("literal-above-i32-range", aboveI32);
 
   // The width is adopted wherever the literal meets its type, not only in an
@@ -379,16 +379,16 @@ fn coercions() {
   showU("literal-fills-u64-return", fillU64());
   aboveI32 = 6000000000;
   show("literal-fills-i64-assignment", aboveI32);
-  imm span = new Span(5000000000, 5000000000);
+  let span = new Span(5000000000, 5000000000);
   show("literal-fills-i64-field", span.big);
 
   // A float target is the same rule: the literal becomes a float of the whole
   // value, not a float of its low 32 bits. Each is read back through i64 so the
   // value printed is exact; 5000000000 is 9765625 * 2^9 and 6000000000 is
   // 5859375 * 2^10, both of which f32 holds exactly.
-  mut asWideDouble f64 = 5000000000;
+  var asWideDouble f64 = 5000000000;
   show("literal-fills-f64", i64.from(asWideDouble));
-  mut asWideSingle f32 = 5000000000;
+  var asWideSingle f32 = 5000000000;
   show("literal-fills-f32", i64.from(asWideSingle));
   asWideDouble = 6000000000;
   show("literal-fills-f64-assignment", i64.from(asWideDouble));
@@ -399,7 +399,7 @@ fn coercions() {
   show("literal-fills-f64-return", i64.from(fillF64()));
   show("literal-fills-f32-return", i64.from(fillF32()));
   show("literal-fills-f64-field", i64.from(span.wide));
-  mut negativeDouble f64 = -5000000000;
+  var negativeDouble f64 = -5000000000;
   show("literal-fills-f64-negative", i64.from(negativeDouble));
 
   // A literal must fit the type it takes (typemgmt_typecheck_litrange holds the
@@ -407,15 +407,15 @@ fn coercions() {
   // the literal and recorded, so i8 takes -128 but not 128; an unsigned type
   // takes a negated literal in its own width, as a suffixed one does; and u64's
   // maximum, which has the same bits as -1, reaches a float as itself.
-  mut byteTop u8 = 255;
+  var byteTop u8 = 255;
   showU("literal-fills-u8", byteTop);
-  mut byteBottom i8 = -128;
+  var byteBottom i8 = -128;
   show("literal-fills-i8-negative", byteBottom);
-  mut allOnes u32 = 0xFFFFFFFF;
+  var allOnes u32 = 0xFFFFFFFF;
   showU("literal-fills-u32-hex", allOnes);
-  mut negatedByte u8 = -1;
+  var negatedByte u8 = -1;
   showU("literal-negated-into-u8", negatedByte);
-  mut beyondI64 f64 = 18446744073709551615;
+  var beyondI64 f64 = 18446744073709551615;
   showF("literal-fills-f64-beyond-i64", beyondI64);
 
   showF("float-literal-widened-global", widenedGlobal);
@@ -423,7 +423,7 @@ fn coercions() {
   showF("float-literal-widened-const", WidenedConst);
   showF("float-literal-widened-static", widenedStatic());
   showF("float-literal-widened-default", widenedDefault());
-  imm localTenth f64 = 0.1;
+  let localTenth f64 = 0.1;
   showB("float-literal-global-agrees-with-local", widenedTenth == localTenth);
 
   show("const-widened-global", constGlobal);
@@ -434,11 +434,11 @@ fn coercions() {
   show("const-widened-typed-const", FiveWide);
   show("const-widened-static", constStatic());
   show("const-widened-default", constDefault());
-  imm localLowest i64 = LowestByte;
+  let localLowest i64 = LowestByte;
   showB("const-global-agrees-with-local", constLowest == localLowest);
 
   // A number coerces to bool in a condition, by way of its 'isTrue' method
-  mut n i32 = 3;
+  var n i32 = 3;
   if n {
     show("number-coerces-to-bool", 1);
   }
@@ -446,9 +446,9 @@ fn coercions() {
   // An operator coerces its right operand to the left operand's type, so
   // mixed widths need no conversion written out in that direction. The other
   // direction is not symmetric and is in typemgmt_typecheck_meet.
-  mut wide i64 = 100i64;
+  var wide i64 = 100i64;
   show("right-operand-widens", wide + small);
-  mut double f64 = 1.5d;
+  var double f64 = 1.5d;
   showF("float-right-operand-widens", double + single);
 }
 
@@ -477,14 +477,14 @@ struct Gauge {
 }
 
 fn literalToBool() {
-  mut initialized bool = 2;
+  var initialized bool = 2;
   showB("literal-to-bool-initializer", initialized);
-  mut assigned bool = true;
+  var assigned bool = true;
   assigned = 2;
   showB("literal-to-bool-assignment", assigned);
   showB("literal-to-bool-argument", wantBool(2));
   showB("literal-to-bool-return", fillBool());
-  imm gauge = new Gauge(2);
+  let gauge = new Gauge(2);
   showB("literal-to-bool-field", gauge.flag);
   show("literal-to-bool-condition", if 2 {1;} else {0;});
   show("literal-to-bool-not", if not 2 {1;} else {0;});
@@ -493,12 +493,12 @@ fn literalToBool() {
 
   // Zero is the false end of the same rule, and a literal bool is untouched by
   // it -- 'true' and 'false' carry bool from the parser and were never untyped
-  mut zeroed bool = 0;
+  var zeroed bool = 0;
   showB("zero-literal-to-bool", zeroed);
   showB("zero-literal-to-bool-argument", wantBool(0));
-  mut yes bool = true;
+  var yes bool = true;
   showB("true-stays-true", yes);
-  mut no bool = false;
+  var no bool = false;
   showB("false-stays-false", no);
 }
 
@@ -510,8 +510,8 @@ fn branches() {
   showF("float-branches-meet-at-f64", if true {5f;} else {7d;});
   showF("float-branches-else", if false {5f;} else {7d;});
 
-  mut narrow i16 = 3;
-  mut wide i64 = 4i64;
+  var narrow i16 = 3;
+  var wide i64 = 4i64;
   show("int-branches-meet-at-i64", if true {narrow;} else {wide;});
 
   // Two variants of one enum meet at the enum, and a third value then meets
@@ -525,9 +525,9 @@ fn branches() {
   show("three-variants-still-meet", sides(if false {Wide(1, 4);} elif true {Tall(2, 5);} else {Wide(1, 6);}));
 
   // ... and the same through references, where the meet has no size to satisfy
-  imm w = Wide(1, 7);
-  imm t = Tall(2, 8);
-  imm u = Wide(1, 9);
+  let w = Wide(1, 7);
+  let t = Tall(2, 8);
+  let u = Wide(1, 9);
   show("three-references-meet", sidesRef(if false {&w;} elif true {&t;} else {&u;}));
 }
 
@@ -611,7 +611,7 @@ alias Cells = Array[i64, 3];
 
 // Each of the four positions below is a use of the alias as a type: a global, a
 // parameter, a return type, and a local in the function further down.
-mut @threadlocal recorded Count = 3i64;
+var @threadlocal recorded Count = 3i64;
 
 fn bumped(n Count) Tally {
   // The aliased type's operators are reached through the alias, which has no
@@ -659,7 +659,7 @@ fn partSize(p Part) i64 {
 }
 
 fn aliases() {
-  mut running Count = 40i64;
+  var running Count = 40i64;
   running = bumped(running);
   show("alias-local", running);
   show("alias-global", recorded);
@@ -668,25 +668,25 @@ fn aliases() {
   // with no conversion written, and the coercion rules above are the alias's
   // rules too, so a narrower number still widens into it
   show("alias-passes-as-aliased-type", wantI64(running));
-  mut narrow i16 = 12;
-  mut widened Count = narrow;
+  var narrow i16 = 12;
+  var widened Count = narrow;
   show("alias-receives-coercion", widened);
 
   // A reference to the alias is a reference to the struct it names
-  imm sample = new Reading(9i64);
+  let sample = new Reading(9i64);
   show("alias-struct-ref", levelOf(&sample));
 
   // An alias of a struct builds a value in a literal, and the value is the
   // struct's: a reference to it is a reference to the struct, and a parameter
   // declared with the alias takes a value built under the struct's own name
-  imm viaAlias = new Sample(4i64);
+  let viaAlias = new Sample(4i64);
   show("alias-struct-literal", levelOfSample(viaAlias));
   show("alias-struct-literal-is-the-struct", levelOf(&viaAlias));
   show("alias-struct-parameter-takes-struct", levelOfSample(sample));
 
   // An alias qualifies what it names: 'Sample.make' reaches the static function
   // 'Reading.make' declares, and the value it returns is the struct's
-  imm made = Sample.make(7i64);
+  let made = Sample.make(7i64);
   show("alias-qualifies", levelOfSample(made));
 
   // An alias of a number converts by its 'from' as the number does,
@@ -696,19 +696,19 @@ fn aliases() {
   // And a reference to an aliased array indexes as the array it names. The
   // second index is what shows the element reached is the one meant rather than
   // a constant that happens to be right.
-  mut cells Cells = [11i64, 22i64, 33i64];
+  var cells Cells = [11i64, 22i64, 33i64];
   show("alias-array-ref-index-first", cellAt(&cells, 0));
   show("alias-array-ref-index-last", cellAt(&cells, 2));
 
   // Conversion targets the aliased type through the alias, and reads it back
-  mut scaled Ratio = f64.from(running) / 2.0d;
+  var scaled Ratio = f64.from(running) / 2.0d;
   showF("alias-in-conversion", scaled);
 
-  imm mark = new Mark(8i64);
+  let mark = new Mark(8i64);
   show("alias-above-struct-self", (&mark).position());
 
-  imm part Part = new Rc[mut, PartValue](6i64);
-  imm copied Part = part;
+  let part Part = new Rc[mut, PartValue](6i64);
+  let copied Part = part;
   copied.size = 13i64;
   show("alias-owning-ref", partSize(part));
 }

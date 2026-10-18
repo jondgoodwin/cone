@@ -23,7 +23,7 @@ struct Package {
   // Where an include file written by hand used to sit, <name>.cone at the
   // package root. Congo no longer reads one, and says so where it finds one.
   pub fn handInclude(self &) Path {
-    imm file = cat(name.view(), ".cone");
+    let file = cat(name.view(), ".cone");
     root.join(file.view());
   }
 }
@@ -34,8 +34,8 @@ fn emptyPackage() Package {
 }
 
 fn copyStrings(from &List[String]) List[String] {
-  mut out = List[String].withCapacity(from.len());
-  mut i = 0usize;
+  var out = List[String].withCapacity(from.len());
+  var i = 0usize;
   while i < from.len() {
     out.push(from[i].copy());
     i = i + 1usize;
@@ -44,8 +44,8 @@ fn copyStrings(from &List[String]) List[String] {
 }
 
 fn copyPaths(from &List[Path]) List[Path] {
-  mut out = List[Path].withCapacity(from.len());
-  mut i = 0usize;
+  var out = List[Path].withCapacity(from.len());
+  var i = 0usize;
   while i < from.len() {
     out.push(from[i].copy());
     i = i + 1usize;
@@ -55,10 +55,10 @@ fn copyPaths(from &List[Path]) List[Path] {
 
 // MAJOR.MINOR.PATCH, each 0 or a number not starting with 0
 fn isVersion(v &str) bool {
-  mut parts = 0usize;
-  mut i = 0usize;
+  var parts = 0usize;
+  var i = 0usize;
   while parts < 3usize {
-    imm start = i;
+    let start = i;
     while i < v.len() and v[i] >= '0' and v[i] <= '9' { i = i + 1usize; }
     if i == start or (v[start] == '0' and i > start + 1usize) { return false; }
     parts = parts + 1usize;
@@ -73,13 +73,13 @@ fn isVersion(v &str) bool {
 // A C library as the linker is told it, without its prefix or suffix
 fn isLibraryName(lib &str) bool {
   if lib.len() == 0usize or not isNameByte(lib[0usize]) { return false; }
-  mut i = 1usize;
+  var i = 1usize;
   while i < lib.len() {
-    imm b = lib[i];
+    let b = lib[i];
     if not (isNameByte(b) or b == '.' or b == '+' or b == '-') { return false; }
     i = i + 1usize;
   }
-  mut lower = String.from(lib);
+  var lower = String.from(lib);
   lower.lowerAscii();
   not (lower.endsWith(".lib") or lower.endsWith(".a") or lower.endsWith(".so")
     or lower.endsWith(".dylib") or lower.endsWith(".dll"));
@@ -88,40 +88,40 @@ fn isLibraryName(lib &str) bool {
 // A file's text as Python's read_text gives it: every line end '\n'
 fn readText(file &Path) Result[String, String] {
   match fs.readFile(file) {
-    case mut ok Ok {
-      mut text = String.empty();
+    case var ok Ok {
+      var text = String.empty();
       text <=> ok;
       text.replace("\r\n", "\n");
       text.replaceByte('\r', '\n');
       Ok[String, String](text);
     }
-    case imm e Error { Error[String, String](fsMessage(&e)); }
+    case let e Error { Error[String, String](fsMessage(&e)); }
   }
 }
 
 // The TOML document in a file, or the reason it cannot be read
 fn readToml(file &Path) Result[toml.Document, String] {
-  mut text = String.empty();
+  var text = String.empty();
   match readText(file) {
-    case mut ok Ok { text <=> ok; }
-    case mut e Error {
-      mut m = String.empty();
+    case var ok Ok { text <=> ok; }
+    case var e Error {
+      var m = String.empty();
       m <=> e;
       return Error[toml.Document, String](m);
     }
   }
   match toml.parse(text.view()) {
-    case mut ok Ok {
-      mut doc = new toml.Document();
+    case var ok Ok {
+      var doc = new toml.Document();
       doc <=> ok;
       Ok[toml.Document, String](doc);
     }
-    case imm e Error { Error[toml.Document, String](e.message()); }
+    case let e Error { Error[toml.Document, String](e.message()); }
   }
 }
 
 fn manifestError(file &Path, m String) Result[Package, String] {
-  imm place = native(file);
+  let place = native(file);
   Error[Package, String](cat(place.view(), ": ", m.view()));
 }
 
@@ -145,40 +145,40 @@ fn isSystemName(key &str) bool {
 // (a mistake in another system's section is found on every machine), and
 // added to pkg after what is there only when apply. "" or what is wrong.
 fn readLinkKeys(file &Path, table &toml.Table, label &str, apply bool, pkg &mut Package) String {
-  imm place = native(file);
-  imm keys = table.keys();
-  mut i = 0usize;
+  let place = native(file);
+  let keys = table.keys();
+  var i = 0usize;
   while i < keys.len() {
-    imm key = keys[i].view();
+    let key = keys[i].view();
     if key != "libraries" and key != "paths" and key != "runtime" and not (label == "[link]" and isSystemName(key)) {
       return cat(place.view(), ": '", key, "' is not a ", label, " key; the keys are libraries, paths and runtime");
     }
     i = i + 1usize;
   }
-  mut libraries = List[String].empty();
-  mut paths = List[String].empty();
-  mut runtime = List[String].empty();
+  var libraries = List[String].empty();
+  var paths = List[String].empty();
+  var runtime = List[String].empty();
   if table.has("libraries") {
     match table.getStrings("libraries") {
-      case mut l Some { libraries <=> l; }
+      case var l Some { libraries <=> l; }
       case is None { return cat(place.view(), ": ", label, " libraries must be a list of strings"); }
     }
   }
   if table.has("paths") {
     match table.getStrings("paths") {
-      case mut l Some { paths <=> l; }
+      case var l Some { paths <=> l; }
       case is None { return cat(place.view(), ": ", label, " paths must be a list of strings"); }
     }
   }
   if table.has("runtime") {
     match table.getStrings("runtime") {
-      case mut l Some { runtime <=> l; }
+      case var l Some { runtime <=> l; }
       case is None { return cat(place.view(), ": ", label, " runtime must be a list of strings"); }
     }
   }
   i = 0usize;
   while i < libraries.len() {
-    imm lib = libraries[i].view();
+    let lib = libraries[i].view();
     if not isLibraryName(lib) {
       return cat(place.view(), ": ", label, " library \"", lib, "\" must be the library's bare name, such as \"SDL3\": no folder, prefix or suffix, which Congo adds for the linker (and paths says where to look)");
     }
@@ -186,7 +186,7 @@ fn readLinkKeys(file &Path, table &toml.Table, label &str, apply bool, pkg &mut 
   }
   i = 0usize;
   while i < runtime.len() {
-    imm dll = runtime[i].view();
+    let dll = runtime[i].view();
     if not isLibraryName(dll) {
       return cat(place.view(), ": ", label, " runtime \"", dll, "\" must be the DLL's bare name, such as \"SDL3\" for SDL3.dll: no folder or suffix, which Congo adds");
     }
@@ -195,15 +195,15 @@ fn readLinkKeys(file &Path, table &toml.Table, label &str, apply bool, pkg &mut 
   if not apply { return String.empty(); }
   i = 0usize;
   while i < paths.len() {
-    imm user = expandUser(paths[i].view());
-    imm vars = expandVars(user.view());
-    imm given = Path.from(vars.view());
+    let user = expandUser(paths[i].view());
+    let vars = expandVars(user.view());
+    let given = Path.from(vars.view());
     if given.isAbsolute() {
       pkg.linkPaths.push(resolved(&given));
     }
     else {
-      imm up = file.parent();
-      imm full = up.join(&given);
+      let up = file.parent();
+      let full = up.join(&given);
       pkg.linkPaths.push(resolved(&full));
     }
     i = i + 1usize;
@@ -227,35 +227,35 @@ fn readLinkKeys(file &Path, table &toml.Table, label &str, apply bool, pkg &mut 
 // system is read, so that a mistake in it is found on every machine, and
 // contributes nothing. Into pkg; "" or what is wrong.
 fn readLink(file &Path, doc &toml.Document, pkg &mut Package) String {
-  imm place = native(file);
+  let place = native(file);
   if doc.has("link") {
-    imm wrong = readLinkKeys(file, doc["link"], "[link]", true, pkg);
+    let wrong = readLinkKeys(file, doc["link"], "[link]", true, pkg);
     if not wrong.isEmpty() { return wrong; }
   }
-  imm names = doc.names();
-  mut i = 0usize;
+  let names = doc.names();
+  var i = 0usize;
   while i < names.len() {
-    imm name = names[i].view();
+    let name = names[i].view();
     if name.startsWith("link.") and name != "link.windows" and name != "link.linux" and name != "link.macos" {
       return cat(place.view(), ": [", name, "] is not a link section; the sections are [link.windows], [link.linux] and [link.macos]");
     }
     i = i + 1usize;
   }
   if doc.has("link") {
-    imm plain = doc["link"];
+    let plain = doc["link"];
     if plain.has("windows") { return cat(place.view(), ": [link] windows must be a table: write it as [link.windows]"); }
     if plain.has("linux") { return cat(place.view(), ": [link] linux must be a table: write it as [link.linux]"); }
     if plain.has("macos") { return cat(place.view(), ": [link] macos must be a table: write it as [link.macos]"); }
   }
-  imm host = hostSystem();
+  let host = hostSystem();
   i = 0usize;
   while i < names.len() {
-    imm name = names[i].view();
+    let name = names[i].view();
     if name == "link.windows" or name == "link.linux" or name == "link.macos" {
-      imm label = cat("[", name, "]");
-      imm want = cat("link.", host);
-      imm apply = name == want.view();
-      imm wrong = readLinkKeys(file, doc[name], label.view(), apply, pkg);
+      let label = cat("[", name, "]");
+      let want = cat("link.", host);
+      let apply = name == want.view();
+      let wrong = readLinkKeys(file, doc[name], label.view(), apply, pkg);
       if not wrong.isEmpty() { return wrong; }
     }
     i = i + 1usize;
@@ -270,18 +270,18 @@ fn readLink(file &Path, doc &toml.Document, pkg &mut Package) String {
 // 2026]. The spelling is a placeholder. "" or what is wrong.
 fn readTargets(file &Path, table &toml.Table, pkg &mut Package) String {
   if not table.has("targets") { return String.empty(); }
-  imm place = native(file);
-  mut targets = List[String].empty();
+  let place = native(file);
+  var targets = List[String].empty();
   match table.getStrings("targets") {
-    case mut l Some { targets <=> l; }
+    case var l Some { targets <=> l; }
     case is None {
       return cat(place.view(), ": [package] targets must be a list of targets, such as [\"native\", \"gpu\"]");
     }
   }
-  mut hasNative = false;
-  mut i = 0usize;
+  var hasNative = false;
+  var i = 0usize;
   while i < targets.len() {
-    imm target = targets[i].view();
+    let target = targets[i].view();
     if target == "native" { hasNative = true; }
     elif target == "gpu" { pkg.gpu = true; }
     else {
@@ -303,18 +303,18 @@ fn readTargets(file &Path, table &toml.Table, pkg &mut Package) String {
 // for each system that needs more. There is no dependencies section: the imports in the source are the dependency list,
 // and the registries say where each one is.
 fn readManifest(file &Path) Result[Package, String] {
-  mut doc = new toml.Document();
+  var doc = new toml.Document();
   match readToml(file) {
-    case mut ok Ok { doc <=> ok; }
-    case imm e Error {
+    case var ok Ok { doc <=> ok; }
+    case let e Error {
       return manifestError(file, cat("cannot read the manifest: ", e.view()));
     }
   }
   // Every top-level key, as tomllib's dict holds them: the root's keys, then
   // the tables, in the order written
-  mut tops = doc.root.keys();
-  imm names = doc.names();
-  mut i = 0usize;
+  var tops = doc.root.keys();
+  let names = doc.names();
+  var i = 0usize;
   while i < names.len() {
     tops.push(names[i].copy());
     i = i + 1usize;
@@ -323,10 +323,10 @@ fn readManifest(file &Path) Result[Package, String] {
   while i < tops.len() {
     // A dotted table is under the table its name starts with: [link.linux]
     // is part of [link], and [package.x] of [package]
-    imm parts = splitText(tops[i].view(), '.');
-    imm key = parts[0usize].view();
+    let parts = splitText(tops[i].view(), '.');
+    let key = parts[0usize].view();
     if key != "package" and key != "link" {
-      mut extra &str = "";
+      var extra &str = "";
       if key == "dependencies" { extra = " There is no dependencies section: a package's imports are its dependencies."; }
       return manifestError(file, cat("[", key, "] is not part of a Congo manifest, which holds [package] and [link].", extra));
     }
@@ -335,11 +335,11 @@ fn readManifest(file &Path) Result[Package, String] {
   if not doc.has("package") {
     return manifestError(file, String.from("the manifest needs a [package] table with name, version and output"));
   }
-  imm table = doc["package"];
-  imm keys = table.keys();
+  let table = doc["package"];
+  let keys = table.keys();
   i = 0usize;
   while i < keys.len() {
-    imm key = keys[i].view();
+    let key = keys[i].view();
     if key != "name" and key != "version" and key != "output" and key != "targets" {
       return manifestError(file, cat("'", key, "' is not a [package] key; the keys are name, version, output and targets"));
     }
@@ -348,49 +348,49 @@ fn readManifest(file &Path) Result[Package, String] {
   // A dotted table under [package], [package.x], is a key that is not one
   i = 0usize;
   while i < names.len() {
-    imm parts = splitText(names[i].view(), '.');
+    let parts = splitText(names[i].view(), '.');
     if parts.len() > 1usize and parts[0usize].equals("package") {
       return manifestError(file, cat("'", parts[1usize].view(), "' is not a [package] key; the keys are name, version, output and targets"));
     }
     i = i + 1usize;
   }
-  mut pkg = emptyPackage();
+  var pkg = emptyPackage();
   match table.getString("name") {
-    case mut n Some { pkg.name <=> n; }
+    case var n Some { pkg.name <=> n; }
     case is None {}
   }
   if not isConeName(pkg.name.view()) {
     return manifestError(file, String.from("[package] name must be a Cone name, such as \"hello\""));
   }
-  imm fault = nameFault(pkg.name.view());
+  let fault = nameFault(pkg.name.view());
   if not fault.isEmpty() {
     return manifestError(file, cat("[package] name '", pkg.name.view(), "' ", fault.view(), "; choose another"));
   }
   match table.getString("version") {
-    case mut v Some { pkg.version <=> v; }
+    case var v Some { pkg.version <=> v; }
     case is None {}
   }
   if not isVersion(pkg.version.view()) {
     return manifestError(file, String.from("[package] version must be MAJOR.MINOR.PATCH, such as \"0.1.0\""));
   }
   match table.getString("output") {
-    case mut o Some { pkg.output <=> o; }
+    case var o Some { pkg.output <=> o; }
     case is None {}
   }
   if not (pkg.output.equals("executable") or pkg.output.equals("library")) {
     return manifestError(file, String.from("[package] output must be \"executable\" or \"library\""));
   }
-  imm wrongTargets = readTargets(file, table, &mut pkg);
+  let wrongTargets = readTargets(file, table, &mut pkg);
   if not wrongTargets.isEmpty() { return Error[Package, String](wrongTargets); }
   if doc.root.has("link") {
     return manifestError(file, String.from("[link] must be a table, with libraries, paths and runtime"));
   }
-  imm wrongLink = readLink(file, &doc, &mut pkg);
+  let wrongLink = readLink(file, &doc, &mut pkg);
   if not wrongLink.isEmpty() { return Error[Package, String](wrongLink); }
-  imm folder = file.parent();
+  let folder = file.parent();
   pkg.root = resolved(&folder);
-  imm srcName = cat(pkg.name.view(), ".cone");
-  imm srcDir = pkg.root.join("src");
+  let srcName = cat(pkg.name.view(), ".cone");
+  let srcDir = pkg.root.join("src");
   pkg.src = srcDir.join(srcName.view());
   Ok[Package, String](pkg);
 }
@@ -399,18 +399,18 @@ fn readManifest(file &Path) Result[Package, String] {
 
 // The Congo home: CONGO_HOME, or ~/.congo
 fn congoHome() Path {
-  imm named = envOr("CONGO_HOME", "");
+  let named = envOr("CONGO_HOME", "");
   if not named.isEmpty() {
-    imm given = Path.from(named.view());
+    let given = Path.from(named.view());
     return given.normalize();
   }
-  imm home = Path.fromString(expandUser("~"));
-  imm h = home.normalize();
+  let home = Path.fromString(expandUser("~"));
+  let h = home.normalize();
   h.join(".congo");
 }
 
 fn configPath() Path {
-  imm home = congoHome();
+  let home = congoHome();
   home.join("config.toml");
 }
 
@@ -425,41 +425,41 @@ fn configPath() Path {
 // A relative folder is relative to the config file's own folder. The indexes
 // are registries of the other kind (index.cone), searched after every folder.
 fn registryFolders(repo &Path) List[Path] {
-  mut folders = List[Path].empty();
+  var folders = List[Path].empty();
   if not repo.isEmpty() {
-    imm packages = repo.join("packages");
+    let packages = repo.join("packages");
     if fs.isDir(&packages) { folders.push(packages); }
   }
-  imm config = configPath();
+  let config = configPath();
   if fs.isFile(&config) {
-    imm place = native(&config);
-    mut doc = new toml.Document();
+    let place = native(&config);
+    var doc = new toml.Document();
     match readToml(&config) {
-      case mut ok Ok { doc <=> ok; }
-      case imm e Error {
+      case var ok Ok { doc <=> ok; }
+      case let e Error {
         fail(cat(place.view(), ": cannot read the machine config: ", e.view()));
       }
     }
-    mut listed = List[String].empty();
+    var listed = List[String].empty();
     if doc.has("registry") and doc["registry"].has("folders") {
       match doc["registry"].getStrings("folders") {
-        case mut l Some { listed <=> l; }
+        case var l Some { listed <=> l; }
         case is None {
           fail(cat(place.view(), ": [registry] folders must be a list of folder paths"));
         }
       }
     }
-    mut i = 0usize;
+    var i = 0usize;
     while i < listed.len() {
-      imm user = expandUser(listed[i].view());
-      imm vars = expandVars(user.view());
-      imm given = Path.from(vars.view());
+      let user = expandUser(listed[i].view());
+      let vars = expandVars(user.view());
+      let given = Path.from(vars.view());
       if given.isAbsolute() {
         folders.push(resolved(&given));
       }
       else {
-        imm up = config.parent();
-        imm full = up.join(&given);
+        let up = config.parent();
+        let full = up.join(&given);
         folders.push(resolved(&full));
       }
       i = i + 1usize;
@@ -488,7 +488,7 @@ struct Registry {
   pub fn has(self &, name &str) bool { byName.contains(name); }
 
   pub fn missedName(self &, name &str) bool {
-    mut i = 0usize;
+    var i = 0usize;
     while i < missed.len() {
       if missed[i].equals(name) { return true; }
       i = i + 1usize;
@@ -499,8 +499,8 @@ struct Registry {
   // The folders and indexes searched, for a message
   pub fn searched(self &) String {
     if folders.len() == 0usize and indexes.len() == 0usize { return String.from("(no registry folders)"); }
-    mut out = nativeList(&folders, ", ");
-    mut i = 0usize;
+    var out = nativeList(&folders, ", ");
+    var i = 0usize;
     while i < indexes.len() {
       if not out.isEmpty() { out <- ", "; }
       out <- indexes[i].url.view();
@@ -517,43 +517,43 @@ struct Registry {
 }
 
 fn readRegistry(folders List[Path], indexes &List[String]) Registry {
-  mut reg = new Registry(folders, List[Package].empty(), Dict[String, usize].empty(),
+  var reg = new Registry(folders, List[Package].empty(), Dict[String, usize].empty(),
     List[IndexRegistry].empty(), List[String].empty());
-  mut x = 0usize;
+  var x = 0usize;
   while x < indexes.len() {
     reg.indexes.push(newIndexRegistry(indexes[x].view()));
     x = x + 1usize;
   }
-  mut f = 0usize;
+  var f = 0usize;
   while f < reg.folders.len() {
-    imm folder = reg.folders[f].copy();
+    let folder = reg.folders[f].copy();
     if not fs.isDir(&folder) {
-      imm place = native(&folder);
+      let place = native(&folder);
       warn(cat("warning: registry folder ", place.view(), " does not exist"));
     }
     else {
-      mut entries = List[fs.DirEntry].empty();
+      var entries = List[fs.DirEntry].empty();
       match fs.readDir(&folder) {
-        case mut ok Ok { entries <=> ok; }
-        case imm e Error {
+        case var ok Ok { entries <=> ok; }
+        case let e Error {
           fail(fsMessage(&e));
         }
       }
-      mut i = 0usize;
+      var i = 0usize;
       while i < entries.len() {
-        imm manifest = entries[i].path.join("congo.toml");
+        let manifest = entries[i].path.join("congo.toml");
         if fs.isFile(&manifest) {
           match readManifest(&manifest) {
-            case mut ok Ok {
-              mut pkg = emptyPackage();
+            case var ok Ok {
+              var pkg = emptyPackage();
               pkg <=> ok;
               if not reg.byName.contains(pkg.name.view()) {
-                imm name = pkg.name.copy();
+                let name = pkg.name.copy();
                 reg.packages.push(pkg);
                 reg.byName.insert(name, reg.packages.len() - 1usize);
               }
             }
-            case imm e Error {
+            case let e Error {
               warn(cat("warning: skipped: ", e.view()));
             }
           }

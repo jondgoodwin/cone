@@ -140,7 +140,7 @@ enum SiMode {
     SiModeField,
     SiModeType,
     SiModeOut,
-    // SiModeType and SiModeOut, for a borrow into a 'mut' global (shapeTypeWritesGlobal): a call
+    // SiModeType and SiModeOut, for a borrow into a 'var' global (shapeTypeWritesGlobal): a call
     // that could run any code (through a virtual reference or a function pointer) is taken to write
     // any global, whatever it is handed
     SiModeTypeG,
@@ -617,7 +617,7 @@ static void siCallType(FnCallNode *call, SiCtx *c) {
         return;
     }
     int visible = !(call->flags & FlagVDisp) && siVisible(callee);
-    // Into a borrow of a 'mut' global: a virtual call, or a call of a function value (a '&fn' held in
+    // Into a borrow of a 'var' global: a virtual call, or a call of a function value (a '&fn' held in
     // a field, a parameter, a global or a local), runs code that is not known, which may write any
     // global without being handed it; so does an 'extern' function handed anything that can reach
     // something callable (a '&fn', a virtual reference, a closure an owner holds), which C may call
@@ -1049,7 +1049,7 @@ int shapeExternHandsCallable(FnCallNode *call, FnDclNode *callee) {
     return 0;
 }
 
-// The same, asked of a call made while a borrow into a 'mut' global is held (reshape.h,
+// The same, asked of a call made while a borrow into a 'var' global is held (reshape.h,
 // 'globalview'): only through a global, with a call into unknown code (a virtual call, a function
 // value) taken to write any
 int shapeTypeWritesGlobal(FnDclNode *fn, INode *cont) {

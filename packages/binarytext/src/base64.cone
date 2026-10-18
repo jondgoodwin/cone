@@ -62,21 +62,21 @@ pub struct Base64Format {
 
   // This format with whitespace passed over when decoding
   pub fn acceptingWhitespace(self &) Base64Format {
-    mut f = self.copy();
+    var f = self.copy();
     f.skipWhitespace = true;
     f;
   }
 
   // This format with padding optional when decoding
   pub fn acceptingAnyPadding(self &) Base64Format {
-    mut f = self.copy();
+    var f = self.copy();
     f.optionalPadding = true;
     f;
   }
 
   // This format with non-zero trailing bits accepted when decoding
   pub fn acceptingTrailingBits(self &) Base64Format {
-    mut f = self.copy();
+    var f = self.copy();
     f.allowTrailingBits = true;
     f;
   }
@@ -138,14 +138,14 @@ fn emitGroup(out &mut String, v u32, bytes u32, urlSafe bool, padded bool) {
 
 // Appends the base64 text of data to out
 pub fn appendBase64(out &mut String, data &Array[u8], fmt &Base64Format) {
-  imm urlSafe = fmt.isUrlSafe();
-  mut i = 0usize;
+  let urlSafe = fmt.isUrlSafe();
+  var i = 0usize;
   while i + 3usize <= data.len {
-    imm v = (u32.from(data[i]) << 16u32) | (u32.from(data[i + 1usize]) << 8u32) | u32.from(data[i + 2usize]);
+    let v = (u32.from(data[i]) << 16u32) | (u32.from(data[i + 1usize]) << 8u32) | u32.from(data[i + 2usize]);
     emitGroup(out, v, 3u32, urlSafe, fmt.padded);
     i = i + 3usize;
   }
-  imm rest = data.len - i;
+  let rest = data.len - i;
   if rest == 1usize {
     emitGroup(out, u32.from(data[i]) << 16u32, 1u32, urlSafe, fmt.padded);
   } elif rest == 2usize {
@@ -155,20 +155,20 @@ pub fn appendBase64(out &mut String, data &Array[u8], fmt &Base64Format) {
 
 // The base64 text of data in this format
 pub fn encodeBase64With(data &Array[u8], fmt &Base64Format) String {
-  mut out = String.withCapacity((data.len + 2usize) / 3usize * 4usize);
+  var out = String.withCapacity((data.len + 2usize) / 3usize * 4usize);
   appendBase64(&mut out, data, fmt);
   out;
 }
 
 // The standard alphabet, padded
 pub fn encodeBase64(data &Array[u8]) String {
-  imm fmt = Base64Format.standard();
+  let fmt = Base64Format.standard();
   encodeBase64With(data, &fmt);
 }
 
 // The URL-safe alphabet, padded
 pub fn encodeBase64Url(data &Array[u8]) String {
-  imm fmt = Base64Format.urlSafe();
+  let fmt = Base64Format.urlSafe();
   encodeBase64With(data, &fmt);
 }
 
@@ -195,7 +195,7 @@ pub struct Base64Encoder {
 
   // Appends the text of the whole groups chunk completes
   pub fn update(self &mut, chunk &Array[u8], out &mut String) {
-    mut i = 0usize;
+    var i = 0usize;
     while i < chunk.len {
       self.acc = (self.acc << 8u32) | u32.from(chunk[i]);
       self.have = self.have + 1u32;
@@ -262,7 +262,7 @@ pub struct Base64Decoder {
 
   // A decoder for the standard alphabet, padded, strict
   pub fn standard() Base64Decoder {
-    imm fmt = Base64Format.standard();
+    let fmt = Base64Format.standard();
     Base64Decoder.forFormat(&fmt);
   }
 
@@ -286,7 +286,7 @@ pub struct Base64Decoder {
   pub fn consumed(self &) usize { offset; }
 
   fn fail(self &mut, kind DecodeErrorKind, at usize, byte u8, why &str) DecodeError {
-    mut reason = String.empty();
+    var reason = String.empty();
     if byte != 0u8 or kind.isCharacterFault() {
       describeByte(&mut reason, byte);
       reason.append(" ");
@@ -331,11 +331,11 @@ pub struct Base64Decoder {
   // stay)
   pub fn update(self &mut, chunk &Array[u8], out &mut List[u8]) Result[usize, DecodeError] {
     if self.failed { return Error[usize, DecodeError](self.failure()); }
-    imm start = out.len();
-    mut i = 0usize;
+    let start = out.len();
+    var i = 0usize;
     while i < chunk.len {
-      imm c = chunk[i];
-      imm at = self.offset;
+      let c = chunk[i];
+      let at = self.offset;
       self.offset = self.offset + 1usize;
       i = i + 1usize;
       if self.skipWhitespace and isSpace(c) { continue; }
@@ -353,9 +353,9 @@ pub struct Base64Decoder {
         if self.count < 2u32 {
           return Error[usize, DecodeError](self.fail(DecodeErrorKind.BadPadding, at, c, "is padding where no padding can be"));
         }
-        imm owed = 3u32 - self.count;
+        let owed = 3u32 - self.count;
         match self.flushPartial(out) {
-          case imm e Some { return Error[usize, DecodeError](e.copy()); }
+          case let e Some { return Error[usize, DecodeError](e.copy()); }
           case is None { }
         }
         self.sealed = true;
@@ -368,7 +368,7 @@ pub struct Base64Decoder {
         }
         return Error[usize, DecodeError](self.fail(DecodeErrorKind.BadPadding, at, c, "comes after the padding that ends the text"));
       }
-      imm v = sextetValue(c, self.urlSafe);
+      let v = sextetValue(c, self.urlSafe);
       if v < 0i32 {
         return Error[usize, DecodeError](self.fail(DecodeErrorKind.BadCharacter, at, c, "is not in the alphabet"));
       }
@@ -392,7 +392,7 @@ pub struct Base64Decoder {
   // 'reset()'). Answers how many bytes it appended
   pub fn finish(self &mut, out &mut List[u8]) Result[usize, DecodeError] {
     if self.failed { return Error[usize, DecodeError](self.failure()); }
-    imm start = out.len();
+    let start = out.len();
     if self.sealed {
       if self.padLeft > 0u32 {
         return Error[usize, DecodeError](self.fail(DecodeErrorKind.BadPadding, self.offset, 0u8, "the text ends with padding still owed"));
@@ -405,11 +405,11 @@ pub struct Base64Decoder {
         return Error[usize, DecodeError](self.fail(DecodeErrorKind.BadPadding, self.offset, 0u8, "the text ends without its padding"));
       }
       match self.flushPartial(out) {
-        case imm e Some { return Error[usize, DecodeError](e.copy()); }
+        case let e Some { return Error[usize, DecodeError](e.copy()); }
         case is None { }
       }
     }
-    imm written = out.len() - start;
+    let written = out.len() - start;
     self.reset();
     Ok[usize, DecodeError](written);
   }
@@ -420,17 +420,17 @@ pub struct Base64Decoder {
 // Decodes text in this format, appending the bytes to out. Answers how many;
 // on a fault, out is left as it was
 pub fn decodeBase64Into(text &Array[u8], fmt &Base64Format, out &mut List[u8]) Result[usize, DecodeError] {
-  imm start = out.len();
-  mut d = Base64Decoder.forFormat(fmt);
+  let start = out.len();
+  var d = Base64Decoder.forFormat(fmt);
   match d.update(text, out) {
-    case imm e Error {
+    case let e Error {
       out.truncate(start);
       return Error[usize, DecodeError](e.copy());
     }
     case is Ok { }
   }
   match d.finish(out) {
-    case imm e Error {
+    case let e Error {
       out.truncate(start);
       return Error[usize, DecodeError](e.copy());
     }
@@ -441,9 +441,9 @@ pub fn decodeBase64Into(text &Array[u8], fmt &Base64Format, out &mut List[u8]) R
 
 // The bytes text names in this format
 pub fn decodeBase64With(text &Array[u8], fmt &Base64Format) Result[List[u8], DecodeError] {
-  mut out = List[u8].withCapacity(text.len / 4usize * 3usize + 3usize);
+  var out = List[u8].withCapacity(text.len / 4usize * 3usize + 3usize);
   match decodeBase64Into(text, fmt, &mut out) {
-    case imm e Error { return Error[List[u8], DecodeError](e.copy()); }
+    case let e Error { return Error[List[u8], DecodeError](e.copy()); }
     case is Ok { }
   }
   Ok[List[u8], DecodeError](out);
@@ -451,12 +451,12 @@ pub fn decodeBase64With(text &Array[u8], fmt &Base64Format) Result[List[u8], Dec
 
 // The standard alphabet, padded, strict
 pub fn decodeBase64(text &Array[u8]) Result[List[u8], DecodeError] {
-  imm fmt = Base64Format.standard();
+  let fmt = Base64Format.standard();
   decodeBase64With(text, &fmt);
 }
 
 // The URL-safe alphabet, padded, strict
 pub fn decodeBase64Url(text &Array[u8]) Result[List[u8], DecodeError] {
-  imm fmt = Base64Format.urlSafe();
+  let fmt = Base64Format.urlSafe();
   decodeBase64With(text, &fmt);
 }

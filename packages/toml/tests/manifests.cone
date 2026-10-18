@@ -25,11 +25,11 @@ import path use Path;
 import toml;
 
 fn parsed(text &Array[u8], label &Array[u8]) toml.Document {
-  mut doc = new toml.Document();
+  var doc = new toml.Document();
   match toml.parse(text) {
-    case mut ok Ok { doc <=> ok; }
-    case imm e Error {
-      imm m = e.message();
+    case var ok Ok { doc <=> ok; }
+    case let e Error {
+      let m = e.message();
       expectStr(m.view(), "<parsed>", label);
     }
   }
@@ -38,30 +38,30 @@ fn parsed(text &Array[u8], label &Array[u8]) toml.Document {
 
 fn strValue(t &toml.Table, key &str) String {
   match t.getString(key) {
-    case imm v Some { v.copy(); }
+    case let v Some { v.copy(); }
     case is None { String.from("<none>"); }
   }
 }
 
 fn list(t &toml.Table, key &str) String {
   match t.getStrings(key) {
-    case imm v Some { String.join(v.view(), "|"); }
+    case let v Some { String.join(v.view(), "|"); }
     case is None { String.from("<none>"); }
   }
 }
 
 fn isStr(t &toml.Table, key &str, want &Array[u8], label &Array[u8]) {
-  imm got = strValue(t, key);
+  let got = strValue(t, key);
   expectStr(got.view(), want, label);
 }
 
 fn isList(t &toml.Table, key &str, want &Array[u8], label &Array[u8]) {
-  imm got = list(t, key);
+  let got = list(t, key);
   expectStr(got.view(), want, label);
 }
 
 fn isJoined(l &List[String], want &Array[u8], label &Array[u8]) {
-  imm got = String.join(l.view(), "|");
+  let got = String.join(l.view(), "|");
   expectStr(got.view(), want, label);
 }
 
@@ -70,30 +70,30 @@ fn oneOf(s &Array[u8], a &Array[u8], b &Array[u8]) bool { s == a or s == b; }
 // What is wrong with the manifest at file, read as Congo reads it, for the
 // package in the folder named folder: "" when nothing is
 fn checkManifest(file &Path, folder &str) String {
-  mut text = String.empty();
+  var text = String.empty();
   match fs.readFile(file) {
-    case mut ok Ok { text <=> ok; }
-    case imm e Error { return e.message(); }
+    case var ok Ok { text <=> ok; }
+    case let e Error { return e.message(); }
   }
-  mut doc = new toml.Document();
+  var doc = new toml.Document();
   match toml.parse(text.view()) {
-    case mut ok Ok { doc <=> ok; }
-    case imm e Error { return e.message(); }
+    case var ok Ok { doc <=> ok; }
+    case let e Error { return e.message(); }
   }
   if doc.root.entries.len() > 0usize { return String.from("keys outside any table"); }
-  imm names = doc.names();
-  mut i = 0usize;
+  let names = doc.names();
+  var i = 0usize;
   while i < names.len() {
     if not (oneOf(names[i].view(), "package", "link") or isLinkSection(names[i].view())) {
-      mut m = String.from("a table that is not Congo's: ");
+      var m = String.from("a table that is not Congo's: ");
       m.append(names[i].view());
       return m;
     }
     i = i + 1usize;
   }
   if not doc.has("package") { return String.from("no [package]"); }
-  imm pkg = doc["package"];
-  imm keys = pkg.keys();
+  let pkg = doc["package"];
+  let keys = pkg.keys();
   i = 0usize;
   while i < keys.len() {
     if not (oneOf(keys[i].view(), "name", "version") or oneOf(keys[i].view(), "output", "targets")) {
@@ -103,9 +103,9 @@ fn checkManifest(file &Path, folder &str) String {
   }
   if pkg.has("targets") {
     match pkg.getStrings("targets") {
-      case imm t Some {
-        mut native = false;
-        mut j = 0usize;
+      case let t Some {
+        var native = false;
+        var j = 0usize;
         while j < t.len() {
           if t[j].equals("native") { native = true; }
           elif not t[j].equals("gpu") { return String.from("a target that is not Congo's"); }
@@ -116,19 +116,19 @@ fn checkManifest(file &Path, folder &str) String {
       case is None { return String.from("targets that are not a list of strings"); }
     }
   }
-  imm name = strValue(pkg, "name");
+  let name = strValue(pkg, "name");
   if not name.equals(folder) { return String.from("its name is not its folder's"); }
-  imm version = strValue(pkg, "version");
+  let version = strValue(pkg, "version");
   if version.equals("<none>") { return String.from("no version string"); }
-  imm output = strValue(pkg, "output");
+  let output = strValue(pkg, "output");
   if not oneOf(output.view(), "library", "executable") { return String.from("no output"); }
   // [link], and the sections for each system, hold the same keys
   i = 0usize;
   while i < names.len() {
     if names[i].equals("link") or isLinkSection(names[i].view()) {
-      imm link = doc[names[i].view()];
-      imm lkeys = link.keys();
-      mut j = 0usize;
+      let link = doc[names[i].view()];
+      let lkeys = link.keys();
+      var j = 0usize;
       while j < lkeys.len() {
         if not (oneOf(lkeys[j].view(), "libraries", "paths") or lkeys[j].equals("runtime")) {
           return String.from("a [link] key that is not Congo's");
@@ -151,24 +151,24 @@ fn isLinkSection(name &str) bool {
 
 // Check every folder of registry holding a congo.toml; how many there were
 fn checkFolder(registry &Path, label &Array[u8]) usize {
-  mut entries = List[fs.DirEntry].empty();
+  var entries = List[fs.DirEntry].empty();
   match fs.readDir(registry) {
-    case mut ok Ok { entries <=> ok; }
-    case imm e Error {
-      imm m = e.message();
+    case var ok Ok { entries <=> ok; }
+    case let e Error {
+      let m = e.message();
       expectStr(m.view(), "", label);
       return 0usize;
     }
   }
-  mut count = 0usize;
-  mut bad = 0usize;
-  mut i = 0usize;
+  var count = 0usize;
+  var bad = 0usize;
+  var i = 0usize;
   while i < entries.len() {
     if entries[i].isDir {
-      imm file = entries[i].path.join("congo.toml");
+      let file = entries[i].path.join("congo.toml");
       if fs.isFile(&file) {
         count = count + 1usize;
-        imm wrong = checkManifest(&file, entries[i].name.view());
+        let wrong = checkManifest(&file, entries[i].name.view());
         if not wrong.isEmpty() {
           bad = bad + 1usize;
           printStr(file.view());
@@ -187,26 +187,26 @@ fn checkFolder(registry &Path, label &Array[u8]) usize {
 // The packages folder: the parent of the nearest folder above this test's
 // whose congo.toml names the toml package
 fn packagesFolder() Path {
-  mut here = Path.from("");
+  var here = Path.from("");
   match fs.currentDir() {
-    case mut ok Ok { here <=> ok; }
+    case var ok Ok { here <=> ok; }
     case is Error { return Path.from(""); }
   }
   while not here.isEmpty() {
-    imm file = here.join("congo.toml");
+    let file = here.join("congo.toml");
     if fs.isFile(&file) {
       match fs.readFile(&file) {
-        case imm t Ok {
-          imm doc = parsed(t.view(), "a congo.toml above the test");
+        case let t Ok {
+          let doc = parsed(t.view(), "a congo.toml above the test");
           if doc.has("package") {
-            imm name = strValue(doc["package"], "name");
+            let name = strValue(doc["package"], "name");
             if name.equals("toml") { return here.parent(); }
           }
         }
         case is Error {}
       }
     }
-    imm up = here.parent();
+    let up = here.parent();
     if up.view() == here.view() { return Path.from(""); }
     here = up;
   }
@@ -214,12 +214,12 @@ fn packagesFolder() Path {
 }
 
 fn repository() {
-  imm packages = packagesFolder();
+  let packages = packagesFolder();
   require(not packages.isEmpty(), "the packages folder found");
-  imm n = checkFolder(&packages, "every package's manifest reads as Congo reads it");
+  let n = checkFolder(&packages, "every package's manifest reads as Congo reads it");
   expect(n >= 31usize, "at least the 31 packages there are today");
-  imm repo = packages.parent();
-  imm samples = repo.join("samples");
+  let repo = packages.parent();
+  let samples = repo.join("samples");
   if fs.isDir(&samples) {
     checkFolder(&samples, "every sample's manifest reads as Congo reads it");
   }
@@ -228,37 +228,37 @@ fn repository() {
   }
 
   // Spot checks, through the files themselves
-  imm sdl = readPackage(&packages, "sdl");
+  let sdl = readPackage(&packages, "sdl");
   isList(sdl["link"], "libraries", "SDL3", "sdl links SDL3");
   isList(sdl["link"], "runtime", "SDL3", "sdl has SDL3.dll copied beside its programs");
   isStr(sdl["package"], "output", "library", "sdl is a library");
-  imm process = readPackage(&packages, "process");
+  let process = readPackage(&packages, "process");
   expect(not process.has("link"), "process has no plain [link]: shell32 is Windows only");
   isList(process["link.windows"], "libraries", "shell32", "process links Windows' shell32");
-  imm sync = readPackage(&packages, "sync");
+  let sync = readPackage(&packages, "sync");
   expect(not sync.has("link"), "sync has no plain [link]: synchronization is Windows only");
   isList(sync["link.windows"], "libraries", "synchronization", "sync links Windows' synchronization");
-  imm iocore = readPackage(&packages, "iocore");
+  let iocore = readPackage(&packages, "iocore");
   isList(iocore["link.windows"], "libraries", "ws2_32|ntdll", "iocore links Winsock and ntdll on Windows");
-  imm tls = readPackage(&packages, "tls");
+  let tls = readPackage(&packages, "tls");
   expect(not tls.has("link"), "tls has no plain [link]: each system's libraries differ");
   isList(tls["link.windows"], "libraries", "libssl|libcrypto|crypt32", "tls on Windows");
   isList(tls["link.linux"], "libraries", "ssl|crypto", "tls on Linux");
-  imm geomath = readPackage(&packages, "geomath");
+  let geomath = readPackage(&packages, "geomath");
   isList(geomath["package"], "targets", "native|gpu", "geomath is marked for the GPU");
-  imm own = readPackage(&packages, "toml");
+  let own = readPackage(&packages, "toml");
   isStr(own["package"], "version", "0.1.0", "this package's version");
   expect(not own.has("link"), "this package links nothing");
 }
 
 fn readPackage(packages &Path, name &str) toml.Document {
-  imm folder = packages.join(name);
-  imm file = folder.join("congo.toml");
-  mut doc = new toml.Document();
+  let folder = packages.join(name);
+  let file = folder.join("congo.toml");
+  var doc = new toml.Document();
   match fs.readFile(&file) {
-    case imm t Ok { doc = parsed(t.view(), name); }
-    case imm e Error {
-      imm m = e.message();
+    case let t Ok { doc = parsed(t.view(), name); }
+    case let e Error {
+      let m = e.message();
       expectStr(m.view(), "", name);
     }
   }
@@ -269,27 +269,27 @@ fn readPackage(packages &Path, name &str) toml.Document {
 // config, a [link] with paths, and the manifests Congo refuses for what they
 // say rather than how they are written
 fn congoTexts() {
-  imm made = parsed("[package]\nname = \"hello\"\nversion = \"0.1.0\"\noutput = \"executable\"\n", "congo new");
+  let made = parsed("[package]\nname = \"hello\"\nversion = \"0.1.0\"\noutput = \"executable\"\n", "congo new");
   isStr(made["package"], "output", "executable", "congo new's manifest");
-  imm config = parsed("[registry]\nfolders = [\"D:/cone/mypackages\", \"~/cone/vendor\"]\n", "the machine config");
+  let config = parsed("[registry]\nfolders = [\"D:/cone/mypackages\", \"~/cone/vendor\"]\n", "the machine config");
   isList(config["registry"], "folders", "D:/cone/mypackages|~/cone/vendor", "the machine config's folders");
-  imm tests = parsed("[registry]\nfolders = [\"C:/Users/x/AppData/Local/Temp/tmp1/pk\", \"C:/b\"]\n", "test_congo's config");
+  let tests = parsed("[registry]\nfolders = [\"C:/Users/x/AppData/Local/Temp/tmp1/pk\", \"C:/b\"]\n", "test_congo's config");
   isList(tests["registry"], "folders", "C:/Users/x/AppData/Local/Temp/tmp1/pk|C:/b", "test_congo's config");
-  imm linked = parsed("[package]\nname = \"tri\"\nversion = \"0.1.0\"\noutput = \"library\"\n\n[link]\nlibraries = [\"tri3\"]\npaths = [\"clib\"]\n", "a [link] with paths");
+  let linked = parsed("[package]\nname = \"tri\"\nversion = \"0.1.0\"\noutput = \"library\"\n\n[link]\nlibraries = [\"tri3\"]\npaths = [\"clib\"]\n", "a [link] with paths");
   isList(linked["link"], "paths", "clib", "[link] paths");
-  imm readme = parsed("[link]\nlibraries = [\"SDL3\", \"user32\"]\npaths = [\"clib\"]\nruntime = [\"SDL3\"]\n", "the README's [link]");
+  let readme = parsed("[link]\nlibraries = [\"SDL3\", \"user32\"]\npaths = [\"clib\"]\nruntime = [\"SDL3\"]\n", "the README's [link]");
   isList(readme["link"], "libraries", "SDL3|user32", "the README's libraries");
   isList(readme["link"], "runtime", "SDL3", "the README's runtime");
-  imm systems = parsed("[link]\nlibraries = [\"z\"]\n\n[link.windows]\nlibraries = [\"user32\"]\n\n[link.linux]\nlibraries = [\"ssl\", \"crypto\"]\n", "the README's per-system sections");
+  let systems = parsed("[link]\nlibraries = [\"z\"]\n\n[link.windows]\nlibraries = [\"user32\"]\n\n[link.linux]\nlibraries = [\"ssl\", \"crypto\"]\n", "the README's per-system sections");
   isList(systems["link.windows"], "libraries", "user32", "the README's Windows section");
   isList(systems["link.linux"], "libraries", "ssl|crypto", "the README's Linux section");
   // Read, and then refused by Congo for what they hold
-  imm deps = parsed("[package]\nname = \"lib1\"\nversion = \"1.0.0\"\noutput = \"library\"\n[dependencies]\nstdio = \"1\"\n", "[dependencies]");
-  imm names = deps.names();
+  let deps = parsed("[package]\nname = \"lib1\"\nversion = \"1.0.0\"\noutput = \"library\"\n[dependencies]\nstdio = \"1\"\n", "[dependencies]");
+  let names = deps.names();
   isJoined(&names, "package|dependencies", "[dependencies] is read, for Congo to refuse");
-  imm short = parsed("[package]\nname = \"lib1\"\nversion = \"1.0\"\noutput = \"library\"\n", "a short version");
+  let short = parsed("[package]\nname = \"lib1\"\nversion = \"1.0\"\noutput = \"library\"\n", "a short version");
   isStr(short["package"], "version", "1.0", "a short version is read, for Congo to refuse");
-  imm libs = parsed("[link]\nlibs = [\"SDL2\"]\n", "a [link] key Congo refuses");
+  let libs = parsed("[link]\nlibs = [\"SDL2\"]\n", "a [link] key Congo refuses");
   expect(libs["link"].has("libs"), "an unknown [link] key is read, for Congo to refuse");
 }
 

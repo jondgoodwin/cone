@@ -14,8 +14,8 @@ import actors;
 import netmsg use *;
 
 fn numberOf(data &Array[u8]) u64 {
-  mut n = 0u64;
-  mut i = 0usize;
+  var n = 0u64;
+  var i = 0usize;
   while i < data.len {
     n = (n << 8u64) | u64.from(data[i]);
     i = i + 1usize;
@@ -24,8 +24,8 @@ fn numberOf(data &Array[u8]) u64 {
 }
 
 fn big(n usize) List[u8] {
-  mut b = List[u8].empty();
-  mut i = 0usize;
+  var b = List[u8].empty();
+  var i = 0usize;
   while i < n {
     b.push(7u8);
     i = i + 1usize;
@@ -34,7 +34,7 @@ fn big(n usize) List[u8] {
 }
 
 fn numberBytes(n u64) List[u8] {
-  mut b = List[u8].empty();
+  var b = List[u8].empty();
   putU32(&mut b, u32.from(n));
   b;
 }
@@ -53,20 +53,20 @@ struct Tally {
 
 fn note(e &NetEvent, t &mut Tally, joined &mut List[Connection]) {
   match e {
-    case imm j &Joined { joined.push(j.conn); }
-    case imm m &Message {
+    case let j &Joined { joined.push(j.conn); }
+    case let m &Message {
       if t.next == 0u64 {t.firstAt = Instant.now();}
       if numberOf(m.data.view()) != t.next {t.wrong = t.wrong + 1u64;}
       t.next = t.next + 1u64;
     }
-    case imm u &Update {
-      imm v = numberOf(u.data.view());
+    case let u &Update {
+      let v = numberOf(u.data.view());
       if t.values > 0u64 and v <= t.lastValue {t.backwards = t.backwards + 1u64;}
       t.lastValue = v;
       t.values = t.values + 1u64;
     }
-    case imm l &Left { t.left = t.left + 1u64; }
-    case imm r &Refused {
+    case let l &Left { t.left = t.left + 1u64; }
+    case let r &Refused {
       // Only the oversize message and value this test offers are refused, with the limits the default packet gives
       if r.limit == (if r.reliable {1173usize;} else {1171usize;}) and r.size == r.limit + 1usize {t.refused = t.refused + 1u64;}
       else {t.refusedWrong = t.refusedWrong + 1u64;}
@@ -75,38 +75,38 @@ fn note(e &NetEvent, t &mut Tally, joined &mut List[Connection]) {
 }
 
 fn main() i32 {
-  mut txA Sender[NetEvent];
-  mut rxA Receiver[NetEvent];
+  var txA Sender[NetEvent];
+  var rxA Receiver[NetEvent];
   txA, rxA = Channel[NetEvent].make();
-  mut txB Sender[NetEvent];
-  mut rxB Receiver[NetEvent];
+  var txB Sender[NetEvent];
+  var rxB Receiver[NetEvent];
   txB, rxB = Channel[NetEvent].make();
   {
-    imm link = new LinkConfig(200u32, 30i64, 20i64, 20u32, 20u32, 40i64);
-    mut pair = pairSimulated(NetConfig.defaults(), link, link, 11u64, channelHandler(txA), 1u32, channelHandler(txB), 1u32);
-    mut ta = new Tally(0u64, 0u64, 0u64, 0u64, 0u64, 0u64, Instant.now(), 0u64, 0u64);
-    mut tb = new Tally(0u64, 0u64, 0u64, 0u64, 0u64, 0u64, Instant.now(), 0u64, 0u64);
-    mut ca = List[Connection].empty();
-    mut cb = List[Connection].empty();
-    imm started = Instant.now();
-    mut sent = false;
-    mut tick = 0u64;
-    imm until = started + Duration.fromSeconds(60i64);
-    mut settle = until;
-    mut all = false;
+    let link = new LinkConfig(200u32, 30i64, 20i64, 20u32, 20u32, 40i64);
+    var pair = pairSimulated(NetConfig.defaults(), link, link, 11u64, channelHandler(txA), 1u32, channelHandler(txB), 1u32);
+    var ta = new Tally(0u64, 0u64, 0u64, 0u64, 0u64, 0u64, Instant.now(), 0u64, 0u64);
+    var tb = new Tally(0u64, 0u64, 0u64, 0u64, 0u64, 0u64, Instant.now(), 0u64, 0u64);
+    var ca = List[Connection].empty();
+    var cb = List[Connection].empty();
+    let started = Instant.now();
+    var sent = false;
+    var tick = 0u64;
+    let until = started + Duration.fromSeconds(60i64);
+    var settle = until;
+    var all = false;
     while Instant.now() < settle {
       match rxA.recvTimeout(Duration.fromMillis(3i64)) {
-        case imm e Some { note(&e, &mut ta, &mut ca); }
+        case let e Some { note(&e, &mut ta, &mut ca); }
         case is None[NetEvent] {}
       }
       match rxB.tryRecv() {
-        case imm e Some { note(&e, &mut tb, &mut cb); }
+        case let e Some { note(&e, &mut tb, &mut cb); }
         case is None[NetEvent] {}
       }
       if ca.len() == 1usize and cb.len() == 1usize {
         if not sent {
           sent = true;
-          mut i = 0u64;
+          var i = 0u64;
           while i < 100u64 {
             ca[0usize].sendReliable(numberBytes(i));
             cb[0usize].sendReliable(numberBytes(i));

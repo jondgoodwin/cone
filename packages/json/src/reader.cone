@@ -71,7 +71,7 @@ pub struct Reader['a] {
   // the same failure again.
   pub fn next(self &mut) Result[Event, JsonError] {
     if self.failed { return Error[Event, JsonError](self.err.copy()); }
-    imm ev = self.step();
+    let ev = self.step();
     if self.failed { return Error[Event, JsonError](self.err.copy()); }
     Ok[Event, JsonError](ev);
   }
@@ -79,10 +79,10 @@ pub struct Reader['a] {
   // Skips the value that comes next, all of it (an array or object with its
   // contents). None when it is skipped, or the failure.
   pub fn skipValue(self &mut) Option[JsonError] {
-    mut levels = 0usize;
+    var levels = 0usize;
     while true {
       match self.next() {
-        case imm ev Ok {
+        case let ev Ok {
           if ev == Event.StartObject or ev == Event.StartArray { levels = levels + 1usize; }
           elif ev == Event.EndObject or ev == Event.EndArray {
             // The end of the container the caller is in: no value to skip
@@ -95,7 +95,7 @@ pub struct Reader['a] {
           // A key is followed by its value, which is what is being skipped
           if levels == 0usize and ev != Event.Key { return None; }
         }
-        case imm e Error { return Some[JsonError](e.copy()); }
+        case let e Error { return Some[JsonError](e.copy()); }
       }
     }
     None;
@@ -109,7 +109,7 @@ pub struct Reader['a] {
 
   fn skipSpace(self &mut) {
     while self.pos < self.src.len {
-      imm c = self.src[self.pos];
+      let c = self.src[self.pos];
       if c != ' ' and c != '\t' and c != '\n' and c != '\r' { return; }
       self.pos = self.pos + 1usize;
     }
@@ -122,7 +122,7 @@ pub struct Reader['a] {
 
   fn open(self &mut,kind u8) bool {
     if self.stack.len() >= self.maxDepth {
-      mut m = String.from("the text is nested deeper than ");
+      var m = String.from("the text is nested deeper than ");
       m.appendUInt(u64.from(self.maxDepth));
       m.append(" levels");
       self.fail(ErrorKind.TooDeep, self.pos, m.view());
@@ -134,7 +134,7 @@ pub struct Reader['a] {
 
   fn step(self &mut) Event {
     self.skipSpace();
-    imm n = self.src.len;
+    let n = self.src.len;
     self.tokenStart = self.pos;
     if self.want == Want.Finished { return Event.Done; }
     if self.want == Want.NeedEnd {
@@ -146,13 +146,13 @@ pub struct Reader['a] {
       return Event.Done;
     }
     if self.want == Want.NeedCommaOrEnd {
-      imm top = *self.stack[self.stack.len() - 1usize];
+      let top = *self.stack[self.stack.len() - 1usize];
       if self.pos >= n {
         if top == inArray { self.fail(ErrorKind.UnexpectedEnd, n, "the text ends inside an array: expected ',' or ']'"); }
         else { self.fail(ErrorKind.UnexpectedEnd, n, "the text ends inside an object: expected ',' or '}'"); }
         return Event.Done;
       }
-      imm c = self.src[self.pos];
+      let c = self.src[self.pos];
       if c == ',' {
         self.pos = self.pos + 1usize;
         self.skipSpace();
@@ -182,7 +182,7 @@ pub struct Reader['a] {
         self.fail(ErrorKind.UnexpectedEnd, n, "the text ends inside an object: expected a key");
         return Event.Done;
       }
-      imm c = self.src[self.pos];
+      let c = self.src[self.pos];
       if c == '}' {
         if self.want == Want.NeedKey {
           self.fail(ErrorKind.UnexpectedByte, self.pos, "a ',' may not come just before '}'");
@@ -217,7 +217,7 @@ pub struct Reader['a] {
       self.fail(ErrorKind.UnexpectedEnd, n, "the text ends where a value was expected");
       return Event.Done;
     }
-    imm c = self.src[self.pos];
+    let c = self.src[self.pos];
     self.tokenStart = self.pos;
     if c == ']' {
       if self.want == Want.NeedValueOrEnd {
@@ -278,7 +278,7 @@ pub struct Reader['a] {
 
   // At a number's first byte: its text into buf, past it
   fn readNumber(self &mut) bool {
-    imm s = scanNumber(self.src, self.pos);
+    let s = scanNumber(self.src, self.pos);
     if s.problem != numOk {
       if s.problem == numNoDigits { self.fail(ErrorKind.BadNumber, s.end, "a number needs a digit here"); }
       elif s.problem == numLeadingZero { self.fail(ErrorKind.BadNumber, s.end, "a number may not have a leading zero"); }
@@ -295,15 +295,15 @@ pub struct Reader['a] {
   // At a string's opening quote: its text, escapes decoded, into buf, past
   // the closing quote
   fn readString(self &mut) bool {
-    imm n = self.src.len;
-    imm opened = self.pos;
+    let n = self.src.len;
+    let opened = self.pos;
     self.buf.clear();
     self.pos = self.pos + 1usize;
     while true {
       // A run of bytes that need no care
-      imm start = self.pos;
+      let start = self.pos;
       while self.pos < n {
-        imm b = self.src[self.pos];
+        let b = self.src[self.pos];
         if b == '"' or b == '\\' or b < 0x20u8 or b >= 0x80u8 { break; }
         self.pos = self.pos + 1usize;
       }
@@ -312,21 +312,21 @@ pub struct Reader['a] {
         self.fail(ErrorKind.UnexpectedEnd, n, "the text ends inside a string: it is not closed with '\"'");
         return false;
       }
-      imm c = self.src[self.pos];
+      let c = self.src[self.pos];
       if c == '"' {
         self.pos = self.pos + 1usize;
         self.tokenStart = opened;
         return true;
       }
       if c < 0x20u8 {
-        mut m = String.from("a control character (U+00");
+        var m = String.from("a control character (U+00");
         m.appendHex(u64.from(c), 2usize);
         m.append(") in a string must be written as an escape");
         self.fail(ErrorKind.ControlChar, self.pos, m.view());
         return false;
       }
       if c >= 0x80u8 {
-        imm len = utf8Length(self.src, self.pos);
+        let len = utf8Length(self.src, self.pos);
         if len == 0usize {
           self.fail(ErrorKind.BadUtf8, self.pos, "the text is not valid UTF-8");
           return false;
@@ -343,13 +343,13 @@ pub struct Reader['a] {
 
   // At a '\' inside a string: the character it names, appended to buf
   fn readEscape(self &mut) bool {
-    imm n = self.src.len;
-    imm at = self.pos;
+    let n = self.src.len;
+    let at = self.pos;
     if at + 1usize >= n {
       self.fail(ErrorKind.UnexpectedEnd, n, "the text ends inside an escape");
       return false;
     }
-    imm e = self.src[at + 1usize];
+    let e = self.src[at + 1usize];
     self.pos = at + 2usize;
     if e == '"' { self.buf.appendByte('"'); }
     elif e == '\\' { self.buf.appendByte('\\'); }
@@ -360,16 +360,16 @@ pub struct Reader['a] {
     elif e == 'r' { self.buf.appendByte('\r'); }
     elif e == 't' { self.buf.appendByte('\t'); }
     elif e == 'u' {
-      imm hi = hex4(self.src, self.pos);
+      let hi = hex4(self.src, self.pos);
       if hi > 0xFFFFu32 {
         self.fail(ErrorKind.BadEscape, at, "'\\u' must be followed by 4 hex digits");
         return false;
       }
       self.pos = self.pos + 4usize;
-      mut cp = hi;
+      var cp = hi;
       if hi >= 0xD800u32 and hi <= 0xDBFFu32 {
         // A high surrogate begins a pair: '\u' and a low one must follow
-        mut lo = 0x10000u32;
+        var lo = 0x10000u32;
         if self.pos + 1usize < n and self.src[self.pos] == '\\' and self.src[self.pos + 1usize] == 'u' {
           lo = hex4(self.src, self.pos + 2usize);
         }
@@ -397,12 +397,12 @@ pub struct Reader['a] {
 // A Reader over text, standard options. A leading UTF-8 byte-order mark is
 // passed over.
 pub fn reader(text &'a Array[u8]) Reader['a] {
-  imm opts = Options.standard();
+  let opts = Options.standard();
   readerWith(text, &opts);
 }
 
 pub fn readerWith(text &'a Array[u8], opts &'b Options) Reader['a] {
-  mut start = 0usize;
+  var start = 0usize;
   if text.len >= 3usize and text[0usize] == 0xEFu8 and text[1usize] == 0xBBu8 and text[2usize] == 0xBFu8 {
     start = 3usize;
   }
@@ -426,10 +426,10 @@ fn hexValue(c u8) u32 {
 // The four hex digits at pos, or a value past 0xFFFF when they are not four
 fn hex4(t &Array[u8], pos usize) u32 {
   if pos + 4usize > t.len { return 0x10000u32; }
-  mut v = 0u32;
-  mut i = 0usize;
+  var v = 0u32;
+  var i = 0usize;
   while i < 4usize {
-    imm d = hexValue(t[pos + i]);
+    let d = hexValue(t[pos + i]);
     if d == 16u32 { return 0x10000u32; }
     v = v * 16u32 + d;
     i = i + 1usize;
@@ -441,19 +441,19 @@ fn hex4(t &Array[u8], pos usize) u32 {
 // the bytes there are not one: no overlong form, no surrogate, nothing beyond
 // U+10FFFF, no cut-off character
 fn utf8Length(t &Array[u8], pos usize) usize {
-  imm b = t[pos];
+  let b = t[pos];
   if b < 0x80u8 { return 1usize; }
-  mut more = 0usize;
-  mut cp = 0u32;
-  mut least = 0u32;
+  var more = 0usize;
+  var cp = 0u32;
+  var least = 0u32;
   if b >= 0xC2u8 and b <= 0xDFu8 { more = 1usize; cp = u32.from(b & 0x1Fu8); least = 0x80u32; }
   elif b >= 0xE0u8 and b <= 0xEFu8 { more = 2usize; cp = u32.from(b & 0x0Fu8); least = 0x800u32; }
   elif b >= 0xF0u8 and b <= 0xF4u8 { more = 3usize; cp = u32.from(b & 0x07u8); least = 0x10000u32; }
   else { return 0usize; }
   if pos + more >= t.len { return 0usize; }
-  mut k = 1usize;
+  var k = 1usize;
   while k <= more {
-    imm c = t[pos + k];
+    let c = t[pos + k];
     if (c & 0xC0u8) != 0x80u8 { return 0usize; }
     cp = (cp << 6u32) | u32.from(c & 0x3Fu8);
     k = k + 1usize;
@@ -486,8 +486,8 @@ fn appendUtf8(s &mut String, cp u32) {
 
 // The line (from 1) of the byte at offset, a line ending at '\n'
 fn lineOf(t &Array[u8], offset usize) u32 {
-  mut line = 1u32;
-  mut i = 0usize;
+  var line = 1u32;
+  var i = 0usize;
   while i < offset and i < t.len {
     if t[i] == '\n' { line = line + 1u32; }
     i = i + 1usize;
@@ -497,8 +497,8 @@ fn lineOf(t &Array[u8], offset usize) u32 {
 
 // The column (from 1, in bytes) of the byte at offset
 fn columnOf(t &Array[u8], offset usize) u32 {
-  mut col = 1u32;
-  mut i = 0usize;
+  var col = 1u32;
+  var i = 0usize;
   while i < offset and i < t.len {
     if t[i] == '\n' { col = 1u32; } else { col = col + 1u32; }
     i = i + 1usize;

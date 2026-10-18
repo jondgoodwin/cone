@@ -34,8 +34,8 @@ import time;
 import actors;
 
 fn bits(v u64) u64 {
-  mut n = 0u64;
-  mut x = v;
+  var n = 0u64;
+  var x = v;
   while x != 0u64 {
     n = n + (x & 1u64);
     x = x >> 1u64;
@@ -51,8 +51,8 @@ struct Tag {
 }
 
 fn mix(i u64, n u64) u64 {
-  mut x = i + 1u64;
-  mut k = 0u64;
+  var x = i + 1u64;
+  var k = 0u64;
   while k < n {
     x = x * 6364136223846793005u64 + k;
     k = k + 1u64;
@@ -78,10 +78,10 @@ actor Log {
 
   // The first 'loops' numbers in order, then the two sent after the loop
   pub async do report(self, loops u64) u64 {
-    mut ok = true;
-    mut k = 0u64;
+    var ok = true;
+    var k = 0u64;
     each n in seen {
-      imm want = if k < loops {k;} else {1000000u64 + (k - loops);};
+      let want = if k < loops {k;} else {1000000u64 + (k - loops);};
       if *n != want {
         ok = false;
       }
@@ -103,8 +103,8 @@ actor Scaler {
   marks u64;
 
   fn init(self &new, n u64, scale u64) {
-    mut l = new List[u64];
-    mut i = 0u64;
+    var l = new List[u64];
+    var i = 0u64;
     while i < n {
       l.push(i);
       i = i + 1u64;
@@ -117,15 +117,15 @@ actor Scaler {
   // after the loop; 'scale' is the actor's own field, read through 'self'
   pub async do run(self, add u64) u64 {
     say("run", add);
-    imm k = add * 2u64;
-    imm tag = new Tag(7u64);
+    let k = add * 2u64;
+    let tag = new Tag(7u64);
     inLoop = 1u64;
     parallel each v in vals.mutItems() {
       *v = cell(*v, scale, k, tag.n);
     }
     inLoop = 0u64;
-    mut bad = 0u64;
-    mut i = 0u64;
+    var bad = 0u64;
+    var i = 0u64;
     each v in vals {
       if *v != cell(i, scale, k, tag.n) {
         bad = bad + 1u64;
@@ -144,14 +144,14 @@ actor Scaler {
     parallel each i in 0usize ..< 3000usize {
       ran.bitOr(1u64 << u64.from(actors.workerIndex()));
       if i == 0usize {
-        mut waited = 0u64;
+        var waited = 0u64;
         while bits(ran.load()) < 2u64 and waited < 3000u64 {
           thread.sleep(time.Duration.fromMillis(1));
           waited = waited + 1u64;
         }
       }
     }
-    imm n = bits(ran.load());
+    let n = bits(ran.load());
     printStr(if n > 1u64 {"  wide: pieces ran on several workers: yes\n";} else {"  wide: pieces ran on several workers: NO\n";});
     n;
   }
@@ -177,7 +177,7 @@ actor Scaler {
   // The body's messages are gathered, and sent after the loop in order
   pub async do spread(self, log Log, n u64) u64 {
     parallel each i in 0usize ..< usize.from(n) {
-      imm w = mix(u64.from(i), (u64.from(i) * u64.from(i)) % 97u64 * 20u64);
+      let w = mix(u64.from(i), (u64.from(i) * u64.from(i)) % 97u64 * 20u64);
       if w == 1u64 {
         hits.add(1u64);
       }
@@ -199,7 +199,7 @@ actor Scaler {
       hits.add(2u64);
     }
     say("  second", hits.load());
-    mut round = 0u64;
+    var round = 0u64;
     while round < 3u64 {
       parallel each i in 0usize ..< 10usize {
         hits.add(100u64);
@@ -240,14 +240,14 @@ actor Scaler {
   // What a loop may walk: an array in a field (through 'self', also lent '&mut'),
   // a list in a local, whose block is on the heap; and read: a number in a local
   pub async do shapes(self, n u64) u64 {
-    imm k = n + 1u64;
+    let k = n + 1u64;
     hits.store(0u64);
     parallel each x in grid {
       hits.add(*x + k);
     }
     say("  field array", hits.load());
     hits.store(0u64);
-    mut l = new List[u64];
+    var l = new List[u64];
     l.push(10u64);
     l.push(20u64);
     l.push(30u64);
@@ -281,7 +281,7 @@ actor Scaler {
 
 actor Client {
   pub async do ask(self, s Scaler, n u64) u64 {
-    imm got = await s.count(n);
+    let got = await s.count(n);
     say("count came back", got);
     got;
   }
@@ -290,20 +290,20 @@ actor Client {
 actor Driver {
   pub async do go(self, s Scaler, log Log, c Client) u64 {
     // Sent while the loop of 'run' is under way, or about to be
-    imm f = s.run(5u64);
+    let f = s.run(5u64);
     s.mark();
     s.mark();
     s.mark();
-    imm bad = await f;
-    imm m = await s.marksSeen();
+    let bad = await f;
+    let m = await s.marksSeen();
     say("marks", m);
-    imm w = await s.wide();
-    imm a = await s.spread(log, 400u64);
-    imm b = await c.ask(s, 777u64);
-    imm d = await s.rounds();
-    imm e = await s.ranges(1000usize);
-    imm f2 = await s.shapes(4u64);
-    imm g = await s.viaHelper();
+    let w = await s.wide();
+    let a = await s.spread(log, 400u64);
+    let b = await c.ask(s, 777u64);
+    let d = await s.rounds();
+    let e = await s.ranges(1000usize);
+    let f2 = await s.shapes(4u64);
+    let g = await s.viaHelper();
     say("done", bad);
     bad;
   }
@@ -313,10 +313,10 @@ fn main() {
   initAll();
   actors.configure(new actors.Options(workers: 4u32));
   {
-    imm s = new Scaler(3000u64, 3u64);
-    imm log = new Log();
-    imm c = new Client();
-    imm d = new Driver();
+    let s = new Scaler(3000u64, 3u64);
+    let log = new Log();
+    let c = new Client();
+    let d = new Driver();
     d.go(s, log, c);
   }
   finalAll();

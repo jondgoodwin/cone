@@ -143,7 +143,7 @@ module that does not import `actors` is `ErrorParReduce`, as `parallel each`'s
 `ErrorParRuntime`. After the rewrite it is a call of a generic function like any
 other, which is why the closures take their parameter types from the bounds
 (`genericClosureSig`, [generic](generic.md)). By shape alone, so a reduction on a
-view held in a variable (`imm v = xs.parallel(); v.sum()`) is not rewritten and is
+view held in a variable (`let v = xs.parallel(); v.sum()`) is not rewritten and is
 refused at type check, in `fnCallLowerMethodOn`'s method-not-found message
 (`parallelViewNotFound`), as is `parallel()` of a type that has none (a chain of
 iterator adapters, a deque's cursor): `ErrorParReduce`, saying what has one. A
@@ -287,7 +287,7 @@ reject an overload name everywhere else. Bail if `objfn` is already marked
   on a method type to `fnCallOpAssgn`. `<-` on a value is not borrowed there:
   the method it selects declares the permission, and the borrow retry
   (`fnCallBorrowReceiver`, below) makes it, so a `self &` `<-` appends through
-  an `imm` receiver. A receiver that is already a reference
+  a `let` receiver. A receiver that is already a reference
   (`fnCallIsRefReceiver`) is passed as it is, exactly as the reference arm of
   stage 3 takes a named method's receiver: its own permission is what candidate
   selection checks, not the permission of the binding that holds it. The `<-`
@@ -713,7 +713,7 @@ Three adjustments, two of them asymmetric on purpose:
   is `&imm`) an `imm` one, then a `mut` one, then a `uni` one, and the first that selects a
   candidate is made by `borrowMutRef`, so the permission check and the lifetime are a written
   `&mut v`'s — `ErrorBadPerm` for `&mut` of an immutable variable — or, for `uni`, a
-  written `&uni v`'s (`borrowLocalLendsUni`: a `mut` local or a part of one held by
+  written `&uni v`'s (`borrowLocalLendsUni`: a `var` local or a part of one held by
   value lends it, anything else is `ErrorBadPerm`, "cannot obtain this permission"), and the
   borrow's scope carried into a returned borrow. It runs only after both
   selections above found nothing, so a by-value candidate is always preferred.
@@ -777,7 +777,7 @@ again where it was a read-only element: a candidate taking `self &mut` makes
 checked receiver and arguments, the innermost first, as `&mut x[i]` would
 (`fnCallPlaceAsMut`, `fnCallMutIndex`). A link is left as it was where its
 type declares no `&[]`, or the place below it may not be borrowed mutably (a
-`&` reference, an `imm` variable), so a place that may not be written is
+`&` reference, a `let` variable), so a place that may not be written is
 refused as before. Rust chooses `IndexMut` the same way; a dynamic arena's
 `ar[key] = v` is the case it was built for.
 
@@ -856,7 +856,7 @@ value. Its `first` is an expression resolved like any other, which a
   variables agree with the ones `eachLower` gives. An array's contents refuse
   an `each` (`ErrorArrayContents`), whose count is not known.
 - **After a construction**, the construction becomes a variable the contents
-  are appended to, and the block's value: `{ mut built = new T(...); built <-
+  are appended to, and the block's value: `{ var built = new T(...); built <-
   contents; built }`, so the construction fills the variable in place. An
   allocation of a collection is this form too, the variable its reference and
   the contents appended through it.

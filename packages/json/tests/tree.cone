@@ -10,11 +10,11 @@ import collections use *;
 import json;
 
 fn parsed(text &str, label &str) json.Json {
-  mut doc json.Json = json.Json.Null;
+  var doc json.Json = json.Json.Null;
   match json.parse(text) {
-    case mut ok Ok { doc <=> ok; }
-    case imm e Error {
-      imm m = e.message();
+    case var ok Ok { doc <=> ok; }
+    case let e Error {
+      let m = e.message();
       expectStr(m.view(), "<parsed>", label);
     }
   }
@@ -23,46 +23,46 @@ fn parsed(text &str, label &str) json.Json {
 
 fn compact(j &json.Json) String {
   match j.toText() {
-    case imm t Ok { t.copy(); }
-    case imm e Error { e.message(); }
+    case let t Ok { t.copy(); }
+    case let e Error { e.message(); }
   }
 }
 
 fn pretty(j &json.Json, indent usize) String {
   match j.toPretty(indent) {
-    case imm t Ok { t.copy(); }
-    case imm e Error { e.message(); }
+    case let t Ok { t.copy(); }
+    case let e Error { e.message(); }
   }
 }
 
 fn same(a &json.Json, b &json.Json) bool {
   match a {
     case is Null { b.isNull(); }
-    case imm x Bool { match b.asBool() { case imm y Some { *x == y; } case is None { false; } } }
-    case imm x Number { match b.numberText() { case imm y Some { x.view() == y; } case is None { false; } } }
-    case imm x Text { match b.asText() { case imm y Some { x.view() == y; } case is None { false; } } }
-    case imm x Array {
+    case let x Bool { match b.asBool() { case let y Some { *x == y; } case is None { false; } } }
+    case let x Number { match b.numberText() { case let y Some { x.view() == y; } case is None { false; } } }
+    case let x Text { match b.asText() { case let y Some { x.view() == y; } case is None { false; } } }
+    case let x Array {
       if b.len() != x.len() or not b.isArray() { return false; }
-      mut i = 0usize;
+      var i = 0usize;
       while i < x.len() {
         match b.at(i) {
-          case imm y Some { if not same(x[i], y) { return false; } }
+          case let y Some { if not same(x[i], y) { return false; } }
           case is None { return false; }
         }
         i = i + 1usize;
       }
       true;
     }
-    case imm x Object {
+    case let x Object {
       if b.len() != x.len() or not b.isObject() { return false; }
-      mut i = 0usize;
+      var i = 0usize;
       while i < x.len() {
         match b.keyAt(i) {
-          case imm k Some { if k != x[i].key.view() { return false; } }
+          case let k Some { if k != x[i].key.view() { return false; } }
           case is None { return false; }
         }
         match b.valueAt(i) {
-          case imm y Some { if not same(&x[i].value, y) { return false; } }
+          case let y Some { if not same(&x[i].value, y) { return false; } }
           case is None { return false; }
         }
         i = i + 1usize;
@@ -74,33 +74,33 @@ fn same(a &json.Json, b &json.Json) bool {
 
 fn code(r Result[String, json.JsonError]) String {
   match r {
-    case imm t Ok { t.copy(); }
-    case imm e Error { e.message(); }
+    case let t Ok { t.copy(); }
+    case let e Error { e.message(); }
   }
 }
 
 fn numErr(r Result[i64, json.NumberError]) String {
   match r {
     case is Ok { String.from("ok"); }
-    case imm e Error { e.message(); }
+    case let e Error { e.message(); }
   }
 }
 
 // A repeatable generator: splitmix64
 fn next(state &mut u64) u64 {
   *state = *state + 0x9E3779B97F4A7C15u64;
-  mut z = *state;
+  var z = *state;
   z = (z ^ (z >> 30u64)) * 0xBF58476D1CE4E5B9u64;
   z = (z ^ (z >> 27u64)) * 0x94D049BB133111EBu64;
   z ^ (z >> 31u64);
 }
 
 fn randomText(state &mut u64) String {
-  mut s = String.empty();
-  imm n = next(state) % 12u64;
-  mut i = 0u64;
+  var s = String.empty();
+  let n = next(state) % 12u64;
+  var i = 0u64;
   while i < n {
-    imm k = next(state) % 14u64;
+    let k = next(state) % 14u64;
     if k == 0u64 { s.append("\""); }
     elif k == 1u64 { s.append("\\"); }
     elif k == 2u64 { s.append("\n"); }
@@ -116,35 +116,35 @@ fn randomText(state &mut u64) String {
 }
 
 fn randomJson(state &mut u64, depth u32) json.Json {
-  imm k = next(state) % (if depth >= 5u32 {6u64;} else {8u64;});
+  let k = next(state) % (if depth >= 5u32 {6u64;} else {8u64;});
   if k == 0u64 { return json.Json.Null; }
   if k == 1u64 { return json.Json.fromBool(next(state) % 2u64 == 0u64); }
   if k == 2u64 { return json.Json.fromI64(i64.from(next(state) % 2001u64) - 1000i64); }
   if k == 3u64 { return json.Json.fromU64(next(state)); }
   if k == 4u64 {
-    mut bits = next(state);
+    var bits = next(state);
     if ((bits >> 52u64) & 0x7FFu64) == 0x7FFu64 { bits = bits & 0x800FFFFFFFFFFFFFu64; }
     return json.Json.fromF64(bits as f64);
   }
   if k == 5u64 {
-    imm t = randomText(state);
+    let t = randomText(state);
     return json.Json.fromText(t.view());
   }
   if k == 6u64 {
-    mut a = json.Json.newArray();
-    imm n = next(state) % 5u64;
-    mut i = 0u64;
+    var a = json.Json.newArray();
+    let n = next(state) % 5u64;
+    var i = 0u64;
     while i < n {
       a.push(randomJson(state, depth + 1u32));
       i = i + 1u64;
     }
     return a;
   }
-  mut o = json.Json.newObject();
-  imm n = next(state) % 5u64;
-  mut i = 0u64;
+  var o = json.Json.newObject();
+  let n = next(state) % 5u64;
+  var i = 0u64;
   while i < n {
-    imm key = randomText(state);
+    let key = randomText(state);
     // Duplicate names are kept by read, but set replaces: build with set and
     // let a repeat replace, so the tree has the members it prints
     o.set(key.view(), randomJson(state, depth + 1u32));
@@ -155,13 +155,13 @@ fn randomJson(state &mut u64, depth u32) json.Json {
 
 fn main() i32 {
   // -------- asking --------
-  imm doc = parsed("{\"name\":\"cone\",\"n\":12,\"neg\":-5,\"big\":18446744073709551615,\"f\":2.5,\"flag\":true,\"off\":false,\"nothing\":null,\"list\":[10,20,30],\"obj\":{\"x\":1},\"text\":\"12\",\"whole\":3.0}", "doc");
+  let doc = parsed("{\"name\":\"cone\",\"n\":12,\"neg\":-5,\"big\":18446744073709551615,\"f\":2.5,\"flag\":true,\"off\":false,\"nothing\":null,\"list\":[10,20,30],\"obj\":{\"x\":1},\"text\":\"12\",\"whole\":3.0}", "doc");
   expect(doc.isObject(), "object");
   expect(not doc.isArray() and not doc.isText() and not doc.isNumber() and not doc.isBool() and not doc.isNull(), "only an object");
   expectUInt(u64.from(doc.len()), 12u64, "twelve members");
   expect(doc.has("n") and not doc.has("missing"), "has");
   match doc.getText("name") {
-    case imm s Some { expectStr(s, "cone", "getText"); }
+    case let s Some { expectStr(s, "cone", "getText"); }
     case is None { expect(false, "getText"); }
   }
   expect(doc.getText("n") is None, "getText of a number is None");
@@ -174,7 +174,7 @@ fn main() i32 {
   expectInt(doc.i64Or("name", 77i64), 77i64, "a string is not an i64: the fallback");
   expectInt(doc.i64Or("missing", 77i64), 77i64, "a missing name: the fallback");
   match doc.getU64("big") {
-    case imm n Some { expectUInt(n, 18446744073709551615u64, "getU64"); }
+    case let n Some { expectUInt(n, 18446744073709551615u64, "getU64"); }
     case is None { expect(false, "getU64"); }
   }
   expect(doc.getU64("neg") is None, "getU64 of a negative is None");
@@ -185,17 +185,17 @@ fn main() i32 {
   expectBool(doc.boolOr("off", true), false, "boolOr false");
   expectBool(doc.boolOr("n", true), true, "boolOr of a number: the fallback");
   match doc.get("nothing") {
-    case imm v Some { expect(v.isNull(), "null member"); }
+    case let v Some { expect(v.isNull(), "null member"); }
     case is None { expect(false, "null member"); }
   }
   match doc.get("list") {
-    case imm l Some {
+    case let l Some {
       expect(l.isArray(), "list is an array");
       expectUInt(u64.from(l.len()), 3u64, "list length");
       match l.at(1usize) {
-        case imm v Some {
+        case let v Some {
           match v.asI64() {
-            case imm n Ok { expectInt(n, 20i64, "list[1] is 20"); }
+            case let n Ok { expectInt(n, 20i64, "list[1] is 20"); }
             case is Error { expect(false, "list[1] is 20"); }
           }
         }
@@ -208,18 +208,18 @@ fn main() i32 {
     case is None { expect(false, "list"); }
   }
   match doc.get("obj") {
-    case imm o Some { expectInt(o.i64Or("x", 0i64), 1i64, "obj.x"); }
+    case let o Some { expectInt(o.i64Or("x", 0i64), 1i64, "obj.x"); }
     case is None { expect(false, "obj"); }
   }
   match doc.keyAt(2usize) {
-    case imm k Some { expectStr(k, "neg", "keyAt(2)"); }
+    case let k Some { expectStr(k, "neg", "keyAt(2)"); }
     case is None { expect(false, "keyAt"); }
   }
   expect(doc.keyAt(12usize) is None, "keyAt past the end");
   expect(doc.valueAt(12usize) is None, "valueAt past the end");
   match doc.get("text") {
-    case imm t Some {
-      imm why = numErr(t.asI64());
+    case let t Some {
+      let why = numErr(t.asI64());
       expectStr(why.view(), "the value is not a number", "a string is not a number");
       expect(t.numberText() is None, "numberText of a string");
       expect(t.asBool() is None, "asBool of a string");
@@ -230,20 +230,20 @@ fn main() i32 {
   expect(json.Json.Null.get("a") is None, "get on null");
 
   // -------- building --------
-  mut o = json.Json.newObject();
+  var o = json.Json.newObject();
   expect(o.set("a", json.Json.fromI64(1i64)), "set on an object");
   expect(o.set("b", json.Json.fromText("two")), "set a second");
   expect(o.set("a", json.Json.fromI64(3i64)), "set replaces the first of a name");
   expectStr(compact(&o).view(), "{\"a\":3,\"b\":\"two\"}", "set keeps the order and replaces");
-  mut arr = json.Json.newArray();
+  var arr = json.Json.newArray();
   expect(arr.push(json.Json.fromBool(true)), "push on an array");
   expect(arr.push(json.Json.Null), "push null");
   expect(arr.push(o), "push an object");
   expectStr(compact(&arr).view(), "[true,null,{\"a\":3,\"b\":\"two\"}]", "an array of three");
   expect(not arr.set("k", json.Json.Null), "set on an array is false");
-  mut o2 = json.Json.newObject();
+  var o2 = json.Json.newObject();
   expect(not o2.push(json.Json.Null), "push on an object is false");
-  mut scalar = json.Json.fromI64(5i64);
+  var scalar = json.Json.fromI64(5i64);
   expect(not scalar.push(json.Json.Null) and not scalar.set("k", json.Json.Null), "push and set on a number are false");
   expectStr(compact(&json.Json.fromI64(-9223372036854775807i64 - 1i64)).view(), "-9223372036854775808", "i64 min");
   expectStr(compact(&json.Json.fromI64(9223372036854775807i64)).view(), "9223372036854775807", "i64 max");
@@ -255,7 +255,7 @@ fn main() i32 {
   expectStr(compact(&json.Json.fromF64(1d / 0d)).view(), "null", "infinity becomes null");
   expectStr(compact(&json.Json.fromBool(false)).view(), "false", "false");
   match json.Json.fromNumberText("1.50e+3") {
-    case imm n Ok { expectStr(compact(&n).view(), "1.50e+3", "a number given as text is kept"); }
+    case let n Ok { expectStr(compact(&n).view(), "1.50e+3", "a number given as text is kept"); }
     case is Error { expect(false, "fromNumberText"); }
   }
   expect(json.Json.fromNumberText("01") is Error, "fromNumberText refuses a leading zero");
@@ -263,14 +263,14 @@ fn main() i32 {
   expect(json.Json.fromNumberText("NaN") is Error, "fromNumberText refuses NaN");
   expect(json.Json.fromNumberText("") is Error, "fromNumberText refuses nothing");
   // A tree built by hand holding text that is no number is refused on writing
-  imm badNumber = json.Json.Number(String.from("0x10"));
+  let badNumber = json.Json.Number(String.from("0x10"));
   match badNumber.toText() {
     case is Ok { expect(false, "a bad Number is refused"); }
-    case imm e Error { expectStr(e.message().view(), "json: the number's text is not a JSON number", "a bad Number is refused"); }
+    case let e Error { expectStr(e.message().view(), "json: the number's text is not a JSON number", "a bad Number is refused"); }
   }
 
   // -------- indented text --------
-  imm p = parsed("{\"a\":1,\"b\":[true,null,[]],\"c\":{},\"d\":[],\"e\":{\"f\":{\"g\":\"h\"}},\"i\":[[1,2],[3]]}", "pretty");
+  let p = parsed("{\"a\":1,\"b\":[true,null,[]],\"c\":{},\"d\":[],\"e\":{\"f\":{\"g\":\"h\"}},\"i\":[[1,2],[3]]}", "pretty");
   expectStr(pretty(&p, 2usize).view(),
     "{\n  \"a\": 1,\n  \"b\": [\n    true,\n    null,\n    []\n  ],\n  \"c\": {},\n  \"d\": [],\n  \"e\": {\n    \"f\": {\n      \"g\": \"h\"\n    }\n  },\n  \"i\": [\n    [\n      1,\n      2\n    ],\n    [\n      3\n    ]\n  ]\n}",
     "indented by two");
@@ -282,7 +282,7 @@ fn main() i32 {
   expect(same(&p, &parsed(pretty(&p, 7usize).view(), "pretty 7")), "indent 7 reads back the same");
 
   // -------- the Writer --------
-  mut w = new json.Writer(json.WriteOptions.standard());
+  var w = new json.Writer(json.WriteOptions.standard());
   w.beginObject();
   w.key("name");
   w.string("hello");
@@ -301,7 +301,7 @@ fn main() i32 {
   w.endObject();
   w.endObject();
   expectStr(code(w.finish()).view(), "{\"name\":\"hello\",\"tags\":[1,18446744073709551615,0.5,true,null,1e400,\"x\\\"y\"],\"sub\":{}}", "a Writer's text");
-  mut wp = new json.Writer(new json.WriteOptions(2usize, false));
+  var wp = new json.Writer(new json.WriteOptions(2usize, false));
   wp.beginArray();
   wp.beginObject();
   wp.key("a");
@@ -311,83 +311,83 @@ fn main() i32 {
   wp.endArray();
   wp.endArray();
   expectStr(code(wp.finish()).view(), "[\n  {\n    \"a\": 1\n  },\n  []\n]", "a Writer with an indent");
-  mut wv = new json.Writer(json.WriteOptions.standard());
+  var wv = new json.Writer(json.WriteOptions.standard());
   wv.value(&p);
   expectStr(code(wv.finish()).view(), compact(&p).view(), "a Writer given a whole tree");
 
   // Out of order: each fails once, with its kind, and the first failure stays
-  mut f1 = new json.Writer(json.WriteOptions.standard());
+  var f1 = new json.Writer(json.WriteOptions.standard());
   f1.beginObject();
   f1.int(1i64);
   f1.key("late");
   expectStr(code(f1.finish()).view(), "json: a value was written where an object's key belongs", "a value where a key belongs");
-  mut f2 = new json.Writer(json.WriteOptions.standard());
+  var f2 = new json.Writer(json.WriteOptions.standard());
   f2.endArray();
   expectStr(code(f2.finish()).view(), "json: endArray with no array open", "endArray with nothing open");
-  mut f3 = new json.Writer(json.WriteOptions.standard());
+  var f3 = new json.Writer(json.WriteOptions.standard());
   f3.beginArray();
   f3.endObject();
   expectStr(code(f3.finish()).view(), "json: endObject with no object open", "endObject inside an array");
-  mut f4 = new json.Writer(json.WriteOptions.standard());
+  var f4 = new json.Writer(json.WriteOptions.standard());
   f4.int(1i64);
   f4.int(2i64);
   expectStr(code(f4.finish()).view(), "json: a second value at the top level: the text holds one value", "a second top-level value");
-  mut f5 = new json.Writer(json.WriteOptions.standard());
+  var f5 = new json.Writer(json.WriteOptions.standard());
   f5.key("k");
   expectStr(code(f5.finish()).view(), "json: a key was written outside an object", "a key outside an object");
-  mut f6 = new json.Writer(json.WriteOptions.standard());
+  var f6 = new json.Writer(json.WriteOptions.standard());
   f6.beginArray();
   f6.key("k");
   expectStr(code(f6.finish()).view(), "json: a key was written outside an object", "a key inside an array");
-  mut f7 = new json.Writer(json.WriteOptions.standard());
+  var f7 = new json.Writer(json.WriteOptions.standard());
   f7.beginObject();
   f7.key("a");
   f7.endObject();
   expectStr(code(f7.finish()).view(), "json: an object's key was written without its value", "a key without its value");
-  mut f8 = new json.Writer(json.WriteOptions.standard());
+  var f8 = new json.Writer(json.WriteOptions.standard());
   f8.beginObject();
   f8.key("a");
   f8.key("b");
   expectStr(code(f8.finish()).view(), "json: a key was written where its predecessor's value is owed", "two keys in a row");
-  mut f9 = new json.Writer(json.WriteOptions.standard());
+  var f9 = new json.Writer(json.WriteOptions.standard());
   f9.beginArray();
   expectStr(code(f9.finish()).view(), "json: finish with an array or object still open", "finish with an array open");
-  mut f10 = new json.Writer(json.WriteOptions.standard());
+  var f10 = new json.Writer(json.WriteOptions.standard());
   expectStr(code(f10.finish()).view(), "json: finish with no value written", "finish with nothing written");
-  mut f11 = new json.Writer(json.WriteOptions.standard());
+  var f11 = new json.Writer(json.WriteOptions.standard());
   f11.float(0d / 0d);
   f11.int(1i64);
   expectStr(code(f11.finish()).view(), "json: NaN and infinity cannot be written in JSON", "NaN, and the first failure stays");
-  mut f12 = new json.Writer(json.WriteOptions.standard());
+  var f12 = new json.Writer(json.WriteOptions.standard());
   f12.float(1d / 0d);
   expectStr(code(f12.finish()).view(), "json: NaN and infinity cannot be written in JSON", "infinity");
-  mut f13 = new json.Writer(json.WriteOptions.standard());
+  var f13 = new json.Writer(json.WriteOptions.standard());
   f13.beginArray();
   f13.number("1.");
   expectStr(code(f13.finish()).view(), "json: the number's text is not a JSON number", "a number that is not one");
-  mut f14 = new json.Writer(json.WriteOptions.standard());
+  var f14 = new json.Writer(json.WriteOptions.standard());
   f14.beginObject();
   f14.key("a");
   f14.value(&parsed("[1]", "f14"));
   f14.endObject();
   expectStr(code(f14.finish()).view(), "{\"a\":[1]}", "a tree as a member's value");
   match json.Json.fromText("x").toText() {
-    case imm t Ok { expectStr(t.view(), "\"x\"", "toText of a string"); }
+    case let t Ok { expectStr(t.view(), "\"x\"", "toText of a string"); }
     case is Error { expect(false, "toText of a string"); }
   }
 
   // -------- random trees --------
-  mut state = 4242u64;
-  mut n = 0usize;
-  mut bad = 0usize;
+  var state = 4242u64;
+  var n = 0usize;
+  var bad = 0usize;
   while n < 400usize {
-    imm t = randomJson(&mut state, 0u32);
-    imm c = compact(&t);
-    imm back = parsed(c.view(), "random compact");
+    let t = randomJson(&mut state, 0u32);
+    let c = compact(&t);
+    let back = parsed(c.view(), "random compact");
     if not same(&t, &back) { bad = bad + 1usize; expectStr(c.view(), "<a tree that reads back the same>", "random tree"); }
     if compact(&back) != c { bad = bad + 1usize; expectStr(compact(&back).view(), c.view(), "random tree written twice"); }
-    imm indented = pretty(&t, 2usize);
-    imm back2 = parsed(indented.view(), "random pretty");
+    let indented = pretty(&t, 2usize);
+    let back2 = parsed(indented.view(), "random pretty");
     if not same(&t, &back2) { bad = bad + 1usize; expectStr(indented.view(), "<a tree that reads back the same>", "random pretty tree"); }
     n = n + 1usize;
   }

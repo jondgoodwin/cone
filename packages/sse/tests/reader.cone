@@ -16,13 +16,13 @@ import sse use Event, Reader;
 // Every event of a stream given whole, as 'name|data|id|retry' separated by ';',
 // the data's line feeds shown as '/'
 fn describe(events &List[Event]) String {
-  mut out = String.empty();
-  mut i = 0usize;
+  var out = String.empty();
+  var i = 0usize;
   while i < events.len() {
     out.append(events[i].name.view());
     out.append("|");
-    mut k = 0usize;
-    imm d = events[i].data.view() as &Array[u8];
+    var k = 0usize;
+    let d = events[i].data.view() as &Array[u8];
     while k < d.len {
       if d[k] == '\n' {out.appendByte('/');} else {out.appendByte(d[k]);}
       k = k + 1usize;
@@ -38,18 +38,18 @@ fn describe(events &List[Event]) String {
 }
 
 fn whole(stream &str) String {
-  mut r = Reader.make();
-  mut events = List[Event].empty();
+  var r = Reader.make();
+  var events = List[Event].empty();
   r.feed(stream, &mut events);
   describe(&events);
 }
 
 // The same stream a byte at a time
 fn bytewise(stream &str) String {
-  mut r = Reader.make();
-  mut events = List[Event].empty();
-  imm b = stream as &Array[u8];
-  mut i = 0usize;
+  var r = Reader.make();
+  var events = List[Event].empty();
+  let b = stream as &Array[u8];
+  var i = 0usize;
   while i < b.len {
     r.feed(&b[i ..< i + 1usize], &mut events);
     i = i + 1usize;
@@ -60,7 +60,7 @@ fn bytewise(stream &str) String {
 // Whole and byte by byte must agree: the expectation is checked for both
 fn check(stream &str, want &str, label &str) {
   expectStr(whole(stream).view(), want, label);
-  mut l = String.from(label);
+  var l = String.from(label);
   l.append(" (byte by byte)");
   expectStr(bytewise(stream).view(), want, l.view());
 }
@@ -91,36 +91,36 @@ fn main() i32 {
   check("event: e\r\ndata: 1\r\n\r\n", "e|1||-1;", "a CRLF stream");
 
   // A CR at the end of one piece and the LF at the start of the next are one line ending
-  mut r = Reader.make();
-  mut events = List[Event].empty();
+  var r = Reader.make();
+  var events = List[Event].empty();
   r.feed("data: a\r", &mut events);
   r.feed("\n\r", &mut events);
   r.feed("\ndata: b\r\n\r\n", &mut events);
   expectStr(describe(&events).view(), "|a||-1;|b||-1;", "CR and LF split across pieces are one ending");
 
   // A byte order mark at the start is dropped
-  mut bom = String.empty();
+  var bom = String.empty();
   bom.appendByte(0xEFu8);
   bom.appendByte(0xBBu8);
   bom.appendByte(0xBFu8);
   bom.append("data: x\n\ndata: y\n\n");
-  mut rb = Reader.make();
-  mut eb = List[Event].empty();
+  var rb = Reader.make();
+  var eb = List[Event].empty();
   rb.feed(bom.view(), &mut eb);
   expectStr(describe(&eb).view(), "|x||-1;|y||-1;", "a byte order mark at the start is dropped");
 
   // An id holding a NUL is ignored
-  mut nul = String.from("id: 1\ndata: a\n\nid: 2");
+  var nul = String.from("id: 1\ndata: a\n\nid: 2");
   nul.appendByte(0u8);
   nul.append("3\ndata: b\n\n");
-  mut rn = Reader.make();
-  mut en = List[Event].empty();
+  var rn = Reader.make();
+  var en = List[Event].empty();
   rn.feed(nul.view(), &mut en);
   expectStr(describe(&en).view(), "|a|1|-1;|b|1|-1;", "an id with a NUL in it is ignored");
 
   // The stream's own state: last id, retry, what is held
-  mut rs = Reader.make();
-  mut es = List[Event].empty();
+  var rs = Reader.make();
+  var es = List[Event].empty();
   rs.feed("id: abc\nretry: 7\n\n", &mut es);
   expectUInt(u64.from(es.len()), 0u64, "an id and a retry alone dispatch no event");
   expectStr(rs.lastId(), "abc", "...but the last id took effect");
@@ -130,12 +130,12 @@ fn main() i32 {
   expect(not rs.overflowed(), "not overflowed");
 
   // The bound: a Reader holding at most 16 bytes of line and data stops past it
-  mut rl = Reader.withLimit(16usize);
-  mut el = List[Event].empty();
+  var rl = Reader.withLimit(16usize);
+  var el = List[Event].empty();
   rl.feed("data: 12345\n\n", &mut el);
   expectUInt(u64.from(el.len()), 1u64, "within the bound");
-  mut big = String.from("data: ");
-  mut k = 0usize;
+  var big = String.from("data: ");
+  var k = 0usize;
   while k < 100usize {
     big.appendByte('z');
     k = k + 1usize;

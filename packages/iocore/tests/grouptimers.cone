@@ -26,7 +26,7 @@ import iocore use *;
 import diag;
 
 fn waitFor(lp &mut Loop, out &mut List[Completion], n usize) {
-  imm limit = Instant.now() + Duration.fromSeconds(5i64);
+  let limit = Instant.now() + Duration.fromSeconds(5i64);
   while out.len() < n and Instant.now() < limit {
     lp.poll(limit, out);
   }
@@ -34,14 +34,14 @@ fn waitFor(lp &mut Loop, out &mut List[Completion], n usize) {
 
 fn main() i32 {
   {
-    mut lp = Loop.mustMake();
-    mut out = List[Completion].empty();
-    imm hour = Duration.fromSeconds(3600i64);
+    var lp = Loop.mustMake();
+    var out = List[Completion].empty();
+    let hour = Duration.fromSeconds(3600i64);
 
     // 1. Due after the deadline: TimedOut at the deadline
     {
-      imm t0 = Instant.now();
-      imm g = CancelGroup.until(t0 + Duration.fromMillis(40i64));
+      let t0 = Instant.now();
+      let g = CancelGroup.until(t0 + Duration.fromMillis(40i64));
       lp.afterIn(t0 + hour, Target.Here(1u64), g);
       waitFor(&mut lp, &mut out, 1usize);
       requireUInt(u64.from(out.len()), 1u64, "answered");
@@ -54,8 +54,8 @@ fn main() i32 {
 
     // 2. Due before the deadline: Done
     {
-      imm t0 = Instant.now();
-      imm g = CancelGroup.until(t0 + hour);
+      let t0 = Instant.now();
+      let g = CancelGroup.until(t0 + hour);
       lp.afterIn(t0 + Duration.fromMillis(30i64), Target.Here(2u64), g);
       waitFor(&mut lp, &mut out, 1usize);
       requireUInt(u64.from(out.len()), 1u64, "answered");
@@ -66,10 +66,10 @@ fn main() i32 {
 
     // 3. Inherited as the tighter
     {
-      imm t0 = Instant.now();
-      imm loose = CancelGroup.until(t0 + hour);
-      imm tight = loose.childUntil(t0 + Duration.fromMillis(30i64));
-      imm looser = tight.childUntil(t0 + hour + hour);
+      let t0 = Instant.now();
+      let loose = CancelGroup.until(t0 + hour);
+      let tight = loose.childUntil(t0 + Duration.fromMillis(30i64));
+      let looser = tight.childUntil(t0 + hour + hour);
       lp.afterIn(t0 + hour, Target.Here(3u64), tight);
       lp.afterIn(t0 + hour, Target.Here(4u64), looser);
       waitFor(&mut lp, &mut out, 2usize);
@@ -82,8 +82,8 @@ fn main() i32 {
 
     // 4. A deadline already past
     {
-      imm before = lp.counters().atSubmit;
-      imm past = CancelGroup.until(Instant.now());
+      let before = lp.counters().atSubmit;
+      let past = CancelGroup.until(Instant.now());
       lp.afterIn(Instant.now() + hour, Target.Here(5u64), past);
       lp.poll(Instant.now(), &mut out);
       requireUInt(u64.from(out.len()), 1u64, "answered at once");
@@ -92,7 +92,7 @@ fn main() i32 {
       expectUInt(lp.inFlight(), 0u64, "nothing left in flight");
       out.clear();
 
-      imm later = CancelGroup.until(Instant.now() + hour);
+      let later = CancelGroup.until(Instant.now() + hour);
       lp.afterIn(Instant.now() - Duration.fromMillis(5i64), Target.Here(6u64), later);
       waitFor(&mut lp, &mut out, 1usize);
       requireUInt(u64.from(out.len()), 1u64, "a timer already due is answered");
@@ -102,8 +102,8 @@ fn main() i32 {
 
     // 5. Cancel still reaches a timer with a deadline
     {
-      imm g = CancelGroup.until(Instant.now() + hour);
-      imm id = lp.afterIn(Instant.now() + hour + hour, Target.Here(7u64), g);
+      let g = CancelGroup.until(Instant.now() + hour);
+      let id = lp.afterIn(Instant.now() + hour + hour, Target.Here(7u64), g);
       expect(lp.cancel(id), "the cancel is asked");
       lp.poll(Instant.now(), &mut out);
       requireUInt(u64.from(out.len()), 1u64, "answered once");
@@ -123,9 +123,9 @@ fn main() i32 {
 
     // 6. A shield
     {
-      imm g = CancelGroup.make();
+      let g = CancelGroup.make();
       g.cancel();
-      imm s = g.shield(Instant.now() + Duration.fromMillis(20i64));
+      let s = g.shield(Instant.now() + Duration.fromMillis(20i64));
       lp.afterIn(Instant.now() + hour, Target.Here(9u64), s);
       waitFor(&mut lp, &mut out, 1usize);
       requireUInt(u64.from(out.len()), 1u64, "answered");
@@ -135,8 +135,8 @@ fn main() i32 {
 
     // 7. No deadline
     {
-      imm t0 = Instant.now();
-      imm g = CancelGroup.make();
+      let t0 = Instant.now();
+      let g = CancelGroup.make();
       lp.afterIn(t0 + Duration.fromMillis(20i64), Target.Here(10u64), g);
       waitFor(&mut lp, &mut out, 1usize);
       requireUInt(u64.from(out.len()), 1u64, "answered");
@@ -144,7 +144,7 @@ fn main() i32 {
       out.clear();
     }
 
-    imm cs = lp.counters();
+    let cs = lp.counters();
     expectUInt(cs.delivered, cs.submitted, "every timer answered once");
     expectUInt(cs.inFlight, 0u64, "nothing in flight");
   }

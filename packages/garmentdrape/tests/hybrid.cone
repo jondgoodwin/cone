@@ -48,34 +48,34 @@ struct Run {
 }
 
 fn dressed(keepLayers bool) Run {
-  imm rig = humanoidMannequin(1.75);
-  imm names = humanoidNames();
-  mut shells = List[ShellSpec].empty();
-  mut b = ShellSpec.make("breeches");
+  let rig = humanoidMannequin(1.75);
+  let names = humanoidNames();
+  var shells = List[ShellSpec].empty();
+  var b = ShellSpec.make("breeches");
   b.bones.push(PELVIS); b.bones.push(THIGH_L); b.bones.push(THIGH_R); b.bones.push(SHIN_L); b.bones.push(SHIN_R);
   shells.push(b);
-  mut patterns = List[Pattern].empty();
-  mut p1 = parsePattern(tunicBody(), &names);
-  mut p2 = parsePattern(tunicSleeves(), &names);
-  mut p3 = parsePattern(apron(), &names);
+  var patterns = List[Pattern].empty();
+  var p1 = parsePattern(tunicBody(), &names);
+  var p2 = parsePattern(tunicSleeves(), &names);
+  var p3 = parsePattern(apron(), &names);
   patterns.push(p1.take()); patterns.push(p2.take()); patterns.push(p3.take());
-  mut d = dress(&rig, &shells, &patterns, 1u32);
-  mut outfit = Outfit.make();
+  var d = dress(&rig, &shells, &patterns, 1u32);
+  var outfit = Outfit.make();
   outfit <=> d.outfit;
   outfit.keepLayers = keepLayers;
-  imm restPose = rig.skeleton.restPose();
+  let restPose = rig.skeleton.restPose();
   new Run(rig, outfit, Walker.make(1.75, 3u32), restPose, List[Transform3].empty(), List[Transform3].empty(), 0., 0., 0., 0usize);
 }
 
 fn toWorld(r &mut Run, at Vec3) {
-  imm root = new Transform3(at, Quat.identity(), new Vec3(1., 1., 1.));
+  let root = new Transform3(at, Quat.identity(), new Vec3(1., 1., 1.));
   r.world.clear();
-  mut i = 0usize;
+  var i = 0usize;
   while i < r.models.len() { r.world.push(root * *r.models[i]); i = i + 1usize; }
 }
 
 fn restAt(r &mut Run, at Vec3) {
-  imm rp = r.rig.skeleton.restPose();
+  let rp = r.rig.skeleton.restPose();
   r.rig.skeleton.modelTransforms(&rp, &mut r.models);
   toWorld(r, at);
   r.outfit.snap(&r.rig, &r.world);
@@ -83,21 +83,21 @@ fn restAt(r &mut Run, at Vec3) {
 
 // One frame of the walk at `speed`, bookkeeping the worst deviations
 fn frame(r &mut Run, workers &mut Workers, z f32, speed f32, wind Vec3) {
-  imm at = new Vec3(0., 0., z);
+  let at = new Vec3(0., 0., z);
   r.walker.update(&r.rig.skeleton, &mut r.pose, &mut r.models, at, 0., speed, 0., true, &flat, 1. / 60.);
   toWorld(r, at);
   r.outfit.step(&r.rig, &r.world, 1. / 60., wind, workers);
-  mut g = 0usize;
+  var g = 0usize;
   while g < r.outfit.garments.len() {
-    imm n = r.outfit.garments[g].particleCount();
-    mut i = 0usize;
+    let n = r.outfit.garments[g].particleCount();
+    var i = 0usize;
     while i < n {
-      imm p = *r.outfit.garments[g].soft.pos[i];
-      imm t = *r.outfit.garments[g].target[i];
+      let p = *r.outfit.garments[g].soft.pos[i];
+      let t = *r.outfit.garments[g].target[i];
       if p.x != p.x or p.y != p.y or p.z != p.z { r.badNumbers = r.badNumbers + 1usize; }
       else {
-        imm lo = *r.outfit.garments[g].loose[i];
-        imm dev = (p - t).length();
+        let lo = *r.outfit.garments[g].loose[i];
+        let dev = (p - t).length();
         if lo <= TIGHT { r.worstTight = fmaxf(r.worstTight, dev); }
         else {
           r.worstReach = fmaxf(r.worstReach, dev - (0.004 + lo * *r.outfit.garments[g].reach[i]));
@@ -113,16 +113,16 @@ fn frame(r &mut Run, workers &mut Workers, z f32, speed f32, wind Vec3) {
 // Stand for 1.5 s, then walk for 4 s (half a second to set off, a second to reach 1.4 m/s)
 fn walk(r &mut Run, workers &mut Workers) {
   restAt(r, new Vec3(0., 0., 0.));
-  mut f = 0;
+  var f = 0;
   while f < 90 { frame(r, workers, 0., 0., new Vec3(0., 0., 0.)); f = f + 1; }
   r.worstTight = 0.;
   r.worstReach = -1.;
   r.maxStray = 0.;
-  mut z = 0.;
+  var z = 0.;
   f = 0;
   while f < 240 {
-    imm t = f32.from(f) / 60.;
-    imm speed = if t < 0.5 { 0.; } elif t < 1.5 { 1.4 * (t - 0.5); } else { 1.4; };
+    let t = f32.from(f) / 60.;
+    let speed = if t < 0.5 { 0.; } elif t < 1.5 { 1.4 * (t - 0.5); } else { 1.4; };
     z = z - speed / 60.;
     frame(r, workers, z, speed, new Vec3(0.8, 0., 0.3));
     f = f + 1;
@@ -130,14 +130,14 @@ fn walk(r &mut Run, workers &mut Workers) {
 }
 
 fn main() i32 {
-  mut a = dressed(true);
+  var a = dressed(true);
   expectUInt(u64.from(a.outfit.shells.len()), 1u64, "one shell");
   expectUInt(u64.from(a.outfit.garments.len()), 3u64, "three garments");
   expectUInt(u64.from(a.outfit.garments[0usize].layer), 0u64, "the tunic is in layer 0");
   expectUInt(u64.from(a.outfit.garments[2usize].layer), 1u64, "the apron in layer 1");
-  mut tight = 0usize;
-  mut free = 0usize;
-  mut g = 0usize;
+  var tight = 0usize;
+  var free = 0usize;
+  var g = 0usize;
   while g < a.outfit.garments.len() {
     tight = tight + a.outfit.garments[g].tightCount();
     free = free + a.outfit.garments[g].particleCount() - a.outfit.garments[g].tightCount();
@@ -148,25 +148,25 @@ fn main() i32 {
   expectBool(a.outfit.garments[2usize].proxyIdx.len() >= 1usize and a.outfit.garments[2usize].proxyIdx.len() < a.rig.proxies.len(), true, "a garment collides with some of the proxies, not all (the nearby ones)");
 
   // 2. standing still (the first 90 frames of the walk), then 3, 4 and 5: the walk
-  mut workers = Workers.none();
+  var workers = Workers.none();
   restAt(&mut a, new Vec3(0., 0., 0.));
-  mut f = 0;
+  var f = 0;
   while f < 89 { frame(&mut a, &mut workers, 0., 0., new Vec3(0., 0., 0.)); f = f + 1; }
   // what moves is measured by how far a particle goes in a frame (its stored velocity can hold a push that is undone each
   // substep: the position does not move)
-  mut was = List[Vec3].empty();
+  var was = List[Vec3].empty();
   g = 0usize;
   while g < a.outfit.garments.len() {
-    mut i = 0usize;
+    var i = 0usize;
     while i < a.outfit.garments[g].particleCount() { was.push(*a.outfit.garments[g].soft.pos[i]); i = i + 1usize; }
     g = g + 1usize;
   }
   frame(&mut a, &mut workers, 0., 0., new Vec3(0., 0., 0.));
-  mut fastest = 0.;
-  mut at = 0usize;
+  var fastest = 0.;
+  var at = 0usize;
   g = 0usize;
   while g < a.outfit.garments.len() {
-    mut i = 0usize;
+    var i = 0usize;
     while i < a.outfit.garments[g].particleCount() {
       if *a.outfit.garments[g].loose[i] > TIGHT { fastest = fmaxf(fastest, (*a.outfit.garments[g].soft.pos[i] - *was[at]).length() * 60.); }
       at = at + 1usize;
@@ -181,11 +181,11 @@ fn main() i32 {
   expectBool(a.worstReach < 0.02, true, "and every free one is within its reach of the skin (the max distance, and the layer push's margin)");
   expectUInt(u64.from(a.badNumbers), 0u64, "no particle is not a number");
   expectBool(a.maxStray > 0.02, true, "some free cloth strays at least 2 cm from the skin: it is simulated");
-  mut inside = 0usize;
-  mut all = 0usize;
+  var inside = 0usize;
+  var all = 0usize;
   g = 0usize;
   while g < a.outfit.garments.len() {
-    mut i = 0usize;
+    var i = 0usize;
     while i < a.outfit.garments[g].particleCount() {
       if a.rig.distanceSeen(&a.world, 0., &a.outfit.garments[g].seen, *a.outfit.garments[g].soft.pos[i]) < -0.02 { inside = inside + 1usize; }
       all = all + 1usize;
@@ -196,26 +196,26 @@ fn main() i32 {
   expectBool(inside * 100usize < all, true, "at the end under 1% of the cloth is inside the body by more than 2 cm");
 
   // 6. the layers hold: the apron's free particles near the tunic, behind a face of it or not, with and without the push
-  imm kept = layerCheckOf(&a.outfit, 2usize);
-  mut c = dressed(false);
+  let kept = layerCheckOf(&a.outfit, 2usize);
+  var c = dressed(false);
   walk(&mut c, &mut workers);
-  imm lost = layerCheckOf(&c.outfit, 2usize);
+  let lost = layerCheckOf(&c.outfit, 2usize);
   expectBool(kept.within > 50usize, true, "the apron lies on the tunic: over fifty of its free particles are within 5 cm of it");
   expectBool(kept.behind * 100usize <= kept.within * 20usize, true, "with the layers kept at most a fifth of those are behind a face of the tunic");
   expectBool(kept.behind * lost.within < lost.behind * kept.within, true, "and that share is smaller than the same walk's without the layers kept");
 
   // 7. determinism: the same again
-  mut b = dressed(true);
+  var b = dressed(true);
   walk(&mut b, &mut workers);
-  mut d = dressed(true);
+  var d = dressed(true);
   walk(&mut d, &mut workers);
-  mut same = true;
+  var same = true;
   g = 0usize;
   while g < d.outfit.garments.len() {
-    mut i = 0usize;
+    var i = 0usize;
     while i < d.outfit.garments[g].particleCount() {
-      imm pa = *d.outfit.garments[g].soft.pos[i];
-      imm pb = *b.outfit.garments[g].soft.pos[i];
+      let pa = *d.outfit.garments[g].soft.pos[i];
+      let pb = *b.outfit.garments[g].soft.pos[i];
       if pa.x != pb.x or pa.y != pb.y or pa.z != pb.z { same = false; }
       i = i + 1usize;
     }
@@ -224,12 +224,12 @@ fn main() i32 {
   expectBool(same, true, "dressed and walked twice, every particle is in the same place to the bit");
 
   // 8. a teleport: the body is put 10 m away; snap carries the cloth with it
-  imm there = new Vec3(10., 0., -5.);
+  let there = new Vec3(10., 0., -5.);
   restAt(&mut a, there);
-  mut worstAway = 0.;
+  var worstAway = 0.;
   g = 0usize;
   while g < a.outfit.garments.len() {
-    mut i = 0usize;
+    var i = 0usize;
     while i < a.outfit.garments[g].particleCount() {
       worstAway = fmaxf(worstAway, (*a.outfit.garments[g].soft.pos[i] - there).length());
       i = i + 1usize;

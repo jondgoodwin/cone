@@ -14,7 +14,7 @@ fn near(got f32, want f32, within f32, label &Array[u8]) bool {
 
 fn main() i32 {
   // Inverse: ref / (ref + rolloff (d - ref)). ref 1, rolloff 1: d 2 -> 1/2, d 10 -> 1/10
-  imm inv = Attenuation.inverse(1., 100., 1.);
+  let inv = Attenuation.inverse(1., 100., 1.);
   near(inv.gain(0.5), 1., 0.00001, "inverse: nearer than ref is full");
   near(inv.gain(2.), 0.5, 0.00001, "inverse at 2 m");
   near(inv.gain(10.), 0.1, 0.00001, "inverse at 10 m");
@@ -23,7 +23,7 @@ fn main() i32 {
   near(inv.gain(1000.), 1. / 100., 0.00001, "inverse stops falling at maxDist");
 
   // Linear: 1 - rolloff (d - ref) / (max - ref). ref 1, max 11: d 6 -> 0.5; d 11 -> 0
-  imm lin = Attenuation.linear(1., 11., 1.);
+  let lin = Attenuation.linear(1., 11., 1.);
   near(lin.gain(6.), 0.5, 0.00001, "linear half way");
   near(lin.gain(11.), 0., 0.00001, "linear silent at max");
   near(lin.gain(50.), 0., 0.00001, "linear stays silent");
@@ -32,7 +32,7 @@ fn main() i32 {
   near(Attenuation.exponent(2., 100., 2.).gain(8.), 0.0625, 0.00001, "exponent");
 
   // Custom: gains 1, .5, 0, 0, 0, 0, 0, 1 over 1..8 m (steps of 1 m): at 1.5 -> .75, at 8 -> 1
-  imm cus = Attenuation.custom(1., 8., [1., 0.5, 0., 0., 0., 0., 0., 1.]);
+  let cus = Attenuation.custom(1., 8., [1., 0.5, 0., 0., 0., 0., 0., 1.]);
   near(cus.gain(1.5), 0.75, 0.00001, "custom between knots");
   near(cus.gain(2.), 0.5, 0.00001, "custom at a knot");
   near(cus.gain(8.), 1., 0.00001, "custom at the end");
@@ -44,54 +44,54 @@ fn main() i32 {
   near(panGains(1.).y, 1., 0.00001, "pan hard right");
   near(panGains(0.).x, 0.70710678, 0.00001, "centre is -3 dB");
   near(panGains(0.).y, 0.70710678, 0.00001, "centre is -3 dB right");
-  mut p = -1.;
-  mut worst = 0.;
+  var p = -1.;
+  var worst = 0.;
   while p <= 1. {
-    imm g = panGains(p);
-    imm e = fabs(g.x * g.x + g.y * g.y - 1.);
+    let g = panGains(p);
+    let e = fabs(g.x * g.x + g.y * g.y - 1.);
     if e > worst { worst = e; }
     p = p + 0.05;
   }
   near(worst, 0., 0.00001, "constant power across the whole range");
 
   // Spatialize: listener at the origin facing -z, right is +x
-  imm l = Listener.make();
+  let l = Listener.make();
   near(l.right().x, 1., 0.00001, "right is +x");
-  imm none = new Vec3(0., 0., 0.);
-  imm ahead = spatialize(&l, new Vec3(0., 0., -4.), none, &inv, 0., 1., true);
+  let none = new Vec3(0., 0., 0.);
+  let ahead = spatialize(&l, new Vec3(0., 0., -4.), none, &inv, 0., 1., true);
   near(ahead.distance, 4., 0.00001, "distance");
   near(ahead.gainL, 0.25 * 0.70710678, 0.00001, "ahead: left gain");
   near(ahead.gainR, 0.25 * 0.70710678, 0.00001, "ahead: right gain");
   near(ahead.cutoffL, 20000., 0.5, "ahead: no shadow on the left");
   near(ahead.cutoffR, 20000., 0.5, "ahead: no shadow on the right");
   near(ahead.pitch, 1., 0.00001, "ahead: no Doppler at rest");
-  imm right = spatialize(&l, new Vec3(3., 0., 0.), none, &inv, 0., 1., true);
+  let right = spatialize(&l, new Vec3(3., 0., 0.), none, &inv, 0., 1., true);
   near(right.gainL, 0., 0.00001, "right: left silent");
   near(right.gainR, 1. / 3., 0.00001, "right: all in the right ear at 1/3");
   near(right.cutoffR, 20000., 0.5, "right: near ear open");
   near(right.cutoffL, 1500., 0.5, "right: far ear shadowed to 1.5 kHz");
-  imm rightNoHead = spatialize(&l, new Vec3(3., 0., 0.), none, &inv, 0., 1., false);
+  let rightNoHead = spatialize(&l, new Vec3(3., 0., 0.), none, &inv, 0., 1., false);
   near(rightNoHead.cutoffL, 20000., 0.5, "head shadow can be switched off");
-  imm quarter = spatialize(&l, new Vec3(-1., 0., 0.), none, &inv, 0., 1., true);
+  let quarter = spatialize(&l, new Vec3(-1., 0., 0.), none, &inv, 0., 1., true);
   near(quarter.cutoffR, 1500., 0.5, "left source: right ear shadowed");
   // A source 45 degrees to the right: side = 0.7071, far ear side = -0.7071
-  imm diag = spatialize(&l, new Vec3(1., 0., -1.), none, &inv, 0., 1., true);
+  let diag = spatialize(&l, new Vec3(1., 0., -1.), none, &inv, 0., 1., true);
   // 20000^(1-0.7071) * 1500^0.7071 = exp(0.2929*9.9035 + 0.7071*7.3132) = 3203 Hz
   near(diag.cutoffL, 3203., 3., "45 deg right: the left ear is part way into shadow");
   near(diag.cutoffR, 20000., 0.5, "45 deg right: the right ear is open");
 
   // Doppler: c = 343.3; a source coming at 34.33 m/s, listener still: c / (c - 34.33)
-  imm toL = new Vec3(0., 0., 1.);
+  let toL = new Vec3(0., 0., 1.);
   near(dopplerPitch(none, new Vec3(0., 0., 34.33), toL, 1., SPEED_OF_SOUND), 343.3 / (343.3 - 34.33), 0.0001, "source approaching: pitch up 11%");
   near(dopplerPitch(none, new Vec3(0., 0., -34.33), toL, 1., SPEED_OF_SOUND), 343.3 / (343.3 + 34.33), 0.0001, "source receding: pitch down 9%");
   near(dopplerPitch(new Vec3(0., 0., 34.33), none, toL, 1., SPEED_OF_SOUND), (343.3 - 34.33) / 343.3, 0.0001, "listener approaching along the line");
   near(dopplerPitch(new Vec3(0., 0., 34.33), none, toL, 0., SPEED_OF_SOUND), 1., 0.00001, "factor 0 switches Doppler off");
   // Through spatialize: source at z = -10 moving towards the listener (+z) at 34.33 m/s
-  imm dop = spatialize(&l, new Vec3(0., 0., -10.), new Vec3(0., 0., 34.33), &inv, 0., 1., true);
+  let dop = spatialize(&l, new Vec3(0., 0., -10.), new Vec3(0., 0., 34.33), &inv, 0., 1., true);
   near(dop.pitch, 343.3 / (343.3 - 34.33), 0.0001, "Doppler through spatialize");
 
   // Occlusion: 1 blocks: -12 dB and a 400 Hz low-pass; 0.5: -6 dB and the geometric mean 2828 Hz
-  imm occ = spatialize(&l, new Vec3(0., 0., -1.), none, &inv, 1., 1., true);
+  let occ = spatialize(&l, new Vec3(0., 0., -1.), none, &inv, 1., 1., true);
   near(gainToDb(occ.gainL / ahead.gainL * 0.25), -12., 0.01, "fully occluded: -12 dB");
   near(occ.cutoffOcc, 400., 0.5, "fully occluded: 400 Hz");
   near(occlusionCutoff(0.5), 2828.427, 0.1, "half occluded: the geometric mean");

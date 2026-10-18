@@ -54,21 +54,21 @@ pub struct SkylinePacker {
   nodes List[SkyNode];
 
   pub fn make(width u32, height u32) SkylinePacker {
-    mut nodes = List[SkyNode].empty();
+    var nodes = List[SkyNode].empty();
     nodes.push(new SkyNode(0u32, 0u32, width));
     new SkylinePacker(width, height, nodes);
   }
 
   // The y a w x h rectangle would rest at starting at node i, or the height of the bin plus one if it does not fit
   fn fitAt(self &, i usize, w u32, h u32) u32 {
-    imm n = *nodes[i];
+    let n = *nodes[i];
     if n.x + w > width { return height + 1u32; }
-    mut y = n.y;
-    mut remaining = w;
-    mut k = i;
+    var y = n.y;
+    var remaining = w;
+    var k = i;
     while remaining > 0u32 {
       if k >= nodes.len() { return height + 1u32; }
-      imm nk = *nodes[k];
+      let nk = *nodes[k];
       if nk.y > y { y = nk.y; }
       if y + h > height { return height + 1u32; }
       if nk.w >= remaining { remaining = 0u32; } else { remaining = remaining - nk.w; }
@@ -79,16 +79,16 @@ pub struct SkylinePacker {
 
   // Place a w x h rectangle; false if there is no room. Its corner is left in 'px', 'py'.
   pub fn pack(self &mut, w u32, h u32, px &mut u32, py &mut u32) bool {
-    mut bestI = nodes.len();
-    mut bestTop = height + 1u32;
-    mut bestW = width + 1u32;
-    mut bestY = 0u32;
-    mut i = 0usize;
+    var bestI = nodes.len();
+    var bestTop = height + 1u32;
+    var bestW = width + 1u32;
+    var bestY = 0u32;
+    var i = 0usize;
     while i < nodes.len() {
-      imm y = self.fitAt(i, w, h);
+      let y = self.fitAt(i, w, h);
       if y <= height {
-        imm top = y + h;
-        imm nw = (*nodes[i]).w;
+        let top = y + h;
+        let nw = (*nodes[i]).w;
         if top < bestTop or (top == bestTop and nw < bestW) {
           bestTop = top;
           bestW = nw;
@@ -99,14 +99,14 @@ pub struct SkylinePacker {
       i = i + 1usize;
     }
     if bestI >= nodes.len() { return false; }
-    imm x = (*nodes[bestI]).x;
+    let x = (*nodes[bestI]).x;
     // The new level: insert before node bestI, then trim what it covers
-    mut rebuilt = List[SkyNode].empty();
+    var rebuilt = List[SkyNode].empty();
     i = 0usize;
     while i < bestI { rebuilt.push(*nodes[i]); i = i + 1usize; }
     rebuilt.push(new SkyNode(x, bestY + h, w));
     while i < nodes.len() {
-      imm n = *nodes[i];
+      let n = *nodes[i];
       if n.x + n.w <= x + w {
         // wholly covered
       } elif n.x < x + w {
@@ -117,12 +117,12 @@ pub struct SkylinePacker {
       i = i + 1usize;
     }
     // Merge neighbours of equal height
-    mut merged = List[SkyNode].empty();
+    var merged = List[SkyNode].empty();
     i = 0usize;
     while i < rebuilt.len() {
-      imm n = *rebuilt[i];
+      let n = *rebuilt[i];
       if merged.len() > 0usize and (*merged[merged.len() - 1usize]).y == n.y {
-        imm last = *merged[merged.len() - 1usize];
+        let last = *merged[merged.len() - 1usize];
         merged.set(merged.len() - 1usize, new SkyNode(last.x, last.y, last.w + n.w));
       } else {
         merged.push(n);
@@ -148,8 +148,8 @@ pub struct Atlas {
   pub resolved u32;                // glyphs whose overlapping contours were resolved to their boundary
 
   pub fn create(config AtlasConfig) Atlas {
-    mut pixels = List[u8].withCapacity(usize.from(config.width * config.height * 4u32));
-    mut i = 0usize;
+    var pixels = List[u8].withCapacity(usize.from(config.width * config.height * 4u32));
+    var i = 0usize;
     // Opaque black: outside (all channels 0)
     while i < usize.from(config.width * config.height) {
       pixels.push(0u8);
@@ -165,13 +165,13 @@ pub struct Atlas {
   // The entry for 'glyph' of 'font', generated if it is new. -1 if the atlas is full.
   pub fn ensure(self &mut, font &Font, glyph u32) i32 {
     if slots.len() == 0usize {
-      mut i = 0u32;
+      var i = 0u32;
       while i < font.glyphCount { slots.push(-1i32); i = i + 1u32; }
     }
     if glyph >= font.glyphCount { return -1i32; }
-    imm s = *slots[usize.from(glyph)];
+    let s = *slots[usize.from(glyph)];
     if s != -1i32 { return s; }
-    imm made = self.generate(font, glyph);
+    let made = self.generate(font, glyph);
     slots.set(usize.from(glyph), made);
     made;
   }
@@ -180,38 +180,38 @@ pub struct Atlas {
   pub fn entry(self &, i i32) GlyphEntry { *entries[usize.from(u32.from(i))]; }
 
   fn generate(self &mut, font &Font, glyph u32) i32 {
-    imm em = f64.from(font.unitsPerEm);
-    imm advance = f32.from(f64.from(font.advance(glyph)) / em);
-    imm o = font.outline(glyph);
-    mut shape = Shape.fromOutline(&o);
+    let em = f64.from(font.unitsPerEm);
+    let advance = f32.from(f64.from(font.advance(glyph)) / em);
+    let o = font.outline(glyph);
+    var shape = Shape.fromOutline(&o);
     if shape.edges.len() == 0usize {
       entries.push(new GlyphEntry(glyph, true, 0u32, 0u32, 0u32, 0u32, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, advance));
       return i32.from(entries.len() - 1usize);
     }
     if shape.resolveOverlaps() { resolved = resolved + 1u32; }
     colorEdges(&mut shape, config.cornerAngle, 0u64);
-    mut lo = new Pt(0.0d, 0.0d);
-    mut hi = new Pt(0.0d, 0.0d);
+    var lo = new Pt(0.0d, 0.0d);
+    var hi = new Pt(0.0d, 0.0d);
     shape.bounds(&mut lo, &mut hi);
-    imm s = config.emPx / em;                          // texels per font unit
-    imm margin = libc.ceil(config.pxRange * 0.5d) + 1.0d;
-    imm w = u32.from(libc.ceil((hi.x - lo.x) * s + 2.0d * margin));
-    imm h = u32.from(libc.ceil((hi.y - lo.y) * s + 2.0d * margin));
-    mut cx = 0u32;
-    mut cy = 0u32;
+    let s = config.emPx / em;                          // texels per font unit
+    let margin = libc.ceil(config.pxRange * 0.5d) + 1.0d;
+    let w = u32.from(libc.ceil((hi.x - lo.x) * s + 2.0d * margin));
+    let h = u32.from(libc.ceil((hi.y - lo.y) * s + 2.0d * margin));
+    var cx = 0u32;
+    var cy = 0u32;
     // One texel of gap on the right and below, so linear filtering never reads a neighbour
     if !packer.pack(w + 1u32, h + 1u32, &mut cx, &mut cy) { return -2i32; }
-    imm frame = new Frame(w, h, s, margin / s - lo.x, margin / s - lo.y, config.pxRange / s);
-    mut field = generateMsdf(&shape, &frame);
+    let frame = new Frame(w, h, s, margin / s - lo.x, margin / s - lo.y, config.pxRange / s);
+    var field = generateMsdf(&shape, &frame);
     fixedTexels = fixedTexels + correctErrors(&mut field, &shape, &frame);
-    mut y = 0u32;
+    var y = 0u32;
     while y < h {
-      mut x = 0u32;
+      var x = 0u32;
       while x < w {
-        imm at = usize.from(((cy + y) * config.width + cx + x) * 4u32);
-        mut ch = 0u32;
+        let at = usize.from(((cy + y) * config.width + cx + x) * 4u32);
+        var ch = 0u32;
         while ch < 3u32 {
-          mut v = field.texel(x, y, ch) * 255.0 + 0.5;
+          var v = field.texel(x, y, ch) * 255.0 + 0.5;
           if v < 0.0 { v = 0.0; }
           if v > 255.0 { v = 255.0; }
           pixels.set(at + usize.from(ch), u8.from(v));
@@ -224,10 +224,10 @@ pub struct Atlas {
     }
     version = version + 1u32;
     generated = generated + 1u32;
-    imm aw = f32.from(config.width);
-    imm ah = f32.from(config.height);
-    imm left = f32.from((lo.x - margin / s) / em);
-    imm bottom = f32.from((lo.y - margin / s) / em);
+    let aw = f32.from(config.width);
+    let ah = f32.from(config.height);
+    let left = f32.from((lo.x - margin / s) / em);
+    let bottom = f32.from((lo.y - margin / s) / em);
     entries.push(new GlyphEntry(glyph, false, cx, cy, w, h,
       f32.from(cx) / aw, f32.from(cy) / ah, f32.from(cx + w) / aw, f32.from(cy + h) / ah,
       left, bottom, left + f32.from(f64.from(w) / config.emPx), bottom + f32.from(f64.from(h) / config.emPx), advance));

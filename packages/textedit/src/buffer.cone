@@ -32,19 +32,19 @@ pub struct TextBuffer {
   total usize = 0usize;
 
   pub fn empty() TextBuffer {
-    mut b = new TextBuffer(String.empty(), String.empty(), List[Piece].empty(), List[usize].empty());
+    var b = new TextBuffer(String.empty(), String.empty(), List[Piece].empty(), List[usize].empty());
     b.lineStarts.push(0usize);
     b;
   }
 
   // A buffer holding a copy of 'text'
   pub fn fromText(text &str) TextBuffer {
-    mut b = new TextBuffer(String.from(text), String.empty(), List[Piece].empty(), List[usize].empty());
+    var b = new TextBuffer(String.from(text), String.empty(), List[Piece].empty(), List[usize].empty());
     b.lineStarts.push(0usize);
     if text.len() > 0usize {
       b.pieces.push(new Piece(0u8, 0usize, text.len(), 0usize));
       b.total = text.len();
-      mut i = 0usize;
+      var i = 0usize;
       while i < text.len() {
         if text[i] == 10u8 {b.lineStarts.push(i + 1usize);}
         i = i + 1usize;
@@ -63,11 +63,11 @@ pub struct TextBuffer {
 
   // The index of the piece holding offset 'off' (pieces.len() when off is the end)
   fn locate(self &, off usize) usize {
-    mut lo = 0usize;
-    mut hi = pieces.len();
+    var lo = 0usize;
+    var hi = pieces.len();
     while lo < hi {
-      imm mid = (lo + hi) / 2usize;
-      imm p = pieces[mid];
+      let mid = (lo + hi) / 2usize;
+      let p = pieces[mid];
       if off < p.at {hi = mid;}
       elif off >= p.at + p.len {lo = mid + 1usize;}
       else {return mid;}
@@ -77,29 +77,29 @@ pub struct TextBuffer {
 
   // The byte at offset 'off' (which must be inside the text)
   pub fn byteAt(self &, off usize) u8 {
-    imm i = locate(off);
-    imm p = pieces[i];
-    imm s = srcOf(p);
+    let i = locate(off);
+    let p = pieces[i];
+    let s = srcOf(p);
     s[p.start + (off - p.at)];
   }
 
   // The longest stretch of text starting at 'off' that lies in one piece (empty at the end)
   pub fn chunk(self &, off usize) &str {
-    imm i = locate(off);
+    let i = locate(off);
     if i >= pieces.len() {return "";}
-    imm p = pieces[i];
-    imm s = srcOf(p);
+    let p = pieces[i];
+    let s = srcOf(p);
     s.slice(p.start + (off - p.at), p.start + p.len);
   }
 
   // The text from lo up to hi, copied
   pub fn text(self &, lo usize, hi usize) String {
-    mut out = String.withCapacity(hi - lo);
-    mut at = lo;
+    var out = String.withCapacity(hi - lo);
+    var at = lo;
     while at < hi {
-      imm c = chunk(at);
+      let c = chunk(at);
       if c.len() == 0usize {return out;}
-      imm take = minUsize(c.len(), hi - at);
+      let take = minUsize(c.len(), hi - at);
       out.append(c.slice(0usize, take));
       at = at + take;
     }
@@ -112,10 +112,10 @@ pub struct TextBuffer {
 
   // The line holding offset 'off' (the last line for the end of the text)
   pub fn lineOf(self &, off usize) usize {
-    mut lo = 0usize;
-    mut hi = lineStarts.len();
+    var lo = 0usize;
+    var hi = lineStarts.len();
     while hi - lo > 1usize {
-      imm mid = (lo + hi) / 2usize;
+      let mid = (lo + hi) / 2usize;
       if *lineStarts[mid] <= off {lo = mid;} else {hi = mid;}
     }
     lo;
@@ -125,7 +125,7 @@ pub struct TextBuffer {
 
   // Where the line's text ends: before its '\n', and before a '\r' that comes just before that
   pub fn lineEnd(self &, line usize) usize {
-    mut e = if line + 1usize < lineStarts.len() {*lineStarts[line + 1usize] - 1usize;} else {total;};
+    var e = if line + 1usize < lineStarts.len() {*lineStarts[line + 1usize] - 1usize;} else {total;};
     if e > *lineStarts[line] and byteAt(e - 1usize) == 13u8 and line + 1usize < lineStarts.len() {e = e - 1usize;}
     e;
   }
@@ -141,7 +141,7 @@ pub struct TextBuffer {
   // True when the text uses CRLF line ends (decided by the first line break)
   pub fn usesCrlf(self &) bool {
     if lineStarts.len() < 2usize {return false;}
-    imm e = *lineStarts[1usize] - 1usize;
+    let e = *lineStarts[1usize] - 1usize;
     e > 0usize and byteAt(e - 1usize) == 13u8;
   }
 
@@ -150,14 +150,14 @@ pub struct TextBuffer {
   // Inserts 's' so that it starts at offset 'off'
   pub fn insert(self &mut, off usize, s &str) {
     if s.len() == 0usize {return;}
-    imm addAt = add.len();
+    let addAt = add.len();
     add.append(s);
-    imm piece = new Piece(1u8, addAt, s.len(), off);
-    imm i = locate(off);
+    let piece = new Piece(1u8, addAt, s.len(), off);
+    let i = locate(off);
     // typing: the piece that ends at 'off' is the tail of 'add', so it simply grows
-    imm before = if i >= pieces.len() {pieces.len();} elif pieces[i].at == off {i;} else {0usize;};
+    let before = if i >= pieces.len() {pieces.len();} elif pieces[i].at == off {i;} else {0usize;};
     if before > 0usize {
-      imm q = pieces[before - 1usize];
+      let q = pieces[before - 1usize];
       if q.src == 1u8 and q.start + q.len == addAt {
         pieces.set(before - 1usize, new Piece(1u8, q.start, q.len + s.len(), q.at));
         fixAt(before);
@@ -167,18 +167,18 @@ pub struct TextBuffer {
       }
     }
     // otherwise the piece list is made again around the new piece (a piece holding 'off' is split)
-    mut fresh = List[Piece].withCapacity(pieces.len() + 2usize);
-    mut placed = false;
-    mut k = 0usize;
+    var fresh = List[Piece].withCapacity(pieces.len() + 2usize);
+    var placed = false;
+    var k = 0usize;
     while k < pieces.len() {
-      imm p = pieces[k];
+      let p = pieces[k];
       if !placed and p.at == off {
         fresh.push(piece);
         placed = true;
         fresh.push(*p);
       }
       elif !placed and off > p.at and off < p.at + p.len {
-        imm cut = off - p.at;
+        let cut = off - p.at;
         fresh.push(new Piece(p.src, p.start, cut, p.at));
         fresh.push(piece);
         fresh.push(new Piece(p.src, p.start + cut, p.len - cut, off));
@@ -196,10 +196,10 @@ pub struct TextBuffer {
 
   // Recomputes the 'at' of every piece from index 'from' on
   fn fixAt(self &mut, from usize) {
-    mut at = if from == 0usize {0usize;} else {pieces[from - 1usize].at + pieces[from - 1usize].len;};
-    mut k = from;
+    var at = if from == 0usize {0usize;} else {pieces[from - 1usize].at + pieces[from - 1usize].len;};
+    var k = from;
     while k < pieces.len() {
-      imm p = *pieces[k];
+      let p = *pieces[k];
       pieces.set(k, new Piece(p.src, p.start, p.len, at));
       at = at + p.len;
       k = k + 1usize;
@@ -209,23 +209,23 @@ pub struct TextBuffer {
   // The line index after 'off' gained s
   fn indexInsert(self &mut, off usize, s &str) {
     // the line starts after 'off' move; one at 'off' itself belongs to a line that keeps its start
-    imm first = lineOf(off) + 1usize;
-    mut nl = 0usize;
-    mut i = 0usize;
+    let first = lineOf(off) + 1usize;
+    var nl = 0usize;
+    var i = 0usize;
     while i < s.len() {
       if s[i] == 10u8 {nl = nl + 1usize;}
       i = i + 1usize;
     }
     if nl == 0usize {
-      mut k = first;
+      var k = first;
       while k < lineStarts.len() {
         lineStarts.set(k, *lineStarts[k] + s.len());
         k = k + 1usize;
       }
       return;
     }
-    mut fresh = List[usize].withCapacity(lineStarts.len() + nl);
-    mut k = 0usize;
+    var fresh = List[usize].withCapacity(lineStarts.len() + nl);
+    var k = 0usize;
     while k < first {
       fresh.push(*lineStarts[k]);
       k = k + 1usize;
@@ -245,12 +245,12 @@ pub struct TextBuffer {
   // Removes the text from lo up to hi
   pub fn remove(self &mut, lo usize, hi usize) {
     if hi <= lo {return;}
-    imm n = hi - lo;
-    mut fresh = List[Piece].withCapacity(pieces.len() + 1usize);
-    mut k = 0usize;
+    let n = hi - lo;
+    var fresh = List[Piece].withCapacity(pieces.len() + 1usize);
+    var k = 0usize;
     while k < pieces.len() {
-      imm p = pieces[k];
-      imm pe = p.at + p.len;
+      let p = pieces[k];
+      let pe = p.at + p.len;
       if pe <= lo or p.at >= hi {fresh.push(*p);}
       else {
         if p.at < lo {fresh.push(new Piece(p.src, p.start, lo - p.at, p.at));}
@@ -262,10 +262,10 @@ pub struct TextBuffer {
     fixAt(0usize);
     total = total - n;
     // the line index: starts in (lo, hi] are gone, later ones move up
-    mut w = 0usize;
+    var w = 0usize;
     k = 0usize;
     while k < lineStarts.len() {
-      imm st = *lineStarts[k];
+      let st = *lineStarts[k];
       if st <= lo {
         lineStarts.set(w, st);
         w = w + 1usize;
@@ -287,7 +287,7 @@ pub struct TextBuffer {
 
   // Joins the pieces into one (after many edits, or before a save)
   pub fn compact(self &mut) {
-    imm t = all();
+    let t = all();
     orig = t;
     add.clear();
     pieces.clear();

@@ -15,17 +15,17 @@ fn at(ms i64) Instant {Instant.fromNanos(ms * 1000000i64);}
 
 // A packet from a connection with a reliable message and two values waiting
 fn sample() List[u8] {
-  mut a = ConnectionCore.make(NetConfig.defaults(), 0x5555u64, at(0i64));
+  var a = ConnectionCore.make(NetConfig.defaults(), 0x5555u64, at(0i64));
   a.sendReliable("first");
   a.sendReliable("second");
   a.sendLatest(1u16, "alpha");
   a.sendLatest(2u16, "beta");
-  mut pk = List[List[u8]].empty();
-  mut evs = List[CoreEvent].empty();
+  var pk = List[List[u8]].empty();
+  var evs = List[CoreEvent].empty();
   a.poll(at(5i64), &mut pk, &mut evs);
-  mut r = List[u8].empty();
+  var r = List[u8].empty();
   match pk.pop() {
-    case imm p Some { r = p; }
+    case let p Some { r = p; }
     case is None[List[u8]] {}
   }
   r;
@@ -34,22 +34,22 @@ fn sample() List[u8] {
 fn fresh() ConnectionCore {ConnectionCore.make(NetConfig.defaults(), 0x5555u64, at(0i64));}
 
 fn main() i32 {
-  imm good = sample();
+  let good = sample();
   expectUInt(u64.from(good.len()), 23u64 + (4u64 + 5u64) + (4u64 + 6u64) + (6u64 + 5u64) + (6u64 + 4u64), "the sample packet is the size the layout says");
 
   // The good packet delivers its four things
-  mut evs = List[CoreEvent].empty();
-  mut b = fresh();
+  var evs = List[CoreEvent].empty();
+  var b = fresh();
   expect(b.receive(good.view(), at(6i64), &mut evs), "a good packet is taken");
   expectUInt(u64.from(evs.len()), 4u64, "two messages and two values");
 
   // Every shorter prefix is refused
-  mut refusedAll = true;
-  mut n = 0usize;
+  var refusedAll = true;
+  var n = 0usize;
   while n < good.len() {
-    mut c = fresh();
-    mut e2 = List[CoreEvent].empty();
-    mut cut = copyBytes(good.view());
+    var c = fresh();
+    var e2 = List[CoreEvent].empty();
+    var cut = copyBytes(good.view());
     cut.truncate(n);
     if c.receive(cut.view(), at(6i64), &mut e2) or e2.len() != 0usize {refusedAll = false;}
     n = n + 1usize;
@@ -57,40 +57,40 @@ fn main() i32 {
   expect(refusedAll, "every cut-short packet is refused, and tells nothing");
 
   // A byte too many
-  mut longer = copyBytes(good.view());
+  var longer = copyBytes(good.view());
   longer.push(0u8);
-  mut d = fresh();
-  mut e3 = List[CoreEvent].empty();
+  var d = fresh();
+  var e3 = List[CoreEvent].empty();
   expect(not d.receive(longer.view(), at(6i64), &mut e3), "a packet with a byte added is refused");
 
   // The reserved bits of a message's length
-  mut flagged = copyBytes(good.view());
+  var flagged = copyBytes(good.view());
   flagged.set(23usize + 2usize, *flagged[23usize + 2usize] | 0x40u8);
-  mut f = fresh();
+  var f = fresh();
   expect(not f.receive(flagged.view(), at(6i64), &mut e3), "a message with a fragmentation bit set is refused (not built)");
   expectUInt(u64.from(e3.len()), 0u64, "and nothing of the packet got through");
 
   // The same packet twice
-  mut g = fresh();
-  mut e4 = List[CoreEvent].empty();
+  var g = fresh();
+  var e4 = List[CoreEvent].empty();
   g.receive(good.view(), at(6i64), &mut e4);
-  imm first = e4.len();
+  let first = e4.len();
   expect(g.receive(good.view(), at(7i64), &mut e4), "a repeated packet is valid");
   expectUInt(u64.from(e4.len()), u64.from(first), "but gives its contents once");
   expectUInt(g.stats().packetsDuplicate, 1u64, "and is counted as a duplicate");
 
   // Noise: random bytes, and the good packet with random bytes changed
-  mut rng = Rng.make(99u64);
-  mut h = fresh();
-  mut e5 = List[CoreEvent].empty();
-  mut accepted = 0u32;
-  mut i = 0u32;
+  var rng = Rng.make(99u64);
+  var h = fresh();
+  var e5 = List[CoreEvent].empty();
+  var accepted = 0u32;
+  var i = 0u32;
   while i < 20000u32 {
-    mut p = copyBytes(good.view());
-    imm kind = rng.below(4u64);
+    var p = copyBytes(good.view());
+    let kind = rng.below(4u64);
     if kind == 0u64 {
       // change 1 to 3 bytes
-      mut k = rng.below(3u64) + 1u64;
+      var k = rng.below(3u64) + 1u64;
       while k > 0u64 {
         p.set(usize.from(rng.below(u64.from(p.len()))), u8.from(rng.next() & 255u64));
         k = k - 1u64;
@@ -99,14 +99,14 @@ fn main() i32 {
       p.truncate(usize.from(rng.below(u64.from(p.len()) + 1u64)));
     } elif kind == 2u64 {
       // pure noise of the same size
-      mut j = 0usize;
+      var j = 0usize;
       while j < p.len() {
         p.set(j, u8.from(rng.next() & 255u64));
         j = j + 1usize;
       }
     } else {
       // the header intact, the body noise
-      mut j = 23usize;
+      var j = 23usize;
       while j < p.len() {
         p.set(j, u8.from(rng.next() & 255u64));
         j = j + 1usize;

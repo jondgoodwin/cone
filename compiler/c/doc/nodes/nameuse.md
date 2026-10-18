@@ -26,7 +26,7 @@ name the source qualified. *Which* namespace it came through is not kept,
 because nothing asks.
 
 `FlagPattern` marks a pattern's bare root — `Red` in `case is Red`, `Circle` in
-`case imm c &Circle`, `K` in `case K` — which is looked up in the matched value's
+`case let c &Circle`, `K` in `case K` — which is looked up in the matched value's
 enum before its lexical meaning. The parser stamps it, `nameUseNameRes` leaves
 such a name unbound instead of reporting it when nothing lexical answers, and
 `castPatternBind` (or, for a value alone, `castMatchValueTypeCheck`) binds it at

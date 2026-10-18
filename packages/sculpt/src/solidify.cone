@@ -59,15 +59,15 @@ pub fn solidify(m &PolyMesh, thickness f32, offset f32, evenThickness bool, rim 
 // has none.
 pub fn solidifyWith(m &PolyMesh, thickness f32, offset f32, evenThickness bool, rim bool, creaseInner f32,
     creaseOuter f32, creaseRim f32) PolyMesh {
-  imm nv = m.positions.len();
-  imm nf = m.fHalfedge.len();
-  imm off = clampf(offset, -1., 1.);
-  imm flip = thickness < 0.;
-  imm normals = m.vertexNormals();
-  imm scale = if evenThickness {evenScales(m, &normals);} else {ones(nv);};
-  mut pos = List[Vec3].withCapacity(2usize * nv);
-  mut vSrc = List[u32].withCapacity(2usize * nv);
-  mut v = 0usize;
+  let nv = m.positions.len();
+  let nf = m.fHalfedge.len();
+  let off = clampf(offset, -1., 1.);
+  let flip = thickness < 0.;
+  let normals = m.vertexNormals();
+  let scale = if evenThickness {evenScales(m, &normals);} else {ones(nv);};
+  var pos = List[Vec3].withCapacity(2usize * nv);
+  var vSrc = List[u32].withCapacity(2usize * nv);
+  var v = 0usize;
   while v < nv {
     pos.push(*m.positions[v] + *normals[v] * (*scale[v] * thickness * (off + 1.) * 0.5));
     vSrc.push(u32.from(v));
@@ -80,11 +80,11 @@ pub fn solidifyWith(m &PolyMesh, thickness f32, offset f32, evenThickness bool, 
     v = v + 1usize;
   }
 
-  mut counts = List[u32].empty();
-  mut idx = List[u32].empty();
-  mut cSrc = List[u32].empty();
-  mut eSrc = List[u32].empty();
-  mut fSrc = List[u32].empty();
+  var counts = List[u32].empty();
+  var idx = List[u32].empty();
+  var cSrc = List[u32].empty();
+  var eSrc = List[u32].empty();
+  var fSrc = List[u32].empty();
   if flip {
     addReversed(m, 0usize, &mut counts, &mut idx, &mut cSrc, &mut eSrc, &mut fSrc);
     addCopy(m, nv, &mut counts, &mut idx, &mut cSrc, &mut eSrc, &mut fSrc);
@@ -94,21 +94,21 @@ pub fn solidifyWith(m &PolyMesh, thickness f32, offset f32, evenThickness bool, 
   }
 
   // Every face in one region, so the rim is the boundary
-  mut region = List[u32].withCapacity(nf);
-  mut f = 0usize;
+  var region = List[u32].withCapacity(nf);
+  var f = 0usize;
   while f < nf {
     region.push(0u32);
     f = f + 1usize;
   }
-  mut loops = List[u32].empty();
-  mut starts = List[u32].empty();
+  var loops = List[u32].empty();
+  var starts = List[u32].empty();
   if rim { rimLoops(m, &region, &mut loops, &mut starts); }
-  mut j = 0usize;
+  var j = 0usize;
   while j < loops.len() {
-    imm h = *loops[j];
-    imm a = m.fromVertex(h);
-    imm b = m.toVertex(h);
-    imm ca = m.prev(h);
+    let h = *loops[j];
+    let a = m.fromVertex(h);
+    let b = m.toVertex(h);
+    let ca = m.prev(h);
     counts.push(4u32);
     if flip {
       idx.push(a);
@@ -137,22 +137,22 @@ pub fn solidifyWith(m &PolyMesh, thickness f32, offset f32, evenThickness bool, 
     j = j + 1usize;
   }
 
-  mut out = assemble(m, &pos, &vSrc, &counts, &idx, &cSrc, &eSrc, &fSrc);
+  var out = assemble(m, &pos, &vSrc, &counts, &idx, &cSrc, &eSrc, &fSrc);
   // A face refused (none should be) would shift the rim's numbers: leave
   // the corner values as carried
   if !rim or out.fHalfedge.len() != counts.len() { return out; }
-  imm stripU = loopU(m, &loops, &starts);
+  let stripU = loopU(m, &loops, &starts);
   stripUvs(&mut out, 2usize * nf, &stripU, !flip);
   if creaseInner > 0. or creaseOuter > 0. or creaseRim > 0. {
-    imm ch = out.addFloatChannel(EdgeDomain, "crease", 0.);
+    let ch = out.addFloatChannel(EdgeDomain, "crease", 0.);
     // A quad's corner k's incoming side: 0 and 2 the uprights, 1 the outer
     // shell's side and 3 the inner's ((b, a, a', b')), or the other way
     // round when flipped ((a, b, b', a'))
-    imm innerK = if flip {1usize;} else {3usize;};
-    imm outerK = if flip {3usize;} else {1usize;};
+    let innerK = if flip {1usize;} else {3usize;};
+    let outerK = if flip {3usize;} else {1usize;};
     j = 0usize;
     while j < loops.len() {
-      imm hs = out.faceHalfedges(u32.from(2usize * nf + j));
+      let hs = out.faceHalfedges(u32.from(2usize * nf + j));
       raiseCrease(&mut out, ch, *hs[innerK], creaseInner);
       raiseCrease(&mut out, ch, *hs[outerK], creaseOuter);
       raiseCrease(&mut out, ch, *hs[0usize], creaseRim);
@@ -168,35 +168,35 @@ pub fn solidifyWith(m &PolyMesh, thickness f32, offset f32, evenThickness bool, 
 // vertex (as the normal is), the cosine held to at least EvenCosMin; 1 for a
 // vertex on no face
 fn evenScales(m &PolyMesh, normals &List[Vec3]) List[f32] {
-  imm nv = m.positions.len();
-  mut sumW = List[f32].withCapacity(nv);
-  mut sumC = List[f32].withCapacity(nv);
-  mut v = 0usize;
+  let nv = m.positions.len();
+  var sumW = List[f32].withCapacity(nv);
+  var sumC = List[f32].withCapacity(nv);
+  var v = 0usize;
   while v < nv {
     sumW.push(0.);
     sumC.push(0.);
     v = v + 1usize;
   }
-  mut f = 0usize;
+  var f = 0usize;
   while f < m.fHalfedge.len() {
-    imm fnrm = m.faceNormal(u32.from(f));
-    imm hs = m.faceHalfedges(u32.from(f));
-    mut k = 0usize;
+    let fnrm = m.faceNormal(u32.from(f));
+    let hs = m.faceHalfedges(u32.from(f));
+    var k = 0usize;
     while k < hs.len() {
-      imm h = *hs[k];
-      imm c = usize.from(m.toVertex(h));
-      imm w = cornerAngleAt(m, h);
+      let h = *hs[k];
+      let c = usize.from(m.toVertex(h));
+      let w = cornerAngleAt(m, h);
       sumW.set(c, *sumW[c] + w);
       sumC.set(c, *sumC[c] + w * normals[c].dot(fnrm));
       k = k + 1usize;
     }
     f = f + 1usize;
   }
-  mut out = List[f32].withCapacity(nv);
+  var out = List[f32].withCapacity(nv);
   v = 0usize;
   while v < nv {
     if *sumW[v] > 0. {
-      mut cosine = *sumC[v] / *sumW[v];
+      var cosine = *sumC[v] / *sumW[v];
       if cosine < EvenCosMin { cosine = EvenCosMin; }
       out.push(1. / cosine);
     } else {
@@ -210,18 +210,18 @@ fn evenScales(m &PolyMesh, normals &List[Vec3]) List[f32] {
 // The angle of corner h's face at h's vertex, in radians; 0 when a side has
 // no length
 fn cornerAngleAt(m &PolyMesh, h u32) f32 {
-  imm p = *m.positions[usize.from(m.toVertex(h))];
-  imm e1 = *m.positions[usize.from(m.fromVertex(h))] - p;
-  imm e2 = *m.positions[usize.from(m.toVertex(m.next(h)))] - p;
-  imm l = e1.length() * e2.length();
+  let p = *m.positions[usize.from(m.toVertex(h))];
+  let e1 = *m.positions[usize.from(m.fromVertex(h))] - p;
+  let e2 = *m.positions[usize.from(m.toVertex(m.next(h)))] - p;
+  let l = e1.length() * e2.length();
   if l <= 0. { return 0.; }
   acos(clampf(e1.dot(e2) / l, -1., 1.));
 }
 
 // A list of n 1s
 fn ones(n usize) List[f32] {
-  mut out = List[f32].withCapacity(n);
-  mut i = 0usize;
+  var out = List[f32].withCapacity(n);
+  var i = 0usize;
   while i < n {
     out.push(1.);
     i = i + 1usize;
@@ -231,6 +231,6 @@ fn ones(n usize) List[f32] {
 
 // The edge of half-edge h given at least 'value' in channel ch
 fn raiseCrease(out &mut PolyMesh, ch u32, h u32, value f32) {
-  imm e = h / 2u32;
+  let e = h / 2u32;
   if out.float(ch, e) < value { out.setFloat(ch, e, value); }
 }

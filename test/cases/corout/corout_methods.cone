@@ -26,7 +26,7 @@ struct Tree {
 
   // The recursion is a method with a parameter of its own besides the receiver
   fn from(self &, at usize) yields &Node {
-    imm n = &self.nodes[at];
+    let n = &self.nodes[at];
     if n.left >= 0i64 { yield each self.from(usize.from(n.left)); }
     yield n;
     if n.right >= 0i64 { yield each self.from(usize.from(n.right)); }
@@ -43,7 +43,7 @@ struct Counter {
   pub n i64;
 
   fn up(self &mut, k i64) yields i64 {
-    mut i = 0i64;
+    var i = 0i64;
     while i < k {
       self.n = self.n + 1i64;
       yield self.n;
@@ -56,7 +56,7 @@ struct Counter {
 struct Acc {
   pub total i64;
 
-  fn running(mut self, step i64) yields i64 {
+  fn running(var self, step i64) yields i64 {
     yield self.total;
     self.total = self.total + step;
     yield self.total;
@@ -71,7 +71,7 @@ struct Slots {
   pub vals Array[i64, 3];
 
   fn slots(self &mut) yields &mut i64 {
-    mut i = 0usize;
+    var i = 0usize;
     while i < 3usize {
       yield &mut self.vals[i];
       i = i + 1usize;
@@ -108,7 +108,7 @@ struct Gauge {
   pub step i64;
 
   fn sweep(self &, step i64) yields i64 {
-    mut i = lo;
+    var i = lo;
     while i <= hi {
       yield i;
       i = i + step;
@@ -127,7 +127,7 @@ struct Span {
   pub lo i64;
 
   fn range(from i64, to i64) yields i64 {
-    mut i = from;
+    var i = from;
     while i < to {
       yield i;
       i = i + 1i64;
@@ -136,7 +136,7 @@ struct Span {
 }
 
 fn main() {
-  imm tree = new Tree([
+  let tree = new Tree([
     new Node(40i64, 1i64, 2i64),
     new Node(20i64, 3i64, 4i64),
     new Node(60i64, 5i64, 6i64),
@@ -155,13 +155,13 @@ fn main() {
   printStr("\n");
 
   // Two generators over one receiver at once: both borrow it, neither writes
-  mut g1 = tree.walk();
-  mut g2 = tree.vals();
-  mut k = 0;
+  var g1 = tree.walk();
+  var g2 = tree.vals();
+  var k = 0;
   while k < 3 {
-    match g1.next() { case imm v Some { printInt(v.val); } case is None { printStr("-"); } }
+    match g1.next() { case let v Some { printInt(v.val); } case is None { printStr("-"); } }
     printStr("/");
-    match g2.next() { case imm v Some { printInt(v); } case is None { printStr("-"); } }
+    match g2.next() { case let v Some { printInt(v); } case is None { printStr("-"); } }
     printStr(" ");
     k = k + 1;
   }
@@ -169,7 +169,7 @@ fn main() {
 
   // A mutable receiver: the counter is written through, and is its own
   // again once the generator is gone
-  mut c = new Counter(10i64);
+  var c = new Counter(10i64);
   each v in c.up(3i64) { printInt(v); printStr(" "); }
   printInt(c.n);
   printStr("\n");
@@ -180,21 +180,21 @@ fn main() {
   // A generator holds its receiver mutably as an alias loan: the receiver is written
   // and read by name while the generator may still be resumed (5 read), and the
   // generator goes on from the new value (6, 7)
-  mut c2 = new Counter(1i64);
-  mut g = c2.up(2i64);
+  var c2 = new Counter(1i64);
+  var g = c2.up(2i64);
   c2.n = 5i64;
-  imm seen = c2.n;
+  let seen = c2.n;
   printInt(seen);
   printStr(" ");
-  match g.next() { case imm v Some { printInt(v); } case is None { printStr("-"); } }
+  match g.next() { case let v Some { printInt(v); } case is None { printStr("-"); } }
   printStr(" ");
-  match g.next() { case imm v Some { printInt(v); } case is None { printStr("-"); } }
+  match g.next() { case let v Some { printInt(v); } case is None { printStr("-"); } }
   printStr(" ");
   printInt(c2.n);
   printStr("\n");
 
   // A receiver by value: a copy of it is walked, and the original is untouched
-  imm acc = new Acc(100i64);
+  let acc = new Acc(100i64);
   each v in acc.running(5i64) { printInt(v); printStr(" "); }
   printInt(acc.total);
   printStr("\n");
@@ -203,14 +203,14 @@ fn main() {
   printStr("\n");
 
   // 'each' walks a value whose type has the generator 'iter'; the methods by name
-  imm trio = new Trio(7i64, 8i64, 9i64);
+  let trio = new Trio(7i64, 8i64, 9i64);
   each v in trio { printInt(v); printStr(" "); }
   each v in trio.backward() { printInt(v); printStr(" "); }
   each v in trio.forward() { printInt(v); printStr(" "); }
   printStr("\n");
 
   // Writing through each item borrowed from the receiver
-  mut slots = new Slots([1i64, 2i64, 3i64]);
+  var slots = new Slots([1i64, 2i64, 3i64]);
   each p in slots.slots() { *p = *p * 10i64; }
   printInt(slots.vals[0]); printStr(" "); printInt(slots.vals[1]); printStr(" "); printInt(slots.vals[2]);
   printStr("\n");
@@ -218,7 +218,7 @@ fn main() {
   // Bare field names: the parameter 'step' (3) shadows the field (4) in sweep, so
   // 2 5 8 (11 is past 10); ticks reads the field, 2 + 4 = 6, writes it, and hands
   // out 6 and 10 - 6 = 4, leaving 6 in the gauge
-  mut gauge = new Gauge(2i64, 10i64, 4i64);
+  var gauge = new Gauge(2i64, 10i64, 4i64);
   each v in gauge.sweep(3i64) { printInt(v); printStr(" "); }
   each v in gauge.ticks() { printInt(v); printStr(" "); }
   printInt(gauge.lo);

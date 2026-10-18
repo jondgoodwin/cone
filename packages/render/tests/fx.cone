@@ -58,10 +58,10 @@ const SIDEZ = 128usize;
 // If FX_SHOTS names a folder, the 128 x 128 image at 'p' is written there as
 // 'name'.bmp, to be looked at
 fn shot(p *u8, name &str) {
-  imm folder = libc.getenv("FX_SHOTS");
+  let folder = libc.getenv("FX_SHOTS");
   if (folder as usize) == 0usize { return; }
-  mut path = String.empty();
-  mut i = 0usize;
+  var path = String.empty();
+  var i = 0usize;
   while *(folder + i) != 0u8 {
     path.appendByte(*(folder + i));
     i = i + 1usize;
@@ -69,14 +69,14 @@ fn shot(p *u8, name &str) {
   path <- "/";
   path <- name;
   path <- ".bmp";
-  imm image = Image.fromTexels(p, i32.from(SIDE), i32.from(SIDE), false);
+  let image = Image.fromTexels(p, i32.from(SIDE), i32.from(SIDE), false);
   image.save(&filepath.Path.from(path.view()));
 }
 
 fn absf(x f32) f32 { if x < 0. { 0. - x; } else { x; }; }
 
 fn scatter(n u32) f32 {
-  mut x = n * 747796405u32 + 2891336453u32;
+  var x = n * 747796405u32 + 2891336453u32;
   x = ((x >> ((x >> 28u32) + 4u32)) ^ x) * 277803737u32;
   x = (x >> 22u32) ^ x;
   f32.from(x & 0xFFFFu32) / 65535.;
@@ -84,15 +84,15 @@ fn scatter(n u32) f32 {
 
 // A leaf: a green disc, clear outside it
 fn leafImage() Image {
-  mut img = new Image(64, 64, 4, List[u8].empty());
-  mut y = 0;
+  var img = new Image(64, 64, 4, List[u8].empty());
+  var y = 0;
   while y < 64 {
-    mut x = 0;
+    var x = 0;
     while x < 64 {
-      imm dx = (f32.from(x) - 31.5) / 32.;
-      imm dy = (f32.from(y) - 31.5) / 32.;
-      imm inside = dx * dx + dy * dy < 0.9;
-      imm shade = 0.75 + 0.25 * scatter(u32.from(x * 64 + y));
+      let dx = (f32.from(x) - 31.5) / 32.;
+      let dy = (f32.from(y) - 31.5) / 32.;
+      let inside = dx * dx + dy * dy < 0.9;
+      let shade = 0.75 + 0.25 * scatter(u32.from(x * 64 + y));
       img.pixels.push(u8.from(40. * shade));
       img.pixels.push(u8.from(150. * shade));
       img.pixels.push(u8.from(30. * shade));
@@ -105,14 +105,14 @@ fn leafImage() Image {
 }
 
 fn preference() u32 {
-  imm env = libc.getenv("GPU_POWER_PREFERENCE");
+  let env = libc.getenv("GPU_POWER_PREFERENCE");
   if (env as usize) != 0usize and libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 { return POWER_PREFERENCE_LOW_POWER; }
   POWER_PREFERENCE_HIGH_PERFORMANCE;
 }
 
 // sRGB's decoding of a byte, to linear light
 fn linearOf(byte u8) f32 {
-  imm v = f32.from(byte) / 255.;
+  let v = f32.from(byte) / 255.;
   if v <= 0.04045 { return v / 12.92; }
   libc.powf((v + 0.055) / 1.055, 2.4);
 }
@@ -130,20 +130,20 @@ struct Rig {
 }
 
 fn makeRig(device &mut Device) Rig {
-  imm targetDesc = new TextureDescriptor(SIDE, SIDE, TEXTURE_FORMAT_RGBA8_UNORM_SRGB,
+  let targetDesc = new TextureDescriptor(SIDE, SIDE, TEXTURE_FORMAT_RGBA8_UNORM_SRGB,
     TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
-  mut color = device.createTexture(&targetDesc);
-  mut readback = device.createBuffer(u64.from(SIDE) * u64.from(SIDE) * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
-  mut renderer = Renderer.create(device, TEXTURE_FORMAT_RGBA16_FLOAT, TEXTURE_FORMAT_DEPTH32_FLOAT);
-  mut post = Post.create(device, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, SIDE, SIDE);
+  var color = device.createTexture(&targetDesc);
+  var readback = device.createBuffer(u64.from(SIDE) * u64.from(SIDE) * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  var renderer = Renderer.create(device, TEXTURE_FORMAT_RGBA16_FLOAT, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  var post = Post.create(device, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, SIDE, SIDE);
   require(renderer.isValid() and post.isValid(), "a renderer and a post");
-  mut fx = ImageFx.create(device, &renderer, &mut post);
+  var fx = ImageFx.create(device, &renderer, &mut post);
   require(fx.isValid(), "an image-quality object");
   new Rig(renderer, post, fx, color, readback);
 }
 
 fn drawScene(device &mut Device, rig &mut Rig, camera &Camera, light &Light, list &DrawList) {
-  mut encoder = device.createCommandEncoder();
+  var encoder = device.createCommandEncoder();
   rig.fx.render(device, &mut encoder, &mut rig.renderer, &mut rig.post, camera, light, list, &rig.color);
   encoder.copyTextureToBuffer(&rig.color, &rig.readback);
   device.queue.submit(encoder.finish());
@@ -153,7 +153,7 @@ fn drawScene(device &mut Device, rig &mut Rig, camera &Camera, light &Light, lis
 
 // The same scene drawn in the two halves a program may draw between
 fn drawSplit(device &mut Device, rig &mut Rig, camera &Camera, light &Light, list &DrawList) {
-  mut encoder = device.createCommandEncoder();
+  var encoder = device.createCommandEncoder();
   rig.fx.renderScene(device, &mut encoder, &mut rig.renderer, &mut rig.post, camera, light, list);
   rig.fx.renderFinish(device, &mut encoder, &mut rig.renderer, &mut rig.post, list, &rig.color);
   encoder.copyTextureToBuffer(&rig.color, &rig.readback);
@@ -165,10 +165,10 @@ fn drawSplit(device &mut Device, rig &mut Rig, camera &Camera, light &Light, lis
 // The same scene drawn by the plain path: the renderer and Post, the camera
 // jittered by (jx, jy) pixels
 fn drawPlain(device &mut Device, rig &mut Rig, camera &Camera, light &Light, list &DrawList, jx f32, jy f32) {
-  mut jittered = *camera;
+  var jittered = *camera;
   jittered.jitterX = 2. * jx / f32.from(SIDE);
   jittered.jitterY = -2. * jy / f32.from(SIDE);
-  mut encoder = device.createCommandEncoder();
+  var encoder = device.createCommandEncoder();
   rig.renderer.render(device, &mut encoder, &rig.post.hdr, &rig.fx.depth, &jittered, light, list);
   rig.post.apply(&mut encoder, &rig.color);
   encoder.copyTextureToBuffer(&rig.color, &rig.readback);
@@ -178,8 +178,8 @@ fn drawPlain(device &mut Device, rig &mut Rig, camera &Camera, light &Light, lis
 }
 
 fn hashOf(p *u8) u64 {
-  mut h = 14695981039346656037u64;
-  mut i = 0usize;
+  var h = 14695981039346656037u64;
+  var i = 0usize;
   while i < usize.from(SIDE * SIDE * 4u32) {
     h = (h ^ u64.from(*(p + i))) * 1099511628211u64;
     i = i + 1usize;
@@ -189,10 +189,10 @@ fn hashOf(p *u8) u64 {
 
 // The root mean square difference of two images of linear light
 fn rms(a &List[f32], b &List[f32]) f32 {
-  mut sum = 0.;
-  mut i = 0usize;
+  var sum = 0.;
+  var i = 0usize;
   while i < a.len() {
-    imm d = *a[i] - *b[i];
+    let d = *a[i] - *b[i];
     sum = sum + d * d;
     i = i + 1usize;
   }
@@ -201,10 +201,10 @@ fn rms(a &List[f32], b &List[f32]) f32 {
 
 // The 128 x 128 image at 'p' as linear light, three channels a pixel
 fn grab(p *u8) List[f32] {
-  mut out = List[f32].withCapacity(SIDEZ * SIDEZ * 3usize);
-  mut y = 0usize;
+  var out = List[f32].withCapacity(SIDEZ * SIDEZ * 3usize);
+  var y = 0usize;
   while y < SIDEZ {
-    mut x = 0usize;
+    var x = 0usize;
     while x < SIDEZ {
       out.push(px(p, x, y, 0usize));
       out.push(px(p, x, y, 1usize));
@@ -219,34 +219,34 @@ fn grab(p *u8) List[f32] {
 // ---- 1. Everything off ----
 
 fn identity(device &mut Device, name &String) {
-  mut rig = makeRig(device);
-  imm p = rig.readback.mappedRange();
-  mut planeMesh = Mesh.plane(1, 1.);
-  imm plane = rig.renderer.addMesh(device, &planeMesh);
-  imm sphereMesh = Mesh.sphere(1., 20);
-  imm sphere = rig.renderer.addMesh(device, &sphereMesh);
-  imm groundM = rig.renderer.addPbrMaterial(device, &PbrMaterial.standard(new Color(0.3, 0.3, 0.3, 1.), 0., 0.9));
-  imm brassM = rig.renderer.addPbrMaterial(device, &PbrMaterial.standard(new Color(0.8, 0.55, 0.2, 1.), 1., 0.35));
-  imm leafImg = leafImage();
-  imm leafTex = rig.renderer.addCutoutTexture(device, &leafImg, 0.5);
-  mut leafPbr = PbrMaterial.standard(new Color(1., 1., 1., 1.), 0., 0.8).cutOut(0.5);
+  var rig = makeRig(device);
+  let p = rig.readback.mappedRange();
+  var planeMesh = Mesh.plane(1, 1.);
+  let plane = rig.renderer.addMesh(device, &planeMesh);
+  let sphereMesh = Mesh.sphere(1., 20);
+  let sphere = rig.renderer.addMesh(device, &sphereMesh);
+  let groundM = rig.renderer.addPbrMaterial(device, &PbrMaterial.standard(new Color(0.3, 0.3, 0.3, 1.), 0., 0.9));
+  let brassM = rig.renderer.addPbrMaterial(device, &PbrMaterial.standard(new Color(0.8, 0.55, 0.2, 1.), 1., 0.35));
+  let leafImg = leafImage();
+  let leafTex = rig.renderer.addCutoutTexture(device, &leafImg, 0.5);
+  var leafPbr = PbrMaterial.standard(new Color(1., 1., 1., 1.), 0., 0.8).cutOut(0.5);
   leafPbr.texture = leafTex;
-  imm leafM = rig.renderer.addPbrMaterial(device, &leafPbr);
-  mut list = DrawList.empty();
+  let leafM = rig.renderer.addPbrMaterial(device, &leafPbr);
+  var list = DrawList.empty();
   list.add(plane, groundM, Mat4.fromTrs(new Vec3(0., 0., 0.), Quat.identity(), new Vec3(30., 1., 30.)));
   list.add(sphere, brassM, Mat4.fromTrs(new Vec3(0., 1., 0.), Quat.identity(), new Vec3(1., 1., 1.)));
   list.add(plane, leafM, Mat4.fromTrs(new Vec3(1.5, 1.2, 0.5), Quat.angleAxis(1.2, new Vec3(1., 0., 0.)), new Vec3(1., 1., 1.)));
-  imm sky = Sky.dusk(radians(28.), radians(235.));
+  let sky = Sky.dusk(radians(28.), radians(235.));
   rig.renderer.setSky(device, &sky);
-  imm light = sky.sunLight(new Color(3.2, 2.9, 2.4, 1.), new Color(0.05, 0.06, 0.08, 1.));
-  mut camera = Camera.make();
+  let light = sky.sunLight(new Color(3.2, 2.9, 2.4, 1.), new Color(0.05, 0.06, 0.08, 1.));
+  var camera = Camera.make();
   camera.fov = radians(50.);
   camera.lookAt(new Vec3(0., 3., 6.), new Vec3(0., 1., 0.), new Vec3(0., 1., 0.));
   camera.background = new Color(0.4, 0.5, 0.7, 1.);
   drawScene(device, &mut rig, &camera, &light, &list);
-  imm hash = hashOf(p);
+  let hash = hashOf(p);
   eprint <- "measured hash: "; eprint <- hash; eprint <- "\n";
-  mut golden = 0u64;
+  var golden = 0u64;
   if name.view() == "NVIDIA GeForce RTX 4060 Laptop GPU" { golden = 15363336798863314105u64; }
   if name.view() == "Intel(R) UHD Graphics 770" { golden = 8445244809760690128u64; }
   if golden != 0u64 { expectUInt(hash, golden, "everything off: the bytes the plain path drew before"); }
@@ -268,24 +268,24 @@ struct Flat {
 fn flatScene(device &mut Device, rig &mut Rig) Flat {
   rig.post.toneMapper = TONE_MAP_NONE;
   rig.post.bloom = 0.;
-  mut sphereMesh = Mesh.sphere(1., 24);
-  imm sphere = rig.renderer.addMesh(device, &sphereMesh);
-  mut planeMesh = Mesh.plane(1, 1.);
-  imm plane = rig.renderer.addMesh(device, &planeMesh);
-  imm discM = rig.renderer.addMaterial(device, &Material.plain(new Color(0.9, 0.5, 0.1, 1.)));
-  imm leafImg = leafImage();
-  imm leafTex = rig.renderer.addCutoutTexture(device, &leafImg, 0.5);
-  mut leafLit = Material.plain(new Color(1., 1., 1., 1.));
+  var sphereMesh = Mesh.sphere(1., 24);
+  let sphere = rig.renderer.addMesh(device, &sphereMesh);
+  var planeMesh = Mesh.plane(1, 1.);
+  let plane = rig.renderer.addMesh(device, &planeMesh);
+  let discM = rig.renderer.addMaterial(device, &Material.plain(new Color(0.9, 0.5, 0.1, 1.)));
+  let leafImg = leafImage();
+  let leafTex = rig.renderer.addCutoutTexture(device, &leafImg, 0.5);
+  var leafLit = Material.plain(new Color(1., 1., 1., 1.));
   leafLit.texture = leafTex;
   leafLit.alphaMode = ALPHA_MASK;
   leafLit.alphaCutoff = 0.5;
-  imm leafM = rig.renderer.addMaterial(device, &leafLit);
-  mut list = DrawList.empty();
+  let leafM = rig.renderer.addMaterial(device, &leafLit);
+  var list = DrawList.empty();
   list.add(sphere, discM, Mat4.fromTrs(new Vec3(-0.9, 0.3, 0.), Quat.identity(), new Vec3(1.3, 1.3, 1.3)));
   list.add(plane, leafM, Mat4.fromTrs(new Vec3(1.4, -0.2, 0.), Quat.angleAxis(1.5707964, new Vec3(1., 0., 0.)) * Quat.angleAxis(0.5, new Vec3(0., 1., 0.)),
     new Vec3(1.1, 1., 1.1)));
-  imm light = Light.directional(new Vec3(0., -1., 0.), new Color(0., 0., 0., 1.), new Color(1., 1., 1., 1.));
-  mut camera = Camera.make();
+  let light = Light.directional(new Vec3(0., -1., 0.), new Color(0., 0., 0., 1.), new Color(1., 1., 1., 1.));
+  var camera = Camera.make();
   camera.fov = radians(40.);
   camera.lookAt(new Vec3(0., 0., 6.), new Vec3(0., 0., 0.), new Vec3(0., 1., 0.));
   camera.background = new Color(0., 0., 0.05, 1.);
@@ -293,24 +293,24 @@ fn flatScene(device &mut Device, rig &mut Rig) Flat {
 }
 
 fn antialiasing(device &mut Device) {
-  mut rig = makeRig(device);
-  imm p = rig.readback.mappedRange();
-  imm scene = flatScene(device, &mut rig);
+  var rig = makeRig(device);
+  let p = rig.readback.mappedRange();
+  let scene = flatScene(device, &mut rig);
   // The unjittered picture, and the supersampled reference
   drawPlain(device, &mut rig, &scene.camera, &scene.light, &scene.list, 0., 0.);
-  imm aliased = grab(p);
-  mut sum = List[f32].empty();
-  mut i = 0u32;
+  let aliased = grab(p);
+  var sum = List[f32].empty();
+  var i = 0u32;
   while i < 64u32 {
-    mut jx = 0.;
-    mut jy = 0.;
+    var jx = 0.;
+    var jy = 0.;
     jitterOf(i, 64u32, 1., &mut jx, &mut jy);
     drawPlain(device, &mut rig, &scene.camera, &scene.light, &scene.list, jx, jy);
-    imm g = grab(p);
+    let g = grab(p);
     if i == 0u32 {
       sum = g;
     } else {
-      mut k = 0usize;
+      var k = 0usize;
       while k < sum.len() {
         sum.set(k, *sum[k] + *g[k]);
         k = k + 1usize;
@@ -318,42 +318,42 @@ fn antialiasing(device &mut Device) {
     }
     i = i + 1u32;
   }
-  mut reference = sum;
-  mut k = 0usize;
+  var reference = sum;
+  var k = 0usize;
   while k < reference.len() {
     reference.set(k, *reference[k] / 64.);
     k = k + 1usize;
   }
-  imm aliasedError = rms(&aliased, &reference);
+  let aliasedError = rms(&aliased, &reference);
   eprint <- "measured: no anti-aliasing, error against 64 samples "; eprint <- aliasedError; eprint <- "\n";
   expect(aliasedError > 0.005, "the unjittered picture is aliased (it differs from the supersample)");
 
   // FXAA
-  mut s = FxSettings.off();
+  var s = FxSettings.off();
   s.aa = AA_FXAA;
   rig.fx.configure(&s);
   drawScene(device, &mut rig, &scene.camera, &scene.light, &scene.list);
-  imm fxaaError = rms(&grab(p), &reference);
+  let fxaaError = rms(&grab(p), &reference);
   eprint <- "measured: FXAA error "; eprint <- fxaaError; eprint <- "\n";
   expect(fxaaError < aliasedError * 0.8, "FXAA brings the edges nearer the supersample");
 
   // Temporal AA, still camera, 40 frames
-  mut t = FxSettings.off();
+  var t = FxSettings.off();
   t.aa = AA_TAA;
   t.taa.sharpness = 0.;
   rig.fx.configure(&t);
-  mut f = 0u32;
+  var f = 0u32;
   while f < 40u32 {
     drawScene(device, &mut rig, &scene.camera, &scene.light, &scene.list);
     f = f + 1u32;
   }
-  imm taaError = rms(&grab(p), &reference);
+  let taaError = rms(&grab(p), &reference);
   eprint <- "measured: TAA error after 40 frames "; eprint <- taaError; eprint <- "\n";
   expect(taaError < aliasedError * 0.3, "temporal AA converges to within 0.3 of the aliased error of the supersample");
   expect(taaError < 0.006, "and to a small error");
   // Averaging the light as it is (no weighting by brightness) is nearer
   // still to a supersample of light
-  mut u = t;
+  var u = t;
   u.taa.hdrWeight = 0.;
   rig.fx.configure(&u);
   rig.fx.cutHistory();
@@ -362,18 +362,18 @@ fn antialiasing(device &mut Device) {
     drawScene(device, &mut rig, &scene.camera, &scene.light, &scene.list);
     f = f + 1u32;
   }
-  imm linearError = rms(&grab(p), &reference);
+  let linearError = rms(&grab(p), &reference);
   eprint <- "measured: TAA, unweighted, error "; eprint <- linearError; eprint <- "\n";
   expect(linearError < aliasedError * 0.25, "unweighted, temporal AA is within a quarter of the aliased error");
 }
 
 // A half float's value
 fn halfToFloat(h u16) f32 {
-  imm bits = u32.from(h);
-  imm exponent = (bits >> 10u32) & 31u32;
-  imm sign = if (bits & 0x8000u32) != 0u32 { -1.; } else { 1.; };
+  let bits = u32.from(h);
+  let exponent = (bits >> 10u32) & 31u32;
+  let sign = if (bits & 0x8000u32) != 0u32 { -1.; } else { 1.; };
   if exponent == 0u32 { return 0.; }
-  imm f = (((bits & 0x3FFu32) << 13u32) | ((exponent + 112u32) << 23u32));
+  let f = (((bits & 0x3FFu32) << 13u32) | ((exponent + 112u32) << 23u32));
   sign * (f as f32);
 }
 
@@ -383,54 +383,54 @@ fn halfToFloat(h u16) f32 {
 // its model matrix) or skinned (placed by its one bone), at a position and,
 // for the motion list, where it was
 fn movingList(sphere MeshHandle, skinned MeshHandle, material MaterialHandle, rigid bool, x f32) DrawList {
-  mut list = DrawList.empty();
+  var list = DrawList.empty();
   if rigid {
     list.add(sphere, material, Mat4.fromTranslation(new Vec3(x, 0., 0.)));
   } else {
-    imm pose = [Mat4.fromTranslation(new Vec3(x, 0., 0.))];
+    let pose = [Mat4.fromTranslation(new Vec3(x, 0., 0.))];
     list.addSkinned(skinned, material, Mat4.identity(), &pose);
   }
   list;
 }
 
 fn movingObjects(device &mut Device) {
-  mut rig = makeRig(device);
-  imm p = rig.readback.mappedRange();
+  var rig = makeRig(device);
+  let p = rig.readback.mappedRange();
   rig.post.toneMapper = TONE_MAP_NONE;
   rig.post.bloom = 0.;
-  mut sphereMesh = Mesh.sphere(1., 24);
-  imm sphere = rig.renderer.addMesh(device, &sphereMesh);
-  mut skin = Skin.empty();
-  mut v = 0usize;
+  var sphereMesh = Mesh.sphere(1., 24);
+  let sphere = rig.renderer.addMesh(device, &sphereMesh);
+  var skin = Skin.empty();
+  var v = 0usize;
   while v < sphereMesh.positions.len() {
     skin.push(0u32, 0u32, 0u32, 0u32, 1., 0., 0., 0.);
     v = v + 1usize;
   }
-  imm skinnedSphere = rig.renderer.addSkinnedMesh(device, &sphereMesh, &skin);
-  imm discM = rig.renderer.addMaterial(device, &Material.plain(new Color(0.9, 0.5, 0.1, 1.)));
-  imm light = Light.directional(new Vec3(0., -1., 0.), new Color(0., 0., 0., 1.), new Color(1., 1., 1., 1.));
-  mut camera = Camera.make();
+  let skinnedSphere = rig.renderer.addSkinnedMesh(device, &sphereMesh, &skin);
+  let discM = rig.renderer.addMaterial(device, &Material.plain(new Color(0.9, 0.5, 0.1, 1.)));
+  let light = Light.directional(new Vec3(0., -1., 0.), new Color(0., 0., 0., 1.), new Color(1., 1., 1., 1.));
+  var camera = Camera.make();
   camera.fov = radians(40.);
   camera.lookAt(new Vec3(0., 0., 6.), new Vec3(0., 0., 0.), new Vec3(0., 1., 0.));
   camera.background = new Color(0., 0., 0.05, 1.);
   // Where the sphere is on frame f: 1.5 pixels a frame (a pixel is 0.034 at the sphere's distance)
-  imm speed = 0.1;
-  imm frames = 16u32;
-  imm last = -1. + speed * f32.from(frames - 1u32);
+  let speed = 0.1;
+  let frames = 16u32;
+  let last = -1. + speed * f32.from(frames - 1u32);
   // The supersample of the last frame's picture
-  mut reference = List[f32].empty();
+  var reference = List[f32].empty();
   {
-    imm still = movingList(sphere, skinnedSphere, discM, true, last);
-    mut sum = List[f32].empty();
-    mut i = 0u32;
+    let still = movingList(sphere, skinnedSphere, discM, true, last);
+    var sum = List[f32].empty();
+    var i = 0u32;
     while i < 64u32 {
-      mut jx = 0.;
-      mut jy = 0.;
+      var jx = 0.;
+      var jy = 0.;
       jitterOf(i, 64u32, 1., &mut jx, &mut jy);
       drawPlain(device, &mut rig, &camera, &light, &still, jx, jy);
-      imm g = grab(p);
+      let g = grab(p);
       if i == 0u32 { sum = g; } else {
-        mut k = 0usize;
+        var k = 0usize;
         while k < sum.len() {
           sum.set(k, *sum[k] + *g[k]);
           k = k + 1usize;
@@ -438,33 +438,33 @@ fn movingObjects(device &mut Device) {
       }
       i = i + 1u32;
     }
-    mut k = 0usize;
+    var k = 0usize;
     while k < sum.len() {
       sum.set(k, *sum[k] / 64.);
       k = k + 1usize;
     }
     reference = sum;
   }
-  mut s = FxSettings.off();
+  var s = FxSettings.off();
   s.aa = AA_TAA;
   s.taa.sharpness = 0.;
   rig.fx.configure(&s);
   // Four runs of the same motion: rigid and skinned, each told it moves or not
-  mut errors = List[f32].empty();
-  mut run = 0usize;
+  var errors = List[f32].empty();
+  var run = 0usize;
   while run < 4usize {
-    imm rigid = run < 2usize;
-    imm told = run % 2usize == 0usize;
+    let rigid = run < 2usize;
+    let told = run % 2usize == 0usize;
     rig.fx.cutHistory();
-    mut f = 0u32;
+    var f = 0u32;
     while f < frames {
-      imm x = -1. + speed * f32.from(f);
-      imm list = movingList(sphere, skinnedSphere, discM, rigid, x);
+      let x = -1. + speed * f32.from(f);
+      let list = movingList(sphere, skinnedSphere, discM, rigid, x);
       if told and f > 0u32 {
         if rigid {
           rig.fx.motion.add(0usize, Mat4.fromTranslation(new Vec3(x - speed, 0., 0.)));
         } else {
-          imm before = [Mat4.fromTranslation(new Vec3(x - speed, 0., 0.))];
+          let before = [Mat4.fromTranslation(new Vec3(x - speed, 0., 0.))];
           rig.fx.motion.addPosed(0usize, Mat4.identity(), &before);
         }
       }
@@ -473,14 +473,14 @@ fn movingObjects(device &mut Device) {
     }
     errors.push(rms(&grab(p), &reference));
     if run == 0usize {
-      mut vback = device.createBuffer(u64.from(SIDE) * u64.from(SIDE) * 8u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
-      mut encoder = device.createCommandEncoder();
+      var vback = device.createBuffer(u64.from(SIDE) * u64.from(SIDE) * 8u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+      var encoder = device.createCommandEncoder();
       encoder.copyTextureToBuffer(&rig.fx.taa.velocity, &vback);
       device.queue.submit(encoder.finish());
       device.endFrame();
       device.waitIdle();
-      imm vp = vback.mappedRange() as *u16;
-      imm at = (64usize * SIDEZ + 80usize) * 4usize;
+      let vp = vback.mappedRange() as *u16;
+      let at = (64usize * SIDEZ + 80usize) * 4usize;
       eprint <- "measured: velocity at the sphere "; eprint <- halfToFloat(*(vp + at)); eprint <- ", "; eprint <- halfToFloat(*(vp + at + 1usize));
       eprint <- ", marker "; eprint <- halfToFloat(*(vp + at + 3usize)); eprint <- "\n";
       // 0.1 along x at the sphere's near side (5 away, the view 2 x 5 tan 20 = 3.64 wide): 0.1 / 3.64
@@ -491,10 +491,10 @@ fn movingObjects(device &mut Device) {
     if run == 1usize { shot(p, "moving-rigid-not-told"); }
     run = run + 1usize;
   }
-  imm rigidTold = *errors[0usize];
-  imm rigidNot = *errors[1usize];
-  imm skinnedTold = *errors[2usize];
-  imm skinnedNot = *errors[3usize];
+  let rigidTold = *errors[0usize];
+  let rigidNot = *errors[1usize];
+  let skinnedTold = *errors[2usize];
+  let skinnedNot = *errors[3usize];
   eprint <- "measured: moving sphere error against the supersample: rigid told "; eprint <- rigidTold; eprint <- ", rigid not told "; eprint <- rigidNot;
   eprint <- ", skinned told "; eprint <- skinnedTold; eprint <- ", skinned not told "; eprint <- skinnedNot; eprint <- "\n";
   expect(rig.fx.velocityDrawn == false, "nothing is drawn for the velocity of a frame that names nothing");
@@ -506,27 +506,27 @@ fn movingObjects(device &mut Device) {
 
 // The four floats of the exposure buffer after a frame
 fn readExposure(device &mut Device, rig &mut Rig, back &Buffer) Array[f32, 4] {
-  mut encoder = device.createCommandEncoder();
+  var encoder = device.createCommandEncoder();
   encoder.copyBufferToBuffer(&rig.post.exposureBuffer, 0u64, back, 0u64, 16u64);
   device.queue.submit(encoder.finish());
   device.endFrame();
   device.waitIdle();
-  imm q = back.mappedRange() as *f32;
+  let q = back.mappedRange() as *f32;
   [*q, *(q + 1usize), *(q + 2usize), *(q + 3usize)];
 }
 
 // Frames of the one luminance 'level' (the camera's background, nothing
 // drawn), settled for 'frames' frames of 'seconds' each; the exposure buffer
 fn settle(device &mut Device, rig &mut Rig, back &Buffer, level f32, s &ExposureSettings, frames u32, seconds f32) Array[f32, 4] {
-  mut camera = Camera.make();
+  var camera = Camera.make();
   camera.background = new Color(level, level, level, 1.);
-  imm light = Light.directional(new Vec3(0., -1., 0.), new Color(0., 0., 0., 1.), new Color(0., 0., 0., 1.));
-  imm list = DrawList.empty();
-  mut settings = FxSettings.off();
+  let light = Light.directional(new Vec3(0., -1., 0.), new Color(0., 0., 0., 1.), new Color(0., 0., 0., 1.));
+  let list = DrawList.empty();
+  var settings = FxSettings.off();
   settings.exposure = *s;
   rig.fx.configure(&settings);
   rig.fx.frameTime = seconds;
-  mut f = 0u32;
+  var f = 0u32;
   while f < frames {
     drawScene(device, rig, &camera, &light, &list);
     f = f + 1u32;
@@ -536,9 +536,9 @@ fn settle(device &mut Device, rig &mut Rig, back &Buffer, level f32, s &Exposure
 
 // The pixel (as x and y) a world point lands on, seen by 'camera'
 fn pixelOf(camera &Camera, world Vec3, x &mut usize, y &mut usize) {
-  imm clip = (camera.projectionMatrix(1.) * camera.viewMatrix()) * new Vec4(world.x, world.y, world.z, 1.);
-  imm nx = clip.x / clip.w;
-  imm ny = clip.y / clip.w;
+  let clip = (camera.projectionMatrix(1.) * camera.viewMatrix()) * new Vec4(world.x, world.y, world.z, 1.);
+  let nx = clip.x / clip.w;
+  let ny = clip.y / clip.w;
   *x = usize.from(u32.from((nx * 0.5 + 0.5) * f32.from(SIDE)));
   *y = usize.from(u32.from((0.5 - ny * 0.5) * f32.from(SIDE)));
 }
@@ -546,71 +546,71 @@ fn pixelOf(camera &Camera, world Vec3, x &mut usize, y &mut usize) {
 // ---- 6. Ambient occlusion ----
 
 fn ambientOcclusion(device &mut Device) {
-  mut rig = makeRig(device);
-  imm p = rig.readback.mappedRange();
+  var rig = makeRig(device);
+  let p = rig.readback.mappedRange();
   rig.post.toneMapper = TONE_MAP_NONE;
   rig.post.bloom = 0.;
-  mut planeMesh = Mesh.plane(1, 1.);
-  imm plane = rig.renderer.addMesh(device, &planeMesh);
-  imm gray = rig.renderer.addMaterial(device, &Material.plain(new Color(0.5, 0.5, 0.5, 1.)));
-  imm light = Light.directional(new Vec3(0., -1., 0.), new Color(0., 0., 0., 1.), new Color(1., 1., 1., 1.));
-  mut camera = Camera.make();
+  var planeMesh = Mesh.plane(1, 1.);
+  let plane = rig.renderer.addMesh(device, &planeMesh);
+  let gray = rig.renderer.addMaterial(device, &Material.plain(new Color(0.5, 0.5, 0.5, 1.)));
+  let light = Light.directional(new Vec3(0., -1., 0.), new Color(0., 0., 0., 1.), new Color(1., 1., 1., 1.));
+  var camera = Camera.make();
   camera.fov = radians(50.);
   camera.near = 0.3;
   camera.far = 60.;
   camera.lookAt(new Vec3(0., 3., 5.), new Vec3(0., 0., -2.), new Vec3(0., 1., 0.));
   camera.background = new Color(0., 0., 0., 1.);
   // A floor, and a wall across it at z = -3: a corner
-  mut corner = DrawList.empty();
+  var corner = DrawList.empty();
   corner.add(plane, gray, Mat4.fromTrs(new Vec3(0., 0., 0.), Quat.identity(), new Vec3(20., 1., 20.)));
   corner.add(plane, gray, Mat4.fromTrs(new Vec3(0., 0., -3.), Quat.angleAxis(1.5707964, new Vec3(1., 0., 0.)), new Vec3(20., 1., 20.)));
   // The floor alone
-  mut flat = DrawList.empty();
+  var flat = DrawList.empty();
   flat.add(plane, gray, Mat4.fromTrs(new Vec3(0., 0., 0.), Quat.identity(), new Vec3(20., 1., 20.)));
 
   drawScene(device, &mut rig, &camera, &light, &corner);
-  imm cornerOff = grab(p);
+  let cornerOff = grab(p);
   shot(p, "ssao-corner-off");
   drawScene(device, &mut rig, &camera, &light, &flat);
-  imm flatOff = grab(p);
-  mut s = FxSettings.off();
+  let flatOff = grab(p);
+  var s = FxSettings.off();
   s.ssao = SsaoSettings.high();
   rig.fx.configure(&s);
   drawScene(device, &mut rig, &camera, &light, &corner);
-  imm cornerOn = grab(p);
+  let cornerOn = grab(p);
   shot(p, "ssao-corner-on");
   drawScene(device, &mut rig, &camera, &light, &flat);
-  imm flatOn = grab(p);
+  let flatOn = grab(p);
   shot(p, "ssao-flat-on");
 
   // The crease: just in front of the wall's foot on the floor
-  mut cx = 0usize;
-  mut cy = 0usize;
+  var cx = 0usize;
+  var cy = 0usize;
   pixelOf(&camera, new Vec3(0., 0., -2.88), &mut cx, &mut cy);
-  imm creaseOff = *cornerOff[(cy * SIDEZ + cx) * 3usize + 1usize];
-  imm creaseOn = *cornerOn[(cy * SIDEZ + cx) * 3usize + 1usize];
+  let creaseOff = *cornerOff[(cy * SIDEZ + cx) * 3usize + 1usize];
+  let creaseOn = *cornerOn[(cy * SIDEZ + cx) * 3usize + 1usize];
   eprint <- "measured: SSAO at the crease "; eprint <- creaseOn / creaseOff; eprint <- " of the unoccluded\n";
   // (a crease a few pixels wide in a 128-pixel picture, in a half-resolution
   // pass: the dip is 8 pixels wide and goes to 0.83)
   expect(creaseOn < creaseOff * 0.88, "ambient occlusion darkens the crease where floor and wall meet");
   // The floor far from the wall, and the same floor with no wall at all
-  mut fx0 = 0usize;
-  mut fy0 = 0usize;
+  var fx0 = 0usize;
+  var fy0 = 0usize;
   pixelOf(&camera, new Vec3(0., 0., 2.), &mut fx0, &mut fy0);
-  imm farOff = *cornerOff[(fy0 * SIDEZ + fx0) * 3usize + 1usize];
-  imm farOn = *cornerOn[(fy0 * SIDEZ + fx0) * 3usize + 1usize];
+  let farOff = *cornerOff[(fy0 * SIDEZ + fx0) * 3usize + 1usize];
+  let farOn = *cornerOn[(fy0 * SIDEZ + fx0) * 3usize + 1usize];
   expect(farOn > farOff * 0.97, "and leaves the floor far from the wall alone");
   // A flat plane is not darkened anywhere
-  mut worst = 1.;
-  mut worstAt = 0usize;
-  mut count = 0usize;
-  mut y = 0usize;
+  var worst = 1.;
+  var worstAt = 0usize;
+  var count = 0usize;
+  var y = 0usize;
   while y < SIDEZ {
-    mut x = 0usize;
+    var x = 0usize;
     while x < SIDEZ {
-      imm at = (y * SIDEZ + x) * 3usize + 1usize;
+      let at = (y * SIDEZ + x) * 3usize + 1usize;
       if *flatOff[at] > 0.01 {
-        imm ratio = *flatOn[at] / *flatOff[at];
+        let ratio = *flatOn[at] / *flatOff[at];
         if ratio < worst {
           worst = ratio;
           worstAt = y * SIDEZ + x;
@@ -624,22 +624,22 @@ fn ambientOcclusion(device &mut Device) {
   eprint <- "measured: the darkest flat-plane pixel is "; eprint <- worst; eprint <- " of the unoccluded, over "; eprint <- u64.from(count); eprint <- " pixels, at x "; eprint <- u64.from(worstAt % SIDEZ); eprint <- " y "; eprint <- u64.from(worstAt / SIDEZ); eprint <- "\n";
   expect(count > 4000usize, "the flat plane covers the picture");
   expect(worst > 0.94, "ambient occlusion leaves a flat plane alone (the darkest pixel within 6%)");
-  mut v = 0u32;
+  var v = 0u32;
   while v < 4u32 {
-    mut t = s;
+    var t = s;
     if v == 1u32 { t.ssao.slices = 6u32; t.ssao.steps = 16u32; }
     if v == 2u32 { t.ssao.power = 1.; }
     if v == 3u32 { t.ssao.radius = 1.5; }
     rig.fx.configure(&t);
     drawScene(device, &mut rig, &camera, &light, &flat);
-    imm g = grab(p);
-    mut sum = 0.;
-    mut mn = 1.;
-    mut n = 0usize;
-    mut q = 0usize;
+    let g = grab(p);
+    var sum = 0.;
+    var mn = 1.;
+    var n = 0usize;
+    var q = 0usize;
     while q < g.len() {
       if *flatOff[q] > 0.01 {
-        imm r = *g[q] / *flatOff[q];
+        let r = *g[q] / *flatOff[q];
         sum = sum + r;
         if r < mn { mn = r; }
         n = n + 1usize;
@@ -657,7 +657,7 @@ fn ambientOcclusion(device &mut Device) {
 
 // The ground and a plate 6 above it, which casts a shadow or not
 fn plateScene(plane MeshHandle, cube MeshHandle, material MaterialHandle, casts bool) DrawList {
-  mut list = DrawList.empty();
+  var list = DrawList.empty();
   list.add(plane, material, Mat4.fromTrs(new Vec3(0., 0., 0.), Quat.identity(), new Vec3(40., 1., 40.)));
   list.add(cube, material, Mat4.fromTrs(new Vec3(0., 6., 0.), Quat.identity(), new Vec3(1., 0.1, 1.)));
   if !casts { list.dontCastShadow(); }
@@ -665,35 +665,35 @@ fn plateScene(plane MeshHandle, cube MeshHandle, material MaterialHandle, casts 
 }
 
 fn fogTest(device &mut Device) {
-  mut rig = makeRig(device);
-  imm p = rig.readback.mappedRange();
+  var rig = makeRig(device);
+  let p = rig.readback.mappedRange();
   rig.post.toneMapper = TONE_MAP_NONE;
   rig.post.bloom = 0.;
-  mut planeMesh = Mesh.plane(1, 1.);
-  imm plane = rig.renderer.addMesh(device, &planeMesh);
-  imm cubeMesh = Mesh.cube(1.);
-  imm cube = rig.renderer.addMesh(device, &cubeMesh);
-  imm gray = rig.renderer.addMaterial(device, &Material.plain(new Color(0.5, 0.5, 0.5, 1.)));
+  var planeMesh = Mesh.plane(1, 1.);
+  let plane = rig.renderer.addMesh(device, &planeMesh);
+  let cubeMesh = Mesh.cube(1.);
+  let cube = rig.renderer.addMesh(device, &cubeMesh);
+  let gray = rig.renderer.addMaterial(device, &Material.plain(new Color(0.5, 0.5, 0.5, 1.)));
   // The camera 12 above the ground looking straight down, up being -z
-  mut camera = Camera.make();
+  var camera = Camera.make();
   camera.fov = radians(40.);
   camera.near = 0.1;
   camera.far = 100.;
   camera.lookAt(new Vec3(0., 12., 0.), new Vec3(0., 0., 0.), new Vec3(0., 0., -1.));
   camera.background = new Color(0., 0., 0., 1.);
-  mut list = DrawList.empty();
+  var list = DrawList.empty();
   list.add(plane, gray, Mat4.fromTrs(new Vec3(0., 0., 0.), Quat.identity(), new Vec3(40., 1., 40.)));
 
   // Beer-Lambert: ground seen through 12 metres of an absorbing medium of extinction 0.1
-  imm ambientOnly = Light.directional(new Vec3(0., -1., 0.), new Color(0., 0., 0., 1.), new Color(1., 1., 1., 1.));
+  let ambientOnly = Light.directional(new Vec3(0., -1., 0.), new Color(0., 0., 0., 1.), new Color(1., 1., 1., 1.));
   drawScene(device, &mut rig, &camera, &ambientOnly, &list);
-  imm bare = px(p, 64usize, 64usize, 1usize);
-  mut s = FxSettings.off();
+  let bare = px(p, 64usize, 64usize, 1usize);
+  var s = FxSettings.off();
   s.fog = new FogSettings(enabled: true, density: 0.1, albedo: new Color(0., 0., 0., 1.), temporal: 1., maxDistance: 60.);
   rig.fx.configure(&s);
   drawScene(device, &mut rig, &camera, &ambientOnly, &list);
-  imm absorbed = px(p, 64usize, 64usize, 1usize);
-  imm want = bare * libc.expf(-0.1 * 12.);
+  let absorbed = px(p, 64usize, 64usize, 1usize);
+  let want = bare * libc.expf(-0.1 * 12.);
   eprint <- "measured: fog: ground "; eprint <- bare; eprint <- ", through 12 m of extinction 0.1 "; eprint <- absorbed; eprint <- " (Beer-Lambert says "; eprint <- want; eprint <- ")\n";
   expect(absf(absorbed / want - 1.) < 0.05, "fog dims what is behind it by Beer-Lambert's law, within 5%");
   // Scattering: with albedo 1 and only ambient light of radiance 1, what is
@@ -701,41 +701,41 @@ fn fogTest(device &mut Device) {
   s.fog.albedo = new Color(1., 1., 1., 1.);
   rig.fx.configure(&s);
   drawScene(device, &mut rig, &camera, &ambientOnly, &list);
-  imm lit = px(p, 64usize, 64usize, 1usize);
-  imm t = libc.expf(-0.1 * 12.);
-  imm wantScatter = bare * t + 1. * (1. - t);
+  let lit = px(p, 64usize, 64usize, 1usize);
+  let t = libc.expf(-0.1 * 12.);
+  let wantScatter = bare * t + 1. * (1. - t);
   eprint <- "measured: fog with scattering "; eprint <- lit; eprint <- ", the formula "; eprint <- wantScatter; eprint <- "\n";
   expect(absf(lit / wantScatter - 1.) < 0.05, "and scatters the ambient light in: ground x T + radiance x (1 - T)");
   // Nothing behind the camera's far end: the sky takes the whole volume's
-  mut empty = DrawList.empty();
+  var empty = DrawList.empty();
   drawScene(device, &mut rig, &camera, &ambientOnly, &empty);
-  imm skyFog = px(p, 64usize, 64usize, 1usize);
-  imm tFar = libc.expf(-0.1 * 60.);
+  let skyFog = px(p, 64usize, 64usize, 1usize);
+  let tFar = libc.expf(-0.1 * 60.);
   expect(absf(skyFog / (1. - tFar) - 1.) < 0.05, "the sky is fogged by the whole volume's");
 
   // God rays: a plate high above the ground casts its shadow through the fog
-  mut shadows = ShadowSettings.high();
+  var shadows = ShadowSettings.high();
   shadows.distance = 60.;
   rig.renderer.setShadows(device, &shadows);
-  imm sun = Light.directional(new Vec3(-0.4472136, -0.8944272, 0.), new Color(3., 3., 3., 1.), new Color(0., 0., 0., 1.));
+  let sun = Light.directional(new Vec3(-0.4472136, -0.8944272, 0.), new Color(3., 3., 3., 1.), new Color(0., 0., 0., 1.));
   s.fog = new FogSettings(enabled: true, density: 0.15, anisotropy: 0., temporal: 1., maxDistance: 60.);
   rig.fx.configure(&s);
-  imm casting = plateScene(plane, cube, gray, true);
-  imm notCasting = plateScene(plane, cube, gray, false);
+  let casting = plateScene(plane, cube, gray, true);
+  let notCasting = plateScene(plane, cube, gray, false);
   drawScene(device, &mut rig, &camera, &sun, &notCasting);
-  imm unshaded = grab(p);
+  let unshaded = grab(p);
   shot(p, "fog-no-shadow");
   drawScene(device, &mut rig, &camera, &sun, &casting);
-  imm shaded = grab(p);
+  let shaded = grab(p);
   shot(p, "fog-god-rays");
-  mut ax = 0usize;
-  mut ay = 0usize;
+  var ax = 0usize;
+  var ay = 0usize;
   pixelOf(&camera, new Vec3(-3., 0., 0.), &mut ax, &mut ay);
-  mut farX = 0usize;
-  mut farY = 0usize;
+  var farX = 0usize;
+  var farY = 0usize;
   pixelOf(&camera, new Vec3(2.5, 0., 3.5), &mut farX, &mut farY);
-  imm inShaft = (ay * SIDEZ + ax) * 3usize + 1usize;
-  imm outside = (farY * SIDEZ + farX) * 3usize + 1usize;
+  let inShaft = (ay * SIDEZ + ax) * 3usize + 1usize;
+  let outside = (farY * SIDEZ + farX) * 3usize + 1usize;
   eprint <- "measured: fog god rays: in the shaft "; eprint <- *shaded[inShaft] / *unshaded[inShaft]; eprint <- " of what it is without the shadow, far from it ";
   eprint <- *shaded[outside] / *unshaded[outside]; eprint <- "\n";
   expect(*shaded[inShaft] < *unshaded[inShaft] * 0.93, "the plate's shadow darkens the fog it falls through (a shaft of light is dimmer where it is shaded)");
@@ -748,11 +748,11 @@ fn fogTest(device &mut Device) {
 fn windowOf(g &List[f32], cx usize, cy usize, sum &mut f32, peak &mut f32) {
   *sum = 0.;
   *peak = 0.;
-  mut y = cy - 12usize;
+  var y = cy - 12usize;
   while y <= cy + 12usize {
-    mut x = cx - 12usize;
+    var x = cx - 12usize;
     while x <= cx + 12usize {
-      imm v = *g[(y * SIDEZ + x) * 3usize + 1usize];
+      let v = *g[(y * SIDEZ + x) * 3usize + 1usize];
       *sum = *sum + v;
       if v > *peak { *peak = v; }
       x = x + 1usize;
@@ -762,49 +762,49 @@ fn windowOf(g &List[f32], cx usize, cy usize, sum &mut f32, peak &mut f32) {
 }
 
 fn depthOfField(device &mut Device) {
-  mut rig = makeRig(device);
-  imm p = rig.readback.mappedRange();
+  var rig = makeRig(device);
+  let p = rig.readback.mappedRange();
   rig.post.toneMapper = TONE_MAP_NONE;
   rig.post.bloom = 0.;
-  mut sphereMesh = Mesh.sphere(1., 24);
-  imm sphere = rig.renderer.addMesh(device, &sphereMesh);
-  imm glowing = rig.renderer.addMaterial(device, &Material.plain(new Color(0., 0., 0., 1.)).glowing(new Color(1., 1., 1., 1.), 0.7));
-  imm light = Light.directional(new Vec3(0., -1., 0.), new Color(0., 0., 0., 1.), new Color(0., 0., 0., 1.));
-  mut camera = Camera.make();
+  var sphereMesh = Mesh.sphere(1., 24);
+  let sphere = rig.renderer.addMesh(device, &sphereMesh);
+  let glowing = rig.renderer.addMaterial(device, &Material.plain(new Color(0., 0., 0., 1.)).glowing(new Color(1., 1., 1., 1.), 0.7));
+  let light = Light.directional(new Vec3(0., -1., 0.), new Color(0., 0., 0., 1.), new Color(0., 0., 0., 1.));
+  var camera = Camera.make();
   camera.fov = radians(40.);
   camera.near = 0.1;
   camera.far = 100.;
   camera.lookAt(new Vec3(0., 0., 0.), new Vec3(0., 0., -1.), new Vec3(0., 1., 0.));
   camera.background = new Color(0., 0., 0., 1.);
   // Two lamps the same size on the screen, one at the focus (5), one far (30)
-  imm near = new Vec3(-0.9, 0., -5.);
-  imm far = new Vec3(5.4, 0., -30.);
-  mut list = DrawList.empty();
+  let near = new Vec3(-0.9, 0., -5.);
+  let far = new Vec3(5.4, 0., -30.);
+  var list = DrawList.empty();
   list.add(sphere, glowing, Mat4.fromTrs(near, Quat.identity(), new Vec3(0.06, 0.06, 0.06)));
   list.add(sphere, glowing, Mat4.fromTrs(far, Quat.identity(), new Vec3(0.36, 0.36, 0.36)));
   drawScene(device, &mut rig, &camera, &light, &list);
-  imm sharp = grab(p);
+  let sharp = grab(p);
   shot(p, "dof-off");
-  mut s = FxSettings.off();
+  var s = FxSettings.off();
   s.dof = new DofSettings(enabled: true, focusDistance: 5., aperture: 1.4, focalLength: 0.1, maxCoc: 90., taps: 48u32);
   rig.fx.configure(&s);
   drawScene(device, &mut rig, &camera, &light, &list);
-  imm blurred = grab(p);
+  let blurred = grab(p);
   shot(p, "dof-on");
-  mut nx = 0usize;
-  mut ny = 0usize;
-  mut fx0 = 0usize;
-  mut fy0 = 0usize;
+  var nx = 0usize;
+  var ny = 0usize;
+  var fx0 = 0usize;
+  var fy0 = 0usize;
   pixelOf(&camera, near, &mut nx, &mut ny);
   pixelOf(&camera, far, &mut fx0, &mut fy0);
-  mut nearSum = 0.;
-  mut nearPeak = 0.;
-  mut nearSumOn = 0.;
-  mut nearPeakOn = 0.;
-  mut farSum = 0.;
-  mut farPeak = 0.;
-  mut farSumOn = 0.;
-  mut farPeakOn = 0.;
+  var nearSum = 0.;
+  var nearPeak = 0.;
+  var nearSumOn = 0.;
+  var nearPeakOn = 0.;
+  var farSum = 0.;
+  var farPeak = 0.;
+  var farSumOn = 0.;
+  var farPeakOn = 0.;
   windowOf(&sharp, nx, ny, &mut nearSum, &mut nearPeak);
   windowOf(&blurred, nx, ny, &mut nearSumOn, &mut nearPeakOn);
   windowOf(&sharp, fx0, fy0, &mut farSum, &mut farPeak);
@@ -820,26 +820,26 @@ fn depthOfField(device &mut Device) {
 // ---- 7. Decals ----
 
 fn decalTest(device &mut Device) {
-  mut rig = makeRig(device);
-  imm p = rig.readback.mappedRange();
+  var rig = makeRig(device);
+  let p = rig.readback.mappedRange();
   rig.post.toneMapper = TONE_MAP_NONE;
   rig.post.bloom = 0.;
-  mut planeMesh = Mesh.plane(1, 1.);
-  imm plane = rig.renderer.addMesh(device, &planeMesh);
-  imm gray = rig.renderer.addMaterial(device, &Material.plain(new Color(0.5, 0.5, 0.5, 1.)));
-  imm light = Light.directional(new Vec3(0., -1., 0.), new Color(0., 0., 0., 1.), new Color(1., 1., 1., 1.));
+  var planeMesh = Mesh.plane(1, 1.);
+  let plane = rig.renderer.addMesh(device, &planeMesh);
+  let gray = rig.renderer.addMaterial(device, &Material.plain(new Color(0.5, 0.5, 0.5, 1.)));
+  let light = Light.directional(new Vec3(0., -1., 0.), new Color(0., 0., 0., 1.), new Color(1., 1., 1., 1.));
   // The camera 12 above the ground looking straight down, up being -z
-  mut camera = Camera.make();
+  var camera = Camera.make();
   camera.fov = radians(40.);
   camera.near = 0.1;
   camera.far = 100.;
   camera.lookAt(new Vec3(0., 12., 0.), new Vec3(0., 0., 0.), new Vec3(0., 0., -1.));
   camera.background = new Color(0., 0., 0., 1.);
-  mut list = DrawList.empty();
+  var list = DrawList.empty();
   list.add(plane, gray, Mat4.fromTrs(new Vec3(0., 0., 0.), Quat.identity(), new Vec3(40., 1., 40.)));
   // A red 4 x 4 image, solid
-  mut img = new Image(4, 4, 4, List[u8].empty());
-  mut i = 0;
+  var img = new Image(4, 4, 4, List[u8].empty());
+  var i = 0;
   while i < 16 {
     img.pixels.push(255u8);
     img.pixels.push(0u8);
@@ -847,31 +847,31 @@ fn decalTest(device &mut Device) {
     img.pixels.push(255u8);
     i = i + 1;
   }
-  imm tex = rig.renderer.addTexture(device, &img);
-  imm material = rig.fx.addDecalMaterial(device, &rig.renderer, tex, TextureHandle.none(), TextureHandle.none());
+  let tex = rig.renderer.addTexture(device, &img);
+  let material = rig.fx.addDecalMaterial(device, &rig.renderer, tex, TextureHandle.none(), TextureHandle.none());
 
   drawScene(device, &mut rig, &camera, &light, &list);
-  imm baseline = grab(p);
+  let baseline = grab(p);
   // A box 2 x 1 x 2 about (1, 0, 0): the floor lies in it from x = 0 to 2 and z = -1 to 1
-  mut d = Decal.at(material, Mat4.fromTrs(new Vec3(1., 0., 0.), Quat.identity(), new Vec3(2., 1., 2.)));
+  var d = Decal.at(material, Mat4.fromTrs(new Vec3(1., 0., 0.), Quat.identity(), new Vec3(2., 1., 2.)));
   rig.fx.decals.add(d);
   drawScene(device, &mut rig, &camera, &light, &list);
-  imm withDecal = grab(p);
-  imm at = (64usize * SIDEZ + 79usize) * 3usize;
+  let withDecal = grab(p);
+  let at = (64usize * SIDEZ + 79usize) * 3usize;
   expect(*withDecal[at] > 0.8 and *withDecal[at + 1usize] < 0.1, "a decal paints the floor in its box red");
-  imm outside = (64usize * SIDEZ + 40usize) * 3usize;
+  let outside = (64usize * SIDEZ + 40usize) * 3usize;
   expect(absf(*withDecal[outside] - *baseline[outside]) < 0.002 and absf(*withDecal[outside + 1usize] - *baseline[outside + 1usize]) < 0.002,
     "and leaves the floor outside its box as it was");
   // Where the box's edges land: x = 0 and 2 on the middle row, z = -1 and 1 on the middle column, within a pixel
-  mut left = -1.;
-  mut right = -1.;
-  mut x = 1usize;
+  var left = -1.;
+  var right = -1.;
+  var x = 1usize;
   while x < SIDEZ {
-    imm a = *withDecal[(64usize * SIDEZ + x - 1usize) * 3usize + 1usize];
-    imm b = *withDecal[(64usize * SIDEZ + x) * 3usize + 1usize];
+    let a = *withDecal[(64usize * SIDEZ + x - 1usize) * 3usize + 1usize];
+    let b = *withDecal[(64usize * SIDEZ + x) * 3usize + 1usize];
     // The green channel falls from the floor's level to the red decal's nothing
     // and rises again: the crossings of half the floor's, between pixels
-    imm mid = 0.5 * *baseline[(64usize * SIDEZ + x) * 3usize + 1usize];
+    let mid = 0.5 * *baseline[(64usize * SIDEZ + x) * 3usize + 1usize];
     if a > mid and b <= mid and left < 0. { left = f32.from(x) - (a - mid) / (a - b) + 0.5; }
     if a <= mid and b > mid and left >= 0. and right < 0. { right = f32.from(x) - (mid - a) / (b - a) + 0.5; }
     x = x + 1usize;
@@ -885,65 +885,65 @@ fn decalTest(device &mut Device) {
   d.fade = 0.5;
   rig.fx.decals.add(d);
   drawScene(device, &mut rig, &camera, &light, &list);
-  imm faded = grab(p);
+  let faded = grab(p);
   expect(absf(*faded[at] - 0.75) < 0.04 and absf(*faded[at + 1usize] - 0.25) < 0.04, "a fade of 0.5 shows half of it");
   // A decal whose up is sideways does not take a floor facing up
   rig.fx.decals.clear();
-  mut sideways = Decal.at(material, Mat4.fromTrs(new Vec3(1., 0., 0.), Quat.angleAxis(-1.5707964, new Vec3(0., 0., 1.)), new Vec3(1., 2., 2.)));
+  var sideways = Decal.at(material, Mat4.fromTrs(new Vec3(1., 0., 0.), Quat.angleAxis(-1.5707964, new Vec3(0., 0., 1.)), new Vec3(1., 2., 2.)));
   rig.fx.decals.add(sideways);
   drawScene(device, &mut rig, &camera, &light, &list);
-  imm rejected = grab(p);
+  let rejected = grab(p);
   expect(rms(&rejected, &baseline) < 0.001, "a surface turned away from the decal's up does not take it");
 
   // A turned box: the red lands in its middle, and its corner reaches where an unturned one's would not
   rig.fx.decals.clear();
-  mut turned = Decal.at(material, Mat4.fromTrs(new Vec3(1., 0., 0.), Quat.angleAxis(0.7853982, new Vec3(0., 1., 0.)), new Vec3(2., 1., 2.)));
+  var turned = Decal.at(material, Mat4.fromTrs(new Vec3(1., 0., 0.), Quat.angleAxis(0.7853982, new Vec3(0., 1., 0.)), new Vec3(2., 1., 2.)));
   rig.fx.decals.add(turned);
   drawScene(device, &mut rig, &camera, &light, &list);
-  imm turnedPicture = grab(p);
+  let turnedPicture = grab(p);
   expect(*turnedPicture[at] > 0.8 and *turnedPicture[at + 1usize] < 0.1, "a decal turned about its up lands in its box");
   // Its corner at x = 1 + 1.414 = 2.41 on the middle row: past the unturned box's edge at x = 2
-  imm cornerAt = (64usize * SIDEZ + 98usize) * 3usize;
+  let cornerAt = (64usize * SIDEZ + 98usize) * 3usize;
   expect(*turnedPicture[cornerAt] > 0.7, "and its corner reaches past the unturned box's edge");
 
   // The same from a low camera, the floor seen at a grazing angle
   rig.fx.decals.clear();
-  mut low = Camera.make();
+  var low = Camera.make();
   low.fov = radians(60.);
   low.near = 0.3;
   low.far = 400.;
   low.lookAt(new Vec3(0., 2., 8.), new Vec3(0., 0., -6.), new Vec3(0., 1., 0.));
   low.background = new Color(0., 0., 0., 1.);
-  mut patch = Decal.at(material, Mat4.fromTrs(new Vec3(0., 0., -6.), Quat.identity(), new Vec3(4., 1., 4.)));
+  var patch = Decal.at(material, Mat4.fromTrs(new Vec3(0., 0., -6.), Quat.identity(), new Vec3(4., 1., 4.)));
   rig.fx.decals.add(patch);
   drawScene(device, &mut rig, &low, &light, &list);
   shot(p, "decal-low");
-  mut lx = 0usize;
-  mut ly = 0usize;
+  var lx = 0usize;
+  var ly = 0usize;
   pixelOf(&low, new Vec3(0., 0., -6.), &mut lx, &mut ly);
-  imm lowAt = (ly * SIDEZ + lx) * 3usize;
+  let lowAt = (ly * SIDEZ + lx) * 3usize;
   eprint <- "measured: a decal seen at a grazing angle: red "; eprint <- *grab(p)[lowAt]; eprint <- " green "; eprint <- *grab(p)[lowAt + 1usize]; eprint <- "\n";
   expect(*grab(p)[lowAt] > 0.8 and *grab(p)[lowAt + 1usize] < 0.1, "a decal on a floor seen at a grazing angle still lands");
 
   // With a sky, shadows and a physically based floor, as a scene has
-  imm groundPbr = rig.renderer.addPbrMaterial(device, &PbrMaterial.standard(new Color(0.18, 0.2, 0.12, 1.), 0., 0.9));
-  imm sky = Sky.dusk(radians(14.), radians(200.));
+  let groundPbr = rig.renderer.addPbrMaterial(device, &PbrMaterial.standard(new Color(0.18, 0.2, 0.12, 1.), 0., 0.9));
+  let sky = Sky.dusk(radians(14.), radians(200.));
   rig.renderer.setSky(device, &sky);
   rig.renderer.setShadows(device, &ShadowSettings.medium());
-  imm sunLight = sky.sunLight(new Color(3.2, 2.9, 2.4, 1.), new Color(0.05, 0.06, 0.08, 1.));
-  mut pbrList = DrawList.empty();
+  let sunLight = sky.sunLight(new Color(3.2, 2.9, 2.4, 1.), new Color(0.05, 0.06, 0.08, 1.));
+  var pbrList = DrawList.empty();
   pbrList.add(plane, groundPbr, Mat4.fromTrs(new Vec3(0., 0., 0.), Quat.identity(), new Vec3(40., 1., 40.)));
   drawScene(device, &mut rig, &low, &sunLight, &pbrList);
-  imm pbrBefore = grab(p);
+  let pbrBefore = grab(p);
   rig.fx.decals.add(patch);
   drawScene(device, &mut rig, &low, &sunLight, &pbrList);
-  imm pbrAfter = grab(p);
+  let pbrAfter = grab(p);
   shot(p, "decal-pbr");
   eprint <- "measured: a decal on a physically based floor under a sky: changed the picture by "; eprint <- rms(&pbrBefore, &pbrAfter); eprint <- "\n";
   expect(rms(&pbrBefore, &pbrAfter) > 0.005, "a decal lands on a physically based floor under a sky and shadows");
 
   // From the camera the example uses, a decal 15 metres ahead
-  mut ahead = Camera.make();
+  var ahead = Camera.make();
   ahead.fov = radians(60.);
   ahead.near = 0.3;
   ahead.far = 400.;
@@ -951,10 +951,10 @@ fn decalTest(device &mut Device) {
   ahead.background = new Color(0.4, 0.5, 0.7, 1.);
   rig.fx.decals.clear();
   drawScene(device, &mut rig, &ahead, &sunLight, &pbrList);
-  imm aheadBefore = grab(p);
+  let aheadBefore = grab(p);
   rig.fx.decals.add(Decal.at(material, Mat4.fromTrs(new Vec3(-1., 0., -5.), Quat.identity(), new Vec3(3., 1., 3.))));
   drawScene(device, &mut rig, &ahead, &sunLight, &pbrList);
-  imm aheadAfter = grab(p);
+  let aheadAfter = grab(p);
   shot(p, "decal-ahead");
   eprint <- "measured: a decal 15 m ahead of the example's camera changed the picture by "; eprint <- rms(&aheadBefore, &aheadAfter); eprint <- "\n";
   expect(rms(&aheadBefore, &aheadAfter) > 0.005, "a decal lands 15 metres ahead of the example's camera");
@@ -964,24 +964,24 @@ fn decalTest(device &mut Device) {
 
 // A uniform frame of 'color' drawn with Post's finish as it is
 fn drawFlat(device &mut Device, rig &mut Rig, color Color) {
-  mut camera = Camera.make();
+  var camera = Camera.make();
   camera.background = color;
-  imm light = Light.directional(new Vec3(0., -1., 0.), new Color(0., 0., 0., 1.), new Color(0., 0., 0., 1.));
-  imm list = DrawList.empty();
+  let light = Light.directional(new Vec3(0., -1., 0.), new Color(0., 0., 0., 1.), new Color(0., 0., 0., 1.));
+  let list = DrawList.empty();
   drawScene(device, rig, &camera, &light, &list);
 }
 
 fn finish(device &mut Device) {
-  mut rig = makeRig(device);
-  imm p = rig.readback.mappedRange();
+  var rig = makeRig(device);
+  let p = rig.readback.mappedRange();
   rig.post.toneMapper = TONE_MAP_NONE;
   rig.post.bloom = 0.;
   // The expected linear value of a display-encoded v
-  imm base = new Color(0.3, 0.3, 0.3, 1.);
+  let base = new Color(0.3, 0.3, 0.3, 1.);
   drawFlat(device, &mut rig, base);
-  imm plain = px(p, 64usize, 64usize, 0usize);
+  let plain = px(p, 64usize, 64usize, 0usize);
   expect(absf(plain - 0.3) < 0.003, "no finish: the frame is shown as it is");
-  imm srgb = 1.055 * libc.powf(0.3, 1. / 2.4) - 0.055;
+  let srgb = 1.055 * libc.powf(0.3, 1. / 2.4) - 0.055;
   // Gain 1.2 on red: in display-encoded values
   rig.post.finish.grade = true;
   rig.post.finish.gain = new Vec3(1.2, 1., 1.);
@@ -1002,12 +1002,12 @@ fn finish(device &mut Device) {
   expect(absf(px(p, 64usize, 64usize, 0usize) - px(p, 64usize, 64usize, 2usize)) < 0.004, "saturation 0: red and blue come out the same (grey)");
   rig.post.finish.saturation = 1.;
   // The table: a size-2 table that inverts display-encoded values
-  mut table = List[u8].empty();
-  mut b = 0u32;
+  var table = List[u8].empty();
+  var b = 0u32;
   while b < 2u32 {
-    mut g = 0u32;
+    var g = 0u32;
     while g < 2u32 {
-      mut r = 0u32;
+      var r = 0u32;
       while r < 2u32 {
         table.push(if r == 0u32 { 255u8; } else { 0u8; });
         table.push(if g == 0u32 { 255u8; } else { 0u8; });
@@ -1019,7 +1019,7 @@ fn finish(device &mut Device) {
     }
     b = b + 1u32;
   }
-  imm tv = table.view();
+  let tv = table.view();
   rig.post.setTable(device, 2u32, tv);
   rig.post.finish.tableStrength = 1.;
   drawFlat(device, &mut rig, base);
@@ -1029,22 +1029,22 @@ fn finish(device &mut Device) {
   // Vignette: the corners darker, the middle not
   rig.post.finish.vignette = 0.5;
   drawFlat(device, &mut rig, base);
-  imm middle = px(p, 64usize, 64usize, 0usize);
-  imm corner = px(p, 0usize, 0usize, 0usize);
+  let middle = px(p, 64usize, 64usize, 0usize);
+  let corner = px(p, 0usize, 0usize, 0usize);
   expect(absf(middle - 0.3) < 0.003, "the vignette leaves the middle");
   expect(corner < middle * 0.72 and corner > middle * 0.6, "and darkens the corner by about a third");
   rig.post.finish.vignette = 0.;
   // Grain: a spread about the same mean
   rig.post.finish.grain = 0.05;
   drawFlat(device, &mut rig, base);
-  mut sum = 0.;
-  mut sumSquares = 0.;
-  mut n = 0.;
-  mut y = 20usize;
+  var sum = 0.;
+  var sumSquares = 0.;
+  var n = 0.;
+  var y = 20usize;
   while y < 100usize {
-    mut x = 20usize;
+    var x = 20usize;
     while x < 100usize {
-      imm v = px(p, x, y, 1usize);
+      let v = px(p, x, y, 1usize);
       sum = sum + v;
       sumSquares = sumSquares + v * v;
       n = n + 1.;
@@ -1052,8 +1052,8 @@ fn finish(device &mut Device) {
     }
     y = y + 1usize;
   }
-  imm mean = sum / n;
-  imm spread = (sumSquares / n - mean * mean).sqrt();
+  let mean = sum / n;
+  let spread = (sumSquares / n - mean * mean).sqrt();
   eprint <- "measured: grain 0.05: mean "; eprint <- mean; eprint <- " spread "; eprint <- spread; eprint <- "\n";
   expect(absf(mean - 0.3) < 0.006 and spread > 0.01, "film grain spreads the values and keeps the mean");
   rig.post.finish.grain = 0.;
@@ -1070,69 +1070,69 @@ fn decode(v f32) f32 {
 fn log2of(x f32) f32 { libc.logf(x) / 0.6931472; }
 
 fn exposure(device &mut Device) {
-  mut rig = makeRig(device);
-  imm p = rig.readback.mappedRange();
+  var rig = makeRig(device);
+  let p = rig.readback.mappedRange();
   rig.post.toneMapper = TONE_MAP_NONE;
   rig.post.bloom = 0.;
-  mut back = device.createBuffer(16u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  var back = device.createBuffer(16u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
   // Quick adaptation, wide clamps: the settled exposure is 0.18 / L, to the
   // histogram's bin (18 stops in 255 bins: half a bin is 0.035 stops, 2.5%)
-  mut s = new ExposureSettings(enabled: true, speedUp: 1000., speedDown: 1000., lowPercent: 0., highPercent: 1.,
+  var s = new ExposureSettings(enabled: true, speedUp: 1000., speedDown: 1000., lowPercent: 0., highPercent: 1.,
     minEv: -10., maxEv: 10.);
-  mut worst = 0.;
-  mut k = 0usize;
-  imm levels = [0.05, 0.4, 2.0, 11.0];
+  var worst = 0.;
+  var k = 0usize;
+  let levels = [0.05, 0.4, 2.0, 11.0];
   while k < 4usize {
-    imm level = levels[k];
-    imm e = settle(device, &mut rig, &back, level, &s, 3u32, 1.);
-    imm want = exposureFor(level, 0.18, 0.);
-    imm error = absf(e[0] / want - 1.);
+    let level = levels[k];
+    let e = settle(device, &mut rig, &back, level, &s, 3u32, 1.);
+    let want = exposureFor(level, 0.18, 0.);
+    let error = absf(e[0] / want - 1.);
     if error > worst { worst = error; }
     expect(error < 0.03, "the settled exposure is 0.18 / L, within the histogram's bin");
     // And the tone map used it: the picture is the middle grey 0.18 (the
     // tone map is off, the frame L times the exposure)
-    imm shown = px(p, 64usize, 64usize, 1usize);
+    let shown = px(p, 64usize, 64usize, 1usize);
     expect(absf(shown / 0.18 - 1.) < 0.04, "and the picture shows it: the frame's average is a middle grey");
     k = k + 1usize;
   }
   eprint <- "measured: worst exposure error against 0.18 / L "; eprint <- worst; eprint <- "\n";
   // The compensation, in stops
-  mut c = s;
+  var c = s;
   c.compensationEv = 1.;
-  imm plus = settle(device, &mut rig, &back, 0.4, &c, 3u32, 1.);
+  let plus = settle(device, &mut rig, &back, 0.4, &c, 3u32, 1.);
   expect(absf(plus[0] / exposureFor(0.4, 0.18, 1.) - 1.) < 0.03, "a compensation of +1 stop doubles the exposure");
   // The clamps
-  mut clamped = s;
+  var clamped = s;
   clamped.maxEv = 1.;
-  imm high = settle(device, &mut rig, &back, 0.05, &clamped, 3u32, 1.);
+  let high = settle(device, &mut rig, &back, 0.05, &clamped, 3u32, 1.);
   expect(absf(high[0] / 2. - 1.) < 0.001, "the exposure is held at the greatest, +1 stop");
   expect(absf(high[2] / 2. - 1.) < 0.001, "and its target with it");
   clamped.maxEv = 10.;
   clamped.minEv = -1.;
-  imm low = settle(device, &mut rig, &back, 11., &clamped, 3u32, 1.);
+  let low = settle(device, &mut rig, &back, 11., &clamped, 3u32, 1.);
   expect(absf(low[0] / 0.5 - 1.) < 0.001, "and at the least, -1 stop");
   // Adaptation: from the exposure for L = 0.4 to the one for 2.0 over a
   // tenth of a second at a speed of 3 a second, in log space
-  mut slow = s;
+  var slow = s;
   slow.speedUp = 3.;
   slow.speedDown = 3.;
-  imm before = settle(device, &mut rig, &back, 0.4, &slow, 3u32, 1.);
-  imm after = settle(device, &mut rig, &back, 2.0, &slow, 1u32, 0.1);
-  imm evBefore = log2of(before[0]);
-  imm evTarget = log2of(exposureFor(2.0, 0.18, 0.));
-  imm evWant = evBefore + (evTarget - evBefore) * (1. - libc.expf(-0.1 * 3.));
-  imm evGot = log2of(after[0]);
+  let before = settle(device, &mut rig, &back, 0.4, &slow, 3u32, 1.);
+  let after = settle(device, &mut rig, &back, 2.0, &slow, 1u32, 0.1);
+  let evBefore = log2of(before[0]);
+  let evTarget = log2of(exposureFor(2.0, 0.18, 0.));
+  let evWant = evBefore + (evTarget - evBefore) * (1. - libc.expf(-0.1 * 3.));
+  let evGot = log2of(after[0]);
   eprint <- "measured: adaptation, want "; eprint <- evWant; eprint <- " stops, got "; eprint <- evGot; eprint <- "\n";
   expect(absf(evGot - evWant) < 0.05, "the exposure moves towards the target as the exponential in log space says");
 }
 
 fn main() i32 {
-  mut instance = Instance.create("render fx");
+  var instance = Instance.create("render fx");
   require(instance.isValid(), "a Vulkan 1.3 instance");
-  mut none = Surface.none();
-  mut adapter = instance.requestAdapter(&none, preference());
+  var none = Surface.none();
+  var adapter = instance.requestAdapter(&none, preference());
   require(adapter.isValid(), "an adapter");
-  mut device = adapter.requestDevice();
+  var device = adapter.requestDevice();
   require(device.isValid(), "a device");
   eprint <- "measured adapter: "; eprintStr(adapter.name.view()); eprint <- "\n";
   identity(&mut device, &adapter.name);

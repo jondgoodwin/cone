@@ -60,8 +60,8 @@ pub struct Biome {
 
 // A trapezoid-ish soft window: 0.5 at lo and hi, 1 'soft/2' inside them
 fn window(x f32, lo f32, hi f32, soft f32) f32 {
-  imm a = smooth01((x - lo) / soft + 0.5);
-  imm b = smooth01((hi - x) / soft + 0.5);
+  let a = smooth01((x - lo) / soft + 0.5);
+  let b = smooth01((hi - x) / soft + 0.5);
   a * b;
 }
 
@@ -102,8 +102,8 @@ pub struct MaskSet {
 // ---- computing ----
 
 fn index(w usize, h usize, x i32, z i32) usize {
-  mut a = x;
-  mut b = z;
+  var a = x;
+  var b = z;
   if a < 0 { a = 0; }
   if b < 0 { b = 0; }
   if a > i32.from(w) - 1 { a = i32.from(w) - 1; }
@@ -114,20 +114,20 @@ fn index(w usize, h usize, x i32, z i32) usize {
 // Distance in metres to the nearest sample where 'water' is set, by the two-pass chamfer transform
 // (Borgefors 1986, the 3-4 weights, here 1 and sqrt 2), capped at FAR
 fn distanceToWater(water &List[u8], w usize, h usize, cell f32) List[f32] {
-  imm big = 1.0e9;
-  mut d = List[f32].withCapacity(w * h);
-  mut i = 0usize;
+  let big = 1.0e9;
+  var d = List[f32].withCapacity(w * h);
+  var i = 0usize;
   while i < w * h {
     d.push(if *water[i] != 0u8 { 0.; } else { big; });
     i = i + 1usize;
   }
-  imm r2 = 1.41421356;
-  mut z = 0;
+  let r2 = 1.41421356;
+  var z = 0;
   while z < i32.from(h) {
-    mut x = 0;
+    var x = 0;
     while x < i32.from(w) {
-      imm c = index(w, h, x, z);
-      mut best = *d[c];
+      let c = index(w, h, x, z);
+      var best = *d[c];
       if x > 0 { best = fm(best, *d[index(w, h, x - 1, z)] + 1.); }
       if z > 0 { best = fm(best, *d[index(w, h, x, z - 1)] + 1.); }
       if x > 0 and z > 0 { best = fm(best, *d[index(w, h, x - 1, z - 1)] + r2); }
@@ -139,10 +139,10 @@ fn distanceToWater(water &List[u8], w usize, h usize, cell f32) List[f32] {
   }
   z = i32.from(h) - 1;
   while z >= 0 {
-    mut x = i32.from(w) - 1;
+    var x = i32.from(w) - 1;
     while x >= 0 {
-      imm c = index(w, h, x, z);
-      mut best = *d[c];
+      let c = index(w, h, x, z);
+      var best = *d[c];
       if x + 1 < i32.from(w) { best = fm(best, *d[index(w, h, x + 1, z)] + 1.); }
       if z + 1 < i32.from(h) { best = fm(best, *d[index(w, h, x, z + 1)] + 1.); }
       if x + 1 < i32.from(w) and z + 1 < i32.from(h) { best = fm(best, *d[index(w, h, x + 1, z + 1)] + r2); }
@@ -163,8 +163,8 @@ fn distanceToWater(water &List[u8], w usize, h usize, cell f32) List[f32] {
 fn fm(a f32, b f32) f32 { if a < b { a; } else { b; }; }
 
 fn cloneList(l &List[f32]) List[f32] {
-  mut c = List[f32].withCapacity(l.len());
-  mut i = 0usize;
+  var c = List[f32].withCapacity(l.len());
+  var i = 0usize;
   while i < l.len() { c.push(*l[i]); i = i + 1usize; }
   c;
 }
@@ -173,30 +173,30 @@ fn cloneList(l &List[f32]) List[f32] {
 // (capped at 1), times a horizon test that marches toward the sun for 'reach' metres in steps that
 // grow with distance, shadowed if the ground rises above the ray
 fn exposureOf(hf &Heightfield, toSun Vec3, reach f32) List[f32] {
-  imm w = hf.w;
-  imm h = hf.h;
-  mut out = List[f32].withCapacity(w * h);
-  imm sun = toSun.normalize();
-  imm horiz = (sun.x * sun.x + sun.z * sun.z).sqrt();
-  mut iz = 0usize;
+  let w = hf.w;
+  let h = hf.h;
+  var out = List[f32].withCapacity(w * h);
+  let sun = toSun.normalize();
+  let horiz = (sun.x * sun.x + sun.z * sun.z).sqrt();
+  var iz = 0usize;
   while iz < h {
-    mut ix = 0usize;
+    var ix = 0usize;
     while ix < w {
-      imm x = hf.originX + f32.from(ix) * hf.cell;
-      imm z = hf.originZ + f32.from(iz) * hf.cell;
-      imm y = hf.at(ix, iz);
-      imm n = hf.normalAt(x, z);
-      mut light = n.dot(sun) / (if sun.y > 0.05 { sun.y; } else { 0.05; });
+      let x = hf.originX + f32.from(ix) * hf.cell;
+      let z = hf.originZ + f32.from(iz) * hf.cell;
+      let y = hf.at(ix, iz);
+      let n = hf.normalAt(x, z);
+      var light = n.dot(sun) / (if sun.y > 0.05 { sun.y; } else { 0.05; });
       if light < 0. { light = 0.; }
       if light > 1. { light = 1.; }
       if light > 0. and horiz > 0.001 {
-        mut t = hf.cell;
-        mut shadow = false;
+        var t = hf.cell;
+        var shadow = false;
         while t < reach and !shadow {
-          imm px = x + sun.x / horiz * t;
-          imm pz = z + sun.z / horiz * t;
+          let px = x + sun.x / horiz * t;
+          let pz = z + sun.z / horiz * t;
           if px < hf.originX or pz < hf.originZ or px > hf.originX + hf.width() or pz > hf.originZ + hf.depth() { break; }
-          imm rayY = y + 0.3 + sun.y / horiz * t;
+          let rayY = y + 0.3 + sun.y / horiz * t;
           if hf.sample(px, pz) > rayY { shadow = true; }
           t = t + hf.cell * (1. + t / 150.);
         }
@@ -212,69 +212,69 @@ fn exposureOf(hf &Heightfield, toSun Vec3, reach f32) List[f32] {
 
 // Compute every mask of the landscape. 'hf' is the final (carved) ground.
 pub fn computeMasks(hf &Heightfield, hy &Hydrology, rm &RiverMaps, spec &MaskSpec, biomes &List[Biome]) MaskSet {
-  imm w = hf.w;
-  imm h = hf.h;
-  imm n = w * h;
-  mut slope = List[f32].withCapacity(n);
-  mut curv = List[f32].withCapacity(n);
-  mut iz = 0usize;
+  let w = hf.w;
+  let h = hf.h;
+  let n = w * h;
+  var slope = List[f32].withCapacity(n);
+  var curv = List[f32].withCapacity(n);
+  var iz = 0usize;
   while iz < h {
-    mut ix = 0usize;
+    var ix = 0usize;
     while ix < w {
-      imm x = hf.originX + f32.from(ix) * hf.cell;
-      imm z = hf.originZ + f32.from(iz) * hf.cell;
+      let x = hf.originX + f32.from(ix) * hf.cell;
+      let z = hf.originZ + f32.from(iz) * hf.cell;
       slope.push(degrees(hf.slopeAt(x, z)));
-      imm c = hf.at(ix, iz);
-      imm s = hf.atClamped(i32.from(ix) - 1, i32.from(iz)) + hf.atClamped(i32.from(ix) + 1, i32.from(iz))
+      let c = hf.at(ix, iz);
+      let s = hf.atClamped(i32.from(ix) - 1, i32.from(iz)) + hf.atClamped(i32.from(ix) + 1, i32.from(iz))
         + hf.atClamped(i32.from(ix), i32.from(iz) - 1) + hf.atClamped(i32.from(ix), i32.from(iz) + 1);
       curv.push((s - 4. * c) / (hf.cell * hf.cell));
       ix = ix + 1usize;
     }
     iz = iz + 1usize;
   }
-  mut isWater = List[u8].withCapacity(n);
-  mut i = 0usize;
+  var isWater = List[u8].withCapacity(n);
+  var i = 0usize;
   while i < n {
     isWater.push(if *rm.waterDepth[i] > 0.01 { 1u8; } else { 0u8; });
     i = i + 1usize;
   }
-  imm wd = distanceToWater(&isWater, w, h, hf.cell);
-  imm exposure = exposureOf(hf, spec.sunDirection, spec.shadowReach);
-  imm lo = hf.minHeight();
-  imm hi = hf.maxHeight();
-  imm span = if hi - lo > 1. { hi - lo; } else { 1.; };
-  imm maxA = hy.maxAccum();
-  imm logMax = libc.logf(if maxA > 1.5 { maxA; } else { 1.5; });
-  mut flow = List[f32].withCapacity(n);
-  mut moisture = List[f32].withCapacity(n);
+  let wd = distanceToWater(&isWater, w, h, hf.cell);
+  let exposure = exposureOf(hf, spec.sunDirection, spec.shadowReach);
+  let lo = hf.minHeight();
+  let hi = hf.maxHeight();
+  let span = if hi - lo > 1. { hi - lo; } else { 1.; };
+  let maxA = hy.maxAccum();
+  let logMax = libc.logf(if maxA > 1.5 { maxA; } else { 1.5; });
+  var flow = List[f32].withCapacity(n);
+  var moisture = List[f32].withCapacity(n);
   i = 0usize;
   while i < n {
-    imm fl = libc.logf(*hy.accum[i]) / logMax;
+    let fl = libc.logf(*hy.accum[i]) / logMax;
     flow.push(fl);
-    imm hn = (*hf.data[i] - lo) / span;
-    imm prox = libc.expf(0. - *wd[i] / spec.moistureReach);
-    mut m = spec.humidity * (1. - 0.55 * hn) * 0.6 + 0.3 * fl + 0.45 * prox;
+    let hn = (*hf.data[i] - lo) / span;
+    let prox = libc.expf(0. - *wd[i] / spec.moistureReach);
+    var m = spec.humidity * (1. - 0.55 * hn) * 0.6 + 0.3 * fl + 0.45 * prox;
     if m > 1. { m = 1.; }
     moisture.push(m);
     i = i + 1usize;
   }
   // biomes
-  imm bc = biomes.len();
-  mut weights = List[f32].withCapacity(n * bc);
-  mut id = List[u8].withCapacity(n);
-  mut names = List[String].empty();
-  mut b = 0usize;
+  let bc = biomes.len();
+  var weights = List[f32].withCapacity(n * bc);
+  var id = List[u8].withCapacity(n);
+  var names = List[String].empty();
+  var b = 0usize;
   while b < bc { names.push(biomes[b].name.copy()); b = b + 1usize; }
   i = 0usize;
   while i < n {
-    mut sum = 0.;
-    mut bestV = -1.;
-    mut best = bc - 1usize;
-    imm base = weights.len();
+    var sum = 0.;
+    var bestV = -1.;
+    var best = bc - 1usize;
+    let base = weights.len();
     b = 0usize;
     while b < bc {
-      imm bi = biomes[b];
-      mut f = 1.;
+      let bi = biomes[b];
+      var f = 1.;
       if bi.waterRule == 1 {
         f = if *rm.waterDepth[i] > 0.01 { 1.; } else { 0.; };
       } else {
@@ -321,39 +321,39 @@ pub struct GroundSignals {
 }
 
 fn bilinear(data &List[f32], w usize, h usize, cell f32, ox f32, oz f32, x f32, z f32) f32 {
-  imm gx = (x - ox) / cell;
-  imm gz = (z - oz) / cell;
-  imm fx = libc.floorf(gx);
-  imm fz = libc.floorf(gz);
-  imm tx = gx - fx;
-  imm tz = gz - fz;
-  imm a = *data[index(w, h, i32.from(fx), i32.from(fz))];
-  imm b = *data[index(w, h, i32.from(fx) + 1, i32.from(fz))];
-  imm c = *data[index(w, h, i32.from(fx), i32.from(fz) + 1)];
-  imm d = *data[index(w, h, i32.from(fx) + 1, i32.from(fz) + 1)];
-  imm top = a + (b - a) * tx;
-  imm bottom = c + (d - c) * tx;
+  let gx = (x - ox) / cell;
+  let gz = (z - oz) / cell;
+  let fx = libc.floorf(gx);
+  let fz = libc.floorf(gz);
+  let tx = gx - fx;
+  let tz = gz - fz;
+  let a = *data[index(w, h, i32.from(fx), i32.from(fz))];
+  let b = *data[index(w, h, i32.from(fx) + 1, i32.from(fz))];
+  let c = *data[index(w, h, i32.from(fx), i32.from(fz) + 1)];
+  let d = *data[index(w, h, i32.from(fx) + 1, i32.from(fz) + 1)];
+  let top = a + (b - a) * tx;
+  let bottom = c + (d - c) * tx;
   top + (bottom - top) * tz;
 }
 
 pub fn groundSignals(hf &Heightfield, m &MaskSet, originX f32, originZ f32, size f32, res u32) GroundSignals {
-  imm n = usize.from(res) * usize.from(res);
-  mut ch = List[List[f32]].empty();
-  mut c = 0usize;
+  let n = usize.from(res) * usize.from(res);
+  var ch = List[List[f32]].empty();
+  var c = 0usize;
   while c < 8usize {
-    mut l = List[f32].withCapacity(n);
+    var l = List[f32].withCapacity(n);
     l.resize(n, 0.);
     ch.push(l);
     c = c + 1usize;
   }
-  imm texel = size / f32.from(res);
-  mut j = 0u32;
+  let texel = size / f32.from(res);
+  var j = 0u32;
   while j < res {
-    mut i = 0u32;
+    var i = 0u32;
     while i < res {
-      imm x = originX + (f32.from(i) + 0.5) * texel;
-      imm z = originZ + (f32.from(j) + 0.5) * texel;
-      imm k = usize.from(j) * usize.from(res) + usize.from(i);
+      let x = originX + (f32.from(i) + 0.5) * texel;
+      let z = originZ + (f32.from(j) + 0.5) * texel;
+      let k = usize.from(j) * usize.from(res) + usize.from(i);
       ch[0usize].set(k, hf.sample(x, z));
       ch[1usize].set(k, bilinear(&m.slope, m.w, m.h, m.cell, m.originX, m.originZ, x, z));
       ch[2usize].set(k, bilinear(&m.moisture, m.w, m.h, m.cell, m.originX, m.originZ, x, z));
@@ -375,25 +375,25 @@ pub fn groundSignals(hf &Heightfield, m &MaskSet, originX f32, originZ f32, size
 // mixed by their weights, a little darker where the slope is steep (the soil's thin) and varied from
 // sample to sample by a hash so large areas of one biome are not a flat colour
 pub fn bakeAlbedo(m &MaskSet, biomes &List[Biome]) List[f32] {
-  imm n = m.w * m.h;
-  mut out = List[f32].withCapacity(n * 3usize);
-  mut i = 0usize;
+  let n = m.w * m.h;
+  var out = List[f32].withCapacity(n * 3usize);
+  var i = 0usize;
   while i < n {
-    mut r = 0.;
-    mut g = 0.;
-    mut b = 0.;
-    mut k = 0usize;
+    var r = 0.;
+    var g = 0.;
+    var b = 0.;
+    var k = 0usize;
     while k < m.biomeCount {
-      imm wgt = *m.weights[i * m.biomeCount + k];
-      imm c = biomes[k].color;
+      let wgt = *m.weights[i * m.biomeCount + k];
+      let c = biomes[k].color;
       r = r + wgt * c.red;
       g = g + wgt * c.green;
       b = b + wgt * c.blue;
       k = k + 1usize;
     }
-    imm hsh = noise.toUnit(noise.pcg(u32.from(i) ^ 0x9E3779B9u32));
-    imm vary = 0.88 + 0.24 * hsh;
-    imm thin = 1. - 0.18 * (if *m.slope[i] > 45. { 1.; } else { *m.slope[i] / 45.; });
+    let hsh = noise.toUnit(noise.pcg(u32.from(i) ^ 0x9E3779B9u32));
+    let vary = 0.88 + 0.24 * hsh;
+    let thin = 1. - 0.18 * (if *m.slope[i] > 45. { 1.; } else { *m.slope[i] / 45.; });
     out.push(r * vary * thin);
     out.push(g * vary * thin);
     out.push(b * vary * thin);

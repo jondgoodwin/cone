@@ -38,44 +38,44 @@
 // m with neighbouring faces whose normals differ by at most 'angle'
 // (radians) merged, and vertices in straight runs dropped
 pub fn dissolvePlanar(m &PolyMesh, angle f32) PolyMesh {
-  imm nf = m.fHalfedge.len();
-  imm nv = m.positions.len();
-  imm cosLimit = cos(angle);
-  imm ecrease = m.findFloatChannel(EdgeDomain, "crease");
-  mut normals = List[Vec3].withCapacity(nf);
-  mut f = 0usize;
+  let nf = m.fHalfedge.len();
+  let nv = m.positions.len();
+  let cosLimit = cos(angle);
+  let ecrease = m.findFloatChannel(EdgeDomain, "crease");
+  var normals = List[Vec3].withCapacity(nf);
+  var f = 0usize;
   while f < nf {
     normals.push(m.faceNormal(u32.from(f)));
     f = f + 1usize;
   }
 
   // Regions, grown breadth first from each seed in face order
-  mut region = List[u32].withCapacity(nf);
+  var region = List[u32].withCapacity(nf);
   f = 0usize;
   while f < nf {
     region.push(NoIndex);
     f = f + 1usize;
   }
-  mut queue = List[u32].empty();
-  mut seeds = List[u32].empty();
+  var queue = List[u32].empty();
+  var seeds = List[u32].empty();
   f = 0usize;
   while f < nf {
     if *region[f] == NoIndex {
-      imm r = u32.from(seeds.len());
+      let r = u32.from(seeds.len());
       seeds.push(u32.from(f));
-      imm sn = *normals[f];
+      let sn = *normals[f];
       region.set(f, r);
       queue.clear();
       queue.push(u32.from(f));
-      mut qi = 0usize;
+      var qi = 0usize;
       while qi < queue.len() {
-        imm g = *queue[qi];
-        imm hs = m.faceHalfedges(g);
-        mut k = 0usize;
+        let g = *queue[qi];
+        let hs = m.faceHalfedges(g);
+        var k = 0usize;
         while k < hs.len() {
-          imm h = *hs[k];
-          imm o = m.face(m.twin(h));
-          imm e = h / 2u32;
+          let h = *hs[k];
+          let o = m.face(m.twin(h));
+          let e = h / 2u32;
           if o != NoIndex and *region[usize.from(o)] == NoIndex and (*normals[usize.from(o)]).dot(sn) >= cosLimit
               and !(ecrease != NoIndex and m.float(ecrease, e) > 0.) and !seamEdge(m, e) {
             region.set(usize.from(o), r);
@@ -91,30 +91,30 @@ pub fn dissolvePlanar(m &PolyMesh, angle f32) PolyMesh {
 
   // Each region's faces: one merged loop, or its faces as they were. A face
   // is its corners (half-edges, each the corner at its end), flat.
-  imm nr = seeds.len();
-  mut members = List[u32].empty();     // faces by region
-  mut start = List[u32].withCapacity(nr + 1usize);
-  mut count = List[u32].withCapacity(nr);
-  mut r = 0usize;
+  let nr = seeds.len();
+  var members = List[u32].empty();     // faces by region
+  var start = List[u32].withCapacity(nr + 1usize);
+  var count = List[u32].withCapacity(nr);
+  var r = 0usize;
   while r < nr {
     count.push(0u32);
     r = r + 1usize;
   }
   f = 0usize;
   while f < nf {
-    imm rf = usize.from(*region[f]);
+    let rf = usize.from(*region[f]);
     count.set(rf, *count[rf] + 1u32);
     f = f + 1usize;
   }
   r = 0usize;
-  mut acc = 0u32;
+  var acc = 0u32;
   while r < nr {
     start.push(acc);
     acc = acc + *count[r];
     r = r + 1usize;
   }
   start.push(acc);
-  mut fill = copyList[u32](&start);
+  var fill = copyList[u32](&start);
   f = 0usize;
   while f < nf {
     members.push(0u32);
@@ -122,38 +122,38 @@ pub fn dissolvePlanar(m &PolyMesh, angle f32) PolyMesh {
   }
   f = 0usize;
   while f < nf {
-    imm rf = usize.from(*region[f]);
+    let rf = usize.from(*region[f]);
     members.set(usize.from(*fill[rf]), u32.from(f));
     fill.set(rf, *fill[rf] + 1u32);
     f = f + 1usize;
   }
 
-  mut fCount = List[u32].empty();      // per output face: corners
-  mut fCorners = List[u32].empty();    // the corners (half-edges), flat
-  mut fSeed = List[u32].empty();       // per output face: its source face
-  mut onLoop = List[u32].withCapacity(nv);  // a mark per vertex, for a loop's repeats
-  mut v = 0usize;
+  var fCount = List[u32].empty();      // per output face: corners
+  var fCorners = List[u32].empty();    // the corners (half-edges), flat
+  var fSeed = List[u32].empty();       // per output face: its source face
+  var onLoop = List[u32].withCapacity(nv);  // a mark per vertex, for a loop's repeats
+  var v = 0usize;
   while v < nv {
     onLoop.push(NoIndex);
     v = v + 1usize;
   }
-  mut loopHs = List[u32].empty();
+  var loopHs = List[u32].empty();
   r = 0usize;
   while r < nr {
-    imm s0 = usize.from(*start[r]);
-    imm s1 = usize.from(*start[r + 1usize]);
-    mut merged = false;
+    let s0 = usize.from(*start[r]);
+    let s1 = usize.from(*start[r + 1usize]);
+    var merged = false;
     if s1 - s0 > 1usize {
       // The outline: the region's half-edges whose twin is not in it
-      mut first = NoIndex;
-      mut outline = 0usize;
-      mut i = s0;
+      var first = NoIndex;
+      var outline = 0usize;
+      var i = s0;
       while i < s1 {
-        imm hs = m.faceHalfedges(*members[i]);
-        mut k = 0usize;
+        let hs = m.faceHalfedges(*members[i]);
+        var k = 0usize;
         while k < hs.len() {
-          imm h = *hs[k];
-          imm o = m.face(m.twin(h));
+          let h = *hs[k];
+          let o = m.face(m.twin(h));
           if o == NoIndex or usize.from(*region[usize.from(o)]) != r {
             outline = outline + 1usize;
             if h < first { first = h; }
@@ -165,17 +165,17 @@ pub fn dissolvePlanar(m &PolyMesh, angle f32) PolyMesh {
       // Walk it from 'first': one loop through every outline half-edge, no
       // vertex twice
       loopHs.clear();
-      mut ok = true;
-      mut h = first;
-      mut going = true;
+      var ok = true;
+      var h = first;
+      var going = true;
       while going and ok {
         loopHs.push(h);
-        imm vx = m.toVertex(h);
+        let vx = m.toVertex(h);
         if *onLoop[usize.from(vx)] == u32.from(r) { ok = false; }
         onLoop.set(usize.from(vx), u32.from(r));
         // The next outline half-edge leaving vx, turning through the region
-        mut g = m.next(h);
-        mut steps = 0usize;
+        var g = m.next(h);
+        var steps = 0usize;
         while ok and !isOutline(m, g, &region, r) {
           g = m.next(m.twin(g));
           steps = steps + 1usize;
@@ -187,7 +187,7 @@ pub fn dissolvePlanar(m &PolyMesh, angle f32) PolyMesh {
       }
       if ok and loopHs.len() == outline and loopHs.len() >= 3usize {
         fCount.push(u32.from(loopHs.len()));
-        mut k = 0usize;
+        var k = 0usize;
         while k < loopHs.len() {
           fCorners.push(*loopHs[k]);
           k = k + 1usize;
@@ -197,11 +197,11 @@ pub fn dissolvePlanar(m &PolyMesh, angle f32) PolyMesh {
       }
     }
     if !merged {
-      mut i = s0;
+      var i = s0;
       while i < s1 {
-        imm hs = m.faceHalfedges(*members[i]);
+        let hs = m.faceHalfedges(*members[i]);
         fCount.push(u32.from(hs.len()));
-        mut k = 0usize;
+        var k = 0usize;
         while k < hs.len() {
           fCorners.push(*hs[k]);
           k = k + 1usize;
@@ -213,22 +213,22 @@ pub fn dissolvePlanar(m &PolyMesh, angle f32) PolyMesh {
     r = r + 1usize;
   }
   // Faces in the order of their seeds (the region's faces in face order)
-  imm nOut = fCount.len();
-  mut fStart = List[u32].withCapacity(nOut);
+  let nOut = fCount.len();
+  var fStart = List[u32].withCapacity(nOut);
   acc = 0u32;
-  mut o = 0usize;
+  var o = 0usize;
   while o < nOut {
     fStart.push(acc);
     acc = acc + *fCount[o];
     o = o + 1usize;
   }
-  imm order = orderBySeed(&fSeed);
+  let order = orderBySeed(&fSeed);
 
   // Straight runs: each vertex's two neighbours, when it has exactly two,
   // and how many output faces hold it
-  mut nbA = List[u32].withCapacity(nv);
-  mut nbB = List[u32].withCapacity(nv);
-  mut many = List[bool].withCapacity(nv);
+  var nbA = List[u32].withCapacity(nv);
+  var nbB = List[u32].withCapacity(nv);
+  var many = List[bool].withCapacity(nv);
   v = 0usize;
   while v < nv {
     nbA.push(NoIndex);
@@ -238,13 +238,13 @@ pub fn dissolvePlanar(m &PolyMesh, angle f32) PolyMesh {
   }
   o = 0usize;
   while o < nOut {
-    imm s = usize.from(*fStart[o]);
-    imm n = usize.from(*fCount[o]);
-    mut k = 0usize;
+    let s = usize.from(*fStart[o]);
+    let n = usize.from(*fCount[o]);
+    var k = 0usize;
     while k < n {
-      imm vx = usize.from(m.toVertex(*fCorners[s + k]));
-      imm before = m.toVertex(*fCorners[s + (k + n - 1usize) % n]);
-      imm after = m.toVertex(*fCorners[s + (k + 1usize) % n]);
+      let vx = usize.from(m.toVertex(*fCorners[s + k]));
+      let before = m.toVertex(*fCorners[s + (k + n - 1usize) % n]);
+      let after = m.toVertex(*fCorners[s + (k + 1usize) % n]);
       noteNeighbour(&mut nbA, &mut nbB, &mut many, vx, before);
       noteNeighbour(&mut nbA, &mut nbB, &mut many, vx, after);
       k = k + 1usize;
@@ -254,19 +254,19 @@ pub fn dissolvePlanar(m &PolyMesh, angle f32) PolyMesh {
   // Corners left per output face, and each vertex's output faces, flat
   // (vfList[vfStart[v]] up to vfList[vfStart[v + 1]]), for the
   // three-corner rule
-  mut left = copyList[u32](&fCount);
-  mut vfStart = List[u32].withCapacity(nv + 1usize);
-  mut per = List[u32].withCapacity(nv);
-  mut dropped = List[bool].withCapacity(nv);
+  var left = copyList[u32](&fCount);
+  var vfStart = List[u32].withCapacity(nv + 1usize);
+  var per = List[u32].withCapacity(nv);
+  var dropped = List[bool].withCapacity(nv);
   v = 0usize;
   while v < nv {
     per.push(0u32);
     dropped.push(false);
     v = v + 1usize;
   }
-  mut c0 = 0usize;
+  var c0 = 0usize;
   while c0 < fCorners.len() {
-    imm vx = usize.from(m.toVertex(*fCorners[c0]));
+    let vx = usize.from(m.toVertex(*fCorners[c0]));
     per.set(vx, *per[vx] + 1u32);
     c0 = c0 + 1usize;
   }
@@ -278,8 +278,8 @@ pub fn dissolvePlanar(m &PolyMesh, angle f32) PolyMesh {
     v = v + 1usize;
   }
   vfStart.push(acc);
-  mut vfFill = copyList[u32](&vfStart);
-  mut vfList = List[u32].withCapacity(fCorners.len());
+  var vfFill = copyList[u32](&vfStart);
+  var vfList = List[u32].withCapacity(fCorners.len());
   c0 = 0usize;
   while c0 < fCorners.len() {
     vfList.push(0u32);
@@ -287,11 +287,11 @@ pub fn dissolvePlanar(m &PolyMesh, angle f32) PolyMesh {
   }
   o = 0usize;
   while o < nOut {
-    imm s = usize.from(*fStart[o]);
-    imm n = usize.from(*fCount[o]);
-    mut k = 0usize;
+    let s = usize.from(*fStart[o]);
+    let n = usize.from(*fCount[o]);
+    var k = 0usize;
     while k < n {
-      imm vx = usize.from(m.toVertex(*fCorners[s + k]));
+      let vx = usize.from(m.toVertex(*fCorners[s + k]));
       vfList.set(usize.from(*vfFill[vx]), u32.from(o));
       vfFill.set(vx, *vfFill[vx] + 1u32);
       k = k + 1usize;
@@ -300,20 +300,20 @@ pub fn dissolvePlanar(m &PolyMesh, angle f32) PolyMesh {
   }
   // The crease rule compares each vertex's own two edges (to its first
   // neighbours), so a run's edges are alike all along it
-  imm origA = copyList[u32](&nbA);
-  imm origB = copyList[u32](&nbB);
+  let origA = copyList[u32](&nbA);
+  let origB = copyList[u32](&nbB);
   v = 0usize;
   while v < nv {
-    imm a = *nbA[v];
-    imm b = *nbB[v];
+    let a = *nbA[v];
+    let b = *nbB[v];
     if !*many[v] and a != NoIndex and b != NoIndex {
-      imm p = *m.positions[v];
-      imm da = unit(p - *m.positions[usize.from(a)]);
-      imm db = unit(*m.positions[usize.from(b)] - p);
-      mut fits = da.dot(db) >= cosLimit and sameCrease(m, ecrease, u32.from(v), *origA[v], *origB[v]);
-      imm f0 = usize.from(*vfStart[v]);
-      imm f1 = usize.from(*vfStart[v + 1usize]);
-      mut k = f0;
+      let p = *m.positions[v];
+      let da = unit(p - *m.positions[usize.from(a)]);
+      let db = unit(*m.positions[usize.from(b)] - p);
+      var fits = da.dot(db) >= cosLimit and sameCrease(m, ecrease, u32.from(v), *origA[v], *origB[v]);
+      let f0 = usize.from(*vfStart[v]);
+      let f1 = usize.from(*vfStart[v + 1usize]);
+      var k = f0;
       while fits and k < f1 {
         if *left[usize.from(*vfList[k])] <= 3u32 { fits = false; }
         k = k + 1usize;
@@ -322,7 +322,7 @@ pub fn dissolvePlanar(m &PolyMesh, angle f32) PolyMesh {
         dropped.set(v, true);
         k = f0;
         while k < f1 {
-          imm fo = usize.from(*vfList[k]);
+          let fo = usize.from(*vfList[k]);
           left.set(fo, *left[fo] - 1u32);
           k = k + 1usize;
         }
@@ -336,21 +336,21 @@ pub fn dissolvePlanar(m &PolyMesh, angle f32) PolyMesh {
 
   // Vertices kept: those on an output face and not dropped, and those on
   // no face to begin with
-  mut used = List[bool].withCapacity(nv);
+  var used = List[bool].withCapacity(nv);
   v = 0usize;
   while v < nv {
     used.push(m.isIsolated(u32.from(v)));
     v = v + 1usize;
   }
-  mut c = 0usize;
+  var c = 0usize;
   while c < fCorners.len() {
-    imm vx = usize.from(m.toVertex(*fCorners[c]));
+    let vx = usize.from(m.toVertex(*fCorners[c]));
     if !*dropped[vx] { used.set(vx, true); }
     c = c + 1usize;
   }
-  mut newIdx = List[u32].withCapacity(nv);
-  mut pos = List[Vec3].empty();
-  mut vSrc = List[u32].empty();
+  var newIdx = List[u32].withCapacity(nv);
+  var pos = List[Vec3].empty();
+  var vSrc = List[u32].empty();
   v = 0usize;
   while v < nv {
     if *used[v] {
@@ -363,21 +363,21 @@ pub fn dissolvePlanar(m &PolyMesh, angle f32) PolyMesh {
     v = v + 1usize;
   }
 
-  mut counts = List[u32].empty();
-  mut idx = List[u32].empty();
-  mut cSrc = List[u32].empty();
-  mut eSrc = List[u32].empty();
-  mut fSrc = List[u32].empty();
-  mut i = 0usize;
+  var counts = List[u32].empty();
+  var idx = List[u32].empty();
+  var cSrc = List[u32].empty();
+  var eSrc = List[u32].empty();
+  var fSrc = List[u32].empty();
+  var i = 0usize;
   while i < order.len() {
-    imm ou = usize.from(*order[i]);
-    imm s = usize.from(*fStart[ou]);
-    imm n = usize.from(*fCount[ou]);
-    mut kept = 0u32;
-    mut k = 0usize;
+    let ou = usize.from(*order[i]);
+    let s = usize.from(*fStart[ou]);
+    let n = usize.from(*fCount[ou]);
+    var kept = 0u32;
+    var k = 0usize;
     while k < n {
-      imm h = *fCorners[s + k];
-      imm vx = usize.from(m.toVertex(h));
+      let h = *fCorners[s + k];
+      let vx = usize.from(m.toVertex(h));
       if !*dropped[vx] {
         idx.push(*newIdx[vx]);
         cSrc.push(h);
@@ -395,22 +395,22 @@ pub fn dissolvePlanar(m &PolyMesh, angle f32) PolyMesh {
 
 // Whether half-edge g is on region r's outline: its face in r, its twin's not
 fn isOutline(m &PolyMesh, g u32, region &List[u32], r usize) bool {
-  imm fg = m.face(g);
+  let fg = m.face(g);
   if fg == NoIndex or usize.from(*region[usize.from(fg)]) != r { return false; }
-  imm o = m.face(m.twin(g));
+  let o = m.face(m.twin(g));
   o == NoIndex or usize.from(*region[usize.from(o)]) != r;
 }
 
 // Output faces' numbers ordered by their seeds (a seed is a face number, each
 // used once)
 fn orderBySeed(seed &List[u32]) List[u32] {
-  mut maxSeed = 0usize;
-  mut i = 0usize;
+  var maxSeed = 0usize;
+  var i = 0usize;
   while i < seed.len() {
     if usize.from(*seed[i]) + 1usize > maxSeed { maxSeed = usize.from(*seed[i]) + 1usize; }
     i = i + 1usize;
   }
-  mut at = List[u32].withCapacity(maxSeed);
+  var at = List[u32].withCapacity(maxSeed);
   i = 0usize;
   while i < maxSeed {
     at.push(NoIndex);
@@ -421,7 +421,7 @@ fn orderBySeed(seed &List[u32]) List[u32] {
     at.set(usize.from(*seed[i]), u32.from(i));
     i = i + 1usize;
   }
-  mut out = List[u32].withCapacity(seed.len());
+  var out = List[u32].withCapacity(seed.len());
   i = 0usize;
   while i < maxSeed {
     if *at[i] != NoIndex { out.push(*at[i]); }
@@ -441,7 +441,7 @@ fn noteNeighbour(nbA &mut List[u32], nbB &mut List[u32], many &mut List[bool], v
 
 // v's neighbour 'was' is now 'now'
 fn replaceNeighbour(nbA &mut List[u32], nbB &mut List[u32], v u32, was u32, now u32) {
-  imm vu = usize.from(v);
+  let vu = usize.from(v);
   if *nbA[vu] == was { nbA.set(vu, now); }
   elif *nbB[vu] == was { nbB.set(vu, now); }
 }
@@ -449,16 +449,16 @@ fn replaceNeighbour(nbA &mut List[u32], nbB &mut List[u32], v u32, was u32, now 
 // Whether the edges v-a and v-b have the same "crease" (true without one)
 fn sameCrease(m &PolyMesh, ch u32, v u32, a u32, b u32) bool {
   if ch == NoIndex { return true; }
-  imm ea = edgeBetween(m, v, a);
-  imm eb = edgeBetween(m, v, b);
+  let ea = edgeBetween(m, v, a);
+  let eb = edgeBetween(m, v, b);
   if ea == NoIndex or eb == NoIndex { return true; }
   m.float(ch, ea) == m.float(ch, eb);
 }
 
 // The edge from v to w, or NoIndex
 fn edgeBetween(m &PolyMesh, v u32, w u32) u32 {
-  imm hs = m.vertexOutgoing(v);
-  mut k = 0usize;
+  let hs = m.vertexOutgoing(v);
+  var k = 0usize;
   while k < hs.len() {
     if m.toVertex(*hs[k]) == w { return *hs[k] / 2u32; }
     k = k + 1usize;

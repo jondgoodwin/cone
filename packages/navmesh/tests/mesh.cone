@@ -26,32 +26,32 @@ fn addFloor(input &mut NavInput, x0 f32, z0 f32, x1 f32, z1 f32, y f32) {
 // Every polygon of the mesh checked for being convex, of six or fewer
 // vertices, with its edge-neighbours agreeing
 fn checkPolygons(nav &NavMesh, label &Array[u8]) {
-  mut convexBad = 0i32;
-  mut asymmetric = 0i32;
-  mut tooMany = 0i32;
-  mut t = 0usize;
+  var convexBad = 0i32;
+  var asymmetric = 0i32;
+  var tooMany = 0i32;
+  var t = 0usize;
   while t < nav.tiles.len() {
-    imm tile = nav.tiles[t];
-    mut p = 0usize;
+    let tile = nav.tiles[t];
+    var p = 0usize;
     while p < tile.polyCount() {
-      imm nv = usize.from(*tile.pcount[p]);
+      let nv = usize.from(*tile.pcount[p]);
       if nv > 6usize or nv < 3usize { tooMany = tooMany + 1i32; }
       // convex: every turn the same way (the winding is counterclockwise seen from above, x right, z down the page)
-      mut sign = 0i32;
-      mut e = 0usize;
+      var sign = 0i32;
+      var e = 0usize;
       while e < nv {
-        imm a = tile.vertOf(p, e);
-        imm b = tile.vertOf(p, (e + 1usize) % nv);
-        imm c = tile.vertOf(p, (e + 2usize) % nv);
-        imm cross = (b.x - a.x) * (c.z - b.z) - (b.z - a.z) * (c.x - b.x);
+        let a = tile.vertOf(p, e);
+        let b = tile.vertOf(p, (e + 1usize) % nv);
+        let c = tile.vertOf(p, (e + 2usize) % nv);
+        let cross = (b.x - a.x) * (c.z - b.z) - (b.z - a.z) * (c.x - b.x);
         if cross > 0.0001 { if sign < 0i32 { convexBad = convexBad + 1i32; } sign = 1i32; }
         if cross < -0.0001 { if sign > 0i32 { convexBad = convexBad + 1i32; } sign = -1i32; }
         // a neighbour inside the tile points back at this polygon
-        imm nei = *tile.pnei[p * 6usize + e];
+        let nei = *tile.pnei[p * 6usize + e];
         if nei >= 0i32 and nei < 32768i32 {
-          mut back = false;
-          imm nn = usize.from(*tile.pcount[usize.from(nei)]);
-          mut f = 0usize;
+          var back = false;
+          let nn = usize.from(*tile.pcount[usize.from(nei)]);
+          var f = 0usize;
           while f < nn {
             if *tile.pnei[usize.from(nei) * 6usize + f] == i32.from(p) { back = true; }
             f = f + 1usize;
@@ -72,26 +72,26 @@ fn checkPolygons(nav &NavMesh, label &Array[u8]) {
 
 // Clearance: a 12 x 12 floor with a pillar of radius 1 in the middle
 fn testClearance() {
-  mut input = NavInput.empty();
+  var input = NavInput.empty();
   addFloor(&mut input, 0., 0., 12., 12., 0.);
   input.addCircleObstacle(6., 6., 1., 0., 3., AreaNull);
-  imm params = NavParams.standard();
-  imm nav = buildNavMesh(&mut input, &params);
+  let params = NavParams.standard();
+  let nav = buildNavMesh(&mut input, &params);
   expectBool(nav.polyCount() > 4usize, true, "the floor made polygons");
   checkPolygons(&nav, "polygons of the pillar scene are convex");
-  mut nearest = 3.4e38;
-  mut farthestNear = 0.;
-  mut minX = 3.4e38;
-  mut maxX = -3.4e38;
-  mut t = 0usize;
+  var nearest = 3.4e38;
+  var farthestNear = 0.;
+  var minX = 3.4e38;
+  var maxX = -3.4e38;
+  var t = 0usize;
   while t < nav.tiles.len() {
-    imm tile = nav.tiles[t];
-    mut p = 0usize;
+    let tile = nav.tiles[t];
+    var p = 0usize;
     while p < tile.polyCount() {
-      mut e = 0usize;
+      var e = 0usize;
       while e < usize.from(*tile.pcount[p]) {
-        imm v = tile.vertOf(p, e);
-        imm d = (new Vec3(v.x - 6., 0., v.z - 6.)).length();
+        let v = tile.vertOf(p, e);
+        let d = (new Vec3(v.x - 6., 0., v.z - 6.)).length();
         if d < nearest { nearest = d; }
         if v.x < minX { minX = v.x; }
         if v.x > maxX { maxX = v.x; }
@@ -109,9 +109,9 @@ fn testClearance() {
   expectBool(minX >= 0.4 and minX <= 1.3, true, "clear of the floor's west edge");
   expectBool(maxX <= 11.6 and maxX >= 10.7, true, "clear of the floor's east edge");
   // a point in the pillar is moved out to its clearance
-  imm n = nearestPolyRaw(&nav, new Vec3(6., 0., 6.), 3., 3., 3.);
+  let n = nearestPolyRaw(&nav, new Vec3(6., 0., 6.), 3., 3., 3.);
   expectBool(n.found, true, "a polygon near the pillar's centre");
-  imm dc = (new Vec3(n.pos.x - 6., 0., n.pos.z - 6.)).length();
+  let dc = (new Vec3(n.pos.x - 6., 0., n.pos.z - 6.)).length();
   expectBool(dc >= 1.4 and dc <= 2.4, true, "the closest mesh point to the pillar's centre is clear of it");
   // far from the mesh: none within the box
   expectBool(nearestPolyRaw(&nav, new Vec3(50., 0., 50.), 2., 2., 2.).found, false, "nothing near a faraway point");
@@ -119,90 +119,90 @@ fn testClearance() {
 
 // Slopes, steps and ceilings decide where the mesh is
 fn testWalkable() {
-  imm params = NavParams.standard();
-  imm filter = QueryFilter.standard();
-  imm half = new Vec3(1., 3., 1.);
+  let params = NavParams.standard();
+  let filter = QueryFilter.standard();
+  let half = new Vec3(1., 3., 1.);
 
   // A step of 0.4 m (under the 0.5 m climb): two floors joined
   {
-    mut input = NavInput.empty();
+    var input = NavInput.empty();
     addFloor(&mut input, 0., 0., 8., 8., 0.);
     addFloor(&mut input, 8., 0., 16., 8., 0.4);
     // the riser between them, facing -x (steep, so solid but not walkable)
     input.addTriangle(new Vec3(8., 0., 0.), new Vec3(8., 0., 8.), new Vec3(8., 0.4, 0.), AreaNull);
     input.addTriangle(new Vec3(8., 0.4, 0.), new Vec3(8., 0., 8.), new Vec3(8., 0.4, 8.), AreaNull);
-    imm nav = buildNavMesh(&mut input, &params);
-    imm r = findRoute(&nav, new Vec3(2., 0., 4.), new Vec3(14., 0.4, 4.), half, &filter);
+    let nav = buildNavMesh(&mut input, &params);
+    let r = findRoute(&nav, new Vec3(2., 0., 4.), new Vec3(14., 0.4, 4.), half, &filter);
     expectBool(r.found and !r.partial, true, "a 0.4 m step can be climbed");
   }
   // A step of 1.0 m is a wall
   {
-    mut input = NavInput.empty();
+    var input = NavInput.empty();
     addFloor(&mut input, 0., 0., 8., 8., 0.);
     addFloor(&mut input, 8., 0., 16., 8., 1.0);
     input.addTriangle(new Vec3(8., 0., 0.), new Vec3(8., 0., 8.), new Vec3(8., 1., 0.), AreaNull);
     input.addTriangle(new Vec3(8., 1., 0.), new Vec3(8., 0., 8.), new Vec3(8., 1., 8.), AreaNull);
-    imm nav = buildNavMesh(&mut input, &params);
-    imm r = findRoute(&nav, new Vec3(2., 0., 4.), new Vec3(14., 1., 4.), half, &filter);
+    let nav = buildNavMesh(&mut input, &params);
+    let r = findRoute(&nav, new Vec3(2., 0., 4.), new Vec3(14., 1., 4.), half, &filter);
     expectBool(r.found and !r.partial, false, "a 1.0 m step cannot");
   }
   // A ramp of 30 degrees up 2 m over 3.46 m is walkable; one of 60 degrees is not
   {
-    mut input = NavInput.empty();
+    var input = NavInput.empty();
     addFloor(&mut input, 0., 0., 6., 8., 0.);
     // the ramp from x = 6 to 9.464 rising 2 m (30 degrees), then a plateau
     input.addTriangle(new Vec3(6., 0., 0.), new Vec3(6., 0., 8.), new Vec3(9.464, 2., 0.), AreaGround);
     input.addTriangle(new Vec3(9.464, 2., 0.), new Vec3(6., 0., 8.), new Vec3(9.464, 2., 8.), AreaGround);
     addFloor(&mut input, 9.464, 0., 16., 8., 2.);
-    imm nav = buildNavMesh(&mut input, &params);
-    imm r = findRoute(&nav, new Vec3(2., 0., 4.), new Vec3(14., 2., 4.), half, &filter);
+    let nav = buildNavMesh(&mut input, &params);
+    let r = findRoute(&nav, new Vec3(2., 0., 4.), new Vec3(14., 2., 4.), half, &filter);
     expectBool(r.found and !r.partial, true, "a 30 degree ramp can be walked");
     // the route climbs: its end is 2 m up, and the corners on the way are monotonic in height
-    imm last = (*r.points[r.points.len() - 1usize]).pos;
+    let last = (*r.points[r.points.len() - 1usize]).pos;
     near(last.y, 2., 0.45, "the route ends on the plateau");
   }
   {
-    mut input = NavInput.empty();
+    var input = NavInput.empty();
     addFloor(&mut input, 0., 0., 6., 8., 0.);
     // 60 degrees: rises 3.464 over 2 m
     input.addTriangle(new Vec3(6., 0., 0.), new Vec3(6., 0., 8.), new Vec3(8., 3.464, 0.), AreaGround);
     input.addTriangle(new Vec3(8., 3.464, 0.), new Vec3(6., 0., 8.), new Vec3(8., 3.464, 8.), AreaGround);
     addFloor(&mut input, 8., 0., 16., 8., 3.464);
-    imm nav = buildNavMesh(&mut input, &params);
-    imm r = findRoute(&nav, new Vec3(2., 0., 4.), new Vec3(14., 3.464, 4.), half, &filter);
+    let nav = buildNavMesh(&mut input, &params);
+    let r = findRoute(&nav, new Vec3(2., 0., 4.), new Vec3(14., 3.464, 4.), half, &filter);
     expectBool(r.found and !r.partial, false, "a 60 degree slope cannot");
   }
   // A ceiling of 1.5 m across the way leaves less than the agent's height
   {
-    mut input = NavInput.empty();
+    var input = NavInput.empty();
     addFloor(&mut input, 0., 0., 14., 8., 0.);
     // a plate at y = 1.5 across x 5 to 9, all of z, facing down (clockwise from above)
     input.addTriangle(new Vec3(5., 1.5, 0.), new Vec3(9., 1.5, 0.), new Vec3(5., 1.5, 8.), AreaNull);
     input.addTriangle(new Vec3(9., 1.5, 0.), new Vec3(9., 1.5, 8.), new Vec3(5., 1.5, 8.), AreaNull);
-    imm nav = buildNavMesh(&mut input, &params);
-    imm r = findRoute(&nav, new Vec3(2., 0., 4.), new Vec3(12., 0., 4.), half, &filter);
+    let nav = buildNavMesh(&mut input, &params);
+    let r = findRoute(&nav, new Vec3(2., 0., 4.), new Vec3(12., 0., 4.), half, &filter);
     expectBool(r.found and !r.partial, false, "a 1.5 m ceiling blocks a 1.8 m agent");
   }
   // The same plate at 2.2 m leaves room
   {
-    mut input = NavInput.empty();
+    var input = NavInput.empty();
     addFloor(&mut input, 0., 0., 14., 8., 0.);
     input.addTriangle(new Vec3(5., 2.2, 0.), new Vec3(9., 2.2, 0.), new Vec3(5., 2.2, 8.), AreaNull);
     input.addTriangle(new Vec3(9., 2.2, 0.), new Vec3(9., 2.2, 8.), new Vec3(5., 2.2, 8.), AreaNull);
-    imm nav = buildNavMesh(&mut input, &params);
-    imm r = findRoute(&nav, new Vec3(2., 0., 4.), new Vec3(12., 0., 4.), half, &filter);
+    let nav = buildNavMesh(&mut input, &params);
+    let r = findRoute(&nav, new Vec3(2., 0., 4.), new Vec3(12., 0., 4.), half, &filter);
     expectBool(r.found and !r.partial, true, "a 2.2 m ceiling does not");
   }
 }
 
 // A rolling heightfield: the path follows the ground
 fn testHeightfield() {
-  mut input = NavInput.empty();
-  imm n = 21i32;
-  mut hs = List[f32].empty();
-  mut j = 0i32;
+  var input = NavInput.empty();
+  let n = 21i32;
+  var hs = List[f32].empty();
+  var j = 0i32;
   while j < n {
-    mut i = 0i32;
+    var i = 0i32;
     while i < n {
       // a gentle ridge across z: height 1 m at most, slopes far under 45 degrees
       hs.push(0.5 * sin(f32.from(i) * 0.3));
@@ -211,18 +211,18 @@ fn testHeightfield() {
     j = j + 1i32;
   }
   input.addHeightfield(0., 0., 1., n, n, hs.view(), AreaGround);
-  imm params = NavParams.standard();
-  imm nav = buildNavMesh(&mut input, &params);
+  let params = NavParams.standard();
+  let nav = buildNavMesh(&mut input, &params);
   checkPolygons(&nav, "heightfield polygons are convex");
-  imm filter = QueryFilter.standard();
-  imm r = findRoute(&nav, new Vec3(2., 0., 10.), new Vec3(18., 0., 10.), new Vec3(1., 5., 1.), &filter);
+  let filter = QueryFilter.standard();
+  let r = findRoute(&nav, new Vec3(2., 0., 10.), new Vec3(18., 0., 10.), new Vec3(1., 5., 1.), &filter);
   expectBool(r.found, true, "a route over the heightfield");
   // every corner within a cell height or two of the true surface
-  mut worst = 0.;
-  mut i = 0usize;
+  var worst = 0.;
+  var i = 0usize;
   while i < r.points.len() {
-    imm p = (*r.points[i]).pos;
-    imm want = 0.5 * sin(p.x * 0.3);
+    let p = (*r.points[i]).pos;
+    let want = 0.5 * sin(p.x * 0.3);
     if absf(p.y - want) > worst { worst = absf(p.y - want); }
     i = i + 1usize;
   }
@@ -232,43 +232,43 @@ fn testHeightfield() {
 // The distance from (x, z) to the box centred (cx, cz) of half extents hx, hz
 // turned 'yaw' (x towards -z), by rotating the point into the box's frame
 fn boxDistance(x f32, z f32, cx f32, cz f32, hx f32, hz f32, yaw f32) f32 {
-  imm c = cos(yaw);
-  imm s = sin(yaw);
-  imm dx = x - cx;
-  imm dz = z - cz;
-  imm lx = c * dx - s * dz;
-  imm lz = s * dx + c * dz;
-  imm ex = if absf(lx) > hx { absf(lx) - hx; } else { 0.; };
-  imm ez = if absf(lz) > hz { absf(lz) - hz; } else { 0.; };
+  let c = cos(yaw);
+  let s = sin(yaw);
+  let dx = x - cx;
+  let dz = z - cz;
+  let lx = c * dx - s * dz;
+  let lz = s * dx + c * dz;
+  let ex = if absf(lx) > hx { absf(lx) - hx; } else { 0.; };
+  let ez = if absf(lz) > hz { absf(lz) - hz; } else { 0.; };
   (ex * ex + ez * ez).sqrt();
 }
 
 // A box turned 30 degrees: its footprint tests agree with sampling, and the
 // mesh keeps the agent's radius from it
 fn testRotated() {
-  imm yaw = 0.5235988;
-  mut o = new Obstacle(1u32, ObstacleBox, 5., 5., 2., 0.5, yaw, 0., 3., AreaNull, true);
-  mut missed = 0i32;
-  mut grazed = 0i32;
-  mut cellsTouched = 0i32;
-  mut cx = 0i32;
+  let yaw = 0.5235988;
+  var o = new Obstacle(1u32, ObstacleBox, 5., 5., 2., 0.5, yaw, 0., 3., AreaNull, true);
+  var missed = 0i32;
+  var grazed = 0i32;
+  var cellsTouched = 0i32;
+  var cx = 0i32;
   while cx < 40i32 {
-    mut cz = 0i32;
+    var cz = 0i32;
     while cz < 40i32 {
-      imm x = 1. + f32.from(cx) * 0.2 + 0.1;
-      imm z = 1. + f32.from(cz) * 0.2 + 0.1;
+      let x = 1. + f32.from(cx) * 0.2 + 0.1;
+      let z = 1. + f32.from(cz) * 0.2 + 0.1;
       // any of 6 x 6 sample points of the 0.2 square inside the box?
-      mut anyIn = false;
-      mut sx = 0i32;
+      var anyIn = false;
+      var sx = 0i32;
       while sx < 6i32 {
-        mut sz = 0i32;
+        var sz = 0i32;
         while sz < 6i32 {
           if o.containsPoint(x - 0.1 + 0.2 * (f32.from(sx) + 0.5) / 6., z - 0.1 + 0.2 * (f32.from(sz) + 0.5) / 6.) { anyIn = true; }
           sz = sz + 1i32;
         }
         sx = sx + 1i32;
       }
-      imm touches = o.touchesSquare(x, z, 0.2);
+      let touches = o.touchesSquare(x, z, 0.2);
       if anyIn and !touches { missed = missed + 1i32; }
       if touches and !anyIn { grazed = grazed + 1i32; }
       if touches { cellsTouched = cellsTouched + 1i32; }
@@ -282,19 +282,19 @@ fn testRotated() {
   expectBool(cellsTouched >= 100i32 and cellsTouched < 190i32, true, "touched cells are the area plus a rim");
 
   // in a mesh
-  mut input = NavInput.empty();
+  var input = NavInput.empty();
   input.addTriangle(new Vec3(0., 0., 0.), new Vec3(0., 0., 10.), new Vec3(10., 0., 0.), AreaGround);
   input.addTriangle(new Vec3(10., 0., 0.), new Vec3(0., 0., 10.), new Vec3(10., 0., 10.), AreaGround);
   input.addBoxObstacle(5., 5., 2., 0.5, yaw, 0., 3., AreaNull);
-  imm params = NavParams.standard();
-  imm nav = buildNavMesh(&mut input, &params);
-  mut nearest = 3.4e38;
-  mut t = 0usize;
+  let params = NavParams.standard();
+  let nav = buildNavMesh(&mut input, &params);
+  var nearest = 3.4e38;
+  var t = 0usize;
   while t < nav.tiles.len() {
-    mut i = 0usize;
+    var i = 0usize;
     while i < nav.tiles[t].verts.len() {
-      imm v = *nav.tiles[t].verts[i];
-      imm d = boxDistance(v.x, v.z, 5., 5., 2., 0.5, yaw);
+      let v = *nav.tiles[t].verts[i];
+      let d = boxDistance(v.x, v.z, 5., 5., 2., 0.5, yaw);
       if d < nearest { nearest = d; }
       i = i + 1usize;
     }
@@ -304,15 +304,15 @@ fn testRotated() {
   expectBool(nearest <= 1.1, true, "and the clearance is not wasted");
 
   // a thin wall across a slant leaks nothing
-  mut input2 = NavInput.empty();
+  var input2 = NavInput.empty();
   input2.addTriangle(new Vec3(0., 0., 0.), new Vec3(0., 0., 10.), new Vec3(20., 0., 0.), AreaGround);
   input2.addTriangle(new Vec3(20., 0., 0.), new Vec3(0., 0., 10.), new Vec3(20., 0., 10.), AreaGround);
   input2.addBoxObstacle(10., 5., 14., 0.05, -0.6, 0., 3., AreaNull);
-  imm nav2 = buildNavMesh(&mut input2, &params);
-  imm filter = QueryFilter.standard();
-  imm r = findRoute(&nav2, new Vec3(3., 0., 8.), new Vec3(17., 0., 2.), new Vec3(1., 3., 1.), &filter);
+  let nav2 = buildNavMesh(&mut input2, &params);
+  let filter = QueryFilter.standard();
+  let r = findRoute(&nav2, new Vec3(3., 0., 8.), new Vec3(17., 0., 2.), new Vec3(1., 3., 1.), &filter);
   expectBool(r.found and !r.partial, false, "a thin slanted wall is a closed barrier");
-  imm same = findRoute(&nav2, new Vec3(3., 0., 8.), new Vec3(3., 0., 9.5), new Vec3(1., 3., 1.), &filter);
+  let same = findRoute(&nav2, new Vec3(3., 0., 8.), new Vec3(3., 0., 9.5), new Vec3(1., 3., 1.), &filter);
   expectBool(same.found and !same.partial, true, "while its own side is connected");
 }
 

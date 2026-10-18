@@ -69,14 +69,14 @@ pub struct Camera {
   // 'viewHeight' above and below its middle, and that times the aspect to
   // either side.
   pub fn orthogonal(self &, aspect f32) Mat4 {
-    imm w = viewHeight * aspect;
+    let w = viewHeight * aspect;
     Mat4.orthographic(-w, w, -viewHeight, viewHeight, near, far);
   }
 
   // The projection its 'projection' names, into a target 'aspect' wide for
   // each unit high
   pub fn projectionMatrix(self &, aspect f32) Mat4 {
-    mut p = if projection == Orthogonal { self.orthogonal(aspect); } else { self.perspective(aspect); };
+    var p = if projection == Orthogonal { self.orthogonal(aspect); } else { self.perspective(aspect); };
     if clipped { p = obliqueNearPlane(p, self.viewMatrix(), clip); }
     if reflected {
       // clip x negated: the winding turned back (see 'reflected')
@@ -88,7 +88,7 @@ pub struct Camera {
     if jitterX != 0. or jitterY != 0. {
       // Clip x and y moved by the jitter times clip w, so the picture shifts
       // by the jitter in NDC
-      mut c = 0usize;
+      var c = 0usize;
       while c < 4usize {
         p.m[4usize * c] = p.m[4usize * c] + jitterX * p.m[4usize * c + 3usize];
         p.m[4usize * c + 1usize] = p.m[4usize * c + 1usize] + jitterY * p.m[4usize * c + 3usize];
@@ -102,7 +102,7 @@ pub struct Camera {
   // facing the side the camera is on, w the offset), nothing behind the
   // plane drawn: the camera of the picture the mirror shows
   pub fn reflectedAbout(self &, plane Vec4) Camera {
-    mut c = *self;
+    var c = *self;
     c.reflected = true;
     c.mirror = plane;
     c.clipped = true;
@@ -112,11 +112,11 @@ pub struct Camera {
 
   // The reflection about 'mirror' as a matrix: p - 2 (n.p + w) n
   pub fn reflectionMatrix(self &) Mat4 {
-    imm n = [mirror.x, mirror.y, mirror.z];
-    mut r = Mat4.identity();
-    mut c = 0usize;
+    let n = [mirror.x, mirror.y, mirror.z];
+    var r = Mat4.identity();
+    var c = 0usize;
     while c < 3usize {
-      mut row = 0usize;
+      var row = 0usize;
       while row < 3usize {
         r.m[4usize * c + row] = r.m[4usize * c + row] - 2. * n[row] * n[c];
         row = row + 1usize;
@@ -130,10 +130,10 @@ pub struct Camera {
   // Where it is placed: relative to the thing it follows, looking out from
   // that thing's eye
   pub fn placement(self &) Mat4 {
-    imm cammat = Mat4.fromTrs(origin, orientation, scale);
+    let cammat = Mat4.fromTrs(origin, orientation, scale);
     if following {
-      mut follow = followMatrix;
-      imm e = followMatrix * eye;
+      var follow = followMatrix;
+      let e = followMatrix * eye;
       follow.m[12] = e.x;
       follow.m[13] = e.y;
       follow.m[14] = e.z;
@@ -165,7 +165,7 @@ pub struct Camera {
   // it: the viewport's height.
   pub fn projectedSize(self &, center Vec3, radius f32, viewportHeight f32) f32 {
     if projection == Orthogonal { return radius / viewHeight * viewportHeight; }
-    imm d = center.distance(self.position());
+    let d = center.distance(self.position());
     if d <= radius { return viewportHeight; }
     radius / (d * tan(fov * 0.5)) * viewportHeight;
   }
@@ -180,12 +180,12 @@ pub struct Camera {
 // negative side gets a negative depth and is clipped. 'view' is the matrix
 // the camera draws with.
 fn obliqueNearPlane(proj Mat4, view Mat4, world Vec4) Mat4 {
-  imm c = view.inverse().transpose() * world;
-  imm sx = if c.x < 0. { -1.; } else { 1.; };
-  imm sy = if c.y < 0. { -1.; } else { 1.; };
-  imm q = proj.inverse() * new Vec4(sx, sy, 1., 1.);
-  imm s = 1. / c.dot(q);
-  mut r = proj;
+  let c = view.inverse().transpose() * world;
+  let sx = if c.x < 0. { -1.; } else { 1.; };
+  let sy = if c.y < 0. { -1.; } else { 1.; };
+  let q = proj.inverse() * new Vec4(sx, sy, 1., 1.);
+  let s = 1. / c.dot(q);
+  var r = proj;
   r.m[2] = c.x * s;
   r.m[6] = c.y * s;
   r.m[10] = c.z * s;
@@ -197,23 +197,23 @@ fn obliqueNearPlane(proj Mat4, view Mat4, world Vec4) Mat4 {
 // matrix's upper 3 x 3, by Shepperd's method: the largest of the four
 // candidates is taken, for accuracy)
 fn rotationOf(m Mat4) Quat {
-  imm m00 = m.m[0];
-  imm m11 = m.m[5];
-  imm m22 = m.m[10];
-  imm trace = m00 + m11 + m22;
+  let m00 = m.m[0];
+  let m11 = m.m[5];
+  let m22 = m.m[10];
+  let trace = m00 + m11 + m22;
   if trace > 0. {
-    imm s = (trace + 1.).sqrt() * 2.;
+    let s = (trace + 1.).sqrt() * 2.;
     return new Quat((m.m[6] - m.m[9]) / s, (m.m[8] - m.m[2]) / s, (m.m[1] - m.m[4]) / s, 0.25 * s);
   }
   if m00 > m11 and m00 > m22 {
-    imm s = (1. + m00 - m11 - m22).sqrt() * 2.;
+    let s = (1. + m00 - m11 - m22).sqrt() * 2.;
     return new Quat(0.25 * s, (m.m[4] + m.m[1]) / s, (m.m[8] + m.m[2]) / s, (m.m[6] - m.m[9]) / s);
   }
   if m11 > m22 {
-    imm s = (1. + m11 - m00 - m22).sqrt() * 2.;
+    let s = (1. + m11 - m00 - m22).sqrt() * 2.;
     return new Quat((m.m[4] + m.m[1]) / s, 0.25 * s, (m.m[9] + m.m[6]) / s, (m.m[8] - m.m[2]) / s);
   }
-  imm s = (1. + m22 - m00 - m11).sqrt() * 2.;
+  let s = (1. + m22 - m00 - m11).sqrt() * 2.;
   new Quat((m.m[8] + m.m[2]) / s, (m.m[9] + m.m[6]) / s, 0.25 * s, (m.m[1] - m.m[4]) / s);
 }
 

@@ -68,12 +68,12 @@ fn main() i32 {
   expectUInt(halfBits(0x7fc00000u32 as f32), 0x7e00u64, "the quiet NaN to half");
 
   // every half value except NaN: to f32 and back is the same half
-  mut bad = 0u64;
-  mut h = 0u32;
+  var bad = 0u64;
+  var h = 0u32;
   while h < 65536u32 {
-    imm isNan = (h & 0x7c00u32) == 0x7c00u32 and (h & 0x3ffu32) != 0u32;
+    let isNan = (h & 0x7c00u32) == 0x7c00u32 and (h & 0x3ffu32) != 0u32;
     if !isNan {
-      imm back = f32ToF16(f16ToF32(u16.from(h)));
+      let back = f32ToF16(f16ToF32(u16.from(h)));
       if u32.from(back) != h { bad = bad + 1u64; }
     }
     h = h + 1u32;
@@ -81,75 +81,75 @@ fn main() i32 {
   expectUInt(bad, 0u64, "every non-NaN half round-trips through f32");
 
   // halfway cases between every pair of adjacent halves round to the even one
-  mut badTie = 0u64;
+  var badTie = 0u64;
   h = 0u32;
   while h < 0x7bffu32 {
-    imm lo = f16ToF32(u16.from(h));
-    imm hi = f16ToF32(u16.from(h + 1u32));
-    imm mid = (f64.from(lo) + f64.from(hi)) * 0.5d;
-    imm got = u32.from(f32ToF16(f32.from(mid)));
+    let lo = f16ToF32(u16.from(h));
+    let hi = f16ToF32(u16.from(h + 1u32));
+    let mid = (f64.from(lo) + f64.from(hi)) * 0.5d;
+    let got = u32.from(f32ToF16(f32.from(mid)));
     // the midpoint is exact in an f32 (a half has 11 significant bits)
-    imm want = if (h & 1u32) == 0u32 { h; } else { h + 1u32; };
+    let want = if (h & 1u32) == 0u32 { h; } else { h + 1u32; };
     if got != want { badTie = badTie + 1u64; }
     h = h + 1u32;
   }
   expectUInt(badTie, 0u64, "the midpoint of every adjacent pair of halves rounds to the even one");
 
   // ---- words ----
-  mut bytes = List[u8].empty();
-  mut i = 1u8;
+  var bytes = List[u8].empty();
+  var i = 1u8;
   while i <= 7u8 { bytes.push(i); i = i + 1u8; }
-  imm w = packWords(bytes.view());
+  let w = packWords(bytes.view());
   expectUInt(u64.from(w.len()), 2u64, "seven bytes make two words");
   expectUInt(u64.from(*w[0usize]), 0x04030201u64, "the first word, little-endian");
   expectUInt(u64.from(*w[1usize]), 0x00070605u64, "the second, padded with zeros");
   expectUInt(u64.from(packWords(&bytes.view()[0usize..<0usize]).len()), 0u64, "no bytes, no words");
 
   // ---- encoders ----
-  mut rng = Rng.fromSeed(11u64);
-  imm values = syntheticFloats(&mut rng, 96usize, 3.0);
-  imm f32bytes = encodeF32(values.view());
+  var rng = Rng.fromSeed(11u64);
+  let values = syntheticFloats(&mut rng, 96usize, 3.0);
+  let f32bytes = encodeF32(values.view());
   expectUInt(u64.from(f32bytes.len()), 384u64, "F32 bytes");
-  mut back = List[f32].withCapacity(96usize);
+  var back = List[f32].withCapacity(96usize);
   i = 0u8;
-  mut k = 0usize;
+  var k = 0usize;
   while k < 96usize { back.push(0.0); k = k + 1usize; }
   expectBool(dequantizeRow(QTYPE_F32, f32bytes.view(), 0usize, 96usize, back.viewMut()), true, "F32 row decodes");
-  mut exact = true;
+  var exact = true;
   k = 0usize;
   while k < 96usize { if *back[k] != *values[k] { exact = false; } k = k + 1usize; }
   expect(exact, "F32 round-trips exactly");
 
-  imm f16bytes = encodeF16(values.view());
+  let f16bytes = encodeF16(values.view());
   expectUInt(u64.from(f16bytes.len()), 192u64, "F16 bytes");
   expectBool(dequantizeRow(QTYPE_F16, f16bytes.view(), 0usize, 96usize, back.viewMut()), true, "F16 row decodes");
-  mut worst = 0.0d;
+  var worst = 0.0d;
   k = 0usize;
   while k < 96usize {
-    imm e = libc.fabs(f64.from(*back[k]) - f64.from(*values[k]));
+    let e = libc.fabs(f64.from(*back[k]) - f64.from(*values[k]));
     if e > worst { worst = e; }
     k = k + 1usize;
   }
   expect(worst <= 3.0d / 1024.0d, "F16 round-trips to within half a unit in the last place (values under 4)");
 
-  imm q8bytes = encodeQ8_0(values.view());
+  let q8bytes = encodeQ8_0(values.view());
   expectUInt(u64.from(q8bytes.len()), 102u64, "Q8_0 bytes: three blocks of 34");
   expectBool(dequantizeRow(QTYPE_Q8_0, q8bytes.view(), 0usize, 96usize, back.viewMut()), true, "Q8_0 row decodes");
   // each block's scale is max|v| / 127 (as a half): the error is at most half a step, plus the scale's half rounding
-  mut q8ok = true;
-  mut blk = 0usize;
+  var q8ok = true;
+  var blk = 0usize;
   while blk < 3usize {
-    mut amax = 0.0;
+    var amax = 0.0;
     k = 0usize;
     while k < 32usize {
-      imm a = libc.fabsf(*values[blk * 32usize + k]);
+      let a = libc.fabsf(*values[blk * 32usize + k]);
       if a > amax { amax = a; }
       k = k + 1usize;
     }
-    imm step = amax / 127.0;
+    let step = amax / 127.0;
     k = 0usize;
     while k < 32usize {
-      imm e = libc.fabsf(*back[blk * 32usize + k] - *values[blk * 32usize + k]);
+      let e = libc.fabsf(*back[blk * 32usize + k] - *values[blk * 32usize + k]);
       if e > step * 0.52 { q8ok = false; }
       k = k + 1usize;
     }
@@ -159,31 +159,31 @@ fn main() i32 {
   expectUInt(u64.from(encodeQ8_0(&values.view()[0usize..<31usize]).len()), 0u64, "Q8_0 of a partial block: nothing");
 
   // ---- the synthetic generator: the same seed, the same bytes ----
-  mut r1 = Rng.fromSeed(5u64);
-  mut r2 = Rng.fromSeed(5u64);
-  imm types = [QTYPE_F32, QTYPE_F16, QTYPE_Q8_0, QTYPE_Q4_K, QTYPE_Q6_K];
-  mut t = 0usize;
+  var r1 = Rng.fromSeed(5u64);
+  var r2 = Rng.fromSeed(5u64);
+  let types = [QTYPE_F32, QTYPE_F16, QTYPE_Q8_0, QTYPE_Q4_K, QTYPE_Q6_K];
+  var t = 0usize;
   while t < 5usize {
-    imm cols = if types[t] == QTYPE_Q8_0 { 64usize; } elif types[t] == QTYPE_F32 or types[t] == QTYPE_F16 { 40usize; } else { 512usize; };
-    imm a = syntheticMatrix(&mut r1, types[t], 3usize, cols);
-    imm b = syntheticMatrix(&mut r2, types[t], 3usize, cols);
+    let cols = if types[t] == QTYPE_Q8_0 { 64usize; } elif types[t] == QTYPE_F32 or types[t] == QTYPE_F16 { 40usize; } else { 512usize; };
+    let a = syntheticMatrix(&mut r1, types[t], 3usize, cols);
+    let b = syntheticMatrix(&mut r2, types[t], 3usize, cols);
     match a {
-      case imm ma Some {
+      case let ma Some {
         match b {
-          case imm mb Some {
+          case let mb Some {
             expectUInt(u64.from(ma.bytes.len()), u64.from(3usize * rowBytes(types[t], cols)), "synthetic matrix size");
-            mut same = ma.bytes.len() == mb.bytes.len();
+            var same = ma.bytes.len() == mb.bytes.len();
             k = 0usize;
             while same and k < ma.bytes.len() { if *ma.bytes[k] != *mb.bytes[k] { same = false; } k = k + 1usize; }
             expect(same, "the same seed gives the same synthetic matrix");
             // every decoded weight is finite and modest
-            mut sane = true;
-            mut row = 0usize;
+            var sane = true;
+            var row = 0usize;
             while row < 3usize {
-              imm decoded = ma.row(row);
+              let decoded = ma.row(row);
               k = 0usize;
               while k < cols {
-                imm v = *decoded[k];
+                let v = *decoded[k];
                 if !(v > -100.0 and v < 100.0) { sane = false; }
                 k = k + 1usize;
               }

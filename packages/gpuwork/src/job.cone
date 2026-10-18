@@ -8,8 +8,8 @@ const WORK_USAGE = BUFFER_USAGE_STORAGE | BUFFER_USAGE_COPY_DST | BUFFER_USAGE_C
 // GPU's own memory. The words are copied now, and into the buffer by the GPU
 // ahead of whatever is submitted next. Check 'isValid'.
 pub fn upload(device &mut Device, words &Array[u32]) Buffer {
-  imm bytes = u64.from(words.len) * 4u64;
-  imm buffer = device.createBuffer(if bytes == 0u64 { 4u64; } else { bytes; }, WORK_USAGE);
+  let bytes = u64.from(words.len) * 4u64;
+  let buffer = device.createBuffer(if bytes == 0u64 { 4u64; } else { bytes; }, WORK_USAGE);
   if bytes > 0u64 and buffer.isValid() { device.queue.writeBuffer(&buffer, 0u64, &words[0usize] as *u8, bytes); }
   buffer;
 }
@@ -18,8 +18,8 @@ pub fn upload(device &mut Device, words &Array[u32]) Buffer {
 // of them): what a kernel's by-value struct parameter is bound to, a small
 // read-only storage buffer. Check 'isValid'.
 pub fn uploadValue[T](device &mut Device, value &T) Buffer {
-  imm bytes = u64.from(mem.sizeof[T]());
-  imm buffer = device.createBuffer(if bytes == 0u64 { 4u64; } else { bytes; }, WORK_USAGE);
+  let bytes = u64.from(mem.sizeof[T]());
+  let buffer = device.createBuffer(if bytes == 0u64 { 4u64; } else { bytes; }, WORK_USAGE);
   if bytes > 0u64 and buffer.isValid() { device.queue.writeBuffer(&buffer, 0u64, value as *u8, bytes); }
   buffer;
 }
@@ -29,8 +29,8 @@ pub fn uploadValue[T](device &mut Device, value &T) Buffer {
 // of whatever is submitted next, as an upload is; none cross from the CPU.
 // Check 'isValid'.
 pub fn zeroed(device &mut Device, count usize) Buffer {
-  imm bytes = u64.from(count) * 4u64;
-  imm buffer = device.createBuffer(if bytes == 0u64 { 4u64; } else { bytes; }, WORK_USAGE);
+  let bytes = u64.from(count) * 4u64;
+  let buffer = device.createBuffer(if bytes == 0u64 { 4u64; } else { bytes; }, WORK_USAGE);
   if bytes > 0u64 and buffer.isValid() { device.queue.clearBuffer(&buffer, 0u64, bytes); }
   buffer;
 }
@@ -38,10 +38,10 @@ pub fn zeroed(device &mut Device, count usize) Buffer {
 // The words of a buffer the CPU reads (a job's readback, once its job is
 // complete), copied out in one block; none for a buffer the CPU does not map
 pub fn wordsOf(buffer &Buffer) List[u32] {
-  imm p = buffer.mappedRange();
-  imm n = usize.from(buffer.size / 4u64);
+  let p = buffer.mappedRange();
+  let n = usize.from(buffer.size / 4u64);
   if (p as usize) == 0usize or n == 0usize { return List[u32].withCapacity(n); }
-  mut out = new List[u32](n) <- fill 0u32;
+  var out = new List[u32](n) <- fill 0u32;
   libc.memcpy(&mut out[0usize] as *u8, p, 4usize * n);
   out;
 }
@@ -64,7 +64,7 @@ pub struct Job {
 
   // An empty job, recording into the device's current frame
   pub fn make(device &mut Device) Job {
-    imm encoder = device.createCommandEncoder();
+    let encoder = device.createCommandEncoder();
     new Job(List[Buffer].empty(), List[BindGroup].empty(), encoder, device.frameNumber, false, 0u32,
       List[ErrorCheck].empty());
   }
@@ -93,10 +93,10 @@ pub struct Job {
     if slots.len != usize.from(kernel.bindings) {
       return self.refuse("dispatch: the slots given are not one for each of the kernel's bindings");
     }
-    mut entries = List[BindGroupEntry].empty();
-    mut i = 0usize;
+    var entries = List[BindGroupEntry].empty();
+    var i = 0usize;
     while i < slots.len {
-      imm s = usize.from(slots[i]);
+      let s = usize.from(slots[i]);
       if s >= buffers.len() or !buffers[s].isValid() {
         return self.refuse("dispatch: a slot holds no buffer");
       }
@@ -108,7 +108,7 @@ pub struct Job {
       }
       // WebGPU refuses a buffer bound twice in one dispatch when either
       // binding writes it
-      mut j = 0usize;
+      var j = 0usize;
       while j < i {
         if slots[j] == slots[i] {
           return self.refuse("dispatch: a slot is bound twice");
@@ -122,25 +122,25 @@ pub struct Job {
     // written ahead of whatever is submitted next, as an upload is, so it is
     // kept with the job from now on, even if the dispatch is refused)
     if kernel.isCone {
-      imm errors = zeroed(device, usize.from(ERROR_BUFFER_WORDS));
+      let errors = zeroed(device, usize.from(ERROR_BUFFER_WORDS));
       // Mapped for reading and writing, so in coherent memory on every GPU:
       // the watcher thread reads its words through their address, where
       // nothing could invalidate a mapping that was not coherent
-      imm errorsRead = device.createBuffer(u64.from(ERROR_BUFFER_WORDS) * 4u64,
+      let errorsRead = device.createBuffer(u64.from(ERROR_BUFFER_WORDS) * 4u64,
         BUFFER_USAGE_MAP_READ | BUFFER_USAGE_MAP_WRITE | BUFFER_USAGE_COPY_DST);
-      imm valid = errors.isValid() and errorsRead.isValid();
+      let valid = errors.isValid() and errorsRead.isValid();
       checks.push(errorCheck(errors, errorsRead, kernel, dispatches));
       if !valid {
         return self.refuse("dispatch: the Cone kernel's error buffer was not made");
       }
       entries.push(BindGroupEntry.buffer(kernel.bindings, &checks[checks.len() - 1usize].errors));
     }
-    imm group = device.createBindGroup(&kernel.groupLayout, entries.view());
+    let group = device.createBindGroup(&kernel.groupLayout, entries.view());
     if !group.isValid() {
       return self.refuse("dispatch: the bind group was not made");
     }
     {
-      mut pass = encoder.beginComputePass();
+      var pass = encoder.beginComputePass();
       pass.setPipeline(&kernel.pipeline);
       pass.setBindGroup(0u32, &group);
       pass.dispatchWorkgroups(x, y, z);
@@ -148,7 +148,7 @@ pub struct Job {
     }
     groups.push(group);
     if kernel.isCone {
-      imm c = &mut checks[checks.len() - 1usize];
+      let c = &mut checks[checks.len() - 1usize];
       encoder.copyBufferToBuffer(&c.errors, 0u64, &c.read, 0u64, u64.from(ERROR_BUFFER_WORDS) * 4u64);
       c.ran = true;
     }
@@ -162,13 +162,13 @@ pub struct Job {
   // the job failed) for an empty slot or a buffer not made with
   // BUFFER_USAGE_COPY_SRC; the answer is then the slot count.
   pub fn readback(self &mut, device &mut Device, slot u32) u32 {
-    imm s = usize.from(slot);
+    let s = usize.from(slot);
     if s >= buffers.len() or !buffers[s].isValid() or (buffers[s].usage & BUFFER_USAGE_COPY_SRC) == 0u32 {
       self.refuse("readback: the slot holds no buffer, or one not made with BUFFER_USAGE_COPY_SRC");
       return u32.from(buffers.len());
     }
-    imm size = buffers[s].size;
-    imm target = device.createBuffer(size, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+    let size = buffers[s].size;
+    let target = device.createBuffer(size, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
     encoder.copyBufferToBuffer(buffers[s], 0u64, &target, 0u64, size);
     self.give(target);
   }
@@ -196,9 +196,9 @@ struct ErrorCheck {
 }
 
 fn errorCheck(errors Buffer, read Buffer, kernel &Kernel, dispatch u32) ErrorCheck {
-  mut names = List[String].empty();
-  mut ids = List[u32].empty();
-  mut k = 0usize;
+  var names = List[String].empty();
+  var ids = List[u32].empty();
+  var k = 0usize;
   while k < kernel.fileIds.len() {
     ids.push(*kernel.fileIds[k]);
     names.push(kernel.fileNames[k].copy());
@@ -249,7 +249,7 @@ pub struct KernelFailure {
   // of bounds at kernels.cone:57, invocation (37, 0, 0), index 1037; 1
   // invocation failed"
   pub fn message(self &) String {
-    mut m = String.from("kernel '");
+    var m = String.from("kernel '");
     m <- kernel.view();
     m <- "' (dispatch ";
     m <- u64.from(dispatch);
@@ -293,18 +293,18 @@ pub struct KernelFailure {
 
 // The failure dispatch 'c' recorded, if any, appended to 'out' and reported
 fn readFailure(c &ErrorCheck, out &mut List[KernelFailure]) {
-  imm at = errorWordsAt(c);
+  let at = errorWordsAt(c);
   if !errorsAt(at) { return; }
-  imm w = mem.sliceFromParts[u32](at as *u32, usize.from(ERROR_BUFFER_WORDS));
-  mut file = String.empty();
-  mut k = 0usize;
+  let w = mem.sliceFromParts[u32](at as *u32, usize.from(ERROR_BUFFER_WORDS));
+  var file = String.empty();
+  var k = 0usize;
   while k < c.fileIds.len() {
     if *c.fileIds[k] == w[2usize] { file = c.fileNames[k].copy(); }
     k = k + 1usize;
   }
-  imm f = new KernelFailure(c.kernel.copy(), c.dispatch, w[0usize], w[1usize], w[2usize], file, w[3usize],
+  let f = new KernelFailure(c.kernel.copy(), c.dispatch, w[0usize], w[1usize], w[2usize], file, w[3usize],
     [w[4usize], w[5usize], w[6usize]], w[7usize]);
-  imm msg = f.message();
+  let msg = f.message();
   failKernel(msg.view());
   out.push(f);
 }

@@ -17,19 +17,19 @@ import http1 use *;
 // ---- the harness: feed bytes in, take bytes out, write events down ----
 
 fn feed(c &mut Connection, pool &Pool, text &Array[u8], at Instant) {
-  mut i = 0usize;
+  var i = 0usize;
   while i < text.len {
-    mut b = pool.mustTake(4096usize);
-    imm n = b.append(&text[i ..< text.len]);
+    var b = pool.mustTake(4096usize);
+    let n = b.append(&text[i ..< text.len]);
     c.handleInput(b, at);
     i = i + n;
   }
 }
 
 fn drain(c &mut Connection, at Instant) String {
-  mut s = String.empty();
+  var s = String.empty();
   while true {
-    imm b = c.pollTransmit(at);
+    let b = c.pollTransmit(at);
     if b.len() == 0usize {break;}
     s.appendBytes(b.view());
   }
@@ -37,7 +37,7 @@ fn drain(c &mut Connection, at Instant) String {
 }
 
 fn putFields(out &mut String, h &Headers) {
-  mut i = 0usize;
+  var i = 0usize;
   while i < h.len() {
     out.append(" [");
     out.append(h.nameAt(i));
@@ -68,7 +68,7 @@ fn rec() Rec {new Rec(String.empty(), String.empty());}
 fn drive(c &mut Connection, r &mut Rec) {
   while true {
     match c.pollEvent() {
-      case mut e Request {
+      case var e Request {
         r.log.append("request ");
         r.log.append(e.head.methodName());
         r.log.append(" ");
@@ -79,7 +79,7 @@ fn drive(c &mut Connection, r &mut Rec) {
         putFields(&mut r.log, &e.head.headers);
         r.log.append("\n");
       }
-      case mut e Response {
+      case var e Response {
         r.log.append("response ");
         r.log.appendUInt(u64.from(e.head.status));
         if e.head.version == Version.Http10 {r.log.append(" 1.0");}
@@ -87,17 +87,17 @@ fn drive(c &mut Connection, r &mut Rec) {
         putFields(&mut r.log, &e.head.headers);
         r.log.append("\n");
       }
-      case mut e Interim {
+      case var e Interim {
         r.log.append("interim ");
         r.log.appendUInt(u64.from(e.head.status));
         putFields(&mut r.log, &e.head.headers);
         r.log.append("\n");
       }
-      case mut d Data {
+      case var d Data {
         r.body.appendBytes(d.buf.view());
         c.release(d.buf.len());
       }
-      case mut e End {
+      case var e End {
         if r.body.len() > 0usize {
           r.log.append("body ");
           r.log.append(r.body.view());
@@ -108,7 +108,7 @@ fn drive(c &mut Connection, r &mut Rec) {
         putFields(&mut r.log, &e.trailers);
         r.log.append("\n");
       }
-      case mut f Failed {
+      case var f Failed {
         r.log.append("failed ");
         r.log.append(f.error.message().view());
         r.log.append("\n");
@@ -126,32 +126,32 @@ fn drive(c &mut Connection, r &mut Rec) {
 // The events of a client that sent a request with this method and read
 // this response, then the end of the stream when close is set
 fn reads(pool &Pool, method &str, response &Array[u8], close bool) String {
-  imm t = Instant.fromNanos(1000000000i64);
-  mut c = Connection.client(Config.make(), *pool, t);
+  let t = Instant.fromNanos(1000000000i64);
+  var c = Connection.client(Config.make(), *pool, t);
   c.sendRequest(RequestHead.make(method, "/x", "h"), BodyLength.empty());
   drain(&mut c, t);
   feed(&mut c, pool, response, t);
   if close {c.handleInput(IoBuf.empty(), t);}
-  mut r = rec();
+  var r = rec();
   drive(&mut c, &mut r);
   if c.canSendRequest() {r.log.append("reusable\n");}
-  mut out = String.empty();
+  var out = String.empty();
   out <=> r.log;
   out;
 }
 
 fn check(pool &Pool, method &str, response &Array[u8], close bool, want &Array[u8], label &Array[u8]) {
-  imm got = reads(pool, method, response, close);
+  let got = reads(pool, method, response, close);
   expectStr(got.view(), want, label);
 }
 
 // ---- requests written ----
 
 fn requests(pool &Pool) {
-  imm t = Instant.fromNanos(1000000000i64);
+  let t = Instant.fromNanos(1000000000i64);
   {
-    mut c = Connection.client(Config.make(), *pool, t);
-    mut h = RequestHead.get("/tiles/7/12.bin?v=2", "example.com:8080");
+    var c = Connection.client(Config.make(), *pool, t);
+    var h = RequestHead.get("/tiles/7/12.bin?v=2", "example.com:8080");
     h.headers.add("Accept", "*/*");
     h.headers.add("X-Two", "a");
     h.headers.add("x-two", "b");
@@ -162,9 +162,9 @@ fn requests(pool &Pool) {
     expect(not c.canSendRequest(), "one request at a time");
   }
   {
-    mut c = Connection.client(Config.make(), *pool, t);
+    var c = Connection.client(Config.make(), *pool, t);
     c.sendRequest(RequestHead.make("POST", "/p", "h"), BodyLength.sized(11u64));
-    mut b = pool.mustTake(64usize);
+    var b = pool.mustTake(64usize);
     b.append("hello world");
     c.sendData(b);
     c.finish();
@@ -172,37 +172,37 @@ fn requests(pool &Pool) {
       "a sized POST: Content-Length, the body beside the head");
   }
   {
-    mut c = Connection.client(Config.make(), *pool, t);
+    var c = Connection.client(Config.make(), *pool, t);
     c.sendRequest(RequestHead.make("POST", "/p", "h"), BodyLength.empty());
     expectStr(drain(&mut c, t).view(), "POST /p HTTP/1.1\r\nHost: h\r\nContent-Length: 0\r\n\r\n",
       "an empty POST says Content-Length: 0");
   }
   {
-    mut c = Connection.client(Config.make(), *pool, t);
+    var c = Connection.client(Config.make(), *pool, t);
     c.sendRequest(RequestHead.make("PUT", "/p", "h"), BodyLength.unsized());
-    mut b = pool.mustTake(64usize);
+    var b = pool.mustTake(64usize);
     b.append("hello");
     c.sendData(b);
-    mut b2 = pool.mustTake(5000usize);
-    imm room = b2.whole();
-    mut i = 0usize;
+    var b2 = pool.mustTake(5000usize);
+    let room = b2.whole();
+    var i = 0usize;
     while i < 3000usize {
       room[i] = 'z';
       i = i + 1usize;
     }
     b2.setLen(3000usize);
     c.sendData(b2);
-    mut tr = Headers.empty();
+    var tr = Headers.empty();
     tr.add("X-Sum", "3005");
     c.finishWith(tr);
-    imm s = drain(&mut c, t);
+    let s = drain(&mut c, t);
     expect(s.startsWith("PUT /p HTTP/1.1\r\nHost: h\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\nbb8\r\nzzz"),
       "a chunked PUT: each buffer a chunk, its size in hex");
     expect(s.endsWith("zzz\r\n0\r\nX-Sum: 3005\r\n\r\n"), "the last chunk, the trailer, the blank line");
     expectUInt(u64.from(s.len()), 3091u64, "every byte");
   }
   {
-    mut c = Connection.client(Config.make(), *pool, t);
+    var c = Connection.client(Config.make(), *pool, t);
     c.sendRequest(RequestHead.make("BREW", "/pot", "h"), BodyLength.empty());
     expectStr(drain(&mut c, t).view(), "BREW /pot HTTP/1.1\r\nHost: h\r\n\r\n", "an extension method, as spelled");
   }
@@ -253,7 +253,7 @@ fn responses(pool &Pool) {
 
 fn main() i32 {
   {
-    imm pool = Pool.make();
+    let pool = Pool.make();
     requests(&pool);
     responses(&pool);
     expectUInt(pool.stats().lent, 0u64, "every buffer back in the pool");

@@ -19,8 +19,8 @@ struct Job {
 
 // A level's nominal stem length: the trunk's, times each level's ratio
 fn nominalLength(p &TreeParams, trunk f32, lv i32) f32 {
-  mut l = trunk;
-  mut i = 1;
+  var l = trunk;
+  var i = 1;
   while i <= lv {
     l = l * p.levelParams[usize.from(i)].length;
     i = i + 1;
@@ -31,10 +31,10 @@ fn nominalLength(p &TreeParams, trunk f32, lv i32) f32 {
 // The radius of a stem at its fraction z along it: linear taper, and the
 // trunk's flare at its foot (the paper's: Flare (100^y - 1) / 100 + 1)
 fn radiusAt(p &TreeParams, lv i32, r0 f32, z f32, flared bool) f32 {
-  imm taper = p.levelParams[usize.from(lv)].taper;
-  mut r = r0 * (1. - taper * z * 0.97);
+  let taper = p.levelParams[usize.from(lv)].taper;
+  var r = r0 * (1. - taper * z * 0.97);
   if lv == 0 and flared {
-    imm y = maxf(0., 1. - 8. * z);
+    let y = maxf(0., 1. - 8. * z);
     r = r * (1. + p.flare * (libc.powf(100., y) - 1.) / 100. * 1.);
   }
   maxf(r, p.minRadius);
@@ -43,51 +43,51 @@ fn radiusAt(p &TreeParams, lv i32, r0 f32, z f32, flared bool) f32 {
 // Build one stem from 'job': its points, radii and frames, the clones it
 // splits off and the children and leaf sites along it
 fn buildStem(p &TreeParams, rng &mut Rng, job Job, trunk f32, tree &mut Tree, jobs &mut List[Job]) {
-  imm lv = job.level;
-  imm lp = p.levelParams[usize.from(lv)];
-  imm n = if lp.curveRes < 1 { 1; } else { lp.curveRes; };
-  imm segLen = job.length / f32.from(n);
-  mut pts = List[Vec3].withCapacity(usize.from(n) + 1usize);
-  mut rad = List[f32].withCapacity(usize.from(n) + 1usize);
-  mut frames = List[Quat].withCapacity(usize.from(n) + 1usize);
-  mut pos = job.pos;
-  mut q = job.q;
-  mut pend = job.pend;
-  mut radScale f32 = 1.;
+  let lv = job.level;
+  let lp = p.levelParams[usize.from(lv)];
+  let n = if lp.curveRes < 1 { 1; } else { lp.curveRes; };
+  let segLen = job.length / f32.from(n);
+  var pts = List[Vec3].withCapacity(usize.from(n) + 1usize);
+  var rad = List[f32].withCapacity(usize.from(n) + 1usize);
+  var frames = List[Quat].withCapacity(usize.from(n) + 1usize);
+  var pos = job.pos;
+  var q = job.q;
+  var pend = job.pend;
+  var radScale f32 = 1.;
   pts.push(pos);
   rad.push(radiusAt(p, lv, job.radius, 0., job.gen == 0));
   frames.push(q);
-  mut splitErr = rng.unit();
-  mut kinkErr = rng.unit();
-  mut i = 0;
+  var splitErr = rng.unit();
+  var kinkErr = rng.unit();
+  var i = 0;
   while i < n {
     // The bend of this segment: curve over the first half, curveBack over the second
-    mut pitch f32 = 0.;
+    var pitch f32 = 0.;
     if lp.curveBack != 0. {
-      imm half = (n + 1) / 2;
+      let half = (n + 1) / 2;
       if i < half { pitch = lp.curve / f32.from(half); }
       else { pitch = lp.curveBack / f32.from(maxf(1., f32.from(n - half)) ); }
     } else { pitch = lp.curve / f32.from(n); }
     pitch = pitch + lp.curveV / f32.from(n) * rng.signed();
-    imm yaw = lp.curveV / f32.from(n) * rng.signed();
+    let yaw = lp.curveV / f32.from(n) * rng.signed();
     // The bend still owed (a split's, a kink's), half of it each segment
     pitch = pitch + pend.x * 0.5;
-    imm yaw2 = yaw + pend.y * 0.5;
+    let yaw2 = yaw + pend.y * 0.5;
     pend = new Vec2(pend.x * 0.5, pend.y * 0.5);
     q = yawQ(pitchQ(q, pitch), yaw2);
     // Attraction up: the axis turned towards the vertical, more the more it leans
     if p.attractionUp != 0. and lv >= 1 {
-      imm a = axisOf(q);
-      imm decl = degrees(libc.acosf(clampf(a.y, -1., 1.)));
-      imm turn = p.attractionUp * decl / f32.from(n);
+      let a = axisOf(q);
+      let decl = degrees(libc.acosf(clampf(a.y, -1., 1.)));
+      let turn = p.attractionUp * decl / f32.from(n);
       if a.y > -0.99 and a.y < 0.99 {
         // rotate about the axis perpendicular to a in the vertical plane through a
-        imm side = unitv(a.cross(v3(0., 1., 0.)));
+        let side = unitv(a.cross(v3(0., 1., 0.)));
         q = (Quat.angleAxis(radians(turn), side) * q).normalize();
       }
     }
     pos = pos + axisOf(q) * segLen;
-    imm z = f32.from(i + 1) / f32.from(n);
+    let z = f32.from(i + 1) / f32.from(n);
     pts.push(pos);
     rad.push(radiusAt(p, lv, job.radius, z, job.gen == 0) * radScale);
     frames.push(q);
@@ -96,9 +96,9 @@ fn buildStem(p &TreeParams, rng &mut Rng, job Job, trunk f32, tree &mut Tree, jo
       kinkErr = kinkErr + lp.kink;
       if kinkErr >= 1. {
         kinkErr = kinkErr - 1.;
-        imm az = rng.unit() * 6.2831853;
-        imm kx = lp.kinkAngle * libc.cosf(az);
-        imm ky = lp.kinkAngle * libc.sinf(az);
+        let az = rng.unit() * 6.2831853;
+        let kx = lp.kinkAngle * libc.cosf(az);
+        let ky = lp.kinkAngle * libc.sinf(az);
         q = yawQ(pitchQ(q, kx), ky);
         frames.set(frames.len() - 1usize, q);
         pend = new Vec2(pend.x - kx * p.kinkRecover, pend.y - ky * p.kinkRecover);
@@ -108,19 +108,19 @@ fn buildStem(p &TreeParams, rng &mut Rng, job Job, trunk f32, tree &mut Tree, jo
     // and the stem itself turns the other way, then both bend back
     if lp.segSplits > 0. and i < n - 1 and job.gen < 3 {
       splitErr = splitErr + lp.segSplits;
-      mut ns = i32.from(floorf(splitErr));
+      var ns = i32.from(floorf(splitErr));
       splitErr = splitErr - f32.from(ns);
       while ns > 0 {
         ns = ns - 1;
-        imm a = axisOf(q);
-        imm steep = libc.sqrtf(maxf(0., 1. - a.y * a.y));
-        imm sa = maxf(0., lp.splitAngle + lp.splitAngleV * rng.signed()) * (0.7 + 0.3 * steep);
-        imm az = rng.unit() * 6.2831853;
-        imm ax = v3(libc.cosf(az), 0., libc.sinf(az));
+        let a = axisOf(q);
+        let steep = libc.sqrtf(maxf(0., 1. - a.y * a.y));
+        let sa = maxf(0., lp.splitAngle + lp.splitAngleV * rng.signed()) * (0.7 + 0.3 * steep);
+        let az = rng.unit() * 6.2831853;
+        let ax = v3(libc.cosf(az), 0., libc.sinf(az));
         // the clone: turned by sa about a horizontal-in-frame axis at the azimuth
-        imm qc = (Quat.angleAxis(radians(sa), (q * ax)) * q).normalize();
-        imm rem = job.length * (1. - z);
-        imm rz = radiusAt(p, lv, job.radius, z, job.gen == 0) * radScale;
+        let qc = (Quat.angleAxis(radians(sa), (q * ax)) * q).normalize();
+        let rem = job.length * (1. - z);
+        let rz = radiusAt(p, lv, job.radius, z, job.gen == 0) * radScale;
         jobs.push(new Job(lv, job.parent, pos, qc, rem, rz * 0.7,
           job.share * rem / maxf(0.001, job.length), new Vec2(0. - sa * 0.5, 0.), job.gen + 1));
         q = (Quat.angleAxis(radians(0. - sa * 0.35), (q * ax)) * q).normalize();
@@ -131,13 +131,13 @@ fn buildStem(p &TreeParams, rng &mut Rng, job Job, trunk f32, tree &mut Tree, jo
   }
   // The tip is thin
   rad.set(rad.len() - 1usize, maxf(p.minRadius, rad[rad.len() - 1usize] * 0.5));
-  imm si = i32.from(tree.stems.len());
+  let si = i32.from(tree.stems.len());
   // Highest point and farthest reach
-  mut k = 0usize;
+  var k = 0usize;
   while k < pts.len() {
-    imm pk = *pts[k];
+    let pk = *pts[k];
     if pk.y > tree.height { tree.height = pk.y; }
-    imm rr = libc.sqrtf(pk.x * pk.x + pk.z * pk.z);
+    let rr = libc.sqrtf(pk.x * pk.x + pk.z * pk.z);
     if rr > tree.reach { tree.reach = rr; }
     k = k + 1usize;
   }
@@ -150,22 +150,22 @@ fn buildStem(p &TreeParams, rng &mut Rng, job Job, trunk f32, tree &mut Tree, jo
     placeSites(p, rng, &pts, &frames, si, lv, &mut tree.sites);
   }
   // Dead stubs up the trunk's lower part (made while its polyline is still ours)
-  mut stubs = List[Stub].empty();
+  var stubs = List[Stub].empty();
   if lv == 0 and job.gen == 0 and p.stubs > 0 {
     stubs = makeStubs(p, rng, &pts, &rad, &frames);
   }
   tree.stems.push(new Stem(lv, job.parent, pts, rad, frames, job.length));
   // each a stem of its own (level 1, 'dead'), two points, bark and nothing more
-  mut sk = 0usize;
+  var sk = 0usize;
   while sk < stubs.len() {
-    imm sb = *stubs[sk];
-    mut sp = List[Vec3].withCapacity(2usize);
+    let sb = *stubs[sk];
+    var sp = List[Vec3].withCapacity(2usize);
     sp.push(sb.at);
     sp.push(sb.at + axisOf(sb.q) * sb.len + v3(0., 0. - 0.12 * sb.len, 0.));
-    mut sr = List[f32].withCapacity(2usize);
+    var sr = List[f32].withCapacity(2usize);
     sr.push(sb.radius);
     sr.push(sb.radius * 0.3);
-    mut sf = List[Quat].withCapacity(2usize);
+    var sf = List[Quat].withCapacity(2usize);
     sf.push(sb.q);
     sf.push(sb.q);
     tree.stems.push(new Stem(1, si, sp, sr, sf, sb.len, true));
@@ -184,16 +184,16 @@ struct Stub {
 // The dead stubs of a trunk: 'stubs' short tapered spikes at random heights between 'stubFrom' and
 // 'stubTo' of the trunk, leaving it out and a little down, round it, the lowest the longest
 fn makeStubs(p &TreeParams, rng &mut Rng, pts &List[Vec3], rad &List[f32], frames &List[Quat]) List[Stub] {
-  mut out = List[Stub].empty();
-  mut k = 0;
+  var out = List[Stub].empty();
+  var k = 0;
   while k < p.stubs {
-    imm t = p.stubFrom + (p.stubTo - p.stubFrom) * rng.unit();
-    mut qa = Quat.identity();
-    imm at = pointAt(pts, frames, t, &mut qa);
-    imm qc = pitchQ(rollQ(qa, rng.unit() * 360.), 82. + 22. * rng.unit());
-    imm along = (t - p.stubFrom) / maxf(0.001, p.stubTo - p.stubFrom);
-    imm len = p.stubLength * (1. - 0.65 * along) * (0.5 + 0.9 * rng.unit());
-    imm r = clampf(radiusAtT(rad, t) * 0.1, 0.012, 0.045);
+    let t = p.stubFrom + (p.stubTo - p.stubFrom) * rng.unit();
+    var qa = Quat.identity();
+    let at = pointAt(pts, frames, t, &mut qa);
+    let qc = pitchQ(rollQ(qa, rng.unit() * 360.), 82. + 22. * rng.unit());
+    let along = (t - p.stubFrom) / maxf(0.001, p.stubTo - p.stubFrom);
+    let len = p.stubLength * (1. - 0.65 * along) * (0.5 + 0.9 * rng.unit());
+    let r = clampf(radiusAtT(rad, t) * 0.1, 0.012, 0.045);
     out.push(new Stub(at, qc, len, r));
     k = k + 1;
   }
@@ -202,87 +202,87 @@ fn makeStubs(p &TreeParams, rng &mut Rng, pts &List[Vec3], rad &List[f32], frame
 
 // The point and frame at the fraction t along a stem's polyline (equal segments)
 fn pointAt(pts &List[Vec3], frames &List[Quat], t f32, outQ &mut Quat) Vec3 {
-  imm n = pts.len() - 1usize;
-  imm f = clampf(t, 0., 1.) * f32.from(n);
-  mut i = usize.from(i32.from(floorf(f)));
+  let n = pts.len() - 1usize;
+  let f = clampf(t, 0., 1.) * f32.from(n);
+  var i = usize.from(i32.from(floorf(f)));
   if i >= n { i = n - 1usize; }
-  imm k = f - f32.from(i32.from(i));
+  let k = f - f32.from(i32.from(i));
   *outQ = (*frames[i]).slerp(*frames[i + 1usize], k);
   (*pts[i]).lerp(*pts[i + 1usize], k);
 }
 
 fn radiusAtT(rad &List[f32], t f32) f32 {
-  imm n = rad.len() - 1usize;
-  imm f = clampf(t, 0., 1.) * f32.from(n);
-  mut i = usize.from(i32.from(floorf(f)));
+  let n = rad.len() - 1usize;
+  let f = clampf(t, 0., 1.) * f32.from(n);
+  var i = usize.from(i32.from(floorf(f)));
   if i >= n { i = n - 1usize; }
-  imm k = f - f32.from(i32.from(i));
+  let k = f - f32.from(i32.from(i));
   *rad[i] * (1. - k) + *rad[i + 1usize] * k;
 }
 
 // The children of the stem just built, in nodes along it
 fn placeChildren(p &TreeParams, rng &mut Rng, job Job, trunk f32, pts &List[Vec3], rad &List[f32],
     frames &List[Quat], si i32, jobs &mut List[Job]) {
-  imm lv = job.level;
-  imm c = lv + 1;
-  imm cp = p.levelParams[usize.from(c)];
-  imm lp = p.levelParams[usize.from(lv)];
+  let lv = job.level;
+  let c = lv + 1;
+  let cp = p.levelParams[usize.from(c)];
+  let lp = p.levelParams[usize.from(lv)];
   if lp.branches <= 0. { return; }
-  imm L = job.length;
+  let L = job.length;
   // how many: the level's count scaled by this stem's share of a full one
-  mut want f32 = 0.;
+  var want f32 = 0.;
   if lv == 0 { want = lp.branches * job.share; }
   else {
-    imm full = nominalLength(p, trunk, lv);
+    let full = nominalLength(p, trunk, lv);
     want = lp.branches * (0.2 + 0.8 * clampf(L / maxf(0.001, full), 0., 1.)) * job.share;
   }
-  mut count = i32.from(floorf(want));
+  var count = i32.from(floorf(want));
   if rng.unit() < want - floorf(want) { count = count + 1; }
   if count < 1 { return; }
-  imm zone0 = if lv == 0 and job.gen == 0 { p.baseSize; } else { 0.12; };
-  imm per = if cp.perNode < 1 { 1; } else { cp.perNode; };
-  imm groups = (count + per - 1) / per;
-  mut roll = rng.unit() * 360.;
-  mut g = 0;
-  mut made = 0;
+  let zone0 = if lv == 0 and job.gen == 0 { p.baseSize; } else { 0.12; };
+  let per = if cp.perNode < 1 { 1; } else { cp.perNode; };
+  let groups = (count + per - 1) / per;
+  var roll = rng.unit() * 360.;
+  var g = 0;
+  var made = 0;
   while g < groups {
     // (a whorl's node strays from even spacing by 'nodeJitter' of the spacing: tiers a year apart are not equal)
-    imm jit = if cp.nodeJitter > 0. { cp.nodeJitter * rng.signed(); } else { 0.; };
-    imm t = zone0 + (1. - zone0) * (f32.from(g) + 0.5 + jit + 0.25 * rng.signed() * (if per == 1 { 1.; } else { 0.; })) / f32.from(groups);
-    imm tr = clampf((t - zone0) / (1. - zone0), 0., 1.);
-    mut qa = Quat.identity();
-    imm at = pointAt(pts, frames, t, &mut qa);
-    imm offLen = t * L;
+    let jit = if cp.nodeJitter > 0. { cp.nodeJitter * rng.signed(); } else { 0.; };
+    let t = zone0 + (1. - zone0) * (f32.from(g) + 0.5 + jit + 0.25 * rng.signed() * (if per == 1 { 1.; } else { 0.; })) / f32.from(groups);
+    let tr = clampf((t - zone0) / (1. - zone0), 0., 1.);
+    var qa = Quat.identity();
+    let at = pointAt(pts, frames, t, &mut qa);
+    let offLen = t * L;
     // this node's turn
     if per > 1 {
       roll = roll + cp.nodeTwist;
       // (a whorl's turn from the last varies by 'rotateV' too, so a conifer's limbs do not line up in columns)
       if cp.rotateV > 0. { roll = roll + cp.rotateV * rng.signed(); }
     }
-    mut j = 0;
+    var j = 0;
     while j < per and made < count {
       if per == 1 { roll = roll + cp.rotate + cp.rotateV * rng.signed(); }
-      imm nodeRoll = if per == 1 { roll; } else { roll + 360. / f32.from(per) * f32.from(j); };
-      mut down f32 = 0.;
+      let nodeRoll = if per == 1 { roll; } else { roll + 360. / f32.from(per) * f32.from(j); };
+      var down f32 = 0.;
       if cp.downAngleV >= 0. { down = cp.downAngle + cp.downAngleV * rng.signed(); }
       else { down = cp.downAngle + (0. - cp.downAngleV) * (1. - 2. * tr) + 0.1 * (0. - cp.downAngleV) * rng.signed(); }
       // a flat level: the roll that puts the child in the horizontal plane through the parent, to its left
       // (j even) or right, mixed with the random one by 'flat'
-      mut rollUsed = nodeRoll;
+      var rollUsed = nodeRoll;
       if cp.flat > 0. {
-        imm pa = axisOf(qa);
-        imm across = pa.cross(v3(0., 1., 0.));
+        let pa = axisOf(qa);
+        let across = pa.cross(v3(0., 1., 0.));
         if across.length() > 0.2 {
-          imm f = unitv(across);
-          imm x0 = qa * v3(1., 0., 0.);
-          imm ang = degrees(libc.atan2f(pa.dot(x0.cross(f)), x0.dot(f)));
+          let f = unitv(across);
+          let x0 = qa * v3(1., 0., 0.);
+          let ang = degrees(libc.atan2f(pa.dot(x0.cross(f)), x0.dot(f)));
           rollUsed = ang + 360. / f32.from(per) * f32.from(j) + (1. - cp.flat) * roll;
         }
       }
-      imm qr = rollQ(qa, rollUsed);
-      imm qc = pitchQ(qr, down);
+      let qr = rollQ(qa, rollUsed);
+      let qc = pitchQ(qr, down);
       // the child's length
-      mut cl f32 = 0.;
+      var cl f32 = 0.;
       if lv == 0 {
         cl = L * (cp.length + cp.lengthV * rng.signed()) * shapeRatio(p, 1. - tr);
       } else {
@@ -290,17 +290,17 @@ fn placeChildren(p &TreeParams, rng &mut Rng, job Job, trunk f32, pts &List[Vec3
       }
       // a conifer's incomplete whorl: a limb missing by chance, the likelier and the shorter on
       // the side the wind comes from (a shore tree is one-sided)
-      mut skipChance = cp.skip;
+      var skipChance = cp.skip;
       if lv == 0 and p.windBias > 0. {
-        imm a = axisOf(qc);
-        imm w = libc.cosf(libc.atan2f(a.z, a.x) - radians(p.windAzimuth));
+        let a = axisOf(qc);
+        let w = libc.cosf(libc.atan2f(a.z, a.x) - radians(p.windAzimuth));
         cl = cl * (1. + 0.55 * p.windBias * w);
         skipChance = skipChance + 0.3 * p.windBias * (1. - w);
       }
-      imm dropped = skipChance > 0. and rng.unit() < skipChance;
-      imm rp = radiusAtT(rad, t);
-      imm ratio = clampf(cl / maxf(0.001, L), 0.01, 1.);
-      imm rc = if cp.radiusShare > 0. { rp * cp.radiusShare * (1. + 0.15 * rng.signed()); }
+      let dropped = skipChance > 0. and rng.unit() < skipChance;
+      let rp = radiusAtT(rad, t);
+      let ratio = clampf(cl / maxf(0.001, L), 0.01, 1.);
+      let rc = if cp.radiusShare > 0. { rp * cp.radiusShare * (1. + 0.15 * rng.signed()); }
         else { minf(rp, rp * libc.powf(ratio, p.ratioPower)); };
       if cl > 0.02 and rc > 0. and !dropped {
         // the radius at the base: radiusAt tapers from 'radius', so start at rc
@@ -316,20 +316,20 @@ fn placeChildren(p &TreeParams, rng &mut Rng, job Job, trunk f32, pts &List[Vec3
 // Leaf sites along a stem: nodes from its middle to its tip, each with the
 // level's perNode leaves leaving at its twist
 fn placeSites(p &TreeParams, rng &mut Rng, pts &List[Vec3], frames &List[Quat], si i32, lv i32, sites &mut List[LeafSite]) {
-  imm lp = p.levelParams[usize.from(lv)];
-  imm per = if lp.perNode < 1 { 1; } else { lp.perNode; };
-  imm nodes = if p.leafSites < 1 { 1; } else { p.leafSites; };
-  mut roll = rng.unit() * 360.;
-  mut k = 0;
+  let lp = p.levelParams[usize.from(lv)];
+  let per = if lp.perNode < 1 { 1; } else { lp.perNode; };
+  let nodes = if p.leafSites < 1 { 1; } else { p.leafSites; };
+  var roll = rng.unit() * 360.;
+  var k = 0;
   while k < nodes {
-    imm t = 0.4 + 0.6 * f32.from(k + 1) / f32.from(nodes);
-    mut qa = Quat.identity();
-    imm at = pointAt(pts, frames, t, &mut qa);
+    let t = 0.4 + 0.6 * f32.from(k + 1) / f32.from(nodes);
+    var qa = Quat.identity();
+    let at = pointAt(pts, frames, t, &mut qa);
     roll = roll + (if per == 1 { lp.rotate; } else { lp.nodeTwist; });
-    mut j = 0;
+    var j = 0;
     while j < per {
-      imm r = roll + 360. / f32.from(per) * f32.from(j);
-      imm qr = rollQ(qa, r);
+      let r = roll + 360. / f32.from(per) * f32.from(j);
+      let qr = rollQ(qa, r);
       // the side a leaf leaves in: the frame's x
       sites.push(new LeafSite(at, axisOf(qa), qr * v3(1., 0., 0.), si, t, k));
       j = j + 1;
@@ -340,15 +340,15 @@ fn placeSites(p &TreeParams, rng &mut Rng, pts &List[Vec3], frames &List[Quat], 
 
 // Grow the tree 'p' describes: the same params give the same tree
 pub fn grow(p &TreeParams) Tree {
-  mut rng = Rng.make(p.seed);
-  mut tree = new Tree(List[Stem].empty(), List[LeafSite].empty(), 0., 0.);
-  mut jobs = List[Job].empty();
-  imm l0 = p.levelParams[0usize];
-  imm trunk = (p.scale + p.scaleV * rng.signed()) * (l0.length + l0.lengthV * rng.signed());
+  var rng = Rng.make(p.seed);
+  var tree = new Tree(List[Stem].empty(), List[LeafSite].empty(), 0., 0.);
+  var jobs = List[Job].empty();
+  let l0 = p.levelParams[0usize];
+  let trunk = (p.scale + p.scaleV * rng.signed()) * (l0.length + l0.lengthV * rng.signed());
   jobs.push(new Job(0, -1, v3(0., 0., 0.), Quat.identity(), trunk, trunk * p.ratio, 1., new Vec2(0., 0.), 0));
-  mut next = 0usize;
+  var next = 0usize;
   while next < jobs.len() {
-    imm job = *jobs[next];
+    let job = *jobs[next];
     buildStem(p, &mut rng, job, trunk, &mut tree, &mut jobs);
     next = next + 1usize;
   }

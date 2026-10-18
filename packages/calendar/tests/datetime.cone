@@ -13,7 +13,7 @@ import calendar use Date, TimeOfDay, DateTime;
 
 fn tod(h i64, m i64, s i64, ns i64) TimeOfDay {
   match TimeOfDay.fromHms(h, m, s, ns) {
-    case imm t Some { t; }
+    case let t Some { t; }
     case is None {
       require(false, "the test's time exists");
       new TimeOfDay();
@@ -30,7 +30,7 @@ fn todExists(h i64, m i64, s i64, ns i64) bool {
 
 fn dt(y i64, mo i64, d i64, h i64, mi i64, s i64, ns i64) DateTime {
   match DateTime.fromYmdHms(y, mo, d, h, mi, s, ns) {
-    case imm t Some { t; }
+    case let t Some { t; }
     case is None {
       require(false, "the test's date-time exists");
       new DateTime();
@@ -48,7 +48,7 @@ fn dtExists(y i64, mo i64, d i64, h i64, mi i64, s i64) bool {
 // The Timestamp of a DateTime, or the epoch and a failed check
 fn stamp(x DateTime, label &Array[u8]) Timestamp {
   match x.toTimestamp() {
-    case imm t Some { t; }
+    case let t Some { t; }
     case is None {
       expect(false, label);
       new Timestamp();
@@ -64,14 +64,14 @@ fn inRange(x DateTime) bool {
 }
 
 fn timeOfDay() {
-  imm t = tod(14, 5, 9, 250000000);
+  let t = tod(14, 5, 9, 250000000);
   expectInt(t.hour(), 14, "hour");
   expectInt(t.minute(), 5, "minute");
   expectInt(t.second(), 9, "second");
   expectInt(t.nanosecond(), 250000000, "nanosecond");
   expectInt(t.sinceMidnight().millis(), 50709250, "since midnight");
   match TimeOfDay.fromHms(23, 59, 59) {
-    case imm x Some { expectInt(x.nanosecond(), 0, "the nanoseconds default to 0"); }
+    case let x Some { expectInt(x.nanosecond(), 0, "the nanoseconds default to 0"); }
     case is None { expect(false, "23:59:59 exists"); }
   }
   expect(new TimeOfDay() == tod(0, 0, 0, 0), "new TimeOfDay() is midnight");
@@ -89,7 +89,7 @@ fn timeOfDay() {
 }
 
 fn construction() {
-  imm x = dt(2026, 10, 3, 14, 5, 9, 0);
+  let x = dt(2026, 10, 3, 14, 5, 9, 0);
   expect(x.date() == Date.fromUnixDays(20729), "the date");
   expect(x.time() == tod(14, 5, 9, 0), "the time");
   expect(DateTime.fromParts(Date.fromUnixDays(20729), tod(14, 5, 9, 0)) == x, "fromParts");
@@ -103,7 +103,7 @@ fn construction() {
 // A Timestamp's nanoseconds and its DateTime, each pair from Python's
 // datetime; seconds and the fraction split as Unix time does (toward the past)
 fn pair(ns i64, x DateTime, label &Array[u8]) {
-  imm t = Timestamp.fromUnixNanos(ns);
+  let t = Timestamp.fromUnixNanos(ns);
   expect(DateTime.fromTimestamp(t) == x, label);
   expectInt(stamp(x, label).unixNanos(), ns, label);
 }
@@ -143,14 +143,14 @@ fn range() {
 // Timestamp -> DateTime -> Timestamp over the whole range, at a stride that
 // lands on every part of a second and of a day, and from both ends
 fn roundTrips() {
-  mut bad = 0i64;
-  mut count = 0i64;
-  mut ns = -9223372036854775807i64 - 1i64;
-  imm stride = 9223372036854775i64 + 123456789i64;     // just under 2000 steps
+  var bad = 0i64;
+  var count = 0i64;
+  var ns = -9223372036854775807i64 - 1i64;
+  let stride = 9223372036854775i64 + 123456789i64;     // just under 2000 steps
   while ns < 9223372036854775807i64 - stride {
-    imm t = Timestamp.fromUnixNanos(ns);
+    let t = Timestamp.fromUnixNanos(ns);
     match DateTime.fromTimestamp(t).toTimestamp() {
-      case imm back Some { if back != t { bad = bad + 1i64; } }
+      case let back Some { if back != t { bad = bad + 1i64; } }
       case is None { bad = bad + 1i64; }
     }
     ns = ns + stride;
@@ -160,14 +160,14 @@ fn roundTrips() {
   expectInt(count, 1999, "1999 of them");
   // Every nanosecond around midnight before and after 1970, and around the epoch
   bad = 0i64;
-  imm points = [-86400000000000i64, 0i64, 86400000000000i64, -2208988800000000000i64];
-  mut p = 0usize;
+  let points = [-86400000000000i64, 0i64, 86400000000000i64, -2208988800000000000i64];
+  var p = 0usize;
   while p < 4usize {
-    mut k = -1000i64;
+    var k = -1000i64;
     while k <= 1000i64 {
-      imm t = Timestamp.fromUnixNanos(points[p] + k);
+      let t = Timestamp.fromUnixNanos(points[p] + k);
       match DateTime.fromTimestamp(t).toTimestamp() {
-        case imm back Some { if back != t { bad = bad + 1i64; } }
+        case let back Some { if back != t { bad = bad + 1i64; } }
         case is None { bad = bad + 1i64; }
       }
       k = k + 1i64;
@@ -178,7 +178,7 @@ fn roundTrips() {
 }
 
 fn addition() {
-  imm x = dt(2026, 10, 3, 23, 30, 0, 0);
+  let x = dt(2026, 10, 3, 23, 30, 0, 0);
   expect(x + Duration.fromHours(1) == dt(2026, 10, 4, 0, 30, 0, 0), "over midnight");
   expect(x + Duration.fromHours(24 * 29) == dt(2026, 11, 1, 23, 30, 0, 0), "over a month");
   expect(dt(2026, 12, 31, 23, 59, 59, 999999999) + Duration.fromNanos(1) == dt(2027, 1, 1, 0, 0, 0, 0), "over a year by a nanosecond");
@@ -187,23 +187,23 @@ fn addition() {
   expect(x + Duration.fromHours(-24) == dt(2026, 10, 2, 23, 30, 0, 0), "a negative Duration goes back");
   expect(dt(1, 1, 1, 0, 0, 0, 0) - Duration.fromSeconds(1) == dt(0, 12, 31, 23, 59, 59, 0), "back across year 1");
   // The largest Durations either way, which no sum may overflow
-  imm big = Duration.fromNanos(9223372036854775807);
+  let big = Duration.fromNanos(9223372036854775807);
   expect(DateTime.fromTimestamp(Timestamp.fromUnixNanos(0)) + big == dt(2262, 4, 11, 23, 47, 16, 854775807), "the largest Duration");
   expect(dt(2262, 4, 11, 23, 47, 16, 854775807) - big == new DateTime(), "and back");
   expect(dt(9000, 1, 1, 12, 0, 0, 0) + big > dt(9292, 1, 1, 0, 0, 0, 0), "from a year a Timestamp cannot hold");
   expectInt((dt(2026, 10, 4, 0, 0, 0, 0) - dt(2026, 10, 3, 23, 0, 0, 0)).minutes(), 60, "DateTime - DateTime");
   expectInt((dt(1969, 12, 31, 0, 0, 0, 0) - dt(1970, 1, 1, 0, 0, 0, 1)).nanos(), -86400000000001, "negative across 1970");
   // Adding agrees with the Timestamp's own arithmetic
-  imm t = Timestamp.fromUnixNanos(-1509457273540090022);
-  imm d = Duration.fromNanos(123456789012345678);
+  let t = Timestamp.fromUnixNanos(-1509457273540090022);
+  let d = Duration.fromNanos(123456789012345678);
   expect(DateTime.fromTimestamp(t) + d == DateTime.fromTimestamp(t + d), "DateTime + Duration agrees with Timestamp + Duration");
   expect(DateTime.fromTimestamp(t) - d == DateTime.fromTimestamp(t - d), "and minus");
 }
 
 fn comparison() {
-  imm a = dt(2026, 10, 3, 14, 5, 9, 0);
-  imm b = dt(2026, 10, 3, 14, 5, 9, 1);
-  imm c = dt(2026, 10, 4, 0, 0, 0, 0);
+  let a = dt(2026, 10, 3, 14, 5, 9, 0);
+  let b = dt(2026, 10, 3, 14, 5, 9, 1);
+  let c = dt(2026, 10, 4, 0, 0, 0, 0);
   expect(a < b and b < c, "earlier is less");
   expect(c > a and c >= a and a <= a and a >= a, "> >= <=");
   expect(a == dt(2026, 10, 3, 14, 5, 9, 0) and a != b, "== and !=");

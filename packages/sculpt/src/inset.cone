@@ -47,7 +47,7 @@
 // ("crease" too); the sides joining a rim vertex to its new vertex are new, 0
 // in every edge channel.
 pub fn inset(m &PolyMesh, faces &Array[u32], thickness f32, depth f32) PolyMesh {
-  imm region = faceRegions(m, faces, false);
+  let region = faceRegions(m, faces, false);
   insetRegions(m, &region, thickness, depth);
 }
 
@@ -55,45 +55,45 @@ pub fn inset(m &PolyMesh, faces &Array[u32], thickness f32, depth f32) PolyMesh 
 // Individual): each shrinks inside its own border, and moves 'depth' along
 // its own normal. As 'inset', each face its own region (and its own clamp).
 pub fn insetIndividual(m &PolyMesh, faces &Array[u32], thickness f32, depth f32) PolyMesh {
-  imm region = faceRegions(m, faces, true);
+  let region = faceRegions(m, faces, true);
   insetRegions(m, &region, thickness, depth);
 }
 
 fn insetRegions(m &PolyMesh, region &List[u32], thickness f32, depth f32) PolyMesh {
-  imm nf = m.fHalfedge.len();
-  imm nh = m.hVertex.len();
-  imm nrm = regionNormals(m, region);
-  imm t = if thickness > 0. {thickness;} else {0.;};
+  let nf = m.fHalfedge.len();
+  let nh = m.hVertex.len();
+  let nrm = regionNormals(m, region);
+  let t = if thickness > 0. {thickness;} else {0.;};
 
   // Each rim half-edge's mitre (the move of its sector's vertex per unit of
   // thickness), and each region's limit, concavity and rim (chained)
-  mut mitre = zeros(nh);
-  mut limit = List[f32].withCapacity(nf);
-  mut concave = List[bool].withCapacity(nf);
-  mut rimHead = List[u32].withCapacity(nf);
-  mut f = 0usize;
+  var mitre = zeros(nh);
+  var limit = List[f32].withCapacity(nf);
+  var concave = List[bool].withCapacity(nf);
+  var rimHead = List[u32].withCapacity(nf);
+  var f = 0usize;
   while f < nf {
     limit.push(t);
     concave.push(false);
     rimHead.push(NoIndex);
     f = f + 1usize;
   }
-  mut rimNext = List[u32].withCapacity(nh);
-  mut h = 0usize;
+  var rimNext = List[u32].withCapacity(nh);
+  var h = 0usize;
   while h < nh {
     rimNext.push(NoIndex);
     h = h + 1usize;
   }
   f = 0usize;
   while f < nf {
-    imm r = *region[f];
+    let r = *region[f];
     if r != NoIndex {
-      imm hs = m.faceHalfedges(u32.from(f));
-      mut k = 0usize;
+      let hs = m.faceHalfedges(u32.from(f));
+      var k = 0usize;
       while k < hs.len() {
-        imm c = *hs[k];
+        let c = *hs[k];
         if !acrossSame(m, region, c) {
-          imm o = sectorOut(m, region, c);
+          let o = sectorOut(m, region, c);
           mitre.set(usize.from(c), mitreOf(m, c, o));
           if isReflex(m, c, o) { concave.set(usize.from(r), true); }
           rimNext.set(usize.from(c), *rimHead[usize.from(r)]);
@@ -111,31 +111,31 @@ fn insetRegions(m &PolyMesh, region &List[u32], thickness f32, depth f32) PolyMe
     if *rimHead[f] != NoIndex {
       // No shrunk side turns back: along side a -> b, the ends close by
       // t (mitre(a) - mitre(b)) . d, which must stay within its length
-      mut g = *rimHead[f];
+      var g = *rimHead[f];
       while g != NoIndex {
-        imm a = *m.positions[usize.from(m.fromVertex(g))];
-        imm b = *m.positions[usize.from(m.toVertex(g))];
-        imm len = (b - a).length();
+        let a = *m.positions[usize.from(m.fromVertex(g))];
+        let b = *m.positions[usize.from(m.toVertex(g))];
+        let len = (b - a).length();
         if len > 0. {
-          imm ma = *mitre[usize.from(sectorIn(m, region, m.prev(g)))];
-          imm closing = (ma - *mitre[usize.from(g)]).dot(b - a) / len;
+          let ma = *mitre[usize.from(sectorIn(m, region, m.prev(g)))];
+          let closing = (ma - *mitre[usize.from(g)]).dot(b - a) / len;
           if closing > 0. and len / closing < *limit[f] { limit.set(f, len / closing); }
         }
         g = *rimNext[usize.from(g)];
       }
       if *concave[f] {
-        mut most f32 = 0.;
-        mut gap f32 = -1.;
-        mut p = *rimHead[f];
+        var most f32 = 0.;
+        var gap f32 = -1.;
+        var p = *rimHead[f];
         while p != NoIndex {
-          imm ml = mitre[usize.from(p)].length();
+          let ml = mitre[usize.from(p)].length();
           if ml > most { most = ml; }
-          imm pv = m.toVertex(p);
-          imm at = *m.positions[usize.from(pv)];
-          mut q = *rimHead[f];
+          let pv = m.toVertex(p);
+          let at = *m.positions[usize.from(pv)];
+          var q = *rimHead[f];
           while q != NoIndex {
             if m.fromVertex(q) != pv and m.toVertex(q) != pv {
-              imm dist = segmentDistance(at, *m.positions[usize.from(m.fromVertex(q))],
+              let dist = segmentDistance(at, *m.positions[usize.from(m.fromVertex(q))],
                 *m.positions[usize.from(m.toVertex(q))]);
               if gap < 0. or dist < gap { gap = dist; }
             }
@@ -149,16 +149,16 @@ fn insetRegions(m &PolyMesh, region &List[u32], thickness f32, depth f32) PolyMe
     f = f + 1usize;
   }
 
-  mut shift = List[Vec3].withCapacity(nf);
+  var shift = List[Vec3].withCapacity(nf);
   f = 0usize;
   while f < nf {
     shift.push(*nrm[f] * depth);
     f = f + 1usize;
   }
-  mut rim = zeros(nh);
+  var rim = zeros(nh);
   h = 0usize;
   while h < nh {
-    imm hf = m.face(u32.from(h));
+    let hf = m.face(u32.from(h));
     if hf != NoIndex and *region[usize.from(hf)] != NoIndex {
       rim.set(h, *mitre[h] * *limit[usize.from(*region[usize.from(hf)])]);
     }
@@ -174,15 +174,15 @@ fn insetRegions(m &PolyMesh, region &List[u32], thickness f32, depth f32) PolyMe
 // both sides. Sides that fold straight back on each other (no bisector) give
 // the first side's inward direction; the scale is held to 10000.
 fn mitreOf(m &PolyMesh, c u32, o u32) Vec3 {
-  imm u = *m.positions[usize.from(m.fromVertex(c))];
-  imm v = *m.positions[usize.from(m.toVertex(c))];
-  imm w = *m.positions[usize.from(m.toVertex(o))];
-  imm in1 = unit(m.faceNormal(m.face(c)).cross(unit(v - u)));
-  imm in2 = unit(m.faceNormal(m.face(o)).cross(unit(w - v)));
-  imm sum = in1 + in2;
+  let u = *m.positions[usize.from(m.fromVertex(c))];
+  let v = *m.positions[usize.from(m.toVertex(c))];
+  let w = *m.positions[usize.from(m.toVertex(o))];
+  let in1 = unit(m.faceNormal(m.face(c)).cross(unit(v - u)));
+  let in2 = unit(m.faceNormal(m.face(o)).cross(unit(w - v)));
+  let sum = in1 + in2;
   if sum.length() < 0.000001 { return in1; }
-  imm dir = unit(sum);
-  imm cosHalf = dir.dot(in1);
+  let dir = unit(sum);
+  let cosHalf = dir.dot(in1);
   if cosHalf < 0.0001 { return dir * 10000.; }
   dir * (1. / cosHalf);
 }
@@ -190,18 +190,18 @@ fn mitreOf(m &PolyMesh, c u32, o u32) Vec3 {
 // Whether the rim turns against its faces at the vertex between c and o (a
 // reflex corner, where the region is concave)
 fn isReflex(m &PolyMesh, c u32, o u32) bool {
-  imm u = *m.positions[usize.from(m.fromVertex(c))];
-  imm v = *m.positions[usize.from(m.toVertex(c))];
-  imm w = *m.positions[usize.from(m.toVertex(o))];
-  imm up = m.faceNormal(m.face(c)) + m.faceNormal(m.face(o));
+  let u = *m.positions[usize.from(m.fromVertex(c))];
+  let v = *m.positions[usize.from(m.toVertex(c))];
+  let w = *m.positions[usize.from(m.toVertex(o))];
+  let up = m.faceNormal(m.face(c)) + m.faceNormal(m.face(o));
   (v - u).cross(w - v).dot(up) < 0.;
 }
 
 // The distance from point p to the segment from a to b
 fn segmentDistance(p Vec3, a Vec3, b Vec3) f32 {
-  imm ab = b - a;
-  imm l2 = ab.lengthSquared();
+  let ab = b - a;
+  let l2 = ab.lengthSquared();
   if l2 <= 0. { return (p - a).length(); }
-  imm s = clampf((p - a).dot(ab) / l2, 0., 1.);
+  let s = clampf((p - a).dot(ab) / l2, 0., 1.);
   (p - (a + ab * s)).length();
 }

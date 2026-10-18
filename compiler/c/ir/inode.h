@@ -332,7 +332,7 @@ enum NodeTags {
 // A flag rather than a pointer field, because cloneBlockNode memcpy's the flags
 // and clones 'stmts', so a pointer would be left aimed into the original.
 #define FlagLoopStep  0x0002        // Block: last statement is 'each's synthesized step
-// An operator changing its operand in place is rewritten to a block, '{imm tmp
+// An operator changing its operand in place is rewritten to a block, '{let tmp
 // = &mut x; *tmp = *tmp + 1}' (fnCallOpAssgn, contentsLower), which was one
 // statement as written: a temporary its operand's place is rooted in ('mk().n
 // += 1', or the guard of '(&mut *p).n += 1', which holds a lock) lives to the
@@ -402,7 +402,7 @@ enum NodeTags {
 // NameUseNode is neither.
 #define FlagQualified 0x0001        // NameUse: reached through a namespace, not written bare
 // A bare name at the root of a pattern -- 'Red' in 'case is Red', 'Circle' in
-// 'case imm c &Circle' -- is looked up in the enum of the value being matched
+// 'case let c &Circle' -- is looked up in the enum of the value being matched
 // before it is looked up lexically, and that value's type is known only at type
 // check. So the parser marks the name (castPatternMark), name resolution leaves
 // it unbound rather than reporting it when nothing lexical answers, and

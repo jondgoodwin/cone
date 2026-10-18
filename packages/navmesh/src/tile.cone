@@ -90,7 +90,7 @@ pub struct NavMesh {
 
   // The reference of polygon p of tile index t
   pub fn makeRef(self &, t i32, p usize) u64 {
-    imm tile = tiles[usize.from(t)];
+    let tile = tiles[usize.from(t)];
     (u64.from(tile.salt) << 32u64) | (u64.from(t) << 16u64) | u64.from(p);
   }
 
@@ -100,9 +100,9 @@ pub struct NavMesh {
   // Whether 'r' names a polygon that still exists
   pub fn isValid(self &, r u64) bool {
     if r == NoRef { return false; }
-    imm t = self.refTile(r);
+    let t = self.refTile(r);
     if t < 0i32 or usize.from(t) >= tiles.len() { return false; }
-    imm tile = tiles[usize.from(t)];
+    let tile = tiles[usize.from(t)];
     if !tile.built or u64.from(tile.salt) != (r >> 32u64) { return false; }
     self.refPoly(r) < tile.polyCount();
   }
@@ -120,14 +120,14 @@ pub struct NavMesh {
   }
 
   pub fn polyCount(self &) usize {
-    mut n = 0usize;
-    mut i = 0usize;
+    var n = 0usize;
+    var i = 0usize;
     while i < tiles.len() { n = n + tiles[i].polyCount(); i = i + 1usize; }
     n;
   }
 
   pub fn tileCoordOf(self &, x f32, z f32) Vec2 {
-    imm tw = self.tileWorld();
+    let tw = self.tileWorld();
     new Vec2(floorf((x - origin.x) / tw), floorf((z - origin.z) / tw));
   }
 }
@@ -135,48 +135,48 @@ pub struct NavMesh {
 // ---- building ----
 
 fn triNormalY(a Vec3, b Vec3, c Vec3) f32 {
-  imm e0 = b - a;
-  imm e1 = c - a;
-  imm n = e0.cross(e1);
-  imm l = n.length();
+  let e0 = b - a;
+  let e1 = c - a;
+  let n = e0.cross(e1);
+  let l = n.length();
   if l <= 0. { return 0.; }
   n.y / l;
 }
 
 // Build, from 'input', the tile (tx, tz) into a Tile (not yet linked)
 pub fn buildTile(nav &NavMesh, input &NavInput, tx i32, tz i32) Tile {
-  imm p = nav.params;
-  imm bs = p.borderSize();
-  imm size = p.tileSize + 2i32 * bs;
-  imm cs = p.cellSize;
-  imm ch = p.cellHeight;
-  imm bmin = new Vec3(nav.origin.x + f32.from(tx * p.tileSize - bs) * cs, nav.origin.y, nav.origin.z + f32.from(tz * p.tileSize - bs) * cs);
-  imm wx1 = bmin.x + f32.from(size) * cs;
-  imm wz1 = bmin.z + f32.from(size) * cs;
-  mut hf = Heightfield.make(size, size, bmin, nav.yRange, cs, ch);
-  imm climb = p.walkableClimb();
-  imm walkThr = cos(p.agentMaxSlope);
-  mut sc = RasterScratch.make();
-  mut t = 0usize;
-  imm ntri = input.tris.len() / 3usize;
+  let p = nav.params;
+  let bs = p.borderSize();
+  let size = p.tileSize + 2i32 * bs;
+  let cs = p.cellSize;
+  let ch = p.cellHeight;
+  let bmin = new Vec3(nav.origin.x + f32.from(tx * p.tileSize - bs) * cs, nav.origin.y, nav.origin.z + f32.from(tz * p.tileSize - bs) * cs);
+  let wx1 = bmin.x + f32.from(size) * cs;
+  let wz1 = bmin.z + f32.from(size) * cs;
+  var hf = Heightfield.make(size, size, bmin, nav.yRange, cs, ch);
+  let climb = p.walkableClimb();
+  let walkThr = cos(p.agentMaxSlope);
+  var sc = RasterScratch.make();
+  var t = 0usize;
+  let ntri = input.tris.len() / 3usize;
   while t < ntri {
-    imm a = *input.verts[usize.from(*input.tris[t * 3usize])];
-    imm b = *input.verts[usize.from(*input.tris[t * 3usize + 1usize])];
-    imm c = *input.verts[usize.from(*input.tris[t * 3usize + 2usize])];
-    imm lo = a.min(b).min(c);
-    imm hi = a.max(b).max(c);
+    let a = *input.verts[usize.from(*input.tris[t * 3usize])];
+    let b = *input.verts[usize.from(*input.tris[t * 3usize + 1usize])];
+    let c = *input.verts[usize.from(*input.tris[t * 3usize + 2usize])];
+    let lo = a.min(b).min(c);
+    let hi = a.max(b).max(c);
     if hi.x >= bmin.x and lo.x <= wx1 and hi.z >= bmin.z and lo.z <= wz1 {
-      mut area = *input.triArea[t];
+      var area = *input.triArea[t];
       if area != AreaNull and triNormalY(a, b, c) <= walkThr { area = AreaNull; }
       rasterizeTriangle(&mut hf, a, b, c, area, climb, &mut sc);
     }
     t = t + 1usize;
   }
-  mut o = 0usize;
+  var o = 0usize;
   while o < input.obstacles.len() {
-    imm ob = input.obstacles[o];
+    let ob = input.obstacles[o];
     if ob.enabled and ob.area == AreaNull {
-      imm e = ob.extent();
+      let e = ob.extent();
       if e.z >= bmin.x and e.x <= wx1 and e.w >= bmin.z and e.y <= wz1 {
         rasterizeObstacle(&mut hf, ob, climb);
       }
@@ -186,44 +186,44 @@ pub fn buildTile(nav &NavMesh, input &NavInput, tx i32, tz i32) Tile {
   filterLowHangingObstacles(&mut hf, climb);
   filterLedgeSpans(&mut hf, p.walkableHeight(), climb);
   filterLowHeightSpans(&mut hf, p.walkableHeight());
-  mut chf = buildCompact(&hf, p.walkableHeight(), climb, bs);
+  var chf = buildCompact(&hf, p.walkableHeight(), climb, bs);
   erodeWalkableArea(&mut chf, p.walkableRadius());
   o = 0usize;
   while o < input.obstacles.len() {
-    imm ob = input.obstacles[o];
+    let ob = input.obstacles[o];
     if ob.enabled and ob.area != AreaNull {
-      imm e = ob.extent();
+      let e = ob.extent();
       if e.z >= bmin.x and e.x <= wx1 and e.w >= bmin.z and e.y <= wz1 { markObstacleArea(&mut chf, ob); }
     }
     o = o + 1usize;
   }
   buildRegionsMonotone(&mut chf, p.minRegionArea);
-  imm contours = buildContours(&chf, p.maxSimplifyError, i32.from(p.maxEdgeLen));
-  imm pm = buildPolyMesh(&contours, p.tileSize, p.tileSize);
+  let contours = buildContours(&chf, p.maxSimplifyError, i32.from(p.maxEdgeLen));
+  let pm = buildPolyMesh(&contours, p.tileSize, p.tileSize);
   tileFromMesh(nav, &pm, tx, tz);
 }
 
 fn tileFromMesh(nav &NavMesh, pm &PolyMesh, tx i32, tz i32) Tile {
-  imm p = nav.params;
-  mut tile = Tile.empty(tx, tz);
-  imm ox = nav.origin.x + f32.from(tx * p.tileSize) * p.cellSize;
-  imm oz = nav.origin.z + f32.from(tz * p.tileSize) * p.cellSize;
-  mut i = 0usize;
+  let p = nav.params;
+  var tile = Tile.empty(tx, tz);
+  let ox = nav.origin.x + f32.from(tx * p.tileSize) * p.cellSize;
+  let oz = nav.origin.z + f32.from(tz * p.tileSize) * p.cellSize;
+  var i = 0usize;
   while i < pm.vertCount() {
     tile.verts.push(new Vec3(ox + f32.from(*pm.verts[i * 3usize]) * p.cellSize,
       nav.origin.y + f32.from(*pm.verts[i * 3usize + 1usize]) * p.cellHeight,
       oz + f32.from(*pm.verts[i * 3usize + 2usize]) * p.cellSize));
     i = i + 1usize;
   }
-  imm nvp = usize.from(MaxVerts);
-  mut q = 0usize;
+  let nvp = usize.from(MaxVerts);
+  var q = 0usize;
   while q < pm.polyCount() {
-    mut n = 0i32;
-    mut lo = new Vec3(3.4e38, 3.4e38, 3.4e38);
-    mut hi = new Vec3(-3.4e38, -3.4e38, -3.4e38);
-    mut k = 0usize;
+    var n = 0i32;
+    var lo = new Vec3(3.4e38, 3.4e38, 3.4e38);
+    var hi = new Vec3(-3.4e38, -3.4e38, -3.4e38);
+    var k = 0usize;
     while k < nvp {
-      imm v = *pm.polys[q * nvp * 2usize + k];
+      let v = *pm.polys[q * nvp * 2usize + k];
       tile.pverts.push(v);
       tile.pnei.push(*pm.polys[q * nvp * 2usize + nvp + k]);
       if v >= 0i32 {
@@ -245,63 +245,63 @@ fn tileFromMesh(nav &NavMesh, pm &PolyMesh, tx i32, tz i32) Tile {
 
 // The tile's links, recomputed from the tile and its built neighbours
 pub fn connectTile(nav &mut NavMesh, t i32) {
-  imm ti = usize.from(t);
-  imm np = nav.tiles[ti].polyCount();
-  mut starts = List[i32].withCapacity(np + 1usize);
-  mut links = List[Link].empty();
-  imm tx = nav.tiles[ti].tx;
-  imm tz = nav.tiles[ti].tz;
-  imm climb2 = nav.params.agentMaxClimb * 2.;
-  mut p = 0usize;
+  let ti = usize.from(t);
+  let np = nav.tiles[ti].polyCount();
+  var starts = List[i32].withCapacity(np + 1usize);
+  var links = List[Link].empty();
+  let tx = nav.tiles[ti].tx;
+  let tz = nav.tiles[ti].tz;
+  let climb2 = nav.params.agentMaxClimb * 2.;
+  var p = 0usize;
   while p < np {
     starts.push(i32.from(links.len()));
-    imm nv = usize.from(*nav.tiles[ti].pcount[p]);
-    mut e = 0usize;
+    let nv = usize.from(*nav.tiles[ti].pcount[p]);
+    var e = 0usize;
     while e < nv {
-      imm nei = *nav.tiles[ti].pnei[p * 6usize + e];
+      let nei = *nav.tiles[ti].pnei[p * 6usize + e];
       if nei >= 0i32 and nei < PortalFlag {
         links.push(new Link(nav.makeRef(t, usize.from(nei)), i32.from(e), -1i32, 0., 1.));
       } elif nei >= PortalFlag {
-        imm side = nei & 7i32;
-        imm nt = nav.tileIndex(tx + dirX(side), tz + dirZ(side));
+        let side = nei & 7i32;
+        let nt = nav.tileIndex(tx + dirX(side), tz + dirZ(side));
         if nt >= 0i32 and nav.tiles[usize.from(nt)].built {
-          imm va = nav.tiles[ti].vertOf(p, e);
-          imm vb = nav.tiles[ti].vertOf(p, (e + 1usize) % nv);
-          imm opp = (side + 2i32) & 3i32;
-          imm other = usize.from(nt);
-          imm nq = nav.tiles[other].polyCount();
-          mut q = 0usize;
+          let va = nav.tiles[ti].vertOf(p, e);
+          let vb = nav.tiles[ti].vertOf(p, (e + 1usize) % nv);
+          let opp = (side + 2i32) & 3i32;
+          let other = usize.from(nt);
+          let nq = nav.tiles[other].polyCount();
+          var q = 0usize;
           while q < nq {
-            imm qn = usize.from(*nav.tiles[other].pcount[q]);
-            mut f = 0usize;
+            let qn = usize.from(*nav.tiles[other].pcount[q]);
+            var f = 0usize;
             while f < qn {
               if *nav.tiles[other].pnei[q * 6usize + f] == (PortalFlag | opp) {
-                imm wa = nav.tiles[other].vertOf(q, f);
-                imm wb = nav.tiles[other].vertOf(q, (f + 1usize) % qn);
+                let wa = nav.tiles[other].vertOf(q, f);
+                let wb = nav.tiles[other].vertOf(q, (f + 1usize) % qn);
                 // the overlap, along z for a side facing x, along x for z
-                imm alongZ = side == 0i32 or side == 2i32;
-                imm a0 = if alongZ { va.z; } else { va.x; };
-                imm a1 = if alongZ { vb.z; } else { vb.x; };
-                imm b0 = if alongZ { wa.z; } else { wa.x; };
-                imm b1 = if alongZ { wb.z; } else { wb.x; };
-                imm amin = fmin(a0, a1);
-                imm amax = fmax(a0, a1);
-                imm bmn = fmin(b0, b1);
-                imm bmx = fmax(b0, b1);
-                imm lo = fmax(amin, bmn);
-                imm hi = fmin(amax, bmx);
+                let alongZ = side == 0i32 or side == 2i32;
+                let a0 = if alongZ { va.z; } else { va.x; };
+                let a1 = if alongZ { vb.z; } else { vb.x; };
+                let b0 = if alongZ { wa.z; } else { wa.x; };
+                let b1 = if alongZ { wb.z; } else { wb.x; };
+                let amin = fmin(a0, a1);
+                let amax = fmax(a0, a1);
+                let bmn = fmin(b0, b1);
+                let bmx = fmax(b0, b1);
+                let lo = fmax(amin, bmn);
+                let hi = fmin(amax, bmx);
                 if hi - lo > 0.01 {
                   // heights of both edges at the ends of the overlap
-                  imm ya0 = edgeHeightAt(va, vb, alongZ, lo);
-                  imm ya1 = edgeHeightAt(va, vb, alongZ, hi);
-                  imm yb0 = edgeHeightAt(wa, wb, alongZ, lo);
-                  imm yb1 = edgeHeightAt(wa, wb, alongZ, hi);
-                  imm d0 = ya0 - yb0;
-                  imm d1 = ya1 - yb1;
+                  let ya0 = edgeHeightAt(va, vb, alongZ, lo);
+                  let ya1 = edgeHeightAt(va, vb, alongZ, hi);
+                  let yb0 = edgeHeightAt(wa, wb, alongZ, lo);
+                  let yb1 = edgeHeightAt(wa, wb, alongZ, hi);
+                  let d0 = ya0 - yb0;
+                  let d1 = ya1 - yb1;
                   if !(d0 * d0 > climb2 * climb2 and d1 * d1 > climb2 * climb2) {
                     // as fractions along our edge from its first vertex
-                    mut t0 = 0.;
-                    mut t1 = 1.;
+                    var t0 = 0.;
+                    var t1 = 1.;
                     if a1 != a0 {
                       t0 = (lo - a0) / (a1 - a0);
                       t1 = (hi - a0) / (a1 - a0);
@@ -326,10 +326,10 @@ pub fn connectTile(nav &mut NavMesh, t i32) {
 }
 
 fn edgeHeightAt(a Vec3, b Vec3, alongZ bool, at f32) f32 {
-  imm a0 = if alongZ { a.z; } else { a.x; };
-  imm a1 = if alongZ { b.z; } else { b.x; };
+  let a0 = if alongZ { a.z; } else { a.x; };
+  let a1 = if alongZ { b.z; } else { b.x; };
   if a1 == a0 { return (a.y + b.y) * 0.5; }
-  imm t = fclamp((at - a0) / (a1 - a0), 0., 1.);
+  let t = fclamp((at - a0) / (a1 - a0), 0., 1.);
   a.y + (b.y - a.y) * t;
 }
 

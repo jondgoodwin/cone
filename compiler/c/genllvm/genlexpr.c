@@ -1308,7 +1308,7 @@ static int genlLendQuiet(INode *node) {
 // - flow saw its whole function, and nothing there borrows it, or a part of
 //   it, to write, nor makes a raw pointer of a borrow of it (VarLendWritable):
 //   so no '&mut' route to it is passed in this call or held anywhere;
-// - an 'imm' variable is then lent. One the program may assign is lent only
+// - a 'let' variable is then lent. One the program may assign is lent only
 //   when no other argument of the call, nor the callee's expression, could
 //   assign it (genlLendQuiet), since those may be evaluated after it.
 static int genlLendable(GenState *gen, FnCallNode *fncall, uint32_t argi) {

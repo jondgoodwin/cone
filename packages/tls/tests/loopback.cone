@@ -32,17 +32,17 @@ const tokConn = 1u64;
 const tokReq = 2u64;
 
 fn certs(name &str) Path {
-  mut p = String.from("../../../../tests/certs/");
+  var p = String.from("../../../../tests/certs/");
   p.append(name);
   Path.fromString(p);
 }
 
 fn readText(name &str) String {
-  mut out = String.empty();
-  imm file = certs(name);
+  var out = String.empty();
+  let file = certs(name);
   match fs.readFile(&file) {
-    case mut r Ok {out <=> r;}
-    case imm e Error {}
+    case var r Ok {out <=> r;}
+    case let e Error {}
   }
   out;
 }
@@ -58,28 +58,28 @@ struct TlsMaker {
 }
 
 fn server(cert &str, key &str) tls.Server {
-  imm certFile = certs(cert);
-  imm keyFile = certs(key);
+  let certFile = certs(cert);
+  let keyFile = certs(key);
   match tls.Server.make(tls.ServerConfig.make(&certFile, &keyFile)) {
-    case imm r Ok {
-      imm s = r;
+    case let r Ok {
+      let s = r;
       return s;
     }
-    case imm e Error {printStr(e.message().view());}
+    case let e Error {printStr(e.message().view());}
   }
   panic("no server");
 }
 
 fn client(v tls.Verifier) tls.Client {
-  mut cfg = tls.ClientConfig.make();
+  var cfg = tls.ClientConfig.make();
   cfg.verify = v;
   cfg.offline = true;
   match tls.Client.make(cfg) {
-    case imm r Ok {
-      imm c = r;
+    case let r Ok {
+      let c = r;
       return c;
     }
-    case imm e Error {printStr(e.message().view());}
+    case let e Error {printStr(e.message().view());}
   }
   panic("no client");
 }
@@ -115,10 +115,10 @@ struct Cli {
 
 // The server's answer to a request read whole
 fn answer(drv &mut Driver, sv &mut Srv) {
-  imm req = sv.req;
+  let req = sv.req;
   if sv.target.view() == "/hello" {
     drv.respond(req, ResponseHead.make(200u16), BodyLength.sized(u64.from(helloBody().len)));
-    mut b = sv.pool.mustTake(64usize);
+    var b = sv.pool.mustTake(64usize);
     b.append(helloBody());
     drv.sendData(req, b);
     drv.finish(req);
@@ -128,7 +128,7 @@ fn answer(drv &mut Driver, sv &mut Srv) {
     sendBig(drv, sv);
   } else {
     drv.respond(req, ResponseHead.make(200u16), BodyLength.sized(u64.from(sv.body.len())));
-    mut b = sv.pool.mustTake(sv.body.len() + 1usize);
+    var b = sv.pool.mustTake(sv.body.len() + 1usize);
     b.append(sv.body.view());
     drv.sendData(req, b);
     drv.finish(req);
@@ -139,9 +139,9 @@ fn answer(drv &mut Driver, sv &mut Srv) {
 // connection takes them: a piece refused waits for Writable
 fn sendBig(drv &mut Driver, sv &mut Srv) {
   while sv.pieces < 16u32 {
-    mut b = sv.pool.mustTake(65536usize);
-    mut j = 0u32;
-    imm s = b.spare();
+    var b = sv.pool.mustTake(65536usize);
+    var j = 0u32;
+    let s = b.spare();
     while j < 65536u32 {
       s[usize.from(j)] = u8.from((sv.pieces * 65536u32 + j) % 251u32);
       j = j + 1u32;
@@ -159,9 +159,9 @@ fn sendBig(drv &mut Driver, sv &mut Srv) {
 // One poll of the driver, every event handled
 fn step(drv &mut Driver, lp &mut Loop, sv &mut Srv, cl &mut Cli, events &mut List[Event]) {
   drv.poll(lp, Instant.now() + Duration.fromMillis(20i64), events);
-  mut k = 0usize;
+  var k = 0usize;
   while k < events.len() {
-    imm e = &mut events[k];
+    let e = &mut events[k];
     k = k + 1usize;
     if e.token >= tokGood {
       if e.kind == EventKind.Accepted {sv.accepted = sv.accepted + 1u64;}
@@ -219,15 +219,15 @@ fn exchange(drv &mut Driver, lp &mut Loop, sv &mut Srv, cl &mut Cli, events &mut
   cl.status = 0u16;
   cl.body = String.empty();
   cl.failure = String.empty();
-  imm before = cl.finals;
+  let before = cl.finals;
   if body.len == 0usize {
     drv.request(lp, conn, head, BodyLength.empty(), Sink.Here(tokReq));
   } else {
-    imm req = drv.request(lp, conn, head, BodyLength.sized(u64.from(body.len)), Sink.Here(tokReq));
-    mut sent = false;
-    imm giveUp = Instant.now() + Duration.fromSeconds(10i64);
+    let req = drv.request(lp, conn, head, BodyLength.sized(u64.from(body.len)), Sink.Here(tokReq));
+    var sent = false;
+    let giveUp = Instant.now() + Duration.fromSeconds(10i64);
     while not sent and Instant.now() < giveUp {
-      mut b = sv.pool.mustTake(body.len);
+      var b = sv.pool.mustTake(body.len);
       b.append(body);
       match drv.sendData(req, b) {
         case is None[IoBuf] {
@@ -238,7 +238,7 @@ fn exchange(drv &mut Driver, lp &mut Loop, sv &mut Srv, cl &mut Cli, events &mut
       }
     }
   }
-  imm giveUp = Instant.now() + Duration.fromSeconds(10i64);
+  let giveUp = Instant.now() + Duration.fromSeconds(10i64);
   while cl.finals == before and Instant.now() < giveUp {step(drv, lp, sv, cl, events);}
   requireUInt(cl.finals, before + 1u64, "the request has its final answer in time");
 }
@@ -246,7 +246,7 @@ fn exchange(drv &mut Driver, lp &mut Loop, sv &mut Srv, cl &mut Cli, events &mut
 // Drive until the client's connection has closed, and the server's
 fn waitClosed(drv &mut Driver, lp &mut Loop, sv &mut Srv, cl &mut Cli, events &mut List[Event],
     clientClosed u64, serverClosed u64) {
-  imm giveUp = Instant.now() + Duration.fromSeconds(10i64);
+  let giveUp = Instant.now() + Duration.fromSeconds(10i64);
   while (cl.closed < clientClosed or sv.closed < serverClosed) and Instant.now() < giveUp {
     step(drv, lp, sv, cl, events);
   }
@@ -257,7 +257,7 @@ fn waitClosed(drv &mut Driver, lp &mut Loop, sv &mut Srv, cl &mut Cli, events &m
 // A connection whose handshake is refused: its request's failure
 fn refused(label &str, drv &mut Driver, lp &mut Loop, sv &mut Srv, cl &mut Cli, events &mut List[Event],
     stream tls.Stream, port u16, want &str) {
-  imm conn = drv.connectWith(lp, "127.0.0.1", port, new Uni[tls.Stream](stream), Sink.Here(tokConn));
+  let conn = drv.connectWith(lp, "127.0.0.1", port, new Uni[tls.Stream](stream), Sink.Here(tokConn));
   exchange(drv, lp, sv, cl, events, conn, RequestHead.get("/hello", "localhost"), "");
   printStr(label);
   printStr(": ");
@@ -271,39 +271,39 @@ fn refused(label &str, drv &mut Driver, lp &mut Loop, sv &mut Srv, cl &mut Cli, 
 }
 
 fn listenOn(drv &mut Driver, lp &mut Loop, srv tls.Server, pool Pool, token u64) u16 {
-  mut port = 0u16;
+  var port = 0u16;
   match drv.listenWith(lp, SocketAddr.localhost(0u16), new Uni[TlsMaker](new TlsMaker(srv, pool)), Sink.Here(token)) {
-    case imm r Ok {
+    case let r Ok {
       match drv.localAddr(lp, r) {
-        case imm a Ok {port = a.port();}
-        case imm e Error {}
+        case let a Ok {port = a.port();}
+        case let e Error {}
       }
     }
-    case imm e Error {}
+    case let e Error {}
   }
   requireUInt(u64.from(port), u64.from(port), "listening");
   port;
 }
 
 fn main() i32 {
-  imm pool = Pool.make();
-  mut lp = Loop.mustMake();
-  mut drv = Driver.make(Config.make(), pool);
-  imm good = listenOn(&mut drv, &mut lp, server("server.pem", "server.key"), pool, tokGood);
-  imm expiredPort = listenOn(&mut drv, &mut lp, server("expired.pem", "expired.key"), pool, tokExpired);
-  imm untrustedPort = listenOn(&mut drv, &mut lp, server("untrusted.pem", "untrusted.key"), pool, tokUntrusted);
+  let pool = Pool.make();
+  var lp = Loop.mustMake();
+  var drv = Driver.make(Config.make(), pool);
+  let good = listenOn(&mut drv, &mut lp, server("server.pem", "server.key"), pool, tokGood);
+  let expiredPort = listenOn(&mut drv, &mut lp, server("expired.pem", "expired.key"), pool, tokExpired);
+  let untrustedPort = listenOn(&mut drv, &mut lp, server("untrusted.pem", "untrusted.key"), pool, tokUntrusted);
   require(good != 0u16 and expiredPort != 0u16 and untrustedPort != 0u16, "three servers listen");
-  mut sv = new Srv(pool: pool, req: ReqId.none(), target: String.empty(), body: String.empty(),
+  var sv = new Srv(pool: pool, req: ReqId.none(), target: String.empty(), body: String.empty(),
     pieces: 99u32, accepted: 0u64, requests: 0u64, dones: 0u64, closed: 0u64, clean: 0u64);
-  mut cl = new Cli(status: 0u16, body: String.empty(), finals: 0u64, last: EventKind.Done,
+  var cl = new Cli(status: 0u16, body: String.empty(), finals: 0u64, last: EventKind.Done,
     failure: String.empty(), stage: Stage.Closed, code: 0u32, connected: 0u64, closed: 0u64, clean: 0u64,
     closeFailure: String.empty());
-  mut events = List[Event].empty();
-  imm roots = client(tls.Verifier.roots(readText("ca.pem").view()));
-  imm before = tls.stats();
+  var events = List[Event].empty();
+  let roots = client(tls.Verifier.roots(readText("ca.pem").view()));
+  let before = tls.stats();
 
   // One connection: a GET, a POST echoed, 1 MiB, then 50 GETs kept alive
-  imm conn = drv.connectWith(&mut lp, "127.0.0.1", good, new Uni[tls.Stream](roots.stream("localhost", pool)),
+  let conn = drv.connectWith(&mut lp, "127.0.0.1", good, new Uni[tls.Stream](roots.stream("localhost", pool)),
     Sink.Here(tokConn));
   exchange(&mut drv, &mut lp, &mut sv, &mut cl, &mut events, conn, RequestHead.get("/hello", "localhost"), "");
   expect(cl.last == EventKind.Done, "GET /hello: Done");
@@ -314,16 +314,16 @@ fn main() i32 {
   expectStr(cl.body.view(), "a body sent over TLS and echoed back", "POST /echo: the body echoed");
   exchange(&mut drv, &mut lp, &mut sv, &mut cl, &mut events, conn, RequestHead.get("/big", "localhost"), "");
   expectUInt(u64.from(cl.body.len()), 1048576u64, "GET /big: 1 MiB");
-  mut same = true;
-  mut k = 0usize;
-  imm v = cl.body.view();
+  var same = true;
+  var k = 0usize;
+  let v = cl.body.view();
   while k < v.len {
     if v[k] != u8.from(u32.from(k % 251usize)) {same = false;}
     k = k + 1usize;
   }
   expect(same, "GET /big: every byte");
   k = 0usize;
-  mut oks = 0u64;
+  var oks = 0u64;
   while k < 50usize {
     exchange(&mut drv, &mut lp, &mut sv, &mut cl, &mut events, conn, RequestHead.get("/hello", "localhost"), "");
     if cl.last == EventKind.Done and cl.status == 200u16 and cl.body.view() == helloBody() {oks = oks + 1u64;}
@@ -337,7 +337,7 @@ fn main() i32 {
   waitClosed(&mut drv, &mut lp, &mut sv, &mut cl, &mut events, 1u64, 1u64);
   expectUInt(cl.clean, 1u64, "the client's connection closed cleanly");
   expectUInt(sv.clean, 1u64, "the server's too");
-  imm closing = tls.stats();
+  let closing = tls.stats();
   expectUInt(closing.closeNotifySent - before.closeNotifySent, 2u64, "close_notify sent by both");
   expectUInt(closing.closeNotifyReceived - before.closeNotifyReceived, 1u64,
     "the server read the client's (the client's linger reads and drops the server's)");
@@ -345,7 +345,7 @@ fn main() i32 {
   expectUInt(closing.handshakes - before.handshakes, 2u64, "one handshake on each side");
 
   // A second connection resumes the first's session
-  imm conn2 = drv.connectWith(&mut lp, "127.0.0.1", good, new Uni[tls.Stream](roots.stream("localhost", pool)),
+  let conn2 = drv.connectWith(&mut lp, "127.0.0.1", good, new Uni[tls.Stream](roots.stream("localhost", pool)),
     Sink.Here(tokConn));
   exchange(&mut drv, &mut lp, &mut sv, &mut cl, &mut events, conn2, RequestHead.get("/hello", "localhost"), "");
   expect(cl.last == EventKind.Done and cl.status == 200u16, "a second connection's GET");
@@ -356,23 +356,23 @@ fn main() i32 {
   // Connections at once, the defect #317 had: a first connection open and
   // kept, its tickets cached as they came; two more, opened together while
   // it lives, each resume from one
-  imm fresh = client(tls.Verifier.roots(readText("ca.pem").view()));
-  imm atOnce = tls.stats();
-  imm connA = drv.connectWith(&mut lp, "127.0.0.1", good, new Uni[tls.Stream](fresh.stream("localhost", pool)),
+  let fresh = client(tls.Verifier.roots(readText("ca.pem").view()));
+  let atOnce = tls.stats();
+  let connA = drv.connectWith(&mut lp, "127.0.0.1", good, new Uni[tls.Stream](fresh.stream("localhost", pool)),
     Sink.Here(tokConn));
   exchange(&mut drv, &mut lp, &mut sv, &mut cl, &mut events, connA, RequestHead.get("/hello", "localhost"), "");
   expect(cl.last == EventKind.Done and cl.status == 200u16, "at once: the first connection's GET");
   expectUInt(u64.from(fresh.cachedSessions()), 2u64, "at once: the first, open, has given two tickets");
-  imm connB = drv.connectWith(&mut lp, "127.0.0.1", good, new Uni[tls.Stream](fresh.stream("localhost", pool)),
+  let connB = drv.connectWith(&mut lp, "127.0.0.1", good, new Uni[tls.Stream](fresh.stream("localhost", pool)),
     Sink.Here(tokConn));
-  imm connC = drv.connectWith(&mut lp, "127.0.0.1", good, new Uni[tls.Stream](fresh.stream("localhost", pool)),
+  let connC = drv.connectWith(&mut lp, "127.0.0.1", good, new Uni[tls.Stream](fresh.stream("localhost", pool)),
     Sink.Here(tokConn));
   expectUInt(u64.from(fresh.cachedSessions()), 0u64, "at once: the second and third took one each");
   exchange(&mut drv, &mut lp, &mut sv, &mut cl, &mut events, connB, RequestHead.get("/hello", "localhost"), "");
   expect(cl.last == EventKind.Done and cl.status == 200u16, "at once: the second connection's GET");
   exchange(&mut drv, &mut lp, &mut sv, &mut cl, &mut events, connC, RequestHead.get("/hello", "localhost"), "");
   expect(cl.last == EventKind.Done and cl.status == 200u16, "at once: the third connection's GET");
-  imm atOnceAfter = tls.stats();
+  let atOnceAfter = tls.stats();
   expectUInt(atOnceAfter.handshakes - atOnce.handshakes, 6u64, "at once: three handshakes, on each side");
   expectUInt(atOnceAfter.resumed - atOnce.resumed, 4u64, "at once: the second and third resumed, on each side");
   expectUInt(u64.from(fresh.cachedSessions()), 2u64, "at once: a new ticket from each resumed connection");
@@ -391,9 +391,9 @@ fn main() i32 {
   expect(not cl.failure.contains("Windows"), "OpenSSL's reasons, not the OS's");
 
   // Pinning: the server's key, and another
-  imm pin = readText("server.pin");
-  imm pinned = client(tls.Verifier.pinnedSha256(pin.view()));
-  imm conn3 = drv.connectWith(&mut lp, "127.0.0.1", good, new Uni[tls.Stream](pinned.stream("localhost", pool)),
+  let pin = readText("server.pin");
+  let pinned = client(tls.Verifier.pinnedSha256(pin.view()));
+  let conn3 = drv.connectWith(&mut lp, "127.0.0.1", good, new Uni[tls.Stream](pinned.stream("localhost", pool)),
     Sink.Here(tokConn));
   exchange(&mut drv, &mut lp, &mut sv, &mut cl, &mut events, conn3, RequestHead.get("/hello", "localhost"), "");
   expect(cl.last == EventKind.Done and cl.status == 200u16, "pinned: the server's key is accepted");
@@ -402,19 +402,19 @@ fn main() i32 {
     untrustedPort, "no pinned key matches");
 
   // The OS's verifier, on the pool: the test root is not the machine's
-  imm platform = client(tls.Verifier.platform());
-  imm pre = tls.stats();
+  let platform = client(tls.Verifier.platform());
+  let pre = tls.stats();
   refused("the OS's verifier", &mut drv, &mut lp, &mut sv, &mut cl, &mut events, platform.stream("localhost", pool),
     good, "not trusted");
   expectUInt(u64.from(cl.code), 0x800B0109u64, "the failure carries Windows' CERT_E_UNTRUSTEDROOT");
   expectUInt(tls.stats().verifications - pre.verifications, 1u64, "one verification, on the pool");
 
   // Every connection ends; nothing is left
-  imm giveUp = Instant.now() + Duration.fromSeconds(10i64);
+  let giveUp = Instant.now() + Duration.fromSeconds(10i64);
   while drv.live() > 0u32 and Instant.now() < giveUp {step(&mut drv, &mut lp, &mut sv, &mut cl, &mut events);}
   expectUInt(u64.from(drv.live()), 0u64, "no connection left");
   drv.abortAll(&mut lp);
-  imm t = drv.stats();
+  let t = drv.stats();
   expectUInt(t.done + t.failed, t.requests, "every request has its one final answer");
   expectUInt(pool.stats().lent, 0u64, "every buffer back in the pool");
   done();

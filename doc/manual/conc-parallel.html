@@ -36,13 +36,13 @@ const height = 24usize;
 
 // How many steps before the point (x, y) escapes, up to 30
 fn depth(x usize, y usize) i32 {
-  imm cr = f64.from(x) / f64.from(width) * 3.0d - 2.2d;
-  imm ci = f64.from(y) / f64.from(height) * 2.4d - 1.2d;
-  mut zr = 0d;
-  mut zi = 0d;
-  mut n = 0;
+  let cr = f64.from(x) / f64.from(width) * 3.0d - 2.2d;
+  let ci = f64.from(y) / f64.from(height) * 2.4d - 1.2d;
+  var zr = 0d;
+  var zi = 0d;
+  var n = 0;
   while n &lt; 30 and zr * zr + zi * zi &lt; 4d {
-    imm t = zr * zr - zi * zi + cr;
+    let t = zr * zr - zi * zi + cr;
     zi = 2d * zr * zi + ci;
     zr = t;
     n += 1;
@@ -52,7 +52,7 @@ fn depth(x usize, y usize) i32 {
 
 fn main() {
   // A picture of width x height cells, every one 0 to begin with
-  mut picture = new List[i32](width * height) &lt;- fill 0;
+  var picture = new List[i32](width * height) &lt;- fill 0;
 
   // One pass a row: each pass is lent a row of its own to fill
   parallel each y, row in picture.mutChunks(width).indexed() {
@@ -63,7 +63,7 @@ fn main() {
 
   each y in 0usize ..&lt; height {
     each x in 0usize ..&lt; width {
-      imm d = picture[y * width + x];
+      let d = picture[y * width + x];
       print &lt;- if d &gt;= 30 { "#"; } elif d &gt; 6 { "+"; } elif d &gt; 3 { "."; } else { " "; };
     }
     print &lt;- "\n";
@@ -141,7 +141,7 @@ fn main() {
 		could be lost. So the body keeps rules an ordinary <span class="pre">each</span> does not, and the compiler checks
 		every one. Each refusal says what to do instead:</p>
 <pre>
-mut total = 0;
+var total = 0;
 parallel each n in 0 ..&lt; 1000 {
   total = total + n;                 // refused
 }
@@ -163,13 +163,13 @@ the same time. Outside variables are read-only for the loop. Hand results back w
 			(<span class="pre">bump(l)</span>), is lent for writing as much as <span class="pre">&amp;mut l[0]</span> is, and is
 			refused alike. Handed to a <span class="pre">&amp;</span>, it is only read. What the pass declares itself is its
 			own to change. A write through a raw pointer is not checked: the loop trusts its writer.</li>
-		<li><b>A <span class="pre">mut</span> global is outside the loop too</b>, and the body may not change it through a
+		<li><b>A <span class="pre">var</span> global is outside the loop too</b>, and the body may not change it through a
 			function either. A call of a function the compiler can read the body of is followed through the bodies it
 			reaches, and is refused (Error 1382, naming the global and the function that writes it) if any of them assigns
-			to or swaps a place of a <span class="pre">mut</span> global, or lends one for writing, which a method that
+			to or swaps a place of a <span class="pre">var</span> global, or lends one for writing, which a method that
 			changes it does. A <a href="mod-globals.html#threadlocal"><span class="pre">@threadlocal</span></a> global is
 			each thread's own, and a <span class="pre">@workgroup</span> one a workgroup's, so both are allowed; so are
-			reads, and an <span class="pre">Atomic</span> in an <span class="pre">imm</span> global. What the compiler cannot
+			reads, and an <span class="pre">Atomic</span> in a <span class="pre">let</span> global. What the compiler cannot
 			read is not followed, and is taken as writing nothing: a call through a virtual reference or a function value,
 			an <span class="pre">extern</span> function, and a function of another package (its body is not in the compile
 			that checks the loop). A global written there still races.</li>
@@ -186,14 +186,14 @@ the same time. Outside variables are read-only for the loop. Hand results back w
 			a type holds (<a href="conc-sharing.html#shareable">Sendable and Shareable</a>, the next page, has the full
 			rule). Naming the value is enough, so a struct or an actor's <span class="pre">self</span> that holds an
 			<span class="pre">Rc</span> cannot be read for a number beside it: <b>copy what the loop needs into a local
-			before it</b> (<span class="pre">imm n = self.n;</span>). For an <span class="pre">Rc</span> itself, <b>borrow the
+			before it</b> (<span class="pre">let n = self.n;</span>). For an <span class="pre">Rc</span> itself, <b>borrow the
 			contents before the loop</b>, as the message says:
 <pre>
 Error 1390: This 'parallel each' reaches 'shared', a Rc[imm, Table] declared outside the loop, which is or holds
 a counted owner whose count is not atomic (an Rc, for example) or a traced reference (a Gc, for example): its
 passes run at the same time, and a copy made anywhere they can reach it, in this body or in a function it hands
 it to, would write a count or a root that every pass shares without an atomic operation. Reading through it,
-lending it and passing it count too. Borrow what the body needs before the loop ('imm mesh = &amp;*shared;') and
+lending it and passing it count too. Borrow what the body needs before the loop ('let mesh = &amp;*shared;') and
 use 'mesh' in the body, or hold it in an Arc.
 </pre></li>
 		<li><b>A loop that writes through its source</b> (<span class="pre">mutChunks</span>,
@@ -203,12 +203,12 @@ use 'mesh' in the body, or hold it in an Arc.
 			reads: <span class="pre">first</span> where <span class="pre">first</span> is a reference to the item's type; a
 			struct reached through a reference that is itself of the item's type; an index into a collection or array
 			reached through a reference whose elements are of the item's type (<span class="pre">hr.cells[0]</span>,
-			<span class="pre">s.items[0]</span> after <span class="pre">imm s = &amp;*self;</span>). A scalar field beside the
+			<span class="pre">s.items[0]</span> after <span class="pre">let s = &amp;*self;</span>). A scalar field beside the
 			buffer (<span class="pre">self.scale</span>) reads none of them. A name used whole, or reached through a call, is
 			judged by its whole type: a reference to the item's type, or a struct or collection holding one or elements of
 			that type, reached through a reference. A raw pointer is trusted. The check goes by type because flow analysis
 			sees only a local, not a parameter, a reborrow or a struct's field. <b>Copy what you need before the loop</b>:
-			<span class="pre">imm f = *first;</span>, then use <span class="pre">f</span>. A value already copied, a
+			<span class="pre">let f = *first;</span>, then use <span class="pre">f</span>. A value already copied, a
 			reference to another type, and every outside reference when nothing is written (<span class="pre">chunks</span>)
 			are free. A closure handed to a function that runs such a loop is read by every pass: one that <i>borrows</i> a
 			variable of the written type (<span class="pre">(x, y) =&gt; scale * f32.from(x)</span> into a list of
@@ -253,7 +253,7 @@ would vary from run to run. 'continue' skips the rest of an item and is allowed.
 		<a href="conc-primitives.html#atomic"><span class="pre">Atomic</span></a>:</p>
 <pre>
 fn total(xs &amp;Array[u64]) u64 {
-  imm sum = Atomic[u64].of(0u64);
+  let sum = Atomic[u64].of(0u64);
   parallel each x in xs {
     sum.add(weigh(*x));
   }
@@ -266,9 +266,9 @@ fn total(xs &amp;Array[u64]) u64 {
 		&lt;-</a>: put <span class="pre">parallel</span> in front of the <span class="pre">each</span> in the list of
 		entries, and give the value each pass appends with <span class="pre">yield</span>:</p>
 <pre>
-imm weights = new List[u64] &lt;- parallel each x in xs yield weigh(*x);
-imm keep = new List[u64] &lt;- parallel each x in xs if x &gt; 9 yield weigh(*x);
-imm squares = new List[i32] &lt;- parallel each i in 0 ..&lt; n yield i * i;   // n an i32
+let weights = new List[u64] &lt;- parallel each x in xs yield weigh(*x);
+let keep = new List[u64] &lt;- parallel each x in xs if x &gt; 9 yield weigh(*x);
+let squares = new List[i32] &lt;- parallel each i in 0 ..&lt; n yield i * i;   // n an i32
 xs &lt;- 0, parallel each x in other yield x + 1, 99;    // in the middle of a list
 </pre>
 	<p>The list holds the values in the order of the passes, the order a plain <span class="pre">each</span> would give
@@ -298,10 +298,10 @@ xs &lt;- 0, parallel each x in other yield x + 1, 99;    // in the middle of a l
 		pieces:</p>
 <pre>
 fn stats(xs &amp;List[f64]) {
-  imm total = xs.parallel().sum();                 // the total of the numbers (0 for none)
-  imm top = xs.parallel().fold(0.0d, (m, x) =&gt; if *x &gt; m { *x; } else { m; },
+  let total = xs.parallel().sum();                 // the total of the numbers (0 for none)
+  let top = xs.parallel().fold(0.0d, (m, x) =&gt; if *x &gt; m { *x; } else { m; },
                                (a, b) =&gt; if b &gt; a { b; } else { a; });
-  imm hit = xs.parallel().findFirst(x =&gt; **x &gt; 100.0d);   // an Option of the item
+  let hit = xs.parallel().findFirst(x =&gt; **x &gt; 100.0d);   // an Option of the item
 }
 </pre>
 	<p>Given 3, 150, 7 and 220, <span class="pre">total</span> is 380, <span class="pre">top</span> is 220, and
@@ -335,13 +335,13 @@ fn stats(xs &amp;List[f64]) {
 	<p>The closures run on several workers at once, so each must be <b>Shareable</b>, as a parallel each's body must be:
 		one that borrows a variable it changes, or holds an <span class="pre">Rc</span>, is refused. In a method taking
 		<span class="pre">self &amp;mut</span>, a closure that names a field borrows <span class="pre">self</span> and is
-		refused; borrow the field first (<span class="pre">imm bodies = &amp;bodies;</span>) and name that.</p>
+		refused; borrow the field first (<span class="pre">let bodies = &amp;bodies;</span>) and name that.</p>
 	<p>The nearest of many, with where it was found, is a <span class="pre">fold</span>. The accumulator is a plain struct
 		(the distance, the position, a payload), the identity has a distance above every real one, and both
 		<span class="pre">step</span> and <span class="pre">combine</span> keep the later candidate only if it is
 		<i>strictly</i> nearer, so ties go to the lowest position whatever the pieces:</p>
 <pre>
-imm best = hits.indexed().parallel().fold(new Nearest(1.0e30, 0usize),
+let best = hits.indexed().parallel().fold(new Nearest(1.0e30, 0usize),
   (acc, p) =&gt; if p.1.d &lt; acc.d { new Nearest(p.1.d, p.0); } else { acc; },
   (a, b) =&gt; if b.d &lt; a.d { b; } else { a; });
 </pre>
@@ -415,7 +415,7 @@ parallel each y, ca, cb, cc in a.mutChunks(n).zip(b.mutChunks(m)).zip(c.mutChunk
 		<li>a local of the function, or a field of one held by value (<span class="pre">grid.cells.mutItems()</span>);</li>
 		<li>a <span class="pre">&amp;uni</span> parameter, or a field of one held by value, taken
 			<span class="pre">fn fill(out &amp;uni List[T])</span> and called with <span class="pre">fill(&amp;uni out)</span>
-			(a <span class="pre">mut</span> local lends itself <span class="pre">&amp;uni</span>);</li>
+			(a <span class="pre">var</span> local lends itself <span class="pre">&amp;uni</span>);</li>
 		<li>the <span class="pre">self</span> of an actor's behaviour, which runs alone on its actor (its parameters cannot
 			be borrows) and whose state the passes borrow for the loop.</li>
 	</ul>
@@ -459,9 +459,9 @@ fn number(s &amp;uni Array[Item]) {
 number((&amp;uni items).viewUni());        // items is a List[Item]
 </pre>
 	<p>A cursor held in a variable is followed to the call that made it when the variable is
-		<span class="pre">imm</span> and has its value (<span class="pre">imm c = list.mutItems();</span> then
+		<span class="pre">let</span> and has its value (<span class="pre">let c = list.mutItems();</span> then
 		<span class="pre">parallel each x in c</span> lends from <span class="pre">list</span>). A cursor the loop cannot
-		trace, in a <span class="pre">mut</span> variable that may be assigned, a parameter or a field, is refused: build a
+		trace, in a <span class="pre">var</span> variable that may be assigned, a parameter or a field, is refused: build a
 		writable cursor in the loop's header.</p>
 
 	<h2 id="parallelactor">In an actor's behaviour</h2>
@@ -476,7 +476,7 @@ actor Scaler {
   scale u64;
 
   pub async do run(self, add u64) {
-    imm k = add * 2u64;
+    let k = add * 2u64;
     parallel each v in vals.mutItems() {
       *v = *v * scale + k;      // the actor's fields are read through self; k and add are carried
     }
@@ -499,7 +499,7 @@ actor Scaler {
 			(<a href="conc-await.html#await-cross">What crosses an await</a>): the parameters and locals it uses
 			afterwards, and every droppable value, which dies where it would have died had the method not been cut. What the
 			passes read of the behaviour's variables is copied as the behaviour returns, so a pass may not read a
-			<b>borrow held in a variable</b> (<span class="pre">imm t = &amp;total</span>; read <span class="pre">total</span>
+			<b>borrow held in a variable</b> (<span class="pre">let t = &amp;total</span>; read <span class="pre">total</span>
 			through <span class="pre">self</span> instead), and the array or slice the loop walks may not lie in the
 			behaviour's own frame (an array in a local, or made for the loop; walk a list, or an array in a field).</li>
 		<li>The messages the passes send are sent when the last pass has finished, before the rest of the behaviour

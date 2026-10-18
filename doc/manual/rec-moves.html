@@ -36,14 +36,14 @@ struct Baton {
 
 // A runner takes the baton, runs a leg, and hands it back on
 fn run(name &amp;str, b Baton) Baton {
-  mut held = b;
+  var held = b;
   held.legs += 1;
   print &lt;- name, " runs leg ", held.legs, "\n";
   held;
 }
 
 fn main() {
-  mut baton = new Baton(0);
+  var baton = new Baton(0);
   each name in ["Ama", "Bo", "Cy", "Dee"] {
     baton = run(*name, baton);    // out to the runner, and back again
   }
@@ -133,8 +133,8 @@ struct Lap is Copy {         // Error 1167: Lap is declared Copy, but its 'final
 fn store(b Baton) { print &lt;- "stored\n"; }  // takes the baton: it dies when store ends
 fn look(b &amp;Baton) { }                       // only borrows it
 
-imm baton = new Baton(0);
-imm kept = { baton; };     // the block hands baton on: it moves
+let baton = new Baton(0);
+let kept = { baton; };     // the block hands baton on: it moves
 store(baton);              // Error 1048: This variable's value has been moved out.
 </pre>
 	<p>A value a function returns is handed to its caller, with no source left behind to deactivate.</p>
@@ -143,7 +143,7 @@ store(baton);              // Error 1048: This variable's value has been moved o
 	<p>A value may move on one path and not another:</p>
 <pre>
 fn practice(raining bool) {
-  imm baton = new Baton(0);
+  let baton = new Baton(0);
   if raining {
     store(baton);          // moved on this path only
   }
@@ -207,13 +207,13 @@ struct Team {
   pub lane i32;
 }
 
-imm team = new Team(new Baton(0), 4);
-imm b = team.baton;      // Error 1166: May not move field 'baton' out of the struct that holds it.
+let team = new Team(new Baton(0), 4);
+let b = team.baton;      // Error 1166: May not move field 'baton' out of the struct that holds it.
                          //   Swap a value in with '&lt;=&gt;', or move the whole struct.
-imm moved = team;        // allowed: the whole struct moves, its baton with it
+let moved = team;        // allowed: the whole struct moves, its baton with it
 
 fn first(batons Array[Baton, 2]) {
-  imm b = batons[0];     // Error 1121: May not move a value out of an element of an array,
+  let b = batons[0];     // Error 1121: May not move a value out of an element of an array,
 }                        //   which would be left with a hole in it. Swap a value in with '&lt;=&gt;',
                          //   or move the whole array.
 fn borrowed(r &amp;mut Baton) {
@@ -234,7 +234,7 @@ fn sole(owner Uni[Baton]) {
 		twice:</p>
 <pre>
 match names.pop() {
-  case mut s Some { imm last = s; print &lt;- last.view(), "\n"; }
+  case var s Some { let last = s; print &lt;- last.view(), "\n"; }
   case is None { }
 }
 </pre>
@@ -248,15 +248,15 @@ match names.pop() {
 		copy or move. To take a moving value out of a field or element, swap another value of its type in, use what came
 		out, and swap it back if you like. Neither value is copied, and the struct always holds something whole:</p>
 <pre>
-mut team = new Team(new Baton(3), 4);
-mut spare = new Baton(5);
+var team = new Team(new Baton(3), 4);
+var spare = new Baton(5);
 team.baton &lt;=&gt; spare;                 // the team now holds baton 5, and spare baton 3
 </pre>
 	<p>The <b>left-assignment operator</b>, <span class="pre">:=</span>, stores a new value and gives back the one it
 		replaced. (Ordinary assignment, used as an expression, gives a copy of the new value, which a moving value cannot
 		give.)</p>
 <pre>
-mut old = team.baton := new Baton(6); // the team holds baton 6, and old the one it held
+var old = team.baton := new Baton(6); // the team holds baton 6, and old the one it held
 </pre>
 
 	<h2 id="conditional">A generic type that moves for some instances</h2>
@@ -275,13 +275,13 @@ struct Future[T] is Move if T is Move {
   pub c Rc[imm, Cell[T]];
 }
 
-imm f = new Future[i32](new Rc[imm, Cell[i32]](new Cell[i32](5)));
-imm f2 = f;     // a copy: i32 does not move, so neither does Future[i32]
-imm f3 = f;     // another copy; f is still there
+let f = new Future[i32](new Rc[imm, Cell[i32]](new Cell[i32](5)));
+let f2 = f;     // a copy: i32 does not move, so neither does Future[i32]
+let f3 = f;     // another copy; f is still there
 
-imm g = new Future[Ticket](new Rc[imm, Cell[Ticket]](new Cell[Ticket](new Ticket(7))));
-imm g2 = g;     // moves g: Ticket moves, so Future[Ticket] does
-imm g3 = g;     // Error 1048: This variable's value has been moved out.
+let g = new Future[Ticket](new Rc[imm, Cell[Ticket]](new Cell[Ticket](new Ticket(7))));
+let g2 = g;     // moves g: Ticket moves, so Future[Ticket] does
+let g3 = g;     // Error 1048: This variable's value has been moved out.
 </pre>
 	<p>So the answer inside a future of something that moves can be taken only once, and a future of something that
 		copies is copied freely. The actors package's <span class="pre">Future[T]</span> is declared this way

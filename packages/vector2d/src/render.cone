@@ -23,19 +23,19 @@ pub struct VectorRenderer {
 
   // A renderer for targets of 'format', drawing text from 'atlas'. Check 'isValid'.
   pub fn create(device &mut Device, atlas &Atlas, format u32) VectorRenderer {
-    mut shader = device.createShaderModule(&VECTOR2D_SPIRV);
-    mut layout = device.createEmptyPipelineLayout(0u32);
-    imm attributes = [new VertexAttribute(VERTEX_FORMAT_FLOAT32X2, 0u64, 0u32),
+    var shader = device.createShaderModule(&VECTOR2D_SPIRV);
+    var layout = device.createEmptyPipelineLayout(0u32);
+    let attributes = [new VertexAttribute(VERTEX_FORMAT_FLOAT32X2, 0u64, 0u32),
       new VertexAttribute(VERTEX_FORMAT_FLOAT32X2, 8u64, 1u32),
       new VertexAttribute(VERTEX_FORMAT_FLOAT32X4, 16u64, 2u32)];
-    imm buffers = [new VertexBufferLayout(arrayStride: VERTEX_BYTES, attributes: &attributes)];
-    imm desc = new RenderPipelineDescriptor(layout: &layout, vertexModule: &shader, vertexEntryPoint: "vertexMain",
+    let buffers = [new VertexBufferLayout(arrayStride: VERTEX_BYTES, attributes: &attributes)];
+    let desc = new RenderPipelineDescriptor(layout: &layout, vertexModule: &shader, vertexEntryPoint: "vertexMain",
       buffers: &buffers, fragmentModule: &shader, fragmentEntryPoint: "fragmentMain", colorFormat: format,
       blendEnabled: true, colorSrcFactor: BLEND_FACTOR_ONE, colorDstFactor: BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
       alphaSrcFactor: BLEND_FACTOR_ONE, alphaDstFactor: BLEND_FACTOR_ONE_MINUS_SRC_ALPHA);
-    mut pipeline = device.createRenderPipeline(&desc);
-    mut vbuf = device.createBuffer(VERTEX_BYTES * 3u64, BUFFER_USAGE_VERTEX | BUFFER_USAGE_COPY_DST);
-    mut text = TextRenderer.create(device, atlas, format, format, TEXTURE_FORMAT_DEPTH32_FLOAT);
+    var pipeline = device.createRenderPipeline(&desc);
+    var vbuf = device.createBuffer(VERTEX_BYTES * 3u64, BUFFER_USAGE_VERTEX | BUFFER_USAGE_COPY_DST);
+    var text = TextRenderer.create(device, atlas, format, format, TEXTURE_FORMAT_DEPTH32_FLOAT);
     new VectorRenderer(shader, layout, pipeline, vbuf, VERTEX_BYTES * 3u64, text, List[TextHandle].empty(), format, 0u32, 0u32);
   }
 
@@ -45,22 +45,22 @@ pub struct VectorRenderer {
   // or pass 'clear' to start from that colour)
   pub fn render(self &mut, device &mut Device, encoder &mut CommandEncoder, target &Texture, canvas &Canvas,
       font &Font, atlas &mut Atlas, clear bool, clearColor Color) {
-    imm nverts = canvas.batch.vertexCount();
+    let nverts = canvas.batch.vertexCount();
     triangles = u32.from(nverts / 3usize);
     // The texts first: layout may add glyphs to the atlas
     texts = u32.from(canvas.texts.len());
-    mut i = 0usize;
+    var i = 0usize;
     while i < canvas.texts.len() {
       if i >= handles.len() { handles.push(text.addText(device, SPACE_OVERLAY)); }
-      imm op = canvas.texts[i];
-      mut opts = LayoutOptions.make(op.size);
+      let op = canvas.texts[i];
+      var opts = LayoutOptions.make(op.size);
       opts.maxWidth = op.maxWidth;
       opts.align = op.align;
-      imm layout = layoutText(font, atlas, op.text.view(), &opts);
-      mut style = TextStyle.plain(op.color);
+      let layout = layoutText(font, atlas, op.text.view(), &opts);
+      var style = TextStyle.plain(op.color);
       if op.outlineWidth > 0. { style.outlineColor = op.outlineColor; style.outlineWidth = op.outlineWidth; }
-      imm x0 = op.x - op.ax * layout.width;
-      imm y0 = op.y - op.ay * layout.height;
+      let x0 = op.x - op.ax * layout.width;
+      let y0 = op.y - op.ay * layout.height;
       text.set(device, *handles[i], &layout, &style, overlayTransform(canvas.width, canvas.height, x0, y0));
       i = i + 1usize;
     }
@@ -68,30 +68,30 @@ pub struct VectorRenderer {
     text.syncAtlas(device, atlas);
 
     if nverts > 0usize {
-      imm need = u64.from(nverts) * VERTEX_BYTES;
+      let need = u64.from(nverts) * VERTEX_BYTES;
       if need > capacity {
         device.queue.releaseBuffer(&mut vbuf);
         capacity = need * 2u64;
         vbuf = device.createBuffer(capacity, BUFFER_USAGE_VERTEX | BUFFER_USAGE_COPY_DST);
       }
-      mut data = List[f32].withCapacity(canvas.batch.verts.len());
-      imm sx = 2. / canvas.width;
-      imm sy = 2. / canvas.height;
-      mut v = 0usize;
+      var data = List[f32].withCapacity(canvas.batch.verts.len());
+      let sx = 2. / canvas.width;
+      let sy = 2. / canvas.height;
+      var v = 0usize;
       while v < nverts {
-        imm b = v * VERTEX_FLOATS;
+        let b = v * VERTEX_FLOATS;
         data.push(*canvas.batch.verts[b] * sx - 1.);
         data.push(1. - *canvas.batch.verts[b + 1usize] * sy);
-        mut k = 2usize;
+        var k = 2usize;
         while k < VERTEX_FLOATS { data.push(*canvas.batch.verts[b + k]); k = k + 1usize; }
         v = v + 1usize;
       }
-      imm raw *f32 = data.view() as *f32;
+      let raw *f32 = data.view() as *f32;
       device.queue.writeBuffer(&vbuf, 0u64, raw as *u8, need);
     }
-    imm op = if clear { LOAD_OP_CLEAR; } else { LOAD_OP_LOAD; };
-    imm color = new RenderPassColorAttachment(view: target.createView(), loadOp: op, clearValue: clearColor);
-    mut pass = encoder.beginRenderPass(&color);
+    let op = if clear { LOAD_OP_CLEAR; } else { LOAD_OP_LOAD; };
+    let color = new RenderPassColorAttachment(view: target.createView(), loadOp: op, clearValue: clearColor);
+    var pass = encoder.beginRenderPass(&color);
     if nverts > 0usize {
       pass.setPipeline(&pipeline);
       pass.setVertexBuffer(0u32, &vbuf, 0u64);
@@ -104,15 +104,15 @@ pub struct VectorRenderer {
 
 // The size a string takes at 'size' pixels of em (wrapped at maxWidth if it is above 0)
 pub fn measureText(font &Font, atlas &mut Atlas, s &Array[u8], size f32, maxWidth f32) Vec2 {
-  mut opts = LayoutOptions.make(size);
+  var opts = LayoutOptions.make(size);
   opts.maxWidth = maxWidth;
-  imm layout = layoutText(font, atlas, s, &opts);
+  let layout = layoutText(font, atlas, s, &opts);
   new Vec2(layout.width, layout.height);
 }
 
 // spirv-begin vector2d.spv VECTOR2D_SPIRV
 // Written by tools/shaders/shaders.py from vector2d.slang (sha256 9df1fa57c17c9d678347437c17c359ec89dd38f33d13815e9825813e505dd70c): do not edit.
-imm VECTOR2D_SPIRV Array[u32, 355] = [
+let VECTOR2D_SPIRV Array[u32, 355] = [
   0x07230203u32, 0x00010500u32, 0x00280000u32, 0x00000044u32, 0x00000000u32, 0x00020011u32,
   0x00000001u32, 0x0006000bu32, 0x00000038u32, 0x4c534c47u32, 0x6474732eu32, 0x3035342eu32,
   0x00000000u32, 0x0003000eu32, 0x00000000u32, 0x00000001u32, 0x000c000fu32, 0x00000000u32,

@@ -27,13 +27,13 @@ pub struct PickMesh {
 
   // The triangles of a Mesh, copied
   pub fn fromMesh(m &Mesh) PickMesh {
-    mut pos = List[Vec3].withCapacity(m.positions.len());
-    mut i = 0usize;
+    var pos = List[Vec3].withCapacity(m.positions.len());
+    var i = 0usize;
     while i < m.positions.len() {
       pos.push(*m.positions[i]);
       i = i + 1usize;
     }
-    mut idx = List[u32].withCapacity(m.indices.len());
+    var idx = List[u32].withCapacity(m.indices.len());
     i = 0usize;
     while i < m.indices.len() {
       idx.push(*m.indices[i]);
@@ -44,10 +44,10 @@ pub struct PickMesh {
 
   // From positions and triangle indices
   pub fn fromTriangles(positions List[Vec3], indices List[u32]) PickMesh {
-    mut p = new PickMesh(positions, indices, Aabb3.empty(), List[u32].empty(), List[u32].empty(), List[u32].empty(),
+    var p = new PickMesh(positions, indices, Aabb3.empty(), List[u32].empty(), List[u32].empty(), List[u32].empty(),
       List[u32].empty(), List[Vec3].empty());
-    mut b = Aabb3.empty();
-    mut v = 0usize;
+    var b = Aabb3.empty();
+    var v = 0usize;
     while v < p.positions.len() {
       b = b.enclose(*p.positions[v]);
       v = v + 1usize;
@@ -66,45 +66,45 @@ pub struct PickMesh {
 
   // Welds the vertices by position, then pairs the triangles on each edge
   fn buildEdges(self &mut) {
-    imm nv = positions.len();
+    let nv = positions.len();
     // weld: sort the vertices by their position quantised to 1/10000, equal runs are one place
-    mut qx = List[i32].withCapacity(nv);
-    mut qy = List[i32].withCapacity(nv);
-    mut qz = List[i32].withCapacity(nv);
-    mut v = 0usize;
+    var qx = List[i32].withCapacity(nv);
+    var qy = List[i32].withCapacity(nv);
+    var qz = List[i32].withCapacity(nv);
+    var v = 0usize;
     while v < nv {
-      imm q = *positions[v];
+      let q = *positions[v];
       qx.push(i32.from(libc.floorf(q.x * 10000. + 0.5)));
       qy.push(i32.from(libc.floorf(q.y * 10000. + 0.5)));
       qz.push(i32.from(libc.floorf(q.z * 10000. + 0.5)));
       v = v + 1usize;
     }
-    mut order = List[u32].withCapacity(nv);
+    var order = List[u32].withCapacity(nv);
     v = 0usize;
     while v < nv {
       order.push(u32.from(v));
       v = v + 1usize;
     }
     order.sortBy(fn(a &u32, b &u32) i32 {
-      imm ia = usize.from(*a);
-      imm ib = usize.from(*b);
+      let ia = usize.from(*a);
+      let ib = usize.from(*b);
       if *qx[ia] != *qx[ib] {return if *qx[ia] < *qx[ib] {-1i32;} else {1i32;};}
       if *qy[ia] != *qy[ib] {return if *qy[ia] < *qy[ib] {-1i32;} else {1i32;};}
       if *qz[ia] != *qz[ib] {return if *qz[ia] < *qz[ib] {-1i32;} else {1i32;};}
       if ia < ib {-1i32;} elif ia > ib {1i32;} else {0i32;};
     });
-    mut weld = List[u32].withCapacity(nv);
+    var weld = List[u32].withCapacity(nv);
     v = 0usize;
     while v < nv {weld.push(0u32); v = v + 1usize;}
-    mut run = 0usize;
+    var run = 0usize;
     while run < nv {
-      imm first = usize.from(*order[run]);
-      mut end = run + 1usize;
+      let first = usize.from(*order[run]);
+      var end = run + 1usize;
       while end < nv {
-        imm o = usize.from(*order[end]);
+        let o = usize.from(*order[end]);
         if *qx[o] == *qx[first] and *qy[o] == *qy[first] and *qz[o] == *qz[first] {end = end + 1usize;} else {break;}
       }
-      mut k = run;
+      var k = run;
       while k < end {
         weld[usize.from(*order[k])] = u32.from(first);
         k = k + 1usize;
@@ -112,27 +112,27 @@ pub struct PickMesh {
       run = end;
     }
     // the faces' normals and every triangle edge, keyed by its welded ends (low, high)
-    imm nf = indices.len() / 3usize;
+    let nf = indices.len() / 3usize;
     faceNormals.clear();
-    mut keys = List[u64].withCapacity(nf * 3usize);
-    mut ea = List[u32].withCapacity(nf * 3usize);
-    mut eb = List[u32].withCapacity(nf * 3usize);
-    mut ef = List[u32].withCapacity(nf * 3usize);
-    mut f = 0usize;
+    var keys = List[u64].withCapacity(nf * 3usize);
+    var ea = List[u32].withCapacity(nf * 3usize);
+    var eb = List[u32].withCapacity(nf * 3usize);
+    var ef = List[u32].withCapacity(nf * 3usize);
+    var f = 0usize;
     while f < nf {
-      imm a = corner(f, 0usize);
-      imm b = corner(f, 1usize);
-      imm c = corner(f, 2usize);
+      let a = corner(f, 0usize);
+      let b = corner(f, 1usize);
+      let c = corner(f, 2usize);
       faceNormals.push((b - a).cross(c - a));
-      mut k = 0usize;
+      var k = 0usize;
       while k < 3usize {
-        imm i0 = *indices[3usize * f + k];
-        imm i1 = *indices[3usize * f + (k + 1usize) % 3usize];
-        imm w0 = *weld[usize.from(i0)];
-        imm w1 = *weld[usize.from(i1)];
+        let i0 = *indices[3usize * f + k];
+        let i1 = *indices[3usize * f + (k + 1usize) % 3usize];
+        let w0 = *weld[usize.from(i0)];
+        let w1 = *weld[usize.from(i1)];
         if w0 != w1 {
-          imm lo = if w0 < w1 {w0;} else {w1;};
-          imm hi = if w0 < w1 {w1;} else {w0;};
+          let lo = if w0 < w1 {w0;} else {w1;};
+          let hi = if w0 < w1 {w1;} else {w0;};
           keys.push((u64.from(lo) << 32u64) | u64.from(hi));
           ea.push(i0);
           eb.push(i1);
@@ -142,24 +142,24 @@ pub struct PickMesh {
       }
       f = f + 1usize;
     }
-    mut eorder = List[u32].withCapacity(keys.len());
-    mut e = 0usize;
+    var eorder = List[u32].withCapacity(keys.len());
+    var e = 0usize;
     while e < keys.len() {eorder.push(u32.from(e)); e = e + 1usize;}
     eorder.sortBy(fn(a &u32, b &u32) i32 {
-      imm ka = *keys[usize.from(*a)];
-      imm kb = *keys[usize.from(*b)];
+      let ka = *keys[usize.from(*a)];
+      let kb = *keys[usize.from(*b)];
       if ka < kb {-1i32;} elif ka > kb {1i32;} elif *a < *b {-1i32;} else {1i32;};
     });
     edgeA.clear();
     edgeB.clear();
     edgeF0.clear();
     edgeF1.clear();
-    mut s = 0usize;
+    var s = 0usize;
     while s < eorder.len() {
-      imm first = usize.from(*eorder[s]);
-      mut next = s + 1usize;
+      let first = usize.from(*eorder[s]);
+      var next = s + 1usize;
       if next < eorder.len() and *keys[usize.from(*eorder[next])] == *keys[first] {
-        imm second = usize.from(*eorder[next]);
+        let second = usize.from(*eorder[next]);
         edgeA.push(*ea[first]);
         edgeB.push(*eb[first]);
         edgeF0.push(*ef[first]);
@@ -182,14 +182,14 @@ pub struct PickMesh {
   pub fn raycast(self &, ray Ray3) f32 {
     match ray.intersectAabb(bounds) {
       case is None { return -1.; }
-      case imm t Some {}
+      case let t Some {}
     }
-    mut best = -1.;
-    mut f = 0usize;
-    imm nf = indices.len() / 3usize;
+    var best = -1.;
+    var f = 0usize;
+    let nf = indices.len() / 3usize;
     while f < nf {
       match ray.intersectTriangle(corner(f, 0usize), corner(f, 1usize), corner(f, 2usize)) {
-        case imm t Some {
+        case let t Some {
           if best < 0. or t < best {best = t;}
         }
         case is None {}
@@ -201,20 +201,20 @@ pub struct PickMesh {
 
   // The silhouette edges seen from 'eye' (in the mesh's space), appended to 'out' as pairs of points
   pub fn silhouette(self &, eye Vec3, out &mut List[Vec3]) {
-    imm nf = faceNormals.len();
-    mut facing = List[bool].withCapacity(nf);
-    mut f = 0usize;
+    let nf = faceNormals.len();
+    var facing = List[bool].withCapacity(nf);
+    var f = 0usize;
     while f < nf {
-      imm n = *faceNormals[f];
+      let n = *faceNormals[f];
       facing.push(n.dot(eye - corner(f, 0usize)) > 0.);
       f = f + 1usize;
     }
-    mut e = 0usize;
+    var e = 0usize;
     while e < edgeA.len() {
-      imm f0 = *edgeF0[e];
-      imm f1 = *edgeF1[e];
-      imm front0 = *facing[usize.from(f0)];
-      imm front1 = if f1 == NO_FACE {false;} else {*facing[usize.from(f1)];};
+      let f0 = *edgeF0[e];
+      let f1 = *edgeF1[e];
+      let front0 = *facing[usize.from(f0)];
+      let front1 = if f1 == NO_FACE {false;} else {*facing[usize.from(f1)];};
       if front0 != front1 {
         out.push(*positions[usize.from(*edgeA[e])]);
         out.push(*positions[usize.from(*edgeB[e])]);

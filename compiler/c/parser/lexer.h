@@ -163,8 +163,8 @@ enum TokenTypes {
     CAttrToken,    // '@c': C naming, on a 'mod' line or a 'fn'
     InitPureToken, // '@initpure': after 'fn', a function a module's 'init' may call, 'init' among them
     IntrinsicAttrToken, // '@intrinsic': after 'fn' in core, a function whose meaning the compiler supplies
-    ThreadLocalToken, // '@threadlocal': after a global's permission, storage each thread has its own copy of
-    WorkgroupToken, // '@workgroup': after a global's permission, on a GPU storage each workgroup has its own copy of
+    ThreadLocalToken, // '@threadlocal': after a global's let or var, storage each thread has its own copy of
+    WorkgroupToken, // '@workgroup': after a global's let or var, on a GPU storage each workgroup has its own copy of
     ComputeAttrToken, // '@compute(x, y, z)': after 'fn', a compute entry point and its workgroup's size
     ExtendsToken,  // 'extends'
     MixinToken,    // 'mixin', retired: kept a keyword so the parser can point it at 'is'
@@ -201,7 +201,9 @@ enum TokenTypes {
     trueToken,     // 'true'
     falseToken,    // 'false'
     UndefToken,    // 'undef'
-    UsingToken,    // 'using': a pattern run by a function, 'case imm rest using prefix("GET ")' (parsefnflow.c)
+    UsingToken,    // 'using': a pattern run by a function, 'case let rest using prefix("GET ")' (parsefnflow.c)
+    LetToken,      // 'let': a declaration whose name is never given a new value (parseDclWord)
+    VarToken,      // 'var': a declaration whose name may be given a new value (parseDclWord)
 
     // Words held for language features that are documented but not implemented.
     // The lexer never returns this token: it diagnoses the use and hands back an
@@ -215,6 +217,12 @@ enum TokenTypes {
 extern Lexer *lex;
 
 #define lexIsToken(tok) (lex->toktype == (tok))
+
+// A declaration begins with 'let' or 'var'. A permission word there is not one:
+// 'imm' and 'mut' are the old spellings and 'uni' and the rest declare nothing.
+// parseDclWord reports it, so every place that decides a declaration starts here
+// takes a permission word too, and the author is told which word to write.
+#define lexIsDclStart() (lex->toktype == LetToken || lex->toktype == VarToken || lex->toktype == PermToken)
 
 // Is the current token one of the range operators?
 #define lexIsRangeOp() (lex->toktype == DotDotToken || lex->toktype == DotDotLessToken || lex->toktype == EllipsisToken)

@@ -43,7 +43,7 @@ mod scratch;
 import testing use *;
 import arena use *;
 
-mut @threadlocal log = 0i64;
+var @threadlocal log = 0i64;
 fn note(d i64) { log = log * 10i64 + d; }
 
 struct Fin {
@@ -62,9 +62,9 @@ struct Watches {
 
 // Values that are made and read in a scratch, and never leave it
 fn readBack() i64 {
-  mut s = Arena.empty();
-  imm p = s.alloc(new Pt(3, 4));
-  imm q = s.alloc(new Pt(p.x + 1, p.y + 1));
+  var s = Arena.empty();
+  let p = s.alloc(new Pt(3, 4));
+  let q = s.alloc(new Pt(p.x + 1, p.y + 1));
   p.x + q.y;
 }
 
@@ -73,8 +73,8 @@ fn getX(p &Pt) i64 { p.x; }
 
 // Borrows passed down to functions that write and read through them
 fn passDown() i64 {
-  mut s = Arena.empty();
-  imm p = s.alloc(new Pt(1, 2));
+  var s = Arena.empty();
+  let p = s.alloc(new Pt(1, 2));
   bump(p);
   bump(p);
   getX(p);
@@ -83,22 +83,22 @@ fn passDown() i64 {
 // A value of the scratch refers to others of it, built with the reference
 // and then pointed at another by assignment
 fn siblings() i64 {
-  mut s = Arena.empty();
-  imm x = s.alloc(new Fin(1));
-  imm w = s.alloc(new Watches(2, x));
-  imm y = s.alloc(new Fin(3));
+  var s = Arena.empty();
+  let x = s.alloc(new Fin(1));
+  let w = s.alloc(new Watches(2, x));
+  let y = s.alloc(new Fin(3));
   w.r = y;
   w.r.n;
 }
 
 // A shorter-lived scratch's value refers into a longer-lived one's
 fn innerRefersOuter() i64 {
-  mut outer = Arena.empty();
-  imm keep = outer.alloc(new Fin(1));
-  mut seen = 0i64;
+  var outer = Arena.empty();
+  let keep = outer.alloc(new Fin(1));
+  var seen = 0i64;
   {
-    mut inner = Arena.empty();
-    imm w = inner.alloc(new Watches(3, keep));
+    var inner = Arena.empty();
+    let w = inner.alloc(new Watches(3, keep));
     seen = w.r.n;
   }
   expectInt(log, 3, "the inner scratch's value died at its block's end");
@@ -107,15 +107,15 @@ fn innerRefersOuter() i64 {
 
 // A callee with a scratch of its own, handed a borrow into its caller's
 fn helper(up &mut Fin) i64 {
-  mut mine = Arena.empty();
-  imm w = mine.alloc(new Watches(2, up));
-  imm f = mine.alloc(new Fin(3));
+  var mine = Arena.empty();
+  let w = mine.alloc(new Watches(2, up));
+  let f = mine.alloc(new Fin(3));
   w.r.n + f.n;
 }
 
 fn nestedCalls() i64 {
-  mut s = Arena.empty();
-  imm f = s.alloc(new Fin(1));
+  var s = Arena.empty();
+  let f = s.alloc(new Fin(1));
   helper(f) * 10 + f.n;
 }
 
@@ -124,15 +124,15 @@ fn nestedCalls() i64 {
 fn make(s &mut Arena, n i64) &mut Fin { s.alloc(new Fin(n)); }
 
 fn allocForCaller() i64 {
-  mut s = Arena.empty();
-  imm x = make(&mut s, 4);
-  imm y = make(&mut s, 5);
+  var s = Arena.empty();
+  let x = make(&mut s, 4);
+  let y = make(&mut s, 5);
   x.n * 10 + y.n;
 }
 
 // An early return ends the scratch too, with what it held so far
 fn earlyReturn(stop bool) i64 {
-  mut s = Arena.empty();
+  var s = Arena.empty();
   s.alloc(new Fin(1));
   if stop { return 7; }
   s.alloc(new Fin(2));
@@ -142,16 +142,16 @@ fn earlyReturn(stop bool) i64 {
 // A scratch in a loop's body is a new one each time round, dying at the end
 // of each pass
 fn perPass() {
-  mut i = 1i64;
+  var i = 1i64;
   while i <= 3i64 {
-    mut s = Arena.empty();
+    var s = Arena.empty();
     s.alloc(new Fin(i));
     s.alloc(new Fin(i + 4i64));
     i = i + 1i64;
   }
 }
 
-mut @threadlocal deaths = 0i64;
+var @threadlocal deaths = 0i64;
 struct Counted {
   pub n i64;
   fn final(self &uni) { deaths = deaths + 1i64; }
@@ -162,9 +162,9 @@ struct Counted {
 // start, and 24000 bytes of room end 24008 bytes past it, so k runs from 0 to
 // 999. The 1001st starts a second block.
 fn roomUpFront() {
-  mut s = Arena.withRoom(24000usize);
+  var s = Arena.withRoom(24000usize);
   expectUInt(u64.from(s.blockCount()), 1, "the first block is there before any value");
-  mut i = 0i64;
+  var i = 0i64;
   while i < 1000i64 { s.alloc(new Counted(i)); i = i + 1i64; }
   expectUInt(u64.from(s.blockCount()), 1, "1000 values fit in the room asked for");
   s.alloc(new Counted(1000));
@@ -173,8 +173,8 @@ fn roomUpFront() {
 
 // Less room than a block asks for a block's worth
 fn smallRoom() {
-  mut s = Arena.withRoom(16usize);
-  imm p = s.alloc(new Pt(5, 6));
+  var s = Arena.withRoom(16usize);
+  let p = s.alloc(new Pt(5, 6));
   s.alloc(new Array[i64, 100] <- fill 1i64);
   expectInt(p.x + p.y, 11, "values read back");
   expectUInt(u64.from(s.blockCount()), 1, "16 bytes of room is a 4096-byte block");

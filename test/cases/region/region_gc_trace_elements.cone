@@ -35,17 +35,17 @@ fn line(label &str, n i64) {
 }
 
 // Each object's id, from 1
-mut @threadlocal nextId = 1i64;
+var @threadlocal nextId = 1i64;
 
 // 'mark' stores 'moveTo' into the slot of the object whose id is 'moveFrom'
-mut @threadlocal moveFrom = 0i64;
-mut @threadlocal moveTo = 0usize;
+var @threadlocal moveFrom = 0i64;
+var @threadlocal moveTo = 0usize;
 
 struct Tr is RegionRef, Traced {
   pub id i64;
 
   fn alloc(size usize) *u8 {
-    imm p = malloc(size);
+    let p = malloc(size);
     mem.writeRaw(p as *Tr, new Tr(nextId));
     nextId = nextId + 1;
     p;
@@ -111,81 +111,81 @@ fn main() {
   holds[Option[Rc[mut, Node]]]("Option[Rc[Node]]");
 
   printStr("-- a list, a deque, a dictionary and a pool\n");
-  mut list = collections.List[Tr[mut, Leaf]].empty();
+  var list = collections.List[Tr[mut, Leaf]].empty();
   list.push(leaf(1i32));
   list.push(leaf(2i32));
   list.push(leaf(3i32));
   traceLocal[collections.List[Tr[mut, Leaf]]]("List", &mut list, 1u32);
-  mut nums = collections.List[i32].empty();
+  var nums = collections.List[i32].empty();
   nums.push(1i32);
   traceLocal[collections.List[i32]]("List[i32]", &mut nums, 1u32);
 
   // The ring wraps: 4 slots, two popped from the front, two more pushed
-  mut dq = collections.Deque[Tr[mut, Leaf]].withCapacity(4usize);
+  var dq = collections.Deque[Tr[mut, Leaf]].withCapacity(4usize);
   dq.push(leaf(10i32));
   dq.push(leaf(11i32));
   dq.push(leaf(12i32));
   dq.push(leaf(13i32));
-  imm gone0 = dq.popFront();
-  imm gone1 = dq.popFront();
+  let gone0 = dq.popFront();
+  let gone1 = dq.popFront();
   dq.push(leaf(14i32));
   dq.push(leaf(15i32));
   traceLocal[collections.Deque[Tr[mut, Leaf]]]("Deque", &mut dq, 2u32);
 
-  mut od = collections.OrderedDict[i64, Tr[mut, Leaf]].empty();
+  var od = collections.OrderedDict[i64, Tr[mut, Leaf]].empty();
   od.insert(7i64, leaf(20i32));
   od.insert(3i64, leaf(21i32));
   od.insert(9i64, leaf(22i32));
   traceLocal[collections.OrderedDict[i64, Tr[mut, Leaf]]]("OrderedDict", &mut od, 3u32);
-  mut dc = collections.Dict[i64, Tr[mut, Leaf]].empty();
+  var dc = collections.Dict[i64, Tr[mut, Leaf]].empty();
   dc.insert(5i64, leaf(23i32));
   traceLocal[collections.Dict[i64, Tr[mut, Leaf]]]("Dict", &mut dc, 3u32);
 
   // A removed value is no longer held, and a free slot holds none
-  mut pl = pool.Pool[Box[Tr[mut, Leaf]]].empty();
-  imm p1 = pl.add(new Box[Tr[mut, Leaf]](leaf(30i32)));
-  imm p2 = pl.add(new Box[Tr[mut, Leaf]](leaf(31i32)));
-  imm p3 = pl.add(new Box[Tr[mut, Leaf]](leaf(32i32)));
-  imm out = pl.remove(p2);
+  var pl = pool.Pool[Box[Tr[mut, Leaf]]].empty();
+  let p1 = pl.add(new Box[Tr[mut, Leaf]](leaf(30i32)));
+  let p2 = pl.add(new Box[Tr[mut, Leaf]](leaf(31i32)));
+  let p3 = pl.add(new Box[Tr[mut, Leaf]](leaf(32i32)));
+  let out = pl.remove(p2);
   traceLocal[pool.Pool[Box[Tr[mut, Leaf]]]]("Pool", &mut pl, 4u32);
 
   printStr("-- an arena, whatever the types it holds\n");
-  mut ar = arena.Arena.empty();
-  imm ap = ar.alloc(new Pair(leaf(50i32), leaf(51i32)));
+  var ar = arena.Arena.empty();
+  let ap = ar.alloc(new Pair(leaf(50i32), leaf(51i32)));
   ar.alloc(7i32);
   ar.alloc(new Box[Tr[mut, Leaf]](leaf(52i32)));
   traceLocal[arena.Arena]("Arena", &mut ar, 5u32);
-  mut emptyArena = arena.Arena.empty();
+  var emptyArena = arena.Arena.empty();
   emptyArena.alloc(8i32);
   traceLocal[arena.Arena]("Arena of numbers", &mut emptyArena, 5u32);
 
   printStr("-- through Rc and Uni, once for each collection\n");
-  imm rc = new Rc[mut, Pair](leaf(60i32), leaf(61i32));
-  imm rc2 = rc;
-  mut two = new Box[(Rc[mut, Pair], Rc[mut, Pair])]((rc, rc2));
+  let rc = new Rc[mut, Pair](leaf(60i32), leaf(61i32));
+  let rc2 = rc;
+  var two = new Box[(Rc[mut, Pair], Rc[mut, Pair])]((rc, rc2));
   traceLocal[Box[(Rc[mut, Pair], Rc[mut, Pair])]]("two owners", &mut two, 1u32);
   traceLocal[Box[(Rc[mut, Pair], Rc[mut, Pair])]]("again, same collection", &mut two, 1u32);
   traceLocal[Box[(Rc[mut, Pair], Rc[mut, Pair])]]("next collection", &mut two, 2u32);
-  mut sop = new Box[Uni[Pair]](new Uni[Pair](leaf(62i32), leaf(63i32)));
+  var sop = new Box[Uni[Pair]](new Uni[Pair](leaf(62i32), leaf(63i32)));
   traceLocal[Box[Uni[Pair]]]("Uni", &mut sop, 1u32);
-  mut rcl = collections.List[Rc[mut, Pair]].empty();
+  var rcl = collections.List[Rc[mut, Pair]].empty();
   rcl.push(rc);
   rcl.push(new Rc[mut, Pair](leaf(64i32), leaf(65i32)));
   traceLocal[collections.List[Rc[mut, Pair]]]("List of Rc", &mut rcl, 3u32);
 
   // A cycle: a -> b -> a. Each node's leaf is traced once
-  imm na = new Rc[mut, Node](None, leaf(70i32));
-  imm nb = new Rc[mut, Node](Some[Rc[mut, Node]](na), leaf(71i32));
+  let na = new Rc[mut, Node](None, leaf(70i32));
+  let nb = new Rc[mut, Node](Some[Rc[mut, Node]](na), leaf(71i32));
   na.next = Some[Rc[mut, Node]](nb);
-  mut ring = new Box[Rc[mut, Node]](na);
+  var ring = new Box[Rc[mut, Node]](na);
   traceLocal[Box[Rc[mut, Node]]]("cycle", &mut ring, 1u32);
   traceLocal[Box[Rc[mut, Node]]]("cycle, next collection", &mut ring, 2u32);
 
   printStr("-- mark rewrites the slot a reference is stored in\n");
   moveFrom = nextId;
-  imm target = leaf(80i32);
-  imm moved = leaf(81i32);
-  mut slotted = new Pair(target, leaf(82i32));
+  let target = leaf(80i32);
+  let moved = leaf(81i32);
+  var slotted = new Pair(target, leaf(82i32));
   line("before ", i64.from(slotted.left.n));
   moveTo = &*moved as *u8 as usize;
   traceLocal[Pair]("trace", &mut slotted, 1u32);

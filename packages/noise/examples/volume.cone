@@ -48,10 +48,10 @@ const SLICE = 32u32;
 // A C string's whole number, or -1
 fn parseCount(s *u8) i32 {
   if (s as usize) == 0usize or *s == 0u8 { return -1; }
-  mut n = 0;
-  mut i = 0usize;
+  var n = 0;
+  var i = 0usize;
   while *(s + i) != 0u8 {
-    imm c = *(s + i);
+    let c = *(s + i);
     if c < '0' or c > '9' { return -1; }
     n = n * 10 + i32.from(c - '0');
     i = i + 1usize;
@@ -60,7 +60,7 @@ fn parseCount(s *u8) i32 {
 }
 
 fn cstrEquals(s *u8, t &Array[u8]) bool {
-  mut i = 0usize;
+  var i = 0usize;
   while i < t.len {
     if *(s + i) != t[i] { return false; }
     i = i + 1usize;
@@ -70,24 +70,24 @@ fn cstrEquals(s *u8, t &Array[u8]) bool {
 
 // A linear value from 0 to 1 as an sRGB byte
 fn srgbByte(c f32) i32 {
-  imm e = if c <= 0.0031308 { c * 12.92; } else { 1.055 * libc.powf(c, 1. / 2.4) - 0.055; };
+  let e = if c <= 0.0031308 { c * 12.92; } else { 1.055 * libc.powf(c, 1. / 2.4) - 0.055; };
   i32.from(e * 255. + 0.5);
 }
 
 // What the slice shows of voxel (x, y, SLICE), as volume.slang's 'grey'
 fn expectedGrey(x u32, y u32) i32 {
-  imm p = new Vec3(OX + f32.from(x) * STEP, OY + f32.from(y) * STEP, OZ + f32.from(SLICE) * STEP);
-  mut g = fbm3(p, SEED, 4, 2., 0.5).value + 0.5;
+  let p = new Vec3(OX + f32.from(x) * STEP, OY + f32.from(y) * STEP, OZ + f32.from(SLICE) * STEP);
+  var g = fbm3(p, SEED, 4, 2., 0.5).value + 0.5;
   if g < 0. { g = 0.; }
   if g > 1. { g = 1.; }
   srgbByte(g);
 }
 
 fn main(argc i32, argv **u8) i32 {
-  mut maxFrames = 0;
-  mut a = 1;
+  var maxFrames = 0;
+  var a = 1;
   while a < argc {
-    imm arg = *(argv + usize.from(a));
+    let arg = *(argv + usize.from(a));
     if cstrEquals(arg, "--frames") and a + 1 < argc {
       maxFrames = parseCount(*(argv + usize.from(a + 1)));
       a = a + 1;
@@ -102,64 +102,64 @@ fn main(argc i32, argv **u8) i32 {
     return 2;
   }
 
-  mut win = Window.openVulkan("Cone: noise baked into a 3-D texture by compute");
+  var win = Window.openVulkan("Cone: noise baked into a 3-D texture by compute");
   if !win.isOpen() {
     print <- "No window could be opened\n";
     return 1;
   }
-  mut instance = Instance.create("volume");
+  var instance = Instance.create("volume");
   if !instance.isValid() {
     print <- "No Vulkan 1.3 instance could be made\n";
     return 1;
   }
-  mut surface = instance.createSurface(win.sdlHandle());
-  mut preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
-  imm env = libc.getenv("GPU_POWER_PREFERENCE");
+  var surface = instance.createSurface(win.sdlHandle());
+  var preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
+  let env = libc.getenv("GPU_POWER_PREFERENCE");
   if (env as usize) != 0usize and libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 { preference = POWER_PREFERENCE_LOW_POWER; }
-  mut adapter = instance.requestAdapter(&surface, preference);
+  var adapter = instance.requestAdapter(&surface, preference);
   if !adapter.isValid() {
     print <- "No GPU can draw to the window\n";
     return 1;
   }
   print <- "Adapter: "; printStr(adapter.name.view()); print <- "\n";
-  mut device = adapter.requestDevice();
+  var device = adapter.requestDevice();
   if !device.isValid() {
     print <- "No device could be made\n";
     return 1;
   }
-  imm size = win.size();
-  mut swapchain = device.createSwapChain(&surface, u32.from(size.w), u32.from(size.h), TEXTURE_FORMAT_UNDEFINED);
+  let size = win.size();
+  var swapchain = device.createSwapChain(&surface, u32.from(size.w), u32.from(size.h), TEXTURE_FORMAT_UNDEFINED);
 
   // ---- The bake ----
-  imm volumeDesc = new TextureDescriptor(width: SIZE, height: SIZE, format: TEXTURE_FORMAT_R32_FLOAT,
+  let volumeDesc = new TextureDescriptor(width: SIZE, height: SIZE, format: TEXTURE_FORMAT_R32_FLOAT,
     usage: TEXTURE_USAGE_STORAGE_BINDING | TEXTURE_USAGE_TEXTURE_BINDING, depthOrArrayLayers: SIZE,
     dimension: TEXTURE_DIMENSION_3D);
-  mut volume = device.createTexture(&volumeDesc);
-  mut shader = device.createShaderModule(&VOLUME_SPIRV);
-  imm bakeEntries = [new BindGroupLayoutEntry(binding: 0u32, visibility: SHADER_STAGE_COMPUTE,
+  var volume = device.createTexture(&volumeDesc);
+  var shader = device.createShaderModule(&VOLUME_SPIRV);
+  let bakeEntries = [new BindGroupLayoutEntry(binding: 0u32, visibility: SHADER_STAGE_COMPUTE,
     kind: BINDING_KIND_STORAGE_TEXTURE, format: TEXTURE_FORMAT_R32_FLOAT, viewDimension: TEXTURE_VIEW_DIMENSION_3D)];
-  mut bakeGroupLayout = device.createBindGroupLayout(&bakeEntries);
-  imm bakeGroupLayouts = [&bakeGroupLayout];
-  mut bakeLayout = device.createPipelineLayout(&bakeGroupLayouts, 40u32);
-  imm bakeDesc = new ComputePipelineDescriptor(layout: &bakeLayout, module: &shader, entryPoint: "bakeMain");
-  mut bakePipeline = device.createComputePipeline(&bakeDesc);
-  imm volumeView = volume.createView();
-  imm bakeGroupEntries = [BindGroupEntry.texture(0u32, &volumeView)];
-  mut bakeGroup = device.createBindGroup(&bakeGroupLayout, &bakeGroupEntries);
+  var bakeGroupLayout = device.createBindGroupLayout(&bakeEntries);
+  let bakeGroupLayouts = [&bakeGroupLayout];
+  var bakeLayout = device.createPipelineLayout(&bakeGroupLayouts, 40u32);
+  let bakeDesc = new ComputePipelineDescriptor(layout: &bakeLayout, module: &shader, entryPoint: "bakeMain");
+  var bakePipeline = device.createComputePipeline(&bakeDesc);
+  let volumeView = volume.createView();
+  let bakeGroupEntries = [BindGroupEntry.texture(0u32, &volumeView)];
+  var bakeGroup = device.createBindGroup(&bakeGroupLayout, &bakeGroupEntries);
 
   // ---- The drawing ----
-  imm drawEntries = [new BindGroupLayoutEntry(binding: 1u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE,
+  let drawEntries = [new BindGroupLayoutEntry(binding: 1u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE,
     sampleType: TEXTURE_SAMPLE_TYPE_UNFILTERABLE_FLOAT, viewDimension: TEXTURE_VIEW_DIMENSION_3D)];
-  mut drawGroupLayout = device.createBindGroupLayout(&drawEntries);
-  imm drawGroupLayouts = [&drawGroupLayout];
-  mut drawLayout = device.createPipelineLayout(&drawGroupLayouts, 40u32);
-  imm noAttributes = [new VertexAttribute(VERTEX_FORMAT_FLOAT32, 0u64, 0u32)];
-  imm noBuffers = [new VertexBufferLayout(arrayStride: 4u64, attributes: &noAttributes)];
-  imm drawDesc = new RenderPipelineDescriptor(layout: &drawLayout, vertexModule: &shader, buffers: &noBuffers[..<0],
+  var drawGroupLayout = device.createBindGroupLayout(&drawEntries);
+  let drawGroupLayouts = [&drawGroupLayout];
+  var drawLayout = device.createPipelineLayout(&drawGroupLayouts, 40u32);
+  let noAttributes = [new VertexAttribute(VERTEX_FORMAT_FLOAT32, 0u64, 0u32)];
+  let noBuffers = [new VertexBufferLayout(arrayStride: 4u64, attributes: &noAttributes)];
+  let drawDesc = new RenderPipelineDescriptor(layout: &drawLayout, vertexModule: &shader, buffers: &noBuffers[..<0],
     fragmentModule: &shader, colorFormat: swapchain.format);
-  mut drawPipeline = device.createRenderPipeline(&drawDesc);
-  imm drawGroupEntries = [BindGroupEntry.texture(1u32, &volumeView)];
-  mut drawGroup = device.createBindGroup(&drawGroupLayout, &drawGroupEntries);
+  var drawPipeline = device.createRenderPipeline(&drawDesc);
+  let drawGroupEntries = [BindGroupEntry.texture(1u32, &volumeView)];
+  var drawGroup = device.createBindGroup(&drawGroupLayout, &drawGroupEntries);
   if !volume.isValid() or !bakePipeline.isValid() or !bakeGroup.isValid() or !drawPipeline.isValid()
       or !drawGroup.isValid() {
     print <- "The texture, pipelines or bind groups could not be made\n";
@@ -168,7 +168,7 @@ fn main(argc i32, argv **u8) i32 {
 
   // The immediates: the bake's origin, step, seed and size, then the turn,
   // the slice and the window's size, set each frame
-  mut immediates = new Array[u32, 10] <- fill 0u32;
+  var immediates = new Array[u32, 10] <- fill 0u32;
   immediates[0] = OX as u32;
   immediates[1] = OY as u32;
   immediates[2] = OZ as u32;
@@ -177,15 +177,15 @@ fn main(argc i32, argv **u8) i32 {
   immediates[5] = SIZE;
 
   // The bake, timed if the queue keeps time
-  imm timing = device.timestampPeriod > 0.;
-  mut queries = QuerySet.none();
+  let timing = device.timestampPeriod > 0.;
+  var queries = QuerySet.none();
   if timing { queries = device.createQuerySet(QUERY_TYPE_TIMESTAMP, 2u32); }
-  mut resolved = device.createBuffer(256u64, BUFFER_USAGE_QUERY_RESOLVE | BUFFER_USAGE_COPY_SRC);
-  mut times = device.createBuffer(16u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  var resolved = device.createBuffer(256u64, BUFFER_USAGE_QUERY_RESOLVE | BUFFER_USAGE_COPY_SRC);
+  var times = device.createBuffer(16u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
   {
-    mut encoder = device.createCommandEncoder();
+    var encoder = device.createCommandEncoder();
     if timing { encoder.writeTimestamp(&queries, 0u32); }
-    mut pass = encoder.beginComputePass();
+    var pass = encoder.beginComputePass();
     pass.setPipeline(&bakePipeline);
     pass.setBindGroup(0u32, &bakeGroup);
     pass.setImmediates(0u32, &immediates as *u8, 40u32);
@@ -201,35 +201,35 @@ fn main(argc i32, argv **u8) i32 {
     device.waitIdle();
   }
   if timing {
-    imm t = times.mappedRange() as *u64;
+    let t = times.mappedRange() as *u64;
     print <- "Baked 64^3 voxels of fBm in "; print <- f64.from(*(t + 1usize) - *t) * f64.from(device.timestampPeriod) / 1000000d;
     print <- " ms on the GPU\n";
   }
 
   // ---- The frames ----
-  mut frames = 0;
-  mut unshown = 0;
-  mut checked = false;
-  mut matched = 0;
+  var frames = 0;
+  var unshown = 0;
+  var checked = false;
+  var matched = 0;
   while win.running and (maxFrames == 0 or frames < maxFrames) {
     win.pollEvents();
     if win.resized {
-      imm s = win.size();
+      let s = win.size();
       swapchain.resize(u32.from(s.w), u32.from(s.h));
       win.resized = false;
     }
-    imm frame = swapchain.getCurrentTexture(&mut device);
+    let frame = swapchain.getCurrentTexture(&mut device);
     if !frame.ok() {
       sdl.Delay(10u32);
     } else {
-      imm turn f32 = f32.from(frames) * 0.01;
+      let turn f32 = f32.from(frames) * 0.01;
       immediates[6] = turn as u32;
       immediates[7] = (SLICE + u32.from(frames) / 4u32) % SIZE;
       immediates[8] = f32.from(frame.texture.width) as u32;
       immediates[9] = f32.from(frame.texture.height) as u32;
-      mut encoder = device.createCommandEncoder();
-      imm color = new RenderPassColorAttachment(view: frame.texture.createView(), clearValue: new Color(0., 0., 0., 1.));
-      mut pass = encoder.beginRenderPass(&color);
+      var encoder = device.createCommandEncoder();
+      let color = new RenderPassColorAttachment(view: frame.texture.createView(), clearValue: new Color(0., 0., 0., 1.));
+      var pass = encoder.beginRenderPass(&color);
       pass.setPipeline(&drawPipeline);
       pass.setBindGroup(0u32, &drawGroup);
       pass.setImmediates(0u32, &immediates as *u8, 40u32);
@@ -238,21 +238,21 @@ fn main(argc i32, argv **u8) i32 {
       if !checked and frame.texture.width >= 288u32 and frame.texture.height >= 288u32 {
         // Three voxels of slice 32, each at the middle of its 4 x 4 pixels
         checked = true;
-        imm w = frame.texture.width;
-        mut readback = device.createBuffer(u64.from(w) * u64.from(frame.texture.height) * 4u64,
+        let w = frame.texture.width;
+        var readback = device.createBuffer(u64.from(w) * u64.from(frame.texture.height) * 4u64,
           BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
         encoder.copyTextureToBuffer(&frame.texture, &readback);
         device.queue.submit(encoder.finish());
         if !swapchain.present(&mut device) { unshown = unshown + 1; }
         device.waitIdle();
-        imm p = readback.mappedRange();
-        imm voxels Array[u32, 6] = [5u32, 9u32, 31u32, 40u32, 60u32, 2u32];
-        mut k = 0usize;
+        let p = readback.mappedRange();
+        let voxels Array[u32, 6] = [5u32, 9u32, 31u32, 40u32, 60u32, 2u32];
+        var k = 0usize;
         while k < 3usize {
-          imm x = voxels[k * 2usize];
-          imm y = voxels[k * 2usize + 1usize];
-          imm got = i32.from(*(p + (usize.from(16u32 + 4u32 * y + 2u32) * usize.from(w) + usize.from(16u32 + 4u32 * x + 2u32)) * 4usize));
-          imm want = expectedGrey(x, y);
+          let x = voxels[k * 2usize];
+          let y = voxels[k * 2usize + 1usize];
+          let got = i32.from(*(p + (usize.from(16u32 + 4u32 * y + 2u32) * usize.from(w) + usize.from(16u32 + 4u32 * x + 2u32)) * 4usize));
+          let want = expectedGrey(x, y);
           print <- "Voxel ("; print <- u64.from(x); print <- ", "; print <- u64.from(y); print <- ", 32): grey ";
           print <- got; print <- " (want "; print <- want; print <- ")\n";
           if got - want <= 2 and want - got <= 2 { matched = matched + 1; }
@@ -281,7 +281,7 @@ fn main(argc i32, argv **u8) i32 {
 
 // spirv-begin volume.spv VOLUME_SPIRV
 // Written by tools/shaders/shaders.py from volume.slang (sha256 b0e44e8e63b84d7f0bcf7f3457861fc39fef1ab391eff414885edef4d84495f7): do not edit.
-imm VOLUME_SPIRV Array[u32, 8205] = [
+let VOLUME_SPIRV Array[u32, 8205] = [
   0x07230203u32, 0x00010500u32, 0x00280000u32, 0x0000081fu32, 0x00000000u32, 0x00020011u32,
   0x00000001u32, 0x0006000bu32, 0x000000aeu32, 0x4c534c47u32, 0x6474732eu32, 0x3035342eu32,
   0x00000000u32, 0x0003000eu32, 0x00000000u32, 0x00000001u32, 0x0009000fu32, 0x00000005u32,

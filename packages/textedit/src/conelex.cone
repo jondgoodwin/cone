@@ -18,7 +18,7 @@
 // A malformed token is still tokenized (an unterminated string runs to the line's end): this is a
 // colourer, not a checker; the compiler is the checker.
 
-const KEYWORDS = " actor alias and as async await baseurl break but by case catch const context continue do each else elif enum extends extern false fn if imm import in include inline into is local macro match mixin mod mut mut1 new nil not null opaq or overload pub ref return ro self selfactor selfmethod spawn static struct this throw trait true trynew typedef undef uni use using void wait where while with yield ";
+const KEYWORDS = " actor alias and as async await baseurl break but by case catch const context continue do each else elif enum extends extern false fn if imm import in include inline into is let local macro match mixin mod mut mut1 new nil not null opaq or overload pub ref return ro self selfactor selfmethod spawn static struct this throw trait true trynew typedef undef uni use using var void wait where while with yield ";
 const PRIMITIVES = " u8 u16 u32 u64 usize i8 i16 i32 i64 isize f32 f64 bool char str cstr void ";
 
 const MODE_COMMENT = 1u32;
@@ -27,12 +27,12 @@ const MODE_RAW_TRIPLE = 3u32;
 
 // Whether ' word ' is in the space-separated list (no allocation)
 fn inList(list &str, word &str) bool {
-  imm n = word.len();
+  let n = word.len();
   if n == 0usize {return false;}
-  mut i = 1usize;
+  var i = 1usize;
   while i + n < list.len() {
     if list[i - 1usize] == 32u8 and list[i + n] == 32u8 {
-      mut k = 0usize;
+      var k = 0usize;
       while k < n and list[i + k] == word[k] {k = k + 1usize;}
       if k == n {return true;}
     }
@@ -69,13 +69,13 @@ fn emit(out &mut List[Token], start usize, end usize, kind u32) {
 
 // Cone source, a line at a time. State: 0 normal; MODE_COMMENT | depth << 8; MODE_TRIPLE; MODE_RAW_TRIPLE
 pub fn coneTokenizer(line &str, state u32, out &mut List[Token]) u32 {
-  imm n = line.len();
-  mut mode = state & 255u32;
-  mut depth = state >> 8u32;
-  mut i = 0usize;
-  mut skip = 0usize;                     // bytes of an opening delimiter still to pass over
+  let n = line.len();
+  var mode = state & 255u32;
+  var depth = state >> 8u32;
+  var i = 0usize;
+  var skip = 0usize;                     // bytes of an opening delimiter still to pass over
   while i < n {
-    imm start = i;
+    let start = i;
     if mode == MODE_COMMENT {
       // inside a block comment: nested openers count
       while i < n {
@@ -100,12 +100,12 @@ pub fn coneTokenizer(line &str, state u32, out &mut List[Token]) u32 {
       // inside """ ... """: ends at the next three quotes; escapes only in the cooked form
       i = i + skip;
       skip = 0usize;
-      mut closed = false;
-      mut segStart = start;
+      var closed = false;
+      var segStart = start;
       while i < n and !closed {
         if mode == MODE_TRIPLE and line[i] == 92u8 and i + 1usize < n {
           emit(out, segStart, i, TK_STRING);
-          mut e = i + 2usize;
+          var e = i + 2usize;
           if line[i + 1usize] == 120u8 and e + 2usize <= n {e = e + 2usize;}     // \xnn
           emit(out, i, e, TK_ESCAPE);
           i = e;
@@ -121,7 +121,7 @@ pub fn coneTokenizer(line &str, state u32, out &mut List[Token]) u32 {
       if closed {mode = 0u32;}
       continue;
     }
-    imm c = line[i];
+    let c = line[i];
     // white space
     if c == 32u8 or c == 9u8 or c == 13u8 {
       i = i + 1usize;
@@ -139,8 +139,8 @@ pub fn coneTokenizer(line &str, state u32, out &mut List[Token]) u32 {
       continue;                          // the comment scanner counts the opener itself
     }
     // strings: " ... ", """ ... """, r" ... ", r` ... `, r""" ... """
-    mut raw = false;
-    mut q = i;
+    var raw = false;
+    var q = i;
     if c == 114u8 and i + 1usize < n and (line[i + 1usize] == 34u8 or line[i + 1usize] == 96u8) {
       raw = true;
       q = i + 1usize;
@@ -151,13 +151,13 @@ pub fn coneTokenizer(line &str, state u32, out &mut List[Token]) u32 {
         skip = q + 3usize - i;
         continue;
       }
-      imm closer = line[q];
-      mut j = q + 1usize;
-      mut segStart = i;
+      let closer = line[q];
+      var j = q + 1usize;
+      var segStart = i;
       while j < n and line[j] != closer {
         if !raw and line[j] == 92u8 and j + 1usize < n {
           emit(out, segStart, j, TK_STRING);
-          mut e = j + 2usize;
+          var e = j + 2usize;
           if line[j + 1usize] == 120u8 and e + 2usize <= n {e = e + 2usize;}
           elif line[j + 1usize] == 117u8 {
             while e < n and e < j + 6usize and isHexDigit(line[e]) {e = e + 1usize;}
@@ -176,7 +176,7 @@ pub fn coneTokenizer(line &str, state u32, out &mut List[Token]) u32 {
     // character literal or lifetime
     if c == 39u8 {
       if i + 1usize < n and line[i + 1usize] == 92u8 {
-        mut j = i + 2usize;
+        var j = i + 2usize;
         while j < n and line[j] != 39u8 {j = j + 1usize;}
         if j < n {j = j + 1usize;}
         emit(out, i, j, TK_CHAR);
@@ -184,7 +184,7 @@ pub fn coneTokenizer(line &str, state u32, out &mut List[Token]) u32 {
         continue;
       }
       // a one-character literal: the quote closes after one (possibly multi-byte) character
-      mut j = i + 1usize;
+      var j = i + 1usize;
       if j < n {
         j = j + 1usize;
         while j < n and line[j] >= 128u8 and line[j] < 192u8 {j = j + 1usize;}
@@ -207,7 +207,7 @@ pub fn coneTokenizer(line &str, state u32, out &mut List[Token]) u32 {
     }
     // numbers
     if isDigit(c) {
-      mut j = i + 1usize;
+      var j = i + 1usize;
       if c == 48u8 and j < n and (line[j] == 120u8 or line[j] == 88u8) {
         j = j + 1usize;
         while j < n and (isHexDigit(line[j]) or line[j] == 95u8) {j = j + 1usize;}
@@ -216,7 +216,7 @@ pub fn coneTokenizer(line &str, state u32, out &mut List[Token]) u32 {
         while j < n and (isDigit(line[j]) or line[j] == 95u8) {j = j + 1usize;}
         // a decimal point: part of the number unless it starts '..' or a method name
         if j < n and line[j] == 46u8 {
-          imm after = if j + 1usize < n {line[j + 1usize];} else {0u8;};
+          let after = if j + 1usize < n {line[j + 1usize];} else {0u8;};
           if isDigit(after) {
             j = j + 1usize;
             while j < n and (isDigit(line[j]) or line[j] == 95u8) {j = j + 1usize;}
@@ -225,7 +225,7 @@ pub fn coneTokenizer(line &str, state u32, out &mut List[Token]) u32 {
         }
         // an exponent
         if j < n and (line[j] == 101u8 or line[j] == 69u8) {
-          mut e = j + 1usize;
+          var e = j + 1usize;
           if e < n and (line[e] == 45u8 or line[e] == 43u8) {e = e + 1usize;}
           if e < n and isDigit(line[e]) {
             while e < n and isDigit(line[e]) {e = e + 1usize;}
@@ -241,7 +241,7 @@ pub fn coneTokenizer(line &str, state u32, out &mut List[Token]) u32 {
     }
     // identifiers and keywords
     if isIdentStart(c) or c == 96u8 {
-      mut j = i + 1usize;
+      var j = i + 1usize;
       if c == 96u8 {
         while j < n and line[j] != 96u8 {j = j + 1usize;}
         if j < n {j = j + 1usize;}
@@ -250,8 +250,8 @@ pub fn coneTokenizer(line &str, state u32, out &mut List[Token]) u32 {
         continue;
       }
       while j < n and isIdentPart(line[j]) {j = j + 1usize;}
-      imm word = line.slice(i, j);
-      mut kind = TK_IDENT;
+      let word = line.slice(i, j);
+      var kind = TK_IDENT;
       if inList(KEYWORDS, word) {kind = TK_KEYWORD;}
       elif inList(PRIMITIVES, word) {kind = TK_TYPE;}
       elif c >= 65u8 and c <= 90u8 {kind = TK_TYPE;}
@@ -262,7 +262,7 @@ pub fn coneTokenizer(line &str, state u32, out &mut List[Token]) u32 {
     }
     // attributes
     if c == 64u8 and i + 1usize < n and isIdentStart(line[i + 1usize]) {
-      mut j = i + 1usize;
+      var j = i + 1usize;
       while j < n and isIdentPart(line[j]) {j = j + 1usize;}
       emit(out, i, j, TK_ATTRIBUTE);
       i = j;
@@ -279,7 +279,7 @@ pub fn coneTokenizer(line &str, state u32, out &mut List[Token]) u32 {
       continue;
     }
     // anything else: a run of operator characters
-    mut j = i + 1usize;
+    var j = i + 1usize;
     while j < n and !isBracket(line[j]) and !isPunct(line[j]) and line[j] != 32u8 and line[j] != 9u8 and line[j] != 34u8 and line[j] != 39u8
         and !isIdentPart(line[j]) and line[j] != 96u8 and line[j] != 64u8 {j = j + 1usize;}
     emit(out, i, j, TK_OPERATOR);

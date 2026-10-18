@@ -20,58 +20,58 @@ fn pv(v Vec3) { print <- "(", f64.from(v.x), ", ", f64.from(v.y), ", ", f64.from
 
 fn main() i32 {
   // The ground is a 12 x 12 heightfield with a gentle swell
-  mut heights = List[f32].empty();
-  mut j = 0u32;
+  var heights = List[f32].empty();
+  var j = 0u32;
   while j < 13u32 {
-    mut i = 0u32;
+    var i = 0u32;
     while i < 13u32 {
-      imm x = f32.from(i) - 6.;
-      imm z = f32.from(j) - 6.;
+      let x = f32.from(i) - 6.;
+      let z = f32.from(j) - 6.;
       heights.push(0.3 * cos(x * 0.4) * cos(z * 0.4));
       i = i + 1u32;
     }
     j = j + 1u32;
   }
-  mut bodies = List[Body].empty();
+  var bodies = List[Body].empty();
   bodies.push(new Body("ground", Shape.single(Prim.heightfield(heights, 13u32, 13u32, 1., 1., new Vec3(-6., 0., -6.))), Rigid.identity(), true));
   bodies.push(new Body("crate", Shape.single(Prim.box(new Vec3(0.5, 0.5, 0.5))), Rigid.at(new Vec3(0., 0.78, 0.)), false));
   bodies.push(new Body("ball", Shape.single(Prim.sphere(0.4)), Rigid.at(new Vec3(0.9, 1.15, 0.1)), false));
   bodies.push(new Body("pill", Shape.single(Prim.capsule(0.25, 0.5)),
     new Rigid(new Vec3(-1.6, 0.7, 0.2), Quat.angleAxis(pi / 2., new Vec3(0., 0., 1.))), false));
   bodies.push(new Body("drum", Shape.single(Prim.cylinder(0.4, 0.5)), Rigid.at(new Vec3(2.2, 0.75, 0.)), false));
-  mut pts = List[Vec3].empty();
+  var pts = List[Vec3].empty();
   pts.push(new Vec3(-0.5, 0., -0.5)); pts.push(new Vec3(0.5, 0., -0.5)); pts.push(new Vec3(0.5, 0., 0.5));
   pts.push(new Vec3(-0.5, 0., 0.5)); pts.push(new Vec3(0., 0.9, 0.));
   bodies.push(new Body("tent", Shape.single(convexHull(pts.view())), Rigid.at(new Vec3(0., 0.62, -2.)), false));
-  mut dumbbell = Shape.compound();
+  var dumbbell = Shape.compound();
   dumbbell.add(Prim.sphere(0.3), Rigid.at(new Vec3(-0.6, 0., 0.)));
   dumbbell.add(Prim.sphere(0.3), Rigid.at(new Vec3(0.6, 0., 0.)));
   dumbbell.add(Prim.cylinder(0.08, 0.6), new Rigid(new Vec3(0., 0., 0.), Quat.angleAxis(pi / 2., new Vec3(0., 0., 1.))));
   bodies.push(new Body("dumbbell", dumbbell, Rigid.at(new Vec3(-3., 0.62, 1.)), false));
 
   // Broad phase
-  mut bp = SweepAndPrune.empty();
-  mut i = 0usize;
+  var bp = SweepAndPrune.empty();
+  var i = 0usize;
   while i < bodies.len() {
-    imm b = bodies[i];
+    let b = bodies[i];
     bp.add(u32.from(i), b.shape.bounds(b.xf).expand(0.05), 1u32, 0xffffffffu32, b.isStatic);
     i = i + 1usize;
   }
-  mut pairs = List[BodyPair].empty();
+  var pairs = List[BodyPair].empty();
   bp.pairs(&mut pairs);
   print <- pairs.len(), " candidate pairs\n";
   i = 0usize;
   while i < pairs.len() {
-    imm pa = bodies[usize.from(pairs[i].a)];
-    imm pb = bodies[usize.from(pairs[i].b)];
-    mut out = List[Manifold].empty();
+    let pa = bodies[usize.from(pairs[i].a)];
+    let pb = bodies[usize.from(pairs[i].b)];
+    var out = List[Manifold].empty();
     collide(&pa.shape, pa.xf, &pb.shape, pb.xf, 0.05, &mut out);
     print <- pa.name, " - ", pb.name, ": ", out.len(), " manifold(s)\n";
-    mut m = 0usize;
+    var m = 0usize;
     while m < out.len() {
-      imm mf = out[m];
+      let mf = out[m];
       print <- "  normal "; pv(mf.normal); print <- ", ", mf.count, " point(s), deepest ", f64.from(mf.deepest()), "\n";
-      mut k = 0usize;
+      var k = 0usize;
       while k < mf.count {
         print <- "    at "; pv(mf.points[k].onA); print <- " depth ", f64.from(mf.points[k].depth), "\n";
         k = k + 1usize;
@@ -82,17 +82,17 @@ fn main() i32 {
   }
 
   // A ray down through the scene
-  imm ground = bodies[0usize];
-  imm crate = bodies[1usize];
-  imm h = rayCast(&crate.shape, crate.xf, new Vec3(0.2, 5., 0.1), new Vec3(0., -1., 0.), 100.);
+  let ground = bodies[0usize];
+  let crate = bodies[1usize];
+  let h = rayCast(&crate.shape, crate.xf, new Vec3(0.2, 5., 0.1), new Vec3(0., -1., 0.), 100.);
   print <- "ray onto the crate: t ", f64.from(h.t), " normal "; pv(h.normal); print <- "\n";
-  imm g = rayCast(&ground.shape, ground.xf, new Vec3(-4.3, 5., 2.2), new Vec3(0., -1., 0.), 100.);
+  let g = rayCast(&ground.shape, ground.xf, new Vec3(-4.3, 5., 2.2), new Vec3(0., -1., 0.), 100.);
   print <- "ray onto the ground: t ", f64.from(g.t), " normal "; pv(g.normal); print <- "\n";
   // A sphere swept across the scene
-  imm probe = Shape.single(Prim.sphere(0.3));
-  imm c = shapeCast(&probe, Rigid.at(new Vec3(-6., 0.8, 0.)), new Vec3(12., 0., 0.), &crate.shape, crate.xf);
+  let probe = Shape.single(Prim.sphere(0.3));
+  let c = shapeCast(&probe, Rigid.at(new Vec3(-6., 0.8, 0.)), new Vec3(12., 0., 0.), &crate.shape, crate.xf);
   print <- "sphere swept along +x hits the crate at fraction ", f64.from(c.fraction), " (", f64.from(c.fraction * 12.), " m)\n";
-  imm d = closestPoints(&bodies[2usize].shape, bodies[2usize].xf, &bodies[4usize].shape, bodies[4usize].xf, 10.);
+  let d = closestPoints(&bodies[2usize].shape, bodies[2usize].xf, &bodies[4usize].shape, bodies[4usize].xf, 10.);
   print <- "ball to drum: ", f64.from(d.dist), " m apart\n";
   0i32;
 }

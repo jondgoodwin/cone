@@ -10,7 +10,7 @@
 //   - a local of the function, a field of one held by value, a struct lent '&uni' and its
 //     field, a '&uni' slice of an array: pass k writes k + 1 to item k, so 100 items sum
 //     to 5050
-//   - a cursor made in an 'imm' variable from a local, which the loop follows to the call
+//   - a cursor made in a 'let' variable from a local, which the loop follows to the call
 //     that made it: the same sum
 //   - the caller side: two different locals lent '&uni' and '&' in one call (a 'mut'
 //     local lends '&uni' since #520)
@@ -50,13 +50,13 @@ fn numberSlice(s &uni Array[Item]) {
 }
 
 fn total(l &List[Item]) i64 {
-  mut sum = 0i64;
+  var sum = 0i64;
   each x in l { sum = sum + x.n; }
   sum;
 }
 
 fn filled(count usize) List[Item] {
-  mut l = new List[Item];
+  var l = new List[Item];
   each i in 0usize ..< count { l.push(new Item(0)); }
   l;
 }
@@ -66,42 +66,42 @@ fn main() {
   actors.configure(new actors.Options(workers: 4u32));
 
   // ---- the zip, the written list taken as '&uni' ----
-  mut a = new List[Item];
+  var a = new List[Item];
   each i in 0usize ..< 4096usize { a.push(new Item(i64.from(i))); }
-  mut b = filled(8192usize);
+  var b = filled(8192usize);
   lift(&a, &uni b);
   printInt(total(&b)); printStr(" sum of b (expect 24965120)\n");
   printInt(b[0usize].n); printStr(" "); printInt(b[1usize].n); printStr(" "); printInt(b[8191usize].n);
   printStr(" b[0] b[1] b[8191] (expect 1000 1000 5095)\n");
 
   // ---- a local ----
-  mut mine = filled(100usize);
+  var mine = filled(100usize);
   parallel each i, x in mine.mutItems().indexed() {
     x.n = i64.from(i) + 1;
   }
   printInt(total(&mine)); printStr(" local (expect 5050)\n");
 
   // ---- a field of a local held by value, and a struct lent '&uni' ----
-  mut grid = new Grid(filled(100usize));
+  var grid = new Grid(filled(100usize));
   parallel each i, x in grid.cells.mutItems().indexed() {
     x.n = i64.from(i) + 1;
   }
   printInt(total(&grid.cells)); printStr(" field of a local (expect 5050)\n");
-  mut grid2 = new Grid(filled(100usize));
+  var grid2 = new Grid(filled(100usize));
   number(&uni grid2);
   printInt(total(&grid2.cells)); printStr(" struct lent uni (expect 5050)\n");
 
   // ---- an array's slice ----
-  mut items Array[Item, 100];
+  var items Array[Item, 100];
   numberSlice(&uni items);
-  imm seen &Array[Item] = &items;
-  mut sliceSum = 0i64;
+  let seen &Array[Item] = &items;
+  var sliceSum = 0i64;
   each i in 0usize ..< 100usize { sliceSum = sliceSum + seen[i].n; }
   printInt(sliceSum); printStr(" array slice lent uni (expect 5050)\n");
 
-  // ---- a cursor made in an imm variable from a local ----
-  mut other = filled(100usize);
-  imm cursor = other.mutItems().indexed();
+  // ---- a cursor made in a let variable from a local ----
+  var other = filled(100usize);
+  let cursor = other.mutItems().indexed();
   parallel each i, x in cursor {
     x.n = i64.from(i) + 1;
   }

@@ -45,7 +45,7 @@ struct NeverAllocs is RegionRef {
   fn alloc(size usize) *u8 inline { 0usize as *u8; }
 }
 
-mut @threadlocal calls = 0;
+var @threadlocal calls = 0;
 fn counter() i32 {
   calls = calls + 1;
   calls;
@@ -59,61 +59,61 @@ fn loudValue(n i32) i32 {
 }
 
 fn regions() {
-  imm rc = new Rc[mut, Array[i32, 4]] <- fill 5;
+  let rc = new Rc[mut, Array[i32, 4]] <- fill 5;
   show("rc", i64.from(rc[0] + rc[3]));
-  imm so = new Uni[Array[i32, 4]] <- 1, 2, fill 3;
+  let so = new Uni[Array[i32, 4]] <- 1, 2, fill 3;
   show("so", i64.from(so[0] * 100 + so[1] * 10 + so[3]));
-  imm sole = new Rc[Array[i64, 3]] <- 2 of 4, 6;
+  let sole = new Rc[Array[i64, 3]] <- 2 of 4, 6;
   show("rc-uni", sole[0] * 100 + sole[1] * 10 + sole[2]);
   // Each element its own allocation, each evaluated in turn
-  imm owners = new Rc[mut, Array[Rc[mut, i32], 3]] <- fill new Rc[mut, i32](counter());
+  let owners = new Rc[mut, Array[Rc[mut, i32], 3]] <- fill new Rc[mut, i32](counter());
   show("owners", i64.from(*owners[0] * 100 + *owners[1] * 10 + *owners[2]));
 }
 
 fn scalars() {
   // Several sizes: the scalars, row by row
-  imm grid = new Rc[mut, Array[i32, 2, 3]] <- 1, 2, 3, 4, 5, 6;
+  let grid = new Rc[mut, Array[i32, 2, 3]] <- 1, 2, 3, 4, 5, 6;
   show("grid-row-0", i64.from(grid[0][0] * 100 + grid[0][1] * 10 + grid[0][2]));
   show("grid-row-1", i64.from(grid[1][0] * 100 + grid[1][1] * 10 + grid[1][2]));
-  imm cube = new Uni[Array[u8, 2, 3, 4]] <- 5 of 1u8, fill 2u8;
+  let cube = new Uni[Array[u8, 2, 3, 4]] <- 5 of 1u8, fill 2u8;
   show("cube", i64.from(cube[0][1][0]) * 10 + i64.from(cube[0][1][1]));
   // Nested, the rows
-  imm rows = new Rc[mut, Array[Array[i32, 2], 2]] <- new Array[i32, 2] <- (7, 8), [9, 10];
+  let rows = new Rc[mut, Array[Array[i32, 2], 2]] <- new Array[i32, 2] <- (7, 8), [9, 10];
   show("nested-rows", i64.from(rows[0][1] * 100 + rows[1][1]));
   // Through a written alias of the reference type
-  imm aliased = new GridRef <- fill 3;
+  let aliased = new GridRef <- fill 3;
   show("alias", i64.from(aliased[1][2]));
 }
 alias GridRef = Rc[mut, Array[i32, 2, 3]];
 
 fn large() {
   // A million scalars, null and not, filled in the region's memory
-  imm zeros = new Rc[mut, Array[i32, 1000, 1000]] <- fill 0;
+  let zeros = new Rc[mut, Array[i32, 1000, 1000]] <- fill 0;
   show("million-zeros", i64.from(zeros[0][0] + zeros[999][999]));
-  imm sevens = new Rc[mut, Array[i32, 1000, 1000]] <- 1, fill 7;
+  let sevens = new Rc[mut, Array[i32, 1000, 1000]] <- 1, fill 7;
   show("million-sevens", i64.from(sevens[0][0]) * 10 + i64.from(sevens[999][999]));
-  imm counted = new Uni[Array[i32, 1000000]] <- fill counter();
+  let counted = new Uni[Array[i32, 1000000]] <- fill counter();
   show("million-counted-first", i64.from(counted[0]));
   show("million-counted-last", i64.from(counted[999999]));
 }
 
 fn order() {
   printStr("-- order\n");
-  imm loud = new Loud[mut, Array[i32, 3]] <- loudValue(1), 2 of loudValue(2);
+  let loud = new Loud[mut, Array[i32, 3]] <- loudValue(1), 2 of loudValue(2);
   show("loud", i64.from(loud[0] * 100 + loud[1] * 10 + loud[2]));
 }
 
 fn fallible() {
   calls = 0;
-  imm some = trynew Rc[mut, Array[i32, 4]] <- fill counter();
+  let some = trynew Rc[mut, Array[i32, 4]] <- fill counter();
   match some {
-    case imm x Some[Rc[mut, Array[i32, 4]]] { show("trynew-some", i64.from(x[0] * 1000 + x[3])); }
+    case let x Some[Rc[mut, Array[i32, 4]]] { show("trynew-some", i64.from(x[0] * 1000 + x[3])); }
     else { show("trynew-none", 0); }
   }
   calls = 0;
-  imm none = trynew NeverAllocs[mut, Array[i32, 4]] <- fill counter();
+  let none = trynew NeverAllocs[mut, Array[i32, 4]] <- fill counter();
   match none {
-    case imm x Some[NeverAllocs[mut, Array[i32, 4]]] { show("trynew-failing", 1); }
+    case let x Some[NeverAllocs[mut, Array[i32, 4]]] { show("trynew-failing", 1); }
     else { show("trynew-failing-none", 0); }
   }
   show("trynew-failing-evaluated", i64.from(calls));
@@ -121,10 +121,10 @@ fn fallible() {
 
 fn collection() {
   // A List's allocation with contents appends them through the reference
-  imm list = new Rc[mut, List[i32]](10) <- 1, 2, 3;
+  let list = new Rc[mut, List[i32]](10) <- 1, 2, 3;
   show("list-len", i64.from(list.len()));
   show("list-items", i64.from(*list[0] * 100 + *list[1] * 10 + *list[2]));
-  imm full = new Rc[mut, List[i32]](4) <- 9, fill 8;
+  let full = new Rc[mut, List[i32]](4) <- 9, fill 8;
   show("list-fill-len", i64.from(full.len()));
   show("list-fill-last", i64.from(*full[3]));
 }

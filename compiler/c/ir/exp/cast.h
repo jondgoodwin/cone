@@ -41,7 +41,7 @@ struct NameUseNode;
 // reference that other references may share: the collection rule applies to the
 // narrowed reference (castSumInterior). Set once the conversion is a plain recast.
 #define FlagVariantNarrow 0x0010  // Cast: narrows a shared reference into one of an enum's variants
-// The binding a guard makes of a variable the arm binds again ('case imm x T if g'):
+// The binding a guard makes of a variable the arm binds again ('case let x T if g'):
 // it reads the matched place before the arm is chosen, so it takes nothing from it --
 // a payload that moves is viewed through a borrow (castGuardBorrow)
 #define FlagMatchGuardBind 0x0020  // Cast: a bound pattern's conversion made for its guard
@@ -50,7 +50,7 @@ struct NameUseNode;
 // the value sits at the same offset in both allocations, which generation asks
 // (genlOwnerNarrowCheck).
 #define FlagOwnerNarrow 0x0040  // Cast: narrows an owning reference to a variant of its enum
-// A trait pattern on an enum, 'case imm m Measured' [topic 7], binds a virtual reference to the
+// A trait pattern on an enum, 'case let m Measured' [topic 7], binds a virtual reference to the
 // trait built from whichever variant the reference points at, chosen by the tag. Only the variants
 // that comply have a vtable, so generation tolerates the others: they cannot reach the arm.
 #define FlagTraitBind 0x0080  // Cast: a trait pattern's conversion, to a virtual reference over the matched enum

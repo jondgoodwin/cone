@@ -34,14 +34,14 @@ fn live() u64 { u64.from(Gc.liveObjects()); }
 
 // Three leaves made, the second returned
 fn keepSecond() Leaf {
-  imm a = new Leaf(1);
-  imm b = new Leaf(2);
-  imm c = new Leaf(3);
+  let a = new Leaf(1);
+  let b = new Leaf(2);
+  let c = new Leaf(3);
   b;
 }
 
 fn keptAndDropped() {
-  imm k = keepSecond();
+  let k = keepSecond();
   settle();
   expectUInt(live(), 1, "the returned leaf is kept, the other two freed");
   expectUInt(u64.from(Gc.liveBytes()), 40, "a leaf is 40 bytes, header included");
@@ -60,21 +60,21 @@ fn tree(depth i64) Option[Node] {
 // into it could see another reference empty it while in use
 fn count(t Option[Node]) i64 {
   match t {
-    case imm s Some[Node] { count(s.left) + count(s.right) + 1; }
+    case let s Some[Node] { count(s.left) + count(s.right) + 1; }
     else { 0; }
   }
 }
 
 fn sum(t Option[Node]) i64 {
   match t {
-    case imm s Some[Node] { s.n + sum(s.left) + sum(s.right); }
+    case let s Some[Node] { s.n + sum(s.left) + sum(s.right); }
     else { 0; }
   }
 }
 
 fn leftOf(t Option[Node]) Option[Node] {
   match t {
-    case imm s Some[Node] { s.left; }
+    case let s Some[Node] { s.left; }
     else { None; }
   }
 }
@@ -84,7 +84,7 @@ fn dropTree() {
 }
 
 fn wholeTree() {
-  imm t = tree(4);
+  let t = tree(4);
   settle();
   expectUInt(live(), 15, "a tree of depth 4 is 15 nodes, all kept");
   expectInt(count(t), 15, "and all 15 are there");
@@ -93,13 +93,13 @@ fn wholeTree() {
 }
 
 fn subtree() {
-  imm l = keepLeft();
+  let l = keepLeft();
   settle();
   expectUInt(live(), 7, "the left subtree of depth 3 is kept, the root and right freed");
   expectInt(sum(l), 11, "3 + 2*2 + 1*4");
 }
 fn keepLeft() Option[Node] {
-  imm t = tree(4);
+  let t = tree(4);
   leftOf(t);
 }
 
@@ -111,7 +111,7 @@ fn makePair() Pair {
   new Pair(new Leaf(1), new Leaf(2));
 }
 fn replaced() {
-  imm p = makePair();
+  let p = makePair();
   replaceLeft(p);
   settle();
   expectUInt(live(), 3, "the pair, its new left and its right; the old left freed");
@@ -121,9 +121,9 @@ fn replaced() {
 
 // Copies of a reference: each is a root, and none costs anything
 fn copies() {
-  imm a = keepSecond();
-  imm b = a;
-  mut c = b;
+  let a = keepSecond();
+  let b = a;
+  var c = b;
   settle();
   expectUInt(live(), 1, "three copies of one reference reach one object");
   c.n = 20;
@@ -132,10 +132,10 @@ fn copies() {
 
 // A thousand leaves made and dropped, one at a time
 fn many() {
-  mut i = 0i64;
-  mut total = 0i64;
+  var i = 0i64;
+  var total = 0i64;
   while i < 1000 {
-    imm l = new Leaf(i);
+    let l = new Leaf(i);
     total = total + l.n;
     i = i + 1;
   }
@@ -150,9 +150,9 @@ fn many() {
 // holds under the stress modes too; this one is the ordinary mode's, and
 // turns stress off.
 fn dropLeaves() {
-  mut i = 0i64;
+  var i = 0i64;
   while i < 10000 {
-    imm l = new Leaf(i);
+    let l = new Leaf(i);
     i = i + 1;
   }
 }
@@ -160,16 +160,16 @@ fn stopped() {
   // What an ordinary allocation does, which either stress mode changes: off,
   // for this section, the last
   Gc.setStress(false);
-  imm c0 = Gc.collections();
+  let c0 = Gc.collections();
   Gc.stop();
   dropLeaves();
   expectUInt(u64.from(Gc.collections() - c0), 0, "stopped: no collection");
   expectUInt(live(), 10000, "every leaf still there");
   Gc.start();
-  imm l = new Leaf(1);
+  let l = new Leaf(1);
   expectUInt(u64.from(Gc.collections() - c0), 1, "started: the next allocation's step finishes marking, since nothing is reached");
   expect(live() > 1u64 and live() < 10001u64, "and has begun the sweep, not finished it: a step, not a collection");
-  mut steps = 0i64;
+  var steps = 0i64;
   while !Gc.step(0usize) { steps = steps + 1; }
   expect(steps > 0, "the least steps finish it, one object at a time");
   expectUInt(u64.from(Gc.collections() - c0), 1, "still that one collection");
@@ -195,7 +195,7 @@ fn main() i32 {
   settle();
   copies();
   settle();
-  imm before = Gc.freed();
+  let before = Gc.freed();
   many();
   settle();
   expectUInt(live(), 0, "every leaf of the loop freed");

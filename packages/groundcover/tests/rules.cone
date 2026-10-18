@@ -37,7 +37,7 @@ import groundcover use *;
 fn flatWorld() GroundMaps { GroundMaps.create(0., 0., 200., 100u32); }
 
 fn gentle() CoverType {
-  mut t = CoverType.grass("gentle");
+  var t = CoverType.grass("gentle");
   t.density = 2.;
   t.range = 60.;
   t.fadeStart = 55.;
@@ -46,12 +46,12 @@ fn gentle() CoverType {
 }
 
 fn countWithin(list &List[Placed], x f32, z f32, r f32) usize {
-  mut n = 0usize;
-  mut i = 0usize;
+  var n = 0usize;
+  var i = 0usize;
   while i < list.len() {
-    imm ins = list[i];
-    imm dx = ins.x - x;
-    imm dz = ins.z - z;
+    let ins = list[i];
+    let dx = ins.x - x;
+    let dz = ins.z - z;
     if dx * dx + dz * dz < r * r { n = n + 1usize; }
     i = i + 1usize;
   }
@@ -60,34 +60,34 @@ fn countWithin(list &List[Placed], x f32, z f32, r f32) usize {
 
 // The dispersion index of the counts in 2 m squares over a 40 m square about (100, 100)
 fn dispersion(list &List[Placed]) f64 {
-  mut counts = List[f64].empty();
-  mut qz = 0;
+  var counts = List[f64].empty();
+  var qz = 0;
   while qz < 20 {
-    mut qx = 0;
+    var qx = 0;
     while qx < 20 {
       counts.push(0d);
       qx = qx + 1;
     }
     qz = qz + 1;
   }
-  mut i = 0usize;
+  var i = 0usize;
   while i < list.len() {
-    imm ins = list[i];
-    imm gx = i32.from(libc.floorf((ins.x - 80.) / 2.));
-    imm gz = i32.from(libc.floorf((ins.z - 80.) / 2.));
+    let ins = list[i];
+    let gx = i32.from(libc.floorf((ins.x - 80.) / 2.));
+    let gz = i32.from(libc.floorf((ins.z - 80.) / 2.));
     if gx >= 0 and gx < 20 and gz >= 0 and gz < 20 {
       counts.set(usize.from(gz * 20 + gx), *counts[usize.from(gz * 20 + gx)] + 1d);
     }
     i = i + 1usize;
   }
-  mut mean = 0d;
-  mut k = 0usize;
+  var mean = 0d;
+  var k = 0usize;
   while k < counts.len() { mean = mean + *counts[k]; k = k + 1usize; }
   mean = mean / f64.from(counts.len());
-  mut variance = 0d;
+  var variance = 0d;
   k = 0usize;
   while k < counts.len() {
-    imm d = *counts[k] - mean;
+    let d = *counts[k] - mean;
     variance = variance + d * d;
     k = k + 1usize;
   }
@@ -97,25 +97,25 @@ fn dispersion(list &List[Placed]) f64 {
 
 fn main() i32 {
   // ---- Windows and noise ----
-  imm w = Window.between(10., 20., 5.);
+  let w = Window.between(10., 20., 5.);
   expectFloat(f64.from(windowValue(&w, 7.5)), 0.5d, 0.0001d, "window: halfway up the ramp");
   expectFloat(f64.from(windowValue(&w, 15.)), 1d, 0.0001d, "window: flat top");
   expectFloat(f64.from(windowValue(&w, 22.5)), 0.5d, 0.0001d, "window: halfway down");
   expectFloat(f64.from(windowValue(&w, 4.)), 0d, 0.0001d, "window: below");
   expectFloat(f64.from(windowValue(&w, 25.)), 0d, 0.0001d, "window: at the far foot");
-  imm any = Window.any();
+  let any = Window.any();
   expectFloat(f64.from(windowValue(&any, 12345.)), 1d, 0.0001d, "window: any");
   expectFloat(f64.from(valueNoise(3., 4., 77u32)), f64.from(toUnit(cellHash(3i32, 4i32, 77u32, 0u32).x)), 0.0000001d, "noise at a lattice point is its hash");
-  mut lo = 1f32;
-  mut hi = 0f32;
-  mut worst = 0f32;
-  mut prev = fbm2(0., 0.37, 5u32);
-  mut s = 1;
+  var lo = 1f32;
+  var hi = 0f32;
+  var worst = 0f32;
+  var prev = fbm2(0., 0.37, 5u32);
+  var s = 1;
   while s < 4000 {
-    imm v = fbm2(f32.from(s) * 0.01, 0.37, 5u32);
+    let v = fbm2(f32.from(s) * 0.01, 0.37, 5u32);
     if v < lo { lo = v; }
     if v > hi { hi = v; }
-    imm step = libc.fabsf(v - prev);
+    let step = libc.fabsf(v - prev);
     if step > worst { worst = step; }
     prev = v;
     s = s + 1;
@@ -125,32 +125,32 @@ fn main() i32 {
   expect(worst < 0.08, "and is continuous (no step of 0.01 changes it by 0.08)");
 
   // ---- Density ----
-  imm flat = flatWorld();
-  mut types = List[CoverType].empty();
+  let flat = flatWorld();
+  var types = List[CoverType].empty();
   types.push(gentle());
-  mut found = List[Placed].empty();
+  var found = List[Placed].empty();
   placeRing(&types, 0usize, 0u32, &flat, 100., 100., &mut found);
-  imm expected = 2d * 3.14159265d * 30d * 30d;
-  imm got = f64.from(countWithin(&found, 100., 100., 30.));
+  let expected = 2d * 3.14159265d * 30d * 30d;
+  let got = f64.from(countWithin(&found, 100., 100., 30.));
   expect(libc.fabs(got - expected) < 0.04d * expected, "density: 2 a square metre within 30 m, to 4%");
   expectInt(i64.from(problems(&types).len()), 0i64, "a valid world has no problems");
 
   // ---- Determinism and independence of the camera ----
-  mut again = List[Placed].empty();
+  var again = List[Placed].empty();
   placeRing(&types, 0usize, 0u32, &flat, 100., 100., &mut again);
   expectInt(i64.from(again.len()), i64.from(found.len()), "the same inputs: the same number");
   expectFloat(f64.from(again[again.len() - 1usize].x), f64.from(found[found.len() - 1usize].x), 0d, "and the same last x");
-  mut moved = List[Placed].empty();
+  var moved = List[Placed].empty();
   placeRing(&types, 0usize, 0u32, &flat, 101., 100., &mut moved);
-  mut matched = 0usize;
-  mut inside = 0usize;
-  mut a = 0usize;
+  var matched = 0usize;
+  var inside = 0usize;
+  var a = 0usize;
   while a < found.len() {
-    imm ia = found[a];
-    imm da = (ia.x - 100.) * (ia.x - 100.) + (ia.z - 100.) * (ia.z - 100.);
+    let ia = found[a];
+    let da = (ia.x - 100.) * (ia.x - 100.) + (ia.z - 100.) * (ia.z - 100.);
     if da < 400. {
       inside = inside + 1usize;
-      mut b = 0usize;
+      var b = 0usize;
       while b < moved.len() {
         if moved[b].seed == ia.seed and moved[b].x == ia.x and moved[b].z == ia.z { matched = matched + 1usize; b = moved.len(); }
         b = b + 1usize;
@@ -161,27 +161,27 @@ fn main() i32 {
   expectInt(i64.from(matched), i64.from(inside), "every instance within 20 m is placed the same by a camera a metre away");
 
   // ---- Slope ----
-  mut hill = GroundMaps.create(0., 0., 200., 100u32);
-  mut j = 0u32;
+  var hill = GroundMaps.create(0., 0., 200., 100u32);
+  var j = 0u32;
   while j < 100u32 {
-    mut i = 0u32;
+    var i = 0u32;
     while i < 100u32 {
-      imm x = hill.worldX(i);
+      let x = hill.worldX(i);
       if x > 100. { hill.set(SIGNAL_HEIGHT, i, j, x - 100.); }
       i = i + 1u32;
     }
     j = j + 1u32;
   }
   hill.deriveSlope();
-  mut gentleOnly = List[CoverType].empty();
-  mut g = gentle();
+  var gentleOnly = List[CoverType].empty();
+  var g = gentle();
   g.slope = Window.atMost(30., 5.);
   gentleOnly.push(g);
-  mut onHill = List[Placed].empty();
+  var onHill = List[Placed].empty();
   placeRing(&gentleOnly, 0usize, 0u32, &hill, 100., 100., &mut onHill);
-  mut steep = 0usize;
-  mut level = 0usize;
-  mut q = 0usize;
+  var steep = 0usize;
+  var level = 0usize;
+  var q = 0usize;
   while q < onHill.len() {
     if onHill[q].x > 104. { steep = steep + 1usize; }
     if onHill[q].x < 96. { level = level + 1usize; }
@@ -191,38 +191,38 @@ fn main() i32 {
   expect(level > 1000usize, "slope: plenty on the level ground");
 
   // ---- NEAR ----
-  mut withShrubs = List[CoverType].empty();
-  mut shrub = CoverType.meshKind("shrub");
+  var withShrubs = List[CoverType].empty();
+  var shrub = CoverType.meshKind("shrub");
   shrub.density = 0.01;
   shrub.cellFactor = 1.;
   shrub.range = 60.;
   shrub.fadeStart = 55.;
   withShrubs.push(shrub);
-  mut meadow = gentle();
+  var meadow = gentle();
   meadow.density = 4.;
   meadow.avoid(0u32, NEAR, 3., 1.);
   withShrubs.push(meadow);
   expectInt(i64.from(problems(&withShrubs).len()), 0i64, "a shrub and a meadow: valid");
-  mut shrubs = List[Placed].empty();
+  var shrubs = List[Placed].empty();
   placeRing(&withShrubs, 0usize, 0u32, &flat, 100., 100., &mut shrubs);
-  mut grass = List[Placed].empty();
+  var grass = List[Placed].empty();
   placeRing(&withShrubs, 1usize, 0u32, &flat, 100., 100., &mut grass);
-  mut base = List[Placed].empty();
-  mut shrubAgain = CoverType.meshKind("shrub");
+  var base = List[Placed].empty();
+  var shrubAgain = CoverType.meshKind("shrub");
   shrubAgain.density = 0.01;
   shrubAgain.cellFactor = 1.;
-  mut meadowFree = gentle();
+  var meadowFree = gentle();
   meadowFree.density = 4.;
-  mut freeTypes = List[CoverType].empty();
+  var freeTypes = List[CoverType].empty();
   freeTypes.push(shrubAgain);
   freeTypes.push(meadowFree);
   placeRing(&freeTypes, 1usize, 0u32, &flat, 100., 100., &mut base);
-  mut nearWith = 0usize;
-  mut nearFree = 0usize;
-  mut counted = 0usize;
-  mut sh = 0usize;
+  var nearWith = 0usize;
+  var nearFree = 0usize;
+  var counted = 0usize;
+  var sh = 0usize;
   while sh < shrubs.len() {
-    imm s0 = shrubs[sh];
+    let s0 = shrubs[sh];
     if (s0.x - 100.) * (s0.x - 100.) + (s0.z - 100.) * (s0.z - 100.) < 900. {
       counted = counted + 1usize;
       nearWith = nearWith + countWithin(&grass, s0.x, s0.z, 1.);
@@ -231,99 +231,99 @@ fn main() i32 {
     sh = sh + 1usize;
   }
   expect(counted > 20usize, "enough shrubs to measure");
-  imm ratio = f64.from(nearWith) / f64.from(nearFree);
+  let ratio = f64.from(nearWith) / f64.from(nearFree);
   expect(ratio > 0.1d and ratio < 0.4d, "NEAR: grass within 1 m of a shrub is about 0.22 of the free density");
 
   // ---- SHARE ----
-  mut shared = flatWorld();
+  var shared = flatWorld();
   j = 0u32;
   while j < 100u32 {
-    mut i = 0u32;
+    var i = 0u32;
     while i < 100u32 {
       if shared.worldX(i) < 100. { shared.set(SIGNAL_MOISTURE, i, j, 1.); } else { shared.set(SIGNAL_MOISTURE, i, j, 0.); }
       i = i + 1u32;
     }
     j = j + 1u32;
   }
-  mut shareTypes = List[CoverType].empty();
-  mut flowers = CoverType.flowerKind("flowers");
+  var shareTypes = List[CoverType].empty();
+  var flowers = CoverType.flowerKind("flowers");
   flowers.moisture = Window.atLeast(0.5, 0.01);
   flowers.density = 0.1;
   shareTypes.push(flowers);
-  mut lawn = gentle();
+  var lawn = gentle();
   lawn.density = 4.;
   lawn.avoid(0u32, SHARE, 0., 0.5);
   shareTypes.push(lawn);
-  mut lawnList = List[Placed].empty();
+  var lawnList = List[Placed].empty();
   placeRing(&shareTypes, 1usize, 0u32, &shared, 100., 100., &mut lawnList);
-  mut leftN = 0usize;
-  mut rightN = 0usize;
+  var leftN = 0usize;
+  var rightN = 0usize;
   q = 0usize;
   while q < lawnList.len() {
-    imm li = lawnList[q];
-    imm dd = (li.x - 100.) * (li.x - 100.) + (li.z - 100.) * (li.z - 100.);
+    let li = lawnList[q];
+    let dd = (li.x - 100.) * (li.x - 100.) + (li.z - 100.) * (li.z - 100.);
     if dd < 900. {
       if li.x < 90. { leftN = leftN + 1usize; }
       if li.x > 110. { rightN = rightN + 1usize; }
     }
     q = q + 1usize;
   }
-  imm shareRatio = f64.from(leftN) / f64.from(rightN);
+  let shareRatio = f64.from(leftN) / f64.from(rightN);
   expect(shareRatio > 0.42d and shareRatio < 0.58d, "SHARE: strength 0.5 against a score of 1 halves the grass");
 
   // ---- Distance: three rings ----
-  mut far = CoverType.grass("far");
+  var far = CoverType.grass("far");
   far.density = 4.;
   far.rings = 3u32;
   far.ringEnd = [12., 30., 70.];
   far.range = 70.;
   far.fadeStart = 55.;
-  mut farTypes = List[CoverType].empty();
+  var farTypes = List[CoverType].empty();
   farTypes.push(far);
-  mut r0 = List[Placed].empty();
-  mut r1 = List[Placed].empty();
-  mut r2 = List[Placed].empty();
-  mut cx = 100f32;
+  var r0 = List[Placed].empty();
+  var r1 = List[Placed].empty();
+  var r2 = List[Placed].empty();
+  var cx = 100f32;
   placeRing(&farTypes, 0usize, 0u32, &flat, cx, 100., &mut r0);
   placeRing(&farTypes, 0usize, 1u32, &flat, cx, 100., &mut r1);
   placeRing(&farTypes, 0usize, 2u32, &flat, cx, 100., &mut r2);
-  imm area0 = 3.14159265d * 8d * 8d;
-  imm area1 = 3.14159265d * (25d * 25d - 15d * 15d);
-  imm area2 = 3.14159265d * (50d * 50d - 35d * 35d);
-  imm d0 = (f64.from(countWithin(&r0, 100., 100., 8.))) / area0;
-  imm d1 = (f64.from(countWithin(&r1, 100., 100., 25.)) - f64.from(countWithin(&r1, 100., 100., 15.))) / area1;
-  imm d2 = (f64.from(countWithin(&r2, 100., 100., 50.)) - f64.from(countWithin(&r2, 100., 100., 35.))) / area2;
+  let area0 = 3.14159265d * 8d * 8d;
+  let area1 = 3.14159265d * (25d * 25d - 15d * 15d);
+  let area2 = 3.14159265d * (50d * 50d - 35d * 35d);
+  let d0 = (f64.from(countWithin(&r0, 100., 100., 8.))) / area0;
+  let d1 = (f64.from(countWithin(&r1, 100., 100., 25.)) - f64.from(countWithin(&r1, 100., 100., 15.))) / area1;
+  let d2 = (f64.from(countWithin(&r2, 100., 100., 50.)) - f64.from(countWithin(&r2, 100., 100., 35.))) / area2;
   expect(libc.fabs(d0 / 4d - 1d) < 0.06d, "ring 0 has the type's density (4 a square metre)");
   expect(libc.fabs(d0 / d1 / 3.24d - 1d) < 0.1d, "ring 1 is ringStep squared (3.24) sparser");
   expect(libc.fabs(d1 / d2 / 3.24d - 1d) < 0.1d, "ring 2 likewise");
-  mut widthSum0 = 0d;
+  var widthSum0 = 0d;
   q = 0usize;
   while q < r0.len() { widthSum0 = widthSum0 + f64.from(r0[q].width); q = q + 1usize; }
-  mut widthSum1 = 0d;
+  var widthSum1 = 0d;
   q = 0usize;
   while q < r1.len() { widthSum1 = widthSum1 + f64.from(r1[q].width); q = q + 1usize; }
-  imm widthRatio = (widthSum1 / f64.from(r1.len())) / (widthSum0 / f64.from(r0.len()));
+  let widthRatio = (widthSum1 / f64.from(r1.len())) / (widthSum0 / f64.from(r0.len()));
   expectFloat(widthRatio, 1.8d, 0.02d, "ring 1's instances are ringStep wider (the mean of random widths, to 1%)");
 
   // ---- Clumping ----
-  mut reg = gentle();
+  var reg = gentle();
   reg.density = 2.;
   reg.cellFactor = 1.;
-  mut regTypes = List[CoverType].empty();
+  var regTypes = List[CoverType].empty();
   regTypes.push(reg);
-  mut regList = List[Placed].empty();
+  var regList = List[Placed].empty();
   placeRing(&regTypes, 0usize, 0u32, &flat, 100., 100., &mut regList);
-  mut cl = gentle();
+  var cl = gentle();
   cl.density = 2.;
   cl.perCluster = 8u32;
   cl.clusterRadius = 1.2;
-  mut clTypes = List[CoverType].empty();
+  var clTypes = List[CoverType].empty();
   clTypes.push(cl);
-  mut clList = List[Placed].empty();
+  var clList = List[Placed].empty();
   placeRing(&clTypes, 0usize, 0u32, &flat, 100., 100., &mut clList);
-  imm dReg = dispersion(&regList);
-  imm dDef = dispersion(&found);
-  imm dCl = dispersion(&clList);
+  let dReg = dispersion(&regList);
+  let dDef = dispersion(&found);
+  let dCl = dispersion(&clList);
   expect(dReg < dDef, "a jittered lattice is more regular than the default scatter");
   expect(dDef < dCl, "and the default scatter less clumped than clusters");
   expect(dReg < 0.5d, "lattice: dispersion index under 0.5");
@@ -331,27 +331,27 @@ fn main() i32 {
   expect(dCl > 2.5d, "clusters: dispersion index above 2.5");
 
   // ---- A cluster stops where its rule stops ----
-  mut edge = GroundMaps.create(0., 0., 200., 100u32);
+  var edge = GroundMaps.create(0., 0., 200., 100u32);
   j = 0u32;
   while j < 100u32 {
-    mut i = 0u32;
+    var i = 0u32;
     while i < 100u32 {
       if edge.worldX(i) < 100. { edge.set(SIGNAL_MOISTURE, i, j, 0.); } else { edge.set(SIGNAL_MOISTURE, i, j, 1.); }
       i = i + 1u32;
     }
     j = j + 1u32;
   }
-  mut drift = CoverType.flowerKind("drift");
+  var drift = CoverType.flowerKind("drift");
   drift.moisture = Window.atLeast(0.5, 0.1);
   drift.density = 1.;
   drift.perCluster = 8u32;
   drift.clusterRadius = 1.5;
-  mut driftTypes = List[CoverType].empty();
+  var driftTypes = List[CoverType].empty();
   driftTypes.push(drift);
-  mut driftList = List[Placed].empty();
+  var driftList = List[Placed].empty();
   placeRing(&driftTypes, 0usize, 0u32, &edge, 100., 100., &mut driftList);
-  mut leftOf = 0usize;
-  mut rightOf = 0usize;
+  var leftOf = 0usize;
+  var rightOf = 0usize;
   q = 0usize;
   while q < driftList.len() {
     if driftList[q].x < 97. { leftOf = leftOf + 1usize; }
@@ -362,21 +362,21 @@ fn main() i32 {
   expect(rightOf > 200usize, "drift: plenty on the right");
 
   // ---- Validity ----
-  mut bad = List[CoverType].empty();
-  mut b0 = gentle();
+  var bad = List[CoverType].empty();
+  var b0 = gentle();
   b0.avoid(0u32, SHARE, 0., 0.5);
   bad.push(b0);
   expectInt(i64.from(problems(&bad).len()), 1i64, "an interaction naming itself is a fault");
-  mut bad2 = List[CoverType].empty();
-  mut s2 = CoverType.grass("rock");
+  var bad2 = List[CoverType].empty();
+  var s2 = CoverType.grass("rock");
   s2.rings = 2u32;
   bad2.push(s2);
-  mut g2 = gentle();
+  var g2 = gentle();
   g2.avoid(0u32, NEAR, 2., 1.);
   bad2.push(g2);
   expectInt(i64.from(problems(&bad2).len()), 1i64, "a NEAR source of grass with two rings is a fault");
-  mut ok2 = List[CoverType].empty();
-  mut s3 = CoverType.meshKind("rock");
+  var ok2 = List[CoverType].empty();
+  var s3 = CoverType.meshKind("rock");
   s3.rings = 2u32;
   ok2.push(s3);
   ok2.push(gentle());
@@ -384,38 +384,38 @@ fn main() i32 {
   expectInt(i64.from(problems(&ok2).len()), 0i64, "but a MESH type's rings are levels of detail, and it may be a NEAR source");
 
   // ---- A MESH type's rings are levels of detail of one set of instances ----
-  mut lod = CoverType.meshKind("lod");
+  var lod = CoverType.meshKind("lod");
   lod.density = 0.2;
   lod.cellFactor = 0.7;
   lod.rings = 2u32;
   lod.ringEnd = [20., 60., 60.];
   lod.range = 60.;
   lod.fadeStart = 50.;
-  mut lodTypes = List[CoverType].empty();
+  var lodTypes = List[CoverType].empty();
   lodTypes.push(lod);
-  mut single = CoverType.meshKind("lod");
+  var single = CoverType.meshKind("lod");
   single.density = 0.2;
   single.cellFactor = 0.7;
   single.rings = 1u32;
   single.range = 60.;
   single.fadeStart = 50.;
-  mut singleTypes = List[CoverType].empty();
+  var singleTypes = List[CoverType].empty();
   singleTypes.push(single);
-  mut level0 = List[Placed].empty();
-  mut level1 = List[Placed].empty();
-  mut whole = List[Placed].empty();
+  var level0 = List[Placed].empty();
+  var level1 = List[Placed].empty();
+  var whole = List[Placed].empty();
   placeRing(&lodTypes, 0usize, 0u32, &flat, 100., 100., &mut level0);
   placeRing(&lodTypes, 0usize, 1u32, &flat, 100., 100., &mut level1);
   placeRing(&singleTypes, 0usize, 0u32, &flat, 100., 100., &mut whole);
   expectInt(i64.from(level0.len() + level1.len()), i64.from(whole.len()), "LOD levels together are exactly the instances of one level");
-  mut crossed = 0usize;
+  var crossed = 0usize;
   q = 0usize;
   while q < whole.len() {
-    imm w0 = whole[q];
-    imm dw = ((w0.x - 100.) * (w0.x - 100.) + (w0.z - 100.) * (w0.z - 100.)).sqrt();
-    mut inLevel0 = false;
-    mut inLevel1 = false;
-    mut m0 = 0usize;
+    let w0 = whole[q];
+    let dw = ((w0.x - 100.) * (w0.x - 100.) + (w0.z - 100.) * (w0.z - 100.)).sqrt();
+    var inLevel0 = false;
+    var inLevel1 = false;
+    var m0 = 0usize;
     while m0 < level0.len() { if level0[m0].seed == w0.seed and level0[m0].x == w0.x { inLevel0 = true; } m0 = m0 + 1usize; }
     m0 = 0usize;
     while m0 < level1.len() { if level1[m0].seed == w0.seed and level1[m0].x == w0.x { inLevel1 = true; } m0 = m0 + 1usize; }

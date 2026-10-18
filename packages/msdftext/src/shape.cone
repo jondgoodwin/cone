@@ -37,7 +37,7 @@ pub struct Pt {
   pub fn lengthSquared(self) f64 inline { x * x + y * y; }
   // The unit vector; (0, 1) for a zero vector, as msdfgen
   pub fn normalized(self) Pt {
-    imm l = libc.sqrt(x * x + y * y);
+    let l = libc.sqrt(x * x + y * y);
     if l == 0.0d { return new Pt(0.0d, 1.0d); }
     new Pt(x / l, y / l);
   }
@@ -57,8 +57,8 @@ pub fn nonZeroSign(v f64) f64 {
 
 // Whether 'a' is nearer than 'b': smaller magnitude, a tie going to the one with the smaller dot
 pub fn nearer(a SignedDist, b SignedDist) bool {
-  imm fa = libc.fabs(a.d);
-  imm fb = libc.fabs(b.d);
+  let fa = libc.fabs(a.d);
+  let fb = libc.fabs(b.d);
   fa < fb or (fa == fb and a.dot < b.dot);
 }
 
@@ -73,7 +73,7 @@ fn solveQuadratic(x &mut Array[f64, 3], a f64, b f64, c f64) i32 {
     x[0] = -c / b;
     return 1i32;
   }
-  mut dscr = b * b - 4.0d * a * c;
+  var dscr = b * b - 4.0d * a * c;
   if dscr > 0.0d {
     dscr = libc.sqrt(dscr);
     x[0] = (-b + dscr) / (2.0d * a);
@@ -88,14 +88,14 @@ fn solveQuadratic(x &mut Array[f64, 3], a f64, b f64, c f64) i32 {
 }
 
 fn solveCubicNormed(x &mut Array[f64, 3], a f64, b f64, c f64) i32 {
-  imm a2 = a * a;
-  mut q = (a2 - 3.0d * b) / 9.0d;
-  imm r = (a * (2.0d * a2 - 9.0d * b) + 27.0d * c) / 54.0d;
-  imm r2 = r * r;
-  imm q3 = q * q * q;
-  mut shift = a;
+  let a2 = a * a;
+  var q = (a2 - 3.0d * b) / 9.0d;
+  let r = (a * (2.0d * a2 - 9.0d * b) + 27.0d * c) / 54.0d;
+  let r2 = r * r;
+  let q3 = q * q * q;
+  var shift = a;
   if r2 < q3 {
-    mut t = r / libc.sqrt(q3);
+    var t = r / libc.sqrt(q3);
     if t < -1.0d { t = -1.0d; }
     if t > 1.0d { t = 1.0d; }
     t = libc.acos(t);
@@ -106,9 +106,9 @@ fn solveCubicNormed(x &mut Array[f64, 3], a f64, b f64, c f64) i32 {
     x[2] = q * libc.cos((t - 2.0d * PI64) / 3.0d) - shift;
     return 3i32;
   }
-  mut aa = -libc.pow(libc.fabs(r) + libc.sqrt(r2 - q3), 1.0d / 3.0d);
+  var aa = -libc.pow(libc.fabs(r) + libc.sqrt(r2 - q3), 1.0d / 3.0d);
   if r < 0.0d { aa = -aa; }
-  imm bb = if aa == 0.0d { 0.0d; } else { q / aa; };
+  let bb = if aa == 0.0d { 0.0d; } else { q / aa; };
   shift = shift / 3.0d;
   x[0] = (aa + bb) - shift;
   x[1] = -0.5d * (aa + bb) - shift;
@@ -119,7 +119,7 @@ fn solveCubicNormed(x &mut Array[f64, 3], a f64, b f64, c f64) i32 {
 
 fn solveCubic(x &mut Array[f64, 3], a f64, b f64, c f64, d f64) i32 {
   if a != 0.0d {
-    imm bn = b / a;
+    let bn = b / a;
     if libc.fabs(bn) < 1.0e6d { return solveCubicNormed(x, bn, c / a, d / a); }
   }
   solveQuadratic(x, b, c, d);
@@ -141,7 +141,7 @@ pub struct Edge {
 
   pub fn point(self &, t f64) Pt {
     if kind == EDGE_LINE { return a + (c - a) * t; }
-    imm u = 1.0d - t;
+    let u = 1.0d - t;
     a * (u * u) + b * (2.0d * u * t) + c * (t * t);
   }
 
@@ -156,45 +156,45 @@ pub struct Edge {
   // outside [0, 1] where the nearest point is an end, then the end's tangent decides
   pub fn signedDistance(self &, p Pt, param &mut f64) SignedDist {
     if kind == EDGE_LINE {
-      imm aq = p - a;
-      imm ab = c - a;
-      imm abab = ab.dot(ab);
+      let aq = p - a;
+      let ab = c - a;
+      let abab = ab.dot(ab);
       *param = if abab == 0.0d { 0.0d; } else { aq.dot(ab) / abab; };
-      imm eq = p - (if *param > 0.5d { c; } else { a; });
-      imm endpointDistance = eq.length();
+      let eq = p - (if *param > 0.5d { c; } else { a; });
+      let endpointDistance = eq.length();
       if *param > 0.0d and *param < 1.0d {
-        imm ortho = aq.cross(ab) / ab.length();
+        let ortho = aq.cross(ab) / ab.length();
         if libc.fabs(ortho) < endpointDistance { return new SignedDist(ortho, 0.0d); }
       }
       return new SignedDist(nonZeroSign(aq.cross(ab)) * endpointDistance,
         libc.fabs(ab.normalized().dot(eq.normalized())));
     }
-    imm qa = a - p;
-    imm ab = b - a;
-    imm br = a + c - b - b;
-    imm qa1 = qa;
-    mut roots = new Array[f64, 3] <- fill 0.0d;
-    imm n = solveCubic(&mut roots, br.dot(br), 3.0d * ab.dot(br), 2.0d * ab.dot(ab) + qa1.dot(br), qa1.dot(ab));
-    mut minDistance = nonZeroSign(ab.cross(qa)) * qa.length();
-    imm abab = ab.dot(ab);
+    let qa = a - p;
+    let ab = b - a;
+    let br = a + c - b - b;
+    let qa1 = qa;
+    var roots = new Array[f64, 3] <- fill 0.0d;
+    let n = solveCubic(&mut roots, br.dot(br), 3.0d * ab.dot(br), 2.0d * ab.dot(ab) + qa1.dot(br), qa1.dot(ab));
+    var minDistance = nonZeroSign(ab.cross(qa)) * qa.length();
+    let abab = ab.dot(ab);
     *param = if abab == 0.0d { 0.0d; } else { -qa.dot(ab) / abab; };
     {
-      imm cp = c - p;
-      imm distance = cp.length();
+      let cp = c - p;
+      let distance = cp.length();
       if distance < libc.fabs(minDistance) {
-        imm bc = c - b;
+        let bc = c - b;
         minDistance = nonZeroSign(bc.cross(cp)) * distance;
-        imm bcbc = bc.dot(bc);
+        let bcbc = bc.dot(bc);
         *param = if bcbc == 0.0d { 1.0d; } else { (p - b).dot(bc) / bcbc; };
       }
     }
-    mut i = 0i32;
+    var i = 0i32;
     while i < n and i < 3i32 {
-      imm t = roots[usize.from(u32.from(i))];
+      let t = roots[usize.from(u32.from(i))];
       if t > 0.0d and t < 1.0d {
-        imm tangent = ab + br * t;
-        imm qe = a + ab * (2.0d * t) + br * (t * t) - p;
-        imm distance = nonZeroSign(tangent.cross(qe)) * qe.length();
+        let tangent = ab + br * t;
+        let qe = a + ab * (2.0d * t) + br * (t * t) - p;
+        let distance = nonZeroSign(tangent.cross(qe)) * qe.length();
         if libc.fabs(distance) <= libc.fabs(minDistance) {
           minDistance = distance;
           *param = t;
@@ -214,17 +214,17 @@ pub struct Edge {
   // the end itself and the point lies beyond the end; 'dist' is replaced
   pub fn toPseudoDistance(self &, dist SignedDist, p Pt, param f64) SignedDist {
     if param < 0.0d {
-      imm dir = self.direction(0.0d).normalized();
-      imm aq = p - a;
+      let dir = self.direction(0.0d).normalized();
+      let aq = p - a;
       if aq.dot(dir) < 0.0d {
-        imm pseudo = aq.cross(dir);
+        let pseudo = aq.cross(dir);
         if libc.fabs(pseudo) <= libc.fabs(dist.d) { return new SignedDist(pseudo, 0.0d); }
       }
     } elif param > 1.0d {
-      imm dir = self.direction(1.0d).normalized();
-      imm bq = p - c;
+      let dir = self.direction(1.0d).normalized();
+      let bq = p - c;
       if bq.dot(dir) > 0.0d {
-        imm pseudo = bq.cross(dir);
+        let pseudo = bq.cross(dir);
         if libc.fabs(pseudo) <= libc.fabs(dist.d) { return new SignedDist(pseudo, 0.0d); }
       }
     }
@@ -237,8 +237,8 @@ pub struct Edge {
   // times the length of the piece: the two tangents of a parabola's arc meet
   // halfway along the parameter.
   pub fn sub(self &, t0 f64, t1 f64) Edge {
-    imm p0 = self.point(t0);
-    imm p1 = self.point(t1);
+    let p0 = self.point(t0);
+    let p1 = self.point(t1);
     if kind == EDGE_LINE { return new Edge(EDGE_LINE, p0, (p0 + p1) * 0.5d, p1, color); }
     new Edge(EDGE_QUAD, p0, p0 + self.direction(t0) * (t1 - t0), p1, color);
   }
@@ -265,21 +265,21 @@ pub struct Shape {
   // on-curve point halfway; a contour with no on-curve point starts at
   // such a midpoint). Zero-length edges are dropped.
   pub fn fromOutline(o &Outline) Shape {
-    mut shape = Shape.empty();
-    mut first = 0usize;
-    mut ci = 0usize;
+    var shape = Shape.empty();
+    var first = 0usize;
+    var ci = 0usize;
     while ci < o.ends.len() {
-      imm last = usize.from(*o.ends[ci]);
+      let last = usize.from(*o.ends[ci]);
       if last >= first and last < o.xs.len() {
         // Expand: implied on-curve midpoints between off-curve neighbours
-        mut px = List[f64].empty();
-        mut py = List[f64].empty();
-        mut pon = List[bool].empty();
-        imm n = last - first + 1usize;
-        mut k = 0usize;
+        var px = List[f64].empty();
+        var py = List[f64].empty();
+        var pon = List[bool].empty();
+        let n = last - first + 1usize;
+        var k = 0usize;
         while k < n {
-          imm i = first + k;
-          imm j = first + (k + 1usize) % n;
+          let i = first + k;
+          let j = first + (k + 1usize) % n;
           px.push(*o.xs[i]);
           py.push(*o.ys[i]);
           pon.push(*o.on[i]);
@@ -291,28 +291,28 @@ pub struct Shape {
           k = k + 1usize;
         }
         // Start at an on-curve point
-        mut s = 0usize;
+        var s = 0usize;
         while s < pon.len() and !*pon[s] { s = s + 1usize; }
         if s < pon.len() and pon.len() >= 2usize {
-          imm m = pon.len();
-          imm begin = shape.edges.len();
-          mut i = 0usize;
+          let m = pon.len();
+          let begin = shape.edges.len();
+          var i = 0usize;
           while i < m {
-            imm i0 = (s + i) % m;
-            imm i1 = (s + i + 1usize) % m;
-            imm p0 = new Pt(*px[i0], *py[i0]);
-            imm p1 = new Pt(*px[i1], *py[i1]);
+            let i0 = (s + i) % m;
+            let i1 = (s + i + 1usize) % m;
+            let p0 = new Pt(*px[i0], *py[i0]);
+            let p1 = new Pt(*px[i1], *py[i1]);
             if *pon[i1] {
               if p0.x != p1.x or p0.y != p1.y { shape.edges.push(Edge.line(p0, p1)); }
               i = i + 1usize;
             } else {
-              imm i2 = (s + i + 2usize) % m;
-              imm p2 = new Pt(*px[i2], *py[i2]);
+              let i2 = (s + i + 2usize) % m;
+              let p2 = new Pt(*px[i2], *py[i2]);
               if p0.x != p2.x or p0.y != p2.y or p0.x != p1.x or p0.y != p1.y { shape.edges.push(Edge.quad(p0, p1, p2)); }
               i = i + 2usize;
             }
           }
-          imm count = shape.edges.len() - begin;
+          let count = shape.edges.len() - begin;
           if count > 0usize {
             shape.contours.push(new Contour(u32.from(begin), u32.from(count), 1i32));
           }
@@ -328,13 +328,13 @@ pub struct Shape {
   // Each contour's winding: the sign of the shoelace sum over its edges'
   // end points and quadratic control points (+1 clockwise)
   pub fn setWindings(self &mut) {
-    mut ci = 0usize;
+    var ci = 0usize;
     while ci < contours.len() {
-      imm c = *contours[ci];
-      mut total = 0.0d;
-      mut i = 0u32;
+      let c = *contours[ci];
+      var total = 0.0d;
+      var i = 0u32;
       while i < c.count {
-        imm e = *edges[usize.from(c.start + i)];
+        let e = *edges[usize.from(c.start + i)];
         if e.kind == EDGE_QUAD {
           total = total + (e.b.x - e.a.x) * (e.a.y + e.b.y) + (e.c.x - e.b.x) * (e.b.y + e.c.y);
         } else {
@@ -342,7 +342,7 @@ pub struct Shape {
         }
         i = i + 1u32;
       }
-      imm w = if total > 0.0d { 1i32; } elif total < 0.0d { -1i32; } else { 0i32; };
+      let w = if total > 0.0d { 1i32; } elif total < 0.0d { -1i32; } else { 0i32; };
       contours.set(ci, new Contour(c.start, c.count, w));
       ci = ci + 1usize;
     }
@@ -350,17 +350,17 @@ pub struct Shape {
 
   // The bounding box of the edges' end points and control points: min, max
   pub fn bounds(self &, lo &mut Pt, hi &mut Pt) {
-    mut x0 = 1.0e30d;
-    mut y0 = 1.0e30d;
-    mut x1 = -1.0e30d;
-    mut y1 = -1.0e30d;
-    mut i = 0usize;
+    var x0 = 1.0e30d;
+    var y0 = 1.0e30d;
+    var x1 = -1.0e30d;
+    var y1 = -1.0e30d;
+    var i = 0usize;
     while i < edges.len() {
-      imm e = *edges[i];
-      mut pts = new Array[Pt, 3] <- fill e.a;
+      let e = *edges[i];
+      var pts = new Array[Pt, 3] <- fill e.a;
       pts[1] = e.b;
       pts[2] = e.c;
-      mut k = 0usize;
+      var k = 0usize;
       while k < 3usize {
         if pts[k].x < x0 { x0 = pts[k].x; }
         if pts[k].x > x1 { x1 = pts[k].x; }
@@ -378,28 +378,28 @@ pub struct Shape {
   // zero inside the filled area (TrueType's rule)
   pub fn windingAt(self &, p Pt) i32 {
     // A ray a hair above p, so that a vertex on it is not counted twice or not at all
-    imm y = p.y + 1.0e-7d;
-    mut w = 0i32;
-    mut i = 0usize;
+    let y = p.y + 1.0e-7d;
+    var w = 0i32;
+    var i = 0usize;
     while i < edges.len() {
-      imm e = *edges[i];
+      let e = *edges[i];
       if e.kind == EDGE_LINE {
         if (e.a.y <= y) != (e.c.y <= y) {
-          imm x = e.a.x + (y - e.a.y) / (e.c.y - e.a.y) * (e.c.x - e.a.x);
+          let x = e.a.x + (y - e.a.y) / (e.c.y - e.a.y) * (e.c.x - e.a.x);
           if x > p.x {
             if e.c.y > e.a.y { w = w + 1i32; } else { w = w - 1i32; }
           }
         }
       } else {
-        imm qa = e.a.y - 2.0d * e.b.y + e.c.y;
-        imm qb = 2.0d * (e.b.y - e.a.y);
-        mut roots = new Array[f64, 3] <- fill 0.0d;
-        imm n = solveQuadratic(&mut roots, qa, qb, e.a.y - y);
-        mut k = 0i32;
+        let qa = e.a.y - 2.0d * e.b.y + e.c.y;
+        let qb = 2.0d * (e.b.y - e.a.y);
+        var roots = new Array[f64, 3] <- fill 0.0d;
+        let n = solveQuadratic(&mut roots, qa, qb, e.a.y - y);
+        var k = 0i32;
         while k < n and k < 2i32 {
-          imm t = roots[usize.from(u32.from(k))];
+          let t = roots[usize.from(u32.from(k))];
           if t >= 0.0d and t < 1.0d {
-            imm dy = 2.0d * qa * t + qb;
+            let dy = 2.0d * qa * t + qb;
             if libc.fabs(dy) > 1.0e-12d and e.point(t).x > p.x {
               if dy > 0.0d { w = w + 1i32; } else { w = w - 1i32; }
             }
@@ -416,9 +416,9 @@ pub struct Shape {
   // filled area: the material (the right of the edge's direction) is on one
   // side only
   fn onBoundary(self &, e Edge, t f64) bool {
-    imm p = e.point(t);
-    imm d = e.direction(t).normalized();
-    imm right = new Pt(d.y, -d.x) * 0.25d;
+    let p = e.point(t);
+    let d = e.direction(t).normalized();
+    let right = new Pt(d.y, -d.x) * 0.25d;
     self.windingAt(p + right) != 0i32 and self.windingAt(p - right) == 0i32;
   }
 
@@ -427,52 +427,52 @@ pub struct Shape {
   // quadratic 16) and solving the edge against each segment exactly (a line:
   // linearly; a quadratic: a quadratic equation). Unsorted.
   fn crossings(self &, ei usize, out &mut List[f64]) {
-    imm e = *edges[ei];
-    mut fi = 0usize;
+    let e = *edges[ei];
+    var fi = 0usize;
     while fi < edges.len() {
       if fi != ei {
-        imm f = *edges[fi];
+        let f = *edges[fi];
         // A line also gets cut where another edge's end lies on it (the
         // other edge may run along it, which a crossing does not show)
         if e.kind == EDGE_LINE {
-          imm ab = e.c - e.a;
-          imm abab = ab.dot(ab);
-          mut end = 0u32;
+          let ab = e.c - e.a;
+          let abab = ab.dot(ab);
+          var end = 0u32;
           while end < 2u32 {
-            imm p = if end == 0u32 { f.a; } else { f.c; };
-            imm t = (p - e.a).dot(ab) / abab;
+            let p = if end == 0u32 { f.a; } else { f.c; };
+            let t = (p - e.a).dot(ab) / abab;
             if t > 0.0d and t < 1.0d and (e.a + ab * t - p).length() < 0.01d { out.push(t); }
             end = end + 1u32;
           }
         }
-        imm steps = if f.kind == EDGE_LINE { 1u32; } else { 16u32; };
-        mut prev = f.a;
-        mut s = 1u32;
+        let steps = if f.kind == EDGE_LINE { 1u32; } else { 16u32; };
+        var prev = f.a;
+        var s = 1u32;
         while s <= steps {
-          imm cur = f.point(f64.from(s) / f64.from(steps));
-          imm dir = cur - prev;
-          imm dd = dir.dot(dir);
+          let cur = f.point(f64.from(s) / f64.from(steps));
+          let dir = cur - prev;
+          let dd = dir.dot(dir);
           if dd > 0.0d {
             if e.kind == EDGE_LINE {
-              imm ab = e.c - e.a;
-              imm denom = ab.cross(dir);
+              let ab = e.c - e.a;
+              let denom = ab.cross(dir);
               if libc.fabs(denom) > 1.0e-12d {
-                imm t = (prev - e.a).cross(dir) / denom;
-                imm u = (prev - e.a).cross(ab) / denom;
+                let t = (prev - e.a).cross(dir) / denom;
+                let u = (prev - e.a).cross(ab) / denom;
                 if t > 0.0d and t < 1.0d and u >= 0.0d and u <= 1.0d { out.push(t); }
               }
             } else {
               // cross(e(t) - prev, dir) = c0 + c1 t + c2 t^2
-              imm c0 = (e.a - prev).cross(dir);
-              imm c1 = 2.0d * (e.b - e.a).cross(dir);
-              imm c2 = (e.a - e.b - e.b + e.c).cross(dir);
-              mut roots = new Array[f64, 3] <- fill 0.0d;
-              imm n = solveQuadratic(&mut roots, c2, c1, c0);
-              mut k = 0i32;
+              let c0 = (e.a - prev).cross(dir);
+              let c1 = 2.0d * (e.b - e.a).cross(dir);
+              let c2 = (e.a - e.b - e.b + e.c).cross(dir);
+              var roots = new Array[f64, 3] <- fill 0.0d;
+              let n = solveQuadratic(&mut roots, c2, c1, c0);
+              var k = 0i32;
               while k < n and k < 2i32 {
-                imm t = roots[usize.from(u32.from(k))];
+                let t = roots[usize.from(u32.from(k))];
                 if t > 0.0d and t < 1.0d {
-                  imm u = (e.point(t) - prev).dot(dir) / dd;
+                  let u = (e.point(t) - prev).dot(dir) / dd;
                   if u >= 0.0d and u <= 1.0d { out.push(t); }
                 }
                 k = k + 1i32;
@@ -500,35 +500,35 @@ pub struct Shape {
   // Answers whether it changed anything: a shape with no edge inside is left
   // as it was. Call it before 'colorEdges'.
   pub fn resolveOverlaps(self &mut) bool {
-    mut kept = List[Edge].empty();
-    mut parent = List[usize].empty();         // for each kept piece: its edge, and the parameters it spans
-    mut starts = List[f64].empty();
-    mut stops = List[f64].empty();
-    mut changed = false;
-    mut i = 0usize;
+    var kept = List[Edge].empty();
+    var parent = List[usize].empty();         // for each kept piece: its edge, and the parameters it spans
+    var starts = List[f64].empty();
+    var stops = List[f64].empty();
+    var changed = false;
+    var i = 0usize;
     while i < edges.len() {
-      imm e = *edges[i];
-      mut cuts = List[f64].empty();
+      let e = *edges[i];
+      var cuts = List[f64].empty();
       cuts.push(0.0d);
       self.crossings(i, &mut cuts);
       cuts.push(1.0d);
       // Sorted by insertion
-      mut a = 1usize;
+      var a = 1usize;
       while a < cuts.len() {
-        imm v = *cuts[a];
-        mut b = a;
+        let v = *cuts[a];
+        var b = a;
         while b > 0usize and *cuts[b - 1usize] > v { cuts.set(b, *cuts[b - 1usize]); b = b - 1usize; }
         cuts.set(b, v);
         a = a + 1usize;
       }
       // Pieces between cuts: those on the boundary are kept
-      mut k = 0usize;
+      var k = 0usize;
       while k + 1usize < cuts.len() {
-        imm t0 = *cuts[k];
-        imm t1 = *cuts[k + 1usize];
+        let t0 = *cuts[k];
+        let t1 = *cuts[k + 1usize];
         if t1 - t0 > 1.0e-9d {
-          mut on = 0u32;
-          mut s = 1u32;
+          var on = 0u32;
+          var s = 1u32;
           while s < 4u32 {
             if self.onBoundary(e, t0 + (t1 - t0) * f64.from(s) / 4.0d) { on = on + 1u32; }
             s = s + 1u32;
@@ -549,15 +549,15 @@ pub struct Shape {
     if !changed { return false; }
     // Two contours along one line (a serif's top and a stem's) leave the same
     // piece twice: keep one
-    mut unique = List[bool].empty();
+    var unique = List[bool].empty();
     i = 0usize;
     while i < kept.len() {
-      imm e = *kept[i];
-      mut seen = false;
-      mut j = 0usize;
+      let e = *kept[i];
+      var seen = false;
+      var j = 0usize;
       while j < i {
         if *unique[j] {
-          imm u = *kept[j];
+          let u = *kept[j];
           if (u.a - e.a).length() < 0.01d and (u.c - e.c).length() < 0.01d and (u.b - e.b).length() < 0.05d { seen = true; }
         }
         j = j + 1usize;
@@ -566,14 +566,14 @@ pub struct Shape {
       i = i + 1usize;
     }
     // Pieces that follow one another along one edge join up again
-    mut joined = List[Edge].empty();
+    var joined = List[Edge].empty();
     i = 0usize;
     while i < kept.len() {
       if *unique[i] {
-        mut stop = *stops[i];
-        imm p = *parent[i];
-        mut j = i + 1usize;
-        mut more = true;
+        var stop = *stops[i];
+        let p = *parent[i];
+        var j = i + 1usize;
+        var more = true;
         while more and j < kept.len() {
           if !*unique[j] { j = j + 1usize; }
           elif *parent[j] == p and *starts[j] == stop { stop = *stops[j]; j = j + 1usize; }
@@ -590,38 +590,38 @@ pub struct Shape {
     // begins within 'tol' of where its predecessor ends: the cuts were found
     // against short segments, not the curves), snapping each start to the
     // end before it so that the corners are exact
-    mut lo = new Pt(0.0d, 0.0d);
-    mut hi = new Pt(0.0d, 0.0d);
+    var lo = new Pt(0.0d, 0.0d);
+    var hi = new Pt(0.0d, 0.0d);
     self.bounds(&mut lo, &mut hi);
-    imm tol = fmax64(hi.x - lo.x, hi.y - lo.y) * 0.003d;
-    mut used = List[bool].empty();
+    let tol = fmax64(hi.x - lo.x, hi.y - lo.y) * 0.003d;
+    var used = List[bool].empty();
     i = 0usize;
     while i < kept.len() { used.push(false); i = i + 1usize; }
-    mut linked = List[Edge].empty();
-    mut made = List[Contour].empty();
+    var linked = List[Edge].empty();
+    var made = List[Contour].empty();
     i = 0usize;
     while i < kept.len() {
       if !*used[i] {
         used.set(i, true);
-        imm begin = linked.len();
-        imm startPoint = (*kept[i]).a;
+        let begin = linked.len();
+        let startPoint = (*kept[i]).a;
         linked.push(*kept[i]);
-        mut cur = (*kept[i]).c;
-        mut going = true;
+        var cur = (*kept[i]).c;
+        var going = true;
         while going {
           if (cur - startPoint).length() < tol and linked.len() - begin >= 2usize {
             // closed: the last end is the first start
-            mut last = *linked[linked.len() - 1usize];
+            var last = *linked[linked.len() - 1usize];
             last.c = startPoint;
             linked.set(linked.len() - 1usize, last);
             going = false;
           } else {
-            mut best = kept.len();
-            mut bestDistance = tol;
-            mut j = 0usize;
+            var best = kept.len();
+            var bestDistance = tol;
+            var j = 0usize;
             while j < kept.len() {
               if !*used[j] {
-                imm d = ((*kept[j]).a - cur).length();
+                let d = ((*kept[j]).a - cur).length();
                 if d < bestDistance { bestDistance = d; best = j; }
               }
               j = j + 1usize;
@@ -630,7 +630,7 @@ pub struct Shape {
               going = false;
             } else {
               used.set(best, true);
-              mut next = *kept[best];
+              var next = *kept[best];
               next.a = cur;
               linked.push(next);
               cur = next.c;
@@ -654,18 +654,18 @@ pub struct Shape {
 // magenta or yellow; otherwise the colour's bits rotate, the seed picking
 // the direction; 'banned' (a single channel) is avoided
 fn switchColor(color u32, seed &mut u64, banned u32) u32 {
-  imm combined = color & banned;
+  let combined = color & banned;
   if combined == COLOR_RED or combined == COLOR_GREEN or combined == COLOR_BLUE {
     return combined ^ COLOR_WHITE;
   }
   if color == COLOR_BLACK or color == COLOR_WHITE {
-    imm pick = *seed % 3u64;
+    let pick = *seed % 3u64;
     *seed = *seed / 3u64;
     if pick == 0u64 { return COLOR_CYAN; }
     if pick == 1u64 { return COLOR_MAGENTA; }
     return COLOR_YELLOW;
   }
-  imm shifted = color << (1u32 + u32.from(*seed & 1u64));
+  let shifted = color << (1u32 + u32.from(*seed & 1u64));
   *seed = *seed >> 1u64;
   (shifted | (shifted >> 3u32)) & COLOR_WHITE;
 }
@@ -684,74 +684,74 @@ fn isCorner(a Pt, b Pt, crossThreshold f64) bool {
 // yellow at each corner. 'seed' varies the cycle. Edges are split in place
 // where the pattern needs it, so contour ranges change.
 pub fn colorEdges(shape &mut Shape, angleThreshold f64, seed0 u64) {
-  imm crossThreshold = libc.sin(angleThreshold);
-  mut seed = seed0;
-  mut outEdges = List[Edge].empty();
-  mut outContours = List[Contour].empty();
-  mut ci = 0usize;
+  let crossThreshold = libc.sin(angleThreshold);
+  var seed = seed0;
+  var outEdges = List[Edge].empty();
+  var outContours = List[Contour].empty();
+  var ci = 0usize;
   while ci < shape.contours.len() {
-    imm c = *shape.contours[ci];
-    imm m = usize.from(c.count);
-    imm begin = usize.from(c.start);
+    let c = *shape.contours[ci];
+    let m = usize.from(c.count);
+    let begin = usize.from(c.start);
     // Corners: the index of each edge whose start is a sharp corner
-    mut corners = List[usize].empty();
-    mut prev = (*shape.edges[begin + m - 1usize]).direction(1.0d).normalized();
-    mut i = 0usize;
+    var corners = List[usize].empty();
+    var prev = (*shape.edges[begin + m - 1usize]).direction(1.0d).normalized();
+    var i = 0usize;
     while i < m {
-      imm e = *shape.edges[begin + i];
+      let e = *shape.edges[begin + i];
       if isCorner(prev, e.direction(0.0d).normalized(), crossThreshold) { corners.push(i); }
       prev = e.direction(1.0d).normalized();
       i = i + 1usize;
     }
-    imm outBegin = outEdges.len();
+    let outBegin = outEdges.len();
     if corners.len() == 0usize {
       i = 0usize;
       while i < m {
-        mut e = *shape.edges[begin + i];
+        var e = *shape.edges[begin + i];
         e.color = COLOR_WHITE;
         outEdges.push(e);
         i = i + 1usize;
       }
     } elif corners.len() == 1usize {
-      mut c0 = switchColor(COLOR_WHITE, &mut seed, COLOR_BLACK);
-      imm c2 = switchColor(c0, &mut seed, COLOR_BLACK);
-      imm corner = *corners[0];
+      var c0 = switchColor(COLOR_WHITE, &mut seed, COLOR_BLACK);
+      let c2 = switchColor(c0, &mut seed, COLOR_BLACK);
+      let corner = *corners[0];
       if m >= 3usize {
         // colors + 1 indexes [-1, 0, 1]: first colour, white, second
         i = 0usize;
         while i < m {
-          imm slot = i32.from(3.0d + 2.875d * f64.from(i) / f64.from(m - 1usize) - 1.4375d + 0.5d) - 3i32;
-          mut e = *shape.edges[begin + (corner + i) % m];
+          let slot = i32.from(3.0d + 2.875d * f64.from(i) / f64.from(m - 1usize) - 1.4375d + 0.5d) - 3i32;
+          var e = *shape.edges[begin + (corner + i) % m];
           e.color = if slot < 0i32 { c0; } elif slot == 0i32 { COLOR_WHITE; } else { c2; };
           outEdges.push(e);
           i = i + 1usize;
         }
       } else {
         // Fewer than three edges: split in thirds
-        mut parts = List[Edge].empty();
-        imm e0 = *shape.edges[begin];
+        var parts = List[Edge].empty();
+        let e0 = *shape.edges[begin];
         if m == 1usize {
-          mut k = 0u32;
+          var k = 0u32;
           while k < 3u32 { parts.push(e0.third(k)); k = k + 1u32; }
-          mut p = 0usize;
+          var p = 0usize;
           while p < 3usize {
-            mut pe = *parts[p];
+            var pe = *parts[p];
             pe.color = if p == 0usize { c0; } elif p == 1usize { COLOR_WHITE; } else { c2; };
             outEdges.push(pe);
             p = p + 1usize;
           }
         } else {
           // Two edges: the corner edge's thirds first
-          imm e1 = *shape.edges[begin + 1usize];
-          imm first = if corner == 0usize { e0; } else { e1; };
-          imm second = if corner == 0usize { e1; } else { e0; };
-          mut k = 0u32;
+          let e1 = *shape.edges[begin + 1usize];
+          let first = if corner == 0usize { e0; } else { e1; };
+          let second = if corner == 0usize { e1; } else { e0; };
+          var k = 0u32;
           while k < 3u32 { parts.push(first.third(k)); k = k + 1u32; }
           k = 0u32;
           while k < 3u32 { parts.push(second.third(k)); k = k + 1u32; }
-          mut p = 0usize;
+          var p = 0usize;
           while p < 6usize {
-            mut pe = *parts[p];
+            var pe = *parts[p];
             pe.color = if p < 2usize { c0; } elif p < 4usize { COLOR_WHITE; } else { c2; };
             outEdges.push(pe);
             p = p + 1usize;
@@ -759,20 +759,20 @@ pub fn colorEdges(shape &mut Shape, angleThreshold f64, seed0 u64) {
         }
       }
     } else {
-      imm cornerCount = corners.len();
-      mut spline = 0usize;
-      imm start = *corners[0];
-      mut color = switchColor(COLOR_WHITE, &mut seed, COLOR_BLACK);
-      imm initial = color;
+      let cornerCount = corners.len();
+      var spline = 0usize;
+      let start = *corners[0];
+      var color = switchColor(COLOR_WHITE, &mut seed, COLOR_BLACK);
+      let initial = color;
       i = 0usize;
       while i < m {
-        imm index = (start + i) % m;
+        let index = (start + i) % m;
         if spline + 1usize < cornerCount and *corners[spline + 1usize] == index {
           spline = spline + 1usize;
-          imm banned = if spline == cornerCount - 1usize { initial; } else { COLOR_BLACK; };
+          let banned = if spline == cornerCount - 1usize { initial; } else { COLOR_BLACK; };
           color = switchColor(color, &mut seed, banned);
         }
-        mut e = *shape.edges[begin + index];
+        var e = *shape.edges[begin + index];
         e.color = color;
         outEdges.push(e);
         i = i + 1usize;

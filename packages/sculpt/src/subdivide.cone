@@ -108,10 +108,10 @@ pub fn subdivide(m &PolyMesh, levels u32) PolyMesh {
 // BoundaryEdgeAndCorner) and the face-varying rule (FvarLinearNone to
 // FvarLinearAll) given
 pub fn subdivideWith(m &PolyMesh, levels u32, boundary u32, fvar u32) PolyMesh {
-  mut cur = copyPolyMesh(m);
-  mut i = 0u32;
+  var cur = copyPolyMesh(m);
+  var i = 0u32;
   while i < levels {
-    imm next = subdivideOnce(&cur, boundary, fvar);
+    let next = subdivideOnce(&cur, boundary, fvar);
     cur = next;
     i = i + 1u32;
   }
@@ -122,11 +122,11 @@ pub fn subdivideWith(m &PolyMesh, levels u32, boundary u32, fvar u32) PolyMesh {
 // subdivision up to 'levels', by 'subdivide''s defaults, each made from the
 // one before; entry i is level i
 pub fn subdivisionLevels(m &PolyMesh, levels u32) List[PolyMesh] {
-  mut out = List[PolyMesh].withCapacity(usize.from(levels) + 1usize);
+  var out = List[PolyMesh].withCapacity(usize.from(levels) + 1usize);
   out.push(copyPolyMesh(m));
-  mut i = 0u32;
+  var i = 0u32;
   while i < levels {
-    imm next = subdivideOnce(out[usize.from(i)], BoundaryEdgeAndCorner, FvarLinearCornersPlus1);
+    let next = subdivideOnce(out[usize.from(i)], BoundaryEdgeAndCorner, FvarLinearCornersPlus1);
     out.push(next);
     i = i + 1u32;
   }
@@ -153,8 +153,8 @@ const RuleCorner = 3u32;
 // fewer (smooth, or a dart) smooth
 fn ruleOf(vs f32, sharp &List[f32]) u32 {
   if vs > 0. { return RuleCorner; }
-  mut n = 0usize;
-  mut i = 0usize;
+  var n = 0usize;
+  var i = 0usize;
   while i < sharp.len() {
     if *sharp[i] > 0. { n = n + 1usize; }
     i = i + 1usize;
@@ -169,47 +169,47 @@ fn ruleOf(vs f32, sharp &List[f32]) u32 {
 fn applyRule(rule u32, own Vec3, ends &List[Vec3], faces &List[Vec3], sharp &List[f32], closed bool) Vec3 {
   if rule == RuleCorner { return own; }
   if rule == RuleCrease {
-    mut sum = new Vec3(0., 0., 0.);
-    mut i = 0usize;
+    var sum = new Vec3(0., 0., 0.);
+    var i = 0usize;
     while i < ends.len() {
       if *sharp[i] > 0. { sum = sum + *ends[i]; }
       i = i + 1usize;
     }
     return (sum + own * 6.) * 0.125;
   }
-  imm n = ends.len();
+  let n = ends.len();
   if !closed or n == 0usize { return own; }
-  mut se = new Vec3(0., 0., 0.);
-  mut sf = new Vec3(0., 0., 0.);
-  mut i = 0usize;
+  var se = new Vec3(0., 0., 0.);
+  var sf = new Vec3(0., 0., 0.);
+  var i = 0usize;
   while i < n {
     se = se + *ends[i];
     sf = sf + *faces[i];
     i = i + 1usize;
   }
-  imm nn = f32.from(n);
+  let nn = f32.from(n);
   own * ((nn - 2.) / nn) + (se + sf) * (1. / (nn * nn));
 }
 
 // A vertex point: the rule its sharpness gives, blended with the rule its
 // children's gives when a crease wears out at this level
 fn fanPoint(own Vec3, ends &List[Vec3], faces &List[Vec3], sharp &List[f32], vs f32, closed bool) Vec3 {
-  imm pRule = ruleOf(vs, sharp);
-  imm p = applyRule(pRule, own, ends, faces, sharp, closed);
+  let pRule = ruleOf(vs, sharp);
+  let p = applyRule(pRule, own, ends, faces, sharp, closed);
   if pRule == RuleSmooth { return p; }
-  mut cs = List[f32].withCapacity(sharp.len());
-  mut i = 0usize;
+  var cs = List[f32].withCapacity(sharp.len());
+  var i = 0usize;
   while i < sharp.len() {
     cs.push(childSharpness(*sharp[i]));
     i = i + 1usize;
   }
-  imm cvs = childSharpness(vs);
-  imm cRule = ruleOf(cvs, &cs);
+  let cvs = childSharpness(vs);
+  let cRule = ruleOf(cvs, &cs);
   if cRule == pRule { return p; }
-  imm c = applyRule(cRule, own, ends, faces, &cs, closed);
+  let c = applyRule(cRule, own, ends, faces, &cs, closed);
   // The fractional weight: the mean sharpness of what wears out, at most 1
-  mut sum f32 = 0.;
-  mut count = 0u32;
+  var sum f32 = 0.;
+  var count = 0u32;
   if vs > 0. and cvs <= 0. {
     sum = vs;
     count = 1u32;
@@ -223,15 +223,15 @@ fn fanPoint(own Vec3, ends &List[Vec3], faces &List[Vec3], sharp &List[f32], vs 
     i = i + 1usize;
   }
   if count == 0u32 { return c; }
-  mut w = sum / f32.from(count);
+  var w = sum / f32.from(count);
   if w > 1. { w = 1.; }
   p * w + c * (1. - w);
 }
 
 // An edge point from its ends a and b and its faces' face points
 fn edgeValue(a Vec3, b Vec3, fa Vec3, fb Vec3, s f32, sharpEdge bool) Vec3 {
-  imm mid = (a + b) * 0.5;
+  let mid = (a + b) * 0.5;
   if sharpEdge or s >= 1. { return mid; }
-  imm smooth = (a + b + fa + fb) * 0.25;
+  let smooth = (a + b + fa + fb) * 0.25;
   if s <= 0. {smooth;} else {smooth * (1. - s) + mid * s;};
 }

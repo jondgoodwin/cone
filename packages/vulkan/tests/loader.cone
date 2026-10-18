@@ -22,9 +22,9 @@ import testing use *;
 import libc;
 import vulkan;
 
-mut @threadlocal asked = 0;
-mut @threadlocal badNames = 0;
-mut @threadlocal noDebugUtils = false;
+var @threadlocal asked = 0;
+var @threadlocal badNames = 0;
+var @threadlocal noDebugUtils = false;
 
 fn count(name *u8) {
   asked = asked + 1;
@@ -53,42 +53,42 @@ fn @c findEverything(instance vulkan.Instance, name *u8) *u8 {
 }
 
 fn main() i32 {
-  imm nothing = vulkan.GlobalFns.find(&findNothing);
+  let nothing = vulkan.GlobalFns.find(&findNothing);
   expectInt(i64.from(nothing.missing), 4, "all four global functions missing");
   expectInt(i64.from(asked), 4, "each global function asked for once");
 
   asked = 0;
-  imm everything = vulkan.GlobalFns.find(&findEverything);
+  let everything = vulkan.GlobalFns.find(&findEverything);
   expectInt(i64.from(everything.missing), 0, "no global function missing");
   expectInt(i64.from(asked), 4, "the global functions asked for once again");
 
   // No loader at all: a null vkGetInstanceProcAddr finds nothing and fails nothing
   asked = 0;
-  imm absent = vulkan.GlobalFns.find(0usize as *u8 as vulkan.PFN_GetInstanceProcAddr);
+  let absent = vulkan.GlobalFns.find(0usize as *u8 as vulkan.PFN_GetInstanceProcAddr);
   expectInt(i64.from(absent.missing), 0, "no loader: nothing counted missing");
   expectInt(i64.from(asked), 0, "and nothing asked");
 
-  imm instance = 0x1000usize as vulkan.Instance;
+  let instance = 0x1000usize as vulkan.Instance;
   asked = 0;
-  imm instanceFns = vulkan.InstanceFns.loadWith(&findEverything, instance);
+  let instanceFns = vulkan.InstanceFns.loadWith(&findEverything, instance);
   expectInt(i64.from(instanceFns.missing), 0, "every instance function found");
   expectInt(i64.from(asked), 17, "each instance function asked for once");
   expectBool(instanceFns.hasDebugUtils(), true, "the debug messenger's functions found");
 
-  imm device = 0x2000usize as vulkan.Device;
+  let device = 0x2000usize as vulkan.Device;
   asked = 0;
-  imm deviceFns = vulkan.DeviceFns.load(&instanceFns, device);
+  let deviceFns = vulkan.DeviceFns.load(&instanceFns, device);
   expectInt(i64.from(deviceFns.missing), 0, "every device function found");
   expectInt(i64.from(asked), 78, "each device function asked for once");
 
   // Another instance has a table of its own
-  imm lost = vulkan.InstanceFns.loadWith(&findNothing, instance);
+  let lost = vulkan.InstanceFns.loadWith(&findNothing, instance);
   expectInt(i64.from(lost.missing), 15, "an instance finding nothing: its 15 required functions missing");
   expectBool(lost.hasDebugUtils(), false, "and no debug messenger");
   expectBool(instanceFns.hasDebugUtils(), true, "the first instance's table is its own");
 
   noDebugUtils = true;
-  imm plain = vulkan.InstanceFns.loadWith(&findEverything, instance);
+  let plain = vulkan.InstanceFns.loadWith(&findEverything, instance);
   expectInt(i64.from(plain.missing), 0, "debug utils are optional, and not counted as missing");
   expectBool(plain.hasDebugUtils(), false, "without debug utils");
 

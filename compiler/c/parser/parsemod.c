@@ -725,8 +725,8 @@ INode *parseFnOrVar(ParseState *parse, uint16_t flags) {
         return (INode*)node;
     }
 
-    // A global variable declaration, if it begins with a permission
-    else if lexIsToken(PermToken) {
+    // A global variable declaration, if it begins with 'let' or 'var'
+    else if lexIsDclStart() {
         // A module's global may carry a fold clause: it is the one-instance
         // analogue of a field, so 'config Config use *' admits Config's members
         // as names of this module, reached through 'config'. An 'extern' global
@@ -904,7 +904,7 @@ static ModTraitNode *parseModTrait(ParseState *parse, uint16_t pubflag) {
             else if (fn->namesym)
                 modTraitAddMember(trait, (INode*)fn);
         }
-        else if (lexIsToken(PermToken)) {
+        else if (lexIsDclStart()) {
             VarDclNode *var = parseVarDcl(parse, immPerm, ParseMayImpl | ParseMaySig);
             var->flags |= memberpub;
             var->flowtempflags |= VarInitialized;   // A global always holds a valid value
@@ -1343,7 +1343,7 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod, int atmodstart) {
         // global like any other; the flag is recorded for the generic module
         // that will make the distinction real.
         uint16_t staticflag = parseStatic();
-        if (staticflag && !lexIsToken(PermToken) && !lexIsToken(FnToken))
+        if (staticflag && !lexIsDclStart() && !lexIsToken(FnToken))
             parseBadStatic(staticflag);
         switch (lex->toktype) {
 
@@ -1494,7 +1494,7 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod, int atmodstart) {
                     char *itemat = lex->tokp;
                     uint16_t itemflag = extflag | parsePub();
                     char *itemkw = lex->tokp;
-                    if (lexIsToken(FnToken) || lexIsToken(PermToken)) {
+                    if (lexIsToken(FnToken) || lexIsDclStart()) {
                         INode *item = parseFnOrVar(parse, itemflag);
                         if (item)
                             parseSpan(parse, &items, item, itemat, itemkw, SpanDcl);
@@ -1524,6 +1524,8 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod, int atmodstart) {
             spankind = SpanOther;
             break;
         case PermToken:
+        case LetToken:
+        case VarToken:
             made = parseFnOrVar(parse, pubflag | staticflag);
             break;
 
@@ -1540,14 +1542,14 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod, int atmodstart) {
         // its permission
         case ThreadLocalToken:
             errorMsgLex(ErrorThreadLocalPlace,
-                "'@threadlocal' is written after the global's permission: 'mut @threadlocal name'.");
+                "'@threadlocal' is written after the global's 'let' or 'var': 'var @threadlocal name'.");
             lexNextToken();
             parseSkipToNextStmt();
             spankind = SpanOther;
             break;
         case WorkgroupToken:
             errorMsgLex(ErrorWorkgroupPlace,
-                "'@workgroup' is written after the global's permission: 'mut @workgroup name'.");
+                "'@workgroup' is written after the global's 'let' or 'var': 'var @workgroup name'.");
             lexNextToken();
             parseSkipToNextStmt();
             spankind = SpanOther;

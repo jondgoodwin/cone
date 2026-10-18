@@ -172,7 +172,7 @@ def spirv_block(text: str):
 
 def block_text(words: list[int], digest: str, nl: str) -> str:
     lines = [f"// Written by tests/kernels.py from the kernels above (sha256 {digest}): do not edit.",
-             f"imm {NAME} Array[u32, {len(words)}] = ["]
+             f"let {NAME} Array[u32, {len(words)}] = ["]
     for i in range(0, len(words), 6):
         lines.append("  " + ", ".join(f"0x{w:08x}u32" for w in words[i:i + 6])
                      + ("," if i + 6 < len(words) else ""))

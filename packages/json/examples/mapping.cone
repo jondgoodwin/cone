@@ -28,58 +28,58 @@ struct Person {
 
 // "address: the member "zip" is missing"
 fn within(path &str, e &json.JsonError) json.JsonError {
-  mut m = String.from(path);
+  var m = String.from(path);
   m.append(": ");
   m.append(e.reason.view());
   json.JsonError.shape(m.view());
 }
 
 fn addressFrom(j &json.Json) Result[Address, json.JsonError] {
-  mut street = String.empty();
-  mut zip = String.empty();
+  var street = String.empty();
+  var zip = String.empty();
   match j.requireText("street") {
-    case mut s Ok { street <=> s; }
-    case imm e Error { return Error[Address, json.JsonError](e.copy()); }
+    case var s Ok { street <=> s; }
+    case let e Error { return Error[Address, json.JsonError](e.copy()); }
   }
   match j.requireText("zip") {
-    case mut z Ok { zip <=> z; }
-    case imm e Error { return Error[Address, json.JsonError](e.copy()); }
+    case var z Ok { zip <=> z; }
+    case let e Error { return Error[Address, json.JsonError](e.copy()); }
   }
   Ok[Address, json.JsonError](new Address(street, zip));
 }
 
 fn personFrom(j &json.Json) Result[Person, json.JsonError] {
-  mut name = String.empty();
+  var name = String.empty();
   match j.requireText("name") {
-    case mut n Ok { name <=> n; }
-    case imm e Error { return Error[Person, json.JsonError](e.copy()); }
+    case var n Ok { name <=> n; }
+    case let e Error { return Error[Person, json.JsonError](e.copy()); }
   }
-  mut age = 0i64;
+  var age = 0i64;
   match j.requireI64("age") {
-    case imm n Ok { age = n; }
-    case imm e Error { return Error[Person, json.JsonError](e.copy()); }
+    case let n Ok { age = n; }
+    case let e Error { return Error[Person, json.JsonError](e.copy()); }
   }
   // May be missing, or null: no email
-  mut email Option[String] = None;
+  var email Option[String] = None;
   match j.getText("email") {
-    case imm s Some { email = Some[String](String.from(s)); }
+    case let s Some { email = Some[String](String.from(s)); }
     case is None { }
   }
   // May be missing; if there, an array of strings
-  mut tags = List[String].empty();
+  var tags = List[String].empty();
   match j.get("tags") {
-    case imm t Some {
+    case let t Some {
       if not t.isArray() {
         return Error[Person, json.JsonError](json.JsonError.shape("the member \"tags\" is not an array"));
       }
-      mut i = 0usize;
+      var i = 0usize;
       while i < t.len() {
         match t.at(i) {
-          case imm v Some {
+          case let v Some {
             match v.asText() {
-              case imm s Some { tags.push(String.from(s)); }
+              case let s Some { tags.push(String.from(s)); }
               case is None {
-                mut m = String.from("tags[");
+                var m = String.from("tags[");
                 m.appendUInt(u64.from(i));
                 m.append("] is not a string");
                 return Error[Person, json.JsonError](json.JsonError.shape(m.view()));
@@ -93,30 +93,30 @@ fn personFrom(j &json.Json) Result[Person, json.JsonError] {
     }
     case is None { }
   }
-  mut address = new Address(String.empty(), String.empty());
+  var address = new Address(String.empty(), String.empty());
   match j.require("address") {
-    case imm a Ok {
+    case let a Ok {
       match addressFrom(a) {
-        case mut ok Ok { address <=> ok; }
-        case imm e Error { return Error[Person, json.JsonError](within("address", &e)); }
+        case var ok Ok { address <=> ok; }
+        case let e Error { return Error[Person, json.JsonError](within("address", &e)); }
       }
     }
-    case imm e Error { return Error[Person, json.JsonError](e.copy()); }
+    case let e Error { return Error[Person, json.JsonError](e.copy()); }
   }
   Ok[Person, json.JsonError](new Person(name, age, email, tags, address));
 }
 
 fn personJson(p &Person) json.Json {
-  mut address = json.Json.newObject();
+  var address = json.Json.newObject();
   address.set("street", json.Json.fromText(p.address.street.view()));
   address.set("zip", json.Json.fromText(p.address.zip.view()));
-  mut tags = json.Json.newArray();
+  var tags = json.Json.newArray();
   each t in p.tags { tags.push(json.Json.fromText(t.view())); }
-  mut o = json.Json.newObject();
+  var o = json.Json.newObject();
   o.set("name", json.Json.fromText(p.name.view()));
   o.set("age", json.Json.fromI64(p.age));
   match &p.email {
-    case imm e Some { o.set("email", json.Json.fromText(e.view())); }
+    case let e Some { o.set("email", json.Json.fromText(e.view())); }
     case is None { }
   }
   o.set("tags", tags);
@@ -126,9 +126,9 @@ fn personJson(p &Person) json.Json {
 
 fn show(text &str) {
   match json.parse(text) {
-    case imm doc Ok {
+    case let doc Ok {
       match personFrom(&doc) {
-        case imm p Ok {
+        case let p Ok {
           printStr(p.name.view());
           printStr(" is ");
           printInt(p.age);
@@ -138,19 +138,19 @@ fn show(text &str) {
           printInt(i64.from(p.tags.len()));
           printStr(" tags\n");
           match personJson(&p).toText() {
-            case imm t Ok { printStr(t.view()); printStr("\n"); }
+            case let t Ok { printStr(t.view()); printStr("\n"); }
             case is Error { printStr("cannot write\n"); }
           }
         }
-        case imm e Error {
-          imm m = e.message();
+        case let e Error {
+          let m = e.message();
           printStr(m.view());
           printStr("\n");
         }
       }
     }
-    case imm e Error {
-      imm m = e.message();
+    case let e Error {
+      let m = e.message();
       printStr(m.view());
       printStr("\n");
     }

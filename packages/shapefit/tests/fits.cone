@@ -12,11 +12,11 @@ import mesh use *;
 import shapefit use *;
 
 fn volume(m &PolyMesh) f32 {
-  mut sum f32 = 0.;
-  mut f = 0usize;
+  var sum f32 = 0.;
+  var f = 0usize;
   while f < m.faceCount() {
-    imm pts = m.facePositions(u32.from(f));
-    mut i = 1usize;
+    let pts = m.facePositions(u32.from(f));
+    var i = 1usize;
     while i + 1usize < pts.len() {
       sum = sum + pts[0usize].dot(pts[i].cross(*pts[i + 1usize]));
       i = i + 1usize;
@@ -28,14 +28,14 @@ fn volume(m &PolyMesh) f32 {
 
 // A small deterministic wobble, from the vertex number
 fn wobble(i usize, amount f32) f32 {
-  imm h = (u32.from(i) * 2654435761u32) >> 8u32;
+  let h = (u32.from(i) * 2654435761u32) >> 8u32;
   amount * (f32.from(h & 1023u32) / 511.5 - 1.);
 }
 
 fn main() i32 {
-  imm none = List[f32].empty();
+  let none = List[f32].empty();
   // The shapes face outward
-  imm sph = sphereMesh(1., 12usize, 16usize);
+  let sph = sphereMesh(1., 12usize, 16usize);
   expect(volume(&sph) > 3.5 and volume(&sph) < 4.2, "sphere mesh faces out");
   expectInt(i64.from(sph.validate().len()), 0, "sphere mesh is valid");
   expect(volume(&cylinderMesh(1., 2., 2usize, 16usize)) > 5., "cylinder mesh faces out");
@@ -44,10 +44,10 @@ fn main() i32 {
   expectInt(i64.from(cylinderMesh(1., 2., 2usize, 16usize).validate().len()), 0, "cylinder mesh is valid");
 
   // A sphere of radius 2 at (1, -2, 3)
-  mut s = sphereMesh(2., 12usize, 16usize);
+  var s = sphereMesh(2., 12usize, 16usize);
   movePoints(&mut s, p => p + new Vec3(1., -2., 3.));
-  imm sp = gather(&s, allVertices(&s).view());
-  imm fs = fitSphere(sp.view(), none.view());
+  let sp = gather(&s, allVertices(&s).view());
+  let fs = fitSphere(sp.view(), none.view());
   expect(fs.ok, "sphere fit ok");
   expectFloat(fs.param(0usize), 1., 0.00001, "sphere cx");
   expectFloat(fs.param(1usize), -2., 0.00001, "sphere cy");
@@ -58,27 +58,27 @@ fn main() i32 {
   expectFloat(f64.from(formDistance(&fs, new Vec3(1., -2., 4.))), -1.d, 0.00001, "inside the sphere by 1");
 
   // The same with noise: the radius is found to within the noise, the rms is the noise
-  mut sn = sphereMesh(2., 12usize, 16usize);
-  mut k = 0usize;
+  var sn = sphereMesh(2., 12usize, 16usize);
+  var k = 0usize;
   while k < sn.positions.len() {
-    imm p = *sn.positions[k];
-    imm n = p.normalize();
+    let p = *sn.positions[k];
+    let n = p.normalize();
     sn.positions.set(k, p + n * wobble(k, 0.02) + new Vec3(1., -2., 3.));
     k += 1usize;
   }
-  imm snp = gather(&sn, allVertices(&sn).view());
-  imm fsn = fitSphere(snp.view(), none.view());
+  let snp = gather(&sn, allVertices(&sn).view());
+  let fsn = fitSphere(snp.view(), none.view());
   expectFloat(fsn.param(3usize), 2., 0.01, "noisy sphere r");
   expect(fsn.rms > 0.003d and fsn.rms < 0.0125d, "noisy sphere rms is about the noise");
   expect(fsn.maxAbs <= 0.0215d and fsn.maxAbs > fsn.rms, "noisy sphere max residual");
 
   // A plane z = 0.5 x + 0.25 y + 1 (a flat grid tilted)
-  imm tilt = gridMesh(8usize, 4., (x, z) => 0.5 * x + 0.25 * z + 1.);
-  imm tp = gather(&tilt, allVertices(&tilt).view());
-  imm fp = fitPlane(tp.view(), none.view());
+  let tilt = gridMesh(8usize, 4., (x, z) => 0.5 * x + 0.25 * z + 1.);
+  let tp = gather(&tilt, allVertices(&tilt).view());
+  let fp = fitPlane(tp.view(), none.view());
   expect(fp.ok, "plane fit ok");
   expectFloat(fp.rms, 0.d, 0.00001, "plane rms");
-  imm up = orientPlane(&fp, new Vec3(0., 1., 0.));
+  let up = orientPlane(&fp, new Vec3(0., 1., 0.));
   // y = 0.5x + 0.25z + 1: normal (-0.5, 1, -0.25) / 1.1456439
   expectFloat(up.param(3usize), -0.4364358, 0.00001, "plane nx");
   expectFloat(up.param(4usize), 0.8728716, 0.00001, "plane ny");
@@ -86,10 +86,10 @@ fn main() i32 {
   expectFloat(f64.from(formDistance(&up, new Vec3(0., 3., 0.))), 2.d * 0.8728716d, 0.00001, "above the plane");
 
   // An axis-aligned ellipsoid (3, 1, 2) at (0.5, 0, -1)
-  mut e = sphereMesh(1., 14usize, 20usize);
+  var e = sphereMesh(1., 14usize, 20usize);
   movePoints(&mut e, p => new Vec3(3. * p.x + 0.5, p.y, 2. * p.z - 1.));
-  imm ep = gather(&e, allVertices(&e).view());
-  imm fe = fitEllipsoidAxis(ep.view(), none.view());
+  let ep = gather(&e, allVertices(&e).view());
+  let fe = fitEllipsoidAxis(ep.view(), none.view());
   expectFloat(fe.rms, 0.d, 0.0001, "axis ellipsoid rms");
   expectFloat(fe.param(0usize), 0.5, 0.0001, "axis ellipsoid cx");
   expectFloat(fe.param(2usize), -1., 0.0001, "axis ellipsoid cz");
@@ -100,14 +100,14 @@ fn main() i32 {
   expectFloat(f64.from(formDistance(&fe, new Vec3(0.5, 0., -1.))), -1.d, 0.0001, "the centre is a radius inside");
 
   // The same turned 35 degrees about (1, 1, 0) and moved: the general fit finds the axes
-  imm rot = Mat3.fromQuat(Quat.angleAxis(radians(35.), new Vec3(1., 1., 0.).normalize()));
-  mut g = sphereMesh(1., 14usize, 20usize);
+  let rot = Mat3.fromQuat(Quat.angleAxis(radians(35.), new Vec3(1., 1., 0.).normalize()));
+  var g = sphereMesh(1., 14usize, 20usize);
   movePoints(&mut g, p => rot * new Vec3(4. * p.x, 1.5 * p.y, 2. * p.z) + new Vec3(-1., 2., 0.5));
-  imm gp = gather(&g, allVertices(&g).view());
-  imm fg = fitEllipsoid(gp.view(), none.view());
+  let gp = gather(&g, allVertices(&g).view());
+  let fg = fitEllipsoid(gp.view(), none.view());
   expectFloat(fg.rms, 0.d, 0.0002, "rotated ellipsoid rms");
   // the semi-axes are 4, 1.5, 2 in some order; the largest 4
-  mut big = fg.param(3usize);
+  var big = fg.param(3usize);
   if fg.param(4usize) > big { big = fg.param(4usize); }
   if fg.param(5usize) > big { big = fg.param(5usize); }
   expectFloat(big, 4., 0.001, "rotated ellipsoid longest semi-axis");
@@ -115,33 +115,33 @@ fn main() i32 {
   expectFloat(fg.param(1usize), 2., 0.001, "rotated ellipsoid cy");
   expectFloat(fg.param(2usize), 0.5, 0.001, "rotated ellipsoid cz");
   // the axis fit cannot do it as well
-  imm fga = fitEllipsoidAxis(gp.view(), none.view());
+  let fga = fitEllipsoidAxis(gp.view(), none.view());
   expect(fga.rms > 0.05d, "an axis-aligned ellipsoid fits the rotated one worse");
   // the general quadric agrees: a point 0.5 outside the ellipsoid along its long axis
-  imm longest = if fg.param(3usize) >= fg.param(4usize) and fg.param(3usize) >= fg.param(5usize) { 0usize; }
+  let longest = if fg.param(3usize) >= fg.param(4usize) and fg.param(3usize) >= fg.param(5usize) { 0usize; }
     elif fg.param(4usize) >= fg.param(5usize) { 1usize; } else { 2usize; };
-  imm ax = ellipsoidAxis(&fg, longest);
-  imm out = new Vec3(-1., 2., 0.5) + ax * 4.5;
+  let ax = ellipsoidAxis(&fg, longest);
+  let out = new Vec3(-1., 2., 0.5) + ax * 4.5;
   expectFloat(f64.from(formDistance(&fg, out)), 0.5d, 0.001, "outside the rotated ellipsoid by 0.5");
-  imm fq = fitQuadric(gp.view(), none.view());
+  let fq = fitQuadric(gp.view(), none.view());
   expectFloat(fq.rms, 0.d, 0.003, "quadric on the rotated ellipsoid");
   expectStr(quadricKind(&fq, 0.0001d), "ellipsoid", "the quadric is an ellipsoid");
   expectFloat(f64.from(formDistance(&fq, out)), 0.5d, 0.01, "outside the quadric by 0.5");
 
   // A cylinder of radius 0.7 and height 3 along (0, 1, 1)
-  imm cdir = new Vec3(0., 1., 1.).normalize();
-  imm crot = Mat3.fromQuat(Quat.angleAxis(radians(45.), new Vec3(1., 0., 0.)));
-  mut c = cylinderMesh(0.7, 3., 6usize, 24usize);
+  let cdir = new Vec3(0., 1., 1.).normalize();
+  let crot = Mat3.fromQuat(Quat.angleAxis(radians(45.), new Vec3(1., 0., 0.)));
+  var c = cylinderMesh(0.7, 3., 6usize, 24usize);
   movePoints(&mut c, p => crot * p + new Vec3(2., 0., 1.));
   // keep the side only: a cylinder fit is of the side
-  mut side = List[u32].empty();
+  var side = List[u32].empty();
   k = 0usize;
   while k < c.positions.len() {
     side.push(u32.from(k));
     k += 1usize;
   }
-  imm cp = gather(&c, side.view());
-  imm fc = fitCylinder(cp.view(), none.view());
+  let cp = gather(&c, side.view());
+  let fc = fitCylinder(cp.view(), none.view());
   expect(fc.ok, "cylinder fit ok");
   expectFloat(fc.rms, 0.d, 0.0005, "cylinder rms");
   expectFloat(fc.param(6usize), 0.7, 0.0005, "cylinder radius");
@@ -149,10 +149,10 @@ fn main() i32 {
   expectFloat(fc.param(8usize) - fc.param(7usize), 3., 0.0005, "cylinder length");
 
   // A capsule: radius 0.6, axis length 2, along (1, 0, 0)
-  mut cap = capsuleMesh(0.6, 2., 4usize, 8usize, 24usize);
+  var cap = capsuleMesh(0.6, 2., 4usize, 8usize, 24usize);
   movePoints(&mut cap, p => new Vec3(p.y, p.x, p.z) + new Vec3(0., 1., 0.));
-  imm kp = gather(&cap, allVertices(&cap).view());
-  imm fk = fitCapsule(kp.view(), none.view());
+  let kp = gather(&cap, allVertices(&cap).view());
+  let fk = fitCapsule(kp.view(), none.view());
   expect(fk.ok, "capsule fit ok");
   expectFloat(fk.rms, 0.d, 0.0005, "capsule rms");
   expectFloat(fk.param(6usize), 0.6, 0.0005, "capsule radius");
@@ -162,26 +162,26 @@ fn main() i32 {
   expect(fitCylinder(kp.view(), none.view()).rms > fk.rms + 0.01d, "a capsule fits a capsule better than a cylinder does");
 
   // Weights: a sphere with a bump of wrong points; weight zero on the bump finds the sphere
-  mut b = sphereMesh(1., 12usize, 16usize);
-  mut wts = List[f32].empty();
+  var b = sphereMesh(1., 12usize, 16usize);
+  var wts = List[f32].empty();
   k = 0usize;
   while k < b.positions.len() {
-    imm p = *b.positions[k];
+    let p = *b.positions[k];
     if p.y > 0.6 {
       b.positions.set(k, p * 1.5);
       wts.push(0.);
     } else { wts.push(1.); }
     k += 1usize;
   }
-  imm bp = gather(&b, allVertices(&b).view());
-  imm fall = fitSphere(bp.view(), none.view());
-  imm fw = fitSphere(bp.view(), wts.view());
+  let bp = gather(&b, allVertices(&b).view());
+  let fall = fitSphere(bp.view(), none.view());
+  let fw = fitSphere(bp.view(), wts.view());
   expectFloat(fw.param(3usize), 1., 0.0001, "weighted sphere r");
   expectFloat(fw.rms, 0.d, 0.0001, "weighted sphere rms");
   expect(fall.rms > 0.05d, "unweighted sphere fit is pulled by the bump");
 
   // Too few points fail without a crash
-  mut few = List[Vec3].empty();
+  var few = List[Vec3].empty();
   few.push(new Vec3(0., 0., 0.));
   expect(not fitSphere(few.view(), none.view()).ok, "one point does not make a sphere");
   done();

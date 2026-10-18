@@ -21,8 +21,8 @@ import geomath use *;
 import worldinteract use *;
 
 fn count(evs &List[Event], kind u32) i64 {
-  mut n = 0i64;
-  mut i = 0usize;
+  var n = 0i64;
+  var i = 0usize;
   while i < evs.len() {
     if (*evs[i]).kind == kind { n = n + 1i64; }
     i = i + 1usize;
@@ -31,7 +31,7 @@ fn count(evs &List[Event], kind u32) i64 {
 }
 
 fn at(evs &List[Event], kind u32) i64 {
-  mut i = 0usize;
+  var i = 0usize;
   while i < evs.len() {
     if (*evs[i]).kind == kind { return i64.from(i); }
     i = i + 1usize;
@@ -40,10 +40,10 @@ fn at(evs &List[Event], kind u32) i64 {
 }
 
 fn main() i32 {
-  mut w = World.make();
-  imm player = w.create(CLASS_CHARACTER);
+  var w = World.make();
+  let player = w.create(CLASS_CHARACTER);
   w.setPosition(player, new Vec3(0., 0., -2.));          // faces +z, toward the door
-  imm door = w.create(CLASS_DOOR);
+  let door = w.create(CLASS_DOOR);
   w.addDoor(door, Door.hinged(door, new Vec3(0., 0., 0.), new Vec3(0., 1., 0.), pi / 2., 1.));
   w.setDoorLocked(door, false);
   w.addInteractable(door, 3., 0.5, false, new Vec3(0., 0., -1.), VERB_USE);
@@ -55,35 +55,35 @@ fn main() i32 {
   expectFloat(f64.from(w.doorOpenness(door, 0.5)), 0.5, 0.00001, "openness at 0.5 s");
   expectFloat(f64.from(w.doorOpenness(door, 1.)), 1., 0.00001, "open at 1 s");
   expectFloat(f64.from(w.doorOpenness(door, 5.)), 1., 0.00001, "and stays open");
-  imm turned = w.doorPose(door, 0.5).rotation * new Vec3(1., 0., 0.);
+  let turned = w.doorPose(door, 0.5).rotation * new Vec3(1., 0., 0.);
   expectFloat(f64.from(turned.x), 0.70711, 0.0001, "at 0.5 s the door has turned 45 degrees: x");
   expectFloat(f64.from(turned.z), -0.70711, 0.0001, "and z");
-  imm full = w.doorPose(door, 1.).rotation * new Vec3(1., 0., 0.);
+  let full = w.doorPose(door, 1.).rotation * new Vec3(1., 0., 0.);
   expectFloat(f64.from(full.z), -1., 0.0001, "fully open is 90 degrees");
 
   // stepping: the events and their order
-  mut evs = w.takeEvents();
+  var evs = w.takeEvents();
   expectInt(count(&evs, EV_USED), 1i64, "one EV_USED");
   expect(at(&evs, EV_USED) < at(&evs, EV_DOOR_OPENING), "used before opening");
   w.step(0.25);
   w.step(0.25);
   expectInt(count(&w.log, EV_PASSABILITY), 0i64, "not passable at 0.5 s");
   w.step(0.25);
-  mut e2 = w.takeEvents();
+  var e2 = w.takeEvents();
   expectInt(count(&e2, EV_PASSABILITY), 1i64, "passability event with the third step");
   expectFloat(f64.from((*e2[usize.from(at(&e2, EV_PASSABILITY))]).value.num), 1., 0.00001, "it says passable");
   w.step(0.25);
-  mut e3 = w.takeEvents();
+  var e3 = w.takeEvents();
   expectInt(count(&e3, EV_DOOR_OPENED), 1i64, "opened with the fourth step");
   expect(w.doorPassable(door), "passable");
 
   // reversing half way: from the pose it had
   expect(w.activate(player, door), "use again closes it");
   w.takeEvents();
-  mut w2 = World.make();
-  imm p2 = w2.create(CLASS_CHARACTER);
+  var w2 = World.make();
+  let p2 = w2.create(CLASS_CHARACTER);
   w2.setPosition(p2, new Vec3(0., 0., -2.));
-  imm d2 = w2.create(CLASS_DOOR);
+  let d2 = w2.create(CLASS_DOOR);
   w2.addDoor(d2, Door.hinged(d2, new Vec3(0., 0., 0.), new Vec3(0., 1., 0.), pi / 2., 1.));
   w2.setDoorLocked(d2, false);
   w2.addInteractable(d2, 3., 0.5, false, new Vec3(0., 0., -1.), VERB_USE);
@@ -95,26 +95,26 @@ fn main() i32 {
   expectFloat(f64.from(w2.doorOpenness(d2, 1.5)), 0., 0.00001, "closed again");
 
   // too far, or turned away: refused
-  mut w3 = World.make();
-  imm p3 = w3.create(CLASS_CHARACTER);
-  imm d3 = w3.create(CLASS_DOOR);
+  var w3 = World.make();
+  let p3 = w3.create(CLASS_CHARACTER);
+  let d3 = w3.create(CLASS_DOOR);
   w3.addDoor(d3, Door.hinged(d3, new Vec3(0., 0., 0.), new Vec3(0., 1., 0.), pi / 2., 1.));
   w3.setDoorLocked(d3, false);
   w3.addInteractable(d3, 3., 0.5, false, new Vec3(0., 0., -1.), VERB_USE);
   w3.setPosition(p3, new Vec3(0., 0., -10.));
   expect(not w3.activate(p3, d3), "too far is refused");
-  mut ev3 = w3.takeEvents();
+  var ev3 = w3.takeEvents();
   expectFloat(f64.from((*ev3[0]).value.num), f64.from(DENY_RANGE), 0.0001, "the reason is range");
   w3.setPosition(p3, new Vec3(0., 0., -2.));
   w3.setTransform(p3, new Transform3(new Vec3(0., 0., -2.), Quat.angleAxis(pi, new Vec3(0., 1., 0.)), new Vec3(1., 1., 1.)));
   expect(not w3.activate(p3, d3), "facing away is refused");
-  mut ev4 = w3.takeEvents();
+  var ev4 = w3.takeEvents();
   expectFloat(f64.from((*ev4[0]).value.num), f64.from(DENY_FACING), 0.0001, "the reason is facing");
 
   // needFront: on the back side of a door that wants its front
-  mut w5 = World.make();
-  imm p5 = w5.create(CLASS_CHARACTER);
-  imm d5 = w5.create(CLASS_DOOR);
+  var w5 = World.make();
+  let p5 = w5.create(CLASS_CHARACTER);
+  let d5 = w5.create(CLASS_DOOR);
   w5.addDoor(d5, Door.sliding(d5, new Vec3(2., 0., 0.), 2.));
   w5.setDoorLocked(d5, false);
   w5.addInteractable(d5, 3., -1., true, new Vec3(0., 0., -1.), VERB_USE);
@@ -126,20 +126,20 @@ fn main() i32 {
   expectFloat(f64.from(w5.doorPose(d5, 1.).translation.x), 1., 0.00001, "and moved 1 m");
 
   // auto close
-  mut w6 = World.make();
-  imm p6 = w6.create(CLASS_CHARACTER);
+  var w6 = World.make();
+  let p6 = w6.create(CLASS_CHARACTER);
   w6.setPosition(p6, new Vec3(0., 0., -2.));
-  imm d6 = w6.create(CLASS_DOOR);
+  let d6 = w6.create(CLASS_DOOR);
   w6.addDoor(d6, Door.sliding(d6, new Vec3(2., 0., 0.), 1.));
   w6.setDoorLocked(d6, false);
   w6.setDoorAutoClose(d6, 2.);
   w6.addInteractable(d6, 3., 0.5, false, new Vec3(0., 0., -1.), VERB_USE);
   w6.activate(p6, d6);
-  mut t = 0;
-  mut closedAt = -1.;
+  var t = 0;
+  var closedAt = -1.;
   while t < 24 {
     w6.step(0.25);
-    mut ev = w6.takeEvents();
+    var ev = w6.takeEvents();
     if count(&ev, EV_DOOR_CLOSING) > 0i64 and closedAt < 0. { closedAt = w6.now; }
     t = t + 1;
   }

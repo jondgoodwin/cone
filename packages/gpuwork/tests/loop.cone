@@ -75,18 +75,18 @@ struct ThreadEntry {
 }
 
 fn handleCount() u32 {
-  mut n = 0u32;
+  var n = 0u32;
   GetProcessHandleCount(GetCurrentProcess(), &mut n as *u32);
   n;
 }
 
 // Whether this process has a thread whose id is 'id'
 fn hasThread(id u32) bool {
-  imm snap = CreateToolhelp32Snapshot(4u32, 0u32);    // TH32CS_SNAPTHREAD
-  imm me = GetCurrentProcessId();
-  mut e = new ThreadEntry(28u32, 0u32, 0u32, 0u32, 0i32, 0i32, 0u32);
-  mut found = false;
-  mut more = Thread32First(snap, &mut e as *ThreadEntry) != 0i32;
+  let snap = CreateToolhelp32Snapshot(4u32, 0u32);    // TH32CS_SNAPTHREAD
+  let me = GetCurrentProcessId();
+  var e = new ThreadEntry(28u32, 0u32, 0u32, 0u32, 0i32, 0i32, 0u32);
+  var found = false;
+  var more = Thread32First(snap, &mut e as *ThreadEntry) != 0i32;
   while more {
     if e.owner == me and e.thread == id { found = true; }
     e.size = 28u32;
@@ -97,14 +97,14 @@ fn hasThread(id u32) bool {
 }
 
 fn preference() u32 {
-  imm env = libc.getenv("GPU_POWER_PREFERENCE");
+  let env = libc.getenv("GPU_POWER_PREFERENCE");
   if (env as usize) != 0usize and libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 { return POWER_PREFERENCE_LOW_POWER; }
   POWER_PREFERENCE_HIGH_PERFORMANCE;
 }
 
 // Poll the loop until it holds 'n' answers, for at most 5 seconds
 fn waitIo(lp &mut iocore.Loop, out &mut List[iocore.Completion], n usize) {
-  imm limit = Instant.now() + Duration.fromSeconds(5i64);
+  let limit = Instant.now() + Duration.fromSeconds(5i64);
   while out.len() < n and Instant.now() < limit {
     lp.poll(limit, out);
   }
@@ -112,8 +112,8 @@ fn waitIo(lp &mut iocore.Loop, out &mut List[iocore.Completion], n usize) {
 
 // How many of 'got' differ from 'want' (a missing word differs)
 fn differences(got &List[u32], want &List[u32]) u64 {
-  mut n = 0u64;
-  mut i = 0usize;
+  var n = 0u64;
+  var i = 0usize;
   while i < want.len() {
     if i >= got.len() or *got[i] != *want[i] { n = n + 1u64; }
     i = i + 1usize;
@@ -124,9 +124,9 @@ fn differences(got &List[u32], want &List[u32]) u64 {
 // A scramble job over 'words': its input, its output, and the output read
 // back (slots 0, 1, 2)
 fn scrambleJob(device &mut Device, kernel &Kernel, words &Array[u32]) Job {
-  mut job = Job.make(device);
-  imm input = job.give(upload(device, words));
-  imm output = job.give(zeroed(device, words.len));
+  var job = Job.make(device);
+  let input = job.give(upload(device, words));
+  let output = job.give(zeroed(device, words.len));
   job.dispatch(device, kernel, &[input, output], 1u32);
   job.readback(device, output);
   job;
@@ -134,43 +134,43 @@ fn scrambleJob(device &mut Device, kernel &Kernel, words &Array[u32]) Job {
 
 // Submit a scramble job over 'words' to 'to'
 fn submitScramble(works &mut Works, device &mut Device, kernel &Kernel, words &Array[u32], to Target) Ticket {
-  imm job = scrambleJob(device, kernel, words);
+  let job = scrambleJob(device, kernel, words);
   works.submit(device, job, to);
 }
 
 fn main() i32 {
-  mut instance = Instance.create("gpuwork loop");
-  require(instance.isValid(), "a Vulkan 1.3 instance");  mut none = Surface.none();
-  mut adapter = instance.requestAdapter(&none, preference());
+  var instance = Instance.create("gpuwork loop");
+  require(instance.isValid(), "a Vulkan 1.3 instance");  var none = Surface.none();
+  var adapter = instance.requestAdapter(&none, preference());
   require(adapter.isValid(), "an adapter");
-  mut device = adapter.requestDevice();
+  var device = adapter.requestDevice();
   require(device.isValid(), "a device");
-  mut kernel = Kernel.make(&device, &SCRAMBLE_SPIRV, "scrambleMain", &[READ, READ_WRITE]);
+  var kernel = Kernel.make(&device, &SCRAMBLE_SPIRV, "scrambleMain", &[READ, READ_WRITE]);
   require(kernel.isValid(), "the scramble kernel");
 
-  mut words = List[u32].empty();
-  mut once = List[u32].empty();
-  mut twice = List[u32].empty();
-  mut i = 0u32;
+  var words = List[u32].empty();
+  var once = List[u32].empty();
+  var twice = List[u32].empty();
+  var i = 0u32;
   while i < 64u32 {
-    imm w = i * 2654435761u32;
+    let w = i * 2654435761u32;
     words.push(w);
     once.push(pcg(w ^ i));
     twice.push(pcg(pcg(w ^ i) ^ i));
     i = i + 1u32;
   }
 
-  mut lp = iocore.Loop.mustMake();
-  mut io = List[iocore.Completion].empty();
-  mut got = List[Completion].empty();
+  var lp = iocore.Loop.mustMake();
+  var io = List[iocore.Completion].empty();
+  var got = List[Completion].empty();
   {
-  mut works = Works.make();
+  var works = Works.make();
 
   // ---- 1. A loop asleep in poll, woken by the GPU ----
-  imm frame1 = device.frameNumber;
-  imm op1 = lp.external(iocore.Target.Here(501u64), IoBuf.empty());
-  imm first = submitScramble(&mut works, &mut device, &kernel, words.view(), Target.Loop(11u64, op1));
-  imm asleep = Instant.now();
+  let frame1 = device.frameNumber;
+  let op1 = lp.external(iocore.Target.Here(501u64), IoBuf.empty());
+  let first = submitScramble(&mut works, &mut device, &kernel, words.view(), Target.Loop(11u64, op1));
+  let asleep = Instant.now();
   lp.poll(asleep + Duration.fromSeconds(5i64), &mut io);
   waitIo(&mut lp, &mut io, 1usize);
   expect(Instant.now() - asleep < Duration.fromSeconds(2i64), "woken by the GPU, not by the poll's time");
@@ -182,21 +182,21 @@ fn main() i32 {
   io.clear();
   expectUInt(u64.from(works.poll(&device, &mut got)), 1u64, "the Completion in the Works' poll at once");
   {
-    imm c = &mut got[0usize];
+    let c = &mut got[0usize];
     expect(c.ticket == first and c.token == 11u64 and c.ok, "its ticket and token, and it ran");
     expectUInt(u64.from(c.count()), 3u64, "its three buffers back");
     expectUInt(differences(&c.words(2u32), &once), 0u64, "every word the CPU's");
   }
 
   // ---- 2. Chained: the output, never read back, into a second job ----
-  mut onGpu = got[0usize].take(1u32);
+  var onGpu = got[0usize].take(1u32);
   got.clear();
-  mut second = Job.make(&mut device);
-  imm input = second.give(onGpu);
-  imm output = second.give(zeroed(&mut device, 64usize));
+  var second = Job.make(&mut device);
+  let input = second.give(onGpu);
+  let output = second.give(zeroed(&mut device, 64usize));
   second.dispatch(&mut device, &kernel, &[input, output], 1u32);
-  imm back2 = second.readback(&mut device, output);
-  imm ticket2 = works.submit(&mut device, second, onLoop(&mut lp, iocore.Target.Here(502u64), 22u64));
+  let back2 = second.readback(&mut device, output);
+  let ticket2 = works.submit(&mut device, second, onLoop(&mut lp, iocore.Target.Here(502u64), 22u64));
   waitIo(&mut lp, &mut io, 1usize);
   require(io.len() == 1usize, "the second job's answer");
   expect(io[0usize].token == 502u64 and io[0usize].isDone() and u64.from(io[0usize].n) == ticket2.id,
@@ -208,10 +208,10 @@ fn main() i32 {
   device.endFrame();         // as a frame loop's frames end (a frame holds 16 command buffers)
 
   // ---- 3. Three jobs in one frame, none ended ----
-  imm frame3 = device.frameNumber;
-  imm t31 = submitScramble(&mut works, &mut device, &kernel, words.view(), onLoop(&mut lp, iocore.Target.Here(531u64), 31u64));
-  imm t32 = submitScramble(&mut works, &mut device, &kernel, words.view(), onLoop(&mut lp, iocore.Target.Here(532u64), 32u64));
-  imm t33 = submitScramble(&mut works, &mut device, &kernel, words.view(), onLoop(&mut lp, iocore.Target.Here(533u64), 33u64));
+  let frame3 = device.frameNumber;
+  let t31 = submitScramble(&mut works, &mut device, &kernel, words.view(), onLoop(&mut lp, iocore.Target.Here(531u64), 31u64));
+  let t32 = submitScramble(&mut works, &mut device, &kernel, words.view(), onLoop(&mut lp, iocore.Target.Here(532u64), 32u64));
+  let t33 = submitScramble(&mut works, &mut device, &kernel, words.view(), onLoop(&mut lp, iocore.Target.Here(533u64), 33u64));
   waitIo(&mut lp, &mut io, 3usize);
   expectUInt(u64.from(device.frameNumber), frame3, "one frame, not ended");
   require(io.len() == 3usize, "three answers");
@@ -225,8 +225,8 @@ fn main() i32 {
   device.endFrame();
 
   // ---- 4. Cancels ----
-  imm op4 = lp.external(iocore.Target.Here(541u64), IoBuf.empty());
-  imm id4 = op4.id();
+  let op4 = lp.external(iocore.Target.Here(541u64), IoBuf.empty());
+  let id4 = op4.id();
   submitScramble(&mut works, &mut device, &kernel, words.view(), Target.Loop(41u64, op4));
   expectBool(lp.cancel(id4), true, "the cancel asked while the job is on the GPU");
   waitIo(&mut lp, &mut io, 1usize);
@@ -239,7 +239,7 @@ fn main() i32 {
   expectUInt(differences(&got[0usize].words(2u32), &once), 0u64, "and its words");
   got.clear();
 
-  imm group = iocore.CancelGroup.make();
+  let group = iocore.CancelGroup.make();
   group.cancel();
   submitScramble(&mut works, &mut device, &kernel, words.view(),
     onLoopIn(&mut lp, iocore.Target.Here(542u64), group, iocore.forever(), 42u64));
@@ -254,8 +254,8 @@ fn main() i32 {
   device.endFrame();
 
   // ---- 5. A refused job ----
-  mut refused = Job.make(&mut device);
-  imm only = refused.give(zeroed(&mut device, 4usize));
+  var refused = Job.make(&mut device);
+  let only = refused.give(zeroed(&mut device, 4usize));
   expectBool(refused.dispatch(&mut device, &kernel, &[only], 1u32), false, "one slot for two bindings refused");
   works.submit(&mut device, refused, onLoop(&mut lp, iocore.Target.Here(551u64), 51u64));
   waitIo(&mut lp, &mut io, 1usize);
@@ -269,7 +269,7 @@ fn main() i32 {
   device.endFrame();
 
   // ---- 6. A Here job beside a Loop job ----
-  imm here = submitScramble(&mut works, &mut device, &kernel, words.view(), Target.Here(61u64));
+  let here = submitScramble(&mut works, &mut device, &kernel, words.view(), Target.Here(61u64));
   submitScramble(&mut works, &mut device, &kernel, words.view(), onLoop(&mut lp, iocore.Target.Here(562u64), 62u64));
   waitIo(&mut lp, &mut io, 1usize);
   expect(io.len() == 1usize and io[0usize].token == 562u64, "the Loop job's answer, its frame not ended");
@@ -280,7 +280,7 @@ fn main() i32 {
   expectUInt(u64.from(works.waitFor(&mut device, here, &mut got)), 1u64, "the Here job, waited for");
   expectUInt(got[0usize].token, 61u64, "the Here job's");
   got.clear();
-  imm blocking = submitScramble(&mut works, &mut device, &kernel, words.view(), onLoop(&mut lp, iocore.Target.Here(563u64), 63u64));
+  let blocking = submitScramble(&mut works, &mut device, &kernel, words.view(), onLoop(&mut lp, iocore.Target.Here(563u64), 63u64));
   expectUInt(u64.from(works.waitFor(&mut device, blocking, &mut got)), 1u64, "a Loop job waited for, as a tool would");
   expect(got[0usize].token == 63u64 and got[0usize].ok, "its Completion");
   expectUInt(differences(&got[0usize].words(2u32), &once), 0u64, "and its words");
@@ -293,20 +293,20 @@ fn main() i32 {
   // ---- 7. A Works that dies with a Loop job in flight ----
   device.endFrame();
   {
-    mut doomed = Works.make();
+    var doomed = Works.make();
     submitScramble(&mut doomed, &mut device, &kernel, words.view(), onLoop(&mut lp, iocore.Target.Here(571u64), 71u64));
   }
   waitIo(&mut lp, &mut io, 1usize);
   expect(io.len() == 1usize and io[0usize].token == 571u64 and io[0usize].isDone(), "still answered, Done");
   io.clear();
-  imm handles = handleCount();
-  mut alive = 0u32;
-  mut gone = 0u32;
-  mut k = 0u32;
+  let handles = handleCount();
+  var alive = 0u32;
+  var gone = 0u32;
+  var k = 0u32;
   while k < 20u32 {
-    mut id = 0u32;
+    var id = 0u32;
     {
-      mut w = Works.make();
+      var w = Works.make();
       expectUInt(u64.from(w.watcherThread()), 0u64, "no watcher before a Loop job");
       submitScramble(&mut w, &mut device, &kernel, words.view(), onLoop(&mut lp, iocore.Target.Here(572u64), 72u64));
       id = w.watcherThread();
@@ -333,7 +333,7 @@ fn main() i32 {
 
 // spirv-begin scramble.spv SCRAMBLE_SPIRV
 // Written by tools/shaders/shaders.py from scramble.slang (sha256 f417e9db249767784a627ff65e956378fe572ae652bd78b85494be07ce2d5746): do not edit.
-imm SCRAMBLE_SPIRV Array[u32, 365] = [
+let SCRAMBLE_SPIRV Array[u32, 365] = [
   0x07230203u32, 0x00010500u32, 0x00280000u32, 0x00000053u32, 0x00000000u32, 0x00020011u32,
   0x00000001u32, 0x000b000au32, 0x5f565053u32, 0x5f52484bu32, 0x726f7473u32, 0x5f656761u32,
   0x66667562u32, 0x735f7265u32, 0x61726f74u32, 0x635f6567u32, 0x7373616cu32, 0x00000000u32,

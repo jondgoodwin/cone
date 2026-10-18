@@ -27,7 +27,7 @@ import path as filepath;
 import terraingen use *;
 
 fn cstrEquals(a *u8, b &str) bool {
-  mut i = 0usize;
+  var i = 0usize;
   while i < b.len() {
     if *(a + i) != b[i] { return false; }
     i = i + 1usize;
@@ -36,34 +36,34 @@ fn cstrEquals(a *u8, b &str) bool {
 }
 
 fn cstrToString(s *u8) String {
-  mut r = String.empty();
-  mut i = 0usize;
+  var r = String.empty();
+  var i = 0usize;
   while *(s + i) != 0u8 { r.appendByte(*(s + i)); i = i + 1usize; }
   r;
 }
 
 fn argNumber(s *u8) usize {
-  mut v = 0usize;
-  mut i = 0usize;
+  var v = 0usize;
+  var i = 0usize;
   while *(s + i) != 0u8 { v = v * 10usize + usize.from(*(s + i) - 48u8); i = i + 1usize; }
   v;
 }
 
 fn srgbByte(linear f32) u8 {
-  mut c = linear;
+  var c = linear;
   if c < 0. { c = 0.; }
   if c > 1. { c = 1.; }
-  imm s = libc.powf(c, 1. / 2.2);
+  let s = libc.powf(c, 1. / 2.2);
   u8.from(i32.from(s * 255. + 0.5));
 }
 
 // The colour map as an Image (rows from the bottom: row iz of the grid)
 fn albedoImage(l &Landscape, biomes &List[Biome]) Image {
-  imm rgb = bakeAlbedo(&l.masks, biomes);
-  imm w = l.height.w;
-  imm h = l.height.h;
-  mut img = new Image(i32.from(w), i32.from(h), 3, List[u8].withCapacity(w * h * 3usize));
-  mut i = 0usize;
+  let rgb = bakeAlbedo(&l.masks, biomes);
+  let w = l.height.w;
+  let h = l.height.h;
+  var img = new Image(i32.from(w), i32.from(h), 3, List[u8].withCapacity(w * h * 3usize));
+  var i = 0usize;
   while i < w * h {
     img.pixels.push(srgbByte(*rgb[i * 3usize]));
     img.pixels.push(srgbByte(*rgb[i * 3usize + 1usize]));
@@ -75,13 +75,13 @@ fn albedoImage(l &Landscape, biomes &List[Biome]) Image {
 
 // The whole grid as one mesh: positions, normals, uvs (u east, v south = row), CCW from above
 fn terrainMesh(hf &Heightfield) Mesh {
-  mut m = Mesh.empty();
-  mut iz = 0usize;
+  var m = Mesh.empty();
+  var iz = 0usize;
   while iz < hf.h {
-    mut ix = 0usize;
+    var ix = 0usize;
     while ix < hf.w {
-      imm x = hf.originX + f32.from(ix) * hf.cell;
-      imm z = hf.originZ + f32.from(iz) * hf.cell;
+      let x = hf.originX + f32.from(ix) * hf.cell;
+      let z = hf.originZ + f32.from(iz) * hf.cell;
       m.positions.push(new Vec3(x, hf.at(ix, iz), z));
       m.normals.push(hf.normalAt(x, z));
       m.uvs.push(new Vec2(f32.from(ix) / f32.from(hf.w - 1usize), f32.from(iz) / f32.from(hf.h - 1usize)));
@@ -91,12 +91,12 @@ fn terrainMesh(hf &Heightfield) Mesh {
   }
   iz = 0usize;
   while iz + 1usize < hf.h {
-    mut ix = 0usize;
+    var ix = 0usize;
     while ix + 1usize < hf.w {
-      imm a = u32.from(iz * hf.w + ix);
-      imm b = a + 1u32;
-      imm c = a + u32.from(hf.w);
-      imm d = c + 1u32;
+      let a = u32.from(iz * hf.w + ix);
+      let b = a + 1u32;
+      let c = a + u32.from(hf.w);
+      let d = c + 1u32;
       m.indices.push(a); m.indices.push(c); m.indices.push(b);
       m.indices.push(b); m.indices.push(c); m.indices.push(d);
       ix = ix + 1usize;
@@ -109,18 +109,18 @@ fn terrainMesh(hf &Heightfield) Mesh {
 // Water: the quads of the grid with water at three or more corners, flat at the highest surface
 // of their corners, so a lake is one level and a river steps down its bed
 fn waterMesh(l &Landscape) Mesh {
-  imm hf = &l.height;
-  mut m = Mesh.empty();
-  imm w = hf.w;
-  mut iz = 0usize;
+  let hf = &l.height;
+  var m = Mesh.empty();
+  let w = hf.w;
+  var iz = 0usize;
   while iz + 1usize < hf.h {
-    mut ix = 0usize;
+    var ix = 0usize;
     while ix + 1usize < w {
-      imm i0 = iz * w + ix;
-      imm ids = [i0, i0 + 1usize, i0 + w, i0 + w + 1usize];
-      mut wet = 0;
-      mut sum = 0.;
-      mut k = 0usize;
+      let i0 = iz * w + ix;
+      let ids = [i0, i0 + 1usize, i0 + w, i0 + w + 1usize];
+      var wet = 0;
+      var sum = 0.;
+      var k = 0usize;
       while k < 4usize {
         if *l.water.waterDepth[ids[k]] > 0.02 {
           wet = wet + 1;
@@ -129,14 +129,14 @@ fn waterMesh(l &Landscape) Mesh {
         k = k + 1usize;
       }
       if wet >= 3 {
-        imm mean = sum / f32.from(wet);
-        imm base = u32.from(m.positions.len());
+        let mean = sum / f32.from(wet);
+        let base = u32.from(m.positions.len());
         k = 0usize;
         while k < 4usize {
-          imm px = hf.originX + f32.from(ix + (k % 2usize)) * hf.cell;
-          imm pz = hf.originZ + f32.from(iz + (k / 2usize)) * hf.cell;
+          let px = hf.originX + f32.from(ix + (k % 2usize)) * hf.cell;
+          let pz = hf.originZ + f32.from(iz + (k / 2usize)) * hf.cell;
           // a wet corner at its own surface, a dry one at the mean of the wet
-          imm py = if *l.water.waterDepth[ids[k]] > 0.02 { *l.water.surface[ids[k]]; } else { mean; };
+          let py = if *l.water.waterDepth[ids[k]] > 0.02 { *l.water.surface[ids[k]]; } else { mean; };
           m.positions.push(new Vec3(px, py + 0.05, pz));
           m.normals.push(new Vec3(0., 1., 0.));
           m.uvs.push(new Vec2(0., 0.));
@@ -154,21 +154,21 @@ fn waterMesh(l &Landscape) Mesh {
 
 // A map from above: the colour map shaded by the sun's exposure, water drawn blue
 fn mapImage(l &Landscape, biomes &List[Biome]) Image {
-  imm rgb = bakeAlbedo(&l.masks, biomes);
-  imm w = l.height.w;
-  imm h = l.height.h;
-  mut img = new Image(i32.from(w), i32.from(h), 3, List[u8].withCapacity(w * h * 3usize));
-  mut row = h;
+  let rgb = bakeAlbedo(&l.masks, biomes);
+  let w = l.height.w;
+  let h = l.height.h;
+  var img = new Image(i32.from(w), i32.from(h), 3, List[u8].withCapacity(w * h * 3usize));
+  var row = h;
   // rows from the bottom of the picture: north (small z) at the top of the picture
   while row > 0usize {
     row = row - 1usize;
-    mut ix = 0usize;
+    var ix = 0usize;
     while ix < w {
-      imm i = (h - 1usize - row) * w + ix;
-      imm lit = 0.35 + 0.85 * *l.masks.exposure[i];
-      mut r = *rgb[i * 3usize] * lit;
-      mut g = *rgb[i * 3usize + 1usize] * lit;
-      mut b = *rgb[i * 3usize + 2usize] * lit;
+      let i = (h - 1usize - row) * w + ix;
+      let lit = 0.35 + 0.85 * *l.masks.exposure[i];
+      var r = *rgb[i * 3usize] * lit;
+      var g = *rgb[i * 3usize + 1usize] * lit;
+      var b = *rgb[i * 3usize + 2usize] * lit;
       if *l.water.waterDepth[i] > 0.02 { r = 0.03; g = 0.1; b = 0.2; }
       img.pixels.push(srgbByte(r * 1.6));
       img.pixels.push(srgbByte(g * 1.6));
@@ -181,11 +181,11 @@ fn mapImage(l &Landscape, biomes &List[Biome]) Image {
 
 // How rough the surface is at the grid's own scale: the mean of |h(x-1) + h(x+1) + h(z-1) + h(z+1) - 4 h|
 fn roughness(hf &Heightfield) f32 {
-  mut s = 0.;
-  mut n = 0.;
-  mut iz = 1usize;
+  var s = 0.;
+  var n = 0.;
+  var iz = 1usize;
   while iz + 1usize < hf.h {
-    mut ix = 1usize;
+    var ix = 1usize;
     while ix + 1usize < hf.w {
       s = s + libc.fabsf(hf.at(ix - 1usize, iz) + hf.at(ix + 1usize, iz) + hf.at(ix, iz - 1usize) + hf.at(ix, iz + 1usize) - 4. * hf.at(ix, iz));
       n = n + 1.;
@@ -197,9 +197,9 @@ fn roughness(hf &Heightfield) f32 {
 }
 
 fn countWater(l &Landscape) Array[usize, 2] {
-  mut lake = 0usize;
-  mut river = 0usize;
-  mut i = 0usize;
+  var lake = 0usize;
+  var river = 0usize;
+  var i = 0usize;
   while i < l.height.data.len() {
     if *l.hydrology.lakeDepth[i] > 0. { lake = lake + 1usize; }
     elif *l.water.waterDepth[i] > 0.02 { river = river + 1usize; }
@@ -209,12 +209,12 @@ fn countWater(l &Landscape) Array[usize, 2] {
 }
 
 fn main(argc i32, argv **u8) i32 {
-  mut prefix = String.empty();
-  mut res = 384usize;
-  mut only = 9usize;          // --only 0|1|2: just alpine, mesa or hills
-  mut a = 1;
+  var prefix = String.empty();
+  var res = 384usize;
+  var only = 9usize;          // --only 0|1|2: just alpine, mesa or hills
+  var a = 1;
   while a < argc {
-    imm arg = *(argv + usize.from(a));
+    let arg = *(argv + usize.from(a));
     if cstrEquals(arg, "--out") and a + 1 < argc {
       prefix = cstrToString(*(argv + usize.from(a + 1)));
       a = a + 1;
@@ -227,32 +227,32 @@ fn main(argc i32, argv **u8) i32 {
     }
     a = a + 1;
   }
-  mut instance = Instance.create("terraingen landscapes");
-  mut none = Surface.none();
-  mut preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
-  imm env = libc.getenv("GPU_POWER_PREFERENCE");
+  var instance = Instance.create("terraingen landscapes");
+  var none = Surface.none();
+  var preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
+  let env = libc.getenv("GPU_POWER_PREFERENCE");
   if (env as usize) != 0usize {
     if libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 { preference = POWER_PREFERENCE_LOW_POWER; }
   }
-  mut adapter = instance.requestAdapter(&none, preference);
+  var adapter = instance.requestAdapter(&none, preference);
   if !adapter.isValid() { print <- "No GPU\n"; return 1i32; }
   print <- "Adapter: "; printStr(adapter.name.view()); print <- "\n";
-  mut device = adapter.requestDevice();
+  var device = adapter.requestDevice();
 
-  imm W = 1280u32;
-  imm H = 720u32;
-  imm outDesc = new TextureDescriptor(W, H, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
-  mut out = device.createTexture(&outDesc);
-  imm depthDesc = new TextureDescriptor(W, H, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
-  mut depth = device.createTexture(&depthDesc);
-  mut renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA16_FLOAT, TEXTURE_FORMAT_DEPTH32_FLOAT);
-  mut post = Post.create(&mut device, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, W, H);
-  mut queries = device.createQuerySet(QUERY_TYPE_TIMESTAMP, 2u32);
-  mut resolved = device.createBuffer(256u64, BUFFER_USAGE_QUERY_RESOLVE | BUFFER_USAGE_COPY_SRC);
-  mut timeBuf = device.createBuffer(16u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  let W = 1280u32;
+  let H = 720u32;
+  let outDesc = new TextureDescriptor(W, H, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
+  var out = device.createTexture(&outDesc);
+  let depthDesc = new TextureDescriptor(W, H, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
+  var depth = device.createTexture(&depthDesc);
+  var renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA16_FLOAT, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  var post = Post.create(&mut device, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, W, H);
+  var queries = device.createQuerySet(QUERY_TYPE_TIMESTAMP, 2u32);
+  var resolved = device.createBuffer(256u64, BUFFER_USAGE_QUERY_RESOLVE | BUFFER_USAGE_COPY_SRC);
+  var timeBuf = device.createBuffer(16u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
   if !renderer.isValid() or !post.isValid() or !queries.isValid() { print <- "renderer failed\n"; return 1i32; }
 
-  mut sky = Sky.dusk(radians(38.), radians(210.));
+  var sky = Sky.dusk(radians(38.), radians(210.));
   sky.sunColor = new Color(30., 27., 22., 1.);
   sky.zenith = new Color(0.16, 0.32, 0.75, 1.);
   sky.horizon = new Color(0.62, 0.74, 0.9, 1.);
@@ -260,33 +260,33 @@ fn main(argc i32, argv **u8) i32 {
   sky.ground = new Color(0.2, 0.2, 0.2, 1.);
   sky.cloudCover = 0.35;
   renderer.setSky(&mut device, &sky);
-  imm light = sky.sunLight(new Color(3.2, 3.0, 2.6, 1.), new Color(0.25, 0.3, 0.4, 1.));
+  let light = sky.sunLight(new Color(3.2, 3.0, 2.6, 1.), new Color(0.25, 0.3, 0.4, 1.));
   post.exposure = 0.9;
   post.bloom = 0.02;
 
-  mut names = List[String].empty();
+  var names = List[String].empty();
   names.push(String.from("alpine"));
   names.push(String.from("mesa"));
   names.push(String.from("hills"));
-  mut k = 0usize;
+  var k = 0usize;
   while k < 3usize {
     if only != 9usize and only != k { k = k + 1usize; continue; }
-    imm cell =if k == 0usize { 4600. / f32.from(res); } elif k == 1usize { 4000. / f32.from(res); } else { 3000. / f32.from(res); };
-    imm spec = if k == 0usize { alpine(res, res, cell, 7u32); } elif k == 1usize { mesa(res, res, cell, 3u32); } else { hills(res, res, cell, 5u32); };
+    let cell =if k == 0usize { 4600. / f32.from(res); } elif k == 1usize { 4000. / f32.from(res); } else { 3000. / f32.from(res); };
+    let spec = if k == 0usize { alpine(res, res, cell, 7u32); } elif k == 1usize { mesa(res, res, cell, 3u32); } else { hills(res, res, cell, 5u32); };
     print <- "\n== "; printStr(names[k].view()); print <- " "; print <- u64.from(res); print <- " x "; print <- u64.from(res);
     print <- " samples, cell "; print <- cell; print <- " m ==\n";
 
     // heights: the CPU and the GPU
-    imm t0 = time.Instant.now();
-    imm cpuField = generate(&spec.shape, spec.w, spec.h, spec.cell, spec.originX, spec.originZ);
-    imm cpuGen = t0.elapsed().secondsF64();
-    imm t1 = time.Instant.now();
-    imm gpuField = generateGpu(&mut device, &spec);
-    imm gpuGen = t1.elapsed().secondsF64();
-    mut maxGen = 0.;
-    mut i = 0usize;
+    let t0 = time.Instant.now();
+    let cpuField = generate(&spec.shape, spec.w, spec.h, spec.cell, spec.originX, spec.originZ);
+    let cpuGen = t0.elapsed().secondsF64();
+    let t1 = time.Instant.now();
+    let gpuField = generateGpu(&mut device, &spec);
+    let gpuGen = t1.elapsed().secondsF64();
+    var maxGen = 0.;
+    var i = 0usize;
     while i < cpuField.data.len() {
-      imm d = libc.fabsf(*cpuField.data[i] - *gpuField.data[i]);
+      let d = libc.fabsf(*cpuField.data[i] - *gpuField.data[i]);
       if d > maxGen { maxGen = d; }
       i = i + 1usize;
     }
@@ -294,16 +294,16 @@ fn main(argc i32, argv **u8) i32 {
     print <- gpuGen * 1000d; print <- " ms; largest difference "; print <- maxGen; print <- " m\n";
 
     // erosion: the CPU and the GPU on the same heights
-    mut a1 = cpuField.tile(0, 0, res, res);
-    imm r1 = erodeCpu(&mut a1, &spec.erosion, &spec.plan);
-    mut a2 = cpuField.tile(0, 0, res, res);
-    imm r2 = erodeGpu(&mut device, &mut a2, &spec.erosion, &spec.plan);
-    mut meanDiff = 0.;
-    mut maxDiff = 0.;
-    mut moved = 0.;
+    var a1 = cpuField.tile(0, 0, res, res);
+    let r1 = erodeCpu(&mut a1, &spec.erosion, &spec.plan);
+    var a2 = cpuField.tile(0, 0, res, res);
+    let r2 = erodeGpu(&mut device, &mut a2, &spec.erosion, &spec.plan);
+    var meanDiff = 0.;
+    var maxDiff = 0.;
+    var moved = 0.;
     i = 0usize;
     while i < a1.data.len() {
-      imm d = libc.fabsf(*a1.data[i] - *a2.data[i]);
+      let d = libc.fabsf(*a1.data[i] - *a2.data[i]);
       meanDiff = meanDiff + d;
       if d > maxDiff { maxDiff = d; }
       moved = moved + libc.fabsf(*a1.data[i] - *cpuField.data[i]);
@@ -319,29 +319,29 @@ fn main(argc i32, argv **u8) i32 {
 
     // the pipeline's CPU stages, timed one by one on the eroded field
     {
-      mut g = a2.tile(0, 0, res, res);
-      imm tA = time.Instant.now();
-      imm hyA = analyze(&g, 0.0005, spec.lakeMin, spec.lakeMax);
-      imm msAnalyze = tA.elapsed().secondsF64() * 1000d;
-      imm tB = time.Instant.now();
-      imm rmA = carveRivers(&mut g, &hyA, &spec.rivers);
-      imm msCarve = tB.elapsed().secondsF64() * 1000d;
-      imm tC = time.Instant.now();
-      imm mkA = computeMasks(&g, &hyA, &rmA, &spec.masks, &spec.biomes);
-      imm msMasks = tC.elapsed().secondsF64() * 1000d;
+      var g = a2.tile(0, 0, res, res);
+      let tA = time.Instant.now();
+      let hyA = analyze(&g, 0.0005, spec.lakeMin, spec.lakeMax);
+      let msAnalyze = tA.elapsed().secondsF64() * 1000d;
+      let tB = time.Instant.now();
+      let rmA = carveRivers(&mut g, &hyA, &spec.rivers);
+      let msCarve = tB.elapsed().secondsF64() * 1000d;
+      let tC = time.Instant.now();
+      let mkA = computeMasks(&g, &hyA, &rmA, &spec.masks, &spec.biomes);
+      let msMasks = tC.elapsed().secondsF64() * 1000d;
       print <- "stages (CPU): drainage analysis "; print <- msAnalyze; print <- " ms (it runs twice), river carving "; print <- msCarve;
       print <- " ms, masks and biomes "; print <- msMasks; print <- " ms ("; print <- u64.from(mkA.biomeCount); print <- " biomes)\n";
     }
 
     // the whole landscape through the GPU path
-    imm l = buildLandscapeOn(&mut device, &spec);
-    imm wc = countWater(&l);
+    let l = buildLandscapeOn(&mut device, &spec);
+    let wc = countWater(&l);
     print <- "landscape built in "; print <- l.seconds * 1000d; print <- " ms; heights "; print <- l.height.minHeight();
     print <- " to "; print <- l.height.maxHeight(); print <- " m; largest drainage "; print <- l.hydrology.maxAccum() * cell * cell / 1.0e6;
     print <- " km2; lake cells "; print <- u64.from(wc[0usize]); print <- ", river cells "; print <- u64.from(wc[1usize]); print <- "\n";
-    mut b = 0usize;
+    var b = 0usize;
     while b < l.masks.biomeCount {
-      mut share = 0.;
+      var share = 0.;
       i = 0usize;
       while i < l.height.data.len() {
         if usize.from(*l.masks.biome[i]) == b { share = share + 1.; }
@@ -352,29 +352,29 @@ fn main(argc i32, argv **u8) i32 {
     }
 
     // drawing
-    imm albedo = albedoImage(&l, &spec.biomes);
-    imm tex = renderer.addTexture(&mut device, &albedo);
-    mut ground = Material.plain(new Color(1., 1., 1., 1.));
+    let albedo = albedoImage(&l, &spec.biomes);
+    let tex = renderer.addTexture(&mut device, &albedo);
+    var ground = Material.plain(new Color(1., 1., 1., 1.));
     ground.texture = tex;
     ground.specular = new Color(0., 0., 0., 1.);
-    imm groundM = renderer.addMaterial(&mut device, &ground);
-    mut waterMat = Material.plain(new Color(0.02, 0.09, 0.14, 1.));
+    let groundM = renderer.addMaterial(&mut device, &ground);
+    var waterMat = Material.plain(new Color(0.02, 0.09, 0.14, 1.));
     waterMat.specular = new Color(0.8, 0.8, 0.8, 1.);
     waterMat.shininess = 120.;
-    imm waterM = renderer.addMaterial(&mut device, &waterMat);
-    imm tm = terrainMesh(&l.height);
-    imm tHandle = renderer.addMesh(&mut device, &tm);
-    imm wm = waterMesh(&l);
-    mut list = DrawList.empty();
+    let waterM = renderer.addMaterial(&mut device, &waterMat);
+    let tm = terrainMesh(&l.height);
+    let tHandle = renderer.addMesh(&mut device, &tm);
+    let wm = waterMesh(&l);
+    var list = DrawList.empty();
     list.add(tHandle, groundM, Mat4.identity());
     if wm.indices.len() > 0usize {
-      imm wHandle = renderer.addMesh(&mut device, &wm);
+      let wHandle = renderer.addMesh(&mut device, &wm);
       list.add(wHandle, waterM, Mat4.identity());
     }
-    imm span = f32.from(res - 1usize) * cell;
-    imm hi = l.height.maxHeight();
-    imm lo = l.height.minHeight();
-    mut camera = Camera.make();
+    let span = f32.from(res - 1usize) * cell;
+    let hi = l.height.maxHeight();
+    let lo = l.height.minHeight();
+    var camera = Camera.make();
     camera.fov = radians(50.);
     camera.near = 5.;
     camera.far = 30000.;
@@ -382,11 +382,11 @@ fn main(argc i32, argv **u8) i32 {
     camera.lookAt(new Vec3(span * 0.5, hi + span * 0.16, span * 1.12), new Vec3(span * 0.5, lo + (hi - lo) * 0.3, span * 0.3), new Vec3(0., 1., 0.));
 
     // GPU time of the draw: the mean of 30 frames after 5
-    mut gpuMs = 0d;
-    mut counted = 0u32;
-    mut f = 0u32;
+    var gpuMs = 0d;
+    var counted = 0u32;
+    var f = 0u32;
     while f < 35u32 {
-      mut encoder = device.createCommandEncoder();
+      var encoder = device.createCommandEncoder();
       encoder.writeTimestamp(&queries, 0u32);
       renderer.render(&mut device, &mut encoder, &post.hdr, &depth, &camera, &light, &list);
       encoder.writeTimestamp(&queries, 1u32);
@@ -397,7 +397,7 @@ fn main(argc i32, argv **u8) i32 {
       device.endFrame();
       device.waitIdle();
       if f >= 5u32 {
-        imm ticks = timeBuf.mappedRange() as *u64;
+        let ticks = timeBuf.mappedRange() as *u64;
         gpuMs = gpuMs + f64.from(*(ticks + 1usize) - *ticks) * f64.from(device.timestampPeriod) * 1.0e-6d;
         counted = counted + 1u32;
       }
@@ -406,21 +406,21 @@ fn main(argc i32, argv **u8) i32 {
     print <- "draw: "; print <- u64.from(tm.triangleCount() + wm.triangleCount()); print <- " triangles, GPU "; print <- gpuMs / f64.from(counted); print <- " ms a frame\n";
 
     if prefix.len() > 0usize {
-      mut shot = device.createBuffer(u64.from(W) * u64.from(H) * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
-      mut encoder = device.createCommandEncoder();
+      var shot = device.createBuffer(u64.from(W) * u64.from(H) * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+      var encoder = device.createCommandEncoder();
       renderer.render(&mut device, &mut encoder, &post.hdr, &depth, &camera, &light, &list);
       post.apply(&mut encoder, &out);
       encoder.copyTextureToBuffer(&out, &shot);
       device.queue.submit(encoder.finish());
       device.endFrame();
       device.waitIdle();
-      imm image = Image.fromTexels(shot.mappedRange(), i32.from(W), i32.from(H), false);
-      mut name = prefix.copy();
+      let image = Image.fromTexels(shot.mappedRange(), i32.from(W), i32.from(H), false);
+      var name = prefix.copy();
       name <- "-"; name <- names[k].view(); name <- "-view.bmp";
       image.save(&filepath.Path.from(name.view()));
-      mut mapName = prefix.copy();
+      var mapName = prefix.copy();
       mapName <- "-"; mapName <- names[k].view(); mapName <- "-map.bmp";
-      imm mp = mapImage(&l, &spec.biomes);
+      let mp = mapImage(&l, &spec.biomes);
       mp.save(&filepath.Path.from(mapName.view()));
       print <- "wrote "; printStr(name.view()); print <- " and "; printStr(mapName.view()); print <- "\n";
     }

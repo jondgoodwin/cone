@@ -29,7 +29,7 @@ fn near(got f32, want f32, within f32, label &Array[u8]) bool {
 }
 
 fn make() Gaze {
-  mut p = GazeParams.standard();
+  var p = GazeParams.standard();
   p.microAmp = 0.;
   p.idleMean = 1000.;
   Gaze.make(p, new Vec3(-0.031, 0.02, -0.07), new Vec3(0.031, 0.02, -0.07), 5u32);
@@ -37,8 +37,8 @@ fn make() Gaze {
 
 // A point at 'yaw' (left positive) and 'pitch' radians from the eyes' middle, 'dist' away
 fn pointAt(yaw f32, pitch f32, dist f32) Vec3 {
-  imm o = new Vec3(0., 0.02, -0.07);
-  imm dir = new Vec3(-sin(yaw) * cos(pitch), sin(pitch), -cos(yaw) * cos(pitch));
+  let o = new Vec3(0., 0.02, -0.07);
+  let dir = new Vec3(-sin(yaw) * cos(pitch), sin(pitch), -cos(yaw) * cos(pitch));
   o + dir * dist;
 }
 
@@ -53,18 +53,18 @@ fn testMainSequence() {
 }
 
 fn testSmallShift() {
-  mut g = make();
-  mut rng = Rng.make(1u32);
+  var g = make();
+  var rng = Rng.make(1u32);
   g.lookAt(pointAt(radians(8.), 0., 2.));
   // Step in milliseconds, tracking the fastest the eye goes
-  mut peak = 0.;
-  mut last = g.eyeYaw;
-  mut launchedAmp = 0.;
-  mut i = 0;
+  var peak = 0.;
+  var last = g.eyeYaw;
+  var launchedAmp = 0.;
+  var i = 0;
   while i < 600 {
     g.update(0.001, &mut rng);
     if g.launched > 0. { launchedAmp = g.launched; }
-    imm v = absf(g.eyeYaw - last) / 0.001;
+    let v = absf(g.eyeYaw - last) / 0.001;
     if v > peak { peak = v; }
     last = g.eyeYaw;
     i = i + 1;
@@ -72,23 +72,23 @@ fn testSmallShift() {
   near(g.eyeYaw, radians(8.), 0.003, "the eyes turn 8 degrees");
   near(g.headYaw, 0., 0.0001, "the head stays put inside the dead zone");
   near(launchedAmp, radians(8.), 0.003, "one saccade of 8 degrees");
-  imm want = 1.875 * radians(8.) / saccadeDuration(radians(8.));
+  let want = 1.875 * radians(8.) / saccadeDuration(radians(8.));
   near(peak, want, want * 0.03, "peak speed is 1.875 A / D");
 }
 
 fn testLargeShift() {
-  mut g = make();
-  mut rng = Rng.make(2u32);
+  var g = make();
+  var rng = Rng.make(2u32);
   g.lookAt(pointAt(radians(40.), 0., 2.));
-  mut eyeLeadsHead = false;
-  mut i = 0;
+  var eyeLeadsHead = false;
+  var i = 0;
   while i < 2000 {
     g.update(0.001, &mut rng);
     if i == 120 and g.eyeYaw > g.headYaw { eyeLeadsHead = true; }
     i = i + 1;
   }
   expectBool(eyeLeadsHead, true, "0.12 s in, the eyes have turned further than the head");
-  imm wantHead = 0.75 * (radians(40.) - 0.17);
+  let wantHead = 0.75 * (radians(40.) - 0.17);
   near(g.headYaw, wantHead, 0.01, "the head takes 0.75 of the shift beyond the dead zone");
   near(g.eyeYaw + g.headYaw, radians(40.), 0.01, "head plus eye is on the target");
   expect(g.eyeYaw < 0.62, "inside the eye's range");
@@ -96,60 +96,60 @@ fn testLargeShift() {
 }
 
 fn testVergence() {
-  mut g = make();
-  mut rng = Rng.make(3u32);
+  var g = make();
+  var rng = Rng.make(3u32);
   g.lookAt(pointAt(0., 0., 0.30));
-  mut i = 0;
+  var i = 0;
   while i < 500 { g.update(0.001, &mut rng); i = i + 1; }
-  imm l = g.eyeAngles(false, 0.);
-  imm r = g.eyeAngles(true, 0.);
+  let l = g.eyeAngles(false, 0.);
+  let r = g.eyeAngles(true, 0.);
   // The right eye turns to the being's left (positive yaw), the left eye to its right
   near(r.x - l.x, 2. * atan2(0.031, 0.30), 0.002, "the eyes converge by 2 atan(0.031 / 0.30)");
   expect(r.x > 0. and l.x < 0., "each turns towards the nose");
 }
 
 fn testLimit() {
-  mut g = make();
-  mut rng = Rng.make(4u32);
+  var g = make();
+  var rng = Rng.make(4u32);
   g.lookAt(pointAt(radians(85.), 0., 2.));
-  mut i = 0;
+  var i = 0;
   while i < 3000 { g.update(0.001, &mut rng); i = i + 1; }
   expect(g.eyeAngles(true, 0.).x <= 0.6201, "the right eye stops at its limit");
   expect(g.eyeAngles(false, 0.).x <= 0.6201, "and the left");
 }
 
 fn testPitchAndQuat() {
-  mut g = make();
-  mut rng = Rng.make(5u32);
+  var g = make();
+  var rng = Rng.make(5u32);
   g.lookAt(pointAt(0., radians(20.), 2.));
-  mut i = 0;
+  var i = 0;
   while i < 800 { g.update(0.001, &mut rng); i = i + 1; }
   // 20 degrees up is inside the head's pitch dead zone (0.10 rad = 5.7 degrees)? no: the head takes 0.5 of the excess
-  imm wantHead = 0.5 * (radians(20.) - 0.10);
+  let wantHead = 0.5 * (radians(20.) - 0.10);
   near(g.headPitch, wantHead, 0.01, "the head's share of a pitch is 0.5 of the excess");
   near(g.eyePitch + g.headPitch, radians(20.), 0.01, "head plus eye is on the target");
   // The eye's quaternion turns -z to the pitch direction
-  imm q = eyeQuat(0., radians(20.));
-  imm d = q * new Vec3(0., 0., -1.);
+  let q = eyeQuat(0., radians(20.));
+  let d = q * new Vec3(0., 0., -1.);
   near(d.y, sin(radians(20.)), 0.0001, "an eye pitched 20 degrees looks up by sin 20");
-  imm q2 = eyeQuat(radians(30.), 0.);
-  imm d2 = q2 * new Vec3(0., 0., -1.);
+  let q2 = eyeQuat(radians(30.), 0.);
+  let d2 = q2 * new Vec3(0., 0., -1.);
   near(d2.x, -sin(radians(30.)), 0.0001, "an eye yawed 30 degrees looks to the left (-x)");
 }
 
 fn testIdleSaccades() {
-  mut p = GazeParams.standard();
+  var p = GazeParams.standard();
   p.microAmp = 0.;
-  mut g = Gaze.make(p, new Vec3(-0.031, 0.02, -0.07), new Vec3(0.031, 0.02, -0.07), 5u32);
-  mut rng = Rng.make(8u32);
+  var g = Gaze.make(p, new Vec3(-0.031, 0.02, -0.07), new Vec3(0.031, 0.02, -0.07), 5u32);
+  var rng = Rng.make(8u32);
   g.lookAt(pointAt(0., 0., 2.));
-  mut launched = 0;
-  mut worst = 0.;
-  mut i = 0;
+  var launched = 0;
+  var worst = 0.;
+  var i = 0;
   while i < 60000 {
     g.update(0.001, &mut rng);
     if g.launched > 0. { launched = launched + 1; }
-    imm off = (g.offYaw * g.offYaw + g.offPitch * g.offPitch).sqrt();
+    let off = (g.offYaw * g.offYaw + g.offPitch * g.offPitch).sqrt();
     if off > worst { worst = off; }
     i = i + 1;
   }

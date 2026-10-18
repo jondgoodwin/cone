@@ -40,23 +40,23 @@ const SLACK f64 = 0.01d;
 // Sample i: a point in [-2.5, 2.5] x [-1, 4] x [-2.5, 2.5] and a unit
 // direction, from hashes
 fn samplePoint(i i32) Vec3 {
-  imm h = noise.pcg3d(new noise.UVec3(u32.from(i), 12345u32, 777u32));
+  let h = noise.pcg3d(new noise.UVec3(u32.from(i), 12345u32, 777u32));
   new Vec3(noise.toSigned(h.x) * 2.5, noise.toSigned(h.y) * 2.5 + 1.5, noise.toSigned(h.z) * 2.5);
 }
 fn sampleDirection(i i32) Vec3 {
-  imm h = noise.pcg3d(new noise.UVec3(u32.from(i), 54321u32, 999u32));
+  let h = noise.pcg3d(new noise.UVec3(u32.from(i), 54321u32, 999u32));
   new Vec3(noise.toSigned(h.x), noise.toSigned(h.y), noise.toSigned(h.z) + 0.001).normalize();
 }
 
 // The largest |d(p) - d(q)| / |p - q| over the pairs
 fn largestRatio[S Shape](shape &S) f64 {
-  mut worst = 0d;
-  mut i = 0;
+  var worst = 0d;
+  var i = 0;
   while i < PAIRS {
-    imm p = samplePoint(i);
-    imm q = p + sampleDirection(i) * STEP;
-    imm dd = f64.from(shape.distance(p)) - f64.from(shape.distance(q));
-    imm r = (if dd < 0d { -dd; } else { dd; }) / f64.from((q - p).length());
+    let p = samplePoint(i);
+    let q = p + sampleDirection(i) * STEP;
+    let dd = f64.from(shape.distance(p)) - f64.from(shape.distance(q));
+    let r = (if dd < 0d { -dd; } else { dd; }) / f64.from((q - p).length());
     if r > worst or r != r { worst = r; }
     i = i + 1;
   }
@@ -65,16 +65,16 @@ fn largestRatio[S Shape](shape &S) f64 {
 
 // The same, the points in 'box' (a horn's bounds, where fine detail is)
 fn largestRatioIn[S Shape](shape &S, box Aabb3) f64 {
-  imm c = box.center();
-  imm e = box.halfExtents();
-  mut worst = 0d;
-  mut i = 0;
+  let c = box.center();
+  let e = box.halfExtents();
+  var worst = 0d;
+  var i = 0;
   while i < PAIRS * 4 {
-    imm h = noise.pcg3d(new noise.UVec3(u32.from(i), 2468u32, 1357u32));
-    imm p = c + new Vec3(noise.toSigned(h.x) * e.x, noise.toSigned(h.y) * e.y, noise.toSigned(h.z) * e.z);
-    imm q = p + sampleDirection(i) * 0.00390625;
-    imm dd = f64.from(shape.distance(p)) - f64.from(shape.distance(q));
-    imm r = (if dd < 0d { -dd; } else { dd; }) / f64.from((q - p).length());
+    let h = noise.pcg3d(new noise.UVec3(u32.from(i), 2468u32, 1357u32));
+    let p = c + new Vec3(noise.toSigned(h.x) * e.x, noise.toSigned(h.y) * e.y, noise.toSigned(h.z) * e.z);
+    let q = p + sampleDirection(i) * 0.00390625;
+    let dd = f64.from(shape.distance(p)) - f64.from(shape.distance(q));
+    let r = (if dd < 0d { -dd; } else { dd; }) / f64.from((q - p).length());
     if r > worst or r != r { worst = r; }
     i = i + 1;
   }
@@ -83,11 +83,11 @@ fn largestRatioIn[S Shape](shape &S, box Aabb3) f64 {
 
 // The largest length of the gradient by central differences
 fn largestGradient[S Shape](shape &S) f64 {
-  mut worst = 0d;
-  mut i = 0;
+  var worst = 0d;
+  var i = 0;
   while i < PAIRS {
-    imm g = gradient(shape, samplePoint(i), 0.00390625);
-    imm len = f64.from(g.length());
+    let g = gradient(shape, samplePoint(i), 0.00390625);
+    let len = f64.from(g.length());
     if len > worst or len != len { worst = len; }
     i = i + 1;
   }
@@ -134,7 +134,7 @@ fn fSmoothIntersect(p Vec3) f32 { smoothIntersect(a(p), b(p), 0.25); }
 fn fOnion(p Vec3) f32 { onion(a(p), 0.125); }
 fn fRound(p Vec3) f32 { round(b(p), 0.125); }
 fn fPlaced(p Vec3) f32 {
-  imm pl = new Placement(new Vec3(0.5, 1., 0.), turn(), 1.5);
+  let pl = new Placement(new Vec3(0.5, 1., 0.), turn(), 1.5);
   pl.distance(box(pl.toLocal(p), new Vec3(0.5, 0.25, 0.375)));
 }
 fn fMirror(p Vec3) f32 { torus(mirror(p, new Vec3(0.6, 0.8, 0.), -1.), 1., 0.25); }
@@ -146,15 +146,15 @@ fn fUnscaled(p Vec3) f32 { sphere(scalePoint(p, 0.5), 1.); }
 fn planesAt(p Vec3, c f32, s f32) Vec3 { new Vec3(p.x, p.x * c + p.z * s, 0.); }
 fn rightAngle(p Vec3) Vec3 { new Vec3(p.x, p.z, 0.); }
 fn at45(p Vec3) Vec3 { planesAt(p, 0.70710678, 0.70710678); }
-fn fRoundRight(p Vec3) f32 { imm d = rightAngle(p); unionRound(d.x, d.y, 0.5); }
-fn fChamferRight(p Vec3) f32 { imm d = rightAngle(p); unionChamfer(d.x, d.y, 0.5); }
-fn fColumnsRight(p Vec3) f32 { imm d = rightAngle(p); unionColumns(d.x, d.y, 0.5, 4.); }
-fn fStairsRight(p Vec3) f32 { imm d = rightAngle(p); unionStairs(d.x, d.y, 0.5, 4.); }
-fn fPipeRight(p Vec3) f32 { imm d = rightAngle(p); pipe(d.x, d.y, 0.1); }
-fn fGrooveRight(p Vec3) f32 { imm d = rightAngle(p); groove(d.x, d.y, 0.2, 0.1); }
-fn fRound45(p Vec3) f32 { imm d = at45(p); unionRound(d.x, d.y, 0.5); }
-fn fColumns45(p Vec3) f32 { imm d = at45(p); unionColumns(d.x, d.y, 0.5, 4.); }
-fn fStairs45(p Vec3) f32 { imm d = at45(p); unionStairs(d.x, d.y, 0.5, 4.); }
+fn fRoundRight(p Vec3) f32 { let d = rightAngle(p); unionRound(d.x, d.y, 0.5); }
+fn fChamferRight(p Vec3) f32 { let d = rightAngle(p); unionChamfer(d.x, d.y, 0.5); }
+fn fColumnsRight(p Vec3) f32 { let d = rightAngle(p); unionColumns(d.x, d.y, 0.5, 4.); }
+fn fStairsRight(p Vec3) f32 { let d = rightAngle(p); unionStairs(d.x, d.y, 0.5, 4.); }
+fn fPipeRight(p Vec3) f32 { let d = rightAngle(p); pipe(d.x, d.y, 0.1); }
+fn fGrooveRight(p Vec3) f32 { let d = rightAngle(p); groove(d.x, d.y, 0.2, 0.1); }
+fn fRound45(p Vec3) f32 { let d = at45(p); unionRound(d.x, d.y, 0.5); }
+fn fColumns45(p Vec3) f32 { let d = at45(p); unionColumns(d.x, d.y, 0.5, 4.); }
+fn fStairs45(p Vec3) f32 { let d = at45(p); unionStairs(d.x, d.y, 0.5, 4.); }
 // The same fillets on the test's two shapes
 fn fColumnsShapes(p Vec3) f32 { unionColumns(a(p), b(p), 0.5, 4.); }
 fn fStairsShapes(p Vec3) f32 { unionStairs(a(p), b(p), 0.5, 4.); }
@@ -170,7 +170,7 @@ struct FnShape is Shape {
 }
 
 fn ratio(f &fn(p Vec3) f32) f64 {
-  imm s = new FnShape(f);
+  let s = new FnShape(f);
   largestRatio(&s);
 }
 
@@ -211,30 +211,30 @@ fn main() i32 {
   check(ratio(&fColumnsShapes), 1.41421356d, "columns, sphere and box");
   check(ratio(&fStairsShapes), 1.41421356d, "stairs, sphere and box");
 
-  imm horn = Horn.make(3., 0.3, 0.9, 2., 14, 0.12);
+  let horn = Horn.make(3., 0.3, 0.9, 2., 14, 0.12);
   check(largestRatio(&horn), 1d, "horn");
   check(largestGradient(&horn), 1d, "horn, gradient length");
-  imm straight = Horn.make(2.5, 0.4, 0.5, 0., 9, 0.2);
+  let straight = Horn.make(2.5, 0.4, 0.5, 0., 9, 0.2);
   check(largestRatio(&straight), 1d, "straight horn");
-  imm curled = Horn.make(4., 0.35, 1., 4.5, 20, 0.15);
+  let curled = Horn.make(4., 0.35, 1., 4.5, 20, 0.15);
   check(largestRatio(&curled), 1d, "horn curled through 4.5 radians");
-  imm demo = Horn.make(3.4, 0.34, 0.97, 1.7, 22, 0.12);
-  imm fine = demo.fluted(40, 0.018, 0.8);
+  let demo = Horn.make(3.4, 0.34, 0.97, 1.7, 22, 0.12);
+  let fine = demo.fluted(40, 0.018, 0.8);
   check(largestRatio(&fine), 1d, "horn with 40 fine flutes, twisted");
   check(largestRatioIn(&fine, fine.bounds()), 1d, "horn with 40 fine flutes, near its surface");
   check(largestGradient(&fine), 1d, "horn with 40 fine flutes, gradient length");
-  imm deep = horn.fluted(12, 0.15, -2.);
+  let deep = horn.fluted(12, 0.15, -2.);
   check(largestRatio(&deep), 1d, "horn with 12 deep flutes, twisted back");
   check(largestRatioIn(&deep, deep.bounds()), 1d, "horn with 12 deep flutes, near its surface");
-  imm detail = new FnShape(&fDetail);
+  let detail = new FnShape(&fDetail);
   check(largestRatio(&detail), 1d, "fBm detail");
   check(largestGradient(&detail), 1d, "fBm detail, gradient length");
 
   // Not distances
-  imm displaced = ratio(&fDisplaced);
+  let displaced = ratio(&fDisplaced);
   if reporting() { printStr("displaced (not a distance): "); printFloat(displaced); printStr("\n"); }
   expect(displaced > 1.1d, "noise displacement is not 1-Lipschitz");
-  imm unscaled = ratio(&fUnscaled);
+  let unscaled = ratio(&fUnscaled);
   if reporting() { printStr("scaled point, distance not scaled back: "); printFloat(unscaled); printStr("\n"); }
   expect(unscaled > 1.9d, "a scaled point without scaleDistance is 2-Lipschitz");
   done();

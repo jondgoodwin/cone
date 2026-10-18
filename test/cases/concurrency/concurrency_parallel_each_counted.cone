@@ -31,20 +31,20 @@ fn main() {
   initAll();
   actors.configure(new actors.Options(workers: 4u32));
 
-  imm shared = new Rc[imm, u64](7u64);
-  imm holder = new Holder(new Rc[imm, u64](3u64), 10u64);
-  mut list = new List[u64];
-  mut k = 0u64;
+  let shared = new Rc[imm, u64](7u64);
+  let holder = new Holder(new Rc[imm, u64](3u64), 10u64);
+  var list = new List[u64];
+  var k = 0u64;
   while k < 200u64 {
     list.push(k);
     k = k + 1u64;
   }
 
   // The contents borrowed before the loop, which the body uses
-  imm sv = &*shared;
-  imm hv = &*holder.shared;
-  imm hn = holder.n;
-  imm total = Atomic[u64].of(0u64);
+  let sv = &*shared;
+  let hv = &*holder.shared;
+  let hn = holder.n;
+  let total = Atomic[u64].of(0u64);
   parallel each i in 0usize ..< 1000usize {
     total.add(*sv);                                // read by the borrow
     total.add(peek(sv));                           // lent to a function
@@ -52,24 +52,24 @@ fn main() {
   }
   report("the contents of an Rc, borrowed before the loop", total.load() == 1000u64 * (7u64 + 7u64 + 3u64 + 10u64));
 
-  imm items = Atomic[u64].of(0u64);
+  let items = Atomic[u64].of(0u64);
   parallel each r in list {
     items.add(*r);                                 // a number, through the pass's borrow
   }
   report("a list of numbers read through the pass's borrow", items.load() == 199u64 * 200u64 / 2u64);
 
-  imm arc = new Arc[imm, u64](5u64);
-  imm viaArc = Atomic[u64].of(0u64);
+  let arc = new Arc[imm, u64](5u64);
+  let viaArc = Atomic[u64].of(0u64);
   parallel each i in 0usize ..< 1000usize {
-    imm mine = arc;                                // an Arc is copied atomically
+    let mine = arc;                                // an Arc is copied atomically
     viaArc.add(*mine);
   }
   report("an Arc copied in the body", viaArc.load() == 5000u64);
 
-  imm own = Atomic[u64].of(0u64);
+  let own = Atomic[u64].of(0u64);
   parallel each i in 0usize ..< 1000usize {
-    imm made = new Rc[imm, u64](u64.from(i));      // the pass's own Rc,
-    imm again = made;                              // and a copy of it
+    let made = new Rc[imm, u64](u64.from(i));      // the pass's own Rc,
+    let again = made;                              // and a copy of it
     own.add(*again);
   }
   report("an Rc the pass makes, and copies", own.load() == 999u64 * 1000u64 / 2u64);

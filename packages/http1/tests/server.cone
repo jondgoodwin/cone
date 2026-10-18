@@ -19,19 +19,19 @@ import calendar;
 // ---- the harness: feed bytes in, take bytes out, write events down ----
 
 fn feed(c &mut Connection, pool &Pool, text &Array[u8], at Instant) {
-  mut i = 0usize;
+  var i = 0usize;
   while i < text.len {
-    mut b = pool.mustTake(4096usize);
-    imm n = b.append(&text[i ..< text.len]);
+    var b = pool.mustTake(4096usize);
+    let n = b.append(&text[i ..< text.len]);
     c.handleInput(b, at);
     i = i + n;
   }
 }
 
 fn drain(c &mut Connection, at Instant) String {
-  mut s = String.empty();
+  var s = String.empty();
   while true {
-    imm b = c.pollTransmit(at);
+    let b = c.pollTransmit(at);
     if b.len() == 0usize {break;}
     s.appendBytes(b.view());
   }
@@ -39,7 +39,7 @@ fn drain(c &mut Connection, at Instant) String {
 }
 
 fn putFields(out &mut String, h &Headers) {
-  mut i = 0usize;
+  var i = 0usize;
   while i < h.len() {
     out.append(" [");
     out.append(h.nameAt(i));
@@ -68,7 +68,7 @@ fn rec() Rec {new Rec(String.empty(), String.empty());}
 fn drive(c &mut Connection, r &mut Rec) {
   while true {
     match c.pollEvent() {
-      case mut e Request {
+      case var e Request {
         r.log.append("request ");
         r.log.append(e.head.methodName());
         r.log.append(" ");
@@ -80,23 +80,23 @@ fn drive(c &mut Connection, r &mut Rec) {
         putFields(&mut r.log, &e.head.headers);
         r.log.append("\n");
       }
-      case mut e Response {
+      case var e Response {
         r.log.append("response ");
         r.log.appendUInt(u64.from(e.head.status));
         putBody(&mut r.log, &e.body);
         putFields(&mut r.log, &e.head.headers);
         r.log.append("\n");
       }
-      case mut e Interim {
+      case var e Interim {
         r.log.append("interim ");
         r.log.appendUInt(u64.from(e.head.status));
         r.log.append("\n");
       }
-      case mut d Data {
+      case var d Data {
         r.body.appendBytes(d.buf.view());
         c.release(d.buf.len());
       }
-      case mut e End {
+      case var e End {
         if r.body.len() > 0usize {
           r.log.append("body ");
           r.log.append(r.body.view());
@@ -107,7 +107,7 @@ fn drive(c &mut Connection, r &mut Rec) {
         putFields(&mut r.log, &e.trailers);
         r.log.append("\n");
       }
-      case mut f Failed {
+      case var f Failed {
         r.log.append("failed ");
         r.log.append(f.error.message().view());
         r.log.append("\n");
@@ -124,10 +124,10 @@ fn drive(c &mut Connection, r &mut Rec) {
 
 // The events of a server that read this text
 fn reads(pool &Pool, request &Array[u8], want &Array[u8], label &Array[u8]) {
-  imm t = Instant.fromNanos(1000000000i64);
-  mut c = Connection.server(Config.make(), *pool, t);
+  let t = Instant.fromNanos(1000000000i64);
+  var c = Connection.server(Config.make(), *pool, t);
   feed(&mut c, pool, request, t);
-  mut r = rec();
+  var r = rec();
   drive(&mut c, &mut r);
   expectStr(r.log.view(), want, label);
 }
@@ -161,27 +161,27 @@ fn requests(pool &Pool) {
 
 // A server that has read request and sent a response to it: the bytes
 fn answer(pool &Pool, request &Array[u8], head ResponseHead, body BodyLength, data &Array[u8]) String {
-  imm t = Instant.fromNanos(1000000000i64);
-  mut c = Connection.server(Config.make(), *pool, t);
+  let t = Instant.fromNanos(1000000000i64);
+  var c = Connection.server(Config.make(), *pool, t);
   feed(&mut c, pool, request, t);
-  mut r = rec();
+  var r = rec();
   drive(&mut c, &mut r);
   c.sendResponse(head, body);
   if data.len > 0usize {
-    mut b = pool.mustTake(data.len);
+    var b = pool.mustTake(data.len);
     b.append(data);
     c.sendData(b);
   }
   c.finish();
-  mut s = drain(&mut c, t);
+  var s = drain(&mut c, t);
   if c.isClosed() {s.append(" [closed]");}
   s;
 }
 
 fn responses(pool &Pool) {
-  imm get = "GET / HTTP/1.1\r\nHost: h\r\n\r\n";
+  let get = "GET / HTTP/1.1\r\nHost: h\r\n\r\n";
   {
-    mut h = ResponseHead.make(200u16);
+    var h = ResponseHead.make(200u16);
     h.headers.add("Date", calendar.httpDate(Timestamp.fromUnixSeconds(784111777)).view());
     h.headers.add("Content-Type", "text/plain");
     expectStr(answer(pool, get, h, BodyLength.sized(5u64), "hello").view(),
@@ -203,10 +203,10 @@ fn responses(pool &Pool) {
     "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok [closed]",
     "asked to close: says so, and closes");
   {
-    imm t = Instant.fromNanos(1000000000i64);
-    mut c = Connection.server(Config.make(), *pool, t);
+    let t = Instant.fromNanos(1000000000i64);
+    var c = Connection.server(Config.make(), *pool, t);
     feed(&mut c, pool, "PUT /f HTTP/1.1\r\nHost: h\r\nExpect: 100-continue\r\nContent-Length: 3\r\n\r\n", t);
-    mut r = rec();
+    var r = rec();
     drive(&mut c, &mut r);
     expectStr(r.log.view(), "request PUT /f host=h sized 3 [Expect: 100-continue] [Content-Length: 3]\n",
       "Expect is the program's to see");
@@ -222,14 +222,14 @@ fn responses(pool &Pool) {
 
 // Two requests in one read, answered in turn
 fn pipelined(pool &Pool) {
-  imm t = Instant.fromNanos(1000000000i64);
-  mut c = Connection.server(Config.make(), *pool, t);
+  let t = Instant.fromNanos(1000000000i64);
+  var c = Connection.server(Config.make(), *pool, t);
   feed(&mut c, pool, "GET /1 HTTP/1.1\r\nHost: h\r\n\r\nGET /2 HTTP/1.1\r\nHost: h\r\n\r\n", t);
-  mut r = rec();
+  var r = rec();
   drive(&mut c, &mut r);
   expectStr(r.log.view(), "request GET /1 host=h empty\nend\n", "the first request, and no further until it is answered");
   c.sendResponse(ResponseHead.make(200u16), BodyLength.sized(1u64));
-  mut b = pool.mustTake(1usize);
+  var b = pool.mustTake(1usize);
   b.append("1");
   c.sendData(b);
   c.finish();
@@ -243,7 +243,7 @@ fn pipelined(pool &Pool) {
 
 fn main() i32 {
   {
-    imm pool = Pool.make();
+    let pool = Pool.make();
     requests(&pool);
     responses(&pool);
     pipelined(&pool);

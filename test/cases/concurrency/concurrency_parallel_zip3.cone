@@ -54,19 +54,19 @@ fn show(label &str, n u64) {
 }
 
 fn zeros(n usize) List[u32] {
-  mut l = new List[u32];
+  var l = new List[u32];
   each i in 0usize ..< n { l.push(0u32); }
   l;
 }
 
 fn total(s &Array[u32]) u64 {
-  mut sum = 0u64;
+  var sum = 0u64;
   each p in s { sum = sum + u64.from(*p); }
   sum;
 }
 
 fn mismatches(a &Array[u32], b &Array[u32]) u64 {
-  mut bad = 0u64;
+  var bad = 0u64;
   if a.len != b.len { return 1000000u64; }
   each i, p in a.indexed() {
     if *p != b[i] { bad = bad + 1u64; }
@@ -79,14 +79,14 @@ fn main() {
   actors.configure(new actors.Options(workers: 4u32));
 
   // ---- three outputs in one pass, three chunk sizes, a short last chunk ----
-  mut a = zeros(6002usize);
-  mut b = zeros(18006usize);
-  mut c = zeros(10803usize);
-  mut serialA = zeros(6002usize);
-  mut serialB = zeros(18006usize);
-  mut serialC = zeros(10803usize);
-  imm passes = Atomic[u64].of(0u64);
-  imm shortPasses = Atomic[u64].of(0u64);
+  var a = zeros(6002usize);
+  var b = zeros(18006usize);
+  var c = zeros(10803usize);
+  var serialA = zeros(6002usize);
+  var serialB = zeros(18006usize);
+  var serialC = zeros(10803usize);
+  let passes = Atomic[u64].of(0u64);
+  let shortPasses = Atomic[u64].of(0u64);
   parallel each y, ca, cb, cc in a.mutChunks(5usize).zip(b.mutChunks(15usize)).zip(c.mutChunks(9usize)).indexed() {
     passes.add(1u64);
     if ca.len == 2usize and cb.len == 6usize and cc.len == 3usize { shortPasses.add(1u64); }
@@ -109,19 +109,19 @@ fn main() {
   show("short passes", shortPasses.load());              // 1
 
   // ---- without the position: three variables; a read-only chunks source among them ----
-  mut src = new List[u64];
+  var src = new List[u64];
   each i in 0usize ..< 1002usize { src.push(u64.from(i)); }
-  mut sums = new List[u64];
-  mut lens = new List[u64];
+  var sums = new List[u64];
+  var lens = new List[u64];
   each i in 0usize ..< 251usize { sums.push(0u64); lens.push(0u64); }
   parallel each s, d, e in src.chunks(4usize).zip(sums.mutChunks(1usize)).zip(lens.mutChunks(1usize)) {
-    mut acc = 0u64;
+    var acc = 0u64;
     each x in s { acc = acc + *x; }
     d[0usize] = acc;
     e[0usize] = u64.from(s.len);
   }
-  mut sumsTotal = 0u64;
-  mut lensTotal = 0u64;
+  var sumsTotal = 0u64;
+  var lensTotal = 0u64;
   each v in sums { sumsTotal = sumsTotal + *v; }
   each v in lens { lensTotal = lensTotal + *v; }
   show("first chunk sum", *sums[0usize]);                // 6
@@ -131,24 +131,24 @@ fn main() {
   show("last chunk length", *lens[250usize]);            // 2
 
   // ... the same with the position, four variables
-  mut numbered = new List[u64];
+  var numbered = new List[u64];
   each i in 0usize ..< 251usize { numbered.push(0u64); }
   parallel each y, s, d, e in src.chunks(4usize).zip(numbered.mutChunks(1usize)).zip(lens.mutChunks(1usize)).indexed() {
     d[0usize] = u64.from(y);
     e[0usize] = e[0usize] + 1u64;
   }
-  mut numbersTotal = 0u64;
+  var numbersTotal = 0u64;
   each v in numbered { numbersTotal = numbersTotal + *v; }
   show("sum of the pass numbers", numbersTotal);         // 0 + ... + 250 = 31375
 
   // ---- three lists ----
-  mut l1 = new List[u32];
-  mut l2 = new List[u32];
-  mut l3 = new List[u32];
+  var l1 = new List[u32];
+  var l2 = new List[u32];
+  var l3 = new List[u32];
   each i in 0usize ..< 10usize { l1.push(u32.from(i)); l2.push(10u32); }
   each i in 0usize ..< 7usize { l3.push(2u32); }
-  imm products = Atomic[u64].of(0u64);
-  imm weighted = Atomic[u64].of(0u64);
+  let products = Atomic[u64].of(0u64);
+  let weighted = Atomic[u64].of(0u64);
   parallel each x, y, z in zip(&l1, &l2).zip(l3.iter()) {
     products.add(u64.from(*x) * u64.from(*y) * u64.from(*z));
   }
@@ -159,21 +159,21 @@ fn main() {
   show("three lists, numbered", weighted.load());               // 2100
 
   // ---- plain each over the same three-way zip ----
-  mut serialProducts = 0u64;
+  var serialProducts = 0u64;
   each x, y, z in zip(&l1, &l2).zip(l3.iter()) {
     serialProducts = serialProducts + u64.from(*x) * u64.from(*y) * u64.from(*z);
   }
   show("plain each, the same three lists", serialProducts);     // 420
 
   // ---- the filter, and a source with nothing in it ----
-  imm evens = Atomic[u64].of(0u64);
+  let evens = Atomic[u64].of(0u64);
   parallel each y, s, d, e in src.chunks(4usize).zip(numbered.mutChunks(1usize)).zip(lens.mutChunks(1usize)).indexed() if y % 2usize == 0usize {
     evens.add(1u64);
   }
   show("filtered passes", evens.load());                 // 251 chunks, numbers 0 to 250, 126 even
 
-  imm nothing = new List[u32];
-  imm none = Atomic[u64].of(0u64);
+  let nothing = new List[u32];
+  let none = Atomic[u64].of(0u64);
   parallel each x, y, z in zip(&l1, &l2).zip(nothing.iter()) {
     none.add(1u64);
   }

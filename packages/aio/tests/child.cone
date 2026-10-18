@@ -37,7 +37,7 @@ import aio use IoLimits;
 
 fn take(rx &mut Receiver[u64]) u64 {
   match rx.recv() {
-    case imm v Some {v;}
+    case let v Some {v;}
     else {999u64;}
   }
 }
@@ -45,14 +45,14 @@ fn take(rx &mut Receiver[u64]) u64 {
 fn b(v bool) u64 {if v {1u64;} else {0u64;}}
 
 fn ms(since Instant) u64 {
-  imm n = since.elapsed().millis();
+  let n = since.elapsed().millis();
   if n < 0i64 {0u64;} else {u64.from(n);};
 }
 
 // How a run ended: 1 done, 2 cancelled, 3 timed out, 4 a failure of the system
 fn endedBy(r &Result[process.Output, IoError]) u64 {
   match r {
-    case imm e &Error {
+    case let e &Error {
       if e.isCancelled() {2u64;}
       elif e.isTimedOut() {3u64;}
       else {4u64;}
@@ -63,17 +63,17 @@ fn endedBy(r &Result[process.Output, IoError]) u64 {
 
 fn codeOf(r &Result[process.Output, IoError]) u64 {
   match r {
-    case imm e &Error {u64.from(e.code);}
+    case let e &Error {u64.from(e.code);}
     else {0u64;}
   }
 }
 
 // The Output an answer holds, a blank one for a failure
 fn outputOf(r Result[process.Output, IoError]) process.Output {
-  mut res = r;
-  mut o = new process.Output(0u32, 0u32, false, String.empty(), String.empty());
+  var res = r;
+  var o = new process.Output(0u32, 0u32, false, String.empty(), String.empty());
   match &mut res {
-    case mut ok &mut Ok {o <=> *ok;}
+    case var ok &mut Ok {o <=> *ok;}
     else {}
   }
   o;
@@ -81,7 +81,7 @@ fn outputOf(r Result[process.Output, IoError]) process.Output {
 
 // The system's way to say hello, as arguments
 fn echoArgs() List[String] {
-  mut a = List[String].empty();
+  var a = List[String].empty();
   if isWindows() {
     a.push(String.from("cmd"));
     a.push(String.from("/c"));
@@ -93,7 +93,7 @@ fn echoArgs() List[String] {
 
 // A command line that takes about 'secs' seconds
 fn slowLine(secs u64) String {
-  mut s = String.empty();
+  var s = String.empty();
   if isWindows() {
     s.append("cmd /c ping -n ");
     s.appendUInt(secs + 1u64);
@@ -110,48 +110,48 @@ actor Runner {
 
   pub async do basic(self) {
     {
-      imm args = echoArgs();
-      imm r = await aio.run(args.view());
-      imm how = endedBy(&r);
-      imm o = outputOf(r);
+      let args = echoArgs();
+      let r = await aio.run(args.view());
+      let how = endedBy(&r);
+      let o = outputOf(r);
       out.send(how);
       out.send(u64.from(o.exitCode));
       out.send(b(o.stdout.startsWith("hello") and o.stdout.len() > 5usize));
       out.send(b(o.stderr.isEmpty()));
     }
     {
-      imm r = await aio.runLine(if isWindows() {"cmd /c exit 3";} else {"exit 3";});
-      imm how = endedBy(&r);
-      imm o = outputOf(r);
+      let r = await aio.runLine(if isWindows() {"cmd /c exit 3";} else {"exit 3";});
+      let how = endedBy(&r);
+      let o = outputOf(r);
       out.send(how);
       out.send(u64.from(o.exitCode));
       out.send(b(o.success()));
     }
     {
-      imm r = await aio.runLine(if isWindows() {"cmd /c echo oops>&2";} else {"echo oops >&2";});
-      imm how = endedBy(&r);
-      imm o = outputOf(r);
+      let r = await aio.runLine(if isWindows() {"cmd /c echo oops>&2";} else {"echo oops >&2";});
+      let how = endedBy(&r);
+      let o = outputOf(r);
       out.send(how);
       out.send(b(o.stderr.startsWith("oops")));
       out.send(b(o.stdout.isEmpty()));
     }
     {
-      mut args = List[String].empty();
+      var args = List[String].empty();
       args.push(String.from("aio-no-such-program"));
-      imm r = await aio.run(args.view());
+      let r = await aio.run(args.view());
       out.send(endedBy(&r));
       out.send(codeOf(&r));
     }
     {
-      imm args = echoArgs();
-      imm r = await aio.run(args.view(), new process.Options(), "aio-no-such-folder");
+      let args = echoArgs();
+      let r = await aio.run(args.view(), new process.Options(), "aio-no-such-folder");
       out.send(endedBy(&r));
     }
     {
-      imm t = Instant.now();
-      imm r = await aio.runLine(slowLine(4u64).view(), new process.Options(timeout: Duration.fromMillis(300i64)));
-      imm how = endedBy(&r);
-      imm o = outputOf(r);
+      let t = Instant.now();
+      let r = await aio.runLine(slowLine(4u64).view(), new process.Options(timeout: Duration.fromMillis(300i64)));
+      let how = endedBy(&r);
+      let o = outputOf(r);
       out.send(how);
       out.send(b(o.timedOut));
       out.send(b(ms(t) < 2500u64));
@@ -162,10 +162,10 @@ actor Runner {
 // A child that says hello
 actor Echoer {
   pub async do go(self, out Sender[u64]) {
-    imm args = echoArgs();
-    imm r = await aio.run(args.view());
-    imm how = endedBy(&r);
-    imm o = outputOf(r);
+    let args = echoArgs();
+    let r = await aio.run(args.view());
+    let how = endedBy(&r);
+    let o = outputOf(r);
     out.send(b(how == 1u64 and o.exitCode == 0u32 and o.stdout.startsWith("hello")));
   }
 }
@@ -173,9 +173,9 @@ actor Echoer {
 // A child of about a second
 actor Slow {
   pub async do go(self, out Sender[u64]) {
-    imm r = await aio.runLine(slowLine(1u64).view());
-    imm how = endedBy(&r);
-    imm o = outputOf(r);
+    let r = await aio.runLine(slowLine(1u64).view());
+    let how = endedBy(&r);
+    let o = outputOf(r);
     out.send(if how == 1u64 and o.exitCode == 0u32 {12u64;} else {19u64;});
   }
 }
@@ -183,9 +183,9 @@ actor Slow {
 // Five 100 ms sleeps while the child runs
 actor Napper {
   pub async do go(self, out Sender[u64]) {
-    mut k = 0u64;
+    var k = 0u64;
     while k < 5u64 {
-      imm nap = await aio.sleep(Duration.fromMillis(100i64));
+      let nap = await aio.sleep(Duration.fromMillis(100i64));
       k = k + 1u64;
     }
     out.send(11u64);
@@ -195,9 +195,9 @@ actor Napper {
 // A child that holds a thread of the pool's lane for a second, then is stopped
 actor Holder {
   pub async do go(self, out Sender[u64]) {
-    imm r = await aio.runLine(slowLine(5u64).view(), new process.Options(timeout: Duration.fromMillis(1000i64)));
-    imm how = endedBy(&r);
-    imm o = outputOf(r);
+    let r = await aio.runLine(slowLine(5u64).view(), new process.Options(timeout: Duration.fromMillis(1000i64)));
+    let how = endedBy(&r);
+    let o = outputOf(r);
     out.send(b(how == 1u64 and o.timedOut));
   }
 }
@@ -205,8 +205,8 @@ actor Holder {
 // A child queued behind the four, in a group main cancels
 actor Waiter {
   pub async do go(self, g CancelGroup, out Sender[u64]) {
-    imm t = Instant.now();
-    imm r = await aio.runLineIn(slowLine(1u64).view(), new process.Options(), "", IoLimits.within(g));
+    let t = Instant.now();
+    let r = await aio.runLineIn(slowLine(1u64).view(), new process.Options(), "", IoLimits.within(g));
     out.send(endedBy(&r));
     out.send(ms(t));
   }
@@ -215,23 +215,23 @@ actor Waiter {
 // A running child under a deadline
 actor Deadliner {
   pub async do go(self, out Sender[u64]) {
-    imm t = Instant.now();
-    imm r = await aio.runLineIn(slowLine(5u64).view(), new process.Options(timeout: Duration.fromMillis(1500i64)), "",
+    let t = Instant.now();
+    let r = await aio.runLineIn(slowLine(5u64).view(), new process.Options(timeout: Duration.fromMillis(1500i64)), "",
       IoLimits.until(t + Duration.fromMillis(100i64)));
     out.send(endedBy(&r));
     out.send(ms(t));
     // Let the child end by its own timeout
-    imm rest = await aio.sleep(Duration.fromMillis(1700i64));
+    let rest = await aio.sleep(Duration.fromMillis(1700i64));
     out.send(1u64);
   }
 }
 
 fn main() i32 {
   initAll();
-  mut tx Sender[u64];
-  mut rx Receiver[u64];
+  var tx Sender[u64];
+  var rx Receiver[u64];
   tx, rx = Channel[u64].make();
-  imm r = new Runner(tx.clone());
+  let r = new Runner(tx.clone());
   r.basic();
 
   expectUInt(take(&mut rx), 1u64, "echo hello: Done");
@@ -257,16 +257,16 @@ fn main() i32 {
 
   // Twenty at once: four run at a time, the rest wait their turn
   {
-    mut k = 0u64;
+    var k = 0u64;
     while k < 20u64 {
-      imm e = new Echoer();
+      let e = new Echoer();
       e.go(tx.clone());
       k = k + 1u64;
     }
   }
-  mut said = 0u64;
+  var said = 0u64;
   {
-    mut k = 0u64;
+    var k = 0u64;
     while k < 20u64 {
       said = said + take(&mut rx);
       k = k + 1u64;
@@ -275,33 +275,33 @@ fn main() i32 {
   expectUInt(said, 20u64, "twenty children at once: each Done, saying hello");
 
   // A child of a second, and a sleeper meanwhile
-  imm slow = new Slow();
+  let slow = new Slow();
   slow.go(tx.clone());
-  imm nap = new Napper();
+  let nap = new Napper();
   nap.go(tx.clone());
   expectUInt(take(&mut rx), 11u64, "a sleeper finishes while the child still runs");
   expectUInt(take(&mut rx), 12u64, "...and the child ends Done, exit code 0");
 
   // The lane's four threads held, a fifth child queued behind them
   {
-    mut k = 0u64;
+    var k = 0u64;
     while k < 4u64 {
-      imm h = new Holder();
+      let h = new Holder();
       h.go(tx.clone());
       k = k + 1u64;
     }
   }
   thread.sleep(Duration.fromMillis(300i64));
-  imm g = CancelGroup.make();
-  imm w = new Waiter();
+  let g = CancelGroup.make();
+  let w = new Waiter();
   w.go(g, tx.clone());
   thread.sleep(Duration.fromMillis(150i64));
   expect(g.cancel(), "the group was live");
   expectUInt(take(&mut rx), 2u64, "a child queued behind four: Cancelled");
   expect(take(&mut rx) < 900u64, "...at once, not when a thread freed");
-  mut held = 0u64;
+  var held = 0u64;
   {
-    mut k = 0u64;
+    var k = 0u64;
     while k < 4u64 {
       held = held + take(&mut rx);
       k = k + 1u64;
@@ -310,7 +310,7 @@ fn main() i32 {
   expectUInt(held, 4u64, "the four children were stopped by their timeouts, Done");
 
   // A running child under a deadline
-  imm d = new Deadliner();
+  let d = new Deadliner();
   d.go(tx.clone());
   expectUInt(take(&mut rx), 3u64, "a running child under a deadline: TimedOut");
   expect(take(&mut rx) < 1000u64, "...at the deadline, not when the child ended");

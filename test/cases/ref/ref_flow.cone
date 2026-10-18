@@ -16,20 +16,20 @@
 mod ref_flow;
 
 fn writesAndLifetimes(readOnly &i32) {
-  mut target = 1;
-  mut other = 2;
+  var target = 1;
+  var other = 2;
 
   // A reference borrowed without 'mut' may be read through but not written
-  imm reading = &target;
+  let reading = &target;
   *reading = 5;           //~ ErrorNoMut:3 "You do not have permission to modify lval"
 
   // ... and that holds for one arriving as a parameter, where the borrow is
   // out of sight
   *readOnly = 6;          //~ ErrorNoMut:3 "You do not have permission to modify lval"
 
-  // The variable's own permission is a separate question: this one is 'imm',
+  // The variable's own word is a separate question: this one is 'let',
   // so it may not be re-pointed even though what it points at is writable
-  imm fixed = &mut target;
+  let fixed = &mut target;
   fixed = &mut other;     //~ ErrorNoMut:3 "You do not have permission to modify lval"
 }
 
@@ -41,19 +41,19 @@ fn writesAndLifetimes(readOnly &i32) {
 // walks only a function whose flow raised nothing else, hence a function of
 // its own.
 fn lifetimes() i32 {
-  imm target = 1;
-  mut escaping = &target;
+  let target = 1;
+  var escaping = &target;
   {
-    mut shortLived = 3;      //~ ErrorFrozen
+    var shortLived = 3;      //~ ErrorFrozen
     escaping = &shortLived;
   }
-  imm first = *escaping;
+  let first = *escaping;
 
   // ... nor by way of a local it initialized, whether that local's type is
   // inferred or declared
   {
-    mut shortLived = 4;      //~ ErrorFrozen
-    imm held &i32 = &shortLived;
+    var shortLived = 4;      //~ ErrorFrozen
+    let held &i32 = &shortLived;
     escaping = held;
   }
   first + *escaping;
@@ -65,7 +65,7 @@ fn lifetimes() i32 {
 // emitted the store, while 'imm x = *p' on the same variable was caught. Swap
 // read both of its sides all along, so the two disagreed about one expression.
 fn writesThroughUninitialized() {
-  mut p &mut i32;
+  var p &mut i32;
   *p = 5;                 //~ ErrorMove:4 "has not been initialized"
 }
 
@@ -81,26 +81,26 @@ struct Point {
 }
 
 fn readsThroughOpaq() {
-  imm value = 1;
-  imm point = new Point(1, 2);
-  imm array = [1, 2, 3];
+  let value = 1;
+  let point = new Point(1, 2);
+  let array = [1, 2, 3];
 
   // A dereference
-  imm hidden = &opaq value;
-  imm v = *hidden;               //~ ErrorNoRead:12 "does not allow reading"
+  let hidden = &opaq value;
+  let v = *hidden;               //~ ErrorNoRead:12 "does not allow reading"
 
   // A field, reached through the dereference injected for a plain reference
-  imm hiddenPoint = &opaq point;
-  imm x = hiddenPoint.x;         //~ ErrorNoRead:11 "does not allow reading"
+  let hiddenPoint = &opaq point;
+  let x = hiddenPoint.x;         //~ ErrorNoRead:11 "does not allow reading"
 
   // An element of a fixed-size array, which is indexed through the reference
   // with no dereference injected
-  imm hiddenArray = &opaq array;
-  imm e = hiddenArray[0];        //~ ErrorNoRead:11 "does not allow reading"
+  let hiddenArray = &opaq array;
+  let e = hiddenArray[0];        //~ ErrorNoRead:11 "does not allow reading"
 
   // '==' on references compares the values they refer to, so it reads through
   // both, and each is refused
-  imm alsoHidden = hidden;
-  imm same = hidden == alsoHidden;  //~ ErrorNoRead:14 "does not allow reading"
+  let alsoHidden = hidden;
+  let same = hidden == alsoHidden;  //~ ErrorNoRead:14 "does not allow reading"
                                     //~^ ErrorNoRead:24 "does not allow reading"
 }

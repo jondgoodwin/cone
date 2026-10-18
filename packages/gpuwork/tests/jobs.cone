@@ -47,7 +47,7 @@ const VOXELS = 4096usize;
 const WORDS = 16384usize;      // the bake's first output: 4 f32s a voxel
 
 fn preference() u32 {
-  imm env = libc.getenv("GPU_POWER_PREFERENCE");
+  let env = libc.getenv("GPU_POWER_PREFERENCE");
   if (env as usize) != 0usize and libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 { return POWER_PREFERENCE_LOW_POWER; }
   POWER_PREFERENCE_HIGH_PERFORMANCE;
 }
@@ -67,13 +67,13 @@ struct Bake {
 
 // The bake, as a Cone compute entry point declares it
 fn bake(inv Invocation, b Bake, out &mut Array[f32], hashes &mut Array[u32]) {
-  imm x = inv.globalId[0usize];
-  imm y = inv.globalId[1usize];
-  imm z = inv.globalId[2usize];
+  let x = inv.globalId[0usize];
+  let y = inv.globalId[1usize];
+  let z = inv.globalId[2usize];
   if x >= b.size or y >= b.size or z >= b.size { return; }
-  imm p = new Vec3(b.ox + f32.from(x) * b.step, b.oy + f32.from(y) * b.step, b.oz + f32.from(z) * b.step);
-  imm n = fbm3(p, b.seed, 4, 2., 0.5);
-  imm v = usize.from(x + b.size * (y + b.size * z));
+  let p = new Vec3(b.ox + f32.from(x) * b.step, b.oy + f32.from(y) * b.step, b.oz + f32.from(z) * b.step);
+  let n = fbm3(p, b.seed, 4, 2., 0.5);
+  let v = usize.from(x + b.size * (y + b.size * z));
   out[4usize * v] = n.value;
   out[4usize * v + 1usize] = n.d.x;
   out[4usize * v + 2usize] = n.d.y;
@@ -87,7 +87,7 @@ fn bakeTwin(inv Invocation, buffers &Array[Words]) {
 
 // The scramble: out[i] = pcg(words[i] ^ i)
 fn scramble(inv Invocation, words &Array[u32], out &mut Array[u32]) {
-  imm i = inv.globalId[0usize];
+  let i = inv.globalId[0usize];
   if usize.from(i) >= words.len { return; }
   out[usize.from(i)] = pcg(words[usize.from(i)] ^ i);
 }
@@ -98,8 +98,8 @@ fn scrambleTwin(inv Invocation, buffers &Array[Words]) {
 
 // 'count' zero words
 fn zeros(count usize) List[u32] {
-  mut l = List[u32].withCapacity(count);
-  mut i = 0usize;
+  var l = List[u32].withCapacity(count);
+  var i = 0usize;
   while i < count {
     l.push(0u32);
     i = i + 1usize;
@@ -108,7 +108,7 @@ fn zeros(count usize) List[u32] {
 }
 
 fn bakeParams() List[u32] {
-  mut params = List[u32].empty();
+  var params = List[u32].empty();
   params.push(bits(-2.03125));
   params.push(bits(0.53125));
   params.push(bits(1.25));
@@ -120,8 +120,8 @@ fn bakeParams() List[u32] {
 
 // How many of 'got' differ from 'want' (a missing word differs)
 fn differences(got &List[u32], want &Array[u32]) u64 {
-  mut n = 0u64;
-  mut i = 0usize;
+  var n = 0u64;
+  var i = 0usize;
   while i < want.len {
     if i >= got.len() or *got[i] != want[i] { n = n + 1u64; }
     i = i + 1usize;
@@ -130,32 +130,32 @@ fn differences(got &List[u32], want &Array[u32]) u64 {
 }
 
 fn main() i32 {
-  mut instance = Instance.create("gpuwork jobs");
+  var instance = Instance.create("gpuwork jobs");
   require(instance.isValid(), "a Vulkan 1.3 instance");
-  mut none = Surface.none();
-  mut adapter = instance.requestAdapter(&none, preference());
+  var none = Surface.none();
+  var adapter = instance.requestAdapter(&none, preference());
   require(adapter.isValid(), "an adapter");
-  mut device = adapter.requestDevice();
+  var device = adapter.requestDevice();
   require(device.isValid(), "a device");
 
-  mut bakeKernel = Kernel.make(&device, &NOISEBAKE_SPIRV, "bakeMain", &[READ, READ_WRITE, READ_WRITE]);
+  var bakeKernel = Kernel.make(&device, &NOISEBAKE_SPIRV, "bakeMain", &[READ, READ_WRITE, READ_WRITE]);
   bakeKernel.setTwin(&bakeTwin);
-  mut scrambleKernel = Kernel.make(&device, &SCRAMBLE_SPIRV, "scrambleMain", &[READ, READ_WRITE]);
+  var scrambleKernel = Kernel.make(&device, &SCRAMBLE_SPIRV, "scrambleMain", &[READ, READ_WRITE]);
   scrambleKernel.setTwin(&scrambleTwin);
   require(bakeKernel.isValid() and scrambleKernel.isValid(), "the two kernels");
   expectUInt(u64.from(scrambleKernel.workgroup[0usize]), 64u64, "the scramble's workgroup, read from the SPIR-V");
 
   // ---- What the GPU must give: the twins' answers ----
-  mut cpuBake = List[List[u32]].empty();
+  var cpuBake = List[List[u32]].empty();
   cpuBake.push(bakeParams());
   cpuBake.push(zeros(WORDS));
   cpuBake.push(zeros(VOXELS));
   require(runTwin(&bakeKernel, &mut cpuBake, 4u32, 4u32, 4u32), "the bake's twin ran");
-  mut cpuScramble = List[List[u32]].empty();
+  var cpuScramble = List[List[u32]].empty();
   {
-    imm baked = cpuBake[1usize].view();
-    mut copy = List[u32].withCapacity(WORDS);
-    mut i = 0usize;
+    let baked = cpuBake[1usize].view();
+    var copy = List[u32].withCapacity(WORDS);
+    var i = 0usize;
     while i < WORDS {
       copy.push(baked[i]);
       i = i + 1usize;
@@ -164,34 +164,34 @@ fn main() i32 {
   }
   cpuScramble.push(zeros(WORDS));
   require(runTwin(&scrambleKernel, &mut cpuScramble, 256u32), "the scramble's twin ran");
-  imm want = cpuScramble[1usize].view();
+  let want = cpuScramble[1usize].view();
 
-  mut works = Works.make();
-  mut got = List[Completion].empty();
+  var works = Works.make();
+  var got = List[Completion].empty();
 
   // ---- 1. One job, two dispatches chained on the GPU, polled ----
-  mut job = Job.make(&mut device);
-  imm params = job.give(upload(&mut device, cpuBake[0usize].view()));
-  imm baked = job.give(zeroed(&mut device, WORDS));
-  imm hashes = job.give(zeroed(&mut device, VOXELS));
-  imm scrambled = job.give(zeroed(&mut device, WORDS));
+  var job = Job.make(&mut device);
+  let params = job.give(upload(&mut device, cpuBake[0usize].view()));
+  let baked = job.give(zeroed(&mut device, WORDS));
+  let hashes = job.give(zeroed(&mut device, VOXELS));
+  let scrambled = job.give(zeroed(&mut device, WORDS));
   expectUInt(u64.from(baked), 1u64, "slots numbered in the order given");
   expect(job.dispatch(&mut device, &bakeKernel, &[params, baked, hashes], 4u32, 4u32, 4u32), "the bake dispatched");
   expect(job.dispatch(&mut device, &scrambleKernel, &[baked, scrambled], 256u32), "the scramble dispatched after it");
-  imm back = job.readback(&mut device, scrambled);
+  let back = job.readback(&mut device, scrambled);
   expectUInt(u64.from(back), 4u64, "the readback's buffer, a fifth slot");
-  imm first = works.submit(&mut device, job, Target.Here(11u64));
+  let first = works.submit(&mut device, job, Target.Here(11u64));
   expectUInt(u64.from(works.poll(&device, &mut got)), 0u64, "not complete while its frame is still recorded");
   expectUInt(u64.from(works.inFlight()), 1u64, "one job in flight");
   works.flush(&mut device);
-  mut polls = 0u64;
+  var polls = 0u64;
   while got.len() == 0usize and polls < 1000000000u64 {
     works.poll(&device, &mut got);          // a frame loop's poll, once a frame
     polls = polls + 1u64;
   }
   require(got.len() == 1usize, "the first job's completion, found by polling");
   {
-    imm c = &mut got[0usize];
+    let c = &mut got[0usize];
     expect(c.ticket == first, "its ticket");
     expectUInt(c.token, 11u64, "its token");
     expectBool(c.ok, true, "it ran");
@@ -201,39 +201,39 @@ fn main() i32 {
   expectUInt(u64.from(works.inFlight()), 0u64, "nothing in flight");
 
   // ---- 2. The bake's output, still on the GPU, into a second job ----
-  mut onGpu = Buffer.none();
+  var onGpu = Buffer.none();
   {
-    imm c = &mut got[0usize];
+    let c = &mut got[0usize];
     onGpu = c.take(baked);
     expectBool(c.buffers[usize.from(baked)].isValid(), false, "its slot left empty");
   }
   expectBool(onGpu.isValid(), true, "the bake's output taken from the completion");
   expectUInt(onGpu.size, u64.from(WORDS) * 4u64, "the whole buffer");
   got.clear();
-  mut second = Job.make(&mut device);
-  imm input = second.give(onGpu);
-  imm output = second.give(zeroed(&mut device, WORDS));
+  var second = Job.make(&mut device);
+  let input = second.give(onGpu);
+  let output = second.give(zeroed(&mut device, WORDS));
   second.dispatch(&mut device, &scrambleKernel, &[input, output], 256u32);
-  imm back2 = second.readback(&mut device, output);
-  imm ticket2 = works.submit(&mut device, second, Target.Here(22u64));
+  let back2 = second.readback(&mut device, output);
+  let ticket2 = works.submit(&mut device, second, Target.Here(22u64));
   expectUInt(u64.from(works.waitFor(&mut device, ticket2, &mut got)), 1u64, "the second job, waited for");
   {
-    imm c = &mut got[0usize];
+    let c = &mut got[0usize];
     expect(c.ticket == ticket2 and c.token == 22u64 and c.ok, "its ticket and token, and it ran");
     expectUInt(differences(&c.words(back2), want), 0u64, "the same words, from a buffer that never left the GPU");
   }
   got.clear();
 
   // ---- 3. A refused job ----
-  mut refused = Job.make(&mut device);
-  imm only = refused.give(zeroed(&mut device, 4usize));
+  var refused = Job.make(&mut device);
+  let only = refused.give(zeroed(&mut device, 4usize));
   expectBool(refused.dispatch(&mut device, &bakeKernel, &[only], 1u32), false, "one slot for three bindings refused");
   expectUInt(u64.from(refusals()), 1u64, "one refusal");
-  imm ticket3 = works.submit(&mut device, refused, Target.Here(33u64));
+  let ticket3 = works.submit(&mut device, refused, Target.Here(33u64));
   expectUInt(u64.from(works.poll(&device, &mut got)), 0u64, "a refused job waits for its frame, as any job");
   expectUInt(u64.from(works.waitFor(&mut device, ticket3, &mut got)), 1u64, "then completes");
   {
-    imm c = &mut got[0usize];
+    let c = &mut got[0usize];
     expect(c.ticket == ticket3 and c.token == 33u64, "its ticket and token");
     expectBool(c.ok, false, "not ok: it did not run");
     expectUInt(u64.from(c.count()), 1u64, "its buffer back");
@@ -242,23 +242,23 @@ fn main() i32 {
   got.clear();
 
   // ---- 4. Two jobs in flight, all waited for: completions in order ----
-  mut small = List[u32].empty();
-  mut smallWant = List[u32].empty();
-  mut i = 0u32;
+  var small = List[u32].empty();
+  var smallWant = List[u32].empty();
+  var i = 0u32;
   while i < 64u32 {
     small.push(i * 2654435761u32);
     smallWant.push(pcg((i * 2654435761u32) ^ i));
     i = i + 1u32;
   }
-  mut a = Job.make(&mut device);
-  imm aIn = a.give(upload(&mut device, small.view()));
-  imm aOut = a.give(zeroed(&mut device, 64usize));
+  var a = Job.make(&mut device);
+  let aIn = a.give(upload(&mut device, small.view()));
+  let aOut = a.give(zeroed(&mut device, 64usize));
   a.dispatch(&mut device, &scrambleKernel, &[aIn, aOut], 1u32);
-  imm aBack = a.readback(&mut device, aOut);
+  let aBack = a.readback(&mut device, aOut);
   works.submit(&mut device, a, Target.Here(41u64));
-  mut b = Job.make(&mut device);
-  imm bIn = b.give(upload(&mut device, small.view()));
-  imm bOut = b.give(zeroed(&mut device, 64usize));
+  var b = Job.make(&mut device);
+  let bIn = b.give(upload(&mut device, small.view()));
+  let bOut = b.give(zeroed(&mut device, 64usize));
   b.dispatch(&mut device, &scrambleKernel, &[bIn, bOut], 1u32);
   b.readback(&mut device, bOut);
   works.submit(&mut device, b, Target.Here(42u64));
@@ -277,7 +277,7 @@ fn main() i32 {
 
 // spirv-begin noisebake.spv NOISEBAKE_SPIRV
 // Written by tools/shaders/shaders.py from noisebake.slang (sha256 c6c0eda632597c724941e9495f81e4bda40583bd8218e49cb9962ff6e77ab3c8): do not edit.
-imm NOISEBAKE_SPIRV Array[u32, 7381] = [
+let NOISEBAKE_SPIRV Array[u32, 7381] = [
   0x07230203u32, 0x00010500u32, 0x00280000u32, 0x00000763u32, 0x00000000u32, 0x00020011u32,
   0x00000001u32, 0x000b000au32, 0x5f565053u32, 0x5f52484bu32, 0x726f7473u32, 0x5f656761u32,
   0x66667562u32, 0x735f7265u32, 0x61726f74u32, 0x635f6567u32, 0x7373616cu32, 0x00000000u32,
@@ -1514,7 +1514,7 @@ imm NOISEBAKE_SPIRV Array[u32, 7381] = [
 
 // spirv-begin scramble.spv SCRAMBLE_SPIRV
 // Written by tools/shaders/shaders.py from scramble.slang (sha256 f417e9db249767784a627ff65e956378fe572ae652bd78b85494be07ce2d5746): do not edit.
-imm SCRAMBLE_SPIRV Array[u32, 365] = [
+let SCRAMBLE_SPIRV Array[u32, 365] = [
   0x07230203u32, 0x00010500u32, 0x00280000u32, 0x00000053u32, 0x00000000u32, 0x00020011u32,
   0x00000001u32, 0x000b000au32, 0x5f565053u32, 0x5f52484bu32, 0x726f7473u32, 0x5f656761u32,
   0x66667562u32, 0x735f7265u32, 0x61726f74u32, 0x635f6567u32, 0x7373616cu32, 0x00000000u32,

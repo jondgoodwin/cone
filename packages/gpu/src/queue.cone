@@ -49,9 +49,9 @@ struct ReleasedObject {
 // Destroy everything one frame's state released, and free its list when asked (its room is
 // otherwise kept for the next time)
 fn destroyReleased(fns &DevFns, device vulkan.Device, frame &mut FrameState, freeList bool) {
-  mut d = 0usize;
+  var d = 0usize;
   while d < usize.from(frame.releasedCount) {
-    imm o = frame.released + d;
+    let o = frame.released + d;
     if o.kind == RELEASED_GROUP {
       fns.destroyDescriptorPool(device, o.pool, nullp());
     } elif o.kind == RELEASED_TEXTURE {
@@ -75,9 +75,9 @@ fn destroyReleased(fns &DevFns, device vulkan.Device, frame &mut FrameState, fre
 
 // Destroy the staging blocks one frame's state outgrew, and free its list when asked
 fn destroyRetired(fns &DevFns, device vulkan.Device, frame &mut FrameState, freeList bool) {
-  mut r = 0usize;
+  var r = 0usize;
   while r < usize.from(frame.retiredCount) {
-    imm b = frame.retired + r;
+    let b = frame.retired + r;
     fns.destroyBuffer(device, b.buffer, nullp());
     fns.freeMemory(device, b.memory, nullp());
     r = r + 1usize;
@@ -163,20 +163,20 @@ pub struct CommandQueue {
     }
     // In pieces of at most MAX_STAGING_BLOCK, so that staging memory stays
     // bounded however many bytes are written at once
-    mut written = 0u64;
+    var written = 0u64;
     while written < size {
-      imm piece = if size - written > MAX_STAGING_BLOCK { MAX_STAGING_BLOCK; } else { size - written; };
+      let piece = if size - written > MAX_STAGING_BLOCK { MAX_STAGING_BLOCK; } else { size - written; };
       if isNull(uploadCommands(self)) or !stagingRoom(self, piece) { return; }
-      imm cmd = uploadCommands(self);
-      imm i = usize.from(backend.frameIndex);
-      imm at = backend.frames[i].stagingUsed;
+      let cmd = uploadCommands(self);
+      let i = usize.from(backend.frameIndex);
+      let at = backend.frames[i].stagingUsed;
       libc.memcpy(backend.frames[i].staging.mapped + usize.from(at), data + usize.from(written), usize.from(piece));
       backend.frames[i].stagingUsed = at + piece;
       // After the frame's earlier copies, which may have written the same
       // bytes (two writes to one buffer in a frame land in the order made)
       memoryBarrier(&fns, cmd, vulkan.PIPELINE_STAGE_2_ALL_TRANSFER_BIT, vulkan.ACCESS_2_TRANSFER_WRITE_BIT,
         vulkan.PIPELINE_STAGE_2_ALL_TRANSFER_BIT, vulkan.ACCESS_2_TRANSFER_WRITE_BIT);
-      imm region = new vulkan.BufferCopy(at, offset + written, piece);
+      let region = new vulkan.BufferCopy(at, offset + written, piece);
       fns.cmdCopyBuffer(cmd, backend.frames[i].staging.buffer, buffer.backend.buffer, 1u32,
         &region as *vulkan.BufferCopy);
       written = written + piece;
@@ -199,7 +199,7 @@ pub struct CommandQueue {
       fail("clearBuffer: the offset or size is not a multiple of 4, or the bytes run past the buffer's end");
       return;
     }
-    imm cmd = uploadCommands(self);
+    let cmd = uploadCommands(self);
     if isNull(cmd) { return; }
     // After the frame's earlier copies and clears, which may have written
     // the same bytes
@@ -233,16 +233,16 @@ pub struct CommandQueue {
       fail("writeTextureRegion: the region runs past the texture's edge");
       return;
     }
-    imm texel = bytesPerTexel(texture.format);
+    let texel = bytesPerTexel(texture.format);
     if bytesPerRow < width * texel or bytesPerRow % texel != 0u32 or (bytesPerRow & 3u32) != 0u32 {
       fail("writeTextureRegion: bytesPerRow is less than a row, or not a multiple of a texel and of 4");
       return;
     }
-    imm size = u64.from(bytesPerRow) * u64.from(height);
+    let size = u64.from(bytesPerRow) * u64.from(height);
     if isNull(uploadCommands(self)) or !stagingRoom(self, size) { return; }
-    imm cmd = uploadCommands(self);
-    imm i = usize.from(backend.frameIndex);
-    imm at = backend.frames[i].stagingUsed;
+    let cmd = uploadCommands(self);
+    let i = usize.from(backend.frameIndex);
+    let at = backend.frames[i].stagingUsed;
     libc.memcpy(backend.frames[i].staging.mapped + usize.from(at), data, usize.from(size));
     backend.frames[i].stagingUsed = at + size;
     // The rest of the texture is kept, so the transition starts from the
@@ -251,7 +251,7 @@ pub struct CommandQueue {
       vulkan.IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
       vulkan.ACCESS_2_MEMORY_READ_BIT | vulkan.ACCESS_2_MEMORY_WRITE_BIT,
       vulkan.PIPELINE_STAGE_2_ALL_TRANSFER_BIT, vulkan.ACCESS_2_TRANSFER_WRITE_BIT);
-    imm region = new vulkan.BufferImageCopy(bufferOffset: at, bufferRowLength: bytesPerRow / texel,
+    let region = new vulkan.BufferImageCopy(bufferOffset: at, bufferRowLength: bytesPerRow / texel,
       imageSubresource: new vulkan.ImageSubresourceLayers(),
       imageOffset: new vulkan.Offset3D(i32.from(x), i32.from(y), 0i32),
       imageExtent: new vulkan.Extent3D(width, height, 1u32));
@@ -280,17 +280,17 @@ pub struct CommandQueue {
       fail("writeTexture: only a color texture shaders sample (TEXTURE_USAGE_TEXTURE_BINDING), or a storage texture, is written");
       return;
     }
-    imm texel = bytesPerTexel(texture.format);
+    let texel = bytesPerTexel(texture.format);
     if bytesPerRow < texture.width * texel or bytesPerRow % texel != 0u32 or (bytesPerRow & 3u32) != 0u32 {
       fail("writeTexture: bytesPerRow is less than a row, or not a multiple of a texel and of 4");
       return;
     }
-    imm depth = if texture.dimension == TEXTURE_DIMENSION_3D { texture.depthOrArrayLayers; } else { 1u32; };
-    imm size = u64.from(bytesPerRow) * u64.from(texture.height) * u64.from(depth);
+    let depth = if texture.dimension == TEXTURE_DIMENSION_3D { texture.depthOrArrayLayers; } else { 1u32; };
+    let size = u64.from(bytesPerRow) * u64.from(texture.height) * u64.from(depth);
     if isNull(uploadCommands(self)) or !stagingRoom(self, size) { return; }
-    imm cmd = uploadCommands(self);
-    imm i = usize.from(backend.frameIndex);
-    imm at = backend.frames[i].stagingUsed;
+    let cmd = uploadCommands(self);
+    let i = usize.from(backend.frameIndex);
+    let at = backend.frames[i].stagingUsed;
     libc.memcpy(backend.frames[i].staging.mapped + usize.from(at), data, usize.from(size));
     backend.frames[i].stagingUsed = at + size;
     // All of it is written, so what it held is not kept; earlier samplings
@@ -298,7 +298,7 @@ pub struct CommandQueue {
     transition(&fns, cmd, texture.backend.image, vulkan.IMAGE_ASPECT_COLOR_BIT, vulkan.IMAGE_LAYOUT_UNDEFINED,
       vulkan.IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT, vulkan.ACCESS_2_NONE,
       vulkan.PIPELINE_STAGE_2_ALL_TRANSFER_BIT, vulkan.ACCESS_2_TRANSFER_WRITE_BIT);
-    imm region = new vulkan.BufferImageCopy(bufferOffset: at, bufferRowLength: bytesPerRow / texel,
+    let region = new vulkan.BufferImageCopy(bufferOffset: at, bufferRowLength: bytesPerRow / texel,
       imageSubresource: new vulkan.ImageSubresourceLayers(), imageOffset: new vulkan.Offset3D(0i32, 0i32, 0i32),
       imageExtent: new vulkan.Extent3D(texture.width, texture.height, depth));
     fns.cmdCopyBufferToImage(cmd, backend.frames[i].staging.buffer, texture.backend.image,
@@ -328,32 +328,32 @@ pub struct CommandQueue {
       fail("writeTextureLevels: only a single-layer 2-D texture shaders sample is written");
       return;
     }
-    imm texel = bytesPerTexel(texture.format);
-    imm levels = texture.mipLevelCount;
-    mut size = 0u64;
-    mut l = 0u32;
+    let texel = bytesPerTexel(texture.format);
+    let levels = texture.mipLevelCount;
+    var size = 0u64;
+    var l = 0u32;
     while l < levels {
-      imm w = if (texture.width >> l) > 0u32 { texture.width >> l; } else { 1u32; };
-      imm h = if (texture.height >> l) > 0u32 { texture.height >> l; } else { 1u32; };
+      let w = if (texture.width >> l) > 0u32 { texture.width >> l; } else { 1u32; };
+      let h = if (texture.height >> l) > 0u32 { texture.height >> l; } else { 1u32; };
       size = size + u64.from(w) * u64.from(h) * u64.from(texel);
       l = l + 1u32;
     }
     if isNull(uploadCommands(self)) or !stagingRoom(self, size) { return; }
-    imm cmd = uploadCommands(self);
-    imm i = usize.from(backend.frameIndex);
-    imm at = backend.frames[i].stagingUsed;
+    let cmd = uploadCommands(self);
+    let i = usize.from(backend.frameIndex);
+    let at = backend.frames[i].stagingUsed;
     libc.memcpy(backend.frames[i].staging.mapped + usize.from(at), data, usize.from(size));
     backend.frames[i].stagingUsed = at + size;
-    imm all = new vulkan.ImageSubresourceRange(aspectMask: vulkan.IMAGE_ASPECT_COLOR_BIT, levelCount: levels);
+    let all = new vulkan.ImageSubresourceRange(aspectMask: vulkan.IMAGE_ASPECT_COLOR_BIT, levelCount: levels);
     transitionRange(&fns, cmd, texture.backend.image, all, vulkan.IMAGE_LAYOUT_UNDEFINED,
       vulkan.IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT, vulkan.ACCESS_2_NONE,
       vulkan.PIPELINE_STAGE_2_ALL_TRANSFER_BIT, vulkan.ACCESS_2_TRANSFER_WRITE_BIT);
-    mut regions = new Array[vulkan.BufferImageCopy, 16] <- fill zeroed[vulkan.BufferImageCopy]();
-    mut offset = at;
+    var regions = new Array[vulkan.BufferImageCopy, 16] <- fill zeroed[vulkan.BufferImageCopy]();
+    var offset = at;
     l = 0u32;
     while l < levels {
-      imm w = if (texture.width >> l) > 0u32 { texture.width >> l; } else { 1u32; };
-      imm h = if (texture.height >> l) > 0u32 { texture.height >> l; } else { 1u32; };
+      let w = if (texture.width >> l) > 0u32 { texture.width >> l; } else { 1u32; };
+      let h = if (texture.height >> l) > 0u32 { texture.height >> l; } else { 1u32; };
       regions[usize.from(l)] = new vulkan.BufferImageCopy(bufferOffset: offset, bufferRowLength: w,
         imageSubresource: new vulkan.ImageSubresourceLayers(mipLevel: l),
         imageOffset: new vulkan.Offset3D(0i32, 0i32, 0i32), imageExtent: new vulkan.Extent3D(w, h, 1u32));
@@ -424,8 +424,8 @@ pub struct CommandQueue {
 // Add 'o' to the objects frame state 'i' destroys when it comes round, growing the list by doubling
 fn queueReleased(queue &mut CommandQueue, i usize, o ReleasedObject) {
   if queue.backend.frames[i].releasedCount == queue.backend.frames[i].releasedCapacity {
-    imm capacity = if queue.backend.frames[i].releasedCapacity == 0u32 { 64u32; } else { queue.backend.frames[i].releasedCapacity * 2u32; };
-    imm grown = libc.calloc(usize.from(capacity), mem.sizeof[ReleasedObject]()) as *ReleasedObject;
+    let capacity = if queue.backend.frames[i].releasedCapacity == 0u32 { 64u32; } else { queue.backend.frames[i].releasedCapacity * 2u32; };
+    let grown = libc.calloc(usize.from(capacity), mem.sizeof[ReleasedObject]()) as *ReleasedObject;
     if (queue.backend.frames[i].released as usize) != 0usize {
       libc.memcpy(grown as *u8, queue.backend.frames[i].released as *u8,
         usize.from(queue.backend.frames[i].releasedCount) * mem.sizeof[ReleasedObject]());
@@ -442,16 +442,16 @@ fn queueReleased(queue &mut CommandQueue, i usize, o ReleasedObject) {
 // before them), so that the frame's staging memory is free to copy new bytes into from its start. The upload
 // command buffer, once run, is kept to record the next uploads into.
 fn flushStaging(queue &mut CommandQueue) {
-  imm i = usize.from(queue.backend.frameIndex);
-  imm upload = queue.backend.frames[i].upload;
+  let i = usize.from(queue.backend.frameIndex);
+  let upload = queue.backend.frames[i].upload;
   if isNull(upload) { return; }
   if queue.backend.flushFence.h == 0u64 {
-    imm fci = new vulkan.FenceCreateInfo();
-    mut made = new vulkan.Fence(0u64);
+    let fci = new vulkan.FenceCreateInfo();
+    var made = new vulkan.Fence(0u64);
     check(queue.fns.createFence(queue.backend.device, &fci, nullp(), &mut made), "vkCreateFence");
     queue.backend.flushFence = made;
   }
-  mut fence = queue.backend.flushFence;
+  var fence = queue.backend.flushFence;
   if submitCommands(queue, nullCommandBuffer(), fence, 0u32, null) {
     check(queue.fns.waitForFences(queue.backend.device, 1u32, &mut fence as *vulkan.Fence, vulkan.TRUE, NO_TIMEOUT),
       "vkWaitForFences");
@@ -463,8 +463,8 @@ fn flushStaging(queue &mut CommandQueue) {
 // Add 'block' to the staging blocks frame state 'i' destroys when it comes round, growing the list by doubling
 fn retireStaging(queue &mut CommandQueue, i usize, block StagingBlock) {
   if queue.backend.frames[i].retiredCount == queue.backend.frames[i].retiredCapacity {
-    imm capacity = if queue.backend.frames[i].retiredCapacity == 0u32 { 8u32; } else { queue.backend.frames[i].retiredCapacity * 2u32; };
-    imm grown = libc.calloc(usize.from(capacity), mem.sizeof[StagingBlock]()) as *StagingBlock;
+    let capacity = if queue.backend.frames[i].retiredCapacity == 0u32 { 8u32; } else { queue.backend.frames[i].retiredCapacity * 2u32; };
+    let grown = libc.calloc(usize.from(capacity), mem.sizeof[StagingBlock]()) as *StagingBlock;
     if (queue.backend.frames[i].retired as usize) != 0usize {
       libc.memcpy(grown as *u8, queue.backend.frames[i].retired as *u8,
         usize.from(queue.backend.frames[i].retiredCount) * mem.sizeof[StagingBlock]());
@@ -482,11 +482,11 @@ fn retireStaging(queue &mut CommandQueue, i usize, block StagingBlock) {
 // estimate's size. The estimate is the most of the last rounds, each counting half as much as the one
 // after it, so one spike does not leave its block for long and a steady load never gives its block back.
 fn shrinkStaging(queue &mut CommandQueue, i usize) {
-  imm taken = if queue.backend.frames[i].stagingTaken > MAX_STAGING_BLOCK { MAX_STAGING_BLOCK; } else { queue.backend.frames[i].stagingTaken; };
-  imm decayed = queue.backend.frames[i].stagingEstimate / 2u64;
+  let taken = if queue.backend.frames[i].stagingTaken > MAX_STAGING_BLOCK { MAX_STAGING_BLOCK; } else { queue.backend.frames[i].stagingTaken; };
+  let decayed = queue.backend.frames[i].stagingEstimate / 2u64;
   queue.backend.frames[i].stagingEstimate = if taken > decayed { taken; } else { decayed; };
   queue.backend.frames[i].stagingTaken = 0u64;
-  imm size = queue.backend.frames[i].staging.size;
+  let size = queue.backend.frames[i].staging.size;
   if queue.backend.frames[i].staging.buffer.h != 0u64 and size > STAGING_BLOCK
       and size >= queue.backend.frames[i].stagingEstimate * 4u64 {
     queue.fns.destroyBuffer(queue.backend.device, queue.backend.frames[i].staging.buffer, nullp());
@@ -500,10 +500,10 @@ fn shrinkStaging(queue &mut CommandQueue, i usize) {
 // staging memory
 fn beginQueueFrame(queue &mut CommandQueue) {
   if queue.backend.inFrame or (queue.backend.device as *u8 as usize) == 0usize { return; }
-  imm device = queue.backend.device;
-  imm i = usize.from(queue.backend.frameIndex);
+  let device = queue.backend.device;
+  let i = usize.from(queue.backend.frameIndex);
   if queue.backend.frames[i].pending {
-    mut fence = queue.backend.frames[i].fence;
+    var fence = queue.backend.frames[i].fence;
     check(queue.fns.waitForFences(device, 1u32, &mut fence as *vulkan.Fence, vulkan.TRUE, NO_TIMEOUT),
       "vkWaitForFences");
     check(queue.fns.resetFences(device, 1u32, &mut fence as *vulkan.Fence), "vkResetFences");
@@ -522,15 +522,15 @@ fn beginQueueFrame(queue &mut CommandQueue) {
 
 // The next unused command buffer of the current frame's pool, begun
 fn nextCommandBuffer(queue &mut CommandQueue) vulkan.CommandBuffer {
-  imm i = usize.from(queue.backend.frameIndex);
+  let i = usize.from(queue.backend.frameIndex);
   if queue.backend.frames[i].used == MAX_FRAME_COMMAND_BUFFERS {
     fail("a frame recorded more than 16 command buffers");
     return nullCommandBuffer();
   }
   if queue.backend.frames[i].used == queue.backend.frames[i].allocated {
-    imm ai = new vulkan.CommandBufferAllocateInfo(commandPool: queue.backend.frames[i].pool,
+    let ai = new vulkan.CommandBufferAllocateInfo(commandPool: queue.backend.frames[i].pool,
       commandBufferCount: 1u32);
-    mut cmd = nullCommandBuffer();
+    var cmd = nullCommandBuffer();
     if !check(queue.fns.allocateCommandBuffers(queue.backend.device, &ai, &mut cmd as *vulkan.CommandBuffer),
         "vkAllocateCommandBuffers") {
       return nullCommandBuffer();
@@ -538,9 +538,9 @@ fn nextCommandBuffer(queue &mut CommandQueue) vulkan.CommandBuffer {
     queue.backend.frames[i].buffers[usize.from(queue.backend.frames[i].allocated)] = cmd;
     queue.backend.frames[i].allocated = queue.backend.frames[i].allocated + 1u32;
   }
-  imm cmd = queue.backend.frames[i].buffers[usize.from(queue.backend.frames[i].used)];
+  let cmd = queue.backend.frames[i].buffers[usize.from(queue.backend.frames[i].used)];
   queue.backend.frames[i].used = queue.backend.frames[i].used + 1u32;
-  imm bi = new vulkan.CommandBufferBeginInfo(flags: vulkan.COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+  let bi = new vulkan.CommandBufferBeginInfo(flags: vulkan.COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
     pInheritanceInfo: nullp());
   check(queue.fns.beginCommandBuffer(cmd, &bi), "vkBeginCommandBuffer");
   cmd;
@@ -548,9 +548,9 @@ fn nextCommandBuffer(queue &mut CommandQueue) vulkan.CommandBuffer {
 
 // A global memory barrier between everything before it and everything after
 fn memoryBarrier(fns &DevFns, cmd vulkan.CommandBuffer, srcStage u64, srcAccess u64, dstStage u64, dstAccess u64) {
-  imm mb = new vulkan.MemoryBarrier2(srcStageMask: srcStage, srcAccessMask: srcAccess,
+  let mb = new vulkan.MemoryBarrier2(srcStageMask: srcStage, srcAccessMask: srcAccess,
     dstStageMask: dstStage, dstAccessMask: dstAccess);
-  imm dep = new vulkan.DependencyInfo(memoryBarrierCount: 1u32, pMemoryBarriers: &mb as *vulkan.MemoryBarrier2,
+  let dep = new vulkan.DependencyInfo(memoryBarrierCount: 1u32, pMemoryBarriers: &mb as *vulkan.MemoryBarrier2,
     pBufferMemoryBarriers: null,
     pImageMemoryBarriers: null);
   fns.cmdPipelineBarrier2(cmd, &dep);
@@ -563,15 +563,15 @@ fn memoryBarrier(fns &DevFns, cmd vulkan.CommandBuffer, srcStage u64, srcAccess 
 // read or write).
 fn uploadCommands(queue &mut CommandQueue) vulkan.CommandBuffer {
   beginQueueFrame(queue);
-  imm i = usize.from(queue.backend.frameIndex);
+  let i = usize.from(queue.backend.frameIndex);
   if !isNull(queue.backend.frames[i].upload) { return queue.backend.frames[i].upload; }
-  mut cmd = queue.backend.frames[i].spare;
+  var cmd = queue.backend.frames[i].spare;
   if isNull(cmd) {
     cmd = nextCommandBuffer(queue);
   } else {
     // The one a flush ran, recorded again (its pool lets a begun buffer reset itself)
     queue.backend.frames[i].spare = nullCommandBuffer();
-    imm bi = new vulkan.CommandBufferBeginInfo(flags: vulkan.COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+    let bi = new vulkan.CommandBufferBeginInfo(flags: vulkan.COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
       pInheritanceInfo: nullp());
     check(queue.fns.beginCommandBuffer(cmd, &bi), "vkBeginCommandBuffer");
   }
@@ -597,8 +597,8 @@ fn uploadCommands(queue &mut CommandQueue) vulkan.CommandBuffer {
 // A block whose bytes the GPU has finished with, or has none yet, is
 // destroyed rather than retired.
 fn stagingRoom(queue &mut CommandQueue, size u64) bool {
-  imm i = usize.from(queue.backend.frameIndex);
-  mut at = (queue.backend.frames[i].stagingUsed + 15u64) & 0xFFFFFFFFFFFFFFF0u64;
+  let i = usize.from(queue.backend.frameIndex);
+  var at = (queue.backend.frames[i].stagingUsed + 15u64) & 0xFFFFFFFFFFFFFFF0u64;
   if queue.backend.frames[i].staging.buffer.h != 0u64 and at + size > queue.backend.frames[i].staging.size
       and queue.backend.frames[i].staging.size >= MAX_STAGING_BLOCK and size <= queue.backend.frames[i].staging.size {
     flushStaging(queue);
@@ -609,7 +609,7 @@ fn stagingRoom(queue &mut CommandQueue, size u64) bool {
     queue.backend.frames[i].stagingTaken = queue.backend.frames[i].stagingTaken + size;
     return true;
   }
-  imm old = queue.backend.frames[i].staging;
+  let old = queue.backend.frames[i].staging;
   if old.buffer.h != 0u64 {
     if queue.backend.frames[i].stagingUsed == 0u64 {
       destroyStaging(queue, old);
@@ -617,7 +617,7 @@ fn stagingRoom(queue &mut CommandQueue, size u64) bool {
       retireStaging(queue, i, old);
     }
   }
-  mut blockSize = STAGING_BLOCK;
+  var blockSize = STAGING_BLOCK;
   if old.size * 2u64 > blockSize { blockSize = old.size * 2u64; }
   if old.size == 0u64 {
     while blockSize < queue.backend.frames[i].stagingEstimate and blockSize < MAX_STAGING_BLOCK { blockSize = blockSize * 2u64; }
@@ -625,7 +625,7 @@ fn stagingRoom(queue &mut CommandQueue, size u64) bool {
   while blockSize < size and blockSize < MAX_STAGING_BLOCK { blockSize = blockSize * 2u64; }
   if blockSize > MAX_STAGING_BLOCK { blockSize = MAX_STAGING_BLOCK; }
   if blockSize < size { blockSize = (size + STAGING_BLOCK - 1u64) / STAGING_BLOCK * STAGING_BLOCK; }
-  imm made = allocateBuffer(&queue.fns, queue.backend.device, &queue.backend.memory, blockSize,
+  let made = allocateBuffer(&queue.fns, queue.backend.device, &queue.backend.memory, blockSize,
     vulkan.BUFFER_USAGE_TRANSFER_SRC_BIT, BUFFER_USAGE_MAP_WRITE);
   queue.backend.frames[i].staging = new StagingBlock(made.buffer, made.memory, made.mapped, blockSize);
   queue.backend.frames[i].stagingUsed = 0u64;
@@ -650,12 +650,12 @@ fn destroyStaging(queue &mut CommandQueue, block StagingBlock) {
 // 'fence' and 'signalCount' semaphores
 fn submitCommands(queue &mut CommandQueue, cmd vulkan.CommandBuffer, fence vulkan.Fence, signalCount u32,
     signals *vulkan.SemaphoreSubmitInfo) bool {
-  mut cbis = new Array[vulkan.CommandBufferSubmitInfo, 2] <- fill new vulkan.CommandBufferSubmitInfo(
+  var cbis = new Array[vulkan.CommandBufferSubmitInfo, 2] <- fill new vulkan.CommandBufferSubmitInfo(
     commandBuffer: nullCommandBuffer());
-  mut count = 0usize;
+  var count = 0usize;
   if queue.backend.inFrame {
-    imm i = usize.from(queue.backend.frameIndex);
-    imm upload = queue.backend.frames[i].upload;
+    let i = usize.from(queue.backend.frameIndex);
+    let upload = queue.backend.frames[i].upload;
     if !isNull(upload) {
       // What was copied, visible to everything after
       memoryBarrier(&queue.fns, upload, vulkan.PIPELINE_STAGE_2_ALL_TRANSFER_BIT, vulkan.ACCESS_2_TRANSFER_WRITE_BIT,
@@ -670,11 +670,11 @@ fn submitCommands(queue &mut CommandQueue, cmd vulkan.CommandBuffer, fence vulka
     cbis[count].commandBuffer = cmd;
     count = count + 1usize;
   }
-  imm waitInfo = new vulkan.SemaphoreSubmitInfo(semaphore: queue.backend.acquired,
+  let waitInfo = new vulkan.SemaphoreSubmitInfo(semaphore: queue.backend.acquired,
     stageMask: vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
-  mut waits = 0u32;
+  var waits = 0u32;
   if queue.backend.waiting { waits = 1u32; }
-  imm submit = new vulkan.SubmitInfo2(waitSemaphoreInfoCount: waits,
+  let submit = new vulkan.SubmitInfo2(waitSemaphoreInfoCount: waits,
     pWaitSemaphoreInfos: &waitInfo as *vulkan.SemaphoreSubmitInfo, commandBufferInfoCount: u32.from(count),
     pCommandBufferInfos: &cbis as *vulkan.CommandBufferSubmitInfo, signalSemaphoreInfoCount: signalCount,
     pSignalSemaphoreInfos: signals);

@@ -94,7 +94,7 @@ fn noStructure(device &Device) AccelerationStructure {
 }
 
 fn bufferAddress(device &Device, buffer &Buffer) u64 {
-  imm info = new vulkan.BufferDeviceAddressInfo(buffer: buffer.backend.buffer);
+  let info = new vulkan.BufferDeviceAddressInfo(buffer: buffer.backend.buffer);
   device.backend.ray.getBufferDeviceAddress(device.backend.device, &info);
 }
 
@@ -103,7 +103,7 @@ fn roundUp256(n u64) u64 { ((n + 255u64) / 256u64) * 256u64; }
 // The structure over one mesh's triangles. The buffers are read when the build is recorded, so they
 // must keep these contents until then (and must not be released before the build is done).
 fn makeBottomLevel(device &mut Device, positions &Buffer, vertexCount u32, indices &Buffer, indexCount u32) AccelerationStructure {
-  mut result = noStructure(device);
+  var result = noStructure(device);
   if !device.rayTracing {
     fail("createBottomLevel: the device was made without ray tracing");
     return result;
@@ -114,29 +114,29 @@ fn makeBottomLevel(device &mut Device, positions &Buffer, vertexCount u32, indic
     fail("createBottomLevel: the buffers must be valid and made with BUFFER_USAGE_ACCELERATION_STRUCTURE_INPUT");
     return result;
   }
-  imm triangles = indexCount / 3u32;
-  imm positionsAddress = bufferAddress(device, positions);
-  imm indicesAddress = bufferAddress(device, indices);
-  imm geometry = new vulkan.AccelerationStructureGeometryTrianglesKHR(vertexData: positionsAddress,
+  let triangles = indexCount / 3u32;
+  let positionsAddress = bufferAddress(device, positions);
+  let indicesAddress = bufferAddress(device, indices);
+  let geometry = new vulkan.AccelerationStructureGeometryTrianglesKHR(vertexData: positionsAddress,
     maxVertex: vertexCount - 1u32, indexData: indicesAddress, flags: vulkan.GEOMETRY_OPAQUE_BIT_KHR);
-  imm info = new vulkan.AccelerationStructureBuildGeometryInfoKHR(type: vulkan.ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,
+  let info = new vulkan.AccelerationStructureBuildGeometryInfoKHR(type: vulkan.ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,
     flags: vulkan.BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR, srcAccelerationStructure: new vulkan.AccelerationStructureKHR(0u64),
     dstAccelerationStructure: new vulkan.AccelerationStructureKHR(0u64), pGeometries: &geometry as *u8);
-  imm primitives = triangles;
-  mut sizes = new vulkan.AccelerationStructureBuildSizesInfoKHR();
+  let primitives = triangles;
+  var sizes = new vulkan.AccelerationStructureBuildSizesInfoKHR();
   device.backend.ray.getAccelerationStructureBuildSizesKHR(device.backend.device,
     vulkan.ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &info, &primitives as *u32, &mut sizes);
   result.storage = device.createBuffer(roundUp256(sizes.accelerationStructureSize), BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE);
   if !result.storage.isValid() { return result; }
-  imm ci = new vulkan.AccelerationStructureCreateInfoKHR(buffer: result.storage.backend.buffer,
+  let ci = new vulkan.AccelerationStructureCreateInfoKHR(buffer: result.storage.backend.buffer,
     size: sizes.accelerationStructureSize, type: vulkan.ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR);
-  mut handle = new vulkan.AccelerationStructureKHR(0u64);
+  var handle = new vulkan.AccelerationStructureKHR(0u64);
   if !check(device.backend.ray.createAccelerationStructureKHR(device.backend.device, &ci, nullp(), &mut handle),
       "vkCreateAccelerationStructureKHR") {
     return result;
   }
   result.backend.handle = handle;
-  imm ai = new vulkan.AccelerationStructureDeviceAddressInfoKHR(accelerationStructure: handle);
+  let ai = new vulkan.AccelerationStructureDeviceAddressInfoKHR(accelerationStructure: handle);
   result.address = device.backend.ray.getAccelerationStructureDeviceAddressKHR(device.backend.device, &ai);
   result.scratch = device.createBuffer(roundUp256(umax64(sizes.buildScratchSize, 256u64)), BUFFER_USAGE_ACCELERATION_STRUCTURE_SCRATCH);
   result.scratchAddress = bufferAddress(device, &result.scratch);
@@ -152,7 +152,7 @@ fn umax64(a u64, b u64) u64 { if a > b { a; } else { b; }; }
 
 // The structure over up to 'maxInstances' placed bottom-level ones
 fn makeTopLevel(device &mut Device, maxInstances u32) AccelerationStructure {
-  mut result = noStructure(device);
+  var result = noStructure(device);
   if !device.rayTracing {
     fail("createTopLevel: the device was made without ray tracing");
     return result;
@@ -164,26 +164,26 @@ fn makeTopLevel(device &mut Device, maxInstances u32) AccelerationStructure {
   result.instances = device.createBuffer(u64.from(maxInstances) * ACCELERATION_STRUCTURE_INSTANCE_BYTES,
     BUFFER_USAGE_ACCELERATION_STRUCTURE_INPUT | BUFFER_USAGE_COPY_DST);
   if !result.instances.isValid() { return result; }
-  imm instancesAddress = bufferAddress(device, &result.instances);
-  imm geometry = new vulkan.AccelerationStructureGeometryInstancesKHR(data: instancesAddress);
-  imm info = new vulkan.AccelerationStructureBuildGeometryInfoKHR(type: vulkan.ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR,
+  let instancesAddress = bufferAddress(device, &result.instances);
+  let geometry = new vulkan.AccelerationStructureGeometryInstancesKHR(data: instancesAddress);
+  let info = new vulkan.AccelerationStructureBuildGeometryInfoKHR(type: vulkan.ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR,
     flags: vulkan.BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR, srcAccelerationStructure: new vulkan.AccelerationStructureKHR(0u64),
     dstAccelerationStructure: new vulkan.AccelerationStructureKHR(0u64), pGeometries: &geometry as *u8);
-  imm primitives = maxInstances;
-  mut sizes = new vulkan.AccelerationStructureBuildSizesInfoKHR();
+  let primitives = maxInstances;
+  var sizes = new vulkan.AccelerationStructureBuildSizesInfoKHR();
   device.backend.ray.getAccelerationStructureBuildSizesKHR(device.backend.device,
     vulkan.ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &info, &primitives as *u32, &mut sizes);
   result.storage = device.createBuffer(roundUp256(sizes.accelerationStructureSize), BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE);
   if !result.storage.isValid() { return result; }
-  imm ci = new vulkan.AccelerationStructureCreateInfoKHR(buffer: result.storage.backend.buffer,
+  let ci = new vulkan.AccelerationStructureCreateInfoKHR(buffer: result.storage.backend.buffer,
     size: sizes.accelerationStructureSize, type: vulkan.ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR);
-  mut handle = new vulkan.AccelerationStructureKHR(0u64);
+  var handle = new vulkan.AccelerationStructureKHR(0u64);
   if !check(device.backend.ray.createAccelerationStructureKHR(device.backend.device, &ci, nullp(), &mut handle),
       "vkCreateAccelerationStructureKHR") {
     return result;
   }
   result.backend.handle = handle;
-  imm ai = new vulkan.AccelerationStructureDeviceAddressInfoKHR(accelerationStructure: handle);
+  let ai = new vulkan.AccelerationStructureDeviceAddressInfoKHR(accelerationStructure: handle);
   result.address = device.backend.ray.getAccelerationStructureDeviceAddressKHR(device.backend.device, &ai);
   result.scratch = device.createBuffer(roundUp256(umax64(sizes.buildScratchSize, 256u64)), BUFFER_USAGE_ACCELERATION_STRUCTURE_SCRATCH);
   result.scratchAddress = bufferAddress(device, &result.scratch);
@@ -196,9 +196,9 @@ fn makeTopLevel(device &mut Device, maxInstances u32) AccelerationStructure {
 // Record the build of 'structure' (all of a bottom level; the first 'count' instances of a top level),
 // after everything recorded before it, and visible to everything after
 fn recordBuild(encoder &mut CommandEncoder, structure &AccelerationStructure, count u32) {
-  imm cmd = encoder.backend.cmd;
+  let cmd = encoder.backend.cmd;
   if isNull(cmd) or !structure.isValid() { return; }
-  mut n = count;
+  var n = count;
   if structure.top {
     if n > structure.capacity {
       fail("buildAccelerationStructure: more instances than the top level was made for");
@@ -210,16 +210,16 @@ fn recordBuild(encoder &mut CommandEncoder, structure &AccelerationStructure, co
   memoryBarrier(&encoder.backend.fns, cmd, vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
     vulkan.ACCESS_2_MEMORY_READ_BIT | vulkan.ACCESS_2_MEMORY_WRITE_BIT, vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
     vulkan.ACCESS_2_MEMORY_READ_BIT | vulkan.ACCESS_2_MEMORY_WRITE_BIT);
-  imm triangles = new vulkan.AccelerationStructureGeometryTrianglesKHR(vertexData: structure.inputAddress,
+  let triangles = new vulkan.AccelerationStructureGeometryTrianglesKHR(vertexData: structure.inputAddress,
     maxVertex: structure.vertexCount - 1u32, indexData: structure.indexAddress, flags: vulkan.GEOMETRY_OPAQUE_BIT_KHR);
-  imm instances = new vulkan.AccelerationStructureGeometryInstancesKHR(data: structure.inputAddress);
-  imm geometry *u8 = if structure.top { &instances as *u8; } else { &triangles as *u8; };
-  imm info = new vulkan.AccelerationStructureBuildGeometryInfoKHR(
+  let instances = new vulkan.AccelerationStructureGeometryInstancesKHR(data: structure.inputAddress);
+  let geometry *u8 = if structure.top { &instances as *u8; } else { &triangles as *u8; };
+  let info = new vulkan.AccelerationStructureBuildGeometryInfoKHR(
     type: if structure.top { vulkan.ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR; } else { vulkan.ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR; },
     flags: vulkan.BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR,
     srcAccelerationStructure: new vulkan.AccelerationStructureKHR(0u64), dstAccelerationStructure: structure.backend.handle, pGeometries: geometry, scratchData: structure.scratchAddress);
-  imm range = new vulkan.AccelerationStructureBuildRangeInfoKHR(primitiveCount: n);
-  imm rangePointer = &range as *vulkan.AccelerationStructureBuildRangeInfoKHR;
+  let range = new vulkan.AccelerationStructureBuildRangeInfoKHR(primitiveCount: n);
+  let rangePointer = &range as *vulkan.AccelerationStructureBuildRangeInfoKHR;
   structure.backend.ray.cmdBuildAccelerationStructuresKHR(cmd, 1u32, &info as *vulkan.AccelerationStructureBuildGeometryInfoKHR,
     &rangePointer as **vulkan.AccelerationStructureBuildRangeInfoKHR);
   memoryBarrier(&encoder.backend.fns, cmd, vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT,

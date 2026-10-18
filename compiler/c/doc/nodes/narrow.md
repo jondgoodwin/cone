@@ -32,7 +32,7 @@ order, and the environment follows.
 | `fnDclTypeCheck` | a function body starts with nothing known and gives back what it was given (`narrowFnBegin`); a closure's `()` is its own function |
 | `assignTypeCheck`, `swapTypeCheck` | `narrowAssigned`: the name is changed; a variant stored over a name held by value is a narrowing to it (`state = State.Run(2)`) |
 | `borrowMutRef`, `borrowTypeCheck`, `borrowDerefOf` | `narrowBorrowed`: a writable borrow of the whole enum, or of what a reference variable points at, is a change |
-| `varDclTypeCheck` | `narrowDeclared`: a local declared with a variant of its enum (`mut s Shape = Shape.Circle(1)`) is narrowed to it |
+| `varDclTypeCheck` | `narrowDeclared`: a local declared with a variant of its enum (`var s Shape = Shape.Circle(1)`) is narrowed to it |
 
 A set that comes out empty (a test that contradicts what was believed) is a branch that cannot
 run, and is taken as no knowledge rather than refused. A test in this pass of a loop makes a

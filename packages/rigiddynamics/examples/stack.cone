@@ -35,76 +35,76 @@ fn placed(xf Rigid, size Vec3) Mat4 { Mat4.fromTrs(xf.pos, xf.rot, size); }
 
 fn main() i32 {
   // ---- The simulation ----
-  mut world = World.make();
-  imm floorShape = world.addShape(Shape.single(Prim.box(new Vec3(12., 0.5, 6.))));
-  imm boxShape = world.addShape(Shape.single(Prim.box(new Vec3(0.5, 0.5, 0.5))));
-  imm ballShape = world.addShape(Shape.single(Prim.sphere(0.6)));
+  var world = World.make();
+  let floorShape = world.addShape(Shape.single(Prim.box(new Vec3(12., 0.5, 6.))));
+  let boxShape = world.addShape(Shape.single(Prim.box(new Vec3(0.5, 0.5, 0.5))));
+  let ballShape = world.addShape(Shape.single(Prim.sphere(0.6)));
   world.createBody(BodyDef.staticAt(floorShape, new Vec3(0., -0.5, 0.)));
-  mut boxes = List[u32].empty();
-  mut k = 0;
+  var boxes = List[u32].empty();
+  var k = 0;
   while k < 10 {
-    mut bd = BodyDef.dynamicAt(boxShape, new Vec3(0., 0.5 + f32.from(k), 0.));
+    var bd = BodyDef.dynamicAt(boxShape, new Vec3(0., 0.5 + f32.from(k), 0.));
     bd.density = 300.;
     boxes.push(world.createBody(bd));
     k = k + 1;
   }
-  mut ballDef = BodyDef.dynamicAt(ballShape, new Vec3(-9., 3.5, 0.));
+  var ballDef = BodyDef.dynamicAt(ballShape, new Vec3(-9., 3.5, 0.));
   ballDef.density = 2500.;
   ballDef.linVel = new Vec3(16., 2., 0.);
   ballDef.bullet = true;
-  imm ball = world.createBody(ballDef);
-  imm topId = *boxes[9usize];
+  let ball = world.createBody(ballDef);
+  let topId = *boxes[9usize];
 
-  mut ok = true;
-  mut i = 0;
+  var ok = true;
+  var i = 0;
   while i < 30 { world.step(1. / 60.); i = i + 1; }
-  imm standing = world.positionOf(topId);
+  let standing = world.positionOf(topId);
   print <- "after half a second the top box is at ("; print <- standing.x; print <- ", "; print <- standing.y; print <- ", "; print <- standing.z; print <- ")\n";
   if absf(standing.y - 9.5) > 0.1 or absf(standing.x) > 0.1 { print <- "FAIL: the tower did not stand\n"; ok = false; }
   // the frame to draw: 0.75 s after the ball is let go (it arrives at 0.5 s)
   while i < 45 { world.step(1. / 60.); i = i + 1; }
-  mut shotBoxes = List[Rigid].empty();
+  var shotBoxes = List[Rigid].empty();
   k = 0;
   while k < 10 { shotBoxes.push(world.transformOf(*boxes[usize.from(k)])); k = k + 1; }
-  imm shotBall = world.transformOf(ball);
+  let shotBall = world.transformOf(ball);
   while i < 300 { world.step(1. / 60.); i = i + 1; }
-  imm fallen = world.positionOf(topId);
+  let fallen = world.positionOf(topId);
   print <- "after 5 s the top box is at ("; print <- fallen.x; print <- ", "; print <- fallen.y; print <- ", "; print <- fallen.z; print <- ")\n";
   if fallen.y > 1. { print <- "FAIL: the ball did not topple the tower\n"; ok = false; }
 
   // ---- The GPU ----
-  mut instance = Instance.create("rigiddynamics stack");
+  var instance = Instance.create("rigiddynamics stack");
   if !instance.isValid() { print <- "FAIL: no Vulkan instance\n"; return 1i32; }
-  mut none = Surface.none();
-  mut preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
-  imm env = libc.getenv("GPU_POWER_PREFERENCE");
+  var none = Surface.none();
+  var preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
+  let env = libc.getenv("GPU_POWER_PREFERENCE");
   if (env as usize) != 0usize {
     if libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 { preference = POWER_PREFERENCE_LOW_POWER; }
   }
-  mut adapter = instance.requestAdapter(&none, preference);
-  mut device = adapter.requestDevice();
+  var adapter = instance.requestAdapter(&none, preference);
+  var device = adapter.requestDevice();
   if !device.isValid() { print <- "FAIL: no device\n"; return 1i32; }
 
-  imm target = new TextureDescriptor(W, H, TEXTURE_FORMAT_RGBA8_UNORM, TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
-  mut color = device.createTexture(&target);
-  imm depthDesc = new TextureDescriptor(W, H, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
-  mut depth = device.createTexture(&depthDesc);
-  mut readback = device.createBuffer(u64.from(W) * u64.from(H) * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
-  mut renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA8_UNORM, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  let target = new TextureDescriptor(W, H, TEXTURE_FORMAT_RGBA8_UNORM, TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
+  var color = device.createTexture(&target);
+  let depthDesc = new TextureDescriptor(W, H, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
+  var depth = device.createTexture(&depthDesc);
+  var readback = device.createBuffer(u64.from(W) * u64.from(H) * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  var renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA8_UNORM, TEXTURE_FORMAT_DEPTH32_FLOAT);
   if !renderer.isValid() { print <- "FAIL: no renderer\n"; return 1i32; }
 
-  imm cubeMesh = renderer.addMesh(&mut device, &Mesh.cube(0.5));
-  imm sphereMesh = renderer.addMesh(&mut device, &Mesh.sphere(1., 24));
-  imm floorColor = renderer.addMaterial(&mut device, &Material.plain(new Color(0.30, 0.42, 0.30, 1.)));
-  imm ballColor = renderer.addMaterial(&mut device, &Material.shiny(new Color(0.80, 0.18, 0.15, 1.), 0.5, 40.));
-  mut mats = List[MaterialHandle].empty();
+  let cubeMesh = renderer.addMesh(&mut device, &Mesh.cube(0.5));
+  let sphereMesh = renderer.addMesh(&mut device, &Mesh.sphere(1., 24));
+  let floorColor = renderer.addMaterial(&mut device, &Material.plain(new Color(0.30, 0.42, 0.30, 1.)));
+  let ballColor = renderer.addMaterial(&mut device, &Material.shiny(new Color(0.80, 0.18, 0.15, 1.), 0.5, 40.));
+  var mats = List[MaterialHandle].empty();
   k = 0;
   while k < 10 {
-    imm t = f32.from(k) / 9.;
+    let t = f32.from(k) / 9.;
     mats.push(renderer.addMaterial(&mut device, &Material.plain(new Color(0.25 + 0.6 * t, 0.45 + 0.25 * (1. - t), 0.85 - 0.6 * t, 1.))));
     k = k + 1;
   }
-  mut list = DrawList.empty();
+  var list = DrawList.empty();
   list.add(cubeMesh, floorColor, Mat4.fromTrs(new Vec3(0., -0.5, 0.), Quat.identity(), new Vec3(24., 1., 12.)));
   k = 0;
   while k < 10 {
@@ -113,29 +113,29 @@ fn main() i32 {
   }
   list.add(sphereMesh, ballColor, placed(shotBall, new Vec3(0.6, 0.6, 0.6)));
 
-  mut camera = Camera.make();
+  var camera = Camera.make();
   camera.lookAt(new Vec3(-3., 7., 21.), new Vec3(0., 4.6, 0.), new Vec3(0., 1., 0.));
   camera.background = new Color(0.55, 0.70, 0.90, 1.);
-  imm sun = Light.directional(new Vec3(0.35, -0.7, -0.6).normalize(), Color.gray(1.8), Color.gray(0.45));
-  mut encoder = device.createCommandEncoder();
+  let sun = Light.directional(new Vec3(0.35, -0.7, -0.6).normalize(), Color.gray(1.8), Color.gray(0.45));
+  var encoder = device.createCommandEncoder();
   renderer.render(&mut device, &mut encoder, &color, &depth, &camera, &sun, &list);
   encoder.copyTextureToBuffer(&color, &readback);
   device.queue.submit(encoder.finish());
   device.endFrame();
   device.waitIdle();
-  imm p = readback.mappedRange();
+  let p = readback.mappedRange();
 
   // The pixel at the ball, and one at the tower's middle box, are not the background's
-  imm viewProjection = camera.projectionMatrix(f32.from(W) / f32.from(H)) * camera.viewMatrix();
-  mut probes = 0;
+  let viewProjection = camera.projectionMatrix(f32.from(W) / f32.from(H)) * camera.viewMatrix();
+  var probes = 0;
   while probes < 2 {
-    imm world3 = if probes == 0 { shotBall.pos; } else { (*shotBoxes[2usize]).pos; };
-    imm ndc = viewProjection.projectPoint(world3);
-    imm px = usize.from((ndc.x + 1.) * 0.5 * f32.from(W));
-    imm py = usize.from((1. - ndc.y) * 0.5 * f32.from(H));
-    imm at = (py * usize.from(W) + px) * 4usize;
-    imm r = i32.from(*(p + at));
-    imm bl = i32.from(*(p + at + 2usize));
+    let world3 = if probes == 0 { shotBall.pos; } else { (*shotBoxes[2usize]).pos; };
+    let ndc = viewProjection.projectPoint(world3);
+    let px = usize.from((ndc.x + 1.) * 0.5 * f32.from(W));
+    let py = usize.from((1. - ndc.y) * 0.5 * f32.from(H));
+    let at = (py * usize.from(W) + px) * 4usize;
+    let r = i32.from(*(p + at));
+    let bl = i32.from(*(p + at + 2usize));
     print <- "pixel at the "; print <- (if probes == 0 { "ball"; } else { "third box"; }); print <- ": ";
     print <- r; print <- ", "; print <- i32.from(*(p + at + 1usize)); print <- ", "; print <- bl; print <- "\n";
     // the sky is (140, 179, 230)
@@ -143,11 +143,11 @@ fn main() i32 {
     probes = probes + 1;
   }
 
-  imm shot = libc.getenv("RIGIDDYNAMICS_SHOT");
+  let shot = libc.getenv("RIGIDDYNAMICS_SHOT");
   if (shot as usize) != 0usize {
-    imm img = Image.fromTexels(p, i32.from(W), i32.from(H), false);
-    mut name = String.empty();
-    mut j = 0usize;
+    let img = Image.fromTexels(p, i32.from(W), i32.from(H), false);
+    var name = String.empty();
+    var j = 0usize;
     while *(shot + j) != 0u8 { name.appendByte(*(shot + j)); j = j + 1usize; }
     if img.save(&Path.from(name.view())) { print <- "wrote "; printStr(name.view()); print <- "\n"; } else { print <- "FAIL: could not write the screenshot\n"; ok = false; }
   }

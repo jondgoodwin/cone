@@ -35,10 +35,10 @@ fn cap(limit &amp;i32, scratch &amp;'a i32) &amp;i32 {
 }
 
 fn main() {
-  mut allowed &amp;i32;
-  imm limit = 50;
+  var allowed &amp;i32;
+  let limit = 50;
   {
-    imm spent = 65;              // lives only in this block
+    let spent = 65;              // lives only in this block
     allowed = cap(&amp;limit, &amp;spent);
   }
   print &lt;- "allowed: ", *allowed, "\n";
@@ -84,10 +84,10 @@ fn refswitch(nbr i32, ref1 &amp;i32, ref2 &amp;i32) &amp;i32 {
 }
 
 fn caller(nbr i32) i32 {
-  mut ref &amp;i32;
-  imm outer = 5;
+  var ref &amp;i32;
+  let outer = 5;
   {
-    imm inner = 10;      // Error 1168: 'inner', declared here, goes out of scope while 'ref'
+    let inner = 10;      // Error 1168: 'inner', declared here, goes out of scope while 'ref'
     ref = refswitch(nbr, &amp;outer, &amp;inner);   // still holds a borrow of it
   }
   *ref;
@@ -113,9 +113,9 @@ fn refswitch(nbr i32, ref1 &amp;i32, ref2 &amp;'a i32) &amp;i32 {
 <pre>
 fn pick(x &amp;'a i32, y &amp;'b i32) &amp;'a i32 { x; }
 
-mut a = 1;
-mut b = 2;
-imm r = pick(&amp;a, &amp;b);
+var a = 1;
+var b = 2;
+let r = pick(&amp;a, &amp;b);
 b = 6;                 // fine: r holds nothing of b
 a = 5;                 // Error 1168: 'a' is borrowed, and that borrow is used again below.
 print &lt;- *r;           //   It may not be changed until after that last use.
@@ -126,8 +126,8 @@ struct S {
   pub fn get(self &amp;) &amp;i32 { &amp;n; }
 }
 
-mut s = new S(1);
-imm r = s.get();
+var s = new S(1);
+let r = s.get();
 s.n = 3;               // Error 1168: 's' is borrowed (by 'get'), and that borrow is used again below.
 print &lt;- *r;
 </pre>
@@ -146,10 +146,10 @@ fn refstore(refmut &amp;mut &amp;i32, refval &amp;i32) {
 }
 
 fn tryit() i32 {
-  imm i = 5;
-  mut a = &amp;i;
+  let i = 5;
+  var a = &amp;i;
   {
-    imm b = 10;         // Error 1168: 'b', declared here, goes out of scope while 'a' still
+    let b = 10;         // Error 1168: 'b', declared here, goes out of scope while 'a' still
     refstore(&amp;mut a, &amp;b);   // holds a borrow of it
   }
   *a;                   // used again here
@@ -178,10 +178,10 @@ struct Holder {
 }
 
 fn tryset() i32 {
-  imm i = 5;
-  mut h = new Holder(&amp;i);
+  let i = 5;
+  var h = new Holder(&amp;i);
   {
-    imm b = 10;        // Error 1168: 'b', declared here, goes out of scope while 'h' still
+    let b = 10;        // Error 1168: 'b', declared here, goes out of scope while 'h' still
     h.set(&amp;b);         //   holds a borrow of it
   }
   *h.r;
@@ -236,14 +236,14 @@ fn put(d &amp;mut &amp;'b R, s &amp;'a R) {
 		parameter takes only a global borrow, a borrow of a global variable, and a borrow the caller lent may not be
 		returned as <span class="pre">'static</span>:</p>
 <pre>
-imm GLOBAL R = new R(1);
+let GLOBAL R = new R(1);
 
 fn keep(s &amp;'static R) i64 { s.n; }
 fn leak(x &amp;R) &amp;'static R {
   x;                       // Error 1064: Returned value carries the borrow the caller lent through
 }                          //   'x', whose lifetime the result's type does not name
 fn caller() i64 {
-  imm v = new R(5);
+  let v = new R(5);
   keep(&amp;GLOBAL);           // Ok
   keep(&amp;v);                // Error 1085: This parameter's lifetime is 'static, so the borrow handed
 }                          //   to it must be global
@@ -260,7 +260,7 @@ fn caller() i64 {
 <pre>
 struct R { pub n i64; }
 
-imm THREE R = new R(3);
+let THREE R = new R(3);
 
 trait Source {
   pub fn top(self &amp;) &amp;R;
@@ -290,7 +290,7 @@ struct Wrapper['a, 'b] {
 		lives no longer than the shorter of them:</p>
 <pre>
 fn makewrap(valref &amp;i32) Wrapper {
-  imm val = 10;
+  let val = 10;
   new Wrapper(valref, &amp;val);  // Error 1064: Returned value carries a borrow of 'val', which it
 }                             //   would outlive: 'val' belongs to this function.
 </pre>
@@ -316,7 +316,7 @@ fn makewrap(valref &amp;i32) Wrapper {
 		its brackets, one for each it declares, in order:</p>
 <pre>
 fn makewrap(valref &amp;i32) &amp;i32 {
-  imm val = 10;
+  let val = 10;
   getref(new Wrapper(valref, &amp;val));
 }
 
@@ -340,10 +340,10 @@ struct Holder['a] { pub r &amp;'a i32; }
 fn pick(h Holder['a], y &amp;'b i32) &amp;'a i32 { h.r; }
 
 fn main() i32 {
-  imm x = 1;
-  mut r = &amp;x;
+  let x = 1;
+  var r = &amp;x;
   {
-    imm y = 2;
+    let y = 2;
     r = pick(new Holder(&amp;x), &amp;y);     // Ok: the result is of h's 'a, not y's
   }
   *r;
@@ -365,7 +365,7 @@ struct Cursor['a] {
   pub at usize;
   pub fn next(self &amp;mut) Option[&amp;'a R] {
     if at &lt; items.len() {
-      imm r = &amp;items[at];
+      let r = &amp;items[at];
       at = at + 1usize;
       return Some[&amp;R](r);
     }
@@ -374,7 +374,7 @@ struct Cursor['a] {
 }
 
 fn firstOf(items &amp;Array[R]) Option[&amp;R] {
-  mut c = new Cursor(items, 0usize);
+  var c = new Cursor(items, 0usize);
   c.next();     // Ok: points where items points, not into c
 }
 </pre>
@@ -398,15 +398,15 @@ struct Parser['src, 'ar] {
   pub at usize;
   pub fn word(self &amp;mut) &amp;'src Array[u8] {
     ar.words += 1;
-    imm start = at;
+    let start = at;
     while at &lt; text.len() and text[at] != 32u8 { at += 1; }
     &amp;text[start ..&lt; at];
   }
 }
 
 fn firstWord(text &amp;Array[u8]) &amp;Array[u8] {
-  mut scratch = new Scratch(0);
-  mut p = new Parser(text, &amp;mut scratch, 0usize);
+  var scratch = new Scratch(0);
+  var p = new Parser(text, &amp;mut scratch, 0usize);
   p.word();     // Ok: the word is of the text, not of the local scratch
 }
 </pre>
@@ -450,14 +450,14 @@ fn first(x &amp;'a mut &amp;'b R) &amp;'b R {
   *x;           // Ok: what x points at holds a 'b borrow
 }
 fn caller(p &amp;R) &amp;R {
-  mut pp = p;
-  imm z = &amp;mut pp;
+  var pp = p;
+  let z = &amp;mut pp;
   first(z);     // Ok: of what pp holds, p's borrow, not of pp
 }
 </pre>
 	<p>Because the result is of the inner lifetime, the call keeps frozen only what the argument holds in it
 		(<span class="pre">p</span>'s borrow), not the argument <span class="pre">z</span>, nor <span class="pre">pp</span>,
-		the local it borrows. After <span class="pre">imm r = first(z);</span>, <span class="pre">pp</span> may still be
+		the local it borrows. After <span class="pre">let r = first(z);</span>, <span class="pre">pp</span> may still be
 		assigned while <span class="pre">r</span> is in use.</p>
 	<p>A borrow taken through an inner <span class="pre">uni</span> reference is a reborrow of it, which lasts no longer
 		than the outer borrow, since the inner reference may be used again once the outer borrow ends:
@@ -525,10 +525,10 @@ fn ordered(d &amp;mut &amp;'x R, v &amp;'y R) where 'y &gt;= 'x {
   put(d, v);        // Ok
 }
 fn main() {
-  imm g = new R(1);
-  mut d = &amp;g;
+  let g = new R(1);
+  var d = &amp;g;
   {
-    imm short = new R(2);   // Error 1168: 'short', declared here, goes out of scope while 'd' still
+    let short = new R(2);   // Error 1168: 'short', declared here, goes out of scope while 'd' still
     put(&amp;mut d, &amp;short);    //   holds a borrow of it
   }
   d.n;

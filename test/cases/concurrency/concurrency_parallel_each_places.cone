@@ -40,7 +40,7 @@ struct Acc {
   }
 
   pub fn lens(self &) u64 {
-    imm out = Atomic[u64].of(0u64);
+    let out = Atomic[u64].of(0u64);
     parallel each s in names {
       out.add(u64.from(s.len));
     }
@@ -49,7 +49,7 @@ struct Acc {
 }
 
 fn generic[T](xs &Array[T], base u64) u64 {
-  imm out = Atomic[u64].of(0u64);
+  let out = Atomic[u64].of(0u64);
   parallel each x in xs {
     out.add(base + 1u64);
   }
@@ -57,7 +57,7 @@ fn generic[T](xs &Array[T], base u64) u64 {
 }
 
 fn sumInline(xs &Array[u64]) u64 inline {
-  imm out = Atomic[u64].of(0u64);
+  let out = Atomic[u64].of(0u64);
   parallel each x in xs {
     out.add(*x);
   }
@@ -65,8 +65,8 @@ fn sumInline(xs &Array[u64]) u64 inline {
 }
 
 fn inLoops() u64 {
-  imm out = Atomic[u64].of(0u64);
-  mut round = 0u64;
+  let out = Atomic[u64].of(0u64);
+  var round = 0u64;
   while round < 3u64 {
     parallel each i in 0usize ..< 100usize {
       out.add(round * 1000u64 + u64.from(i));      // the enclosing loop's variable, read
@@ -77,7 +77,7 @@ fn inLoops() u64 {
 }
 
 fn shadow(x u64) u64 {
-  imm out = Atomic[u64].of(0u64);
+  let out = Atomic[u64].of(0u64);
   parallel each x in [1u64, 2u64, 3u64] {          // shadows the parameter
     out.add(*x);
   }
@@ -85,7 +85,7 @@ fn shadow(x u64) u64 {
 }
 
 fn branches(flag bool) u64 {
-  imm out = Atomic[u64].of(0u64);
+  let out = Atomic[u64].of(0u64);
   if flag {
     parallel each i in 0usize ..< 10usize {
       out.add(1u64);
@@ -102,7 +102,7 @@ fn branches(flag bool) u64 {
 }
 
 fn exprBounds(a usize, b usize) u64 {
-  imm out = Atomic[u64].of(0u64);
+  let out = Atomic[u64].of(0u64);
   parallel each i in a * 2usize ..< b + 3usize {
     out.add(1u64);
   }
@@ -110,8 +110,8 @@ fn exprBounds(a usize, b usize) u64 {
 }
 
 fn makeList(n u64) List[u64] {
-  mut l = new List[u64];
-  mut i = 0u64;
+  var l = new List[u64];
+  var i = 0u64;
   while i < n {
     l.push(i);
     i = i + 1u64;
@@ -120,11 +120,11 @@ fn makeList(n u64) List[u64] {
 }
 
 fn owned() u64 {
-  imm out = Atomic[u64].of(0u64);
+  let out = Atomic[u64].of(0u64);
   parallel each x in makeList(100u64) {            // a value, held for the loop
     out.add(*x);
   }
-  mut l = makeList(10u64);
+  var l = makeList(10u64);
   parallel each x in l.mutItems() {
     out.add(*x);
   }
@@ -132,11 +132,11 @@ fn owned() u64 {
 }
 
 fn rawWrites(n usize) u64 {
-  imm buf = libc.calloc(n, 8usize) as *u64;
+  let buf = libc.calloc(n, 8usize) as *u64;
   parallel each i in 0usize ..< n {
     *(buf + i) = u64.from(i) * 2u64;               // through a raw pointer: the loop trusts its writer
   }
-  mut sum = 0u64;
+  var sum = 0u64;
   each i in 0usize ..< n {
     sum = sum + *(buf + i);
   }
@@ -148,16 +148,16 @@ fn main() {
   initAll();
   actors.configure(new actors.Options(workers: 4u32));
 
-  mut names = new List[String];
+  var names = new List[String];
   names.push(String.from("ab"));
   names.push(String.from("cde"));
-  imm acc = new Acc(3u64, Atomic[u64].of(0u64), names);
+  let acc = new Acc(3u64, Atomic[u64].of(0u64), names);
   report("a method reads self's fields", acc.run(10usize) == 3u64 * 45u64);
   report("a method walks a list in a field", acc.lens() == 5u64);
 
-  imm bytes = [1u8, 2u8, 3u8];
+  let bytes = [1u8, 2u8, 3u8];
   report("a generic function", generic[u8](&bytes, 9u64) == 30u64);
-  imm arr = [1u64, 2u64, 3u64, 4u64];
+  let arr = [1u64, 2u64, 3u64, 4u64];
   report("an inline function", sumInline(&arr) == 10u64);
   report("an inline function twice in one expression", sumInline(&arr) + sumInline(&arr) == 20u64);
   report("an enclosing while's variable", inLoops() == 3u64 * 4950u64 + 100u64 * 3000u64);

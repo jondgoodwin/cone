@@ -10,12 +10,12 @@ has the overview and the file map; each file's header says its method and its so
 ```cone
 import humanbody use *;
 
-imm men = buildBlendSet(MALE, 1u32);                 // the base man and his 29 blends
-imm people = cast();                                 // the main avatar and six, as ANSUR II measures
-mut body = personBody(&men, &people[0usize].measures);   // a person: the base plus the blends at their weights
-imm face = buildFace(&mut body);                     // FACS targets on the mesh; the jaw and eyes as bones
-imm wardrobe = dressPerson(&body, people[0usize], false, 4u32);   // shells, a skirt, the cape
-imm pose = sitPose(&body.skeleton, &Seat.chair(point, 0., 0.45), 1., true);
+let men = buildBlendSet(MALE, 1u32);                 // the base man and his 29 blends
+let people = cast();                                 // the main avatar and six, as ANSUR II measures
+var body = personBody(&men, &people[0usize].measures);   // a person: the base plus the blends at their weights
+let face = buildFace(&mut body);                     // FACS targets on the mesh; the jaw and eyes as bones
+let wardrobe = dressPerson(&body, people[0usize], false, 4u32);   // shells, a skirt, the cape
+let pose = sitPose(&body.skeleton, &Seat.chair(point, 0., 0.45), 1., true);
 ```
 
 `examples/peoplebench.cone` is the test bench: the cast side by side, under day and dusk light, with ray tracing

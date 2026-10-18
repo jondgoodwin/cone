@@ -17,7 +17,7 @@ struct Import {
 
   // 'file:line', for messages
   pub fn location(self &) String {
-    mut s = shown(&file);
+    var s = shown(&file);
     s <- ":";
     s.appendUInt(u64.from(line));
     s;
@@ -42,8 +42,8 @@ fn noHeader() Header { new Header(false, String.empty(), List[Import].empty(), f
 
 // Whether word is one of the space-separated words
 fn inWords(word &str, words &str) bool {
-  mut start = 0usize;
-  mut i = 0usize;
+  var start = 0usize;
+  var i = 0usize;
   while i <= words.len() {
     if i == words.len() or words[i] == ' ' {
       if i > start and &words[start..<i] == word { return true; }
@@ -60,7 +60,7 @@ fn inWords(word &str, words &str) bool {
 // congo.py lists them; test_congo.py checks congo.py's lists against the
 // compiler's own
 fn isKeyword(w &str) bool {
-  inWords(w, "include import extern pub static macro fn overload const alias typedef struct mod actor trait extends mixin use but enum return with if elif else case match while each in by break continue not or and as is into inline where new trynew await yield selfactor async do void nil null true false undef using");
+  inWords(w, "include import extern pub static macro fn overload const alias typedef struct mod actor trait extends mixin use but enum return with if elif else case match while each in by break continue not or and as is into inline where new trynew await yield selfactor async do void nil null true false undef using let var");
 }
 fn isReserved(w &str) bool {
   inWords(w, "baseurl context local selfmethod wait throw catch spawn");
@@ -73,7 +73,7 @@ fn isNameByte(b u8) bool { isNameStart(b) or (b >= '0' and b <= '9'); }
 // A Cone name: a letter or '_', then letters, digits or '_' (NAME_RE)
 fn isConeName(w &str) bool {
   if w.len() == 0usize or not isNameStart(w[0usize]) { return false; }
-  mut i = 1usize;
+  var i = 1usize;
   while i < w.len() {
     if not isNameByte(w[i]) { return false; }
     i = i + 1usize;
@@ -128,7 +128,7 @@ struct Toks {
   // inside a character, where a slice of the text would not begin
   pub fn startsAt(self &, i usize, s &str) bool {
     if i + s.len() > text.len() { return false; }
-    mut k = 0usize;
+    var k = 0usize;
     while k < s.len() {
       if text[i + k] != s[k] { return false; }
       k = k + 1usize;
@@ -137,9 +137,9 @@ struct Toks {
   }
 
   pub fn skip(self &mut) {
-    imm n = text.len();
+    let n = text.len();
     while pos < n {
-      imm ch = self.at(pos);
+      let ch = self.at(pos);
       if ch == '\n' {
         line = line + 1u32;
         pos = pos + 1usize;
@@ -151,7 +151,7 @@ struct Toks {
         while pos < n and self.at(pos) != '\n' { pos = pos + 1usize; }
       }
       elif self.startsAt(pos, "/*") {
-        mut nest = 1usize;
+        var nest = 1usize;
         pos = pos + 2usize;
         while pos < n and nest > 0usize {
           if self.startsAt(pos, "*/") {
@@ -176,23 +176,23 @@ struct Toks {
 
   pub fn read(self &mut) Tok {
     self.skip();
-    imm start = pos;
-    imm n = text.len();
+    let start = pos;
+    let n = text.len();
     if start >= n { return new Tok(tokEof, String.empty(), line); }
-    imm ch = self.at(start);
+    let ch = self.at(start);
     if isNameStart(ch) or ch >= 0x80u8 {
-      mut end = start + 1usize;
+      var end = start + 1usize;
       while end < n and (isNameByte(self.at(end)) or self.at(end) >= 0x80u8) { end = end + 1usize; }
       pos = end;
       return new Tok(tokName, text.sub(start, end), line);
     }
     if ch == '"' {
-      mut end = start + 1usize;
+      var end = start + 1usize;
       while end < n and self.at(end) != '"' and self.at(end) != '\n' {
         end = end + (if self.at(end) == '\\' {2usize;} else {1usize;});
       }
       pos = if end + 1usize < n {end + 1usize;} else {n;};
-      imm last = if end < n {end;} else {n;};
+      let last = if end < n {end;} else {n;};
       return new Tok(tokString, text.sub(start + 1usize, last), line);
     }
     pos = start + 1usize;
@@ -202,7 +202,7 @@ struct Toks {
   // Make sure the token k ahead has been read
   pub fn fill(self &mut, k usize) {
     while ahead.len() <= head + k {
-      imm t = self.read();
+      let t = self.read();
       ahead.push(t);
     }
   }
@@ -224,7 +224,7 @@ struct Toks {
 
   pub fn isTok(self &mut, k usize, kind u8, value &str) bool {
     self.fill(k);
-    imm t = ahead[head + k];
+    let t = ahead[head + k];
     t.kind == kind and t.value.view() == value;
   }
 
@@ -232,7 +232,7 @@ struct Toks {
 
   // Pass over the next token, answering whether it was the punctuation p
   pub fn nextIs(self &mut, kind u8, value &str) bool {
-    imm was = self.isTok(0usize, kind, value);
+    let was = self.isTok(0usize, kind, value);
     head = head + 1usize;
     was;
   }
@@ -242,14 +242,14 @@ struct Toks {
   // Pass over the rest of a statement: up to its ';', with any brackets in
   // it (a 'use { ... }' block) balanced
   pub fn skipStatement(self &mut) {
-    mut depth = 0i64;
+    var depth = 0i64;
     while true {
-      imm kind = self.kindAt(0usize);
-      imm value = self.valueAt(0usize);
+      let kind = self.kindAt(0usize);
+      let value = self.valueAt(0usize);
       self.next();
       if kind == tokEof { return; }
       if kind == tokPunct {
-        imm v = value.view();
+        let v = value.view();
         if v == "(" or v == "{" or v == "[" { depth = depth + 1i64; }
         elif v == ")" or v == "}" or v == "]" { depth = depth - 1i64; }
         elif v == ";" and depth <= 0i64 { return; }
@@ -265,8 +265,8 @@ struct Toks {
 
 // The text of a file without its leading byte order marks
 fn withoutBom(text String) String {
-  mut start = 0usize;
-  imm t = text.view();
+  var start = 0usize;
+  let t = text.view();
   while start + 3usize <= t.len() and t[start] == 0xEFu8 and t[start + 1usize] == 0xBBu8 and t[start + 2usize] == 0xBFu8 {
     start = start + 3usize;
   }
@@ -284,20 +284,20 @@ fn withoutBom(text String) String {
 // 'pub', and whatever 'as' and 'use' clause follow: the name read is the
 // package's, whatever name 'as' binds it under.
 fn scanHeader(file &Path) Result[Header, String] {
-  mut text = String.empty();
+  var text = String.empty();
   match fs.readFile(file) {
-    case mut ok Ok { text <=> ok; }
-    case imm e Error {
-      imm place = native(file);
-      imm m = fsMessage(&e);
+    case var ok Ok { text <=> ok; }
+    case let e Error {
+      let place = native(file);
+      let m = fsMessage(&e);
       return Error[Header, String](cat("cannot read ", place.view(), ": ", m.view()));
     }
   }
-  mut toks = new Toks(withoutBom(text), 0usize, 1u32, List[Tok].empty(), 0usize);
-  mut header = noHeader();
-  mut k = if toks.isName("pub", 0usize) {1usize;} else {0usize;};
+  var toks = new Toks(withoutBom(text), 0usize, 1u32, List[Tok].empty(), 0usize);
+  var header = noHeader();
+  var k = if toks.isName("pub", 0usize) {1usize;} else {0usize;};
   if toks.isName("mod", k) and not toks.isName("trait", k + 1usize) {
-    mut j = 0usize;
+    var j = 0usize;
     while j <= k {
       toks.next();
       j = j + 1usize;
@@ -317,7 +317,7 @@ fn scanHeader(file &Path) Result[Header, String] {
       if toks.isName("extends", 0usize) {
         toks.next();
         if toks.kindAt(0usize) == tokName {
-          imm v = toks.valueAt(0usize);
+          let v = toks.valueAt(0usize);
           header.hasExtends = true;
           header.extended = new Import(true, v.copy(), v.copy(), file.copy(), toks.lineAt(0usize));
         }
@@ -328,14 +328,14 @@ fn scanHeader(file &Path) Result[Header, String] {
   while true {
     k = if toks.isName("pub", 0usize) {1usize;} else {0usize;};
     if not toks.isName("import", k) { break; }
-    mut j = 0usize;
+    var j = 0usize;
     while j <= k {
       toks.next();
       j = j + 1usize;
     }
-    imm kind = toks.kindAt(0usize);
-    imm v = toks.valueAt(0usize);
-    imm line = toks.lineAt(0usize);
+    let kind = toks.kindAt(0usize);
+    let v = toks.valueAt(0usize);
+    let line = toks.lineAt(0usize);
     if kind == tokName {
       header.imports.push(new Import(true, v.copy(), v.copy(), file.copy(), line));
     }
@@ -351,16 +351,16 @@ fn scanHeader(file &Path) Result[Header, String] {
 // holds_kernel): read to its end with the header scan's tokens, so that one
 // written in a comment or a string does not count
 fn holdsKernel(file &Path) Result[bool, String] {
-  mut text = String.empty();
+  var text = String.empty();
   match fs.readFile(file) {
-    case mut ok Ok { text <=> ok; }
-    case imm e Error {
-      imm place = native(file);
-      imm m = fsMessage(&e);
+    case var ok Ok { text <=> ok; }
+    case let e Error {
+      let place = native(file);
+      let m = fsMessage(&e);
       return Error[bool, String](cat("cannot read ", place.view(), ": ", m.view()));
     }
   }
-  mut toks = new Toks(withoutBom(text), 0usize, 1u32, List[Tok].empty(), 0usize);
+  var toks = new Toks(withoutBom(text), 0usize, 1u32, List[Tok].empty(), 0usize);
   while toks.kindAt(0usize) != tokEof {
     if toks.isName("fn", 0usize) and toks.isTok(1usize, tokPunct, "@") and toks.isName("compute", 2usize) {
       return Ok[bool, String](true);

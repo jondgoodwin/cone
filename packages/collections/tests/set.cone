@@ -19,9 +19,9 @@ struct Id is Hash {
 }
 
 // Equal by id alone, and counted when it dies
-mut @threadlocal deaths = 0i64;
-mut @threadlocal deathMask = 0u64;
-mut @threadlocal twice = 0i64;
+var @threadlocal deaths = 0i64;
+var @threadlocal deathMask = 0u64;
+var @threadlocal twice = 0i64;
 
 struct Tracked is Hash {
   pub id u64;
@@ -31,7 +31,7 @@ struct Tracked is Hash {
   fn final(self &uni) {
     if tag != 0u64 {
       deaths = deaths + 1i64;
-      imm bit = 1u64 << tag;
+      let bit = 1u64 << tag;
       if (deathMask & bit) != 0u64 { twice = twice + 1i64; }
       deathMask = deathMask | bit;
     }
@@ -58,7 +58,7 @@ fn entrySize() {
 }
 
 fn strings() {
-  mut s = Set[String].empty();
+  var s = Set[String].empty();
   expectUInt(u64.from(s.len()), 0, "empty length");
   expectUInt(u64.from(s.capacity()), 0, "empty capacity");
   expectBool(s.isEmpty(), true, "empty is empty");
@@ -72,7 +72,7 @@ fn strings() {
   expectUInt(u64.from(s.capacity()), 7, "8 buckets, room for 7");
   expectBool(s.isEmpty(), false, "not empty");
 
-  imm core = String.from("core");
+  let core = String.from("core");
   expectBool(s.contains(&core), true, "contains, by a String");
   expectBool(s.contains("core"), true, "by bytes");
   expectBool(s.contains(core.view()), true, "by a view");
@@ -80,12 +80,12 @@ fn strings() {
   expectBool(s.contains(""), false, "not the empty string");
 
   // The elements, counted and measured in bytes (4 + 5)
-  mut c = s.items();
-  mut n = 0u64;
-  mut bytes = 0u64;
+  var c = s.items();
+  var n = 0u64;
+  var bytes = 0u64;
   while true {
     match c.next() {
-      case imm e Some {
+      case let e Some {
         n = n + 1u64;
         bytes = bytes + u64.from(e.len());
       }
@@ -109,14 +109,14 @@ fn strings() {
   expectUInt(u64.from(s.capacity()), 7, "clear keeps the room");
   expectBool(s.insert(String.from("libc")), true, "new again after clear");
 
-  imm made = new Set[String] <- String.from("a"), String.from("b"), String.from("a");
+  let made = new Set[String] <- String.from("a"), String.from("b"), String.from("a");
   expectUInt(u64.from(made.len()), 2, "constructed with two of three");
 }
 
 fn integers() {
-  mut s = Set[u64].empty();
-  mut k = 0u64;
-  mut wrong = 0i64;
+  var s = Set[u64].empty();
+  var k = 0u64;
+  var wrong = 0i64;
   while k < 10000u64 {
     if not s.insert(k * 7u64) { wrong = wrong + 1i64; }
     k = k + 1u64;
@@ -146,11 +146,11 @@ fn integers() {
   expectInt(wrong, 0, "5000 removed");
   expectUInt(u64.from(s.len()), 5000, "5000 left");
   // The rest sum to 7 * (1 + 3 + ... + 9999) = 7 * 5000^2
-  mut total = 0u64;
-  mut c = s.items();
+  var total = 0u64;
+  var c = s.items();
   while true {
     match c.next() {
-      case imm e Some {total = total + *e;}
+      case let e Some {total = total + *e;}
       case is None {break;}
     }
   }
@@ -166,14 +166,14 @@ fn integers() {
 }
 
 fn ids() {
-  mut s = Set[Id].empty();
-  mut i = 0u32;
+  var s = Set[Id].empty();
+  var i = 0u32;
   while i < 300u32 {
     s.insert(new Id(i, i % 5u32));
     i = i + 1u32;
   }
   expectUInt(u64.from(s.len()), 300, "three hundred ids");
-  mut wrong = 0i64;
+  var wrong = 0i64;
   i = 0u32;
   while i < 300u32 {
     if not s.contains(&new Id(i, i % 5u32)) { wrong = wrong + 1i64; }
@@ -189,10 +189,10 @@ fn ids() {
 
 // One seed, one order; the process's seed is shared
 fn deterministic() {
-  mut a = Set[u64].deterministic();
-  mut b = Set[u64].deterministic();
-  mut c = Set[u64].withSeed(9u64);
-  mut k = 0u64;
+  var a = Set[u64].deterministic();
+  var b = Set[u64].deterministic();
+  var c = Set[u64].withSeed(9u64);
+  var k = 0u64;
   while k < 50u64 {
     a.insert(k * 13u64);
     b.insert(k * 13u64);
@@ -205,11 +205,11 @@ fn deterministic() {
 }
 
 fn listOf(s &Set[u64]) String {
-  mut out = String.empty();
-  mut c = s.items();
+  var out = String.empty();
+  var c = s.items();
   while true {
     match c.next() {
-      case imm e Some {
+      case let e Some {
         out.appendUInt(*e);
         out.append(",");
       }
@@ -225,7 +225,7 @@ fn tracked(id u64, tag u64) Tracked { new Tracked(id, tag); }
 // clear and the set's death finalize what they hold, once each
 fn finalizing() {
   {
-    mut s = Set[Tracked].empty();
+    var s = Set[Tracked].empty();
     expectBool(s.insert(tracked(1u64, 1u64)), true, "a new element");
     expectBool(s.insert(tracked(2u64, 2u64)), true, "another");
     expectInt(deaths, 0, "nothing died yet");

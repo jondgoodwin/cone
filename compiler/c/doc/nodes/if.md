@@ -53,7 +53,7 @@ name use. A reference is such a value: its copy is the reference. A guard's
 binding reads the value before the arm is chosen, so it takes nothing from a place
 or a held value the arms after it test (see [cast](cast.md), "What a binding takes from a place").
 
-**A bound pattern match is de-sugared**: `if imm c Circle = value {…}` becomes the
+**A bound pattern match is de-sugared**: `if let c Circle = value {…}` becomes the
 `is` condition and a variable bound to a cast inserted at index 0 of the arm. For
 a value that is held, a wrapping block declares the anonymous variable, the
 condition and the cast share one name use of it, and **`parseIf` returns the
@@ -68,7 +68,7 @@ share the pattern's type node, and the variable takes its type from the cast
 `parseMatch` lowers the whole construct into a block plus one `IfNode`:
 `case is T` → an `is` node, `case == v` (or any comparison operator) → that
 operator's call with the scrutinee on the left, `case a ..< b` → `>= a and < b` (`case a .. b` → `>= a and <= b`),
-`case imm x T` → a bound pattern, `case v` (a value alone) →
+`case let x T` → a bound pattern, `case v` (a value alone) →
 an `is` node flagged `FlagMatchValue` that type check turns into `v`'s variant
 test or `== v` ([cast](cast.md)), `else` → `elseCond`. Patterns joined by `or` → a logical `or` of
 their conditions; an `if g` after them → `cond and g` (the `and` flagged
@@ -85,7 +85,7 @@ is one. `_` is a column's pattern that takes any value: a literal `true` flagged
 `FlagMatchAny` (`parseMatchWild`), so it type checks and generates as the constant it
 looks like and costs nothing at run time. `_` in a match of one value, a case whose
 patterns are fewer or more than the values, and a column that binds a variable
-(`case imm x Some, …`; whether a column may bind is not decided) are `ErrorMatchColumn`,
+(`case let x Some, …`; whether a column may bind is not decided) are `ErrorMatchColumn`,
 reported at parse. At most `MatchMaxColumns` values.
 
 **A pattern's first operand decides between a range, a value and a refusal.**
@@ -99,7 +99,7 @@ alone is compared with the matched value, and the comparison without its left si
 (`case 1`, `case true`, `case K`, `case Circle`), the same at the start of a
 case and after an `or`.
 
-**A binding that outlives an early exit, `imm n Ok = r else {...};`, is the same bound
+**A binding that outlives an early exit, `let n Ok = r else {...};`, is the same bound
 pattern declared where it stands** (`parseLetElse`, from the `PermToken` case of
 `parseExprBlock`, when `else` follows a local declaration's initializer). It makes, in the
 enclosing block: the hidden variable that holds a value that is not a place (named
@@ -120,19 +120,19 @@ comes after the receiver). It is read in three places.
 - *A test*, `case using isOdd()`, is a pattern of `parseMatchPattern`: the call is the condition, like any
   other call a case may hold, so it can be joined by `or`, be a column's pattern and take a guard. A
   call giving an Option is `ErrorUsingForm` (`ifTypeCheck`), not a condition that is not a bool.
-- *A binding in a match*, `case imm rest using prefix("GET ")`, must run the call once and read its result
+- *A binding in a match*, `case let rest using prefix("GET ")`, must run the call once and read its result
   twice (the test and the binding), which one condition of the flat chain cannot do. So the chain goes on
   in the `else` of the cases before it, which holds the call's result in a variable and the cases after, as
-  an `elif imm x Some = call` does (`parseBoundMatch`, `usingarm`): `[…, elseCond, { imm -using1 =
-  prefix(matchee, "GET "); if -using1 is Some { imm rest = [Some]-using1; … } elif … }]`. The cases
+  an `elif let x Some = call` does (`parseBoundMatch`, `usingarm`): `[…, elseCond, { let -using1 =
+  prefix(matchee, "GET "); if -using1 is Some { let rest = [Some]-using1; … } elif … }]`. The cases
   after it are an `IfNode` of their own, marked `FlagIfMatchTail`, which `parseMatch` goes on adding to;
   it is not a match for `ifMatchCover`, which judges the first `IfNode`, whose last arm is that `else`. The
   variable is named `-using` and a number, one of a match's own names (`nameIsMatchHolder`).
   `varDclTypeCheck` asks the variable of that name for an Option, `ErrorUsingForm`, and gives it the error
   type otherwise, which `castIsTypeCheck` leaves unreported.
-- *A binding in an `if`, an `elif` and a let-else*, `imm rest using prefix("GET ") = line`, reads the call
+- *A binding in an `if`, an `elif` and a let-else*, `let rest using prefix("GET ") = line`, reads the call
   where a type would stand (`parseBindVarDcl`; `parseVarDcl` with `ParseMayUsing`, and `ParseState.usingdcl`
-  to say it did), and the value after `=` becomes its first argument: `imm rest Some = prefix(line, "GET ")`,
+  to say it did), and the value after `=` becomes its first argument: `let rest Some = prefix(line, "GET ")`,
   held and bound as any bound `if` is. A declaration of this kind with no `else` is `ErrorUsingForm`.
 
 The variable takes `Some` (`parseUsingSome`), so the binding is what a variant declared as a type binds: the
@@ -146,8 +146,8 @@ variable, whose initializer becomes the local's contents ([cast](cast.md),
 `castBindProject`). The desugaring here is the same for every variant.
 
 **A bound pattern's guard binds the variable a second time.** The variable is
-declared at the head of the arm, which the condition is outside, so `case imm x
-T if g {…}` becomes the condition `is T and {imm x = [T]v; g}` — a block
+declared at the head of the arm, which the condition is outside, so `case let x
+T if g {…}` becomes the condition `is T and {let x = [T]v; g}` — a block
 declaring its own `x`, from a second conversion that shares the pattern's type
 node (`FlagMatchBind`) — and the arm keeps its own `x` as before.
 
@@ -172,8 +172,8 @@ must be last. Then check the arm against `expectType` and fold its type into the
 type in common — **unless the arm jumps away** (`ifBlockJumps`: it ends in a
 `return`, `break` or `continue`, a call returning `Never` among them, since
 `blockTypeCheck` makes a `return` of one). Such an arm gives the `if` no value,
-so has no say in its type: `imm x = if c {1} else {return 7}` and
-`imm x = if c {1} else {panic("no")}` are both `i32`.
+so has no say in its type: `let x = if c {1} else {return 7}` and
+`let x = if c {1} else {panic("no")}` are both `i32`.
 
 **After the loop:** a `noCareType` expectation returns immediately, leaving
 `vtype` `unknownType` — the statement-position `if`. No `else` in a

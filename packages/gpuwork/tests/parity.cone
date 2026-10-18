@@ -35,7 +35,7 @@ import noise use fbm3, hash3;
 const SIZE = 16u32;
 
 fn preference() u32 {
-  imm env = libc.getenv("GPU_POWER_PREFERENCE");
+  let env = libc.getenv("GPU_POWER_PREFERENCE");
   if (env as usize) != 0usize and libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 { return POWER_PREFERENCE_LOW_POWER; }
   POWER_PREFERENCE_HIGH_PERFORMANCE;
 }
@@ -57,13 +57,13 @@ struct Bake {
 // ('fn @compute(64) bake(inv Invocation, b Bake, out &mut Array[f32],
 // hashes &mut Array[u32])'): voxel inv.globalId's fBm and hash
 fn bake(inv Invocation, b Bake, out &mut Array[f32], hashes &mut Array[u32]) {
-  imm x = inv.globalId[0usize];
-  imm y = inv.globalId[1usize];
-  imm z = inv.globalId[2usize];
+  let x = inv.globalId[0usize];
+  let y = inv.globalId[1usize];
+  let z = inv.globalId[2usize];
   if x >= b.size or y >= b.size or z >= b.size { return; }
-  imm p = new Vec3(b.ox + f32.from(x) * b.step, b.oy + f32.from(y) * b.step, b.oz + f32.from(z) * b.step);
-  imm n = fbm3(p, b.seed, 4, 2., 0.5);
-  imm v = usize.from(x + b.size * (y + b.size * z));
+  let p = new Vec3(b.ox + f32.from(x) * b.step, b.oy + f32.from(y) * b.step, b.oz + f32.from(z) * b.step);
+  let n = fbm3(p, b.seed, 4, 2., 0.5);
+  let v = usize.from(x + b.size * (y + b.size * z));
   out[4usize * v] = n.value;
   out[4usize * v + 1usize] = n.d.x;
   out[4usize * v + 2usize] = n.d.y;
@@ -78,8 +78,8 @@ fn bakeTwin(inv Invocation, buffers &Array[Words]) {
 
 // 'count' zero words
 fn zeros(count usize) List[u32] {
-  mut l = List[u32].withCapacity(count);
-  mut i = 0usize;
+  var l = List[u32].withCapacity(count);
+  var i = 0usize;
   while i < count {
     l.push(0u32);
     i = i + 1usize;
@@ -88,12 +88,12 @@ fn zeros(count usize) List[u32] {
 }
 
 fn main() i32 {
-  mut instance = Instance.create("gpuwork parity");
+  var instance = Instance.create("gpuwork parity");
   require(instance.isValid(), "a Vulkan 1.3 instance");
-  mut none = Surface.none();
-  mut adapter = instance.requestAdapter(&none, preference());
+  var none = Surface.none();
+  var adapter = instance.requestAdapter(&none, preference());
   require(adapter.isValid(), "an adapter");
-  mut device = adapter.requestDevice();
+  var device = adapter.requestDevice();
   require(device.isValid(), "a device");
   if (libc.getenv("GPUWORK_REPORT") as usize) != 0usize {
     printStr("adapter: ");
@@ -101,16 +101,16 @@ fn main() i32 {
     printStr("\n");
   }
 
-  mut kernel = Kernel.make(&device, &NOISEBAKE_SPIRV, "bakeMain", &[READ, READ_WRITE, READ_WRITE]);
+  var kernel = Kernel.make(&device, &NOISEBAKE_SPIRV, "bakeMain", &[READ, READ_WRITE, READ_WRITE]);
   require(kernel.isValid(), "the bake kernel");
   expectUInt(u64.from(kernel.workgroup[0usize]) * 100u64 + u64.from(kernel.workgroup[1usize]) * 10u64
     + u64.from(kernel.workgroup[2usize]), 444u64, "its workgroup, 4 x 4 x 4, read from the SPIR-V");
   expectBool(kernel.hasTwin, false, "no twin until given one");
   kernel.setTwin(&bakeTwin);
 
-  imm voxels = usize.from(SIZE * SIZE * SIZE);
-  mut buffers = List[List[u32]].empty();
-  mut params = List[u32].empty();
+  let voxels = usize.from(SIZE * SIZE * SIZE);
+  var buffers = List[List[u32]].empty();
+  var params = List[u32].empty();
   params.push(bits(-2.03125));
   params.push(bits(0.53125));
   params.push(bits(1.25));
@@ -121,8 +121,8 @@ fn main() i32 {
   buffers.push(zeros(4usize * voxels));
   buffers.push(zeros(voxels));
 
-  imm groups = SIZE / 4u32;
-  imm p = checkParity(&mut device, &kernel, &buffers, groups, groups, groups);
+  let groups = SIZE / 4u32;
+  let p = checkParity(&mut device, &kernel, &buffers, groups, groups, groups);
   expectBool(p.ran, true, "the GPU and the twin both ran");
   expectUInt(p.compared, 20480u64, "every word written compared: 4 a voxel and its hash");
   if !expectUInt(p.mismatched, 0u64, "every word the same, bit for bit") {
@@ -141,7 +141,7 @@ fn main() i32 {
 
 // spirv-begin noisebake.spv NOISEBAKE_SPIRV
 // Written by tools/shaders/shaders.py from noisebake.slang (sha256 c6c0eda632597c724941e9495f81e4bda40583bd8218e49cb9962ff6e77ab3c8): do not edit.
-imm NOISEBAKE_SPIRV Array[u32, 7381] = [
+let NOISEBAKE_SPIRV Array[u32, 7381] = [
   0x07230203u32, 0x00010500u32, 0x00280000u32, 0x00000763u32, 0x00000000u32, 0x00020011u32,
   0x00000001u32, 0x000b000au32, 0x5f565053u32, 0x5f52484bu32, 0x726f7473u32, 0x5f656761u32,
   0x66667562u32, 0x735f7265u32, 0x61726f74u32, 0x635f6567u32, 0x7373616cu32, 0x00000000u32,

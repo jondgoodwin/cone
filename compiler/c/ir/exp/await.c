@@ -169,7 +169,7 @@ static void awaitOperation(TypeCheckState *pstate, AwaitNode *node, INode *expec
         char rname[256] = "";
         itypeSpellCat(rname, sizeof(rname), result, 0);
         errorMsgNode((INode *)node, WarnAwaitUnused,
-            "This 'await' waits for an operation, which answers with a %s, and the answer is thrown away. An operation's answer says whether it worked, a failure among what it may say, as a synchronous call that can fail answers, so a failure here goes unread: bind it, 'imm r = await ...', and match on it.",
+            "This 'await' waits for an operation, which answers with a %s, and the answer is thrown away. An operation's answer says whether it worked, a failure among what it may say, as a synchronous call that can fail answers, so a failure here goes unread: bind it, 'let r = await ...', and match on it.",
             rname);
     }
 }

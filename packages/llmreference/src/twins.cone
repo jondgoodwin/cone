@@ -12,8 +12,8 @@
 
 // The sum of w[c] * x[c] over c < cols, in f64 in column order (a product of two f32s is exact in f64)
 fn dot64(w &Array[f32], x &Array[f32], x0 usize, cols usize) f64 {
-  mut acc = 0.0d;
-  mut c = 0usize;
+  var acc = 0.0d;
+  var c = 0usize;
   while c < cols {
     acc = acc + f64.from(w[c]) * f64.from(x[x0 + c]);
     c = c + 1usize;
@@ -24,8 +24,8 @@ fn dot64(w &Array[f32], x &Array[f32], x0 usize, cols usize) f64 {
 // y[r] = sum over c of W[r][c] x[c], for every row of the matrix. x holds at least m.cols values, y at least m.rows.
 pub fn matvecCpu(m &QMatrix, x &Array[f32], y &mut Array[f32]) bool {
   if x.len < m.cols or y.len < m.rows { return false; }
-  mut row = zeroFloats(m.cols);
-  mut r = 0usize;
+  var row = zeroFloats(m.cols);
+  var r = 0usize;
   while r < m.rows {
     dequantizeRow(m.qtype, m.bytes.view(), r * m.stride(), m.cols, row.viewMut());
     y[r] = f32.from(dot64(row.view(), x, 0usize, m.cols));
@@ -37,11 +37,11 @@ pub fn matvecCpu(m &QMatrix, x &Array[f32], y &mut Array[f32]) bool {
 // Y[b][r] = sum over c of W[r][c] X[b][c], X 'batch' rows of m.cols, Y 'batch' rows of m.rows
 pub fn matmulCpu(m &QMatrix, x &Array[f32], batch usize, y &mut Array[f32]) bool {
   if x.len < batch * m.cols or y.len < batch * m.rows { return false; }
-  mut row = zeroFloats(m.cols);
-  mut r = 0usize;
+  var row = zeroFloats(m.cols);
+  var r = 0usize;
   while r < m.rows {
     dequantizeRow(m.qtype, m.bytes.view(), r * m.stride(), m.cols, row.viewMut());
-    mut b = 0usize;
+    var b = 0usize;
     while b < batch {
       y[b * m.rows + r] = f32.from(dot64(row.view(), x, b * m.cols, m.cols));
       b = b + 1usize;
@@ -53,8 +53,8 @@ pub fn matmulCpu(m &QMatrix, x &Array[f32], batch usize, y &mut Array[f32]) bool
 
 // The sum of |w[c] x[c]| in f64, the size of the terms a sum is made of
 fn absDot64(w &Array[f32], x &Array[f32], x0 usize, cols usize) f64 {
-  mut acc = 0.0d;
-  mut c = 0usize;
+  var acc = 0.0d;
+  var c = 0usize;
   while c < cols {
     acc = acc + libc.fabs(f64.from(w[c]) * f64.from(x[x0 + c]));
     c = c + 1usize;
@@ -65,8 +65,8 @@ fn absDot64(w &Array[f32], x &Array[f32], x0 usize, cols usize) f64 {
 // For each row of the matrix, the sum of the absolute values of its products with x (what 'sumTolerance' scales)
 pub fn matvecMagnitudeCpu(m &QMatrix, x &Array[f32], y &mut Array[f64]) bool {
   if x.len < m.cols or y.len < m.rows { return false; }
-  mut row = zeroFloats(m.cols);
-  mut r = 0usize;
+  var row = zeroFloats(m.cols);
+  var r = 0usize;
   while r < m.rows {
     dequantizeRow(m.qtype, m.bytes.view(), r * m.stride(), m.cols, row.viewMut());
     y[r] = absDot64(row.view(), x, 0usize, m.cols);
@@ -78,11 +78,11 @@ pub fn matvecMagnitudeCpu(m &QMatrix, x &Array[f32], y &mut Array[f64]) bool {
 // The same for every output of a matmul, laid out as its Y
 pub fn matmulMagnitudeCpu(m &QMatrix, x &Array[f32], batch usize, y &mut Array[f64]) bool {
   if x.len < batch * m.cols or y.len < batch * m.rows { return false; }
-  mut row = zeroFloats(m.cols);
-  mut r = 0usize;
+  var row = zeroFloats(m.cols);
+  var r = 0usize;
   while r < m.rows {
     dequantizeRow(m.qtype, m.bytes.view(), r * m.stride(), m.cols, row.viewMut());
-    mut b = 0usize;
+    var b = 0usize;
     while b < batch {
       y[b * m.rows + r] = absDot64(row.view(), x, b * m.cols, m.cols);
       b = b + 1usize;
@@ -104,16 +104,16 @@ pub fn sumTolerance(n usize, absSum f64) f64 {
 // y = x / sqrt(mean(x^2) + eps) * w, for each of 'rows' rows of 'n'
 pub fn rmsnormCpu(x &Array[f32], w &Array[f32], n usize, rows usize, eps f32, y &mut Array[f32]) bool {
   if n == 0usize or x.len < n * rows or w.len < n or y.len < n * rows { return false; }
-  mut r = 0usize;
+  var r = 0usize;
   while r < rows {
-    mut ss = 0.0d;
-    mut i = 0usize;
+    var ss = 0.0d;
+    var i = 0usize;
     while i < n {
-      imm v = f64.from(x[r * n + i]);
+      let v = f64.from(x[r * n + i]);
       ss = ss + v * v;
       i = i + 1usize;
     }
-    imm scale = 1.0d / libc.sqrt(ss / f64.from(n) + f64.from(eps));
+    let scale = 1.0d / libc.sqrt(ss / f64.from(n) + f64.from(eps));
     i = 0usize;
     while i < n {
       y[r * n + i] = f32.from(f64.from(x[r * n + i]) * scale * f64.from(w[i]));
@@ -126,8 +126,8 @@ pub fn rmsnormCpu(x &Array[f32], w &Array[f32], n usize, rows usize, eps f32, y 
 
 // The ropeDim / 2 frequencies base^(-2 i / ropeDim), the table the RoPE kernel and its twin both take
 pub fn ropeFrequencies(ropeDim usize, base f32) List[f32] {
-  mut out = List[f32].withCapacity(ropeDim / 2usize);
-  mut i = 0usize;
+  var out = List[f32].withCapacity(ropeDim / 2usize);
+  var i = 0usize;
   while i < ropeDim / 2usize {
     out.push(f32.from(libc.pow(f64.from(base), 0.0d - 2.0d * f64.from(i) / f64.from(ropeDim))));
     i = i + 1usize;
@@ -140,27 +140,27 @@ pub fn ropeFrequencies(ropeDim usize, base f32) List[f32] {
 // [token][head][d]. The angle is the f32 product the shader forms; its cosine and sine are libm's in f64.
 pub fn ropeCpu(x &mut Array[f32], freqs &Array[f32], tokens usize, nHeads usize, headDim usize, ropeDim usize,
     pos0 usize, mode u32) bool {
-  imm half = ropeDim / 2usize;
+  let half = ropeDim / 2usize;
   if ropeDim % 2usize != 0usize or ropeDim > headDim or freqs.len < half or x.len < tokens * nHeads * headDim { return false; }
   if mode > 1u32 { return false; }
-  mut t = 0usize;
+  var t = 0usize;
   while t < tokens {
-    mut h = 0usize;
+    var h = 0usize;
     while h < nHeads {
-      imm basis = (t * nHeads + h) * headDim;
-      mut p = 0usize;
+      let basis = (t * nHeads + h) * headDim;
+      var p = 0usize;
       while p < half {
-        imm angle = f64.from(f32.from(pos0 + t) * freqs[p]);
-        imm c = libc.cos(angle);
-        imm s = libc.sin(angle);
-        mut a = basis + p;
-        mut b = basis + p + half;
+        let angle = f64.from(f32.from(pos0 + t) * freqs[p]);
+        let c = libc.cos(angle);
+        let s = libc.sin(angle);
+        var a = basis + p;
+        var b = basis + p + half;
         if mode == 0u32 {
           a = basis + 2usize * p;
           b = a + 1usize;
         }
-        imm x0 = f64.from(x[a]);
-        imm x1 = f64.from(x[b]);
+        let x0 = f64.from(x[a]);
+        let x1 = f64.from(x[b]);
         x[a] = f32.from(x0 * c - x1 * s);
         x[b] = f32.from(x0 * s + x1 * c);
         p = p + 1usize;
@@ -175,15 +175,15 @@ pub fn ropeCpu(x &mut Array[f32], freqs &Array[f32], tokens usize, nHeads usize,
 // Softmax of each of 'rows' rows of 'n'
 pub fn softmaxCpu(x &Array[f32], n usize, rows usize, y &mut Array[f32]) bool {
   if n == 0usize or x.len < n * rows or y.len < n * rows { return false; }
-  mut r = 0usize;
+  var r = 0usize;
   while r < rows {
-    mut m = f64.from(x[r * n]);
-    mut i = 1usize;
+    var m = f64.from(x[r * n]);
+    var i = 1usize;
     while i < n {
       if f64.from(x[r * n + i]) > m { m = f64.from(x[r * n + i]); }
       i = i + 1usize;
     }
-    mut sum = 0.0d;
+    var sum = 0.0d;
     i = 0usize;
     while i < n {
       sum = sum + libc.exp(f64.from(x[r * n + i]) - m);
@@ -205,43 +205,43 @@ pub fn attentionCpu(q &Array[f32], kCache &Array[f32], vCache &Array[f32], nToke
     nKvHeads usize, headDim usize, pos0 usize, maxSeq usize, scale f32, out &mut Array[f32]) bool {
   if nKvHeads == 0usize or nHeads % nKvHeads != 0usize or headDim == 0usize { return false; }
   if pos0 + nTokens > maxSeq { return false; }
-  imm kvDim = nKvHeads * headDim;
+  let kvDim = nKvHeads * headDim;
   if q.len < nTokens * nHeads * headDim or out.len < nTokens * nHeads * headDim { return false; }
   if kCache.len < maxSeq * kvDim or vCache.len < maxSeq * kvDim { return false; }
-  mut scores = List[f64].withCapacity(maxSeq);
-  mut t = 0usize;
+  var scores = List[f64].withCapacity(maxSeq);
+  var t = 0usize;
   while t < nTokens {
-    imm seqLen = pos0 + t + 1usize;
-    mut h = 0usize;
+    let seqLen = pos0 + t + 1usize;
+    var h = 0usize;
     while h < nHeads {
-      imm kvh = h / (nHeads / nKvHeads);
-      imm qBase = (t * nHeads + h) * headDim;
+      let kvh = h / (nHeads / nKvHeads);
+      let qBase = (t * nHeads + h) * headDim;
       scores.clear();
-      mut m = -1.0e300d;
-      mut j = 0usize;
+      var m = -1.0e300d;
+      var j = 0usize;
       while j < seqLen {
-        mut acc = 0.0d;
-        mut d = 0usize;
+        var acc = 0.0d;
+        var d = 0usize;
         while d < headDim {
           acc = acc + f64.from(q[qBase + d]) * f64.from(kCache[j * kvDim + kvh * headDim + d]);
           d = d + 1usize;
         }
-        imm s = acc * f64.from(scale);
+        let s = acc * f64.from(scale);
         scores.push(s);
         if s > m { m = s; }
         j = j + 1usize;
       }
-      mut total = 0.0d;
+      var total = 0.0d;
       j = 0usize;
       while j < seqLen {
-        imm e = libc.exp(*scores[j] - m);
+        let e = libc.exp(*scores[j] - m);
         scores.set(j, e);
         total = total + e;
         j = j + 1usize;
       }
-      mut d = 0usize;
+      var d = 0usize;
       while d < headDim {
-        mut acc = 0.0d;
+        var acc = 0.0d;
         j = 0usize;
         while j < seqLen {
           acc = acc + *scores[j] * f64.from(vCache[j * kvDim + kvh * headDim + d]);
@@ -260,7 +260,7 @@ pub fn attentionCpu(q &Array[f32], kCache &Array[f32], vCache &Array[f32], nToke
 // cache[(pos0 + t) * kvDim + i] = src[t * kvDim + i] for t < nTokens, i < kvDim
 pub fn kvAppendCpu(src &Array[f32], cache &mut Array[f32], nTokens usize, kvDim usize, pos0 usize) bool {
   if src.len < nTokens * kvDim or cache.len < (pos0 + nTokens) * kvDim { return false; }
-  mut i = 0usize;
+  var i = 0usize;
   while i < nTokens * kvDim {
     cache[pos0 * kvDim + i] = src[i];
     i = i + 1usize;
@@ -270,49 +270,49 @@ pub fn kvAppendCpu(src &Array[f32], cache &mut Array[f32], nTokens usize, kvDim 
 
 // x / (1 + e^-x)
 pub fn siluValue(x f32) f32 {
-  imm v = f64.from(x);
+  let v = f64.from(x);
   f32.from(v / (1.0d + libc.exp(0.0d - v)));
 }
 
 // tanh in f64 from exp (libc has no tanh here): (1 - e^-2|v|) / (1 + e^-2|v|), signed
 fn tanh64(v f64) f64 {
-  imm a = if v < 0.0d { 0.0d - v; } else { v; };
-  imm t = libc.exp(-2.0d * a);
-  imm r = (1.0d - t) / (1.0d + t);
+  let a = if v < 0.0d { 0.0d - v; } else { v; };
+  let t = libc.exp(-2.0d * a);
+  let r = (1.0d - t) / (1.0d + t);
   if v < 0.0d { return 0.0d - r; }
   r;
 }
 
 // 0.5 x (1 + tanh(sqrt(2 / pi) (x + 0.044715 x^3))), the tanh GELU ggml uses
 pub fn geluValue(x f32) f32 {
-  imm v = f64.from(x);
+  let v = f64.from(x);
   f32.from(0.5d * v * (1.0d + tanh64(0.79788456080286535588d * (v + 0.044715d * v * v * v))));
 }
 
 pub fn siluCpu(x &Array[f32], n usize, y &mut Array[f32]) bool {
   if x.len < n or y.len < n { return false; }
-  mut i = 0usize;
+  var i = 0usize;
   while i < n { y[i] = siluValue(x[i]); i = i + 1usize; }
   true;
 }
 
 pub fn geluCpu(x &Array[f32], n usize, y &mut Array[f32]) bool {
   if x.len < n or y.len < n { return false; }
-  mut i = 0usize;
+  var i = 0usize;
   while i < n { y[i] = geluValue(x[i]); i = i + 1usize; }
   true;
 }
 
 pub fn addCpu(a &Array[f32], b &Array[f32], n usize, y &mut Array[f32]) bool {
   if a.len < n or b.len < n or y.len < n { return false; }
-  mut i = 0usize;
+  var i = 0usize;
   while i < n { y[i] = a[i] + b[i]; i = i + 1usize; }
   true;
 }
 
 pub fn mulCpu(a &Array[f32], b &Array[f32], n usize, y &mut Array[f32]) bool {
   if a.len < n or b.len < n or y.len < n { return false; }
-  mut i = 0usize;
+  var i = 0usize;
   while i < n { y[i] = a[i] * b[i]; i = i + 1usize; }
   true;
 }

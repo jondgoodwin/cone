@@ -653,7 +653,7 @@ static int genericInferFnParms(TypeCheckState *pstate, Nodes *genparms, FnSigNod
 
     // A type parameter still unsaid may be said by where the call's value goes:
     // the function's return type is matched against the type expected of it. This
-    // comes before a literal takes a default, so 'imm n i64 = id(5)' is an i64's
+    // comes before a literal takes a default, so 'let n i64 = id(5)' is an i64's
     // identity, not an i32's widened.
     genericInferFromExpected(genparms, genfnsig->rettype, expectType, inferredgencall);
 
@@ -1782,7 +1782,7 @@ static void genericBindingsCat(char *buf, size_t size, INode *cond, Nodes *parms
 // Why a type is not Sendable: into 'what', where the culprit sits in it
 // ('Job.data is Rc[mut, Log],', or 'it is'), and into 'reason', what kind of
 // thing binds it to its thread. Returns whether the cause is one most often met
-// through a local -- a borrow or a permission -- whose own 'mut' is not what is
+// through a local -- a borrow or a permission -- whose own 'var' is not what is
 // checked. Each buffer holds 512 bytes.
 int genericNotSendableWhy(INode *arg, char *what, char *reason, StaticBorrow how) {
     char path[256];
@@ -1874,7 +1874,7 @@ int genericNotSendableWhy(INode *arg, char *what, char *reason, StaticBorrow how
 // Refuse an instance whose argument 'arg', for parameter 'parm', is not
 // Sendable, saying what binds it to its thread and where that sits in it. A
 // borrow or a permission is the cause most often met through a local, and a
-// local's own 'mut' is not what is checked, so the message says so.
+// local's own 'var' is not what is checked, so the message says so.
 static int genericFieldThreadBound(INode *type) {
     return itypeThreadBound(type, NULL);
 }
@@ -1898,7 +1898,7 @@ static void genericNotSendableMsg(INode *errnode, Name *name, GenVarDclNode *par
     int local = genericNotSendableWhy(arg, what, reason, how);
     errorMsgNode(errnode, ErrorNotSendable, "%s requires %s is Sendable, and %s is not Sendable: %s %s.%s",
         &name->namestr, &parm->namesym->namestr, argname, what, reason,
-        local ? " What is checked is the types of the references a value holds, not how a variable was declared: a local declared 'mut x = 5' holds a number, which is Sendable." : "");
+        local ? " What is checked is the types of the references a value holds, not how a variable was declared: a local declared 'var x = 5' holds a number, which is Sendable." : "");
 }
 
 // What makes a type not Shareable, in the words of the reference found

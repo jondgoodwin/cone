@@ -154,19 +154,19 @@ pub struct Client {
     if cfg.maxPerOrigin == 0u32 or cfg.maxTotal == 0u32 {
       panic("httpclient: maxPerOrigin and maxTotal are at least 1", file, line);
     }
-    mut c = cfg;
+    var c = cfg;
     c.conn.protocol.idleTimeout = c.idleTimeout;
-    mut tc = tls.ClientConfig.make();
+    var tc = tls.ClientConfig.make();
     tc <=> c.tlsConfig;
-    mut tlsc Option[tls.Client] = None;
-    mut tf = Failure.none();
+    var tlsc Option[tls.Client] = None;
+    var tf = Failure.none();
     match tls.Client.make(tc) {
-      case imm r Ok {tlsc = Some[tls.Client](r);}
-      case imm e Error {
+      case let r Ok {tlsc = Some[tls.Client](r);}
+      case let e Error {
         tf = Failure.make(Stage.Tls, e.osError, ErrorKind.Unsupported, e.message().view());
       }
     }
-    imm d = httpconn.Driver.make(c.conn, pool);
+    let d = httpconn.Driver.make(c.conn, pool);
     new Client(cfg: c, pool: pool, drv: d, tlsc: tlsc, tlsFailure: tf,
       fetchBlocks: List[*Fetch].empty(), fetchCount: 0u32, freeFetch: noEntry, liveFetches: 0u32,
       queuedN: 0u32, seq: 0u64, connBlocks: List[*PConn].empty(), connCount: 0u32, freeConn: noEntry,
@@ -179,12 +179,12 @@ pub struct Client {
 
   // Its counters, as they are now
   pub fn stats(self &) ClientStats {
-    mut s = st;
+    var s = st;
     s.queuedNow = queuedN;
     s.activeNow = liveFetches - queuedN;
     s.openNow = total;
-    mut idle = 0u32;
-    mut o = 0usize;
+    var idle = 0u32;
+    var o = 0usize;
     while o < origins.len() {
       idle = idle + u32.from((*origins[o] as &Origin).idle.len());
       o = o + 1usize;
@@ -229,7 +229,7 @@ pub struct Client {
   // The live fetch id names, or noEntry
   fn fetchIndex(self &, id FetchId) u32 {
     if id.isNone() or id.index >= fetchCount {return noEntry;}
-    imm f = self.fetchAt(id.index) as &Fetch;
+    let f = self.fetchAt(id.index) as &Fetch;
     if f.gen != id.gen or f.state == fFree {return noEntry;}
     id.index;
   }
@@ -246,12 +246,12 @@ pub struct Client {
 
   fn newFetch(self &mut) u32 {
     if freeFetch == noEntry {
-      imm block = libc.malloc(usize.from(recsPerBlock) * mem.sizeof[Fetch]()) as *Fetch;
+      let block = libc.malloc(usize.from(recsPerBlock) * mem.sizeof[Fetch]()) as *Fetch;
       if block as usize == 0usize {panic("httpclient: out of memory for the fetch table");}
-      imm base = fetchCount;
-      mut j = 0u32;
+      let base = fetchCount;
+      var j = 0u32;
       while j < recsPerBlock {
-        imm next = if j + 1u32 < recsPerBlock {base + j + 1u32;} else {noEntry;};
+        let next = if j + 1u32 < recsPerBlock {base + j + 1u32;} else {noEntry;};
         mem.writeRaw[Fetch](block + usize.from(j), self.blankFetch(next));
         j = j + 1u32;
       }
@@ -259,8 +259,8 @@ pub struct Client {
       fetchCount = fetchCount + recsPerBlock;
       freeFetch = base;
     }
-    imm i = freeFetch;
-    imm f = self.fetchAt(i) as &mut Fetch;
+    let i = freeFetch;
+    let f = self.fetchAt(i) as &mut Fetch;
     freeFetch = f.nextFree;
     f.nextFree = noEntry;
     f.state = fQueued;
@@ -284,7 +284,7 @@ pub struct Client {
   }
 
   fn freeFetchRec(self &mut, i u32) {
-    imm f = self.fetchAt(i) as &mut Fetch;
+    let f = self.fetchAt(i) as &mut Fetch;
     f.state = fFree;
     f.gen = nextGen(f.gen);
     f.sink = Sink.Here(0u64);
@@ -306,12 +306,12 @@ pub struct Client {
 
   fn newConn(self &mut) u32 {
     if freeConn == noEntry {
-      imm block = libc.malloc(usize.from(recsPerBlock) * mem.sizeof[PConn]()) as *PConn;
+      let block = libc.malloc(usize.from(recsPerBlock) * mem.sizeof[PConn]()) as *PConn;
       if block as usize == 0usize {panic("httpclient: out of memory for the connection table");}
-      imm base = connCount;
-      mut j = 0u32;
+      let base = connCount;
+      var j = 0u32;
       while j < recsPerBlock {
-        imm next = if j + 1u32 < recsPerBlock {base + j + 1u32;} else {noEntry;};
+        let next = if j + 1u32 < recsPerBlock {base + j + 1u32;} else {noEntry;};
         mem.writeRaw[PConn](block + usize.from(j), self.blankConn(next));
         j = j + 1u32;
       }
@@ -319,8 +319,8 @@ pub struct Client {
       connCount = connCount + recsPerBlock;
       freeConn = base;
     }
-    imm i = freeConn;
-    imm p = self.connAt(i) as &mut PConn;
+    let i = freeConn;
+    let p = self.connAt(i) as &mut PConn;
     freeConn = p.nextFree;
     p.nextFree = noEntry;
     p.state = pConnecting;
@@ -330,7 +330,7 @@ pub struct Client {
   }
 
   fn freeConnRec(self &mut, i u32) {
-    imm p = self.connAt(i) as &mut PConn;
+    let p = self.connAt(i) as &mut PConn;
     p.state = pFree;
     p.gen = nextGen(p.gen);
     p.id = httpconn.ConnId.none();
@@ -340,15 +340,15 @@ pub struct Client {
 
   // The origin of a URL: its record, made the first time
   fn originFor(self &mut, u &Url) u32 {
-    imm secure = u.isSecure();
-    imm port = u.effectivePort();
-    mut k = 0usize;
+    let secure = u.isSecure();
+    let port = u.effectivePort();
+    var k = 0usize;
     while k < origins.len() {
-      imm og = *origins[k] as &Origin;
+      let og = *origins[k] as &Origin;
       if og.port == port and og.secure == secure and og.host.view() == u.host.view() {return u32.from(k);}
       k = k + 1usize;
     }
-    imm o = libc.malloc(mem.sizeof[Origin]()) as *Origin;
+    let o = libc.malloc(mem.sizeof[Origin]()) as *Origin;
     if o as usize == 0usize {panic("httpclient: out of memory for an origin");}
     mem.writeRaw[Origin](o, new Origin(key: u.origin(), secure: secure, host: u.host.copy(),
       port: u.effectivePort(), queue: List[u32].empty(), idle: List[u32].empty(), open: 0u32,
@@ -372,17 +372,17 @@ pub struct Client {
   // Transfer-Encoding), or whose method is not a token or is CONNECT, is a
   // program error: a panic at the caller's line
   pub fn send(self &mut, lp &mut Loop, req Request, sink Sink, file &Array[u8] = srcFile(), line u32 = srcLine()) FetchId {
-    mut r = req;
+    var r = req;
     if not isToken(r.methodName()) {panic("httpclient: the request's method is not a token", file, line);}
     if r.method == Method.Connect {panic("httpclient: CONNECT is not supported", file, line);}
     if r.headers.has("Host") {panic("httpclient: Host is written from the request's URL, not its fields", file, line);}
     if r.headers.has("Content-Length") or r.headers.has("Transfer-Encoding") {
       panic("httpclient: framing fields are the client's to write, from the request's body", file, line);
     }
-    imm now = Instant.now();
-    imm fi = self.newFetch();
-    imm f = self.fetchAt(fi) as &mut Fetch;
-    mut s = sink;
+    let now = Instant.now();
+    let fi = self.newFetch();
+    let f = self.fetchAt(fi) as &mut Fetch;
+    var s = sink;
     f.sink <=> s;
     f.method = r.method;
     f.methodText <=> r.methodText;
@@ -390,7 +390,7 @@ pub struct Client {
     f.headers <=> r.headers;
     if not f.headers.has("User-Agent") {
       // Copied: the fields hold Strings, and nothing shows the config's is none of them
-      imm agent = cfg.userAgent.copy();
+      let agent = cfg.userAgent.copy();
       f.headers.add("User-Agent", agent.view());
     }
     if not f.headers.has("Accept") {f.headers.add("Accept", "*/*");}
@@ -404,7 +404,7 @@ pub struct Client {
     seq = seq + 1u64;
     f.timing.queued = now;
     st.fetches = st.fetches + 1u64;
-    imm id = self.idOf(fi);
+    let id = self.idOf(fi);
     // Answered at once: a bad URL, a full queue, a cancelled group, a past deadline
     if not r.urlError.isNone() {
       self.refuse(lp, fi, Stage.Url, r.urlError.message().view());
@@ -418,11 +418,11 @@ pub struct Client {
       self.refuse(lp, fi, Stage.Queue, "maxQueued requests already wait for a connection");
       return id;
     }
-    mut dl = f.deadline;
-    mut cancelled = false;
-    imm g = f.group;
+    var dl = f.deadline;
+    var cancelled = false;
+    let g = f.group;
     match g {
-      case imm gv Some {
+      case let gv Some {
         if gv.isCancelled() {cancelled = true;}
         if gv.deadline() < dl {dl = gv.deadline();}
       }
@@ -438,10 +438,10 @@ pub struct Client {
       return id;
     }
     // Its deadline and group, watched by one timer on the loop
-    imm wt = drv.upperToken(lp, kWatch, (u64.from(f.gen & watchGenMask) << 24u64) | u64.from(fi));
+    let wt = drv.upperToken(lp, kWatch, (u64.from(f.gen & watchGenMask) << 24u64) | u64.from(fi));
     match g {
-      case imm gv Some {
-        imm at = if dl < forever() {dl;} else {now + Duration.fromHours(87600i64);};
+      case let gv Some {
+        let at = if dl < forever() {dl;} else {now + Duration.fromHours(87600i64);};
         f.watch = lp.afterIn(at, Target.Here(wt), gv);
       }
       else {
@@ -454,7 +454,7 @@ pub struct Client {
 
   // A fetch that cannot be made is answered Failed at once
   fn refuse(self &mut, lp &mut Loop, fi u32, stage Stage, detail &str) {
-    mut fl = Failure.make(stage, 0u32, if stage == Stage.Queue {ErrorKind.TooLarge;} else {ErrorKind.Malformed;}, detail);
+    var fl = Failure.make(stage, 0u32, if stage == Stage.Queue {ErrorKind.TooLarge;} else {ErrorKind.Malformed;}, detail);
     fl.unsent = true;
     fl.error.noResponse = true;
     st.refused = st.refused + 1u64;
@@ -463,8 +463,8 @@ pub struct Client {
 
   // Into its origin's queue, to wait for a connection
   fn enqueue(self &mut, fi u32) {
-    imm f = self.fetchAt(fi) as &mut Fetch;
-    imm oi = self.originFor(&f.url);
+    let f = self.fetchAt(fi) as &mut Fetch;
+    let oi = self.originFor(&f.url);
     f.origin = oi;
     f.state = fQueued;
     f.conn = noEntry;
@@ -481,10 +481,10 @@ pub struct Client {
   // The program is done with n bytes of a fetch's body that Data events to
   // this thread handed it: credit back to its connection, which reads again
   pub fn release(self &mut, id FetchId, n usize) {
-    imm fi = self.fetchIndex(id);
+    let fi = self.fetchIndex(id);
     if fi == noEntry or n == 0usize {return;}
-    imm f = self.fetchAt(fi) as &mut Fetch;
-    imm m = if n < f.held {n;} else {f.held;};
+    let f = self.fetchAt(fi) as &mut Fetch;
+    let m = if n < f.held {n;} else {f.held;};
     if m == 0usize {return;}
     f.held = f.held - m;
     drv.release(f.req, m);
@@ -493,7 +493,7 @@ pub struct Client {
   // Ask a fetch to end (see the package's header, CANCEL AND DEADLINES):
   // true while its answer is still to come
   pub fn cancel(self &mut, lp &mut Loop, id FetchId) bool {
-    imm fi = self.fetchIndex(id);
+    let fi = self.fetchIndex(id);
     if fi == noEntry {return false;}
     self.cancelFetch(lp, fi, endCancelled);
     true;
@@ -502,9 +502,9 @@ pub struct Client {
   // A fetch's intent and score, changed: a waiting fetch takes its new place
   // in the order at once. True while its answer is still to come
   pub fn reprioritize(self &mut, id FetchId, intent Intent, score i64) bool {
-    imm fi = self.fetchIndex(id);
+    let fi = self.fetchIndex(id);
     if fi == noEntry {return false;}
-    imm f = self.fetchAt(fi) as &mut Fetch;
+    let f = self.fetchAt(fi) as &mut Fetch;
     f.intent = intent;
     f.score = score;
     true;
@@ -512,10 +512,10 @@ pub struct Client {
 
   // Every idle pooled connection closed (politely): how many
   pub fn closeIdle(self &mut, lp &mut Loop) u32 {
-    mut n = 0u32;
-    mut o = 0usize;
+    var n = 0u32;
+    var o = 0usize;
     while o < origins.len() {
-      imm og = *origins[o] as &mut Origin;
+      let og = *origins[o] as &mut Origin;
       while og.idle.len() > 0usize {
         self.retire(lp, *og.idle[0usize], true);
         n = n + 1u32;
@@ -527,9 +527,9 @@ pub struct Client {
 
   // Every fetch answered Cancelled, every connection reset
   pub fn abortAll(self &mut, lp &mut Loop) {
-    mut i = 0u32;
+    var i = 0u32;
     while i < fetchCount {
-      imm f = self.fetchAt(i) as &Fetch;
+      let f = self.fetchAt(i) as &Fetch;
       if f.state == fQueued {self.finishFetch(lp, i, endCancelled, Failure.none());}
       elif f.state == fActive {(self.fetchAt(i) as &mut Fetch).ending = endCancelled;}
       i = i + 1u32;
@@ -540,7 +540,7 @@ pub struct Client {
 
   // Fetch fi is cancelled (how: endCancelled, endTimedOut, endLimit)
   fn cancelFetch(self &mut, lp &mut Loop, fi u32, how u32) {
-    imm f = self.fetchAt(fi) as &mut Fetch;
+    let f = self.fetchAt(fi) as &mut Fetch;
     if f.state == fQueued {
       self.finishFetch(lp, fi, how, Failure.none());
     } elif f.state == fActive {
@@ -555,10 +555,10 @@ pub struct Client {
 
   // Fetch fi's one final answer: sent to its sink, and the fetch freed
   fn finishFetch(self &mut, lp &mut Loop, fi u32, how u32, fl Failure) {
-    imm f = self.fetchAt(fi) as &mut Fetch;
+    let f = self.fetchAt(fi) as &mut Fetch;
     if f.state == fFree {return;}
     if f.state == fQueued and f.origin != noEntry {
-      imm og = self.originAt(f.origin) as &mut Origin;
+      let og = self.originAt(f.origin) as &mut Origin;
       if removeValue(&mut og.queue, fi) {queuedN = queuedN - 1u32;}
     }
     if not f.watch.isNone() {
@@ -570,8 +570,8 @@ pub struct Client {
       f.held = 0usize;
     }
     f.timing.ended = Instant.now();
-    mut k EventKind = EventKind.Done;
-    mut failure = fl;
+    var k EventKind = EventKind.Done;
+    var failure = fl;
     if how == endDone {
       st.done = st.done + 1u64;
     } elif how == endFailed or how == endLimit {
@@ -587,7 +587,7 @@ pub struct Client {
       st.timedOut = st.timedOut + 1u64;
       k = EventKind.TimedOut;
     }
-    mut ev = Event.make(k, f.sink.token, self.idOf(fi));
+    var ev = Event.make(k, f.sink.token, self.idOf(fi));
     ev.timing = f.timing;
     if k == EventKind.Failed {
       failure.attempts = f.timing.attempts;
@@ -600,9 +600,9 @@ pub struct Client {
   // Whether fetch fi may be sent again after its connection failed with fl
   // (see the package's header, RETRIES)
   fn canRetry(self &, fi u32, fl &Failure) bool {
-    imm f = self.fetchAt(fi) as &Fetch;
+    let f = self.fetchAt(fi) as &Fetch;
     if f.delivered or f.ending != endNone or f.retries >= cfg.maxRetries {return false;}
-    imm s = fl.stage;
+    let s = fl.stage;
     if s != Stage.Read and s != Stage.Write and s != Stage.Closed {return false;}
     if fl.unsent {return true;}
     fl.error.noResponse and isIdempotent(f.method);
@@ -616,7 +616,7 @@ pub struct Client {
   // event releases once a channel takes it
   fn emit(self &mut, fi u32, credit usize, e Event) {
     st.events = st.events + 1u64;
-    imm f = self.fetchAt(fi) as &mut Fetch;
+    let f = self.fetchAt(fi) as &mut Fetch;
     if not isChan(&mut f.sink) {
       ready.push(e);
       return;
@@ -625,10 +625,10 @@ pub struct Client {
       self.hold(fi, credit, e);
       return;
     }
-    mut s Sink = Sink.Here(0u64);
+    var s Sink = Sink.Here(0u64);
     s <=> f.sink;
-    mut back = blankEvent();
-    mut sent = sinkTaken;
+    var back = blankEvent();
+    var sent = sinkTaken;
     s, sent = trySink(s, e, &mut back);
     f.sink <=> s;
     if sent == sinkFull {
@@ -640,7 +640,7 @@ pub struct Client {
   }
 
   fn hold(self &mut, fi u32, credit usize, e Event) {
-    imm f = self.fetchAt(fi) as &mut Fetch;
+    let f = self.fetchAt(fi) as &mut Fetch;
     st.held = st.held + 1u64;
     heldE.push(e);
     heldS.push(copySink(&mut f.sink));
@@ -655,40 +655,40 @@ pub struct Client {
   // events stay behind its first still held
   fn retryHeld(self &mut) {
     if heldE.len() == 0usize {return;}
-    mut ke = List[Event].empty();
-    mut ks = List[Sink].empty();
-    mut kf = List[u32].empty();
-    mut kg = List[u32].empty();
-    mut kn = List[usize].empty();
-    mut kq = List[httpconn.ReqId].empty();
-    mut blocked = List[u64].empty();
-    mut k = 0usize;
+    var ke = List[Event].empty();
+    var ks = List[Sink].empty();
+    var kf = List[u32].empty();
+    var kg = List[u32].empty();
+    var kn = List[usize].empty();
+    var kq = List[httpconn.ReqId].empty();
+    var blocked = List[u64].empty();
+    var k = 0usize;
     while k < heldE.len() {
-      mut e = blankEvent();
-      imm es = &mut heldE[k];
+      var e = blankEvent();
+      let es = &mut heldE[k];
       e <=> *es;
-      mut s Sink = Sink.Here(0u64);
-      imm ss = &mut heldS[k];
+      var s Sink = Sink.Here(0u64);
+      let ss = &mut heldS[k];
       s <=> *ss;
-      imm fi = *heldF[k];
-      imm gen = *heldG[k];
-      imm n = *heldN[k];
-      imm q = *heldQ[k];
+      let fi = *heldF[k];
+      let gen = *heldG[k];
+      let n = *heldN[k];
+      let q = *heldQ[k];
       k = k + 1usize;
-      imm key = (u64.from(gen) << 32u64) | u64.from(fi);
-      mut stay = false;
-      mut j = 0usize;
+      let key = (u64.from(gen) << 32u64) | u64.from(fi);
+      var stay = false;
+      var j = 0usize;
       while j < blocked.len() {
         if *blocked[j] == key {stay = true;}
         j = j + 1usize;
       }
       if not stay {
-        mut e2 = blankEvent();
-        mut sent = sinkTaken;
+        var e2 = blankEvent();
+        var sent = sinkTaken;
         s, sent = trySink(s, e, &mut e2);
         if sent == sinkGone {st.dropped = st.dropped + 1u64;}
         if sent != sinkFull {
-          imm f = self.fetchAt(fi) as &mut Fetch;
+          let f = self.fetchAt(fi) as &mut Fetch;
           if f.gen == gen and f.state != fFree and f.heldEvents > 0u32 {f.heldEvents = f.heldEvents - 1u32;}
           if n > 0usize {drv.release(q, n);}
           continue;
@@ -714,16 +714,16 @@ pub struct Client {
 
   // Events for this thread, moved to out: how many
   fn handOver(self &mut, out &mut List[Event]) usize {
-    imm n = ready.len();
+    let n = ready.len();
     if n == 0usize {return 0usize;}
     if out.len() == 0usize {
       *out <=> ready;
       return n;
     }
-    mut k = 0usize;
+    var k = 0usize;
     while k < n {
-      mut e = blankEvent();
-      imm slot = &mut ready[k];
+      var e = blankEvent();
+      let slot = &mut ready[k];
       e <=> *slot;
       out.push(e);
       k = k + 1usize;
@@ -740,9 +740,9 @@ pub struct Client {
   // THE CLIENT)
   pub fn wakeAt(self &) Instant {
     if ready.len() > 0usize or wantSchedule {return new Instant();}
-    mut w = drv.wakeAt();
+    var w = drv.wakeAt();
     if heldE.len() > 0usize {
-      imm h = Instant.now() + Duration.fromNanos(heldRetryNs);
+      let h = Instant.now() + Duration.fromNanos(heldRetryNs);
       if h < w {w = h;}
     }
     w;
@@ -752,17 +752,17 @@ pub struct Client {
   // ready; hand the client what completed; drive what it touched; append the
   // events for this thread to out: how many
   pub fn poll(self &mut, lp &mut Loop, until Instant, out &mut List[Event]) usize {
-    mut n = self.pump(lp, out);
-    mut limit = until;
-    imm w = self.wakeAt();
+    var n = self.pump(lp, out);
+    var limit = until;
+    let w = self.wakeAt();
     if w < limit {limit = w;}
     if n > 0usize {limit = new Instant();}
-    mut cs = List[Completion].empty();
+    var cs = List[Completion].empty();
     cs <=> comps;
     lp.poll(limit, &mut cs);
-    mut k = 0usize;
+    var k = 0usize;
     while k < cs.len() {
-      imm c = &mut cs[k];
+      let c = &mut cs[k];
       if not self.complete(lp, c) {st.unclaimed = st.unclaimed + 1u64;}
       k = k + 1usize;
     }
@@ -776,11 +776,11 @@ pub struct Client {
   pub fn complete(self &mut, lp &mut Loop, comp &mut Completion) bool {
     if drv.complete(lp, comp) {return true;}
     if not drv.isUpperToken(comp.token) {return false;}
-    imm n = comp.token & 0xFFFFFFFFFFu64;
-    imm fi = u32.from(n & u64.from(genMask));
-    imm gen = u32.from((n >> 24u64) & u64.from(watchGenMask));
+    let n = comp.token & 0xFFFFFFFFFFu64;
+    let fi = u32.from(n & u64.from(genMask));
+    let gen = u32.from((n >> 24u64) & u64.from(watchGenMask));
     if fi >= fetchCount {return true;}
-    imm f = self.fetchAt(fi) as &mut Fetch;
+    let f = self.fetchAt(fi) as &mut Fetch;
     if (f.gen & watchGenMask) != gen or f.state == fFree or f.watch != comp.id {return true;}
     f.watch = OpId.none();
     self.cancelFetch(lp, fi, if comp.status == diag.outcomeDone {endTimedOut;} else {endCancelled;});
@@ -791,10 +791,10 @@ pub struct Client {
   // events for this thread to out: how many
   pub fn pump(self &mut, lp &mut Loop, out &mut List[Event]) usize {
     self.retryHeld();
-    mut rounds = 0u32;
+    var rounds = 0u32;
     while rounds < 64u32 {
-      imm got = self.takeDriverEvents(lp);
-      mut did = false;
+      let got = self.takeDriverEvents(lp);
+      var did = false;
       if wantSchedule {
         wantSchedule = false;
         did = self.schedule(lp);
@@ -808,19 +808,19 @@ pub struct Client {
   // The driver's events, each to the fetch or connection it is about: how
   // many
   fn takeDriverEvents(self &mut, lp &mut Loop) usize {
-    mut evs = List[httpconn.Event].empty();
+    var evs = List[httpconn.Event].empty();
     evs <=> dev;
-    imm n = drv.pump(lp, &mut evs);
-    mut k = 0usize;
+    let n = drv.pump(lp, &mut evs);
+    var k = 0usize;
     while k < evs.len() {
-      imm e = &mut evs[k];
+      let e = &mut evs[k];
       k = k + 1usize;
-      imm t = e.token;
-      imm index = u32.from(t & 0xFFFFFFFFu64);
-      imm gen = u32.from((t >> 32u64) & u64.from(genMask));
+      let t = e.token;
+      let index = u32.from(t & 0xFFFFFFFFu64);
+      let gen = u32.from((t >> 32u64) & u64.from(genMask));
       if (t & tokReq) != 0u64 {
         if index < fetchCount {
-          imm f = self.fetchAt(index) as &Fetch;
+          let f = self.fetchAt(index) as &Fetch;
           if f.gen == gen and f.state == fActive and f.req == e.req {
             self.onRequest(lp, index, e);
             continue;
@@ -830,7 +830,7 @@ pub struct Client {
         if e.kind == httpconn.EventKind.Data {drv.release(e.req, e.buf.len());}
       } elif (t & tokConn) != 0u64 {
         if index < connCount {
-          imm p = self.connAt(index) as &PConn;
+          let p = self.connAt(index) as &PConn;
           if p.gen == gen and p.state != pFree {self.onConn(lp, index, e);}
         }
       }
@@ -846,8 +846,8 @@ pub struct Client {
 
   // A pooled connection's event: connected, or closed
   fn onConn(self &mut, lp &mut Loop, pc u32, e &mut httpconn.Event) {
-    imm p = self.connAt(pc) as &mut PConn;
-    imm og = self.originAt(p.origin) as &mut Origin;
+    let p = self.connAt(pc) as &mut PConn;
+    let og = self.originAt(p.origin) as &mut Origin;
     if e.kind == httpconn.EventKind.Connected {
       if p.state == pConnecting {
         p.state = pIdle;
@@ -858,7 +858,7 @@ pub struct Client {
       return;
     }
     if e.kind != httpconn.EventKind.Closed {return;}
-    imm was = p.state;
+    let was = p.state;
     if was == pConnecting {
       og.connecting = og.connecting - 1u32;
       og.open = og.open - 1u32;
@@ -872,17 +872,17 @@ pub struct Client {
       total = total - 1u32;
     }
     st.closed = st.closed + 1u64;
-    imm oi = p.origin;
+    let oi = p.origin;
     // A connection that could not be made (or whose TLS failed before its
     // first exchange) fails what waits for its origin, when nothing else is
     // open to it: they would meet the same failure
-    imm s = e.failure.stage;
-    imm establishing = was == pConnecting or (p.uses <= 1u32 and s == httpconn.Stage.Tls);
+    let s = e.failure.stage;
+    let establishing = was == pConnecting or (p.uses <= 1u32 and s == httpconn.Stage.Tls);
     if not e.clean and establishing and og.open == og.connecting {
-      imm fl = Failure.fromConn(&e.failure);
+      let fl = Failure.fromConn(&e.failure);
       while og.queue.len() > 0usize {
-        imm fi = *og.queue[0usize];
-        imm f = self.fetchAt(fi) as &mut Fetch;
+        let fi = *og.queue[0usize];
+        let f = self.fetchAt(fi) as &mut Fetch;
         f.timing.attempts = f.timing.attempts + 1u32;
         self.finishFetch(lp, fi, endFailed, fl.copy());
       }
@@ -894,10 +894,10 @@ pub struct Client {
   // An exchange on connection pc has ended well: it is idle in its pool if
   // it can carry another, else it closes
   fn connDone(self &mut, lp &mut Loop, pc u32) {
-    imm p = self.connAt(pc) as &mut PConn;
+    let p = self.connAt(pc) as &mut PConn;
     if p.state != pBusy {return;}
     p.fetch = noEntry;
-    imm og = self.originAt(p.origin) as &mut Origin;
+    let og = self.originAt(p.origin) as &mut Origin;
     if drv.isIdle(p.id) {
       p.state = pIdle;
       og.idle.push(pc);
@@ -912,7 +912,7 @@ pub struct Client {
   // started on it (cancelled while the driver still held it), when it is
   // free again
   fn connEnded(self &mut, lp &mut Loop, pc u32) {
-    imm p = self.connAt(pc) as &mut PConn;
+    let p = self.connAt(pc) as &mut PConn;
     if p.state == pBusy and drv.isIdle(p.id) {
       self.connDone(lp, pc);
     } else {
@@ -923,8 +923,8 @@ pub struct Client {
   // Connection pc leaves the pool: closed now (politely) when 'close', or
   // already ending; its Closed frees its record
   fn retire(self &mut, lp &mut Loop, pc u32, close bool) {
-    imm p = self.connAt(pc) as &mut PConn;
-    imm og = self.originAt(p.origin) as &mut Origin;
+    let p = self.connAt(pc) as &mut PConn;
+    let og = self.originAt(p.origin) as &mut Origin;
     if p.state == pIdle {removeValue(&mut og.idle, pc);}
     if p.state == pConnecting {og.connecting = og.connecting - 1u32;}
     if p.state != pClosing and p.state != pFree {
@@ -939,25 +939,25 @@ pub struct Client {
 
   // Open a connection to origin oi
   fn openConn(self &mut, lp &mut Loop, oi u32) {
-    imm og = self.originAt(oi) as &mut Origin;
-    imm pc = self.newConn();
-    imm p = self.connAt(pc) as &mut PConn;
+    let og = self.originAt(oi) as &mut Origin;
+    let pc = self.newConn();
+    let p = self.connAt(pc) as &mut PConn;
     p.origin = oi;
     og.open = og.open + 1u32;
     og.connecting = og.connecting + 1u32;
     total = total + 1u32;
     st.connects = st.connects + 1u64;
-    imm sink = httpconn.Sink.Here(tokConn | (u64.from(p.gen) << 32u64) | u64.from(pc));
+    let sink = httpconn.Sink.Here(tokConn | (u64.from(p.gen) << 32u64) | u64.from(pc));
     // The driver is handed a copy of the host: it holds Strings, and nothing shows
     // the origin's is none of them
-    imm host = og.host.copy();
+    let host = og.host.copy();
     if not og.secure {
       p.id = drv.connect(lp, host.view(), og.port, sink);
       return;
     }
-    imm t = tlsc;
+    let t = tlsc;
     match t {
-      case imm c Some {
+      case let c Some {
         p.id = drv.connectWith(lp, host.view(), og.port, new Uni[tls.Stream](c.stream(host.view(), pool)), sink);
       }
       else {
@@ -967,7 +967,7 @@ pub struct Client {
         total = total - 1u32;
         self.freeConnRec(pc);
         while og.queue.len() > 0usize {
-          imm fi = *og.queue[0usize];
+          let fi = *og.queue[0usize];
           self.finishFetch(lp, fi, endFailed, tlsFailure.copy());
         }
       }
@@ -977,11 +977,11 @@ pub struct Client {
   // An idle connection closed to make room: the one idle longest, of an
   // origin nothing waits for. False when there is none
   fn closeAnIdle(self &mut, lp &mut Loop) bool {
-    mut o = 0usize;
+    var o = 0usize;
     while o < origins.len() {
-      imm og = *origins[o] as &mut Origin;
+      let og = *origins[o] as &mut Origin;
       if og.queue.len() == 0usize and og.idle.len() > 0usize {
-        imm pc = *og.idle[0usize];
+        let pc = *og.idle[0usize];
         self.retire(lp, pc, true);
         return true;
       }
@@ -997,10 +997,10 @@ pub struct Client {
   // Whether fetch a goes before fetch b: by intent, then score, then the
   // order asked
   fn before(self &, a u32, b u32) bool {
-    imm fa = self.fetchAt(a) as &Fetch;
-    imm fb = self.fetchAt(b) as &Fetch;
-    imm ra = intentRank(fa.intent);
-    imm rb = intentRank(fb.intent);
+    let fa = self.fetchAt(a) as &Fetch;
+    let fb = self.fetchAt(b) as &Fetch;
+    let ra = intentRank(fa.intent);
+    let rb = intentRank(fb.intent);
     if ra != rb {return ra < rb;}
     if fa.score != fb.score {return fa.score > fb.score;}
     fa.seq < fb.seq;
@@ -1008,9 +1008,9 @@ pub struct Client {
 
   // Where the first of origin oi's queue is in it
   fn firstIn(self &, oi u32) usize {
-    imm og = self.originAt(oi) as &Origin;
-    mut best = 0usize;
-    mut k = 1usize;
+    let og = self.originAt(oi) as &Origin;
+    var best = 0usize;
+    var k = 1usize;
     while k < og.queue.len() {
       if self.before(*og.queue[k], *og.queue[best]) {best = k;}
       k = k + 1usize;
@@ -1022,21 +1022,21 @@ pub struct Client {
   // fetches wait, the origins whose first fetch is first getting them first.
   // Whether it did anything
   fn schedule(self &mut, lp &mut Loop) bool {
-    mut did = false;
-    mut o = 0u32;
+    var did = false;
+    var o = 0u32;
     while o < u32.from(origins.len()) {
-      imm og = self.originAt(o) as &mut Origin;
+      let og = self.originAt(o) as &mut Origin;
       while og.queue.len() > 0usize and og.idle.len() > 0usize {
-        imm pc = *og.idle[og.idle.len() - 1usize];
-        imm p = self.connAt(pc) as &mut PConn;
+        let pc = *og.idle[og.idle.len() - 1usize];
+        let p = self.connAt(pc) as &mut PConn;
         if not drv.isIdle(p.id) {
           // It is closing under us (the server's close, its idle timeout)
           self.retire(lp, pc, false);
           continue;
         }
         og.idle.pop();
-        imm pos = self.firstIn(o);
-        imm fi = *og.queue[pos];
+        let pos = self.firstIn(o);
+        let fi = *og.queue[pos];
         removeAt(&mut og.queue, pos);
         queuedN = queuedN - 1u32;
         self.dispatch(lp, fi, pc);
@@ -1045,13 +1045,13 @@ pub struct Client {
       o = o + 1u32;
     }
     while true {
-      mut bestO = noEntry;
-      mut bestF = noEntry;
+      var bestO = noEntry;
+      var bestF = noEntry;
       o = 0u32;
       while o < u32.from(origins.len()) {
-        imm og = self.originAt(o) as &Origin;
+        let og = self.originAt(o) as &Origin;
         if og.queue.len() > usize.from(og.connecting) and og.open < cfg.maxPerOrigin {
-          imm fi = *og.queue[self.firstIn(o)];
+          let fi = *og.queue[self.firstIn(o)];
           if bestF == noEntry or self.before(fi, bestF) {
             bestO = o;
             bestF = fi;
@@ -1069,20 +1069,20 @@ pub struct Client {
 
   // Fetch fi's request, on idle connection pc
   fn dispatch(self &mut, lp &mut Loop, fi u32, pc u32) {
-    imm f = self.fetchAt(fi) as &mut Fetch;
-    imm p = self.connAt(pc) as &mut PConn;
+    let f = self.fetchAt(fi) as &mut Fetch;
+    let p = self.connAt(pc) as &mut PConn;
     f.state = fActive;
     f.conn = pc;
     f.sent = 0usize;
     p.state = pBusy;
     p.fetch = fi;
     p.uses = p.uses + 1u32;
-    imm target = f.url.target();
-    imm authority = f.url.authority();
-    mut head = RequestHead.make(f.methodName(), target.view(), authority.view());
+    let target = f.url.target();
+    let authority = f.url.authority();
+    var head = RequestHead.make(f.methodName(), target.view(), authority.view());
     head.scheme = f.url.scheme.copy();
     head.headers = f.headers.copy();
-    imm body = if f.body.len() > 0usize {BodyLength.sized(u64.from(f.body.len()));} else {BodyLength.empty();};
+    let body = if f.body.len() > 0usize {BodyLength.sized(u64.from(f.body.len()));} else {BodyLength.empty();};
     f.timing.dispatched = Instant.now();
     f.timing.attempts = f.timing.attempts + 1u32;
     f.timing.reused = p.uses > 1u32;
@@ -1093,15 +1093,15 @@ pub struct Client {
 
   // As much of fetch fi's body as its connection takes now
   fn sendBody(self &mut, lp &mut Loop, fi u32) {
-    imm f = self.fetchAt(fi) as &mut Fetch;
+    let f = self.fetchAt(fi) as &mut Fetch;
     // The body is viewed only where its bytes are copied: a view held across the
     // driver's calls would be one into a String the driver might change
     while f.sent < f.body.len() {
-      imm left = f.body.len() - f.sent;
-      imm n = if left < sendChunk {left;} else {sendChunk;};
-      mut b = IoBuf.empty();
+      let left = f.body.len() - f.sent;
+      let n = if left < sendChunk {left;} else {sendChunk;};
+      var b = IoBuf.empty();
       match pool.take(n) {
-        case mut s Some {b <=> s;}
+        case var s Some {b <=> s;}
         case is None[IoBuf] {}
       }
       if b.capacity() == 0usize {
@@ -1110,7 +1110,7 @@ pub struct Client {
         drv.cancel(lp, f.req);
         return;
       }
-      imm all = f.body.view();
+      let all = f.body.view();
       b.append(&all[f.sent ..< f.sent + n]);
       match drv.sendData(f.req, b) {
         case is None[IoBuf] {f.sent = f.sent + n;}
@@ -1126,14 +1126,14 @@ pub struct Client {
 
   // An event of fetch fi's request on the driver
   fn onRequest(self &mut, lp &mut Loop, fi u32, e &mut httpconn.Event) {
-    imm f = self.fetchAt(fi) as &mut Fetch;
-    imm k = e.kind;
+    let f = self.fetchAt(fi) as &mut Fetch;
+    let k = e.kind;
     if k == httpconn.EventKind.Response {
       f.timing.firstByte = Instant.now();
-      imm status = e.response.status;
+      let status = e.response.status;
       if f.ending == endNone and followsRedirect(status) and f.maxRedirects > 0u32 {
         match e.response.headers.get("Location") {
-          case imm loc Some {
+          case let loc Some {
             f.following = true;
             f.location = String.fromBytes(loc);
             f.redirectStatus = status;
@@ -1144,13 +1144,13 @@ pub struct Client {
         }
       }
       f.delivered = true;
-      mut ev = Event.make(EventKind.Response, f.sink.token, self.idOf(fi));
+      var ev = Event.make(EventKind.Response, f.sink.token, self.idOf(fi));
       ev.response <=> e.response;
       ev.body = e.body;
       ev.url = f.url.text();
       self.emit(fi, 0usize, ev);
     } elif k == httpconn.EventKind.Data {
-      imm n = e.buf.len();
+      let n = e.buf.len();
       if f.following {
         // A redirect's body: read and dropped, cut off past drainLimit
         drv.release(f.req, n);
@@ -1161,7 +1161,7 @@ pub struct Client {
         }
         return;
       }
-      mut ev = Event.make(EventKind.Data, f.sink.token, self.idOf(fi));
+      var ev = Event.make(EventKind.Data, f.sink.token, self.idOf(fi));
       ev.buf <=> e.buf;
       if isChan(&mut f.sink) {
         self.emit(fi, n, ev);
@@ -1171,13 +1171,13 @@ pub struct Client {
       }
     } elif k == httpconn.EventKind.End {
       if f.following {return;}
-      mut ev = Event.make(EventKind.End, f.sink.token, self.idOf(fi));
+      var ev = Event.make(EventKind.End, f.sink.token, self.idOf(fi));
       ev.trailers <=> e.trailers;
       self.emit(fi, 0usize, ev);
     } elif k == httpconn.EventKind.Writable {
       self.sendBody(lp, fi);
     } elif k == httpconn.EventKind.Done {
-      imm pc = f.conn;
+      let pc = f.conn;
       self.connDone(lp, pc);
       if f.following {
         self.follow(lp, fi);
@@ -1186,7 +1186,7 @@ pub struct Client {
       }
     } elif k == httpconn.EventKind.Failed {
       self.connEnded(lp, f.conn);
-      imm fl = Failure.fromConn(&e.failure);
+      let fl = Failure.fromConn(&e.failure);
       if f.ending == endLimit or f.ending == endCancelled or f.ending == endTimedOut {
         self.finishFetch(lp, fi, if f.ending == endLimit {endLimit;} else {endFailed;}, fl);
       } elif self.canRetry(fi, &fl) {
@@ -1216,26 +1216,26 @@ pub struct Client {
   // Fetch fi's response was a redirect, read whole: the next request (see
   // the package's header, REDIRECTS)
   fn follow(self &mut, lp &mut Loop, fi u32) {
-    imm f = self.fetchAt(fi) as &mut Fetch;
+    let f = self.fetchAt(fi) as &mut Fetch;
     f.following = false;
     f.cutting = false;
-    imm status = f.redirectStatus;
+    let status = f.redirectStatus;
     if f.timing.redirects >= f.maxRedirects {
-      mut d = String.from("more than ");
+      var d = String.from("more than ");
       d.appendUInt(u64.from(f.maxRedirects));
       d.append(" redirects");
       self.finishFetch(lp, fi, endFailed, Failure.make(Stage.Redirect, 0u32, ErrorKind.TooLarge, d.view()));
       return;
     }
-    mut next = Url.empty();
-    mut why = String.empty();
+    var next = Url.empty();
+    var why = String.empty();
     match f.url.resolve(f.location.view()) {
-      case mut r Ok {next <=> r;}
-      case imm x Error {why = x.message();}
+      case var r Ok {next <=> r;}
+      case let x Error {why = x.message();}
     }
     if why.len() == 0usize and not next.isHttp() {why = String.from("it is not an http or https URL");}
     if why.len() > 0usize {
-      mut d = String.from("the Location '");
+      var d = String.from("the Location '");
       d.append(f.location.view());
       d.append("' cannot be followed: ");
       d.append(why.view());
@@ -1243,7 +1243,7 @@ pub struct Client {
       return;
     }
     // 303 makes it a GET (a HEAD stays one), as 301 and 302 do of a POST
-    imm toGet = (status == 303u16 and f.method != Method.Head) or
+    let toGet = (status == 303u16 and f.method != Method.Head) or
       ((status == 301u16 or status == 302u16) and f.method == Method.Post);
     if toGet and f.method != Method.Get {
       f.method = Method.Get;
@@ -1279,17 +1279,17 @@ pub struct Client {
   // gathered up to limit bytes (past it, Failed at Stage.Limit). Other
   // fetches' events that arrive meanwhile wait for the next poll
   pub fn fetchWhole(self &mut, lp &mut Loop, req Request, limit usize, file &Array[u8] = srcFile(), line u32 = srcLine()) Response {
-    imm id = self.send(lp, req, Sink.Here(0u64), file, line);
-    mut resp = Response.blank();
-    mut others = List[Event].empty();
-    mut going = true;
-    mut evs = List[Event].empty();
+    let id = self.send(lp, req, Sink.Here(0u64), file, line);
+    var resp = Response.blank();
+    var others = List[Event].empty();
+    var going = true;
+    var evs = List[Event].empty();
     while going {
       self.poll(lp, forever(), &mut evs);
-      mut k = 0usize;
+      var k = 0usize;
       while k < evs.len() {
-        mut e = blankEvent();
-        imm slot = &mut evs[k];
+        var e = blankEvent();
+        let slot = &mut evs[k];
         e <=> *slot;
         k = k + 1usize;
         if e.id != id {
@@ -1299,9 +1299,9 @@ pub struct Client {
           resp.headers <=> e.response.headers;
           resp.url <=> e.url;
         } elif e.kind == EventKind.Data {
-          imm n = e.buf.len();
+          let n = e.buf.len();
           if resp.body.len() + n > limit {
-            imm fi = self.fetchIndex(id);
+            let fi = self.fetchIndex(id);
             if fi != noEntry {self.cancelFetch(lp, fi, endLimit);}
           } else {
             resp.body.appendBytes(e.buf.view());
@@ -1318,17 +1318,17 @@ pub struct Client {
     }
     // What came for others goes first at the next poll
     while ready.len() > 0usize {
-      mut e = blankEvent();
+      var e = blankEvent();
       match ready.pop() {
-        case mut s Some {e <=> s;}
+        case var s Some {e <=> s;}
         case is None[Event] {}
       }
       evs.push(e);
     }
     while evs.len() > 0usize {
-      mut e = blankEvent();
+      var e = blankEvent();
       match evs.pop() {
-        case mut s Some {e <=> s;}
+        case var s Some {e <=> s;}
         case is None[Event] {}
       }
       others.push(e);
@@ -1341,10 +1341,10 @@ pub struct Client {
   // them. The connections are its driver's, which dies with it; the sockets
   // the loop's
   fn final(self &uni) {
-    mut b = 0usize;
+    var b = 0usize;
     while b < fetchBlocks.len() {
-      imm block = *fetchBlocks[b];
-      mut j = 0u32;
+      let block = *fetchBlocks[b];
+      var j = 0u32;
       while j < recsPerBlock {
         mem.finalize[Fetch](block + usize.from(j));
         j = j + 1u32;
@@ -1354,8 +1354,8 @@ pub struct Client {
     }
     b = 0usize;
     while b < connBlocks.len() {
-      imm block = *connBlocks[b];
-      mut j = 0u32;
+      let block = *connBlocks[b];
+      var j = 0u32;
       while j < recsPerBlock {
         mem.finalize[PConn](block + usize.from(j));
         j = j + 1u32;
@@ -1365,7 +1365,7 @@ pub struct Client {
     }
     b = 0usize;
     while b < origins.len() {
-      imm o = *origins[b];
+      let o = *origins[b];
       mem.finalize[Origin](o);
       libc.free(o as *u8);
       b = b + 1usize;
@@ -1376,11 +1376,11 @@ pub struct Client {
 // One URL fetched whole, with a loop and a client of its own made for it
 // and gone after (see the package's header, FETCHING)
 pub fn getWhole(text &str, limit usize) Response {
-  mut lp = Loop.mustMake();
-  mut c = Client.make(Config.make(), Pool.make());
-  mut r = c.fetchWhole(&mut lp, Request.get(text), limit);
+  var lp = Loop.mustMake();
+  var c = Client.make(Config.make(), Pool.make());
+  var r = c.fetchWhole(&mut lp, Request.get(text), limit);
   c.abortAll(&mut lp);
-  mut evs = List[Event].empty();
+  var evs = List[Event].empty();
   c.pump(&mut lp, &mut evs);
   r;
 }
@@ -1406,11 +1406,11 @@ const sinkGone = 2u32;
 // swapped into a local to be matched: Cone narrows only a local's variant,
 // error 1034)
 fn copySink(s &mut Sink) Sink {
-  mut here Sink = Sink.Here(0u64);
+  var here Sink = Sink.Here(0u64);
   here <=> *s;
-  mut out Sink = Sink.Here(here.token);
+  var out Sink = Sink.Here(here.token);
   match &here {
-    case imm c &Chan {out = Sink.Chan(here.token, c.tx.clone());}
+    case let c &Chan {out = Sink.Chan(here.token, c.tx.clone());}
     else {}
   }
   *s <=> here;
@@ -1419,9 +1419,9 @@ fn copySink(s &mut Sink) Sink {
 
 // Whether a sink is a channel
 fn isChan(s &mut Sink) bool {
-  mut here Sink = Sink.Here(0u64);
+  var here Sink = Sink.Here(0u64);
   here <=> *s;
-  mut yes = false;
+  var yes = false;
   match &here {
     case is &Chan {yes = true;}
     else {}
@@ -1433,12 +1433,12 @@ fn isChan(s &mut Sink) bool {
 // Send e on a channel sink, never waiting; the sink is moved in and handed
 // back. A full channel hands e back in 'back'
 fn trySink(s Sink, e Event, back &mut Event) Sink, u32 {
-  mut here = s;
-  mut how = sinkTaken;
+  var here = s;
+  var how = sinkTaken;
   match &here {
-    case imm ch &Chan {
+    case let ch &Chan {
       match ch.tx.trySend(e) {
-        case mut r Some {
+        case var r Some {
           if ch.tx.isClosed() {
             how = sinkGone;
           } else {
@@ -1455,7 +1455,7 @@ fn trySink(s Sink, e Event, back &mut Event) Sink, u32 {
 }
 
 fn removeAt(l &mut List[u32], k usize) {
-  mut j = k;
+  var j = k;
   while j + 1usize < l.len() {
     l.swap(j, j + 1usize);
     j = j + 1usize;
@@ -1465,7 +1465,7 @@ fn removeAt(l &mut List[u32], k usize) {
 
 // Remove v from l, keeping the order: whether it was there
 fn removeValue(l &mut List[u32], v u32) bool {
-  mut k = 0usize;
+  var k = 0usize;
   while k < l.len() {
     if *l[k] == v {
       removeAt(l, k);

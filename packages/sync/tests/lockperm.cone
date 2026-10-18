@@ -29,11 +29,11 @@ const perThread = 2000u64;
 
 // How many values have been finalized; the gate four pushers wait at; the
 // readers inside and main's word to them
-imm finals Atomic[u32];
-imm ready Atomic[u32];
-imm go Atomic[u32];
-imm inside Atomic[u32];
-imm release Atomic[bool];
+let finals Atomic[u32];
+let ready Atomic[u32];
+let go Atomic[u32];
+let inside Atomic[u32];
+let release Atomic[bool];
 
 fn @initpure init() {
   finals = Atomic[u32].of(0u32);
@@ -64,7 +64,7 @@ fn atGate() {
 // Push perThread numbers, thread k's being k * 1000000 + i
 fn pushMany(p Push) u64 {
   atGate();
-  mut i = 0u64;
+  var i = 0u64;
   while i < perThread {
     (&mut *p.items).list.push(p.k * 1000000u64 + i);
     i = i + 1u64;
@@ -76,25 +76,25 @@ fn pushMany(p Push) u64 {
 fn race(items Shared) bool {
   ready.store(0u32);
   go.store(0u32);
-  imm a = thread.start(new Push(items, 0u64), &pushMany);
-  imm b = thread.start(new Push(items, 1u64), &pushMany);
-  imm c = thread.start(new Push(items, 2u64), &pushMany);
-  imm d = thread.start(new Push(items, 3u64), &pushMany);
+  let a = thread.start(new Push(items, 0u64), &pushMany);
+  let b = thread.start(new Push(items, 1u64), &pushMany);
+  let c = thread.start(new Push(items, 2u64), &pushMany);
+  let d = thread.start(new Push(items, 3u64), &pushMany);
   while ready.load() < 4u32 {
     thread.yieldNow();
   }
   go.store(1u32);
   sync.futexWakeAll(&go);
-  imm made = a.join() + b.join() + c.join() + d.join();
-  imm l = &*items;
+  let made = a.join() + b.join() + c.join() + d.join();
+  let l = &*items;
   if made != 4u64 * perThread or l.list.len() != usize.from(4u64 * perThread) {
     return false;
   }
-  mut next = new Array[u64, 4] <- fill 0u64;
-  mut i = 0usize;
+  var next = new Array[u64, 4] <- fill 0u64;
+  var i = 0usize;
   while i < l.list.len() {
-    imm v = *l.list[i];
-    imm k = v / 1000000u64;
+    let v = *l.list[i];
+    let k = v / 1000000u64;
     if k >= 4u64 or v % 1000000u64 != next[k] {
       return false;
     }
@@ -111,18 +111,18 @@ struct Settings {
 alias Watched = Arc[Rwlock, Settings];
 
 fn reader(s Watched) u64 {
-  imm r = &*s;
+  let r = &*s;
   inside.add(1u32);
   while !release.load() {
     thread.yieldNow();
   }
   inside.sub(1u32);            // out of the count while the lock is still held
-  imm seen = r.scale;          // the borrow's last use: the read lock goes back after it
+  let seen = r.scale;          // the borrow's last use: the read lock goes back after it
   seen;
 }
 
 fn writer(s Watched) u32 {
-  imm w = &mut *s;
+  let w = &mut *s;
   w.scale = 20u64;
   inside.load();
 }
@@ -130,9 +130,9 @@ fn writer(s Watched) u32 {
 fn main() i32 {
   initAll();
   {
-    imm items = new Shared(List[u64].empty());
-    mut whole = 0u64;
-    mut run = 0;
+    let items = new Shared(List[u64].empty());
+    var whole = 0u64;
+    var run = 0;
     while run < 10 {
       (&mut *items).list.clear();
       if race(items) { whole = whole + 1u64; }
@@ -144,14 +144,14 @@ fn main() i32 {
   expectUInt(u64.from(finals.load()), 1u64, "the List finalized once, after its last owner");
 
   {
-    imm s = new Watched(10u64);
-    imm a = thread.start(s, &reader);
-    imm b = thread.start(s, &reader);
+    let s = new Watched(10u64);
+    let a = thread.start(s, &reader);
+    let b = thread.start(s, &reader);
     while inside.load() < 2u32 {
       thread.yieldNow();
     }
     expectUInt(u64.from(inside.load()), 2u64, "two readers hold read-only borrows at once");
-    imm w = thread.start(s, &writer);
+    let w = thread.start(s, &writer);
     release.store(true);
     expectUInt(a.join(), 10u64, "the first reader read the scale before the writer");
     expectUInt(b.join(), 10u64, "and so did the second");

@@ -71,7 +71,7 @@ pub struct InvModel {
   pub slots List[u32];           // item id in each slot, 0 for empty
 
   pub fn make() InvModel {
-    mut m = new InvModel(List[ItemType].empty(), List[Item].empty(), List[Container].empty(), List[u32].empty());
+    var m = new InvModel(List[ItemType].empty(), List[Item].empty(), List[Container].empty(), List[u32].empty());
     m.types.push(new ItemType(name: String.from("(none)")));
     m.items.push(new Item);
     m.containers.push(new Container);
@@ -87,9 +87,9 @@ pub struct InvModel {
 
   // A root container (a pack, a chest, an equipment row)
   pub fn makeContainer(self &mut, nslots u32, accept u32) u32 {
-    imm id = u32.from(containers.len());
+    let id = u32.from(containers.len());
     containers.push(new Container(nslots: nslots, first: slots.len(), owner: 0u32, accept: accept, live: true));
-    mut i = 0u32;
+    var i = 0u32;
     while i < nslots {
       slots.push(0u32);
       i = i + 1u32;
@@ -99,10 +99,10 @@ pub struct InvModel {
 
   // A new item, in no container yet. A bag gets its own container
   pub fn newItem(self &mut, kind u32, count u32) u32 {
-    imm id = u32.from(items.len());
+    let id = u32.from(items.len());
     items.push(new Item(kind: kind, count: count));
     if types[usize.from(kind)].bagSlots > 0u32 {
-      imm c = makeContainer(types[usize.from(kind)].bagSlots, 0u32);
+      let c = makeContainer(types[usize.from(kind)].bagSlots, 0u32);
       containers[usize.from(c)].owner = id;
       items[usize.from(id)].bag = c;
       items[usize.from(id)].count = 1u32;
@@ -113,13 +113,13 @@ pub struct InvModel {
   // ---- reading ----
 
   pub fn itemAt(self &, container u32, slot u32) u32 {
-    imm c = usize.from(container);
+    let c = usize.from(container);
     if c == 0usize or c >= containers.len() or slot >= containers[c].nslots {return 0u32;}
     *slots[containers[c].first + usize.from(slot)];
   }
 
   pub fn countAt(self &, container u32, slot u32) u32 {
-    imm it = itemAt(container, slot);
+    let it = itemAt(container, slot);
     if it == 0u32 {0u32;} else {items[usize.from(it)].count;};
   }
 
@@ -131,10 +131,10 @@ pub struct InvModel {
 
   // How many of one type a container holds, bags' contents included
   pub fn total(self &, container u32, kind u32) u32 {
-    mut n = 0u32;
-    mut s = 0u32;
+    var n = 0u32;
+    var s = 0u32;
     while s < containers[usize.from(container)].nslots {
-      imm it = itemAt(container, s);
+      let it = itemAt(container, s);
       if it != 0u32 {
         if items[usize.from(it)].kind == kind {n = n + items[usize.from(it)].count;}
         if items[usize.from(it)].bag != 0u32 {n = n + total(items[usize.from(it)].bag, kind);}
@@ -145,8 +145,8 @@ pub struct InvModel {
   }
 
   pub fn freeSlots(self &, container u32) u32 {
-    mut n = 0u32;
-    mut s = 0u32;
+    var n = 0u32;
+    var s = 0u32;
     while s < containers[usize.from(container)].nslots {
       if itemAt(container, s) == 0u32 {n = n + 1u32;}
       s = s + 1u32;
@@ -156,14 +156,14 @@ pub struct InvModel {
 
   // The container a container sits in (through its bag), 0 for a root
   pub fn parentContainer(self &, container u32) u32 {
-    imm owner = containers[usize.from(container)].owner;
+    let owner = containers[usize.from(container)].owner;
     if owner == 0u32 {0u32;} else {items[usize.from(owner)].container;};
   }
 
   // Whether 'inner' is 'outer' or inside one of its bags
   pub fn isInside(self &, inner u32, outer u32) bool {
-    mut c = inner;
-    mut guard = 0;
+    var c = inner;
+    var guard = 0;
     while c != 0u32 and guard < 64 {
       if c == outer {return true;}
       c = parentContainer(c);
@@ -192,14 +192,14 @@ pub struct InvModel {
   // Adds 'count' of a type to a container: onto stacks with room first, then empty slots
   // (never into bags). Returns how many did not fit
   pub fn add(self &mut, container u32, kind u32, count u32) u32 {
-    mut left = count;
-    imm limit = types[usize.from(kind)].maxStack;
-    mut s = 0u32;
+    var left = count;
+    let limit = types[usize.from(kind)].maxStack;
+    var s = 0u32;
     while s < containers[usize.from(container)].nslots and left > 0u32 {
-      imm it = itemAt(container, s);
+      let it = itemAt(container, s);
       if it != 0u32 and items[usize.from(it)].kind == kind and items[usize.from(it)].count < limit {
-        imm room = limit - items[usize.from(it)].count;
-        imm take = if left < room {left;} else {room;};
+        let room = limit - items[usize.from(it)].count;
+        let take = if left < room {left;} else {room;};
         items[usize.from(it)].count = items[usize.from(it)].count + take;
         left = left - take;
       }
@@ -208,8 +208,8 @@ pub struct InvModel {
     s = 0u32;
     while s < containers[usize.from(container)].nslots and left > 0u32 {
       if itemAt(container, s) == 0u32 {
-        imm take = if left < limit {left;} else {limit;};
-        imm it = newItem(kind, take);
+        let take = if left < limit {left;} else {limit;};
+        let it = newItem(kind, take);
         putInSlot(it, container, s);
         left = left - take;
       }
@@ -223,8 +223,8 @@ pub struct InvModel {
   // May this item stand in this container (category, and the bag rule)? Returns 0 if so,
   // else the refusal
   pub fn mayStandIn(self &, item u32, container u32) u32 {
-    imm cont = containers[usize.from(container)];
-    imm tp = types[usize.from(items[usize.from(item)].kind)];
+    let cont = containers[usize.from(container)];
+    let tp = types[usize.from(items[usize.from(item)].kind)];
     if cont.accept != 0u32 and (tp.category & cont.accept) == 0u32 {return DR_FILTER;}
     if items[usize.from(item)].bag != 0u32 and cont.owner != 0u32 {
       // inside a bag: only a bag with fewer slots, and never into itself or its own contents
@@ -237,17 +237,17 @@ pub struct InvModel {
   // Where 'count' of a type would go in a container: true if all of it fits (stacks of the
   // same type with room, then empty slots)
   pub fn roomFor(self &, container u32, kind u32, count u32) bool {
-    imm limit = types[usize.from(kind)].maxStack;
-    mut left = count;
-    mut s = 0u32;
+    let limit = types[usize.from(kind)].maxStack;
+    var left = count;
+    var s = 0u32;
     while s < containers[usize.from(container)].nslots {
-      imm it = itemAt(container, s);
+      let it = itemAt(container, s);
       if it == 0u32 {
         if left <= limit {return true;}
         left = left - limit;
       }
       elif items[usize.from(it)].kind == kind and items[usize.from(it)].count < limit {
-        imm room = limit - items[usize.from(it)].count;
+        let room = limit - items[usize.from(it)].count;
         if left <= room {return true;}
         left = left - room;
       }
@@ -257,36 +257,36 @@ pub struct InvModel {
   }
 
   fn amount(self &, item u32, want u32) u32 {
-    imm have = items[usize.from(item)].count;
+    let have = items[usize.from(item)].count;
     if want == 0u32 or want > have {have;} else {want;};
   }
 
   // What would moving 'want' (0: all) of the stack in (srcC, srcS) onto (dstC, dstS) do? The
   // outcome code, without doing it
   pub fn check(self &, srcC u32, srcS u32, dstC u32, dstS u32, want u32) u32 {
-    imm s = itemAt(srcC, srcS);
+    let s = itemAt(srcC, srcS);
     if s == 0u32 {return DR_NOTHING;}
     if srcC == dstC and srcS == dstS {return DR_SAME;}
-    imm refuse = mayStandIn(s, dstC);
-    imm n = amount(s, want);
-    imm t = itemAt(dstC, dstS);
+    let refuse = mayStandIn(s, dstC);
+    let n = amount(s, want);
+    let t = itemAt(dstC, dstS);
     if t == 0u32 {
       if refuse != 0u32 {return refuse;}
       return if n == items[usize.from(s)].count {DR_PLACED;} else {DR_SPLIT;};
     }
-    imm sk = items[usize.from(s)].kind;
-    imm tk = items[usize.from(t)].kind;
-    imm limit = types[usize.from(sk)].maxStack;
+    let sk = items[usize.from(s)].kind;
+    let tk = items[usize.from(t)].kind;
+    let limit = types[usize.from(sk)].maxStack;
     if sk == tk and limit > 1u32 {
       if refuse != 0u32 {return refuse;}
       if items[usize.from(t)].count >= limit {return DR_FULL;}
-      imm room = limit - items[usize.from(t)].count;
+      let room = limit - items[usize.from(t)].count;
       return if n <= room and n == items[usize.from(s)].count {DR_MERGED;} else {DR_MERGED_PARTIAL;};
     }
     // onto a bag: into it
-    imm tb = items[usize.from(t)].bag;
+    let tb = items[usize.from(t)].bag;
     if tb != 0u32 and t != s {
-      imm inward = mayStandIn(s, tb);
+      let inward = mayStandIn(s, tb);
       if inward == 0u32 {
         if !roomFor(tb, sk, n) {return DR_BAG_FULL;}
         return DR_INTO_BAG;
@@ -297,7 +297,7 @@ pub struct InvModel {
     // swap
     if n != items[usize.from(s)].count {return DR_NOT_ALLOWED;}
     if refuse != 0u32 {return refuse;}
-    imm back = mayStandIn(t, srcC);
+    let back = mayStandIn(t, srcC);
     if back != 0u32 {return back;}
     // a bag may not swap into its own contents
     if isInside(dstC, items[usize.from(s)].bag) and items[usize.from(s)].bag != 0u32 {return DR_BAG_TOO_BIG;}
@@ -307,24 +307,24 @@ pub struct InvModel {
 
   // Does the move 'check' describes. Returns the outcome (a refusal changes nothing)
   pub fn move(self &mut, srcC u32, srcS u32, dstC u32, dstS u32, want u32) u32 {
-    imm code = check(srcC, srcS, dstC, dstS, want);
+    let code = check(srcC, srcS, dstC, dstS, want);
     if !accepted(code) {return code;}
-    imm s = itemAt(srcC, srcS);
-    imm t = itemAt(dstC, dstS);
-    imm n = amount(s, want);
+    let s = itemAt(srcC, srcS);
+    let t = itemAt(dstC, dstS);
+    let n = amount(s, want);
     if code == DR_PLACED {
       takeFromSlot(srcC, srcS);
       putInSlot(s, dstC, dstS);
     }
     elif code == DR_SPLIT {
-      imm part = newItem(items[usize.from(s)].kind, n);
+      let part = newItem(items[usize.from(s)].kind, n);
       items[usize.from(s)].count = items[usize.from(s)].count - n;
       putInSlot(part, dstC, dstS);
     }
     elif code == DR_MERGED or code == DR_MERGED_PARTIAL {
-      imm limit = types[usize.from(items[usize.from(s)].kind)].maxStack;
-      imm room = limit - items[usize.from(t)].count;
-      imm take = if n < room {n;} else {room;};
+      let limit = types[usize.from(items[usize.from(s)].kind)].maxStack;
+      let room = limit - items[usize.from(t)].count;
+      let take = if n < room {n;} else {room;};
       items[usize.from(t)].count = items[usize.from(t)].count + take;
       items[usize.from(s)].count = items[usize.from(s)].count - take;
       if items[usize.from(s)].count == 0u32 {
@@ -334,7 +334,7 @@ pub struct InvModel {
       elif code == DR_MERGED {return DR_MERGED_PARTIAL;}
     }
     elif code == DR_INTO_BAG {
-      imm bagC = items[usize.from(t)].bag;
+      let bagC = items[usize.from(t)].bag;
       moveInto(s, srcC, srcS, bagC, n);
     }
     else {
@@ -349,13 +349,13 @@ pub struct InvModel {
 
   // Moves n of the stack s (from srcC/srcS) into a container: onto stacks with room, then empty slots
   fn moveInto(self &mut, s u32, srcC u32, srcS u32, dst u32, n u32) {
-    imm kind = items[usize.from(s)].kind;
-    imm limit = types[usize.from(kind)].maxStack;
-    mut left = n;
+    let kind = items[usize.from(s)].kind;
+    let limit = types[usize.from(kind)].maxStack;
+    var left = n;
     if items[usize.from(s)].bag != 0u32 {
       // a bag goes in whole, to the first empty slot
       takeFromSlot(srcC, srcS);
-      mut k = 0u32;
+      var k = 0u32;
       while k < containers[usize.from(dst)].nslots {
         if itemAt(dst, k) == 0u32 {
           putInSlot(s, dst, k);
@@ -365,12 +365,12 @@ pub struct InvModel {
       }
       return;
     }
-    mut k = 0u32;
+    var k = 0u32;
     while k < containers[usize.from(dst)].nslots and left > 0u32 {
-      imm it = itemAt(dst, k);
+      let it = itemAt(dst, k);
       if it != 0u32 and items[usize.from(it)].kind == kind and items[usize.from(it)].count < limit {
-        imm room = limit - items[usize.from(it)].count;
-        imm take = if left < room {left;} else {room;};
+        let room = limit - items[usize.from(it)].count;
+        let take = if left < room {left;} else {room;};
         items[usize.from(it)].count = items[usize.from(it)].count + take;
         left = left - take;
       }
@@ -379,8 +379,8 @@ pub struct InvModel {
     k = 0u32;
     while k < containers[usize.from(dst)].nslots and left > 0u32 {
       if itemAt(dst, k) == 0u32 {
-        imm take = if left < limit {left;} else {limit;};
-        imm it = newItem(kind, take);
+        let take = if left < limit {left;} else {limit;};
+        let it = newItem(kind, take);
         putInSlot(it, dst, k);
         left = left - take;
       }

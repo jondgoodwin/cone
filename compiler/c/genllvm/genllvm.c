@@ -39,7 +39,7 @@
 // rather than copied into the parameter's own slot (generation.md, "Lending a
 // place to a call")? Only one its body cannot change and never borrows, so
 // that nothing writes through the pointer and nothing keeps it: its binding
-// is not 'mut', flow saw no borrow of it, nothing finalizes its type and it
+// is not 'var', flow saw no borrow of it, nothing finalizes its type and it
 // holds no traced reference (both of which take its slot's address); not in
 // a split method, whose parameters outlive its first half's call; not for a
 // C-named function, which keeps C's ABI
@@ -439,7 +439,7 @@ static LLVMValueRef genlGloVarGlobal(VarDclNode *glovar) {
 // is another object's. Nor one whose type finalizes: the module's 'drop' hands
 // it to that 'final' as '&uni', which may write it. Nor a thread-local, whose
 // storage is each thread's own block, which no read-only section holds (the
-// parser refuses one 'imm', and this keeps the rule where the flag is set).
+// parser refuses a 'let' one, and this keeps the rule where the flag is set).
 // Nor one holding an atomic value, which atomic operations change even
 // through 'imm' [Jon 26 Sep]: a write to read-only memory would fault, and
 // every read of a constant could be folded to its initial value.

@@ -67,7 +67,7 @@ pub struct SequenceDiagram {
   }
 
   pub fn addMessage(self &mut, from u32, to u32, label &str, labelW f32, kind u32) u32 {
-    mut k = kind;
+    var k = kind;
     if from == to { k = MSG_SELF; }
     messages.push(new Message(from, to, String.from(label), labelW, k, 0.));
     u32.from(messages.len() - 1usize);
@@ -86,52 +86,52 @@ pub struct SequenceOptions {
 }
 
 pub fn layoutSequence(d &mut SequenceDiagram, o &SequenceOptions) {
-  imm np = d.participants.len();
+  let np = d.participants.len();
   if np == 0usize { return; }
   // gaps
-  mut gap = List[f32].empty();
-  mut i = 0usize;
+  var gap = List[f32].empty();
+  var i = 0usize;
   while i + 1usize < np { gap.push(o.minGap); i = i + 1usize; }
   i = 0usize;
   while i < np {
     // the head boxes must not touch
     if i + 1usize < np {
-      imm need = (d.participants[i].w + d.participants[i + 1usize].w) * 0.5 + 24.;
+      let need = (d.participants[i].w + d.participants[i + 1usize].w) * 0.5 + 24.;
       if need > *gap[i] { gap.set(i, need); }
     }
     i = i + 1usize;
   }
-  mut m = 0usize;
+  var m = 0usize;
   while m < d.messages.len() {
-    imm a = usize.from(d.messages[m].from);
-    imm b = usize.from(d.messages[m].to);
+    let a = usize.from(d.messages[m].from);
+    let b = usize.from(d.messages[m].to);
     if a != b {
-      imm lo = if a < b { a; } else { b; };
-      imm hi = if a < b { b; } else { a; };
-      imm per = (d.messages[m].labelW + 28.) / f32.from(hi - lo);
-      mut g = lo;
+      let lo = if a < b { a; } else { b; };
+      let hi = if a < b { b; } else { a; };
+      let per = (d.messages[m].labelW + 28.) / f32.from(hi - lo);
+      var g = lo;
       while g < hi { if per > *gap[g] { gap.set(g, per); } g = g + 1usize; }
     } else {
       // a self message's loop and label go to the right: ask the next gap for its width
       if a + 1usize < np {
-        imm need = d.messages[m].labelW + 50.;
+        let need = d.messages[m].labelW + 50.;
         if need > *gap[a] { gap.set(a, need); }
       }
     }
     m = m + 1usize;
   }
-  mut x = o.margin + d.participants[0usize].w * 0.5;
+  var x = o.margin + d.participants[0usize].w * 0.5;
   i = 0usize;
   while i < np {
     d.participants[i].x = x;
     if i + 1usize < np { x = x + *gap[i]; }
     i = i + 1usize;
   }
-  mut headH = 0.0f;
+  var headH = 0.0f;
   i = 0usize;
   while i < np { if d.participants[i].h > headH { headH = d.participants[i].h; } i = i + 1usize; }
   d.lifelineTop = o.margin + headH;
-  mut y = d.lifelineTop + o.headGap;
+  var y = d.lifelineTop + o.headGap;
   d.rowHeight = o.rowHeight;
   m = 0usize;
   while m < d.messages.len() {
@@ -145,25 +145,25 @@ pub fn layoutSequence(d &mut SequenceDiagram, o &SequenceOptions) {
   if d.width < x + o.margin { d.width = x + o.margin; }
   // activations
   d.activations.clear();
-  mut open = List[List[usize]].empty();      // per participant, the indices into activations of the still open ones
+  var open = List[List[usize]].empty();      // per participant, the indices into activations of the still open ones
   i = 0usize;
   while i < np { open.push(List[usize].empty()); i = i + 1usize; }
-  mut lastSend = List[f32].empty();
+  var lastSend = List[f32].empty();
   i = 0usize;
   while i < np { lastSend.push(0.); i = i + 1usize; }
   m = 0usize;
   while m < d.messages.len() {
-    imm msg = d.messages[m];
-    imm from = usize.from(msg.from);
-    imm to = usize.from(msg.to);
+    let msg = d.messages[m];
+    let from = usize.from(msg.from);
+    let to = usize.from(msg.to);
     lastSend.set(from, msg.y);
     if msg.kind == MSG_CALL {
-      imm depth = u32.from(open[to].len());
+      let depth = u32.from(open[to].len());
       d.activations.push(new Activation(msg.to, msg.y - 6., msg.y, depth, 0., o.activationWidth));
       open[to].push(d.activations.len() - 1usize);
     } elif msg.kind == MSG_RETURN {
       if open[from].len() > 0usize {
-        imm a = *open[from][open[from].len() - 1usize];
+        let a = *open[from][open[from].len() - 1usize];
         open[from].pop();
         d.activations[a].y1 = msg.y + 6.;
       }
@@ -174,15 +174,15 @@ pub fn layoutSequence(d &mut SequenceDiagram, o &SequenceOptions) {
   i = 0usize;
   while i < d.activations.len() {
     if d.activations[i].y1 <= d.activations[i].y0 + 6.01 {
-      imm p = usize.from(d.activations[i].participant);
-      imm end = if *lastSend[p] > d.activations[i].y0 { *lastSend[p] + 6.; } else { d.activations[i].y0 + 18.; };
+      let p = usize.from(d.activations[i].participant);
+      let end = if *lastSend[p] > d.activations[i].y0 { *lastSend[p] + 6.; } else { d.activations[i].y0 + 18.; };
       d.activations[i].y1 = end;
     }
     i = i + 1usize;
   }
   i = 0usize;
   while i < d.activations.len() {
-    imm p = usize.from(d.activations[i].participant);
+    let p = usize.from(d.activations[i].participant);
     d.activations[i].x = d.participants[p].x - o.activationWidth * 0.5 + f32.from(d.activations[i].depth) * o.activationWidth * 0.5;
     i = i + 1usize;
   }

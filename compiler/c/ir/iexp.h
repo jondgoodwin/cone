@@ -38,11 +38,11 @@ int iexpCharNumberMismatch(INode *from, INode *totypedcl);
 // Return 1 if type "matches", 0 otherwise
 int iexpCoerce(INode **from, INode *totypep);
 
-// A 'mut' declaration (variable or field) that takes its type from a type checked
-// initializer which is a variant of an enum ('mut st = Status.Done') holds the
+// A 'var' declaration (variable or field) that takes its type from a type checked
+// initializer which is a variant of an enum ('var st = Status.Done') holds the
 // enum, so it may be given another variant later. The initializer is coerced to the
 // enum, and the enum type is the answer. NULL, changing nothing, for any other
-// declaration: an 'imm' keeps the variant's type, as does a declared type (which
+// declaration: a 'let' keeps the variant's type, as does a declared type (which
 // this is never asked of).
 INode *iexpMutDclEnum(INode *perm, INode **valuep);
 

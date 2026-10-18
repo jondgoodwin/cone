@@ -39,7 +39,7 @@ struct Point {
 
 // A field may declare its own permission ahead of its name
 struct Holder {
-  pub mut count i32;
+  pub var count i32;
 }
 
 // A struct with no fields at all is legal and its values may be passed around
@@ -64,52 +64,52 @@ struct Segment {
 // A global's initializer may be a struct literal whose fields are struct
 // literals: generation builds the whole value as one constant, level by level,
 // and a nested literal's defaulted field is filled in there as in a function
-imm route = new Segment(new Point(21, 22, 23), new Point(24, 25));
+let route = new Segment(new Point(21, 22, 23), new Point(24, 25));
 
 // -------- construction --------
 
 fn construction() {
   // Positional: values are matched to fields in declaration order
-  imm a = new Point(1, 2, 3);
+  let a = new Point(1, 2, 3);
   show("positional-x", a.x);
   show("positional-y", a.y);
   show("positional-z", a.z);
 
   // Named: order is free, and the compiler puts each value in its own field
-  imm b = new Point(y: 20, x: 10, z: 30);
+  let b = new Point(y: 20, x: 10, z: 30);
   show("named-x", b.x);
   show("named-y", b.y);
   show("named-z", b.z);
 
   // A field with a default may be left out of either form
-  imm c = new Point(4, 5);
+  let c = new Point(4, 5);
   show("default-omitted", c.z);
-  imm d = new Point(x: 6, y: 7);
+  let d = new Point(x: 6, y: 7);
   show("default-omitted-named", d.z);
 
   // A field's declared permission is part of the field, not of the constructor
-  mut h = new Holder(count: 3);
+  var h = new Holder(count: 3);
   show("perm-field", h.count);
 
   // A value is coerced to its field's type in either form; named, it is the
   // value that is coerced, not the name wrapped around it
-  imm lp = new Label("by-position", 5000000000, 0.5);
+  let lp = new Label("by-position", 5000000000, 0.5);
   printStr(lp.name);
   printStr("\n");
   show("literal-by-position-i64", lp.big);
   showF("literal-by-position-f64", lp.ratio);
-  imm ln = new Label(ratio: 0.5, big: 5000000000, name: "by-name");
+  let ln = new Label(ratio: 0.5, big: 5000000000, name: "by-name");
   printStr(ln.name);
   printStr("\n");
   show("literal-by-name-i64", ln.big);
   showF("literal-by-name-f64", ln.ratio);
 
   // A zero-size value still constructs and still copies
-  imm e = new Empty();
-  imm e2 = e;
+  let e = new Empty();
+  let e2 = e;
 
   // A struct-typed field is built with its own constructor
-  imm s = new Segment(new Point(1, 2, 3), new Point(4, 5, 6));
+  let s = new Segment(new Point(1, 2, 3), new Point(4, 5, 6));
   show("nested-head-x", s.head.x);
   show("nested-tail-z", s.tail.z);
 
@@ -122,7 +122,7 @@ fn construction() {
 // -------- field access --------
 
 fn access() {
-  mut p = new Point(1, 2, 3);
+  var p = new Point(1, 2, 3);
 
   // A field is read and written through '.'
   p.x = 40;
@@ -131,31 +131,31 @@ fn access() {
   show("field-from-field", p.y);
 
   // A nested field is reached one '.' at a time
-  mut s = new Segment(new Point(1, 2, 3), new Point(4, 5, 6));
+  var s = new Segment(new Point(1, 2, 3), new Point(4, 5, 6));
   s.tail.y = s.head.y + 100;
   show("nested-assign", s.tail.y);
 
   // A reference to a struct reaches the fields without being dereferenced
-  imm rp = &mut p;
+  let rp = &mut p;
   rp.x = 60;
   show("field-through-ref", p.x);
 
   // A field may be borrowed on its own. The '&' binds to the name before the
   // '.', so the parentheses are what make this a reference to the field
   // rather than a field of a reference.
-  imm r = &(p.z);
+  let r = &(p.z);
   show("field-borrow", *r);
 
   // A struct may be declared without a value and assigned one later. It is the
   // whole value that flow analysis tracks: filling the fields in one at a time
   // instead leaves the variable uninitialized as far as it is concerned.
-  mut late Point;
+  var late Point;
   late = new Point(11, 12, 13);
   show("late-init", late.x + late.y + late.z);
 
   // 'with' makes a value the subject of the block, so '.name' reaches its
   // fields without repeating the value's name
-  mut w = new Point(0, 0, 0);
+  var w = new Point(0, 0, 0);
   with &mut w {
     .x = 3;
     .y = .x * 2;
@@ -169,22 +169,22 @@ fn access() {
 // -------- copying --------
 
 // A struct parameter receives a copy, so changing it cannot reach the caller
-fn shift(mut p Point) Point {
+fn shift(var p Point) Point {
   p.x = p.x + 1000;
   p;
 }
 
 fn copying() {
-  mut original = new Point(1, 2, 3);
+  var original = new Point(1, 2, 3);
 
   // Assignment copies every field
-  mut duplicate = original;
+  var duplicate = original;
   duplicate.x = 99;
   show("copy-source-unchanged", original.x);
   show("copy-target-changed", duplicate.x);
 
   // So does passing to and returning from a function
-  imm shifted = shift(original);
+  let shifted = shift(original);
   show("arg-source-unchanged", original.x);
   show("returned-copy", shifted.x);
 
@@ -204,7 +204,7 @@ struct Circle {
 }
 
 fn othertypes() {
-  imm c = new Circle(2.5, true);
+  let c = new Circle(2.5, true);
   showF("float-field", f64.from(c.radius));
   if c.filled {
     show("bool-field", 1);
@@ -226,12 +226,12 @@ fn controlflow() {
   show("returned-from-fallthrough", pick(0).x);
 
   // A struct chosen by an 'if' expression
-  imm chosen = if pick(1).x == 1 {new Point(5, 6, 7);} else {new Point(0, 0, 0);};
+  let chosen = if pick(1).x == 1 {new Point(5, 6, 7);} else {new Point(0, 0, 0);};
   show("if-expression-struct", chosen.y);
 
   // A struct accumulated across loop iterations
-  mut acc = new Point(0, 0, 0);
-  mut i = 1;
+  var acc = new Point(0, 0, 0);
+  var i = 1;
   while i <= 4 {
     acc.x = acc.x + i;
     acc.y = acc.y + acc.x;
@@ -311,7 +311,7 @@ fn leftRound(l &Left) i64 {
 // and by its bare name from the type's own functions and methods.
 struct Tally {
   pub n i32;
-  pub static mut made = 0;
+  pub static var made = 0;
 
   pub fn make(n i32) Tally {
     made = made + 1;
@@ -324,8 +324,8 @@ struct Tally {
 }
 
 fn typeStatics() {
-  imm a = Tally.make(1);
-  imm b = Tally.make(2);
+  let a = Tally.make(1);
+  let b = Tally.make(2);
   show("type-static-shared-by-two-values", a.madeSoFar() + b.madeSoFar());
   show("type-static-through-the-type", Tally.made);
   Tally.made = 10;
@@ -358,7 +358,7 @@ struct Tagged[T] {
 }
 
 fn aggregateDefaults() {
-  imm d = new Defaults();
+  let d = new Defaults();
   show("default-construction", d.at.x + d.at.y + d.at.z);
   show("default-construction-named", d.named.x * 10 + d.named.y);
   show("default-construction-named-takes-default", d.named.z);
@@ -372,23 +372,23 @@ fn aggregateDefaults() {
 
   // A value given replaces the default, by name or by position, and the
   // fields not given still take theirs
-  imm e = new Defaults(at: new Point(30, 31, 32));
+  let e = new Defaults(at: new Point(30, 31, 32));
   show("default-replaced-by-name", e.at.x);
   show("default-kept-beside-it", e.named.x);
-  imm f = new Defaults(new Point(33, 34, 35), new Point(36, 37, 38));
+  let f = new Defaults(new Point(33, 34, 35), new Point(36, 37, 38));
   show("default-replaced-by-position", f.named.z);
   show("default-kept-after-them", i32.from(f.filled[0]));
 
   // Each value gets its own copy of the default
-  mut g = new Defaults();
+  var g = new Defaults();
   g.at.x = 40;
   g.bytes[1] = 41u8;
-  imm h = new Defaults();
+  let h = new Defaults();
   show("default-changed-in-one", g.at.x + i32.from(g.bytes[1]));
   show("default-unchanged-in-another", h.at.x + i32.from(h.bytes[1]));
 
-  imm ti = new Tagged[i32](v: 1);
-  imm tf = new Tagged[f32](v: 2.);
+  let ti = new Tagged[i32](v: 1);
+  let tf = new Tagged[f32](v: 2.);
   show("default-generic", ti.at.x + tf.at.z);
 }
 

@@ -172,7 +172,7 @@ enum ParseFlags {
     ParseMayFold = 0x0400,        // The variable may carry a fold clause: a module's global
     ParseInList = 0x0200,         // A comma ends the value: a parameter, whose list the comma continues
     ParseMayThreadLocal = 0x0100, // The variable may be '@threadlocal' or '@workgroup': a module's global
-    ParseMayUsing = 0x0080,       // The variable may be bound by a pattern a function runs: a local, 'imm rest using prefix("GET ") = line'
+    ParseMayUsing = 0x0080,       // The variable may be bound by a pattern a function runs: a local, 'let rest using prefix("GET ") = line'
 };
 
 // parsebuild.c
@@ -282,6 +282,7 @@ INode *parseUsingSome(FnCallNode *call);
 INode *parsePerm();
 
 // Parse the permission a declaration carries, defaulting to 'defperm'
+INode *parseDclWord();
 INode *parseDclPerm(PermNode *defperm);
 VarDclNode *parseVarDcl(ParseState *parse, PermNode *defperm, uint16_t flags);
 // Consume a '@threadlocal' or '@workgroup', if the lexer is on one, returning

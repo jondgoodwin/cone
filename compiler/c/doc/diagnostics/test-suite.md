@@ -393,8 +393,8 @@ Mark anything not yet implemented `xfail`: it reports as an expected failure and
 fn scale(v f32) f32 { v * 2. }
 
 fn main() {
-  imm a = scale(1, 2)      //~ ErrorManyArgs:17
-  imm b = add(pt, 3)       //~ ErrorNoCandidate:11 "accepts the call's arguments"
+  let a = scale(1, 2)      //~ ErrorManyArgs:17
+  let b = add(pt, 3)       //~ ErrorNoCandidate:11 "accepts the call's arguments"
                            //~^ ErrorInvType:11 follow-on
 }
 ```

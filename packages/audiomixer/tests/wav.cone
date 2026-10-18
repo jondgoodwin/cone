@@ -28,11 +28,11 @@ fn header(b &mut List[u8], fmtTag u32, ch u32, rate u32, bits u32, dataBytes u32
 
 fn main() i32 {
   // 16-bit mono: 0, 16384 (0.5), -32768 (-1), 32767
-  mut a = List[u8].empty();
+  var a = List[u8].empty();
   header(&mut a, 1u32, 1u32, 22050u32, 16u32, 8u32);
   le16(&mut a, 0u32); le16(&mut a, 16384u32); le16(&mut a, 32768u32); le16(&mut a, 32767u32);
   match decodeWav(a.view()) {
-    case imm s Ok {
+    case let s Ok {
       expectUInt(u64.from(s.rate), 22050u64, "rate");
       expectUInt(u64.from(s.channels), 1u64, "channels");
       expectUInt(u64.from(s.frames()), 4u64, "frames");
@@ -45,11 +45,11 @@ fn main() i32 {
   }
 
   // 8-bit stereo: unsigned, 128 is silence; (255, 0) then (128, 192)
-  mut b = List[u8].empty();
+  var b = List[u8].empty();
   header(&mut b, 1u32, 2u32, 8000u32, 8u32, 4u32);
   b.push(255u8); b.push(0u8); b.push(128u8); b.push(192u8);
   match decodeWav(b.view()) {
-    case imm s Ok {
+    case let s Ok {
       expectUInt(u64.from(s.frames()), 2u64, "8-bit stereo frames");
       near(s.at(0usize, 0u32), 0.9921875, 0.00001, "8-bit 255");
       near(s.at(0usize, 1u32), -1., 0.00001, "8-bit 0");
@@ -60,12 +60,12 @@ fn main() i32 {
   }
 
   // 24-bit: 0x400000 = 0.5, 0x800000 = -1
-  mut c = List[u8].empty();
+  var c = List[u8].empty();
   header(&mut c, 1u32, 1u32, 8000u32, 24u32, 6u32);
   c.push(0u8); c.push(0u8); c.push(64u8);
   c.push(0u8); c.push(0u8); c.push(128u8);
   match decodeWav(c.view()) {
-    case imm s Ok {
+    case let s Ok {
       near(s.at(0usize, 0u32), 0.5, 0.00001, "24-bit half");
       near(s.at(1usize, 0u32), -1., 0.00001, "24-bit minimum");
     }
@@ -73,11 +73,11 @@ fn main() i32 {
   }
 
   // 32-bit float: 0.25 is 0x3E800000, -2.0 is 0xC0000000
-  mut d = List[u8].empty();
+  var d = List[u8].empty();
   header(&mut d, 3u32, 1u32, 8000u32, 32u32, 8u32);
   le32(&mut d, 1048576000u32); le32(&mut d, 3221225472u32);
   match decodeWav(d.view()) {
-    case imm s Ok {
+    case let s Ok {
       near(s.at(0usize, 0u32), 0.25, 0.0000001, "float 0.25");
       near(s.at(1usize, 0u32), -2., 0.0000001, "float -2");
     }
@@ -85,14 +85,14 @@ fn main() i32 {
   }
 
   // Round trip through the encoder, both forms
-  mut src = Sound.silent(44100u32, 2u32, 100usize);
+  var src = Sound.silent(44100u32, 2u32, 100usize);
   src.samples.set(0usize, 0.5);
   src.samples.set(1usize, -0.25);
   src.samples.set(199usize, 0.125);
-  imm asPcm = encodeWav(&src, false);
+  let asPcm = encodeWav(&src, false);
   expectUInt(u64.from(asPcm.len()), 44u64 + 400u64, "16-bit file size");
   match decodeWav(asPcm.view()) {
-    case imm s Ok {
+    case let s Ok {
       expectUInt(u64.from(s.frames()), 100u64, "round trip frames");
       near(s.at(0usize, 0u32), 0.5, 0.0001, "round trip 0.5");
       near(s.at(0usize, 1u32), -0.25, 0.0001, "round trip -0.25");
@@ -100,9 +100,9 @@ fn main() i32 {
     }
     case is Error { expect(false, "round trip decodes"); }
   }
-  imm asFloat = encodeWav(&src, true);
+  let asFloat = encodeWav(&src, true);
   match decodeWav(asFloat.view()) {
-    case imm s Ok {
+    case let s Ok {
       near(s.at(0usize, 0u32), 0.5, 0.0, "float round trip exact 0.5");
       near(s.at(0usize, 1u32), -0.25, 0.0, "float round trip exact -0.25");
     }
@@ -110,7 +110,7 @@ fn main() i32 {
   }
 
   // Refusals
-  mut junk = List[u8].empty();
+  var junk = List[u8].empty();
   junk.push(1u8);
   match decodeWav(junk.view()) {
     case is Ok { expect(false, "junk refused"); }

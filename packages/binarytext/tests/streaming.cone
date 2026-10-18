@@ -12,9 +12,9 @@ import collections use *;
 import binarytext;
 
 fn lcgBytes(n usize, seed u32) List[u8] {
-  mut out = List[u8].empty();
-  mut x = seed;
-  mut i = 0usize;
+  var out = List[u8].empty();
+  var x = seed;
+  var i = 0usize;
   while i < n {
     x = x * 1664525u32 + 1013904223u32;
     out.push(u8.from(x >> 24u32));
@@ -30,7 +30,7 @@ fn same(got &Array[u8], want &Array[u8], what &str, n usize, k usize) {
   if got == want {
     expect(true, what);
   } else {
-    mut label = String.from(what);
+    var label = String.from(what);
     label.append(" (length ");
     label.appendUInt(u64.from(n));
     label.append(", cut at ");
@@ -43,8 +43,8 @@ fn same(got &Array[u8], want &Array[u8], what &str, n usize, k usize) {
 // -------- base64 --------
 
 fn encodeCut(fmt &binarytext.Base64Format, data &Array[u8], a usize, b usize) String {
-  mut enc = binarytext.Base64Encoder.forFormat(fmt);
-  mut out = String.empty();
+  var enc = binarytext.Base64Encoder.forFormat(fmt);
+  var out = String.empty();
   enc.update(part(data, 0usize, a), &mut out);
   enc.update(part(data, a, b), &mut out);
   enc.update(part(data, b, data.len), &mut out);
@@ -54,8 +54,8 @@ fn encodeCut(fmt &binarytext.Base64Format, data &Array[u8], a usize, b usize) St
 
 // The decoded bytes, or None if the decoder refused
 fn decodeCut(fmt &binarytext.Base64Format, text &Array[u8], a usize, b usize) Option[List[u8]] {
-  mut dec = binarytext.Base64Decoder.forFormat(fmt);
-  mut out = List[u8].empty();
+  var dec = binarytext.Base64Decoder.forFormat(fmt);
+  var out = List[u8].empty();
   match dec.update(part(text, 0usize, a), &mut out) { case is Error { return None; } case is Ok { } }
   match dec.update(part(text, a, b), &mut out) { case is Error { return None; } case is Ok { } }
   match dec.update(part(text, b, text.len), &mut out) { case is Error { return None; } case is Ok { } }
@@ -64,21 +64,21 @@ fn decodeCut(fmt &binarytext.Base64Format, text &Array[u8], a usize, b usize) Op
 }
 
 fn checkBase64(fmt &binarytext.Base64Format, n usize, name &str) {
-  imm data = lcgBytes(n, u32.from(n) + 7u32);
-  imm whole = binarytext.encodeBase64With(data.view(), fmt);
-  mut label = String.from(name);
+  let data = lcgBytes(n, u32.from(n) + 7u32);
+  let whole = binarytext.encodeBase64With(data.view(), fmt);
+  var label = String.from(name);
 
   // One cut at every offset, then two
-  mut a = 0usize;
+  var a = 0usize;
   while a <= n {
-    imm one = encodeCut(fmt, data.view(), a, a);
+    let one = encodeCut(fmt, data.view(), a, a);
     label.clear();
     label.append(name);
     label.append(" encode, one cut");
     same(one.view(), whole.view(), label.view(), n, a);
-    mut b = a;
+    var b = a;
     while b <= n and n <= 13usize {
-      imm two = encodeCut(fmt, data.view(), a, b);
+      let two = encodeCut(fmt, data.view(), a, b);
       same(two.view(), whole.view(), "encode, two cuts", n, a * 100usize + b);
       b = b + 1usize;
     }
@@ -86,17 +86,17 @@ fn checkBase64(fmt &binarytext.Base64Format, n usize, name &str) {
   }
 
   // The same for decoding the text: cut at every offset of the text
-  imm m = whole.len();
+  let m = whole.len();
   a = 0usize;
   while a <= m {
     match decodeCut(fmt, whole.view(), a, a) {
-      case imm got Some { same(got.view(), data.view(), "decode, one cut", m, a); }
+      case let got Some { same(got.view(), data.view(), "decode, one cut", m, a); }
       case is None { expect(false, "decode, one cut: refused"); }
     }
-    mut b = a;
+    var b = a;
     while b <= m and m <= 20usize {
       match decodeCut(fmt, whole.view(), a, b) {
-        case imm got Some { same(got.view(), data.view(), "decode, two cuts", m, a * 100usize + b); }
+        case let got Some { same(got.view(), data.view(), "decode, two cuts", m, a * 100usize + b); }
         case is None { expect(false, "decode, two cuts: refused"); }
       }
       b = b + 1usize;
@@ -114,12 +114,12 @@ fn checkEveryFormat(n usize) {
 
 // One byte at a time, and in blocks of the given size
 fn checkBlocks(fmt &binarytext.Base64Format, data &Array[u8], block usize) {
-  imm whole = binarytext.encodeBase64With(data, fmt);
-  mut enc = binarytext.Base64Encoder.forFormat(fmt);
-  mut text = String.empty();
-  mut i = 0usize;
+  let whole = binarytext.encodeBase64With(data, fmt);
+  var enc = binarytext.Base64Encoder.forFormat(fmt);
+  var text = String.empty();
+  var i = 0usize;
   while i < data.len {
-    mut j = i + block;
+    var j = i + block;
     if j > data.len { j = data.len; }
     enc.update(part(data, i, j), &mut text);
     i = j;
@@ -127,12 +127,12 @@ fn checkBlocks(fmt &binarytext.Base64Format, data &Array[u8], block usize) {
   enc.finish(&mut text);
   same(text.view(), whole.view(), "encode in blocks", block, data.len);
 
-  mut dec = binarytext.Base64Decoder.forFormat(fmt);
-  mut back = List[u8].empty();
+  var dec = binarytext.Base64Decoder.forFormat(fmt);
+  var back = List[u8].empty();
   i = 0usize;
-  mut allOk = true;
+  var allOk = true;
   while i < text.len() {
-    mut j = i + block;
+    var j = i + block;
     if j > text.len() { j = text.len(); }
     match dec.update(part(text.view(), i, j), &mut back) { case is Error { allOk = false; } case is Ok { } }
     i = j;
@@ -145,8 +145,8 @@ fn checkBlocks(fmt &binarytext.Base64Format, data &Array[u8], block usize) {
 // -------- hex --------
 
 fn hexCut(data &Array[u8], a usize, b usize, upper bool) String {
-  mut enc = if upper { binarytext.HexEncoder.upperCase(); } else { binarytext.HexEncoder.lower(); };
-  mut out = String.empty();
+  var enc = if upper { binarytext.HexEncoder.upperCase(); } else { binarytext.HexEncoder.lower(); };
+  var out = String.empty();
   enc.update(part(data, 0usize, a), &mut out);
   enc.update(part(data, a, b), &mut out);
   enc.update(part(data, b, data.len), &mut out);
@@ -155,7 +155,7 @@ fn hexCut(data &Array[u8], a usize, b usize, upper bool) String {
 }
 
 fn hexDecodeCut(dec &mut binarytext.HexDecoder, text &Array[u8], a usize, b usize) Option[List[u8]] {
-  mut out = List[u8].empty();
+  var out = List[u8].empty();
   match dec.update(part(text, 0usize, a), &mut out) { case is Error { return None; } case is Ok { } }
   match dec.update(part(text, a, b), &mut out) { case is Error { return None; } case is Ok { } }
   match dec.update(part(text, b, text.len), &mut out) { case is Error { return None; } case is Ok { } }
@@ -164,16 +164,16 @@ fn hexDecodeCut(dec &mut binarytext.HexDecoder, text &Array[u8], a usize, b usiz
 }
 
 fn checkHex(n usize) {
-  imm data = lcgBytes(n, u32.from(n) + 91u32);
-  imm lowerWhole = binarytext.encodeHex(data.view());
-  imm upperWhole = binarytext.encodeHexUpper(data.view());
-  mut a = 0usize;
+  let data = lcgBytes(n, u32.from(n) + 91u32);
+  let lowerWhole = binarytext.encodeHex(data.view());
+  let upperWhole = binarytext.encodeHexUpper(data.view());
+  var a = 0usize;
   while a <= n {
-    mut b = a;
+    var b = a;
     while b <= n {
-      imm lo = hexCut(data.view(), a, b, false);
+      let lo = hexCut(data.view(), a, b, false);
       same(lo.view(), lowerWhole.view(), "hex lower encode, two cuts", n, a * 100usize + b);
-      imm up = hexCut(data.view(), a, b, true);
+      let up = hexCut(data.view(), a, b, true);
       same(up.view(), upperWhole.view(), "hex upper encode, two cuts", n, a * 100usize + b);
       b = b + 1usize;
     }
@@ -181,20 +181,20 @@ fn checkHex(n usize) {
   }
 
   // Decoding: every cut of the text, mixed case, strict
-  mut mixed = String.empty();
-  mut i = 0usize;
+  var mixed = String.empty();
+  var i = 0usize;
   while i < lowerWhole.len() {
     mixed.appendByte(if i % 3usize == 0usize { upperWhole.view()[i]; } else { lowerWhole.view()[i]; });
     i = i + 1usize;
   }
-  imm m = mixed.len();
+  let m = mixed.len();
   a = 0usize;
   while a <= m {
-    mut b = a;
+    var b = a;
     while b <= m {
-      mut dec = binarytext.HexDecoder.strict();
+      var dec = binarytext.HexDecoder.strict();
       match hexDecodeCut(&mut dec, mixed.view(), a, b) {
-        case imm got Some { same(got.view(), data.view(), "hex decode, two cuts", m, a * 100usize + b); }
+        case let got Some { same(got.view(), data.view(), "hex decode, two cuts", m, a * 100usize + b); }
         case is None { expect(false, "hex decode, two cuts: refused"); }
       }
       b = b + 1usize;
@@ -205,18 +205,18 @@ fn checkHex(n usize) {
 
 fn main() i32 {
   // Every length from 0 to 40 (so each padding length meets each cut)
-  mut n = 0usize;
+  var n = 0usize;
   while n <= 40usize {
     checkEveryFormat(n);
     n = n + 1usize;
   }
 
   // Long inputs, one byte at a time and in blocks of every awkward size
-  imm big = lcgBytes(3001usize, 5u32);
-  mut sizes = List[usize].empty();
+  let big = lcgBytes(3001usize, 5u32);
+  var sizes = List[usize].empty();
   sizes.push(1usize); sizes.push(2usize); sizes.push(3usize); sizes.push(4usize); sizes.push(5usize);
   sizes.push(7usize); sizes.push(64usize); sizes.push(1000usize); sizes.push(4096usize);
-  mut s = 0usize;
+  var s = 0usize;
   while s < sizes.len() {
     checkBlocks(&binarytext.Base64Format.standard(), big.view(), *sizes[s]);
     checkBlocks(&binarytext.Base64Format.urlSafeUnpadded(), big.view(), *sizes[s]);
@@ -231,9 +231,9 @@ fn main() i32 {
   }
 
   // A codec is ready for the next text after 'finish'
-  imm fmt = binarytext.Base64Format.standard();
-  mut enc = binarytext.Base64Encoder.forFormat(&fmt);
-  mut text = String.empty();
+  let fmt = binarytext.Base64Format.standard();
+  var enc = binarytext.Base64Encoder.forFormat(&fmt);
+  var text = String.empty();
   enc.update("foob", &mut text);
   expectUInt(u64.from(enc.pending()), 1u64, "one byte pending after 'foob'");
   enc.finish(&mut text);
@@ -248,23 +248,23 @@ fn main() i32 {
   enc.finish(&mut text);
   expectStr(text.view(), "", "finish with nothing fed writes nothing");
 
-  mut dec = binarytext.Base64Decoder.forFormat(&fmt);
-  mut out = List[u8].empty();
+  var dec = binarytext.Base64Decoder.forFormat(&fmt);
+  var out = List[u8].empty();
   match dec.update("Zm9v", &mut out) {
-    case imm k Ok { expectUInt(u64.from(k), 3u64, "a whole group gives 3 bytes"); }
+    case let k Ok { expectUInt(u64.from(k), 3u64, "a whole group gives 3 bytes"); }
     case is Error { expect(false, "update refused"); }
   }
   match dec.update("Yg", &mut out) {
-    case imm k Ok { expectUInt(u64.from(k), 0u64, "half a group gives none yet"); }
+    case let k Ok { expectUInt(u64.from(k), 0u64, "half a group gives none yet"); }
     case is Error { expect(false, "update refused"); }
   }
   expectUInt(u64.from(dec.consumed()), 6u64, "six characters consumed");
   match dec.update("==", &mut out) {
-    case imm k Ok { expectUInt(u64.from(k), 1u64, "the padding releases the last byte"); }
+    case let k Ok { expectUInt(u64.from(k), 1u64, "the padding releases the last byte"); }
     case is Error { expect(false, "update refused"); }
   }
   match dec.finish(&mut out) {
-    case imm k Ok { expectUInt(u64.from(k), 0u64, "finish adds nothing here"); }
+    case let k Ok { expectUInt(u64.from(k), 0u64, "finish adds nothing here"); }
     case is Error { expect(false, "finish refused"); }
   }
   expectStr(out.view(), "foob", "decoded in pieces");

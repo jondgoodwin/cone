@@ -59,8 +59,8 @@ pub struct ErosionParams {
 }
 
 fn at(x i32, z i32, w u32, h u32) usize {
-  mut a = x;
-  mut b = z;
+  var a = x;
+  var b = z;
   if a < 0 { a = 0; }
   if b < 0 { b = 0; }
   if a > i32.from(w) - 1 { a = i32.from(w) - 1; }
@@ -77,36 +77,36 @@ fn fmax(a f32, b f32) f32 { if a > b { a; } else { b; }; }
 // 1 terrain, 2 water, 3 flux (read and written, the cell's own four words only).
 pub fn @compute(8, 8) flux(inv Invocation, p ErosionParams, terrain &Array[f32], water &Array[f32],
     fl &mut Array[f32]) {
-  imm x = i32.from(inv.globalId[0usize]);
-  imm z = i32.from(inv.globalId[1usize]);
+  let x = i32.from(inv.globalId[0usize]);
+  let z = i32.from(inv.globalId[1usize]);
   if x >= i32.from(p.w) or z >= i32.from(p.h) { return; }
-  imm c = at(x, z, p.w, p.h);
-  imm here = terrain[c] + water[c];
-  mut out Array[f32, 4] = [0., 0., 0., 0.];
-  mut k = 0usize;
+  let c = at(x, z, p.w, p.h);
+  let here = terrain[c] + water[c];
+  var out Array[f32, 4] = [0., 0., 0., 0.];
+  var k = 0usize;
   while k < 4usize {
-    mut nx = x;
-    mut nz = z;
+    var nx = x;
+    var nz = z;
     if k == 0usize { nx = x - 1; } elif k == 1usize { nx = x + 1; } elif k == 2usize { nz = z - 1; } else { nz = z + 1; }
-    mut dh f32 = 0.;
-    imm outside = nx < 0 or nz < 0 or nx >= i32.from(p.w) or nz >= i32.from(p.h);
+    var dh f32 = 0.;
+    let outside = nx < 0 or nz < 0 or nx >= i32.from(p.w) or nz >= i32.from(p.h);
     if outside {
       // the grid's edge: water leaves if the edge drains, as if the cell beyond were a metre lower and dry
       if p.edgeDrain != 0u32 { dh = water[c] + 1.; }
     } else {
-      imm n = at(nx, nz, p.w, p.h);
+      let n = at(nx, nz, p.w, p.h);
       dh = here - (terrain[n] + water[n]);
     }
     // the pipe accelerates with the head difference (cross-section = cell^2, length = cell: g dh cell)
-    mut f = fl[c * 4usize + k] + p.dt * p.gravity * dh * p.cell;
+    var f = fl[c * 4usize + k] + p.dt * p.gravity * dh * p.cell;
     if f < 0. { f = 0.; }
     out[k] = f;
     k = k + 1usize;
   }
-  imm total = out[0usize] + out[1usize] + out[2usize] + out[3usize];
-  mut scale f32 = 1.;
+  let total = out[0usize] + out[1usize] + out[2usize] + out[3usize];
+  var scale f32 = 1.;
   if total > 0. {
-    imm room = water[c] * p.cell * p.cell / (total * p.dt);
+    let room = water[c] * p.cell * p.cell / (total * p.dt);
     if room < 1. { scale = room; }
   }
   k = 0usize;
@@ -120,33 +120,33 @@ pub fn @compute(8, 8) flux(inv Invocation, p ErosionParams, terrain &Array[f32],
 // cell), 3 velocity (2 words a cell, written).
 pub fn @compute(8, 8) waterStep(inv Invocation, p ErosionParams, fl &Array[f32], water &mut Array[f32],
     vel &mut Array[f32]) {
-  imm x = i32.from(inv.globalId[0usize]);
-  imm z = i32.from(inv.globalId[1usize]);
+  let x = i32.from(inv.globalId[0usize]);
+  let z = i32.from(inv.globalId[1usize]);
   if x >= i32.from(p.w) or z >= i32.from(p.h) { return; }
-  imm c = at(x, z, p.w, p.h);
+  let c = at(x, z, p.w, p.h);
   // what each neighbour sends here: the left one its +x pipe, the right one its -x pipe, ...
-  mut inL f32 = 0.;
-  mut inR f32 = 0.;
-  mut inT f32 = 0.;
-  mut inB f32 = 0.;
+  var inL f32 = 0.;
+  var inR f32 = 0.;
+  var inT f32 = 0.;
+  var inB f32 = 0.;
   if x > 0 { inL = fl[at(x - 1, z, p.w, p.h) * 4usize + 1usize]; }
   if x + 1 < i32.from(p.w) { inR = fl[at(x + 1, z, p.w, p.h) * 4usize + 0usize]; }
   if z > 0 { inT = fl[at(x, z - 1, p.w, p.h) * 4usize + 3usize]; }
   if z + 1 < i32.from(p.h) { inB = fl[at(x, z + 1, p.w, p.h) * 4usize + 2usize]; }
-  imm outL = fl[c * 4usize + 0usize];
-  imm outR = fl[c * 4usize + 1usize];
-  imm outT = fl[c * 4usize + 2usize];
-  imm outB = fl[c * 4usize + 3usize];
-  imm net = (inL + inR + inT + inB) - (outL + outR + outT + outB);
-  imm d1 = water[c];
-  mut d2 = d1 + p.dt * (net / (p.cell * p.cell) + p.rain);
+  let outL = fl[c * 4usize + 0usize];
+  let outR = fl[c * 4usize + 1usize];
+  let outT = fl[c * 4usize + 2usize];
+  let outB = fl[c * 4usize + 3usize];
+  let net = (inL + inR + inT + inB) - (outL + outR + outT + outB);
+  let d1 = water[c];
+  var d2 = d1 + p.dt * (net / (p.cell * p.cell) + p.rain);
   if d2 < 0. { d2 = 0.; }
   // the flow through the cell along x and z, then divided by the mean depth and the width
-  imm wx = (inL - outL + outR - inR) * 0.5;
-  imm wz = (inT - outT + outB - inB) * 0.5;
-  imm dm = (d1 + d2) * 0.5;
-  mut vx f32 = 0.;
-  mut vz f32 = 0.;
+  let wx = (inL - outL + outR - inR) * 0.5;
+  let wz = (inT - outT + outB - inB) * 0.5;
+  let dm = (d1 + d2) * 0.5;
+  var vx f32 = 0.;
+  var vz f32 = 0.;
   if dm > 0.0005 {
     vx = wx / (dm * p.cell);
     vz = wz / (dm * p.cell);
@@ -159,12 +159,12 @@ pub fn @compute(8, 8) waterStep(inv Invocation, p ErosionParams, fl &Array[f32],
 // sin(alpha) of the terrain at each cell, from central differences. Bindings: 0 params, 1 terrain,
 // 2 tilt (written).
 pub fn @compute(8, 8) tilt(inv Invocation, p ErosionParams, terrain &Array[f32], out &mut Array[f32]) {
-  imm x = i32.from(inv.globalId[0usize]);
-  imm z = i32.from(inv.globalId[1usize]);
+  let x = i32.from(inv.globalId[0usize]);
+  let z = i32.from(inv.globalId[1usize]);
   if x >= i32.from(p.w) or z >= i32.from(p.h) { return; }
-  imm gx = (terrain[at(x + 1, z, p.w, p.h)] - terrain[at(x - 1, z, p.w, p.h)]) / (2. * p.cell);
-  imm gz = (terrain[at(x, z + 1, p.w, p.h)] - terrain[at(x, z - 1, p.w, p.h)]) / (2. * p.cell);
-  imm g2 = gx * gx + gz * gz;
+  let gx = (terrain[at(x + 1, z, p.w, p.h)] - terrain[at(x - 1, z, p.w, p.h)]) / (2. * p.cell);
+  let gz = (terrain[at(x, z + 1, p.w, p.h)] - terrain[at(x, z - 1, p.w, p.h)]) / (2. * p.cell);
+  let g2 = gx * gx + gz * gz;
   out[at(x, z, p.w, p.h)] = (g2 / (1. + g2)).sqrt();
 }
 
@@ -172,24 +172,24 @@ pub fn @compute(8, 8) tilt(inv Invocation, p ErosionParams, terrain &Array[f32],
 // 4 tilt, 5 sediment (read and written); each cell touches only its own.
 pub fn @compute(8, 8) erode(inv Invocation, p ErosionParams, terrain &mut Array[f32], water &Array[f32],
     vel &Array[f32], tl &Array[f32], sed &mut Array[f32]) {
-  imm x = i32.from(inv.globalId[0usize]);
-  imm z = i32.from(inv.globalId[1usize]);
+  let x = i32.from(inv.globalId[0usize]);
+  let z = i32.from(inv.globalId[1usize]);
   if x >= i32.from(p.w) or z >= i32.from(p.h) { return; }
-  imm c = at(x, z, p.w, p.h);
-  mut speed = (vel[c * 2usize] * vel[c * 2usize] + vel[c * 2usize + 1usize] * vel[c * 2usize + 1usize]).sqrt();
+  let c = at(x, z, p.w, p.h);
+  var speed = (vel[c * 2usize] * vel[c * 2usize] + vel[c * 2usize + 1usize] * vel[c * 2usize + 1usize]).sqrt();
   if speed > p.maxSpeed { speed = p.maxSpeed; }
-  mut depthFactor = 1. - water[c] / p.maxDepth;
+  var depthFactor = 1. - water[c] / p.maxDepth;
   if depthFactor < 0. { depthFactor = 0.; }
-  imm capacity = p.capacity * fmax(tl[c], p.minTilt) * speed * depthFactor;
-  imm s = sed[c];
+  let capacity = p.capacity * fmax(tl[c], p.minTilt) * speed * depthFactor;
+  let s = sed[c];
   if capacity > s {
-    mut amount = p.dissolve / p.hardness * (capacity - s);
+    var amount = p.dissolve / p.hardness * (capacity - s);
     // never cut more than makes a pit in one iteration
     if amount > p.maxStep { amount = p.maxStep; }
     terrain[c] = terrain[c] - amount;
     sed[c] = s + amount;
   } else {
-    imm amount = p.deposit * (s - capacity);
+    let amount = p.deposit * (s - capacity);
     terrain[c] = terrain[c] + amount;
     sed[c] = s - amount;
   }
@@ -199,24 +199,24 @@ pub fn @compute(8, 8) erode(inv Invocation, p ErosionParams, terrain &mut Array[
 // 0 params, 1 velocity, 2 sediment in, 3 sediment out.
 pub fn @compute(8, 8) advect(inv Invocation, p ErosionParams, vel &Array[f32], sedIn &Array[f32],
     sedOut &mut Array[f32]) {
-  imm x = i32.from(inv.globalId[0usize]);
-  imm z = i32.from(inv.globalId[1usize]);
+  let x = i32.from(inv.globalId[0usize]);
+  let z = i32.from(inv.globalId[1usize]);
   if x >= i32.from(p.w) or z >= i32.from(p.h) { return; }
-  imm c = at(x, z, p.w, p.h);
-  imm bx = f32.from(x) - vel[c * 2usize] * p.dt / p.cell;
-  imm bz = f32.from(z) - vel[c * 2usize + 1usize] * p.dt / p.cell;
-  imm fx = libc.floorf(bx);
-  imm fz = libc.floorf(bz);
-  imm tx = bx - fx;
-  imm tz = bz - fz;
-  imm ix = i32.from(fx);
-  imm iz = i32.from(fz);
-  imm a = sedIn[at(ix, iz, p.w, p.h)];
-  imm b = sedIn[at(ix + 1, iz, p.w, p.h)];
-  imm cc = sedIn[at(ix, iz + 1, p.w, p.h)];
-  imm d = sedIn[at(ix + 1, iz + 1, p.w, p.h)];
-  imm top = a + (b - a) * tx;
-  imm bottom = cc + (d - cc) * tx;
+  let c = at(x, z, p.w, p.h);
+  let bx = f32.from(x) - vel[c * 2usize] * p.dt / p.cell;
+  let bz = f32.from(z) - vel[c * 2usize + 1usize] * p.dt / p.cell;
+  let fx = libc.floorf(bx);
+  let fz = libc.floorf(bz);
+  let tx = bx - fx;
+  let tz = bz - fz;
+  let ix = i32.from(fx);
+  let iz = i32.from(fz);
+  let a = sedIn[at(ix, iz, p.w, p.h)];
+  let b = sedIn[at(ix + 1, iz, p.w, p.h)];
+  let cc = sedIn[at(ix, iz + 1, p.w, p.h)];
+  let d = sedIn[at(ix + 1, iz + 1, p.w, p.h)];
+  let top = a + (b - a) * tx;
+  let bottom = cc + (d - cc) * tx;
   sedOut[c] = top + (bottom - top) * tz;
 }
 
@@ -226,16 +226,16 @@ pub fn @compute(8, 8) advect(inv Invocation, p ErosionParams, vel &Array[f32], s
 // by the rate (the 0.5 is Jako and Toth's, so a pair never swaps heights past each other).
 // Returns the total given and the sum of the drops over the talus that it is shared by.
 fn givingOf(terrain &Array[f32], x i32, z i32, p ErosionParams) Array[f32, 2] {
-  imm hc = terrain[at(x, z, p.w, p.h)];
-  mut maxExcess f32 = 0.;
-  mut sumExcess f32 = 0.;
-  mut dz = -1;
+  let hc = terrain[at(x, z, p.w, p.h)];
+  var maxExcess f32 = 0.;
+  var sumExcess f32 = 0.;
+  var dz = -1;
   while dz <= 1 {
-    mut dx = -1;
+    var dx = -1;
     while dx <= 1 {
       if (dx != 0 or dz != 0) and x + dx >= 0 and z + dz >= 0 and x + dx < i32.from(p.w) and z + dz < i32.from(p.h) {
-        imm run = if dx != 0 and dz != 0 { p.cell * 1.41421356; } else { p.cell; };
-        imm drop = hc - terrain[at(x + dx, z + dz, p.w, p.h)] - p.talus * run;
+        let run = if dx != 0 and dz != 0 { p.cell * 1.41421356; } else { p.cell; };
+        let drop = hc - terrain[at(x + dx, z + dz, p.w, p.h)] - p.talus * run;
         if drop > 0. {
           sumExcess = sumExcess + drop;
           if drop > maxExcess { maxExcess = drop; }
@@ -251,22 +251,22 @@ fn givingOf(terrain &Array[f32], x i32, z i32, p ErosionParams) Array[f32, 2] {
 // Talus erosion: heights in, heights out (written to another buffer, so the dispatch reads old
 // heights everywhere). Bindings: 0 params, 1 terrain in, 2 terrain out.
 pub fn @compute(8, 8) thermal(inv Invocation, p ErosionParams, terrain &Array[f32], out &mut Array[f32]) {
-  imm x = i32.from(inv.globalId[0usize]);
-  imm z = i32.from(inv.globalId[1usize]);
+  let x = i32.from(inv.globalId[0usize]);
+  let z = i32.from(inv.globalId[1usize]);
   if x >= i32.from(p.w) or z >= i32.from(p.h) { return; }
-  imm c = at(x, z, p.w, p.h);
-  imm mine = givingOf(terrain, x, z, p);
-  mut h = terrain[c] - mine[0usize];
+  let c = at(x, z, p.w, p.h);
+  let mine = givingOf(terrain, x, z, p);
+  var h = terrain[c] - mine[0usize];
   // plus what each higher neighbour sends here: its giving, in the share this cell's drop is of its sum
-  mut dz = -1;
+  var dz = -1;
   while dz <= 1 {
-    mut dx = -1;
+    var dx = -1;
     while dx <= 1 {
       if (dx != 0 or dz != 0) and x + dx >= 0 and z + dz >= 0 and x + dx < i32.from(p.w) and z + dz < i32.from(p.h) {
-        imm run = if dx != 0 and dz != 0 { p.cell * 1.41421356; } else { p.cell; };
-        imm drop = terrain[at(x + dx, z + dz, p.w, p.h)] - terrain[c] - p.talus * run;
+        let run = if dx != 0 and dz != 0 { p.cell * 1.41421356; } else { p.cell; };
+        let drop = terrain[at(x + dx, z + dz, p.w, p.h)] - terrain[c] - p.talus * run;
         if drop > 0. {
-          imm theirs = givingOf(terrain, x + dx, z + dz, p);
+          let theirs = givingOf(terrain, x + dx, z + dz, p);
           if theirs[1usize] > 0. { h = h + theirs[0usize] * drop / theirs[1usize]; }
         }
       }

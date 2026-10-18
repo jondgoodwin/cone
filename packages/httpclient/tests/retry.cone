@@ -72,25 +72,25 @@ fn server(pool Pool) Srv {
 }
 
 fn listen(sv &mut Srv, lp &mut Loop) u16 {
-  mut port = 0u16;
+  var port = 0u16;
   match sv.drv.listen(lp, SocketAddr.localhost(0u16), httpconn.Sink.Here(tokSrv)) {
-    case imm r Ok {
+    case let r Ok {
       match sv.drv.localAddr(lp, r) {
-        case imm a Ok {port = a.port();}
-        case imm e Error {}
+        case let a Ok {port = a.port();}
+        case let e Error {}
       }
     }
-    case imm e Error {}
+    case let e Error {}
   }
   port;
 }
 
 fn reply(sv &mut Srv, req httpconn.ReqId, head bool, status u16, location &Array[u8], body &Array[u8]) {
-  mut h = ResponseHead.make(status);
+  var h = ResponseHead.make(status);
   if location.len > 0usize {h.headers.add("Location", location);}
   sv.drv.respond(req, h, BodyLength.sized(u64.from(body.len)));
   if body.len > 0usize and not head {
-    mut b = sv.pool.mustTake(body.len);
+    var b = sv.pool.mustTake(body.len);
     b.append(body);
     sv.drv.sendData(req, b);
     sv.drv.finish(req);
@@ -99,21 +99,21 @@ fn reply(sv &mut Srv, req httpconn.ReqId, head bool, status u16, location &Array
 
 fn number(s &str) u64 {
   match collections.parseUInt(s) {
-    case imm v Some {v;}
+    case let v Some {v;}
     case is None[u64] {0u64;}
   }
 }
 
 // Stream j's next pieces, as many as the connection takes now
 fn pumpStream(sv &mut Srv, j usize) {
-  imm req = *sv.streams[j];
+  let req = *sv.streams[j];
   while *sv.sent[j] < *sv.totals[j] {
-    imm at = *sv.sent[j];
-    imm left = *sv.totals[j] - at;
-    imm n = if left < 65536u64 {usize.from(left);} else {65536usize;};
-    mut b = sv.pool.mustTake(n);
-    imm s = b.spare();
-    mut i = 0usize;
+    let at = *sv.sent[j];
+    let left = *sv.totals[j] - at;
+    let n = if left < 65536u64 {usize.from(left);} else {65536usize;};
+    var b = sv.pool.mustTake(n);
+    let s = b.spare();
+    var i = 0usize;
     while i < n {
       s[i] = u8.from((at + u64.from(i)) % 251u64);
       i = i + 1usize;
@@ -129,7 +129,7 @@ fn pumpStream(sv &mut Srv, j usize) {
 }
 
 fn dropStream(sv &mut Srv, j usize) {
-  imm last = sv.streams.len() - 1usize;
+  let last = sv.streams.len() - 1usize;
   sv.streams.swap(j, last);
   sv.sent.swap(j, last);
   sv.totals.swap(j, last);
@@ -139,7 +139,7 @@ fn dropStream(sv &mut Srv, j usize) {
 }
 
 fn findStream(sv &Srv, req httpconn.ReqId) usize {
-  mut j = 0usize;
+  var j = 0usize;
   while j < sv.streams.len() {
     if *sv.streams[j] == req {return j;}
     j = j + 1usize;
@@ -149,16 +149,16 @@ fn findStream(sv &Srv, req httpconn.ReqId) usize {
 
 // The answer to request k, read whole
 fn answer(sv &mut Srv, lp &mut Loop, k usize) {
-  imm req = *sv.reqs[k];
-  imm full = sv.targets[k].copy();
-  imm t = full.view();
-  mut q = 0usize;
+  let req = *sv.reqs[k];
+  let full = sv.targets[k].copy();
+  let t = full.view();
+  var q = 0usize;
   while q < t.len and t[q] != '?' {q = q + 1usize;}
-  imm path = &t[0usize ..< q];
-  imm query = &t[(if q < t.len {q + 1usize;} else {q;}) ..];
-  imm head = *sv.methods[k] == Method.Head;
+  let path = &t[0usize ..< q];
+  let query = &t[(if q < t.len {q + 1usize;} else {q;}) ..];
+  let head = *sv.methods[k] == Method.Head;
   if path == "/echo" {
-    mut b = String.from(methodToken(*sv.methods[k]));
+    var b = String.from(methodToken(*sv.methods[k]));
     b.append(" ");
     b.append(sv.bodies[k].view());
     reply(sv, req, head, 200u16, "", b.view());
@@ -174,18 +174,18 @@ fn answer(sv &mut Srv, lp &mut Loop, k usize) {
       reply(sv, req, head, 200u16, "", "second");
     }
   } elif path.len > 10usize and &path[0usize ..< 10usize] == "/redirect/" {
-    imm n = number(&path[10usize ..]);
+    let n = number(&path[10usize ..]);
     if n == 0u64 {
       reply(sv, req, head, 200u16, "", "landed");
     } else {
-      mut loc = String.from("/redirect/");
+      var loc = String.from("/redirect/");
       loc.appendUInt(n - 1u64);
       reply(sv, req, head, 302u16, loc.view(), "moved");
     }
   } elif path.len > 8usize and &path[0usize ..< 8usize] == "/status/" {
     reply(sv, req, head, u16.from(number(&path[8usize ..])), query, "moved");
   } elif path == "/headers" {
-    mut b = String.from("auth=");
+    var b = String.from("auth=");
     b.append(sv.auths[k].view());
     b.append(";cookie=");
     b.append(sv.cookies[k].view());
@@ -195,7 +195,7 @@ fn answer(sv &mut Srv, lp &mut Loop, k usize) {
     b.append(if sv.bodies[k].len() == 0usize {"-";} else {sv.bodies[k].view();});
     reply(sv, req, head, 200u16, "", b.view());
   } elif path.len > 5usize and &path[0usize ..< 5usize] == "/big/" {
-    imm n = number(&path[5usize ..]);
+    let n = number(&path[5usize ..]);
     sv.drv.respond(req, ResponseHead.make(200u16), BodyLength.sized(n));
     sv.streams.push(req);
     sv.sent.push(0u64);
@@ -203,7 +203,7 @@ fn answer(sv &mut Srv, lp &mut Loop, k usize) {
     pumpStream(sv, sv.streams.len() - 1usize);
   } elif path == "/stall" {
     sv.drv.respond(req, ResponseHead.make(200u16), BodyLength.sized(1048576u64));
-    mut b = sv.pool.mustTake(65536usize);
+    var b = sv.pool.mustTake(65536usize);
     b.setLen(65536usize);
     sv.drv.sendData(req, b);
   } elif path == "/hang" {
@@ -215,7 +215,7 @@ fn answer(sv &mut Srv, lp &mut Loop, k usize) {
 }
 
 fn findReq(sv &Srv, req httpconn.ReqId) usize {
-  mut k = 0usize;
+  var k = 0usize;
   while k < sv.reqs.len() {
     if *sv.reqs[k] == req {return k;}
     k = k + 1usize;
@@ -224,7 +224,7 @@ fn findReq(sv &Srv, req httpconn.ReqId) usize {
 }
 
 fn forget(sv &mut Srv, k usize) {
-  imm last = sv.reqs.len() - 1usize;
+  let last = sv.reqs.len() - 1usize;
   sv.reqs.swap(k, last);
   sv.conns.swap(k, last);
   sv.methods.swap(k, last);
@@ -243,13 +243,13 @@ fn forget(sv &mut Srv, k usize) {
 
 fn fieldOr(h &Headers, name &str) String {
   match h.get(name) {
-    case imm v Some {String.fromBytes(v);}
+    case let v Some {String.fromBytes(v);}
     case is None[&Array[u8]] {String.from("-");}
   }
 }
 
 fn serve(sv &mut Srv, lp &mut Loop, e &mut httpconn.Event) {
-  imm kind = e.kind;
+  let kind = e.kind;
   if kind == httpconn.EventKind.Accepted {
     sv.accepted = sv.accepted + 1u64;
     sv.open = sv.open + 1u64;
@@ -267,19 +267,19 @@ fn serve(sv &mut Srv, lp &mut Loop, e &mut httpconn.Event) {
     sv.auths.push(fieldOr(&e.request.headers, "Authorization"));
     sv.cookies.push(fieldOr(&e.request.headers, "Cookie"));
   } elif kind == httpconn.EventKind.Data {
-    imm k = findReq(sv, e.req);
+    let k = findReq(sv, e.req);
     if k < sv.reqs.len() {(&mut sv.bodies[k]).appendBytes(e.buf.view());}
     sv.drv.release(e.req, e.buf.len());
   } elif kind == httpconn.EventKind.End {
-    imm k = findReq(sv, e.req);
+    let k = findReq(sv, e.req);
     if k < sv.reqs.len() {answer(sv, lp, k);}
   } elif kind == httpconn.EventKind.Writable {
-    imm j = findStream(sv, e.req);
+    let j = findStream(sv, e.req);
     if j < sv.streams.len() {pumpStream(sv, j);}
   } elif e.isTerminal() {
-    imm k = findReq(sv, e.req);
+    let k = findReq(sv, e.req);
     if k < sv.reqs.len() {forget(sv, k);}
-    imm j = findStream(sv, e.req);
+    let j = findStream(sv, e.req);
     if j < sv.streams.len() {dropStream(sv, j);}
   }
 }
@@ -287,20 +287,20 @@ fn serve(sv &mut Srv, lp &mut Loop, e &mut httpconn.Event) {
 // One turn of the loop: the client's completions to it, the server's to
 // its driver; the server's events answered; the client's appended to out
 fn step(cl &mut Client, sv &mut Srv, lp &mut Loop, out &mut List[Event], until Instant) {
-  mut sevs = List[httpconn.Event].empty();
+  var sevs = List[httpconn.Event].empty();
   cl.pump(lp, out);
   sv.drv.pump(lp, &mut sevs);
-  mut limit = until;
-  imm a = cl.wakeAt();
+  var limit = until;
+  let a = cl.wakeAt();
   if a < limit {limit = a;}
-  imm b = sv.drv.wakeAt();
+  let b = sv.drv.wakeAt();
   if b < limit {limit = b;}
   if out.len() > 0usize or sevs.len() > 0usize {limit = new Instant();}
-  mut comps = List[Completion].empty();
+  var comps = List[Completion].empty();
   lp.poll(limit, &mut comps);
-  mut k = 0usize;
+  var k = 0usize;
   while k < comps.len() {
-    imm c = &mut comps[k];
+    let c = &mut comps[k];
     if not cl.complete(lp, c) {sv.drv.complete(lp, c);}
     k = k + 1usize;
   }
@@ -317,12 +317,12 @@ fn step(cl &mut Client, sv &mut Srv, lp &mut Loop, out &mut List[Event], until I
 // The server's every connection reset, and its buffers home
 fn stopServer(sv &mut Srv, lp &mut Loop) {
   sv.drv.abortAll(lp);
-  mut sevs = List[httpconn.Event].empty();
+  var sevs = List[httpconn.Event].empty();
   sv.drv.pump(lp, &mut sevs);
 }
 
 fn url(port u16, path &str) String {
-  mut u = String.from("http://127.0.0.1:");
+  var u = String.from("http://127.0.0.1:");
   u.appendUInt(u64.from(port));
   u.append(path);
   u;
@@ -350,7 +350,7 @@ fn seen() Seen {
 }
 
 fn note(cl &mut Client, s &mut Seen, e &mut Event) {
-  imm n = eventName(e.kind);
+  let n = eventName(e.kind);
   s.kinds.appendByte(n[0usize]);
   if e.kind == EventKind.Response {
     s.status = e.response.status;
@@ -371,14 +371,14 @@ fn note(cl &mut Client, s &mut Seen, e &mut Event) {
 
 // Drive until fetch id has its final answer, its events noted in s
 fn finishOf(cl &mut Client, sv &mut Srv, lp &mut Loop, id FetchId, s &mut Seen) {
-  mut out = List[Event].empty();
-  imm giveUp = Instant.now() + Duration.fromSeconds(10i64);
-  imm before = s.finals;
+  var out = List[Event].empty();
+  let giveUp = Instant.now() + Duration.fromSeconds(10i64);
+  let before = s.finals;
   while s.finals == before and Instant.now() < giveUp {
     step(cl, sv, lp, &mut out, giveUp);
-    mut k = 0usize;
+    var k = 0usize;
     while k < out.len() {
-      imm e = &mut out[k];
+      let e = &mut out[k];
       if e.id == id {note(cl, s, e);}
       k = k + 1usize;
     }
@@ -389,21 +389,21 @@ fn finishOf(cl &mut Client, sv &mut Srv, lp &mut Loop, id FetchId, s &mut Seen) 
 
 // A request sent and driven to its final answer: what was seen
 fn fetchSeen(cl &mut Client, sv &mut Srv, lp &mut Loop, r Request) Seen {
-  mut s = seen();
-  imm id = cl.send(lp, r, Sink.Here(1u64));
+  var s = seen();
+  let id = cl.send(lp, r, Sink.Here(1u64));
   finishOf(cl, sv, lp, id, &mut s);
   s;
 }
 
 // Drive for a while
 fn idleFor(cl &mut Client, sv &mut Srv, lp &mut Loop, d Duration) {
-  mut out = List[Event].empty();
-  imm until = Instant.now() + d;
+  var out = List[Event].empty();
+  let until = Instant.now() + d;
   while Instant.now() < until {
     step(cl, sv, lp, &mut out, until);
-    mut k = 0usize;
+    var k = 0usize;
     while k < out.len() {
-      imm e = &mut out[k];
+      let e = &mut out[k];
       if e.kind == EventKind.Data {cl.release(e.id, e.buf.len());}
       k = k + 1usize;
     }
@@ -412,18 +412,18 @@ fn idleFor(cl &mut Client, sv &mut Srv, lp &mut Loop, d Duration) {
 }
 
 fn main() i32 {
-  imm pool = Pool.make();
-  mut lp = Loop.mustMake();
-  mut sv = server(pool);
-  imm port = listen(&mut sv, &mut lp);
-  imm port2 = listen(&mut sv, &mut lp);
+  let pool = Pool.make();
+  var lp = Loop.mustMake();
+  var sv = server(pool);
+  let port = listen(&mut sv, &mut lp);
+  let port2 = listen(&mut sv, &mut lp);
   require(port != 0u16 and port2 != 0u16, "the server listens on two ports: two origins");
-  mut cl = Client.make(Config.make(), pool);
+  var cl = Client.make(Config.make(), pool);
 
   // ---- Retries ----
   // A GET reset before its response: sent again on a new connection
   sv.closedOnce = false;
-  imm g = fetchSeen(&mut cl, &mut sv, &mut lp, Request.get(url(port, "/closeonce").view()));
+  let g = fetchSeen(&mut cl, &mut sv, &mut lp, Request.get(url(port, "/closeonce").view()));
   expect(g.last == EventKind.Done, "GET reset once: Done");
   expectStr(g.body.view(), "second", "...answered the second time");
   expectUInt(u64.from(g.timing.attempts), 2u64, "...two attempts");
@@ -432,9 +432,9 @@ fn main() i32 {
 
   // A POST in the same plight: not sent again
   sv.closedOnce = false;
-  mut post = Request.make("POST", url(port, "/closeonce").view());
+  var post = Request.make("POST", url(port, "/closeonce").view());
   post.body = String.from("once only");
-  imm p = fetchSeen(&mut cl, &mut sv, &mut lp, post);
+  let p = fetchSeen(&mut cl, &mut sv, &mut lp, post);
   expect(p.last == EventKind.Failed, "POST reset: Failed");
   expect(p.stage == Stage.Read or p.stage == Stage.Closed, "...the connection reset under it");
   expectUInt(u64.from(p.timing.attempts), 1u64, "...one attempt, no retry");
@@ -442,14 +442,14 @@ fn main() i32 {
 
   // A PUT is idempotent: sent again
   sv.closedOnce = false;
-  mut put = Request.make("PUT", url(port, "/closeonce").view());
+  var put = Request.make("PUT", url(port, "/closeonce").view());
   put.body = String.from("twice is once");
-  imm u = fetchSeen(&mut cl, &mut sv, &mut lp, put);
+  let u = fetchSeen(&mut cl, &mut sv, &mut lp, put);
   expect(u.last == EventKind.Done and u.timing.attempts == 2u32, "PUT reset once: Done on its second attempt");
 
   // A server that always resets: maxRetries (2) retries, then Failed
-  imm before = sv.requests;
-  imm a = fetchSeen(&mut cl, &mut sv, &mut lp, Request.get(url(port, "/close").view()));
+  let before = sv.requests;
+  let a = fetchSeen(&mut cl, &mut sv, &mut lp, Request.get(url(port, "/close").view()));
   expect(a.last == EventKind.Failed, "always reset: Failed");
   expectUInt(u64.from(a.timing.attempts), 3u64, "...after three attempts");
   expectUInt(sv.requests - before, 3u64, "...the server saw three");
@@ -457,15 +457,15 @@ fn main() i32 {
     "...the connection's failure");
 
   // Never once a response has begun: a body cut off mid-way is not retried
-  imm before2 = sv.requests;
-  mut stall = Request.get(url(port, "/stall").view());
+  let before2 = sv.requests;
+  var stall = Request.get(url(port, "/stall").view());
   stall.deadline = Instant.now() + Duration.fromMillis(100i64);
-  imm st = fetchSeen(&mut cl, &mut sv, &mut lp, stall);
+  let st = fetchSeen(&mut cl, &mut sv, &mut lp, stall);
   expect(st.last == EventKind.TimedOut, "a stalled body: TimedOut at its deadline");
   expectUInt(sv.requests - before2, 1u64, "...sent once");
 
   // ---- Redirects ----
-  imm r3 = fetchSeen(&mut cl, &mut sv, &mut lp, Request.get(url(port, "/redirect/3").view()));
+  let r3 = fetchSeen(&mut cl, &mut sv, &mut lp, Request.get(url(port, "/redirect/3").view()));
   expect(r3.last == EventKind.Done, "three redirects: Done");
   expectStr(r3.body.view(), "landed", "...the last one's body");
   expectStr(r3.url.view(), url(port, "/redirect/0").view(), "...and its URL");
@@ -474,72 +474,72 @@ fn main() i32 {
   expectUInt(u64.from(r3.timing.attempts), 4u64, "...four requests");
   expect(r3.timing.reused, "...the last on a kept connection");
 
-  mut lim = Request.get(url(port, "/redirect/3").view());
+  var lim = Request.get(url(port, "/redirect/3").view());
   lim.maxRedirects = 2u32;
-  imm l2 = fetchSeen(&mut cl, &mut sv, &mut lp, lim);
+  let l2 = fetchSeen(&mut cl, &mut sv, &mut lp, lim);
   expect(l2.last == EventKind.Failed and l2.stage == Stage.Redirect, "a limit of two: Failed at the third");
   expectStr(l2.failure.view(), "redirect: too large: more than 2 redirects", "...saying so");
 
-  imm ten = fetchSeen(&mut cl, &mut sv, &mut lp, Request.get(url(port, "/redirect/10").view()));
+  let ten = fetchSeen(&mut cl, &mut sv, &mut lp, Request.get(url(port, "/redirect/10").view()));
   expect(ten.last == EventKind.Done and ten.timing.redirects == 10u32, "ten redirects: the default limit, Done");
-  imm eleven = fetchSeen(&mut cl, &mut sv, &mut lp, Request.get(url(port, "/redirect/11").view()));
+  let eleven = fetchSeen(&mut cl, &mut sv, &mut lp, Request.get(url(port, "/redirect/11").view()));
   expectStr(eleven.failure.view(), "redirect: too large: more than 10 redirects", "eleven: Failed");
 
-  mut none = Request.get(url(port, "/redirect/3").view());
+  var none = Request.get(url(port, "/redirect/3").view());
   none.maxRedirects = 0u32;
-  imm z = fetchSeen(&mut cl, &mut sv, &mut lp, none);
+  let z = fetchSeen(&mut cl, &mut sv, &mut lp, none);
   expect(z.last == EventKind.Done and z.status == 302u16, "a limit of 0: the 302 is the answer");
   expectStr(z.body.view(), "moved", "...with its body");
 
   // 303 and 301 make a POST a GET, its body gone; 307 keeps both
-  mut p303 = Request.make("POST", url(port, "/status/303?/headers").view());
+  var p303 = Request.make("POST", url(port, "/status/303?/headers").view());
   p303.body = String.from("form");
   p303.headers.add("Content-Type", "application/x-www-form-urlencoded");
-  imm s303 = fetchSeen(&mut cl, &mut sv, &mut lp, p303);
+  let s303 = fetchSeen(&mut cl, &mut sv, &mut lp, p303);
   expectStr(s303.body.view(), "auth=-;cookie=-;method=GET;body=-", "303 after a POST: a GET, no body");
-  mut p301 = Request.make("POST", url(port, "/status/301?/headers").view());
+  var p301 = Request.make("POST", url(port, "/status/301?/headers").view());
   p301.body = String.from("form");
-  imm s301 = fetchSeen(&mut cl, &mut sv, &mut lp, p301);
+  let s301 = fetchSeen(&mut cl, &mut sv, &mut lp, p301);
   expectStr(s301.body.view(), "auth=-;cookie=-;method=GET;body=-", "301 after a POST: a GET, no body");
-  mut p307 = Request.make("POST", url(port, "/status/307?/headers").view());
+  var p307 = Request.make("POST", url(port, "/status/307?/headers").view());
   p307.body = String.from("kept");
-  imm s307 = fetchSeen(&mut cl, &mut sv, &mut lp, p307);
+  let s307 = fetchSeen(&mut cl, &mut sv, &mut lp, p307);
   expectStr(s307.body.view(), "auth=-;cookie=-;method=POST;body=kept", "307 after a POST: the same POST, its body");
-  mut put308 = Request.make("PUT", url(port, "/status/308?/headers").view());
+  var put308 = Request.make("PUT", url(port, "/status/308?/headers").view());
   put308.body = String.from("again");
-  imm s308 = fetchSeen(&mut cl, &mut sv, &mut lp, put308);
+  let s308 = fetchSeen(&mut cl, &mut sv, &mut lp, put308);
   expectStr(s308.body.view(), "auth=-;cookie=-;method=PUT;body=again", "308 after a PUT: the same PUT, its body");
 
   // Credentials: kept within an origin, dropped across origins
-  mut same = Request.get(url(port, "/status/302?/headers").view());
+  var same = Request.get(url(port, "/status/302?/headers").view());
   same.headers.add("Authorization", "Bearer secret");
   same.headers.add("Cookie", "c=1");
-  imm ss = fetchSeen(&mut cl, &mut sv, &mut lp, same);
+  let ss = fetchSeen(&mut cl, &mut sv, &mut lp, same);
   expectStr(ss.body.view(), "auth=Bearer secret;cookie=c=1;method=GET;body=-", "the same origin: credentials kept");
-  mut away = String.from("/status/302?");
+  var away = String.from("/status/302?");
   away.append(url(port2, "/headers").view());
-  mut cross = Request.get(url(port, away.view()).view());
+  var cross = Request.get(url(port, away.view()).view());
   cross.headers.add("Authorization", "Bearer secret");
   cross.headers.add("Cookie", "c=1");
   cross.headers.add("X-Other", "kept");
-  imm cs = fetchSeen(&mut cl, &mut sv, &mut lp, cross);
+  let cs = fetchSeen(&mut cl, &mut sv, &mut lp, cross);
   expectStr(cs.body.view(), "auth=-;cookie=-;method=GET;body=-", "another origin (another port): credentials dropped");
   expectStr(cs.url.view(), url(port2, "/headers").view(), "...answered by it");
 
   // A Location that cannot be followed; a 3xx with none
-  imm bad = fetchSeen(&mut cl, &mut sv, &mut lp, Request.get(url(port, "/status/302?http://[::1").view()));
+  let bad = fetchSeen(&mut cl, &mut sv, &mut lp, Request.get(url(port, "/status/302?http://[::1").view()));
   expectStr(bad.failure.view(),
     "redirect: malformed: the Location 'http://[::1' cannot be followed: url: an IPv6 address in a URL ends with ']' (at 7)",
     "a Location that does not parse: Failed");
-  imm ftp = fetchSeen(&mut cl, &mut sv, &mut lp, Request.get(url(port, "/status/301?ftp://example.com/").view()));
+  let ftp = fetchSeen(&mut cl, &mut sv, &mut lp, Request.get(url(port, "/status/301?ftp://example.com/").view()));
   expectStr(ftp.failure.view(),
     "redirect: malformed: the Location 'ftp://example.com/' cannot be followed: it is not an http or https URL",
     "a Location of another scheme: Failed");
-  imm noLoc = fetchSeen(&mut cl, &mut sv, &mut lp, Request.get(url(port, "/status/302").view()));
+  let noLoc = fetchSeen(&mut cl, &mut sv, &mut lp, Request.get(url(port, "/status/302").view()));
   expect(noLoc.last == EventKind.Done and noLoc.status == 302u16, "a 302 with no Location: the answer itself");
 
   // Every fetch answered once; every buffer home
-  imm s = cl.stats();
+  let s = cl.stats();
   expectUInt(s.fetches, s.done + s.failed + s.cancelled + s.timedOut, "every fetch has had its one final answer");
   expectUInt(s.redirects, 3u64 + 2u64 + 10u64 + 10u64 + 4u64 + 2u64, "stats: the redirects followed");
   cl.abortAll(&mut lp);

@@ -39,92 +39,92 @@ fn near(a f32, b f32, tol f32) bool { libc.fabsf(a - b) <= tol; }
 
 fn main() i32 {
   // 1, 2: the FFT
-  imm f64n = Fft.make(64usize);
-  mut re = List[f32].withCapacity(64usize);
-  mut im = List[f32].withCapacity(64usize);
+  let f64n = Fft.make(64usize);
+  var re = List[f32].withCapacity(64usize);
+  var im = List[f32].withCapacity(64usize);
   re.resize(64usize, 0.);
   im.resize(64usize, 0.);
   re.set(3usize, 1.);
   f64n.inverse1(re.viewMut(), im.viewMut());
-  mut worst = 0.;
-  mut x = 0usize;
+  var worst = 0.;
+  var x = 0usize;
   while x < 64usize {
-    imm a = 6.28318530718 * 3. * f32.from(x) / 64.;
-    imm e = libc.fabsf(*re[x] - libc.cosf(a)) + libc.fabsf(*im[x] - libc.sinf(a));
+    let a = 6.28318530718 * 3. * f32.from(x) / 64.;
+    let e = libc.fabsf(*re[x] - libc.cosf(a)) + libc.fabsf(*im[x] - libc.sinf(a));
     if e > worst { worst = e; }
     x = x + 1usize;
   }
   expectFloat(f64.from(worst), 0., 0.00002, "the inverse FFT of a unit at index 3 is exp(2 pi i 3 x / 64)");
   // Parseval, in 1-D and 2-D, on a pseudo-random spectrum
-  mut seed = 12345u32;
-  mut r1 = List[f32].withCapacity(64usize);
-  mut i1 = List[f32].withCapacity(64usize);
-  mut energy = 0d;
+  var seed = 12345u32;
+  var r1 = List[f32].withCapacity(64usize);
+  var i1 = List[f32].withCapacity(64usize);
+  var energy = 0d;
   x = 0usize;
   while x < 64usize {
     seed = seed * 1664525u32 + 1013904223u32;
-    imm a = f32.from(seed >> 8u32) / 16777216. - 0.5;
+    let a = f32.from(seed >> 8u32) / 16777216. - 0.5;
     seed = seed * 1664525u32 + 1013904223u32;
-    imm b = f32.from(seed >> 8u32) / 16777216. - 0.5;
+    let b = f32.from(seed >> 8u32) / 16777216. - 0.5;
     r1.push(a); i1.push(b);
     energy = energy + f64.from(a * a + b * b);
     x = x + 1usize;
   }
   f64n.inverse1(r1.viewMut(), i1.viewMut());
-  mut spatial = 0d;
+  var spatial = 0d;
   x = 0usize;
   while x < 64usize { spatial = spatial + f64.from(*r1[x] * *r1[x] + *i1[x] * *i1[x]); x = x + 1usize; }
   expectFloat(spatial / (64d * energy), 1d, 0.0001, "Parseval in 1-D: the sum of |f|^2 is n times the sum of |F|^2");
-  imm f32n = Fft.make(32usize);
-  mut r2 = List[f32].withCapacity(1024usize);
-  mut i2 = List[f32].withCapacity(1024usize);
-  mut e2 = 0d;
+  let f32n = Fft.make(32usize);
+  var r2 = List[f32].withCapacity(1024usize);
+  var i2 = List[f32].withCapacity(1024usize);
+  var e2 = 0d;
   x = 0usize;
   while x < 1024usize {
     seed = seed * 1664525u32 + 1013904223u32;
-    imm a = f32.from(seed >> 8u32) / 16777216. - 0.5;
+    let a = f32.from(seed >> 8u32) / 16777216. - 0.5;
     seed = seed * 1664525u32 + 1013904223u32;
-    imm b = f32.from(seed >> 8u32) / 16777216. - 0.5;
+    let b = f32.from(seed >> 8u32) / 16777216. - 0.5;
     r2.push(a); i2.push(b);
     e2 = e2 + f64.from(a * a + b * b);
     x = x + 1usize;
   }
-  mut rowA = List[f32].withCapacity(32usize);
-  mut rowB = List[f32].withCapacity(32usize);
+  var rowA = List[f32].withCapacity(32usize);
+  var rowB = List[f32].withCapacity(32usize);
   rowA.resize(32usize, 0.);
   rowB.resize(32usize, 0.);
   f32n.inverse2(&mut r2, &mut i2, &mut rowA, &mut rowB);
-  mut s2 = 0d;
+  var s2 = 0d;
   x = 0usize;
   while x < 1024usize { s2 = s2 + f64.from(*r2[x] * *r2[x] + *i2[x] * *i2[x]); x = x + 1usize; }
   expectFloat(s2 / (1024d * e2), 1d, 0.0001, "Parseval in 2-D: the sum of |f|^2 is n^2 times the sum of |F|^2");
 
   // 3: JONSWAP
-  imm sea = SeaState.make(14., 0., 200000.);
-  imm wp = sea.peakFrequency();
-  mut best = 0.;
-  mut bestW = 0.;
-  mut w = wp * 0.3;
+  let sea = SeaState.make(14., 0., 200000.);
+  let wp = sea.peakFrequency();
+  var best = 0.;
+  var bestW = 0.;
+  var w = wp * 0.3;
   while w < wp * 3. {
-    imm s = sea.density(w);
+    let s = sea.density(w);
     if s > best { best = s; bestW = w; }
     w = w + wp * 0.001;
   }
   expectFloat(f64.from(bestW / wp), 1., 0.03, "the spectrum's maximum is at its peak frequency");
   expect(best > sea.density(0.7 * wp) and best > sea.density(1.6 * wp), "and higher than at 0.7 and 1.6 times it");
-  imm developed = SeaState.make(20., 0., 1.0e8);
+  let developed = SeaState.make(20., 0., 1.0e8);
   expectFloat(f64.from(developed.significantHeight()), 0.0246 * 400., 0.0246 * 400. * 0.15, "a fully developed sea at 20 m/s has Hs within 15 percent of 0.0246 U^2");
 
   // 4: spreading
-  mut ok = true;
-  mut fi = 0;
+  var ok = true;
+  var fi = 0;
   while fi < 4 {
-    imm wf = wp * (0.8 + 0.4 * f32.from(fi));
-    mut total = 0.;
-    imm steps = 720;
-    mut t = 0;
+    let wf = wp * (0.8 + 0.4 * f32.from(fi));
+    var total = 0.;
+    let steps = 720;
+    var t = 0;
     while t < steps {
-      imm th = -3.14159265 + (f32.from(t) + 0.5) * 6.28318530718 / f32.from(steps);
+      let th = -3.14159265 + (f32.from(t) + 0.5) * 6.28318530718 / f32.from(steps);
       total = total + sea.direction(wf, th) * 6.28318530718 / f32.from(steps);
       t = t + 1;
     }
@@ -140,40 +140,40 @@ fn main() i32 {
   expectFloat(f64.from(groupVelocity(0.3, 1000.)) / (f64.from(angularFrequency(0.3, 1000.)) / 0.3d), 0.5d, 0.001, "deep water: the group velocity is half the phase velocity");
 
   // 6: sea states grow
-  mut hs = List[f32].empty();
-  mut f = 2;
+  var hs = List[f32].empty();
+  var f = 2;
   while f <= 10 { hs.push(SeaState.beaufort(f, 0.).significantHeight()); f = f + 2; }
   expect(*hs[0usize] < *hs[1usize] and *hs[1usize] < *hs[2usize] and *hs[2usize] < *hs[3usize] and *hs[3usize] < *hs[4usize], "Hs grows with the Beaufort force");
   expect(SeaState.beaufort(0, 0.).significantHeight() < 0.05, "a Beaufort 0 sea is under 5 cm");
 
   // 7, 8, 9: one wave
-  imm spec = new CascadeSpec(100., 64usize, 0., 100.);
-  mut one = Cascade.make(spec, &SeaState.make(5., 0., 10000.), 1u32);
+  let spec = new CascadeSpec(100., 64usize, 0., 100.);
+  var one = Cascade.make(spec, &SeaState.make(5., 0., 10000.), 1u32);
   one.setSingleWave(3, 2, 0.8, 0.7, 1000.);
-  imm k = 6.28318530718 / 100. * (13.).sqrt();
-  imm kx = 6.28318530718 / 100. * 3.;
-  imm kz = 6.28318530718 / 100. * 2.;
-  imm wv = angularFrequency(k, 1000.);
-  mut wH = 0.;
-  mut wS = 0.;
-  mut wD = 0.;
-  mut wJ = 0.;
-  mut tt = 0;
+  let k = 6.28318530718 / 100. * (13.).sqrt();
+  let kx = 6.28318530718 / 100. * 3.;
+  let kz = 6.28318530718 / 100. * 2.;
+  let wv = angularFrequency(k, 1000.);
+  var wH = 0.;
+  var wS = 0.;
+  var wD = 0.;
+  var wJ = 0.;
+  var tt = 0;
   while tt < 2 {
-    imm time = if tt == 0 { 0d; } else { 2.5d; };
+    let time = if tt == 0 { 0d; } else { 2.5d; };
     one.update(time, 1., 0.9, 1.4, 4., 0.);
-    mut q = 0usize;
+    var q = 0usize;
     while q < 64usize * 64usize {
-      imm gx = 100. * f32.from(q % 64usize) / 64.;
-      imm gz = 100. * f32.from(q / 64usize) / 64.;
-      imm th = kx * gx + kz * gz - wv * f32.from(time) + 0.7;
-      imm e1 = libc.fabsf(*one.height[q] - 0.8 * libc.cosf(th));
+      let gx = 100. * f32.from(q % 64usize) / 64.;
+      let gz = 100. * f32.from(q / 64usize) / 64.;
+      let th = kx * gx + kz * gz - wv * f32.from(time) + 0.7;
+      let e1 = libc.fabsf(*one.height[q] - 0.8 * libc.cosf(th));
       if e1 > wH { wH = e1; }
-      imm e2 = libc.fabsf(*one.slopeX[q] + 0.8 * kx * libc.sinf(th)) + libc.fabsf(*one.slopeZ[q] + 0.8 * kz * libc.sinf(th));
+      let e2 = libc.fabsf(*one.slopeX[q] + 0.8 * kx * libc.sinf(th)) + libc.fabsf(*one.slopeZ[q] + 0.8 * kz * libc.sinf(th));
       if e2 > wS { wS = e2; }
-      imm e3 = libc.fabsf(*one.dispX[q] + 0.8 * (kx / k) * libc.sinf(th)) + libc.fabsf(*one.dispZ[q] + 0.8 * (kz / k) * libc.sinf(th));
+      let e3 = libc.fabsf(*one.dispX[q] + 0.8 * (kx / k) * libc.sinf(th)) + libc.fabsf(*one.dispZ[q] + 0.8 * (kz / k) * libc.sinf(th));
       if e3 > wD { wD = e3; }
-      imm e4 = libc.fabsf(*one.jacobian[q] - (1. - 0.8 * k * libc.cosf(th)));
+      let e4 = libc.fabsf(*one.jacobian[q] - (1. - 0.8 * k * libc.cosf(th)));
       if e4 > wJ { wJ = e4; }
       q = q + 1usize;
     }
@@ -186,21 +186,21 @@ fn main() i32 {
   // 9: travel. The crest nearest the origin along the wave's direction at t = 0 is at phase 0: k.x = -phi.
   // At t = 2.5 it is where k.x = w t - phi: moved c dt along k.
   one.update(0d, 1., 0.9, 1.4, 4., 0.);
-  imm h0a = one.at(&one.height, 0., 0.);
+  let h0a = one.at(&one.height, 0., 0.);
   one.update(2.5d, 1., 0.9, 1.4, 4., 0.);
   // at x = c dt k-hat the surface has the height the origin had at t = 0
-  imm cdt = wv / k * 2.5;
-  imm h1 = one.at(&one.height, cdt * kx / k, cdt * kz / k);
+  let cdt = wv / k * 2.5;
+  let h1 = one.at(&one.height, cdt * kx / k, cdt * kz / k);
   expectFloat(f64.from(h1), f64.from(h0a), 0.02, "the wave has moved by c dt = w t / k along +k: the origin's height is now there (to 2 cm; bilinear reading of 17 samples a wavelength is within 1.3 cm)");
 
   // 10: foam
-  mut fw = Cascade.make(spec, &SeaState.make(5., 0., 10000.), 1u32);
+  var fw = Cascade.make(spec, &SeaState.make(5., 0., 10000.), 1u32);
   fw.setSingleWave(3, 2, 0.8, 0.7, 1000.);
   fw.update(0d, 1., 0.9, 1.4, 4., 0.1);
-  mut made = 0;
-  mut shouldBe = 0;
-  mut wrong = 0;
-  mut q = 0usize;
+  var made = 0;
+  var shouldBe = 0;
+  var wrong = 0;
+  var q = 0usize;
   while q < 64usize * 64usize {
     if *fw.jacobian[q] < 0.9 { shouldBe = shouldBe + 1; }
     if *fw.foam[q] > 0. { made = made + 1; }
@@ -209,62 +209,62 @@ fn main() i32 {
   }
   expectInt(i64.from(wrong), 0i64, "foam is made exactly where the Jacobian is under the threshold");
   expect(shouldBe > 50, "and there is such a place (more than 50 samples)");
-  mut quiet = Cascade.make(spec, &SeaState.make(5., 0., 10000.), 1u32);
+  var quiet = Cascade.make(spec, &SeaState.make(5., 0., 10000.), 1u32);
   quiet.setSingleWave(3, 2, 0., 0., 1000.);
   quiet.foam.set(100usize, 0.8);
   quiet.update(1d, 1., 0.9, 1.4, 4., 2.);
   expectFloat(f64.from(*quiet.foam[100usize]), 0.8d * libc.exp(-0.5d), 0.0001, "foam fades as exp(-dt / tau): 0.8 over 2 s at tau 4 is 0.485");
 
   // 11: the normalisation chain
-  imm band = new CascadeSpec(2000., 256usize, 0.02, 0.9);
-  imm sea5 = SeaState.beaufort(5, 0.3);
-  imm wide = Cascade.make(band, &sea5, 4u32);
+  let band = new CascadeSpec(2000., 256usize, 0.02, 0.9);
+  let sea5 = SeaState.beaufort(5, 0.3);
+  let wide = Cascade.make(band, &sea5, 4u32);
   // the spectrum's integral over the same band of w: w(k) at both ends, trapezoid over 20000 steps
-  imm w0 = angularFrequency(0.02, 1000.);
-  imm w1 = angularFrequency(0.9, 1000.);
-  mut integral = 0d;
-  imm nsteps = 20000;
-  mut ii = 0;
+  let w0 = angularFrequency(0.02, 1000.);
+  let w1 = angularFrequency(0.9, 1000.);
+  var integral = 0d;
+  let nsteps = 20000;
+  var ii = 0;
   while ii < nsteps {
-    imm wmid = w0 + (f32.from(ii) + 0.5) * (w1 - w0) / f32.from(nsteps);
+    let wmid = w0 + (f32.from(ii) + 0.5) * (w1 - w0) / f32.from(nsteps);
     integral = integral + f64.from(sea5.density(wmid) * (w1 - w0) / f32.from(nsteps));
     ii = ii + 1;
   }
   expectFloat(wide.expectedVariance() / integral, 1d, 0.03, "the cascade's expected variance is the spectrum's integral over its band, to 3 percent");
 
   // 12: seeds
-  imm sp1 = OceanSpec.withTile(SeaState.beaufort(5, 0.3), 5u32, 900.);
-  imm sp2 = OceanSpec.withTile(SeaState.beaufort(5, 0.3), 5u32, 900.);
-  imm sp3 = OceanSpec.withTile(SeaState.beaufort(5, 0.3), 6u32, 900.);
-  mut oa = Ocean.make(sp1);
-  mut ob = Ocean.make(sp2);
-  mut oc = Ocean.make(sp3);
+  let sp1 = OceanSpec.withTile(SeaState.beaufort(5, 0.3), 5u32, 900.);
+  let sp2 = OceanSpec.withTile(SeaState.beaufort(5, 0.3), 5u32, 900.);
+  let sp3 = OceanSpec.withTile(SeaState.beaufort(5, 0.3), 6u32, 900.);
+  var oa = Ocean.make(sp1);
+  var ob = Ocean.make(sp2);
+  var oc = Ocean.make(sp3);
   oa.update(7.5d); ob.update(7.5d); oc.update(7.5d);
   expect(oa.heightAt(12.3, 45.6) == ob.heightAt(12.3, 45.6), "the same seed gives the same sea, bit for bit");
   expect(oa.heightAt(12.3, 45.6) != oc.heightAt(12.3, 45.6), "another seed another sea");
-  imm before = oa.rmsHeight();
+  let before = oa.rmsHeight();
   oa.setSea(SeaState.beaufort(8, 0.3));
   oa.update(8d);
   expect(oa.rmsHeight() > before * 1.8, "setSea to Beaufort 8 raises the rms height by more than 1.8 times");
 
   // 13: wind grows the sea, and the field agrees with the spectrum on average
-  mut prev = 0.;
-  mut grows = true;
-  mut agree = true;
-  mut force = 3;
+  var prev = 0.;
+  var grows = true;
+  var agree = true;
+  var force = 3;
   while force <= 9 {
-    mut measured = 0.;
-    mut expected = 0.;
-    mut sd = 1u32;
+    var measured = 0.;
+    var expected = 0.;
+    var sd = 1u32;
     while sd <= 8u32 {
-      mut oo = Ocean.make(OceanSpec.forSea(SeaState.beaufort(force, 0.3), sd));
+      var oo = Ocean.make(OceanSpec.forSea(SeaState.beaufort(force, 0.3), sd));
       oo.update(2d);
       measured = measured + oo.rmsHeight() * oo.rmsHeight();
       expected = expected + oo.expectedSignificantHeight() * oo.expectedSignificantHeight() / 16.;
       sd = sd + 1u32;
     }
-    imm rm = (measured / 8.).sqrt();
-    imm ex = (expected / 8.).sqrt();
+    let rm = (measured / 8.).sqrt();
+    let ex = (expected / 8.).sqrt();
     if rm <= prev { grows = false; }
     if libc.fabsf(rm - ex) > 0.25 * ex { agree = false; }
     prev = rm;
@@ -274,27 +274,27 @@ fn main() i32 {
   expect(agree, "and agrees with the spectrum's expectation to 25 percent on the mean square of 8 seeds");
 
   // 14: the height query inverts the displacement
-  mut oq = Ocean.make(OceanSpec.forSea(SeaState.beaufort(6, 0.3), 9u32));
+  var oq = Ocean.make(OceanSpec.forSea(SeaState.beaufort(6, 0.3), 9u32));
   oq.update(3.3d);
-  mut worstQ = 0.;
-  mut tested = 0;
-  mut p = 0;
+  var worstQ = 0.;
+  var tested = 0;
+  var p = 0;
   while p < 60 {
-    imm rx = f32.from(p) * 7.13 + 1.7;
-    imm rz = f32.from(p) * 4.91 - 30.3;
+    let rx = f32.from(p) * 7.13 + 1.7;
+    let rz = f32.from(p) * 4.91 - 30.3;
     // the displaced point of the rest position (rx, rz), by the ocean's own displacement
-    imm c0 = oq.cascades[0usize].at(&oq.cascades[0usize].dispX, rx, rz) + oq.cascades[1usize].at(&oq.cascades[1usize].dispX, rx, rz)
+    let c0 = oq.cascades[0usize].at(&oq.cascades[0usize].dispX, rx, rz) + oq.cascades[1usize].at(&oq.cascades[1usize].dispX, rx, rz)
       + oq.cascades[2usize].at(&oq.cascades[2usize].dispX, rx, rz);
-    imm c1 = oq.cascades[0usize].at(&oq.cascades[0usize].dispZ, rx, rz) + oq.cascades[1usize].at(&oq.cascades[1usize].dispZ, rx, rz)
+    let c1 = oq.cascades[0usize].at(&oq.cascades[0usize].dispZ, rx, rz) + oq.cascades[1usize].at(&oq.cascades[1usize].dispZ, rx, rz)
       + oq.cascades[2usize].at(&oq.cascades[2usize].dispZ, rx, rz);
-    imm px = rx + oq.spec.choppiness * c0;
-    imm pz = rz + oq.spec.choppiness * c1;
-    imm hRest = oq.cascades[0usize].at(&oq.cascades[0usize].height, rx, rz) + oq.cascades[1usize].at(&oq.cascades[1usize].height, rx, rz)
+    let px = rx + oq.spec.choppiness * c0;
+    let pz = rz + oq.spec.choppiness * c1;
+    let hRest = oq.cascades[0usize].at(&oq.cascades[0usize].height, rx, rz) + oq.cascades[1usize].at(&oq.cascades[1usize].height, rx, rz)
       + oq.cascades[2usize].at(&oq.cascades[2usize].height, rx, rz);
     // is the mapping locally a fold? the three cascades' own Jacobians' product is a fair guide
-    imm jac = oq.cascades[0usize].at(&oq.cascades[0usize].jacobian, rx, rz);
+    let jac = oq.cascades[0usize].at(&oq.cascades[0usize].jacobian, rx, rz);
     if jac > 0.3 {
-      imm e = libc.fabsf(oq.heightAt(px, pz) - hRest);
+      let e = libc.fabsf(oq.heightAt(px, pz) - hRest);
       if e > worstQ { worstQ = e; }
       tested = tested + 1;
     }
@@ -304,13 +304,13 @@ fn main() i32 {
   expectFloat(f64.from(worstQ), 0., 0.01, "heightAt at the displaced point gives the rest point's height to 1 cm");
 
   // 15: spray
-  mut os = Ocean.make(OceanSpec.forSea(SeaState.beaufort(9, 0.3), 2u32));
+  var os = Ocean.make(OceanSpec.forSea(SeaState.beaufort(9, 0.3), 2u32));
   os.update(5d);
-  imm spots = os.sprayAt(0., 0., 120., 0.3, 12usize);
-  mut sorted = true;
-  mut onSurface = true;
-  mut strong = true;
-  mut s = 0usize;
+  let spots = os.sprayAt(0., 0., 120., 0.3, 12usize);
+  var sorted = true;
+  var onSurface = true;
+  var strong = true;
+  var s = 0usize;
   while s < spots.len() {
     if s > 0usize and spots[s].strength > spots[s - 1usize].strength { sorted = false; }
     if libc.fabsf(spots[s].position.y - os.heightAt(spots[s].position.x, spots[s].position.z)) > 0.001 { onSurface = false; }

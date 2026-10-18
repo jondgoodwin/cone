@@ -10,9 +10,9 @@ fn colorOf(ld &Ld, arr u32, fallback Color) Color {
 
 // A TextureInfo object: texture index, uv set, and KHR_texture_transform
 fn textureRef(ld &mut Ld, info u32) TextureRef {
-  mut t = TextureRef.none();
+  var t = TextureRef.none();
   if info == NoNode { return t; }
-  imm idx = ld.json.getInt(info, "index", -1i64);
+  let idx = ld.json.getInt(info, "index", -1i64);
   if idx < 0i64 { return t; }
   if usize.from(idx) >= ld.json.len(rootArray(ld, "textures")) {
     ldFailIdx(ld, "a material uses texture ", usize.from(idx), ", which does not exist");
@@ -20,51 +20,51 @@ fn textureRef(ld &mut Ld, info u32) TextureRef {
   }
   t.texture = i32.from(idx);
   t.texCoord = u32.from(ld.json.getInt(info, "texCoord", 0i64));
-  imm tt = ld.json.get(ld.json.get(info, "extensions"), "KHR_texture_transform");
+  let tt = ld.json.get(ld.json.get(info, "extensions"), "KHR_texture_transform");
   if tt != NoNode {
     t.hasTransform = true;
-    imm off = ld.json.get(tt, "offset");
-    imm sc = ld.json.get(tt, "scale");
+    let off = ld.json.get(tt, "offset");
+    let sc = ld.json.get(tt, "scale");
     t.offset = new Vec2(jnum(ld, off, 0usize, 0.), jnum(ld, off, 1usize, 0.));
     t.scale = new Vec2(jnum(ld, sc, 0usize, 1.), jnum(ld, sc, 1usize, 1.));
     t.rotation = f32.from(ld.json.getNum(tt, "rotation", 0.));
-    imm tc = ld.json.getInt(tt, "texCoord", -1i64);
+    let tc = ld.json.getInt(tt, "texCoord", -1i64);
     if tc >= 0i64 { t.texCoord = u32.from(tc); }
   }
   t;
 }
 
 fn loadMaterial(ld &mut Ld, m u32) GltfMaterial {
-  mut out = GltfMaterial.standard();
+  var out = GltfMaterial.standard();
   out.name = ld.json.getStr(m, "name", "");
-  imm pbr = ld.json.get(m, "pbrMetallicRoughness");
+  let pbr = ld.json.get(m, "pbrMetallicRoughness");
   out.baseColor = colorOf(ld, ld.json.get(pbr, "baseColorFactor"), new Color(1., 1., 1., 1.));
   out.baseColorTexture = textureRef(ld, ld.json.get(pbr, "baseColorTexture"));
   out.metallic = f32.from(ld.json.getNum(pbr, "metallicFactor", 1.));
   out.roughness = f32.from(ld.json.getNum(pbr, "roughnessFactor", 1.));
   out.metallicRoughnessTexture = textureRef(ld, ld.json.get(pbr, "metallicRoughnessTexture"));
-  imm nt = ld.json.get(m, "normalTexture");
+  let nt = ld.json.get(m, "normalTexture");
   out.normalTexture = textureRef(ld, nt);
   out.normalScale = f32.from(ld.json.getNum(nt, "scale", 1.));
-  imm ot = ld.json.get(m, "occlusionTexture");
+  let ot = ld.json.get(m, "occlusionTexture");
   out.occlusionTexture = textureRef(ld, ot);
   out.occlusionStrength = f32.from(ld.json.getNum(ot, "strength", 1.));
   out.emissiveTexture = textureRef(ld, ld.json.get(m, "emissiveTexture"));
   out.emissive = colorOf(ld, ld.json.get(m, "emissiveFactor"), new Color(0., 0., 0., 1.));
-  imm mode = ld.json.getStr(m, "alphaMode", "OPAQUE");
+  let mode = ld.json.getStr(m, "alphaMode", "OPAQUE");
   out.alphaMode = if mode.view() == "MASK" {1u32;} elif mode.view() == "BLEND" {2u32;} else {0u32;};
   out.alphaCutoff = f32.from(ld.json.getNum(m, "alphaCutoff", 0.5));
   out.doubleSided = ld.json.getFlag(m, "doubleSided", false);
-  imm ext = ld.json.get(m, "extensions");
-  imm es = ld.json.get(ext, "KHR_materials_emissive_strength");
+  let ext = ld.json.get(m, "extensions");
+  let es = ld.json.get(ext, "KHR_materials_emissive_strength");
   if es != NoNode { out.emissiveStrength = f32.from(ld.json.getNum(es, "emissiveStrength", 1.)); }
   if ld.json.get(ext, "KHR_materials_unlit") != NoNode { out.unlit = true; }
   // Extensions this loader reads nothing from are named, not silently dropped
-  mut i = 0usize;
+  var i = 0usize;
   while i < ld.json.len(ext) {
-    imm name = ld.json.textView(ld.json.keyAt(ext, i));
+    let name = ld.json.textView(ld.json.keyAt(ext, i));
     if name != "KHR_materials_emissive_strength" and name != "KHR_materials_unlit" {
-      mut w = String.from("material ");
+      var w = String.from("material ");
       w.append(out.name.view());
       w.append(": extension ");
       w.append(name);
@@ -77,13 +77,13 @@ fn loadMaterial(ld &mut Ld, m u32) GltfMaterial {
 }
 
 fn loadTexture(ld &mut Ld, t u32) GltfTexture {
-  mut src = ld.json.getInt(t, "source", -1i64);
+  var src = ld.json.getInt(t, "source", -1i64);
   // The basisu and webp extensions name another source: use the plain one if
   // the file gives it, which a conforming file does as a fallback
   if src < 0i64 {
-    imm ext = ld.json.get(t, "extensions");
+    let ext = ld.json.get(t, "extensions");
     if ext != NoNode and ld.json.len(ext) > 0usize {
-      mut w = String.from("texture has no PNG or JPEG source (only ");
+      var w = String.from("texture has no PNG or JPEG source (only ");
       w.append(ld.json.textView(ld.json.keyAt(ext, 0usize)));
       w.append(", which is not supported)");
       ld.gltf.warnings.push(w);
@@ -93,15 +93,15 @@ fn loadTexture(ld &mut Ld, t u32) GltfTexture {
 }
 
 fn loadImage(ld &mut Ld, im u32, index usize) GltfImage {
-  mut out = new GltfImage(ld.json.getStr(im, "name", ""), ld.json.getStr(im, "uri", ""), ld.json.getStr(im, "mimeType", ""),
+  var out = new GltfImage(ld.json.getStr(im, "name", ""), ld.json.getStr(im, "uri", ""), ld.json.getStr(im, "mimeType", ""),
     Raster.empty(), String.empty());
-  mut bytes = List[u8].empty();
-  imm uri = ld.json.get(im, "uri");
+  var bytes = List[u8].empty();
+  let uri = ld.json.get(im, "uri");
   if uri != NoNode {
-    mut why = String.empty();
+    var why = String.empty();
     if not loadUri(ld, out.uri.view(), &mut bytes, &mut why) {
       out.error = why;
-      mut w = String.from("image ");
+      var w = String.from("image ");
       w.appendUInt(u64.from(index));
       w.append(": ");
       w.append(out.error.view());
@@ -109,24 +109,24 @@ fn loadImage(ld &mut Ld, im u32, index usize) GltfImage {
       return out;
     }
   } else {
-    imm vi = ld.json.getInt(im, "bufferView", -1i64);
+    let vi = ld.json.getInt(im, "bufferView", -1i64);
     if vi < 0i64 { out.error = String.from("an image with neither a uri nor a buffer view"); return out; }
-    mut buf = 0usize;
-    mut off = 0usize;
-    mut len = 0usize;
-    mut stride = 0usize;
+    var buf = 0usize;
+    var off = 0usize;
+    var len = 0usize;
+    var stride = 0usize;
     if not viewPlace(ld, usize.from(vi), &mut buf, &mut off, &mut len, &mut stride) { return out; }
-    imm d = ld.buffers[buf].view();
+    let d = ld.buffers[buf].view();
     bytes.reserve(len);
-    mut i = 0usize;
+    var i = 0usize;
     while i < len { bytes.push(d[off + i]); i += 1usize; }
   }
   if not ld.decodeImages { return out; }
   match decode(bytes.view()) {
-    case mut ok Ok { out.raster <=> ok; }
-    case imm e Error {
+    case var ok Ok { out.raster <=> ok; }
+    case let e Error {
       out.error = e.reason.copy();
-      mut w = String.from("image ");
+      var w = String.from("image ");
       w.appendUInt(u64.from(index));
       w.append(": ");
       w.append(out.error.view());
@@ -139,7 +139,7 @@ fn loadImage(ld &mut Ld, im u32, index usize) GltfImage {
 // ---- nodes ----
 
 fn normQuat(q Quat) Quat {
-  imm l = (q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w).sqrt();
+  let l = (q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w).sqrt();
   if l < 0.0000001 { return Quat.identity(); }
   new Quat(q.x / l, q.y / l, q.z / l, q.w / l);
 }
@@ -148,71 +148,71 @@ fn normQuat(q Quat) Quat {
 // scale (negative on x when the matrix mirrors), the rest a rotation. A matrix
 // with shear is approximated.
 fn decomposeMat4(m Mat4) Transform3 {
-  imm t = new Vec3(m.m[12], m.m[13], m.m[14]);
-  mut sx = new Vec3(m.m[0], m.m[1], m.m[2]).length();
-  imm sy = new Vec3(m.m[4], m.m[5], m.m[6]).length();
-  imm sz = new Vec3(m.m[8], m.m[9], m.m[10]).length();
+  let t = new Vec3(m.m[12], m.m[13], m.m[14]);
+  var sx = new Vec3(m.m[0], m.m[1], m.m[2]).length();
+  let sy = new Vec3(m.m[4], m.m[5], m.m[6]).length();
+  let sz = new Vec3(m.m[8], m.m[9], m.m[10]).length();
   if m.determinant() < 0. { sx = -sx; }
-  imm ix = if sx != 0. {1. / sx;} else {0.;};
-  imm iy = if sy != 0. {1. / sy;} else {0.;};
-  imm iz = if sz != 0. {1. / sz;} else {0.;};
+  let ix = if sx != 0. {1. / sx;} else {0.;};
+  let iy = if sy != 0. {1. / sy;} else {0.;};
+  let iz = if sz != 0. {1. / sz;} else {0.;};
   // The rotation matrix r (columns)
-  imm r00 = m.m[0] * ix;
-  imm r10 = m.m[1] * ix;
-  imm r20 = m.m[2] * ix;
-  imm r01 = m.m[4] * iy;
-  imm r11 = m.m[5] * iy;
-  imm r21 = m.m[6] * iy;
-  imm r02 = m.m[8] * iz;
-  imm r12 = m.m[9] * iz;
-  imm r22 = m.m[10] * iz;
+  let r00 = m.m[0] * ix;
+  let r10 = m.m[1] * ix;
+  let r20 = m.m[2] * ix;
+  let r01 = m.m[4] * iy;
+  let r11 = m.m[5] * iy;
+  let r21 = m.m[6] * iy;
+  let r02 = m.m[8] * iz;
+  let r12 = m.m[9] * iz;
+  let r22 = m.m[10] * iz;
   // Shepperd's method
-  imm trace = r00 + r11 + r22;
-  mut q = Quat.identity();
+  let trace = r00 + r11 + r22;
+  var q = Quat.identity();
   if trace > 0. {
-    imm s = (trace + 1.).sqrt() * 2.;
+    let s = (trace + 1.).sqrt() * 2.;
     q = new Quat((r21 - r12) / s, (r02 - r20) / s, (r10 - r01) / s, 0.25 * s);
   } elif r00 > r11 and r00 > r22 {
-    imm s = (1. + r00 - r11 - r22).sqrt() * 2.;
+    let s = (1. + r00 - r11 - r22).sqrt() * 2.;
     q = new Quat(0.25 * s, (r01 + r10) / s, (r02 + r20) / s, (r21 - r12) / s);
   } elif r11 > r22 {
-    imm s = (1. + r11 - r00 - r22).sqrt() * 2.;
+    let s = (1. + r11 - r00 - r22).sqrt() * 2.;
     q = new Quat((r01 + r10) / s, 0.25 * s, (r12 + r21) / s, (r02 - r20) / s);
   } else {
-    imm s = (1. + r22 - r00 - r11).sqrt() * 2.;
+    let s = (1. + r22 - r00 - r11).sqrt() * 2.;
     q = new Quat((r02 + r20) / s, (r12 + r21) / s, 0.25 * s, (r10 - r01) / s);
   }
   new Transform3(t, normQuat(q), new Vec3(sx, sy, sz));
 }
 
 fn loadNode(ld &mut Ld, n u32) GltfNode {
-  mut out = new GltfNode(ld.json.getStr(n, "name", ""), List[u32].empty(), -1, i32.from(ld.json.getInt(n, "mesh", -1i64)),
+  var out = new GltfNode(ld.json.getStr(n, "name", ""), List[u32].empty(), -1, i32.from(ld.json.getInt(n, "mesh", -1i64)),
     i32.from(ld.json.getInt(n, "skin", -1i64)), i32.from(ld.json.getInt(n, "camera", -1i64)), -1, Transform3.identity(),
     Mat4.identity(), false, List[f32].empty());
-  imm kids = ld.json.get(n, "children");
-  mut i = 0usize;
+  let kids = ld.json.get(n, "children");
+  var i = 0usize;
   while i < ld.json.len(kids) {
     out.children.push(u32.from(ld.json.int(ld.json.at(kids, i), 0i64)));
     i += 1usize;
   }
-  imm w = ld.json.get(n, "weights");
+  let w = ld.json.get(n, "weights");
   i = 0usize;
   while i < ld.json.len(w) { out.weights.push(jnum(ld, w, i, 0.)); i += 1usize; }
-  imm lt = ld.json.get(ld.json.get(ld.json.get(n, "extensions"), "KHR_lights_punctual"), "light");
+  let lt = ld.json.get(ld.json.get(ld.json.get(n, "extensions"), "KHR_lights_punctual"), "light");
   if lt != NoNode { out.light = i32.from(ld.json.int(lt, -1i64)); }
-  imm mat = ld.json.get(n, "matrix");
+  let mat = ld.json.get(n, "matrix");
   if ld.json.len(mat) == 16usize {
-    mut a = Mat4.identity();
+    var a = Mat4.identity();
     i = 0usize;
     while i < 16usize { a.m[i] = jnum(ld, mat, i, 0.); i += 1usize; }
     out.matrix = a;
     out.usesMatrix = true;
     out.trs = decomposeMat4(a);
   } else {
-    imm tr = ld.json.get(n, "translation");
-    imm rotj = ld.json.get(n, "rotation");
-    imm sc = ld.json.get(n, "scale");
-    mut t = Transform3.identity();
+    let tr = ld.json.get(n, "translation");
+    let rotj = ld.json.get(n, "rotation");
+    let sc = ld.json.get(n, "scale");
+    var t = Transform3.identity();
     if ld.json.len(tr) == 3usize { t.translation = new Vec3(jnum(ld, tr, 0usize, 0.), jnum(ld, tr, 1usize, 0.), jnum(ld, tr, 2usize, 0.)); }
     if ld.json.len(rotj) == 4usize {
       t.rotation = normQuat(new Quat(jnum(ld, rotj, 0usize, 0.), jnum(ld, rotj, 1usize, 0.), jnum(ld, rotj, 2usize, 0.), jnum(ld, rotj, 3usize, 1.)));
@@ -226,12 +226,12 @@ fn loadNode(ld &mut Ld, n u32) GltfNode {
 
 // Every node has one parent at most and no node is its own ancestor
 fn linkNodes(ld &mut Ld) {
-  imm n = ld.gltf.nodes.len();
-  mut i = 0usize;
+  let n = ld.gltf.nodes.len();
+  var i = 0usize;
   while i < n {
-    mut k = 0usize;
+    var k = 0usize;
     while k < ld.gltf.nodes[i].children.len() {
-      imm c = usize.from(*ld.gltf.nodes[i].children[k]);
+      let c = usize.from(*ld.gltf.nodes[i].children[k]);
       if c >= n { ldFailIdx(ld, "node ", i, " has a child that does not exist"); return; }
       if ld.gltf.nodes[c].parent >= 0i32 { ldFailIdx(ld, "node ", c, " has two parents"); return; }
       ld.gltf.nodes[c].parent = i32.from(i);
@@ -242,8 +242,8 @@ fn linkNodes(ld &mut Ld) {
   // Walk up from each node: more than n steps is a cycle
   i = 0usize;
   while i < n {
-    mut steps = 0usize;
-    mut p = ld.gltf.nodes[i].parent;
+    var steps = 0usize;
+    var p = ld.gltf.nodes[i].parent;
     while p >= 0i32 {
       steps += 1usize;
       if steps > n { ldFailIdx(ld, "node ", i, " is its own ancestor"); return; }
@@ -256,32 +256,32 @@ fn linkNodes(ld &mut Ld) {
 // ---- meshes ----
 
 fn getVec3s(ld &mut Ld, ai usize, count usize, out &mut List[Vec3], what &str) bool {
-  mut f = List[f32].empty();
-  mut per = 0usize;
+  var f = List[f32].empty();
+  var per = 0usize;
   if not readFloats(ld, ai, &mut f, &mut per) { return false; }
   if per != 3usize or f.len() != count * 3usize { ldFail2(ld, what, " has the wrong shape or count"); return false; }
   out.reserve(count);
-  mut i = 0usize;
+  var i = 0usize;
   while i < count { out.push(new Vec3(*f[i * 3usize], *f[i * 3usize + 1usize], *f[i * 3usize + 2usize])); i += 1usize; }
   true;
 }
 
 fn loadPrimitive(ld &mut Ld, p u32, prim &mut GltfPrimitive, meshIndex usize) bool {
-  imm mode = ld.json.getInt(p, "mode", 4i64);
+  let mode = ld.json.getInt(p, "mode", 4i64);
   if mode < 4i64 {
-    mut w = String.from("mesh ");
+    var w = String.from("mesh ");
     w.appendUInt(u64.from(meshIndex));
     w.append(": a points or lines primitive is skipped (triangles only)");
     ld.gltf.warnings.push(w);
     return false;
   }
-  imm attrs = ld.json.get(p, "attributes");
+  let attrs = ld.json.get(p, "attributes");
   prim.material = i32.from(ld.json.getInt(p, "material", -1i64));
-  imm draco = ld.json.get(ld.json.get(p, "extensions"), "KHR_draco_mesh_compression");
-  imm posIdx = ld.json.getInt(attrs, "POSITION", -1i64);
+  let draco = ld.json.get(ld.json.get(p, "extensions"), "KHR_draco_mesh_compression");
+  let posIdx = ld.json.getInt(attrs, "POSITION", -1i64);
   if draco != NoNode {
     // Usable only if the file kept uncompressed accessors beside it
-    imm a = ld.json.at(rootArray(ld, "accessors"), usize.from(if posIdx >= 0i64 {posIdx;} else {0i64;}));
+    let a = ld.json.at(rootArray(ld, "accessors"), usize.from(if posIdx >= 0i64 {posIdx;} else {0i64;}));
     if posIdx < 0i64 or ld.json.getInt(a, "bufferView", -1i64) < 0i64 {
       refuseCompressed(ld, "KHR_draco_mesh_compression");
       return false;
@@ -289,49 +289,49 @@ fn loadPrimitive(ld &mut Ld, p u32, prim &mut GltfPrimitive, meshIndex usize) bo
     ldWarn(ld, "KHR_draco_mesh_compression is present; using the uncompressed fallback accessors");
   }
   if posIdx < 0i64 { ldFail(ld, "a primitive without POSITION"); return false; }
-  mut count = 0usize;
+  var count = 0usize;
   {
-    mut pos = List[Vec3].empty();
+    var pos = List[Vec3].empty();
     if not getVec3s(ld, usize.from(posIdx), usize.from(ld.json.getInt(ld.json.at(rootArray(ld, "accessors"), usize.from(posIdx)), "count", 0i64)), &mut pos, "POSITION") { return false; }
     count = pos.len();
     prim.mesh.positions <=> pos;
   }
   // Normals
-  imm nIdx = ld.json.getInt(attrs, "NORMAL", -1i64);
+  let nIdx = ld.json.getInt(attrs, "NORMAL", -1i64);
   if nIdx >= 0i64 {
     if not getVec3s(ld, usize.from(nIdx), count, &mut prim.mesh.normals, "NORMAL") { return false; }
     // Normalise (the file should, but rounding of quantised ones)
-    mut i = 0usize;
+    var i = 0usize;
     while i < count { prim.mesh.normals.set(i, (*prim.mesh.normals[i]).normalize()); i += 1usize; }
   }
   // Tangents
-  imm tIdx = ld.json.getInt(attrs, "TANGENT", -1i64);
+  let tIdx = ld.json.getInt(attrs, "TANGENT", -1i64);
   if tIdx >= 0i64 {
-    mut f = List[f32].empty();
-    mut per = 0usize;
+    var f = List[f32].empty();
+    var per = 0usize;
     if not readFloats(ld, usize.from(tIdx), &mut f, &mut per) { return false; }
     if per != 4usize or f.len() != count * 4usize { ldFail(ld, "TANGENT has the wrong shape or count"); return false; }
-    mut i = 0usize;
+    var i = 0usize;
     while i < count {
-      imm t = (new Vec3(*f[i * 4usize], *f[i * 4usize + 1usize], *f[i * 4usize + 2usize])).normalize();
+      let t = (new Vec3(*f[i * 4usize], *f[i * 4usize + 1usize], *f[i * 4usize + 2usize])).normalize();
       prim.mesh.tangents.push(new Vec4(t.x, t.y, t.z, if *f[i * 4usize + 3usize] < 0. {-1.;} else {1.;}));
       i += 1usize;
     }
   }
   // Texture coordinates: glTF's v runs down the image, mesh's up
-  mut set = 0usize;
+  var set = 0usize;
   while set < 2usize {
-    mut name = String.from("TEXCOORD_");
+    var name = String.from("TEXCOORD_");
     name.appendUInt(u64.from(set));
-    imm uIdx = ld.json.getInt(attrs, name.view(), -1i64);
+    let uIdx = ld.json.getInt(attrs, name.view(), -1i64);
     if uIdx >= 0i64 {
-      mut f = List[f32].empty();
-      mut per = 0usize;
+      var f = List[f32].empty();
+      var per = 0usize;
       if not readFloats(ld, usize.from(uIdx), &mut f, &mut per) { return false; }
       if per != 2usize or f.len() != count * 2usize { ldFail2(ld, name.view(), " has the wrong shape or count"); return false; }
-      mut i = 0usize;
+      var i = 0usize;
       while i < count {
-        imm uv = new Vec2(*f[i * 2usize], 1. - *f[i * 2usize + 1usize]);
+        let uv = new Vec2(*f[i * 2usize], 1. - *f[i * 2usize + 1usize]);
         if set == 0usize { prim.mesh.uvs.push(uv); } else { prim.uvs1.push(uv); }
         i += 1usize;
       }
@@ -339,53 +339,53 @@ fn loadPrimitive(ld &mut Ld, p u32, prim &mut GltfPrimitive, meshIndex usize) bo
     set += 1usize;
   }
   // Vertex colours
-  imm cIdx = ld.json.getInt(attrs, "COLOR_0", -1i64);
+  let cIdx = ld.json.getInt(attrs, "COLOR_0", -1i64);
   if cIdx >= 0i64 {
-    mut f = List[f32].empty();
-    mut per = 0usize;
+    var f = List[f32].empty();
+    var per = 0usize;
     if not readFloats(ld, usize.from(cIdx), &mut f, &mut per) { return false; }
     if (per != 3usize and per != 4usize) or f.len() != count * per { ldFail(ld, "COLOR_0 has the wrong shape or count"); return false; }
-    mut i = 0usize;
+    var i = 0usize;
     while i < count {
       prim.mesh.colors.push(new Color(*f[i * per], *f[i * per + 1usize], *f[i * per + 2usize], if per == 4usize {*f[i * per + 3usize];} else {1.;}));
       i += 1usize;
     }
   }
   // Skinning
-  imm jIdx = ld.json.getInt(attrs, "JOINTS_0", -1i64);
-  imm wIdx = ld.json.getInt(attrs, "WEIGHTS_0", -1i64);
+  let jIdx = ld.json.getInt(attrs, "JOINTS_0", -1i64);
+  let wIdx = ld.json.getInt(attrs, "WEIGHTS_0", -1i64);
   if jIdx >= 0i64 and wIdx >= 0i64 {
-    mut per = 0usize;
+    var per = 0usize;
     if not readUints(ld, usize.from(jIdx), &mut prim.joints, &mut per) { return false; }
     if per != 4usize or prim.joints.len() != count * 4usize { ldFail(ld, "JOINTS_0 has the wrong shape or count"); return false; }
-    mut f = List[f32].empty();
+    var f = List[f32].empty();
     if not readFloats(ld, usize.from(wIdx), &mut f, &mut per) { return false; }
     if per != 4usize or f.len() != count * 4usize { ldFail(ld, "WEIGHTS_0 has the wrong shape or count"); return false; }
-    mut i = 0usize;
+    var i = 0usize;
     while i < count {
-      imm w = new Vec4(*f[i * 4usize], *f[i * 4usize + 1usize], *f[i * 4usize + 2usize], *f[i * 4usize + 3usize]);
-      imm sum = w.x + w.y + w.z + w.w;
+      let w = new Vec4(*f[i * 4usize], *f[i * 4usize + 1usize], *f[i * 4usize + 2usize], *f[i * 4usize + 3usize]);
+      let sum = w.x + w.y + w.z + w.w;
       prim.weights.push(if sum > 0.0000001 {w * (1. / sum);} else {new Vec4(1., 0., 0., 0.);});
       i += 1usize;
     }
   }
   // Indices, and the topology turned into a triangle list
-  mut idx = List[u32].empty();
-  imm iIdx = ld.json.getInt(p, "indices", -1i64);
+  var idx = List[u32].empty();
+  let iIdx = ld.json.getInt(p, "indices", -1i64);
   if iIdx >= 0i64 {
-    mut per = 0usize;
+    var per = 0usize;
     if not readUints(ld, usize.from(iIdx), &mut idx, &mut per) { return false; }
   } else {
-    mut i = 0usize;
+    var i = 0usize;
     while i < count { idx.push(u32.from(i)); i += 1usize; }
   }
-  mut k = 0usize;
+  var k = 0usize;
   while k < idx.len() {
     if usize.from(*idx[k]) >= count { ldFail(ld, "a primitive's index is past its vertices"); return false; }
     k += 1usize;
   }
   if mode == 4i64 {
-    mut t = 0usize;
+    var t = 0usize;
     while t + 2usize < idx.len() {
       prim.mesh.indices.push(*idx[t]);
       prim.mesh.indices.push(*idx[t + 1usize]);
@@ -393,7 +393,7 @@ fn loadPrimitive(ld &mut Ld, p u32, prim &mut GltfPrimitive, meshIndex usize) bo
       t += 3usize;
     }
   } elif mode == 5i64 {
-    mut t = 0usize;
+    var t = 0usize;
     while t + 2usize < idx.len() {
       if t % 2usize == 0usize {
         prim.mesh.indices.push(*idx[t]);
@@ -406,7 +406,7 @@ fn loadPrimitive(ld &mut Ld, p u32, prim &mut GltfPrimitive, meshIndex usize) bo
       t += 1usize;
     }
   } else {
-    mut t = 1usize;
+    var t = 1usize;
     while t + 1usize < idx.len() {
       prim.mesh.indices.push(*idx[0usize]);
       prim.mesh.indices.push(*idx[t]);
@@ -415,14 +415,14 @@ fn loadPrimitive(ld &mut Ld, p u32, prim &mut GltfPrimitive, meshIndex usize) bo
     }
   }
   // Morph targets
-  imm tg = ld.json.get(p, "targets");
-  mut ti = 0usize;
+  let tg = ld.json.get(p, "targets");
+  var ti = 0usize;
   while ti < ld.json.len(tg) {
-    imm td = ld.json.at(tg, ti);
-    mut mt = new MorphTarget(List[Vec3].empty(), List[Vec3].empty(), List[Vec3].empty());
-    imm tp = ld.json.getInt(td, "POSITION", -1i64);
-    imm tn = ld.json.getInt(td, "NORMAL", -1i64);
-    imm tt = ld.json.getInt(td, "TANGENT", -1i64);
+    let td = ld.json.at(tg, ti);
+    var mt = new MorphTarget(List[Vec3].empty(), List[Vec3].empty(), List[Vec3].empty());
+    let tp = ld.json.getInt(td, "POSITION", -1i64);
+    let tn = ld.json.getInt(td, "NORMAL", -1i64);
+    let tt = ld.json.getInt(td, "TANGENT", -1i64);
     if tp >= 0i64 and not getVec3s(ld, usize.from(tp), count, &mut mt.positions, "a morph target's POSITION") { return false; }
     if tn >= 0i64 and not getVec3s(ld, usize.from(tn), count, &mut mt.normals, "a morph target's NORMAL") { return false; }
     if tt >= 0i64 and not getVec3s(ld, usize.from(tt), count, &mut mt.tangents, "a morph target's TANGENT") { return false; }
@@ -445,14 +445,14 @@ fn loadPrimitive(ld &mut Ld, p u32, prim &mut GltfPrimitive, meshIndex usize) bo
 }
 
 fn loadMesh(ld &mut Ld, m u32, index usize) GltfMesh {
-  mut out = new GltfMesh(ld.json.getStr(m, "name", ""), List[GltfPrimitive].empty(), List[f32].empty());
-  imm prims = ld.json.get(m, "primitives");
-  imm w = ld.json.get(m, "weights");
-  mut i = 0usize;
+  var out = new GltfMesh(ld.json.getStr(m, "name", ""), List[GltfPrimitive].empty(), List[f32].empty());
+  let prims = ld.json.get(m, "primitives");
+  let w = ld.json.get(m, "weights");
+  var i = 0usize;
   while i < ld.json.len(w) { out.weights.push(jnum(ld, w, i, 0.)); i += 1usize; }
   i = 0usize;
   while i < ld.json.len(prims) and not ld.failed {
-    mut prim = new GltfPrimitive(Mesh.empty(), -1, List[Vec2].empty(), List[u32].empty(), List[Vec4].empty(),
+    var prim = new GltfPrimitive(Mesh.empty(), -1, List[Vec2].empty(), List[u32].empty(), List[Vec4].empty(),
       List[MorphTarget].empty(), false);
     if loadPrimitive(ld, ld.json.at(prims, i), &mut prim, index) { out.primitives.push(prim); }
     i += 1usize;
@@ -463,20 +463,20 @@ fn loadMesh(ld &mut Ld, m u32, index usize) GltfMesh {
 // ---- skins, animations, cameras, lights ----
 
 fn loadSkin(ld &mut Ld, s u32) GltfSkin {
-  mut out = new GltfSkin(ld.json.getStr(s, "name", ""), List[u32].empty(), List[Mat4].empty(),
+  var out = new GltfSkin(ld.json.getStr(s, "name", ""), List[u32].empty(), List[Mat4].empty(),
     i32.from(ld.json.getInt(s, "skeleton", -1i64)));
-  imm j = ld.json.get(s, "joints");
-  mut i = 0usize;
+  let j = ld.json.get(s, "joints");
+  var i = 0usize;
   while i < ld.json.len(j) {
-    imm n = ld.json.int(ld.json.at(j, i), -1i64);
+    let n = ld.json.int(ld.json.at(j, i), -1i64);
     if n < 0i64 or usize.from(n) >= ld.gltf.nodes.len() { ldFail(ld, "a skin names a joint node that does not exist"); return out; }
     out.joints.push(u32.from(n));
     i += 1usize;
   }
-  imm ib = ld.json.getInt(s, "inverseBindMatrices", -1i64);
+  let ib = ld.json.getInt(s, "inverseBindMatrices", -1i64);
   if ib >= 0i64 {
-    mut f = List[f32].empty();
-    mut per = 0usize;
+    var f = List[f32].empty();
+    var per = 0usize;
     if not readFloats(ld, usize.from(ib), &mut f, &mut per) { return out; }
     if per != 16usize or f.len() != out.joints.len() * 16usize {
       ldFail(ld, "a skin's inverseBindMatrices do not match its joints");
@@ -484,8 +484,8 @@ fn loadSkin(ld &mut Ld, s u32) GltfSkin {
     }
     i = 0usize;
     while i < out.joints.len() {
-      mut m = Mat4.identity();
-      mut k = 0usize;
+      var m = Mat4.identity();
+      var k = 0usize;
       while k < 16usize { m.m[k] = *f[i * 16usize + k]; k += 1usize; }
       out.inverseBind.push(m);
       i += 1usize;
@@ -498,32 +498,32 @@ fn loadSkin(ld &mut Ld, s u32) GltfSkin {
 }
 
 fn loadAnimation(ld &mut Ld, a u32) GltfAnimation {
-  mut out = new GltfAnimation(ld.json.getStr(a, "name", ""), List[AnimSampler].empty(), List[GltfChannel].empty(), 0.);
-  imm sams = ld.json.get(a, "samplers");
-  mut i = 0usize;
+  var out = new GltfAnimation(ld.json.getStr(a, "name", ""), List[AnimSampler].empty(), List[GltfChannel].empty(), 0.);
+  let sams = ld.json.get(a, "samplers");
+  var i = 0usize;
   while i < ld.json.len(sams) and not ld.failed {
-    imm s = ld.json.at(sams, i);
-    mut sm = new AnimSampler(List[f32].empty(), List[f32].empty(), InterpLinear, 0u32);
-    imm interp = ld.json.getStr(s, "interpolation", "LINEAR");
+    let s = ld.json.at(sams, i);
+    var sm = new AnimSampler(List[f32].empty(), List[f32].empty(), InterpLinear, 0u32);
+    let interp = ld.json.getStr(s, "interpolation", "LINEAR");
     sm.interpolation = if interp.view() == "STEP" {InterpStep;} elif interp.view() == "CUBICSPLINE" {InterpCubic;} else {InterpLinear;};
-    mut per = 0usize;
-    imm ii = ld.json.getInt(s, "input", -1i64);
-    imm oi = ld.json.getInt(s, "output", -1i64);
+    var per = 0usize;
+    let ii = ld.json.getInt(s, "input", -1i64);
+    let oi = ld.json.getInt(s, "output", -1i64);
     if ii < 0i64 or oi < 0i64 { ldFail(ld, "an animation sampler needs an input and an output"); return out; }
     if not readFloats(ld, usize.from(ii), &mut sm.times, &mut per) { return out; }
     if per != 1usize { ldFail(ld, "an animation sampler's input must be scalar"); return out; }
-    mut vals = List[f32].empty();
+    var vals = List[f32].empty();
     if not readFloats(ld, usize.from(oi), &mut vals, &mut per) { return out; }
-    imm n = sm.times.len();
+    let n = sm.times.len();
     if n == 0usize { ldFail(ld, "an animation sampler has no keys"); return out; }
-    mut k = 1usize;
+    var k = 1usize;
     while k < n {
       if *sm.times[k] <= *sm.times[k - 1usize] { ldFail(ld, "an animation sampler's times must increase"); return out; }
       k += 1usize;
     }
     // Floats per key: the output's length over the key count (and 3 times
     // that for cubic: in-tangent, value, out-tangent)
-    imm perKey = vals.len() / n;
+    let perKey = vals.len() / n;
     if perKey * n != vals.len() or perKey == 0usize { ldFail(ld, "an animation sampler's output does not match its input"); return out; }
     if sm.interpolation == InterpCubic {
       if perKey % 3usize != 0usize or n < 2usize { ldFail(ld, "a cubic spline sampler needs three values a key and two keys"); return out; }
@@ -536,29 +536,29 @@ fn loadAnimation(ld &mut Ld, a u32) GltfAnimation {
     out.samplers.push(sm);
     i += 1usize;
   }
-  imm chans = ld.json.get(a, "channels");
+  let chans = ld.json.get(a, "channels");
   i = 0usize;
   while i < ld.json.len(chans) and not ld.failed {
-    imm c = ld.json.at(chans, i);
-    imm tg = ld.json.get(c, "target");
-    imm s = ld.json.getInt(c, "sampler", -1i64);
-    imm node = ld.json.getInt(tg, "node", -1i64);
-    imm path = ld.json.getStr(tg, "path", "");
+    let c = ld.json.at(chans, i);
+    let tg = ld.json.get(c, "target");
+    let s = ld.json.getInt(c, "sampler", -1i64);
+    let node = ld.json.getInt(tg, "node", -1i64);
+    let path = ld.json.getStr(tg, "path", "");
     if s < 0i64 or usize.from(s) >= out.samplers.len() { ldFail(ld, "an animation channel names a missing sampler"); return out; }
     if node < 0i64 {
       // KHR_animation_pointer and the like: no node to drive
-      mut w = String.from("animation channel ignored (target path ");
+      var w = String.from("animation channel ignored (target path ");
       w.append(path.view());
       w.append(", no node)");
       ld.gltf.warnings.push(w);
     } else {
       if usize.from(node) >= ld.gltf.nodes.len() { ldFail(ld, "an animation channel targets a node that does not exist"); return out; }
-      imm pth = if path.view() == "translation" {PathTranslation;} elif path.view() == "rotation" {PathRotation;}
+      let pth = if path.view() == "translation" {PathTranslation;} elif path.view() == "rotation" {PathRotation;}
         elif path.view() == "scale" {PathScale;} elif path.view() == "weights" {PathWeights;} else {99u32;};
       if pth == 99u32 {
         ldWarn(ld, "an animation channel with an unknown path is ignored");
       } else {
-        imm st = out.samplers[usize.from(s)].stride;
+        let st = out.samplers[usize.from(s)].stride;
         if (pth == PathTranslation or pth == PathScale) and st != 3u32 or pth == PathRotation and st != 4u32 {
           ldFail(ld, "an animation channel's output has the wrong width for its path");
           return out;
@@ -572,9 +572,9 @@ fn loadAnimation(ld &mut Ld, a u32) GltfAnimation {
 }
 
 fn loadCamera(ld &mut Ld, c u32) GltfCamera {
-  imm kind = ld.json.getStr(c, "type", "perspective");
-  imm per = ld.json.get(c, "perspective");
-  imm ort = ld.json.get(c, "orthographic");
+  let kind = ld.json.getStr(c, "type", "perspective");
+  let per = ld.json.get(c, "perspective");
+  let ort = ld.json.get(c, "orthographic");
   if kind.view() == "orthographic" {
     return new GltfCamera(ld.json.getStr(c, "name", ""), false, 0., 0., f32.from(ld.json.getNum(ort, "xmag", 1.)),
       f32.from(ld.json.getNum(ort, "ymag", 1.)), f32.from(ld.json.getNum(ort, "znear", 0.1)), f32.from(ld.json.getNum(ort, "zfar", 100.)));
@@ -585,8 +585,8 @@ fn loadCamera(ld &mut Ld, c u32) GltfCamera {
 }
 
 fn loadLight(ld &mut Ld, l u32) GltfLight {
-  imm t = ld.json.getStr(l, "type", "point");
-  imm spot = ld.json.get(l, "spot");
+  let t = ld.json.getStr(l, "type", "point");
+  let spot = ld.json.get(l, "spot");
   new GltfLight(ld.json.getStr(l, "name", ""), if t.view() == "directional" {0u32;} elif t.view() == "spot" {2u32;} else {1u32;},
     colorOf(ld, ld.json.get(l, "color"), new Color(1., 1., 1., 1.)), f32.from(ld.json.getNum(l, "intensity", 1.)),
     f32.from(ld.json.getNum(l, "range", 0.)), f32.from(ld.json.getNum(spot, "innerConeAngle", 0.)),
@@ -595,16 +595,16 @@ fn loadLight(ld &mut Ld, l u32) GltfLight {
 
 // The extensions this loader understands, and the ones it refuses by name
 fn checkExtensions(ld &mut Ld) {
-  imm req = ld.json.get(ld.root, "extensionsRequired");
-  imm used = ld.json.get(ld.root, "extensionsUsed");
-  mut i = 0usize;
+  let req = ld.json.get(ld.root, "extensionsRequired");
+  let used = ld.json.get(ld.root, "extensionsUsed");
+  var i = 0usize;
   while i < ld.json.len(used) {
     ld.gltf.extensionsUsed.push(ld.json.string(ld.json.at(used, i), ""));
     i += 1usize;
   }
   i = 0usize;
   while i < ld.json.len(req) {
-    imm name = ld.json.textView(ld.json.at(req, i));
+    let name = ld.json.textView(ld.json.at(req, i));
     if name == "KHR_draco_mesh_compression" {
       // A file can require Draco and still carry uncompressed accessors only
       // rarely; the primitive check decides. Here it is refused.
@@ -627,8 +627,8 @@ fn checkExtensions(ld &mut Ld) {
 // Load a parsed document. 'glbBin' is a GLB file's binary chunk (empty if
 // none).
 fn loadDocument(ld &mut Ld, glbBin &Array[u8], hasBin bool) {
-  imm asset = ld.json.get(ld.root, "asset");
-  imm ver = ld.json.getStr(asset, "version", "");
+  let asset = ld.json.get(ld.root, "asset");
+  let ver = ld.json.getStr(asset, "version", "");
   if ver.view() != "2.0" and not ver.view().startsWith("2.") {
     ldFail2(ld, "only glTF 2.0 is supported; this file says version ", ver.view());
     return;
@@ -639,16 +639,16 @@ fn loadDocument(ld &mut Ld, glbBin &Array[u8], hasBin bool) {
   if ld.failed { return; }
 
   // Buffers
-  imm bufs = rootArray(ld, "buffers");
-  mut i = 0usize;
+  let bufs = rootArray(ld, "buffers");
+  var i = 0usize;
   while i < ld.json.len(bufs) and not ld.failed {
-    imm b = ld.json.at(bufs, i);
-    mut bytes = List[u8].empty();
-    mut ok = true;
-    imm uri = ld.json.get(b, "uri");
+    let b = ld.json.at(bufs, i);
+    var bytes = List[u8].empty();
+    var ok = true;
+    let uri = ld.json.get(b, "uri");
     if uri != NoNode {
-      mut why = String.empty();
-      imm u = ld.json.getStr(b, "uri", "");
+      var why = String.empty();
+      let u = ld.json.getStr(b, "uri", "");
       if not loadUri(ld, u.view(), &mut bytes, &mut why) {
         ldFailIdx(ld, "buffer ", i, "");
         ld.reason.append(": ");
@@ -657,7 +657,7 @@ fn loadDocument(ld &mut Ld, glbBin &Array[u8], hasBin bool) {
       }
     } elif i == 0usize and hasBin {
       bytes.reserve(glbBin.len);
-      mut k = 0usize;
+      var k = 0usize;
       while k < glbBin.len { bytes.push(glbBin[k]); k += 1usize; }
     } else {
       // No bytes: a fallback buffer of a compressed file; fine until read
@@ -673,27 +673,27 @@ fn loadDocument(ld &mut Ld, glbBin &Array[u8], hasBin bool) {
   }
 
   // Samplers, images, textures, materials
-  imm sams = rootArray(ld, "samplers");
+  let sams = rootArray(ld, "samplers");
   i = 0usize;
   while i < ld.json.len(sams) {
-    imm s = ld.json.at(sams, i);
+    let s = ld.json.at(sams, i);
     ld.gltf.samplers.push(new GltfSampler(u32.from(ld.json.getInt(s, "magFilter", 0i64)), u32.from(ld.json.getInt(s, "minFilter", 0i64)),
       u32.from(ld.json.getInt(s, "wrapS", 10497i64)), u32.from(ld.json.getInt(s, "wrapT", 10497i64))));
     i += 1usize;
   }
-  imm ims = rootArray(ld, "images");
+  let ims = rootArray(ld, "images");
   i = 0usize;
   while i < ld.json.len(ims) and not ld.failed {
     ld.gltf.images.push(loadImage(ld, ld.json.at(ims, i), i));
     i += 1usize;
   }
-  imm texs = rootArray(ld, "textures");
+  let texs = rootArray(ld, "textures");
   i = 0usize;
   while i < ld.json.len(texs) {
     ld.gltf.textures.push(loadTexture(ld, ld.json.at(texs, i)));
     i += 1usize;
   }
-  imm mats = rootArray(ld, "materials");
+  let mats = rootArray(ld, "materials");
   i = 0usize;
   while i < ld.json.len(mats) and not ld.failed {
     ld.gltf.materials.push(loadMaterial(ld, ld.json.at(mats, i)));
@@ -702,7 +702,7 @@ fn loadDocument(ld &mut Ld, glbBin &Array[u8], hasBin bool) {
   if ld.failed { return; }
 
   // Nodes before meshes (a node's mesh and skin numbers are checked after)
-  imm nodes = rootArray(ld, "nodes");
+  let nodes = rootArray(ld, "nodes");
   i = 0usize;
   while i < ld.json.len(nodes) {
     ld.gltf.nodes.push(loadNode(ld, ld.json.at(nodes, i)));
@@ -712,33 +712,33 @@ fn loadDocument(ld &mut Ld, glbBin &Array[u8], hasBin bool) {
   if ld.failed { return; }
 
   // Lights (KHR_lights_punctual) and cameras
-  imm lights = ld.json.get(ld.json.get(ld.json.get(ld.root, "extensions"), "KHR_lights_punctual"), "lights");
+  let lights = ld.json.get(ld.json.get(ld.json.get(ld.root, "extensions"), "KHR_lights_punctual"), "lights");
   i = 0usize;
   while i < ld.json.len(lights) {
     ld.gltf.lights.push(loadLight(ld, ld.json.at(lights, i)));
     i += 1usize;
   }
-  imm cams = rootArray(ld, "cameras");
+  let cams = rootArray(ld, "cameras");
   i = 0usize;
   while i < ld.json.len(cams) {
     ld.gltf.cameras.push(loadCamera(ld, ld.json.at(cams, i)));
     i += 1usize;
   }
 
-  imm meshes = rootArray(ld, "meshes");
+  let meshes = rootArray(ld, "meshes");
   i = 0usize;
   while i < ld.json.len(meshes) and not ld.failed {
     ld.gltf.meshes.push(loadMesh(ld, ld.json.at(meshes, i), i));
     i += 1usize;
   }
   if ld.failed { return; }
-  imm skins = rootArray(ld, "skins");
+  let skins = rootArray(ld, "skins");
   i = 0usize;
   while i < ld.json.len(skins) and not ld.failed {
     ld.gltf.skins.push(loadSkin(ld, ld.json.at(skins, i)));
     i += 1usize;
   }
-  imm anims = rootArray(ld, "animations");
+  let anims = rootArray(ld, "animations");
   i = 0usize;
   while i < ld.json.len(anims) and not ld.failed {
     ld.gltf.animations.push(loadAnimation(ld, ld.json.at(anims, i)));
@@ -749,17 +749,17 @@ fn loadDocument(ld &mut Ld, glbBin &Array[u8], hasBin bool) {
   // Cross-references a consumer would otherwise trip on
   i = 0usize;
   while i < ld.gltf.nodes.len() {
-    imm m = ld.gltf.nodes[i].mesh;
-    imm s = ld.gltf.nodes[i].skin;
+    let m = ld.gltf.nodes[i].mesh;
+    let s = ld.gltf.nodes[i].skin;
     if m >= 0i32 and usize.from(m) >= ld.gltf.meshes.len() { ldFailIdx(ld, "node ", i, " names a mesh that does not exist"); return; }
     if s >= 0i32 and usize.from(s) >= ld.gltf.skins.len() { ldFailIdx(ld, "node ", i, " names a skin that does not exist"); return; }
     i += 1usize;
   }
   i = 0usize;
   while i < ld.gltf.meshes.len() {
-    mut p = 0usize;
+    var p = 0usize;
     while p < ld.gltf.meshes[i].primitives.len() {
-      imm mt = ld.gltf.meshes[i].primitives[p].material;
+      let mt = ld.gltf.meshes[i].primitives[p].material;
       if mt >= 0i32 and usize.from(mt) >= ld.gltf.materials.len() {
         ldFailIdx(ld, "mesh ", i, " names a material that does not exist");
         return;
@@ -770,15 +770,15 @@ fn loadDocument(ld &mut Ld, glbBin &Array[u8], hasBin bool) {
   }
 
   // Scenes
-  imm scenes = rootArray(ld, "scenes");
+  let scenes = rootArray(ld, "scenes");
   i = 0usize;
   while i < ld.json.len(scenes) {
-    imm s = ld.json.at(scenes, i);
-    mut sc = new GltfScene(ld.json.getStr(s, "name", ""), List[u32].empty());
-    imm ns = ld.json.get(s, "nodes");
-    mut k = 0usize;
+    let s = ld.json.at(scenes, i);
+    var sc = new GltfScene(ld.json.getStr(s, "name", ""), List[u32].empty());
+    let ns = ld.json.get(s, "nodes");
+    var k = 0usize;
     while k < ld.json.len(ns) {
-      imm n = ld.json.int(ld.json.at(ns, k), -1i64);
+      let n = ld.json.int(ld.json.at(ns, k), -1i64);
       if n < 0i64 or usize.from(n) >= ld.gltf.nodes.len() { ldFail(ld, "a scene names a node that does not exist"); return; }
       sc.nodes.push(u32.from(n));
       k += 1usize;
@@ -811,30 +811,30 @@ pub fn loadGltfBytes(data &Array[u8], decodeImages bool) Result[Gltf, GltfError]
 }
 
 fn loadCore(data &Array[u8], baseDir &Path, canRead bool, decodeImages bool) Result[Gltf, GltfError] {
-  mut jsonBytes = List[u8].empty();
-  mut bin = List[u8].empty();
-  mut hasBin = false;
+  var jsonBytes = List[u8].empty();
+  var bin = List[u8].empty();
+  var hasBin = false;
   if data.len >= 12usize and data[0usize] == 'g' and data[1usize] == 'l' and data[2usize] == 'T' and data[3usize] == 'F' {
     // GLB: 12-byte header (magic, version 2, total length), then chunks of
     // (length, type, data): the JSON first, then optionally the BIN
     if le32(data, 4usize) != 2u32 { return loadFail("glb: only version 2 is supported"); }
-    imm total = usize.from(le32(data, 8usize));
+    let total = usize.from(le32(data, 8usize));
     if total > data.len { return loadFail("glb: the file is shorter than its header says"); }
-    mut pos = 12usize;
-    mut sawJson = false;
+    var pos = 12usize;
+    var sawJson = false;
     while pos + 8usize <= total {
-      imm len = usize.from(le32(data, pos));
-      imm tag = le32(data, pos + 4usize);
+      let len = usize.from(le32(data, pos));
+      let tag = le32(data, pos + 4usize);
       if pos + 8usize + len > total { return loadFail("glb: a chunk runs past the end of the file"); }
       if tag == 0x4E4F534Au32 and not sawJson {
         sawJson = true;
         jsonBytes.reserve(len);
-        mut k = 0usize;
+        var k = 0usize;
         while k < len { jsonBytes.push(data[pos + 8usize + k]); k += 1usize; }
       } elif tag == 0x004E4942u32 and not hasBin {
         hasBin = true;
         bin.reserve(len);
-        mut k = 0usize;
+        var k = 0usize;
         while k < len { bin.push(data[pos + 8usize + k]); k += 1usize; }
       }
       pos = pos + 8usize + ((len + 3usize) / 4usize) * 4usize;
@@ -842,22 +842,22 @@ fn loadCore(data &Array[u8], baseDir &Path, canRead bool, decodeImages bool) Res
     if not sawJson { return loadFail("glb: no JSON chunk"); }
   } else {
     jsonBytes.reserve(data.len);
-    mut k = 0usize;
+    var k = 0usize;
     while k < data.len { jsonBytes.push(data[k]); k += 1usize; }
   }
-  mut parsed = new Json(List[JNode].empty(), List[u32].empty());
+  var parsed = new Json(List[JNode].empty(), List[u32].empty());
   match parseJson(jsonBytes.view()) {
-    case mut ok Ok { parsed <=> ok; }
-    case imm e Error { return Error[Gltf, GltfError](new GltfError(e.message())); }
+    case var ok Ok { parsed <=> ok; }
+    case let e Error { return Error[Gltf, GltfError](new GltfError(e.message())); }
   }
   if parsed.nodes.len() == 0usize or parsed.nodes[0usize].kind != JsonKind.Object {
     return loadFail("gltf: the JSON is not an object");
   }
-  mut ld = new Ld(parsed, 0u32, List[List[u8]].empty(), List[bool].empty(), baseDir.copy(), canRead, decodeImages,
+  var ld = new Ld(parsed, 0u32, List[List[u8]].empty(), List[bool].empty(), baseDir.copy(), canRead, decodeImages,
     Gltf.empty(), false, String.empty());
   loadDocument(&mut ld, bin.view(), hasBin);
   if ld.failed { return Error[Gltf, GltfError](new GltfError(ld.reason.copy())); }
-  mut out = Gltf.empty();
+  var out = Gltf.empty();
   out <=> ld.gltf;
   Ok[Gltf, GltfError](out);
 }
@@ -865,13 +865,13 @@ fn loadCore(data &Array[u8], baseDir &Path, canRead bool, decodeImages bool) Res
 // Load a .gltf or .glb file; external files are read from its folder.
 pub fn loadGltf(path &Path, decodeImages bool) Result[Gltf, GltfError] {
   match fs.readFile(path) {
-    case mut ok Ok {
-      mut s = String.empty();
+    case var ok Ok {
+      var s = String.empty();
       s <=> ok;
       return loadGltfBytesIn(s.view(), &path.parent(), decodeImages);
     }
-    case imm e Error {
-      mut m = String.from("cannot read ");
+    case let e Error {
+      var m = String.from("cannot read ");
       m.append(path.view());
       return Error[Gltf, GltfError](new GltfError(m));
     }

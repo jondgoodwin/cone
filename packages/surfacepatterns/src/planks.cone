@@ -48,8 +48,8 @@ fn plankRelief(p &PlankParams) f32 { 0.006 + p.battenRaise + 0.003; }
 // the rings (0 to 1, a sine across the board) darkening it, the fibres
 // (-1 to 1) varying it
 fn woodColour(p &PlankParams, tone f32, bright f32, rings f32, fibres f32, weathered f32) Color {
-  mut c = mixRgb(p.colorA, p.colorB, tone);
-  imm k = bright * (1. - 0.30 * p.grain * rings + 0.10 * p.grain * fibres);
+  var c = mixRgb(p.colorA, p.colorB, tone);
+  let k = bright * (1. - 0.30 * p.grain * rings + 0.10 * p.grain * fibres);
   c = scaleRgb(c, k);
   // weathering: toward silvery grey, and a little paler
   mixRgb(c, new Color(0.18, 0.17, 0.16, 1.), weathered * p.weather * 0.7);
@@ -57,46 +57,46 @@ fn woodColour(p &PlankParams, tone f32, bright f32, rings f32, fibres f32, weath
 
 // One texel of a plank tile at the tile point (u, v)
 pub fn plankTexel(p &PlankParams, u f32, v f32) PatternTexel {
-  imm n = wholeCount(p.tileMetres, p.boardWidth, 1);
-  imm boardM = p.tileMetres / f32.from(n);
-  imm x = u * f32.from(n);
-  imm i = posMod(i32.from(libc.floorf(x)), n);
-  imm lx = frac(x);
-  imm xm = lx * boardM;
-  imm dseam = minF(xm, boardM - xm);
-  imm gapHalf = p.gap * 0.5;
+  let n = wholeCount(p.tileMetres, p.boardWidth, 1);
+  let boardM = p.tileMetres / f32.from(n);
+  let x = u * f32.from(n);
+  let i = posMod(i32.from(libc.floorf(x)), n);
+  let lx = frac(x);
+  let xm = lx * boardM;
+  let dseam = minF(xm, boardM - xm);
+  let gapHalf = p.gap * 0.5;
 
   // the length of this board that v lies on, and the distance to its butt joints
-  mut seg = 0;
-  mut dbutt f32 = 1000.;
+  var seg = 0;
+  var dbutt f32 = 1000.;
   if p.boardLength > 0. {
-    imm m = wholeCount(p.tileMetres, p.boardLength, 1);
-    imm t = v * f32.from(m) + unitHash(i, 17, p.seed + 1u32);
+    let m = wholeCount(p.tileMetres, p.boardLength, 1);
+    let t = v * f32.from(m) + unitHash(i, 17, p.seed + 1u32);
     seg = posMod(i32.from(libc.floorf(t)), m);
-    imm lt = frac(t);
+    let lt = frac(t);
     dbutt = minF(lt, 1. - lt) * (p.tileMetres / f32.from(m));
   }
-  imm key = unitHash3(i, seg, p.seed);
+  let key = unitHash3(i, seg, p.seed);
   // each board's own offset into the noise, so neighbours differ
-  imm vo = key.z;
+  let vo = key.z;
 
   // grain: fibres along the board, rings wandering across it
-  imm fibres = fbmNoise(u, v + vo, n * 12, 5, p.seed + 11u32, 3, 0.55);
-  imm wander = fbmNoise(u, v + vo, n * 2, 3, p.seed + 12u32, 2, 0.5);
-  imm rings = 0.5 + 0.5 * sin(6.2831853 * (lx * 3. + 1.8 * wander + key.x * 4.));
-  imm streak = 0.5 + 0.5 * fbmNoise(u, v, n * 3, 3, p.seed + 13u32, 2, 0.5);
+  let fibres = fbmNoise(u, v + vo, n * 12, 5, p.seed + 11u32, 3, 0.55);
+  let wander = fbmNoise(u, v + vo, n * 2, 3, p.seed + 12u32, 2, 0.5);
+  let rings = 0.5 + 0.5 * sin(6.2831853 * (lx * 3. + 1.8 * wander + key.x * 4.));
+  let streak = 0.5 + 0.5 * fbmNoise(u, v, n * 3, 3, p.seed + 13u32, 2, 0.5);
 
-  imm relief = plankRelief(p);
-  imm faceLevel = 0.006 + 0.001 * (key.y - 0.5);
-  mut hm = faceLevel + 0.0012 * p.grain * (rings - 0.5) + 0.0006 * p.grain * fibres;
-  mut tone = key.x;
-  mut bright = 1. + p.variation * (key.y * 2. - 1.);
-  mut rough = 0.78 + 0.12 * (1. - streak) * p.weather;
-  mut cavity = 1.;
-  mut weathered = streak;
+  let relief = plankRelief(p);
+  let faceLevel = 0.006 + 0.001 * (key.y - 0.5);
+  var hm = faceLevel + 0.0012 * p.grain * (rings - 0.5) + 0.0006 * p.grain * fibres;
+  var tone = key.x;
+  var bright = 1. + p.variation * (key.y * 2. - 1.);
+  var rough = 0.78 + 0.12 * (1. - streak) * p.weather;
+  var cavity = 1.;
+  var weathered = streak;
 
   // a joint between boards or lengths: the dark gap, where it is not hidden by a batten
-  imm battenHalf = p.battenWidth * 0.5;
+  let battenHalf = p.battenWidth * 0.5;
   if dseam < gapHalf or dbutt < gapHalf {
     hm = 0.;
     cavity = 0.35;
@@ -110,11 +110,11 @@ pub fn plankTexel(p &PlankParams, u f32, v f32) PatternTexel {
   // a batten over the seam: its own board, standing proud, rounded at its edges
   if p.battenWidth > 0. and dseam < battenHalf {
     // the seam this batten covers: the left edge of board i or of board i + 1
-    imm seam = if xm < boardM * 0.5 { i; } else { posMod(i + 1, n); };
-    imm bk = unitHash3(seam, 4001, p.seed);
-    imm edgeIn = battenHalf - dseam;
-    imm round = smoothstep01(0., 0.005, edgeIn);
-    imm bfibres = fbmNoise(u, v + bk.z, n * 12, 5, p.seed + 21u32, 3, 0.55);
+    let seam = if xm < boardM * 0.5 { i; } else { posMod(i + 1, n); };
+    let bk = unitHash3(seam, 4001, p.seed);
+    let edgeIn = battenHalf - dseam;
+    let round = smoothstep01(0., 0.005, edgeIn);
+    let bfibres = fbmNoise(u, v + bk.z, n * 12, 5, p.seed + 21u32, 3, 0.55);
     hm = 0.006 + p.battenRaise * (0.55 + 0.45 * round) + 0.0006 * p.grain * bfibres;
     tone = bk.x;
     bright = (1. + p.variation * (bk.y * 2. - 1.)) * (0.95 + 0.17 * round);
@@ -132,7 +132,7 @@ pub fn plankTexel(p &PlankParams, u f32, v f32) PatternTexel {
 
 // A plank tile's maps
 pub fn bakePlanks(p &PlankParams) TextureSet {
-  mut field = PatternField.empty(p.size, p.tileMetres, plankRelief(p));
+  var field = PatternField.empty(p.size, p.tileMetres, plankRelief(p));
   fillTexels(&uni field, (u, v) => plankTexel(p, u, v));
   finishField(&mut field, 0.02, 4);
 }

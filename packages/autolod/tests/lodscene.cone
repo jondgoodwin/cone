@@ -32,8 +32,8 @@ import autolod use *;
 const SIZE = 160u32;
 
 fn subject() Mesh {
-  mut m = Mesh.sphere(1., 20);
-  mut cube = Mesh.cube(0.9);
+  var m = Mesh.sphere(1., 20);
+  var cube = Mesh.cube(0.9);
   cube.transform(Mat4.fromTranslation(new Vec3(0.75, 0.1, 0.2)));
   m.append(&cube);
   m.transform(Mat4.fromTranslation(new Vec3(0., 1.4, 0.)));
@@ -49,7 +49,7 @@ struct Rig {
 }
 
 fn shoot(device &mut Device, renderer &mut Renderer, rig &Rig, camera &Camera, light &Light, list &DrawList) Image {
-  mut encoder = device.createCommandEncoder();
+  var encoder = device.createCommandEncoder();
   renderer.render(device, &mut encoder, &rig.color, &rig.depth, camera, light, list);
   encoder.copyTextureToBuffer(&rig.color, &rig.readback);
   device.queue.submit(encoder.finish());
@@ -60,10 +60,10 @@ fn shoot(device &mut Device, renderer &mut Renderer, rig &Rig, camera &Camera, l
 
 // The pixels of 'a' that are not the background (sRGB 124, 170, 203)
 fn coveredCount(img &Image) i32 {
-  mut n = 0;
-  mut y = 0;
+  var n = 0;
+  var y = 0;
   while y < i32.from(SIZE) {
-    mut x = 0;
+    var x = 0;
     while x < i32.from(SIZE) {
       if iabs(i32.from(img.at(x, y, 0)) - 124) + iabs(i32.from(img.at(x, y, 1)) - 170) + iabs(i32.from(img.at(x, y, 2)) - 203) > 6 {
         n = n + 1;
@@ -77,8 +77,8 @@ fn coveredCount(img &Image) i32 {
 
 // The number of bytes of a that differ from b's, over the channels of every pixel
 fn differing(a &Image, b &Image) i32 {
-  mut n = 0;
-  mut i = 0usize;
+  var n = 0;
+  var i = 0usize;
   while i < a.pixels.len() {
     if *a.pixels[i] != *b.pixels[i] { n = n + 1; }
     i = i + 1usize;
@@ -87,44 +87,44 @@ fn differing(a &Image, b &Image) i32 {
 }
 
 fn main() i32 {
-  mut instance = Instance.create("autolod scene");
+  var instance = Instance.create("autolod scene");
   require(instance.isValid(), "a Vulkan 1.3 instance");
-  mut none = Surface.none();
-  mut preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
-  imm env = libc.getenv("GPU_POWER_PREFERENCE");
+  var none = Surface.none();
+  var preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
+  let env = libc.getenv("GPU_POWER_PREFERENCE");
   if (env as usize) != 0usize {
     if libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 { preference = POWER_PREFERENCE_LOW_POWER; }
   }
-  mut adapter = instance.requestAdapter(&none, preference);
+  var adapter = instance.requestAdapter(&none, preference);
   require(adapter.isValid(), "an adapter");
-  mut device = adapter.requestDevice();
+  var device = adapter.requestDevice();
   require(device.isValid(), "a device");
-  imm target = new TextureDescriptor(SIZE, SIZE, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
-  imm depthDesc = new TextureDescriptor(SIZE, SIZE, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_TEXTURE_BINDING);
-  imm rig = new Rig(device.createTexture(&target), device.createTexture(&depthDesc),
+  let target = new TextureDescriptor(SIZE, SIZE, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
+  let depthDesc = new TextureDescriptor(SIZE, SIZE, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_TEXTURE_BINDING);
+  let rig = new Rig(device.createTexture(&target), device.createTexture(&depthDesc),
     device.createBuffer(u64.from(SIZE) * u64.from(SIZE) * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST));
-  mut renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  var renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, TEXTURE_FORMAT_DEPTH32_FLOAT);
   require(renderer.isValid(), "a renderer");
 
-  imm material = Material.plain(new Color(0.8, 0.5, 0.3, 1.));
-  imm subjectMesh = subject();
-  imm mesh = renderer.addMesh(&mut device, &subjectMesh);
-  imm matHandle = renderer.addMaterial(&mut device, &material);
-  mut baker = ImpostorBaker.create(&mut device, 64u32);
-  mut parts = List[BakePart].empty();
+  let material = Material.plain(new Color(0.8, 0.5, 0.3, 1.));
+  let subjectMesh = subject();
+  let mesh = renderer.addMesh(&mut device, &subjectMesh);
+  let matHandle = renderer.addMaterial(&mut device, &material);
+  var baker = ImpostorBaker.create(&mut device, 64u32);
+  var parts = List[BakePart].empty();
   parts.push(new BakePart(subject(), material, Image.empty()));
-  mut center = new Vec3(0., 0., 0.);
-  mut radius = 0.;
+  var center = new Vec3(0., 0., 0.);
+  var radius = 0.;
   boundingSphereOf(&subjectMesh, &mut center, &mut radius);
-  mut settings = new ImpostorSettings();
+  var settings = new ImpostorSettings();
   settings.frameSize = 64u32;
   settings.grid = 6u32;
-  imm atlas = baker.bake(&mut device, &parts, center, radius, &settings);
-  imm pipe = makeImpostorPipeline(&mut renderer, &mut device);
-  imm impostor = makeImpostor(&mut renderer, &mut device, &pipe, &atlas, &settings);
+  let atlas = baker.bake(&mut device, &parts, center, radius, &settings);
+  let pipe = makeImpostorPipeline(&mut renderer, &mut device);
+  let impostor = makeImpostor(&mut renderer, &mut device, &pipe, &atlas, &settings);
 
   // The chain: the mesh to 60 pixels, then the card
-  mut chain = LodChain.empty(0.1);
+  var chain = LodChain.empty(0.1);
   chain.add(mesh, 60.);
   chain.addWithMaterial(impostor.card, impostor.material, 0.);
   expect(chain.materialOf(0usize).isNone(), "a level added with 'add' has no material of its own");
@@ -132,30 +132,30 @@ fn main() i32 {
   expectUInt(u64.from(chain.lastPlainLevel(1usize)), 0u64, "a shadow pass falls back from the card to the mesh");
   expectUInt(u64.from(chain.lastPlainLevel(0usize)), 0u64, "and keeps the mesh");
 
-  imm light = Light.directional(new Vec3(-0.5, -0.8, -0.35), new Color(2.6, 2.4, 2.0, 1.), new Color(0.35, 0.4, 0.5, 1.));
-  imm dir = new Vec3(0.4, 0.5, 0.7).normalize();
-  mut camera = Camera.make();
+  let light = Light.directional(new Vec3(-0.5, -0.8, -0.35), new Color(2.6, 2.4, 2.0, 1.), new Color(0.35, 0.4, 0.5, 1.));
+  let dir = new Vec3(0.4, 0.5, 0.7).normalize();
+  var camera = Camera.make();
   camera.fov = radians(30.);
   camera.near = 0.5;
   camera.far = 400.;
   camera.background = new Color(0.2, 0.4, 0.6, 1.);
   // the size in pixels is radius / (distance tan(fov/2)) x 160: 100 px at
-  imm tanHalf = libc.tanf(radians(15.));
-  imm nearDistance = radius / (100. / f32.from(SIZE) * tanHalf);
-  imm farDistance = radius / (30. / f32.from(SIZE) * tanHalf);
+  let tanHalf = libc.tanf(radians(15.));
+  let nearDistance = radius / (100. / f32.from(SIZE) * tanHalf);
+  let farDistance = radius / (30. / f32.from(SIZE) * tanHalf);
 
-  mut item = renderer.addSceneItem(mesh, matHandle, Mat4.identity(), new Color(1., 1., 1., 1.));
+  var item = renderer.addSceneItem(mesh, matHandle, Mat4.identity(), new Color(1., 1., 1., 1.));
   require(renderer.setSceneLod(item, &chain), "the chain set");
-  mut empty = DrawList.empty();
+  var empty = DrawList.empty();
 
   // near: the mesh
   camera.lookAt(center + dir * nearDistance, center, new Vec3(0., 1., 0.));
-  imm nearScene = shoot(&mut device, &mut renderer, &rig, &camera, &light, &empty);
+  let nearScene = shoot(&mut device, &mut renderer, &rig, &camera, &light, &empty);
   expectUInt(u64.from(renderer.vis.stats.drawn), 1u64, "near: one item drawn");
-  mut meshList = DrawList.empty();
+  var meshList = DrawList.empty();
   meshList.add(mesh, matHandle, Mat4.identity());
   renderer.clearScene();
-  imm nearList = shoot(&mut device, &mut renderer, &rig, &camera, &light, &meshList);
+  let nearList = shoot(&mut device, &mut renderer, &rig, &camera, &light, &meshList);
   expectInt(i64.from(differing(&nearScene, &nearList)), 0i64, "near: the scene's picture is the mesh's, bit for bit");
   expect(coveredCount(&nearScene) > 1500, "near: the subject is on screen");
 
@@ -163,37 +163,37 @@ fn main() i32 {
   item = renderer.addSceneItem(mesh, matHandle, Mat4.identity(), new Color(1., 1., 1., 1.));
   renderer.setSceneLod(item, &chain);
   camera.lookAt(center + dir * farDistance, center, new Vec3(0., 1., 0.));
-  imm farScene = shoot(&mut device, &mut renderer, &rig, &camera, &light, &empty);
+  let farScene = shoot(&mut device, &mut renderer, &rig, &camera, &light, &empty);
   expectUInt(u64.from(renderer.vis.stats.drawn), 1u64, "far: one item drawn");
   renderer.clearScene();
-  mut cardList = DrawList.empty();
+  var cardList = DrawList.empty();
   cardList.add(impostor.card, impostor.material, Mat4.identity());
-  imm farCard = shoot(&mut device, &mut renderer, &rig, &camera, &light, &cardList);
+  let farCard = shoot(&mut device, &mut renderer, &rig, &camera, &light, &cardList);
   expectInt(i64.from(differing(&farScene, &farCard)), 0i64, "far: the scene's picture is the card's with its own material, bit for bit");
-  imm farMeshOnly = shoot(&mut device, &mut renderer, &rig, &camera, &light, &meshList);
+  let farMeshOnly = shoot(&mut device, &mut renderer, &rig, &camera, &light, &meshList);
   expect(differing(&farScene, &farMeshOnly) > 100, "far: and not the mesh's");
   expect(coveredCount(&farScene) > 40, "far: the subject is on screen");
 
   // a hidden level: the mesh, then nothing
-  imm hidden = renderer.addMesh(&mut device, &Mesh.empty());
-  mut hideChain = LodChain.empty(0.1);
+  let hidden = renderer.addMesh(&mut device, &Mesh.empty());
+  var hideChain = LodChain.empty(0.1);
   hideChain.add(mesh, 60.);
   hideChain.add(hidden, 0.);
   item = renderer.addSceneItem(mesh, matHandle, Mat4.identity(), new Color(1., 1., 1., 1.));
   renderer.setSceneLod(item, &hideChain);
-  imm farHidden = shoot(&mut device, &mut renderer, &rig, &camera, &light, &empty);
+  let farHidden = shoot(&mut device, &mut renderer, &rig, &camera, &light, &empty);
   expectInt(i64.from(coveredCount(&farHidden)), 0i64, "a chain ending in an empty mesh draws nothing far away");
   renderer.clearScene();
 
   // the cross-fade: pull the camera out over frames
   item = renderer.addSceneItem(mesh, matHandle, Mat4.identity(), new Color(1., 1., 1., 1.));
   renderer.setSceneLod(item, &chain);
-  mut sawFading = false;
-  mut sawTwo = false;
-  mut f = 0;
+  var sawFading = false;
+  var sawTwo = false;
+  var f = 0;
   while f < 24 {
-    imm t = f32.from(f) / 23.;
-    imm dist = nearDistance + (farDistance - nearDistance) * t;
+    let t = f32.from(f) / 23.;
+    let dist = nearDistance + (farDistance - nearDistance) * t;
     camera.lookAt(center + dir * dist, center, new Vec3(0., 1., 0.));
     renderer.vis.settings.timeStep = 0.05;
     renderer.vis.settings.fadeSeconds = 0.3;
@@ -206,7 +206,7 @@ fn main() i32 {
   expect(sawTwo, "and draws both in the fade");
 
   // shadows on
-  imm shadows = ShadowSettings.medium();
+  let shadows = ShadowSettings.medium();
   renderer.setShadows(&mut device, &shadows);
   camera.lookAt(center + dir * farDistance, center, new Vec3(0., 1., 0.));
   shoot(&mut device, &mut renderer, &rig, &camera, &light, &empty);

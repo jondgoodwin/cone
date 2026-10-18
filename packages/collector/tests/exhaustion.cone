@@ -27,7 +27,7 @@ fn live() u64 { u64.from(Gc.liveObjects()); }
 struct LinkValue { pub n i64; pub next Option[Link]; }
 alias Link = Gc[mut, LinkValue];
 
-mut @threadlocal nfinals = 0i64;
+var @threadlocal nfinals = 0i64;
 struct FinLinkValue {
   pub n i64;
   pub next Option[FinLink];
@@ -36,8 +36,8 @@ struct FinLinkValue {
 alias FinLink = Gc[mut, FinLinkValue];
 
 fn chain(k i64) Option[Link] {
-  mut head Option[Link] = None;
-  mut i = 0i64;
+  var head Option[Link] = None;
+  var i = 0i64;
   while i < k {
     head = Some[Link](new Link(i, head));
     i = i + 1;
@@ -46,8 +46,8 @@ fn chain(k i64) Option[Link] {
 }
 
 fn finChain(k i64) {
-  mut head Option[FinLink] = None;
-  mut i = 0i64;
+  var head Option[FinLink] = None;
+  var i = 0i64;
   while i < k {
     head = Some[FinLink](new FinLink(i, head));
     i = i + 1;
@@ -57,16 +57,16 @@ fn finChain(k i64) {
 // '&imm', since the binding is a reference into the Option
 fn isSome(o &imm Option[Link]) bool {
   match o {
-    case imm s &Some[Link] { true; }
+    case let s &Some[Link] { true; }
     else { false; }
   }
 }
 
 // -- Ten live links fill 480 bytes exactly; an eleventh cannot be had
 fn full() {
-  imm c = chain(10);
+  let c = chain(10);
   expectUInt(u64.from(Gc.liveBytes()), 480, "ten links fill the limit exactly");
-  imm o = trynew Link(10, None);
+  let o = trynew Link(10, None);
   expectBool(isSome(&imm o), false, "past the limit, with nothing to free, the allocation is None");
   expectUInt(live(), 10, "the ten are all still there");
 }
@@ -78,7 +78,7 @@ fn dropChain() {
 fn reclaimed() {
   dropChain();
   expectUInt(live(), 10, "ten links of garbage fill the limit");
-  imm o = trynew Link(1, None);
+  let o = trynew Link(1, None);
   expectBool(isSome(&imm o), true, "garbage is collected to make room");
   expectUInt(live(), 1, "only the new link is left");
 }
@@ -92,14 +92,14 @@ fn dropFinChain() {
 fn emergency() {
   Gc.stop();
   dropFinChain();
-  imm c0 = Gc.collections();
-  imm o = trynew Link(1, None);
+  let c0 = Gc.collections();
+  let o = trynew Link(1, None);
   expectBool(isSome(&imm o), false, "stopped, ten links waiting on their finalizers fill the heap");
   expectInt(nfinals, 0, "the emergency collection ran no finalizer");
   expectUInt(u64.from(Gc.collections() - c0), 1, "one collection ran: the emergency one");
   Gc.start();
-  imm c1 = Gc.collections();
-  imm o2 = trynew Link(2, None);
+  let c1 = Gc.collections();
+  let o2 = trynew Link(2, None);
   expectBool(isSome(&imm o2), true, "started again, the allocation succeeds");
   expectInt(nfinals, 10, "an ordinary collection ran the ten finalizers");
   expectUInt(u64.from(Gc.collections() - c1), 2, "and the emergency one after it freed the ten");

@@ -20,7 +20,7 @@ mod reentry;
 import testing use *;
 import pool use *;
 
-mut @threadlocal log = 0i64;
+var @threadlocal log = 0i64;
 fn note(d i64) { log = log * 10i64 + d; }
 
 // Its death notes n, then removes its victim, if any
@@ -31,7 +31,7 @@ struct Killer {
   pub victim Ref[Killer];
   fn final(self &uni) {
     note(n);
-    imm p = home as &mut Pool[Killer];
+    let p = home as &mut Pool[Killer];
     expect(!p.alive(me), "a dying value is not alive to its own final");
     expect(!p.remove(me), "and cannot be removed again");
     p.remove(victim);
@@ -39,17 +39,17 @@ struct Killer {
 }
 
 fn killer(p &mut Pool[Killer], n i64) Ref[Killer] {
-  imm home = p as *Pool[Killer];
-  imm r = p.add(new Killer(n, home, Ref[Killer].none(), Ref[Killer].none()));
+  let home = p as *Pool[Killer];
+  let r = p.add(new Killer(n, home, Ref[Killer].none(), Ref[Killer].none()));
   (&mut p[r]).me = r;
   r;
 }
 
 fn killsOnRemove() {
-  mut p = Pool[Killer].empty();
-  imm a = killer(&mut p, 1);
-  imm b = killer(&mut p, 2);
-  imm c = killer(&mut p, 3);
+  var p = Pool[Killer].empty();
+  let a = killer(&mut p, 1);
+  let b = killer(&mut p, 2);
+  let c = killer(&mut p, 3);
   (&mut p[a]).victim = b;
   (&mut p[b]).victim = c;
   p.remove(a);
@@ -61,17 +61,17 @@ fn killsOnRemove() {
 // Slot order 1, 2, 3, 4: 1 removes 3 (ahead of the walk), 4 removes 2
 // (behind it, already dead)
 fn killsInTeardown() {
-  mut p = Pool[Killer].empty();
-  imm a = killer(&mut p, 1);
-  imm b = killer(&mut p, 2);
-  imm c = killer(&mut p, 3);
-  imm d = killer(&mut p, 4);
+  var p = Pool[Killer].empty();
+  let a = killer(&mut p, 1);
+  let b = killer(&mut p, 2);
+  let c = killer(&mut p, 3);
+  let d = killer(&mut p, 4);
   (&mut p[a]).victim = c;
   (&mut p[d]).victim = b;
 }
 
 // How many of the spawned kind (n = 2) have died: too many for 'log'
-mut @threadlocal spawned = 0i64;
+var @threadlocal spawned = 0i64;
 
 // Its death notes n (or counts it, if it is of the spawned kind), then adds
 // 'count' of the spawned kind
@@ -81,8 +81,8 @@ struct Spawner {
   pub count i64;
   fn final(self &uni) {
     if n == 2i64 { spawned = spawned + 1i64; } else { note(n); }
-    imm p = home as &mut Pool[Spawner];
-    mut k = 0i64;
+    let p = home as &mut Pool[Spawner];
+    var k = 0i64;
     while k < count {
       p.add(new Spawner(2, home, 0));
       k = k + 1i64;
@@ -91,7 +91,7 @@ struct Spawner {
 }
 
 fn spawner(p &mut Pool[Spawner], n i64, count i64) Ref[Spawner] {
-  imm home = p as *Pool[Spawner];
+  let home = p as *Pool[Spawner];
   p.add(new Spawner(n, home, count));
 }
 
@@ -99,8 +99,8 @@ fn spawner(p &mut Pool[Spawner], n i64, count i64) Ref[Spawner] {
 // block to 8, 16 and 32 while 1 is still dying in the first block. None
 // takes slot 0, which is free only once 1's final returns.
 fn growsWhileDying() {
-  mut p = Pool[Spawner].empty();
-  imm a = spawner(&mut p, 1, 20);
+  var p = Pool[Spawner].empty();
+  let a = spawner(&mut p, 1, 20);
   spawner(&mut p, 3, 0);
   spawner(&mut p, 3, 0);
   spawner(&mut p, 3, 0);
@@ -108,7 +108,7 @@ fn growsWhileDying() {
   expectInt(log, 1, "one death");
   expectUInt(u64.from(p.len()), 23, "three left and twenty added");
   expectUInt(u64.from(p.capacity()), 32, "grown three times meanwhile");
-  imm next = spawner(&mut p, 4, 0);
+  let next = spawner(&mut p, 4, 0);
   expectUInt(u64.from(next.slot()), 0, "slot 0 is free once its final has returned");
   log = 0;
 }
@@ -116,7 +116,7 @@ fn growsWhileDying() {
 // A value whose death, at the pool's, adds three: they die too, and the
 // third grows the block while 1 is still dying in it
 fn spawnsInTeardown() {
-  mut p = Pool[Spawner].empty();
+  var p = Pool[Spawner].empty();
   spawner(&mut p, 1, 3);
   spawner(&mut p, 3, 0);
 }

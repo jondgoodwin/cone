@@ -13,8 +13,8 @@ import collections use *;
 import actors;
 
 fn counting(n usize) List[i64] {
-  mut l = new List[i64]();
-  mut i = 0i64;
+  var l = new List[i64]();
+  var i = 0i64;
   while i < i64.from(n) {
     l.push(i);
     i = i + 1i64;
@@ -23,7 +23,7 @@ fn counting(n usize) List[i64] {
 }
 
 fn bitsOf(x f64) u64 {
-  mut c = x;
+  var c = x;
   mem.readRaw[u64](&mut c as *f64 as *u64);
 }
 
@@ -37,8 +37,8 @@ fn main() i32 {
   expectInt(counting(100000usize).parallel().sum(), 4999950000i64, "sum of 100000");
 
   // The harmonic sum's bits, the same as on four workers
-  mut h = new List[f64]();
-  mut k = 0usize;
+  var h = new List[f64]();
+  var k = 0usize;
   while k < 100000usize {
     h.push(1.0d / (f64.from(k) + 1.0d));
     k = k + 1usize;
@@ -47,21 +47,21 @@ fn main() i32 {
 
   // A float fold's bits, as on four workers (and 2, 3, 8, 16): squares of the harmonic items
   expectUInt(bitsOf(h.parallel().fold(0.0d, (acc, x) => acc + *x * *x, (a, b) => a + b)), 4610086898587382524u64, "f64 fold bits");
-  mut g = new List[f32]();
+  var g = new List[f32]();
   k = 0usize;
   while k < 70001usize {
     g.push(1.0 / (f32.from(k) + 1.0));
     k = k + 1usize;
   }
-  imm gsum = g.parallel().fold(0.0, (acc, x) => acc + *x, (a, b) => a + b);
-  mut gc = gsum;
+  let gsum = g.parallel().fold(0.0, (acc, x) => acc + *x, (a, b) => a + b);
+  var gc = gsum;
   expectUInt(u64.from(mem.readRaw[u32](&mut gc as *f32 as *u32)), 1094433886u64, "f32 fold bits");
 
   // A mixed-sign sum, whose result depends on the order of addition, as on four workers
-  mut m = new List[f64]();
+  var m = new List[f64]();
   k = 0usize;
   while k < 50000usize {
-    imm v = 1.0d / (f64.from(k) + 1.0d);
+    let v = 1.0d / (f64.from(k) + 1.0d);
     m.push(if k % 2usize == 0usize { v * 1.0e8d; } else { -v * 1.0e8d + 1.0d / 3.0d; });
     k = k + 1usize;
   }
@@ -69,7 +69,7 @@ fn main() i32 {
 
   // The nearest with a payload as a fold: ties to the lowest position, across blocks.
   // 5000 distances 100 + (k * 37) % 997, positions 700, 2100 and 4999 set to 3.5
-  mut d = new List[f32]();
+  var d = new List[f32]();
   k = 0usize;
   while k < 5000usize {
     d.push(100.0 + f32.from((k * 37usize) % 997usize));
@@ -78,7 +78,7 @@ fn main() i32 {
   d[2100usize] = 3.5;
   d[700usize] = 3.5;
   d[4999usize] = 3.5;
-  imm near = d.indexed().parallel().fold((1.0e30, 0usize),
+  let near = d.indexed().parallel().fold((1.0e30, 0usize),
     (acc, p) => if *p.1 < acc.0 { (*p.1, p.0); } else { acc; },
     (a, b) => if b.0 < a.0 { b; } else { a; });
   expectInt(i64.from(near.1), 700i64, "nearest with ties: the lowest position");
@@ -86,23 +86,23 @@ fn main() i32 {
 
   // A fold with a combine that is not commutative: the sequence's polynomial hash
   // as (h, p), joined (h1 * p2 + h2, p1 * p2) and so by position (5000 items: 858949)
-  imm l = counting(5000usize);
-  imm hash = l.parallel().fold((0u64, 1u64),
+  let l = counting(5000usize);
+  let hash = l.parallel().fold((0u64, 1u64),
     (acc, x) => ((acc.0 * 31u64 + u64.from(*x) + 1u64) % 1000003u64, (acc.1 * 31u64) % 1000003u64),
     (p, q) => ((p.0 * q.1 + q.0) % 1000003u64, (p.1 * q.1) % 1000003u64));
   expectUInt(hash.0, 858949u64, "in-order hash of 5000 items");
 
   // findFirst: the earliest by position, none, and over indexed()
   match l.parallel().findFirst(x => **x % 1000i64 == 123i64) {
-    case imm s Some { expectInt(*s, 123i64, "earliest of many"); }
+    case let s Some { expectInt(*s, 123i64, "earliest of many"); }
     case is None { expect(false, "earliest of many found"); }
   }
   match l.parallel().findFirst(x => **x < 0i64) {
-    case imm s Some { expect(false, "none found"); }
+    case let s Some { expect(false, "none found"); }
     case is None { expect(true, "none found"); }
   }
   match l.indexed().parallel().findFirst(p => *(*p).1 == 977i64) {
-    case imm s Some { expectInt(i64.from(s.0), 977i64, "indexed position"); }
+    case let s Some { expectInt(i64.from(s.0), 977i64, "indexed position"); }
     case is None { expect(false, "indexed found"); }
   }
   done();

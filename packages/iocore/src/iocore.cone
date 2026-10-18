@@ -430,7 +430,7 @@ fn @initpure init() {
   groupSeq = Atomic[u64].of(0u64);
   // Winsock started, and the blocking pool's default lanes made, before any
   // thread of the program can reach them
-  imm ws = startWinsock();
+  let ws = startWinsock();
   acceptExAddr = ws.acceptEx;
   connectExAddr = ws.connectEx;
   startError = ws.error;
@@ -522,12 +522,12 @@ pub struct IoError {
   // C library's (strerror) on Linux; a Cancelled or TimedOut error says so
   pub fn message(self &) String {
     if cause == IoErrorKind.Cancelled {
-      mut s = String.empty();
+      var s = String.empty();
       s.append("cancelled");
       return s;
     }
     if cause == IoErrorKind.TimedOut {
-      mut s = String.empty();
+      var s = String.empty();
       s.append("deadline passed");
       return s;
     }
@@ -564,7 +564,7 @@ pub struct SocketAddr {
 
   // a.b.c.d:port
   pub fn v4(a u8, b u8, c u8, d u8, port u16) SocketAddr {
-    mut s = new SocketAddr(new Array[u8, 28] <- fill 0u8, 16i32);
+    var s = new SocketAddr(new Array[u8, 28] <- fill 0u8, 16i32);
     s.raw[0usize] = 2u8;
     s.setPort(port);
     s.raw[4usize] = a;
@@ -580,10 +580,10 @@ pub struct SocketAddr {
 
   // [addr]:port, addr its 16 bytes
   pub fn v6(addr &Array[u8], port u16) SocketAddr {
-    mut s = new SocketAddr(new Array[u8, 28] <- fill 0u8, 28i32);
+    var s = new SocketAddr(new Array[u8, 28] <- fill 0u8, 28i32);
     s.raw[0usize] = afInet6Tag();
     s.setPort(port);
-    mut i = 0usize;
+    var i = 0usize;
     while i < 16usize and i < addr.len {
       s.raw[8usize + i] = addr[i];
       i = i + 1usize;
@@ -593,7 +593,7 @@ pub struct SocketAddr {
 
   // [::1]:port
   pub fn v6Localhost(port u16) SocketAddr {
-    mut s = new SocketAddr(new Array[u8, 28] <- fill 0u8, 28i32);
+    var s = new SocketAddr(new Array[u8, 28] <- fill 0u8, 28i32);
     s.raw[0usize] = afInet6Tag();
     s.setPort(port);
     s.raw[23usize] = 1u8;
@@ -610,7 +610,7 @@ pub struct SocketAddr {
     if not self.isV6() {
       return raw[0usize] == 2u8 and raw[4usize] == 127u8;
     }
-    mut i = 8usize;
+    var i = 8usize;
     while i < 23usize {
       if raw[i] != 0u8 {return false;}
       i = i + 1usize;
@@ -625,7 +625,7 @@ pub struct SocketAddr {
 
   // The same family's every address, port 0: what a connecting socket binds to
   fn wildcard(self &) SocketAddr {
-    mut s = new SocketAddr(new Array[u8, 28] <- fill 0u8, size);
+    var s = new SocketAddr(new Array[u8, 28] <- fill 0u8, size);
     s.raw[0usize] = raw[0usize];
     s;
   }
@@ -633,22 +633,22 @@ pub struct SocketAddr {
   // As text: '127.0.0.1:8080', '[2001:db8:0:0:0:0:0:1]:8080' (each group
   // in hexadecimal without leading zeros; no '::' shortening)
   pub fn text(self &) String {
-    mut out = String.empty();
+    var out = String.empty();
     if self.isV6() {
       out.append("[");
-      mut g = 0usize;
+      var g = 0usize;
       while g < 8usize {
         if g > 0usize {out.append(":");}
-        imm v = (u64.from(raw[8usize + g * 2usize]) << 8u64) | u64.from(raw[9usize + g * 2usize]);
+        let v = (u64.from(raw[8usize + g * 2usize]) << 8u64) | u64.from(raw[9usize + g * 2usize]);
         // appendHex writes exactly the digits it is told: as many as v needs
-        mut digits = 1usize;
+        var digits = 1usize;
         while digits < 4usize and (v >> u64.from(digits * 4usize)) != 0u64 {digits = digits + 1usize;}
         out.appendHex(v, digits);
         g = g + 1usize;
       }
       out.append("]");
     } else {
-      mut i = 4usize;
+      var i = 4usize;
       while i < 8usize {
         if i > 4usize {out.append(".");}
         out.appendUInt(u64.from(raw[i]));
@@ -789,7 +789,7 @@ struct Port is Sendable {
 
   // Its queue, changed under its lock through a shared reference
   fn lists(self &) &mut Port {
-    imm p = self as *Port;
+    let p = self as *Port;
     p as &mut Port;
   }
 
@@ -799,19 +799,19 @@ struct Port is Sendable {
     if isWindows() {
       PostQueuedCompletionStatus(handle, 0u32, key, ov) != 0i32;
     } else {
-      imm node = libc.malloc(mem.sizeof[Packet]()) as *Packet;
+      let node = libc.malloc(mem.sizeof[Packet]()) as *Packet;
       if node as usize == 0usize {return false;}
       (*node).key = key;
       (*node).ov = ov;
       (*node).next = null;
-      imm st = self.lists();
+      let st = self.lists();
       st.lock.lock();
       if st.tail as usize == 0usize {st.head = node;} else {(*st.tail).next = node;}
       st.tail = node;
       st.lock.unlock();
       // One write wakes the loop for all the packets queued before it takes them
       if pending.swap(1u32) == 0u32 {
-        mut one = 1u64;
+        var one = 1u64;
         sysWrite(fdOf(handle), &mut one as *u8, 8usize);
       }
       true;
@@ -822,15 +822,15 @@ struct Port is Sendable {
   // dropped (their buffers go home), and the port closed
   fn final(self &uni) {
     if isWindows() {
-      imm entries = libc.malloc(64usize * mem.sizeof[OverlappedEntry]()) as *OverlappedEntry;
+      let entries = libc.malloc(64usize * mem.sizeof[OverlappedEntry]()) as *OverlappedEntry;
       while true {
-        mut got = 0u32;
+        var got = 0u32;
         if GetQueuedCompletionStatusEx(handle, entries, 64u32, &mut got, 0u32, 0i32) == 0i32 or got == 0u32 {
           break;
         }
-        mut k = 0usize;
+        var k = 0usize;
         while k < usize.from(got) {
-          imm e = entries + k;
+          let e = entries + k;
           if (*e).key == keyPost {
             mem.finalize[Completion]((*e).ov as *Completion);
             libc.free((*e).ov);
@@ -843,9 +843,9 @@ struct Port is Sendable {
       libc.free(entries as *u8);
       CloseHandle(handle);
     } else {
-      mut node = head;
+      var node = head;
       while node as usize != 0usize {
-        imm next = (*node).next;
+        let next = (*node).next;
         if (*node).key == keyPost {
           mem.finalize[Completion]((*node).ov as *Completion);
           libc.free((*node).ov);
@@ -882,7 +882,7 @@ pub struct Waker {
   // home), if the loop has gone
   fn post(self &, c Completion) bool {
     if port.closed.load() {return false;}
-    imm block = libc.malloc(mem.sizeof[Completion]()) as *Completion;
+    let block = libc.malloc(mem.sizeof[Completion]()) as *Completion;
     mem.writeRaw[Completion](block, c);
     if not port.send(keyPost, block as *u8) {
       mem.finalize[Completion](block);

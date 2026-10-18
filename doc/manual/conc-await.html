@@ -53,8 +53,8 @@ actor Fetcher {
   net Net;
 
   pub async do fetch(self, url u64) Buffer {
-    imm conn = new Conn(url);             // opened
-    imm buf = await net.read(conn.url);   // conn waits, with the method
+    let conn = new Conn(url);             // opened
+    let buf = await net.read(conn.url);   // conn waits, with the method
     print &lt;- "  fetched ", buf.size, "\n";
     buf;                                  // the answer to the 'await' on fetch
   }                                       // conn closes here
@@ -66,14 +66,14 @@ actor Page {
 
   pub async do load(self, u u64) {
     print &lt;- "load ", u, "\n";
-    imm b = await fetcher.fetch(u);       // pauses here
+    let b = await fetcher.fetch(u);       // pauses here
     body = b.size;                        // and resumes when the answer comes
     print &lt;- "loaded ", body, "\n";
   }
 }
 
 fn main() {
-  imm page = new Page(new Fetcher(new Net()), 0u64);
+  let page = new Page(new Fetcher(new Net()), 0u64);
   page.load(7u64);
 }
 </pre>
@@ -141,7 +141,7 @@ actor Reporter {
   last u64;
 
   pub async do report(self) {
-    imm t = await clock.now();    // the 'await', at the top of the behaviour
+    let t = await clock.now();    // the 'await', at the top of the behaviour
     last = self.format(t);        // the synchronous work, pushed down
   }
 
@@ -182,9 +182,9 @@ actor Logger {
   clock Clock;
 
   pub async do log(self) u64 {
-    imm first = new Note(1u64);
-    imm second = new Note(2u64);
-    imm t = await clock.now();
+    let first = new Note(1u64);
+    let second = new Note(2u64);
+    let t = await clock.now();
     say("  at", t + first.n);             // 'second' is not named again
     t;
   }                                       // second dies, then first
@@ -214,14 +214,14 @@ actor Logger {
 		a function, since what it points at outlives every function; for the same reason it crosses an
 		<span class="pre">await</span>:
 <pre>
-imm limit u64 = 100u64;
+let limit u64 = 100u64;
 
 actor Gauge {
   clock Clock;
 
   pub async do check(self) u64 {
-    imm max = &amp;limit;                     // a borrow of a global: 'static
-    imm t = await clock.now();
+    let max = &amp;limit;                     // a borrow of a global: 'static
+    let t = await clock.now();
     *max - t;                             // still valid after the 'await': 58
   }
 }
@@ -238,9 +238,9 @@ actor Tally {
   clock Clock;
 
   pub async do bump(self) u64 {
-    imm c = &amp;mut *count;                  // takes the lock
+    let c = &amp;mut *count;                  // takes the lock
     c.n += 1u64;
-    imm t = await clock.now();            // gives it back
+    let t = await clock.now();            // gives it back
     (&amp;mut *count).n += t;                 // takes it again, for the statement
     (&amp;*count).n;                          // 43, from a count of 0
   }
@@ -266,14 +266,14 @@ actor Meter {
   reading u64;
 
   pub async do stale(self) {
-    imm r = &amp;reading;
-    imm t = await clock.now();  // refused: r's borrow ends here, and r is used below
+    let r = &amp;reading;
+    let t = await clock.now();  // refused: r's borrow ends here, and r is used below
     reading = *r + t;
   }
 
   pub async do fresh(self) {
-    imm t = await clock.now();
-    imm r = &amp;reading;           // borrowed after the 'await'
+    let t = await clock.now();
+    let r = &amp;reading;           // borrowed after the 'await'
     reading = *r + t;
   }
 }
@@ -314,7 +314,7 @@ actor Shelf {
 }
 </pre>
 	<p><span class="pre">await shelf.stock()</span> is 11. Each statement runs as if the value awaited were made first,
-		into a local of its own: <span class="pre">imm i = await counter.next(); slots[i] = 7u64;</span>. So what the rest
+		into a local of its own: <span class="pre">let i = await counter.next(); slots[i] = 7u64;</span>. So what the rest
 		of the statement reaches (<span class="pre">slots</span>, the state through <span class="pre">self</span>,
 		<span class="pre">total</span>) it reaches as it is when the behaviour resumes, after whatever the actor's other
 		messages did meanwhile, and nothing of it is borrowed while the behaviour waits. A borrow written to the left of the
@@ -339,7 +339,7 @@ actor Shelf {
   }
 
   pub async do bound(self) {
-    imm c = compute();
+    let c = compute();
     reading = add(&amp;c, await clock.now());          // c is borrowed after the 'await'
   }
 </pre>
@@ -372,7 +372,7 @@ actor Board {
     cells[await lane.pick(0u64)][0u64] &lt;=&gt; cells[await lane.pick(1u64)][2u64];  // both sides
     (cells[0][1], cells[await lane.pick(1u64)][await lane.pick(1u64)]) = (7u64, 8u64);
     marks &lt;- (cells[1][2], await lane.pick(9u64), 3u64);
-    imm row = &amp;cells[await lane.pick(1u64)][await lane.pick(0u64)..&lt;await lane.pick(2u64)];
+    let row = &amp;cells[await lane.pick(1u64)][await lane.pick(0u64)..&lt;await lane.pick(2u64)];
     row.len() * 100u64 + cells[0][0] * 10u64 + *marks[1];
   }
 }
@@ -391,7 +391,7 @@ actor Cache {
     if url == hot {
       return 1u64;                        // answered here, at once
     }
-    imm b = await net.read(url);
+    let b = await net.read(url);
     b.size;                               // or here, once the answer came
   }
 }
@@ -416,10 +416,10 @@ actor Basket {
   stock Stock;
 
   pub async do total(self) u64 {
-    imm apples = stock.price(4u64);     // sent: a future comes back at once
-    imm pears = stock.price(5u64);      // both requests are in flight
-    imm a = await apples;               // waits for the first
-    imm p = await pears;                // then for the second
+    let apples = stock.price(4u64);     // sent: a future comes back at once
+    let pears = stock.price(5u64);      // both requests are in flight
+    let a = await apples;               // waits for the first
+    let p = await pears;                // then for the second
     a + p;
   }
 }
@@ -430,7 +430,7 @@ actor Basket {
 	<ul>
 	<li><span class="pre">await stock.price(4u64)</span> sends it and waits here: the <span class="pre">await</span>'s value
 		is the behaviour's, and no future is made.</li>
-	<li><span class="pre">imm f = stock.price(4u64)</span> sends it and keeps its future, an
+	<li><span class="pre">let f = stock.price(4u64)</span> sends it and keeps its future, an
 		<span class="pre">actors.Future[u64]</span>, for an <span class="pre">await</span> later.</li>
 	<li><span class="pre">stock.price(4u64);</span>, a statement of its own, sends it and forgets it: its value is
 		dropped.</li>
@@ -459,7 +459,7 @@ actor Printer {
 
 actor Archive {
   pub async do keep(self, f actors.Future[u64]) u64 {
-    imm n = await f;                    // the value arrives here
+    let n = await f;                    // the value arrives here
     n + 1u64;
   }
 }
@@ -470,13 +470,13 @@ actor Office {
   archive Archive;
 
   pub async do file(self) u64 {
-    imm r = printer.render(10u64);      // a Future[Report], which moves
-    imm report = await r;               // the Report is taken out of it
+    let r = printer.render(10u64);      // a Future[Report], which moves
+    let report = await r;               // the Report is taken out of it
     report.lines;
   }
 
   pub async do pass(self) u64 {
-    imm f = stock.price(2u64);
+    let f = stock.price(2u64);
     await archive.keep(f);              // the future goes to Archive
   }
 }
@@ -488,9 +488,9 @@ actor Desk {
   printer Printer;
 
   pub async do twice(self) u64 {
-    imm r = printer.render(10u64);
-    imm report = await r;
-    imm again = await r;          // refused: r moved into the first 'await'
+    let r = printer.render(10u64);
+    let report = await r;
+    let again = await r;          // refused: r moved into the first 'await'
     report.lines;
   }
 }
@@ -506,7 +506,7 @@ Error 1048: This variable's value has been moved out. It is no longer there to u
 		paused on something abandoned itself, as at the program's end), the future is <i>abandoned</i>. A behaviour already
 		paused on it is abandoned with it, as one paused on the request itself would be: the rest of it never runs, and the
 		values it held are finalized, in the order its one scope gives, once nothing else holds its actor. So the program's
-		end, which ends what is outstanding, ends <span class="pre">imm f = server.next(); await f</span> as it ends
+		end, which ends what is outstanding, ends <span class="pre">let f = server.next(); await f</span> as it ends
 		<span class="pre">await server.next()</span>. An <span class="pre">await</span> that finds the future abandoned
 		already panics, reported at the <span class="pre">await</span>:</p>
 <pre>
@@ -558,7 +558,7 @@ actor Keeper {
 
   pub async do keep(self) {
     log.flush();                  // sent, and forgotten
-    imm f = log.flush();          // refused: flush gives no future
+    let f = log.flush();          // refused: flush gives no future
   }
 }
 </pre>
@@ -581,9 +581,9 @@ actor Sizes {
   net Net;
 
   pub async do total(self, n u64) u64 {
-    mut sum = 0u64;
+    var sum = 0u64;
     each i in 0u64 ..&lt; n {
-      imm b = await net.read(i);          // one request at a time
+      let b = await net.read(i);          // one request at a time
       sum = sum + b.size;
     }
     sum;
@@ -632,7 +632,7 @@ actor Waiter {
   }
 
   pub async do repeated(self) {
-    mut v = List[u64].empty();
+    var v = List[u64].empty();
     v &lt;- 3 of await clock.now();  // not built: among the entries a '&lt;-' appends
   }
 }

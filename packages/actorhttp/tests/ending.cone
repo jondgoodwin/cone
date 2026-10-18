@@ -29,20 +29,20 @@ struct Note {
 }
 
 fn socketOf(r Result[Socket, IoError]) Socket {
-  mut res = r;
-  mut s = Socket.none();
+  var res = r;
+  var s = Socket.none();
   match &mut res {
-    case mut ok &mut Ok {s <=> *ok;}
+    case var ok &mut Ok {s <=> *ok;}
     else {}
   }
   s;
 }
 
 fn connOf(r Result[Conn, FetchError]) Conn {
-  mut res = r;
-  mut c = Conn.none();
+  var res = r;
+  var c = Conn.none();
   match &mut res {
-    case mut ok &mut Ok {c <=> *ok;}
+    case var ok &mut Ok {c <=> *ok;}
     else {}
   }
   c;
@@ -54,12 +54,12 @@ actor Lister {
 
   pub async do listen(self, port OneshotSender[u16]) {
     sock = socketOf(await aio.listen(SocketAddr.localhost(0u16)));
-    mut p = 0u16;
+    var p = 0u16;
     match await sock.localAddr() {
-      case imm a Ok {p = a.port();}
+      case let a Ok {p = a.port();}
       else {}
     }
-    mut tx = port;
+    var tx = port;
     tx.send(p);
   }
 }
@@ -68,52 +68,52 @@ actor Waiter {
   client Client;
 
   pub async do serve(self, port u16, ready OneshotSender[u64]) {
-    imm keep = new Note(1u64);
-    mut u = String.from("http://127.0.0.1:");
+    let keep = new Note(1u64);
+    var u = String.from("http://127.0.0.1:");
     u.appendUInt(u64.from(port));
     u.append("/");
-    mut r = ready;
+    var r = ready;
     r.send(1u64);
-    imm answer = await client.get(u.view());
+    let answer = await client.get(u.view());
     printStr("answered\n");
   }
 }
 
 actor Holder {
   pub async do hold(self, port u16, ready OneshotSender[u64]) {
-    imm keep = new Note(2u64);
-    imm c = connOf(await actorhttp.connect("127.0.0.1", port));
-    mut r = ready;
+    let keep = new Note(2u64);
+    let c = connOf(await actorhttp.connect("127.0.0.1", port));
+    var r = ready;
     r.send(1u64);
-    imm answer = await c.request(RequestHead.make("GET", "/", "127.0.0.1"), String.empty());
+    let answer = await c.request(RequestHead.make("GET", "/", "127.0.0.1"), String.empty());
     printStr("answered\n");
   }
 }
 
 fn main() {
   initAll();
-  mut ptx OneshotSender[u16];
-  mut prx OneshotReceiver[u16];
+  var ptx OneshotSender[u16];
+  var prx OneshotReceiver[u16];
   ptx, prx = Oneshot[u16].make();
-  imm lister = new Lister(Socket.none());
+  let lister = new Lister(Socket.none());
   lister.listen(ptx);
-  mut port = 0u16;
+  var port = 0u16;
   match prx.recv() {
-    case imm p Some {port = p;}
+    case let p Some {port = p;}
     case is None[u16] {}
   }
   printStr("listening\n");
 
-  mut wtx OneshotSender[u64];
-  mut wrx OneshotReceiver[u64];
+  var wtx OneshotSender[u64];
+  var wrx OneshotReceiver[u64];
   wtx, wrx = Oneshot[u64].make();
-  mut htx OneshotSender[u64];
-  mut hrx OneshotReceiver[u64];
+  var htx OneshotSender[u64];
+  var hrx OneshotReceiver[u64];
   htx, hrx = Oneshot[u64].make();
   {
-    imm w = new Waiter(Client.standard());
+    let w = new Waiter(Client.standard());
     w.serve(port, wtx);
-    imm h = new Holder();
+    let h = new Holder();
     h.hold(port, htx);
   }
   wrx.recv();

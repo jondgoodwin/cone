@@ -20,10 +20,10 @@
 // number range -- and the loop is built over an index range:
 //
 //   [ the source, held and lent as a slice, or the range's bounds ]
-//   imm lo = 0;                 // the range of passes: [lo, hi)
-//   imm hi = the source's length   (a range: its count, which generation works out)
-//   mut k = lo;                 // the index a piece counts through
-//   loop { if k >= hi {break}; imm x = &slice[k]; k++; ...body... }
+//   let lo = 0;                 // the range of passes: [lo, hi)
+//   let hi = the source's length   (a range: its count, which generation works out)
+//   var k = lo;                 // the index a piece counts through
+//   loop { if k >= hi {break}; let x = &slice[k]; k++; ...body... }
 //
 // The statements before 'k' run where the loop is written; 'k' and the loop
 // are the PIECE, which generation outlines (genlParallelRun) into a function of

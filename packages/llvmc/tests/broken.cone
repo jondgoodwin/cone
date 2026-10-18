@@ -18,38 +18,38 @@ fn show(label &str, m *llvmc.Module) {
   print <- "== ", label, "\n";
   match llvmc.checkModule(m) {
     case is None { print <- "verifies (it should not)\n"; }
-    case imm why Some { print <- why.view(); }
+    case let why Some { print <- why.view(); }
   }
 }
 
 fn main() i32 {
-  imm ctx = llvmc.ContextCreate();
-  imm i32t = llvmc.Int32TypeInContext(ctx);
-  imm i64t = llvmc.Int64TypeInContext(ctx);
-  imm voidt = llvmc.VoidTypeInContext(ctx);
-  imm bld = llvmc.CreateBuilderInContext(ctx);
+  let ctx = llvmc.ContextCreate();
+  let i32t = llvmc.Int32TypeInContext(ctx);
+  let i64t = llvmc.Int64TypeInContext(ctx);
+  let voidt = llvmc.VoidTypeInContext(ctx);
+  let bld = llvmc.CreateBuilderInContext(ctx);
 
   // A block that never ends
-  imm m1 = llvmc.ModuleCreateWithNameInContext("noterm", ctx);
-  imm f1 = llvmc.AddFunction(m1, "noterm", llvmc.FunctionType(voidt, null, 0u32, 0i32));
-  imm b1 = llvmc.AppendBasicBlockInContext(ctx, f1, "entry");
+  let m1 = llvmc.ModuleCreateWithNameInContext("noterm", ctx);
+  let f1 = llvmc.AddFunction(m1, "noterm", llvmc.FunctionType(voidt, null, 0u32, 0i32));
+  let b1 = llvmc.AppendBasicBlockInContext(ctx, f1, "entry");
   llvmc.PositionBuilderAtEnd(bld, b1);
   llvmc.BuildAdd(bld, llvmc.ConstInt(i32t, 1u64, 0i32), llvmc.ConstInt(i32t, 2u64, 0i32), "x");
   show("a block with no terminator", m1);
 
   // 'ret i64' in a function that returns i32
-  imm m2 = llvmc.ModuleCreateWithNameInContext("wrongret", ctx);
-  imm f2 = llvmc.AddFunction(m2, "wrongret", llvmc.FunctionType(i32t, null, 0u32, 0i32));
+  let m2 = llvmc.ModuleCreateWithNameInContext("wrongret", ctx);
+  let f2 = llvmc.AddFunction(m2, "wrongret", llvmc.FunctionType(i32t, null, 0u32, 0i32));
   llvmc.PositionBuilderAtEnd(bld, llvmc.AppendBasicBlockInContext(ctx, f2, "entry"));
   llvmc.BuildRet(bld, llvmc.ConstInt(i64t, 7u64, 0i32));
   show("a ret of the wrong type", m2);
 
   // A branch into another function's block
-  imm m3 = llvmc.ModuleCreateWithNameInContext("crossbranch", ctx);
-  imm fa = llvmc.AddFunction(m3, "a", llvmc.FunctionType(voidt, null, 0u32, 0i32));
-  imm fb = llvmc.AddFunction(m3, "b", llvmc.FunctionType(voidt, null, 0u32, 0i32));
-  imm ba = llvmc.AppendBasicBlockInContext(ctx, fa, "entry");
-  imm bb = llvmc.AppendBasicBlockInContext(ctx, fb, "entry");
+  let m3 = llvmc.ModuleCreateWithNameInContext("crossbranch", ctx);
+  let fa = llvmc.AddFunction(m3, "a", llvmc.FunctionType(voidt, null, 0u32, 0i32));
+  let fb = llvmc.AddFunction(m3, "b", llvmc.FunctionType(voidt, null, 0u32, 0i32));
+  let ba = llvmc.AppendBasicBlockInContext(ctx, fa, "entry");
+  let bb = llvmc.AppendBasicBlockInContext(ctx, fb, "entry");
   llvmc.PositionBuilderAtEnd(bld, bb);
   llvmc.BuildRetVoid(bld);
   llvmc.PositionBuilderAtEnd(bld, ba);
@@ -57,20 +57,20 @@ fn main() i32 {
   show("a branch to another function's block", m3);
 
   // The raw call and its out-parameter
-  mut message *u8 = null;
-  imm status = llvmc.VerifyModule(m2, llvmc.VerifierFailureAction.ReturnStatusAction, &message);
+  var message *u8 = null;
+  let status = llvmc.VerifyModule(m2, llvmc.VerifierFailureAction.ReturnStatusAction, &message);
   expect(status == 1i32, "VerifyModule answers 1 for a broken module");
   expect(message != null, "and fills in the message");
-  imm text = llvmc.takeMessage(message);
+  let text = llvmc.takeMessage(message);
   expect(text.view().startsWith("Function return type does not match operand type of return inst!"), "the verifier's own words");
 
   // A good module answers 0 and leaves the message empty (a char* to dispose all the same)
-  imm m4 = llvmc.ModuleCreateWithNameInContext("fine", ctx);
-  imm f4 = llvmc.AddFunction(m4, "fine", llvmc.FunctionType(voidt, null, 0u32, 0i32));
+  let m4 = llvmc.ModuleCreateWithNameInContext("fine", ctx);
+  let f4 = llvmc.AddFunction(m4, "fine", llvmc.FunctionType(voidt, null, 0u32, 0i32));
   llvmc.PositionBuilderAtEnd(bld, llvmc.AppendBasicBlockInContext(ctx, f4, "entry"));
   llvmc.BuildRetVoid(bld);
-  mut message2 *u8 = null;
-  imm status2 = llvmc.VerifyModule(m4, llvmc.VerifierFailureAction.ReturnStatusAction, &message2);
+  var message2 *u8 = null;
+  let status2 = llvmc.VerifyModule(m4, llvmc.VerifierFailureAction.ReturnStatusAction, &message2);
   expect(status2 == 0i32, "VerifyModule answers 0 for a good module");
   print <- "good module: status ", status2, "\n";
   if message2 != null { llvmc.DisposeMessage(message2); }

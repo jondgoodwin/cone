@@ -82,11 +82,11 @@ pub struct Effect {
 
   // How long until nothing of it remains (the longest layer's delay and duration, a particle's life)
   pub fn length(self &) f32 {
-    mut t = 0.;
-    mut i = 0usize;
+    var t = 0.;
+    var i = 0usize;
     while i < particles.len() {
-      imm l = particles[i];
-      imm end = l.delay + l.duration + l.cls.life * (1. + l.cls.lifeJitter);
+      let l = particles[i];
+      let end = l.delay + l.duration + l.cls.life * (1. + l.cls.lifeJitter);
       if end > t { t = end; }
       i = i + 1usize;
     }
@@ -197,26 +197,26 @@ pub struct EffectPlayer {
   // Register 'effect': its particle classes join the pool's table and its flipbooks are baked.
   // Answers its id, what 'play' takes.
   pub fn register(self &mut, device &mut Device, effect Effect) u32 {
-    mut classIds = List[u32].empty();
-    mut i = 0usize;
+    var classIds = List[u32].empty();
+    var i = 0usize;
     while i < effect.particles.len() {
       classIds.push(particles.addClass(&effect.particles[i].cls));
       i = i + 1usize;
     }
-    mut atlasIds = List[u32].empty();
+    var atlasIds = List[u32].empty();
     i = 0usize;
     while i < effect.flipbooks.len() {
       atlasIds.push(flipbooks.addFlipbook(device, &effect.flipbooks[i].desc));
       i = i + 1usize;
     }
-    imm length = effect.length();
+    let length = effect.length();
     registered.push(new Registered(effect, classIds, atlasIds, length));
     u32.from(registered.len() - 1usize);
   }
 
   fn nextSeed(self &mut, base u32, salt u32) u32 {
     counter = counter + 1u32;
-    imm h = pcg4d(new UVec4(base, salt, counter, 0x9e3779b9u32));
+    let h = pcg4d(new UVec4(base, salt, counter, 0x9e3779b9u32));
     h.x;
   }
 
@@ -224,45 +224,45 @@ pub struct EffectPlayer {
   // at 'velocity' (what a class's 'inherit' takes), its random numbers from 'seed'
   pub fn play(self &mut, id u32, origin Vec3, axis Vec3, velocity Vec3, seed u32, now f32) {
     if usize.from(id) >= registered.len() { return; }
-    imm ri = usize.from(id);
-    imm a = axis.normalize();
-    imm basisA = if libc.fabsf(a.y) < 0.9 { new Vec3(0., 1., 0.); } else { new Vec3(1., 0., 0.); };
-    imm side = basisA.cross(a).normalize();
-    imm across = a.cross(side).normalize();
+    let ri = usize.from(id);
+    let a = axis.normalize();
+    let basisA = if libc.fabsf(a.y) < 0.9 { new Vec3(0., 1., 0.); } else { new Vec3(1., 0., 0.); };
+    let side = basisA.cross(a).normalize();
+    let across = a.cross(side).normalize();
     // What is set going now and runs itself: lights, flipbooks, distortions, decals
-    mut i = 0usize;
+    var i = 0usize;
     while i < registered[ri].effect.lights.len() {
-      imm l = *registered[ri].effect.lights[i];
+      let l = *registered[ri].effect.lights[i];
       lights.add(&l, origin + localToWorld(l.offset, side, a, across), now, seed + u32.from(i));
       i = i + 1usize;
     }
     i = 0usize;
     while i < registered[ri].effect.flipbooks.len() {
-      imm l = *registered[ri].effect.flipbooks[i];
-      imm roll = (toUnit(pcg4d(new UVec4(seed, u32.from(i), 77u32, 1u32)).x) - 0.5) * l.roll;
+      let l = *registered[ri].effect.flipbooks[i];
+      let roll = (toUnit(pcg4d(new UVec4(seed, u32.from(i), 77u32, 1u32)).x) - 0.5) * l.roll;
       flipbooks.play(*registered[ri].atlasIds[i], origin + localToWorld(l.offset, side, a, across), l.size,
         now + l.delay, l.duration, roll, l.tint);
       i = i + 1usize;
     }
     i = 0usize;
     while i < registered[ri].effect.distortions.len() {
-      imm l = *registered[ri].effect.distortions[i];
+      let l = *registered[ri].effect.distortions[i];
       distortion.add(new DistortionSprite(origin + localToWorld(l.offset, side, a, across), l.radius, now + l.delay,
         l.duration, l.kind, l.strength, l.width, l.rise, seed + 31u32 * u32.from(i)));
       i = i + 1usize;
     }
     i = 0usize;
     while i < registered[ri].effect.decals.len() {
-      imm l = *registered[ri].effect.decals[i];
-      imm roll = l.roll + toUnit(pcg4d(new UVec4(seed, u32.from(i), 79u32, 2u32)).x) * 2. * pi;
+      let l = *registered[ri].effect.decals[i];
+      let roll = l.roll + toUnit(pcg4d(new UVec4(seed, u32.from(i), 79u32, 2u32)).x) * 2. * pi;
       decals.push(new ActiveDecal(l, origin + localToWorld(l.offset, side, a, across), a, now + l.delay, roll));
       i = i + 1usize;
     }
-    imm ev = new Playing(id, origin, a, side, across, velocity, seed, now, false,
+    let ev = new Playing(id, origin, a, side, across, velocity, seed, now, false,
       new Array[f32, 12] <- fill 0f, new Array[bool, 24] <- fill false);
     // A finished slot is reused before the list grows
-    mut s = 0usize;
-    mut placed = false;
+    var s = 0usize;
+    var placed = false;
     while s < playing.len() and !placed {
       if playing[s].done {
         playing.set(s, ev);
@@ -278,29 +278,29 @@ pub struct EffectPlayer {
   // order their particles and throw their debris, lights are set, debris moves and joins the
   // draw list, decals join the image passes' list, the camera shake decays
   pub fn beginFrame(self &mut, renderer &mut Renderer, fx &mut ImageFx, list &mut DrawList, camera &Camera, now f32, dt f32) {
-    mut p = 0usize;
+    var p = 0usize;
     while p < playing.len() {
       if !playing[p].done {
-        mut pl = *playing[p];
-        imm ri = usize.from(pl.id);
-        imm t = now - pl.start;
-        imm tPrev = t - dt;
-        mut j = 0usize;
+        var pl = *playing[p];
+        let ri = usize.from(pl.id);
+        let t = now - pl.start;
+        let tPrev = t - dt;
+        var j = 0usize;
         while j < registered[ri].effect.particles.len() and j < MAX_PARTICLE_LAYERS {
-          imm l = *registered[ri].effect.particles[j];
-          imm cls = *registered[ri].classIds[j];
-          imm origin = pl.origin + localToWorld(l.offset, pl.side, pl.axis, pl.across);
-          imm dir = localToWorld(l.axis, pl.side, pl.axis, pl.across).normalize();
+          let l = *registered[ri].effect.particles[j];
+          let cls = *registered[ri].classIds[j];
+          let origin = pl.origin + localToWorld(l.offset, pl.side, pl.axis, pl.across);
+          let dir = localToWorld(l.axis, pl.side, pl.axis, pl.across).normalize();
           if l.burst > 0u32 and !pl.fired[j] and t >= l.delay {
             pl.fired[j] = true;
             particles.emit(cls, origin, dir, pl.velocity, l.burst, self.nextSeed(pl.seed, u32.from(j)));
           }
           if l.rate > 0. {
-            imm from = if tPrev > l.delay { tPrev; } else { l.delay; };
-            imm to = if t < l.delay + l.duration { t; } else { l.delay + l.duration; };
+            let from = if tPrev > l.delay { tPrev; } else { l.delay; };
+            let to = if t < l.delay + l.duration { t; } else { l.delay + l.duration; };
             if to > from {
-              imm owed = pl.carry[j] + l.rate * (to - from);
-              imm whole = libc.floorf(owed);
+              let owed = pl.carry[j] + l.rate * (to - from);
+              let whole = libc.floorf(owed);
               pl.carry[j] = owed - whole;
               if whole >= 1. {
                 particles.emit(cls, origin, dir, pl.velocity, u32.from(whole), self.nextSeed(pl.seed, u32.from(j) + 50u32));
@@ -310,10 +310,10 @@ pub struct EffectPlayer {
           j = j + 1usize;
         }
         // Debris and shakes are done once, when their time comes
-        mut k = 0usize;
+        var k = 0usize;
         while k < registered[ri].effect.debris.len() and k < MAX_DEBRIS_LAYERS {
-          imm l = *registered[ri].effect.debris[k];
-          imm slot = 12usize + k;
+          let l = *registered[ri].effect.debris[k];
+          let slot = 12usize + k;
           if !pl.fired[slot] and t >= l.delay {
             pl.fired[slot] = true;
             debris.throwFrom(&l, pl.origin + localToWorld(l.offset, pl.side, pl.axis, pl.across), pl.axis, pl.side, pl.across,
@@ -323,8 +323,8 @@ pub struct EffectPlayer {
         }
         k = 0usize;
         while k < registered[ri].effect.shakes.len() and k < MAX_SHAKE_LAYERS {
-          imm l = *registered[ri].effect.shakes[k];
-          imm slot = 18usize + k;
+          let l = *registered[ri].effect.shakes[k];
+          let slot = 18usize + k;
           if !pl.fired[slot] and t >= l.delay {
             pl.fired[slot] = true;
             shake.addAt(camera.position(), pl.origin, l.trauma, l.radius);
@@ -341,21 +341,21 @@ pub struct EffectPlayer {
     debris.draw(list, now);
     shake.update(dt);
     // Decals: each frame's list is the image passes', emptied by them
-    mut d = 0usize;
+    var d = 0usize;
     while d < decals.len() {
-      imm a = *decals[d];
-      imm age = now - a.start;
-      imm total = a.layer.fadeIn + a.layer.hold + a.layer.fadeOut;
+      let a = *decals[d];
+      let age = now - a.start;
+      let total = a.layer.fadeIn + a.layer.hold + a.layer.fadeOut;
       if age >= total {
         decals.swap(d, decals.len() - 1usize);
-        imm gone = decals.pop();
+        let gone = decals.pop();
       } else {
         if age >= 0. {
-          mut k = 1.;
+          var k = 1.;
           if age < a.layer.fadeIn { k = age / a.layer.fadeIn; }
           elif age > a.layer.fadeIn + a.layer.hold { k = 1. - (age - a.layer.fadeIn - a.layer.hold) / a.layer.fadeOut; }
-          imm q = Quat.angleAxis(a.roll, a.axis) * Quat.fromVectors(new Vec3(0., 1., 0.), a.axis);
-          mut decal = Decal.at(a.layer.material, Mat4.fromTrs(a.origin + a.axis * (a.layer.depth * 0.3), q,
+          let q = Quat.angleAxis(a.roll, a.axis) * Quat.fromVectors(new Vec3(0., 1., 0.), a.axis);
+          var decal = Decal.at(a.layer.material, Mat4.fromTrs(a.origin + a.axis * (a.layer.depth * 0.3), q,
             new Vec3(a.layer.size, a.layer.depth, a.layer.size)));
           decal.tint = a.layer.tint;
           decal.fade = k;
@@ -407,8 +407,8 @@ pub struct EffectPlayer {
   }
 
   pub fn playingCount(self &) usize {
-    mut n = 0usize;
-    mut s = 0usize;
+    var n = 0usize;
+    var s = 0usize;
     while s < playing.len() {
       if !playing[s].done { n = n + 1usize; }
       s = s + 1usize;

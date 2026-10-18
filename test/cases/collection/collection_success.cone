@@ -33,12 +33,12 @@ fn showU(label &str, n u64) {
 // -------- taking a slice, and what it knows --------
 
 fn borrowing() {
-  mut b Array[i32, 4] = [1, 2, 3, 4];
+  var b Array[i32, 4] = [1, 2, 3, 4];
 
   // '&[]' borrows a slice over the whole array. The length is carried by the
   // slice rather than by its type, which is the difference that matters: the
   // array's length is in 'Array[i32, 4]', the slice's is a value it holds.
-  imm s = &[]b;
+  let s = &[]b;
   showU("slice-len", s.len);
 
   // 'maxlen' is the second name for the same count, for a slice over a
@@ -49,35 +49,35 @@ fn borrowing() {
   show("slice-index-read", s[1]);
 
   // The permission is written between '&[]' and the array, as on any borrow
-  imm rw = &[]mut b;
+  let rw = &[]mut b;
   showU("mut-slice-len", rw.len);
 
   // A slice type may also be stated on the variable rather than inferred
-  imm stated &Array[i32] = &[]b;
+  let stated &Array[i32] = &[]b;
   show("stated-slice-type", stated[2]);
 }
 
 // -------- a slice aliases the array it was borrowed from --------
 
 fn aliasing() {
-  mut b Array[i32, 4] = [10, 20, 30, 40];
+  var b Array[i32, 4] = [10, 20, 30, 40];
 
   // A write through the slice lands in the array. The array is frozen while
   // the slice is still to be used, so it is read after the slice's last use.
-  imm s = &[]mut b;
+  let s = &[]mut b;
   s[1] = 99;
   show("write-slice-read-array", b[1]);
 
   // ... and a write to the array is visible through a slice borrowed after it
   b[2] = 77;
-  imm seen = &[]b;
+  let seen = &[]b;
   show("write-array-read-slice", seen[2]);
 
   // An element read from the array may be stored through a slice of the same
   // array, which is the same memory reached two ways: read first, since the
   // array may not be read while the slice that writes it is still to be used
-  imm fourth = b[3];
-  imm dest = &[]mut b;
+  let fourth = b[3];
+  let dest = &[]mut b;
   dest[0] = fourth;
   show("array-elem-into-slice", b[0]);
 }
@@ -85,8 +85,8 @@ fn aliasing() {
 // -------- indexing by a value only known at run time --------
 
 fn runtimeIndex(i usize) {
-  mut b Array[i32, 4] = [5, 6, 7, 8];
-  imm s = &[]mut b;
+  var b Array[i32, 4] = [5, 6, 7, 8];
+  let s = &[]mut b;
 
   // The index is a variable, so no constant folding can stand in for the
   // element being fetched from the slice's data pointer
@@ -98,18 +98,18 @@ fn runtimeIndex(i usize) {
 // -------- references to elements --------
 
 fn elementRefs() {
-  mut b Array[i32, 4] = [1, 2, 3, 4];
+  var b Array[i32, 4] = [1, 2, 3, 4];
 
   // A reference to an array element is a plain '&i32', not a slice
-  imm r = &b[1];
+  let r = &b[1];
   show("array-elem-ref-read", *r);
 
   // The same borrow through a slice reaches the same element, so writing
   // through it is visible through the slice. The element reference borrows
   // from the slice, which may be used again once that reference's last use is
   // behind it.
-  imm s = &[]mut b;
-  imm refelem = &mut s[0];
+  let s = &[]mut b;
+  let refelem = &mut s[0];
   *refelem = 50;
   show("slice-elem-ref-write", s[0]);
 
@@ -139,13 +139,13 @@ fn firstOf(s &mut Array[i32]) &mut i32 {
 }
 
 fn parameters() {
-  mut b Array[i32, 4] = [1, 2, 3, 4];
+  var b Array[i32, 4] = [1, 2, 3, 4];
 
   // A 'mut' slice coerces to the 'ro' slice a reading function asks for, the
   // same way a 'mut' reference does. Each slice of 'b' below is used before
   // the next borrow of 'b', which is frozen while a mutable one is still to
   // be used.
-  imm s = &[]mut b;
+  let s = &[]mut b;
   show("mut-slice-to-ro-parm", sumFirstTwo(s));
 
   // An array auto-borrows to a slice at a call, so the caller need not write
@@ -157,26 +157,26 @@ fn parameters() {
   // length coming from the array's type: '&b' where '&Array[i32]' is asked for, and
   // '&mut m' where '&mut Array[i32]' is
   show("array-ref-coerces-to-slice", sumFirstTwo(&b));
-  imm viaRef &Array[i32] = &b;
+  let viaRef &Array[i32] = &b;
   showU("array-ref-slice-len", viaRef.len);
-  mut m Array[i32, 2] = [5, 6];
+  var m Array[i32, 2] = [5, 6];
   setFirst(&mut m, 50);
   show("array-mut-ref-coerces-to-slice", m[0]);
 
   // A slice parameter that may write reaches the caller's array
-  imm t = &[]mut b;
+  let t = &[]mut b;
   setFirst(t, 11);
   show("write-through-slice-parm", b[0]);
 
   // A slice may be produced by a function as well as consumed by one
-  imm whole = wholeOf(&mut b);
+  let whole = wholeOf(&mut b);
   showU("returned-slice-len", whole.len);
   whole[3] = 44;
   show("write-through-returned-slice", b[3]);
 
   // ... and so may a reference to one of its elements
-  imm u = &[]mut b;
-  imm first = firstOf(u);
+  let u = &[]mut b;
+  let first = firstOf(u);
   *first = 12;
   show("write-through-returned-elem-ref", b[0]);
 }
@@ -196,9 +196,9 @@ fn writeThroughDeref(v &mut Array[i32, 4]) {
 }
 
 fn arrayRefs() {
-  mut b Array[i32, 4] = [1, 2, 3, 4];
+  var b Array[i32, 4] = [1, 2, 3, 4];
 
-  // 'v' is an 'imm' binding, so a write reaching the array proves the check
+  // 'v' is a 'let' binding, so a write reaching the array proves the check
   // consulted the reference's 'mut' rather than the binding's 'imm'
   writeThroughArrayRef(&mut b);
   show("write-through-array-ref", b[0]);
@@ -209,7 +209,7 @@ fn arrayRefs() {
 
   // Reading needs no permission and has always worked; it is here so that a
   // fix repairing only the write would still be caught
-  imm r = &b;
+  let r = &b;
   show("read-through-array-ref", r[2]);
 }
 
@@ -222,12 +222,12 @@ fn arrayRefs() {
 // own '=='. collection_typecheck_slice asserts the refusals: elements with no
 // '==', and an ordering, which a slice does not have.
 fn comparing() {
-  mut b Array[i32, 4] = [1, 2, 3, 4];
-  mut c Array[i32, 4] = [1, 2, 3, 4];
+  var b Array[i32, 4] = [1, 2, 3, 4];
+  var c Array[i32, 4] = [1, 2, 3, 4];
 
-  imm whole = &[]b;
-  imm aliased = &[]b;
-  imm other = &[]c;
+  let whole = &[]b;
+  let aliased = &[]b;
+  let other = &[]c;
 
   show("slice-same-as-alias", if whole === aliased {1;} else {0;});
   show("slice-not-same-as-other-array", if whole !== other {1;} else {0;});
@@ -237,24 +237,24 @@ fn comparing() {
 
   // Identity holds for an element type with no equality of its own, because
   // only the two words are compared
-  mut pairs Array[Window, 2] = [new Window(&[]mut b), new Window(&[]mut c)];
-  imm ps = &[]pairs;
-  imm psalias = &[]pairs;
+  var pairs Array[Window, 2] = [new Window(&[]mut b), new Window(&[]mut c)];
+  let ps = &[]pairs;
+  let psalias = &[]pairs;
   show("slice-of-struct-same", if ps === psalias {1;} else {0;});
 }
 
 fn equality() {
-  mut b Array[i32, 4] = [1, 2, 3, 4];
-  mut c Array[i32, 4] = [1, 2, 3, 4];
-  imm whole = &[]b;
-  imm other = &[]c;
+  var b Array[i32, 4] = [1, 2, 3, 4];
+  var c Array[i32, 4] = [1, 2, 3, 4];
+  let whole = &[]b;
+  let other = &[]c;
 
   // Same elements, different array: equality says these are equal, and '!='
   // is its negation
   show("equal-contents", if whole == other {1;} else {0;});
   show("equal-contents-ne", if whole != other {1;} else {0;});
-  mut e Array[i32, 4] = [1, 2, 3, 5];
-  imm differs = &[]e;
+  var e Array[i32, 4] = [1, 2, 3, 5];
+  let differs = &[]e;
   show("one-element-differs", if whole == differs {1;} else {0;});
   show("one-element-differs-ne", if whole != differs {1;} else {0;});
 
@@ -268,48 +268,48 @@ fn equality() {
   // The other side is converted to the slice as any slice argument is: an
   // array, a reference to one, a string literal; and an array or a reference
   // to one on the left is compared as the slice it converts to
-  mut d Array[i32, 4] = [1, 2, 3, 4];
+  var d Array[i32, 4] = [1, 2, 3, 4];
   show("slice-equals-array", if whole == d {1;} else {0;});
   show("slice-equals-array-ref", if whole == &d {1;} else {0;});
   show("array-ref-equals-slice", if &d == whole {1;} else {0;});
   show("mut-slice-equals-slice", if &[]mut d == whole {1;} else {0;});
-  imm word &Array[u8] = "box";
+  let word &Array[u8] = "box";
   show("bytes-equal-string", if word == "box" {1;} else {0;});
   show("string-equals-bytes", if "box" == word {1;} else {0;});
   show("longer-string-not-equal", if word == "boxes" {1;} else {0;});
 
   // Floats compare by IEEE '==': NaN is equal to nothing, itself included, and
   // -0.0 is equal to 0.0
-  imm zero = 0.0f32;
-  imm nan = zero / zero;
-  mut f1 Array[f32, 2] = [1.5f32, nan];
-  mut f2 Array[f32, 2] = [1.5f32, nan];
-  imm fs = &[]f1;
+  let zero = 0.0f32;
+  let nan = zero / zero;
+  var f1 Array[f32, 2] = [1.5f32, nan];
+  var f2 Array[f32, 2] = [1.5f32, nan];
+  let fs = &[]f1;
   show("nan-elements-not-equal", if &[]f1 == &[]f2 {1;} else {0;});
   show("nan-not-equal-even-to-itself", if fs == fs {1;} else {0;});
-  mut pz Array[f32, 1] = [0.0f32];
-  mut nz Array[f32, 1] = [-0.0f32];
+  var pz Array[f32, 1] = [0.0f32];
+  var nz Array[f32, 1] = [-0.0f32];
   show("negative-zero-equals-zero", if &[]pz == &[]nz {1;} else {0;});
 
   // A struct's elements compare by the '==' it declares, on the value or on
   // references
-  mut coins1 Array[Coin, 2] = [new Coin(5), new Coin(10)];
-  mut coins2 Array[Coin, 2] = [new Coin(5), new Coin(10)];
+  var coins1 Array[Coin, 2] = [new Coin(5), new Coin(10)];
+  var coins2 Array[Coin, 2] = [new Coin(5), new Coin(10)];
   show("struct-value-eq", if &[]coins1 == &[]coins2 {1;} else {0;});
-  mut cards1 Array[Card, 2] = [new Card(1, 0), new Card(2, 0)];
-  mut cards2 Array[Card, 2] = [new Card(1, 7), new Card(3, 7)];
+  var cards1 Array[Card, 2] = [new Card(1, 0), new Card(2, 0)];
+  var cards2 Array[Card, 2] = [new Card(1, 7), new Card(3, 7)];
   show("struct-ref-eq-differs", if &[]cards1 == &[]cards2 {1;} else {0;});
   cards2[1] = new Card(2, 9);
   show("struct-ref-eq-by-rank", if &[]cards1 == &[]cards2 {1;} else {0;});
 
   // A slice of slices compares each inner slice's elements, and a reference
   // to a slice reads through to it
-  mut ab Array[u8, 2] = [97u8, 98u8];
-  mut rows1 Array[&Array[u8], 2] = ["ab", "cd"];
-  mut rows2 Array[&Array[u8], 2] = [&[]ab, "cd"];
+  var ab Array[u8, 2] = [97u8, 98u8];
+  var rows1 Array[&Array[u8], 2] = ["ab", "cd"];
+  var rows2 Array[&Array[u8], 2] = [&[]ab, "cd"];
   show("nested-slices-equal", if &[]rows1 == &[]rows2 {1;} else {0;});
-  imm r1 = &[]rows1;
-  imm r2 = &[]rows2;
+  let r1 = &[]rows1;
+  let r2 = &[]rows2;
   show("ref-to-slice-equal", if &r1 == &r2 {1;} else {0;});
 }
 
@@ -326,16 +326,16 @@ fn bytes() {
 
   // A u8 array reaches the same parameter, which is the fact that makes the
   // literal's case unremarkable rather than special
-  mut raw Array[u8, 3] = [65u8, 66u8, 67u8];
+  var raw Array[u8, 3] = [65u8, 66u8, 67u8];
   showU("u8-array-len", byteLen(raw));
 }
 
 // -------- slices in other positions --------
 
-mut @threadlocal totals Array[i32, 3] = [100, 200, 300];
+var @threadlocal totals Array[i32, 3] = [100, 200, 300];
 
 struct Window {
-  pub mut view &mut Array[i32];
+  pub var view &mut Array[i32];
 }
 
 // '==' declared on the value
@@ -353,18 +353,18 @@ struct Card {
 
 fn globals() {
   // A global array is borrowed exactly as a local one is
-  imm g = &[]mut totals;
+  let g = &[]mut totals;
   showU("global-slice-len", g.len);
   g[0] = 111;
   show("write-through-global-slice", totals[0]);
 }
 
 fn members() {
-  mut b Array[i32, 4] = [1, 2, 3, 4];
+  var b Array[i32, 4] = [1, 2, 3, 4];
 
   // A slice is a value, so a struct may hold one, and the struct then aliases
   // the array the slice was borrowed from
-  mut w = new Window(&[]mut b);
+  var w = new Window(&[]mut b);
   showU("member-slice-len", w.view.len);
   w.view[2] = 33;
   show("write-through-member-slice", b[2]);

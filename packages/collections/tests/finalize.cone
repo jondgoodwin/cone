@@ -14,7 +14,7 @@ mod finalize;
 import testing use *;
 import collections use *;
 
-mut @threadlocal log = 0i64;
+var @threadlocal log = 0i64;
 
 struct Fin {
   pub n i64;
@@ -22,41 +22,41 @@ struct Fin {
 }
 
 fn listDies() {
-  imm l = new List[Fin] <- new Fin(1), new Fin(2), new Fin(3);
+  let l = new List[Fin] <- new Fin(1), new Fin(2), new Fin(3);
 }
 
 // Nine pushes grow the block twice (4, 8, 16) and move every value each time
 fn growsThenDies() {
-  mut l = List[Fin].empty();
-  mut i = 1i64;
+  var l = List[Fin].empty();
+  var i = 1i64;
   while i <= 9i64 { l.push(new Fin(i)); i = i + 1i64; }
   expectInt(log, 0, "growing finalizes nothing");
   expectUInt(u64.from(l.capacity()), 16, "grown twice");
 }
 
 fn popped() {
-  mut l = new List[Fin] <- new Fin(1), new Fin(2), new Fin(3);
+  var l = new List[Fin] <- new Fin(1), new Fin(2), new Fin(3);
   match l.pop() {
-    case imm s Some {expectInt(s.n, 3, "popped 3");}
+    case let s Some {expectInt(s.n, 3, "popped 3");}
     case is None {expect(false, "popped 3");}
   }
   expectInt(log, 3, "the popped value dies with its binding");
 }
 
 fn replaced() {
-  mut l = new List[Fin] <- new Fin(1), new Fin(2);
+  var l = new List[Fin] <- new Fin(1), new Fin(2);
   l.set(0usize, new Fin(5));
   expectInt(log, 1, "set finalizes the value it replaces");
 }
 
 fn swapped() {
-  mut l = new List[Fin] <- new Fin(1), new Fin(2), new Fin(3);
+  var l = new List[Fin] <- new Fin(1), new Fin(2), new Fin(3);
   l.swap(0usize, 2usize);
   expectInt(log, 0, "swap finalizes nothing");
 }
 
 fn cleared() {
-  mut l = new List[Fin] <- new Fin(1), new Fin(2);
+  var l = new List[Fin] <- new Fin(1), new Fin(2);
   l.clear();
   expectInt(log, 12, "clear finalizes first to last");
   l.push(new Fin(3));
@@ -64,13 +64,13 @@ fn cleared() {
 
 // The inner lists die in order, each finalizing its own values in order
 fn nested() {
-  imm first = new List[Fin] <- new Fin(1), new Fin(2);
-  imm second = new List[Fin] <- new Fin(3);
-  imm outer = new List[List[Fin]] <- first, second;
+  let first = new List[Fin] <- new Fin(1), new Fin(2);
+  let second = new List[Fin] <- new Fin(3);
+  let outer = new List[List[Fin]] <- first, second;
 }
 
 fn singleOwner() {
-  imm owned = new Uni[List[Fin]](List[Fin].empty());
+  let owned = new Uni[List[Fin]](List[Fin].empty());
   owned.push(new Fin(4));
   owned.push(new Fin(5));
   expectUInt(u64.from(owned.len()), 2, "pushed through its Uni owner");
@@ -78,9 +78,9 @@ fn singleOwner() {
 
 // Two owners of one list: the first to go finalizes nothing
 fn sharedOwners() {
-  imm a = new Rc[mut, List[Fin]](List[Fin].empty());
+  let a = new Rc[mut, List[Fin]](List[Fin].empty());
   {
-    imm b = a;
+    let b = a;
     b.push(new Fin(7));
   }
   expectInt(log, 0, "one owner of two gone, nothing finalized");
@@ -89,13 +89,13 @@ fn sharedOwners() {
 }
 
 fn dictEntries() {
-  mut d = Dict[String, Fin].empty();
+  var d = Dict[String, Fin].empty();
   d.insert(String.from("a"), new Fin(1));
   d.insert(String.from("a"), new Fin(2));
   expectInt(log, 1, "a replacing insert finalizes the old value");
   d.insert(String.from("b"), new Fin(3));
   match d.remove("b") {
-    case imm s Some {expectInt(s.n, 3, "removed 3");}
+    case let s Some {expectInt(s.n, 3, "removed 3");}
     case is None {expect(false, "removed 3");}
   }
   expectInt(log, 13, "the removed value dies with its binding");
@@ -104,18 +104,18 @@ fn dictEntries() {
 // Twenty entries rehash the block from 8 buckets to 16 to 32, moving every
 // value; none dies until the dictionary does, and then every one, once:
 // the log is order-dependent, so count and add them instead
-mut @threadlocal deaths = 0i64;
-mut @threadlocal sum = 0i64;
+var @threadlocal deaths = 0i64;
+var @threadlocal sum = 0i64;
 struct Counted {
   pub n i64;
   fn final(self &uni) { deaths = deaths + 1i64; sum = sum + n; }
 }
 
 fn dictGrows() {
-  mut d = Dict[String, Counted].empty();
-  mut i = 1i64;
+  var d = Dict[String, Counted].empty();
+  var i = 1i64;
   while i <= 20i64 {
-    mut key = String.from("key");
+    var key = String.from("key");
     key.appendInt(i);
     d.insert(key, new Counted(i));
     i = i + 1i64;

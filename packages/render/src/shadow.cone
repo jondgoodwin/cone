@@ -140,12 +140,12 @@ pub struct CascadeSet {
 // lambda n (f / n)^(i / count) + (1 - lambda) (n + (f - n) i / count); the
 // last at 'far' exactly. The unused entries are 'far'.
 pub fn cascadeSplits(near f32, far f32, count u32, lambda f32) Array[f32, 4] {
-  mut ends = new Array[f32, 4] <- fill far;
-  mut i = 1u32;
+  var ends = new Array[f32, 4] <- fill far;
+  var i = 1u32;
   while i <= count and i <= MAX_CASCADES {
-    imm t = f32.from(i) / f32.from(count);
-    imm logSplit = near * libc.powf(far / near, t);
-    imm linSplit = near + (far - near) * t;
+    let t = f32.from(i) / f32.from(count);
+    let logSplit = near * libc.powf(far / near, t);
+    let linSplit = near + (far - near) * t;
     ends[usize.from(i - 1u32)] = lambda * logSplit + (1. - lambda) * linSplit;
     i = i + 1u32;
   }
@@ -163,8 +163,8 @@ pub fn cascadeSplits(near f32, far f32, count u32, lambda f32) Array[f32, 4] {
 // the centre may not pass the far plane (a long thin slice is bounded by its
 // far corners, the sphere about them centred on the far plane).
 pub fn sliceSphere(a f32, b f32, tanY f32, aspect f32, center &mut f32) f32 {
-  imm k2 = tanY * tanY * (1. + aspect * aspect);
-  mut t = 0.5 * (a + b) * (1. + k2);
+  let k2 = tanY * tanY * (1. + aspect * aspect);
+  var t = 0.5 * (a + b) * (1. + k2);
   if t > b { t = b; }
   *center = t;
   (b * b * k2 + (b - t) * (b - t)).sqrt();
@@ -180,81 +180,81 @@ fn sfloorf(x f32) f32 { libc.floorf(x); }
 // camera's position and the light, and the radius on the field of view and
 // the splits alone.
 pub fn computeCascades(camera &Camera, aspect f32, sunDirection Vec3, s &ShadowSettings) CascadeSet {
-  mut count = s.cascades;
+  var count = s.cascades;
   if count < 1u32 { count = 1u32; }
   if count > MAX_CASCADES { count = MAX_CASCADES; }
-  mut near = camera.near;
+  var near = camera.near;
   if near < 0.01 { near = 0.01; }
-  mut far = s.distance;
+  var far = s.distance;
   if far > camera.far { far = camera.far; }
   if far <= near { far = near * 2.; }
-  imm ends = cascadeSplits(near, far, count, s.splitLambda);
-  mut set = new CascadeSet(count, new Array[Mat4, 4] <- fill Mat4.identity(), ends, new Array[f32, 4] <- fill 0f,
+  let ends = cascadeSplits(near, far, count, s.splitLambda);
+  var set = new CascadeSet(count, new Array[Mat4, 4] <- fill Mat4.identity(), ends, new Array[f32, 4] <- fill 0f,
     new Array[f32, 4] <- fill 0f, new Array[f32, 4] <- fill 0f, new Array[f32, 4] <- fill 0f,
     new Array[f32, 4] <- fill 0f, new Array[Vec3, 4] <- fill new Vec3(0., 0., 0.));
 
   // The camera's axes in the world: right, up and back (its own +z)
-  imm place = camera.placement();
-  imm eye = place.translation();
-  imm forward = new Vec3(-place.m[8], -place.m[9], -place.m[10]).normalize();
-  imm size = f32.from(s.mapSize);
+  let place = camera.placement();
+  let eye = place.translation();
+  let forward = new Vec3(-place.m[8], -place.m[9], -place.m[10]).normalize();
+  let size = f32.from(s.mapSize);
   // How many texels at the map's edge the filter and the normal offset can
   // reach beyond a point, which the window must leave room for
-  imm pad = sceilf(s.pcfRadius + s.normalOffset) + 2.;
-  imm towardsSun = new Vec3(0., 0., 0.) - sunDirection;
-  mut up = new Vec3(0., 1., 0.);
+  let pad = sceilf(s.pcfRadius + s.normalOffset) + 2.;
+  let towardsSun = new Vec3(0., 0., 0.) - sunDirection;
+  var up = new Vec3(0., 1., 0.);
   if towardsSun.y > 0.99 or towardsSun.y < -0.99 { up = new Vec3(1., 0., 0.); }
   // The sun's view: the sun's direction as -z, the origin of the world as
   // the point it looks at (a translation of the whole scene does not change
   // the cascades' shape, and the snapping lattice is the world's)
-  imm sunView = Mat4.lookAt(towardsSun, new Vec3(0., 0., 0.), up);
-  imm tanY = tan(camera.fov * 0.5);
+  let sunView = Mat4.lookAt(towardsSun, new Vec3(0., 0., 0.), up);
+  let tanY = tan(camera.fov * 0.5);
 
-  mut i = 0usize;
+  var i = 0usize;
   while i < usize.from(count) {
     // The slice: from where the cascade before it begins to blend, to its end
-    mut a = near;
+    var a = near;
     if i > 0usize {
-      imm prevLen = ends[i - 1usize] - set.splitNear[i - 1usize];
-      mut start = ends[i - 1usize] - s.blend * prevLen;
+      let prevLen = ends[i - 1usize] - set.splitNear[i - 1usize];
+      var start = ends[i - 1usize] - s.blend * prevLen;
       if start < near { start = near; }
       a = start;
     }
-    imm b = ends[i];
+    let b = ends[i];
     set.splitNear[i] = a;
     // The band at its end: a share of its own length
     set.bandLen[i] = s.blend * (b - a);
 
-    mut t = 0.;
-    mut r = 0.;
+    var t = 0.;
+    var r = 0.;
     if camera.projection == Orthogonal {
       t = 0.5 * (a + b);
-      imm hy = camera.viewHeight;
-      imm hx = camera.viewHeight * aspect;
+      let hy = camera.viewHeight;
+      let hx = camera.viewHeight * aspect;
       r = (hx * hx + hy * hy + (0.5 * (b - a)) * (0.5 * (b - a))).sqrt();
     } else {
       r = sliceSphere(a, b, tanY, aspect, &mut t);
     }
-    imm center = eye + forward * t;
+    let center = eye + forward * t;
     set.centers[i] = center;
     // Leave room at the window's edge for the filter
-    imm radius = r * size / (size - 2. * pad);
-    imm texel = 2. * radius / size;
+    let radius = r * size / (size - 2. * pad);
+    let texel = 2. * radius / size;
 
     // The centre in the sun's view, snapped to the lattice of texels
-    imm lc = sunView * center;
-    mut sx = lc.x;
-    mut sy = lc.y;
+    let lc = sunView * center;
+    var sx = lc.x;
+    var sy = lc.y;
     if s.stabilize {
       sx = sfloorf(lc.x / texel) * texel;
       sy = sfloorf(lc.y / texel) * texel;
     }
     // Depth: along the sun's -z. The sphere's own depth extent, and
     // 'casterDistance' further towards the sun
-    imm d = 0. - lc.z;
-    imm nearD = d - radius - s.casterDistance;
-    imm farD = d + radius;
-    imm projection = Mat4.orthographic(sx - radius, sx + radius, sy - radius, sy + radius, nearD, farD);
+    let d = 0. - lc.z;
+    let nearD = d - radius - s.casterDistance;
+    let farD = d + radius;
+    let projection = Mat4.orthographic(sx - radius, sx + radius, sy - radius, sy + radius, nearD, farD);
     set.matrices[i] = projection * sunView;
     set.texelWorld[i] = texel;
     set.depthRange[i] = farD - nearD;
@@ -267,10 +267,10 @@ pub fn computeCascades(camera &Camera, aspect f32, sunDirection Vec3, s &ShadowS
 // shadowparams.slang's ShadowParams for 'set', as the settings 's' and the
 // camera's forward direction 'forward' have it
 fn shadowParamsFloats(set &CascadeSet, s &ShadowSettings, forward Vec3, enabled bool) Array[f32, 92] {
-  mut out = new Array[f32, 92] <- fill 0f;
-  mut c = 0usize;
+  var out = new Array[f32, 92] <- fill 0f;
+  var c = 0usize;
   while c < 4usize {
-    mut k = 0usize;
+    var k = 0usize;
     while k < 16usize {
       out[c * 16usize + k] = set.matrices[c].m[k];
       k = k + 1usize;
@@ -286,7 +286,7 @@ fn shadowParamsFloats(set &CascadeSet, s &ShadowSettings, forward Vec3, enabled 
   out[83] = s.pcfRadius;
   out[84] = s.bias;
   out[85] = s.normalOffset;
-  mut taps = s.pcfTaps;
+  var taps = s.pcfTaps;
   if taps < 1u32 { taps = 1u32; }
   if taps > 16u32 { taps = 16u32; }
   out[86] = f32.from(taps);
@@ -319,87 +319,87 @@ pub struct ShadowCasters {
   // depth slope (D3D's and Vulkan's slope-scaled bias) to its depths
   pub fn create(device &mut Device, casterLayout &BindGroupLayout, materialLayout &BindGroupLayout,
       pbrMaterialLayout &BindGroupLayout, slopeBias f32) ShadowCasters {
-    mut shaderCast = device.createShaderModule(&SHADOWCAST_SPIRV);
-    mut shaderCutLit = device.createShaderModule(&SHADOWCUTLIT_SPIRV);
-    mut shaderCutPbr = device.createShaderModule(&SHADOWCUTPBR_SPIRV);
-    imm opaqueGroups = [casterLayout];
-    mut layoutOpaque = device.createPipelineLayout(&opaqueGroups, 4u32);
-    imm litGroups = [casterLayout, materialLayout];
-    mut layoutLit = device.createPipelineLayout(&litGroups, 4u32);
-    imm pbrGroups = [casterLayout, pbrMaterialLayout];
-    mut layoutPbr = device.createPipelineLayout(&pbrGroups, 4u32);
+    var shaderCast = device.createShaderModule(&SHADOWCAST_SPIRV);
+    var shaderCutLit = device.createShaderModule(&SHADOWCUTLIT_SPIRV);
+    var shaderCutPbr = device.createShaderModule(&SHADOWCUTPBR_SPIRV);
+    let opaqueGroups = [casterLayout];
+    var layoutOpaque = device.createPipelineLayout(&opaqueGroups, 4u32);
+    let litGroups = [casterLayout, materialLayout];
+    var layoutLit = device.createPipelineLayout(&litGroups, 4u32);
+    let pbrGroups = [casterLayout, pbrMaterialLayout];
+    var layoutPbr = device.createPipelineLayout(&pbrGroups, 4u32);
 
     // The vertex streams each variant reads, each in a buffer of its own
     // (the locations are those Slang gives its inputs, in order)
-    imm positionAt0 = [new VertexAttribute(VERTEX_FORMAT_FLOAT32X3, 0u64, 0u32)];
-    imm uvAt1 = [new VertexAttribute(VERTEX_FORMAT_FLOAT32X2, 0u64, 1u32)];
-    imm jointsAt1 = [new VertexAttribute(VERTEX_FORMAT_UINT8X4, 0u64, 1u32)];
-    imm weightsAt2 = [new VertexAttribute(VERTEX_FORMAT_UNORM8X4, 0u64, 2u32)];
-    imm jointsAt2 = [new VertexAttribute(VERTEX_FORMAT_UINT8X4, 0u64, 2u32)];
-    imm weightsAt3 = [new VertexAttribute(VERTEX_FORMAT_UNORM8X4, 0u64, 3u32)];
-    imm swayAt1 = [new VertexAttribute(VERTEX_FORMAT_FLOAT32X4, 0u64, 1u32)];
-    imm swayAt2 = [new VertexAttribute(VERTEX_FORMAT_FLOAT32X4, 0u64, 2u32)];
-    imm position = new VertexBufferLayout(arrayStride: 12u64, attributes: &positionAt0);
-    imm uv = new VertexBufferLayout(arrayStride: 8u64, attributes: &uvAt1);
-    imm opaqueBuffers = [position];
-    imm opaqueSkinnedBuffers = [position, new VertexBufferLayout(arrayStride: 4u64, attributes: &jointsAt1),
+    let positionAt0 = [new VertexAttribute(VERTEX_FORMAT_FLOAT32X3, 0u64, 0u32)];
+    let uvAt1 = [new VertexAttribute(VERTEX_FORMAT_FLOAT32X2, 0u64, 1u32)];
+    let jointsAt1 = [new VertexAttribute(VERTEX_FORMAT_UINT8X4, 0u64, 1u32)];
+    let weightsAt2 = [new VertexAttribute(VERTEX_FORMAT_UNORM8X4, 0u64, 2u32)];
+    let jointsAt2 = [new VertexAttribute(VERTEX_FORMAT_UINT8X4, 0u64, 2u32)];
+    let weightsAt3 = [new VertexAttribute(VERTEX_FORMAT_UNORM8X4, 0u64, 3u32)];
+    let swayAt1 = [new VertexAttribute(VERTEX_FORMAT_FLOAT32X4, 0u64, 1u32)];
+    let swayAt2 = [new VertexAttribute(VERTEX_FORMAT_FLOAT32X4, 0u64, 2u32)];
+    let position = new VertexBufferLayout(arrayStride: 12u64, attributes: &positionAt0);
+    let uv = new VertexBufferLayout(arrayStride: 8u64, attributes: &uvAt1);
+    let opaqueBuffers = [position];
+    let opaqueSkinnedBuffers = [position, new VertexBufferLayout(arrayStride: 4u64, attributes: &jointsAt1),
       new VertexBufferLayout(arrayStride: 4u64, attributes: &weightsAt2)];
-    imm cutBuffers = [position, uv];
-    imm cutSkinnedBuffers = [position, uv, new VertexBufferLayout(arrayStride: 4u64, attributes: &jointsAt2),
+    let cutBuffers = [position, uv];
+    let cutSkinnedBuffers = [position, uv, new VertexBufferLayout(arrayStride: 4u64, attributes: &jointsAt2),
       new VertexBufferLayout(arrayStride: 4u64, attributes: &weightsAt3)];
-    imm swayBuffers = [position, new VertexBufferLayout(arrayStride: 16u64, attributes: &swayAt1)];
-    imm swayCutBuffers = [position, uv, new VertexBufferLayout(arrayStride: 16u64, attributes: &swayAt2)];
+    let swayBuffers = [position, new VertexBufferLayout(arrayStride: 16u64, attributes: &swayAt1)];
+    let swayCutBuffers = [position, uv, new VertexBufferLayout(arrayStride: 16u64, attributes: &swayAt2)];
 
-    imm opaqueDesc = new RenderPipelineDescriptor(layout: &layoutOpaque, vertexModule: &shaderCast,
+    let opaqueDesc = new RenderPipelineDescriptor(layout: &layoutOpaque, vertexModule: &shaderCast,
       vertexEntryPoint: "vertexOpaque", buffers: &opaqueBuffers, fragmentModule: &shaderCast,
       fragmentEntryPoint: "fragmentOpaque", colorFormat: TEXTURE_FORMAT_UNDEFINED, cullMode: CULL_MODE_NONE,
       depthFormat: TEXTURE_FORMAT_DEPTH32_FLOAT, depthWriteEnabled: true, depthCompare: COMPARE_FUNCTION_LESS,
       depthBiasSlopeScale: slopeBias);
-    mut opaque = device.createRenderPipeline(&opaqueDesc);
-    imm opaqueSkinnedDesc = new RenderPipelineDescriptor(layout: &layoutOpaque, vertexModule: &shaderCast,
+    var opaque = device.createRenderPipeline(&opaqueDesc);
+    let opaqueSkinnedDesc = new RenderPipelineDescriptor(layout: &layoutOpaque, vertexModule: &shaderCast,
       vertexEntryPoint: "vertexOpaqueSkinned", buffers: &opaqueSkinnedBuffers, fragmentModule: &shaderCast,
       fragmentEntryPoint: "fragmentOpaque", colorFormat: TEXTURE_FORMAT_UNDEFINED, cullMode: CULL_MODE_NONE,
       depthFormat: TEXTURE_FORMAT_DEPTH32_FLOAT, depthWriteEnabled: true, depthCompare: COMPARE_FUNCTION_LESS,
       depthBiasSlopeScale: slopeBias);
-    mut opaqueSkinned = device.createRenderPipeline(&opaqueSkinnedDesc);
+    var opaqueSkinned = device.createRenderPipeline(&opaqueSkinnedDesc);
 
-    imm litCutDesc = new RenderPipelineDescriptor(layout: &layoutLit, vertexModule: &shaderCutLit,
+    let litCutDesc = new RenderPipelineDescriptor(layout: &layoutLit, vertexModule: &shaderCutLit,
       vertexEntryPoint: "vertexCut", buffers: &cutBuffers, fragmentModule: &shaderCutLit,
       fragmentEntryPoint: "fragmentCut", colorFormat: TEXTURE_FORMAT_UNDEFINED, cullMode: CULL_MODE_NONE,
       depthFormat: TEXTURE_FORMAT_DEPTH32_FLOAT, depthWriteEnabled: true, depthCompare: COMPARE_FUNCTION_LESS,
       depthBiasSlopeScale: slopeBias);
-    mut litCut = device.createRenderPipeline(&litCutDesc);
-    imm litCutSkinnedDesc = new RenderPipelineDescriptor(layout: &layoutLit, vertexModule: &shaderCutLit,
+    var litCut = device.createRenderPipeline(&litCutDesc);
+    let litCutSkinnedDesc = new RenderPipelineDescriptor(layout: &layoutLit, vertexModule: &shaderCutLit,
       vertexEntryPoint: "vertexCutSkinned", buffers: &cutSkinnedBuffers, fragmentModule: &shaderCutLit,
       fragmentEntryPoint: "fragmentCut", colorFormat: TEXTURE_FORMAT_UNDEFINED, cullMode: CULL_MODE_NONE,
       depthFormat: TEXTURE_FORMAT_DEPTH32_FLOAT, depthWriteEnabled: true, depthCompare: COMPARE_FUNCTION_LESS,
       depthBiasSlopeScale: slopeBias);
-    mut litCutSkinned = device.createRenderPipeline(&litCutSkinnedDesc);
+    var litCutSkinned = device.createRenderPipeline(&litCutSkinnedDesc);
 
-    imm pbrCutDesc = new RenderPipelineDescriptor(layout: &layoutPbr, vertexModule: &shaderCutPbr,
+    let pbrCutDesc = new RenderPipelineDescriptor(layout: &layoutPbr, vertexModule: &shaderCutPbr,
       vertexEntryPoint: "vertexCut", buffers: &cutBuffers, fragmentModule: &shaderCutPbr,
       fragmentEntryPoint: "fragmentCut", colorFormat: TEXTURE_FORMAT_UNDEFINED, cullMode: CULL_MODE_NONE,
       depthFormat: TEXTURE_FORMAT_DEPTH32_FLOAT, depthWriteEnabled: true, depthCompare: COMPARE_FUNCTION_LESS,
       depthBiasSlopeScale: slopeBias);
-    mut pbrCut = device.createRenderPipeline(&pbrCutDesc);
-    imm pbrCutSkinnedDesc = new RenderPipelineDescriptor(layout: &layoutPbr, vertexModule: &shaderCutPbr,
+    var pbrCut = device.createRenderPipeline(&pbrCutDesc);
+    let pbrCutSkinnedDesc = new RenderPipelineDescriptor(layout: &layoutPbr, vertexModule: &shaderCutPbr,
       vertexEntryPoint: "vertexCutSkinned", buffers: &cutSkinnedBuffers, fragmentModule: &shaderCutPbr,
       fragmentEntryPoint: "fragmentCut", colorFormat: TEXTURE_FORMAT_UNDEFINED, cullMode: CULL_MODE_NONE,
       depthFormat: TEXTURE_FORMAT_DEPTH32_FLOAT, depthWriteEnabled: true, depthCompare: COMPARE_FUNCTION_LESS,
       depthBiasSlopeScale: slopeBias);
-    mut pbrCutSkinned = device.createRenderPipeline(&pbrCutSkinnedDesc);
-    imm swayDesc = new RenderPipelineDescriptor(layout: &layoutPbr, vertexModule: &shaderCutPbr,
+    var pbrCutSkinned = device.createRenderPipeline(&pbrCutSkinnedDesc);
+    let swayDesc = new RenderPipelineDescriptor(layout: &layoutPbr, vertexModule: &shaderCutPbr,
       vertexEntryPoint: "vertexSway", buffers: &swayBuffers, fragmentModule: &shaderCutPbr,
       fragmentEntryPoint: "fragmentOpaque", colorFormat: TEXTURE_FORMAT_UNDEFINED, cullMode: CULL_MODE_NONE,
       depthFormat: TEXTURE_FORMAT_DEPTH32_FLOAT, depthWriteEnabled: true, depthCompare: COMPARE_FUNCTION_LESS,
       depthBiasSlopeScale: slopeBias);
-    mut sway = device.createRenderPipeline(&swayDesc);
-    imm swayCutDesc = new RenderPipelineDescriptor(layout: &layoutPbr, vertexModule: &shaderCutPbr,
+    var sway = device.createRenderPipeline(&swayDesc);
+    let swayCutDesc = new RenderPipelineDescriptor(layout: &layoutPbr, vertexModule: &shaderCutPbr,
       vertexEntryPoint: "vertexCutSway", buffers: &swayCutBuffers, fragmentModule: &shaderCutPbr,
       fragmentEntryPoint: "fragmentCut", colorFormat: TEXTURE_FORMAT_UNDEFINED, cullMode: CULL_MODE_NONE,
       depthFormat: TEXTURE_FORMAT_DEPTH32_FLOAT, depthWriteEnabled: true, depthCompare: COMPARE_FUNCTION_LESS,
       depthBiasSlopeScale: slopeBias);
-    mut swayCut = device.createRenderPipeline(&swayCutDesc);
+    var swayCut = device.createRenderPipeline(&swayCutDesc);
     new ShadowCasters(shaderCast, shaderCutLit, shaderCutPbr, layoutOpaque, layoutLit, layoutPbr, opaque,
       opaqueSkinned, litCut, litCutSkinned, pbrCut, pbrCutSkinned, sway, swayCut);
   }
@@ -433,8 +433,8 @@ pub struct ShadowState {
   // renderer's frame group's)
   pub fn create(device &mut Device, materialLayout &BindGroupLayout, pbrMaterialLayout &BindGroupLayout,
       frameUniforms &Buffer, instances &Buffer, bones &Buffer, boneBases &Buffer) ShadowState {
-    imm settings = new ShadowSettings();
-    imm casterEntries = [new BindGroupLayoutEntry(binding: 0u32, visibility: SHADER_STAGE_VERTEX),
+    let settings = new ShadowSettings();
+    let casterEntries = [new BindGroupLayoutEntry(binding: 0u32, visibility: SHADER_STAGE_VERTEX),
       new BindGroupLayoutEntry(binding: 1u32, visibility: SHADER_STAGE_VERTEX,
         bufferType: BUFFER_BINDING_TYPE_READ_ONLY_STORAGE),
       new BindGroupLayoutEntry(binding: 2u32, visibility: SHADER_STAGE_VERTEX,
@@ -442,23 +442,23 @@ pub struct ShadowState {
       new BindGroupLayoutEntry(binding: 3u32, visibility: SHADER_STAGE_VERTEX,
         bufferType: BUFFER_BINDING_TYPE_READ_ONLY_STORAGE),
       new BindGroupLayoutEntry(binding: 4u32, visibility: SHADER_STAGE_VERTEX)];
-    mut casterLayout = device.createBindGroupLayout(&casterEntries);
-    mut params = device.createBuffer(SHADOW_PARAMS_BYTES, BUFFER_USAGE_UNIFORM | BUFFER_USAGE_COPY_DST);
-    imm zeros = new Array[f32, 484] <- fill 0f;
+    var casterLayout = device.createBindGroupLayout(&casterEntries);
+    var params = device.createBuffer(SHADOW_PARAMS_BYTES, BUFFER_USAGE_UNIFORM | BUFFER_USAGE_COPY_DST);
+    let zeros = new Array[f32, 484] <- fill 0f;
     device.queue.writeBuffer(&params, 0u64, &zeros as *u8, SHADOW_PARAMS_BYTES);
-    imm samplerDesc = new SamplerDescriptor(magFilter: FILTER_MODE_LINEAR, minFilter: FILTER_MODE_LINEAR,
+    let samplerDesc = new SamplerDescriptor(magFilter: FILTER_MODE_LINEAR, minFilter: FILTER_MODE_LINEAR,
       addressModeU: ADDRESS_MODE_CLAMP_TO_EDGE, addressModeV: ADDRESS_MODE_CLAMP_TO_EDGE,
       addressModeW: ADDRESS_MODE_CLAMP_TO_EDGE, compare: COMPARE_FUNCTION_LESS_EQUAL);
-    mut sampler = device.createSampler(&samplerDesc);
-    imm mapDesc = new TextureDescriptor(1u32, 1u32, TEXTURE_FORMAT_DEPTH32_FLOAT,
+    var sampler = device.createSampler(&samplerDesc);
+    let mapDesc = new TextureDescriptor(1u32, 1u32, TEXTURE_FORMAT_DEPTH32_FLOAT,
       TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_TEXTURE_BINDING, 1u32, 1u32);
-    mut map = device.createTexture(&mapDesc);
-    imm groupEntries = [BindGroupEntry.buffer(0u32, frameUniforms), BindGroupEntry.buffer(1u32, instances),
+    var map = device.createTexture(&mapDesc);
+    let groupEntries = [BindGroupEntry.buffer(0u32, frameUniforms), BindGroupEntry.buffer(1u32, instances),
       BindGroupEntry.buffer(2u32, bones), BindGroupEntry.buffer(3u32, boneBases), BindGroupEntry.buffer(4u32, &params)];
-    mut casterGroup = device.createBindGroup(&casterLayout, &groupEntries);
-    mut casters = ShadowCasters.create(device, &casterLayout, materialLayout, pbrMaterialLayout, settings.slopeBias);
-    imm camera = Camera.make();
-    imm cascades = computeCascades(&camera, 1., new Vec3(0., -1., 0.), &settings);
+    var casterGroup = device.createBindGroup(&casterLayout, &groupEntries);
+    var casters = ShadowCasters.create(device, &casterLayout, materialLayout, pbrMaterialLayout, settings.slopeBias);
+    let camera = Camera.make();
+    let cascades = computeCascades(&camera, 1., new Vec3(0., -1., 0.), &settings);
     new ShadowState(settings, params, sampler, map, casterLayout, casterGroup, casters, cascades, 0u32, 0u64, 0u32);
   }
 
@@ -468,7 +468,7 @@ pub struct ShadowState {
 
   // A view of the whole map as an array, what the frame group binds
   pub fn arrayView(self &) TextureView {
-    imm desc = new TextureViewDescriptor(dimension: TEXTURE_VIEW_DIMENSION_2D_ARRAY);
+    let desc = new TextureViewDescriptor(dimension: TEXTURE_VIEW_DIMENSION_2D_ARRAY);
     map.createViewWith(&desc);
   }
 
@@ -476,7 +476,7 @@ pub struct ShadowState {
   // replaced
   pub fn remakeCasterGroup(self &mut, device &mut Device, frameUniforms &Buffer, instances &Buffer, bones &Buffer,
       boneBases &Buffer) {
-    imm entries = [BindGroupEntry.buffer(0u32, frameUniforms), BindGroupEntry.buffer(1u32, instances),
+    let entries = [BindGroupEntry.buffer(0u32, frameUniforms), BindGroupEntry.buffer(1u32, instances),
       BindGroupEntry.buffer(2u32, bones), BindGroupEntry.buffer(3u32, boneBases), BindGroupEntry.buffer(4u32, &params)];
     casterGroup = device.createBindGroup(&casterLayout, &entries);
   }
@@ -484,19 +484,19 @@ pub struct ShadowState {
   // The map made again: 'layers' layers of 'size' square, or, for 0 layers,
   // the 1 x 1 stand-in
   pub fn remakeMap(self &mut, device &mut Device, size u32, layers u32) {
-    mut side = size;
-    mut count = layers;
+    var side = size;
+    var count = layers;
     if count == 0u32 {
       side = 1u32;
       count = 1u32;
     }
-    imm desc = new TextureDescriptor(side, side, TEXTURE_FORMAT_DEPTH32_FLOAT,
+    let desc = new TextureDescriptor(side, side, TEXTURE_FORMAT_DEPTH32_FLOAT,
       TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_TEXTURE_BINDING, 1u32, count);
     // The old map's first layout change may still be in the commands the
     // frame has recorded and not submitted, and a texture dropped before
     // that is submitted spoils them (gpu.md, "Lifetimes"): submit them
     // first, with nothing of ours in them
-    mut flush = device.createCommandEncoder();
+    var flush = device.createCommandEncoder();
     device.queue.submit(flush.finish());
     map = device.createTexture(&desc);
   }
@@ -504,7 +504,7 @@ pub struct ShadowState {
 
 // The shadow settings kept within what the shaders and the map support
 fn clampShadowSettings(s &ShadowSettings) ShadowSettings {
-  mut c = *s;
+  var c = *s;
   if c.cascades < 1u32 { c.cascades = 1u32; }
   if c.cascades > MAX_CASCADES { c.cascades = MAX_CASCADES; }
   if c.mapSize < 64u32 { c.mapSize = 64u32; }
@@ -525,12 +525,12 @@ fn clampShadowSettings(s &ShadowSettings) ShadowSettings {
 // shadow pass, or CASTER_NONE if it casts nothing
 fn casterKindOf(r &Renderer, item &DrawItem, m &GpuMesh) u32 {
   if !item.castsShadow or !r.materials.alive(item.material.slot) { return CASTER_NONE; }
-  imm ms = r.materials[item.material.slot];
-  imm skinned = m.isSkinned();
+  let ms = r.materials[item.material.slot];
+  let skinned = m.isSkinned();
   if ms.kind == MATERIAL_CUSTOM { return CASTER_NONE; }
   if ms.kind == MATERIAL_PBR {
     if ms.pbr.alphaMode == ALPHA_BLEND { return CASTER_NONE; }
-    imm cut = ms.pbr.alphaMode == ALPHA_MASK;
+    let cut = ms.pbr.alphaMode == ALPHA_MASK;
     // A flutter material on a mesh that carries its leaves' data
     if !skinned and ms.pbr.flutter > 0. and m.sway.isValid() {
       return if cut { CASTER_SWAY_CUT; } else { CASTER_SWAY; };
@@ -548,25 +548,25 @@ fn casterKindOf(r &Renderer, item &DrawItem, m &GpuMesh) u32 {
 // beyond the window's far plane, or to its side, rules it out; in front of
 // the near plane it still casts)
 fn batchTouchesCascade(r &Renderer, list &DrawList, batch &DrawBatch, c usize) bool {
-  imm matrix = r.shadow.cascades.matrices[c];
-  imm radius = r.shadow.cascades.radius[c];
-  imm range = r.shadow.cascades.depthRange[c];
-  mut j = 0u32;
+  let matrix = r.shadow.cascades.matrices[c];
+  let radius = r.shadow.cascades.radius[c];
+  let range = r.shadow.cascades.depthRange[c];
+  var j = 0u32;
   while j < batch.count {
-    imm item = list.items[usize.from(r.keys[usize.from(batch.first + j)].item)];
-    imm m = r.meshes[item.mesh.slot].current();
-    imm center = item.model * m.center;
+    let item = list.items[usize.from(r.keys[usize.from(batch.first + j)].item)];
+    let m = r.meshes[item.mesh.slot].current();
+    let center = item.model * m.center;
     // The most the copy's matrix stretches the sphere (the length of its
     // longest column)
-    imm sx = item.model.transformVector(new Vec3(1., 0., 0.)).length();
-    imm sy = item.model.transformVector(new Vec3(0., 1., 0.)).length();
-    imm sz = item.model.transformVector(new Vec3(0., 0., 1.)).length();
-    mut s = sx;
+    let sx = item.model.transformVector(new Vec3(1., 0., 0.)).length();
+    let sy = item.model.transformVector(new Vec3(0., 1., 0.)).length();
+    let sz = item.model.transformVector(new Vec3(0., 0., 1.)).length();
+    var s = sx;
     if sy > s { s = sy; }
     if sz > s { s = sz; }
-    imm rw = m.radius * s;
-    imm p = matrix * center;
-    imm side = 1. + rw / radius;
+    let rw = m.radius * s;
+    let p = matrix * center;
+    let side = 1. + rw / radius;
     if p.x >= -side and p.x <= side and p.y >= -side and p.y <= side and p.z - rw / range <= 1. { return true; }
     j = j + 1u32;
   }
@@ -578,7 +578,7 @@ fn batchTouchesCascade(r &Renderer, list &DrawList, batch &DrawBatch, c usize) b
 // pass's own if the scene gathered casters for it (visibility.cone), else the
 // main view's
 fn passBatches(r &Renderer, index usize) SetRange {
-  imm n = r.vis.sets.len();
+  let n = r.vis.sets.len();
   if n > 1usize + index { return *r.vis.sets[1usize + index]; }
   if n > 0usize { return *r.vis.sets[0usize]; }
   new SetRange(0usize, r.batches.len());
@@ -593,27 +593,27 @@ fn recordShadowPasses(r &mut Renderer, device &mut Device, encoder &mut CommandE
   r.shadow.drawCalls = 0u32;
   r.shadow.triangles = 0u64;
   r.shadow.passes = 0u32;
-  imm count = r.shadow.cascades.count;
-  mut c = 0u32;
+  let count = r.shadow.cascades.count;
+  var c = 0u32;
   while c < count {
-    imm viewDesc = new TextureViewDescriptor(dimension: TEXTURE_VIEW_DIMENSION_2D, baseArrayLayer: c,
+    let viewDesc = new TextureViewDescriptor(dimension: TEXTURE_VIEW_DIMENSION_2D, baseArrayLayer: c,
       arrayLayerCount: 1u32);
-    imm attachment = new RenderPassDepthStencilAttachment(view: r.shadow.map.createViewWith(&viewDesc),
+    let attachment = new RenderPassDepthStencilAttachment(view: r.shadow.map.createViewWith(&viewDesc),
       depthLoadOp: LOAD_OP_CLEAR, depthStoreOp: STORE_OP_STORE);
-    mut pass = encoder.beginDepthPass(&attachment);
-    imm cascade = c;
-    mut bound = CASTER_NONE;
-    mut boundMaterial = Ref[MaterialSlot].none();
-    imm range = passBatches(r, usize.from(c));
-    mut b = range.first;
+    var pass = encoder.beginDepthPass(&attachment);
+    let cascade = c;
+    var bound = CASTER_NONE;
+    var boundMaterial = Ref[MaterialSlot].none();
+    let range = passBatches(r, usize.from(c));
+    var b = range.first;
     while b < range.end {
-      imm batch = *r.batches[b];
+      let batch = *r.batches[b];
       b = b + 1usize;
       if batch.layer != LAYER_OPAQUE or batch.noShadow { continue; }
-      imm first = *r.keys[usize.from(batch.first)];
-      imm item = list.items[usize.from(first.item)];
-      imm m = r.meshes[item.mesh.slot].current();
-      imm kind = casterKindOf(r, item, m);
+      let first = *r.keys[usize.from(batch.first)];
+      let item = list.items[usize.from(first.item)];
+      let m = r.meshes[item.mesh.slot].current();
+      let kind = casterKindOf(r, item, m);
       if kind == CASTER_NONE { continue; }
       if !batchTouchesCascade(r, list, &batch, usize.from(cascade)) { continue; }
       if bound != kind {
@@ -652,9 +652,9 @@ fn recordShadowPasses(r &mut Renderer, device &mut Device, encoder &mut CommandE
         pass.setVertexBuffer(2u32, &m.sway, 0u64);
       }
       pass.setIndexBuffer(&m.indices, INDEX_FORMAT_UINT32, 0u64);
-      mut g = 0usize;
+      var g = 0usize;
       while g < m.groups.len() {
-        imm group = m.groups[g];
+        let group = m.groups[g];
         pass.drawIndexed(group.count, batch.count, group.start, 0i32, batch.firstInstance);
         r.shadow.triangles = r.shadow.triangles + u64.from(group.count / 3u32) * u64.from(batch.count);
         r.shadow.drawCalls = r.shadow.drawCalls + 1u32;
@@ -671,7 +671,7 @@ fn recordShadowPasses(r &mut Renderer, device &mut Device, encoder &mut CommandE
 
 // spirv-begin shadowcast.spv SHADOWCAST_SPIRV
 // Written by tools/shaders/shaders.py from shadowcast.slang (sha256 a63497d47bca8b0edfe3f669ca8c2feb24905690b040e1474810cbd2426bc716): do not edit.
-imm SHADOWCAST_SPIRV Array[u32, 1668] = [
+let SHADOWCAST_SPIRV Array[u32, 1668] = [
   0x07230203u32, 0x00010500u32, 0x00280000u32, 0x0000025au32, 0x00000000u32, 0x00020011u32,
   0x00000001u32, 0x000b000au32, 0x5f565053u32, 0x5f52484bu32, 0x726f7473u32, 0x5f656761u32,
   0x66667562u32, 0x735f7265u32, 0x61726f74u32, 0x635f6567u32, 0x7373616cu32, 0x00000000u32,
@@ -955,7 +955,7 @@ imm SHADOWCAST_SPIRV Array[u32, 1668] = [
 
 // spirv-begin shadowcutlit.spv SHADOWCUTLIT_SPIRV
 // Written by tools/shaders/shaders.py from shadowcutlit.slang (sha256 50004ba7ad58c6b5c0ab405aed6148fddf27b49fff152cc7688a663384b3c973): do not edit.
-imm SHADOWCUTLIT_SPIRV Array[u32, 2224] = [
+let SHADOWCUTLIT_SPIRV Array[u32, 2224] = [
   0x07230203u32, 0x00010500u32, 0x00280000u32, 0x000002d4u32, 0x00000000u32, 0x00020011u32,
   0x00000001u32, 0x000b000au32, 0x5f565053u32, 0x5f52484bu32, 0x726f7473u32, 0x5f656761u32,
   0x66667562u32, 0x735f7265u32, 0x61726f74u32, 0x635f6567u32, 0x7373616cu32, 0x00000000u32,
@@ -1332,7 +1332,7 @@ imm SHADOWCUTLIT_SPIRV Array[u32, 2224] = [
 
 // spirv-begin shadowcutpbr.spv SHADOWCUTPBR_SPIRV
 // Written by tools/shaders/shaders.py from shadowcutpbr.slang (sha256 c05d4a695fdb8afc5021b85429c8c257414a5616583ab0b8ea2f9110d9ffd974): do not edit.
-imm SHADOWCUTPBR_SPIRV Array[u32, 3640] = [
+let SHADOWCUTPBR_SPIRV Array[u32, 3640] = [
   0x07230203u32, 0x00010500u32, 0x00280000u32, 0x00000407u32, 0x00000000u32, 0x00020011u32,
   0x00000001u32, 0x000b000au32, 0x5f565053u32, 0x5f52484bu32, 0x726f7473u32, 0x5f656761u32,
   0x66667562u32, 0x735f7265u32, 0x61726f74u32, 0x635f6567u32, 0x7373616cu32, 0x00000000u32,

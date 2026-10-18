@@ -90,7 +90,7 @@ fn pad2(b &mut List[u8]) {
 }
 
 fn twoByTwo(topDown bool) List[u8] {
-  mut b = List[u8].empty();
+  var b = List[u8].empty();
   header(&mut b, 2, if topDown {-2;} else {2;}, 24, 0, 40, 16);
   if topDown {
     pixel(&mut b, 0, 0, 255);
@@ -126,14 +126,14 @@ fn checkTwoByTwo(img &Image, how &Array[u8]) {
 }
 
 fn decoding() {
-  imm up = twoByTwo(false);
-  imm a = Image.fromBmp(up.view());
+  let up = twoByTwo(false);
+  let a = Image.fromBmp(up.view());
   checkTwoByTwo(&a, "2x2 bottom-up");
-  imm down = twoByTwo(true);
-  imm b = Image.fromBmp(down.view());
+  let down = twoByTwo(true);
+  let b = Image.fromBmp(down.view());
   checkTwoByTwo(&b, "2x2 top-down");
 
-  mut odd = List[u8].empty();
+  var odd = List[u8].empty();
   header(&mut odd, 3, 1, 24, 0, 40, 12);
   pixel(&mut odd, 1, 2, 3);
   pixel(&mut odd, 4, 5, 6);
@@ -141,93 +141,93 @@ fn decoding() {
   odd.push(0u8);
   odd.push(0u8);
   odd.push(0u8);
-  imm c = Image.fromBmp(odd.view());
+  let c = Image.fromBmp(odd.view());
   expectInt(i64.from(c.width), 3, "3x1 width");
   rgb(&c, 0, 0, 3, 2, 1, "3x1 first pixel");
   rgb(&c, 2, 0, 9, 8, 7, "3x1 last pixel");
 
-  mut plain = List[u8].empty();
+  var plain = List[u8].empty();
   header(&mut plain, 1, 1, 32, 0, 40, 4);
   plain.push(10u8);
   plain.push(20u8);
   plain.push(30u8);
   plain.push(40u8);
-  imm d = Image.fromBmp(plain.view());
+  let d = Image.fromBmp(plain.view());
   expectInt(i64.from(d.channels), 4, "32-bit channels");
   rgb(&d, 0, 0, 30, 20, 10, "32-bit color");
   expectInt(i64.from(d.at(0, 0, 3)), 255, "32-bit without masks is opaque");
 
-  mut masked = List[u8].empty();
+  var masked = List[u8].empty();
   header(&mut masked, 1, 1, 32, 3, 56, 4);
   masked.push(10u8);
   masked.push(20u8);
   masked.push(30u8);
   masked.push(40u8);
-  imm e = Image.fromBmp(masked.view());
+  let e = Image.fromBmp(masked.view());
   rgb(&e, 0, 0, 30, 20, 10, "masked color");
   expectInt(i64.from(e.at(0, 0, 3)), 40, "masked alpha");
 }
 
 fn refusals() {
-  mut notBmp = twoByTwo(false);
+  var notBmp = twoByTwo(false);
   notBmp.set(1usize, 'X');
-  imm a = Image.fromBmp(notBmp.view());
+  let a = Image.fromBmp(notBmp.view());
   expect(a.isEmpty(), "not a BMP");
-  imm short = twoByTwo(false);
-  imm sv = short.view();
-  imm b = Image.fromBmp(&sv[..<40]);
+  let short = twoByTwo(false);
+  let sv = short.view();
+  let b = Image.fromBmp(&sv[..<40]);
   expect(b.isEmpty(), "too short for its headers");
-  imm cut = twoByTwo(false);
-  imm cv = cut.view();
-  imm c = Image.fromBmp(&cv[..<62]);
+  let cut = twoByTwo(false);
+  let cv = cut.view();
+  let c = Image.fromBmp(&cv[..<62]);
   expect(c.isEmpty(), "rows cut short");
 
-  mut eight = List[u8].empty();
+  var eight = List[u8].empty();
   header(&mut eight, 2, 2, 8, 0, 40, 8);
-  mut i = 0;
+  var i = 0;
   while i < 8 { eight.push(0u8); i = i + 1; }
-  imm d = Image.fromBmp(eight.view());
+  let d = Image.fromBmp(eight.view());
   expect(d.isEmpty(), "8 bits a pixel");
 
-  mut rle = twoByTwo(false);
+  var rle = twoByTwo(false);
   rle.set(30usize, 1u8);
-  imm e = Image.fromBmp(rle.view());
+  let e = Image.fromBmp(rle.view());
   expect(e.isEmpty(), "compressed");
 
-  mut narrow = twoByTwo(false);
+  var narrow = twoByTwo(false);
   narrow.set(18usize, 0u8);
-  imm f = Image.fromBmp(narrow.view());
+  let f = Image.fromBmp(narrow.view());
   expect(f.isEmpty(), "no width");
 
-  imm g = Image.empty();
+  let g = Image.empty();
   expect(g.isEmpty(), "the empty image");
 }
 
 fn files() {
-  imm bytes = twoByTwo(false);
-  imm v = bytes.view();
-  imm f = libc.fopen("two.bmp", "wb");
+  let bytes = twoByTwo(false);
+  let v = bytes.view();
+  let f = libc.fopen("two.bmp", "wb");
   requireBool(!f, false, "a file to write");
   libc.fwrite(v as *u8, 1usize, v.len, f);
   libc.fclose(f);
-  imm img = Image.load("two.bmp");
+  let img = Image.load("two.bmp");
   checkTwoByTwo(&img, "2x2 from a file");
   // A Path in a variable is lent, not given away: it is as it was after the call
-  imm named = Path.from("two.bmp");
-  imm viaPath = Image.load(&named);
+  let named = Path.from("two.bmp");
+  let viaPath = Image.load(&named);
   checkTwoByTwo(&viaPath, "2x2 from a file named by a Path variable");
   expectStr(named.view(), "two.bmp", "and the Path is unchanged by the load");
   libc.remove("two.bmp");
-  imm missing = Image.load("missing.bmp");
+  let missing = Image.load("missing.bmp");
   expect(missing.isEmpty(), "a file that is not there");
-  imm gone = Path.from("missing.bmp");
-  imm missingToo = Image.load(&gone);
+  let gone = Path.from("missing.bmp");
+  let missingToo = Image.load(&gone);
   expect(missingToo.isEmpty(), "a file that is not there, named by a Path variable");
   expectStr(gone.view(), "missing.bmp", "and the Path is unchanged by the failure");
 }
 
 fn checker() {
-  imm img = Image.checker(4, 2, 2, 1, new Color(1., 0., 0., 1.), new Color(0., 0.5, 1., 1.));
+  let img = Image.checker(4, 2, 2, 1, new Color(1., 0., 0., 1.), new Color(0., 0.5, 1., 1.));
   expectInt(i64.from(img.pixels.len()), 24, "checker bytes");
   rgb(&img, 0, 0, 255, 0, 0, "checker (0, 0)");
   rgb(&img, 1, 1, 255, 0, 0, "checker (1, 1)");
@@ -240,9 +240,9 @@ fn le32(b &List[u8], at usize) i64 {
 }
 
 fn writing() {
-  imm up = twoByTwo(false);
-  imm a = Image.fromBmp(up.view());
-  imm bytes = a.toBmp();
+  let up = twoByTwo(false);
+  let a = Image.fromBmp(up.view());
+  let bytes = a.toBmp();
   expectInt(i64.from(bytes.len()), 70, "2x2 written: 54 bytes of headers, 2 rows of 8");
   expectInt(i64.from(*bytes[0usize]), 66, "'B'");
   expectInt(i64.from(*bytes[1usize]), 77, "'M'");
@@ -253,27 +253,27 @@ fn writing() {
   expectInt(i64.from(*bytes[28usize]), 24, "24 bits a pixel");
   expectInt(i64.from(*bytes[54usize]), 255, "the first pixel stored, blue: its blue byte first");
   expectInt(i64.from(*bytes[56usize]), 0, "and its red byte last");
-  imm back = Image.fromBmp(bytes.view());
+  let back = Image.fromBmp(bytes.view());
   checkTwoByTwo(&back, "2x2 written and read back");
 
-  imm odd = Image.checker(3, 1, 3, 1, new Color(1., 0., 0., 1.), new Color(0., 0., 1., 1.));
-  imm oddBytes = odd.toBmp();
+  let odd = Image.checker(3, 1, 3, 1, new Color(1., 0., 0., 1.), new Color(0., 0., 1., 1.));
+  let oddBytes = odd.toBmp();
   expectInt(i64.from(oddBytes.len()), 66, "3x1 written: a row of 9 bytes padded to 12");
-  imm oddBack = Image.fromBmp(oddBytes.view());
+  let oddBack = Image.fromBmp(oddBytes.view());
   rgb(&oddBack, 1, 0, 0, 0, 255, "3x1 read back: the middle pixel, blue");
 
   expectBool(a.save("written.bmp"), true, "saved to a file");
-  imm loaded = Image.load("written.bmp");
+  let loaded = Image.load("written.bmp");
   checkTwoByTwo(&loaded, "2x2 saved and loaded");
   libc.remove("written.bmp");
 
-  imm out = Path.from("written-path.bmp");
+  let out = Path.from("written-path.bmp");
   expectBool(a.save(&out), true, "saved to a Path variable's file");
   expectStr(out.view(), "written-path.bmp", "and the Path is unchanged by the save");
-  imm loadedPath = Image.load(&out);
+  let loadedPath = Image.load(&out);
   checkTwoByTwo(&loadedPath, "2x2 saved to a Path and loaded");
   libc.remove("written-path.bmp");
-  imm nowhere = Path.from("no such folder/written.bmp");
+  let nowhere = Path.from("no such folder/written.bmp");
   expectBool(a.save(&nowhere), false, "a file that cannot be made");
   expectStr(nowhere.view(), "no such folder/written.bmp", "and the Path is unchanged by the failure");
 }
@@ -282,15 +282,15 @@ fn writing() {
 // (1, 2, 3, 4) (5, 6, 7, 8) above (9, 10, 11, 12) (13, 14, 15, 16). An Image
 // is bottom row first, so its (0, 0) is the texels' bottom left, (9, 10, 11),
 // and its (1, 1) their top right, (5, 6, 7); read as BGRA, (11, 10, 9).
-imm TEXELS Array[u8, 16] = [1u8, 2u8, 3u8, 4u8, 5u8, 6u8, 7u8, 8u8, 9u8, 10u8, 11u8, 12u8, 13u8, 14u8, 15u8, 16u8];
+let TEXELS Array[u8, 16] = [1u8, 2u8, 3u8, 4u8, 5u8, 6u8, 7u8, 8u8, 9u8, 10u8, 11u8, 12u8, 13u8, 14u8, 15u8, 16u8];
 
 fn texels() {
-  imm img = Image.fromTexels(&TEXELS as *u8, 2, 2, false);
+  let img = Image.fromTexels(&TEXELS as *u8, 2, 2, false);
   expectInt(i64.from(img.channels), 3, "texels: RGB, the fourth byte dropped");
   rgb(&img, 0, 0, 9, 10, 11, "texels: the bottom left");
   rgb(&img, 1, 1, 5, 6, 7, "texels: the top right");
   rgb(&img, 0, 1, 1, 2, 3, "texels: the top left");
-  imm swapped = Image.fromTexels(&TEXELS as *u8, 2, 2, true);
+  let swapped = Image.fromTexels(&TEXELS as *u8, 2, 2, true);
   rgb(&swapped, 0, 0, 11, 10, 9, "texels as BGRA: the bottom left");
 }
 

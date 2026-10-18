@@ -56,28 +56,28 @@
 
 fn bodyInvMassAround(c &Coupled, r Vec3) f32 {
   if c.invMass == 0. { return 0.; }
-  imm rx = r.cross(new Vec3(1., 0., 0.));
-  imm ry = r.cross(new Vec3(0., 1., 0.));
-  imm rz = r.cross(new Vec3(0., 0., 1.));
+  let rx = r.cross(new Vec3(1., 0., 0.));
+  let ry = r.cross(new Vec3(0., 1., 0.));
+  let rz = r.cross(new Vec3(0., 0., 1.));
   c.invMass + (rx.dot(c.invInertia * rx) + ry.dot(c.invInertia * ry) + rz.dot(c.invInertia * rz)) * (1. / 3.);
 }
 
 // The raw pointers the loops use, for the lists as they are now
 fn viewOf(b &mut SoftBody) StepView {
-  imm pos = b.pos.viewMut() as *Vec3;
-  imm prev = b.prev.viewMut() as *Vec3;
-  imm vel = b.vel.viewMut() as *Vec3;
-  imm force = b.force.viewMut() as *Vec3;
-  imm inv = b.invMass.viewMut() as *f32;
-  imm tris = b.tris.viewMut() as *u32;
-  imm triForce = b.triForce.viewMut() as *Vec3;
-  imm adjStart = b.adjStart.viewMut() as *u32;
-  imm adj = b.adjList.viewMut() as *u32;
-  imm dist = b.dist.viewMut() as *DistanceC;
-  imm bend = b.bend.viewMut() as *BendC;
-  imm curves = b.curves.viewMut() as *CurveC;
-  imm tethers = b.tethers.viewMut() as *TetherC;
-  imm grid = b.windGrid.viewMut() as *Vec3;
+  let pos = b.pos.viewMut() as *Vec3;
+  let prev = b.prev.viewMut() as *Vec3;
+  let vel = b.vel.viewMut() as *Vec3;
+  let force = b.force.viewMut() as *Vec3;
+  let inv = b.invMass.viewMut() as *f32;
+  let tris = b.tris.viewMut() as *u32;
+  let triForce = b.triForce.viewMut() as *Vec3;
+  let adjStart = b.adjStart.viewMut() as *u32;
+  let adj = b.adjList.viewMut() as *u32;
+  let dist = b.dist.viewMut() as *DistanceC;
+  let bend = b.bend.viewMut() as *BendC;
+  let curves = b.curves.viewMut() as *CurveC;
+  let tethers = b.tethers.viewMut() as *TetherC;
+  let grid = b.windGrid.viewMut() as *Vec3;
   new StepView(pos, prev, vel, force, inv, tris, triForce, adjStart, adj, dist, bend, curves, tethers,
     b.stepH, b.stepH, true, 1., b.relaxation, 1. + b.strainLimit, b.gravity, b.stepWind, false, b.airDensity, b.skinCoeff, b.dragCoeff, b.liftCoeff,
     grid, b.gridOrigin, 1. / b.gridCell, if b.windGrid.len() > 0usize {b.gridNx;} else {0u32;}, b.gridNy, b.gridNz);
@@ -85,29 +85,29 @@ fn viewOf(b &mut SoftBody) StepView {
 
 // Cross-flow drag on a rope's segments, added to the particles' forces
 fn ropeWind(b &mut SoftBody, wind Vec3) {
-  imm rho = b.airDensity;
-  mut k = 0usize;
+  let rho = b.airDensity;
+  var k = 0usize;
   while k + 1usize < b.ropeSegments.len() {
-    imm ia = usize.from(*b.ropeSegments[k]);
-    imm ib = usize.from(*b.ropeSegments[k + 1usize]);
+    let ia = usize.from(*b.ropeSegments[k]);
+    let ib = usize.from(*b.ropeSegments[k + 1usize]);
     k = k + 2usize;
-    imm pa = *b.pos[ia];
-    imm pb = *b.pos[ib];
-    imm axis = pb - pa;
-    imm len = axis.length();
+    let pa = *b.pos[ia];
+    let pb = *b.pos[ib];
+    let axis = pb - pa;
+    let len = axis.length();
     if len < 1e-9 { continue; }
-    imm u = axis * (1. / len);
-    imm vseg = (*b.vel[ia] + *b.vel[ib]) * 0.5;
-    imm here = if b.windGrid.len() > 0usize {
+    let u = axis * (1. / len);
+    let vseg = (*b.vel[ia] + *b.vel[ib]) * 0.5;
+    let here = if b.windGrid.len() > 0usize {
       sampleWindGrid(b.windGrid.view() as *Vec3, b.gridOrigin, 1. / b.gridCell, b.gridNx, b.gridNy, b.gridNz, (pa + pb) * 0.5);
     } else {
       wind;
     };
-    imm vr = here - vseg;
-    imm vperp = vr - u * vr.dot(u);
-    imm sp = vperp.length();
+    let vr = here - vseg;
+    let vperp = vr - u * vr.dot(u);
+    let sp = vperp.length();
     if sp < 1e-4 { continue; }
-    imm f = vperp * (0.5 * rho * b.ropeDrag * 2. * b.ropeRadius * len * sp);
+    let f = vperp * (0.5 * rho * b.ropeDrag * 2. * b.ropeRadius * len * sp);
     b.force.set(ia, *b.force[ia] + f * 0.5);
     b.force.set(ib, *b.force[ib] + f * 0.5);
   }
@@ -115,10 +115,10 @@ fn ropeWind(b &mut SoftBody, wind Vec3) {
 
 // Run the colour batches of one kind: each batch to completion before the next
 fn runBatches(workers &mut Workers, parallel bool, v &StepView, kind u32, starts &Array[u32]) {
-  mut c = 0usize;
+  var c = 0usize;
   while c + 1usize < starts.len {
-    imm lo = usize.from(starts[c]);
-    imm hi = usize.from(starts[c + 1usize]);
+    let lo = usize.from(starts[c]);
+    let hi = usize.from(starts[c + 1usize]);
     if hi > lo {
       if parallel { workers.run(v, kind, lo, hi); } else { runRegion(v, kind, lo, hi); }
     }
@@ -133,7 +133,7 @@ fn runBatches(workers &mut Workers, parallel bool, v &StepView, kind u32, starts
 // cloth or rope (a correction travels a batch's neighbours in a pass, so a long chain needs
 // passes in proportion to the load's reach).
 fn limitBatches(workers &mut Workers, parallel bool, v &StepView, passes u32, starts &Array[u32]) {
-  mut p = 0u32;
+  var p = 0u32;
   while p < passes {
     runBatches(workers, parallel, v, R_LIMIT, starts);
     p = p + 1u32;
@@ -144,14 +144,14 @@ fn limitBatches(workers &mut Workers, parallel bool, v &StepView, passes u32, st
 
 // Count, for each body, the particles held to it
 fn countAnchors(b &mut SoftBody) {
-  mut i = 0usize;
+  var i = 0usize;
   while i < b.bodies.len() {
     b.bodies[i].anchored = 0u32;
     i = i + 1usize;
   }
   i = 0usize;
   while i < b.bodyAnchors.len() {
-    imm bi = usize.from(b.bodyAnchors[i].body);
+    let bi = usize.from(b.bodyAnchors[i].body);
     b.bodies[bi].anchored = b.bodies[bi].anchored + 1u32;
     i = i + 1usize;
   }
@@ -161,16 +161,16 @@ fn maxU32(a u32, c u32) u32 {if a > c {a;} else {c;};}
 
 // The held particles become the bodies' points, with the bodies' mass
 fn setBodyProxies(b &mut SoftBody, h f32) {
-  mut k = 0usize;
+  var k = 0usize;
   while k < b.bodyAnchors.len() {
-    imm a = *b.bodyAnchors[k];
+    let a = *b.bodyAnchors[k];
     k = k + 1usize;
-    imm c = *b.bodies[usize.from(a.body)];
-    imm p = c.pos + c.rot * a.offset;
-    imm r = p - c.pos;
-    imm vpt = c.velocityAt(p);
-    imm ip = usize.from(a.particle);
-    imm w = bodyInvMassAround(&c, r) * f32.from(maxU32(c.anchored, 1u32));
+    let c = *b.bodies[usize.from(a.body)];
+    let p = c.pos + c.rot * a.offset;
+    let r = p - c.pos;
+    let vpt = c.velocityAt(p);
+    let ip = usize.from(a.particle);
+    let w = bodyInvMassAround(&c, r) * f32.from(maxU32(c.anchored, 1u32));
     b.prev.set(ip, p);
     b.pos.set(ip, p + vpt * h);
     b.vel.set(ip, vpt);
@@ -181,20 +181,20 @@ fn setBodyProxies(b &mut SoftBody, h f32) {
 // What the held particles were moved by is the impulse their bodies are given;
 // one pulled harder than its break force is let go
 fn finishBodyProxies(b &mut SoftBody, h f32) {
-  mut k = 0usize;
+  var k = 0usize;
   while k < b.bodyAnchors.len() {
-    imm a = *b.bodyAnchors[k];
-    imm c = *b.bodies[usize.from(a.body)];
-    imm p = c.pos + c.rot * a.offset;
-    imm r = p - c.pos;
-    imm vpt = c.velocityAt(p);
-    imm ip = usize.from(a.particle);
-    imm w = *b.invMass[ip];
-    mut released = false;
+    let a = *b.bodyAnchors[k];
+    let c = *b.bodies[usize.from(a.body)];
+    let p = c.pos + c.rot * a.offset;
+    let r = p - c.pos;
+    let vpt = c.velocityAt(p);
+    let ip = usize.from(a.particle);
+    let w = *b.invMass[ip];
+    var released = false;
     if w > 0. {
-      imm disp = *b.pos[ip] - (p + vpt * h);
-      imm j = disp * (1. / (w * h));
-      imm pull = j.length() / h;
+      let disp = *b.pos[ip] - (p + vpt * h);
+      let j = disp * (1. / (w * h));
+      let pull = j.length() / h;
       if a.breakForce >= 0. and pull > a.breakForce {
         released = true;
         b.breaks.push(new BreakEvent(BREAK_ANCHOR, a.particle, a.body, pull));
@@ -218,13 +218,13 @@ fn finishBodyProxies(b &mut SoftBody, h f32) {
 
 // Remove every stretch constraint pulled past its break force this substep
 fn checkBreaks(b &mut SoftBody, h f32) {
-  imm inv = 1. / (h * h);
-  imm blend = h / (b.breakWindow + h);
-  mut k = 0usize;
+  let inv = 1. / (h * h);
+  let blend = h / (b.breakWindow + h);
+  var k = 0usize;
   while k < b.dist.len() {
-    imm c = *b.dist[k];
-    imm limit = c.breakForce;
-    imm load = c.load + (fabs(c.lambda) * inv - c.load) * blend;
+    let c = *b.dist[k];
+    let limit = c.breakForce;
+    let load = c.load + (fabs(c.lambda) * inv - c.load) * blend;
     b.dist[k].load = load;
     if limit >= 0. and load > limit {
       b.breaks.push(new BreakEvent(BREAK_DISTANCE, c.a, c.b, load));
@@ -239,11 +239,11 @@ fn checkBreaks(b &mut SoftBody, h f32) {
 
 // An edge is gone: bending across it, and the triangles on it, go too
 fn dropAcross(b &mut SoftBody, pa u32, pb u32) {
-  mut k = 0usize;
+  var k = 0usize;
   while k < b.bend.len() {
-    imm c = *b.bend[k];
-    imm has_a = c.a == pa or c.b == pa or c.c == pa or c.d == pa;
-    imm has_b = c.a == pb or c.b == pb or c.c == pb or c.d == pb;
+    let c = *b.bend[k];
+    let has_a = c.a == pa or c.b == pa or c.c == pa or c.d == pa;
+    let has_b = c.a == pb or c.b == pb or c.c == pb or c.d == pb;
     if has_a and has_b {
       b.bend.swap(k, b.bend.len() - 1usize);
       b.bend.truncate(b.bend.len() - 1usize);
@@ -252,12 +252,12 @@ fn dropAcross(b &mut SoftBody, pa u32, pb u32) {
     }
   }
   // triangles, in the order they were made (the output's indices are the same triangles)
-  mut t = 0usize;
+  var t = 0usize;
   while t + 2usize < b.tris.len() {
-    imm x = *b.tris[t];
-    imm y = *b.tris[t + 1usize];
-    imm z = *b.tris[t + 2usize];
-    imm on = (x == pa or y == pa or z == pa) and (x == pb or y == pb or z == pb);
+    let x = *b.tris[t];
+    let y = *b.tris[t + 1usize];
+    let z = *b.tris[t + 2usize];
+    let on = (x == pa or y == pa or z == pa) and (x == pb or y == pb or z == pb);
     if on {
       removeTriangle(b, t);
     } else {
@@ -267,9 +267,9 @@ fn dropAcross(b &mut SoftBody, pa u32, pb u32) {
 }
 
 fn removeTriangle(b &mut SoftBody, t usize) {
-  imm last = b.tris.len() - 3usize;
-  imm same = b.vertexTris.len() == b.tris.len();
-  mut e = 0usize;
+  let last = b.tris.len() - 3usize;
+  let same = b.vertexTris.len() == b.tris.len();
+  var e = 0usize;
   while e < 3usize {
     b.tris.set(t + e, *b.tris[last + e]);
     if same { b.vertexTris.set(t + e, *b.vertexTris[last + e]); }
@@ -282,7 +282,7 @@ fn removeTriangle(b &mut SoftBody, t usize) {
 // ---- the step ----
 
 pub fn beginStep(b &mut SoftBody, dt f32, wind Vec3, workers &mut Workers) {
-  imm n = b.pos.len();
+  let n = b.pos.len();
   b.stepSubs = if b.substeps < 1u32 {1u32;} else {b.substeps;};
   b.stepH = dt / f32.from(b.stepSubs);
   b.stepIndex = 0u32;
@@ -292,7 +292,7 @@ pub fn beginStep(b &mut SoftBody, dt f32, wind Vec3, workers &mut Workers) {
     return;
   }
   ensureBatches(b);
-  mut v = viewOf(b);
+  var v = viewOf(b);
   v.windOn = b.airDensity > 0. and b.tris.len() > 0usize;
   if v.windOn { workers.run(&v, R_WIND_TRI, 0usize, b.tris.len() / 3usize); }
   workers.run(&v, R_WIND_GATHER, 0usize, n);
@@ -301,39 +301,39 @@ pub fn beginStep(b &mut SoftBody, dt f32, wind Vec3, workers &mut Workers) {
 
 pub fn substep(b &mut SoftBody, workers &mut Workers, field &<fn(p Vec3) Vec4, hasField bool) {
   if b.stepIndex >= b.stepSubs { return; }
-  imm n = b.pos.len();
+  let n = b.pos.len();
   ensureBatches(b);
-  imm h = b.stepH;
-  imm s = b.stepIndex;
+  let h = b.stepH;
+  let s = b.stepIndex;
   moveAttached(b, f32.from(s + 1u32) / f32.from(b.stepSubs), h);
-  imm anyBody = b.bodies.len() > 0usize;
+  let anyBody = b.bodies.len() > 0usize;
   if anyBody { countAnchors(b); }
-  mut v = viewOf(b);
+  var v = viewOf(b);
   v.damp = 1. / (1. + b.damping * h);
-  imm parallel = workers.isParallel() and !b.batchesSerial;
+  let parallel = workers.isParallel() and !b.batchesSerial;
   workers.run(&v, R_PREDICT, 0usize, n);
   if b.bodyAnchors.len() > 0usize { setBodyProxies(b, h); }
-  mut grad = List[Vec3].empty();
+  var grad = List[Vec3].empty();
   if b.pressure.active {
-    mut i = 0usize;
+    var i = 0usize;
     while i < n {
       grad.push(zero3());
       i = i + 1usize;
     }
   }
-  imm anyContact = hasField or b.colliders.len() > 0usize or b.heightfields.len() > 0usize;
-  imm every = if b.bendEvery < 1u32 {1u32;} else {b.bendEvery;};
-  imm bendNow = s % every == 0u32;
+  let anyContact = hasField or b.colliders.len() > 0usize or b.heightfields.len() > 0usize;
+  let every = if b.bendEvery < 1u32 {1u32;} else {b.bendEvery;};
+  let bendNow = s % every == 0u32;
   v.hBend = h * f32.from(every);
   b.pressure.lambda = 0.;
   if b.anyBreakable {
-    mut k = 0usize;
+    var k = 0usize;
     while k < b.dist.len() {
       b.dist[k].lambda = 0.;
       k = k + 1usize;
     }
   }
-  mut it = 0u32;
+  var it = 0u32;
   while it < b.iterations {
     v.first = it == 0u32;
     if anyContact { collideAll(b, field); }
@@ -346,7 +346,7 @@ pub fn substep(b &mut SoftBody, workers &mut Workers, field &<fn(p Vec3) Vec4, h
     runBatches(workers, parallel, &v, R_DIST, b.distBatch.view());
     it = it + 1u32;
   }
-  imm limiting = b.strainLimit >= 0.;
+  let limiting = b.strainLimit >= 0.;
   if limiting { limitBatches(workers, parallel, &v, b.limitPasses, b.distBatch.view()); }
   if anyContact { collideAll(b, field); }
   if limiting and anyContact { limitBatches(workers, parallel, &v, b.limitPasses, b.distBatch.view()); }

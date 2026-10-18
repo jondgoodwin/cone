@@ -21,7 +21,7 @@ struct Node {
 }
 
 fn newNode(next *Node, val u64) *Node {
-  imm node = libc.malloc(mem.sizeof[Node]()) as *Node;
+  let node = libc.malloc(mem.sizeof[Node]()) as *Node;
   mem.writeRaw(node, new Node(next, val));
   node;
 }
@@ -29,18 +29,18 @@ fn newNode(next *Node, val u64) *Node {
 fn valOf(p *Node) u64 {(p as &Node).val;}
 
 fn operations() {
-  imm none *Node = null;
-  imm a = newNode(none, 1u64);
-  imm b = newNode(none, 2u64);
-  imm h = Atomic[*Node].of(none);
+  let none *Node = null;
+  let a = newNode(none, 1u64);
+  let b = newNode(none, 2u64);
+  let h = Atomic[*Node].of(none);
   expect(h.load() as usize == 0usize, "of then load: null");
   h.store(a);
   expectUInt(valOf(h.load()), 1u64, "store");
   expectUInt(valOf(h.swap(b)), 1u64, "swap answers the pointer before");
   expectUInt(valOf(h.load()), 2u64, "after swap");
 
-  mut seen = none;
-  mut ok = false;
+  var seen = none;
+  var ok = false;
   seen, ok = h.compareSwap(b, a);
   expectUInt(valOf(seen), 2u64, "compareSwap sees b");
   expectBool(ok, true, "and stores a");
@@ -55,7 +55,7 @@ fn operations() {
 }
 
 // The stack's head, shared by every thread
-imm head Atomic[*Node];
+let head Atomic[*Node];
 
 fn @initpure init() {
   head = Atomic[*Node].of(null);
@@ -65,12 +65,12 @@ const perThread = 5000u64;
 
 // Push 'perThread' nodes, valued base + 1 upward
 fn pusher(base u64) u64 {
-  mut i = 0u64;
+  var i = 0u64;
   while i < perThread {
     i = i + 1u64;
-    mut seen = head.load();
-    imm node = newNode(seen, base + i);
-    mut ok = false;
+    var seen = head.load();
+    let node = newNode(seen, base + i);
+    var ok = false;
     seen, ok = head.compareSwap(seen, node);
     while !ok {
       mem.writeRaw(node, new Node(seen, base + i));
@@ -83,21 +83,21 @@ fn pusher(base u64) u64 {
 fn main() i32 {
   initAll();
   operations();
-  imm a = thread.start(0u64, &pusher);
-  imm b = thread.start(100000u64, &pusher);
-  imm c = thread.start(200000u64, &pusher);
-  imm d = thread.start(300000u64, &pusher);
-  imm pushed = a.join() + b.join() + c.join() + d.join();
+  let a = thread.start(0u64, &pusher);
+  let b = thread.start(100000u64, &pusher);
+  let c = thread.start(200000u64, &pusher);
+  let d = thread.start(300000u64, &pusher);
+  let pushed = a.join() + b.join() + c.join() + d.join();
   expectUInt(pushed, 20000u64, "the pushes the four threads made");
 
   // Walk the list: every node once
-  mut count = 0u64;
-  mut sum = 0u64;
-  mut p = head.load();
+  var count = 0u64;
+  var sum = 0u64;
+  var p = head.load();
   while p as usize != 0usize {
     count = count + 1u64;
     sum = sum + valOf(p);
-    imm next = (p as &Node).next;
+    let next = (p as &Node).next;
     libc.free(p as *u8);
     p = next;
   }

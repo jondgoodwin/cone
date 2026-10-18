@@ -47,7 +47,7 @@ const OZ f32 = 1.25;
 const STEP f32 = 0.0625;
 
 fn preference() u32 {
-  imm env = libc.getenv("GPU_POWER_PREFERENCE");
+  let env = libc.getenv("GPU_POWER_PREFERENCE");
   if (env as usize) != 0usize and libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 { return POWER_PREFERENCE_LOW_POWER; }
   POWER_PREFERENCE_HIGH_PERFORMANCE;
 }
@@ -59,8 +59,8 @@ fn fromBits(b u32) f32 { b as f32; }
 // The difference between two f32s in units in the last place, by their
 // order as integers (-0 and +0 the same)
 fn ulps(a u32, b u32) u64 {
-  imm ia = if (a & 0x80000000u32) != 0u32 { -i64.from(a & 0x7fffffffu32); } else { i64.from(a); };
-  imm ib = if (b & 0x80000000u32) != 0u32 { -i64.from(b & 0x7fffffffu32); } else { i64.from(b); };
+  let ia = if (a & 0x80000000u32) != 0u32 { -i64.from(a & 0x7fffffffu32); } else { i64.from(a); };
+  let ib = if (b & 0x80000000u32) != 0u32 { -i64.from(b & 0x7fffffffu32); } else { i64.from(b); };
   u64.from(if ia > ib { ia - ib; } else { ib - ia; });
 }
 
@@ -75,10 +75,10 @@ struct Tally {
       exact = exact + 1u32;
       return;
     }
-    imm d = f64.from(fromBits(gpuBits)) - f64.from(fromBits(cpuBits));
-    imm ad = if d < 0d { -d; } else { d; };
+    let d = f64.from(fromBits(gpuBits)) - f64.from(fromBits(cpuBits));
+    let ad = if d < 0d { -d; } else { d; };
     if ad > maxDiff { maxDiff = ad; }
-    imm u = ulps(gpuBits, cpuBits);
+    let u = ulps(gpuBits, cpuBits);
     if u > maxUlps { maxUlps = u; }
   }
 
@@ -95,53 +95,53 @@ struct Tally {
 }
 
 fn main() i32 {
-  mut instance = Instance.create("noise bake");
+  var instance = Instance.create("noise bake");
   require(instance.isValid(), "a Vulkan 1.3 instance");
-  imm report = (libc.getenv("NOISE_BAKE_REPORT") as usize) != 0usize;
-  mut none = Surface.none();
-  mut adapter = instance.requestAdapter(&none, preference());
+  let report = (libc.getenv("NOISE_BAKE_REPORT") as usize) != 0usize;
+  var none = Surface.none();
+  var adapter = instance.requestAdapter(&none, preference());
   require(adapter.isValid(), "an adapter");
-  mut device = adapter.requestDevice();
+  var device = adapter.requestDevice();
   require(device.isValid(), "a device");
 
-  imm valuesDesc = new TextureDescriptor(width: SIZE, height: SIZE, format: TEXTURE_FORMAT_R32_FLOAT,
+  let valuesDesc = new TextureDescriptor(width: SIZE, height: SIZE, format: TEXTURE_FORMAT_R32_FLOAT,
     usage: TEXTURE_USAGE_STORAGE_BINDING | TEXTURE_USAGE_COPY_SRC, depthOrArrayLayers: SIZE,
     dimension: TEXTURE_DIMENSION_3D);
-  mut values = device.createTexture(&valuesDesc);
-  imm hashesDesc = new TextureDescriptor(width: SIZE, height: SIZE, format: TEXTURE_FORMAT_R32_UINT,
+  var values = device.createTexture(&valuesDesc);
+  let hashesDesc = new TextureDescriptor(width: SIZE, height: SIZE, format: TEXTURE_FORMAT_R32_UINT,
     usage: TEXTURE_USAGE_STORAGE_BINDING | TEXTURE_USAGE_COPY_SRC, depthOrArrayLayers: SIZE,
     dimension: TEXTURE_DIMENSION_3D);
-  mut hashes = device.createTexture(&hashesDesc);
-  mut derivatives = device.createBuffer(u64.from(VOXELS) * 16u64, BUFFER_USAGE_STORAGE | BUFFER_USAGE_COPY_SRC);
-  mut valuesBack = device.createBuffer(u64.from(VOXELS) * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
-  mut hashesBack = device.createBuffer(u64.from(VOXELS) * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
-  mut derivativesBack = device.createBuffer(u64.from(VOXELS) * 16u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  var hashes = device.createTexture(&hashesDesc);
+  var derivatives = device.createBuffer(u64.from(VOXELS) * 16u64, BUFFER_USAGE_STORAGE | BUFFER_USAGE_COPY_SRC);
+  var valuesBack = device.createBuffer(u64.from(VOXELS) * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  var hashesBack = device.createBuffer(u64.from(VOXELS) * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  var derivativesBack = device.createBuffer(u64.from(VOXELS) * 16u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
   require(values.isValid() and hashes.isValid() and derivatives.isValid(), "the 3-D textures and the buffer");
 
-  mut shader = device.createShaderModule(&BAKE_SPIRV);
-  imm entries = [
+  var shader = device.createShaderModule(&BAKE_SPIRV);
+  let entries = [
     new BindGroupLayoutEntry(binding: 0u32, visibility: SHADER_STAGE_COMPUTE, kind: BINDING_KIND_STORAGE_TEXTURE,
       format: TEXTURE_FORMAT_R32_FLOAT, viewDimension: TEXTURE_VIEW_DIMENSION_3D),
     new BindGroupLayoutEntry(binding: 1u32, visibility: SHADER_STAGE_COMPUTE, kind: BINDING_KIND_STORAGE_TEXTURE,
       format: TEXTURE_FORMAT_R32_UINT, viewDimension: TEXTURE_VIEW_DIMENSION_3D),
     new BindGroupLayoutEntry(binding: 2u32, visibility: SHADER_STAGE_COMPUTE, bufferType: BUFFER_BINDING_TYPE_STORAGE)];
-  mut groupLayout = device.createBindGroupLayout(&entries);
-  imm groupLayouts = [&groupLayout];
-  mut layout = device.createPipelineLayout(&groupLayouts, 24u32);
-  imm pipelineDesc = new ComputePipelineDescriptor(layout: &layout, module: &shader, entryPoint: "bakeMain");
-  mut pipeline = device.createComputePipeline(&pipelineDesc);
-  imm valuesView = values.createView();
-  imm hashesView = hashes.createView();
-  imm groupEntries = [BindGroupEntry.texture(0u32, &valuesView), BindGroupEntry.texture(1u32, &hashesView),
+  var groupLayout = device.createBindGroupLayout(&entries);
+  let groupLayouts = [&groupLayout];
+  var layout = device.createPipelineLayout(&groupLayouts, 24u32);
+  let pipelineDesc = new ComputePipelineDescriptor(layout: &layout, module: &shader, entryPoint: "bakeMain");
+  var pipeline = device.createComputePipeline(&pipelineDesc);
+  let valuesView = values.createView();
+  let hashesView = hashes.createView();
+  let groupEntries = [BindGroupEntry.texture(0u32, &valuesView), BindGroupEntry.texture(1u32, &hashesView),
     BindGroupEntry.buffer(2u32, &derivatives)];
-  mut group = device.createBindGroup(&groupLayout, &groupEntries);
+  var group = device.createBindGroup(&groupLayout, &groupEntries);
   require(pipeline.isValid() and group.isValid(), "the bake pipeline and its bind group");
 
   {
-    mut encoder = device.createCommandEncoder();
-    mut pass = encoder.beginComputePass();
-    imm origin Array[f32, 4] = [OX, OY, OZ, STEP];
-    imm words Array[u32, 2] = [SEED, SIZE];
+    var encoder = device.createCommandEncoder();
+    var pass = encoder.beginComputePass();
+    let origin Array[f32, 4] = [OX, OY, OZ, STEP];
+    let words Array[u32, 2] = [SEED, SIZE];
     pass.setPipeline(&pipeline);
     pass.setBindGroup(0u32, &group);
     pass.setImmediates(0u32, &origin as *u8, 16u32);
@@ -157,24 +157,24 @@ fn main() i32 {
   }
 
   // Every voxel, on the CPU, compared
-  imm v = valuesBack.mappedRange() as *u32;
-  imm h = hashesBack.mappedRange() as *u32;
-  imm d = derivativesBack.mappedRange() as *u32;
-  mut hashExact = 0u32;
-  mut value = new Tally(0u32, 0d, 0u64);
-  mut dx = new Tally(0u32, 0d, 0u64);
-  mut dy = new Tally(0u32, 0d, 0u64);
-  mut dz = new Tally(0u32, 0d, 0u64);
-  mut again = new Tally(0u32, 0d, 0u64);
-  mut z = 0u32;
+  let v = valuesBack.mappedRange() as *u32;
+  let h = hashesBack.mappedRange() as *u32;
+  let d = derivativesBack.mappedRange() as *u32;
+  var hashExact = 0u32;
+  var value = new Tally(0u32, 0d, 0u64);
+  var dx = new Tally(0u32, 0d, 0u64);
+  var dy = new Tally(0u32, 0d, 0u64);
+  var dz = new Tally(0u32, 0d, 0u64);
+  var again = new Tally(0u32, 0d, 0u64);
+  var z = 0u32;
   while z < SIZE {
-    mut y = 0u32;
+    var y = 0u32;
     while y < SIZE {
-      mut x = 0u32;
+      var x = 0u32;
       while x < SIZE {
-        imm at = usize.from(x + SIZE * (y + SIZE * z));
-        imm p = new Vec3(OX + f32.from(x) * STEP, OY + f32.from(y) * STEP, OZ + f32.from(z) * STEP);
-        imm n = fbm3(p, SEED, 4, 2., 0.5);
+        let at = usize.from(x + SIZE * (y + SIZE * z));
+        let p = new Vec3(OX + f32.from(x) * STEP, OY + f32.from(y) * STEP, OZ + f32.from(z) * STEP);
+        let n = fbm3(p, SEED, 4, 2., 0.5);
         if *(h + at) == hash3(i32.from(x), i32.from(y), i32.from(z), SEED).x { hashExact = hashExact + 1u32; }
         value.add(*(v + at), bits(n.value));
         dx.add(*(d + at * 4usize), bits(n.d.x));
@@ -214,7 +214,7 @@ fn main() i32 {
 
 // spirv-begin bake.spv BAKE_SPIRV
 // Written by tools/shaders/shaders.py from bake.slang (sha256 c1be5e9122dcf7d9f5747f4110d72611b18eb2cb43a9b57a68cd1173a332e1b2): do not edit.
-imm BAKE_SPIRV Array[u32, 7130] = [
+let BAKE_SPIRV Array[u32, 7130] = [
   0x07230203u32, 0x00010500u32, 0x00280000u32, 0x00000715u32, 0x00000000u32, 0x00020011u32,
   0x00000001u32, 0x000b000au32, 0x5f565053u32, 0x5f52484bu32, 0x726f7473u32, 0x5f656761u32,
   0x66667562u32, 0x735f7265u32, 0x61726f74u32, 0x635f6567u32, 0x7373616cu32, 0x00000000u32,

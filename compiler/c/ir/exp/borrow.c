@@ -546,14 +546,14 @@ uint16_t borrowTempScope(TypeCheckState *pstate) {
     return (uint16_t)pstate->scope;
 }
 
-// A 'mut' local variable, or a part of one held by value, lends '&uni': a source
+// A 'var' local variable, or a part of one held by value, lends '&uni': a source
 // reached as 'uni' is what a local variable is (mem-permissions.html#fromuni, "From uni, for a while"). The
 // stack alone owns it, so nothing else can name it, and the loan walk freezes it
 // against reading and changing until the borrow's last use (mem-borrowing.html#freezing,
 // "What a borrow leaves its source free to do"). Nothing is reached through a
 // reference that is not 'uni' on the way (iexpPathNonUniLink), and the variable
-// is not a global, which others may name. An 'imm' local promises no change and
-// lends no '&uni'. 'lvalperm' is what the place grants (a local's own 'mut');
+// is not a global, which others may name. A 'let' local promises no change and
+// lends no '&uni'. 'lvalperm' is what the place grants (a local's own 'var');
 // 'refperm' the permission asked.
 static int borrowLocalLendsUni(INode *lval, INode *lvalperm, uint16_t scope, INode *refperm) {
     if (itypeGetTypeDcl(refperm) != (INode *)uniPerm || itypeGetTypeDcl(lvalperm) != (INode *)mutPerm || scope == 0)
@@ -730,7 +730,7 @@ void borrowTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
     if (refperm == unknownType) {
         refperm = newPermUseNode(itypeIsConcrete(refvtype) || itypeLenBodyElem(refvtype) ? roPerm : opaqPerm);
         // Immutable's rule one: 'imm', where the place allows it. A place that
-        // does not (a 'mut' variable, a 'ro' borrow) keeps the ordinary default,
+        // does not (a 'var' variable, a 'ro' borrow) keeps the ordinary default,
         // so that a borrow of what is already held stays possible
         INode *immperm = tag == RefTag ? refImmutableDefaultPerm(refvtype) : NULL;
         if (immperm && permMatches(immperm, lvalperm) != NoMatch)

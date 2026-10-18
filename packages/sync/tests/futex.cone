@@ -8,7 +8,7 @@
 // return spuriously, and a wake may come before the wait. So what is checked
 // is that each wait returns and sees the changed word, never how many times
 // it slept. 'testing' counts its checks in globals, so every check is made on
-// the main thread. The words are 'imm' globals, which change only inside
+// the main thread. The words are 'let' globals, which change only inside
 // their atomic values, and each thread reaches them by name.
 
 mod futex;
@@ -18,9 +18,9 @@ import thread;
 import sync use *;
 import time use Duration;
 
-imm word Atomic[u32];
-imm shared Atomic[u32];
-imm ready Atomic[u32];
+let word Atomic[u32];
+let shared Atomic[u32];
+let ready Atomic[u32];
 
 fn @initpure init() {
   word = Atomic[u32].of(0u32);
@@ -48,16 +48,16 @@ fn main() i32 {
   initAll();
 
   // One waiter, woken
-  imm w = thread.start(0u32, &waitWord);
+  let w = thread.start(0u32, &waitWord);
   thread.sleep(Duration.fromMillis(20));
   word.store(5u32);
   sync.futexWake(&word);
   expectUInt(u64.from(w.join()), 5u64, "the waiter returned with the new value");
 
   // Three waiters, all woken at once
-  imm a = thread.start(0u32, &countedWait);
-  imm b = thread.start(0u32, &countedWait);
-  imm c = thread.start(0u32, &countedWait);
+  let a = thread.start(0u32, &countedWait);
+  let b = thread.start(0u32, &countedWait);
+  let c = thread.start(0u32, &countedWait);
   while ready.load() < 3u32 { thread.sleep(Duration.fromMillis(1)); }
   thread.sleep(Duration.fromMillis(10));
   shared.store(9u32);
@@ -65,7 +65,7 @@ fn main() i32 {
   expectUInt(u64.from(a.join() + b.join() + c.join()), 27u64, "wakeAll woke all three waiters");
 
   // A word that already differs does not sleep
-  mut other = Atomic[u32].of(3u32);
+  var other = Atomic[u32].of(3u32);
   expect(sync.futexWait(&other, 4u32), "a wait on a changed word returns true");
 
   // A timeout returns false, and zero or a negative one returns at once

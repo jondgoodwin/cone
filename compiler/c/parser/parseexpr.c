@@ -191,7 +191,7 @@ static INode *parseClosureArrow(ParseState *parse, Nodes *names, INode *at) {
 }
 
 // A closure in the full form, with the lexer on its 'fn':
-//   fn (u f32) [ribs, mut n = 0] f32 { ... }
+//   fn (u f32) [ribs, var n = 0] f32 { ... }
 // Parameters, then an optional state list in brackets (a bracket never starts a
 // type), an optional return type and the block. A parameter's type, and the
 // return type, are left out where the signature the closure is given to
@@ -211,7 +211,7 @@ static INode *parseClosureFn(ParseState *parse) {
         parse->inlist = 1;
         uint16_t parmnbr = 0;
         uint16_t parseflags = ParseMaySig | ParseMayImpl | ParseInList;
-        while (lexIsToken(PermToken) || lexIsToken(IdentToken)) {
+        while (lexIsDclStart() || lexIsToken(IdentToken)) {
             VarDclNode *parm = parseVarDcl(parse, immPerm, parseflags);
             parm->flowtempflags |= VarInitialized;
             parm->scope = 1;
@@ -236,7 +236,7 @@ static INode *parseClosureFn(ParseState *parse) {
         while (!lexIsToken(RBracketToken) && !lexIsToken(EofToken)) {
             INode *perm = parseDclPerm(immPerm);
             if (!lexIsToken(IdentToken)) {
-                errorMsgLex(ErrorNoIdent, "Expected a name in the closure's state list: '[ribs, mut n = 0]'");
+                errorMsgLex(ErrorNoIdent, "Expected a name in the closure's state list: '[ribs, var n = 0]'");
                 while (!lexIsToken(RBracketToken) && !lexIsToken(LCurlyToken) && !lexIsToken(EofToken))
                     lexNextToken();
                 break;
@@ -1094,7 +1094,7 @@ INode *parsePrefix(ParseState *parse) {
 // parses, and the parse error keeps analysis from running.
 static void parseRetiredInto(ParseState *parse) {
     errorMsgLex(ErrorInto,
-        "'into' is retired: a value converts with its type's method, 'T.from(x)', and a reference narrows to a variant with a check, by a 'match' or 'if imm x &Variant = &value'.");
+        "'into' is retired: a value converts with its type's method, 'T.from(x)', and a reference narrows to a variant with a check, by a 'match' or 'if let x &Variant = &value'.");
     lexNextToken();
     parseType(parse);
 }

@@ -27,11 +27,11 @@ import stdio use *;
 import collections use *;
 
 fn main() {
-  mut scores = List[i32].empty();
+  var scores = List[i32].empty();
   scores.push(10);
   scores.push(20);
-  imm best = &amp;mut scores[0usize];   // a borrow into the list's block of elements
-  imm n = scores.len();             // fine: the list may be read
+  let best = &amp;mut scores[0usize];   // a borrow into the list's block of elements
+  let n = scores.len();             // fine: the list may be read
   scores.set(1usize, 5);            // fine: an element written in place
   *best = 7;                        // the borrow's last use
   scores.push(30);                  // fine: the borrow is over
@@ -63,7 +63,7 @@ fn main() {
 		its bytes) is one more alias of the elements, as in the program above: until its last use the collection may still
 		be read and written in place, but not reshaped, by a push, a <span class="pre">clear</span> or a
 		<span class="pre">pop</span>. Copying out what is needed before the push leaves no borrow to wait for:
-		<span class="pre">imm firstX = l[0usize].x; l.push(p);</span>.</p>
+		<span class="pre">let firstX = l[0usize].x; l.push(p);</span>.</p>
 	<p>A collection reached through a shared path is held to the same rule. A <span class="pre">mut</span> reference is
 		shared, so another name may make the change while the borrow is in use; the borrow lets the path be read, lent and
 		written as any alias does, and a change of the collection's shape, by the same name or another, is refused. The
@@ -89,13 +89,13 @@ import collections use *;
 struct Pt { pub x i64; pub y i64; }
 
 fn f(l &amp;mut List[Pt], p Pt) i64 {
-  imm e = l[0usize];
+  let e = l[0usize];
   l.push(p);                    // Error 1339: e is used again below
   e.x;
 }
 
 fn g(dq &amp;mut Deque[i64]) {
-  mut it = dq.items();          // a cursor
+  var it = dq.items();          // a cursor
   dq.push(9);                   // Error 1339: it is used again below
   it.next();
 }
@@ -103,7 +103,7 @@ fn g(dq &amp;mut Deque[i64]) {
 struct Holder {
   items List[Pt];
   fn h(self &amp;mut, p Pt) i64 {  // the same through a field of self
-    imm e = items[0usize];
+    let e = items[0usize];
     items.push(p);              // Error 1339
     e.x;
   }
@@ -114,8 +114,8 @@ struct Holder {
 		refuses only a change of its shape, by the same name or by another:</p>
 <pre>
 fn grow(l &amp;mut List[Pt], p Pt) i64 {
-  imm e = &amp;mut l[0usize];
-  imm n = l.len();              // Ok: the path may be read,
+  let e = &amp;mut l[0usize];
+  let n = l.len();              // Ok: the path may be read,
   l.set(1usize, p);             // and an element written in place
   e.x = e.x + 1;
   e.x + i64.from(n);            // (a l.push(p) anywhere above would be refused)
@@ -134,7 +134,7 @@ struct Bag {
   fn add(self &amp;mut, p Pt) { items.push(p); }
 }
 fn bagAdd(bag &amp;mut Bag, p Pt) i64 {
-  imm e = bag.first();
+  let e = bag.first();
   bag.add(p);                   // Error 1339: e is used again below
   e.x;
 }
@@ -145,7 +145,7 @@ struct Shelf {
   fn add(self &amp;mut, p Pt) { bag.add(p); }
 }
 fn shelfAdd(s &amp;mut Shelf, p Pt) i64 {
-  imm e = s.first();
+  let e = s.first();
   s.add(p);                     // Error 1339, the same
   e.x;
 }
@@ -160,7 +160,7 @@ struct Counter {
   fn advance(self &amp;mut) { at = at + 1usize; }
 }
 fn count(a &amp;mut Counter, b &amp;mut Counter) i64 {
-  imm e = a.current();
+  let e = a.current();
   b.advance();                  // Ok: advance writes only a position
   e.x;
 }
@@ -189,7 +189,7 @@ fn first(c &amp;Cell) &amp;i64 { c.ptr as &amp;i64; }
 fn grow(c &amp;mut Cell) { c.ptr = libc.realloc(c.ptr as *u8, 64usize) as *i64; }
 
 fn cellGrow(a &amp;mut Cell, b &amp;mut Cell) i64 {
-  imm e = first(a);
+  let e = first(a);
   grow(b);                      // Error 1339: e is used again below
   *e;
 }
@@ -214,8 +214,8 @@ fn cellGrow(a &amp;mut Cell, b &amp;mut Cell) i64 {
 	<li>it is handed a value that can reach a collection of that type (as a field, an element, a variant, a pointer, a
 		reference or an owner) by a path it may write, and its body, or what it calls, reshapes one; or</li>
 	<li>it is handed nothing that reaches one and reshapes one through a global; or</li>
-	<li>the borrow points into a <span class="pre">mut</span> global, or into anything reached from one, or is reached
-		through a reference some <span class="pre">mut</span> global of that type could be, and the call,
+	<li>the borrow points into a <span class="pre">var</span> global, or into anything reached from one, or is reached
+		through a reference some <span class="pre">var</span> global of that type could be, and the call,
 		<a href="#globalview">whatever it is handed</a>, reshapes one through a global or is code the compiler cannot
 		read.</li>
 	</ol>
@@ -235,13 +235,13 @@ fn cellGrow(a &amp;mut Cell, b &amp;mut Cell) i64 {
 	<p>All of these are refused when the borrow is still to be used afterwards (error 1339):</p>
 <pre>
 fn clearOther(l &amp;mut List[Pt], m &amp;mut List[Pt]) i64 {
-  imm e = l[0usize];
+  let e = l[0usize];
   m.clear();                    // Error 1339: clear writes the length (so do pop and truncate)
   e.x;
 }
 
 fn setString(l &amp;mut List[String], m &amp;mut List[String], s String) usize {
-  imm t = l[0usize].view();
+  let t = l[0usize].view();
   m.set(0usize, s);             // Error 1339: set finalizes the String it replaces
   t.len;
 }
@@ -249,17 +249,17 @@ fn setString(l &amp;mut List[String], m &amp;mut List[String], s String) usize {
 fn bump(q &amp;mut List[Pt], p Pt) { q.push(p); }
 
 fn viaCall(l &amp;mut List[Pt], m &amp;mut List[Pt], p Pt) i64 {
-  imm e = l[0usize];
+  let e = l[0usize];
   bump(m, p);                   // Error 1339: bump is handed a list and pushes
   e.x;
 }
 
-mut pool List[Pt];
+var pool List[Pt];
 fn @initpure init() { pool = List[Pt].empty(); }
 fn resetPool() { pool.clear(); }
 
 fn viaGlobal(l &amp;mut List[Pt]) i64 {
-  imm e = l[0usize];
+  let e = l[0usize];
   resetPool();                  // Error 1339: resetPool clears a list through a global
   e.x;
 }
@@ -267,34 +267,34 @@ fn viaGlobal(l &amp;mut List[Pt]) i64 {
 extern fn elsewhere(q &amp;mut List[Pt]);
 
 fn viaExtern(l &amp;mut List[Pt], m &amp;mut List[Pt]) i64 {
-  imm e = l[0usize];
+  let e = l[0usize];
   elsewhere(m);                 // Error 1339: its body is not visible, so it is assumed to reshape
   e.x;
 }
 </pre>
-	<p>And these reshape nothing, so they are accepted (in a program with no <span class="pre">mut</span> global that
+	<p>And these reshape nothing, so they are accepted (in a program with no <span class="pre">var</span> global that
 		could be the list, <a href="#globalview">below</a>):</p>
 <pre>
 fn setNum(l &amp;mut List[i64], m &amp;mut List[i64]) i64 {
-  imm e = l[0usize];
+  let e = l[0usize];
   m.set(0usize, 9i64);          // Ok: a number has no finalizer
   *e;
 }
 
 fn swapStr(l &amp;mut List[String], m &amp;mut List[String]) usize {
-  imm t = l[0usize].view();
+  let t = l[0usize].view();
   m.swap(0usize, 1usize);       // Ok: the bytes of each String stay where they are
   t.len;
 }
 
 fn readOnly(l &amp;mut List[Pt], m &amp;List[Pt]) i64 {
-  imm e = l[0usize];
+  let e = l[0usize];
   e.x + i64.from(m.len());      // Ok: a read-only reference cannot write
 }
 
 fn ownedLocal(l &amp;mut List[Pt], p Pt) i64 {
-  imm e = l[0usize];
-  mut mine = List[Pt].empty();
+  let e = l[0usize];
+  var mine = List[Pt].empty();
   mine.push(p);                 // Ok: a local list is not the one reached through l
   e.x + mine[0usize].x;
 }
@@ -315,38 +315,38 @@ fn ownedLocal(l &amp;mut List[Pt], p Pt) i64 {
 struct Bag2 {
   items List[Pt];
   fn fb(self &amp;mut, other &amp;mut Bag2, p Pt) i64 {
-    imm e = items[0usize];
+    let e = items[0usize];
     other.items.push(p);        // Error 1339: other may be self
     e.x;
   }
 }
 
 fn fa(l &amp;mut List[Pt], m &amp;mut List[Pt], p Pt) i64 {
-  imm e = l[0usize];
+  let e = l[0usize];
   m.push(p);                    // Error 1339: m may be l
   e.x;
 }
 
 fn fc(p Pt) i64 {
-  imm l = new Rc[mut, List[Pt]](List[Pt].empty());
-  imm l2 = l;
-  imm e = l[0usize];
+  let l = new Rc[mut, List[Pt]](List[Pt].empty());
+  let l2 = l;
+  let e = l[0usize];
   l2.push(p);                   // Error 1339
   e.x;
 }
 
 fn fd(a &amp;mut Arena, p Pt) i64 {
-  imm l = a.alloc(List[Pt].empty());
-  imm l2 = l;
-  imm e = l[0usize];
+  let l = a.alloc(List[Pt].empty());
+  let l2 = l;
+  let e = l[0usize];
   l2.push(p);                   // Error 1339
   e.x;
 }
 
 fn fe(ptr *List[Pt], p Pt) i64 {
-  imm l = ptr as &amp;mut List[Pt];
-  imm l2 = ptr as &amp;mut List[Pt];
-  imm e = l[0usize];
+  let l = ptr as &amp;mut List[Pt];
+  let l2 = ptr as &amp;mut List[Pt];
+  let e = l[0usize];
   l2.push(p);                   // Error 1339
   e.x;
 }
@@ -379,7 +379,7 @@ struct Dl {
 }
 struct Ed {
   items List[Item];
-  fn grow(self &amp;mut, s &amp;str) { imm r = &amp;mut items[0usize]; r.label.append(s); }
+  fn grow(self &amp;mut, s &amp;str) { let r = &amp;mut items[0usize]; r.label.append(s); }
 }
 struct Ui { items List[Item]; }
 
@@ -389,8 +389,8 @@ fn draw(dl &amp;mut Dl, ui &amp;Ui) {
 
 fn twoParams(ed &amp;mut Ed, src &amp;mut Ed) {
   ed.grow(src.items[0usize].label.view());      // Error 1339: ed and src may be one value; the same
-                                                //   as imm item = src.items[0usize]; item.label.view()
-  imm c = String.from(src.items[0usize].label.view());
+                                                //   as let item = src.items[0usize]; item.label.view()
+  let c = String.from(src.items[0usize].label.view());
   ed.grow(c.view());                            // Ok: copied out first
 }
 
@@ -417,11 +417,11 @@ fn twoEds(a &amp;mut Ed, b &amp;mut Ed) {
 fn grow(x &amp;mut List[i64], e &amp;mut i64) { x.push(1); }
 
 fn two() {
-  mut ls = [List[i64].empty(), List[i64].empty()];
+  var ls = [List[i64].empty(), List[i64].empty()];
   ls[0usize].push(7);
   grow(&amp;mut ls[0usize], &amp;mut ls[0usize][0usize]);   // Error 1339: grow pushes, and the second
                                                     //   borrow points into the block that may move
-  imm e = &amp;mut ls[0usize][0usize];
+  let e = &amp;mut ls[0usize][0usize];
   ls[1usize].push(1);                               // Error 1339: any element of the array may be
   *e;                                               //   the one e is into
 }
@@ -440,25 +440,25 @@ struct Item { pub n i64; }
 struct Ship { pub fuel i64; pub vec Uni[List[Item]]; }
 
 fn whole(l &amp;mut List[String], m &amp;mut List[String]) usize {
-  imm t = l[0usize].view();
+  let t = l[0usize].view();
   *m = List[String].empty();    // Error 1426: the old list is freed
   t.len;
 }
 
 fn elem(l &amp;mut List[String], m &amp;mut List[String], s String) usize {
-  imm t = l[0usize].view();
+  let t = l[0usize].view();
   m[0usize] = s;                // Error 1426: the old String is finalized
   t.len;
 }
 
 fn field(a &amp;mut Ship, b &amp;mut Ship) i64 {
-  imm e = a.vec[0usize];
+  let e = a.vec[0usize];
   b.vec = new Uni[List[Item]](List[Item].empty());   // Error 1426: the list the owner held is freed
   e.n;
 }
 
 fn wholeShip(a &amp;mut Ship, b &amp;mut Ship, s Ship) i64 {
-  imm e = a.vec[0usize];
+  let e = a.vec[0usize];
   *b = s;                       // Error 1426, the same
   e.n;
 }
@@ -467,13 +467,13 @@ fn wholeShip(a &amp;mut Ship, b &amp;mut Ship, s Ship) i64 {
 		reference that borrowed the element:</p>
 <pre>
 fn setPt(l &amp;mut List[Pt], m &amp;mut List[Pt], p Pt) i64 {
-  imm e = l[0usize];
+  let e = l[0usize];
   m[0usize] = p;                // Ok: a Pt owns nothing
   e.x;
 }
 
 fn fieldOfElem(l &amp;mut List[Pt]) i64 {
-  imm e = &amp;mut l[0usize];
+  let e = &amp;mut l[0usize];
   e.x = 12;                     // Ok: a field of the element, through the borrow
   e.x;
 }
@@ -505,12 +505,12 @@ fn clobber(x &amp;mut Uni[Item], y &amp;mut Item) {
 }
 
 fn lend() {
-  mut s = new Uni[Item](1);
+  var s = new Uni[Item](1);
   clobber(&amp;mut s, s);           // Error 1339: clobber stores over the owner it is handed,
 }                               //   beside a borrow of its contents
 
 fn field(a &amp;mut Ship, b &amp;mut Ship) i64 {
-  imm y = &amp;mut *a.it;
+  let y = &amp;mut *a.it;
   b.it = new Uni[Item](9);       // Error 1426: b may be a
   y.v;
 }
@@ -526,7 +526,7 @@ fn writes(x &amp;mut Uni[Item], y &amp;mut Item) {
 }
 
 fn after(a &amp;mut Uni[Item]) i64 {
-  imm n = (**a).v;
+  let n = (**a).v;
   *a = new Uni[Item](n + 1);     // Ok: the borrow was used up first
   n;
 }
@@ -541,7 +541,7 @@ fn after(a &amp;mut Uni[Item]) i64 {
 
 	<h2 id="enums">An enum's variant</h2>
 	<p>For an enum, nothing is frozen. A reference into the payload of an enum's variant, the binding of
-		<span class="pre">case mut c Circle</span> on a reference, is a borrow into the enum, through a
+		<span class="pre">case var c Circle</span> on a reference, is a borrow into the enum, through a
 		<span class="pre">mut</span> or <span class="pre">ro</span> reference from anywhere (a parameter, a field reached
 		through a reference, a reference a variable holds) as well as a borrow of a local made where it is matched. It is
 		allowed, and the fields of the variant may be written through it. It is refused only if something could change
@@ -557,13 +557,13 @@ enum Shape {
 
 fn grow(s &amp;mut Shape) {
   match s {
-    case mut c Circle { c.radius = 2; }   // Ok: nothing changes the variant while c is used
+    case var c Circle { c.radius = 2; }   // Ok: nothing changes the variant while c is used
     else {}
   }
 }
 fn restart(s &amp;mut Shape) i32 {
   match s {
-    case mut c Circle {
+    case var c Circle {
       c.radius = 2;
       *s = Shape.Rect(1, 2, 3);
       c.radius;                 // Error 1425: 'c', a reference into one of the variants of a 'Shape'
@@ -599,7 +599,7 @@ fn appendImm(out &amp;mut String, x &amp;imm String) { out.append(x.view()); }
 fn appendUni(out &amp;uni String, x &amp;String) { out.append(x.view()); }
 
 fn appendCopy(out &amp;mut String, x &amp;String) {
-  imm c = String.from(x.view());
+  let c = String.from(x.view());
   out.append(c.view());
 }
 
@@ -619,7 +619,7 @@ struct Entity { pub hp i64; }
 struct World { pub score i64; pub entities List[Entity]; }
 
 fn visit(w &amp;mut World, f &amp;&lt;fn(x &amp;mut World)) i64 {
-  imm e = w.entities[0usize];
+  let e = w.entities[0usize];
   f(w);                         // Error 1339: f's body is not visible, so it may push
   e.hp;
 }
@@ -646,7 +646,7 @@ fn visit[T](xs &amp;List[T], f &amp;&lt;mut fn(x &amp;T)) {
 		caller:</p>
 <pre>
 fn visit(w &amp;mut World, f &amp;&lt;fn(x &amp;mut World) + ShapeKeeping) i64 {
-  imm e = w.entities[0usize];
+  let e = w.entities[0usize];
   f(w);                         // Ok: whatever f is, it reshapes nothing it was handed
   e.hp;
 }
@@ -654,7 +654,7 @@ fn visit(w &amp;mut World, f &amp;&lt;fn(x &amp;mut World) + ShapeKeeping) i64 {
 trait Scorer { pub fn bump(self &amp;mut, w &amp;mut World); }
 
 fn tune(w &amp;mut World, s &amp;&lt;mut Scorer + ShapeKeeping) i64 {
-  imm e = w.entities[0usize];
+  let e = w.entities[0usize];
   s.bump(w);                    // Ok, the same
   e.hp;
 }
@@ -690,9 +690,9 @@ fn count(w &amp;mut World, log &amp;mut List[i64]) i64 {
 		whole struct is refused. A function of another package named with <span class="pre">&amp;</span> has no body to
 		read, and is refused.</p>
 
-	<h2 id="globalview">A borrow into a mut global</h2>
+	<h2 id="globalview">A borrow into a var global</h2>
 	<p>A function may write a global by its name, whatever it is handed, and the check does not keep a summary of which
-		globals a function writes. So a borrow into a <span class="pre">mut</span> global (the view of a String it holds, an
+		globals a function writes. So a borrow into a <span class="pre">var</span> global (the view of a String it holds, an
 		element of a List it holds), or into anything reached from one, is asked of every call made while it is still to be
 		used, or while it is being handed to a call, whether or not the call is handed the global. The call is refused (error
 		1339) when it, or something it calls, reshapes a collection of that type through a global, as above, or when it is
@@ -704,7 +704,7 @@ fn count(w &amp;mut World, log &amp;mut List[i64]) i64 {
 		that reshapes nothing is let through, and so is an <span class="pre">extern</span> C function handed nothing
 		callable, such as a print handed the view, as are the intrinsics, an init, and a call through a virtual reference
 		marked <a href="#shapekeeping"><span class="pre">+ ShapeKeeping</span></a>. A global that is
-		<span class="pre">imm</span> cannot change, so a borrow into it is not asked.</p>
+		<span class="pre">let</span> cannot change, so a borrow into it is not asked.</p>
 <pre>
 struct Item { label String; }
 struct Ed {
@@ -713,9 +713,9 @@ struct Ed {
 }
 struct Holder { pub f &amp;&lt;fn(s &amp;str); }
 
-mut gl Ed;
-mut title String;
-mut count i64;
+var gl Ed;
+var title String;
+var count i64;
 fn @initpure init() { gl = new Ed(List[Item].empty()); title = String.from("t"); count = 0; }
 
 fn grow(s &amp;str) { gl.growFirst(s); }
@@ -726,8 +726,8 @@ fn direct() {
 }                                       //   view points into
 
 fn readOnlyCallee() usize {
-  imm v = gl.items[0usize].label.view();
-  imm n = show("x");                    // Ok: show reshapes nothing
+  let v = gl.items[0usize].label.view();
+  let n = show("x");                    // Ok: show reshapes nothing
   n + v.len;
 }
 
@@ -741,17 +741,17 @@ fn viaClosure(h &amp;Holder) {
 		the String made by a method of the global itself (<span class="pre">title.copy()</span>), and to hold that:</p>
 <pre>
 fn copied() {
-  imm text = title.copy();              // Ok: a copy of the String, not a borrow of it
-  imm n = count;                        // Ok: a number
+  let text = title.copy();              // Ok: a copy of the String, not a borrow of it
+  let n = count;                        // Ok: a number
   grow("!");
   show(text.view());
 }
 </pre>
 	<p>A function handed a reference cannot tell that it is the global: the <span class="pre">&amp;mut Ed</span> parameter
-		of a function that is called with <span class="pre">&amp;mut gl</span>. So where a <span class="pre">mut</span> global
+		of a function that is called with <span class="pre">&amp;mut gl</span>. So where a <span class="pre">var</span> global
 		reaches the type of the collection (a global holding a <span class="pre">List[Item]</span> reaches
 		<span class="pre">List[Item]</span>, <span class="pre">Item</span> and <span class="pre">String</span>), a borrow into
-		it reached through a reference is asked of the same calls. A program with no <span class="pre">mut</span> global of
+		it reached through a reference is asked of the same calls. A program with no <span class="pre">var</span> global of
 		that type is not affected:</p>
 <pre>
 fn useHolder(h &amp;Holder, s &amp;str) { h.f(s); }   // h.f is a closure that may write gl
@@ -768,8 +768,8 @@ fn viaParam(h &amp;Holder, g &amp;mut Ed) {
 		exception, as above.)</p>
 <pre>
 fn ownedFresh(l &amp;mut List[Pt], p Pt) i64 {
-  imm e = l[0usize];
-  imm m = new Uni[List[Pt]](List[Pt].empty());
+  let e = l[0usize];
+  let m = new Uni[List[Pt]](List[Pt].empty());
   bump(&amp;mut *m, p);            // Error 1339: refused, though m cannot be l
   e.x;
 }
@@ -778,7 +778,7 @@ fn ownedFresh(l &amp;mut List[Pt], p Pt) i64 {
 		is taken to replace the one a borrow is into, though it replaces a different node's. A borrow into the owner a method
 		is called through is its receiver and no other name for the owner, so <span class="pre">left.insert(v)</span> is asked
 		only of the other arguments.</p>
-	<p>Nor does it tell which global a function writes: a borrow of a collection a <span class="pre">mut</span> global could
+	<p>Nor does it tell which global a function writes: a borrow of a collection a <span class="pre">var</span> global could
 		be is refused across a call that reshapes a collection of that type through any global, or that runs code it cannot
 		read (<a href="#globalview">above</a>), even when the global it writes is another. A virtual call or a closure called
 		anywhere in the callee counts, even one handed nothing.</p>

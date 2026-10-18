@@ -10,7 +10,7 @@
  * reported at the generator's name, Lexer.genat):
  *
  *   struct walk.Gen is Iterator[&Node] {               the generator's value, declaring what it is
- *     imm t &'a Tree;  imm n i32;                      the parameters, as the author wrote them, under names no source can spell
+ *     let t &'a Tree;  let n i32;                      the parameters, as the author wrote them, under names no source can spell
  *     state' u32;                                      where the body resumes
  *     pub fn next(self &mut) Option[&'a Node] {...}    the author's body
  *     fn final(self &uni) {}                           what the frame's drop hangs on
@@ -200,7 +200,7 @@ static uint32_t parseGenParms(ParseState *parse, GenSig *sig, GenParm **parmsp) 
         lexNextToken();
         parse->inlist = 1;
         uint16_t parseflags = ParseMaySig | ParseMayImpl | ParseInList;
-        while (lexIsToken(PermToken) || lexIsToken(IdentToken)) {
+        while (lexIsDclStart() || lexIsToken(IdentToken)) {
             if (count == max) {
                 GenParm *grown = (GenParm *)memAllocBlk(max * 2 * sizeof(GenParm));
                 memcpy(grown, parms, max * sizeof(GenParm));
@@ -209,7 +209,7 @@ static uint32_t parseGenParms(ParseState *parse, GenSig *sig, GenParm **parmsp) 
             }
             GenParm *parm = &parms[count++];
             parm->start = lex->tokp;
-            parm->hasperm = lexIsToken(PermToken);
+            parm->hasperm = lexIsDclStart();
             VarDclNode *var = parseVarDcl(parse, immPerm, parseflags);
             parm->name = var->namesym;
             parm->nameend = parse->nameendp;
@@ -537,7 +537,7 @@ FnDclNode *parseGenFinish(ParseState *parse, FnDclNode *fn, GenSig *sig, GenCtx 
     genPuts(&g, "] {\n");
     for (uint32_t i = 0; i < nparms; ++i) {
         if (!parms[i].hasperm)
-            genPuts(&g, "  imm ");
+            genPuts(&g, "  let ");
         else
             genPuts(&g, "  ");
         // The permission, if written, then the name, then the type. A
@@ -701,13 +701,13 @@ static INode *parseYieldEach(ParseState *parse, INode *src, YieldNode *at) {
         names[GenItem] = nametblPrivate("item'", 5);
     }
     GenText g = {NULL, 0, 0};
-    genPuts(&g, "{ mut ");
+    genPuts(&g, "{ var ");
     genSlot(&g, GenSub);
     genPuts(&g, " = ");
     genSlot(&g, GenSource);
     genPuts(&g, "; while true { match ");
     genSlot(&g, GenSub);
-    genPuts(&g, ".next() { case imm ");
+    genPuts(&g, ".next() { case let ");
     genSlot(&g, GenItem);
     genPuts(&g, " Some { yield ");
     genSlot(&g, GenItem);

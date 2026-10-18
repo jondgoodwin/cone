@@ -278,26 +278,26 @@ import spatialindex use Bvh, Proxy;
 
 // Report a problem to stderr
 fn logLine(msg &str) {
-  mut m = String.from(msg);
+  var m = String.from(msg);
   m.appendByte('\n');
-  imm v &Array[u8] = m.view();
+  let v &Array[u8] = m.view();
   libc.fflush(libc.stdout());
   libc.fwrite(v as *u8, 1usize, v.len, libc.stderr());
 }
 
 // The whole of a file, or ok false when it cannot be opened
 fn readFile(path &Path, ok &mut bool) String {
-  mut text = String.empty();
-  mut cpath = String.from(path.view());
-  imm f = libc.fopen(cpath.cstr(), "rb");
+  var text = String.empty();
+  var cpath = String.from(path.view());
+  let f = libc.fopen(cpath.cstr(), "rb");
   if !f {
     *ok = false;
     return text;
   }
-  mut buf = new Array[u8, 4096] <- fill 0u8;
-  mut going = true;
+  var buf = new Array[u8, 4096] <- fill 0u8;
+  var going = true;
   while going {
-    imm n = libc.fread(&mut buf[0], 1usize, 4096usize, f);
+    let n = libc.fread(&mut buf[0], 1usize, 4096usize, f);
     if n > 0usize { text.appendBytes(&buf[..<n]); }
     going = n == 4096usize;
   }
@@ -363,11 +363,11 @@ pub struct ResourceUse {
 
 // The bytes of a texture's levels, all of them
 fn textureBytes(t &Texture) u64 {
-  imm texel = if t.format == TEXTURE_FORMAT_RGBA16_FLOAT { 8u64; } else { 4u64; };
-  mut w = u64.from(t.width);
-  mut h = u64.from(t.height);
-  mut total = 0u64;
-  mut level = 0u32;
+  let texel = if t.format == TEXTURE_FORMAT_RGBA16_FLOAT { 8u64; } else { 4u64; };
+  var w = u64.from(t.width);
+  var h = u64.from(t.height);
+  var total = 0u64;
+  var level = 0u32;
   while level < t.mipLevelCount {
     total = total + w * h * texel * u64.from(t.depthOrArrayLayers);
     w = if w > 1u64 { w / 2u64; } else { 1u64; };
@@ -490,13 +490,13 @@ pub struct Renderer {
   // lighting, 'colorFormat' is TEXTURE_FORMAT_RGBA16_FLOAT and the target a
   // Post's frame, which tone-maps it to the display. Check 'isValid'.
   pub fn create(device &mut Device, colorFormat u32, depthFormat u32) Renderer {
-    mut litShader = device.createShaderModule(&LIT_SPIRV);
-    mut linesShader = device.createShaderModule(&LINES_SPIRV);
+    var litShader = device.createShaderModule(&LIT_SPIRV);
+    var linesShader = device.createShaderModule(&LINES_SPIRV);
     // The frame's group: its uniforms, the instances, the bones and the
     // instances' bone bases (read-only storage)
     // and the sun's shadows: their parameters, the cascades' map (a depth
     // texture array) and the comparison sampler that reads it
-    imm frameEntries = [new BindGroupLayoutEntry(binding: 0u32, visibility: SHADER_STAGE_VERTEX | SHADER_STAGE_FRAGMENT),
+    let frameEntries = [new BindGroupLayoutEntry(binding: 0u32, visibility: SHADER_STAGE_VERTEX | SHADER_STAGE_FRAGMENT),
       new BindGroupLayoutEntry(binding: 1u32, visibility: SHADER_STAGE_VERTEX | SHADER_STAGE_FRAGMENT,
         bufferType: BUFFER_BINDING_TYPE_READ_ONLY_STORAGE),
       new BindGroupLayoutEntry(binding: 2u32, visibility: SHADER_STAGE_VERTEX, bufferType: BUFFER_BINDING_TYPE_READ_ONLY_STORAGE),
@@ -513,155 +513,155 @@ pub struct Renderer {
       // and those lights' shadow views, a depth texture array (read through binding 6's comparison sampler)
       new BindGroupLayoutEntry(binding: 10u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE,
         viewDimension: TEXTURE_VIEW_DIMENSION_2D_ARRAY, sampleType: TEXTURE_SAMPLE_TYPE_DEPTH)];
-    mut frameLayout = device.createBindGroupLayout(&frameEntries);
-    imm materialEntries = [new BindGroupLayoutEntry(binding: 0u32, visibility: SHADER_STAGE_FRAGMENT),
+    var frameLayout = device.createBindGroupLayout(&frameEntries);
+    let materialEntries = [new BindGroupLayoutEntry(binding: 0u32, visibility: SHADER_STAGE_FRAGMENT),
       new BindGroupLayoutEntry(binding: 1u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE),
       new BindGroupLayoutEntry(binding: 2u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_SAMPLER)];
-    mut materialLayout = device.createBindGroupLayout(&materialEntries);
-    imm groupLayouts = [&frameLayout, &materialLayout];
-    mut layout = device.createPipelineLayout(&groupLayouts, IMMEDIATE_BYTES);
+    var materialLayout = device.createBindGroupLayout(&materialEntries);
+    let groupLayouts = [&frameLayout, &materialLayout];
+    var layout = device.createPipelineLayout(&groupLayouts, IMMEDIATE_BYTES);
 
     // The physically based material and the sky: a third group, the
     // environment's (the sky's parameters, the diffuse and specular cubes,
     // the split sum's table, their sampler)
-    mut pbrShader = device.createShaderModule(&PBR_SPIRV);
-    imm environmentEntries = [new BindGroupLayoutEntry(binding: 0u32, visibility: SHADER_STAGE_FRAGMENT),
+    var pbrShader = device.createShaderModule(&PBR_SPIRV);
+    let environmentEntries = [new BindGroupLayoutEntry(binding: 0u32, visibility: SHADER_STAGE_FRAGMENT),
       new BindGroupLayoutEntry(binding: 1u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE,
         viewDimension: TEXTURE_VIEW_DIMENSION_CUBE),
       new BindGroupLayoutEntry(binding: 2u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE,
         viewDimension: TEXTURE_VIEW_DIMENSION_CUBE),
       new BindGroupLayoutEntry(binding: 3u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE),
       new BindGroupLayoutEntry(binding: 4u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_SAMPLER)];
-    mut environmentLayout = device.createBindGroupLayout(&environmentEntries);
+    var environmentLayout = device.createBindGroupLayout(&environmentEntries);
     // A physically based material's own group: the parameters, the base
     // colour's texture and the sampler, as the lit material's, then the
     // metallic-roughness, normal and occlusion maps
     // (the parameters are read by the vertex stage too: flutter)
-    imm pbrMaterialEntries = [new BindGroupLayoutEntry(binding: 0u32, visibility: SHADER_STAGE_VERTEX | SHADER_STAGE_FRAGMENT),
+    let pbrMaterialEntries = [new BindGroupLayoutEntry(binding: 0u32, visibility: SHADER_STAGE_VERTEX | SHADER_STAGE_FRAGMENT),
       new BindGroupLayoutEntry(binding: 1u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE),
       new BindGroupLayoutEntry(binding: 2u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_SAMPLER),
       new BindGroupLayoutEntry(binding: 3u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE),
       new BindGroupLayoutEntry(binding: 4u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE),
       new BindGroupLayoutEntry(binding: 5u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE)];
-    mut pbrMaterialLayout = device.createBindGroupLayout(&pbrMaterialEntries);
-    imm pbrGroupLayouts = [&frameLayout, &pbrMaterialLayout, &environmentLayout];
-    mut pbrLayout = device.createPipelineLayout(&pbrGroupLayouts, IMMEDIATE_BYTES);
+    var pbrMaterialLayout = device.createBindGroupLayout(&pbrMaterialEntries);
+    let pbrGroupLayouts = [&frameLayout, &pbrMaterialLayout, &environmentLayout];
+    var pbrLayout = device.createPipelineLayout(&pbrGroupLayouts, IMMEDIATE_BYTES);
 
     // Lit: three vertex buffers (position, normal, uv), back faces culled,
     // depth tested and written
-    imm positionAttr = [new VertexAttribute(VERTEX_FORMAT_FLOAT32X3, 0u64, 0u32)];
-    imm normalAttr = [new VertexAttribute(VERTEX_FORMAT_FLOAT32X3, 0u64, 1u32)];
-    imm uvAttr = [new VertexAttribute(VERTEX_FORMAT_FLOAT32X2, 0u64, 2u32)];
-    imm litBuffers = [new VertexBufferLayout(arrayStride: 12u64, attributes: &positionAttr),
+    let positionAttr = [new VertexAttribute(VERTEX_FORMAT_FLOAT32X3, 0u64, 0u32)];
+    let normalAttr = [new VertexAttribute(VERTEX_FORMAT_FLOAT32X3, 0u64, 1u32)];
+    let uvAttr = [new VertexAttribute(VERTEX_FORMAT_FLOAT32X2, 0u64, 2u32)];
+    let litBuffers = [new VertexBufferLayout(arrayStride: 12u64, attributes: &positionAttr),
       new VertexBufferLayout(arrayStride: 12u64, attributes: &normalAttr),
       new VertexBufferLayout(arrayStride: 8u64, attributes: &uvAttr)];
-    imm litDesc = new RenderPipelineDescriptor(layout: &layout, vertexModule: &litShader, buffers: &litBuffers,
+    let litDesc = new RenderPipelineDescriptor(layout: &layout, vertexModule: &litShader, buffers: &litBuffers,
       fragmentModule: &litShader, colorFormat: colorFormat, cullMode: CULL_MODE_BACK,
       depthFormat: depthFormat, depthWriteEnabled: true, depthCompare: COMPARE_FUNCTION_LESS);
-    mut litPipeline = device.createRenderPipeline(&litDesc);
+    var litPipeline = device.createRenderPipeline(&litDesc);
 
     // Lines: positions only, depth tested (less or equal) and written
-    imm lineBuffers = [new VertexBufferLayout(arrayStride: 12u64, attributes: &positionAttr)];
-    imm linesDesc = new RenderPipelineDescriptor(layout: &layout, vertexModule: &linesShader, buffers: &lineBuffers,
+    let lineBuffers = [new VertexBufferLayout(arrayStride: 12u64, attributes: &positionAttr)];
+    let linesDesc = new RenderPipelineDescriptor(layout: &layout, vertexModule: &linesShader, buffers: &lineBuffers,
       fragmentModule: &linesShader, colorFormat: colorFormat, topology: PRIMITIVE_TOPOLOGY_LINE_LIST,
       depthFormat: depthFormat, depthWriteEnabled: true, depthCompare: COMPARE_FUNCTION_LESS_EQUAL);
-    mut linesPipeline = device.createRenderPipeline(&linesDesc);
+    var linesPipeline = device.createRenderPipeline(&linesDesc);
 
     // Physically based: the lit material's vertex buffers, culling and depth
-    imm pbrDesc = new RenderPipelineDescriptor(layout: &pbrLayout, vertexModule: &pbrShader, buffers: &litBuffers,
+    let pbrDesc = new RenderPipelineDescriptor(layout: &pbrLayout, vertexModule: &pbrShader, buffers: &litBuffers,
       fragmentModule: &pbrShader, colorFormat: colorFormat, cullMode: CULL_MODE_BACK,
       depthFormat: depthFormat, depthWriteEnabled: true, depthCompare: COMPARE_FUNCTION_LESS);
-    mut pbrPipeline = device.createRenderPipeline(&pbrDesc);
+    var pbrPipeline = device.createRenderPipeline(&pbrDesc);
     // The same for a mesh with a sway stream, drawn with a flutter material:
     // the colors as a fourth buffer, read at location 3
-    imm swayAttr = [new VertexAttribute(VERTEX_FORMAT_FLOAT32X4, 0u64, 3u32)];
-    imm swayBuffers = [new VertexBufferLayout(arrayStride: 12u64, attributes: &positionAttr),
+    let swayAttr = [new VertexAttribute(VERTEX_FORMAT_FLOAT32X4, 0u64, 3u32)];
+    let swayBuffers = [new VertexBufferLayout(arrayStride: 12u64, attributes: &positionAttr),
       new VertexBufferLayout(arrayStride: 12u64, attributes: &normalAttr),
       new VertexBufferLayout(arrayStride: 8u64, attributes: &uvAttr),
       new VertexBufferLayout(arrayStride: 16u64, attributes: &swayAttr)];
-    imm pbrSwayDesc = new RenderPipelineDescriptor(layout: &pbrLayout, vertexModule: &pbrShader,
+    let pbrSwayDesc = new RenderPipelineDescriptor(layout: &pbrLayout, vertexModule: &pbrShader,
       vertexEntryPoint: "vertexSway", buffers: &swayBuffers, fragmentModule: &pbrShader, colorFormat: colorFormat,
       cullMode: CULL_MODE_BACK, depthFormat: depthFormat, depthWriteEnabled: true, depthCompare: COMPARE_FUNCTION_LESS);
-    mut pbrSwayPipeline = device.createRenderPipeline(&pbrSwayDesc);
+    var pbrSwayPipeline = device.createRenderPipeline(&pbrSwayDesc);
     // Their skinned variants: the same three buffers, then the joints (four
     // bytes read as integers) and the weights (four bytes read as 0 to 1)
-    imm jointsAttr = [new VertexAttribute(VERTEX_FORMAT_UINT8X4, 0u64, 3u32)];
-    imm weightsAttr = [new VertexAttribute(VERTEX_FORMAT_UNORM8X4, 0u64, 4u32)];
-    imm skinnedBuffers = [new VertexBufferLayout(arrayStride: 12u64, attributes: &positionAttr),
+    let jointsAttr = [new VertexAttribute(VERTEX_FORMAT_UINT8X4, 0u64, 3u32)];
+    let weightsAttr = [new VertexAttribute(VERTEX_FORMAT_UNORM8X4, 0u64, 4u32)];
+    let skinnedBuffers = [new VertexBufferLayout(arrayStride: 12u64, attributes: &positionAttr),
       new VertexBufferLayout(arrayStride: 12u64, attributes: &normalAttr),
       new VertexBufferLayout(arrayStride: 8u64, attributes: &uvAttr),
       new VertexBufferLayout(arrayStride: 4u64, attributes: &jointsAttr),
       new VertexBufferLayout(arrayStride: 4u64, attributes: &weightsAttr)];
-    imm litSkinnedDesc = new RenderPipelineDescriptor(layout: &layout, vertexModule: &litShader,
+    let litSkinnedDesc = new RenderPipelineDescriptor(layout: &layout, vertexModule: &litShader,
       vertexEntryPoint: "vertexSkinned", buffers: &skinnedBuffers, fragmentModule: &litShader, colorFormat: colorFormat,
       cullMode: CULL_MODE_BACK, depthFormat: depthFormat, depthWriteEnabled: true, depthCompare: COMPARE_FUNCTION_LESS);
-    mut litSkinnedPipeline = device.createRenderPipeline(&litSkinnedDesc);
-    imm pbrSkinnedDesc = new RenderPipelineDescriptor(layout: &pbrLayout, vertexModule: &pbrShader,
+    var litSkinnedPipeline = device.createRenderPipeline(&litSkinnedDesc);
+    let pbrSkinnedDesc = new RenderPipelineDescriptor(layout: &pbrLayout, vertexModule: &pbrShader,
       vertexEntryPoint: "vertexSkinned", buffers: &skinnedBuffers, fragmentModule: &pbrShader, colorFormat: colorFormat,
       cullMode: CULL_MODE_BACK, depthFormat: depthFormat, depthWriteEnabled: true, depthCompare: COMPARE_FUNCTION_LESS);
-    mut pbrSkinnedPipeline = device.createRenderPipeline(&pbrSkinnedDesc);
+    var pbrSkinnedPipeline = device.createRenderPipeline(&pbrSkinnedDesc);
     // The see-through variants: the same, but blended with premultiplied
     // alpha (src + (1 - src alpha) x dst, the alpha likewise), the depth
     // tested and not written, so what is behind one pane still shows through
     // the next
-    imm litBlendDesc = new RenderPipelineDescriptor(layout: &layout, vertexModule: &litShader, buffers: &litBuffers,
+    let litBlendDesc = new RenderPipelineDescriptor(layout: &layout, vertexModule: &litShader, buffers: &litBuffers,
       fragmentModule: &litShader, colorFormat: colorFormat, cullMode: CULL_MODE_BACK,
       depthFormat: depthFormat, depthWriteEnabled: false, depthCompare: COMPARE_FUNCTION_LESS,
       blendEnabled: true, colorSrcFactor: BLEND_FACTOR_ONE, colorDstFactor: BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
       alphaSrcFactor: BLEND_FACTOR_ONE, alphaDstFactor: BLEND_FACTOR_ONE_MINUS_SRC_ALPHA);
-    mut litBlendPipeline = device.createRenderPipeline(&litBlendDesc);
-    imm pbrBlendDesc = new RenderPipelineDescriptor(layout: &pbrLayout, vertexModule: &pbrShader, buffers: &litBuffers,
+    var litBlendPipeline = device.createRenderPipeline(&litBlendDesc);
+    let pbrBlendDesc = new RenderPipelineDescriptor(layout: &pbrLayout, vertexModule: &pbrShader, buffers: &litBuffers,
       fragmentModule: &pbrShader, colorFormat: colorFormat, cullMode: CULL_MODE_BACK,
       depthFormat: depthFormat, depthWriteEnabled: false, depthCompare: COMPARE_FUNCTION_LESS,
       blendEnabled: true, colorSrcFactor: BLEND_FACTOR_ONE, colorDstFactor: BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
       alphaSrcFactor: BLEND_FACTOR_ONE, alphaDstFactor: BLEND_FACTOR_ONE_MINUS_SRC_ALPHA);
-    mut pbrBlendPipeline = device.createRenderPipeline(&pbrBlendDesc);
-    imm litSkinnedBlendDesc = new RenderPipelineDescriptor(layout: &layout, vertexModule: &litShader,
+    var pbrBlendPipeline = device.createRenderPipeline(&pbrBlendDesc);
+    let litSkinnedBlendDesc = new RenderPipelineDescriptor(layout: &layout, vertexModule: &litShader,
       vertexEntryPoint: "vertexSkinned", buffers: &skinnedBuffers, fragmentModule: &litShader, colorFormat: colorFormat,
       cullMode: CULL_MODE_BACK, depthFormat: depthFormat, depthWriteEnabled: false, depthCompare: COMPARE_FUNCTION_LESS,
       blendEnabled: true, colorSrcFactor: BLEND_FACTOR_ONE, colorDstFactor: BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
       alphaSrcFactor: BLEND_FACTOR_ONE, alphaDstFactor: BLEND_FACTOR_ONE_MINUS_SRC_ALPHA);
-    mut litSkinnedBlendPipeline = device.createRenderPipeline(&litSkinnedBlendDesc);
-    imm pbrSkinnedBlendDesc = new RenderPipelineDescriptor(layout: &pbrLayout, vertexModule: &pbrShader,
+    var litSkinnedBlendPipeline = device.createRenderPipeline(&litSkinnedBlendDesc);
+    let pbrSkinnedBlendDesc = new RenderPipelineDescriptor(layout: &pbrLayout, vertexModule: &pbrShader,
       vertexEntryPoint: "vertexSkinned", buffers: &skinnedBuffers, fragmentModule: &pbrShader, colorFormat: colorFormat,
       cullMode: CULL_MODE_BACK, depthFormat: depthFormat, depthWriteEnabled: false, depthCompare: COMPARE_FUNCTION_LESS,
       blendEnabled: true, colorSrcFactor: BLEND_FACTOR_ONE, colorDstFactor: BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
       alphaSrcFactor: BLEND_FACTOR_ONE, alphaDstFactor: BLEND_FACTOR_ONE_MINUS_SRC_ALPHA);
-    mut pbrSkinnedBlendPipeline = device.createRenderPipeline(&pbrSkinnedBlendDesc);
+    var pbrSkinnedBlendPipeline = device.createRenderPipeline(&pbrSkinnedBlendDesc);
     // The sky: one triangle at the far plane, where nothing nearer was
     // drawn (depth tested less or equal against the cleared 1, not written)
-    imm skyBuffers = [new VertexBufferLayout(arrayStride: 12u64, attributes: &positionAttr)];
-    imm skyDesc = new RenderPipelineDescriptor(layout: &pbrLayout, vertexModule: &pbrShader,
+    let skyBuffers = [new VertexBufferLayout(arrayStride: 12u64, attributes: &positionAttr)];
+    let skyDesc = new RenderPipelineDescriptor(layout: &pbrLayout, vertexModule: &pbrShader,
       vertexEntryPoint: "backgroundVertex", buffers: &skyBuffers[..<0], fragmentModule: &pbrShader,
       fragmentEntryPoint: "backgroundFragment", colorFormat: colorFormat, depthFormat: depthFormat,
       depthWriteEnabled: false, depthCompare: COMPARE_FUNCTION_LESS_EQUAL);
-    mut skyPipeline = device.createRenderPipeline(&skyDesc);
+    var skyPipeline = device.createRenderPipeline(&skyDesc);
 
-    mut frameUniforms = device.createBuffer(FRAME_BYTES, BUFFER_USAGE_UNIFORM | BUFFER_USAGE_COPY_DST);
-    mut instances = device.createBuffer(u64.from(FIRST_INSTANCES) * INSTANCE_BYTES,
+    var frameUniforms = device.createBuffer(FRAME_BYTES, BUFFER_USAGE_UNIFORM | BUFFER_USAGE_COPY_DST);
+    var instances = device.createBuffer(u64.from(FIRST_INSTANCES) * INSTANCE_BYTES,
       BUFFER_USAGE_STORAGE | BUFFER_USAGE_COPY_DST);
-    mut bones = device.createBuffer(u64.from(FIRST_BONES) * BONE_BYTES, BUFFER_USAGE_STORAGE | BUFFER_USAGE_COPY_DST);
-    mut boneBases = device.createBuffer(u64.from(FIRST_INSTANCES) * 4u64, BUFFER_USAGE_STORAGE | BUFFER_USAGE_COPY_DST);
-    mut shadow = ShadowState.create(device, &materialLayout, &pbrMaterialLayout, &frameUniforms, &instances, &bones,
+    var bones = device.createBuffer(u64.from(FIRST_BONES) * BONE_BYTES, BUFFER_USAGE_STORAGE | BUFFER_USAGE_COPY_DST);
+    var boneBases = device.createBuffer(u64.from(FIRST_INSTANCES) * 4u64, BUFFER_USAGE_STORAGE | BUFFER_USAGE_COPY_DST);
+    var shadow = ShadowState.create(device, &materialLayout, &pbrMaterialLayout, &frameUniforms, &instances, &bones,
       &boneBases);
-    imm shadowView = shadow.arrayView();
-    mut lights = LightSet.create(device);
-    imm lightShadowView = lights.shadows.arrayView();
-    imm frameGroupEntries = [BindGroupEntry.buffer(0u32, &frameUniforms), BindGroupEntry.buffer(1u32, &instances),
+    let shadowView = shadow.arrayView();
+    var lights = LightSet.create(device);
+    let lightShadowView = lights.shadows.arrayView();
+    let frameGroupEntries = [BindGroupEntry.buffer(0u32, &frameUniforms), BindGroupEntry.buffer(1u32, &instances),
       BindGroupEntry.buffer(2u32, &bones), BindGroupEntry.buffer(3u32, &boneBases),
       BindGroupEntry.buffer(4u32, &shadow.params), BindGroupEntry.texture(5u32, &shadowView),
       BindGroupEntry.sampler(6u32, &shadow.sampler), BindGroupEntry.buffer(7u32, &lights.paramsBuffer),
       BindGroupEntry.buffer(8u32, &lights.rowBuffer), BindGroupEntry.buffer(9u32, &lights.clusterBuffer),
       BindGroupEntry.texture(10u32, &lightShadowView)];
-    mut frameGroup = device.createBindGroup(&frameLayout, &frameGroupEntries);
+    var frameGroup = device.createBindGroup(&frameLayout, &frameGroupEntries);
     // Trilinear, and anisotropic to 16 where the device does it (fewer
     // where it does less; none where it does none)
-    imm samplerDesc = new SamplerDescriptor(mipmapFilter: FILTER_MODE_LINEAR, maxAnisotropy: 16u32);
-    mut sampler = device.createSampler(&samplerDesc);
-    imm dusk = Sky.dusk(radians(4.), radians(180.));
-    mut environment = Environment.create(device, &environmentLayout, &dusk);
+    let samplerDesc = new SamplerDescriptor(mipmapFilter: FILTER_MODE_LINEAR, maxAnisotropy: 16u32);
+    var sampler = device.createSampler(&samplerDesc);
+    let dusk = Sky.dusk(radians(4.), radians(180.));
+    var environment = Environment.create(device, &environmentLayout, &dusk);
 
-    mut r = new Renderer(colorFormat, depthFormat, litShader, linesShader, frameLayout, materialLayout, layout,
+    var r = new Renderer(colorFormat, depthFormat, litShader, linesShader, frameLayout, materialLayout, layout,
       litPipeline, linesPipeline, frameUniforms, frameGroup, sampler, Pool[MeshSlot].empty(),
       Pool[TextureSlot].empty(), Pool[MaterialSlot].empty(), TextureHandle.none(), List[MeshHandle].empty(),
       0u32, 0u64, pbrShader, environmentLayout, pbrLayout, pbrPipeline, skyPipeline, environment, false, 0., 1., pbrMaterialLayout,
@@ -671,7 +671,7 @@ pub struct Renderer {
       pbrSwayPipeline, shadow, lights, List[ProbeSlot].empty(), Visibility.create(0.25), List[HiZ].empty(),
       List[DrawItem].empty(), List[SceneCapture].empty(), ReflectionSettings.medium(), List[RtScene].empty(),
       CausticVolume.none());
-    mut w = new Image(1, 1, 3, List[u8].empty());
+    var w = new Image(1, 1, 3, List[u8].empty());
     w.pixels.push(255u8);
     w.pixels.push(255u8);
     w.pixels.push(255u8);
@@ -691,9 +691,9 @@ pub struct Renderer {
 
   // The frame's group made again, after a buffer in it was replaced
   fn remakeFrameGroup(self &mut, device &mut Device) {
-    imm shadowView = shadow.arrayView();
-    imm lightShadowView = lights.shadows.arrayView();
-    imm entries = [BindGroupEntry.buffer(0u32, &frameUniforms), BindGroupEntry.buffer(1u32, &instances),
+    let shadowView = shadow.arrayView();
+    let lightShadowView = lights.shadows.arrayView();
+    let entries = [BindGroupEntry.buffer(0u32, &frameUniforms), BindGroupEntry.buffer(1u32, &instances),
       BindGroupEntry.buffer(2u32, &bones), BindGroupEntry.buffer(3u32, &boneBases),
       BindGroupEntry.buffer(4u32, &shadow.params), BindGroupEntry.texture(5u32, &shadowView),
       BindGroupEntry.sampler(6u32, &shadow.sampler), BindGroupEntry.buffer(7u32, &lights.paramsBuffer),
@@ -711,10 +711,10 @@ pub struct Renderer {
   // material receives them, and every opaque or cut-out mesh draw casts
   // them (a draw item marked 'dontCastShadow' does not).
   pub fn setShadows(self &mut, device &mut Device, s &ShadowSettings) {
-    imm wanted = clampShadowSettings(s);
-    imm layers = if wanted.enabled { wanted.cascades; } else { 0u32; };
-    imm size = if wanted.enabled { wanted.mapSize; } else { 1u32; };
-    imm wantedLayers = if layers == 0u32 { 1u32; } else { layers; };
+    let wanted = clampShadowSettings(s);
+    let layers = if wanted.enabled { wanted.cascades; } else { 0u32; };
+    let size = if wanted.enabled { wanted.mapSize; } else { 1u32; };
+    let wantedLayers = if layers == 0u32 { 1u32; } else { layers; };
     if shadow.map.width != size or shadow.map.depthOrArrayLayers != wantedLayers {
       device.waitIdle();
       shadow.remakeMap(device, size, layers);
@@ -735,10 +735,10 @@ pub struct Renderer {
   // again when its size or layers change (the GPU is waited for: set the
   // tier at start-up or in a menu, not every frame).
   pub fn setLightShadows(self &mut, device &mut Device, s &LightShadowSettings) {
-    imm wanted = clampLightShadowSettings(s);
-    imm layers = if wanted.enabled { wanted.maxViews; } else { 0u32; };
-    imm size = if wanted.enabled { wanted.tileSize; } else { 1u32; };
-    imm wantedLayers = if layers == 0u32 { 1u32; } else { layers; };
+    let wanted = clampLightShadowSettings(s);
+    let layers = if wanted.enabled { wanted.maxViews; } else { 0u32; };
+    let size = if wanted.enabled { wanted.tileSize; } else { 1u32; };
+    let wantedLayers = if layers == 0u32 { 1u32; } else { layers; };
     if lights.shadows.map.width != size or lights.shadows.map.depthOrArrayLayers != wantedLayers {
       device.waitIdle();
       lights.shadows.remakeMap(device, size, layers);
@@ -751,7 +751,7 @@ pub struct Renderer {
   // The point and spot lights' shadows off again (the map is freed, the
   // one-texel stand-in kept)
   pub fn disableLightShadows(self &mut, device &mut Device) {
-    imm off = LightShadowSettings.off();
+    let off = LightShadowSettings.off();
     self.setLightShadows(device, &off);
   }
 
@@ -768,7 +768,7 @@ pub struct Renderer {
   // A mesh of triangles to draw: its vertex streams and indices uploaded
   // now, and kept. Normals it lacks are made smooth; uvs it lacks are 0.
   pub fn addMesh(self &mut, device &mut Device, m &Mesh) MeshHandle {
-    imm version = uploadTriangles(device, m);
+    let version = uploadTriangles(device, m);
     new MeshHandle(meshes.add(new MeshSlot(version, GpuMesh.none(), 0u32, false, 0u64, 0u32)));
   }
 
@@ -777,7 +777,7 @@ pub struct Renderer {
   // order. Drawn by 'DrawList.addSkinned' with its bones; drawn as modelled
   // by 'add'. A skin of the wrong length leaves it an unskinned mesh.
   pub fn addSkinnedMesh(self &mut, device &mut Device, m &Mesh, skin &Skin) MeshHandle {
-    imm version = uploadSkinned(device, m, skin);
+    let version = uploadSkinned(device, m, skin);
     new MeshHandle(meshes.add(new MeshSlot(version, GpuMesh.none(), 0u32, false, 0u64, 0u32)));
   }
 
@@ -788,7 +788,7 @@ pub struct Renderer {
 
   // Shadows off again (the map is freed, the one-texel stand-in kept)
   pub fn disableShadows(self &mut, device &mut Device) {
-    imm off = ShadowSettings.off();
+    let off = ShadowSettings.off();
     self.setShadows(device, &off);
   }
 
@@ -801,7 +801,7 @@ pub struct Renderer {
       *radius = 0.;
       return;
     }
-    imm m = meshes[h.slot].current();
+    let m = meshes[h.slot].current();
     *center = m.center;
     *radius = m.radius;
   }
@@ -814,11 +814,11 @@ pub struct Renderer {
   // every camera that renders. None for a mesh that is gone, skinned or lines.
   pub fn addSceneItem(self &mut, mesh MeshHandle, material MaterialHandle, model Mat4, tint Color) SceneHandle {
     if !meshes.alive(mesh.slot) { return SceneHandle.none(); }
-    imm m = meshes[mesh.slot].current();
+    let m = meshes[mesh.slot].current();
     if !m.isValid() or m.topology == PRIMITIVE_TOPOLOGY_LINE_LIST or m.isSkinned() { return SceneHandle.none(); }
-    imm c = m.center;
-    imm h = m.half;
-    imm r = m.radius;
+    let c = m.center;
+    let h = m.half;
+    let r = m.radius;
     vis.addItem(mesh, material, model, tint, c, h, r);
   }
 
@@ -833,10 +833,10 @@ pub struct Renderer {
   // level 0 is the item's mesh and sets its bounds)
   pub fn setSceneLod(self &mut, h SceneHandle, chain &LodChain) bool {
     if chain.levels.len() == 0usize or !meshes.alive(chain.levels[0usize].slot) { return false; }
-    imm m = meshes[chain.levels[0usize].slot].current();
-    imm c = m.center;
-    imm half = m.half;
-    imm r = m.radius;
+    let m = meshes[chain.levels[0usize].slot].current();
+    let c = m.center;
+    let half = m.half;
+    let r = m.radius;
     if !vis.setChain(h, chain) { return false; }
     vis.setBounds(h, c, half, r);
   }
@@ -844,13 +844,13 @@ pub struct Renderer {
   // The bounds of an item's mesh taken again (after 'replaceMesh' gave it other bounds)
   pub fn refreshSceneItem(self &mut, h SceneHandle) bool {
     if !vis.alive(h) { return false; }
-    imm it = vis.items[usize.from(h.slot)];
-    imm mesh = it.mesh;
+    let it = vis.items[usize.from(h.slot)];
+    let mesh = it.mesh;
     if !meshes.alive(mesh.slot) { return false; }
-    imm m = meshes[mesh.slot].current();
-    imm c = m.center;
-    imm half = m.half;
-    imm r = m.radius;
+    let m = meshes[mesh.slot].current();
+    let c = m.center;
+    let half = m.half;
+    let r = m.radius;
     vis.setBounds(h, c, half, r);
   }
 
@@ -869,7 +869,7 @@ pub struct Renderer {
   // Lines to draw: 'positions', and 'indices' two to a line (a wireframe:
   // 'polyEdges' makes them of a PolyMesh's edges)
   pub fn addLines(self &mut, device &mut Device, positions &Array[Vec3], indices &Array[u32]) MeshHandle {
-    imm version = uploadLines(device, positions, indices);
+    let version = uploadLines(device, positions, indices);
     new MeshHandle(meshes.add(new MeshSlot(version, GpuMesh.none(), 0u32, false, 0u64, 0u32)));
   }
 
@@ -880,7 +880,7 @@ pub struct Renderer {
   // false if 'h' names no mesh.
   pub fn replaceMesh(self &mut, device &mut Device, h MeshHandle, m &Mesh) bool {
     if !meshes.alive(h.slot) or meshes[h.slot].dynamicVertices > 0u32 { return false; }
-    imm version = uploadTriangles(device, m);
+    let version = uploadTriangles(device, m);
     self.stage(device, h, version);
     true;
   }
@@ -888,7 +888,7 @@ pub struct Renderer {
   // The same for a skinned mesh, with its skin
   pub fn replaceSkinnedMesh(self &mut, device &mut Device, h MeshHandle, m &Mesh, skin &Skin) bool {
     if !meshes.alive(h.slot) or meshes[h.slot].dynamicVertices > 0u32 { return false; }
-    imm version = uploadSkinned(device, m, skin);
+    let version = uploadSkinned(device, m, skin);
     self.stage(device, h, version);
     true;
   }
@@ -896,14 +896,14 @@ pub struct Renderer {
   // The same for lines
   pub fn replaceLines(self &mut, device &mut Device, h MeshHandle, positions &Array[Vec3], indices &Array[u32]) bool {
     if !meshes.alive(h.slot) { return false; }
-    imm version = uploadLines(device, positions, indices);
+    let version = uploadLines(device, positions, indices);
     self.stage(device, h, version);
     true;
   }
 
   // Put 'version' into the slot of 'h' not being drawn, to be swapped in
   fn stage(self &mut, device &mut Device, h MeshHandle, version GpuMesh) {
-    mut slot = &mut meshes[h.slot];
+    var slot = &mut meshes[h.slot];
     // A replacement not yet swapped in is replaced itself: it was never drawn
     if slot.active == 0u32 {
       slot.b.release(&mut device.queue);
@@ -922,7 +922,7 @@ pub struct Renderer {
   pub fn removeMesh(self &mut, device &mut Device, h MeshHandle) bool {
     if !meshes.alive(h.slot) { return false; }
     {
-      mut slot = &mut meshes[h.slot];
+      var slot = &mut meshes[h.slot];
       slot.a.release(&mut device.queue);
       slot.b.release(&mut device.queue);
     }
@@ -936,8 +936,8 @@ pub struct Renderer {
   // before it, so a write never lands under a frame still drawing the last
   // contents; it is drawn only once written.
   pub fn addDynamicMesh(self &mut, device &mut Device, maxVertices u32, maxIndices u32) MeshHandle {
-    mut g = GpuMesh.none();
-    imm usage = BUFFER_USAGE_VERTEX | BUFFER_USAGE_COPY_DST | BUFFER_USAGE_COPY_SRC;
+    var g = GpuMesh.none();
+    let usage = BUFFER_USAGE_VERTEX | BUFFER_USAGE_COPY_DST | BUFFER_USAGE_COPY_SRC;
     g.positions = device.createBuffer(u64.from(maxVertices) * 12u64, usage);
     g.normals = device.createBuffer(u64.from(maxVertices) * 12u64, usage);
     g.uvs = device.createBuffer(u64.from(maxVertices) * 8u64, usage);
@@ -953,15 +953,15 @@ pub struct Renderer {
   // dynamic mesh or 'm' does not fit its room.
   pub fn writeDynamicMesh(self &mut, device &mut Device, h MeshHandle, m &Mesh) bool {
     if !meshes.alive(h.slot) { return false; }
-    imm n = m.positions.len();
+    let n = m.positions.len();
     {
-      imm slot = meshes[h.slot];
+      let slot = meshes[h.slot];
       if slot.dynamicVertices == 0u32 or n > usize.from(slot.dynamicVertices)
           or m.indices.len() > usize.from(slot.dynamicIndices) {
         return false;
       }
     }
-    mut slot = &mut meshes[h.slot];
+    var slot = &mut meshes[h.slot];
     if n == 0usize or m.indices.len() == 0usize {
       slot.a.indexCount = 0u32;
       return true;
@@ -970,7 +970,7 @@ pub struct Renderer {
     if m.normals.len() == n {
       device.queue.writeBuffer(&slot.a.normals, 0u64, bytesOf[Vec3](&m.normals), u64.from(n) * 12u64);
     } else {
-      mut withNormals = Mesh.empty();
+      var withNormals = Mesh.empty();
       withNormals.append(m);
       withNormals.computeSmoothNormals();
       device.queue.writeBuffer(&slot.a.normals, 0u64, bytesOf[Vec3](&withNormals.normals), u64.from(n) * 12u64);
@@ -987,7 +987,7 @@ pub struct Renderer {
     if m.groups.len() == 0usize {
       slot.a.groups.push(new Group(0u32, slot.a.indexCount, 0u32));
     } else {
-      mut i = 0usize;
+      var i = 0usize;
       while i < m.groups.len() {
         slot.a.groups.push(*m.groups[i]);
         i = i + 1usize;
@@ -1011,13 +1011,13 @@ pub struct Renderer {
   // meshes, textures, materials and custom pipelines, and the bytes of the
   // mesh buffers and of the textures (every mip level of each)
   pub fn resourceUse(self &mut) ResourceUse {
-    mut held = new ResourceUse(0usize, 0u64, 0usize, 0u64, 0usize, 0usize);
+    var held = new ResourceUse(0usize, 0u64, 0usize, 0u64, 0usize, 0usize);
     {
-      mut it = meshes.gcTraceElements();
-      mut more = true;
+      var it = meshes.gcTraceElements();
+      var more = true;
       while more {
         match it.next() {
-          case imm s Some {
+          case let s Some {
             held.meshes = held.meshes + 1usize;
             held.meshBytes = held.meshBytes + s.a.bufferBytes() + s.b.bufferBytes();
           }
@@ -1026,11 +1026,11 @@ pub struct Renderer {
       }
     }
     {
-      mut it = textures.gcTraceElements();
-      mut more = true;
+      var it = textures.gcTraceElements();
+      var more = true;
       while more {
         match it.next() {
-          case imm s Some {
+          case let s Some {
             held.textures = held.textures + 1usize;
             held.textureBytes = held.textureBytes + textureBytes(&s.texture);
           }
@@ -1046,12 +1046,12 @@ pub struct Renderer {
   // Swap in the replacements made in an earlier frame, releasing what they
   // replace. 'render' does this first; a program drawing no frame need not.
   pub fn update(self &mut, device &mut Device) {
-    mut i = 0usize;
-    mut kept = List[MeshHandle].empty();
+    var i = 0usize;
+    var kept = List[MeshHandle].empty();
     while i < pending.len() {
-      imm h = *pending[i];
+      let h = *pending[i];
       if meshes.alive(h.slot) {
-        mut slot = &mut meshes[h.slot];
+        var slot = &mut meshes[h.slot];
         if slot.pending and device.frameNumber > slot.pendingFrame {
           if slot.active == 0u32 {
             slot.a.release(&mut device.queue);
@@ -1109,29 +1109,29 @@ pub struct Renderer {
   }
 
   fn addTextureAs(self &mut, device &mut Device, img &Image, format u32, kind u32, cutoff f32) TextureHandle {
-    imm w = u32.from(img.width);
-    imm h = u32.from(img.height);
-    mut rgba = List[u8].withCapacity(usize.from(w * h * 4u32));
-    mut p = 0usize;
-    imm n = usize.from(img.width * img.height);
+    let w = u32.from(img.width);
+    let h = u32.from(img.height);
+    var rgba = List[u8].withCapacity(usize.from(w * h * 4u32));
+    var p = 0usize;
+    let n = usize.from(img.width * img.height);
     while p < n {
-      imm at = p * usize.from(img.channels);
+      let at = p * usize.from(img.channels);
       rgba.push(*img.pixels[at]);
       rgba.push(*img.pixels[at + 1usize]);
       rgba.push(*img.pixels[at + 2usize]);
       rgba.push(if img.channels == 4 {*img.pixels[at + 3usize];} else {255u8;});
       p = p + 1usize;
     }
-    imm levels = if n > 0usize { mipLevelCount(w, h); } else { 1u32; };
-    imm desc = new TextureDescriptor(w, h, format, TEXTURE_USAGE_TEXTURE_BINDING | TEXTURE_USAGE_COPY_DST, levels);
-    mut texture = device.createTexture(&desc);
+    let levels = if n > 0usize { mipLevelCount(w, h); } else { 1u32; };
+    let desc = new TextureDescriptor(w, h, format, TEXTURE_USAGE_TEXTURE_BINDING | TEXTURE_USAGE_COPY_DST, levels);
+    var texture = device.createTexture(&desc);
     if n > 0usize {
       if levels > 1u32 {
-        imm chain = buildMipsCut(&rgba, w, h, kind, cutoff);
-        imm cv = chain.view();
+        let chain = buildMipsCut(&rgba, w, h, kind, cutoff);
+        let cv = chain.view();
         device.queue.writeTextureLevels(&texture, &cv[0] as *u8);
       } else {
-        imm v = rgba.view();
+        let v = rgba.view();
         device.queue.writeTexture(&texture, &v[0] as *u8, w * 4u32);
       }
     }
@@ -1147,7 +1147,7 @@ pub struct Renderer {
   pub fn removeTexture(self &mut, device &mut Device, h TextureHandle) bool {
     if !textures.alive(h.slot) or h.slot == white.slot { return false; }
     {
-      mut slot = &mut textures[h.slot];
+      var slot = &mut textures[h.slot];
       device.queue.releaseTexture(&mut slot.texture);
     }
     textures.remove(h.slot);
@@ -1161,7 +1161,7 @@ pub struct Renderer {
   pub fn removeMaterial(self &mut, device &mut Device, h MaterialHandle) bool {
     if !materials.alive(h.slot) { return false; }
     {
-      mut slot = &mut materials[h.slot];
+      var slot = &mut materials[h.slot];
       device.queue.releaseBuffer(&mut slot.uniforms);
       device.queue.releaseBindGroup(&mut slot.group);
     }
@@ -1171,16 +1171,16 @@ pub struct Renderer {
   // A material to draw with: its parameters in a uniform buffer of its own,
   // bound with its texture (the white one if it has none) and the sampler
   pub fn addMaterial(self &mut, device &mut Device, material &Material) MaterialHandle {
-    mut uniforms = device.createBuffer(MATERIAL_BYTES, BUFFER_USAGE_UNIFORM | BUFFER_USAGE_COPY_DST);
-    imm params = materialParams(material);
+    var uniforms = device.createBuffer(MATERIAL_BYTES, BUFFER_USAGE_UNIFORM | BUFFER_USAGE_COPY_DST);
+    let params = materialParams(material);
     device.queue.writeBuffer(&uniforms, 0u64, &params as *u8, MATERIAL_BYTES);
-    mut th = material.texture;
+    var th = material.texture;
     if !textures.alive(th.slot) { th = white; }
-    imm view = textures[th.slot].texture.createView();
-    imm entries = [BindGroupEntry.buffer(0u32, &uniforms), BindGroupEntry.texture(1u32, &view),
+    let view = textures[th.slot].texture.createView();
+    let entries = [BindGroupEntry.buffer(0u32, &uniforms), BindGroupEntry.texture(1u32, &view),
       BindGroupEntry.sampler(2u32, &sampler)];
-    mut group = device.createBindGroup(&materialLayout, &entries);
-    imm pbr = PbrMaterial.standard(material.baseColor, 0., 0.5);
+    var group = device.createBindGroup(&materialLayout, &entries);
+    let pbr = PbrMaterial.standard(material.baseColor, 0., 0.5);
     new MaterialHandle(materials.add(new MaterialSlot(*material, uniforms, group, MATERIAL_BLINN_PHONG, pbr,
       PipelineHandle.none(), material.alphaMode == ALPHA_BLEND)));
   }
@@ -1189,18 +1189,18 @@ pub struct Renderer {
   // directional light and the environment made from the sky
   pub fn addPbrMaterial(self &mut, device &mut Device, material &PbrMaterial) MaterialHandle {
     if material.isExtended() { self.ensureExtended(device); }
-    mut uniforms = device.createBuffer(PBR_BYTES, BUFFER_USAGE_UNIFORM | BUFFER_USAGE_COPY_DST);
-    imm params = pbrParams(material, self.mapNormalScale(material, material), self.mapOcclusionStrength(material, material));
+    var uniforms = device.createBuffer(PBR_BYTES, BUFFER_USAGE_UNIFORM | BUFFER_USAGE_COPY_DST);
+    let params = pbrParams(material, self.mapNormalScale(material, material), self.mapOcclusionStrength(material, material));
     device.queue.writeBuffer(&uniforms, 0u64, &params as *u8, PBR_BYTES);
-    imm view = textures[self.orWhite(material.texture).slot].texture.createView();
-    imm mrView = textures[self.orWhite(material.metallicRoughnessTexture).slot].texture.createView();
-    imm normalView = textures[self.orWhite(material.normalTexture).slot].texture.createView();
-    imm occlusionView = textures[self.orWhite(material.occlusionTexture).slot].texture.createView();
-    imm entries = [BindGroupEntry.buffer(0u32, &uniforms), BindGroupEntry.texture(1u32, &view),
+    let view = textures[self.orWhite(material.texture).slot].texture.createView();
+    let mrView = textures[self.orWhite(material.metallicRoughnessTexture).slot].texture.createView();
+    let normalView = textures[self.orWhite(material.normalTexture).slot].texture.createView();
+    let occlusionView = textures[self.orWhite(material.occlusionTexture).slot].texture.createView();
+    let entries = [BindGroupEntry.buffer(0u32, &uniforms), BindGroupEntry.texture(1u32, &view),
       BindGroupEntry.sampler(2u32, &sampler), BindGroupEntry.texture(3u32, &mrView),
       BindGroupEntry.texture(4u32, &normalView), BindGroupEntry.texture(5u32, &occlusionView)];
-    mut group = device.createBindGroup(&pbrMaterialLayout, &entries);
-    imm plain = Material.plain(material.baseColor);
+    var group = device.createBindGroup(&pbrMaterialLayout, &entries);
+    let plain = Material.plain(material.baseColor);
     new MaterialHandle(materials.add(new MaterialSlot(plain, uniforms, group, MATERIAL_PBR, *material,
       PipelineHandle.none(), material.alphaMode == ALPHA_BLEND)));
   }
@@ -1210,9 +1210,9 @@ pub struct Renderer {
   pub fn setPbrMaterial(self &mut, device &mut Device, h MaterialHandle, material &PbrMaterial) bool {
     if !materials.alive(h.slot) { return false; }
     if material.isExtended() { self.ensureExtended(device); }
-    imm bound = materials[h.slot].pbr;
-    imm params = pbrParams(material, self.mapNormalScale(&bound, material), self.mapOcclusionStrength(&bound, material));
-    mut slot = &mut materials[h.slot];
+    let bound = materials[h.slot].pbr;
+    let params = pbrParams(material, self.mapNormalScale(&bound, material), self.mapOcclusionStrength(&bound, material));
+    var slot = &mut materials[h.slot];
     if slot.kind != MATERIAL_PBR { return false; }
     device.queue.writeBuffer(&slot.uniforms, 0u64, &params as *u8, PBR_BYTES);
     slot.pbr = *material;
@@ -1227,7 +1227,7 @@ pub struct Renderer {
   // Make the extended material's pipelines, capture passes and tables, if they are not made (scenecapture.cone)
   fn ensureExtended(self &mut, device &mut Device) {
     if ext.len() > 0usize { return; }
-    imm noRays = RtScene.none();
+    let noRays = RtScene.none();
     ext.push(SceneCapture.create(device, colorFormat, depthFormat, &frameLayout, &pbrMaterialLayout, &environmentLayout,
       &reflections, &noRays));
   }
@@ -1246,7 +1246,7 @@ pub struct Renderer {
     if ext.len() < 2usize {
       if rt.len() == 0usize { rt.push(RtScene.create(device)); }
       if !rt[0usize].isValid() { return false; }
-      mut traced = SceneCapture.create(device, colorFormat, depthFormat, &frameLayout, &pbrMaterialLayout,
+      var traced = SceneCapture.create(device, colorFormat, depthFormat, &frameLayout, &pbrMaterialLayout,
         &environmentLayout, &reflections, rt[0usize]);
       if !traced.isValid() { return false; }
       traced.forceAll = ext[0usize].forceAll;
@@ -1264,9 +1264,9 @@ pub struct Renderer {
   // 'ReflectionSettings.high()', 'medium()', 'low()'; scenecapture.cone)
   pub fn setReflections(self &mut, s &ReflectionSettings) {
     reflections = *s;
-    mut k = 0usize;
+    var k = 0usize;
     while k < ext.len() {
-      mut e = &mut ext[k];
+      var e = &mut ext[k];
       e.settings = *s;
       k = k + 1usize;
     }
@@ -1278,9 +1278,9 @@ pub struct Renderer {
   pub fn setCaustics(self &mut, device &mut Device, v &CausticVolume) {
     self.ensureExtended(device);
     causticVolume = *v;
-    mut k = 0usize;
+    var k = 0usize;
     while k < ext.len() {
-      mut e = &mut ext[k];
+      var e = &mut ext[k];
       e.setCaustics(device, v);
       k = k + 1usize;
     }
@@ -1290,9 +1290,9 @@ pub struct Renderer {
   // test: the extended pipelines with all the lobes off must draw what the base ones do)
   pub fn forceExtended(self &mut, device &mut Device, on bool) {
     if on { self.ensureExtended(device); }
-    mut k = 0usize;
+    var k = 0usize;
     while k < ext.len() {
-      mut e = &mut ext[k];
+      var e = &mut ext[k];
       e.forceAll = on;
       k = k + 1usize;
     }
@@ -1316,8 +1316,8 @@ pub struct Renderer {
   // texture), from the next submission on
   pub fn setMaterial(self &mut, device &mut Device, h MaterialHandle, material &Material) bool {
     if !materials.alive(h.slot) { return false; }
-    imm params = materialParams(material);
-    mut slot = &mut materials[h.slot];
+    let params = materialParams(material);
+    var slot = &mut materials[h.slot];
     if slot.kind != MATERIAL_BLINN_PHONG { return false; }
     device.queue.writeBuffer(&slot.uniforms, 0u64, &params as *u8, MATERIAL_BYTES);
     slot.params.baseColor = material.baseColor;
@@ -1337,42 +1337,42 @@ pub struct Renderer {
   // 'addCustomMaterial' are drawn with (custom.cone has the contract its
   // shaders keep). 'hasPipeline' says whether it was made.
   pub fn addPipeline(self &mut, device &mut Device, desc &CustomPipeline) PipelineHandle {
-    mut shader = device.createShaderModule(desc.spirv);
-    imm stages = SHADER_STAGE_VERTEX | SHADER_STAGE_FRAGMENT;
-    mut entries = List[BindGroupLayoutEntry].empty();
+    var shader = device.createShaderModule(desc.spirv);
+    let stages = SHADER_STAGE_VERTEX | SHADER_STAGE_FRAGMENT;
+    var entries = List[BindGroupLayoutEntry].empty();
     entries.push(new BindGroupLayoutEntry(binding: 0u32, visibility: stages));
-    mut t = 0usize;
+    var t = 0usize;
     while t < desc.textures.len {
       entries.push(new BindGroupLayoutEntry(binding: u32.from(t) + 1u32, visibility: stages, kind: BINDING_KIND_TEXTURE,
         sampleType: desc.textures[t]));
       t = t + 1usize;
     }
     entries.push(new BindGroupLayoutEntry(binding: u32.from(t) + 1u32, visibility: stages, kind: BINDING_KIND_SAMPLER));
-    mut materialLayout = device.createBindGroupLayout(entries.view());
-    mut layout = if desc.environment {
-      imm groups = [&frameLayout, &materialLayout, &environmentLayout];
+    var materialLayout = device.createBindGroupLayout(entries.view());
+    var layout = if desc.environment {
+      let groups = [&frameLayout, &materialLayout, &environmentLayout];
       device.createPipelineLayout(&groups, IMMEDIATE_BYTES);
     } else {
-      imm groups = [&frameLayout, &materialLayout];
+      let groups = [&frameLayout, &materialLayout];
       device.createPipelineLayout(&groups, IMMEDIATE_BYTES);
     };
-    imm positionAttr = [new VertexAttribute(VERTEX_FORMAT_FLOAT32X3, 0u64, 0u32)];
-    imm normalAttr = [new VertexAttribute(VERTEX_FORMAT_FLOAT32X3, 0u64, 1u32)];
-    imm uvAttr = [new VertexAttribute(VERTEX_FORMAT_FLOAT32X2, 0u64, 2u32)];
-    imm buffers = [new VertexBufferLayout(arrayStride: 12u64, attributes: &positionAttr),
+    let positionAttr = [new VertexAttribute(VERTEX_FORMAT_FLOAT32X3, 0u64, 0u32)];
+    let normalAttr = [new VertexAttribute(VERTEX_FORMAT_FLOAT32X3, 0u64, 1u32)];
+    let uvAttr = [new VertexAttribute(VERTEX_FORMAT_FLOAT32X2, 0u64, 2u32)];
+    let buffers = [new VertexBufferLayout(arrayStride: 12u64, attributes: &positionAttr),
       new VertexBufferLayout(arrayStride: 12u64, attributes: &normalAttr),
       new VertexBufferLayout(arrayStride: 8u64, attributes: &uvAttr)];
-    imm streams = if desc.streams < 1u32 { 1usize; } elif desc.streams > 3u32 { 3usize; } else { usize.from(desc.streams); };
+    let streams = if desc.streams < 1u32 { 1usize; } elif desc.streams > 3u32 { 3usize; } else { usize.from(desc.streams); };
     // See-through: premultiplied alpha, the depth tested but not written
-    imm blend = desc.alphaMode == ALPHA_BLEND;
-    imm dstFactor = if blend { BLEND_FACTOR_ONE_MINUS_SRC_ALPHA; } else { BLEND_FACTOR_ZERO; };
-    imm pipelineDesc = new RenderPipelineDescriptor(layout: &layout, vertexModule: &shader,
+    let blend = desc.alphaMode == ALPHA_BLEND;
+    let dstFactor = if blend { BLEND_FACTOR_ONE_MINUS_SRC_ALPHA; } else { BLEND_FACTOR_ZERO; };
+    let pipelineDesc = new RenderPipelineDescriptor(layout: &layout, vertexModule: &shader,
       vertexEntryPoint: desc.vertexEntryPoint, buffers: &buffers[..<streams], fragmentModule: &shader,
       fragmentEntryPoint: desc.fragmentEntryPoint, colorFormat: colorFormat, cullMode: desc.cullMode,
       depthFormat: depthFormat, depthWriteEnabled: desc.depthWrite and !blend, depthCompare: COMPARE_FUNCTION_LESS,
       blendEnabled: blend, colorSrcFactor: BLEND_FACTOR_ONE, colorDstFactor: dstFactor,
       alphaSrcFactor: BLEND_FACTOR_ONE, alphaDstFactor: dstFactor);
-    mut pipeline = device.createRenderPipeline(&pipelineDesc);
+    var pipeline = device.createRenderPipeline(&pipelineDesc);
     new PipelineHandle(pipelines.add(new PipelineSlot(shader, materialLayout, layout, pipeline, u32.from(desc.textures.len),
       desc.paramBytes, desc.environment, blend)));
   }
@@ -1389,19 +1389,19 @@ pub struct Renderer {
   pub fn addCustomMaterial(self &mut, device &mut Device, pipeline PipelineHandle, params &Array[f32],
       maps &Array[TextureHandle]) MaterialHandle {
     if !self.hasPipeline(pipeline) { return MaterialHandle.none(); }
-    imm bytes = pipelines[pipeline.slot].paramBytes;
-    imm count = pipelines[pipeline.slot].textureCount;
-    mut uniforms = device.createBuffer(bytes, BUFFER_USAGE_UNIFORM | BUFFER_USAGE_COPY_DST);
+    let bytes = pipelines[pipeline.slot].paramBytes;
+    let count = pipelines[pipeline.slot].textureCount;
+    var uniforms = device.createBuffer(bytes, BUFFER_USAGE_UNIFORM | BUFFER_USAGE_COPY_DST);
     self.writeParams(device, &uniforms, bytes, params);
-    mut views = List[TextureView].empty();
-    mut t = 0u32;
+    var views = List[TextureView].empty();
+    var t = 0u32;
     while t < count {
-      mut th = TextureHandle.none();
+      var th = TextureHandle.none();
       if usize.from(t) < maps.len { th = maps[usize.from(t)]; }
       views.push(textures[self.orWhite(th).slot].texture.createView());
       t = t + 1u32;
     }
-    mut entries = List[BindGroupEntry].empty();
+    var entries = List[BindGroupEntry].empty();
     entries.push(BindGroupEntry.buffer(0u32, &uniforms));
     t = 0u32;
     while t < count {
@@ -1409,10 +1409,10 @@ pub struct Renderer {
       t = t + 1u32;
     }
     entries.push(BindGroupEntry.sampler(count + 1u32, &sampler));
-    mut group = device.createBindGroup(&pipelines[pipeline.slot].materialLayout, entries.view());
-    imm plain = Material.plain(new Color(1., 1., 1., 1.));
-    imm pbr = PbrMaterial.standard(plain.baseColor, 0., 0.5);
-    imm blend = pipelines[pipeline.slot].blend;
+    var group = device.createBindGroup(&pipelines[pipeline.slot].materialLayout, entries.view());
+    let plain = Material.plain(new Color(1., 1., 1., 1.));
+    let pbr = PbrMaterial.standard(plain.baseColor, 0., 0.5);
+    let blend = pipelines[pipeline.slot].blend;
     new MaterialHandle(materials.add(new MaterialSlot(plain, uniforms, group, MATERIAL_CUSTOM, pbr, pipeline, blend)));
   }
 
@@ -1420,7 +1420,7 @@ pub struct Renderer {
   // (its textures stay those it was made with): a water's time, say
   pub fn setCustomParams(self &mut, device &mut Device, h MaterialHandle, params &Array[f32]) bool {
     if !materials.alive(h.slot) { return false; }
-    imm slot = materials[h.slot];
+    let slot = materials[h.slot];
     if slot.kind != MATERIAL_CUSTOM { return false; }
     self.writeParams(device, &slot.uniforms, slot.uniforms.size, params);
     true;
@@ -1428,15 +1428,15 @@ pub struct Renderer {
 
   // Write 'params' into the first of 'bytes' bytes of 'uniforms', the rest 0
   fn writeParams(self &, device &mut Device, uniforms &Buffer, bytes u64, params &Array[f32]) {
-    mut data = List[f32].empty();
-    imm n = usize.from(bytes / 4u64);
-    mut i = 0usize;
+    var data = List[f32].empty();
+    let n = usize.from(bytes / 4u64);
+    var i = 0usize;
     while i < n {
       data.push(if i < params.len { params[i]; } else { 0.; });
       i = i + 1usize;
     }
     if n > 0usize {
-      imm v = data.view();
+      let v = data.view();
       device.queue.writeBuffer(uniforms, 0u64, &v[0] as *u8, bytes);
     }
   }
@@ -1447,9 +1447,9 @@ pub struct Renderer {
   // texel ('Load'), and its pipeline binds it as
   // TEXTURE_SAMPLE_TYPE_UNFILTERABLE_FLOAT. A heightfield, say.
   pub fn addFieldTexture(self &mut, device &mut Device, width u32, height u32, values &Array[f32]) TextureHandle {
-    imm desc = new TextureDescriptor(width, height, TEXTURE_FORMAT_R32_FLOAT,
+    let desc = new TextureDescriptor(width, height, TEXTURE_FORMAT_R32_FLOAT,
       TEXTURE_USAGE_TEXTURE_BINDING | TEXTURE_USAGE_COPY_DST);
-    mut texture = device.createTexture(&desc);
+    var texture = device.createTexture(&desc);
     if values.len >= usize.from(width * height) and values.len > 0usize {
       device.queue.writeTexture(&texture, &values[0] as *u8, width * 4u32);
     }
@@ -1460,8 +1460,8 @@ pub struct Renderer {
   // ahead of the next submission: a field that changes frame by frame
   pub fn writeFieldTexture(self &mut, device &mut Device, h TextureHandle, values &Array[f32]) bool {
     if !textures.alive(h.slot) { return false; }
-    imm slot = textures[h.slot];
-    imm width = slot.texture.width;
+    let slot = textures[h.slot];
+    let width = slot.texture.width;
     if slot.texture.format != TEXTURE_FORMAT_R32_FLOAT or values.len < usize.from(width * slot.texture.height) {
       return false;
     }
@@ -1479,7 +1479,7 @@ pub struct Renderer {
   pub fn writeFieldRegion(self &mut, device &mut Device, h TextureHandle, x u32, y u32, width u32, height u32,
       values &Array[f32]) bool {
     if !textures.alive(h.slot) { return false; }
-    imm slot = textures[h.slot];
+    let slot = textures[h.slot];
     if slot.texture.format != TEXTURE_FORMAT_R32_FLOAT or x + width > slot.texture.width
         or y + height > slot.texture.height or values.len < usize.from(width * height) or values.len == 0usize {
       return false;
@@ -1504,8 +1504,8 @@ pub struct Renderer {
   // step when there are views).
   pub fn render(self &mut, device &mut Device, encoder &mut CommandEncoder, target &Texture, depth &Texture,
       camera &Camera, light &Light, list &DrawList) {
-    imm targetView = target.createView();
-    imm depthView = depth.createView();
+    let targetView = target.createView();
+    let depthView = depth.createView();
     // The depth pyramid reads the depth buffer, if it can be sampled
     vis.depthSampled = (depth.usage & TEXTURE_USAGE_TEXTURE_BINDING) != 0u32;
     // The extended material captures the frame so far, if both the target and the depth can be sampled
@@ -1529,13 +1529,13 @@ pub struct Renderer {
     if target.width == 0u32 or target.height == 0u32 { return; }
 
     // The frame's uniforms: the camera and the light
-    imm aspect = f32.from(target.width) / f32.from(target.height);
-    imm viewProjection = camera.projectionMatrix(aspect) * camera.viewMatrix();
-    imm inverse = viewProjection.inverse();
-    imm eye = camera.position();
-    imm towards = new Vec3(0., 0., 0.) - light.direction;
-    mut frame = new Array[f32, 56] <- fill 0f;
-    mut k = 0usize;
+    let aspect = f32.from(target.width) / f32.from(target.height);
+    let viewProjection = camera.projectionMatrix(aspect) * camera.viewMatrix();
+    let inverse = viewProjection.inverse();
+    let eye = camera.position();
+    let towards = new Vec3(0., 0., 0.) - light.direction;
+    var frame = new Array[f32, 56] <- fill 0f;
+    var k = 0usize;
     while k < 16usize {
       frame[k] = viewProjection.m[k];
       k = k + 1usize;
@@ -1574,19 +1574,19 @@ pub struct Renderer {
 
     // The sun's cascades fitted to this camera (a function of the camera
     // alone, so the casters of each can be gathered before the batches)
-    imm shadowsOn = shadow.settings.enabled;
+    let shadowsOn = shadow.settings.enabled;
     if shadowsOn { shadow.cascades = computeCascades(camera, aspect, light.direction, &shadow.settings); }
 
     // The scene (visibility.cone): what this camera sees of it, added to the
     // draw list's items in a list of this render's, and, for each shadow
     // pass that is on, the casters that reach its volume, each after the
     // last. Without a scene the draw list itself is the list.
-    mut sceneList = DrawList.empty();
-    imm sceneOn = vis.active();
-    mut mainItems = list.items.len();
-    mut itemSets = List[SetRange].empty();
+    var sceneList = DrawList.empty();
+    let sceneOn = vis.active();
+    var mainItems = list.items.len();
+    var itemSets = List[SetRange].empty();
     if sceneOn {
-      mut k = 0usize;
+      var k = 0usize;
       while k < list.items.len() {
         sceneList.items.push(*list.items[k]);
         k = k + 1usize;
@@ -1599,36 +1599,36 @@ pub struct Renderer {
       vis.collect(camera, aspect, f32.from(target.height), &mut sceneList.items);
       mainItems = sceneList.items.len();
       if vis.settings.shadowCulling {
-        imm localViews = lights.shadows.viewsUsed;
-        imm cascadeCount = if shadowsOn { shadow.cascades.count; } else { 0u32; };
-        mut c = 0u32;
+        let localViews = lights.shadows.viewsUsed;
+        let cascadeCount = if shadowsOn { shadow.cascades.count; } else { 0u32; };
+        var c = 0u32;
         while c < cascadeCount {
-          imm first = sceneList.items.len();
+          let first = sceneList.items.len();
           self.appendCasters(&mut sceneList, list);
-          imm matrix = shadow.cascades.matrices[usize.from(c)];
-          imm volume = casterVolume(&matrix);
+          let matrix = shadow.cascades.matrices[usize.from(c)];
+          let volume = casterVolume(&matrix);
           vis.collectCasters(&volume, camera, f32.from(target.height), &mut sceneList.items);
           itemSets.push(new SetRange(first, sceneList.items.len()));
           c = c + 1u32;
         }
-        mut v = 0u32;
+        var v = 0u32;
         while v < localViews {
-          imm first = sceneList.items.len();
+          let first = sceneList.items.len();
           self.appendCasters(&mut sceneList, list);
-          mut matrix = Mat4.identity();
+          var matrix = Mat4.identity();
           k = 0usize;
           while k < 16usize {
             matrix.m[k] = *lights.shadows.views[usize.from(v) * 16usize + k];
             k = k + 1usize;
           }
-          imm volume = Frustum.fromMatrix(matrix);
+          let volume = Frustum.fromMatrix(matrix);
           vis.collectCasters(&volume, camera, f32.from(target.height), &mut sceneList.items);
           itemSets.push(new SetRange(first, sceneList.items.len()));
           v = v + 1u32;
         }
       }
     }
-    imm drawList &DrawList = if sceneOn { &sceneList; } else { list; };
+    let drawList &DrawList = if sceneOn { &sceneList; } else { list; };
 
     // The batches, front to back, of the main view and then of each shadow
     // pass, and their instances and bones written
@@ -1636,7 +1636,7 @@ pub struct Renderer {
     batches.clear();
     vis.sets.clear();
     // The depth pyramid culls scene items (hiz.cone) if asked to and the depth can be sampled
-    imm occluding = sceneOn and vis.settings.occlusion and vis.depthSampled;
+    let occluding = sceneOn and vis.settings.occlusion and vis.depthSampled;
     if occluding {
       if hiz.len() == 0usize { hiz.push(HiZ.create(device, &instances, &boneBases, target.width, target.height)); }
       hiz[0usize].ensurePyramid(device, target.width, target.height);
@@ -1644,9 +1644,9 @@ pub struct Renderer {
     self.gatherSet(drawList, 0usize, mainItems, eye, false, occluding);
     vis.sets.push(new SetRange(0usize, batches.len()));
     {
-      mut s = 0usize;
+      var s = 0usize;
       while s < itemSets.len() {
-        imm firstBatch = batches.len();
+        let firstBatch = batches.len();
         self.gatherSet(drawList, itemSets[s].first, itemSets[s].end, eye, true, false);
         vis.sets.push(new SetRange(firstBatch, batches.len()));
         s = s + 1usize;
@@ -1656,7 +1656,7 @@ pub struct Renderer {
     self.writeInstances(device, drawList, occluding);
     self.writeBones(device, drawList);
     if occluding and hiz[0usize].candidateCount > 0u32 {
-      mut hz = &mut hiz[0usize];
+      var hz = &mut hiz[0usize];
       hz.upload(device, &instances, &boneBases, instanceCapacity, &viewProjection);
     }
 
@@ -1664,9 +1664,9 @@ pub struct Renderer {
     // read, and, if they are on, a depth pass for each cascade before the
     // scene is drawn
     {
-      imm place = camera.placement();
-      imm forward = new Vec3(-place.m[8], -place.m[9], -place.m[10]).normalize();
-      imm shadowFloats = shadowParamsFloats(&shadow.cascades, &shadow.settings, forward, shadowsOn);
+      let place = camera.placement();
+      let forward = new Vec3(-place.m[8], -place.m[9], -place.m[10]).normalize();
+      let shadowFloats = shadowParamsFloats(&shadow.cascades, &shadow.settings, forward, shadowsOn);
       device.queue.writeBuffer(&shadow.params, 0u64, &shadowFloats as *u8, SHADOW_SUN_BYTES);
     }
     if shadowsOn { recordShadowPasses(self, device, encoder, drawList); }
@@ -1674,50 +1674,50 @@ pub struct Renderer {
     recordLocalShadowPasses(self, device, encoder, drawList);
 
     // The background is light too: exposed like the rest
-    imm bg = camera.background;
-    imm clear = new Color(bg.red * exposure, bg.green * exposure, bg.blue * exposure, bg.alpha);
+    let bg = camera.background;
+    let clear = new Color(bg.red * exposure, bg.green * exposure, bg.blue * exposure, bg.alpha);
     blendedDrawn = 0u32;
-    imm mainEnd = vis.sets[0usize].end;
-    imm proj = camera.projectionMatrix(aspect);
+    let mainEnd = vis.sets[0usize].end;
+    let proj = camera.projectionMatrix(aspect);
     if ext.len() > 0usize and self.drawsPbr(drawList) {
-      mut e = &mut ext[extActive];
+      var e = &mut ext[extActive];
       e.bake(encoder);
     }
     // The structure rays are cast into, built from the draw list (raytrace.cone)
     if extActive == 1usize {
-      mut r = &mut rt[0usize];
+      var r = &mut rt[0usize];
       r.update(device, encoder, &meshes, &materials, &drawList.items, mainItems);
     }
     // With the depth pyramid, the view is drawn in two render passes with the
     // pyramid built between them (hiz.cone); otherwise in one
-    imm occActive = occluding and hiz[0usize].candidateCount > 0u32;
-    imm phases = if occActive { 2u32; } else { 1u32; };
+    let occActive = occluding and hiz[0usize].candidateCount > 0u32;
+    let phases = if occActive { 2u32; } else { 1u32; };
     if occActive { hiz[0usize].recordFirst(encoder); }
-    mut phase = 0u32;
+    var phase = 0u32;
     while phase < phases {
-    imm lastPhase = phase + 1u32 == phases;
-    imm color = new RenderPassColorAttachment(view: target, clearValue: clear,
+    let lastPhase = phase + 1u32 == phases;
+    let color = new RenderPassColorAttachment(view: target, clearValue: clear,
       loadOp: if phase == 0u32 { LOAD_OP_CLEAR; } else { LOAD_OP_LOAD; });
     // The extended material's captures (scenecapture.cone) end this pass to copy what it drew and begin it
     // again: 'splitMask' says which are wanted (1: before the opaque meshes that reflect the frame; 2: before
     // the glass), and the depth is stored while another capture, or the caller, will read it
-    imm splitMask = self.splitMask(mainEnd);
-    imm keepsDepth = keepDepth or !lastPhase;
-    imm depthStore = if keepsDepth or splitMask != 0u32 { STORE_OP_STORE; } else { STORE_OP_DISCARD; };
-    imm depthAttachment = new RenderPassDepthStencilAttachment(view: depth, depthStoreOp: depthStore,
+    let splitMask = self.splitMask(mainEnd);
+    let keepsDepth = keepDepth or !lastPhase;
+    let depthStore = if keepsDepth or splitMask != 0u32 { STORE_OP_STORE; } else { STORE_OP_DISCARD; };
+    let depthAttachment = new RenderPassDepthStencilAttachment(view: depth, depthStoreOp: depthStore,
       depthLoadOp: if phase == 0u32 { LOAD_OP_CLEAR; } else { LOAD_OP_LOAD; });
-    mut pass = encoder.beginRenderPassWithDepth(&color, &depthAttachment);
-    mut bound = BOUND_NONE;
-    mut boundMaterial = Ref[MaterialSlot].none();
-    mut boundPipeline = Ref[PipelineSlot].none();
-    mut boundProbe = 0u32;           // the probe whose group is group 2 (0: the sky's)
-    mut skyDrawn = !drawSky;
-    mut sceneLive = false;           // the capture's group (group 3) holds a capture of this render
-    mut reflectDone = (splitMask & 1u32) == 0u32;
-    mut glassDone = (splitMask & 2u32) == 0u32;
-    mut b = 0usize;
+    var pass = encoder.beginRenderPassWithDepth(&color, &depthAttachment);
+    var bound = BOUND_NONE;
+    var boundMaterial = Ref[MaterialSlot].none();
+    var boundPipeline = Ref[PipelineSlot].none();
+    var boundProbe = 0u32;           // the probe whose group is group 2 (0: the sky's)
+    var skyDrawn = !drawSky;
+    var sceneLive = false;           // the capture's group (group 3) holds a capture of this render
+    var reflectDone = (splitMask & 1u32) == 0u32;
+    var glassDone = (splitMask & 2u32) == 0u32;
+    var b = 0usize;
     while b < mainEnd {
-      imm batch = *batches[b];
+      let batch = *batches[b];
       b = b + 1usize;
       // The first pass of two draws the opaque batches; the second draws the
       // culled ones' second set and everything after them
@@ -1731,8 +1731,8 @@ pub struct Renderer {
         self.captureFrame(device, encoder, &target, &depth, &proj);
         reflectDone = true;
         sceneLive = true;
-        imm colorLoad = new RenderPassColorAttachment(view: target, clearValue: clear, loadOp: LOAD_OP_LOAD);
-        imm depthLoad = new RenderPassDepthStencilAttachment(view: depth,
+        let colorLoad = new RenderPassColorAttachment(view: target, clearValue: clear, loadOp: LOAD_OP_LOAD);
+        let depthLoad = new RenderPassDepthStencilAttachment(view: depth,
           depthStoreOp: if keepsDepth or !glassDone { STORE_OP_STORE; } else { STORE_OP_DISCARD; }, depthLoadOp: LOAD_OP_LOAD);
         pass = encoder.beginRenderPassWithDepth(&colorLoad, &depthLoad);
         bound = BOUND_NONE;
@@ -1753,24 +1753,24 @@ pub struct Renderer {
         self.captureFrame(device, encoder, &target, &depth, &proj);
         glassDone = true;
         sceneLive = true;
-        imm colorLoad = new RenderPassColorAttachment(view: target, clearValue: clear, loadOp: LOAD_OP_LOAD);
-        imm depthLoad = new RenderPassDepthStencilAttachment(view: depth,
+        let colorLoad = new RenderPassColorAttachment(view: target, clearValue: clear, loadOp: LOAD_OP_LOAD);
+        let depthLoad = new RenderPassDepthStencilAttachment(view: depth,
           depthStoreOp: if keepsDepth { STORE_OP_STORE; } else { STORE_OP_DISCARD; }, depthLoadOp: LOAD_OP_LOAD);
         pass = encoder.beginRenderPassWithDepth(&colorLoad, &depthLoad);
         bound = BOUND_NONE;
         boundMaterial = Ref[MaterialSlot].none();
         boundPipeline = Ref[PipelineSlot].none();
       }
-      imm first = *keys[usize.from(batch.first)];
-      imm item = drawList.items[usize.from(first.item)];
+      let first = *keys[usize.from(batch.first)];
+      let item = drawList.items[usize.from(first.item)];
       // gatherSet kept only items whose mesh (and material) are alive
-      imm slot = meshes[item.mesh.slot];
-      imm m = slot.current();
-      imm lines = batch.layer == LAYER_LINES;
-      imm blend = batch.layer == LAYER_BLEND;
-      mut skinned = false;
-      mut sway = false;
-      mut tangented = false;
+      let slot = meshes[item.mesh.slot];
+      let m = slot.current();
+      let lines = batch.layer == LAYER_LINES;
+      let blend = batch.layer == LAYER_BLEND;
+      var skinned = false;
+      var sway = false;
+      var tangented = false;
       if lines {
         if bound != BOUND_LINES {
           pass.setPipeline(&linesPipeline);
@@ -1778,7 +1778,7 @@ pub struct Renderer {
           bound = BOUND_LINES;
         }
         // A line's model matrix and color in the immediates
-        mut immediates = new Array[f32, 20] <- fill 0f;
+        var immediates = new Array[f32, 20] <- fill 0f;
         k = 0usize;
         while k < 16usize {
           immediates[k] = item.model.m[k];
@@ -1791,10 +1791,10 @@ pub struct Renderer {
         pass.setImmediates(0u32, &immediates as *u8, IMMEDIATE_BYTES);
       } else {
         // The material's kind chooses the pipeline
-        imm mslot = materials[item.material.slot];
+        let mslot = materials[item.material.slot];
         if mslot.kind == MATERIAL_CUSTOM {
           if bound != BOUND_CUSTOM or !(boundPipeline == mslot.pipeline.slot) {
-            imm ps = pipelines[mslot.pipeline.slot];
+            let ps = pipelines[mslot.pipeline.slot];
             pass.setPipeline(&ps.pipeline);
             pass.setBindGroup(0u32, &frameGroup);
             if ps.environment { pass.setBindGroup(2u32, &environment.group); }
@@ -1809,14 +1809,14 @@ pub struct Renderer {
           skinned = m.isSkinned();
           // A material that asks for a lobe the base shader lacks, or the frame, is drawn by the extended
           // pipelines (scenecapture.cone), which have the capture as their fourth group
-          imm extended = ext.len() > 0usize and (mslot.pbr.isExtended() or ext[extActive].forceAll);
+          let extended = ext.len() > 0usize and (mslot.pbr.isExtended() or ext[extActive].forceAll);
           // Glass found by rays replaces what is behind it, so it is drawn by a pipeline that writes depth
-          imm glassTraced = extended and blend and !skinned and ext[extActive].rayTraced and mslot.pbr.glass > 0.;
+          let glassTraced = extended and blend and !skinned and ext[extActive].rayTraced and mslot.pbr.glass > 0.;
           // A flutter material on a mesh that carries its leaves' data
           sway = !blend and !skinned and !extended and mslot.pbr.flutter > 0. and m.sway.isValid();
           // A mesh with tangents follows them in an anisotropic highlight
           tangented = extended and !blend and !skinned and m.tangents.isValid();
-          imm want = if extended {
+          let want = if extended {
             if blend {
               if skinned { BOUND_PBRX_SKINNED_BLEND; } elif glassTraced { BOUND_PBRX_GLASS; } else { BOUND_PBRX_BLEND; };
             } else {
@@ -1850,7 +1850,7 @@ pub struct Renderer {
           }
         } else {
           skinned = m.isSkinned();
-          imm want = if blend {
+          let want = if blend {
             if skinned { BOUND_LIT_SKINNED_BLEND; } else { BOUND_LIT_BLEND; };
           } else {
             if skinned { BOUND_LIT_SKINNED; } else { BOUND_LIT; };
@@ -1894,18 +1894,18 @@ pub struct Renderer {
       }
       pass.setIndexBuffer(&m.indices, INDEX_FORMAT_UINT32, 0u64);
       // One draw a material group of the mesh, for every copy in the batch
-      mut g = 0usize;
+      var g = 0usize;
       while g < m.groups.len() {
-        imm group = m.groups[g];
+        let group = m.groups[g];
         if lines {
           pass.drawIndexed(group.count, 1u32, group.start, 0i32, 0u32);
           triangles = triangles + u64.from(group.count / 2u32);
         } elif batch.occ != 0u32 {
           // A batch the pyramid culls: the survivors' count is the GPU's, an indirect draw (hiz.cone);
           // 'triangles' counts all its candidates, an upper bound
-          imm hz = hiz[0usize];
-          imm draw = u64.from(*hz.batchData[usize.from(batch.occ - 1u32) * 4usize + 2usize]) + u64.from(g);
-          imm offset = (u64.from(phase) * u64.from(hz.drawCount) + draw) * 20u64;
+          let hz = hiz[0usize];
+          let draw = u64.from(*hz.batchData[usize.from(batch.occ - 1u32) * 4usize + 2usize]) + u64.from(g);
+          let offset = (u64.from(phase) * u64.from(hz.drawCount) + draw) * 20u64;
           pass.drawIndexedIndirect(&hz.args, offset);
           if phase == 0u32 { triangles = triangles + u64.from(group.count / 3u32) * u64.from(batch.count); }
         } else {
@@ -1923,13 +1923,13 @@ pub struct Renderer {
     pass.end();
     if occActive and phase == 0u32 {
       // The pyramid of what the first pass drew, and the second set of survivors
-      mut hz = &mut hiz[0usize];
+      var hz = &mut hiz[0usize];
       hz.recordSecond(device, encoder, &depth, target.width, target.height);
     }
     phase = phase + 1u32;
     }
     if occActive {
-      mut hz = &mut hiz[0usize];
+      var hz = &mut hiz[0usize];
       hz.finishFrame(&viewProjection);
       if vis.settings.occlusionStats { hz.copyStats(device, encoder); }
     }
@@ -1943,10 +1943,10 @@ pub struct Renderer {
   // the frame; bit 1, a glass batch. 0 when the render cannot capture its target.
   fn splitMask(self &, end usize) u32 {
     if !captureReady or ext.len() == 0usize { return 0u32; }
-    mut mask = 0u32;
-    mut i = 0usize;
+    var mask = 0u32;
+    var i = 0usize;
     while i < end {
-      imm bt = *batches[i];
+      let bt = *batches[i];
       if bt.layer == LAYER_OPAQUE and bt.late != 0u32 { mask = mask | 1u32; }
       if bt.layer == LAYER_BLEND and bt.late == 0u32 { mask = mask | 2u32; }
       i = i + 1usize;
@@ -1957,7 +1957,7 @@ pub struct Renderer {
   // Capture the target and the depth as drawn so far, for the extended material to read
   fn captureFrame(self &mut, device &mut Device, encoder &mut CommandEncoder, target &TextureView, depth &TextureView,
       proj &Mat4) {
-    mut e = &mut ext[extActive];
+    var e = &mut ext[extActive];
     e.capture(device, encoder, target, depth, target.width, target.height, proj.m[10], proj.m[14], frameNumber);
   }
 
@@ -1974,11 +1974,11 @@ pub struct Renderer {
   // The reflection probe whose box holds the point 'p': 1 + its index (the
   // smallest box if several hold it), or 0 if none does (views.cone)
   fn probeFor(self &, p Vec3) u32 {
-    mut found = 0u32;
-    mut volume = 0.;
-    mut i = 0usize;
+    var found = 0u32;
+    var volume = 0.;
+    var i = 0usize;
     while i < probes.len() {
-      imm s = probes[i];
+      let s = probes[i];
       if s.ready and p.x >= s.boxMin.x and p.x <= s.boxMax.x and p.y >= s.boxMin.y and p.y <= s.boxMax.y
           and p.z >= s.boxMin.z and p.z <= s.boxMax.z {
         if found == 0u32 or s.volume < volume {
@@ -1993,11 +1993,11 @@ pub struct Renderer {
 
   // Whether 'list' draws a mesh with a physically based material
   fn drawsPbr(self &, list &DrawList) bool {
-    mut i = 0usize;
+    var i = 0usize;
     while i < list.items.len() {
-      imm item = list.items[i];
+      let item = list.items[i];
       if materials.alive(item.material.slot) {
-        imm mslot = materials[item.material.slot];
+        let mslot = materials[item.material.slot];
         if mslot.kind == MATERIAL_PBR { return true; }
         if mslot.kind == MATERIAL_CUSTOM and pipelines.alive(mslot.pipeline.slot) {
           if pipelines[mslot.pipeline.slot].environment { return true; }
@@ -2027,40 +2027,40 @@ pub struct Renderer {
   // main view's, then a shadow pass's, which 'shadowOnly' limits to what
   // casts a shadow (no lines, nothing see-through or custom).
   fn gatherSet(self &mut, list &DrawList, itemFirst usize, itemEnd usize, eye Vec3, shadowOnly bool, occlusion bool) {
-    mut setKeys = List[DrawKey].withCapacity(itemEnd - itemFirst);
-    mut i = itemFirst;
+    var setKeys = List[DrawKey].withCapacity(itemEnd - itemFirst);
+    var i = itemFirst;
     while i < itemEnd {
-      imm item = list.items[i];
-      imm cast = if item.castsShadow { 1u32; } else { 0u32; };
+      let item = list.items[i];
+      let cast = if item.castsShadow { 1u32; } else { 0u32; };
       if meshes.alive(item.mesh.slot) {
-        imm m = meshes[item.mesh.slot].current();
+        let m = meshes[item.mesh.slot].current();
         if m.isValid() {
           if shadowOnly {
             if m.topology != PRIMITIVE_TOPOLOGY_LINE_LIST and materials.alive(item.material.slot)
                 and casterKindOf(self, item, m) != CASTER_NONE {
-              imm d = item.model.translation().distanceSquared(eye);
+              let d = item.model.translation().distanceSquared(eye);
               setKeys.push(new DrawKey(LAYER_OPAQUE, item.material.slot.slot(), item.mesh.slot.slot(), u32.from(i), 1u32, d, 0u32));
             }
           } elif m.topology == PRIMITIVE_TOPOLOGY_LINE_LIST {
-            imm d = item.model.translation().distanceSquared(eye);
+            let d = item.model.translation().distanceSquared(eye);
             setKeys.push(new DrawKey(LAYER_LINES, u32.from(i), item.mesh.slot.slot(), u32.from(i), 0u32, d, 0u32));
           } elif materials.alive(item.material.slot) {
-            imm probe = self.probeFor(item.model.translation());
-            imm mslot = materials[item.material.slot];
-            imm extended = mslot.kind == MATERIAL_PBR;
+            let probe = self.probeFor(item.model.translation());
+            let mslot = materials[item.material.slot];
+            let extended = mslot.kind == MATERIAL_PBR;
             if mslot.blend {
-              imm d = (item.model * m.center).distanceSquared(eye);
+              let d = (item.model * m.center).distanceSquared(eye);
               // Glass is drawn before the rest of the see-through meshes (scenecapture.cone): 'late' 0
-              imm late = if extended and mslot.pbr.glass > 0. { 0u32; } else { 1u32; };
+              let late = if extended and mslot.pbr.glass > 0. { 0u32; } else { 1u32; };
               setKeys.push(new DrawKey(LAYER_BLEND, item.material.slot.slot(), item.mesh.slot.slot(), u32.from(i), 0u32, d, probe,
                 0u32, late));
             } else {
-              imm d = item.model.translation().distanceSquared(eye);
+              let d = item.model.translation().distanceSquared(eye);
               // The depth pyramid may cull an unskinned lit or physically based copy the scene marked so
-              imm occ = if occlusion and item.occludable and !m.isSkinned() and mslot.kind != MATERIAL_CUSTOM
+              let occ = if occlusion and item.occludable and !m.isSkinned() and mslot.kind != MATERIAL_CUSTOM
                 { 1u32; } else { 0u32; };
               // A mesh that reflects the frame is drawn after the others (scenecapture.cone): 'late' 1
-              imm late = if extended and mslot.pbr.reflections > 0. { 1u32; } else { 0u32; };
+              let late = if extended and mslot.pbr.reflections > 0. { 1u32; } else { 0u32; };
               setKeys.push(new DrawKey(LAYER_OPAQUE, item.material.slot.slot(), item.mesh.slot.slot(), u32.from(i), cast, d, probe,
                 occ, late));
             }
@@ -2076,17 +2076,17 @@ pub struct Renderer {
     // a batch (not nearest first, which only helps early depth rejection),
     // each batch's distance the nearest of its keys'. Everything else, and a
     // small set, sorts as ever.
-    mut placed = List[DrawKey].empty();
-    mut groupCount = List[u32].empty();
-    mut groupNear = List[f32].empty();
-    mut groupRep = List[DrawKey].empty();
-    mut groupOffset = List[u32].empty();
+    var placed = List[DrawKey].empty();
+    var groupCount = List[u32].empty();
+    var groupNear = List[f32].empty();
+    var groupRep = List[DrawKey].empty();
+    var groupOffset = List[u32].empty();
     if setKeys.len() > bucketMin {
-      mut rest = List[DrawKey].empty();
-      mut big = List[DrawKey].withCapacity(setKeys.len());
-      mut s = 0usize;
+      var rest = List[DrawKey].empty();
+      var big = List[DrawKey].withCapacity(setKeys.len());
+      var s = 0usize;
       while s < setKeys.len() {
-        imm key = *setKeys[s];
+        let key = *setKeys[s];
         if key.layer == LAYER_OPAQUE and key.material < 1048576u32 and key.mesh < 1048576u32 and key.probe < 4096u32
             and key.late == 0u32 {
           big.push(key);
@@ -2096,14 +2096,14 @@ pub struct Renderer {
         s = s + 1usize;
       }
       setKeys = rest;
-      mut ids = Dict[u64, u32].empty();
-      mut groupOf = List[u32].withCapacity(big.len());
+      var ids = Dict[u64, u32].empty();
+      var groupOf = List[u32].withCapacity(big.len());
       s = 0usize;
       while s < big.len() {
-        imm key = *big[s];
-        imm packed = (u64.from(key.material) << 44u64) | (u64.from(key.mesh) << 24u64) | (u64.from(key.probe) << 12u64)
+        let key = *big[s];
+        let packed = (u64.from(key.material) << 44u64) | (u64.from(key.mesh) << 24u64) | (u64.from(key.probe) << 12u64)
           | (u64.from(key.cast & 1u32) << 1u64) | u64.from(key.occ & 1u32);
-        mut id = 0u32;
+        var id = 0u32;
         if ids.containsKey(&packed) {
           id = *ids[&packed];
           groupCount.set(usize.from(id), *groupCount[usize.from(id)] + 1u32);
@@ -2118,7 +2118,7 @@ pub struct Renderer {
         groupOf.push(id);
         s = s + 1usize;
       }
-      mut running = 0u32;
+      var running = 0u32;
       s = 0usize;
       while s < groupCount.len() {
         groupOffset.push(running);
@@ -2128,7 +2128,7 @@ pub struct Renderer {
       if big.len() > 0usize {
         placed = List[DrawKey].withCapacity(big.len());
         placed.resize(big.len(), *big[0usize]);
-        mut cursor = List[u32].withCapacity(groupOffset.len());
+        var cursor = List[u32].withCapacity(groupOffset.len());
         s = 0usize;
         while s < groupOffset.len() {
           cursor.push(*groupOffset[s]);
@@ -2136,7 +2136,7 @@ pub struct Renderer {
         }
         s = 0usize;
         while s < big.len() {
-          imm g = usize.from(*groupOf[s]);
+          let g = usize.from(*groupOf[s]);
           placed.set(usize.from(*cursor[g]), *big[s]);
           cursor.set(g, *cursor[g] + 1u32);
           s = s + 1usize;
@@ -2145,12 +2145,12 @@ pub struct Renderer {
     }
     setKeys.sortBy(&byBatch);
     // Runs of one material and mesh
-    imm keyBase = keys.len();
-    mut setBatches = List[DrawBatch].empty();
-    mut k = 0usize;
+    let keyBase = keys.len();
+    var setBatches = List[DrawBatch].empty();
+    var k = 0usize;
     while k < setKeys.len() {
-      imm first = *setKeys[k];
-      mut end = k + 1usize;
+      let first = *setKeys[k];
+      var end = k + 1usize;
       while end < setKeys.len() and setKeys[end].layer == first.layer and setKeys[end].material == first.material
           and setKeys[end].mesh == first.mesh and setKeys[end].cast == first.cast and setKeys[end].probe == first.probe
           and setKeys[end].occ == first.occ and setKeys[end].late == first.late {
@@ -2158,7 +2158,7 @@ pub struct Renderer {
       }
       // The keys of a run are sorted nearest first (or, see-through,
       // farthest first)
-      mut runBatch = new DrawBatch(u32.from(keyBase + k), u32.from(end - k), 0u32, first.distance, first.layer,
+      var runBatch = new DrawBatch(u32.from(keyBase + k), u32.from(end - k), 0u32, first.distance, first.layer,
         u32.from(keyBase + k), first.layer == LAYER_OPAQUE and first.cast == 0u32, first.probe, first.occ);
       runBatch.late = first.late;
       setBatches.push(runBatch);
@@ -2167,8 +2167,8 @@ pub struct Renderer {
     // The grouped keys' batches, their keys after the sorted ones
     k = 0usize;
     while k < groupCount.len() {
-      imm rep = *groupRep[k];
-      imm at = u32.from(keyBase + setKeys.len()) + *groupOffset[k];
+      let rep = *groupRep[k];
+      let at = u32.from(keyBase + setKeys.len()) + *groupOffset[k];
       setBatches.push(new DrawBatch(at, *groupCount[k], 0u32, *groupNear[k], LAYER_OPAQUE, at, rep.cast == 0u32,
         rep.probe, rep.occ));
       k = k + 1usize;
@@ -2195,9 +2195,9 @@ pub struct Renderer {
   // (a shadow pass's set holds the draw list's own items whole, beside the
   // scene's it gathers)
   fn appendCasters(self &, frame &mut DrawList, list &DrawList) {
-    mut k = 0usize;
+    var k = 0usize;
     while k < list.items.len() {
-      imm it = list.items[k];
+      let it = list.items[k];
       if it.castsShadow { frame.items.push(*it); }
       k = k + 1usize;
     }
@@ -2214,11 +2214,11 @@ pub struct Renderer {
   fn writeInstances(self &mut, device &mut Device, list &DrawList, occluding bool) {
     instanceData.clear();
     boneBaseData.clear();
-    mut count = 0u32;
-    mut b = 0usize;
-    mut occTotal = 0u32;
+    var count = 0u32;
+    var b = 0usize;
+    var occTotal = 0u32;
     while b < batches.len() {
-      mut batch = *batches[b];
+      var batch = *batches[b];
       if batch.occ != 0u32 {
         occTotal = occTotal + batch.count;
         b = b + 1usize;
@@ -2226,10 +2226,10 @@ pub struct Renderer {
       }
       batch.firstInstance = count;
       batches.set(b, batch);
-      mut j = 0u32;
+      var j = 0u32;
       while j < batch.count {
-        imm item = list.items[usize.from(keys[usize.from(batch.first + j)].item)];
-        mut e = 0usize;
+        let item = list.items[usize.from(keys[usize.from(batch.first + j)].item)];
+        var e = 0usize;
         while e < 16usize {
           instanceData.push(item.model.m[e]);
           e = e + 1usize;
@@ -2245,30 +2245,30 @@ pub struct Renderer {
       count = count + batch.count;
       b = b + 1usize;
     }
-    imm plain = count;
+    let plain = count;
     if occTotal > 0u32 and occluding {
       // The culled batches: two places each after the rest, a candidate for each copy
-      mut place0 = plain;
-      mut place1 = plain + occTotal;
-      mut hz = &mut hiz[0usize];
+      var place0 = plain;
+      var place1 = plain + occTotal;
+      var hz = &mut hiz[0usize];
       hz.beginFrame();
       b = 0usize;
       while b < batches.len() {
-        mut batch = *batches[b];
+        var batch = *batches[b];
         if batch.occ != 0u32 {
-          imm firstItem = list.items[usize.from(keys[usize.from(batch.first)].item)];
-          imm gm = meshes[firstItem.mesh.slot].current();
-          imm index = hz.addBatch(place0, place1, gm);
+          let firstItem = list.items[usize.from(keys[usize.from(batch.first)].item)];
+          let gm = meshes[firstItem.mesh.slot].current();
+          let index = hz.addBatch(place0, place1, gm);
           batch.occ = index + 1u32;
           batch.firstInstance = place0;
           batch.dest2 = place1;
           batches.set(b, batch);
-          mut j = 0u32;
+          var j = 0u32;
           while j < batch.count {
-            imm item = list.items[usize.from(keys[usize.from(batch.first + j)].item)];
-            imm mm = meshes[item.mesh.slot].current();
-            imm box = Aabb3.fromCenter(mm.center, mm.half).transformed(item.model);
-            imm word = if item.fade != 0. and item.bones == NO_BONES { fadeCode(item.fade); } else { item.bones; };
+            let item = list.items[usize.from(keys[usize.from(batch.first + j)].item)];
+            let mm = meshes[item.mesh.slot].current();
+            let box = Aabb3.fromCenter(mm.center, mm.half).transformed(item.model);
+            let word = if item.fade != 0. and item.bones == NO_BONES { fadeCode(item.fade); } else { item.bones; };
             hz.addCandidate(index, box.center(), box.halfExtents(), &item.model, item.tint, word);
             j = j + 1u32;
           }
@@ -2281,7 +2281,7 @@ pub struct Renderer {
     }
     if count == 0u32 { return; }
     if count > instanceCapacity {
-      mut capacity = instanceCapacity;
+      var capacity = instanceCapacity;
       while capacity < count { capacity = capacity * 2u32; }
       device.queue.releaseBuffer(&mut instances);
       instances = device.createBuffer(u64.from(capacity) * INSTANCE_BYTES, BUFFER_USAGE_STORAGE | BUFFER_USAGE_COPY_DST);
@@ -2291,9 +2291,9 @@ pub struct Renderer {
       self.remakeFrameGroup(device);
     }
     if plain > 0u32 {
-      imm v = instanceData.view();
+      let v = instanceData.view();
       device.queue.writeBuffer(&instances, 0u64, &v[0] as *u8, u64.from(plain) * INSTANCE_BYTES);
-      imm bv = boneBaseData.view();
+      let bv = boneBaseData.view();
       device.queue.writeBuffer(&boneBases, 0u64, &bv[0] as *u8, u64.from(plain) * 4u64);
     }
   }
@@ -2301,18 +2301,18 @@ pub struct Renderer {
   // Write the draw list's bones (every skinned copy's skinning matrices,
   // side by side) into the bone buffer, made larger first if it must be
   fn writeBones(self &mut, device &mut Device, list &DrawList) {
-    imm count = u32.from(list.bones.len() / BONE_FLOATS);
+    let count = u32.from(list.bones.len() / BONE_FLOATS);
     bonesDrawn = count;
     if count == 0u32 { return; }
     if count > boneCapacity {
-      mut capacity = boneCapacity;
+      var capacity = boneCapacity;
       while capacity < count { capacity = capacity * 2u32; }
       device.queue.releaseBuffer(&mut bones);
       bones = device.createBuffer(u64.from(capacity) * BONE_BYTES, BUFFER_USAGE_STORAGE | BUFFER_USAGE_COPY_DST);
       boneCapacity = capacity;
       self.remakeFrameGroup(device);
     }
-    imm v = list.bones.view();
+    let v = list.bones.view();
     device.queue.writeBuffer(&bones, 0u64, &v[0] as *u8, u64.from(count) * BONE_BYTES);
   }
 }
@@ -2439,11 +2439,11 @@ pub struct DrawList {
 
   // The same, its color multiplied by 'tint'
   pub fn addSkinnedTinted(self &mut, mesh MeshHandle, material MaterialHandle, model Mat4, tint Color, pose &Array[Mat4]) {
-    imm first = u32.from(bones.len() / BONE_FLOATS);
-    mut b = 0usize;
+    let first = u32.from(bones.len() / BONE_FLOATS);
+    var b = 0usize;
     while b < pose.len {
-      imm rows = boneRows(pose[b]);
-      mut e = 0usize;
+      let rows = boneRows(pose[b]);
+      var e = 0usize;
       while e < BONE_FLOATS {
         bones.push(rows[e]);
         e = e + 1usize;
@@ -2456,9 +2456,9 @@ pub struct DrawList {
   // Put the items from index 'from' on (those just added) on the layers
   // 'mask' (a bit a layer; items start on layer bit 0)
   pub fn setLayers(self &mut, from usize, mask u32) {
-    mut i = from;
+    var i = from;
     while i < items.len() {
-      mut it = *items[i];
+      var it = *items[i];
       it.layers = mask;
       items.set(i, it);
       i = i + 1usize;
@@ -2469,7 +2469,7 @@ pub struct DrawList {
   // a skybox, a mesh far from the sun's use)
   pub fn dontCastShadow(self &mut) {
     if items.len() == 0usize { return; }
-    mut last = *items[items.len() - 1usize];
+    var last = *items[items.len() - 1usize];
     last.castsShadow = false;
     items.set(items.len() - 1usize, last);
   }

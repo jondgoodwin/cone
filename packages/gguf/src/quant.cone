@@ -39,14 +39,14 @@ fn putLe64(out &mut List[u8], v u64) {
 fn absF(x f32) f32 { if x < 0.0 { 0.0 - x; } else { x; }; }
 
 fn quantQ8_0(x &Array[f32], at usize, out &mut List[u8]) {
-  mut amax = 0.0;
-  mut j = 0usize;
+  var amax = 0.0;
+  var j = 0usize;
   while j < 32usize {
     if absF(x[at + j]) > amax { amax = absF(x[at + j]); }
     j = j + 1usize;
   }
-  imm d = amax / 127.0;
-  imm id = if d != 0.0 { 1.0 / d; } else { 0.0; };
+  let d = amax / 127.0;
+  let id = if d != 0.0 { 1.0 / d; } else { 0.0; };
   putHalf(out, f32ToHalf(d));
   j = 0usize;
   while j < 32usize {
@@ -56,37 +56,37 @@ fn quantQ8_0(x &Array[f32], at usize, out &mut List[u8]) {
 }
 
 fn quantQ4_0(x &Array[f32], at usize, out &mut List[u8]) {
-  mut amax = 0.0;
-  mut biggest = 0.0;
-  mut j = 0usize;
+  var amax = 0.0;
+  var biggest = 0.0;
+  var j = 0usize;
   while j < 32usize {
     if absF(x[at + j]) > amax { amax = absF(x[at + j]); biggest = x[at + j]; }
     j = j + 1usize;
   }
-  imm d = biggest / -8.0;
-  imm id = if d != 0.0 { 1.0 / d; } else { 0.0; };
+  let d = biggest / -8.0;
+  let id = if d != 0.0 { 1.0 / d; } else { 0.0; };
   putHalf(out, f32ToHalf(d));
   j = 0usize;
   while j < 16usize {
-    imm q0 = clampI(i32.from(x[at + j] * id + 8.5), 0i32, 15i32);
-    imm q1 = clampI(i32.from(x[at + j + 16usize] * id + 8.5), 0i32, 15i32);
+    let q0 = clampI(i32.from(x[at + j] * id + 8.5), 0i32, 15i32);
+    let q1 = clampI(i32.from(x[at + j + 16usize] * id + 8.5), 0i32, 15i32);
     out.push(u8.from(q0 | (q1 << 4i32)));
     j = j + 1usize;
   }
 }
 
 fn quantQ4_K(x &Array[f32], at usize, out &mut List[u8]) {
-  mut scale = new Array[f32, 8] <- fill 0.0;
-  mut offset = new Array[f32, 8] <- fill 0.0;
-  mut maxScale = 0.0;
-  mut maxOffset = 0.0;
-  mut s = 0usize;
+  var scale = new Array[f32, 8] <- fill 0.0;
+  var offset = new Array[f32, 8] <- fill 0.0;
+  var maxScale = 0.0;
+  var maxOffset = 0.0;
+  var s = 0usize;
   while s < 8usize {
-    mut lo = 0.0;
-    mut hi = 0.0;
-    mut l = 0usize;
+    var lo = 0.0;
+    var hi = 0.0;
+    var l = 0usize;
     while l < 32usize {
-      imm v = x[at + 32usize * s + l];
+      let v = x[at + 32usize * s + l];
       if v < lo { lo = v; }
       if v > hi { hi = v; }
       l = l + 1usize;
@@ -97,12 +97,12 @@ fn quantQ4_K(x &Array[f32], at usize, out &mut List[u8]) {
     if offset[s] > maxOffset { maxOffset = offset[s]; }
     s = s + 1usize;
   }
-  imm d16 = f32ToHalf(maxScale / 63.0);
-  imm dmin16 = f32ToHalf(maxOffset / 63.0);
-  imm d = halfToF32(d16);
-  imm dmin = halfToF32(dmin16);
-  mut sc = new Array[i32, 8] <- fill 0i32;
-  mut mn = new Array[i32, 8] <- fill 0i32;
+  let d16 = f32ToHalf(maxScale / 63.0);
+  let dmin16 = f32ToHalf(maxOffset / 63.0);
+  let d = halfToF32(d16);
+  let dmin = halfToF32(dmin16);
+  var sc = new Array[i32, 8] <- fill 0i32;
+  var mn = new Array[i32, 8] <- fill 0i32;
   s = 0usize;
   while s < 8usize {
     sc[s] = if d > 0.0 { clampI(roundAway(scale[s] / d), 0i32, 63i32); } else { 0i32; };
@@ -112,8 +112,8 @@ fn quantQ4_K(x &Array[f32], at usize, out &mut List[u8]) {
   putHalf(out, d16);
   putHalf(out, dmin16);
   // The scales and mins, 6 bits each, packed as 'dequant.cone' reads them
-  mut packed = new Array[i32, 12] <- fill 0i32;
-  mut j = 0usize;
+  var packed = new Array[i32, 12] <- fill 0i32;
+  var j = 0usize;
   while j < 4usize {
     packed[j] = sc[j] | ((sc[j + 4usize] >> 4i32) << 6i32);
     packed[j + 4usize] = mn[j] | ((mn[j + 4usize] >> 4i32) << 6i32);
@@ -126,18 +126,18 @@ fn quantQ4_K(x &Array[f32], at usize, out &mut List[u8]) {
     j = j + 1usize;
   }
   // The 4-bit values: sub-blocks 2g (low nibbles) and 2g+1 (high) share 32 bytes
-  mut g = 0usize;
+  var g = 0usize;
   while g < 4usize {
-    imm es0 = d * f32.from(sc[2usize * g]);
-    imm em0 = dmin * f32.from(mn[2usize * g]);
-    imm es1 = d * f32.from(sc[2usize * g + 1usize]);
-    imm em1 = dmin * f32.from(mn[2usize * g + 1usize]);
-    mut l = 0usize;
+    let es0 = d * f32.from(sc[2usize * g]);
+    let em0 = dmin * f32.from(mn[2usize * g]);
+    let es1 = d * f32.from(sc[2usize * g + 1usize]);
+    let em1 = dmin * f32.from(mn[2usize * g + 1usize]);
+    var l = 0usize;
     while l < 32usize {
-      imm v0 = x[at + 64usize * g + l];
-      imm v1 = x[at + 64usize * g + 32usize + l];
-      imm q0 = if es0 > 0.0 { clampI(roundAway((v0 + em0) / es0), 0i32, 15i32); } else { 0i32; };
-      imm q1 = if es1 > 0.0 { clampI(roundAway((v1 + em1) / es1), 0i32, 15i32); } else { 0i32; };
+      let v0 = x[at + 64usize * g + l];
+      let v1 = x[at + 64usize * g + 32usize + l];
+      let q0 = if es0 > 0.0 { clampI(roundAway((v0 + em0) / es0), 0i32, 15i32); } else { 0i32; };
+      let q1 = if es1 > 0.0 { clampI(roundAway((v1 + em1) / es1), 0i32, 15i32); } else { 0i32; };
       out.push(u8.from(q0 | (q1 << 4i32)));
       l = l + 1usize;
     }
@@ -146,12 +146,12 @@ fn quantQ4_K(x &Array[f32], at usize, out &mut List[u8]) {
 }
 
 fn quantQ6_K(x &Array[f32], at usize, out &mut List[u8]) {
-  mut scale = new Array[f32, 16] <- fill 0.0;
-  mut maxScale = 0.0;
-  mut s = 0usize;
+  var scale = new Array[f32, 16] <- fill 0.0;
+  var maxScale = 0.0;
+  var s = 0usize;
   while s < 16usize {
-    mut amax = 0.0;
-    mut l = 0usize;
+    var amax = 0.0;
+    var l = 0usize;
     while l < 16usize {
       if absF(x[at + 16usize * s + l]) > amax { amax = absF(x[at + 16usize * s + l]); }
       l = l + 1usize;
@@ -160,32 +160,32 @@ fn quantQ6_K(x &Array[f32], at usize, out &mut List[u8]) {
     if scale[s] > maxScale { maxScale = scale[s]; }
     s = s + 1usize;
   }
-  imm d16 = f32ToHalf(maxScale / 127.0);
-  imm d = halfToF32(d16);
-  mut sc = new Array[i32, 16] <- fill 0i32;
+  let d16 = f32ToHalf(maxScale / 127.0);
+  let d = halfToF32(d16);
+  var sc = new Array[i32, 16] <- fill 0i32;
   s = 0usize;
   while s < 16usize {
     sc[s] = if d > 0.0 { clampI(roundAway(scale[s] / d), 0i32, 127i32); } else { 0i32; };
     s = s + 1usize;
   }
   // The 6-bit values (q + 32), by element
-  mut q = new Array[i32, 256] <- fill 0i32;
-  mut e = 0usize;
+  var q = new Array[i32, 256] <- fill 0i32;
+  var e = 0usize;
   while e < 256usize {
-    imm es = d * f32.from(sc[e / 16usize]);
+    let es = d * f32.from(sc[e / 16usize]);
     q[e] = if es > 0.0 { clampI(roundAway(x[at + e] / es), -32i32, 31i32) + 32i32; } else { 32i32; };
     e = e + 1usize;
   }
-  mut ql = new Array[i32, 128] <- fill 0i32;
-  mut qh = new Array[i32, 64] <- fill 0i32;
-  mut h = 0usize;
+  var ql = new Array[i32, 128] <- fill 0i32;
+  var qh = new Array[i32, 64] <- fill 0i32;
+  var h = 0usize;
   while h < 2usize {
-    mut l = 0usize;
+    var l = 0usize;
     while l < 32usize {
-      imm q1 = q[128usize * h + l];
-      imm q2 = q[128usize * h + l + 32usize];
-      imm q3 = q[128usize * h + l + 64usize];
-      imm q4 = q[128usize * h + l + 96usize];
+      let q1 = q[128usize * h + l];
+      let q2 = q[128usize * h + l + 32usize];
+      let q3 = q[128usize * h + l + 64usize];
+      let q4 = q[128usize * h + l + 96usize];
       ql[64usize * h + l] = (q1 & 15i32) | ((q3 & 15i32) << 4i32);
       ql[64usize * h + l + 32usize] = (q2 & 15i32) | ((q4 & 15i32) << 4i32);
       qh[32usize * h + l] = (q1 >> 4i32) | ((q2 >> 4i32) << 2i32) | ((q3 >> 4i32) << 4i32) | ((q4 >> 4i32) << 6i32);
@@ -193,7 +193,7 @@ fn quantQ6_K(x &Array[f32], at usize, out &mut List[u8]) {
     }
     h = h + 1usize;
   }
-  mut i = 0usize;
+  var i = 0usize;
   while i < 128usize { out.push(u8.from(ql[i])); i = i + 1usize; }
   i = 0usize;
   while i < 64usize { out.push(u8.from(qh[i])); i = i + 1usize; }
@@ -206,12 +206,12 @@ fn quantQ6_K(x &Array[f32], at usize, out &mut List[u8]) {
 // bytes to out. Answers the number of bytes appended. A plain float type is
 // converted, not quantised (F16 and BF16 round to nearest).
 pub fn quantize(kind &TensorType, x &Array[f32], out &mut List[u8]) Result[usize, GgufError] {
-  imm bs = kind.blockSize();
+  let bs = kind.blockSize();
   if x.len % bs != 0usize {
     return Error[usize, GgufError](GgufError.make(ErrorKind.BadSize, 0u64, "the element count is not a whole number of blocks"));
   }
-  imm before = out.len();
-  mut at = 0usize;
+  let before = out.len();
+  var at = 0usize;
   while at < x.len {
     match kind {
       case is F32 { putLe32(out, x[at] as u32); }

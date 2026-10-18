@@ -13,11 +13,11 @@ import deflate use *;
 // CRC-32 by its definition, one bit at a time: no tables, nothing shared
 // with the package's code
 fn crcBitwise(data &Array[u8]) u32 {
-  mut c = 0xFFFFFFFFu32;
-  mut i = 0usize;
+  var c = 0xFFFFFFFFu32;
+  var i = 0usize;
   while i < data.len {
     c = c ^ u32.from(data[i]);
-    mut k = 0u32;
+    var k = 0u32;
     while k < 8u32 {
       c = if (c & 1u32) != 0u32 {0xEDB88320u32 ^ (c >> 1u32);} else {c >> 1u32;};
       k += 1u32;
@@ -29,9 +29,9 @@ fn crcBitwise(data &Array[u8]) u32 {
 
 // Adler-32 by its definition: a running pair, a modulo at every byte
 fn adlerPlain(data &Array[u8]) u32 {
-  mut a = 1u32;
-  mut b = 0u32;
-  mut i = 0usize;
+  var a = 1u32;
+  var b = 0u32;
+  var i = 0usize;
   while i < data.len {
     a = (a + u32.from(data[i])) % 65521u32;
     b = (b + a) % 65521u32;
@@ -41,9 +41,9 @@ fn adlerPlain(data &Array[u8]) u32 {
 }
 
 fn gen(n usize, seed u64) List[u8] {
-  mut d = List[u8].empty();
-  mut s = seed;
-  mut i = 0usize;
+  var d = List[u8].empty();
+  var s = seed;
+  var i = 0usize;
   while i < n {
     s = s * 6364136223846793005u64 + 1442695040888963407u64;
     d.push(u8.from((s >> 40u64) & 255u64));
@@ -64,14 +64,14 @@ fn main() i32 {
   expectUInt(u64.from(crc32("The quick brown fox jumps over the lazy dog")), 0x414FA339u64, "crc32 of the fox");
 
   // In pieces: every split point of a 40-byte text
-  imm text = "The quick brown fox jumps over the lazy dog.";
-  imm crc = Crc32.make();
-  mut cut = 0usize;
-  mut allSame = true;
+  let text = "The quick brown fox jumps over the lazy dog.";
+  let crc = Crc32.make();
+  var cut = 0usize;
+  var allSame = true;
   while cut <= text.len {
-    imm part = crc.update(0u32, text, 0usize, cut);
+    let part = crc.update(0u32, text, 0usize, cut);
     if crc.update(part, text, cut, text.len) != crc32(text) { allSame = false; }
-    mut ad = Adler32.start();
+    var ad = Adler32.start();
     ad.update(text, 0usize, cut);
     ad.update(text, cut, text.len);
     if ad.value() != adler32(text) { allSame = false; }
@@ -80,13 +80,13 @@ fn main() i32 {
   expect(allSame, "crc32 and adler32 are the same cut anywhere");
 
   // The four-at-a-time CRC against the definition, at every start and length
-  imm d = gen(300usize, 7u64);
-  mut agree = true;
-  mut from = 0usize;
+  let d = gen(300usize, 7u64);
+  var agree = true;
+  var from = 0usize;
   while from < 9usize {
-    mut n = 0usize;
+    var n = 0usize;
     while n < 40usize {
-      imm piece = &d.view()[from..<from + n];
+      let piece = &d.view()[from..<from + n];
       if crc.update(0u32, d.view(), from, from + n) != crcBitwise(piece) { agree = false; }
       n += 1usize;
     }
@@ -96,11 +96,11 @@ fn main() i32 {
   expectUInt(u64.from(crc.update(0u32, d.view(), 0usize, d.len())), u64.from(crcBitwise(d.view())), "crc32 of 300 bytes");
 
   // Adler-32 across the 5552-byte stretch the package sums between moduli
-  imm big = gen(70000usize, 11u64);
+  let big = gen(70000usize, 11u64);
   expectUInt(u64.from(adler32(big.view())), u64.from(adlerPlain(big.view())), "adler32 of 70000 bytes");
   // A run of 0xFF bytes: the largest sums the stretch holds
-  mut ff = List[u8].empty();
-  mut i = 0usize;
+  var ff = List[u8].empty();
+  var i = 0usize;
   while i < 20000usize { ff.push(0xFFu8); i += 1usize; }
   expectUInt(u64.from(adler32(ff.view())), u64.from(adlerPlain(ff.view())), "adler32 of 20000 bytes of 255");
   expectUInt(u64.from(crc32(big.view())), u64.from(crcBitwise(big.view())), "crc32 of 70000 bytes");

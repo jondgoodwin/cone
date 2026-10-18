@@ -31,28 +31,28 @@ import iocore use *;
 import diag;
 
 fn waitFor(lp &mut Loop, out &mut List[Completion], n usize) {
-  imm limit = Instant.now() + Duration.fromSeconds(5i64);
+  let limit = Instant.now() + Duration.fromSeconds(5i64);
   while out.len() < n and Instant.now() < limit {
     lp.poll(limit, out);
   }
 }
 
 fn finishLater(c Completer) bool {
-  mut q = c;
+  var q = c;
   thread.sleep(Duration.fromMillis(20i64));
   q.buf().append("fence 42");
-  imm first = q.done(42usize);
+  let first = q.done(42usize);
   first and not q.done(43usize);
 }
 
 // End each Completer that comes, Done with its index
 fn finisher(rx Receiver[Completer]) u64 {
-  mut r = rx;
-  mut n = 0u64;
-  mut more = true;
+  var r = rx;
+  var n = 0u64;
+  var more = true;
   while more {
     match r.recv() {
-      case mut s Some {
+      case var s Some {
         s.done(usize.from(n));
         n = n + 1u64;
       }
@@ -64,26 +64,26 @@ fn finisher(rx Receiver[Completer]) u64 {
 
 // A completer of a loop that has died
 fn orphan(pool &Pool) Completer {
-  mut lp = Loop.mustMake();
+  var lp = Loop.mustMake();
   lp.external(Target.Here(0u64), pool.mustTake(10usize));
 }
 
 fn main() i32 {
   {
-    imm pool = Pool.make();
-    mut lp = Loop.mustMake();
-    mut out = List[Completion].empty();
+    let pool = Pool.make();
+    var lp = Loop.mustMake();
+    var out = List[Completion].empty();
 
     // 1. Ended on another thread
     {
-      imm c = lp.external(Target.Here(1u64), pool.mustTake(64usize));
+      let c = lp.external(Target.Here(1u64), pool.mustTake(64usize));
       expect(c.isLive(), "live");
-      imm id = c.id();
-      imm t = thread.start(c, &finishLater);
+      let id = c.id();
+      let t = thread.start(c, &finishLater);
       lp.poll(forever(), &mut out);
       expect(t.join(), "ended once; the second ending said false");
       requireUInt(u64.from(out.len()), 1u64, "the idle loop woke with the answer");
-      imm a = out[0usize];
+      let a = out[0usize];
       expect(a.id == id and a.token == 1u64, "its id and token");
       expectUInt(u64.from(a.kind), u64.from(diag.kindExternal), "an external operation");
       expect(a.isDone() and a.count() == 42usize, "Done, with the completer's count");
@@ -96,7 +96,7 @@ fn main() i32 {
     // 2. Dropped
     {
       {
-        imm c = lp.external(Target.Here(2u64), IoBuf.empty());
+        let c = lp.external(Target.Here(2u64), IoBuf.empty());
       }
       waitFor(&mut lp, &mut out, 1usize);
       expectUInt(u64.from(out[0usize].status), u64.from(diag.outcomeFailed), "a dropped completer: Failed");
@@ -106,7 +106,7 @@ fn main() i32 {
 
     // 3. Cancelled
     {
-      mut c = lp.external(Target.Here(3u64), pool.mustTake(64usize));
+      var c = lp.external(Target.Here(3u64), pool.mustTake(64usize));
       expect(not c.isCancelRequested(), "no cancel asked yet");
       expect(lp.cancel(c.id()), "the cancel asked");
       lp.poll(Instant.now() + Duration.fromMillis(5i64), &mut out);
@@ -121,14 +121,14 @@ fn main() i32 {
 
     // 4. A deadline missed
     {
-      mut c = lp.externalIn(Target.Here(4u64), pool.mustTake(64usize), CancelGroup.make(),
+      var c = lp.externalIn(Target.Here(4u64), pool.mustTake(64usize), CancelGroup.make(),
         Instant.now() + Duration.fromMillis(20i64));
       waitFor(&mut lp, &mut out, 1usize);
       expectUInt(u64.from(out[0usize].status), u64.from(diag.outcomeTimedOut), "TimedOut");
       expectUInt(u64.from(out[0usize].buf.capacity()), 0u64, "without the buffer the completer holds");
       expect(c.isCancelRequested(), "the completer was asked to stop");
       out.clear();
-      imm late = lp.counters().lateReturns;
+      let late = lp.counters().lateReturns;
       c.done(1usize);
       lp.poll(Instant.now() + Duration.fromMillis(10i64), &mut out);
       expectUInt(u64.from(out.len()), 0u64, "its late ending answers nothing");
@@ -137,9 +137,9 @@ fn main() i32 {
 
     // 5. A cancelled group
     {
-      imm g = CancelGroup.make();
+      let g = CancelGroup.make();
       g.cancel();
-      mut c = lp.externalIn(Target.Here(5u64), pool.mustTake(64usize), g, forever());
+      var c = lp.externalIn(Target.Here(5u64), pool.mustTake(64usize), g, forever());
       expect(not c.isLive(), "nothing to end");
       expect(not c.done(0usize), "ending it says false");
       lp.poll(Instant.now(), &mut out);
@@ -151,40 +151,40 @@ fn main() i32 {
 
     // 6. A loop that has died
     {
-      mut c = orphan(&pool);
+      var c = orphan(&pool);
       expect(not c.done(0usize), "its loop gone: false");
       expectUInt(pool.stats().lent, 0u64, "the buffer home");
     }
 
     // 7. Twenty thousand, from another thread
     {
-      mut tx Sender[Completer];
-      mut rx Receiver[Completer];
+      var tx Sender[Completer];
+      var rx Receiver[Completer];
       tx, rx = Channel[Completer].make();
-      imm t = thread.start(rx, &finisher);
-      mut i = 0u64;
+      let t = thread.start(rx, &finisher);
+      var i = 0u64;
       while i < 20000u64 {
         tx.send(lp.external(Target.Here(i), IoBuf.empty()));
         i = i + 1u64;
       }
       {
-        imm gone = tx;
+        let gone = tx;
       }
-      mut seen = List[bool].empty();
+      var seen = List[bool].empty();
       i = 0u64;
       while i < 20000u64 {
         seen.push(false);
         i = i + 1u64;
       }
-      mut twice = 0u64;
-      mut wrong = 0u64;
-      mut got = 0u64;
-      imm limit = Instant.now() + Duration.fromSeconds(20i64);
+      var twice = 0u64;
+      var wrong = 0u64;
+      var got = 0u64;
+      let limit = Instant.now() + Duration.fromSeconds(20i64);
       while got < 20000u64 and Instant.now() < limit {
         lp.poll(limit, &mut out);
-        mut k = 0usize;
+        var k = 0usize;
         while k < out.len() {
-          imm s = usize.from(out[k].token);
+          let s = usize.from(out[k].token);
           if *seen[s] {twice = twice + 1u64;} else {seen.set(s, true); got = got + 1u64;}
           if not out[k].isDone() {wrong = wrong + 1u64;}
           k = k + 1usize;
@@ -197,7 +197,7 @@ fn main() i32 {
       expectUInt(wrong, 0u64, "each Done");
     }
 
-    imm cs = lp.counters();
+    let cs = lp.counters();
     expectUInt(cs.delivered, cs.submitted, "every operation answered once");
     expectUInt(cs.inFlight, 0u64, "nothing in flight");
     expectUInt(pool.stats().lent, 0u64, "every buffer back in the pool");

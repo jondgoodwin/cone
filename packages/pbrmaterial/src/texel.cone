@@ -25,9 +25,9 @@ pub struct HeightParams {
 
 // The height, 0 to 1, of texel ('x', 'y') of a tile 'size' texels square
 pub fn heightTexel(h &HeightParams, x i32, y i32, size i32) f32 {
-  imm u = texelCentre(x, size);
-  imm v = texelCentre(y, size);
-  mut n = h.primary.at(u, v);
+  let u = texelCentre(x, size);
+  let v = texelCentre(y, size);
+  var n = h.primary.at(u, v);
   if h.detailWeight != 0. { n = n + h.detailWeight * h.detail.at(u, v); }
   clamp01(h.bias + h.contrast * n);
 }
@@ -41,16 +41,16 @@ pub fn texelCentre(i i32, size i32) f32 { (f32.from(i) + 0.5) / f32.from(size); 
 // (x along +u, y along +v, z out of the surface), from central differences
 // of 'height' (wrapping), its range 'depth' tile units deep
 pub fn normalTexel(height &ScalarMap, x i32, y i32, depth f32) Vec3 {
-  imm s = f32.from(height.size);
+  let s = f32.from(height.size);
   // The slope in tile units: the difference over two texels, 2 / size apart
-  imm gx = (height.at(x + 1, y) - height.at(x - 1, y)) * 0.5 * s * depth;
-  imm gy = (height.at(x, y + 1) - height.at(x, y - 1)) * 0.5 * s * depth;
+  let gx = (height.at(x + 1, y) - height.at(x - 1, y)) * 0.5 * s * depth;
+  let gy = (height.at(x, y + 1) - height.at(x, y - 1)) * 0.5 * s * depth;
   new Vec3(0. - gx, 0. - gy, 1.).normalize();
 }
 
 // The eight directions a neighbourhood is sampled in, unit length
 fn direction(i i32) Vec2 {
-  imm d f32 = 0.70710678;
+  let d f32 = 0.70710678;
   if i == 0 { new Vec2(1., 0.); } elif i == 1 { new Vec2(d, d); } elif i == 2 { new Vec2(0., 1.); }
   elif i == 3 { new Vec2(0. - d, d); } elif i == 4 { new Vec2(-1., 0.); } elif i == 5 { new Vec2(0. - d, 0. - d); }
   elif i == 6 { new Vec2(0., -1.); } else { new Vec2(d, 0. - d); };
@@ -62,11 +62,11 @@ fn direction(i i32) Vec2 {
 // a slope, positive on a ridge or a bump (convex), negative in a crease or a
 // pit (concave), and the same at any resolution
 pub fn convexityTexel(height &ScalarMap, x i32, y i32, radius f32, depth f32) f32 {
-  imm r = radius * f32.from(height.size);
-  mut sum f32 = 0.;
-  mut i = 0;
+  let r = radius * f32.from(height.size);
+  var sum f32 = 0.;
+  var i = 0;
   while i < 8 {
-    imm d = direction(i);
+    let d = direction(i);
     sum = sum + height.sample(f32.from(x) + d.x * r, f32.from(y) + d.y * r);
     i = i + 1;
   }
@@ -80,18 +80,18 @@ pub fn convexityTexel(height &ScalarMap, x i32, y i32, radius f32, depth f32) f3
 // texel's openness is 1 less the mean of those angles' sines. 1 is open
 // sky, lower is a pit or a crease. 'depth' scales the height to tile units.
 pub fn occlusionTexel(height &ScalarMap, x i32, y i32, radius f32, steps i32, depth f32) f32 {
-  imm s = f32.from(height.size);
-  imm h0 = height.at(x, y);
-  mut sum f32 = 0.;
-  mut i = 0;
+  let s = f32.from(height.size);
+  let h0 = height.at(x, y);
+  var sum f32 = 0.;
+  var i = 0;
   while i < 8 {
-    imm d = direction(i);
-    mut best f32 = 0.;              // the greatest tangent of elevation
-    mut k = 1;
+    let d = direction(i);
+    var best f32 = 0.;              // the greatest tangent of elevation
+    var k = 1;
     while k <= steps {
-      imm dist = radius * f32.from(k) / f32.from(steps);        // tile units
-      imm hk = height.sample(f32.from(x) + d.x * dist * s, f32.from(y) + d.y * dist * s);
-      imm t = (hk - h0) * depth / dist;
+      let dist = radius * f32.from(k) / f32.from(steps);        // tile units
+      let hk = height.sample(f32.from(x) + d.x * dist * s, f32.from(y) + d.y * dist * s);
+      let t = (hk - h0) * depth / dist;
       if t > best { best = t; }
       k = k + 1;
     }
@@ -153,7 +153,7 @@ pub struct SurfaceTexel {
 // The weathering mask for 'signal' at tile coordinates ('u', 'v')
 pub fn weatheringMask(w &WeatheringParams, signal f32, u f32, v f32) f32 {
   if w.amount <= 0. { return 0.; }
-  mut s = signal;
+  var s = signal;
   if w.breakupStrength != 0. { s = s + w.breakupStrength * w.breakup.at(u, v); }
   w.amount * smoothstep01(w.threshold - w.softness, w.threshold + w.softness, s);
 }
@@ -164,24 +164,24 @@ pub fn weatheringMask(w &WeatheringParams, signal f32, u f32, v f32) f32 {
 // concavity) over it
 pub fn surfaceTexel(s &SurfaceParams, wear &WeatheringParams, grime &WeatheringParams,
     height f32, convexity f32, occlusion f32, x i32, y i32, size i32) SurfaceTexel {
-  imm u = texelCentre(x, size);
-  imm v = texelCentre(y, size);
-  mut n f32 = 0.;
+  let u = texelCentre(x, size);
+  let v = texelCentre(y, size);
+  var n f32 = 0.;
   if s.colorVariation != 0. or s.roughnessVariation != 0. { n = s.variation.at(u, v); }
-  imm bright = 1. + s.colorVariation * n;
-  mut base = mixColor(s.lowColor, s.highColor, height);
+  let bright = 1. + s.colorVariation * n;
+  var base = mixColor(s.lowColor, s.highColor, height);
   base = new Color(base.red * bright, base.green * bright, base.blue * bright, 1.);
-  mut rough = s.lowRoughness + (s.highRoughness - s.lowRoughness) * height + s.roughnessVariation * n;
-  mut metal = s.metallic;
+  var rough = s.lowRoughness + (s.highRoughness - s.lowRoughness) * height + s.roughnessVariation * n;
+  var metal = s.metallic;
 
-  imm wm = weatheringMask(wear, convexity, u, v);
+  let wm = weatheringMask(wear, convexity, u, v);
   base = mixColor(base, wear.color, wm);
   rough = rough + (wear.roughness - rough) * wm;
   metal = metal + (wear.metallic - metal) * wm;
 
-  mut concave = 0. - convexity;
+  var concave = 0. - convexity;
   if concave < 0. { concave = 0.; }
-  imm gm = weatheringMask(grime, (1. - occlusion) + concave, u, v);
+  let gm = weatheringMask(grime, (1. - occlusion) + concave, u, v);
   base = mixColor(base, grime.color, gm);
   rough = rough + (grime.roughness - rough) * gm;
   metal = metal + (grime.metallic - metal) * gm;
@@ -196,7 +196,7 @@ pub fn clamp01(v f32) f32 { if v < 0. { 0.; } elif v > 1. { 1.; } else { v; }; }
 // Hermite's smooth step from 0 at 'a' to 1 at 'b'
 pub fn smoothstep01(a f32, b f32, v f32) f32 {
   if b <= a { return if v < a { 0.; } else { 1.; }; }
-  imm t = clamp01((v - a) / (b - a));
+  let t = clamp01((v - a) / (b - a));
   t * t * (3. - 2. * t);
 }
 

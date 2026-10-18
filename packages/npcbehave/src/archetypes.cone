@@ -45,7 +45,7 @@ pub struct Patroller {
       if findPath(body.pos, *waypoints[next], &mut path) { havePath = true; }
       else { next = (next + 1usize) % waypoints.len(); return; }
     }
-    imm a = follower.accel(body.pos, body.vel, path.view(), body.maxAccel, body.maxSpeed, 0.5, 1.5, 0.5, 3.);
+    let a = follower.accel(body.pos, body.vel, path.view(), body.maxAccel, body.maxSpeed, 0.5, 1.5, 0.5, 3.);
     body.integrate(a, dt);
     if follower.done {
       havePath = false;
@@ -80,11 +80,11 @@ pub struct Grazer {
   seed u32;
 
   pub fn make(body Body2, home Vec2, leash f32, seed u32) Grazer {
-    mut tree = BehaviorTree.make();
-    imm walk = tree.leaf(LEAF_WALK);
-    imm graze = tree.leaf(LEAF_GRAZE);
-    imm both = new Array[u32, 2] <- walk, graze;
-    imm seq = tree.sequence(&both);
+    var tree = BehaviorTree.make();
+    let walk = tree.leaf(LEAF_WALK);
+    let graze = tree.leaf(LEAF_GRAZE);
+    let both = new Array[u32, 2] <- walk, graze;
+    let seq = tree.sequence(&both);
     tree.repeat(seq, 0u32);
     new Grazer(body, home, leash, tree, Blackboard.make(), FixedTicker.make(5.), Wander.make(seed), seed);
   }
@@ -93,18 +93,18 @@ pub struct Grazer {
   pub fn mode(self &) i32 { bb.getI(SLOT_MODE); }
 
   pub fn step(self &mut, dt f32) {
-    imm n = ticker.advance(dt);
-    mut k = 0u32;
+    let n = ticker.advance(dt);
+    var k = 0u32;
     while k < n {
       // A countdown, started when the leaf is first reached, from a hash of the seed and the count
-      imm tickDt = ticker.period;
-      imm s = seed;
+      let tickDt = ticker.period;
+      let s = seed;
       tree.tick(tickDt, &mut bb, (id, board) => {
-        imm running = board.getF(SLOT_TIMER) > 0.;
+        let running = board.getF(SLOT_TIMER) > 0.;
         if not running and board.getI(SLOT_MODE) == (if id == LEAF_WALK { 1; } else { 0; }) {
           // Starting this leaf: pick a duration
           board.setI(SLOT_COUNT, board.getI(SLOT_COUNT) + 1);
-          imm u = unitHash(s, u32.from(board.getI(SLOT_COUNT)), id);
+          let u = unitHash(s, u32.from(board.getI(SLOT_COUNT)), id);
           board.setI(SLOT_MODE, if id == LEAF_WALK { 0; } else { 1; });
           board.setF(SLOT_TIMER, if id == LEAF_WALK { 3. + 5. * u; } else { 2. + 4. * u; });
         }
@@ -114,7 +114,7 @@ pub struct Grazer {
       k = k + 1u32;
     }
     if bb.getI(SLOT_MODE) == GRAZE_WALK {
-      imm toHome = home - body.pos;
+      let toHome = home - body.pos;
       if toHome.length() > leash {
         body.integrate(seek(body.pos, home, body.maxAccel), dt);
       } else {
@@ -137,9 +137,9 @@ pub struct Follower {
   pub fn make(body Body2, distance f32) Follower { new Follower(body, distance); }
 
   pub fn step(self &mut, dt f32, playerPos Vec2) {
-    imm away = body.pos - playerPos;
-    imm dist = away.length();
-    imm spot = playerPos + away.normalize() * distance;
+    let away = body.pos - playerPos;
+    let dist = away.length();
+    let spot = playerPos + away.normalize() * distance;
     if dist > distance * 0.8 and dist < distance * 1.2 {
       body.integrate(arrive(body.pos, body.vel, body.pos, body.maxAccel, body.maxSpeed, 0.1, 1., 0.3), dt);
     } else {
@@ -164,7 +164,7 @@ pub struct Fleer {
   pub fn make(body Body2, home Vec2, alarm f32, calm f32) Fleer { new Fleer(body, home, alarm, calm, false); }
 
   pub fn step(self &mut, dt f32, playerPos Vec2, playerVel Vec2) {
-    imm dist = body.pos.distance(playerPos);
+    let dist = body.pos.distance(playerPos);
     if dist < alarm { afraid = true; }
     elif dist > calm { afraid = false; }
     if afraid {
@@ -226,13 +226,13 @@ pub struct Guard {
   follower PathFollower;
 
   pub fn make(body Body2, sight SightCone, hearing Hearing) Guard {
-    mut m = StateMachine.make();
-    imm onDuty = m.addState(NO_STATE);
-    imm post = m.addState(onDuty);
-    imm investigate = m.addState(onDuty);
-    imm look = m.addState(onDuty);
-    imm ret = m.addState(onDuty);
-    imm chase = m.addState(NO_STATE);
+    var m = StateMachine.make();
+    let onDuty = m.addState(NO_STATE);
+    let post = m.addState(onDuty);
+    let investigate = m.addState(onDuty);
+    let look = m.addState(onDuty);
+    let ret = m.addState(onDuty);
+    let chase = m.addState(NO_STATE);
     m.setInitial(onDuty, post);
     m.addTransition(post, investigate, u32.from(FLAG_HEARD));
     m.addTransition(look, investigate, u32.from(FLAG_HEARD));
@@ -243,7 +243,7 @@ pub struct Guard {
     m.addTransition(onDuty, chase, u32.from(FLAG_SEES));
     m.addTransition(chase, investigate, u32.from(FLAG_LOST));
     m.start(onDuty);
-    mut g = new Guard(body, body.pos, new Vec2(1., 0.), sight, hearing, Memory.make(4.), m, Blackboard.make(), List[u32].empty(),
+    var g = new Guard(body, body.pos, new Vec2(1., 0.), sight, hearing, Memory.make(4.), m, Blackboard.make(), List[u32].empty(),
       2., 3., 0., FixedTicker.make(10.), List[Vec2].empty(), PathFollower.make());
     g.history.push(GUARD_POST);
     g;
@@ -252,7 +252,7 @@ pub struct Guard {
   pub fn state(self &) u32 { machine.active; }
 
   fn clearFlags(self &mut) {
-    mut i = 0usize;
+    var i = 0usize;
     while i < 8usize { bb.setI(i, 0); i = i + 1usize; }
   }
 
@@ -267,8 +267,8 @@ pub struct Guard {
   pub fn step(self &mut, dt f32, player Vec3, playerVel Vec2, sounds &Array[SoundEvent],
               blocked &<fn(a Vec3, b Vec3) bool, findPath &<fn(from Vec2, to Vec2, out &mut List[Vec2]) bool) {
     // ---- sensing ----
-    imm eye = lift(body.pos, 1.6);
-    imm sees = sight.sees(eye, lift(facing, 0.), player + new Vec3(0., 0.6, 0.), blocked);
+    let eye = lift(body.pos, 1.6);
+    let sees = sight.sees(eye, lift(facing, 0.), player + new Vec3(0., 0.6, 0.), blocked);
     if sees {
       memory.see(player, lift(playerVel, 0.));
       unseen = 0.;
@@ -278,7 +278,7 @@ pub struct Guard {
       bb.setI(FLAG_SEES, 0);
       memory.tick(dt);
     }
-    imm heard = hearing.loudest(lift(body.pos, 0.), sounds);
+    let heard = hearing.loudest(lift(body.pos, 0.), sounds);
     if heard >= 0 and not sees {
       bb.setI(FLAG_HEARD, 1);
       bb.setV(VEC_TARGET, sounds[usize.from(heard)].pos);
@@ -290,16 +290,16 @@ pub struct Guard {
       bb.setV(VEC_TARGET, memory.pos);
     }
     // ---- deciding ----
-    imm n = ticker.advance(dt);
-    mut k = 0u32;
+    let n = ticker.advance(dt);
+    var k = 0u32;
     while k < n {
       if machine.tick(&bb, (id, board) => board.getI(usize.from(id)) != 0) {
         self.clearFlags();
         // Keep a sighting and a sound that arrived this very tick
         if sees { bb.setI(FLAG_SEES, 1); }
-        mut e = 0usize;
+        var e = 0usize;
         while e < machine.enteredCount {
-          imm s = machine.entered[e];
+          let s = machine.entered[e];
           if s != GUARD_ON_DUTY { history.push(s); }
           if s == GUARD_INVESTIGATE { self.startPath(ground(bb.getV(VEC_TARGET)), findPath); }
           if s == GUARD_RETURN { self.startPath(post, findPath); }
@@ -310,9 +310,9 @@ pub struct Guard {
       k = k + 1u32;
     }
     // ---- acting ----
-    imm st = machine.active;
+    let st = machine.active;
     if st == GUARD_INVESTIGATE or st == GUARD_RETURN {
-      imm a = follower.accel(body.pos, body.vel, path.view(), body.maxAccel, body.maxSpeed, 0.5, 1.5, 0.5, 3.);
+      let a = follower.accel(body.pos, body.vel, path.view(), body.maxAccel, body.maxSpeed, 0.5, 1.5, 0.5, 3.);
       body.integrate(a, dt);
       if follower.done { bb.setI(if st == GUARD_INVESTIGATE { FLAG_ARRIVED; } else { FLAG_AT_POST; }, 1); }
     } elif st == GUARD_LOOK {
@@ -321,7 +321,7 @@ pub struct Guard {
       bb.setF(0usize, bb.getF(0usize) - dt);
       if bb.getF(0usize) <= 0. { bb.setI(FLAG_LOOK_DONE, 1); }
     } elif st == GUARD_CHASE {
-      imm target = ground(memory.guess());
+      let target = ground(memory.guess());
       body.integrate(pursue(body.pos, body.vel, body.maxAccel, target, playerVel, 1.), dt);
     } else {
       body.integrate(arrive(body.pos, body.vel, post, body.maxAccel, body.maxSpeed, 0.1, 1., 0.25), dt);

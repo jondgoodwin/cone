@@ -16,7 +16,7 @@ import actors;
 
 // Item i of a row-major grid: row * 1000 + col + 1
 fn fillCols(out *u64, row usize, cols usize, lo usize, hi usize) {
-  mut c = lo;
+  var c = lo;
   while c < hi {
     *(out + row * cols + c) = u64.from(row) * 1000u64 + u64.from(c) + 1u64;
     c = c + 1usize;
@@ -26,18 +26,18 @@ fn fillCols(out *u64, row usize, cols usize, lo usize, hi usize) {
 // Each piece of the outer loop gets a row at a time, and fills it with an
 // inner loop of its own, a closure that lists the row it fills
 fn fillRows(out *u64, cols usize, lo usize, hi usize) {
-  mut r = lo;
+  var r = lo;
   while r < hi {
-    imm row = r;
+    let row = r;
     actors.parallelRange(0usize, cols, 8usize, fn(a usize, b usize) [out, row, cols] { fillCols(out, row, cols, a, b); });
     r = r + 1usize;
   }
 }
 
 fn gridCorrect(out *u64, rows usize, cols usize) bool {
-  mut r = 0usize;
+  var r = 0usize;
   while r < rows {
-    mut c = 0usize;
+    var c = 0usize;
     while c < cols {
       if *(out + r * cols + c) != u64.from(r) * 1000u64 + u64.from(c) + 1u64 {
         return false;
@@ -61,8 +61,8 @@ struct Outcome {
   pub workerIndex Atomic[u64];
 }
 
-imm outcome Outcome;
-imm finish Done;
+let outcome Outcome;
+let finish Done;
 
 fn @initpure init() {
   outcome = new Outcome(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(99u64));
@@ -72,9 +72,9 @@ fn @initpure init() {
 actor Looper {
   pub async do go(self) {
     outcome.workerIndex.store(u64.from(actors.workerIndex()));
-    imm rows = 40usize;
-    imm cols = 100usize;
-    imm out = libc.calloc(rows * cols, 8usize) as *u64;
+    let rows = 40usize;
+    let cols = 100usize;
+    let out = libc.calloc(rows * cols, 8usize) as *u64;
     actors.parallelRange(0usize, rows, 1usize, fn(lo usize, hi usize) [out, cols] { fillRows(out, cols, lo, hi); });
     if gridCorrect(out, rows, cols) {
       outcome.gridOk.store(1u64);
@@ -97,9 +97,9 @@ fn main() i32 {
   actors.configure(new actors.Options(workers: 1u32));
 
   // from main: main and the one worker
-  imm rows = 40usize;
-  imm cols = 100usize;
-  imm out = libc.calloc(rows * cols, 8usize) as *u64;
+  let rows = 40usize;
+  let cols = 100usize;
+  let out = libc.calloc(rows * cols, 8usize) as *u64;
   actors.parallelRange(0usize, rows, 1usize, fn(lo usize, hi usize) [out, cols] { fillRows(out, cols, lo, hi); });
   expect(gridCorrect(out, rows, cols), "a nested loop from main on one worker: every cell right");
   expectUInt(u64.from(actors.stats().workers), 1u64, "one worker");
@@ -107,7 +107,7 @@ fn main() i32 {
 
   // from inside an actor
   {
-    imm l = new Looper();
+    let l = new Looper();
     l.go();
   }
   while finish.flag.load() == 0u64 {

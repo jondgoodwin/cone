@@ -25,24 +25,24 @@ fn chainLimitOf(level i32) usize {
 // position (modulo 32768) the one before it with the same hash.
 fn lzScan(buf &Array[u8], base i64, cur &mut i64, head &mut List[i64], prev &mut List[i64], tokens &mut List[u32],
   chainLimit usize, maxTokens usize, final bool) bool {
-  imm n = buf.len;
-  imm endPos = base + i64.from(n);
+  let n = buf.len;
+  let endPos = base + i64.from(n);
   while *cur < endPos {
     if not final and endPos - *cur < lookAhead() { return false; }
     if tokens.len() >= maxTokens { return true; }
-    imm i = *cur;
-    imm ib = usize.from(i - base);
-    mut bestLen = 0usize;
-    mut bestDist = 0usize;
+    let i = *cur;
+    let ib = usize.from(i - base);
+    var bestLen = 0usize;
+    var bestDist = 0usize;
     if ib + 3usize <= n {
-      imm h = hash3(buf, ib);
-      mut cand = *head[h];
-      mut chain = 0usize;
+      let h = hash3(buf, ib);
+      var cand = *head[h];
+      var chain = 0usize;
       while cand >= 0i64 and chain < chainLimit {
         if i - cand > 32768i64 { break; }
-        imm ci = usize.from(cand - base);
+        let ci = usize.from(cand - base);
         // Match length at this candidate
-        mut l = 0usize;
+        var l = 0usize;
         while l < 258usize and ib + l < n and buf[ci + l] == buf[ib + l] { l += 1usize; }
         if l > bestLen {
           bestLen = l;
@@ -56,11 +56,11 @@ fn lzScan(buf &Array[u8], base i64, cur &mut i64, head &mut List[i64], prev &mut
     if bestLen >= 3usize {
       tokens.push(0x80000000u32 | (u32.from(bestLen) << 16u32) | u32.from(bestDist));
       // Insert every position the match covers
-      mut k = 0usize;
+      var k = 0usize;
       while k < bestLen {
         if ib + k + 3usize <= n {
-          imm h = hash3(buf, ib + k);
-          imm p = i + i64.from(k);
+          let h = hash3(buf, ib + k);
+          let p = i + i64.from(k);
           prev.set(usize.from(p & 32767i64), *head[h]);
           head.set(h, p);
         }
@@ -70,7 +70,7 @@ fn lzScan(buf &Array[u8], base i64, cur &mut i64, head &mut List[i64], prev &mut
     } else {
       tokens.push(u32.from(buf[ib]));
       if ib + 3usize <= n {
-        imm h = hash3(buf, ib);
+        let h = hash3(buf, ib);
         prev.set(usize.from(i & 32767i64), *head[h]);
         head.set(h, i);
       }
@@ -87,13 +87,13 @@ fn writeGzipHeader(out &mut List[u8], h &GzipHeader) {
   out.push(0x1Fu8);
   out.push(0x8Bu8);
   out.push(8u8);
-  mut nameLen = 0usize;
+  var nameLen = 0usize;
   while nameLen < h.name.len() and *h.name[nameLen] != 0u8 { nameLen += 1usize; }
-  mut commentLen = 0usize;
+  var commentLen = 0usize;
   while commentLen < h.comment.len() and *h.comment[commentLen] != 0u8 { commentLen += 1usize; }
-  mut extraLen = h.extra.len();
+  var extraLen = h.extra.len();
   if extraLen > 65535usize { extraLen = 65535usize; }
-  mut flg = 0u8;
+  var flg = 0u8;
   if h.text { flg = flg | 1u8; }
   if extraLen > 0usize { flg = flg | 4u8; }
   if nameLen > 0usize { flg = flg | 8u8; }
@@ -108,16 +108,16 @@ fn writeGzipHeader(out &mut List[u8], h &GzipHeader) {
   if extraLen > 0usize {
     out.push(u8.from(extraLen & 255usize));
     out.push(u8.from(extraLen >> 8usize));
-    mut k = 0usize;
+    var k = 0usize;
     while k < extraLen { out.push(*h.extra[k]); k += 1usize; }
   }
   if nameLen > 0usize {
-    mut k = 0usize;
+    var k = 0usize;
     while k < nameLen { out.push(*h.name[k]); k += 1usize; }
     out.push(0u8);
   }
   if commentLen > 0usize {
-    mut k = 0usize;
+    var k = 0usize;
     while k < commentLen { out.push(*h.comment[k]); k += 1usize; }
     out.push(0u8);
   }
@@ -144,7 +144,7 @@ fn writeGzipTrailer(out &mut List[u8], crc u32, size u64) {
   out.push(u8.from((crc >> 8u32) & 255u32));
   out.push(u8.from((crc >> 16u32) & 255u32));
   out.push(u8.from(crc >> 24u32));
-  imm s = u32.from(size & 0xFFFFFFFFu64);
+  let s = u32.from(size & 0xFFFFFFFFu64);
   out.push(u8.from(s & 255u32));
   out.push(u8.from((s >> 8u32) & 255u32));
   out.push(u8.from((s >> 16u32) & 255u32));
@@ -205,17 +205,17 @@ pub struct Deflater {
   // header (no time, no name, system 255) unless 'setGzipHeader' is called
   // before the first 'feed'.
   pub fn make(format Format, level i32) Deflater {
-    imm lv = if level == 0 {0;} elif level == 1 {1;} else {2;};
-    mut head = List[i64].empty();
-    mut prev = List[i64].empty();
+    let lv = if level == 0 {0;} elif level == 1 {1;} else {2;};
+    var head = List[i64].empty();
+    var prev = List[i64].empty();
     if lv > 0 {
       head.reserve(32768usize);
       prev.reserve(32768usize);
-      mut i = 0usize;
+      var i = 0usize;
       while i < 32768usize { head.push(-1i64); prev.push(-1i64); i += 1usize; }
     }
-    imm table = if format == Format.Gzip {Crc32.make();} else {new Crc32(List[u32].empty());};
-    mut gz = GzipHeader.plain();
+    let table = if format == Format.Gzip {Crc32.make();} else {new Crc32(List[u32].empty());};
+    var gz = GzipHeader.plain();
     gz.xfl = xflOf(lv);
     new Deflater(format, lv, List[u8].empty(), 0i64, 0i64, head, prev, List[u32].empty(),
       new BitWriter(List[u8].empty(), 0u64, 0u32), 0usize, false, false, false, false,
@@ -238,7 +238,7 @@ pub struct Deflater {
     elif format == Format.Gzip { crcv = crc.update(crcv, chunk, 0usize, chunk.len); }
     inTotal = inTotal + u64.from(chunk.len);
     buf.reserve(chunk.len);
-    mut i = 0usize;
+    var i = 0usize;
     while i < chunk.len { buf.push(chunk[i]); i += 1usize; }
   }
 
@@ -266,10 +266,10 @@ pub struct Deflater {
     while bw.out.len() - outPos < max and not done {
       if not self.step() { break; }
     }
-    imm avail = bw.out.len() - outPos;
-    imm n = if avail < max {avail;} else {max;};
+    let avail = bw.out.len() - outPos;
+    let n = if avail < max {avail;} else {max;};
     out.reserve(n);
-    mut i = 0usize;
+    var i = 0usize;
     while i < n { out.push(*bw.out[outPos + i]); i += 1usize; }
     outPos = outPos + n;
     outTotal = outTotal + u64.from(n);
@@ -291,9 +291,9 @@ pub struct Deflater {
 
   // Free the delivered front of the output queue, when it is at least half
   fn trimOutput(self &mut) {
-    imm total = bw.out.len();
+    let total = bw.out.len();
     if outPos > 0usize and outPos >= total - outPos {
-      mut i = 0usize;
+      var i = 0usize;
       while i < total - outPos { bw.out.set(i, *bw.out[outPos + i]); i += 1usize; }
       bw.out.truncate(total - outPos);
       outPos = 0usize;
@@ -304,7 +304,7 @@ pub struct Deflater {
   fn step(self &mut) bool {
     self.slide();
     if level == 0 { return self.stepStored(); }
-    imm full = lzScan(buf.view(), base, &mut cur, &mut head, &mut prev, &mut tokens, chainLimitOf(level),
+    let full = lzScan(buf.view(), base, &mut cur, &mut head, &mut prev, &mut tokens, chainLimitOf(level),
       if level == 1 {fixedFlushTokens();} else {blockTokens();}, finishing);
     if full {
       self.flushTokens();
@@ -321,18 +321,18 @@ pub struct Deflater {
   // Drop input that is no longer needed: the matcher reaches back 32768
   // bytes, the stored mode not at all
   fn slide(self &mut) {
-    imm used = usize.from(cur - base);
+    let used = usize.from(cur - base);
     if used < 98304usize { return; }
-    imm drop = if level == 0 {used;} else {used - 32768usize;};
-    imm keep = buf.len() - drop;
-    mut i = 0usize;
+    let drop = if level == 0 {used;} else {used - 32768usize;};
+    let keep = buf.len() - drop;
+    var i = 0usize;
     while i < keep { buf.set(i, *buf[drop + i]); i += 1usize; }
     buf.truncate(keep);
     base = base + i64.from(drop);
   }
 
   fn stepStored(self &mut) bool {
-    imm pending = buf.len() - usize.from(cur - base);
+    let pending = buf.len() - usize.from(cur - base);
     if pending > 65535usize {
       self.storedBlock(65535usize, false);
       return true;
@@ -352,8 +352,8 @@ pub struct Deflater {
     bw.align();
     bw.put(u32.from(n), 16u32);
     bw.put(u32.from(n) ^ 0xFFFFu32, 16u32);
-    imm from = usize.from(cur - base);
-    mut k = 0usize;
+    let from = usize.from(cur - base);
+    var k = 0usize;
     while k < n { bw.out.push(*buf[from + k]); k += 1usize; }
     cur = cur + i64.from(n);
   }

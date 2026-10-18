@@ -26,8 +26,8 @@ fn addFloor(input &mut NavInput, x0 f32, z0 f32, x1 f32, z1 f32, y f32) {
 }
 
 fn pathLen(pts &List[StraightPoint]) f32 {
-  mut len = 0.;
-  mut i = 1usize;
+  var len = 0.;
+  var i = 1usize;
   while i < pts.len() {
     len = len + (*pts[i]).pos.distance((*pts[i - 1usize]).pos);
     i = i + 1usize;
@@ -37,15 +37,15 @@ fn pathLen(pts &List[StraightPoint]) f32 {
 
 // The mesh vertex nearest (x, z)
 fn nearestVertex(nav &NavMesh, x f32, z f32) Vec3 {
-  mut best = 3.4e38;
-  mut bv = new Vec3(0., 0., 0.);
-  mut t = 0usize;
+  var best = 3.4e38;
+  var bv = new Vec3(0., 0., 0.);
+  var t = 0usize;
   while t < nav.tiles.len() {
-    imm tile = nav.tiles[t];
-    mut i = 0usize;
+    let tile = nav.tiles[t];
+    var i = 0usize;
     while i < tile.verts.len() {
-      imm v = *tile.verts[i];
-      imm d = (v.x - x) * (v.x - x) + (v.z - z) * (v.z - z);
+      let v = *tile.verts[i];
+      let d = (v.x - x) * (v.x - x) + (v.z - z) * (v.z - z);
       if d < best { best = d; bv = v; }
       i = i + 1usize;
     }
@@ -56,17 +56,17 @@ fn nearestVertex(nav &NavMesh, x f32, z f32) Vec3 {
 
 // The distance from (x, z) to the rectangle x0..x1, z0..z1
 fn rectDistance(x f32, z f32, x0 f32, z0 f32, x1 f32, z1 f32) f32 {
-  imm dx = if x < x0 { x0 - x; } elif x > x1 { x - x1; } else { 0.; };
-  imm dz = if z < z0 { z0 - z; } elif z > z1 { z - z1; } else { 0.; };
+  let dx = if x < x0 { x0 - x; } elif x > x1 { x - x1; } else { 0.; };
+  let dz = if z < z0 { z0 - z; } elif z > z1 { z - z1; } else { 0.; };
   (dx * dx + dz * dz).sqrt();
 }
 
 fn maxVertexX(nav &NavMesh) f32 {
-  mut m = -3.4e38;
-  mut t = 0usize;
+  var m = -3.4e38;
+  var t = 0usize;
   while t < nav.tiles.len() {
-    imm tile = nav.tiles[t];
-    mut i = 0usize;
+    let tile = nav.tiles[t];
+    var i = 0usize;
     while i < tile.verts.len() {
       if (*tile.verts[i]).x > m { m = (*tile.verts[i]).x; }
       i = i + 1usize;
@@ -77,96 +77,96 @@ fn maxVertexX(nav &NavMesh) f32 {
 }
 
 fn testCorner() {
-  mut input = NavInput.empty();
+  var input = NavInput.empty();
   addFloor(&mut input, 0., 0., 14., 12., 0.);
   // a wall from the south edge to z = 6, x 6 to 8
   input.addBoxObstacle(7., 3., 1., 3., 0., 0., 3., AreaNull);
-  imm params = NavParams.standard();
-  imm nav = buildNavMesh(&mut input, &params);
-  imm filter = QueryFilter.standard();
-  imm half = new Vec3(1., 3., 1.);
-  imm s = new Vec3(2., 0., 3.);
-  imm g = new Vec3(12., 0., 3.);
-  imm r = findRoute(&nav, s, g, half, &filter);
+  let params = NavParams.standard();
+  let nav = buildNavMesh(&mut input, &params);
+  let filter = QueryFilter.standard();
+  let half = new Vec3(1., 3., 1.);
+  let s = new Vec3(2., 0., 3.);
+  let g = new Vec3(12., 0., 3.);
+  let r = findRoute(&nav, s, g, half, &filter);
   expectBool(r.found and !r.partial, true, "a route round the wall");
   expectInt(i64.from(r.points.len()), 4, "start, two corners, end");
   // the two corners are mesh vertices hugging the wall's top corners (6, 6) and (8, 6)
-  imm v1 = nearestVertex(&nav, 5.4, 6.6);
-  imm v2 = nearestVertex(&nav, 8.6, 6.6);
-  imm c1 = (*r.points[1usize]).pos;
-  imm c2 = (*r.points[2usize]).pos;
+  let v1 = nearestVertex(&nav, 5.4, 6.6);
+  let v2 = nearestVertex(&nav, 8.6, 6.6);
+  let c1 = (*r.points[1usize]).pos;
+  let c2 = (*r.points[2usize]).pos;
   near(c1.x, v1.x, 0.001, "corner 1 is the vertex near the wall: x");
   near(c1.z, v1.z, 0.001, "corner 1 z");
   near(c2.x, v2.x, 0.001, "corner 2 x");
   near(c2.z, v2.z, 0.001, "corner 2 z");
   // each corner's distance from the wall's rectangle (x 6 to 8, z 0 to 6): at
   // least the agent's radius, and no more than a radius and two cells
-  imm d1 = rectDistance(v1.x, v1.z, 6., 0., 8., 6.);
-  imm d2 = rectDistance(v2.x, v2.z, 6., 0., 8., 6.);
+  let d1 = rectDistance(v1.x, v1.z, 6., 0., 8., 6.);
+  let d2 = rectDistance(v2.x, v2.z, 6., 0., 8., 6.);
   expectBool(d1 >= 0.4 and d1 <= 1.0, true, "corner 1 keeps the agent's radius from the wall");
   expectBool(d2 >= 0.4 and d2 <= 1.0, true, "corner 2 too");
   // the length is the polyline through them: worked from the mesh's own corners
-  imm p0 = (*r.points[0usize]).pos;
-  imm p3 = (*r.points[3usize]).pos;
-  imm want = p0.distance(c1) + c1.distance(c2) + c2.distance(p3);
+  let p0 = (*r.points[0usize]).pos;
+  let p3 = (*r.points[3usize]).pos;
+  let want = p0.distance(c1) + c1.distance(c2) + c2.distance(p3);
   near(pathLen(&r.points), want, 0.001, "length is the polyline through the corners");
   // and a straight line from either end to the far corner passes the wall:
   // the funnel pulled the path tight (no corner could be dropped)
-  imm direct = s.distance(g);
+  let direct = s.distance(g);
   expectBool(pathLen(&r.points) > direct + 1., true, "longer than the straight line");
   // with a clear view, the path is the two ends
-  imm clear = findRoute(&nav, new Vec3(2., 0., 3.), new Vec3(2., 0., 10.), half, &filter);
+  let clear = findRoute(&nav, new Vec3(2., 0., 3.), new Vec3(2., 0., 10.), half, &filter);
   expectInt(i64.from(clear.points.len()), 2, "a clear view is a straight path");
   near(pathLen(&clear.points), 7., 0.05, "its length is the distance");
 }
 
 fn testRaycast() {
-  mut input = NavInput.empty();
+  var input = NavInput.empty();
   addFloor(&mut input, 0., 0., 10., 10., 0.);
-  imm params = NavParams.standard();
-  imm nav = buildNavMesh(&mut input, &params);
-  imm filter = QueryFilter.standard();
-  imm startPoly = findNearestPoly(&nav, new Vec3(5., 0., 5.), 1., 3., 1., &filter);
+  let params = NavParams.standard();
+  let nav = buildNavMesh(&mut input, &params);
+  let filter = QueryFilter.standard();
+  let startPoly = findNearestPoly(&nav, new Vec3(5., 0., 5.), 1., 3., 1., &filter);
   expectBool(startPoly.found, true, "a polygon at the middle");
   // to the east wall
-  imm maxX = maxVertexX(&nav);
-  imm h = raycast(&nav, startPoly.ref, startPoly.pos, new Vec3(15., 0., startPoly.pos.z), &filter);
+  let maxX = maxVertexX(&nav);
+  let h = raycast(&nav, startPoly.ref, startPoly.pos, new Vec3(15., 0., startPoly.pos.z), &filter);
   expectBool(h.hit, true, "a ray east hits the edge of the walkable area");
   near(h.t, (maxX - startPoly.pos.x) / (15. - startPoly.pos.x), 0.001, "at the mesh's east edge");
   near(h.normal.x, 1., 0.01, "its normal points east");
   near(h.normal.z, 0., 0.01, "along no z");
   expectBool(h.polys.len() > 1usize, true, "it passed through several polygons");
   // a short ray inside
-  imm in2 = raycast(&nav, startPoly.ref, startPoly.pos, startPoly.pos + new Vec3(1., 0., 0.5), &filter);
+  let in2 = raycast(&nav, startPoly.ref, startPoly.pos, startPoly.pos + new Vec3(1., 0., 0.5), &filter);
   expectBool(in2.hit, false, "a short ray stays on the mesh");
   expectBool(isVisible(&nav, startPoly.ref, startPoly.pos, startPoly.pos + new Vec3(1., 0., 0.5), &filter), true, "visible");
   // moving along the surface: slides along the wall
-  imm mv = moveAlongSurface(&nav, startPoly.ref, startPoly.pos, new Vec3(15., 0., startPoly.pos.z + 1.), &filter, 16usize);
+  let mv = moveAlongSurface(&nav, startPoly.ref, startPoly.pos, new Vec3(15., 0., startPoly.pos.z + 1.), &filter, 16usize);
   near(mv.pos.x, maxX, 0.01, "moved to the east edge");
   near(mv.pos.z, startPoly.pos.z + 1., 0.2, "and slid along it towards z");
-  imm mv2 = moveAlongSurface(&nav, startPoly.ref, startPoly.pos, startPoly.pos + new Vec3(1., 0., 1.), &filter, 16usize);
+  let mv2 = moveAlongSurface(&nav, startPoly.ref, startPoly.pos, startPoly.pos + new Vec3(1., 0., 1.), &filter, 16usize);
   near(mv2.pos.x, startPoly.pos.x + 1., 0.001, "a move inside lands where asked: x");
   near(mv2.pos.z, startPoly.pos.z + 1., 0.001, "z");
   // a point above the floor is projected onto it
-  imm up = findNearestPoly(&nav, new Vec3(5., 1.5, 5.), 1., 3., 1., &filter);
+  let up = findNearestPoly(&nav, new Vec3(5., 1.5, 5.), 1., 3., 1., &filter);
   near(up.pos.x, 5., 0.001, "projected: x");
   near(up.pos.z, 5., 0.001, "z");
   near(up.pos.y, 0., 0.25, "onto the floor");
 }
 
 fn testAreas() {
-  imm params = NavParams.standard();
-  imm half = new Vec3(1., 3., 1.);
+  let params = NavParams.standard();
+  let half = new Vec3(1., 3., 1.);
   // a door area across a corridor-wide room
   {
-    mut input = NavInput.empty();
+    var input = NavInput.empty();
     addFloor(&mut input, 0., 0., 16., 8., 0.);
     input.addBoxObstacle(8., 4., 1., 6., 0., -1., 1., AreaDoor);
-    imm nav = buildNavMesh(&mut input, &params);
-    mut doors = 0usize;
-    mut t = 0usize;
+    let nav = buildNavMesh(&mut input, &params);
+    var doors = 0usize;
+    var t = 0usize;
     while t < nav.tiles.len() {
-      mut p = 0usize;
+      var p = 0usize;
       while p < nav.tiles[t].polyCount() {
         if *nav.tiles[t].parea[p] == AreaDoor { doors = doors + 1usize; }
         p = p + 1usize;
@@ -174,32 +174,32 @@ fn testAreas() {
       t = t + 1usize;
     }
     expectBool(doors > 0usize, true, "the door box marked polygons as door area");
-    mut filter = QueryFilter.standard();
-    imm open = findRoute(&nav, new Vec3(2., 0., 4.), new Vec3(14., 0., 4.), half, &filter);
+    var filter = QueryFilter.standard();
+    let open = findRoute(&nav, new Vec3(2., 0., 4.), new Vec3(14., 0., 4.), half, &filter);
     expectBool(open.found and !open.partial, true, "through the door area");
     filter.setCost(AreaDoor, 5.);
-    imm costly = findRoute(&nav, new Vec3(2., 0., 4.), new Vec3(14., 0., 4.), half, &filter);
+    let costly = findRoute(&nav, new Vec3(2., 0., 4.), new Vec3(14., 0., 4.), half, &filter);
     expectBool(costly.cost > open.cost + 3., true, "door area costs more when its cost is raised");
     // shut: the filter excludes the area; nothing to rebuild
     filter.setPassable(AreaDoor, false);
-    imm shut = findRoute(&nav, new Vec3(2., 0., 4.), new Vec3(14., 0., 4.), half, &filter);
+    let shut = findRoute(&nav, new Vec3(2., 0., 4.), new Vec3(14., 0., 4.), half, &filter);
     expectBool(shut.partial, true, "a shut door area stops the route short");
     expectBool((*shut.points[shut.points.len() - 1usize]).pos.x < 8., true, "at the door");
     filter.setPassable(AreaDoor, true);
-    imm again = findRoute(&nav, new Vec3(2., 0., 4.), new Vec3(14., 0., 4.), half, &filter);
+    let again = findRoute(&nav, new Vec3(2., 0., 4.), new Vec3(14., 0., 4.), half, &filter);
     expectBool(again.found and !again.partial, true, "opened again with no rebuild");
   }
   // mud costs: the route goes round a costly patch
   {
-    mut input = NavInput.empty();
+    var input = NavInput.empty();
     addFloor(&mut input, 0., 0., 16., 10., 0.);
     input.addBoxObstacle(8., 2.5, 2., 3.5, 0., -1., 1., AreaMud);
-    imm nav = buildNavMesh(&mut input, &params);
-    mut filter = QueryFilter.standard();
-    imm cheap = findRoute(&nav, new Vec3(2., 0., 3.), new Vec3(14., 0., 3.), half, &filter);
+    let nav = buildNavMesh(&mut input, &params);
+    var filter = QueryFilter.standard();
+    let cheap = findRoute(&nav, new Vec3(2., 0., 3.), new Vec3(14., 0., 3.), half, &filter);
     expectInt(i64.from(cheap.points.len()), 2, "mud at the cost of ground: straight through");
     filter.setCost(AreaMud, 10.);
-    imm dear = findRoute(&nav, new Vec3(2., 0., 3.), new Vec3(14., 0., 3.), half, &filter);
+    let dear = findRoute(&nav, new Vec3(2., 0., 3.), new Vec3(14., 0., 3.), half, &filter);
     expectBool(dear.points.len() > 2usize, true, "mud at ten times: round it");
     expectBool(pathLen(&dear.points) > pathLen(&cheap.points) + 0.5, true, "a longer way");
     expectBool(dear.cost < 10. * pathLen(&cheap.points) * 0.5, true, "that costs less than going through");
@@ -208,36 +208,36 @@ fn testAreas() {
 
 // Three tiles side by side; a door in the middle one
 fn testDoorRebuild() {
-  mut input = NavInput.empty();
+  var input = NavInput.empty();
   addFloor(&mut input, 0., 0., 50., 10., 0.);
   // the wall at x = 25: solid from z 0 to 1, and 3 to 8; open at 8 to 10; the doorway at 1 to 3
   input.addBoxObstacle(25., 0.5, 0.3, 0.5, 0., 0., 3., AreaNull);
   input.addBoxObstacle(25., 5.5, 0.3, 2.5, 0., 0., 3., AreaNull);
-  imm door = input.addBoxObstacle(25., 2., 0.3, 1., 0., 0., 2.2, AreaNull);
-  imm params = NavParams.standard();
-  mut nav = buildNavMesh(&mut input, &params);
+  let door = input.addBoxObstacle(25., 2., 0.3, 1., 0., 0., 2.2, AreaNull);
+  let params = NavParams.standard();
+  var nav = buildNavMesh(&mut input, &params);
   expectInt(i64.from(nav.tilesW), 3, "three tiles along");
-  imm filter = QueryFilter.standard();
-  imm half = new Vec3(1., 3., 1.);
-  imm s = new Vec3(5., 0., 2.);
-  imm g = new Vec3(45., 0., 2.);
-  imm shut = findRoute(&nav, s, g, half, &filter);
+  let filter = QueryFilter.standard();
+  let half = new Vec3(1., 3., 1.);
+  let s = new Vec3(5., 0., 2.);
+  let g = new Vec3(45., 0., 2.);
+  let shut = findRoute(&nav, s, g, half, &filter);
   expectBool(shut.found and !shut.partial, true, "round by the gap, across two tile seams");
   expectBool(pathLen(&shut.points) > 42.3 and pathLen(&shut.points) < 45., true, "the way round is 42.3 to 45 m");
   // refs into each tile now
-  imm ref0 = findNearestPoly(&nav, new Vec3(5., 0., 5.), 1., 3., 1., &filter).ref;
-  imm ref1 = findNearestPoly(&nav, new Vec3(30., 0., 5.), 1., 3., 1., &filter).ref;
-  imm ref2 = findNearestPoly(&nav, new Vec3(45., 0., 5.), 1., 3., 1., &filter).ref;
-  imm salt0 = nav.tiles[0usize].salt;
-  imm salt2 = nav.tiles[2usize].salt;
+  let ref0 = findNearestPoly(&nav, new Vec3(5., 0., 5.), 1., 3., 1., &filter).ref;
+  let ref1 = findNearestPoly(&nav, new Vec3(30., 0., 5.), 1., 3., 1., &filter).ref;
+  let ref2 = findNearestPoly(&nav, new Vec3(45., 0., 5.), 1., 3., 1., &filter).ref;
+  let salt0 = nav.tiles[0usize].salt;
+  let salt2 = nav.tiles[2usize].salt;
   input.setObstacleEnabled(door, false);
-  imm n = rebuildDirty(&mut nav, &mut input);
+  let n = rebuildDirty(&mut nav, &mut input);
   expectInt(i64.from(n), 1, "only the tile the door is in was rebuilt");
   expectBool(nav.isValid(ref0), true, "a reference into an untouched tile is still good");
   expectBool(nav.isValid(ref2), true, "and the far one");
   expectBool(nav.isValid(ref1), false, "one into the rebuilt tile is stale");
   expectBool(nav.tiles[0usize].salt == salt0 and nav.tiles[2usize].salt == salt2, true, "untouched tiles keep their salt");
-  imm open = findRoute(&nav, s, g, half, &filter);
+  let open = findRoute(&nav, s, g, half, &filter);
   expectBool(open.found and !open.partial, true, "through the open door");
   near(pathLen(&open.points), 40., 0.15, "straight through: 40 m");
   expectBool(pathLen(&open.points) < pathLen(&shut.points) - 2., true, "shorter than the way round");
@@ -246,27 +246,27 @@ fn testDoorRebuild() {
   // and shut again
   input.setObstacleEnabled(door, true);
   expectInt(i64.from(rebuildDirty(&mut nav, &mut input)), 1, "closing it rebuilds that tile again");
-  imm shut2 = findRoute(&nav, s, g, half, &filter);
+  let shut2 = findRoute(&nav, s, g, half, &filter);
   near(pathLen(&shut2.points), pathLen(&shut.points), 0.001, "the same way round as before");
 }
 
 fn testOffMesh() {
-  mut input = NavInput.empty();
+  var input = NavInput.empty();
   addFloor(&mut input, 0., 0., 8., 8., 0.);
   addFloor(&mut input, 12., 0., 20., 8., 0.);
-  imm params = NavParams.standard();
-  mut nav = buildNavMesh(&mut input, &params);
-  imm filter = QueryFilter.standard();
-  imm half = new Vec3(1., 3., 1.);
-  imm s = new Vec3(3., 0., 4.);
-  imm g = new Vec3(17., 0., 4.);
-  imm none = findRoute(&nav, s, g, half, &filter);
+  let params = NavParams.standard();
+  var nav = buildNavMesh(&mut input, &params);
+  let filter = QueryFilter.standard();
+  let half = new Vec3(1., 3., 1.);
+  let s = new Vec3(3., 0., 4.);
+  let g = new Vec3(17., 0., 4.);
+  let none = findRoute(&nav, s, g, half, &filter);
   expectBool(none.partial, true, "a gap with no link: the route stops short");
-  imm link = addOffMesh(&mut nav, new Vec3(7., 0., 4.), new Vec3(13., 0., 4.), 1., false, AreaDoor);
-  imm r = findRoute(&nav, s, g, half, &filter);
+  let link = addOffMesh(&mut nav, new Vec3(7., 0., 4.), new Vec3(13., 0., 4.), 1., false, AreaDoor);
+  let r = findRoute(&nav, s, g, half, &filter);
   expectBool(r.found and !r.partial, true, "a link joins the islands");
-  mut flagged = 0i32;
-  mut i = 0usize;
+  var flagged = 0i32;
+  var i = 0usize;
   while i < r.points.len() {
     if ((*r.points[i]).flags & StraightOffMesh) != 0u8 { flagged = flagged + 1i32; }
     i = i + 1usize;
@@ -275,38 +275,38 @@ fn testOffMesh() {
   // length: 3 to the link (about 7), the jump (6) and on to 17
   near(pathLen(&r.points), 14., 0.3, "length 14 m");
   // one way: back is not possible
-  imm back = findRoute(&nav, g, s, half, &filter);
+  let back = findRoute(&nav, g, s, half, &filter);
   expectBool(back.partial, true, "a one-way link does not go back");
   // switched off: a door closing
   setOffMeshEnabled(&mut nav, link, false);
-  imm off = findRoute(&nav, s, g, half, &filter);
+  let off = findRoute(&nav, s, g, half, &filter);
   expectBool(off.partial, true, "a link switched off is not used");
   setOffMeshEnabled(&mut nav, link, true);
-  imm on = findRoute(&nav, s, g, half, &filter);
+  let on = findRoute(&nav, s, g, half, &filter);
   expectBool(on.found and !on.partial, true, "and on again");
   // a filter that refuses its area
-  mut f2 = QueryFilter.standard();
+  var f2 = QueryFilter.standard();
   f2.setPassable(AreaDoor, false);
   expectBool(findRoute(&nav, s, g, half, &f2).partial, true, "a filter can refuse the link's area");
   // two ways
-  imm link2 = addOffMesh(&mut nav, new Vec3(7., 0., 2.), new Vec3(13., 0., 2.), 1., true, AreaGround);
-  imm back2 = findRoute(&nav, g, s, half, &filter);
+  let link2 = addOffMesh(&mut nav, new Vec3(7., 0., 2.), new Vec3(13., 0., 2.), 1., true, AreaGround);
+  let back2 = findRoute(&nav, g, s, half, &filter);
   expectBool(back2.found and !back2.partial, true, "a two-way link goes back");
 }
 
 fn testDeterministic() {
-  mut input = NavInput.empty();
+  var input = NavInput.empty();
   addFloor(&mut input, 0., 0., 30., 20., 0.);
   input.addCircleObstacle(10., 8., 2., 0., 3., AreaNull);
   input.addBoxObstacle(20., 12., 3., 1., 0.5, 0., 3., AreaNull);
-  imm params = NavParams.standard();
-  imm a = buildNavMesh(&mut input, &params);
-  imm b = buildNavMesh(&mut input, &params);
+  let params = NavParams.standard();
+  let a = buildNavMesh(&mut input, &params);
+  let b = buildNavMesh(&mut input, &params);
   expectInt(i64.from(a.polyCount()), i64.from(b.polyCount()), "two builds make the same polygons");
-  mut same = true;
-  mut t = 0usize;
+  var same = true;
+  var t = 0usize;
   while t < a.tiles.len() {
-    mut i = 0usize;
+    var i = 0usize;
     while i < a.tiles[t].verts.len() {
       if (*a.tiles[t].verts[i]).x != (*b.tiles[t].verts[i]).x or (*a.tiles[t].verts[i]).z != (*b.tiles[t].verts[i]).z { same = false; }
       i = i + 1usize;

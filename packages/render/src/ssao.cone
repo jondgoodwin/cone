@@ -68,27 +68,27 @@ pub struct SsaoPass {
   pub groupApply BindGroup;        // reads ao0
 
   pub fn create(device &mut Device, frameBuffer &Buffer, dv &TextureView) SsaoPass {
-    mut shader = device.createShaderModule(&SSAO_SPIRV);
-    imm entries = [new BindGroupLayoutEntry(binding: 0u32, visibility: SHADER_STAGE_FRAGMENT),
+    var shader = device.createShaderModule(&SSAO_SPIRV);
+    let entries = [new BindGroupLayoutEntry(binding: 0u32, visibility: SHADER_STAGE_FRAGMENT),
       new BindGroupLayoutEntry(binding: 1u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE,
         sampleType: TEXTURE_SAMPLE_TYPE_DEPTH),
       new BindGroupLayoutEntry(binding: 2u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE)];
-    mut layout = device.createBindGroupLayout(&entries);
-    imm layouts = [&layout];
-    mut pipelineLayout = device.createPipelineLayout(&layouts, 48u32);
-    mut aoPipeline = fxPipeline(device, &pipelineLayout, &shader, "aoMain", TEXTURE_FORMAT_RGBA8_UNORM, false);
-    mut blurPipeline = fxPipeline(device, &pipelineLayout, &shader, "blurMain", TEXTURE_FORMAT_RGBA8_UNORM, false);
-    mut applyPipeline = fxPipeline(device, &pipelineLayout, &shader, "applyMain", TEXTURE_FORMAT_RGBA16_FLOAT, true);
-    imm tiny = new TextureDescriptor(1u32, 1u32, TEXTURE_FORMAT_RGBA8_UNORM,
+    var layout = device.createBindGroupLayout(&entries);
+    let layouts = [&layout];
+    var pipelineLayout = device.createPipelineLayout(&layouts, 48u32);
+    var aoPipeline = fxPipeline(device, &pipelineLayout, &shader, "aoMain", TEXTURE_FORMAT_RGBA8_UNORM, false);
+    var blurPipeline = fxPipeline(device, &pipelineLayout, &shader, "blurMain", TEXTURE_FORMAT_RGBA8_UNORM, false);
+    var applyPipeline = fxPipeline(device, &pipelineLayout, &shader, "applyMain", TEXTURE_FORMAT_RGBA16_FLOAT, true);
+    let tiny = new TextureDescriptor(1u32, 1u32, TEXTURE_FORMAT_RGBA8_UNORM,
       TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_TEXTURE_BINDING);
-    mut ao0 = device.createTexture(&tiny);
-    mut ao1 = device.createTexture(&tiny);
-    imm v0 = ao0.createView();
-    imm v1 = ao1.createView();
-    mut groupAo = aoGroup(device, &layout, frameBuffer, dv, &v1);
-    mut groupBlurH = aoGroup(device, &layout, frameBuffer, dv, &v0);
-    mut groupBlurV = aoGroup(device, &layout, frameBuffer, dv, &v1);
-    mut groupApply = aoGroup(device, &layout, frameBuffer, dv, &v0);
+    var ao0 = device.createTexture(&tiny);
+    var ao1 = device.createTexture(&tiny);
+    let v0 = ao0.createView();
+    let v1 = ao1.createView();
+    var groupAo = aoGroup(device, &layout, frameBuffer, dv, &v1);
+    var groupBlurH = aoGroup(device, &layout, frameBuffer, dv, &v0);
+    var groupBlurV = aoGroup(device, &layout, frameBuffer, dv, &v1);
+    var groupApply = aoGroup(device, &layout, frameBuffer, dv, &v0);
     new SsaoPass(shader, layout, pipelineLayout, aoPipeline, blurPipeline, applyPipeline, ao0, ao1, groupAo, groupBlurH,
       groupBlurV, groupApply);
   }
@@ -102,14 +102,14 @@ pub struct SsaoPass {
   // not 'enabled'), and the groups over them and the scene's depth
   pub fn remake(self &mut, device &mut Device, enabled bool, width u32, height u32, depth &TextureView,
       frameBuffer &Buffer) {
-    imm w = if enabled { (width + 1u32) / 2u32; } else { 1u32; };
-    imm h = if enabled { (height + 1u32) / 2u32; } else { 1u32; };
-    imm desc = new TextureDescriptor(w, h, TEXTURE_FORMAT_RGBA8_UNORM,
+    let w = if enabled { (width + 1u32) / 2u32; } else { 1u32; };
+    let h = if enabled { (height + 1u32) / 2u32; } else { 1u32; };
+    let desc = new TextureDescriptor(w, h, TEXTURE_FORMAT_RGBA8_UNORM,
       TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_TEXTURE_BINDING);
     ao0 = device.createTexture(&desc);
     ao1 = device.createTexture(&desc);
-    imm v0 = ao0.createView();
-    imm v1 = ao1.createView();
+    let v0 = ao0.createView();
+    let v1 = ao1.createView();
     groupAo = aoGroup(device, &layout, frameBuffer, depth, &v1);
     groupBlurH = aoGroup(device, &layout, frameBuffer, depth, &v0);
     groupBlurV = aoGroup(device, &layout, frameBuffer, depth, &v1);
@@ -120,13 +120,13 @@ pub struct SsaoPass {
   // frame 'hdr' by it. 'frame' is the frame number (the noise moves with it
   // when 'moving', so that temporal AA averages it away)
   pub fn record(self &mut, encoder &mut CommandEncoder, hdr &Texture, s &SsaoSettings, frame u32, moving bool) {
-    imm noise = if moving { (f32.from(frame % 16u32) + 0.5) / 16.; } else { 0.; };
-    imm base = new SsaoImmediates(s.radius, s.power, s.falloff, s.strength, s.slices, s.steps, noise, s.maxPixels, 1., 0.,
+    let noise = if moving { (f32.from(frame % 16u32) + 0.5) / 16.; } else { 0.; };
+    let base = new SsaoImmediates(s.radius, s.power, s.falloff, s.strength, s.slices, s.steps, noise, s.maxPixels, 1., 0.,
       s.depthSensitivity, 0.);
     fxPass(encoder, ao0.createView(), false, &aoPipeline, &groupAo, &base as *u8, 48u32);
-    mut horizontal = base;
+    var horizontal = base;
     fxPass(encoder, ao1.createView(), false, &blurPipeline, &groupBlurH, &horizontal as *u8, 48u32);
-    mut vertical = base;
+    var vertical = base;
     vertical.directionX = 0.;
     vertical.directionY = 1.;
     fxPass(encoder, ao0.createView(), false, &blurPipeline, &groupBlurV, &vertical as *u8, 48u32);
@@ -136,14 +136,14 @@ pub struct SsaoPass {
 
 fn aoGroup(device &mut Device, layout &BindGroupLayout, frameBuffer &Buffer, depth &TextureView, source &TextureView)
     BindGroup {
-  imm entries = [BindGroupEntry.buffer(0u32, frameBuffer), BindGroupEntry.texture(1u32, depth),
+  let entries = [BindGroupEntry.buffer(0u32, frameBuffer), BindGroupEntry.texture(1u32, depth),
     BindGroupEntry.texture(2u32, source)];
   device.createBindGroup(layout, &entries);
 }
 
 // spirv-begin ssao.spv SSAO_SPIRV
 // Written by tools/shaders/shaders.py from ssao.slang (sha256 b208ce31f37041bee9ca903a88e2ad5dde071e82321622427dbcea018dab571a): do not edit.
-imm SSAO_SPIRV Array[u32, 5807] = [
+let SSAO_SPIRV Array[u32, 5807] = [
   0x07230203u32, 0x00010500u32, 0x00280000u32, 0x00000555u32, 0x00000000u32, 0x00020011u32,
   0x00000001u32, 0x0006000bu32, 0x00000071u32, 0x4c534c47u32, 0x6474732eu32, 0x3035342eu32,
   0x00000000u32, 0x0003000eu32, 0x00000000u32, 0x00000001u32, 0x000a000fu32, 0x00000000u32,

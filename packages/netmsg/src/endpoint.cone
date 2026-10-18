@@ -90,10 +90,10 @@ pub actor Endpoint {
   remoteKey String;
 
   fn init(self &new, server bool, cfg NetConfig, handler EventHandler, remote SocketAddr, seed u64) {
-    mut rng = Rng.make(seed);
-    imm salt = rng.next();
-    imm gateSeed = rng.next();
-    imm g = CancelGroup.make();
+    var rng = Rng.make(seed);
+    let salt = rng.next();
+    let gateSeed = rng.next();
+    let g = CancelGroup.make();
     *self = new Self(server: server, cfg: cfg, handler: handler, pool: Pool.make(), sock: UdpSocket.none(),
       group: g, timer: g.child(), timerGen: 0u32, inflight: 0usize,
       gate: ChallengeGate.make(gateSeed), slots: List[ConnectionSlot].empty(), nextId: 1u32,
@@ -112,25 +112,25 @@ pub actor Endpoint {
   pub async do shutdown(self) {
     if stopped {return;}
     stopped = true;
-    mut conns = List[Connection].empty();
-    mut i = 0usize;
+    var conns = List[Connection].empty();
+    var i = 0usize;
     while i < slots.len() {
       conns.push(slots[i].conn);
       i = i + 1usize;
     }
     while conns.len() > 0usize {
       match conns.pop() {
-        case imm c Some { imm r = await c.closeAndWait(); }
+        case let c Some { let r = await c.closeAndWait(); }
         case is None[Connection] {}
       }
     }
     // The disconnect datagrams are in flight: wait for the socket to take them
-    imm limit = Instant.now() + Duration.fromMillis(flushMillis);
+    let limit = Instant.now() + Duration.fromMillis(flushMillis);
     while inflight > 0usize and Instant.now() < limit {
-      imm z = await aio.sleep(Duration.fromMillis(1i64));
+      let z = await aio.sleep(Duration.fromMillis(1i64));
     }
-    imm c = group.cancel();
-    mut dead = UdpSocket.none();
+    let c = group.cancel();
+    var dead = UdpSocket.none();
     dead <=> sock;
   }
 
@@ -142,24 +142,24 @@ pub actor Endpoint {
   // the system chose when port 0 was asked) or why it could not; then receive.
   // The first message the endpoint is sent
   async do open(self, bind SocketAddr, up OneshotSender[Result[SocketAddr, IoError]]) {
-    mut tx = up;
-    mut made = await aio.bindUdp(bind);
+    var tx = up;
+    var made = await aio.bindUdp(bind);
     match &mut made {
-      case mut ok &mut Ok { sock <=> *ok; }
+      case var ok &mut Ok { sock <=> *ok; }
       else {}
     }
     if sock.isNone() {
       match &made {
-        case imm e &Error { tx.send(Error[SocketAddr, IoError](*e)); }
+        case let e &Error { tx.send(Error[SocketAddr, IoError](*e)); }
         else { tx.send(Error[SocketAddr, IoError](new IoError(1u32))); }
       }
       return;
     }
     // What the system bound: the address asked for, and the port it chose
-    mut bound = bind;
-    imm la = await sock.localAddr();
+    var bound = bind;
+    let la = await sock.localAddr();
     match &la {
-      case imm a &Ok { bound = *a; }
+      case let a &Ok { bound = *a; }
       else {}
     }
     tx.send(Ok[SocketAddr, IoError](bound));
@@ -171,15 +171,15 @@ pub actor Endpoint {
 
   // Receive datagrams, one at a time, until shutdown cancels the receive
   async do receive(self) {
-    mut failures = 0u32;
+    var failures = 0u32;
     while not stopped and failures <= maxFailures {
-      imm r = await sock.recvFromIn(pool.mustTake(recvRoom), IoLimits.within(group));
+      let r = await sock.recvFromIn(pool.mustTake(recvRoom), IoLimits.within(group));
       match &r {
-        case imm ok &Ok {
+        case let ok &Ok {
           failures = 0u32;
           self.onDatagram(ok.from, copyBytes(ok.buf.view()));
         }
-        case imm e &Error {
+        case let e &Error {
           if aio.isCancelled(*e) {return;}
           if not aio.isTruncated(*e) {failures = failures + 1u32;}
         }
@@ -190,17 +190,17 @@ pub actor Endpoint {
   // A packet to send: one datagram to 'addr'
   async do send(self, addr SocketAddr, data List[u8]) {
     if sock.isNone() {return;}
-    mut b = pool.mustTake(max(data.len(), 1usize));
+    var b = pool.mustTake(max(data.len(), 1usize));
     b.append(data.view());
     inflight = inflight + 1usize;
-    imm r = await sock.sendTo(addr, b);
+    let r = await sock.sendTo(addr, b);
     inflight = inflight - 1usize;
   }
 
   // The timer 'g' of generation 'gen' is for the instant 'at': when it comes,
   // the connections and the dialer that are due are ticked
   async do wake(self, at i64, gen u32, g CancelGroup) {
-    imm r = await aio.sleepUntilIn(Instant.fromNanos(at), IoLimits.within(g));
+    let r = await aio.sleepUntilIn(Instant.fromNanos(at), IoLimits.within(g));
     if slept(r) and gen == timerGen and not stopped {
       self.fire();
     }
@@ -212,7 +212,7 @@ pub actor Endpoint {
 
   // A connection says when it next needs a tick
   async do deadline(self, id u32, at i64) {
-    mut i = 0usize;
+    var i = 0usize;
     while i < slots.len() {
       if slots[i].id == id {
         slots[i].due = at;
@@ -224,7 +224,7 @@ pub actor Endpoint {
 
   // A connection has ended
   async do gone(self, id u32) {
-    mut i = 0usize;
+    var i = 0usize;
     while i < slots.len() {
       if slots[i].id == id {
         slots.swap(i, slots.len() - 1usize);
@@ -242,11 +242,11 @@ pub actor Endpoint {
   // A datagram arrived, from 'from'
   fn onDatagram(self, from SocketAddr, data List[u8]) {
     if stopped {return;}
-    imm key = from.text();
+    let key = from.text();
     if not server and key != remoteKey {return;}
-    imm kind = if data.len() > 4usize {*data[4usize];} else {255u8;};
+    let kind = if data.len() > 4usize {*data[4usize];} else {255u8;};
     if kind == kindPayload or kind == kindDisconnect {
-      imm k = self.find(key.view());
+      let k = self.find(key.view());
       if k != notFound {
         slots[k].conn.packet(copyBytes(data.view()));
       }
@@ -259,21 +259,21 @@ pub actor Endpoint {
       self.dial(data);
       return;
     }
-    mut reply = List[u8].empty();
-    imm verdict = gate.handle(key.view(), data.view(), Instant.now(), &mut reply);
+    var reply = List[u8].empty();
+    let verdict = gate.handle(key.view(), data.view(), Instant.now(), &mut reply);
     match verdict {
       case is Ignore {}
       case is Reply { self.transmit(from, reply); }
-      case imm a Accept { self.admit(from, key.view(), a.session, reply, data.view()); }
+      case let a Accept { self.admit(from, key.view(), a.session, reply, data.view()); }
     }
   }
 
   // The timer is due: some connection, or the dialer, is due
   fn fire(self) {
     armed = -1i64;
-    imm now = Instant.now();
+    let now = Instant.now();
     if dialing {
-      mut out = List[List[u8]].empty();
+      var out = List[List[u8]].empty();
       dialer.poll(now, &mut out);
       each p in out.drain() { self.transmit(remote, p); }
       if dialer.isFailed() {
@@ -281,9 +281,9 @@ pub actor Endpoint {
         (&mut *handler).call(NetEvent.Left(1u32, if dialer.wasRefused() {CloseReason.Refused;} else {CloseReason.NoAnswer;}));
       }
     }
-    mut i = 0usize;
+    var i = 0usize;
     while i < slots.len() {
-      imm s = &mut slots[i];
+      let s = &mut slots[i];
       if s.due <= now.nanos() {
         s.due = farFuture;
         s.conn.tick();
@@ -294,7 +294,7 @@ pub actor Endpoint {
   }
 
   fn find(self &, key &str) usize {
-    mut i = 0usize;
+    var i = 0usize;
     while i < slots.len() {
       if slots[i].key == key {return i;}
       i = i + 1usize;
@@ -311,18 +311,18 @@ pub actor Endpoint {
   // the one armed: the armed one's group is cancelled
   fn rearm(self) {
     if stopped {return;}
-    mut at = farFuture;
+    var at = farFuture;
     if dialing {
       at = dialer.nextDeadline().nanos();
     }
-    mut i = 0usize;
+    var i = 0usize;
     while i < slots.len() {
       if slots[i].due < at {at = slots[i].due;}
       i = i + 1usize;
     }
     if at != farFuture and (armed < 0i64 or at < armed) {
       armed = at;
-      imm c = timer.cancel();
+      let c = timer.cancel();
       timer = group.child();
       timerGen = timerGen + 1u32;
       selfactor.wake(at, timerGen, timer);
@@ -332,7 +332,7 @@ pub actor Endpoint {
   // A client proved it receives at its address: open its connection, or
   // answer a Response that has already been taken
   fn admit(self, from SocketAddr, key &str, session u64, accept List[u8], response &Array[u8]) {
-    imm k = self.find(key);
+    let k = self.find(key);
     if k != notFound {
       if slots[k].session == session {
         // The Accept was lost; say it again
@@ -347,9 +347,9 @@ pub actor Endpoint {
       self.transmit(from, ChallengeGate.denied(ChallengeGate.saltOf(response)));
       return;
     }
-    imm id = nextId;
+    let id = nextId;
     nextId = nextId + 1u32;
-    imm conn = new Connection(connUdp, id, handler, cfg, session, from,
+    let conn = new Connection(connUdp, id, handler, cfg, session, from,
       Some[Endpoint](selfactor), LinkConfig.perfect(), 0u64);
     slots.push(new ConnectionSlot(String.from(key), id, conn, session, Instant.now().nanos()));
     self.transmit(from, accept);
@@ -357,11 +357,11 @@ pub actor Endpoint {
 
   // The client side of the handshake: a datagram from the server
   fn dial(self, data List[u8]) {
-    imm ev = dialer.receive(data.view());
+    let ev = dialer.receive(data.view());
     match ev {
       case is Connected {
-        imm id = 1u32;
-        imm conn = new Connection(connUdp, id, handler, cfg, dialer.sessionId(), remote,
+        let id = 1u32;
+        let conn = new Connection(connUdp, id, handler, cfg, dialer.sessionId(), remote,
           Some[Endpoint](selfactor), LinkConfig.perfect(), 0u64);
         slots.push(new ConnectionSlot(String.from(remoteKey.view()), id, conn, dialer.sessionId(), Instant.now().nanos()));
         dialing = false;
@@ -384,7 +384,7 @@ fn max(a usize, b usize) usize {
 // Whether a timer ran its course: not cancelled, and not failed
 fn slept(r Result[void, IoError]) bool {
   match r {
-    case imm e Error {false;}
+    case let e Error {false;}
     else {true;}
   }
 }
@@ -419,16 +419,16 @@ fn requireAWorker() {
 // address the socket got
 fn start(server bool, bind SocketAddr, remote SocketAddr, cfg NetConfig, h EventHandler) Result[BoundEndpoint, IoError] {
   requireAWorker();
-  imm ep = new Endpoint(server, cfg, h, remote, freshSeed());
-  mut tx OneshotSender[Result[SocketAddr, IoError]];
-  mut rx OneshotReceiver[Result[SocketAddr, IoError]];
+  let ep = new Endpoint(server, cfg, h, remote, freshSeed());
+  var tx OneshotSender[Result[SocketAddr, IoError]];
+  var rx OneshotReceiver[Result[SocketAddr, IoError]];
   tx, rx = Oneshot[Result[SocketAddr, IoError]].make();
   ep.open(bind, tx);
   match rx.recv() {
-    case imm answer Some {
+    case let answer Some {
       match &answer {
-        case imm a &Ok { return Ok[BoundEndpoint, IoError](new BoundEndpoint(ep, a.port(), *a)); }
-        case imm e &Error { return Error[BoundEndpoint, IoError](*e); }
+        case let a &Ok { return Ok[BoundEndpoint, IoError](new BoundEndpoint(ep, a.port(), *a)); }
+        case let e &Error { return Error[BoundEndpoint, IoError](*e); }
       }
     }
     case is None[Result[SocketAddr, IoError]] {}
@@ -448,7 +448,7 @@ fn clientBindAddress(server &SocketAddr) SocketAddr {
     return SocketAddr.localhost(0u16);
   }
   if server.isV6() {
-    mut zeros = List[u8].empty();
+    var zeros = List[u8].empty();
     putZeros(&mut zeros, 16usize);
     SocketAddr.v6(zeros.view(), 0u16);
   } else {
@@ -475,7 +475,7 @@ pub fn connect(server SocketAddr, cfg NetConfig, h EventHandler) Result[BoundEnd
 // field.)
 pub fn mustListen(bind SocketAddr, cfg NetConfig, h EventHandler) BoundEndpoint {
   match &start(true, bind, bind, cfg, h) {
-    case imm b &Ok { return *b; }
+    case let b &Ok { return *b; }
     else {}
   }
   panic("netmsg: cannot bind the server's UDP socket");
@@ -483,7 +483,7 @@ pub fn mustListen(bind SocketAddr, cfg NetConfig, h EventHandler) BoundEndpoint 
 
 pub fn mustConnect(server SocketAddr, cfg NetConfig, h EventHandler) BoundEndpoint {
   match &start(false, clientBindAddress(&server), server, cfg, h) {
-    case imm b &Ok { return *b; }
+    case let b &Ok { return *b; }
     else {}
   }
   panic("netmsg: cannot bind the client's UDP socket");

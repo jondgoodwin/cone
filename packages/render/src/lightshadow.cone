@@ -95,7 +95,7 @@ pub struct LightShadowSettings {
 }
 
 fn clampLightShadowSettings(s &LightShadowSettings) LightShadowSettings {
-  mut c = *s;
+  var c = *s;
   if c.tileSize < 64u32 { c.tileSize = 64u32; }
   if c.tileSize > 4096u32 { c.tileSize = 4096u32; }
   c.tileSize = c.tileSize & 0xFFFFFFFEu32;
@@ -129,9 +129,9 @@ pub struct LocalShadows {
   pub triangles u64;
 
   pub fn create(device &mut Device) LocalShadows {
-    imm mapDesc = new TextureDescriptor(1u32, 1u32, TEXTURE_FORMAT_DEPTH32_FLOAT,
+    let mapDesc = new TextureDescriptor(1u32, 1u32, TEXTURE_FORMAT_DEPTH32_FLOAT,
       TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_TEXTURE_BINDING, 1u32, 1u32);
-    mut map = device.createTexture(&mapDesc);
+    var map = device.createTexture(&mapDesc);
     new LocalShadows(new LightShadowSettings(), map, List[u32].empty(), List[u32].empty(), List[f32].empty(),
       List[u32].empty(), List[u32].empty(), List[f32].empty(), List[f32].empty(), 0u32, 0u32, 0u32, 0u32, 0u64);
   }
@@ -140,23 +140,23 @@ pub struct LocalShadows {
 
   // A view of the whole map as an array, what the frame group binds
   pub fn arrayView(self &) TextureView {
-    imm desc = new TextureViewDescriptor(dimension: TEXTURE_VIEW_DIMENSION_2D_ARRAY);
+    let desc = new TextureViewDescriptor(dimension: TEXTURE_VIEW_DIMENSION_2D_ARRAY);
     map.createViewWith(&desc);
   }
 
   // The map made again: 'layers' layers of 'size' square, or, for 0 layers,
   // the 1 x 1 stand-in
   pub fn remakeMap(self &mut, device &mut Device, size u32, layers u32) {
-    mut side = size;
-    mut count = layers;
+    var side = size;
+    var count = layers;
     if count == 0u32 {
       side = 1u32;
       count = 1u32;
     }
-    imm desc = new TextureDescriptor(side, side, TEXTURE_FORMAT_DEPTH32_FLOAT,
+    let desc = new TextureDescriptor(side, side, TEXTURE_FORMAT_DEPTH32_FLOAT,
       TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_TEXTURE_BINDING, 1u32, count);
     // See ShadowState.remakeMap: submit what the frame has recorded first
-    mut flush = device.createCommandEncoder();
+    var flush = device.createCommandEncoder();
     device.queue.submit(flush.finish());
     map = device.createTexture(&desc);
   }
@@ -166,13 +166,13 @@ pub struct LocalShadows {
 // 'dir' ('up' not parallel to it), 'fov' radians across, depths 'near' to
 // 'far' mapped to 0 to 1
 fn viewMatrixOf(eye Vec3, dir Vec3, up Vec3, fov f32, near f32, far f32) Mat4 {
-  imm view = Mat4.lookAt(eye, eye + dir, up);
-  imm proj = Mat4.perspective(fov, 1., near, far);
+  let view = Mat4.lookAt(eye, eye + dir, up);
+  let proj = Mat4.perspective(fov, 1., near, far);
   proj * view;
 }
 
 fn pushMatrix(out &mut List[f32], m &Mat4) {
-  mut k = 0usize;
+  var k = 0usize;
   while k < 16usize {
     out.push(m.m[k]);
     k = k + 1usize;
@@ -200,11 +200,11 @@ fn faceUp(face u32) Vec3 {
 // budget, at the head of this file); true if the choice is not what it was
 // last frame (the lights' table must be written again)
 fn selectLocalShadows(ls &mut LightSet) bool {
-  imm n = ls.owners.len();
-  imm s = ls.shadows.settings;
+  let n = ls.owners.len();
+  let s = ls.shadows.settings;
   // Last frame's choice, kept in each row's flag
-  mut previous = List[u32].empty();
-  mut i = 0usize;
+  var previous = List[u32].empty();
+  var i = 0usize;
   while i < n {
     previous.push(if i < ls.shadows.base.len() { *ls.shadows.base[i]; } else { NO_VIEW; });
     i = i + 1usize;
@@ -218,7 +218,7 @@ fn selectLocalShadows(ls &mut LightSet) bool {
   ls.shadows.viewsUsed = 0u32;
   ls.shadows.lightsShadowed = 0u32;
   if !s.enabled {
-    mut same = true;
+    var same = true;
     i = 0usize;
     while i < n {
       if *previous[i] != NO_VIEW { same = false; }
@@ -229,12 +229,12 @@ fn selectLocalShadows(ls &mut LightSet) bool {
   // The candidates: lights that may cast, give light and reach something in view
   i = 0usize;
   while i < n {
-    imm flag = *ls.shadows.flags[i];
+    let flag = *ls.shadows.flags[i];
     if (flag & 1u32) != 0u32 and ls.isLit(i) and i < ls.reachRows.len() and *ls.reachRows[i] > 0u32 {
-      imm b = i * LIGHT_FLOATS;
-      imm p = new Vec3(*ls.rows[b], *ls.rows[b + 1usize], *ls.rows[b + 2usize]);
-      imm range = *ls.rows[b + 3usize];
-      mut score = range * range / (1. + (p - ls.eye).lengthSquared());
+      let b = i * LIGHT_FLOATS;
+      let p = new Vec3(*ls.rows[b], *ls.rows[b + 1usize], *ls.rows[b + 2usize]);
+      let range = *ls.rows[b + 3usize];
+      var score = range * range / (1. + (p - ls.eye).lengthSquared());
       if *previous[i] != NO_VIEW and s.fade <= 0. { score = score * 1.4; }
       ls.shadows.candRows.push(u32.from(i));
       ls.shadows.candScore.push(score);
@@ -242,12 +242,12 @@ fn selectLocalShadows(ls &mut LightSet) bool {
     i = i + 1usize;
   }
   // The best first, while layers last
-  mut used = 0u32;
-  mut taken = 0usize;
+  var used = 0u32;
+  var taken = 0usize;
   while taken < ls.shadows.candRows.len() {
-    mut best = 0usize;
-    mut bestScore = -1.;
-    mut k = 0usize;
+    var best = 0usize;
+    var bestScore = -1.;
+    var k = 0usize;
     while k < ls.shadows.candRows.len() {
       if *ls.shadows.candScore[k] > bestScore {
         bestScore = *ls.shadows.candScore[k];
@@ -258,26 +258,26 @@ fn selectLocalShadows(ls &mut LightSet) bool {
     if bestScore < 0. { break; }
     ls.shadows.candScore.set(best, -2.);
     taken = taken + 1usize;
-    imm row = usize.from(*ls.shadows.candRows[best]);
-    imm b = row * LIGHT_FLOATS;
-    imm spot = *ls.rows[b + 11usize] > 0.5;
-    imm need = if spot { 1u32; } else { 6u32; };
+    let row = usize.from(*ls.shadows.candRows[best]);
+    let b = row * LIGHT_FLOATS;
+    let spot = *ls.rows[b + 11usize] > 0.5;
+    let need = if spot { 1u32; } else { 6u32; };
     if used + need > s.maxViews { continue; }
-    imm p = new Vec3(*ls.rows[b], *ls.rows[b + 1usize], *ls.rows[b + 2usize]);
-    imm range = *ls.rows[b + 3usize];
+    let p = new Vec3(*ls.rows[b], *ls.rows[b + 1usize], *ls.rows[b + 2usize]);
+    let range = *ls.rows[b + 3usize];
     ls.shadows.base.set(row, used);
     if spot {
-      imm axis = new Vec3(*ls.rows[b + 8usize], *ls.rows[b + 9usize], *ls.rows[b + 10usize]);
-      imm up = if axis.y > 0.99 or axis.y < -0.99 { new Vec3(1., 0., 0.); } else { new Vec3(0., 1., 0.); };
-      mut fov = 2. * *ls.rows[b + 15usize] + radians(FACE_GUARD);
+      let axis = new Vec3(*ls.rows[b + 8usize], *ls.rows[b + 9usize], *ls.rows[b + 10usize]);
+      let up = if axis.y > 0.99 or axis.y < -0.99 { new Vec3(1., 0., 0.); } else { new Vec3(0., 1., 0.); };
+      var fov = 2. * *ls.rows[b + 15usize] + radians(FACE_GUARD);
       if fov > radians(170.) { fov = radians(170.); }
-      imm m = viewMatrixOf(p, axis, up, fov, s.near, range);
+      let m = viewMatrixOf(p, axis, up, fov, s.near, range);
       pushMatrix(&mut ls.shadows.views, &m);
       ls.shadows.viewRow.push(u32.from(row));
     } else {
-      mut face = 0u32;
+      var face = 0u32;
       while face < 6u32 {
-        imm m = viewMatrixOf(p, faceDirection(face), faceUp(face), radians(90. + FACE_GUARD), s.near, range);
+        let m = viewMatrixOf(p, faceDirection(face), faceUp(face), radians(90. + FACE_GUARD), s.near, range);
         pushMatrix(&mut ls.shadows.views, &m);
         ls.shadows.viewRow.push(u32.from(row));
         face = face + 1u32;
@@ -290,7 +290,7 @@ fn selectLocalShadows(ls &mut LightSet) bool {
   // The share of each light's shadow that shows. With a fade, the best rank among the
   // lights left without views is the level where a shadow is gone, and one 'fade' above
   // it (as a ratio less one) is where it shows in full
-  mut previousFade = List[f32].empty();
+  var previousFade = List[f32].empty();
   i = 0usize;
   while i < n {
     previousFade.push(if i < ls.shadows.fade.len() { *ls.shadows.fade[i]; } else { 1.; });
@@ -299,15 +299,15 @@ fn selectLocalShadows(ls &mut LightSet) bool {
   ls.shadows.fade.clear();
   ls.shadows.fade.resize(n, 1.);
   if s.fade > 0. {
-    mut left = 0.;
-    mut c = 0usize;
+    var left = 0.;
+    var c = 0usize;
     while c < ls.shadows.candRows.len() {
-      imm row = usize.from(*ls.shadows.candRows[c]);
+      let row = usize.from(*ls.shadows.candRows[c]);
       if *ls.shadows.base[row] == NO_VIEW {
-        imm b = row * LIGHT_FLOATS;
-        imm p = new Vec3(*ls.rows[b], *ls.rows[b + 1usize], *ls.rows[b + 2usize]);
-        imm range = *ls.rows[b + 3usize];
-        imm score = range * range / (1. + (p - ls.eye).lengthSquared());
+        let b = row * LIGHT_FLOATS;
+        let p = new Vec3(*ls.rows[b], *ls.rows[b + 1usize], *ls.rows[b + 2usize]);
+        let range = *ls.rows[b + 3usize];
+        let score = range * range / (1. + (p - ls.eye).lengthSquared());
         if score > left { left = score; }
       }
       c = c + 1usize;
@@ -315,13 +315,13 @@ fn selectLocalShadows(ls &mut LightSet) bool {
     if left > 0. {
       c = 0usize;
       while c < ls.shadows.candRows.len() {
-        imm row = usize.from(*ls.shadows.candRows[c]);
+        let row = usize.from(*ls.shadows.candRows[c]);
         if *ls.shadows.base[row] != NO_VIEW {
-          imm b = row * LIGHT_FLOATS;
-          imm p = new Vec3(*ls.rows[b], *ls.rows[b + 1usize], *ls.rows[b + 2usize]);
-          imm range = *ls.rows[b + 3usize];
-          imm score = range * range / (1. + (p - ls.eye).lengthSquared());
-          mut f = (score / left - 1.) / s.fade;
+          let b = row * LIGHT_FLOATS;
+          let p = new Vec3(*ls.rows[b], *ls.rows[b + 1usize], *ls.rows[b + 2usize]);
+          let range = *ls.rows[b + 3usize];
+          let score = range * range / (1. + (p - ls.eye).lengthSquared());
+          var f = (score / left - 1.) / s.fade;
           if f < 0. { f = 0.; }
           if f > 1. { f = 1.; }
           ls.shadows.fade.set(row, f);
@@ -330,14 +330,14 @@ fn selectLocalShadows(ls &mut LightSet) bool {
       }
     }
   }
-  mut changed = false;
+  var changed = false;
   i = 0usize;
   while i < n {
     if *previous[i] != *ls.shadows.base[i] { changed = true; }
-    imm df = *ls.shadows.fade[i] - *previousFade[i];
+    let df = *ls.shadows.fade[i] - *previousFade[i];
     if df > 0.002 or df < -0.002 { changed = true; }
     // Remember who has views, for the bonus
-    imm flag = *ls.shadows.flags[i];
+    let flag = *ls.shadows.flags[i];
     ls.shadows.flags.set(i, if *ls.shadows.base[i] != NO_VIEW { flag | 2u32; } else { flag & 1u32; });
     i = i + 1usize;
   }
@@ -349,17 +349,17 @@ fn selectLocalShadows(ls &mut LightSet) bool {
 // frustum, from the matrix's rows (Gribb and Hartmann, "Fast Extraction of
 // Viewing Frustum Planes from the World-View-Projection Matrix", 2001)
 fn sphereInView(m &Mat4, c Vec3, r f32) bool {
-  mut p = 0u32;
+  var p = 0u32;
   while p < 6u32 {
     // The plane's coefficients: row 3 plus or minus a row, row 2 alone for the near plane
-    mut a = 0.;
-    mut b = 0.;
-    mut cc = 0.;
-    mut d = 0.;
-    imm col0 = m.m[3];
-    imm col1 = m.m[7];
-    imm col2 = m.m[11];
-    imm col3 = m.m[15];
+    var a = 0.;
+    var b = 0.;
+    var cc = 0.;
+    var d = 0.;
+    let col0 = m.m[3];
+    let col1 = m.m[7];
+    let col2 = m.m[11];
+    let col3 = m.m[15];
     if p == 0u32 {
       a = col0 + m.m[0]; b = col1 + m.m[4]; cc = col2 + m.m[8]; d = col3 + m.m[12];
     } elif p == 1u32 {
@@ -373,7 +373,7 @@ fn sphereInView(m &Mat4, c Vec3, r f32) bool {
     } else {
       a = col0 - m.m[2]; b = col1 - m.m[6]; cc = col2 - m.m[10]; d = col3 - m.m[14];
     }
-    imm len = (a * a + b * b + cc * cc).sqrt();
+    let len = (a * a + b * b + cc * cc).sqrt();
     if len > 0. and (a * c.x + b * c.y + cc * c.z + d) / len < 0. - r { return false; }
     p = p + 1u32;
   }
@@ -383,15 +383,15 @@ fn sphereInView(m &Mat4, c Vec3, r f32) bool {
 // Whether any copy in the batch has a bounding sphere in view 'view' of
 // the lights' views (a matrix as 'viewMatrix' made it)
 fn batchInView(r &Renderer, list &DrawList, batch &DrawBatch, m &Mat4) bool {
-  mut j = 0u32;
+  var j = 0u32;
   while j < batch.count {
-    imm item = list.items[usize.from(r.keys[usize.from(batch.first + j)].item)];
-    imm mesh = r.meshes[item.mesh.slot].current();
-    imm center = item.model * mesh.center;
-    imm sx = item.model.transformVector(new Vec3(1., 0., 0.)).length();
-    imm sy = item.model.transformVector(new Vec3(0., 1., 0.)).length();
-    imm sz = item.model.transformVector(new Vec3(0., 0., 1.)).length();
-    mut s = sx;
+    let item = list.items[usize.from(r.keys[usize.from(batch.first + j)].item)];
+    let mesh = r.meshes[item.mesh.slot].current();
+    let center = item.model * mesh.center;
+    let sx = item.model.transformVector(new Vec3(1., 0., 0.)).length();
+    let sy = item.model.transformVector(new Vec3(0., 1., 0.)).length();
+    let sz = item.model.transformVector(new Vec3(0., 0., 1.)).length();
+    var s = sx;
     if sy > s { s = sy; }
     if sz > s { s = sz; }
     if sphereInView(m, center, mesh.radius * s) { return true; }
@@ -407,48 +407,48 @@ fn recordLocalShadowPasses(r &mut Renderer, device &mut Device, encoder &mut Com
   r.lights.shadows.passes = 0u32;
   r.lights.shadows.drawCalls = 0u32;
   r.lights.shadows.triangles = 0u64;
-  imm views = r.lights.shadows.viewsUsed;
+  let views = r.lights.shadows.viewsUsed;
   if views == 0u32 { return; }
-  imm s = r.lights.shadows.settings;
-  mut data = new Array[f32, 392] <- fill 0f;
+  let s = r.lights.shadows.settings;
+  var data = new Array[f32, 392] <- fill 0f;
   data[0] = f32.from(s.tileSize);
   data[1] = s.pcfRadius;
   data[2] = s.bias;
   data[3] = s.normalOffset;
   data[4] = f32.from(s.pcfTaps);
-  mut k = 0usize;
+  var k = 0usize;
   while k < usize.from(views) * 16usize {
     data[8usize + k] = *r.lights.shadows.views[k];
     k = k + 1usize;
   }
   device.queue.writeBuffer(&r.shadow.params, SHADOW_SUN_BYTES, &data as *u8, 1568u64);
-  mut v = 0u32;
+  var v = 0u32;
   while v < views {
-    imm viewDesc = new TextureViewDescriptor(dimension: TEXTURE_VIEW_DIMENSION_2D, baseArrayLayer: v, arrayLayerCount: 1u32);
-    imm attachment = new RenderPassDepthStencilAttachment(view: r.lights.shadows.map.createViewWith(&viewDesc),
+    let viewDesc = new TextureViewDescriptor(dimension: TEXTURE_VIEW_DIMENSION_2D, baseArrayLayer: v, arrayLayerCount: 1u32);
+    let attachment = new RenderPassDepthStencilAttachment(view: r.lights.shadows.map.createViewWith(&viewDesc),
       depthLoadOp: LOAD_OP_CLEAR, depthStoreOp: STORE_OP_STORE);
-    mut pass = encoder.beginDepthPass(&attachment);
-    imm immediate = 4u32 + v;
-    mut matrix = Mat4.identity();
+    var pass = encoder.beginDepthPass(&attachment);
+    let immediate = 4u32 + v;
+    var matrix = Mat4.identity();
     k = 0usize;
     while k < 16usize {
       matrix.m[k] = *r.lights.shadows.views[usize.from(v) * 16usize + k];
       k = k + 1usize;
     }
-    mut bound = CASTER_NONE;
-    mut boundMaterial = Ref[MaterialSlot].none();
+    var bound = CASTER_NONE;
+    var boundMaterial = Ref[MaterialSlot].none();
     // The pass's own casters, gathered after the sun's cascades' (visibility.cone), or the main view's
-    imm sunPasses = if r.shadow.settings.enabled { usize.from(r.shadow.cascades.count); } else { 0usize; };
-    imm range = passBatches(r, sunPasses + usize.from(v));
-    mut b = range.first;
+    let sunPasses = if r.shadow.settings.enabled { usize.from(r.shadow.cascades.count); } else { 0usize; };
+    let range = passBatches(r, sunPasses + usize.from(v));
+    var b = range.first;
     while b < range.end {
-      imm batch = *r.batches[b];
+      let batch = *r.batches[b];
       b = b + 1usize;
       if batch.layer != LAYER_OPAQUE or batch.noShadow { continue; }
-      imm first = *r.keys[usize.from(batch.first)];
-      imm item = list.items[usize.from(first.item)];
-      imm m = r.meshes[item.mesh.slot].current();
-      imm kind = casterKindOf(r, item, m);
+      let first = *r.keys[usize.from(batch.first)];
+      let item = list.items[usize.from(first.item)];
+      let m = r.meshes[item.mesh.slot].current();
+      let kind = casterKindOf(r, item, m);
       if kind == CASTER_NONE { continue; }
       if !batchInView(r, list, &batch, &matrix) { continue; }
       if bound != kind {
@@ -486,9 +486,9 @@ fn recordLocalShadowPasses(r &mut Renderer, device &mut Device, encoder &mut Com
         pass.setVertexBuffer(2u32, &m.sway, 0u64);
       }
       pass.setIndexBuffer(&m.indices, INDEX_FORMAT_UINT32, 0u64);
-      mut g = 0usize;
+      var g = 0usize;
       while g < m.groups.len() {
-        imm group = m.groups[g];
+        let group = m.groups[g];
         pass.drawIndexed(group.count, batch.count, group.start, 0i32, batch.firstInstance);
         r.lights.shadows.triangles = r.lights.shadows.triangles + u64.from(group.count / 3u32) * u64.from(batch.count);
         r.lights.shadows.drawCalls = r.lights.shadows.drawCalls + 1u32;

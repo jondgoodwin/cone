@@ -36,14 +36,14 @@ const U = 5.9604644775390625e-8d;           // 2^-24
 const GARBAGE = 123456.0;
 
 fn preference() u32 {
-  imm env = libc.getenv("GPU_POWER_PREFERENCE");
+  let env = libc.getenv("GPU_POWER_PREFERENCE");
   if (env as usize) != 0usize and libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 { return POWER_PREFERENCE_LOW_POWER; }
   POWER_PREFERENCE_HIGH_PERFORMANCE;
 }
 
 fn zerosF(n usize) List[f32] {
-  mut l = List[f32].withCapacity(n);
-  mut i = 0usize;
+  var l = List[f32].withCapacity(n);
+  var i = 0usize;
   while i < n { l.push(0.0); i = i + 1usize; }
   l;
 }
@@ -59,8 +59,8 @@ struct Stats {
 }
 
 fn finish(device &mut Device, works &mut Works, job Job, back u32) List[f32] {
-  imm ticket = works.submit(device, job, Target.Here(1u64));
-  mut got = List[Completion].empty();
+  let ticket = works.submit(device, job, Target.Here(1u64));
+  var got = List[Completion].empty();
   works.waitFor(device, ticket, &mut got);
   require(got.len() == 1usize, "the job's completion");
   expectBool(got[0usize].ok, true, "the job ran");
@@ -70,20 +70,20 @@ fn finish(device &mut Device, works &mut Works, job Job, back u32) List[f32] {
 // Compare the GPU's output with the twin's under the bound: how many elements are outside it
 fn compare(stats &mut Stats, got &List[f32], want &List[f32], q &Array[f32], k &Array[f32], v &Array[f32], nTokens usize,
     nHeads usize, nKvHeads usize, headDim usize, pos0 usize, scale f32) u64 {
-  imm kvDim = nKvHeads * headDim;
-  mut bad = 0u64;
-  mut t = 0usize;
+  let kvDim = nKvHeads * headDim;
+  var bad = 0u64;
+  var t = 0usize;
   while t < nTokens {
-    imm seqLen = pos0 + t + 1usize;
-    mut h = 0usize;
+    let seqLen = pos0 + t + 1usize;
+    var h = 0usize;
     while h < nHeads {
-      imm kvh = h / (nHeads / nKvHeads);
-      imm qBase = (t * nHeads + h) * headDim;
-      mut a = 0.0d;
-      mut j = 0usize;
+      let kvh = h / (nHeads / nKvHeads);
+      let qBase = (t * nHeads + h) * headDim;
+      var a = 0.0d;
+      var j = 0usize;
       while j < seqLen {
-        mut s = 0.0d;
-        mut d = 0usize;
+        var s = 0.0d;
+        var d = 0usize;
         while d < headDim {
           s = s + libc.fabs(f64.from(q[qBase + d]) * f64.from(k[j * kvDim + kvh * headDim + d]));
           d = d + 1usize;
@@ -92,20 +92,20 @@ fn compare(stats &mut Stats, got &List[f32], want &List[f32], q &Array[f32], k &
         if s > a { a = s; }
         j = j + 1usize;
       }
-      imm units = attentionUnits(headDim, seqLen, a);
-      mut d = 0usize;
+      let units = attentionUnits(headDim, seqLen, a);
+      var d = 0usize;
       while d < headDim {
-        mut vmax = 0.0d;
+        var vmax = 0.0d;
         j = 0usize;
         while j < seqLen {
-          imm av = libc.fabs(f64.from(v[j * kvDim + kvh * headDim + d]));
+          let av = libc.fabs(f64.from(v[j * kvDim + kvh * headDim + d]));
           if av > vmax { vmax = av; }
           j = j + 1usize;
         }
-        imm err = libc.fabs(f64.from(*got[qBase + d]) - f64.from(*want[qBase + d]));
+        let err = libc.fabs(f64.from(*got[qBase + d]) - f64.from(*want[qBase + d]));
         if !(err <= units * U * vmax) { bad = bad + 1u64; }
         if vmax > 0.0d {
-          imm seen = err / (U * vmax);
+          let seen = err / (U * vmax);
           if seen > stats.worst { stats.worst = seen; }
           if seen / units > stats.worstRatio { stats.worstRatio = seen / units; }
         }
@@ -120,8 +120,8 @@ fn compare(stats &mut Stats, got &List[f32], want &List[f32], q &Array[f32], k &
 
 // Fill a cache of maxSeq positions: real values for positions 0 .. valid - 1, garbage after
 fn filledCache(rng &mut Rng, maxSeq usize, kvDim usize, valid usize) List[f32] {
-  mut c = syntheticFloats(rng, valid * kvDim, 1.0);
-  mut i = valid * kvDim;
+  var c = syntheticFloats(rng, valid * kvDim, 1.0);
+  var i = valid * kvDim;
   while i < maxSeq * kvDim { c.push(GARBAGE); i = i + 1usize; }
   c;
 }
@@ -129,70 +129,70 @@ fn filledCache(rng &mut Rng, maxSeq usize, kvDim usize, valid usize) List[f32] {
 // One attention call with the caches uploaded as they are
 fn run(device &mut Device, kernels &Kernels, works &mut Works, stats &mut Stats, rng &mut Rng, nTokens usize, nHeads usize,
     nKvHeads usize, headDim usize, pos0 usize, maxSeq usize) u64 {
-  imm kvDim = nKvHeads * headDim;
-  imm q = syntheticFloats(rng, nTokens * nHeads * headDim, 1.5);
-  imm k = filledCache(rng, maxSeq, kvDim, pos0 + nTokens);
-  imm v = filledCache(rng, maxSeq, kvDim, pos0 + nTokens);
-  imm scale = 1.0 / f32.from(libc.sqrt(f64.from(headDim)));
-  mut want = zerosF(nTokens * nHeads * headDim);
+  let kvDim = nKvHeads * headDim;
+  let q = syntheticFloats(rng, nTokens * nHeads * headDim, 1.5);
+  let k = filledCache(rng, maxSeq, kvDim, pos0 + nTokens);
+  let v = filledCache(rng, maxSeq, kvDim, pos0 + nTokens);
+  let scale = 1.0 / f32.from(libc.sqrt(f64.from(headDim)));
+  var want = zerosF(nTokens * nHeads * headDim);
   require(attentionCpu(q.view(), k.view(), v.view(), nTokens, nHeads, nKvHeads, headDim, pos0, maxSeq, scale, want.viewMut()), "the twin ran");
-  mut job = Job.make(device);
-  imm qb = job.give(upload(device, floatWords(q.view()).view()));
-  imm kb = job.give(upload(device, floatWords(k.view()).view()));
-  imm vb = job.give(upload(device, floatWords(v.view()).view()));
-  imm sb = job.give(zeroed(device, nTokens * nHeads * maxSeq));
-  imm ob = job.give(zeroed(device, nTokens * nHeads * headDim));
+  var job = Job.make(device);
+  let qb = job.give(upload(device, floatWords(q.view()).view()));
+  let kb = job.give(upload(device, floatWords(k.view()).view()));
+  let vb = job.give(upload(device, floatWords(v.view()).view()));
+  let sb = job.give(zeroed(device, nTokens * nHeads * maxSeq));
+  let ob = job.give(zeroed(device, nTokens * nHeads * headDim));
   require(kernels.attention(&mut job, device, qb, kb, vb, sb, ob, nTokens, nHeads, nKvHeads, headDim, pos0, maxSeq, scale), "the attention recorded");
-  imm back = job.readback(device, ob);
-  imm got = finish(device, works, job, back);
+  let back = job.readback(device, ob);
+  let got = finish(device, works, job, back);
   compare(stats, &got, &want, q.view(), k.view(), v.view(), nTokens, nHeads, nKvHeads, headDim, pos0, scale);
 }
 
 // The same, with the caches filled on the GPU by two appends in the job that attends
 fn chained(device &mut Device, kernels &Kernels, works &mut Works, stats &mut Stats, rng &mut Rng, nTokens usize, nHeads usize,
     nKvHeads usize, headDim usize, pos0 usize, maxSeq usize) u64 {
-  imm kvDim = nKvHeads * headDim;
-  imm total = pos0 + nTokens;
-  imm q = syntheticFloats(rng, nTokens * nHeads * headDim, 1.5);
-  imm ks = syntheticFloats(rng, total * kvDim, 1.0);
-  imm vs = syntheticFloats(rng, total * kvDim, 1.0);
-  imm scale = 1.0 / f32.from(libc.sqrt(f64.from(headDim)));
+  let kvDim = nKvHeads * headDim;
+  let total = pos0 + nTokens;
+  let q = syntheticFloats(rng, nTokens * nHeads * headDim, 1.5);
+  let ks = syntheticFloats(rng, total * kvDim, 1.0);
+  let vs = syntheticFloats(rng, total * kvDim, 1.0);
+  let scale = 1.0 / f32.from(libc.sqrt(f64.from(headDim)));
   // the twin's caches: appended the same way
-  mut kc = zerosF(maxSeq * kvDim);
-  mut vc = zerosF(maxSeq * kvDim);
+  var kc = zerosF(maxSeq * kvDim);
+  var vc = zerosF(maxSeq * kvDim);
   kvAppendCpu(ks.view(), kc.viewMut(), total, kvDim, 0usize);
   kvAppendCpu(vs.view(), vc.viewMut(), total, kvDim, 0usize);
-  mut want = zerosF(nTokens * nHeads * headDim);
+  var want = zerosF(nTokens * nHeads * headDim);
   require(attentionCpu(q.view(), kc.view(), vc.view(), nTokens, nHeads, nKvHeads, headDim, pos0, maxSeq, scale, want.viewMut()), "the twin ran");
-  mut job = Job.make(device);
-  imm qb = job.give(upload(device, floatWords(q.view()).view()));
-  imm ksb = job.give(upload(device, floatWords(ks.view()).view()));
-  imm vsb = job.give(upload(device, floatWords(vs.view()).view()));
-  imm kb = job.give(zeroed(device, maxSeq * kvDim));
-  imm vb = job.give(zeroed(device, maxSeq * kvDim));
-  imm sb = job.give(zeroed(device, nTokens * nHeads * maxSeq));
-  imm ob = job.give(zeroed(device, nTokens * nHeads * headDim));
+  var job = Job.make(device);
+  let qb = job.give(upload(device, floatWords(q.view()).view()));
+  let ksb = job.give(upload(device, floatWords(ks.view()).view()));
+  let vsb = job.give(upload(device, floatWords(vs.view()).view()));
+  let kb = job.give(zeroed(device, maxSeq * kvDim));
+  let vb = job.give(zeroed(device, maxSeq * kvDim));
+  let sb = job.give(zeroed(device, nTokens * nHeads * maxSeq));
+  let ob = job.give(zeroed(device, nTokens * nHeads * headDim));
   require(kernels.kvAppend(&mut job, device, ksb, kb, total, kvDim, 0usize), "the key append recorded");
   require(kernels.kvAppend(&mut job, device, vsb, vb, total, kvDim, 0usize), "the value append recorded");
   require(kernels.attention(&mut job, device, qb, kb, vb, sb, ob, nTokens, nHeads, nKvHeads, headDim, pos0, maxSeq, scale), "the attention recorded");
-  imm back = job.readback(device, ob);
-  imm got = finish(device, works, job, back);
+  let back = job.readback(device, ob);
+  let got = finish(device, works, job, back);
   compare(stats, &got, &want, q.view(), kc.view(), vc.view(), nTokens, nHeads, nKvHeads, headDim, pos0, scale);
 }
 
 fn main() i32 {
-  mut instance = Instance.create("llmkernels attention");
+  var instance = Instance.create("llmkernels attention");
   require(instance.isValid(), "a Vulkan 1.3 instance");
-  mut none = Surface.none();
-  mut adapter = instance.requestAdapter(&none, preference());
+  var none = Surface.none();
+  var adapter = instance.requestAdapter(&none, preference());
   require(adapter.isValid(), "an adapter");
-  mut device = adapter.requestDevice();
+  var device = adapter.requestDevice();
   require(device.isValid(), "a device");
-  imm kernels = Kernels.make(&device);
+  let kernels = Kernels.make(&device);
   require(kernels.isValid(), "the kernels");
-  mut works = Works.make();
-  mut stats = new Stats(0.0d, 0.0d);
-  mut rng = Rng.fromSeed(99u64);
+  var works = Works.make();
+  var stats = new Stats(0.0d, 0.0d);
+  var rng = Rng.fromSeed(99u64);
 
   // tokens, heads, kv heads, head dim, pos0, maxSeq
   expectUInt(run(&mut device, &kernels, &mut works, &mut stats, &mut rng, 1usize, 1usize, 1usize, 8usize, 0usize, 4usize), 0u64, "one token, one position");
@@ -211,19 +211,19 @@ fn main() i32 {
 
   // refusals
   {
-    mut job = Job.make(&mut device);
-    imm a = job.give(zeroed(&mut device, 64usize));
-    imm b = job.give(zeroed(&mut device, 64usize));
-    imm c = job.give(zeroed(&mut device, 64usize));
-    imm d = job.give(zeroed(&mut device, 64usize));
-    imm e = job.give(zeroed(&mut device, 64usize));
+    var job = Job.make(&mut device);
+    let a = job.give(zeroed(&mut device, 64usize));
+    let b = job.give(zeroed(&mut device, 64usize));
+    let c = job.give(zeroed(&mut device, 64usize));
+    let d = job.give(zeroed(&mut device, 64usize));
+    let e = job.give(zeroed(&mut device, 64usize));
     expectBool(kernels.attention(&mut job, &mut device, a, b, c, d, e, 1usize, 6usize, 4usize, 8usize, 0usize, 4usize, 1.0), false, "4 KV heads do not divide 6 heads");
     expectBool(kernels.attention(&mut job, &mut device, a, b, c, d, e, 1usize, 4usize, 2usize, 8usize, 4usize, 4usize, 1.0), false, "a token beyond the cache is refused");
     expectBool(kernels.attention(&mut job, &mut device, a, b, c, d, e, 0usize, 4usize, 2usize, 8usize, 0usize, 4usize, 1.0), false, "no tokens is refused");
     expectBool(kernels.attention(&mut job, &mut device, a, b, c, d, e, 1usize, 4usize, 2usize, 0usize, 0usize, 4usize, 1.0), false, "head size 0 is refused");
     expectBool(kernels.attention(&mut job, &mut device, a, b, c, d, e, 1usize, 2usize, 1usize, 4usize, 0usize, 4usize, 1.0), true, "a good one is recorded");
-    imm t = works.submit(&mut device, job, Target.Here(2u64));
-    mut got = List[Completion].empty();
+    let t = works.submit(&mut device, job, Target.Here(2u64));
+    var got = List[Completion].empty();
     works.waitFor(&mut device, t, &mut got);
     expectBool(got[0usize].ok, true, "the job with only the good dispatch ran");
   }

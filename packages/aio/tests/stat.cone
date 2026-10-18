@@ -30,7 +30,7 @@ import aio use IoLimits, File;
 
 fn take(rx &mut Receiver[u64]) u64 {
   match rx.recv() {
-    case imm v Some {v;}
+    case let v Some {v;}
     else {999u64;}
   }
 }
@@ -38,10 +38,10 @@ fn take(rx &mut Receiver[u64]) u64 {
 fn b(v bool) u64 {if v {1u64;} else {0u64;}}
 
 fn fileOf(r Result[File, IoError]) File {
-  mut res = r;
-  mut f = File.none();
+  var res = r;
+  var f = File.none();
   match &mut res {
-    case mut ok &mut Ok {f <=> *ok;}
+    case var ok &mut Ok {f <=> *ok;}
     else {}
   }
   f;
@@ -50,7 +50,7 @@ fn fileOf(r Result[File, IoError]) File {
 // The metadata an answer holds, zeroes for a failure
 fn statOf(r &Result[FileStat, IoError]) FileStat {
   match r {
-    case imm s &Ok {*s;}
+    case let s &Ok {*s;}
     else {new FileStat(0u64, 0u32, Timestamp.fromUnixNanos(0i64));}
   }
 }
@@ -59,7 +59,7 @@ fn statOf(r &Result[FileStat, IoError]) FileStat {
 // with the failure's code beside it
 fn endedBy(r &Result[FileStat, IoError]) u64 {
   match r {
-    case imm e &Error {
+    case let e &Error {
       if e.isCancelled() {2u64;}
       elif e.isTimedOut() {3u64;}
       else {4u64;}
@@ -70,16 +70,16 @@ fn endedBy(r &Result[FileStat, IoError]) u64 {
 
 fn codeOf(r &Result[FileStat, IoError]) u64 {
   match r {
-    case imm e &Error {u64.from(e.code);}
+    case let e &Error {u64.from(e.code);}
     else {0u64;}
   }
 }
 
 // A block of n bytes
 fn block(pool &Pool, n usize) IoBuf {
-  mut buf = pool.mustTake(n);
-  imm room = buf.whole();
-  mut i = 0usize;
+  var buf = pool.mustTake(n);
+  let room = buf.whole();
+  var i = 0usize;
   while i < n {
     room[i] = u8.from(i % 251usize);
     i = i + 1usize;
@@ -93,52 +93,52 @@ actor Statter {
   out Sender[u64];
 
   pub async do cases(self, cancelled CancelGroup) {
-    imm name = Path.from("aiostat.tmp");
-    imm f = fileOf(await aio.openFile(&name, Access.Create));
-    imm w = await f.writeAt(0u64, block(&pool, 13usize));
+    let name = Path.from("aiostat.tmp");
+    let f = fileOf(await aio.openFile(&name, Access.Create));
+    let w = await f.writeAt(0u64, block(&pool, 13usize));
     {
-      imm began = Timestamp.now();
-      imm r = await aio.stat(&name);
-      imm s = statOf(&r);
+      let began = Timestamp.now();
+      let r = await aio.stat(&name);
+      let s = statOf(&r);
       out.send(endedBy(&r));
       out.send(s.size);
       out.send(b(not s.isDir()));
       // The write was within a minute: the metadata's time is not the epoch's
-      imm age = began - s.modified;
+      let age = began - s.modified;
       out.send(b(age.millis() < 60000i64 and age.millis() > -60000i64));
     }
     {
-      imm r = await aio.stat(&Path.from("."));
+      let r = await aio.stat(&Path.from("."));
       out.send(endedBy(&r));
       out.send(b(statOf(&r).isDir()));
     }
     {
-      imm more = await f.writeAt(13u64, block(&pool, 27usize));
-      imm r = await aio.stat(&name);
+      let more = await f.writeAt(13u64, block(&pool, 27usize));
+      let r = await aio.stat(&name);
       out.send(endedBy(&r));
       out.send(statOf(&r).size);
     }
     {
-      imm r = await aio.stat(&Path.from("aiostat-missing.tmp"));
+      let r = await aio.stat(&Path.from("aiostat-missing.tmp"));
       out.send(endedBy(&r));
       out.send(codeOf(&r));
     }
     {
-      mut long = String.empty();
-      mut i = 0usize;
+      var long = String.empty();
+      var i = 0usize;
       while i < 5000usize {
         long.append("x");
         i = i + 1usize;
       }
-      imm r = await aio.stat(&Path.fromString(long));
+      let r = await aio.stat(&Path.fromString(long));
       out.send(endedBy(&r));
     }
     {
-      imm r = await aio.statIn(&name, IoLimits.within(cancelled));
+      let r = await aio.statIn(&name, IoLimits.within(cancelled));
       out.send(endedBy(&r));
     }
     {
-      imm r = await aio.statIn(&name, IoLimits.until(Instant.now() - Duration.fromSeconds(5i64)));
+      let r = await aio.statIn(&name, IoLimits.until(Instant.now() - Duration.fromSeconds(5i64)));
       out.send(endedBy(&r));
     }
   }
@@ -146,12 +146,12 @@ actor Statter {
 
 fn main() i32 {
   initAll();
-  mut tx Sender[u64];
-  mut rx Receiver[u64];
+  var tx Sender[u64];
+  var rx Receiver[u64];
   tx, rx = Channel[u64].make();
-  imm cancelled = CancelGroup.make();
+  let cancelled = CancelGroup.make();
   expect(cancelled.cancel(), "the group was live");
-  imm s = new Statter(Pool.make(), tx.clone());
+  let s = new Statter(Pool.make(), tx.clone());
   s.cases(cancelled);
 
   expectUInt(take(&mut rx), 1u64, "the file just written: Done");

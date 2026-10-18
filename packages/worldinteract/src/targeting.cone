@@ -44,10 +44,10 @@ pub struct TargetParams {
 // (origin, unit direction, max distance) meets nothing, or the candidate itself
 // first, or something no nearer than the candidate's surface.
 pub fn clearLine(eye Vec3, c &Candidate, cast &<fn(o Vec3, d Vec3, m f32) RayHit) bool {
-  imm v = c.pos - eye;
-  imm dist = v.length();
+  let v = c.pos - eye;
+  let dist = v.length();
   if dist < 0.0001 { return true; }
-  imm h = cast(eye, v * (1. / dist), dist);
+  let h = cast(eye, v * (1. / dist), dist);
   if not h.hit { return true; }
   if h.id == c.id { return true; }
   h.dist >= dist - c.radius - 0.001;
@@ -56,31 +56,31 @@ pub fn clearLine(eye Vec3, c &Candidate, cast &<fn(o Vec3, d Vec3, m f32) RayHit
 // The cost of candidate c from the eye looking along 'forward' (unit), or a
 // negative number when it is not valid
 pub fn cost(eye Vec3, forward Vec3, c &Candidate, p &TargetParams, current bool, cast &<fn(o Vec3, d Vec3, m f32) RayHit) f32 {
-  imm v = c.pos - eye;
-  imm dist = v.length();
+  let v = c.pos - eye;
+  let dist = v.length();
   if dist - c.radius > p.range { return -1.; }
-  mut angle = 0.;
+  var angle = 0.;
   if dist > 0.0001 {
-    mut cs = forward.dot(v) / dist;
+    var cs = forward.dot(v) / dist;
     if cs > 1. { cs = 1.; }
     if cs < -1. { cs = -1.; }
     angle = acos(cs);
   }
   if angle > p.halfAngle { return -1.; }
   if p.useSight and not clearLine(eye, c, cast) { return -1.; }
-  mut k = p.angleWeight * (angle / p.halfAngle) + p.distWeight * (dist / p.range);
+  var k = p.angleWeight * (angle / p.halfAngle) + p.distWeight * (dist / p.range);
   if current { k = k * p.stickiness; }
   k;
 }
 
 // The best valid candidate's id, or 0. 'current' is the id now targeted (0 for none).
 pub fn best(eye Vec3, forward Vec3, cands &List[Candidate], p &TargetParams, current u32, cast &<fn(o Vec3, d Vec3, m f32) RayHit) u32 {
-  mut bestId = 0u32;
-  mut bestCost = 1000000.;
-  mut i = 0usize;
+  var bestId = 0u32;
+  var bestCost = 1000000.;
+  var i = 0usize;
   while i < cands.len() {
-    imm c = *cands[i];
-    imm k = cost(eye, forward, &c, p, c.id == current, cast);
+    let c = *cands[i];
+    let k = cost(eye, forward, &c, p, c.id == current, cast);
     if k >= 0. and (k < bestCost or (k == bestCost and c.id < bestId)) {
       bestCost = k;
       bestId = c.id;
@@ -93,13 +93,13 @@ pub fn best(eye Vec3, forward Vec3, cands &List[Candidate], p &TargetParams, cur
 // The bearing of a point: the signed angle, about 'up', from 'forward' to the
 // direction of v, positive to the viewer's right (forward x up points right)
 pub fn bearing(forward Vec3, up Vec3, v Vec3) f32 {
-  imm f = (forward - up * forward.dot(up));
-  imm r = f.cross(up);
+  let f = (forward - up * forward.dot(up));
+  let r = f.cross(up);
   atan2(v.dot(r), v.dot(f));
 }
 
 fn wrapAngle(a f32) f32 {
-  mut x = a;
+  var x = a;
   while x > pi { x = x - 2. * pi; }
   while x <= -pi { x = x + 2. * pi; }
   x;
@@ -111,23 +111,23 @@ fn wrapAngle(a f32) f32 {
 // Returns 'current' when nothing lies that way.
 pub fn switchTo(eye Vec3, forward Vec3, up Vec3, dir f32, cands &List[Candidate], p &TargetParams, current u32,
     cast &<fn(o Vec3, d Vec3, m f32) RayHit) u32 {
-  mut curBearing = 0.;
-  mut found = false;
-  mut i = 0usize;
+  var curBearing = 0.;
+  var found = false;
+  var i = 0usize;
   while i < cands.len() {
-    imm c = *cands[i];
+    let c = *cands[i];
     if c.id == current { curBearing = bearing(forward, up, c.pos - eye); found = true; }
     i = i + 1usize;
   }
   if not found { return current; }
-  mut bestId = current;
-  mut bestGap = 1000.;
-  mut j = 0usize;
+  var bestId = current;
+  var bestGap = 1000.;
+  var j = 0usize;
   while j < cands.len() {
-    imm c = *cands[j];
+    let c = *cands[j];
     if c.id != current {
-      imm v = c.pos - eye;
-      imm gap = wrapAngle(bearing(forward, up, v) - curBearing) * dir;
+      let v = c.pos - eye;
+      let gap = wrapAngle(bearing(forward, up, v) - curBearing) * dir;
       if gap > 0.0001 and gap < bestGap and v.length() - c.radius <= p.range {
         if not p.useSight or clearLine(eye, &c, cast) {
           bestGap = gap;
@@ -166,12 +166,12 @@ pub struct LockOn {
   pub fn update(self &mut, dt f32, eye Vec3, cands &List[Candidate], p &TargetParams,
       cast &<fn(o Vec3, d Vec3, m f32) RayHit) u32 {
     if target == 0u32 { return 0u32; }
-    mut ok = false;
-    mut i = 0usize;
+    var ok = false;
+    var i = 0usize;
     while i < cands.len() {
-      imm c = *cands[i];
+      let c = *cands[i];
       if c.id == target {
-        imm dist = (c.pos - eye).length();
+        let dist = (c.pos - eye).length();
         ok = dist - c.radius <= p.range * 1.25 and (not p.useSight or clearLine(eye, &c, cast));
       }
       i = i + 1usize;
@@ -202,19 +202,19 @@ pub fn defaultBlend(angle f32, maxAngle f32, strength f32) f32 {
 pub fn aimAssist(eye Vec3, aim Vec3, cands &List[Candidate], p &TargetParams, strength f32,
     blend &<fn(angle f32, maxAngle f32, strength f32) f32,
     cast &<fn(o Vec3, d Vec3, m f32) RayHit) Vec3 {
-  imm id = best(eye, aim, cands, p, 0u32, cast);
+  let id = best(eye, aim, cands, p, 0u32, cast);
   if id == 0u32 { return aim; }
-  mut pos = eye;
-  mut i = 0usize;
+  var pos = eye;
+  var i = 0usize;
   while i < cands.len() {
-    imm c = *cands[i];
+    let c = *cands[i];
     if c.id == id { pos = c.pos; }
     i = i + 1usize;
   }
-  imm to = (pos - eye).normalize();
-  mut cs = aim.dot(to);
+  let to = (pos - eye).normalize();
+  var cs = aim.dot(to);
   if cs > 1. { cs = 1.; }
   if cs < -1. { cs = -1.; }
-  imm k = blend(acos(cs), p.halfAngle, strength);
+  let k = blend(acos(cs), p.halfAngle, strength);
   (aim * (1. - k) + to * k).normalize();
 }

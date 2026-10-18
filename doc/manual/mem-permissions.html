@@ -27,21 +27,21 @@ import collections use *;
 import thread;
 
 fn total(readings Uni[List[i64]]) i64 {
-  mut sum = 0i64;
+  var sum = 0i64;
   each r in readings.iter() { sum += *r; }
   sum;
 }
 
 fn main() {
   // A new owner is uni: the one and only way to the list
-  imm readings = new Uni[List[i64]](4);
+  let readings = new Uni[List[i64]](4);
   readings.push(12);
   readings.push(7);
   readings.push(30);
 
   // So it may move to another thread: nobody is left behind to race with it
-  imm worker = thread.start(readings, &amp;total);
-  imm sum i64 = worker.join();
+  let worker = thread.start(readings, &amp;total);
+  let sum i64 = worker.join();
   print &lt;- "total: ", sum, "\n";
 }
 </pre>
@@ -56,32 +56,32 @@ total: 49
 		with or sent to another thread.</i></p>
 
 	<h2 id="variable">A permission belongs to a reference</h2>
-	<p>The Guide met <span class="pre">imm</span> and <span class="pre">mut</span> on variables
-		(<a href="guide-values.html#vars">imm and mut</a>): they say whether the <i>variable</i> can be changed, given a
+	<p>The Guide met <span class="pre">let</span> and <span class="pre">var</span> on variables
+		(<a href="guide-values.html#vars">let and var</a>): they say whether the <i>variable</i> can be given a
 		new value. A permission on a <i>reference</i> says what may be done with the reference: whether the value it
 		points at may be read or changed, and whether the reference may be copied or sent. The two are separate, which
 		is easiest to see when a variable holds a reference:</p>
 <pre>
-imm fixed = 1;
-mut counter = 2;
-imm ref1 = &amp;imm fixed;     // an imm variable holding an imm reference
-mut ref3 = &amp;imm fixed;     // a mut variable holding an imm reference
-imm ref2 = &amp;mut counter;   // an imm variable holding a mut reference
-mut ref4 = &amp;mut counter;   // a mut variable holding a mut reference
+let fixed = 1;
+var counter = 2;
+let ref1 = &amp;imm fixed;     // a let variable holding an imm reference
+var ref3 = &amp;imm fixed;     // a var variable holding an imm reference
+let ref2 = &amp;mut counter;   // a let variable holding a mut reference
+var ref4 = &amp;mut counter;   // a var variable holding a mut reference
 </pre>
-	<p>Because of the variable's <span class="pre">mut</span>, <span class="pre">ref3</span> and
+	<p>Because of the variable's <span class="pre">var</span>, <span class="pre">ref3</span> and
 		<span class="pre">ref4</span> may be changed to hold a different reference, and <span class="pre">ref1</span> and
 		<span class="pre">ref2</span> may not. Because of the reference's <span class="pre">mut</span>, the values that
 		<span class="pre">ref2</span> and <span class="pre">ref4</span> point at may be changed through them, and the
 		ones <span class="pre">ref1</span> and <span class="pre">ref3</span> point at may not:</p>
 <pre>
-ref3 = &amp;imm other;   // Ok: the variable is mut
-ref2 = &amp;mut other;   // Error 1017: You do not have permission to modify lval (the variable is imm)
+ref3 = &amp;imm other;   // Ok: the variable is var
+ref2 = &amp;mut other;   // Error 1017: You do not have permission to modify lval (the variable is let)
 *ref4 = 5;           // Ok: the reference is mut
 *ref1 = 5;           // Error 1017: You do not have permission to modify lval (the reference is imm)
 </pre>
 	<p>A borrow can only ask for what its source allows: <span class="pre">&amp;imm</span> of a
-		<span class="pre">mut</span> variable is refused (<i>Error 1034: Borrowed reference cannot obtain this
+		<span class="pre">var</span> variable is refused (<i>Error 1034: Borrowed reference cannot obtain this
 		permission</i>), since the variable may change while the borrow promises it will not.</p>
 
 	<h2 id="list">The static permissions</h2>
@@ -152,7 +152,7 @@ ref2 = &amp;mut other;   // Error 1017: You do not have permission to modify lva
 		<a href="conc-locks.html">lock permission</a> lets only one reach it at a time. The compiler checks every
 		reference that crosses to another thread against these rules, whatever region the value is in;
 		<a href="conc-sharing.html#race">What may cross a thread</a> has the full rules for sending and sharing. <b>Not
-		checked yet:</b> a <span class="pre">mut</span> global reached from several threads, and a value that crosses by a
+		checked yet:</b> a <span class="pre">var</span> global reached from several threads, and a value that crosses by a
 		route that does not ask, such as a raw pointer cast or an <span class="pre">extern</span> call.</p>
 	<p>The same permissions keep a single thread honest too. Since a <span class="pre">uni</span> or
 		<span class="pre">imm</span> reference promises that nothing else is changing the value under it, code holding one
@@ -177,9 +177,9 @@ ref2 = &amp;mut other;   // Error 1017: You do not have permission to modify lva
 		source against reading and changing too. Once the borrows' last use is behind it, the source is unique again, and
 		usable in every way:</p>
 <pre>
-imm uniref = new Uni[i32](5);
-imm bref1 &amp;mut i32 = uniref;     // the owner lends a 'mut' borrow
-imm bref2 = bref1;               // shared with another borrow
+let uniref = new Uni[i32](5);
+let bref1 &amp;mut i32 = uniref;     // the owner lends a 'mut' borrow
+let bref2 = bref1;               // shared with another borrow
 *uniref = 6;                     // Ok: uniref is one more 'mut' alias while the borrows are to be used
 consume(uniref);                 // Error 1168: 'uniref' is borrowed mutably, and that borrow is used again
                                  //   below. It may not be moved until after that last use.
@@ -197,8 +197,8 @@ consume(uniref);                 // Ok: uniref is unique again (and the value it
 		unique:</p>
 <pre>
 fn share(b &amp;Rc[mut, i32]) Rc[mut, i32] { *b; }
-imm uniref = new Rc[i32](5);
-imm other = share(&amp;uniref);     // Error 1013: a borrowed Rc[i32] is not a borrowed Rc[mut, i32]
+let uniref = new Rc[i32](5);
+let other = share(&amp;uniref);     // Error 1013: a borrowed Rc[i32] is not a borrowed Rc[mut, i32]
 </pre>
 	<h3 id="permanent">From uni, for good</h3>
 	<p>A <span class="pre">uni</span> owning reference can also become shared for good, by moving it into an owning
@@ -206,9 +206,9 @@ imm other = share(&amp;uniref);     // Error 1013: a borrowed Rc[i32] is not a b
 		<span class="pre">uni</span> reference is consumed by the move, and what is left is a shareable reference, which
 		may be copied:</p>
 <pre>
-imm ref = new Rc[i32](5);           // a new owner: uni
-imm shared Rc[mut, i32] = ref;      // moved into a shared, mutable owner
-imm also = shared;                  // two owners of the same value
+let ref = new Rc[i32](5);           // a new owner: uni
+let shared Rc[mut, i32] = ref;      // moved into a shared, mutable owner
+let also = shared;                  // two owners of the same value
 *also = 7;                          // either may change it
 *ref;                               // Error 1048: This variable's value has been moved out.
 </pre>
@@ -216,7 +216,7 @@ imm also = shared;                  // two owners of the same value
 		nor a <span class="pre">mut</span> one <span class="pre">imm</span>: as <span class="pre">mut</span> it can never
 		cross to another thread, and as <span class="pre">imm</span> it can never be changed. <b>Not built yet:</b> moving
 		a <span class="pre">uni</span> owner into a <i>borrowed</i> reference of a shared permission,
-		<span class="pre">imm newref &amp;mut i32 = ref;</span>, is meant to be the same permanent move. Today it borrows
+		<span class="pre">let newref &amp;mut i32 = ref;</span>, is meant to be the same permanent move. Today it borrows
 		instead, and <span class="pre">ref</span> stays usable; only a move into an owning type, as above, consumes it.</p>
 
 	<h2 id="recovery">Getting a permission back</h2>
@@ -264,8 +264,8 @@ fn twice(r &amp;uni R) {
 	<p>It is meant to read like this, for the third case:</p>
 <pre>
 recover {
-  imm ref1 = uniref as &amp;mut i32;
-  imm ref2 = ref1;
+  let ref1 = uniref as &amp;mut i32;
+  let ref2 = ref1;
   *ref1 = 5;
   ref2 as &amp;uni i32;
 }
@@ -320,8 +320,8 @@ fn handleCar(car &amp;Car) {
 		<span class="pre">owner</span> keeps its own permission.</p>
 	<p id="fieldperm">A field's own declared permission takes part the same way: what governs access to it is derived
 		from both the field's permission and the struct value's. A field declares none by default, which means
-		<span class="pre">mut</span>, so the struct value's permission alone decides. One declared
-		<span class="pre">imm</span>, <span class="pre">pub imm id i32</span>, is not writable even through a
+		<span class="pre">var</span>, so the struct value's permission alone decides. One declared
+		<span class="pre">let</span>, <span class="pre">pub let id i32</span>, is not writable even through a
 		<span class="pre">&amp;mut</span> to the struct (<i>Error 1017: You do not have permission to modify lval</i>).</p>
 	<p>An owning field is no exception either. For <span class="pre">app Uni[App]</span> in a struct
 		<span class="pre">Holder</span>, through a <span class="pre">&amp;Holder</span> the field lends only
@@ -371,7 +371,7 @@ fn handleCar(car &amp;Car) {
 			<span class="pre">Rc[T]</span> of an ordinary type is <span class="pre">uni</span> and moves.
 			<span class="pre">imm</span> may still be written, and so may <span class="pre">ro</span> and
 			<span class="pre">opaq</span>. A borrow made with <span class="pre">&amp;</span> from a place that cannot be
-			borrowed as <span class="pre">imm</span> (a <span class="pre">mut</span> variable) is
+			borrowed as <span class="pre">imm</span> (a <span class="pre">var</span> variable) is
 			<span class="pre">ro</span>, as it is for any type.</li>
 		<li><b>The permissions that write through a shared path are refused.</b> <span class="pre">mut</span>,
 			<span class="pre">mut1</span> and a lock permission (<span class="pre">Rc[Rwcell, str]</span>) on the type are an
@@ -382,8 +382,8 @@ fn handleCar(car &amp;Car) {
 	</ul>
 <pre>
 fn length(s &amp;str) usize { s.len; }   // s is &amp;imm str
-imm a = new Rc[str](view);            // Rc[imm, str]
-imm b = a;                            // copied, not moved: a is still held
+let a = new Rc[str](view);            // Rc[imm, str]
+let b = a;                            // copied, not moved: a is still held
 fn change(s &amp;mut str) {}              // Error 1297: str declares Immutable, so nothing changes it
                                       //   through a reference: 'mut' is refused.
 </pre>

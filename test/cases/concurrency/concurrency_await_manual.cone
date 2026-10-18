@@ -60,8 +60,8 @@ actor Fetcher {
   net Net;
 
   pub async do fetch(self, url u64) Buffer {
-    imm conn = new Conn(url);             // opened
-    imm buf = await net.read(conn.url);   // conn waits, with the method
+    let conn = new Conn(url);             // opened
+    let buf = await net.read(conn.url);   // conn waits, with the method
     say("  fetched", buf.size);
     buf;                                  // the reply to the 'await' on fetch
   }                                       // conn closes here
@@ -73,7 +73,7 @@ actor Page {
 
   pub async do load(self, u u64) {
     say("load", u);
-    imm b = await fetcher.fetch(u);       // pauses here
+    let b = await fetcher.fetch(u);       // pauses here
     body = b.size;                        // and resumes when the reply comes
     say("loaded", body);
   }
@@ -94,9 +94,9 @@ actor Logger {
   clock Clock;
 
   pub async do log(self) u64 {
-    imm first = new Note(1u64);
-    imm second = new Note(2u64);
-    imm t = await clock.now();
+    let first = new Note(1u64);
+    let second = new Note(2u64);
+    let t = await clock.now();
     say("  at", t + first.n);             // 'second' is not named again
     t;
   }                                       // second dies, then first
@@ -104,14 +104,14 @@ actor Logger {
 // manual: end
 
 // manual: static
-imm limit u64 = 100u64;
+let limit u64 = 100u64;
 
 actor Gauge {
   clock Clock;
 
   pub async do check(self) u64 {
-    imm max = &limit;                     // a borrow of a global: 'static
-    imm t = await clock.now();
+    let max = &limit;                     // a borrow of a global: 'static
+    let t = await clock.now();
     *max - t;                             // still valid after the 'await'
   }
 }
@@ -125,9 +125,9 @@ actor Tally {
   clock Clock;
 
   pub async do bump(self) u64 {
-    imm c = &mut *count;                  // takes the lock
+    let c = &mut *count;                  // takes the lock
     c.n += 1u64;
-    imm t = await clock.now();            // gives it back
+    let t = await clock.now();            // gives it back
     (&mut *count).n += t;                 // takes it again, for the statement
     (&*count).n;
   }
@@ -139,8 +139,8 @@ actor Doubler {
   pub async do double(self, n u64) u64 {n * 2u64;}
 
   pub async do twice(self, n u64) u64 {
-    imm once = await selfactor.double(n);  // a message to itself
-    imm again = await selfactor.double(once);
+    let once = await selfactor.double(n);  // a message to itself
+    let again = await selfactor.double(once);
     again;
   }
 }
@@ -155,7 +155,7 @@ actor Cache {
     if url == hot {
       return 1u64;                        // answered here, at once
     }
-    imm b = await net.read(url);
+    let b = await net.read(url);
     b.size;                               // or here, once the reply came
   }
 }
@@ -166,9 +166,9 @@ actor Sizes {
   net Net;
 
   pub async do total(self, n u64) u64 {
-    mut sum = 0u64;
+    var sum = 0u64;
     each i in 0u64 ..< n {
-      imm b = await net.read(i);          // one request at a time
+      let b = await net.read(i);          // one request at a time
       sum = sum + b.size;
     }
     sum;
@@ -212,7 +212,7 @@ actor Board {
     cells[await lane.pick(0u64)][0u64] <=> cells[await lane.pick(1u64)][2u64];  // both sides
     (cells[0][1], cells[await lane.pick(1u64)][await lane.pick(1u64)]) = (7u64, 8u64);
     marks <- (cells[1][2], await lane.pick(9u64), 3u64);
-    imm row = &cells[await lane.pick(1u64)][await lane.pick(0u64)..<await lane.pick(2u64)];
+    let row = &cells[await lane.pick(1u64)][await lane.pick(0u64)..<await lane.pick(2u64)];
     row.len() * 100u64 + cells[0][0] * 10u64 + *marks[1];
   }
 }
@@ -238,7 +238,7 @@ actor Mixed {
 
   pub async do read(self) u64 {
     (&mut *count).n = 7u64;
-    imm x = (&*count).n + await locker.now();
+    let x = (&*count).n + await locker.now();
     x + (&*count).n;
   }
 }
@@ -273,13 +273,13 @@ actor Driver {
 fn main() {
   initAll();
   {
-    imm net = new Net();
-    imm clock = new Clock();
-    imm fetcher = new Fetcher(net);
-    imm page = new Page(fetcher, 0u64);
-    imm count = new Arc[Mutex, Count](0u64);
-    imm shared = new Arc[Mutex, Count](0u64);
-    imm d = new Driver(new Mixed(shared, new Locker(shared)), page, new Logger(clock), new Gauge(clock), new Tally(count, clock),
+    let net = new Net();
+    let clock = new Clock();
+    let fetcher = new Fetcher(net);
+    let page = new Page(fetcher, 0u64);
+    let count = new Arc[Mutex, Count](0u64);
+    let shared = new Arc[Mutex, Count](0u64);
+    let d = new Driver(new Mixed(shared, new Locker(shared)), page, new Logger(clock), new Gauge(clock), new Tally(count, clock),
       new Doubler(), new Cache(net, 3u64), new Sizes(net), new Shelf(new Counter(), [0u64, 0u64, 0u64, 0u64], 0u64),
       new Board(new Lane(), [[0u64, 0u64, 0u64], [0u64, 0u64, 0u64]], List[u64].empty()));
     d.go();

@@ -42,8 +42,8 @@ enum Gauge {
   // another value's privates, the other variant's included
   pub fn probe(self &, other &imm Gauge) i32 {
     match other {
-      case imm l &Low {l.lo + other.secret;}
-      case imm h &High {h.hi + h.twice() + other.secret;}
+      case let l &Low {l.lo + other.secret;}
+      case let h &High {h.hi + h.twice() + other.secret;}
     }
   }
 
@@ -66,16 +66,16 @@ enum Gauge {
   // method through a match on the enum
   pub fn reading(g &imm Gauge) i32 {
     match g {
-      case imm l &Low {l.lo * 10 + l.half();}
-      case imm h &High {h.hi * 10 + h.twice();}
+      case let l &Low {l.lo * 10 + l.half();}
+      case let h &High {h.hi * 10 + h.twice();}
     }
   }
 
   // ... writes one through a match on the value, and hands the value back
   pub fn raised(g Gauge) Gauge {
     match g {
-      case mut l Low {l.lo = l.lo + 1; l;}
-      case mut h High {h.hi = h.hi + 1; h;}
+      case var l Low {l.lo = l.lo + 1; l;}
+      case var h High {h.hi = h.hi + 1; h;}
     }
   }
 
@@ -85,17 +85,17 @@ enum Gauge {
 }
 
 fn oneEnum() {
-  mut a Gauge.Low = Gauge.low(1, 10);      // secret 7, lo 10
-  imm b = Gauge.high(2, 3);       // secret 5, hi 3
-  imm ga Gauge = a;
-  imm gb Gauge = b;
+  var a Gauge.Low = Gauge.low(1, 10);      // secret 7, lo 10
+  let b = Gauge.high(2, 3);       // secret 5, hi 3
+  let ga Gauge = a;
+  let gb Gauge = b;
   show("static-reads-variant-private", Gauge.reading(&imm ga));    // 10*10 + 10/2 = 105
   show("static-calls-variant-private", Gauge.reading(&imm gb));    // 3*10 + 3*2 = 36
   show("enum-method-on-low-reads-high", (&a).probe(&imm gb));      // 3 + 6 + 5 = 14
   show("enum-method-on-high-reads-low", (&b).probe(&imm ga));      // 10 + 7 = 17
   show("variant-reads-sibling-private", (&a).peekHigh(&b));    // 3*100 + 6 = 306
   (&b).lower(&mut a);                                          // lo 10 + 3 = 13
-  imm gm = Gauge.raised(a);                                    // lo 13 + 1 = 14
+  let gm = Gauge.raised(a);                                    // lo 13 + 1 = 14
   show("variant-and-static-write-private", Gauge.reading(&imm gm)); // 14*10 + 14/2 = 147
 }
 
@@ -112,7 +112,7 @@ enum Rich extends Gauge {
   pub fn peer(self &imm, base &Gauge.Low) i32 {base.lo * 100 + base.half() * 10 + secret + peek(self);}
   fn peek(r &imm Rich) i32 {
     match r {
-      case imm l &Low {l.lo * 1000;}
+      case let l &Low {l.lo * 1000;}
       else {0;}
     }
   }
@@ -126,29 +126,29 @@ enum Rich extends Gauge {
     }
     pub fn fromRich(self &, r &imm Rich) i32 {
       match r {
-        case imm l &Low {l.lo + l.secret;}
-        case imm h &High {h.hi + h.twice() + h.secret;}
-        case imm m &Mid {m.mid + m.secret;}
+        case let l &Low {l.lo + l.secret;}
+        case let h &High {h.hi + h.twice() + h.secret;}
+        case let m &Mid {m.mid + m.secret;}
       }
     }
   }
 }
 
 fn extension() {
-  imm mid = Rich.Mid(1);                // secret 9 and mid 8, by default
-  imm copy = (&mid).copyLow(4);         // secret 2, lo 4
-  imm high = (&mid).copyHigh(6);        // secret 3, hi 6
-  imm base = Gauge.low(1, 3);           // secret 7, lo 3
+  let mid = Rich.Mid(1);                // secret 9 and mid 8, by default
+  let copy = (&mid).copyLow(4);         // secret 2, lo 4
+  let high = (&mid).copyHigh(6);        // secret 3, hi 6
+  let base = Gauge.low(1, 3);           // secret 7, lo 3
   show("extension-reads-copy-and-base-private", (&mid).sum(&copy, &base)); // 400 + 30 + 2 + 7 = 439
-  imm rl Rich = copy;
-  imm rh Rich = high;
-  imm rm Rich = mid;
+  let rl Rich = copy;
+  let rh Rich = high;
+  let rm Rich = mid;
   show("extension-matches-copy-low", (&mid).fromRich(&imm rl));   // 4 + 2 = 6
   show("extension-matches-copy-high", (&mid).fromRich(&imm rh));  // 6 + 12 + 3 = 21
   show("extension-matches-own-variant", (&mid).fromRich(&imm rm)); // 8 + 9 = 17
   // The copy's clone of Gauge's 'probe' is the extension's code, and reads
   // the private members of a value of the base
-  imm gh Gauge = Gauge.high(3, 4);      // secret 5, hi 4
+  let gh Gauge = Gauge.high(3, 4);      // secret 5, hi 4
   show("copied-method-reads-base-private", (&copy).probe(&imm gh)); // 4 + 8 + 5 = 17
   show("extension-own-code-reads-copy-and-base-private", (&imm copy).peer(&base)); // 300 + 1*10 + 2 + 4*1000 = 4312
 }
@@ -165,7 +165,7 @@ enum Stash[T] {
 
   pub fn tally(self &, other &imm Stash[T]) i32 {
     match other {
-      case imm f &Full[T] {f.count + f.size();}
+      case let f &Full[T] {f.count + f.size();}
       else {other.count;}
     }
   }
@@ -181,7 +181,7 @@ enum Stash[T] {
     pub fn peek(self &, f &Full[T], d T) T {f.item + d;}
     pub fn itemOf(self &, s &imm Stash[T]) T {
       match s {
-        case imm f &Full[T] {f.item;}
+        case let f &Full[T] {f.item;}
         else {T.from(countOf(s));}
       }
     }
@@ -192,18 +192,18 @@ enum Stash[T] {
 }
 
 fn generic() {
-  imm empty = Stash.Empty[i64];        // count 6, by default
-  mut full Stash.Full[i64] = (&empty).fill(3, 40);      // count 3, item 40
-  imm other = (&empty).fill(4, 50);      // count 4, item 50
-  imm sf Stash[i64] = full;
-  imm se Stash[i64] = empty;
+  let empty = Stash.Empty[i64];        // count 6, by default
+  var full Stash.Full[i64] = (&empty).fill(3, 40);      // count 3, item 40
+  let other = (&empty).fill(4, 50);      // count 4, item 50
+  let sf Stash[i64] = full;
+  let se Stash[i64] = empty;
   show("generic-variant-matches-sibling-private", i32.from((&empty).itemOf(&imm sf)));  // 40
   show("generic-static-reads-enum-private", i32.from((&empty).itemOf(&imm se)));        // 6
   show("generic-variant-reads-sibling-private", i32.from((&empty).peek(&full, 2))); // 40 + 2 = 42
   show("generic-enum-method-reads-private", (&empty).tally(&imm sf));              // 3 + 10 = 13
   show("generic-enum-method-reads-enum-private", (&full).tally(&imm se));          // 6
   (&mut full).swapFrom(&other);
-  imm sw Stash[i64] = full;
+  let sw Stash[i64] = full;
   show("generic-variant-writes-other-private", i32.from((&empty).itemOf(&imm sw)));     // 50
 }
 

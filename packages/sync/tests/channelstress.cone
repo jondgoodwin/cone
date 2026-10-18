@@ -30,7 +30,7 @@ struct Work {
 }
 
 fn produce(w Work) u64 {
-  mut k = 1u64;
+  var k = 1u64;
   while k <= perProducer {
     w.tx.send((w.id << 32u64) + k);
     k = k + 1u64;
@@ -39,7 +39,7 @@ fn produce(w Work) u64 {
 }
 
 // A value whose deaths are counted, from any thread
-imm deaths Atomic[u64];
+let deaths Atomic[u64];
 
 fn @initpure init() {
   deaths = Atomic[u64].of(0u64);
@@ -59,8 +59,8 @@ struct CountedWork {
 
 // Send 20000 counted values: how many were refused
 fn produceCounted(w CountedWork) u64 {
-  mut refused = 0u64;
-  mut k = 1u64;
+  var refused = 0u64;
+  var k = 1u64;
   while k <= 20000u64 {
     match w.tx.send(new Counted(w.id * 100000u64 + k)) {
       case is Some[Counted] {refused = refused + 1u64;}
@@ -74,23 +74,23 @@ fn produceCounted(w CountedWork) u64 {
 fn dropReceiver(rx Receiver[Counted]) {}
 
 fn contended() {
-  mut tx Sender[u64];
-  mut rx Receiver[u64];
+  var tx Sender[u64];
+  var rx Receiver[u64];
   tx, rx = Channel[u64].make();
-  imm a = thread.start(new Work(tx.clone(), 1u64), &produce);
-  imm b = thread.start(new Work(tx.clone(), 2u64), &produce);
-  imm c = thread.start(new Work(tx.clone(), 3u64), &produce);
-  imm d = thread.start(new Work(tx, 0u64), &produce);
-  mut last = new Array[u64, 4] <- fill 0u64;
-  mut items = 0u64;
-  mut sum = 0u64;
-  mut disorder = 0u64;
-  mut more = true;
+  let a = thread.start(new Work(tx.clone(), 1u64), &produce);
+  let b = thread.start(new Work(tx.clone(), 2u64), &produce);
+  let c = thread.start(new Work(tx.clone(), 3u64), &produce);
+  let d = thread.start(new Work(tx, 0u64), &produce);
+  var last = new Array[u64, 4] <- fill 0u64;
+  var items = 0u64;
+  var sum = 0u64;
+  var disorder = 0u64;
+  var more = true;
   while more {
     match rx.recv() {
-      case imm s Some {
-        imm p = s >> 32u64;
-        imm k = s & 0xFFFFFFFFu64;
+      case let s Some {
+        let p = s >> 32u64;
+        let k = s & 0xFFFFFFFFu64;
         if p > 3u64 or k != last[p] + 1u64 {
           disorder = disorder + 1u64;
         }
@@ -103,7 +103,7 @@ fn contended() {
       case is None[u64] {more = false;}
     }
   }
-  imm sent = a.join() + b.join() + c.join() + d.join();
+  let sent = a.join() + b.join() + c.join() + d.join();
   expectUInt(sent, 400000u64, "the items four producers sent");
   expectUInt(items, 400000u64, "the items taken");
   expectUInt(sum, 2577000377800000u64, "their sum");
@@ -113,13 +113,13 @@ fn contended() {
 // The receiver goes mid-stream: every value dies once
 fn receiverGoes() bool {
   deaths.store(0u64);
-  mut tx Sender[Counted];
-  mut rx Receiver[Counted];
+  var tx Sender[Counted];
+  var rx Receiver[Counted];
   tx, rx = Channel[Counted].make();
-  imm a = thread.start(new CountedWork(tx.clone(), 1u64), &produceCounted);
-  imm b = thread.start(new CountedWork(tx.clone(), 2u64), &produceCounted);
-  imm c = thread.start(new CountedWork(tx, 3u64), &produceCounted);
-  mut taken = 0u64;
+  let a = thread.start(new CountedWork(tx.clone(), 1u64), &produceCounted);
+  let b = thread.start(new CountedWork(tx.clone(), 2u64), &produceCounted);
+  let c = thread.start(new CountedWork(tx, 3u64), &produceCounted);
+  var taken = 0u64;
   while taken < 1000u64 {
     match rx.recv() {
       case is Some[Counted] {taken = taken + 1u64;}
@@ -127,17 +127,17 @@ fn receiverGoes() bool {
     }
   }
   dropReceiver(rx);
-  imm refused = a.join() + b.join() + c.join();
+  let refused = a.join() + b.join() + c.join();
   // Every value is dead now: taken (1000), finalized in the queue when the
   // receiver went, or refused
-  imm ok = deaths.load() == 60000u64 and refused <= 59000u64;
+  let ok = deaths.load() == 60000u64 and refused <= 59000u64;
   ok;
 }
 
 fn main() i32 {
   contended();
-  mut run = 0u32;
-  mut good = 0u32;
+  var run = 0u32;
+  var good = 0u32;
   while run < 5u32 {
     if receiverGoes() {
       good = good + 1u32;

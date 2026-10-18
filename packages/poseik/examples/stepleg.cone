@@ -49,11 +49,11 @@ fn ground(x f32, z f32) f32 {
 
 // A tube of radius 1 and length 1 up +y, open ended
 fn tube() Mesh {
-  mut m = Mesh.empty();
-  imm sides = 14usize;
-  mut k = 0usize;
+  var m = Mesh.empty();
+  let sides = 14usize;
+  var k = 0usize;
   while k < sides {
-    imm a = 2. * pi * f32.from(k) / f32.from(sides);
+    let a = 2. * pi * f32.from(k) / f32.from(sides);
     m.positions.push(new Vec3(cos(a), 0., sin(a)));
     m.normals.push(new Vec3(cos(a), 0., sin(a)));
     m.positions.push(new Vec3(cos(a), 1., sin(a)));
@@ -62,11 +62,11 @@ fn tube() Mesh {
   }
   k = 0usize;
   while k < sides {
-    imm k1 = (k + 1usize) % sides;
-    imm v0 = u32.from(2usize * k);
-    imm v1 = u32.from(2usize * k + 1usize);
-    imm v2 = u32.from(2usize * k1 + 1usize);
-    imm v3 = u32.from(2usize * k1);
+    let k1 = (k + 1usize) % sides;
+    let v0 = u32.from(2usize * k);
+    let v1 = u32.from(2usize * k + 1usize);
+    let v2 = u32.from(2usize * k1 + 1usize);
+    let v3 = u32.from(2usize * k1);
     m.indices.push(v0);
     m.indices.push(v2);
     m.indices.push(v1);
@@ -79,7 +79,7 @@ fn tube() Mesh {
 }
 
 fn limb(a Vec3, b Vec3, r f32) Mat4 {
-  imm d = b - a;
+  let d = b - a;
   Mat4.fromTrs(a, Quat.fromVectors(new Vec3(0., 1., 0.), d), new Vec3(r, d.length(), r));
 }
 
@@ -103,73 +103,73 @@ fn radius(b usize) f32 {
 }
 
 fn main() i32 {
-  imm height = 1.75;
-  imm skel = humanoid(height);
-  mut pose = skel.restPose();
-  mut models = List[Transform3].empty();
-  imm world = Transform3.identity();
+  let height = 1.75;
+  let skel = humanoid(height);
+  var pose = skel.restPose();
+  var models = List[Transform3].empty();
+  let world = Transform3.identity();
 
   // ---- The pose ----
-  mut placer = FootPlacer.make(height);
-  imm placed = placer.place(&skel, &mut pose, &mut models, &world, &ground, 1., 0.);
+  var placer = FootPlacer.make(height);
+  let placed = placer.place(&skel, &mut pose, &mut models, &world, &ground, 1., 0.);
   // The head looks at a point in front of the right hand, then the hand reaches for it
   // (the look turns the spine and chest, which carry the shoulder, so it comes first)
-  imm grip = new Vec3(0.30, 1.30, -0.55);
-  imm gripRot = Quat.angleAxis(pi / 2., new Vec3(1., 0., 0.));
-  imm look = LookConfig.standard();
-  imm lookResult = lookAt(&skel, &mut pose, &mut models, grip, 1., &look);
-  imm reach = reachHand(&skel, &mut pose, &mut models, true, grip, gripRot, elbowPole(true), 1.);
+  let grip = new Vec3(0.30, 1.30, -0.55);
+  let gripRot = Quat.angleAxis(pi / 2., new Vec3(1., 0., 0.));
+  let look = LookConfig.standard();
+  let lookResult = lookAt(&skel, &mut pose, &mut models, grip, 1., &look);
+  let reach = reachHand(&skel, &mut pose, &mut models, true, grip, gripRot, elbowPole(true), 1.);
 
-  mut ok = true;
+  var ok = true;
   print <- "pelvis shift "; print <- placed.pelvisShift; print <- " m; left sole "; print <- placed.soleL;
   print <- " m, right sole "; print <- placed.soleR; print <- " m\n";
   if !(placed.reachedL and placed.reachedR) { print <- "FAIL: a leg did not reach\n"; ok = false; }
   if absf(placed.soleL - 0.2) > 0.001 or absf(placed.soleR) > 0.001 { print <- "FAIL: soles not on the ground\n"; ok = false; }
-  imm gripNow = skel.socketModel(&models, SOCKET_HAND_R_GRIP).translation;
+  let gripNow = skel.socketModel(&models, SOCKET_HAND_R_GRIP).translation;
   if gripNow.distance(grip) > 0.002 or !reach.reached { print <- "FAIL: the grip is not on its target\n"; ok = false; }
-  imm eye = skel.socketModel(&models, SOCKET_EYE).translation;
-  imm gaze = (*models[HEAD]).rotation * new Vec3(0., 0., -1.);
+  let eye = skel.socketModel(&models, SOCKET_EYE).translation;
+  let gaze = (*models[HEAD]).rotation * new Vec3(0., 0., -1.);
   print <- "look yaw "; print <- lookResult.yaw; print <- " rad, clamped "; print <- i64.from(lookResult.clamped); print <- "\n";
   if lookResult.clamped or gaze.dot((grip - eye).normalize()) < 0.99 { print <- "FAIL: the head is not looking at the grip\n"; ok = false; }
 
   // ---- The GPU ----
-  mut instance = Instance.create("poseik stepleg");
+  var instance = Instance.create("poseik stepleg");
   if !instance.isValid() { print <- "FAIL: no Vulkan instance\n"; return 1i32; }
-  mut none = Surface.none();
-  mut preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
-  imm env = libc.getenv("GPU_POWER_PREFERENCE");
+  var none = Surface.none();
+  var preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
+  let env = libc.getenv("GPU_POWER_PREFERENCE");
   if (env as usize) != 0usize {
     if libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 { preference = POWER_PREFERENCE_LOW_POWER; }
   }
-  mut adapter = instance.requestAdapter(&none, preference);
-  mut device = adapter.requestDevice();
+  var adapter = instance.requestAdapter(&none, preference);
+  var device = adapter.requestDevice();
   if !device.isValid() { print <- "FAIL: no device\n"; return 1i32; }
 
-  imm target = new TextureDescriptor(W, H, TEXTURE_FORMAT_RGBA8_UNORM, TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
-  mut color = device.createTexture(&target);
-  imm depthDesc = new TextureDescriptor(W, H, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
-  mut depth = device.createTexture(&depthDesc);
-  mut readback = device.createBuffer(u64.from(W) * u64.from(H) * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
-  mut renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA8_UNORM, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  let target = new TextureDescriptor(W, H, TEXTURE_FORMAT_RGBA8_UNORM, TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
+  var color = device.createTexture(&target);
+  let depthDesc = new TextureDescriptor(W, H, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
+  var depth = device.createTexture(&depthDesc);
+  var readback = device.createBuffer(u64.from(W) * u64.from(H) * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  var renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA8_UNORM, TEXTURE_FORMAT_DEPTH32_FLOAT);
   if !renderer.isValid() { print <- "FAIL: no renderer\n"; return 1i32; }
 
-  imm tubeMesh = renderer.addMesh(&mut device, &tube());
-  imm ballMesh = renderer.addMesh(&mut device, &Mesh.sphere(1., 14));
-  imm cubeMesh = renderer.addMesh(&mut device, &Mesh.cube(0.5));
-  imm skinColor = renderer.addMaterial(&mut device, &Material.plain(new Color(0.78, 0.80, 0.86, 1.)));
-  imm jointColor = renderer.addMaterial(&mut device, &Material.plain(new Color(0.35, 0.40, 0.55, 1.)));
-  imm footColor = renderer.addMaterial(&mut device, &Material.plain(new Color(0.20, 0.22, 0.30, 1.)));
-  imm stepColor = renderer.addMaterial(&mut device, &Material.plain(new Color(0.62, 0.45, 0.28, 1.)));
-  imm floorColor = renderer.addMaterial(&mut device, &Material.plain(new Color(0.30, 0.42, 0.30, 1.)));
-  imm targetColor = renderer.addMaterial(&mut device, &Material.plain(new Color(0.95, 0.25, 0.20, 1.)));
+  let tubeMesh = renderer.addMesh(&mut device, &tube());
+  let ballMesh = renderer.addMesh(&mut device, &Mesh.sphere(1., 14));
+  let cubeMesh = renderer.addMesh(&mut device, &Mesh.cube(0.5));
+  let skinColor = renderer.addMaterial(&mut device, &Material.plain(new Color(0.78, 0.80, 0.86, 1.)));
+  let jointColor = renderer.addMaterial(&mut device, &Material.plain(new Color(0.35, 0.40, 0.55, 1.)));
+  let footColor = renderer.addMaterial(&mut device, &Material.plain(new Color(0.20, 0.22, 0.30, 1.)));
+  let stepColor = renderer.addMaterial(&mut device, &Material.plain(new Color(0.62, 0.45, 0.28, 1.)));
+  let floorColor = renderer.addMaterial(&mut device, &Material.plain(new Color(0.30, 0.42, 0.30, 1.)));
+  let targetColor = renderer.addMaterial(&mut device, &Material.plain(new Color(0.95, 0.25, 0.20, 1.)));
 
-  mut list = DrawList.empty();
+  var list = DrawList.empty();
   list.add(cubeMesh, floorColor, slab(new Vec3(0., -0.025, 0.), new Vec3(4., 0.05, 4.)));
   list.add(cubeMesh, stepColor, slab(new Vec3(-0.35, 0.1, 0.), new Vec3(0.7, 0.2, 1.2)));
-  mut b = 1usize;
+  var b = 1usize;
   while b < skel.boneCount() {
-    imm p = (*models[usize.from(skel.parentOf(b))]).translation;
-    imm q = (*models[b]).translation;
+    let p = (*models[usize.from(skel.parentOf(b))]).translation;
+    let q = (*models[b]).translation;
     if p.distance(q) > 0.001 { list.add(tubeMesh, skinColor, limb(p, q, radius(b))); }
     list.add(ballMesh, jointColor, ball(q, 0.5 * radius(b) + 0.022));
     b = b + 1usize;
@@ -177,44 +177,44 @@ fn main() i32 {
   list.add(ballMesh, skinColor, ball((*models[HEAD]).translation + new Vec3(0., 0.066 * height, 0.), 0.095));
   list.add(ballMesh, targetColor, ball(grip, 0.025));
   // The feet: boxes in each foot bone's frame, the heel 0.04 H behind the ankle, the toe 0.112 H ahead
-  imm footLen = 0.152 * height;
-  imm sides = [FOOT_L, FOOT_R];
-  mut s = 0usize;
+  let footLen = 0.152 * height;
+  let sides = [FOOT_L, FOOT_R];
+  var s = 0usize;
   while s < 2usize {
-    imm t = *models[sides[s]];
-    imm centre = t.translation + t.rotation * new Vec3(0., -0.039 * height + 0.02, -0.036 * height);
+    let t = *models[sides[s]];
+    let centre = t.translation + t.rotation * new Vec3(0., -0.039 * height + 0.02, -0.036 * height);
     list.add(cubeMesh, footColor, Mat4.fromTrs(centre, t.rotation, new Vec3(0.09, 0.04, footLen)));
     s = s + 1usize;
   }
 
-  mut camera = Camera.make();
+  var camera = Camera.make();
   camera.lookAt(new Vec3(0.12, 0.6, -3.2), new Vec3(0.0, 0.7, 0.), new Vec3(0., 1., 0.));
   camera.background = new Color(0.55, 0.70, 0.90, 1.);
-  imm sun = Light.directional(new Vec3(0.3, -0.6, 0.8).normalize(), Color.gray(1.8), Color.gray(0.45));
-  mut encoder = device.createCommandEncoder();
+  let sun = Light.directional(new Vec3(0.3, -0.6, 0.8).normalize(), Color.gray(1.8), Color.gray(0.45));
+  var encoder = device.createCommandEncoder();
   renderer.render(&mut device, &mut encoder, &color, &depth, &camera, &sun, &list);
   encoder.copyTextureToBuffer(&color, &readback);
   device.queue.submit(encoder.finish());
   device.endFrame();
   device.waitIdle();
-  imm p = readback.mappedRange();
+  let p = readback.mappedRange();
 
   // The pixel at the left ankle is not the background's
-  imm viewProjection = camera.projectionMatrix(f32.from(W) / f32.from(H)) * camera.viewMatrix();
-  imm ndc = viewProjection.projectPoint((*models[SHIN_L]).translation);
-  imm px = usize.from((ndc.x + 1.) * 0.5 * f32.from(W));
-  imm py = usize.from((1. - ndc.y) * 0.5 * f32.from(H));
-  imm at = (py * usize.from(W) + px) * 4usize;
-  imm r = i32.from(*(p + at));
-  imm bl = i32.from(*(p + at + 2usize));
+  let viewProjection = camera.projectionMatrix(f32.from(W) / f32.from(H)) * camera.viewMatrix();
+  let ndc = viewProjection.projectPoint((*models[SHIN_L]).translation);
+  let px = usize.from((ndc.x + 1.) * 0.5 * f32.from(W));
+  let py = usize.from((1. - ndc.y) * 0.5 * f32.from(H));
+  let at = (py * usize.from(W) + px) * 4usize;
+  let r = i32.from(*(p + at));
+  let bl = i32.from(*(p + at + 2usize));
   print <- "pixel at the left knee: "; print <- r; print <- ", "; print <- i32.from(*(p + at + 1usize)); print <- ", "; print <- bl; print <- "\n";
   if r > 120 and bl > 200 { print <- "FAIL: the knee's pixel is the sky's\n"; ok = false; }
 
-  imm shot = libc.getenv("POSEIK_SHOT");
+  let shot = libc.getenv("POSEIK_SHOT");
   if (shot as usize) != 0usize {
-    imm img = Image.fromTexels(p, i32.from(W), i32.from(H), false);
-    mut name = String.empty();
-    mut i = 0usize;
+    let img = Image.fromTexels(p, i32.from(W), i32.from(H), false);
+    var name = String.empty();
+    var i = 0usize;
     while *(shot + i) != 0u8 { name.appendByte(*(shot + i)); i = i + 1usize; }
     if img.save(&Path.from(name.view())) { print <- "wrote "; printStr(name.view()); print <- "\n"; } else { print <- "FAIL: could not write the screenshot\n"; ok = false; }
   }

@@ -88,7 +88,7 @@ struct TlsMaker {
 }
 
 fn answerTo[R](rp &mut actors.Reply, v R) {
-  mut r = new actors.Reply();
+  var r = new actors.Reply();
   r <=> *rp;
   actors.answerNow[R](r, v);
 }
@@ -96,24 +96,24 @@ fn answerTo[R](rp &mut actors.Reply, v R) {
 // Where the live exchange is (its slot's record), or null: a record that is
 // not in use, was reused (another id) or died before an actor took it names none
 fn exOf(srv &SrvRec, slot u32, id u64) *ExRec {
-  imm s = usize.from(slot);
+  let s = usize.from(slot);
   if s >= srv.exs.len() {return null;}
-  imm x = srv.exs.at(s);
+  let x = srv.exs.at(s);
   if (*x).used and (*x).id == id and (*x).stage != exDead {return x;}
   null;
 }
 
 // The slot of the request the driver calls req, or the number of slots when it is none
 fn slotOfReq(srv &SrvRec, req httpconn.ReqId) usize {
-  imm key = req.number();
+  let key = req.number();
   match srv.byReq.getCopy(&key) {
-    case imm s Some {s;}
+    case let s Some {s;}
     case is None[usize] {srv.exs.len();}
   }
 }
 
 fn freeEx(srv &mut SrvRec, slot usize) {
-  imm x = srv.exs.at(slot) as &mut ExRec;
+  let x = srv.exs.at(slot) as &mut ExRec;
   *x = blankEx();
   srv.exs.put(slot);
 }
@@ -123,21 +123,21 @@ fn freeEx(srv &mut SrvRec, slot usize) {
 // ---------------------------------------------------------------------------
 
 fn pumpServer(srv &mut SrvRec, lp &mut Loop, pool Pool) {
-  mut evs = List[httpconn.Event].empty();
+  var evs = List[httpconn.Event].empty();
   srv.drv.pump(lp, &mut evs);
-  mut k = 0usize;
+  var k = 0usize;
   while k < evs.len() {
-    imm e = &mut evs[k];
+    let e = &mut evs[k];
     k = k + 1usize;
     onServerEvent(srv, lp, pool, e);
   }
 }
 
 fn onServerEvent(srv &mut SrvRec, lp &mut Loop, pool Pool, e &mut httpconn.Event) {
-  imm k = e.kind;
+  let k = e.kind;
   if k == httpconn.EventKind.Request {
-    imm slot = srv.exs.take(blankEx());
-    imm x = srv.exs.at(slot) as &mut ExRec;
+    let slot = srv.exs.take(blankEx());
+    let x = srv.exs.at(slot) as &mut ExRec;
     x.used = true;
     x.id = newId();
     x.req = e.req;
@@ -145,7 +145,7 @@ fn onServerEvent(srv &mut SrvRec, lp &mut Loop, pool Pool, e &mut httpconn.Event
     x.head <=> e.request;
     x.peer = srv.drv.peer(e.conn);
     x.isHead = x.head.method == Method.Head;
-    imm key = e.req.number();
+    let key = e.req.number();
     srv.byReq.insert(key, slot);
     srv.live = srv.live + 1usize;
     if srv.closing {
@@ -160,10 +160,10 @@ fn onServerEvent(srv &mut SrvRec, lp &mut Loop, pool Pool, e &mut httpconn.Event
       srv.drv.sendContinue(e.req);
     }
   } elif k == httpconn.EventKind.Data {
-    imm n = e.buf.len();
-    imm slot = slotOfReq(srv, e.req);
+    let n = e.buf.len();
+    let slot = slotOfReq(srv, e.req);
     if slot < srv.exs.len() {
-      imm x = srv.exs.at(slot) as &mut ExRec;
+      let x = srv.exs.at(slot) as &mut ExRec;
       if x.stage == exReading and not x.rejected {
         if x.body.len() + n > srv.maxBody {
           x.rejected = true;
@@ -176,21 +176,21 @@ fn onServerEvent(srv &mut SrvRec, lp &mut Loop, pool Pool, e &mut httpconn.Event
     }
     srv.drv.release(e.req, n);
   } elif k == httpconn.EventKind.End {
-    imm slot = slotOfReq(srv, e.req);
+    let slot = slotOfReq(srv, e.req);
     if slot < srv.exs.len() {
-      imm x = srv.exs.at(slot) as &ExRec;
+      let x = srv.exs.at(slot) as &ExRec;
       if x.stage == exReading and not x.rejected {readyEx(srv, pool, slot);}
     }
   } elif k == httpconn.EventKind.Writable {
-    imm slot = slotOfReq(srv, e.req);
+    let slot = slotOfReq(srv, e.req);
     if slot < srv.exs.len() {
-      imm x = srv.exs.at(slot) as &mut ExRec;
+      let x = srv.exs.at(slot) as &mut ExRec;
       pumpWrites(srv, lp, pool, x);
     }
   } elif e.isTerminal() {
-    imm slot = slotOfReq(srv, e.req);
+    let slot = slotOfReq(srv, e.req);
     if slot < srv.exs.len() {endEx(srv, slot, k == httpconn.EventKind.Done);}
-    imm key = e.req.number();
+    let key = e.req.number();
     srv.byReq.remove(&key);
   }
 }
@@ -198,10 +198,10 @@ fn onServerEvent(srv &mut SrvRec, lp &mut Loop, pool Pool, e &mut httpconn.Event
 // A request whose head and whole body are in: to the actor waiting for one,
 // else into the queue (503 if that is full)
 fn readyEx(srv &mut SrvRec, pool Pool, slot usize) {
-  imm x = srv.exs.at(slot) as &mut ExRec;
+  let x = srv.exs.at(slot) as &mut ExRec;
   if srv.whead < srv.waiters.len() {
-    mut rp = new actors.Reply();
-    imm w = &mut srv.waiters[srv.whead];
+    var rp = new actors.Reply();
+    let w = &mut srv.waiters[srv.whead];
     rp <=> *w;
     srv.whead = srv.whead + 1usize;
     if srv.whead == srv.waiters.len() {
@@ -221,31 +221,31 @@ fn readyEx(srv &mut SrvRec, pool Pool, slot usize) {
 
 // An actor has the request: its Exchange is the answer to the reply
 fn deliverEx(srv &mut SrvRec, slot usize, rp actors.Reply) {
-  imm x = srv.exs.at(slot) as &mut ExRec;
+  let x = srv.exs.at(slot) as &mut ExRec;
   x.stage = exOut;
   x.handle = true;
-  mut r = new Request(RequestHead.empty(), String.empty(), x.peer, srv.secure);
+  var r = new Request(RequestHead.empty(), String.empty(), x.peer, srv.secure);
   r.head <=> x.head;
   r.body <=> x.body;
-  imm ex = new Exchange(srv.id, u32.from(slot), x.id, 0u32, false, 0u64, 0u64, false, r);
+  let ex = new Exchange(srv.id, u32.from(slot), x.id, 0u32, false, 0u64, 0u64, false, r);
   actors.answerNow[Result[Exchange, ServerError]](rp, Ok[Exchange, ServerError](ex));
 }
 
 // The server answers a request itself, with text
 fn answerText(srv &mut SrvRec, pool Pool, x &mut ExRec, status u16, text &str, closeAfter bool) {
-  mut h = ResponseHead.make(status);
+  var h = ResponseHead.make(status);
   h.headers.add("Content-Type", "text/plain; charset=utf-8");
   if closeAfter {h.headers.add("Connection", "close");}
-  imm n = text.len;
-  mut b = IoBuf.empty();
+  let n = text.len;
+  var b = IoBuf.empty();
   if not x.isHead and n > 0usize {
     match pool.take(n) {
-      case mut s Some {b <=> s;}
+      case var s Some {b <=> s;}
       case is None[IoBuf] {}
     }
   }
-  imm have = b.capacity() > 0usize;
-  imm len = if have {n;} else {0usize;};
+  let have = b.capacity() > 0usize;
+  let len = if have {n;} else {0usize;};
   srv.drv.respond(x.req, h, BodyLength.sized(u64.from(len)));
   x.responded = true;
   x.finished = true;
@@ -259,13 +259,13 @@ fn answerText(srv &mut SrvRec, pool Pool, x &mut ExRec, status u16, text &str, c
 
 // The request's final answer has come
 fn endEx(srv &mut SrvRec, slot usize, done bool) {
-  imm x = srv.exs.at(slot) as &mut ExRec;
+  let x = srv.exs.at(slot) as &mut ExRec;
   x.over = true;
   x.ok = done;
   if srv.live > 0usize {srv.live = srv.live - 1usize;}
   // Writes still to go, and a finish still waiting, are answered
   while x.wi < x.writes.len() {
-    imm w = &mut x.writes[x.wi];
+    let w = &mut x.writes[x.wi];
     x.wi = x.wi + 1usize;
     if w.hasReply {
       answerTo[Result[usize, ServerError]](&mut w.reply, Error[usize, ServerError](ServerError.closed()));
@@ -296,14 +296,14 @@ fn pumpWrites(srv &mut SrvRec, lp &mut Loop, pool Pool, x &mut ExRec) {
     // The write is looked up afresh each time round: the driver's call may be
     // taken to change lists, so no borrow of one is kept across it
     while true {
-      imm sent = x.writes[x.wi].sent;
-      imm total = x.writes[x.wi].data.len();
+      let sent = x.writes[x.wi].sent;
+      let total = x.writes[x.wi].data.len();
       if sent >= total {break;}
-      imm left = total - sent;
-      imm n = if left < sendChunk {left;} else {sendChunk;};
-      mut b = IoBuf.empty();
+      let left = total - sent;
+      let n = if left < sendChunk {left;} else {sendChunk;};
+      var b = IoBuf.empty();
       match pool.take(n) {
-        case mut s Some {b <=> s;}
+        case var s Some {b <=> s;}
         case is None[IoBuf] {}
       }
       if b.capacity() == 0usize {
@@ -313,10 +313,10 @@ fn pumpWrites(srv &mut SrvRec, lp &mut Loop, pool Pool, x &mut ExRec) {
       }
       {
         // As bytes: a piece may end inside a UTF-8 character, which a 'str' slice refuses
-        imm all = x.writes[x.wi].data.view() as &Array[u8];
+        let all = x.writes[x.wi].data.view() as &Array[u8];
         b.append(&all[sent ..< sent + n]);
       }
-      mut taken = false;
+      var taken = false;
       match srv.drv.sendData(x.req, b) {
         case is None[IoBuf] {taken = true;}
         else {}      // refused: Writable comes when there is room
@@ -325,7 +325,7 @@ fn pumpWrites(srv &mut SrvRec, lp &mut Loop, pool Pool, x &mut ExRec) {
       x.writes[x.wi].sent = sent + n;
       x.written = x.written + u64.from(n);
     }
-    imm w = &mut x.writes[x.wi];
+    let w = &mut x.writes[x.wi];
     if w.hasReply {
       w.hasReply = false;
       answerTo[Result[usize, ServerError]](&mut w.reply, Ok[usize, ServerError](w.data.len()));
@@ -353,16 +353,16 @@ fn closeServer(srv &mut SrvRec, lp &mut Loop, pool Pool) {
   srv.closing = true;
   srv.drv.stopListening(lp, srv.listener);
   while srv.whead < srv.waiters.len() {
-    imm w = &mut srv.waiters[srv.whead];
+    let w = &mut srv.waiters[srv.whead];
     srv.whead = srv.whead + 1usize;
     answerTo[Result[Exchange, ServerError]](w, Error[Exchange, ServerError](ServerError.closed()));
   }
   srv.waiters.clear();
   srv.whead = 0usize;
   while srv.rhead < srv.ready.len() {
-    imm slot = *srv.ready[srv.rhead];
+    let slot = *srv.ready[srv.rhead];
     srv.rhead = srv.rhead + 1usize;
-    imm x = srv.exs.at(slot) as &mut ExRec;
+    let x = srv.exs.at(slot) as &mut ExRec;
     if x.stage == exReady {
       x.stage = exOut;
       x.rejected = true;
@@ -386,23 +386,23 @@ struct ListenJob {
   pub reply actors.Reply;
 
   fn run(self &mut, lp &mut Loop, sv &mut Service) {
-    mut rp = new actors.Reply();
+    var rp = new actors.Reply();
     rp <=> reply;
-    mut c = ServerConfig.make();
+    var c = ServerConfig.make();
     c <=> cfg;
-    mut tcfg Option[tls.ServerConfig] = None;
+    var tcfg Option[tls.ServerConfig] = None;
     tcfg <=> c.tlsConfig;
-    mut drv = httpconn.Driver.make(c.conn, sv.pool);
-    mut res Result[httpconn.ListenerId, IoError] = Error[httpconn.ListenerId, IoError](IoError.cancelled());
-    mut secure = false;
+    var drv = httpconn.Driver.make(c.conn, sv.pool);
+    var res Result[httpconn.ListenerId, IoError] = Error[httpconn.ListenerId, IoError](IoError.cancelled());
+    var secure = false;
     match tcfg {
-      case mut t Some {
+      case var t Some {
         match tls.Server.make(t) {
-          case imm s Ok {
+          case let s Ok {
             secure = true;
             res = drv.listenWith(lp, addr, new Uni[TlsMaker](new TlsMaker(s, sv.pool)), httpconn.Sink.Here(0u64));
           }
-          case imm x Error {
+          case let x Error {
             answerTo[Result[Server, ServerError]](&mut rp, Error[Server, ServerError](
               ServerError.failed(x.osError, x.message().view())));
             return;
@@ -412,14 +412,14 @@ struct ListenJob {
       else {res = drv.listen(lp, addr, httpconn.Sink.Here(0u64));}
     }
     match res {
-      case imm l Ok {
-        mut bound = addr;
+      case let l Ok {
+        var bound = addr;
         match drv.localAddr(lp, l) {
-          case imm a Ok {bound = a;}
-          case imm e Error {}
+          case let a Ok {bound = a;}
+          case let e Error {}
         }
-        imm id = newId();
-        imm p = libc.malloc(mem.sizeof[SrvRec]()) as *SrvRec;
+        let id = newId();
+        let p = libc.malloc(mem.sizeof[SrvRec]()) as *SrvRec;
         if p as usize == 0usize {die("actorhttp: out of memory for a server");}
         mem.writeRaw[SrvRec](p, new SrvRec(id, 1u32, false, false, secure, c.maxBody, c.maxPending, drv, l,
           Slots[ExRec].make(), Dict[u64, usize].empty(), List[usize].empty(), 0usize,
@@ -427,7 +427,7 @@ struct ListenJob {
         sv.srvs.push(p);
         answerTo[Result[Server, ServerError]](&mut rp, Ok[Server, ServerError](new Server(id, bound, secure)));
       }
-      case imm e Error {
+      case let e Error {
         answerTo[Result[Server, ServerError]](&mut rp, Error[Server, ServerError](
           ServerError.failed(e.code, "could not listen")));
       }
@@ -441,9 +441,9 @@ struct SrvRefJob {
   pub add bool;
 
   fn run(self &mut, lp &mut Loop, sv &mut Service) {
-    imm k = sv.findSrv(id);
+    let k = sv.findSrv(id);
     if k >= sv.srvs.len() {return;}
-    imm srv = sv.srvAt(k) as &mut SrvRec;
+    let srv = sv.srvAt(k) as &mut SrvRec;
     if add {
       srv.refs = srv.refs + 1u32;
       return;
@@ -458,7 +458,7 @@ struct SrvCloseJob {
   pub id u64;
 
   fn run(self &mut, lp &mut Loop, sv &mut Service) {
-    imm k = sv.findSrv(id);
+    let k = sv.findSrv(id);
     if k >= sv.srvs.len() {return;}
     closeServer(sv.srvAt(k) as &mut SrvRec, lp, sv.pool);
   }
@@ -470,24 +470,24 @@ struct NextJob {
   pub reply actors.Reply;
 
   fn run(self &mut, lp &mut Loop, sv &mut Service) {
-    mut rp = new actors.Reply();
+    var rp = new actors.Reply();
     rp <=> reply;
-    imm k = sv.findSrv(id);
+    let k = sv.findSrv(id);
     if k >= sv.srvs.len() {
       answerTo[Result[Exchange, ServerError]](&mut rp, Error[Exchange, ServerError](ServerError.closed()));
       return;
     }
-    imm srv = sv.srvAt(k) as &mut SrvRec;
+    let srv = sv.srvAt(k) as &mut SrvRec;
     if srv.closing {
       answerTo[Result[Exchange, ServerError]](&mut rp, Error[Exchange, ServerError](ServerError.closed()));
       return;
     }
     // The first request waiting that is still alive
-    mut slot = srv.exs.len();
+    var slot = srv.exs.len();
     while srv.rhead < srv.ready.len() and slot == srv.exs.len() {
-      imm s = *srv.ready[srv.rhead];
+      let s = *srv.ready[srv.rhead];
       srv.rhead = srv.rhead + 1usize;
-      imm x = srv.exs.at(s) as &ExRec;
+      let x = srv.exs.at(s) as &ExRec;
       if x.stage == exDead {
         freeEx(srv, s);
       } else {
@@ -513,15 +513,15 @@ struct Located {
 }
 
 fn locate(sv &Service, sid u64, slot u32, id u64) Located {
-  imm k = sv.findSrv(sid);
+  let k = sv.findSrv(sid);
   if k >= sv.srvs.len() {return new Located(null, null);}
-  imm srv = sv.srvAt(k);
+  let srv = sv.srvAt(k);
   new Located(srv, exOf(srv as &SrvRec, slot, id));
 }
 
 // Begin an exchange's response: its head and the framing of its body
 fn beginResponse(srv &mut SrvRec, x &mut ExRec, head ResponseHead, framing BodyLength) {
-  imm st = head.status;
+  let st = head.status;
   x.responded = true;
   x.sized = framing.isSized();
   x.length = framing.length;
@@ -541,19 +541,19 @@ struct RespondJob {
   pub body String;
 
   fn run(self &mut, lp &mut Loop, sv &mut Service) {
-    imm loc = locate(sv, srv, slot, id);
+    let loc = locate(sv, srv, slot, id);
     if loc.ex as usize == 0usize {return;}
-    imm s = loc.srv as &mut SrvRec;
-    imm x = loc.ex as &mut ExRec;
+    let s = loc.srv as &mut SrvRec;
+    let x = loc.ex as &mut ExRec;
     if x.over or x.responded {return;}
-    mut h = ResponseHead.empty();
+    var h = ResponseHead.empty();
     h <=> head;
-    imm st = h.status;
-    imm n = body.len();
-    imm framing = if st == 204u16 or st == 304u16 {BodyLength.empty();} else {BodyLength.sized(u64.from(n));};
+    let st = h.status;
+    let n = body.len();
+    let framing = if st == 204u16 or st == 304u16 {BodyLength.empty();} else {BodyLength.sized(u64.from(n));};
     beginResponse(s, x, h, framing);
     if not x.bodyless {
-      mut w = new PendingWrite(String.empty(), 0usize, new actors.Reply(), false);
+      var w = new PendingWrite(String.empty(), 0usize, new actors.Reply(), false);
       w.data <=> body;
       x.writes.push(w);
       x.finishing = true;
@@ -571,12 +571,12 @@ struct StartJob {
   pub framing BodyLength;
 
   fn run(self &mut, lp &mut Loop, sv &mut Service) {
-    imm loc = locate(sv, srv, slot, id);
+    let loc = locate(sv, srv, slot, id);
     if loc.ex as usize == 0usize {return;}
-    imm s = loc.srv as &mut SrvRec;
-    imm x = loc.ex as &mut ExRec;
+    let s = loc.srv as &mut SrvRec;
+    let x = loc.ex as &mut ExRec;
     if x.over or x.responded {return;}
-    mut h = ResponseHead.empty();
+    var h = ResponseHead.empty();
     h <=> head;
     beginResponse(s, x, h, framing);
   }
@@ -591,15 +591,15 @@ struct WriteJob {
   pub reply actors.Reply;
 
   fn run(self &mut, lp &mut Loop, sv &mut Service) {
-    mut rp = new actors.Reply();
+    var rp = new actors.Reply();
     rp <=> reply;
-    imm loc = locate(sv, srv, slot, id);
+    let loc = locate(sv, srv, slot, id);
     if loc.ex as usize == 0usize {
       answerTo[Result[usize, ServerError]](&mut rp, Error[usize, ServerError](ServerError.closed()));
       return;
     }
-    imm s = loc.srv as &mut SrvRec;
-    imm x = loc.ex as &mut ExRec;
+    let s = loc.srv as &mut SrvRec;
+    let x = loc.ex as &mut ExRec;
     if x.bodyless and not x.over {
       answerTo[Result[usize, ServerError]](&mut rp, Ok[usize, ServerError](0usize));
       return;
@@ -608,7 +608,7 @@ struct WriteJob {
       answerTo[Result[usize, ServerError]](&mut rp, Error[usize, ServerError](ServerError.closed()));
       return;
     }
-    mut w = new PendingWrite(String.empty(), 0usize, new actors.Reply(), true);
+    var w = new PendingWrite(String.empty(), 0usize, new actors.Reply(), true);
     w.data <=> data;
     w.reply <=> rp;
     x.writes.push(w);
@@ -624,15 +624,15 @@ struct FinishJob {
   pub reply actors.Reply;
 
   fn run(self &mut, lp &mut Loop, sv &mut Service) {
-    mut rp = new actors.Reply();
+    var rp = new actors.Reply();
     rp <=> reply;
-    imm loc = locate(sv, srv, slot, id);
+    let loc = locate(sv, srv, slot, id);
     if loc.ex as usize == 0usize {
       answerTo[Result[u64, ServerError]](&mut rp, Error[u64, ServerError](ServerError.closed()));
       return;
     }
-    imm s = loc.srv as &mut SrvRec;
-    imm x = loc.ex as &mut ExRec;
+    let s = loc.srv as &mut SrvRec;
+    let x = loc.ex as &mut ExRec;
     if x.over {
       if x.ok {
         answerTo[Result[u64, ServerError]](&mut rp, Ok[u64, ServerError](x.written));
@@ -656,10 +656,10 @@ struct DropExJob {
   pub id u64;
 
   fn run(self &mut, lp &mut Loop, sv &mut Service) {
-    imm loc = locate(sv, srv, slot, id);
+    let loc = locate(sv, srv, slot, id);
     if loc.ex as usize == 0usize {return;}
-    imm s = loc.srv as &mut SrvRec;
-    imm x = loc.ex as &mut ExRec;
+    let s = loc.srv as &mut SrvRec;
+    let x = loc.ex as &mut ExRec;
     x.handle = false;
     if x.over {
       freeEx(s, usize.from(slot));

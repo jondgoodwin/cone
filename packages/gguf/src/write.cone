@@ -17,7 +17,7 @@ struct Pending {
 
 fn putStr(out &mut List[u8], s &str) {
   putLe64(out, u64.from(s.len()));
-  mut i = 0usize;
+  var i = 0usize;
   while i < s.len() {
     out.push(s[i]);
     i = i + 1usize;
@@ -29,19 +29,19 @@ fn badInput(reason &str) GgufError { GgufError.make(ErrorKind.BadInput, 0u64, re
 // Appends the bytes of one value (not its type code)
 fn putValue(out &mut List[u8], v &Value, depth u32) Option[GgufError] {
   match v {
-    case imm x U8 { out.push(*x); }
-    case imm x I8 { out.push(u8.from(*x)); }
-    case imm x U16 { putHalf(out, *x); }
-    case imm x I16 { putHalf(out, u16.from(*x)); }
-    case imm x U32 { putLe32(out, *x); }
-    case imm x I32 { putLe32(out, u32.from(*x)); }
-    case imm x F32 { putLe32(out, *x as u32); }
-    case imm x Bool { out.push(if *x { 1u8; } else { 0u8; }); }
-    case imm x U64 { putLe64(out, *x); }
-    case imm x I64 { putLe64(out, u64.from(*x)); }
-    case imm x F64 { putLe64(out, *x as u64); }
-    case imm x Str { putStr(out, x.view()); }
-    case imm x Items {
+    case let x U8 { out.push(*x); }
+    case let x I8 { out.push(u8.from(*x)); }
+    case let x U16 { putHalf(out, *x); }
+    case let x I16 { putHalf(out, u16.from(*x)); }
+    case let x U32 { putLe32(out, *x); }
+    case let x I32 { putLe32(out, u32.from(*x)); }
+    case let x F32 { putLe32(out, *x as u32); }
+    case let x Bool { out.push(if *x { 1u8; } else { 0u8; }); }
+    case let x U64 { putLe64(out, *x); }
+    case let x I64 { putLe64(out, u64.from(*x)); }
+    case let x F64 { putLe64(out, *x as u64); }
+    case let x Str { putStr(out, x.view()); }
+    case let x Items {
       if depth >= maxDepth() {
         return Some[GgufError](GgufError.make(ErrorKind.TooDeep, 0u64, "arrays are nested deeper than 8 levels"));
       }
@@ -52,8 +52,8 @@ fn putValue(out &mut List[u8], v &Value, depth u32) Option[GgufError] {
           return Some[GgufError](badInput("an array holds a value of a type other than its element type"));
         }
         match putValue(out, e, depth + 1u32) {
-          case mut err Some {
-            mut r = badInput("");
+          case var err Some {
+            var r = badInput("");
             r <=> err;
             return Some[GgufError](r);
           }
@@ -77,7 +77,7 @@ pub struct Writer {
   // Sets a key: replaces the value of one already put (keeping its place),
   // else adds it at the end
   pub fn put(self &mut, key &str, value Value) {
-    mut i = 0usize;
+    var i = 0usize;
     while i < meta.len() {
       if meta[i].key.view() == key {
         meta.set(i, new MetaEntry(String.from(key), value));
@@ -97,8 +97,8 @@ pub struct Writer {
 
   // An array of strings (a tokenizer's tokens or merges)
   pub fn putTexts(self &mut, key &str, items &Array[String]) {
-    mut list = List[Value].withCapacity(items.len);
-    mut i = 0usize;
+    var list = List[Value].withCapacity(items.len);
+    var i = 0usize;
     while i < items.len {
       list.push(Value.Str(items[i].copy()));
       i = i + 1usize;
@@ -113,7 +113,7 @@ pub struct Writer {
   // bytes must be exactly what the type and dimensions make. Answers the
   // tensor's place in the table.
   pub fn addTensor(self &mut, name &str, kind TensorType, dims &Array[u64], data List[u8]) Result[usize, GgufError] {
-    imm geo = geometry(&kind, dims);
+    let geo = geometry(&kind, dims);
     if geo.fault != 0u32 {
       return Error[usize, GgufError](GgufError.make(ErrorKind.BadDimensions, 0u64, faultText(geo.fault)));
     }
@@ -125,8 +125,8 @@ pub struct Writer {
         return Error[usize, GgufError](GgufError.make(ErrorKind.DuplicateTensor, 0u64, "a tensor name is added twice"));
       }
     }
-    mut d = List[u64].withCapacity(dims.len);
-    mut i = 0usize;
+    var d = List[u64].withCapacity(dims.len);
+    var i = 0usize;
     while i < dims.len {
       d.push(dims[i]);
       i = i + 1usize;
@@ -138,17 +138,17 @@ pub struct Writer {
   // Adds a tensor from f32 values, stored as the given type (quantised if it
   // is a quantised one, by 'quantize')
   pub fn addValues(self &mut, name &str, kind TensorType, dims &Array[u64], values &Array[f32]) Result[usize, GgufError] {
-    imm geo = geometry(&kind, dims);
+    let geo = geometry(&kind, dims);
     if geo.fault != 0u32 {
       return Error[usize, GgufError](GgufError.make(ErrorKind.BadDimensions, 0u64, faultText(geo.fault)));
     }
     if u64.from(values.len) != geo.elements {
       return Error[usize, GgufError](badInput("the number of values is not the tensor's element count"));
     }
-    mut bytes = List[u8].empty();
+    var bytes = List[u8].empty();
     match quantize(&kind, values, &mut bytes) {
-      case mut e Error {
-        mut err = badInput("");
+      case var e Error {
+        var err = badInput("");
         err <=> e;
         return Error[usize, GgufError](err);
       }
@@ -160,11 +160,11 @@ pub struct Writer {
   // The file's bytes
   pub fn finish(self &) Result[List[u8], GgufError] {
     // The alignment: general.alignment if put, else 32
-    mut alignment = 32u64;
+    var alignment = 32u64;
     each e in meta {
       if e.key.view() == "general.alignment" {
         match e.value.asU64() {
-          case imm a Some { alignment = a; }
+          case let a Some { alignment = a; }
           case is None {
             return Error[List[u8], GgufError](GgufError.make(ErrorKind.BadAlignment, 0u64, "general.alignment is not an unsigned integer"));
           }
@@ -175,7 +175,7 @@ pub struct Writer {
       return Error[List[u8], GgufError](GgufError.make(ErrorKind.BadAlignment, 0u64, "general.alignment is not a power of two up to 2^31"));
     }
 
-    mut out = List[u8].empty();
+    var out = List[u8].empty();
     out.push('G');
     out.push('G');
     out.push('U');
@@ -187,8 +187,8 @@ pub struct Writer {
       putStr(&mut out, e.key.view());
       putLe32(&mut out, e.value.valueType().code());
       match putValue(&mut out, &e.value, 0u32) {
-        case mut err Some {
-          mut r = badInput("");
+        case var err Some {
+          var r = badInput("");
           r <=> err;
           return Error[List[u8], GgufError](r);
         }
@@ -196,7 +196,7 @@ pub struct Writer {
       }
     }
     // The table
-    mut offset = 0u64;
+    var offset = 0u64;
     each p in tensors {
       putStr(&mut out, p.name.view());
       putLe32(&mut out, u32.from(p.dims.len()));
@@ -208,7 +208,7 @@ pub struct Writer {
     }
     // The data
     while u64.from(out.len()) % alignment != 0u64 { out.push(0u8); }
-    imm start = out.len();
+    let start = out.len();
     each p in tensors {
       while u64.from(out.len() - start) % alignment != 0u64 { out.push(0u8); }
       each b in p.data { out.push(*b); }

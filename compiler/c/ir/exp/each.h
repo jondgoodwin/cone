@@ -13,7 +13,7 @@
 // marked FlagEach, whose statements are
 //
 //   mut <hidden> = src;
-//   loop { imm x; ...body... }          // the reader's variables, declared without a value
+//   loop { let x; ...body... }          // the reader's variables, declared without a value
 //
 // and type check finishes it (eachLower, from blockTypeCheck, which has checked
 // the first statement) once it knows what 'src' is: how the loop walks it is
@@ -29,11 +29,11 @@
 // A cursor's 'next' answers an Option, and every pass takes it apart in the
 // initializer of the pass's variable, which leaves the loop when there is none:
 //
-//   imm x = match cursor.next() { case imm s Some { s; } case is None { break; } };
+//   let x = match cursor.next() { case let s Some { s; } case is None { break; } };
 //
 // A pass's variable is a new, unchangeable variable (not one that the loop
-// steps): two or more of them unpack a tuple item, 'imm -item = ...; imm k =
-// -item.0; imm v = -item.1'.
+// steps): two or more of them unpack a tuple item, 'let -item = ...; let k =
+// -item.0; let v = -item.1'.
 //
 // A header filter ('each x in src if cond') is the statement 'if !cond {continue}'
 // after the variables, built by the parser (parseEachFilterStmt). A loop's 'else'

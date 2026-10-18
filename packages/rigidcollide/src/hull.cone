@@ -13,29 +13,29 @@ struct QFace {
 }
 
 fn makeQFace(pts &Array[Vec3], a usize, b usize, c usize) QFace {
-  imm pa = pts[a];
-  imm n = (pts[b] - pa).cross(pts[c] - pa).normalize();
+  let pa = pts[a];
+  let n = (pts[b] - pa).cross(pts[c] - pa).normalize();
   new QFace(a, b, c, n, n.dot(pa), true);
 }
 
 // The hull of 'pts'. If the points are flat or fewer than four, the result
 // has no faces (check 'faces.len() > 0').
 pub fn convexHull(pts &Array[Vec3]) Prim {
-  imm n = pts.len;
-  mut out = Prim.blank(KHull);
+  let n = pts.len;
+  var out = Prim.blank(KHull);
   if n < 4usize { return out; }
   // Scale of the cloud, for tolerances
-  mut ext = 0.;
-  mut i = 0usize;
+  var ext = 0.;
+  var i = 0usize;
   while i < n {
     ext = maxf(ext, maxf(absf(pts[i].x), maxf(absf(pts[i].y), absf(pts[i].z))));
     i = i + 1usize;
   }
-  imm eps = 1.0e-5 * maxf(ext, 1.0e-3);
+  let eps = 1.0e-5 * maxf(ext, 1.0e-3);
 
   // Extreme points on each axis; the farthest pair
-  mut minI = [0usize, 0usize, 0usize];
-  mut maxI = [0usize, 0usize, 0usize];
+  var minI = [0usize, 0usize, 0usize];
+  var maxI = [0usize, 0usize, 0usize];
   i = 1usize;
   while i < n {
     if pts[i].x < pts[minI[0usize]].x { minI[0usize] = i; }
@@ -46,65 +46,65 @@ pub fn convexHull(pts &Array[Vec3]) Prim {
     if pts[i].z > pts[maxI[2usize]].z { maxI[2usize] = i; }
     i = i + 1usize;
   }
-  mut i0 = 0usize;
-  mut i1 = 0usize;
-  mut bestSpan = -1.;
-  mut ax = 0usize;
+  var i0 = 0usize;
+  var i1 = 0usize;
+  var bestSpan = -1.;
+  var ax = 0usize;
   while ax < 3usize {
-    imm span = (pts[maxI[ax]] - pts[minI[ax]]).lengthSquared();
+    let span = (pts[maxI[ax]] - pts[minI[ax]]).lengthSquared();
     if span > bestSpan { bestSpan = span; i0 = minI[ax]; i1 = maxI[ax]; }
     ax = ax + 1usize;
   }
   if bestSpan <= eps * eps { return out; }
   // Third point: farthest from the line
-  imm dir = (pts[i1] - pts[i0]).normalize();
-  mut i2 = i0;
-  mut bestD = -1.;
+  let dir = (pts[i1] - pts[i0]).normalize();
+  var i2 = i0;
+  var bestD = -1.;
   i = 0usize;
   while i < n {
-    imm v = pts[i] - pts[i0];
-    imm dist = (v - dir * v.dot(dir)).lengthSquared();
+    let v = pts[i] - pts[i0];
+    let dist = (v - dir * v.dot(dir)).lengthSquared();
     if dist > bestD { bestD = dist; i2 = i; }
     i = i + 1usize;
   }
   if bestD <= eps * eps { return out; }
   // Fourth: farthest from the plane
-  imm pn = (pts[i1] - pts[i0]).cross(pts[i2] - pts[i0]).normalize();
-  mut i3 = i0;
+  let pn = (pts[i1] - pts[i0]).cross(pts[i2] - pts[i0]).normalize();
+  var i3 = i0;
   bestD = -1.;
   i = 0usize;
   while i < n {
-    imm dist = absf(pn.dot(pts[i] - pts[i0]));
+    let dist = absf(pn.dot(pts[i] - pts[i0]));
     if dist > bestD { bestD = dist; i3 = i; }
     i = i + 1usize;
   }
   if bestD <= eps { return out; }
 
   // The starting tetrahedron, each face turned outward
-  imm centre = (pts[i0] + pts[i1] + pts[i2] + pts[i3]) * 0.25;
-  mut faces = List[QFace].empty();
-  mut t = 0usize;
+  let centre = (pts[i0] + pts[i1] + pts[i2] + pts[i3]) * 0.25;
+  var faces = List[QFace].empty();
+  var t = 0usize;
   while t < 4usize {
-    mut a = i0;
-    mut b = i1;
-    mut c = i2;
+    var a = i0;
+    var b = i1;
+    var c = i2;
     if t == 1usize { a = i0; b = i3; c = i1; }
     if t == 2usize { a = i1; b = i3; c = i2; }
     if t == 3usize { a = i2; b = i3; c = i0; }
-    mut f = makeQFace(pts, a, b, c);
+    var f = makeQFace(pts, a, b, c);
     if f.normal.dot(centre) - f.d > 0. { f = makeQFace(pts, a, c, b); }
     faces.push(f);
     t = t + 1usize;
   }
 
   // Each point is assigned to a face it lies outside of, or -1
-  mut assign = List[i32].empty();
+  var assign = List[i32].empty();
   i = 0usize;
   while i < n {
-    mut f = -1i32;
-    mut k = 0usize;
+    var f = -1i32;
+    var k = 0usize;
     while k < faces.len() and f < 0i32 {
-      imm fc = faces[k];
+      let fc = faces[k];
       if fc.normal.dot(pts[i]) - fc.d > eps { f = i32.from(k); }
       k = k + 1usize;
     }
@@ -112,45 +112,45 @@ pub fn convexHull(pts &Array[Vec3]) Prim {
     i = i + 1usize;
   }
 
-  mut guard = 0u32;
+  var guard = 0u32;
   while guard < 100000u32 {
     guard = guard + 1u32;
     // The assigned point farthest outside its face
-    mut p = n;
-    mut pd = eps;
+    var p = n;
+    var pd = eps;
     i = 0usize;
     while i < n {
-      imm f = *assign[i];
+      let f = *assign[i];
       if f >= 0i32 {
-        imm fc = faces[usize.from(f)];
-        imm dist = fc.normal.dot(pts[i]) - fc.d;
+        let fc = faces[usize.from(f)];
+        let dist = fc.normal.dot(pts[i]) - fc.d;
         if dist > pd { pd = dist; p = i; }
       }
       i = i + 1usize;
     }
     if p == n { break; }
     // Faces that see it, and the horizon between seen and unseen
-    mut visible = List[usize].empty();
-    mut k = 0usize;
+    var visible = List[usize].empty();
+    var k = 0usize;
     while k < faces.len() {
-      imm fc = faces[k];
+      let fc = faces[k];
       if fc.alive and fc.normal.dot(pts[p]) - fc.d > eps { visible.push(k); }
       k = k + 1usize;
     }
-    mut horizonA = List[usize].empty();
-    mut horizonB = List[usize].empty();
+    var horizonA = List[usize].empty();
+    var horizonB = List[usize].empty();
     k = 0usize;
     while k < visible.len() {
-      imm fc = faces[*visible[k]];
-      mut e = 0usize;
+      let fc = faces[*visible[k]];
+      var e = 0usize;
       while e < 3usize {
-        imm ea = if e == 0usize { fc.a; } else if e == 1usize { fc.b; } else { fc.c; };
-        imm eb = if e == 0usize { fc.b; } else if e == 1usize { fc.c; } else { fc.a; };
-        mut shared = false;
-        mut m = 0usize;
+        let ea = if e == 0usize { fc.a; } else if e == 1usize { fc.b; } else { fc.c; };
+        let eb = if e == 0usize { fc.b; } else if e == 1usize { fc.c; } else { fc.a; };
+        var shared = false;
+        var m = 0usize;
         while m < visible.len() {
           if m != k {
-            imm go = faces[*visible[m]];
+            let go = faces[*visible[m]];
             if (go.a == eb and go.b == ea) or (go.b == eb and go.c == ea) or (go.c == eb and go.a == ea) { shared = true; }
           }
           m = m + 1usize;
@@ -163,13 +163,13 @@ pub fn convexHull(pts &Array[Vec3]) Prim {
     // Retire the seen faces, add a face from each horizon edge to the point
     k = 0usize;
     while k < visible.len() {
-      imm vi = *visible[k];
-      mut fc = *faces[vi];
+      let vi = *visible[k];
+      var fc = *faces[vi];
       fc.alive = false;
       faces.set(vi, fc);
       k = k + 1usize;
     }
-    imm firstNew = faces.len();
+    let firstNew = faces.len();
     k = 0usize;
     while k < horizonA.len() {
       faces.push(makeQFace(pts, *horizonA[k], *horizonB[k], p));
@@ -178,13 +178,13 @@ pub fn convexHull(pts &Array[Vec3]) Prim {
     // Points whose face died look for a new one
     i = 0usize;
     while i < n {
-      imm f = *assign[i];
+      let f = *assign[i];
       if i == p { assign.set(i, -1i32); }
       else if f >= 0i32 and not faces[usize.from(f)].alive {
-        mut g = -1i32;
-        mut q = firstNew;
+        var g = -1i32;
+        var q = firstNew;
         while q < faces.len() and g < 0i32 {
-          imm fc = faces[q];
+          let fc = faces[q];
           if fc.normal.dot(pts[i]) - fc.d > eps { g = i32.from(q); }
           q = q + 1usize;
         }
@@ -195,33 +195,33 @@ pub fn convexHull(pts &Array[Vec3]) Prim {
   }
 
   // Merge coplanar neighbours into polygons
-  mut alive = List[usize].empty();
+  var alive = List[usize].empty();
   i = 0usize;
   while i < faces.len() {
     if faces[i].alive { alive.push(i); }
     i = i + 1usize;
   }
-  imm na = alive.len();
-  mut group = List[i32].empty();
+  let na = alive.len();
+  var group = List[i32].empty();
   i = 0usize;
   while i < na { group.push(-1i32); i = i + 1usize; }
-  mut groups = 0i32;
+  var groups = 0i32;
   i = 0usize;
   while i < na {
     if *group[i] < 0i32 {
       group.set(i, groups);
-      mut stack = List[usize].empty();
+      var stack = List[usize].empty();
       stack.push(i);
       while stack.len() > 0usize {
-        imm cur = *stack[stack.len() - 1usize];
+        let cur = *stack[stack.len() - 1usize];
         stack.pop();
-        imm fc = faces[*alive[cur]];
-        mut o = 0usize;
+        let fc = faces[*alive[cur]];
+        var o = 0usize;
         while o < na {
           if *group[o] < 0i32 {
-            imm go = faces[*alive[o]];
+            let go = faces[*alive[o]];
             // coplanar with the face that started the group: all three corners within 3 eps of its plane
-            imm seed = faces[*alive[i]];
+            let seed = faces[*alive[i]];
             if seed.normal.dot(go.normal) > 0.999 and absf(seed.normal.dot(pts[go.a]) - seed.d) < eps * 3.
                 and absf(seed.normal.dot(pts[go.b]) - seed.d) < eps * 3. and absf(seed.normal.dot(pts[go.c]) - seed.d) < eps * 3.
                 and sharesEdge(fc, go) {
@@ -238,18 +238,18 @@ pub fn convexHull(pts &Array[Vec3]) Prim {
   }
 
   // Per group: edges that cancel with their reverse vanish; the rest chain into the outline
-  mut remap = List[i32].empty();
+  var remap = List[i32].empty();
   i = 0usize;
   while i < n { remap.push(-1i32); i = i + 1usize; }
-  mut g = 0i32;
+  var g = 0i32;
   while g < groups {
-    mut ea = List[usize].empty();
-    mut eb = List[usize].empty();
-    mut nsum = new Vec3(0., 0., 0.);
-    mut k = 0usize;
+    var ea = List[usize].empty();
+    var eb = List[usize].empty();
+    var nsum = new Vec3(0., 0., 0.);
+    var k = 0usize;
     while k < na {
       if *group[k] == g {
-        imm fc = faces[*alive[k]];
+        let fc = faces[*alive[k]];
         nsum = nsum + fc.normal;
         ea.push(fc.a); eb.push(fc.b);
         ea.push(fc.b); eb.push(fc.c);
@@ -257,12 +257,12 @@ pub fn convexHull(pts &Array[Vec3]) Prim {
       }
       k = k + 1usize;
     }
-    mut keepA = List[usize].empty();
-    mut keepB = List[usize].empty();
+    var keepA = List[usize].empty();
+    var keepB = List[usize].empty();
     k = 0usize;
     while k < ea.len() {
-      mut cancelled = false;
-      mut m = 0usize;
+      var cancelled = false;
+      var m = 0usize;
       while m < ea.len() {
         if *ea[m] == *eb[k] and *eb[m] == *ea[k] { cancelled = true; }
         m = m + 1usize;
@@ -271,13 +271,13 @@ pub fn convexHull(pts &Array[Vec3]) Prim {
       k = k + 1usize;
     }
     if keepA.len() >= 3usize {
-      mut loopV = List[usize].empty();
-      mut cur = *keepA[0usize];
+      var loopV = List[usize].empty();
+      var cur = *keepA[0usize];
       loopV.push(cur);
-      mut steps = 0usize;
+      var steps = 0usize;
       while steps < keepA.len() {
-        mut nxt = cur;
-        mut m = 0usize;
+        var nxt = cur;
+        var m = 0usize;
         while m < keepA.len() {
           if *keepA[m] == cur { nxt = *keepB[m]; }
           m = m + 1usize;
@@ -288,23 +288,23 @@ pub fn convexHull(pts &Array[Vec3]) Prim {
         steps = steps + 1usize;
       }
       // Drop vertices in the middle of a straight run
-      mut clean = List[usize].empty();
-      mut q = 0usize;
+      var clean = List[usize].empty();
+      var q = 0usize;
       while q < loopV.len() {
-        imm prev = pts[*loopV[(q + loopV.len() - 1usize) % loopV.len()]];
-        imm curp = pts[*loopV[q]];
-        imm next = pts[*loopV[(q + 1usize) % loopV.len()]];
-        imm cr = (curp - prev).cross(next - curp);
+        let prev = pts[*loopV[(q + loopV.len() - 1usize) % loopV.len()]];
+        let curp = pts[*loopV[q]];
+        let next = pts[*loopV[(q + 1usize) % loopV.len()]];
+        let cr = (curp - prev).cross(next - curp);
         if cr.length() > eps * eps * 10. or loopV.len() <= 3usize { clean.push(*loopV[q]); }
         q = q + 1usize;
       }
       if clean.len() >= 3usize {
-        imm nrm = nsum.normalize();
-        mut dsum = 0.;
-        imm start = out.faceIdx.len();
+        let nrm = nsum.normalize();
+        var dsum = 0.;
+        let start = out.faceIdx.len();
         q = 0usize;
         while q < clean.len() {
-          imm vi = *clean[q];
+          let vi = *clean[q];
           if *remap[vi] < 0i32 { remap.set(vi, i32.from(out.verts.len())); out.verts.push(pts[vi]); }
           out.faceIdx.push(u32.from(*remap[vi]));
           dsum = dsum + nrm.dot(pts[vi]);
@@ -319,7 +319,7 @@ pub fn convexHull(pts &Array[Vec3]) Prim {
 }
 
 fn sharesEdge(f &QFace, g &QFace) bool {
-  mut count = 0u32;
+  var count = 0u32;
   if g.a == f.a or g.b == f.a or g.c == f.a { count = count + 1u32; }
   if g.a == f.b or g.b == f.b or g.c == f.b { count = count + 1u32; }
   if g.a == f.c or g.b == f.c or g.c == f.c { count = count + 1u32; }

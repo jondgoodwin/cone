@@ -90,12 +90,12 @@ pub struct Running {
   pub beforeSet bool;
 
   pub fn make(id u32, root &Anim, startAt f64, status u32) Running {
-    mut st = List[f32].empty();
-    mut i = 0usize;
+    var st = List[f32].empty();
+    var i = 0usize;
     while i < root.size * SLOT { st.push(0.); i = i + 1usize; }
-    mut rc = root.copy();
+    var rc = root.copy();
     resolveDefaults(&mut rc);
-    mut r = new Running(id, rc, startAt, 0.0f64, 0.0f64, 1., false, status, st, List[Value].empty(),
+    var r = new Running(id, rc, startAt, 0.0f64, 0.0f64, 1., false, status, st, List[Value].empty(),
       List[u32].empty(), List[u64].empty(), false, 0.0f64, 0.0f64, List[Value].empty(), List[bool].empty(), false);
     gatherKeys(root, &mut r.keys);
     r;
@@ -105,7 +105,7 @@ pub struct Running {
 pub fn keyOf(target u32, prop u32) u64 { u64.from(target) * 4294967296u64 + u64.from(prop); }
 
 fn addKey(out &mut List[u64], k u64) {
-  mut i = 0usize;
+  var i = 0usize;
   while i < out.len() {
     if *out[i] == k { return; }
     i = i + 1usize;
@@ -116,18 +116,18 @@ fn addKey(out &mut List[u64], k u64) {
 // Every field a tree can write
 pub fn gatherKeys(a &Anim, out &mut List[u64]) {
   match a {
-    case imm g Group {
-      mut i = 0usize;
+    case let g Group {
+      var i = 0usize;
       while i < g.kids.len() { gatherKeys(g.kids[i], out); i = i + 1usize; }
     }
-    case imm k Keys {
-      mut i = 0usize;
+    case let k Keys {
+      var i = 0usize;
       while i < k.clip.bindings.len() {
         addKey(out, keyOf((*k.clip.bindings[i]).target, (*k.clip.bindings[i]).prop));
         i = i + 1usize;
       }
     }
-    case imm al Along {
+    case let al Along {
       addKey(out, keyOf(al.target, al.prop));
       if al.faceProp != 0u32 { addKey(out, keyOf(al.target, al.faceProp)); }
     }
@@ -138,8 +138,8 @@ pub fn gatherKeys(a &Anim, out &mut List[u64]) {
 // The goal slot of a stepped kind
 fn slotOf(a &Anim) u32 {
   match a {
-    case imm c Chase { c.slot; }
-    case imm s Spring { s.slot; }
+    case let c Chase { c.slot; }
+    case let s Spring { s.slot; }
     else { 0u32; }
   }
 }
@@ -147,9 +147,9 @@ fn slotOf(a &Anim) u32 {
 // The value a transition, chase or spring goes to
 fn toOf(a &Anim) Value {
   match a {
-    case imm t Transition { t.to; }
-    case imm c Chase { c.to; }
-    case imm s Spring { s.to; }
+    case let t Transition { t.to; }
+    case let c Chase { c.to; }
+    case let s Spring { s.to; }
     else { Value.rest(TK_F32); }
   }
 }
@@ -170,13 +170,13 @@ fn stSet(r &mut Running, o usize, v f32) { r.state.set(o, v); }
 
 // The goal of a stepped node: the one the host last set on its slot, else its own
 fn goalOf(r &Running, a &Anim) Value {
-  imm s = usize.from(slotOf(a));
+  let s = usize.from(slotOf(a));
   if s < r.goals.len() and *r.goalSeq[s] > 0u32 { return *r.goals[s]; }
   toOf(a);
 }
 
 fn seqOfSlot(r &Running, slot u32) f32 {
-  imm s = usize.from(slot);
+  let s = usize.from(slot);
   if s < r.goalSeq.len() { return f32.from(*r.goalSeq[s]); }
   0.;
 }
@@ -199,39 +199,39 @@ pub struct Phase {
 fn dirMap(dir u32, k f64, p f64, d f64) f64 {
   if dir == DIR_REVERSE { return d - p; }
   if dir == DIR_ALTERNATE {
-    imm odd = k - 2.0f64 * libc.floor(k / 2.0f64);
+    let odd = k - 2.0f64 * libc.floor(k / 2.0f64);
     if odd >= 0.5f64 { return d - p; }
   }
   p;
 }
 
 pub fn phaseOf(a &Anim, t f64) Phase {
-  imm r = a.rateOf();
-  imm u = (t - f64.from(a.delay)) * r;
-  imm dir = if a.isStepped() { DIR_NORMAL; } else { a.direction; };
-  imm d = f64.from(a.life);
-  imm n = f64.from(a.iterations());
+  let r = a.rateOf();
+  let u = (t - f64.from(a.delay)) * r;
+  let dir = if a.isStepped() { DIR_NORMAL; } else { a.direction; };
+  let d = f64.from(a.life);
+  let n = f64.from(a.iterations());
   if u < 0. { return new Phase(PH_BEFORE, if dir == DIR_REVERSE { d; } else { 0.; }, u); }
   if d <= 0. or n <= 0. { return new Phase(PH_AFTER, if dir == DIR_REVERSE { d; } else { 0.; }, u); }
   if !isForever(d) and !isForever(n) {
-    imm total = d * n;
+    let total = d * n;
     if u >= total {
-      imm lastK = libc.ceil(n) - 1.0f64;
-      imm pEnd = total - lastK * d;
+      let lastK = libc.ceil(n) - 1.0f64;
+      let pEnd = total - lastK * d;
       return new Phase(PH_AFTER, dirMap(dir, lastK, pEnd, d), u);
     }
   }
   if isForever(d) { return new Phase(PH_ACTIVE, dirMap(dir, 0., u, d), u); }
-  imm k = libc.floor(u / d);
+  let k = libc.floor(u / d);
   new Phase(PH_ACTIVE, dirMap(dir, k, u - k * d, d), u);
 }
 
 // The pre-order index of a group's i-th member, given the group's own
 fn kidIndex(a &Anim, ix usize, i usize) usize {
-  mut k = ix + 1usize;
+  var k = ix + 1usize;
   match a {
-    case imm g Group {
-      mut j = 0usize;
+    case let g Group {
+      var j = 0usize;
       while j < i { k = k + g.kids[j].size; j = j + 1usize; }
     }
     else {}
@@ -243,20 +243,20 @@ fn kidIndex(a &Anim, ix usize, i usize) usize {
 // The node has run its course at time t (see the header of animators.cone for
 // the stepped kinds)
 pub fn nodeFinished(r &Running, a &Anim, ix usize, t f64) bool {
-  imm ph = phaseOf(a, t);
+  let ph = phaseOf(a, t);
   if ph.state == PH_BEFORE { return false; }
   if a.isStepped() {
     if ph.state == PH_AFTER { return true; }
     return stGet(r, ix * SLOT + 18usize) > 0.5;
   }
   if !a.isGroup() { return ph.state == PH_AFTER; }
-  imm n = f64.from(a.iterations());
+  let n = f64.from(a.iterations());
   if isForever(n) { return false; }
   if !isForever(f64.from(a.life)) { return ph.state == PH_AFTER; }
   // a group with an endless member: finished when every member is
   match a {
-    case imm g Group {
-      mut i = 0usize;
+    case let g Group {
+      var i = 0usize;
       while i < g.kids.len() {
         if !nodeFinished(r, g.kids[i], kidIndex(a, ix, i), ph.loc - f64.from(*g.offs[i])) { return false; }
         i = i + 1usize;
@@ -294,15 +294,15 @@ fn clampf(x f32, lo f32, hi f32) f32 { if x < lo { lo; } elif x > hi { hi; } els
 
 // A spring's value at time tl into its segment, from the state at offset o
 fn springAt(r &Running, kind u32, zeta f32, omega f32, o usize, tl f32) Value {
-  imm goal = stValue(r, o + 5usize, kind);
+  let goal = stValue(r, o + 5usize, kind);
   if stGet(r, o + 18usize) > 0.5 { return goal; }
   if kind == TK_QUAT {
-    imm d = springValue(zeta, omega, stGet(r, o + 20usize), stGet(r, o + 21usize), 0., tl);
+    let d = springValue(zeta, omega, stGet(r, o + 20usize), stGet(r, o + 21usize), 0., tl);
     return mixValue(goal, stValue(r, o + 1usize, kind), d, SPACE_LINEAR);
   }
-  imm n = kindComps(kind);
-  mut v = Value.rest(kind);
-  mut c = 0usize;
+  let n = kindComps(kind);
+  var v = Value.rest(kind);
+  var c = 0usize;
   while c < n {
     v = v.setAt(c, springValue(zeta, omega, stGet(r, o + 1usize + c), stGet(r, o + 9usize + c),
       stGet(r, o + 5usize + c), tl));
@@ -315,69 +315,69 @@ fn springAt(r &Running, kind u32, zeta f32, omega f32, o usize, tl f32) Value {
 // 'force' makes an ended node write its end whatever its hold says (the last
 // write of a run is its end).
 pub fn collectNode(r &Running, a &Anim, ix usize, t f64, force bool, filt &Filter, out &mut List[Emit]) {
-  imm ph = phaseOf(a, t);
+  let ph = phaseOf(a, t);
   if ph.state == PH_BEFORE and (a.hold & HOLD_START) == 0u32 { return; }
   if ph.state == PH_AFTER and (a.hold & HOLD_END) == 0u32 and !force { return; }
-  imm loc = ph.loc;
-  imm o = ix * SLOT;
+  let loc = ph.loc;
+  let o = ix * SLOT;
   match a {
-    case imm g Group {
-      mut i = 0usize;
+    case let g Group {
+      var i = 0usize;
       while i < g.kids.len() {
         collectNode(r, g.kids[i], kidIndex(a, ix, i), ph.loc - f64.from(*g.offs[i]), false, filt, out);
         i = i + 1usize;
       }
     }
-    case imm tr Transition {
-      mut from = tr.from;
-      mut ready = true;
+    case let tr Transition {
+      var from = tr.from;
+      var ready = true;
       if !tr.hasFrom {
         if stGet(r, o) < 0.5 { ready = false; } else { from = stValue(r, o + 1usize, tr.vkind); }
       }
       if ready {
-        imm s = if tr.dur > 0. { clampf(f32.from(loc) / tr.dur, 0., 1.); } else { 1.; };
+        let s = if tr.dur > 0. { clampf(f32.from(loc) / tr.dur, 0., 1.); } else { 1.; };
         emit(filt, tr.target, tr.prop, mixValue(from, tr.to, tr.easing.applyOver(s, tr.dur), tr.space), out);
       }
     }
-    case imm k Keys {
-      mut lt = f32.from(loc);
+    case let k Keys {
+      var lt = f32.from(loc);
       if k.dur > 0. and !k.easing.isLinear() { lt = k.easing.applyOver(lt / k.dur, k.dur) * k.dur; }
       if lt > k.clip.length { lt = k.clip.length; }
-      mut smp = Sample.empty();
+      var smp = Sample.empty();
       k.clip.sampleLocal(lt, &mut smp);
-      mut i = 0usize;
+      var i = 0usize;
       while i < smp.len() {
-        imm kind = *smp.kinds[i];
-        imm vk = if kind == TK_BOOL or kind == TK_DISCRETE { TK_F32; } else { kind; };
+        let kind = *smp.kinds[i];
+        let vk = if kind == TK_BOOL or kind == TK_DISCRETE { TK_F32; } else { kind; };
         if supportedKind(vk) {
-          mut raw = List[f32].empty();
-          mut c = 0usize;
-          imm off = *smp.offs[i];
+          var raw = List[f32].empty();
+          var c = 0usize;
+          let off = *smp.offs[i];
           while c < *smp.counts[i] { raw.push(ldf(&smp.data, off + c)); c = c + 1usize; }
           emit(filt, *smp.targets[i], *smp.props[i], valueFromFloats(kind, &raw), out);
         }
         i = i + 1usize;
       }
     }
-    case imm al Along {
-      imm s = al.easing.applyOver(if al.dur > 0. { clampf(f32.from(loc) / al.dur, 0., 1.); } else { 1.; }, al.dur);
-      imm uu = if al.arc { al.curve.uAtFraction(s); } else { s; };
+    case let al Along {
+      let s = al.easing.applyOver(if al.dur > 0. { clampf(f32.from(loc) / al.dur, 0., 1.); } else { 1.; }, al.dur);
+      let uu = if al.arc { al.curve.uAtFraction(s); } else { s; };
       emit(filt, al.target, al.prop, Value.ofVec3(al.curve.point(uu)), out);
       if al.faceProp != 0u32 {
         if al.headings.len() > 0usize {
-          imm h = headingAlong(&al.curve, &al.headings, uu);
+          let h = headingAlong(&al.curve, &al.headings, uu);
           emit(filt, al.target, al.faceProp, Value.ofQuat(new Quat(0., sin(h * 0.5), 0., cos(h * 0.5))), out);
         } else {
           emit(filt, al.target, al.faceProp, Value.ofQuat(faceRotation(al.curve.direction(uu), new Vec3(0., 1., 0.))), out);
         }
       }
     }
-    case imm c Chase {
+    case let c Chase {
       if stGet(r, o) > 0.5 { emit(filt, c.target, c.prop, stValue(r, o + 13usize, c.vkind), out); }
     }
-    case imm sp Spring {
+    case let sp Spring {
       if stGet(r, o) > 0.5 {
-        imm tl = f32.from(loc) - stGet(r, o + 17usize);
+        let tl = f32.from(loc) - stGet(r, o + 17usize);
         emit(filt, sp.target, sp.prop, springAt(r, sp.vkind, sp.zeta, sp.omega, o, tl), out);
       }
     }
@@ -412,27 +412,27 @@ pub struct Pend {
 
 pub fn findPending(r &Running, a &Anim, ix usize, t f64, out &mut List[Pend]) {
   if (a.flags & F_NEEDS_INIT) == 0u32 { return; }
-  imm ph = phaseOf(a, t);
+  let ph = phaseOf(a, t);
   if ph.state == PH_BEFORE { return; }
   match a {
-    case imm g Group {
-      mut i = 0usize;
+    case let g Group {
+      var i = 0usize;
       while i < g.kids.len() {
         findPending(r, g.kids[i], kidIndex(a, ix, i), ph.loc - f64.from(*g.offs[i]), out);
         i = i + 1usize;
       }
     }
-    case imm tr Transition {
+    case let tr Transition {
       if !tr.hasFrom and stGet(r, ix * SLOT) < 0.5 {
         out.push(new Pend(ix, PK_TRANSITION, tr.target, tr.prop, tr.vkind, false, tr.from, tr.to, false, 0u32));
       }
     }
-    case imm c Chase {
+    case let c Chase {
       if stGet(r, ix * SLOT) < 0.5 {
         out.push(new Pend(ix, PK_CHASE, c.target, c.prop, c.vkind, c.hasFrom, c.from, goalOf(r, a), false, c.slot));
       }
     }
-    case imm s Spring {
+    case let s Spring {
       if stGet(r, ix * SLOT) < 0.5 {
         out.push(new Pend(ix, PK_SPRING, s.target, s.prop, s.vkind, s.hasFrom, s.from, goalOf(r, a), s.inheritVel, s.slot));
       }
@@ -444,9 +444,9 @@ pub fn findPending(r &Running, a &Anim, ix usize, t f64, out &mut List[Pend]) {
 // Set the state of a pending node: 'shown' is what its field shows now (if
 // 'hasShown'), 'vel' how fast it is changing
 pub fn applyPending(r &mut Running, p &Pend, hasShown bool, shown Value, vel Value) {
-  imm o = p.ix * SLOT;
-  mut from = p.from;
-  mut v0 = Value.rest(p.vkind);
+  let o = p.ix * SLOT;
+  var from = p.from;
+  var v0 = Value.rest(p.vkind);
   if !p.hasFrom {
     from = if hasShown and shown.kind == p.vkind { shown; } else { p.to; };
     if hasShown and p.inheritVel and vel.kind == p.vkind and p.vkind != TK_QUAT { v0 = vel; }
@@ -473,9 +473,9 @@ pub fn nodePure(r &Running, a &Anim, ix usize) bool {
   match a {
     case is Chase { false; }
     case is Spring { stGet(r, ix * SLOT + 19usize) < 0.5; }
-    case imm g Group {
-      mut pure = true;
-      mut i = 0usize;
+    case let g Group {
+      var pure = true;
+      var i = 0usize;
       while i < g.kids.len() {
         if !nodePure(r, g.kids[i], kidIndex(a, ix, i)) { pure = false; }
         i = i + 1usize;
@@ -493,11 +493,11 @@ pub fn nodePure(r &Running, a &Anim, ix usize) bool {
 // numbers, vectors and colours; the angle between two rotations, in radians
 fn valueDistance(kind u32, a Value, b Value) f32 {
   if kind == TK_QUAT { return quatAngle(a.asQuat(), b.asQuat()); }
-  imm n = kindComps(kind);
-  mut sum f32 = 0.;
-  mut i = 0usize;
+  let n = kindComps(kind);
+  var sum f32 = 0.;
+  var i = 0usize;
   while i < n {
-    imm d = b.get(i) - a.get(i);
+    let d = b.get(i) - a.get(i);
     sum = sum + d * d;
     i = i + 1usize;
   }
@@ -506,24 +506,24 @@ fn valueDistance(kind u32, a Value, b Value) f32 {
 
 // Step a stepped leaf over its internal time c0 to c1 (c0 < c1, both inside its life)
 fn stepLeaf(r &mut Running, a &Anim, ix usize, c0 f64, c1 f64) {
-  imm o = ix * SLOT;
+  let o = ix * SLOT;
   if stGet(r, o) < 0.5 { return; }
-  imm seq = goalSeqOf(r, a);
+  let seq = goalSeqOf(r, a);
   match a {
-    case imm ch Chase {
-      imm kind = ch.vkind;
+    case let ch Chase {
+      let kind = ch.vkind;
       if seq != stGet(r, o + 23usize) {
         stPut(r, o + 5usize, goalOf(r, a));
         stSet(r, o + 23usize, seq);
         // a goal that moved wakes a chase that had arrived
         stSet(r, o + 18usize, 0.);
       }
-      imm goal = stValue(r, o + 5usize, kind);
-      imm dt = f32.from(c1 - c0);
+      let goal = stValue(r, o + 5usize, kind);
+      let dt = f32.from(c1 - c0);
       if ch.mode == CHASE_SPEED {
-        imm cur = stValue(r, o + 13usize, kind);
-        imm dist = valueDistance(kind, cur, goal);
-        imm step = ch.speed * dt;
+        let cur = stValue(r, o + 13usize, kind);
+        let dist = valueDistance(kind, cur, goal);
+        let step = ch.speed * dt;
         if dist <= step {
           // reaches the goal this step: lands exactly on it, never past it
           stPut(r, o + 13usize, goal);
@@ -533,16 +533,16 @@ fn stepLeaf(r &mut Running, a &Anim, ix usize, c0 f64, c1 f64) {
         }
         return;
       }
-      imm f = if ch.tau <= 0. { 1.; } else { 1. - libc.expf(-dt / ch.tau); };
+      let f = if ch.tau <= 0. { 1.; } else { 1. - libc.expf(-dt / ch.tau); };
       stPut(r, o + 13usize, mixValue(stValue(r, o + 13usize, kind), goal, f, ch.space));
     }
-    case imm sp Spring {
+    case let sp Spring {
       if seq != stGet(r, o + 23usize) {
         retargetSpring(r, sp.vkind, sp.zeta, sp.omega, o, f32.from(c0), goalOf(r, a));
         stSet(r, o + 23usize, seq);
       }
       if stGet(r, o + 18usize) < 0.5 {
-        imm tl = f32.from(c1) - stGet(r, o + 17usize);
+        let tl = f32.from(c1) - stGet(r, o + 17usize);
         if tl >= springSettle(sp.zeta, sp.omega, SETTLE_EPS) { stSet(r, o + 18usize, 1.); }
       }
     }
@@ -552,19 +552,19 @@ fn stepLeaf(r &mut Running, a &Anim, ix usize, c0 f64, c1 f64) {
 
 // Move a spring to a new goal at its internal time c, carrying position and velocity
 fn retargetSpring(r &mut Running, kind u32, zeta f32, omega f32, o usize, c f32, goal Value) {
-  imm tl = c - stGet(r, o + 17usize);
-  imm wasDone = stGet(r, o + 18usize) > 0.5;
+  let tl = c - stGet(r, o + 17usize);
+  let wasDone = stGet(r, o + 18usize) > 0.5;
   stSet(r, o + 19usize, 1.);
   stSet(r, o + 18usize, 0.);
   if kind == TK_QUAT {
-    imm oldGoal = stValue(r, o + 5usize, kind);
-    imm oldFrom = stValue(r, o + 1usize, kind);
-    imm d0 = stGet(r, o + 20usize);
-    imm dv0 = stGet(r, o + 21usize);
-    imm cur = if wasDone { oldGoal; } else { mixValue(oldGoal, oldFrom, springValue(zeta, omega, d0, dv0, 0., tl), SPACE_LINEAR); };
-    imm dd = if wasDone { 0.; } else { springVelocity(zeta, omega, d0, dv0, tl); };
-    imm thetaOld = stGet(r, o + 22usize);
-    imm thetaNew = quatAngle(cur.asQuat(), goal.asQuat());
+    let oldGoal = stValue(r, o + 5usize, kind);
+    let oldFrom = stValue(r, o + 1usize, kind);
+    let d0 = stGet(r, o + 20usize);
+    let dv0 = stGet(r, o + 21usize);
+    let cur = if wasDone { oldGoal; } else { mixValue(oldGoal, oldFrom, springValue(zeta, omega, d0, dv0, 0., tl), SPACE_LINEAR); };
+    let dd = if wasDone { 0.; } else { springVelocity(zeta, omega, d0, dv0, tl); };
+    let thetaOld = stGet(r, o + 22usize);
+    let thetaNew = quatAngle(cur.asQuat(), goal.asQuat());
     stPut(r, o + 1usize, cur);
     stPut(r, o + 5usize, goal);
     stSet(r, o + 20usize, 1.);
@@ -573,17 +573,17 @@ fn retargetSpring(r &mut Running, kind u32, zeta f32, omega f32, o usize, c f32,
     stSet(r, o + 17usize, c);
     return;
   }
-  imm n = kindComps(kind);
-  mut x0 = Value.rest(kind);
-  mut v0 = Value.rest(kind);
-  mut i = 0usize;
+  let n = kindComps(kind);
+  var x0 = Value.rest(kind);
+  var v0 = Value.rest(kind);
+  var i = 0usize;
   while i < n {
-    imm g = stGet(r, o + 5usize + i);
+    let g = stGet(r, o + 5usize + i);
     if wasDone {
       x0 = x0.setAt(i, g);
     } else {
-      imm xi = stGet(r, o + 1usize + i);
-      imm vi = stGet(r, o + 9usize + i);
+      let xi = stGet(r, o + 1usize + i);
+      let vi = stGet(r, o + 9usize + i);
       x0 = x0.setAt(i, springValue(zeta, omega, xi, vi, g, tl));
       v0 = v0.setAt(i, springVelocity(zeta, omega, xi - g, vi, tl));
     }
@@ -599,20 +599,20 @@ fn retargetSpring(r &mut Running, kind u32, zeta f32, omega f32, o usize, c f32,
 // forward (if 'step') and raise the markers crossed (if 'markers'), either way
 pub fn advanceNode(r &mut Running, a &Anim, ix usize, t0 f64, t1 f64, step bool, markers bool, evs &mut List[AnimEvent]) {
   if (a.flags & (F_STEPPED | F_MARKERS)) == 0u32 { return; }
-  imm rt = a.rateOf();
-  imm u0 = (t0 - f64.from(a.delay)) * rt;
-  imm u1 = (t1 - f64.from(a.delay)) * rt;
-  imm forward = u1 >= u0;
-  imm lo = if forward { u0; } else { u1; };
-  imm hi = if forward { u1; } else { u0; };
+  let rt = a.rateOf();
+  let u0 = (t0 - f64.from(a.delay)) * rt;
+  let u1 = (t1 - f64.from(a.delay)) * rt;
+  let forward = u1 >= u0;
+  let lo = if forward { u0; } else { u1; };
+  let hi = if forward { u1; } else { u0; };
   if hi < 0. { return; }
-  imm d = f64.from(a.life);
-  imm n = f64.from(a.iterations());
-  imm endless = isForever(d) or isForever(n);
-  imm total = if endless { 1.0e30f64; } else { d * n; };
+  let d = f64.from(a.life);
+  let n = f64.from(a.iterations());
+  let endless = isForever(d) or isForever(n);
+  let total = if endless { 1.0e30f64; } else { d * n; };
   if lo >= total { return; }
-  imm cLo = if lo < 0. { 0.0f64; } else { lo; };
-  imm cHi = if hi > total { total; } else { hi; };
+  let cLo = if lo < 0. { 0.0f64; } else { lo; };
+  let cHi = if hi > total { total; } else { hi; };
   if cHi <= cLo { return; }
   if a.isStepped() {
     if step and forward { stepLeaf(r, a, ix, cLo, cHi); }
@@ -620,43 +620,43 @@ pub fn advanceNode(r &mut Running, a &Anim, ix usize, t0 f64, t1 f64, step bool,
   }
   if d <= 0. { return; }
   // the iterations the interval (cLo, cHi] touches
-  mut k0 = libc.floor(cLo / d);
-  mut k1 = libc.ceil(cHi / d) - 1.0f64;
+  var k0 = libc.floor(cLo / d);
+  var k1 = libc.ceil(cHi / d) - 1.0f64;
   if k1 - k0 > 1000.0f64 { k0 = k1 - 1000.0f64; }
-  mut k = k0;
+  var k = k0;
   while k <= k1 {
-    imm base = k * d;
-    imm s0 = (if cLo > base { cLo; } else { base; }) - base;
-    imm s1 = (if cHi < base + d { cHi; } else { base + d; }) - base;
+    let base = k * d;
+    let s0 = (if cLo > base { cLo; } else { base; }) - base;
+    let s1 = (if cHi < base + d { cHi; } else { base + d; }) - base;
     // the piece in the order time moves, then through the direction
-    imm fromP = if forward { s0; } else { s1; };
-    imm toP = if forward { s1; } else { s0; };
-    imm dir = a.direction;
-    imm l0 = dirMap(dir, k, fromP, d);
-    imm l1 = dirMap(dir, k, toP, d);
+    let fromP = if forward { s0; } else { s1; };
+    let toP = if forward { s1; } else { s0; };
+    let dir = a.direction;
+    let l0 = dirMap(dir, k, fromP, d);
+    let l1 = dirMap(dir, k, toP, d);
     match a {
-      case imm g Group {
-        mut i = 0usize;
+      case let g Group {
+        var i = 0usize;
         while i < g.kids.len() {
           advanceNode(r, g.kids[i], kidIndex(a, ix, i), l0 - f64.from(*g.offs[i]), l1 - f64.from(*g.offs[i]), step,
             markers, evs);
           i = i + 1usize;
         }
       }
-      case imm kk Keys {
+      case let kk Keys {
         if markers {
-          mut found = List[Fired].empty();
-          mut e0 = l0;
-          mut e1 = l1;
+          var found = List[Fired].empty();
+          var e0 = l0;
+          var e1 = l1;
           if !kk.easing.isLinear() and d > 0. {
             e0 = f64.from(kk.easing.applyOver(f32.from(l0 / d), kk.dur) * kk.dur);
             e1 = f64.from(kk.easing.applyOver(f32.from(l1 / d), kk.dur) * kk.dur);
           }
           kk.clip.crossings(e0, e1, 0u32, &mut found);
-          mut j = 0usize;
+          var j = 0usize;
           while j < found.len() {
-            imm f = *found[j];
-            mut e = newEvent(EV_MARKER, r.id);
+            let f = *found[j];
+            var e = newEvent(EV_MARKER, r.id);
             e.id = f.id; e.arg = f.arg; e.time = f.clipTime;
             evs.push(e);
             j = j + 1usize;
@@ -674,23 +674,23 @@ pub fn advanceNode(r &mut Running, a &Anim, ix usize, t0 f64, t1 f64, step bool,
 // crossed that is not the end
 pub fn repeatsCrossed(a &Anim, t0 f64, t1 f64, evs &mut List[AnimEvent], handle u32) {
   if a.isStepped() { return; }
-  imm d = f64.from(a.life);
-  imm n = f64.from(a.iterations());
+  let d = f64.from(a.life);
+  let n = f64.from(a.iterations());
   if d <= 0. or isForever(d) or n <= 1. { return; }
-  imm rt = a.rateOf();
-  imm u0 = (t0 - f64.from(a.delay)) * rt;
-  imm u1 = (t1 - f64.from(a.delay)) * rt;
+  let rt = a.rateOf();
+  let u0 = (t0 - f64.from(a.delay)) * rt;
+  let u1 = (t1 - f64.from(a.delay)) * rt;
   if u1 <= u0 or u1 < d { return; }
-  imm total = if isForever(n) { 1.0e30f64; } else { d * n; };
-  mut k0 = libc.floor((if u0 < 0. { 0.0f64; } else { u0; }) / d) + 1.0f64;
-  imm top = if u1 > total { total; } else { u1; };
-  mut k1 = libc.floor(top / d);
+  let total = if isForever(n) { 1.0e30f64; } else { d * n; };
+  var k0 = libc.floor((if u0 < 0. { 0.0f64; } else { u0; }) / d) + 1.0f64;
+  let top = if u1 > total { total; } else { u1; };
+  var k1 = libc.floor(top / d);
   // a boundary at the very end is the end, not a repeat
   if !isForever(n) and k1 >= n { k1 = n - 1.0f64; }
   if k1 - k0 > 1000.0f64 { k0 = k1 - 1000.0f64; }
-  mut k = k0;
+  var k = k0;
   while k <= k1 {
-    mut e = newEvent(EV_REPEATED, handle);
+    var e = newEvent(EV_REPEATED, handle);
     e.count = u32.from(usize.from(k));
     evs.push(e);
     k = k + 1.0f64;

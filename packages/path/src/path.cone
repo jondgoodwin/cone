@@ -88,22 +88,22 @@ fn prefixOf(p &Array[u8]) Prefix {
   }
   // A share: two separators, a server, a separator, a share
   if p.len >= 2usize and isSeparator(p[0usize]) and isSeparator(p[1usize]) {
-    mut i = 2usize;
+    var i = 2usize;
     while i < p.len and not isSeparator(p[i]) { i = i + 1usize; }
-    imm serverEnd = i;
+    let serverEnd = i;
     if serverEnd > 2usize and serverEnd < p.len {
       i = serverEnd + 1usize;
       while i < p.len and not isSeparator(p[i]) { i = i + 1usize; }
       if i > serverEnd + 1usize {
         // A share always has its root, written or not
-        imm whole = if i < p.len {i + 1usize;} else {i;};
+        let whole = if i < p.len {i + 1usize;} else {i;};
         return new Prefix(i, whole);
       }
     }
   }
   // A drive
   if p.len >= 2usize and isLetter(p[0usize]) and p[1usize] == ':' {
-    imm whole = if p.len > 2usize and isSeparator(p[2usize]) {3usize;} else {2usize;};
+    let whole = if p.len > 2usize and isSeparator(p[2usize]) {3usize;} else {2usize;};
     return new Prefix(2usize, whole);
   }
   // A root alone
@@ -118,7 +118,7 @@ fn isShare(p &Array[u8], pre &Prefix) bool { pre.volume > 2usize; }
 // Whether a path is absolute: a drive and a root ('C:\x'), or a share
 // ('\\server\share\x'); on POSIX, a root
 fn absoluteOf(p &Array[u8]) bool {
-  imm pre = prefixOf(p);
+  let pre = prefixOf(p);
   if not isWindows() { return pre.whole == 1usize; }
   isShare(p, &pre) or (pre.volume == 2usize and pre.whole == 3usize);
 }
@@ -126,14 +126,14 @@ fn absoluteOf(p &Array[u8]) bool {
 // Where a path's names end once the separators after its last are left
 // off, never cutting into its volume and root
 fn trimmedEnd(p &Array[u8], pre &Prefix) usize {
-  mut end = p.len;
+  var end = p.len;
   while end > pre.whole and isSeparator(p[end - 1usize]) { end = end - 1usize; }
   end;
 }
 
 // Where its last name starts, at or after the prefix
 fn lastNameStart(p &Array[u8], pre &Prefix, end usize) usize {
-  mut i = end;
+  var i = end;
   while i > pre.whole and not isSeparator(p[i - 1usize]) { i = i - 1usize; }
   i;
 }
@@ -146,17 +146,17 @@ fn lastNameStart(p &Array[u8], pre &Prefix, end usize) usize {
 // and '../b' join to 'a/../b'.
 fn joinOf(a &Array[u8], b &Array[u8]) String {
   if b.len == 0usize { return String.fromBytes(a); }
-  imm bpre = prefixOf(b);
+  let bpre = prefixOf(b);
   if a.len == 0usize or bpre.volume > 0usize { return String.fromBytes(b); }
   if bpre.whole > 0usize {
-    imm apre = prefixOf(a);
-    mut out = String.fromBytes(&a[..<apre.volume]);
+    let apre = prefixOf(a);
+    var out = String.fromBytes(&a[..<apre.volume]);
     out.appendBytes(b);
     return out;
   }
-  mut out = String.fromBytes(a);
-  imm apre = prefixOf(a);
-  imm driveAlone = apre.volume == 2usize and apre.whole == 2usize and a.len == 2usize;
+  var out = String.fromBytes(a);
+  let apre = prefixOf(a);
+  let driveAlone = apre.volume == 2usize and apre.whole == 2usize and a.len == 2usize;
   if not isSeparator(a[a.len - 1usize]) and not driveAlone { out.appendByte('/'); }
   out.appendBytes(b);
   out;
@@ -168,9 +168,9 @@ fn joinOf(a &Array[u8], b &Array[u8]) String {
 // parent: 'C:/' is in 'C:/'. Separators after the last name are left off
 // first, so 'a/b/' is in 'a'. Nothing is normalized: 'a/..' is in 'a'.
 fn parentOf(p &Array[u8]) String {
-  imm pre = prefixOf(p);
-  imm end = trimmedEnd(p, &pre);
-  mut i = lastNameStart(p, &pre, end);
+  let pre = prefixOf(p);
+  let end = trimmedEnd(p, &pre);
+  var i = lastNameStart(p, &pre, end);
   while i > pre.whole and isSeparator(p[i - 1usize]) { i = i - 1usize; }
   String.fromBytes(&p[..<i]);
 }
@@ -179,7 +179,7 @@ fn parentOf(p &Array[u8]) String {
 // first byte; at its end when it has none, as '..' has none
 fn extensionStart(n &Array[u8]) usize {
   if n == ".." { return n.len; }
-  mut i = n.len;
+  var i = n.len;
   while i > 1usize {
     i = i - 1usize;
     if n[i] == '.' { return i; }
@@ -192,11 +192,11 @@ fn extensionStart(n &Array[u8]) usize {
 // '..' included, with no separators. Empty names, between two separators
 // or after the last, are left out. "" has no pieces.
 fn partsOf(p &Array[u8]) List[String] {
-  imm pre = prefixOf(p);
-  mut out = List[String].empty();
+  let pre = prefixOf(p);
+  var out = List[String].empty();
   if pre.whole > 0usize { out.push(String.fromBytes(&p[..<pre.whole])); }
-  mut start = pre.whole;
-  mut i = pre.whole;
+  var start = pre.whole;
+  var i = pre.whole;
   while i <= p.len {
     if i == p.len or isSeparator(p[i]) {
       if i > start { out.push(String.fromBytes(&p[start..<i])); }
@@ -222,28 +222,28 @@ fn partsOf(p &Array[u8]) List[String] {
 // dropped with the link, which on the disk may not be where the link's
 // folder is: this reads text, not the file system.
 fn normalizeOf(p &Array[u8]) String {
-  imm pre = prefixOf(p);
-  mut out = String.fromBytes(&p[..<pre.whole]);
+  let pre = prefixOf(p);
+  var out = String.fromBytes(&p[..<pre.whole]);
   out.replaceByte('\\', '/');
   if isShare(p, &pre) and pre.whole == pre.volume { out.appendByte('/'); }
-  imm rooted = isShare(p, &pre) or (pre.whole > pre.volume);
-  imm base = out.len();
+  let rooted = isShare(p, &pre) or (pre.whole > pre.volume);
+  let base = out.len();
   // The names kept so far are out's bytes after base; 'kept' counts them,
   // and 'ups' how many of the first are '..'
-  mut kept = 0usize;
-  mut ups = 0usize;
-  mut start = pre.whole;
-  mut i = pre.whole;
+  var kept = 0usize;
+  var ups = 0usize;
+  var start = pre.whole;
+  var i = pre.whole;
   while i <= p.len {
     if i == p.len or isSeparator(p[i]) {
-      imm part = &p[start..<i];
+      let part = &p[start..<i];
       if part.len == 0usize or part == "." {
         // nothing to keep
       }
       elif part == ".." {
         if kept > ups {
           // Drop the last name kept, and the '/' before it
-          mut cut = out.len();
+          var cut = out.len();
           while cut > base and out[cut - 1usize] != '/' { cut = cut - 1usize; }
           if cut > base { cut = cut - 1usize; }
           out = out.sub(0usize, cut);
@@ -310,8 +310,8 @@ pub struct Path is Hash {
   // The volume it starts with, 'C:' or '\\server\share' as written, or ""
   // (always "" on POSIX)
   pub fn volume(self &) &str {
-    imm b &Array[u8] = text.view();
-    imm pre = prefixOf(b);
+    let b &Array[u8] = text.view();
+    let pre = prefixOf(b);
     &b[..<pre.volume] as &str;
   }
 
@@ -321,30 +321,30 @@ pub struct Path is Hash {
   // Its last name: 'c.txt' of 'a/b/c.txt', 'b' of 'a/b/', and "" of a path
   // that is only a volume and a root ('C:/', '/')
   pub fn name(self &) &str {
-    imm b &Array[u8] = text.view();
-    imm pre = prefixOf(b);
-    imm end = trimmedEnd(b, &pre);
+    let b &Array[u8] = text.view();
+    let pre = prefixOf(b);
+    let end = trimmedEnd(b, &pre);
     &b[lastNameStart(b, &pre, end)..<end] as &str;
   }
 
   // Its last name without its extension: 'b.tar' of 'a/b.tar.gz'
   pub fn stem(self &) &str {
-    imm b &Array[u8] = text.view();
-    imm pre = prefixOf(b);
-    imm end = trimmedEnd(b, &pre);
-    imm start = lastNameStart(b, &pre, end);
-    imm n = &b[start..<end];
+    let b &Array[u8] = text.view();
+    let pre = prefixOf(b);
+    let end = trimmedEnd(b, &pre);
+    let start = lastNameStart(b, &pre, end);
+    let n = &b[start..<end];
     &n[..<extensionStart(n)] as &str;
   }
 
   // The extension of its last name, from its last dot, the dot included: '.gz'
   // of 'a/b.tar.gz', '.' of 'b.', and "" of 'b' and '.profile'
   pub fn extension(self &) &str {
-    imm b &Array[u8] = text.view();
-    imm pre = prefixOf(b);
-    imm end = trimmedEnd(b, &pre);
-    imm start = lastNameStart(b, &pre, end);
-    imm n = &b[start..<end];
+    let b &Array[u8] = text.view();
+    let pre = prefixOf(b);
+    let end = trimmedEnd(b, &pre);
+    let start = lastNameStart(b, &pre, end);
+    let n = &b[start..<end];
     &n[extensionStart(n)..] as &str;
   }
 

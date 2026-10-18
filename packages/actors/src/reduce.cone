@@ -58,7 +58,7 @@ const reduceMaxBlocks = 256usize;
 // How many items a block holds when n are cut: n / blocks, rounded up, where the
 // blocks are n / 128 rounded up, at most 256. A function of n alone
 fn blockLen(n usize) usize {
-  mut blocks = (n + reduceMinBlock - 1usize) / reduceMinBlock;
+  var blocks = (n + reduceMinBlock - 1usize) / reduceMinBlock;
   if blocks > reduceMaxBlocks {
     blocks = reduceMaxBlocks;
   }
@@ -90,30 +90,30 @@ struct Halves {
 fn reduceNode[A, L fn(lo usize, hi usize) A + Shareable, M fn(a A, b A) A + Shareable](
     ctx *TreeCtx, b0 usize, b1 usize) A {
   if b1 - b0 == 1usize {
-    imm lo = b0 * (*ctx).blk;
-    imm end = lo + (*ctx).blk;
-    imm hi = if end < (*ctx).n { end; } else { (*ctx).n; };
-    imm leaf = (*ctx).leaf as &L;
+    let lo = b0 * (*ctx).blk;
+    let end = lo + (*ctx).blk;
+    let hi = if end < (*ctx).n { end; } else { (*ctx).n; };
+    let leaf = (*ctx).leaf as &L;
     return leaf(lo, hi);
   }
-  imm mid = b0 + (b1 - b0) / 2usize;
-  imm slots = libc.malloc(2usize * mem.sizeof[A]());
+  let mid = b0 + (b1 - b0) / 2usize;
+  let slots = libc.malloc(2usize * mem.sizeof[A]());
   if slots as usize == 0usize {
     die("actors: out of memory for a parallel reduction");
   }
-  mut halves = new Halves(ctx, b0, mid, b1, slots);
+  var halves = new Halves(ctx, b0, mid, b1, slots);
   rangeRun(0usize, 2usize, 1usize, &halvesPiece[A, L, M], &mut halves as *Halves as *u8);
-  imm left = mem.readRaw[A](slots as *A);
-  imm right = mem.readRaw[A]((slots as *A) + 1usize);
+  let left = mem.readRaw[A](slots as *A);
+  let right = mem.readRaw[A]((slots as *A) + 1usize);
   libc.free(slots);
-  imm combine = (*ctx).combine as &M;
+  let combine = (*ctx).combine as &M;
   combine(left, right);
 }
 
 fn halvesPiece[A, L fn(lo usize, hi usize) A + Shareable, M fn(a A, b A) A + Shareable](
     data *u8, lo usize, hi usize) {
-  imm h = data as *Halves;
-  mut i = lo;
+  let h = data as *Halves;
+  var i = lo;
   while i < hi {
     if i == 0usize {
       mem.writeRaw[A]((*h).slots as *A, reduceNode[A, L, M]((*h).ctx, (*h).b0, (*h).mid));
@@ -128,9 +128,9 @@ fn halvesPiece[A, L fn(lo usize, hi usize) A + Shareable, M fn(a A, b A) A + Sha
 // accumulator, and 'combine' joins two neighbours. The same result for any workers
 fn reduceBlocks[A, L fn(lo usize, hi usize) A + Shareable, M fn(a A, b A) A + Shareable](
     n usize, leaf &L, combine &M) A {
-  imm blk = blockLen(n);
-  imm blocks = (n + blk - 1usize) / blk;
-  mut ctx = new TreeCtx(leaf as *L as *u8, combine as *M as *u8, n, blk);
+  let blk = blockLen(n);
+  let blocks = (n + blk - 1usize) / blk;
+  var ctx = new TreeCtx(leaf as *L as *u8, combine as *M as *u8, n, blk);
   reduceNode[A, L, M](&mut ctx as *TreeCtx, 0usize, blocks);
 }
 
@@ -143,20 +143,20 @@ fn identityOf[A](init &A) A {
 
 // The total of the numbers a view reads (0 for none)
 pub fn parSum[N, V ParallelNumberAt[N]](v V) N where N is Integer or N is f32 or N is f64 {
-  imm n = v.len();
+  let n = v.len();
   if n == 0usize {
     return N.from(0i32);
   }
-  imm leaf = fn(lo usize, hi usize) N {
-    mut s = N.from(0i32);
-    mut k = lo;
+  let leaf = fn(lo usize, hi usize) N {
+    var s = N.from(0i32);
+    var k = lo;
     while k < hi {
       s = s + v.numberAt(k);
       k = k + 1usize;
     }
     s;
   };
-  imm combine = fn(a N, b N) N { a + b; };
+  let combine = fn(a N, b N) N { a + b; };
   reduceBlocks(n, &leaf, &combine);
 }
 
@@ -164,16 +164,16 @@ pub fn parSum[N, V ParallelNumberAt[N]](v V) N where N is Integer or N is f32 or
 // time; the blocks' accumulators joined by 'combine'
 pub fn parFold[Item, A, V RandomAccess[Item], S fn(acc A, x Item) A + Shareable, M fn(a A, b A) A + Shareable](
     v V, init A, step S, combine M, file &Array[u8] = srcFile(), line u32 = srcLine()) A {
-  imm n = v.len();
+  let n = v.len();
   if n == 0usize {
     return init;
   }
   if mem.needsFinal[A]() {
     panic("fold: the identity is copied for each block, so its type must have no finalizer; build a list or text with '<- parallel each ... yield'", file, line);
   }
-  imm leaf = fn(lo usize, hi usize) A {
-    mut acc = identityOf[A](&init);
-    mut k = lo;
+  let leaf = fn(lo usize, hi usize) A {
+    var acc = identityOf[A](&init);
+    var k = lo;
     while k < hi {
       acc = step(acc, v.at(k));
       k = k + 1usize;
@@ -202,9 +202,9 @@ fn runFirst[Q fn(b usize, best *usize) + Shareable](blocks usize, scan &Q, ctx *
 
 // Blocks lo to hi of a findFirst, each scanned
 fn firstPiece[Q fn(b usize, best *usize) + Shareable](data *u8, lo usize, hi usize) {
-  imm c = data as *FirstCtx;
-  imm scan = (*c).scan as &Q;
-  mut b = lo;
+  let c = data as *FirstCtx;
+  let scan = (*c).scan as &Q;
+  var b = lo;
   while b < hi {
     scan(b, &(*c).best as *usize);
     b = b + 1usize;
@@ -219,20 +219,20 @@ fn firstPiece[Q fn(b usize, best *usize) + Shareable](data *u8, lo usize, hi usi
 // answer is the lowest position any block found, so it does not depend on which
 // block finished first
 pub fn parFindFirst[Item, V RandomAccess[Item], P fn(x &Item) bool + Shareable](v V, pred P) Option[Item] {
-  imm n = v.len();
+  let n = v.len();
   if n == 0usize {
     return None;
   }
-  imm blk = blockLen(n);
-  imm blocks = (n + blk - 1usize) / blk;
-  imm scan = fn(b usize, best *usize) {
-    mut k = b * blk;
-    imm end = if k + blk < n { k + blk; } else { n; };
+  let blk = blockLen(n);
+  let blocks = (n + blk - 1usize) / blk;
+  let scan = fn(b usize, best *usize) {
+    var k = b * blk;
+    let end = if k + blk < n { k + blk; } else { n; };
     while k < end {
       if (k & 31usize) == 0usize and mem.atomicLoad[usize](best, MemOrder.Acquire) < k {
         return;
       }
-      imm item = v.at(k);
+      let item = v.at(k);
       if pred(&item) {
         mem.atomicMin[usize](best, k, MemOrder.AcqRel);
         return;
@@ -240,9 +240,9 @@ pub fn parFindFirst[Item, V RandomAccess[Item], P fn(x &Item) bool + Shareable](
       k = k + 1usize;
     }
   };
-  mut ctx = new FirstCtx(n, null);
+  var ctx = new FirstCtx(n, null);
   runFirst(blocks, &scan, &mut ctx as *FirstCtx);
-  imm at = mem.atomicLoad[usize](&ctx.best as *usize, MemOrder.Acquire);
+  let at = mem.atomicLoad[usize](&ctx.best as *usize, MemOrder.Acquire);
   if at >= n {
     return None;
   }

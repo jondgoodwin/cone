@@ -31,75 +31,75 @@ const tokNew = 200u64;
 const tokConn = 1u64;
 
 fn main() i32 {
-  imm pool = Pool.make();
-  mut lp = Loop.mustMake();
+  let pool = Pool.make();
+  var lp = Loop.mustMake();
 
   // The old driver listens, and dies, with its accept in flight
-  mut oldPort = 0u16;
-  mut oldToken = 0u64;
+  var oldPort = 0u16;
+  var oldToken = 0u64;
   {
-    mut old = Driver.make(Config.make(), pool);
+    var old = Driver.make(Config.make(), pool);
     oldToken = old.upperToken(&mut lp, 3u8, 0u64);
     match old.listen(&mut lp, SocketAddr.localhost(0u16), Sink.Here(tokOld)) {
-      case imm r Ok {
+      case let r Ok {
         match old.localAddr(&lp, r) {
-          case imm a Ok {oldPort = a.port();}
-          case imm e Error {}
+          case let a Ok {oldPort = a.port();}
+          case let e Error {}
         }
       }
-      case imm e Error {}
+      case let e Error {}
     }
   }
   require(oldPort != 0u16, "the old driver listened on a port");
 
   // 1023 more come and go: the next number is the old driver's again
   {
-    mut i = 0u32;
+    var i = 0u32;
     while i < 1023u32 {
-      imm other = Driver.make(Config.make(), pool);
+      let other = Driver.make(Config.make(), pool);
       i = i + 1u32;
     }
   }
-  mut nw = Driver.make(Config.make(), pool);
+  var nw = Driver.make(Config.make(), pool);
   require(nw.owns(oldToken), "the new driver took the dead driver's number");
-  mut newPort = 0u16;
+  var newPort = 0u16;
   match nw.listen(&mut lp, SocketAddr.localhost(0u16), Sink.Here(tokNew)) {
-    case imm r Ok {
+    case let r Ok {
       match nw.localAddr(&lp, r) {
-        case imm a Ok {newPort = a.port();}
-        case imm e Error {}
+        case let a Ok {newPort = a.port();}
+        case let e Error {}
       }
     }
-    case imm e Error {}
+    case let e Error {}
   }
   require(newPort != 0u16, "the new driver listens on a port");
   expect(not nw.isUpperToken(oldToken), "the new driver does not take the dead driver's upper token for its own");
 
   // A client connects to the dead driver's port
-  mut cli = Driver.make(Config.make(), pool);
-  imm conn = cli.connect(&mut lp, "127.0.0.1", oldPort, Sink.Here(tokConn));
+  var cli = Driver.make(Config.make(), pool);
+  let conn = cli.connect(&mut lp, "127.0.0.1", oldPort, Sink.Here(tokConn));
 
-  mut claimedOld = 0u64;
-  mut accepted = 0u64;
-  mut connected = 0u64;
-  mut unclaimed = 0u64;
-  mut events = List[Event].empty();
-  mut comps = List[Completion].empty();
-  imm giveUp = Instant.now() + Duration.fromSeconds(1i64);
+  var claimedOld = 0u64;
+  var accepted = 0u64;
+  var connected = 0u64;
+  var unclaimed = 0u64;
+  var events = List[Event].empty();
+  var comps = List[Completion].empty();
+  let giveUp = Instant.now() + Duration.fromSeconds(1i64);
   while connected == 0u64 and Instant.now() < giveUp {
     nw.pump(&mut lp, &mut events);
     cli.pump(&mut lp, &mut events);
-    mut w = nw.wakeAt();
+    var w = nw.wakeAt();
     if cli.wakeAt() < w {w = cli.wakeAt();}
     if events.len() > 0usize {w = new Instant();}
     lp.poll(if w < giveUp {w;} else {giveUp;}, &mut comps);
-    mut k = 0usize;
+    var k = 0usize;
     while k < comps.len() {
-      imm c = &mut comps[k];
+      let c = &mut comps[k];
       k = k + 1usize;
       // The accept's token is the old driver's: only the new driver, with
       // its number, could say it owns it
-      imm isAccept = c.kind == diag.kindAccept;
+      let isAccept = c.kind == diag.kindAccept;
       if nw.complete(&mut lp, c) {
         if isAccept {claimedOld = claimedOld + 1u64;}
       } elif not cli.complete(&mut lp, c) {
@@ -111,7 +111,7 @@ fn main() i32 {
     cli.pump(&mut lp, &mut events);
     k = 0usize;
     while k < events.len() {
-      imm e = &mut events[k];
+      let e = &mut events[k];
       k = k + 1usize;
       if e.token == tokNew and e.kind == EventKind.Accepted {accepted = accepted + 1u64;}
       if e.token == tokConn and e.kind == EventKind.Connected {connected = connected + 1u64;}

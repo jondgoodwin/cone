@@ -26,20 +26,20 @@ const W = 960u32;
 const H = 560u32;
 
 fn saveBmp(file &Path, p *u8) {
-  imm rowBytes = W * 3u32;
-  imm pad = (4u32 - rowBytes % 4u32) % 4u32;
-  imm size = 54u32 + (rowBytes + pad) * H;
-  mut b = List[u8].withCapacity(usize.from(size));
+  let rowBytes = W * 3u32;
+  let pad = (4u32 - rowBytes % 4u32) % 4u32;
+  let size = 54u32 + (rowBytes + pad) * H;
+  var b = List[u8].withCapacity(usize.from(size));
   b.push('B');
   b.push('M');
-  mut words = new Array[u32, 13] <- fill 0u32;
+  var words = new Array[u32, 13] <- fill 0u32;
   words[0] = size;
   words[2] = 54u32;
   words[3] = 40u32;
   words[4] = W;
   words[5] = H;
   words[6] = 0x00180001u32;
-  mut w = 0usize;
+  var w = 0usize;
   while w < 13usize {
     b.push(u8.from(words[w] & 255u32));
     b.push(u8.from((words[w] >> 8u32) & 255u32));
@@ -47,131 +47,131 @@ fn saveBmp(file &Path, p *u8) {
     b.push(u8.from((words[w] >> 24u32) & 255u32));
     w = w + 1usize;
   }
-  mut y = H;
+  var y = H;
   while y > 0u32 {
     y = y - 1u32;
-    mut x = 0u32;
+    var x = 0u32;
     while x < W {
-      imm at = p + usize.from((y * W + x) * 4u32);
+      let at = p + usize.from((y * W + x) * 4u32);
       b.push(*(at + 2usize));
       b.push(*(at + 1usize));
       b.push(*at);
       x = x + 1u32;
     }
-    mut q = 0u32;
+    var q = 0u32;
     while q < pad { b.push(0u8); q = q + 1u32; }
   }
   fs.writeFile(file, b.view());
 }
 
 fn draw(font &Font, out &Path) {
-  mut instance = Instance.create("msdftext demo");
-  mut none = Surface.none();
-  mut preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
-  imm env = libc.getenv("GPU_POWER_PREFERENCE");
+  var instance = Instance.create("msdftext demo");
+  var none = Surface.none();
+  var preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
+  let env = libc.getenv("GPU_POWER_PREFERENCE");
   if (env as usize) != 0usize {
     if libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 { preference = POWER_PREFERENCE_LOW_POWER; }
   }
-  mut adapter = instance.requestAdapter(&none, preference);
-  mut device = adapter.requestDevice();
+  var adapter = instance.requestAdapter(&none, preference);
+  var device = adapter.requestDevice();
   print <- "adapter ", adapter.name.view(), "\n";
-  imm targetDesc = new TextureDescriptor(W, H, TEXTURE_FORMAT_RGBA8_UNORM,
+  let targetDesc = new TextureDescriptor(W, H, TEXTURE_FORMAT_RGBA8_UNORM,
     TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
-  mut target = device.createTexture(&targetDesc);
-  imm depthDesc = new TextureDescriptor(W, H, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
-  mut depth = device.createTexture(&depthDesc);
-  mut readback = device.createBuffer(u64.from(W * H * 4u32), BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  var target = device.createTexture(&targetDesc);
+  let depthDesc = new TextureDescriptor(W, H, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
+  var depth = device.createTexture(&depthDesc);
+  var readback = device.createBuffer(u64.from(W * H * 4u32), BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
 
-  mut atlas = Atlas.create(AtlasConfig.standard());
-  mut text = TextRenderer.create(&mut device, &atlas, TEXTURE_FORMAT_RGBA8_UNORM, TEXTURE_FORMAT_RGBA8_UNORM,
+  var atlas = Atlas.create(AtlasConfig.standard());
+  var text = TextRenderer.create(&mut device, &atlas, TEXTURE_FORMAT_RGBA8_UNORM, TEXTURE_FORMAT_RGBA8_UNORM,
     TEXTURE_FORMAT_DEPTH32_FLOAT);
-  imm white = TextStyle.plain(new Color(1., 1., 1., 1.));
-  imm grey = TextStyle.plain(new Color(0.75, 0.8, 0.9, 1.));
+  let white = TextStyle.plain(new Color(1., 1., 1., 1.));
+  let grey = TextStyle.plain(new Color(0.75, 0.8, 0.9, 1.));
 
   // How long the CPU takes to make every printable ASCII glyph's field
-  imm began = Instant.now();
-  mut cp = 33u32;
+  let began = Instant.now();
+  var cp = 33u32;
   while cp < 127u32 { atlas.ensure(font, font.glyphOf(cp)); cp = cp + 1u32; }
-  imm took = Instant.now() - began;
+  let took = Instant.now() - began;
   print <- "95 ASCII glyph fields at 48 px/em, range 6: ", took.millis(), " ms (", u64.from(atlas.fixedTexels),
     " texels corrected, ", u64.from(atlas.resolved), " glyphs resolved)\n";
 
   // The page: (text, size, x, y, style, options)
-  mut shadowed = TextStyle.plain(new Color(1., 1., 1., 1.));
+  var shadowed = TextStyle.plain(new Color(1., 1., 1., 1.));
   shadowed.shadowColor = new Color(0., 0., 0., 0.7);
   shadowed.shadowOffset = new Vec2(3., 3.);
   shadowed.shadowSoftness = 3.;
-  mut outlined = TextStyle.plain(new Color(1., 0.85, 0.2, 1.));
+  var outlined = TextStyle.plain(new Color(1., 0.85, 0.2, 1.));
   outlined.outlineColor = new Color(0.25, 0.05, 0.0, 1.);
   outlined.outlineWidth = 3.;
 
-  imm title = layoutText(font, &mut atlas, "Sharp at every size", &LayoutOptions.make(64.0));
-  imm hTitle = text.addText(&mut device, SPACE_OVERLAY);
+  let title = layoutText(font, &mut atlas, "Sharp at every size", &LayoutOptions.make(64.0));
+  let hTitle = text.addText(&mut device, SPACE_OVERLAY);
   text.set(&mut device, hTitle, &title, &shadowed, overlayTransform(f32.from(W), f32.from(H), 24., 16.));
 
   // The same sentence at six sizes, from one atlas
-  imm sentence = "Quick zephyrs blow, vexing daft Jim";
-  mut sizes = new Array[f32, 6] <- 12.0, 14.0, 18.0, 22.0, 26.0, 32.0;
-  mut y = 100.0f;
-  mut k = 0usize;
+  let sentence = "Quick zephyrs blow, vexing daft Jim";
+  var sizes = new Array[f32, 6] <- 12.0, 14.0, 18.0, 22.0, 26.0, 32.0;
+  var y = 100.0f;
+  var k = 0usize;
   while k < 6usize {
-    imm layout = layoutText(font, &mut atlas, sentence, &LayoutOptions.make(sizes[k]));
-    imm h = text.addText(&mut device, SPACE_OVERLAY);
+    let layout = layoutText(font, &mut atlas, sentence, &LayoutOptions.make(sizes[k]));
+    let h = text.addText(&mut device, SPACE_OVERLAY);
     text.set(&mut device, h, &layout, &white, overlayTransform(f32.from(W), f32.from(H), 24., y));
     y = y + layout.height + 4.0;
     k = k + 1usize;
   }
 
   // A wrapped paragraph, left, then centred, in a 330 px column
-  mut column = LayoutOptions.make(18.0);
+  var column = LayoutOptions.make(18.0);
   column.maxWidth = 300.0;
-  imm para = "Text wraps at the width it is given, breaking after spaces, and words longer than the line break between glyphs. Kerning pulls AV and To together.";
-  imm left = layoutText(font, &mut atlas, para, &column);
-  imm hLeft = text.addText(&mut device, SPACE_OVERLAY);
+  let para = "Text wraps at the width it is given, breaking after spaces, and words longer than the line break between glyphs. Kerning pulls AV and To together.";
+  let left = layoutText(font, &mut atlas, para, &column);
+  let hLeft = text.addText(&mut device, SPACE_OVERLAY);
   text.set(&mut device, hLeft, &left, &grey, overlayTransform(f32.from(W), f32.from(H), 24., 380.));
   column.align = ALIGN_CENTER;
-  imm centred = layoutText(font, &mut atlas, para, &column);
-  imm hCentre = text.addText(&mut device, SPACE_OVERLAY);
+  let centred = layoutText(font, &mut atlas, para, &column);
+  let hCentre = text.addText(&mut device, SPACE_OVERLAY);
   text.set(&mut device, hCentre, &centred, &grey, overlayTransform(f32.from(W), f32.from(H), 340., 380.));
 
   // Outline, and kerning on and off
-  imm big = layoutText(font, &mut atlas, "Outlined", &LayoutOptions.make(76.0));
-  imm hBig = text.addText(&mut device, SPACE_OVERLAY);
+  let big = layoutText(font, &mut atlas, "Outlined", &LayoutOptions.make(76.0));
+  let hBig = text.addText(&mut device, SPACE_OVERLAY);
   text.set(&mut device, hBig, &big, &outlined, overlayTransform(f32.from(W), f32.from(H), 620., 90.));
-  mut kern = LayoutOptions.make(44.0);
-  imm kerned = layoutText(font, &mut atlas, "AVATAR To Wa", &kern);
+  var kern = LayoutOptions.make(44.0);
+  let kerned = layoutText(font, &mut atlas, "AVATAR To Wa", &kern);
   kern.kerning = false;
-  imm unkerned = layoutText(font, &mut atlas, "AVATAR To Wa", &kern);
-  imm hK = text.addText(&mut device, SPACE_OVERLAY);
-  imm hU = text.addText(&mut device, SPACE_OVERLAY);
+  let unkerned = layoutText(font, &mut atlas, "AVATAR To Wa", &kern);
+  let hK = text.addText(&mut device, SPACE_OVERLAY);
+  let hU = text.addText(&mut device, SPACE_OVERLAY);
   text.set(&mut device, hK, &kerned, &white, overlayTransform(f32.from(W), f32.from(H), 620., 190.));
   text.set(&mut device, hU, &unkerned, &grey, overlayTransform(f32.from(W), f32.from(H), 620., 240.));
 
   // A sign in the world, turned 35 degrees about y, and a billboard over it
-  imm aspect = f32.from(W) / f32.from(H);
-  mut camera = Camera.make();
+  let aspect = f32.from(W) / f32.from(H);
+  var camera = Camera.make();
   camera.lookAt(new Vec3(0., 0.6, 4.), new Vec3(0., 0., 0.), new Vec3(0., 1., 0.));
-  imm vp = camera.projectionMatrix(aspect) * camera.viewMatrix();
-  imm signText = layoutText(font, &mut atlas, "Welcome to the\nworld of text", &LayoutOptions.make(0.22));
-  imm hSign = text.addText(&mut device, SPACE_WORLD);
-  imm turned = Mat4.fromTrs(new Vec3(2.1, -0.95, 0.), Quat.angleAxis(radians(-35.), new Vec3(0., 1., 0.)), new Vec3(1., 1., 1.));
-  mut signStyle = TextStyle.plain(new Color(0.4, 1., 0.6, 1.));
+  let vp = camera.projectionMatrix(aspect) * camera.viewMatrix();
+  let signText = layoutText(font, &mut atlas, "Welcome to the\nworld of text", &LayoutOptions.make(0.22));
+  let hSign = text.addText(&mut device, SPACE_WORLD);
+  let turned = Mat4.fromTrs(new Vec3(2.1, -0.95, 0.), Quat.angleAxis(radians(-35.), new Vec3(0., 1., 0.)), new Vec3(1., 1., 1.));
+  var signStyle = TextStyle.plain(new Color(0.4, 1., 0.6, 1.));
   signStyle.shadowColor = new Color(0., 0., 0., 0.8);
   signStyle.shadowOffset = new Vec2(0.01, 0.01);
   signStyle.shadowSoftness = 0.008;
   text.set(&mut device, hSign, &signText, &signStyle, worldTransform(vp, turned, &signText, 0.5, 0.5));
-  imm label = layoutText(font, &mut atlas, "label (billboard)", &LayoutOptions.make(0.12));
-  imm hLabel = text.addText(&mut device, SPACE_WORLD);
+  let label = layoutText(font, &mut atlas, "label (billboard)", &LayoutOptions.make(0.12));
+  let hLabel = text.addText(&mut device, SPACE_WORLD);
   text.set(&mut device, hLabel, &label, &white, worldTransform(vp, billboardPlacement(&camera, new Vec3(2.1, -0.45, 0.), false), &label, 0.5, 0.5));
 
   text.syncAtlas(&mut device, &atlas);
   print <- "atlas: ", u64.from(atlas.generated), " glyph fields, ", u64.from(atlas.fixedTexels), " texels corrected\n";
-  mut encoder = device.createCommandEncoder();
-  imm color = new RenderPassColorAttachment(view: target.createView(), loadOp: LOAD_OP_CLEAR,
+  var encoder = device.createCommandEncoder();
+  let color = new RenderPassColorAttachment(view: target.createView(), loadOp: LOAD_OP_CLEAR,
     clearValue: new Color(0.08, 0.1, 0.14, 1.));
-  imm d = new RenderPassDepthStencilAttachment(view: depth.createView(), depthLoadOp: LOAD_OP_CLEAR,
+  let d = new RenderPassDepthStencilAttachment(view: depth.createView(), depthLoadOp: LOAD_OP_CLEAR,
     depthStoreOp: STORE_OP_STORE, depthClearValue: 1.);
-  mut pass = encoder.beginRenderPassWithDepth(&color, &d);
+  var pass = encoder.beginRenderPassWithDepth(&color, &d);
   pass.end();
   text.renderWorld(&mut encoder, &target, &depth);
   text.renderOverlay(&mut encoder, &target);
@@ -184,22 +184,22 @@ fn draw(font &Font, out &Path) {
 }
 
 fn main() i32 {
-  imm args = process.args();
-  mut fontFile = Path.fromLiteral("C:/Windows/Fonts/arial.ttf");
-  mut outFile = Path.fromLiteral("textdemo.bmp");
+  let args = process.args();
+  var fontFile = Path.fromLiteral("C:/Windows/Fonts/arial.ttf");
+  var outFile = Path.fromLiteral("textdemo.bmp");
   if args.len() > 1usize { fontFile = Path.fromLiteral((*args[1usize]).view()); }
   if args.len() > 2usize { outFile = Path.fromLiteral((*args[2usize]).view()); }
   match fs.readFile(&fontFile) {
-    case imm bytes Ok {
+    case let bytes Ok {
       match Font.load(bytes.view()) {
-        case imm f Ok { draw(&f, &outFile); }
-        case imm e Error { print <- "cannot load the font: ", e.message(), "\n"; return 1; }
+        case let f Ok { draw(&f, &outFile); }
+        case let e Error { print <- "cannot load the font: ", e.message(), "\n"; return 1; }
       }
     }
     case is Error {
       print <- "no font file; using the demo font\n";
       match Font.load(&DEMO_FONT) {
-        case imm f Ok { draw(&f, &outFile); }
+        case let f Ok { draw(&f, &outFile); }
         case is Error { return 1; }
       }
     }

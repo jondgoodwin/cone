@@ -73,25 +73,25 @@ fn server(pool Pool) Srv {
 }
 
 fn listen(sv &mut Srv, lp &mut Loop) u16 {
-  mut port = 0u16;
+  var port = 0u16;
   match sv.drv.listen(lp, SocketAddr.localhost(0u16), httpconn.Sink.Here(tokSrv)) {
-    case imm r Ok {
+    case let r Ok {
       match sv.drv.localAddr(lp, r) {
-        case imm a Ok {port = a.port();}
-        case imm e Error {}
+        case let a Ok {port = a.port();}
+        case let e Error {}
       }
     }
-    case imm e Error {}
+    case let e Error {}
   }
   port;
 }
 
 fn reply(sv &mut Srv, req httpconn.ReqId, head bool, status u16, location &Array[u8], body &Array[u8]) {
-  mut h = ResponseHead.make(status);
+  var h = ResponseHead.make(status);
   if location.len > 0usize {h.headers.add("Location", location);}
   sv.drv.respond(req, h, BodyLength.sized(u64.from(body.len)));
   if body.len > 0usize and not head {
-    mut b = sv.pool.mustTake(body.len);
+    var b = sv.pool.mustTake(body.len);
     b.append(body);
     sv.drv.sendData(req, b);
     sv.drv.finish(req);
@@ -100,21 +100,21 @@ fn reply(sv &mut Srv, req httpconn.ReqId, head bool, status u16, location &Array
 
 fn number(s &str) u64 {
   match collections.parseUInt(s) {
-    case imm v Some {v;}
+    case let v Some {v;}
     case is None[u64] {0u64;}
   }
 }
 
 // Stream j's next pieces, as many as the connection takes now
 fn pumpStream(sv &mut Srv, j usize) {
-  imm req = *sv.streams[j];
+  let req = *sv.streams[j];
   while *sv.sent[j] < *sv.totals[j] {
-    imm at = *sv.sent[j];
-    imm left = *sv.totals[j] - at;
-    imm n = if left < 65536u64 {usize.from(left);} else {65536usize;};
-    mut b = sv.pool.mustTake(n);
-    imm s = b.spare();
-    mut i = 0usize;
+    let at = *sv.sent[j];
+    let left = *sv.totals[j] - at;
+    let n = if left < 65536u64 {usize.from(left);} else {65536usize;};
+    var b = sv.pool.mustTake(n);
+    let s = b.spare();
+    var i = 0usize;
     while i < n {
       s[i] = u8.from((at + u64.from(i)) % 251u64);
       i = i + 1usize;
@@ -130,7 +130,7 @@ fn pumpStream(sv &mut Srv, j usize) {
 }
 
 fn dropStream(sv &mut Srv, j usize) {
-  imm last = sv.streams.len() - 1usize;
+  let last = sv.streams.len() - 1usize;
   sv.streams.swap(j, last);
   sv.sent.swap(j, last);
   sv.totals.swap(j, last);
@@ -140,7 +140,7 @@ fn dropStream(sv &mut Srv, j usize) {
 }
 
 fn findStream(sv &Srv, req httpconn.ReqId) usize {
-  mut j = 0usize;
+  var j = 0usize;
   while j < sv.streams.len() {
     if *sv.streams[j] == req {return j;}
     j = j + 1usize;
@@ -150,16 +150,16 @@ fn findStream(sv &Srv, req httpconn.ReqId) usize {
 
 // The answer to request k, read whole
 fn answer(sv &mut Srv, lp &mut Loop, k usize) {
-  imm req = *sv.reqs[k];
-  imm full = sv.targets[k].copy();
-  imm t = full.view();
-  mut q = 0usize;
+  let req = *sv.reqs[k];
+  let full = sv.targets[k].copy();
+  let t = full.view();
+  var q = 0usize;
   while q < t.len and t[q] != '?' {q = q + 1usize;}
-  imm path = &t[0usize ..< q];
-  imm query = &t[(if q < t.len {q + 1usize;} else {q;}) ..];
-  imm head = *sv.methods[k] == Method.Head;
+  let path = &t[0usize ..< q];
+  let query = &t[(if q < t.len {q + 1usize;} else {q;}) ..];
+  let head = *sv.methods[k] == Method.Head;
   if path == "/echo" {
-    mut b = String.from(methodToken(*sv.methods[k]));
+    var b = String.from(methodToken(*sv.methods[k]));
     b.append(" ");
     b.append(sv.bodies[k].view());
     reply(sv, req, head, 200u16, "", b.view());
@@ -175,18 +175,18 @@ fn answer(sv &mut Srv, lp &mut Loop, k usize) {
       reply(sv, req, head, 200u16, "", "second");
     }
   } elif path.len > 10usize and &path[0usize ..< 10usize] == "/redirect/" {
-    imm n = number(&path[10usize ..]);
+    let n = number(&path[10usize ..]);
     if n == 0u64 {
       reply(sv, req, head, 200u16, "", "landed");
     } else {
-      mut loc = String.from("/redirect/");
+      var loc = String.from("/redirect/");
       loc.appendUInt(n - 1u64);
       reply(sv, req, head, 302u16, loc.view(), "moved");
     }
   } elif path.len > 8usize and &path[0usize ..< 8usize] == "/status/" {
     reply(sv, req, head, u16.from(number(&path[8usize ..])), query, "moved");
   } elif path == "/headers" {
-    mut b = String.from("auth=");
+    var b = String.from("auth=");
     b.append(sv.auths[k].view());
     b.append(";cookie=");
     b.append(sv.cookies[k].view());
@@ -196,7 +196,7 @@ fn answer(sv &mut Srv, lp &mut Loop, k usize) {
     b.append(if sv.bodies[k].len() == 0usize {"-";} else {sv.bodies[k].view();});
     reply(sv, req, head, 200u16, "", b.view());
   } elif path.len > 5usize and &path[0usize ..< 5usize] == "/big/" {
-    imm n = number(&path[5usize ..]);
+    let n = number(&path[5usize ..]);
     sv.drv.respond(req, ResponseHead.make(200u16), BodyLength.sized(n));
     sv.streams.push(req);
     sv.sent.push(0u64);
@@ -204,7 +204,7 @@ fn answer(sv &mut Srv, lp &mut Loop, k usize) {
     pumpStream(sv, sv.streams.len() - 1usize);
   } elif path == "/stall" {
     sv.drv.respond(req, ResponseHead.make(200u16), BodyLength.sized(1048576u64));
-    mut b = sv.pool.mustTake(65536usize);
+    var b = sv.pool.mustTake(65536usize);
     b.setLen(65536usize);
     sv.drv.sendData(req, b);
   } elif path == "/hang" {
@@ -216,7 +216,7 @@ fn answer(sv &mut Srv, lp &mut Loop, k usize) {
 }
 
 fn findReq(sv &Srv, req httpconn.ReqId) usize {
-  mut k = 0usize;
+  var k = 0usize;
   while k < sv.reqs.len() {
     if *sv.reqs[k] == req {return k;}
     k = k + 1usize;
@@ -225,7 +225,7 @@ fn findReq(sv &Srv, req httpconn.ReqId) usize {
 }
 
 fn forget(sv &mut Srv, k usize) {
-  imm last = sv.reqs.len() - 1usize;
+  let last = sv.reqs.len() - 1usize;
   sv.reqs.swap(k, last);
   sv.conns.swap(k, last);
   sv.methods.swap(k, last);
@@ -244,13 +244,13 @@ fn forget(sv &mut Srv, k usize) {
 
 fn fieldOr(h &Headers, name &str) String {
   match h.get(name) {
-    case imm v Some {String.fromBytes(v);}
+    case let v Some {String.fromBytes(v);}
     case is None[&Array[u8]] {String.from("-");}
   }
 }
 
 fn serve(sv &mut Srv, lp &mut Loop, e &mut httpconn.Event) {
-  imm kind = e.kind;
+  let kind = e.kind;
   if kind == httpconn.EventKind.Accepted {
     sv.accepted = sv.accepted + 1u64;
     sv.open = sv.open + 1u64;
@@ -268,19 +268,19 @@ fn serve(sv &mut Srv, lp &mut Loop, e &mut httpconn.Event) {
     sv.auths.push(fieldOr(&e.request.headers, "Authorization"));
     sv.cookies.push(fieldOr(&e.request.headers, "Cookie"));
   } elif kind == httpconn.EventKind.Data {
-    imm k = findReq(sv, e.req);
+    let k = findReq(sv, e.req);
     if k < sv.reqs.len() {(&mut sv.bodies[k]).appendBytes(e.buf.view());}
     sv.drv.release(e.req, e.buf.len());
   } elif kind == httpconn.EventKind.End {
-    imm k = findReq(sv, e.req);
+    let k = findReq(sv, e.req);
     if k < sv.reqs.len() {answer(sv, lp, k);}
   } elif kind == httpconn.EventKind.Writable {
-    imm j = findStream(sv, e.req);
+    let j = findStream(sv, e.req);
     if j < sv.streams.len() {pumpStream(sv, j);}
   } elif e.isTerminal() {
-    imm k = findReq(sv, e.req);
+    let k = findReq(sv, e.req);
     if k < sv.reqs.len() {forget(sv, k);}
-    imm j = findStream(sv, e.req);
+    let j = findStream(sv, e.req);
     if j < sv.streams.len() {dropStream(sv, j);}
   }
 }
@@ -288,20 +288,20 @@ fn serve(sv &mut Srv, lp &mut Loop, e &mut httpconn.Event) {
 // One turn of the loop: the client's completions to it, the server's to
 // its driver; the server's events answered; the client's appended to out
 fn step(cl &mut Client, sv &mut Srv, lp &mut Loop, out &mut List[Event], until Instant) {
-  mut sevs = List[httpconn.Event].empty();
+  var sevs = List[httpconn.Event].empty();
   cl.pump(lp, out);
   sv.drv.pump(lp, &mut sevs);
-  mut limit = until;
-  imm a = cl.wakeAt();
+  var limit = until;
+  let a = cl.wakeAt();
   if a < limit {limit = a;}
-  imm b = sv.drv.wakeAt();
+  let b = sv.drv.wakeAt();
   if b < limit {limit = b;}
   if out.len() > 0usize or sevs.len() > 0usize {limit = new Instant();}
-  mut comps = List[Completion].empty();
+  var comps = List[Completion].empty();
   lp.poll(limit, &mut comps);
-  mut k = 0usize;
+  var k = 0usize;
   while k < comps.len() {
-    imm c = &mut comps[k];
+    let c = &mut comps[k];
     if not cl.complete(lp, c) {sv.drv.complete(lp, c);}
     k = k + 1usize;
   }
@@ -318,12 +318,12 @@ fn step(cl &mut Client, sv &mut Srv, lp &mut Loop, out &mut List[Event], until I
 // The server's every connection reset, and its buffers home
 fn stopServer(sv &mut Srv, lp &mut Loop) {
   sv.drv.abortAll(lp);
-  mut sevs = List[httpconn.Event].empty();
+  var sevs = List[httpconn.Event].empty();
   sv.drv.pump(lp, &mut sevs);
 }
 
 fn url(port u16, path &str) String {
-  mut u = String.from("http://127.0.0.1:");
+  var u = String.from("http://127.0.0.1:");
   u.appendUInt(u64.from(port));
   u.append(path);
   u;
@@ -351,7 +351,7 @@ fn seen() Seen {
 }
 
 fn note(cl &mut Client, s &mut Seen, e &mut Event) {
-  imm n = eventName(e.kind);
+  let n = eventName(e.kind);
   s.kinds.appendByte(n[0usize]);
   if e.kind == EventKind.Response {
     s.status = e.response.status;
@@ -372,14 +372,14 @@ fn note(cl &mut Client, s &mut Seen, e &mut Event) {
 
 // Drive until fetch id has its final answer, its events noted in s
 fn finishOf(cl &mut Client, sv &mut Srv, lp &mut Loop, id FetchId, s &mut Seen) {
-  mut out = List[Event].empty();
-  imm giveUp = Instant.now() + Duration.fromSeconds(10i64);
-  imm before = s.finals;
+  var out = List[Event].empty();
+  let giveUp = Instant.now() + Duration.fromSeconds(10i64);
+  let before = s.finals;
   while s.finals == before and Instant.now() < giveUp {
     step(cl, sv, lp, &mut out, giveUp);
-    mut k = 0usize;
+    var k = 0usize;
     while k < out.len() {
-      imm e = &mut out[k];
+      let e = &mut out[k];
       if e.id == id {note(cl, s, e);}
       k = k + 1usize;
     }
@@ -390,21 +390,21 @@ fn finishOf(cl &mut Client, sv &mut Srv, lp &mut Loop, id FetchId, s &mut Seen) 
 
 // A request sent and driven to its final answer: what was seen
 fn fetchSeen(cl &mut Client, sv &mut Srv, lp &mut Loop, r Request) Seen {
-  mut s = seen();
-  imm id = cl.send(lp, r, Sink.Here(1u64));
+  var s = seen();
+  let id = cl.send(lp, r, Sink.Here(1u64));
   finishOf(cl, sv, lp, id, &mut s);
   s;
 }
 
 // Drive for a while
 fn idleFor(cl &mut Client, sv &mut Srv, lp &mut Loop, d Duration) {
-  mut out = List[Event].empty();
-  imm until = Instant.now() + d;
+  var out = List[Event].empty();
+  let until = Instant.now() + d;
   while Instant.now() < until {
     step(cl, sv, lp, &mut out, until);
-    mut k = 0usize;
+    var k = 0usize;
     while k < out.len() {
-      imm e = &mut out[k];
+      let e = &mut out[k];
       if e.kind == EventKind.Data {cl.release(e.id, e.buf.len());}
       k = k + 1usize;
     }
@@ -416,13 +416,13 @@ const mib = 1048576u64;
 
 // The pool's bytes lent now: both ends' buffers
 fn lent(pool &Pool) u64 {
-  imm s = pool.stats();
+  let s = pool.stats();
   u64.from(s.heldBytes - s.idleBytes);
 }
 
 // Whether buf holds the body's bytes from offset 'at'
 fn pattern(buf &Array[u8], at u64) bool {
-  mut i = 0usize;
+  var i = 0usize;
   while i < buf.len {
     if buf[i] != u8.from((at + u64.from(i)) % 251u64) {return false;}
     i = i + 1usize;
@@ -443,19 +443,19 @@ struct Read {
 // Fetch /big/n, the consumer releasing at most 'perStep' bytes a turn of
 // the loop (0: all at once): what it read
 fn readBig(cl &mut Client, sv &mut Srv, lp &mut Loop, pool &Pool, port u16, n u64, perStep usize) Read {
-  mut path = String.from("/big/");
+  var path = String.from("/big/");
   path.appendUInt(n);
-  imm id = cl.get(lp, url(port, path.view()).view(), Sink.Here(1u64));
-  mut r = new Read(0u64, true, EventKind.Data, 0u64, 0u64, 0u64);
-  mut kept = List[IoBuf].empty();
-  mut keptBytes = 0usize;
-  mut out = List[Event].empty();
-  imm giveUp = Instant.now() + Duration.fromSeconds(60i64);
+  let id = cl.get(lp, url(port, path.view()).view(), Sink.Here(1u64));
+  var r = new Read(0u64, true, EventKind.Data, 0u64, 0u64, 0u64);
+  var kept = List[IoBuf].empty();
+  var keptBytes = 0usize;
+  var out = List[Event].empty();
+  let giveUp = Instant.now() + Duration.fromSeconds(60i64);
   while (r.finals == 0u64 or kept.len() > 0usize) and Instant.now() < giveUp {
     step(cl, sv, lp, &mut out, giveUp);
-    mut k = 0usize;
+    var k = 0usize;
     while k < out.len() {
-      imm e = &mut out[k];
+      let e = &mut out[k];
       k = k + 1usize;
       if e.id != id {continue;}
       if e.kind == EventKind.Data {
@@ -465,7 +465,7 @@ fn readBig(cl &mut Client, sv &mut Srv, lp &mut Loop, pool &Pool, port u16, n u6
           cl.release(e.id, e.buf.len());
         } else {
           keptBytes = keptBytes + e.buf.len();
-          mut b = IoBuf.empty();
+          var b = IoBuf.empty();
           b <=> e.buf;
           kept.push(b);
         }
@@ -476,21 +476,21 @@ fn readBig(cl &mut Client, sv &mut Srv, lp &mut Loop, pool &Pool, port u16, n u6
     }
     out.clear();
     if u64.from(keptBytes) > r.peakHeld {r.peakHeld = u64.from(keptBytes);}
-    imm l = lent(pool);
+    let l = lent(pool);
     if l > r.peakLent {r.peakLent = l;}
     // The slow consumer: the oldest of what it holds, perStep at a time
-    mut freed = 0usize;
-    mut gone = 0usize;
+    var freed = 0usize;
+    var gone = 0usize;
     while gone < kept.len() and freed < perStep {
       freed = freed + kept[gone].len();
       gone = gone + 1usize;
     }
     if gone > 0usize {
-      mut rest = List[IoBuf].empty();
-      mut j = gone;
+      var rest = List[IoBuf].empty();
+      var j = gone;
       while j < kept.len() {
-        mut b = IoBuf.empty();
-        imm slotRef = &mut kept[j];
+        var b = IoBuf.empty();
+        let slotRef = &mut kept[j];
         b <=> *slotRef;
         rest.push(b);
         j = j + 1usize;
@@ -515,13 +515,13 @@ struct ChanRead {
 }
 
 fn chanReader(rx Receiver[Event]) ChanRead {
-  mut r = new ChanRead(0u64, true, 0u64, 0u64, 0u64, false);
-  mut inbox = rx;
-  mut seen = 0u64;
+  var r = new ChanRead(0u64, true, 0u64, 0u64, 0u64, false);
+  var inbox = rx;
+  var seen = 0u64;
   while true {
-    mut e = Event.make(EventKind.Data, 0u64, FetchId.none());
+    var e = Event.make(EventKind.Data, 0u64, FetchId.none());
     match inbox.recv() {
-      case mut s Some {e <=> s;}
+      case var s Some {e <=> s;}
       case is None[Event] {break;}
     }
     seen = seen + 1u64;
@@ -542,22 +542,22 @@ fn chanReader(rx Receiver[Event]) ChanRead {
 }
 
 fn main() i32 {
-  imm pool = Pool.make();
-  mut lp = Loop.mustMake();
-  mut sv = server(pool);
-  imm port = listen(&mut sv, &mut lp);
+  let pool = Pool.make();
+  var lp = Loop.mustMake();
+  var sv = server(pool);
+  let port = listen(&mut sv, &mut lp);
   require(port != 0u16, "the server listens");
-  mut cl = Client.make(Config.make(), pool);
+  var cl = Client.make(Config.make(), pool);
 
   // A 16 MiB body, released as it comes
-  imm fast = readBig(&mut cl, &mut sv, &mut lp, &pool, port, 16u64 * mib, 0usize);
+  let fast = readBig(&mut cl, &mut sv, &mut lp, &pool, port, 16u64 * mib, 0usize);
   expect(fast.last == EventKind.Done and fast.finals == 1u64, "16 MiB: Done, once");
   expectUInt(fast.bytes, 16u64 * mib, "...every byte");
   expect(fast.good, "...each the right one");
   expect(fast.peakLent <= 2u64 * mib, "...the bytes lent never past 2 MiB");
 
   // A slow consumer: 16 KiB released a turn; the link slows, memory does not grow
-  imm slow = readBig(&mut cl, &mut sv, &mut lp, &pool, port, 8u64 * mib, 16384usize);
+  let slow = readBig(&mut cl, &mut sv, &mut lp, &pool, port, 8u64 * mib, 16384usize);
   expect(slow.last == EventKind.Done and slow.finals == 1u64, "8 MiB to a slow consumer: Done, once");
   expectUInt(slow.bytes, 8u64 * mib, "...every byte");
   expect(slow.good, "...each the right one");
@@ -566,18 +566,18 @@ fn main() i32 {
 
   // Cancelled mid-body: Cancelled, nothing after; its connection reset
   {
-    imm id = cl.get(&mut lp, url(port, "/stall").view(), Sink.Here(2u64));
-    mut out = List[Event].empty();
-    mut kinds = String.empty();
-    mut cancelled = false;
-    mut finals = 0u64;
-    imm giveUp = Instant.now() + Duration.fromSeconds(10i64);
-    imm openBefore = sv.open;
+    let id = cl.get(&mut lp, url(port, "/stall").view(), Sink.Here(2u64));
+    var out = List[Event].empty();
+    var kinds = String.empty();
+    var cancelled = false;
+    var finals = 0u64;
+    let giveUp = Instant.now() + Duration.fromSeconds(10i64);
+    let openBefore = sv.open;
     while finals == 0u64 and Instant.now() < giveUp {
       step(&mut cl, &mut sv, &mut lp, &mut out, giveUp);
-      mut k = 0usize;
+      var k = 0usize;
       while k < out.len() {
-        imm e = &mut out[k];
+        let e = &mut out[k];
         k = k + 1usize;
         kinds.appendByte(eventName(e.kind)[0usize]);
         if e.kind == EventKind.Data {
@@ -599,21 +599,21 @@ fn main() i32 {
 
   // Through a bounded channel to a slow thread
   {
-    mut tx Sender[Event];
-    mut rx Receiver[Event];
+    var tx Sender[Event];
+    var rx Receiver[Event];
     tx, rx = Channel[Event].bounded(4u64);
-    imm reader = thread.start(rx, &chanReader);
-    imm id = cl.get(&mut lp, url(port, "/big/4194304").view(), Sink.Chan(3u64, tx));
-    mut out = List[Event].empty();
-    mut peak = 0u64;
-    imm giveUp = Instant.now() + Duration.fromSeconds(60i64);
+    let reader = thread.start(rx, &chanReader);
+    let id = cl.get(&mut lp, url(port, "/big/4194304").view(), Sink.Chan(3u64, tx));
+    var out = List[Event].empty();
+    var peak = 0u64;
+    let giveUp = Instant.now() + Duration.fromSeconds(60i64);
     while (cl.live() > 0u32 or cl.held() > 0usize) and Instant.now() < giveUp {
       step(&mut cl, &mut sv, &mut lp, &mut out, giveUp);
       out.clear();
-      imm l = lent(&pool);
+      let l = lent(&pool);
       if l > peak {peak = l;}
     }
-    imm r = reader.join();
+    let r = reader.join();
     expectUInt(r.bytes, 4u64 * mib, "4 MiB through a channel of 4: every byte");
     expect(r.good, "...each the right one, nothing after the final answer");
     expect(r.responses == 1u64 and r.ends == 1u64 and r.finals == 1u64 and r.doneLast,
@@ -623,7 +623,7 @@ fn main() i32 {
     expectUInt(cl.stats().dropped, 0u64, "...none dropped");
   }
 
-  imm s = cl.stats();
+  let s = cl.stats();
   expectUInt(s.fetches, s.done + s.failed + s.cancelled + s.timedOut, "every fetch has had its one final answer");
   cl.abortAll(&mut lp);
   idleFor(&mut cl, &mut sv, &mut lp, Duration.fromMillis(50i64));

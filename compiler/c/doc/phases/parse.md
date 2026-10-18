@@ -350,7 +350,12 @@ token type. Permissions reach the same effect by a different route:
 `lexScanIdent` has a separate branch turning a `PermTag` binding into a
 `PermToken`. So `mut` and `uni` are lexically distinguished without being
 keyword tokens — copy the right one of these two patterns if you add a third
-family. The permission `new` is the exception: `new` is a keyword token
+family. `let` and `var` are keywords (`LetToken`, `VarToken`): the words a
+declaration begins with, which `parseDclWord` turns into the `imm` and `mut`
+permissions the rest of the compiler knows. Every place that decides a declaration
+starts here asks `lexIsDclStart`, which also accepts a `PermToken`, so that an
+`imm` or `mut` written where a declaration's word belongs is reported with the
+word to write instead (`ErrorDclWord`) and the declaration still parses. The permission `new` is the exception: `new` is a keyword token
 (`NewToken`), since it also begins a construction, and `newPerm` is not bound
 to its name. Being no identifier, a permission is no term either: inside `[...]`,
 where `Rc[mut, Node]` writes one, `parseIndexArg` takes it as the permission
@@ -452,7 +457,7 @@ with my blog post"*); he declined a postscript.
 `each`, `match`, `with`, a bare block, a `fn` or type with a body — **is Penny's
 default from the build, not Jon's ruling** [Penny 19 Sep], standing unless he
 objects. Measured 25 Sep: `if … {…}` needs none and tolerates one;
-`imm x = if … {…} else {…};` requires one, as in Rust; and a block's last
+`let x = if … {…} else {…};` requires one, as in Rust; and a block's last
 statement needs its own `;`, unlike Rust.
 
 **Layout is a documented style, not enforced** [Jon 25 Sep]: `else` and `elif`
@@ -582,7 +587,7 @@ settles them once it is: in a type, a parameter written as a lone name is an
 unnamed parameter of the type the name names (`&fn(Vec3) f32`); in an anonymous
 function it stays a parameter's name, with a method's `Self` inference, and a
 parameter written as its type alone is `ErrorNoIdent`. **A closure literal** is a
-value, with no `&`: `fn (u f32) [ribs, mut n = 0] f32 { ... }`, read by
+value, with no `&`: `fn (u f32) [ribs, var n = 0] f32 { ... }`, read by
 `parseTerm` where a term begins with `fn`, and the short form `x => x * 2` (and
 `(a, b) => ...`, `() => ...`), read where a name or a parenthesised list is
 followed by `=>` (`FatArrowToken`). Both build a `ClosureNode`
@@ -689,7 +694,7 @@ flagged `FlagLoopStep`. That step is a block that carries the guard wherever the
 value it steps to could wrap past the type's extreme and pass the loop's guard
 again. For an inclusive range
 without `by` (`a .. b`) it is `{ if x == b {break}; x++ }`, with the
-bound cloned for the second comparison. With `by` it is `{ imm prev = x; x += s;
+bound cloned for the second comparison. With `by` it is `{ let prev = x; x += s;
 if x < prev {break} }`, `>` for a range counting down, since a step of more than
 one need not land on the bound and the wrap is only visible after the step, as a
 move against the range's direction; `prev` is a phantom variable the parser
@@ -820,7 +825,7 @@ list from its text (`parseGenParms`), and writes as Cone source, parsed from a
 lexer of its own with private names (`Lexer.gennames`, as an actor's):
 
 ```
-struct walk.Gen { imm t &'a Tree; state' u32;
+struct walk.Gen { let t &'a Tree; state' u32;
                   pub fn next(self &mut) Option[&'a Node] {}  fn final(self &uni) {}
                   fn walk.yield(v &Node) Option[&Node] inline {Some[&Node](v);}
                   fn walk.none() Option[&Node] {None[&Node];} }
@@ -845,7 +850,7 @@ given the one lifetime `'a` (`parseGenAnnotate`), so that `next` hands out borro
 of what the generator was lent, not of the generator. `final` is an empty method
 that makes the struct need finalizing; generation hangs the frame's drop on it.
 `yield each src` is written as text too (`parseYieldEach`): a block holding
-`mut sub = src;` and a loop of `match sub.next()` that `yield`s each item
+`var sub = src;` and a loop of `match sub.next()` that `yield`s each item
 the `Some` binding holds, which the `yield` wraps in a `Some` of its own. What the compiler needs later is recorded in a
 `GenInfo` (`ir/exp/yield.h`).
 
@@ -1107,13 +1112,13 @@ numbers.
 | | `parseEnumExtensionMember` | what an enum extending another may not declare — a member of any kind, since a field or method every variant carries would have to reach its copies of the base's variants too, and a requirement declared there would need every copy to implement it; such a member belongs on the base, and comes along with the copies. Nor a discriminant: none is synthesized for such an enum either, its base's arriving with the fields name resolution splices in |
 | | `parseIsTagType`, `parseTagType` | `tag` recognized where a field's type is written and nowhere else, so it is not a reserved word |
 | | `parseFnSig`, `parseFnSigSettle` | parameters, `Self` inference, single or tuple return type; several return types separated by commas only outside every list (`ParseState.inlist`, section 1), a signature inside one returning several values parenthesising them. A `&fn` signature's parameter may be its type alone (an `anonName` parameter), and its lone names and `Self` inference wait for `parseFnSigSettle`, called once `parseAmper` or `parseFn` knows whether a body follows (section 4) |
-| | `parseVarDcl`, `parseStorageAttr`, `parseFieldDclBody`, `parseConstDcl`, `parsePerm` | the declaration forms; a field's or a global's trailing `use` clause goes to `parseFoldClause`, and one on a local, a parameter or a static is `ErrorBadFold`. `@threadlocal` after the permission is `DclThreadLocal` on a module's global, the one caller passing `ParseMayThreadLocal` (`parseFnOrVar`, which also refuses one with no initial value unless `extern`, `ErrorThreadLocalInit`); `imm` with it is `ErrorThreadLocalImm`; on a local, a static, a parameter, a field, a module trait's global, after `fn` or a type's keyword, or before a global's permission it is `ErrorThreadLocalPlace`, reported and dropped. `@workgroup` is read in the same places, `DclWorkgroup`, and refused in the same with `ErrorWorkgroupPlace` (beside `@threadlocal` too), on an `imm` global with `ErrorWorkgroupImm`, and with an initial value with `ErrorWorkgroupInit` (`parseFnOrVar`). A field's node is built while the lexer is still on its name, both so a diagnostic points there and so an enum's body can decide between a field and a bare-name variant afterwards |
+| | `parseVarDcl`, `parseStorageAttr`, `parseFieldDclBody`, `parseConstDcl`, `parseDclWord` | the declaration forms; a field's or a global's trailing `use` clause goes to `parseFoldClause`, and one on a local, a parameter or a static is `ErrorBadFold`. `@threadlocal` after the `let` or `var` is `DclThreadLocal` on a module's global, the one caller passing `ParseMayThreadLocal` (`parseFnOrVar`, which also refuses one with no initial value unless `extern`, `ErrorThreadLocalInit`); `let` with it is `ErrorThreadLocalImm`; on a local, a static, a parameter, a field, a module trait's global, after `fn` or a type's keyword, or before a global's `let` or `var` it is `ErrorThreadLocalPlace`, reported and dropped. `@workgroup` is read in the same places, `DclWorkgroup`, and refused in the same with `ErrorWorkgroupPlace` (beside `@threadlocal` too), on a `let` global with `ErrorWorkgroupImm`, and with an initial value with `ErrorWorkgroupInit` (`parseFnOrVar`). A field's node is built while the lexer is still on its name, both so a diagnostic points there and so an enum's body can decide between a field and a bare-name variant afterwards |
 | | `parseFoldClause` | `use *` with an optional `but` list, or a list of names each with an optional `as`; builds the clause on the field and an alias per listed name, bound by name resolution |
 | | `parseUseSibling`, `parseModUse`, `parseUseAdmits` | a `use` standing as a statement: in a type body it folds a sibling in, and at module scope (`parseGlobalStmts`) it folds an enum's variants or a submodule's names in, held on a `ModUseNode` — which of the two is known only once the source resolves. Both name their source and then share what follows it — every member by default, `*` refused as saying nothing more, a list with `as`, a block, or `but` |
 | `parser/parsefnflow.c` | `parseFn` | function/method declaration, with its `@initpure` after `fn`, before or after `@c`, recorded as `DclInitPure` and not checked, its `@intrinsic`, recorded as `DclIntrinsic` and letting the declaration end without a body, and its `@c`, refused where there is no one symbol for it to name — an anonymous, generic or `inline` fn, an intrinsic, a trait's or a generic type's method (`ErrorCAttr`), and its `@compute(x, y, z)` (`parseComputeAttr`), first or after the others: constant sizes, at least 1, at most 256 invocations and 64 along z (`ErrorComputeSize`), on no method, generic, `inline` fn, intrinsic, `@c` fn or anonymous one (`ErrorComputeAttr`), its signature left to type check (`fnDclComputeCheck`) — **despite the file name, this is where declarations and control flow are parsed, not data flow analysis** |
 | | `parseGenericParms`, `parseWhere`, `parseIsCondition`, `parseMacro` | the type parameter list, shared by `fn`, `struct`, `mod` and `macro`: comma-separated names, each a generic's annotated with `+`-joined names (or a function signature written bare, `parseFnBound`) whose meaning name resolution decides (`or` there is `ErrorGenParmOr`), and a macro's or module's refused an annotation as `ErrorGenParmConstr`; the `where` clause just before a function's or a type's block, `T is Name` (or `T is fn(...) R`) clauses joined by `and` and `or`, `and` binding tighter, grouped by parentheses, any other form `ErrorWhereForm` ([generic](../nodes/generic.md), "Parse"); and the condition after an `is` entry's `if`, read as a `where` clause's is, but kept whole and with no lifetime in it |
 | | `parseExprBlock` | the statement-block loop — the parser's second dispatch table |
-| | `parseIf`, `parseMatch`, `parseBoundMatch`, `parseLetElse` | `if`/`elif`/`else` and the `match`-to-`if` desugaring, and a local declaration followed by `else` (`imm n Ok = r else {...};`) as the bound `if` it stands for, stood in its own block's statements ([if](../nodes/if.md)); every pattern's root name is marked (`castPatternMark`) to be looked up in the matched value's enum at type check, as `parseCmp` marks an `is` test's |
+| | `parseIf`, `parseMatch`, `parseBoundMatch`, `parseLetElse` | `if`/`elif`/`else` and the `match`-to-`if` desugaring, and a local declaration followed by `else` (`let n Ok = r else {...};`) as the bound `if` it stands for, stood in its own block's statements ([if](../nodes/if.md)); every pattern's root name is marked (`castPatternMark`) to be looked up in the matched value's enum at type check, as `parseCmp` marks an `is` test's |
 | | `parseMatchColumn`, `parseMatchWild` | the patterns of one value of a match, joined by `or`; in `match a, b` a column that binds is `ErrorMatchColumn`; `_` (`parseMatchWild`) is a literal `true` flagged `FlagMatchAny`, refused in a match of one value |
 | | `parseUsingCall`, `parseUsingMatchee`, `parseUsingSome` | a function's pattern after `using` (`UsingToken`): the call, the matched value put in as its first argument, and the `Some` a binding takes; not a call is `ErrorUsingForm`, a match with one that does not end in `else` is `ErrorMatchUsing` |
 | | `parseMatchPattern`, `parseMatchRange` | one pattern of a case — `is`, a comparison, a range, a value alone, a test by `using` — lowered to the condition that tests the captured value, a value alone to the undecided test `newMatchValueNode` builds; a condition (`not b`, `n > 3`), at the start of a case or after an `or`, is `ErrorPatBare` |

@@ -421,7 +421,7 @@ pub struct ProcessError {
   // One line for a person: 'run nosuch: The system cannot find the file
   // specified', or 'run conec in build/x: The directory name is invalid'
   pub fn message(self &) String {
-    mut out = String.from(op.view());
+    var out = String.from(op.view());
     if not program.isEmpty() {
       out.append(" ");
       out.append(program.view());
@@ -431,7 +431,7 @@ pub struct ProcessError {
       out.append(dir.view());
     }
     out.append(": ");
-    imm text = systemText(code);
+    let text = systemText(code);
     out.append(text.view());
     out;
   }
@@ -460,23 +460,23 @@ fn systemText(code u32) String {
 // Windows' text for an error number, in English where the system has it,
 // with no line end or full stop; 'Windows error N' where it has none
 fn windowsText(code u32) String {
-  mut buf = new Array[u16, 512] <- fill 0u16;
-  imm bp *u16 = &[]buf as *u16;
-  mut n = FormatMessageW(formatFromSystem, null, code, english, bp, 512u32, null);
+  var buf = new Array[u16, 512] <- fill 0u16;
+  let bp *u16 = &[]buf as *u16;
+  var n = FormatMessageW(formatFromSystem, null, code, english, bp, 512u32, null);
   if n == 0u32 {
     n = FormatMessageW(formatFromSystem, null, code, 0u32, bp, 512u32, null);
   }
-  mut out = String.empty();
+  var out = String.empty();
   if n == 0u32 {
     out.append("Windows error ");
     out.appendUInt(u64.from(code));
     return out;
   }
-  imm text = narrow(bp, i32.from(n));
-  imm trimmed = text.trim();
+  let text = narrow(bp, i32.from(n));
+  let trimmed = text.trim();
   out.append(trimmed.view());
   if out.endsWith(".") {
-    imm cut = out.sub(0usize, out.len() - 1usize);
+    let cut = out.sub(0usize, out.len() - 1usize);
     return cut;
   }
   out;
@@ -490,16 +490,16 @@ fn windowsText(code u32) String {
 // a null pointer when s is not UTF-8
 fn widen(s &Array[u8]) *u16 {
   if s.len == 0usize {
-    imm p = libc.malloc(2usize) as *u16;
+    let p = libc.malloc(2usize) as *u16;
     *p = 0u16;
     return p;
   }
   if s.len > 0x3FFFFFFFusize { return null; }
-  imm len = i32.from(s.len);
-  imm n = MultiByteToWideChar(utf8Page, invalidUtf8Fails, s as *u8, len, null, 0i32);
+  let len = i32.from(s.len);
+  let n = MultiByteToWideChar(utf8Page, invalidUtf8Fails, s as *u8, len, null, 0i32);
   if n == 0i32 { return null; }
-  imm count = usize.from(n);
-  imm p = libc.malloc((count + 1usize) * 2usize) as *u16;
+  let count = usize.from(n);
+  let p = libc.malloc((count + 1usize) * 2usize) as *u16;
   MultiByteToWideChar(utf8Page, invalidUtf8Fails, s as *u8, len, p, n);
   *(p + count) = 0u16;
   p;
@@ -508,14 +508,14 @@ fn widen(s &Array[u8]) *u16 {
 // UTF-16 as UTF-8: n units from p, or up to its 0 when n is -1. A lone
 // surrogate, which is no character, becomes U+FFFD.
 fn narrow(p *u16, n i32) String {
-  mut out = String.empty();
+  var out = String.empty();
   if n == 0i32 { return out; }
-  imm size = WideCharToMultiByte(utf8Page, 0u32, p, n, null, 0i32, null, null);
+  let size = WideCharToMultiByte(utf8Page, 0u32, p, n, null, 0i32, null, null);
   if size <= 0i32 { return out; }
-  imm buf = libc.malloc(usize.from(size));
+  let buf = libc.malloc(usize.from(size));
   WideCharToMultiByte(utf8Page, 0u32, p, n, buf, size, null, null);
   // Counted up to the 0, the 0 is among the bytes
-  imm len = if n < 0i32 {usize.from(size) - 1usize;} else {usize.from(size);};
+  let len = if n < 0i32 {usize.from(size) - 1usize;} else {usize.from(size);};
   out.appendBytes(mem.sliceFromParts(buf, len));
   libc.free(buf);
   out;
@@ -526,7 +526,7 @@ fn narrow(p *u16, n i32) String {
 // ---------------------------------------------------------------------------
 
 fn hasByte(s &Array[u8], b u8) bool {
-  mut i = 0usize;
+  var i = 0usize;
   while i < s.len {
     if s[i] == b { return true; }
     i = i + 1usize;
@@ -535,7 +535,7 @@ fn hasByte(s &Array[u8], b u8) bool {
 }
 
 fn appendBackslashes(out &mut String, n usize) {
-  mut k = 0usize;
+  var k = 0usize;
   while k < n {
     out.appendByte('\\');
     k = k + 1usize;
@@ -548,10 +548,10 @@ fn appendBackslashes(out &mut String, n usize) {
 // backslash, and the backslashes before a '"' (or before the closing one)
 // doubled
 fn quoteArg(out &mut String, a &Array[u8]) {
-  mut plain = a.len > 0usize;
-  mut i = 0usize;
+  var plain = a.len > 0usize;
+  var i = 0usize;
   while i < a.len {
-    imm c = a[i];
+    let c = a[i];
     if c == ' ' or c == '\t' or c == '\n' or c == 0x0Bu8 or c == '"' { plain = false; }
     i = i + 1usize;
   }
@@ -560,10 +560,10 @@ fn quoteArg(out &mut String, a &Array[u8]) {
     return;
   }
   out.appendByte('"');
-  mut slashes = 0usize;
+  var slashes = 0usize;
   i = 0usize;
   while i < a.len {
-    imm c = a[i];
+    let c = a[i];
     if c == '\\' {
       slashes = slashes + 1usize;
     }
@@ -601,8 +601,8 @@ fn quoteProgram(out &mut String, p &Array[u8]) {
 // argument, quoted where it must be, one space between them. A program
 // holding a '"' cannot be written, and is written as it is.
 pub fn commandLine(args &Array[String]) String {
-  mut out = String.empty();
-  mut i = 0usize;
+  var out = String.empty();
+  var i = 0usize;
   while i < args.len {
     if i == 0usize {
       quoteProgram(&mut out, args[i].view());
@@ -663,8 +663,8 @@ pub fn run(args &Array[String], opts Options = new Options(), dir &Path = "") Re
   if args.len == 0usize {
     return Error[Output, ProcessError](failure("run", "", dir, invalidParameter()));
   }
-  imm program = args[0usize].view();
-  mut i = 0usize;
+  let program = args[0usize].view();
+  var i = 0usize;
   while i < args.len {
     if hasByte(args[i].view(), 0u8) {
       return Error[Output, ProcessError](failure("run", program, dir, invalidParameter()));
@@ -676,7 +676,7 @@ pub fn run(args &Array[String], opts Options = new Options(), dir &Path = "") Re
     return Error[Output, ProcessError](failure("run", program, dir, errorInvalidName));
   }
   if isWindows() {
-    imm line = commandLine(args);
+    let line = commandLine(args);
     start("run", program, line.view(), dir, opts);
   }
   else {
@@ -695,7 +695,7 @@ pub fn runLine(line &str, opts Options = new Options(), dir &Path = "") Result[O
     start("runLine", line, line, dir, opts);
   }
   else {
-    mut shell = List[String].empty();
+    var shell = List[String].empty();
     shell.push(String.from("/bin/sh"));
     shell.push(String.from("-c"));
     shell.push(String.from(line));
@@ -718,29 +718,29 @@ fn noStream() Stream {
 }
 
 // Each pipe a name of its own: this process, this thread, and a count
-mut @threadlocal pipeSerial = 0u32;
+var @threadlocal pipeSerial = 0u32;
 
 // A pipe for one of the child's outputs: our end, to read without blocking,
 // goes in s; the child's end, inheritable, is returned, or 0 on failure
 fn makePipe(s &mut Stream) usize {
-  mut tries = 0u32;
+  var tries = 0u32;
   while tries < 8u32 {
     tries = tries + 1u32;
     pipeSerial = pipeSerial + 1u32;
-    mut name = String.from("\\\\.\\pipe\\cone-process-");
+    var name = String.from("\\\\.\\pipe\\cone-process-");
     name.appendUInt(u64.from(GetCurrentProcessId()));
     name.append("-");
     name.appendUInt(u64.from(GetCurrentThreadId()));
     name.append("-");
     name.appendUInt(u64.from(pipeSerial));
-    imm wname = widen(name.view());
-    imm ours = CreateNamedPipeW(wname, pipeAccessInbound | flagOverlapped | flagFirstInstance,
+    let wname = widen(name.view());
+    let ours = CreateNamedPipeW(wname, pipeAccessInbound | flagOverlapped | flagFirstInstance,
       pipeRejectRemote, 1u32, pipeSize, pipeSize, 0u32, null);
     if ours != invalidHandle {
-      imm sa = new SecurityAttributes(24u32, null, 1i32);
-      imm theirs = CreateFileW(wname, genericWrite, 0u32, &sa, openExisting, 0u32, 0usize);
+      let sa = new SecurityAttributes(24u32, null, 1i32);
+      let theirs = CreateFileW(wname, genericWrite, 0u32, &sa, openExisting, 0u32, 0usize);
       libc.free(wname as *u8);
-      imm event = CreateEventW(null, 1i32, 0i32, null);
+      let event = CreateEventW(null, 1i32, 0i32, null);
       if theirs == invalidHandle or event == 0usize {
         closeIf(theirs);
         closeIf(event);
@@ -760,9 +760,9 @@ fn makePipe(s &mut Stream) usize {
 
 // The NUL device, inheritable, to read from or write to
 fn openNul(access u32) usize {
-  imm sa = new SecurityAttributes(24u32, null, 1i32);
-  imm wname = widen("NUL");
-  imm h = CreateFileW(wname, access, shareReadWrite, &sa, openExisting, 0u32, 0usize);
+  let sa = new SecurityAttributes(24u32, null, 1i32);
+  let wname = widen("NUL");
+  let h = CreateFileW(wname, access, shareReadWrite, &sa, openExisting, 0u32, 0usize);
   libc.free(wname as *u8);
   if h == invalidHandle {0usize;} else {h;};
 }
@@ -770,10 +770,10 @@ fn openNul(access u32) usize {
 // An inheritable copy of one of this program's standard handles, or NUL
 // where it has none
 fn inheritStd(which u32, access u32) usize {
-  imm h = GetStdHandle(which);
+  let h = GetStdHandle(which);
   if h != 0usize and h != invalidHandle {
-    mut copy = 0usize;
-    imm me = GetCurrentProcess();
+    var copy = 0usize;
+    let me = GetCurrentProcess();
     if DuplicateHandle(me, h, me, &mut copy, 0u32, 1i32, duplicateSameAccess) != 0i32 {
       return copy;
     }
@@ -797,7 +797,7 @@ fn readNext(s &mut Stream) {
 
 // A read has finished: keep what it brought, and start the next
 fn harvest(s &mut Stream) {
-  mut got = 0u32;
+  var got = 0u32;
   if GetOverlappedResult(s.pipe, &mut s.ov, &mut got, 0i32) == 0i32 {
     s.active = false;
     return;
@@ -811,7 +811,7 @@ fn harvest(s &mut Stream) {
 fn cancel(s &mut Stream) {
   if not s.active { return; }
   CancelIoEx(s.pipe, &mut s.ov);
-  mut got = 0u32;
+  var got = 0u32;
   if GetOverlappedResult(s.pipe, &mut s.ov, &mut got, 1i32) != 0i32 and got > 0u32 {
     s.data.appendBytes(mem.sliceFromParts(s.buf, usize.from(got)));
   }
@@ -828,9 +828,9 @@ fn closeStream(s &mut Stream) {
 // there is none
 fn remaining(timed bool, deadline time.Instant) u32 {
   if not timed { return infinite; }
-  imm left = (deadline - time.Instant.now()).nanos();
+  let left = (deadline - time.Instant.now()).nanos();
   if left <= 0i64 { return 0u32; }
-  imm ms = (left + 999999i64) / 1000000i64;
+  let ms = (left + 999999i64) / 1000000i64;
   if ms >= i64.from(infinite) {infinite - 1u32;} else {u32.from(ms);};
 }
 
@@ -862,13 +862,13 @@ struct Debuggee {
 // Everything else goes on as with no debugger: a first-chance exception to
 // the child's own handlers, the loader's breakpoint aside
 fn pump(d &mut Debuggee, ms u32) bool {
-  mut within = ms;
+  var within = ms;
   while not d.exited and WaitForDebugEvent(&mut d.ev, within) != 0i32 {
     within = 0u32;
-    mut status = dbgContinue;
+    var status = dbgContinue;
     if d.ev.code == exceptionDebugEvent {
-      imm code = u32.from(d.ev.u[0usize]);
-      imm firstChance = u32.from(d.ev.u[19usize]) != 0u32;
+      let code = u32.from(d.ev.u[0usize]);
+      let firstChance = u32.from(d.ev.u[19usize]) != 0u32;
       if firstChance and code == statusBreakpoint and not d.seenBreakpoint {
         d.seenBreakpoint = true;
       }
@@ -898,30 +898,30 @@ fn pump(d &mut Debuggee, ms u32) bool {
 // that one. A block for CreateProcessW, from malloc, or null for this
 // program's own
 fn debuggeeEnvironment() *u16 {
-  imm block = GetEnvironmentStringsW();
+  let block = GetEnvironmentStringsW();
   if block as usize == 0usize { return null; }
-  imm name &Array[u8] = "_NO_DEBUG_HEAP=";
-  mut found = false;
+  let name &Array[u8] = "_NO_DEBUG_HEAP=";
+  var found = false;
   // Each string, to the empty one that ends the block
-  mut i = 0usize;
+  var i = 0usize;
   while *(block + i) != 0u16 {
-    mut j = 0usize;
+    var j = 0usize;
     while j < name.len and *(block + i + j) == u16.from(name[j]) { j = j + 1usize; }
     if j == name.len { found = true; }
     while *(block + i) != 0u16 { i = i + 1usize; }
     i = i + 1usize;
   }
-  imm added &Array[u8] = "_NO_DEBUG_HEAP=1";
-  mut extra = 0usize;
+  let added &Array[u8] = "_NO_DEBUG_HEAP=1";
+  var extra = 0usize;
   if not found { extra = added.len + 1usize; }
-  imm out = libc.malloc((i + extra + 1usize) * 2usize) as *u16;
-  mut k = 0usize;
+  let out = libc.malloc((i + extra + 1usize) * 2usize) as *u16;
+  var k = 0usize;
   while k < i {
     *(out + k) = *(block + k);
     k = k + 1usize;
   }
   if not found {
-    mut m = 0usize;
+    var m = 0usize;
     while m < added.len {
       *(out + k) = u16.from(added[m]);
       k = k + 1usize;
@@ -938,17 +938,17 @@ fn debuggeeEnvironment() *u16 {
 // How long to wait for a stream or the child: until the deadline, or a
 // slice of it when there are a debuggee's events to handle between
 fn waitFor(timed bool, deadline time.Instant, debugging bool) u32 {
-  imm left = remaining(timed, deadline);
+  let left = remaining(timed, deadline);
   if debugging and left > debugSlice {debugSlice;} else {left;};
 }
 
 // Start line, read what it writes, wait for it
 fn start(op &str, program &str, line &str, dir &Path, opts Options) Result[Output, ProcessError] {
-  imm wline = widen(line);
+  let wline = widen(line);
   if wline as usize == 0usize {
     return Error[Output, ProcessError](failure(op, program, dir, errorNoUnicodeTranslation));
   }
-  mut wdir *u16 = null;
+  var wdir *u16 = null;
   if not dir.isEmpty() {
     if hasByte(dir.view(), 0u8) {
       libc.free(wline as *u8);
@@ -962,11 +962,11 @@ fn start(op &str, program &str, line &str, dir &Path, opts Options) Result[Outpu
   }
 
   // The child's three standard handles, each inheritable
-  mut so = noStream();
-  mut se = noStream();
-  mut childIn = 0usize;
-  mut childOut = 0usize;
-  mut childErr = 0usize;
+  var so = noStream();
+  var se = noStream();
+  var childIn = 0usize;
+  var childOut = 0usize;
+  var childErr = 0usize;
   if opts.inherit {
     childIn = inheritStd(stdInput, genericRead);
     childOut = inheritStd(stdOutput, genericWrite);
@@ -980,16 +980,16 @@ fn start(op &str, program &str, line &str, dir &Path, opts Options) Result[Outpu
 
   // Only those three are inherited: no other handle this program has open,
   // a pipe another thread's run is making among them
-  mut handles = new Array[usize, 3] <- fill 0usize;
+  var handles = new Array[usize, 3] <- fill 0usize;
   handles[0usize] = childIn;
   handles[1usize] = childOut;
   handles[2usize] = childErr;
-  imm hp *usize = &[]handles as *usize;
-  mut listSize = 0usize;
+  let hp *usize = &[]handles as *usize;
+  var listSize = 0usize;
   InitializeProcThreadAttributeList(null, 1u32, 0u32, &mut listSize);
-  imm list = libc.malloc(listSize);
-  mut failed = true;
-  mut code = 0u32;
+  let list = libc.malloc(listSize);
+  var failed = true;
+  var code = 0u32;
   if childIn == 0usize or childOut == 0usize or childErr == 0usize {
     code = GetLastError();
   }
@@ -1005,15 +1005,15 @@ fn start(op &str, program &str, line &str, dir &Path, opts Options) Result[Outpu
     failed = false;
   }
 
-  mut pi = new ProcessInformation(0usize, 0usize, 0u32, 0u32);
-  imm timed = opts.timeout > time.Duration.zero();
+  var pi = new ProcessInformation(0usize, 0usize, 0u32, 0u32);
+  let timed = opts.timeout > time.Duration.zero();
   if not failed {
-    mut si = new StartupInfoEx(112u32, null, null, null,
+    var si = new StartupInfoEx(112u32, null, null, null,
       0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32, useStdHandles, 0u16, 0u16, null,
       childIn, childOut, childErr, list);
-    mut flags = extendedStartupInfo;
+    var flags = extendedStartupInfo;
     if timed { flags = flags | createSuspended; }
-    mut environment *u16 = null;
+    var environment *u16 = null;
     if not opts.crashReport {
       flags = flags | debugOnlyThisProcess;
       environment = debuggeeEnvironment();
@@ -1047,8 +1047,8 @@ fn start(op &str, program &str, line &str, dir &Path, opts Options) Result[Outpu
 
   // With a time limit, the child goes in a job of its own before it runs,
   // so that the programs it starts are in it too and stop with it
-  mut job = 0usize;
-  mut deadline = time.Instant.fromNanos(0i64);
+  var job = 0usize;
+  var deadline = time.Instant.fromNanos(0i64);
   if timed {
     job = CreateJobObjectW(null, null);
     if job != 0usize and AssignProcessToJobObject(job, pi.hProcess) == 0i32 {
@@ -1060,19 +1060,19 @@ fn start(op &str, program &str, line &str, dir &Path, opts Options) Result[Outpu
   }
 
   // Run as this program's debuggee, its events are handled while it runs
-  mut dbg = new Debuggee(not opts.crashReport, pi.hProcess, false, false,
+  var dbg = new Debuggee(not opts.crashReport, pi.hProcess, false, false,
     new DebugEvent(0u32, 0u32, 0u32, new Array[u64, 20] <- fill 0u64));
 
   // Both outputs at once, so that a child blocked writing one is never
   // waiting on a reader blocked on the other
-  mut timedOut = false;
+  var timedOut = false;
   if so.active { readNext(&mut so); }
   if se.active { readNext(&mut se); }
-  mut events = new Array[usize, 2] <- fill 0usize;
-  imm ep *usize = &[]events as *usize;
+  var events = new Array[usize, 2] <- fill 0usize;
+  let ep *usize = &[]events as *usize;
   while so.active or se.active {
     if dbg.on { pump(&mut dbg, 0u32); }
-    mut n = 0u32;
+    var n = 0u32;
     if so.active {
       events[0usize] = so.ov.hEvent;
       n = 1u32;
@@ -1084,9 +1084,9 @@ fn start(op &str, program &str, line &str, dir &Path, opts Options) Result[Outpu
     // A debuggee is stopped at each of its events until it is handled, so
     // with one the wait is for its events, which end it at once, and the
     // outputs are only looked at, not waited for
-    mut within = remaining(timed, deadline);
+    var within = remaining(timed, deadline);
     if dbg.on { within = 0u32; }
-    imm r = WaitForMultipleObjects(n, ep, 0i32, within);
+    let r = WaitForMultipleObjects(n, ep, 0i32, within);
     if r == waitTimeout and dbg.on and not (timed and remaining(timed, deadline) == 0u32) {
       // Nothing read: wait for its next event, for a slice at most
       pump(&mut dbg, waitFor(timed, deadline, true));
@@ -1120,7 +1120,7 @@ fn start(op &str, program &str, line &str, dir &Path, opts Options) Result[Outpu
     }
     // Stopped, it still has its last events to give: for up to ten seconds,
     // and then it is let go
-    mut waits = 0u32;
+    var waits = 0u32;
     while not pump(&mut dbg, 50u32) and waits < 200u32 { waits = waits + 1u32; }
     if not dbg.exited { DebugActiveProcessStop(pi.dwProcessId); }
   }
@@ -1129,15 +1129,15 @@ fn start(op &str, program &str, line &str, dir &Path, opts Options) Result[Outpu
     stop(job, pi.hProcess);
   }
   WaitForSingleObject(pi.hProcess, infinite);
-  mut exitCode = 0u32;
+  var exitCode = 0u32;
   GetExitCodeProcess(pi.hProcess, &mut exitCode);
   CloseHandle(pi.hThread);
   CloseHandle(pi.hProcess);
   closeIf(job);
   closeStream(&mut so);
   closeStream(&mut se);
-  mut out = String.empty();
-  mut err = String.empty();
+  var out = String.empty();
+  var err = String.empty();
   out <=> so.data;
   err <=> se.data;
   Ok[Output, ProcessError](new Output(exitCode, 0u32, timedOut, out, err));
@@ -1162,16 +1162,16 @@ fn closeFdIf(fd i32) {
 // when there is none
 fn remainingMs(timed bool, deadline time.Instant) i32 {
   if not timed { return -1i32; }
-  imm left = (deadline - time.Instant.now()).nanos();
+  let left = (deadline - time.Instant.now()).nanos();
   if left <= 0i64 { return 0i32; }
-  imm ms = (left + 999999i64) / 1000000i64;
+  let ms = (left + 999999i64) / 1000000i64;
   if ms > 2000000000i64 {2000000000i32;} else {i32.from(ms);};
 }
 
 // A program's exit code from the status waitpid gave: the status it exited
 // with, 0 to 255, or 128 and the signal that ended it
 fn exitStatus(status i32) u32 {
-  imm signal = status & 0x7Fi32;
+  let signal = status & 0x7Fi32;
   if signal == 0i32 { return u32.from((status >> 8i32) & 0xFFi32); }
   u32.from(128i32 + signal);
 }
@@ -1182,7 +1182,7 @@ fn signalOf(status i32) u32 { u32.from(status & 0x7Fi32); }
 
 // A copy of the bytes with a NUL after them, in a block from malloc
 fn copyCString(s &Array[u8]) *u8 {
-  imm p = libc.malloc(s.len + 1usize);
+  let p = libc.malloc(s.len + 1usize);
   if s.len > 0usize { libc.memcpy(p, s as *u8, s.len); }
   p[s.len] = 0u8;
   p;
@@ -1200,7 +1200,7 @@ fn stopGroup(pid i32, grouped bool) {
 // Take what is waiting in a stream's pipe; an end, or a failure other than an
 // interrupted call, closes it
 fn readReady(r &mut Reader, buf *u8) {
-  imm n = readFd(r.fd, buf, 65536usize);
+  let n = readFd(r.fd, buf, 65536usize);
   if n > 0isize {
     r.data.appendBytes(mem.sliceFromParts(buf, usize.from(n)));
   }
@@ -1214,13 +1214,13 @@ fn readReady(r &mut Reader, buf *u8) {
 // wait for it
 fn startPosix(op &str, program &str, args &Array[String], dir &Path, opts Options) Result[Output, ProcessError] {
   // The working folder must be a folder there is
-  mut cdir = String.empty();
+  var cdir = String.empty();
   if not dir.isEmpty() {
     if hasByte(dir.view(), 0u8) {
       return Error[Output, ProcessError](failure(op, program, dir, errnoInvalid));
     }
     cdir = String.from(dir.view());
-    mut st = new posix.Stat(0u64, 0u64, 0u16, 0u32, 0u32, 0u32, 0u64, 0i64, 0i64, 0i64, 0i64);
+    var st = new posix.Stat(0u64, 0u64, 0u16, 0u32, 0u32, 0u32, 0u64, 0i64, 0i64, 0i64, 0i64);
     if posix.stat(cdir.cstr(), &mut st) != 0i32 {
       return Error[Output, ProcessError](failure(op, program, dir, u32.from(*libc.errno())));
     }
@@ -1233,11 +1233,11 @@ fn startPosix(op &str, program &str, args &Array[String], dir &Path, opts Option
   // not from the child's
   // ('program' is what an error names; the program to run is the first
   // argument, which for a command line is the shell)
-  imm name = args[0usize].view();
-  mut file = String.from(name);
-  imm named &Array[u8] = name;
+  let name = args[0usize].view();
+  var file = String.from(name);
+  let named &Array[u8] = name;
   if not dir.isEmpty() and hasByte(named, '/') and named[0usize] != '/' {
-    imm here = posix.getcwd(null, 0usize);
+    let here = posix.getcwd(null, 0usize);
     if here != null {
       file = String.fromCStr(cstr.fromPtr(here));
       libc.free(here);
@@ -1246,9 +1246,9 @@ fn startPosix(op &str, program &str, args &Array[String], dir &Path, opts Option
     }
   }
 
-  imm count = args.len;
-  imm argv = libc.malloc((count + 1usize) * 8usize) as **u8;
-  mut k = 0usize;
+  let count = args.len;
+  let argv = libc.malloc((count + 1usize) * 8usize) as **u8;
+  var k = 0usize;
   while k < count {
     *(argv + k) = copyCString(args[k].view());
     k = k + 1usize;
@@ -1258,21 +1258,21 @@ fn startPosix(op &str, program &str, args &Array[String], dir &Path, opts Option
   // The child's standard input from /dev/null and its output and error to
   // pipes of ours; close-on-exec, so no other program started meanwhile
   // holds them
-  mut so = new Reader(-1i32, String.empty());
-  mut se = new Reader(-1i32, String.empty());
-  mut outFds = new Array[i32, 2] <- fill 0i32;
-  mut errFds = new Array[i32, 2] <- fill 0i32;
-  imm outp *i32 = &[]outFds as *i32;
-  imm errp *i32 = &[]errFds as *i32;
-  mut actions = new Array[u64, 32] <- fill 0u64;
-  mut attr = new Array[u64, 64] <- fill 0u64;
+  var so = new Reader(-1i32, String.empty());
+  var se = new Reader(-1i32, String.empty());
+  var outFds = new Array[i32, 2] <- fill 0i32;
+  var errFds = new Array[i32, 2] <- fill 0i32;
+  let outp *i32 = &[]outFds as *i32;
+  let errp *i32 = &[]errFds as *i32;
+  var actions = new Array[u64, 32] <- fill 0u64;
+  var attr = new Array[u64, 64] <- fill 0u64;
   // (opaque to us, and aligned for the pointers they hold: a block of words)
-  imm aw *u64 = &[]actions as *u64;
-  imm tw *u64 = &[]attr as *u64;
-  imm ap *u8 = aw as *u8;
-  imm tp *u8 = tw as *u8;
-  imm timed = opts.timeout > time.Duration.zero();
-  mut rc = actionsInit(ap);
+  let aw *u64 = &[]actions as *u64;
+  let tw *u64 = &[]attr as *u64;
+  let ap *u8 = aw as *u8;
+  let tp *u8 = tw as *u8;
+  let timed = opts.timeout > time.Duration.zero();
+  var rc = actionsInit(ap);
   if rc == 0i32 { rc = attrInit(tp); }
   if rc == 0i32 and not opts.inherit {
     if makePipe2(outp, closeOnExec) != 0i32 {
@@ -1299,16 +1299,16 @@ fn startPosix(op &str, program &str, args &Array[String], dir &Path, opts Option
 
   // A crash that is not to be reported leaves no core dump for the system to
   // take: the limit is zero for the child, whose it becomes, and put back
-  mut saved = new RLimit(0u64, 0u64);
-  mut limited = false;
+  var saved = new RLimit(0u64, 0u64);
+  var limited = false;
   if rc == 0i32 and not opts.crashReport {
     if getLimit(limitCore, &mut saved as *RLimit) == 0i32 {
-      mut none = new RLimit(0u64, saved.hard);
+      var none = new RLimit(0u64, saved.hard);
       setLimit(limitCore, &mut none as *RLimit);
       limited = true;
     }
   }
-  mut pid = 0i32;
+  var pid = 0i32;
   if rc == 0i32 {
     rc = spawnProgram(&mut pid as *i32, file.cstr(), ap, tp, argv, cone_environ());
   }
@@ -1336,21 +1336,21 @@ fn startPosix(op &str, program &str, args &Array[String], dir &Path, opts Option
 
   // A child with a time limit is its group's leader, so a stop reaches what
   // it started
-  imm deadline = if timed {time.Instant.now() + opts.timeout;} else {time.Instant.fromNanos(0i64);};
+  let deadline = if timed {time.Instant.now() + opts.timeout;} else {time.Instant.fromNanos(0i64);};
 
   // Both outputs at once, so that a child blocked writing one is never
   // waiting on a reader blocked on the other
-  mut timedOut = false;
-  imm buf = libc.malloc(65536usize);
-  mut polls = new Array[PollFd, 2] <- fill new PollFd(-1i32, pollIn, 0i16);
-  imm pp *PollFd = &[]polls as *PollFd;
-  mut reading = so.fd >= 0i32 or se.fd >= 0i32;
+  var timedOut = false;
+  let buf = libc.malloc(65536usize);
+  var polls = new Array[PollFd, 2] <- fill new PollFd(-1i32, pollIn, 0i16);
+  let pp *PollFd = &[]polls as *PollFd;
+  var reading = so.fd >= 0i32 or se.fd >= 0i32;
   while reading {
     polls[0usize].fd = so.fd;
     polls[0usize].revents = 0i16;
     polls[1usize].fd = se.fd;
     polls[1usize].revents = 0i16;
-    imm ready = pollFds(pp, 2u64, remainingMs(timed, deadline));
+    let ready = pollFds(pp, 2u64, remainingMs(timed, deadline));
     if ready == 0i32 {
       timedOut = true;
       stopGroup(pid, timed);
@@ -1371,11 +1371,11 @@ fn startPosix(op &str, program &str, args &Array[String], dir &Path, opts Option
   closeFdIf(se.fd);
 
   // Wait for the child, until its time runs out
-  mut status = 0i32;
-  mut reaped = false;
+  var status = 0i32;
+  var reaped = false;
   if timed and not timedOut {
     while not reaped and not timedOut {
-      imm w = waitPid(pid, &mut status as *i32, waitNoHang);
+      let w = waitPid(pid, &mut status as *i32, waitNoHang);
       if w == pid {
         reaped = true;
       }
@@ -1393,14 +1393,14 @@ fn startPosix(op &str, program &str, args &Array[String], dir &Path, opts Option
     }
   }
   while not reaped {
-    imm w = waitPid(pid, &mut status as *i32, 0i32);
+    let w = waitPid(pid, &mut status as *i32, 0i32);
     if w == pid or *libc.errno() != errnoInterrupted { reaped = true; }
   }
-  mut out = String.empty();
-  mut err = String.empty();
+  var out = String.empty();
+  var err = String.empty();
   out <=> so.data;
   err <=> se.data;
-  imm exitCode = if timedOut {stoppedCode;} else {exitStatus(status);};
+  let exitCode = if timedOut {stoppedCode;} else {exitStatus(status);};
   Ok[Output, ProcessError](new Output(exitCode, signalOf(status), timedOut, out, err));
 }
 
@@ -1411,21 +1411,21 @@ fn startPosix(op &str, program &str, args &Array[String], dir &Path, opts Option
 // This program's arguments on POSIX, its own name first: argv's bytes, which
 // the kernel keeps as the NUL-ended strings of /proc/self/cmdline
 fn argsPosix() List[String] {
-  mut out = List[String].empty();
-  imm f = libc.fopen("/proc/self/cmdline", "rb");
+  var out = List[String].empty();
+  let f = libc.fopen("/proc/self/cmdline", "rb");
   if f == null { return out; }
-  mut whole = String.empty();
-  mut buf = new Array[u8, 4096] <- fill 0u8;
-  imm bp *u8 = &[]buf as *u8;
-  mut going = true;
+  var whole = String.empty();
+  var buf = new Array[u8, 4096] <- fill 0u8;
+  let bp *u8 = &[]buf as *u8;
+  var going = true;
   while going {
-    imm n = libc.fread(bp, 1usize, 4096usize, f);
+    let n = libc.fread(bp, 1usize, 4096usize, f);
     if n > 0usize { whole.appendBytes(mem.sliceFromParts(bp, n)); }
     going = n == 4096usize;
   }
   libc.fclose(f);
-  mut begin = 0usize;
-  mut i = 0usize;
+  var begin = 0usize;
+  var i = 0usize;
   while i < whole.len() {
     if whole[i] == 0u8 {
       out.push(whole.sub(begin, i));
@@ -1438,19 +1438,19 @@ fn argsPosix() List[String] {
 
 // The path of this program's executable on POSIX, where /proc/self/exe links
 fn currentExePosix() Result[Path, ProcessError] {
-  mut size = 256usize;
+  var size = 256usize;
   while size <= 0x10000usize {
-    imm buf = libc.malloc(size);
-    imm n = readLink("/proc/self/exe", buf, size);
+    let buf = libc.malloc(size);
+    let n = readLink("/proc/self/exe", buf, size);
     if n < 0isize {
-      imm code = u32.from(*libc.errno());
+      let code = u32.from(*libc.errno());
       libc.free(buf);
       return Error[Path, ProcessError](failure("currentExe", "", "", code));
     }
     if usize.from(n) < size {
-      imm got = String.fromBytes(mem.sliceFromParts(buf, usize.from(n)));
+      let got = String.fromBytes(mem.sliceFromParts(buf, usize.from(n)));
       libc.free(buf);
-      imm exe = Path.from(got.view());
+      let exe = Path.from(got.view());
       return Ok[Path, ProcessError](exe.normalize());
     }
     libc.free(buf);
@@ -1467,12 +1467,12 @@ pub fn args() List[String] {
 }
 
 fn argsWindows() List[String] {
-  mut out = List[String].empty();
-  mut n = 0i32;
-  imm argv = CommandLineToArgvW(GetCommandLineW(), &mut n);
+  var out = List[String].empty();
+  var n = 0i32;
+  let argv = CommandLineToArgvW(GetCommandLineW(), &mut n);
   if argv as usize == 0usize { return out; }
-  mut i = 0usize;
-  imm count = usize.from(n);
+  var i = 0usize;
+  let count = usize.from(n);
   while i < count {
     out.push(narrow(*(argv + i), -1i32));
     i = i + 1usize;
@@ -1487,19 +1487,19 @@ pub fn currentExe() Result[Path, ProcessError] {
 }
 
 fn currentExeWindows() Result[Path, ProcessError] {
-  mut size = 260u32;
+  var size = 260u32;
   while size <= 0x10000u32 {
-    imm buf = libc.malloc(usize.from(size) * 2usize) as *u16;
-    imm n = GetModuleFileNameW(0usize, buf, size);
+    let buf = libc.malloc(usize.from(size) * 2usize) as *u16;
+    let n = GetModuleFileNameW(0usize, buf, size);
     if n == 0u32 {
-      imm code = GetLastError();
+      let code = GetLastError();
       libc.free(buf as *u8);
       return Error[Path, ProcessError](failure("currentExe", "", "", code));
     }
     if n < size {
-      imm got = narrow(buf, i32.from(n));
+      let got = narrow(buf, i32.from(n));
       libc.free(buf as *u8);
-      imm exe = Path.from(got.view());
+      let exe = Path.from(got.view());
       return Ok[Path, ProcessError](exe.normalize());
     }
     libc.free(buf as *u8);

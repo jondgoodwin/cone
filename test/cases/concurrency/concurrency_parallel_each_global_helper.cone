@@ -1,4 +1,4 @@
-// A 'parallel each' body may not write a 'mut' global (conc-parallel.html#parallelbody, "What the body
+// A 'parallel each' body may not write a 'var' global (conc-parallel.html#parallelbody, "What the body
 // may do": what is declared outside the loop is read-only in it, and a global is the most
 // outside of them). Writing it by name was refused; calling a function that writes it was
 // not, though the passes then write it at the same time exactly as before (measured: 4000
@@ -10,7 +10,7 @@
 // reaches it through a helper of its own, and through two; a method whose body writes it;
 // a helper that changes a global list by a method, an element or a field of a global
 // struct, or swaps two globals; recursion on the way. Allowed beside them: a helper that
-// only reads a 'mut' or an 'imm' global, one that counts in an Atomic, one that writes a
+// only reads a 'mut' or a 'let' global, one that counts in an Atomic, one that writes a
 // '@threadlocal' global (each thread's own copy), one that writes only a local or the
 // pass's own item, and the same writing helper called outside any parallel loop.
 //
@@ -25,14 +25,14 @@ import actors;
 
 struct Item { pub n i64; }
 
-mut counter i64 = 0i64;
-mut other i64 = 0i64;
-mut table Array[i64, 4] = [0i64, 0i64, 0i64, 0i64];
-mut items List[Item];
-mut box Item = new Item(0i64);
-mut @threadlocal depth i64 = 0i64;
-imm limit i64 = 10i64;
-imm hits Atomic[i64];
+var counter i64 = 0i64;
+var other i64 = 0i64;
+var table Array[i64, 4] = [0i64, 0i64, 0i64, 0i64];
+var items List[Item];
+var box Item = new Item(0i64);
+var @threadlocal depth i64 = 0i64;
+let limit i64 = 10i64;
+let hits Atomic[i64];
 
 fn @initpure init() {
   items = List[Item].empty();
@@ -63,7 +63,7 @@ struct Meter {
 fn peek() i64 { counter + table[0usize] + i64.from(items.len()) + box.n; }
 fn peekLimit() i64 { limit; }
 fn count() { hits.add(1i64); }
-fn mine() i64 { mut k = 0i64; k = k + 1i64; k; }
+fn mine() i64 { var k = 0i64; k = k + 1i64; k; }
 fn threadOwn() { depth = depth + 1i64; }
 fn ownItem(it &mut Item) { it.n = it.n + 1i64; }
 
@@ -119,7 +119,7 @@ fn byRecursion(n usize) {
 
 fn byMethod(n usize) {
   parallel each i in 0usize ..< n {
-    mut mine = new Meter(0i64);
+    var mine = new Meter(0i64);
     mine.tick();                               //~ ErrorParWrite "which writes the global 'counter'"
   }
 }
@@ -135,9 +135,9 @@ fn byParam(l &mut List[Item], n usize) {
 
 fn reads(n usize) {
   parallel each i in 0usize ..< n {
-    imm a = peek();
-    imm b = peekLimit();
-    imm c = mine();
+    let a = peek();
+    let b = peekLimit();
+    let c = mine();
   }
 }
 

@@ -83,42 +83,42 @@ pub struct RibField {
 fn coverThreshold(cover f32) f32 { 0.9 * (0.5 - cover); }
 
 fn smoothstepF(e0 f32, e1 f32, x f32) f32 {
-  imm t = clampF((x - e0) / (e1 - e0), 0., 1.);
+  let t = clampF((x - e0) / (e1 - e0), 0., 1.);
   t * t * (3. - 2. * t);
 }
 
 // One vortex's 1 - e^-z, z = u + i v, as (real, imaginary)
 fn vortexFactor(u f32, v f32) Vec2 {
-  imm uu = if u < -30. {-30.;} else {u;};
-  imm e = libc.expf(0. - uu);
+  let uu = if u < -30. {-30.;} else {u;};
+  let e = libc.expf(0. - uu);
   new Vec2(1. - e * cos(v), e * sin(v));
 }
 
 // Pair d's two vortices: (along, theta) of the first and second
 pub fn ribDefectPair(r &RibField, d u32) Vec4 {
-  imm h = noise.hash2(i32.from(d), 101, r.seed);
-  imm g = noise.hash2(i32.from(d), 102, r.seed);
-  imm s0 = 0.15 + 0.6 * noise.toUnit(h.x);
-  imm t0 = 2. * pi * noise.toUnit(h.y);
-  imm turn = (0.8 + 1.2 * noise.toUnit(g.x)) * (if (g.y & 1u32) == 0u32 {1.;} else {-1.;});
-  imm ds = (noise.toUnit(g.z) - 0.5) * 0.3 / r.frequency;
+  let h = noise.hash2(i32.from(d), 101, r.seed);
+  let g = noise.hash2(i32.from(d), 102, r.seed);
+  let s0 = 0.15 + 0.6 * noise.toUnit(h.x);
+  let t0 = 2. * pi * noise.toUnit(h.y);
+  let turn = (0.8 + 1.2 * noise.toUnit(g.x)) * (if (g.y & 1u32) == 0u32 {1.;} else {-1.;});
+  let ds = (noise.toUnit(g.z) - 0.5) * 0.3 / r.frequency;
   new Vec4(s0, t0, s0 + ds, t0 + turn);
 }
 
 // The phase at a point: along, theta = 2 pi around, its position
 pub fn ribPhase(r &RibField, along f32, theta f32, p Vec3) f32 {
-  mut phase = r.frequency * along;
+  var phase = r.frequency * along;
   if r.warp != 0. {
     phase = phase + r.warp * noise.fbm3(p * r.warpScale, noise.hash1(1, r.seed), 3, 2., 0.5).value;
   }
-  mut d = 0u32;
+  var d = 0u32;
   while d < r.defects {
-    imm pair = ribDefectPair(r, d);
-    imm f1 = vortexFactor((along - pair.x) * r.defectAspect, theta - pair.y);
-    imm f2 = vortexFactor((along - pair.z) * r.defectAspect, theta - pair.w);
+    let pair = ribDefectPair(r, d);
+    let f1 = vortexFactor((along - pair.x) * r.defectAspect, theta - pair.y);
+    let f2 = vortexFactor((along - pair.z) * r.defectAspect, theta - pair.w);
     // f1 times f2's conjugate
-    imm re = f1.x * f2.x + f1.y * f2.y;
-    imm im = f1.y * f2.x - f1.x * f2.y;
+    let re = f1.x * f2.x + f1.y * f2.y;
+    let im = f1.y * f2.x - f1.x * f2.y;
     phase = phase + atan2(im, re) / (2. * pi);
     d = d + 1u32;
   }
@@ -127,15 +127,15 @@ pub fn ribPhase(r &RibField, along f32, theta f32, p Vec3) f32 {
 
 // The amplitude at a point of phase 'phase': the envelope times rib k's height
 pub fn ribAmplitude(r &RibField, phase f32, p Vec3) f32 {
-  mut amp = 1.;
+  var amp = 1.;
   if r.cover < 1. {
-    imm n = noise.fbm3(p * r.coverScale, noise.hash1(2, r.seed), 3, 2., 0.5).value;
-    imm t = coverThreshold(r.cover);
+    let n = noise.fbm3(p * r.coverScale, noise.hash1(2, r.seed), 3, 2., 0.5).value;
+    let t = coverThreshold(r.cover);
     amp = smoothstepF(t - 0.12, t + 0.12, n);
   }
   if r.spread != 0. or r.absent > 0. {
-    imm k = i32.from(libc.floorf(phase));
-    imm h = noise.hash2(k, 3, r.seed);
+    let k = i32.from(libc.floorf(phase));
+    let h = noise.hash2(k, 3, r.seed);
     if noise.toUnit(h.y) < r.absent { return 0.; }
     amp = amp * (1. + r.spread * noise.toSigned(h.x));
   }
@@ -144,7 +144,7 @@ pub fn ribAmplitude(r &RibField, phase f32, p Vec3) f32 {
 
 // The crest's shape at a phase: 0 at whole numbers, 1 at halves
 pub fn ribProfile(r &RibField, phase f32) f32 {
-  imm s = sin(pi * phase);
+  let s = sin(pi * phase);
   libc.powf(s * s, r.sharpness);
 }
 
@@ -152,19 +152,19 @@ pub fn ribProfile(r &RibField, phase f32) f32 {
 // none) and its amplitude, A h(k), into 'name' followed by "Amp". A mesh
 // without "along" or "around" counts 0 for the missing one.
 pub fn ribField(m &mut PolyMesh, name &str, r &RibField) {
-  imm along = m.findFloatChannel(VertexDomain, "along");
-  imm around = m.findFloatChannel(VertexDomain, "around");
-  imm out = channelNamed(m, name);
-  mut ampName = String.from(name);
+  let along = m.findFloatChannel(VertexDomain, "along");
+  let around = m.findFloatChannel(VertexDomain, "around");
+  let out = channelNamed(m, name);
+  var ampName = String.from(name);
   ampName <- "Amp";
-  imm ampOut = channelNamed(m, ampName.view());
-  mut k = 0u32;
+  let ampOut = channelNamed(m, ampName.view());
+  var k = 0u32;
   while k < u32.from(m.vertexCount()) {
-    imm a = if along != NoIndex {m.float(along, k);} else {0.;};
-    imm t = if around != NoIndex {2. * pi * m.float(around, k);} else {0.;};
-    imm p = *m.positions[usize.from(k)];
-    imm phase = ribPhase(r, a, t, p);
-    imm amp = ribAmplitude(r, phase, p);
+    let a = if along != NoIndex {m.float(along, k);} else {0.;};
+    let t = if around != NoIndex {2. * pi * m.float(around, k);} else {0.;};
+    let p = *m.positions[usize.from(k)];
+    let phase = ribPhase(r, a, t, p);
+    let amp = ribAmplitude(r, phase, p);
     m.setFloat(out, k, amp * ribProfile(r, phase));
     m.setFloat(ampOut, k, amp);
     k = k + 1u32;
@@ -172,7 +172,7 @@ pub fn ribField(m &mut PolyMesh, name &str, r &RibField) {
 }
 
 fn channelNamed(m &mut PolyMesh, name &str) u32 {
-  imm c = m.findFloatChannel(VertexDomain, name);
+  let c = m.findFloatChannel(VertexDomain, name);
   if c != NoIndex { return c; }
   m.addFloatChannel(VertexDomain, name, 0.);
 }
@@ -205,16 +205,16 @@ const RING_WARMUP = 8;       // periods run before along 0
 
 // One Euler step of the ring; 'feeds' each cell's A
 fn ringStep(g &MarginRing, a &mut List[f32], b &mut List[f32], na &mut List[f32], nb &mut List[f32], feeds &List[f32], dt f32) {
-  imm n = a.len();
-  mut i = 0usize;
+  let n = a.len();
+  var i = 0usize;
   while i < n {
-    imm l = (i + n - 1usize) % n;
-    imm r = (i + 1usize) % n;
-    imm ai = *a[i];
-    imm bi = *b[i];
-    imm react = ai * ai * bi;
-    imm da = *feeds[i] - (g.drive + 1.) * ai + react + g.spreadA * (*a[l] + *a[r] - 2. * ai);
-    imm db = g.drive * ai - react + g.spreadB * (*b[l] + *b[r] - 2. * bi);
+    let l = (i + n - 1usize) % n;
+    let r = (i + 1usize) % n;
+    let ai = *a[i];
+    let bi = *b[i];
+    let react = ai * ai * bi;
+    let da = *feeds[i] - (g.drive + 1.) * ai + react + g.spreadA * (*a[l] + *a[r] - 2. * ai);
+    let db = g.drive * ai - react + g.spreadB * (*b[l] + *b[r] - 2. * bi);
     na.set(i, ai + dt * da);
     nb.set(i, bi + dt * db);
     i = i + 1usize;
@@ -230,19 +230,19 @@ fn ringStep(g &MarginRing, a &mut List[f32], b &mut List[f32], na &mut List[f32]
 // One lone cell's period, least and greatest a, measured over its fifth to
 // tenth pulses (after the start has died away), stepping 'dt'
 pub fn marginPeriod(g &MarginRing) Vec3 {
-  imm dt = 0.002;
-  mut a = g.feed + 0.1;
-  mut b = g.drive / g.feed;
-  mut t = 0.;
-  mut rising = true;
-  mut peaks = 0;
-  mut firstPeak = 0.;
-  mut lo = 1000000.;
-  mut hi = -1000000.;
+  let dt = 0.002;
+  var a = g.feed + 0.1;
+  var b = g.drive / g.feed;
+  var t = 0.;
+  var rising = true;
+  var peaks = 0;
+  var firstPeak = 0.;
+  var lo = 1000000.;
+  var hi = -1000000.;
   while peaks < 10 and t < 10000. {
-    imm react = a * a * b;
-    imm na = a + dt * (g.feed - (g.drive + 1.) * a + react);
-    imm nb = b + dt * (g.drive * a - react);
+    let react = a * a * b;
+    let na = a + dt * (g.feed - (g.drive + 1.) * a + react);
+    let nb = b + dt * (g.drive * a - react);
     if rising and na < a {
       peaks = peaks + 1;
       if peaks == 5 { firstPeak = t; }
@@ -263,16 +263,16 @@ pub fn marginPeriod(g &MarginRing) Vec3 {
 // has none), height 0 at the lone cell's least a and 1 at its greatest, and
 // 1 into 'name' followed by "Amp"
 pub fn marginRing(m &mut PolyMesh, name &str, g &MarginRing) {
-  imm cycle = marginPeriod(g);
-  imm period = cycle.x;
-  imm n = usize.from(if g.cells < 3u32 {3u32;} else {g.cells;});
-  imm dt = period / f32.from(RING_STEPS);
-  mut a = List[f32].withCapacity(n);
-  mut b = List[f32].withCapacity(n);
-  mut na = List[f32].withCapacity(n);
-  mut nb = List[f32].withCapacity(n);
-  mut feeds = List[f32].withCapacity(n);
-  mut i = 0usize;
+  let cycle = marginPeriod(g);
+  let period = cycle.x;
+  let n = usize.from(if g.cells < 3u32 {3u32;} else {g.cells;});
+  let dt = period / f32.from(RING_STEPS);
+  var a = List[f32].withCapacity(n);
+  var b = List[f32].withCapacity(n);
+  var na = List[f32].withCapacity(n);
+  var nb = List[f32].withCapacity(n);
+  var feeds = List[f32].withCapacity(n);
+  var i = 0usize;
   while i < n {
     a.push(g.feed * (1. + 0.002 * noise.toSigned(noise.hash1(i32.from(i), g.seed))));
     b.push(g.drive / g.feed);
@@ -284,17 +284,17 @@ pub fn marginRing(m &mut PolyMesh, name &str, g &MarginRing) {
   // Run RING_WARMUP periods first, so the ring is on its cycle (it starts
   // at the fixed point, whence the pulses grow over a few periods) before
   // along 0
-  mut w = 0;
+  var w = 0;
   while w < RING_WARMUP * RING_STEPS {
     ringStep(g, &mut a, &mut b, &mut na, &mut nb, &feeds, dt);
     w = w + 1;
   }
   // The states, RING_SNAPSHOTS a period, from along 0 to 1
-  imm snaps = i32.from(libc.ceilf(g.frequency * f32.from(RING_SNAPSHOTS))) + 1;
-  imm per = RING_STEPS / RING_SNAPSHOTS;
-  mut kept = List[f32].withCapacity(usize.from(snaps) * n);
-  imm fseed = noise.hash1(4, g.seed);
-  mut s = 0;
+  let snaps = i32.from(libc.ceilf(g.frequency * f32.from(RING_SNAPSHOTS))) + 1;
+  let per = RING_STEPS / RING_SNAPSHOTS;
+  var kept = List[f32].withCapacity(usize.from(snaps) * n);
+  let fseed = noise.hash1(4, g.seed);
+  var s = 0;
   while s < snaps {
     i = 0usize;
     while i < n {
@@ -302,17 +302,17 @@ pub fn marginRing(m &mut PolyMesh, name &str, g &MarginRing) {
       i = i + 1usize;
     }
     // the cells' feeds for the next stretch
-    imm time = f32.from(s) / f32.from(RING_SNAPSHOTS) * g.drift;
+    let time = f32.from(s) / f32.from(RING_SNAPSHOTS) * g.drift;
     i = 0usize;
     while i < n {
       if g.unevenness != 0. {
-        imm phi = 2. * pi * f32.from(i) / f32.from(n);
-        imm q = new Vec3(cos(phi) * g.unevenScale, sin(phi) * g.unevenScale, time);
+        let phi = 2. * pi * f32.from(i) / f32.from(n);
+        let q = new Vec3(cos(phi) * g.unevenScale, sin(phi) * g.unevenScale, time);
         feeds.set(i, g.feed * (1. + g.unevenness * noise.gradient3(q, fseed).value));
       }
       i = i + 1usize;
     }
-    mut step = 0;
+    var step = 0;
     while step < per {
       ringStep(g, &mut a, &mut b, &mut na, &mut nb, &feeds, dt);
       step = step + 1;
@@ -320,30 +320,30 @@ pub fn marginRing(m &mut PolyMesh, name &str, g &MarginRing) {
     s = s + 1;
   }
   // Each vertex: its along in snapshots, its around in cells
-  imm along = m.findFloatChannel(VertexDomain, "along");
-  imm around = m.findFloatChannel(VertexDomain, "around");
-  imm out = channelNamed(m, name);
-  mut ampName = String.from(name);
+  let along = m.findFloatChannel(VertexDomain, "along");
+  let around = m.findFloatChannel(VertexDomain, "around");
+  let out = channelNamed(m, name);
+  var ampName = String.from(name);
   ampName <- "Amp";
-  imm ampOut = channelNamed(m, ampName.view());
-  imm span = cycle.z - cycle.y;
-  mut k = 0u32;
+  let ampOut = channelNamed(m, ampName.view());
+  let span = cycle.z - cycle.y;
+  var k = 0u32;
   while k < u32.from(m.vertexCount()) {
-    imm al = if along != NoIndex {clampF(m.float(along, k), 0., 1.);} else {0.;};
-    imm ar = if around != NoIndex {m.float(around, k);} else {0.;};
-    imm ts = al * g.frequency * f32.from(RING_SNAPSHOTS);
-    imm s0 = i32.from(libc.floorf(ts));
-    imm s1 = if s0 + 1 < snaps {s0 + 1;} else {s0;};
-    imm ft = ts - f32.from(s0);
-    imm cs = (ar - libc.floorf(ar)) * f32.from(n);
-    imm c0 = usize.from(i32.from(libc.floorf(cs))) % n;
-    imm c1 = (c0 + 1usize) % n;
-    imm fc = cs - libc.floorf(cs);
-    imm r0 = usize.from(s0) * n;
-    imm r1 = usize.from(s1) * n;
-    imm lo = *kept[r0 + c0] * (1. - fc) + *kept[r0 + c1] * fc;
-    imm hi = *kept[r1 + c0] * (1. - fc) + *kept[r1 + c1] * fc;
-    imm val = lo * (1. - ft) + hi * ft;
+    let al = if along != NoIndex {clampF(m.float(along, k), 0., 1.);} else {0.;};
+    let ar = if around != NoIndex {m.float(around, k);} else {0.;};
+    let ts = al * g.frequency * f32.from(RING_SNAPSHOTS);
+    let s0 = i32.from(libc.floorf(ts));
+    let s1 = if s0 + 1 < snaps {s0 + 1;} else {s0;};
+    let ft = ts - f32.from(s0);
+    let cs = (ar - libc.floorf(ar)) * f32.from(n);
+    let c0 = usize.from(i32.from(libc.floorf(cs))) % n;
+    let c1 = (c0 + 1usize) % n;
+    let fc = cs - libc.floorf(cs);
+    let r0 = usize.from(s0) * n;
+    let r1 = usize.from(s1) * n;
+    let lo = *kept[r0 + c0] * (1. - fc) + *kept[r0 + c1] * fc;
+    let hi = *kept[r1 + c0] * (1. - fc) + *kept[r1 + c1] * fc;
+    let val = lo * (1. - ft) + hi * ft;
     m.setFloat(out, k, clampF((val - cycle.y) / span, 0., 1.5));
     m.setFloat(ampOut, k, 1.);
     k = k + 1u32;

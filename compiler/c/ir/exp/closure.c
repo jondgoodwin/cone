@@ -2,7 +2,7 @@
  *
  * See closure.h. In the order a literal passes through the compiler:
  *
- * - The parser reads 'fn (u f32) [ribs, mut n = 0] f32 { ... }' and
+ * - The parser reads 'fn (u f32) [ribs, var n = 0] f32 { ... }' and
  *   'x => x * 2' into a ClosureNode.
  * - Name resolution resolves the body in the code around it, with its own
  *   parameters and state names hooked over that, and notes each variable of the

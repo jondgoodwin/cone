@@ -39,19 +39,19 @@ fn asc(a &u64, b &u64) i32 {
 fn v3(x f32, y f32, z f32) Vec3 {new Vec3(x, y, z);}
 
 fn randomBox(rng &mut Rng, world f32, maxSize f32) Aabb3 {
-  imm c = v3(rng.range(0., world), rng.range(0., world), rng.range(0., world));
-  imm h = v3(rng.range(0.1, maxSize), rng.range(0.1, maxSize), rng.range(0.1, maxSize));
+  let c = v3(rng.range(0., world), rng.range(0., world), rng.range(0., world));
+  let h = v3(rng.range(0.1, maxSize), rng.range(0.1, maxSize), rng.range(0.1, maxSize));
   Aabb3.fromCenter(c, h);
 }
 
-mut @threadlocal totalFound = 0i64;
+var @threadlocal totalFound = 0i64;
 
 fn sameSets(got &mut List[u64], want &mut List[u64]) bool {
   totalFound = totalFound + i64.from(want.len());
   got.sortBy(&asc);
   want.sortBy(&asc);
   if got.len() != want.len() {return false;}
-  mut i = 0usize;
+  var i = 0usize;
   while i < got.len() {
     if *got[i] != *want[i] {return false;}
     i = i + 1usize;
@@ -72,7 +72,7 @@ fn makeScene() Scene {
 }
 
 fn addTo(s &mut Scene, b Aabb3) {
-  imm id = u64.from(s.boxes.len());
+  let id = u64.from(s.boxes.len());
   s.proxies.push(s.idx.insert(b, id));
   s.boxes.push(b);
   s.live.push(true);
@@ -80,18 +80,18 @@ fn addTo(s &mut Scene, b Aabb3) {
 
 // Checks every query kind at random against brute force; returns mismatches
 fn checkQueries(s &mut Scene, rng &mut Rng, world f32, rounds i32) i64 {
-  mut bad = 0i64;
-  mut r = 0i32;
+  var bad = 0i64;
+  var r = 0i32;
   while r < rounds {
     r = r + 1i32;
     // box overlap
-    imm q = Aabb3.fromCenter(v3(rng.range(0., world), rng.range(0., world), rng.range(0., world)),
+    let q = Aabb3.fromCenter(v3(rng.range(0., world), rng.range(0., world), rng.range(0., world)),
       v3(rng.range(1., 15.), rng.range(1., 15.), rng.range(1., 15.)));
-    mut got = List[u64].empty();
-    mut want = List[u64].empty();
-    mut c1 = fn(h u64, p Proxy) bool { got.push(h); true; };
+    var got = List[u64].empty();
+    var want = List[u64].empty();
+    var c1 = fn(h u64, p Proxy) bool { got.push(h); true; };
     s.idx.overlapAabb(q, &mut c1);
-    mut i = 0usize;
+    var i = 0usize;
     while i < s.boxes.len() {
       if *s.live[i] and s.boxes[i].overlaps(q) {want.push(u64.from(i));}
       i = i + 1usize;
@@ -99,10 +99,10 @@ fn checkQueries(s &mut Scene, rng &mut Rng, world f32, rounds i32) i64 {
     if !sameSets(&mut got, &mut want) {bad = bad + 1i64;}
 
     // sphere overlap
-    imm ball = new Sphere(v3(rng.range(0., world), rng.range(0., world), rng.range(0., world)), rng.range(1., 20.));
-    mut got2 = List[u64].empty();
-    mut want2 = List[u64].empty();
-    mut c2 = fn(h u64, p Proxy) bool { got2.push(h); true; };
+    let ball = new Sphere(v3(rng.range(0., world), rng.range(0., world), rng.range(0., world)), rng.range(1., 20.));
+    var got2 = List[u64].empty();
+    var want2 = List[u64].empty();
+    var c2 = fn(h u64, p Proxy) bool { got2.push(h); true; };
     s.idx.overlapSphere(ball, &mut c2);
     i = 0usize;
     while i < s.boxes.len() {
@@ -112,13 +112,13 @@ fn checkQueries(s &mut Scene, rng &mut Rng, world f32, rounds i32) i64 {
     if !sameSets(&mut got2, &mut want2) {bad = bad + 1i64;}
 
     // frustum
-    imm eye = v3(rng.range(-20., world + 20.), rng.range(-20., world + 20.), rng.range(-20., world + 20.));
-    imm target = v3(rng.range(0., world), rng.range(0., world), rng.range(0., world));
-    imm vp = Mat4.perspective(rng.range(0.4, 1.8), 1.3, 1., rng.range(30., 150.)) * Mat4.lookAt(eye, target, v3(0., 1., 0.));
-    imm fr = Frustum.fromMatrix(vp);
-    mut got3 = List[u64].empty();
-    mut want3 = List[u64].empty();
-    mut c3 = fn(h u64, p Proxy) bool { got3.push(h); true; };
+    let eye = v3(rng.range(-20., world + 20.), rng.range(-20., world + 20.), rng.range(-20., world + 20.));
+    let target = v3(rng.range(0., world), rng.range(0., world), rng.range(0., world));
+    let vp = Mat4.perspective(rng.range(0.4, 1.8), 1.3, 1., rng.range(30., 150.)) * Mat4.lookAt(eye, target, v3(0., 1., 0.));
+    let fr = Frustum.fromMatrix(vp);
+    var got3 = List[u64].empty();
+    var want3 = List[u64].empty();
+    var c3 = fn(h u64, p Proxy) bool { got3.push(h); true; };
     s.idx.frustum(&fr, &mut c3);
     i = 0usize;
     while i < s.boxes.len() {
@@ -128,22 +128,22 @@ fn checkQueries(s &mut Scene, rng &mut Rng, world f32, rounds i32) i64 {
     if !sameSets(&mut got3, &mut want3) {bad = bad + 1i64;}
 
     // rays: all hits, and the nearest
-    mut dir = v3(rng.range(-1., 1.), rng.range(-1., 1.), rng.range(-1., 1.));
+    var dir = v3(rng.range(-1., 1.), rng.range(-1., 1.), rng.range(-1., 1.));
     if r % 5i32 == 0i32 {dir = v3(1., 0., 0.);}
     if r % 7i32 == 0i32 {dir = v3(0., 0., -2.);}
-    imm ray = new Ray3(v3(rng.range(-10., world + 10.), rng.range(0., world), rng.range(0., world)), dir);
-    imm maxT = rng.range(20., 200.);
-    mut got4 = List[u64].empty();
-    mut want4 = List[u64].empty();
-    mut c4 = fn(h u64, p Proxy, t f32) bool { got4.push(h); true; };
+    let ray = new Ray3(v3(rng.range(-10., world + 10.), rng.range(0., world), rng.range(0., world)), dir);
+    let maxT = rng.range(20., 200.);
+    var got4 = List[u64].empty();
+    var want4 = List[u64].empty();
+    var c4 = fn(h u64, p Proxy, t f32) bool { got4.push(h); true; };
     s.idx.rayAll(ray, maxT, &mut c4);
-    mut bestT = FAR;
-    mut bestId = 0u64;
+    var bestT = FAR;
+    var bestId = 0u64;
     i = 0usize;
     while i < s.boxes.len() {
       if *s.live[i] {
         match ray.intersectAabb(*s.boxes[i]) {
-          case imm t Some {
+          case let t Some {
             if t <= maxT {
               want4.push(u64.from(i));
               if t < bestT {bestT = t; bestId = u64.from(i);}
@@ -156,7 +156,7 @@ fn checkQueries(s &mut Scene, rng &mut Rng, world f32, rounds i32) i64 {
     }
     if !sameSets(&mut got4, &mut want4) {bad = bad + 1i64;}
     match s.idx.rayNearest(ray, maxT) {
-      case imm hit Some {
+      case let hit Some {
         if want4.len() == 0usize {bad = bad + 1i64;}
         else if absDiff(hit.t, bestT) > 0.0005 {bad = bad + 1i64;}
       }
@@ -166,24 +166,24 @@ fn checkQueries(s &mut Scene, rng &mut Rng, world f32, rounds i32) i64 {
     }
 
     // k nearest
-    imm pt = v3(rng.range(-5., world + 5.), rng.range(-5., world + 5.), rng.range(-5., world + 5.));
-    imm k = 1usize + usize.from(rng.next() % 12u64);
-    mut near = List[Neighbor[u64]].empty();
+    let pt = v3(rng.range(-5., world + 5.), rng.range(-5., world + 5.), rng.range(-5., world + 5.));
+    let k = 1usize + usize.from(rng.next() % 12u64);
+    var near = List[Neighbor[u64]].empty();
     s.idx.nearest(pt, k, &mut near);
-    mut ds = List[f32].empty();
+    var ds = List[f32].empty();
     i = 0usize;
     while i < s.boxes.len() {
       if *s.live[i] {ds.push(s.boxes[i].closestPoint(pt).distanceSquared(pt));}
       i = i + 1usize;
     }
     // selection of the k smallest, by repeated minimum
-    imm expect = if ds.len() < k {ds.len();} else {k;};
+    let expect = if ds.len() < k {ds.len();} else {k;};
     if near.len() != expect {bad = bad + 1i64;}
     else {
-      mut n = 0usize;
+      var n = 0usize;
       while n < expect {
-        mut mi = n;
-        mut j = n + 1usize;
+        var mi = n;
+        var j = n + 1usize;
         while j < ds.len() {
           if *ds[j] < *ds[mi] {mi = j;}
           j = j + 1usize;
@@ -201,40 +201,40 @@ fn absDiff(a f32, b f32) f32 {if a > b {a - b;} else {b - a;};}
 
 fn main() i32 {
   // ---- hand cases ----
-  mut hand = LooseOctree[u64].create(v3(3., 3., 3.), 8., 5i32, 2.);
-  imm pa = hand.insert(new Aabb3(v3(0., 0., 0.), v3(1., 1., 1.)), 10u64);
-  imm pb = hand.insert(new Aabb3(v3(2., 0., 0.), v3(3., 1., 1.)), 20u64);
-  imm pc = hand.insert(new Aabb3(v3(5., 5., 5.), v3(6., 6., 6.)), 30u64);
+  var hand = LooseOctree[u64].create(v3(3., 3., 3.), 8., 5i32, 2.);
+  let pa = hand.insert(new Aabb3(v3(0., 0., 0.), v3(1., 1., 1.)), 10u64);
+  let pb = hand.insert(new Aabb3(v3(2., 0., 0.), v3(3., 1., 1.)), 20u64);
+  let pc = hand.insert(new Aabb3(v3(5., 5., 5.), v3(6., 6., 6.)), 30u64);
   expectInt(i64.from(hand.len()), 3i64, "three items");
   match hand.rayNearest(new Ray3(v3(-1., 0.5, 0.5), v3(1., 0., 0.)), 100.) {
-    case imm h Some {
+    case let h Some {
       expectUInt(h.handle, 10u64, "ray nearest is A");
       expectFloat(h.t, 1., 0.00001, "ray enters A at t = 1");
     }
     case is None { expect(false, "ray hits something"); }
   }
   match hand.rayNearest(new Ray3(v3(-1., 0.5, 0.5), v3(2., 0., 0.)), 100.) {
-    case imm h Some { expectFloat(h.t, 0.5, 0.00001, "doubled direction: t = 0.5"); }
+    case let h Some { expectFloat(h.t, 0.5, 0.00001, "doubled direction: t = 0.5"); }
     case is None { expect(false, "ray hits something (doubled)"); }
   }
   match hand.rayNearest(new Ray3(v3(0.5, 0.5, 0.5), v3(1., 0., 0.)), 100.) {
-    case imm h Some { expectFloat(h.t, 0., 0.00001, "ray from inside enters at 0"); }
+    case let h Some { expectFloat(h.t, 0., 0.00001, "ray from inside enters at 0"); }
     case is None { expect(false, "ray from inside hits"); }
   }
   match hand.rayNearest(new Ray3(v3(-1., 0.5, 0.5), v3(1., 0., 0.)), 0.5) {
-    case imm h Some { expect(false, "reach 0.5 stops short of A"); }
+    case let h Some { expect(false, "reach 0.5 stops short of A"); }
     case is None { }
   }
-  mut hits = 0i32;
-  mut count = fn(h u64, p Proxy, t f32) bool { hits = hits + 1i32; true; };
+  var hits = 0i32;
+  var count = fn(h u64, p Proxy, t f32) bool { hits = hits + 1i32; true; };
   hand.rayAll(new Ray3(v3(-1., 0.5, 0.5), v3(1., 0., 0.)), 100., &mut count);
   expectInt(i64.from(hits), 2i64, "ray along x meets A and B");
 
-  mut ids = List[u64].empty();
-  mut collect = fn(h u64, p Proxy) bool { ids.push(h); true; };
+  var ids = List[u64].empty();
+  var collect = fn(h u64, p Proxy) bool { ids.push(h); true; };
   hand.overlapSphere(new Sphere(v3(1.5, 0.5, 0.5), 1.5), &mut collect);
   expectInt(i64.from(ids.len()), 2i64, "ball touches A and B");
-  mut near = List[Neighbor[u64]].empty();
+  var near = List[Neighbor[u64]].empty();
   hand.nearest(v3(4., 0.5, 0.5), 3usize, &mut near);
   expectInt(i64.from(near.len()), 3i64, "three nearest");
   expectUInt(near[0usize].handle, 20u64, "B nearest");
@@ -249,15 +249,15 @@ fn main() i32 {
   expect(!hand.remove(pb), "B cannot be removed twice");
   expect(!hand.contains(pb), "B's proxy is dead");
   expect(hand.contains(pa) and hand.contains(pc), "A and C live");
-  imm pd = hand.insert(new Aabb3(v3(2., 0., 0.), v3(3., 1., 1.)), 40u64);
+  let pd = hand.insert(new Aabb3(v3(2., 0., 0.), v3(3., 1., 1.)), 40u64);
   expect(!hand.contains(pb), "B's proxy stays dead after its slot is reused");
   expect(hand.contains(pd), "D live");
   expectInt(i64.from(hand.len()), 3i64, "three again");
 
   // ---- random scenes ----
-  mut rng = new Rng(88172645463325252u64);
-  mut s = makeScene();
-  mut i = 0;
+  var rng = new Rng(88172645463325252u64);
+  var s = makeScene();
+  var i = 0;
   while i < 1500 {
     addTo(&mut s, randomBox(&mut rng, 100., 4.));
     i = i + 1;
@@ -265,15 +265,15 @@ fn main() i32 {
   expectInt(checkQueries(&mut s, &mut rng, 100., 60i32), 0i64, "queries after dynamic inserts");
 
   // moves, removes and inserts
-  mut round = 0;
+  var round = 0;
   while round < 4 {
     round = round + 1;
-    mut j = 0usize;
+    var j = 0usize;
     while j < s.boxes.len() {
-      imm roll = rng.next() % 10u64;
+      let roll = rng.next() % 10u64;
       if *s.live[j] {
         if roll < 4u64 {
-          imm nb = randomBox(&mut rng, 100., 4.);
+          let nb = randomBox(&mut rng, 100., 4.);
           s.idx.move(*s.proxies[j], nb, nb.center() - s.boxes[j].center());
           s.boxes.set(j, nb);
         }
@@ -283,8 +283,8 @@ fn main() i32 {
         }
         else if roll < 7u64 {
           // a small jitter
-          imm b = *s.boxes[j];
-          imm nb = new Aabb3(b.min + v3(0.02, 0., 0.), b.max + v3(0.02, 0., 0.));
+          let b = *s.boxes[j];
+          let nb = new Aabb3(b.min + v3(0.02, 0., 0.), b.max + v3(0.02, 0., 0.));
           s.idx.move(*s.proxies[j], nb, v3(0.02, 0., 0.));
           s.boxes.set(j, nb);
         }
@@ -300,7 +300,7 @@ fn main() i32 {
   }
 
   // mixed sizes: many small, a few huge, and a tight cluster
-  mut mx = makeScene();
+  var mx = makeScene();
   i = 0;
   while i < 500 {
     addTo(&mut mx, randomBox(&mut rng, 100., 1.));
@@ -319,25 +319,25 @@ fn main() i32 {
   expectInt(checkQueries(&mut mx, &mut rng, 100., 60i32), 0i64, "queries on mixed sizes and a cluster");
 
   // ---- pairs ----
-  mut ps = makeScene();
+  var ps = makeScene();
   i = 0;
   while i < 400 {
     addTo(&mut ps, randomBox(&mut rng, 40., 3.));
     i = i + 1;
   }
-  mut known = List[u64].empty();
-  mut ev = PairEvents[u64].create();
-  mut pairBad = 0i64;
-  mut step = 0;
+  var known = List[u64].empty();
+  var ev = PairEvents[u64].create();
+  var pairBad = 0i64;
+  var step = 0;
   while step < 8 {
     step = step + 1;
     if step > 1 {
-      mut m = 0usize;
+      var m = 0usize;
       while m < ps.boxes.len() {
-        imm roll = rng.next() % 10u64;
+        let roll = rng.next() % 10u64;
         if *ps.live[m] {
           if roll < 3u64 {
-            imm nb = randomBox(&mut rng, 40., 3.);
+            let nb = randomBox(&mut rng, 40., 3.);
             ps.idx.move(*ps.proxies[m], nb, nb.center() - ps.boxes[m].center());
             ps.boxes.set(m, nb);
           }
@@ -357,14 +357,14 @@ fn main() i32 {
     ev.clear();
     ps.idx.updatePairs(&mut ev);
     // apply the events to the known set
-    mut e = 0usize;
+    var e = 0usize;
     while e < ev.removed.len() {
-      imm key = pairKey(ev.removed[e].a, ev.removed[e].b);
-      mut f = 0usize;
-      mut found = false;
+      let key = pairKey(ev.removed[e].a, ev.removed[e].b);
+      var f = 0usize;
+      var found = false;
       while f < known.len() {
         if *known[f] == key {
-          imm last = known.len() - 1usize;
+          let last = known.len() - 1usize;
           known.swap(f, last);
           known.truncate(last);
           found = true;
@@ -381,11 +381,11 @@ fn main() i32 {
       e = e + 1usize;
     }
     // truth: brute force over the fat boxes
-    mut truth = List[u64].empty();
-    mut a = 0usize;
+    var truth = List[u64].empty();
+    var a = 0usize;
     while a < ps.boxes.len() {
       if *ps.live[a] {
-        mut b = a + 1usize;
+        var b = a + 1usize;
         while b < ps.boxes.len() {
           if *ps.live[b] and ps.idx.pairBox(*ps.proxies[a]).overlaps(ps.idx.pairBox(*ps.proxies[b])) {
             truth.push(pairKey(u64.from(a), u64.from(b)));
@@ -397,9 +397,9 @@ fn main() i32 {
     }
     if !sameSets(&mut known, &mut truth) {pairBad = pairBad + 1i64;}
     // and allPairs says the same
-    mut all = List[Pair[u64]].empty();
+    var all = List[Pair[u64]].empty();
     ps.idx.allPairs(&mut all);
-    mut allKeys = List[u64].empty();
+    var allKeys = List[u64].empty();
     e = 0usize;
     while e < all.len() {
       allKeys.push(pairKey(all[e].a, all[e].b));

@@ -134,7 +134,7 @@ fn show(label &amp;str, s &amp;str) {
 fn main() {
   // Read a URL: it is tidied, and every way of writing it back is a method
   match Url.parse("HTTPS://Example.com:443/a/./b/../c?x=1#top") {
-    case imm u Ok {
+    case let u Ok {
       show("text     ", u.text().view());
       show("origin   ", u.origin().view());
       show("authority", u.authority().view());
@@ -149,21 +149,21 @@ fn main() {
 
       // Resolve a reference against it
       match u.resolve("../d?y") {
-        case imm t Ok {show("resolved ", t.text().view());}
-        case imm e Error {show("error    ", e.message().view());}
+        case let t Ok {show("resolved ", t.text().view());}
+        case let e Error {show("error    ", e.message().view());}
       }
       match u.resolve("//other.example/x") {
-        case imm t Ok {show("resolved ", t.text().view());}
-        case imm e Error {show("error    ", e.message().view());}
+        case let t Ok {show("resolved ", t.text().view());}
+        case let e Error {show("error    ", e.message().view());}
       }
     }
-    case imm e Error {show("error    ", e.message().view());}
+    case let e Error {show("error    ", e.message().view());}
   }
 
   // A refusal says where and why
   match Url.parse("http://example.com:99999/") {
-    case imm u Ok {show("text     ", u.text().view());}
-    case imm e Error {
+    case let u Ok {show("text     ", u.text().view());}
+    case let e Error {
       show("error    ", e.message().view());
       printStr("at byte  ");
       printUInt(u64.from(e.at));
@@ -173,24 +173,24 @@ fn main() {
 
   // The same origin, however the default port is written
   match Url.parse("http://a:80/x") {
-    case imm a Ok {
+    case let a Ok {
       match Url.parse("http://A/y") {
-        case imm b Ok {printStr(if a.sameOrigin(&amp;b) {"same origin\n";} else {"other origin\n";});}
-        case imm e Error {}
+        case let b Ok {printStr(if a.sameOrigin(&amp;b) {"same origin\n";} else {"other origin\n";});}
+        case let e Error {}
       }
     }
-    case imm e Error {}
+    case let e Error {}
   }
 
   // A value for a query, encoded; and decoded again
-  imm enc = encodeComponent("a b&amp;c=d/é");
+  let enc = encodeComponent("a b&amp;c=d/é");
   show("encoded  ", enc.view());
   match decode(enc.view()) {
-    case imm d Some {show("decoded  ", d.view());}
+    case let d Some {show("decoded  ", d.view());}
     case is None[String] {printStr("not decodable\n");}
   }
   match decode("%zz") {
-    case imm d Some {show("decoded  ", d.view());}
+    case let d Some {show("decoded  ", d.view());}
     case is None[String] {printStr("%zz is not decodable\n");}
   }
 }
@@ -305,7 +305,7 @@ import http use *;
 
 fn main() {
   // A request: method, target, authority; fields beside them
-  mut req = RequestHead.make("GET", "/tiles/7/12.bin", "example.com");
+  var req = RequestHead.make("GET", "/tiles/7/12.bin", "example.com");
   req.headers.add("Accept", "application/octet-stream");
   req.headers.add("Range", "bytes=0-65535");
   printStr(req.methodName());
@@ -319,7 +319,7 @@ fn main() {
 
   // Names compare ignoring case; the first value comes back
   match req.headers.get("RANGE") {
-    case imm v Some {
+    case let v Some {
       printStr("Range is ");
       printStr(v as &amp;str);
       printStr("\n");
@@ -328,14 +328,14 @@ fn main() {
   }
 
   // A field that is not allowed is refused, and nothing is added
-  imm ok = req.headers.add("Bad Name", "x");
+  let ok = req.headers.add("Bad Name", "x");
   printStr(if ok {"added\n";} else {"refused: ";});
   printStr(checkFieldName("Bad Name"));
   printStr("\n");
   printStr(if req.headers.add("X-Note", "two\nlines") {"added\n";} else {"refused a value with a newline\n";});
 
   // A repeated field is kept as often as it came; joined only when asked
-  mut h = Headers.empty();
+  var h = Headers.empty();
   h.add("Set-Cookie", "a=1");
   h.add("Set-Cookie", "b=2");
   h.add("Connection", "keep-alive, Upgrade");
@@ -349,7 +349,7 @@ fn main() {
   printStr(" cookie after set\n");
 
   // Methods, statuses, bodies
-  imm m = methodOf("PUT");
+  let m = methodOf("PUT");
   printStr(if isIdempotent(m) and not isSafe(m) {"PUT is idempotent, not safe\n";} else {"?\n";});
   printStr(if methodOf("get") == Method.Other {"'get' is not GET\n";} else {"?\n";});
   printStr(reasonPhrase(404u16));
@@ -357,17 +357,17 @@ fn main() {
   printStr(if isRedirect(302u16) {"302 is a redirect; ";} else {"?; ";});
   printStr(if responseHasBody(Method.Head, 200u16) {"HEAD has a body\n";} else {"a response to HEAD has no body\n";});
 
-  mut resp = ResponseHead.make(200u16);
+  var resp = ResponseHead.make(200u16);
   resp.headers.addUInt("X-Count", 42u64);
   match resp.headers.get("x-count") {
-    case imm v Some {printStr(v as &amp;str);}
+    case let v Some {printStr(v as &amp;str);}
     case is None[&amp;Array[u8]] {}
   }
   printStr("\n");
-  imm body = BodyLength.sized(1024u64);
+  let body = BodyLength.sized(1024u64);
   printStr(if body.isSized() and not body.isUnsized() {"sized\n";} else {"?\n";});
 
-  imm err = HttpError.make(ErrorKind.Malformed, 400u16, "a header field's name has a space before its colon");
+  let err = HttpError.make(ErrorKind.Malformed, 400u16, "a header field's name has a space before its colon");
   printStr(err.message().view());
   printStr("\n");
 }
@@ -440,7 +440,7 @@ import http1 use *;
 fn events(c &amp;mut Connection) {
   while true {
     match c.pollEvent() {
-      case mut e Request {
+      case var e Request {
         printStr("event Request ");
         printStr(e.head.methodName());
         printStr(" ");
@@ -449,14 +449,14 @@ fn events(c &amp;mut Connection) {
         printStr(e.head.authority.view());
         printStr("\n");
       }
-      case mut d Data {
+      case var d Data {
         printStr("event Data ");
         printUInt(u64.from(d.buf.len()));
         printStr(" bytes\n");
         c.release(d.buf.len());
       }
       case is End {printStr("event End\n");}
-      case mut f Failed {
+      case var f Failed {
         printStr("event Failed ");
         printStr(f.error.message().view());
         printStr("\n");
@@ -477,28 +477,28 @@ fn events(c &amp;mut Connection) {
 // The bytes the connection wants sent, written out
 fn wire(c &amp;mut Connection, at Instant) {
   while true {
-    imm b = c.pollTransmit(at);
+    let b = c.pollTransmit(at);
     if b.len() == 0usize {break;}
     printStr(b.view() as &amp;str);
   }
 }
 
 fn main() {
-  imm pool = Pool.make();
-  imm now = Instant.now();
-  mut server = Connection.server(Config.make(), pool, now);
+  let pool = Pool.make();
+  let now = Instant.now();
+  var server = Connection.server(Config.make(), pool, now);
 
   // Bytes arrive, as a socket would bring them
-  mut arrived = pool.mustTake(256usize);
+  var arrived = pool.mustTake(256usize);
   arrived.append("POST /notes HTTP/1.1\r\nHost: example.com\r\nContent-Length: 5\r\n\r\nhello");
   server.handleInput(arrived, now);
   events(&amp;mut server);
 
   // The program answers; the connection says what to put on the wire
-  mut head = ResponseHead.make(201u16);
+  var head = ResponseHead.make(201u16);
   head.headers.add("Content-Type", "text/plain");
   server.sendResponse(head, BodyLength.sized(3u64));
-  mut body = pool.mustTake(16usize);
+  var body = pool.mustTake(16usize);
   body.append("ok\n");
   server.sendData(body);
   server.finish();
@@ -507,8 +507,8 @@ fn main() {
   printStr("---\n");
 
   // A request it will not accept is refused, and the connection ends
-  mut bad = Connection.server(Config.make(), pool, now);
-  mut junk = pool.mustTake(256usize);
+  var bad = Connection.server(Config.make(), pool, now);
+  var junk = pool.mustTake(256usize);
   junk.append("GET / HTTP/1.1\r\nHost: a\r\nHost: b\r\n\r\n");
   bad.handleInput(junk, now);
   events(&amp;mut bad);
@@ -628,7 +628,7 @@ struct Pending {
 }
 
 fn find(pending &amp;List[Pending], req ReqId) usize {
-  mut k = 0usize;
+  var k = 0usize;
   while k &lt; pending.len() {
     if pending[k].req == req {return k;}
     k = k + 1usize;
@@ -638,10 +638,10 @@ fn find(pending &amp;List[Pending], req ReqId) usize {
 
 // Answer with a body that is a whole text
 fn reply(drv &amp;mut Driver, pool &amp;Pool, req ReqId, status u16, text &amp;Array[u8]) {
-  mut head = ResponseHead.make(status);
+  var head = ResponseHead.make(status);
   head.headers.add("Content-Type", "text/plain");
   drv.respond(req, head, BodyLength.sized(u64.from(text.len)));
-  mut buf = pool.mustTake(text.len + 1usize);
+  var buf = pool.mustTake(text.len + 1usize);
   buf.append(text);
   drv.sendData(req, buf);
   drv.finish(req);
@@ -663,21 +663,21 @@ fn serve(drv &amp;mut Driver, pool &amp;Pool, pending &amp;mut List[Pending], e 
   if e.kind == EventKind.Request {
     pending.push(new Pending(e.req, e.request.method, e.request.target.copy(), String.empty()));
   } elif e.kind == EventKind.Data {
-    imm k = find(pending, e.req);
+    let k = find(pending, e.req);
     if k &lt; pending.len() {(&amp;mut pending[k]).body.appendBytes(e.buf.view());}
     drv.release(e.req, e.buf.len());
   } elif e.kind == EventKind.End {
-    imm k = find(pending, e.req);
+    let k = find(pending, e.req);
     if k &lt; pending.len() {
       pending.swap(k, pending.len() - 1usize);
       match pending.pop() {
-        case imm p Some {route(drv, pool, p);}
+        case let p Some {route(drv, pool, p);}
         case is None[Pending] {}
       }
     }
   } elif e.isTerminal() {
     // Done, or the connection failed first: either way, the request is over
-    imm k = find(pending, e.req);
+    let k = find(pending, e.req);
     if k &lt; pending.len() {
       pending.swap(k, pending.len() - 1usize);
       pending.pop();
@@ -698,34 +698,34 @@ fn ask(drv &amp;mut Driver, lp &amp;mut Loop, conn ConnId, step u32) {
 }
 
 fn main() {
-  imm pool = Pool.make();
-  mut lp = Loop.mustMake();
-  mut drv = Driver.make(Config.make(), pool);
+  let pool = Pool.make();
+  var lp = Loop.mustMake();
+  var drv = Driver.make(Config.make(), pool);
 
   // Listen on any free port of this machine
-  mut port = 0u16;
+  var port = 0u16;
   match drv.listen(&amp;mut lp, SocketAddr.localhost(0u16), Sink.Here(tokServer)) {
-    case imm l Ok {
+    case let l Ok {
       match drv.localAddr(&amp;lp, l) {
-        case imm a Ok {port = a.port();}
-        case imm e Error {}
+        case let a Ok {port = a.port();}
+        case let e Error {}
       }
     }
-    case imm e Error {printStr(e.message().view());}
+    case let e Error {printStr(e.message().view());}
   }
 
   // A client on the same loop asks it three things
-  imm conn = drv.connect(&amp;mut lp, "127.0.0.1", port, Sink.Here(tokConn));
-  mut step = 0u32;
+  let conn = drv.connect(&amp;mut lp, "127.0.0.1", port, Sink.Here(tokConn));
+  var step = 0u32;
   ask(&amp;mut drv, &amp;mut lp, conn, step);
-  mut pending = List[Pending].empty();
-  mut events = List[Event].empty();
-  imm giveUp = Instant.now() + Duration.fromSeconds(10i64);
+  var pending = List[Pending].empty();
+  var events = List[Event].empty();
+  let giveUp = Instant.now() + Duration.fromSeconds(10i64);
   while step &lt; 3u32 and Instant.now() &lt; giveUp {
     drv.poll(&amp;mut lp, giveUp, &amp;mut events);
-    mut k = 0usize;
+    var k = 0usize;
     while k &lt; events.len() {
-      imm e = &amp;mut events[k];
+      let e = &amp;mut events[k];
       k = k + 1usize;
       if e.token == tokServer {
         serve(&amp;mut drv, &amp;pool, &amp;mut pending, e);
@@ -739,7 +739,7 @@ fn main() {
           printStr(e.buf.view() as &amp;str);
           drv.release(e.req, e.buf.len());
         } elif e.kind == EventKind.Writable {
-          mut buf = pool.mustTake(16usize);
+          var buf = pool.mustTake(16usize);
           buf.append("hello, Cone\n");
           drv.sendData(e.req, buf);
           drv.finish(e.req);
@@ -783,9 +783,9 @@ struct Sending {
 // Send as many pieces as the connection takes now; finish when all are gone
 fn sendPieces(drv &amp;mut Driver, pool &amp;Pool, s &amp;mut Sending) {
   while s.sent &lt; total {
-    mut buf = pool.mustTake(piece);
-    imm room = buf.spare();
-    mut i = 0usize;
+    var buf = pool.mustTake(piece);
+    let room = buf.spare();
+    var i = 0usize;
     while i &lt; piece {
       room[i] = u8.from((s.sent + i) % 251usize);
       i = i + 1usize;
@@ -972,7 +972,7 @@ if e.kind == EventKind.End {
 		program is the file named below; the client is:)</p>
 <pre>
 fn urlOf(port u16, path &amp;str) String {
-  mut u = String.from("http://127.0.0.1:");
+  var u = String.from("http://127.0.0.1:");
   u.appendUInt(u64.from(port));
   u.append(path);
   u;
@@ -1002,36 +1002,36 @@ fn show(label &amp;str, r &amp;Response) {
 
 fn main() {
   // The server, on its own thread, and the port it listens on
-  mut portTx Sender[u16];
-  mut portRx Receiver[u16];
+  var portTx Sender[u16];
+  var portRx Receiver[u16];
   portTx, portRx = Channel[u16].make();
-  imm stop = new Arc[imm, Atomic[bool]](Atomic[bool].of(false));
-  imm server = thread.start(new ServerArgs(portTx, stop), &amp;serverThread);
-  mut port = 0u16;
+  let stop = new Arc[imm, Atomic[bool]](Atomic[bool].of(false));
+  let server = thread.start(new ServerArgs(portTx, stop), &amp;serverThread);
+  var port = 0u16;
   match portRx.recv() {
-    case imm p Some {port = p;}
+    case let p Some {port = p;}
     case is None[u16] {}
   }
 
-  mut lp = Loop.mustMake();
-  mut client = Client.make(Config.make(), Pool.make());
+  var lp = Loop.mustMake();
+  var client = Client.make(Config.make(), Pool.make());
 
   // One call, the whole body: up to 64 KiB of it
-  imm hello = client.fetchWhole(&amp;mut lp, Request.get(urlOf(port, "/").view()), 65536usize);
+  let hello = client.fetchWhole(&amp;mut lp, Request.get(urlOf(port, "/").view()), 65536usize);
   show("GET /", &amp;hello);
 
   // A redirect is followed; the URL that answered is on the response
-  imm moved = client.fetchWhole(&amp;mut lp, Request.get(urlOf(port, "/old").view()), 65536usize);
+  let moved = client.fetchWhole(&amp;mut lp, Request.get(urlOf(port, "/old").view()), 65536usize);
   show("GET /old", &amp;moved);
   printStr(if moved.url.view() == urlOf(port, "/").view() {"  answered by the URL of /\n";} else {"  answered by another URL\n";});
 
   // Redirects are the caller's to follow when it says none
-  mut stay = Request.get(urlOf(port, "/old").view());
+  var stay = Request.get(urlOf(port, "/old").view());
   stay.maxRedirects = 0u32;
-  imm still = client.fetchWhole(&amp;mut lp, stay, 65536usize);
+  let still = client.fetchWhole(&amp;mut lp, stay, 65536usize);
   show("GET /old, no redirects", &amp;still);
   match still.headers.get("location") {
-    case imm v Some {
+    case let v Some {
       printStr("  Location: ");
       printStr(v as &amp;str);
       printStr("\n");
@@ -1040,30 +1040,30 @@ fn main() {
   }
 
   // A POST with a body and a header field
-  mut post = Request.make("POST", urlOf(port, "/echo").view());
+  var post = Request.make("POST", urlOf(port, "/echo").view());
   post.headers.add("Content-Type", "text/plain");
   post.body = String.from("sent whole");
-  imm echoed = client.fetchWhole(&amp;mut lp, post, 65536usize);
+  let echoed = client.fetchWhole(&amp;mut lp, post, 65536usize);
   show("POST /echo", &amp;echoed);
 
   // A page that is not there is an answer, not a failure
-  imm missing = client.fetchWhole(&amp;mut lp, Request.get(urlOf(port, "/missing").view()), 65536usize);
+  let missing = client.fetchWhole(&amp;mut lp, Request.get(urlOf(port, "/missing").view()), 65536usize);
   show("GET /missing", &amp;missing);
 
   // A failure says where it failed
-  imm bad = client.fetchWhole(&amp;mut lp, Request.get("ftp://127.0.0.1/"), 65536usize);
+  let bad = client.fetchWhole(&amp;mut lp, Request.get("ftp://127.0.0.1/"), 65536usize);
   show("GET ftp://", &amp;bad);
   printStr("  ");
   printStr(bad.failure.message().view());
   printStr("\n");
 
   // A GET is repeated on a fresh connection when the first is reset under it; two repeats, then it fails
-  imm reset = client.fetchWhole(&amp;mut lp, Request.get(urlOf(port, "/reset").view()), 65536usize);
+  let reset = client.fetchWhole(&amp;mut lp, Request.get(urlOf(port, "/reset").view()), 65536usize);
   show("GET /reset", &amp;reset);
   printUInt(u64.from(reset.failure.attempts));
   printStr(" attempts\n");
 
-  imm s = client.stats();
+  let s = client.stats();
   printUInt(s.fetches);
   printStr(" fetches, ");
   printUInt(s.reused);
@@ -1148,7 +1148,7 @@ GET /reset: Failed, read stage
 		as the body; the first number on each line is the fetch's token.)</p>
 <pre>
 fn getAt(port u16, path &amp;str, intent Intent) Request {
-  mut r = Request.get(urlOf(port, path).view());
+  var r = Request.get(urlOf(port, path).view());
   r.intent = intent;
   r;
 }
@@ -1158,28 +1158,28 @@ fn main() {
 
   // One connection to an origin at a time, so the order requests are
   // given it shows
-  mut config = Config.make();
+  var config = Config.make();
   config.maxPerOrigin = 1u32;
-  mut lp = Loop.mustMake();
-  mut client = Client.make(config, Pool.make());
+  var lp = Loop.mustMake();
+  var client = Client.make(config, Pool.make());
 
   // Five requests, asked for in this order; the fourth is changed its mind about
   client.send(&amp;mut lp, getAt(port, "/background", Intent.Background), Sink.Here(1u64));
   client.send(&amp;mut lp, getAt(port, "/prefetch", Intent.Prefetch), Sink.Here(2u64));
   client.send(&amp;mut lp, getAt(port, "/visible", Intent.Visible), Sink.Here(3u64));
-  imm dropped = client.send(&amp;mut lp, getAt(port, "/cancelled", Intent.Visible), Sink.Here(4u64));
+  let dropped = client.send(&amp;mut lp, getAt(port, "/cancelled", Intent.Visible), Sink.Here(4u64));
   client.send(&amp;mut lp, getAt(port, "/urgent", Intent.Urgent), Sink.Here(5u64));
   client.cancel(&amp;mut lp, dropped);
 
   // Each fetch's events, as they come
-  mut events = List[Event].empty();
-  mut finals = 0u32;
-  imm giveUp = Instant.now() + Duration.fromSeconds(10i64);
+  var events = List[Event].empty();
+  var finals = 0u32;
+  let giveUp = Instant.now() + Duration.fromSeconds(10i64);
   while finals &lt; 5u32 and Instant.now() &lt; giveUp {
     client.poll(&amp;mut lp, giveUp, &amp;mut events);
-    mut k = 0usize;
+    var k = 0usize;
     while k &lt; events.len() {
-      imm e = &amp;mut events[k];
+      let e = &amp;mut events[k];
       k = k + 1usize;
       printUInt(e.token);
       printStr(" ");
@@ -1307,13 +1307,13 @@ struct TlsMaker {
 
 // ... and where the plain server called drv.listen:
 match tls.Server.make(tls.ServerConfig.make(&amp;certFile, &amp;keyFile)) {
-  case imm tlsServer Ok {
-    imm maker = new Uni[TlsMaker](new TlsMaker(tlsServer, pool));
+  case let tlsServer Ok {
+    let maker = new Uni[TlsMaker](new TlsMaker(tlsServer, pool));
     match drv.listenWith(&amp;mut lp, SocketAddr.localhost(0u16), maker, httpconn.Sink.Here(100u64)) {
       ...
     }
   }
-  case imm e Error {printStr(e.message().view());}
+  case let e Error {printStr(e.message().view());}
 }
 </pre>
 	<p>Nothing else about the server changes: its requests are the same events, answered the same way. A client
@@ -1327,17 +1327,17 @@ match tls.Server.make(tls.ServerConfig.make(&amp;certFile, &amp;keyFile)) {
 <pre>
 fn main() {
   // ... the server thread and its port, as before ...
-  mut address = String.from("https://127.0.0.1:");
+  var address = String.from("https://127.0.0.1:");
   address.appendUInt(u64.from(port));
   address.append("/");
 
   // A client that trusts the test root, and only it
-  mut trusting = httpclient.Config.make();
+  var trusting = httpclient.Config.make();
   trusting.tlsConfig.verify = tls.Verifier.roots(readText("ca.pem").view());
   trusting.tlsConfig.offline = true;
-  mut lp = Loop.mustMake();
-  mut client = httpclient.Client.make(trusting, Pool.make());
-  imm ok = client.fetchWhole(&amp;mut lp, httpclient.Request.get(address.view()), 4096usize);
+  var lp = Loop.mustMake();
+  var client = httpclient.Client.make(trusting, Pool.make());
+  let ok = client.fetchWhole(&amp;mut lp, httpclient.Request.get(address.view()), 4096usize);
   printStr(if ok.isOk() {"trusting client: ";} else {"trusting client failed: ";});
   printUInt(u64.from(ok.status));
   printStr(" ");
@@ -1345,11 +1345,11 @@ fn main() {
   printStr("\n");
 
   // A client that asks the operating system, which has never heard of that root
-  mut asking = httpclient.Config.make();
+  var asking = httpclient.Config.make();
   asking.tlsConfig.offline = true;
-  mut lp2 = Loop.mustMake();
-  mut client2 = httpclient.Client.make(asking, Pool.make());
-  imm refused = client2.fetchWhole(&amp;mut lp2, httpclient.Request.get(address.view()), 4096usize);
+  var lp2 = Loop.mustMake();
+  var client2 = httpclient.Client.make(asking, Pool.make());
+  let refused = client2.fetchWhole(&amp;mut lp2, httpclient.Request.get(address.view()), 4096usize);
   printStr("asking the OS: ");
   printStr(httpclient.eventName(refused.outcome));
   printStr(", ");
@@ -1438,27 +1438,27 @@ asking the OS: Failed, tls: closed: certificate untrusted (Windows error 2148204
 // Move what each side has to send to the other until neither has any;
 // what each reads is appended to its string
 fn pump(c &amp;mut tls.Session, s &amp;mut tls.Session, cin &amp;mut String, sin &amp;mut String) {
-  mut buf = new Array[u8, 20000] &lt;- fill 0u8;
-  mut moved = true;
+  var buf = new Array[u8, 20000] &lt;- fill 0u8;
+  var moved = true;
   while moved {
     moved = false;
     while c.pending() > 0usize {
-      imm n = c.transmit(&amp;mut buf[0usize ..&lt; 20000usize]);
+      let n = c.transmit(&amp;mut buf[0usize ..&lt; 20000usize]);
       s.feed(&amp;buf[0usize ..&lt; n]);
       moved = true;
     }
     while s.pending() > 0usize {
-      imm n = s.transmit(&amp;mut buf[0usize ..&lt; 20000usize]);
+      let n = s.transmit(&amp;mut buf[0usize ..&lt; 20000usize]);
       c.feed(&amp;buf[0usize ..&lt; n]);
       moved = true;
     }
     while c.canRead() {
-      imm n = c.read(&amp;mut buf[0usize ..&lt; 20000usize]);
+      let n = c.read(&amp;mut buf[0usize ..&lt; 20000usize]);
       if n == 0usize {break;}
       cin.appendBytes(&amp;buf[0usize ..&lt; n]);
     }
     while s.canRead() {
-      imm n = s.read(&amp;mut buf[0usize ..&lt; 20000usize]);
+      let n = s.read(&amp;mut buf[0usize ..&lt; 20000usize]);
       if n == 0usize {break;}
       sin.appendBytes(&amp;buf[0usize ..&lt; n]);
     }
@@ -1467,32 +1467,32 @@ fn pump(c &amp;mut tls.Session, s &amp;mut tls.Session, cin &amp;mut String, sin
 
 fn main() {
   // The server's side: its certificate chain and key
-  imm certFile = certs("server.pem");
-  imm keyFile = certs("server.key");
-  imm server = tls.Server.make(tls.ServerConfig.make(&amp;certFile, &amp;keyFile));
+  let certFile = certs("server.pem");
+  let keyFile = certs("server.key");
+  let server = tls.Server.make(tls.ServerConfig.make(&amp;certFile, &amp;keyFile));
 
   // The client's side: trusts the test root alone
-  mut rootPem = String.empty();
-  imm caFile = certs("ca.pem");
+  var rootPem = String.empty();
+  let caFile = certs("ca.pem");
   match fs.readFile(&amp;caFile) {
-    case mut r Ok {rootPem &lt;=> r;}
-    case imm e Error {}
+    case var r Ok {rootPem &lt;=> r;}
+    case let e Error {}
   }
-  mut config = tls.ClientConfig.make();
+  var config = tls.ClientConfig.make();
   config.verify = tls.Verifier.roots(rootPem.view());
 
   match server {
-    case imm srv Ok {
+    case let srv Ok {
       match tls.Client.make(config) {
-        case imm cl Ok {
+        case let cl Ok {
           // One session each; no socket anywhere
-          mut c = cl.session("localhost");
-          mut s = srv.session();
-          mut cin = String.empty();
-          mut sin = String.empty();
+          var c = cl.session("localhost");
+          var s = srv.session();
+          var cin = String.empty();
+          var sin = String.empty();
           pump(&amp;mut c, &amp;mut s, &amp;mut cin, &amp;mut sin);
           printStr(if c.isOpen() and s.isOpen() {"handshake done\n";} else {"no handshake\n";});
-          imm info = c.info();
+          let info = c.info();
           printStr(info.versionName.view());
           printStr(" ");
           printStr(info.cipher.view());
@@ -1521,21 +1521,21 @@ fn main() {
           printStr(if s.info().closeNotify {"...with a close_notify\n";} else {"...without one\n";});
 
           // The same client, the wrong name
-          mut c2 = cl.session("example.org");
-          mut s2 = srv.session();
+          var c2 = cl.session("example.org");
+          var s2 = srv.session();
           pump(&amp;mut c2, &amp;mut s2, &amp;mut cin, &amp;mut sin);
           if c2.isFailed() {
-            imm why = c2.error().message();
+            let why = c2.error().message();
             printStr(why.view());
           } else {
             printStr("no failure");
           }
           printStr("\n");
         }
-        case imm e Error {printStr(e.message().view());}
+        case let e Error {printStr(e.message().view());}
       }
     }
-    case imm e Error {printStr(e.message().view());}
+    case let e Error {printStr(e.message().view());}
   }
 }
 </pre>

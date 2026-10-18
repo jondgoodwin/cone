@@ -50,8 +50,8 @@ struct BitWriter {
 
   // A Huffman code goes in most-significant bit first
   pub fn putCode(self &mut, code u32, bits u32) {
-    mut rev = 0u32;
-    mut i = 0u32;
+    var rev = 0u32;
+    var i = 0u32;
     while i < bits {
       rev = (rev << 1u32) | ((code >> i) & 1u32);
       i += 1u32;
@@ -76,12 +76,12 @@ struct Code {
 // used symbols: the used one (or symbol 0) gets length 1, which every inflater
 // accepts.
 fn huffmanLengths(freq &Array[u32], n usize, maxBits u8) List[u8] {
-  mut f = List[u32].withCapacity(n);
-  mut i = 0usize;
+  var f = List[u32].withCapacity(n);
+  var i = 0usize;
   while i < n { f.push(freq[i]); i += 1usize; }
   while true {
-    imm lens = huffmanOnce(f.view(), n);
-    mut maxLen = 0u8;
+    let lens = huffmanOnce(f.view(), n);
+    var maxLen = 0u8;
     i = 0usize;
     while i < n { if *lens[i] > maxLen { maxLen = *lens[i]; } i += 1usize; }
     if maxLen <= maxBits { return lens; }
@@ -97,14 +97,14 @@ fn huffmanLengths(freq &Array[u32], n usize, maxBits u8) List[u8] {
 
 // Huffman's merge by repeatedly joining the two lightest trees
 fn huffmanOnce(freq &Array[u32], n usize) List[u8] {
-  mut lens = List[u8].withCapacity(n);
-  mut i = 0usize;
+  var lens = List[u8].withCapacity(n);
+  var i = 0usize;
   while i < n { lens.push(0u8); i += 1usize; }
   // Nodes: leaves 0..n-1, then internal ones; weight, parent, alive
-  mut weight = List[u64].empty();
-  mut parent = List[i32].empty();
-  mut alive = List[bool].empty();
-  mut used = 0usize;
+  var weight = List[u64].empty();
+  var parent = List[i32].empty();
+  var alive = List[bool].empty();
+  var used = 0usize;
   i = 0usize;
   while i < n {
     weight.push(u64.from(freq[i]));
@@ -119,12 +119,12 @@ fn huffmanOnce(freq &Array[u32], n usize) List[u8] {
     while i < n { if freq[i] > 0u32 { lens.set(i, 1u8); } i += 1usize; }
     return lens;
   }
-  mut left = used;
+  var left = used;
   while left > 1usize {
     // The two lightest alive nodes (ties to the lowest index: deterministic)
-    mut a = -1i32;
-    mut b = -1i32;
-    mut j = 0usize;
+    var a = -1i32;
+    var b = -1i32;
+    var j = 0usize;
     while j < weight.len() {
       if *alive[j] {
         if a < 0i32 or *weight[j] < *weight[usize.from(a)] {
@@ -136,7 +136,7 @@ fn huffmanOnce(freq &Array[u32], n usize) List[u8] {
       }
       j += 1usize;
     }
-    imm id = i32.from(weight.len());
+    let id = i32.from(weight.len());
     weight.push(*weight[usize.from(a)] + *weight[usize.from(b)]);
     parent.push(-1i32);
     alive.push(true);
@@ -150,8 +150,8 @@ fn huffmanOnce(freq &Array[u32], n usize) List[u8] {
   i = 0usize;
   while i < n {
     if freq[i] > 0u32 {
-      mut d = 0u8;
-      mut p = *parent[i];
+      var d = 0u8;
+      var p = *parent[i];
       while p >= 0i32 { d += 1u8; p = *parent[usize.from(p)]; }
       lens.set(i, d);
     }
@@ -162,25 +162,25 @@ fn huffmanOnce(freq &Array[u32], n usize) List[u8] {
 
 // The canonical codes of RFC 1951 3.2.2 for the lengths
 fn canonicalCodes(lens &Array[u8], n usize) List[u32] {
-  mut count = List[u32].empty();
-  mut i = 0usize;
+  var count = List[u32].empty();
+  var i = 0usize;
   while i < 17usize { count.push(0u32); i += 1usize; }
   i = 0usize;
   while i < n { if lens[i] > 0u8 { count.set(usize.from(lens[i]), *count[usize.from(lens[i])] + 1u32); } i += 1usize; }
-  mut next = List[u32].empty();
+  var next = List[u32].empty();
   i = 0usize;
   while i < 17usize { next.push(0u32); i += 1usize; }
-  mut code = 0u32;
+  var code = 0u32;
   i = 1usize;
   while i < 16usize {
     code = (code + *count[i - 1usize]) << 1u32;
     next.set(i, code);
     i += 1usize;
   }
-  mut codes = List[u32].empty();
+  var codes = List[u32].empty();
   i = 0usize;
   while i < n {
-    imm l = usize.from(lens[i]);
+    let l = usize.from(lens[i]);
     if l > 0usize {
       codes.push(*next[l]);
       next.set(l, *next[l] + 1u32);
@@ -193,19 +193,19 @@ fn canonicalCodes(lens &Array[u8], n usize) List[u32] {
 }
 
 fn makeCode(lens List[u8]) Code {
-  imm codes = canonicalCodes(lens.view(), lens.len());
+  let codes = canonicalCodes(lens.view(), lens.len());
   new Code(lens, codes);
 }
 
 // The length code (257 to 285) and the extra bits a match length takes
 fn lengthSymbol(len usize) usize {
-  mut s = 28usize;
+  var s = 28usize;
   while usize.from(lenBase[s]) > len { s -= 1usize; }
   s;
 }
 
 fn distSymbol(d usize) usize {
-  mut s = 29usize;
+  var s = 29usize;
   while usize.from(distBase[s]) > d { s -= 1usize; }
   s;
 }
@@ -216,18 +216,18 @@ fn hash3(d &Array[u8], i usize) usize {
 
 // Write tokens [from, to) with the codes
 fn writeTokenCodes(w &mut BitWriter, tokens &Array[u32], from usize, to usize, lit &Code, dist &Code) {
-  mut i = from;
+  var i = from;
   while i < to {
-    imm t = tokens[i];
+    let t = tokens[i];
     if (t & 0x80000000u32) == 0u32 {
       w.putCode(*lit.codes[usize.from(t)], u32.from(*lit.lens[usize.from(t)]));
     } else {
-      imm len = usize.from((t >> 16u32) & 0x7FFFu32);
-      imm d = usize.from(t & 0xFFFFu32);
-      imm ls = lengthSymbol(len);
+      let len = usize.from((t >> 16u32) & 0x7FFFu32);
+      let d = usize.from(t & 0xFFFFu32);
+      let ls = lengthSymbol(len);
       w.putCode(*lit.codes[257usize + ls], u32.from(*lit.lens[257usize + ls]));
       w.put(u32.from(len - usize.from(lenBase[ls])), u32.from(lenExtra[ls]));
-      imm ds = distSymbol(d);
+      let ds = distSymbol(d);
       w.putCode(*dist.codes[ds], u32.from(*dist.lens[ds]));
       w.put(u32.from(d - usize.from(distBase[ds])), u32.from(distExtra[ds]));
     }
@@ -242,14 +242,14 @@ fn writeTokens(w &mut BitWriter, tokens &Array[u32], from usize, to usize, lit &
 }
 
 fn fixedCodes(lit &mut Code, dist &mut Code) {
-  mut l = List[u8].empty();
-  mut i = 0usize;
+  var l = List[u8].empty();
+  var i = 0usize;
   while i < 288usize {
     l.push(if i < 144usize {8u8;} elif i < 256usize {9u8;} elif i < 280usize {7u8;} else {8u8;});
     i += 1usize;
   }
   *lit = makeCode(l);
-  mut d = List[u8].empty();
+  var d = List[u8].empty();
   i = 0usize;
   while i < 30usize { d.push(5u8); i += 1usize; }
   *dist = makeCode(d);
@@ -257,48 +257,48 @@ fn fixedCodes(lit &mut Code, dist &mut Code) {
 
 // A dynamic block of tokens [from, to)
 fn writeDynamicBlock(w &mut BitWriter, tokens &Array[u32], from usize, to usize, last bool) {
-  mut lf = List[u32].empty();
-  mut i = 0usize;
+  var lf = List[u32].empty();
+  var i = 0usize;
   while i < 286usize { lf.push(0u32); i += 1usize; }
-  mut df = List[u32].empty();
+  var df = List[u32].empty();
   i = 0usize;
   while i < 30usize { df.push(0u32); i += 1usize; }
   lf.set(256usize, 1u32);
   i = from;
   while i < to {
-    imm t = tokens[i];
+    let t = tokens[i];
     if (t & 0x80000000u32) == 0u32 {
       lf.set(usize.from(t), *lf[usize.from(t)] + 1u32);
     } else {
-      imm ls = 257usize + lengthSymbol(usize.from((t >> 16u32) & 0x7FFFu32));
+      let ls = 257usize + lengthSymbol(usize.from((t >> 16u32) & 0x7FFFu32));
       lf.set(ls, *lf[ls] + 1u32);
-      imm ds = distSymbol(usize.from(t & 0xFFFFu32));
+      let ds = distSymbol(usize.from(t & 0xFFFFu32));
       df.set(ds, *df[ds] + 1u32);
     }
     i += 1usize;
   }
-  imm lit = makeCode(huffmanLengths(lf.view(), 286usize, 15u8));
-  imm dist = makeCode(huffmanLengths(df.view(), 30usize, 15u8));
+  let lit = makeCode(huffmanLengths(lf.view(), 286usize, 15u8));
+  let dist = makeCode(huffmanLengths(df.view(), 30usize, 15u8));
   // Trim trailing unused lengths (at least 257 literal/length, 1 distance)
-  mut nlen = 286usize;
+  var nlen = 286usize;
   while nlen > 257usize and *lit.lens[nlen - 1usize] == 0u8 { nlen -= 1usize; }
-  mut ndist = 30usize;
+  var ndist = 30usize;
   while ndist > 1usize and *dist.lens[ndist - 1usize] == 0u8 { ndist -= 1usize; }
   // The lengths as a run-length coded sequence of code-length symbols
-  mut seq = List[u8].empty();       // symbol
-  mut extra = List[u8].empty();     // its extra-bits value
-  mut all = List[u8].empty();
+  var seq = List[u8].empty();       // symbol
+  var extra = List[u8].empty();     // its extra-bits value
+  var all = List[u8].empty();
   i = 0usize;
   while i < nlen { all.push(*lit.lens[i]); i += 1usize; }
   i = 0usize;
   while i < ndist { all.push(*dist.lens[i]); i += 1usize; }
   i = 0usize;
   while i < all.len() {
-    imm v = *all[i];
-    mut run = 1usize;
+    let v = *all[i];
+    var run = 1usize;
     while i + run < all.len() and *all[i + run] == v { run += 1usize; }
     if v == 0u8 and run >= 3usize {
-      imm r = if run > 138usize {138usize;} else {run;};
+      let r = if run > 138usize {138usize;} else {run;};
       if r >= 11usize { seq.push(18u8); extra.push(u8.from(r - 11usize)); }
       else { seq.push(17u8); extra.push(u8.from(r - 3usize)); }
       i += r;
@@ -306,10 +306,10 @@ fn writeDynamicBlock(w &mut BitWriter, tokens &Array[u32], from usize, to usize,
       // The length itself once, then repeats of 3 to 6
       seq.push(v);
       extra.push(0u8);
-      mut rest = run - 1usize;
+      var rest = run - 1usize;
       i += 1usize;
       while rest >= 3usize {
-        imm r = if rest > 6usize {6usize;} else {rest;};
+        let r = if rest > 6usize {6usize;} else {rest;};
         seq.push(16u8);
         extra.push(u8.from(r - 3usize));
         rest -= r;
@@ -322,13 +322,13 @@ fn writeDynamicBlock(w &mut BitWriter, tokens &Array[u32], from usize, to usize,
       i += 1usize;
     }
   }
-  mut cf = List[u32].empty();
+  var cf = List[u32].empty();
   i = 0usize;
   while i < 19usize { cf.push(0u32); i += 1usize; }
   i = 0usize;
   while i < seq.len() { cf.set(usize.from(*seq[i]), *cf[usize.from(*seq[i])] + 1u32); i += 1usize; }
-  imm cl = makeCode(huffmanLengths(cf.view(), 19usize, 7u8));
-  mut ncode = 19usize;
+  let cl = makeCode(huffmanLengths(cf.view(), 19usize, 7u8));
+  var ncode = 19usize;
   while ncode > 4usize and *cl.lens[usize.from(clOrder[ncode - 1usize])] == 0u8 { ncode -= 1usize; }
 
   w.put(if last {1u32;} else {0u32;}, 1u32);
@@ -340,7 +340,7 @@ fn writeDynamicBlock(w &mut BitWriter, tokens &Array[u32], from usize, to usize,
   while i < ncode { w.put(u32.from(*cl.lens[usize.from(clOrder[i])]), 3u32); i += 1usize; }
   i = 0usize;
   while i < seq.len() {
-    imm s = usize.from(*seq[i]);
+    let s = usize.from(*seq[i]);
     w.putCode(*cl.codes[s], u32.from(*cl.lens[s]));
     if s == 16usize { w.put(u32.from(*extra[i]), 2u32); }
     elif s == 17usize { w.put(u32.from(*extra[i]), 3u32); }

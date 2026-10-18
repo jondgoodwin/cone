@@ -34,30 +34,30 @@ fn pageText(target &str) &'static Array[u8] {
 
 // Answer a request read by a server's driver
 fn answer(drv &mut Driver, e &mut Event, pool &Pool) {
-  imm body = pageText(e.request.target.view());
+  let body = pageText(e.request.target.view());
   if body.len == 0usize {
     drv.respond(e.req, ResponseHead.make(404u16), BodyLength.empty());
     return;
   }
-  mut h = ResponseHead.make(200u16);
+  var h = ResponseHead.make(200u16);
   h.headers.add("Content-Type", "text/plain");
   drv.respond(e.req, h, BodyLength.sized(u64.from(body.len)));
-  mut b = pool.mustTake(body.len);
+  var b = pool.mustTake(body.len);
   b.append(body);
   drv.sendData(e.req, b);
   drv.finish(e.req);
 }
 
 fn listenOn(drv &mut Driver, lp &mut Loop) u16 {
-  mut port = 0u16;
+  var port = 0u16;
   match drv.listen(lp, SocketAddr.localhost(0u16), Sink.Here(tokServer)) {
-    case imm r Ok {
+    case let r Ok {
       match drv.localAddr(lp, r) {
-        case imm a Ok {port = a.port();}
-        case imm e Error {}
+        case let a Ok {port = a.port();}
+        case let e Error {}
       }
     }
-    case imm e Error {}
+    case let e Error {}
   }
   port;
 }
@@ -73,11 +73,11 @@ fn printTiming(t &Timing) {
 // Fetch each target in turn on one connection, printing what came; the
 // driver may be serving too (serveHere)
 fn fetchAll(drv &mut Driver, lp &mut Loop, pool &Pool, port u16, targets &Array[&str], serveHere bool) {
-  imm conn = drv.connect(lp, "127.0.0.1", port, Sink.Here(tokConn));
-  mut next = 0usize;
-  mut inFlight = false;
-  mut body = String.empty();
-  mut events = List[Event].empty();
+  let conn = drv.connect(lp, "127.0.0.1", port, Sink.Here(tokConn));
+  var next = 0usize;
+  var inFlight = false;
+  var body = String.empty();
+  var events = List[Event].empty();
   while next < targets.len or inFlight {
     if not inFlight and drv.isIdle(conn) {
       drv.request(lp, conn, RequestHead.get(targets[next], "127.0.0.1"), BodyLength.empty(), Sink.Here(10u64 + u64.from(next)));
@@ -88,9 +88,9 @@ fn fetchAll(drv &mut Driver, lp &mut Loop, pool &Pool, port u16, targets &Array[
       inFlight = true;
     }
     drv.poll(lp, forever(), &mut events);
-    mut k = 0usize;
+    var k = 0usize;
     while k < events.len() {
-      imm e = &mut events[k];
+      let e = &mut events[k];
       k = k + 1usize;
       if e.token == tokServer {
         if serveHere and e.kind == EventKind.Request {answer(drv, e, pool);}
@@ -131,12 +131,12 @@ fn fetchAll(drv &mut Driver, lp &mut Loop, pool &Pool, port u16, targets &Array[
   }
   drv.close(lp, conn);
   // Let the close finish
-  imm until = Instant.now() + Duration.fromSeconds(2i64);
+  let until = Instant.now() + Duration.fromSeconds(2i64);
   while drv.live() > 0u32 and Instant.now() < until {
     drv.poll(lp, until, &mut events);
-    mut k = 0usize;
+    var k = 0usize;
     while k < events.len() {
-      imm e = &mut events[k];
+      let e = &mut events[k];
       if serveHere and e.token == tokServer and e.kind == EventKind.Request {answer(drv, e, pool);}
       k = k + 1usize;
     }
@@ -156,17 +156,17 @@ struct ServerArgs {
 }
 
 fn serve(a ServerArgs) u64 {
-  imm pool = Pool.make();
-  mut lp = Loop.mustMake();
-  mut drv = Driver.make(Config.make(), pool);
+  let pool = Pool.make();
+  var lp = Loop.mustMake();
+  var drv = Driver.make(Config.make(), pool);
   a.portTx.send(listenOn(&mut drv, &mut lp));
-  mut events = List[Event].empty();
-  mut served = 0u64;
+  var events = List[Event].empty();
+  var served = 0u64;
   while not a.stop.load() {
     drv.poll(&mut lp, Instant.now() + Duration.fromMillis(20i64), &mut events);
-    mut k = 0usize;
+    var k = 0usize;
     while k < events.len() {
-      imm e = &mut events[k];
+      let e = &mut events[k];
       if e.kind == EventKind.Request {
         answer(&mut drv, e, &pool);
         served = served + 1u64;
@@ -181,19 +181,19 @@ fn serve(a ServerArgs) u64 {
 
 // The final answers a driver has given
 fn finals(d &Driver) u64 {
-  imm s = d.stats();
+  let s = d.stats();
   s.done + s.failed + s.cancelled + s.timedOut;
 }
 
 // A thread that prints a request's events as they come over a channel
 fn printer(rx Receiver[Event]) u64 {
-  mut r = rx;
-  mut n = 0u64;
+  var r = rx;
+  var n = 0u64;
   while true {
-    mut last = true;
+    var last = true;
     match r.recv() {
-      case mut s Some {
-        imm e = &mut s;
+      case var s Some {
+        let e = &mut s;
         n = n + 1u64;
         printStr("  [printer thread] ");
         printStr(eventName(e.kind));
@@ -213,49 +213,49 @@ fn printer(rx Receiver[Event]) u64 {
 }
 
 fn main() {
-  imm targets Array[&str, 3] =["/", "/about", "/time"];
+  let targets Array[&str, 3] =["/", "/about", "/time"];
   printStr("== one thread: server and client on one Loop ==\n");
   {
-    imm pool = Pool.make();
-    mut lp = Loop.mustMake();
-    mut drv = Driver.make(Config.make(), pool);
-    imm port = listenOn(&mut drv, &mut lp);
+    let pool = Pool.make();
+    var lp = Loop.mustMake();
+    var drv = Driver.make(Config.make(), pool);
+    let port = listenOn(&mut drv, &mut lp);
     fetchAll(&mut drv, &mut lp, &pool, port, &targets, true);
     drv.abortAll(&mut lp);
   }
   printStr("== two threads: the server on its own ==\n");
   {
-    mut portTx Sender[u16];
-    mut portRx Receiver[u16];
+    var portTx Sender[u16];
+    var portRx Receiver[u16];
     portTx, portRx = Channel[u16].make();
-    imm stop = new Arc[imm, Atomic[bool]](Atomic[bool].of(false));
-    imm server = thread.start(new ServerArgs(portTx, stop), &serve);
-    mut port = 0u16;
+    let stop = new Arc[imm, Atomic[bool]](Atomic[bool].of(false));
+    let server = thread.start(new ServerArgs(portTx, stop), &serve);
+    var port = 0u16;
     match portRx.recv() {
-      case imm p Some {port = p;}
+      case let p Some {port = p;}
       case is None[u16] {}
     }
-    imm pool = Pool.make();
-    mut lp = Loop.mustMake();
-    mut drv = Driver.make(Config.make(), pool);
+    let pool = Pool.make();
+    var lp = Loop.mustMake();
+    var drv = Driver.make(Config.make(), pool);
     fetchAll(&mut drv, &mut lp, &pool, port, &targets, false);
     // One more request, its events to another thread by a channel
-    mut tx Sender[Event];
-    mut rx Receiver[Event];
+    var tx Sender[Event];
+    var rx Receiver[Event];
     tx, rx = Channel[Event].bounded(16u64);
-    imm pr = thread.start(rx, &printer);
-    imm conn = drv.connect(&mut lp, "127.0.0.1", port, Sink.Here(tokConn));
+    let pr = thread.start(rx, &printer);
+    let conn = drv.connect(&mut lp, "127.0.0.1", port, Sink.Here(tokConn));
     printStr("GET /about, its events to a channel\n");
-    imm before = finals(&drv);
+    let before = finals(&drv);
     drv.request(&mut lp, conn, RequestHead.get("/about", "127.0.0.1"), BodyLength.empty(), Sink.Chan(50u64, tx));
-    mut events = List[Event].empty();
-    imm until = Instant.now() + Duration.fromSeconds(3i64);
+    var events = List[Event].empty();
+    let until = Instant.now() + Duration.fromSeconds(3i64);
     // Driven until its final answer has gone into the channel
     while (finals(&drv) == before or drv.held() > 0usize) and Instant.now() < until {
       drv.poll(&mut lp, until, &mut events);
       events.clear();
     }
-    imm n = pr.join();
+    let n = pr.join();
     printStr("the printer thread got ");
     printUInt(n);
     printStr(" events\n");

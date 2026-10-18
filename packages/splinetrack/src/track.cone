@@ -61,27 +61,27 @@ pub struct Track {
   // Build the track through 'points'. 'closed' joins the last to the first. For an open track
   // 'startTan' and 'endTan' are the end tangents (unit vectors) or zero for the chord.
   pub fn build(points List[TrackPoint], closed bool, startTan Vec3, endTan Vec3) Track {
-    imm n = points.len();
-    imm nseg = if closed { n; } else { n - 1usize; };
+    let n = points.len();
+    let nseg = if closed { n; } else { n - 1usize; };
     // chord lengths
-    mut chord = List[f32].empty();
-    mut i = 0usize;
+    var chord = List[f32].empty();
+    var i = 0usize;
     while i < nseg {
-      imm j = (i + 1usize) % n;
+      let j = (i + 1usize) % n;
       chord.push((points[j].pos - points[i].pos).length());
       i = i + 1usize;
     }
     // Hermite tangents (position derivative per unit of the segment's u, so scaled by the chord of the
     // segment it is used in)
-    mut tg = List[Vec3].empty();
+    var tg = List[Vec3].empty();
     i = 0usize;
     while i < n {
-      mut m = new Vec3(0., 0., 0.);
+      var m = new Vec3(0., 0., 0.);
       if closed {
-        imm prev = (i + n - 1usize) % n;
-        imm next = (i + 1usize) % n;
-        imm d0 = *chord[prev];
-        imm d1 = *chord[i];
+        let prev = (i + n - 1usize) % n;
+        let next = (i + 1usize) % n;
+        let d0 = *chord[prev];
+        let d1 = *chord[i];
         m = (points[next].pos - points[prev].pos) * (1. / (d0 + d1));
       } elif i == 0usize {
         m = if startTan.lengthSquared() > 0.5 { startTan; } else { (points[1usize].pos - points[0usize].pos) * (1. / *chord[0usize]); };
@@ -94,10 +94,10 @@ pub struct Track {
       i = i + 1usize;
     }
     // roll tangents: central differences in the control index
-    mut rt = List[f32].empty();
+    var rt = List[f32].empty();
     i = 0usize;
     while i < n {
-      mut r = 0.;
+      var r = 0.;
       if closed {
         r = (points[(i + 1usize) % n].roll - points[(i + n - 1usize) % n].roll) * 0.5;
       } elif i == 0usize {
@@ -111,36 +111,36 @@ pub struct Track {
       i = i + 1usize;
     }
     // sample
-    mut ps = List[Vec3].empty();
-    mut ds = List[Vec3].empty();      // derivative directions (not unit)
-    mut rolls = List[f32].empty();
-    mut seg = 0usize;
+    var ps = List[Vec3].empty();
+    var ds = List[Vec3].empty();      // derivative directions (not unit)
+    var rolls = List[f32].empty();
+    var seg = 0usize;
     while seg < nseg {
-      imm a = seg;
-      imm b = (seg + 1usize) % n;
-      imm d = *chord[seg];
-      imm pa = points[a].pos;
-      imm pb = points[b].pos;
-      imm ma = *tg[a] * d;
-      imm mb = *tg[b] * d;
-      imm ra = points[a].roll;
-      imm rb = points[b].roll;
-      imm rma = *rt[a];
-      imm rmb = *rt[b];
-      mut k = 0;
+      let a = seg;
+      let b = (seg + 1usize) % n;
+      let d = *chord[seg];
+      let pa = points[a].pos;
+      let pb = points[b].pos;
+      let ma = *tg[a] * d;
+      let mb = *tg[b] * d;
+      let ra = points[a].roll;
+      let rb = points[b].roll;
+      let rma = *rt[a];
+      let rmb = *rt[b];
+      var k = 0;
       while k < TRACK_SUB {
-        imm u = f32.from(k) / f32.from(TRACK_SUB);
-        imm u2 = u * u;
-        imm u3 = u2 * u;
-        imm h00 = 2. * u3 - 3. * u2 + 1.;
-        imm h10 = u3 - 2. * u2 + u;
-        imm h01 = -2. * u3 + 3. * u2;
-        imm h11 = u3 - u2;
+        let u = f32.from(k) / f32.from(TRACK_SUB);
+        let u2 = u * u;
+        let u3 = u2 * u;
+        let h00 = 2. * u3 - 3. * u2 + 1.;
+        let h10 = u3 - 2. * u2 + u;
+        let h01 = -2. * u3 + 3. * u2;
+        let h11 = u3 - u2;
         ps.push(pa * h00 + ma * h10 + pb * h01 + mb * h11);
-        imm g00 = 6. * u2 - 6. * u;
-        imm g10 = 3. * u2 - 4. * u + 1.;
-        imm g01 = -6. * u2 + 6. * u;
-        imm g11 = 3. * u2 - 2. * u;
+        let g00 = 6. * u2 - 6. * u;
+        let g10 = 3. * u2 - 4. * u + 1.;
+        let g01 = -6. * u2 + 6. * u;
+        let g11 = 3. * u2 - 2. * u;
         ds.push(pa * g00 + ma * g10 + pb * g01 + mb * g11);
         rolls.push(ra * h00 + rma * h10 + rb * h01 + rmb * h11);
         k = k + 1;
@@ -153,15 +153,15 @@ pub struct Track {
       ds.push(*ds[0usize]);
       rolls.push(*rolls[0usize]);
     } else {
-      imm last = points[n - 1usize];
+      let last = points[n - 1usize];
       ps.push(last.pos);
       ds.push(*tg[n - 1usize] * *chord[nseg - 1usize]);
       rolls.push(last.roll);
     }
-    imm count = ps.len();
+    let count = ps.len();
     // arc length and unit tangents
-    mut ts = List[f32].empty();
-    mut tans = List[Vec3].empty();
+    var ts = List[f32].empty();
+    var tans = List[Vec3].empty();
     ts.push(0.);
     i = 0usize;
     while i < count {
@@ -169,30 +169,30 @@ pub struct Track {
       if i > 0usize { ts.push(*ts[i - 1usize] + (*ps[i] - *ps[i - 1usize]).length()); }
       i = i + 1usize;
     }
-    imm total = *ts[count - 1usize];
+    let total = *ts[count - 1usize];
     // the rotation-minimising frame by double reflection, from a first up
-    mut frameUp = List[Vec3].empty();
-    imm t0 = *tans[0usize];
-    mut up0 = new Vec3(0., 1., 0.);
+    var frameUp = List[Vec3].empty();
+    let t0 = *tans[0usize];
+    var up0 = new Vec3(0., 1., 0.);
     if libc.fabsf(t0.y) > 0.95 { up0 = new Vec3(0., 0., 1.); }
     up0 = (up0 - t0 * up0.dot(t0)).normalize();
     frameUp.push(up0);
     i = 0usize;
     while i + 1usize < count {
       // double reflection from node i to node i + 1
-      imm x0 = *ps[i];
-      imm x1 = *ps[i + 1usize];
-      imm r0 = *frameUp[i];
-      imm tt0 = *tans[i];
-      imm tt1 = *tans[i + 1usize];
-      imm v1 = x1 - x0;
-      imm c1 = v1.dot(v1);
-      mut up1 = r0;
+      let x0 = *ps[i];
+      let x1 = *ps[i + 1usize];
+      let r0 = *frameUp[i];
+      let tt0 = *tans[i];
+      let tt1 = *tans[i + 1usize];
+      let v1 = x1 - x0;
+      let c1 = v1.dot(v1);
+      var up1 = r0;
       if c1 > 0.0000000001 {
-        imm rL = r0 - v1 * (2. / c1 * v1.dot(r0));
-        imm tL = tt0 - v1 * (2. / c1 * v1.dot(tt0));
-        imm v2 = tt1 - tL;
-        imm c2 = v2.dot(v2);
+        let rL = r0 - v1 * (2. / c1 * v1.dot(r0));
+        let tL = tt0 - v1 * (2. / c1 * v1.dot(tt0));
+        let v2 = tt1 - tL;
+        let c2 = v2.dot(v2);
         up1 = if c2 > 0.0000000001 { rL - v2 * (2. / c2 * v2.dot(rL)); } else { rL; };
       }
       up1 = (up1 - tt1 * up1.dot(tt1)).normalize();
@@ -201,16 +201,16 @@ pub struct Track {
     }
     // a closed track: spread the twist the frame has picked up by the end over the length
     if closed {
-      imm uEnd = *frameUp[count - 1usize];
-      imm uStart = *frameUp[0usize];
-      imm tStart = *tans[0usize];
+      let uEnd = *frameUp[count - 1usize];
+      let uStart = *frameUp[0usize];
+      let tStart = *tans[0usize];
       // the angle from the end's up to the start's up, about the tangent
-      imm sinA = tStart.dot(uEnd.cross(uStart));
-      imm cosA = uEnd.dot(uStart);
-      imm twist = libc.atan2f(sinA, cosA);
+      let sinA = tStart.dot(uEnd.cross(uStart));
+      let cosA = uEnd.dot(uStart);
+      let twist = libc.atan2f(sinA, cosA);
       i = 0usize;
       while i < count {
-        imm f = *ts[i] / total;
+        let f = *ts[i] / total;
         frameUp[i] = (Quat.angleAxis(twist * f, *tans[i]) * *frameUp[i]).normalize();
         i = i + 1usize;
       }
@@ -223,15 +223,15 @@ pub struct Track {
     // inverted, not flipped); between those nodes (the steep parts, where "vertical" has no meaning) the
     // turn is interpolated along the arc length, and beyond the first or last it is held. Roll is then
     // the banking away from level.
-    mut valid = List[bool].empty();
-    mut level = List[f32].empty();
+    var valid = List[bool].empty();
+    var level = List[f32].empty();
     i = 0usize;
     while i < count {
-      imm tn = *tans[i];
+      let tn = *tans[i];
       if libc.fabsf(tn.y) < 0.7 {
-        imm href = (new Vec3(0., 1., 0.) - tn * tn.y).normalize();
-        imm a = *frameUp[i];
-        mut phi = libc.atan2f(tn.dot(a.cross(href)), a.dot(href));
+        let href = (new Vec3(0., 1., 0.) - tn * tn.y).normalize();
+        let a = *frameUp[i];
+        var phi = libc.atan2f(tn.dot(a.cross(href)), a.dot(href));
         if phi > 1.5707963 { phi = phi - 3.14159265; }
         if phi < -1.5707963 { phi = phi + 3.14159265; }
         valid.push(true);
@@ -242,7 +242,7 @@ pub struct Track {
       }
       i = i + 1usize;
     }
-    mut anyValid = false;
+    var anyValid = false;
     i = 0usize;
     while i < count { if *valid[i] { anyValid = true; } i = i + 1usize; }
     if anyValid {
@@ -250,14 +250,14 @@ pub struct Track {
       while i < count {
         if !*valid[i] {
           // the nearest valid nodes either side
-          mut lo = i;
+          var lo = i;
           while lo > 0usize and !*valid[lo] { lo = lo - 1usize; }
-          mut hi = i;
+          var hi = i;
           while hi + 1usize < count and !*valid[hi] { hi = hi + 1usize; }
-          imm hasLo = *valid[lo];
-          imm hasHi = *valid[hi];
+          let hasLo = *valid[lo];
+          let hasHi = *valid[hi];
           if hasLo and hasHi {
-            imm f = (*ts[i] - *ts[lo]) / (*ts[hi] - *ts[lo]);
+            let f = (*ts[i] - *ts[lo]) / (*ts[hi] - *ts[lo]);
             level[i] = *level[lo] * (1. - f) + *level[hi] * f;
           } elif hasLo {
             level[i] = *level[lo];
@@ -274,18 +274,18 @@ pub struct Track {
       }
     }
     // the banking: roll each up about its tangent
-    mut ups = List[Vec3].empty();
+    var ups = List[Vec3].empty();
     i = 0usize;
     while i < count {
       ups.push(Quat.angleAxis(*rolls[i], *tans[i]) * *frameUp[i]);
       i = i + 1usize;
     }
     // curvature vectors dT/ds: central differences over the neighbouring nodes
-    mut kaps = List[Vec3].empty();
+    var kaps = List[Vec3].empty();
     i = 0usize;
     while i < count {
-      mut lo = if i > 0usize { i - 1usize; } else { 0usize; };
-      mut hi = if i + 1usize < count { i + 1usize; } else { count - 1usize; };
+      var lo = if i > 0usize { i - 1usize; } else { 0usize; };
+      var hi = if i + 1usize < count { i + 1usize; } else { count - 1usize; };
       if closed {
         // a closed track's nodes 0 and count-1 are the same place: wrap
         if i == 0usize or i == count - 1usize {
@@ -293,7 +293,7 @@ pub struct Track {
           hi = 1usize;
         }
       }
-      mut dsn = *ts[hi] - *ts[lo];
+      var dsn = *ts[hi] - *ts[lo];
       if closed and (i == 0usize or i == count - 1usize) { dsn = *ts[1usize] + (total - *ts[count - 2usize]); }
       kaps.push((*tans[hi] - *tans[lo]) * (1. / dsn));
       i = i + 1usize;
@@ -311,10 +311,10 @@ pub struct Track {
 
   // The index of the node at or before arc length s (0 .. count-2)
   fn find(self &, s f32) usize {
-    mut lo = 0usize;
-    mut hi = ts.len() - 1usize;
+    var lo = 0usize;
+    var hi = ts.len() - 1usize;
     while hi - lo > 1usize {
-      imm mid = (lo + hi) / 2usize;
+      let mid = (lo + hi) / 2usize;
       if *ts[mid] <= s { lo = mid; } else { hi = mid; }
     }
     lo;
@@ -323,7 +323,7 @@ pub struct Track {
   // Arc length folded into the track: wrapped on a closed track, clamped on an open one
   pub fn wrap(self &, s f32) f32 {
     if closed {
-      mut r = s - length * libc.floorf(s / length);
+      var r = s - length * libc.floorf(s / length);
       if r >= length { r = 0.; }
       r;
     } else {
@@ -333,12 +333,12 @@ pub struct Track {
 
   // The track at arc length s
   pub fn at(self &, s0 f32) TrackSample {
-    imm s = wrap(s0);
-    imm i = find(s);
-    imm span = *ts[i + 1usize] - *ts[i];
-    imm f = if span > 0.0000001 { (s - *ts[i]) / span; } else { 0.; };
-    imm tangent = (*tans[i]).lerp(*tans[i + 1usize], f).normalize();
-    mut up = (*ups[i]).lerp(*ups[i + 1usize], f);
+    let s = wrap(s0);
+    let i = find(s);
+    let span = *ts[i + 1usize] - *ts[i];
+    let f = if span > 0.0000001 { (s - *ts[i]) / span; } else { 0.; };
+    let tangent = (*tans[i]).lerp(*tans[i + 1usize], f).normalize();
+    var up = (*ups[i]).lerp(*ups[i + 1usize], f);
     up = (up - tangent * up.dot(tangent)).normalize();
     new TrackSample(s, (*ps[i]).lerp(*ps[i + 1usize], f), tangent, up, tangent.cross(up),
       (*kaps[i]).lerp(*kaps[i + 1usize], f), *rolls[i] * (1. - f) + *rolls[i + 1usize] * f);

@@ -14,14 +14,14 @@
  *   struct Counter {                                         the handle
  *     mailbox Arc[opaq, actors.Mailbox[Counter.Msg]];
  *     fn init(self &new, n u64) {
- *       imm st = actors.makeActor[Counter.State, Counter.Msg](&Counter.dispatch);
+ *       let st = actors.makeActor[Counter.State, Counter.Msg](&Counter.dispatch);
  *       mem.writeRaw[Counter.State](st, new Counter.State(n));
  *       *self = new Self(mailbox: actors.startActor[Counter.State, Counter.Msg](st));}
  *     pub fn bump(self &, n u64) {actors.send[Counter.Msg](mailbox, Counter.Msg.bump[n]);}
  *   }
  *   enum Counter.Msg is Sendable {struct bump {n u64;}}     one variant per behaviour
  *   fn Counter.dispatch(self &mut Counter.State, msg *Counter.Msg) {
- *     if &*msg is &Counter.Msg.bump {imm p = (msg as *u8 as usize) as *Counter.Msg.bump; self.bump(actors.take(&(*p).n));}
+ *     if &*msg is &Counter.Msg.bump {let p = (msg as *u8 as usize) as *Counter.Msg.bump; self.bump(actors.take(&(*p).n));}
  *   }
  *
  * The handle's initializer makes the actor's block first and constructs the
@@ -269,7 +269,7 @@ static void genParm(GenText *g, DclText *text, Name *name) {
 // where it stays, in an actor that is real already, then the actor started
 // (the actors package, A NEW ACTOR)
 static void genStartOpen(GenText *g) {
-    genPuts(g, ") {imm ");
+    genPuts(g, ") {let ");
     genSlot(g, GenAt);
     genPuts(g, " = ");
     genSlot(g, GenActors);
@@ -1125,7 +1125,7 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
         genSlot(&g, GenActors);
         genPuts(&g, ".Future[");
         genPutn(&g, rt.text, rt.len);
-        genPuts(&g, "] {\n    imm f = ");
+        genPuts(&g, "] {\n    let f = ");
         genSlot(&g, GenActors);
         genPuts(&g, ".futureFor[");
         genPutn(&g, rtx.text, rtx.len);
@@ -1191,7 +1191,7 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
                 genSlot(&g, variant);
             else
                 genName(&g, fn->namesym);
-            genPuts(&g, " {imm p = (msg as *u8 as usize) as *");
+            genPuts(&g, " {let p = (msg as *u8 as usize) as *");
             genSlot(&g, GenMsg);
             genPuts(&g, ".");
             if (asked)
@@ -1208,12 +1208,12 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
                     genSlot(&g, GenTake);
                     genPuts(&g, "(&(*p).");
                     genSlot(&g, GenEnvelope);
-                    genPuts(&g, ")); imm r = ");
+                    genPuts(&g, ")); let r = ");
                 }
                 else {
                     genPuts(&g, ".askNone(&mut self.");
                     genSlot(&g, GenAnswer);
-                    genPuts(&g, "); imm r = ");
+                    genPuts(&g, "); let r = ");
                 }
                 genSlot(&g, GenActors);
                 genPuts(&g, ".keep(&");
@@ -1263,7 +1263,7 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
         genSlot(&g, GenMsg);
         genPuts(&g, ".");
         genSlot(&g, withid ? GenResumeId : GenResume);
-        genPuts(&g, " {imm p = msg as *");
+        genPuts(&g, " {let p = msg as *");
         genSlot(&g, GenMsg);
         genPuts(&g, ".");
         genSlot(&g, withid ? GenResumeId : GenResume);
@@ -1292,7 +1292,7 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
         genSlot(&g, GenState);
         genPuts(&g, withid ? ", run *u8, id u64, size usize, align usize) " : ", run *u8, size usize, align usize) ");
         genSlot(&g, GenActors);
-        genPuts(&g, ".Reply {\n  imm r = ");
+        genPuts(&g, ".Reply {\n  let r = ");
         genSlot(&g, GenActors);
         genPuts(&g, ".replyNode[");
         genSlot(&g, GenState);

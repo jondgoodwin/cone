@@ -34,14 +34,14 @@ pub struct Image {
   // the bottom-left one colored a and its neighbours b. (Not Pegasus's: it
   // gives the example a texture without a file.)
   pub fn checker(width i32, height i32, across i32, down i32, a Color, b Color) Image {
-    mut img = new Image(width, height, 3, List[u8].withCapacity(usize.from(width * height * 3)));
-    imm cw = if width / across > 0 {width / across;} else {1;};
-    imm ch = if height / down > 0 {height / down;} else {1;};
-    mut y = 0;
+    var img = new Image(width, height, 3, List[u8].withCapacity(usize.from(width * height * 3)));
+    let cw = if width / across > 0 {width / across;} else {1;};
+    let ch = if height / down > 0 {height / down;} else {1;};
+    var y = 0;
     while y < height {
-      mut x = 0;
+      var x = 0;
       while x < width {
-        imm c = if (x / cw + y / ch) % 2 == 0 {a;} else {b;};
+        let c = if (x / cw + y / ch) % 2 == 0 {a;} else {b;};
         img.pixels.push(colorByte(c.red));
         img.pixels.push(colorByte(c.green));
         img.pixels.push(colorByte(c.blue));
@@ -57,14 +57,14 @@ pub struct Image {
   // red, green, blue order, or blue, green, red if 'bgra' (a swapchain's
   // BGRA formats). The fourth byte is dropped.
   pub fn fromTexels(data *u8, width i32, height i32, bgra bool) Image {
-    mut img = new Image(width, height, 3, List[u8].withCapacity(usize.from(width * height * 3)));
-    mut y = 0;
+    var img = new Image(width, height, 3, List[u8].withCapacity(usize.from(width * height * 3)));
+    var y = 0;
     while y < height {
       // The image's row y from the bottom is the texels' row height - 1 - y
-      imm row = data + usize.from((height - 1 - y) * width * 4);
-      mut x = 0;
+      let row = data + usize.from((height - 1 - y) * width * 4);
+      var x = 0;
       while x < width {
-        imm p = row + usize.from(x * 4);
+        let p = row + usize.from(x * 4);
         if bgra {
           img.pixels.push(*(p + 2usize));
           img.pixels.push(*(p + 1usize));
@@ -84,8 +84,8 @@ pub struct Image {
   // The image in a BMP file, or an empty one when the file cannot be read or
   // is not a BMP this decodes (see 'fromBmp')
   pub fn load(path &Path) Image {
-    mut ok = true;
-    imm data = readFile(path, &mut ok);
+    var ok = true;
+    let data = readFile(path, &mut ok);
     if !ok { return Image.empty(); }
     Image.fromBmp(data.view());
   }
@@ -96,15 +96,15 @@ pub struct Image {
   pub fn fromBmp(data &Array[u8]) Image {
     if data.len < 54usize { return Image.empty(); }
     if data[0] != 'B' or data[1] != 'M' { return Image.empty(); }
-    imm offset = usize.from(le32(data, 10usize));
-    imm headerSize = le32(data, 14usize);
-    imm width = i32.from(le32(data, 18usize));
-    mut height = i32.from(le32(data, 22usize));
-    imm bpp = le16(data, 28usize);
-    imm compression = le32(data, 30usize);
+    let offset = usize.from(le32(data, 10usize));
+    let headerSize = le32(data, 14usize);
+    let width = i32.from(le32(data, 18usize));
+    var height = i32.from(le32(data, 22usize));
+    let bpp = le16(data, 28usize);
+    let compression = le32(data, 30usize);
 
     // A negative height means the rows are stored top row first
-    imm topDown = height < 0;
+    let topDown = height < 0;
     if topDown { height = -height; }
     if width <= 0 or height <= 0 { return Image.empty(); }
     if bpp != 24u16 and bpp != 32u16 { return Image.empty(); }
@@ -120,23 +120,23 @@ pub struct Image {
     } elif compression != 0u32 {
       return Image.empty();
     }
-    imm channels = i32.from(bpp) / 8;
+    let channels = i32.from(bpp) / 8;
 
     // Each stored row is padded to a multiple of four bytes
-    imm rowSize = usize.from((width * i32.from(bpp) + 31) / 32 * 4);
+    let rowSize = usize.from((width * i32.from(bpp) + 31) / 32 * 4);
     if offset + rowSize * usize.from(height) > data.len { return Image.empty(); }
 
     // A 32-bit BMP without masks leaves its fourth byte unused: opaque
-    imm alphaStored = channels == 4 and compression == 3u32 and headerSize >= 56u32;
+    let alphaStored = channels == 4 and compression == 3u32 and headerSize >= 56u32;
 
-    mut img = new Image(width, height, channels, List[u8].withCapacity(usize.from(width * height * channels)));
-    mut row = 0;
+    var img = new Image(width, height, channels, List[u8].withCapacity(usize.from(width * height * channels)));
+    var row = 0;
     while row < height {
-      imm stored = if topDown {height - 1 - row;} else {row;};
-      imm base = offset + usize.from(stored) * rowSize;
-      mut x = 0;
+      let stored = if topDown {height - 1 - row;} else {row;};
+      let base = offset + usize.from(stored) * rowSize;
+      var x = 0;
       while x < width {
-        imm p = base + usize.from(x * channels);
+        let p = base + usize.from(x * channels);
         // Stored blue, green, red (alpha)
         img.pixels.push(data[p + 2usize]);
         img.pixels.push(data[p + 1usize]);
@@ -154,9 +154,9 @@ pub struct Image {
   // The image as a BMP file's bytes: 24 bits a pixel, bottom row first, the
   // information header the 40-byte one (alpha, if it has any, dropped)
   pub fn toBmp(self &) List[u8] {
-    imm rowSize = (width * 3 + 3) / 4 * 4;
-    imm pixelBytes = rowSize * height;
-    mut out = List[u8].withCapacity(usize.from(54 + pixelBytes));
+    let rowSize = (width * 3 + 3) / 4 * 4;
+    let pixelBytes = rowSize * height;
+    var out = List[u8].withCapacity(usize.from(54 + pixelBytes));
     // The file header: 'BM', the file's size, 0, where the pixels start
     out.push('B');
     out.push('M');
@@ -179,18 +179,18 @@ pub struct Image {
     put32(&mut out, 2835u32);
     put32(&mut out, 0u32);
     put32(&mut out, 0u32);
-    mut y = 0;
+    var y = 0;
     while y < height {
-      mut x = 0;
+      var x = 0;
       while x < width {
         // Stored blue, green, red
-        imm p = usize.from((y * width + x) * channels);
+        let p = usize.from((y * width + x) * channels);
         out.push(*pixels[p + 2usize]);
         out.push(*pixels[p + 1usize]);
         out.push(*pixels[p]);
         x = x + 1;
       }
-      mut pad = width * 3;
+      var pad = width * 3;
       while pad < rowSize {
         out.push(0u8);
         pad = pad + 1;
@@ -203,12 +203,12 @@ pub struct Image {
   // Write the image to 'path' as a 24-bit BMP; false if it could not be
   // written
   pub fn save(self &, path &Path) bool {
-    imm bytes = self.toBmp();
-    imm v = bytes.view();
-    mut cpath = String.from(path.view());
-    imm f = libc.fopen(cpath.cstr(), "wb");
+    let bytes = self.toBmp();
+    let v = bytes.view();
+    var cpath = String.from(path.view());
+    let f = libc.fopen(cpath.cstr(), "wb");
     if !f { return false; }
-    imm written = libc.fwrite(&v[0] as *u8, 1usize, v.len, f);
+    let written = libc.fwrite(&v[0] as *u8, 1usize, v.len, f);
     libc.fclose(f);
     written == v.len;
   }

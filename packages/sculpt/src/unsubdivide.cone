@@ -60,7 +60,7 @@ const UnsubF = 3u32;
 // level of subdivision (see above); what is not on a grid is kept and
 // reported. 0 iterations gives a copy.
 pub fn unsubdivide(m &PolyMesh, iterations u32, problems &mut List[String]) PolyMesh {
-  imm none = List[u32].empty();
+  let none = List[u32].empty();
   unsubdivideWith(m, iterations, none.view(), problems);
 }
 
@@ -69,21 +69,21 @@ pub fn unsubdivide(m &PolyMesh, iterations u32, problems &mut List[String]) Poly
 // vertex point is reported, and its faces are left as they were. A number
 // past the end is reported and left out.
 pub fn unsubdivideWith(m &PolyMesh, iterations u32, keep &Array[u32], problems &mut List[String]) PolyMesh {
-  imm bad = m.validate();
+  let bad = m.validate();
   if bad.len() > 0usize {
-    mut s = String.from("the mesh is not valid (");
+    var s = String.from("the mesh is not valid (");
     s.append(bad[0usize].view());
     s.append("); nothing is un-subdivided");
     problems.push(s);
     return copyPolyMesh(m);
   }
-  imm nv = m.vertexCount();
-  mut kept = List[u32].empty();
-  mut i = 0usize;
+  let nv = m.vertexCount();
+  var kept = List[u32].empty();
+  var i = 0usize;
   while i < keep.len {
     if usize.from(keep[i]) < nv { kept.push(keep[i]); }
     else {
-      mut s = String.from("vertex ");
+      var s = String.from("vertex ");
       s.appendUInt(u64.from(keep[i]));
       s.append(" to keep is past the last (");
       s.appendUInt(u64.from(nv));
@@ -92,11 +92,11 @@ pub fn unsubdivideWith(m &PolyMesh, iterations u32, keep &Array[u32], problems &
     }
     i = i + 1usize;
   }
-  mut cur = copyPolyMesh(m);
-  mut it = 0u32;
+  var cur = copyPolyMesh(m);
+  var it = 0u32;
   while it < iterations {
-    mut next = PolyMesh.empty();
-    mut vmap = List[u32].empty();
+    var next = PolyMesh.empty();
+    var vmap = List[u32].empty();
     if !unsubdivideOnce(&cur, &kept, it + 1u32, &mut next, &mut vmap, problems) { return cur; }
     // The vertices to keep, renumbered (they are never removed)
     i = 0usize;
@@ -125,7 +125,7 @@ struct UnsubLabels {
   pub queue List[u32];     // V and F vertices whose quads are still to read
 
   fn label(self &, v u32) u32 {
-    imm t = *tlab[usize.from(v)];
+    let t = *tlab[usize.from(v)];
     if t != UnsubNone {t;} else {*lab[usize.from(v)];};
   }
 
@@ -140,7 +140,7 @@ struct UnsubLabels {
 
   // v is to be labelled l: labelled when it has none, flagged when it has another
   fn assign(self &mut, v u32, l u32) {
-    imm cur = self.label(v);
+    let cur = self.label(v);
     if cur == UnsubNone {
       tlab.set(usize.from(v), l);
       self.touch(v);
@@ -153,9 +153,9 @@ struct UnsubLabels {
 
   // The trial forgotten
   fn reset(self &mut) {
-    mut i = 0usize;
+    var i = 0usize;
     while i < touched.len() {
-      imm v = usize.from(*touched[i]);
+      let v = usize.from(*touched[i]);
       tlab.set(v, UnsubNone);
       tbad.set(v, false);
       mark.set(v, false);
@@ -167,9 +167,9 @@ struct UnsubLabels {
 
   // The trial kept
   fn commit(self &mut) {
-    mut i = 0usize;
+    var i = 0usize;
     while i < touched.len() {
-      imm v = usize.from(*touched[i]);
+      let v = usize.from(*touched[i]);
       if *tlab[v] != UnsubNone { lab.set(v, *tlab[v]); }
       if *tbad[v] { bad.set(v, true); }
       i = i + 1usize;
@@ -179,12 +179,12 @@ struct UnsubLabels {
 }
 
 fn unsubLabels(nv usize) UnsubLabels {
-  mut lab = List[u32].withCapacity(nv);
-  mut bad = List[bool].withCapacity(nv);
-  mut tlab = List[u32].withCapacity(nv);
-  mut tbad = List[bool].withCapacity(nv);
-  mut mark = List[bool].withCapacity(nv);
-  mut v = 0usize;
+  var lab = List[u32].withCapacity(nv);
+  var bad = List[bool].withCapacity(nv);
+  var tlab = List[u32].withCapacity(nv);
+  var tbad = List[bool].withCapacity(nv);
+  var mark = List[bool].withCapacity(nv);
+  var v = 0usize;
   while v < nv {
     lab.push(UnsubNone);
     bad.push(false);
@@ -199,14 +199,14 @@ fn unsubLabels(nv usize) UnsubLabels {
 // Whether half-edge h's face is a quad
 fn unsubQuad(m &PolyMesh, h u32) bool {
   if *m.hFace[usize.from(h)] == NoIndex { return false; }
-  imm h2 = m.next(m.next(h));
+  let h2 = m.next(m.next(h));
   h2 != h and m.next(m.next(h2)) == h;
 }
 
 // Whether v is a corner of a quad
 fn unsubOnQuad(m &PolyMesh, v u32) bool {
-  imm hs = m.vertexOutgoing(v);
-  mut i = 0usize;
+  let hs = m.vertexOutgoing(v);
+  var i = 0usize;
   while i < hs.len() {
     if unsubQuad(m, *hs[i]) { return true; }
     i = i + 1usize;
@@ -217,18 +217,18 @@ fn unsubOnQuad(m &PolyMesh, v u32) bool {
 // The labels spread from the queued vertices through their quads: across a
 // quad from a V the vertex is F, and from an F a V; beside either, E
 fn unsubSpread(m &PolyMesh, L &mut UnsubLabels) {
-  mut q = 0usize;
+  var q = 0usize;
   while q < L.queue.len() {
-    imm v = *L.queue[q];
-    imm l = L.label(v);
-    imm across = if l == UnsubV {UnsubF;} else {UnsubV;};
-    imm hs = m.vertexOutgoing(v);
-    mut i = 0usize;
+    let v = *L.queue[q];
+    let l = L.label(v);
+    let across = if l == UnsubV {UnsubF;} else {UnsubV;};
+    let hs = m.vertexOutgoing(v);
+    var i = 0usize;
     while i < hs.len() {
-      imm h = *hs[i];
+      let h = *hs[i];
       if unsubQuad(m, h) {
-        imm h1 = m.next(h);
-        imm h2 = m.next(h1);
+        let h1 = m.next(h);
+        let h2 = m.next(h1);
         L.assign(m.toVertex(h), UnsubE);
         L.assign(m.toVertex(h2), UnsubE);
         L.assign(m.toVertex(h1), across);
@@ -243,19 +243,19 @@ fn unsubSpread(m &PolyMesh, L &mut UnsubLabels) {
 // does not collapse; see the top)
 fn unsubFan(m &PolyMesh, L &UnsubLabels, pinned &List[bool], f u32) usize {
   if L.label(f) != UnsubF or L.isBad(f) or *pinned[usize.from(f)] { return 0usize; }
-  imm hs = m.vertexOutgoing(f);
-  imm n = hs.len();
+  let hs = m.vertexOutgoing(f);
+  let n = hs.len();
   if n < 3usize { return 0usize; }
-  mut loop = List[u32].withCapacity(2usize * n);
-  mut i = 0usize;
+  var loop = List[u32].withCapacity(2usize * n);
+  var i = 0usize;
   while i < n {
-    imm h = *hs[i];
+    let h = *hs[i];
     if !unsubQuad(m, h) { return 0usize; }
-    imm h1 = m.next(h);
-    imm h2 = m.next(h1);
-    imm a = m.toVertex(h);
-    imm o = m.toVertex(h1);
-    imm b = m.toVertex(h2);
+    let h1 = m.next(h);
+    let h2 = m.next(h1);
+    let a = m.toVertex(h);
+    let o = m.toVertex(h1);
+    let b = m.toVertex(h2);
     if L.label(a) != UnsubE or L.label(b) != UnsubE or L.label(o) != UnsubV { return 0usize; }
     if L.isBad(a) or L.isBad(b) or L.isBad(o) { return 0usize; }
     loop.push(a);
@@ -265,7 +265,7 @@ fn unsubFan(m &PolyMesh, L &UnsubLabels, pinned &List[bool], f u32) usize {
   // The loop passes no vertex twice
   i = 0usize;
   while i < loop.len() {
-    mut j = i + 1usize;
+    var j = i + 1usize;
     while j < loop.len() {
       if *loop[i] == *loop[j] { return 0usize; }
       j = j + 1usize;
@@ -277,10 +277,10 @@ fn unsubFan(m &PolyMesh, L &UnsubLabels, pinned &List[bool], f u32) usize {
 
 // The quads that collapse under the trial: the fans of the face points it labelled
 fn unsubScore(m &PolyMesh, L &UnsubLabels, pinned &List[bool]) usize {
-  mut sum = 0usize;
-  mut i = 0usize;
+  var sum = 0usize;
+  var i = 0usize;
   while i < L.touched.len() {
-    imm v = *L.touched[i];
+    let v = *L.touched[i];
     if *L.tlab[usize.from(v)] == UnsubF { sum = sum + unsubFan(m, L, pinned, v); }
     i = i + 1usize;
   }
@@ -303,18 +303,18 @@ fn unsubTrial(m &PolyMesh, L &mut UnsubLabels, s u32, n u32, option u32) {
 // region's vertex point, then the lowest-numbered unlabelled vertex, read
 // the four ways, the one that collapses the most quads kept
 fn unsubRead(m &PolyMesh, keep &List[u32], pinned &List[bool], iteration u32, problems &mut List[String]) UnsubLabels {
-  imm nv = m.vertexCount();
-  mut L = unsubLabels(nv);
-  mut k = 0usize;
+  let nv = m.vertexCount();
+  var L = unsubLabels(nv);
+  var k = 0usize;
   while k < keep.len() {
-    imm v = *keep[k];
+    let v = *keep[k];
     if unsubOnQuad(m, v) {
       if L.label(v) == UnsubNone {
         unsubTrial(m, &mut L, v, v, 0u32);
         L.commit();
       }
       if L.label(v) != UnsubV {
-        mut s = String.from("iteration ");
+        var s = String.from("iteration ");
         s.appendUInt(u64.from(iteration));
         s.append(": vertex ");
         s.appendUInt(u64.from(v));
@@ -324,28 +324,28 @@ fn unsubRead(m &PolyMesh, keep &List[u32], pinned &List[bool], iteration u32, pr
     }
     k = k + 1usize;
   }
-  mut s = 0usize;
+  var s = 0usize;
   while s < nv {
-    imm sv = u32.from(s);
+    let sv = u32.from(s);
     if L.label(sv) == UnsubNone and unsubOnQuad(m, sv) {
       // Its lowest-numbered neighbour along a quad's side
-      mut n = NoIndex;
-      imm hs = m.vertexOutgoing(sv);
-      mut i = 0usize;
+      var n = NoIndex;
+      let hs = m.vertexOutgoing(sv);
+      var i = 0usize;
       while i < hs.len() {
-        imm h = *hs[i];
+        let h = *hs[i];
         if unsubQuad(m, h) or unsubQuad(m, m.twin(h)) {
-          imm w = m.toVertex(h);
+          let w = m.toVertex(h);
           if w < n { n = w; }
         }
         i = i + 1usize;
       }
-      mut best = 0u32;
-      mut bestScore = 0usize;
-      mut option = 0u32;
+      var best = 0u32;
+      var bestScore = 0usize;
+      var option = 0u32;
       while option < 4u32 {
         unsubTrial(m, &mut L, sv, n, option);
-        imm score = unsubScore(m, &L, pinned);
+        let score = unsubScore(m, &L, pinned);
         L.reset();
         if score > bestScore {
           best = option;
@@ -368,40 +368,40 @@ fn unsubRead(m &PolyMesh, keep &List[u32], pinned &List[bool], iteration u32, pr
 // the result would not be valid ('out' is then not made)
 fn unsubdivideOnce(m &PolyMesh, keep &List[u32], iteration u32, out &mut PolyMesh, vmap &mut List[u32],
     problems &mut List[String]) bool {
-  imm nv = m.vertexCount();
-  imm nf = m.faceCount();
-  mut pinned = List[bool].withCapacity(nv);
-  mut v = 0usize;
+  let nv = m.vertexCount();
+  let nf = m.faceCount();
+  var pinned = List[bool].withCapacity(nv);
+  var v = 0usize;
   while v < nv {
     pinned.push(false);
     v = v + 1usize;
   }
-  mut k = 0usize;
+  var k = 0usize;
   while k < keep.len() {
     pinned.set(usize.from(*keep[k]), true);
     k = k + 1usize;
   }
-  imm L = unsubRead(m, keep, &pinned, iteration, problems);
+  let L = unsubRead(m, keep, &pinned, iteration, problems);
 
   // The face points that collapse, and each face's fan (its face point)
-  mut fanOf = List[u32].withCapacity(nf);
-  mut f = 0usize;
+  var fanOf = List[u32].withCapacity(nf);
+  var f = 0usize;
   while f < nf {
     fanOf.push(NoIndex);
     f = f + 1usize;
   }
-  mut gone = List[bool].withCapacity(nv);
-  mut fans = 0usize;
-  mut merged = 0usize;
+  var gone = List[bool].withCapacity(nv);
+  var fans = 0usize;
+  var merged = 0usize;
   v = 0usize;
   while v < nv {
-    imm size = unsubFan(m, &L, &pinned, u32.from(v));
+    let size = unsubFan(m, &L, &pinned, u32.from(v));
     gone.push(size > 0usize);
     if size > 0usize {
       fans = fans + 1usize;
       merged = merged + size;
-      imm hs = m.vertexOutgoing(u32.from(v));
-      mut i = 0usize;
+      let hs = m.vertexOutgoing(u32.from(v));
+      var i = 0usize;
       while i < hs.len() {
         fanOf.set(usize.from(m.face(*hs[i])), u32.from(v));
         i = i + 1usize;
@@ -410,7 +410,7 @@ fn unsubdivideOnce(m &PolyMesh, keep &List[u32], iteration u32, out &mut PolyMes
     v = v + 1usize;
   }
   if fans == 0usize {
-    mut s = String.from("iteration ");
+    var s = String.from("iteration ");
     s.appendUInt(u64.from(iteration));
     s.append(" found no grid to undo; stopped");
     problems.push(s);
@@ -420,27 +420,27 @@ fn unsubdivideOnce(m &PolyMesh, keep &List[u32], iteration u32, out &mut PolyMes
   // inside or three on the boundary
   v = 0usize;
   while v < nv {
-    imm vu = u32.from(v);
+    let vu = u32.from(v);
     if L.label(vu) == UnsubE and !L.isBad(vu) and !*pinned[v] {
-      imm hs = m.vertexOutgoing(vu);
-      mut all = true;
-      mut boundary = false;
-      mut i = 0usize;
+      let hs = m.vertexOutgoing(vu);
+      var all = true;
+      var boundary = false;
+      var i = 0usize;
       while i < hs.len() {
-        imm fh = m.face(*hs[i]);
+        let fh = m.face(*hs[i]);
         if fh == NoIndex { boundary = true; }
         elif *fanOf[usize.from(fh)] == NoIndex { all = false; }
         i = i + 1usize;
       }
-      imm shape = (!boundary and hs.len() == 4usize) or (boundary and hs.len() == 3usize);
+      let shape = (!boundary and hs.len() == 4usize) or (boundary and hs.len() == 3usize);
       if all and shape { gone.set(v, true); }
     }
     v = v + 1usize;
   }
 
   // The kept vertices, in order
-  mut pos = List[Vec3].empty();
-  mut vSrc = List[u32].empty();
+  var pos = List[Vec3].empty();
+  var vSrc = List[u32].empty();
   vmap.clear();
   v = 0usize;
   while v < nv {
@@ -454,27 +454,27 @@ fn unsubdivideOnce(m &PolyMesh, keep &List[u32], iteration u32, out &mut PolyMes
   }
 
   // The faces, in the order of their first face
-  mut counts = List[u32].empty();
-  mut idx = List[u32].empty();
-  mut cSrc = List[u32].empty();
-  mut eSrc = List[u32].empty();
-  mut fSrc = List[u32].empty();
-  mut done = List[bool].withCapacity(nv);   // per face point: its face made
+  var counts = List[u32].empty();
+  var idx = List[u32].empty();
+  var cSrc = List[u32].empty();
+  var eSrc = List[u32].empty();
+  var fSrc = List[u32].empty();
+  var done = List[bool].withCapacity(nv);   // per face point: its face made
   v = 0usize;
   while v < nv {
     done.push(false);
     v = v + 1usize;
   }
-  mut leftFaces = 0usize;
+  var leftFaces = 0usize;
   f = 0usize;
   while f < nf {
-    imm fp = *fanOf[f];
+    let fp = *fanOf[f];
     if fp == NoIndex {
       leftFaces = leftFaces + 1usize;
-      imm hs = m.faceHalfedges(u32.from(f));
-      mut i = 0usize;
+      let hs = m.faceHalfedges(u32.from(f));
+      var i = 0usize;
       while i < hs.len() {
-        imm h = *hs[i];
+        let h = *hs[i];
         idx.push(*vmap[usize.from(m.toVertex(h))]);
         cSrc.push(h);
         eSrc.push(m.edge(h));
@@ -486,33 +486,33 @@ fn unsubdivideOnce(m &PolyMesh, keep &List[u32], iteration u32, out &mut PolyMes
       done.set(usize.from(fp), true);
       // From the vertex point of this, the fan's first quad: the half-edge
       // ending there follows the one leaving the face point
-      imm hs = m.faceHalfedges(u32.from(f));
-      mut g = NoIndex;
-      mut i = 0usize;
+      let hs = m.faceHalfedges(u32.from(f));
+      var g = NoIndex;
+      var i = 0usize;
       while i < hs.len() {
         if m.fromVertex(*hs[i]) == fp { g = *hs[i]; }
         i = i + 1usize;
       }
-      imm start = m.next(g);
-      mut h = start;
-      mut n = 0u32;
-      mut going = true;
+      let start = m.next(g);
+      var h = start;
+      var n = 0u32;
+      var going = true;
       while going {
         // The vertex point, its incoming side one half or, its edge point
         // gone, the lower-numbered of two
         idx.push(*vmap[usize.from(m.toVertex(h))]);
         cSrc.push(h);
         if *gone[usize.from(m.fromVertex(h))] {
-          imm other = m.prev(m.twin(m.prev(h)));
-          imm a = m.edge(h);
-          imm b = m.edge(other);
+          let other = m.prev(m.twin(m.prev(h)));
+          let a = m.edge(h);
+          let b = m.edge(other);
           if a < b { eSrc.push(a); } else { eSrc.push(b); }
         } else {
           eSrc.push(m.edge(h));
         }
         n = n + 1u32;
         // The edge point after it, kept or gone
-        imm he = m.next(h);
+        let he = m.next(h);
         if !*gone[usize.from(m.toVertex(he))] {
           idx.push(*vmap[usize.from(m.toVertex(he))]);
           cSrc.push(he);
@@ -528,10 +528,10 @@ fn unsubdivideOnce(m &PolyMesh, keep &List[u32], iteration u32, out &mut PolyMes
     f = f + 1usize;
   }
 
-  mut made = assemble(m, &pos, &vSrc, &counts, &idx, &cSrc, &eSrc, &fSrc);
-  imm check = made.validate();
+  var made = assemble(m, &pos, &vSrc, &counts, &idx, &cSrc, &eSrc, &fSrc);
+  let check = made.validate();
   if made.faceCount() != counts.len() or check.len() > 0usize {
-    mut s = String.from("iteration ");
+    var s = String.from("iteration ");
     s.appendUInt(u64.from(iteration));
     s.append("'s result would not be a valid mesh");
     if check.len() > 0usize {
@@ -544,7 +544,7 @@ fn unsubdivideOnce(m &PolyMesh, keep &List[u32], iteration u32, out &mut PolyMes
     return false;
   }
   if leftFaces > 0usize {
-    mut s = String.from("iteration ");
+    var s = String.from("iteration ");
     s.appendUInt(u64.from(iteration));
     s.append(" left ");
     s.appendUInt(u64.from(leftFaces));

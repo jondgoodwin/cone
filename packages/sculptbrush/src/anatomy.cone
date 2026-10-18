@@ -25,9 +25,9 @@
 
 // Does the face lie wholly in the limb (every corner's "limb" within half of the number)?
 fn faceInLimb(m &PolyMesh, vs &List[u32], limbCh u32, limb f32) bool {
-  mut i = 0usize;
+  var i = 0usize;
   while i < vs.len() {
-    imm l = m.float(limbCh, *vs[i]);
+    let l = m.float(limbCh, *vs[i]);
     if absf(l - limb) > 0.5 { return false; }
     i = i + 1usize;
   }
@@ -36,26 +36,26 @@ fn faceInLimb(m &PolyMesh, vs &List[u32], limbCh u32, limb f32) bool {
 
 // b brought to within half of a, going round
 fn nearCyclic(b f32, a f32) f32 {
-  mut x = b;
+  var x = b;
   if x - a > 0.5 { x = x - 1.; }
   if a - x > 0.5 { x = x + 1.; }
   x;
 }
 
 fn cyclicDistance(a f32, b f32) f32 {
-  imm d = absf(a - b);
+  let d = absf(a - b);
   if d > 0.5 { 1. - d; } else { d; };
 }
 
 // The barycentric coordinates of q in the triangle (a, b, c) in the plane
 fn bary2(q Vec2, a Vec2, b Vec2, c Vec2) Vec3 {
-  imm v0 = b - a;
-  imm v1 = c - a;
-  imm v2 = q - a;
-  imm den = v0.x * v1.y - v1.x * v0.y;
+  let v0 = b - a;
+  let v1 = c - a;
+  let v2 = q - a;
+  let den = v0.x * v1.y - v1.x * v0.y;
   if absf(den) < 0.000000001 { return new Vec3(-1., -1., -1.); }
-  imm l1 = (v2.x * v1.y - v1.x * v2.y) / den;
-  imm l2 = (v0.x * v2.y - v2.x * v0.y) / den;
+  let l1 = (v2.x * v1.y - v1.x * v2.y) / den;
+  let l2 = (v0.x * v2.y - v2.x * v0.y) / den;
   new Vec3(1. - l1 - l2, l1, l2);
 }
 
@@ -69,35 +69,35 @@ pub struct AnatomyHit {
 
 // The surface point of (limb, along, around); see the header
 pub fn anatomyHit(m &PolyMesh, limb f32, along f32, around f32) AnatomyHit {
-  imm limbCh = m.findFloatChannel(VertexDomain, "limb");
-  imm alongCh = m.findFloatChannel(VertexDomain, "along");
-  imm aroundCh = m.findFloatChannel(VertexDomain, "around");
+  let limbCh = m.findFloatChannel(VertexDomain, "limb");
+  let alongCh = m.findFloatChannel(VertexDomain, "along");
+  let aroundCh = m.findFloatChannel(VertexDomain, "around");
   if limbCh == NoIndex or alongCh == NoIndex or aroundCh == NoIndex {
     return new AnatomyHit(new Vec3(0., 0., 0.), false, NoIndex);
   }
-  imm q0 = new Vec2(around, along);
-  mut f = 0usize;
+  let q0 = new Vec2(around, along);
+  var f = 0usize;
   while f < m.faceCount() {
-    imm vs = m.faceVertices(u32.from(f));
+    let vs = m.faceVertices(u32.from(f));
     if vs.len() >= 3usize and faceInLimb(m, &vs, limbCh, limb) {
       // The corners in (around, along), around going round from the first corner
-      imm a0 = m.float(aroundCh, *vs[0usize]);
-      mut pts = List[Vec2].withCapacity(vs.len());
-      mut i = 0usize;
+      let a0 = m.float(aroundCh, *vs[0usize]);
+      var pts = List[Vec2].withCapacity(vs.len());
+      var i = 0usize;
       while i < vs.len() {
         pts.push(new Vec2(nearCyclic(m.float(aroundCh, *vs[i]), a0), m.float(alongCh, *vs[i])));
         i = i + 1usize;
       }
       // The query at each way round that could put it inside
-      mut shift = -1;
+      var shift = -1;
       while shift <= 1 {
-        imm q = new Vec2(q0.x + f32.from(shift), q0.y);
+        let q = new Vec2(q0.x + f32.from(shift), q0.y);
         // The polygon as a fan from its first corner
-        mut k = 1usize;
+        var k = 1usize;
         while k + 1usize < vs.len() {
-          imm bc = bary2(q, *pts[0usize], *pts[k], *pts[k + 1usize]);
+          let bc = bary2(q, *pts[0usize], *pts[k], *pts[k + 1usize]);
           if bc.x >= -0.0001 and bc.y >= -0.0001 and bc.z >= -0.0001 {
-            imm p = *m.positions[usize.from(*vs[0usize])] * bc.x + *m.positions[usize.from(*vs[k])] * bc.y
+            let p = *m.positions[usize.from(*vs[0usize])] * bc.x + *m.positions[usize.from(*vs[k])] * bc.y
               + *m.positions[usize.from(*vs[k + 1usize])] * bc.z;
             return new AnatomyHit(p, true, u32.from(f));
           }
@@ -109,15 +109,15 @@ pub fn anatomyHit(m &PolyMesh, limb f32, along f32, around f32) AnatomyHit {
     f = f + 1usize;
   }
   // The nearest vertex of the limb in (along, around)
-  mut best = NoIndex;
-  mut bestD = 3.0e38;
-  mut v = 0usize;
+  var best = NoIndex;
+  var bestD = 3.0e38;
+  var v = 0usize;
   while v < m.vertexCount() {
-    imm vu = u32.from(v);
+    let vu = u32.from(v);
     if absf(m.float(limbCh, vu) - limb) <= 0.5 {
-      imm da = m.float(alongCh, vu) - along;
-      imm dr = cyclicDistance(m.float(aroundCh, vu), around);
-      imm dd = da * da + dr * dr;
+      let da = m.float(alongCh, vu) - along;
+      let dr = cyclicDistance(m.float(aroundCh, vu), around);
+      let dd = da * da + dr * dr;
       if dd < bestD {
         bestD = dd;
         best = vu;
@@ -137,10 +137,10 @@ pub fn anatomyPoint(m &PolyMesh, limb f32, along f32, around f32) Vec3 {
 // A stroke's points from places in a shape's coordinates: each place is
 // (limb, along, around) packed as x, y, z
 pub fn anatomyPath(m &PolyMesh, places &List[Vec3]) List[Vec3] {
-  mut out = List[Vec3].withCapacity(places.len());
-  mut i = 0usize;
+  var out = List[Vec3].withCapacity(places.len());
+  var i = 0usize;
   while i < places.len() {
-    imm p = *places[i];
+    let p = *places[i];
     out.push(anatomyPoint(m, p.x, p.y, p.z));
     i = i + 1usize;
   }
@@ -150,10 +150,10 @@ pub fn anatomyPath(m &PolyMesh, places &List[Vec3]) List[Vec3] {
 // A straight run of places along a limb at one 'around', from 'a0' to 'a1'
 // along it, in n + 1 steps: a stroke down a limb's side
 pub fn alongPlaces(limb f32, a0 f32, a1 f32, around f32, n u32) List[Vec3] {
-  mut out = List[Vec3].withCapacity(usize.from(n) + 1usize);
-  mut i = 0u32;
+  var out = List[Vec3].withCapacity(usize.from(n) + 1usize);
+  var i = 0u32;
   while i <= n {
-    imm t = if n > 0u32 {f32.from(i) / f32.from(n);} else {0.;};
+    let t = if n > 0u32 {f32.from(i) / f32.from(n);} else {0.;};
     out.push(new Vec3(limb, a0 + (a1 - a0) * t, around));
     i = i + 1u32;
   }
@@ -162,10 +162,10 @@ pub fn alongPlaces(limb f32, a0 f32, a1 f32, around f32, n u32) List[Vec3] {
 
 // A run of places round a limb at one 'along', from 'r0' to 'r1' in around
 pub fn aroundPlaces(limb f32, along f32, r0 f32, r1 f32, n u32) List[Vec3] {
-  mut out = List[Vec3].withCapacity(usize.from(n) + 1usize);
-  mut i = 0u32;
+  var out = List[Vec3].withCapacity(usize.from(n) + 1usize);
+  var i = 0u32;
   while i <= n {
-    imm t = if n > 0u32 {f32.from(i) / f32.from(n);} else {0.;};
+    let t = if n > 0u32 {f32.from(i) / f32.from(n);} else {0.;};
     out.push(new Vec3(limb, along, r0 + (r1 - r0) * t));
     i = i + 1u32;
   }

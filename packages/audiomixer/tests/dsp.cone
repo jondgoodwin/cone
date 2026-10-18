@@ -11,9 +11,9 @@ fn near(got f32, want f32, within f32, label &Array[u8]) bool {
 
 // n samples of an oscillator
 fn render(wave u32, freq f32, rate f32, n usize) List[f32] {
-  mut o = Osc.make(wave);
-  mut out = List[f32].withCapacity(n);
-  mut i = 0usize;
+  var o = Osc.make(wave);
+  var out = List[f32].withCapacity(n);
+  var i = 0usize;
   while i < n { out.push(o.next(freq, rate)); i = i + 1usize; }
   out;
 }
@@ -21,14 +21,14 @@ fn render(wave u32, freq f32, rate f32, n usize) List[f32] {
 // Gain of a filter measured by driving a sine through it (the second half of
 // the run, past the transient): RMS out over RMS in
 fn measured(f Biquad, freq f32, rate f32) f32 {
-  mut b = f;
-  mut o = Osc.make(WAVE_SINE);
-  mut outp = List[f32].withCapacity(8192usize);
-  mut inp = List[f32].withCapacity(8192usize);
-  mut i = 0usize;
+  var b = f;
+  var o = Osc.make(WAVE_SINE);
+  var outp = List[f32].withCapacity(8192usize);
+  var inp = List[f32].withCapacity(8192usize);
+  var i = 0usize;
   while i < 16384usize {
-    imm x = o.next(freq, rate);
-    imm y = b.process(x);
+    let x = o.next(freq, rate);
+    let y = b.process(x);
     if i >= 8192usize { outp.push(y); inp.push(x); }
     i = i + 1usize;
   }
@@ -40,74 +40,74 @@ fn main() i32 {
   near(gainToDb(0.1), -20., 0.001, "0.1 is -20 dB");
   near(semitones(12.), 2., 0.0001, "an octave doubles");
 
-  mut r = Rng.seeded(1u32);
-  mut sum = 0.;
-  mut i = 0;
+  var r = Rng.seeded(1u32);
+  var sum = 0.;
+  var i = 0;
   while i < 10000 { sum = sum + r.unit(); i = i + 1; }
   near(sum / 10000., 0.5, 0.02, "uniform mean");
 
   // Oscillator frequencies by zero crossings
-  imm sine = render(WAVE_SINE, 440., 48000., 48000usize);
+  let sine = render(WAVE_SINE, 440., 48000., 48000usize);
   near(zeroCrossingFreq(sine.view(), 48000.), 440., 0.05, "sine 440 Hz");
   near(rms(sine.view()), 0.70710678, 0.001, "sine rms is 1/sqrt 2");
-  imm saw = render(WAVE_SAW, 1000., 48000., 48000usize);
+  let saw = render(WAVE_SAW, 1000., 48000., 48000usize);
   near(zeroCrossingFreq(saw.view(), 48000.), 1000., 0.5, "saw 1000 Hz");
-  imm sq = render(WAVE_SQUARE, 500., 48000., 48000usize);
+  let sq = render(WAVE_SQUARE, 500., 48000., 48000usize);
   near(zeroCrossingFreq(sq.view(), 48000.), 500., 0.5, "square 500 Hz");
   near(rms(sq.view()), 1., 0.02, "square rms is 1");
-  imm tri = render(WAVE_TRIANGLE, 250., 48000., 48000usize);
+  let tri = render(WAVE_TRIANGLE, 250., 48000., 48000usize);
   near(zeroCrossingFreq(tri.view(), 48000.), 250., 0.5, "triangle 250 Hz");
 
   // The FFT finds the sine's bin: 4096 samples at 48 kHz, bin width 11.72 Hz
-  imm spec = spectrum(sine.view(), 4096usize);
+  let spec = spectrum(sine.view(), 4096usize);
   near(dominantFreq(&spec, 4096usize, 48000.), 440., 6., "FFT peak near 440 Hz");
-  imm sumsq = bandFraction(&spec, 4096usize, 48000., 400., 480.);
+  let sumsq = bandFraction(&spec, 4096usize, 48000., 400., 480.);
   expect(sumsq > 0.999, "all the sine's power is in its band");
 
   // Saw band limiting: a saw at 6 kHz folds harmonics over Nyquist; PolyBLEP
   // keeps the aliased power low next to the naive 2p-1 saw
   // Biquad responses against the cookbook formula (magnitude) and against a driven sine
-  imm lp = Biquad.design(FILTER_LOWPASS, 1000., 0.70710678, 0., 48000.);
+  let lp = Biquad.design(FILTER_LOWPASS, 1000., 0.70710678, 0., 48000.);
   near(lp.magnitude(1000., 48000.), 0.70710678, 0.001, "lowpass is -3 dB at its corner");
   near(lp.magnitude(10., 48000.), 1., 0.001, "lowpass passes lows");
   near(measured(lp, 1000., 48000.), 0.70710678, 0.01, "lowpass corner, driven");
   near(measured(lp, 4000., 48000.), lp.magnitude(4000., 48000.), 0.01, "lowpass 4 kHz, driven vs formula");
   near(measured(lp, 4000., 48000.), 0.0617, 0.005, "second-order lowpass is -24 dB at 2 octaves (about)");
-  imm hp = Biquad.design(FILTER_HIGHPASS, 1000., 0.70710678, 0., 48000.);
+  let hp = Biquad.design(FILTER_HIGHPASS, 1000., 0.70710678, 0., 48000.);
   near(hp.magnitude(1000., 48000.), 0.70710678, 0.001, "highpass is -3 dB at its corner");
   near(measured(hp, 250., 48000.), hp.magnitude(250., 48000.), 0.01, "highpass 250 Hz, driven");
-  imm bp = Biquad.design(FILTER_BANDPASS, 2000., 2., 0., 48000.);
+  let bp = Biquad.design(FILTER_BANDPASS, 2000., 2., 0., 48000.);
   near(bp.magnitude(2000., 48000.), 1., 0.001, "bandpass peaks at 0 dB");
-  imm nt = Biquad.design(FILTER_NOTCH, 2000., 4., 0., 48000.);
+  let nt = Biquad.design(FILTER_NOTCH, 2000., 4., 0., 48000.);
   expect(nt.magnitude(2000., 48000.) < 0.001, "notch kills its centre");
-  imm pk = Biquad.design(FILTER_PEAK, 1000., 1., 6., 48000.);
+  let pk = Biquad.design(FILTER_PEAK, 1000., 1., 6., 48000.);
   near(gainToDb(pk.magnitude(1000., 48000.)), 6., 0.01, "peak gives its gain at the centre");
-  imm ls = Biquad.design(FILTER_LOWSHELF, 200., 0.7071, 9., 48000.);
+  let ls = Biquad.design(FILTER_LOWSHELF, 200., 0.7071, 9., 48000.);
   near(gainToDb(ls.magnitude(20., 48000.)), 9., 0.2, "low shelf boosts lows");
   near(gainToDb(ls.magnitude(10000., 48000.)), 0., 0.1, "low shelf leaves highs");
 
   // Pink noise: equal power per octave, so 100-200 Hz and 1600-3200 Hz hold similar power
-  mut pn = PinkNoise.seeded(7u32);
-  mut pk2 = List[f32].withCapacity(65536usize);
-  mut k = 0usize;
+  var pn = PinkNoise.seeded(7u32);
+  var pk2 = List[f32].withCapacity(65536usize);
+  var k = 0usize;
   while k < 65536usize { pk2.push(pn.next()); k = k + 1usize; }
-  imm ps = spectrum(pk2.view(), 65536usize);
-  imm lowOct = bandFraction(&ps, 65536usize, 48000., 200., 400.);
-  imm highOct = bandFraction(&ps, 65536usize, 48000., 3200., 6400.);
+  let ps = spectrum(pk2.view(), 65536usize);
+  let lowOct = bandFraction(&ps, 65536usize, 48000., 200., 400.);
+  let highOct = bandFraction(&ps, 65536usize, 48000., 3200., 6400.);
   near(lowOct / highOct, 1., 0.3, "pink noise: octaves hold equal power");
 
   // ADSR and Ramp
-  mut env = Adsr.make(0.01, 0.01, 0.5, 0.01);
+  var env = Adsr.make(0.01, 0.01, 0.5, 0.01);
   env.gateOn();
-  mut lvl = 0.;
-  mut n = 0;
+  var lvl = 0.;
+  var n = 0;
   while n < 2000 { lvl = env.next(48000.); n = n + 1; }
   near(lvl, 0.5, 0.0001, "ADSR settles at sustain");
   env.gateOff();
   n = 0;
   while n < 2000 { lvl = env.next(48000.); n = n + 1; }
   expect(env.isIdle(), "ADSR returns to idle");
-  mut ramp = Ramp.at(1.);
+  var ramp = Ramp.at(1.);
   ramp.to(0., 0.1, 48000.);
   n = 0;
   while n < 2400 { lvl = ramp.next(); n = n + 1; }

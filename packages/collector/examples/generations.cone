@@ -50,7 +50,7 @@ fn none() Option[Node] {
 // into it could see another reference empty it while in use
 fn count(t Option[Node]) i64 {
   match t {
-    case imm s Some[Node] { count(s.left) + count(s.right) + 1; }
+    case let s Some[Node] { count(s.left) + count(s.right) + 1; }
     else { 0; }
   }
 }
@@ -67,7 +67,7 @@ fn grown(depth i64) Option[Node] {
 
 fn graft(t Option[Node], path i64) {
   match t {
-    case imm s Some[Node] {
+    case let s Some[Node] {
       if s.n == 1 {
         s.left = Some[Node](new Node(100, none(), none(), none()));
       }
@@ -83,9 +83,9 @@ fn graft(t Option[Node], path i64) {
 }
 
 fn junk(k i64) i64 {
-  imm a = new Node(k, none(), none(), none());
-  imm b = new Node(k, none(), none(), none());
-  imm c = new Node(k, Some[Node](a), Some[Node](b), none());
+  let a = new Node(k, none(), none(), none());
+  let b = new Node(k, none(), none(), none());
+  let c = new Node(k, Some[Node](a), Some[Node](b), none());
   c.n;
 }
 
@@ -94,15 +94,15 @@ fn junk(k i64) i64 {
 const scale = 8i64;
 
 // The most bytes live, as the loads see it between their iterations
-mut @threadlocal peak = 0usize;
+var @threadlocal peak = 0usize;
 fn watch() {
   if Gc.liveBytes() > peak { peak = Gc.liveBytes(); }
 }
 
 // The kept tree's node count at the end: 4,095
 fn garbage() i64 {
-  imm tree = grown(12);
-  mut i = 0i64;
+  let tree = grown(12);
+  var i = 0i64;
   while i < scale * 20480 {
     junk(i);
     watch();
@@ -113,8 +113,8 @@ fn garbage() i64 {
 
 // The kept tree's node count at the end: 4,095, and the 2,048 grafts in it
 fn churn() i64 {
-  imm tree = grown(12);
-  mut i = 0i64;
+  let tree = grown(12);
+  var i = 0i64;
   while i < scale * 20480 {
     graft(tree, i % 2048);
     junk(i);
@@ -131,14 +131,14 @@ fn stored(depth i64, up Option[Node]) Option[Node] {
   if depth == 0 {
     return none();
   }
-  imm node = new Node(depth, none(), none(), up);
+  let node = new Node(depth, none(), none(), up);
   node.left = stored(depth - 1, Some[Node](node));
   node.right = stored(depth - 1, Some[Node](node));
   Some[Node](node);
 }
 
 fn round() i64 {
-  imm t = stored(10, none());
+  let t = stored(10, none());
   watch();
   count(t);
 }
@@ -146,9 +146,9 @@ fn round() i64 {
 // Every dropped tree's nodes counted, 512 * 1,023 = 523,776, and the kept
 // tree's at the end, 1,023: 524,799
 fn forest() i64 {
-  imm kept = stored(10, none());
-  mut total = 0i64;
-  mut i = 0i64;
+  let kept = stored(10, none());
+  var total = 0i64;
+  var i = 0i64;
   while i < scale * 64 {
     total = total + round();
     i = i + 1;
@@ -171,19 +171,19 @@ fn measure(name &str, gen bool, load i64) {
   Gc.collect();
   Gc.collect();
   peak = 0usize;
-  imm c0 = Gc.collections();
-  imm n0 = Gc.minorCollections();
-  imm m0 = Gc.markedObjects();
-  imm s0 = Gc.sweptObjects();
-  imm w0 = Gc.work();
-  imm mw0 = Gc.minorWork();
-  imm t0 = Instant.now();
-  imm check = if load == 0 {garbage();} else if load == 1 {churn();} else {forest();};
-  imm took = t0.elapsed();
-  imm colls = Gc.collections() - c0;
-  imm minors = Gc.minorCollections() - n0;
-  imm work = Gc.work() - w0;
-  imm minorWork = Gc.minorWork() - mw0;
+  let c0 = Gc.collections();
+  let n0 = Gc.minorCollections();
+  let m0 = Gc.markedObjects();
+  let s0 = Gc.sweptObjects();
+  let w0 = Gc.work();
+  let mw0 = Gc.minorWork();
+  let t0 = Instant.now();
+  let check = if load == 0 {garbage();} else if load == 1 {churn();} else {forest();};
+  let took = t0.elapsed();
+  let colls = Gc.collections() - c0;
+  let minors = Gc.minorCollections() - n0;
+  let work = Gc.work() - w0;
+  let minorWork = Gc.minorWork() - mw0;
   printStr(name);
   if gen { printStr(", generational:"); } else { printStr(", incremental:"); }
   printStr(" check "); printInt(check);

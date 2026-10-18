@@ -98,14 +98,14 @@ pub struct Event {
 
   // The same with an id
   pub fn withId(self, id &str) Event {
-    mut e = self;
+    var e = self;
     e.id = String.from(id);
     e;
   }
 
   // The same telling the client to reconnect after ms milliseconds
   pub fn withRetry(self, ms i64) Event {
-    mut e = self;
+    var e = self;
     e.retry = ms;
     e;
   }
@@ -117,7 +117,7 @@ pub struct Event {
 
   // The bytes a server sends for it
   pub fn encode(self &) String {
-    mut out = String.empty();
+    var out = String.empty();
     self.encodeInto(&mut out);
     out;
   }
@@ -125,13 +125,13 @@ pub struct Event {
   // The same, appended to out
   pub fn encodeInto(self &, out &mut String) {
     if name.len() > 0usize {
-      imm clean = cleaned(name.view(), false);
+      let clean = cleaned(name.view(), false);
       out.append("event: ");
       out.append(clean.view());
       out.appendByte(lf);
     }
     if id.len() > 0usize {
-      imm clean = cleaned(id.view(), true);
+      let clean = cleaned(id.view(), true);
       out.append("id: ");
       out.append(clean.view());
       out.appendByte(lf);
@@ -141,7 +141,7 @@ pub struct Event {
       out.appendUInt(u64.from(retry));
       out.appendByte(lf);
     }
-    imm lines = linesOf("data", data.view());
+    let lines = linesOf("data", data.view());
     out.append(lines.view());
     out.appendByte(lf);
   }
@@ -149,10 +149,10 @@ pub struct Event {
 
 // text without its CRs and LFs (and NULs, for an id)
 fn cleaned(text &Array[u8], dropNul bool) String {
-  mut out = String.empty();
-  mut i = 0usize;
+  var out = String.empty();
+  var i = 0usize;
   while i < text.len {
-    imm c = text[i];
+    let c = text[i];
     if c != lf and c != cr and not (dropNul and c == 0u8) {out.appendByte(c);}
     i = i + 1usize;
   }
@@ -161,9 +161,9 @@ fn cleaned(text &Array[u8], dropNul bool) String {
 
 // One 'field: line' line for each line of text (at least one)
 fn linesOf(field &str, text &Array[u8]) String {
-  mut out = String.empty();
-  mut start = 0usize;
-  mut i = 0usize;
+  var out = String.empty();
+  var start = 0usize;
+  var i = 0usize;
   while true {
     if i >= text.len or text[i] == lf or text[i] == cr {
       out.append(field);
@@ -186,7 +186,7 @@ fn linesOf(field &str, text &Array[u8]) String {
 
 // A comment block (see the package's header, COMMENTS): ':' lines and an empty line
 pub fn comment(text &str) String {
-  mut out = linesOf("", text);
+  var out = linesOf("", text);
   out.appendByte(lf);
   out;
 }
@@ -232,10 +232,10 @@ pub struct Reader {
 
   // Take the next bytes of the stream; the events they complete are appended to out
   pub fn feed(self &mut, bytes &Array[u8], out &mut List[Event]) {
-    mut i = 0usize;
+    var i = 0usize;
     while i < bytes.len {
       if over {return;}
-      imm c = bytes[i];
+      let c = bytes[i];
       i = i + 1usize;
       if afterCr {
         afterCr = false;
@@ -254,10 +254,10 @@ pub struct Reader {
   // A line is whole
   fn endLine(self &mut, out &mut List[Event]) {
     // The line is moved out so that the fields can be changed while it is read
-    mut cur = String.empty();
+    var cur = String.empty();
     cur <=> line;
-    imm raw = cur.view() as &Array[u8];
-    mut text = raw;
+    let raw = cur.view() as &Array[u8];
+    var text = raw;
     if first {
       first = false;
       if text.len >= 3usize and text[0usize] == 0xEFu8 and text[1usize] == 0xBBu8 and text[2usize] == 0xBFu8 {
@@ -267,12 +267,12 @@ pub struct Reader {
     if text.len == 0usize {
       self.dispatch(out);
     } elif text[0usize] != ':' {
-      mut colon = 0usize;
+      var colon = 0usize;
       while colon < text.len and text[colon] != ':' {colon = colon + 1usize;}
-      imm name = &text[0usize ..< colon];
-      mut value = &text[0usize ..< 0usize];
+      let name = &text[0usize ..< colon];
+      var value = &text[0usize ..< 0usize];
       if colon < text.len {
-        mut v = colon + 1usize;
+        var v = colon + 1usize;
         if v < text.len and text[v] == ' ' {v = v + 1usize;}
         value = &text[v ..];
       }
@@ -290,8 +290,8 @@ pub struct Reader {
       eventType.clear();
       eventType.appendBytes(value);
     } elif same(name, "id") {
-      mut nul = false;
-      mut k = 0usize;
+      var nul = false;
+      var k = 0usize;
       while k < value.len {
         if value[k] == 0u8 {nul = true;}
         k = k + 1usize;
@@ -302,9 +302,9 @@ pub struct Reader {
       }
     } elif same(name, "retry") {
       if value.len > 0usize and value.len <= 15usize {
-        mut n = 0i64;
-        mut ok = true;
-        mut k = 0usize;
+        var n = 0i64;
+        var ok = true;
+        var k = 0usize;
         while k < value.len {
           if value[k] < '0' or value[k] > '9' {ok = false;}
           else {n = n * 10i64 + i64.from(value[k] - '0');}
@@ -321,10 +321,10 @@ pub struct Reader {
   // An empty line: the block's event, if it had data
   fn dispatch(self &mut, out &mut List[Event]) {
     if dataSet {
-      mut d = String.empty();
+      var d = String.empty();
       d <=> dataBuf;
       d.truncate(d.len() - 1usize);
-      mut name = String.empty();
+      var name = String.empty();
       name <=> eventType;
       out.push(new Event(name, d, seenId.copy(), blockRetry));
     }
@@ -337,9 +337,9 @@ pub struct Reader {
 
 // Whether a field name is the lower-case word
 fn same(name &Array[u8], word &str) bool {
-  imm w = word as &Array[u8];
+  let w = word as &Array[u8];
   if name.len != w.len {return false;}
-  mut i = 0usize;
+  var i = 0usize;
   while i < w.len {
     if name[i] != w[i] {return false;}
     i = i + 1usize;

@@ -27,7 +27,7 @@ mod generations;
 import testing use *;
 import collector;
 
-mut @threadlocal log = 0i64;
+var @threadlocal log = 0i64;
 fn note(d i64) { log = log * 10 + d; }
 
 struct LeafValue { pub n i64; }
@@ -68,9 +68,9 @@ fn isOld(p *u8) bool {
 }
 
 fn dropLeaves(k i64) {
-  mut i = 0i64;
+  var i = 0i64;
   while i < k {
-    imm l = new Leaf(i);
+    let l = new Leaf(i);
     i = i + 1;
   }
 }
@@ -79,15 +79,15 @@ fn dropLeaves(k i64) {
 // whether it was minor
 fn minorCycle() bool {
   dropLeaves(20);
-  imm n = Gc.minorCollections();
+  let n = Gc.minorCollections();
   cycle();
   Gc.minorCollections() == n + 1usize;
 }
 
 // -- Lists of links, born holding the rest: no barrier stores any of them
 fn extend(l Option[Link], k i64) Option[Link] {
-  mut head = l;
-  mut i = 0i64;
+  var head = l;
+  var i = 0i64;
   while i < k {
     head = Some[Link](new Link(i, head));
     i = i + 1;
@@ -101,31 +101,31 @@ fn chain(k i64) Option[Link] {
 // into it could see another reference empty it while in use
 fn isLink(l Option[Link]) bool {
   match l {
-    case imm s Some[Link] { true; }
+    case let s Some[Link] { true; }
     else { false; }
   }
 }
 fn nOf(l Option[Link]) i64 {
   match l {
-    case imm s Some[Link] { s.n; }
+    case let s Some[Link] { s.n; }
     else { 0; }
   }
 }
 fn nextOf(l Option[Link]) Option[Link] {
   match l {
-    case imm s Some[Link] { s.next; }
+    case let s Some[Link] { s.next; }
     else { None; }
   }
 }
 fn headOld(l Option[Link]) bool {
   match l {
-    case imm s Some[Link] { isOld(&*s as *u8); }
+    case let s Some[Link] { isOld(&*s as *u8); }
     else { false; }
   }
 }
 fn sum(l Option[Link]) i64 {
-  mut at = l;
-  mut total = 0i64;
+  var at = l;
+  var total = 0i64;
   while isLink(at) {
     total = total + nOf(at);
     at = nextOf(at);
@@ -136,17 +136,17 @@ fn sum(l Option[Link]) i64 {
 // -- Young garbage is freed by a minor collection, which does no work on the
 // old generation
 fn youngGarbage() {
-  imm old = chain(1000);
+  let old = chain(1000);
   Gc.collect();
   expectUInt(u64.from(Gc.oldBytes()), 48000, "a full collection promotes what it finds live: 1,000 links of 48 bytes");
   expect(headOld(old), "the root's link is old");
 
   dropLeaves(2000);
-  imm n1 = Gc.minorCollections();
-  imm m1 = Gc.markedObjects();
-  imm s1 = Gc.sweptObjects();
-  imm f1 = Gc.freed();
-  imm w1 = Gc.work();
+  let n1 = Gc.minorCollections();
+  let m1 = Gc.markedObjects();
+  let s1 = Gc.sweptObjects();
+  let f1 = Gc.freed();
+  let w1 = Gc.work();
   cycle();
   expectUInt(u64.from(Gc.minorCollections() - n1), 1, "the next collection is minor");
   expectUInt(u64.from(Gc.markedObjects() - m1), 0, "it marks nothing: the root's link is old, and not traced");
@@ -156,8 +156,8 @@ fn youngGarbage() {
   expectInt(sum(old), 499500, "the old links untouched: 0 + 1 + ... + 999");
 
   dropLeaves(2000);
-  imm m2 = Gc.markedObjects();
-  imm s2 = Gc.sweptObjects();
+  let m2 = Gc.markedObjects();
+  let s2 = Gc.sweptObjects();
   Gc.collect();
   expectUInt(u64.from(Gc.markedObjects() - m2), 1000, "the same garbage collected in full: every live link marked");
   expectUInt(u64.from(Gc.sweptObjects() - s2), 3000, "and every object swept");
@@ -172,13 +172,13 @@ fn emptyBox() Box {
 }
 fn finOf(o Option[Fin]) i64 {
   match o {
-    case imm s Some[Fin] { s.n; }
+    case let s Some[Fin] { s.n; }
     else { -1; }
   }
 }
 fn boxOf(o Option[Box]) i64 {
   match o {
-    case imm s Some[Box] { finOf(s.fin); }
+    case let s Some[Box] { finOf(s.fin); }
     else { -1; }
   }
 }
@@ -186,7 +186,7 @@ fn putNew(o Box, n i64) {
   o.fin = Some[Fin](new Fin(n));
 }
 fn dropFin(n i64) {
-  imm f = new Fin(n);
+  let f = new Fin(n);
 }
 
 // A lost child is finalized by the first minor collection that does not
@@ -194,7 +194,7 @@ fn dropFin(n i64) {
 // and stops there if the child was lost, before anything reads freed memory.
 // A child kept is read after one more.
 fn caseBetween() {
-  imm o = emptyBox();
+  let o = emptyBox();
   Gc.collect();
   expect(isOld(&*o as *u8), "between collections: o is old");
   putNew(o, 1);
@@ -204,9 +204,9 @@ fn caseBetween() {
   expectInt(finOf(o.fin), 1, "and o holds it");
 }
 fn caseMarking() {
-  imm o = emptyBox();
+  let o = emptyBox();
   Gc.collect();
-  imm n0 = Gc.minorCollections();
+  let n0 = Gc.minorCollections();
   dropLeaves(20);
   Gc.step(0usize);
   expect(Gc.phase() == 1u32 and isOld(&*o as *u8), "a collection marking, and o old");
@@ -218,9 +218,9 @@ fn caseMarking() {
   expectInt(finOf(o.fin), 2, "and o holds it");
 }
 fn caseSweep() {
-  imm o = emptyBox();
+  let o = emptyBox();
   Gc.collect();
-  imm n0 = Gc.minorCollections();
+  let n0 = Gc.minorCollections();
   dropLeaves(20);
   while Gc.phase() != 2u32 { Gc.step(0usize); }
   expect(isOld(&*o as *u8), "a collection sweeping, and o old");
@@ -232,9 +232,9 @@ fn caseSweep() {
   expectInt(finOf(o.fin), 3, "and o holds it");
 }
 fn caseFinalize() {
-  imm o = emptyBox();
+  let o = emptyBox();
   Gc.collect();
-  imm n0 = Gc.minorCollections();
+  let n0 = Gc.minorCollections();
   dropFin(9);
   dropLeaves(20);
   while Gc.phase() != 3u32 { Gc.step(0usize); }
@@ -252,7 +252,7 @@ fn putSubtree(p Pod) {
   p.box = Some[Box](new Box(Some[Fin](new Fin(5))));
 }
 fn caseSubtree() {
-  imm p = new Pod(None);
+  let p = new Pod(None);
   Gc.collect();
   expect(isOld(&*p as *u8), "between collections: p is old");
   putSubtree(p);
@@ -290,12 +290,12 @@ fn oldGainsYoung() {
 // 262,144 bytes. Each round adds 1,000 links (48,000 bytes) and drops 4,000
 // leaves: a productive minor collection promotes the links
 fn promotion() {
-  mut head = chain(5000);
+  var head = chain(5000);
   Gc.collect();
   expectUInt(u64.from(Gc.oldBytes()), 240000, "a full collection promotes the 5,000 links it finds live");
-  imm n0 = Gc.minorCollections();
-  imm p0 = Gc.promotedBytes();
-  mut round = 0i64;
+  let n0 = Gc.minorCollections();
+  let p0 = Gc.promotedBytes();
+  var round = 0i64;
   while round < 5 {
     head = extend(head, 1000);
     dropLeaves(4000);
@@ -308,16 +308,16 @@ fn promotion() {
 
   head = extend(head, 1000);
   dropLeaves(4000);
-  imm m1 = Gc.markedObjects();
-  imm s1 = Gc.sweptObjects();
+  let m1 = Gc.markedObjects();
+  let s1 = Gc.sweptObjects();
   cycle();
   expectUInt(u64.from(Gc.minorCollections() - n0), 5, "the sixth, whose 1,000 links would pass the limit, is not minor");
   expectUInt(u64.from(Gc.markedObjects() - m1), 1000, "its marking is: only the new links");
   expectUInt(u64.from(Gc.sweptObjects() - s1), 15000, "but its sweep goes through everything: 4,000 leaves freed, 11,000 links");
   expectUInt(u64.from(Gc.oldBytes()), 0, "made white and young");
 
-  imm m2 = Gc.markedObjects();
-  imm s2 = Gc.sweptObjects();
+  let m2 = Gc.markedObjects();
+  let s2 = Gc.sweptObjects();
   cycle();
   expectUInt(u64.from(Gc.minorCollections() - n0), 5, "the next marks in full");
   expectUInt(u64.from(Gc.markedObjects() - m2), 11000, "every link");
@@ -326,8 +326,8 @@ fn promotion() {
   expectUInt(u64.from(Gc.promotedBytes() - p0), 240000, "which counts toward no trigger");
 
   dropLeaves(4000);
-  imm m3 = Gc.markedObjects();
-  imm s3 = Gc.sweptObjects();
+  let m3 = Gc.markedObjects();
+  let s3 = Gc.sweptObjects();
   cycle();
   expectUInt(u64.from(Gc.minorCollections() - n0), 6, "the next is minor again");
   expectUInt(u64.from(Gc.markedObjects() - m3), 0, "and marks nothing");
@@ -340,8 +340,8 @@ fn promotion() {
 // unproductive: its sweep is full, and full collections follow, one after
 // the first such collection, two after the second in a row
 fn unproductive() {
-  mut keep = chain(1000);
-  imm n0 = Gc.minorCollections();
+  var keep = chain(1000);
+  let n0 = Gc.minorCollections();
   cycle();
   expectUInt(u64.from(Gc.minorCollections() - n0), 0, "a young generation all live: the collection is not minor");
   expectUInt(u64.from(Gc.oldBytes()), 0, "its sweep promotes nothing");
@@ -366,9 +366,9 @@ fn unproductive() {
 
 // -- Finalizers: once, newest first, and never promoted
 fn dropThree() {
-  imm a = new Fin(1);
-  imm b = new Fin(2);
-  imm c = new Fin(3);
+  let a = new Fin(1);
+  let b = new Fin(2);
+  let c = new Fin(3);
 }
 fn youngFinalized() {
   dropThree();
@@ -380,7 +380,7 @@ fn youngFinalized() {
   expectUInt(live(), 0, "and freed by the next minor collection: a finalized object is not promoted");
 }
 fn dropHolder() {
-  imm h = new Holder(4, new Leaf(5));
+  let h = new Holder(4, new Leaf(5));
 }
 fn keptChild() {
   dropHolder();
@@ -391,7 +391,7 @@ fn keptChild() {
   expectUInt(live(), 0, "both freed by the next minor collection: what a finalizer kept is not promoted either");
 }
 fn makeOldFin() {
-  imm f = new Fin(7);
+  let f = new Fin(7);
   Gc.collect();
   expect(isOld(&*f as *u8), "a fin kept through a collection is old");
 }
@@ -411,16 +411,16 @@ fn oldFinal() {
 
 // -- Back to incremental
 fn switchOff() {
-  imm keep = chain(100);
+  let keep = chain(100);
   Gc.collect();
   expect(headOld(keep), "a hundred links promoted");
   Gc.setGenerational(false);
   expectBool(Gc.generational(), false, "incremental now");
-  imm m0 = Gc.markedObjects();
+  let m0 = Gc.markedObjects();
   cycle();
   expectUInt(u64.from(Gc.markedObjects() - m0), 0, "the collection after the switch marks as a minor one: the old links are black");
   expect(!headOld(keep), "but its sweep leaves nothing old");
-  imm m1 = Gc.markedObjects();
+  let m1 = Gc.markedObjects();
   cycle();
   expectUInt(u64.from(Gc.markedObjects() - m1), 100, "and the next marks every live link: incremental again");
   cycle();

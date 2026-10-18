@@ -22,8 +22,8 @@ import geomath use *;
 import xpbdsoftbody use *;
 
 fn banner(n u32, substeps u32, curvature bool, tethers bool) SoftBody {
-  mut c = clothGrid(new Vec3(0., 3., 0.), new Vec3(2., 0., 0.), new Vec3(0., -2., 0.), n, n, &Fabric.light());
-  mut i = 0u32;
+  var c = clothGrid(new Vec3(0., 3., 0.), new Vec3(2., 0., 0.), new Vec3(0., -2., 0.), n, n, &Fabric.light());
+  var i = 0u32;
   while i <= n { c.pin(i * (n + 1u32)); i = i + 1u32; }
   if curvature { c.useCurvatureBending(); }
   if tethers {
@@ -35,10 +35,10 @@ fn banner(n u32, substeps u32, curvature bool, tethers bool) SoftBody {
 }
 
 fn sortInto(v &mut List[i64]) {
-  mut i = 1usize;
+  var i = 1usize;
   while i < v.len() {
-    imm x = *v[i];
-    mut j = i;
+    let x = *v[i];
+    var j = i;
     while j > 0usize and *v[j - 1usize] > x {
       v.set(j, *v[j - 1usize]);
       j = j - 1usize;
@@ -49,11 +49,11 @@ fn sortInto(v &mut List[i64]) {
 }
 
 fn worstStretch(b &SoftBody) f32 {
-  mut worst = 0.;
-  mut k = 0usize;
+  var worst = 0.;
+  var k = 0usize;
   while k < b.dist.len() {
-    imm c = *b.dist[k];
-    imm s = ((*b.pos[usize.from(c.a)] - *b.pos[usize.from(c.b)]).length() - c.rest) / c.rest;
+    let c = *b.dist[k];
+    let s = ((*b.pos[usize.from(c.a)] - *b.pos[usize.from(c.b)]).length() - c.rest) / c.rest;
     if s > worst { worst = s; }
     k = k + 1usize;
   }
@@ -61,18 +61,18 @@ fn worstStretch(b &SoftBody) f32 {
 }
 
 fn timeIt(label &str, c &mut SoftBody, workers &mut Workers) {
-  mut s = 0;
+  var s = 0;
   while s < 60 { c.stepPool(workers, 1. / 60., new Vec3(4., 0., 0.5)); s = s + 1; }
-  mut times = List[i64].empty();
+  var times = List[i64].empty();
   s = 0;
   while s < 300 {
-    imm t0 = Instant.now();
+    let t0 = Instant.now();
     c.stepPool(workers, 1. / 60., new Vec3(4., 0., 0.5));
     times.push(t0.elapsed().nanos() / 1000i64);
     s = s + 1;
   }
   sortInto(&mut times);
-  imm tip = *c.pos[c.pos.len() - 1usize];
+  let tip = *c.pos[c.pos.len() - 1usize];
   printStr(label); printStr(": p50 "); printInt(*times[150usize]); printStr(" us, min "); printInt(*times[0usize]);
   printStr(", p95 "); printInt(*times[285usize]);
   print <- "   [far corner "; print <- tip.x; print <- " "; print <- tip.y; print <- " "; print <- tip.z;
@@ -80,30 +80,30 @@ fn timeIt(label &str, c &mut SoftBody, workers &mut Workers) {
 }
 
 fn main() i32 {
-  mut none = Workers.none();
-  mut a = banner(32u32, 10u32, false, false);
+  var none = Workers.none();
+  var a = banner(32u32, 10u32, false, false);
   timeIt("32x32, 10 substeps, dihedral, 1 thread            ", &mut a, &mut none);
-  mut b = banner(64u32, 10u32, false, false);
+  var b = banner(64u32, 10u32, false, false);
   timeIt("64x64, 10 substeps, dihedral, 1 thread            ", &mut b, &mut none);
-  mut c = banner(64u32, 4u32, false, true);
+  var c = banner(64u32, 4u32, false, true);
   timeIt("64x64, 4 substeps, dihedral, tethers, 1 thread    ", &mut c, &mut none);
-  mut d = banner(64u32, 4u32, true, true);
+  var d = banner(64u32, 4u32, true, true);
   timeIt("64x64, 4 substeps, curvature, tethers, 1 thread   ", &mut d, &mut none);
-  mut w2 = Workers.make(2u32);
-  mut e = banner(64u32, 4u32, true, true);
+  var w2 = Workers.make(2u32);
+  var e = banner(64u32, 4u32, true, true);
   timeIt("64x64, 4 substeps, curvature, tethers, 2 threads  ", &mut e, &mut w2);
-  mut w4 = Workers.make(4u32);
-  mut f = banner(64u32, 4u32, true, true);
+  var w4 = Workers.make(4u32);
+  var f = banner(64u32, 4u32, true, true);
   timeIt("64x64, 4 substeps, curvature, tethers, 4 threads  ", &mut f, &mut w4);
-  mut w6 = Workers.make(6u32);
-  mut g = banner(64u32, 4u32, true, true);
+  var w6 = Workers.make(6u32);
+  var g = banner(64u32, 4u32, true, true);
   timeIt("64x64, 4 substeps, curvature, tethers, 6 threads  ", &mut g, &mut w6);
-  mut h = banner(64u32, 10u32, true, true);
+  var h = banner(64u32, 10u32, true, true);
   timeIt("64x64, 10 substeps, curvature, tethers, 4 threads ", &mut h, &mut w4);
   // over-relaxation of the stretch projections, on the 4-thread, 4-substep banner
-  mut om = 1.2;
+  var om = 1.2;
   while om < 1.9 {
-    mut r = banner(64u32, 4u32, true, true);
+    var r = banner(64u32, 4u32, true, true);
     r.relaxation = om;
     print <- "relaxation "; print <- om; print <- ": ";
     timeIt("64x64, 4 substeps, curvature, tethers, 4 threads  ", &mut r, &mut w4);

@@ -20,9 +20,9 @@ import collections use *;
 import imagedecode use *;
 
 fn data(kind i32, n usize) List[u8] {
-  mut d = List[u8].empty();
-  mut s = 12345u64;
-  mut i = 0usize;
+  var d = List[u8].empty();
+  var s = 12345u64;
+  var i = 0usize;
   while i < n {
     s = s * 6364136223846793005u64 + 1442695040888963407u64;
     if kind == 0 { d.push(u8.from((s >> 40u64) & 255u64)); }
@@ -40,33 +40,33 @@ fn data(kind i32, n usize) List[u8] {
 
 fn same(a &Array[u8], b &Array[u8]) bool {
   if a.len != b.len { return false; }
-  mut i = 0usize;
+  var i = 0usize;
   while i < a.len { if a[i] != b[i] { return false; } i += 1usize; }
   true;
 }
 
 fn main() i32 {
-  imm sizes Array[usize, 11] = [0usize, 1usize, 2usize, 3usize, 257usize, 258usize, 259usize, 65535usize, 65536usize, 65537usize, 100000usize];
-  mut failures = 0usize;
-  mut count = 0usize;
-  mut oversize = 0usize;
-  mut kind = 0;
+  let sizes Array[usize, 11] = [0usize, 1usize, 2usize, 3usize, 257usize, 258usize, 259usize, 65535usize, 65536usize, 65537usize, 100000usize];
+  var failures = 0usize;
+  var count = 0usize;
+  var oversize = 0usize;
+  var kind = 0;
   while kind < 5 {
-    mut si = 0usize;
+    var si = 0usize;
     while si < 11usize {
-      imm d = data(kind, sizes[si]);
-      mut level = 0;
+      let d = data(kind, sizes[si]);
+      var level = 0;
       while level < 3 {
-        imm z = zlibCompress(d.view(), level);
+        let z = zlibCompress(d.view(), level);
         count += 1usize;
         match zlibDecompress(z.view(), d.len()) {
-          case imm ok Ok { if not same(ok.view(), d.view()) { failures += 1usize; } }
-          case imm e Error { failures += 1usize; }
+          case let ok Ok { if not same(ok.view(), d.view()) { failures += 1usize; } }
+          case let e Error { failures += 1usize; }
         }
         // Without the size given, too
         match zlibDecompress(z.view(), 0usize) {
-          case imm ok Ok { if not same(ok.view(), d.view()) { failures += 1usize; } }
-          case imm e Error { failures += 1usize; }
+          case let ok Ok { if not same(ok.view(), d.view()) { failures += 1usize; } }
+          case let e Error { failures += 1usize; }
         }
         if z.len() > d.len() + 6usize + 5usize * (d.len() / 65535usize + 1usize) + 4usize { oversize += 1usize; }
         level += 1;
@@ -80,17 +80,17 @@ fn main() i32 {
   expectInt(i64.from(oversize), 0i64, "streams larger than storing the data");
 
   // What compression is worth
-  imm runs = data(1, 100000usize);
-  imm l1 = zlibCompress(runs.view(), 1);
-  imm l2 = zlibCompress(runs.view(), 2);
+  let runs = data(1, 100000usize);
+  let l1 = zlibCompress(runs.view(), 1);
+  let l2 = zlibCompress(runs.view(), 2);
   expect(l1.len() < 6000usize, "runs shrink by 94 percent at level 1");
   expect(l2.len() <= l1.len() + 16usize, "and dynamic Huffman is not worse");
-  imm letters = data(3, 100000usize);
-  imm m1 = zlibCompress(letters.view(), 1);
-  imm m2 = zlibCompress(letters.view(), 2);
+  let letters = data(3, 100000usize);
+  let m1 = zlibCompress(letters.view(), 1);
+  let m2 = zlibCompress(letters.view(), 2);
   expect(m2.len() < m1.len(), "six letters: dynamic Huffman beats the fixed code");
   expect(m2.len() < 100000usize * 13usize / 32usize, "six letters take about three bits a letter (a greedy parse and no cost model: the entropy is 2.58)");
-  imm far = data(4, 65536usize);
+  let far = data(4, 65536usize);
   expect(zlibCompress(far.view(), 2).len() < 33500usize, "the repeat at distance 32768 is found");
   done();
 }

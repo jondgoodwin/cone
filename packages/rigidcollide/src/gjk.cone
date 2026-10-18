@@ -55,49 +55,49 @@ struct SimplexPoint {
 // 32 bits the weights came out wrong and GJK stopped with the origin outside a
 // difference that held it.
 fn triWeights(a0 Vec3, b0 Vec3, c0 Vec3) Array[f32, 3] {
-  imm a = DVec3.from(a0);
-  imm b = DVec3.from(b0);
-  imm c = DVec3.from(c0);
-  imm ab = b - a;
-  imm ac = c - a;
-  imm d1 = ab.dot(-a);
-  imm d2 = ac.dot(-a);
+  let a = DVec3.from(a0);
+  let b = DVec3.from(b0);
+  let c = DVec3.from(c0);
+  let ab = b - a;
+  let ac = c - a;
+  let d1 = ab.dot(-a);
+  let d2 = ac.dot(-a);
   if d1 <= 0. and d2 <= 0. { return [1., 0., 0.]; }
-  imm d3 = ab.dot(-b);
-  imm d4 = ac.dot(-b);
+  let d3 = ab.dot(-b);
+  let d4 = ac.dot(-b);
   if d3 >= 0. and d4 <= d3 { return [0., 1., 0.]; }
-  imm vc = d1 * d4 - d3 * d2;
+  let vc = d1 * d4 - d3 * d2;
   if vc <= 0. and d1 >= 0. and d3 <= 0. {
-    imm v = d1 / (d1 - d3);
+    let v = d1 / (d1 - d3);
     return [f32.from(1.0f64 - v), f32.from(v), 0.];
   }
-  imm d5 = ab.dot(-c);
-  imm d6 = ac.dot(-c);
+  let d5 = ab.dot(-c);
+  let d6 = ac.dot(-c);
   if d6 >= 0. and d5 <= d6 { return [0., 0., 1.]; }
-  imm vb = d5 * d2 - d1 * d6;
+  let vb = d5 * d2 - d1 * d6;
   if vb <= 0. and d2 >= 0. and d6 <= 0. {
-    imm w = d2 / (d2 - d6);
+    let w = d2 / (d2 - d6);
     return [f32.from(1.0f64 - w), 0., f32.from(w)];
   }
-  imm va = d3 * d6 - d5 * d4;
+  let va = d3 * d6 - d5 * d4;
   if va <= 0. and (d4 - d3) >= 0. and (d5 - d6) >= 0. {
-    imm w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
+    let w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
     return [0., f32.from(1.0f64 - w), f32.from(w)];
   }
-  imm sum = va + vb + vc;
+  let sum = va + vb + vc;
   if sum < 1.0e-300f64 and sum > -1.0e-300f64 { return [1., 0., 0.]; }
-  imm denom = 1.0f64 / sum;
-  imm v = vb * denom;
-  imm w = vc * denom;
+  let denom = 1.0f64 / sum;
+  let v = vb * denom;
+  let w = vc * denom;
   [f32.from(1.0f64 - v - w), f32.from(v), f32.from(w)];
 }
 
 fn segWeights(a0 Vec3, b0 Vec3) Array[f32, 2] {
-  imm a = DVec3.from(a0);
-  imm ab = DVec3.from(b0) - a;
-  imm l2 = ab.dot(ab);
+  let a = DVec3.from(a0);
+  let ab = DVec3.from(b0) - a;
+  let l2 = ab.dot(ab);
   if l2 < 1.0e-30f64 { return [1., 0.]; }
-  imm t = f32.from(clampd(-a.dot(ab) / l2, 0.0f64, 1.0f64));
+  let t = f32.from(clampd(-a.dot(ab) / l2, 0.0f64, 1.0f64));
   [1. - t, t];
 }
 
@@ -106,37 +106,37 @@ fn clampd(v f64, lo f64, hi f64) f64 { if v < lo { lo; } else if v > hi { hi; } 
 // The point of the simplex nearest the origin, with the simplex cut down to
 // the vertices that support it (weight zero vertices dropped)
 fn reduceSimplex(s &mut Simplex) SimplexPoint {
-  mut lam = [0., 0., 0., 0.];
-  mut inside = false;
+  var lam = [0., 0., 0., 0.];
+  var inside = false;
   if s.n == 1usize {
     lam[0usize] = 1.;
   } else if s.n == 2usize {
-    imm t = segWeights(s.w[0usize], s.w[1usize]);
+    let t = segWeights(s.w[0usize], s.w[1usize]);
     lam[0usize] = t[0usize]; lam[1usize] = t[1usize];
   } else if s.n == 3usize {
-    imm t = triWeights(s.w[0usize], s.w[1usize], s.w[2usize]);
+    let t = triWeights(s.w[0usize], s.w[1usize], s.w[2usize]);
     lam[0usize] = t[0usize]; lam[1usize] = t[1usize]; lam[2usize] = t[2usize];
   } else {
     // Tetrahedron: the origin is inside if on the inner side of every face,
     // else the nearest of the faces it is outside of
-    mut bestD = bigNumber;
-    mut f = 0usize;
+    var bestD = bigNumber;
+    var f = 0usize;
     while f < 4usize {
       // face (i, j, k) with the opposite vertex l
-      imm l = f;
-      imm i = (f + 1usize) % 4usize;
-      imm j = (f + 2usize) % 4usize;
-      imm k = (f + 3usize) % 4usize;
-      imm wi = s.w[i];
-      imm nrm = (s.w[j] - wi).cross(s.w[k] - wi);
-      imm so = nrm.dot(-wi);
-      imm sl = nrm.dot(s.w[l] - wi);
+      let l = f;
+      let i = (f + 1usize) % 4usize;
+      let j = (f + 2usize) % 4usize;
+      let k = (f + 3usize) % 4usize;
+      let wi = s.w[i];
+      let nrm = (s.w[j] - wi).cross(s.w[k] - wi);
+      let so = nrm.dot(-wi);
+      let sl = nrm.dot(s.w[l] - wi);
       // A nearly flat tetrahedron cannot hold the origin: every face is a candidate
-      imm flat = absf(sl) <= 1.0e-5 * nrm.length() * (s.w[l] - wi).length();
+      let flat = absf(sl) <= 1.0e-5 * nrm.length() * (s.w[l] - wi).length();
       if flat or (so * sl <= 0. and not (so == 0. and sl != 0.)) {
-        imm t = triWeights(wi, s.w[j], s.w[k]);
-        imm p = wi * t[0usize] + s.w[j] * t[1usize] + s.w[k] * t[2usize];
-        imm d = p.lengthSquared();
+        let t = triWeights(wi, s.w[j], s.w[k]);
+        let p = wi * t[0usize] + s.w[j] * t[1usize] + s.w[k] * t[2usize];
+        let d = p.lengthSquared();
         if d < bestD {
           bestD = d;
           lam = [0., 0., 0., 0.];
@@ -151,9 +151,9 @@ fn reduceSimplex(s &mut Simplex) SimplexPoint {
     }
   }
   // Keep the supporting vertices
-  mut out = new Simplex(0usize, s.w, s.pa, s.pb);
-  mut vd = new DVec3(0., 0., 0.);
-  mut i = 0usize;
+  var out = new Simplex(0usize, s.w, s.pa, s.pb);
+  var vd = new DVec3(0., 0., 0.);
+  var i = 0usize;
   while i < s.n {
     if lam[i] > 0. or inside {
       out.w[out.n] = s.w[i];
@@ -173,38 +173,38 @@ fn reduceSimplex(s &mut Simplex) SimplexPoint {
 // GJK on the cores of a and b. Stops early ('far') when the cores are
 // certainly more than 'maxDist' apart.
 pub fn gjk(a &Prim, xa Rigid, b &Prim, xb Rigid, maxDist f32) GjkResult {
-  mut s = new Simplex(1usize, [new Vec3(0., 0., 0.), new Vec3(0., 0., 0.), new Vec3(0., 0., 0.), new Vec3(0., 0., 0.)],
+  var s = new Simplex(1usize, [new Vec3(0., 0., 0.), new Vec3(0., 0., 0.), new Vec3(0., 0., 0.), new Vec3(0., 0., 0.)],
     [new Vec3(0., 0., 0.), new Vec3(0., 0., 0.), new Vec3(0., 0., 0.), new Vec3(0., 0., 0.)],
     [new Vec3(0., 0., 0.), new Vec3(0., 0., 0.), new Vec3(0., 0., 0.), new Vec3(0., 0., 0.)]);
-  mut dir0 = xb.pos - xa.pos;
+  var dir0 = xb.pos - xa.pos;
   if dir0.lengthSquared() < 1.0e-12 { dir0 = new Vec3(1., 0., 0.); }
   s.pa[0usize] = supportWorld(a, xa, dir0);
   s.pb[0usize] = supportWorld(b, xb, -dir0);
   s.w[0usize] = s.pa[0usize] - s.pb[0usize];
-  mut v = s.w[0usize];
-  mut lam = [1., 0., 0., 0.];
-  mut iter = 0u32;
-  mut hit = false;
-  mut far = false;
-  mut wmax2 = s.w[0usize].lengthSquared();
+  var v = s.w[0usize];
+  var lam = [1., 0., 0., 0.];
+  var iter = 0u32;
+  var hit = false;
+  var far = false;
+  var wmax2 = s.w[0usize].lengthSquared();
   while iter < 64u32 {
     iter = iter + 1u32;
-    imm v2 = v.lengthSquared();
+    let v2 = v.lengthSquared();
     if v2 < 1.0e-12 { hit = true; break; }
-    imm dir = -v;
-    imm pa = supportWorld(a, xa, dir);
-    imm pb = supportWorld(b, xb, -dir);
-    imm w = pa - pb;
+    let dir = -v;
+    let pa = supportWorld(a, xa, dir);
+    let pb = supportWorld(b, xb, -dir);
+    let w = pa - pb;
     wmax2 = maxf(wmax2, w.lengthSquared());
-    imm vw = v.dot(w);
+    let vw = v.dot(w);
     // The plane through w perpendicular to v separates the origin from the
     // difference: the distance is at least vw / |v|
     if vw > 0. and vw * vw > maxDist * maxDist * v2 { far = true; break; }
     // No progress
     if v2 - vw <= 1.0e-6 * v2 + 1.0e-10 { break; }
     // a vertex already in the simplex means no progress
-    mut dup = false;
-    mut i = 0usize;
+    var dup = false;
+    var i = 0usize;
     while i < s.n {
       if (s.w[i] - w).lengthSquared() < 1.0e-12 { dup = true; }
       i = i + 1usize;
@@ -214,7 +214,7 @@ pub fn gjk(a &Prim, xa Rigid, b &Prim, xb Rigid, maxDist f32) GjkResult {
     s.pa[s.n] = pa;
     s.pb[s.n] = pb;
     s.n = s.n + 1usize;
-    imm cl = reduceSimplex(&mut s);
+    let cl = reduceSimplex(&mut s);
     v = cl.v;
     lam = cl.lam;
     if cl.inside { hit = true; break; }
@@ -222,12 +222,12 @@ pub fn gjk(a &Prim, xa Rigid, b &Prim, xb Rigid, maxDist f32) GjkResult {
   // Stopped with the nearest point within the rounding of the difference's own size
   // (about 3e-5 of its largest vertex, the f32 floor of a long sliver simplex): it cannot
   // be told from the origin, so the cores overlap or touch and EPA decides
-  mut borderline = false;
+  var borderline = false;
   if not hit and not far and v.lengthSquared() <= 1.0e-9 * wmax2 { hit = true; borderline = true; }
   // The weights belonging to the simplex that reduced to v
-  mut pa = new Vec3(0., 0., 0.);
-  mut pb = new Vec3(0., 0., 0.);
-  mut i = 0usize;
+  var pa = new Vec3(0., 0., 0.);
+  var pb = new Vec3(0., 0., 0.);
+  var i = 0usize;
   while i < s.n {
     pa = pa + s.pa[i] * lam[i];
     pb = pb + s.pb[i] * lam[i];
@@ -249,11 +249,11 @@ struct EFace {
 }
 
 fn makeEFace(w &List[Vec3], i usize, j usize, k usize) EFace {
-  imm wi = *w[i];
-  imm c = (*w[j] - wi).cross(*w[k] - wi);
-  imm l = c.length();
+  let wi = *w[i];
+  let c = (*w[j] - wi).cross(*w[k] - wi);
+  let l = c.length();
   if l < 1.0e-12 { return new EFace(i, j, k, new Vec3(1., 0., 0.), 0., false); }
-  imm n = c * (1. / l);
+  let n = c * (1. / l);
   new EFace(i, j, k, n, maxf(n.dot(wi), 0.), true);
 }
 
@@ -272,10 +272,10 @@ pub struct EpaResult {
 // Grow a simplex (1 to 4 vertices holding the origin) into a tetrahedron
 // around the origin by asking for supports in fixed directions
 fn completeSimplex(a &Prim, xa Rigid, b &Prim, xb Rigid, s &mut Simplex) bool {
-  mut tries = 0usize;
+  var tries = 0usize;
   while s.n < 4usize and tries < 14usize {
-    mut d = new Vec3(1., 0., 0.);
-    imm t = tries % 7usize;
+    var d = new Vec3(1., 0., 0.);
+    let t = tries % 7usize;
     if t == 1usize { d = new Vec3(-1., 0., 0.); }
     if t == 2usize { d = new Vec3(0., 1., 0.); }
     if t == 3usize { d = new Vec3(0., -1., 0.); }
@@ -284,14 +284,14 @@ fn completeSimplex(a &Prim, xa Rigid, b &Prim, xb Rigid, s &mut Simplex) bool {
     if t == 6usize { d = new Vec3(0.577, 0.577, 0.577); }
     if tries >= 7usize { d = -d + new Vec3(0.1, 0.2, 0.3); }
     tries = tries + 1usize;
-    imm pa = supportWorld(a, xa, d);
-    imm pb = supportWorld(b, xb, -d);
-    imm w = pa - pb;
-    mut ok = false;
+    let pa = supportWorld(a, xa, d);
+    let pb = supportWorld(b, xb, -d);
+    let w = pa - pb;
+    var ok = false;
     if s.n == 1usize { ok = (w - s.w[0usize]).lengthSquared() > 1.0e-8; }
     if s.n == 2usize { ok = (s.w[1usize] - s.w[0usize]).cross(w - s.w[0usize]).lengthSquared() > 1.0e-10; }
     if s.n == 3usize {
-      imm nrm = (s.w[1usize] - s.w[0usize]).cross(s.w[2usize] - s.w[0usize]);
+      let nrm = (s.w[1usize] - s.w[0usize]).cross(s.w[2usize] - s.w[0usize]);
       ok = absf(nrm.dot(w - s.w[0usize])) > 1.0e-8;
     }
     if ok {
@@ -305,78 +305,78 @@ fn completeSimplex(a &Prim, xa Rigid, b &Prim, xb Rigid, s &mut Simplex) bool {
 // EPA from the simplex GJK ended in. Fails (ok false) if no tetrahedron round
 // the origin can be built, as when a core is flat and the shapes only touch.
 pub fn epa(a &Prim, xa Rigid, b &Prim, xb Rigid, start Simplex) EpaResult {
-  mut s = start;
-  imm none = new EpaResult(false, new Vec3(0., 1., 0.), 0., new Vec3(0., 0., 0.), new Vec3(0., 0., 0.));
+  var s = start;
+  let none = new EpaResult(false, new Vec3(0., 1., 0.), 0., new Vec3(0., 0., 0.), new Vec3(0., 0., 0.));
   if not completeSimplex(a, xa, b, xb, &mut s) { return none; }
-  mut w = List[Vec3].empty();
-  mut pas = List[Vec3].empty();
-  mut pbs = List[Vec3].empty();
-  mut i = 0usize;
+  var w = List[Vec3].empty();
+  var pas = List[Vec3].empty();
+  var pbs = List[Vec3].empty();
+  var i = 0usize;
   while i < 4usize { w.push(s.w[i]); pas.push(s.pa[i]); pbs.push(s.pb[i]); i = i + 1usize; }
-  mut faces = List[EFace].empty();
+  var faces = List[EFace].empty();
   // The four faces, each wound so its normal points away from the vertex it leaves out
-  mut f = 0usize;
+  var f = 0usize;
   while f < 4usize {
-    imm l = f;
-    imm p = (f + 1usize) % 4usize;
-    imm q = (f + 2usize) % 4usize;
-    imm r = (f + 3usize) % 4usize;
-    mut fc = makeEFace(&w, p, q, r);
+    let l = f;
+    let p = (f + 1usize) % 4usize;
+    let q = (f + 2usize) % 4usize;
+    let r = (f + 3usize) % 4usize;
+    var fc = makeEFace(&w, p, q, r);
     if fc.n.dot(*w[l] - *w[p]) > 0. { fc = makeEFace(&w, p, r, q); }
     faces.push(fc);
     f = f + 1usize;
   }
-  mut best = 0usize;
-  mut lastDist = 0.;
-  mut chosen = *faces[0usize];
-  mut iter = 0u32;
+  var best = 0usize;
+  var lastDist = 0.;
+  var chosen = *faces[0usize];
+  var iter = 0u32;
   while iter < 96u32 {
     iter = iter + 1u32;
     // Nearest live face
-    mut bd = bigNumber;
+    var bd = bigNumber;
     i = 0usize;
     while i < faces.len() {
-      imm fc = faces[i];
+      let fc = faces[i];
       if fc.alive and fc.dist < bd { bd = fc.dist; best = i; }
       i = i + 1usize;
     }
     if bd == bigNumber { return none; }
-    imm bf = *faces[best];
+    let bf = *faces[best];
     // The nearest face can only move away from the origin; if it moves back, rounding has
     // broken a sliver face (a curved core such as a cylinder's rim creeps in ever
     // smaller steps): stop with the last good face
     if bd < lastDist - 2.0e-4 { break; }
     lastDist = bd;
     chosen = bf;
-    imm pa = supportWorld(a, xa, bf.n);
-    imm pb = supportWorld(b, xb, -bf.n);
-    imm nw = pa - pb;
+    let pa = supportWorld(a, xa, bf.n);
+    let pb = supportWorld(b, xb, -bf.n);
+    let nw = pa - pb;
     if nw.dot(bf.n) - bf.dist < 2.0e-4 * (1. + bf.dist) { break; }
     // Remove the faces the new vertex sees; the edges between seen and unseen get new faces
-    mut visible = List[usize].empty();
+    var visible = List[usize].empty();
     i = 0usize;
     while i < faces.len() {
-      imm fc = faces[i];
+      let fc = faces[i];
       if fc.alive and fc.n.dot(nw) - fc.dist > 1.0e-7 { visible.push(i); }
       i = i + 1usize;
     }
     if visible.len() == 0usize { break; }
-    imm vi = w.len();
+    let vi = w.len();
     w.push(nw); pas.push(pa); pbs.push(pb);
-    mut ha = List[usize].empty();
-    mut hb = List[usize].empty();
-    mut k = 0usize;
+    var ha = List[usize].empty();
+    var hb = List[usize].empty();
+    var k = 0usize;
     while k < visible.len() {
-      imm fc = *faces[*visible[k]];
-      mut e = 0usize;
+      let fc = *faces[*visible[k]];
+      var e = 0usize;
       while e < 3usize {
-        imm ea = if e == 0usize { fc.i; } else if e == 1usize { fc.j; } else { fc.k; };
-        imm eb = if e == 0usize { fc.j; } else if e == 1usize { fc.k; } else { fc.i; };
-        mut shared = false;
-        mut m = 0usize;
+        let ea = if e == 0usize { fc.i; } else if e == 1usize { fc.j; } else { fc.k; };
+        let eb = if e == 0usize { fc.j; } else if e == 1usize { fc.k; } else { fc.i; };
+        var shared = false;
+        var m = 0usize;
         while m < visible.len() {
           if m != k {
-            imm go = faces[*visible[m]];
+            let go = faces[*visible[m]];
             if (go.i == eb and go.j == ea) or (go.j == eb and go.k == ea) or (go.k == eb and go.i == ea) { shared = true; }
           }
           m = m + 1usize;
@@ -388,8 +388,8 @@ pub fn epa(a &Prim, xa Rigid, b &Prim, xb Rigid, start Simplex) EpaResult {
     }
     k = 0usize;
     while k < visible.len() {
-      imm idx = *visible[k];
-      mut fc = *faces[idx];
+      let idx = *visible[k];
+      var fc = *faces[idx];
       fc.alive = false;
       faces.set(idx, fc);
       k = k + 1usize;
@@ -400,27 +400,27 @@ pub fn epa(a &Prim, xa Rigid, b &Prim, xb Rigid, start Simplex) EpaResult {
       k = k + 1usize;
     }
   }
-  imm bf = chosen;
+  let bf = chosen;
   // The origin's projection on the face, as weights of its three corners
-  imm p = bf.n * bf.dist;
-  imm a0 = *w[bf.i];
-  imm e1 = *w[bf.j] - a0;
-  imm e2 = *w[bf.k] - a0;
-  imm d00 = e1.dot(e1);
-  imm d01 = e1.dot(e2);
-  imm d11 = e2.dot(e2);
-  imm d20 = (p - a0).dot(e1);
-  imm d21 = (p - a0).dot(e2);
-  imm den = d00 * d11 - d01 * d01;
-  mut lv = 0.;
-  mut lw = 0.;
+  let p = bf.n * bf.dist;
+  let a0 = *w[bf.i];
+  let e1 = *w[bf.j] - a0;
+  let e2 = *w[bf.k] - a0;
+  let d00 = e1.dot(e1);
+  let d01 = e1.dot(e2);
+  let d11 = e2.dot(e2);
+  let d20 = (p - a0).dot(e1);
+  let d21 = (p - a0).dot(e2);
+  let den = d00 * d11 - d01 * d01;
+  var lv = 0.;
+  var lw = 0.;
   if absf(den) > 1.0e-20 {
     lv = (d11 * d20 - d01 * d21) / den;
     lw = (d00 * d21 - d01 * d20) / den;
   }
-  imm lu = 1. - lv - lw;
-  imm ca = *pas[bf.i] * lu + *pas[bf.j] * lv + *pas[bf.k] * lw;
-  imm cb = *pbs[bf.i] * lu + *pbs[bf.j] * lv + *pbs[bf.k] * lw;
+  let lu = 1. - lv - lw;
+  let ca = *pas[bf.i] * lu + *pas[bf.j] * lv + *pas[bf.k] * lw;
+  let cb = *pbs[bf.i] * lu + *pbs[bf.j] * lv + *pbs[bf.k] * lw;
   new EpaResult(true, bf.n, bf.dist, ca, cb);
 }
 
@@ -440,30 +440,30 @@ pub struct Penetration {
 }
 
 pub fn convexPenetration(a &Prim, xa Rigid, b &Prim, xb Rigid, maxGap f32) Penetration {
-  imm ra = a.coreRadius();
-  imm rb = b.coreRadius();
-  imm miss = new Penetration(false, new Vec3(0., 1., 0.), 0., new Vec3(0., 0., 0.), new Vec3(0., 0., 0.));
-  imm g = gjk(a, xa, b, xb, ra + rb + maxGap);
+  let ra = a.coreRadius();
+  let rb = b.coreRadius();
+  let miss = new Penetration(false, new Vec3(0., 1., 0.), 0., new Vec3(0., 0., 0.), new Vec3(0., 0., 0.));
+  let g = gjk(a, xa, b, xb, ra + rb + maxGap);
   if g.far { return miss; }
   if not g.intersect {
     if g.dist > ra + rb + maxGap { return miss; }
     // pa - pb is the vector from b's core point to a's; the normal runs the other way
-    imm nrm = (g.pb - g.pa).normalize();
+    let nrm = (g.pb - g.pa).normalize();
     return new Penetration(true, nrm, ra + rb - g.dist, g.pa + nrm * ra, g.pb - nrm * rb);
   }
-  imm e = epa(a, xa, b, xb, g.simplex);
+  let e = epa(a, xa, b, xb, g.simplex);
   if e.ok {
     // The cores cannot overlap by more than their widths together along the normal; a depth
     // beyond that is EPA having lost its way on a thin or very large core (one box on a flat
     // triangle came out 2.7 m deep when the box is 0.87 m across)
-    imm wid = coreWidth(a, xa, e.normal) + coreWidth(b, xb, e.normal);
+    let wid = coreWidth(a, xa, e.normal) + coreWidth(b, xb, e.normal);
     if e.depth <= wid + 1.0e-3 * wid + 1.0e-4 {
       return new Penetration(true, e.normal, e.depth + ra + rb, e.pa + e.normal * ra, e.pb - e.normal * rb);
     }
   }
   if g.borderline {
     // too close to tell touching from overlapping, and EPA has no polytope to grow: a touch
-    imm nrm = (g.pb - g.pa).normalize();
+    let nrm = (g.pb - g.pa).normalize();
     return new Penetration(true, nrm, ra + rb - g.dist, g.pa + nrm * ra, g.pb - nrm * rb);
   }
   penetrationByAxes(a, xa, b, xb, e, ra, rb);
@@ -480,9 +480,9 @@ fn coreWidth(p &Prim, x Rigid, n Vec3) f32 {
 // world axes is right for the flat, large and symmetric cases that defeat EPA). No overlap
 // along some axis means the shapes are apart.
 fn penetrationByAxes(a &Prim, xa Rigid, b &Prim, xb Rigid, e EpaResult, ra f32, rb f32) Penetration {
-  imm miss = new Penetration(false, new Vec3(0., 1., 0.), 0., new Vec3(0., 0., 0.), new Vec3(0., 0., 0.));
-  mut axes = new Array[Vec3, 8] <- fill new Vec3(0., 1., 0.);
-  mut na = 0usize;
+  let miss = new Penetration(false, new Vec3(0., 1., 0.), 0., new Vec3(0., 0., 0.), new Vec3(0., 0., 0.));
+  var axes = new Array[Vec3, 8] <- fill new Vec3(0., 1., 0.);
+  var na = 0usize;
   if a.kind == KTriangle {
     axes[na] = xa.rotate((a.b - a.a).cross(a.c - a.a)).normalize(); na = na + 1usize;
   }
@@ -490,27 +490,27 @@ fn penetrationByAxes(a &Prim, xa Rigid, b &Prim, xb Rigid, e EpaResult, ra f32, 
     axes[na] = xb.rotate((b.b - b.a).cross(b.c - b.a)).normalize(); na = na + 1usize;
   }
   if e.ok { axes[na] = e.normal; na = na + 1usize; }
-  imm between = xb.pos - xa.pos;
+  let between = xb.pos - xa.pos;
   if between.lengthSquared() > 1.0e-10 { axes[na] = between.normalize(); na = na + 1usize; }
   axes[na] = new Vec3(0., 1., 0.); na = na + 1usize;
   axes[na] = new Vec3(1., 0., 0.); na = na + 1usize;
   axes[na] = new Vec3(0., 0., 1.); na = na + 1usize;
-  mut best = bigNumber;
-  mut bestN = new Vec3(0., 1., 0.);
-  mut k = 0usize;
+  var best = bigNumber;
+  var bestN = new Vec3(0., 1., 0.);
+  var k = 0usize;
   while k < na {
-    mut s = 0;
+    var s = 0;
     while s < 2 {
-      imm n = if s == 0 { axes[k]; } else { -axes[k]; };
+      let n = if s == 0 { axes[k]; } else { -axes[k]; };
       // the overlap pushing B along n: A's far side past B's near side
-      imm depth = supportWorld(a, xa, n).dot(n) - supportWorld(b, xb, -n).dot(n);
+      let depth = supportWorld(a, xa, n).dot(n) - supportWorld(b, xb, -n).dot(n);
       if depth < best { best = depth; bestN = n; }
       s = s + 1;
     }
     k = k + 1usize;
   }
   if best < -1.0e-4 { return miss; }
-  imm pa = supportWorld(a, xa, bestN);
-  imm pb = supportWorld(b, xb, -bestN);
+  let pa = supportWorld(a, xa, bestN);
+  let pb = supportWorld(b, xb, -bestN);
   new Penetration(true, bestN, best + ra + rb, pa + bestN * ra, pb - bestN * rb);
 }

@@ -26,8 +26,8 @@
 
 // The points of the given vertices of a mesh
 pub fn gather(m &PolyMesh, ids &Array[u32]) List[Vec3] {
-  mut out = List[Vec3].withCapacity(ids.len);
-  mut i = 0usize;
+  var out = List[Vec3].withCapacity(ids.len);
+  var i = 0usize;
   while i < ids.len {
     out.push(*m.positions[usize.from(ids[i])]);
     i += 1usize;
@@ -37,8 +37,8 @@ pub fn gather(m &PolyMesh, ids &Array[u32]) List[Vec3] {
 
 // Every vertex of a mesh, as a list of numbers
 pub fn allVertices(m &PolyMesh) List[u32] {
-  mut out = List[u32].withCapacity(m.vertexCount());
-  mut i = 0usize;
+  var out = List[u32].withCapacity(m.vertexCount());
+  var i = 0usize;
   while i < m.vertexCount() { out.push(u32.from(i)); i += 1usize; }
   out;
 }
@@ -49,25 +49,25 @@ fn wt(w &Array[f32], i usize) f64 {
 }
 
 fn totalWeight(pts &Array[Vec3], w &Array[f32]) f64 {
-  mut s = 0.d;
-  mut i = 0usize;
+  var s = 0.d;
+  var i = 0usize;
   while i < pts.len { s = s + wt(w, i); i += 1usize; }
   s;
 }
 
 fn countFitted(pts &Array[Vec3], w &Array[f32]) usize {
-  mut c = 0usize;
-  mut i = 0usize;
+  var c = 0usize;
+  var i = 0usize;
   while i < pts.len { if wt(w, i) > 0.d { c += 1usize; } i += 1usize; }
   c;
 }
 
 fn meanOf(pts &Array[Vec3], w &Array[f32]) DVec3 {
-  mut s = new DVec3(0.d, 0.d, 0.d);
-  mut tw = 0.d;
-  mut i = 0usize;
+  var s = new DVec3(0.d, 0.d, 0.d);
+  var tw = 0.d;
+  var i = 0usize;
   while i < pts.len {
-    imm wi = wt(w, i);
+    let wi = wt(w, i);
     s = s + DVec3.from(pts[i]) * wi;
     tw = tw + wi;
     i += 1usize;
@@ -78,12 +78,12 @@ fn meanOf(pts &Array[Vec3], w &Array[f32]) DVec3 {
 // The principal axes of the points: the three unit eigenvectors of the weighted
 // covariance, least variance first, and the variances
 fn principalAxes(pts &Array[Vec3], w &Array[f32], centre DVec3, axes &mut List[DVec3], vars &mut List[f64]) {
-  mut cov = zeros(9usize);
-  mut tw = 0.d;
-  mut i = 0usize;
+  var cov = zeros(9usize);
+  var tw = 0.d;
+  var i = 0usize;
   while i < pts.len {
-    imm wi = wt(w, i);
-    imm d = DVec3.from(pts[i]) - centre;
+    let wi = wt(w, i);
+    let d = DVec3.from(pts[i]) - centre;
     cov.set(0usize, *cov[0] + wi * d.x * d.x); cov.set(1usize, *cov[1] + wi * d.x * d.y); cov.set(2usize, *cov[2] + wi * d.x * d.z);
     cov.set(4usize, *cov[4] + wi * d.y * d.y); cov.set(5usize, *cov[5] + wi * d.y * d.z); cov.set(8usize, *cov[8] + wi * d.z * d.z);
     tw = tw + wi;
@@ -94,12 +94,12 @@ fn principalAxes(pts &Array[Vec3], w &Array[f32], centre DVec3, axes &mut List[D
     i = 0usize;
     while i < 9usize { cov.set(i, *cov[i] / tw); i += 1usize; }
   }
-  mut vals = List[f64].empty();
-  mut vecs = List[f64].empty();
+  var vals = List[f64].empty();
+  var vecs = List[f64].empty();
   jacobiEigen(&mut cov, 3usize, &mut vals, &mut vecs);
   axes.clear();
   vars.clear();
-  mut k = 0usize;
+  var k = 0usize;
   while k < 3usize {
     axes.push(new DVec3(*vecs[k], *vecs[3usize + k], *vecs[6usize + k]));
     vars.push(*vals[k]);
@@ -109,15 +109,15 @@ fn principalAxes(pts &Array[Vec3], w &Array[f32], centre DVec3, axes &mut List[D
 
 // The residuals of the points (weight above zero) to the parameters; fills in a Form's statistics
 fn measure(f &mut Form, pts &Array[Vec3], w &Array[f32]) {
-  mut sum = 0.d;
-  mut tw = 0.d;
-  mut big = 0.d;
-  mut c = 0usize;
-  mut i = 0usize;
+  var sum = 0.d;
+  var tw = 0.d;
+  var big = 0.d;
+  var c = 0usize;
+  var i = 0usize;
   while i < pts.len {
-    imm wi = wt(w, i);
+    let wi = wt(w, i);
     if wi > 0.d {
-      imm d = distanceTo(f.kind, &f.params, DVec3.from(pts[i]));
+      let d = distanceTo(f.kind, &f.params, DVec3.from(pts[i]));
       sum = sum + wi * d * d;
       tw = tw + wi;
       big = maxd(big, absd(d));
@@ -131,12 +131,12 @@ fn measure(f &mut Form, pts &Array[Vec3], w &Array[f32]) {
 }
 
 fn costOf(kind u32, params &List[f64], pts &Array[Vec3], w &Array[f32]) f64 {
-  mut sum = 0.d;
-  mut i = 0usize;
+  var sum = 0.d;
+  var i = 0usize;
   while i < pts.len {
-    imm wi = wt(w, i);
+    let wi = wt(w, i);
     if wi > 0.d {
-      imm d = distanceTo(kind, params, DVec3.from(pts[i]));
+      let d = distanceTo(kind, params, DVec3.from(pts[i]));
       sum = sum + wi * d * d;
     }
     i += 1usize;
@@ -147,37 +147,37 @@ fn costOf(kind u32, params &List[f64], pts &Array[Vec3], w &Array[f32]) f64 {
 // Levenberg-Marquardt on the signed distances, over the parameters numbered in
 // 'free'; returns the steps taken
 fn refine(kind u32, params &mut List[f64], free &List[usize], pts &Array[Vec3], w &Array[f32], maxIter u32) u32 {
-  imm np = free.len();
-  imm n = pts.len;
-  mut lambda = 0.001d;
-  mut cost = costOf(kind, params, pts, w);
-  mut it = 0u32;
-  mut go = true;
-  mut row = zeros(np);
+  let np = free.len();
+  let n = pts.len;
+  var lambda = 0.001d;
+  var cost = costOf(kind, params, pts, w);
+  var it = 0u32;
+  var go = true;
+  var row = zeros(np);
   while go and it < maxIter {
-    mut jtj = zeros(np * np);
-    mut jtr = zeros(np);
-    mut i = 0usize;
+    var jtj = zeros(np * np);
+    var jtr = zeros(np);
+    var i = 0usize;
     while i < n {
-      imm wi = wt(w, i);
+      let wi = wt(w, i);
       if wi > 0.d {
-        imm x = DVec3.from(pts[i]);
-        imm d0 = distanceTo(kind, params, x);
-        mut k = 0usize;
+        let x = DVec3.from(pts[i]);
+        let d0 = distanceTo(kind, params, x);
+        var k = 0usize;
         while k < np {
-          imm idx = *free[k];
-          imm old = *params[idx];
-          imm h = 0.000001d * (1.d + absd(old));
+          let idx = *free[k];
+          let old = *params[idx];
+          let h = 0.000001d * (1.d + absd(old));
           params.set(idx, old + h);
-          imm d1 = distanceTo(kind, params, x);
+          let d1 = distanceTo(kind, params, x);
           params.set(idx, old);
           row.set(k, (d1 - d0) / h);
           k += 1usize;
         }
         k = 0usize;
         while k < np {
-          imm rk = wi * *row[k];
-          mut l = 0usize;
+          let rk = wi * *row[k];
+          var l = 0usize;
           while l < np { jtj.set(k * np + l, *jtj[k * np + l] + rk * *row[l]); l += 1usize; }
           jtr.set(k, *jtr[k] + rk * d0);
           k += 1usize;
@@ -185,34 +185,34 @@ fn refine(kind u32, params &mut List[f64], free &List[usize], pts &Array[Vec3], 
       }
       i += 1usize;
     }
-    mut accepted = false;
-    mut tries = 0;
+    var accepted = false;
+    var tries = 0;
     while not accepted and tries < 14 {
-      mut a = zeros(np * np);
-      mut k = 0usize;
+      var a = zeros(np * np);
+      var k = 0usize;
       while k < np * np { a.set(k, *jtj[k]); k += 1usize; }
       k = 0usize;
       while k < np {
         a.set(k * np + k, *a[k * np + k] + lambda * (*jtj[k * np + k] + 0.000000000001d));
         k += 1usize;
       }
-      mut delta = zeros(np);
+      var delta = zeros(np);
       k = 0usize;
       while k < np { delta.set(k, -*jtr[k]); k += 1usize; }
       if solveLinear(&mut a, &mut delta, np) {
-        mut trial = List[f64].withCapacity(params.len());
+        var trial = List[f64].withCapacity(params.len());
         k = 0usize;
         while k < params.len() { trial.push(*params[k]); k += 1usize; }
         k = 0usize;
         while k < np { trial.set(*free[k], *trial[*free[k]] + *delta[k]); k += 1usize; }
-        imm c2 = costOf(kind, &trial, pts, w);
+        let c2 = costOf(kind, &trial, pts, w);
         if c2 < cost {
-          mut step = 0.d;
+          var step = 0.d;
           k = 0usize;
           while k < np { step = maxd(step, absd(*delta[k])); k += 1usize; }
           k = 0usize;
           while k < params.len() { params.set(k, *trial[k]); k += 1usize; }
-          imm gain = cost - c2;
+          let gain = cost - c2;
           cost = c2;
           lambda = maxd(lambda / 3.d, 1.0e-12d);
           accepted = true;
@@ -228,8 +228,8 @@ fn refine(kind u32, params &mut List[f64], free &List[usize], pts &Array[Vec3], 
 }
 
 fn seq(a usize, b usize) List[usize] {
-  mut out = List[usize].empty();
-  mut i = a;
+  var out = List[usize].empty();
+  var i = a;
   while i < b { out.push(i); i += 1usize; }
   out;
 }
@@ -239,29 +239,29 @@ fn seq(a usize, b usize) List[usize] {
 // The plane through the points that minimises the weighted squared orthogonal distance
 pub fn fitPlane(pts &Array[Vec3], w &Array[f32]) Form {
   if countFitted(pts, w) < 3usize { return Form.failed(FormPlane); }
-  imm c = meanOf(pts, w);
-  mut axes = List[DVec3].empty();
-  mut vars = List[f64].empty();
+  let c = meanOf(pts, w);
+  var axes = List[DVec3].empty();
+  var vars = List[f64].empty();
   principalAxes(pts, w, c, &mut axes, &mut vars);
-  mut p = List[f64].empty();
+  var p = List[f64].empty();
   p.push(c.x); p.push(c.y); p.push(c.z);
-  imm n = *axes[0];
+  let n = *axes[0];
   p.push(n.x); p.push(n.y); p.push(n.z);
-  mut f = Form.make(FormPlane, p);
+  var f = Form.make(FormPlane, p);
   measure(&mut f, pts, w);
   f;
 }
 
 // The same plane with its normal turned to face 'toward' (a direction)
 pub fn orientPlane(f &Form, toward Vec3) Form {
-  mut p = List[f64].empty();
-  mut i = 0usize;
+  var p = List[f64].empty();
+  var i = 0usize;
   while i < f.params.len() { p.push(*f.params[i]); i += 1usize; }
-  imm n = pv(&p, 3usize);
+  let n = pv(&p, 3usize);
   if n.dot(DVec3.from(toward)) < 0.d {
     p.set(3usize, -*p[3]); p.set(4usize, -*p[4]); p.set(5usize, -*p[5]);
   }
-  mut g = Form.make(f.kind, p);
+  var g = Form.make(f.kind, p);
   g.ok = f.ok; g.count = f.count; g.rms = f.rms; g.maxAbs = f.maxAbs; g.iterations = f.iterations;
   g;
 }
@@ -271,20 +271,20 @@ pub fn orientPlane(f &Form, toward Vec3) Form {
 // The sphere nearest the points, by orthogonal distance
 pub fn fitSphere(pts &Array[Vec3], w &Array[f32]) Form {
   if countFitted(pts, w) < 4usize { return Form.failed(FormSphere); }
-  imm c0 = meanOf(pts, w);
+  let c0 = meanOf(pts, w);
   // |x|^2 = 2 c.x + k with k = r^2 - |c|^2, on points moved to their mean
-  mut a = zeros(16usize);
-  mut b = zeros(4usize);
-  mut i = 0usize;
+  var a = zeros(16usize);
+  var b = zeros(4usize);
+  var i = 0usize;
   while i < pts.len {
-    imm wi = wt(w, i);
+    let wi = wt(w, i);
     if wi > 0.d {
-      imm d = DVec3.from(pts[i]) - c0;
-      imm row = [2.d * d.x, 2.d * d.y, 2.d * d.z, 1.d];
-      imm rhs = d.lengthSquared();
-      mut k = 0usize;
+      let d = DVec3.from(pts[i]) - c0;
+      let row = [2.d * d.x, 2.d * d.y, 2.d * d.z, 1.d];
+      let rhs = d.lengthSquared();
+      var k = 0usize;
       while k < 4usize {
-        mut l = 0usize;
+        var l = 0usize;
         while l < 4usize { a.set(k * 4usize + l, *a[k * 4usize + l] + wi * row[k] * row[l]); l += 1usize; }
         b.set(k, *b[k] + wi * row[k] * rhs);
         k += 1usize;
@@ -293,10 +293,10 @@ pub fn fitSphere(pts &Array[Vec3], w &Array[f32]) Form {
     i += 1usize;
   }
   if not solveLinear(&mut a, &mut b, 4usize) { return Form.failed(FormSphere); }
-  imm r2 = *b[3] + *b[0] * *b[0] + *b[1] * *b[1] + *b[2] * *b[2];
-  mut p = List[f64].empty();
+  let r2 = *b[3] + *b[0] * *b[0] + *b[1] * *b[1] + *b[2] * *b[2];
+  var p = List[f64].empty();
   p.push(c0.x + *b[0]); p.push(c0.y + *b[1]); p.push(c0.z + *b[2]); p.push(sqrtd(r2));
-  mut f = Form.make(FormSphere, p);
+  var f = Form.make(FormSphere, p);
   f.iterations = refine(FormSphere, &mut f.params, &seq(0usize, 4usize), pts, w, 40u32);
   measure(&mut f, pts, w);
   f;
@@ -307,24 +307,24 @@ pub fn fitSphere(pts &Array[Vec3], w &Array[f32]) Form {
 // An ellipsoid with axes along x, y and z
 pub fn fitEllipsoidAxis(pts &Array[Vec3], w &Array[f32]) Form {
   if countFitted(pts, w) < 6usize { return Form.failed(FormEllipsoidAxis); }
-  mut lo = new DVec3(1.0e30d, 1.0e30d, 1.0e30d);
-  mut hi = new DVec3(-1.0e30d, -1.0e30d, -1.0e30d);
-  mut i = 0usize;
+  var lo = new DVec3(1.0e30d, 1.0e30d, 1.0e30d);
+  var hi = new DVec3(-1.0e30d, -1.0e30d, -1.0e30d);
+  var i = 0usize;
   while i < pts.len {
     if wt(w, i) > 0.d {
-      imm d = DVec3.from(pts[i]);
+      let d = DVec3.from(pts[i]);
       lo = new DVec3(mind(lo.x, d.x), mind(lo.y, d.y), mind(lo.z, d.z));
       hi = new DVec3(maxd(hi.x, d.x), maxd(hi.y, d.y), maxd(hi.z, d.z));
     }
     i += 1usize;
   }
-  imm c = (lo + hi) * 0.5d;
-  imm r = (hi - lo) * 0.5d;
-  mut p = List[f64].empty();
+  let c = (lo + hi) * 0.5d;
+  let r = (hi - lo) * 0.5d;
+  var p = List[f64].empty();
   p.push(c.x); p.push(c.y); p.push(c.z);
   p.push(maxd(r.x, 1.0e-9d)); p.push(maxd(r.y, 1.0e-9d)); p.push(maxd(r.z, 1.0e-9d));
   p.push(0.d); p.push(0.d); p.push(0.d);
-  mut f = Form.make(FormEllipsoidAxis, p);
+  var f = Form.make(FormEllipsoidAxis, p);
   f.iterations = refine(FormEllipsoidAxis, &mut f.params, &seq(0usize, 6usize), pts, w, 60u32);
   measure(&mut f, pts, w);
   f;
@@ -333,21 +333,21 @@ pub fn fitEllipsoidAxis(pts &Array[Vec3], w &Array[f32]) Form {
 // An ellipsoid of any orientation
 pub fn fitEllipsoid(pts &Array[Vec3], w &Array[f32]) Form {
   if countFitted(pts, w) < 9usize { return Form.failed(FormEllipsoid); }
-  imm c0 = meanOf(pts, w);
-  mut axes = List[DVec3].empty();
-  mut vars = List[f64].empty();
+  let c0 = meanOf(pts, w);
+  var axes = List[DVec3].empty();
+  var vars = List[f64].empty();
   principalAxes(pts, w, c0, &mut axes, &mut vars);
   // Extents along each principal axis
-  mut lo = zeros(3usize);
-  mut hi = zeros(3usize);
-  mut first = true;
-  mut i = 0usize;
+  var lo = zeros(3usize);
+  var hi = zeros(3usize);
+  var first = true;
+  var i = 0usize;
   while i < pts.len {
     if wt(w, i) > 0.d {
-      imm d = DVec3.from(pts[i]) - c0;
-      mut k = 0usize;
+      let d = DVec3.from(pts[i]) - c0;
+      var k = 0usize;
       while k < 3usize {
-        imm t = d.dot(*axes[k]);
+        let t = d.dot(*axes[k]);
         if first { lo.set(k, t); hi.set(k, t); } else { lo.set(k, mind(*lo[k], t)); hi.set(k, maxd(*hi[k], t)); }
         k += 1usize;
       }
@@ -355,31 +355,31 @@ pub fn fitEllipsoid(pts &Array[Vec3], w &Array[f32]) Form {
     }
     i += 1usize;
   }
-  mut centre = c0;
-  mut k = 0usize;
+  var centre = c0;
+  var k = 0usize;
   while k < 3usize {
     centre = centre + *axes[k] * (0.5d * (*lo[k] + *hi[k]));
     k += 1usize;
   }
   // The rotation of the axes nearest the identity: try each order and sign of the columns
-  mut bestAngle = 1.0e30d;
-  mut bestR = zeros(9usize);
-  mut bestRad = zeros(3usize);
-  imm perms = [0usize, 1usize, 2usize,  0usize, 2usize, 1usize,  1usize, 0usize, 2usize,
+  var bestAngle = 1.0e30d;
+  var bestR = zeros(9usize);
+  var bestRad = zeros(3usize);
+  let perms = [0usize, 1usize, 2usize,  0usize, 2usize, 1usize,  1usize, 0usize, 2usize,
     1usize, 2usize, 0usize,  2usize, 0usize, 1usize,  2usize, 1usize, 0usize];
-  mut pi = 0usize;
+  var pi = 0usize;
   while pi < 6usize {
-    mut sg = 0u32;
+    var sg = 0u32;
     while sg < 8u32 {
-      imm s0 = if (sg & 1u32) != 0u32 { -1.d; } else { 1.d; };
-      imm s1 = if (sg & 2u32) != 0u32 { -1.d; } else { 1.d; };
-      imm s2 = if (sg & 4u32) != 0u32 { -1.d; } else { 1.d; };
-      imm c0v = *axes[perms[pi * 3usize]] * s0;
-      imm c1v = *axes[perms[pi * 3usize + 1usize]] * s1;
-      imm c2v = *axes[perms[pi * 3usize + 2usize]] * s2;
+      let s0 = if (sg & 1u32) != 0u32 { -1.d; } else { 1.d; };
+      let s1 = if (sg & 2u32) != 0u32 { -1.d; } else { 1.d; };
+      let s2 = if (sg & 4u32) != 0u32 { -1.d; } else { 1.d; };
+      let c0v = *axes[perms[pi * 3usize]] * s0;
+      let c1v = *axes[perms[pi * 3usize + 1usize]] * s1;
+      let c2v = *axes[perms[pi * 3usize + 2usize]] * s2;
       if crossd(c0v, c1v).dot(c2v) > 0.d {
-        imm tr = c0v.x + c1v.y + c2v.z;
-        imm ang = libc.acos(maxd(-1.d, mind(1.d, (tr - 1.d) * 0.5d)));
+        let tr = c0v.x + c1v.y + c2v.z;
+        let ang = libc.acos(maxd(-1.d, mind(1.d, (tr - 1.d) * 0.5d)));
         if ang < bestAngle - 1.0e-9d {
           bestAngle = ang;
           bestR = zeros(9usize);
@@ -395,12 +395,12 @@ pub fn fitEllipsoid(pts &Array[Vec3], w &Array[f32]) Form {
     }
     pi += 1usize;
   }
-  imm rv = rotationVectorOf(&bestR);
-  mut p = List[f64].empty();
+  let rv = rotationVectorOf(&bestR);
+  var p = List[f64].empty();
   p.push(centre.x); p.push(centre.y); p.push(centre.z);
   p.push(maxd(*bestRad[0], 1.0e-9d)); p.push(maxd(*bestRad[1], 1.0e-9d)); p.push(maxd(*bestRad[2], 1.0e-9d));
   p.push(rv.x); p.push(rv.y); p.push(rv.z);
-  mut f = Form.make(FormEllipsoid, p);
+  var f = Form.make(FormEllipsoid, p);
   f.iterations = refine(FormEllipsoid, &mut f.params, &seq(0usize, 9usize), pts, w, 80u32);
   measure(&mut f, pts, w);
   f;
@@ -417,77 +417,77 @@ fn quadricRow(x DVec3, row &mut List[f64]) {
 // The general quadric surface nearest the points (see the top for the method)
 pub fn fitQuadric(pts &Array[Vec3], w &Array[f32]) Form {
   if countFitted(pts, w) < 10usize { return Form.failed(FormQuadric); }
-  imm c = meanOf(pts, w);
+  let c = meanOf(pts, w);
   // Scale: the root-mean-square distance from the mean
-  mut s2 = 0.d;
-  mut tw = 0.d;
-  mut i = 0usize;
+  var s2 = 0.d;
+  var tw = 0.d;
+  var i = 0usize;
   while i < pts.len {
-    imm wi = wt(w, i);
+    let wi = wt(w, i);
     s2 = s2 + wi * (DVec3.from(pts[i]) - c).lengthSquared();
     tw = tw + wi;
     i += 1usize;
   }
-  imm s = sqrtd(s2 / tw);
+  let s = sqrtd(s2 / tw);
   if s < 1.0e-12d { return Form.failed(FormQuadric); }
-  mut th = zeros(10usize);
+  var th = zeros(10usize);
   th.set(0usize, 1.d);
-  mut row = zeros(10usize);
-  mut pass = 0;
+  var row = zeros(10usize);
+  var pass = 0;
   while pass < 7 {
-    mut m = zeros(100usize);
+    var m = zeros(100usize);
     i = 0usize;
     while i < pts.len {
-      imm wi = wt(w, i);
+      let wi = wt(w, i);
       if wi > 0.d {
-        imm x = (DVec3.from(pts[i]) - c) * (1.d / s);
+        let x = (DVec3.from(pts[i]) - c) * (1.d / s);
         quadricRow(x, &mut row);
-        mut ww = wi;
+        var ww = wi;
         if pass > 0 {
-          mut g = new DVec3(0.d, 0.d, 0.d);
+          var g = new DVec3(0.d, 0.d, 0.d);
           quadricValue(&th, x, &mut g);
           ww = wi / (g.lengthSquared() + 0.01d);
         }
-        mut k = 0usize;
+        var k = 0usize;
         while k < 10usize {
-          imm rk = ww * *row[k];
-          mut l = 0usize;
+          let rk = ww * *row[k];
+          var l = 0usize;
           while l < 10usize { m.set(k * 10usize + l, *m[k * 10usize + l] + rk * *row[l]); l += 1usize; }
           k += 1usize;
         }
       }
       i += 1usize;
     }
-    mut vals = List[f64].empty();
-    mut vecs = List[f64].empty();
+    var vals = List[f64].empty();
+    var vecs = List[f64].empty();
     jacobiEigen(&mut m, 10usize, &mut vals, &mut vecs);
-    mut k = 0usize;
+    var k = 0usize;
     while k < 10usize { th.set(k, *vecs[k * 10usize]); k += 1usize; }
     pass += 1;
   }
   // Back to the original coordinates: x' = (x - c) / s
-  imm a = [*th[0] / (s * s), *th[3] / (s * s), *th[4] / (s * s),
+  let a = [*th[0] / (s * s), *th[3] / (s * s), *th[4] / (s * s),
            *th[3] / (s * s), *th[1] / (s * s), *th[5] / (s * s),
            *th[4] / (s * s), *th[5] / (s * s), *th[2] / (s * s)];
   // A is symmetric with the cross terms halved: write A_o c as the vector
-  imm ac = new DVec3(a[0] * c.x + 0.5d * a[1] * c.y + 0.5d * a[2] * c.z,
+  let ac = new DVec3(a[0] * c.x + 0.5d * a[1] * c.y + 0.5d * a[2] * c.z,
     0.5d * a[3] * c.x + a[4] * c.y + 0.5d * a[5] * c.z,
     0.5d * a[6] * c.x + 0.5d * a[7] * c.y + a[8] * c.z);
-  mut p = zeros(10usize);
+  var p = zeros(10usize);
   p.set(0usize, a[0]); p.set(1usize, a[4]); p.set(2usize, a[8]);
   p.set(3usize, a[1]); p.set(4usize, a[2]); p.set(5usize, a[5]);
   p.set(6usize, *th[6] / s - 2.d * ac.x);
   p.set(7usize, *th[7] / s - 2.d * ac.y);
   p.set(8usize, *th[8] / s - 2.d * ac.z);
-  imm cac = ac.dot(c);
+  let cac = ac.dot(c);
   p.set(9usize, *th[9] - (*th[6] * c.x + *th[7] * c.y + *th[8] * c.z) / s + cac);
   // Outside positive: the centroid of the points is inside
-  mut g = new DVec3(0.d, 0.d, 0.d);
+  var g = new DVec3(0.d, 0.d, 0.d);
   if quadricValue(&p, c, &mut g) > 0.d {
     i = 0usize;
     while i < 10usize { p.set(i, -*p[i]); i += 1usize; }
   }
-  mut f = Form.make(FormQuadric, p);
+  var f = Form.make(FormQuadric, p);
   measure(&mut f, pts, w);
   f;
 }
@@ -499,26 +499,26 @@ pub fn fitQuadric(pts &Array[Vec3], w &Array[f32]) Form {
 // eigenvalue counts as zero.
 pub fn quadricKind(f &Form, rel f64) &str {
   if f.kind != FormQuadric or not f.ok { return "other"; }
-  mut a = zeros(9usize);
+  var a = zeros(9usize);
   a.set(0usize, *f.params[0]); a.set(1usize, 0.5d * *f.params[3]); a.set(2usize, 0.5d * *f.params[4]);
   a.set(3usize, *a[1]); a.set(4usize, *f.params[1]); a.set(5usize, 0.5d * *f.params[5]);
   a.set(6usize, *a[2]); a.set(7usize, *a[5]); a.set(8usize, *f.params[2]);
-  mut vals = List[f64].empty();
-  mut vecs = List[f64].empty();
+  var vals = List[f64].empty();
+  var vecs = List[f64].empty();
   jacobiEigen(&mut a, 3usize, &mut vals, &mut vecs);
-  imm big = maxd(absd(*vals[0]), absd(*vals[2]));
-  mut pos = 0; mut neg = 0; mut zero = 0;
-  mut k = 0usize;
+  let big = maxd(absd(*vals[0]), absd(*vals[2]));
+  var pos = 0; var neg = 0; var zero = 0;
+  var k = 0usize;
   while k < 3usize {
     if absd(*vals[k]) <= rel * big { zero += 1; } elif *vals[k] > 0.d { pos += 1; } else { neg += 1; }
     k += 1usize;
   }
   if zero == 0 {
     // The constant, with the centre moved to the origin: zero means a cone
-    imm centre = formCenter(f);
-    mut g = new DVec3(0.d, 0.d, 0.d);
-    imm v = quadricValue(&f.params, DVec3.from(centre), &mut g);
-    imm scale = absd(*f.params[0]) + absd(*f.params[1]) + absd(*f.params[2]);
+    let centre = formCenter(f);
+    var g = new DVec3(0.d, 0.d, 0.d);
+    let v = quadricValue(&f.params, DVec3.from(centre), &mut g);
+    let scale = absd(*f.params[0]) + absd(*f.params[1]) + absd(*f.params[2]);
     if pos == 3 or neg == 3 { "ellipsoid"; }
     elif absd(v) <= rel * maxd(scale, 1.0e-300d) * (1.d + centre.length() * centre.length()) { "cone"; }
     elif (pos == 2 and v > 0.d) or (neg == 2 and v < 0.d) { "hyperboloid of one sheet"; }
@@ -534,16 +534,16 @@ pub fn quadricKind(f &Form, rel f64) &str {
 
 // The extents of the points along the unit direction d from the point o, and their mean distance from the line
 fn spanAlong(pts &Array[Vec3], w &Array[f32], o DVec3, d DVec3, tmin &mut f64, tmax &mut f64, meanR &mut f64) {
-  mut lo = 1.0e30d;
-  mut hi = -1.0e30d;
-  mut sr = 0.d;
-  mut tw = 0.d;
-  mut i = 0usize;
+  var lo = 1.0e30d;
+  var hi = -1.0e30d;
+  var sr = 0.d;
+  var tw = 0.d;
+  var i = 0usize;
   while i < pts.len {
-    imm wi = wt(w, i);
+    let wi = wt(w, i);
     if wi > 0.d {
-      imm v = DVec3.from(pts[i]) - o;
-      imm t = v.dot(d);
+      let v = DVec3.from(pts[i]) - o;
+      let t = v.dot(d);
       lo = mind(lo, t);
       hi = maxd(hi, t);
       sr = sr + wi * (v - d * t).length();
@@ -559,26 +559,26 @@ fn spanAlong(pts &Array[Vec3], w &Array[f32], o DVec3, d DVec3, tmin &mut f64, t
 // The cylinder (infinite, with the fitted span noted) nearest the points
 pub fn fitCylinder(pts &Array[Vec3], w &Array[f32]) Form {
   if countFitted(pts, w) < 7usize { return Form.failed(FormCylinder); }
-  imm c = meanOf(pts, w);
-  mut axes = List[DVec3].empty();
-  mut vars = List[f64].empty();
+  let c = meanOf(pts, w);
+  var axes = List[DVec3].empty();
+  var vars = List[f64].empty();
   principalAxes(pts, w, c, &mut axes, &mut vars);
-  mut best = Form.failed(FormCylinder);
-  mut k = 0usize;
+  var best = Form.failed(FormCylinder);
+  var k = 0usize;
   while k < 3usize {
-    imm d = *axes[k];
-    mut tmin = 0.d; mut tmax = 0.d; mut mr = 0.d;
+    let d = *axes[k];
+    var tmin = 0.d; var tmax = 0.d; var mr = 0.d;
     spanAlong(pts, w, c, d, &mut tmin, &mut tmax, &mut mr);
-    mut p = List[f64].empty();
+    var p = List[f64].empty();
     p.push(c.x); p.push(c.y); p.push(c.z);
     p.push(d.x); p.push(d.y); p.push(d.z);
     p.push(maxd(mr, 1.0e-9d)); p.push(tmin); p.push(tmax);
-    mut f = Form.make(FormCylinder, p);
+    var f = Form.make(FormCylinder, p);
     f.iterations = refine(FormCylinder, &mut f.params, &seq(0usize, 7usize), pts, w, 80u32);
     // Normalise the axis, put the point on the axis nearest the centroid, and note the span
-    imm dn = unitd(pv(&f.params, 3usize));
-    imm o = pv(&f.params, 0usize);
-    imm o2 = o + dn * (c - o).dot(dn);
+    let dn = unitd(pv(&f.params, 3usize));
+    let o = pv(&f.params, 0usize);
+    let o2 = o + dn * (c - o).dot(dn);
     spanAlong(pts, w, o2, dn, &mut tmin, &mut tmax, &mut mr);
     f.params.set(0usize, o2.x); f.params.set(1usize, o2.y); f.params.set(2usize, o2.z);
     f.params.set(3usize, dn.x); f.params.set(4usize, dn.y); f.params.set(5usize, dn.z);
@@ -593,27 +593,27 @@ pub fn fitCylinder(pts &Array[Vec3], w &Array[f32]) Form {
 // The capsule (a segment's neighbourhood, the points within a radius of it) nearest the points
 pub fn fitCapsule(pts &Array[Vec3], w &Array[f32]) Form {
   if countFitted(pts, w) < 8usize { return Form.failed(FormCapsule); }
-  imm c = meanOf(pts, w);
-  mut axes = List[DVec3].empty();
-  mut vars = List[f64].empty();
+  let c = meanOf(pts, w);
+  var axes = List[DVec3].empty();
+  var vars = List[f64].empty();
   principalAxes(pts, w, c, &mut axes, &mut vars);
-  mut best = Form.failed(FormCapsule);
-  mut k = 0usize;
+  var best = Form.failed(FormCapsule);
+  var k = 0usize;
   while k < 3usize {
-    imm d = *axes[k];
-    mut tmin = 0.d; mut tmax = 0.d; mut mr = 0.d;
+    let d = *axes[k];
+    var tmin = 0.d; var tmax = 0.d; var mr = 0.d;
     spanAlong(pts, w, c, d, &mut tmin, &mut tmax, &mut mr);
-    imm r0 = maxd(mr, 1.0e-9d);
-    imm mid = 0.5d * (tmin + tmax);
-    imm ta = if tmax - tmin > 2.d * r0 { tmin + r0; } else { mid; };
-    imm tb = if tmax - tmin > 2.d * r0 { tmax - r0; } else { mid; };
-    imm a = c + d * ta;
-    imm b = c + d * tb;
-    mut p = List[f64].empty();
+    let r0 = maxd(mr, 1.0e-9d);
+    let mid = 0.5d * (tmin + tmax);
+    let ta = if tmax - tmin > 2.d * r0 { tmin + r0; } else { mid; };
+    let tb = if tmax - tmin > 2.d * r0 { tmax - r0; } else { mid; };
+    let a = c + d * ta;
+    let b = c + d * tb;
+    var p = List[f64].empty();
     p.push(a.x); p.push(a.y); p.push(a.z);
     p.push(b.x); p.push(b.y); p.push(b.z);
     p.push(r0);
-    mut f = Form.make(FormCapsule, p);
+    var f = Form.make(FormCapsule, p);
     f.iterations = refine(FormCapsule, &mut f.params, &seq(0usize, 7usize), pts, w, 80u32);
     measure(&mut f, pts, w);
     if not best.ok or f.rms < best.rms { best = f; }

@@ -33,7 +33,7 @@ import sync use *;
 
 fn isPrime(n u64) bool {
   if n &lt; 2u64 { return false; }
-  mut d = 2u64;
+  var d = 2u64;
   while d * d &lt;= n {
     if n % d == 0u64 { return false; }
     d += 1u64;
@@ -48,9 +48,9 @@ struct Job {
   pub out Sender[u64];
 }
 
-fn count(mut j Job) void {
-  mut found = 0u64;
-  mut n = j.from;
+fn count(var j Job) void {
+  var found = 0u64;
+  var n = j.from;
   while n &lt; j.to {
     if isPrime(n) { found += 1u64; }
     n += 1u64;
@@ -59,20 +59,20 @@ fn count(mut j Job) void {
 }
 
 fn main() {
-  mut tx Sender[u64];
-  mut rx Receiver[u64];
+  var tx Sender[u64];
+  var rx Receiver[u64];
   tx, rx = Channel[u64].make();
 
   // Four OS threads, each counting the primes in a quarter of a million
-  imm a = thread.start(new Job(0u64, 250000u64, tx.clone()), &amp;count);
-  imm b = thread.start(new Job(250000u64, 500000u64, tx.clone()), &amp;count);
-  imm c = thread.start(new Job(500000u64, 750000u64, tx.clone()), &amp;count);
-  imm d = thread.start(new Job(750000u64, 1000000u64, tx.clone()), &amp;count);
+  let a = thread.start(new Job(0u64, 250000u64, tx.clone()), &amp;count);
+  let b = thread.start(new Job(250000u64, 500000u64, tx.clone()), &amp;count);
+  let c = thread.start(new Job(500000u64, 750000u64, tx.clone()), &amp;count);
+  let d = thread.start(new Job(750000u64, 1000000u64, tx.clone()), &amp;count);
 
-  mut total = 0u64;
+  var total = 0u64;
   each i in 1 .. 4 {
     match rx.recv() {                    // waits for the next count
-      case imm n Some { total += n; }
+      case let n Some { total += n; }
       else {}
     }
   }
@@ -103,7 +103,7 @@ import thread;
 fn triangle(n i64) i64 { ... }
 
 fn main() {
-  imm t = thread.start(100i64, &amp;triangle);  // a new thread runs triangle(100)
+  let t = thread.start(100i64, &amp;triangle);  // a new thread runs triangle(100)
   ...                                        // while main goes on
   imm total = t.join();                      // wait for it: 5050
 }
@@ -263,18 +263,18 @@ fn main() {
 import sync use *;
 
 fn main() {
-  mut tx Sender[Job];
-  mut rx Receiver[Job];
+  var tx Sender[Job];
+  var rx Receiver[Job];
   tx, rx = Channel[Job].make();   // the two ends; or Channel[Job].bounded(64)
-  imm tx2 = tx.clone();           // a second sender, said out loud
+  let tx2 = tx.clone();           // a second sender, said out loud
   tx &lt;- job;                      // send: waits only while a bounded channel is full
   match rx.recv() {               // waits while it is empty
-    case imm j Some {run(j);}
+    case let j Some {run(j);}
     case is None[Job] {}          // closed, and every value taken
   }
 
-  mut solo SoloSender[Job];
-  mut rx2 Receiver[Job];
+  var solo SoloSender[Job];
+  var rx2 Receiver[Job];
   solo, rx2 = Channel[Job].spsc(1024);  // one sender, no clone
   solo &lt;- job;
 }
@@ -323,18 +323,18 @@ import sync use *;
 
 // The answering thread: takes the sending end, sends one reply
 fn answer(tx OneshotSender[u64]) u64 {
-  mut t = tx;
+  var t = tx;
   t.send(42u64);
   0u64;
 }
 
 fn main() {
-  mut tx OneshotSender[u64];
-  mut rx OneshotReceiver[u64];
+  var tx OneshotSender[u64];
+  var rx OneshotReceiver[u64];
   tx, rx = Oneshot[u64].make();
-  imm t = thread.start(tx, &amp;answer);     // the sending end moves to the answering thread
+  let t = thread.start(tx, &amp;answer);     // the sending end moves to the answering thread
   match rx.recv() {                      // waits for the one value
-    case imm v Some {printUInt(v); printStr("\n");}
+    case let v Some {printUInt(v); printStr("\n");}
     case is None[u64] {printStr("no reply\n");}
   }
   t.join();
@@ -362,40 +362,40 @@ import sync use *;
 fn main() {
   // A second send hands its value back, and a receive after the take finds nothing
   {
-    mut tx OneshotSender[u64];
-    mut rx OneshotReceiver[u64];
+    var tx OneshotSender[u64];
+    var rx OneshotReceiver[u64];
     tx, rx = Oneshot[u64].make();
     tx.send(5u64);
     match tx.send(6u64) {
-      case imm back Some {printStr("handed back "); printUInt(back); printStr("\n");}
+      case let back Some {printStr("handed back "); printUInt(back); printStr("\n");}
       case is None[u64] {}
     }
     match rx.recv() {
-      case imm v Some {printStr("received "); printUInt(v); printStr("\n");}
+      case let v Some {printStr("received "); printUInt(v); printStr("\n");}
       case is None[u64] {}
     }
     match rx.recv() {
-      case imm v Some {}
+      case let v Some {}
       case is None[u64] {printStr("nothing more\n");}
     }
   }
   // The sender going without sending: the receiver is told at once
   {
-    mut rx OneshotReceiver[u64];
+    var rx OneshotReceiver[u64];
     {
-      mut tx OneshotSender[u64];
+      var tx OneshotSender[u64];
       tx, rx = Oneshot[u64].make();
     }
     match rx.recv() {
-      case imm v Some {}
+      case let v Some {}
       case is None[u64] {printStr("the sender went\n");}
     }
   }
   // The receiver going: a send would hand its value back
   {
-    mut tx OneshotSender[u64];
+    var tx OneshotSender[u64];
     {
-      mut rx OneshotReceiver[u64];
+      var rx OneshotReceiver[u64];
       tx, rx = Oneshot[u64].make();
     }
     printStr(if tx.isClosed() {"the receiver went\n";} else {"?\n";});

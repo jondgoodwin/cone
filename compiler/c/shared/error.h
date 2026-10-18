@@ -342,8 +342,8 @@ enum ErrorCode {
     ErrorAtomicOrder = 1178,    // An ordering the operation forbids: a load's Release or AcqRel, a store's Acquire or AcqRel, a compareSwap failure's Release or AcqRel or one stronger than its success
 
     // '@threadlocal' globals
-    ErrorThreadLocalPlace = 1179, // '@threadlocal' anywhere but after a module global's permission: on a local, a static, a parameter, a field, a module trait's global, a function or a type, or before the permission
-    ErrorThreadLocalImm = 1180, // '@threadlocal' on an 'imm' global: a copy per thread of a value no thread can change is the same as one copy
+    ErrorThreadLocalPlace = 1179, // '@threadlocal' anywhere but after a module global's 'let' or 'var': on a local, a static, a parameter, a field, a module trait's global, a function or a type, or before the word
+    ErrorThreadLocalImm = 1180, // '@threadlocal' on a 'let' global: a copy per thread of a value no thread can change is the same as one copy
     ErrorThreadLocalInit = 1181, // A '@threadlocal' global, not 'extern', with no initial value: every thread's copy starts from it, and a module's 'init' runs on one thread
     ErrorThreadLocalFinal = 1182, // A '@threadlocal' global whose type needs finalizing: nothing yet runs a finalizer as a thread ends
 
@@ -417,7 +417,7 @@ enum ErrorCode {
     ErrorEntryPlace = 1223,     // 'n of x', 'fill x' or 'k: v' where no '<-' takes it apart: inside a tuple that is itself appended
 
     // The retired 'into' operator (parser/parseexpr.c)
-    ErrorInto = 1224,           // 'x into T': a value converts with 'T.from(x)'; a reference narrows to a variant with a check, by a 'match' or 'if imm x &Variant = &value'
+    ErrorInto = 1224,           // 'x into T': a value converts with 'T.from(x)'; a reference narrows to a variant with a check, by a 'match' or 'if let x &Variant = &value'
 
     // Construction, continued (ir/exp/assign.c)
     ErrorInitRecurse = 1225,    // In a declared init, '*self = new T(...)' whose construction selects that same init: self is filled by the fields' names, 'new Point(x: 1, y: 2)'
@@ -490,8 +490,8 @@ enum ErrorCode {
 
     // What a GPU's invocations share: '@workgroup' globals (parser/parsetype.c,
     // ir/stmt/vardcl.c) and atomics (genllvm/genlgpusync.c)
-    ErrorWorkgroupPlace = 1265, // '@workgroup' anywhere but after a module global's permission, or beside '@threadlocal'
-    ErrorWorkgroupImm = 1266,   // '@workgroup' on an 'imm' global: a workgroup's copy is there for its invocations to change
+    ErrorWorkgroupPlace = 1265, // '@workgroup' anywhere but after a module global's 'let' or 'var', or beside '@threadlocal'
+    ErrorWorkgroupImm = 1266,   // '@workgroup' on a 'let' global: a workgroup's copy is there for its invocations to change
     ErrorWorkgroupInit = 1267,  // A '@workgroup' global given an initial value: a workgroup's copy starts undefined, and nothing writes a value into it
     ErrorWorkgroupData = 1268,  // What a '@workgroup' global holds: anything but 32-bit numbers, their atomics, and structs and fixed arrays of them
     ErrorGpuAtomicPlace = 1269, // In a kernel, an atomic operation on memory invocations do not share: a local, or a global not '@workgroup'
@@ -647,7 +647,7 @@ enum ErrorCode {
     ErrorMatchUnreachable = 1418,   // A case or an 'else' of a match that can never run: every value it matches an earlier case matches already (a variant or a combination of columns named twice, a case after the cases cover everything)
     ErrorMatchColumn = 1419,        // A misuse of the columns of 'match a, b': '_' in a match of one value, a row with more or fewer patterns than the match has values, or a pattern that binds a variable in a column
     ErrorMatchUsing = 1423,         // A match with a 'using' pattern that does not end in 'else': what a function's pattern matches only running says, so the writer says the rest
-    ErrorUsingForm = 1424,          // A 'using' pattern written other than 'case imm x using f(args)', 'case using f(args)' or 'imm x using f(args) = value' (not a call, a binding in a column, a binding outside 'if' and let-else with no 'else'), or whose function gives neither an Option to bind nor a bool to test
+    ErrorUsingForm = 1424,          // A 'using' pattern written other than 'case let x using f(args)', 'case using f(args)' or 'let x using f(args) = value' (not a call, a binding in a column, a binding outside 'if' and let-else with no 'else'), or whose function gives neither an Option to bind nor a bool to test
 
     // A type that gets its memory from a region (ir/types/struct.c, ir/exp/typelit.c)
     ErrorRegionMark = 1420, // A type declaring CarriesRegion that declares no init, or an init whose last parameter is not 'region *MemRegion'
@@ -670,7 +670,7 @@ enum ErrorCode {
     // Flow typing and let-else (ir/exp/narrow.c, ir/exp/if.c)
     ErrorNarrowStale = 1460,    // A member of one variant named on a name that was narrowed to it and has since been changed: the message names the change
     ErrorNarrowLoop = 1461,     // A name narrowed to a variant from before a loop, used in the loop, which changes it later and comes back to the use
-    ErrorLetElse = 1462,        // The 'else' of 'imm n Ok = r else ...' falls through to the binding: it must leave with 'return', 'break', 'continue' or a call that does not return
+    ErrorLetElse = 1462,        // The 'else' of 'let n Ok = r else ...' falls through to the binding: it must leave with 'return', 'break', 'continue' or a call that does not return
     ErrorOwnerNarrow = 1463,    // An owner ('Rc[mut, Shape]') narrowed to a variant whose value would sit at another offset in its allocation: the address would have to change
 
     // Trait patterns on a closed family (ir/exp/cast.c)
@@ -703,6 +703,8 @@ enum ErrorCode {
 
     // 'mut' on an owner of a region with one owner per value (ir/types/permission.c)
     ErrorSoleOwnerMut = 1507,   // 'mut' written on a reference of a region declaring 'Move' (`Uni[mut, T]`, `new Uni[mut, T](...)`, a `Uni[mut, Trait]`): 'mut' is shared mutable, and a region whose values have one owner shares nothing, so the permission means nothing on it. `Uni[T]` is the normal spelling; `imm` stays legal as a promise the value never changes
+
+    ErrorDclWord = 1508,        // 'imm' or 'mut' where a declaration's word is expected (`imm n = 3;`, `mut n i32;`, `pub imm id i32`, `fn f(mut self)`, `case imm x Some`): they are the permissions of a reference, and a declaration starts with 'let' (a name that never changes) or 'var' (a name that may be given a new value). The word is read as the one that replaces it, so the declaration is checked as written
 
     // Warnings
     WarnCode = 3000,

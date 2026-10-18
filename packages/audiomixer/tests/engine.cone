@@ -19,10 +19,10 @@ fn near(got f32, want f32, within f32, label &Array[u8]) bool {
 }
 
 fn sine(freq f32, seconds f32) Sound {
-  mut s = List[f32].empty();
-  mut o = Osc.make(WAVE_SINE);
-  imm n = usize.from(seconds * R);
-  mut i = 0usize;
+  var s = List[f32].empty();
+  var o = Osc.make(WAVE_SINE);
+  let n = usize.from(seconds * R);
+  var i = 0usize;
   while i < n { s.push(o.next(freq, R)); i = i + 1usize; }
   new Sound(48000u32, 1u32, s);
 }
@@ -30,11 +30,11 @@ fn sine(freq f32, seconds f32) Sound {
 // The audio thread: render 480-frame blocks (10 ms) until the listener the
 // game parks at x = 123 appears, and answer how many plays began and were refused
 fn audioThread(rx Receiver[Cmd]) u64 {
-  mut e = Engine.make(R, 8usize, rx);
-  mut buf = List[f32].empty();
-  mut i = 0usize;
+  var e = Engine.make(R, 8usize, rx);
+  var buf = List[f32].empty();
+  var i = 0usize;
   while i < 960usize { buf.push(0.); i = i + 1usize; }
-  mut spins = 0u32;
+  var spins = 0u32;
   while e.mixer.listener.position.x != 123. and spins < 2000000u32 {
     e.render(buf.viewMut(), 480usize);
     spins = spins + 1u32;
@@ -48,18 +48,18 @@ fn audioThread(rx Receiver[Cmd]) u64 {
 fn main() i32 {
   // -------- one thread --------
   {
-    mut c Control;
-    mut rx Receiver[Cmd];
+    var c Control;
+    var rx Receiver[Cmd];
     c, rx = commandQueue(64u64);
-    mut e = Engine.make(R, 8usize, rx);
-    imm tone = c.addSound(sine(440., 2.));
-    imm id = c.play(tone, BUS_EFFECTS, 1., 1., 0., false, 0i32);
+    var e = Engine.make(R, 8usize, rx);
+    let tone = c.addSound(sine(440., 2.));
+    let id = c.play(tone, BUS_EFFECTS, 1., 1., 0., false, 0i32);
     expectUInt(u64.from(id), 1u64, "the first voice id is 1");
-    mut buf = List[f32].empty();
-    mut i = 0usize;
+    var buf = List[f32].empty();
+    var i = 0usize;
     while i < 24000usize { buf.push(0.); i = i + 1usize; }
     e.render(buf.viewMut(), 12000usize);
-    mut left = List[f32].empty();
+    var left = List[f32].empty();
     i = 0usize;
     while i < 12000usize { left.push(*buf[i * 2usize]); i = i + 1usize; }
     near(zeroCrossingFreq(left.view(), R), 440., 0.1, "a sound added and played through the queue");
@@ -67,7 +67,7 @@ fn main() i32 {
     c.setBusGain(BUS_MASTER, 0.5, 0.);
     e.render(buf.viewMut(), 12000usize);
     i = 0usize;
-    mut left2 = List[f32].empty();
+    var left2 = List[f32].empty();
     while i < 12000usize { left2.push(*buf[i * 2usize]); i = i + 1usize; }
     near(zeroCrossingFreq(left2.view(), R), 880., 0.4, "pitch set through the queue");
     near(rms(left2.view()), 0.25, 0.005, "master gain through the queue");
@@ -76,7 +76,7 @@ fn main() i32 {
     expect(e.mixer.activeVoices() == 0usize, "a stop through the queue");
     expectUInt(u64.from(c.refused), 0u64, "nothing refused");
     // ids count up; a synth id too
-    imm w = c.playSynth(SYNTH_WIND, 5u32, BUS_AMBIENCE, 1., 0.5, 0., 0i32);
+    let w = c.playSynth(SYNTH_WIND, 5u32, BUS_AMBIENCE, 1., 0.5, 0., 0i32);
     expectUInt(u64.from(w), 2u64, "ids go on from 2");
     e.render(buf.viewMut(), 4800usize);
     expect(e.mixer.activeVoices() == 1usize, "the synth plays");
@@ -87,15 +87,15 @@ fn main() i32 {
 
   // -------- a full ring refuses and counts, never waits --------
   {
-    mut c Control;
-    mut rx Receiver[Cmd];
+    var c Control;
+    var rx Receiver[Cmd];
     c, rx = commandQueue(4u64);
-    mut k = 0;
+    var k = 0;
     while k < 20 { c.setPan(1u32, 0.); k = k + 1; }
     expectUInt(u64.from(c.refused), 16u64, "a ring of 4 takes 4 of 20 commands and refuses 16");
-    mut e = Engine.make(R, 4usize, rx);
-    mut buf = List[f32].empty();
-    mut i = 0usize;
+    var e = Engine.make(R, 4usize, rx);
+    var buf = List[f32].empty();
+    var i = 0usize;
     while i < 960usize { buf.push(0.); i = i + 1usize; }
     e.render(buf.viewMut(), 480usize);
     c.setPan(1u32, 0.);
@@ -104,17 +104,17 @@ fn main() i32 {
 
   // -------- two threads --------
   {
-    mut c Control;
-    mut rx Receiver[Cmd];
+    var c Control;
+    var rx Receiver[Cmd];
     c, rx = commandQueue(64u64);
     // a short sound so voices end on their own: 5 ms
-    imm blip = c.addSound(sine(1000., 0.005));
-    imm audio = thread.start(rx, &audioThread);
-    mut sent = 0u32;
-    mut lis = Listener.make();
+    let blip = c.addSound(sine(1000., 0.005));
+    let audio = thread.start(rx, &audioThread);
+    var sent = 0u32;
+    var lis = Listener.make();
     while sent < 600u32 {
       // retry until the ring has room: the test, unlike a game, wants every one
-      mut ok = false;
+      var ok = false;
       while !ok {
         ok = c.send(Cmd.play(sent + 100u32, blip, BUS_EFFECTS, 0.1, 1., 0., false, i32.from(sent % 4u32), 0.));
         if !ok { thread.yieldNow(); }
@@ -122,14 +122,14 @@ fn main() i32 {
       sent = sent + 1u32;
     }
     lis.position = new Vec3(123., 0., 0.);
-    mut ok = false;
+    var ok = false;
     while !ok {
       ok = c.send(Cmd.listener(&lis));
       if !ok { thread.yieldNow(); }
     }
-    imm answer = audio.join();
-    imm began = answer / 1000000u64;
-    imm dropped = (answer / 1000u64) % 1000u64;
+    let answer = audio.join();
+    let began = answer / 1000000u64;
+    let dropped = (answer / 1000u64) % 1000u64;
     expectUInt(began + dropped, 600u64, "every one of 600 plays arrived once: began plus dropped");
     expectUInt(answer % 1000u64, 0u64, "and all the blips have ended");
   }

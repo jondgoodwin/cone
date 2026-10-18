@@ -351,7 +351,7 @@ pub struct Connection is Move {
   // sending. More than readCredit() is a program error
   pub fn handleInput(self &mut, buf IoBuf, at Instant, file &Array[u8] = srcFile(), line u32 = srcLine()) {
     now = at;
-    imm n = buf.len();
+    let n = buf.len();
     if n == 0usize {
       eof = true;
       return;
@@ -387,10 +387,10 @@ pub struct Connection is Move {
       expectArmed = true;
       armExpect = false;
     }
-    mut b = IoBuf.empty();
+    var b = IoBuf.empty();
     if out.len() > 0usize {
       match out.popFront() {
-        case mut s Some {b <=> s;}
+        case var s Some {b <=> s;}
         case is None[IoBuf] {}
       }
     } elif tail.len() > 0usize and not holding {
@@ -403,8 +403,8 @@ pub struct Connection is Move {
   // The one Instant the driver must wake at and call handleTimeout, or None
   pub fn pollTimeout(self &) Option[Instant] {
     if closed or failed {return None;}
-    mut any = false;
-    mut best = Instant.fromNanos(0x7FFFFFFFFFFFFFFFi64);
+    var any = false;
+    var best = Instant.fromNanos(0x7FFFFFFFFFFFFFFFi64);
     if headArmed {
       any = true;
       if headAt < best {best = headAt;}
@@ -541,7 +541,7 @@ pub struct Connection is Move {
 
   // The consumer is done with n bytes of body the Data events handed out
   pub fn release(self &mut, n usize) {
-    imm wasBlocked = self.blocked();
+    let wasBlocked = self.blocked();
     outstanding = if n >= outstanding {0usize;} else {outstanding - n;};
     if wasBlocked and not self.blocked() and self.inBody() {
       bodyAt = now + cfg.bodyTimeout;
@@ -554,7 +554,7 @@ pub struct Connection is Move {
 
   // How many more bytes sendData takes before the watermark refuses
   pub fn writeRoom(self &) usize {
-    imm q = self.queued();
+    let q = self.queued();
     if q >= cfg.writeWatermark {0usize;} else {cfg.writeWatermark - q;};
   }
 
@@ -571,7 +571,7 @@ pub struct Connection is Move {
   pub fn sendRequest(self &mut, head RequestHead, body BodyLength, file &Array[u8] = srcFile(), line u32 = srcLine()) {
     if not clientRole {panic("http1: sendRequest on a server's connection", file, line);}
     if not self.canSendRequest() {panic("http1: sendRequest while an exchange is in progress or the connection is closed (no pipelining)", file, line);}
-    imm name = head.methodName();
+    let name = head.methodName();
     if not isToken(name) {panic("http1: the request's method is not a token", file, line);}
     if head.method == Method.Connect {panic("http1: CONNECT is not supported", file, line);}
     if not isTargetText(head.target.view()) {panic("http1: the request's target is empty or holds a space or a control character", file, line);}
@@ -624,13 +624,13 @@ pub struct Connection is Move {
     if clientRole {panic("http1: sendResponse on a client's connection", file, line);}
     if closed or failed {return;}
     if not requestSeen or ws != WriteState.Idle {panic("http1: sendResponse with no request awaiting one", file, line);}
-    imm status = head.status;
+    let status = head.status;
     if status < 200u16 or status > 599u16 {panic("http1: sendResponse takes a final status, 200 to 599: a 1xx goes by sendInterim", file, line);}
     if head.headers.has("Content-Length") or head.headers.has("Transfer-Encoding") {
       panic("http1: framing fields are the core's to write: say the body's length with a BodyLength", file, line);
     }
     requestSeen = false;
-    imm noBody = answeringHead or status == 204u16 or status == 304u16;
+    let noBody = answeringHead or status == 204u16 or status == 304u16;
     if head.headers.hasToken("Connection", "close") {keepAlive = false;}
     if not noBody and body.isUnsized() and peer10 {keepAlive = false;}
     self.putStatusLine(status);
@@ -687,10 +687,10 @@ pub struct Connection is Move {
     if ws != WriteState.Sized and ws != WriteState.Chunked and ws != WriteState.UntilClose {
       panic("http1: sendData with no body being sent", file, line);
     }
-    imm n = buf.len();
+    let n = buf.len();
     if n == 0usize {return None;}
     if ws == WriteState.Sized and u64.from(n) > wremaining {panic("http1: sendData past the body's Content-Length", file, line);}
-    imm q = self.queued();
+    let q = self.queued();
     if q > 0usize and q + n > cfg.writeWatermark {return Some[IoBuf](buf);}
     if ws == WriteState.Chunked {
       self.putNum(u64.from(n), 16u64);
@@ -772,7 +772,7 @@ pub struct Connection is Move {
   // The failure, moved out, once
   fn failedEvent(self &mut) Event {
     failureOut = true;
-    mut e = HttpError.empty();
+    var e = HttpError.empty();
     e <=> failure;
     Event.Failed(e);
   }
@@ -793,7 +793,7 @@ pub struct Connection is Move {
     idleArmed = false;
     expectArmed = false;
     holding = false;
-    mut h = Chain.make(noBound);
+    var h = Chain.make(noBound);
     h <=> held;
     if not clientRole and cfg.autoErrorResponse and failure.status != 0u16 and ws == WriteState.Idle and
         failure.kind != ErrorKind.Closed {
@@ -813,7 +813,7 @@ pub struct Connection is Move {
   fn gatherHead(self &mut) usize {
     if headBuf.capacity() == 0usize {
       match pool.take(cfg.maxHeadBytes) {
-        case mut s Some {headBuf <=> s;}
+        case var s Some {headBuf <=> s;}
         case is None[IoBuf] {}
       }
       if headBuf.capacity() == 0usize {
@@ -822,19 +822,19 @@ pub struct Connection is Move {
       }
       headScan = 0usize;
     }
-    imm have = headBuf.len();
+    let have = headBuf.len();
     if input.len() > have and have < cfg.maxHeadBytes {
-      imm room = headBuf.spare();
-      imm n = input.copyOut(have, room);
+      let room = headBuf.spare();
+      let n = input.copyOut(have, room);
       headBuf.setLen(have + n);
     }
-    imm v = headBuf.view();
-    imm lim = if v.len < cfg.maxHeadBytes {v.len;} else {cfg.maxHeadBytes;};
-    mut i = headScan;
+    let v = headBuf.view();
+    let lim = if v.len < cfg.maxHeadBytes {v.len;} else {cfg.maxHeadBytes;};
+    var i = headScan;
     while i < lim {
-      imm c = v[i];
+      let c = v[i];
       if c == '\n' {
-        imm bare = i == 0usize or v[i - 1usize] != '\r';
+        let bare = i == 0usize or v[i - 1usize] != '\r';
         if bare and not clientRole {
           self.fail(ErrorKind.Malformed, 400u16, "a line ends in an LF without its CR");
           return 0usize;
@@ -842,7 +842,7 @@ pub struct Connection is Move {
         if clientRole {
           // A response's line may end in an LF alone (RFC 9112, 2.2): its
           // head ends at a line with nothing before its CR or LF
-          imm lineAt = if bare {i;} else {i - 1usize;};
+          let lineAt = if bare {i;} else {i - 1usize;};
           if lineAt == 0usize or v[lineAt - 1usize] == '\n' {
             headScan = 0usize;
             return i + 1usize;
@@ -868,13 +868,13 @@ pub struct Connection is Move {
   // goes home
   fn consumeHead(self &mut, len usize) {
     input.advance(len);
-    mut b = IoBuf.empty();
+    var b = IoBuf.empty();
     b <=> headBuf;
     headScan = 0usize;
   }
 
   fn readHead(self &mut) Event {
-    imm len = self.gatherHead();
+    let len = self.gatherHead();
     if failed {return self.failedEvent();}
     if len == 0usize {
       if eof {
@@ -891,14 +891,14 @@ pub struct Connection is Move {
   // A server's request head, gathered: parsed, checked, and its body's
   // framing decided
   fn requestHead(self &mut, len usize) Event {
-    mut head = RequestHead.empty();
-    mut err = HttpError.empty();
-    mut host = String.empty();
-    mut hosts = 0usize;
-    mut ok = false;
+    var head = RequestHead.empty();
+    var err = HttpError.empty();
+    var host = String.empty();
+    var hosts = 0usize;
+    var ok = false;
     {
-      imm h = headBuf.view();
-      imm first = lineEnd(h, 0usize);
+      let h = headBuf.view();
+      let first = lineEnd(h, 0usize);
       if first > cfg.maxLineBytes {
         bad(&mut err, ErrorKind.TooLarge, 414u16, "the request line is longer than maxLineBytes");
       } else {
@@ -908,13 +908,13 @@ pub struct Connection is Move {
     }
     self.consumeHead(len);
     if ok {
-      imm http10 = head.version == Version.Http10;
+      let http10 = head.version == Version.Http10;
       if hosts > 1usize {ok = bad(&mut err, ErrorKind.Malformed, 400u16, "the request has more than one Host");}
       elif hosts == 0usize and not http10 {ok = bad(&mut err, ErrorKind.Malformed, 400u16, "an HTTP/1.1 request has no Host");}
       elif head.method == Method.Connect {ok = bad(&mut err, ErrorKind.Unsupported, 501u16, "CONNECT is not supported");}
     }
-    mut mode = 0u32;
-    mut n = 0u64;
+    var mode = 0u32;
+    var n = 0u64;
     if ok {ok = framingOf(&head.headers, true, head.version == Version.Http10, &mut mode, &mut n, &mut err);}
     if not ok {
       self.failWith(err);
@@ -926,21 +926,21 @@ pub struct Connection is Move {
     answeringHead = head.method == Method.Head;
     requestSeen = true;
     sawBytes = false;
-    imm body = self.startBody(mode, n);
+    let body = self.startBody(mode, n);
     Event.Request(head, body);
   }
 
   // A client's response head, gathered: an interim one, or the final one
   // with its body's framing decided
   fn responseHead(self &mut, len usize) Event {
-    mut head = ResponseHead.empty();
-    mut err = HttpError.empty();
-    mut host = String.empty();
-    mut hosts = 0usize;
-    mut ok = false;
+    var head = ResponseHead.empty();
+    var err = HttpError.empty();
+    var host = String.empty();
+    var hosts = 0usize;
+    var ok = false;
     {
-      imm h = headBuf.view();
-      imm first = lineEnd(h, 0usize);
+      let h = headBuf.view();
+      let first = lineEnd(h, 0usize);
       if first > cfg.maxLineBytes {
         bad(&mut err, ErrorKind.TooLarge, 0u16, "the status line is longer than maxLineBytes");
       } else {
@@ -950,8 +950,8 @@ pub struct Connection is Move {
     }
     self.consumeHead(len);
     if ok and head.status == 101u16 {ok = bad(&mut err, ErrorKind.Unsupported, 0u16, "101 Switching Protocols: upgrades are not supported");}
-    mut mode = 0u32;
-    mut n = 0u64;
+    var mode = 0u32;
+    var n = 0u64;
     if ok {ok = framingOf(&head.headers, false, head.version == Version.Http10, &mut mode, &mut n, &mut err);}
     if not ok {
       self.failWith(err);
@@ -978,7 +978,7 @@ pub struct Connection is Move {
       // A final answer before the body was sent: it never will be
       holding = false;
       expectArmed = false;
-      mut h = Chain.make(noBound);
+      var h = Chain.make(noBound);
       h <=> held;
       self.dropTail();
       abandoned = true;
@@ -992,7 +992,7 @@ pub struct Connection is Move {
     if head.version == Version.Http10 or head.headers.hasToken("Connection", "close") or mode == frameClose {
       keepAlive = false;
     }
-    imm body = self.startBody(mode, n);
+    let body = self.startBody(mode, n);
     Event.Response(head, body);
   }
 
@@ -1022,36 +1022,36 @@ pub struct Connection is Move {
   // the input moved out where it lies wholly within the body, or the bytes
   // copied into a buffer of their own where it does not
   fn deliver(self &mut) Event {
-    imm avail = u64.from(input.len());
+    let avail = u64.from(input.len());
     if avail == 0u64 {
       if eof {return self.closedMidBody();}
       return Event.NeedData;
     }
     if self.blocked() {return Event.Paused;}
-    mut n = avail;
+    var n = avail;
     if rs != ReadState.UntilClose and remaining < n {n = remaining;}
-    mut buf = IoBuf.empty();
+    var buf = IoBuf.empty();
     if u64.from(input.firstLen()) <= n {
       match input.popFront() {
-        case mut s Some {buf <=> s;}
+        case var s Some {buf <=> s;}
         case is None[IoBuf] {}
       }
     } else {
-      imm want = if n > u64.from(maxCopy) {maxCopy;} else {usize.from(n);};
+      let want = if n > u64.from(maxCopy) {maxCopy;} else {usize.from(n);};
       match pool.take(want) {
-        case mut s Some {buf <=> s;}
+        case var s Some {buf <=> s;}
         case is None[IoBuf] {}
       }
       if buf.capacity() == 0usize {
         self.fail(ErrorKind.TooLarge, 503u16, "the buffer pool refused a buffer for a body");
         return self.failedEvent();
       }
-      imm room = buf.spare();
-      imm k = input.copyOut(0usize, &mut room[0usize ..< want]);
+      let room = buf.spare();
+      let k = input.copyOut(0usize, &mut room[0usize ..< want]);
       buf.setLen(k);
       input.advance(k);
     }
-    imm got = buf.len();
+    let got = buf.len();
     outstanding = outstanding + got;
     if rs != ReadState.UntilClose {remaining = remaining - u64.from(got);}
     Event.Data(buf);
@@ -1060,12 +1060,12 @@ pub struct Connection is Move {
   // A chunk's size line: true once read (the state moved on), false when it
   // has not all arrived or the connection failed
   fn chunkSize(self &mut) bool {
-    mut at = 0usize;
-    mut found = false;
-    mut skip = 2usize;              // the line's end: CRLF, or (a client's) an LF alone
+    var at = 0usize;
+    var found = false;
+    var skip = 2usize;              // the line's end: CRLF, or (a client's) an LF alone
     if clientRole {
       match input.findByte('\n') {
-        case imm p Some {
+        case let p Some {
           at = p;
           found = true;
           skip = 1usize;
@@ -1078,7 +1078,7 @@ pub struct Connection is Move {
       }
     } else {
       match input.find("\r\n") {
-        case imm p Some {
+        case let p Some {
           at = p;
           found = true;
         }
@@ -1087,9 +1087,9 @@ pub struct Connection is Move {
     }
     // A bare CR before the line's end (or before what has arrived of it) is
     // refused at once, and so, in a request, is a bare LF
-    imm upTo = if found {at;} else {input.len();};
+    let upTo = if found {at;} else {input.len();};
     match input.findByte('\n') {
-      case imm p Some {
+      case let p Some {
         if p < upTo {
           self.fail(ErrorKind.Malformed, 400u16, "a chunk's size line ends in an LF without its CR");
           return false;
@@ -1098,7 +1098,7 @@ pub struct Connection is Move {
       case is None[usize] {}
     }
     match input.findByte('\r') {
-      case imm p Some {
+      case let p Some {
         if p < upTo and p + 1usize < input.len() {
           self.fail(ErrorKind.Malformed, 400u16, "a CR in a chunk's size line is not followed by its LF");
           return false;
@@ -1118,27 +1118,27 @@ pub struct Connection is Move {
       self.fail(ErrorKind.TooLarge, 400u16, "a chunk's size line is longer than maxChunkLineBytes");
       return false;
     }
-    mut size = 0u64;
-    mut err = HttpError.empty();
-    mut ok = false;
-    mut copied = false;
+    var size = 0u64;
+    var err = HttpError.empty();
+    var ok = false;
+    var copied = false;
     match input.contiguous(0usize, at) {
-      case imm s Some {ok = parseChunkLine(s, &cfg, &mut size, &mut err);}
+      case let s Some {ok = parseChunkLine(s, &cfg, &mut size, &mut err);}
       case is None[&Array[u8]] {copied = true;}
     }
     if copied {
       // The line lies across segments: copy it out to read it
-      mut tmp = IoBuf.empty();
+      var tmp = IoBuf.empty();
       match pool.take(at + 1usize) {
-        case mut s Some {tmp <=> s;}
+        case var s Some {tmp <=> s;}
         case is None[IoBuf] {}
       }
       if tmp.capacity() == 0usize {
         self.fail(ErrorKind.TooLarge, 503u16, "the buffer pool refused a buffer for a chunk's size line");
         return false;
       }
-      imm room = tmp.spare();
-      imm k = input.copyOut(0usize, &mut room[0usize ..< at]);
+      let room = tmp.spare();
+      let k = input.copyOut(0usize, &mut room[0usize ..< at]);
       tmp.setLen(k);
       ok = parseChunkLine(tmp.view(), &cfg, &mut size, &mut err);
     }
@@ -1170,19 +1170,19 @@ pub struct Connection is Move {
       input.advance(2usize);
       return self.endMessage(Headers.empty());
     }
-    imm len = self.gatherHead();
+    let len = self.gatherHead();
     if failed {return self.failedEvent();}
     if len == 0usize {
       if eof {return self.closedMidBody();}
       return Event.NeedData;
     }
-    mut trailers = Headers.empty();
-    mut err = HttpError.empty();
-    mut host = String.empty();
-    mut hosts = 0usize;
-    mut ok = false;
+    var trailers = Headers.empty();
+    var err = HttpError.empty();
+    var host = String.empty();
+    var hosts = 0usize;
+    var ok = false;
     {
-      imm h = headBuf.view();
+      let h = headBuf.view();
       ok = parseFields(h, 0usize, &cfg, not clientRole, false, &mut trailers, &mut host, &mut hosts, &mut err);
     }
     self.consumeHead(len);
@@ -1203,7 +1203,7 @@ pub struct Connection is Move {
       keepAlive = false;
       ws = WriteState.Done;
       holding = false;
-      mut h = Chain.make(noBound);
+      var h = Chain.make(noBound);
       h <=> held;
     }
     self.endExchange();
@@ -1249,12 +1249,12 @@ pub struct Connection is Move {
 
   // Append bytes to what is to be sent, gathering small writes in the tail
   fn put(self &mut, bytes &Array[u8]) {
-    mut i = 0usize;
+    var i = 0usize;
     while i < bytes.len {
       if tail.room() == 0usize {
         self.flushTail();
         match pool.take(tailSize) {
-          case mut s Some {tail <=> s;}
+          case var s Some {tail <=> s;}
           case is None[IoBuf] {}
         }
         if tail.capacity() == 0usize {
@@ -1268,12 +1268,12 @@ pub struct Connection is Move {
 
   // A number in decimal (base 10) or hexadecimal (16), lower case
   fn putNum(self &mut, n u64, base u64) {
-    mut d = new Array[u8, 20] <- fill 0u8;
-    mut k = 20usize;
-    mut v = n;
+    var d = new Array[u8, 20] <- fill 0u8;
+    var k = 20usize;
+    var v = n;
     while true {
       k = k - 1usize;
-      imm r = v % base;
+      let r = v % base;
       d[k] = if r < 10u64 {u8.from(r) + '0';} else {u8.from(r) - 10u8 + 'a';};
       v = v / base;
       if v == 0u64 {break;}
@@ -1291,7 +1291,7 @@ pub struct Connection is Move {
   }
 
   fn putFields(self &mut, h &Headers) {
-    mut i = 0usize;
+    var i = 0usize;
     while i < h.len() {
       self.put(h.nameAt(i));
       self.put(": ");
@@ -1304,7 +1304,7 @@ pub struct Connection is Move {
   // A body buffer: copied in after what is gathered when small, else queued
   // whole after it
   fn putBuf(self &mut, buf IoBuf) {
-    imm n = buf.len();
+    let n = buf.len();
     if n <= smallCopy and n <= tail.room() {
       tail.append(buf.view());
       return;
@@ -1316,7 +1316,7 @@ pub struct Connection is Move {
   // The tail, whole, queued
   fn flushTail(self &mut) {
     if tail.len() == 0usize {return;}
-    mut t = IoBuf.empty();
+    var t = IoBuf.empty();
     t <=> tail;
     self.pushOut(t);
   }
@@ -1326,14 +1326,14 @@ pub struct Connection is Move {
   }
 
   fn dropTail(self &mut) {
-    mut t = IoBuf.empty();
+    var t = IoBuf.empty();
     t <=> tail;
   }
 
   fn dropOutput(self &mut) {
-    mut o = Chain.make(noBound);
+    var o = Chain.make(noBound);
     o <=> out;
-    mut h = Chain.make(noBound);
+    var h = Chain.make(noBound);
     h <=> held;
     self.dropTail();
   }
@@ -1344,9 +1344,9 @@ pub struct Connection is Move {
     if not holding {return;}
     holding = false;
     while held.len() > 0usize {
-      mut b = IoBuf.empty();
+      var b = IoBuf.empty();
       match held.popFront() {
-        case mut s Some {b <=> s;}
+        case var s Some {b <=> s;}
         case is None[IoBuf] {}
       }
       out.push(b);
@@ -1358,7 +1358,7 @@ pub struct Connection is Move {
 // ASCII
 fn isTargetText(s &Array[u8]) bool {
   if s.len == 0usize {return false;}
-  mut i = 0usize;
+  var i = 0usize;
   while i < s.len {
     if s[i] <= 0x20u8 or s[i] >= 0x7Fu8 {return false;}
     i = i + 1usize;

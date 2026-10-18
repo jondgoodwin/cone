@@ -37,15 +37,15 @@ struct Outcome {
 }
 
 fn run(throttle f32, rudder f32, warm f32, seconds f32, wave bool, preThrottle f32) Outcome {
-  imm props = WaterProps.sea();
-  imm dt = 1. / 60.;
-  mut w = World.make();
-  mut boat = Boat.create(&mut w, BoatSpec.dinghy(), new Vec3(0., -0.2, 0.), Quat.identity());
-  imm k = 6.28318530718 / 100.;
-  imm om = (9.81 * k).sqrt();
-  mut t = 0.;
-  mut step = 0;
-  imm total = i32.from((warm + seconds) / dt);
+  let props = WaterProps.sea();
+  let dt = 1. / 60.;
+  var w = World.make();
+  var boat = Boat.create(&mut w, BoatSpec.dinghy(), new Vec3(0., -0.2, 0.), Quat.identity());
+  let k = 6.28318530718 / 100.;
+  let om = (9.81 * k).sqrt();
+  var t = 0.;
+  var step = 0;
+  let total = i32.from((warm + seconds) / dt);
   while step < total {
     if t < warm { boat.steer(preThrottle, 0.); } else { boat.steer(throttle, rudder); }
     if wave {
@@ -57,52 +57,52 @@ fn run(throttle f32, rudder f32, warm f32, seconds f32, wave bool, preThrottle f
     t = t + dt;
     step = step + 1;
   }
-  imm q = w.rotationOf(boat.id());
-  imm fwd = q * new Vec3(1., 0., 0.);
-  imm up = q * new Vec3(0., 1., 0.);
-  imm vel = w.linearVelocity(boat.id());
-  imm p = w.positionOf(boat.id());
+  let q = w.rotationOf(boat.id());
+  let fwd = q * new Vec3(1., 0., 0.);
+  let up = q * new Vec3(0., 1., 0.);
+  let vel = w.linearVelocity(boat.id());
+  let p = w.positionOf(boat.id());
   // the horizontal balance, world x: the engine's thrust, the hull's drag, the hydrostatic force (which is
   // vertical for a closed hull in flat water, so adds nothing) and the rudder's force
-  imm dragAlong = boat.thrust * fwd.x + boat.floater.last.drag.x + boat.floater.last.buoyancy.x + boat.rudderForce.x;
-  imm surface = if wave { 1. * libc.cosf(k * p.x - om * t); } else { 0.; };
+  let dragAlong = boat.thrust * fwd.x + boat.floater.last.drag.x + boat.floater.last.buoyancy.x + boat.rudderForce.x;
+  let surface = if wave { 1. * libc.cosf(k * p.x - om * t); } else { 0.; };
   new Outcome(vel.dot(fwd), fwd.z, w.angularVelocity(boat.id()).y, libc.acosf(if up.y > 1. { 1.; } else { up.y; }) * 57.2958,
     boat.floater.last.volume * props.density, p.y, boat.thrust, dragAlong, libc.fabsf(p.y - surface));
 }
 
 fn main() i32 {
   // 1. at rest
-  imm rest = run(0., 0., 0., 15., false, 0.);
+  let rest = run(0., 0., 0., 15., false, 0.);
   expectFloat(f64.from(rest.displaced), 600d, 9d, "at rest the boat displaces its own mass, 600 kg to 1.5 percent");
   expect(rest.tilt < 6. and rest.y > -1.5, "on an even keel (under 6 degrees) and not sunk");
 
   // 2. full ahead
-  imm full = run(1., 0., 0., 40., false, 0.);
+  let full = run(1., 0., 0., 40., false, 0.);
   expect(full.speed > 3. and full.speed < 12., "full throttle gives between 3 and 12 m/s");
   expect(libc.fabsf(full.forwardZ) < 0.05, "and goes straight with the rudder at 0");
   expectFloat(f64.from(full.dragX), 0d, f64.from(full.thrust) * 0.03, "and the horizontal forces (thrust, drag, rudder, hydrostatic) balance to 3 percent of the thrust");
 
   // 3. throttle
-  imm half = run(0.5, 0., 0., 40., false, 0.);
+  let half = run(0.5, 0., 0., 40., false, 0.);
   expect(full.speed > 1.2 * half.speed and half.speed > 1., "full throttle is at least 1.2 times as fast as half");
 
   // 4. the rudder
-  imm starboard = run(0.6, 0.5, 15., 3., false, 0.6);
-  imm port = run(0.6, -0.5, 15., 3., false, 0.6);
+  let starboard = run(0.6, 0.5, 15., 3., false, 0.6);
+  let port = run(0.6, -0.5, 15., 3., false, 0.6);
   expect(starboard.forwardZ > 0.3 and starboard.yawRate < -0.1, "rudder +0.5 for 3 s turns the bow toward +z (its z over 0.3), a negative yaw rate");
   expect(port.forwardZ < -0.3 and port.yawRate > 0.1, "rudder -0.5 turns it the other way");
-  imm hard = run(0.6, 0.8, 15., 12., false, 0.6);
-  imm gentle = run(0.6, 0.4, 15., 12., false, 0.6);
-  imm rHard = hard.speed / libc.fabsf(hard.yawRate);
-  imm rGentle = gentle.speed / libc.fabsf(gentle.yawRate);
+  let hard = run(0.6, 0.8, 15., 12., false, 0.6);
+  let gentle = run(0.6, 0.4, 15., 12., false, 0.6);
+  let rHard = hard.speed / libc.fabsf(hard.yawRate);
+  let rGentle = gentle.speed / libc.fabsf(gentle.yawRate);
   expect(rHard < rGentle, "the turn radius is smaller at rudder 0.8 than at 0.4");
 
   // 5. astern
-  imm astern = run(-0.6, 0., 0., 6., false, 0.);
+  let astern = run(-0.6, 0., 0., 6., false, 0.);
   expect(astern.speed < -0.5, "astern the boat goes backward");
 
   // 6. waves
-  imm waves = run(0., 0., 0., 20., true, 0.);
+  let waves = run(0., 0., 0., 20., true, 0.);
   expect(waves.offWave < 1.2 and waves.tilt < 40., "on a wave of 1 m it rides, within 1.2 m of the surface and not capsized");
   done();
 }

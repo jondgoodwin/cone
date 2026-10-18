@@ -32,11 +32,11 @@ struct Particle {
 
 // One frame's scratch work: many small values, all freed together
 fn step(n i64) i64 {
-  mut scratch = Arena.empty();
-  mut total = 0i64;
-  mut i = 0i64;
+  var scratch = Arena.empty();
+  var total = 0i64;
+  var i = 0i64;
   while i &lt; n {
-    imm p = scratch.alloc(new Particle(i, 2));   // a bump of a pointer, no more
+    let p = scratch.alloc(new Particle(i, 2));   // a bump of a pointer, no more
     p.x += p.v;
     total += p.x;
     i += 1;
@@ -69,7 +69,7 @@ frame total: 501500
 		compilers among them, and the scratch work of each frame or request in a long-running program.</p>
 
 	<h2 id="arenaalloc">Allocating in an arena</h2>
-	<p>An arena is a value of the <span class="pre">arena</span> package: <span class="pre">mut a = Arena.empty()</span>.
+	<p>An arena is a value of the <span class="pre">arena</span> package: <span class="pre">var a = Arena.empty()</span>.
 		A value is allocated in it with <span class="pre">a.alloc(value)</span>, which returns a borrowed
 		<span class="pre">&amp;mut</span> reference to the value there. The same allocation is written with
 		<span class="pre">new</span>, the arena in its head and the type in brackets, <span class="pre">new a[Node](1,
@@ -91,10 +91,10 @@ struct Node {
 }
 
 fn main() i32 {
-  mut ar = Arena.empty();
-  imm x = ar.alloc(new Node(1, 2));         // a borrowed &amp;mut Node
-  imm y = new ar[Node](3, 4);               // the same call, written with new
-  imm z = new ar[mut, Node](5, 6);          // mut is all an arena lends
+  var ar = Arena.empty();
+  let x = ar.alloc(new Node(1, 2));         // a borrowed &amp;mut Node
+  let y = new ar[Node](3, 4);               // the same call, written with new
+  let z = new ar[mut, Node](5, 6);          // mut is all an arena lends
   x.a = 10;
   printInt(x.a + y.b + z.a);
   printStr("\n");
@@ -138,9 +138,9 @@ struct Node { pub a i64; pub b i64; }
 fn fill(ar &amp;mut Arena) &amp;mut Node { ar.alloc(new Node(7, 8)); }
 
 fn main() i32 {
-  mut ar = Arena.empty();
-  imm x = ar.alloc(new Node(3, 4));
-  imm y = fill(&amp;mut ar);                    // lent to a function that allocates
+  var ar = Arena.empty();
+  let x = ar.alloc(new Node(3, 4));
+  let y = fill(&amp;mut ar);                    // lent to a function that allocates
   printInt(x.a + y.b);                      // 11: both are live at once
   printStr("\n");
   0i32;
@@ -149,19 +149,19 @@ fn main() i32 {
 	<p>These are refused:</p>
 <pre>
 fn make() &amp;mut Node {
-  mut ar = Arena.empty();
+  var ar = Arena.empty();
   ar.alloc(new Node(3, 4));                 // Error 1064: Returned borrowed reference outlives
 }                                           //   the local value it points to
 
 struct Holder { pub n &amp;mut Node; }
 fn hold() Holder {
-  mut ar = Arena.empty();
+  var ar = Arena.empty();
   new Holder(ar.alloc(new Node(3, 4)));     // Error 1064: Returned value carries a borrow of 'ar'
 }
 
 fn main() {
-  mut ar = Arena.empty();
-  imm x = ar.alloc(new Node(3, 4));
+  var ar = Arena.empty();
+  let x = ar.alloc(new Node(3, 4));
   ar = Arena.empty();                       // Error 1168: 'ar' is borrowed (by 'alloc'), and that
   printInt(x.a);                            //   borrow is used again below. It may not be changed.
 }
@@ -178,7 +178,7 @@ fn main() {
 		and passed, its values with it. A reference into it cannot be a borrow, which ends with a scope, so it is a
 		<i>key</i>: a reference carrying the arena's <a href="#invariant">invariant lifetime</a>, which reaches nothing on its
 		own.</p>
-	<p><span class="pre">mut a = DynArena.empty()</span> mints a brand of its own, an invariant lifetime, and
+	<p><span class="pre">var a = DynArena.empty()</span> mints a brand of its own, an invariant lifetime, and
 		<span class="pre">a.alloc(value)</span>, or <span class="pre">new a[T](...)</span>, returns a key of that lifetime,
 		<span class="pre">&amp;'=a mut T</span>, which goes anywhere. The arena is the lock: <span class="pre">a[key]</span>
 		reaches what a key names, and only where the two carry the same invariant lifetime, which the compiler checks at no
@@ -196,9 +196,9 @@ struct Node['=a] { pub val i64; pub next Option[&amp;'=a mut Node['=a]]; }
 struct Chain['=a] { pub ar DynArena['=a]; pub first Option[&amp;'=a mut Node['=a]]; }
 
 fn build(n i64) Chain['=a] {
-  mut ar = DynArena.empty();            // a brand of its own
-  mut head Option[&amp;'=a mut Node['=a]] = None[&amp;'=a mut Node['=a]];
-  mut i = 0i64;
+  var ar = DynArena.empty();            // a brand of its own
+  var head Option[&amp;'=a mut Node['=a]] = None[&amp;'=a mut Node['=a]];
+  var i = 0i64;
   while i &lt; n {
     head = Some(ar.alloc(new Node(i, head)));
     i = i + 1;
@@ -207,11 +207,11 @@ fn build(n i64) Chain['=a] {
 }
 
 fn sum(c &amp;Chain['=a]) i64 {
-  mut total = 0i64;
-  mut at = c.first;
+  var total = 0i64;
+  var at = c.first;
   while {
     match at {
-      case imm k Some[&amp;'=a mut Node['=a]] {
+      case let k Some[&amp;'=a mut Node['=a]] {
         total = total + c.ar[k].val;    // read through the arena
         at = c.ar[k].next;
       }
@@ -227,11 +227,11 @@ fn bump(ar &amp;mut DynArena['=a], key &amp;'=a mut i64) {
 }
 
 fn main() i32 {
-  imm c = build(5);
+  let c = build(5);
   printInt(sum(&amp;c));                    // 10
   printStr("\n");
-  mut a = DynArena.empty();
-  imm key = a.alloc(2i64);              // a key to an i64
+  var a = DynArena.empty();
+  let key = a.alloc(2i64);              // a key to an i64
   bump(&amp;mut a, key);
   printInt(*a[key]);                    // 3
   printStr("\n");
@@ -259,9 +259,9 @@ fn sum(ar &amp;DynArena['=a], p &amp;Pair['=a]) i64 {
 }
 
 fn main() {
-  mut a = DynArena.empty();
-  mut b = DynArena.empty();
-  imm p = new Pair(a.alloc(new R(1)), a.alloc(new R(2)));
+  var a = DynArena.empty();
+  var b = DynArena.empty();
+  let p = new Pair(a.alloc(new R(1)), a.alloc(new R(2)));
   sum(&amp;a, &amp;p);                   // Ok: 3
   sum(&amp;b, &amp;p);                   // Error 1240: This value carries the brand minted at one
                                   //   DynArena.empty(), and the call's other values carry the

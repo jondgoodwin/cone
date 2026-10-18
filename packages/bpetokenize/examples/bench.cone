@@ -33,86 +33,86 @@ struct Lcg {
 fn argOr(args &List[String], at usize, fallback usize) usize {
   if at >= args.len() { return fallback; }
   match parseUInt(args.view()[at].view()) {
-    case imm n Some { usize.from(n); }
+    case let n Some { usize.from(n); }
     case is None { fallback; }
   }
 }
 
 fn main() i32 {
-  imm args = process.args();
-  imm merges = argOr(&args, 1usize, 20000usize);
-  imm size = argOr(&args, 2usize, 1000000usize);
-  mut rng = new Lcg(7u64);
+  let args = process.args();
+  let merges = argOr(&args, 1usize, 20000usize);
+  let size = argOr(&args, 2usize, 1000000usize);
+  var rng = new Lcg(7u64);
 
-  mut tokens = List[String].empty();
-  mut texts = List[String].empty();
-  mut b = 0u32;
+  var tokens = List[String].empty();
+  var texts = List[String].empty();
+  var b = 0u32;
   while b < 256u32 {
-    mut one = List[u8].empty();
+    var one = List[u8].empty();
     one.push(u8.from(b));
     tokens.push(bpetokenize.toByteLevel(one.view()));
     texts.push(String.fromBytes(one.view()));
     b = b + 1u32;
   }
-  mut seen = Dict[String, u32].deterministic();
-  mut k = 0usize;
+  var seen = Dict[String, u32].deterministic();
+  var k = 0usize;
   while k < 256usize { seen.insert(texts.view()[k].copy(), u32.from(k)); k = k + 1usize; }
-  mut lines = List[String].empty();
-  mut tries = 0usize;
+  var lines = List[String].empty();
+  var tries = 0usize;
   while lines.len() < merges and tries < merges * 20usize {
     tries = tries + 1usize;
     // the letters a to h and the space, or a token made so far (more often later)
-    mut l = 97u32 + rng.next() % 8u32;
-    mut r = 97u32 + rng.next() % 8u32;
+    var l = 97u32 + rng.next() % 8u32;
+    var r = 97u32 + rng.next() % 8u32;
     if texts.len() > 256usize and rng.next() % 5u32 != 0u32 { l = 256u32 + rng.next() % u32.from(texts.len() - 256usize); }
     if texts.len() > 256usize and rng.next() % 5u32 != 0u32 { r = 256u32 + rng.next() % u32.from(texts.len() - 256usize); }
-    mut joined = texts.view()[usize.from(l)].copy();
+    var joined = texts.view()[usize.from(l)].copy();
     joined.append(texts.view()[usize.from(r)].view());
     if seen.contains(joined.view()) { continue; }
     if joined.len() > 24usize { continue; }
     seen.insert(joined.copy(), u32.from(texts.len()));
     tokens.push(bpetokenize.toByteLevel(joined.view()));
-    mut line = bpetokenize.toByteLevel(texts.view()[usize.from(l)].view());
+    var line = bpetokenize.toByteLevel(texts.view()[usize.from(l)].view());
     line.append(" ");
     line.append(bpetokenize.toByteLevel(texts.view()[usize.from(r)].view()).view());
     lines.push(line);
     texts.push(joined);
   }
 
-  mut text = List[u8].empty();
+  var text = List[u8].empty();
   while text.len() < size {
-    imm len = 1u32 + rng.next() % 12u32;
-    mut j = 0u32;
+    let len = 1u32 + rng.next() % 12u32;
+    var j = 0u32;
     while j < len { text.push(u8.from(97u32 + rng.next() % 8u32)); j = j + 1u32; }
     text.push(' ');
   }
 
-  mut bestBuild = 0x7FFFFFFFFFFFFFFFi64;
-  mut bestEncode = 0x7FFFFFFFFFFFFFFFi64;
-  mut bestDecode = 0x7FFFFFFFFFFFFFFFi64;
-  mut idCount = 0usize;
-  mut run = 0;
+  var bestBuild = 0x7FFFFFFFFFFFFFFFi64;
+  var bestEncode = 0x7FFFFFFFFFFFFFFFi64;
+  var bestDecode = 0x7FFFFFFFFFFFFFFFi64;
+  var idCount = 0usize;
+  var run = 0;
   while run < 3 {
-    imm t0 = Instant.now();
+    let t0 = Instant.now();
     match bpetokenize.Tokenizer.build(tokens.view(), lines.view(), List[String].empty().view(),
                                       bpetokenize.PreTokenizer.Gpt2) {
-      case imm tok Ok {
-        imm built = t0.elapsed().nanos();
+      case let tok Ok {
+        let built = t0.elapsed().nanos();
         if built < bestBuild { bestBuild = built; }
-        imm t1 = Instant.now();
-        imm ids = tok.encode(text.view());
-        imm encoded = t1.elapsed().nanos();
+        let t1 = Instant.now();
+        let ids = tok.encode(text.view());
+        let encoded = t1.elapsed().nanos();
         if encoded < bestEncode { bestEncode = encoded; }
         idCount = ids.len();
-        imm t2 = Instant.now();
+        let t2 = Instant.now();
         match tok.decode(ids.view()) {
-          case imm back Ok { if back.len() != text.len() { printStr("MISMATCH\n"); } }
+          case let back Ok { if back.len() != text.len() { printStr("MISMATCH\n"); } }
           case is Error { printStr("DECODE ERROR\n"); }
         }
-        imm decoded = t2.elapsed().nanos();
+        let decoded = t2.elapsed().nanos();
         if decoded < bestDecode { bestDecode = decoded; }
       }
-      case imm e Error { imm m = e.message(); printStr(m.view()); printStr("\n"); return 1i32; }
+      case let e Error { let m = e.message(); printStr(m.view()); printStr("\n"); return 1i32; }
     }
     run += 1;
   }

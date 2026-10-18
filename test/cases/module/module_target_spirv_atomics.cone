@@ -20,26 +20,26 @@
 mod module_target_spirv_atomics;
 
 fn @compute(64) compact(inv Invocation, input &Array[u32], count &mut Array[Atomic[u32]], out &mut Array[u32]) {
-  imm i = usize.from(inv.globalId[0]);
+  let i = usize.from(inv.globalId[0]);
   if i < input.len {
-    imm v = input[i];
+    let v = input[i];
     if v % 3u32 == 0u32 {
-      imm slot = count[0usize].addOrdered(1u32, MemOrder.Relaxed);
+      let slot = count[0usize].addOrdered(1u32, MemOrder.Relaxed);
       out[usize.from(slot)] = v;
     }
   }
 }
 
-mut @workgroup scan Array[u32, 256];
+var @workgroup scan Array[u32, 256];
 
 fn @compute(256) prefix(inv Invocation, input &Array[u32], out &mut Array[u32]) {
-  imm g = usize.from(inv.globalId[0]);
-  imm l = usize.from(inv.localIndex);
+  let g = usize.from(inv.globalId[0]);
+  let l = usize.from(inv.localIndex);
   scan[l] = if g < input.len {input[g];} else {0u32;};
   workgroupBarrier();
-  mut step = 1usize;
+  var step = 1usize;
   while step < 256usize {
-    imm add = if l >= step {scan[l - step];} else {0u32;};
+    let add = if l >= step {scan[l - step];} else {0u32;};
     workgroupBarrier();
     scan[l] = scan[l] + add;
     workgroupBarrier();
@@ -50,15 +50,15 @@ fn @compute(256) prefix(inv Invocation, input &Array[u32], out &mut Array[u32]) 
   }
 }
 
-mut @workgroup bins Array[Atomic[u32], 64];
+var @workgroup bins Array[Atomic[u32], 64];
 
 fn @compute(256) histogram(inv Invocation, input &Array[u32], hist &mut Array[Atomic[u32]]) {
-  imm l = usize.from(inv.localIndex);
+  let l = usize.from(inv.localIndex);
   if l < 64usize {
     bins[l].store(0u32);
   }
   workgroupBarrier();
-  imm g = usize.from(inv.globalId[0]);
+  let g = usize.from(inv.globalId[0]);
   if g < input.len {
     bins[usize.from(input[g] % 64u32)].add(1u32);
   }
@@ -73,13 +73,13 @@ struct Tally {
   pub low Atomic[i32];
 }
 
-mut @workgroup cell Atomic[i32];
+var @workgroup cell Atomic[i32];
 
 fn @compute(64) every(inv Invocation, a &mut Array[Atomic[u32]], t &mut Array[Tally], out &mut Array[u32]) {
-  imm i = usize.from(inv.globalId[0]);
+  let i = usize.from(inv.globalId[0]);
   if inv.localIndex == 0u32 { cell.store(0i32); }
   workgroupBarrier();
-  imm v = inv.globalId[0];
+  let v = inv.globalId[0];
   a[0usize].add(v);
   a[1usize].sub(v);
   a[2usize].min(v);
@@ -93,8 +93,8 @@ fn @compute(64) every(inv Invocation, a &mut Array[Atomic[u32]], t &mut Array[Ta
   t[1usize].low.max(i32.from(v) - 32i32);
   cell.add(1i32);
   cell.minOrdered(-5i32, MemOrder.Acquire);
-  mut seen = 0u32;
-  mut stored = false;
+  var seen = 0u32;
+  var stored = false;
   seen, stored = a[8usize].compareSwap(v, v + 1u32);
   a[9usize].storeOrdered(a[10usize].loadOrdered(MemOrder.Relaxed), MemOrder.Release);
   storageBarrier();

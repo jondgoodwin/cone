@@ -32,14 +32,14 @@ const NO_LIMIT = 1.0e30d;
 
 // A shape flattened to segments (x0 y0 x1 y1) in a list of f64
 fn flatten(shape &Shape, out &mut List[f64]) {
-  mut i = 0usize;
+  var i = 0usize;
   while i < shape.edges.len() {
-    imm e = *shape.edges[i];
-    imm steps = if e.kind == EDGE_LINE { 1u32; } else { 400u32; };
-    mut prev = e.point(0.0d);
-    mut s = 1u32;
+    let e = *shape.edges[i];
+    let steps = if e.kind == EDGE_LINE { 1u32; } else { 400u32; };
+    var prev = e.point(0.0d);
+    var s = 1u32;
     while s <= steps {
-      imm p = e.point(f64.from(s) / f64.from(steps));
+      let p = e.point(f64.from(s) / f64.from(steps));
       out.push(prev.x);
       out.push(prev.y);
       out.push(p.x);
@@ -53,18 +53,18 @@ fn flatten(shape &Shape, out &mut List[f64]) {
 
 // The signed distance (positive inside, by nonzero winding) from p to the flattened shape
 fn trueDistance(segs &List[f64], p Pt) f64 {
-  mut best = NO_LIMIT;
-  mut winding = 0i32;
-  mut i = 0usize;
+  var best = NO_LIMIT;
+  var winding = 0i32;
+  var i = 0usize;
   while i < segs.len() {
-    imm a = new Pt(*segs[i], *segs[i + 1usize]);
-    imm b = new Pt(*segs[i + 2usize], *segs[i + 3usize]);
-    imm ab = b - a;
-    imm ap = p - a;
-    mut t = ap.dot(ab) / ab.dot(ab);
+    let a = new Pt(*segs[i], *segs[i + 1usize]);
+    let b = new Pt(*segs[i + 2usize], *segs[i + 3usize]);
+    let ab = b - a;
+    let ap = p - a;
+    var t = ap.dot(ab) / ab.dot(ab);
     if t < 0.0d { t = 0.0d; }
     if t > 1.0d { t = 1.0d; }
-    imm d = (p - (a + ab * t)).length();
+    let d = (p - (a + ab * t)).length();
     if d < best { best = d; }
     // Winding by a ray towards +x
     if a.y <= p.y {
@@ -81,8 +81,8 @@ fn trueDistance(segs &List[f64], p Pt) f64 {
 
 fn demoShape(codepoint u32) Shape {
   match Font.load(&DEMO_FONT) {
-    case imm f Ok {
-      imm o = f.outline(f.glyphOf(codepoint));
+    case let f Ok {
+      let o = f.outline(f.glyphOf(codepoint));
       return Shape.fromOutline(&o);
     }
     case is Error { }
@@ -93,7 +93,7 @@ fn demoShape(codepoint u32) Shape {
 // ---- checks ----
 
 fn colours() {
-  mut tri = new Outline(List[f64].empty(), List[f64].empty(), List[bool].empty(), List[u32].empty());
+  var tri = new Outline(List[f64].empty(), List[f64].empty(), List[bool].empty(), List[u32].empty());
   tri.xs.push(0.0d);
   tri.ys.push(0.0d);
   tri.on.push(true);
@@ -104,7 +104,7 @@ fn colours() {
   tri.ys.push(0.0d);
   tri.on.push(true);
   tri.ends.push(2u32);
-  mut t = Shape.fromOutline(&tri);
+  var t = Shape.fromOutline(&tri);
   expectUInt(u64.from(t.edges.len()), 3u64, "triangle: 3 edges");
   expectInt(i64.from((*t.contours[0usize]).winding), 1i64, "triangle (clockwise): winding +1");
   colorEdges(&mut t, 3.0d, 0u64);
@@ -112,7 +112,7 @@ fn colours() {
   expectUInt(u64.from((*t.edges[1usize]).color), u64.from(COLOR_MAGENTA), "triangle: second edge magenta");
   expectUInt(u64.from((*t.edges[2usize]).color), u64.from(COLOR_YELLOW), "triangle: third edge yellow");
 
-  mut bar = demoShape(0x49u32);
+  var bar = demoShape(0x49u32);
   expectUInt(u64.from(bar.edges.len()), 4u64, "bar: 4 edges");
   colorEdges(&mut bar, 3.0d, 0u64);
   expectUInt(u64.from((*bar.edges[0usize]).color), u64.from(COLOR_CYAN), "bar: left cyan");
@@ -121,14 +121,14 @@ fn colours() {
   expectUInt(u64.from((*bar.edges[3usize]).color), u64.from(COLOR_MAGENTA), "bar: bottom magenta");
 
   // A smooth contour has no corner: all white. The O's four rounded corners are smooth.
-  mut ring = demoShape(0x4Fu32);
+  var ring = demoShape(0x4Fu32);
   expectUInt(u64.from(ring.contours.len()), 2u64, "O: 2 contours");
   expectInt(i64.from((*ring.contours[0usize]).winding), 1i64, "O: the outer contour winds +1");
   expectInt(i64.from((*ring.contours[1usize]).winding), -1i64, "O: the counter winds -1");
   expectUInt(u64.from(ring.edges.len()), 8u64, "O: 4 quadratics a contour");
   colorEdges(&mut ring, 3.0d, 0u64);
-  mut allWhite = true;
-  mut i = 0usize;
+  var allWhite = true;
+  var i = 0usize;
   while i < ring.edges.len() { if (*ring.edges[i]).color != COLOR_WHITE { allWhite = false; } i = i + 1usize; }
   expect(allWhite, "O: smooth, so every edge is white");
 }
@@ -136,35 +136,35 @@ fn colours() {
 fn edgeDistances() {
   // The quadratic (0,0) (50,100) (100,0) peaks at (50, 50). The point (50, 200)
   // is above it: the nearest point by brute force over the curve.
-  imm q = Edge.quad(new Pt(0.0d, 0.0d), new Pt(50.0d, 100.0d), new Pt(100.0d, 0.0d));
-  mut cases = new Array[Pt, 5] <- fill new Pt(0.0d, 0.0d);
+  let q = Edge.quad(new Pt(0.0d, 0.0d), new Pt(50.0d, 100.0d), new Pt(100.0d, 0.0d));
+  var cases = new Array[Pt, 5] <- fill new Pt(0.0d, 0.0d);
   cases[0] = new Pt(50.0d, 200.0d);
   cases[1] = new Pt(20.0d, 10.0d);
   cases[2] = new Pt(-30.0d, 40.0d);
   cases[3] = new Pt(120.0d, -10.0d);
   cases[4] = new Pt(50.0d, 20.0d);
-  mut k = 0usize;
+  var k = 0usize;
   while k < 5usize {
-    imm p = cases[k];
-    mut best = NO_LIMIT;
-    mut s = 0u32;
+    let p = cases[k];
+    var best = NO_LIMIT;
+    var s = 0u32;
     while s <= 100000u32 {
-      imm d = (q.point(f64.from(s) / 100000.0d) - p).length();
+      let d = (q.point(f64.from(s) / 100000.0d) - p).length();
       if d < best { best = d; }
       s = s + 1u32;
     }
-    mut param = 0.0d;
-    imm sd = q.signedDistance(p, &mut param);
+    var param = 0.0d;
+    let sd = q.signedDistance(p, &mut param);
     expectFloat(libc.fabs(sd.d), best, 0.001d, "quadratic: the cubic solver finds the nearest point");
     k = k + 1usize;
   }
   // Signs: positive on the right of the direction of travel (the curve goes left to right and
   // bulges up, so the point below it is on the right: (50, 20) is inside the bulge, below the curve)
-  mut param = 0.0d;
+  var param = 0.0d;
   expect(q.signedDistance(new Pt(50.0d, 20.0d), &mut param).d > 0.0d, "quadratic: below a rightward curve is positive");
   expect(q.signedDistance(new Pt(50.0d, 200.0d), &mut param).d < 0.0d, "quadratic: above it is negative");
   // A line
-  imm l = Edge.line(new Pt(100.0d, 0.0d), new Pt(100.0d, 700.0d));
+  let l = Edge.line(new Pt(100.0d, 0.0d), new Pt(100.0d, 700.0d));
   expectFloat(l.signedDistance(new Pt(200.0d, 350.0d), &mut param).d, 100.0d, 1.0e-9d, "line: 100 to its right is +100");
   expectFloat(l.signedDistance(new Pt(0.0d, 350.0d), &mut param).d, -100.0d, 1.0e-9d, "line: 100 to its left is -100");
   expectFloat(l.signedDistance(new Pt(150.0d, 800.0d), &mut param).d, 111.80339887d, 1.0e-6d, "line: beyond its end, the end's distance");
@@ -172,21 +172,21 @@ fn edgeDistances() {
 }
 
 fn fieldValues() {
-  mut bar = demoShape(0x49u32);
+  var bar = demoShape(0x49u32);
   colorEdges(&mut bar, 3.0d, 0u64);
-  imm frame = new Frame(40u32, 100u32, 0.1d, 5.0d, 25.0d, 400.0d);
-  imm field = generateMsdf(&bar, &frame);
+  let frame = new Frame(40u32, 100u32, 0.1d, 5.0d, 25.0d, 400.0d);
+  let field = generateMsdf(&bar, &frame);
   // Pixel (20, 62) is centred on (200, 350)
-  imm cp = frame.pointOf(20.0d, 62.0d);
+  let cp = frame.pointOf(20.0d, 62.0d);
   expectFloat(cp.x, 200.0d, 1.0e-9d, "frame: x of pixel 20");
   expectFloat(cp.y, 350.0d, 1.0e-9d, "frame: y of pixel 62");
-  mut ch = 0u32;
+  var ch = 0u32;
   while ch < 3u32 {
     expectFloat(f64.from(field.texel(20u32, 62u32, ch)), 0.75d, 1.0e-6d, "bar centre: every channel 0.75");
     ch = ch + 1u32;
   }
   // Pixel (5, 99) is centred on (50, -20)
-  imm op = frame.pointOf(5.0d, 99.0d);
+  let op = frame.pointOf(5.0d, 99.0d);
   expectFloat(op.x, 50.0d, 1.0e-9d, "frame: x of pixel 5");
   expectFloat(op.y, -20.0d, 1.0e-9d, "frame: y of pixel 99");
   expectFloat(f64.from(field.texel(5u32, 99u32, 0u32)), 0.45d, 1.0e-6d, "corner: red -20");
@@ -194,36 +194,36 @@ fn fieldValues() {
   expectFloat(f64.from(field.texel(5u32, 99u32, 2u32)), 0.375d, 1.0e-6d, "corner: blue -50");
   expectFloat(f64.from(field.median(5u32, 99u32)), 0.375d, 1.0e-6d, "corner: median -50, not the true -53.85");
   // The plain distance field has the true distance there
-  imm sdf = generateSdf(&bar, &frame);
+  let sdf = generateSdf(&bar, &frame);
   expectFloat(f64.from(sdf.median(5u32, 99u32)), 0.5d - 53.8516480713d / 400.0d, 1.0e-5d, "sdf: the corner's true distance");
   expectFloat(f64.from(sdf.median(20u32, 62u32)), 0.75d, 1.0e-6d, "sdf: the centre");
 }
 
 // The multi-channel field's median against the flattened shape's true signed distance
 fn againstBruteForce(codepoint u32, scale f64, range f64, what &Array[u8], maxBad u32) {
-  mut shape = demoShape(codepoint);
+  var shape = demoShape(codepoint);
   colorEdges(&mut shape, 3.0d, 0u64);
-  mut segs = List[f64].empty();
+  var segs = List[f64].empty();
   flatten(&shape, &mut segs);
-  mut lo = new Pt(0.0d, 0.0d);
-  mut hi = new Pt(0.0d, 0.0d);
+  var lo = new Pt(0.0d, 0.0d);
+  var hi = new Pt(0.0d, 0.0d);
   shape.bounds(&mut lo, &mut hi);
-  imm pad = range * 0.5d + 5.0d;
-  imm w = u32.from((hi.x - lo.x + 2.0d * pad) * scale) + 1u32;
-  imm h = u32.from((hi.y - lo.y + 2.0d * pad) * scale) + 1u32;
-  imm frame = new Frame(w, h, scale, pad - lo.x, pad - lo.y, range);
-  imm sdf = generateSdf(&shape, &frame);
-  mut worst = 0.0d;
-  mut bad = 0u32;
-  mut y = 0u32;
+  let pad = range * 0.5d + 5.0d;
+  let w = u32.from((hi.x - lo.x + 2.0d * pad) * scale) + 1u32;
+  let h = u32.from((hi.y - lo.y + 2.0d * pad) * scale) + 1u32;
+  let frame = new Frame(w, h, scale, pad - lo.x, pad - lo.y, range);
+  let sdf = generateSdf(&shape, &frame);
+  var worst = 0.0d;
+  var bad = 0u32;
+  var y = 0u32;
   while y < h {
-    mut x = 0u32;
+    var x = 0u32;
     while x < w {
-      imm p = frame.pointOf(f64.from(x), f64.from(y));
-      imm want = trueDistance(&segs, p);
+      let p = frame.pointOf(f64.from(x), f64.from(y));
+      let want = trueDistance(&segs, p);
       if libc.fabs(want) < range * 0.45d {
-        imm got = (f64.from(sdf.median(x, y)) - 0.5d) * range;
-        imm err = libc.fabs(got - want);
+        let got = (f64.from(sdf.median(x, y)) - 0.5d) * range;
+        let err = libc.fabs(got - want);
         if err > worst { worst = err; }
         if err > 0.05d { bad = bad + 1u32; }
       }
@@ -238,45 +238,45 @@ fn againstBruteForce(codepoint u32, scale f64, range f64, what &Array[u8], maxBa
 // true shape: away from the outline, the interpolated median must be on the
 // right side of 1/2.
 fn bilinearSign(codepoint u32, scale f64, range f64, what &Array[u8], correct bool) u32 {
-  mut shape = demoShape(codepoint);
+  var shape = demoShape(codepoint);
   colorEdges(&mut shape, 3.0d, 0u64);
-  mut segs = List[f64].empty();
+  var segs = List[f64].empty();
   flatten(&shape, &mut segs);
-  mut lo = new Pt(0.0d, 0.0d);
-  mut hi = new Pt(0.0d, 0.0d);
+  var lo = new Pt(0.0d, 0.0d);
+  var hi = new Pt(0.0d, 0.0d);
   shape.bounds(&mut lo, &mut hi);
-  imm pad = range * 0.5d + 5.0d;
-  imm w = u32.from((hi.x - lo.x + 2.0d * pad) * scale) + 1u32;
-  imm h = u32.from((hi.y - lo.y + 2.0d * pad) * scale) + 1u32;
-  imm frame = new Frame(w, h, scale, pad - lo.x, pad - lo.y, range);
-  mut field = generateMsdf(&shape, &frame);
+  let pad = range * 0.5d + 5.0d;
+  let w = u32.from((hi.x - lo.x + 2.0d * pad) * scale) + 1u32;
+  let h = u32.from((hi.y - lo.y + 2.0d * pad) * scale) + 1u32;
+  let frame = new Frame(w, h, scale, pad - lo.x, pad - lo.y, range);
+  var field = generateMsdf(&shape, &frame);
   if correct { correctErrors(&mut field, &shape, &frame); }
-  mut wrong = 0u32;
+  var wrong = 0u32;
   // Sample a grid of fractional texel positions
-  mut y = 0u32;
+  var y = 0u32;
   while y + 1u32 < h {
-    mut x = 0u32;
+    var x = 0u32;
     while x + 1u32 < w {
-      mut fy = 0u32;
+      var fy = 0u32;
       while fy < 4u32 {
-        mut fx = 0u32;
+        var fx = 0u32;
         while fx < 4u32 {
-          imm u = f64.from(fx) / 4.0d + 0.125d;
-          imm v = f64.from(fy) / 4.0d + 0.125d;
+          let u = f64.from(fx) / 4.0d + 0.125d;
+          let v = f64.from(fy) / 4.0d + 0.125d;
           // Bilinear interpolation of each channel, then the median
-          mut m = new Array[f64, 3] <- fill 0.0d;
-          mut ch = 0u32;
+          var m = new Array[f64, 3] <- fill 0.0d;
+          var ch = 0u32;
           while ch < 3u32 {
-            imm a = f64.from(field.texel(x, y, ch));
-            imm b = f64.from(field.texel(x + 1u32, y, ch));
-            imm c = f64.from(field.texel(x, y + 1u32, ch));
-            imm d = f64.from(field.texel(x + 1u32, y + 1u32, ch));
+            let a = f64.from(field.texel(x, y, ch));
+            let b = f64.from(field.texel(x + 1u32, y, ch));
+            let c = f64.from(field.texel(x, y + 1u32, ch));
+            let d = f64.from(field.texel(x + 1u32, y + 1u32, ch));
             m[usize.from(ch)] = (a * (1.0d - u) + b * u) * (1.0d - v) + (c * (1.0d - u) + d * u) * v;
             ch = ch + 1u32;
           }
-          imm med = new Rgb(m[0], m[1], m[2]).median();
-          imm p = frame.pointOf(f64.from(x) + u, f64.from(y) + v);
-          imm want = trueDistance(&segs, p);
+          let med = new Rgb(m[0], m[1], m[2]).median();
+          let p = frame.pointOf(f64.from(x) + u, f64.from(y) + v);
+          let want = trueDistance(&segs, p);
           // More than 1.5 texels from the outline, the side must agree
           if libc.fabs(want) > 0.3d / scale and ((med > 0.5d) != (want > 0.0d)) { wrong = wrong + 1u32; }
           fx = fx + 1u32;
@@ -299,32 +299,32 @@ fn bilinearSign(codepoint u32, scale f64, range f64, what &Array[u8], correct bo
 // (0.55, 0.55, 0.55) and b (0.9, 0.9, 0.9). Halfway between them the median is
 // then (0.55 + 0.9) / 2 = 0.725.
 fn correctionMechanics() {
-  mut data = List[f32].empty();
-  mut i = 0usize;
+  var data = List[f32].empty();
+  var i = 0usize;
   while i < 8usize * 6usize {
     data.push(0.9);
     data.push(0.9);
     data.push(0.9);
     i = i + 1usize;
   }
-  imm at = usize.from((2u32 * 8u32 + 2u32) * 3u32);
+  let at = usize.from((2u32 * 8u32 + 2u32) * 3u32);
   data.set(at, 0.55);
   data.set(at + 1usize, 0.0);
   data.set(at + 3usize, 0.0);
   data.set(at + 4usize, 0.95);
-  mut field = new Field(8u32, 6u32, data);
-  imm none = Shape.empty();
-  imm frame = new Frame(8u32, 6u32, 1.0d, 0.0d, 0.0d, 8.0d);
+  var field = new Field(8u32, 6u32, data);
+  let none = Shape.empty();
+  let frame = new Frame(8u32, 6u32, 1.0d, 0.0d, 0.0d, 8.0d);
   expectFloat(f64.from(field.median(2u32, 2u32)), 0.55d, 1.0e-6d, "hand field: a's median");
-  imm fixed = correctErrors(&mut field, &none, &frame);
+  let fixed = correctErrors(&mut field, &none, &frame);
   expectUInt(u64.from(fixed), 2u64, "hand field: a and b are replaced, nothing else");
   expectFloat(f64.from(field.texel(2u32, 2u32, 0u32)), 0.55d, 1.0e-6d, "hand field: a red");
   expectFloat(f64.from(field.texel(2u32, 2u32, 1u32)), 0.55d, 1.0e-6d, "hand field: a green is its median now");
   expectFloat(f64.from(field.texel(2u32, 2u32, 2u32)), 0.55d, 1.0e-6d, "hand field: a blue is its median now");
   expectFloat(f64.from(field.texel(3u32, 2u32, 0u32)), 0.9d, 1.0e-6d, "hand field: b red is its median now");
   expectFloat(f64.from(field.texel(3u32, 2u32, 1u32)), 0.9d, 1.0e-6d, "hand field: b green is its median now");
-  mut m = new Array[f64, 3] <- fill 0.0d;
-  mut ch = 0u32;
+  var m = new Array[f64, 3] <- fill 0.0d;
+  var ch = 0u32;
   while ch < 3u32 {
     m[usize.from(ch)] = (f64.from(field.texel(2u32, 2u32, ch)) + f64.from(field.texel(3u32, 2u32, ch))) * 0.5d;
     ch = ch + 1u32;
@@ -339,11 +339,11 @@ fn main() i32 {
   againstBruteForce(0x4Fu32, 0.05d, 120.0d, "O: sdf median equals the true distance", 0u32);
   againstBruteForce(0x49u32, 0.05d, 120.0d, "I: sdf median equals the true distance", 0u32);
   againstBruteForce(0x41u32, 0.05d, 120.0d, "A: sdf median equals the true distance", 0u32);
-  imm before = bilinearSign(0x41u32, 0.02d, 160.0d, "A", false);
-  imm after = bilinearSign(0x41u32, 0.02d, 160.0d, "A", true);
+  let before = bilinearSign(0x41u32, 0.02d, 160.0d, "A", false);
+  let after = bilinearSign(0x41u32, 0.02d, 160.0d, "A", true);
   expectUInt(u64.from(after), 0u64, "A, corrected: interpolated medians on the right side of the outline");
-  imm beforeO = bilinearSign(0x4Fu32, 0.02d, 160.0d, "O", false);
-  imm afterO = bilinearSign(0x4Fu32, 0.02d, 160.0d, "O", true);
+  let beforeO = bilinearSign(0x4Fu32, 0.02d, 160.0d, "O", false);
+  let afterO = bilinearSign(0x4Fu32, 0.02d, 160.0d, "O", true);
   expectUInt(u64.from(afterO), 0u64, "O, corrected: interpolated medians on the right side of the outline");
   expect(after <= before and afterO <= beforeO, "correction does not add wrong samples");
   correctionMechanics();

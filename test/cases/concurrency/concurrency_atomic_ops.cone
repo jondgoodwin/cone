@@ -1,6 +1,6 @@
 // core's Atomic[T] as the compiler sees it: every operation, in its everyday
 // form (sequentially consistent) and its 'Ordered' form, reached through
-// each kind of path a program holds an atomic value by -- a local, an 'imm'
+// each kind of path a program holds an atomic value by -- a local, a 'let'
 // local, a field of an 'imm' struct shared by two 'Rc[imm, T]' owners, a borrow,
 // an array element -- and a local counter bumped in a loop, which keeps its
 // address through optimization. The output is the assertion that each
@@ -33,7 +33,7 @@ fn show(label &str, n i64) {
 }
 
 fn everyday() {
-  imm a = Atomic[u64].of(10u64);
+  let a = Atomic[u64].of(10u64);
   a.store(12u64);
   show("load", i64.from(a.load()));
   show("swap was", i64.from(a.swap(20u64)));
@@ -42,8 +42,8 @@ fn everyday() {
   show("bitAnd was", i64.from(a.bitAnd(15u64)));
   show("bitOr was", i64.from(a.bitOr(48u64)));
   show("bitXor was", i64.from(a.bitXor(6u64)));
-  mut seen = 0u64;
-  mut ok = false;
+  var seen = 0u64;
+  var ok = false;
   seen, ok = a.compareSwap(48u64, 49u64);
   show("compareSwap saw", i64.from(seen));
   if ok {printStr("stored\n");}
@@ -54,7 +54,7 @@ fn everyday() {
 }
 
 fn ordered() {
-  imm a = Atomic[i32].of(0i32);
+  let a = Atomic[i32].of(0i32);
   a.storeOrdered(3i32, MemOrder.Release);
   show("loadOrdered", i64.from(a.loadOrdered(MemOrder.Acquire)));
   show("addOrdered was", i64.from(a.addOrdered(1i32, MemOrder.Relaxed)));
@@ -63,8 +63,8 @@ fn ordered() {
   show("bitAndOrdered was", i64.from(a.bitAndOrdered(4i32, MemOrder.Release)));
   show("bitOrOrdered was", i64.from(a.bitOrOrdered(3i32, MemOrder.Relaxed)));
   show("bitXorOrdered was", i64.from(a.bitXorOrdered(1i32, MemOrder.SeqCst)));
-  mut seen = 0i32;
-  mut ok = false;
+  var seen = 0i32;
+  var ok = false;
   seen, ok = a.compareSwapOrdered(6i32, 9i32, MemOrder.AcqRel, MemOrder.Acquire);
   show("compareSwapOrdered saw", i64.from(seen));
   if ok {printStr("stored\n");}
@@ -80,18 +80,18 @@ fn ordered() {
 // A field of an 'imm' struct changes through two 'Rc[imm, T]' owners and a
 // borrow, while the plain field beside it reads as always
 fn shared() {
-  imm s = new Rc[imm, Stats](7u32, Atomic[u64].of(0u64));
-  imm t = s;
+  let s = new Rc[imm, Stats](7u32, Atomic[u64].of(0u64));
+  let t = s;
   s.hits.add(1u64);
   t.hits.add(2u64);
-  imm r = &s.hits;
+  let r = &s.hits;
   r.add(4u64);
   show("shared hits", i64.from(t.hits.load()));
   show("shared name", i64.from(s.name));
 }
 
 fn board() {
-  imm b = new Board([Atomic[u32].of(0u32), Atomic[u32].of(0u32), Atomic[u32].of(0u32)]);
+  let b = new Board([Atomic[u32].of(0u32), Atomic[u32].of(0u32), Atomic[u32].of(0u32)]);
   b.slots[1].add(5u32);
   b.slots[2].sub(1u32);
   show("slot 0", i64.from(b.slots[0].load()));
@@ -102,8 +102,8 @@ fn board() {
 // A local changed only atomically keeps its address, so the count is right
 // after optimization, and the one holding it takes the number out
 fn counted(n u32) u32 {
-  mut c = Atomic[u32].of(0u32);
-  mut i = 0u32;
+  var c = Atomic[u32].of(0u32);
+  var i = 0u32;
   while i < n {
     c.add(2u32);
     i = i + 1u32;
@@ -122,7 +122,7 @@ fn main() {
   shared();
   board();
   show("counted", i64.from(counted(1000u32)));
-  imm x = Atomic[u64].of(41u64);
+  let x = Atomic[u64].of(41u64);
   relaxedAdd(&x);
   show("relaxedAdd", i64.from(x.load()));
 }

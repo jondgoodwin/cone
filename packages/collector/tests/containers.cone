@@ -27,16 +27,16 @@ struct Shelf {
 }
 alias ShelfRef = Gc[mut, Shelf];
 
-mut @threadlocal made = 0i64;
+var @threadlocal made = 0i64;
 fn leaf() Leaf {
   made = made + 1;
   new Leaf(made);
 }
 
 fn garbage() {
-  mut i = 0i64;
+  var i = 0i64;
   while i < 60 {
-    imm junk = new Leaf(i);
+    let junk = new Leaf(i);
     i = i + 1;
   }
 }
@@ -44,15 +44,15 @@ fn garbage() {
 // Leaves 1 to 50 in a list held in a local
 fn inLocal(mode &Array[u8]) {
   made = 0;
-  mut list = List[Leaf].empty();
-  mut i = 0;
+  var list = List[Leaf].empty();
+  var i = 0;
   while i < 50 {
     list.push(leaf());
     i = i + 1;
   }
   garbage();
-  mut sum = 0i64;
-  each v in list.iter() { imm c = *v; sum = sum + c.n; }
+  var sum = 0i64;
+  each v in list.iter() { let c = *v; sum = sum + c.n; }
   expectInt(sum, 1275, mode);
 }
 
@@ -60,8 +60,8 @@ fn inLocal(mode &Array[u8]) {
 // held by a 'Gc' object whose collections are filled after it is made
 fn inObject(mode &Array[u8]) {
   made = 0;
-  imm shelf = new ShelfRef(List[Leaf].empty(), Deque[Leaf].withCapacity(4usize), Dict[i64, Leaf].empty());
-  mut i = 0;
+  let shelf = new ShelfRef(List[Leaf].empty(), Deque[Leaf].withCapacity(4usize), Dict[i64, Leaf].empty());
+  var i = 0;
   while i < 40 {
     shelf.list.push(leaf());
     shelf.table.insert(i64.from(i), leaf());
@@ -71,22 +71,22 @@ fn inObject(mode &Array[u8]) {
   while i < 30 {
     shelf.ring.push(leaf());
     if i >= 3 {
-      imm gone = shelf.ring.popFront();
+      let gone = shelf.ring.popFront();
     }
     i = i + 1;
   }
   garbage();
-  mut sum = 0i64;
-  each v in shelf.list.iter() { imm c = *v; sum = sum + c.n; }
-  each v in shelf.table.values() { imm c = *v; sum = sum + c.n; }
-  each v in shelf.ring.items() { imm c = *v; sum = sum + c.n; }
+  var sum = 0i64;
+  each v in shelf.list.iter() { let c = *v; sum = sum + c.n; }
+  each v in shelf.table.values() { let c = *v; sum = sum + c.n; }
+  each v in shelf.ring.items() { let c = *v; sum = sum + c.n; }
   // The leaves made are numbered 1 upward: a list's and a table's, then the
   // ring's; the three the ring still holds are the last three made
-  mut expected = 0i64;
-  mut k = 1i64;
+  var expected = 0i64;
+  var k = 1i64;
   while k <= 110 { expected = expected + k; k = k + 1; }
   // the ring made 30 and gave up 27 of them, the first 27 of the ring's
-  mut gone = 0i64;
+  var gone = 0i64;
   k = 81;
   while k <= 107 { gone = gone + k; k = k + 1; }
   expectInt(sum, expected - gone, mode);

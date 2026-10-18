@@ -36,7 +36,7 @@ struct Got {
   pub capacity Atomic[u64];     // the buffer's capacity, as it came back
 }
 
-imm got Got;
+let got Got;
 
 fn @initpure init() {
   got = new Got(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
@@ -46,10 +46,10 @@ fn @initpure init() {
 
 // The Socket a Result holds, swapped out of it; Socket.none() for a failure
 fn socketOf(r Result[Socket, IoError]) Socket {
-  mut res = r;
-  mut s = Socket.none();
+  var res = r;
+  var s = Socket.none();
   match &mut res {
-    case mut ok &mut Ok {s <=> *ok;}
+    case var ok &mut Ok {s <=> *ok;}
     else {}
   }
   s;
@@ -57,7 +57,7 @@ fn socketOf(r Result[Socket, IoError]) Socket {
 
 fn same(a &Array[u8], b &Array[u8]) bool {
   if a.len != b.len {return false;}
-  mut i = 0usize;
+  var i = 0usize;
   while i < a.len {
     if a[i] != b[i] {return false;}
     i = i + 1usize;
@@ -67,7 +67,7 @@ fn same(a &Array[u8], b &Array[u8]) bool {
 
 fn codeOf[T](r Result[T, IoError]) u64 {
   match r {
-    case imm e Error {u64.from(e.code);}
+    case let e Error {u64.from(e.code);}
     else {0u64;}
   }
 }
@@ -76,14 +76,14 @@ actor Client {
   pool Pool;
 
   pub async do dial(self, port u16) {
-    imm c = await aio.connect(SocketAddr.localhost(port));
-    imm s = socketOf(c);
-    mut b = pool.mustTake(64usize);
+    let c = await aio.connect(SocketAddr.localhost(port));
+    let s = socketOf(c);
+    var b = pool.mustTake(64usize);
     b.append("hello, actor");
-    imm w = await s.write(b);
+    let w = await s.write(b);
     match w {
-      case imm n Ok {got.written.store(u64.from(n));}
-      case imm e Error {got.written.store(1000000u64 + u64.from(e.code));}
+      case let n Ok {got.written.store(u64.from(n));}
+      case let e Error {got.written.store(1000000u64 + u64.from(e.code));}
     }
   }
 }
@@ -92,33 +92,33 @@ actor Server {
   pool Pool;
 
   pub async do serve(self, client Client, done OneshotSender[u64]) {
-    imm l = await aio.listen(SocketAddr.localhost(0u16));
-    imm ls = socketOf(l);
-    imm a = await ls.localAddr();
-    mut port = 0u16;
+    let l = await aio.listen(SocketAddr.localhost(0u16));
+    let ls = socketOf(l);
+    let a = await ls.localAddr();
+    var port = 0u16;
     match a {
-      case imm addr Ok {port = addr.port();}
+      case let addr Ok {port = addr.port();}
       else {}
     }
     got.port.store(u64.from(port));
-    imm again = await aio.listen(SocketAddr.localhost(port));
+    let again = await aio.listen(SocketAddr.localhost(port));
     got.inUse.store(codeOf[Socket](again));
     client.dial(port);
-    imm ac = await ls.accept();
-    imm conn = socketOf(ac);
-    imm none = await conn.read(IoBuf.empty());
+    let ac = await ls.accept();
+    let conn = socketOf(ac);
+    let none = await conn.read(IoBuf.empty());
     got.noRoom.store(codeOf[IoBuf](none));
-    mut r = await conn.read(pool.mustTake(4096usize));
+    var r = await conn.read(pool.mustTake(4096usize));
     match &mut r {
-      case mut ok &mut Ok {
-        mut b = IoBuf.empty();
+      case var ok &mut Ok {
+        var b = IoBuf.empty();
         b <=> *ok;
         got.read.store(u64.from(b.len()));
         if same(b.view(), "hello, actor") {got.text.store(1u64);}
         b.clear();
-        imm rest = await conn.read(b);
+        let rest = await conn.read(b);
         match rest {
-          case imm end Ok {
+          case let end Ok {
             if end.len() == 0usize {got.ended.store(1u64);}
             got.capacity.store(u64.from(end.capacity()));
           }
@@ -127,19 +127,19 @@ actor Server {
       }
       else {}
     }
-    mut d = done;
+    var d = done;
     d.send(1u64);
   }
 }
 
 fn main() i32 {
   initAll();
-  mut tx OneshotSender[u64];
-  mut rx OneshotReceiver[u64];
+  var tx OneshotSender[u64];
+  var rx OneshotReceiver[u64];
   tx, rx = Oneshot[u64].make();
   {
-    imm client = new Client(Pool.make());
-    imm server = new Server(Pool.make());
+    let client = new Client(Pool.make());
+    let server = new Server(Pool.make());
     server.serve(client, tx);
   }
   match rx.recv() {

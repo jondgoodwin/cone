@@ -62,7 +62,7 @@ pub struct GpuMesh {
 
   // The bytes of the buffers it holds
   pub fn bufferBytes(self &) u64 {
-    mut n = 0u64;
+    var n = 0u64;
     if positions.isValid() { n = n + positions.size; }
     if normals.isValid() { n = n + normals.size; }
     if uvs.isValid() { n = n + uvs.size; }
@@ -93,14 +93,14 @@ pub struct GpuMesh {
 
 // The bytes of a list, for 'writeBuffer'
 fn bytesOf[T](list &List[T]) *u8 {
-  imm v = list.view();
+  let v = list.view();
   &v[0] as *u8;
 }
 
 // A buffer of 'size' bytes for 'usage', filled from 'data'; COPY_SRC too,
 // so what it holds can be read back
 fn filledBuffer(device &mut Device, data *u8, size u64, usage u32) Buffer {
-  mut b = device.createBuffer(size, usage | BUFFER_USAGE_COPY_DST | BUFFER_USAGE_COPY_SRC);
+  var b = device.createBuffer(size, usage | BUFFER_USAGE_COPY_DST | BUFFER_USAGE_COPY_SRC);
   device.queue.writeBuffer(&b, 0u64, data, size);
   b;
 }
@@ -118,12 +118,12 @@ fn boundingSphere(positions &Array[Vec3], center &mut Vec3, radius &mut f32) {
     *radius = 0.;
     return;
   }
-  imm box = Aabb3.fromPoints(positions);
-  imm c = (box.min + box.max) * 0.5;
-  mut r2 f32 = 0.;
-  mut i = 0usize;
+  let box = Aabb3.fromPoints(positions);
+  let c = (box.min + box.max) * 0.5;
+  var r2 f32 = 0.;
+  var i = 0usize;
   while i < positions.len {
-    imm d = positions[i].distanceSquared(c);
+    let d = positions[i].distanceSquared(c);
     if d > r2 { r2 = d; }
     i = i + 1usize;
   }
@@ -140,8 +140,8 @@ fn boundingHalf(positions &Array[Vec3]) Vec3 {
 // A mesh of triangles uploaded: normals made smooth if it has none, uvs of 0
 // if it has none
 fn uploadTriangles(device &mut Device, m &Mesh) GpuMesh {
-  mut g = GpuMesh.none();
-  imm n = m.positions.len();
+  var g = GpuMesh.none();
+  let n = m.positions.len();
   if n == 0usize or m.indices.len() == 0usize { return g; }
   g.vertexCount = u32.from(n);
   g.indexCount = u32.from(m.indices.len());
@@ -149,7 +149,7 @@ fn uploadTriangles(device &mut Device, m &Mesh) GpuMesh {
   if m.normals.len() == n {
     g.normals = filledBuffer(device, bytesOf[Vec3](&m.normals), u64.from(n) * 12u64, BUFFER_USAGE_VERTEX);
   } else {
-    mut withNormals = Mesh.empty();
+    var withNormals = Mesh.empty();
     withNormals.append(m);
     withNormals.computeSmoothNormals();
     g.normals = filledBuffer(device, bytesOf[Vec3](&withNormals.normals), u64.from(n) * 12u64, BUFFER_USAGE_VERTEX);
@@ -157,8 +157,8 @@ fn uploadTriangles(device &mut Device, m &Mesh) GpuMesh {
   if m.uvs.len() == n {
     g.uvs = filledBuffer(device, bytesOf[Vec2](&m.uvs), u64.from(n) * 8u64, BUFFER_USAGE_VERTEX);
   } else {
-    mut zeros = List[Vec2].withCapacity(n);
-    mut i = 0usize;
+    var zeros = List[Vec2].withCapacity(n);
+    var i = 0usize;
     while i < n {
       zeros.push(new Vec2(0., 0.));
       i = i + 1usize;
@@ -175,7 +175,7 @@ fn uploadTriangles(device &mut Device, m &Mesh) GpuMesh {
   if m.groups.len() == 0usize {
     g.groups.push(new Group(0u32, g.indexCount, 0u32));
   } else {
-    mut i = 0usize;
+    var i = 0usize;
     while i < m.groups.len() {
       g.groups.push(*m.groups[i]);
       i = i + 1usize;
@@ -193,8 +193,8 @@ pub const SKINNED_BOUNDS_SCALE f32 = 1.5;
 // and the skin's joints and weights (none, an unskinned mesh, if the skin
 // has not one entry a vertex)
 fn uploadSkinned(device &mut Device, m &Mesh, skin &Skin) GpuMesh {
-  mut g = uploadTriangles(device, m);
-  imm n = usize.from(g.vertexCount);
+  var g = uploadTriangles(device, m);
+  let n = usize.from(g.vertexCount);
   if n == 0usize or skin.joints.len() != n or skin.weights.len() != n { return g; }
   g.joints = filledBuffer(device, bytesOf[u32](&skin.joints), u64.from(n) * 4u64, BUFFER_USAGE_VERTEX);
   g.weights = filledBuffer(device, bytesOf[u32](&skin.weights), u64.from(n) * 4u64, BUFFER_USAGE_VERTEX);
@@ -205,7 +205,7 @@ fn uploadSkinned(device &mut Device, m &Mesh, skin &Skin) GpuMesh {
 
 // Lines uploaded: 'positions', and 'indices' two a line
 fn uploadLines(device &mut Device, positions &Array[Vec3], indices &Array[u32]) GpuMesh {
-  mut g = GpuMesh.none();
+  var g = GpuMesh.none();
   g.topology = PRIMITIVE_TOPOLOGY_LINE_LIST;
   if positions.len == 0usize or indices.len < 2usize { return g; }
   g.vertexCount = u32.from(positions.len);
@@ -221,11 +221,11 @@ fn uploadLines(device &mut Device, positions &Array[Vec3], indices &Array[u32]) 
 // The indices of a PolyMesh's edges, two an edge, into its positions: its
 // wireframe, as the faces are (quads stay quads), for 'addLines'
 pub fn polyEdges(pm &PolyMesh) List[u32] {
-  imm n = pm.edgeCount();
-  mut out = List[u32].withCapacity(n * 2usize);
-  mut e = 0usize;
+  let n = pm.edgeCount();
+  var out = List[u32].withCapacity(n * 2usize);
+  var e = 0usize;
   while e < n {
-    imm h = u32.from(e) * 2u32;
+    let h = u32.from(e) * 2u32;
     out.push(pm.fromVertex(h));
     out.push(pm.toVertex(h));
     e = e + 1usize;
@@ -313,7 +313,7 @@ pub struct LodChain {
   // its own: what a shadow pass draws when the level chosen has one (a card
   // casts no shadow)
   pub fn lastPlainLevel(self &, from usize) usize {
-    mut k = from;
+    var k = from;
     if k >= levels.len() { k = levels.len() - 1usize; }
     while k > 0usize and !self.materialOf(k).isNone() {
       k = k - 1usize;
@@ -331,7 +331,7 @@ pub struct LodChain {
 
   // Choose the level for an object drawn 'size' pixels across, answering it
   pub fn selectBySize(self &mut, size f32) usize {
-    imm n = levels.len();
+    let n = levels.len();
     if n == 0usize { return 0usize; }
     if current >= n { current = n - 1usize; }
     // Finer, while the size is well past the finer level's threshold

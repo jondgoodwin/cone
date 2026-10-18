@@ -28,53 +28,53 @@ import fs;
 // The test's folder: TEMP's absolute path and the name, after checking
 // that it is that and nothing shorter
 fn makeRoot(name &str) Path {
-  mut variable cstr = "TMPDIR";
+  var variable cstr = "TMPDIR";
   if isWindows() { variable = "TEMP"; }
-  imm temp = libc.getenv(variable);
+  let temp = libc.getenv(variable);
   require(temp != null or not isWindows(), "TEMP is set");
-  imm tempPath = if temp != null {Path.from(cstr.fromPtr(temp).view());} else {Path.from("/tmp");};
-  mut root = Path.from("");
+  let tempPath = if temp != null {Path.from(cstr.fromPtr(temp).view());} else {Path.from("/tmp");};
+  var root = Path.from("");
   match fs.absolute(&tempPath) {
-    case imm t Ok { root = t.join(name); }
+    case let t Ok { root = t.join(name); }
     case is Error { require(false, "TEMP has an absolute path"); }
   }
-  imm up = root.parent();
-  imm safe = root.isAbsolute() and root.view().endsWith(name) and up.view().len() > 3usize;
+  let up = root.parent();
+  let safe = root.isAbsolute() and root.view().endsWith(name) and up.view().len() > 3usize;
   require(safe, "the test's folder is under TEMP");
   root;
 }
 
 fn shown(root &Path, text &Array[u8]) String {
-  mut out = String.fromBytes(text);
+  var out = String.fromBytes(text);
   if not root.isEmpty() { out.replace(root.view(), "<root>" as &str); }
   out;
 }
 
 fn messageOf[T](root &Path, r Result[T, fs.FsError]) String {
   match r {
-    case imm e Error { imm m = e.message(); shown(root, m.view()); }
+    case let e Error { let m = e.message(); shown(root, m.view()); }
     case is Ok { String.from("<succeeded>"); }
   }
 }
 
 fn ok[T](r Result[T, fs.FsError], label &Array[u8]) bool {
-  imm m = messageOf("", r);
+  let m = messageOf("", r);
   expectStr(m.view(), "<succeeded>", label);
 }
 
 fn failsWith[T](root &Path, r Result[T, fs.FsError], want &Array[u8], label &Array[u8]) bool {
-  imm m = messageOf(root, r);
+  let m = messageOf(root, r);
   expectStr(m.view(), want, label);
 }
 
 // A listing shown on one line: each entry's path (the root as '<root>'),
 // then '/' for a folder, '@' for a link, nothing for a file, then ' '
 fn showEntries(root &Path, entries &List[fs.DirEntry]) String {
-  mut out = String.empty();
-  mut i = 0usize;
+  var out = String.empty();
+  var i = 0usize;
   while i < entries.len() {
-    imm e = entries[i];
-    imm p = shown(root, e.path.view());
+    let e = entries[i];
+    let p = shown(root, e.path.view());
     out.append(p.view());
     if e.isDir { out.append("/"); }
     if e.isLink { out.append("@"); }
@@ -87,10 +87,10 @@ fn showEntries(root &Path, entries &List[fs.DirEntry]) String {
 
 fn listingIs(root &Path, dir &Path, want &Array[u8], label &Array[u8]) {
   match fs.readDir(dir) {
-    case imm l Ok { imm s = showEntries(root, &l); expectStr(s.view(), want, label); }
-    case imm e Error {
-      imm m = e.message();
-      imm s = shown(root, m.view());
+    case let l Ok { let s = showEntries(root, &l); expectStr(s.view(), want, label); }
+    case let e Error {
+      let m = e.message();
+      let s = shown(root, m.view());
       expectStr(s.view(), want, label);
     }
   }
@@ -98,10 +98,10 @@ fn listingIs(root &Path, dir &Path, want &Array[u8], label &Array[u8]) {
 
 fn walkIs(root &Path, dir &Path, want &Array[u8], label &Array[u8]) {
   match fs.walk(dir) {
-    case imm l Ok { imm s = showEntries(root, &l); expectStr(s.view(), want, label); }
-    case imm e Error {
-      imm m = e.message();
-      imm s = shown(root, m.view());
+    case let l Ok { let s = showEntries(root, &l); expectStr(s.view(), want, label); }
+    case let e Error {
+      let m = e.message();
+      let s = shown(root, m.view());
       expectStr(s.view(), want, label);
     }
   }
@@ -110,36 +110,36 @@ fn walkIs(root &Path, dir &Path, want &Array[u8], label &Array[u8]) {
 fn touch(p &Path) { ok(fs.writeFile(p, "x"), "write a file"); }
 
 fn making(root &Path) {
-  imm one = root.join("one");
+  let one = root.join("one");
   ok(fs.makeDir(&one), "makeDir");
   expect(fs.isDir(&one), "made a folder");
   failsWith(root, fs.makeDir(&one), "makeDir <root>/one: File exists", "makeDir again");
   match fs.makeDir(&one) {
-    case imm e Error { expect(e.alreadyExists(), "makeDir again is alreadyExists"); }
+    case let e Error { expect(e.alreadyExists(), "makeDir again is alreadyExists"); }
     case is Ok { expect(false, "makeDir again fails"); }
   }
-  imm deep = root.join("two/three/four");
+  let deep = root.join("two/three/four");
   failsWith(root, fs.makeDir(&deep), "makeDir <root>/two/three/four: No such file or directory",
     "makeDir without its parent");
   ok(fs.makeDirAll(&deep), "makeDirAll");
   expect(fs.isDir(&deep), "made with its parents");
   ok(fs.makeDirAll(&deep), "makeDirAll of a folder there is success");
-  imm trailing = root.join(if isWindows() {"five\\six\\";} else {"five/six/";});
+  let trailing = root.join(if isWindows() {"five\\six\\";} else {"five/six/";});
   ok(fs.makeDirAll(&trailing), "makeDirAll with a trailing separator");
-  imm six = root.join("five/six");
+  let six = root.join("five/six");
   expect(fs.isDir(&six), "made through a trailing separator");
 
   // A file in the way
-  imm file = root.join("one/file");
+  let file = root.join("one/file");
   touch(&file);
-  imm under = root.join("one/file/sub");
+  let under = root.join("one/file/sub");
   failsWith(root, fs.makeDirAll(&under), "makeDirAll <root>/one/file: Not a directory",
     "makeDirAll through a file");
   failsWith(root, fs.makeDirAll(&file), "makeDirAll <root>/one/file: Not a directory",
     "makeDirAll over a file");
 
   // Removing: an empty folder, not one with something in it
-  imm two = root.join("two");
+  let two = root.join("two");
   failsWith(root, fs.removeDir(&two), "removeDir <root>/two: Directory not empty", "removeDir of a full folder");
   ok(fs.removeDir(&deep), "removeDir of an empty folder");
   expect(not fs.exists(&deep), "removed");
@@ -147,7 +147,7 @@ fn making(root &Path) {
     "removeDir of a folder not there");
   ok(fs.removeAll(&two), "removeAll of a tree");
   expect(not fs.exists(&two), "the tree is gone");
-  imm five = root.join("five");
+  let five = root.join("five");
   ok(fs.removeAll(&five), "removeAll of another");
   ok(fs.removeAll(&five), "removeAll of nothing there is success");
   ok(fs.removeAll(&file), "removeAll of a file");
@@ -156,27 +156,27 @@ fn making(root &Path) {
 }
 
 fn listing(root &Path) {
-  imm list = root.join("list");
+  let list = root.join("list");
   ok(fs.makeDir(&list), "make list");
   // Made in an order that is not the listing's
-  imm names = new List[String] <- String.from("日本"), String.from("b"), String.from("Big"),
+  let names = new List[String] <- String.from("日本"), String.from("b"), String.from("Big"),
     String.from("a.txt"), String.from("é"), String.from("a"), String.from("Z.txt");
-  mut i = 0usize;
+  var i = 0usize;
   while i < names.len() {
-    imm p = list.join(names[i].view());
+    let p = list.join(names[i].view());
     if names[i].endsWith(".txt") { touch(&p); } else { ok(fs.makeDir(&p), "make a folder to list"); }
     i = i + 1usize;
   }
-  imm inner = list.join("a/inner.txt");
+  let inner = list.join("a/inner.txt");
   touch(&inner);
-  imm deeper = list.join("é/日本/deep.txt");
-  imm nested = list.join("é/日本");
+  let deeper = list.join("é/日本/deep.txt");
+  let nested = list.join("é/日本");
   ok(fs.makeDir(&nested), "make é/日本");
   touch(&deeper);
 
   // Windows: names are one name whatever their ASCII case; POSIX: 'B' is
   // another folder (made, then removed, so the listings below read the same)
-  imm capitalB = list.join("B");
+  let capitalB = list.join("B");
   if isWindows() {
     failsWith(root, fs.makeDir(&capitalB), "makeDir <root>/list/B: File exists",
       "Windows: 'B' is the folder 'b'");
@@ -190,14 +190,14 @@ fn listing(root &Path) {
   listingIs(root, &list,
     "<root>/list/Big/ <root>/list/Z.txt <root>/list/a/ <root>/list/a.txt <root>/list/b/ <root>/list/é/ <root>/list/日本/ ",
     "readDir, sorted by bytes");
-  imm empty = list.join("b");
+  let empty = list.join("b");
   listingIs(root, &empty, "", "readDir of an empty folder");
-  imm aTxt = list.join("a.txt");
+  let aTxt = list.join("a.txt");
   listingIs(root, &aTxt, "readDir <root>/list/a.txt: Not a directory", "readDir of a file");
-  imm none = list.join("none");
+  let none = list.join("none");
   listingIs(root, &none, "readDir <root>/list/none: No such file or directory", "readDir of nothing");
   // A trailing separator ('\' on Windows, where it separates)
-  imm slashed = list.join(if isWindows() {"a\\";} else {"a/";});
+  let slashed = list.join(if isWindows() {"a\\";} else {"a/";});
   listingIs(root, &slashed, if isWindows() {"<root>/list/a\\inner.txt ";} else {"<root>/list/a/inner.txt ";},
     "readDir with a trailing separator");
 
@@ -215,9 +215,9 @@ fn listing(root &Path) {
 // made by the shell's 'ln -s'. Both paths are inside the test's folder, and
 // quoted, since TEMP may hold a space
 fn junction(link &Path, target &Path) bool {
-  mut command = String.empty();
+  var command = String.empty();
   if isWindows() {
-    mut paths = String.from(link.view());
+    var paths = String.from(link.view());
     paths.append("\" \"");
     paths.append(target.view());
     paths.replaceByte('/', '\\');
@@ -235,10 +235,10 @@ fn junction(link &Path, target &Path) bool {
 }
 
 fn links(root &Path) {
-  imm target = root.join("target");
-  imm kept = root.join("target/kept.txt");
-  imm tree = root.join("tree");
-  imm link = root.join("tree/link");
+  let target = root.join("target");
+  let kept = root.join("target/kept.txt");
+  let tree = root.join("tree");
+  let link = root.join("tree/link");
   ok(fs.makeDir(&target), "make target");
   touch(&kept);
   ok(fs.makeDir(&tree), "make tree");
@@ -248,7 +248,7 @@ fn links(root &Path) {
   walkIs(root, &tree, "<root>/tree/link@ ", "walk does not go into a junction");
   // stat follows it
   expect(fs.isDir(&link), "stat follows a junction to its folder");
-  imm through = root.join("tree/link/kept.txt");
+  let through = root.join("tree/link/kept.txt");
   expect(fs.isFile(&through), "a file through a junction");
 
   ok(fs.removeAll(&tree), "removeAll of a tree holding a junction");
@@ -287,85 +287,85 @@ fn guards(root &Path) {
   } else {
     failsWith(root, fs.removeAll("/.."), "removeAll /..: Invalid argument", "removeAll of a root's '..'");
   }
-  imm withDot = root.join("x/.");
+  let withDot = root.join("x/.");
   failsWith(root, fs.removeAll(&withDot), "removeAll <root>/x/.: Invalid argument", "removeAll ending in '.'");
 }
 
 fn currentFolder(root &Path) {
-  mut before = Path.from("");
+  var before = Path.from("");
   match fs.currentDir() {
-    case mut c Ok { before <=> c; }
+    case var c Ok { before <=> c; }
     case is Error { require(false, "currentDir"); }
   }
   expect(before.isAbsolute(), "currentDir is absolute");
   expect(not before.view().contains("\\"), "currentDir is normalized");
 
-  imm here = root.join("here é");
+  let here = root.join("here é");
   ok(fs.makeDir(&here), "make 'here é'");
   ok(fs.setCurrentDir(&here), "setCurrentDir");
   match fs.currentDir() {
-    case imm c Ok {
-      imm want = here.normalize();
+    case let c Ok {
+      let want = here.normalize();
       expectStr(c.view(), want.view(), "currentDir is where it was set");
     }
     case is Error { expect(false, "currentDir after setCurrentDir"); }
   }
   // Relative paths read from it
   ok(fs.writeFile("rel.txt", "relative"), "write a relative path");
-  imm rel = here.join("rel.txt");
+  let rel = here.join("rel.txt");
   expect(fs.isFile(&rel), "a relative path lands in the current folder");
 
   // absolute: the current folder's normalized path, then the name, '..' read
-  imm norm = here.normalize();
-  mut wantRel = String.from(norm.view());
+  let norm = here.normalize();
+  var wantRel = String.from(norm.view());
   wantRel.append("/rel.txt");
   match fs.absolute("rel.txt") {
-    case imm a Ok { expectStr(a.view(), wantRel.view(), "absolute of a name"); }
+    case let a Ok { expectStr(a.view(), wantRel.view(), "absolute of a name"); }
     case is Error { expect(false, "absolute of a name"); }
   }
-  imm dotted = Path.from(if isWindows() {"sub\\..\\.\\rel.txt";} else {"sub/.././rel.txt";});
+  let dotted = Path.from(if isWindows() {"sub\\..\\.\\rel.txt";} else {"sub/.././rel.txt";});
   match fs.absolute(&dotted) {
-    case imm a Ok { expectStr(a.view(), wantRel.view(), "absolute reads '.' and '..'"); }
+    case let a Ok { expectStr(a.view(), wantRel.view(), "absolute reads '.' and '..'"); }
     case is Error { expect(false, "absolute with '..'"); }
   }
   match fs.absolute("not-there.txt") {
-    case imm a Ok {
-      imm want = norm.join("not-there.txt");
+    case let a Ok {
+      let want = norm.join("not-there.txt");
       expectStr(a.view(), want.view(), "absolute of a name not there");
     }
     case is Error { expect(false, "absolute of a name not there"); }
   }
   match fs.absolute("") {
-    case imm a Ok { expectStr(a.view(), norm.view(), "absolute of \"\" is the current folder"); }
+    case let a Ok { expectStr(a.view(), norm.view(), "absolute of \"\" is the current folder"); }
     case is Error { expect(false, "absolute of \"\""); }
   }
   match fs.absolute("..") {
-    case imm a Ok {
-      imm want = root.normalize();
+    case let a Ok {
+      let want = root.normalize();
       expectStr(a.view(), want.view(), "absolute of '..'");
     }
     case is Error { expect(false, "absolute of '..'"); }
   }
-  imm elsewhere = Path.from(if isWindows() {"C:\\Some\\..\\Where";} else {"/Some/../Where";});
+  let elsewhere = Path.from(if isWindows() {"C:\\Some\\..\\Where";} else {"/Some/../Where";});
   match fs.absolute(&elsewhere) {
-    case imm a Ok { expectStr(a.view(), if isWindows() {"C:/Where";} else {"/Where";}, "absolute of an absolute path"); }
+    case let a Ok { expectStr(a.view(), if isWindows() {"C:/Where";} else {"/Where";}, "absolute of an absolute path"); }
     case is Error { expect(false, "absolute of an absolute path"); }
   }
-  imm missing = root.join("missing");
+  let missing = root.join("missing");
   failsWith(root, fs.setCurrentDir(&missing), "setCurrentDir <root>/missing: No such file or directory",
     "setCurrentDir to nothing");
 
   // Back where it started
   ok(fs.setCurrentDir(&before), "setCurrentDir back");
   match fs.currentDir() {
-    case imm c Ok { expectStr(c.view(), before.view(), "currentDir restored"); }
+    case let c Ok { expectStr(c.view(), before.view(), "currentDir restored"); }
     case is Error { expect(false, "currentDir restored"); }
   }
   ok(fs.removeAll(&here), "remove 'here é'");
 }
 
 fn main() i32 {
-  imm root = makeRoot("cone-fs-test-folders");
+  let root = makeRoot("cone-fs-test-folders");
   require(fs.removeAll(&root) is Ok, "clear what an earlier run left");
   require(fs.makeDir(&root) is Ok, "make the test's folder");
 

@@ -17,7 +17,7 @@
 // the next registration. Reading the flag is a load, up the chain of
 // parents: cancelled is a state, checked at every submit.
 
-imm groupSeq Atomic[u64];
+let groupSeq Atomic[u64];
 
 // A group's state, shared through an Arc by every copy of it and by every
 // operation in it. It declares Sendable, a promise taken on trust: the flag
@@ -35,7 +35,7 @@ struct GroupState is Sendable {
 
   // Its lists, changed under its lock through a shared reference
   fn lists(self &) &mut GroupState {
-    imm p = self as *GroupState;
+    let p = self as *GroupState;
     p as &mut GroupState;
   }
 }
@@ -67,7 +67,7 @@ pub struct CancelGroup {
 
   // A child whose deadline is the tighter of this group's and 'deadline'
   pub fn childUntil(self &, deadline Instant) CancelGroup {
-    imm d = if deadline < s.deadline {deadline;} else {s.deadline;};
+    let d = if deadline < s.deadline {deadline;} else {s.deadline;};
     CancelGroup.made(d, false, Some[CancelGroup](*self));
   }
 
@@ -83,9 +83,9 @@ pub struct CancelGroup {
   // once it was cancelled already (idempotent). From any thread
   pub fn cancel(self &) bool {
     if s.flag.swap(1u32) != 0u32 {return false;}
-    imm st = s.lists();
+    let st = s.lists();
     st.lock.lock();
-    mut k = 0usize;
+    var k = 0usize;
     while k < st.wakers.len() {
       st.wakers[k].signal(keyGroup);
       k = k + 1usize;
@@ -100,7 +100,7 @@ pub struct CancelGroup {
     if s.flag.load() != 0u32 {return true;}
     if s.shield {return false;}
     match s.parent {
-      case imm p Some {p.isCancelled();}
+      case let p Some {p.isCancelled();}
       else {false;}
     }
   }
@@ -123,17 +123,17 @@ pub struct CancelGroup {
   }
 
   fn registerChain(self &, loopId u64, w &Waker) {
-    imm st = s.lists();
+    let st = s.lists();
     st.lock.lock();
-    mut found = false;
-    mut k = 0usize;
+    var found = false;
+    var k = 0usize;
     while k < st.loops.len() {
       if *st.loops[k] == loopId {
         found = true;
         k = k + 1usize;
       } elif st.wakers[k].isGone() {
         // A loop that has died: its entry goes, last into its place
-        imm last = st.loops.len() - 1usize;
+        let last = st.loops.len() - 1usize;
         st.loops.swap(k, last);
         st.wakers.swap(k, last);
         st.loops.pop();
@@ -150,7 +150,7 @@ pub struct CancelGroup {
     st.lock.unlock();
     if not s.shield {
       match s.parent {
-        case imm p Some {p.registerChain(loopId, w);}
+        case let p Some {p.registerChain(loopId, w);}
         else {}
       }
     }

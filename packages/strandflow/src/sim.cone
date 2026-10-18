@@ -21,10 +21,10 @@ pub struct Medium {
 
   // The fluid's velocity at a place and a time
   pub fn velocityAt(self &, p Vec3, t f32) Vec3 {
-    mut v = flow.velocityAt(p, t);
+    var v = flow.velocityAt(p, t);
     if surge.lengthSquared() > 0. {
-      imm dir = surge.normalize();
-      imm phase = if surgeWavelength > 0.0001 { p.dot(dir) / surgeWavelength; } else { 0.; };
+      let dir = surge.normalize();
+      let phase = if surgeWavelength > 0.0001 { p.dot(dir) / surgeWavelength; } else { 0.; };
       v = v + surge * sin(2. * pi * (surgeHz * t - phase));
     }
     v;
@@ -69,7 +69,7 @@ pub struct StrandSim {
 
   // A group of strands of 'style' riding 'frame'; its number
   pub fn addGroup(self &mut, frame Transform3, style StrandStyle) usize {
-    mut body = SoftBody.empty();
+    var body = SoftBody.empty();
     body.frameFrom = frame;
     body.frameTo = frame;
     body.airDensity = 0.;
@@ -89,30 +89,30 @@ pub struct StrandSim {
   pub fn groupCount(self &) usize { groups.len(); }
 
   pub fn strandCount(self &) usize {
-    mut n = 0usize;
-    mut g = 0usize;
+    var n = 0usize;
+    var g = 0usize;
     while g < groups.len() { n = n + groups[g].strands.len(); g = g + 1usize; }
     n;
   }
 
   pub fn particleCount(self &) usize {
-    mut n = 0usize;
-    mut g = 0usize;
+    var n = 0usize;
+    var g = 0usize;
     while g < groups.len() { n = n + groups[g].body.pos.len(); g = g + 1usize; }
     n;
   }
 
   // Grow strands from roots (each names its group). The strands start in their styled shape, at rest.
   pub fn addStrands(self &mut, roots &List[StrandRoot]) {
-    mut i = 0usize;
+    var i = 0usize;
     while i < roots.len() {
       self.addStrand(roots[i]);
       i = i + 1usize;
     }
     // each group's wind lattice
-    mut g = 0usize;
+    var g = 0usize;
     while g < groups.len() {
-      imm b = &mut groups[g].body;
+      let b = &mut groups[g].body;
       if b.windGrid.len() == 0usize {
         b.setWindGrid(new Vec3(0., 0., 0.), 1., gridSize, gridSize, gridSize);
       }
@@ -122,37 +122,37 @@ pub struct StrandSim {
   }
 
   fn addStrand(self &mut, root &StrandRoot) {
-    imm g = root.group;
-    imm style = groups[g].style;
-    imm frame = groups[g].frame;
-    imm shape = styledCurve(root, &style);
-    mut world = List[Vec3].empty();
-    mut k = 0usize;
+    let g = root.group;
+    let style = groups[g].style;
+    let frame = groups[g].frame;
+    let shape = styledCurve(root, &style);
+    var world = List[Vec3].empty();
+    var k = 0usize;
     while k < shape.len() { world.push(frame.transformPoint(*shape[k])); k = k + 1usize; }
-    imm n = usize.from(style.segments);
+    let n = usize.from(style.segments);
     // a strand's mass a metre: its own, and the fluid it carries along (a cylinder's added mass equals the fluid it displaces)
-    imm lin = style.linearMass + medium.density * pi * style.dragRadius * style.dragRadius;
-    mut strandBody = rope(world.view(), lin, style.stretch, style.bend, style.thickness);
+    let lin = style.linearMass + medium.density * pi * style.dragRadius * style.dragRadius;
+    var strandBody = rope(world.view(), lin, style.stretch, style.bend, style.thickness);
     // softer toward the tip
-    mut c = 0usize;
+    var c = 0usize;
     while c < strandBody.curves.len() {
-      imm t = f32.from(c) / f32.from(n);
+      let t = f32.from(c) / f32.from(n);
       strandBody.curves[c].compliance = style.bend * (1. + (style.bendTip - 1.) * t);
       c = c + 1usize;
     }
-    imm count = strandBody.pos.len();
-    imm base = usize.from(groups[g].body.merge(strandBody));
+    let count = strandBody.pos.len();
+    let base = usize.from(groups[g].body.merge(strandBody));
     // the ghost and the root ride the frame
     groups[g].body.attachAt(u32.from(base), *shape[0usize]);
     groups[g].body.attachAt(u32.from(base + 1usize), *shape[1usize]);
-    mut j = 0usize;
+    var j = 0usize;
     while j < count {
       groups[g].goalLocal.push(*shape[j]);
-      imm t = if j < 2usize { 0.; } else { f32.from(j - 1usize) / f32.from(n); };
+      let t = if j < 2usize { 0.; } else { f32.from(j - 1usize) / f32.from(n); };
       groups[g].goalK.push(if j < 2usize { 0.; } else { style.goal + (style.goalTip - style.goal) * t; });
       j = j + 1usize;
     }
-    mut r = Rand.make(root.seed + 99u32);
+    var r = Rand.make(root.seed + 99u32);
     groups[g].strands.push(new Strand(base, count, root.normal, root.seed, 1. + 0.18 * r.signed()));
   }
 
@@ -160,9 +160,9 @@ pub struct StrandSim {
 
   // The shapes group 'g''s strands are pushed out of, in the world
   pub fn setColliders(self &mut, g usize, shapes &List[Collider]) {
-    imm b = &mut groups[g].body;
+    let b = &mut groups[g].body;
     b.colliders.clear();
-    mut i = 0usize;
+    var i = 0usize;
     while i < shapes.len() { b.colliders.push(*shapes[i]); i = i + 1usize; }
   }
 
@@ -173,7 +173,7 @@ pub struct StrandSim {
 
   // Advance 'dt' seconds
   pub fn step(self &mut, dt f32) {
-    mut g = 0usize;
+    var g = 0usize;
     while g < groups.len() {
       self.stepGroup(g, dt);
       g = g + 1usize;
@@ -182,24 +182,24 @@ pub struct StrandSim {
   }
 
   fn fillFlow(self &mut, g usize) {
-    imm b = &mut groups[g].body;
-    imm box = b.bounds();
-    imm lo = box.0 - new Vec3(0.05, 0.05, 0.05);
-    imm span = (box.1 + new Vec3(0.05, 0.05, 0.05)) - lo;
-    mut big = span.x;
+    let b = &mut groups[g].body;
+    let box = b.bounds();
+    let lo = box.0 - new Vec3(0.05, 0.05, 0.05);
+    let span = (box.1 + new Vec3(0.05, 0.05, 0.05)) - lo;
+    var big = span.x;
     if span.y > big { big = span.y; }
     if span.z > big { big = span.z; }
-    imm n = gridSize;
-    imm cell = big / f32.from(n - 1u32);
+    let n = gridSize;
+    let cell = big / f32.from(n - 1u32);
     b.gridOrigin = lo;
     b.gridCell = if cell > 0.001 { cell; } else { 0.001; };
-    mut z = 0u32;
+    var z = 0u32;
     while z < n {
-      mut y = 0u32;
+      var y = 0u32;
       while y < n {
-        mut x = 0u32;
+        var x = 0u32;
         while x < n {
-          imm p = lo + new Vec3(f32.from(x), f32.from(y), f32.from(z)) * b.gridCell;
+          let p = lo + new Vec3(f32.from(x), f32.from(y), f32.from(z)) * b.gridCell;
           b.windGrid.set(usize.from(z * n * n + y * n + x), medium.velocityAt(p, time));
           x = x + 1u32;
         }
@@ -214,8 +214,8 @@ pub struct StrandSim {
     self.fillFlow(g);
     // The substep is the solver's own unit and its result depends on it, so it is held: 'substeps' is the number in a sixtieth of a
     // second, and a step of another length takes as many as keep the substep the same (a step of 1/120 s takes half of them)
-    imm want = dt * 60. * f32.from(groups[g].style.substeps);
-    imm count = i32.from(libc.ceilf(want - 0.001));
+    let want = dt * 60. * f32.from(groups[g].style.substeps);
+    let count = i32.from(libc.ceilf(want - 0.001));
     groups[g].body.substeps = if count < 1 { 1u32; } else { u32.from(count); };
     groups[g].body.moveAnchors(groups[g].frame);
     groups[g].body.beginSteps(&mut workers, dt, new Vec3(0., 0., 0.));
@@ -234,17 +234,17 @@ pub struct StrandSim {
   // and in order, which a pass of the solver cannot do along a chain. The position change is not given to the velocity (the
   // solver has made it already), so it only removes error and puts no energy in.
   fn followTheLeader(self &mut, g usize) {
-    imm b = &mut groups[g].body;
-    mut s = 0usize;
+    let b = &mut groups[g].body;
+    var s = 0usize;
     while s < groups[g].strands.len() {
-      imm st = groups[g].strands[s];
-      mut j = 2usize;
+      let st = groups[g].strands[s];
+      var j = 2usize;
       while j < st.count {
-        imm i = st.first + j;
-        imm rest = (*groups[g].goalLocal[i] - *groups[g].goalLocal[i - 1usize]).length();
-        imm lead = *b.pos[i - 1usize];
-        imm d = *b.pos[i] - lead;
-        imm len = d.length();
+        let i = st.first + j;
+        let rest = (*groups[g].goalLocal[i] - *groups[g].goalLocal[i - 1usize]).length();
+        let lead = *b.pos[i - 1usize];
+        let d = *b.pos[i] - lead;
+        let len = d.length();
         if len > 0.000001 { b.pos.set(i, lead + d * (rest / len)); }
         j = j + 1usize;
       }
@@ -254,41 +254,41 @@ pub struct StrandSim {
 
   // After each substep: the fluid's drag on every free particle, and the style spring (impulses on the velocities)
   fn relax(self &mut, g usize) {
-    imm b = &mut groups[g].body;
-    imm style = groups[g].style;
-    imm h = b.substepSeconds();
-    imm fraction = f32.from(b.stepIndex) / f32.from(b.stepSubs);
-    imm frame = lerpTransform(&b.frameFrom, &b.frameTo, fraction);
-    imm grid = b.windGrid.view() as *Vec3;
-    imm inv = 1. / b.gridCell;
-    imm rho = medium.density;
-    imm width = 2. * style.dragRadius;
-    mut s = 0usize;
+    let b = &mut groups[g].body;
+    let style = groups[g].style;
+    let h = b.substepSeconds();
+    let fraction = f32.from(b.stepIndex) / f32.from(b.stepSubs);
+    let frame = lerpTransform(&b.frameFrom, &b.frameTo, fraction);
+    let grid = b.windGrid.view() as *Vec3;
+    let inv = 1. / b.gridCell;
+    let rho = medium.density;
+    let width = 2. * style.dragRadius;
+    var s = 0usize;
     while s < groups[g].strands.len() {
-      imm st = groups[g].strands[s];
-      mut j = 2usize;
+      let st = groups[g].strands[s];
+      var j = 2usize;
       while j < st.count {
-        imm i = st.first + j;
-        imm p = *b.pos[i];
-        imm prev = *b.pos[i - 1usize];
-        imm next = if j + 1usize < st.count { *b.pos[i + 1usize]; } else { p; };
-        imm span = next - prev;
-        imm tl = span.length();
-        imm t = if tl > 0.000001 { span * (1. / tl); } else { new Vec3(0., -1., 0.); };
-        imm ell = if j + 1usize < st.count { tl * 0.5; } else { tl; };
-        imm u = sampleWindGrid(grid, b.gridOrigin, inv, b.gridNx, b.gridNy, b.gridNz, p);
-        imm v = *b.vel[i];
-        imm vr = u - v;
-        imm along = t * vr.dot(t);
-        imm vperp = vr - along;
-        imm sp = vperp.length();
-        imm m = *b.mass[i];
+        let i = st.first + j;
+        let p = *b.pos[i];
+        let prev = *b.pos[i - 1usize];
+        let next = if j + 1usize < st.count { *b.pos[i + 1usize]; } else { p; };
+        let span = next - prev;
+        let tl = span.length();
+        let t = if tl > 0.000001 { span * (1. / tl); } else { new Vec3(0., -1., 0.); };
+        let ell = if j + 1usize < st.count { tl * 0.5; } else { tl; };
+        let u = sampleWindGrid(grid, b.gridOrigin, inv, b.gridNx, b.gridNy, b.gridNz, p);
+        let v = *b.vel[i];
+        let vr = u - v;
+        let along = t * vr.dot(t);
+        let vperp = vr - along;
+        let sp = vperp.length();
+        let m = *b.mass[i];
         // across the strand: relaxed towards the fluid's velocity; along it, a little (skin friction)
-        imm kappa = 0.5 * rho * style.dragCd * width * ell * sp / m;
-        imm kt = 0.04 * 0.5 * rho * style.dragCd * width * ell * along.length() / m;
-        mut dv = vperp * (1. - libc.expf(-kappa * h)) + along * (1. - libc.expf(-kt * h));
+        let kappa = 0.5 * rho * style.dragCd * width * ell * sp / m;
+        let kt = 0.04 * 0.5 * rho * style.dragCd * width * ell * along.length() / m;
+        var dv = vperp * (1. - libc.expf(-kappa * h)) + along * (1. - libc.expf(-kt * h));
         // the style spring
-        imm goal = frame.transformPoint(*groups[g].goalLocal[i]);
+        let goal = frame.transformPoint(*groups[g].goalLocal[i]);
         dv = dv + (goal - p) * (*groups[g].goalK[i] * h);
         b.vel.set(i, v + dv);
         j = j + 1usize;

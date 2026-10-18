@@ -52,12 +52,12 @@ pub struct ChallengeGate {
   // A gate with a key of 128 bits made from 'seed', which should be secret and
   // unpredictable (freshSeed())
   pub fn make(seed u64) ChallengeGate {
-    mut rng = Rng.make(seed);
+    var rng = Rng.make(seed);
     new ChallengeGate(rng.next(), rng.next());
   }
 
   fn cookie(self &, addr &str, salt u64, epoch i64) u64 {
-    mut m = List[u8].empty();
+    var m = List[u8].empty();
     putU64(&mut m, salt);
     putU64(&mut m, u64.from(epoch));
     putBytes(&mut m, addr);
@@ -69,12 +69,12 @@ pub struct ChallengeGate {
   // holds the datagram to send back.
   pub fn handle(self &, addr &str, data &Array[u8], now Instant, reply &mut List[u8]) GateVerdict {
     reply.clear();
-    mut c = PacketReader.start();
-    imm magic = c.rdU32(data);
-    imm kind = c.rdU8(data);
-    imm salt = c.rdU64(data);
+    var c = PacketReader.start();
+    let magic = c.rdU32(data);
+    let kind = c.rdU8(data);
+    let salt = c.rdU64(data);
     if not c.ok or magic != protocolId {return GateVerdict.Ignore;}
-    imm epoch = now.nanos() / epochNs;
+    let epoch = now.nanos() / epochNs;
     if kind == kindRequest {
       if data.len < handshakeSize {return GateVerdict.Ignore;}
       putU32(reply, protocolId);
@@ -85,10 +85,10 @@ pub struct ChallengeGate {
     }
     if kind == kindResponse {
       if data.len < handshakeSize {return GateVerdict.Ignore;}
-      imm got = c.rdU64(data);
+      let got = c.rdU64(data);
       if not c.ok {return GateVerdict.Ignore;}
       if got != self.cookie(addr, salt, epoch) and got != self.cookie(addr, salt, epoch - 1i64) {return GateVerdict.Ignore;}
-      imm session = salt ^ got;
+      let session = salt ^ got;
       putU32(reply, protocolId);
       putU8(reply, kindAccept);
       putU64(reply, session);
@@ -100,7 +100,7 @@ pub struct ChallengeGate {
   // The datagram that tells a client its connection was refused (the server
   // is full)
   pub fn denied(salt u64) List[u8] {
-    mut p = List[u8].withCapacity(13usize);
+    var p = List[u8].withCapacity(13usize);
     putU32(&mut p, protocolId);
     putU8(&mut p, kindDenied);
     putU64(&mut p, salt);
@@ -109,10 +109,10 @@ pub struct ChallengeGate {
 
   // The client salt in a Response datagram, or 0 if it is not one
   pub fn saltOf(data &Array[u8]) u64 {
-    mut c = PacketReader.start();
-    imm magic = c.rdU32(data);
-    imm kind = c.rdU8(data);
-    imm salt = c.rdU64(data);
+    var c = PacketReader.start();
+    let magic = c.rdU32(data);
+    let kind = c.rdU8(data);
+    let salt = c.rdU64(data);
     if not c.ok or magic != protocolId or kind != kindResponse {return 0u64;}
     salt;
   }
@@ -158,9 +158,9 @@ pub struct ClientHandshake {
   // When to call poll next: the next Request or Response is due, or the
   // attempt times out
   pub fn nextDeadline(self &) Instant {
-    mut at = startedAt + cfg.connectTimeoutMs * msNs2;
+    var at = startedAt + cfg.connectTimeoutMs * msNs2;
     if state == HandshakeState.Requesting or state == HandshakeState.Responding {
-      imm retry = lastSent + cfg.connectRetryMs * msNs2;
+      let retry = lastSent + cfg.connectRetryMs * msNs2;
       if retry < at {at = retry;}
     }
     Instant.fromNanos(at);
@@ -170,7 +170,7 @@ pub struct ClientHandshake {
   // every connectRetryMs until answered). The attempt fails when
   // connectTimeoutMs pass with no Accept.
   pub fn poll(self &mut, now Instant, out &mut List[List[u8]]) {
-    imm t = now.nanos();
+    let t = now.nanos();
     if state != HandshakeState.Requesting and state != HandshakeState.Responding {return;}
     if t - startedAt >= cfg.connectTimeoutMs * msNs2 {
       state = HandshakeState.Failed;
@@ -178,7 +178,7 @@ pub struct ClientHandshake {
     }
     if t - lastSent < cfg.connectRetryMs * msNs2 {return;}
     lastSent = t;
-    mut p = List[u8].withCapacity(handshakeSize);
+    var p = List[u8].withCapacity(handshakeSize);
     putU32(&mut p, protocolId);
     if state == HandshakeState.Requesting {
       putU8(&mut p, kindRequest);
@@ -198,13 +198,13 @@ pub struct ClientHandshake {
   // that packet to the connection, too.
   pub fn receive(self &mut, data &Array[u8]) HandshakeEvent {
     if state != HandshakeState.Requesting and state != HandshakeState.Responding {return HandshakeEvent.Nothing;}
-    mut c = PacketReader.start();
-    imm magic = c.rdU32(data);
-    imm kind = c.rdU8(data);
+    var c = PacketReader.start();
+    let magic = c.rdU32(data);
+    let kind = c.rdU8(data);
     if not c.ok or magic != protocolId {return HandshakeEvent.Nothing;}
     if kind == kindChallenge {
-      imm s = c.rdU64(data);
-      imm ck = c.rdU64(data);
+      let s = c.rdU64(data);
+      let ck = c.rdU64(data);
       if c.ok and s == salt and state == HandshakeState.Requesting {
         cookie = ck;
         session = salt ^ ck;
@@ -215,7 +215,7 @@ pub struct ClientHandshake {
     }
     if state != HandshakeState.Responding {return HandshakeEvent.Nothing;}
     if kind == kindAccept or kind == kindPayload {
-      imm s = c.rdU64(data);
+      let s = c.rdU64(data);
       if c.ok and s == session {
         state = HandshakeState.Connected;
         return HandshakeEvent.Connected;
@@ -223,7 +223,7 @@ pub struct ClientHandshake {
       return HandshakeEvent.Nothing;
     }
     if kind == kindDenied {
-      imm s = c.rdU64(data);
+      let s = c.rdU64(data);
       if c.ok and s == salt {
         state = HandshakeState.Failed;
         refused = true;

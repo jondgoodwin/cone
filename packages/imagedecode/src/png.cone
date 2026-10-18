@@ -25,10 +25,10 @@ const PngRgba = 6u8;
 
 // Adam7: each pass's first column and row, and the step between its pixels
 // (specification section 8.2)
-imm adamX0 Array[u32, 7] = [0u32, 4u32, 0u32, 2u32, 0u32, 1u32, 0u32];
-imm adamY0 Array[u32, 7] = [0u32, 0u32, 4u32, 0u32, 2u32, 0u32, 1u32];
-imm adamDx Array[u32, 7] = [8u32, 8u32, 4u32, 4u32, 2u32, 2u32, 1u32];
-imm adamDy Array[u32, 7] = [8u32, 8u32, 8u32, 4u32, 4u32, 2u32, 2u32];
+let adamX0 Array[u32, 7] = [0u32, 4u32, 0u32, 2u32, 0u32, 1u32, 0u32];
+let adamY0 Array[u32, 7] = [0u32, 0u32, 4u32, 0u32, 2u32, 0u32, 1u32];
+let adamDx Array[u32, 7] = [8u32, 8u32, 4u32, 4u32, 2u32, 2u32, 1u32];
+let adamDy Array[u32, 7] = [8u32, 8u32, 8u32, 4u32, 4u32, 2u32, 2u32];
 
 fn pngFail(why &str) Result[Raster, DecodeError] {
   Error[Raster, DecodeError](new DecodeError(String.from(why)));
@@ -48,10 +48,10 @@ fn pngChannels(ct u8) usize {
 
 // The Paeth predictor (specification 9.4)
 fn paeth(a i32, b i32, c i32) i32 {
-  imm p = a + b - c;
-  imm pa = if p > a {p - a;} else {a - p;};
-  imm pb = if p > b {p - b;} else {b - p;};
-  imm pc = if p > c {p - c;} else {c - p;};
+  let p = a + b - c;
+  let pa = if p > a {p - a;} else {a - p;};
+  let pb = if p > b {p - b;} else {b - p;};
+  let pc = if p > c {p - c;} else {c - p;};
   if pa <= pb and pa <= pc { return a; }
   if pb <= pc { return b; }
   c;
@@ -62,13 +62,13 @@ fn paeth(a i32, b i32, c i32) i32 {
 // previous unfiltered scanline's data, or 'noRow' for the first. bpp is the
 // bytes per complete pixel, at least 1. false on a filter type over 4.
 fn unfilterRow(buf &mut Array[u8], row usize, len usize, prev usize, bpp usize) bool {
-  imm ft = buf[row];
-  imm start = row + 1usize;
-  imm hasPrev = prev != noRow;
+  let ft = buf[row];
+  let start = row + 1usize;
+  let hasPrev = prev != noRow;
   if ft == 0u8 { return true; }
   if ft == 1u8 {
     // Sub: add the byte bpp to the left
-    mut i = bpp;
+    var i = bpp;
     while i < len {
       buf[start + i] = buf[start + i] + buf[start + i - bpp];
       i += 1usize;
@@ -78,7 +78,7 @@ fn unfilterRow(buf &mut Array[u8], row usize, len usize, prev usize, bpp usize) 
   if ft == 2u8 {
     // Up
     if hasPrev {
-      mut i = 0usize;
+      var i = 0usize;
       while i < len {
         buf[start + i] = buf[start + i] + buf[prev + i];
         i += 1usize;
@@ -88,21 +88,21 @@ fn unfilterRow(buf &mut Array[u8], row usize, len usize, prev usize, bpp usize) 
   }
   if ft == 3u8 {
     // Average of left and up (rounded down)
-    mut i = 0usize;
+    var i = 0usize;
     while i < len {
-      imm left = if i >= bpp {u32.from(buf[start + i - bpp]);} else {0u32;};
-      imm up = if hasPrev {u32.from(buf[prev + i]);} else {0u32;};
+      let left = if i >= bpp {u32.from(buf[start + i - bpp]);} else {0u32;};
+      let up = if hasPrev {u32.from(buf[prev + i]);} else {0u32;};
       buf[start + i] = buf[start + i] + u8.from((left + up) >> 1u32);
       i += 1usize;
     }
     return true;
   }
   if ft == 4u8 {
-    mut i = 0usize;
+    var i = 0usize;
     while i < len {
-      imm a = if i >= bpp {i32.from(buf[start + i - bpp]);} else {0i32;};
-      imm b = if hasPrev {i32.from(buf[prev + i]);} else {0i32;};
-      imm c = if i >= bpp and hasPrev {i32.from(buf[prev + i - bpp]);} else {0i32;};
+      let a = if i >= bpp {i32.from(buf[start + i - bpp]);} else {0i32;};
+      let b = if hasPrev {i32.from(buf[prev + i]);} else {0i32;};
+      let c = if i >= bpp and hasPrev {i32.from(buf[prev + i - bpp]);} else {0i32;};
       buf[start + i] = buf[start + i] + u8.from(paeth(a, b, c));
       i += 1usize;
     }
@@ -150,27 +150,27 @@ pub const maxPixels = 268435456usize;
 // Decode a PNG file's bytes
 pub fn decodePng(data &Array[u8]) Result[Raster, DecodeError] {
   if data.len < 33usize { return pngFail("png: the file is too short"); }
-  imm sig Array[u8, 8] = [137u8, 80u8, 78u8, 71u8, 13u8, 10u8, 26u8, 10u8];
-  mut s = 0usize;
+  let sig Array[u8, 8] = [137u8, 80u8, 78u8, 71u8, 13u8, 10u8, 26u8, 10u8];
+  var s = 0usize;
   while s < 8usize {
     if data[s] != sig[s] { return pngFail("png: not a PNG file (bad signature)"); }
     s += 1usize;
   }
-  imm crc = Crc32.make();
-  mut info = new PngInfo(0u32, 0u32, 0u8, 0u8, 0u8, List[u8].empty(), List[u8].empty(), false, 0u16, 0u16, 0u16, 0., false);
-  mut idat = List[u8].empty();
-  mut sawHeader = false;
-  mut sawEnd = false;
-  mut sawPlte = false;
-  mut pos = 8usize;
+  let crc = Crc32.make();
+  var info = new PngInfo(0u32, 0u32, 0u8, 0u8, 0u8, List[u8].empty(), List[u8].empty(), false, 0u16, 0u16, 0u16, 0., false);
+  var idat = List[u8].empty();
+  var sawHeader = false;
+  var sawEnd = false;
+  var sawPlte = false;
+  var pos = 8usize;
   while pos + 12usize <= data.len and not sawEnd {
-    imm len = usize.from(be32(data, pos));
-    imm tag = be32(data, pos + 4usize);
+    let len = usize.from(be32(data, pos));
+    let tag = be32(data, pos + 4usize);
     if len > 0x7FFFFFFFusize or pos + 12usize + len > data.len {
       return pngFail("png: a chunk runs past the end of the file");
     }
-    imm body = pos + 8usize;
-    imm want = be32(data, body + len);
+    let body = pos + 8usize;
+    let want = be32(data, body + len);
     if crc.update(0u32, data, pos + 4usize, body + len) != want {
       return pngFail("png: a chunk's CRC does not match");
     }
@@ -198,13 +198,13 @@ pub fn decodePng(data &Array[u8]) Result[Raster, DecodeError] {
       // PLTE
       if len % 3usize != 0usize or len == 0usize or len > 768usize { return pngFail("png: bad palette"); }
       info.palette.clear();
-      mut i = 0usize;
+      var i = 0usize;
       while i < len { info.palette.push(data[body + i]); i += 1usize; }
       sawPlte = true;
     } elif tag == 0x49444154u32 {
       // IDAT
       idat.reserve(len);
-      mut i = 0usize;
+      var i = 0usize;
       while i < len { idat.push(data[body + i]); i += 1usize; }
     } elif tag == 0x49454E44u32 {
       sawEnd = true;
@@ -212,7 +212,7 @@ pub fn decodePng(data &Array[u8]) Result[Raster, DecodeError] {
       // tRNS
       if info.colorType == PngPalette {
         info.trnsPalette.clear();
-        mut i = 0usize;
+        var i = 0usize;
         while i < len { info.trnsPalette.push(data[body + i]); i += 1usize; }
       } elif info.colorType == PngGray and len == 2usize {
         info.hasKey = true;
@@ -232,7 +232,7 @@ pub fn decodePng(data &Array[u8]) Result[Raster, DecodeError] {
     } else {
       // An unknown chunk: ancillary (bit 5 of its first letter set) is skipped,
       // a critical one cannot be
-      imm first = u8.from(tag >> 24u32);
+      let first = u8.from(tag >> 24u32);
       if (first & 32u8) == 0u8 { return pngFail("png: an unknown critical chunk"); }
     }
     pos = pos + 12usize + len;
@@ -241,37 +241,37 @@ pub fn decodePng(data &Array[u8]) Result[Raster, DecodeError] {
   if idat.len() == 0usize { return pngFail("png: no image data"); }
   if info.colorType == PngPalette and not sawPlte { return pngFail("png: a palette picture with no palette"); }
 
-  imm w = usize.from(info.width);
-  imm h = usize.from(info.height);
-  imm bitsPerPixel = pngChannels(info.colorType) * usize.from(info.depth);
-  imm bpp = if bitsPerPixel >= 8usize {bitsPerPixel / 8usize;} else {1usize;};
+  let w = usize.from(info.width);
+  let h = usize.from(info.height);
+  let bitsPerPixel = pngChannels(info.colorType) * usize.from(info.depth);
+  let bpp = if bitsPerPixel >= 8usize {bitsPerPixel / 8usize;} else {1usize;};
 
   // The size of the filtered data
-  mut total = 0usize;
+  var total = 0usize;
   if info.interlace == 0u8 {
     total = h * (rowBytes(&info, w) + 1usize);
   } else {
-    mut p = 0usize;
+    var p = 0usize;
     while p < 7usize {
-      imm pw = passSize(info.width, adamX0[p], adamDx[p]);
-      imm ph = passSize(info.height, adamY0[p], adamDy[p]);
+      let pw = passSize(info.width, adamX0[p], adamDx[p]);
+      let ph = passSize(info.height, adamY0[p], adamDy[p]);
       if pw > 0usize and ph > 0usize { total = total + ph * (rowBytes(&info, pw) + 1usize); }
       p += 1usize;
     }
   }
 
-  mut raw = List[u8].empty();
+  var raw = List[u8].empty();
   match zlibDecompress(idat.view(), total) {
-    case mut ok Ok { raw <=> ok; }
-    case imm e Error {
+    case var ok Ok { raw <=> ok; }
+    case let e Error {
       return Error[Raster, DecodeError](new DecodeError(e.reason.copy()));
     }
   }
   if raw.len() != total { return pngFail("png: the image data is the wrong size"); }
 
   // Output
-  imm sixteen = info.depth == 16u8;
-  mut out = Raster.empty();
+  let sixteen = info.depth == 16u8;
+  var out = Raster.empty();
   out.width = i32.from(w);
   out.height = i32.from(h);
   out.depth = if sixteen {16;} else {8;};
@@ -287,11 +287,11 @@ pub fn decodePng(data &Array[u8]) Result[Raster, DecodeError] {
       return pngFail("png: bad scanline filter");
     }
   } else {
-    mut off = 0usize;
-    mut p = 0usize;
+    var off = 0usize;
+    var p = 0usize;
     while p < 7usize {
-      imm pw = passSize(info.width, adamX0[p], adamDx[p]);
-      imm ph = passSize(info.height, adamY0[p], adamDy[p]);
+      let pw = passSize(info.width, adamX0[p], adamDx[p]);
+      let ph = passSize(info.height, adamY0[p], adamDy[p]);
       if pw > 0usize and ph > 0usize {
         if not pngPass(raw.viewMut(), off, &info, pw, ph, usize.from(adamX0[p]), usize.from(adamDx[p]),
           usize.from(adamY0[p]), usize.from(adamDy[p]), w, &mut out) {
@@ -317,16 +317,16 @@ fn passSize(n u32, start u32, step u32) usize {
 // picture, which is 'w' wide.
 fn pngPass(buf &mut Array[u8], off usize, info &PngInfo, pw usize, ph usize, x0 usize, dx usize, y0 usize,
   dy usize, w usize, out &mut Raster) bool {
-  imm rb = rowBytes(info, pw);
-  imm bitsPerPixel = pngChannels(info.colorType) * usize.from(info.depth);
-  imm bpp = if bitsPerPixel >= 8usize {bitsPerPixel / 8usize;} else {1usize;};
-  mut prev = noRow;
-  mut y = 0usize;
+  let rb = rowBytes(info, pw);
+  let bitsPerPixel = pngChannels(info.colorType) * usize.from(info.depth);
+  let bpp = if bitsPerPixel >= 8usize {bitsPerPixel / 8usize;} else {1usize;};
+  var prev = noRow;
+  var y = 0usize;
   while y < ph {
-    imm row = off + y * (rb + 1usize);
+    let row = off + y * (rb + 1usize);
     if not unfilterRow(buf, row, rb, prev, bpp) { return false; }
-    imm picY = y0 + y * dy;
-    imm dst = (picY * w + x0) * 4usize;
+    let picY = y0 + y * dy;
+    let dst = (picY * w + x0) * 4usize;
     if info.depth == 16u8 {
       convertRow16(buf, row + 1usize, info, pw, dst, dx * 4usize, out.pixels16.viewMut());
     } else {
@@ -341,13 +341,13 @@ fn pngPass(buf &mut Array[u8], off usize, info &PngInfo, pw usize, ph usize, x0 
 // Convert one unfiltered scanline of 'n' pixels at buf[src] into RGBA8 at
 // dst[at], each pixel 'step' bytes after the last
 fn convertRow8(buf &Array[u8], src usize, info &PngInfo, n usize, at usize, step usize, dst &mut Array[u8]) {
-  imm ct = info.colorType;
-  imm depth = usize.from(info.depth);
-  mut o = at;
-  mut x = 0usize;
+  let ct = info.colorType;
+  let depth = usize.from(info.depth);
+  var o = at;
+  var x = 0usize;
   if ct == PngRgba {
     while x < n {
-      imm s = src + x * 4usize;
+      let s = src + x * 4usize;
       dst[o] = buf[s];
       dst[o + 1usize] = buf[s + 1usize];
       dst[o + 2usize] = buf[s + 2usize];
@@ -356,16 +356,16 @@ fn convertRow8(buf &Array[u8], src usize, info &PngInfo, n usize, at usize, step
       x += 1usize;
     }
   } elif ct == PngRgb {
-    imm key = info.hasKey;
-    imm kr = u8.from(info.keyR & 255u16);
-    imm kg = u8.from(info.keyG & 255u16);
-    imm kb = u8.from(info.keyB & 255u16);
-    imm keyHigh = info.keyR > 255u16 or info.keyG > 255u16 or info.keyB > 255u16;
+    let key = info.hasKey;
+    let kr = u8.from(info.keyR & 255u16);
+    let kg = u8.from(info.keyG & 255u16);
+    let kb = u8.from(info.keyB & 255u16);
+    let keyHigh = info.keyR > 255u16 or info.keyG > 255u16 or info.keyB > 255u16;
     while x < n {
-      imm s = src + x * 3usize;
-      imm r = buf[s];
-      imm g = buf[s + 1usize];
-      imm b = buf[s + 2usize];
+      let s = src + x * 3usize;
+      let r = buf[s];
+      let g = buf[s + 1usize];
+      let b = buf[s + 2usize];
       dst[o] = r;
       dst[o + 1usize] = g;
       dst[o + 2usize] = b;
@@ -375,8 +375,8 @@ fn convertRow8(buf &Array[u8], src usize, info &PngInfo, n usize, at usize, step
     }
   } elif ct == PngGrayAlpha {
     while x < n {
-      imm s = src + x * 2usize;
-      imm g = buf[s];
+      let s = src + x * 2usize;
+      let g = buf[s];
       dst[o] = g;
       dst[o + 1usize] = g;
       dst[o + 2usize] = g;
@@ -387,22 +387,22 @@ fn convertRow8(buf &Array[u8], src usize, info &PngInfo, n usize, at usize, step
   } else {
     // Greyscale or palette: one sample of 'depth' bits a pixel, packed
     // most-significant bit first
-    imm isPal = ct == PngPalette;
-    imm mask = (1u32 << u32.from(depth)) - 1u32;
-    imm scale = 255u32 / mask;
-    imm palN = info.palette.len() / 3usize;
+    let isPal = ct == PngPalette;
+    let mask = (1u32 << u32.from(depth)) - 1u32;
+    let scale = 255u32 / mask;
+    let palN = info.palette.len() / 3usize;
     while x < n {
-      mut v = 0u32;
+      var v = 0u32;
       if depth == 8usize {
         v = u32.from(buf[src + x]);
       } else {
-        imm bit = x * depth;
-        imm byte = u32.from(buf[src + bit / 8usize]);
-        imm shift = 8u32 - u32.from(depth) - u32.from(bit % 8usize);
+        let bit = x * depth;
+        let byte = u32.from(buf[src + bit / 8usize]);
+        let shift = 8u32 - u32.from(depth) - u32.from(bit % 8usize);
         v = (byte >> shift) & mask;
       }
       if isPal {
-        imm i = usize.from(v);
+        let i = usize.from(v);
         if i < palN {
           dst[o] = *info.palette[i * 3usize];
           dst[o + 1usize] = *info.palette[i * 3usize + 1usize];
@@ -414,7 +414,7 @@ fn convertRow8(buf &Array[u8], src usize, info &PngInfo, n usize, at usize, step
         }
         dst[o + 3usize] = if i < info.trnsPalette.len() {*info.trnsPalette[i];} else {255u8;};
       } else {
-        imm g = u8.from(v * scale);
+        let g = u8.from(v * scale);
         dst[o] = g;
         dst[o + 1usize] = g;
         dst[o + 2usize] = g;
@@ -429,34 +429,34 @@ fn convertRow8(buf &Array[u8], src usize, info &PngInfo, n usize, at usize, step
 
 // The same for 16-bit samples (big-endian in the file), into RGBA16
 fn convertRow16(buf &Array[u8], src usize, info &PngInfo, n usize, at usize, step usize, dst &mut Array[u16]) {
-  imm ct = info.colorType;
-  mut o = at;
-  mut x = 0usize;
+  let ct = info.colorType;
+  var o = at;
+  var x = 0usize;
   while x < n {
     if ct == PngRgba {
-      imm s = src + x * 8usize;
+      let s = src + x * 8usize;
       dst[o] = be16(buf, s);
       dst[o + 1usize] = be16(buf, s + 2usize);
       dst[o + 2usize] = be16(buf, s + 4usize);
       dst[o + 3usize] = be16(buf, s + 6usize);
     } elif ct == PngRgb {
-      imm s = src + x * 6usize;
-      imm r = be16(buf, s);
-      imm g = be16(buf, s + 2usize);
-      imm b = be16(buf, s + 4usize);
+      let s = src + x * 6usize;
+      let r = be16(buf, s);
+      let g = be16(buf, s + 2usize);
+      let b = be16(buf, s + 4usize);
       dst[o] = r;
       dst[o + 1usize] = g;
       dst[o + 2usize] = b;
       dst[o + 3usize] = if info.hasKey and r == info.keyR and g == info.keyG and b == info.keyB {0u16;} else {65535u16;};
     } elif ct == PngGrayAlpha {
-      imm s = src + x * 4usize;
-      imm g = be16(buf, s);
+      let s = src + x * 4usize;
+      let g = be16(buf, s);
       dst[o] = g;
       dst[o + 1usize] = g;
       dst[o + 2usize] = g;
       dst[o + 3usize] = be16(buf, s + 2usize);
     } else {
-      imm g = be16(buf, src + x * 2usize);
+      let g = be16(buf, src + x * 2usize);
       dst[o] = g;
       dst[o + 1usize] = g;
       dst[o + 2usize] = g;

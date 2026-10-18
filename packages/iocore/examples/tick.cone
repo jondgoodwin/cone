@@ -32,19 +32,19 @@ extern {
 }
 
 fn main() i32 {
-  mut lp = Loop.mustMake();
-  mut out = List[Completion].empty();
+  var lp = Loop.mustMake();
+  var out = List[Completion].empty();
 
   // 1. The tick
-  imm start = Instant.now();
-  mut late = Histogram.make();
-  mut k = 1i64;
+  let start = Instant.now();
+  var late = Histogram.make();
+  var k = 1i64;
   lp.after(start + Duration.fromMillis(1i64), Target.Here(1u64));
   while k <= 2000i64 {
     lp.poll(forever(), &mut out);
-    mut j = 0usize;
+    var j = 0usize;
     while j < out.len() {
-      imm c = out[j];
+      let c = out[j];
       late.record((c.dequeued - (start + Duration.fromMillis(i64.from(c.token)))).nanos());
       k = k + 1i64;
       if k <= 2000i64 {lp.after(start + Duration.fromMillis(k), Target.Here(u64.from(k)));}
@@ -56,20 +56,20 @@ fn main() i32 {
   late.printLine("   lateness");
 
   // 2. Timeouts through the wheel
-  imm t0 = Instant.now();
-  mut i = 0i64;
+  let t0 = Instant.now();
+  var i = 0i64;
   while i < 2000i64 {
-    imm ms = 2i64 + (i * 37i64) % 2000i64;
+    let ms = 2i64 + (i * 37i64) % 2000i64;
     lp.after(t0 + Duration.fromMillis(ms), Target.Here(u64.from(ms)));
     i = i + 1i64;
   }
-  mut wl = Histogram.make();
-  mut got = 0u64;
+  var wl = Histogram.make();
+  var got = 0u64;
   while got < 2000u64 {
     lp.poll(forever(), &mut out);
-    mut j = 0usize;
+    var j = 0usize;
     while j < out.len() {
-      imm c = out[j];
+      let c = out[j];
       wl.record((c.dequeued - (t0 + Duration.fromMillis(i64.from(c.token)))).nanos());
       got = got + 1u64;
       j = j + 1usize;
@@ -80,23 +80,23 @@ fn main() i32 {
   wl.printLine("   lateness");
 
   // 3. The port's own timeout
-  mut entries = new Array[u8, 256] <- fill 0u8;
-  mut pl = Histogram.make();
-  mut n = 0u32;
-  mut w = 0u32;
+  var entries = new Array[u8, 256] <- fill 0u8;
+  var pl = Histogram.make();
+  var n = 0u32;
+  var w = 0u32;
   if isWindows() {
-    imm port = CreateIoCompletionPort(0xFFFFFFFFFFFFFFFFusize, 0usize, 0usize, 1u32);
+    let port = CreateIoCompletionPort(0xFFFFFFFFFFFFFFFFusize, 0usize, 0usize, 1u32);
     while w < 200u32 {
-      imm s = Instant.now();
+      let s = Instant.now();
       GetQueuedCompletionStatusEx(port, &mut entries as *u8, 4u32, &mut n, 1u32, 0i32);
       pl.record((s.elapsed() - Duration.fromMillis(1i64)).nanos());
       w = w + 1u32;
     }
     CloseHandle(port);
   } else {
-    imm ep = epoll_create1(0i32);
+    let ep = epoll_create1(0i32);
     while w < 200u32 {
-      imm s = Instant.now();
+      let s = Instant.now();
       epoll_wait(ep, &mut entries as *u8, 4i32, 1i32);
       pl.record((s.elapsed() - Duration.fromMillis(1i64)).nanos());
       w = w + 1u32;
@@ -108,8 +108,8 @@ fn main() i32 {
   pl.printLine("   lateness");
 
   // 4. A poll that waits for nothing
-  imm p0 = Instant.now();
-  mut q = 0u32;
+  let p0 = Instant.now();
+  var q = 0u32;
   while q < 100000u32 {
     lp.poll(Instant.now(), &mut out);
     q = q + 1u32;
@@ -117,7 +117,7 @@ fn main() i32 {
   printStr("4. poll(Instant.now()) with nothing ready: ");
   printUInt(u64.from(p0.elapsed().nanos()) / 100000u64);
   printStr(" ns a call\n");
-  imm c = lp.counters();
+  let c = lp.counters();
   printStr(if c.delivered == c.submitted {"   every timer answered once\n";} else {"   TIMERS MISSING\n";});
   printStr("   the timer's expiries ");
   printUInt(c.timerExpiries);

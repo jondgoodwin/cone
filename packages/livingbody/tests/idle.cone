@@ -38,23 +38,23 @@ fn testEnvelope() {
 }
 
 fn testShift() {
-  imm s = humanoid(1.75);
-  mut idle = IdleMotion.humanoid(1.75, 5u32);
-  mut changes = 0;
-  mut last = idle.shiftTo;
-  mut maxSide = 0.;
-  mut t = 0;
-  mut headRollWorst = 0.;
+  let s = humanoid(1.75);
+  var idle = IdleMotion.humanoid(1.75, 5u32);
+  var changes = 0;
+  var last = idle.shiftTo;
+  var maxSide = 0.;
+  var t = 0;
+  var headRollWorst = 0.;
   while t < 60 * 120 {
-    mut d = zeroPose(s.boneCount());
+    var d = zeroPose(s.boneCount());
     idle.update(1. / 60., 1., &mut d);
     if idle.shiftTo != last { changes = changes + 1; last = idle.shiftTo; }
-    imm side = idle.side();
+    let side = idle.side();
     if absf(side) > maxSide { maxSide = absf(side); }
     if idle.active < 0i32 {
       // with no gesture going, the pelvis roll less the counter-rolls is the head's roll: nothing
-      imm roll = side * radians(3.);
-      imm res = roll - 0.5 * roll - 0.4 * roll - 0.1 * roll;
+      let roll = side * radians(3.);
+      let res = roll - 0.5 * roll - 0.4 * roll - 0.1 * roll;
       if absf(res) > headRollWorst { headRollWorst = absf(res); }
       near((*d.locals[PELVIS]).translation.x, side * 0.035, 0.0001, "the pelvis is over the loaded foot");
     }
@@ -64,85 +64,85 @@ fn testShift() {
   expectBool(maxSide <= 1.0001, true, "the side stays within -1 to 1");
   near(headRollWorst, 0., 0.00001, "the counter-rolls bring the head level");
   // roll of the pelvis at full shift
-  mut idle2 = IdleMotion.humanoid(1.75, 5u32);
+  var idle2 = IdleMotion.humanoid(1.75, 5u32);
   idle2.shiftFrom = 1.;
   idle2.shiftTo = 1.;
   idle2.shiftStart = -100.;
   idle2.shiftNext = 1000.;
   idle2.nextFidget = 1000.;
-  mut d2 = zeroPose(s.boneCount());
+  var d2 = zeroPose(s.boneCount());
   idle2.update(1. / 60., 1., &mut d2);
   near(angleOf(d2.rotation(PELVIS)), radians(3.), 0.0001, "the pelvis rolls 3 degrees at full shift");
   near(angleOf(d2.rotation(SPINE)), radians(1.5), 0.0001, "the spine counters 1.5");
   near((*d2.locals[PELVIS]).translation.x, 0.035, 0.0001, "3.5 cm over");
   // walking
-  mut idle3 = IdleMotion.humanoid(1.75, 5u32);
+  var idle3 = IdleMotion.humanoid(1.75, 5u32);
   idle3.shiftFrom = 1.;
   idle3.shiftTo = 1.;
   idle3.shiftStart = -100.;
-  mut d3 = zeroPose(s.boneCount());
+  var d3 = zeroPose(s.boneCount());
   idle3.update(1. / 60., 0., &mut d3);
   near((*d3.locals[PELVIS]).translation.x, 0., 0.00001, "walking: no shift");
   near(angleOf(d3.rotation(PELVIS)), 0., 0.00001, "and no roll");
 }
 
 fn testFidgets() {
-  imm s = humanoid(1.75);
-  mut idle = IdleMotion.humanoid(1.75, 11u32);
-  mut starts = 0;
-  mut wasActive = false;
-  mut names = List[String].empty();
-  mut t = 0;
+  let s = humanoid(1.75);
+  var idle = IdleMotion.humanoid(1.75, 11u32);
+  var starts = 0;
+  var wasActive = false;
+  var names = List[String].empty();
+  var t = 0;
   while t < 60 * 200 {
-    mut d = zeroPose(s.boneCount());
+    var d = zeroPose(s.boneCount());
     idle.update(1. / 60., 1., &mut d);
-    imm now = idle.active >= 0i32;
+    let now = idle.active >= 0i32;
     if now and !wasActive { starts = starts + 1; names.push(idle.gestureName()); }
     wasActive = now;
     t = t + 1;
   }
   expectBool(starts >= 15 and starts <= 30, true, "200 s: 15 to 30 gestures");
-  mut distinct = 0;
-  mut i = 0usize;
+  var distinct = 0;
+  var i = 0usize;
   while i < names.len() {
-    mut seen = false;
-    mut j = 0usize;
+    var seen = false;
+    var j = 0usize;
     while j < i { if names[j].view() == names[i].view() { seen = true; } j = j + 1usize; }
     if !seen { distinct = distinct + 1; }
     i = i + 1usize;
   }
   expectBool(distinct >= 4, true, "and at least four different ones");
   // none while walking
-  mut walker = IdleMotion.humanoid(1.75, 11u32);
-  mut started = 0;
+  var walker = IdleMotion.humanoid(1.75, 11u32);
+  var started = 0;
   t = 0;
   while t < 60 * 100 {
-    mut d = zeroPose(s.boneCount());
+    var d = zeroPose(s.boneCount());
     walker.update(1. / 60., 0., &mut d);
     if walker.active >= 0i32 { started = started + 1; }
     t = t + 1;
   }
   expectInt(i64.from(started), 0i64, "walking: no gestures");
   // a gesture's peak: the shrug lifts both clavicles 1.6 cm, and asks for a deep breath
-  mut sh = IdleMotion.humanoid(1.75, 3u32);
+  var sh = IdleMotion.humanoid(1.75, 3u32);
   sh.active = 0i32;
   sh.gestureStart = 0.;
   sh.time = 0.75 - 1. / 60.;
   sh.shiftNext = 1000.;
   sh.nextFidget = 1000.;
-  mut d = zeroPose(s.boneCount());
+  var d = zeroPose(s.boneCount());
   sh.update(1. / 60., 1., &mut d);
   near((*d.locals[CLAVICLE_L]).translation.y, 0.016, 0.0005, "the shrug at its peak: 1.6 cm");
   near((*d.locals[CLAVICLE_R]).translation.y, 0.016, 0.0005, "both sides");
 }
 
 fn testAttention() {
-  mut a = Attention.make(AttentionParams.standard(), 21u32);
-  mut interests = List[Vec3].empty();
-  mut changes = 0;
-  mut near0 = 0;
-  mut maxYaw = 0.;
-  mut t = 0;
+  var a = Attention.make(AttentionParams.standard(), 21u32);
+  var interests = List[Vec3].empty();
+  var changes = 0;
+  var near0 = 0;
+  var maxYaw = 0.;
+  var t = 0;
   while t < 60 * 300 {
     if a.update(1. / 60., &interests) {
       changes = changes + 1;
@@ -156,10 +156,10 @@ fn testAttention() {
   expectBool(maxYaw <= 1.1001 and maxYaw > 0.8, true, "the widest look is about 1.1 rad");
   near(a.direction().length(), 1., 0.0001, "the direction is a unit vector");
   // with an interest
-  mut b = Attention.make(AttentionParams.standard(), 22u32);
+  var b = Attention.make(AttentionParams.standard(), 22u32);
   interests.push(new Vec3(0.5, 0., -0.8660254));
-  mut onIt = 0;
-  mut total = 0;
+  var onIt = 0;
+  var total = 0;
   t = 0;
   while t < 60 * 300 {
     if b.update(1. / 60., &interests) {

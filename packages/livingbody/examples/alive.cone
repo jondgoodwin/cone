@@ -50,7 +50,7 @@ const W = 640u32;
 const H = 512u32;
 
 fn cstrEquals(a *u8, b &str) bool {
-  mut i = 0usize;
+  var i = 0usize;
   while i < b.len() {
     if *(a + i) != b[i] { return false; }
     i = i + 1usize;
@@ -61,10 +61,10 @@ fn cstrEquals(a *u8, b &str) bool {
 // ------------------------------------------------------------------------------ timing
 
 fn sortInto(v &mut List[i64]) {
-  mut i = 1usize;
+  var i = 1usize;
   while i < v.len() {
-    imm x = *v[i];
-    mut j = i;
+    let x = *v[i];
+    var j = i;
     while j > 0usize and *v[j - 1usize] > x { v.set(j, *v[j - 1usize]); j = j - 1usize; }
     v.set(j, x);
     i = i + 1usize;
@@ -82,23 +82,23 @@ struct Costs {
   fn make() Costs { new Costs(List[Phase].empty()); }
 
   fn add(self &mut, name &str, micros i64) {
-    mut i = 0usize;
+    var i = 0usize;
     while i < phases.len() {
       if phases[i].name.view() == name { phases[i].micros.push(micros); return; }
       i = i + 1usize;
     }
-    mut p = new Phase(String.from(name), List[i64].empty());
+    var p = new Phase(String.from(name), List[i64].empty());
     p.micros.push(micros);
     phases.push(p);
   }
 
   fn report(self &mut, label &str) {
     printStr(label); print <- ": p50 microseconds a frame\n";
-    mut total i64 = 0i64;
-    mut i = 0usize;
+    var total i64 = 0i64;
+    var i = 0usize;
     while i < phases.len() {
       sortInto(&mut phases[i].micros);
-      imm m = *phases[i].micros[phases[i].micros.len() / 2usize];
+      let m = *phases[i].micros[phases[i].micros.len() / 2usize];
       total = total + m;
       print <- "  "; printStr(phases[i].name.view()); print <- " "; print <- m; print <- "\n";
       i = i + 1usize;
@@ -131,40 +131,40 @@ fn checkerImage() Image {
 fn slab(center Vec3, size Vec3) Mat4 { Mat4.fromTrs(center, Quat.identity(), size); }
 
 fn makeStage(device &mut Device) Stage {
-  imm outDesc = new TextureDescriptor(W, H, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
-  mut out = device.createTexture(&outDesc);
-  imm depthDesc = new TextureDescriptor(W, H, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
-  mut depth = device.createTexture(&depthDesc);
-  mut renderer = Renderer.create(device, TEXTURE_FORMAT_RGBA16_FLOAT, TEXTURE_FORMAT_DEPTH32_FLOAT);
-  mut post = Post.create(device, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, W, H);
-  mut queries = device.createQuerySet(QUERY_TYPE_TIMESTAMP, 2u32);
-  mut resolved = device.createBuffer(256u64, BUFFER_USAGE_QUERY_RESOLVE | BUFFER_USAGE_COPY_SRC);
-  mut tick = device.createBuffer(16u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
-  mut shot = device.createBuffer(u64.from(W) * u64.from(H) * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
-  mut sky = Sky.dusk(radians(48.), radians(215.));
+  let outDesc = new TextureDescriptor(W, H, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
+  var out = device.createTexture(&outDesc);
+  let depthDesc = new TextureDescriptor(W, H, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
+  var depth = device.createTexture(&depthDesc);
+  var renderer = Renderer.create(device, TEXTURE_FORMAT_RGBA16_FLOAT, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  var post = Post.create(device, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, W, H);
+  var queries = device.createQuerySet(QUERY_TYPE_TIMESTAMP, 2u32);
+  var resolved = device.createBuffer(256u64, BUFFER_USAGE_QUERY_RESOLVE | BUFFER_USAGE_COPY_SRC);
+  var tick = device.createBuffer(16u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  var shot = device.createBuffer(u64.from(W) * u64.from(H) * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  var sky = Sky.dusk(radians(48.), radians(215.));
   sky.zenith = new Color(0.14, 0.28, 0.62, 1.);
   sky.horizon = new Color(0.55, 0.62, 0.74, 1.);
   sky.sunColor = new Color(40., 36., 30., 1.);
   sky.glow = new Color(0.35, 0.28, 0.16, 1.);
   sky.ground = new Color(0.10, 0.12, 0.08, 1.);
   renderer.setSky(device, &sky);
-  imm light = sky.sunLight(new Color(2.2, 2.0, 1.75, 1.), new Color(0.08, 0.1, 0.14, 1.));
-  imm settings = ShadowSettings.medium();
+  let light = sky.sunLight(new Color(2.2, 2.0, 1.75, 1.), new Color(0.08, 0.1, 0.14, 1.));
+  let settings = ShadowSettings.medium();
   renderer.setShadows(device, &settings);
-  imm img = checkerImage();
-  imm tex = renderer.addTexture(device, &img);
-  mut gm = PbrMaterial.standard(new Color(1., 1., 1., 1.), 0., 0.9);
+  let img = checkerImage();
+  let tex = renderer.addTexture(device, &img);
+  var gm = PbrMaterial.standard(new Color(1., 1., 1., 1.), 0., 0.9);
   gm.texture = tex;
-  imm groundMat = renderer.addPbrMaterial(device, &gm);
-  imm gmesh = Mesh.cube(0.5);
-  imm groundMesh = renderer.addMesh(device, &gmesh);
-  mut morpher = Morpher.create(device);
+  let groundMat = renderer.addPbrMaterial(device, &gm);
+  let gmesh = Mesh.cube(0.5);
+  let groundMesh = renderer.addMesh(device, &gmesh);
+  var morpher = Morpher.create(device);
   new Stage(out, depth, renderer, post, queries, resolved, tick, shot, light, groundMesh, groundMat, morpher);
 }
 
 // One frame drawn (after the morph pre-pass); the GPU time of 'render' in ms, and the picture written if `name` is not empty
 fn drawFrame(device &mut Device, st &mut Stage, camera &Camera, list &DrawList, name &str) f64 {
-  mut encoder = device.createCommandEncoder();
+  var encoder = device.createCommandEncoder();
   st.morpher.update(device, &mut encoder, &st.renderer);
   encoder.writeTimestamp(&st.queries, 0u32);
   st.renderer.render(device, &mut encoder, &st.post.hdr, &st.depth, camera, &st.light, list);
@@ -176,17 +176,17 @@ fn drawFrame(device &mut Device, st &mut Stage, camera &Camera, list &DrawList, 
   device.queue.submit(encoder.finish());
   device.endFrame();
   device.waitIdle();
-  imm ticks = st.tick.mappedRange() as *u64;
-  imm ms = f64.from(*(ticks + 1usize) - *ticks) * f64.from(device.timestampPeriod) * 1.0e-6d;
+  let ticks = st.tick.mappedRange() as *u64;
+  let ms = f64.from(*(ticks + 1usize) - *ticks) * f64.from(device.timestampPeriod) * 1.0e-6d;
   if name.len() > 0usize {
-    imm image = Image.fromTexels(st.shot.mappedRange(), i32.from(W), i32.from(H), false);
+    let image = Image.fromTexels(st.shot.mappedRange(), i32.from(W), i32.from(H), false);
     if !image.save(&filepath.Path.from(name)) { print <- "COULD NOT WRITE "; printStr(name); print <- "\n"; }
   }
   ms;
 }
 
 fn fileName(dir &str, name &str) String {
-  mut s = String.from(dir);
+  var s = String.from(dir);
   s <- "/";
   s <- name;
   s <- ".bmp";
@@ -194,7 +194,7 @@ fn fileName(dir &str, name &str) String {
 }
 
 fn numbered(base &str, i i32) String {
-  mut s = String.from(base);
+  var s = String.from(base);
   s <- "-";
   if i < 10 { s <- "0"; }
   s <- i64.from(i);
@@ -202,7 +202,7 @@ fn numbered(base &str, i i32) String {
 }
 
 fn camera(eye Vec3, at Vec3, fov f32) Camera {
-  mut c = Camera.make();
+  var c = Camera.make();
   c.fov = radians(fov);
   c.near = 0.05;
   c.far = 200.;
@@ -251,14 +251,14 @@ struct Person {
 // Where the hair grows: the crown and the sides and back of the head, not the face (model space of the 1.75 m mannequin,
 // whose head joint is at y 1.5225 and whose head tube rises 0.166 m from it)
 fn scalp(p Vec3, n Vec3) f32 {
-  imm lower = if p.z > 0.02 { 1.57; } else { 1.60; };
-  imm up = smoothstep(lower, lower + 0.03, p.y);
-  imm forehead = if p.z < -0.04 { smoothstep(1.645, 1.67, p.y); } else { 1.; };
+  let lower = if p.z > 0.02 { 1.57; } else { 1.60; };
+  let up = smoothstep(lower, lower + 0.03, p.y);
+  let forehead = if p.z < -0.04 { smoothstep(1.645, 1.67, p.y); } else { 1.; };
   up * forehead;
 }
 
 fn regionTable() List[SoftRegion] {
-  mut r = List[SoftRegion].empty();
+  var r = List[SoftRegion].empty();
   // the belly: below the chest, in front, breathing with the belly and lagging at 3 Hz
   r.push(SoftRegion.make("belly", SPINE, new Vec3(0., 0.03, 0.), new Vec3(0., 0., -1.), new Vec3(0.17, 0.10, 0.11))
     .breathing(REGION_BELLY, 1.).jiggling(3., 0.2, 0.03, new Vec3(0.6, 1., 0.8)));
@@ -273,8 +273,8 @@ fn regionTable() List[SoftRegion] {
 
 // The posture layer's deltas: neutral, slumped, bent over with the hands towards the knees
 fn postureClip(kind i32, count usize) Clip {
-  mut p = zeroPose(count);
-  imm x = new Vec3(1., 0., 0.);
+  var p = zeroPose(count);
+  let x = new Vec3(1., 0., 0.);
   if kind == 1 {
     deltaRotate(&mut p, SPINE, Quat.angleAxis(radians(-9.), x));
     deltaRotate(&mut p, CHEST, Quat.angleAxis(radians(-7.), x));
@@ -294,110 +294,110 @@ fn postureClip(kind i32, count usize) Clip {
     deltaRotate(&mut p, FOREARM_R, Quat.angleAxis(radians(16.), x));
     deltaTranslate(&mut p, PELVIS, new Vec3(0., -0.03, 0.));
   }
-  mut c = Clip.make(1., true);
+  var c = Clip.make(1., true);
   c.addKey(0., &p);
   c;
 }
 
 fn makePerson(device &mut Device, st &mut Stage, seed u32) Person {
-  mut rig = humanoidMannequin(1.75);
-  imm skel = humanoid(1.75);
-  imm regions = regionTable();
-  imm tg = buildRegionTargets(&rig.mesh, &rig.restModels, &regions);
-  imm nTargets = tg.count();
-  imm sr = SoftRegions.make(regionTable(), tg, &rig.restModels);
-  imm life = LivingHumanoid.make(&skel, 1.75, ExertionParams.quick(), seed, sr);
+  var rig = humanoidMannequin(1.75);
+  let skel = humanoid(1.75);
+  let regions = regionTable();
+  let tg = buildRegionTargets(&rig.mesh, &rig.restModels, &regions);
+  let nTargets = tg.count();
+  let sr = SoftRegions.make(regionTable(), tg, &rig.restModels);
+  let life = LivingHumanoid.make(&skel, 1.75, ExertionParams.quick(), seed, sr);
   // the morph set for the body: the regions' targets
-  mut mt = MorphTargets.empty(rig.mesh.positions.len());
-  imm noTan = List[Vec3].empty();
-  mut t = 0usize;
+  var mt = MorphTargets.empty(rig.mesh.positions.len());
+  let noTan = List[Vec3].empty();
+  var t = 0usize;
   while t < nTargets {
     mt.addSparse(&life.regions.tg.targets.indicesOf(t), &life.regions.tg.targets.positionsOf(t), &life.regions.tg.targets.normalsOf(t), &noTan);
     t = t + 1usize;
   }
-  imm set = st.morpher.addSet(device, &mt, &rig.mesh);
-  imm baseMesh = st.renderer.addSkinnedMesh(device, &rig.mesh, &rig.skin);
-  mut enc0 = device.createCommandEncoder();
-  imm copy = st.morpher.addCopy(device, &mut enc0, &mut st.renderer, baseMesh, set, false);
+  let set = st.morpher.addSet(device, &mt, &rig.mesh);
+  let baseMesh = st.renderer.addSkinnedMesh(device, &rig.mesh, &rig.skin);
+  var enc0 = device.createCommandEncoder();
+  let copy = st.morpher.addCopy(device, &mut enc0, &mut st.renderer, baseMesh, set, false);
   device.queue.submit(enc0.finish());
   device.endFrame();
   device.waitIdle();
-  mut bm = PbrMaterial.standard(new Color(0.74, 0.55, 0.44, 1.), 0., 0.55);
-  imm bodyMat = st.renderer.addPbrMaterial(device, &bm);
+  var bm = PbrMaterial.standard(new Color(0.74, 0.55, 0.44, 1.), 0., 0.55);
+  let bodyMat = st.renderer.addPbrMaterial(device, &bm);
   // the posture state machine: upright, or tired (a blend space of the deltas, by how winded)
-  imm zero = zeroPose(skel.boneCount());
-  mut anim = Animator.make(&zero);
-  imm cNeutral = anim.addClip(postureClip(0, skel.boneCount()));
-  imm cSlump = anim.addClip(postureClip(1, skel.boneCount()));
-  imm cBent = anim.addClip(postureClip(2, skel.boneCount()));
-  mut space = BlendSpace1D.empty();
+  let zero = zeroPose(skel.boneCount());
+  var anim = Animator.make(&zero);
+  let cNeutral = anim.addClip(postureClip(0, skel.boneCount()));
+  let cSlump = anim.addClip(postureClip(1, skel.boneCount()));
+  let cBent = anim.addClip(postureClip(2, skel.boneCount()));
+  var space = BlendSpace1D.empty();
   space.add(0., postureClip(0, skel.boneCount()));
   space.add(0.55, postureClip(1, skel.boneCount()));
   space.add(1., postureClip(2, skel.boneCount()));
-  imm iSpace = anim.addSpace(space);
-  imm pWinded = anim.addParam(0.);
-  imm pSpeed = anim.addParam(0.);
-  imm sUpright = anim.addClipState(cNeutral, 1.);
-  imm sTired = anim.addSpaceState(iSpace, pWinded, 1.);
-  imm toTired = anim.addTransition(i32.from(sUpright), sTired, 1.4, -1.);
+  let iSpace = anim.addSpace(space);
+  let pWinded = anim.addParam(0.);
+  let pSpeed = anim.addParam(0.);
+  let sUpright = anim.addClipState(cNeutral, 1.);
+  let sTired = anim.addSpaceState(iSpace, pWinded, 1.);
+  let toTired = anim.addTransition(i32.from(sUpright), sTired, 1.4, -1.);
   anim.addCondition(toTired, pWinded, CMP_GREATER, 0.45);
   anim.addCondition(toTired, pSpeed, CMP_LESS, 0.3);
-  imm toUpright = anim.addTransition(i32.from(sTired), sUpright, 2.5, -1.);
+  let toUpright = anim.addTransition(i32.from(sTired), sUpright, 2.5, -1.);
   anim.addCondition(toUpright, pWinded, CMP_LESS, 0.2);
-  mut walker = Walker.make(1.75, seed);
+  var walker = Walker.make(1.75, seed);
   walker.ownIdle = false;
-  imm rp = skel.restPose();
+  let rp = skel.restPose();
   // the hair: strands rooted on the scalp in the head bone's frame, a gusty breeze
-  mut hairStyle = StrandStyle.hair();
+  var hairStyle = StrandStyle.hair();
   hairStyle.length = 0.34;
   hairStyle.cardWidth = 0.034;
   hairStyle.cardTipWidth = 0.013;
   hairStyle.rootHold = 0.04;
-  mut sim = StrandSim.make(Medium.air(WindField.breeze(new Vec3(0.9, 0., 0.5))), 1u32);
-  imm headRest = *rig.restModels[HEAD];
-  imm hg = sim.addGroup(headRest, hairStyle);
-  imm roots0 = rootsOnMesh(hg, &rig.mesh, 320usize, &scalp, new Vec3(0., -1., 0.35), 0.9, 77u32);
-  mut roots = List[StrandRoot].empty();
-  imm inv = headRest.inverse();
-  mut ri = 0usize;
+  var sim = StrandSim.make(Medium.air(WindField.breeze(new Vec3(0.9, 0., 0.5))), 1u32);
+  let headRest = *rig.restModels[HEAD];
+  let hg = sim.addGroup(headRest, hairStyle);
+  let roots0 = rootsOnMesh(hg, &rig.mesh, 320usize, &scalp, new Vec3(0., -1., 0.35), 0.9, 77u32);
+  var roots = List[StrandRoot].empty();
+  let inv = headRest.inverse();
+  var ri = 0usize;
   while ri < roots0.len() {
-    imm r = roots0[ri];
+    let r = roots0[ri];
     roots.push(new StrandRoot(hg, inv.transformPoint(r.pos), (inv.rotation * r.dir).normalize(), (inv.rotation * r.normal).normalize(), r.seed));
     ri = ri + 1usize;
   }
   sim.addStrands(&roots);
-  imm cnt = cardCounts(&sim);
-  imm hairMesh = st.renderer.addDynamicMesh(device, u32.from(cnt.0), u32.from(cnt.1));
-  imm fibres = paintFibers(4, 64, 256, 14, 5u32);
-  mut img = new Image(fibres.width, fibres.height, 4, List[u8].empty());
-  mut q = 0usize;
+  let cnt = cardCounts(&sim);
+  let hairMesh = st.renderer.addDynamicMesh(device, u32.from(cnt.0), u32.from(cnt.1));
+  let fibres = paintFibers(4, 64, 256, 14, 5u32);
+  var img = new Image(fibres.width, fibres.height, 4, List[u8].empty());
+  var q = 0usize;
   while q < fibres.rgba.len() { img.pixels.push(*fibres.rgba[q]); q = q + 1usize; }
-  imm hairTex = st.renderer.addCutoutTexture(device, &img, 0.45);
-  mut hm = PbrMaterial.standard(new Color(0.34, 0.17, 0.07, 1.), 0., 0.6);
+  let hairTex = st.renderer.addCutoutTexture(device, &img, 0.45);
+  var hm = PbrMaterial.standard(new Color(0.34, 0.17, 0.07, 1.), 0., 0.6);
   hm.texture = hairTex;
   hm.alphaMode = ALPHA_MASK;
   hm.alphaCutoff = 0.45;
   hm.specularScale = 0.35;
-  imm hairMat = st.renderer.addPbrMaterial(device, &hm);
+  let hairMat = st.renderer.addPbrMaterial(device, &hm);
   // which bones the hair meets
-  mut seen = List[bool].empty();
-  mut b = 0usize;
+  var seen = List[bool].empty();
+  var b = 0usize;
   while b < rig.boneCount() {
     seen.push(b == HEAD or b == NECK or b == CHEST);
     b = b + 1usize;
   }
   // eyes: two spheres and their pupils, on the head bone, turned by the face rig
-  imm eyeMesh = st.renderer.addMesh(device, &Mesh.sphere(0.0155, 16));
-  imm pupilMesh = st.renderer.addMesh(device, &Mesh.sphere(0.0072, 12));
-  mut em = PbrMaterial.standard(new Color(0.92, 0.9, 0.86, 1.), 0., 0.25);
+  let eyeMesh = st.renderer.addMesh(device, &Mesh.sphere(0.0155, 16));
+  let pupilMesh = st.renderer.addMesh(device, &Mesh.sphere(0.0072, 12));
+  var em = PbrMaterial.standard(new Color(0.92, 0.9, 0.86, 1.), 0., 0.25);
   em.clearcoat = 1.;
   em.clearcoatRoughness = 0.04;
-  imm eyeMat = st.renderer.addPbrMaterial(device, &em);
-  mut pm = PbrMaterial.standard(new Color(0.03, 0.025, 0.02, 1.), 0., 0.1);
+  let eyeMat = st.renderer.addPbrMaterial(device, &em);
+  var pm = PbrMaterial.standard(new Color(0.03, 0.025, 0.02, 1.), 0., 0.1);
   pm.clearcoat = 1.;
   pm.clearcoatRoughness = 0.03;
-  imm pupilMat = st.renderer.addPbrMaterial(device, &pm);
-  imm socket = skel.sockets[SOCKET_EYE].offset.translation;
+  let pupilMat = st.renderer.addPbrMaterial(device, &pm);
+  let socket = skel.sockets[SOCKET_EYE].offset.translation;
   new Person(rig, walker, life, anim, pWinded, pSpeed, copy, st.morpher.mesh(copy), bodyMat, rp.copy(), List[Transform3].empty(), rp.copy(),
     List[Transform3].empty(), List[Transform3].empty(), List[Mat4].empty(), List[LimbPin].empty(), nTargets, 0u32,
     sim, hairMesh, hairMat, Mesh.empty(), seen, List[Collider].empty(), eyeMesh, pupilMesh, eyeMat, pupilMat,
@@ -407,12 +407,12 @@ fn makePerson(device &mut Device, st &mut Stage, seed u32) Person {
 // The feet the walker has planted, as pins in the model's space (the model faces yaw 0 here)
 fn footPins(p &mut Person, at Vec3) {
   p.pins.clear();
-  mut side = 0;
+  var side = 0;
   while side < 2 {
-    imm f = if side == 0 { p.walker.left; } else { p.walker.right; };
-    imm sgn = if side == 0 { -1.; } else { 1.; };
-    imm thigh = if side == 0 { THIGH_L; } else { THIGH_R; };
-    imm rot = Quat.angleAxis(f.yaw, new Vec3(0., 1., 0.)) * Quat.angleAxis(f.pitch * (1. - p.walker.air), new Vec3(1., 0., 0.));
+    let f = if side == 0 { p.walker.left; } else { p.walker.right; };
+    let sgn = if side == 0 { -1.; } else { 1.; };
+    let thigh = if side == 0 { THIGH_L; } else { THIGH_R; };
+    let rot = Quat.angleAxis(f.yaw, new Vec3(0., 1., 0.)) * Quat.angleAxis(f.pitch * (1. - p.walker.air), new Vec3(1., 0., 0.));
     p.pins.push(new LimbPin(thigh, f.ankle - at, rot, new Vec3(sgn * 0.12, 0., -1.).normalize(), 0.5235988, 1.));
     side = side + 1;
   }
@@ -421,19 +421,19 @@ fn footPins(p &mut Person, at Vec3) {
 // A frame of the person at ground point `at` moving `speed` m/s along -z doing `work`
 fn stepPerson(p &mut Person, at Vec3, speed f32, work f32, dt f32) {
   p.walker.update(&p.rig.skeleton, &mut p.base, &mut p.baseModels, at, 0., speed, 0., true, &flat, dt);
-  imm calm = 1. - smoothstep(0.05, 0.4, speed);
+  let calm = 1. - smoothstep(0.05, 0.4, speed);
   p.life.tick(&p.rig.skeleton, dt, work, calm);
   // the posture
   p.anim.setParam(p.pWinded, p.life.state.winded);
   p.anim.setParam(p.pSpeed, speed);
-  imm posture = p.anim.update(dt);
+  let posture = p.anim.update(dt);
   p.life.setPosture(posture);
   p.life.fadePosture(1., 0.1);
   footPins(p, at);
-  imm world = new Transform3(at, Quat.identity(), new Vec3(1., 1., 1.));
+  let world = new Transform3(at, Quat.identity(), new Vec3(1., 1., 1.));
   p.life.compose(&p.rig.skeleton, &p.base, &world, &p.pins, &mut p.pose, &mut p.models);
   p.bones.clear();
-  mut i = 0usize;
+  var i = 0usize;
   while i < p.models.len() { p.bones.push(world * *p.models[i]); i = i + 1usize; }
 }
 
@@ -442,9 +442,9 @@ fn stepHair(p &mut Person, dt f32) {
   p.hair.setFrame(0usize, *p.bones[HEAD]);
   // three capsules (a box costs several times a capsule's contact test): the skull, the neck, the shoulders and upper back
   p.hairColliders.clear();
-  imm hb = *p.bones[HEAD];
-  imm nb = *p.bones[NECK];
-  imm cb = *p.bones[CHEST];
+  let hb = *p.bones[HEAD];
+  let nb = *p.bones[NECK];
+  let cb = *p.bones[CHEST];
   p.hairColliders.push(Collider.capsule(hb.transformPoint(new Vec3(0., 0.05, 0.004)), hb.transformPoint(new Vec3(0., 0.125, 0.004)), 0.094));
   p.hairColliders.push(Collider.capsule(nb.transformPoint(new Vec3(0., -0.03, 0.)), hb.transformPoint(new Vec3(0., 0.02, 0.)), 0.075));
   p.hairColliders.push(Collider.capsule(cb.transformPoint(new Vec3(-0.12, 0.09, 0.02)), cb.transformPoint(new Vec3(0.12, 0.09, 0.02)), 0.085));
@@ -457,12 +457,12 @@ fn drawPerson(st &mut Stage, device &mut Device, p &mut Person, list &mut DrawLi
   st.morpher.setWeights(&mut st.renderer, p.morphed, &p.life.regions.weights);
   list.addSkinned(p.bodyMesh, p.bodyMat, Mat4.identity(), p.mats.view());
   // the eyes: each turned by the face rig's rotation for it
-  imm head = (*p.bones[HEAD]).toMat4();
-  mut side = 0;
+  let head = (*p.bones[HEAD]).toMat4();
+  var side = 0;
   while side < 2 {
-    imm centre = if side == 0 { p.eyeCentreL; } else { p.eyeCentreR; };
-    imm q = if side == 0 { p.life.frame.eyeL; } else { p.life.frame.eyeR; };
-    imm m = head * Mat4.fromTranslation(centre) * Mat4.fromQuat(q);
+    let centre = if side == 0 { p.eyeCentreL; } else { p.eyeCentreR; };
+    let q = if side == 0 { p.life.frame.eyeL; } else { p.life.frame.eyeR; };
+    let m = head * Mat4.fromTranslation(centre) * Mat4.fromQuat(q);
     list.add(p.eyeMesh, p.eyeMat, m);
     list.add(p.pupilMesh, p.pupilMat, m * Mat4.fromTranslation(new Vec3(0., 0., -0.0132)));
     side = side + 1;
@@ -484,35 +484,35 @@ fn manSpeed(t f32) f32 {
 fn manWork(t f32) f32 { if t >= 8. and t < 18. { 0.9; } else { 0.; }; }
 
 fn runMan(device &mut Device, st &mut Stage, outDir &str) bool {
-  mut ok = true;
-  mut p = makePerson(device, st, 11u32);
-  imm dt = 1. / 60.;
-  mut z f32 = 0.;
-  mut t f32 = 0.;
-  mut frame = 0;
-  mut shots = 0;
-  mut costs = Costs.make();
-  mut maxChest f32 = 0.;
-  mut minBelly f32 = 0.;
-  mut gpuMs f64 = 0d;
-  mut gpuFrames = 0;
-  mut sceneList = DrawList.empty();
+  var ok = true;
+  var p = makePerson(device, st, 11u32);
+  let dt = 1. / 60.;
+  var z f32 = 0.;
+  var t f32 = 0.;
+  var frame = 0;
+  var shots = 0;
+  var costs = Costs.make();
+  var maxChest f32 = 0.;
+  var minBelly f32 = 0.;
+  var gpuMs f64 = 0d;
+  var gpuFrames = 0;
+  var sceneList = DrawList.empty();
   while t < 36. {
-    imm speed = manSpeed(t);
+    let speed = manSpeed(t);
     z = z - speed * dt;
-    imm at = new Vec3(0., 0., z);
-    imm c0 = Instant.now();
+    let at = new Vec3(0., 0., z);
+    let c0 = Instant.now();
     stepPerson(&mut p, at, speed, manWork(t), dt);
     costs.add("person: walker, life, layers, pins, look-at, springs", c0.elapsed().nanos() / 1000i64);
-    imm c1 = Instant.now();
+    let c1 = Instant.now();
     stepHair(&mut p, dt);
     costs.add("hair: strand step", c1.elapsed().nanos() / 1000i64);
     if p.life.state.chest > maxChest { maxChest = p.life.state.chest; }
     if p.life.state.belly < minBelly { minBelly = p.life.state.belly; }
     // pictures: the lungs empty and full (standing and winded) from the side; sequences; the hair close
-    imm fill = p.life.state.fill;
-    mut name = String.empty();
-    mut cam = camera(new Vec3(4.4, 1.0, z - 0.4), new Vec3(0., 0.88, z), 30.);
+    let fill = p.life.state.fill;
+    var name = String.empty();
+    var cam = camera(new Vec3(4.4, 1.0, z - 0.4), new Vec3(0., 0.88, z), 30.);
     if t >= 2. and t < 7.9 {
       if fill < 0.03 and !hasShot(&p, 0) { name = String.from("stand-empty"); markShot(&mut p, 0); }
       if fill > 0.97 and !hasShot(&p, 1) { name = String.from("stand-full"); markShot(&mut p, 1); }
@@ -529,11 +529,11 @@ fn runMan(device &mut Device, st &mut Stage, outDir &str) bool {
     if t >= 6.3 and !hasShot(&p, 6) { name = String.from("hair-stand-back"); markShot(&mut p, 6); cam = camera(new Vec3(0.55, 1.5, z + 1.2), new Vec3(0., 1.45, z), 30.); }
     if t >= 13.0 and !hasShot(&p, 7) { name = String.from("hair-walk-side"); markShot(&mut p, 7); cam = camera(new Vec3(1.5, 1.5, z - 0.2), new Vec3(0., 1.45, z - 0.1), 30.); }
     if t >= 24.0 and !hasShot(&p, 8) { name = String.from("hair-winded"); markShot(&mut p, 8); cam = camera(new Vec3(-0.7, 1.45, z - 1.3), new Vec3(0., 1.35, z), 30.); }
-    imm seqStand = t >= 1.0 and t < 7.0 and frame % 45 == 0;
-    imm seqWalk = t >= 11.0 and t < 12.2 and frame % 9 == 0;
-    imm seqWinded = t >= 18.6 and t < 30.6 and frame % 90 == 0;
+    let seqStand = t >= 1.0 and t < 7.0 and frame % 45 == 0;
+    let seqWalk = t >= 11.0 and t < 12.2 and frame % 9 == 0;
+    let seqWinded = t >= 18.6 and t < 30.6 and frame % 90 == 0;
     if seqStand or seqWalk or seqWinded {
-      mut nm = String.from(if seqStand { "seq-stand"; } elif seqWalk { "seq-walk"; } else { "seq-winded"; });
+      var nm = String.from(if seqStand { "seq-stand"; } elif seqWalk { "seq-walk"; } else { "seq-winded"; });
       nm <- "-";
       nm <- i64.from(frame);
       name = nm.copy();
@@ -541,7 +541,7 @@ fn runMan(device &mut Device, st &mut Stage, outDir &str) bool {
         else { camera(new Vec3(-1.9, 1.3, z - 3.0), new Vec3(0., 1.0, z), 30.); };
     }
     if name.len() > 0usize {
-      mut list = DrawList.empty();
+      var list = DrawList.empty();
       list.add(st.groundMesh, st.groundMat, slab(new Vec3(0., -0.05, z - 8.), new Vec3(40., 0.1, 60.)));
       drawPerson(st, device, &mut p, &mut list);
       drawFrame(device, st, &cam, &list, fileName(outDir, name.view()).view());
@@ -554,34 +554,34 @@ fn runMan(device &mut Device, st &mut Stage, outDir &str) bool {
   print <- minBelly * 1000.; print <- " mm\n";
 
   // the soak: 600 more frames of the brisk walk (work 0.9), all of it drawn, a frame at a time
-  mut soak = Costs.make();
-  mut gpuSum f64 = 0d;
-  mut gpuN = 0;
-  mut k = 0;
+  var soak = Costs.make();
+  var gpuSum f64 = 0d;
+  var gpuN = 0;
+  var k = 0;
   while k < 700 {
     z = z - 1.9 * dt;
-    imm at = new Vec3(0., 0., z);
-    imm a0 = Instant.now();
+    let at = new Vec3(0., 0., z);
+    let a0 = Instant.now();
     stepPerson(&mut p, at, 1.9, 0.9, dt);
     soak.add("person: walker, life, layers, pins, look-at, springs", a0.elapsed().nanos() / 1000i64);
-    imm a1 = Instant.now();
+    let a1 = Instant.now();
     stepHair(&mut p, dt);
     soak.add("hair: strand step", a1.elapsed().nanos() / 1000i64);
-    imm a2 = Instant.now();
-    mut list = DrawList.empty();
+    let a2 = Instant.now();
+    var list = DrawList.empty();
     list.add(st.groundMesh, st.groundMat, slab(new Vec3(0., -0.05, z - 8.), new Vec3(40., 0.1, 60.)));
     drawPerson(st, device, &mut p, &mut list);
     soak.add("draw list: skin matrices, morph weights, hair cards written and uploaded", a2.elapsed().nanos() / 1000i64);
-    imm cam = camera(new Vec3(4.4, 1.0, z - 0.4), new Vec3(0., 0.88, z), 30.);
-    imm a3 = Instant.now();
-    imm ms = drawFrame(device, st, &cam, &list, "");
+    let cam = camera(new Vec3(4.4, 1.0, z - 0.4), new Vec3(0., 0.88, z), 30.);
+    let a3 = Instant.now();
+    let ms = drawFrame(device, st, &cam, &list, "");
     soak.add("render call, the wait for the GPU, readback of the timestamps", a3.elapsed().nanos() / 1000i64);
     if k >= 60 { gpuSum = gpuSum + ms; gpuN = gpuN + 1; }
     k = k + 1;
   }
   soak.report("man (soak of 700 frames)");
   print <- "  GPU time of a frame (skinned morphed body, eyes, hair cards, shadows, post), mean: "; print <- gpuSum / f64.from(gpuN); print <- " ms\n";
-  imm cnt = cardCounts(&p.hair);
+  let cnt = cardCounts(&p.hair);
   print <- "  hair: "; print <- i64.from(p.hair.strandCount()); print <- " strands, "; print <- i64.from(p.hair.particleCount()); print <- " particles, "; print <- i64.from(cnt.0);
   print <- " card vertices, "; print <- i64.from(cnt.1 / 3usize); print <- " triangles\n";
   p.hair.stop();
@@ -601,10 +601,10 @@ struct BodyField {
   k f32;
 
   pub fn distance(self &, p Vec3) f32 {
-    mut d = 3.0e38;
-    mut i = 0usize;
+    var d = 3.0e38;
+    var i = 0usize;
     while i < a.len() {
-      imm c = taperedCapsule(p, *a[i], *b[i], *ra[i], *rb[i]);
+      let c = taperedCapsule(p, *a[i], *b[i], *ra[i], *rb[i]);
       d = if i == 0usize { c; } else { smoothUnion(d, c, k); };
       i = i + 1usize;
     }
@@ -614,16 +614,16 @@ struct BodyField {
 
 // The body: a capsule on every segment of the rig (a joint to its child), meshed by surface nets
 fn bodyMesh(rig &Rig, cell f32, blend f32) Mesh {
-  mut f = new BodyField(List[Vec3].empty(), List[Vec3].empty(), List[f32].empty(), List[f32].empty(), blend);
-  mut lo = new Vec3(1.0e9, 1.0e9, 1.0e9);
-  mut hi = new Vec3(-1.0e9, -1.0e9, -1.0e9);
-  mut big f32 = 0.;
-  mut i = 0usize;
+  var f = new BodyField(List[Vec3].empty(), List[Vec3].empty(), List[f32].empty(), List[f32].empty(), blend);
+  var lo = new Vec3(1.0e9, 1.0e9, 1.0e9);
+  var hi = new Vec3(-1.0e9, -1.0e9, -1.0e9);
+  var big f32 = 0.;
+  var i = 0usize;
   while i < rig.boneCount() {
-    imm p = rig.skeleton.parentOf(i);
+    let p = rig.skeleton.parentOf(i);
     if p >= 0i32 {
-      imm pa = rig.restPosition(usize.from(p));
-      imm pb = rig.restPosition(i);
+      let pa = rig.restPosition(usize.from(p));
+      let pb = rig.restPosition(i);
       f.a.push(pa); f.b.push(pb);
       f.ra.push(*rig.radii[usize.from(p)]); f.rb.push(*rig.radii[i]);
       lo = lo.min(pa.min(pb));
@@ -633,14 +633,14 @@ fn bodyMesh(rig &Rig, cell f32, blend f32) Mesh {
     }
     i = i + 1usize;
   }
-  imm m = new Vec3(big + 0.05, big + 0.05, big + 0.05);
-  imm net = surfaceNet(&f, new Aabb3(lo - m, hi + m), cell, 1u32, false);
+  let m = new Vec3(big + 0.05, big + 0.05, big + 0.05);
+  let net = surfaceNet(&f, new Aabb3(lo - m, hi + m), cell, 1u32, false);
   net.toMesh();
 }
 
 fn makeSkin(w &VertexWeights) Skin {
-  mut s = Skin.empty();
-  mut v = 0usize;
+  var s = Skin.empty();
+  var v = 0usize;
   while v < w.vertexCount() {
     s.push(u32.from(w.joint(v, 0usize)), u32.from(w.joint(v, 1usize)), u32.from(w.joint(v, 2usize)), u32.from(w.joint(v, 3usize)),
       w.weight(v, 0usize), w.weight(v, 1usize), w.weight(v, 2usize), w.weight(v, 3usize));
@@ -678,9 +678,9 @@ struct Horse {
 }
 
 fn horseRegions(rig &Rig) List[SoftRegion] {
-  imm s0 = usize.from(rig.boneIndex("spine/s0"));
-  imm s1 = usize.from(rig.boneIndex("spine/s1"));
-  mut r = List[SoftRegion].empty();
+  let s0 = usize.from(rig.boneIndex("spine/s0"));
+  let s1 = usize.from(rig.boneIndex("spine/s1"));
+  var r = List[SoftRegion].empty();
   r.push(SoftRegion.make("barrel left", s1, new Vec3(0., 0., 0.), new Vec3(-1., 0., 0.), new Vec3(0.12, 0.17, 0.26)).breathing(REGION_CHEST, 1.));
   r.push(SoftRegion.make("barrel right", s1, new Vec3(0., 0., 0.), new Vec3(1., 0., 0.), new Vec3(0.12, 0.17, 0.26)).breathing(REGION_CHEST, 1.));
   r.push(SoftRegion.make("belly", s1, new Vec3(0., 0., 0.), new Vec3(0., -1., 0.), new Vec3(0.17, 0.12, 0.26)).breathing(REGION_BELLY, 0.8)
@@ -691,75 +691,75 @@ fn horseRegions(rig &Rig) List[SoftRegion] {
 }
 
 fn chainBones(rig &Rig, name &str) List[usize] {
-  mut out = List[usize].empty();
-  imm c = rig.chainIndex(name);
+  var out = List[usize].empty();
+  let c = rig.chainIndex(name);
   if c < 0i32 { return out; }
-  mut i = 0usize;
+  var i = 0usize;
   while i < rig.chains[usize.from(c)].bones.len() { out.push(*rig.chains[usize.from(c)].bones[i]); i = i + 1usize; }
   out;
 }
 
 fn makeHorse(device &mut Device, st &mut Stage, seed u32) Horse {
-  mut built = buildRig(&plainBody(&BodyParams.quadruped()));
-  imm rig = built.take();
-  imm mesh = bodyMesh(&rig, 0.03, 0.02);
-  imm params = WeightParams.standard();
-  imm w = heatWeights(&rig, &mesh, &params);
-  imm skin = makeSkin(&w);
-  imm regions = horseRegions(&rig);
-  imm tg = buildRegionTargets(&mesh, &rig.restModels, &regions);
-  imm nT = tg.count();
-  imm sr = SoftRegions.make(horseRegions(&rig), tg, &rig.restModels);
-  mut mt = MorphTargets.empty(mesh.positions.len());
-  imm noTan = List[Vec3].empty();
-  mut t = 0usize;
+  var built = buildRig(&plainBody(&BodyParams.quadruped()));
+  let rig = built.take();
+  let mesh = bodyMesh(&rig, 0.03, 0.02);
+  let params = WeightParams.standard();
+  let w = heatWeights(&rig, &mesh, &params);
+  let skin = makeSkin(&w);
+  let regions = horseRegions(&rig);
+  let tg = buildRegionTargets(&mesh, &rig.restModels, &regions);
+  let nT = tg.count();
+  let sr = SoftRegions.make(horseRegions(&rig), tg, &rig.restModels);
+  var mt = MorphTargets.empty(mesh.positions.len());
+  let noTan = List[Vec3].empty();
+  var t = 0usize;
   while t < nT {
     mt.addSparse(&sr.tg.targets.indicesOf(t), &sr.tg.targets.positionsOf(t), &sr.tg.targets.normalsOf(t), &noTan);
     t = t + 1usize;
   }
-  imm set = st.morpher.addSet(device, &mt, &mesh);
-  imm baseMesh = st.renderer.addSkinnedMesh(device, &mesh, &skin);
-  mut enc0 = device.createCommandEncoder();
-  imm copy = st.morpher.addCopy(device, &mut enc0, &mut st.renderer, baseMesh, set, false);
+  let set = st.morpher.addSet(device, &mt, &mesh);
+  let baseMesh = st.renderer.addSkinnedMesh(device, &mesh, &skin);
+  var enc0 = device.createCommandEncoder();
+  let copy = st.morpher.addCopy(device, &mut enc0, &mut st.renderer, baseMesh, set, false);
   device.queue.submit(enc0.finish());
   device.endFrame();
   device.waitIdle();
-  mut bm = PbrMaterial.standard(new Color(0.30, 0.17, 0.09, 1.), 0., 0.62);
-  imm bodyMat = st.renderer.addPbrMaterial(device, &bm);
-  imm spine = chainBones(&rig, "spine");
-  imm neck = chainBones(&rig, "neck");
-  imm tail = chainBones(&rig, "tail");
-  imm head = chainBones(&rig, "head");
+  var bm = PbrMaterial.standard(new Color(0.30, 0.17, 0.09, 1.), 0., 0.62);
+  let bodyMat = st.renderer.addPbrMaterial(device, &bm);
+  let spine = chainBones(&rig, "spine");
+  let neck = chainBones(&rig, "neck");
+  let tail = chainBones(&rig, "tail");
+  let head = chainBones(&rig, "head");
   // look-at: the front of the spine, the neck, the head
-  mut lb = List[usize].empty();
-  mut ls = List[f32].empty();
+  var lb = List[usize].empty();
+  var ls = List[f32].empty();
   lb.push(*spine[spine.len() - 1usize]); ls.push(0.05);
-  mut k = 0usize;
+  var k = 0usize;
   while k < neck.len() { lb.push(*neck[k]); ls.push(0.15 + 0.1 * f32.from(k)); k = k + 1usize; }
   lb.push(*head[0usize]); ls.push(0.4);
-  mut look = LookChain.make(lb, ls, *spine[0usize], new Vec3(0., 0., -0.08));
+  var look = LookChain.make(lb, ls, *spine[0usize], new Vec3(0., 0., -0.08));
   look.normalized();
   look.maxYaw = radians(70.);
   // strands: a mane on each neck bone's stretch of the crest, a tail on each tail bone's
-  mut sim = StrandSim.make(Medium.air(WindField.breeze(new Vec3(2.8, 0., 1.2))), 1u32);
-  mut gb = List[usize].empty();
-  mut roots = List[StrandRoot].empty();
+  var sim = StrandSim.make(Medium.air(WindField.breeze(new Vec3(2.8, 0., 1.2))), 1u32);
+  var gb = List[usize].empty();
+  var roots = List[StrandRoot].empty();
   k = 0usize;
   while k < neck.len() {
-    imm b = *neck[k];
-    imm nextB = if k + 1usize < neck.len() { *neck[k + 1usize]; } else { *head[0usize]; };
-    mut mst = StrandStyle.mane();
+    let b = *neck[k];
+    let nextB = if k + 1usize < neck.len() { *neck[k + 1usize]; } else { *head[0usize]; };
+    var mst = StrandStyle.mane();
     mst.fall = new Vec3(0.9, -1., 0.15).normalize();
-    imm g = sim.addGroup(*rig.restModels[b], mst);
+    let g = sim.addGroup(*rig.restModels[b], mst);
     gb.push(b);
-    imm up = new Vec3(0., *rig.radii[b] * 0.8, 0.);
-    mut pts = List[Vec3].empty(); mut dirs = List[Vec3].empty(); mut nrm = List[Vec3].empty();
+    let up = new Vec3(0., *rig.radii[b] * 0.8, 0.);
+    var pts = List[Vec3].empty(); var dirs = List[Vec3].empty(); var nrm = List[Vec3].empty();
     pts.push(rig.restPosition(b) + up); pts.push(rig.restPosition(nextB) + up);
     dirs.push(new Vec3(0., 0.9, 0.4).normalize()); dirs.push(new Vec3(0., 0.9, 0.4).normalize());
     nrm.push(new Vec3(1., 0., 0.)); nrm.push(new Vec3(1., 0., 0.));
-    imm rs = rootsAlongPath(g, &pts, &dirs, &nrm, 22usize, 0.8, seed + u32.from(k) * 13u32);
-    imm inv = (*rig.restModels[b]).inverse();
-    mut i = 0usize;
+    let rs = rootsAlongPath(g, &pts, &dirs, &nrm, 22usize, 0.8, seed + u32.from(k) * 13u32);
+    let inv = (*rig.restModels[b]).inverse();
+    var i = 0usize;
     while i < rs.len() {
       roots.push(new StrandRoot(g, inv.transformPoint(rs[i].pos), (inv.rotation * rs[i].dir).normalize(), (inv.rotation * rs[i].normal).normalize(), rs[i].seed));
       i = i + 1usize;
@@ -768,21 +768,21 @@ fn makeHorse(device &mut Device, st &mut Stage, seed u32) Horse {
   }
   k = 0usize;
   while k < tail.len() {
-    imm b = *tail[k];
-    imm nextB = if k + 1usize < tail.len() { *tail[k + 1usize]; } else { b; };
-    mut tst = StrandStyle.tail();
+    let b = *tail[k];
+    let nextB = if k + 1usize < tail.len() { *tail[k + 1usize]; } else { b; };
+    var tst = StrandStyle.tail();
     tst.length = 0.62;
-    imm g = sim.addGroup(*rig.restModels[b], tst);
+    let g = sim.addGroup(*rig.restModels[b], tst);
     gb.push(b);
-    mut pts = List[Vec3].empty(); mut dirs = List[Vec3].empty(); mut nrm = List[Vec3].empty();
-    imm a = rig.restPosition(b);
-    imm bpos = if nextB != b { rig.restPosition(nextB); } else { a + new Vec3(0., 0., 0.06); };
+    var pts = List[Vec3].empty(); var dirs = List[Vec3].empty(); var nrm = List[Vec3].empty();
+    let a = rig.restPosition(b);
+    let bpos = if nextB != b { rig.restPosition(nextB); } else { a + new Vec3(0., 0., 0.06); };
     pts.push(a); pts.push(bpos);
     dirs.push(new Vec3(0., -0.35, 1.).normalize()); dirs.push(new Vec3(0., -0.35, 1.).normalize());
     nrm.push(new Vec3(1., 0., 0.)); nrm.push(new Vec3(1., 0., 0.));
-    imm rs = rootsAlongPath(g, &pts, &dirs, &nrm, 16usize, 0.9, seed + 500u32 + u32.from(k) * 17u32);
-    imm inv = (*rig.restModels[b]).inverse();
-    mut i = 0usize;
+    let rs = rootsAlongPath(g, &pts, &dirs, &nrm, 16usize, 0.9, seed + 500u32 + u32.from(k) * 17u32);
+    let inv = (*rig.restModels[b]).inverse();
+    var i = 0usize;
     while i < rs.len() {
       roots.push(new StrandRoot(g, inv.transformPoint(rs[i].pos), (inv.rotation * rs[i].dir).normalize(), (inv.rotation * rs[i].normal).normalize(), rs[i].seed));
       i = i + 1usize;
@@ -790,20 +790,20 @@ fn makeHorse(device &mut Device, st &mut Stage, seed u32) Horse {
     k = k + 1usize;
   }
   sim.addStrands(&roots);
-  imm cnt = cardCounts(&sim);
-  imm strandMesh = st.renderer.addDynamicMesh(device, u32.from(cnt.0), u32.from(cnt.1));
-  imm fibres = paintFibers(4, 64, 256, 14, 9u32);
-  mut img = new Image(fibres.width, fibres.height, 4, List[u8].empty());
-  mut q = 0usize;
+  let cnt = cardCounts(&sim);
+  let strandMesh = st.renderer.addDynamicMesh(device, u32.from(cnt.0), u32.from(cnt.1));
+  let fibres = paintFibers(4, 64, 256, 14, 9u32);
+  var img = new Image(fibres.width, fibres.height, 4, List[u8].empty());
+  var q = 0usize;
   while q < fibres.rgba.len() { img.pixels.push(*fibres.rgba[q]); q = q + 1usize; }
-  imm tex = st.renderer.addCutoutTexture(device, &img, 0.45);
-  mut hm = PbrMaterial.standard(new Color(0.05, 0.035, 0.025, 1.), 0., 0.6);
+  let tex = st.renderer.addCutoutTexture(device, &img, 0.45);
+  var hm = PbrMaterial.standard(new Color(0.05, 0.035, 0.025, 1.), 0., 0.6);
   hm.texture = tex;
   hm.alphaMode = ALPHA_MASK;
   hm.alphaCutoff = 0.45;
   hm.specularScale = 0.4;
-  imm strandMat = st.renderer.addPbrMaterial(device, &hm);
-  imm loco = Locomotion.make(&rig);
+  let strandMat = st.renderer.addPbrMaterial(device, &hm);
+  let loco = Locomotion.make(&rig);
   new Horse(rig, loco, copy, st.morpher.mesh(copy), bodyMat, Breathing.make(ExertionParams.quick(), 1.5, seed), sr,
     Attention.make(AttentionParams.standard(), seed), look, *head[0usize], *spine[0usize], Pose.empty(), List[Transform3].empty(), List[Mat4].empty(),
     sim, strandMesh, strandMat, Mesh.empty(), gb, List[Collider].empty(), neck, tail, spine,
@@ -811,7 +811,7 @@ fn makeHorse(device &mut Device, st &mut Stage, seed u32) Horse {
 }
 
 fn horseSpeed(t0 f32) f32 {
-  imm t = t0 - 4.;
+  let t = t0 - 4.;
   if t < 3. { return 0.; }
   if t < 5. { return 1.35 * smoothstep(3., 5., t); }
   if t < 11. { return 1.35; }
@@ -830,19 +830,19 @@ fn stepHorse(h &mut Horse, x f32, z f32, speed f32, dt f32) {
   h.state = h.breathing.update(dt, horseWork(speed));
   // looking: the attention's direction from the head, in the body's frame
   h.attention.update(dt, &List[Vec3].empty());
-  imm headW = (*h.models[h.headBone]).transformPoint(new Vec3(0., 0., -0.08));
-  imm bodyRot = (*h.models[h.bodyBone]).rotation;
+  let headW = (*h.models[h.headBone]).transformPoint(new Vec3(0., 0., -0.08));
+  let bodyRot = (*h.models[h.bodyBone]).rotation;
   h.look.aim(&h.rig.skeleton, &mut h.pose, &mut h.models, headW + bodyRot * h.attention.direction() * 4., 0.8);
   h.regions.update(dt, &h.loco.world, &h.models, &h.state);
   // the strands: each group on its bone, the body's capsules as colliders
   h.colliders.clear();
-  mut i = 0usize;
+  var i = 0usize;
   while i < h.rig.boneCount() {
-    imm p = h.rig.skeleton.parentOf(i);
-    imm isTrunk = h.rig.boneChain[i] == h.rig.boneChain[h.bodyBone] or i == *h.neckBones[0usize] or i == h.headBone;
+    let p = h.rig.skeleton.parentOf(i);
+    let isTrunk = h.rig.boneChain[i] == h.rig.boneChain[h.bodyBone] or i == *h.neckBones[0usize] or i == h.headBone;
     if p >= 0i32 and isTrunk {
-      imm a = h.loco.world.transformPoint((*h.models[usize.from(p)]).translation);
-      imm b = h.loco.world.transformPoint((*h.models[i]).translation);
+      let a = h.loco.world.transformPoint((*h.models[usize.from(p)]).translation);
+      let b = h.loco.world.transformPoint((*h.models[i]).translation);
       h.colliders.push(Collider.capsule(a, b, *h.rig.radii[usize.from(p)] * 0.98));
     }
     i = i + 1usize;
@@ -858,8 +858,8 @@ fn stepHorse(h &mut Horse, x f32, z f32, speed f32, dt f32) {
 
 fn drawHorse(st &mut Stage, device &mut Device, h &mut Horse, list &mut DrawList) {
   h.mats.clear();
-  imm sk = skinTransforms(&h.rig, &h.models);
-  mut i = 0usize;
+  let sk = skinTransforms(&h.rig, &h.models);
+  var i = 0usize;
   while i < sk.len() { h.mats.push(sk[i].toMat4()); i = i + 1usize; }
   st.morpher.setWeights(&mut st.renderer, h.morphed, &h.regions.weights);
   list.addSkinned(h.bodyMesh, h.bodyMat, h.loco.world.toMat4(), h.mats.view());
@@ -869,28 +869,28 @@ fn drawHorse(st &mut Stage, device &mut Device, h &mut Horse, list &mut DrawList
 }
 
 fn runHorse(device &mut Device, st &mut Stage, outDir &str) bool {
-  mut h = makeHorse(device, st, 5u32);
-  imm dt = 1. / 60.;
-  mut t f32 = 0.;
-  mut z f32 = 0.;
-  mut frame = 0;
-  mut shots = 0;
-  mut maxBelly f32 = 0.;
+  var h = makeHorse(device, st, 5u32);
+  let dt = 1. / 60.;
+  var t f32 = 0.;
+  var z f32 = 0.;
+  var frame = 0;
+  var shots = 0;
+  var maxBelly f32 = 0.;
   while t < 30. {
-    imm speed = horseSpeed(t);
+    let speed = horseSpeed(t);
     z = z - speed * dt;
     stepHorse(&mut h, 0., z, speed, dt);
     if h.state.belly > maxBelly { maxBelly = h.state.belly; }
-    mut name = String.empty();
-    mut cam = camera(new Vec3(5.2, 1.3, z - 0.6), new Vec3(0., 0.8, z - 0.6), 36.);
-    imm fill = h.state.fill;
+    var name = String.empty();
+    var cam = camera(new Vec3(5.2, 1.3, z - 0.6), new Vec3(0., 0.8, z - 0.6), 36.);
+    let fill = h.state.fill;
     if t < 6.5 and fill < 0.02 and t > 0.5 and (h.flags & 1u32) == 0u32 { name = String.from("horse-empty"); h.flags = h.flags | 1u32; cam = camera(new Vec3(3.2, 1.0, z - 0.1), new Vec3(0., 0.8, z - 0.1), 34.); }
     if t < 6.5 and fill > 0.995 and t > 0.5 and (h.flags & 2u32) == 0u32 { name = String.from("horse-full"); h.flags = h.flags | 2u32; cam = camera(new Vec3(3.2, 1.0, z - 0.1), new Vec3(0., 0.8, z - 0.1), 34.); }
     if t >= 2.5 and t < 2.6 and (h.flags & 4u32) == 0u32 { name = String.from("horse-stand-3q"); h.flags = h.flags | 4u32; cam = camera(new Vec3(-2.6, 1.5, z - 3.2), new Vec3(0., 0.9, z), 34.); }
     if t >= 12. and t < 12.6 and frame % 9 == 0 { name = String.from("horse-walk"); name <- "-"; name <- i64.from(frame); }
     if t >= 20. and t < 20.6 and frame % 6 == 0 { name = String.from("horse-trot"); name <- "-"; name <- i64.from(frame); }
     if name.len() > 0usize {
-      mut list = DrawList.empty();
+      var list = DrawList.empty();
       list.add(st.groundMesh, st.groundMat, slab(new Vec3(0., -0.05, z - 8.), new Vec3(40., 0.1, 60.)));
       drawHorse(st, device, &mut h, &mut list);
       drawFrame(device, st, &cam, &list, fileName(outDir, name.view()).view());
@@ -901,30 +901,30 @@ fn runHorse(device &mut Device, st &mut Stage, outDir &str) bool {
   }
   print <- "horse: "; print <- i64.from(shots); print <- " pictures\n";
   // the soak: a trot, all drawn
-  mut soak = Costs.make();
-  mut gpuSum f64 = 0d;
-  mut gpuN = 0;
-  mut k = 0;
+  var soak = Costs.make();
+  var gpuSum f64 = 0d;
+  var gpuN = 0;
+  var k = 0;
   while k < 600 {
     z = z - 3.2 * dt;
-    imm a0 = Instant.now();
+    let a0 = Instant.now();
     stepHorse(&mut h, 0., z, 3.2, dt);
     soak.add("horse: locomotion, breath, look, soft regions, strands (mane and tail)", a0.elapsed().nanos() / 1000i64);
-    imm a2 = Instant.now();
-    mut list = DrawList.empty();
+    let a2 = Instant.now();
+    var list = DrawList.empty();
     list.add(st.groundMesh, st.groundMat, slab(new Vec3(0., -0.05, z - 8.), new Vec3(40., 0.1, 60.)));
     drawHorse(st, device, &mut h, &mut list);
     soak.add("draw list: skin matrices, morph weights, strand cards written and uploaded", a2.elapsed().nanos() / 1000i64);
-    imm cam = camera(new Vec3(5.2, 1.3, z - 0.6), new Vec3(0., 0.8, z - 0.6), 36.);
-    imm a3 = Instant.now();
-    imm ms = drawFrame(device, st, &cam, &list, "");
+    let cam = camera(new Vec3(5.2, 1.3, z - 0.6), new Vec3(0., 0.8, z - 0.6), 36.);
+    let a3 = Instant.now();
+    let ms = drawFrame(device, st, &cam, &list, "");
     soak.add("render call and the wait for the GPU", a3.elapsed().nanos() / 1000i64);
     if k >= 60 { gpuSum = gpuSum + ms; gpuN = gpuN + 1; }
     k = k + 1;
   }
   soak.report("horse (soak of 600 frames at a trot)");
   print <- "  GPU time of a frame, mean: "; print <- gpuSum / f64.from(gpuN); print <- " ms\n";
-  imm cnt = cardCounts(&h.strands);
+  let cnt = cardCounts(&h.strands);
   print <- "  strands: "; print <- i64.from(h.strands.strandCount()); print <- " in "; print <- i64.from(h.strands.groupCount()); print <- " groups, ";
   print <- i64.from(h.strands.particleCount()); print <- " particles, "; print <- i64.from(cnt.1 / 3usize); print <- " card triangles\n";
   h.strands.stop();
@@ -932,40 +932,40 @@ fn runHorse(device &mut Device, st &mut Stage, outDir &str) bool {
 }
 
 fn main(argc i32, argv **u8) i32 {
-  mut outDir = String.from(".");
-  mut scene = String.from("all");
-  mut a = 1;
+  var outDir = String.from(".");
+  var scene = String.from("all");
+  var a = 1;
   while a < argc {
     if cstrEquals(*(argv + usize.from(a)), "--out") and a + 1 < argc {
       outDir = String.empty();
-      mut q = 0usize;
-      imm s = *(argv + usize.from(a + 1));
+      var q = 0usize;
+      let s = *(argv + usize.from(a + 1));
       while *(s + q) != 0u8 { outDir.appendByte(*(s + q)); q = q + 1usize; }
       a = a + 1;
     }
     if cstrEquals(*(argv + usize.from(a)), "--scene") and a + 1 < argc {
       scene = String.empty();
-      mut q = 0usize;
-      imm s = *(argv + usize.from(a + 1));
+      var q = 0usize;
+      let s = *(argv + usize.from(a + 1));
       while *(s + q) != 0u8 { scene.appendByte(*(s + q)); q = q + 1usize; }
       a = a + 1;
     }
     a = a + 1;
   }
-  mut instance = Instance.create("livingbody alive");
+  var instance = Instance.create("livingbody alive");
   if !instance.isValid() { print <- "FAIL: no Vulkan instance\n"; return 1i32; }
-  mut none = Surface.none();
-  mut preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
-  imm env = libc.getenv("GPU_POWER_PREFERENCE");
+  var none = Surface.none();
+  var preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
+  let env = libc.getenv("GPU_POWER_PREFERENCE");
   if (env as usize) != 0usize {
     if libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 { preference = POWER_PREFERENCE_LOW_POWER; }
   }
-  mut adapter = instance.requestAdapter(&none, preference);
-  mut device = adapter.requestDevice();
+  var adapter = instance.requestAdapter(&none, preference);
+  var device = adapter.requestDevice();
   if !device.isValid() { print <- "FAIL: no device\n"; return 1i32; }
-  mut st = makeStage(&mut device);
+  var st = makeStage(&mut device);
   if !st.renderer.isValid() { print <- "FAIL: no renderer\n"; return 1i32; }
-  mut ok = true;
+  var ok = true;
   if scene.view() == "all" or scene.view() == "man" { if !runMan(&mut device, &mut st, outDir.view()) { ok = false; } }
   if scene.view() == "all" or scene.view() == "horse" { if !runHorse(&mut device, &mut st, outDir.view()) { ok = false; } }
   if failures() != 0u32 { print <- "FAIL: a Vulkan call failed\n"; ok = false; }

@@ -19,9 +19,9 @@ import collections use *;
 struct Pt { pub x i64; pub y i64; }
 
 fn addGetRemove() {
-  mut p = Pool[Pt].empty();
-  imm a = p.add(new Pt(1, 2));
-  imm b = p.add(new Pt(3, 4));
+  var p = Pool[Pt].empty();
+  let a = p.add(new Pt(1, 2));
+  let b = p.add(new Pt(3, 4));
   expectUInt(u64.from(a.slot()), 0, "first value in slot 0");
   expectUInt(u64.from(a.generation()), 1, "as its first occupant");
   expectUInt(u64.from(b.slot()), 1, "second value in slot 1");
@@ -30,7 +30,7 @@ fn addGetRemove() {
   expectInt(p[b].y, 4, "pool[r] reads the other");
   expect(p.alive(a), "alive");
   match p.get(b) {
-    case imm s Some { expectInt(s.x, 3, "get gives Some borrow"); }
+    case let s Some { expectInt(s.x, 3, "get gives Some borrow"); }
     case is None { expect(false, "get gives Some borrow"); }
   }
   expect(p.remove(a), "remove answers true");
@@ -39,8 +39,8 @@ fn addGetRemove() {
 }
 
 fn stale() {
-  mut p = Pool[Pt].empty();
-  imm a = p.add(new Pt(1, 2));
+  var p = Pool[Pt].empty();
+  let a = p.add(new Pt(1, 2));
   p.remove(a);
   expect(!p.alive(a), "a removed value's reference is not alive");
   match p.get(a) {
@@ -55,19 +55,19 @@ fn stale() {
   expectUInt(u64.from(p.len()), 0, "and does nothing");
   // A made-up Ref at the free slot's own, even, generation is taken as the
   // odd one after it, so it names the slot's next occupant, not the free slot
-  imm madeUp = Ref[Pt].of(0u32, 2u32);
+  let madeUp = Ref[Pt].of(0u32, 2u32);
   expectUInt(u64.from(madeUp.generation()), 3, "an even generation is made odd");
   expect(!p.alive(madeUp), "so a made-up Ref never reaches a free slot");
-  imm b = p.add(new Pt(5, 6));
+  let b = p.add(new Pt(5, 6));
   expect(p.alive(madeUp) and madeUp == b, "but does reach the next occupant");
 }
 
 fn reuse() {
-  mut p = Pool[Pt].empty();
-  imm a = p.add(new Pt(1, 2));
-  imm b = p.add(new Pt(3, 4));
+  var p = Pool[Pt].empty();
+  let a = p.add(new Pt(1, 2));
+  let b = p.add(new Pt(3, 4));
   p.remove(a);
-  imm c = p.add(new Pt(5, 6));
+  let c = p.add(new Pt(5, 6));
   expectUInt(u64.from(c.slot()), 0, "the removed slot is taken again");
   expectUInt(u64.from(c.generation()), 3, "by its second occupant");
   expect(!p.alive(a), "the first occupant's reference stays dead");
@@ -75,7 +75,7 @@ fn reuse() {
   expect(!(a == c), "the two references differ");
   expectInt(p[c].x, 5, "and reaches the new value");
   p.remove(c);
-  imm d = p.add(new Pt(7, 8));
+  let d = p.add(new Pt(7, 8));
   expectUInt(u64.from(d.generation()), 5, "a third occupant");
   expect(!p.alive(a) and !p.alive(c), "neither earlier reference is alive");
   expect(!p.remove(a) and !p.remove(c), "nor can remove the third");
@@ -84,14 +84,14 @@ fn reuse() {
 }
 
 fn mutate() {
-  mut p = Pool[Pt].empty();
-  imm a = p.add(new Pt(1, 2));
+  var p = Pool[Pt].empty();
+  let a = p.add(new Pt(1, 2));
   match p.getMut(a) {
-    case imm s Some { s.x = 10; }
+    case let s Some { s.x = 10; }
     case is None { expect(false, "getMut gives Some"); }
   }
   expectInt(p[a].x, 10, "written through getMut");
-  imm m = &mut p[a];
+  let m = &mut p[a];
   m.y = 20;
   expectInt(p[a].y, 20, "written through &mut pool[r]");
   (&mut p[a]).x = 30;
@@ -99,8 +99,8 @@ fn mutate() {
 }
 
 fn none() {
-  mut p = Pool[Pt].empty();
-  imm n = Ref[Pt].none();
+  var p = Pool[Pt].empty();
+  let n = Ref[Pt].none();
   expect(n.isNone(), "none() is none");
   expect(!p.alive(n), "and never alive in an empty pool");
   p.add(new Pt(0, 0));
@@ -112,16 +112,16 @@ fn none() {
 // Growth moves the block, 4 -> 8 -> 16 -> 32 -> 64 -> 128 for 100 values;
 // every reference still reaches its value
 fn growth() {
-  mut p = Pool[i64].empty();
-  mut refs = List[Ref[i64]].empty();
-  mut i = 0i64;
+  var p = Pool[i64].empty();
+  var refs = List[Ref[i64]].empty();
+  var i = 0i64;
   while i < 100i64 {
     refs.push(p.add(i * 10i64));
     i = i + 1i64;
   }
   expectUInt(u64.from(p.capacity()), 128, "grown five times");
-  mut sum = 0i64;
-  mut j = 0usize;
+  var sum = 0i64;
+  var j = 0usize;
   while j < refs.len() {
     sum = sum + *p[*refs[j]];
     j = j + 1usize;
@@ -134,16 +134,16 @@ fn growth() {
 // Remove every other value of 50, then add 25: the 25 free slots are taken,
 // the block does not grow, and exactly the 25 not removed are alive
 fn churn() {
-  mut p = Pool[i64].empty();
-  mut refs = List[Ref[i64]].empty();
-  mut i = 0i64;
+  var p = Pool[i64].empty();
+  var refs = List[Ref[i64]].empty();
+  var i = 0i64;
   while i < 50i64 { refs.push(p.add(i)); i = i + 1i64; }
-  mut j = 0usize;
+  var j = 0usize;
   while j < refs.len() { p.remove(*refs[j]); j = j + 2usize; }
   i = 0i64;
   while i < 25i64 { p.add(1000i64); i = i + 1i64; }
-  mut alive = 0i64;
-  mut oddSum = 0i64;
+  var alive = 0i64;
+  var oddSum = 0i64;
   j = 0usize;
   while j < refs.len() {
     if p.alive(*refs[j]) { alive = alive + 1i64; oddSum = oddSum + *p[*refs[j]]; }
@@ -162,12 +162,12 @@ fn pass(r Ref[Pt]) Ref[Pt] { r; }
 fn stash(l &mut List[Ref[Pt]], r Ref[Pt]) { l.push(r); }
 
 fn copies() {
-  mut p = Pool[Pt].empty();
-  imm a = p.add(new Pt(1, 2));
-  imm b = a;
-  imm c = pass(a);
-  imm h = new Holder(a, 5);
-  mut l = List[Ref[Pt]].empty();
+  var p = Pool[Pt].empty();
+  let a = p.add(new Pt(1, 2));
+  let b = a;
+  let c = pass(a);
+  let h = new Holder(a, 5);
+  var l = List[Ref[Pt]].empty();
   stash(&mut l, a);
   expect(a == b and a == c and a == h.r and a == *l[0usize], "all name the same value");
   expectInt(p[a].x + p[b].x + p[c].x + p[h.r].x + p[*l[0usize]].x, 5, "each reaches it");
@@ -182,14 +182,14 @@ fn copies() {
 struct Node { pub n i64; pub next Ref[Node]; }
 
 fn graph() {
-  mut p = Pool[Node].empty();
-  imm a = p.add(new Node(1, Ref[Node].none()));
-  imm b = p.add(new Node(2, a));
-  imm c = p.add(new Node(3, b));
+  var p = Pool[Node].empty();
+  let a = p.add(new Node(1, Ref[Node].none()));
+  let b = p.add(new Node(2, a));
+  let c = p.add(new Node(3, b));
   (&mut p[a]).next = c;
-  mut walk = 0i64;
-  mut at = a;
-  mut i = 0;
+  var walk = 0i64;
+  var at = a;
+  var i = 0;
   while i < 4 {
     walk = walk * 10i64 + p[at].n;
     at = p[at].next;
@@ -210,13 +210,13 @@ fn graph() {
 // taken as a live value -- the other pool's, which is wrong, but a value of
 // the right type in memory the pool owns.
 fn wrongPool() {
-  mut p = Pool[i64].empty();
-  mut q = Pool[i64].empty();
-  imm pa = p.add(10);
+  var p = Pool[i64].empty();
+  var q = Pool[i64].empty();
+  let pa = p.add(10);
   p.add(11);
-  imm pc = p.add(12);
-  imm qa = q.add(20);
-  imm qb = q.add(21);
+  let pc = p.add(12);
+  let qa = q.add(20);
+  let qb = q.add(21);
   q.remove(qb);
   q.add(22);
   expect(!q.alive(pc), "past the other pool's slots: not alive");

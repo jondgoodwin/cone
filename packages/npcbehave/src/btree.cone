@@ -84,7 +84,7 @@ pub struct BehaviorTree {
   }
 
   fn add(self &mut, n BtNode) u32 {
-    imm id = u32.from(nodes.len());
+    let id = u32.from(nodes.len());
     nodes.push(n);
     cursor.push(0u32);
     counter.push(0u32);
@@ -97,8 +97,8 @@ pub struct BehaviorTree {
   pub fn leaf(self &mut, id u32) u32 { self.add(new BtNode(NODE_LEAF, id, 0u32, 0u32, 0., 0u32)); }
 
   fn composite(self &mut, kind u32, children &Array[u32]) u32 {
-    imm first = u32.from(kids.len());
-    mut i = 0usize;
+    let first = u32.from(kids.len());
+    var i = 0usize;
     while i < children.len() {
       kids.push(children[i]);
       i = i + 1usize;
@@ -107,7 +107,7 @@ pub struct BehaviorTree {
   }
 
   fn decorator(self &mut, kind u32, child u32, param f32, times u32) u32 {
-    imm first = u32.from(kids.len());
+    let first = u32.from(kids.len());
     kids.push(child);
     self.add(new BtNode(kind, 0u32, first, 1u32, param, times));
   }
@@ -131,7 +131,7 @@ pub struct BehaviorTree {
   // Forget every running node: the next tick starts from the root. (A
   // cooldown's remaining time is kept.)
   pub fn reset(self &mut) {
-    mut i = 0usize;
+    var i = 0usize;
     while i < nodes.len() {
       cursor.set(i, 0u32);
       counter.set(i, 0u32);
@@ -150,21 +150,21 @@ pub struct BehaviorTree {
   fn child(self &, n u32, k u32) u32 { *kids[usize.from(nodes[usize.from(n)].first + k)]; }
 
   fn tickNode(self &mut, n u32, bb &mut Blackboard, leaf &<mut fn(id u32, bb &mut Blackboard) u32) u32 {
-    imm i = usize.from(n);
-    imm node = *nodes[i];
-    mut result = FAILURE;
+    let i = usize.from(n);
+    let node = *nodes[i];
+    var result = FAILURE;
     if node.kind == NODE_LEAF {
       result = leaf(node.leaf, bb);
     } elif node.kind == NODE_SEQUENCE or node.kind == NODE_SELECTOR or node.kind == NODE_REACTIVE_SEQUENCE or node.kind == NODE_REACTIVE_SELECTOR {
       // A sequence goes on past SUCCESS and stops at FAILURE; a selector the other way round
-      imm isSeq = node.kind == NODE_SEQUENCE or node.kind == NODE_REACTIVE_SEQUENCE;
-      imm memory = node.kind == NODE_SEQUENCE or node.kind == NODE_SELECTOR;
-      imm goOn = if isSeq { SUCCESS; } else { FAILURE; };
-      mut k = if memory { *cursor[i]; } else { 0u32; };
-      mut finished = true;
+      let isSeq = node.kind == NODE_SEQUENCE or node.kind == NODE_REACTIVE_SEQUENCE;
+      let memory = node.kind == NODE_SEQUENCE or node.kind == NODE_SELECTOR;
+      let goOn = if isSeq { SUCCESS; } else { FAILURE; };
+      var k = if memory { *cursor[i]; } else { 0u32; };
+      var finished = true;
       result = goOn;
       while k < node.count and finished {
-        imm s = self.tickNode(self.child(n, k), bb, leaf);
+        let s = self.tickNode(self.child(n, k), bb, leaf);
         if s == RUNNING {
           if memory { cursor.set(i, k); }
           result = RUNNING;
@@ -178,13 +178,13 @@ pub struct BehaviorTree {
       }
       if finished or result != RUNNING { cursor.set(i, 0u32); }
     } elif node.kind == NODE_PARALLEL_ALL or node.kind == NODE_PARALLEL_ONE {
-      imm all = node.kind == NODE_PARALLEL_ALL;
-      mut succeeded = 0u32;
-      mut failed = 0u32;
-      mut k = 0u32;
+      let all = node.kind == NODE_PARALLEL_ALL;
+      var succeeded = 0u32;
+      var failed = 0u32;
+      var k = 0u32;
       while k < node.count {
-        imm c = self.child(n, k);
-        mut s = *done[usize.from(c)];
+        let c = self.child(n, k);
+        var s = *done[usize.from(c)];
         if s == NOT_DONE or s == RUNNING { s = self.tickNode(c, bb, leaf); done.set(usize.from(c), s); }
         if s == SUCCESS { succeeded = succeeded + 1u32; }
         if s == FAILURE { failed = failed + 1u32; }
@@ -200,17 +200,17 @@ pub struct BehaviorTree {
         while k < node.count { done.set(usize.from(self.child(n, k)), NOT_DONE); k = k + 1u32; }
       }
     } elif node.kind == NODE_INVERTER {
-      imm s = self.tickNode(self.child(n, 0u32), bb, leaf);
+      let s = self.tickNode(self.child(n, 0u32), bb, leaf);
       result = if s == SUCCESS { FAILURE; } elif s == FAILURE { SUCCESS; } else { RUNNING; };
     } elif node.kind == NODE_SUCCEEDER {
-      imm s = self.tickNode(self.child(n, 0u32), bb, leaf);
+      let s = self.tickNode(self.child(n, 0u32), bb, leaf);
       result = if s == RUNNING { RUNNING; } else { SUCCESS; };
     } elif node.kind == NODE_REPEAT {
-      imm s = self.tickNode(self.child(n, 0u32), bb, leaf);
+      let s = self.tickNode(self.child(n, 0u32), bb, leaf);
       if s == RUNNING { result = RUNNING; }
       elif s == FAILURE { counter.set(i, 0u32); result = FAILURE; }
       else {
-        imm c = *counter[i] + 1u32;
+        let c = *counter[i] + 1u32;
         if node.times != 0u32 and c >= node.times { counter.set(i, 0u32); result = SUCCESS; }
         else { counter.set(i, c); result = RUNNING; }
       }
@@ -218,13 +218,13 @@ pub struct BehaviorTree {
       if *cursor[i] == 0u32 and time < *stamp[i] {
         result = FAILURE;
       } else {
-        imm s = self.tickNode(self.child(n, 0u32), bb, leaf);
+        let s = self.tickNode(self.child(n, 0u32), bb, leaf);
         if s == RUNNING { cursor.set(i, 1u32); result = RUNNING; }
         else { cursor.set(i, 0u32); stamp.set(i, time + node.param); result = s; }
       }
     } elif node.kind == NODE_TIMEOUT {
       if *cursor[i] == 0u32 { stamp.set(i, time); }
-      imm s = self.tickNode(self.child(n, 0u32), bb, leaf);
+      let s = self.tickNode(self.child(n, 0u32), bb, leaf);
       if s == RUNNING {
         if time - *stamp[i] > node.param { cursor.set(i, 0u32); result = FAILURE; }
         else { cursor.set(i, 1u32); result = RUNNING; }

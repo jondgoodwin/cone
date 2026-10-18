@@ -26,7 +26,7 @@ Six forms:
 | --- | --- | --- | --- |
 | `x as T` | `CastTag` | `newRecastNode` | reinterpret the bits |
 | `x is T` | `IsTag` | `newIsNode` | is this the runtime type? |
-| `case imm c &Circle` | `CastTag` + `FlagConvert` + `FlagMatchBind` | `newConvCastNode` from `parseBoundMatch` | the matched value, narrowed, that initializes `c` |
+| `case let c &Circle` | `CastTag` + `FlagConvert` + `FlagMatchBind` | `newConvCastNode` from `parseBoundMatch` | the matched value, narrowed, that initializes `c` |
 | *(injected)* | `CastTag` | `newRecastNode` from `iexpCoerce` | a `CastSubtype` coercion |
 | *(injected)* | `CastTag` + `FlagConvert` | `newConvCastNode` from `iexpCoerce` | a `ConvSubtype` coercion |
 | `case v` | `IsTag` + `FlagMatchValue` | `newMatchValueNode` | a value alone as a pattern: `is v` for a variant of the matched enum, else `== v` |
@@ -39,7 +39,7 @@ lowers to a type literal that generation hands to the same `genlConvert`
 ([literals](literals.md)), and a reference narrows to a variant only through a
 pattern, whose `is` test checks the variant first.
 
-**A bound pattern desugars to two of these sharing one `typ`**: `case imm c
+**A bound pattern desugars to two of these sharing one `typ`**: `case let c
 &Circle` is an `is` test and a conversion (`FlagMatchBind`) that initializes
 `c`. The variable itself declares no type and takes the conversion's, because a
 clone copies `typ` once per holder and a third copy would be left unbound (see
@@ -147,7 +147,7 @@ reference type, whatever the name means for now.
 written as a reference, against a matched value that is a reference of any kind
 (a borrow, an owner into a managed region, a virtual reference) becomes a
 reference to that type with the matched value's region and permission:
-`case imm c Circle` on an `&imm Shape` narrows to `&imm Circle`, on an
+`case let c Circle` on an `&imm Shape` narrows to `&imm Circle`, on an
 `Rc[mut, Shape]` to `Rc[mut, Circle]`. The `is` test and the conversion each wrap
 their own copy of the pattern, around the one shared name. A pattern that is
 already a reference, `&Circle`, or an alias of one, is left as written: it is the
@@ -299,7 +299,7 @@ marked `FlagVariantNarrow` and followed by the loan walk. It initializes the hid
 
 ### Trait patterns
 
-A trait named as a pattern on an enum (`case imm m Measured`, `s is Measured`) matches the
+A trait named as a pattern on an enum (`case let m Measured`, `s is Measured`) matches the
 variants that comply with it. It is the same pair, an `is` test and a conversion that binds,
 and the same shared `typ`; what differs is what the name is bound to. `castPatternTrait` finds
 a trait (a struct with `TraitType`, not an enum) at the root of a pattern, looking through a
@@ -346,7 +346,7 @@ trait's vtable list is in the order conversions registered their implementers.
 
 ### What a binding takes from a place
 
-An arm that binds, `case imm c Circle` or `if imm c Circle = s`, on a place takes the
+An arm that binds, `case let c Circle` or `if let c Circle = s`, on a place takes the
 place's value into a hidden variable of its own (`FlagMatchArm`, made by
 `parseBoundMatch`), which the binding's conversion reads. Where the variant is **plain
 data** (`castVariantIsPlain`: nothing in it to move, finalize, count or trace),

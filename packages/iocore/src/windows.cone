@@ -211,39 +211,39 @@ struct WinsockStart {
   error u32;
 }
 
-imm acceptExAddr usize;
-imm connectExAddr usize;
-imm startError u32;
+let acceptExAddr usize;
+let connectExAddr usize;
+let startError u32;
 
 // WSAStartup, then AcceptEx's and ConnectEx's addresses, asked of a socket
 // made for the purpose. Run by the module's 'init', so every program that
 // imports iocore has Winsock started before its 'main' and no loop starts it
 fn @initpure startWinsock() WinsockStart {
   if isWindows() {
-    mut data = new Array[u64, 64] <- fill 0u64;     // WSADATA, 512 bytes
-    imm r = WSAStartup(0x0202u16, &mut data as *u8);
+    var data = new Array[u64, 64] <- fill 0u64;     // WSADATA, 512 bytes
+    let r = WSAStartup(0x0202u16, &mut data as *u8);
     if r != 0i32 {
       return new WinsockStart(0usize, 0usize, u32.from(r));
     }
-    imm s = WSASocketW(afInet, sockStream, ipprotoTcp, null, 0u32, wsaFlagOverlapped | wsaFlagNoHandleInherit);
+    let s = WSASocketW(afInet, sockStream, ipprotoTcp, null, 0u32, wsaFlagOverlapped | wsaFlagNoHandleInherit);
     if s == invalidHandle {
       return new WinsockStart(0usize, 0usize, u32.from(WSAGetLastError()));
     }
     // WSAID_ACCEPTEX and WSAID_CONNECTEX
-    mut accept = new Guid(0xb5367df1u32, 0xcbacu16, 0x11cfu16, new Array[u8, 8] <- fill 0u8);
+    var accept = new Guid(0xb5367df1u32, 0xcbacu16, 0x11cfu16, new Array[u8, 8] <- fill 0u8);
     accept.d[0usize] = 0x95u8; accept.d[1usize] = 0xcau8; accept.d[2usize] = 0x00u8; accept.d[3usize] = 0x80u8;
     accept.d[4usize] = 0x5fu8; accept.d[5usize] = 0x48u8; accept.d[6usize] = 0xa1u8; accept.d[7usize] = 0x92u8;
-    mut connect = new Guid(0x25a207b9u32, 0xddf3u16, 0x4660u16, new Array[u8, 8] <- fill 0u8);
+    var connect = new Guid(0x25a207b9u32, 0xddf3u16, 0x4660u16, new Array[u8, 8] <- fill 0u8);
     connect.d[0usize] = 0x8eu8; connect.d[1usize] = 0xe9u8; connect.d[2usize] = 0x76u8; connect.d[3usize] = 0xe5u8;
     connect.d[4usize] = 0x8cu8; connect.d[5usize] = 0x74u8; connect.d[6usize] = 0x06u8; connect.d[7usize] = 0x3eu8;
-    mut got = 0u32;
-    mut fa = 0usize;
-    mut fc = 0usize;
-    imm ra = WSAIoctl(s, sioGetExtensionFunctionPointer, &mut accept as *u8, 16u32,
+    var got = 0u32;
+    var fa = 0usize;
+    var fc = 0usize;
+    let ra = WSAIoctl(s, sioGetExtensionFunctionPointer, &mut accept as *u8, 16u32,
       &mut fa as *u8, 8u32, &mut got, null, null);
-    imm rc = WSAIoctl(s, sioGetExtensionFunctionPointer, &mut connect as *u8, 16u32,
+    let rc = WSAIoctl(s, sioGetExtensionFunctionPointer, &mut connect as *u8, 16u32,
       &mut fc as *u8, 8u32, &mut got, null, null);
-    mut err = 0u32;
+    var err = 0u32;
     if ra != 0i32 or rc != 0i32 {
       err = u32.from(WSAGetLastError());
     }
@@ -265,9 +265,9 @@ fn winsock() u32 {
 // which are zero on Windows
 fn openPort() u32, usize, usize, usize {
   if isWindows() {
-    imm ws = winsock();
+    let ws = winsock();
     if ws != 0u32 {return ws, 0usize, 0usize, 0usize;}
-    imm port = CreateIoCompletionPort(invalidHandle, 0usize, 0usize, 1u32);
+    let port = CreateIoCompletionPort(invalidHandle, 0usize, 0usize, 1u32);
     if port == 0usize {return GetLastError(), 0usize, 0usize, 0usize;}
     return 0u32, port, 0usize, 0usize;
   } else {
@@ -282,7 +282,7 @@ fn tcpSocket(family u16) usize {
   if isWindows() {
     WSASocketW(i32.from(family), sockStream, ipprotoTcp, null, 0u32, wsaFlagOverlapped | wsaFlagNoHandleInherit);
   } else {
-    imm s = sysSocket(i32.from(family), sockStreamLx | nonBlock | epollCloexec, 0i32);
+    let s = sysSocket(i32.from(family), sockStreamLx | nonBlock | epollCloexec, 0i32);
     if s < 0i32 {invalidHandle;} else {usize.from(s);};
   }
 }
@@ -292,14 +292,14 @@ fn udpSocket(family u16) usize {
   if isWindows() {
     WSASocketW(i32.from(family), sockDgram, ipprotoUdp, null, 0u32, wsaFlagOverlapped | wsaFlagNoHandleInherit);
   } else {
-    imm s = sysSocket(i32.from(family), sockDgram | nonBlock | epollCloexec, 0i32);
+    let s = sysSocket(i32.from(family), sockDgram | nonBlock | epollCloexec, 0i32);
     if s < 0i32 {invalidHandle;} else {usize.from(s);};
   }
 }
 
 // Nagle's algorithm off: a small send goes at once
 fn noDelay(s usize) {
-  mut one = 1i32;
+  var one = 1i32;
   setsockopt(s, ipprotoTcp, tcpNoDelay, &mut one as *u8, 4i32);
 }
 
@@ -313,11 +313,11 @@ struct Linger {
 // Close s abortively: its peer sees the connection reset
 fn resetSocket(s usize) {
   if isWindows() {
-    mut l = new Linger(1u16, 0u16);
+    var l = new Linger(1u16, 0u16);
     setsockopt(s, solSocket, soLinger, &mut l as *u8, 4i32);
     closesocket(s);
   } else {
-    mut l = new LingerLx(1i32, 0i32);
+    var l = new LingerLx(1i32, 0i32);
     setsockopt(s, solSocketLx, soLingerLx, &mut l as *u8, 8i32);
     sysClose(fdOf(s));
   }
@@ -346,11 +346,11 @@ fn wsaError() u32 {
 fn widen(s &Array[u8]) *u16 {
   if isWindows() {
     if s.len == 0usize or s.len > 0x3FFFFFFFusize {return null;}
-    imm len = i32.from(s.len);
-    imm n = MultiByteToWideChar(utf8Page, invalidUtf8Fails, s as *u8, len, null, 0i32);
+    let len = i32.from(s.len);
+    let n = MultiByteToWideChar(utf8Page, invalidUtf8Fails, s as *u8, len, null, 0i32);
     if n == 0i32 {return null;}
-    imm count = usize.from(n);
-    imm p = libc.malloc((count + 1usize) * 2usize) as *u16;
+    let count = usize.from(n);
+    let p = libc.malloc((count + 1usize) * 2usize) as *u16;
     MultiByteToWideChar(utf8Page, invalidUtf8Fails, s as *u8, len, p, n);
     *(p + count) = 0u16;
     p;
@@ -364,26 +364,26 @@ fn widen(s &Array[u8]) *u16 {
 // Linux: the C library's, for the errno the number stands for
 fn systemText(code u32) String {
   if isWindows() {
-    mut buf = new Array[u16, 512] <- fill 0u16;
-    imm bp *u16 = &[]buf as *u16;
-    mut n = FormatMessageW(formatFromSystem, null, code, english, bp, 512u32, null);
+    var buf = new Array[u16, 512] <- fill 0u16;
+    let bp *u16 = &[]buf as *u16;
+    var n = FormatMessageW(formatFromSystem, null, code, english, bp, 512u32, null);
     if n == 0u32 {
       n = FormatMessageW(formatFromSystem, null, code, 0u32, bp, 512u32, null);
     }
-    mut out = String.empty();
+    var out = String.empty();
     if n == 0u32 {
       out.append("Windows error ");
       out.appendUInt(u64.from(code));
       return out;
     }
-    imm size = WideCharToMultiByte(utf8Page, 0u32, bp, i32.from(n), null, 0i32, null, null);
+    let size = WideCharToMultiByte(utf8Page, 0u32, bp, i32.from(n), null, 0i32, null, null);
     if size > 0i32 {
-      imm text = libc.malloc(usize.from(size));
+      let text = libc.malloc(usize.from(size));
       WideCharToMultiByte(utf8Page, 0u32, bp, i32.from(n), text, size, null, null);
       out.appendBytes(mem.sliceFromParts(text, usize.from(size)));
       libc.free(text);
     }
-    imm trimmed = out.trim();
+    let trimmed = out.trim();
     if trimmed.endsWith(".") {
       return trimmed.sub(0usize, trimmed.len() - 1usize);
     }

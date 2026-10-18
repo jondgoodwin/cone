@@ -40,18 +40,18 @@ const fsctlSetSparse = 0x000900C4u32;
 // The test's folder: TEMP's absolute path and the name, after checking
 // that it is that and nothing shorter
 fn makeRoot(name &str) Path {
-  mut variable cstr = "TMPDIR";
+  var variable cstr = "TMPDIR";
   if isWindows() { variable = "TEMP"; }
-  imm temp = libc.getenv(variable);
+  let temp = libc.getenv(variable);
   require(temp != null or not isWindows(), "TEMP is set");
-  imm tempPath = if temp != null {Path.from(cstr.fromPtr(temp).view());} else {Path.from("/tmp");};
-  mut root = Path.from("");
+  let tempPath = if temp != null {Path.from(cstr.fromPtr(temp).view());} else {Path.from("/tmp");};
+  var root = Path.from("");
   match fs.absolute(&tempPath) {
-    case imm t Ok { root = t.join(name); }
+    case let t Ok { root = t.join(name); }
     case is Error { require(false, "TEMP has an absolute path"); }
   }
-  imm up = root.parent();
-  imm safe = root.isAbsolute() and root.view().endsWith(name) and up.view().len() > 3usize;
+  let up = root.parent();
+  let safe = root.isAbsolute() and root.view().endsWith(name) and up.view().len() > 3usize;
   require(safe, "the test's folder is under TEMP");
   root;
 }
@@ -68,8 +68,8 @@ fn putAt(f *libc.FILE, at i64, bytes &Array[u8]) bool {
 
 // Whether the map holds these bytes at the position
 fn markerAt(v &Array[u8], at usize, bytes &Array[u8]) bool {
-  mut i = 0usize;
-  mut same = true;
+  var i = 0usize;
+  var same = true;
   while i < bytes.len {
     if v[at + i] != bytes[i] { same = false; }
     i = i + 1usize;
@@ -80,8 +80,8 @@ fn markerAt(v &Array[u8], at usize, bytes &Array[u8]) bool {
 // Whether every byte from 'from' (inclusive) to 'to' is zero, looking at one
 // byte in every 'step'
 fn zeroBetween(v &Array[u8], from usize, to usize, step usize) bool {
-  mut i = from;
-  mut zero = true;
+  var i = from;
+  var zero = true;
   while i < to {
     if v[i] != 0u8 { zero = false; }
     i = i + step;
@@ -90,49 +90,49 @@ fn zeroBetween(v &Array[u8], from usize, to usize, step usize) bool {
 }
 
 fn bigFile(root &Path) {
-  imm p = root.join("big.bin");
-  mut c = String.from(p.view());
-  imm f = libc.fopen(c.cstr(), "wb");
+  let p = root.join("big.bin");
+  var c = String.from(p.view());
+  let f = libc.fopen(c.cstr(), "wb");
   require(f != null, "open the big file for writing");
-  mut sparse = true;
+  var sparse = true;
   if isWindows() {
-    mut returned = 0u32;
-    imm h = _get_osfhandle(_fileno(f)) as usize;
+    var returned = 0u32;
+    let h = _get_osfhandle(_fileno(f)) as usize;
     sparse = DeviceIoControl(h, fsctlSetSparse, null, 0u32, null, 0u32, &mut returned, null) != 0i32;
   }
-  imm head &Array[u8] = "HEAD-MARKER";
-  imm straddle &Array[u8] = "ACROSS-4GiB";
-  imm tail &Array[u8] = "TAIL-AT-5GiB";
+  let head &Array[u8] = "HEAD-MARKER";
+  let straddle &Array[u8] = "ACROSS-4GiB";
+  let tail &Array[u8] = "TAIL-AT-5GiB";
   // 4 GiB - 4: the marker's first four bytes are below the boundary and the rest above
-  imm straddleAt = 4294967292usize;
+  let straddleAt = 4294967292usize;
   // 5 GiB + 3
-  imm tailAt = 5368709123usize;
-  mut wrote = false;
+  let tailAt = 5368709123usize;
+  var wrote = false;
   if sparse {
     wrote = putAt(f, 0i64, head) and putAt(f, i64.from(straddleAt), straddle)
       and putAt(f, i64.from(tailAt), tail);
   }
-  imm closed = libc.fclose(f);
+  let closed = libc.fclose(f);
   if not sparse or not wrote {
     // Never write 5 GB for real: say so and leave
     eprintStr("skipped: the file system cannot make a sparse file here\n");
     // As many checks as the real run makes, so the output is the same
-    mut k = 0u32;
+    var k = 0u32;
     while k < 11u32 { expect(true, "skipped: no sparse file"); k = k + 1u32; }
     fs.removeFile(&p);
     return;
   }
   expectInt(i64.from(closed), 0, "close the big file");
 
-  imm expected = tailAt + tail.len;
+  let expected = tailAt + tail.len;
   match fs.stat(&p) {
-    case imm s Ok { expectInt(s.size, i64.from(expected), "stat sees a file past 4 GB"); }
+    case let s Ok { expectInt(s.size, i64.from(expected), "stat sees a file past 4 GB"); }
     case is Error { expect(false, "stat of the big file"); }
   }
   match fs.mapFile(&p) {
-    case imm m Ok {
+    case let m Ok {
       expectUInt(u64.from(m.size()), u64.from(expected), "the map's size is past 4 GB");
-      imm v = m.view();
+      let v = m.view();
       expectUInt(u64.from(v.len), u64.from(expected), "the view's length is past 4 GB");
       expect(markerAt(v, 0usize, head), "the marker at the start");
       expect(markerAt(v, straddleAt, straddle), "the marker astride 4 GiB");
@@ -150,13 +150,13 @@ fn bigFile(root &Path) {
 }
 
 fn main() i32 {
-  imm root = makeRoot("cone-fs-test-mapfile-big");
+  let root = makeRoot("cone-fs-test-mapfile-big");
   require(fs.removeAll(&root) is Ok, "clear what an earlier run left");
   require(fs.makeDir(&root) is Ok, "make the test's folder");
 
   bigFile(&root);
 
-  imm removed = fs.removeAll(&root);
+  let removed = fs.removeAll(&root);
   expect(removed is Ok, "remove the test's folder, the big file with it");
   expect(not fs.exists(&root), "the test's folder is gone");
   done();

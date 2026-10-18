@@ -31,24 +31,24 @@ import sync use *;
 // The queue: jobs, the next one to take, and whether more will come, all
 // guarded by queueLock; 'queueReady' is notified when a job arrives or the
 // queue closes
-imm queueLock Mutex;
-imm queueReady Condvar;
-mut jobs List[u64];
-mut nextJob usize = 0usize;
-mut closed bool = false;
+let queueLock Mutex;
+let queueReady Condvar;
+var jobs List[u64];
+var nextJob usize = 0usize;
+var closed bool = false;
 
 // The table of squares, built once
-imm tableOnce Once;
-mut table = new Array[u64, 16] <- fill 0u64;
-imm builds Atomic[u32];
+let tableOnce Once;
+var table = new Array[u64, 16] <- fill 0u64;
+let builds Atomic[u32];
 
 // The scale, guarded by settings
-imm settings Rwlock;
-mut scale u64 = 1u64;
+let settings Rwlock;
+var scale u64 = 1u64;
 
 // The results, guarded by resultsLock
-imm resultsLock Mutex;
-mut results List[u64];
+let resultsLock Mutex;
+var results List[u64];
 
 fn @initpure init() {
   queueLock = Mutex.make();
@@ -63,7 +63,7 @@ fn @initpure init() {
 
 fn buildTable() {
   builds.add(1u32);
-  mut i = 0u64;
+  var i = 0u64;
   while i < 16u64 {
     table[i] = i * i;
     i = i + 1u64;
@@ -80,7 +80,7 @@ fn takeJob() u64, bool {
     queueLock.unlock();
     return 0u64, false;
   }
-  imm j = *jobs[nextJob];
+  let j = *jobs[nextJob];
   nextJob = nextJob + 1usize;
   queueLock.unlock();
   j, true;
@@ -88,14 +88,14 @@ fn takeJob() u64, bool {
 
 // Take jobs until there are none: how many this worker did
 fn worker(id u32) u32 {
-  mut done = 0u32;
-  mut j = 0u64;
-  mut more = true;
+  var done = 0u32;
+  var j = 0u64;
+  var more = true;
   j, more = takeJob();
   while more {
     tableOnce.callOnce(&buildTable);
     settings.readLock();
-    imm r = table[j % 16u64] * scale;
+    let r = table[j % 16u64] * scale;
     settings.readUnlock();
     resultsLock.lock();
     results.push(r);
@@ -112,12 +112,12 @@ fn main() {
   scale = 3u64;
   settings.writeUnlock();
 
-  imm a = thread.start(0u32, &worker);
-  imm b = thread.start(1u32, &worker);
-  imm c = thread.start(2u32, &worker);
-  imm d = thread.start(3u32, &worker);
+  let a = thread.start(0u32, &worker);
+  let b = thread.start(1u32, &worker);
+  let c = thread.start(2u32, &worker);
+  let d = thread.start(3u32, &worker);
 
-  mut j = 0u64;
+  var j = 0u64;
   while j < 1000u64 {
     queueLock.lock();
     jobs.push(j);
@@ -130,9 +130,9 @@ fn main() {
   queueReady.notifyAll();
   queueLock.unlock();
 
-  imm did = a.join() + b.join() + c.join() + d.join();
-  mut sum = 0u64;
-  mut i = 0usize;
+  let did = a.join() + b.join() + c.join() + d.join();
+  var sum = 0u64;
+  var i = 0usize;
   while i < results.len() {
     sum = sum + *results[i];
     i = i + 1usize;

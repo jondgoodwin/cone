@@ -36,8 +36,8 @@ fn consume(f Fin) {}
 // Changed while a read-only borrow is still to be used: by assignment, and by
 // an operator that changes it in place
 fn writeUnderShared() {
-  mut k = 5;
-  imm b = &k;
+  var k = 5;
+  let b = &k;
   k = 6;                     //~ ErrorFrozen:3 "may not be changed"
   k += 1;                    //~ ErrorFrozen:3 "may not be changed"
   printInt(*b);
@@ -45,24 +45,24 @@ fn writeUnderShared() {
 
 // Moved away, and replaced whole
 fn moveUnderShared() {
-  mut a = new Fin(1);
-  imm r = &a;
+  var a = new Fin(1);
+  let r = &a;
   consume(a);                //~ ErrorFrozen:11 "may not be moved"
   printInt(r.n);
 }
 
 fn replaceUnderShared() {
-  mut a = new Fin(1);
-  imm r = &a;
+  var a = new Fin(1);
+  let r = &a;
   a = new Fin(2);            //~ ErrorFrozen:3 "may not be changed"
   printInt(r.n);
 }
 
 // Swapped while a mutable borrow is still to be used
 fn swapUnderMut() {
-  mut a = new Fin(1);
-  mut other = new Fin(2);
-  imm r = &mut a;
+  var a = new Fin(1);
+  var other = new Fin(2);
+  let r = &mut a;
   a <=> other;               //~ ErrorFrozen:3 "may not be changed"
   r.n = 3;
 }
@@ -71,15 +71,15 @@ fn swapUnderMut() {
 // borrow promises nobody changes what it borrows, and an '&uni' that nobody
 // else reaches it, which a mutable borrow held beside it would break
 fn immUnderMut(p &uni Pt) i64 {
-  imm r = &mut *p;
-  imm s = &imm *p;           //~ ErrorFrozen:11 "may not be borrowed as 'imm'"
+  let r = &mut *p;
+  let s = &imm *p;           //~ ErrorFrozen:11 "may not be borrowed as 'imm'"
   r.x = 2;
   s.x;
 }
 
 fn uniUnderMut(p &uni Pt) i64 {
-  imm r = &mut *p;
-  imm s = &uni *p;           //~ ErrorFrozen:11 "may not be borrowed as 'uni'"
+  let r = &mut *p;
+  let s = &uni *p;           //~ ErrorFrozen:11 "may not be borrowed as 'uni'"
   r.x = 2;
   s.x;
 }
@@ -87,11 +87,11 @@ fn uniUnderMut(p &uni Pt) i64 {
 // A reborrow through a reference keeps what the reference borrowed alive: the
 // local may not end while the reborrow is used
 fn reborrowKeepsLocalAlive() {
-  mut zero = 0i64;
-  mut r &mut i64 = &mut zero;
+  var zero = 0i64;
+  var r &mut i64 = &mut zero;
   {
-    mut k = 1i64;            //~ ErrorFrozen:9 "goes out of scope while"
-    imm r1 = &mut k;
+    var k = 1i64;            //~ ErrorFrozen:9 "goes out of scope while"
+    let r1 = &mut k;
     r = &mut *r1;
   }
   *r = 3;
@@ -106,16 +106,16 @@ struct Holder { pub p Rc[mut, Pt]; }
 // A field borrowed through a 'Uni[T]' owner, then the owner moved away. (A
 // 'Rc[mut, T]' owner is copied, not moved, and a copy keeps the value alive.)
 fn sharedOwnerMoved() {
-  imm u = new Uni[Pt](1, 2);
-  imm b = &mut u.x;
+  let u = new Uni[Pt](1, 2);
+  let b = &mut u.x;
   consumeOwner(u);           //~ ErrorFrozen:16 "'u' is borrowed mutably"
   *b = 3;
 }
 
 // ... replaced whole, which releases what the borrow points into
 fn sharedOwnerReplaced() {
-  mut u = new Rc[mut, Pt](1, 2);
-  imm b = &u.x;
+  var u = new Rc[mut, Pt](1, 2);
+  let b = &u.x;
   u = new Rc[mut, Pt](3, 4);      //~ ErrorFrozen:3 "may not be changed"
   printInt(*b);
 }
@@ -123,17 +123,17 @@ fn sharedOwnerReplaced() {
 // ... changed where it is held: the field holding the owner is on the way to
 // the borrow, not behind the shared path
 fn sharedOwnerFieldReplaced() {
-  mut h = new Holder(new Rc[mut, Pt](1, 2));
-  imm b = &mut h.p.x;
+  var h = new Holder(new Rc[mut, Pt](1, 2));
+  let b = &mut h.p.x;
   h.p = new Rc[mut, Pt](3, 4);    //~ ErrorFrozen:4 "may not be changed"
   *b = 5;
 }
 
 // ... or borrowed mutably there, which could replace it the same way
 fn sharedOwnerFieldBorrowed() {
-  mut h = new Holder(new Rc[mut, Pt](1, 2));
-  imm b = &mut h.p.x;
-  imm hp = &mut h.p;         //~ ErrorFrozen:12 "may not be borrowed mutably"
+  var h = new Holder(new Rc[mut, Pt](1, 2));
+  let b = &mut h.p.x;
+  let hp = &mut h.p;         //~ ErrorFrozen:12 "may not be borrowed mutably"
   *b = 5;
   *hp = new Rc[mut, Pt](5, 6);
 }
@@ -141,11 +141,11 @@ fn sharedOwnerFieldBorrowed() {
 // ... or ended while a variable declared outside its block still holds the
 // borrow
 fn sharedOwnerEnds() {
-  mut zero = 0i64;
-  mut r &mut i64 = &mut zero;
+  var zero = 0i64;
+  var r &mut i64 = &mut zero;
   {
-    imm u = new Rc[mut, Pt](1, 2);    //~ ErrorFrozen:9 "goes out of scope while"
-    mut b &mut i64 = &mut zero;
+    let u = new Rc[mut, Pt](1, 2);    //~ ErrorFrozen:9 "goes out of scope while"
+    var b &mut i64 = &mut zero;
     b = &mut u.x;
     r = b;
   }
@@ -159,11 +159,11 @@ fn sharedOwnerEnds() {
 // keeps its initializer's lifetime and not the one it now holds, so the store
 // is let through and the scope's end is what refuses it.
 fn scopeEnds() {
-  mut zero = 0i64;
-  mut r &i64 = &zero;
+  var zero = 0i64;
+  var r &i64 = &zero;
   {
-    mut a = 1i64;            //~ ErrorFrozen:9 "goes out of scope while"
-    mut b &i64 = &zero;
+    var a = 1i64;            //~ ErrorFrozen:9 "goes out of scope while"
+    var b &i64 = &zero;
     b = &a;
     r = b;
   }
@@ -182,9 +182,9 @@ enum Sh {
 }
 
 fn variantChangedUnderBinding(v Sh) i64 {
-  mut s = v;
+  var s = v;
   match &mut s {
-    case mut c &mut Ci { s = Sh.Re(2); c.r; }   //~ ErrorVariantReshape:40 "which could change which variant the 'Sh' value holds"
+    case var c &mut Ci { s = Sh.Re(2); c.r; }   //~ ErrorVariantReshape:40 "which could change which variant the 'Sh' value holds"
     else { 0; }
   }
 }
@@ -193,9 +193,9 @@ fn resetSh(s &mut Sh) { *s = Sh.Re(3); }
 
 // ... by a call handed another '&mut' of the enum
 fn variantChangedByCall(v Sh) i64 {
-  mut s = v;
+  var s = v;
   match &mut s {
-    case mut c &mut Ci { resetSh(&mut s); c.r; }   //~ ErrorVariantReshape:43 "which could change which variant the 'Sh' value holds"
+    case var c &mut Ci { resetSh(&mut s); c.r; }   //~ ErrorVariantReshape:43 "which could change which variant the 'Sh' value holds"
     else { 0; }
   }
 }
@@ -204,9 +204,9 @@ fn variantChangedByCall(v Sh) i64 {
 struct ShapeBag { pub shape Sh; }
 
 fn variantChangedInField(v Sh) i64 {
-  mut h = new ShapeBag(v);
+  var h = new ShapeBag(v);
   match &mut h.shape {
-    case mut c &mut Ci { h.shape = Sh.Re(2); c.r; }   //~ ErrorVariantReshape:46 "which could change which variant the 'Sh' value holds"
+    case var c &mut Ci { h.shape = Sh.Re(2); c.r; }   //~ ErrorVariantReshape:46 "which could change which variant the 'Sh' value holds"
     else { 0; }
   }
 }
@@ -215,16 +215,16 @@ fn variantChangedInField(v Sh) i64 {
 
 // Moved away while a mutable borrow is still to be used
 fn moveUnderMut() {
-  mut a = new Fin(1);
-  imm r = &mut a;
+  var a = new Fin(1);
+  let r = &mut a;
   consume(a);                //~ ErrorFrozen:11 "may not be moved"
   r.n = 3;
 }
 
 // Replaced whole (its old value finalized)
 fn replaceUnderMut() {
-  mut a = new Fin(1);
-  imm r = &mut a;
+  var a = new Fin(1);
+  let r = &mut a;
   a = new Fin(2);            //~ ErrorFrozen:3 "may not be changed"
   r.n = 3;
 }

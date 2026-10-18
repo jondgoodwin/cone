@@ -181,8 +181,8 @@ concept. It is named at each allocation site, so the choice is per-object and
 lexically visible:
 
 ```cone
-imm person = new Uni[Person]("Tako")     // single-owner: freed when the owner drops
-imm shared = new Rc[Person]("Tako")     // counted: freed at zero
+let person = new Uni[Person]("Tako")     // single-owner: freed when the owner drops
+let shared = new Rc[Person]("Tako")     // counted: freed at zero
 ```
 
 | Region | Is | Strategy |
@@ -253,18 +253,20 @@ anything coerces **to** `borrowRef`, and never between two owning regions.
 
 ### Permission — what may be done through this reference
 
-**Two different things share the word, and confusing them is easy.** A reference
-*type* carries a permission, and so does a *declaration* — a field, a local, a
-parameter or a global. They are written in different places, parsed by different
+**Two different things are easy to confuse.** A reference *type* carries a
+permission, and a *declaration* — a field, a local, a parameter or a global —
+carries a word, `let` or `var`, that says only whether its name may be given a new
+value (the compiler holds it as the `imm` or `mut` permission, the two that say
+that). They are written in different places, parsed by different
 functions, admit different vocabularies, and answer different questions:
 
-| | reference permission | declaration permission |
+| | reference permission | declaration word |
 | --- | --- | --- |
-| Written | inside a type: `&mut Point`, `Rc[ro, T]` | before a name: `mut x i32` |
-| Parsed by | `parsePerm`, inside `parseType` | `parseDclPerm` |
-| Vocabulary | all six below | `mut` and `imm`, nothing else |
+| Written | inside a type: `&mut Point`, `Rc[ro, T]` | before a name: `var x i32` |
+| Parsed by | `parsePerm`, inside `parseType` | `parseDclWord` |
+| Vocabulary | all six below | `let` and `var`, nothing else |
 | Answers | read, write, alias, share — and move-ness | may this storage's value change |
-| Default | `ro` borrowed, `uni` owning, `opaq` for a function | `imm` on a variable, `mut` on a field |
+| Default | `ro` borrowed, `uni` owning, `opaq` for a function | `let` on a variable, `var` on a field |
 
 **Why they differ is the reason the rest of this note exists.** A declaration
 names one storage location that only it owns, so the aliasing and sharing
@@ -274,16 +276,16 @@ is where the other axes start to matter.
 
 Two consequences worth knowing:
 
-- **A declaration permission is not part of a function's signature.**
+- **A declaration word is not part of a function's signature.**
   `fnSigMatches` compares each parameter's *type* and nothing else, so
-  `fn f(mut n i32)` and `fn f(n i32)` are one signature and a caller cannot tell
+  `fn f(var n i32)` and `fn f(n i32)` are one signature and a caller cannot tell
   them apart. What a caller does see is the permission on a reference
   parameter's *type* — a different thing in the same sentence, which is what
-  makes a parameter's own permission as private to the body as a local's.
+  makes a parameter's own word as private to the body as a local's.
 - **They compose by taking the minimum, for the one bit that is enforced.**
   `iexpGetLvalInfo` walks an lval to its variable, adopting a reference's
-  permission wherever one is crossed and downgrading on a field's. So a `mut`
-  field is not writable through an `imm` value or a `&` reference, and an `imm`
+  permission wherever one is crossed and downgrading on a field's. So a `var`
+  field is not writable through a `let` variable or a `&` reference, and a `let`
   field is not writable through a `&mut` one. That is the write half of what
   `doc/manual/guide-structs.html` calls *viewpoint adaptation*, and it is the half that
   exists, with one rule from the sharing side: a `&uni` field, array element or
@@ -521,7 +523,7 @@ gap:
   initialized with; kept past its source's block and used there, it is
   refused at the source's end, by freezing — see [Safety](safety.md).
 - **The permission on a reference is not the permission on the binding.**
-  `imm fixed = &mut target` is a writable target through an unrebindable name.
+  `let fixed = &mut target` is a writable target through an unrebindable name.
 - **`&[]x` on a non-array is legal** and yields a one-element slice.
 
 ## What lives elsewhere

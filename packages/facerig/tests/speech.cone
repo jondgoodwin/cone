@@ -47,19 +47,19 @@ fn testG2p() {
 }
 
 fn testTimeline() {
-  imm u = utteranceFromPhonemes("HH AH L OW", 1.);
+  let u = utteranceFromPhonemes("HH AH L OW", 1.);
   expectUInt(u64.from(u.phonemes.len()), 4u64, "four phonemes");
   expectUInt(u64.from(u.segments.len()), 5u64, "the diphthong makes two segments");
   near(u.duration, 0.055 + 0.085 + 0.070 + 0.150, 0.0001, "hello takes 0.36 s");
   near(*u.starts[1], 0.055, 0.0001, "AH starts at 0.055");
   near(*u.starts[3], 0.210, 0.0001, "OW starts at 0.21");
-  imm fast = utteranceFromPhonemes("HH AH L OW", 2.);
+  let fast = utteranceFromPhonemes("HH AH L OW", 2.);
   near(fast.duration, 0.18, 0.0001, "twice the rate halves it");
   // Pauses
-  imm p = utteranceFromPhonemes("HH AH , L OW .", 1.);
+  let p = utteranceFromPhonemes("HH AH , L OW .", 1.);
   near(p.duration, 0.055 + 0.085 + 0.18 + 0.070 + 0.150 + 0.40, 0.0001, "a comma is 0.18 s and a full stop 0.40 s");
   // Unknown tokens are ignored, the word boundary is silent
-  imm w = utteranceFromPhonemes("HH XX AH | L", 1.);
+  let w = utteranceFromPhonemes("HH XX AH | L", 1.);
   expectUInt(u64.from(w.phonemes.len()), 3u64, "an unknown name is skipped");
 }
 
@@ -71,68 +71,68 @@ struct Setup {
 }
 
 fn setup() Setup {
-  imm units = standardUnits();
-  imm speech = Speech.make(&units);
-  mut values = List[f32].empty();
+  let units = standardUnits();
+  let speech = Speech.make(&units);
+  var values = List[f32].empty();
   values.resize(units.len(), 0.);
   new Setup(units, speech, values);
 }
 
 fn clear(s &mut Setup) {
-  mut i = 0usize;
+  var i = 0usize;
   while i < s.values.len() { s.values.set(i, 0.); i = i + 1usize; }
 }
 
 fn valueAt(s &mut Setup, t f32, au u32, side u32) f32 {
   clear(s);
   s.speech.valuesAt(t, &mut s.values);
-  imm i = findUnit(&s.units, au, side);
+  let i = findUnit(&s.units, au, side);
   *s.values[usize.from(i)];
 }
 
 fn testBlend() {
-  mut s = setup();
-  imm u = utteranceFromPhonemes("P", 1.);
+  var s = setup();
+  let u = utteranceFromPhonemes("P", 1.);
   s.speech.say(&u);
   // P lasts 0.07 s: its centre is 0.035
   near(valueAt(&mut s, 0.035, AU_LIP_PRESSOR, SIDE_RIGHT), 3.2 / 3.32, 0.0005, "P: the lips pressed 0.96386 at its centre");
   near(valueAt(&mut s, 0.085, AU_LIP_PRESSOR, SIDE_RIGHT), 0.61440 / (0.61440 + 0.12), 0.002, "0.05 s later 0.83659");
-  imm before = 3.2 * libc.expf(-24.2 * 0.05);
+  let before = 3.2 * libc.expf(-24.2 * 0.05);
   near(valueAt(&mut s, -0.015, AU_LIP_PRESSOR, SIDE_RIGHT), before / (before + 0.12), 0.002, "0.05 s before it 0.8883");
   near(valueAt(&mut s, 0.6, AU_LIP_PRESSOR, SIDE_RIGHT), 0., 0.0001, "long after it, the lips are free");
-  imm k = utteranceFromPhonemes("K", 1.);
+  let k = utteranceFromPhonemes("K", 1.);
   s.speech.say(&k);
   near(valueAt(&mut s, 0.035, AU_LIP_PRESSOR, SIDE_RIGHT), 0., 0.0001, "K: no opinion about the lips");
-  imm a = utteranceFromPhonemes("AH", 1.);
+  let a = utteranceFromPhonemes("AH", 1.);
   s.speech.say(&a);
   // AH lasts 0.085: its centre is 0.0425
   near(valueAt(&mut s, 0.0425, AU_JAW_DROP, SIDE_BOTH), 0.48 * 1.3 / 1.42, 0.001, "AH: the jaw opens 0.43944 at its centre");
   // Between P and AH: "P AH": at P's centre the jaw is held nearly shut by P's own opinion of it
-  imm pa = utteranceFromPhonemes("P AH", 1.);
+  let pa = utteranceFromPhonemes("P AH", 1.);
   s.speech.say(&pa);
-  imm jawAtP = valueAt(&mut s, 0.035, AU_JAW_DROP, SIDE_BOTH);
-  imm jawAtA = valueAt(&mut s, 0.07 + 0.0425, AU_JAW_DROP, SIDE_BOTH);
+  let jawAtP = valueAt(&mut s, 0.035, AU_JAW_DROP, SIDE_BOTH);
+  let jawAtA = valueAt(&mut s, 0.07 + 0.0425, AU_JAW_DROP, SIDE_BOTH);
   expect(jawAtP < 0.15, "P holds the jaw nearly shut");
   expect(jawAtA > 0.3, "and the vowel after opens it");
   expect(jawAtA > jawAtP * 2., "much wider than at the P");
   // Anticipation: the pucker of OU leaks into the sound before it
-  imm sou = utteranceFromPhonemes("S UW", 1.);
+  let sou = utteranceFromPhonemes("S UW", 1.);
   s.speech.say(&sou);
-  imm pucker = valueAt(&mut s, 0.045, AU_LIP_PUCKER, SIDE_RIGHT);
-  imm puckerAfter = valueAt(&mut s, 0.09 + 0.0575, AU_LIP_PUCKER, SIDE_RIGHT);
+  let pucker = valueAt(&mut s, 0.045, AU_LIP_PUCKER, SIDE_RIGHT);
+  let puckerAfter = valueAt(&mut s, 0.09 + 0.0575, AU_LIP_PUCKER, SIDE_RIGHT);
   expect(pucker > 0.1, "the lips start to round during the S before an OO");
   expect(puckerAfter > pucker, "and round fully at the vowel");
 }
 
 fn testPlaying() {
-  mut s = setup();
-  imm u = utteranceFromText("Hello.", 1.);
+  var s = setup();
+  let u = utteranceFromText("Hello.", 1.);
   s.speech.say(&u);
   expectBool(s.speech.done(), false, "just started");
-  mut vals = List[f32].empty();
+  var vals = List[f32].empty();
   vals.resize(s.units.len(), 0.);
-  mut i = 0;
-  mut sawActivity = false;
+  var i = 0;
+  var sawActivity = false;
   while i < 120 {
     s.speech.update(1. / 60., &mut vals);
     if s.speech.activity > 0.5 { sawActivity = true; }

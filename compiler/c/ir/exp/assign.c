@@ -304,7 +304,7 @@ int assignlvalrtype(INode *lval, INode *rtype, HollowNode **hollowrel) {
         flowVarSetFlags(var, (flowflags | VarInitialized) & (0xFFFF - (VarMoved | VarHollow)), NULL);
         // The value stored into such a binding is the matched value's variable's
         // to release, so that variable holds a value again, as a moved plain
-        // 'mut' local does once assigned
+        // 'var' local does once assigned
         if (flowMatchInPlace(var)) {
             VarDclNode *owner = flowDropOwner(var);
             if (owner != var)

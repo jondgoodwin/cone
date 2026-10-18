@@ -77,7 +77,7 @@ pub struct SceneHandle {
 // The code a fade of 'f' (-1 to 1) is written into an instance's per-instance
 // word as (fade.slang); NO_BONES for none
 pub fn fadeCode(f f32) u32 {
-  mut q = i32.from(f * 32767. + (if f < 0. { -0.5; } else { 0.5; }));
+  var q = i32.from(f * 32767. + (if f < 0. { -0.5; } else { 0.5; }));
   if q > 32767i32 { q = 32767i32; }
   if q < -32767i32 { q = -32767i32; }
   if q == 0i32 {
@@ -89,7 +89,7 @@ pub fn fadeCode(f f32) u32 {
 // The fade a code holds, as fade.slang's 'instanceFade' reads it: 0 for none
 pub fn fadeOfCode(code u32) f32 {
   if (code >> 16u32) != 0xFADEu32 { return 0.; }
-  mut q = i32.from(code & 0xFFFFu32);
+  var q = i32.from(code & 0xFFFFu32);
   if q >= 32768i32 { q = q - 65536i32; }
   f32.from(q) / 32767.;
 }
@@ -105,8 +105,8 @@ pub fn fadeKeeps(f f32, noise f32) bool {
 // The interleaved gradient noise at the pixel (x, y), 0 to 1: fade.slang's
 // 'fadeNoise'
 pub fn fadeNoise(x f32, y f32) f32 {
-  imm a = 0.06711056 * x + 0.00583715 * y;
-  imm b = 52.9829189 * (a - libc.floorf(a));
+  let a = 0.06711056 * x + 0.00583715 * y;
+  let b = 52.9829189 * (a - libc.floorf(a));
   b - libc.floorf(b);
 }
 
@@ -207,7 +207,7 @@ pub struct Visibility {
   pub depthSampled bool = false;   // set by 'render' while the depth buffer it draws with can be sampled (occlusion needs it)
 
   pub fn create(margin f32) Visibility {
-    mut s = new VisibilitySettings();
+    var s = new VisibilitySettings();
     s.margin = margin;
     new Visibility(s, List[SceneItem].empty(), List[u32].empty(), Bvh[u32].create(margin), List[LodChain].empty(),
       List[LodSlot].empty(), 0u32, List[u32].empty(), new VisibilityStats(), List[SetRange].empty());
@@ -228,31 +228,31 @@ pub struct Visibility {
   // Renderer's 'addSceneItem' reads them from the mesh
   pub fn addItem(self &mut, mesh MeshHandle, material MaterialHandle, model Mat4, tint Color, boundsCenter Vec3,
       boundsHalf Vec3, boundsRadius f32) SceneHandle {
-    imm world = worldBox(&model, boundsCenter, boundsHalf);
-    imm sc = model * boundsCenter;
-    imm r = boundsRadius * maxScale(&model);
-    mut slot = u32.from(items.len());
-    mut gen = 1u32;
-    mut reuse = false;
+    let world = worldBox(&model, boundsCenter, boundsHalf);
+    let sc = model * boundsCenter;
+    let r = boundsRadius * maxScale(&model);
+    var slot = u32.from(items.len());
+    var gen = 1u32;
+    var reuse = false;
     if free.len() > 0usize {
       slot = *free[free.len() - 1usize];
       free.truncate(free.len() - 1usize);
       gen = items[usize.from(slot)].gen + 1u32;
       reuse = true;
     }
-    imm proxy = tree.insert(world, slot);
-    imm item = new SceneItem(true, gen, mesh, material, model, tint, 1u32, true, true, world.center(),
+    let proxy = tree.insert(world, slot);
+    let item = new SceneItem(true, gen, mesh, material, model, tint, 1u32, true, true, world.center(),
       world.halfExtents(), sc, r, boundsCenter, boundsHalf, boundsRadius, proxy, -1i32, 0., 0., 0.);
     if reuse {
       items.set(usize.from(slot), item);
-      mut k = 0usize;
+      var k = 0usize;
       while k < LOD_SLOTS {
         lodSlots.set(usize.from(slot) * LOD_SLOTS + k, new LodSlot(0u32, 0u32, 1., 0u32));
         k = k + 1usize;
       }
     } else {
       items.push(item);
-      mut k = 0usize;
+      var k = 0usize;
       while k < LOD_SLOTS {
         lodSlots.push(new LodSlot(0u32, 0u32, 1., 0u32));
         k = k + 1usize;
@@ -264,7 +264,7 @@ pub struct Visibility {
   // Take an item out; its handle reaches nothing from now on
   pub fn remove(self &mut, h SceneHandle) bool {
     if !self.alive(h) { return false; }
-    mut it = *items[usize.from(h.slot)];
+    var it = *items[usize.from(h.slot)];
     tree.remove(it.proxy);
     it.alive = false;
     items.set(usize.from(h.slot), it);
@@ -274,9 +274,9 @@ pub struct Visibility {
 
   // Remove everything
   pub fn clear(self &mut) {
-    mut i = 0usize;
+    var i = 0usize;
     while i < items.len() {
-      imm it = items[i];
+      let it = items[i];
       if it.alive { self.remove(new SceneHandle(u32.from(i), it.gen)); }
       i = i + 1usize;
     }
@@ -286,8 +286,8 @@ pub struct Visibility {
   // box leaves the old one's margin)
   pub fn move(self &mut, h SceneHandle, model Mat4) bool {
     if !self.alive(h) { return false; }
-    mut it = *items[usize.from(h.slot)];
-    imm oldCenter = it.center;
+    var it = *items[usize.from(h.slot)];
+    let oldCenter = it.center;
     it.model = model;
     self.rebound(&mut it);
     tree.move(it.proxy, Aabb3.fromCenter(it.center, it.half), it.center - oldCenter);
@@ -297,7 +297,7 @@ pub struct Visibility {
 
   // Take the item's world bounds from its model and its local bounds
   fn rebound(self &, it &mut SceneItem) {
-    imm world = worldBox(&it.model, it.localCenter, it.localHalf);
+    let world = worldBox(&it.model, it.localCenter, it.localHalf);
     it.center = world.center();
     it.half = world.halfExtents();
     it.sphereCenter = it.model * it.localCenter;
@@ -308,7 +308,7 @@ pub struct Visibility {
   // mesh), after the mesh was replaced
   pub fn setBounds(self &mut, h SceneHandle, boundsCenter Vec3, boundsHalf Vec3, boundsRadius f32) bool {
     if !self.alive(h) { return false; }
-    mut it = *items[usize.from(h.slot)];
+    var it = *items[usize.from(h.slot)];
     it.localCenter = boundsCenter;
     it.localHalf = boundsHalf;
     it.localRadius = boundsRadius;
@@ -320,7 +320,7 @@ pub struct Visibility {
 
   pub fn setTint(self &mut, h SceneHandle, tint Color) bool {
     if !self.alive(h) { return false; }
-    mut it = *items[usize.from(h.slot)];
+    var it = *items[usize.from(h.slot)];
     it.tint = tint;
     items.set(usize.from(h.slot), it);
     true;
@@ -328,7 +328,7 @@ pub struct Visibility {
 
   pub fn setMaterial(self &mut, h SceneHandle, material MaterialHandle) bool {
     if !self.alive(h) { return false; }
-    mut it = *items[usize.from(h.slot)];
+    var it = *items[usize.from(h.slot)];
     it.material = material;
     items.set(usize.from(h.slot), it);
     true;
@@ -336,7 +336,7 @@ pub struct Visibility {
 
   pub fn setMesh(self &mut, h SceneHandle, mesh MeshHandle) bool {
     if !self.alive(h) { return false; }
-    mut it = *items[usize.from(h.slot)];
+    var it = *items[usize.from(h.slot)];
     it.mesh = mesh;
     items.set(usize.from(h.slot), it);
     true;
@@ -344,7 +344,7 @@ pub struct Visibility {
 
   pub fn setLayers(self &mut, h SceneHandle, layers u32) bool {
     if !self.alive(h) { return false; }
-    mut it = *items[usize.from(h.slot)];
+    var it = *items[usize.from(h.slot)];
     it.layers = layers;
     items.set(usize.from(h.slot), it);
     true;
@@ -352,7 +352,7 @@ pub struct Visibility {
 
   pub fn setCastsShadow(self &mut, h SceneHandle, casts bool) bool {
     if !self.alive(h) { return false; }
-    mut it = *items[usize.from(h.slot)];
+    var it = *items[usize.from(h.slot)];
     it.castsShadow = casts;
     items.set(usize.from(h.slot), it);
     true;
@@ -361,7 +361,7 @@ pub struct Visibility {
   // Whether the depth pyramid may cull the item (hiz.cone)
   pub fn setOccludable(self &mut, h SceneHandle, occludable bool) bool {
     if !self.alive(h) { return false; }
-    mut it = *items[usize.from(h.slot)];
+    var it = *items[usize.from(h.slot)];
     it.occludable = occludable;
     items.set(usize.from(h.slot), it);
     true;
@@ -371,7 +371,7 @@ pub struct Visibility {
   // bounding sphere's centre; 0 for no limit), each edge fading over 'margin'
   pub fn setRange(self &mut, h SceneHandle, minDistance f32, maxDistance f32, margin f32) bool {
     if !self.alive(h) { return false; }
-    mut it = *items[usize.from(h.slot)];
+    var it = *items[usize.from(h.slot)];
     it.rangeMin = minDistance;
     it.rangeMax = maxDistance;
     it.rangeMargin = margin;
@@ -383,9 +383,9 @@ pub struct Visibility {
   // levels, by projected size, and 'chain.levels[0]' is its mesh
   pub fn setChain(self &mut, h SceneHandle, chain &LodChain) bool {
     if !self.alive(h) or chain.levels.len() == 0usize { return false; }
-    mut it = *items[usize.from(h.slot)];
-    mut copy = LodChain.empty(chain.hysteresis);
-    mut k = 0usize;
+    var it = *items[usize.from(h.slot)];
+    var copy = LodChain.empty(chain.hysteresis);
+    var k = 0usize;
     while k < chain.levels.len() {
       copy.addWithMaterial(*chain.levels[k], chain.materialOf(k), *chain.minSizes[k]);
       k = k + 1usize;
@@ -413,12 +413,12 @@ pub struct Visibility {
     slotFrames.set(lodSlot, *slotFrames[lodSlot] + 1u32);
     frame = *slotFrames[lodSlot];
     stats = new VisibilityStats();
-    imm n = items.len();
+    let n = items.len();
     stats.items = u32.from(self.count());
     if n == 0usize { return; }
-    mut mark = List[u8].withCapacity(n);
+    var mark = List[u8].withCapacity(n);
     mark.resize(n, 0u8);
-    mut i = 0usize;
+    var i = 0usize;
     if !settings.frustumCulling {
       while i < n {
         if items[i].alive { mark.set(i, 1u8); }
@@ -426,21 +426,21 @@ pub struct Visibility {
       }
     }
     if settings.frustumCulling {
-      imm vp = camera.projectionMatrix(aspect) * camera.viewMatrix();
-      imm fr = Frustum.fromMatrix(vp);
-      mut visit = fn(h u32, p Proxy) bool { mark.set(usize.from(h), 1u8); true; };
+      let vp = camera.projectionMatrix(aspect) * camera.viewMatrix();
+      let fr = Frustum.fromMatrix(vp);
+      var visit = fn(h u32, p Proxy) bool { mark.set(usize.from(h), 1u8); true; };
       tree.frustum(&fr, &mut visit);
     }
-    imm eye = camera.position();
-    imm perspective = camera.projection != Orthogonal;
-    imm tanHalf = tan(camera.fov * 0.5);
-    imm bias = cameraBias * settings.lodBias;
-    imm step = settings.timeStep / (if settings.fadeSeconds > 0.0001 { settings.fadeSeconds; } else { 0.0001; });
+    let eye = camera.position();
+    let perspective = camera.projection != Orthogonal;
+    let tanHalf = tan(camera.fov * 0.5);
+    let bias = cameraBias * settings.lodBias;
+    let step = settings.timeStep / (if settings.fadeSeconds > 0.0001 { settings.fadeSeconds; } else { 0.0001; });
     i = 0usize;
     while i < n {
       if *mark[i] != 0u8 {
         stats.candidates = stats.candidates + 1u32;
-        imm it = *items[i];
+        let it = *items[i];
         if (it.layers & layerMask) == 0u32 {
           stats.layerCulled = stats.layerCulled + 1u32;
         } else {
@@ -455,31 +455,31 @@ pub struct Visibility {
   // two, fading), appended to 'out'
   fn emit(self &mut, i usize, it &SceneItem, eye Vec3, perspective bool, tanHalf f32, orthoHeight f32,
       viewHeight f32, bias f32, step f32, out &mut List[DrawItem]) {
-    imm d = eye.distance(it.sphereCenter);
+    let d = eye.distance(it.sphereCenter);
     // The range: a share 0 to 1 of the item drawn
-    mut v = 1.;
+    var v = 1.;
     if settings.ranges { v = rangeShare(it, d); }
     if v <= 0. {
       stats.rangeCulled = stats.rangeCulled + 1u32;
       return;
     }
     // The level
-    mut level = 0u32;
-    mut prev = 0u32;
-    mut t = 1.;
+    var level = 0u32;
+    var prev = 0u32;
+    var t = 1.;
     if it.chain >= 0i32 and settings.lod {
-      imm chain = chains[usize.from(u32.from(it.chain))];
-      mut size = viewHeight;
+      let chain = chains[usize.from(u32.from(it.chain))];
+      var size = viewHeight;
       if perspective {
         if d > it.radius { size = it.radius / (d * tanHalf) * viewHeight; }
       } else {
         size = it.radius / orthoHeight * viewHeight;
       }
       size = size * bias;
-      imm si = i * LOD_SLOTS + lodSlot;
-      mut st = *lodSlots[si];
-      imm fresh = st.stamp + 1u32 < frame or st.stamp == 0u32;
-      imm chosen = u32.from(selectLod(chain, size, if fresh { 0usize; } else { usize.from(st.level); }));
+      let si = i * LOD_SLOTS + lodSlot;
+      var st = *lodSlots[si];
+      let fresh = st.stamp + 1u32 < frame or st.stamp == 0u32;
+      let chosen = u32.from(selectLod(chain, size, if fresh { 0usize; } else { usize.from(st.level); }));
       if fresh or !settings.crossFade {
         if fresh and chosen != st.level and st.stamp != 0u32 {
           stats.lodSwitches = stats.lodSwitches + 1u32;
@@ -526,12 +526,12 @@ pub struct Visibility {
   // the main camera at 'eye', at the level the shadow bias makes of the
   // size 'camera' sees them at
   pub fn collectCasters(self &mut, volume &Frustum, camera &Camera, viewHeight f32, out &mut List[DrawItem]) {
-    imm n = items.len();
+    let n = items.len();
     if n == 0usize { return; }
     stats.casterSets = stats.casterSets + 1u32;
-    mut mark = List[u8].withCapacity(n);
+    var mark = List[u8].withCapacity(n);
     mark.resize(n, 0u8);
-    mut i = 0usize;
+    var i = 0usize;
     if !settings.frustumCulling {
       while i < n {
         if items[i].alive { mark.set(i, 1u8); }
@@ -539,33 +539,33 @@ pub struct Visibility {
       }
     }
     if settings.frustumCulling {
-      mut visit = fn(h u32, p Proxy) bool { mark.set(usize.from(h), 1u8); true; };
+      var visit = fn(h u32, p Proxy) bool { mark.set(usize.from(h), 1u8); true; };
       tree.frustum(volume, &mut visit);
     }
-    imm eye = camera.position();
-    imm perspective = camera.projection != Orthogonal;
-    imm tanHalf = tan(camera.fov * 0.5);
-    imm bias = settings.shadowLodBias;
+    let eye = camera.position();
+    let perspective = camera.projection != Orthogonal;
+    let tanHalf = tan(camera.fov * 0.5);
+    let bias = settings.shadowLodBias;
     i = 0usize;
     while i < n {
       if *mark[i] != 0u8 {
-        imm it = *items[i];
+        let it = *items[i];
         if it.castsShadow and (it.layers & layerMask) != 0u32 {
-          imm d = eye.distance(it.sphereCenter);
+          let d = eye.distance(it.sphereCenter);
           if !settings.ranges or rangeShare(&it, d) > 0. {
-            mut mesh = it.mesh;
+            var mesh = it.mesh;
             if it.chain >= 0i32 {
-              imm chain = chains[usize.from(u32.from(it.chain))];
-              mut level = 0usize;
+              let chain = chains[usize.from(u32.from(it.chain))];
+              var level = 0usize;
               if settings.lod {
-                mut size = viewHeight;
+                var size = viewHeight;
                 if perspective {
                   if d > it.radius { size = it.radius / (d * tanHalf) * viewHeight; }
                 } else {
                   size = it.radius / camera.viewHeight * viewHeight;
                 }
                 // Start from the level the main view last drew it at
-                imm cur = usize.from(lodSlots[i * LOD_SLOTS].level);
+                let cur = usize.from(lodSlots[i * LOD_SLOTS].level);
                 level = selectLod(chain, size * bias, cur);
               }
               // A level with a material of its own (an impostor card) casts nothing: the last plain one casts
@@ -591,7 +591,7 @@ fn levelMesh(chains &List[LodChain], it &SceneItem, l u32) MeshHandle {
 // card's), or the item's
 fn levelMaterial(chains &List[LodChain], it &SceneItem, l u32) MaterialHandle {
   if it.chain >= 0i32 {
-    imm own = chains[usize.from(u32.from(it.chain))].materialOf(usize.from(l));
+    let own = chains[usize.from(u32.from(it.chain))].materialOf(usize.from(l));
     if !own.isNone() { return own; }
   }
   it.material;
@@ -601,18 +601,18 @@ fn levelMaterial(chains &List[LodChain], it &SceneItem, l u32) MaterialHandle {
 // whole between the edges' margins, a linear ramp over each margin, none
 // outside
 pub fn rangeShare(it &SceneItem, d f32) f32 {
-  mut v = 1.;
+  var v = 1.;
   if it.rangeMax > 0. {
     if d >= it.rangeMax { return 0.; }
     if it.rangeMargin > 0. and d > it.rangeMax - it.rangeMargin {
-      imm s = (it.rangeMax - d) / it.rangeMargin;
+      let s = (it.rangeMax - d) / it.rangeMargin;
       if s < v { v = s; }
     }
   }
   if it.rangeMin > 0. {
     if d < it.rangeMin { return 0.; }
     if it.rangeMargin > 0. and d < it.rangeMin + it.rangeMargin {
-      imm s = (d - it.rangeMin) / it.rangeMargin;
+      let s = (d - it.rangeMin) / it.rangeMargin;
       if s < v { v = s; }
     }
   }
@@ -624,9 +624,9 @@ pub fn rangeShare(it &SceneItem, d f32) f32 {
 // size is past the finer level's threshold by the chain's hysteresis, coarser
 // while it is short of this level's own by that much.
 pub fn selectLod(chain &LodChain, size f32, current usize) usize {
-  imm n = chain.levels.len();
+  let n = chain.levels.len();
   if n == 0usize { return 0usize; }
-  mut c = current;
+  var c = current;
   if c >= n { c = n - 1usize; }
   while c > 0usize and size >= *chain.minSizes[c - 1usize] * (1. + chain.hysteresis) {
     c = c - 1usize;
@@ -644,10 +644,10 @@ fn worldBox(m &Mat4, c Vec3, h Vec3) Aabb3 {
 
 // The most 'm' stretches a length: its longest column
 fn maxScale(m &Mat4) f32 {
-  imm sx = m.transformVector(new Vec3(1., 0., 0.)).length();
-  imm sy = m.transformVector(new Vec3(0., 1., 0.)).length();
-  imm sz = m.transformVector(new Vec3(0., 0., 1.)).length();
-  mut s = sx;
+  let sx = m.transformVector(new Vec3(1., 0., 0.)).length();
+  let sy = m.transformVector(new Vec3(0., 1., 0.)).length();
+  let sz = m.transformVector(new Vec3(0., 0., 1.)).length();
+  var s = sx;
   if sy > s { s = sy; }
   if sz > s { s = sz; }
   s;
@@ -657,8 +657,8 @@ fn maxScale(m &Mat4) f32 {
 // holds, its near plane taken away: what lies between the window and the sun
 // still casts into it
 pub fn casterVolume(matrix &Mat4) Frustum {
-  mut f = Frustum.fromMatrix(*matrix);
-  imm near = f.planes[4];
+  var f = Frustum.fromMatrix(*matrix);
+  let near = f.planes[4];
   f.planes[4] = new Plane(near.normal, near.d + 1000000.);
   f;
 }

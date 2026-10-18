@@ -54,14 +54,14 @@ pub const CLOTH_PARAM_BYTES = 112u64;
 
 // The cloth pipeline in a renderer; make it once
 pub fn addClothPipeline(renderer &mut Renderer, device &mut Device) PipelineHandle {
-  imm textures = [TEXTURE_SAMPLE_TYPE_FLOAT];
-  imm desc = new CustomPipeline(spirv: &CLOTH_SPIRV, textures: &textures, streams: 3u32, paramBytes: CLOTH_PARAM_BYTES,
+  let textures = [TEXTURE_SAMPLE_TYPE_FLOAT];
+  let desc = new CustomPipeline(spirv: &CLOTH_SPIRV, textures: &textures, streams: 3u32, paramBytes: CLOTH_PARAM_BYTES,
     cullMode: CULL_MODE_BACK);
   renderer.addPipeline(device, &desc);
 }
 
 pub fn clothParams(look &ClothLook, sheetW f32, sheetH f32, wearGain f32, dirtGain f32) List[f32] {
-  mut p = List[f32].empty();
+  var p = List[f32].empty();
   p.push(look.warp.red); p.push(look.warp.green); p.push(look.warp.blue); p.push(1.);
   p.push(look.weft.red); p.push(look.weft.green); p.push(look.weft.blue); p.push(1.);
   p.push(look.sheen.red); p.push(look.sheen.green); p.push(look.sheen.blue); p.push(look.sheenStrength);
@@ -75,7 +75,7 @@ pub fn clothParams(look &ClothLook, sheetW f32, sheetH f32, wearGain f32, dirtGa
 // ---- the pattern sheet ----
 
 fn hashf(x i32, y i32, seed u32) f32 {
-  mut h = u32.from(x) * 374761393u32 + u32.from(y) * 668265263u32 + seed * 2246822519u32;
+  var h = u32.from(x) * 374761393u32 + u32.from(y) * 668265263u32 + seed * 2246822519u32;
   h = (h ^ (h >> 13u32)) * 1274126177u32;
   h = h ^ (h >> 16u32);
   f32.from(h & 0xFFFFFFu32) / 16777215.;
@@ -83,18 +83,18 @@ fn hashf(x i32, y i32, seed u32) f32 {
 
 // Value noise on a lattice of `cell` metres, smooth between lattice points
 fn valueNoise(x f32, y f32, cell f32, seed u32) f32 {
-  imm gx = x / cell;
-  imm gy = y / cell;
-  imm ix = i32.from(libc.floorf(gx));
-  imm iy = i32.from(libc.floorf(gy));
-  imm fx = gx - f32.from(ix);
-  imm fy = gy - f32.from(iy);
-  imm sx = fx * fx * (3. - 2. * fx);
-  imm sy = fy * fy * (3. - 2. * fy);
-  imm a = hashf(ix, iy, seed);
-  imm b = hashf(ix + 1i32, iy, seed);
-  imm c = hashf(ix, iy + 1i32, seed);
-  imm d = hashf(ix + 1i32, iy + 1i32, seed);
+  let gx = x / cell;
+  let gy = y / cell;
+  let ix = i32.from(libc.floorf(gx));
+  let iy = i32.from(libc.floorf(gy));
+  let fx = gx - f32.from(ix);
+  let fy = gy - f32.from(iy);
+  let sx = fx * fx * (3. - 2. * fx);
+  let sy = fy * fy * (3. - 2. * fy);
+  let a = hashf(ix, iy, seed);
+  let b = hashf(ix + 1i32, iy, seed);
+  let c = hashf(ix, iy + 1i32, seed);
+  let d = hashf(ix + 1i32, iy + 1i32, seed);
   (a + (b - a) * sx) + ((c + (d - c) * sx) - (a + (b - a) * sx)) * sy;
 }
 
@@ -112,67 +112,67 @@ pub struct WearBand {
 // The pattern sheet of a garment: its flat layout at 'texelsPerMetre', painted with dirt (red), wear (green) and the
 // nearness of a seam (blue). `bands` are the places the cloth is rubbed (v down a panel, a half width, an amount)
 pub fn paintSheet(g &Garment, look &ClothLook, bands &List[WearBand], texelsPerMetre f32) Image {
-  imm w = i32.from(g.atlasWidth * texelsPerMetre) + 1i32;
-  imm h = i32.from(g.atlasHeight * texelsPerMetre) + 1i32;
-  mut img = new Image(w, h, 4, List[u8].withCapacity(usize.from(w) * usize.from(h) * 4usize));
+  let w = i32.from(g.atlasWidth * texelsPerMetre) + 1i32;
+  let h = i32.from(g.atlasHeight * texelsPerMetre) + 1i32;
+  var img = new Image(w, h, 4, List[u8].withCapacity(usize.from(w) * usize.from(h) * 4usize));
   img.pixels.resize(usize.from(w) * usize.from(h) * 4usize, 0u8);
   // the texels no triangle reaches stay clear (alpha 0), then are filled from their neighbours
-  mut painted = List[bool].empty();
-  mut z = 0usize;
+  var painted = List[bool].empty();
+  var z = 0usize;
   while z < usize.from(w) * usize.from(h) { painted.push(false); z = z + 1usize; }
-  imm tris = &g.soft.vertexTris;
-  imm uvs = &g.soft.vertexUvs;
-  imm attr = &g.vertexAttr;
+  let tris = &g.soft.vertexTris;
+  let uvs = &g.soft.vertexUvs;
+  let attr = &g.vertexAttr;
   if attr.len() == 0usize { return img; }
-  mut t = 0usize;
+  var t = 0usize;
   while t + 2usize < tris.len() {
-    imm ia = usize.from(*tris[t]);
-    imm ib = usize.from(*tris[t + 1usize]);
-    imm ic = usize.from(*tris[t + 2usize]);
+    let ia = usize.from(*tris[t]);
+    let ib = usize.from(*tris[t + 1usize]);
+    let ic = usize.from(*tris[t + 2usize]);
     t = t + 3usize;
-    imm pa = new Vec2((*uvs[ia]).x * f32.from(w), (*uvs[ia]).y * f32.from(h));
-    imm pb = new Vec2((*uvs[ib]).x * f32.from(w), (*uvs[ib]).y * f32.from(h));
-    imm pc = new Vec2((*uvs[ic]).x * f32.from(w), (*uvs[ic]).y * f32.from(h));
-    imm lo = pa.min(pb).min(pc);
-    imm hi = pa.max(pb).max(pc);
-    imm x0 = imax(i32.from(libc.floorf(lo.x)) - 1i32, 0i32);
-    imm x1 = imin(i32.from(libc.ceilf(hi.x)) + 1i32, w - 1i32);
-    imm y0 = imax(i32.from(libc.floorf(lo.y)) - 1i32, 0i32);
-    imm y1 = imin(i32.from(libc.ceilf(hi.y)) + 1i32, h - 1i32);
-    imm den = (pb.y - pc.y) * (pa.x - pc.x) + (pc.x - pb.x) * (pa.y - pc.y);
+    let pa = new Vec2((*uvs[ia]).x * f32.from(w), (*uvs[ia]).y * f32.from(h));
+    let pb = new Vec2((*uvs[ib]).x * f32.from(w), (*uvs[ib]).y * f32.from(h));
+    let pc = new Vec2((*uvs[ic]).x * f32.from(w), (*uvs[ic]).y * f32.from(h));
+    let lo = pa.min(pb).min(pc);
+    let hi = pa.max(pb).max(pc);
+    let x0 = imax(i32.from(libc.floorf(lo.x)) - 1i32, 0i32);
+    let x1 = imin(i32.from(libc.ceilf(hi.x)) + 1i32, w - 1i32);
+    let y0 = imax(i32.from(libc.floorf(lo.y)) - 1i32, 0i32);
+    let y1 = imin(i32.from(libc.ceilf(hi.y)) + 1i32, h - 1i32);
+    let den = (pb.y - pc.y) * (pa.x - pc.x) + (pc.x - pb.x) * (pa.y - pc.y);
     if den > -1e-9 and den < 1e-9 { continue; }
-    mut y = y0;
+    var y = y0;
     while y <= y1 {
-      mut x = x0;
+      var x = x0;
       while x <= x1 {
-        imm px = f32.from(x) + 0.5;
-        imm py = f32.from(y) + 0.5;
-        imm l0 = ((pb.y - pc.y) * (px - pc.x) + (pc.x - pb.x) * (py - pc.y)) / den;
-        imm l1 = ((pc.y - pa.y) * (px - pc.x) + (pa.x - pc.x) * (py - pc.y)) / den;
-        imm l2 = 1. - l0 - l1;
+        let px = f32.from(x) + 0.5;
+        let py = f32.from(y) + 0.5;
+        let l0 = ((pb.y - pc.y) * (px - pc.x) + (pc.x - pb.x) * (py - pc.y)) / den;
+        let l1 = ((pc.y - pa.y) * (px - pc.x) + (pa.x - pc.x) * (py - pc.y)) / den;
+        let l2 = 1. - l0 - l1;
         if l0 >= -0.02 and l1 >= -0.02 and l2 >= -0.02 {
-          imm at = (*attr[ia]) * l0 + (*attr[ib]) * l1 + (*attr[ic]) * l2;
+          let at = (*attr[ia]) * l0 + (*attr[ib]) * l1 + (*attr[ic]) * l2;
           // at.x metres to the hem, at.y to the nearest free edge, at.z to a seam, at.w v down the panel
-          imm mx = px / texelsPerMetre;
-          imm my = py / texelsPerMetre;
+          let mx = px / texelsPerMetre;
+          let my = py / texelsPerMetre;
           // dirt: the hem's, reaching hemDirt up, broken up by a noise; and a general grime
-          imm hemK = 1. - smoothstep(0., look.hemDirt, at.x);
-          imm grime = fbm2(mx, my, look.seed + 100u32);
-          mut dirt = look.dirt * (hemK * (0.35 + 0.9 * grime) + 0.25 * grime * grime);
+          let hemK = 1. - smoothstep(0., look.hemDirt, at.x);
+          let grime = fbm2(mx, my, look.seed + 100u32);
+          var dirt = look.dirt * (hemK * (0.35 + 0.9 * grime) + 0.25 * grime * grime);
           // wear: the free edges, noise patches, and the rubbed bands
-          imm edgeK = 1. - smoothstep(0., 0.045, at.y);
-          mut wear = look.wear * (edgeK * (0.5 + 0.8 * fbm2(mx * 1.7, my * 1.7, look.seed + 200u32)) + 0.45 * fbm2(mx, my, look.seed + 300u32));
-          mut b = 0usize;
+          let edgeK = 1. - smoothstep(0., 0.045, at.y);
+          var wear = look.wear * (edgeK * (0.5 + 0.8 * fbm2(mx * 1.7, my * 1.7, look.seed + 200u32)) + 0.45 * fbm2(mx, my, look.seed + 300u32));
+          var b = 0usize;
           while b < bands.len() {
-            imm band = *bands[b];
-            imm d = fabsf(at.w - band.v);
+            let band = *bands[b];
+            let d = fabsf(at.w - band.v);
             wear = wear + band.amount * look.wear * (1. - smoothstep(0., band.width, d)) * (0.6 + 0.6 * fbm2(mx * 2., my * 2., look.seed + 400u32));
             b = b + 1usize;
           }
-          imm seam = 1. - smoothstep(0., 0.012, at.z);
+          let seam = 1. - smoothstep(0., 0.012, at.z);
           dirt = fclampf(dirt, 0., 1.);
           wear = fclampf(wear, 0., 1.);
-          imm o = (usize.from(y) * usize.from(w) + usize.from(x)) * 4usize;
+          let o = (usize.from(y) * usize.from(w) + usize.from(x)) * 4usize;
           img.pixels.set(o, u8.from(i32.from(dirt * 255.)));
           img.pixels.set(o + 1usize, u8.from(i32.from(wear * 255.)));
           img.pixels.set(o + 2usize, u8.from(i32.from(seam * 255.)));
@@ -186,25 +186,25 @@ pub fn paintSheet(g &Garment, look &ClothLook, bands &List[WearBand], texelsPerM
   }
   // dilate: a texel nobody painted takes its painted neighbour's, three times over, so filtering at a panel's
   // edge never reads black
-  mut pass = 0;
+  var pass = 0;
   while pass < 3 {
-    mut yy = 0i32;
+    var yy = 0i32;
     while yy < h {
-      mut xx = 0i32;
+      var xx = 0i32;
       while xx < w {
-        imm idx = usize.from(yy) * usize.from(w) + usize.from(xx);
+        let idx = usize.from(yy) * usize.from(w) + usize.from(xx);
         if !*painted[idx] {
-          mut found = false;
-          mut dy = -1i32;
+          var found = false;
+          var dy = -1i32;
           while dy <= 1i32 and !found {
-            mut dx = -1i32;
+            var dx = -1i32;
             while dx <= 1i32 and !found {
-              imm nx = xx + dx;
-              imm ny = yy + dy;
+              let nx = xx + dx;
+              let ny = yy + dy;
               if nx >= 0i32 and ny >= 0i32 and nx < w and ny < h {
-                imm ni = usize.from(ny) * usize.from(w) + usize.from(nx);
+                let ni = usize.from(ny) * usize.from(w) + usize.from(nx);
                 if *painted[ni] {
-                  mut c = 0usize;
+                  var c = 0usize;
                   while c < 4usize { img.pixels.set(idx * 4usize + c, *img.pixels[ni * 4usize + c]); c = c + 1usize; }
                   found = true;
                 }
@@ -230,10 +230,10 @@ fn imin(a i32, b i32) i32 { if a < b { a; } else { b; }; }
 // The material of a garment: its sheet painted and uploaded, its look and the sheet's size as the shader's parameters
 pub fn addClothMaterial(renderer &mut Renderer, device &mut Device, pipeline PipelineHandle, g &Garment, look &ClothLook,
     bands &List[WearBand]) MaterialHandle {
-  imm sheetImage = paintSheet(g, look, bands, 250.);
-  imm sheet = renderer.addLinearTexture(device, &sheetImage);
-  imm params = clothParams(look, g.atlasWidth, g.atlasHeight, 1., 1.);
-  imm maps = [sheet];
+  let sheetImage = paintSheet(g, look, bands, 250.);
+  let sheet = renderer.addLinearTexture(device, &sheetImage);
+  let params = clothParams(look, g.atlasWidth, g.atlasHeight, 1., 1.);
+  let maps = [sheet];
   renderer.addCustomMaterial(device, pipeline, params.view(), &maps);
 }
 
@@ -245,7 +245,7 @@ pub struct GarmentView {
   normals List[Vec3];
 
   pub fn make(renderer &mut Renderer, device &mut Device, g &Garment, material MaterialHandle) GarmentView {
-    imm mesh = renderer.addDynamicMesh(device, u32.from(outputVertexCount(&g.soft, true)), u32.from(outputIndexCount(&g.soft, true)));
+    let mesh = renderer.addDynamicMesh(device, u32.from(outputVertexCount(&g.soft, true)), u32.from(outputIndexCount(&g.soft, true)));
     new GarmentView(mesh, material, Mesh.empty(), List[Vec3].empty());
   }
 
@@ -259,7 +259,7 @@ pub struct GarmentView {
 
 // spirv-begin cloth.spv CLOTH_SPIRV
 // Written by tools/shaders/shaders.py from cloth.slang (sha256 2b7c5b398302369bd52365de59cba346dedfb241ae62a2ec8e65acc33c4e9d8d): do not edit.
-imm CLOTH_SPIRV Array[u32, 5026] = [
+let CLOTH_SPIRV Array[u32, 5026] = [
   0x07230203u32, 0x00010500u32, 0x00280000u32, 0x0000048fu32, 0x00000000u32, 0x00020011u32,
   0x00000001u32, 0x000b000au32, 0x5f565053u32, 0x5f52484bu32, 0x726f7473u32, 0x5f656761u32,
   0x66667562u32, 0x735f7265u32, 0x61726f74u32, 0x635f6567u32, 0x7373616cu32, 0x00000000u32,

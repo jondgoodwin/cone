@@ -337,7 +337,7 @@ int reshapeGlobalsReach(INode *cont) {
     return m->reaches;
 }
 
-// The same, of the globals that can be written ('mut' ones): an 'imm' global cannot change under a borrow
+// The same, of the globals that can be written ('var' ones): a 'let' global cannot change under a borrow
 static RgMemo rgMutMemo[RgMemoCap];
 static uint32_t rgMutMemoUsed = 0;
 static uint32_t rgMutMemoNext = 0;
@@ -574,7 +574,7 @@ static int reshapeCallBody(FnCallNode *call, FnDclNode *meth, int recvunique, IN
     int capable = 0;
     for (uint32_t k = first; k < nargs && !capable; ++k) {
         INode *t = iexpGetTypeDcl(nodesGet(call->args, k));
-        // A read-only reference to a value holding borrows can write through a 'mut' one it holds
+        // A read-only reference to a value holding borrows can write through a 'var' one it holds
         INode *pointee = nmine > 0 && (t->tag == RefTag || t->tag == ArrayRefTag) ? itypeGetTypeDcl(((RefNode *)t)->vtexp) : NULL;
         capable = ((t->tag == RefTag || t->tag == ArrayRefTag) && (permGetFlags(((RefNode *)t)->perm) & MayWrite))
             || (pointee && pointee->tag == StructTag && ((StructNode *)pointee)->carriesborrow != CarriesBorrowNo)
@@ -673,7 +673,7 @@ int reshapeCall(FnCallNode *call, FnDclNode *meth, int recvunique, INode *cont, 
         int globalview, ReshapeVerdict *verdict, VarDclNode **mine, int nmine, int skiprecv) {
     if (reshapeCallBody(call, meth, recvunique, cont, owner, recvowner, verdict, mine, nmine, skiprecv))
         return 1;
-    // The borrow points into a 'mut' global, or into something reached from one: a call that may
+    // The borrow points into a 'var' global, or into something reached from one: a call that may
     // reshape the container's type through a global does, by the inference that judges every call
     // (shapeTypeWritesGlobal). A callee whose body cannot be read (extern, virtual, a function value,
     // another package's) may do anything. No summary is made of which global a function writes.

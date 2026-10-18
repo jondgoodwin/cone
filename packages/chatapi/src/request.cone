@@ -42,7 +42,7 @@ pub struct Message {
 
   // The message as the API's JSON object
   pub fn toJson(self &) json.Json {
-    mut o = json.Json.newObject();
+    var o = json.Json.newObject();
     o.set("role", json.Json.fromText(roleName(role)));
     o.set("content", json.Json.fromText(content.view()));
     if name.len() > 0usize {o.set("name", json.Json.fromText(name.view()));}
@@ -67,9 +67,9 @@ pub struct ChatRequest {
   }
 
   pub fn copy(self &) ChatRequest {
-    mut ms = List[Message].empty();
+    var ms = List[Message].empty();
     each m in messages {ms.push(m.copy());}
-    mut ss = List[String].empty();
+    var ss = List[String].empty();
     each s in stop {ss.push(s.copy());}
     new ChatRequest(model.copy(), ms, temperature, topP, maxTokens, ss, includeUsage);
   }
@@ -91,35 +91,35 @@ pub struct ChatRequest {
   // The request body the API takes. 'stream' asks for server-sent chunks;
   // 'completionName' names the token limit 'max_completion_tokens'
   pub fn toJson(self &, stream bool, completionName bool) json.Json {
-    mut o = json.Json.newObject();
+    var o = json.Json.newObject();
     o.set("model", json.Json.fromText(model.view()));
-    mut ms = json.Json.newArray();
+    var ms = json.Json.newArray();
     each m in messages {ms.push(m.toJson());}
     o.set("messages", ms);
     match &temperature {
-      case imm t Some {o.set("temperature", json.Json.fromF64(*t));}
+      case let t Some {o.set("temperature", json.Json.fromF64(*t));}
       case is None {}
     }
     match &topP {
-      case imm t Some {o.set("top_p", json.Json.fromF64(*t));}
+      case let t Some {o.set("top_p", json.Json.fromF64(*t));}
       case is None {}
     }
     match &maxTokens {
-      case imm n Some {
+      case let n Some {
         if completionName {o.set("max_completion_tokens", json.Json.fromU64(*n));}
         else {o.set("max_tokens", json.Json.fromU64(*n));}
       }
       case is None {}
     }
     if stop.len() > 0usize {
-      mut ss = json.Json.newArray();
+      var ss = json.Json.newArray();
       each s in stop {ss.push(json.Json.fromText(s.view()));}
       o.set("stop", ss);
     }
     if stream {
       o.set("stream", json.Json.fromBool(true));
       if includeUsage {
-        mut so = json.Json.newObject();
+        var so = json.Json.newObject();
         so.set("include_usage", json.Json.fromBool(true));
         o.set("stream_options", so);
       }
@@ -134,21 +134,21 @@ pub struct ChatRequest {
 // and nowhere else. A request that cannot be written, or whose key's variable
 // is not set, is an error and nothing is sent
 pub fn httpRequest(ep &Endpoint, req &ChatRequest, stream bool) Result[httpclient.Request, ChatError] {
-  imm why = req.problem();
+  let why = req.problem();
   if why.len() > 0usize {
     return Error[httpclient.Request, ChatError](ChatError.make(ChatErrorKind.Request, why));
   }
-  mut body = String.empty();
-  imm tree = req.toJson(stream, ep.maxCompletionTokens);
+  var body = String.empty();
+  let tree = req.toJson(stream, ep.maxCompletionTokens);
   match tree.toText() {
-    case mut t Ok {body <=> t;}
-    case imm e Error {
-      mut d = String.from("the request cannot be written as JSON: ");
+    case var t Ok {body <=> t;}
+    case let e Error {
+      var d = String.from("the request cannot be written as JSON: ");
       d.append(e.reason.view());
       return Error[httpclient.Request, ChatError](ChatError.make(ChatErrorKind.Request, d.view()));
     }
   }
-  mut r = httpclient.Request.make("POST", ep.url().view());
+  var r = httpclient.Request.make("POST", ep.url().view());
   r.body <=> body;
   r.headers.add("Content-Type", "application/json");
   if stream {
@@ -159,12 +159,12 @@ pub fn httpRequest(ep &Endpoint, req &ChatRequest, stream bool) Result[httpclien
   }
   if ep.keyEnv.len() > 0usize {
     match env.get(ep.keyEnv.view()) {
-      case imm key Some {
+      case let key Some {
         if key.len() == 0usize {return noKey(ep);}
-        mut auth = String.from("Bearer ");
+        var auth = String.from("Bearer ");
         auth.append(key.view());
         if not r.headers.add("Authorization", auth.view()) {
-          mut d = String.from("the API key in ");
+          var d = String.from("the API key in ");
           d.append(ep.keyEnv.view());
           d.append(" cannot be sent as a header field (it holds a line break or a control character)");
           return Error[httpclient.Request, ChatError](ChatError.make(ChatErrorKind.Request, d.view()));
@@ -178,7 +178,7 @@ pub fn httpRequest(ep &Endpoint, req &ChatRequest, stream bool) Result[httpclien
 
 // The error for a key that is not there. It names the variable, never a value
 fn noKey(ep &Endpoint) Result[httpclient.Request, ChatError] {
-  mut d = String.from("the environment variable ");
+  var d = String.from("the environment variable ");
   d.append(ep.keyEnv.view());
   d.append(" holds no API key");
   Error[httpclient.Request, ChatError](ChatError.make(ChatErrorKind.NoKey, d.view()));

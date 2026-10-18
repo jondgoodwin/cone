@@ -56,8 +56,8 @@ extern {
 // (PROCESS_MEMORY_COUNTERS_EX), Linux's data size (VmData)
 fn privateBytes() u64 {
   if isWindows() {
-    mut c = new Array[usize, 10] <- fill 0usize;
-    imm p = &mut c as *u8;
+    var c = new Array[usize, 10] <- fill 0usize;
+    let p = &mut c as *u8;
     *(p as *u32) = 80u32;
     K32GetProcessMemoryInfo(GetCurrentProcess(), p, 80u32);
     u64.from(c[9usize]);
@@ -69,17 +69,17 @@ fn privateBytes() u64 {
 // Linux: the sixth number of /proc/self/statm (size resident shared text lib
 // data dt), in 4096-byte pages: the process's writable private memory
 fn dataBytes() u64 {
-  imm f = libc.fopen("/proc/self/statm", "rb");
+  let f = libc.fopen("/proc/self/statm", "rb");
   if f == null {return 0u64;}
-  mut buf = new Array[u8, 256] <- fill 0u8;
-  imm bp *u8 = &[]buf as *u8;
-  imm n = libc.fread(bp, 1usize, 255usize, f);
+  var buf = new Array[u8, 256] <- fill 0u8;
+  let bp *u8 = &[]buf as *u8;
+  let n = libc.fread(bp, 1usize, 255usize, f);
   libc.fclose(f);
-  mut field = 0u32;
-  mut value = 0u64;
-  mut k = 0usize;
+  var field = 0u32;
+  var value = 0u64;
+  var k = 0usize;
   while k < n {
-    imm c = buf[k];
+    let c = buf[k];
     if c >= '0' and c <= '9' {
       if field == 5u32 {value = value * 10u64 + u64.from(c - '0');}
     } else {
@@ -96,44 +96,44 @@ const tokReq = 0x30000000u64;
 const bigPiece = 262144usize;
 
 fn certs(name &str) Path {
-  mut p = String.from("packages/tls/tests/certs/");
+  var p = String.from("packages/tls/tests/certs/");
   p.append(name);
   Path.fromString(p);
 }
 
 fn readText(name &str) String {
-  mut out = String.empty();
-  imm file = certs(name);
+  var out = String.empty();
+  let file = certs(name);
   match fs.readFile(&file) {
-    case mut r Ok {out <=> r;}
-    case imm e Error {}
+    case var r Ok {out <=> r;}
+    case let e Error {}
   }
   out;
 }
 
 fn makeServer() tls.Server {
-  imm serverPem = certs("server.pem");
-  imm serverKey = certs("server.key");
+  let serverPem = certs("server.pem");
+  let serverKey = certs("server.key");
   match tls.Server.make(tls.ServerConfig.make(&serverPem, &serverKey)) {
-    case imm r Ok {
-      imm s = r;
+    case let r Ok {
+      let s = r;
       return s;
     }
-    case imm e Error {printStr(e.message().view());}
+    case let e Error {printStr(e.message().view());}
   }
   panic("no server: run from the repository's root");
 }
 
 fn makeClient(resume bool) tls.Client {
-  mut cfg = tls.ClientConfig.make();
+  var cfg = tls.ClientConfig.make();
   cfg.verify = tls.Verifier.roots(readText("ca.pem").view());
   cfg.resume = resume;
   match tls.Client.make(cfg) {
-    case imm r Ok {
-      imm c = r;
+    case let r Ok {
+      let c = r;
       return c;
     }
-    case imm e Error {printStr(e.message().view());}
+    case let e Error {printStr(e.message().view());}
   }
   panic("no client");
 }
@@ -170,17 +170,17 @@ fn report(label &str, h &Histogram) {
 // ---------------------------------------------------------------------------
 
 fn pump(c &mut tls.Session, s &mut tls.Session) {
-  mut buf = new Array[u8, 20000] <- fill 0u8;
-  mut moved = true;
+  var buf = new Array[u8, 20000] <- fill 0u8;
+  var moved = true;
   while moved {
     moved = false;
     while c.pending() > 0usize {
-      imm n = c.transmit(&mut buf[0usize ..< 20000usize]);
+      let n = c.transmit(&mut buf[0usize ..< 20000usize]);
       s.feed(&buf[0usize ..< n]);
       moved = true;
     }
     while s.pending() > 0usize {
-      imm n = s.transmit(&mut buf[0usize ..< 20000usize]);
+      let n = s.transmit(&mut buf[0usize ..< 20000usize]);
       c.feed(&buf[0usize ..< n]);
       moved = true;
     }
@@ -192,30 +192,30 @@ fn pump(c &mut tls.Session, s &mut tls.Session) {
 }
 
 fn inMemory(n u32) {
-  imm srv = makeServer();
-  mut full = Histogram.make();
-  mut k = 0u32;
+  let srv = makeServer();
+  var full = Histogram.make();
+  var k = 0u32;
   while k < n {
-    imm cl = makeClient(false);
-    imm t0 = Instant.now();
-    mut c = cl.session("localhost");
-    mut s = srv.session();
+    let cl = makeClient(false);
+    let t0 = Instant.now();
+    var c = cl.session("localhost");
+    var s = srv.session();
     pump(&mut c, &mut s);
     full.record((Instant.now() - t0).nanos());
     if not c.isOpen() {printStr("a handshake failed\n");}
     k = k + 1u32;
   }
   report("in memory, full handshake (both sides)", &full);
-  imm cl = makeClient(true);
-  mut resumed = Histogram.make();
-  mut fresh = 0u32;
+  let cl = makeClient(true);
+  var resumed = Histogram.make();
+  var fresh = 0u32;
   k = 0u32;
   while k <= n {
-    imm t0 = Instant.now();
-    mut c = cl.session("localhost");
-    mut s = srv.session();
+    let t0 = Instant.now();
+    var c = cl.session("localhost");
+    var s = srv.session();
     pump(&mut c, &mut s);
-    imm took = (Instant.now() - t0).nanos();
+    let took = (Instant.now() - t0).nanos();
     if c.info().resumed {resumed.record(took);} else {fresh = fresh + 1u32;}
     k = k + 1u32;
   }
@@ -227,18 +227,18 @@ fn inMemory(n u32) {
 // then a second to the same server, timed. It resumes from one of the
 // first's tickets, which came after its handshake
 fn concurrentInMemory(n u32) {
-  imm srv = makeServer();
-  mut second = Histogram.make();
-  mut resumed = 0u32;
-  mut k = 0u32;
+  let srv = makeServer();
+  var second = Histogram.make();
+  var resumed = 0u32;
+  var k = 0u32;
   while k < n {
-    imm cl = makeClient(true);
-    mut a = cl.session("localhost");
-    mut sa = srv.session();
+    let cl = makeClient(true);
+    var a = cl.session("localhost");
+    var sa = srv.session();
     pump(&mut a, &mut sa);
-    imm t0 = Instant.now();
-    mut b = cl.session("localhost");
-    mut sb = srv.session();
+    let t0 = Instant.now();
+    var b = cl.session("localhost");
+    var sb = srv.session();
     pump(&mut b, &mut sb);
     second.record((Instant.now() - t0).nanos());
     if b.info().resumed {resumed = resumed + 1u32;}
@@ -265,8 +265,8 @@ struct Serving {
 
 fn sendBig(drv &mut Driver, sv &mut Serving) {
   while sv.left > 0u64 {
-    imm n = if sv.left < u64.from(bigPiece) {usize.from(sv.left);} else {bigPiece;};
-    mut b = sv.pool.mustTake(n);
+    let n = if sv.left < u64.from(bigPiece) {usize.from(sv.left);} else {bigPiece;};
+    var b = sv.pool.mustTake(n);
     b.setLen(n);
     match drv.sendData(sv.big, b) {
       case is None[IoBuf] {sv.left = sv.left - u64.from(n);}
@@ -288,7 +288,7 @@ fn serve(drv &mut Driver, sv &mut Serving, kind EventKind, req ReqId, big bool, 
       sendBig(drv, sv);
     } else {
       drv.respond(req, ResponseHead.make(200u16), BodyLength.sized(64u64));
-      mut b = sv.pool.mustTake(64usize);
+      var b = sv.pool.mustTake(64usize);
       b.setLen(64usize);
       drv.sendData(req, b);
       drv.finish(req);
@@ -299,20 +299,20 @@ fn serve(drv &mut Driver, sv &mut Serving, kind EventKind, req ReqId, big bool, 
 }
 
 fn listenOn(drv &mut Driver, lp &mut Loop, secure bool, srv &tls.Server, pool Pool) u16 {
-  mut port = 0u16;
-  mut res = if secure {
+  var port = 0u16;
+  var res = if secure {
     drv.listenWith(lp, SocketAddr.localhost(0u16), new Uni[TlsMaker](new TlsMaker(*srv, pool)), Sink.Here(tokServer));
   } else {
     drv.listen(lp, SocketAddr.localhost(0u16), Sink.Here(tokServer));
   };
   match res {
-    case imm r Ok {
+    case let r Ok {
       match drv.localAddr(lp, r) {
-        case imm a Ok {port = a.port();}
-        case imm e Error {}
+        case let a Ok {port = a.port();}
+        case let e Error {}
       }
     }
-    case imm e Error {}
+    case let e Error {}
   }
   port;
 }
@@ -330,27 +330,27 @@ fn connect(drv &mut Driver, lp &mut Loop, secure bool, cl &tls.Client, pool Pool
 // ---------------------------------------------------------------------------
 
 fn cycles(label &str, secure bool, resume bool, n u32) {
-  imm pool = Pool.make();
-  mut lp = Loop.mustMake();
-  mut drv = Driver.make(Config.make(), pool);
-  imm srv = makeServer();
-  imm cl = makeClient(resume);
-  imm port = listenOn(&mut drv, &mut lp, secure, &srv, pool);
-  mut sv = new Serving(pool, ReqId.none(), 0u64);
-  mut h = Histogram.make();
-  mut events = List[Event].empty();
-  imm r0 = tls.stats().resumed;
-  mut k = 0u32;
+  let pool = Pool.make();
+  var lp = Loop.mustMake();
+  var drv = Driver.make(Config.make(), pool);
+  let srv = makeServer();
+  let cl = makeClient(resume);
+  let port = listenOn(&mut drv, &mut lp, secure, &srv, pool);
+  var sv = new Serving(pool, ReqId.none(), 0u64);
+  var h = Histogram.make();
+  var events = List[Event].empty();
+  let r0 = tls.stats().resumed;
+  var k = 0u32;
   while k < n + 1u32 {
-    imm t0 = Instant.now();
-    imm c = connect(&mut drv, &mut lp, secure, &cl, pool, port, 0u64);
+    let t0 = Instant.now();
+    let c = connect(&mut drv, &mut lp, secure, &cl, pool, port, 0u64);
     drv.request(&mut lp, c, RequestHead.get("/x", "localhost"), BodyLength.empty(), Sink.Here(tokReq));
-    mut going = true;
+    var going = true;
     while going {
       drv.poll(&mut lp, forever(), &mut events);
-      mut j = 0usize;
+      var j = 0usize;
       while j < events.len() {
-        imm e = &mut events[j];
+        let e = &mut events[j];
         j = j + 1usize;
         if e.token == tokServer {serve(&mut drv, &mut sv, e.kind, e.req, e.request.target.view() == "/big", 0u64);}
         elif e.kind == EventKind.Data {drv.release(e.req, e.buf.len());}
@@ -375,12 +375,12 @@ fn cycles(label &str, secure bool, resume bool, n u32) {
 // A GET on a connection, driven to its final answer
 fn getOn(drv &mut Driver, lp &mut Loop, sv &mut Serving, events &mut List[Event], c ConnId) {
   drv.request(lp, c, RequestHead.get("/x", "localhost"), BodyLength.empty(), Sink.Here(tokReq));
-  mut going = true;
+  var going = true;
   while going {
     drv.poll(lp, forever(), events);
-    mut j = 0usize;
+    var j = 0usize;
     while j < events.len() {
-      imm e = &mut events[j];
+      let e = &mut events[j];
       j = j + 1usize;
       if e.token == tokServer {serve(drv, sv, e.kind, e.req, e.request.target.view() == "/big", 0u64);}
       elif e.kind == EventKind.Data {drv.release(e.req, e.buf.len());}
@@ -395,22 +395,22 @@ fn getOn(drv &mut Driver, lp &mut Loop, sv &mut Serving, events &mut List[Event]
 // kept; then a second connection and its GET, timed from asking for it to
 // the GET's Done; both reset
 fn concurrentCycles(n u32) {
-  imm pool = Pool.make();
-  mut lp = Loop.mustMake();
-  mut drv = Driver.make(Config.make(), pool);
-  imm srv = makeServer();
-  imm port = listenOn(&mut drv, &mut lp, true, &srv, pool);
-  mut sv = new Serving(pool, ReqId.none(), 0u64);
-  mut h = Histogram.make();
-  mut events = List[Event].empty();
-  imm r0 = tls.stats().resumed;
-  mut k = 0u32;
+  let pool = Pool.make();
+  var lp = Loop.mustMake();
+  var drv = Driver.make(Config.make(), pool);
+  let srv = makeServer();
+  let port = listenOn(&mut drv, &mut lp, true, &srv, pool);
+  var sv = new Serving(pool, ReqId.none(), 0u64);
+  var h = Histogram.make();
+  var events = List[Event].empty();
+  let r0 = tls.stats().resumed;
+  var k = 0u32;
   while k < n + 1u32 {
-    imm cl = makeClient(true);
-    imm first = connect(&mut drv, &mut lp, true, &cl, pool, port, 0u64);
+    let cl = makeClient(true);
+    let first = connect(&mut drv, &mut lp, true, &cl, pool, port, 0u64);
     getOn(&mut drv, &mut lp, &mut sv, &mut events, first);
-    imm t0 = Instant.now();
-    imm c = connect(&mut drv, &mut lp, true, &cl, pool, port, 1u64);
+    let t0 = Instant.now();
+    let c = connect(&mut drv, &mut lp, true, &cl, pool, port, 1u64);
     getOn(&mut drv, &mut lp, &mut sv, &mut events, c);
     if k > 0u32 {h.record((Instant.now() - t0).nanos());}
     drv.abort(&mut lp, c);
@@ -429,19 +429,19 @@ fn concurrentCycles(n u32) {
 // ---------------------------------------------------------------------------
 
 fn bulk(label &str, secure bool, size u64) {
-  imm pool = Pool.make(268435456usize, 67108864usize);
-  mut lp = Loop.mustMake();
-  mut drv = Driver.make(Config.make(), pool);
-  imm srv = makeServer();
-  imm cl = makeClient(false);
-  imm port = listenOn(&mut drv, &mut lp, secure, &srv, pool);
-  mut sv = new Serving(pool, ReqId.none(), 0u64);
-  mut events = List[Event].empty();
-  imm c = connect(&mut drv, &mut lp, secure, &cl, pool, port, 0u64);
+  let pool = Pool.make(268435456usize, 67108864usize);
+  var lp = Loop.mustMake();
+  var drv = Driver.make(Config.make(), pool);
+  let srv = makeServer();
+  let cl = makeClient(false);
+  let port = listenOn(&mut drv, &mut lp, secure, &srv, pool);
+  var sv = new Serving(pool, ReqId.none(), 0u64);
+  var events = List[Event].empty();
+  let c = connect(&mut drv, &mut lp, secure, &cl, pool, port, 0u64);
   // A first GET, so the handshake is not timed
-  mut round = 0u32;
-  mut got = 0u64;
-  mut t0 = Instant.now();
+  var round = 0u32;
+  var got = 0u64;
+  var t0 = Instant.now();
   while round < 2u32 {
     if round == 0u32 {
       drv.request(&mut lp, c, RequestHead.get("/x", "localhost"), BodyLength.empty(), Sink.Here(tokReq));
@@ -449,12 +449,12 @@ fn bulk(label &str, secure bool, size u64) {
       t0 = Instant.now();
       drv.request(&mut lp, c, RequestHead.get("/big", "localhost"), BodyLength.empty(), Sink.Here(tokReq));
     }
-    mut going = true;
+    var going = true;
     while going {
       drv.poll(&mut lp, forever(), &mut events);
-      mut j = 0usize;
+      var j = 0usize;
       while j < events.len() {
-        imm e = &mut events[j];
+        let e = &mut events[j];
         j = j + 1usize;
         if e.token == tokServer {serve(&mut drv, &mut sv, e.kind, e.req, e.request.target.view() == "/big", size);}
         elif e.kind == EventKind.Data {
@@ -466,7 +466,7 @@ fn bulk(label &str, secure bool, size u64) {
     }
     round = round + 1u32;
   }
-  imm ns = (Instant.now() - t0).nanos();
+  let ns = (Instant.now() - t0).nanos();
   printStr(label);
   printStr(": ");
   printUInt(got / 1048576u64);
@@ -483,42 +483,42 @@ fn bulk(label &str, secure bool, size u64) {
 // ---------------------------------------------------------------------------
 
 fn idleMemory(n u64) {
-  imm pool = Pool.make(268435456usize, 268435456usize);
-  mut lp = Loop.mustMake();
-  mut cfg = Config.make();
+  let pool = Pool.make(268435456usize, 268435456usize);
+  var lp = Loop.mustMake();
+  var cfg = Config.make();
   cfg.acceptDepth = 64u32;
-  mut drv = Driver.make(cfg, pool);
-  imm srv = makeServer();
-  imm cl = makeClient(true);
-  imm port = listenOn(&mut drv, &mut lp, true, &srv, pool);
-  mut sv = new Serving(pool, ReqId.none(), 0u64);
-  mut events = List[Event].empty();
-  mut round = 0u32;
-  mut before = 0u64;
-  mut heldBefore = 0usize;
+  var drv = Driver.make(cfg, pool);
+  let srv = makeServer();
+  let cl = makeClient(true);
+  let port = listenOn(&mut drv, &mut lp, true, &srv, pool);
+  var sv = new Serving(pool, ReqId.none(), 0u64);
+  var events = List[Event].empty();
+  var round = 0u32;
+  var before = 0u64;
+  var heldBefore = 0usize;
   while round < 2u32 {
     // Round 0 warms the tables and the pool with 64; round 1 is measured
-    imm want = if round == 0u32 {64u64;} else {n;};
+    let want = if round == 0u32 {64u64;} else {n;};
     if round == 1u32 {
       pool.trim();
       before = privateBytes();
       heldBefore = pool.stats().heldBytes - pool.stats().idleBytes;
     }
-    mut cs = List[ConnId].empty();
-    mut connected = 0u64;
-    mut ended = 0u64;
+    var cs = List[ConnId].empty();
+    var connected = 0u64;
+    var ended = 0u64;
     while ended < want {
       if u64.from(cs.len()) < want and u64.from(cs.len()) < connected + 64u64 {
-        imm k = u64.from(cs.len());
-        imm c = connect(&mut drv, &mut lp, true, &cl, pool, port, k);
+        let k = u64.from(cs.len());
+        let c = connect(&mut drv, &mut lp, true, &cl, pool, port, k);
         drv.request(&mut lp, c, RequestHead.get("/x", "localhost"), BodyLength.empty(), Sink.Here(tokReq + k));
         cs.push(c);
         continue;
       }
       drv.poll(&mut lp, forever(), &mut events);
-      mut j = 0usize;
+      var j = 0usize;
       while j < events.len() {
-        imm e = &mut events[j];
+        let e = &mut events[j];
         j = j + 1usize;
         if e.token == tokServer {serve(&mut drv, &mut sv, e.kind, e.req, e.request.target.view() == "/big", 0u64);}
         elif e.kind == EventKind.Data {drv.release(e.req, e.buf.len());}
@@ -527,18 +527,18 @@ fn idleMemory(n u64) {
       }
       events.clear();
     }
-    imm settle = Instant.now() + Duration.fromMillis(200i64);
+    let settle = Instant.now() + Duration.fromMillis(200i64);
     while Instant.now() < settle {
       drv.poll(&mut lp, settle, &mut events);
       events.clear();
     }
     if round == 0u32 {
-      mut k = 0usize;
+      var k = 0usize;
       while k < cs.len() {
         drv.abort(&mut lp, *cs[k]);
         k = k + 1usize;
       }
-      imm settle2 = Instant.now() + Duration.fromMillis(200i64);
+      let settle2 = Instant.now() + Duration.fromMillis(200i64);
       while Instant.now() < settle2 {
         drv.poll(&mut lp, settle2, &mut events);
         events.clear();
@@ -547,8 +547,8 @@ fn idleMemory(n u64) {
     round = round + 1u32;
   }
   pool.trim();
-  imm after = privateBytes();
-  imm heldAfter = pool.stats().heldBytes - pool.stats().idleBytes;
+  let after = privateBytes();
+  let heldAfter = pool.stats().heldBytes - pool.stats().idleBytes;
   printStr("idle TLS connections: ");
   printUInt(n);
   printStr(" open (");
@@ -565,20 +565,20 @@ fn idleMemory(n u64) {
 
 // Memory per session pair in memory, idle after a handshake and a small exchange
 fn sessionMemory(n u32) {
-  imm srv = makeServer();
-  imm cl = makeClient(false);
-  mut cs = List[tls.Session].empty();
-  mut ss = List[tls.Session].empty();
+  let srv = makeServer();
+  let cl = makeClient(false);
+  var cs = List[tls.Session].empty();
+  var ss = List[tls.Session].empty();
   {
-    mut c = cl.session("localhost");
-    mut s = srv.session();
+    var c = cl.session("localhost");
+    var s = srv.session();
     pump(&mut c, &mut s);
   }
-  imm before = privateBytes();
-  mut k = 0u32;
+  let before = privateBytes();
+  var k = 0u32;
   while k < n {
-    mut c = cl.session("localhost");
-    mut s = srv.session();
+    var c = cl.session("localhost");
+    var s = srv.session();
     pump(&mut c, &mut s);
     c.write("GET / HTTP/1.1\r\n\r\n");
     pump(&mut c, &mut s);
@@ -586,7 +586,7 @@ fn sessionMemory(n u32) {
     ss.push(s);
     k = k + 1u32;
   }
-  imm after = privateBytes();
+  let after = privateBytes();
   printStr("sessions in memory, a client and a server, open and idle: ");
   printUInt((after - before) / u64.from(n));
   printStr(" bytes a pair\n");
@@ -595,7 +595,7 @@ fn sessionMemory(n u32) {
 fn main() i32 {
   printStr(tls.backendVersion());
   printStr("\n");
-  imm args = process.args();
+  let args = process.args();
   if args.len() > 1usize and args[1usize].view() == "concurrent" {
     concurrentInMemory(500u32);
     concurrentCycles(500u32);

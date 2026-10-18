@@ -7,7 +7,7 @@
  *   xs <- 4 of 0;                   // n values, the value evaluated for each
  *   xs <- fill 0;                   // values until the collection is full
  *   dict <- "a": 1, "b": 2;         // pairs, given to a two-value append
- *   imm ys = new List[i32](8) <- fill 0;    // a construction's contents
+ *   let ys = new List[i32](8) <- fill 0;    // a construction's contents
  *
  * Every entry lowers to applications of the receiver's '<-' method, against
  * one borrow of the receiver. A construction's contents are appended to the
@@ -240,7 +240,7 @@ static int contentsHasPairAppend(INode *colltype) {
 }
 
 // 'n of x':
-//   { imm count usize = n; mut i = 0usize; loop { if i >= count {break}; *recv <- x; i++ } }
+//   { let count usize = n; var i = 0usize; loop { if i >= count {break}; *recv <- x; i++ } }
 // n is evaluated once, x once for each value. The block is a statement of the
 // block holding recv, so it opens the scope two past the one lowering it.
 static INode *contentsRepeat(TypeCheckState *pstate, VarDclNode *recv, EntryNode *entry) {
@@ -425,7 +425,7 @@ static INode **contentsEntries(FnCallNode *node, uint32_t *nentries) {
 
 // The entries of a '<-' on a value that is not a construction become a block
 // that borrows the receiver once and applies each entry against that borrow:
-//   { imm recv = &mut xs; *recv <- 1; ... }
+//   { let recv = &mut xs; *recv <- 1; ... }
 // The borrow is as strong as the type's '<-' methods need (fnCallAppendBorrowPerm),
 // and each application takes of it what its own method's 'self' declares. A
 // receiver that is already a reference is held as it is, so its permission,
@@ -549,7 +549,7 @@ static Name *contentsBuiltName() {
 
 // A construction's contents are appended to the value it builds, which is
 // then the value of the whole:
-//   { mut built = new T(...); built <- contents; built }
+//   { var built = new T(...); built <- contents; built }
 // The construction fills the variable in place; the block hands it on.
 static void contentsLowerConstruction(TypeCheckState *pstate, FnCallNode **nodep) {
     FnCallNode *node = *nodep;
@@ -848,7 +848,7 @@ static void contentsRefuseTryNew(TypeCheckState *pstate, FnCallNode **nodep, INo
     inodeTypeCheckAny(pstate, &node->objfn);
     if (isExpNode(node->objfn) && !inodeIsError(node->objfn) && iexpGetTypeDcl(node->objfn) != errorType)
         errorMsgNode((INode*)node, ErrorTryNewContents,
-            "Contents after '<-' on a 'trynew' are built only for an array's allocation, and not yet for %s. Allocate it with 'trynew' alone, then append on Some: 'imm maybe = trynew R[perm, T](...); match maybe { case imm s Some[R[perm, T]] { s <- ...; } else {...} }'.",
+            "Contents after '<-' on a 'trynew' are built only for an array's allocation, and not yet for %s. Allocate it with 'trynew' alone, then append on Some: 'let maybe = trynew R[perm, T](...); match maybe { case let s Some[R[perm, T]] { s <- ...; } else {...} }'.",
             built && built->tag == RefTag ? itypeName(((RefNode*)built)->vtexp) : "this value");
     *((INode**)nodep) = newErrorNode((INode*)node);
 }

@@ -20,11 +20,11 @@ fn say(s &str, n u64) {printStr(s); printStr(" "); printUInt(n); printStr("\n");
 // manual: begin
 // The Socket an answer holds, swapped out of it: Socket.none() if it failed
 fn socketOf(r Result[Socket, IoError]) Socket {
-  mut res = r;
-  mut s = Socket.none();
+  var res = r;
+  var s = Socket.none();
   match &mut res {
-    case mut ok &mut Ok {s <=> *ok;}
-    case imm e &mut Error {say("failed", u64.from((*e).code));}
+    case var ok &mut Ok {s <=> *ok;}
+    case let e &mut Error {say("failed", u64.from((*e).code));}
   }
   s;
 }
@@ -33,12 +33,12 @@ actor Client {
   pool Pool;
 
   pub async do send(self, port u16) {
-    imm conn = socketOf(await aio.connect(SocketAddr.localhost(port)));
-    mut buf = pool.mustTake(64usize);
+    let conn = socketOf(await aio.connect(SocketAddr.localhost(port)));
+    var buf = pool.mustTake(64usize);
     buf.append("hello");
-    imm sent = await conn.write(buf);          // pauses until all of it is sent
+    let sent = await conn.write(buf);          // pauses until all of it is sent
     match sent {
-      case imm e Error {say("write failed", u64.from(e.code));}
+      case let e Error {say("write failed", u64.from(e.code));}
       else {}
     }
   }                                           // conn closes here
@@ -49,24 +49,24 @@ actor Server {
   client Client;
 
   pub async do serve(self) u64 {
-    imm listener = socketOf(await aio.listen(SocketAddr.localhost(0u16)));
-    imm addr = await listener.localAddr();     // the port the system chose
+    let listener = socketOf(await aio.listen(SocketAddr.localhost(0u16)));
+    let addr = await listener.localAddr();     // the port the system chose
     match addr {
-      case imm a Ok {client.send(a.port());}
-      case imm e Error {say("no address", u64.from(e.code));}
+      case let a Ok {client.send(a.port());}
+      case let e Error {say("no address", u64.from(e.code));}
     }
-    imm conn = socketOf(await listener.accept());
-    imm none = await conn.read(IoBuf.empty());           // a buffer with no room
+    let conn = socketOf(await listener.accept());
+    let none = await conn.read(IoBuf.empty());           // a buffer with no room
     match none {
-      case imm e Error {say("no room: error", u64.from(e.code));}
+      case let e Error {say("no room: error", u64.from(e.code));}
       else {}
     }
-    mut total = 0u64;
-    mut more = true;
+    var total = 0u64;
+    var more = true;
     while more {
-      imm got = await conn.read(pool.mustTake(4096usize));
+      let got = await conn.read(pool.mustTake(4096usize));
       match got {
-        case imm b Ok {
+        case let b Ok {
           if b.len() == 0usize {
             say("end of stream", total);                 // the peer closed
             more = false;
@@ -75,7 +75,7 @@ actor Server {
             total = total + u64.from(b.len());
           }
         }
-        case imm e Error {
+        case let e Error {
           say("read failed", u64.from(e.code));
           more = false;
         }
@@ -88,20 +88,20 @@ actor Server {
 
 actor Starter {
   pub async do start(self, done OneshotSender[u64]) {
-    imm server = new Server(Pool.make(), new Client(Pool.make()));
-    imm total = await server.serve();
-    mut d = done;
+    let server = new Server(Pool.make(), new Client(Pool.make()));
+    let total = await server.serve();
+    var d = done;
     d.send(total);
   }
 }
 
 fn main() {
   initAll();
-  mut tx OneshotSender[u64];
-  mut rx OneshotReceiver[u64];
+  var tx OneshotSender[u64];
+  var rx OneshotReceiver[u64];
   tx, rx = Oneshot[u64].make();
   {
-    imm s = new Starter();
+    let s = new Starter();
     s.start(tx);
   }
   rx.recv();

@@ -50,14 +50,14 @@ actor Shelf {
 
   // One cell, shared by two owners of the state: its leaf is 5000
   pub async do share(self) {
-    imm cell = new Rc[mut, Cell](new self[Leaf](5000), 1);
+    let cell = new Rc[mut, Cell](new self[Leaf](5000), 1);
     shared = Some[Rc[mut, Cell]](cell);
     other = Some[Rc[mut, Cell]](cell);
   }
 
   // Leaves 1 to count in the list, 100 times each in the table
   pub async do fill(self, count i64) {
-    mut i = 1i64;
+    var i = 1i64;
     while i <= count {
       list.push(new self[Leaf](i));
       table.insert(i, new self[Leaf](i * 100));
@@ -67,44 +67,44 @@ actor Shelf {
 
   // Garbage: leaves nothing reaches
   pub async do churn(self, count i64) {
-    mut i = 0i64;
+    var i = 0i64;
     while i < count {
-      imm junk = new self[Leaf](i);
+      let junk = new self[Leaf](i);
       i = i + 1;
     }
   }
 
   // A ring of three nodes, leaves 11, 12, 13, held by the state
   pub async do makeRing(self) {
-    imm a = new Rc[mut, RingNode](new self[Leaf](11), None[Rc[mut, RingNode]]);
-    imm b = new Rc[mut, RingNode](new self[Leaf](12), Some[Rc[mut, RingNode]](a));
-    imm c = new Rc[mut, RingNode](new self[Leaf](13), Some[Rc[mut, RingNode]](b));
+    let a = new Rc[mut, RingNode](new self[Leaf](11), None[Rc[mut, RingNode]]);
+    let b = new Rc[mut, RingNode](new self[Leaf](12), Some[Rc[mut, RingNode]](a));
+    let c = new Rc[mut, RingNode](new self[Leaf](13), Some[Rc[mut, RingNode]](b));
     a.next = Some[Rc[mut, RingNode]](c);
     ring = Some[Rc[mut, RingNode]](a);
   }
 
   // The sum of what each holds, read through borrows
   pub async do report(self, tag i64) {
-    mut listSum = 0i64;
+    var listSum = 0i64;
     each v in list.iter() { listSum = listSum + v.n; }
-    mut tableSum = 0i64;
-    mut k = 1i64;
+    var tableSum = 0i64;
+    var k = 1i64;
     while k <= i64.from(list.len()) {
       match table.get(&k) {
-        case imm leaf Some[&LeafRef] { tableSum = tableSum + leaf.n; }
+        case let leaf Some[&LeafRef] { tableSum = tableSum + leaf.n; }
         else { }
       }
       k = k + 1;
     }
-    imm st = self.allocRegion().stats();
+    let st = self.allocRegion().stats();
     line("report", tag);
     line("  list", listSum);
     line("  table", tableSum);
     match shared {
-      case imm c Some[Rc[mut, Cell]] {
+      case let c Some[Rc[mut, Cell]] {
         line("  shared leaf", c.leaf.n);
         match other {
-          case imm d Some[Rc[mut, Cell]] {
+          case let d Some[Rc[mut, Cell]] {
             line("  other leaf", d.leaf.n);
             // the same cell: a write through one is seen through the other
             c.tag = c.tag + 1;
@@ -121,12 +121,12 @@ actor Shelf {
 
   // Round the ring twice from its first node, adding the leaves
   pub async do walkRing(self) {
-    mut sum = 0i64;
-    mut at = ring;
-    mut steps = 0i64;
+    var sum = 0i64;
+    var at = ring;
+    var steps = 0i64;
     while steps < 6 {
       match at {
-        case imm node Some[Rc[mut, RingNode]] {
+        case let node Some[Rc[mut, RingNode]] {
           sum = sum + node.leaf.n;
           at = node.next;
         }
@@ -141,7 +141,7 @@ actor Shelf {
 fn main() {
   actors.setStress(true);
   {
-    imm s = new Shelf();
+    let s = new Shelf();
     s.share();
     s.fill(10i64);
     s.churn(25i64);

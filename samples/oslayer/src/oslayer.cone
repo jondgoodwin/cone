@@ -21,7 +21,7 @@ import libc use * but getenv;
 import posix use *;
 
 // How many steps failed, which main returns as the exit status
-imm failures Atomic[i32];
+let failures Atomic[i32];
 
 fn @initpure init() {
   failures = Atomic[i32].of(0i32);
@@ -40,9 +40,9 @@ fn same(a *u8, b cstr) bool {strcmp(cstr.fromPtr(a), b) == 0i32;}
 // Memory: a list of i64 grown by doubling with realloc, then freed
 fn memory() {
   printStr("memory\n");
-  mut cap = 2usize;
-  mut list = malloc(cap * 8usize) as *i64;
-  mut len = 0usize;
+  var cap = 2usize;
+  var list = malloc(cap * 8usize) as *i64;
+  var len = 0usize;
   while len < 100usize {
     if len == cap {
       cap = cap * 2usize;
@@ -51,13 +51,13 @@ fn memory() {
     list[len] = i64.from(len) * i64.from(len);
     len = len + 1usize;
   };
-  mut sum = 0i64;
-  mut i = 0usize;
+  var sum = 0i64;
+  var i = 0usize;
   while i < len {sum = sum + list[i]; i = i + 1usize;};
   // 0 + 1 + 4 + ... + 99*99 = 99*100*199/6
   step("100 squares kept through 6 reallocs sum to 328350", sum == 328350i64 and cap == 128usize);
   free(list as *u8);
-  imm zeroed = calloc(16usize, 1usize);
+  let zeroed = calloc(16usize, 1usize);
   step("calloc gives zeroed memory", zeroed[0] == 0u8 and zeroed[15] == 0u8);
   free(zeroed);
 }
@@ -65,21 +65,21 @@ fn memory() {
 // Files: written, read back, their status taken, removed
 fn files() {
   printStr("files\n");
-  imm name cstr = "notes.txt";
-  imm text cstr = "first line\nsecond line\n";
-  imm out = fopen(name, "wb");
-  imm wrote = fwrite(text.ptr(), 1usize, strlen(text), out);
+  let name cstr = "notes.txt";
+  let text cstr = "first line\nsecond line\n";
+  let out = fopen(name, "wb");
+  let wrote = fwrite(text.ptr(), 1usize, strlen(text), out);
   fflush(out);
   fclose(out);
   step("wrote 23 bytes to notes.txt", wrote == 23usize);
 
-  mut buf = new Array[u8, 64] <- fill 0u8;
-  imm back = fopen(name, "rb");
-  imm got = fread(&[]buf as *u8, 1usize, 63usize, back);
+  var buf = new Array[u8, 64] <- fill 0u8;
+  let back = fopen(name, "rb");
+  let got = fread(&[]buf as *u8, 1usize, 63usize, back);
   fclose(back);
   step("read the same 23 bytes back", got == 23usize and same(&[]buf as *u8, text));
 
-  mut st = new Stat(0u64, 0u64, 0u16, 0u32, 0u32, 0u32, 0u64, 0i64, 0i64, 0i64, 0i64);
+  var st = new Stat(0u64, 0u64, 0u16, 0u32, 0u32, 0u32, 0u64, 0i64, 0i64, 0i64, 0i64);
   step("stat: notes.txt exists, a regular file of 23 bytes",
     stat(name, &mut st) == 0i32 and (st.st_mode & S_IFMT) == S_IFREG and st.st_size == 23i64);
   step("stat: missing.txt does not exist", stat("missing.txt", &mut st) != 0i32);
@@ -88,34 +88,34 @@ fn files() {
 // Directories: made, entered and left, the current one named, listed
 fn directories() {
   printStr("directories\n");
-  mut here = new Array[u8, 4096] <- fill 0u8;
-  mut there = new Array[u8, 4096] <- fill 0u8;
-  imm herep *u8 = &[]here as *u8;
-  imm therep *u8 = &[]there as *u8;
+  var here = new Array[u8, 4096] <- fill 0u8;
+  var there = new Array[u8, 4096] <- fill 0u8;
+  let herep *u8 = &[]here as *u8;
+  let therep *u8 = &[]there as *u8;
   // The separator: '\' on Windows (whose getcwd writes it), '/' on Linux
-  imm slash = if isWindows() {92u8;} else {47u8;};
+  let slash = if isWindows() {92u8;} else {47u8;};
   getcwd(herep, 4096usize);
   step("mkdir made sub", mkdir("sub", 0x1EDu32) == 0i32);
   step("chdir went into sub", chdir("sub") == 0i32);
   getcwd(therep, 4096usize);
-  imm n = strlen(cstr.fromPtr(herep));
+  let n = strlen(cstr.fromPtr(herep));
   step("getcwd there is getcwd here with a separator and sub after it",
     strlen(cstr.fromPtr(therep)) == n + 4usize and therep[n] == slash and same(therep + n + 1usize, "sub"));
   step("chdir came back out", chdir("..") == 0i32);
-  imm full = realpath("sub/../notes.txt", null);
+  let full = realpath("sub/../notes.txt", null);
   step("realpath of sub/../notes.txt is here with a separator and notes.txt after it",
     strlen(cstr.fromPtr(full)) == n + 10usize and full[n] == slash and same(full + n + 1usize, "notes.txt"));
   free(full);
 
   // Listing: the folder holds notes.txt and sub
-  mut count = 0i32;
-  mut sawNotes = false;
-  mut sawSub = false;
-  imm dir = opendir(".");
-  mut entry = readdir(dir);
+  var count = 0i32;
+  var sawNotes = false;
+  var sawSub = false;
+  let dir = opendir(".");
+  var entry = readdir(dir);
   while entry != null {
-    imm e = entry as &dirent;
-    imm name *u8 = &[]e.d_name as *u8;
+    let e = entry as &dirent;
+    let name *u8 = &[]e.d_name as *u8;
     if !same(name, ".") and !same(name, "..") {count = count + 1i32;};
     if same(name, "notes.txt") and e.d_type == DT_REG {sawNotes = true;};
     if same(name, "sub") and e.d_type == DT_DIR {sawSub = true;};
@@ -132,21 +132,21 @@ fn processes() {
   step("setenv set OSLAYER_GREETING", setenv("OSLAYER_GREETING", "hello", 1i32) == 0i32);
   step("getenv reads it back", same(getenv("OSLAYER_GREETING"), "hello"));
 
-  mut buf = new Array[u8, 64] <- fill 0u8;
-  imm bufp *u8 = &[]buf as *u8;
-  imm command cstr = if isWindows() {"echo %OSLAYER_GREETING% from a child";}
+  var buf = new Array[u8, 64] <- fill 0u8;
+  let bufp *u8 = &[]buf as *u8;
+  let command cstr = if isWindows() {"echo %OSLAYER_GREETING% from a child";}
     else {"echo $OSLAYER_GREETING from a child";};
-  imm pipe = popen(command, "r");
-  imm got = fread(bufp, 1usize, 63usize, pipe);
-  imm status = pclose(pipe);
+  let pipe = popen(command, "r");
+  let got = fread(bufp, 1usize, 63usize, pipe);
+  let status = pclose(pipe);
   step("popen captured what the child printed, the variable included",
     status == 0i32 and got == 19usize and same(bufp, "hello from a child\n"));
   printStr("        the child said: ");
   printCStr(bufp);
   // 'system' answers the exit status on Windows, and on POSIX the status
   // 'wait' gives, the exit status in its second byte
-  imm leave cstr = if isWindows() {"exit /b 7";} else {"exit 7";};
-  imm code = if isWindows() {system(leave);} else {system(leave) >> 8i32;};
+  let leave cstr = if isWindows() {"exit /b 7";} else {"exit 7";};
+  let code = if isWindows() {system(leave);} else {system(leave) >> 8i32;};
   step("system returns the command's exit status", code == 7i32);
 }
 
@@ -161,11 +161,11 @@ fn cleanUp() {
 fn main() i32 {
   // A folder of our own under TEMP (TMPDIR or /tmp on Linux), cleared of
   // anything a stopped run left
-  mut temp cstr = "/tmp";
+  var temp cstr = "/tmp";
   if isWindows() {
     temp = cstr.fromPtr(getenv("TEMP"));
   } else {
-    imm t = getenv("TMPDIR");
+    let t = getenv("TMPDIR");
     if t != null {temp = cstr.fromPtr(t);};
   };
   chdir(temp);

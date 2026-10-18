@@ -27,25 +27,25 @@ fn putF(out &mut List[u8], v f32) { put32(out, v as u32); }
 
 fn get8(d &List[u8], pos &mut usize, ok &mut bool) u32 {
   if *pos >= d.len() { *ok = false; return 0u32; }
-  imm v = u32.from(*d[*pos]);
+  let v = u32.from(*d[*pos]);
   *pos = *pos + 1usize;
   v;
 }
 
 fn get16(d &List[u8], pos &mut usize, ok &mut bool) u32 {
-  imm a = get8(d, pos, ok);
+  let a = get8(d, pos, ok);
   a | (get8(d, pos, ok) << 8u32);
 }
 
 fn get32(d &List[u8], pos &mut usize, ok &mut bool) u32 {
-  imm a = get16(d, pos, ok);
+  let a = get16(d, pos, ok);
   a | (get16(d, pos, ok) << 16u32);
 }
 
 fn getF(d &List[u8], pos &mut usize, ok &mut bool) f32 { get32(d, pos, ok) as f32; }
 
 fn anyNonZero(l &List[f32], from usize, n usize) bool {
-  mut i = 0usize;
+  var i = 0usize;
   while i < n { if ld(l, from + i) != 0. { return true; } i = i + 1usize; }
   false;
 }
@@ -56,15 +56,15 @@ pub fn encodeTrack(t &Track, out &mut List[u8]) {
   put8(out, t.space);
   put16(out, u32.from(t.comps));
   put32(out, u32.from(t.len()));
-  mut k = 0usize;
+  var k = 0usize;
   while k < t.len() {
     putF(out, ld(&t.times, k));
     put8(out, *t.interps[k]);
     put8(out, *t.eases[k]);
-    imm hasShape = anyNonZero(&t.shapes, k * 4usize, 4usize);
-    imm hasTan = anyNonZero(&t.inTan, k * t.comps, t.comps) or anyNonZero(&t.outTan, k * t.comps, t.comps);
+    let hasShape = anyNonZero(&t.shapes, k * 4usize, 4usize);
+    let hasTan = anyNonZero(&t.inTan, k * t.comps, t.comps) or anyNonZero(&t.outTan, k * t.comps, t.comps);
     put8(out, (if hasShape { 1u32; } else { 0u32; }) | (if hasTan { 2u32; } else { 0u32; }));
-    mut c = 0usize;
+    var c = 0usize;
     while c < t.comps { putF(out, ld(&t.values, k * t.comps + c)); c = c + 1usize; }
     if hasShape {
       c = 0usize;
@@ -82,23 +82,23 @@ pub fn encodeTrack(t &Track, out &mut List[u8]) {
 
 // Read a track from 'd' at 'pos'
 pub fn decodeTrack(d &List[u8], pos &mut usize) Option[Track] {
-  mut ok = true;
-  imm kind = get8(d, pos, &mut ok);
-  imm space = get8(d, pos, &mut ok);
-  imm comps = usize.from(get16(d, pos, &mut ok));
-  imm n = usize.from(get32(d, pos, &mut ok));
+  var ok = true;
+  let kind = get8(d, pos, &mut ok);
+  let space = get8(d, pos, &mut ok);
+  let comps = usize.from(get16(d, pos, &mut ok));
+  let n = usize.from(get32(d, pos, &mut ok));
   if !ok or kind > TK_VECN or comps == 0usize or comps > 4096usize or n > 16777216usize { return None; }
-  mut t = if kind == TK_VECN { Track.makeVecN(comps); } else { Track.make(kind); };
+  var t = if kind == TK_VECN { Track.makeVecN(comps); } else { Track.make(kind); };
   if t.comps != comps { return None; }
   t.space = space;
-  mut k = 0usize;
+  var k = 0usize;
   while k < n and ok {
-    imm time = getF(d, pos, &mut ok);
-    imm idx = t.appendBlank(time);
+    let time = getF(d, pos, &mut ok);
+    let idx = t.appendBlank(time);
     t.interps.set(idx, get8(d, pos, &mut ok));
     t.eases.set(idx, get8(d, pos, &mut ok));
-    imm flags = get8(d, pos, &mut ok);
-    mut c = 0usize;
+    let flags = get8(d, pos, &mut ok);
+    var c = 0usize;
     while c < comps { t.values.set(idx * comps + c, getF(d, pos, &mut ok)); c = c + 1usize; }
     if (flags & 1u32) != 0u32 {
       c = 0usize;
@@ -118,10 +118,10 @@ pub fn decodeTrack(d &List[u8], pos &mut usize) Option[Track] {
 
 // A clip's bytes
 pub fn encodeClip(c &Clip) List[u8] {
-  mut out = List[u8].empty();
+  var out = List[u8].empty();
   out.push('K'); out.push('F'); out.push('C'); out.push('1');
   put16(&mut out, u32.from(c.name.len()));
-  mut i = 0usize;
+  var i = 0usize;
   while i < c.name.len() { out.push(c.name[i]); i = i + 1usize; }
   putF(&mut out, c.length);
   put8(&mut out, c.mode);
@@ -146,42 +146,42 @@ pub fn encodeClip(c &Clip) List[u8] {
 
 // A clip from bytes (None if they are not a clip or run out)
 pub fn decodeClip(d &List[u8]) Option[Clip] {
-  mut ok = true;
-  mut pos = 0usize;
+  var ok = true;
+  var pos = 0usize;
   if d.len() < 4usize { return None; }
   if *d[0usize] != 'K' or *d[1usize] != 'F' or *d[2usize] != 'C' or *d[3usize] != '1' { return None; }
   pos = 4usize;
-  imm nameLen = usize.from(get16(d, &mut pos, &mut ok));
-  mut nameBytes = List[u8].empty();
-  mut i = 0usize;
+  let nameLen = usize.from(get16(d, &mut pos, &mut ok));
+  var nameBytes = List[u8].empty();
+  var i = 0usize;
   while i < nameLen and ok {
     nameBytes.push(u8.from(get8(d, &mut pos, &mut ok)));
     i = i + 1usize;
   }
-  imm name = String.fromBytes(nameBytes.view());
-  mut clip = Clip.make(name.view(), LOOP_ONCE);
+  let name = String.fromBytes(nameBytes.view());
+  var clip = Clip.make(name.view(), LOOP_ONCE);
   clip.length = getF(d, &mut pos, &mut ok);
   clip.mode = get8(d, &mut pos, &mut ok);
-  imm nb = usize.from(get32(d, &mut pos, &mut ok));
+  let nb = usize.from(get32(d, &mut pos, &mut ok));
   if !ok or nb > 1048576usize or clip.mode > LOOP_PINGPONG { return None; }
   i = 0usize;
   while i < nb {
-    imm target = get32(d, &mut pos, &mut ok);
-    imm prop = get32(d, &mut pos, &mut ok);
+    let target = get32(d, &mut pos, &mut ok);
+    let prop = get32(d, &mut pos, &mut ok);
     if !ok { return None; }
     match decodeTrack(d, &mut pos) {
-      case imm tr Some { clip.bindings.push(new Binding(target, prop, tr)); }
+      case let tr Some { clip.bindings.push(new Binding(target, prop, tr)); }
       case None { return None; }
     }
     i = i + 1usize;
   }
-  imm nm = usize.from(get32(d, &mut pos, &mut ok));
+  let nm = usize.from(get32(d, &mut pos, &mut ok));
   if !ok or nm > 16777216usize { return None; }
   i = 0usize;
   while i < nm {
-    imm time = getF(d, &mut pos, &mut ok);
-    imm id = get32(d, &mut pos, &mut ok);
-    imm arg = getF(d, &mut pos, &mut ok);
+    let time = getF(d, &mut pos, &mut ok);
+    let id = get32(d, &mut pos, &mut ok);
+    let arg = getF(d, &mut pos, &mut ok);
     if !ok { return None; }
     clip.markers.push(new Marker(time, id, arg));
     i = i + 1usize;

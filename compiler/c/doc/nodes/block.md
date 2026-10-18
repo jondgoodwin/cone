@@ -45,7 +45,7 @@ outer block holding the range's first value (`first`, a hidden variable), its en
 unless the end is a literal (`end`, read once, before the first pass, as the step is), the
 loop's **counter** (`counter`, another, no name of the
 reader's) and the count of steps taken (`n`), plus a loop block that begins with the guard and the pass's variable,
-`imm x = counter`, and whose **last statement is the synthesized step**, flagged
+`let x = counter`, and whose **last statement is the synthesized step**, flagged
 `FlagLoopStep`. The guard is `c < b` (`c <= b` for `..`) going up and `c > b`
 (`c >= b`) going down; which way a range goes is the sign of its step, read off
 a literal step by the parser, or, for a step that is not a literal, held in a
@@ -62,7 +62,7 @@ turns into the operator (`c += s`, `c++`) or, for a float counter, into
 computed from the first value and the count, never added up. Where stepping
 past the bound could wrap the counter around the type's extreme, and so satisfy
 the comparison again, that block holds the guard. For an inclusive range without
-`by` it is `{ n += 1; if c == b {break}; c++ }`. With `by` it is `{ imm prev = c; n += 1; c += s;
+`by` it is `{ n += 1; if c == b {break}; c++ }`. With `by` it is `{ let prev = c; n += 1; c += s;
 if c < prev {break} }`, `>` in place of `<` for a range counting down: a step of
 more than one need never land on the bound, and neither the distance to the bound
 nor the step's sign may be computed ahead of the step, so the wrap is recognized
@@ -75,7 +75,7 @@ name of its own (`-counter`): an assignment to the anonymous name discards its v
 
 **`each` over anything else is finished by type check.** The parser cannot say
 how a loop walks its source, which is the source's type to say, so it builds an
-outer block flagged `FlagEach` holding `mut hidden = src` and the loop block,
+outer block flagged `FlagEach` holding `var hidden = src` and the loop block,
 whose leading statements declare the reader's variables with no value and whose
 body follows them. Name resolution sees an ordinary pair of nested blocks, and
 the variables, the body and every `break`/`continue` in it resolve as for a
@@ -150,14 +150,14 @@ needs no hooked name.)
 
 **`FlagEach`: the loop is built here, from the source's type.** Before any
 statement is checked, `blockTypeCheck` checks the block's first statement, the
-hidden variable `mut hidden = src` (`blockStmtTypeCheck`, so the source is
+hidden variable `var hidden = src` (`blockStmtTypeCheck`, so the source is
 lowered once and a temporary it extends is hoisted as any initializer's is),
 and `eachLower` reads what the checked source is and rewrites the block's
 statements; the loop below then checks them as built. By the source's type:
 
 - **an array, or a reference to one, a slice, or a type that lends an array it
-  holds** (a list, `structLentBody`): a counted loop over the slice, `mut i = 0`
-  and `loop { if i >= s.len {break}; imm x = &s[i]; i++; ...body }`, the slice
+  holds** (a list, `structLentBody`): a counted loop over the slice, `var i = 0`
+  and `loop { if i >= s.len {break}; let x = &s[i]; i++; ...body }`, the slice
   being the array lent as one, the source itself, or the lending method's
   result (`list.view()`). No cursor is made, and the loop is the one a `while` over the
   list's indexes optimizes to. A list's `iter()` is not called: its cursor gives
@@ -172,7 +172,7 @@ statements; the loop below then checks them as built. By the source's type:
 - **core's `ArrayIter` or `ArrayIndexed`, a value made for the loop** (not a
   place, not behind a reference; `iter()` with one variable, `indexed()` with
   two, `eachIsCore`): the same counted loop, over the slice the cursor holds and
-  from the position it holds (`mut i = cursor.pos`), so a cursor made by the loop
+  from the position it holds (`var i = cursor.pos`), so a cursor made by the loop
   is no cursor in the code. With `indexed()` the first variable is a copy of `i`
   and the second the element's borrow. A cursor kept in a variable, or taken
   whole by one variable of `indexed()`, is walked through its `next`.
@@ -189,14 +189,14 @@ statements; the loop below then checks them as built. By the source's type:
   one, a dereference of one) is advanced where it stands, so a cursor left part
   way by a `break` is finished by the next loop; another place is borrowed once;
   a value is held in the hidden variable.
-- **a type with `iter` and no `next`**: `mut cursor = src.iter()`, the source
+- **a type with `iter` and no `next`**: `var cursor = src.iter()`, the source
   held first unless it is a place.
 
 Each pass of a cursor loop declares its variable from the item:
-`imm x = match cursor.next() { case imm s Some { s; } case is None {
+`let x = match cursor.next() { case let s Some { s; } case is None {
 break; } }`, built as `match` is desugared (`eachNextItem`), the `break`
 joined to the loop as it is built. Two or more variables take the item through
-a variable of the pass's own, `imm -item = ...; imm k = -item.0; imm v =
+a variable of the pass's own, `let -item = ...; let k = -item.0; let v =
 -item.1`. The pass's binding of the `Some` has a name no reader can write
 (`-some`), so that a move out of it is marked at the move as a named binding's
 is. An item that moves is taken whole by one variable, the binding of the
@@ -244,8 +244,8 @@ range, the statements
 
 ```
 [source held and lent as a slice, or the range's bounds]
-imm lo' = 0;  imm hi' = s.len;  mut k' = lo';
-loop { if k' >= hi' {break}; imm x = &s[k'] (or first + T.from(k')); k'++; ...body }
+let lo' = 0;  let hi' = s.len;  var k' = lo';
+loop { if k' >= hi' {break}; let x = &s[k'] (or first + T.from(k')); k'++; ...body }
 ```
 
 whose hidden variables carry names no source can spell, so generation finds the
@@ -264,7 +264,7 @@ has no borrow node to see, so `parCheckLentArgs` looks at the calls: an argument
 actor's allocator is `ErrorActorGcPiece`'s). A call whose callee's body the compiler
 can read (`siVisible`) is noted (`parNoteHelperCalls`), and once every body is checked
 (`parallelHelperGlobalsCheckAll`, after type check in `conec.c`) the bodies it reaches are
-read, each once: one that assigns to or swaps a place of a shared `mut` global, or lends
+read, each once: one that assigns to or swaps a place of a shared `var` global, or lends
 one for writing (a method that changes it, a `&mut` of it), makes the call the same
 `ErrorParWrite`, naming the global and the function that writes it. A `@threadlocal` or
 `@workgroup` global is not shared; a borrow made a raw pointer on the spot is an address and
@@ -382,10 +382,10 @@ actor's behaviour pass: `parSelfIsBehaviour` is set from `actorOfBehaviour` for 
 written directly in a behaviour (`parBodiesIn` counts one), whose `self` is the one name
 for the state because the behaviour runs alone on its actor and its parameters cannot be
 borrows; a sync method's `&mut self` is refused. A cursor held in a variable is followed to
-the call that made it when the variable is `imm` and has its value (`var->value` is judged
-as if written in the header); a `mut` one, a parameter, or a field holding a cursor has no
+the call that made it when the variable is `let` and has its value (`var->value` is judged
+as if written in the header); a `var` one, a parameter, or a field holding a cursor has no
 origin to follow and is refused (`parCursorWhy`), so a writable cursor named as a source
-must be built in the loop's header or in an `imm` variable.
+must be built in the loop's header or in a `let` variable.
 
 **Cursors in a `parallel each`** (`parCursorOf`). A source of core's cursor types
 (`ArrayChunks`, `ArrayMutChunks`, `ArrayMutItems`, and the `ArrayIndexed`,
@@ -398,7 +398,7 @@ recognises a method by name: what is lent, `&` or `&mut`, is what the cursor's o
 types say, so a bare `indexed()` lends `&` on any slice and `mutItems().indexed()`
 `&mut`. An indexed cursor takes two variables (any other source one,
 `ErrorParSource` otherwise) and its `at(k)` gives the position and the item as a
-tuple, which the loop unpacks: `imm pair' = c.at(k'); imm i = pair'.0; imm x =
+tuple, which the loop unpacks: `let pair' = c.at(k'); let i = pair'.0; let x =
 pair'.1; k'++`. The position is the cursor's own count plus `k'`, so it is global
 whichever piece runs it. A write through the pass's own run or item is its own;
 naming the buffer the cursor comes from is refused as for `mutItems()`. A cursor
@@ -437,10 +437,10 @@ is refused) and that the function is not an actor's method (`ErrorParRuntime`),
 builds the statements around the loop (`parBuilderLower`):
 
 ```
-mut bag' = (*recv).pieceBag();                       // before k': the caller's
-mut k' = lo';                                        // from here, the piece's
-mut list' = (*recv).emptyPiece();                    //   the piece's own list, a local
-imm piece' = &mut list';                             //   what the yield appends through
+var bag' = (*recv).pieceBag();                       // before k': the caller's
+var k' = lo';                                        // from here, the piece's
+var list' = (*recv).emptyPiece();                    //   the piece's own list, a local
+let piece' = &mut list';                             //   what the yield appends through
 loop { if k' >= hi' { (*recv).depositPiece(&mut bag', lo', list'); break }; ... *piece' <- v }
 (*recv).joinPieces(&mut bag')                        // after the loop: the caller's
 ```
@@ -530,7 +530,7 @@ loop block, whose final expression loops back, and a block typed with no value
 function's own block, typed with none whatever it returns, unless the function
 returns nothing. Its final expression is a statement's: a temporary there is
 wrapped as one thrown away, and a local it names is no result, so the release
-list does not exempt it (`flowresult` is NULL). `if c { imm x = mk(); x; }`
+list does not exempt it (`flowresult` is NULL). `if c { let x = mk(); x; }`
 finalizes `x` at the branch's end.
 
 **Each statement that made a temporary is walked again** once flow has walked
@@ -569,7 +569,7 @@ statement's entries are then dropped ([Generation](../phases/generation.md),
 ## Hazards
 
 - **A regular block must not get two `blockret`s.** `blockTypeCheck` appends one
-  for a block not ending in an expression or a jump -- `{}`, `{ imm f = mk(); }`
+  for a block not ending in an expression or a jump -- `{}`, `{ let f = mk(); }`
   -- so `blockFlow` treats a final `blockret` as present. It once appended a
   second: the main walk built the first one's `dealias` empty, but the path
   walk records a release at every exit it meets, and the drop walk

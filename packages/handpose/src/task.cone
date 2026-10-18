@@ -37,26 +37,26 @@ pub struct HandKey {
   pub fn make(pose HandPose) HandKey { new HandKey(new Vec3(0., 0., 0.), new Vec3(0., 0., 0.), 0., pose); }
 
   pub fn flat(self &) List[f32] {
-    mut out = List[f32].empty();
+    var out = List[f32].empty();
     out.push(translation.x); out.push(translation.y); out.push(translation.z);
     out.push(rotation.x); out.push(rotation.y); out.push(rotation.z);
     out.push(close);
-    mut i = 0usize;
+    var i = 0usize;
     while i < pose.v.len() { out.push(*pose.v[i]); i = i + 1usize; }
     out;
   }
 
   pub fn fromFlat(v &List[f32]) HandKey {
-    mut p = HandPose.zero();
-    mut i = 0usize;
+    var p = HandPose.zero();
+    var i = 0usize;
     while i < FINGERS * DOF { p.v.set(i, *v[7usize + i]); i = i + 1usize; }
     new HandKey(new Vec3(*v[0], *v[1], *v[2]), new Vec3(*v[3], *v[4], *v[5]), *v[6], p);
   }
 
   // The wrist's offset as a transform
   pub fn offset(self &) Transform3 {
-    imm angle = rotation.length();
-    imm q = if angle > 0.000001 { Quat.angleAxis(angle, rotation * (1. / angle)); } else { Quat.identity(); };
+    let angle = rotation.length();
+    let q = if angle > 0.000001 { Quat.angleAxis(angle, rotation * (1. / angle)); } else { Quat.identity(); };
     new Transform3(translation, q, new Vec3(1., 1., 1.));
   }
 }
@@ -77,36 +77,36 @@ pub struct HandMotion {
 
   // The key at time 't' (taken round the period)
   pub fn sample(self &, t f32) HandKey {
-    imm n = keys.len();
+    let n = keys.len();
     if n == 1usize { return HandKey.fromFlat(&keys[0].key.flat()); }
-    imm u = t - period * libc.floorf(t / period);
+    let u = t - period * libc.floorf(t / period);
     // The interval u falls in: key i to key i + 1 (the last to the first, a period on)
-    mut i = 0usize;
+    var i = 0usize;
     while i + 1usize < n and keys[i + 1usize].time <= u { i = i + 1usize; }
-    imm j = (i + 1usize) % n;
-    imm pi_ = (i + n - 1usize) % n;
-    imm nj = (j + 1usize) % n;
-    imm t0 = keys[i].time;
-    imm t1 = if j > i { keys[j].time; } else { keys[j].time + period; };
-    imm tp = if pi_ < i { keys[pi_].time; } else { keys[pi_].time - period; };
-    imm tn = if nj > j { keys[nj].time; } else { keys[nj].time + period; };
-    imm h = t1 - t0;
-    imm s = (u - t0) / h;
-    imm v0 = keys[i].key.flat();
-    imm v1 = keys[j].key.flat();
-    imm vp = keys[pi_].key.flat();
-    imm vn = keys[nj].key.flat();
-    imm s2 = s * s;
-    imm s3 = s2 * s;
-    imm h00 = 2. * s3 - 3. * s2 + 1.;
-    imm h10 = s3 - 2. * s2 + s;
-    imm h01 = -2. * s3 + 3. * s2;
-    imm h11 = s3 - s2;
-    mut out = List[f32].empty();
-    mut k = 0usize;
+    let j = (i + 1usize) % n;
+    let pi_ = (i + n - 1usize) % n;
+    let nj = (j + 1usize) % n;
+    let t0 = keys[i].time;
+    let t1 = if j > i { keys[j].time; } else { keys[j].time + period; };
+    let tp = if pi_ < i { keys[pi_].time; } else { keys[pi_].time - period; };
+    let tn = if nj > j { keys[nj].time; } else { keys[nj].time + period; };
+    let h = t1 - t0;
+    let s = (u - t0) / h;
+    let v0 = keys[i].key.flat();
+    let v1 = keys[j].key.flat();
+    let vp = keys[pi_].key.flat();
+    let vn = keys[nj].key.flat();
+    let s2 = s * s;
+    let s3 = s2 * s;
+    let h00 = 2. * s3 - 3. * s2 + 1.;
+    let h10 = s3 - 2. * s2 + s;
+    let h01 = -2. * s3 + 3. * s2;
+    let h11 = s3 - s2;
+    var out = List[f32].empty();
+    var k = 0usize;
     while k < KEY_FLOATS {
-      imm m0 = (*v1[k] - *vp[k]) / (t1 - tp) * h;
-      imm m1 = (*vn[k] - *v0[k]) / (tn - t0) * h;
+      let m0 = (*v1[k] - *vp[k]) / (t1 - tp) * h;
+      let m1 = (*vn[k] - *v0[k]) / (tn - t0) * h;
       out.push(h00 * *v0[k] + h10 * m0 + h01 * *v1[k] + h11 * m1);
       k = k + 1usize;
     }
@@ -143,9 +143,9 @@ pub struct TaskBlend {
   // Advance the clock and the weights
   pub fn update(self &mut, dt f32) {
     clock = clock + dt;
-    mut i = 0usize;
+    var i = 0usize;
     while i < motions.len() {
-      imm k = 1. - libc.expf(-dt * *rate[i]);
+      let k = 1. - libc.expf(-dt * *rate[i]);
       weight.set(i, *weight[i] + (*goal[i] - *weight[i]) * k);
       i = i + 1usize;
     }
@@ -153,18 +153,18 @@ pub struct TaskBlend {
 
   // The blend at the clock: the weights' normalised sum of the motions' samples
   pub fn sample(self &) HandKey {
-    mut total = 0.;
-    mut i = 0usize;
+    var total = 0.;
+    var i = 0usize;
     while i < motions.len() { total = total + *weight[i]; i = i + 1usize; }
-    mut acc = List[f32].empty();
+    var acc = List[f32].empty();
     acc.resize(KEY_FLOATS, 0.);
     if total < 0.000001 { return motions[0].sample(clock); }
     i = 0usize;
     while i < motions.len() {
-      imm w = *weight[i] / total;
+      let w = *weight[i] / total;
       if w > 0.000001 {
-        imm k = motions[i].sample(clock).flat();
-        mut c = 0usize;
+        let k = motions[i].sample(clock).flat();
+        var c = 0usize;
         while c < KEY_FLOATS { acc.set(c, *acc[c] + w * *k[c]); c = c + 1usize; }
       }
       i = i + 1usize;
@@ -185,8 +185,8 @@ fn fmax(a f32, b f32) f32 { if a > b { return a; } b; }
 
 // Hold: still, in a pose, closed to 'close'
 pub fn holdMotion(pose &HandPose, close f32) HandMotion {
-  mut m = HandMotion.make("hold", 1.);
-  mut k = HandKey.make(pose.copy());
+  var m = HandMotion.make("hold", 1.);
+  var k = HandKey.make(pose.copy());
   k.close = close;
   m.add(0., k);
   m;
@@ -194,12 +194,12 @@ pub fn holdMotion(pose &HandPose, close f32) HandMotion {
 
 // A sinusoidal cycle of wrist translation and rotation about a held pose
 pub fn oscillate(name &str, translationAmp Vec3, rotationAmp Vec3, period f32, pose &HandPose, close f32) HandMotion {
-  mut m = HandMotion.make(name, period);
-  mut i = 0;
+  var m = HandMotion.make(name, period);
+  var i = 0;
   while i < 8 {
-    imm ph = f32.from(i) / 8.;
-    imm s = sin(2. * pi * ph);
-    mut k = HandKey.make(pose.copy());
+    let ph = f32.from(i) / 8.;
+    let s = sin(2. * pi * ph);
+    var k = HandKey.make(pose.copy());
     k.translation = translationAmp * s;
     k.rotation = rotationAmp * s;
     k.close = close;
@@ -221,12 +221,12 @@ pub fn swingMotion(angle f32, period f32, pose &HandPose, close f32) HandMotion 
 
 // Press: the palm leans into the surface by 'depth' metres along its normal and eases off
 pub fn pressMotion(spec &HandSpec, depth f32, period f32, pose &HandPose) HandMotion {
-  mut m = HandMotion.make("press", period);
-  mut i = 0;
+  var m = HandMotion.make("press", period);
+  var i = 0;
   while i < 8 {
-    imm ph = f32.from(i) / 8.;
-    imm lean = 0.5 - 0.5 * cos(2. * pi * ph);
-    mut k = HandKey.make(pose.copy());
+    let ph = f32.from(i) / 8.;
+    let lean = 0.5 - 0.5 * cos(2. * pi * ph);
+    var k = HandKey.make(pose.copy());
     k.translation = spec.palmNormal * (depth * lean);
     k.close = 0.;
     m.add(ph * period, k);
@@ -236,7 +236,7 @@ pub fn pressMotion(spec &HandSpec, depth f32, period f32, pose &HandPose) HandMo
 }
 
 fn keyAt(spec &HandSpec, along f32, lean f32, roll f32, pose &HandPose, close f32) HandKey {
-  mut k = HandKey.make(pose.copy());
+  var k = HandKey.make(pose.copy());
   // 'along' is distance towards the fingertips (the hand's -y); 'lean' the palm's push into the surface
   k.translation = new Vec3(0., -along, 0.) + spec.palmNormal * lean;
   k.rotation = new Vec3(0., 0., roll * spec.h);
@@ -247,10 +247,10 @@ fn keyAt(spec &HandSpec, along f32, lean f32, roll f32, pose &HandPose, close f3
 // Knead: the heel of the palm pushes forward and down, the fingers fold at the end of the stroke
 // and the hand draws back with them raked. 'stroke' metres long, 'depth' of lean, 'period' seconds.
 pub fn kneadMotion(spec &HandSpec, stroke f32, depth f32, period f32) HandMotion {
-  mut m = HandMotion.make("knead", period);
-  imm flat = poseFlat();
-  imm claw = poseClaw();
-  imm mid = lerpPose(&flat, &claw, 0.5);
+  var m = HandMotion.make("knead", period);
+  let flat = poseFlat();
+  let claw = poseClaw();
+  let mid = lerpPose(&flat, &claw, 0.5);
   m.add(0.00 * period, keyAt(spec, -stroke * 0.5, depth * 0.45, 0.05, &flat, 0.));
   m.add(0.28 * period, keyAt(spec, -stroke * 0.05, depth, 0.18, &flat, 0.));
   m.add(0.50 * period, keyAt(spec, stroke * 0.5, depth * 0.85, 0.12, &mid, 0.4));
@@ -271,23 +271,23 @@ pub struct HandFrame {
 // pose closed by 'close' of the way to where they meet the surface (the shape's closed pose is the far end).
 // With 'rest' the hand is lifted along 'up' until its palm and fingers are clear of the surface.
 pub fn evaluateKey(spec &HandSpec, shape &GripShape, base &Transform3, key &HandKey, surface &PropSurface, squash f32, rest bool, up Vec3) HandFrame {
-  imm off = key.offset();
-  mut wrist = base * off;
+  let off = key.offset();
+  var wrist = base * off;
   if rest {
     // Lifted until the palm and every finger of the key's own pose are clear (the fingers then close from there)
-    mut lifted = 0.;
+    var lifted = 0.;
     while lifted < 0.05 and !poseClear(spec, &key.pose, &wrist, surface, squash) {
       wrist = new Transform3(wrist.translation + up * 0.0005, wrist.rotation, wrist.scale);
       lifted = lifted + 0.0005;
     }
   }
-  imm trial = new GripShape(String.from("key"), key.pose.copy(), shape.closed.copy());
-  mut closedOn = closeOn(spec, &trial, &wrist, surface, squash, 31u32);
+  let trial = new GripShape(String.from("key"), key.pose.copy(), shape.closed.copy());
+  var closedOn = closeOn(spec, &trial, &wrist, surface, squash, 31u32);
   // (the spline may overshoot the closure a little; past 0 to 1 it would pull the fingers through the prop)
-  mut pose = lerpPose(&key.pose, &closedOn.pose, clampf(key.close, 0., 1.));
-  mut result = measure(spec, &pose, &wrist, surface);
+  var pose = lerpPose(&key.pose, &closedOn.pose, clampf(key.close, 0., 1.));
+  var result = measure(spec, &pose, &wrist, surface);
   // A pose in between can chord through a curved prop: with 'rest', lift a little more and close again
-  mut again = 0;
+  var again = 0;
   while rest and result.deepest > squash * 1.5 and again < 40 {
     wrist = new Transform3(wrist.translation + up * 0.002, wrist.rotation, wrist.scale);
     closedOn = closeOn(spec, &trial, &wrist, surface, squash, 31u32);

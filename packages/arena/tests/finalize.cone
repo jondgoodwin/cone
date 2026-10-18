@@ -19,7 +19,7 @@ import testing use *;
 import arena use *;
 import collections use *;
 
-mut @threadlocal log = 0i64;
+var @threadlocal log = 0i64;
 fn note(d i64) { log = log * 10i64 + d; }
 
 struct Fin {
@@ -52,71 +52,71 @@ struct Watches { pub n i64; pub r &mut Fin; fn final(self &uni) { note(n); } }
 struct Box[T] { pub v T; }
 
 // Size zero, with a 'final'
-mut @threadlocal zdeaths = 0i64;
+var @threadlocal zdeaths = 0i64;
 struct Zero { fn final(self &uni) { zdeaths = zdeaths + 1i64; } }
 
 fn plain() {
-  mut a = Arena.empty();
-  imm p = a.alloc(new Plain(4, 2.5));
+  var a = Arena.empty();
+  let p = a.alloc(new Plain(4, 2.5));
   expectInt(p.a, 4, "a plain value reads back");
   expectUInt(u64.from(a.finalizers()), 0, "a plain value gets no finalizer header");
 }
 
 fn onlyField() {
-  mut a = Arena.empty();
+  var a = Arena.empty();
   a.alloc(new OnlyField(9, new Fin(1)));
   expectUInt(u64.from(a.finalizers()), 1, "a field's finalizer is enough for a header");
 }
 
 fn nested() {
-  mut a = Arena.empty();
+  var a = Arena.empty();
   a.alloc(new Outer(1, new Middle(2, new Inner(3), new Fin(4))));
 }
 
 fn soField() {
-  mut a = Arena.empty();
+  var a = Arena.empty();
   a.alloc(new HoldsUni(1, new Uni[Fin](2)));
 }
 
 fn soChain() {
-  mut a = Arena.empty();
+  var a = Arena.empty();
   a.alloc(new ChainTop(1, new Uni[HoldsUni](2, new Uni[Fin](3))));
 }
 
 fn rcShared() {
-  imm keep = new Rc[mut, Fin](3);
+  let keep = new Rc[mut, Fin](3);
   {
-    mut a = Arena.empty();
+    var a = Arena.empty();
     a.alloc(new HoldsRc(1, keep));
   }
   expectInt(log, 1, "an Rc owner shared outside is counted down, not finalized");
 }
 
 fn rcLast() {
-  mut a = Arena.empty();
+  var a = Arena.empty();
   a.alloc(new HoldsRc(1, new Rc[mut, Fin](2)));
 }
 
 fn refersToSibling() {
-  mut a = Arena.empty();
-  imm x = a.alloc(new Fin(1));
+  var a = Arena.empty();
+  let x = a.alloc(new Fin(1));
   a.alloc(new Watches(2, x));
   expectUInt(u64.from(a.finalizers()), 2, "each of the two has its own header");
 }
 
 fn refersToOtherArena() {
-  mut a1 = Arena.empty();
-  imm x = a1.alloc(new Fin(1));
+  var a1 = Arena.empty();
+  let x = a1.alloc(new Fin(1));
   {
-    mut a2 = Arena.empty();
+    var a2 = Arena.empty();
     a2.alloc(new Watches(2, x));
   }
   expectInt(log, 2, "the inner arena finalizes only its own value");
 }
 
 fn generic() {
-  mut a = Arena.empty();
-  imm b = a.alloc(new Box[i64](5));
+  var a = Arena.empty();
+  let b = a.alloc(new Box[i64](5));
   expectUInt(u64.from(a.finalizers()), 0, "Box[i64] needs no finalizing");
   a.alloc(new Box[Fin](new Fin(b.v)));
   expectUInt(u64.from(a.finalizers()), 1, "Box[Fin] does");
@@ -126,75 +126,75 @@ fn generic() {
 // the compiler (1075: a method's explicit type argument that is a generic
 // type's instance)
 fn enumValue() {
-  mut a = Arena.empty();
-  imm v Option[Fin] = Some[Fin](new Fin(3));
+  var a = Arena.empty();
+  let v Option[Fin] = Some[Fin](new Fin(3));
   a.alloc(v);
   expectUInt(u64.from(a.finalizers()), 1, "an Option of a finalizing value gets a header");
-  imm n Option[i64] = Some[i64](4i64);
+  let n Option[i64] = Some[i64](4i64);
   a.alloc(n);
   expectUInt(u64.from(a.finalizers()), 1, "an Option of a plain one does not");
 }
 
 fn array() {
-  mut a = Arena.empty();
+  var a = Arena.empty();
   a.alloc([new Fin(1), new Fin(2)]);
   expectUInt(u64.from(a.finalizers()), 1, "an array of finalizing values gets one header");
 }
 
 fn tuple() {
-  mut a = Arena.empty();
+  var a = Arena.empty();
   a.alloc[(Fin, i64)]((new Fin(1), 2i64));
   expectUInt(u64.from(a.finalizers()), 1, "a tuple holding a finalizing value gets one header");
 }
 
 fn twoDeep() {
-  mut a = Arena.empty();
+  var a = Arena.empty();
   a.alloc(new TwoDeep(1, new HoldsUni(2, new Uni[Fin](3))));
 }
 
 fn ownerAsValue() {
-  mut a = Arena.empty();
-  imm r = a.alloc(new Uni[Fin](6));
+  var a = Arena.empty();
+  let r = a.alloc(new Uni[Fin](6));
   expectInt((*r).n, 6, "read through the owner held in the arena");
 }
 
 fn order() {
-  mut a = Arena.empty();
-  mut i = 1i64;
+  var a = Arena.empty();
+  var i = 1i64;
   while i <= 5i64 { a.alloc(new Fin(i)); i = i + 1i64; }
 }
 
 fn list() {
-  mut a = Arena.empty();
-  imm l = a.alloc(List[Fin].empty());
+  var a = Arena.empty();
+  let l = a.alloc(List[Fin].empty());
   l.push(new Fin(1));
   l.push(new Fin(2));
   l.push(new Fin(3));
-  imm s = a.alloc(String.from("arena"));
+  let s = a.alloc(String.from("arena"));
   s.append("s");
   expectUInt(u64.from(s.len()), 6, "a String in an arena grows its own block");
-  imm d = a.alloc(Dict[String, Fin].empty());
+  let d = a.alloc(Dict[String, Fin].empty());
   d.insert(String.from("k"), new Fin(4));
 }
 
 fn nestedArenas() {
-  mut outer = Arena.empty();
-  imm inner = outer.alloc(Arena.empty());
+  var outer = Arena.empty();
+  let inner = outer.alloc(Arena.empty());
   inner.alloc(new Fin(1));
   inner.alloc(new Fin(2));
   outer.alloc(new Fin(3));
 }
 
 fn soHeldArena() {
-  imm a = new Uni[Arena](Arena.empty());
+  let a = new Uni[Arena](Arena.empty());
   a.alloc(new Fin(1));
   a.alloc(new Fin(2));
 }
 
 fn swapOut() {
-  mut a = Arena.empty();
-  imm r = a.alloc(new Fin(1));
-  mut held = new Fin(2);
+  var a = Arena.empty();
+  let r = a.alloc(new Fin(1));
+  var held = new Fin(2);
   held <=> *r;
   expectInt(r.n, 2, "swapped in");
 }
@@ -202,15 +202,15 @@ fn swapOut() {
 // A value assigned over through the reference is finalized as it is
 // replaced; its replacement dies with the arena
 fn overwrite() {
-  mut a = Arena.empty();
-  imm r = a.alloc(new Fin(1));
+  var a = Arena.empty();
+  let r = a.alloc(new Fin(1));
   *r = new Fin(2);
   expectInt(log, 1, "the value assigned over, as it is replaced");
 }
 
 // An arena assigned over is torn down first, its values with it
 fn reassigned() {
-  mut a = Arena.empty();
+  var a = Arena.empty();
   a.alloc(new Fin(1));
   a = Arena.empty();
   expectInt(log, 1, "the arena assigned over dies, and its value");
@@ -218,7 +218,7 @@ fn reassigned() {
 }
 
 fn zeroSized() {
-  mut a = Arena.empty();
+  var a = Arena.empty();
   a.alloc(new Zero());
   a.alloc(new Zero());
   a.alloc(new Fin(7));

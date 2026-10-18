@@ -40,21 +40,21 @@ pub struct Delta {
 
 fn textOr(j &json.Json, key &str) String {
   match j.getText(key) {
-    case imm s Some {String.from(s);}
+    case let s Some {String.from(s);}
     case is None {String.empty();}
   }
 }
 
 fn countOf(j &json.Json, key &str) u64 {
   match j.getU64(key) {
-    case imm n Some {n;}
+    case let n Some {n;}
     case is None {0u64;}
   }
 }
 
 fn usageOf(j &json.Json) Option[Usage] {
   match j.get("usage") {
-    case imm u Some {
+    case let u Some {
       if u.isObject() {
         return Some[Usage](new Usage(countOf(u, "prompt_tokens"), countOf(u, "completion_tokens"),
           countOf(u, "total_tokens")));
@@ -66,7 +66,7 @@ fn usageOf(j &json.Json) Option[Usage] {
 }
 
 fn decodeError(what &str, e &json.JsonError) ChatError {
-  mut d = String.from(what);
+  var d = String.from(what);
   d.append(": ");
   d.append(e.message().view());
   ChatError.make(ChatErrorKind.Decode, d.view());
@@ -78,11 +78,11 @@ fn shapeError(what &str) ChatError {ChatError.make(ChatErrorKind.Decode, what);}
 // {"error": "text"} as some servers do. None when the document holds no error
 fn errorObject(doc &json.Json, kind ChatErrorKind, status u16) Option[ChatError] {
   match doc.get("error") {
-    case imm e Some {
-      mut err = ChatError.make(kind, "");
+    case let e Some {
+      var err = ChatError.make(kind, "");
       err.status = status;
       match e.asText() {
-        case imm s Some {
+        case let s Some {
           err.detail = String.from(s);
           return Some[ChatError](err);
         }
@@ -92,12 +92,12 @@ fn errorObject(doc &json.Json, kind ChatErrorKind, status u16) Option[ChatError]
         err.detail = textOr(e, "message");
         err.errorType = textOr(e, "type");
         match e.get("code") {
-          case imm c Some {
+          case let c Some {
             match c.asText() {
-              case imm s Some {err.code = String.from(s);}
+              case let s Some {err.code = String.from(s);}
               case is None {
                 match c.numberText() {
-                  case imm n Some {err.code = String.from(n);}
+                  case let n Some {err.code = String.from(n);}
                   case is None {}
                 }
               }
@@ -119,22 +119,22 @@ fn errorObject(doc &json.Json, kind ChatErrorKind, status u16) Option[ChatError]
 // one, else the status and the start of the body
 pub fn apiError(status u16, body &Array[u8]) ChatError {
   match json.parse(body) {
-    case imm doc Ok {
+    case let doc Ok {
       match errorObject(&doc, ChatErrorKind.Api, status) {
-        case mut e Some {
-          mut out = ChatError.make(ChatErrorKind.Api, "");
+        case var e Some {
+          var out = ChatError.make(ChatErrorKind.Api, "");
           out <=> e;
           return out;
         }
         case is None {}
       }
     }
-    case imm bad Error {}
+    case let bad Error {}
   }
-  mut d = String.from("the server answered ");
+  var d = String.from("the server answered ");
   d.appendUInt(u64.from(status));
   d.append(" with no error object");
-  imm snippet = String.fromBytes(body).trim();
+  let snippet = String.fromBytes(body).trim();
   if snippet.len() > 0usize {
     d.append(": ");
     if snippet.len() > 160usize {
@@ -144,7 +144,7 @@ pub fn apiError(status u16, body &Array[u8]) ChatError {
       d.append(snippet.view());
     }
   }
-  mut e = ChatError.make(ChatErrorKind.Api, d.view());
+  var e = ChatError.make(ChatErrorKind.Api, d.view());
   e.status = status;
   e;
 }
@@ -154,8 +154,8 @@ pub fn apiError(status u16, body &Array[u8]) ChatError {
 // Read the body of a 200 as the API's chat completion
 pub fn parseReply(text &Array[u8]) Result[ChatReply, ChatError] {
   match json.parse(text) {
-    case imm doc Ok {replyOf(&doc);}
-    case imm e Error {Error[ChatReply, ChatError](decodeError("the reply", &e));}
+    case let doc Ok {replyOf(&doc);}
+    case let e Error {Error[ChatReply, ChatError](decodeError("the reply", &e));}
   }
 }
 
@@ -164,25 +164,25 @@ fn replyOf(doc &json.Json) Result[ChatReply, ChatError] {
     return Error[ChatReply, ChatError](shapeError("the reply is not a JSON object"));
   }
   match errorObject(doc, ChatErrorKind.Api, 200u16) {
-    case mut e Some {
-      mut out = ChatError.make(ChatErrorKind.Api, "");
+    case var e Some {
+      var out = ChatError.make(ChatErrorKind.Api, "");
       out <=> e;
       return Error[ChatReply, ChatError](out);
     }
     case is None {}
   }
-  mut r = ChatReply.empty();
+  var r = ChatReply.empty();
   r.id = textOr(doc, "id");
   r.model = textOr(doc, "model");
   r.created = doc.i64Or("created", 0i64);
   r.usage = usageOf(doc);
   match doc.get("choices") {
-    case imm cs Some {
+    case let cs Some {
       match cs.at(0usize) {
-        case imm c Some {
+        case let c Some {
           r.finishReason = textOr(c, "finish_reason");
           match c.get("message") {
-            case imm m Some {
+            case let m Some {
               r.role = textOr(m, "role");
               r.content = textOr(m, "content");
             }
@@ -221,7 +221,7 @@ pub fn transportError(e &actorhttp.FetchError) ChatError {
 
 // Whether an event's data is the stream's last word, '[DONE]'
 pub fn isDone(data &Array[u8]) bool {
-  imm t = data as &str;
+  let t = data as &str;
   t.trim() == "[DONE]";
 }
 
@@ -229,8 +229,8 @@ pub fn isDone(data &Array[u8]) bool {
 // that carries an error object is a Stream error
 pub fn parseChunk(text &Array[u8]) Result[Delta, ChatError] {
   match json.parse(text) {
-    case imm doc Ok {deltaOf(&doc);}
-    case imm e Error {Error[Delta, ChatError](decodeError("a chunk", &e));}
+    case let doc Ok {deltaOf(&doc);}
+    case let e Error {Error[Delta, ChatError](decodeError("a chunk", &e));}
   }
 }
 
@@ -239,26 +239,26 @@ fn deltaOf(doc &json.Json) Result[Delta, ChatError] {
     return Error[Delta, ChatError](shapeError("a chunk is not a JSON object"));
   }
   match errorObject(doc, ChatErrorKind.Stream, 0u16) {
-    case mut e Some {
-      mut out = ChatError.make(ChatErrorKind.Stream, "");
+    case var e Some {
+      var out = ChatError.make(ChatErrorKind.Stream, "");
       out <=> e;
       return Error[Delta, ChatError](out);
     }
     case is None {}
   }
-  mut d = Delta.empty();
+  var d = Delta.empty();
   d.id = textOr(doc, "id");
   d.model = textOr(doc, "model");
   d.usage = usageOf(doc);
   match doc.get("choices") {
-    case imm cs Some {
+    case let cs Some {
       if not cs.isArray() {return Error[Delta, ChatError](shapeError("a chunk's \"choices\" is not an array"));}
       // The usage chunk has none; n above 1 is not asked for, so the first is the reply
       match cs.at(0usize) {
-        case imm c Some {
+        case let c Some {
           d.finishReason = textOr(c, "finish_reason");
           match c.get("delta") {
-            case imm x Some {
+            case let x Some {
               d.role = textOr(x, "role");
               d.content = textOr(x, "content");
             }

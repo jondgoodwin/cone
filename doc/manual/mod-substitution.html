@@ -49,9 +49,9 @@ fn describe(shape &amp;&lt;Shape) {
 }
 
 fn main() {
-  imm circle = new Circle(5.);
+  let circle = new Circle(5.);
   describe(&amp;circle);
-  imm square = new Rectangle(10., 10.);
+  let square = new Rectangle(10., 10.);
   describe(&amp;square);
 }
 </pre>
@@ -272,7 +272,7 @@ struct Pt is Same {
 	<p>A plain reference given to a variable or parameter that wants a virtual reference is coerced to one
 		automatically, which is called <i>upcasting</i>. The variable's type may say so explicitly:</p>
 <pre>
-imm virtref &amp;&lt;Shape = &amp;circle;
+let virtref &amp;&lt;Shape = &amp;circle;
 </pre>
 	<p>A concrete type that does not structurally meet the virtual reference's type is a compile error there.
 		The type may implement more fields and methods than the trait asks for, but it must implement at least the
@@ -289,9 +289,9 @@ imm virtref &amp;&lt;Shape = &amp;circle;
 		to one call beside another lend or a move of it (<span class="pre">app.mix(app)</span>, for a
 		<span class="pre">self &amp;mut</span> method, is refused):</p>
 <pre>
-mut app Uni[Shape] = new Uni[Circle](5.);
+var app Uni[Shape] = new Uni[Circle](5.);
 app.area();                       // lends app to the method
-imm view &amp;&lt;Shape = app;          // borrows from app
+let view &amp;&lt;Shape = app;          // borrows from app
 describe(app);                    // and so does passing it
 </pre>
 	<p>An owning virtual reference owns its value exactly as the owning reference it was coerced from did: that
@@ -318,8 +318,8 @@ struct Ring['a] is Shape {
   pub fn perimeter(self &amp;) f32 { inner.perimeter(); }
 }
 
-mut app Uni[Shape] = new Uni[Circle](5.);   // Ok: a Circle holds no borrow
-imm c = new Circle(2.);
+var app Uni[Shape] = new Uni[Circle](5.);   // Ok: a Circle holds no borrow
+let c = new Circle(2.);
 app = new Uni[Ring](new Ring(&amp;c));       // ERROR: a Ring holds a borrow of c
 </pre>
 <pre>
@@ -371,7 +371,7 @@ struct Counter {
 
 fn peek(r &amp;&lt;Reading) i64 { r.read(); }
 
-mut c = new Counter(0);
+var c = new Counter(0);
 peek(&amp;c);                        // ERROR
 </pre>
 <pre>
@@ -387,8 +387,8 @@ Declare `read` with `self &amp;`, or the trait's with `self &amp;mut`.
 <pre>
 fn which(shape &amp;&lt;Shape) i32 {
   match shape {
-    case imm c &amp;Circle { 1; }       // c is a &amp;Circle here
-    case imm r &amp;Rectangle { 2; }    // r is a &amp;Rectangle
+    case let c &amp;Circle { 1; }       // c is a &amp;Circle here
+    case let r &amp;Rectangle { 2; }    // r is a &amp;Rectangle
     else { 0; }                     // some other shape
   }
 }
@@ -438,11 +438,11 @@ trait Shape {
 fn depth[S Shape](shape &amp;S, p V) f32 { shape.distance(p) * 2.; }
 fn lend(shape &amp;&lt;Shape, p V) f32 { shape.nearness(p); }
 
-imm p = new V(3., 4.);
+let p = new V(3., 4.);
 depth(q =&gt; q.x * q.x + q.y * q.y - 5., p);     // the static form: 40
 lend(q =&gt; q.x + q.y, p);                       // the dynamic form: 100 - 7: 93
-imm k = 10.;
-imm own = new Uni[Shape](fn(q V) [off = k] f32 { q.x + off; });
+let k = 10.;
+let own = new Uni[Shape](fn(q V) [off = k] f32 { q.x + off; });
 own.distance(p);     // 13
 own.nearness(p);     // 87
 </pre>
@@ -479,9 +479,9 @@ trait Counter {
 }
 fn bumpTwice(c &amp;&lt;mut Counter) i32 { c.bump(1); c.bump(10); }
 
-bumpTwice(fn(step i32) [mut n = 5] i32 { n += step; n; });    // 6, then 16: 16
+bumpTwice(fn(step i32) [var n = 5] i32 { n += step; n; });    // 6, then 16: 16
 
-mut total = 0.;
+var total = 0.;
 depth(q =&gt; { total += q.x; total; }, p);    // ERROR: Shape's distance takes 'self &amp;'
 </pre>
 <pre>
@@ -526,7 +526,7 @@ enum Event {
 	}
 }
 
-imm k Event = Event.KeyEvent(17, 'q');
+let k Event = Event.KeyEvent(17, 'q');
 (&amp;k).stamp();       // 17
 (&amp;k).describe();    // 2, KeyEvent's own
 </pre>
@@ -588,8 +588,8 @@ enum Reading {
 Reading.High(1, 4).get()      // 1: High's own copy of get
 </pre>
 	<p>Inside a copy, <span class="pre">Self</span> is the variant, in the receiver, in a parameter and
-		in the result. A method written <span class="pre">pub fn setN(mut self, v i32) Self {n = v; self;}</span>
-		is, in <span class="pre">High</span>, <span class="pre">setN(mut self High, v i32) High</span>: calling it on a
+		in the result. A method written <span class="pre">pub fn setN(var self, v i32) Self {n = v; self;}</span>
+		is, in <span class="pre">High</span>, <span class="pre">setN(var self High, v i32) High</span>: calling it on a
 		<span class="pre">High</span> gives a <span class="pre">High</span>, with its own fields. The enum requires
 		nothing of the copy itself. A variant may declare its own method of the same name, which
 		replaces the copy; it must then have the enum's signature with <span class="pre">Self</span> read as
@@ -634,16 +634,16 @@ enum Lamp {
 	pub fn get(self &amp;) i32 {n;}            // copied into each variant, as above
 }
 
-imm l Lamp = Lamp.Green;
+let l Lamp = Lamp.Green;
 l.describe()               // 20
 Lamp.Red.describe()        // 10: a variant's value calls it, widened to Lamp
 </pre>
 	<p>A method over the whole enum is called on a value of the enum or on a value of one of its variants, which is
 		widened to the enum for the call, and by value it takes a copy. A variant's value cannot lend
 		<span class="pre">&amp;mut Lamp</span>, since the method could store another variant in it: a
-		<span class="pre">mut</span> variable that starts as a variant is the enum already (<span class="pre">mut l =
+		<span class="pre">var</span> variable that starts as a variant is the enum already (<span class="pre">var l =
 		Lamp.Red</span>, <a href="#mutvariant">below</a>), and a variable of another kind declares it,
-		<span class="pre">mut l Lamp = Lamp.Red</span>. If a variant declares a method of the same name, a
+		<span class="pre">var l Lamp = Lamp.Red</span>. If a variant declares a method of the same name, a
 		value typed as that variant calls the variant's own, and a value typed as the enum calls the enum's. Within one
 		enum a name is declared once, so the two kinds cannot share a name there. A package that declares such a method
 		defines it once, and an importer calls it. An enum that <a href="mod-extensibility.html#enum-extends">extends</a>
@@ -716,7 +716,7 @@ enum Shape {
 
 fn measure(s &amp;Shape) i32 {
   match s {
-    case imm m Measured { m.size(); }   // Circle's or Square's own size, by their vtables
+    case let m Measured { m.size(); }   // Circle's or Square's own size, by their vtables
     case is Third { 7; }
   }
 }
@@ -732,7 +732,7 @@ fn measure(s &amp;Shape) i32 {
 		be one (<span class="pre">match &amp;s</span>, <span class="pre">match &amp;mut s</span>); a value or an owner
 		such as an <span class="pre">Rc</span> can be asked, <span class="pre">case is Measured</span>, and not bound. A
 		pattern may not be written as a plain reference to the trait (<span class="pre">&amp;Measured</span>), which has
-		no vtable to carry. The patterns work in a bound <span class="pre">if</span>, <span class="pre">imm m Measured =
+		no vtable to carry. The patterns work in a bound <span class="pre">if</span>, <span class="pre">let m Measured =
 		s</span>, in let-else, and joined by <span class="pre">or</span> and guarded like any other.</p>
 	<p>Which variants comply is decided as a generic's <span class="pre">where T is Measured</span> decides it: by
 		declaring the trait, or structurally for a trait that requires something. A marker trait, which requires
@@ -848,25 +848,25 @@ enum State {
   struct Run { pub speed i32; }
 }
 
-mut state State = State.Idle;
+var state State = State.Idle;
 while running {
   if state is Idle { start(); state = State.Run(1); }   // tested each pass
   if state is Run { state.speed = state.speed + 1; }    // narrowed by its own test
 }
 </pre>
-	<p id="mutvariant">A <span class="pre">mut</span> variable, parameter or field whose type is inferred from a
+	<p id="mutvariant">A <span class="pre">var</span> variable, parameter or field whose type is inferred from a
 		variant holds the variant's enum, so another variant can be stored in it later, a <span class="pre">&amp;mut</span>
 		of it goes where a <span class="pre">&amp;mut</span> of the enum is wanted, and <span class="pre">match</span> and
-		<span class="pre">is</span> ask which variant it holds: <span class="pre">mut st = Status.Done</span> is a
+		<span class="pre">is</span> ask which variant it holds: <span class="pre">var st = Status.Done</span> is a
 		<span class="pre">Status</span>. The variant's fields stay reachable by name until the variable changes
-		(<span class="pre">mut c = Shape.Circle(5); c.radius</span>). An <span class="pre">imm</span>
+		(<span class="pre">var c = Shape.Circle(5); c.radius</span>). A <span class="pre">let</span>
 		keeps the variant's own type throughout, and so do a global, a static and a variable of an
 		<a href="#unsized"><span class="pre">@unsized</span></a> enum. A declared type is never changed, and neither is a
-		<span class="pre">mut</span> pattern binding, which is the matched value's own storage under its variant's name. A generic enum's variant whose type arguments the
-		value fixes gives its instance: <span class="pre">mut o = Some(5)</span> is an <span class="pre">Option[i32]</span>,
-		while <span class="pre">mut o = None</span> is refused for want of the type. A method only the variant has is
+		<span class="pre">var</span> pattern binding, which is the matched value's own storage under its variant's name. A generic enum's variant whose type arguments the
+		value fixes gives its instance: <span class="pre">var o = Some(5)</span> is an <span class="pre">Option[i32]</span>,
+		while <span class="pre">var o = None</span> is refused for want of the type. A method only the variant has is
 		reached by name (<span class="pre">c.grow()</span>) but not through a borrow of the variable until it is declared as
-		the variant, <span class="pre">mut c Shape.Circle = ...</span>.</p>
+		the variant, <span class="pre">var c Shape.Circle = ...</span>.</p>
 
 	<h2 id="traitvar">Open traits: variants other modules may add</h2>
 	<p style="margin-left: 40px;"><i>Note: All of this is implemented.</i></p>
@@ -956,7 +956,7 @@ fn when(e &amp;&lt;Event) i64 { e.time; }
 			(<a href="mem-regions.html">Regions</a>). A region ref may also declare <span class="pre">Move</span>, as
 			<span class="pre">Uni</span> does: <span class="pre">struct Uni is RegionRef, Move</span>.</li>
 		<li><span class="pre">AtomicValue</span>, which marks a value changed only by atomic operations, even where
-			it is <span class="pre">imm</span>: core's <span class="pre">Atomic[T]</span> declares it
+			it is <span class="pre">let</span>: core's <span class="pre">Atomic[T]</span> declares it
 			(<a href="conc-primitives.html#atomic">Atomic values</a>). A type declaring it moves.</li>
 		<li><span class="pre">Integer</span>, which the compiler grants to the integer types,
 			<span class="pre">i8</span> to <span class="pre">i64</span>, <span class="pre">u8</span> to
@@ -1027,10 +1027,10 @@ struct Id is Hash {
   pub fn `==`(self, o Id) bool {slot == o.slot and gen == o.gen;}
 }
 
-imm id = new Id(1, 2);
-mut h = Hasher.seeded();
+let id = new Id(1, 2);
+var h = Hasher.seeded();
 id.hash(&amp;mut h);          // feeds slot, then gen
-imm number = h.finish();
+let number = h.finish();
 </pre>
 	<p>It feeds the fields, never the struct's bytes, because the bytes between fields are undefined. It is
 		refused, at the field, where a field has no hash that agrees with its <span class="pre">==</span>: a float
@@ -1080,10 +1080,10 @@ pub trait Iterable[T, I] where I is Iterator[T] {
 		(<span class="pre">&amp;&lt;mut Iterator[i64]</span>), which takes any cursor through one compiled function:</p>
 <pre>
 fn count[T, S Iterator[T]](it &amp;mut S) usize {
-  mut n = 0usize;
+  var n = 0usize;
   while true {
     match it.next() {
-      case imm v Some {n = n + 1usize;}
+      case let v Some {n = n + 1usize;}
       case is None {break;}
     }
   }
@@ -1091,10 +1091,10 @@ fn count[T, S Iterator[T]](it &amp;mut S) usize {
 }
 
 fn total[S Iterator[&amp;i64]](it &amp;mut S) i64 {   // a cursor that lends numbers
-  mut sum = 0i64;
+  var sum = 0i64;
   while true {
     match it.next() {
-      case imm v Some {sum = sum + *v;}
+      case let v Some {sum = sum + *v;}
       case is None {break;}
     }
   }
@@ -1102,7 +1102,7 @@ fn total[S Iterator[&amp;i64]](it &amp;mut S) i64 {   // a cursor that lends num
 }
 
 fn walk[T, I, C Iterable[T, I]](c &amp;C) usize where I is Iterator[T] {
-  mut it = c.iter();
+  var it = c.iter();
   count[T, I](&amp;mut it);
 }
 </pre>
@@ -1139,7 +1139,7 @@ struct Countdown is Iterator[i64] {
   }
 }
 
-mut cd = new Countdown(4);
+var cd = new Countdown(4);
 cd.map(x =&gt; x * 10).sum();      // 100: 40 + 30 + 20 + 10
 </pre>
 	<p>Each step of a chain is a cursor of its own type (the whole chain's, so a chain is held in a variable of
@@ -1193,10 +1193,10 @@ import collections use *;
 fn countOf[C Collection](c &amp;C) usize { c.len(); }
 
 fn drainSum[S Stack[i64]](s &amp;mut S) i64 {
-  mut total = 0i64;
+  var total = 0i64;
   while true {
     match s.pop() {
-      case imm v Some {total = total + v;}
+      case let v Some {total = total + v;}
       case is None {break;}
     }
   }
@@ -1206,17 +1206,17 @@ fn drainSum[S Stack[i64]](s &amp;mut S) i64 {
 // The other form: one compiled function, called through a table of methods
 fn peekTop(s &amp;&lt;mut Stack[i64]) i64 {
   match s.peek() {
-    case imm v Some {*v;}
+    case let v Some {*v;}
     case is None {-1i64;}
   }
 }
 
 fn main() i32 {
-  mut list = List[i64].empty();
+  var list = List[i64].empty();
   list &lt;- 1i64, 2i64, 3i64;
-  mut deque = Deque[i64].empty();
+  var deque = Deque[i64].empty();
   deque &lt;- 10i64, 20i64;
-  imm word = String.from("four");
+  let word = String.from("four");
   print &lt;- countOf(&amp;list), " ", countOf(&amp;deque), " ", countOf(&amp;word), "\n";
   print &lt;- peekTop(&amp;mut list), "\n";
   print &lt;- drainSum(&amp;mut list), " ", drainSum(&amp;mut deque), "\n";   // a List and a Deque are Stacks
@@ -1250,9 +1250,9 @@ mod hosts;
 
 pub mod trait Runner {
   pub fn step(n i64) i64;        // required
-  pub mut scale i64;             // required
+  pub var scale i64;             // required
 
-  pub mut offset = 100i64;       // a default
+  pub var offset = 100i64;       // a default
   pub fn run(n i64) i64 {        // a default
     step(n) * scale + offset;
   }
@@ -1274,7 +1274,7 @@ pub fn step(n i64) i64 {
   n + 1i64;
 }
 
-pub mut @threadlocal scale = 2i64;
+pub var @threadlocal scale = 2i64;
 </pre>
 	<p>Now <span class="pre">plain.run(4i64)</span> is 110: <span class="pre">plain</span>'s own
 		<span class="pre">step</span>, times its <span class="pre">scale</span>, plus the default

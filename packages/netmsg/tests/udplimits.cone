@@ -27,15 +27,15 @@ fn reasonText(r CloseReason) &str {
 // The next event as text (J1, L1:reason), or "none" if none comes in 'ms'; a
 // Joined's connection is kept
 fn next(rx &mut Receiver[NetEvent], ms i64, conns &mut List[Connection]) String {
-  mut s = String.empty();
+  var s = String.empty();
   match rx.recvTimeout(Duration.fromMillis(ms)) {
-    case imm e Some {
+    case let e Some {
       match &e {
-        case imm j &Joined { s.append("J"); s.appendUInt(u64.from(j.id)); conns.push(j.conn); }
-        case imm l &Left { s.append("L"); s.appendUInt(u64.from(l.id)); s.append(":"); s.append(reasonText(l.reason)); }
-        case imm r &Refused { s.append("R"); s.appendUInt(u64.from(r.id)); }
-        case imm m &Message { s.append("M"); s.appendUInt(u64.from(m.id)); }
-        case imm u &Update { s.append("U"); s.appendUInt(u64.from(u.id)); }
+        case let j &Joined { s.append("J"); s.appendUInt(u64.from(j.id)); conns.push(j.conn); }
+        case let l &Left { s.append("L"); s.appendUInt(u64.from(l.id)); s.append(":"); s.append(reasonText(l.reason)); }
+        case let r &Refused { s.append("R"); s.appendUInt(u64.from(r.id)); }
+        case let m &Message { s.append("M"); s.appendUInt(u64.from(m.id)); }
+        case let u &Update { s.append("U"); s.appendUInt(u64.from(u.id)); }
       }
       return s;
     }
@@ -45,27 +45,27 @@ fn next(rx &mut Receiver[NetEvent], ms i64, conns &mut List[Connection]) String 
 }
 
 fn main() i32 {
-  mut dump = List[Connection].empty();
+  var dump = List[Connection].empty();
 
   // A full server refuses the next client
   {
-    mut txS Sender[NetEvent];
-    mut rxS Receiver[NetEvent];
+    var txS Sender[NetEvent];
+    var rxS Receiver[NetEvent];
     txS, rxS = Channel[NetEvent].make();
-    mut txA Sender[NetEvent];
-    mut rxA Receiver[NetEvent];
+    var txA Sender[NetEvent];
+    var rxA Receiver[NetEvent];
     txA, rxA = Channel[NetEvent].make();
-    mut txB Sender[NetEvent];
-    mut rxB Receiver[NetEvent];
+    var txB Sender[NetEvent];
+    var rxB Receiver[NetEvent];
     txB, rxB = Channel[NetEvent].make();
-    mut cfg = NetConfig.defaults();
+    var cfg = NetConfig.defaults();
     cfg.maxClients = 1usize;
     cfg.connectTimeoutMs = 3000i64;
-    imm server = mustListen(SocketAddr.localhost(0u16), cfg, channelHandler(txS));
-    imm a = mustConnect(SocketAddr.localhost(server.port), cfg, channelHandler(txA));
+    let server = mustListen(SocketAddr.localhost(0u16), cfg, channelHandler(txS));
+    let a = mustConnect(SocketAddr.localhost(server.port), cfg, channelHandler(txA));
     expectStr(next(&mut rxA, 3000i64, &mut dump).view(), "J1", "the first client joins");
     expectStr(next(&mut rxS, 3000i64, &mut dump).view(), "J1", "the server has it");
-    imm b = mustConnect(SocketAddr.localhost(server.port), cfg, channelHandler(txB));
+    let b = mustConnect(SocketAddr.localhost(server.port), cfg, channelHandler(txB));
     expectStr(next(&mut rxB, 3000i64, &mut dump).view(), "L1:refused", "the second is refused: the server is full");
     expectStr(next(&mut rxS, 300i64, &mut dump).view(), "none", "and the server hears nothing of it");
     // The server shuts down: its client is told
@@ -77,36 +77,36 @@ fn main() i32 {
 
   // Nobody answers: the attempt fails
   {
-    mut txS Sender[NetEvent];
-    mut rxS Receiver[NetEvent];
+    var txS Sender[NetEvent];
+    var rxS Receiver[NetEvent];
     txS, rxS = Channel[NetEvent].make();
-    mut txA Sender[NetEvent];
-    mut rxA Receiver[NetEvent];
+    var txA Sender[NetEvent];
+    var rxA Receiver[NetEvent];
     txA, rxA = Channel[NetEvent].make();
-    mut cfg = NetConfig.defaults();
+    var cfg = NetConfig.defaults();
     cfg.connectTimeoutMs = 700i64;
     cfg.connectRetryMs = 100i64;
-    imm gone = mustListen(SocketAddr.localhost(0u16), cfg, channelHandler(txS));
-    imm port = gone.port;
+    let gone = mustListen(SocketAddr.localhost(0u16), cfg, channelHandler(txS));
+    let port = gone.port;
     gone.endpoint.shutdown();
-    imm a = mustConnect(SocketAddr.localhost(port), cfg, channelHandler(txA));
+    let a = mustConnect(SocketAddr.localhost(port), cfg, channelHandler(txA));
     expectStr(next(&mut rxA, 3000i64, &mut dump).view(), "L1:noanswer", "a client with nobody to answer gives up");
     a.endpoint.shutdown();
   }
 
   // The peer goes silent: both sides time out
   {
-    mut txS Sender[NetEvent];
-    mut rxS Receiver[NetEvent];
+    var txS Sender[NetEvent];
+    var rxS Receiver[NetEvent];
     txS, rxS = Channel[NetEvent].make();
-    mut txA Sender[NetEvent];
-    mut rxA Receiver[NetEvent];
+    var txA Sender[NetEvent];
+    var rxA Receiver[NetEvent];
     txA, rxA = Channel[NetEvent].make();
-    mut cfg = NetConfig.defaults();
+    var cfg = NetConfig.defaults();
     cfg.timeoutMs = 1200i64;
-    imm server = mustListen(SocketAddr.localhost(0u16), cfg, channelHandler(txS));
-    mut relay = startLossyRelay(SocketAddr.localhost(server.port), LinkConfig.perfect(), LinkConfig.perfect(), 1u64);
-    imm a = mustConnect(SocketAddr.localhost(relay.port), cfg, channelHandler(txA));
+    let server = mustListen(SocketAddr.localhost(0u16), cfg, channelHandler(txS));
+    var relay = startLossyRelay(SocketAddr.localhost(server.port), LinkConfig.perfect(), LinkConfig.perfect(), 1u64);
+    let a = mustConnect(SocketAddr.localhost(relay.port), cfg, channelHandler(txA));
     expectStr(next(&mut rxA, 3000i64, &mut dump).view(), "J1", "joined through the relay");
     expectStr(next(&mut rxS, 3000i64, &mut dump).view(), "J1", "the server has it");
     relay.stop();

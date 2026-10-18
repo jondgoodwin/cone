@@ -31,108 +31,108 @@ import analyticdaylight use *;
 
 // Direction 'i', as gpuparity.slang's 'direction'
 fn direction(i u32) Vec3 {
-  imm raw = f32.from(i) * 0.6180339 + 0.07;
-  imm f = raw - libc.floorf(raw);
-  imm s = -0.15 + 1.12 * f;
-  imm clamped = if s < -0.99 { -0.99; } elif s > 0.99 { 0.99; } else { s; };
-  imm el = asin(clamped);
-  imm az = f32.from(i) * 2.3999632;
+  let raw = f32.from(i) * 0.6180339 + 0.07;
+  let f = raw - libc.floorf(raw);
+  let s = -0.15 + 1.12 * f;
+  let clamped = if s < -0.99 { -0.99; } elif s > 0.99 { 0.99; } else { s; };
+  let el = asin(clamped);
+  let az = f32.from(i) * 2.3999632;
   new Vec3(cos(el) * sin(az), sin(el), cos(el) * cos(az));
 }
 
 // A half-float's value from its 16 bits
 fn halfValue(h u16) f32 {
-  imm bits = u32.from(h);
-  imm sign = if (bits & 0x8000u32) != 0u32 { -1.; } else { 1.; };
-  imm exponent = i32.from((bits >> 10u32) & 31u32);
-  imm fraction = f32.from(bits & 1023u32);
+  let bits = u32.from(h);
+  let sign = if (bits & 0x8000u32) != 0u32 { -1.; } else { 1.; };
+  let exponent = i32.from((bits >> 10u32) & 31u32);
+  let fraction = f32.from(bits & 1023u32);
   if exponent == 0i32 { return sign * fraction * 0.000000059604645; }
   sign * (1. + fraction / 1024.) * libc.powf(2., f32.from(exponent - 15i32));
 }
 
 fn main() i32 {
-  mut instance = Instance.create("analyticdaylight parity");
+  var instance = Instance.create("analyticdaylight parity");
   require(instance.isValid(), "a Vulkan 1.3 instance");
-  mut none = Surface.none();
-  mut preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
-  imm env = libc.getenv("GPU_POWER_PREFERENCE");
+  var none = Surface.none();
+  var preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
+  let env = libc.getenv("GPU_POWER_PREFERENCE");
   if (env as usize) != 0usize {
     if libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 { preference = POWER_PREFERENCE_LOW_POWER; }
   }
-  mut adapter = instance.requestAdapter(&none, preference);
+  var adapter = instance.requestAdapter(&none, preference);
   require(adapter.isValid(), "an adapter");
-  mut device = adapter.requestDevice();
+  var device = adapter.requestDevice();
   require(device.isValid(), "a device");
-  imm report = (libc.getenv("ANALYTICDAYLIGHT_PARITY_REPORT") as usize) != 0usize;
+  let report = (libc.getenv("ANALYTICDAYLIGHT_PARITY_REPORT") as usize) != 0usize;
   if report { print <- "Adapter: "; printStr(adapter.name.view()); print <- "\n"; }
-  imm target = new TextureDescriptor(64u32, 64u32, TEXTURE_FORMAT_RGBA16_FLOAT,
+  let target = new TextureDescriptor(64u32, 64u32, TEXTURE_FORMAT_RGBA16_FLOAT,
     TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
-  mut color = device.createTexture(&target);
-  imm depthDesc = new TextureDescriptor(64u32, 64u32, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
-  mut depth = device.createTexture(&depthDesc);
-  mut readback = device.createBuffer(64u64 * 64u64 * 8u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
-  imm p = readback.mappedRange();
-  mut renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA16_FLOAT, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  var color = device.createTexture(&target);
+  let depthDesc = new TextureDescriptor(64u32, 64u32, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
+  var depth = device.createTexture(&depthDesc);
+  var readback = device.createBuffer(64u64 * 64u64 * 8u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  let p = readback.mappedRange();
+  var renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA16_FLOAT, TEXTURE_FORMAT_DEPTH32_FLOAT);
   require(renderer.isValid(), "a renderer");
-  imm textures = [TEXTURE_SAMPLE_TYPE_FLOAT];
-  imm desc = new CustomPipeline(spirv: &PARITY_SPIRV, textures: &textures, paramBytes: 144u64, streams: 1u32,
+  let textures = [TEXTURE_SAMPLE_TYPE_FLOAT];
+  let desc = new CustomPipeline(spirv: &PARITY_SPIRV, textures: &textures, paramBytes: 144u64, streams: 1u32,
     cullMode: CULL_MODE_NONE, depthWrite: false);
-  imm pipeline = renderer.addPipeline(&mut device, &desc);
+  let pipeline = renderer.addPipeline(&mut device, &desc);
   require(renderer.hasPipeline(pipeline), "the pipeline made");
-  imm plane = Mesh.plane(1, 1.);
-  imm mesh = renderer.addMesh(&mut device, &plane);
-  imm none2 = List[f32].empty();
-  imm noMaps = List[TextureHandle].empty();
-  imm material = renderer.addCustomMaterial(&mut device, pipeline, none2.view(), noMaps.view());
+  let plane = Mesh.plane(1, 1.);
+  let mesh = renderer.addMesh(&mut device, &plane);
+  let none2 = List[f32].empty();
+  let noMaps = List[TextureHandle].empty();
+  let material = renderer.addCustomMaterial(&mut device, pipeline, none2.view(), noMaps.view());
   require(!material.isNone(), "the material made");
-  mut camera = Camera.make();
+  var camera = Camera.make();
   camera.lookAt(new Vec3(0., 0., 3.), new Vec3(0., 0., 0.), new Vec3(0., 1., 0.));
   camera.background = new Color(0., 0., 0., 1.);
-  imm light = Light.directional(new Vec3(0., 0., -1.), Color.gray(1.), Color.gray(0.2));
-  mut list = DrawList.empty();
+  let light = Light.directional(new Vec3(0., 0., -1.), Color.gray(1.), Color.gray(0.2));
+  var list = DrawList.empty();
   list.add(mesh, material, Mat4.identity());
 
-  imm cfg = DayConfig.standard();
-  imm hours = [7., 12., 16.5, 19., 19.6, 20.2, 21., 0.];
-  mut hi = 0usize;
+  let cfg = DayConfig.standard();
+  let hours = [7., 12., 16.5, 19., 19.6, 20.2, 21., 0.];
+  var hi = 0usize;
   while hi < 8usize {
-    imm sky = DaySky.at(&cfg, hours[hi]);
+    let sky = DaySky.at(&cfg, hours[hi]);
     // The CPU's table, and the scale that makes its largest 0.5
-    mut cpu = List[Vec3].empty();
-    mut biggest = 0.0000001;
-    mut i = 0u32;
+    var cpu = List[Vec3].empty();
+    var biggest = 0.0000001;
+    var i = 0u32;
     while i < 64u32 {
-      imm c = sky.radiance(direction(i));
+      let c = sky.radiance(direction(i));
       cpu.push(c);
       if c.x > biggest { biggest = c.x; }
       if c.y > biggest { biggest = c.y; }
       if c.z > biggest { biggest = c.z; }
       i = i + 1u32;
     }
-    imm scale = 0.5 / biggest;
-    mut packed = List[f32].empty();
+    let scale = 0.5 / biggest;
+    var packed = List[f32].empty();
     sky.pack(&mut packed);
     packed.push(scale); packed.push(0.); packed.push(0.); packed.push(0.);
     expect(renderer.setCustomParams(&mut device, material, packed.view()), "the parameters set");
-    mut encoder = device.createCommandEncoder();
+    var encoder = device.createCommandEncoder();
     renderer.render(&mut device, &mut encoder, &color, &depth, &camera, &light, &list);
     encoder.copyTextureToBuffer(&color, &readback);
     device.queue.submit(encoder.finish());
     device.endFrame();
     device.waitIdle();
-    mut worst = 0.;
-    mut bad = 0;
+    var worst = 0.;
+    var bad = 0;
     i = 0u32;
     while i < 64u32 {
       // Row 32's pixel i: four half-floats
-      imm at = (p as *u16) + (32usize * 64usize + usize.from(i)) * 4usize;
-      imm want = *cpu[usize.from(i)];
-      mut c = 0usize;
+      let at = (p as *u16) + (32usize * 64usize + usize.from(i)) * 4usize;
+      let want = *cpu[usize.from(i)];
+      var c = 0usize;
       while c < 3usize {
-        imm got = halfValue(*(at + c));
-        imm w = (if c == 0usize { want.x; } elif c == 1usize { want.y; } else { want.z; }) * scale;
-        imm err = if got > w { got - w; } else { w - got; };
-        imm tol = 0.003 * 0.5 + 0.005 * w;
+        let got = halfValue(*(at + c));
+        let w = (if c == 0usize { want.x; } elif c == 1usize { want.y; } else { want.z; }) * scale;
+        let err = if got > w { got - w; } else { w - got; };
+        let tol = 0.003 * 0.5 + 0.005 * w;
         if err > worst { worst = err; }
         if err > tol { bad = bad + 1; }
         c = c + 1usize;
@@ -151,7 +151,7 @@ fn main() i32 {
 
 // spirv-begin gpuparity.spv PARITY_SPIRV
 // Written by tools/shaders/shaders.py from gpuparity.slang (sha256 77c5ca6235821e86717f1f51850683528e04891d0685564ffa355ecb993bf88c): do not edit.
-imm PARITY_SPIRV Array[u32, 2122] = [
+let PARITY_SPIRV Array[u32, 2122] = [
   0x07230203u32, 0x00010500u32, 0x00280000u32, 0x000002c4u32, 0x00000000u32, 0x00020011u32,
   0x00000001u32, 0x0006000bu32, 0x00000032u32, 0x4c534c47u32, 0x6474732eu32, 0x3035342eu32,
   0x00000000u32, 0x0003000eu32, 0x00000000u32, 0x00000001u32, 0x0008000fu32, 0x00000000u32,

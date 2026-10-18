@@ -18,7 +18,7 @@ suite and `packages/closurelib`.*
 ## The two forms
 
 ```
-fn (u f32) [ribs, mut n = 0, w = window.handle()] f32 { ... }     // the full form
+fn (u f32) [ribs, var n = 0, w = window.handle()] f32 { ... }     // the full form
 x => x * 2          (a, b) => a.len() < b.len()          () => 5   // the short form
 ```
 
@@ -44,7 +44,7 @@ local.
 | Field | Meaning |
 | --- | --- |
 | `sig` | a `FnSigNode` of the parameters; `unknownType` for a type not written, and for a return type not written |
-| `state` | a `VarDclNode` per entry: name, permission (`mut` or `imm`), initializer in `value` |
+| `state` | a `VarDclNode` per entry: name, declaration word (`var` or `let`), initializer in `value` |
 | `body` | a block (the short form's expression is wrapped in one) |
 | `captures` | name resolution: the variables of the code around that the body names, each borrowed |
 | `outerself` | name resolution: the `self` of the method it is written in, where the body names a member bare |
@@ -102,7 +102,7 @@ function. (`selfmethod` stays reserved.)
    body is checked as a clone, its diagnostics counted and not printed
    (`errorSilent`), first with the weakest permissions; if that fails, with
    every borrow the variable allows `&mut` (a variable is borrowed `&mut` only
-   if it is `mut`) and `self &mut`; if that passes, each `&mut` borrow is taken
+   if it is `var`) and `self &mut`; if that passes, each `&mut` borrow is taken
    back in turn while the body still checks, and `self` last, which stays `&mut`
    while any borrow is. A failure that survives the most permissive guess is the
    body's own, and the real check reports it. This asks the type checker itself
@@ -287,7 +287,7 @@ it is refused at the call, as a struct's is.
 **A closure that fails stops its call.** A literal that failed to type check as an
 argument of a generic call leaves the call nothing to infer from; `fnCallClosureArgs`
 gives the call up (the failed literal's lent borrow, left behind, reached
-generic substitution as a node with no name). A literal first bound to an `imm`
+generic substitution as a node with no name). A literal first bound to a `let`
 and refused there leaves the variable of the error type; handed to a generic with a
 signature bound, `f` or `&f` binds the type parameter to `errorType`, which
 `genericRequirementsMetIn` refuses without a second report, as the

@@ -70,7 +70,7 @@ fn blendFactor(f u32) u32 {
 }
 
 fn shaderStages(visibility u32) u32 {
-  mut stages = 0u32;
+  var stages = 0u32;
   if (visibility & SHADER_STAGE_VERTEX) != 0u32 { stages = stages | vulkan.SHADER_STAGE_VERTEX_BIT; }
   if (visibility & SHADER_STAGE_FRAGMENT) != 0u32 { stages = stages | vulkan.SHADER_STAGE_FRAGMENT_BIT; }
   if (visibility & SHADER_STAGE_COMPUTE) != 0u32 { stages = stages | vulkan.SHADER_STAGE_COMPUTE_BIT; }
@@ -120,7 +120,7 @@ pub struct Buffer {
   // done, and read through what it answers.
   pub fn mappedRange(self &) *u8 {
     if !backend.coherent and (backend.mapped as usize) != 0usize {
-      imm range = new vulkan.MappedMemoryRange(memory: backend.memory);
+      let range = new vulkan.MappedMemoryRange(memory: backend.memory);
       check(backend.fns.invalidateMappedMemoryRanges(backend.device, 1u32, &range as *vulkan.MappedMemoryRange),
         "vkInvalidateMappedMemoryRanges");
     }
@@ -164,14 +164,14 @@ pub struct Fence is Move, Sendable {
   // nothing will signal.
   pub fn waitSignalled(self &, nanos u64) bool {
     if !submitted { return false; }
-    mut f = fence;
+    var f = fence;
     fns.waitForFences(device, 1u32, &mut f as *vulkan.Fence, vulkan.TRUE, nanos) == vulkan.SUCCESS;
   }
 
   fn final(self &uni) {
     if fence.h == 0u64 { return; }
     if submitted {
-      mut f = fence;
+      var f = fence;
       fns.waitForFences(device, 1u32, &mut f as *vulkan.Fence, vulkan.TRUE, NO_TIMEOUT);
     }
     fns.destroyFence(device, fence, nullp());
@@ -262,21 +262,21 @@ pub struct Texture {
   // made once, the first time it is asked for, and kept as long as the
   // texture (an invalid view if it cannot be made: check 'isValid').
   pub fn createViewWith(self &, desc &TextureViewDescriptor) TextureView {
-    mut result = new TextureView(backend, width, height, format);
+    var result = new TextureView(backend, width, height, format);
     result.backend.view = new vulkan.ImageView(0u64);
     if backend.image.h == 0u64 or (backend.views as usize) == 0usize { return result; }
-    imm volume = dimension == TEXTURE_DIMENSION_3D;
+    let volume = dimension == TEXTURE_DIMENSION_3D;
     if volume != (desc.dimension == TEXTURE_VIEW_DIMENSION_3D) {
       fail("createViewWith: a 3-D texture is viewed 3-D, and only a 3-D texture is");
       return result;
     }
-    imm baseMip = desc.baseMipLevel;
-    imm baseLayer = desc.baseArrayLayer;
-    mut mips = desc.mipLevelCount;
+    let baseMip = desc.baseMipLevel;
+    let baseLayer = desc.baseArrayLayer;
+    var mips = desc.mipLevelCount;
     if mips == 0u32 and baseMip < mipLevelCount { mips = mipLevelCount - baseMip; }
-    mut layers = desc.arrayLayerCount;
+    var layers = desc.arrayLayerCount;
     // A 3-D texture's depth is not layers: it has one
-    imm textureLayers = if volume { 1u32; } else { depthOrArrayLayers; };
+    let textureLayers = if volume { 1u32; } else { depthOrArrayLayers; };
     if layers == 0u32 {
       if desc.dimension == TEXTURE_VIEW_DIMENSION_CUBE {
         layers = 6u32;
@@ -292,17 +292,17 @@ pub struct Texture {
       fail("createViewWith: the levels or layers are not the texture's, or not the dimension's");
       return result;
     }
-    mut viewType = vulkan.IMAGE_VIEW_TYPE_2D;
+    var viewType = vulkan.IMAGE_VIEW_TYPE_2D;
     if desc.dimension == TEXTURE_VIEW_DIMENSION_2D_ARRAY { viewType = vulkan.IMAGE_VIEW_TYPE_2D_ARRAY; }
     if desc.dimension == TEXTURE_VIEW_DIMENSION_CUBE { viewType = vulkan.IMAGE_VIEW_TYPE_CUBE; }
     if volume { viewType = vulkan.IMAGE_VIEW_TYPE_3D; }
-    imm key = u64.from(desc.dimension) | (u64.from(baseMip) << 8u64) | (u64.from(mips) << 16u64) | (u64.from(baseLayer) << 24u64)
+    let key = u64.from(desc.dimension) | (u64.from(baseMip) << 8u64) | (u64.from(mips) << 16u64) | (u64.from(baseLayer) << 24u64)
       | (u64.from(layers) << 40u64);
-    imm cache = backend.views;
-    mut found = new vulkan.ImageView(0u64);
-    mut i = 0usize;
+    let cache = backend.views;
+    var found = new vulkan.ImageView(0u64);
+    var i = 0usize;
     while i < usize.from(cache.count) {
-      imm e = cache.entries + i;
+      let e = cache.entries + i;
       if e.key == key { found = e.view; }
       i = i + 1usize;
     }
@@ -311,14 +311,14 @@ pub struct Texture {
         fail("createViewWith: more views of one texture than it keeps");
         return result;
       }
-      imm vk = vkFormat(format);
-      imm vci = new vulkan.ImageViewCreateInfo(image: backend.image, viewType: viewType, format: vk,
+      let vk = vkFormat(format);
+      let vci = new vulkan.ImageViewCreateInfo(image: backend.image, viewType: viewType, format: vk,
         components: new vulkan.ComponentMapping(), subresourceRange: new vulkan.ImageSubresourceRange(aspectMask: aspectOf(vk),
         baseMipLevel: baseMip, levelCount: mips, baseArrayLayer: baseLayer, layerCount: layers));
       if !check(backend.fns.createImageView(backend.device, &vci, nullp(), &mut found), "vkCreateImageView") {
         return result;
       }
-      imm slot = cache.entries + usize.from(cache.count);
+      let slot = cache.entries + usize.from(cache.count);
       *slot = new ViewEntry(key, found);
       cache.count = cache.count + 1u32;
     }
@@ -346,14 +346,14 @@ pub struct Texture {
 
 // A level's width or height: the texture's halved 'level' times, at least 1
 fn mipSize(size u32, level u32) u32 {
-  imm s = size >> level;
+  let s = size >> level;
   if s == 0u32 { return 1u32; }
   s;
 }
 
 // A cache of room for 'capacity' views
 fn newViews(capacity u32) *ViewCache {
-  imm cache = libc.calloc(1usize, mem.sizeof[ViewCache]()) as *ViewCache;
+  let cache = libc.calloc(1usize, mem.sizeof[ViewCache]()) as *ViewCache;
   cache.capacity = capacity;
   cache.entries = libc.calloc(usize.from(capacity), mem.sizeof[ViewEntry]()) as *ViewEntry;
   cache;
@@ -362,9 +362,9 @@ fn newViews(capacity u32) *ViewCache {
 // Destroy the views in 'cache', and free it
 fn endViews(fns &DevFns, device vulkan.Device, cache *ViewCache) {
   if (cache as usize) == 0usize { return; }
-  mut i = 0usize;
+  var i = 0usize;
   while i < usize.from(cache.count) {
-    imm e = cache.entries + i;
+    let e = cache.entries + i;
     fns.destroyImageView(device, e.view, nullp());
     i = i + 1usize;
   }

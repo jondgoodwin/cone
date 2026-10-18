@@ -27,37 +27,37 @@ fn hitAt(t f32, n Vec3) RayHit { new RayHit(true, t, n, 0u32, NoSub); }
 fn nearer(a RayHit, b RayHit) RayHit { if b.hit and (not a.hit or b.t < a.t) { b; } else { a; }; }
 
 fn raySphere(o Vec3, d Vec3, c Vec3, r f32, maxT f32) RayHit {
-  imm m = o - c;
-  imm a = d.dot(d);
-  imm b = m.dot(d);
-  imm cc = m.dot(m) - r * r;
+  let m = o - c;
+  let a = d.dot(d);
+  let b = m.dot(d);
+  let cc = m.dot(m) - r * r;
   if cc <= 0. { return hitAt(0., -d.normalize()); }
   if b > 0. { return noHit(); }
-  imm disc = b * b - a * cc;
+  let disc = b * b - a * cc;
   if disc < 0. { return noHit(); }
-  imm t = (-b - disc.sqrt()) / a;
+  let t = (-b - disc.sqrt()) / a;
   if t > maxT { return noHit(); }
   hitAt(t, (o + d * t - c).normalize());
 }
 
 fn rayBox(o Vec3, d Vec3, h Vec3, maxT f32) RayHit {
-  mut tmin = 0.;
-  mut tmax = maxT;
-  mut nrm = new Vec3(0., 0., 0.);
-  mut inside = true;
-  mut ax = 0usize;
+  var tmin = 0.;
+  var tmax = maxT;
+  var nrm = new Vec3(0., 0., 0.);
+  var inside = true;
+  var ax = 0usize;
   while ax < 3usize {
-    imm oa = vecGet(o, ax);
-    imm da = vecGet(d, ax);
-    imm ha = vecGet(h, ax);
+    let oa = vecGet(o, ax);
+    let da = vecGet(d, ax);
+    let ha = vecGet(h, ax);
     if absf(da) < 1.0e-12 {
       if oa < -ha or oa > ha { return noHit(); }
     } else {
-      imm inv = 1. / da;
-      mut t1 = (-ha - oa) * inv;
-      mut t2 = (ha - oa) * inv;
-      mut sgn = -1.;
-      if t1 > t2 { imm s = t1; t1 = t2; t2 = s; sgn = 1.; }
+      let inv = 1. / da;
+      var t1 = (-ha - oa) * inv;
+      var t2 = (ha - oa) * inv;
+      var sgn = -1.;
+      if t1 > t2 { let s = t1; t1 = t2; t2 = s; sgn = 1.; }
       if t1 > tmin { tmin = t1; nrm = vecSet(new Vec3(0., 0., 0.), ax, sgn); inside = false; }
       if t2 < tmax { tmax = t2; }
       if tmin > tmax { return noHit(); }
@@ -69,29 +69,29 @@ fn rayBox(o Vec3, d Vec3, h Vec3, maxT f32) RayHit {
 }
 
 fn rayCylinderSide(o Vec3, d Vec3, r f32, hy f32, maxT f32) RayHit {
-  imm a = d.x * d.x + d.z * d.z;
+  let a = d.x * d.x + d.z * d.z;
   if a < 1.0e-12 { return noHit(); }
-  imm b = o.x * d.x + o.z * d.z;
-  imm c = o.x * o.x + o.z * o.z - r * r;
-  imm disc = b * b - a * c;
+  let b = o.x * d.x + o.z * d.z;
+  let c = o.x * o.x + o.z * o.z - r * r;
+  let disc = b * b - a * c;
   if disc < 0. { return noHit(); }
-  imm t = (-b - disc.sqrt()) / a;
+  let t = (-b - disc.sqrt()) / a;
   if t < 0. or t > maxT { return noHit(); }
-  imm p = o + d * t;
+  let p = o + d * t;
   if absf(p.y) > hy { return noHit(); }
   hitAt(t, new Vec3(p.x, 0., p.z).normalize());
 }
 
 fn rayCylinder(o Vec3, d Vec3, r f32, hy f32, maxT f32) RayHit {
   if o.x * o.x + o.z * o.z <= r * r and absf(o.y) <= hy { return hitAt(0., -d.normalize()); }
-  mut best = rayCylinderSide(o, d, r, hy, maxT);
+  var best = rayCylinderSide(o, d, r, hy, maxT);
   if absf(d.y) > 1.0e-12 {
-    mut k = 0usize;
+    var k = 0usize;
     while k < 2usize {
-      imm y = if k == 0usize { hy; } else { -hy; };
-      imm t = (y - o.y) / d.y;
+      let y = if k == 0usize { hy; } else { -hy; };
+      let t = (y - o.y) / d.y;
       if t >= 0. and t <= maxT {
-        imm p = o + d * t;
+        let p = o + d * t;
         if p.x * p.x + p.z * p.z <= r * r {
           best = nearer(best, hitAt(t, new Vec3(0., if k == 0usize { 1.; } else { -1.; }, 0.)));
         }
@@ -104,27 +104,27 @@ fn rayCylinder(o Vec3, d Vec3, r f32, hy f32, maxT f32) RayHit {
 
 fn rayCapsule(o Vec3, d Vec3, r f32, hy f32, maxT f32) RayHit {
   // inside if within r of the segment
-  imm cy = clampf(o.y, -hy, hy);
+  let cy = clampf(o.y, -hy, hy);
   if (new Vec3(o.x, o.y - cy, o.z)).lengthSquared() <= r * r { return hitAt(0., -d.normalize()); }
-  mut best = rayCylinderSide(o, d, r, hy, maxT);
+  var best = rayCylinderSide(o, d, r, hy, maxT);
   best = nearer(best, raySphere(o, d, new Vec3(0., hy, 0.), r, maxT));
   nearer(best, raySphere(o, d, new Vec3(0., -hy, 0.), r, maxT));
 }
 
 fn rayHull(p &Prim, o Vec3, d Vec3, maxT f32) RayHit {
-  mut tEnter = 0.;
-  mut tExit = maxT;
-  mut nrm = new Vec3(0., 0., 0.);
-  mut inside = true;
-  mut i = 0usize;
+  var tEnter = 0.;
+  var tExit = maxT;
+  var nrm = new Vec3(0., 0., 0.);
+  var inside = true;
+  var i = 0usize;
   while i < p.faces.len() {
-    imm f = p.faces[i];
-    imm denom = f.normal.dot(d);
-    imm dist = f.d - f.normal.dot(o);       // positive: the origin is inside this plane
+    let f = p.faces[i];
+    let denom = f.normal.dot(d);
+    let dist = f.d - f.normal.dot(o);       // positive: the origin is inside this plane
     if absf(denom) < 1.0e-12 {
       if dist < 0. { return noHit(); }
     } else {
-      imm t = dist / denom;
+      let t = dist / denom;
       if denom < 0. {
         if t > tEnter { tEnter = t; nrm = f.normal; inside = false; }
       } else {
@@ -140,32 +140,32 @@ fn rayHull(p &Prim, o Vec3, d Vec3, maxT f32) RayHit {
 
 // Moller and Trumbore; the normal faces the ray
 fn rayTriangle(o Vec3, d Vec3, a Vec3, b Vec3, c Vec3, maxT f32) RayHit {
-  imm e1 = b - a;
-  imm e2 = c - a;
-  imm pv = d.cross(e2);
-  imm det = e1.dot(pv);
+  let e1 = b - a;
+  let e2 = c - a;
+  let pv = d.cross(e2);
+  let det = e1.dot(pv);
   if absf(det) < 1.0e-12 { return noHit(); }
-  imm inv = 1. / det;
-  imm s = o - a;
-  imm u = s.dot(pv) * inv;
+  let inv = 1. / det;
+  let s = o - a;
+  let u = s.dot(pv) * inv;
   if u < 0. or u > 1. { return noHit(); }
-  imm q = s.cross(e1);
-  imm v = d.dot(q) * inv;
+  let q = s.cross(e1);
+  let v = d.dot(q) * inv;
   if v < 0. or u + v > 1. { return noHit(); }
-  imm t = e2.dot(q) * inv;
+  let t = e2.dot(q) * inv;
   if t < 0. or t > maxT { return noHit(); }
-  imm n = e1.cross(e2).normalize();
+  let n = e1.cross(e2).normalize();
   hitAt(t, if n.dot(d) > 0. { -n; } else { n; });
 }
 
 // Slab test of a ray against a box: the distance in, or a big number
 fn rayBoxEnter(o Vec3, inv Vec3, lo Vec3, hi Vec3, maxT f32) f32 {
-  mut tmin = 0.;
-  mut tmax = maxT;
-  mut ax = 0usize;
+  var tmin = 0.;
+  var tmax = maxT;
+  var ax = 0usize;
   while ax < 3usize {
-    imm t1 = (vecGet(lo, ax) - vecGet(o, ax)) * vecGet(inv, ax);
-    imm t2 = (vecGet(hi, ax) - vecGet(o, ax)) * vecGet(inv, ax);
+    let t1 = (vecGet(lo, ax) - vecGet(o, ax)) * vecGet(inv, ax);
+    let t2 = (vecGet(hi, ax) - vecGet(o, ax)) * vecGet(inv, ax);
     tmin = maxf(tmin, minf(t1, t2));
     tmax = minf(tmax, maxf(t1, t2));
     ax = ax + 1usize;
@@ -174,26 +174,26 @@ fn rayBoxEnter(o Vec3, inv Vec3, lo Vec3, hi Vec3, maxT f32) f32 {
 }
 
 fn rayMesh(p &Prim, o Vec3, d Vec3, maxT f32) RayHit {
-  mut best = noHit();
+  var best = noHit();
   if p.bvh.len() == 0usize { return best; }
-  imm inv = new Vec3(if absf(d.x) > 1.0e-20 { 1. / d.x; } else { 1.0e20; }, if absf(d.y) > 1.0e-20 { 1. / d.y; } else { 1.0e20; },
+  let inv = new Vec3(if absf(d.x) > 1.0e-20 { 1. / d.x; } else { 1.0e20; }, if absf(d.y) > 1.0e-20 { 1. / d.y; } else { 1.0e20; },
                      if absf(d.z) > 1.0e-20 { 1. / d.z; } else { 1.0e20; });
-  mut stack = List[usize].empty();
+  var stack = List[usize].empty();
   stack.push(0usize);
   while stack.len() > 0usize {
-    imm ni = *stack[stack.len() - 1usize];
+    let ni = *stack[stack.len() - 1usize];
     stack.pop();
-    imm nd = *p.bvh[ni];
-    imm limit = if best.hit { best.t; } else { maxT; };
+    let nd = *p.bvh[ni];
+    let limit = if best.hit { best.t; } else { maxT; };
     if rayBoxEnter(o, inv, nd.lo, nd.hi, limit) < bigNumber {
       if nd.count == 0u32 {
         stack.push(usize.from(nd.first));
         stack.push(ni + 1usize);
       } else {
-        mut k = usize.from(nd.first);
+        var k = usize.from(nd.first);
         while k < usize.from(nd.first + nd.count) {
-          imm t = meshTriangle(p, k);
-          mut h = rayTriangle(o, d, t.a, t.b, t.c, if best.hit { best.t; } else { maxT; });
+          let t = meshTriangle(p, k);
+          var h = rayTriangle(o, d, t.a, t.b, t.c, if best.hit { best.t; } else { maxT; });
           if h.hit { h.sub = *p.triId[k]; best = nearer(best, h); }
           k = k + 1usize;
         }
@@ -204,58 +204,58 @@ fn rayMesh(p &Prim, o Vec3, d Vec3, maxT f32) RayHit {
 }
 
 fn rayHeightfield(p &Prim, o Vec3, d Vec3, maxT f32) RayHit {
-  mut best = noHit();
+  var best = noHit();
   if p.cols < 2u32 or p.rows < 2u32 { return best; }
   // Walk the cells along the ray's footprint, in grid units
-  imm gx = (o.x - p.origin.x) / p.spacing.x;
-  imm gz = (o.z - p.origin.z) / p.spacing.y;
-  imm dx = d.x / p.spacing.x;
-  imm dz = d.z / p.spacing.y;
-  imm cw = i32.from(p.cols - 1u32);
-  imm ch = i32.from(p.rows - 1u32);
+  let gx = (o.x - p.origin.x) / p.spacing.x;
+  let gz = (o.z - p.origin.z) / p.spacing.y;
+  let dx = d.x / p.spacing.x;
+  let dz = d.z / p.spacing.y;
+  let cw = i32.from(p.cols - 1u32);
+  let ch = i32.from(p.rows - 1u32);
   // Clip the footprint to the grid box (in t)
-  mut t0 = 0.;
-  mut t1 = maxT;
+  var t0 = 0.;
+  var t1 = maxT;
   if absf(dx) < 1.0e-12 { if gx < 0. or gx > f32.from(cw) { return best; } }
   else {
-    imm ta = (0. - gx) / dx;
-    imm tb = (f32.from(cw) - gx) / dx;
+    let ta = (0. - gx) / dx;
+    let tb = (f32.from(cw) - gx) / dx;
     t0 = maxf(t0, minf(ta, tb)); t1 = minf(t1, maxf(ta, tb));
   }
   if absf(dz) < 1.0e-12 { if gz < 0. or gz > f32.from(ch) { return best; } }
   else {
-    imm ta = (0. - gz) / dz;
-    imm tb = (f32.from(ch) - gz) / dz;
+    let ta = (0. - gz) / dz;
+    let tb = (f32.from(ch) - gz) / dz;
     t0 = maxf(t0, minf(ta, tb)); t1 = minf(t1, maxf(ta, tb));
   }
   if t0 > t1 { return best; }
-  imm sx = gx + dx * (t0 + 1.0e-5);
-  imm sz = gz + dz * (t0 + 1.0e-5);
-  mut ci = i32.from(libc.floorf(sx));
-  mut cj = i32.from(libc.floorf(sz));
+  let sx = gx + dx * (t0 + 1.0e-5);
+  let sz = gz + dz * (t0 + 1.0e-5);
+  var ci = i32.from(libc.floorf(sx));
+  var cj = i32.from(libc.floorf(sz));
   if ci >= cw { ci = cw - 1i32; }
   if cj >= ch { cj = ch - 1i32; }
   if ci < 0i32 { ci = 0i32; }
   if cj < 0i32 { cj = 0i32; }
-  imm stepX = if dx > 0. { 1i32; } else { -1i32; };
-  imm stepZ = if dz > 0. { 1i32; } else { -1i32; };
-  mut nextX = if absf(dx) < 1.0e-12 { bigNumber; } else { (f32.from(if dx > 0. { ci + 1i32; } else { ci; }) - gx) / dx; };
-  mut nextZ = if absf(dz) < 1.0e-12 { bigNumber; } else { (f32.from(if dz > 0. { cj + 1i32; } else { cj; }) - gz) / dz; };
-  imm deltaX = if absf(dx) < 1.0e-12 { bigNumber; } else { absf(1. / dx); };
-  imm deltaZ = if absf(dz) < 1.0e-12 { bigNumber; } else { absf(1. / dz); };
-  mut guard = 0u32;
+  let stepX = if dx > 0. { 1i32; } else { -1i32; };
+  let stepZ = if dz > 0. { 1i32; } else { -1i32; };
+  var nextX = if absf(dx) < 1.0e-12 { bigNumber; } else { (f32.from(if dx > 0. { ci + 1i32; } else { ci; }) - gx) / dx; };
+  var nextZ = if absf(dz) < 1.0e-12 { bigNumber; } else { (f32.from(if dz > 0. { cj + 1i32; } else { cj; }) - gz) / dz; };
+  let deltaX = if absf(dx) < 1.0e-12 { bigNumber; } else { absf(1. / dx); };
+  let deltaZ = if absf(dz) < 1.0e-12 { bigNumber; } else { absf(1. / dz); };
+  var guard = 0u32;
   while ci >= 0i32 and ci < cw and cj >= 0i32 and cj < ch and guard < 100000u32 {
     guard = guard + 1u32;
-    imm cell = usize.from(u32.from(cj)) * usize.from(p.cols - 1u32) + usize.from(u32.from(ci));
-    mut s = 0usize;
+    let cell = usize.from(u32.from(cj)) * usize.from(p.cols - 1u32) + usize.from(u32.from(ci));
+    var s = 0usize;
     while s < 2usize {
-      imm t = heightCellTriangle(p, usize.from(u32.from(ci)), usize.from(u32.from(cj)), s == 1usize);
-      mut h = rayTriangle(o, d, t.a, t.b, t.c, if best.hit { best.t; } else { maxT; });
+      let t = heightCellTriangle(p, usize.from(u32.from(ci)), usize.from(u32.from(cj)), s == 1usize);
+      var h = rayTriangle(o, d, t.a, t.b, t.c, if best.hit { best.t; } else { maxT; });
       if h.hit { h.sub = u32.from(2usize * cell + s); best = nearer(best, h); }
       s = s + 1usize;
     }
     // stop once the next cell starts beyond the best hit
-    imm tNext = minf(nextX, nextZ);
+    let tNext = minf(nextX, nextZ);
     if best.hit and tNext > best.t { break; }
     if tNext > t1 { break; }
     if nextX < nextZ { nextX = nextX + deltaX; ci = ci + stepX; } else { nextZ = nextZ + deltaZ; cj = cj + stepZ; }
@@ -278,14 +278,14 @@ pub fn rayPrim(p &Prim, o Vec3, d Vec3, maxT f32) RayHit {
 // A ray (world space) against a shape placed by x
 pub fn rayCast(s &Shape, x Rigid, origin Vec3, dir Vec3, maxT f32) RayHit {
   if s.leaves.len() == 0usize {
-    imm h = rayPrim(&s.prim, x.unapply(origin), x.unrotate(dir), maxT);
+    let h = rayPrim(&s.prim, x.unapply(origin), x.unrotate(dir), maxT);
     return new RayHit(h.hit, h.t, x.rotate(h.normal), 0u32, h.sub);
   }
-  mut best = noHit();
-  mut i = 0usize;
+  var best = noHit();
+  var i = 0usize;
   while i < s.leaves.len() {
-    imm xp = x * s.leaves[i].xf;
-    imm h = rayPrim(&s.leaves[i].prim, xp.unapply(origin), xp.unrotate(dir), if best.hit { best.t; } else { maxT; });
+    let xp = x * s.leaves[i].xf;
+    let h = rayPrim(&s.leaves[i].prim, xp.unapply(origin), xp.unrotate(dir), if best.hit { best.t; } else { maxT; });
     if h.hit and (not best.hit or h.t < best.t) { best = new RayHit(true, h.t, xp.rotate(h.normal), u32.from(i), h.sub); }
     i = i + 1usize;
   }

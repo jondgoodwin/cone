@@ -12,8 +12,8 @@ mod closure_owner_empty;
 import stdio use *;
 import libc;
 
-mut @threadlocal allocs = 0i64;
-mut @threadlocal frees = 0i64;
+var @threadlocal allocs = 0i64;
+var @threadlocal frees = 0i64;
 
 struct One is RegionRef, Move {
   fn alloc(size usize) *u8 inline { allocs = allocs + 1; printStr("alloc "); printInt(i64.from(size)); printStr("\n"); malloc(size); }
@@ -35,30 +35,30 @@ fn setTwin(h &mut Holder, f &fn(inv i32, b &Words)) {
 }
 
 fn main() {
-  imm w = new Words(5);
+  let w = new Words(5);
   {
     // Nothing held: one byte
-    imm empty = new One[fn(inv i32, b &Words)](fn(inv i32, b &Words) {});
+    let empty = new One[fn(inv i32, b &Words)](fn(inv i32, b &Words) {});
     empty(1, &w);
   }
   {
     // A plain function: the reference to it, a pointer's worth
-    imm f = new One[fn(x i32) i32](&twice);
+    let f = new One[fn(x i32) i32](&twice);
     printInt(i64.from(f(21))); printStr("\n");
   }
   {
     // The default "no callback", replaced by a function
-    mut h = new Holder(new Uni[fn(inv i32, b &Words)](&quiet));
+    var h = new Holder(new Uni[fn(inv i32, b &Words)](&quiet));
     h.twin(2, &w);
     setTwin(&mut h, &loud);
     h.twin(2, &w);
   }
   {
     // A function shared by counted owners, and a closure that holds nothing
-    imm shared = new Rc[imm, fn(x i32) i32](&twice);
-    imm again = shared;
+    let shared = new Rc[imm, fn(x i32) i32](&twice);
+    let again = shared;
     printInt(i64.from(shared(5) + again(6))); printStr("\n");
-    imm bare = new Rc[imm, fn(x i32) i32](x => x - 1);
+    let bare = new Rc[imm, fn(x i32) i32](x => x - 1);
     printInt(i64.from(bare(10))); printStr("\n");
   }
   printInt(allocs); printStr(" "); printInt(frees); printStr("\n");

@@ -56,37 +56,37 @@ struct Rig {
   glyphs u32 = 0u32;
 
   fn make(device &mut Device, font Font) Rig {
-    mut atlas = Atlas.create(AtlasConfig.standard());
+    var atlas = Atlas.create(AtlasConfig.standard());
     // the printable ASCII now, not in the middle of a frame (3 ms a glyph)
-    mut cp = 32u32;
+    var cp = 32u32;
     while cp < 127u32 {
       atlas.ensure(&font, font.glyphOf(cp));
       cp = cp + 1u32;
     }
-    mut shader = device.createShaderModule(&EDITORLIST_SPIRV);
-    imm entries = [new BindGroupLayoutEntry(binding: 0u32, visibility: SHADER_STAGE_VERTEX | SHADER_STAGE_FRAGMENT)];
-    mut groupLayout = device.createBindGroupLayout(&entries);
-    imm groupLayouts = [&groupLayout];
-    mut layout = device.createPipelineLayout(&groupLayouts, 0u32);
-    imm attributes = [new VertexAttribute(VERTEX_FORMAT_FLOAT32X4, 0u64, 0u32),
+    var shader = device.createShaderModule(&EDITORLIST_SPIRV);
+    let entries = [new BindGroupLayoutEntry(binding: 0u32, visibility: SHADER_STAGE_VERTEX | SHADER_STAGE_FRAGMENT)];
+    var groupLayout = device.createBindGroupLayout(&entries);
+    let groupLayouts = [&groupLayout];
+    var layout = device.createPipelineLayout(&groupLayouts, 0u32);
+    let attributes = [new VertexAttribute(VERTEX_FORMAT_FLOAT32X4, 0u64, 0u32),
       new VertexAttribute(VERTEX_FORMAT_FLOAT32X4, 16u64, 1u32),
       new VertexAttribute(VERTEX_FORMAT_FLOAT32X4, 32u64, 2u32),
       new VertexAttribute(VERTEX_FORMAT_FLOAT32X4, 48u64, 3u32),
       new VertexAttribute(VERTEX_FORMAT_FLOAT32X4, 64u64, 4u32)];
-    imm buffers = [new VertexBufferLayout(arrayStride: PRIM_BYTES, stepMode: VERTEX_STEP_MODE_INSTANCE, attributes: &attributes)];
-    imm desc = new RenderPipelineDescriptor(layout: &layout, vertexModule: &shader, vertexEntryPoint: "vertexMain",
+    let buffers = [new VertexBufferLayout(arrayStride: PRIM_BYTES, stepMode: VERTEX_STEP_MODE_INSTANCE, attributes: &attributes)];
+    let desc = new RenderPipelineDescriptor(layout: &layout, vertexModule: &shader, vertexEntryPoint: "vertexMain",
       buffers: &buffers, fragmentModule: &shader, fragmentEntryPoint: "fragmentMain", colorFormat: TEXTURE_FORMAT_RGBA8_UNORM,
       blendEnabled: true, colorSrcFactor: BLEND_FACTOR_ONE, colorDstFactor: BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
       alphaSrcFactor: BLEND_FACTOR_ONE, alphaDstFactor: BLEND_FACTOR_ONE_MINUS_SRC_ALPHA);
-    mut pipeline = device.createRenderPipeline(&desc);
-    mut uniforms = device.createBuffer(16u64, BUFFER_USAGE_UNIFORM | BUFFER_USAGE_COPY_DST);
-    imm bindings = [BindGroupEntry.buffer(0u32, &uniforms)];
-    mut group = device.createBindGroup(&groupLayout, &bindings);
-    mut instances = device.createBuffer(PRIM_BYTES * 256u64, BUFFER_USAGE_VERTEX | BUFFER_USAGE_COPY_DST);
-    mut text = TextRenderer.create(device, &atlas, TEXTURE_FORMAT_RGBA8_UNORM, TEXTURE_FORMAT_RGBA8_UNORM, TEXTURE_FORMAT_DEPTH32_FLOAT);
-    imm targetDesc = new TextureDescriptor(W, H, TEXTURE_FORMAT_RGBA8_UNORM, TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
-    mut target = device.createTexture(&targetDesc);
-    mut readback = device.createBuffer(u64.from(W * H * 4u32), BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+    var pipeline = device.createRenderPipeline(&desc);
+    var uniforms = device.createBuffer(16u64, BUFFER_USAGE_UNIFORM | BUFFER_USAGE_COPY_DST);
+    let bindings = [BindGroupEntry.buffer(0u32, &uniforms)];
+    var group = device.createBindGroup(&groupLayout, &bindings);
+    var instances = device.createBuffer(PRIM_BYTES * 256u64, BUFFER_USAGE_VERTEX | BUFFER_USAGE_COPY_DST);
+    var text = TextRenderer.create(device, &atlas, TEXTURE_FORMAT_RGBA8_UNORM, TEXTURE_FORMAT_RGBA8_UNORM, TEXTURE_FORMAT_DEPTH32_FLOAT);
+    let targetDesc = new TextureDescriptor(W, H, TEXTURE_FORMAT_RGBA8_UNORM, TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
+    var target = device.createTexture(&targetDesc);
+    var readback = device.createBuffer(u64.from(W * H * 4u32), BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
     new Rig(font: font, atlas: atlas, shader: shader, groupLayout: groupLayout, layout: layout, pipeline: pipeline, uniforms: uniforms,
       group: group, instances: instances, capacity: 256u32, text: text, slots: List[TextHandle].empty(), target: target, readback: readback);
   }
@@ -94,20 +94,20 @@ struct Rig {
   // The list drawn into the target. 'copyOut' also copies the picture to the readback buffer. Nanoseconds
   // spent preparing (prep), recording and submitting (record) and waiting for the GPU (wait) go into 'times'
   fn paint(self &mut, device &mut Device, list &DrawList, copyOut bool, times &mut List[i64]) {
-    imm t0 = sdl.GetTicksNS();
-    mut data = List[f32].withCapacity(list.cmds.len() * PRIM_FLOATS);
-    mut clips = List[f32].empty();
-    mut c0 = -1000000.;
-    mut c1 = -1000000.;
-    mut c2 = 1000000.;
-    mut c3 = 1000000.;
-    mut count = 0u32;
-    mut texts = List[usize].empty();                  // indices of DC_TEXT commands, with the clip each had
-    mut textClips = List[f32].empty();
-    mut i = 0usize;
+    let t0 = sdl.GetTicksNS();
+    var data = List[f32].withCapacity(list.cmds.len() * PRIM_FLOATS);
+    var clips = List[f32].empty();
+    var c0 = -1000000.;
+    var c1 = -1000000.;
+    var c2 = 1000000.;
+    var c3 = 1000000.;
+    var count = 0u32;
+    var texts = List[usize].empty();                  // indices of DC_TEXT commands, with the clip each had
+    var textClips = List[f32].empty();
+    var i = 0usize;
     while i < list.cmds.len() {
-      imm d = list.cmds[i];
-      imm k = d.kind;
+      let d = list.cmds[i];
+      let k = d.kind;
       if k == DC_CLIP_PUSH {
         clips.push(c0);
         clips.push(c1);
@@ -120,7 +120,7 @@ struct Rig {
       }
       elif k == DC_CLIP_POP {
         if clips.len() >= 4usize {
-          imm top = clips.len() - 4usize;
+          let top = clips.len() - 4usize;
           c0 = *clips[top];
           c1 = *clips[top + 1usize];
           c2 = *clips[top + 2usize];
@@ -179,21 +179,21 @@ struct Rig {
     }
     prims = count;
     // The texts: laid out, each glyph placed in pixels, grouped by size and colour into one draw each
-    mut gSize = List[f32].empty();
-    mut gColor = List[u32].empty();
-    mut gQuads = List[List[GlyphQuad]].empty();
-    mut t = 0usize;
+    var gSize = List[f32].empty();
+    var gColor = List[u32].empty();
+    var gQuads = List[List[GlyphQuad]].empty();
+    var t = 0usize;
     while t < texts.len() {
-      imm d = list.cmds[*texts[t]];
-      imm s = list.textOf(*texts[t]);
-      imm lay = layoutText(&font, &mut atlas, s, &LayoutOptions.make(d.size));
-      mut px = d.x;
+      let d = list.cmds[*texts[t]];
+      let s = list.textOf(*texts[t]);
+      let lay = layoutText(&font, &mut atlas, s, &LayoutOptions.make(d.size));
+      var px = d.x;
       if d.align == TA_CENTER {px = px + (d.w - lay.width) * 0.5;}
       elif d.align == TA_RIGHT {px = px + d.w - lay.width;}
       px = libc.floorf(px + 0.5);
-      imm py = libc.floorf(d.y + (d.h - lay.height) * 0.5 + 0.5);
-      mut g = 0usize;
-      mut found = false;
+      let py = libc.floorf(d.y + (d.h - lay.height) * 0.5 + 0.5);
+      var g = 0usize;
+      var found = false;
       while g < gSize.len() and !found {
         if *gSize[g] == d.size and *gColor[g] == d.color {found = true;} else {g = g + 1usize;}
       }
@@ -202,17 +202,17 @@ struct Rig {
         gColor.push(d.color);
         gQuads.push(List[GlyphQuad].empty());
       }
-      imm cl0 = *textClips[t * 4usize];
-      imm cl1 = *textClips[t * 4usize + 1usize];
-      imm cl2 = *textClips[t * 4usize + 2usize];
-      imm cl3 = *textClips[t * 4usize + 3usize];
-      mut q = 0usize;
+      let cl0 = *textClips[t * 4usize];
+      let cl1 = *textClips[t * 4usize + 1usize];
+      let cl2 = *textClips[t * 4usize + 2usize];
+      let cl3 = *textClips[t * 4usize + 3usize];
+      var q = 0usize;
       while q < lay.quads.len() {
-        imm gq = lay.quads[q];
-        imm x0 = gq.x0 + px;
-        imm x1 = gq.x1 + px;
-        imm y0 = gq.y0 + py;
-        imm y1 = gq.y1 + py;
+        let gq = lay.quads[q];
+        let x0 = gq.x0 + px;
+        let x1 = gq.x1 + px;
+        let y0 = gq.y0 + py;
+        let y1 = gq.y1 + py;
         if x0 >= cl0 - 2. and x1 <= cl2 + 2. and y0 >= cl1 - 2. and y1 <= cl3 + 2. {
           gQuads[g].push(new GlyphQuad(x0, y0, x1, y1, gq.u0, gq.v0, gq.u1, gq.v1));
         }
@@ -221,20 +221,20 @@ struct Rig {
       t = t + 1usize;
     }
     text.syncAtlas(device, &atlas);
-    mut g = 0usize;
-    mut nGlyphs = 0usize;
+    var g = 0usize;
+    var nGlyphs = 0usize;
     while g < gSize.len() {
       while slots.len() <= g {slots.push(text.addText(device, SPACE_OVERLAY));}
-      mut quads = List[GlyphQuad].withCapacity(gQuads[g].len());
-      mut qi = 0usize;
+      var quads = List[GlyphQuad].withCapacity(gQuads[g].len());
+      var qi = 0usize;
       while qi < gQuads[g].len() {
         quads.push(*gQuads[g][qi]);
         qi = qi + 1usize;
       }
-      imm lay = new TextLayout(List[PlacedGlyph].empty(), quads, List[LineInfo].empty(), 0., 0., 0., *gSize[g]);
+      let lay = new TextLayout(List[PlacedGlyph].empty(), quads, List[LineInfo].empty(), 0., 0., 0., *gSize[g]);
       nGlyphs = nGlyphs + gQuads[g].len();
-      imm rgba = *gColor[g];
-      imm style = TextStyle.plain(new Color(f32.from((rgba >> 24u32) & 255u32) / 255., f32.from((rgba >> 16u32) & 255u32) / 255.,
+      let rgba = *gColor[g];
+      let style = TextStyle.plain(new Color(f32.from((rgba >> 24u32) & 255u32) / 255., f32.from((rgba >> 16u32) & 255u32) / 255.,
         f32.from((rgba >> 8u32) & 255u32) / 255., f32.from(rgba & 255u32) / 255.));
       text.set(device, *slots[g], &lay, &style, overlayTransform(f32.from(W), f32.from(H), 0., 0.));
       g = g + 1usize;
@@ -245,7 +245,7 @@ struct Rig {
     }
     glyphs = u32.from(nGlyphs);
     // The shapes' data to the GPU
-    mut params = new Array[f32, 4] <- f32.from(W), f32.from(H), 0., 0.;
+    var params = new Array[f32, 4] <- f32.from(W), f32.from(H), 0., 0.;
     device.queue.writeBuffer(&uniforms, 0u64, &params as *u8, 16u64);
     if count > capacity {
       device.queue.releaseBuffer(&mut instances);
@@ -253,13 +253,13 @@ struct Rig {
       instances = device.createBuffer(u64.from(capacity) * PRIM_BYTES, BUFFER_USAGE_VERTEX | BUFFER_USAGE_COPY_DST);
     }
     if count > 0u32 {
-      imm raw *f32 = data.view() as *f32;
+      let raw *f32 = data.view() as *f32;
       device.queue.writeBuffer(&instances, 0u64, raw as *u8, u64.from(count) * PRIM_BYTES);
     }
-    imm t1 = sdl.GetTicksNS();
-    mut encoder = device.createCommandEncoder();
-    imm color = new RenderPassColorAttachment(view: target.createView(), loadOp: LOAD_OP_CLEAR, clearValue: new Color(0.06, 0.06, 0.07, 1.));
-    mut pass = encoder.beginRenderPass(&color);
+    let t1 = sdl.GetTicksNS();
+    var encoder = device.createCommandEncoder();
+    let color = new RenderPassColorAttachment(view: target.createView(), loadOp: LOAD_OP_CLEAR, clearValue: new Color(0.06, 0.06, 0.07, 1.));
+    var pass = encoder.beginRenderPass(&color);
     if count > 0u32 {
       pass.setPipeline(&pipeline);
       pass.setBindGroup(0u32, &group);
@@ -270,10 +270,10 @@ struct Rig {
     text.renderOverlay(&mut encoder, &target);
     if copyOut {encoder.copyTextureToBuffer(&target, &readback);}
     device.queue.submit(encoder.finish());
-    imm t2 = sdl.GetTicksNS();
+    let t2 = sdl.GetTicksNS();
     device.endFrame();
     device.waitIdle();
-    imm t3 = sdl.GetTicksNS();
+    let t3 = sdl.GetTicksNS();
     times.push(i64.from(t1 - t0));
     times.push(i64.from(t2 - t1));
     times.push(i64.from(t3 - t2));
@@ -281,15 +281,15 @@ struct Rig {
 
   // The last picture as a PNG
   fn savePng(self &, file &Path) {
-    imm px = readback.mappedRange();
-    mut samples = List[u16].withCapacity(usize.from(W * H * 4u32));
-    mut i = 0usize;
+    let px = readback.mappedRange();
+    var samples = List[u16].withCapacity(usize.from(W * H * 4u32));
+    var i = 0usize;
     while i < usize.from(W * H * 4u32) {
       samples.push(u16.from(*(px + i)));
       i = i + 1usize;
     }
-    imm opts = PngWrite.make(6u8, 8u8);
-    imm bytes = encodePngSamples(i32.from(W), i32.from(H), samples.view(), &opts);
+    let opts = PngWrite.make(6u8, 8u8);
+    let bytes = encodePngSamples(i32.from(W), i32.from(H), samples.view(), &opts);
     fs.writeFile(file, bytes.view());
   }
 }
@@ -305,8 +305,8 @@ fn pushColor(data &mut List[f32], c u32) {
 
 // One frame of the Ui and the editor: layout, the queued events applied, the draw list made again if it changed
 fn frame(ui &mut Ui, ed &mut Editor, font &Font, atlas &mut Atlas) {
-  mut m = fn(t &str, face u32, size f32) Vec2 {
-    imm lay = layoutText(font, atlas, t, &LayoutOptions.make(size));
+  var m = fn(t &str, face u32, size f32) Vec2 {
+    let lay = layoutText(font, atlas, t, &LayoutOptions.make(size));
     new Vec2(lay.width, lay.height);
   };
   layout(ui, &mut m);
@@ -329,8 +329,8 @@ fn press(ui &mut Ui, code u32, mods u32) {
 }
 
 fn typeString(ui &mut Ui, s &str) {
-  imm n = s.len();
-  mut i = 0usize;
+  let n = s.len();
+  var i = 0usize;
   while i < n {
     if s[i] == 10u8 {
       keyDown(ui, KEY_ENTER, 0u32);
@@ -343,8 +343,8 @@ fn typeString(ui &mut Ui, s &str) {
 }
 
 fn p50(v &List[i64]) i64 {
-  mut c = List[i64].empty();
-  mut i = 0usize;
+  var c = List[i64].empty();
+  var i = 0usize;
   while i < v.len() {
     c.push(*v[i]);
     i = i + 1usize;
@@ -355,7 +355,7 @@ fn p50(v &List[i64]) i64 {
 
 fn readText(file &Path) String {
   match fs.readFile(file) {
-    case imm s Ok { String.from(s.view()); }
+    case let s Ok { String.from(s.view()); }
     case is Error { String.empty(); }
   }
 }
@@ -366,15 +366,15 @@ fn describe(label &str, ed &Editor) {
 }
 
 fn run(device &mut Device, outDir &str, sample &Path) {
-  imm outPath = Path.from(outDir);
+  let outPath = Path.from(outDir);
   fs.makeDirAll(&outPath);
   // ---- fonts ----
-  mut monoRig = loadRig(device, "C:/Windows/Fonts/consola.ttf");
-  mut propRig = loadRig(device, "C:/Windows/Fonts/segoeui.ttf");
+  var monoRig = loadRig(device, "C:/Windows/Fonts/consola.ttf");
+  var propRig = loadRig(device, "C:/Windows/Fonts/segoeui.ttf");
   match &mut monoRig {
-    case mut rig Some {
+    case var rig Some {
       match &mut propRig {
-        case mut rig2 Some { shots(device, rig, rig2, &outPath, sample); }
+        case var rig2 Some { shots(device, rig, rig2, &outPath, sample); }
         case is None { print <- "no Segoe UI font on this machine\n"; }
       }
     }
@@ -383,11 +383,11 @@ fn run(device &mut Device, outDir &str, sample &Path) {
 }
 
 fn loadRig(device &mut Device, file &str) Option[Rig] {
-  mut rig Option[Rig] = None;
+  var rig Option[Rig] = None;
   match fs.readFile(&Path.from(file)) {
-    case imm bytes Ok {
+    case let bytes Ok {
       match Font.load(bytes.view()) {
-        case imm f Ok { rig = Some[Rig](Rig.make(device, f)); }
+        case let f Ok { rig = Some[Rig](Rig.make(device, f)); }
         case is Error {}
       }
     }
@@ -397,14 +397,14 @@ fn loadRig(device &mut Device, file &str) Option[Rig] {
 }
 
 fn shots(device &mut Device, rig &mut Rig, rig2 &mut Rig, outPath &Path, sample &Path) {
-  mut times = List[i64].empty();
-  mut list = DrawList.make();
-  imm source = readText(sample);
-  mut ui = Ui.make(f32.from(W), f32.from(H));
-  mut ed = Editor.make(&mut ui, ui.root, source.view());
+  var times = List[i64].empty();
+  var list = DrawList.make();
+  let source = readText(sample);
+  var ui = Ui.make(f32.from(W), f32.from(H));
+  var ed = Editor.make(&mut ui, ui.root, source.view());
   ed.style.size = 15.;
   ed.style.font = 0u32;
-  imm status = label(&mut ui, ui.root, "");
+  let status = label(&mut ui, ui.root, "");
   ui.setOffsets(ed.node, 20., 20., 0., 0.);
   ui.setSize(ed.node, f32.from(W) - 40., f32.from(H) - 70.);
   ui.setOffsets(status, 24., f32.from(H) - 38., 0., 0.);
@@ -423,8 +423,8 @@ fn shots(device &mut Device, rig &mut Rig, rig2 &mut Rig, outPath &Path, sample 
   describe("shot 1", &ed);
 
   // 2. a click inside the parentheses of a call: the caret and its bracket pair
-  imm opts = FindOptions.make("applyEdit(&mut core");
-  imm at = findNext(ed.doc.buffer(), &opts, 0usize);
+  let opts = FindOptions.make("applyEdit(&mut core");
+  let at = findNext(ed.doc.buffer(), &opts, 0usize);
   print <- "target offset ", u64.from(at), "\n";
   ed.doc.setCaret(at + 10usize);
   ed.dirtyAll();
@@ -440,8 +440,8 @@ fn shots(device &mut Device, rig &mut Rig, rig2 &mut Rig, outPath &Path, sample 
   print <- "bracket pair at ", u64.from(ed.matchA), " and ", u64.from(ed.matchB), "\n";
 
   // 3. a drag across six lines
-  imm from = ed.pointOf(&ui, ed.doc.buffer().lineStart(ed.doc.buffer().lineOf(at) + 2usize) + 4usize);
-  imm to = ed.pointOf(&ui, ed.doc.buffer().lineStart(ed.doc.buffer().lineOf(at) + 7usize) + 22usize);
+  let from = ed.pointOf(&ui, ed.doc.buffer().lineStart(ed.doc.buffer().lineOf(at) + 2usize) + 4usize);
+  let to = ed.pointOf(&ui, ed.doc.buffer().lineStart(ed.doc.buffer().lineOf(at) + 7usize) + 22usize);
   pointerMove(&mut ui, from.x, from.y);
   pointerDown(&mut ui, BTN_LEFT);
   frame(&mut ui, &mut ed, &rig.font, &mut rig.atlas);
@@ -487,7 +487,7 @@ fn shots(device &mut Device, rig &mut Rig, rig2 &mut Rig, outPath &Path, sample 
 
   // 5. three carets (alt+click) and one keystroke
   while ed.doc.undo() {}
-  imm l0 = ed.doc.buffer().lineOf(at);
+  let l0 = ed.doc.buffer().lineOf(at);
   ed.doc.setCaret(ed.doc.buffer().lineStart(l0 + 1usize));
   ed.dirtyAll();
   frame(&mut ui, &mut ed, &rig.font, &mut rig.atlas);
@@ -506,17 +506,17 @@ fn shots(device &mut Device, rig &mut Rig, rig2 &mut Rig, outPath &Path, sample 
   print <- "after undoing the three-caret keystroke: ", u64.from(ed.doc.caretCount()), " caret(s)\n";
 
   // 6. the same file in a proportional font (Segoe UI): the editor measures every run
-  mut ed3 = Editor.make(&mut ui, ui.root, source.view());
+  var ed3 = Editor.make(&mut ui, ui.root, source.view());
   ed3.style.size = 15.;
   ed3.style.mono = false;
   ui.setOffsets(ed3.node, 20., 20., 0., 0.);
   ui.setSize(ed3.node, f32.from(W) - 40., f32.from(H) - 70.);
   ui.setVisible(ed.node, false);
   frame(&mut ui, &mut ed3, &rig2.font, &mut rig2.atlas);
-  imm at3 = findNext(ed3.doc.buffer(), &opts, 0usize);
+  let at3 = findNext(ed3.doc.buffer(), &opts, 0usize);
   ed3.showLine(&ui, ed3.doc.buffer().lineOf(at3), 0.3);
   frame(&mut ui, &mut ed3, &rig2.font, &mut rig2.atlas);
-  imm w0 = ed3.pointOf(&ui, at3);
+  let w0 = ed3.pointOf(&ui, at3);
   pointerMove(&mut ui, 400., 300.);
   click(&mut ui, new Vec2(w0.x + 80., w0.y), 0u32);
   press(&mut ui, KEY_RIGHT, MOD_CTRL | MOD_SHIFT);
@@ -529,12 +529,12 @@ fn shots(device &mut Device, rig &mut Rig, rig2 &mut Rig, outPath &Path, sample 
   ui.setVisible(ed3.node, false);
 
   // 7. a 10,000-line file: frame costs
-  mut big = String.empty();
+  var big = String.empty();
   while true {
     big.append(source.view());
     if big.view().len() > 10000usize * 38usize {break;}
   }
-  mut ed2 = Editor.make(&mut ui, ui.root, big.view());
+  var ed2 = Editor.make(&mut ui, ui.root, big.view());
   ed2.style.size = 15.;
   ui.setOffsets(ed2.node, 20., 20., 0., 0.);
   ui.setSize(ed2.node, f32.from(W) - 40., f32.from(H) - 70.);
@@ -551,58 +551,58 @@ fn shots(device &mut Device, rig &mut Rig, rig2 &mut Rig, outPath &Path, sample 
   ui.setText(status, "8: a 10,000-line file, scrolled to line ~4,500");
   frame(&mut ui, &mut ed2, &rig.font, &mut rig.atlas);
   drawUi(&ui, &mut list);
-  mut scratchTimes = List[i64].empty();
+  var scratchTimes = List[i64].empty();
   rig.paint(device, &list, true, &mut scratchTimes);
   rig.savePng(&outPath.join("08-big-file.png"));
   describe("shot 8", &ed2);
 
   // frame costs: nanoseconds, 200 frames each
-  imm lenBefore = ed2.doc.len();
+  let lenBefore = ed2.doc.len();
   textInput(&mut ui, 120u32);
   print <- "queued: ", i64.from(hasHostEvents(&ui, ed2.node)), " focused ", i64.from(ed2.focused), "\n";
   frame(&mut ui, &mut ed2, &rig.font, &mut rig.atlas);
   print <- "typing grew the text by ", u64.from(ed2.doc.len() - lenBefore), " bytes\n";
-  mut idleModel = List[i64].empty();
-  mut typeModel = List[i64].empty();
-  mut scrollModel = List[i64].empty();
-  mut idleGpu = List[i64].empty();
-  mut typeGpu = List[i64].empty();
-  mut scrollGpu = List[i64].empty();
-  mut typePrep = List[i64].empty();
-  mut typeRecord = List[i64].empty();
-  mut typeWait = List[i64].empty();
-  mut f = 0u32;
+  var idleModel = List[i64].empty();
+  var typeModel = List[i64].empty();
+  var scrollModel = List[i64].empty();
+  var idleGpu = List[i64].empty();
+  var typeGpu = List[i64].empty();
+  var scrollGpu = List[i64].empty();
+  var typePrep = List[i64].empty();
+  var typeRecord = List[i64].empty();
+  var typeWait = List[i64].empty();
+  var f = 0u32;
   while f < 200u32 {
     // idle: nothing changed
-    imm a0 = sdl.GetTicksNS();
+    let a0 = sdl.GetTicksNS();
     frame(&mut ui, &mut ed2, &rig.font, &mut rig.atlas);
     drawUi(&ui, &mut list);
-    imm a1 = sdl.GetTicksNS();
+    let a1 = sdl.GetTicksNS();
     idleModel.push(i64.from(a1 - a0));
-    mut tt = List[i64].empty();
+    var tt = List[i64].empty();
     rig.paint(device, &list, false, &mut tt);
     idleGpu.push(*tt[0usize] + *tt[1usize] + *tt[2usize]);
     // a keystroke
-    imm b0 = sdl.GetTicksNS();
+    let b0 = sdl.GetTicksNS();
     textInput(&mut ui, 120u32);
     frame(&mut ui, &mut ed2, &rig.font, &mut rig.atlas);
     drawUi(&ui, &mut list);
-    imm b1 = sdl.GetTicksNS();
+    let b1 = sdl.GetTicksNS();
     typeModel.push(i64.from(b1 - b0));
-    mut tk = List[i64].empty();
+    var tk = List[i64].empty();
     rig.paint(device, &list, false, &mut tk);
     typeGpu.push(*tk[0usize] + *tk[1usize] + *tk[2usize]);
     typePrep.push(*tk[0usize]);
     typeRecord.push(*tk[1usize]);
     typeWait.push(*tk[2usize]);
     // a wheel step
-    imm c0 = sdl.GetTicksNS();
+    let c0 = sdl.GetTicksNS();
     wheel(&mut ui, 0., -1.);
     frame(&mut ui, &mut ed2, &rig.font, &mut rig.atlas);
     drawUi(&ui, &mut list);
-    imm c1 = sdl.GetTicksNS();
+    let c1 = sdl.GetTicksNS();
     scrollModel.push(i64.from(c1 - c0));
-    mut ts = List[i64].empty();
+    var ts = List[i64].empty();
     rig.paint(device, &list, false, &mut ts);
     scrollGpu.push(*ts[0usize] + *ts[1usize] + *ts[2usize]);
     f = f + 1u32;
@@ -625,19 +625,19 @@ fn clipboardRoundTrip() {
     return;
   }
   // (SDL's Windows clipboard wants a window to open it with: a hidden one, never shown, takes no input)
-  imm window = sdl.CreateWindow(cstr.fromLiteral("textedit clipboard"), 64, 64, sdl.WINDOW_HIDDEN);
-  imm hadText = sdl.HasClipboardText();
-  mut before = String.empty();
+  let window = sdl.CreateWindow(cstr.fromLiteral("textedit clipboard"), 64, 64, sdl.WINDOW_HIDDEN);
+  let hadText = sdl.HasClipboardText();
+  var before = String.empty();
   if hadText {
-    imm p = sdl.GetClipboardText();
+    let p = sdl.GetClipboardText();
     before = String.from(cstr.fromPtr(p).view());
     sdl.free(p);
   }
   // (a clipboard that holds a picture or files has no text: leave it alone)
-  mut ui = Ui.make(400., 200.);
-  mut ed = Editor.make(&mut ui, ui.root, "alpha beta gamma\n");
+  var ui = Ui.make(400., 200.);
+  var ed = Editor.make(&mut ui, ui.root, "alpha beta gamma\n");
   ui.setSize(ed.node, 400., 200.);
-  mut m = fn(t &str, face u32, size f32) Vec2 { new Vec2(f32.from(t.len()) * 8., 20.); };
+  var m = fn(t &str, face u32, size f32) Vec2 { new Vec2(f32.from(t.len()) * 8., 20.); };
   layout(&mut ui, &mut m);
   ed.refresh(&mut ui, &mut m, &coneTokenizer);
   click(&mut ui, new Vec2(100., 10.), 0u32);
@@ -648,8 +648,8 @@ fn clipboardRoundTrip() {
   print <- "copied: \"", ed.clipboard.view(), "\" written ", i64.from(ed.clipboardWritten), "\n";
   if ed.clipboardWritten {
     // (another program may hold the Windows clipboard open for a moment: try again a few times)
-    mut ok = false;
-    mut tries = 0u32;
+    var ok = false;
+    var tries = 0u32;
     while !ok and tries < 10u32 {
       ok = sdl.SetClipboardText(cstr.fromLiteral(ed.clipboard.view()));
       if !ok {sdl.Delay(100u32);}
@@ -662,7 +662,7 @@ fn clipboardRoundTrip() {
   press(&mut ui, KEY_END, 0u32);
   press(&mut ui, KEY_V, MOD_CTRL);
   if ed.needsClipboard(&ui) {
-    imm p = sdl.GetClipboardText();
+    let p = sdl.GetClipboardText();
     ed.clipboard = String.from(cstr.fromPtr(p).view());
     sdl.free(p);
   }
@@ -674,8 +674,8 @@ fn clipboardRoundTrip() {
 }
 
 fn main() i32 {
-  imm args = process.args();
-  mut i = 1usize;
+  let args = process.args();
+  var i = 1usize;
   while i < args.len() {
     if (*args[i]).view() == "--clipboard" {
       clipboardRoundTrip();
@@ -683,19 +683,19 @@ fn main() i32 {
     }
     i = i + 1usize;
   }
-  mut out = String.from("editor-shots");
-  mut sample = String.from("C:/src/cone-wt-textedit/packages/textedit/src/doc.cone");
+  var out = String.from("editor-shots");
+  var sample = String.from("C:/src/cone-wt-textedit/packages/textedit/src/doc.cone");
   if args.len() > 1usize {out = String.from((*args[1usize]).view());}
   if args.len() > 2usize {sample = String.from((*args[2usize]).view());}
-  mut instance = Instance.create("textedit demo");
-  mut none = Surface.none();
-  mut preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
-  imm env = libc.getenv("GPU_POWER_PREFERENCE");
+  var instance = Instance.create("textedit demo");
+  var none = Surface.none();
+  var preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
+  let env = libc.getenv("GPU_POWER_PREFERENCE");
   if (env as usize) != 0usize {
     if libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 {preference = POWER_PREFERENCE_LOW_POWER;}
   }
-  mut adapter = instance.requestAdapter(&none, preference);
-  mut device = adapter.requestDevice();
+  var adapter = instance.requestAdapter(&none, preference);
+  var device = adapter.requestDevice();
   print <- "adapter ", adapter.name.view(), "\n";
   run(&mut device, out.view(), &Path.from(sample.view()));
   0;
@@ -703,7 +703,7 @@ fn main() i32 {
 
 // spirv-begin editorlist.spv EDITORLIST_SPIRV
 // Written by tools/shaders/shaders.py from editorlist.slang (sha256 69791aa713b7d053ae629dc5df94e5a3754738f6cf4d8f5579fdd3e73386df72): do not edit.
-imm EDITORLIST_SPIRV Array[u32, 1625] = [
+let EDITORLIST_SPIRV Array[u32, 1625] = [
   0x07230203u32, 0x00010500u32, 0x00280000u32, 0x0000019bu32, 0x00000000u32, 0x00020011u32,
   0x00000001u32, 0x0006000bu32, 0x00000069u32, 0x4c534c47u32, 0x6474732eu32, 0x3035342eu32,
   0x00000000u32, 0x0003000eu32, 0x00000000u32, 0x00000001u32, 0x0013000fu32, 0x00000000u32,

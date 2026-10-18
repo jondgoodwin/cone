@@ -23,9 +23,9 @@ mod region_roots;
 import stdio use *;
 import libc;
 
-mut @threadlocal nextId = 1i64;
-mut @threadlocal trHead = 0usize;
-mut @threadlocal collectInAlloc = false;
+var @threadlocal nextId = 1i64;
+var @threadlocal trHead = 0usize;
+var @threadlocal collectInAlloc = false;
 
 struct Tr is RegionRef, Traced {
   pub id i64;
@@ -38,7 +38,7 @@ struct Tr is RegionRef, Traced {
       printStr("  alloc "); printInt(nextId);
       roots(" finds");
     }
-    imm p = malloc(size);
+    let p = malloc(size);
     mem.writeRaw(p as *Tr, new Tr(nextId, trHead, 0));
     nextId = nextId + 1;
     trHead = p as usize;
@@ -52,9 +52,9 @@ struct Tr is RegionRef, Traced {
 fn roots(label &str) {
   mem.traceRoots(0u32);
   printStr(label); printStr(":");
-  mut at = trHead;
+  var at = trHead;
   while at != 0usize {
-    imm hdr = at as &mut Tr;
+    let hdr = at as &mut Tr;
     if hdr.marks > 0 {
       printStr(" "); printInt(hdr.id);
       if hdr.marks > 1 { printStr("x"); printInt(hdr.marks); }
@@ -86,7 +86,7 @@ fn both(a Tr[mut, Leaf], b i64) i64 {
 //   after: 2 1               the slot keeps it until locals returns
 //   none:                    (in main) locals' frame is gone, main has none
 fn locals() {
-  imm a = new Tr[mut, Leaf](1);
+  let a = new Tr[mut, Leaf](1);
   roots("local");
   both(new Tr[mut, Leaf](2), probe("argument"));
   roots("after");
@@ -96,12 +96,12 @@ fn locals() {
 //   callee: 4 3x2            keep's mine and l; popped's birth of the argument
 //   popped: 3x2              the birth and k; keep's frame, and Leaf 4, gone
 fn keep(l Tr[mut, Leaf]) Tr[mut, Leaf] {
-  imm mine = new Tr[mut, Leaf](l.n + 10);
+  let mine = new Tr[mut, Leaf](l.n + 10);
   probe("callee");
   l;
 }
 fn popped() {
-  imm k = keep(new Tr[mut, Leaf](3));
+  let k = keep(new Tr[mut, Leaf](3));
   roots("popped");
 }
 
@@ -111,7 +111,7 @@ fn popped() {
 //   deepest: 8 7x2 6x2 5x2
 //   back: 5                  every deep frame popped; the birth remains
 fn deep(k i64, held Tr[mut, Leaf]) {
-  imm mine = new Tr[mut, Leaf](k);
+  let mine = new Tr[mut, Leaf](k);
   if k == 0 {
     roots("deepest");
     return;
@@ -132,9 +132,9 @@ fn recursion() {
 // (kept), 16 (break).
 //   looped: 16 15 11         x's slot, kept, s
 fn search(limit i64) Tr[mut, Leaf] {
-  mut i = 0i64;
+  var i = 0i64;
   while i < 10 {
-    imm x = new Tr[mut, Leaf](i);
+    let x = new Tr[mut, Leaf](i);
     if i == limit {
       probe("found");
       return x;
@@ -144,12 +144,12 @@ fn search(limit i64) Tr[mut, Leaf] {
   new Tr[mut, Leaf](-1);
 }
 fn loops() {
-  imm s = search(2);
+  let s = search(2);
   roots("searched");
-  mut i = 0i64;
-  mut kept = new Tr[mut, Leaf](50);
+  var i = 0i64;
+  var kept = new Tr[mut, Leaf](50);
   while i < 5 {
-    imm x = new Tr[mut, Leaf](i);
+    let x = new Tr[mut, Leaf](i);
     i = i + 1;
     if i == 2 { continue; }
     if i == 4 { break; }
@@ -174,7 +174,7 @@ fn clobber(p Tr[mut, Pair]) i64 {
   0;
 }
 fn loaded() {
-  imm p = new Tr[mut, Pair](new Tr[mut, Leaf](20), new Tr[mut, Leaf](21));
+  let p = new Tr[mut, Pair](new Tr[mut, Leaf](20), new Tr[mut, Leaf](21));
   roots("pair");
   both(p.left, clobber(p));
 }
@@ -186,11 +186,11 @@ fn chain(n i64) Option[Tr[mut, Link]] {
   if n == 0 {
     return None;
   }
-  imm rest = chain(n - 1);
+  let rest = chain(n - 1);
   Some[Tr[mut, Link]](new Tr[mut, Link](n, rest));
 }
 fn built() {
-  imm c = chain(3);
+  let c = chain(3);
   roots("chain");
 }
 
@@ -203,7 +203,7 @@ fn built() {
 //   made: 26 25 24
 fn initOrder() {
   collectInAlloc = true;
-  imm q = new Tr[mut, Pair](new Tr[mut, Leaf](30), new Tr[mut, Leaf](31));
+  let q = new Tr[mut, Pair](new Tr[mut, Leaf](30), new Tr[mut, Leaf](31));
   collectInAlloc = false;
   roots("made");
 }
@@ -223,8 +223,8 @@ fn twice(l Tr[mut, Leaf]) i64 inline {
   l.n * 2;
 }
 fn aggregates() {
-  imm pr = new Pair(new Tr[mut, Leaf](40), new Tr[mut, Leaf](41));
-  imm t = (7i64, new Tr[mut, Leaf](42));
+  let pr = new Pair(new Tr[mut, Leaf](40), new Tr[mut, Leaf](41));
+  let t = (7i64, new Tr[mut, Leaf](42));
   roots("aggregates");
   hold[Pair](pr);
   twice(t.1);
@@ -235,11 +235,11 @@ fn aggregates() {
 //   cast: 30
 //   end:                     (in main) no frame left
 fn make() *Leaf {
-  imm l = new Tr[mut, Leaf](60);
+  let l = new Tr[mut, Leaf](60);
   l as *Leaf;
 }
 fn cast() {
-  imm raw = make();
+  let raw = make();
   both(raw as Tr[mut, Leaf], probe("cast"));
 }
 

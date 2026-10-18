@@ -66,9 +66,9 @@ for name, fields in structs:
     cone.append(f'  size("{name}", mem.sizeof[{t}](), mem.alignof[{t}]());')
     if fields not in (['h'], ['raw']):
         cone.append('  {')
-        cone.append(f'    imm raw = libc.calloc(1usize, mem.sizeof[{t}]()) as *{t};')
-        cone.append(f'    mut v = mem.readRaw[{t}](raw);')
-        cone.append('    imm b = &mut v as *u8 as usize;')
+        cone.append(f'    let raw = libc.calloc(1usize, mem.sizeof[{t}]()) as *{t};')
+        cone.append(f'    var v = mem.readRaw[{t}](raw);')
+        cone.append('    let b = &mut v as *u8 as usize;')
         for fld in fields:
             line += f' O({name}, {fld});'
             cone.append(f'    o("{name}.{fld}", b, &mut v.{fld} as *u8);')

@@ -793,7 +793,7 @@ INode *iexpPathNonUniLink(INode *lval) {
 // reference that only reads ('&', '&imm', a read-only virtual reference or slice,
 // a 'Uni[imm, T]') on the way makes the place one nothing is written through,
 // whatever the place's own slot says: whether the slot can be assigned to (an
-// 'imm' field, a variable) is another matter, and does not reach what a
+// 'let' field, a variable) is another matter, and does not reach what a
 // reference held in it points at. A lock permission is not asked: its value is
 // reached only by the lock's guard.
 int iexpReachWrites(INode *lval) {

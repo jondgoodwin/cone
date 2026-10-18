@@ -23,19 +23,19 @@ import terraingen use *;
 
 fn main() i32 {
   // 1. the plane
-  mut plane = Heightfield.make(24usize, 24usize, 10., 0., 0., 0.);
-  mut iz = 0usize;
+  var plane = Heightfield.make(24usize, 24usize, 10., 0., 0., 0.);
+  var iz = 0usize;
   while iz < 24usize {
-    mut ix = 0usize;
+    var ix = 0usize;
     while ix < 24usize { plane.set(ix, iz, 100. - 2. * f32.from(ix)); ix = ix + 1usize; }
     iz = iz + 1usize;
   }
-  imm hy = analyze(&plane, 0.0005, 1., 40.);
-  mut eastOk = true;
-  mut countOk = true;
+  let hy = analyze(&plane, 0.0005, 1., 40.);
+  var eastOk = true;
+  var countOk = true;
   iz = 1usize;
   while iz < 23usize {
-    mut ix = 1usize;
+    var ix = 1usize;
     while ix < 23usize {
       if *hy.down[iz * 24usize + ix] != u32.from(iz * 24usize + ix + 1usize) { eastOk = false; }
       if *hy.accum[iz * 24usize + ix] != f32.from(ix) { countOk = false; }
@@ -48,42 +48,42 @@ fn main() i32 {
   expectFloat(f64.from(*hy.accum[10usize * 24usize + 23usize]), 23., 0.001, "the border column gathers 23");
 
   // 2. the bowl
-  mut bowl = Heightfield.make(21usize, 21usize, 5., 0., 0., 50.);
+  var bowl = Heightfield.make(21usize, 21usize, 5., 0., 0., 50.);
   // a cone-shaped floor: 35 m at the pit (10, 10), 1.5 m higher for each ring out to 39.5 at ring 3
   iz = 7usize;
   while iz <= 13usize {
-    mut ix = 7usize;
+    var ix = 7usize;
     while ix <= 13usize {
-      imm dxx = if ix > 10usize { ix - 10usize; } else { 10usize - ix; };
-      imm dzz = if iz > 10usize { iz - 10usize; } else { 10usize - iz; };
-      imm ring = if dxx > dzz { dxx; } else { dzz; };
+      let dxx = if ix > 10usize { ix - 10usize; } else { 10usize - ix; };
+      let dzz = if iz > 10usize { iz - 10usize; } else { 10usize - iz; };
+      let ring = if dxx > dzz { dxx; } else { dzz; };
       bowl.set(ix, iz, 35. + 1.5 * f32.from(ring));
       ix = ix + 1usize;
     }
     iz = iz + 1usize;
   }
-  imm lake = analyze(&bowl, 0.0005, 1., 40.);
+  let lake = analyze(&bowl, 0.0005, 1., 40.);
   expectFloat(f64.from(*lake.lakeDepth[8usize * 21usize + 8usize]), 12., 0.01, "a cell of ring 2 (38 m) is under 12 m of lake");
   expectFloat(f64.from(*lake.lakeDepth[10usize * 21usize + 10usize]), 15., 0.01, "the pit under 15 m");
   expectFloat(f64.from(*lake.lakeDepth[3usize * 21usize + 3usize]), 0., 0.0001, "the rim has none");
   expect(*lake.filled[8usize * 21usize + 8usize] >= 49.99, "the flood fills the bowl to the rim");
-  imm dry = analyze(&bowl, 0.0005, 1., 5.);
+  let dry = analyze(&bowl, 0.0005, 1., 5.);
   expectFloat(f64.from(*dry.lakeDepth[8usize * 21usize + 8usize]), 0., 0.0001, "with lakeMax 5 the same bowl is a dry basin");
   expect(*dry.accum[10usize * 21usize + 10usize] >= 45., "and its cells drain to the pit, which gathers at least 45 of the bowl's 49");
   expect(*dry.down[10usize * 21usize + 10usize] == 0xFFFFFFFFu32, "the pit is a sink");
 
   // 3. generated hills: no sink, water conserved
-  imm spec = hills(96usize, 96usize, 20., 9u32);
-  mut hf = generate(&spec.shape, 96usize, 96usize, 20., 0., 0.);
-  imm all = analyze(&hf, 0.0005, 1., 1000.);
-  mut sinks = 0;
-  mut outlets = 0.;
+  let spec = hills(96usize, 96usize, 20., 9u32);
+  var hf = generate(&spec.shape, 96usize, 96usize, 20., 0., 0.);
+  let all = analyze(&hf, 0.0005, 1., 1000.);
+  var sinks = 0;
+  var outlets = 0.;
   iz = 0usize;
   while iz < 96usize {
-    mut ix = 0usize;
+    var ix = 0usize;
     while ix < 96usize {
-      imm c = iz * 96usize + ix;
-      imm border = ix == 0usize or iz == 0usize or ix == 95usize or iz == 95usize;
+      let c = iz * 96usize + ix;
+      let border = ix == 0usize or iz == 0usize or ix == 95usize or iz == 95usize;
       if *all.down[c] == 0xFFFFFFFFu32 {
         if border { outlets = outlets + *all.accum[c]; } else { sinks = sinks + 1; }
       }
@@ -93,19 +93,19 @@ fn main() i32 {
   }
   expectInt(i64.from(sinks), 0i64, "with no dry basins no interior cell is a sink");
   expectFloat(f64.from(outlets), 96. * 96., 0.5, "and the outlets' accumulations add to the number of cells");
-  mut filledOk = true;
-  mut i = 0usize;
+  var filledOk = true;
+  var i = 0usize;
   while i < hf.data.len() { if *all.filled[i] < *hf.data[i] { filledOk = false; } i = i + 1usize; }
   expect(filledOk, "the filled surface is never below the ground");
 
   // 4. carving
-  imm ground0 = hf.tile(0, 0, 96usize, 96usize);
-  imm rs = RiverSpec.standard();
-  mut cut = hf.tile(0, 0, 96usize, 96usize);
-  imm maps = carveRivers(&mut cut, &all, &rs);
-  mut raised = false;
-  mut anyCarved = false;
-  mut channel = 0usize;
+  let ground0 = hf.tile(0, 0, 96usize, 96usize);
+  let rs = RiverSpec.standard();
+  var cut = hf.tile(0, 0, 96usize, 96usize);
+  let maps = carveRivers(&mut cut, &all, &rs);
+  var raised = false;
+  var anyCarved = false;
+  var channel = 0usize;
   i = 0usize;
   while i < cut.data.len() {
     if *cut.data[i] > *ground0.data[i] + 0.00001 { raised = true; }
@@ -115,14 +115,14 @@ fn main() i32 {
   expect(!raised, "carving never raises the ground");
   expect(anyCarved, "and does cut somewhere");
   // the cell with the largest accumulation: its cut is at least min(maxDepth, depthScale * sqrt(area/minArea)) - 1 mm
-  mut big = 0usize;
+  var big = 0usize;
   i = 0usize;
   while i < all.accum.len() {
     if *all.accum[i] > *all.accum[big] and *all.lakeDepth[i] <= 0. { big = i; }
     i = i + 1usize;
   }
-  imm area = *all.accum[big] * 400.;
-  mut wantCut = rs.depthScale * (area / rs.minArea).sqrt();
+  let area = *all.accum[big] * 400.;
+  var wantCut = rs.depthScale * (area / rs.minArea).sqrt();
   if wantCut > rs.maxDepth { wantCut = rs.maxDepth; }
   if area < rs.minArea { wantCut = 0.; }
   expect(*maps.carve[big] >= wantCut - 0.001, "the channel of largest drainage is cut by the depth law's depth (or its limit)");

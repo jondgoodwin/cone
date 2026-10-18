@@ -25,67 +25,67 @@ import geomath use *;
 import gpu use *;
 
 fn main() i32 {
-  mut instance = Instance.create("levels");
+  var instance = Instance.create("levels");
   require(instance.isValid(), "a Vulkan 1.3 instance");
-  mut none = Surface.none();
-  mut adapter = instance.requestAdapter(&none, POWER_PREFERENCE_HIGH_PERFORMANCE);
+  var none = Surface.none();
+  var adapter = instance.requestAdapter(&none, POWER_PREFERENCE_HIGH_PERFORMANCE);
   require(adapter.isValid(), "an adapter");
-  mut device = adapter.requestDevice();
+  var device = adapter.requestDevice();
   require(device.isValid(), "a device");
 
-  imm cubeDesc = new TextureDescriptor(8u32, 8u32, TEXTURE_FORMAT_RGBA16_FLOAT,
+  let cubeDesc = new TextureDescriptor(8u32, 8u32, TEXTURE_FORMAT_RGBA16_FLOAT,
     TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_TEXTURE_BINDING, 4u32, 6u32);
-  mut cube = device.createTexture(&cubeDesc);
+  var cube = device.createTexture(&cubeDesc);
   require(cube.isValid(), "a cube of half floats, four levels, drawn into and sampled");
-  imm targetDesc = new TextureDescriptor(64u32, 64u32, TEXTURE_FORMAT_RGBA8_UNORM,
+  let targetDesc = new TextureDescriptor(64u32, 64u32, TEXTURE_FORMAT_RGBA8_UNORM,
     TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
-  mut target = device.createTexture(&targetDesc);
-  mut readback = device.createBuffer(16384u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
-  imm p = readback.mappedRange();
+  var target = device.createTexture(&targetDesc);
+  var readback = device.createBuffer(16384u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  let p = readback.mappedRange();
 
-  mut shader = device.createShaderModule(&LEVELS_SPIRV);
-  imm attributes = [new VertexAttribute(VERTEX_FORMAT_FLOAT32, 0u64, 0u32)];
-  imm buffers = [new VertexBufferLayout(arrayStride: 4u64, attributes: &attributes)];
-  mut fillLayout = device.createEmptyPipelineLayout(16u32);
-  imm fillDesc = new RenderPipelineDescriptor(layout: &fillLayout, vertexModule: &shader, vertexEntryPoint: "fullscreenMain",
+  var shader = device.createShaderModule(&LEVELS_SPIRV);
+  let attributes = [new VertexAttribute(VERTEX_FORMAT_FLOAT32, 0u64, 0u32)];
+  let buffers = [new VertexBufferLayout(arrayStride: 4u64, attributes: &attributes)];
+  var fillLayout = device.createEmptyPipelineLayout(16u32);
+  let fillDesc = new RenderPipelineDescriptor(layout: &fillLayout, vertexModule: &shader, vertexEntryPoint: "fullscreenMain",
     buffers: &buffers[..<0], fragmentModule: &shader, fragmentEntryPoint: "fillMain",
     colorFormat: TEXTURE_FORMAT_RGBA16_FLOAT);
-  mut fillPipeline = device.createRenderPipeline(&fillDesc);
-  imm entries = [new BindGroupLayoutEntry(binding: 0u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE,
+  var fillPipeline = device.createRenderPipeline(&fillDesc);
+  let entries = [new BindGroupLayoutEntry(binding: 0u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE,
       viewDimension: TEXTURE_VIEW_DIMENSION_CUBE),
     new BindGroupLayoutEntry(binding: 1u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_SAMPLER)];
-  mut groupLayout = device.createBindGroupLayout(&entries);
-  imm groupLayouts = [&groupLayout];
-  mut readLayout = device.createPipelineLayout(&groupLayouts, 0u32);
-  imm readDesc = new RenderPipelineDescriptor(layout: &readLayout, vertexModule: &shader, vertexEntryPoint: "fullscreenMain",
+  var groupLayout = device.createBindGroupLayout(&entries);
+  let groupLayouts = [&groupLayout];
+  var readLayout = device.createPipelineLayout(&groupLayouts, 0u32);
+  let readDesc = new RenderPipelineDescriptor(layout: &readLayout, vertexModule: &shader, vertexEntryPoint: "fullscreenMain",
     buffers: &buffers[..<0], fragmentModule: &shader, fragmentEntryPoint: "readMain",
     colorFormat: TEXTURE_FORMAT_RGBA8_UNORM);
-  mut readPipeline = device.createRenderPipeline(&readDesc);
-  imm samplerDesc = new SamplerDescriptor(magFilter: FILTER_MODE_NEAREST, minFilter: FILTER_MODE_NEAREST,
+  var readPipeline = device.createRenderPipeline(&readDesc);
+  let samplerDesc = new SamplerDescriptor(magFilter: FILTER_MODE_NEAREST, minFilter: FILTER_MODE_NEAREST,
     addressModeU: ADDRESS_MODE_CLAMP_TO_EDGE, addressModeV: ADDRESS_MODE_CLAMP_TO_EDGE,
     addressModeW: ADDRESS_MODE_CLAMP_TO_EDGE);
-  mut sampler = device.createSampler(&samplerDesc);
-  imm wholeDesc = new TextureViewDescriptor(dimension: TEXTURE_VIEW_DIMENSION_CUBE);
-  imm whole = cube.createViewWith(&wholeDesc);
+  var sampler = device.createSampler(&samplerDesc);
+  let wholeDesc = new TextureViewDescriptor(dimension: TEXTURE_VIEW_DIMENSION_CUBE);
+  let whole = cube.createViewWith(&wholeDesc);
   require(whole.isValid(), "a cube view of every level");
-  imm groupEntries = [BindGroupEntry.texture(0u32, &whole), BindGroupEntry.sampler(1u32, &sampler)];
-  mut group = device.createBindGroup(&groupLayout, &groupEntries);
+  let groupEntries = [BindGroupEntry.texture(0u32, &whole), BindGroupEntry.sampler(1u32, &sampler)];
+  var group = device.createBindGroup(&groupLayout, &groupEntries);
   require(fillPipeline.isValid() and readPipeline.isValid() and group.isValid(), "the pipelines and the bind group");
 
   // ---- 1. Each face of each level drawn ----
-  mut encoder = device.createCommandEncoder();
-  mut level = 0u32;
+  var encoder = device.createCommandEncoder();
+  var level = 0u32;
   while level < 4u32 {
-    mut face = 0u32;
+    var face = 0u32;
     while face < 6u32 {
-      imm viewDesc = new TextureViewDescriptor(baseMipLevel: level, mipLevelCount: 1u32, baseArrayLayer: face,
+      let viewDesc = new TextureViewDescriptor(baseMipLevel: level, mipLevelCount: 1u32, baseArrayLayer: face,
         arrayLayerCount: 1u32);
-      imm view = cube.createViewWith(&viewDesc);
+      let view = cube.createViewWith(&viewDesc);
       expectUInt(u64.from(view.width), u64.from(8u32 >> level), "a level's view is the level's size");
-      imm attachment = new RenderPassColorAttachment(view: view, clearValue: new Color(0., 0., 0., 1.));
-      mut pass = encoder.beginRenderPass(&attachment);
+      let attachment = new RenderPassColorAttachment(view: view, clearValue: new Color(0., 0., 0., 1.));
+      var pass = encoder.beginRenderPass(&attachment);
       pass.setPipeline(&fillPipeline);
-      imm data Array[f32, 4] = [10. * f32.from(face) + f32.from(level) + 2.5, 0., 0., 0.];
+      let data Array[f32, 4] = [10. * f32.from(face) + f32.from(level) + 2.5, 0., 0., 0.];
       pass.setImmediates(0u32, &data as *u8, 16u32);
       pass.draw(3u32, 1u32, 0u32, 0u32);
       pass.end();
@@ -96,8 +96,8 @@ fn main() i32 {
 
   // ---- 2. Read back through the cube view ----
   {
-    imm attachment = new RenderPassColorAttachment(view: target.createView(), clearValue: new Color(0., 0., 0., 1.));
-    mut pass = encoder.beginRenderPass(&attachment);
+    let attachment = new RenderPassColorAttachment(view: target.createView(), clearValue: new Color(0., 0., 0., 1.));
+    var pass = encoder.beginRenderPass(&attachment);
     pass.setPipeline(&readPipeline);
     pass.setBindGroup(0u32, &group);
     pass.draw(3u32, 1u32, 0u32, 0u32);
@@ -109,12 +109,12 @@ fn main() i32 {
   device.waitIdle();
   level = 0u32;
   while level < 4u32 {
-    mut face = 0u32;
+    var face = 0u32;
     while face < 6u32 {
-      imm x = usize.from(face) * 8usize + 4usize;
-      imm y = usize.from(level) * 16usize + 8usize;
-      imm got = f64.from(*(p + (y * 64usize + x) * 4usize));
-      imm want = f64.from((10. * f32.from(face) + f32.from(level) + 2.5) / 64. * 255.);
+      let x = usize.from(face) * 8usize + 4usize;
+      let y = usize.from(level) * 16usize + 8usize;
+      let got = f64.from(*(p + (y * 64usize + x) * 4usize));
+      let want = f64.from((10. * f32.from(face) + f32.from(level) + 2.5) / 64. * 255.);
       expectFloat(got, want, 1d, "a face of a level, drawn through its own view and read through the cube's");
       face = face + 1u32;
     }
@@ -122,7 +122,7 @@ fn main() i32 {
   }
 
   // ---- 3. A view asked for twice is made once ----
-  imm again = cube.createViewWith(&wholeDesc);
+  let again = cube.createViewWith(&wholeDesc);
   expectBool(again.sameView(&whole), true, "the same view, asked for again");
 
   expectUInt(u64.from(failures()), 0u64, "no Vulkan call failed");
@@ -132,7 +132,7 @@ fn main() i32 {
 
 // spirv-begin levels.spv LEVELS_SPIRV
 // Written by tools/shaders/shaders.py from levels.slang (sha256 112b0a8ff19c93d4df6ec23a7b5eceb5c0a836380b5948cb2d1bcad43bc055e1): do not edit.
-imm LEVELS_SPIRV Array[u32, 635] = [
+let LEVELS_SPIRV Array[u32, 635] = [
   0x07230203u32, 0x00010500u32, 0x00280000u32, 0x00000081u32, 0x00000000u32, 0x00020011u32,
   0x00000001u32, 0x0003000eu32, 0x00000000u32, 0x00000001u32, 0x0009000fu32, 0x00000000u32,
   0x00000002u32, 0x6c6c7566u32, 0x65726373u32, 0x614d6e65u32, 0x00006e69u32, 0x00000029u32,

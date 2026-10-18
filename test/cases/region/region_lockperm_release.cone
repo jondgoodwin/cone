@@ -50,8 +50,8 @@ struct Level {
 alias Watched = Arc[Rwlock, Level];
 
 // main's word to the probe, and how many probes got in
-imm go Atomic[u32];
-imm got Atomic[u32];
+let go Atomic[u32];
+let got Atomic[u32];
 
 fn @initpure init() {
   go = Atomic[u32].of(0u32);
@@ -84,7 +84,7 @@ fn probeWriter(s Watched) u64 {
 // The probe is let go and waited for: did it get in?
 fn letIn() bool {
   go.store(1u32);
-  mut tries = 0;
+  var tries = 0;
   while got.load() == 0u32 {
     if tries == 300 {
       return false;
@@ -114,9 +114,9 @@ fn say(what &str, free bool) {
 
 fn early(s Shared) {
   reset();
-  imm h = thread.start(s, &probe);
+  let h = thread.start(s, &probe);
   {
-    imm r = &mut *s;
+    let r = &mut *s;
     r.n = 1u64;                        // the last use
     say("early", letIn());
   }
@@ -125,9 +125,9 @@ fn early(s Shared) {
 
 fn branch(s Shared, c bool) {
   reset();
-  imm h = thread.start(s, &probe);
+  let h = thread.start(s, &probe);
   {
-    imm r = &mut *s;
+    let r = &mut *s;
     r.n = 1u64;
     if c {
       r.n = 2u64;                      // the last use, on this path
@@ -142,10 +142,10 @@ fn branch(s Shared, c bool) {
 
 fn loopOver(s Shared) {
   reset();
-  imm h = thread.start(s, &probe);
+  let h = thread.start(s, &probe);
   {
-    imm r = &mut *s;
-    mut i = 0;
+    let r = &mut *s;
+    var i = 0;
     while i < 3 {
       r.n += 1u64;                     // used on every pass
       i += 1;
@@ -156,11 +156,11 @@ fn loopOver(s Shared) {
 }
 
 fn pass(s Shared) {
-  mut i = 0;
+  var i = 0;
   while i < 2 {
     reset();
-    imm h = thread.start(s, &probe);
-    imm w = &mut *s;                   // this pass's own borrow
+    let h = thread.start(s, &probe);
+    let w = &mut *s;                   // this pass's own borrow
     w.n += 1u64;
     say("pass", letIn());
     i += 1;
@@ -169,8 +169,8 @@ fn pass(s Shared) {
 
 fn leave(s Shared, early bool) u64 {
   reset();
-  imm h = thread.start(s, &probe);
-  imm r = &mut *s;
+  let h = thread.start(s, &probe);
+  let r = &mut *s;
   r.n = 1u64;
   if early {
     say("return", letIn());
@@ -183,9 +183,9 @@ fn leave(s Shared, early bool) u64 {
 
 fn late(s Shared) {
   reset();
-  imm h = thread.start(s, &probe);
+  let h = thread.start(s, &probe);
   {
-    imm r = &mut *s;
+    let r = &mut *s;
     r.n = 1u64;
     say("late", !stillOut());          // held: a use is to come
     r.n = 2u64;                        // the last use
@@ -196,9 +196,9 @@ fn late(s Shared) {
 
 fn nested(s Shared) {
   reset();
-  imm h = thread.start(s, &probe);
+  let h = thread.start(s, &probe);
   {
-    imm r = &mut *s;
+    let r = &mut *s;
     {
       r.n = 1u64;                      // the last use is in a nested block
       say("nested", letIn());
@@ -209,10 +209,10 @@ fn nested(s Shared) {
 
 fn derived(s Shared) {
   reset();
-  imm h = thread.start(s, &probe);
+  let h = thread.start(s, &probe);
   {
-    imm r = &mut *s;
-    imm q = &mut r.n;                  // r is not used again; q is
+    let r = &mut *s;
+    let q = &mut r.n;                  // r is not used again; q is
     *q = 1u64;
     say("derived", !stillOut());       // held: q is to be used
     *q = 2u64;
@@ -223,10 +223,10 @@ fn derived(s Shared) {
 
 fn readOnly(w Watched) {
   reset();
-  imm h = thread.start(w, &probeWriter);
+  let h = thread.start(w, &probeWriter);
   {
-    imm r = &*w;                       // a read lock
-    imm seen = r.scale;
+    let r = &*w;                       // a read lock
+    let seen = r.scale;
     say("read", letIn());              // the writer gets in
     printInt(i64.from(seen));
     printStr("\n");
@@ -236,7 +236,7 @@ fn readOnly(w Watched) {
 
 fn main() {
   initAll();
-  imm s = new Shared(0u64);
+  let s = new Shared(0u64);
   early(s);
   branch(s, true);
   branch(s, false);
@@ -249,6 +249,6 @@ fn main() {
   late(s);
   nested(s);
   derived(s);
-  imm w = new Watched(5u64);
+  let w = new Watched(5u64);
   readOnly(w);
 }

@@ -49,12 +49,12 @@ fn micros(t Instant) i64 { (Instant.now() - t).micros(); }
 // Workgroups for n invocations of 64 each: x, and y rows of x (the kernels
 // flatten the two)
 fn groupsX(n u32) u32 {
-  imm g = (n + 63u32) / 64u32;
+  let g = (n + 63u32) / 64u32;
   if g == 0u32 { 1u32; } elif g <= 65535u32 { g; } else { 32768u32; };
 }
 fn groupsY(n u32) u32 {
-  imm g = (n + 63u32) / 64u32;
-  imm x = groupsX(n);
+  let g = (n + 63u32) / 64u32;
+  let x = groupsX(n);
   if g <= x { 1u32; } else { (g + x - 1u32) / x; };
 }
 
@@ -65,14 +65,14 @@ const MaxWords = 33554432u64;
 // most 'most' layers each (0: as many as a buffer allows), consecutive ones
 // sharing two sample layers
 fn slabsOf(grid SampleGrid, most u32, out &mut List[u32]) {
-  imm per = u64.from(grid.samplesX) * u64.from(grid.samplesY);
-  mut fit = u32.from((MaxWords - 1u64) / per);
+  let per = u64.from(grid.samplesX) * u64.from(grid.samplesY);
+  var fit = u32.from((MaxWords - 1u64) / per);
   if most > 0u32 and most < fit { fit = most; }
   if fit < 3u32 { fit = 3u32; }
-  imm last = grid.samplesZ - 1u32;
-  mut z0 = 0u32;
+  let last = grid.samplesZ - 1u32;
+  var z0 = 0u32;
   while true {
-    imm e = if z0 + fit - 1u32 < last { z0 + fit - 1u32; } else { last; };
+    let e = if z0 + fit - 1u32 < last { z0 + fit - 1u32; } else { last; };
     out.push(z0);
     out.push(e - z0 + 1u32);
     if e == last { break; }
@@ -100,8 +100,8 @@ struct ShipMesher {
   pub slabLayers u32;    // at most this many sample layers a slab (0: as a buffer allows)
 
   pub fn make(device &Device) ShipMesher {
-    imm spirv = readSpirv("starship.spv");
-    imm s = spirv.view();
+    let spirv = readSpirv("starship.spv");
+    let s = spirv.view();
     new ShipMesher(
       Kernel.make(device, s, "blocks", &[READ, READ, READ_WRITE, READ_WRITE]),
       Kernel.make(device, s, "sample", &[READ, READ, READ, READ, READ_WRITE]),
@@ -125,51 +125,51 @@ struct ShipMesher {
   // differ in sign, and the most they differ by. True if none differs in
   // sign
   pub fn checkSamples(self &, device &mut Device, ship &ShipData, box Aabb3, cell f32, sparse bool, band f32) bool {
-    imm grid = SampleGrid.covering(box, cell);
-    mut slabs = List[u32].empty();
+    let grid = SampleGrid.covering(box, cell);
+    var slabs = List[u32].empty();
     slabsOf(grid, slabLayers, &mut slabs);
-    imm nslabs = slabs.len() / 2usize;
-    imm blockCount = blocksAlong(grid.samplesX - 1u32) * blocksAlong(grid.samplesY - 1u32)
+    let nslabs = slabs.len() / 2usize;
+    let blockCount = blocksAlong(grid.samplesX - 1u32) * blocksAlong(grid.samplesY - 1u32)
       * blocksAlong(grid.samplesZ - 1u32);
-    imm sp = if sparse { 1u32; } else { 0u32; };
-    mut compared = 0u64;
-    mut same = 0u64;
-    mut flipped = 0u64;
-    mut most f32 = 0.;
-    mut k = 0usize;
+    let sp = if sparse { 1u32; } else { 0u32; };
+    var compared = 0u64;
+    var same = 0u64;
+    var flipped = 0u64;
+    var most f32 = 0.;
+    var k = 0usize;
     while k < nslabs {
-      imm z0 = *slabs[2usize * k];
-      imm layers = *slabs[2usize * k + 1usize];
-      imm n = grid.samplesX * grid.samplesY * layers;
-      mut works = Works.make();
-      mut job = Job.make(device);
-      imm shipSlot = job.give(uploadValue(device, ship));
-      imm whole = new Sweep(grid, 0u32, grid.samplesZ, sp, blockCount, 0u32, 0u32, cell * 0.1);
-      imm wholeSlot = job.give(uploadValue(device, &whole));
-      imm centres = job.give(scratch(device, u64.from(blockCount)));
-      imm far = job.give(scratch(device, u64.from(blockCount)));
+      let z0 = *slabs[2usize * k];
+      let layers = *slabs[2usize * k + 1usize];
+      let n = grid.samplesX * grid.samplesY * layers;
+      var works = Works.make();
+      var job = Job.make(device);
+      let shipSlot = job.give(uploadValue(device, ship));
+      let whole = new Sweep(grid, 0u32, grid.samplesZ, sp, blockCount, 0u32, 0u32, cell * 0.1);
+      let wholeSlot = job.give(uploadValue(device, &whole));
+      let centres = job.give(scratch(device, u64.from(blockCount)));
+      let far = job.give(scratch(device, u64.from(blockCount)));
       if sparse {
         job.dispatch(device, &blocks, &[wholeSlot, shipSlot, centres, far], groupsX(blockCount), groupsY(blockCount));
       }
-      imm sweep = new Sweep(grid, z0, layers, sp, n, 0u32, 0u32, cell * 0.1);
-      imm sweepSlot = job.give(uploadValue(device, &sweep));
-      imm out = job.give(scratch(device, u64.from(n)));
+      let sweep = new Sweep(grid, z0, layers, sp, n, 0u32, 0u32, cell * 0.1);
+      let sweepSlot = job.give(uploadValue(device, &sweep));
+      let out = job.give(scratch(device, u64.from(n)));
       job.dispatch(device, &sample, &[sweepSlot, shipSlot, centres, far, out], groupsX(n), groupsY(n));
-      imm back = job.readback(device, out);
-      imm ticket = works.submit(device, job, Target.Here(0u64));
-      mut done = List[Completion].empty();
+      let back = job.readback(device, out);
+      let ticket = works.submit(device, job, Target.Here(0u64));
+      var done = List[Completion].empty();
       works.waitFor(device, ticket, &mut done);
       if done.len() != 1usize or !done[0usize].ok { print <- "  sampling on the GPU FAILED\n"; return false; }
-      imm words = done[0usize].words(back);
+      let words = done[0usize].words(back);
       // Each slab's samples but its first layer, the slab before's last
-      mut i = if k == 0usize { 0u32; } else { 2u32 * grid.samplesX * grid.samplesY; };
+      var i = if k == 0usize { 0u32; } else { 2u32 * grid.samplesX * grid.samplesY; };
       while usize.from(i) < words.len() and i < n {
-        imm g = *words[usize.from(i)] as f32;
+        let g = *words[usize.from(i)] as f32;
         if absf(g) < band {
-          imm x = i % grid.samplesX;
-          imm y = (i / grid.samplesX) % grid.samplesY;
-          imm z = i / (grid.samplesX * grid.samplesY) + z0;
-          imm c = ship.distance(grid.point(x, y, z));
+          let x = i % grid.samplesX;
+          let y = (i / grid.samplesX) % grid.samplesY;
+          let z = i / (grid.samplesX * grid.samplesY) + z0;
+          let c = ship.distance(grid.point(x, y, z));
           compared = compared + 1u64;
           if (g as u32) == (c as u32) { same = same + 1u64; }
           if (g < 0.) != (c < 0.) {
@@ -179,7 +179,7 @@ struct ShipMesher {
             }
             flipped = flipped + 1u64;
           }
-          imm d = absf(g - c);
+          let d = absf(g - c);
           if d > most { most = d; }
         }
         i = i + 1u32;
@@ -197,51 +197,51 @@ struct ShipMesher {
   // 'times'
   pub fn meshShip(self &, device &mut Device, ship &ShipData, box Aabb3, cell f32, relax u32, sparse bool,
       times &mut GpuTimes, stats &mut GpuStats) mesh.Mesh {
-    imm grid = SampleGrid.covering(box, cell);
-    imm h = cell * 0.1;
-    mut slabs = List[u32].empty();
+    let grid = SampleGrid.covering(box, cell);
+    let h = cell * 0.1;
+    var slabs = List[u32].empty();
     slabsOf(grid, slabLayers, &mut slabs);
-    imm nslabs = slabs.len() / 2usize;
-    imm blx = blocksAlong(grid.samplesX - 1u32);
-    imm bly = blocksAlong(grid.samplesY - 1u32);
-    imm blz = blocksAlong(grid.samplesZ - 1u32);
-    imm blockCount = blx * bly * blz;
+    let nslabs = slabs.len() / 2usize;
+    let blx = blocksAlong(grid.samplesX - 1u32);
+    let bly = blocksAlong(grid.samplesY - 1u32);
+    let blz = blocksAlong(grid.samplesZ - 1u32);
+    let blockCount = blx * bly * blz;
     stats.samples = u64.from(grid.samplesX) * u64.from(grid.samplesY) * u64.from(grid.samplesZ);
     stats.slabs = u32.from(nslabs);
     stats.blocks = if sparse { blockCount; } else { 0u32; };
     stats.ok = false;
-    imm sp = if sparse { 1u32; } else { 0u32; };
+    let sp = if sparse { 1u32; } else { 0u32; };
 
     // Sampling: the blocks, then each slab's samples, one job
-    imm t0 = Instant.now();
-    mut works = Works.make();
-    mut job = Job.make(device);
-    imm shipSlot = job.give(uploadValue(device, ship));
-    imm whole = new Sweep(grid, 0u32, grid.samplesZ, sp, blockCount, 0u32, 0u32, h);
-    imm wholeSlot = job.give(uploadValue(device, &whole));
-    imm centres = job.give(scratch(device, if sparse { u64.from(blockCount); } else { 1u64; }));
-    imm far = job.give(scratch(device, if sparse { u64.from(blockCount); } else { 1u64; }));
+    let t0 = Instant.now();
+    var works = Works.make();
+    var job = Job.make(device);
+    let shipSlot = job.give(uploadValue(device, ship));
+    let whole = new Sweep(grid, 0u32, grid.samplesZ, sp, blockCount, 0u32, 0u32, h);
+    let wholeSlot = job.give(uploadValue(device, &whole));
+    let centres = job.give(scratch(device, if sparse { u64.from(blockCount); } else { 1u64; }));
+    let far = job.give(scratch(device, if sparse { u64.from(blockCount); } else { 1u64; }));
     if sparse {
       job.dispatch(device, &blocks, &[wholeSlot, shipSlot, centres, far], groupsX(blockCount), groupsY(blockCount));
     }
-    mut sampleSlots = List[u32].empty();
-    mut k = 0usize;
+    var sampleSlots = List[u32].empty();
+    var k = 0usize;
     while k < nslabs {
-      imm z0 = *slabs[2usize * k];
-      imm layers = *slabs[2usize * k + 1usize];
-      imm n = grid.samplesX * grid.samplesY * layers;
-      imm sweep = new Sweep(grid, z0, layers, sp, n, 0u32, 0u32, h);
-      imm sweepSlot = job.give(uploadValue(device, &sweep));
-      imm out = job.give(scratch(device, u64.from(n)));
+      let z0 = *slabs[2usize * k];
+      let layers = *slabs[2usize * k + 1usize];
+      let n = grid.samplesX * grid.samplesY * layers;
+      let sweep = new Sweep(grid, z0, layers, sp, n, 0u32, 0u32, h);
+      let sweepSlot = job.give(uploadValue(device, &sweep));
+      let out = job.give(scratch(device, u64.from(n)));
       job.dispatch(device, &sample, &[sweepSlot, shipSlot, centres, far, out], groupsX(n), groupsY(n));
       sampleSlots.push(out);
       k = k + 1usize;
     }
-    imm ticket = works.submit(device, job, Target.Here(0u64));
-    mut done = List[Completion].empty();
+    let ticket = works.submit(device, job, Target.Here(0u64));
+    var done = List[Completion].empty();
     works.waitFor(device, ticket, &mut done);
     if done.len() != 1usize or !done[0usize].ok { return mesh.Mesh.empty(); }
-    mut samples = List[Buffer].empty();
+    var samples = List[Buffer].empty();
     k = 0usize;
     while k < nslabs {
       samples.push(done[0usize].take(*sampleSlots[k]));
@@ -250,19 +250,19 @@ struct ShipMesher {
     times.sampling = micros(t0);
 
     // Meshing: each slab its own grid, its points the whole grid's
-    imm t1 = Instant.now();
-    mut nets = List[GridNet].empty();
+    let t1 = Instant.now();
+    var nets = List[GridNet].empty();
     k = 0usize;
     while k < nslabs {
-      imm z0 = *slabs[2usize * k];
-      imm layers = *slabs[2usize * k + 1usize];
-      imm slabGrid = new SampleGrid(grid.point(0u32, 0u32, z0), grid.cellSize, grid.samplesX, grid.samplesY, layers);
-      mut b = Buffer.none();
+      let z0 = *slabs[2usize * k];
+      let layers = *slabs[2usize * k + 1usize];
+      let slabGrid = new SampleGrid(grid.point(0u32, 0u32, z0), grid.cellSize, grid.samplesX, grid.samplesY, layers);
+      var b = Buffer.none();
       {
-        imm r = &mut samples[k];
+        let r = &mut samples[k];
         b <=> *r;
       }
-      imm net = mesher.mesh(device, slabGrid, b);
+      let net = mesher.mesh(device, slabGrid, b);
       if !net.ok { return mesh.Mesh.empty(); }
       nets.push(net);
       k = k + 1usize;
@@ -271,40 +271,40 @@ struct ShipMesher {
 
     // Relaxation, normals and the quads cut again, a job a slab; and how
     // many of each slab's vertices are in its first layer of cells
-    imm t2 = Instant.now();
-    mut drops = List[u32].empty();
+    let t2 = Instant.now();
+    var drops = List[u32].empty();
     k = 0usize;
     while k < nslabs {
-      imm net = &mut nets[k];
-      imm z0 = *slabs[2usize * k];
-      imm layers = *slabs[2usize * k + 1usize];
-      imm nv = net.vertexCount;
-      imm nq = net.triangleCount / 2u32;
-      mut rjob = Job.make(device);
-      imm ss = rjob.give(uploadValue(device, ship));
-      imm sweep7 = new Sweep(grid, z0, layers, sp, nv, 0u32, 7u32, h);
-      imm sweep6 = new Sweep(grid, z0, layers, sp, nv, 1u32, 6u32, h);
-      imm sweepV = new Sweep(grid, z0, layers, sp, nv, 0u32, 0u32, h);
-      imm sweepQ = new Sweep(grid, z0, layers, sp, nq, 0u32, 0u32, h);
-      imm all7 = rjob.give(uploadValue(device, &sweep7));
-      imm grad6 = rjob.give(uploadValue(device, &sweep6));
-      imm verts = rjob.give(uploadValue(device, &sweepV));
-      imm quads = rjob.give(uploadValue(device, &sweepQ));
-      mut pb = Buffer.none();
-      mut nb = Buffer.none();
-      mut cb = Buffer.none();
-      mut ib = Buffer.none();
+      let net = &mut nets[k];
+      let z0 = *slabs[2usize * k];
+      let layers = *slabs[2usize * k + 1usize];
+      let nv = net.vertexCount;
+      let nq = net.triangleCount / 2u32;
+      var rjob = Job.make(device);
+      let ss = rjob.give(uploadValue(device, ship));
+      let sweep7 = new Sweep(grid, z0, layers, sp, nv, 0u32, 7u32, h);
+      let sweep6 = new Sweep(grid, z0, layers, sp, nv, 1u32, 6u32, h);
+      let sweepV = new Sweep(grid, z0, layers, sp, nv, 0u32, 0u32, h);
+      let sweepQ = new Sweep(grid, z0, layers, sp, nq, 0u32, 0u32, h);
+      let all7 = rjob.give(uploadValue(device, &sweep7));
+      let grad6 = rjob.give(uploadValue(device, &sweep6));
+      let verts = rjob.give(uploadValue(device, &sweepV));
+      let quads = rjob.give(uploadValue(device, &sweepQ));
+      var pb = Buffer.none();
+      var nb = Buffer.none();
+      var cb = Buffer.none();
+      var ib = Buffer.none();
       pb <=> net.positions;
       nb <=> net.normals;
       cb <=> net.vertexCells;
       ib <=> net.indices;
-      imm ps = rjob.give(pb);
-      imm ns = rjob.give(nb);
-      imm cs = rjob.give(cb);
-      imm xs = rjob.give(ib);
-      imm probed = rjob.give(scratch(device, 7u64 * u64.from(nv)));
-      imm endSlot = rjob.give(scratch(device, 1u64));
-      mut r = 0u32;
+      let ps = rjob.give(pb);
+      let ns = rjob.give(nb);
+      let cs = rjob.give(cb);
+      let xs = rjob.give(ib);
+      let probed = rjob.give(scratch(device, 7u64 * u64.from(nv)));
+      let endSlot = rjob.give(scratch(device, 1u64));
+      var r = 0u32;
       while r < relax {
         rjob.dispatch(device, &probe, &[all7, ss, ps, probed], groupsX(7u32 * nv), groupsY(7u32 * nv));
         rjob.dispatch(device, &move, &[verts, cs, probed, ps], groupsX(nv), groupsY(nv));
@@ -314,14 +314,14 @@ struct ShipMesher {
       rjob.dispatch(device, &shade, &[verts, probed, ns], groupsX(nv), groupsY(nv));
       rjob.dispatch(device, &recut, &[quads, ps, xs], groupsX(nq), groupsY(nq));
       rjob.dispatch(device, &layerEnd, &[verts, cs, endSlot], 1u32);
-      imm back = rjob.readback(device, endSlot);
-      imm rt = works.submit(device, rjob, Target.Here(0u64));
-      mut rdone = List[Completion].empty();
+      let back = rjob.readback(device, endSlot);
+      let rt = works.submit(device, rjob, Target.Here(0u64));
+      var rdone = List[Completion].empty();
       works.waitFor(device, rt, &mut rdone);
       if rdone.len() != 1usize { return mesh.Mesh.empty(); }
-      imm c = &mut rdone[0usize];
+      let c = &mut rdone[0usize];
       if !c.ok { return mesh.Mesh.empty(); }
-      imm w = c.words(back);
+      let w = c.words(back);
       drops.push(if w.len() > 0usize { *w[0usize]; } else { 0u32; });
       net.positions = c.take(ps);
       net.normals = c.take(ns);
@@ -332,11 +332,11 @@ struct ShipMesher {
     times.relaxing = micros(t2);
 
     // Read back, and the slabs joined
-    imm t3 = Instant.now();
-    mut joined = mesh.Mesh.empty();
+    let t3 = Instant.now();
+    var joined = mesh.Mesh.empty();
     k = 0usize;
     while k < nslabs {
-      imm part = nets[k].readBackMesh(device);
+      let part = nets[k].readBackMesh(device);
       join(&mut joined, &part, if k == 0usize { 0u32; } else { *drops[k]; });
       k = k + 1usize;
     }
@@ -352,17 +352,17 @@ struct ShipMesher {
 // which the slab before made too) left out, its other indices shifted down
 // by 'drop' and up by the vertices already there
 fn join(out &mut mesh.Mesh, part &mesh.Mesh, drop u32) {
-  imm base = u32.from(out.positions.len());
-  mut i = usize.from(drop);
+  let base = u32.from(out.positions.len());
+  var i = usize.from(drop);
   while i < part.positions.len() {
     out.positions.push(*part.positions[i]);
     out.normals.push(*part.normals[i]);
     i = i + 1usize;
   }
-  mut t = 0usize;
+  var t = 0usize;
   while t + 5usize < part.indices.len() {
-    mut old = true;
-    mut j = 0usize;
+    var old = true;
+    var j = 0usize;
     while j < 6usize {
       if *part.indices[t + j] >= drop { old = false; }
       j = j + 1usize;

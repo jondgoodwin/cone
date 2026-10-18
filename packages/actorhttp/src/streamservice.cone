@@ -46,15 +46,15 @@ fn blankStream() StreamRec {
 
 // Where the live stream is (its slot's record), or null
 fn streamOf(rec &ClientRec, slot u32, id u64) *StreamRec {
-  imm s = usize.from(slot);
+  let s = usize.from(slot);
   if s >= rec.streams.len() {return null;}
-  imm x = rec.streams.at(s);
+  let x = rec.streams.at(s);
   if (*x).used and (*x).id == id {return x;}
   null;
 }
 
 fn freeStream(rec &mut ClientRec, slot usize) {
-  imm s = rec.streams.at(slot) as &mut StreamRec;
+  let s = rec.streams.at(slot) as &mut StreamRec;
   *s = blankStream();
   rec.streams.put(slot);
 }
@@ -72,7 +72,7 @@ fn unrefClient(rec &mut ClientRec, lp &mut Loop) {
 // How a stream's reads end once its pieces are all taken: None for a clean
 // end, else the error
 fn endOf[T](s &StreamRec) Result[Option[T], FetchError] {
-  imm k = s.outcome;
+  let k = s.outcome;
   if s.limited {
     return Error[Option[T], FetchError](FetchError.failed(httpclient.Failure.make(httpclient.Stage.Limit, 0u32,
       ErrorKind.TooLarge, "an event is longer than the reader's limit")));
@@ -106,8 +106,8 @@ fn serveRead(rec &mut ClientRec, s &mut StreamRec) {
   if not s.reading {return;}
   if s.asEvents {
     if s.ehead < s.events.len() {
-      mut ev = sse.Event.message("");
-      imm slot = &mut s.events[s.ehead];
+      var ev = sse.Event.message("");
+      let slot = &mut s.events[s.ehead];
       ev <=> *slot;
       s.ehead = s.ehead + 1usize;
       if s.ehead == s.events.len() {
@@ -124,8 +124,8 @@ fn serveRead(rec &mut ClientRec, s &mut StreamRec) {
     }
   } else {
     if s.chead < s.chunks.len() {
-      mut piece = String.empty();
-      imm slot = &mut s.chunks[s.chead];
+      var piece = String.empty();
+      let slot = &mut s.chunks[s.chead];
       piece <=> *slot;
       s.chead = s.chead + 1usize;
       if s.chead == s.chunks.len() {
@@ -145,17 +145,17 @@ fn serveRead(rec &mut ClientRec, s &mut StreamRec) {
 
 // A fetch event of a Wait that belongs to a stream
 fn onStreamEvent(rec &mut ClientRec, lp &mut Loop, e &mut httpclient.Event, wslot usize, w &mut Wait) {
-  imm sslot = w.stream;
-  imm s = rec.streams.at(sslot) as &mut StreamRec;
-  imm k = e.kind;
+  let sslot = w.stream;
+  let s = rec.streams.at(sslot) as &mut StreamRec;
+  let k = e.kind;
   if k == httpclient.EventKind.Response {
     s.status = e.response.status;
     s.headers <=> e.response.headers;
     s.url <=> e.url;
     s.opening = false;
-    mut hs = Headers.empty();
+    var hs = Headers.empty();
     hs <=> s.headers;
-    mut url = String.empty();
+    var url = String.empty();
     url <=> s.url;
     if s.asEvents {
       answerTo[Result[EventStream, FetchError]](&mut s.openReply, Ok[EventStream, FetchError](
@@ -165,7 +165,7 @@ fn onStreamEvent(rec &mut ClientRec, lp &mut Loop, e &mut httpclient.Event, wslo
         new BodyStream(rec.id, u32.from(sslot), s.id, s.status, hs, url)));
     }
   } elif k == httpclient.EventKind.Data {
-    imm n = e.buf.len();
+    let n = e.buf.len();
     if s.gone or s.limited {
       rec.client.release(e.id, n);
     } else {
@@ -189,7 +189,7 @@ fn onStreamEvent(rec &mut ClientRec, lp &mut Loop, e &mut httpclient.Event, wslo
     if k == httpclient.EventKind.Failed {s.failure = e.failure.copy();}
     if s.opening {
       s.opening = false;
-      imm err = if k == httpclient.EventKind.Failed {FetchError.failed(e.failure.copy());}
+      let err = if k == httpclient.EventKind.Failed {FetchError.failed(e.failure.copy());}
         elif k == httpclient.EventKind.TimedOut {FetchError.timedOut();}
         else {FetchError.cancelled();};
       if s.asEvents {
@@ -218,9 +218,9 @@ struct StreamOpenJob {
   pub reply actors.Reply;
 
   fn run(self &mut, lp &mut Loop, sv &mut Service) {
-    mut rp = new actors.Reply();
+    var rp = new actors.Reply();
     rp <=> reply;
-    imm k = sv.findClient(id);
+    let k = sv.findClient(id);
     if k >= sv.clients.len() {
       if asEvents {
         answerTo[Result[EventStream, FetchError]](&mut rp, Error[EventStream, FetchError](FetchError.cancelled()));
@@ -229,19 +229,19 @@ struct StreamOpenJob {
       }
       return;
     }
-    imm rec = sv.clientAt(k) as &mut ClientRec;
-    imm sslot = rec.streams.take(blankStream());
-    imm s = rec.streams.at(sslot) as &mut StreamRec;
+    let rec = sv.clientAt(k) as &mut ClientRec;
+    let sslot = rec.streams.take(blankStream());
+    let s = rec.streams.at(sslot) as &mut StreamRec;
     s.used = true;
     s.id = newId();
     s.asEvents = asEvents;
     s.opening = true;
     s.openReply <=> rp;
-    imm wslot = rec.waits.take(blankWait());
-    imm w = rec.waits.at(wslot) as &mut Wait;
+    let wslot = rec.waits.take(blankWait());
+    let w = rec.waits.at(wslot) as &mut Wait;
     w.stream = sslot;
     rec.refs = rec.refs + 1u32;
-    mut r = httpclient.Request.get("");
+    var r = httpclient.Request.get("");
     r <=> req;
     s.fetch = rec.client.send(lp, r, httpclient.Sink.Here(u64.from(wslot)));
     w.fetch = s.fetch;
@@ -257,10 +257,10 @@ struct StreamReadJob {
   pub reply actors.Reply;
 
   fn run(self &mut, lp &mut Loop, sv &mut Service) {
-    mut rp = new actors.Reply();
+    var rp = new actors.Reply();
     rp <=> reply;
-    imm k = sv.findClient(client);
-    mut s = null as *StreamRec;
+    let k = sv.findClient(client);
+    var s = null as *StreamRec;
     if k < sv.clients.len() {
       s = streamOf(sv.clientAt(k) as &ClientRec, slot, id);
     }
@@ -274,8 +274,8 @@ struct StreamReadJob {
       }
       return;
     }
-    imm rec = sv.clientAt(k) as &mut ClientRec;
-    imm st = s as &mut StreamRec;
+    let rec = sv.clientAt(k) as &mut ClientRec;
+    let st = s as &mut StreamRec;
     if st.reading {
       // One read at a time: a second is refused
       if asEvents {
@@ -301,12 +301,12 @@ struct StreamDropJob {
   pub id u64;
 
   fn run(self &mut, lp &mut Loop, sv &mut Service) {
-    imm k = sv.findClient(client);
+    let k = sv.findClient(client);
     if k >= sv.clients.len() {return;}
-    imm rec = sv.clientAt(k) as &mut ClientRec;
-    imm s = streamOf(rec as &ClientRec, slot, id);
+    let rec = sv.clientAt(k) as &mut ClientRec;
+    let s = streamOf(rec as &ClientRec, slot, id);
     if s as usize == 0usize {return;}
-    imm st = s as &mut StreamRec;
+    let st = s as &mut StreamRec;
     st.gone = true;
     if st.ended {
       freeStream(rec, usize.from(slot));

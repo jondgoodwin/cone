@@ -88,19 +88,19 @@ struct Canceller {
 }
 
 fn canceller(arg Canceller) u64 {
-  mut c = arg;
-  mut n = 0u64;
-  mut more = true;
+  var c = arg;
+  var n = 0u64;
+  var more = true;
   while more {
     match c.orders.recv() {
-      case mut s Some {
+      case var s Some {
         match &mut s {
-          case mut o &mut CancelOne {
+          case var o &mut CancelOne {
             spinUntil(o.at);
             o.req.cancel();
             n = n + 1u64;
           }
-          case imm o &mut CancelAll {
+          case let o &mut CancelAll {
             spinUntil(o.at);
             o.group.cancel();
           }
@@ -131,17 +131,17 @@ struct Peer {
 }
 
 fn peer(p Peer) u64 {
-  mut q = p;
-  mut lp = Loop.mustMake();
-  mut out = List[Completion].empty();
-  mut socks = List[Handle].empty();
-  mut i = 0u64;
+  var q = p;
+  var lp = Loop.mustMake();
+  var out = List[Completion].empty();
+  var socks = List[Handle].empty();
+  var i = 0u64;
   while i < conns {
     lp.submit(Op.Connect(SocketAddr.localhost(q.port)), Target.Here(i));
     i = i + 1u64;
   }
   while out.len() < usize.from(conns) {lp.poll(forever(), &mut out);}
-  mut k = 0usize;
+  var k = 0usize;
   while k < out.len() {
     socks.push(out[k].handle);
     k = k + 1usize;
@@ -150,23 +150,23 @@ fn peer(p Peer) u64 {
   // Each connection's number down it first, so main knows which is which
   k = 0usize;
   while k < socks.len() {
-    mut b = q.pool.mustTake(1usize);
-    mut one = new Array[u8, 1] <- fill u8.from(k);
+    var b = q.pool.mustTake(1usize);
+    var one = new Array[u8, 1] <- fill u8.from(k);
     b.append(&one[0usize ..< 1usize]);
     lp.submit(Op.Send(*socks[k], b), Target.Here(0u64));
     k = k + 1usize;
   }
   while lp.inFlight() > 0u64 {lp.poll(forever(), &mut out);}
   out.clear();
-  mut sent = 0u64;
-  mut more = true;
+  var sent = 0u64;
+  var more = true;
   while more {
     match q.plans.recv() {
-      case imm s Some {
-        mut j = 0usize;
+      case let s Some {
+        var j = 0usize;
         while j < usize.from(conns) {
           spinUntil(Instant.fromNanos(s.at[j]));
-          mut b = q.pool.mustTake(1usize);
+          var b = q.pool.mustTake(1usize);
           b.append("x");
           lp.submit(Op.Send(*socks[usize.from(s.sock[j])], b), Target.Here(0u64));
           lp.poll(Instant.now(), &mut out);
@@ -209,11 +209,11 @@ struct Tally {
 // outcome of each operation goes in ended[i]
 fn count(t &mut Tally, out &List[Completion], round u64, ended &mut Array[u32, 50], got &mut u64,
     receives bool) {
-  mut k = 0usize;
+  var k = 0usize;
   while k < out.len() {
-    imm c = out[k];
-    imm r = c.token / conns;
-    imm i = usize.from(c.token % conns);
+    let c = out[k];
+    let r = c.token / conns;
+    let i = usize.from(c.token % conns);
     if r != round {
       t.stale = t.stale + 1u64;
     } elif ended[i] != 9u32 {
@@ -241,8 +241,8 @@ fn count(t &mut Tally, out &List[Completion], round u64, ended &mut Array[u32, 5
 // waiting in the kernel
 fn collect(lp &mut Loop, out &mut List[Completion], t &mut Tally, round u64, ended &mut Array[u32, 50],
     receives bool, drain bool) {
-  mut got = 0u64;
-  imm limit = Instant.now() + Duration.fromSeconds(10i64);
+  var got = 0u64;
+  let limit = Instant.now() + Duration.fromSeconds(10i64);
   while got < conns and Instant.now() < limit {
     if drain {lp.poll(Instant.now(), out);} else {lp.poll(limit, out);}
     count(t, out, round, ended, &mut got, receives);
@@ -302,12 +302,12 @@ struct Moments {
 // a byte sent takes some microseconds to reach its receive, where a cancel
 // or a deadline acts in the loop itself
 fn plan(rng &mut Rng, t0 Instant, early i64) Moments {
-  mut m = new Moments(new Array[i64, 50] <- fill 0i64, new Array[i64, 50] <- fill 0i64,
+  var m = new Moments(new Array[i64, 50] <- fill 0i64, new Array[i64, 50] <- fill 0i64,
     new Array[i64, 50] <- fill 0i64);
-  mut i = 0u64;
+  var i = 0u64;
   while i < conns {
-    imm moment = t0 + Duration.fromNanos(i64.from((i * windowNs) / conns + rng.below(windowNs / conns)));
-    imm k = usize.from(i);
+    let moment = t0 + Duration.fromNanos(i64.from((i * windowNs) / conns + rng.below(windowNs / conns)));
+    let k = usize.from(i);
     m.at[k] = rng.near(moment).nanos() - early;
     m.cancelAt[k] = if rng.below(2u64) == 0u64 {rng.near(moment).nanos();} else {0i64;};
     m.deadline[k] = if rng.below(4u64) == 0u64 {forever().nanos();} else {rng.near(moment).nanos();};
@@ -321,15 +321,15 @@ fn orderCancels(lp &Loop, ctx &Sender[Order], m &Moments, reqs &mut List[Request
     groupAt Instant, cancelGroup bool) {
   // The requests were made in operation order, for those with a cancel;
   // their moments are nearly in order already: an insertion sort
-  mut order = List[usize].empty();
-  mut i = 0usize;
+  var order = List[usize].empty();
+  var i = 0usize;
   while i < usize.from(conns) {
     if m.cancelAt[i] != 0i64 {order.push(i);}
     i = i + 1usize;
   }
-  mut a = 1usize;
+  var a = 1usize;
   while a < order.len() {
-    mut b = a;
+    var b = a;
     while b > 0usize and m.cancelAt[*order[b - 1usize]] > m.cancelAt[*order[b]] {
       order.swap(b - 1usize, b);
       b = b - 1usize;
@@ -337,8 +337,8 @@ fn orderCancels(lp &Loop, ctx &Sender[Order], m &Moments, reqs &mut List[Request
     a = a + 1usize;
   }
   // reqs[j] is the j-th operation with a cancel: find each one's place
-  mut rank = new Array[usize, 50] <- fill 0usize;
-  mut j = 0usize;
+  var rank = new Array[usize, 50] <- fill 0usize;
+  var j = 0usize;
   i = 0usize;
   while i < usize.from(conns) {
     if m.cancelAt[i] != 0i64 {
@@ -347,17 +347,17 @@ fn orderCancels(lp &Loop, ctx &Sender[Order], m &Moments, reqs &mut List[Request
     }
     i = i + 1usize;
   }
-  mut sentGroup = not cancelGroup;
-  mut k = 0usize;
+  var sentGroup = not cancelGroup;
+  var k = 0usize;
   while k < order.len() {
-    imm op = *order[k];
+    let op = *order[k];
     if not sentGroup and groupAt.nanos() <= m.cancelAt[op] {
       ctx.send(Order.CancelAll(groupAt, g));
       sentGroup = true;
     }
     // Out of the list by a swap with a Request naming nothing, which cancels
     // nothing when it dies
-    mut q = lp.request(OpId.none());
+    var q = lp.request(OpId.none());
     q <=> *(&mut reqs[rank[op]]);
     ctx.send(Order.CancelOne(Instant.fromNanos(m.cancelAt[op]), q));
     k = k + 1usize;
@@ -368,17 +368,17 @@ fn orderCancels(lp &Loop, ctx &Sender[Order], m &Moments, reqs &mut List[Request
 
 fn main() i32 {
   {
-    imm pool = Pool.make();
-    mut lp = Loop.mustMake();
-    mut out = List[Completion].empty();
-    mut ctx Sender[Order];
-    mut crx Receiver[Order];
+    let pool = Pool.make();
+    var lp = Loop.mustMake();
+    var out = List[Completion].empty();
+    var ctx Sender[Order];
+    var crx Receiver[Order];
     ctx, crx = Channel[Order].make();
-    mut cdone Sender[u64];
-    mut cdoneRx Receiver[u64];
+    var cdone Sender[u64];
+    var cdoneRx Receiver[u64];
     cdone, cdoneRx = Channel[u64].make();
-    imm cthread = thread.start(new Canceller(crx, cdone), &canceller);
-    mut rng = Rng.make(0x2545F4914F6CDD1Du64);
+    let cthread = thread.start(new Canceller(crx, cdone), &canceller);
+    var rng = Rng.make(0x2545F4914F6CDD1Du64);
 
     // -----------------------------------------------------------------------
     // Receives against sends, cancels and deadlines
@@ -388,34 +388,34 @@ fn main() i32 {
       // comes with its buffer, and the kernel's own answer, so each byte
       // can be accounted for
       lp.setGrace(Duration.fromSeconds(1i64));
-      imm listener = lp.mustListen(SocketAddr.localhost(0u16));
-      mut port = 0u16;
+      let listener = lp.mustListen(SocketAddr.localhost(0u16));
+      var port = 0u16;
       match lp.localAddr(listener) {
-        case imm a Ok {port = a.port();}
-        case imm e Error {}
+        case let a Ok {port = a.port();}
+        case let e Error {}
       }
-      mut ptx Sender[Plan];
-      mut prx Receiver[Plan];
+      var ptx Sender[Plan];
+      var prx Receiver[Plan];
       ptx, prx = Channel[Plan].make();
-      mut pdone Sender[u64];
-      mut pdoneRx Receiver[u64];
+      var pdone Sender[u64];
+      var pdoneRx Receiver[u64];
       pdone, pdoneRx = Channel[u64].make();
-      imm pthread = thread.start(new Peer(port, prx, pdone, pool), &peer);
-      mut accepted = List[Handle].empty();
-      mut i = 0u64;
+      let pthread = thread.start(new Peer(port, prx, pdone, pool), &peer);
+      var accepted = List[Handle].empty();
+      var i = 0u64;
       while i < conns {
         lp.submit(Op.Accept(listener), Target.Here(i));
         i = i + 1u64;
       }
       while out.len() < usize.from(conns) {lp.poll(forever(), &mut out);}
-      mut k = 0usize;
+      var k = 0usize;
       while k < out.len() {
         accepted.push(out[k].handle);
         k = k + 1usize;
       }
       out.clear();
       // socks[n] is the connection the peer numbered n
-      mut socks = new Array[Handle, 50] <- fill Handle.none();
+      var socks = new Array[Handle, 50] <- fill Handle.none();
       k = 0usize;
       while k < accepted.len() {
         lp.submit(Op.Recv(*accepted[k], pool.mustTake(1usize)), Target.Here(u64.from(k)));
@@ -429,37 +429,37 @@ fn main() i32 {
       }
       out.clear();
 
-      mut t = Tally.zero();
-      mut leftOver = 0u64;
-      mut leftWrong = 0u64;
-      imm began = Instant.now();
-      mut round = 0u64;
-      mut lead = leadNs;
+      var t = Tally.zero();
+      var leftOver = 0u64;
+      var leftWrong = 0u64;
+      let began = Instant.now();
+      var round = 0u64;
+      var lead = leadNs;
       while round < rounds {
-        imm began0 = Instant.now();
-        imm t0 = began0 + Duration.fromNanos(lead);
-        imm m = plan(&mut rng, t0, sendEarlyNs);
-        imm g = CancelGroup.make();
-        mut reqs = List[Request].empty();
-        mut j = 0u64;
+        let began0 = Instant.now();
+        let t0 = began0 + Duration.fromNanos(lead);
+        let m = plan(&mut rng, t0, sendEarlyNs);
+        let g = CancelGroup.make();
+        var reqs = List[Request].empty();
+        var j = 0u64;
         while j < conns {
-          imm n = usize.from(j);
-          imm id = lp.submitIn(Op.Recv(socks[n], pool.mustTake(64usize)),
+          let n = usize.from(j);
+          let id = lp.submitIn(Op.Recv(socks[n], pool.mustTake(64usize)),
             Target.Here(round * conns + j), g, Instant.fromNanos(m.deadline[n]));
           if m.cancelAt[n] != 0i64 {reqs.push(lp.request(id));}
           j = j + 1u64;
         }
         // The peer sends in time order; operation n's socket is socks[n]
-        mut pl = new Plan(new Array[i64, 50] <- fill 0i64, new Array[u32, 50] <- fill 0u32);
-        mut order = List[usize].empty();
+        var pl = new Plan(new Array[i64, 50] <- fill 0i64, new Array[u32, 50] <- fill 0u32);
+        var order = List[usize].empty();
         j = 0u64;
         while j < conns {
           order.push(usize.from(j));
           j = j + 1u64;
         }
-        mut a = 1usize;
+        var a = 1usize;
         while a < order.len() {
-          mut b = a;
+          var b = a;
           while b > 0usize and m.at[*order[b - 1usize]] > m.at[*order[b]] {
             order.swap(b - 1usize, b);
             b = b - 1usize;
@@ -473,18 +473,18 @@ fn main() i32 {
           a = a + 1usize;
         }
         ptx.send(pl);
-        imm cancelGroup = rng.below(4u64) == 0u64;
+        let cancelGroup = rng.below(4u64) == 0u64;
         orderCancels(&lp, &ctx, &m, &mut reqs, g, t0 + Duration.fromNanos(i64.from(rng.below(windowNs))), cancelGroup);
         lead = nextLead(began0.elapsed().nanos());
-        mut ended = new Array[u32, 50] <- fill 9u32;
+        var ended = new Array[u32, 50] <- fill 9u32;
         collect(&mut lp, &mut out, &mut t, round, &mut ended, true, round % 2u64 == 0u64);
         pdoneRx.recv();
         cdoneRx.recv();
         // Each receive that took nothing left its byte: read it now
-        mut left = 0u64;
+        var left = 0u64;
         j = 0u64;
         while j < conns {
-          imm n = usize.from(j);
+          let n = usize.from(j);
           if ended[n] != diag.outcomeDone {
             lp.submit(Op.Recv(socks[n], pool.mustTake(64usize)), Target.Here(0u64));
             left = left + 1u64;
@@ -501,12 +501,12 @@ fn main() i32 {
         out.clear();
         round = round + 1u64;
       }
-      imm took = began.elapsed();
+      let took = began.elapsed();
       {
-        imm stop = ptx;
+        let stop = ptx;
       }
-      imm sent = pthread.join();
-      imm c = lp.counters();
+      let sent = pthread.join();
+      let c = lp.counters();
       report("receives", &t, &c, took);
       expectUInt(t.done + t.cancelled + t.timedOut + t.failed, rounds * conns,
         "500,000 receives raced: every one answered");
@@ -527,40 +527,40 @@ fn main() i32 {
     // -----------------------------------------------------------------------
     {
       lp.setGrace(Duration.zero());
-      imm lane = addLane(new LaneConfig(name: "race", maxThreads: 4u32));
-      mut t = Tally.zero();
-      imm began = Instant.now();
-      mut round = 0u64;
-      mut lead = leadNs;
+      let lane = addLane(new LaneConfig(name: "race", maxThreads: 4u32));
+      var t = Tally.zero();
+      let began = Instant.now();
+      var round = 0u64;
+      var lead = leadNs;
       while round < rounds {
-        imm began0 = Instant.now();
-        imm t0 = began0 + Duration.fromNanos(lead);
-        imm m = plan(&mut rng, t0, 0i64);
-        imm g = CancelGroup.make();
-        mut reqs = List[Request].empty();
-        mut j = 0u64;
+        let began0 = Instant.now();
+        let t0 = began0 + Duration.fromNanos(lead);
+        let m = plan(&mut rng, t0, 0i64);
+        let g = CancelGroup.make();
+        var reqs = List[Request].empty();
+        var j = 0u64;
         while j < conns {
-          imm n = usize.from(j);
-          imm id = lp.submitIn(Op.Call(lane, &spinWork, u64.from(m.at[n]), pool.mustTake(64usize)),
+          let n = usize.from(j);
+          let id = lp.submitIn(Op.Call(lane, &spinWork, u64.from(m.at[n]), pool.mustTake(64usize)),
             Target.Here(round * conns + j), g, Instant.fromNanos(m.deadline[n]));
           if m.cancelAt[n] != 0i64 {reqs.push(lp.request(id));}
           j = j + 1u64;
         }
-        imm cancelGroup = rng.below(4u64) == 0u64;
+        let cancelGroup = rng.below(4u64) == 0u64;
         orderCancels(&lp, &ctx, &m, &mut reqs, g, t0 + Duration.fromNanos(i64.from(rng.below(windowNs))), cancelGroup);
         lead = nextLead(began0.elapsed().nanos());
-        mut ended = new Array[u32, 50] <- fill 9u32;
+        var ended = new Array[u32, 50] <- fill 9u32;
         collect(&mut lp, &mut out, &mut t, round, &mut ended, false, round % 2u64 == 0u64);
         cdoneRx.recv();
         round = round + 1u64;
       }
-      imm took = began.elapsed();
+      let took = began.elapsed();
       // The jobs answered without their buffers still return them
-      imm limit = Instant.now() + Duration.fromSeconds(10i64);
+      let limit = Instant.now() + Duration.fromSeconds(10i64);
       while lp.counters().lateReturns < lp.counters().promptTimeouts and Instant.now() < limit {
         lp.poll(Instant.now() + Duration.fromMillis(1i64), &mut out);
       }
-      imm c = lp.counters();
+      let c = lp.counters();
       report("jobs", &t, &c, took);
       expectUInt(u64.from(out.len()), 0u64, "nothing answered after the rounds");
       expectUInt(t.done + t.cancelled + t.timedOut + t.failed, rounds * conns,
@@ -575,10 +575,10 @@ fn main() i32 {
         "each of those jobs' buffers came back after");
     }
     {
-      imm stop = ctx;
+      let stop = ctx;
     }
     expect(cthread.join() > 0u64, "the canceller cancelled");
-    imm cs = lp.counters();
+    let cs = lp.counters();
     expectUInt(cs.delivered, cs.submitted, "every operation answered once");
     expectUInt(cs.inFlight, 0u64, "nothing in flight");
     expectUInt(pool.stats().lent, 0u64, "every buffer back in the pool");

@@ -145,8 +145,8 @@ void varDclNameRes(NameResState *pstate, VarDclNode *name) {
 // A temporary dies at the end of the statement that made it (flow.c,
 // "Temporaries"), except where Rust's rule extends it to the end of the
 // enclosing block: what a borrow in an extending position of a local's
-// initializer borrows ('imm r = &make();', '&make().x', '&*makeOwner()'), and
-// the owner such an initializer lends where a borrow is wanted ('imm r &R =
+// initializer borrows ('let r = &make();', '&make().x', '&*makeOwner()'), and
+// the owner such an initializer lends where a borrow is wanted ('let r &R =
 // makeOwner();', read as Rust's '&*'). The initializer is an extending
 // position, and so, recursively, are the operand of an extending borrow or
 // recast and each element of an extending tuple, array or variant literal
@@ -359,7 +359,7 @@ static void varDclExtendPlace(VarDclExtend *ext, INode **nodep) {
     }
 }
 
-// Does this recast lend an owning reference as a borrowed one ('imm r &R =
+// Does this recast lend an owning reference as a borrowed one ('let r &R =
 // owner'), a borrow of what it owns?
 static int varDclLendsOwner(CastNode *cast) {
     if (cast->flags & FlagConvert)
@@ -614,7 +614,7 @@ void varDclTypeCheck(TypeCheckState *pstate, VarDclNode *name) {
                 && borrowUniReborrows(name->value, iexpGetTypeDcl(name->value)))
                 borrowUniReborrow(&name->value, iexpGetTypeDcl(name->value));
             name->vtype = ((IExpNode *)name->value)->vtype;
-            // A 'mut' one that starts as a variant holds its enum, so another variant can follow.
+            // A 'var' one that starts as a variant holds its enum, so another variant can follow.
             // Not a pattern's binding, which is the matched value's own storage under its
             // variant's name, nor a variable the compiler makes (its name starts with '-').
             // Not a global or a static either: globals are held (the 12 Oct globals hold),

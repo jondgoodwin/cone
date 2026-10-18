@@ -61,8 +61,8 @@ pub struct VertexWeights {
 
   // What joint 'j' carries of vertex 'v' (0 if it is not among the four)
   pub fn weightOf(self &, v usize, j usize) f32 {
-    mut k = 0usize;
-    mut sum f32 = 0.;
+    var k = 0usize;
+    var sum f32 = 0.;
     while k < 4usize {
       if self.joint(v, k) == j { sum = sum + self.weight(v, k); }
       k = k + 1usize;
@@ -82,12 +82,12 @@ struct Seg {
 
 // The distance from p to the capsule's surface (negative inside), and the capsule's radius there
 fn capsuleDistance(p Vec3, s &Seg) Vec3 {
-  imm ab = s.b - s.a;
-  imm len2 = ab.lengthSquared();
-  mut t f32 = 0.;
+  let ab = s.b - s.a;
+  let len2 = ab.lengthSquared();
+  var t f32 = 0.;
   if len2 > 0.0000000001 { t = clampf((p - s.a).dot(ab) / len2, 0., 1.); }
-  imm closest = s.a + ab * t;
-  imm r = s.ra + (s.rb - s.ra) * t;
+  let closest = s.a + ab * t;
+  let r = s.ra + (s.rb - s.ra) * t;
   new Vec3((p - closest).length() - r, r, t);
 }
 
@@ -99,20 +99,20 @@ struct Carriers {
 
 // Every joint of the rig may carry the surface
 pub fn allJoints(rig &Rig) List[bool] {
-  mut out = List[bool].empty();
-  mut i = 0usize;
+  var out = List[bool].empty();
+  var i = 0usize;
   while i < rig.boneCount() { out.push(true); i = i + 1usize; }
   out;
 }
 
 // Every joint but those of chains of the given kinds (feathers, say, which carry their own blades and not the body)
 pub fn jointsExcludingKinds(rig &Rig, kinds &List[u32]) List[bool] {
-  mut out = List[bool].empty();
-  mut i = 0usize;
+  var out = List[bool].empty();
+  var i = 0usize;
   while i < rig.boneCount() {
-    imm kind = rig.chains[usize.from(*rig.boneChain[i])].kind;
-    mut keep = true;
-    mut k = 0usize;
+    let kind = rig.chains[usize.from(*rig.boneChain[i])].kind;
+    var keep = true;
+    var k = 0usize;
     while k < kinds.len() { if *kinds[k] == kind { keep = false; } k = k + 1usize; }
     out.push(keep);
     i = i + 1usize;
@@ -121,17 +121,17 @@ pub fn jointsExcludingKinds(rig &Rig, kinds &List[u32]) List[bool] {
 }
 
 fn carriers(rig &Rig, mask &List[bool]) Carriers {
-  mut segs = List[Seg].empty();
-  mut joints = List[u32].empty();
-  imm n = rig.boneCount();
-  mut hasChild = List[bool].empty();
-  mut i = 0usize;
+  var segs = List[Seg].empty();
+  var joints = List[u32].empty();
+  let n = rig.boneCount();
+  var hasChild = List[bool].empty();
+  var i = 0usize;
   while i < n { hasChild.push(false); i = i + 1usize; }
   i = 0usize;
   while i < n {
-    imm p = rig.skeleton.parentOf(i);
+    let p = rig.skeleton.parentOf(i);
     if p >= 0i32 {
-      imm pj = usize.from(p);
+      let pj = usize.from(p);
       if *mask[pj] and *mask[i] {
         hasChild.set(pj, true);
         segs.push(new Seg(u32.from(pj), rig.restModels[pj].translation, rig.restModels[i].translation, *rig.radii[pj], *rig.radii[i]));
@@ -156,7 +156,7 @@ struct Nearest {
 }
 
 fn slotOf(c &Carriers, joint u32) usize {
-  mut k = 0usize;
+  var k = 0usize;
   while k < c.joints.len() {
     if *c.joints[k] == joint { return k; }
     k = k + 1usize;
@@ -165,12 +165,12 @@ fn slotOf(c &Carriers, joint u32) usize {
 }
 
 fn nearest(c &Carriers, p Vec3) Nearest {
-  mut best = 3.0e38;
-  mut bestSlot = 0usize;
-  mut bestR f32 = 0.01;
-  mut k = 0usize;
+  var best = 3.0e38;
+  var bestSlot = 0usize;
+  var bestR f32 = 0.01;
+  var k = 0usize;
   while k < c.segs.len() {
-    imm d = capsuleDistance(p, c.segs[k]);
+    let d = capsuleDistance(p, c.segs[k]);
     if d.x < best {
       best = d.x;
       bestSlot = slotOf(c, c.segs[k].joint);
@@ -183,15 +183,15 @@ fn nearest(c &Carriers, p Vec3) Nearest {
 
 // The distance to each carrying joint (the least over its segments)
 fn jointDistances(c &Carriers, p Vec3) List[f32] {
-  mut out = List[f32].empty();
-  mut k = 0usize;
+  var out = List[f32].empty();
+  var k = 0usize;
   while k < c.joints.len() { out.push(3.0e38); k = k + 1usize; }
   k = 0usize;
   while k < c.segs.len() {
-    imm d = capsuleDistance(p, c.segs[k]);
-    imm slot = slotOf(c, c.segs[k].joint);
-    imm floor = 0.25 * d.y;
-    imm de = fmaxf(d.x, floor);
+    let d = capsuleDistance(p, c.segs[k]);
+    let slot = slotOf(c, c.segs[k].joint);
+    let floor = 0.25 * d.y;
+    let de = fmaxf(d.x, floor);
     if de < *out[slot] { out.set(slot, de); }
     k = k + 1usize;
   }
@@ -200,23 +200,23 @@ fn jointDistances(c &Carriers, p Vec3) List[f32] {
 
 // The best four of a vertex's per-joint weights, those under 'prune' dropped, normalised
 fn pickFour(w &List[f32], joints &List[u32], prune f32, outJ &mut List[u32], outW &mut List[f32]) {
-  mut bj = [0usize, 0usize, 0usize, 0usize];
-  mut bw = [0., 0., 0., 0.];
-  mut total f32 = 0.;
-  mut k = 0usize;
+  var bj = [0usize, 0usize, 0usize, 0usize];
+  var bw = [0., 0., 0., 0.];
+  var total f32 = 0.;
+  var k = 0usize;
   while k < w.len() { total = total + *w[k]; k = k + 1usize; }
   k = 0usize;
   while k < w.len() {
-    imm v = if total > 0. { *w[k] / total; } else { 0.; };
+    let v = if total > 0. { *w[k] / total; } else { 0.; };
     if v >= prune {
       // Insert among the four by size
-      mut slot = 4usize;
-      mut s = 0usize;
+      var slot = 4usize;
+      var s = 0usize;
       while s < 4usize {
         if v > bw[s] { slot = s; s = 4usize; } else { s = s + 1usize; }
       }
       if slot < 4usize {
-        mut m = 3usize;
+        var m = 3usize;
         while m > slot { bw[m] = bw[m - 1usize]; bj[m] = bj[m - 1usize]; m = m - 1usize; }
         bw[slot] = v;
         bj[slot] = k;
@@ -224,10 +224,10 @@ fn pickFour(w &List[f32], joints &List[u32], prune f32, outJ &mut List[u32], out
     }
     k = k + 1usize;
   }
-  mut sum f32 = bw[0] + bw[1] + bw[2] + bw[3];
+  var sum f32 = bw[0] + bw[1] + bw[2] + bw[3];
   if sum <= 0. {
     // Nothing survived: the largest alone
-    mut best = 0usize;
+    var best = 0usize;
     k = 1usize;
     while k < w.len() { if *w[k] > *w[best] { best = k; } k = k + 1usize; }
     bj[0] = best;
@@ -250,16 +250,16 @@ pub fn envelopeWeights(rig &Rig, m &Mesh, params &WeightParams) VertexWeights {
 
 // The same over only the joints marked in `mask` (see jointsExcludingKinds)
 pub fn envelopeWeightsFor(rig &Rig, m &Mesh, params &WeightParams, mask &List[bool]) VertexWeights {
-  imm c = carriers(rig, mask);
-  mut outJ = List[u32].empty();
-  mut outW = List[f32].empty();
-  mut v = 0usize;
+  let c = carriers(rig, mask);
+  var outJ = List[u32].empty();
+  var outW = List[f32].empty();
+  var v = 0usize;
   while v < m.positions.len() {
-    imm ds = jointDistances(&c, *m.positions[v]);
-    mut w = List[f32].empty();
-    mut k = 0usize;
+    let ds = jointDistances(&c, *m.positions[v]);
+    var w = List[f32].empty();
+    var k = 0usize;
     while k < ds.len() {
-      imm d = *ds[k];
+      let d = *ds[k];
       w.push(1. / libc.powf(d, params.power));
       k = k + 1usize;
     }
@@ -281,63 +281,63 @@ struct Laplacian {
 }
 
 fn cotWeight(pc Vec3, pa Vec3, pb Vec3) f32 {
-  imm e1 = pa - pc;
-  imm e2 = pb - pc;
-  imm cr = e1.cross(e2).length();
+  let e1 = pa - pc;
+  let e2 = pb - pc;
+  let cr = e1.cross(e2).length();
   if cr < 0.000000000001 { return 0.; }
   fmaxf(e1.dot(e2) / cr, 0.);
 }
 
 fn buildLaplacian(m &Mesh) Laplacian {
-  imm nv = m.positions.len();
-  imm nt = m.indices.len() / 3usize;
-  mut count = List[u32].empty();
-  mut i = 0usize;
+  let nv = m.positions.len();
+  let nt = m.indices.len() / 3usize;
+  var count = List[u32].empty();
+  var i = 0usize;
   while i < nv + 1usize { count.push(0u32); i = i + 1usize; }
   // Two entries a corner: each corner of a triangle names the other two
   i = 0usize;
   while i < nt * 3usize {
-    imm v = usize.from(*m.indices[i]);
+    let v = usize.from(*m.indices[i]);
     count.set(v + 1usize, *count[v + 1usize] + 2u32);
     i = i + 1usize;
   }
-  mut start = List[u32].empty();
+  var start = List[u32].empty();
   start.push(0u32);
   i = 0usize;
   while i < nv { start.push(*start[i] + *count[i + 1usize]); i = i + 1usize; }
-  imm total = usize.from(*start[nv]);
-  mut col = List[u32].empty();
-  mut wgt = List[f32].empty();
+  let total = usize.from(*start[nv]);
+  var col = List[u32].empty();
+  var wgt = List[f32].empty();
   i = 0usize;
   while i < total { col.push(0u32); wgt.push(0.); i = i + 1usize; }
-  mut fill = List[u32].empty();
+  var fill = List[u32].empty();
   i = 0usize;
   while i < nv { fill.push(*start[i]); i = i + 1usize; }
-  mut mass = List[f32].empty();
+  var mass = List[f32].empty();
   i = 0usize;
   while i < nv { mass.push(0.); i = i + 1usize; }
-  mut t = 0usize;
+  var t = 0usize;
   while t < nt {
-    imm ia = usize.from(*m.indices[t * 3usize]);
-    imm ib = usize.from(*m.indices[t * 3usize + 1usize]);
-    imm ic = usize.from(*m.indices[t * 3usize + 2usize]);
-    imm pa = *m.positions[ia];
-    imm pb = *m.positions[ib];
-    imm pc = *m.positions[ic];
-    imm area = 0.5 * (pb - pa).cross(pc - pa).length();
+    let ia = usize.from(*m.indices[t * 3usize]);
+    let ib = usize.from(*m.indices[t * 3usize + 1usize]);
+    let ic = usize.from(*m.indices[t * 3usize + 2usize]);
+    let pa = *m.positions[ia];
+    let pb = *m.positions[ib];
+    let pc = *m.positions[ic];
+    let area = 0.5 * (pb - pa).cross(pc - pa).length();
     mass.set(ia, *mass[ia] + area / 3.);
     mass.set(ib, *mass[ib] + area / 3.);
     mass.set(ic, *mass[ic] + area / 3.);
     // Edge (b, c) is opposite a, and so on; half the cotangent each side. A
     // tiny floor keeps a triangle fan connected where every angle is obtuse.
-    mut e = 0usize;
+    var e = 0usize;
     while e < 3usize {
-      imm u = if e == 0usize { ia; } elif e == 1usize { ib; } else { ic; };
-      imm v = if e == 0usize { ib; } elif e == 1usize { ic; } else { ia; };
-      imm w = if e == 0usize { ic; } elif e == 1usize { ia; } else { ib; };
+      let u = if e == 0usize { ia; } elif e == 1usize { ib; } else { ic; };
+      let v = if e == 0usize { ib; } elif e == 1usize { ic; } else { ia; };
+      let w = if e == 0usize { ic; } elif e == 1usize { ia; } else { ib; };
       // The angle at w is opposite the edge (u, v)
-      imm weight = 0.5 * cotWeight(*m.positions[w], *m.positions[u], *m.positions[v]) + 0.000001;
-      mut f = usize.from(*fill[u]);
+      let weight = 0.5 * cotWeight(*m.positions[w], *m.positions[u], *m.positions[v]) + 0.000001;
+      var f = usize.from(*fill[u]);
       col.set(f, u32.from(v));
       wgt.set(f, weight);
       fill.set(u, *fill[u] + 1u32);
@@ -349,11 +349,11 @@ fn buildLaplacian(m &Mesh) Laplacian {
     }
     t = t + 1usize;
   }
-  mut diag = List[f32].empty();
+  var diag = List[f32].empty();
   i = 0usize;
   while i < nv {
-    mut s f32 = 0.;
-    mut k = usize.from(*start[i]);
+    var s f32 = 0.;
+    var k = usize.from(*start[i]);
     while k < usize.from(*start[i + 1usize]) { s = s + *wgt[k]; k = k + 1usize; }
     diag.push(s);
     i = i + 1usize;
@@ -363,18 +363,18 @@ fn buildLaplacian(m &Mesh) Laplacian {
 
 // Solve (L + diag(mh)) x = rhs by Jacobi-preconditioned conjugate gradient; the steps taken
 fn solve(lap &Laplacian, mh &List[f32], rhs &List[f32], x &mut List[f32], maxIterations u32, tolerance f32) u32 {
-  imm n = rhs.len();
-  mut r = List[f32].empty();
-  mut z = List[f32].empty();
-  mut p = List[f32].empty();
-  mut ap = List[f32].empty();
-  mut i = 0usize;
-  mut bnorm f64 = 0.;
+  let n = rhs.len();
+  var r = List[f32].empty();
+  var z = List[f32].empty();
+  var p = List[f32].empty();
+  var ap = List[f32].empty();
+  var i = 0usize;
+  var bnorm f64 = 0.;
   while i < n {
     x.set(i, 0.);
     r.push(*rhs[i]);
-    imm d = *lap.diag[i] + *mh[i];
-    imm zi = if d > 0. { *rhs[i] / d; } else { 0.; };
+    let d = *lap.diag[i] + *mh[i];
+    let zi = if d > 0. { *rhs[i] / d; } else { 0.; };
     z.push(zi);
     p.push(zi);
     ap.push(0.);
@@ -383,47 +383,47 @@ fn solve(lap &Laplacian, mh &List[f32], rhs &List[f32], x &mut List[f32], maxIte
   }
   if bnorm <= 0. { return 0u32; }
   bnorm = bnorm.sqrt();
-  mut rz f64 = 0.;
+  var rz f64 = 0.;
   i = 0usize;
   while i < n { rz = rz + f64.from(*r[i]) * f64.from(*z[i]); i = i + 1usize; }
-  mut it = 0u32;
+  var it = 0u32;
   while it < maxIterations {
     // ap = A p
     i = 0usize;
-    mut pap f64 = 0.;
+    var pap f64 = 0.;
     while i < n {
-      imm pi = *p[i];
-      mut s = (*lap.diag[i] + *mh[i]) * pi;
-      mut k = usize.from(*lap.rowStart[i]);
-      imm end = usize.from(*lap.rowStart[i + 1usize]);
+      let pi = *p[i];
+      var s = (*lap.diag[i] + *mh[i]) * pi;
+      var k = usize.from(*lap.rowStart[i]);
+      let end = usize.from(*lap.rowStart[i + 1usize]);
       while k < end { s = s - *lap.wgt[k] * (*p[usize.from(*lap.col[k])]); k = k + 1usize; }
       ap.set(i, s);
       pap = pap + f64.from(pi) * f64.from(s);
       i = i + 1usize;
     }
     if pap <= 0. { return it; }
-    imm alpha = rz / pap;
-    mut rnorm f64 = 0.;
+    let alpha = rz / pap;
+    var rnorm f64 = 0.;
     i = 0usize;
     while i < n {
       x.set(i, *x[i] + f32.from(alpha) * (*p[i]));
-      imm ri = *r[i] - f32.from(alpha) * (*ap[i]);
+      let ri = *r[i] - f32.from(alpha) * (*ap[i]);
       r.set(i, ri);
       rnorm = rnorm + f64.from(ri) * f64.from(ri);
       i = i + 1usize;
     }
     it = it + 1u32;
     if rnorm.sqrt() < f64.from(tolerance) * bnorm { return it; }
-    mut rzNew f64 = 0.;
+    var rzNew f64 = 0.;
     i = 0usize;
     while i < n {
-      imm d = *lap.diag[i] + *mh[i];
-      imm zi = if d > 0. { *r[i] / d; } else { 0.; };
+      let d = *lap.diag[i] + *mh[i];
+      let zi = if d > 0. { *r[i] / d; } else { 0.; };
       z.set(i, zi);
       rzNew = rzNew + f64.from(*r[i]) * f64.from(zi);
       i = i + 1usize;
     }
-    imm beta = f32.from(rzNew / rz);
+    let beta = f32.from(rzNew / rz);
     rz = rzNew;
     i = 0usize;
     while i < n { p.set(i, *z[i] + beta * (*p[i])); i = i + 1usize; }
@@ -438,47 +438,47 @@ pub fn heatWeights(rig &Rig, m &Mesh, params &WeightParams) VertexWeights {
 // The same over only the joints marked in `mask` (see jointsExcludingKinds): the rest carry nothing, and the
 // surface near them goes to the joints that are left
 pub fn heatWeightsFor(rig &Rig, m &Mesh, params &WeightParams, mask &List[bool]) VertexWeights {
-  imm c = carriers(rig, mask);
-  imm nv = m.positions.len();
-  imm nj = c.joints.len();
-  imm lap = buildLaplacian(m);
+  let c = carriers(rig, mask);
+  let nv = m.positions.len();
+  let nj = c.joints.len();
+  let lap = buildLaplacian(m);
   // Each vertex's nearest joint and its heat
-  mut near = List[usize].empty();
-  mut mh = List[f32].empty();
-  mut v = 0usize;
+  var near = List[usize].empty();
+  var mh = List[f32].empty();
+  var v = 0usize;
   while v < nv {
-    imm nr = nearest(&c, *m.positions[v]);
+    let nr = nearest(&c, *m.positions[v]);
     near.push(nr.slot);
     mh.push(*lap.mass[v] * params.heat / (nr.dist * nr.dist) + 0.0000000001);
     v = v + 1usize;
   }
   // One solve a joint that is anyone's nearest
-  mut field = List[List[f32]].empty();
-  mut steps = 0u32;
-  mut q = 0usize;
+  var field = List[List[f32]].empty();
+  var steps = 0u32;
+  var q = 0usize;
   while q < nj {
-    mut rhs = List[f32].empty();
-    mut any = false;
+    var rhs = List[f32].empty();
+    var any = false;
     v = 0usize;
     while v < nv {
       if *near[v] == q { rhs.push(*mh[v]); any = true; } else { rhs.push(0.); }
       v = v + 1usize;
     }
-    mut x = List[f32].empty();
+    var x = List[f32].empty();
     v = 0usize;
     while v < nv { x.push(0.); v = v + 1usize; }
     if any {
-      imm used = solve(&lap, &mh, &rhs, &mut x, params.maxIterations, params.tolerance);
+      let used = solve(&lap, &mh, &rhs, &mut x, params.maxIterations, params.tolerance);
       if used > steps { steps = used; }
     }
     field.push(x);
     q = q + 1usize;
   }
-  mut outJ = List[u32].empty();
-  mut outW = List[f32].empty();
+  var outJ = List[u32].empty();
+  var outW = List[f32].empty();
   v = 0usize;
   while v < nv {
-    mut w = List[f32].empty();
+    var w = List[f32].empty();
     q = 0usize;
     while q < nj { w.push(*field[q][v]); q = q + 1usize; }
     pickFour(&w, &c.joints, params.prune, &mut outJ, &mut outW);
@@ -492,8 +492,8 @@ pub fn heatWeightsFor(rig &Rig, m &Mesh, params &WeightParams, mask &List[bool])
 // The skinning transform of every bone: its posed model transform times the
 // inverse of its rest one (render's skinningMatrix, as a rigid transform)
 pub fn skinTransforms(rig &Rig, models &List[Transform3]) List[Transform3] {
-  mut out = List[Transform3].empty();
-  mut i = 0usize;
+  var out = List[Transform3].empty();
+  var i = 0usize;
   while i < rig.boneCount() {
     out.push((*models[i]) * rig.restModels[i].inverse());
     i = i + 1usize;
@@ -504,14 +504,14 @@ pub fn skinTransforms(rig &Rig, models &List[Transform3]) List[Transform3] {
 // Where linear blend skinning carries the rest positions 'rest' when the
 // bones are posed at 'models'
 pub fn skinPositions(rig &Rig, w &VertexWeights, rest &List[Vec3], models &List[Transform3]) List[Vec3] {
-  imm bones = skinTransforms(rig, models);
-  mut out = List[Vec3].empty();
-  mut v = 0usize;
+  let bones = skinTransforms(rig, models);
+  var out = List[Vec3].empty();
+  var v = 0usize;
   while v < rest.len() {
-    mut p = new Vec3(0., 0., 0.);
-    mut k = 0usize;
+    var p = new Vec3(0., 0., 0.);
+    var k = 0usize;
     while k < 4usize {
-      imm wk = w.weight(v, k);
+      let wk = w.weight(v, k);
       if wk > 0. { p = p + bones[w.joint(v, k)].transformPoint(*rest[v]) * wk; }
       k = k + 1usize;
     }

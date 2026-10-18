@@ -15,12 +15,12 @@ import collections use *;
 import bpetokenize;
 
 fn pieces(mode &bpetokenize.PreTokenizer, text &Array[u8]) String {
-  imm ends = bpetokenize.pieceEnds(mode, text);
-  mut out = String.empty();
-  mut start = 0usize;
-  mut i = 0usize;
+  let ends = bpetokenize.pieceEnds(mode, text);
+  var out = String.empty();
+  var start = 0usize;
+  var i = 0usize;
   while i < ends.len() {
-    imm end = ends.view()[i];
+    let end = ends.view()[i];
     if i > 0usize { out.append("|"); }
     out.appendBytes(&text[start..<end]);
     start = end;
@@ -30,15 +30,15 @@ fn pieces(mode &bpetokenize.PreTokenizer, text &Array[u8]) String {
 }
 
 fn split(mode &bpetokenize.PreTokenizer, text &str, want &str) {
-  imm got = pieces(mode, text);
+  let got = pieces(mode, text);
   expectStr(got.view(), want, text);
 }
 
 fn main() i32 {
-  imm gpt2 = bpetokenize.PreTokenizer.Gpt2;
-  imm llama3 = bpetokenize.PreTokenizer.Llama3;
-  imm qwen2 = bpetokenize.PreTokenizer.Qwen2;
-  imm whole = bpetokenize.PreTokenizer.Whole;
+  let gpt2 = bpetokenize.PreTokenizer.Gpt2;
+  let llama3 = bpetokenize.PreTokenizer.Llama3;
+  let qwen2 = bpetokenize.PreTokenizer.Qwen2;
+  let whole = bpetokenize.PreTokenizer.Whole;
 
   // -------- from the regular-expression engine --------
   split(&gpt2, "Hello world", "Hello| world");
@@ -211,46 +211,46 @@ fn main() i32 {
   // then a space and C3). Llama 3 would join one such byte to a letter after it
   // (the byte as the one character that may begin a word); none is followed by one
   // here, the same text cut by both expressions.
-  mut bad = List[u8].empty();
+  var bad = List[u8].empty();
   bad.push('a'); bad.push(0xFFu8); bad.push(0xFEu8); bad.push('b'); bad.push(' '); bad.push(0xC3u8);
-  imm badGpt2 = pieces(&gpt2, bad.view());
-  mut want = List[u8].empty();
+  let badGpt2 = pieces(&gpt2, bad.view());
+  var want = List[u8].empty();
   want.push('a'); want.push('|'); want.push(0xFFu8); want.push(0xFEu8); want.push('|'); want.push('b'); want.push('|');
   want.push(' '); want.push(0xC3u8);
   expectStr(badGpt2.view(), want.view(), "GPT-2 cut with invalid bytes");
-  imm badLlama = pieces(&llama3, bad.view());
-  mut want3 = List[u8].empty();
+  let badLlama = pieces(&llama3, bad.view());
+  var want3 = List[u8].empty();
   want3.push('a'); want3.push('|'); want3.push(0xFFu8); want3.push(0xFEu8); want3.push('|'); want3.push('b'); want3.push('|');
   want3.push(' '); want3.push(0xC3u8);
   expectStr(badLlama.view(), want3.view(), "Llama 3 cut with invalid bytes");
-  mut lead = List[u8].empty();
+  var lead = List[u8].empty();
   lead.push(0xFFu8); lead.push('a'); lead.push('b');
-  imm leadLlama = bpetokenize.pieceEnds(&llama3, lead.view());
+  let leadLlama = bpetokenize.pieceEnds(&llama3, lead.view());
   expectUInt(u64.from(leadLlama.len()), 1u64, "Llama 3: an invalid byte may begin a word");
-  imm leadGpt2 = bpetokenize.pieceEnds(&gpt2, lead.view());
+  let leadGpt2 = bpetokenize.pieceEnds(&gpt2, lead.view());
   expectUInt(u64.from(leadGpt2.len()), 2u64, "GPT-2: an invalid byte is a piece before the word");
   // A cut-off character and an overlong one are not characters either
-  mut cut = List[u8].empty();
+  var cut = List[u8].empty();
   cut.push('x'); cut.push(0xE2u8); cut.push(0x82u8);
-  imm cutPieces = bpetokenize.pieceEnds(&gpt2, cut.view());
+  let cutPieces = bpetokenize.pieceEnds(&gpt2, cut.view());
   expectUInt(u64.from(cutPieces.len()), 2u64, "x then a cut-off euro sign: two pieces");
   expectUInt(u64.from(cutPieces.view()[1usize]), 3u64, "the pieces end at the text's end");
 
   // -------- every cut is the text, in non-empty pieces --------
-  mut b = 0u32;
-  mut all = List[u8].empty();
+  var b = 0u32;
+  var all = List[u8].empty();
   while b < 256u32 { all.push(u8.from(b)); b = b + 1u32; }
-  mut modes = List[bpetokenize.PreTokenizer].empty();
+  var modes = List[bpetokenize.PreTokenizer].empty();
   modes.push(bpetokenize.PreTokenizer.Gpt2);
   modes.push(bpetokenize.PreTokenizer.Llama3);
   modes.push(bpetokenize.PreTokenizer.Qwen2);
   modes.push(bpetokenize.PreTokenizer.Whole);
-  mut m = 0usize;
+  var m = 0usize;
   while m < modes.len() {
-    imm ends = bpetokenize.pieceEnds(&modes.view()[m], all.view());
-    mut prev = 0usize;
-    mut ok = ends.len() > 0usize;
-    mut k = 0usize;
+    let ends = bpetokenize.pieceEnds(&modes.view()[m], all.view());
+    var prev = 0usize;
+    var ok = ends.len() > 0usize;
+    var k = 0usize;
     while k < ends.len() {
       if ends.view()[k] <= prev { ok = false; }
       prev = ends.view()[k];
@@ -263,15 +263,15 @@ fn main() i32 {
   // -------- names --------
   expectStr(bpetokenize.PreTokenizer.Llama3.name(), "llama3", "name");
   match bpetokenize.PreTokenizer.fromName("llama-bpe") {
-    case imm p Some { expectStr(p.name(), "llama3", "fromName llama-bpe"); }
+    case let p Some { expectStr(p.name(), "llama3", "fromName llama-bpe"); }
     case is None { expect(false, "fromName llama-bpe"); }
   }
   match bpetokenize.PreTokenizer.fromName("qwen2") {
-    case imm p Some { expectStr(p.name(), "qwen2", "fromName qwen2"); }
+    case let p Some { expectStr(p.name(), "qwen2", "fromName qwen2"); }
     case is None { expect(false, "fromName qwen2"); }
   }
   match bpetokenize.PreTokenizer.fromName("gpt-2") {
-    case imm p Some { expectStr(p.name(), "gpt2", "fromName gpt-2"); }
+    case let p Some { expectStr(p.name(), "gpt2", "fromName gpt-2"); }
     case is None { expect(false, "fromName gpt-2"); }
   }
   match bpetokenize.PreTokenizer.fromName("tekken") {
