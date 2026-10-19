@@ -39,28 +39,28 @@ pub const AA_TAA = 2u32;
 // tuned to it. Everything here may change between frames.
 pub struct TaaSettings {
   // How long the jitter sequence is (Halton 2, 3): 8 or 16 positions
-  pub samples u32 = 16u32;
+  pub samples: u32 = 16u32;
   // The history averages at most this many frames (a new frame has at least
   // 1 / this weight); more is smoother and slower to follow a change
-  pub maxSamples f32 = 16.;
+  pub maxSamples: f32 = 16.;
   // The box the history is clipped to is this many standard deviations of the
   // current frame's 3 x 3 wide (and never wider than its min and max): smaller
   // removes ghosts harder and shimmers more
-  pub clipGamma f32 = 1.5;
+  pub clipGamma: f32 = 1.5;
   // 1 weights samples by 1 / (1 + luma), so that the average is of the
   // colours as a tone mapper will show them and a bright sample cannot
   // dominate; 0 averages the light as it is (a supersample's average: error
   // 0.004 against 64 samples on the test's scene; 1 gives 0.007 and 0.5
   // 0.005, a bright edge on dark coming out a little darker, as a tone
   // mapper would show it)
-  pub hdrWeight f32 = 0.5;
+  pub hdrWeight: f32 = 0.5;
   // The contrast-adaptive sharpening after the resolve, 0 (off, and its pass
   // skipped) to 1
-  pub sharpness f32 = 0.25;
+  pub sharpness: f32 = 0.25;
   // The least weight a new frame has when the picture moves 8 pixels a frame
-  pub motionBlend f32 = 0.2;
+  pub motionBlend: f32 = 0.2;
   // The size of the jitter in pixels (1: from -0.5 to 0.5)
-  pub jitterScale f32 = 1.;
+  pub jitterScale: f32 = 1.;
 
   // 16 samples, sharpened: for a discrete GPU
   pub fn high() TaaSettings { new TaaSettings(samples: 16u32, maxSamples: 16., sharpness: 0.2) }
@@ -70,7 +70,7 @@ pub struct TaaSettings {
 
 // A jitter sequence's number: the Halton sequence's 'index'th number in
 // base 'b' (0 to 1); fxcommon.slang has the GPU's twin
-pub fn halton(index u32, b u32) f32 {
+pub fn halton(index: u32, b: u32) f32 {
   var result = 0.f;
   var f = 1.f;
   var i = index;
@@ -85,7 +85,7 @@ pub fn halton(index u32, b u32) f32 {
 // The jitter of frame 'frame' in pixels (x right, y down), from -0.5 to 0.5
 // times 'scale': the Halton (2, 3) sequence, 'samples' long, from its second
 // number (the first, index 0, is 0)
-pub fn jitterOf(frame u32, samples u32, scale f32, x &mut f32, y &mut f32) {
+pub fn jitterOf(frame: u32, samples: u32, scale: f32, x: &mut f32, y: &mut f32) {
   let index = (frame % samples) + 1u32;
   *x = (halton(index, 2u32) - 0.5) * scale;
   *y = (halton(index, 3u32) - 0.5) * scale;
@@ -95,34 +95,34 @@ pub fn jitterOf(frame u32, samples u32, scale f32, x &mut f32, y &mut f32) {
 // of the draw list named by index, last frame's model matrix and, for a
 // skinned item, last frame's pose
 pub struct MotionEntry {
-  pub item u32;
-  pub model Mat4;
-  pub bones u32;                // where its previous bones begin in 'MotionList.bones', or NO_BONES
+  pub item: u32;
+  pub model: Mat4;
+  pub bones: u32;                // where its previous bones begin in 'MotionList.bones', or NO_BONES
 }
 
 pub struct MotionList {
-  pub entries List[MotionEntry];
-  pub bones List[f32];          // previous poses' skinning matrices, as DrawList.bones has them
+  pub entries: List[MotionEntry];
+  pub bones: List[f32];          // previous poses' skinning matrices, as DrawList.bones has them
 
   pub fn empty() MotionList { new MotionList(List[MotionEntry].empty(), List[f32].empty()) }
 
-  pub fn clear(self &mut) {
+  pub fn clear(self: &mut) {
     entries.clear();
     bones.clear();
   }
 
-  pub fn len(self &) usize { entries.len() }
+  pub fn len(self: &) usize { entries.len() }
 
   // The draw list's item number 'item' (the index it was added at: after
   // 'list.add', that is 'list.len() - 1') was placed by 'previousModel'
   // last frame
-  pub fn add(self &mut, item usize, previousModel Mat4) {
+  pub fn add(self: &mut, item: usize, previousModel: Mat4) {
     entries.push(new MotionEntry(u32.from(item), previousModel, NO_BONES));
   }
 
   // The same for a skinned item, posed last frame as 'previousPose' (one
   // skinning matrix a bone, as DrawList.addSkinned takes)
-  pub fn addPosed(self &mut, item usize, previousModel Mat4, previousPose &Array[Mat4]) {
+  pub fn addPosed(self: &mut, item: usize, previousModel: Mat4, previousPose: &Array[Mat4]) {
     let first = u32.from(bones.len() / BONE_FLOATS);
     var b = 0usize;
     while b < previousPose.len {
@@ -140,14 +140,14 @@ pub struct MotionList {
 
 // What the resolve's immediates hold (taa.slang's TaaImmediates)
 struct TaaImmediates {
-  maxSamples f32;
-  clipGamma f32;
-  hdrWeight f32;
-  sharpness f32;
-  flags u32;
-  motionBlend f32;
-  pad0 f32;
-  pad1 f32;
+  maxSamples: f32;
+  clipGamma: f32;
+  hdrWeight: f32;
+  sharpness: f32;
+  flags: u32;
+  motionBlend: f32;
+  pad0: f32;
+  pad1: f32;
 }
 
 // The kinds of velocity draw
@@ -161,50 +161,50 @@ const VELOCITY_PBR_CUT_SKINNED = 6u32;
 
 // The pass: pipelines, the textures of a size and the bind groups over them
 pub struct TaaPass {
-  pub shader ShaderModule;
-  pub layout BindGroupLayout;
-  pub pipelineLayout PipelineLayout;
-  pub resolve RenderPipeline;
-  pub sharpen RenderPipeline;
-  pub sampler Sampler;
+  pub shader: ShaderModule;
+  pub layout: BindGroupLayout;
+  pub pipelineLayout: PipelineLayout;
+  pub resolve: RenderPipeline;
+  pub sharpen: RenderPipeline;
+  pub sampler: Sampler;
   // The velocity pass
-  pub shaderVelocity ShaderModule;
-  pub shaderLit ShaderModule;
-  pub shaderPbr ShaderModule;
-  pub velocityLayout BindGroupLayout;      // group 2
-  pub layoutOpaque PipelineLayout;
-  pub layoutLit PipelineLayout;
-  pub layoutPbr PipelineLayout;
-  pub opaque RenderPipeline;
-  pub opaqueSkinned RenderPipeline;
-  pub litCut RenderPipeline;
-  pub litCutSkinned RenderPipeline;
-  pub pbrCut RenderPipeline;
-  pub pbrCutSkinned RenderPipeline;
+  pub shaderVelocity: ShaderModule;
+  pub shaderLit: ShaderModule;
+  pub shaderPbr: ShaderModule;
+  pub velocityLayout: BindGroupLayout;      // group 2
+  pub layoutOpaque: PipelineLayout;
+  pub layoutLit: PipelineLayout;
+  pub layoutPbr: PipelineLayout;
+  pub opaque: RenderPipeline;
+  pub opaqueSkinned: RenderPipeline;
+  pub litCut: RenderPipeline;
+  pub litCutSkinned: RenderPipeline;
+  pub pbrCut: RenderPipeline;
+  pub pbrCutSkinned: RenderPipeline;
   // The textures (the size of the frame): the history twice, the velocity,
   // the sharpened picture
-  pub history0 Texture;
-  pub history1 Texture;
-  pub velocity Texture;
-  pub sharp Texture;
-  pub resolveGroups List[BindGroup];       // [k]: reads history k, writes the other
-  pub sharpenGroups List[BindGroup];       // [k]: reads history k
+  pub history0: Texture;
+  pub history1: Texture;
+  pub velocity: Texture;
+  pub sharp: Texture;
+  pub resolveGroups: List[BindGroup];       // [k]: reads history k, writes the other
+  pub sharpenGroups: List[BindGroup];       // [k]: reads history k
   // Last frame's matrices of the instances, and the previous bones
-  pub previousModels Buffer;
-  pub previousBones Buffer;
-  pub previousBoneBases Buffer;
-  pub instanceCapacity u32;
-  pub boneCapacity u32;
-  pub velocityGroup BindGroup;
-  pub modelData List[f32];
-  pub baseData List[u32];
-  pub itemEntry List[u32];                 // per draw item: its MotionEntry's index + 1, or 0
-  pub latest u32;                          // the history the last resolve wrote (0 or 1)
-  pub drawn u32;                           // batches the last velocity pass drew
-  pub hasVelocity bool;                    // a velocity pass drew this frame
+  pub previousModels: Buffer;
+  pub previousBones: Buffer;
+  pub previousBoneBases: Buffer;
+  pub instanceCapacity: u32;
+  pub boneCapacity: u32;
+  pub velocityGroup: BindGroup;
+  pub modelData: List[f32];
+  pub baseData: List[u32];
+  pub itemEntry: List[u32];                 // per draw item: its MotionEntry's index + 1, or 0
+  pub latest: u32;                          // the history the last resolve wrote (0 or 1)
+  pub drawn: u32;                           // batches the last velocity pass drew
+  pub hasVelocity: bool;                    // a velocity pass drew this frame
 
-  pub fn create(device &mut Device, frameLayout &BindGroupLayout, materialLayout &BindGroupLayout,
-      pbrMaterialLayout &BindGroupLayout, frameBuffer &Buffer) TaaPass {
+  pub fn create(device: &mut Device, frameLayout: &BindGroupLayout, materialLayout: &BindGroupLayout,
+      pbrMaterialLayout: &BindGroupLayout, frameBuffer: &Buffer) TaaPass {
     var shader = device.createShaderModule(&TAA_SPIRV);
     let entries = [new BindGroupLayoutEntry(binding: 0u32, visibility: SHADER_STAGE_FRAGMENT),
       new BindGroupLayoutEntry(binding: 1u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_SAMPLER),
@@ -276,7 +276,7 @@ pub struct TaaPass {
       List[u32].empty(), 0u32, 0u32, false)
   }
 
-  pub fn isValid(self &) bool {
+  pub fn isValid(self: &) bool {
     resolve.isValid() && sharpen.isValid() && opaque.isValid() && opaqueSkinned.isValid() && litCut.isValid()
       && litCutSkinned.isValid() && pbrCut.isValid() && pbrCutSkinned.isValid() && velocityGroup.isValid()
       && sampler.isValid()
@@ -286,8 +286,8 @@ pub struct TaaPass {
   // set) and the groups over them. 'current' is the frame to resolve (the
   // renderer's, or the depth of field's); 'depth' the scene's depth. The
   // GPU is waited for. The histories start empty (their counts 0).
-  pub fn remake(self &mut, device &mut Device, enabled bool, width u32, height u32, current &TextureView,
-      depth &TextureView, frameBuffer &Buffer, sharpness f32) {
+  pub fn remake(self: &mut, device: &mut Device, enabled: bool, width: u32, height: u32, current: &TextureView,
+      depth: &TextureView, frameBuffer: &Buffer, sharpness: f32) {
     resolveGroups = List[BindGroup].empty();
     sharpenGroups = List[BindGroup].empty();
     let w = if enabled { width } else { 1u32 };
@@ -316,7 +316,7 @@ pub struct TaaPass {
   // Which picture the next stage reads, as an index into the sources 'ImageFx'
   // makes (0: the history 0, 1: the history 1, 2: the sharpened picture): the
   // sharpened picture, or, with no sharpening, the history just written
-  pub fn outputSource(self &, sharpness f32) u32 {
+  pub fn outputSource(self: &, sharpness: f32) u32 {
     if sharpness > 0. { return 2u32; }
     latest
   }
@@ -329,9 +329,9 @@ pub struct TaaPass {
   // items the renderer gathered (the draw list's, then the scene's), so those are read, not the list; the
   // scene's items do not move as far as motion goes (the camera's motion is the depth's), and a batch the
   // depth pyramid culls (occlusion) has its copies placed by the GPU, so it has no previous matrices here.
-  pub fn writePrevious(self &mut, device &mut Device, frameBuffer &Buffer, r &Renderer, list &DrawList,
-      motion &MotionList) bool {
-    let items &List[DrawItem] = if r.frameItemsLive { &r.frameItems } else { &list.items };
+  pub fn writePrevious(self: &mut, device: &mut Device, frameBuffer: &Buffer, r: &Renderer, list: &DrawList,
+      motion: &MotionList) bool {
+    let items: &List[DrawItem] = if r.frameItemsLive { &r.frameItems } else { &list.items };
     itemEntry.clear();
     var i = 0usize;
     while i < items.len() {
@@ -421,7 +421,7 @@ pub struct TaaPass {
   // Draw the batches that hold a moving copy into the velocity texture,
   // after the scene, depth tested against the scene's depth ('depth', kept
   // by the main pass)
-  pub fn recordVelocity(self &mut, encoder &mut CommandEncoder, r &Renderer, list &DrawList, depth &Texture) {
+  pub fn recordVelocity(self: &mut, encoder: &mut CommandEncoder, r: &Renderer, list: &DrawList, depth: &Texture) {
     drawn = 0u32;
     let attachment = new RenderPassColorAttachment(view: velocity.createView(), clearValue: new Color(0., 0., 0., 0.));
     let depthAttachment = new RenderPassDepthStencilAttachment(view: depth.createView(), depthLoadOp: LOAD_OP_LOAD,
@@ -444,7 +444,7 @@ pub struct TaaPass {
       }
       if !moving { continue; }
       let first = *r.keys[usize.from(batch.first)];
-      let items &List[DrawItem] = if r.frameItemsLive { &r.frameItems } else { &list.items };
+      let items: &List[DrawItem] = if r.frameItemsLive { &r.frameItems } else { &list.items };
       let item = items[usize.from(first.item)];
       let m = r.meshes[item.mesh.slot].current();
       let kind = velocityKindOf(r, item, m);
@@ -491,7 +491,7 @@ pub struct TaaPass {
   // Resolve 'current' (the frame, jittered) and the history into the other
   // history, then sharpen it into 'sharp' if 'sharpness' says. The new
   // history is 'latestHistory()'.
-  pub fn recordResolve(self &mut, encoder &mut CommandEncoder, s &TaaSettings, hasVelocity bool) {
+  pub fn recordResolve(self: &mut, encoder: &mut CommandEncoder, s: &TaaSettings, hasVelocity: bool) {
     let read = latest;
     let write = 1u32 - latest;
     let flags = if hasVelocity { 1u32 } else { 0u32 };
@@ -509,7 +509,7 @@ pub struct TaaPass {
 // Which velocity pipeline a draw of 'item' (mesh 'm') is drawn with, or
 // VELOCITY_NONE if it is not drawn (a custom pipeline's material, a
 // see-through one: they are treated as static)
-fn velocityKindOf(r &Renderer, item &DrawItem, m &GpuMesh) u32 {
+fn velocityKindOf(r: &Renderer, item: &DrawItem, m: &GpuMesh) u32 {
   if !r.materials.alive(item.material.slot) { return VELOCITY_NONE; }
   let ms = r.materials[item.material.slot];
   let skinned = m.isSkinned();
@@ -524,8 +524,8 @@ fn velocityKindOf(r &Renderer, item &DrawItem, m &GpuMesh) u32 {
   if skinned { VELOCITY_OPAQUE_SKINNED } else { VELOCITY_OPAQUE }
 }
 
-fn resolveGroup(device &mut Device, layout &BindGroupLayout, frameBuffer &Buffer, sampler &Sampler, current &TextureView,
-    history &TextureView, depth &TextureView, velocity &TextureView) BindGroup {
+fn resolveGroup(device: &mut Device, layout: &BindGroupLayout, frameBuffer: &Buffer, sampler: &Sampler, current: &TextureView,
+    history: &TextureView, depth: &TextureView, velocity: &TextureView) BindGroup {
   let entries = [BindGroupEntry.buffer(0u32, frameBuffer), BindGroupEntry.sampler(1u32, sampler),
     BindGroupEntry.texture(2u32, current), BindGroupEntry.texture(3u32, history), BindGroupEntry.texture(4u32, depth),
     BindGroupEntry.texture(5u32, velocity)];
@@ -537,8 +537,8 @@ fn resolveGroup(device &mut Device, layout &BindGroupLayout, frameBuffer &Buffer
 // another shader passes though its depth differs in the last bit: a negative
 // bias is towards the camera) and not written; the velocity texture
 // (rgba16float) written
-fn velocityPipeline(device &mut Device, layout &PipelineLayout, shader &ShaderModule, vertex &str, fragment &str,
-    buffers &Array[VertexBufferLayout]) RenderPipeline {
+fn velocityPipeline(device: &mut Device, layout: &PipelineLayout, shader: &ShaderModule, vertex: &str, fragment: &str,
+    buffers: &Array[VertexBufferLayout]) RenderPipeline {
   let desc = new RenderPipelineDescriptor(layout: layout, vertexModule: shader, vertexEntryPoint: vertex, buffers: buffers,
     fragmentModule: shader, fragmentEntryPoint: fragment, colorFormat: TEXTURE_FORMAT_RGBA16_FLOAT,
     cullMode: CULL_MODE_BACK, depthFormat: TEXTURE_FORMAT_DEPTH32_FLOAT, depthWriteEnabled: false,
@@ -550,7 +550,7 @@ fn velocityPipeline(device &mut Device, layout &PipelineLayout, shader &ShaderMo
 
 // spirv-begin taa.spv TAA_SPIRV
 // Written by tools/shaders/shaders.py from taa.slang (sha256 e66e1005695f4ab79a89f5c2d24ec4e37da7f5f7b6d09a3bc9bfef8ac0b8730e): do not edit.
-let TAA_SPIRV Array[u32, 4338] = [
+let TAA_SPIRV: Array[u32, 4338] = [
   0x07230203u32, 0x00010500u32, 0x00280000u32, 0x000004aeu32, 0x00000000u32, 0x00020011u32,
   0x00000001u32, 0x0006000bu32, 0x000000c5u32, 0x4c534c47u32, 0x6474732eu32, 0x3035342eu32,
   0x00000000u32, 0x0003000eu32, 0x00000000u32, 0x00000001u32, 0x000a000fu32, 0x00000000u32,
@@ -1279,7 +1279,7 @@ let TAA_SPIRV Array[u32, 4338] = [
 
 // spirv-begin taavelocity.spv TAAVELOCITY_SPIRV
 // Written by tools/shaders/shaders.py from taavelocity.slang (sha256 6893d27e2bb437db6f2d9649b6c5616ccd3d01c73c2fef6d0208212f0acf6967): do not edit.
-let TAAVELOCITY_SPIRV Array[u32, 2472] = [
+let TAAVELOCITY_SPIRV: Array[u32, 2472] = [
   0x07230203u32, 0x00010500u32, 0x00280000u32, 0x000004d4u32, 0x00000000u32, 0x00020011u32,
   0x00000001u32, 0x000b000au32, 0x5f565053u32, 0x5f52484bu32, 0x726f7473u32, 0x5f656761u32,
   0x66667562u32, 0x735f7265u32, 0x61726f74u32, 0x635f6567u32, 0x7373616cu32, 0x00000000u32,
@@ -1697,7 +1697,7 @@ let TAAVELOCITY_SPIRV Array[u32, 2472] = [
 
 // spirv-begin taavelocitylit.spv TAAVELOCITYLIT_SPIRV
 // Written by tools/shaders/shaders.py from taavelocitylit.slang (sha256 b2cc8fe82769697c461efe14b7fa9bd2d771378098cb1868c4826fe44febcbdd): do not edit.
-let TAAVELOCITYLIT_SPIRV Array[u32, 2965] = [
+let TAAVELOCITYLIT_SPIRV: Array[u32, 2965] = [
   0x07230203u32, 0x00010500u32, 0x00280000u32, 0x000004e1u32, 0x00000000u32, 0x00020011u32,
   0x00000001u32, 0x000b000au32, 0x5f565053u32, 0x5f52484bu32, 0x726f7473u32, 0x5f656761u32,
   0x66667562u32, 0x735f7265u32, 0x61726f74u32, 0x635f6567u32, 0x7373616cu32, 0x00000000u32,
@@ -2198,7 +2198,7 @@ let TAAVELOCITYLIT_SPIRV Array[u32, 2965] = [
 
 // spirv-begin taavelocitypbr.spv TAAVELOCITYPBR_SPIRV
 // Written by tools/shaders/shaders.py from taavelocitypbr.slang (sha256 15883837d3afd9da4bc8ad1443484ea0f10e9c5c7f474bc2e0065493263e819e): do not edit.
-let TAAVELOCITYPBR_SPIRV Array[u32, 3007] = [
+let TAAVELOCITYPBR_SPIRV: Array[u32, 3007] = [
   0x07230203u32, 0x00010500u32, 0x00280000u32, 0x000004e2u32, 0x00000000u32, 0x00020011u32,
   0x00000001u32, 0x000b000au32, 0x5f565053u32, 0x5f52484bu32, 0x726f7473u32, 0x5f656761u32,
   0x66667562u32, 0x735f7265u32, 0x61726f74u32, 0x635f6567u32, 0x7373616cu32, 0x00000000u32,

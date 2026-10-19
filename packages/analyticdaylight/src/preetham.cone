@@ -22,11 +22,11 @@
 
 // The coefficients of one distribution (Y, x or y), from the turbidity
 pub struct Perez {
-  pub a f32;
-  pub b f32;
-  pub c f32;
-  pub d f32;
-  pub e f32;
+  pub a: f32;
+  pub b: f32;
+  pub c: f32;
+  pub d: f32;
+  pub e: f32;
 }
 
 // The largest sun angle from the zenith the fits are used at (own)
@@ -36,31 +36,31 @@ pub const MAX_SUN_ZENITH = 1.5f;
 const NITS_PER_KCD = 1000.f;
 
 // The Y distribution's coefficients at turbidity 't' (S, page 98)
-pub fn perezY(t f32) Perez {
+pub fn perezY(t: f32) Perez {
   new Perez(0.1787 * t - 1.4630, -0.3554 * t + 0.4275, -0.0227 * t + 5.3251, 0.1206 * t - 2.5771, -0.0670 * t + 0.3703)
 }
 
 // The x distribution's (S, page 98)
-pub fn perezX(t f32) Perez {
+pub fn perezX(t: f32) Perez {
   new Perez(-0.0193 * t - 0.2592, -0.0665 * t + 0.0008, -0.0004 * t + 0.2125, -0.0641 * t - 0.8989, -0.0033 * t + 0.0452)
 }
 
 // The y distribution's (S, page 98)
-pub fn perezYc(t f32) Perez {
+pub fn perezYc(t: f32) Perez {
   new Perez(-0.0167 * t - 0.2608, -0.0950 * t + 0.0092, -0.0079 * t + 0.2102, -0.0441 * t - 1.6537, -0.0109 * t + 0.0529)
 }
 
 // The zenith luminance in nits for turbidity 't' and sun angle 'thetaS' from
 // the zenith (S, page 98: Yz = (4.0453 T - 4.9710) tan chi - 0.2155 T + 2.4192
 // kcd/m2, chi = (4/9 - T/120)(pi - 2 thetaS))
-pub fn zenithLuminance(t f32, thetaS f32) f32 {
+pub fn zenithLuminance(t: f32, thetaS: f32) f32 {
   let chi = (4. / 9. - t / 120.) * (pi - 2. * thetaS);
   ((4.0453 * t - 4.9710) * tan(chi) - 0.2155 * t + 2.4192) * NITS_PER_KCD
 }
 
 // The zenith's x chromaticity (S, page 98, the matrix as printed there, four
 // decimals: [T^2 T 1] times a 3 x 4 matrix times [thetaS^3 thetaS^2 thetaS 1])
-pub fn zenithChromaX(t f32, th f32) f32 {
+pub fn zenithChromaX(t: f32, th: f32) f32 {
   let th2 = th * th;
   let th3 = th2 * th;
   t * t * (0.0017 * th3 - 0.0037 * th2 + 0.0021 * th)
@@ -69,7 +69,7 @@ pub fn zenithChromaX(t f32, th f32) f32 {
 }
 
 // The zenith's y chromaticity (S, page 98)
-pub fn zenithChromaY(t f32, th f32) f32 {
+pub fn zenithChromaY(t: f32, th: f32) f32 {
   let th2 = th * th;
   let th3 = th2 * th;
   t * t * (0.0028 * th3 - 0.0061 * th2 + 0.0032 * th)
@@ -79,7 +79,7 @@ pub fn zenithChromaY(t f32, th f32) f32 {
 
 // The Perez function F(theta, gamma) for 'p', given cos theta (held at 0.01
 // or more, so the horizon is finite) and the angle gamma from the sun
-pub fn perezF(p &Perez, cosTheta f32, gamma f32) f32 {
+pub fn perezF(p: &Perez, cosTheta: f32, gamma: f32) f32 {
   let ct = if cosTheta < 0.01 { 0.01 } else { cosTheta };
   let cg = cos(gamma);
   (1. + p.a * libc.expf(p.b / ct)) * (1. + p.c * libc.expf(p.d * gamma) + p.e * cg * cg)
@@ -88,21 +88,21 @@ pub fn perezF(p &Perez, cosTheta f32, gamma f32) f32 {
 // One sky: the model's numbers for a turbidity and a sun, ready to ask the
 // colour of any direction
 pub struct PreethamSky {
-  pub turbidity f32;
-  pub sunZenith f32;       // the sun's angle from the zenith, held to MAX_SUN_ZENITH
-  pub zenithY f32;         // nits
-  pub zenithX f32;
-  pub zenithYc f32;
-  pub y Perez;
-  pub x Perez;
-  pub yc Perez;
-  pub f0Y f32;             // F(0, thetaS) for each of the three
-  pub f0X f32;
-  pub f0Yc f32;
+  pub turbidity: f32;
+  pub sunZenith: f32;       // the sun's angle from the zenith, held to MAX_SUN_ZENITH
+  pub zenithY: f32;         // nits
+  pub zenithX: f32;
+  pub zenithYc: f32;
+  pub y: Perez;
+  pub x: Perez;
+  pub yc: Perez;
+  pub f0Y: f32;             // F(0, thetaS) for each of the three
+  pub f0X: f32;
+  pub f0Yc: f32;
 
   // The sky for turbidity 't' (2 to 6 is the fitted range) and a sun whose
   // direction is 'sun' (unit length, y up)
-  pub fn make(t f32, sun Vec3) PreethamSky {
+  pub fn make(t: f32, sun: Vec3) PreethamSky {
     let raw = acos(clampUnit(sun.y));
     let ts = if raw > MAX_SUN_ZENITH { MAX_SUN_ZENITH } else { raw };
     let py = perezY(t);
@@ -115,7 +115,7 @@ pub struct PreethamSky {
   // The sky's radiance in direction 'dir' (unit length), nits, linear RGB,
   // for the sun in direction 'sun' (the one this was made for). A direction
   // below the horizon is given the horizon's.
-  pub fn radiance(self &, dir Vec3, sun Vec3) Vec3 {
+  pub fn radiance(self: &, dir: Vec3, sun: Vec3) Vec3 {
     let cosGamma = clampUnit(dir.dot(sun));
     let gamma = acos(cosGamma);
     let ct = if dir.y < 0. { 0. } else { dir.y };
@@ -129,7 +129,7 @@ pub struct PreethamSky {
 // CIE xyY to linear sRGB (Rec. 709 primaries, D65): X = x Y / y, Z = (1 - x - y) Y / y,
 // then IEC 61966-2-1's matrix (S: the standard's matrix, as it is quoted
 // everywhere, not fetched)
-pub fn xyYToLinear(x f32, y f32, lum f32) Vec3 {
+pub fn xyYToLinear(x: f32, y: f32, lum: f32) Vec3 {
   let yy = if y < 0.001 { 0.001 } else { y };
   let bigX = x * lum / yy;
   let bigZ = (1. - x - yy) * lum / yy;

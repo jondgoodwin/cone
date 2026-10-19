@@ -81,9 +81,8 @@ Penny's default from the enum build, not Jon's ruling* [Penny 22 Sep], standing
 unless he objects. Open traits it may name with `is` (below).
 
 **A variant may be declared as a type.** `Ok(i32);` in an enum body (a name and a
-type in parentheses; a name and a type without them, `time datetime;`, is always a
-common field, whatever its case, and so is a name and a tuple type, `t (A, B);`:
-`parseParenHoldsComma` tells the tuple from the parentheses by a top-level comma,
+type in parentheses; a name and a type after a `:`, `time: datetime;`, is always a
+common field, whatever its case, and so is a name and a tuple type, `t: (A, B);`,
 so a tuple variant will need a spelling of its own) is parsed into the variant a struct would be with
 one field, and nothing marks it but that field's name: `payloadName`, `(payload)`,
 which no source can spell. `structIsTypeVariant` and `structTypeVariantField` ask.
@@ -466,13 +465,13 @@ nothing (the body may rely only on what every alternative gives). Pinned by
 
 ⚠ **A slot is filled by no stronger a `self` than the trait's method declares.**
 `fnSigVrefEqual` skips the receiver, so a vtable slot's match would meet a trait's
-`self &` with a method taking `self &mut`, and a call through a `&<Trait` would
+`self: &` with a method taking `self: &mut`, and a call through a `&<Trait` would
 change what it was lent to read. `structMapVtableImpl` asks `fnSigVrefSelfFits`:
-the trait's borrow permission must `permMatches` the implementer's (a `self &mut`
+the trait's borrow permission must `permMatches` the implementer's (a `self: &mut`
 method meets `&`, `&uni` meets `&mut`, `&imm` meets nothing but `&imm`), and a
 `self` that is not a borrow is not compared. A closure's method is held to it
 too: it takes the `self` its body needs, so a literal that changes state is
-refused where the trait says `self &`, under every holder
+refused where the trait says `self: &`, under every holder
 ([closure](closure.md)). `fnSigCallRefusal` says why a coercion was refused
 (`fnSigVrefSelfRefusal`, `ErrorVtableSelf`), at an argument, an initializer and
 an owner's making; other positions report the generic type mismatch.
@@ -535,7 +534,7 @@ their `typecheck` scenarios pin them.
 | `traits` | every abstraction whose members were taken — the base, and each further name in the `is` list (every name, for an enum or a variant) — or NULL. Written where the members are taken (`structInheritTrait`), and for an instance's `is` entry whose condition it meets as the instance is cloned (`cloneStructNode`), and read by type check's two requirement checks and by a library compile's export of the methods meeting a requirement (`fnIsTraitMethod`), the only things that still need to know which trait a requirement came from. **Which entry is the base is asked of `basetrait`, not of this list's order**, since the field walk that fills it runs backwards |
 | `fields` | all fields in layout order. A declared field may carry a fold clause (`FieldDclNode.fold`); a folded copy is never here |
 | `vtable` | NULL until `structMakeVtable` |
-| `callsig`, `callmut` | on the trait the compiler writes for a signature behind a virtual reference or an owner (`&<fn(sig)`, `Uni[fn(sig)]`; `fnSigCallTrait`): the signature, and whether its one `()` takes `self &mut` (else `self &`). NULL and 0 on every other type. `structMapVtableImpl` holds an implementer's `()` to that `self` (`fnSigCallSelfFits`) ([closure](closure.md)) |
+| `callsig`, `callmut` | on the trait the compiler writes for a signature behind a virtual reference or an owner (`&<fn(sig)`, `Uni[fn(sig)]`; `fnSigCallTrait`): the signature, and whether its one `()` takes `self: &mut` (else `self: &`). NULL and 0 on every other type. `structMapVtableImpl` holds an implementer's `()` to that `self` (`fnSigCallSelfFits`) ([closure](closure.md)) |
 | `tagnbr` | discriminant value, assigned at parse: the value the author pinned, which may be negative, or the next in sequence (`structTagFollow`). **All 64 bits, read as `tagstate` says** |
 | `tagstate` | `TagUnassigned` between reading a variant's name and settling its value, so keeping a pinned value and assigning the next in sequence are one test; after that, **whether `tagnbr` is below zero** (`TagNegative`) or reads unsigned (`TagNonNeg`). A value may be anything `u64` or `i64` holds, and 64 bits hold either but not both — `0xFFFFFFFFFFFFFFFF` and `-1` are the same bits — so the duplicate check (`structTagSame`) and the fit check against a declared type (`enumTagFits`) each read the number the author meant. **A variant of an extension stays unassigned until name resolution**, which is when the base's values are known and its own can continue from them |
 | `llvmtype` | generation memoizes here; non-NULL means "already generated" |
@@ -737,7 +736,7 @@ LLVM struct, which is why a reference to a trait could not be lowered.
   fields as soon as it is name resolved, before the enum is type checked; type check
   validates the mark and refuses a second one.
 - **`tag` is recognized only where a field's type is written**, so it is not a
-  reserved word and `pub tag i32` still declares a field named `tag`. Written on
+  reserved word and `pub tag: i32` still declares a field named `tag`. Written on
   anything but an enum it is refused here, which is what keeps the type-check rule
   below to one question: does this enum carry more than one.
 - **An enum with no variants is `ErrorNoVariants`.** Its identity is its variant
@@ -1134,7 +1133,7 @@ Steps 9 to 11 are `structCheckMembers`, run from the members queue:
    requirement with no body, inherited as such, is unmet in a struct; a trait
    may pass it on. **`Self` in the requirement is this type**, as it is in a
    default cloned in: `fnSigVrefEqual` is given this type as its `selftype`, so
-   the trait's `o &Self` is met by this type's `o &Self`. Not for a closed
+   the trait's `o: &Self` is met by this type's `o: &Self`. Not for a closed
    trait (`HasTagField` or `SameSize`, an enum among them), whose requirement a
    variant meets exactly as written, since a call through a reference to it
    dispatches by the tag with an argument of any variant; nor when a vtable is
@@ -1159,9 +1158,9 @@ no declaration: a construction it takes is lowered to the struct's literal
 ([literals](literals.md), "Construction").
 
 A struct's function named `init`, or joining the overload name `init`, is a
-**declared init**, and it fills its value in place: `fn init(self &new, ...)`,
+**declared init**, and it fills its value in place: `fn init(self: &new, ...)`,
 returning nothing (`fnDclInitCheck`, from `fnDclTypeCheck` once the signature
-is checked; `ErrorInitDcl`, the body then skipped). `self &new` on any other
+is checked; `ErrorInitDcl`, the body then skipped). `self: &new` on any other
 function is `ErrorPermNew`, and so is `&new` anywhere but a signature's first
 parameter named `self`: `fnSigTypeCheck` sets `refAllowNewPerm` around that
 parameter alone, and `refTypeCheck` refuses the permission without it, putting
@@ -1265,7 +1264,7 @@ it ([flow](../phases/flow.md), "Calls"):
   (`siSumHasPayload`): a reference narrowed into a variant, or a borrow a free function
   returns out of an enum, is asked the same, and what reshapes an enum is the whole value stored
   over or swapped (`ErrorVariantReshape`). Its alternatives are writable: a `&uni` variable passed to a
-  `&`, `&mut` or `&uni` is borrowed from, so a `self &uni` method may be called
+  `&`, `&mut` or `&uni` is borrowed from, so a `self: &uni` method may be called
   repeatedly.
 
 ### CarriesRegion
@@ -1286,7 +1285,7 @@ What the marker brings:
 
 - **Its shape** (`structCarriesRegionCheck`, at the end of name resolution,
   beside `structLendsDeclared`): the type declares an init, and every init it
-  declares ends with a parameter `region *MemRegion` that has no default.
+  declares ends with a parameter `region: *MemRegion` that has no default.
   Otherwise `ErrorRegionMark`. Where the type keeps the region, and what it
   does with it, are the type's own; a type that wraps another (`String`'s
   `List[u8]`, `Set`'s `Dict`) passes the region on to it.
@@ -1318,7 +1317,7 @@ What the marker brings:
 holds values in memory it points to -- a collection's block, a pool's slots, an
 arena's allocations -- and so cannot be traced by its fields, which hold a raw
 pointer. It says how a garbage collector reaches them. The type declares
-`GcTraceElements` and one method, `fn gcTraceElements(self &mut) I`, `I` a cursor
+`GcTraceElements` and one method, `fn gcTraceElements(self: &mut) I`, `I` a cursor
 that declares `is Iterator[&mut E]`: a writable reference to each value it holds,
 of a type `E` whose size is known where it is written. The compiler finds `E` from
 the cursor's `next` (`structGcTraceElements`, `structGcTraceElementsElem`), and
@@ -1389,7 +1388,7 @@ and the compiler knows nothing else of that type. What it brings:
 ### Hash
 
 `Hash` is an ordinary trait, declared in core (`pub trait Hash { pub fn
-hash(self &, h &mut Hasher); }`), that the compiler knows by its name and
+hash(self: &, h: &mut Hasher); }`), that the compiler knows by its name and
 package, as it knows `TypeRecord` (`coreIsHashTrait`, `coreIsHasher`,
 `ir/stmt/intrinsic.c`). It is not one of the built-in markers: it has a method,
 so a type that writes a `hash` of the right signature fits it structurally
@@ -1505,7 +1504,7 @@ field arm of `fnCallLowerMethod` calls it; a bare `self.x` arrives there through
 then on into that field's type where the name is folded there too, then the
 call continues exactly as today from overload selection. A reference receiver
 dereferences and reborrows the field it lands on with the reference's own
-permission, so `(&mut car).thrust()` reaches `thrust(self &mut)` as
+permission, so `(&mut car).thrust()` reaches `thrust(self: &mut)` as
 `(&mut car.engine).thrust()` does; a field that is itself a reference is the
 receiver as it stands; a value receiver stays a value, which reaches a method
 taking `self` by value. The fold adds no borrowing rule the language lacks.
@@ -1814,7 +1813,7 @@ integer on Win64, and on SysV x86-64 one INTEGER eightbyte, a `ptr`), and the C-
 cannot import core (core imports libc), declare their strings with it. So the compiler
 makes the struct whole in `stdlibInit` (`cstrTypeDcl`, name resolved, type checked on
 first use, with the field `p`) and binds the name for every module as it does
-`str`. Core's source declares `pub struct cstr { p *u8; ... }` with its methods
+`str`. Core's source declares `pub struct cstr { p: *u8; ... }` with its methods
 (`fromPtr`, `fromLiteral`, `fromOwned`, `ptr`, `len`, `view`), and `stdlibAdoptCStr`
 hands the parser the compiler's node, emptied, for that declaration: a compile
 with core gets core's field and methods, one without (libc's own) the
@@ -2217,7 +2216,7 @@ and `extractvalue`, and `vtblidx` for vtable slots.
 - **A finalizer an enrichment adds runs only while the value is typed as the
   enrichment.** Where the base declares no `final`, the enrichment may declare one,
   and it is this type's drop and not the base's. A value that crosses to the base's
-  name by value is dropped as the base — so `let p Plain = new PlainFin(1)`, or passing
+  name by value is dropped as the base — so `let p: Plain = new PlainFin(1)`, or passing
   a `PlainFin` to a parameter typed `Plain`, runs no finalizer at all. Measured, not
   pinned: nothing refuses it and nothing decides it. A base's own `final` has no
   such gap, since every enrichment carries a copy.
@@ -2247,7 +2246,7 @@ and `extractvalue`, and `vtblidx` for vtable slots.
   leave a call to a function that does not exist. The same absence is why a
   virtual reference to another trait is built from the variant's vtable and never
   from one for the enum. **The exception is a method whose written receiver names
-  the enum** (`self &Lamp`, `&mut Lamp`, `self Lamp`; `structIsWholeEnumMethod`,
+  the enum** (`self: &Lamp`, `&mut Lamp`, `self: Lamp`; `structIsWholeEnumMethod`,
   read off the parameter as written, so `Self` and an omitted type are the
   variant's): it is one function over the whole enum. `structInheritTrait` and
   `structEnumCloneOwnMethods` do not clone it, `structMakeVtable` gives it no slot,
@@ -2260,14 +2259,14 @@ and `extractvalue`, and `vtblidx` for vtable slots.
   variant reaches it by `fnCallLowerMethodOn` finding it in the variant's enum
   when the variant has no method of that name, the receiver widened to the enum by
   the ordinary candidate test, so a variant's own method of the same name is the
-  one a variant-typed value calls. A generic enum's (`self &Box[T]`) is not built:
+  one a variant-typed value calls. A generic enum's (`self: &Box[T]`) is not built:
   the receiver is not a plain name, so it stays a per-variant method and is
   refused as before (`ErrorInvType`).
   **A by-value receiver that names no enum is the other half**
   (`structTakesSelfByValue`: a method with a body whose `self` is not a reference;
   one naming the enum is whole-enum above): each variant's clone has its own
   `Self` for the receiver, a parameter and the result, so
-  `setN(var self, v i32) Self` is `setN(var self A, v i32) A` in `A`.
+  `setN(var self, v: i32) Self` is `setN(var self: A, v: i32) A` in `A`.
   The enum's own copy says `Self` = the enum, and nothing dispatches it (the call
   on an enum value is refused above), so the copy itself is no requirement:
   `structMakeVtable` gives it no slot. A variant that declares its OWN method of
@@ -2281,7 +2280,7 @@ and `extractvalue`, and `vtblidx` for vtable slots.
   variant returning the enum where `Self` is wanted is a conversion and is refused.
   Without the vtable rule a variant whose clone differs in `Self` could not fill the
   slot, `structMapVtableImpl` would drop the variant from the enum's vtable list,
-  and a tag index would read past it. A `self &` copy stays a requirement and a
+  and a tag index would read past it. A `self: &` copy stays a requirement and a
   slot, met by exactly its signature (`selftype` NULL in `structCheckTraitReqs`).
 - **`structAddField` drops a duplicate-named field from `fields`** while the
   parser has already assigned indices, so positional literals shift.

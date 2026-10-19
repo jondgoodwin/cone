@@ -224,7 +224,7 @@ builds. The record's finalizer is `finalize`'s expansion made a function of
 its own, and its trace `trace`'s; what the record holds, and why each slot is
 never null, is
 [Generation](../phases/generation.md), "The allocation header". The same record
-is what a region whose `alloc` takes `ty *TypeRecord` is handed
+is what a region whose `alloc` takes `ty: *TypeRecord` is handed
 ([What a region is](module.md)). Accepting core's `typeRecord` declaration
 also remembers the struct its result points at (`typeRecordStruct`), which is
 how generation builds a root map's records, where no declaration names the

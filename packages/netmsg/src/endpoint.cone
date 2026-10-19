@@ -47,11 +47,11 @@
 
 // A connection an endpoint holds
 struct ConnectionSlot {
-  key String;             // the other end's address as text
-  id u32;
-  conn Connection;
-  session u64;
-  due i64;                // when the connection asked to be ticked (steady-clock ns)
+  key: String;             // the other end's address as text
+  id: u32;
+  conn: Connection;
+  session: u64;
+  due: i64;                // when the connection asked to be ticked (steady-clock ns)
 }
 
 // The deadline of a connection that has not asked for one
@@ -68,28 +68,28 @@ const maxFailures = 1000u32;
 const flushMillis = 300i64;
 
 pub actor Endpoint {
-  server bool;
-  cfg NetConfig;
-  handler EventHandler;
-  pool Pool;
-  sock UdpSocket;             // bound by 'open'; UdpSocket.none() before, and after shutdown
-  group CancelGroup;           // cancelled by shutdown: ends the receive and the timer
-  timer CancelGroup;           // the armed timer's group, a child of 'group'
-  timerGen u32;                // which timer is the armed one
-  inflight usize;              // datagrams handed to the socket and not yet sent
-  gate ChallengeGate;
-  slots List[ConnectionSlot];
-  nextId u32;
-  armed i64;                   // the instant the timer will next wake us; -1 none
-  stopped bool;
+  server: bool;
+  cfg: NetConfig;
+  handler: EventHandler;
+  pool: Pool;
+  sock: UdpSocket;             // bound by 'open'; UdpSocket.none() before, and after shutdown
+  group: CancelGroup;           // cancelled by shutdown: ends the receive and the timer
+  timer: CancelGroup;           // the armed timer's group, a child of 'group'
+  timerGen: u32;                // which timer is the armed one
+  inflight: usize;              // datagrams handed to the socket and not yet sent
+  gate: ChallengeGate;
+  slots: List[ConnectionSlot];
+  nextId: u32;
+  armed: i64;                   // the instant the timer will next wake us; -1 none
+  stopped: bool;
 
   // a client's
-  dialer ClientHandshake;
-  dialing bool;
-  remote SocketAddr;
-  remoteKey String;
+  dialer: ClientHandshake;
+  dialing: bool;
+  remote: SocketAddr;
+  remoteKey: String;
 
-  fn init(self &new, server bool, cfg NetConfig, handler EventHandler, remote SocketAddr, seed u64) {
+  fn init(self: &new, server: bool, cfg: NetConfig, handler: EventHandler, remote: SocketAddr, seed: u64) {
     var rng = Rng.make(seed);
     let salt = rng.next();
     let gateSeed = rng.next();
@@ -141,7 +141,7 @@ pub actor Endpoint {
   // Bind the socket at 'bind' and say what it got (the address, with the port
   // the system chose when port 0 was asked) or why it could not; then receive.
   // The first message the endpoint is sent
-  async do open(self, bind SocketAddr, up OneshotSender[Result[SocketAddr, IoError]]) {
+  async do open(self, bind: SocketAddr, up: OneshotSender[Result[SocketAddr, IoError]]) {
     var tx = up;
     var made = await aio.bindUdp(bind);
     match &mut made {
@@ -188,7 +188,7 @@ pub actor Endpoint {
   }
 
   // A packet to send: one datagram to 'addr'
-  async do send(self, addr SocketAddr, data List[u8]) {
+  async do send(self, addr: SocketAddr, data: List[u8]) {
     if sock.isNone() {return;}
     var b = pool.mustTake(max(data.len(), 1usize));
     b.append(data.view());
@@ -199,7 +199,7 @@ pub actor Endpoint {
 
   // The timer 'g' of generation 'gen' is for the instant 'at': when it comes,
   // the connections and the dialer that are due are ticked
-  async do wake(self, at i64, gen u32, g CancelGroup) {
+  async do wake(self, at: i64, gen: u32, g: CancelGroup) {
     let r = await aio.sleepUntilIn(Instant.fromNanos(at), IoLimits.within(g));
     if slept(r) && gen == timerGen && !stopped {
       self.fire();
@@ -211,7 +211,7 @@ pub actor Endpoint {
   // ------------------------------------------------------------------
 
   // A connection says when it next needs a tick
-  async do deadline(self, id u32, at i64) {
+  async do deadline(self, id: u32, at: i64) {
     var i = 0usize;
     while i < slots.len() {
       if slots[i].id == id {
@@ -223,7 +223,7 @@ pub actor Endpoint {
   }
 
   // A connection has ended
-  async do gone(self, id u32) {
+  async do gone(self, id: u32) {
     var i = 0usize;
     while i < slots.len() {
       if slots[i].id == id {
@@ -240,7 +240,7 @@ pub actor Endpoint {
   // ------------------------------------------------------------------
 
   // A datagram arrived, from 'from'
-  fn onDatagram(self, from SocketAddr, data List[u8]) {
+  fn onDatagram(self, from: SocketAddr, data: List[u8]) {
     if stopped {return;}
     let key = from.text();
     if !server && key != remoteKey {return;}
@@ -293,7 +293,7 @@ pub actor Endpoint {
     self.rearm();
   }
 
-  fn find(self &, key &str) usize {
+  fn find(self: &, key: &str) usize {
     var i = 0usize;
     while i < slots.len() {
       if slots[i].key == key {return i;}
@@ -303,7 +303,7 @@ pub actor Endpoint {
   }
 
   // Queue a datagram for the socket (a message to ourselves, as a connection's are)
-  fn transmit(self, to SocketAddr, data List[u8]) {
+  fn transmit(self, to: SocketAddr, data: List[u8]) {
     selfactor.send(to, data);
   }
 
@@ -331,7 +331,7 @@ pub actor Endpoint {
 
   // A client proved it receives at its address: open its connection, or
   // answer a Response that has already been taken
-  fn admit(self, from SocketAddr, key &str, session u64, accept List[u8], response &Array[u8]) {
+  fn admit(self, from: SocketAddr, key: &str, session: u64, accept: List[u8], response: &Array[u8]) {
     let k = self.find(key);
     if k != notFound {
       if slots[k].session == session {
@@ -356,7 +356,7 @@ pub actor Endpoint {
   }
 
   // The client side of the handshake: a datagram from the server
-  fn dial(self, data List[u8]) {
+  fn dial(self, data: List[u8]) {
     let ev = dialer.receive(data.view());
     match ev {
       case is Connected {
@@ -377,12 +377,12 @@ pub actor Endpoint {
   }
 }
 
-fn max(a usize, b usize) usize {
+fn max(a: usize, b: usize) usize {
   if a > b {a} else {b}
 }
 
 // Whether a timer ran its course: not cancelled, and not failed
-fn slept(r Result[void, IoError]) bool {
+fn slept(r: Result[void, IoError]) bool {
   match r {
     case let e Error {false}
     else {true}
@@ -397,13 +397,13 @@ fn slept(r Result[void, IoError]) bool {
 // socket has (the system's choice when port 0 was asked). A server's and a
 // client's alike
 pub struct BoundEndpoint {
-  pub endpoint Endpoint;
-  pub port u16;
-  bound SocketAddr;
+  pub endpoint: Endpoint;
+  pub port: u16;
+  bound: SocketAddr;
 
   // The address the socket is bound to, with the port the system chose (what
   // POSIX's getsockname and Rust's local_addr give); its port is 'port'
-  pub fn localAddress(self &) SocketAddr { bound }
+  pub fn localAddress(self: &) SocketAddr { bound }
 }
 
 // Binding takes a second worker when the caller is one: the endpoint binds on
@@ -417,11 +417,11 @@ fn requireAWorker() {
 // The endpoint, its socket bound at 'bind' (the other end of a client's is
 // 'remote'): the error that stopped it binding, or the endpoint and the
 // address the socket got
-fn start(server bool, bind SocketAddr, remote SocketAddr, cfg NetConfig, h EventHandler) Result[BoundEndpoint, IoError] {
+fn start(server: bool, bind: SocketAddr, remote: SocketAddr, cfg: NetConfig, h: EventHandler) Result[BoundEndpoint, IoError] {
   requireAWorker();
   let ep = new Endpoint(server, cfg, h, remote, freshSeed());
-  var tx OneshotSender[Result[SocketAddr, IoError]];
-  var rx OneshotReceiver[Result[SocketAddr, IoError]];
+  var tx: OneshotSender[Result[SocketAddr, IoError]];
+  var rx: OneshotReceiver[Result[SocketAddr, IoError]];
   tx, rx = Oneshot[Result[SocketAddr, IoError]].make();
   ep.open(bind, tx);
   match rx.recv() {
@@ -440,7 +440,7 @@ fn start(server bool, bind SocketAddr, remote SocketAddr, cfg NetConfig, h Event
 // loopback address of the server's family when the server is on loopback (a
 // socket bound to the wildcard can ask the firewall for permission even when it
 // only talks to this machine), otherwise the wildcard address of that family
-fn clientBindAddress(server &SocketAddr) SocketAddr {
+fn clientBindAddress(server: &SocketAddr) SocketAddr {
   if server.isLoopback() {
     if server.isV6() {
       return SocketAddr.v6Localhost(0u16);
@@ -459,21 +459,21 @@ fn clientBindAddress(server &SocketAddr) SocketAddr {
 // Listen for clients at 'bind' (port 0 has the system choose one: 'port'
 // says which). Every client's events go to 'h'. Call 'endpoint.shutdown()'
 // before the program ends.
-pub fn listen(bind SocketAddr, cfg NetConfig, h EventHandler) Result[BoundEndpoint, IoError] {
+pub fn listen(bind: SocketAddr, cfg: NetConfig, h: EventHandler) Result[BoundEndpoint, IoError] {
   start(true, bind, bind, cfg, h)
 }
 
 // Connect to the server at 'server': the handshake runs in the background,
 // and 'h' hears Joined when it is done, or Left (NoAnswer or Refused) if it
 // fails. Call 'endpoint.shutdown()' before the program ends.
-pub fn connect(server SocketAddr, cfg NetConfig, h EventHandler) Result[BoundEndpoint, IoError] {
+pub fn connect(server: SocketAddr, cfg: NetConfig, h: EventHandler) Result[BoundEndpoint, IoError] {
   start(false, clientBindAddress(&server), server, cfg, h)
 }
 
 // Like listen and connect, but a panic if the socket cannot be bound. (They do
 // not unwrap the Result: Cone moves no value out of a matched variant's
 // field.)
-pub fn mustListen(bind SocketAddr, cfg NetConfig, h EventHandler) BoundEndpoint {
+pub fn mustListen(bind: SocketAddr, cfg: NetConfig, h: EventHandler) BoundEndpoint {
   match &start(true, bind, bind, cfg, h) {
     case let b &Ok { return *b; }
     else {}
@@ -481,7 +481,7 @@ pub fn mustListen(bind SocketAddr, cfg NetConfig, h EventHandler) BoundEndpoint 
   panic("netmsg: cannot bind the server's UDP socket")
 }
 
-pub fn mustConnect(server SocketAddr, cfg NetConfig, h EventHandler) BoundEndpoint {
+pub fn mustConnect(server: SocketAddr, cfg: NetConfig, h: EventHandler) BoundEndpoint {
   match &start(false, clientBindAddress(&server), server, cfg, h) {
     case let b &Ok { return *b; }
     else {}

@@ -112,7 +112,7 @@ void fnSigTypeCheck(TypeCheckState *pstate, FnSigNode *sig) {
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(sig->parms, cnt, nodesp)) {
-        // An init's 'self &new' is the one place that permission is written
+        // An init's 'self: &new' is the one place that permission is written
         // (refTypeCheck); whether this is an init is fnDclTypeCheck's to judge
         refAllowNewPerm = cnt == sig->parms->used && ((VarDclNode*)*nodesp)->namesym == selfName
             && ((VarDclNode*)*nodesp)->vtype->tag == RefTag;
@@ -710,8 +710,8 @@ static Nodes *fnCallTraits = NULL;
 // those parameter and return types meets (a closure's hidden struct, a
 // hand-written struct, a plain function through its stub). The reference's
 // permission is the call's kind: a reference that may write ('&<mut', an owner)
-// is to the trait whose '()' takes 'self &mut', any other to the one taking
-// 'self &', so a state-changing '()' is not met behind a read-only reference.
+// is to the trait whose '()' takes 'self: &mut', any other to the one taking
+// 'self: &', so a state-changing '()' is not met behind a read-only reference.
 // One trait per signature and kind, so two spellings of one signature are one type.
 StructNode *fnSigCallTrait(TypeCheckState *pstate, FnSigNode *sig, int mutself, INode *lexnode) {
     if (fnCallTraits == NULL)
@@ -789,8 +789,8 @@ FnSigNode *fnSigOfCallTrait(INode *type) {
 }
 
 // Whether a struct's '()' method, found for a callable trait, takes the
-// receiver the trait's kind allows: 'self &' (a read-only borrow) for either
-// kind, 'self &mut' for the kind that may write
+// receiver the trait's kind allows: 'self: &' (a read-only borrow) for either
+// kind, 'self: &mut' for the kind that may write
 int fnSigCallSelfFits(StructNode *trait, FnDclNode *meth) {
     FnSigNode *msig = (FnSigNode*)itypeGetTypeDcl(meth->vtype);
     if (msig->tag != FnSigTag || msig->parms->used == 0)
@@ -820,7 +820,7 @@ INode *fnSigSelfBorrowPerm(FnDclNode *meth) {
 // Whether a type's method may fill the slot of a trait's method behind a
 // virtual reference. A call through the trait lends the permission the trait's
 // 'self' declares, and that borrow is all the caller holds, so the
-// implementation may ask for no more of it: a trait's 'self &' met by 'self &mut'
+// implementation may ask for no more of it: a trait's 'self: &' met by 'self: &mut'
 // would change what the caller was only allowed to read. Anything but a borrow
 // on both sides is not compared here.
 int fnSigVrefSelfFits(FnDclNode *traitmeth, FnDclNode *implmeth) {
@@ -831,11 +831,11 @@ int fnSigVrefSelfFits(FnDclNode *traitmeth, FnDclNode *implmeth) {
     return permMatches(iperm, tperm) != NoMatch;
 }
 
-// A 'self' as it is written, for a message: 'self &', 'self &mut', 'self &uni'
+// A 'self' as it is written, for a message: 'self: &', 'self: &mut', 'self: &uni'
 static char *fnSigSelfSpell(FnDclNode *meth, char *buf, size_t size) {
     INode *perm = fnSigSelfBorrowPerm(meth);
     char *name = perm && perm->tag == PermTag ? &inodeGetName(perm)->namestr : "";
-    snprintf(buf, size, "self &%s", strcmp(name, "ro") == 0 ? "" : name);
+    snprintf(buf, size, "self: &%s", strcmp(name, "ro") == 0 ? "" : name);
     return buf;
 }
 
@@ -1122,12 +1122,12 @@ char *fnSigCallRefusal(INode *from, INode *to, int *code) {
             flipped.callmut = 1;
             fnCallSpell(other, sizeof(other), toref, &flipped);
             snprintf(msg, sizeof(msg),
-                "`%s` may only call a callable that reads its state; %s changes it (its `()` takes `self &mut`). To let it change, the type is `%s`.",
+                "`%s` may only call a callable that reads its state; %s changes it (its `()` takes `self: &mut`). To let it change, the type is `%s`.",
                 wanted, isclosure ? "this closure" : what, other);
         }
         else
             snprintf(msg, sizeof(msg),
-                "The `()` of %s takes `self` %s, and `%s` calls it without that: it lends `self &%s`.",
+                "The `()` of %s takes `self` %s, and `%s` calls it without that: it lends `self: &%s`.",
                 what, perm == (INode*)uniPerm ? "uniquely, so it is called once" : "by value",
                 wanted, trait->callmut ? "mut" : "");
         return msg;

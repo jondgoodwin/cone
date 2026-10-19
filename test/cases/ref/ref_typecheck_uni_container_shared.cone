@@ -2,7 +2,7 @@
 // through a '&' or a '&mut' is refused once, at the use that gave it the '&uni',
 // and not inside the generic code (ref_typecheck_uni_elem_shared and
 // ref_typecheck_uni_field_shared hold the refusals of the places themselves): a
-// 'List[&uni App]' reaches its elements through 'self &mut', so the one
+// 'List[&uni App]' reaches its elements through 'self: &mut', so the one
 // reference that promised to be unique would be seen through a shared path.
 // Each use below is reported alone, however many methods of the generic reach
 // the element. A generic whose code does not reach it that way, and a generic
@@ -12,40 +12,40 @@ mod ref_typecheck_uni_container_shared;
 
 import collections use *;
 
-struct Item { pub n i64; }
-struct App { pub items List[Item]; }
+struct Item { pub n: i64; }
+struct App { pub items: List[Item]; }
 
 // the library's own list: one error at the use, none in collections or core
-fn pushLocal(app &uni App) {
+fn pushLocal(app: &uni App) {
   var cs = List[&uni App].empty();                               //~ ErrorUniShared:16 "A `&uni` cannot be the type argument of this use"
   cs.push(app);
 }
 
-// a generic struct of the program's own, reaching its field through 'self &mut'
+// a generic struct of the program's own, reaching its field through 'self: &mut'
 struct Slot[T] {
-  pub v T;
-  pub fn peek(self &mut) usize { 0usize }
-  pub fn get(self &mut) T { v }
+  pub v: T;
+  pub fn peek(self: &mut) usize { 0usize }
+  pub fn get(self: &mut) T { v }
 }
-fn slotUse(app &uni App) {
+fn slotUse(app: &uni App) {
   var s = new Slot[&uni App](app);                               //~ ErrorUniShared:19 "as a field, through a `&mut` reference"
   s.peek();
 }
 
 // a generic function indexing through a '&mut' array
-fn first[T](a &mut Array[T, 1]) usize { a[0]; 0usize }
-fn firstUse(app &uni App) {
+fn first[T](a: &mut Array[T, 1]) usize { a[0]; 0usize }
+fn firstUse(app: &uni App) {
   var cells = [app];
   first[&uni App](&mut cells);                                   //~ ErrorUniShared:8 "as an element, through a `&mut` reference"
 }
 
 // allowed: a list of owners, and a generic that never reaches the element through a shared path
-fn ownersOk(app Uni[App]) {
+fn ownersOk(app: Uni[App]) {
   var cs = List[Uni[App]].empty();
   cs.push(app);
 }
-struct Holder[T] { pub v T; }
-fn holderOk(app &uni App) {
+struct Holder[T] { pub v: T; }
+fn holderOk(app: &uni App) {
   let h = new Holder[&uni App](app);
   let same = h.v;
 }

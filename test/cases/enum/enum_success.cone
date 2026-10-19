@@ -11,14 +11,14 @@ mod enum_success;
 
 import stdio use *;
 
-fn show(label &str, n i64) {
+fn show(label: &str, n: i64) {
   printStr(label);
   printStr(" = ");
   printInt(n);
   printStr("\n");
 }
 
-fn showB(label &str, b bool) {
+fn showB(label: &str, b: bool) {
   show(label, if b {1} else {0});
 }
 
@@ -27,15 +27,15 @@ fn showB(label &str, b bool) {
 // A field declared on the enum itself is present in every variant, at the same
 // offset, so it can be read from a value whose variant is not yet known.
 enum Shape {
-  pub kind i32;
+  pub kind: i32;
 
   struct Circle {
-    pub radius i32;
+    pub radius: i32;
   }
 
   struct Rect {
-    pub w i32;
-    pub h i32;
+    pub w: i32;
+    pub h: i32;
   }
 }
 
@@ -51,12 +51,12 @@ enum Signal {
   struct Halt {}
 
   struct Step {
-    pub amount i32;
+    pub amount: i32;
   }
 
   struct Drift {
-    pub rateX f32;
-    pub rateY f32;
+    pub rateX: f32;
+    pub rateY: f32;
   }
 }
 use Signal;
@@ -75,7 +75,7 @@ use PhoneType;
 // rather than assigned -- which is what lines an enum up with an external
 // library's constants. Numbering resumes from the last value written, so Cyan
 // follows Blue.
-enum Colors u32 {
+enum Colors: u32 {
   Red   = 0xFF0000,
   Green = 0x00FF00,
   Blue  = 0x0000FF,
@@ -99,7 +99,7 @@ use Wide;
 // magnitude. Reading the discriminant answers it whole here, because every
 // variant is empty and the value is the tag.
 fn payloadFree() {
-  var p PhoneType = Work;
+  var p: PhoneType = Work;
   showB("payload-free-equal", p == Work);
   showB("payload-free-unequal", p == Home);
   showB("payload-free-not-equal-op", p != Home);
@@ -115,14 +115,14 @@ fn payloadFree() {
   // A pinned value is still a tag: what the language can observe is which
   // variant a value holds, and the width it is laid out in is asserted by a
   // named check in cases.toml rather than from here.
-  var c Colors = Green;
+  var c: Colors = Green;
   showB("pinned-tag-equal", c == Green);
   showB("pinned-tag-unequal", c == Red);
   c = Cyan;
   showB("pinned-tag-numbering-resumed", c == Cyan);
 
   // A tag past a byte, in an enum that declared no type to hold it
-  var w Wide = Broad;
+  var w: Wide = Broad;
   showB("widened-tag-equal", w == Broad);
   showB("widened-tag-not-first", w == Narrow);
 }
@@ -136,37 +136,37 @@ fn payloadFree() {
 // against each variant's value instead. Nothing about the call changes, which is
 // what these lines assert -- and they are the only coverage of that path, so a
 // regression in it shows up as the wrong implementation being reached.
-enum Signals u32 {
-  pub fn weight(self &) i32;
+enum Signals: u32 {
+  pub fn weight(self: &) i32;
 
   pub struct Quiet = 0x10 {
-    pub n i32;
-    fn weight(self &) i32 {n}
+    pub n: i32;
+    fn weight(self: &) i32 {n}
   }
 
   pub struct Loud = 0x2000 {
-    pub n i32;
-    fn weight(self &) i32 {n * 100}
+    pub n: i32;
+    fn weight(self: &) i32 {n * 100}
   }
 }
 use Signals;
 
 // Dispatch through a plain reference, which is where the compiler inserts the
 // coercion to a virtual reference and therefore where the tag selects a vtable
-fn weigh(s &Signals) i32 {
+fn weigh(s: &Signals) i32 {
   s.weight()
 }
 
 fn sparseTagDispatch() {
-  let quiet Signals = Quiet(3);
-  let loud Signals = Loud(5);
+  let quiet: Signals = Quiet(3);
+  let loud: Signals = Loud(5);
   show("sparse-tag-dispatch-first", weigh(&quiet));
   show("sparse-tag-dispatch-second", weigh(&loud));
 
   // ... and through a virtual reference written by hand, which reaches the same
   // selection from the other side
-  let vq &<Signals = &quiet;
-  let vl &<Signals = &loud;
+  let vq: &<Signals = &quiet;
+  let vl: &<Signals = &loud;
   show("sparse-tag-vref-first", vq.weight());
   show("sparse-tag-vref-second", vl.weight());
 
@@ -175,7 +175,7 @@ fn sparseTagDispatch() {
   show("sparse-tag-matches-other", which(&loud));
 }
 
-fn which(s &Signals) i32 {
+fn which(s: &Signals) i32 {
   match s {
     case is &Quiet {1}
     case is &Loud {2}
@@ -187,12 +187,12 @@ fn which(s &Signals) i32 {
 // a one-byte tag would hold it as 0, the tag of the first variant, and the match
 // below would take the wrong arm without any complaint.
 enum Pinned[T] {
-  struct PinnedLow {pub v T;}
+  struct PinnedLow {pub v: T;}
   struct PinnedHigh = 256 {}
 }
 use Pinned;
 
-fn whichPinned(p &Pinned[i32]) i32 {
+fn whichPinned(p: &Pinned[i32]) i32 {
   match p {
     case is &PinnedLow[i32] {1}
     case is &PinnedHigh[i32] {2}
@@ -200,8 +200,8 @@ fn whichPinned(p &Pinned[i32]) i32 {
 }
 
 fn genericPinnedTag() {
-  let low Pinned[i32] = PinnedLow[i32](7);
-  let high Pinned[i32] = PinnedHigh;
+  let low: Pinned[i32] = PinnedLow[i32](7);
+  let high: Pinned[i32] = PinnedHigh;
   show("generic-pinned-tag-first", whichPinned(&low));
   show("generic-pinned-tag-wide", whichPinned(&high));
 }
@@ -212,7 +212,7 @@ fn genericPinnedTag() {
 // success and below zero for each error -- so a pinned value may be negative when
 // the enum's integer type is signed. Numbering resumes from a negative value as
 // from any other: NoMemory follows LowMemory's -2 with -1.
-enum Outcome i32 {
+enum Outcome: i32 {
   Success = 0,
   NotReady,
   LowMemory = -2,
@@ -221,7 +221,7 @@ enum Outcome i32 {
   SurfaceLost = -1000000000;
 }
 
-fn outcomeCode(o Outcome) i64 {
+fn outcomeCode(o: Outcome) i64 {
   match o {
     case is Outcome.Success {0}
     case is Outcome.NotReady {1}
@@ -235,7 +235,7 @@ fn outcomeCode(o Outcome) i64 {
 // The discriminant read as the integer the enum declared, which is what a C
 // function returning the constant hands back: the value's own bits, not a
 // variant's position.
-fn outcomeBits(o Outcome) i64 {
+fn outcomeBits(o: Outcome) i64 {
   let p = &o as *i32;
   i64.from(*p)
 }
@@ -248,14 +248,14 @@ enum Offset {
   Ahead;
 }
 
-fn offsetBits(o Offset) i64 {
+fn offsetBits(o: Offset) i64 {
   let p = &o as *i8;
   i64.from(*p)
 }
 
 // A tag value keeps all 64 bits. Beyond's 0x100000000 was once cut to 32, so it
 // read as 0, Base's value; Far's 0x1FFFFFFFF was cut to 0xFFFFFFFF.
-enum Huge u64 {
+enum Huge: u64 {
   Base = 0,
   Beyond = 0x100000000;
 }
@@ -265,18 +265,18 @@ enum Vast {
   Far = 0x1FFFFFFFF;
 }
 
-fn hugeBits(h Huge) i64 {
+fn hugeBits(h: Huge) i64 {
   let p = &h as *u64;
   i64.from(*p)
 }
 
-fn vastBits(v Vast) i64 {
+fn vastBits(v: Vast) i64 {
   let p = &v as *u64;
   i64.from(*p)
 }
 
 fn negativeTags() {
-  var o Outcome = Outcome.DeviceLost;
+  var o: Outcome = Outcome.DeviceLost;
   show("negative-tag-matches", outcomeCode(o));
   show("negative-tag-bits", outcomeBits(o));
   showB("negative-tag-equal", o == Outcome.DeviceLost);
@@ -291,17 +291,17 @@ fn negativeTags() {
   show("positive-tag-beside-negatives", outcomeCode(o));
   show("positive-tag-beside-negatives-bits", outcomeBits(o));
 
-  var f Offset = Offset.Behind;
+  var f: Offset = Offset.Behind;
   show("undeclared-negative-tag-bits", offsetBits(f));
   showB("undeclared-negative-tag-equal", f == Offset.Behind);
   f = Offset.Ahead;
   show("undeclared-negative-tag-next-bits", offsetBits(f));
 
-  let h Huge = Huge.Beyond;
+  let h: Huge = Huge.Beyond;
   show("wide-tag-bits", hugeBits(h));
   showB("wide-tag-equal", h == Huge.Beyond);
   showB("wide-tag-not-zero", h == Huge.Base);
-  let v Vast = Vast.Far;
+  let v: Vast = Vast.Far;
   show("undeclared-wide-tag-bits", vastBits(v));
   showB("undeclared-wide-tag-not-first", v == Vast.Near);
 }
@@ -311,13 +311,13 @@ fn negativeTags() {
 // function a body and no symbol, and building any variant of the enum crashed
 // the compiler. Nothing here calls it: the declaration is the case.
 enum Stocked[T] {
-  pub count i32;
+  pub count: i32;
   fn restock() i32 {30}
-  struct Full {pub item T;}
+  struct Full {pub item: T;}
   struct Out {}
 }
 
-fn stockedItem(s Stocked[i64]) i64 {
+fn stockedItem(s: Stocked[i64]) i64 {
   match s {
     case let f Full {f.item + i64.from(f.count)}
     case is Out {0i64}
@@ -329,12 +329,12 @@ fn stockedItem(s Stocked[i64]) i64 {
 // the method naming it. Each use was bound to the generic's member, which is
 // never generated, and the call to it crashed the compiler.
 enum Restocked[T] {
-  pub count i32;
+  pub count: i32;
   fn restock() i32 {30}
-  pub fn reorder(self &) i32 {restock() + count}
+  pub fn reorder(self: &) i32 {restock() + count}
   struct Shelved {
-    pub item T;
-    pub fn topUp(self &) i32 {restock() + shelf()}
+    pub item: T;
+    pub fn topUp(self: &) i32 {restock() + shelf()}
     fn shelf() i32 {2}
   }
   struct Sold {}
@@ -343,7 +343,7 @@ enum Restocked[T] {
 fn genericStaticFn() {
   show("generic-enum-with-static-fn", stockedItem(Stocked.Full[i64](4, 9)));
   let s = Restocked.Shelved[i64](4, 9);
-  let o Restocked[i64] = Restocked.Sold[i64](5);
+  let o: Restocked[i64] = Restocked.Sold[i64](5);
   show("generic-enum-static-fn-from-variant", i64.from((&s).topUp()));
   show("generic-enum-static-fn-from-common-method", i64.from((&s).reorder()));
   show("generic-enum-static-fn-from-common-method-on-enum", i64.from((&o).reorder()));
@@ -357,13 +357,13 @@ fn genericStaticFn() {
 // variant or drop silently. The layout still puts common fields first in every
 // variant, which is what the positional initializers below rely on.
 enum Reading {
-  struct Spot { pub at i32; }
+  struct Spot { pub at: i32; }
 
-  pub scale i32;
+  pub scale: i32;
 
-  struct Span { pub len i32; }
+  struct Span { pub len: i32; }
 
-  pub fn scaled(self &) i32 {scale * 2}
+  pub fn scaled(self: &) i32 {scale * 2}
 }
 use Reading;
 
@@ -387,15 +387,15 @@ fn commonMembersAnywhere() {
 // reserved word: 'pub tag i32' elsewhere in the suite still declares a field
 // named 'tag'.
 enum Aligned {
-  pub wide i64;
-  _ tag;
+  pub wide: i64;
+  _: tag;
 
-  struct Small { pub n i32; }
-  struct Large { pub a i64; pub b i64; }
+  struct Small { pub n: i32; }
+  struct Large { pub a: i64; pub b: i64; }
 }
 use Aligned;
 
-fn widthOf(a &Aligned) i32 {
+fn widthOf(a: &Aligned) i32 {
   match a {
     case is &Small {4}
     case is &Large {16}
@@ -420,14 +420,14 @@ fn placedDiscriminant() {
 // given up is holding a value of the enum in a variable, copying it and passing
 // it by value. enum_typecheck_unsized holds those refusals.
 enum @unsized Packet {
-  pub id i32;
+  pub id: i32;
 
   struct Ping {}
-  struct Payload { pub a i64; pub b i64; pub c i64; }
+  struct Payload { pub a: i64; pub b: i64; pub c: i64; }
 }
 use Packet;
 
-fn packetSize(p &imm Packet) i32 {
+fn packetSize(p: &imm Packet) i32 {
   match p {
     case is &Ping {0}
     case let d &Payload {i32.from(d.a + d.b + d.c)}
@@ -436,7 +436,7 @@ fn packetSize(p &imm Packet) i32 {
 
 // A common field is readable through a reference to the enum without knowing the
 // variant, which is what the tag and the shared prefix buy even unpadded
-fn readId(p &Packet) i32 {
+fn readId(p: &Packet) i32 {
   p.id
 }
 
@@ -480,7 +480,7 @@ fn construction() {
 // An enum whose variants share no field at all: only the tag distinguishes them.
 // The conversion is here because show prints integers, not because an enum
 // needs one.
-fn stride(s &imm Signal) i32 {
+fn stride(s: &imm Signal) i32 {
   match s {
     case let h &Halt {0}
     case let t &Step {t.amount}
@@ -492,7 +492,7 @@ fn stride(s &imm Signal) i32 {
 
 // An enum may be passed by value: the parameter is one variant's worth of
 // storage, and only the common field is readable without matching.
-fn kindOf(s Shape) i32 {
+fn kindOf(s: Shape) i32 {
   s.kind
 }
 
@@ -501,13 +501,13 @@ fn kindOf(s Shape) i32 {
 // Tally, the largest, is byte-aligned where Count is not, so the one size every
 // variant is padded to is Tally's rounded up to Count's alignment.
 enum Cell {
-  struct Flag {pub on bool; pub code u8;}
-  struct Count {pub n i32;}
-  struct Tally {pub a u8; pub b u8; pub c u8; pub d u8; pub e u8; pub f u8; pub g u8; pub h u8; pub i u8;}
+  struct Flag {pub on: bool; pub code: u8;}
+  struct Count {pub n: i32;}
+  struct Tally {pub a: u8; pub b: u8; pub c: u8; pub d: u8; pub e: u8; pub f: u8; pub g: u8; pub h: u8; pub i: u8;}
 }
 use Cell;
 
-fn cellValue(c Cell) i32 {
+fn cellValue(c: Cell) i32 {
   match c {
     case let f Flag {if f.on {i32.from(f.code)} else {-1}}
     case let n Count {n.n}
@@ -521,7 +521,7 @@ fn enumValues() {
 
   // An enum-typed variable accepts either variant, and accepts a different one
   // later, because every variant is the same size
-  var s Shape = c;
+  var s: Shape = c;
   show("enum-var-holds-circle", s.kind);
   s = r;
   show("enum-var-reassigned-to-rect", s.kind);
@@ -540,7 +540,7 @@ fn enumValues() {
   show("supertype-inferred-by-ref", byRef.kind);
 
   // A reference to an enum is stated the same way as any other reference
-  let sref &Shape = &r;
+  let sref: &Shape = &r;
   show("enum-reference-common-field", sref.kind);
 }
 
@@ -556,7 +556,7 @@ fn enumValues() {
 
 // Matching every variant of a closed enum is exhaustive, so the match is a
 // value-producing expression with no 'else' clause
-fn area(s &imm Shape) i32 {
+fn area(s: &imm Shape) i32 {
   match s {
     case let c &Circle {c.radius * c.radius}
     case let r &Rect {r.w * r.h}
@@ -564,7 +564,7 @@ fn area(s &imm Shape) i32 {
 }
 
 // 'case is' tests the variant without binding a name to the narrowed value
-fn isRect(s &Shape) i32 {
+fn isRect(s: &Shape) i32 {
   match s {
     case is &Rect {1}
     else {0}
@@ -572,7 +572,7 @@ fn isRect(s &Shape) i32 {
 }
 
 // An arm that does not name every variant needs an 'else' to be exhaustive
-fn radiusOr(s &imm Shape, dflt i32) i32 {
+fn radiusOr(s: &imm Shape, dflt: i32) i32 {
   match s {
     case let c &Circle {c.radius}
     else {dflt}
@@ -580,7 +580,7 @@ fn radiusOr(s &imm Shape, dflt i32) i32 {
 }
 
 // The single-pattern form of a match is an 'if' whose condition binds
-fn circleRadius(s &imm Shape) i32 {
+fn circleRadius(s: &imm Shape) i32 {
   if let c &Circle = s {
     c.radius
   } else {
@@ -603,8 +603,8 @@ fn matching() {
   // A bound variable may be 'var', which writes through to the matched value.
   // Matched through a '&mut' borrow of a local, made here: the local is frozen
   // while the binding is used, so its variant cannot change underneath.
-  var sc Shape = c;
-  var sr Shape = r;
+  var sc: Shape = c;
+  var sr: Shape = r;
   match &mut sc {
     case var cc &mut Circle {cc.radius = cc.radius + 10;}
     case var rr &mut Rect {rr.w = rr.w + 10;}
@@ -627,7 +627,7 @@ fn matching() {
   show("by-value-parameter-narrowed", radiusOfValue(Circle(1, 9)));
 }
 
-fn radiusOfValue(s Shape) i32 {
+fn radiusOfValue(s: Shape) i32 {
   match &s {
     case let cc &Circle {cc.radius}
     else {0}
@@ -655,7 +655,7 @@ alias CircleVal = Circle;
 alias RectVal = Rect;
 
 // The same match as 'area', with both arms spelled through an alias
-fn areaAlias(s &imm Shape) i32 {
+fn areaAlias(s: &imm Shape) i32 {
   match s {
     case let c CircleRef {c.radius * c.radius}
     case let r RectRef {r.w * r.h}
@@ -663,7 +663,7 @@ fn areaAlias(s &imm Shape) i32 {
 }
 
 // An alias of an alias, followed to its end
-fn areaAliasOfAlias(s &imm Shape) i32 {
+fn areaAliasOfAlias(s: &imm Shape) i32 {
   match s {
     case let c CircleRefAgain {c.radius * c.radius}
     case let r RectRef {r.w * r.h}
@@ -671,7 +671,7 @@ fn areaAliasOfAlias(s &imm Shape) i32 {
 }
 
 // One arm concrete and one aliased: exhaustiveness has to account for both
-fn areaMixedSpelling(s &imm Shape) i32 {
+fn areaMixedSpelling(s: &imm Shape) i32 {
   match s {
     case let c &Circle {c.radius * c.radius}
     case let r RectRef {r.w * r.h}
@@ -679,7 +679,7 @@ fn areaMixedSpelling(s &imm Shape) i32 {
 }
 
 // 'case is', which binds no name, through an alias
-fn whichAlias(s &Shape) i32 {
+fn whichAlias(s: &Shape) i32 {
   match s {
     case is CircleRef {1}
     case is RectRef {2}
@@ -689,7 +689,7 @@ fn whichAlias(s &Shape) i32 {
 // Matched by value, where the alias names the variant struct rather than a
 // reference to it. This spelling was already right, and is here as the control
 // on the two that were not.
-fn whichValueAlias(s Shape) i32 {
+fn whichValueAlias(s: Shape) i32 {
   match s {
     case let c CircleVal {1}
     case let r RectVal {2}
@@ -697,7 +697,7 @@ fn whichValueAlias(s Shape) i32 {
 }
 
 // The single-pattern 'if' form
-fn circleRadiusAlias(s &imm Shape) i32 {
+fn circleRadiusAlias(s: &imm Shape) i32 {
   if let c CircleRef = s {
     c.radius
   } else {
@@ -707,7 +707,7 @@ fn circleRadiusAlias(s &imm Shape) i32 {
 
 // A match that names one variant is not exhaustive however it is spelled, so
 // the 'else' is still required
-fn radiusOrAlias(s &imm Shape, dflt i32) i32 {
+fn radiusOrAlias(s: &imm Shape, dflt: i32) i32 {
   match s {
     case let c CircleRef {c.radius}
     else {dflt}
@@ -732,8 +732,8 @@ fn aliasMatching() {
 
   // A 'var' binding through an alias of '&mut Variant', which writes through,
   // on a '&mut' borrow of a local
-  var sc Shape = c;
-  var sr Shape = r;
+  var sc: Shape = c;
+  var sr: Shape = r;
   match &mut sc {
     case var cc CircleMut {cc.radius = cc.radius + 10;}
     case var rr RectMut {rr.w = rr.w + 10;}
@@ -747,7 +747,7 @@ fn aliasMatching() {
 }
 
 // A match on a value rather than a variant compares with '=='
-fn classify(n i32) i32 {
+fn classify(n: i32) i32 {
   match n {
     case ==0 {100}
     case ==1 {200}
@@ -756,7 +756,7 @@ fn classify(n i32) i32 {
 }
 
 // A bool matched by equivalence, the spelling a bare 'case true' is refused for
-fn flagged(b bool) i32 {
+fn flagged(b: bool) i32 {
   match b {
     case ==true {1}
     else {0}
@@ -765,7 +765,7 @@ fn flagged(b bool) i32 {
 
 // A comparison pattern writes the operator and its right operand only: the
 // matched value is the left one. Every comparison operator is one.
-fn sign(n i32) i32 {
+fn sign(n: i32) i32 {
   match n {
     case <0 {-1}
     case >0 {1}
@@ -773,7 +773,7 @@ fn sign(n i32) i32 {
   }
 }
 
-fn band(n i32) i32 {
+fn band(n: i32) i32 {
   match n {
     case <=-5 {1}
     case >=5 {2}
@@ -784,7 +784,7 @@ fn band(n i32) i32 {
 
 // A range tests both ends: '..<' leaves its end out and '..' takes it in. A
 // bound is an expression like any operand.
-fn ranged(n i32, top i32) i32 {
+fn ranged(n: i32, top: i32) i32 {
   match n {
     case 0 ..< 3 {1}
     case 3 .. 6 {2}
@@ -796,7 +796,7 @@ fn ranged(n i32, top i32) i32 {
 
 // Characters are ordered too, so a range of them is a pattern: 'a' through 'z',
 // and 'A' up to but not 'Z'
-fn letterKind(c char) i32 {
+fn letterKind(c: char) i32 {
   match c {
     case 'a' .. 'z' {1}
     case 'A' ..< 'Z' {2}
@@ -805,7 +805,7 @@ fn letterKind(c char) i32 {
 }
 
 // Patterns joined by '|' match when any one of them does, a range among them
-fn primeOrNear(n i32) i32 {
+fn primeOrNear(n: i32) i32 {
   match n {
     case ==2 | ==3 | ==5 | ==7 {2}
     case ==-6 | -1..1 | ==6 {1}
@@ -816,7 +816,7 @@ fn primeOrNear(n i32) i32 {
 
 // An 'if' guard after the pattern must hold too. When it does not, the cases
 // after it are tried, so the unguarded one below catches the rest.
-fn guarded(nbr i32, cnt i32) i32 {
+fn guarded(nbr: i32, cnt: i32) i32 {
   match nbr {
     case ==4 if cnt > 0 {0}
     case ==4 {1}
@@ -827,7 +827,7 @@ fn guarded(nbr i32, cnt i32) i32 {
 // A bound pattern's guard reads the variable the pattern binds. A guarded arm
 // may fail, so it does not account for its variant: the unguarded 'Some' after
 // it does, and with 'None' that makes the match a value without an 'else'.
-fn positiveOr(o Option[i32]) i32 {
+fn positiveOr(o: Option[i32]) i32 {
   match o {
     case let x Some if x > 0 {x}
     case let x Some {0 - x}
@@ -836,7 +836,7 @@ fn positiveOr(o Option[i32]) i32 {
 }
 
 // Through a reference, and on an 'is' pattern joined by '|'
-fn wideCircle(s &imm Shape) i32 {
+fn wideCircle(s: &imm Shape) i32 {
   match s {
     case let c &Circle if c.radius > 10 {c.radius * 2}
     case let c &Circle {c.radius}
@@ -845,7 +845,7 @@ fn wideCircle(s &imm Shape) i32 {
   }
 }
 
-fn moving(s &Signal) i32 {
+fn moving(s: &Signal) i32 {
   match s {
     case is &Step | is &Drift {1}
     else {0}
@@ -853,14 +853,14 @@ fn moving(s &Signal) i32 {
 }
 
 // A generic function's match is cloned into each instance, guard and all
-fn pickOver[T](o Option[T], floor T) T {
+fn pickOver[T](o: Option[T], floor: T) T {
   match o {
     case let s Some if s > floor {s}
     else {floor}
   }
 }
 
-fn inBand[T](x T, lo T, hi T) i32 {
+fn inBand[T](x: T, lo: T, hi: T) i32 {
   match x {
     case lo ..< hi | ==hi {1}
     else {0}
@@ -912,18 +912,18 @@ fn valueMatching() {
   show("bound-guard-fails", positiveOr(Some(-5)));
   show("bound-guard-other-variant", positiveOr(None));
 
-  let big Shape = Circle(0, 20);
-  let small Shape = Circle(0, 5);
-  let square Shape = Rect(0, 3, 3);
-  let oblong Shape = Rect(0, 3, 4);
+  let big: Shape = Circle(0, 20);
+  let small: Shape = Circle(0, 5);
+  let square: Shape = Rect(0, 3, 3);
+  let oblong: Shape = Rect(0, 3, 4);
   show("ref-guard-holds", wideCircle(&imm big));
   show("ref-guard-fails", wideCircle(&imm small));
   show("ref-guard-second-variant", wideCircle(&imm square));
   show("ref-guard-to-else", wideCircle(&imm oblong));
 
-  var halt Signal = Halt;
-  var step Signal = Step(2);
-  var drift Signal = Drift(1., 2.);
+  var halt: Signal = Halt;
+  var step: Signal = Step(2);
+  var drift: Signal = Drift(1., 2.);
   show("or-is-first", moving(&step));
   show("or-is-second", moving(&drift));
   show("or-is-neither", moving(&halt));
@@ -943,14 +943,14 @@ fn valueMatching() {
 // match exactly like an enum declared here. Their variants are bare with no
 // 'use' written here: core writes 'pub use Option;' and 'pub use Result;', and
 // every module's automatic import of core carries a public fold on.
-fn unwrapOr(o Option[i32], dflt i32) i32 {
+fn unwrapOr(o: Option[i32], dflt: i32) i32 {
   match o {
     case let s Some[i32] {s}
     case let n None[i32] {dflt}
   }
 }
 
-fn signedResult(r Result[i32, i32]) i32 {
+fn signedResult(r: Result[i32, i32]) i32 {
   match r {
     case let k Ok[i32, i32] {k}
     case let e Error[i32, i32] {0 - e}
@@ -958,7 +958,7 @@ fn signedResult(r Result[i32, i32]) i32 {
 }
 
 // A bool beside a tag is at byte 1, where the i32 variant has padding
-fn boolResult(r Result[bool, i32]) i32 {
+fn boolResult(r: Result[bool, i32]) i32 {
   match r {
     case let k Ok[bool, i32] {if k {1} else {2}}
     case let e Error[bool, i32] {3}
@@ -969,7 +969,7 @@ fn boolResult(r Result[bool, i32]) i32 {
 // generic instantiation rather than a plain type. That is the only thing
 // separating this from 'unwrapOr' above, and it was once recorded as a defect
 // that would not compile.
-fn unwrapNested(o Option[Option[i32]], dflt i32) i32 {
+fn unwrapNested(o: Option[Option[i32]], dflt: i32) i32 {
   match o {
     case let s Some[Option[i32]] {unwrapOr(s, dflt)}
     case let n None[Option[i32]] {dflt}
@@ -979,7 +979,7 @@ fn unwrapNested(o Option[Option[i32]], dflt i32) i32 {
 // Option reached by reference rather than by value. '&Option[i32]' is a type of
 // a generic instantiation, which used not to parse as one because a borrow
 // consumed only the bare name; the whole group matched by value for that reason.
-fn unwrapRefOr(o &Option[i32], dflt i32) i32 {
+fn unwrapRefOr(o: &Option[i32], dflt: i32) i32 {
   match *o {
     case let s Some[i32] {s}
     case let n None[i32] {dflt}
@@ -995,7 +995,7 @@ fn optionAndResult() {
   show("option-from-branches", unwrapOr(chosen, 99));
 
   // A declared Option variable accepts either variant
-  var opt Option[i32] = None;
+  var opt: Option[i32] = None;
   show("option-declared-none", unwrapOr(opt, 42));
   opt = Some(8);
   show("option-declared-reassigned", unwrapOr(opt, 42));
@@ -1004,15 +1004,15 @@ fn optionAndResult() {
   show("result-error", signedResult(Error[i32, i32](3)));
   show("result-bool-by-value", boolResult(Ok[bool, i32](true)));
 
-  let held Option[i32] = Some(6);
+  let held: Option[i32] = Some(6);
   show("option-by-reference", unwrapRefOr(&held, 99));
-  let empty Option[i32] = None;
+  let empty: Option[i32] = None;
   show("option-by-reference-none", unwrapRefOr(&empty, 99));
 
   // An Option holding an Option, built the way the recorded defect spelled it
-  let nested Option[Option[i32]] = Some[Option[i32]](Some(4));
+  let nested: Option[Option[i32]] = Some[Option[i32]](Some(4));
   show("option-nested-outer", unwrapNested(nested, 99));
-  let nestedEmpty Option[Option[i32]] = Some[Option[i32]](None[i32]);
+  let nestedEmpty: Option[Option[i32]] = Some[Option[i32]](None[i32]);
   show("option-nested-inner-none", unwrapNested(nestedEmpty, 99));
 }
 
@@ -1034,14 +1034,14 @@ enum WindowEvent {
   Quit, Resize;
 }
 
-fn signOf(s Signs) i32 {
+fn signOf(s: Signs) i32 {
   match s {
     case is Signs.Plus {1}
     case is Signs.Minus {-1i32}
   }
 }
 
-fn qualifiedArea(s &imm Shape) i32 {
+fn qualifiedArea(s: &imm Shape) i32 {
   match s {
     case let c &Shape.Circle {c.radius * c.radius * 3}
     case let r &Shape.Rect {r.w * r.h}
@@ -1052,7 +1052,7 @@ fn qualifiedArea(s &imm Shape) i32 {
 // share the pattern's type node, and a path collapses by replacing the slot that
 // held it, so the conversion must take the name the test's slot collapsed to.
 // The guarded arm and the bound 'if' each hold a further conversion of it.
-fn qualifiedAreaByValue(s Shape) i32 {
+fn qualifiedAreaByValue(s: Shape) i32 {
   match s {
     case let c Shape.Circle if c.radius > 5 {0}
     case let c Shape.Circle {c.radius * c.radius * 3}
@@ -1060,11 +1060,11 @@ fn qualifiedAreaByValue(s Shape) i32 {
   }
 }
 
-fn qualifiedRadiusIf(s Shape) i32 {
+fn qualifiedRadiusIf(s: Shape) i32 {
   if let c Shape.Circle = s {c.radius} else {-1}
 }
 
-fn quits(k KeyEvent, w WindowEvent) i32 {
+fn quits(k: KeyEvent, w: WindowEvent) i32 {
   var n = 0;
   if k is KeyEvent.Quit {n = n + 1;}
   if w is WindowEvent.Quit {n = n + 10;}
@@ -1073,7 +1073,7 @@ fn quits(k KeyEvent, w WindowEvent) i32 {
 
 // A generic enum's variant, reached through the enum and instantiated as the bare
 // name is
-fn unwrapQualified(o Option[i32], dflt i32) i32 {
+fn unwrapQualified(o: Option[i32], dflt: i32) i32 {
   match o {
     case let s Option.Some[i32] {s}
     case let n Option.None[i32] {dflt}
@@ -1082,8 +1082,8 @@ fn unwrapQualified(o Option[i32], dflt i32) i32 {
 
 fn namingVariants() {
   show("qualified-construct-and-match", signOf(Signs.Minus));
-  let c Shape = Shape.Circle(1, 2);
-  let r Shape = Shape.Rect(2, 3, 4);
+  let c: Shape = Shape.Circle(1, 2);
+  let r: Shape = Shape.Rect(2, 3, 4);
   show("qualified-pattern-circle", qualifiedArea(&imm c));
   show("qualified-pattern-rect", qualifiedArea(&imm r));
   show("qualified-by-value-circle", qualifiedAreaByValue(c));
@@ -1108,16 +1108,16 @@ enum Season {
 
 enum Figure {
   struct Square {
-    pub side i32;
+    pub side: i32;
   }
 
   struct Tri {
-    pub base i32;
-    pub height i32;
+    pub base: i32;
+    pub height: i32;
   }
 }
 
-fn warmth(s Season) i32 {
+fn warmth(s: Season) i32 {
   match s {
     case is Summer {3}
     case is Spring {2}
@@ -1128,20 +1128,20 @@ fn warmth(s Season) i32 {
 
 // Through a reference, in every form a pattern takes: a 'case', a bound 'if'
 // and its 'elif', and an 'is' test
-fn figureArea(f &imm Figure) i32 {
+fn figureArea(f: &imm Figure) i32 {
   match f {
     case let s &Square {s.side * s.side}
     case let t &Tri {t.base * t.height / 2}
   }
 }
 
-fn figureWidth(f &imm Figure) i32 {
+fn figureWidth(f: &imm Figure) i32 {
   if let s &Square = f {s.side}
   elif let t &Tri = f {t.base}
   else {0}
 }
 
-fn isSquare(f &Figure) bool {
+fn isSquare(f: &Figure) bool {
   f is &Square
 }
 
@@ -1150,20 +1150,20 @@ fn isSquare(f &Figure) bool {
 // same way, with no 'use' of it.
 enum Perhaps[T] {
   struct Surely {
-    pub value T;
+    pub value: T;
   }
 
   struct Nothing {}
 }
 
-fn someOr(o Option[i32], dflt i32) i32 {
+fn someOr(o: Option[i32], dflt: i32) i32 {
   match o {
     case let s Some {s}
     case is None {dflt}
   }
 }
 
-fn surelyOr(p Perhaps[i64], dflt i64) i64 {
+fn surelyOr(p: Perhaps[i64], dflt: i64) i64 {
   match p {
     case let s Surely {s.value}
     case is Nothing {dflt}
@@ -1172,7 +1172,7 @@ fn surelyOr(p Perhaps[i64], dflt i64) i64 {
 
 // In a generic function each instance's body looks the variant up in its own
 // matched value's enum
-fn someOrAny[T](o Option[T], dflt T) T {
+fn someOrAny[T](o: Option[T], dflt: T) T {
   match o {
     case let s Some {s}
     else {dflt}
@@ -1186,7 +1186,7 @@ enum Lamp {
   Amber, Red;
 }
 
-fn lampCode(l Lamp) i32 {
+fn lampCode(l: Lamp) i32 {
   match l {
     case is Red {1}
     case is Amber {2}
@@ -1195,8 +1195,8 @@ fn lampCode(l Lamp) i32 {
 
 fn barePatterns() {
   show("bare-plain-enum", warmth(Season.Autumn));
-  let sq Figure = Figure.Square(4);
-  let tr Figure = Figure.Tri(6, 3);
+  let sq: Figure = Figure.Square(4);
+  let tr: Figure = Figure.Tri(6, 3);
   show("bare-case-through-ref", figureArea(&imm sq));
   show("bare-case-other-variant", figureArea(&imm tr));
   show("bare-bound-if", figureWidth(&imm sq));
@@ -1221,7 +1221,7 @@ fn barePatterns() {
 // taken, so 0, which the range below also holds, takes the first.
 const Limit = 10;
 
-fn aloneNumber(n i32) i32 {
+fn aloneNumber(n: i32) i32 {
   match n {
     case 0 {100}
     case 2 | 3 | 5 | 7 {2}
@@ -1233,7 +1233,7 @@ fn aloneNumber(n i32) i32 {
 
 // A bool's two values alone. Each is an '==', and the two cover a bool, so the
 // match needs no 'else' to be a value
-fn aloneBool(b bool) i32 {
+fn aloneBool(b: bool) i32 {
   match b {
     case true {1}
     case false {2}
@@ -1241,7 +1241,7 @@ fn aloneBool(b bool) i32 {
 }
 
 // A value alone takes an 'if' guard, as any pattern does
-fn aloneGuarded(n i32, g bool) i32 {
+fn aloneGuarded(n: i32, g: bool) i32 {
   match n {
     case 2 if g {1}
     case 2 {2}
@@ -1250,7 +1250,7 @@ fn aloneGuarded(n i32, g bool) i32 {
 }
 
 // In a generic function each instance compares with its own type's '=='
-fn aloneEnds[T](x T, lo T, hi T) i32 {
+fn aloneEnds[T](x: T, lo: T, hi: T) i32 {
   match x {
     case lo | hi {1}
     else {0}
@@ -1259,9 +1259,9 @@ fn aloneEnds[T](x T, lo T, hi T) i32 {
 
 // In a method, a field named bare is the receiver's, compared like any value
 struct Threshold {
-  pub at i32;
+  pub at: i32;
 
-  pub fn hit(self, n i32) i32 {
+  pub fn hit(self, n: i32) i32 {
     match n {
       case at {1}
       else {0}
@@ -1273,14 +1273,14 @@ struct Threshold {
 // root is: on a Shape, 'Circle' is the variant, and 'case Circle' is
 // 'case is Circle'. Naming every variant makes the match exhaustive, with no
 // 'else', and variants may be joined by '|'.
-fn aloneVariant(s Shape) i32 {
+fn aloneVariant(s: Shape) i32 {
   match s {
     case Circle {1}
     case Rect {2}
   }
 }
 
-fn aloneVariantOr(s Signal) i32 {
+fn aloneVariantOr(s: Signal) i32 {
   match s {
     case Step | Drift {1}
     else {0}
@@ -1288,7 +1288,7 @@ fn aloneVariantOr(s Signal) i32 {
 }
 
 // On an Option in a generic function, each instance's own variants
-fn aloneOption[T](o Option[T]) i32 {
+fn aloneOption[T](o: Option[T]) i32 {
   match o {
     case Some {1}
     case None {0}
@@ -1301,14 +1301,14 @@ fn aloneOption[T](o Option[T]) i32 {
 // constant is what the name means, compared with '=='.
 const Amber = 7;
 
-fn aloneLamp(l Lamp) i32 {
+fn aloneLamp(l: Lamp) i32 {
   match l {
     case Red {1}
     case Amber {2}
   }
 }
 
-fn aloneAmber(n i32) i32 {
+fn aloneAmber(n: i32) i32 {
   match n {
     case Amber {1}
     else {0}
@@ -1318,7 +1318,7 @@ fn aloneAmber(n i32) i32 {
 // A string alone against a slice of bytes is the '==' of two slices, which
 // compares their elements: the same length and the same bytes. The empty
 // string is a pattern like any other
-fn aloneString(s &Array[u8]) i32 {
+fn aloneString(s: &Array[u8]) i32 {
   match s {
     case "box" {1}
     case "ball" | "bat" {2}
@@ -1390,7 +1390,7 @@ enum Weather {
 }
 use Weather but Snow;
 
-fn heading(c Compass) i32 {
+fn heading(c: Compass) i32 {
   match c {
     case is Up {1}
     case is Compass.East {2}
@@ -1399,7 +1399,7 @@ fn heading(c Compass) i32 {
   }
 }
 
-fn height(l Level) i32 {
+fn height(l: Level) i32 {
   match l {
     case is Low {1}
     case is Level.Mid {2}
@@ -1407,7 +1407,7 @@ fn height(l Level) i32 {
   }
 }
 
-fn wetness(w Weather) i32 {
+fn wetness(w: Weather) i32 {
   match w {
     case is Sun {0}
     case is Rain {1}
@@ -1436,13 +1436,13 @@ enum Traffic {
   fn base() i32 {40}
 
   struct Stop {
-    pub fn next(self &) Traffic {Go(5)}
-    pub fn pause(self &) i32 {base() + 2}
+    pub fn next(self: &) Traffic {Go(5)}
+    pub fn pause(self: &) i32 {base() + 2}
   }
 
   struct Hold {
     // A match on a sibling, and an arm building one
-    pub fn after(self &, t Traffic) Traffic {
+    pub fn after(self: &, t: Traffic) Traffic {
       match t {
         case is Stop {Go(1)}
         else {Stop}
@@ -1453,12 +1453,12 @@ enum Traffic {
   struct Go {
     // The variant's own names are the nearer scope, so 'Hold' in its method is
     // this field and not the sibling variant
-    pub Hold i32;
-    pub fn held(self &) i32 {Hold}
+    pub Hold: i32;
+    pub fn held(self: &) i32 {Hold}
   }
 }
 
-fn trafficCode(t Traffic) i32 {
+fn trafficCode(t: Traffic) i32 {
   match t {
     case is Stop {1}
     case is Hold {2}
@@ -1479,16 +1479,16 @@ fn trafficCode(t Traffic) i32 {
 // checked, so 'Empty[T]' in Full's body finds the instance already made rather
 // than starting the whole enum again, endlessly (ErrorInstDepth).
 enum Slot[T] {
-  pub count i32;
+  pub count: i32;
 
   struct Full {
-    pub item T;
-    pub fn drain(self &) Slot[T] {Empty[T](count * 10)}
+    pub item: T;
+    pub fn drain(self: &) Slot[T] {Empty[T](count * 10)}
   }
 
   struct Empty {
-    pub fn fill(self &, v T) Slot[T] {Full[T](count + 1, v)}
-    pub fn itemOr(self &, s Slot[T], d T) T {
+    pub fn fill(self: &, v: T) Slot[T] {Full[T](count + 1, v)}
+    pub fn itemOr(self: &, s: Slot[T], d: T) T {
       match s {
         case let f Full[T] {f.item}
         else {d}
@@ -1504,8 +1504,8 @@ enum Slot[T] {
 // any variant's body is type checked, so the match is checked against the whole
 // set, and a bare name finds its sibling in it.
 enum Tote[T] {
-  pub count i32;
-  pub fn which(self &, t Tote[T]) i32 {
+  pub count: i32;
+  pub fn which(self: &, t: Tote[T]) i32 {
     match t {
       case is Stuffed[T] {5}
       case is Hollow[T] {6}
@@ -1513,21 +1513,21 @@ enum Tote[T] {
   }
 
   struct Stuffed {
-    pub item T;
-    pub fn code(self &, t Tote[T]) i32 {
+    pub item: T;
+    pub fn code(self: &, t: Tote[T]) i32 {
       match t {
         case is Stuffed[T] {1}
         case let h Hollow[T] {h.count + 20}
       }
     }
-    pub fn codeBare(self &, t Tote[T]) i32 {
+    pub fn codeBare(self: &, t: Tote[T]) i32 {
       match t {
         case is Stuffed {3}
         case let h Hollow {h.count + 40}
       }
     }
     // The enum's bare name is this instance, so the parameter's type is bare too
-    pub fn codeAllBare(self &, t Tote) i32 {
+    pub fn codeAllBare(self: &, t: Tote) i32 {
       match t {
         case is Stuffed {7}
         case let h Tote.Hollow {h.count + 70}
@@ -1536,7 +1536,7 @@ enum Tote[T] {
   }
 
   struct Hollow {
-    pub fn itemOr(self &, t &imm Tote[T], d T) T {
+    pub fn itemOr(self: &, t: &imm Tote[T], d: T) T {
       match t {
         case let s &Stuffed[T] {s.item}
         case is &Hollow[T] {d}
@@ -1556,19 +1556,19 @@ enum Tote[T] {
 // check, as Crop's below is with its arguments written, and Idle's 'weigh'
 // matches a parameter typed bare, exhaustively, with its variants bare.
 enum Grove[T] {
-  pub rows i64;
-  pub fn sow(r i64) Grove {Idle(r)}
+  pub rows: i64;
+  pub fn sow(r: i64) Grove {Idle(r)}
 
   struct Fruiting {
-    pub grain T;
-    pub fn reap(self &) Grove {Grove.Idle(rows + 1)}
-    pub fn keep(self &) Fruiting {Fruiting(rows * 2, grain)}
+    pub grain: T;
+    pub fn reap(self: &) Grove {Grove.Idle(rows + 1)}
+    pub fn keep(self: &) Fruiting {Fruiting(rows * 2, grain)}
   }
 
   struct Idle {
-    pub fn plant(self &, y T) Grove {Fruiting(rows + 5, y)}
-    pub fn resow(self &) Grove {Grove.sow(rows * 10)}
-    pub fn weigh(self &, g Grove) i64 {
+    pub fn plant(self: &, y: T) Grove {Fruiting(rows + 5, y)}
+    pub fn resow(self: &) Grove {Grove.sow(rows * 10)}
+    pub fn weigh(self: &, g: Grove) i64 {
       match g {
         case let f Fruiting {f.grain + rows}
         case is Grove.Idle {rows * 100}
@@ -1578,7 +1578,7 @@ enum Grove[T] {
 }
 
 // Outside the braces the enum is named with its type arguments, as always
-fn groveCode(g Grove[i64]) i64 {
+fn groveCode(g: Grove[i64]) i64 {
   match g {
     case let f Fruiting {f.grain * 100 + f.rows}
     case let i Idle {i.rows}
@@ -1593,12 +1593,12 @@ fn groveCode(g Grove[i64]) i64 {
 // again, endlessly (ErrorInstDepth), and its match saw part of the set
 // (ErrorNoElse). Two instances, each checked the same way.
 enum Crop[T] {
-  pub rows i64;
-  pub fn sow(r i64) Crop[T] {Fallow[T](r)}
-  struct Ripe {pub grain T;}
+  pub rows: i64;
+  pub fn sow(r: i64) Crop[T] {Fallow[T](r)}
+  struct Ripe {pub grain: T;}
   struct Fallow {
-    pub fn resow(self &) Crop[T] {sow(rows + 1)}
-    pub fn weigh(self &, c Crop[T]) i64 {
+    pub fn resow(self: &) Crop[T] {sow(rows + 1)}
+    pub fn weigh(self: &, c: Crop[T]) i64 {
       match c {
         case let r Ripe[T] {i64.from(r.grain) + rows}
         case let f Fallow[T] {f.rows * 100 + rows}
@@ -1616,24 +1616,24 @@ enum Crop[T] {
 enum Tier {
   struct Low {}
   struct High {
-    pub fn drop(self &) Tier {Low}
+    pub fn drop(self: &) Tier {Low}
   }
 }
 
 enum WideTier extends Tier {
   struct Peak {
-    pub fn drop(self &) WideTier {High}
+    pub fn drop(self: &) WideTier {High}
   }
 }
 
-fn tierCode(t Tier) i32 {
+fn tierCode(t: Tier) i32 {
   match t {
     case is Tier.Low {1}
     case is Tier.High {2}
   }
 }
 
-fn wideTierCode(w WideTier) i32 {
+fn wideTierCode(w: WideTier) i32 {
   match w {
     case is WideTier.Low {1}
     case is WideTier.High {2}
@@ -1650,25 +1650,25 @@ fn wideTierCode(w WideTier) i32 {
 // name binds to the enum's method, the instance points it at the enum instance's,
 // and type check calls it through 'self' by name. So is an overload name's.
 enum Gauge {
-  pub level i32;
-  pub fn twice(self &) i32 {level * 2}
+  pub level: i32;
+  pub fn twice(self: &) i32 {level * 2}
 
   struct Dial {
-    pub fn viaSelf(self &) i32 {self.twice() + 1}
-    pub fn viaBare(self &) i32 {twice() + 2}
+    pub fn viaSelf(self: &) i32 {self.twice() + 1}
+    pub fn viaBare(self: &) i32 {twice() + 2}
   }
 }
 
 enum Bin[T] {
-  pub level T;
-  pub fn twice(self &) T {level * 2}
-  pub fn plus1 overload plus(self &, x T) T {level + x}
-  pub fn plus2 overload plus(self &, x T, y T) T {level + x + y}
+  pub level: T;
+  pub fn twice(self: &) T {level * 2}
+  pub fn plus1 overload plus(self: &, x: T) T {level + x}
+  pub fn plus2 overload plus(self: &, x: T, y: T) T {level + x + y}
 
   struct Box {
-    pub fn viaSelf(self &) T {self.twice() + 1}
-    pub fn viaBare(self &) T {twice() + 2}
-    pub fn viaOverload(self &) T {plus(10) * 100 + plus(1, 2)}
+    pub fn viaSelf(self: &) T {self.twice() + 1}
+    pub fn viaBare(self: &) T {twice() + 2}
+    pub fn viaOverload(self: &) T {plus(10) * 100 + plus(1, 2)}
   }
 }
 
@@ -1695,8 +1695,8 @@ fn variantBodies() {
   show("generic-variant-sibling-pattern-else", (&empty).itemOr(Slot.Empty[i64](0), 99));
   let full = Slot.Full[i64](3, 7);
   show("generic-variant-builds-later-sibling", (&full).drain().count);
-  let stuffed Tote[i64] = Tote.Stuffed[i64](2, 9);
-  let hollow Tote[i64] = Tote.Hollow[i64](5);
+  let stuffed: Tote[i64] = Tote.Stuffed[i64](2, 9);
+  let hollow: Tote[i64] = Tote.Hollow[i64](5);
   let tote = Tote.Stuffed[i64](0, 0);
   show("generic-variant-exhaustive-match-first", i64.from((&tote).code(stuffed)));
   show("generic-variant-exhaustive-match-last", i64.from((&tote).code(hollow)));
@@ -1711,7 +1711,7 @@ fn variantBodies() {
   show("generic-enum-method-exhaustive-last", i64.from((&totehollow).which(hollow)));
   let fruiting = Grove.Fruiting[i64](3, 7);
   show("generic-variant-bare-builds-later-sibling", groveCode((&fruiting).reap()));
-  let kept Grove.Fruiting[i64] = (&fruiting).keep();
+  let kept: Grove.Fruiting[i64] = (&fruiting).keep();
   show("generic-variant-bare-is-its-own-instance", groveCode(kept));
   let idle = Grove.Idle[i64](2);
   show("generic-variant-bare-builds-earlier-sibling", groveCode((&idle).plant(4)));
@@ -1733,7 +1733,7 @@ fn variantBodies() {
 
 // An enum built in one branch and matched in another, accumulated in a loop:
 // the intersections where variant tags and control flow have to agree.
-fn stepped(n i32) Shape {
+fn stepped(n: i32) Shape {
   if n % 2 == 0 {
     Circle(1, n)
   } else {
@@ -1774,7 +1774,7 @@ fn interactions() {
   // not: a literal's values were compared for exact type equality where a
   // variable initializer coerces, so the same value the line above accepts was
   // refused one line down.
-  let asVariable Shape = Circle(1, 4);
+  let asVariable: Shape = Circle(1, 4);
   let inField = new Framed(Circle(1, 5));
   show("variant-coerces-in-initializer", area(&imm asVariable));
   show("variant-coerces-in-struct-literal", area(&imm inField.s));
@@ -1784,25 +1784,25 @@ fn interactions() {
 // than beside Shape for the same reason Held is: the coercion is the subject,
 // not the struct.
 struct Framed {
-  pub s Shape;
+  pub s: Shape;
 }
 
 // The enum whose declaration is the subject above. Declared down here with the
 // other interaction types rather than beside Shape, because it is not what this
 // group is about -- only the infection it triggers is.
 struct Handle is Move {
-  pub id i32;
+  pub id: i32;
 }
 
 enum Held {
-  pub kind i32;
+  pub kind: i32;
 
   struct Boxed {
-    pub h Handle;
+    pub h: Handle;
   }
 
   struct Bare {
-    n i32;
+    n: i32;
   }
 }
 use Held;
@@ -1817,12 +1817,12 @@ use Held;
 // were one. Demanding the enum lays its variants out with it, and generation
 // sizes the enum from them, as it does for every enum.
 struct Shipment {
-  pub load Crate;
-  pub count i64;
+  pub load: Crate;
+  pub count: i64;
 }
 
-fn crateWeight(c Crate) i64 {
-  var held Crate = c;
+fn crateWeight(c: Crate) i64 {
+  var held: Crate = c;
   match held {
     case let b Bulky {b.kg}
     case let s Slim {1i64}
@@ -1831,7 +1831,7 @@ fn crateWeight(c Crate) i64 {
 
 enum Crate {
   struct Bulky {
-    pub kg i64;
+    pub kg: i64;
   }
   Slim;
 }
@@ -1854,19 +1854,19 @@ fn heldAboveDeclaration() {
 // refused as not having the 'probe' its enum requires, while Needle, the other
 // order, compiled.
 enum Meter {
-  pub id i32;
-  struct Under {pub lo i32;}
-  struct Over {pub hi i32;}
-  fn highOf(g &Over) i32 {g.hi}
-  pub fn probe(self &, other &Meter) i32 {id * 10 + other.id}
+  pub id: i32;
+  struct Under {pub lo: i32;}
+  struct Over {pub hi: i32;}
+  fn highOf(g: &Over) i32 {g.hi}
+  pub fn probe(self: &, other: &Meter) i32 {id * 10 + other.id}
 }
 
 enum Needle {
-  pub id i32;
-  struct Left {pub lo i32;}
-  struct Right {pub hi i32;}
-  pub fn probe(self &, other &Needle) i32 {id * 10 + other.id}
-  fn rightOf(g &Right) i32 {g.hi}
+  pub id: i32;
+  struct Left {pub lo: i32;}
+  struct Right {pub hi: i32;}
+  pub fn probe(self: &, other: &Needle) i32 {id * 10 + other.id}
+  fn rightOf(g: &Right) i32 {g.hi}
 }
 
 fn staticAboveMethod() {
@@ -1890,19 +1890,19 @@ fn staticAboveMethod() {
 // variant's value, which calls that variant's clone; on a value typed as the enum
 // it is refused, and enum_typecheck_variant holds that.
 enum Keeper {
-  pub id i64;
+  pub id: i64;
   pub fn get(self) i64 {id}
-  pub fn take(k Keeper) i64 {k.id + 10}
-  pub fn viaBelow(k &Keeper) i64 {keeperTriple(*k)}
-  pub fn boxed(self &) KeeperBox {new KeeperBox(*self)}
-  struct Full {pub n i64;}
+  pub fn take(k: Keeper) i64 {k.id + 10}
+  pub fn viaBelow(k: &Keeper) i64 {keeperTriple(*k)}
+  pub fn boxed(self: &) KeeperBox {new KeeperBox(*self)}
+  struct Full {pub n: i64;}
   struct Bare {}
 }
 
-fn keeperTriple(k Keeper) i64 {k.id * 3}
+fn keeperTriple(k: Keeper) i64 {k.id * 3}
 
 struct KeeperBox {
-  pub k Keeper;
+  pub k: Keeper;
 }
 
 fn heldByOwnMembers() {
@@ -1910,7 +1910,7 @@ fn heldByOwnMembers() {
   let bare = Keeper.Bare(5);
   show("enum-self-by-value-other-variant", bare.get());
   show("enum-static-by-value", Keeper.take(Keeper.Full(2, 4)));
-  let full Keeper = Keeper.Full(7, 4);
+  let full: Keeper = Keeper.Full(7, 4);
   show("enum-passed-to-function-below", Keeper.viaBelow(&full));
   show("enum-in-struct-built-by-method", (&full).boxed().k.id);
 }
@@ -1922,20 +1922,20 @@ fn heldByOwnMembers() {
 // terminates. Declared rather than built: constructing one needs a nullable
 // reference, and enum_nullable_ptr owns that shape.
 enum Tree {
-  pub depth i32;
+  pub depth: i32;
 
   struct Leaf {
-    v i64;
+    v: i64;
   }
 
   struct Fork {
-    pub left &Tree;
-    pub right &Tree;
+    pub left: &Tree;
+    pub right: &Tree;
   }
 }
 
 // Named through its enum, which is the spelling wherever no 'use' is in force
-fn forkDepth(f &Tree.Fork) i32 {
+fn forkDepth(f: &Tree.Fork) i32 {
   f.left.depth + f.right.depth
 }
 

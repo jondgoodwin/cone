@@ -25,21 +25,21 @@ const PngRgba = 6u8;
 
 // Adam7: each pass's first column and row, and the step between its pixels
 // (specification section 8.2)
-let adamX0 Array[u32, 7] = [0u32, 4u32, 0u32, 2u32, 0u32, 1u32, 0u32];
-let adamY0 Array[u32, 7] = [0u32, 0u32, 4u32, 0u32, 2u32, 0u32, 1u32];
-let adamDx Array[u32, 7] = [8u32, 8u32, 4u32, 4u32, 2u32, 2u32, 1u32];
-let adamDy Array[u32, 7] = [8u32, 8u32, 8u32, 4u32, 4u32, 2u32, 2u32];
+let adamX0: Array[u32, 7] = [0u32, 4u32, 0u32, 2u32, 0u32, 1u32, 0u32];
+let adamY0: Array[u32, 7] = [0u32, 0u32, 4u32, 0u32, 2u32, 0u32, 1u32];
+let adamDx: Array[u32, 7] = [8u32, 8u32, 4u32, 4u32, 2u32, 2u32, 1u32];
+let adamDy: Array[u32, 7] = [8u32, 8u32, 8u32, 4u32, 4u32, 2u32, 2u32];
 
-fn pngFail(why &str) Result[Raster, DecodeError] {
+fn pngFail(why: &str) Result[Raster, DecodeError] {
   Error[Raster, DecodeError](new DecodeError(String.from(why)))
 }
 
-fn be32(d &Array[u8], at usize) u32 {
+fn be32(d: &Array[u8], at: usize) u32 {
   (u32.from(d[at]) << 24u32) | (u32.from(d[at + 1usize]) << 16u32) | (u32.from(d[at + 2usize]) << 8u32) | u32.from(d[at + 3usize])
 }
 
 // Samples a pixel has for a colour type
-fn pngChannels(ct u8) usize {
+fn pngChannels(ct: u8) usize {
   if ct == PngRgb { return 3usize; }
   if ct == PngGrayAlpha { return 2usize; }
   if ct == PngRgba { return 4usize; }
@@ -47,7 +47,7 @@ fn pngChannels(ct u8) usize {
 }
 
 // The Paeth predictor (specification 9.4)
-fn paeth(a i32, b i32, c i32) i32 {
+fn paeth(a: i32, b: i32, c: i32) i32 {
   let p = a + b - c;
   let pa = if p > a {p - a} else {a - p};
   let pb = if p > b {p - b} else {b - p};
@@ -61,7 +61,7 @@ fn paeth(a i32, b i32, c i32) i32 {
 // 'len' bytes of data after it) in place. 'prev' is the start of the
 // previous unfiltered scanline's data, or 'noRow' for the first. bpp is the
 // bytes per complete pixel, at least 1. false on a filter type over 4.
-fn unfilterRow(buf &mut Array[u8], row usize, len usize, prev usize, bpp usize) bool {
+fn unfilterRow(buf: &mut Array[u8], row: usize, len: usize, prev: usize, bpp: usize) bool {
   let ft = buf[row];
   let start = row + 1usize;
   let hasPrev = prev != noRow;
@@ -115,28 +115,28 @@ const noRow = 0xFFFFFFFFFFFFFFFFusize;
 
 // What the header and ancillary chunks say
 struct PngInfo {
-  pub width u32;
-  pub height u32;
-  pub depth u8;
-  pub colorType u8;
-  pub interlace u8;
-  pub palette List[u8];       // RGB triples
-  pub trnsPalette List[u8];   // alpha per palette entry
-  pub hasKey bool;
-  pub keyR u16;
-  pub keyG u16;
-  pub keyB u16;
-  pub gamma f32;
-  pub srgb bool;
+  pub width: u32;
+  pub height: u32;
+  pub depth: u8;
+  pub colorType: u8;
+  pub interlace: u8;
+  pub palette: List[u8];       // RGB triples
+  pub trnsPalette: List[u8];   // alpha per palette entry
+  pub hasKey: bool;
+  pub keyR: u16;
+  pub keyG: u16;
+  pub keyB: u16;
+  pub gamma: f32;
+  pub srgb: bool;
 }
 
 // The number of data bytes of a scanline of 'w' pixels
-fn rowBytes(info &PngInfo, w usize) usize {
+fn rowBytes(info: &PngInfo, w: usize) usize {
   (w * pngChannels(info.colorType) * usize.from(info.depth) + 7usize) / 8usize
 }
 
 // Whether depth and colour type go together (specification table 6)
-fn validDepth(ct u8, d u8) bool {
+fn validDepth(ct: u8, d: u8) bool {
   if ct == PngGray { return d == 1u8 || d == 2u8 || d == 4u8 || d == 8u8 || d == 16u8; }
   if ct == PngPalette { return d == 1u8 || d == 2u8 || d == 4u8 || d == 8u8; }
   if ct == PngRgb || ct == PngGrayAlpha || ct == PngRgba { return d == 8u8 || d == 16u8; }
@@ -148,9 +148,9 @@ fn validDepth(ct u8, d u8) bool {
 pub const maxPixels = 268435456usize;
 
 // Decode a PNG file's bytes
-pub fn decodePng(data &Array[u8]) Result[Raster, DecodeError] {
+pub fn decodePng(data: &Array[u8]) Result[Raster, DecodeError] {
   if data.len < 33usize { return pngFail("png: the file is too short"); }
-  let sig Array[u8, 8] = [137u8, 80u8, 78u8, 71u8, 13u8, 10u8, 26u8, 10u8];
+  let sig: Array[u8, 8] = [137u8, 80u8, 78u8, 71u8, 13u8, 10u8, 26u8, 10u8];
   var s = 0usize;
   while s < 8usize {
     if data[s] != sig[s] { return pngFail("png: not a PNG file (bad signature)"); }
@@ -306,7 +306,7 @@ pub fn decodePng(data &Array[u8]) Result[Raster, DecodeError] {
 }
 
 // How many pixels of a side of 'n' a pass reaches: from 'start' every 'step'
-fn passSize(n u32, start u32, step u32) usize {
+fn passSize(n: u32, start: u32, step: u32) usize {
   if n <= start { return 0usize; }
   usize.from((n - start + step - 1u32) / step)
 }
@@ -315,8 +315,8 @@ fn passSize(n u32, start u32, step u32) usize {
 // 'pw' by 'ph' pixels whose filtered scanlines start at 'off' in 'buf'; pixel
 // (x, y) of the pass lands at column x0 + x * dx, row y0 + y * dy of the
 // picture, which is 'w' wide.
-fn pngPass(buf &mut Array[u8], off usize, info &PngInfo, pw usize, ph usize, x0 usize, dx usize, y0 usize,
-  dy usize, w usize, out &mut Raster) bool {
+fn pngPass(buf: &mut Array[u8], off: usize, info: &PngInfo, pw: usize, ph: usize, x0: usize, dx: usize, y0: usize,
+  dy: usize, w: usize, out: &mut Raster) bool {
   let rb = rowBytes(info, pw);
   let bitsPerPixel = pngChannels(info.colorType) * usize.from(info.depth);
   let bpp = if bitsPerPixel >= 8usize {bitsPerPixel / 8usize} else {1usize};
@@ -340,7 +340,7 @@ fn pngPass(buf &mut Array[u8], off usize, info &PngInfo, pw usize, ph usize, x0 
 
 // Convert one unfiltered scanline of 'n' pixels at buf[src] into RGBA8 at
 // dst[at], each pixel 'step' bytes after the last
-fn convertRow8(buf &Array[u8], src usize, info &PngInfo, n usize, at usize, step usize, dst &mut Array[u8]) {
+fn convertRow8(buf: &Array[u8], src: usize, info: &PngInfo, n: usize, at: usize, step: usize, dst: &mut Array[u8]) {
   let ct = info.colorType;
   let depth = usize.from(info.depth);
   var o = at;
@@ -428,7 +428,7 @@ fn convertRow8(buf &Array[u8], src usize, info &PngInfo, n usize, at usize, step
 }
 
 // The same for 16-bit samples (big-endian in the file), into RGBA16
-fn convertRow16(buf &Array[u8], src usize, info &PngInfo, n usize, at usize, step usize, dst &mut Array[u16]) {
+fn convertRow16(buf: &Array[u8], src: usize, info: &PngInfo, n: usize, at: usize, step: usize, dst: &mut Array[u16]) {
   let ct = info.colorType;
   var o = at;
   var x = 0usize;
@@ -467,4 +467,4 @@ fn convertRow16(buf &Array[u8], src usize, info &PngInfo, n usize, at usize, ste
   }
 }
 
-fn be16(d &Array[u8], at usize) u16 { u16.from(d[at]) * 256u16 + u16.from(d[at + 1usize]) }
+fn be16(d: &Array[u8], at: usize) u16 { u16.from(d[at]) * 256u16 + u16.from(d[at + 1usize]) }

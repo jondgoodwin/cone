@@ -101,7 +101,7 @@ ordinary recursion.
 **One lval of a tuple type takes a value tuple whole.** `p = 5, 6` (the
 parentheses in `p = (5, 6)` change nothing) gives a `(i64, i64)` variable both
 values, each coerced to its element's type by `vtupleCoerce`, exactly as its
-declaration's `var p (i64, i64) = 5, 6` does. The parser builds the same nodes
+declaration's `var p: (i64, i64) = 5, 6` does. The parser builds the same nodes
 as for `x = 7, 8`, so only the lval's resolved type tells the two apart:
 `assignOneTakesTuple` asks it, and flow (`assignFlow`, `pwAssign`) and
 generation ask the same function rather than the rval's tag, so all three agree

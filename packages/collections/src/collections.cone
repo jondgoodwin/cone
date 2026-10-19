@@ -115,21 +115,21 @@ alias CStr = cstr;
 // Every block a collection holds comes from its region and goes back to it:
 // these are the three calls, for a block of n values of T (or, for the tables
 // that keep their parts in one block, of bytes)
-fn blockNew[T](r *MemRegion, n usize) *T inline {
+fn blockNew[T](r: *MemRegion, n: usize) *T inline {
   (r as &MemRegion).allocate(n * mem.sizeof[T](), mem.alignof[T]()) as *T
 }
 
-fn blockGrow[T](r *MemRegion, block *T, old usize, want usize) *T inline {
+fn blockGrow[T](r: *MemRegion, block: *T, old: usize, want: usize) *T inline {
   (r as &MemRegion).resize(block as *u8, old * mem.sizeof[T](), want * mem.sizeof[T](), mem.alignof[T]()) as *T
 }
 
-fn blockFree[T](r *MemRegion, block *T, n usize) inline {
+fn blockFree[T](r: *MemRegion, block: *T, n: usize) inline {
   (r as &MemRegion).release(block as *u8, n * mem.sizeof[T]());
 }
 
 // Whether a region is the heap's, whose blocks the raw blocks layer gives back
 // (as an owner's death does)
-fn isHeap(r *MemRegion) bool inline { r as usize == heapRegion() as usize }
+fn isHeap(r: *MemRegion) bool inline { r as usize == heapRegion() as usize }
 
 // -------- List --------
 
@@ -138,10 +138,10 @@ fn isHeap(r *MemRegion) bool inline { r as usize == heapRegion() as usize }
 // gives its block back only when it dies. The block comes from the list's
 // region, the last field.
 pub struct List[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
-  ptr *T;
-  used usize;
-  cap usize;
-  region *MemRegion;
+  ptr: *T;
+  used: usize;
+  cap: usize;
+  region: *MemRegion;
 
   // The methods of 'Array[T]', the body 'view' lends, are the list's too, as
   // 'str''s are a String's: its 'len', written once on the body
@@ -150,11 +150,11 @@ pub struct List[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
   // An empty list, 'new List[i32]': no block until the first value arrives. The
   // last argument of every init is the region the list's block will come from,
   // which a construction that names none leaves out and is handed the heap's.
-  pub fn initEmpty overload init(self &new, region *MemRegion) { *self = new List(null, 0usize, 0usize, region); }
+  pub fn initEmpty overload init(self: &new, region: *MemRegion) { *self = new List(null, 0usize, 0usize, region); }
 
   // An empty list whose block has room for exactly n values, 'new List[i32](100)',
   // which is what its contents' 'fill' fills: 'new List[i32](100) <- fill 0'
-  pub fn initCapacity overload init(self &new, n usize, region *MemRegion) {
+  pub fn initCapacity overload init(self: &new, n: usize, region: *MemRegion) {
     *self = new List(null, 0usize, 0usize, region);
     if n > 0usize {
       self.ptr = blockNew[T](region, n);
@@ -166,7 +166,7 @@ pub struct List[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
   pub fn empty() List { new List(null, 0usize, 0usize, heapRegion()) }
 
   // An empty list whose block already has room for n values
-  pub fn withCapacity(n usize) List {
+  pub fn withCapacity(n: usize) List {
     var l = new List(null, 0usize, 0usize, heapRegion());
     l.reserve(n);
     l
@@ -174,14 +174,14 @@ pub struct List[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
 
   // How many values it holds ('len', the body's), and how many its block has
   // room for
-  pub fn capacity(self &) usize { cap }
-  pub fn isEmpty(self &) bool { used == 0usize }
+  pub fn capacity(self: &) usize { cap }
+  pub fn isEmpty(self: &) bool { used == 0usize }
 
   // Make room for 'more' values beyond those it holds. A block too small is
   // replaced by one twice its size, or exactly big enough if that is more,
   // and never smaller than 4. The block may move: every borrow into it, and
   // every slice from 'view', is then stale.
-  pub fn reserve(self &mut, more usize) {
+  pub fn reserve(self: &mut, more: usize) {
     if used + more <= cap { return; }
     var want = cap * 2usize;
     if want < used + more { want = used + more; }
@@ -191,17 +191,17 @@ pub struct List[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
   }
 
   // Move a value in at the end
-  pub fn push(self &mut, value T) {
+  pub fn push(self: &mut, value: T) {
     self.reserve(1usize);
     mem.writeRaw(ptr + used, value);
     used = used + 1usize;
   }
 
   // 'list <- value' is 'list.push(value)'
-  pub fn append overload `<-`(self &mut, value T) { self.push(value); }
+  pub fn append overload `<-`(self: &mut, value: T) { self.push(value); }
 
   // Move the last value out, or None when it is empty
-  pub fn pop(self &mut) Option[T] {
+  pub fn pop(self: &mut) Option[T] {
     if used == 0usize { return None; }
     used = used - 1usize;
     Some[T](mem.readRaw(ptr + used))
@@ -209,14 +209,14 @@ pub struct List[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
 
   // A borrow of the last value, for reading it now, or None when it is empty:
   // what 'pop' would move out, left where it is (the Stack trait's 'peek')
-  pub fn peek(self &) Option[&T] {
+  pub fn peek(self: &) Option[&T] {
     if used == 0usize { return None; }
     Some[&T]((ptr + (used - 1usize)) as &T)
   }
 
   // A borrow of the value at index, or None when index is out of range: the
   // lookup that does not panic (the Indexed trait's 'get')
-  pub fn get(self &, index usize) Option[&T] {
+  pub fn get(self: &, index: usize) Option[&T] {
     if index >= used { return None; }
     Some[&T]((ptr + index) as &T)
   }
@@ -224,27 +224,27 @@ pub struct List[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
   // A borrow of the value at index, for reading it now. Each of these four
   // reports an index out of range at the line of its caller, which its
   // 'file' and 'line' default to
-  pub fn `[]`(self &, index usize, file &Array[u8] = srcFile(), line u32 = srcLine()) &T {
+  pub fn `[]`(self: &, index: usize, file: &Array[u8] = srcFile(), line: u32 = srcLine()) &T {
     if index >= used { outOfRange(index, used, file, line); }
     (ptr + index) as &T
   }
 
   // A mutable borrow of the value at index, for changing it in place:
   // '&mut list[i]'
-  pub fn `&[]`(self &mut, index usize, file &Array[u8] = srcFile(), line u32 = srcLine()) &mut T {
+  pub fn `&[]`(self: &mut, index: usize, file: &Array[u8] = srcFile(), line: u32 = srcLine()) &mut T {
     if index >= used { outOfRange(index, used, file, line); }
     (ptr + index) as &mut T
   }
 
   // Put value at index, finalizing the value it replaces
-  pub fn set(self &mut, index usize, value T, file &Array[u8] = srcFile(), line u32 = srcLine()) {
+  pub fn set(self: &mut, index: usize, value: T, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
     if index >= used { outOfRange(index, used, file, line); }
     mem.finalize(ptr + index);
     mem.writeRaw(ptr + index, value);
   }
 
   // Exchange the values at two indexes
-  pub fn swap(self &mut, a usize, b usize, file &Array[u8] = srcFile(), line u32 = srcLine()) {
+  pub fn swap(self: &mut, a: usize, b: usize, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
     if a >= used { outOfRange(a, used, file, line); }
     if b >= used { outOfRange(b, used, file, line); }
     if a == b { return; }
@@ -254,14 +254,14 @@ pub struct List[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
   }
 
   // Finalize every value, first to last, and keep the block for reuse
-  pub fn clear(self &mut) {
+  pub fn clear(self: &mut) {
     self.finalizeAll();
     used = 0usize;
   }
 
   // Shorten it to n values, finalizing each one dropped, first to last, and
   // keeping the block. A list of n values or fewer is left as it is.
-  pub fn truncate(self &mut, n usize) {
+  pub fn truncate(self: &mut, n: usize) {
     if n >= used { return; }
     if mem.needsFinal[T]() {
       var i = n;
@@ -279,7 +279,7 @@ pub struct List[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
   // This, 'viewMut' and 'truncate' are how a C function fills a list: resize
   // it to the count the function was told it may write, hand it 'viewMut()',
   // and truncate to the count the function says it wrote.
-  pub fn resize(self &mut, n usize, value T) where T is Copy {
+  pub fn resize(self: &mut, n: usize, value: T) where T is Copy {
     if n <= used { self.truncate(n); return; }
     self.reserve(n - used);
     while used < n {
@@ -290,42 +290,42 @@ pub struct List[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
 
   // A slice of every value it holds, for reading them now: a borrow of the
   // body 'Array[T]', whose methods the list folds in
-  pub fn view(self &) &Array[T] { mem.sliceFromParts(ptr, used) }
+  pub fn view(self: &) &Array[T] { mem.sliceFromParts(ptr, used) }
 
   // A cursor over its values, front to back, which 'each x in list' walks: 'next'
   // gives a borrow of each in turn until it answers None. The list may not
   // change while the cursor, or a borrow it gave, is used
-  pub fn iter(self &) ListIter[T] { new ListIter[T](self, ptr, used, 0usize) }
+  pub fn iter(self: &) ListIter[T] { new ListIter[T](self, ptr, used, 0usize) }
 
   // A mutable slice of every value it holds, for changing them in place:
   // what a function that fills a slice writes into, a C function included.
   // The list stays borrowed mutably while the slice is used, so nothing else
   // may read or change it until the slice's last use
-  pub fn viewMut(self &mut) &mut Array[T] { mem.sliceFromPartsMut(ptr, used) }
+  pub fn viewMut(self: &mut) &mut Array[T] { mem.sliceFromPartsMut(ptr, used) }
 
   // A uni slice of every value it holds, for a parallel loop that changes them: a
   // list reached only by a '&uni' lends its values the same way 'viewMut' does for
   // a '&mut' one, so the slice can be the exclusive source such a loop needs
   // ('parallel each p in (&uni list).viewUni().mutItems()'). Nothing else may read
   // or change the list until the slice's last use
-  pub fn viewUni(self &uni) &uni Array[T] { mem.sliceFromPartsUni(ptr, used) }
+  pub fn viewUni(self: &uni) &uni Array[T] { mem.sliceFromPartsUni(ptr, used) }
 
   // The values for changing in place, which 'each x in list.mutItems()' walks:
   // 'x' is a '&mut' of each. It is a cursor over the mutable slice 'viewMut' lends
   // (so the loop is a counted one, as for any slice), and the list may not be read or
   // changed otherwise while the loop runs
-  pub fn mutItems(self &mut) ArrayMutItems[T] { new ArrayMutItems[T](mem.sliceFromPartsMut(ptr, used), 0usize) }
+  pub fn mutItems(self: &mut) ArrayMutItems[T] { new ArrayMutItems[T](mem.sliceFromPartsMut(ptr, used), 0usize) }
 
   // How a collector reaches what the list holds, in its block: a writable
   // reference to each value, which it traces as the value is traced (and, where
   // it moves what a value refers to, rewrites in place). A list of numbers holds
   // nothing a collector need find, and this costs it nothing.
-  pub fn gcTraceElements(self &mut) ArrayMutItems[T] { new ArrayMutItems[T](mem.sliceFromPartsMut(ptr, used), 0usize) }
+  pub fn gcTraceElements(self: &mut) ArrayMutItems[T] { new ArrayMutItems[T](mem.sliceFromPartsMut(ptr, used), 0usize) }
 
   // The values in runs of 'n' for changing in place, each run a '&mut' slice
   // (the last may be shorter): the mutable slice's 'mutChunks'. The list may not
   // be read or changed otherwise while they are used
-  pub fn mutChunks(self &mut, n usize, file &Array[u8] = srcFile(), line u32 = srcLine()) ArrayMutChunks[T] {
+  pub fn mutChunks(self: &mut, n: usize, file: &Array[u8] = srcFile(), line: u32 = srcLine()) ArrayMutChunks[T] {
     mem.sliceFromPartsMut(ptr, used).mutChunks(n, file, line)
   }
 
@@ -333,7 +333,7 @@ pub struct List[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
   // slice's 'mutArrays', a '&mut' slice of 'Array[T, N]' over the list's own block (its
   // 'asArrays' is the slice's, folded in). The list may not be read or changed otherwise
   // while the rows are used
-  pub fn mutArrays[N usize](self &mut, file &Array[u8] = srcFile(), line u32 = srcLine()) &mut Array[Array[T, N]] {
+  pub fn mutArrays[N: usize](self: &mut, file: &Array[u8] = srcFile(), line: u32 = srcLine()) &mut Array[Array[T, N]] {
     mem.sliceFromPartsMut(ptr, used).mutArrays[N](file, line)
   }
 
@@ -341,7 +341,7 @@ pub struct List[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
   // is the value itself, not a borrow of it. The list is left empty at once (its
   // block kept for reuse), and a value the loop does not reach, because it ends
   // early, is finalized with the cursor
-  pub fn drain(self &mut) ListDrain[T] {
+  pub fn drain(self: &mut) ListDrain[T] {
     let n = used;
     used = 0usize;
     new ListDrain[T](self, ptr, n, 0usize)
@@ -382,16 +382,16 @@ pub struct List[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
   // piece has, 'joinPieces' moves the pieces' values onto the end of this list in
   // the order of the passes that made them, by where each piece began, and gives
   // the pieces' blocks back. The bag is made first, 'pieceBag'.
-  pub fn pieceBag(self &) PieceBag { new PieceBag(0usize) }
+  pub fn pieceBag(self: &) PieceBag { new PieceBag(0usize) }
 
   // (A piece is built on a worker of its own, so it is the heap's, not the
   // list's region, whose owner may not allow two threads in at once)
-  pub fn emptyPiece(self &) List[T] { new List[T](null, 0usize, 0usize, heapRegion()) }
+  pub fn emptyPiece(self: &) List[T] { new List[T](null, 0usize, 0usize, heapRegion()) }
 
   // The list of the piece that began at pass 'lo', kept in the bag (a piece that
   // appended nothing is not kept). The bag's stack is pushed atomically: the
   // pieces end at the same time.
-  pub fn depositPiece(self &, bag &mut PieceBag, lo usize, piece List[T]) {
+  pub fn depositPiece(self: &, bag: &mut PieceBag, lo: usize, piece: List[T]) {
     if piece.used == 0usize { return; }
     let node = libc.malloc(mem.sizeof[PieceNode[T]]()) as *PieceNode[T];
     mem.writeRaw(node, new PieceNode[T](0usize, lo, piece));
@@ -408,7 +408,7 @@ pub struct List[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
 
   // After the loop: the values of the bag's pieces, first piece first, appended to
   // this list; the bag is left empty
-  pub fn joinPieces(self &mut, bag &mut PieceBag) {
+  pub fn joinPieces(self: &mut, bag: &mut PieceBag) {
     var pending = bag.head;
     bag.head = 0usize;
     // The stack comes in no order: insert each piece by where it began
@@ -451,11 +451,11 @@ pub struct List[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
   // second block as big as the list's, given back before it returns.
   // 'order' is any callable of that signature that only reads what it holds,
   // met statically and so inlined into the merge: a function referenced,
-  // 'names.sortBy(&byName)' with 'fn byName(a &String, b &String) i32', a struct
+  // 'names.sortBy(&byName)' with 'fn byName(a: &String, b: &String) i32', a struct
   // with that '()', or a closure written there, which may capture what it
   // compares by, an eye point say (one that changes what it borrows is refused
   // at the call).
-  pub fn sortBy[F fn(a &T, b &T) i32](self &mut, order &F) {
+  pub fn sortBy[F: fn(a: &T, b: &T) i32](self: &mut, order: &F) {
     if used < 2usize { return; }
     let spare = RawBlocks.alloc(used * mem.sizeof[T](), mem.alignof[T]()) as *T;
     // Each pass merges runs of 'width' values from one block into the other
@@ -495,7 +495,7 @@ pub struct List[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
     RawBlocks.release(spare as *u8);
   }
 
-  fn finalizeAll(self &mut) {
+  fn finalizeAll(self: &mut) {
     if mem.needsFinal[T]() {
       var i = 0usize;
       while i < used { mem.finalize(ptr + i); i = i + 1usize; }
@@ -504,7 +504,7 @@ pub struct List[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
 
   // Its death: each value it holds, first to last, then the block, given back
   // to its region
-  fn final(self &uni) {
+  fn final(self: &uni) {
     self.finalizeAll();
     blockFree[T](region, ptr, cap);
   }
@@ -515,13 +515,13 @@ pub struct List[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
 // piece began, whose top's address is 'head' (0 when there is none), pushed
 // atomically as the pieces end
 pub struct PieceBag {
-  head usize;
+  head: usize;
 }
 
 struct PieceNode[T] {
-  next usize;      // the node below it in the stack, as an address
-  lo usize;        // the pass the piece began at
-  list List[T];
+  next: usize;      // the node below it in the stack, as an address
+  lo: usize;        // the pass the piece began at
+  list: List[T];
 }
 
 // A cursor over a list's values, front to back: 'next' gives a borrow of each in
@@ -529,12 +529,12 @@ struct PieceNode[T] {
 // gave, is used; the block and the count are read once, when it is made, so that
 // a loop over it reads neither again
 pub struct ListIter['a, T] is Iterator[&T] {
-  list &'a List[T];
-  ptr *T;
-  end usize;
-  pos usize;
+  list: &'a List[T];
+  ptr: *T;
+  end: usize;
+  pos: usize;
 
-  pub fn next(self &mut) Option[&'a T] {
+  pub fn next(self: &mut) Option[&'a T] {
     if pos >= end { return None; }
     let i = pos;
     pos = i + 1usize;
@@ -544,16 +544,16 @@ pub struct ListIter['a, T] is Iterator[&T] {
   // How many values are left, the one at k of them, and the cursors over those
   // before the place 'at' of them and those from it on: a ParallelIterable and
   // RandomAccess, so that a zip of two lists can be walked by 'parallel each'
-  pub fn len(self &) usize { end - pos }
+  pub fn len(self: &) usize { end - pos }
 
-  pub fn at(self &, k usize) &'a T {
+  pub fn at(self: &, k: usize) &'a T {
     if k >= end - pos {
       panic("ListIter.at: the value is past the end");
     }
     (ptr + pos + k) as &T
   }
 
-  pub fn split(self &, at usize) (ListIter['a, T], ListIter['a, T]) {
+  pub fn split(self: &, at: usize) (ListIter['a, T], ListIter['a, T]) {
     if at > end - pos {
       panic("ListIter.split: the index is past the end");
     }
@@ -566,19 +566,19 @@ pub struct ListIter['a, T] is Iterator[&T] {
 // is used (a push could write over a value not yet moved out). Its death
 // finalizes the values not moved out.
 pub struct ListDrain['a, T] is Iterator[T] {
-  list &'a mut List[T];
-  ptr *T;
-  end usize;
-  pos usize;
+  list: &'a mut List[T];
+  ptr: *T;
+  end: usize;
+  pos: usize;
 
-  pub fn next(self &mut) Option[T] {
+  pub fn next(self: &mut) Option[T] {
     if pos >= end { return None; }
     let i = pos;
     pos = i + 1usize;
     Some[T](mem.readRaw(ptr + i))
   }
 
-  fn final(self &uni) {
+  fn final(self: &uni) {
     if mem.needsFinal[T]() {
       var i = pos;
       while i < end { mem.finalize(ptr + i); i = i + 1usize; }
@@ -604,19 +604,19 @@ pub struct ListDrain['a, T] is Iterator[T] {
 // end, so there is no 'view' of them: walk them with 'items', or by position.
 // A borrow from a lookup or a cursor is good only until the deque next changes.
 pub struct Deque[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
-  ptr *T;
-  head usize;    // the slot of the first value
-  used usize;
-  cap usize;
-  region *MemRegion;
+  ptr: *T;
+  head: usize;    // the slot of the first value
+  used: usize;
+  cap: usize;
+  region: *MemRegion;
 
   // An empty deque, 'new Deque[i32]': no block until the first value arrives.
   // The last argument of every init is the region the block will come from
   // (see List)
-  pub fn initEmpty overload init(self &new, region *MemRegion) { *self = new Deque(null, 0usize, 0usize, 0usize, region); }
+  pub fn initEmpty overload init(self: &new, region: *MemRegion) { *self = new Deque(null, 0usize, 0usize, 0usize, region); }
 
   // An empty deque whose block has room for exactly n values, 'new Deque[i32](100)'
-  pub fn initCapacity overload init(self &new, n usize, region *MemRegion) {
+  pub fn initCapacity overload init(self: &new, n: usize, region: *MemRegion) {
     *self = new Deque(null, 0usize, 0usize, 0usize, region);
     if n > 0usize {
       self.ptr = blockNew[T](region, n);
@@ -628,26 +628,26 @@ pub struct Deque[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
   pub fn empty() Deque { new Deque(null, 0usize, 0usize, 0usize, heapRegion()) }
 
   // An empty deque whose block already has room for n values
-  pub fn withCapacity(n usize) Deque {
+  pub fn withCapacity(n: usize) Deque {
     var d = new Deque(null, 0usize, 0usize, 0usize, heapRegion());
     d.reserve(n);
     d
   }
 
   // How many values it holds, and how many its block has room for
-  pub fn len(self &) usize { used }
-  pub fn capacity(self &) usize { cap }
-  pub fn isEmpty(self &) bool { used == 0usize }
+  pub fn len(self: &) usize { used }
+  pub fn capacity(self: &) usize { cap }
+  pub fn isEmpty(self: &) bool { used == 0usize }
 
   // How a collector reaches what the deque holds, in its block: a writable
   // reference to each value, front to back (see List)
-  pub fn gcTraceElements(self &mut) DequeGcTraceItems[T] { new DequeGcTraceItems[T](self, 0usize) }
+  pub fn gcTraceElements(self: &mut) DequeGcTraceItems[T] { new DequeGcTraceItems[T](self, 0usize) }
 
   // Make room for 'more' values beyond those it holds. A block too small is
   // replaced by one twice its size, or exactly big enough if that is more, and
   // never smaller than 4; the values move into it with the first in slot 0.
   // Every borrow into the old block is then stale.
-  pub fn reserve(self &mut, more usize) {
+  pub fn reserve(self: &mut, more: usize) {
     if used + more <= cap { return; }
     var want = cap * 2usize;
     if want < used + more { want = used + more; }
@@ -656,17 +656,17 @@ pub struct Deque[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
   }
 
   // Move a value in at the back
-  pub fn push(self &mut, value T) {
+  pub fn push(self: &mut, value: T) {
     self.reserve(1usize);
     mem.writeRaw(ptr + self.slot(used), value);
     used = used + 1usize;
   }
 
   // 'deque <- value' is 'deque.push(value)'
-  pub fn append overload `<-`(self &mut, value T) { self.push(value); }
+  pub fn append overload `<-`(self: &mut, value: T) { self.push(value); }
 
   // Move a value in at the front: it becomes position 0
-  pub fn pushFront(self &mut, value T) {
+  pub fn pushFront(self: &mut, value: T) {
     self.reserve(1usize);
     head = if head == 0usize {cap - 1usize} else {head - 1usize};
     mem.writeRaw(ptr + head, value);
@@ -674,14 +674,14 @@ pub struct Deque[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
   }
 
   // Move the last value out, or None when it is empty
-  pub fn pop(self &mut) Option[T] {
+  pub fn pop(self: &mut) Option[T] {
     if used == 0usize { return None; }
     used = used - 1usize;
     Some[T](mem.readRaw(ptr + self.slot(used)))
   }
 
   // Move the first value out, or None when it is empty
-  pub fn popFront(self &mut) Option[T] {
+  pub fn popFront(self: &mut) Option[T] {
     if used == 0usize { return None; }
     let slot = head;
     head = if head + 1usize == cap {0usize} else {head + 1usize};
@@ -690,40 +690,40 @@ pub struct Deque[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
   }
 
   // A borrow of the last value, for reading it now, or None when it is empty
-  pub fn peek(self &) Option[&T] {
+  pub fn peek(self: &) Option[&T] {
     if used == 0usize { return None; }
     Some[&T]((ptr + self.slot(used - 1usize)) as &T)
   }
 
   // A borrow of the first value, or None when it is empty
-  pub fn peekFront(self &) Option[&T] {
+  pub fn peekFront(self: &) Option[&T] {
     if used == 0usize { return None; }
     Some[&T]((ptr + head) as &T)
   }
 
   // A borrow of the value at position index from the front, or None when index
   // is out of range
-  pub fn get(self &, index usize) Option[&T] {
+  pub fn get(self: &, index: usize) Option[&T] {
     if index >= used { return None; }
     Some[&T]((ptr + self.slot(index)) as &T)
   }
 
   // A borrow of the value at position index from the front, for reading it
   // now. An index out of range is a panic at the line of the caller
-  pub fn `[]`(self &, index usize, file &Array[u8] = srcFile(), line u32 = srcLine()) &T {
+  pub fn `[]`(self: &, index: usize, file: &Array[u8] = srcFile(), line: u32 = srcLine()) &T {
     if index >= used { outOfRange(index, used, file, line); }
     (ptr + self.slot(index)) as &T
   }
 
   // A mutable borrow of the value at position index, for changing it in place:
   // '&mut deque[i]'
-  pub fn `&[]`(self &mut, index usize, file &Array[u8] = srcFile(), line u32 = srcLine()) &mut T {
+  pub fn `&[]`(self: &mut, index: usize, file: &Array[u8] = srcFile(), line: u32 = srcLine()) &mut T {
     if index >= used { outOfRange(index, used, file, line); }
     (ptr + self.slot(index)) as &mut T
   }
 
   // Finalize every value, front to back, and keep the block for reuse
-  pub fn clear(self &mut) {
+  pub fn clear(self: &mut) {
     self.finalizeAll();
     head = 0usize;
     used = 0usize;
@@ -731,14 +731,14 @@ pub struct Deque[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
 
   // A cursor over its values, front to back: 'next' gives a borrow of each in
   // turn until it answers None. The deque may not change while it is used.
-  pub fn items(self &) DequeItems[T] { new DequeItems[T](self, 0usize) }
+  pub fn items(self: &) DequeItems[T] { new DequeItems[T](self, 0usize) }
 
   // The same cursor under the name 'each x in deque' walks it by
-  pub fn iter(self &) DequeItems[T] { new DequeItems[T](self, 0usize) }
+  pub fn iter(self: &) DequeItems[T] { new DequeItems[T](self, 0usize) }
 
   // The slot of the value at position i, which may be the one just past the last
   // when the caller is about to fill it
-  fn slot(self &, i usize) usize {
+  fn slot(self: &, i: usize) usize {
     let s = head + i;
     if s >= cap {s - cap} else {s}
   }
@@ -746,7 +746,7 @@ pub struct Deque[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
   // A new block of 'want' slots (more than 'used') with every value moved into
   // it in order, the front one in slot 0. The old block holds up to two runs:
   // from 'head' to the block's end, and from its start round to the last value
-  fn regrow(self &mut, want usize) {
+  fn regrow(self: &mut, want: usize) {
     let fresh = blockNew[T](region, want);
     if used > 0usize {
       let firstRun = if head + used <= cap {used} else {cap - head};
@@ -759,7 +759,7 @@ pub struct Deque[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
     cap = want;
   }
 
-  fn finalizeAll(self &mut) {
+  fn finalizeAll(self: &mut) {
     if mem.needsFinal[T]() {
       var i = 0usize;
       while i < used {
@@ -771,7 +771,7 @@ pub struct Deque[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
 
   // Its death: each value it holds, front to back, then the block, given back
   // to its region
-  fn final(self &uni) {
+  fn final(self: &uni) {
     self.finalizeAll();
     blockFree[T](region, ptr, cap);
   }
@@ -781,10 +781,10 @@ pub struct Deque[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
 // in turn. It borrows the deque, which may not change while the cursor, or a
 // value it gave, is used
 pub struct DequeItems['a, T] is Iterator[&T] {
-  deque &'a Deque[T];
-  pos usize;
+  deque: &'a Deque[T];
+  pos: usize;
 
-  pub fn next(self &mut) Option[&'a T] {
+  pub fn next(self: &mut) Option[&'a T] {
     if pos >= deque.used { return None; }
     let i = pos;
     pos = i + 1usize;
@@ -796,10 +796,10 @@ pub struct DequeItems['a, T] is Iterator[&T] {
 // them: 'next' gives a writable reference to each in turn. It borrows the deque
 // mutably, which may not change while the cursor is used
 pub struct DequeGcTraceItems['a, T] is Iterator[&mut T] {
-  deque &'a mut Deque[T];
-  pos usize;
+  deque: &'a mut Deque[T];
+  pos: usize;
 
-  pub fn next(self &mut) Option[&'a mut T] {
+  pub fn next(self: &mut) Option[&'a mut T] {
     if pos >= deque.used { return None; }
     let i = pos;
     pos = i + 1usize;
@@ -827,19 +827,19 @@ pub struct DequeGcTraceItems['a, T] is Iterator[&mut T] {
 // bytes. The methods of 'str' that a String has no reason to differ from, 'find'
 // and 'startsWith' among them, are the fold's.
 pub struct String is ShapeChanging, Hash, CarriesRegion {
-  buf List[u8];
+  buf: List[u8];
 
   use str via view but len, isEmpty, cstr, `[]`, trim, eq, `==`, hash;
 
   // An empty String, 'new String': no block until the first byte arrives. The
   // last argument of every init is the region the bytes will sit in (see List),
   // which the String hands its List
-  pub fn initEmpty overload init(self &new, region *MemRegion) {
+  pub fn initEmpty overload init(self: &new, region: *MemRegion) {
     *self = new String(new List[u8](region));
   }
 
   // An empty String with room for n bytes (and the NUL after them), 'new String(100)'
-  pub fn initCapacity overload init(self &new, n usize, region *MemRegion) {
+  pub fn initCapacity overload init(self: &new, n: usize, region: *MemRegion) {
     if n == 0usize { *self = new String(new List[u8](region)); }
     else { *self = new String(new List[u8](n + 1usize, region)); }
   }
@@ -847,13 +847,13 @@ pub struct String is ShapeChanging, Hash, CarriesRegion {
   pub fn empty() String { new String(List[u8].empty()) }
 
   // An empty String with room for n bytes (and the NUL after them)
-  pub fn withCapacity(n usize) String {
+  pub fn withCapacity(n: usize) String {
     if n == 0usize { return String.empty(); }
     new String(List[u8].withCapacity(n + 1usize))
   }
 
   // A String holding a copy of this text
-  pub fn from(s &str) String {
+  pub fn from(s: &str) String {
     var str = String.withCapacity(s.len());
     str.append(s);
     str
@@ -862,7 +862,7 @@ pub struct String is ShapeChanging, Hash, CarriesRegion {
   // A String holding a copy of these bytes, for bytes that are text (a buffer
   // read from a file or a socket, a part of one). Nothing checks they are
   // UTF-8: strings are UTF-8 by convention, as 'bytes as &str' is.
-  pub fn fromBytes(b &Array[u8]) String {
+  pub fn fromBytes(b: &Array[u8]) String {
     var str = String.withCapacity(b.len);
     str.appendBytes(b);
     str
@@ -870,15 +870,15 @@ pub struct String is ShapeChanging, Hash, CarriesRegion {
 
   // A String holding a copy of this text: what a literal becomes where a
   // String is wanted, '"core"' in the place of 'String.from("core")'
-  pub fn fromLiteral(s &str) String { String.from(s) }
+  pub fn fromLiteral(s: &str) String { String.from(s) }
 
   // The bytes it holds, for the methods here that work on bytes, and the NUL
   // kept after them. The block is nothing until the first byte arrives.
-  fn raw(self &) &Array[u8] inline { mem.sliceFromParts(buf.ptr, buf.used) }
+  fn raw(self: &) &Array[u8] inline { mem.sliceFromParts(buf.ptr, buf.used) }
 
   // Write the NUL after the bytes, making room for it first. A String with no
   // block has nothing to terminate: its view is the static empty literal.
-  fn seal(self &mut) {
+  fn seal(self: &mut) {
     if buf.ptr == null { return; }
     if buf.used >= buf.cap { buf.reserve(1usize); }
     mem.writeRaw(buf.ptr + buf.used, 0u8);
@@ -890,11 +890,11 @@ pub struct String is ShapeChanging, Hash, CarriesRegion {
   // promise that (and a '&u8' converts to one), so none is taken: where C may
   // leave one null, the caller asks first, and 'cstr.fromPtr(p)' vouches for
   // the rest.
-  pub fn fromCStr(c CStr) String { String.from(c.view()) }
+  pub fn fromCStr(c: CStr) String { String.from(c.view()) }
 
   // The views of 'parts' one after another, with 'sep' between each two:
   // 'String.join(names.view(), ", ")'. No parts make an empty String.
-  pub fn join(parts &Array[String], sep &str) String {
+  pub fn join(parts: &Array[String], sep: &str) String {
     var out = String.empty();
     var i = 0usize;
     while i < parts.len {
@@ -907,24 +907,24 @@ pub struct String is ShapeChanging, Hash, CarriesRegion {
 
   // A copy of this one. (Not 'clone': a method of that name is the lifecycle
   // method that makes a type's values copyable, which a String's are not.)
-  pub fn copy(self &) String { String.from(self.view()) }
+  pub fn copy(self: &) String { String.from(self.view()) }
 
-  pub fn len(self &) usize { buf.used }
-  pub fn isEmpty(self &) bool { buf.used == 0usize }
+  pub fn len(self: &) usize { buf.used }
+  pub fn isEmpty(self: &) bool { buf.used == 0usize }
 
   // Its text, for reading it now: the static empty literal when it holds
   // nothing, else its bytes. While the borrow is used the String may not change.
-  pub fn view(self &) &str {
+  pub fn view(self: &) &str {
     if buf.used == 0usize { return ""; }
     self.raw() as &str
   }
 
   // Its bytes, for changing them in place (nothing checks they stay UTF-8)
-  pub fn viewMut(self &mut) &mut Array[u8] { buf.viewMut() }
+  pub fn viewMut(self: &mut) &mut Array[u8] { buf.viewMut() }
 
   // Its bytes as a uni slice, when the String is reached only by a '&uni': the
   // list's 'viewUni', for a parallel loop that changes them
-  pub fn viewUni(self &uni) &uni Array[u8] { (&uni buf).viewUni() }
+  pub fn viewUni(self: &uni) &uni Array[u8] { (&uni buf).viewUni() }
 
   // The String is consumed: its bytes stay where they are, in the block it
   // owned, which becomes a Uni[str]'s. The block is shrunk to hold the text and
@@ -951,31 +951,31 @@ pub struct String is ShapeChanging, Hash, CarriesRegion {
   }
 
   // The byte at index
-  pub fn `[]`(self &, index usize) u8 { *buf[index] }
+  pub fn `[]`(self: &, index: usize) u8 { *buf[index] }
 
   // -------- adding to the end --------
 
   // Add the text s at the end. Rust's 'push_str'.
-  pub fn append overload `<-`(self &mut, s &str) {
+  pub fn append overload `<-`(self: &mut, s: &str) {
     self.appendBytes(s);
   }
 
   // Add these bytes at the end, for bytes that are text; nothing checks they
   // are UTF-8 (see 'fromBytes')
-  pub fn appendBytes(self &mut, b &Array[u8]) {
+  pub fn appendBytes(self: &mut, b: &Array[u8]) {
     buf.reserve(b.len + 1usize);
     var i = 0usize;
     while i < b.len { buf.push(b[i]); i = i + 1usize; }
     self.seal();
   }
 
-  pub fn appendByte(self &mut, b u8) {
+  pub fn appendByte(self: &mut, b: u8) {
     buf.push(b);
     self.seal();
   }
 
   // An integer in decimal, with a '-' before a negative one
-  pub fn appendInt overload `<-`(self &mut, n i64) {
+  pub fn appendInt overload `<-`(self: &mut, n: i64) {
     if n < 0i64 {
       buf.push('-');
       // The magnitude as a u64, which holds even the most negative i64's
@@ -986,7 +986,7 @@ pub struct String is ShapeChanging, Hash, CarriesRegion {
     }
   }
 
-  pub fn appendUInt overload `<-`(self &mut, n u64) {
+  pub fn appendUInt overload `<-`(self: &mut, n: u64) {
     var digits = new Array[u8, 20] <- fill 0u8;
     var count = 0usize;
     var rest = n;
@@ -1005,7 +1005,7 @@ pub struct String is ShapeChanging, Hash, CarriesRegion {
   }
 
   // The low 'width' hex digits of n, lowercase, leading zeros kept
-  pub fn appendHex(self &mut, n u64, width usize) {
+  pub fn appendHex(self: &mut, n: u64, width: usize) {
     var d = width;
     while d > 0usize {
       d = d - 1usize;
@@ -1018,11 +1018,11 @@ pub struct String is ShapeChanging, Hash, CarriesRegion {
   // Put s into the text so that it begins at byte index: "ac" with "b" put at
   // 1 is "abc". The index is a position between characters, 0 up to the
   // length, and anything else is a program error.
-  pub fn insert(self &mut, index usize, s &str, file &Array[u8] = srcFile(), line u32 = srcLine()) {
+  pub fn insert(self: &mut, index: usize, s: &str, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
     if index > buf.used || !self.view().isCharBoundary(index) {
       panic("collections: String.insert at a position that is not between characters", file, line);
     }
-    let text &Array[u8] = s;
+    let text: &Array[u8] = s;
     if text.len == 0usize { return; }
     let old = buf.used;
     buf.reserve(text.len + 1usize);
@@ -1036,7 +1036,7 @@ pub struct String is ShapeChanging, Hash, CarriesRegion {
   // Take away the bytes from start up to, not including, end: "abcd" with 1
   // to 3 removed is "ad". Both are positions between characters, start not
   // after end and end not past the length, or it is a program error.
-  pub fn remove(self &mut, start usize, end usize, file &Array[u8] = srcFile(), line u32 = srcLine()) {
+  pub fn remove(self: &mut, start: usize, end: usize, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
     let v = self.view();
     if start > end || end > buf.used || !(v.isCharBoundary(start) && v.isCharBoundary(end)) {
       panic("collections: String.remove of a range that is not between characters", file, line);
@@ -1048,7 +1048,7 @@ pub struct String is ShapeChanging, Hash, CarriesRegion {
 
   // Cut it to n bytes, keeping its block; one of n bytes or fewer is left
   // alone. n is a position between characters, or it is a program error.
-  pub fn truncate(self &mut, n usize, file &Array[u8] = srcFile(), line u32 = srcLine()) {
+  pub fn truncate(self: &mut, n: usize, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
     if n >= buf.used { return; }
     if !self.view().isCharBoundary(n) {
       panic("collections: String.truncate to a length that is not between characters", file, line);
@@ -1058,7 +1058,7 @@ pub struct String is ShapeChanging, Hash, CarriesRegion {
   }
 
   // Every '\' made a '/', or any byte made another
-  pub fn replaceByte(self &mut, from u8, to u8) {
+  pub fn replaceByte(self: &mut, from: u8, to: u8) {
     var i = 0usize;
     while i < buf.used {
       if *buf[i] == from { buf.set(i, to); }
@@ -1069,9 +1069,9 @@ pub struct String is ShapeChanging, Hash, CarriesRegion {
   // Every 'from' made 'to', left to right, the pieces never overlapping:
   // "aaa" with "aa" made "b" is "ba". An empty 'from' is found before each
   // byte and at the end, so "ab" with "" made "-" is "-a-b-".
-  pub fn replace(self &mut, from &str, to &str) {
+  pub fn replace(self: &mut, from: &str, to: &str) {
     let v = self.raw();
-    let f &Array[u8] = from;
+    let f: &Array[u8] = from;
     var out = new String(v.len, buf.region);
     var i = 0usize;
     if f.len == 0usize {
@@ -1097,7 +1097,7 @@ pub struct String is ShapeChanging, Hash, CarriesRegion {
   // it is 'width' bytes long: "7" padded to 3 is "  7", which right-aligns
   // it. One that long already, or longer, is left as it is. Width counts
   // bytes, so a character beyond ASCII counts each of its UTF-8 bytes.
-  pub fn padStart(self &mut, width usize, fill u8 = ' ') {
+  pub fn padStart(self: &mut, width: usize, fill: u8 = ' ') {
     if buf.used >= width { return; }
     var out = new String(width, buf.region);
     var n = width - buf.used;
@@ -1108,14 +1108,14 @@ pub struct String is ShapeChanging, Hash, CarriesRegion {
 
   // The same, put after its bytes: "ab" padded to 4 is "ab  ", which
   // left-aligns it
-  pub fn padEnd(self &mut, width usize, fill u8 = ' ') {
+  pub fn padEnd(self: &mut, width: usize, fill: u8 = ' ') {
     while buf.used < width { buf.push(fill); }
     self.seal();
   }
 
   // Each ASCII capital letter, A to Z, made small; every other byte, those
   // of characters beyond ASCII included, left as it is
-  pub fn lowerAscii(self &mut) {
+  pub fn lowerAscii(self: &mut) {
     var i = 0usize;
     while i < buf.used {
       let b = *buf[i];
@@ -1125,7 +1125,7 @@ pub struct String is ShapeChanging, Hash, CarriesRegion {
   }
 
   // Each ASCII small letter, a to z, made a capital; every other byte left
-  pub fn upperAscii(self &mut) {
+  pub fn upperAscii(self: &mut) {
     var i = 0usize;
     while i < buf.used {
       let b = *buf[i];
@@ -1135,20 +1135,20 @@ pub struct String is ShapeChanging, Hash, CarriesRegion {
   }
 
   // Empty it, keeping its block
-  pub fn clear(self &mut) {
+  pub fn clear(self: &mut) {
     buf.clear();
     self.seal();
   }
 
   // -------- reading --------
 
-  pub fn equals(self &, s &str) bool { self.view() == s }
+  pub fn equals(self: &, s: &str) bool { self.view() == s }
 
   // Whether it holds the same bytes as s once ASCII letters are made one
   // case: "Path" equals "PATH" this way. Bytes beyond ASCII must match exactly.
-  pub fn equalsIgnoreAsciiCase(self &, text &str) bool {
+  pub fn equalsIgnoreAsciiCase(self: &, text: &str) bool {
     let v = self.raw();
-    let s &Array[u8] = text;
+    let s: &Array[u8] = text;
     if v.len != s.len { return false; }
     var i = 0usize;
     while i < v.len {
@@ -1160,23 +1160,23 @@ pub struct String is ShapeChanging, Hash, CarriesRegion {
 
   // Whether two hold the same bytes: the '==' that Hash requires of a type
   // beside its 'hash'
-  pub fn eq overload `==`(self &, o &String) bool inline { self.view() == o.view() }
+  pub fn eq overload `==`(self: &, o: &String) bool inline { self.view() == o.view() }
 
   // What identifies it to a Hasher (core's Hash): what its text feeds (str's
   // 'hash'), so a literal, a view and a String of the same bytes hash alike
-  pub fn hash(self &, h &mut Hasher) inline { self.view().hash(h); }
+  pub fn hash(self: &, h: &mut Hasher) inline { self.view().hash(h); }
 
   // -------- copies of parts --------
 
   // A copy of the bytes from 'start' up to, not including, 'end'
-  pub fn sub(self &, start usize, end usize) String {
+  pub fn sub(self: &, start: usize, end: usize) String {
     let v = self.raw();
     String.fromBytes(&v[start..<end])
   }
 
   // A copy without the spaces, tabs, carriage returns and line feeds at
   // either end
-  pub fn trim(self &) String {
+  pub fn trim(self: &) String {
     let v = self.raw();
     var a = 0usize;
     var b = v.len;
@@ -1189,7 +1189,7 @@ pub struct String is ShapeChanging, Hash, CarriesRegion {
   // dropped; a last line need not end in '\n', and an ending '\n' does not
   // begin another line, so "a\nb\n" and "a\r\nb" are both two lines, and ""
   // is none.
-  pub fn lines(self &) List[String] {
+  pub fn lines(self: &) List[String] {
     let v = self.raw();
     var out = List[String].empty();
     var start = 0usize;
@@ -1213,7 +1213,7 @@ pub struct String is ShapeChanging, Hash, CarriesRegion {
 
   // Copies of the pieces between each 'sep': "a,b,,c" is four pieces, the
   // third empty; "" is one empty piece
-  pub fn split(self &, sep u8) List[String] {
+  pub fn split(self: &, sep: u8) List[String] {
     let v = self.raw();
     var out = List[String].empty();
     var start = 0usize;
@@ -1234,7 +1234,7 @@ pub struct String is ShapeChanging, Hash, CarriesRegion {
   // dies; the NUL is not one of its bytes. A NUL inside the text would end the
   // string early for C, so it is a panic, at the line of the caller. An empty
   // String holds no block, and its C string is the static empty literal.
-  pub fn cstr(self &, file &Array[u8] = srcFile(), line u32 = srcLine()) CStr {
+  pub fn cstr(self: &, file: &Array[u8] = srcFile(), line: u32 = srcLine()) CStr {
     if buf.ptr == null { return ""; }
     if libc.memchr(buf.ptr, 0i32, buf.used) != null {
       panic("collections: String.cstr of text holding a NUL byte, which would end the C string early", file, line);
@@ -1283,8 +1283,8 @@ pub struct String is ShapeChanging, Hash, CarriesRegion {
 
 // One bucket's key and value: live only where its control byte says full
 pub struct DictEntry[K, V] {
-  pub key K;
-  pub value V;
+  pub key: K;
+  pub value: V;
 }
 
 const ctrlEmpty = 0xFFu8;
@@ -1299,10 +1299,10 @@ const noBucket = 0xFFFFFFFFFFFFFFFFusize;
 // The 8 control bytes from pos on, as one word (the first byte is the lowest),
 // read however pos is aligned. The last 8 control bytes copy the first 8, so a
 // group that begins near the end wraps around
-fn ctrlGroup(ctrl *u8, pos usize) u64 { mem.readRaw[u64]((ctrl + pos) as *u64) }
+fn ctrlGroup(ctrl: *u8, pos: usize) u64 { mem.readRaw[u64]((ctrl + pos) as *u64) }
 
 // Set bucket i's control byte, and its copy past the end if it is among the first 8
-fn ctrlSet(ctrl *u8, mask usize, i usize, v u8) {
+fn ctrlSet(ctrl: *u8, mask: usize, i: usize, v: u8) {
   mem.writeRaw[u8](ctrl + i, v);
   mem.writeRaw[u8](ctrl + (((i + mask + 1usize - 8usize) & mask) + 8usize), v);
 }
@@ -1310,7 +1310,7 @@ fn ctrlSet(ctrl *u8, mask usize, i usize, v u8) {
 // Make bucket i's control byte empty if no search can have gone past it (a
 // full group around it that has an empty bucket on one side), else removed.
 // It answers whether it became empty
-fn ctrlErase(ctrl *u8, mask usize, i usize) bool {
+fn ctrlErase(ctrl: *u8, mask: usize, i: usize) bool {
   let before = matchEmpty(ctrlGroup(ctrl, (i + mask + 1usize - 8usize) & mask));
   let after = matchEmpty(ctrlGroup(ctrl, i));
   if (before.leadingZeros() >> 3u32) + (after.trailingZeros() >> 3u32) >= 8u32 {
@@ -1323,26 +1323,26 @@ fn ctrlErase(ctrl *u8, mask usize, i usize) bool {
 
 // A flag (0x80) in each byte of g that holds t, and perhaps one that doesn't, in
 // a byte just after one that does
-fn matchTag(g u64, t u8) u64 {
+fn matchTag(g: u64, t: u8) u64 {
   let x = g ^ (lowBytes * u64.from(t));
   (x - lowBytes) & ~x & highBits
 }
 
 // A flag in each byte of g that is empty
-fn matchEmpty(g u64) u64 { g & (g << 1u64) & highBits }
+fn matchEmpty(g: u64) u64 { g & (g << 1u64) & highBits }
 
 // A flag in each byte of g that is empty or removed
-fn matchFree(g u64) u64 { g & highBits }
+fn matchFree(g: u64) u64 { g & highBits }
 
 // Which byte (0 to 7) the lowest flag in m is in
-fn flagByte(m u64) usize { usize.from(m.trailingZeros() >> 3u32) }
+fn flagByte(m: u64) usize { usize.from(m.trailingZeros() >> 3u32) }
 
 // The tag of a hash: its top 7 bits
-fn hashTag(hash u64) u8 { u8.from(hash >> 57u64) }
+fn hashTag(hash: u64) u8 { u8.from(hash >> 57u64) }
 
 // The first empty or removed bucket in the probe sequence of hash. The table
 // always has an empty bucket, so the search ends
-fn freeBucket(ctrl *u8, mask usize, hash u64) usize {
+fn freeBucket(ctrl: *u8, mask: usize, hash: u64) usize {
   var pos = usize.from(hash) & mask;
   var stride = 0usize;
   while true {
@@ -1356,36 +1356,36 @@ fn freeBucket(ctrl *u8, mask usize, hash u64) usize {
 
 // How many entries a table of this many buckets (a power of two, 8 or more)
 // holds, 7 in every 8 buckets
-fn bucketsCapacity(buckets usize) usize { buckets / 8usize * 7usize }
+fn bucketsCapacity(buckets: usize) usize { buckets / 8usize * 7usize }
 
 // The fewest buckets (a power of two, 8 or more) that hold n entries
-fn capacityBuckets(n usize) usize {
+fn capacityBuckets(n: usize) usize {
   var b = 8usize;
   while bucketsCapacity(b) < n { b = b * 2usize; }
   b
 }
 
-pub struct Dict[K Hash, V] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
-  ctrl *u8;
-  slots *DictEntry[K, V];
-  mask usize;       // the buckets, less one
-  items usize;      // how many hold entries
-  left usize;       // how many more empty buckets may be filled before it grows
-  hasher Hasher;    // starts every key's hash: the seed, mixed
-  region *MemRegion;   // where the block comes from and goes back to
+pub struct Dict[K: Hash, V] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
+  ctrl: *u8;
+  slots: *DictEntry[K, V];
+  mask: usize;       // the buckets, less one
+  items: usize;      // how many hold entries
+  left: usize;       // how many more empty buckets may be filled before it grows
+  hasher: Hasher;    // starts every key's hash: the seed, mixed
+  region: *MemRegion;   // where the block comes from and goes back to
 
   // An empty dictionary, 'new Dict[String, i64]': no block until the first entry
   // arrives. Its seed is the process's, so its order differs from run to run.
   // The last argument of every init is the region the block will come from (see
   // List), which a construction that names none leaves out and is handed the heap's.
-  pub fn initEmpty overload init(self &new, region *MemRegion) {
+  pub fn initEmpty overload init(self: &new, region: *MemRegion) {
     *self = new Dict(null, null, 0usize, 0usize, 0usize, Hasher.seeded(), region);
   }
 
   // An empty dictionary whose block already has room for n entries without
   // growing (rounded up to the table's size, so 'capacity' may be more),
   // 'new Dict[String, i64](100)'
-  pub fn initCapacity overload init(self &new, n usize, region *MemRegion) {
+  pub fn initCapacity overload init(self: &new, n: usize, region: *MemRegion) {
     var d = new Dict(null, null, 0usize, 0usize, 0usize, Hasher.seeded(), region);
     if n > 0usize { d.resize(capacityBuckets(n)); }
     *self = d;
@@ -1394,7 +1394,7 @@ pub struct Dict[K Hash, V] is ShapeChanging, Sendable, CarriesRegion, GcTraceEle
   pub fn empty() Dict { new Dict(null, null, 0usize, 0usize, 0usize, Hasher.seeded(), heapRegion()) }
 
   // An empty dictionary whose block already has room for n entries without growing
-  pub fn withCapacity(n usize) Dict {
+  pub fn withCapacity(n: usize) Dict {
     var d = new Dict(null, null, 0usize, 0usize, 0usize, Hasher.seeded(), heapRegion());
     if n > 0usize { d.resize(capacityBuckets(n)); }
     d
@@ -1406,19 +1406,19 @@ pub struct Dict[K Hash, V] is ShapeChanging, Sendable, CarriesRegion, GcTraceEle
 
   // An empty dictionary with this seed: a key hashes to what 'Hasher.withSeed(seed)'
   // makes of what it feeds, and another seed shuffles the order
-  pub fn withSeed(seed u64) Dict { new Dict(null, null, 0usize, 0usize, 0usize, Hasher.withSeed(seed), heapRegion()) }
+  pub fn withSeed(seed: u64) Dict { new Dict(null, null, 0usize, 0usize, 0usize, Hasher.withSeed(seed), heapRegion()) }
 
   // How many entries it holds, and how many it holds before it next grows
-  pub fn len(self &) usize { items }
-  pub fn capacity(self &) usize { items + left }
-  pub fn isEmpty(self &) bool { items == 0usize }
+  pub fn len(self: &) usize { items }
+  pub fn capacity(self: &) usize { items + left }
+  pub fn isEmpty(self: &) bool { items == 0usize }
 
   // Move key and value in. A key it already holds has its entry replaced: the
   // old key is finalized and the old value moved out to the caller, as an
   // Option (Rust's HashMap::insert); None when the key was new. The Option's
   // value dies with the caller's binding, or at the end of a statement that
   // ignores it.
-  pub fn insert(self &mut, key K, value V) Option[V] {
+  pub fn insert(self: &mut, key: K, value: V) Option[V] {
     let hash = self.hashOf(&key);
     let found = self.freeOrFound(hash, &key);
     if self.isFull(found) {
@@ -1434,14 +1434,14 @@ pub struct Dict[K Hash, V] is ShapeChanging, Sendable, CarriesRegion, GcTraceEle
 
   // 'dict <- key: value' is 'dict.insert(key, value)': a later value for a key
   // it holds replaces the earlier
-  pub fn insertPair overload `<-`(self &mut, key K, value V) { self.insert(key, value); }
+  pub fn insertPair overload `<-`(self: &mut, key: K, value: V) { self.insert(key, value); }
 
   // A borrow of key's value for changing it in place, which is how a count is
   // kept: the value already there, or else the one given, moved in, with
   // one search. A key and a value that were not needed die.
   //
   //   *counts.getOrInsert(word, 0) += 1;
-  pub fn getOrInsert(self &mut, key K, value V) &mut V {
+  pub fn getOrInsert(self: &mut, key: K, value: V) &mut V {
     let hash = self.hashOf(&key);
     let found = self.freeOrFound(hash, &key);
     if self.isFull(found) { return &mut slots[found].value; }
@@ -1462,30 +1462,30 @@ pub struct Dict[K Hash, V] is ShapeChanging, Sendable, CarriesRegion, GcTraceEle
   // name.
 
   // Whether it holds key
-  pub fn containsKey overload contains(self &, key &K) bool { self.find(self.hashOf(key), key) != noBucket }
-  pub fn containsText overload contains(self &, key &str) bool where K is String || K is Uni[str] || K is Rc[str] {
+  pub fn containsKey overload contains(self: &, key: &K) bool { self.find(self.hashOf(key), key) != noBucket }
+  pub fn containsText overload contains(self: &, key: &str) bool where K is String || K is Uni[str] || K is Rc[str] {
     self.find(self.hashOf(key), key) != noBucket
   }
 
   // A borrow of key's value, for reading it now, or None
-  pub fn getKey overload get(self &, key &K) Option[&V] {
+  pub fn getKey overload get(self: &, key: &K) Option[&V] {
     let i = self.find(self.hashOf(key), key);
     if i == noBucket { return None; }
     Some[&V](&slots[i].value)
   }
-  pub fn getText overload get(self &, key &str) Option[&V] where K is String || K is Uni[str] || K is Rc[str] {
+  pub fn getText overload get(self: &, key: &str) Option[&V] where K is String || K is Uni[str] || K is Rc[str] {
     let i = self.find(self.hashOf(key), key);
     if i == noBucket { return None; }
     Some[&V](&slots[i].value)
   }
 
   // A borrow of key's value for changing it in place, or None
-  pub fn getMutKey overload getMut(self &mut, key &K) Option[&mut V] {
+  pub fn getMutKey overload getMut(self: &mut, key: &K) Option[&mut V] {
     let i = self.find(self.hashOf(key), key);
     if i == noBucket { return None; }
     Some[&mut V](&mut slots[i].value)
   }
-  pub fn getMutText overload getMut(self &mut, key &str) Option[&mut V] where K is String || K is Uni[str] || K is Rc[str] {
+  pub fn getMutText overload getMut(self: &mut, key: &str) Option[&mut V] where K is String || K is Uni[str] || K is Rc[str] {
     let i = self.find(self.hashOf(key), key);
     if i == noBucket { return None; }
     Some[&mut V](&mut slots[i].value)
@@ -1494,12 +1494,12 @@ pub struct Dict[K Hash, V] is ShapeChanging, Sendable, CarriesRegion, GcTraceEle
   // A copy of key's value, or None. This is the lookup that answers without a
   // borrow into the table, so it works through a shared owner, and it exists
   // only where V copies: a number, an id, a reference-counted owner
-  pub fn getCopyKey overload getCopy(self &, key &K) Option[V] where V is Copy {
+  pub fn getCopyKey overload getCopy(self: &, key: &K) Option[V] where V is Copy {
     let i = self.find(self.hashOf(key), key);
     if i == noBucket { return None; }
     Some[V](slots[i].value)
   }
-  pub fn getCopyText overload getCopy(self &, key &str) Option[V] where (K is String || K is Uni[str] || K is Rc[str]) && V is Copy {
+  pub fn getCopyText overload getCopy(self: &, key: &str) Option[V] where (K is String || K is Uni[str] || K is Rc[str]) && V is Copy {
     let i = self.find(self.hashOf(key), key);
     if i == noBucket { return None; }
     Some[V](slots[i].value)
@@ -1508,24 +1508,24 @@ pub struct Dict[K Hash, V] is ShapeChanging, Sendable, CarriesRegion, GcTraceEle
   // 'dict[&key]': a borrow of key's value. A key it does not hold is a program
   // error, a panic at the line of the caller (naming the key, when it is
   // given as text): ask 'contains' first.
-  pub fn indexKey overload `[]`(self &, key &K, file &Array[u8] = srcFile(), line u32 = srcLine()) &V {
+  pub fn indexKey overload `[]`(self: &, key: &K, file: &Array[u8] = srcFile(), line: u32 = srcLine()) &V {
     let i = self.find(self.hashOf(key), key);
     if i == noBucket { panic("collections: Dict has no entry for the key", file, line); }
     &slots[i].value
   }
-  pub fn indexText overload `[]`(self &, key &str, file &Array[u8] = srcFile(), line u32 = srcLine()) &V where K is String || K is Uni[str] || K is Rc[str] {
+  pub fn indexText overload `[]`(self: &, key: &str, file: &Array[u8] = srcFile(), line: u32 = srcLine()) &V where K is String || K is Uni[str] || K is Rc[str] {
     let i = self.find(self.hashOf(key), key);
     if i == noBucket { missingKey(key, file, line); }
     &slots[i].value
   }
 
   // '&mut dict[&key]': a borrow of key's value for changing it, a panic as above
-  pub fn indexMutKey overload `&[]`(self &mut, key &K, file &Array[u8] = srcFile(), line u32 = srcLine()) &mut V {
+  pub fn indexMutKey overload `&[]`(self: &mut, key: &K, file: &Array[u8] = srcFile(), line: u32 = srcLine()) &mut V {
     let i = self.find(self.hashOf(key), key);
     if i == noBucket { panic("collections: Dict has no entry for the key", file, line); }
     &mut slots[i].value
   }
-  pub fn indexMutText overload `&[]`(self &mut, key &str, file &Array[u8] = srcFile(), line u32 = srcLine()) &mut V where K is String || K is Uni[str] || K is Rc[str] {
+  pub fn indexMutText overload `&[]`(self: &mut, key: &str, file: &Array[u8] = srcFile(), line: u32 = srcLine()) &mut V where K is String || K is Uni[str] || K is Rc[str] {
     let i = self.find(self.hashOf(key), key);
     if i == noBucket { missingKey(key, file, line); }
     &mut slots[i].value
@@ -1533,12 +1533,12 @@ pub struct Dict[K Hash, V] is ShapeChanging, Sendable, CarriesRegion, GcTraceEle
 
   // Move key's value out and finalize the key it was held under, or None when it
   // holds no such key
-  pub fn removeKey overload remove(self &mut, key &K) Option[V] {
+  pub fn removeKey overload remove(self: &mut, key: &K) Option[V] {
     let i = self.find(self.hashOf(key), key);
     if i == noBucket { return None; }
     self.take(i)
   }
-  pub fn removeText overload remove(self &mut, key &str) Option[V] where K is String || K is Uni[str] || K is Rc[str] {
+  pub fn removeText overload remove(self: &mut, key: &str) Option[V] where K is String || K is Uni[str] || K is Rc[str] {
     let i = self.find(self.hashOf(key), key);
     if i == noBucket { return None; }
     self.take(i)
@@ -1546,7 +1546,7 @@ pub struct Dict[K Hash, V] is ShapeChanging, Sendable, CarriesRegion, GcTraceEle
 
   // Finalize every key and value, first bucket to last, and keep the block:
   // it holds nothing, with the room it had
-  pub fn clear(self &mut) {
+  pub fn clear(self: &mut) {
     if ctrl == null { return; }
     if mem.needsFinal[DictEntry[K, V]]() {
       var i = 0usize;
@@ -1564,32 +1564,32 @@ pub struct Dict[K Hash, V] is ShapeChanging, Sendable, CarriesRegion, GcTraceEle
   // now, with 'next' until it answers None, in the table's order: different on
   // every run unless it was made with 'deterministic' or 'withSeed'. The table
   // may not change while one is used.
-  pub fn keys(self &) DictKeys[K, V] { new DictKeys[K, V](self, 0usize) }
-  pub fn values(self &) DictValues[K, V] { new DictValues[K, V](self, 0usize) }
-  pub fn entries(self &) DictEntries[K, V] { new DictEntries[K, V](self, 0usize) }
+  pub fn keys(self: &) DictKeys[K, V] { new DictKeys[K, V](self, 0usize) }
+  pub fn values(self: &) DictValues[K, V] { new DictValues[K, V](self, 0usize) }
+  pub fn entries(self: &) DictEntries[K, V] { new DictEntries[K, V](self, 0usize) }
 
   // How a collector reaches what the dictionary holds, in its block: a
   // writable reference to each value (see List); the keys are not walked
-  pub fn gcTraceElements(self &mut) DictGcTraceItems[K, V] { new DictGcTraceItems[K, V](self, 0usize) }
+  pub fn gcTraceElements(self: &mut) DictGcTraceItems[K, V] { new DictGcTraceItems[K, V](self, 0usize) }
 
   // A cursor over its pairs, which 'each k, v in dict' walks: 'next' gives a
   // pair of borrows, a key and its value, in the table's order
-  pub fn iter(self &) DictPairs[K, V] { new DictPairs[K, V](self, 0usize) }
+  pub fn iter(self: &) DictPairs[K, V] { new DictPairs[K, V](self, 0usize) }
 
   // The hash of a key: the key fed to this dictionary's hasher. '(*key)' and
   // not 'key': a Uni[str] or Rc[str] key is a reference itself, and a method
   // call reads through one reference only, so it is read through to its text
-  fn hashOf[B](self &, key &B) u64 {
+  fn hashOf[B](self: &, key: &B) u64 {
     var h = hasher;
     (*key).hash(&mut h);
     h.finish()
   }
 
   // Whether the bucket holds an entry (its control byte's top bit is clear)
-  fn isFull(self &, i usize) bool { mem.readRaw[u8](ctrl + i) < ctrlRemoved }
+  fn isFull(self: &, i: usize) bool { mem.readRaw[u8](ctrl + i) < ctrlRemoved }
 
   // The bucket holding key, or noBucket
-  fn find[B](self &, hash u64, key &B) usize {
+  fn find[B](self: &, hash: u64, key: &B) usize {
     if items == 0usize { return noBucket; }
     let t = hashTag(hash);
     var pos = usize.from(hash) & mask;
@@ -1612,7 +1612,7 @@ pub struct Dict[K Hash, V] is ShapeChanging, Sendable, CarriesRegion, GcTraceEle
   // One search for an insert: the bucket holding key, if there is one, else the
   // first empty or removed bucket in the probe sequence. The block is made
   // when there is none yet. Whether it found key is 'isFull'
-  fn freeOrFound(self &mut, hash u64, key &K) usize {
+  fn freeOrFound(self: &mut, hash: u64, key: &K) usize {
     if ctrl == null { self.resize(8usize); }
     let t = hashTag(hash);
     var pos = usize.from(hash) & mask;
@@ -1640,7 +1640,7 @@ pub struct Dict[K Hash, V] is ShapeChanging, Sendable, CarriesRegion, GcTraceEle
   // The bucket a new entry goes in, given the free one the search found: the
   // table grows first (or is rebuilt at its size, when removed buckets are most
   // of what fills it) if the bucket is an empty one and none are left to fill
-  fn roomFor(self &mut, hash u64, spare usize) usize {
+  fn roomFor(self: &mut, hash: u64, spare: usize) usize {
     if left > 0usize || mem.readRaw[u8](ctrl + spare) != ctrlEmpty { return spare; }
     let wanted = items + 1usize;
     let buckets = mask + 1usize;
@@ -1649,7 +1649,7 @@ pub struct Dict[K Hash, V] is ShapeChanging, Sendable, CarriesRegion, GcTraceEle
   }
 
   // Move an entry into bucket i, which is free
-  fn fill(self &mut, i usize, hash u64, key K, value V) {
+  fn fill(self: &mut, i: usize, hash: u64, key: K, value: V) {
     if mem.readRaw[u8](ctrl + i) == ctrlEmpty { left = left - 1usize; }
     ctrlSet(ctrl, mask, i, hashTag(hash));
     items = items + 1usize;
@@ -1659,7 +1659,7 @@ pub struct Dict[K Hash, V] is ShapeChanging, Sendable, CarriesRegion, GcTraceEle
   // Remove the entry in bucket i: its key is finalized, its value moved out.
   // The bucket becomes empty if no search can have gone past it (a full group
   // around it that has an empty bucket on one side), else removed
-  fn take(self &mut, i usize) Option[V] {
+  fn take(self: &mut, i: usize) Option[V] {
     if ctrlErase(ctrl, mask, i) { left = left + 1usize; }
     items = items - 1usize;
     // The value is read out of its bucket raw, since nothing moves out of a
@@ -1671,12 +1671,12 @@ pub struct Dict[K Hash, V] is ShapeChanging, Sendable, CarriesRegion, GcTraceEle
 
   // The bytes of the block of this many buckets: the entries, then the control
   // bytes and their copy of the first eight
-  fn tableBytes(self &, buckets usize) usize {
+  fn tableBytes(self: &, buckets: usize) usize {
     buckets * mem.sizeof[DictEntry[K, V]]() + buckets + 8usize
   }
 
   // A new block of this many buckets, every entry moved into it by its hash
-  fn resize(self &mut, buckets usize) {
+  fn resize(self: &mut, buckets: usize) {
     let entrySize = mem.sizeof[DictEntry[K, V]]();
     let base = (region as &MemRegion).allocate(self.tableBytes(buckets), mem.alignof[DictEntry[K, V]]());
     let fresh = base + buckets * entrySize;
@@ -1704,7 +1704,7 @@ pub struct Dict[K Hash, V] is ShapeChanging, Sendable, CarriesRegion, GcTraceEle
 
   // Its death: each entry's key and value, first bucket to last, then the block,
   // given back to its region
-  fn final(self &uni) {
+  fn final(self: &uni) {
     if ctrl != null {
       if mem.needsFinal[DictEntry[K, V]]() {
         var i = 0usize;
@@ -1719,7 +1719,7 @@ pub struct Dict[K Hash, V] is ShapeChanging, Sendable, CarriesRegion, GcTraceEle
 }
 
 // The next full bucket at or after pos, or noBucket
-fn nextFull(ctrl *u8, mask usize, pos usize) usize {
+fn nextFull(ctrl: *u8, mask: usize, pos: usize) usize {
   if ctrl == null { return noBucket; }
   var i = pos;
   while i <= mask {
@@ -1732,11 +1732,11 @@ fn nextFull(ctrl *u8, mask usize, pos usize) usize {
 // A cursor over a dictionary's keys: 'next' gives a borrow of each in turn.
 // It borrows the dictionary, which may not change while the cursor, or a key
 // it gave, is used
-pub struct DictKeys['a, K Hash, V] is Iterator[&K] {
-  dict &'a Dict[K, V];
-  pos usize;
+pub struct DictKeys['a, K: Hash, V] is Iterator[&K] {
+  dict: &'a Dict[K, V];
+  pos: usize;
 
-  pub fn next(self &mut) Option[&'a K] {
+  pub fn next(self: &mut) Option[&'a K] {
     let i = nextFull(dict.ctrl, dict.mask, pos);
     if i == noBucket { pos = dict.mask + 1usize; return None; }
     pos = i + 1usize;
@@ -1745,11 +1745,11 @@ pub struct DictKeys['a, K Hash, V] is Iterator[&K] {
 }
 
 // A cursor over a dictionary's values
-pub struct DictValues['a, K Hash, V] is Iterator[&V] {
-  dict &'a Dict[K, V];
-  pos usize;
+pub struct DictValues['a, K: Hash, V] is Iterator[&V] {
+  dict: &'a Dict[K, V];
+  pos: usize;
 
-  pub fn next(self &mut) Option[&'a V] {
+  pub fn next(self: &mut) Option[&'a V] {
     let i = nextFull(dict.ctrl, dict.mask, pos);
     if i == noBucket { pos = dict.mask + 1usize; return None; }
     pos = i + 1usize;
@@ -1761,11 +1761,11 @@ pub struct DictValues['a, K Hash, V] is Iterator[&V] {
 // gives a writable reference to each. Keys are not walked: a collector that
 // moved one would leave it hashed where it was, so a key that holds a traced
 // reference is refused
-pub struct DictGcTraceItems['a, K Hash, V] is Iterator[&mut V] {
-  dict &'a mut Dict[K, V];
-  pos usize;
+pub struct DictGcTraceItems['a, K: Hash, V] is Iterator[&mut V] {
+  dict: &'a mut Dict[K, V];
+  pos: usize;
 
-  pub fn next(self &mut) Option[&'a mut V] {
+  pub fn next(self: &mut) Option[&'a mut V] {
     let i = nextFull(dict.ctrl, dict.mask, pos);
     if i == noBucket { pos = dict.mask + 1usize; return None; }
     pos = i + 1usize;
@@ -1774,11 +1774,11 @@ pub struct DictGcTraceItems['a, K Hash, V] is Iterator[&mut V] {
 }
 
 // A cursor over a dictionary's entries: a borrow of each key with its value
-pub struct DictEntries['a, K Hash, V] is Iterator[&DictEntry[K, V]] {
-  dict &'a Dict[K, V];
-  pos usize;
+pub struct DictEntries['a, K: Hash, V] is Iterator[&DictEntry[K, V]] {
+  dict: &'a Dict[K, V];
+  pos: usize;
 
-  pub fn next(self &mut) Option[&'a DictEntry[K, V]] {
+  pub fn next(self: &mut) Option[&'a DictEntry[K, V]] {
     let i = nextFull(dict.ctrl, dict.mask, pos);
     if i == noBucket { pos = dict.mask + 1usize; return None; }
     pos = i + 1usize;
@@ -1788,11 +1788,11 @@ pub struct DictEntries['a, K Hash, V] is Iterator[&DictEntry[K, V]] {
 
 // A cursor over a dictionary's pairs: a borrow of each key with a borrow of its
 // value, as a tuple
-pub struct DictPairs['a, K Hash, V] is Iterator[(&K, &V)] {
-  dict &'a Dict[K, V];
-  pos usize;
+pub struct DictPairs['a, K: Hash, V] is Iterator[(&K, &V)] {
+  dict: &'a Dict[K, V];
+  pos: usize;
 
-  pub fn next(self &mut) Option[(&'a K, &'a V)] {
+  pub fn next(self: &mut) Option[(&'a K, &'a V)] {
     let i = nextFull(dict.ctrl, dict.mask, pos);
     if i == noBucket { pos = dict.mask + 1usize; return None; }
     pos = i + 1usize;
@@ -1831,31 +1831,31 @@ pub struct DictPairs['a, K Hash, V] is Iterator[(&K, &V)] {
 // One entry: the hash of its key, as the dictionary computed it, kept so that
 // growing never hashes again, and the key and the value
 pub struct OrderedEntry[K, V] {
-  pub hash u64;
-  pub key K;
-  pub value V;
+  pub hash: u64;
+  pub key: K;
+  pub value: V;
 }
 
-pub struct OrderedDict[K Hash, V] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
-  ctrl *u8;                        // the control bytes, past the index in its block
-  index *u32;                      // per bucket, its entry's position; live only where ctrl is full
-  dense *OrderedEntry[K, V];       // the entries in order, 'count' live, room for 7/8 of the buckets
-  mask usize;                      // the buckets, less one
-  count usize;                     // how many entries
-  left usize;                      // how many more empty buckets may be filled before it is rebuilt
-  hasher Hasher;
-  region *MemRegion;                  // where both blocks come from and go back to
+pub struct OrderedDict[K: Hash, V] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
+  ctrl: *u8;                        // the control bytes, past the index in its block
+  index: *u32;                      // per bucket, its entry's position; live only where ctrl is full
+  dense: *OrderedEntry[K, V];       // the entries in order, 'count' live, room for 7/8 of the buckets
+  mask: usize;                      // the buckets, less one
+  count: usize;                     // how many entries
+  left: usize;                      // how many more empty buckets may be filled before it is rebuilt
+  hasher: Hasher;
+  region: *MemRegion;                  // where both blocks come from and go back to
 
   // An empty dictionary, 'new OrderedDict[String, i64]': no block until the
   // first entry arrives. The last argument of every init is the region the
   // blocks will come from (see List)
-  pub fn initEmpty overload init(self &new, region *MemRegion) {
+  pub fn initEmpty overload init(self: &new, region: *MemRegion) {
     *self = new OrderedDict(null, null, null, 0usize, 0usize, 0usize, Hasher.seeded(), region);
   }
 
   // An empty dictionary whose blocks already have room for n entries without
   // growing (rounded up to the table's size), 'new OrderedDict[String, i64](100)'
-  pub fn initCapacity overload init(self &new, n usize, region *MemRegion) {
+  pub fn initCapacity overload init(self: &new, n: usize, region: *MemRegion) {
     var d = new OrderedDict(null, null, null, 0usize, 0usize, 0usize, Hasher.seeded(), region);
     if n > 0usize { d.resize(capacityBuckets(n)); }
     *self = d;
@@ -1864,7 +1864,7 @@ pub struct OrderedDict[K Hash, V] is ShapeChanging, Sendable, CarriesRegion, GcT
   pub fn empty() OrderedDict { new OrderedDict(null, null, null, 0usize, 0usize, 0usize, Hasher.seeded(), heapRegion()) }
 
   // An empty dictionary whose blocks already have room for n entries without growing
-  pub fn withCapacity(n usize) OrderedDict {
+  pub fn withCapacity(n: usize) OrderedDict {
     var d = new OrderedDict(null, null, null, 0usize, 0usize, 0usize, Hasher.seeded(), heapRegion());
     if n > 0usize { d.resize(capacityBuckets(n)); }
     d
@@ -1875,19 +1875,19 @@ pub struct OrderedDict[K Hash, V] is ShapeChanging, Sendable, CarriesRegion, GcT
 
   // An empty dictionary with this seed: a key hashes to what 'Hasher.withSeed(seed)'
   // makes of what it feeds
-  pub fn withSeed(seed u64) OrderedDict {
+  pub fn withSeed(seed: u64) OrderedDict {
     new OrderedDict(null, null, null, 0usize, 0usize, 0usize, Hasher.withSeed(seed), heapRegion())
   }
 
   // How many entries it holds, and how many it holds before it next grows
-  pub fn len(self &) usize { count }
-  pub fn capacity(self &) usize { if ctrl == null {0usize} else {bucketsCapacity(mask + 1usize)} }
-  pub fn isEmpty(self &) bool { count == 0usize }
+  pub fn len(self: &) usize { count }
+  pub fn capacity(self: &) usize { if ctrl == null {0usize} else {bucketsCapacity(mask + 1usize)} }
+  pub fn isEmpty(self: &) bool { count == 0usize }
 
   // Move key and value in, at the end. A key it already holds has its entry
   // replaced where it stands: the old key is finalized and the old value moved
   // out to the caller, as an Option; None when the key was new.
-  pub fn insert(self &mut, key K, value V) Option[V] {
+  pub fn insert(self: &mut, key: K, value: V) Option[V] {
     let hash = self.hashOf(&key);
     let found = self.freeOrFound(hash, &key);
     if self.isFull(found) {
@@ -1903,11 +1903,11 @@ pub struct OrderedDict[K Hash, V] is ShapeChanging, Sendable, CarriesRegion, GcT
   }
 
   // 'dict <- key: value' is 'dict.insert(key, value)'
-  pub fn insertPair overload `<-`(self &mut, key K, value V) { self.insert(key, value); }
+  pub fn insertPair overload `<-`(self: &mut, key: K, value: V) { self.insert(key, value); }
 
   // A borrow of key's value for changing it in place: the value already there,
   // or else the one given, moved in at the end, with one search
-  pub fn getOrInsert(self &mut, key K, value V) &mut V {
+  pub fn getOrInsert(self: &mut, key: K, value: V) &mut V {
     let hash = self.hashOf(&key);
     let found = self.freeOrFound(hash, &key);
     if self.isFull(found) { return &mut dense[self.posOf(found)].value; }
@@ -1920,30 +1920,30 @@ pub struct OrderedDict[K Hash, V] is ShapeChanging, Sendable, CarriesRegion, GcT
   // ones ending in Text; callers write the plain name)
 
   // Whether it holds key
-  pub fn containsKey overload contains(self &, key &K) bool { self.find(self.hashOf(key), key) != noBucket }
-  pub fn containsText overload contains(self &, key &str) bool where K is String || K is Uni[str] || K is Rc[str] {
+  pub fn containsKey overload contains(self: &, key: &K) bool { self.find(self.hashOf(key), key) != noBucket }
+  pub fn containsText overload contains(self: &, key: &str) bool where K is String || K is Uni[str] || K is Rc[str] {
     self.find(self.hashOf(key), key) != noBucket
   }
 
   // A borrow of key's value, for reading it now, or None
-  pub fn getKey overload get(self &, key &K) Option[&V] {
+  pub fn getKey overload get(self: &, key: &K) Option[&V] {
     let b = self.find(self.hashOf(key), key);
     if b == noBucket { return None; }
     Some[&V](&dense[self.posOf(b)].value)
   }
-  pub fn getText overload get(self &, key &str) Option[&V] where K is String || K is Uni[str] || K is Rc[str] {
+  pub fn getText overload get(self: &, key: &str) Option[&V] where K is String || K is Uni[str] || K is Rc[str] {
     let b = self.find(self.hashOf(key), key);
     if b == noBucket { return None; }
     Some[&V](&dense[self.posOf(b)].value)
   }
 
   // A borrow of key's value for changing it in place, or None
-  pub fn getMutKey overload getMut(self &mut, key &K) Option[&mut V] {
+  pub fn getMutKey overload getMut(self: &mut, key: &K) Option[&mut V] {
     let b = self.find(self.hashOf(key), key);
     if b == noBucket { return None; }
     Some[&mut V](&mut dense[self.posOf(b)].value)
   }
-  pub fn getMutText overload getMut(self &mut, key &str) Option[&mut V] where K is String || K is Uni[str] || K is Rc[str] {
+  pub fn getMutText overload getMut(self: &mut, key: &str) Option[&mut V] where K is String || K is Uni[str] || K is Rc[str] {
     let b = self.find(self.hashOf(key), key);
     if b == noBucket { return None; }
     Some[&mut V](&mut dense[self.posOf(b)].value)
@@ -1951,12 +1951,12 @@ pub struct OrderedDict[K Hash, V] is ShapeChanging, Sendable, CarriesRegion, GcT
 
   // A copy of key's value, or None: the lookup that holds no borrow into the
   // table, so it works through a shared owner, where V copies
-  pub fn getCopyKey overload getCopy(self &, key &K) Option[V] where V is Copy {
+  pub fn getCopyKey overload getCopy(self: &, key: &K) Option[V] where V is Copy {
     let b = self.find(self.hashOf(key), key);
     if b == noBucket { return None; }
     Some[V](dense[self.posOf(b)].value)
   }
-  pub fn getCopyText overload getCopy(self &, key &str) Option[V] where (K is String || K is Uni[str] || K is Rc[str]) && V is Copy {
+  pub fn getCopyText overload getCopy(self: &, key: &str) Option[V] where (K is String || K is Uni[str] || K is Rc[str]) && V is Copy {
     let b = self.find(self.hashOf(key), key);
     if b == noBucket { return None; }
     Some[V](dense[self.posOf(b)].value)
@@ -1964,24 +1964,24 @@ pub struct OrderedDict[K Hash, V] is ShapeChanging, Sendable, CarriesRegion, GcT
 
   // 'dict[&key]': a borrow of key's value; a key it does not hold is a panic
   // at the line of the caller (naming the key, when it is given as text)
-  pub fn indexKey overload `[]`(self &, key &K, file &Array[u8] = srcFile(), line u32 = srcLine()) &V {
+  pub fn indexKey overload `[]`(self: &, key: &K, file: &Array[u8] = srcFile(), line: u32 = srcLine()) &V {
     let b = self.find(self.hashOf(key), key);
     if b == noBucket { panic("collections: OrderedDict has no entry for the key", file, line); }
     &dense[self.posOf(b)].value
   }
-  pub fn indexText overload `[]`(self &, key &str, file &Array[u8] = srcFile(), line u32 = srcLine()) &V where K is String || K is Uni[str] || K is Rc[str] {
+  pub fn indexText overload `[]`(self: &, key: &str, file: &Array[u8] = srcFile(), line: u32 = srcLine()) &V where K is String || K is Uni[str] || K is Rc[str] {
     let b = self.find(self.hashOf(key), key);
     if b == noBucket { missingKey(key, file, line); }
     &dense[self.posOf(b)].value
   }
 
   // '&mut dict[&key]': a borrow of key's value for changing it, a panic as above
-  pub fn indexMutKey overload `&[]`(self &mut, key &K, file &Array[u8] = srcFile(), line u32 = srcLine()) &mut V {
+  pub fn indexMutKey overload `&[]`(self: &mut, key: &K, file: &Array[u8] = srcFile(), line: u32 = srcLine()) &mut V {
     let b = self.find(self.hashOf(key), key);
     if b == noBucket { panic("collections: OrderedDict has no entry for the key", file, line); }
     &mut dense[self.posOf(b)].value
   }
-  pub fn indexMutText overload `&[]`(self &mut, key &str, file &Array[u8] = srcFile(), line u32 = srcLine()) &mut V where K is String || K is Uni[str] || K is Rc[str] {
+  pub fn indexMutText overload `&[]`(self: &mut, key: &str, file: &Array[u8] = srcFile(), line: u32 = srcLine()) &mut V where K is String || K is Uni[str] || K is Rc[str] {
     let b = self.find(self.hashOf(key), key);
     if b == noBucket { missingKey(key, file, line); }
     &mut dense[self.posOf(b)].value
@@ -1990,12 +1990,12 @@ pub struct OrderedDict[K Hash, V] is ShapeChanging, Sendable, CarriesRegion, GcT
   // Move key's value out and finalize the key it was held under, or None when
   // it holds no such key. Every entry after it moves down one place, so the
   // others keep their order
-  pub fn removeKey overload remove(self &mut, key &K) Option[V] {
+  pub fn removeKey overload remove(self: &mut, key: &K) Option[V] {
     let b = self.find(self.hashOf(key), key);
     if b == noBucket { return None; }
     Some[V](self.takeShift(b))
   }
-  pub fn removeText overload remove(self &mut, key &str) Option[V] where K is String || K is Uni[str] || K is Rc[str] {
+  pub fn removeText overload remove(self: &mut, key: &str) Option[V] where K is String || K is Uni[str] || K is Rc[str] {
     let b = self.find(self.hashOf(key), key);
     if b == noBucket { return None; }
     Some[V](self.takeShift(b))
@@ -2004,12 +2004,12 @@ pub struct OrderedDict[K Hash, V] is ShapeChanging, Sendable, CarriesRegion, GcT
   // The same, but the last entry takes the removed one's place instead of the
   // later ones all moving down: O(1), and the order is no longer the order of
   // insertion
-  pub fn swapRemoveKey overload swapRemove(self &mut, key &K) Option[V] {
+  pub fn swapRemoveKey overload swapRemove(self: &mut, key: &K) Option[V] {
     let b = self.find(self.hashOf(key), key);
     if b == noBucket { return None; }
     Some[V](self.takeSwap(b))
   }
-  pub fn swapRemoveText overload swapRemove(self &mut, key &str) Option[V] where K is String || K is Uni[str] || K is Rc[str] {
+  pub fn swapRemoveText overload swapRemove(self: &mut, key: &str) Option[V] where K is String || K is Uni[str] || K is Rc[str] {
     let b = self.find(self.hashOf(key), key);
     if b == noBucket { return None; }
     Some[V](self.takeSwap(b))
@@ -2017,7 +2017,7 @@ pub struct OrderedDict[K Hash, V] is ShapeChanging, Sendable, CarriesRegion, GcT
 
   // Finalize every key and value, first inserted to last, and keep the blocks:
   // it holds nothing, with the room it had
-  pub fn clear(self &mut) {
+  pub fn clear(self: &mut) {
     if ctrl == null { return; }
     if mem.needsFinal[OrderedEntry[K, V]]() {
       var i = 0usize;
@@ -2034,33 +2034,33 @@ pub struct OrderedDict[K Hash, V] is ShapeChanging, Sendable, CarriesRegion, GcT
   // Cursors over what it holds, each giving a borrow into the table for reading
   // now, with 'next' until it answers None, in the order of insertion. The
   // table may not change while one is used.
-  pub fn keys(self &) OrderedKeys[K, V] { new OrderedKeys[K, V](self, 0usize) }
-  pub fn values(self &) OrderedValues[K, V] { new OrderedValues[K, V](self, 0usize) }
-  pub fn entries(self &) OrderedEntries[K, V] { new OrderedEntries[K, V](self, 0usize) }
+  pub fn keys(self: &) OrderedKeys[K, V] { new OrderedKeys[K, V](self, 0usize) }
+  pub fn values(self: &) OrderedValues[K, V] { new OrderedValues[K, V](self, 0usize) }
+  pub fn entries(self: &) OrderedEntries[K, V] { new OrderedEntries[K, V](self, 0usize) }
 
   // How a collector reaches what the dictionary holds, in its dense block: a
   // writable reference to each value, in the order of insertion (see Dict.gcTraceElements)
-  pub fn gcTraceElements(self &mut) OrderedDictGcTraceItems[K, V] { new OrderedDictGcTraceItems[K, V](self, 0usize) }
+  pub fn gcTraceElements(self: &mut) OrderedDictGcTraceItems[K, V] { new OrderedDictGcTraceItems[K, V](self, 0usize) }
 
   // A cursor over its pairs, which 'each k, v in dict' walks: 'next' gives a
   // pair of borrows, a key and its value, in the order of insertion
-  pub fn iter(self &) OrderedPairs[K, V] { new OrderedPairs[K, V](self, 0usize) }
+  pub fn iter(self: &) OrderedPairs[K, V] { new OrderedPairs[K, V](self, 0usize) }
 
   // The hash of a key: the key fed to this dictionary's hasher
-  fn hashOf[B](self &, key &B) u64 {
+  fn hashOf[B](self: &, key: &B) u64 {
     var h = hasher;
     (*key).hash(&mut h);
     h.finish()
   }
 
   // Whether the bucket holds an entry (its control byte's top bit is clear)
-  fn isFull(self &, b usize) bool { mem.readRaw[u8](ctrl + b) < ctrlRemoved }
+  fn isFull(self: &, b: usize) bool { mem.readRaw[u8](ctrl + b) < ctrlRemoved }
 
   // The position in 'dense' of the entry the full bucket b names
-  fn posOf(self &, b usize) usize { usize.from(mem.readRaw[u32](index + b)) }
+  fn posOf(self: &, b: usize) usize { usize.from(mem.readRaw[u32](index + b)) }
 
   // The bucket naming the entry that holds key, or noBucket
-  fn find[B](self &, hash u64, key &B) usize {
+  fn find[B](self: &, hash: u64, key: &B) usize {
     if count == 0usize { return noBucket; }
     let t = hashTag(hash);
     var pos = usize.from(hash) & mask;
@@ -2082,7 +2082,7 @@ pub struct OrderedDict[K Hash, V] is ShapeChanging, Sendable, CarriesRegion, GcT
 
   // The bucket naming the entry at position p, whose key hashes to hash. The
   // entry is there, so the search finds it
-  fn bucketAt(self &, hash u64, p usize) usize {
+  fn bucketAt(self: &, hash: u64, p: usize) usize {
     let t = hashTag(hash);
     var pos = usize.from(hash) & mask;
     var stride = 0usize;
@@ -2104,7 +2104,7 @@ pub struct OrderedDict[K Hash, V] is ShapeChanging, Sendable, CarriesRegion, GcT
   // One search for an insert: the bucket naming key's entry, if there is one,
   // else the first empty or removed bucket in the probe sequence. The blocks
   // are made when there are none yet. Whether it found key is 'isFull'
-  fn freeOrFound(self &mut, hash u64, key &K) usize {
+  fn freeOrFound(self: &mut, hash: u64, key: &K) usize {
     if ctrl == null { self.resize(8usize); }
     let t = hashTag(hash);
     var pos = usize.from(hash) & mask;
@@ -2133,7 +2133,7 @@ pub struct OrderedDict[K Hash, V] is ShapeChanging, Sendable, CarriesRegion, GcT
   // index is rebuilt first (grown, or at its size when removed buckets are
   // most of what fills it) if the bucket is an empty one and none are left
   // to fill. The entries array has room whenever the index does
-  fn roomFor(self &mut, hash u64, spare usize) usize {
+  fn roomFor(self: &mut, hash: u64, spare: usize) usize {
     if left > 0usize || mem.readRaw[u8](ctrl + spare) != ctrlEmpty { return spare; }
     let wanted = count + 1usize;
     let buckets = mask + 1usize;
@@ -2142,7 +2142,7 @@ pub struct OrderedDict[K Hash, V] is ShapeChanging, Sendable, CarriesRegion, GcT
   }
 
   // Append an entry, named by the free bucket b. It answers its position
-  fn fill(self &mut, b usize, hash u64, key K, value V) usize {
+  fn fill(self: &mut, b: usize, hash: u64, key: K, value: V) usize {
     if mem.readRaw[u8](ctrl + b) == ctrlEmpty { left = left - 1usize; }
     ctrlSet(ctrl, mask, b, hashTag(hash));
     let p = count;
@@ -2153,7 +2153,7 @@ pub struct OrderedDict[K Hash, V] is ShapeChanging, Sendable, CarriesRegion, GcT
   }
 
   // Make bucket b, which names a live entry, free
-  fn release(self &mut, b usize) {
+  fn release(self: &mut, b: usize) {
     if ctrlErase(ctrl, mask, b) { left = left + 1usize; }
   }
 
@@ -2161,7 +2161,7 @@ pub struct OrderedDict[K Hash, V] is ShapeChanging, Sendable, CarriesRegion, GcT
   // its value moved out, the later entries move down one place, and each one's
   // bucket is told. A short tail is found one entry at a time by hash; a long
   // one by reading the whole index
-  fn takeShift(self &mut, b usize) V {
+  fn takeShift(self: &mut, b: usize) V {
     let p = self.posOf(b);
     self.release(b);
     let slot = (dense +p) as &mut OrderedEntry[K, V];
@@ -2192,7 +2192,7 @@ pub struct OrderedDict[K Hash, V] is ShapeChanging, Sendable, CarriesRegion, GcT
   }
 
   // Remove the entry bucket b names, the last entry taking its place
-  fn takeSwap(self &mut, b usize) V {
+  fn takeSwap(self: &mut, b: usize) V {
     let p = self.posOf(b);
     self.release(b);
     let slot = (dense +p) as &mut OrderedEntry[K, V];
@@ -2209,7 +2209,7 @@ pub struct OrderedDict[K Hash, V] is ShapeChanging, Sendable, CarriesRegion, GcT
 
   // A new index of this many buckets (a power of two, 8 or more) over the same
   // entries, in the same order; the entries array grows with it
-  fn resize(self &mut, buckets usize) {
+  fn resize(self: &mut, buckets: usize) {
     if buckets > 4294967296usize { panic("collections: OrderedDict is past 2^32 buckets", srcFile(), srcLine()); }
     let base = (region as &MemRegion).allocate(buckets * 5usize + 8usize, mem.alignof[u32]());
     let fresh = base + buckets * 4usize;
@@ -2238,7 +2238,7 @@ pub struct OrderedDict[K Hash, V] is ShapeChanging, Sendable, CarriesRegion, GcT
 
   // Its death: each entry's key and value, first inserted to last, then the
   // blocks, given back to its region
-  fn final(self &uni) {
+  fn final(self: &uni) {
     if ctrl != null {
       if mem.needsFinal[OrderedEntry[K, V]]() {
         var i = 0usize;
@@ -2256,11 +2256,11 @@ pub struct OrderedDict[K Hash, V] is ShapeChanging, Sendable, CarriesRegion, GcT
 // A cursor over an OrderedDict's keys: 'next' gives a borrow of each in turn,
 // in the order of insertion. It borrows the dictionary, which may not change
 // while the cursor, or a key it gave, is used
-pub struct OrderedKeys['a, K Hash, V] is Iterator[&K] {
-  dict &'a OrderedDict[K, V];
-  pos usize;
+pub struct OrderedKeys['a, K: Hash, V] is Iterator[&K] {
+  dict: &'a OrderedDict[K, V];
+  pos: usize;
 
-  pub fn next(self &mut) Option[&'a K] {
+  pub fn next(self: &mut) Option[&'a K] {
     if pos >= dict.count { return None; }
     let i = pos;
     pos = i + 1usize;
@@ -2269,11 +2269,11 @@ pub struct OrderedKeys['a, K Hash, V] is Iterator[&K] {
 }
 
 // A cursor over an OrderedDict's values, in the order of insertion
-pub struct OrderedValues['a, K Hash, V] is Iterator[&V] {
-  dict &'a OrderedDict[K, V];
-  pos usize;
+pub struct OrderedValues['a, K: Hash, V] is Iterator[&V] {
+  dict: &'a OrderedDict[K, V];
+  pos: usize;
 
-  pub fn next(self &mut) Option[&'a V] {
+  pub fn next(self: &mut) Option[&'a V] {
     if pos >= dict.count { return None; }
     let i = pos;
     pos = i + 1usize;
@@ -2283,11 +2283,11 @@ pub struct OrderedValues['a, K Hash, V] is Iterator[&V] {
 
 // A cursor over an OrderedDict's values for a collector to trace them: 'next'
 // gives a writable reference to each, in the order of insertion (see DictGcTraceItems)
-pub struct OrderedDictGcTraceItems['a, K Hash, V] is Iterator[&mut V] {
-  dict &'a mut OrderedDict[K, V];
-  pos usize;
+pub struct OrderedDictGcTraceItems['a, K: Hash, V] is Iterator[&mut V] {
+  dict: &'a mut OrderedDict[K, V];
+  pos: usize;
 
-  pub fn next(self &mut) Option[&'a mut V] {
+  pub fn next(self: &mut) Option[&'a mut V] {
     if pos >= dict.count { return None; }
     let i = pos;
     pos = i + 1usize;
@@ -2297,11 +2297,11 @@ pub struct OrderedDictGcTraceItems['a, K Hash, V] is Iterator[&mut V] {
 
 // A cursor over an OrderedDict's entries: a borrow of each key with its value
 // (and its hash), in the order of insertion
-pub struct OrderedEntries['a, K Hash, V] is Iterator[&OrderedEntry[K, V]] {
-  dict &'a OrderedDict[K, V];
-  pos usize;
+pub struct OrderedEntries['a, K: Hash, V] is Iterator[&OrderedEntry[K, V]] {
+  dict: &'a OrderedDict[K, V];
+  pos: usize;
 
-  pub fn next(self &mut) Option[&'a OrderedEntry[K, V]] {
+  pub fn next(self: &mut) Option[&'a OrderedEntry[K, V]] {
     if pos >= dict.count { return None; }
     let i = pos;
     pos = i + 1usize;
@@ -2311,11 +2311,11 @@ pub struct OrderedEntries['a, K Hash, V] is Iterator[&OrderedEntry[K, V]] {
 
 // A cursor over an OrderedDict's pairs: a borrow of each key with a borrow of
 // its value, as a tuple, in the order of insertion
-pub struct OrderedPairs['a, K Hash, V] is Iterator[(&K, &V)] {
-  dict &'a OrderedDict[K, V];
-  pos usize;
+pub struct OrderedPairs['a, K: Hash, V] is Iterator[(&K, &V)] {
+  dict: &'a OrderedDict[K, V];
+  pos: usize;
 
-  pub fn next(self &mut) Option[(&'a K, &'a V)] {
+  pub fn next(self: &mut) Option[(&'a K, &'a V)] {
     if pos >= dict.count { return None; }
     let i = pos;
     pos = i + 1usize;
@@ -2334,52 +2334,52 @@ pub struct OrderedPairs['a, K Hash, V] is Iterator[(&K, &V)] {
 // What a Set's dictionary holds beside each element: nothing, in no bytes
 struct Member {}
 
-pub struct Set[T Hash] is ShapeChanging, Sendable, CarriesRegion {
-  dict Dict[T, Member];
+pub struct Set[T: Hash] is ShapeChanging, Sendable, CarriesRegion {
+  dict: Dict[T, Member];
 
   // An empty set, 'new Set[String]'. Its seed is the process's. The last
   // argument of every init is the region the block will come from (see List),
   // which the set hands its dictionary
-  pub fn initEmpty overload init(self &new, region *MemRegion) { *self = new Set(new Dict[T, Member](region)); }
+  pub fn initEmpty overload init(self: &new, region: *MemRegion) { *self = new Set(new Dict[T, Member](region)); }
 
   // An empty set whose block already has room for n elements without growing
   // (rounded up to the table's size), 'new Set[String](100)'
-  pub fn initCapacity overload init(self &new, n usize, region *MemRegion) {
+  pub fn initCapacity overload init(self: &new, n: usize, region: *MemRegion) {
     *self = new Set(new Dict[T, Member](n, region));
   }
 
   pub fn empty() Set { new Set(Dict[T, Member].empty()) }
 
   // An empty set whose block already has room for n elements without growing
-  pub fn withCapacity(n usize) Set { new Set(Dict[T, Member].withCapacity(n)) }
+  pub fn withCapacity(n: usize) Set { new Set(Dict[T, Member].withCapacity(n)) }
 
   // An empty set with a fixed seed: the same elements inserted in the same
   // order are visited in the same order on every run
   pub fn deterministic() Set { new Set(Dict[T, Member].deterministic()) }
 
   // An empty set with this seed
-  pub fn withSeed(seed u64) Set { new Set(Dict[T, Member].withSeed(seed)) }
+  pub fn withSeed(seed: u64) Set { new Set(Dict[T, Member].withSeed(seed)) }
 
-  pub fn len(self &) usize { dict.len() }
-  pub fn capacity(self &) usize { dict.capacity() }
-  pub fn isEmpty(self &) bool { dict.isEmpty() }
+  pub fn len(self: &) usize { dict.len() }
+  pub fn capacity(self: &) usize { dict.capacity() }
+  pub fn isEmpty(self: &) bool { dict.isEmpty() }
 
   // Move item in. It answers whether it was new: an element the set already
   // holds stays, and the item given dies
-  pub fn insert(self &mut, item T) bool {
+  pub fn insert(self: &mut, item: T) bool {
     let before = dict.len();
     dict.getOrInsert(item, new Member());
     dict.len() > before
   }
 
   // 'set <- item' is 'set.insert(item)'
-  pub fn insertItem overload `<-`(self &mut, item T) { self.insert(item); }
+  pub fn insertItem overload `<-`(self: &mut, item: T) { self.insert(item); }
 
   // Whether it holds item
-  pub fn containsItem overload contains(self &, item &T) bool { dict.contains(item) }
+  pub fn containsItem overload contains(self: &, item: &T) bool { dict.contains(item) }
 
   // Remove item, finalizing the element held; whether it was there
-  pub fn removeItem overload remove(self &mut, item &T) bool {
+  pub fn removeItem overload remove(self: &mut, item: &T) bool {
     match dict.remove(item) {
       case is Some[Member] {true}
       case is None[Member] {false}
@@ -2388,9 +2388,9 @@ pub struct Set[T Hash] is ShapeChanging, Sendable, CarriesRegion {
 
   // The same, given a String, Uni[str] or Rc[str] element as a '&str', the body
   // it lends or holds (a literal finds it)
-  pub fn containsText overload contains(self &, item &str) bool where T is String || T is Uni[str] || T is Rc[str] { dict.contains(item) }
+  pub fn containsText overload contains(self: &, item: &str) bool where T is String || T is Uni[str] || T is Rc[str] { dict.contains(item) }
 
-  pub fn removeText overload remove(self &mut, item &str) bool where T is String || T is Uni[str] || T is Rc[str] {
+  pub fn removeText overload remove(self: &mut, item: &str) bool where T is String || T is Uni[str] || T is Rc[str] {
     match dict.remove(item) {
       case is Some[Member] {true}
       case is None[Member] {false}
@@ -2398,21 +2398,21 @@ pub struct Set[T Hash] is ShapeChanging, Sendable, CarriesRegion {
   }
 
   // Finalize every element and keep the room
-  pub fn clear(self &mut) { dict.clear(); }
+  pub fn clear(self: &mut) { dict.clear(); }
 
   // A cursor over its elements: 'next' gives a borrow of each in turn, in the
   // table's order, until it answers None
-  pub fn items(self &) SetItems[T] { new SetItems[T](dict.keys()) }
+  pub fn items(self: &) SetItems[T] { new SetItems[T](dict.keys()) }
 
   // The same cursor under the name 'each x in set' walks it by
-  pub fn iter(self &) SetItems[T] { new SetItems[T](dict.keys()) }
+  pub fn iter(self: &) SetItems[T] { new SetItems[T](dict.keys()) }
 }
 
 // A cursor over a set's elements
-pub struct SetItems['a, T Hash] is Iterator[&T] {
-  inner DictKeys['a, T, Member];
+pub struct SetItems['a, T: Hash] is Iterator[&T] {
+  inner: DictKeys['a, T, Member];
 
-  pub fn next(self &mut) Option[&'a T] { inner.next() }
+  pub fn next(self: &mut) Option[&'a T] { inner.next() }
 }
 
 // -------- capability traits --------
@@ -2424,14 +2424,14 @@ pub struct SetItems['a, T Hash] is Iterator[&T] {
 // nothing, and a user's own type with the same methods fits too.
 //
 // A function asks for one as a static bound: 'fn drain[S Stack[i64]](s &mut
-// S)', 'fn drain[T, S Stack[T]](s &mut S)' or 'fn drain[T, S](s &mut S) where
+// S)', 'fn drain[T, S: Stack[T]](s: &mut S)' or 'fn drain[T, S](s &mut S) where
 // S is Stack[T]', called with '&mut list' or '&mut deque' as it is. The bound
 // is decided where the function is called and compiled for the type's own
 // methods, so nothing is looked up when it runs. The trait is given all its
-// type arguments ('[S Stack]' is refused, there are no associated types yet),
+// type arguments ('[S: Stack]' is refused, there are no associated types yet),
 // and a bound decides a parameter before an unsuffixed integer literal takes a
 // type of its own. 'Collection', which mentions no element type, is written
-// alone: 'fn count[C Collection](c &C)'.
+// alone: 'fn count[C: Collection](c: &C)'.
 //
 // The other form is dynamic: a virtual reference, 'fn drain(s &<mut
 // Stack[i64])', takes the same arguments through one compiled function and a
@@ -2443,39 +2443,39 @@ pub struct SetItems['a, T Hash] is Iterator[&T] {
 
 // Anything that holds a number of values
 pub trait Collection {
-  pub fn len(self &) usize;
-  pub fn isEmpty(self &) bool;
+  pub fn len(self: &) usize;
+  pub fn isEmpty(self: &) bool;
 }
 
 // Values reached by their position, counted from the front (List, Deque). 'get'
 // answers None for a position that is out of range; the indexing '[i]' panics.
 pub trait Indexed[T] {
-  pub fn get(self &, index usize) Option[&T];
+  pub fn get(self: &, index: usize) Option[&T];
 }
 
 // Values pushed and popped at one end, the last in the first out (List, Deque,
 // at the back). 'peek' borrows the value 'pop' would move out.
 pub trait Stack[T] {
-  pub fn push(self &mut, value T);
-  pub fn pop(self &mut) Option[T];
-  pub fn peek(self &) Option[&T];
+  pub fn push(self: &mut, value: T);
+  pub fn pop(self: &mut) Option[T];
+  pub fn peek(self: &) Option[&T];
 }
 
 // Values pushed at the back and popped from the front, the first in the first
 // out (Deque)
 pub trait Queue[T] {
-  pub fn push(self &mut, value T);
-  pub fn popFront(self &mut) Option[T];
+  pub fn push(self: &mut, value: T);
+  pub fn popFront(self: &mut) Option[T];
 }
 
 // Values found by a key (Dict, OrderedDict). 'insert' answers the old value,
 // moved out, when the key was already there (Rust's HashMap::insert), else
 // None; 'remove' moves the value out.
 pub trait Map[K, V] {
-  pub fn get(self &, key &K) Option[&V];
-  pub fn insert(self &mut, key K, value V) Option[V];
-  pub fn remove(self &mut, key &K) Option[V];
-  pub fn contains(self &, key &K) bool;
+  pub fn get(self: &, key: &K) Option[&V];
+  pub fn insert(self: &mut, key: K, value: V) Option[V];
+  pub fn remove(self: &mut, key: &K) Option[V];
+  pub fn contains(self: &, key: &K) bool;
 }
 
 // -------- byte slices --------
@@ -2485,12 +2485,12 @@ pub trait Map[K, V] {
 // readers, which take text.
 
 // Whether a and b hold the same bytes: 'a == b'
-pub fn bytesEqual(a &Array[u8], b &Array[u8]) bool {
+pub fn bytesEqual(a: &Array[u8], b: &Array[u8]) bool {
   a == b
 }
 
 // -1, 0 or 1 as a sorts before, with or after b
-pub fn bytesCompare(a &Array[u8], b &Array[u8]) i32 {
+pub fn bytesCompare(a: &Array[u8], b: &Array[u8]) i32 {
   var i = 0usize;
   while i < a.len && i < b.len {
     if a[i] < b[i] { return -1i32; }
@@ -2501,7 +2501,7 @@ pub fn bytesCompare(a &Array[u8], b &Array[u8]) i32 {
 }
 
 // Where needle first starts in hay at or after 'from', or None
-pub fn bytesFind(hay &Array[u8], needle &Array[u8], from usize) Option[usize] {
+pub fn bytesFind(hay: &Array[u8], needle: &Array[u8], from: usize) Option[usize] {
   var i = from;
   while i + needle.len <= hay.len {
     if &hay[i..<i + needle.len] == needle { return Some[usize](i); }
@@ -2511,20 +2511,20 @@ pub fn bytesFind(hay &Array[u8], needle &Array[u8], from usize) Option[usize] {
 }
 
 // A space, tab, carriage return or line feed
-pub fn isSpace(b u8) bool { b == ' ' || b == '\t' || b == '\r' || b == '\n' }
+pub fn isSpace(b: u8) bool { b == ' ' || b == '\t' || b == '\r' || b == '\n' }
 
 // The byte, made small if it is an ASCII capital letter, A to Z
-pub fn asciiLower(b u8) u8 { if b >= 'A' && b <= 'Z' {b + 32u8} else {b} }
+pub fn asciiLower(b: u8) u8 { if b >= 'A' && b <= 'Z' {b + 32u8} else {b} }
 
 // The byte, made a capital if it is an ASCII small letter, a to z
-pub fn asciiUpper(b u8) u8 { if b >= 'a' && b <= 'z' {b - 32u8} else {b} }
+pub fn asciiUpper(b: u8) u8 { if b >= 'a' && b <= 'z' {b - 32u8} else {b} }
 
 // The integer the text spells in decimal: a '-' or a '+' or neither, then one
 // or more digits, 0 to 9, and nothing else, no spaces either ('trim' first).
 // None for any other text, and for a number beyond i64's range, which is
 // -9223372036854775808 to 9223372036854775807.
-pub fn parseInt(s &str) Option[i64] {
-  let text &Array[u8] = s;
+pub fn parseInt(s: &str) Option[i64] {
+  let text: &Array[u8] = s;
   var start = 0usize;
   var negative = false;
   if text.len > 0usize && (text[0usize] == '-' || text[0usize] == '+') {
@@ -2545,8 +2545,8 @@ pub fn parseInt(s &str) Option[i64] {
 
 // The same for a u64, 0 to 18446744073709551615: a '+' or nothing, then the
 // digits. A '-' is None, even before 0.
-pub fn parseUInt(s &str) Option[u64] {
-  let text &Array[u8] = s;
+pub fn parseUInt(s: &str) Option[u64] {
+  let text: &Array[u8] = s;
   var start = 0usize;
   if text.len > 0usize && text[0usize] == '+' { start = 1usize; }
   digitsValue(&text[start..], 18446744073709551615u64)
@@ -2554,7 +2554,7 @@ pub fn parseUInt(s &str) Option[u64] {
 
 // The value of one or more decimal digits and nothing else, or None when
 // there are none, when anything else is there, or when it is beyond limit
-fn digitsValue(digits &Array[u8], limit u64) Option[u64] {
+fn digitsValue(digits: &Array[u8], limit: u64) Option[u64] {
   if digits.len == 0usize { return None; }
   var n = 0u64;
   var i = 0usize;
@@ -2574,7 +2574,7 @@ fn digitsValue(digits &Array[u8], limit u64) Option[u64] {
 
 // Each a panic, reported where the method finding it was called
 
-fn outOfRange(index usize, length usize, file &Array[u8], line u32) Never {
+fn outOfRange(index: usize, length: usize, file: &Array[u8], line: u32) Never {
   var msg = String.from("collections: index ");
   msg.appendUInt(u64.from(index));
   msg.append(" is out of range for a length of ");
@@ -2583,7 +2583,7 @@ fn outOfRange(index usize, length usize, file &Array[u8], line u32) Never {
 }
 
 // A lookup by '[]' of a key given as text that is not held: the panic names it
-fn missingKey(key &str, file &Array[u8], line u32) Never {
+fn missingKey(key: &str, file: &Array[u8], line: u32) Never {
   var msg = String.from("collections: no entry for the key \"");
   msg.append(key);
   msg.append("\"");

@@ -11,7 +11,7 @@
 //               out every packet due by now, in the order it arrives
 
 // A copy of some bytes
-pub fn copyBytes(data &Array[u8]) List[u8] {
+pub fn copyBytes(data: &Array[u8]) List[u8] {
   var out = List[u8].withCapacity(data.len);
   putBytes(&mut out, data);
   out
@@ -20,11 +20,11 @@ pub fn copyBytes(data &Array[u8]) List[u8] {
 // SplitMix64 (Steele, Lea and Flood): small, fast, and the same numbers for
 // the same seed on every system
 pub struct Rng {
-  state u64;
+  state: u64;
 
-  pub fn make(seed u64) Rng {new Rng(seed)}
+  pub fn make(seed: u64) Rng {new Rng(seed)}
 
-  pub fn next(self &mut) u64 {
+  pub fn next(self: &mut) u64 {
     state = state + 0x9E3779B97F4A7C15u64;
     var z = state;
     z = (z ^ (z >> 30u64)) * 0xBF58476D1CE4E5B9u64;
@@ -33,71 +33,71 @@ pub struct Rng {
   }
 
   // A number from 0 up to, not including, n (0 when n is 0)
-  pub fn below(self &mut, n u64) u64 {
+  pub fn below(self: &mut, n: u64) u64 {
     if n == 0u64 {return 0u64;}
     self.next() % n
   }
 
   // true with a chance of 'permille' in a thousand
-  pub fn chance(self &mut, permille u32) bool {
+  pub fn chance(self: &mut, permille: u32) bool {
     self.below(1000u64) < u64.from(permille)
   }
 }
 
 // What a link does to the packets put into it
 pub struct LinkConfig {
-  pub lossPermille u32;        // the chance in 1000 that a packet is dropped
-  pub latencyMs i64;           // every packet's delay
-  pub jitterMs i64;            // plus a random 0 to this many ms more
-  pub duplicatePermille u32;   // the chance in 1000 that a packet arrives twice
-  pub reorderPermille u32;     // the chance in 1000 that a packet is held back
-  pub reorderMs i64;           // ... by this many ms more, so later ones pass it
+  pub lossPermille: u32;        // the chance in 1000 that a packet is dropped
+  pub latencyMs: i64;           // every packet's delay
+  pub jitterMs: i64;            // plus a random 0 to this many ms more
+  pub duplicatePermille: u32;   // the chance in 1000 that a packet arrives twice
+  pub reorderPermille: u32;     // the chance in 1000 that a packet is held back
+  pub reorderMs: i64;           // ... by this many ms more, so later ones pass it
 
   // A link that does nothing to a packet but pass it on at once
   pub fn perfect() LinkConfig {new LinkConfig(0u32, 0i64, 0i64, 0u32, 0u32, 0i64)}
 
   // A link that loses some packets, delays all of them, and jitters
-  pub fn lossy(lossPermille u32, latencyMs i64, jitterMs i64) LinkConfig {
+  pub fn lossy(lossPermille: u32, latencyMs: i64, jitterMs: i64) LinkConfig {
     new LinkConfig(lossPermille, latencyMs, jitterMs, 0u32, 0u32, 0i64)
   }
 }
 
 // What a link has done so far
 pub struct LinkStats {
-  pub sent u64;
-  pub dropped u64;
-  pub duplicated u64;
-  pub delivered u64;
+  pub sent: u64;
+  pub dropped: u64;
+  pub duplicated: u64;
+  pub delivered: u64;
 }
 
 struct Flight {
-  due i64;
-  order u64;
-  data List[u8];
+  due: i64;
+  order: u64;
+  data: List[u8];
 }
 
 // A one-way link
 pub struct LinkSim {
-  cfg LinkConfig;
-  rng Rng;
-  queue List[Flight];
-  counter u64;
-  nSent u64;
-  nDropped u64;
-  nDuplicated u64;
-  nDelivered u64;
+  cfg: LinkConfig;
+  rng: Rng;
+  queue: List[Flight];
+  counter: u64;
+  nSent: u64;
+  nDropped: u64;
+  nDuplicated: u64;
+  nDelivered: u64;
 
-  pub fn make(cfg LinkConfig, seed u64) LinkSim {
+  pub fn make(cfg: LinkConfig, seed: u64) LinkSim {
     new LinkSim(cfg, Rng.make(seed), List[Flight].empty(), 0u64, 0u64, 0u64, 0u64, 0u64)
   }
 
-  pub fn config(self &) LinkConfig {cfg}
+  pub fn config(self: &) LinkConfig {cfg}
 
   // Change what the link does from now on; packets in flight keep their times
-  pub fn setConfig(self &mut, c LinkConfig) {cfg = c;}
+  pub fn setConfig(self: &mut, c: LinkConfig) {cfg = c;}
 
   // Put a packet in. The link may drop it, delay it, and deliver it twice
-  pub fn send(self &mut, now Instant, data List[u8]) {
+  pub fn send(self: &mut, now: Instant, data: List[u8]) {
     nSent = nSent + 1u64;
     if rng.chance(cfg.lossPermille) {
       nDropped = nDropped + 1u64;
@@ -110,7 +110,7 @@ pub struct LinkSim {
     self.enqueue(now, data);
   }
 
-  fn enqueue(self &mut, now Instant, data List[u8]) {
+  fn enqueue(self: &mut, now: Instant, data: List[u8]) {
     var delay = cfg.latencyMs;
     if cfg.jitterMs > 0i64 {
       delay = delay + i64.from(rng.below(u64.from(cfg.jitterMs) + 1u64));
@@ -123,7 +123,7 @@ pub struct LinkSim {
   }
 
   // Take out every packet due at or before 'now', the earliest first
-  pub fn deliver(self &mut, now Instant, out &mut List[List[u8]]) {
+  pub fn deliver(self: &mut, now: Instant, out: &mut List[List[u8]]) {
     while true {
       var best = queue.len();
       var i = 0usize;
@@ -155,7 +155,7 @@ pub struct LinkSim {
   }
 
   // When the next packet comes due, if any is in flight
-  pub fn nextDue(self &) Option[Instant] {
+  pub fn nextDue(self: &) Option[Instant] {
     if queue.len() == 0usize {return None[Instant];}
     var best = queue[0usize].due;
     var i = 1usize;
@@ -167,9 +167,9 @@ pub struct LinkSim {
   }
 
   // Packets still in flight
-  pub fn inFlight(self &) usize {queue.len()}
+  pub fn inFlight(self: &) usize {queue.len()}
 
-  pub fn stats(self &) LinkStats {
+  pub fn stats(self: &) LinkStats {
     new LinkStats(nSent, nDropped, nDuplicated, nDelivered)
   }
 }

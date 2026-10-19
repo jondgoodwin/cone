@@ -54,7 +54,7 @@
 // simulation"). The inverse mass a body offers a held particle is the mean over
 // directions of 1/m + (r x n) . I^-1 (r x n).
 
-fn bodyInvMassAround(c &Coupled, r Vec3) f32 {
+fn bodyInvMassAround(c: &Coupled, r: Vec3) f32 {
   if c.invMass == 0. { return 0.; }
   let rx = r.cross(new Vec3(1., 0., 0.));
   let ry = r.cross(new Vec3(0., 1., 0.));
@@ -63,7 +63,7 @@ fn bodyInvMassAround(c &Coupled, r Vec3) f32 {
 }
 
 // The raw pointers the loops use, for the lists as they are now
-fn viewOf(b &mut SoftBody) StepView {
+fn viewOf(b: &mut SoftBody) StepView {
   let pos = b.pos.viewMut() as *Vec3;
   let prev = b.prev.viewMut() as *Vec3;
   let vel = b.vel.viewMut() as *Vec3;
@@ -84,7 +84,7 @@ fn viewOf(b &mut SoftBody) StepView {
 }
 
 // Cross-flow drag on a rope's segments, added to the particles' forces
-fn ropeWind(b &mut SoftBody, wind Vec3) {
+fn ropeWind(b: &mut SoftBody, wind: Vec3) {
   let rho = b.airDensity;
   var k = 0usize;
   while k + 1usize < b.ropeSegments.len() {
@@ -114,7 +114,7 @@ fn ropeWind(b &mut SoftBody, wind Vec3) {
 }
 
 // Run the colour batches of one kind: each batch to completion before the next
-fn runBatches(workers &mut Workers, parallel bool, v &StepView, kind u32, starts &Array[u32]) {
+fn runBatches(workers: &mut Workers, parallel: bool, v: &StepView, kind: u32, starts: &Array[u32]) {
   var c = 0usize;
   while c + 1usize < starts.len {
     let lo = usize.from(starts[c]);
@@ -132,7 +132,7 @@ fn runBatches(workers &mut Workers, parallel bool, v &StepView, kind u32, starts
 // the solve and bound the stretch that a small number of Gauss-Seidel iterations leaves in a loaded
 // cloth or rope (a correction travels a batch's neighbours in a pass, so a long chain needs
 // passes in proportion to the load's reach).
-fn limitBatches(workers &mut Workers, parallel bool, v &StepView, passes u32, starts &Array[u32]) {
+fn limitBatches(workers: &mut Workers, parallel: bool, v: &StepView, passes: u32, starts: &Array[u32]) {
   var p = 0u32;
   while p < passes {
     runBatches(workers, parallel, v, R_LIMIT, starts);
@@ -143,7 +143,7 @@ fn limitBatches(workers &mut Workers, parallel bool, v &StepView, passes u32, st
 // ---- rigid bodies ----
 
 // Count, for each body, the particles held to it
-fn countAnchors(b &mut SoftBody) {
+fn countAnchors(b: &mut SoftBody) {
   var i = 0usize;
   while i < b.bodies.len() {
     b.bodies[i].anchored = 0u32;
@@ -157,10 +157,10 @@ fn countAnchors(b &mut SoftBody) {
   }
 }
 
-fn maxU32(a u32, c u32) u32 {if a > c {a} else {c}}
+fn maxU32(a: u32, c: u32) u32 {if a > c {a} else {c}}
 
 // The held particles become the bodies' points, with the bodies' mass
-fn setBodyProxies(b &mut SoftBody, h f32) {
+fn setBodyProxies(b: &mut SoftBody, h: f32) {
   var k = 0usize;
   while k < b.bodyAnchors.len() {
     let a = *b.bodyAnchors[k];
@@ -180,7 +180,7 @@ fn setBodyProxies(b &mut SoftBody, h f32) {
 
 // What the held particles were moved by is the impulse their bodies are given;
 // one pulled harder than its break force is let go
-fn finishBodyProxies(b &mut SoftBody, h f32) {
+fn finishBodyProxies(b: &mut SoftBody, h: f32) {
   var k = 0usize;
   while k < b.bodyAnchors.len() {
     let a = *b.bodyAnchors[k];
@@ -217,7 +217,7 @@ fn finishBodyProxies(b &mut SoftBody, h f32) {
 // ---- breaking ----
 
 // Remove every stretch constraint pulled past its break force this substep
-fn checkBreaks(b &mut SoftBody, h f32) {
+fn checkBreaks(b: &mut SoftBody, h: f32) {
   let inv = 1. / (h * h);
   let blend = h / (b.breakWindow + h);
   var k = 0usize;
@@ -238,7 +238,7 @@ fn checkBreaks(b &mut SoftBody, h f32) {
 }
 
 // An edge is gone: bending across it, and the triangles on it, go too
-fn dropAcross(b &mut SoftBody, pa u32, pb u32) {
+fn dropAcross(b: &mut SoftBody, pa: u32, pb: u32) {
   var k = 0usize;
   while k < b.bend.len() {
     let c = *b.bend[k];
@@ -266,7 +266,7 @@ fn dropAcross(b &mut SoftBody, pa u32, pb u32) {
   }
 }
 
-fn removeTriangle(b &mut SoftBody, t usize) {
+fn removeTriangle(b: &mut SoftBody, t: usize) {
   let last = b.tris.len() - 3usize;
   let same = b.vertexTris.len() == b.tris.len();
   var e = 0usize;
@@ -281,7 +281,7 @@ fn removeTriangle(b &mut SoftBody, t usize) {
 
 // ---- the step ----
 
-pub fn beginStep(b &mut SoftBody, dt f32, wind Vec3, workers &mut Workers) {
+pub fn beginStep(b: &mut SoftBody, dt: f32, wind: Vec3, workers: &mut Workers) {
   let n = b.pos.len();
   b.stepSubs = if b.substeps < 1u32 {1u32} else {b.substeps};
   b.stepH = dt / f32.from(b.stepSubs);
@@ -299,7 +299,7 @@ pub fn beginStep(b &mut SoftBody, dt f32, wind Vec3, workers &mut Workers) {
   if b.airDensity > 0. && b.ropeRadius > 0. { ropeWind(b, wind); }
 }
 
-pub fn substep(b &mut SoftBody, workers &mut Workers, field &<fn(p Vec3) Vec4, hasField bool) {
+pub fn substep(b: &mut SoftBody, workers: &mut Workers, field: &<fn(p: Vec3) Vec4, hasField: bool) {
   if b.stepIndex >= b.stepSubs { return; }
   let n = b.pos.len();
   ensureBatches(b);
@@ -357,11 +357,11 @@ pub fn substep(b &mut SoftBody, workers &mut Workers, field &<fn(p Vec3) Vec4, h
   b.stepIndex = s + 1u32;
 }
 
-pub fn endStep(b &mut SoftBody) {
+pub fn endStep(b: &mut SoftBody) {
   b.frameFrom = b.frameTo;
 }
 
-fn runStep(b &mut SoftBody, dt f32, wind Vec3, field &<fn(p Vec3) Vec4, hasField bool, workers &mut Workers) {
+fn runStep(b: &mut SoftBody, dt: f32, wind: Vec3, field: &<fn(p: Vec3) Vec4, hasField: bool, workers: &mut Workers) {
   beginStep(b, dt, wind, workers);
   while b.stepIndex < b.stepSubs { substep(b, workers, field, hasField); }
   endStep(b);

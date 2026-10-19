@@ -43,27 +43,27 @@ import httpclient use *;
 const tokSrv = 100u64;
 
 struct Srv {
-  pub drv httpconn.Driver;
-  pub pool Pool;
-  pub accepted u64;
-  pub open u64;
-  pub maxOpen u64;
-  pub requests u64;
-  pub closedOnce bool;
-  pub order List[String];
-  pub reqs List[httpconn.ReqId];
-  pub conns List[httpconn.ConnId];
-  pub methods List[Method];
-  pub targets List[String];
-  pub bodies List[String];
-  pub auths List[String];
-  pub cookies List[String];
-  pub streams List[httpconn.ReqId];
-  pub sent List[u64];
-  pub totals List[u64];
+  pub drv: httpconn.Driver;
+  pub pool: Pool;
+  pub accepted: u64;
+  pub open: u64;
+  pub maxOpen: u64;
+  pub requests: u64;
+  pub closedOnce: bool;
+  pub order: List[String];
+  pub reqs: List[httpconn.ReqId];
+  pub conns: List[httpconn.ConnId];
+  pub methods: List[Method];
+  pub targets: List[String];
+  pub bodies: List[String];
+  pub auths: List[String];
+  pub cookies: List[String];
+  pub streams: List[httpconn.ReqId];
+  pub sent: List[u64];
+  pub totals: List[u64];
 }
 
-fn server(pool Pool) Srv {
+fn server(pool: Pool) Srv {
   new Srv(drv: httpconn.Driver.make(httpconn.Config.make(), pool), pool: pool, accepted: 0u64,
     open: 0u64, maxOpen: 0u64, requests: 0u64, closedOnce: false, order: List[String].empty(),
     reqs: List[httpconn.ReqId].empty(), conns: List[httpconn.ConnId].empty(), methods: List[Method].empty(),
@@ -72,7 +72,7 @@ fn server(pool Pool) Srv {
     totals: List[u64].empty())
 }
 
-fn listen(sv &mut Srv, lp &mut Loop) u16 {
+fn listen(sv: &mut Srv, lp: &mut Loop) u16 {
   var port = 0u16;
   match sv.drv.listen(lp, SocketAddr.localhost(0u16), httpconn.Sink.Here(tokSrv)) {
     case let r Ok {
@@ -86,7 +86,7 @@ fn listen(sv &mut Srv, lp &mut Loop) u16 {
   port
 }
 
-fn reply(sv &mut Srv, req httpconn.ReqId, head bool, status u16, location &Array[u8], body &Array[u8]) {
+fn reply(sv: &mut Srv, req: httpconn.ReqId, head: bool, status: u16, location: &Array[u8], body: &Array[u8]) {
   var h = ResponseHead.make(status);
   if location.len > 0usize {h.headers.add("Location", location);}
   sv.drv.respond(req, h, BodyLength.sized(u64.from(body.len)));
@@ -98,7 +98,7 @@ fn reply(sv &mut Srv, req httpconn.ReqId, head bool, status u16, location &Array
   }
 }
 
-fn number(s &str) u64 {
+fn number(s: &str) u64 {
   match collections.parseUInt(s) {
     case let v Some {v}
     case is None[u64] {0u64}
@@ -106,7 +106,7 @@ fn number(s &str) u64 {
 }
 
 // Stream j's next pieces, as many as the connection takes now
-fn pumpStream(sv &mut Srv, j usize) {
+fn pumpStream(sv: &mut Srv, j: usize) {
   let req = *sv.streams[j];
   while *sv.sent[j] < *sv.totals[j] {
     let at = *sv.sent[j];
@@ -129,7 +129,7 @@ fn pumpStream(sv &mut Srv, j usize) {
   dropStream(sv, j);
 }
 
-fn dropStream(sv &mut Srv, j usize) {
+fn dropStream(sv: &mut Srv, j: usize) {
   let last = sv.streams.len() - 1usize;
   sv.streams.swap(j, last);
   sv.sent.swap(j, last);
@@ -139,7 +139,7 @@ fn dropStream(sv &mut Srv, j usize) {
   sv.totals.pop();
 }
 
-fn findStream(sv &Srv, req httpconn.ReqId) usize {
+fn findStream(sv: &Srv, req: httpconn.ReqId) usize {
   var j = 0usize;
   while j < sv.streams.len() {
     if *sv.streams[j] == req {return j;}
@@ -149,7 +149,7 @@ fn findStream(sv &Srv, req httpconn.ReqId) usize {
 }
 
 // The answer to request k, read whole
-fn answer(sv &mut Srv, lp &mut Loop, k usize) {
+fn answer(sv: &mut Srv, lp: &mut Loop, k: usize) {
   let req = *sv.reqs[k];
   let full = sv.targets[k].copy();
   let t = full.view();
@@ -215,7 +215,7 @@ fn answer(sv &mut Srv, lp &mut Loop, k usize) {
   }
 }
 
-fn findReq(sv &Srv, req httpconn.ReqId) usize {
+fn findReq(sv: &Srv, req: httpconn.ReqId) usize {
   var k = 0usize;
   while k < sv.reqs.len() {
     if *sv.reqs[k] == req {return k;}
@@ -224,7 +224,7 @@ fn findReq(sv &Srv, req httpconn.ReqId) usize {
   sv.reqs.len()
 }
 
-fn forget(sv &mut Srv, k usize) {
+fn forget(sv: &mut Srv, k: usize) {
   let last = sv.reqs.len() - 1usize;
   sv.reqs.swap(k, last);
   sv.conns.swap(k, last);
@@ -242,14 +242,14 @@ fn forget(sv &mut Srv, k usize) {
   sv.cookies.pop();
 }
 
-fn fieldOr(h &Headers, name &str) String {
+fn fieldOr(h: &Headers, name: &str) String {
   match h.get(name) {
     case let v Some {String.fromBytes(v)}
     case is None[&Array[u8]] {String.from("-")}
   }
 }
 
-fn serve(sv &mut Srv, lp &mut Loop, e &mut httpconn.Event) {
+fn serve(sv: &mut Srv, lp: &mut Loop, e: &mut httpconn.Event) {
   let kind = e.kind;
   if kind == httpconn.EventKind.Accepted {
     sv.accepted = sv.accepted + 1u64;
@@ -287,7 +287,7 @@ fn serve(sv &mut Srv, lp &mut Loop, e &mut httpconn.Event) {
 
 // One turn of the loop: the client's completions to it, the server's to
 // its driver; the server's events answered; the client's appended to out
-fn step(cl &mut Client, sv &mut Srv, lp &mut Loop, out &mut List[Event], until Instant) {
+fn step(cl: &mut Client, sv: &mut Srv, lp: &mut Loop, out: &mut List[Event], until: Instant) {
   var sevs = List[httpconn.Event].empty();
   cl.pump(lp, out);
   sv.drv.pump(lp, &mut sevs);
@@ -316,13 +316,13 @@ fn step(cl &mut Client, sv &mut Srv, lp &mut Loop, out &mut List[Event], until I
 }
 
 // The server's every connection reset, and its buffers home
-fn stopServer(sv &mut Srv, lp &mut Loop) {
+fn stopServer(sv: &mut Srv, lp: &mut Loop) {
   sv.drv.abortAll(lp);
   var sevs = List[httpconn.Event].empty();
   sv.drv.pump(lp, &mut sevs);
 }
 
-fn url(port u16, path &str) String {
+fn url(port: u16, path: &str) String {
   var u = String.from("http://127.0.0.1:");
   u.appendUInt(u64.from(port));
   u.append(path);
@@ -334,15 +334,15 @@ fn url(port u16, path &str) String {
 // ---------------------------------------------------------------------------
 
 struct Seen {
-  pub status u16;
-  pub body String;
-  pub url String;
-  pub kinds String;          // each event's kind's first letter, in order
-  pub finals u64;
-  pub last EventKind;
-  pub failure String;
-  pub stage Stage;
-  pub timing Timing;
+  pub status: u16;
+  pub body: String;
+  pub url: String;
+  pub kinds: String;          // each event's kind's first letter, in order
+  pub finals: u64;
+  pub last: EventKind;
+  pub failure: String;
+  pub stage: Stage;
+  pub timing: Timing;
 }
 
 fn seen() Seen {
@@ -350,7 +350,7 @@ fn seen() Seen {
     last: EventKind.Done, failure: String.empty(), stage: Stage.Url, timing: Timing.zero())
 }
 
-fn note(cl &mut Client, s &mut Seen, e &mut Event) {
+fn note(cl: &mut Client, s: &mut Seen, e: &mut Event) {
   let n = eventName(e.kind);
   s.kinds.appendByte(n[0usize]);
   if e.kind == EventKind.Response {
@@ -371,7 +371,7 @@ fn note(cl &mut Client, s &mut Seen, e &mut Event) {
 }
 
 // Drive until fetch id has its final answer, its events noted in s
-fn finishOf(cl &mut Client, sv &mut Srv, lp &mut Loop, id FetchId, s &mut Seen) {
+fn finishOf(cl: &mut Client, sv: &mut Srv, lp: &mut Loop, id: FetchId, s: &mut Seen) {
   var out = List[Event].empty();
   let giveUp = Instant.now() + Duration.fromSeconds(10i64);
   let before = s.finals;
@@ -389,7 +389,7 @@ fn finishOf(cl &mut Client, sv &mut Srv, lp &mut Loop, id FetchId, s &mut Seen) 
 }
 
 // A request sent and driven to its final answer: what was seen
-fn fetchSeen(cl &mut Client, sv &mut Srv, lp &mut Loop, r Request) Seen {
+fn fetchSeen(cl: &mut Client, sv: &mut Srv, lp: &mut Loop, r: Request) Seen {
   var s = seen();
   let id = cl.send(lp, r, Sink.Here(1u64));
   finishOf(cl, sv, lp, id, &mut s);
@@ -397,7 +397,7 @@ fn fetchSeen(cl &mut Client, sv &mut Srv, lp &mut Loop, r Request) Seen {
 }
 
 // Drive for a while
-fn idleFor(cl &mut Client, sv &mut Srv, lp &mut Loop, d Duration) {
+fn idleFor(cl: &mut Client, sv: &mut Srv, lp: &mut Loop, d: Duration) {
   var out = List[Event].empty();
   let until = Instant.now() + d;
   while Instant.now() < until {
@@ -415,13 +415,13 @@ fn idleFor(cl &mut Client, sv &mut Srv, lp &mut Loop, d Duration) {
 const mib = 1048576u64;
 
 // The pool's bytes lent now: both ends' buffers
-fn lent(pool &Pool) u64 {
+fn lent(pool: &Pool) u64 {
   let s = pool.stats();
   u64.from(s.heldBytes - s.idleBytes)
 }
 
 // Whether buf holds the body's bytes from offset 'at'
-fn pattern(buf &Array[u8], at u64) bool {
+fn pattern(buf: &Array[u8], at: u64) bool {
   var i = 0usize;
   while i < buf.len {
     if buf[i] != u8.from((at + u64.from(i)) % 251u64) {return false;}
@@ -432,17 +432,17 @@ fn pattern(buf &Array[u8], at u64) bool {
 
 // What a body's reader found
 struct Read {
-  pub bytes u64;
-  pub good bool;
-  pub last EventKind;
-  pub finals u64;
-  pub peakLent u64;
-  pub peakHeld u64;        // bytes the consumer held unreleased, at the most
+  pub bytes: u64;
+  pub good: bool;
+  pub last: EventKind;
+  pub finals: u64;
+  pub peakLent: u64;
+  pub peakHeld: u64;        // bytes the consumer held unreleased, at the most
 }
 
 // Fetch /big/n, the consumer releasing at most 'perStep' bytes a turn of
 // the loop (0: all at once): what it read
-fn readBig(cl &mut Client, sv &mut Srv, lp &mut Loop, pool &Pool, port u16, n u64, perStep usize) Read {
+fn readBig(cl: &mut Client, sv: &mut Srv, lp: &mut Loop, pool: &Pool, port: u16, n: u64, perStep: usize) Read {
   var path = String.from("/big/");
   path.appendUInt(n);
   let id = cl.get(lp, url(port, path.view()).view(), Sink.Here(1u64));
@@ -506,15 +506,15 @@ fn readBig(cl &mut Client, sv &mut Srv, lp &mut Loop, pool &Pool, port u16, n u6
 // A channel's reader, on its own thread: every event of one fetch, in
 // order, the final answer last; slow, a millisecond every eight events
 struct ChanRead {
-  pub bytes u64;
-  pub good bool;
-  pub responses u64;
-  pub ends u64;
-  pub finals u64;
-  pub doneLast bool;
+  pub bytes: u64;
+  pub good: bool;
+  pub responses: u64;
+  pub ends: u64;
+  pub finals: u64;
+  pub doneLast: bool;
 }
 
-fn chanReader(rx Receiver[Event]) ChanRead {
+fn chanReader(rx: Receiver[Event]) ChanRead {
   var r = new ChanRead(0u64, true, 0u64, 0u64, 0u64, false);
   var inbox = rx;
   var seen = 0u64;
@@ -599,8 +599,8 @@ fn main() i32 {
 
   // Through a bounded channel to a slow thread
   {
-    var tx Sender[Event];
-    var rx Receiver[Event];
+    var tx: Sender[Event];
+    var rx: Receiver[Event];
     tx, rx = Channel[Event].bounded(4u64);
     let reader = thread.start(rx, &chanReader);
     let id = cl.get(&mut lp, url(port, "/big/4194304").view(), Sink.Chan(3u64, tx));

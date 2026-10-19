@@ -73,40 +73,40 @@ pub const DEFAULT_MAX_NEST = 1u32;
 
 // What a view holds
 pub struct RenderView {
-  pub color TextureHandle;     // its picture: the renderer's colour format, 'width' by 'height'
-  pub depth Texture;
-  pub width u32;
-  pub height u32;
-  queries QuerySet;            // GPU timestamps round its picture, once 'enableTiming' made them
-  resolved Buffer;
-  readback Buffer;
-  fogPass List[FogPass];       // volumetric fog for its picture: empty, or the one 'enableFog' made
-  fogFrame Buffer;             // fxcommon.slang's FxFrame for the fog, written each picture
-  fogPrevious Mat4;            // the last fogged picture's view-projection
+  pub color: TextureHandle;     // its picture: the renderer's colour format, 'width' by 'height'
+  pub depth: Texture;
+  pub width: u32;
+  pub height: u32;
+  queries: QuerySet;            // GPU timestamps round its picture, once 'enableTiming' made them
+  resolved: Buffer;
+  readback: Buffer;
+  fogPass: List[FogPass];       // volumetric fog for its picture: empty, or the one 'enableFog' made
+  fogFrame: Buffer;             // fxcommon.slang's FxFrame for the fog, written each picture
+  fogPrevious: Mat4;            // the last fogged picture's view-projection
   // The fog (fog.cone), drawn over each picture, as the camera sees the scene, when 'enabled' and
   // 'enableFog' made its passes. Read every picture: a weather system may set the density at will.
   // Its 'tileSize' and 'slices' are the grid the volume is made for and a change remakes it (with a
   // stall, as ImageFx.configure does); 'temporal' blends in the view's last picture's volume.
-  pub fog FogSettings = new FogSettings();
-  fogTile u32 = 0u32;          // the grid 'fog' had when the volume was made
-  fogSlices u32 = 0u32;
-  fogPictures u32 = 0u32;      // pictures fogged: the volume's jitter index
-  fogHavePrevious bool = false;
-  pub layerMask u32 = 0xffffffffu32;   // the items it draws: those on one of these layers
-  pub nest u32 = 0u32;         // how many views deep it sits
-  pub drawn u32 = 0u32;        // how many times it has been drawn
-  pub drawCalls u32 = 0u32;    // the draws of its last picture
-  pub triangles u64 = 0u64;
+  pub fog: FogSettings = new FogSettings();
+  fogTile: u32 = 0u32;          // the grid 'fog' had when the volume was made
+  fogSlices: u32 = 0u32;
+  fogPictures: u32 = 0u32;      // pictures fogged: the volume's jitter index
+  fogHavePrevious: bool = false;
+  pub layerMask: u32 = 0xffffffffu32;   // the items it draws: those on one of these layers
+  pub nest: u32 = 0u32;         // how many views deep it sits
+  pub drawn: u32 = 0u32;        // how many times it has been drawn
+  pub drawCalls: u32 = 0u32;    // the draws of its last picture
+  pub triangles: u64 = 0u64;
   // Which of the scene's cameras it is, for the levels of detail an item keeps
   // a hysteresis for (1 to 3; the main view is 0), and its bias: the
   // multiplier of the projected size a small picture wants (visibility.cone)
-  pub lodSlot usize = 1usize;
-  pub lodBias f32 = 1.;
+  pub lodSlot: usize = 1usize;
+  pub lodBias: f32 = 1.;
 
   // A view of 'width' by 'height' texels: the picture a texture of 'renderer''s
   // colour format (sampled by materials, copied from with COPY_SRC), and a
   // depth texture of its depth format
-  pub fn create(renderer &mut Renderer, device &mut Device, width u32, height u32) RenderView {
+  pub fn create(renderer: &mut Renderer, device: &mut Device, width: u32, height: u32) RenderView {
     let usage = TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_TEXTURE_BINDING | TEXTURE_USAGE_COPY_SRC;
     let desc = new TextureDescriptor(width, height, renderer.colorFormat, usage);
     var texture = device.createTexture(&desc);
@@ -119,7 +119,7 @@ pub struct RenderView {
       Buffer.none(), Mat4.identity())
   }
 
-  pub fn isValid(self &) bool { depth.isValid() && !color.isNone() }
+  pub fn isValid(self: &) bool { depth.isValid() && !color.isNone() }
 
   // The texture holding the view's picture (not valid once the view is released). With
   // 'depth', it is what a later pass of the program's own draws into the picture, such
@@ -127,7 +127,7 @@ pub struct RenderView {
   // pass in an encoder of its own and submit it after 'render' returns ('render'
   // submits its picture before it returns), and set 'renderer.keepDepth' while the
   // scene is drawn, or the depth test has nothing to read.
-  pub fn texture(self &, renderer &Renderer) &Texture {
+  pub fn texture(self: &, renderer: &Renderer) &Texture {
     &renderer.textures[color.slot].texture
   }
 
@@ -137,7 +137,7 @@ pub struct RenderView {
   // picture is removed with 'removeMaterial', which the caller does, as
   // for any texture's materials. The view is not valid afterwards. (A view with
   // fog drops its fog passes, which waits for the device to be idle.)
-  pub fn release(self &mut, renderer &mut Renderer, device &mut Device) {
+  pub fn release(self: &mut, renderer: &mut Renderer, device: &mut Device) {
     renderer.removeTexture(device, color);
     device.queue.releaseTexture(&mut depth);
     color = TextureHandle.none();
@@ -150,7 +150,7 @@ pub struct RenderView {
 
   // Time every later picture on the GPU ('gpuNanoseconds'); false if the
   // device keeps no timestamps
-  pub fn enableTiming(self &mut, device &mut Device) bool {
+  pub fn enableTiming(self: &mut, device: &mut Device) bool {
     if device.timestampPeriod <= 0. { return false; }
     queries = device.createQuerySet(QUERY_TYPE_TIMESTAMP, 2u32);
     resolved = device.createBuffer(256u64, BUFFER_USAGE_QUERY_RESOLVE | BUFFER_USAGE_COPY_SRC);
@@ -162,7 +162,7 @@ pub struct RenderView {
   // (about 12 MB for 1080 lines at the high tier). Every later picture is fogged while
   // 'fog.enabled'. False, and no fog, if the renderer's colour format is not RGBA16_FLOAT
   // (the fog pipelines' format).
-  pub fn enableFog(self &mut, renderer &mut Renderer, device &mut Device) bool {
+  pub fn enableFog(self: &mut, renderer: &mut Renderer, device: &mut Device) bool {
     if renderer.colorFormat != TEXTURE_FORMAT_RGBA16_FLOAT { return false; }
     if fogPass.len() > 0usize { return true; }
     fogFrame = device.createBuffer(FX_FRAME_BYTES, BUFFER_USAGE_UNIFORM | BUFFER_USAGE_COPY_DST);
@@ -182,11 +182,11 @@ pub struct RenderView {
 
   // The next picture's fog starts afresh, with none of the last picture's volume (the view's
   // camera has cut to somewhere else)
-  pub fn cutFog(self &mut) { fogHavePrevious = false; }
+  pub fn cutFog(self: &mut) { fogHavePrevious = false; }
 
   // The GPU time of the last picture drawn, in nanoseconds, once the device
   // is idle ('device.waitIdle()'); 0 if timing is off
-  pub fn gpuNanoseconds(self &, device &Device) f64 {
+  pub fn gpuNanoseconds(self: &, device: &Device) f64 {
     if !queries.isValid() { return 0.0; }
     let ticks = readback.mappedRange() as *u64;
     f64.from(*(ticks + 1usize) - *ticks) * f64.from(device.timestampPeriod)
@@ -195,8 +195,8 @@ pub struct RenderView {
   // Draw the items of 'list' on this view's layers, seen by 'camera' and lit
   // by 'light', into its picture, in a submission of its own. False, and
   // nothing drawn, if the view sits deeper than 'maxNest' views.
-  pub fn render(self &mut, renderer &mut Renderer, device &mut Device, camera &Camera, light &Light,
-      list &DrawList, maxNest u32) bool {
+  pub fn render(self: &mut, renderer: &mut Renderer, device: &mut Device, camera: &Camera, light: &Light,
+      list: &DrawList, maxNest: u32) bool {
     if nest > maxNest || !renderer.textures.alive(color.slot) { return false; }
     let sub = onLayers(list, layerMask);
     let target = renderer.textures[color.slot].texture.createView();
@@ -233,7 +233,7 @@ pub struct RenderView {
   // Make the fog's volumes again if 'fog' now asks for another grid (before the picture's
   // commands are recorded: the volumes about to be replaced may be named by commands not yet
   // run, so let them run)
-  fn remakeFog(self &mut, renderer &mut Renderer, device &mut Device) {
+  fn remakeFog(self: &mut, renderer: &mut Renderer, device: &mut Device) {
     if fog.tileSize == fogTile && fog.slices == fogSlices { return; }
     let depthView = depth.createView();
     var flush = device.createCommandEncoder();
@@ -248,8 +248,8 @@ pub struct RenderView {
   // The fog over the picture just recorded into 'encoder' (same encoder: the cascades the
   // view's own render drew, and the shadow parameters it wrote for its camera, are what the
   // fog reads). The frame uniform is the camera's own, the eye a reflected camera's reflection.
-  fn recordFog(self &mut, renderer &mut Renderer, device &mut Device, encoder &mut CommandEncoder, camera &Camera,
-      light &Light) {
+  fn recordFog(self: &mut, renderer: &mut Renderer, device: &mut Device, encoder: &mut CommandEncoder, camera: &Camera,
+      light: &Light) {
     let depthView = depth.createView();
     var base = *camera;
     base.jitterX = 0.;
@@ -267,7 +267,7 @@ pub struct RenderView {
 
 // The items of 'list' that meet 'mask', with all its bones (the items keep
 // their places in them)
-pub fn onLayers(list &DrawList, mask u32) DrawList {
+pub fn onLayers(list: &DrawList, mask: u32) DrawList {
   var out = DrawList.empty();
   var i = 0usize;
   while i < list.items.len() {
@@ -289,7 +289,7 @@ pub fn onLayers(list &DrawList, mask u32) DrawList {
 // The plane of a mirror through 'point' facing 'normal', turned to face the
 // camera at 'eye': (n, d) with n.p + d = 0 on the plane and the eye on the
 // positive side
-pub fn mirrorPlane(point Vec3, normal Vec3, eye Vec3) Vec4 {
+pub fn mirrorPlane(point: Vec3, normal: Vec3, eye: Vec3) Vec4 {
   var n = normal.normalize();
   if n.dot(eye - point) < 0. { n = new Vec3(0., 0., 0.) - n; }
   new Vec4(n.x, n.y, n.z, -n.dot(point))
@@ -297,7 +297,7 @@ pub fn mirrorPlane(point Vec3, normal Vec3, eye Vec3) Vec4 {
 
 // spirv-begin viewmat.spv VIEWMAT_SPIRV
 // Written by tools/shaders/shaders.py from viewmat.slang (sha256 c89906e7683b8d29036e303ad5eb2e97f8455d218aa4f22fb2e8698fb4e0d0fc): do not edit.
-let VIEWMAT_SPIRV Array[u32, 1855] = [
+let VIEWMAT_SPIRV: Array[u32, 1855] = [
   0x07230203u32, 0x00010500u32, 0x00280000u32, 0x0000016bu32, 0x00000000u32, 0x00020011u32,
   0x00000001u32, 0x000b000au32, 0x5f565053u32, 0x5f52484bu32, 0x726f7473u32, 0x5f656761u32,
   0x66667562u32, 0x735f7265u32, 0x61726f74u32, 0x635f6567u32, 0x7373616cu32, 0x00000000u32,
@@ -613,10 +613,10 @@ let VIEWMAT_SPIRV Array[u32, 1855] = [
 
 // The materials that show a view: two custom pipelines (viewmat.slang)
 pub struct ViewMaterials {
-  pub screen PipelineHandle;
-  pub mirror PipelineHandle;
+  pub screen: PipelineHandle;
+  pub mirror: PipelineHandle;
 
-  pub fn create(renderer &mut Renderer, device &mut Device) ViewMaterials {
+  pub fn create(renderer: &mut Renderer, device: &mut Device) ViewMaterials {
     let sampleTypes = [TEXTURE_SAMPLE_TYPE_FLOAT, TEXTURE_SAMPLE_TYPE_FLOAT];
     let screenDesc = new CustomPipeline(spirv: &VIEWMAT_SPIRV, fragmentEntryPoint: "screenFragment", textures: &sampleTypes,
       streams: 3u32, paramBytes: 64u64);
@@ -627,11 +627,11 @@ pub struct ViewMaterials {
     new ViewMaterials(screen, mirror)
   }
 
-  pub fn isValid(self &, renderer &Renderer) bool { renderer.hasPipeline(screen) && renderer.hasPipeline(mirror) }
+  pub fn isValid(self: &, renderer: &Renderer) bool { renderer.hasPipeline(screen) && renderer.hasPipeline(mirror) }
 
   // A material showing the picture of 'view' as light given off, times 'tint'
   // (a screen on a quad whose uvs run 0 to 1, v up)
-  pub fn screenMaterial(self &, renderer &mut Renderer, device &mut Device, view TextureHandle, tint Color) MaterialHandle {
+  pub fn screenMaterial(self: &, renderer: &mut Renderer, device: &mut Device, view: TextureHandle, tint: Color) MaterialHandle {
     let params = [tint.red, tint.green, tint.blue, 1.,  0., 0., 0., 0.,  0., 0., 0., 0.,  0., 0., 0., 0.];
     let maps = [view, TextureHandle.none()];
     renderer.addCustomMaterial(device, screen, &params, &maps)
@@ -640,8 +640,8 @@ pub struct ViewMaterials {
   // A perfect mirror showing the reflection 'view' (the picture of a camera
   // reflected about the mirror's plane, drawn the size of the frame),
   // multiplied by 'tint'
-  pub fn mirrorMaterial(self &, renderer &mut Renderer, device &mut Device, reflection TextureHandle,
-      tint Color) MaterialHandle {
+  pub fn mirrorMaterial(self: &, renderer: &mut Renderer, device: &mut Device, reflection: TextureHandle,
+      tint: Color) MaterialHandle {
     let params = [tint.red, tint.green, tint.blue, 1.,  0., 0., 0., 0.,  0., 0., 0., 0.,  0., 0., 0., 0.];
     let maps = [reflection, TextureHandle.none()];
     renderer.addCustomMaterial(device, mirror, &params, &maps)
@@ -652,8 +652,8 @@ pub struct ViewMaterials {
   // reflection read 'distortion' (in screen widths, 0.02 is a ripple) times
   // the xy of 'normalMap' (a tangent-space normal map, tiled 'tiling' times
   // over the uvs, scrolling 'scrollX', 'scrollY' of a tile a second) away
-  pub fn waterMaterial(self &, renderer &mut Renderer, device &mut Device, reflection TextureHandle,
-      normalMap TextureHandle, body Color, f0 f32, distortion f32, tiling f32, scrollX f32, scrollY f32) MaterialHandle {
+  pub fn waterMaterial(self: &, renderer: &mut Renderer, device: &mut Device, reflection: TextureHandle,
+      normalMap: TextureHandle, body: Color, f0: f32, distortion: f32, tiling: f32, scrollX: f32, scrollY: f32) MaterialHandle {
     let usesMap = if normalMap.isNone() { 0.f } else { 1. };
     let params = [body.red, body.green, body.blue, 1.,  1., f0, distortion, tiling,  scrollX, scrollY, 0., usesMap,
       0., 0., 0., 0.];
@@ -679,16 +679,16 @@ const PROBE_SIZE = ENVIRONMENT_SIZE;
 // What the renderer keeps of a probe: its box and the group 2 that
 // physically based copies inside the box are drawn with
 pub struct ProbeSlot {
-  pub ready bool;              // captured, and not removed
-  pub boxMin Vec3;
-  pub boxMax Vec3;
-  pub volume f32;
-  pub group BindGroup;
+  pub ready: bool;              // captured, and not removed
+  pub boxMin: Vec3;
+  pub boxMax: Vec3;
+  pub volume: f32;
+  pub group: BindGroup;
 }
 
 // spirv-begin probe.spv PROBE_SPIRV
 // Written by tools/shaders/shaders.py from probe.slang (sha256 5db2fbf3d1b3d09f8ce88b7d7594378648c17adffd65c7cb6094408716eca6f0): do not edit.
-let PROBE_SPIRV Array[u32, 378] = [
+let PROBE_SPIRV: Array[u32, 378] = [
   0x07230203u32, 0x00010500u32, 0x00280000u32, 0x00000054u32, 0x00000000u32, 0x00020011u32,
   0x00000032u32, 0x00020011u32, 0x00000001u32, 0x0003000eu32, 0x00000000u32, 0x00000001u32,
   0x0009000fu32, 0x00000000u32, 0x00000002u32, 0x6c6c7566u32, 0x65726373u32, 0x614d6e65u32,
@@ -759,30 +759,30 @@ let PROBE_SPIRV Array[u32, 378] = [
 // holds a slot for it, 'slot'). It must outlive the frames that draw with
 // it; 'remove' stops the renderer using it.
 pub struct ReflectionProbe {
-  pub slot usize;              // its place in renderer.probes
-  pub position Vec3;
-  pub boxMin Vec3;
-  pub boxMax Vec3;
-  pub background Color;        // what a face is cleared to where no sky is set
-  pub bakes u32 = 0u32;
-  capture Texture;             // the scene, RGBA16_FLOAT, with its whole mip chain
-  specular Texture;
-  irradiance Texture;
-  uniforms Buffer;
-  pictureColor Texture;        // a face as a camera drew it, before it is mirrored into the cube
-  pictureDepth Texture;
-  copyShader ShaderModule;
-  copyLayout BindGroupLayout;
-  copyPipelineLayout PipelineLayout;
-  copyPipeline RenderPipeline;
-  copyGroup BindGroup;
-  wholeGroup BindGroup;
-  levelGroups List[BindGroup];
+  pub slot: usize;              // its place in renderer.probes
+  pub position: Vec3;
+  pub boxMin: Vec3;
+  pub boxMax: Vec3;
+  pub background: Color;        // what a face is cleared to where no sky is set
+  pub bakes: u32 = 0u32;
+  capture: Texture;             // the scene, RGBA16_FLOAT, with its whole mip chain
+  specular: Texture;
+  irradiance: Texture;
+  uniforms: Buffer;
+  pictureColor: Texture;        // a face as a camera drew it, before it is mirrored into the cube
+  pictureDepth: Texture;
+  copyShader: ShaderModule;
+  copyLayout: BindGroupLayout;
+  copyPipelineLayout: PipelineLayout;
+  copyPipeline: RenderPipeline;
+  copyGroup: BindGroup;
+  wholeGroup: BindGroup;
+  levelGroups: List[BindGroup];
 
-  pub fn isValid(self &) bool { copyGroup.isValid() && wholeGroup.isValid() && capture.isValid() }
+  pub fn isValid(self: &) bool { copyGroup.isValid() && wholeGroup.isValid() && capture.isValid() }
 
   // Stop the renderer lighting anything with this probe
-  pub fn remove(self &, renderer &mut Renderer) {
+  pub fn remove(self: &, renderer: &mut Renderer) {
     if self.slot < renderer.probes.len() {
       var s = &mut renderer.probes[self.slot];
       s.ready = false;
@@ -792,7 +792,7 @@ pub struct ReflectionProbe {
   // Capture the scene 'list' (lit by 'light') again from the probe's
   // position and filter it, in submissions of its own: six faces, then the
   // filtering. Probes are baked, not per frame: call it between frames.
-  pub fn capturePass(self &mut, renderer &mut Renderer, device &mut Device, light &Light, list &DrawList) {
+  pub fn capturePass(self: &mut, renderer: &mut Renderer, device: &mut Device, light: &Light, list: &DrawList) {
     var base = Camera.make();
     base.fov = radians(90.);
     base.near = 0.05;
@@ -867,8 +867,8 @@ pub struct ReflectionProbe {
 // the smallest), captured now from the scene 'list' lit by 'light'. Needs a
 // renderer drawing into RGBA16_FLOAT; the result is not valid otherwise.
 // Call it between frames (it ends the frame it is in).
-pub fn addProbe(renderer &mut Renderer, device &mut Device, position Vec3, boxMin Vec3, boxMax Vec3,
-    background Color, light &Light, list &DrawList) ReflectionProbe {
+pub fn addProbe(renderer: &mut Renderer, device: &mut Device, position: Vec3, boxMin: Vec3, boxMax: Vec3,
+    background: Color, light: &Light, list: &DrawList) ReflectionProbe {
   let usage = TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_TEXTURE_BINDING;
   let captureDesc = new TextureDescriptor(PROBE_SIZE, PROBE_SIZE, TEXTURE_FORMAT_RGBA16_FLOAT, usage, ENVIRONMENT_LEVELS, 6u32);
   var capture = device.createTexture(&captureDesc);

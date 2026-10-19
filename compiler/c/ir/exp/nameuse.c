@@ -371,7 +371,7 @@ int nameUseTemplateMember(NameUseNode *name, INode *dcl) {
 //
 // A member's name shadows the module's names inside its type, signatures
 // included, as any inner name shadows an outer one. So where the member is named
-// like a module this module binds -- 'fn mesh(self &) mesh.Mesh' -- the author
+// like a module this module binds -- 'fn mesh(self: &) mesh.Mesh' -- the author
 // meant the module, and the diagnostic names the two ways to reach it: bind the
 // import under another name, or walk to it from this module's own name, which
 // no member hides. The first is offered only where an import is what binds the
@@ -597,7 +597,7 @@ void nameuseFlow(FlowState *fstate, NameUseNode **nodep) {
         return;
     if (fstate->inflightcnt)
         flowGateUse(fstate, vardclnode);
-    // An init's 'self &new' is reached only through itself, once filled
+    // An init's 'self: &new' is reached only through itself, once filled
     if (flowNewSelf((INode*)node)) {
         if (!flowThroughSelf)
             errorMsgNode((INode*)node, ErrorInitSelf,

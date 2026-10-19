@@ -700,7 +700,7 @@ static int genlTypeRecLayoutOk(GenState *gen, LLVMTypeRef rectype, LLVMTypeRef f
 }
 
 // The function type a record's finalize or trace slot points at: 'fn(p *u8)',
-// or 'fn(p *u8, mode u32)', read from core's declaration of the slot, so a
+// or 'fn(p: *u8, mode: u32)', read from core's declaration of the slot, so a
 // call through it is typed as the slot is
 static LLVMTypeRef genlTypeRecSlotFnType(GenState *gen, StructNode *recnode, unsigned index) {
     if (recnode->fields.used != TypeRecFieldCount)
@@ -741,7 +741,7 @@ LLVMValueRef genlTypeRecordOf(GenState *gen, INode *vtype, StructNode *recnode) 
     LLVMTypeRef tracetype = genlTypeRecSlotFnType(gen, recnode, TypeRecTrace);
     if (!genlTypeRecLayoutOk(gen, rectype, finaltype, tracetype))
         errorExit(ExitGen, "Internal error: core's TypeRecord is not laid out as the compiler fills it: "
-            "'size usize; align usize; finalize &fn(p *u8); trace &fn(p *u8, mode u32); flags u32;'");
+            "'size: usize; align: usize; finalize: &fn(p: *u8); trace: &fn(p: *u8, mode: u32); flags: u32;'");
 
     // The record is remembered before its finalizer and trace are generated,
     // which may ask for records of their own, this one among them

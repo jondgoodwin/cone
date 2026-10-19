@@ -10,12 +10,12 @@
 pub const BvhLeafSize = 4usize;
 const BvhBins = 12usize;
 
-fn triBounds(verts &List[Vec3], idx &List[u32], t usize) Aabb3 {
+fn triBounds(verts: &List[Vec3], idx: &List[u32], t: usize) Aabb3 {
   Aabb3.empty().enclose(*verts[usize.from(*idx[3usize * t])]).enclose(*verts[usize.from(*idx[3usize * t + 1usize])])
     .enclose(*verts[usize.from(*idx[3usize * t + 2usize])])
 }
 
-fn area(b Aabb3) f32 {
+fn area(b: Aabb3) f32 {
   if b.isEmpty() { return 0.; }
   let d = b.max - b.min;
   2. * (d.x * d.y + d.y * d.z + d.z * d.x)
@@ -24,7 +24,7 @@ fn area(b Aabb3) f32 {
 // An edge is flat, so inactive, if the triangle across it faces within about
 // 5 degrees of this one (Jolt's active edges): a shape touching it is touching
 // the neighbour too, and the contact there is a ghost unless it points along the face
-pub fn edgeIsActive(t Tri, nb Tri) bool {
+pub fn edgeIsActive(t: Tri, nb: Tri) bool {
   let n1 = (t.b - t.a).cross(t.c - t.a).normalize();
   let n2 = (nb.b - nb.a).cross(nb.c - nb.a).normalize();
   n1.dot(n2) < 0.996
@@ -32,7 +32,7 @@ pub fn edgeIsActive(t Tri, nb Tri) bool {
 
 // Edge flags per triangle (three bits), by pairing each edge with the one
 // that runs the other way in another triangle. An edge with no partner is active.
-fn computeEdgeFlags(verts &List[Vec3], idx &List[u32]) List[u8] {
+fn computeEdgeFlags(verts: &List[Vec3], idx: &List[u32]) List[u8] {
   let nt = idx.len() / 3usize;
   var owner = Dict[u64, u32].empty();
   var flags = List[u8].empty();
@@ -68,15 +68,15 @@ fn computeEdgeFlags(verts &List[Vec3], idx &List[u32]) List[u8] {
 }
 
 struct Job {
-  lo usize;
-  hi usize;
-  parent i32;
-  isRight bool;
+  lo: usize;
+  hi: usize;
+  parent: i32;
+  isRight: bool;
 }
 
 // A mesh from vertices and triangle indices (three a triangle, counterclockwise
 // seen from outside)
-pub fn meshPrim(verts List[Vec3], indices List[u32]) Prim {
+pub fn meshPrim(verts: List[Vec3], indices: List[u32]) Prim {
   var p = Prim.blank(KMesh);
   let nt = indices.len() / 3usize;
   var boxes = List[Aabb3].empty();
@@ -199,18 +199,18 @@ pub fn meshPrim(verts List[Vec3], indices List[u32]) Prim {
 }
 
 // Triangle number k (in BVH order) of a mesh
-pub fn meshTriangle(p &Prim, k usize) Tri {
+pub fn meshTriangle(p: &Prim, k: usize) Tri {
   new Tri(*p.verts[usize.from(*p.tris[3usize * k])], *p.verts[usize.from(*p.tris[3usize * k + 1usize])],
     *p.verts[usize.from(*p.tris[3usize * k + 2usize])])
 }
 
-fn boxesOverlap(lo Vec3, hi Vec3, b Aabb3) bool {
+fn boxesOverlap(lo: Vec3, hi: Vec3, b: Aabb3) bool {
   lo.x <= b.max.x && hi.x >= b.min.x && lo.y <= b.max.y && hi.y >= b.min.y && lo.z <= b.max.z && hi.z >= b.min.z
 }
 
 // The mesh triangles (their original numbers and corners, in the mesh's own
 // space) whose boxes meet 'lb'
-pub fn meshTrianglesIn(p &Prim, lb Aabb3, ids &mut List[u32], tris &mut List[Tri], flags &mut List[u8]) {
+pub fn meshTrianglesIn(p: &Prim, lb: Aabb3, ids: &mut List[u32], tris: &mut List[Tri], flags: &mut List[u8]) {
   if p.bvh.len() == 0usize { return; }
   var stack = List[usize].empty();
   stack.push(0usize);
@@ -236,7 +236,7 @@ pub fn meshTrianglesIn(p &Prim, lb Aabb3, ids &mut List[u32], tris &mut List[Tri
 }
 
 // Recompute every node's box after the vertices moved
-pub fn refitMesh(p &mut Prim) {
+pub fn refitMesh(p: &mut Prim) {
   var i = p.bvh.len();
   while i > 0usize {
     i = i - 1usize;
@@ -263,12 +263,12 @@ pub fn refitMesh(p &mut Prim) {
 // ---------------------------------------------------------------------------
 // Heightfield
 
-pub fn heightSample(p &Prim, i usize, j usize) f32 {
+pub fn heightSample(p: &Prim, i: usize, j: usize) f32 {
   *p.heights[j * usize.from(p.cols) + i] + p.origin.y
 }
 
 // The two triangles of cell (i, j), numbered 2 * (j * (cols - 1) + i) and +1
-pub fn heightCellTriangle(p &Prim, i usize, j usize, second bool) Tri {
+pub fn heightCellTriangle(p: &Prim, i: usize, j: usize, second: bool) Tri {
   let x0 = p.origin.x + f32.from(i) * p.spacing.x;
   let x1 = x0 + p.spacing.x;
   let z0 = p.origin.z + f32.from(j) * p.spacing.y;
@@ -281,7 +281,7 @@ pub fn heightCellTriangle(p &Prim, i usize, j usize, second bool) Tri {
 }
 
 // Active edges of a cell triangle, found against the triangle across each edge
-fn heightEdgeFlags(p &Prim, i usize, j usize, second bool) u8 {
+fn heightEdgeFlags(p: &Prim, i: usize, j: usize, second: bool) u8 {
   let cw = usize.from(p.cols - 1u32);
   let ch = usize.from(p.rows - 1u32);
   let t = heightCellTriangle(p, i, j, second);
@@ -300,7 +300,7 @@ fn heightEdgeFlags(p &Prim, i usize, j usize, second bool) u8 {
   f
 }
 
-pub fn heightTrianglesIn(p &Prim, lb Aabb3, ids &mut List[u32], tris &mut List[Tri], flags &mut List[u8]) {
+pub fn heightTrianglesIn(p: &Prim, lb: Aabb3, ids: &mut List[u32], tris: &mut List[Tri], flags: &mut List[u8]) {
   if p.cols < 2u32 || p.rows < 2u32 { return; }
   let fx0 = (lb.min.x - p.origin.x) / p.spacing.x;
   let fx1 = (lb.max.x - p.origin.x) / p.spacing.x;
@@ -332,12 +332,12 @@ pub fn heightTrianglesIn(p &Prim, lb Aabb3, ids &mut List[u32], tris &mut List[T
 }
 
 // The mesh or heightfield triangles meeting a box (in the shape's own space)
-pub fn concaveTriangles(p &Prim, lb Aabb3, ids &mut List[u32], tris &mut List[Tri], flags &mut List[u8]) {
+pub fn concaveTriangles(p: &Prim, lb: Aabb3, ids: &mut List[u32], tris: &mut List[Tri], flags: &mut List[u8]) {
   if p.kind == KMesh { meshTrianglesIn(p, lb, ids, tris, flags); } else { heightTrianglesIn(p, lb, ids, tris, flags); }
 }
 
 // A triangle of a mesh (by its original number) or heightfield (by cell number), in the shape's space
-pub fn concaveTriangle(p &Prim, id u32) Tri {
+pub fn concaveTriangle(p: &Prim, id: u32) Tri {
   if p.kind == KHeightfield {
     let cell = usize.from(id / 2u32);
     let cw = usize.from(p.cols - 1u32);

@@ -14,7 +14,7 @@
 //
 // It is not the enum. An enum is a StructNode -- see compiler/c/doc/nodes/struct.md -- and this
 // is the type of the one field the compiler synthesizes at position 0 of it. An
-// author may place that field explicitly, for alignment, by writing '_ tag'.
+// author may place that field explicitly, for alignment, by writing '_: tag'.
 //
 // This node is SHARED rather than cloned (clone.c), so an enum, every variant of
 // it and every enum that extends it read one of these. That is what makes it the

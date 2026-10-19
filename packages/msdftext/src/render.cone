@@ -20,15 +20,15 @@
 // How a text looks. Distances are in the text's units (pixels for overlay
 // text, metres in the world).
 pub struct TextStyle {
-  pub color Color;                 // the fill (straight alpha)
-  pub outlineColor Color;
-  pub outlineWidth f32;            // 0: none
-  pub shadowColor Color;           // alpha 0: none
-  pub shadowOffset Vec2;           // where the shadow falls from the glyph (y down)
-  pub shadowSoftness f32;          // the width of its soft edge
+  pub color: Color;                 // the fill (straight alpha)
+  pub outlineColor: Color;
+  pub outlineWidth: f32;            // 0: none
+  pub shadowColor: Color;           // alpha 0: none
+  pub shadowOffset: Vec2;           // where the shadow falls from the glyph (y down)
+  pub shadowSoftness: f32;          // the width of its soft edge
 
   // Plain text in 'color': no outline, no shadow
-  pub fn plain(color Color) TextStyle {
+  pub fn plain(color: Color) TextStyle {
     new TextStyle(color, new Color(0., 0., 0., 1.), 0., new Color(0., 0., 0., 0.), new Vec2(0., 0.), 0.)
   }
 }
@@ -39,43 +39,43 @@ pub const SPACE_WORLD = 1u32;
 
 // Names one text of a TextRenderer
 pub struct TextHandle {
-  pub index u32;
+  pub index: u32;
 }
 
 const PARAMS_BYTES = 144u64;       // msdftext.slang's TextParams
 const QUAD_BYTES = 32u64;
 
 struct TextSlot {
-  instances Buffer;
-  capacity u32;                    // glyphs the instance buffer holds
-  uniforms Buffer;
-  group BindGroup;
-  count u32;                       // glyphs drawn
-  space u32;
+  instances: Buffer;
+  capacity: u32;                    // glyphs the instance buffer holds
+  uniforms: Buffer;
+  group: BindGroup;
+  count: u32;                       // glyphs drawn
+  space: u32;
 }
 
 pub struct TextRenderer {
-  shader ShaderModule;
-  groupLayout BindGroupLayout;
-  layout PipelineLayout;
-  pub overlayPipeline RenderPipeline;
-  pub worldPipeline RenderPipeline;
-  sampler Sampler;
-  pub texture Texture;
-  view TextureView;
-  uploaded u32;                    // the atlas version the texture holds (+1; 0: none)
-  pxRange f32;
-  emPx f32;
-  atlasWidth f32;
-  atlasHeight f32;
-  slots List[TextSlot];
-  pub drawCalls u32;               // draws the last render made
-  pub glyphs u64;                  // and glyphs they drew
+  shader: ShaderModule;
+  groupLayout: BindGroupLayout;
+  layout: PipelineLayout;
+  pub overlayPipeline: RenderPipeline;
+  pub worldPipeline: RenderPipeline;
+  sampler: Sampler;
+  pub texture: Texture;
+  view: TextureView;
+  uploaded: u32;                    // the atlas version the texture holds (+1; 0: none)
+  pxRange: f32;
+  emPx: f32;
+  atlasWidth: f32;
+  atlasHeight: f32;
+  slots: List[TextSlot];
+  pub drawCalls: u32;               // draws the last render made
+  pub glyphs: u64;                  // and glyphs they drew
 
   // A renderer for text from 'atlas', drawing into overlay targets of
   // 'overlayFormat' and world targets of 'worldFormat' tested against a depth
   // texture of 'depthFormat'. Check 'isValid'.
-  pub fn create(device &mut Device, atlas &Atlas, overlayFormat u32, worldFormat u32, depthFormat u32) TextRenderer {
+  pub fn create(device: &mut Device, atlas: &Atlas, overlayFormat: u32, worldFormat: u32, depthFormat: u32) TextRenderer {
     var shader = device.createShaderModule(&MSDFTEXT_SPIRV);
     let entries = [new BindGroupLayoutEntry(binding: 0u32, visibility: SHADER_STAGE_VERTEX | SHADER_STAGE_FRAGMENT),
       new BindGroupLayoutEntry(binding: 1u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE),
@@ -110,19 +110,19 @@ pub struct TextRenderer {
       f32.from(atlas.config.height), List[TextSlot].empty(), 0u32, 0u64)
   }
 
-  pub fn isValid(self &) bool {
+  pub fn isValid(self: &) bool {
     overlayPipeline.isValid() && worldPipeline.isValid() && texture.isValid() && sampler.isValid()
   }
 
   // Upload the atlas to the texture if it has changed since the last time
-  pub fn syncAtlas(self &mut, device &mut Device, atlas &Atlas) {
+  pub fn syncAtlas(self: &mut, device: &mut Device, atlas: &Atlas) {
     if uploaded == atlas.version + 1u32 { return; }
     device.queue.writeTexture(&texture, atlas.pixels.view() as *u8, atlas.config.width * 4u32);
     uploaded = atlas.version + 1u32;
   }
 
   // A new text slot in 'space' (SPACE_...); it draws nothing until 'set'
-  pub fn addText(self &mut, device &mut Device, space u32) TextHandle {
+  pub fn addText(self: &mut, device: &mut Device, space: u32) TextHandle {
     var instances = device.createBuffer(QUAD_BYTES, BUFFER_USAGE_VERTEX | BUFFER_USAGE_COPY_DST);
     var uniforms = device.createBuffer(PARAMS_BYTES, BUFFER_USAGE_UNIFORM | BUFFER_USAGE_COPY_DST);
     let entries = [BindGroupEntry.buffer(0u32, &uniforms), BindGroupEntry.texture(1u32, &view),
@@ -133,12 +133,12 @@ pub struct TextRenderer {
     new TextHandle(index)
   }
 
-  pub fn textCount(self &) usize { slots.len() }
+  pub fn textCount(self: &) usize { slots.len() }
 
   // Make slot 'h' draw 'text' in 'style', its space taken to clip space by
   // 'transform', from the next submission on. The atlas must hold the
   // glyphs: call 'syncAtlas' after laying text out.
-  pub fn set(self &mut, device &mut Device, h TextHandle, text &TextLayout, style &TextStyle, transform Mat4) {
+  pub fn set(self: &mut, device: &mut Device, h: TextHandle, text: &TextLayout, style: &TextStyle, transform: Mat4) {
     if usize.from(h.index) >= slots.len() { return; }
     var slot = &mut slots[usize.from(h.index)];
     let n = u32.from(text.quads.len());
@@ -162,7 +162,7 @@ pub struct TextRenderer {
         data.push(q.v1);
         i = i + 1usize;
       }
-      let raw *f32 = data.view() as *f32;
+      let raw: *f32 = data.view() as *f32;
       device.queue.writeBuffer(&slot.instances, 0u64, raw as *u8, u64.from(n) * QUAD_BYTES);
     }
     slot.count = n;
@@ -197,11 +197,11 @@ pub struct TextRenderer {
   }
 
   // Stop drawing slot 'h'
-  pub fn clearText(self &mut, h TextHandle) {
+  pub fn clearText(self: &mut, h: TextHandle) {
     if usize.from(h.index) < slots.len() { slots[usize.from(h.index)].count = 0u32; }
   }
 
-  fn drawSlots(self &mut, pass &mut RenderPass, pipeline &RenderPipeline, space u32) {
+  fn drawSlots(self: &mut, pass: &mut RenderPass, pipeline: &RenderPipeline, space: u32) {
     pass.setPipeline(pipeline);
     var i = 0usize;
     while i < slots.len() {
@@ -219,7 +219,7 @@ pub struct TextRenderer {
 
   // Record a pass drawing every overlay text into 'target' (its contents
   // kept), no depth
-  pub fn renderOverlay(self &mut, encoder &mut CommandEncoder, target &Texture) {
+  pub fn renderOverlay(self: &mut, encoder: &mut CommandEncoder, target: &Texture) {
     drawCalls = 0u32;
     glyphs = 0u64;
     let color = new RenderPassColorAttachment(view: target.createView(), loadOp: LOAD_OP_LOAD,
@@ -231,7 +231,7 @@ pub struct TextRenderer {
 
   // Record a pass drawing every world text into 'target' (its contents
   // kept), depth tested against 'depth' (kept by render's 'keepDepth')
-  pub fn renderWorld(self &mut, encoder &mut CommandEncoder, target &Texture, depth &Texture) {
+  pub fn renderWorld(self: &mut, encoder: &mut CommandEncoder, target: &Texture, depth: &Texture) {
     drawCalls = 0u32;
     glyphs = 0u64;
     let color = new RenderPassColorAttachment(view: target.createView(), loadOp: LOAD_OP_LOAD,
@@ -248,7 +248,7 @@ pub struct TextRenderer {
 
 // The transform for overlay text with its top left at pixel (x, y) of a
 // target 'width' x 'height' pixels: the text's units are pixels, y down
-pub fn overlayTransform(width f32, height f32, x f32, y f32) Mat4 {
+pub fn overlayTransform(width: f32, height: f32, x: f32, y: f32) Mat4 {
   Mat4.orthographic(0., width, height, 0., -1., 1.) * Mat4.fromTranslation(new Vec3(x, y, 0.))
 }
 
@@ -257,7 +257,7 @@ pub fn overlayTransform(width f32, height f32, x f32, y f32) Mat4 {
 // text's units are the placement's, metres for a placement of scale 1. The
 // block's point (anchorX, anchorY) (0 to 1 across and down; (0.5, 0.5) its
 // middle) is at the placement's origin. 'viewProjection' is the camera's.
-pub fn worldTransform(viewProjection Mat4, placement Mat4, text &TextLayout, anchorX f32, anchorY f32) Mat4 {
+pub fn worldTransform(viewProjection: Mat4, placement: Mat4, text: &TextLayout, anchorX: f32, anchorY: f32) Mat4 {
   viewProjection * placement * Mat4.fromScale(new Vec3(1., -1., 1.))
     * Mat4.fromTranslation(new Vec3(-anchorX * text.width, -anchorY * text.height, 0.))
 }
@@ -265,7 +265,7 @@ pub fn worldTransform(viewProjection Mat4, placement Mat4, text &TextLayout, anc
 // A placement at 'position' facing the camera: spherical (the text square to
 // the view, turning with it) or, if 'cylindrical', staying upright about the
 // world's y axis and turning only to face the camera's side
-pub fn billboardPlacement(camera &Camera, position Vec3, cylindrical bool) Mat4 {
+pub fn billboardPlacement(camera: &Camera, position: Vec3, cylindrical: bool) Mat4 {
   let c = camera.placement();
   if !cylindrical {
     let right = new Vec3(c.m[0], c.m[1], c.m[2]).normalize();
@@ -282,13 +282,13 @@ pub fn billboardPlacement(camera &Camera, position Vec3, cylindrical bool) Mat4 
 }
 
 // The placement whose axes are 'x', 'y' and 'z' (unit vectors) at 'origin'
-pub fn basisMatrix(x Vec3, y Vec3, z Vec3, origin Vec3) Mat4 {
+pub fn basisMatrix(x: Vec3, y: Vec3, z: Vec3, origin: Vec3) Mat4 {
   new Mat4([x.x, x.y, x.z, 0f, y.x, y.y, y.z, 0f, z.x, z.y, z.z, 0f, origin.x, origin.y, origin.z, 1f])
 }
 
 // spirv-begin msdftext.spv MSDFTEXT_SPIRV
 // Written by tools/shaders/shaders.py from msdftext.slang (sha256 5c551f38ee10d38c7c7ed63e79121d6547161c71645450d5f7292631a866077a): do not edit.
-let MSDFTEXT_SPIRV Array[u32, 2095] = [
+let MSDFTEXT_SPIRV: Array[u32, 2095] = [
   0x07230203u32, 0x00010500u32, 0x00280000u32, 0x00000217u32, 0x00000000u32, 0x00020011u32,
   0x00000032u32, 0x00020011u32, 0x00000001u32, 0x0006000bu32, 0x00000069u32, 0x4c534c47u32,
   0x6474732eu32, 0x3035342eu32, 0x00000000u32, 0x0003000eu32, 0x00000000u32, 0x00000001u32,

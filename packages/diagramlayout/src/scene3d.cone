@@ -14,46 +14,46 @@
 // (the old handles are released with 'release'), a moved node needs only 'updateTransforms'.
 
 pub struct Diagram3dOptions {
-  pub unit f32;                    // metres a layout unit
-  pub boxDepth f32;                // metres, front to back
-  pub tubeRadius f32;
-  pub bow f32;                     // how far a tube arches towards +z, as a fraction of its length
-  pub arrowLength f32;
-  pub segments u32;                // sides of a tube
+  pub unit: f32;                    // metres a layout unit
+  pub boxDepth: f32;                // metres, front to back
+  pub tubeRadius: f32;
+  pub bow: f32;                     // how far a tube arches towards +z, as a fraction of its length
+  pub arrowLength: f32;
+  pub segments: u32;                // sides of a tube
 
   pub fn make() Diagram3dOptions { new Diagram3dOptions(0.012, 0.35, 0.025, 0.12, 0.16, 10u32) }
 }
 
 pub struct Diagram3d {
-  pub centre Vec3;                 // of the boxes, world
-  pub radius f32;                  // of a sphere round them
-  pub extent Vec3;                 // half the size of the box round them
-  pub box MeshHandle;
-  pub boxMaterials List[MaterialHandle];
-  pub tubeMaterial MaterialHandle;
-  pub nodePos List[Vec3];          // world centres (dead nodes at the origin)
-  pub nodeHalf List[Vec3];
-  pub nodeKind List[u32];
-  pub nodeLive List[bool];
-  pub tubes List[MeshHandle];
-  pub texts List[TextHandle];
-  pub triangles u32;               // boxes and tubes together
+  pub centre: Vec3;                 // of the boxes, world
+  pub radius: f32;                  // of a sphere round them
+  pub extent: Vec3;                 // half the size of the box round them
+  pub box: MeshHandle;
+  pub boxMaterials: List[MaterialHandle];
+  pub tubeMaterial: MaterialHandle;
+  pub nodePos: List[Vec3];          // world centres (dead nodes at the origin)
+  pub nodeHalf: List[Vec3];
+  pub nodeKind: List[u32];
+  pub nodeLive: List[bool];
+  pub tubes: List[MeshHandle];
+  pub texts: List[TextHandle];
+  pub triangles: u32;               // boxes and tubes together
 }
 
 // The tier of a node as z: kind times 'spacing' (layout units)
-pub fn tierByKind(g &mut Graph, spacing f32) {
+pub fn tierByKind(g: &mut Graph, spacing: f32) {
   var i = 0usize;
   while i < g.nodes.len() { g.nodes[i].z = f32.from(g.nodes[i].kind) * spacing; i = i + 1usize; }
 }
 
-fn perpendicularTo(t Vec3) Vec3 {
+fn perpendicularTo(t: Vec3) Vec3 {
   let a = if absf2(t.y) < 0.9 { new Vec3(0., 1., 0.) } else { new Vec3(1., 0., 0.) };
   t.cross(a).normalize().cross(t).normalize()
 }
 
 // A tube along 'pts' (at least two points) of 'radius', ended by a cone of 'arrowLen' and 'arrowRadius' at the
 // last point (which is the cone's tip; the tube stops at its base)
-pub fn tubeMesh(pts &List[Vec3], radius f32, arrowLen f32, arrowRadius f32, sides u32) Mesh {
+pub fn tubeMesh(pts: &List[Vec3], radius: f32, arrowLen: f32, arrowRadius: f32, sides: u32) Mesh {
   var m = Mesh.empty();
   let n = pts.len();
   if n < 2usize { return m; }
@@ -164,10 +164,10 @@ pub fn tubeMesh(pts &List[Vec3], radius f32, arrowLen f32, arrowRadius f32, side
   m
 }
 
-fn clampf2(v f32, lo f32, hi f32) f32 { if v < lo { return lo; } if v > hi { return hi; } v }
+fn clampf2(v: f32, lo: f32, hi: f32) f32 { if v < lo { return lo; } if v > hi { return hi; } v }
 
 // Where the segment from the box centre 'c' (half extents 'h') towards 'to' leaves the box
-fn leaveBox(c Vec3, h Vec3, to Vec3) Vec3 {
+fn leaveBox(c: Vec3, h: Vec3, to: Vec3) Vec3 {
   let d = to - c;
   var t = 1.0f;
   if absf2(d.x) > 0.0001 { t = minf2(t, h.x / absf2(d.x)); }
@@ -177,7 +177,7 @@ fn leaveBox(c Vec3, h Vec3, to Vec3) Vec3 {
 }
 
 // Builds the meshes and materials for the live nodes and edges of 'g'. 'kindColors' gives a colour per node kind (wrapping).
-pub fn buildDiagram3d(renderer &mut Renderer, device &mut Device, g &Graph, o &Diagram3dOptions, kindColors &List[Color]) Diagram3d {
+pub fn buildDiagram3d(renderer: &mut Renderer, device: &mut Device, g: &Graph, o: &Diagram3dOptions, kindColors: &List[Color]) Diagram3d {
   let bb = g.bounds();
   let cx = (bb.min.x + bb.max.x) * 0.5;
   let cy = (bb.min.y + bb.max.y) * 0.5;
@@ -251,7 +251,7 @@ pub fn buildDiagram3d(renderer &mut Renderer, device &mut Device, g &Graph, o &D
 }
 
 // Adds the boxes and tubes to 'list'
-pub fn drawList3d(d &Diagram3d, list &mut DrawList) {
+pub fn drawList3d(d: &Diagram3d, list: &mut DrawList) {
   var n = 0usize;
   while n < d.nodePos.len() {
     if *d.nodeLive[n] {
@@ -271,8 +271,8 @@ pub fn drawList3d(d &Diagram3d, list &mut DrawList) {
 
 // Labels: one world text a live node, floating in front of its box, billboarded to 'camera'. Call it each frame
 // the camera moves (and after the atlas gains glyphs: it syncs the atlas). 'size' is the text's em in metres.
-pub fn placeLabels(d &mut Diagram3d, g &Graph, device &mut Device, text &mut TextRenderer, font &Font, atlas &mut Atlas,
-    camera &Camera, aspect f32, size f32, color Color) {
+pub fn placeLabels(d: &mut Diagram3d, g: &Graph, device: &mut Device, text: &mut TextRenderer, font: &Font, atlas: &mut Atlas,
+    camera: &Camera, aspect: f32, size: f32, color: Color) {
   let vp = camera.projectionMatrix(aspect) * camera.viewMatrix();
   var n = 0usize;
   while n < g.nodes.len() {

@@ -31,13 +31,13 @@ const tokUntrusted = 102u64;
 const tokConn = 1u64;
 const tokReq = 2u64;
 
-fn certs(name &str) Path {
+fn certs(name: &str) Path {
   var p = String.from("../../../../tests/certs/");
   p.append(name);
   Path.fromString(p)
 }
 
-fn readText(name &str) String {
+fn readText(name: &str) String {
   var out = String.empty();
   let file = certs(name);
   match fs.readFile(&file) {
@@ -51,13 +51,13 @@ fn helloBody() &Array[u8] {"hello over TLS"}
 
 // The listeners' layers: a TLS server session each, from one context
 struct TlsMaker {
-  server tls.Server;
-  pool Pool;
+  server: tls.Server;
+  pool: Pool;
 
-  pub fn make(self &mut) Uni[Layer] {new Uni[tls.Stream](server.stream(pool))}
+  pub fn make(self: &mut) Uni[Layer] {new Uni[tls.Stream](server.stream(pool))}
 }
 
-fn server(cert &str, key &str) tls.Server {
+fn server(cert: &str, key: &str) tls.Server {
   let certFile = certs(cert);
   let keyFile = certs(key);
   match tls.Server.make(tls.ServerConfig.make(&certFile, &keyFile)) {
@@ -70,7 +70,7 @@ fn server(cert &str, key &str) tls.Server {
   panic("no server")
 }
 
-fn client(v tls.Verifier) tls.Client {
+fn client(v: tls.Verifier) tls.Client {
   var cfg = tls.ClientConfig.make();
   cfg.verify = v;
   cfg.offline = true;
@@ -86,35 +86,35 @@ fn client(v tls.Verifier) tls.Client {
 
 // What the server side has seen
 struct Srv {
-  pub pool Pool;
-  pub req ReqId;
-  pub target String;
-  pub body String;
-  pub pieces u32;
-  pub accepted u64;
-  pub requests u64;
-  pub dones u64;
-  pub closed u64;
-  pub clean u64;
+  pub pool: Pool;
+  pub req: ReqId;
+  pub target: String;
+  pub body: String;
+  pub pieces: u32;
+  pub accepted: u64;
+  pub requests: u64;
+  pub dones: u64;
+  pub closed: u64;
+  pub clean: u64;
 }
 
 // What the client side has seen, for the request under way
 struct Cli {
-  pub status u16;
-  pub body String;
-  pub finals u64;
-  pub last EventKind;
-  pub failure String;
-  pub stage Stage;
-  pub code u32;
-  pub connected u64;
-  pub closed u64;
-  pub clean u64;
-  pub closeFailure String;
+  pub status: u16;
+  pub body: String;
+  pub finals: u64;
+  pub last: EventKind;
+  pub failure: String;
+  pub stage: Stage;
+  pub code: u32;
+  pub connected: u64;
+  pub closed: u64;
+  pub clean: u64;
+  pub closeFailure: String;
 }
 
 // The server's answer to a request read whole
-fn answer(drv &mut Driver, sv &mut Srv) {
+fn answer(drv: &mut Driver, sv: &mut Srv) {
   let req = sv.req;
   if sv.target.view() == "/hello" {
     drv.respond(req, ResponseHead.make(200u16), BodyLength.sized(u64.from(helloBody().len)));
@@ -137,7 +137,7 @@ fn answer(drv &mut Driver, sv &mut Srv) {
 
 // 1 MiB, each byte its offset modulo 251, in 16 pieces, as fast as the
 // connection takes them: a piece refused waits for Writable
-fn sendBig(drv &mut Driver, sv &mut Srv) {
+fn sendBig(drv: &mut Driver, sv: &mut Srv) {
   while sv.pieces < 16u32 {
     var b = sv.pool.mustTake(65536usize);
     var j = 0u32;
@@ -157,7 +157,7 @@ fn sendBig(drv &mut Driver, sv &mut Srv) {
 }
 
 // One poll of the driver, every event handled
-fn step(drv &mut Driver, lp &mut Loop, sv &mut Srv, cl &mut Cli, events &mut List[Event]) {
+fn step(drv: &mut Driver, lp: &mut Loop, sv: &mut Srv, cl: &mut Cli, events: &mut List[Event]) {
   drv.poll(lp, Instant.now() + Duration.fromMillis(20i64), events);
   var k = 0usize;
   while k < events.len() {
@@ -214,8 +214,8 @@ fn step(drv &mut Driver, lp &mut Loop, sv &mut Srv, cl &mut Cli, events &mut Lis
 }
 
 // Ask for a request and drive until its final answer
-fn exchange(drv &mut Driver, lp &mut Loop, sv &mut Srv, cl &mut Cli, events &mut List[Event], conn ConnId,
-    head RequestHead, body &Array[u8]) {
+fn exchange(drv: &mut Driver, lp: &mut Loop, sv: &mut Srv, cl: &mut Cli, events: &mut List[Event], conn: ConnId,
+    head: RequestHead, body: &Array[u8]) {
   cl.status = 0u16;
   cl.body = String.empty();
   cl.failure = String.empty();
@@ -244,8 +244,8 @@ fn exchange(drv &mut Driver, lp &mut Loop, sv &mut Srv, cl &mut Cli, events &mut
 }
 
 // Drive until the client's connection has closed, and the server's
-fn waitClosed(drv &mut Driver, lp &mut Loop, sv &mut Srv, cl &mut Cli, events &mut List[Event],
-    clientClosed u64, serverClosed u64) {
+fn waitClosed(drv: &mut Driver, lp: &mut Loop, sv: &mut Srv, cl: &mut Cli, events: &mut List[Event],
+    clientClosed: u64, serverClosed: u64) {
   let giveUp = Instant.now() + Duration.fromSeconds(10i64);
   while (cl.closed < clientClosed || sv.closed < serverClosed) && Instant.now() < giveUp {
     step(drv, lp, sv, cl, events);
@@ -255,8 +255,8 @@ fn waitClosed(drv &mut Driver, lp &mut Loop, sv &mut Srv, cl &mut Cli, events &m
 }
 
 // A connection whose handshake is refused: its request's failure
-fn refused(label &str, drv &mut Driver, lp &mut Loop, sv &mut Srv, cl &mut Cli, events &mut List[Event],
-    stream tls.Stream, port u16, want &str) {
+fn refused(label: &str, drv: &mut Driver, lp: &mut Loop, sv: &mut Srv, cl: &mut Cli, events: &mut List[Event],
+    stream: tls.Stream, port: u16, want: &str) {
   let conn = drv.connectWith(lp, "127.0.0.1", port, new Uni[tls.Stream](stream), Sink.Here(tokConn));
   exchange(drv, lp, sv, cl, events, conn, RequestHead.get("/hello", "localhost"), "");
   printStr(label);
@@ -270,7 +270,7 @@ fn refused(label &str, drv &mut Driver, lp &mut Loop, sv &mut Srv, cl &mut Cli, 
   expect(cl.failure.contains(want), "...saying why");
 }
 
-fn listenOn(drv &mut Driver, lp &mut Loop, srv tls.Server, pool Pool, token u64) u16 {
+fn listenOn(drv: &mut Driver, lp: &mut Loop, srv: tls.Server, pool: Pool, token: u64) u16 {
   var port = 0u16;
   match drv.listenWith(lp, SocketAddr.localhost(0u16), new Uni[TlsMaker](new TlsMaker(srv, pool)), Sink.Here(token)) {
     case let r Ok {

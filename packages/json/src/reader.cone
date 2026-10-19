@@ -44,32 +44,32 @@ const inArray = 1u8;
 const inObject = 2u8;
 
 pub struct Reader['a] {
-  src &'a Array[u8];
-  pos usize;
-  tokenStart usize;
-  maxDepth usize;
-  stack List[u8];
-  want Want;
-  buf String;
-  failed bool;
-  err JsonError;
+  src: &'a Array[u8];
+  pos: usize;
+  tokenStart: usize;
+  maxDepth: usize;
+  stack: List[u8];
+  want: Want;
+  buf: String;
+  failed: bool;
+  err: JsonError;
 
   // The text of the Key, Text or Number just read
-  pub fn text(self &) &str { self.buf.view() }
+  pub fn text(self: &) &str { self.buf.view() }
 
   // Where the last event's token starts, in bytes from the start of the text
-  pub fn offset(self &) usize { self.tokenStart }
+  pub fn offset(self: &) usize { self.tokenStart }
 
   // The line (from 1) and column (in bytes, from 1) of the last event's token
-  pub fn line(self &) u32 { lineOf(self.src, self.tokenStart) }
-  pub fn column(self &) u32 { columnOf(self.src, self.tokenStart) }
+  pub fn line(self: &) u32 { lineOf(self.src, self.tokenStart) }
+  pub fn column(self: &) u32 { columnOf(self.src, self.tokenStart) }
 
   // How many arrays and objects are open
-  pub fn depth(self &) usize { self.stack.len() }
+  pub fn depth(self: &) usize { self.stack.len() }
 
   // The next event, or why the text is not JSON. After a failure it answers
   // the same failure again.
-  pub fn next(self &mut) Result[Event, JsonError] {
+  pub fn next(self: &mut) Result[Event, JsonError] {
     if self.failed { return Error[Event, JsonError](self.err.copy()); }
     let ev = self.step();
     if self.failed { return Error[Event, JsonError](self.err.copy()); }
@@ -78,7 +78,7 @@ pub struct Reader['a] {
 
   // Skips the value that comes next, all of it (an array or object with its
   // contents). None when it is skipped, or the failure.
-  pub fn skipValue(self &mut) Option[JsonError] {
+  pub fn skipValue(self: &mut) Option[JsonError] {
     var levels = 0usize;
     while true {
       match self.next() {
@@ -101,13 +101,13 @@ pub struct Reader['a] {
     None
   }
 
-  fn fail(self &mut,kind ErrorKind, at usize, reason &str) {
+  fn fail(self: &mut,kind: ErrorKind, at: usize, reason: &str) {
     if self.failed { return; }
     self.failed = true;
     self.err = errorAt(self.src, at, kind, reason);
   }
 
-  fn skipSpace(self &mut) {
+  fn skipSpace(self: &mut) {
     while self.pos < self.src.len {
       let c = self.src[self.pos];
       if c != ' ' && c != '\t' && c != '\n' && c != '\r' { return; }
@@ -116,11 +116,11 @@ pub struct Reader['a] {
   }
 
   // After a complete value
-  fn afterValue(self &mut) {
+  fn afterValue(self: &mut) {
     if self.stack.len() == 0usize { self.want = Want.NeedEnd; } else { self.want = Want.NeedCommaOrEnd; }
   }
 
-  fn open(self &mut,kind u8) bool {
+  fn open(self: &mut,kind: u8) bool {
     if self.stack.len() >= self.maxDepth {
       var m = String.from("the text is nested deeper than ");
       m.appendUInt(u64.from(self.maxDepth));
@@ -132,7 +132,7 @@ pub struct Reader['a] {
     true
   }
 
-  fn step(self &mut) Event {
+  fn step(self: &mut) Event {
     self.skipSpace();
     let n = self.src.len;
     self.tokenStart = self.pos;
@@ -277,7 +277,7 @@ pub struct Reader['a] {
   }
 
   // At a number's first byte: its text into buf, past it
-  fn readNumber(self &mut) bool {
+  fn readNumber(self: &mut) bool {
     let s = scanNumber(self.src, self.pos);
     if s.problem != numOk {
       if s.problem == numNoDigits { self.fail(ErrorKind.BadNumber, s.end, "a number needs a digit here"); }
@@ -294,7 +294,7 @@ pub struct Reader['a] {
 
   // At a string's opening quote: its text, escapes decoded, into buf, past
   // the closing quote
-  fn readString(self &mut) bool {
+  fn readString(self: &mut) bool {
     let n = self.src.len;
     let opened = self.pos;
     self.buf.clear();
@@ -342,7 +342,7 @@ pub struct Reader['a] {
   }
 
   // At a '\' inside a string: the character it names, appended to buf
-  fn readEscape(self &mut) bool {
+  fn readEscape(self: &mut) bool {
     let n = self.src.len;
     let at = self.pos;
     if at + 1usize >= n {
@@ -396,12 +396,12 @@ pub struct Reader['a] {
 
 // A Reader over text, standard options. A leading UTF-8 byte-order mark is
 // passed over.
-pub fn reader(text &'a Array[u8]) Reader['a] {
+pub fn reader(text: &'a Array[u8]) Reader['a] {
   let opts = Options.standard();
   readerWith(text, &opts)
 }
 
-pub fn readerWith(text &'a Array[u8], opts &'b Options) Reader['a] {
+pub fn readerWith(text: &'a Array[u8], opts: &'b Options) Reader['a] {
   var start = 0usize;
   if text.len >= 3usize && text[0usize] == 0xEFu8 && text[1usize] == 0xBBu8 && text[2usize] == 0xBFu8 {
     start = 3usize;
@@ -412,11 +412,11 @@ pub fn readerWith(text &'a Array[u8], opts &'b Options) Reader['a] {
 // -------- helpers --------
 
 // Whether text holds want at pos
-fn startsAt(text &Array[u8], pos usize, want &Array[u8]) bool {
+fn startsAt(text: &Array[u8], pos: usize, want: &Array[u8]) bool {
   pos + want.len <= text.len && &text[pos..<pos + want.len] == want
 }
 
-fn hexValue(c u8) u32 {
+fn hexValue(c: u8) u32 {
   if isDigit(c) { return u32.from(c - '0'); }
   if c >= 'a' && c <= 'f' { return u32.from(c - 'a') + 10u32; }
   if c >= 'A' && c <= 'F' { return u32.from(c - 'A') + 10u32; }
@@ -424,7 +424,7 @@ fn hexValue(c u8) u32 {
 }
 
 // The four hex digits at pos, or a value past 0xFFFF when they are not four
-fn hex4(t &Array[u8], pos usize) u32 {
+fn hex4(t: &Array[u8], pos: usize) u32 {
   if pos + 4usize > t.len { return 0x10000u32; }
   var v = 0u32;
   var i = 0usize;
@@ -440,7 +440,7 @@ fn hex4(t &Array[u8], pos usize) u32 {
 // The length (1 to 4) of the well-formed UTF-8 character at pos, or 0 when
 // the bytes there are not one: no overlong form, no surrogate, nothing beyond
 // U+10FFFF, no cut-off character
-fn utf8Length(t &Array[u8], pos usize) usize {
+fn utf8Length(t: &Array[u8], pos: usize) usize {
   let b = t[pos];
   if b < 0x80u8 { return 1usize; }
   var more = 0usize;
@@ -463,7 +463,7 @@ fn utf8Length(t &Array[u8], pos usize) usize {
 }
 
 // A character, appended in UTF-8
-fn appendUtf8(s &mut String, cp u32) {
+fn appendUtf8(s: &mut String, cp: u32) {
   if cp < 0x80u32 {
     s.appendByte(u8.from(cp));
   }
@@ -485,7 +485,7 @@ fn appendUtf8(s &mut String, cp u32) {
 }
 
 // The line (from 1) of the byte at offset, a line ending at '\n'
-fn lineOf(t &Array[u8], offset usize) u32 {
+fn lineOf(t: &Array[u8], offset: usize) u32 {
   var line = 1u32;
   var i = 0usize;
   while i < offset && i < t.len {
@@ -496,7 +496,7 @@ fn lineOf(t &Array[u8], offset usize) u32 {
 }
 
 // The column (from 1, in bytes) of the byte at offset
-fn columnOf(t &Array[u8], offset usize) u32 {
+fn columnOf(t: &Array[u8], offset: usize) u32 {
   var col = 1u32;
   var i = 0usize;
   while i < offset && i < t.len {
@@ -506,6 +506,6 @@ fn columnOf(t &Array[u8], offset usize) u32 {
   col
 }
 
-fn errorAt(t &Array[u8], offset usize, kind ErrorKind, reason &str) JsonError {
+fn errorAt(t: &Array[u8], offset: usize, kind: ErrorKind, reason: &str) JsonError {
   new JsonError(kind, offset, lineOf(t, offset), columnOf(t, offset), String.from(reason))
 }

@@ -1,15 +1,15 @@
 // ======== Loading: JSON structure into a Gltf ========
 
-fn jnum(ld &Ld, arr u32, i usize, fallback f32) f32 { f32.from(ld.json.num(ld.json.at(arr, i), f64.from(fallback))) }
+fn jnum(ld: &Ld, arr: u32, i: usize, fallback: f32) f32 { f32.from(ld.json.num(ld.json.at(arr, i), f64.from(fallback))) }
 
-fn colorOf(ld &Ld, arr u32, fallback Color) Color {
+fn colorOf(ld: &Ld, arr: u32, fallback: Color) Color {
   if ld.json.len(arr) < 3usize { return fallback; }
   new Color(jnum(ld, arr, 0usize, 1.), jnum(ld, arr, 1usize, 1.), jnum(ld, arr, 2usize, 1.),
     if ld.json.len(arr) >= 4usize {jnum(ld, arr, 3usize, 1.)} else {1.})
 }
 
 // A TextureInfo object: texture index, uv set, and KHR_texture_transform
-fn textureRef(ld &mut Ld, info u32) TextureRef {
+fn textureRef(ld: &mut Ld, info: u32) TextureRef {
   var t = TextureRef.none();
   if info == NoNode { return t; }
   let idx = ld.json.getInt(info, "index", -1i64);
@@ -34,7 +34,7 @@ fn textureRef(ld &mut Ld, info u32) TextureRef {
   t
 }
 
-fn loadMaterial(ld &mut Ld, m u32) GltfMaterial {
+fn loadMaterial(ld: &mut Ld, m: u32) GltfMaterial {
   var out = GltfMaterial.standard();
   out.name = ld.json.getStr(m, "name", "");
   let pbr = ld.json.get(m, "pbrMetallicRoughness");
@@ -76,7 +76,7 @@ fn loadMaterial(ld &mut Ld, m u32) GltfMaterial {
   out
 }
 
-fn loadTexture(ld &mut Ld, t u32) GltfTexture {
+fn loadTexture(ld: &mut Ld, t: u32) GltfTexture {
   var src = ld.json.getInt(t, "source", -1i64);
   // The basisu and webp extensions name another source: use the plain one if
   // the file gives it, which a conforming file does as a fallback
@@ -92,7 +92,7 @@ fn loadTexture(ld &mut Ld, t u32) GltfTexture {
   new GltfTexture(i32.from(src), i32.from(ld.json.getInt(t, "sampler", -1i64)))
 }
 
-fn loadImage(ld &mut Ld, im u32, index usize) GltfImage {
+fn loadImage(ld: &mut Ld, im: u32, index: usize) GltfImage {
   var out = new GltfImage(ld.json.getStr(im, "name", ""), ld.json.getStr(im, "uri", ""), ld.json.getStr(im, "mimeType", ""),
     Raster.empty(), String.empty());
   var bytes = List[u8].empty();
@@ -138,7 +138,7 @@ fn loadImage(ld &mut Ld, im u32, index usize) GltfImage {
 
 // ---- nodes ----
 
-fn normQuat(q Quat) Quat {
+fn normQuat(q: Quat) Quat {
   let l = (q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w).sqrt();
   if l < 0.0000001 { return Quat.identity(); }
   new Quat(q.x / l, q.y / l, q.z / l, q.w / l)
@@ -147,7 +147,7 @@ fn normQuat(q Quat) Quat {
 // A matrix as translation, rotation and scale: the columns' lengths are the
 // scale (negative on x when the matrix mirrors), the rest a rotation. A matrix
 // with shear is approximated.
-fn decomposeMat4(m Mat4) Transform3 {
+fn decomposeMat4(m: Mat4) Transform3 {
   let t = new Vec3(m.m[12], m.m[13], m.m[14]);
   var sx = new Vec3(m.m[0], m.m[1], m.m[2]).length();
   let sy = new Vec3(m.m[4], m.m[5], m.m[6]).length();
@@ -185,7 +185,7 @@ fn decomposeMat4(m Mat4) Transform3 {
   new Transform3(t, normQuat(q), new Vec3(sx, sy, sz))
 }
 
-fn loadNode(ld &mut Ld, n u32) GltfNode {
+fn loadNode(ld: &mut Ld, n: u32) GltfNode {
   var out = new GltfNode(ld.json.getStr(n, "name", ""), List[u32].empty(), -1, i32.from(ld.json.getInt(n, "mesh", -1i64)),
     i32.from(ld.json.getInt(n, "skin", -1i64)), i32.from(ld.json.getInt(n, "camera", -1i64)), -1, Transform3.identity(),
     Mat4.identity(), false, List[f32].empty());
@@ -225,7 +225,7 @@ fn loadNode(ld &mut Ld, n u32) GltfNode {
 }
 
 // Every node has one parent at most and no node is its own ancestor
-fn linkNodes(ld &mut Ld) {
+fn linkNodes(ld: &mut Ld) {
   let n = ld.gltf.nodes.len();
   var i = 0usize;
   while i < n {
@@ -255,7 +255,7 @@ fn linkNodes(ld &mut Ld) {
 
 // ---- meshes ----
 
-fn getVec3s(ld &mut Ld, ai usize, count usize, out &mut List[Vec3], what &str) bool {
+fn getVec3s(ld: &mut Ld, ai: usize, count: usize, out: &mut List[Vec3], what: &str) bool {
   var f = List[f32].empty();
   var per = 0usize;
   if !readFloats(ld, ai, &mut f, &mut per) { return false; }
@@ -266,7 +266,7 @@ fn getVec3s(ld &mut Ld, ai usize, count usize, out &mut List[Vec3], what &str) b
   true
 }
 
-fn loadPrimitive(ld &mut Ld, p u32, prim &mut GltfPrimitive, meshIndex usize) bool {
+fn loadPrimitive(ld: &mut Ld, p: u32, prim: &mut GltfPrimitive, meshIndex: usize) bool {
   let mode = ld.json.getInt(p, "mode", 4i64);
   if mode < 4i64 {
     var w = String.from("mesh ");
@@ -444,7 +444,7 @@ fn loadPrimitive(ld &mut Ld, p u32, prim &mut GltfPrimitive, meshIndex usize) bo
   true
 }
 
-fn loadMesh(ld &mut Ld, m u32, index usize) GltfMesh {
+fn loadMesh(ld: &mut Ld, m: u32, index: usize) GltfMesh {
   var out = new GltfMesh(ld.json.getStr(m, "name", ""), List[GltfPrimitive].empty(), List[f32].empty());
   let prims = ld.json.get(m, "primitives");
   let w = ld.json.get(m, "weights");
@@ -462,7 +462,7 @@ fn loadMesh(ld &mut Ld, m u32, index usize) GltfMesh {
 
 // ---- skins, animations, cameras, lights ----
 
-fn loadSkin(ld &mut Ld, s u32) GltfSkin {
+fn loadSkin(ld: &mut Ld, s: u32) GltfSkin {
   var out = new GltfSkin(ld.json.getStr(s, "name", ""), List[u32].empty(), List[Mat4].empty(),
     i32.from(ld.json.getInt(s, "skeleton", -1i64)));
   let j = ld.json.get(s, "joints");
@@ -497,7 +497,7 @@ fn loadSkin(ld &mut Ld, s u32) GltfSkin {
   out
 }
 
-fn loadAnimation(ld &mut Ld, a u32) GltfAnimation {
+fn loadAnimation(ld: &mut Ld, a: u32) GltfAnimation {
   var out = new GltfAnimation(ld.json.getStr(a, "name", ""), List[AnimSampler].empty(), List[GltfChannel].empty(), 0.);
   let sams = ld.json.get(a, "samplers");
   var i = 0usize;
@@ -571,7 +571,7 @@ fn loadAnimation(ld &mut Ld, a u32) GltfAnimation {
   out
 }
 
-fn loadCamera(ld &mut Ld, c u32) GltfCamera {
+fn loadCamera(ld: &mut Ld, c: u32) GltfCamera {
   let kind = ld.json.getStr(c, "type", "perspective");
   let per = ld.json.get(c, "perspective");
   let ort = ld.json.get(c, "orthographic");
@@ -584,7 +584,7 @@ fn loadCamera(ld &mut Ld, c u32) GltfCamera {
     f32.from(ld.json.getNum(per, "zfar", 0.)))
 }
 
-fn loadLight(ld &mut Ld, l u32) GltfLight {
+fn loadLight(ld: &mut Ld, l: u32) GltfLight {
   let t = ld.json.getStr(l, "type", "point");
   let spot = ld.json.get(l, "spot");
   new GltfLight(ld.json.getStr(l, "name", ""), if t.view() == "directional" {0u32} elif t.view() == "spot" {2u32} else {1u32},
@@ -594,7 +594,7 @@ fn loadLight(ld &mut Ld, l u32) GltfLight {
 }
 
 // The extensions this loader understands, and the ones it refuses by name
-fn checkExtensions(ld &mut Ld) {
+fn checkExtensions(ld: &mut Ld) {
   let req = ld.json.get(ld.root, "extensionsRequired");
   let used = ld.json.get(ld.root, "extensionsUsed");
   var i = 0usize;
@@ -626,7 +626,7 @@ fn checkExtensions(ld &mut Ld) {
 
 // Load a parsed document. 'glbBin' is a GLB file's binary chunk (empty if
 // none).
-fn loadDocument(ld &mut Ld, glbBin &Array[u8], hasBin bool) {
+fn loadDocument(ld: &mut Ld, glbBin: &Array[u8], hasBin: bool) {
   let asset = ld.json.get(ld.root, "asset");
   let ver = ld.json.getStr(asset, "version", "");
   if ver.view() != "2.0" && !ver.view().startsWith("2.") {
@@ -791,7 +791,7 @@ fn loadDocument(ld &mut Ld, glbBin &Array[u8], hasBin bool) {
 
 // ======== The entry points ========
 
-fn loadFail(why &str) Result[Gltf, GltfError] {
+fn loadFail(why: &str) Result[Gltf, GltfError] {
   Error[Gltf, GltfError](new GltfError(String.from(why)))
 }
 
@@ -801,16 +801,16 @@ fn loadFail(why &str) Result[Gltf, GltfError] {
 // one is then a failure (a data: uri and a .glb's own chunks need none).
 // 'decodeImages' false leaves every image's Raster empty (the bytes are not
 // kept either; the uri says where they came from).
-pub fn loadGltfBytesIn(data &Array[u8], baseDir &Path, decodeImages bool) Result[Gltf, GltfError] {
+pub fn loadGltfBytesIn(data: &Array[u8], baseDir: &Path, decodeImages: bool) Result[Gltf, GltfError] {
   loadCore(data, baseDir, true, decodeImages)
 }
 
 // The same with no folder: a file that names an external file fails.
-pub fn loadGltfBytes(data &Array[u8], decodeImages bool) Result[Gltf, GltfError] {
+pub fn loadGltfBytes(data: &Array[u8], decodeImages: bool) Result[Gltf, GltfError] {
   loadCore(data, &Path.from(""), false, decodeImages)
 }
 
-fn loadCore(data &Array[u8], baseDir &Path, canRead bool, decodeImages bool) Result[Gltf, GltfError] {
+fn loadCore(data: &Array[u8], baseDir: &Path, canRead: bool, decodeImages: bool) Result[Gltf, GltfError] {
   var jsonBytes = List[u8].empty();
   var bin = List[u8].empty();
   var hasBin = false;
@@ -863,7 +863,7 @@ fn loadCore(data &Array[u8], baseDir &Path, canRead bool, decodeImages bool) Res
 }
 
 // Load a .gltf or .glb file; external files are read from its folder.
-pub fn loadGltf(path &Path, decodeImages bool) Result[Gltf, GltfError] {
+pub fn loadGltf(path: &Path, decodeImages: bool) Result[Gltf, GltfError] {
   match fs.readFile(path) {
     case var ok Ok {
       var s = String.empty();

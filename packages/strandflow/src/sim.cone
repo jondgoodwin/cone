@@ -2,25 +2,25 @@
 
 // Air or water: plain data
 pub struct Medium {
-  pub flow WindField;       // the mean flow, its gusts and its swirl
-  pub surge Vec3;           // an oscillating flow added to it, metres a second at its peak (waves)
-  pub surgeHz f32;
-  pub surgeWavelength f32;  // metres along the surge's direction; 0: all of space surges together
-  pub density f32;          // kg/m3
-  pub gravity Vec3;
+  pub flow: WindField;       // the mean flow, its gusts and its swirl
+  pub surge: Vec3;           // an oscillating flow added to it, metres a second at its peak (waves)
+  pub surgeHz: f32;
+  pub surgeWavelength: f32;  // metres along the surge's direction; 0: all of space surges together
+  pub density: f32;          // kg/m3
+  pub gravity: Vec3;
 
   // Air with a wind
-  pub fn air(wind WindField) Medium {
+  pub fn air(wind: WindField) Medium {
     new Medium(wind, new Vec3(0., 0., 0.), 0., 0., 1.2, new Vec3(0., -9.81, 0.))
   }
 
   // Water with a current and a surge
-  pub fn water(current WindField, surge Vec3, hz f32, wavelength f32) Medium {
+  pub fn water(current: WindField, surge: Vec3, hz: f32, wavelength: f32) Medium {
     new Medium(current, surge, hz, wavelength, 1000., new Vec3(0., -9.81, 0.))
   }
 
   // The fluid's velocity at a place and a time
-  pub fn velocityAt(self &, p Vec3, t f32) Vec3 {
+  pub fn velocityAt(self: &, p: Vec3, t: f32) Vec3 {
     var v = flow.velocityAt(p, t);
     if surge.lengthSquared() > 0. {
       let dir = surge.normalize();
@@ -33,42 +33,42 @@ pub struct Medium {
 
 // A strand in its group
 pub struct Strand {
-  pub first usize;        // its first particle (the ghost) in the group's body
-  pub count usize;        // particles, the ghost and the root among them
-  pub normal Vec3;        // the way a card faces at the root, in the group's frame
-  pub seed u32;
-  pub widthScale f32;     // this strand's width over the style's
+  pub first: usize;        // its first particle (the ghost) in the group's body
+  pub count: usize;        // particles, the ghost and the root among them
+  pub normal: Vec3;        // the way a card faces at the root, in the group's frame
+  pub seed: u32;
+  pub widthScale: f32;     // this strand's width over the style's
 }
 
 // The strands of one style that ride one frame
 pub struct Group {
-  pub frame Transform3;         // the frame now; the program sets it
-  pub style StrandStyle;
-  pub body SoftBody;
-  pub goalLocal List[Vec3];     // for each particle: where it is in the frame in the styled shape
-  pub goalK List[f32];          // and the style spring there
-  pub strands List[Strand];
+  pub frame: Transform3;         // the frame now; the program sets it
+  pub style: StrandStyle;
+  pub body: SoftBody;
+  pub goalLocal: List[Vec3];     // for each particle: where it is in the frame in the styled shape
+  pub goalK: List[f32];          // and the style spring there
+  pub strands: List[Strand];
 }
 
-fn lerpTransform(a &Transform3, b &Transform3, t f32) Transform3 {
+fn lerpTransform(a: &Transform3, b: &Transform3, t: f32) Transform3 {
   new Transform3(a.translation.lerp(b.translation, t), a.rotation.slerp(b.rotation, t).normalize(), new Vec3(1., 1., 1.))
 }
 
 pub struct StrandSim {
-  pub groups List[Group];
-  pub medium Medium;
-  pub time f32;
-  pub workers Workers;
-  pub gridSize u32 = 4u32;
+  pub groups: List[Group];
+  pub medium: Medium;
+  pub time: f32;
+  pub workers: Workers;
+  pub gridSize: u32 = 4u32;
 
-  pub fn make(medium Medium, threads u32) StrandSim {
+  pub fn make(medium: Medium, threads: u32) StrandSim {
     new StrandSim(List[Group].empty(), medium, 0., Workers.make(threads))
   }
 
-  pub fn stop(self &mut) { workers.stop(); }
+  pub fn stop(self: &mut) { workers.stop(); }
 
   // A group of strands of 'style' riding 'frame'; its number
-  pub fn addGroup(self &mut, frame Transform3, style StrandStyle) usize {
+  pub fn addGroup(self: &mut, frame: Transform3, style: StrandStyle) usize {
     var body = SoftBody.empty();
     body.frameFrom = frame;
     body.frameTo = frame;
@@ -86,16 +86,16 @@ pub struct StrandSim {
     groups.len() - 1usize
   }
 
-  pub fn groupCount(self &) usize { groups.len() }
+  pub fn groupCount(self: &) usize { groups.len() }
 
-  pub fn strandCount(self &) usize {
+  pub fn strandCount(self: &) usize {
     var n = 0usize;
     var g = 0usize;
     while g < groups.len() { n = n + groups[g].strands.len(); g = g + 1usize; }
     n
   }
 
-  pub fn particleCount(self &) usize {
+  pub fn particleCount(self: &) usize {
     var n = 0usize;
     var g = 0usize;
     while g < groups.len() { n = n + groups[g].body.pos.len(); g = g + 1usize; }
@@ -103,7 +103,7 @@ pub struct StrandSim {
   }
 
   // Grow strands from roots (each names its group). The strands start in their styled shape, at rest.
-  pub fn addStrands(self &mut, roots &List[StrandRoot]) {
+  pub fn addStrands(self: &mut, roots: &List[StrandRoot]) {
     var i = 0usize;
     while i < roots.len() {
       self.addStrand(roots[i]);
@@ -121,7 +121,7 @@ pub struct StrandSim {
     }
   }
 
-  fn addStrand(self &mut, root &StrandRoot) {
+  fn addStrand(self: &mut, root: &StrandRoot) {
     let g = root.group;
     let style = groups[g].style;
     let frame = groups[g].frame;
@@ -156,10 +156,10 @@ pub struct StrandSim {
     groups[g].strands.push(new Strand(base, count, root.normal, root.seed, 1. + 0.18 * r.signed()));
   }
 
-  pub fn setFrame(self &mut, g usize, frame Transform3) { groups[g].frame = frame; }
+  pub fn setFrame(self: &mut, g: usize, frame: Transform3) { groups[g].frame = frame; }
 
   // The shapes group 'g''s strands are pushed out of, in the world
-  pub fn setColliders(self &mut, g usize, shapes &List[Collider]) {
+  pub fn setColliders(self: &mut, g: usize, shapes: &List[Collider]) {
     let b = &mut groups[g].body;
     b.colliders.clear();
     var i = 0usize;
@@ -167,12 +167,12 @@ pub struct StrandSim {
   }
 
   // The position of particle 'j' of strand 'k' of group 'g' (0: the ghost, 1: the root)
-  pub fn particle(self &, g usize, k usize, j usize) Vec3 {
+  pub fn particle(self: &, g: usize, k: usize, j: usize) Vec3 {
     *groups[g].body.pos[groups[g].strands[k].first + j]
   }
 
   // Advance 'dt' seconds
-  pub fn step(self &mut, dt f32) {
+  pub fn step(self: &mut, dt: f32) {
     var g = 0usize;
     while g < groups.len() {
       self.stepGroup(g, dt);
@@ -181,7 +181,7 @@ pub struct StrandSim {
     time = time + dt;
   }
 
-  fn fillFlow(self &mut, g usize) {
+  fn fillFlow(self: &mut, g: usize) {
     let b = &mut groups[g].body;
     let box = b.bounds();
     let lo = box.0 - new Vec3(0.05, 0.05, 0.05);
@@ -209,7 +209,7 @@ pub struct StrandSim {
     }
   }
 
-  fn stepGroup(self &mut, g usize, dt f32) {
+  fn stepGroup(self: &mut, g: usize, dt: f32) {
     if groups[g].strands.len() == 0usize { return; }
     self.fillFlow(g);
     // The substep is the solver's own unit and its result depends on it, so it is held: 'substeps' is the number in a sixtieth of a
@@ -233,7 +233,7 @@ pub struct StrandSim {
   // pushes it back on itself (alternate links absorb the error: 14 per cent at 4 m/s); this pass takes the error out exactly
   // and in order, which a pass of the solver cannot do along a chain. The position change is not given to the velocity (the
   // solver has made it already), so it only removes error and puts no energy in.
-  fn followTheLeader(self &mut, g usize) {
+  fn followTheLeader(self: &mut, g: usize) {
     let b = &mut groups[g].body;
     var s = 0usize;
     while s < groups[g].strands.len() {
@@ -253,7 +253,7 @@ pub struct StrandSim {
   }
 
   // After each substep: the fluid's drag on every free particle, and the style spring (impulses on the velocities)
-  fn relax(self &mut, g usize) {
+  fn relax(self: &mut, g: usize) {
     let b = &mut groups[g].body;
     let style = groups[g].style;
     let h = b.substepSeconds();

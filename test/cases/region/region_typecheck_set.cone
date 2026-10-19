@@ -12,45 +12,45 @@ mod region_typecheck_set;
 // value never dies by count -- it waits for a collector to free it, as a region
 // with no 'free' never gives memory back
 struct CountsUp is RegionRef {
-  cnt usize;
-  fn alloc(size usize) *u8 inline { malloc(size) }
-  fn aliasRef(self &uni CountsUp) inline { cnt = cnt + 1usize; }
+  cnt: usize;
+  fn alloc(size: usize) *u8 inline { malloc(size) }
+  fn aliasRef(self: &uni CountsUp) inline { cnt = cnt + 1usize; }
 }
 
 // No 'aliasRef', and 'Move': a single owner, whose going still asks 'dealiasRef'
 struct CountsDown is RegionRef, Move {
-  cnt usize;
-  fn alloc(size usize) *u8 inline { malloc(size) }
-  fn dealiasRef(self &uni CountsDown) bool inline { true }
+  cnt: usize;
+  fn alloc(size: usize) *u8 inline { malloc(size) }
+  fn dealiasRef(self: &uni CountsDown) bool inline { true }
 }
 
 // No 'alloc': nothing allocates from it, so its 'init' is never called
 struct InitOnly is RegionRef {
-  cnt usize;
-  fn init(self &new) inline { *self = new InitOnly(1usize); }
+  cnt: usize;
+  fn init(self: &new) inline { *self = new InitOnly(1usize); }
 }
 
 // Neither 'aliasRef' nor 'Move' nor 'dealiasRef': copies are free and an owner's
 // going does nothing, which is a collector's shape
 struct SharesFreely is RegionRef {
-  fn alloc(size usize) *u8 inline { malloc(size) }
+  fn alloc(size: usize) *u8 inline { malloc(size) }
 }
 
 // 'Move' with no 'aliasRef': one owner per value
 struct MovesAlready is RegionRef, Move {
-  fn alloc(size usize) *u8 inline { malloc(size) }
+  fn alloc(size: usize) *u8 inline { malloc(size) }
 }
 
 // 'Move' with an 'aliasRef' contradicts itself, in either order
 struct MovesAndCounts is RegionRef, Move {                            //~ ErrorRegionSet "is Move, one owner per value, but declares aliasRef"
-  cnt usize;
-  fn alloc(size usize) *u8 inline { malloc(size) }
-  fn aliasRef(self &uni MovesAndCounts) inline { cnt = cnt + 1usize; }
-  fn dealiasRef(self &uni MovesAndCounts) bool inline { cnt = cnt - 1usize; cnt == 0usize }
+  cnt: usize;
+  fn alloc(size: usize) *u8 inline { malloc(size) }
+  fn aliasRef(self: &uni MovesAndCounts) inline { cnt = cnt + 1usize; }
+  fn dealiasRef(self: &uni MovesAndCounts) bool inline { cnt = cnt - 1usize; cnt == 0usize }
 }
 
 struct CountsAndMoves is Move, RegionRef {                            //~ ErrorRegionSet "is Move, one owner per value, but declares aliasRef"
-  cnt usize;
-  fn alloc(size usize) *u8 inline { malloc(size) }
-  fn aliasRef(self &uni CountsAndMoves) inline { cnt = cnt + 1usize; }
+  cnt: usize;
+  fn alloc(size: usize) *u8 inline { malloc(size) }
+  fn aliasRef(self: &uni CountsAndMoves) inline { cnt = cnt + 1usize; }
 }

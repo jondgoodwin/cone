@@ -152,16 +152,28 @@ VarDclNode *parseVarDcl(ParseState *parse, PermNode *defperm, uint16_t flags) {
     }
     char *nameendp = lex->prevend;
 
-    // Get value type, if provided
+    // Get value type, if provided: a ':' and the type
     char *typep = lex->tokp;
     // A local may be bound by a pattern a function runs, 'let rest using prefix("GET ") = line': the
     // call stands where the type does, and becomes the value once the matched value after '=' is known
     FnCallNode *usingcall = NULL;
     parse->usingdcl = 0;
+    int letelsetype = 0, colontype = 0;
     if ((flags & ParseMayUsing) && lexIsToken(UsingToken))
         usingcall = parseUsingCall(parse);
-    else
+    else if (lexIsToken(ColonToken)) {
+        lexNextToken();
+        typep = lex->tokp;
+        varnode->vtype = parseTypeReq(parse, "':'");
+        colontype = 1;
+    }
+    // A local bound by a variant it leaves unless it matches, 'let n Ok = r else {...};', names the
+    // variant where a type would be, and writes no ':'. Any other local that does so is refused where
+    // its statement ends without the 'else'
+    else if ((flags & ParseMayUsing) && parseIsTypeStart()) {
         varnode->vtype = parseType(parse);
+        letelsetype = 1;
+    }
     int typed = varnode->vtype != unknownType;
     char *typeendp = lex->prevend;
 
@@ -221,6 +233,8 @@ VarDclNode *parseVarDcl(ParseState *parse, PermNode *defperm, uint16_t flags) {
     parse->typed = typed;
     parse->typep = typed ? typep : NULL;
     parse->typeendp = typed ? typeendp : NULL;
+    parse->letelsetype = letelsetype;
+    parse->colontype = colontype;
     return varnode;
 }
 
@@ -238,7 +252,10 @@ ConstDclNode *parseConstDcl(ParseState *parse) {
     lexNextToken();
 
     // Get value type, if provided
-    constnode->vtype = parseType(parse);
+    if (lexIsToken(ColonToken)) {
+        lexNextToken();
+        constnode->vtype = parseTypeReq(parse, "':'");
+    }
 
     // Get initialization value after '=', if provided
     if (lexIsToken(AssgnToken)) {
@@ -282,9 +299,9 @@ INode *parseTypeName(ParseState *parse) {
 // Is the lexer on 'tag', where a field's type is written?
 //
 // 'tag' is recognized here and nowhere else, so it is not a reserved word and
-// 'pub tag i32' still declares a field named 'tag'. What it names is the
+// 'pub tag: i32' still declares a field named 'tag'. What it names is the
 // discriminant type an enum synthesizes for itself; an author writes it, as
-// '_ tag', only to place that field somewhere other than position 0, which is
+// '_: tag', only to place that field somewhere other than position 0, which is
 // done for alignment.
 static int parseIsTagType() {
     return lexIsToken(IdentToken) && lex->val.ident == tagName;
@@ -527,10 +544,14 @@ static FieldDclNode *parseFieldDclBody(ParseState *parse, FieldDclNode *fldnode,
     StructNode *svlifestruct = parse->lifestruct;
     parse->lifestruct = lifeowner;
     char *typep = lex->tokp;
-    if (parseIsTagType())
-        fldnode->vtype = parseTagType(parse);
-    else if ((vtype = parseType(parse)))
-        fldnode->vtype = vtype;
+    if (lexIsToken(ColonToken)) {
+        lexNextToken();
+        typep = lex->tokp;
+        if (parseIsTagType())
+            fldnode->vtype = parseTagType(parse);
+        else if ((vtype = parseTypeReq(parse, "':'")))
+            fldnode->vtype = vtype;
+    }
     parse->lifestruct = svlifestruct;
     char *typeendp = lex->prevend;
 
@@ -566,9 +587,9 @@ static int parseNamesType(INode *named, StructNode *type) {
     return named->tag == NameUseTag && ((NameUseNode*)named)->namesym == type->namesym;
 }
 
-// Does this method's receiver, as written, name the enum: 'self &Lamp', '&mut Lamp'
+// Does this method's receiver, as written, name the enum: 'self: &Lamp', '&mut Lamp'
 // or by value 'self Lamp'? Such a method is one function over the whole enum
-// (structIsWholeEnumMethod), where 'self &' and 'self &Self' are the variant's.
+// (structIsWholeEnumMethod), where 'self: &' and 'self: &Self' are the variant's.
 static int parseNamesEnumReceiver(FnDclNode *fn, StructNode *enumnode) {
     if (fn->vtype == NULL || fn->vtype->tag != FnSigTag)
         return 0;
@@ -732,28 +753,6 @@ static void parseVariantTagPin(StructNode *substruct) {
     lexNextToken();
 }
 
-// With the lexer on the '(' after a name in an enum's body: does the
-// parenthesized text hold a comma at its top level? 'Ok(i32);' does not, and is
-// a variant declared as a type; 't (A, B);' does, and is a common field whose
-// type is a tuple, as it has always been. Read from the source text, because
-// which of the two to build is settled before the type is.
-static int parseParenHoldsComma() {
-    int depth = 0;
-    for (char *p = lex->tokp; *p; ++p) {
-        if (*p == '(' || *p == '[' || *p == '{')
-            ++depth;
-        else if (*p == ')' || *p == ']' || *p == '}') {
-            if (--depth <= 0)
-                return 0;
-        }
-        else if (*p == ',' && depth == 1)
-            return 1;
-        else if (*p == ';')
-            return 0;
-    }
-    return 0;
-}
-
 // An enum with fields in common has a name for everything it holds, so no
 // variant of it is declared as a type, which has none ('Ok(i32);'). Reported at the
 // first such variant, naming the first common field.
@@ -914,8 +913,13 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
     // tag's width, so a pinned value too large for it is refused rather than
     // silently widening the tag.
     INode *underlying = NULL;
-    if (isenum && lexIsToken(IdentToken))
-        underlying = parseTypeName(parse);
+    if (isenum && lexIsToken(ColonToken)) {
+        lexNextToken();
+        if (lexIsToken(IdentToken))
+            underlying = parseTypeName(parse);
+        else
+            errorMsgLexAfter(ErrorNoType, "Expected a type after ':'");
+    }
 
     // 'is' asserts, in the type's own declaration, that it complies with one or
     // more abstractions. It is the only subtype relationship in Cone that is
@@ -1103,7 +1107,7 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
             // which is where their bodies are needed, so they have no one
             // definition elsewhere to name
             uint16_t externflag = 0;
-            // An enum's method whose receiver names the enum ('self &Lamp') is one
+            // An enum's method whose receiver names the enum ('self: &Lamp') is one
             // function over the whole enum, defined in one place, so an include file
             // may declare it 'extern'. Which receiver is written is known only once
             // the signature is parsed, where it is checked
@@ -1148,7 +1152,7 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
                 parseExternFnCheck(fn);
                 if (externenum && !parseNamesEnumReceiver(fn, strnode))
                     errorMsgNode((INode*)fn, ErrorBadExtern,
-                        "An enum's method is a requirement each variant meets, or a default copied into each, so it is defined in no one place for 'extern' to name, unless its receiver names the enum, as 'self &%s'.",
+                        "An enum's method is a requirement each variant meets, or a default copied into each, so it is defined in no one place for 'extern' to name, unless its receiver names the enum, as 'self: &%s'.",
                         &strnode->namesym->namestr);
                 // A function whose name was missing is reported and not added:
                 // the type's namespace binds names, and it has none
@@ -1276,10 +1280,9 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
                 // In an enum, a name and a type in parentheses, 'Ok(i32);', is a
                 // variant declared as a type: a variant that holds that type
                 // itself, with no name for it and no field to reach it by. A name
-                // and a type without parentheses is always a common field
-                // ('time datetime;'), and so is one whose parentheses are a tuple
-                // type ('t (A, B);').
-                if (isenum && !hadperm && lexIsToken(LParenToken) && !parseParenHoldsComma()) {
+                // and a type after a ':' is always a common field ('time:
+                // datetime;'), and so is one whose type is a tuple ('t: (A, B);').
+                if (isenum && !hadperm && lexIsToken(LParenToken)) {
                     lexNextToken();
                     strnode->flags |= HasTagField;
                     StructNode *substruct = newStructNode(field->namesym);
@@ -1453,7 +1456,7 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
 }
 
 // A method's parameter written without a type is Self, and so is what a
-// reference written without its pointee ('self &') points to. The inferred
+// reference written without its pointee ('self: &') points to. The inferred
 // name is placed where the lexer is, or, given 'at', there.
 static void parseParmInferSelf(ParseState *parse, VarDclNode *parm, INode *at) {
     if (!parse->typenode)
@@ -1474,7 +1477,7 @@ static void parseParmInferSelf(ParseState *parse, VarDclNode *parm, INode *at) {
 static int parseInFnBound = 0;
 
 // Parse a function signature written bare, with the lexer on its 'fn': what a
-// generic bound or a 'where' clause says a type parameter has, 'F fn(a &T, b &T) i32'.
+// generic bound or a 'where' clause says a type parameter has, 'F: fn(a: &T, b: &T) i32'.
 // It is read as the type after '&fn' is, a signature with no body, whose
 // parameters may be named or only typed. Inside the brackets or the clause a
 // comma after its return type ends the signature, as in a parameter list, and a
@@ -1512,7 +1515,7 @@ INode *parseFnBound(ParseState *parse) {
 // ('geomath.Vec3', 'List[i32]'). A lone name ('&fn(Vec3) f32') reads as a name
 // until parseFnSigSettle knows whether a body follows.
 //
-// Several return types are separated by commas, 'fn ceil(x i32) i32, i32',
+// Several return types are separated by commas, 'fn ceil(x: i32) i32, i32',
 // only where the signature is not inside a list (ParseState.inlist). Inside
 // one, a parameter list above all, the comma after a return type continues the
 // list: '(f &fn(u32) u32, x u32)' is two parameters.
@@ -1604,7 +1607,7 @@ INode *parseFnSig(ParseState *parse, int reftype) {
         fnsig->rettype = parseType(parse);
         gensig.ytypeend = lex->prevend;
         if (fnsig->rettype == unknownType) {
-            errorMsgLex(ErrorInvType, "Expected the type a generator yields after 'yields', as in 'fn walk(t &Tree) yields &Node'.");
+            errorMsgLex(ErrorInvType, "Expected the type a generator yields after 'yields', as in 'fn walk(t: &Tree) yields &Node'.");
             fnsig->rettype = (INode*)newVoidNode();
             inodeLexCopy(fnsig->rettype, (INode*)fnsig);
         }
@@ -1613,14 +1616,14 @@ INode *parseFnSig(ParseState *parse, int reftype) {
     }
     // (a generator's 'yields' type is no return type: the generator's body ends in a ';')
     // A '+' and a marker's name after the parameters of a function-reference type,
-    // '&<fn(x i32) + ShapeKeeping', joins the marker to the reference (parseRefBounds);
+    // '&<fn(x: i32) + ShapeKeeping', joins the marker to the reference (parseRefBounds);
     // it does not begin a return type
     else if (!(atbound && lexIsToken(PlusToken))
             && !(reftype && lexIsToken(PlusToken)
                 && (lexNextIsWord("Sendable") || lexNextIsWord("Shareable") || lexNextIsWord("ShapeKeeping")))
             && (fnsig->rettype = parseType(parse)) != unknownType) {
         fnsig->retwritten = 1;
-        // Handle multiple return types: 'fn ceil(x i32) i32, i32'. Inside a
+        // Handle multiple return types: 'fn ceil(x: i32) i32, i32'. Inside a
         // list -- a parameter list, a tuple, arguments -- the comma continues
         // the list instead, so a signature there returning several values
         // parenthesises them: 'apply(f &fn(u32) (u32, u32), x u32)'.

@@ -82,20 +82,20 @@
 // numbers give the same bits every run and in debug and release builds.
 
 // The band of exact distances, in cells
-const RemeshBand f64 = 1.5;
+const RemeshBand: f64 = 1.5;
 // The most samples a grid may have
 const RemeshMaxSamples = 268435456usize;
 
 // The mesh rebuilt as an even surface of quads 'voxelSize' across, its
 // channels carried from the nearest point (see above)
-pub fn voxelRemesh(m &PolyMesh, voxelSize f32, problems &mut List[String]) PolyMesh {
+pub fn voxelRemesh(m: &PolyMesh, voxelSize: f32, problems: &mut List[String]) PolyMesh {
   voxelRemeshWith(m, voxelSize, false, true, problems)
 }
 
 // The same, with 'preserveVolume' (each new vertex moved to the nearest point
 // of the input) and 'keepChannels' (the channels carried, or none) chosen
-pub fn voxelRemeshWith(m &PolyMesh, voxelSize f32, preserveVolume bool, keepChannels bool,
-    problems &mut List[String]) PolyMesh {
+pub fn voxelRemeshWith(m: &PolyMesh, voxelSize: f32, preserveVolume: bool, keepChannels: bool,
+    problems: &mut List[String]) PolyMesh {
   let empty = PolyMesh.empty();
   if !(voxelSize > 0.) || voxelSize > 3.4e38 {
     problems.push(String.from("the voxel size must be a positive number"));
@@ -197,7 +197,7 @@ pub fn voxelRemeshWith(m &PolyMesh, voxelSize f32, preserveVolume bool, keepChan
         c = c + 1usize;
       }
       samples.push(cs2);
-      var ignoredNames Array[&str, 1] = [""];
+      var ignoredNames: Array[&str, 1] = [""];
       var carried = List[String].empty();
       carryChannels(m, &mut out, &samples, false, &ignoredNames, 1., &mut carried);
     }
@@ -210,21 +210,21 @@ pub fn voxelRemeshWith(m &PolyMesh, voxelSize f32, preserveVolume bool, keepChan
 // The samples: (lo.x + cs x, lo.y + cs y, lo.z + cs z) for x below px, y
 // below py and z below pz, sample (x, y, z) number x + px (y + py z)
 struct RemeshGrid {
-  pub lo Vec3;
-  pub cs f32;
-  pub px usize;
-  pub py usize;
-  pub pz usize;
+  pub lo: Vec3;
+  pub cs: f32;
+  pub px: usize;
+  pub py: usize;
+  pub pz: usize;
 
   // A sample's coordinate along an axis, as the mesher computes it
-  fn coord(self &, axis u32, i usize) f32 {
+  fn coord(self: &, axis: u32, i: usize) f32 {
     if axis == 0u32 { lo.x + cs * f32.from(i) } elif axis == 1u32 { lo.y + cs * f32.from(i) } else { lo.z + cs * f32.from(i) }
   }
-  fn count(self &, axis u32) usize { if axis == 0u32 { px } elif axis == 1u32 { py } else { pz } }
+  fn count(self: &, axis: u32) usize { if axis == 0u32 { px } elif axis == 1u32 { py } else { pz } }
 
   // The sample number along an axis whose coordinate is c exactly, or
   // NoIndex if none is
-  fn exactIndex(self &, axis u32, c f32) u32 {
+  fn exactIndex(self: &, axis: u32, c: f32) u32 {
     let base = if axis == 0u32 { lo.x } elif axis == 1u32 { lo.y } else { lo.z };
     let f = libc.floorf((c - base) / cs + 0.5);
     if !(f >= 0.) || f >= f32.from(self.count(axis)) { return NoIndex; }
@@ -233,7 +233,7 @@ struct RemeshGrid {
   }
 
   // Whether every sample is found again by its coordinates
-  fn aligned(self &) bool {
+  fn aligned(self: &) bool {
     var axis = 0u32;
     while axis < 3u32 {
       var i = 0usize;
@@ -251,10 +251,10 @@ struct RemeshGrid {
 // elsewhere the trilinear blend of the eight samples round the point (held to
 // the grid)
 struct RemeshField['a] {
-  pub values &'a Array[f32];
-  pub grid RemeshGrid;
+  pub values: &'a Array[f32];
+  pub grid: RemeshGrid;
 
-  pub fn distance(self &, p Vec3) f32 {
+  pub fn distance(self: &, p: Vec3) f32 {
     let ix = grid.exactIndex(0u32, p.x);
     let iy = grid.exactIndex(1u32, p.y);
     let iz = grid.exactIndex(2u32, p.z);
@@ -283,20 +283,20 @@ struct RemeshField['a] {
   }
 }
 
-fn minUsize(a usize, b usize) usize { if a < b { a } else { b } }
+fn minUsize(a: usize, b: usize) usize { if a < b { a } else { b } }
 
-fn axisOf(v DVec3, axis u32) f64 { if axis == 0u32 { v.x } elif axis == 1u32 { v.y } else { v.z } }
+fn axisOf(v: DVec3, axis: u32) f64 { if axis == 0u32 { v.x } elif axis == 1u32 { v.y } else { v.z } }
 
 // The least sample number along an axis whose coordinate may be at least c,
 // and the greatest that may be at most c (each a step generous)
-fn indexAtOrAbove(g &RemeshGrid, axis u32, c f64) usize {
+fn indexAtOrAbove(g: &RemeshGrid, axis: u32, c: f64) usize {
   let base = f64.from(if axis == 0u32 { g.lo.x } elif axis == 1u32 { g.lo.y } else { g.lo.z });
   let f = libc.ceil((c - base) / f64.from(g.cs)) - 1.0;
   if !(f > 0.0) { return 0usize; }
   if f >= f64.from(g.count(axis)) { return g.count(axis); }
   usize.from(f)
 }
-fn indexAtOrBelow(g &RemeshGrid, axis u32, c f64) usize {
+fn indexAtOrBelow(g: &RemeshGrid, axis: u32, c: f64) usize {
   // one past the last, so a range is [above, below)
   let base = f64.from(if axis == 0u32 { g.lo.x } elif axis == 1u32 { g.lo.y } else { g.lo.z });
   let f = libc.floor((c - base) / f64.from(g.cs)) + 2.0;
@@ -309,7 +309,7 @@ fn indexAtOrBelow(g &RemeshGrid, axis u32, c f64) usize {
 
 // Every sample's distance to the surface, held to the band: the least of the
 // triangles near it
-fn bandDistances(t &TriMesh, g &RemeshGrid) List[f32] {
+fn bandDistances(t: &TriMesh, g: &RemeshGrid) List[f32] {
   let n = g.px * g.py * g.pz;
   let band = RemeshBand * f64.from(g.cs);
   let far = f32.from(band);
@@ -385,21 +385,21 @@ fn bandDistances(t &TriMesh, g &RemeshGrid) List[f32] {
 }
 
 // Coordinates along (a, a + 1, a + 2) back to (x, y, z)
-fn axisToXyz3(a u32, pa usize, pu usize, pv usize, x &mut usize, y &mut usize, z &mut usize) {
+fn axisToXyz3(a: u32, pa: usize, pu: usize, pv: usize, x: &mut usize, y: &mut usize, z: &mut usize) {
   if a == 0u32 { *x = pa; *y = pu; *z = pv; }
   elif a == 1u32 { *y = pa; *z = pu; *x = pv; }
   else { *z = pa; *x = pu; *y = pv; }
 }
 
 // The squared distance from p to the box from lo to hi
-fn boxDistance2(p DVec3, lo DVec3, hi DVec3) f64 {
+fn boxDistance2(p: DVec3, lo: DVec3, hi: DVec3) f64 {
   let dx = if p.x < lo.x { lo.x - p.x } elif p.x > hi.x { p.x - hi.x } else { 0.0 };
   let dy = if p.y < lo.y { lo.y - p.y } elif p.y > hi.y { p.y - hi.y } else { 0.0 };
   let dz = if p.z < lo.z { lo.z - p.z } elif p.z > hi.z { p.z - hi.z } else { 0.0 };
   dx * dx + dy * dy + dz * dz
 }
 
-fn crossD(a DVec3, b DVec3) DVec3 {
+fn crossD(a: DVec3, b: DVec3) DVec3 {
   new DVec3(a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x)
 }
 
@@ -407,7 +407,7 @@ fn crossD(a DVec3, b DVec3) DVec3 {
 // b, c in x, y, z): Ericson, "Real-Time Collision Detection" (2005), 5.1.5,
 // by the Voronoi regions of the corners, the sides and the face. A triangle
 // of no area is taken as its three sides
-fn nearestOnTriangle(p DVec3, a DVec3, b DVec3, c DVec3, wts &mut DVec3) {
+fn nearestOnTriangle(p: DVec3, a: DVec3, b: DVec3, c: DVec3, wts: &mut DVec3) {
   let ab = b - a;
   let ac = c - a;
   let ap = p - a;
@@ -464,7 +464,7 @@ fn nearestOnTriangle(p DVec3, a DVec3, b DVec3, c DVec3, wts &mut DVec3) {
 }
 
 // Where along the segment a b the point nearest p is, 0 to 1
-fn segmentParam(p DVec3, a DVec3, b DVec3) f64 {
+fn segmentParam(p: DVec3, a: DVec3, b: DVec3) f64 {
   let ab = b - a;
   let len2 = ab.lengthSquared();
   if len2 <= 0.0 { return 0.0; }
@@ -476,7 +476,7 @@ fn segmentParam(p DVec3, a DVec3, b DVec3) f64 {
 
 // Each sample inside the solid made negative (a distance of 0 there the
 // least negative number, so the mesher sees it inside), row by row along x
-fn signRows(t &TriMesh, bvh &Bvh, g &RemeshGrid, values &mut List[f32]) {
+fn signRows(t: &TriMesh, bvh: &Bvh, g: &RemeshGrid, values: &mut List[f32]) {
   var cands = List[u32].empty();
   var stack = List[u32].empty();
   var diff = List[i32].withCapacity(g.px + 1usize);
@@ -547,7 +547,7 @@ fn signRows(t &TriMesh, bvh &Bvh, g &RemeshGrid, values &mut List[f32]) {
 // ray's point is moved symbolically by (eps, eps^2) in (y, z), so a ray
 // through a side or a corner is decided as if just beside it, the same way
 // for both triangles that share the side
-fn rayCrosses(a DVec3, b DVec3, c DVec3, qy f64, qz f64) i32 {
+fn rayCrosses(a: DVec3, b: DVec3, c: DVec3, qy: f64, qz: f64) i32 {
   let s0 = side2(a, b, qy, qz);
   if s0 == 0i32 { return 0i32; }
   let s1 = side2(b, c, qy, qz);
@@ -560,7 +560,7 @@ fn rayCrosses(a DVec3, b DVec3, c DVec3, qy f64, qz f64) i32 {
 // The perturbed sign of the orientation of (a, b, q) in the (y, z) plane:
 // the exact sign, else its derivative along y (a.z - b.z), else along z
 // (b.y - a.y); 0 only for a side of no length in that plane
-fn side2(a DVec3, b DVec3, qy f64, qz f64) i32 {
+fn side2(a: DVec3, b: DVec3, qy: f64, qz: f64) i32 {
   let o = orient2dSign(a.y, a.z, b.y, b.z, qy, qz);
   if o != 0i32 { return o; }
   if a.z > b.z { return 1i32; }
@@ -572,7 +572,7 @@ fn side2(a DVec3, b DVec3, qy f64, qz f64) i32 {
 
 // Three values blended by barycentric weights, in f64 and rounded once, so
 // three equal values give that value exactly
-fn blend3(a f32, b f32, c f32, w DVec3) f32 {
+fn blend3(a: f32, b: f32, c: f32, w: DVec3) f32 {
   f32.from(f64.from(a) * w.x + f64.from(b) * w.y + f64.from(c) * w.z)
 }
 

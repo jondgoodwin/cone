@@ -188,8 +188,8 @@ holding the `f32` value widened, rather than wrapping it in a conversion node.
 The value is exactly what the conversion generated, so no position's value
 moves; what moves is that the result is still a literal, which the global,
 static, parameter-default and typed-constant rules ask for ([vardcl](vardcl.md)),
-so `let g f64 = 0.5` is accepted as it is in a function body. It is still the
-`f32` value: `let g f64 = 0.1f` holds `0.100000001490116…`, as a local, an
+so `let g: f64 = 0.5` is accepted as it is in a function body. It is still the
+`f32` value: `let g: f64 = 0.1f` holds `0.100000001490116…`, as a local, an
 argument, a return value and a field do. `typemgmt_success` pins the positions
 that require a literal, with values exact in `f32`, and pins that a global and a
 local given the same literal agree.
@@ -202,13 +202,13 @@ constant, `litWidenConst` follows the constant, and a constant whose value names
 another, to its literal and replaces the use with a literal of the wider type,
 leaving the constant's own literal for its other uses. An integer is
 sign-extended from a signed type and zero-extended from an unsigned one, as the
-conversion would, so `const B i8 = -128` reaches an `i64` as `-128` and
-`const U u8 = -1` a `u32` as `255`; a float goes through `litWidenFloat`. A
+conversion would, so `const B: i8 = -128` reaches an `i64` as `-128` and
+`const U: u8 = -1` a `u32` as `255`; a float goes through `litWidenFloat`. A
 widening holds every value of the narrower type, so nothing is range checked at
 the wider one. The one value not yet checked is an untyped integer's `i32`
 default, which generation checks (below): a constant whose value does not fit it
 is not folded, so its use keeps the conversion and generation still refuses it
-at the constant. Only widening folds: `const K = 300` then `let b u8 = K` is a
+at the constant. Only widening folds: `const K = 300` then `let b: u8 = K` is a
 type mismatch, as `i32` does not coerce to `u8`. `typemgmt_success` pins a
 global, a static, a parameter default and a typed constant initialized from a
 widened constant, with the edge values above.
@@ -250,8 +250,8 @@ zero; a float is computed as an `f64`, so it is rounded once to the `f32` a plac
 for; an integer beside a float is that number as a float, the kind of each subexpression
 deciding its own (`7 / 2 + 0.5` is `3.5`). A result that is no finite number, a division
 by zero or an overflow of 64 bits is not folded, and is judged as it has been. The
-literal then takes its place's type as any untyped literal does (`let a f32 = 2.0 * 3.0`,
-`let b u8 = 200 + 50`), or the default of its kind: `2147483647 + 1` is the `i32` default's
+literal then takes its place's type as any untyped literal does (`let a: f32 = 2.0 * 3.0`,
+`let b: u8 = 200 + 50`), or the default of its kind: `2147483647 + 1` is the `i32` default's
 value past its range, refused at generation like any such literal. Folding is on the
 operator's own operands, so `x * (1.0 / 3.0)` has an untyped literal for its argument,
 and `(2.0).sqrt()` is a call on an `f64`: a method call has no place to ask.
@@ -284,7 +284,7 @@ alike, after everything that could have typed it has run.
 **A literal must fit the type it is given.** `litCheckRange` refuses an integer
 literal whose value its integer type cannot hold (`ErrorLitRange`) rather than
 materializing it at that width, which silently dropped every bit above it:
-`300u8` and `var n u8 = 300` stored `44`. It runs where the type is decided —
+`300u8` and `var n: u8 = 300` stored `44`. It runs where the type is decided —
 `litTypeCheck` for a literal whose suffix gave it one, `litAdoptNumberType` for
 one taking the type it is wanted as — and at generation for the `i32` default.
 It measures the magnitude written, recovered through `FlagLitNeg`: a signed
@@ -481,7 +481,7 @@ allocation takes one as its value instead. A generic
 struct named bare, `new Box(5i64)`, has its type arguments inferred from the
 values, as its literal's were (`genericSubstitute`). Its inits are the implicit
 field-wise one and those it declares under the name `init`, one or an overload
-set, each `fn init(self &new, ...)`. With none declared, the arguments are
+set, each `fn init(self: &new, ...)`. With none declared, the arguments are
 checked against the fields they fill, as a literal's are; otherwise with no
 expectation, as an overload set's are. Viability is counted as
 `fnSigViableCall` counts it -- the count, the defaults, each argument passable
@@ -533,11 +533,11 @@ slice and leave an untyped number literal at its default type.
 
 `litIsLiteral` is the compile-time-constant predicate the global, parameter and
 field-default rules use. It accepts a use resolved to a `ConstDclTag`, which is
-what makes `let g i32 = K` legal. It accepts a borrow (`BorrowTag` or
+what makes `let g: i32 = K` legal. It accepts a borrow (`BorrowTag` or
 `ArrayBorrowTag`) of a string literal too: the text is a constant global, so a
 reference to it, or a slice of it (its address and its length), is known before
 anything runs. The literal itself, which is that address and length, is a literal
-too, alone or recast to a `&Array[u8]` (`litIsTextAsBytes`), so `let g &Array[u8] = "text"`
+too, alone or recast to a `&Array[u8]` (`litIsTextAsBytes`), so `let g: &Array[u8] = "text"`
 and a struct literal holding one as a field are literal initializers;
 generation's `genlExpr` builds the `{ptr, usize}` with instructions the builder
 folds to a constant aggregate. It accepts a borrow of
@@ -545,7 +545,7 @@ an array literal whose elements all satisfy it (`arrayLitIsLiteral`) on the same
 terms, so `let g = &[1, 2, 3]` is a literal initializer, and a borrow of a named
 constant holding either (`borrowIsConstLit`), so `let g = &K` is one too. It accepts a value
 tuple whose values all satisfy it (`vtupleIsLiteral`), so
-`var g (i64, i64) = 1, 2` is one too: the `VTupleTag` arm of `genlExpr` builds
+`var g: (i64, i64) = 1, 2` is one too: the `VTupleTag` arm of `genlExpr` builds
 it by `insertvalue` of constants, which the builder folds to a constant struct,
 as it does a struct literal of constants.
 
@@ -608,7 +608,7 @@ its value (mod-globals.html#const, "Named constants"), so `borrowIsConstLit` fol
 `ConstDclTag` use to the literal it holds: `&K` for `const K = [1, 2, 3]` is
 `&[1, 2, 3]`, `imm`, the program's lifetime, and placed in a constant global
 (`genlAddr` recurses into the value, [vardcl](vardcl.md), "Shape"). Not
-retyped, as a named array is not: `const K Array[u32, 3]` borrows as an `&Array[u32, 3]`.
+retyped, as a named array is not: `const K: Array[u32, 3]` borrows as an `&Array[u32, 3]`.
 Any other constant, or a field or element of one (`&K.x`, `&K[1].y`, and a
 method taking a borrowed `self` on one), is the borrow of a temporary, as its
 literal's would be: `borrowRefusesConst` reports it once (`ErrorBadLval`) and the
@@ -792,7 +792,7 @@ The count leaves the byte out. A `String` keeps its own (collections), and
 
 **So does a global byte array initialized from a string literal.** It is not a
 copy: its storage is the initialized data, so like the literal it gets the
-terminating zero after the text, uncounted — `var g Array[u8, 5] = "hello"` is an
+terminating zero after the text, uncounted — `var g: Array[u8, 5] = "hello"` is an
 `Array[u8, 5]` stored in a `[6 x i8]`, and a `static` in a function body the
 same (`genlGloVarHasNul` asks that the literal has been taken as an array). A
 global given a literal as it is, `let g = "hello"`, holds the `&imm str`, the
@@ -870,4 +870,4 @@ is its type exactly and has no terminator.
 - An array's contents, and the list after `<-` they are written with: [fncall](fncall.md), "The list after `<-`"
 - The nullable-pointer enum: [struct](struct.md) and [Generation](../phases/generation.md)
 - Where a type literal is retagged from a call, and a construction by a declared init: [fncall](fncall.md)
-- What a declared init may do with its `self &new`: [Flow Analysis](../phases/flow.md), "An init's self"
+- What a declared init may do with its `self: &new`: [Flow Analysis](../phases/flow.md), "An init's self"

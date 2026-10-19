@@ -18,39 +18,39 @@ import collections use *;
 import gguf use *;
 
 struct Bld {
-  out List[u8];
+  out: List[u8];
 
-  fn w8(self &mut, v u32) { out.push(u8.from(v & 255u32)); }
-  fn w32(self &mut, v u32) {
+  fn w8(self: &mut, v: u32) { out.push(u8.from(v & 255u32)); }
+  fn w32(self: &mut, v: u32) {
     out.push(u8.from(v & 255u32));
     out.push(u8.from((v >> 8u32) & 255u32));
     out.push(u8.from((v >> 16u32) & 255u32));
     out.push(u8.from((v >> 24u32) & 255u32));
   }
-  fn w64(self &mut, v u64) {
+  fn w64(self: &mut, v: u64) {
     self.w32(u32.from(v & 0xFFFFFFFFu64));
     self.w32(u32.from(v >> 32u64));
   }
-  fn wstr(self &mut, s &str) {
+  fn wstr(self: &mut, s: &str) {
     self.w64(u64.from(s.len()));
     var i = 0usize;
     while i < s.len() { out.push(s[i]); i = i + 1usize; }
   }
-  fn magic(self &mut) {
+  fn magic(self: &mut) {
     self.w8(71u32); self.w8(71u32); self.w8(85u32); self.w8(70u32);
   }
-  fn padTo(self &mut, a usize) {
+  fn padTo(self: &mut, a: usize) {
     while out.len() % a != 0usize { out.push(0u8); }
   }
-  fn at(self &) u64 { u64.from(out.len()) }
-  fn take(self &mut) List[u8] {
+  fn at(self: &) u64 { u64.from(out.len()) }
+  fn take(self: &mut) List[u8] {
     var r = List[u8].empty();
     r <=> out;
     r
   }
 }
 
-fn start(tensors u64, kvs u64) Bld {
+fn start(tensors: u64, kvs: u64) Bld {
   var b = new Bld(List[u8].empty());
   b.magic();
   b.w32(3u32);
@@ -61,7 +61,7 @@ fn start(tensors u64, kvs u64) Bld {
 
 fn any() u64 { 0xFFFFFFFFFFFFFFFFu64 }
 
-fn kindName(k &ErrorKind) &str {
+fn kindName(k: &ErrorKind) &str {
   if *k == ErrorKind.BadMagic { return "BadMagic"; }
   if *k == ErrorKind.BigEndian { return "BigEndian"; }
   if *k == ErrorKind.UnsupportedVersion { return "UnsupportedVersion"; }
@@ -79,7 +79,7 @@ fn kindName(k &ErrorKind) &str {
 }
 
 // The file is refused as this kind, at this offset (or any offset)
-fn refused(bytes &List[u8], kind &str, offset u64, label &str) {
+fn refused(bytes: &List[u8], kind: &str, offset: u64, label: &str) {
   match parse(bytes.view()) {
     case is Ok { expectStr("<parsed>", kind, label); }
     case let e Error {
@@ -92,7 +92,7 @@ fn refused(bytes &List[u8], kind &str, offset u64, label &str) {
   }
 }
 
-fn accepted(bytes &List[u8], label &str) {
+fn accepted(bytes: &List[u8], label: &str) {
   match parse(bytes.view()) {
     case is Ok {}
     case let e Error {
@@ -103,10 +103,10 @@ fn accepted(bytes &List[u8], label &str) {
 }
 
 // One metadata entry that is a u32
-fn kvU32(b &mut Bld, key &str, v u32) { b.wstr(key); b.w32(4u32); b.w32(v); }
+fn kvU32(b: &mut Bld, key: &str, v: u32) { b.wstr(key); b.w32(4u32); b.w32(v); }
 
 // A tensor entry: name, dimensions, type, offset
-fn tensor(b &mut Bld, name &str, dims &Array[u64], kind u32, offset u64) {
+fn tensor(b: &mut Bld, name: &str, dims: &Array[u64], kind: u32, offset: u64) {
   b.wstr(name);
   b.w32(u32.from(dims.len));
   var i = 0usize;
@@ -116,7 +116,7 @@ fn tensor(b &mut Bld, name &str, dims &Array[u64], kind u32, offset u64) {
 }
 
 // A good file with one F32 tensor of 4 numbers (16 bytes), given the pieces that vary
-fn oneTensor(dims &Array[u64], kind u32, offset u64, dataBytes usize) List[u8] {
+fn oneTensor(dims: &Array[u64], kind: u32, offset: u64, dataBytes: usize) List[u8] {
   var b = start(1u64, 0u64);
   tensor(&mut b, "t", dims, kind, offset);
   b.padTo(32usize);

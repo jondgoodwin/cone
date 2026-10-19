@@ -20,21 +20,21 @@ import sync use *;
 import thread;
 import actors;
 
-struct Log {pub n u64;}
+struct Log {pub n: u64;}
 
 enum Keeper_msg is Sendable {
-  struct Note {pub n u64;}
+  struct Note {pub n: u64;}
 }
 
 struct Keeper_state {
-  log Rc[mut, Log];
+  log: Rc[mut, Log];
 
-  fn init(self &new) {*self = new Keeper_state(new Rc[mut, Log](0u64));}
+  fn init(self: &new) {*self = new Keeper_state(new Rc[mut, Log](0u64));}
 
-  fn note(self &mut, n u64) {log.n = log.n + n;}
+  fn note(self: &mut, n: u64) {log.n = log.n + n;}
 }
 
-fn Keeper_dispatch(self &mut Keeper_state, msg *Keeper_msg) {
+fn Keeper_dispatch(self: &mut Keeper_state, msg: *Keeper_msg) {
   if &*msg is &Keeper_msg.Note {
     let p = msg as *Keeper_msg.Note;
     self.note(mem.readRaw[u64](&(*p).n as *u64));
@@ -42,27 +42,27 @@ fn Keeper_dispatch(self &mut Keeper_state, msg *Keeper_msg) {
 }
 
 struct Keeper {
-  mb Arc[opaq, actors.Mailbox[Keeper_msg]];
+  mb: Arc[opaq, actors.Mailbox[Keeper_msg]];
 
-  fn init(self &new) {
+  fn init(self: &new) {
     let st = actors.makeActor[Keeper_state, Keeper_msg](&Keeper_dispatch);
     mem.writeRaw[Keeper_state](st, new Keeper_state());
     *self = new Keeper(mb: actors.startActor[Keeper_state, Keeper_msg](st));
   }
-  pub fn note(self &, n u64) {
+  pub fn note(self: &, n: u64) {
     actors.send[Keeper_msg](mb, Keeper_msg.Note(n));
   }
 }
 
-fn keepState(s Keeper_state) u64 {0u64}
-fn keepHandle(k Keeper) u64 {0u64}
+fn keepState(s: Keeper_state) u64 {0u64}
+fn keepHandle(k: Keeper) u64 {0u64}
 
 fn main() {
   // The state may not cross
-  var tx Sender[Keeper_state];   //~ ErrorNotSendable "Keeper_state.log is Rc[mut, Log], an owner whose permission, mut, is not race-safe"
+  var tx: Sender[Keeper_state];   //~ ErrorNotSendable "Keeper_state.log is Rc[mut, Log], an owner whose permission, mut, is not race-safe"
   let t = thread.start(new Keeper_state(), &keepState);   //~ ErrorNotSendable "start requires A is Sendable, and Keeper_state is not Sendable"
 
   // Its handle may
-  var htx Sender[Keeper];
+  var htx: Sender[Keeper];
   let h = thread.start(new Keeper(), &keepHandle);
 }

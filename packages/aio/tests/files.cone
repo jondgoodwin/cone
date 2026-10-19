@@ -25,7 +25,7 @@ import iocore use IoError, Access;
 import actors;
 import aio use File;
 
-fn fileOf(r Result[File, IoError]) File {
+fn fileOf(r: Result[File, IoError]) File {
   var res = r;
   var f = File.none();
   match &mut res {
@@ -35,12 +35,12 @@ fn fileOf(r Result[File, IoError]) File {
   f
 }
 
-fn note(what &str, yes bool) {
+fn note(what: &str, yes: bool) {
   printStr(what);
   if yes {printStr(": yes\n");} else {printStr(": NO\n");}
 }
 
-fn num(what &str, n u64) {
+fn num(what: &str, n: u64) {
   printStr(what);
   printStr(": ");
   printUInt(n);
@@ -48,7 +48,7 @@ fn num(what &str, n u64) {
 }
 
 // The error code of a failed answer, 0 for a success
-fn codeOf[T](r Result[T, IoError]) u64 {
+fn codeOf[T](r: Result[T, IoError]) u64 {
   match r {
     case let e Error {u64.from(e.code)}
     else {0u64}
@@ -56,7 +56,7 @@ fn codeOf[T](r Result[T, IoError]) u64 {
 }
 
 // What a write answered: its count, or 1000000 and the error code
-fn countOf(r Result[usize, IoError]) u64 {
+fn countOf(r: Result[usize, IoError]) u64 {
   match r {
     case let n Ok {u64.from(n)}
     case let e Error {1000000u64 + u64.from(e.code)}
@@ -64,7 +64,7 @@ fn countOf(r Result[usize, IoError]) u64 {
 }
 
 // A block of n bytes, byte i being i mod 251 xor seed
-fn block(pool &Pool, n usize, seed u8) IoBuf {
+fn block(pool: &Pool, n: usize, seed: u8) IoBuf {
   var b = pool.mustTake(n);
   let room = b.whole();
   var i = 0usize;
@@ -78,7 +78,7 @@ fn block(pool &Pool, n usize, seed u8) IoBuf {
 
 // Whether the n bytes of b from 'from' are those of a block of seed, byte
 // 'base' of it on
-fn isRun(b &IoBuf, from usize, n usize, base usize, seed u8) bool {
+fn isRun(b: &IoBuf, from: usize, n: usize, base: usize, seed: u8) bool {
   let v = b.view();
   if v.len < from + n {return false;}
   var i = 0usize;
@@ -90,12 +90,12 @@ fn isRun(b &IoBuf, from usize, n usize, base usize, seed u8) bool {
 }
 
 // Whether the n bytes of b from 'from' are the start of a block of seed
-fn isBlock(b &IoBuf, from usize, n usize, seed u8) bool {
+fn isBlock(b: &IoBuf, from: usize, n: usize, seed: u8) bool {
   isRun(b, from, n, 0usize, seed)
 }
 
 // The buffer a read's answer holds, or an empty one
-fn bufOf(r Result[IoBuf, IoError]) IoBuf {
+fn bufOf(r: Result[IoBuf, IoError]) IoBuf {
   var res = r;
   var b = IoBuf.empty();
   match &mut res {
@@ -106,10 +106,10 @@ fn bufOf(r Result[IoBuf, IoError]) IoBuf {
 }
 
 actor Peeker {
-  pool Pool;
+  pool: Pool;
 
   // Reads the first block of a file sent to it
-  pub async do peek(self, f File, done OneshotSender[u64]) {
+  pub async do peek(self, f: File, done: OneshotSender[u64]) {
     let b = bufOf(await f.readAt(0u64, pool.mustTake(4096usize)));
     note("the sent file reads in the other actor", b.len() == 4096usize && isBlock(&b, 0usize, 4096usize, 11u8));
     var d = done;
@@ -118,10 +118,10 @@ actor Peeker {
 }
 
 actor Filer {
-  pool Pool;
-  peeker Peeker;
+  pool: Pool;
+  peeker: Peeker;
 
-  pub async do run(self, done OneshotSender[u64]) {
+  pub async do run(self, done: OneshotSender[u64]) {
     let name = Path.from("aiofiles.tmp");
 
     let f = fileOf(await aio.openFile(&name, Access.Create));
@@ -197,8 +197,8 @@ actor Filer {
 
 fn main() {
   initAll();
-  var tx OneshotSender[u64];
-  var rx OneshotReceiver[u64];
+  var tx: OneshotSender[u64];
+  var rx: OneshotReceiver[u64];
   tx, rx = Oneshot[u64].make();
   {
     let f = new Filer(Pool.make(), new Peeker(Pool.make()));

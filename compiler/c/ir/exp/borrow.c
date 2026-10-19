@@ -72,7 +72,7 @@ static int borrowHeldRefLendRefused(INode *held, INode *perm) {
         || !iexpPathThroughBorrow(held) || iexpReachWrites(held))
         return 0;
     errorMsgNode(held, ErrorBadPerm,
-        "Borrowed reference cannot obtain this permission: it is held in a place reached through a reference that only reads, and a `&` lends only `&` of the references it holds, `&mut` ones included. To change what it points at, reach it through a `&mut` (a method takes `self &mut`).");
+        "Borrowed reference cannot obtain this permission: it is held in a place reached through a reference that only reads, and a `&` lends only `&` of the references it holds, `&mut` ones included. To change what it points at, reach it through a `&mut` (a method takes `self: &mut`).");
     return 1;
 }
 
@@ -160,7 +160,7 @@ void borrowMutRef(INode **nodep, INode* type, INode *perm) {
         refused = 1;
     }
     // A local lends 'uni' as a written '&uni' does (borrowTypeCheck), which a
-    // method declaring 'self &uni' is handed (fnCallBorrowReceiver)
+    // method declaring 'self: &uni' is handed (fnCallBorrowReceiver)
     if (!refused && !permMatches(perm, lvalperm) && !borrowLocalLendsUni(node, lvalperm, scope, perm)) {
         // A '&uni' that cannot be lent says what the written '&uni' says
         if (itypeGetTypeDcl(perm) == (INode *)uniPerm)
@@ -648,7 +648,7 @@ void borrowTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
     // A GPU has no pointers to code: every call is inlined into the kernel
     else if (flowGpu && nameUseNames(node->vtexp, FnDclTag)) {
         errorMsgNode(node->vtexp, ErrorGpuUnavailable,
-            "In GPU code a function cannot be borrowed as a reference to it, '&%s': a GPU has no pointers to code. Call it, or give it to a function generic over its signature, '[F fn(...)]', which is inlined.",
+            "In GPU code a function cannot be borrowed as a reference to it, '&%s': a GPU has no pointers to code. Call it, or give it to a function generic over its signature, '[F: fn(...)]', which is inlined.",
             &((NameUseNode*)node->vtexp)->namesym->namestr);
     }
 

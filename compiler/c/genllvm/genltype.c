@@ -237,7 +237,7 @@ LLVMTypeRef genlVtableSlotFnType(GenState *gen, FnDclNode *meth) {
 void genlVtable(GenState *gen, Vtable *vtable) {
     // Name the vtable and the virtual reference type, and publish both, before
     // any slot is typed. A slot's type comes from its method's signature, which
-    // may name a virtual reference to this same trait ('fn cmp(self &, o &<Self)'),
+    // may name a virtual reference to this same trait ('fn cmp(self: &, o: &<Self)'),
     // and that is the type being built here. Published, it is answered with a
     // named struct whose body is filled in below, as a struct that points to
     // itself is; unpublished, it would start this vtable again without end.

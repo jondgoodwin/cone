@@ -17,30 +17,30 @@ mod move_flow_infection;
 
 // Declared non-copyable outright
 struct Attributed is Move {
-  pub id i32;
+  pub id: i32;
 }
 
 // A finalizer implies the value owns something a copy would duplicate
 struct Finalized {
-  pub id i32;
-  fn final(self &uni Finalized) { }
+  pub id: i32;
+  fn final(self: &uni Finalized) { }
 }
 
 // An enrichment is its base's representation under a second name, so it moves
 // as its base does -- a declared 'Move' included, which is written on the base
 // alone. A generic one is enriched later, as its instance is type checked.
 struct EnrichedAttr extends Attributed {
-  pub fn peek(self &) i32 {
+  pub fn peek(self: &) i32 {
     id
   }
 }
 
 struct AttrBox[T] is Move {
-  pub v T;
+  pub v: T;
 }
 
 struct EnrichedBox[T] extends AttrBox[T] {
-  pub fn get(self &) T {
+  pub fn get(self: &) T {
     self.v
   }
 }
@@ -49,40 +49,40 @@ struct EnrichedBox[T] extends AttrBox[T] {
 // copyable. No copy calls it: a copy is bitwise, so a copy of a finalizing value
 // would be finalized again.
 struct FinalizedClone {
-  pub id i32;
-  fn final(self &uni) { }
-  pub fn clone(self &) Self { new Self(id) }
+  pub id: i32;
+  fn final(self: &uni) { }
+  pub fn clone(self: &) Self { new Self(id) }
 }
 
 struct MoveFieldClone {
-  pub h Attributed;
-  pub fn clone(self &) Self { new Self(new Attributed(h.id)) }
+  pub h: Attributed;
+  pub fn clone(self: &) Self { new Self(new Attributed(h.id)) }
 }
 
 // A field that cannot be copied makes the whole struct uncopyable
 struct HasMoveField {
-  pub h Attributed;
-  pub n i32;
+  pub h: Attributed;
+  pub n: i32;
 }
 
 // A tuple field holding a move value is such a field, as the bare tuple moves:
 // directly, nested in another tuple, as a generic's type argument, and in an
 // enum's variant, which moves the enum too
 struct HasTupleField {
-  pub t (Finalized, i32);
+  pub t: (Finalized, i32);
 }
 
 struct HasNestedTuple {
-  pub t ((Finalized, i32), i32);
+  pub t: ((Finalized, i32), i32);
 }
 
 struct Holder[T] {
-  pub v T;
+  pub v: T;
 }
 
 enum TupleVariant {
-  pub id i32;
-  struct Holds { pub t (Finalized, i32); }
+  pub id: i32;
+  struct Holds { pub t: (Finalized, i32); }
   struct Empty {}
 }
 
@@ -92,12 +92,12 @@ enum TupleVariant {
 // copied however it was made. Plain, generic, and an extension, whose copy of
 // the variant declares it too.
 enum DeclaredVariant {
-  struct Moves is Move { pub n i32; }
+  struct Moves is Move { pub n: i32; }
   struct Stays {}
 }
 
 enum DeclaredGeneric[T] {
-  struct Moves is Move { pub x T; }
+  struct Moves is Move { pub x: T; }
   struct Stays {}
 }
 
@@ -115,20 +115,20 @@ enum DeclaredExtended extends DeclaredVariant {
 // reference twice, and main copies a HoldsLater twice. With the enum reached
 // through its first variant instead, 'dup' was refused as a cycle it is not.
 struct HoldsLater {
-  pub l Later;
+  pub l: Later;
 }
 
-fn sinkLater(l Later) i32 {1}
+fn sinkLater(l: Later) i32 {1}
 
 enum Later {
-  pub id i32;
-  pub fn dup(l Later) i32 {let a = l; let b = l; 1}   //~ ErrorMove:47 "moved out"
-  pub fn twice(l &Later) i32 {
+  pub id: i32;
+  pub fn dup(l: Later) i32 {let a = l; let b = l; 1}   //~ ErrorMove:48 "moved out"
+  pub fn twice(l: &Later) i32 {
     sinkLater(*l) + sinkLater(*l)   //~ ErrorMoveOut:15 "through a borrowed reference"
                                      //~^ ErrorMoveOut:31 "through a borrowed reference"
   }
   struct Plain {}
-  struct Carries { pub a Attributed; }
+  struct Carries { pub a: Attributed; }
 }
 
 fn main() i32 {
@@ -168,23 +168,23 @@ fn main() i32 {
   let cv2 = cv;
   let useCv = cv;            //~ ErrorMove:15 "moved out"
 
-  let ce TupleVariant = TupleVariant.Empty(1);
+  let ce: TupleVariant = TupleVariant.Empty(1);
   let ce2 = ce;
   let useCe = ce;            //~ ErrorMove:15 "moved out"
 
-  let dv DeclaredVariant = DeclaredVariant.Moves(1);
+  let dv: DeclaredVariant = DeclaredVariant.Moves(1);
   let dv2 = dv;
   let useDv = dv;            //~ ErrorMove:15 "moved out"
 
-  let dg DeclaredGeneric[i32] = DeclaredGeneric.Stays;
+  let dg: DeclaredGeneric[i32] = DeclaredGeneric.Stays;
   let dg2 = dg;
   let useDg = dg;            //~ ErrorMove:15 "moved out"
 
-  let dx DeclaredExtended = DeclaredExtended.Added;
+  let dx: DeclaredExtended = DeclaredExtended.Added;
   let dx2 = dx;
   let useDx = dx;            //~ ErrorMove:15 "moved out"
 
-  var d Array[Attributed, 2] = [new Attributed(5), new Attributed(6)];
+  var d: Array[Attributed, 2] = [new Attributed(5), new Attributed(6)];
   let d2 = d;
   let useD = d[0].id;        //~ ErrorMove:14 "moved out"
 
@@ -198,7 +198,7 @@ fn main() i32 {
   let useBi = bi[0].id;      //~ ErrorMove:15 "moved out"
 
   // An array of tuples holding a move value, written out and inferred
-  let dt Array[(Attributed, i32), 2] = [(new Attributed(5), 1), (new Attributed(6), 2)];
+  let dt: Array[(Attributed, i32), 2] = [(new Attributed(5), 1), (new Attributed(6), 2)];
   let dt2 = dt;
   let useDt = dt;            //~ ErrorMove:15 "moved out"
 
@@ -212,7 +212,7 @@ fn main() i32 {
 
   // Moved across to the base's name, which leaves the enrichment's source gone too
   let f = new EnrichedAttr(8);
-  let f2 Attributed = f;
+  let f2: Attributed = f;
   let useF = f.id;           //~ ErrorMove:14 "moved out"
 
   let g = new EnrichedBox[i32](9);

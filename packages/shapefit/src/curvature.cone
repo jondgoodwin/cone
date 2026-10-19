@@ -30,7 +30,7 @@ pub const PatchSaddle = 3u32;
 pub const PatchRidge = 4u32;
 pub const PatchValley = 5u32;
 
-pub fn patchName(c u32) &str {
+pub fn patchName(c: u32) &str {
   if c == PatchFlat { "flat" }
   elif c == PatchDome { "dome" }
   elif c == PatchCup { "cup" }
@@ -40,17 +40,17 @@ pub fn patchName(c u32) &str {
 }
 
 pub struct Curvature {
-  pub k1 List[f32];        // per vertex: the greater principal curvature
-  pub k2 List[f32];        // the lesser
-  pub dir1 List[Vec3];     // the direction of k1
-  pub dir2 List[Vec3];     // the direction of k2
-  pub normal List[Vec3];   // the vertex normals used
+  pub k1: List[f32];        // per vertex: the greater principal curvature
+  pub k2: List[f32];        // the lesser
+  pub dir1: List[Vec3];     // the direction of k1
+  pub dir2: List[Vec3];     // the direction of k2
+  pub normal: List[Vec3];   // the vertex normals used
 
-  pub fn mean(self &, v usize) f32 { 0.5 * (*k1[v] + *k2[v]) }
-  pub fn gaussian(self &, v usize) f32 { *k1[v] * *k2[v] }
+  pub fn mean(self: &, v: usize) f32 { 0.5 * (*k1[v] + *k2[v]) }
+  pub fn gaussian(self: &, v: usize) f32 { *k1[v] * *k2[v] }
 }
 
-fn classify(k1 f32, k2 f32, e f32) u32 {
+fn classify(k1: f32, k2: f32, e: f32) u32 {
   if k1 > e && k2 > e { PatchDome }
   elif k1 < -e && k2 < -e { PatchCup }
   elif k1 > e && k2 < -e { PatchSaddle }
@@ -60,10 +60,10 @@ fn classify(k1 f32, k2 f32, e f32) u32 {
 }
 
 // The class of a patch with the principal curvatures k1 and k2, and flatness limit e
-pub fn classifyPatch(k1 f32, k2 f32, e f32) u32 { classify(k1, k2, e) }
+pub fn classifyPatch(k1: f32, k2: f32, e: f32) u32 { classify(k1, k2, e) }
 
 // The class of each vertex
-pub fn classifyVertices(c &Curvature, e f32) List[u32] {
+pub fn classifyVertices(c: &Curvature, e: f32) List[u32] {
   var out = List[u32].withCapacity(c.k1.len());
   var v = 0usize;
   while v < c.k1.len() { out.push(classify(*c.k1[v], *c.k2[v], e)); v += 1usize; }
@@ -72,7 +72,7 @@ pub fn classifyVertices(c &Curvature, e f32) List[u32] {
 
 // The flatness limit as a curvature: 1 / (factor x the diagonal of the mesh's
 // bounding box); a surface whose radius of curvature exceeds that is flat
-pub fn flatCurvature(m &PolyMesh, factor f32) f32 {
+pub fn flatCurvature(m: &PolyMesh, factor: f32) f32 {
   let b = m.bounds();
   let diag = (b.max - b.min).length();
   if diag > 0. { 1. / (factor * diag) } else { 1. }
@@ -80,7 +80,7 @@ pub fn flatCurvature(m &PolyMesh, factor f32) f32 {
 
 // Rotate the frame (u, v) about the axis that takes its normal u x v onto 'nn',
 // so that it lies in the plane with normal nn (Rusinkiewicz's rot_coord_sys)
-fn rotateFrame(u DVec3, v DVec3, nn DVec3, nu &mut DVec3, nv &mut DVec3) {
+fn rotateFrame(u: DVec3, v: DVec3, nn: DVec3, nu: &mut DVec3, nv: &mut DVec3) {
   *nu = u;
   *nv = v;
   let on = crossd(u, v);
@@ -92,7 +92,7 @@ fn rotateFrame(u DVec3, v DVec3, nn DVec3, nu &mut DVec3, nv &mut DVec3) {
   *nv = v - dperp * v.dot(perp);
 }
 
-fn cornerAreas(p0 DVec3, p1 DVec3, p2 DVec3, ca &mut List[f64]) {
+fn cornerAreas(p0: DVec3, p1: DVec3, p2: DVec3, ca: &mut List[f64]) {
   let e0 = p2 - p1;
   let e1 = p0 - p2;
   let e2 = p1 - p0;
@@ -123,7 +123,7 @@ fn cornerAreas(p0 DVec3, p1 DVec3, p2 DVec3, ca &mut List[f64]) {
 }
 
 // The triangles of a mesh as vertex numbers, three to a triangle, a polygon as a fan
-pub fn fanTriangles(m &PolyMesh) List[u32] {
+pub fn fanTriangles(m: &PolyMesh) List[u32] {
   var tris = List[u32].empty();
   var f = 0usize;
   while f < m.faceCount() {
@@ -139,7 +139,7 @@ pub fn fanTriangles(m &PolyMesh) List[u32] {
 }
 
 // The principal curvatures and directions at every vertex (see the top)
-pub fn curvature(m &PolyMesh) Curvature {
+pub fn curvature(m: &PolyMesh) Curvature {
   let nv = m.vertexCount();
   let tris = fanTriangles(m);
   let nt = tris.len() / 3usize;
@@ -287,7 +287,7 @@ pub fn curvature(m &PolyMesh) Curvature {
 // The curvatures smoothed: each of k1 and k2 averaged with its neighbours' for
 // 'steps' rounds (each round every vertex becomes the mean of itself and its
 // neighbours, all at once). The directions are kept.
-pub fn smoothCurvature(m &PolyMesh, c &Curvature, steps u32) Curvature {
+pub fn smoothCurvature(m: &PolyMesh, c: &Curvature, steps: u32) Curvature {
   var a = smoothField(m, &c.k1, steps);
   var b = smoothField(m, &c.k2, steps);
   // keep k1 >= k2 after averaging
@@ -303,7 +303,7 @@ pub fn smoothCurvature(m &PolyMesh, c &Curvature, steps u32) Curvature {
 }
 
 // A per-vertex field averaged with its neighbours for 'steps' rounds
-pub fn smoothField(m &PolyMesh, field &List[f32], steps u32) List[f32] {
+pub fn smoothField(m: &PolyMesh, field: &List[f32], steps: u32) List[f32] {
   var cur = List[f32].withCapacity(field.len());
   var i = 0usize;
   while i < field.len() { cur.push(*field[i]); i += 1usize; }
@@ -328,7 +328,7 @@ pub fn smoothField(m &PolyMesh, field &List[f32], steps u32) List[f32] {
 // Write the curvatures into the mesh as vertex channels "k1", "k2", "mean",
 // "gaussian" and "patch" (the class as a number: PatchFlat and the rest), so
 // that later operators and pictures can read them. Returns the channel number of "patch".
-pub fn curvatureChannels(m &mut PolyMesh, c &Curvature, e f32) u32 {
+pub fn curvatureChannels(m: &mut PolyMesh, c: &Curvature, e: f32) u32 {
   let ck1 = m.addFloatChannel(VertexDomain, "k1", 0.);
   let ck2 = m.addFloatChannel(VertexDomain, "k2", 0.);
   let cm = m.addFloatChannel(VertexDomain, "mean", 0.);

@@ -1,12 +1,12 @@
 // What 'List.viewUni' refuses. A list lends its items as a uni slice only when it is itself
-// reached only by a '&uni' (a local lent '&uni', a '&uni' parameter, 'self &uni'); that slice
+// reached only by a '&uni' (a local lent '&uni', a '&uni' parameter, 'self: &uni'); that slice
 // is the exclusive source a 'parallel each' that changes its items needs
 // (concurrency_parallel_view_uni holds what it accepts). So:
 //
 //   - a '&mut' slice from 'viewMut' is still no such source (ErrorParRoot): its list was
 //     reached through a '&mut' parameter, which could have another name
 //   - 'viewUni' on a list reached through a '&mut' parameter or a '&' is no call at all
-//     (ErrorInvType: the method is there, the permission is not); on a field of a 'self &mut' it is the receiver lent '&uni', which
+//     (ErrorInvType: the method is there, the permission is not); on a field of a 'self: &mut' it is the receiver lent '&uni', which
 //     is refused (ErrorBadPerm) as lending a '&mut' parameter '&uni' by hand is: a '&mut'
 //     path cannot lend uni
 //   - while the uni slice is used the list is lent: it may not be read or pushed onto
@@ -17,46 +17,46 @@ mod concurrency_parallel_view_uni_refused;
 import collections use *;
 import actors;
 
-struct Item { pub n i64; }
+struct Item { pub n: i64; }
 
 // A '&mut' slice as the source: its list is a '&mut' parameter
-fn viaViewMut(l &mut List[Item]) {
+fn viaViewMut(l: &mut List[Item]) {
   parallel each x in l.viewMut().mutItems() {                 //~ ErrorParRoot "reached through a '&mut' reference (l)"
     x.n = x.n + 1;
   }
 }
 
 // A list reached through a '&mut' parameter cannot lend uni
-fn uniFromMut(l &mut List[Item]) {
+fn uniFromMut(l: &mut List[Item]) {
   let s = l.viewUni();                                         //~ ErrorInvType "does not match declared parameter"
 }
 
-fn uniFromMutExplicit(l &mut List[Item]) {
+fn uniFromMutExplicit(l: &mut List[Item]) {
   let s = (&uni l).viewUni();                                  //~ ErrorBadPerm "cannot obtain this permission"
                                                                //~^ ErrorInvType follow-on
 }
 
 // Nor one reached through a '&'
-fn uniFromShared(l &List[Item]) {
+fn uniFromShared(l: &List[Item]) {
   let s = l.viewUni();                                         //~ ErrorInvType "does not match declared parameter"
 }
 
 // Nor a field of a '&mut self'
 struct Holder {
-  pub items List[Item];
-  fn bump(self &mut) {
+  pub items: List[Item];
+  fn bump(self: &mut) {
     let s = self.items.viewUni();                              //~ ErrorBadPerm "cannot obtain this permission"
   }
 }
 
 // The list is lent while the uni slice is used
-fn readWhileLent(l &uni List[Item]) usize {
+fn readWhileLent(l: &uni List[Item]) usize {
   let s = l.viewUni();
   let n = l.len();                                             //~ ErrorFrozen "borrowed mutably (by 'viewUni'"
   s.len + n
 }
 
-fn pushWhileLent(l &uni List[Item]) {
+fn pushWhileLent(l: &uni List[Item]) {
   let s = l.viewUni();
   l.push(new Item(1));                                         //~ ErrorFrozen "borrowed mutably (by 'viewUni'"
   let k = s.len;

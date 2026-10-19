@@ -42,14 +42,14 @@ fn preference() u32 {
 
 // A renderer, its post and image-quality objects, a target and a readback
 struct Rig {
-  renderer Renderer;
-  post Post;
-  fx ImageFx;
-  color Texture;
-  readback Buffer;
+  renderer: Renderer;
+  post: Post;
+  fx: ImageFx;
+  color: Texture;
+  readback: Buffer;
 }
 
-fn makeRig(device &mut Device) Rig {
+fn makeRig(device: &mut Device) Rig {
   let targetDesc = new TextureDescriptor(W, H, TEXTURE_FORMAT_RGBA8_UNORM_SRGB,
     TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
   var color = device.createTexture(&targetDesc);
@@ -62,7 +62,7 @@ fn makeRig(device &mut Device) Rig {
   new Rig(renderer, post, fx, color, readback)
 }
 
-fn drawScene(device &mut Device, rig &mut Rig, camera &Camera, light &Light, list &DrawList) {
+fn drawScene(device: &mut Device, rig: &mut Rig, camera: &Camera, light: &Light, list: &DrawList) {
   var encoder = device.createCommandEncoder();
   rig.fx.render(device, &mut encoder, &mut rig.renderer, &mut rig.post, camera, light, list, &rig.color);
   encoder.copyTextureToBuffer(&rig.color, &rig.readback);
@@ -71,20 +71,20 @@ fn drawScene(device &mut Device, rig &mut Rig, camera &Camera, light &Light, lis
   device.waitIdle();
 }
 
-fn absf(x f32) f32 { if x < 0. { 0. - x } else { x } }
+fn absf(x: f32) f32 { if x < 0. { 0. - x } else { x } }
 
 // sRGB's decoding of a byte, to linear light
-fn linearOf(byte u8) f32 {
+fn linearOf(byte: u8) f32 {
   let v = f32.from(byte) / 255.;
   if v <= 0.04045 { return v / 12.92; }
   libc.powf((v + 0.055) / 1.055, 2.4)
 }
 
 // Channel 'c' of the pixel ('x', 'y') of the picture at 'p', in linear light
-fn px(p *u8, x usize, y usize, c usize) f32 { linearOf(*(p + (y * WZ + x) * 4usize + c)) }
+fn px(p: *u8, x: usize, y: usize, c: usize) f32 { linearOf(*(p + (y * WZ + x) * 4usize + c)) }
 
 // The picture at 'p' as bytes
-fn grab(p *u8) List[u8] {
+fn grab(p: *u8) List[u8] {
   var out = List[u8].withCapacity(WZ * HZ * 4usize);
   var i = 0usize;
   while i < WZ * HZ * 4usize {
@@ -98,7 +98,7 @@ fn grab(p *u8) List[u8] {
 // the unfogged pictures 'bareA' and 'bareB' are the same (where the two cameras drew the same surface:
 // their depth buffers round differently, and a distant block's base z-fights the sea differently, which
 // is not the fog's); 'used' is how many pixels that is, 'over' how many differ by more than one
-fn compare(a &List[u8], b &List[u8], bareA &List[u8], bareB &List[u8], used &mut usize, over &mut usize) u32 {
+fn compare(a: &List[u8], b: &List[u8], bareA: &List[u8], bareB: &List[u8], used: &mut usize, over: &mut usize) u32 {
   var worst = 0u32;
   *used = 0usize;
   *over = 0usize;
@@ -130,7 +130,7 @@ fn compare(a &List[u8], b &List[u8], bareA &List[u8], bareB &List[u8], used &mut
 }
 
 // If FOGEDGE_DUMP names a folder, the picture 'bytes' is written there as 'name'.rgba
-fn dump(bytes *u8, name &str) {
+fn dump(bytes: *u8, name: &str) {
   let folder = libc.getenv("FOGEDGE_DUMP");
   if (folder as usize) == 0usize { return; }
   var path = String.empty();
@@ -149,14 +149,14 @@ fn dump(bytes *u8, name &str) {
 }
 
 // A small deterministic random in [0, 1)
-fn rand(state &mut u32) f32 {
+fn rand(state: &mut u32) f32 {
   *state = *state * 1664525u32 + 1013904223u32;
   f32.from((*state >> 8u32) & 0xFFFFu32) / 65536.
 }
 
 // A sea to the horizon and 90 blocks of every height and width, the nearest 150 away and the farthest
 // beyond 3 km, over the width of the view
-fn blocks(sea MeshHandle, cube MeshHandle, water MaterialHandle, stone MaterialHandle, pale MaterialHandle, eye Vec3) DrawList {
+fn blocks(sea: MeshHandle, cube: MeshHandle, water: MaterialHandle, stone: MaterialHandle, pale: MaterialHandle, eye: Vec3) DrawList {
   var list = DrawList.empty();
   list.add(sea, water, Mat4.fromTrs(new Vec3(0., 0., 0.), Quat.identity(), new Vec3(30000., 1., 30000.)));
   var seed = 12345u32;
@@ -175,7 +175,7 @@ fn blocks(sea MeshHandle, cube MeshHandle, water MaterialHandle, stone MaterialH
 }
 
 // A camera at 'eye' looking along -z, as the main view of a game that lives far from the origin
-fn viewFrom(eye Vec3) Camera {
+fn viewFrom(eye: Vec3) Camera {
   var camera = Camera.make();
   camera.fov = 1.0471976;
   camera.near = 0.1;
@@ -188,7 +188,7 @@ fn viewFrom(eye Vec3) Camera {
 // The same camera with its near plane replaced, through the oblique clip, by a plane 0.1 ahead of it
 // turned 20 and 11 degrees about the vertical and the horizontal: the same picture (it clips nothing
 // the picture shows), drawn through the projection with x and y terms in the depth row
-fn clippedNear(plain &Camera, eye Vec3) Camera {
+fn clippedNear(plain: &Camera, eye: Vec3) Camera {
   var camera = *plain;
   camera.clipped = true;
   // (the side the picture keeps is the plane's positive one: the camera is on its negative side)

@@ -280,11 +280,11 @@ fn @initpure init() {
 // driver had in flight. One driver more than 'maxDrivers' alive at once in
 // the process is a panic.
 const maxDrivers = 1024u32;
-let numberLock Mutex;
-let numberBits *u64;
-let numberNext Atomic[u32];
+let numberLock: Mutex;
+let numberBits: *u64;
+let numberNext: Atomic[u32];
 
-fn takeNumber(file &Array[u8], line u32) u32 {
+fn takeNumber(file: &Array[u8], line: u32) u32 {
   numberLock.lock();
   let start = numberNext.load();
   var k = 0u32;
@@ -307,7 +307,7 @@ fn takeNumber(file &Array[u8], line u32) u32 {
 }
 
 // A dead driver's number, free to be taken again
-fn giveNumber(n u32) {
+fn giveNumber(n: u32) {
   numberLock.lock();
   let word = numberBits + usize.from(n / 64u32);
   let bit = 1u64 << u64.from(n % 64u32);
@@ -324,38 +324,38 @@ const noEntry = 4294967295u32;
 // A connection: an entry of its driver's table and which of its occupants
 // it was, so an id kept after the connection closed names nothing
 pub struct ConnId {
-  index u32;
-  gen u32;
+  index: u32;
+  gen: u32;
 
   pub fn none() ConnId {new ConnId(noEntry, 0u32)}
   pub fn isNone(self) bool {gen == 0u32}
   pub fn number(self) u64 {(u64.from(gen) << 32u64) | u64.from(index)}
-  pub fn `==`(self, o ConnId) bool {index == o.index && gen == o.gen}
-  pub fn `!=`(self, o ConnId) bool {index != o.index || gen != o.gen}
+  pub fn `==`(self, o: ConnId) bool {index == o.index && gen == o.gen}
+  pub fn `!=`(self, o: ConnId) bool {index != o.index || gen != o.gen}
 }
 
 // A request, and the connection it is on
 pub struct ReqId {
-  conn ConnId;
-  index u32;
-  gen u32;
+  conn: ConnId;
+  index: u32;
+  gen: u32;
 
   pub fn none() ReqId {new ReqId(ConnId.none(), noEntry, 0u32)}
   pub fn isNone(self) bool {gen == 0u32}
   pub fn connId(self) ConnId {conn}
   pub fn number(self) u64 {(u64.from(gen) << 32u64) | u64.from(index)}
-  pub fn `==`(self, o ReqId) bool {index == o.index && gen == o.gen && conn == o.conn}
-  pub fn `!=`(self, o ReqId) bool {index != o.index || gen != o.gen || conn != o.conn}
+  pub fn `==`(self, o: ReqId) bool {index == o.index && gen == o.gen && conn == o.conn}
+  pub fn `!=`(self, o: ReqId) bool {index != o.index || gen != o.gen || conn != o.conn}
 }
 
 // A listening socket
 pub struct ListenerId {
-  index u32;
-  gen u32;
+  index: u32;
+  gen: u32;
 
   pub fn none() ListenerId {new ListenerId(noEntry, 0u32)}
   pub fn isNone(self) bool {gen == 0u32}
-  pub fn `==`(self, o ListenerId) bool {index == o.index && gen == o.gen}
+  pub fn `==`(self, o: ListenerId) bool {index == o.index && gen == o.gen}
 }
 
 // ---------------------------------------------------------------------------
@@ -365,15 +365,15 @@ pub struct ListenerId {
 // A driver's bounds and timeouts (see the package's header). Every
 // connection's core takes 'protocol', http1's own Config
 pub struct Config {
-  pub protocol http1.Config;
-  pub connectTimeout Duration;   // a client connection's lookup and connect, from the call
-  pub recvSize usize;            // each receive's buffer
-  pub sendDepth u32;             // sends in flight per connection
-  pub maxConnections u32;        // connections the driver holds at once
-  pub maxWaiting u32;            // requests waiting on a busy or connecting connection
-  pub lingerTimeout Duration;    // after its FIN, how long a closing connection waits for the peer's
-  pub acceptDepth u32;           // accepts outstanding per listener
-  pub idleRecvReady bool;        // an idle connection waits with a zero-byte receive
+  pub protocol: http1.Config;
+  pub connectTimeout: Duration;   // a client connection's lookup and connect, from the call
+  pub recvSize: usize;            // each receive's buffer
+  pub sendDepth: u32;             // sends in flight per connection
+  pub maxConnections: u32;        // connections the driver holds at once
+  pub maxWaiting: u32;            // requests waiting on a busy or connecting connection
+  pub lingerTimeout: Duration;    // after its FIN, how long a closing connection waits for the peer's
+  pub acceptDepth: u32;           // accepts outstanding per listener
+  pub idleRecvReady: bool;        // an idle connection waits with a zero-byte receive
 
   // The defaults
   pub fn make() Config {
@@ -400,7 +400,7 @@ pub enum Stage {
 }
 
 // The name of a stage, in lower case
-pub fn stageName(s Stage) &str {
+pub fn stageName(s: Stage) &str {
   if s == Stage.Resolve {"resolve"}
   elif s == Stage.Connect {"connect"}
   elif s == Stage.Read {"read"}
@@ -413,19 +413,19 @@ pub fn stageName(s Stage) &str {
 
 // Why a request or a connection failed (see the package's header, FAILURES)
 pub struct Failure {
-  pub stage Stage;
-  pub code u32;           // Windows' error number, or 0
-  pub error HttpError;    // its kind, detail, and noResponse
-  pub unsent bool;        // no byte of the request reached the socket
+  pub stage: Stage;
+  pub code: u32;           // Windows' error number, or 0
+  pub error: HttpError;    // its kind, detail, and noResponse
+  pub unsent: bool;        // no byte of the request reached the socket
 
-  pub fn make(stage Stage, code u32, kind ErrorKind, detail &str) Failure {
+  pub fn make(stage: Stage, code: u32, kind: ErrorKind, detail: &str) Failure {
     new Failure(stage, code, HttpError.make(kind, 0u16, detail), false)
   }
 
   // Nothing: a connection that has not failed
   pub fn none() Failure {new Failure(Stage.Closed, 0u32, HttpError.empty(), false)}
 
-  pub fn copy(self &) Failure {
+  pub fn copy(self: &) Failure {
     var e = HttpError.make(error.kind, error.status, error.detail.view());
     e.noResponse = error.noResponse;
     new Failure(stage, code, e, unsent)
@@ -433,7 +433,7 @@ pub struct Failure {
 
   // 'connect: timed out: no connection within connectTimeout'; with the
   // Windows error's number and text when there is one
-  pub fn message(self &) String {
+  pub fn message(self: &) String {
     var out = String.from(stageName(stage));
     out.append(": ");
     out.append(error.message().view());
@@ -450,10 +450,10 @@ pub struct Failure {
 
 // When a request reached each point: zero where it did not
 pub struct Timing {
-  pub submitted Instant;  // asked for
-  pub started Instant;    // handed to the connection's core: its bytes on their way
-  pub firstByte Instant;  // its response's head arrived
-  pub ended Instant;      // its final answer
+  pub submitted: Instant;  // asked for
+  pub started: Instant;    // handed to the connection's core: its bytes on their way
+  pub firstByte: Instant;  // its response's head arrived
+  pub ended: Instant;      // its final answer
 
   pub fn zero() Timing {new Timing(new Instant(), new Instant(), new Instant(), new Instant())}
 }
@@ -465,18 +465,18 @@ pub struct Timing {
 // Where events go, and the token they carry back (see the package's
 // header, SINKS)
 pub enum Sink {
-  pub token u64;
+  pub token: u64;
   pub struct Here {}
-  pub struct Chan {pub tx Sender[Event];}
+  pub struct Chan {pub tx: Sender[Event];}
 }
 
 // A second sink to the same place: a channel's sender cloned. (The sink
 // is swapped into a local to be matched: Cone narrows only a local's
 // variant, error 1034)
-fn copySink(s &mut Sink) Sink {
-  var here Sink = Sink.Here(0u64);
+fn copySink(s: &mut Sink) Sink {
+  var here: Sink = Sink.Here(0u64);
   here <=> *s;
-  var out Sink = Sink.Here(here.token);
+  var out: Sink = Sink.Here(here.token);
   match &here {
     case let c &Chan {out = Sink.Chan(here.token, c.tx.clone());}
     else {}
@@ -486,8 +486,8 @@ fn copySink(s &mut Sink) Sink {
 }
 
 // Whether a sink is a channel
-fn isChan(s &mut Sink) bool {
-  var here Sink = Sink.Here(0u64);
+fn isChan(s: &mut Sink) bool {
+  var here: Sink = Sink.Here(0u64);
   here <=> *s;
   var yes = false;
   match &here {
@@ -517,7 +517,7 @@ pub enum EventKind {
 }
 
 // The name of an event's kind
-pub fn eventName(k EventKind) &str {
+pub fn eventName(k: EventKind) &str {
   if k == EventKind.Connected {"Connected"}
   elif k == EventKind.Accepted {"Accepted"}
   elif k == EventKind.Closed {"Closed"}
@@ -537,23 +537,23 @@ pub fn eventName(k EventKind) &str {
 // empty). A struct, as iocore's Completion is, so a program reads it in
 // place in its list, with no swap to narrow it
 pub struct Event {
-  pub kind EventKind;
-  pub token u64;             // its sink's token
-  pub conn ConnId;           // the connection it is about
-  pub req ReqId;             // the request it is about, or ReqId.none()
-  pub listener ListenerId;   // Accepted: the listener
-  pub peer SocketAddr;       // Connected, Accepted: the other end
-  pub clean bool;            // Closed: it ended as HTTP meant it to
-  pub failure Failure;       // Closed when not clean, Failed: why
-  pub request RequestHead;   // Request: the head
-  pub response ResponseHead; // Response, Interim: the head
-  pub body BodyLength;       // Request, Response: what is known of the body
-  pub buf IoBuf;             // Data: the bytes, the program's now
-  pub trailers Headers;      // End: the trailer fields
-  pub timing Timing;         // Done: when it reached each point
+  pub kind: EventKind;
+  pub token: u64;             // its sink's token
+  pub conn: ConnId;           // the connection it is about
+  pub req: ReqId;             // the request it is about, or ReqId.none()
+  pub listener: ListenerId;   // Accepted: the listener
+  pub peer: SocketAddr;       // Connected, Accepted: the other end
+  pub clean: bool;            // Closed: it ended as HTTP meant it to
+  pub failure: Failure;       // Closed when not clean, Failed: why
+  pub request: RequestHead;   // Request: the head
+  pub response: ResponseHead; // Response, Interim: the head
+  pub body: BodyLength;       // Request, Response: what is known of the body
+  pub buf: IoBuf;             // Data: the bytes, the program's now
+  pub trailers: Headers;      // End: the trailer fields
+  pub timing: Timing;         // Done: when it reached each point
 
   // An event of kind k, about conn and req, every other field empty
-  pub fn make(k EventKind, token u64, conn ConnId, req ReqId) Event {
+  pub fn make(k: EventKind, token: u64, conn: ConnId, req: ReqId) Event {
     new Event(kind: k, token: token, conn: conn, req: req, listener: ListenerId.none(),
       peer: SocketAddr.localhost(0u16), clean: false, failure: Failure.none(),
       request: RequestHead.empty(), response: ResponseHead.empty(), body: BodyLength.empty(),
@@ -561,7 +561,7 @@ pub struct Event {
   }
 
   // Whether it is a request's final answer
-  pub fn isTerminal(self &) bool {
+  pub fn isTerminal(self: &) bool {
     kind == EventKind.Done || kind == EventKind.Failed || kind == EventKind.Cancelled ||
       kind == EventKind.TimedOut
   }
@@ -573,23 +573,23 @@ pub struct Event {
 
 // A driver's counters, as 'stats' copies them out
 pub struct DriverStats {
-  pub connects u64;       // client connections asked for
-  pub connected u64;      // ...that connected
-  pub accepted u64;       // server connections accepted
-  pub refused u64;        // accepted sockets closed at once: maxConnections reached
-  pub closed u64;         // connections closed (each with its one Closed)
-  pub cleanCloses u64;    // ...of them, cleanly
-  pub requests u64;       // requests asked for, and requests read (a server's)
-  pub done u64;           // final answers, by outcome
-  pub failed u64;
-  pub cancelled u64;
-  pub timedOut u64;
-  pub events u64;         // events handed to sinks
-  pub held u64;           // events held for a full channel
-  pub dropped u64;        // events dropped: their channel's receiver had gone
-  pub unclaimed u64;      // completions poll was given that were not the driver's
-  pub bytesIn u64;        // bytes received
-  pub bytesOut u64;       // bytes sent
+  pub connects: u64;       // client connections asked for
+  pub connected: u64;      // ...that connected
+  pub accepted: u64;       // server connections accepted
+  pub refused: u64;        // accepted sockets closed at once: maxConnections reached
+  pub closed: u64;         // connections closed (each with its one Closed)
+  pub cleanCloses: u64;    // ...of them, cleanly
+  pub requests: u64;       // requests asked for, and requests read (a server's)
+  pub done: u64;           // final answers, by outcome
+  pub failed: u64;
+  pub cancelled: u64;
+  pub timedOut: u64;
+  pub events: u64;         // events handed to sinks
+  pub held: u64;           // events held for a full channel
+  pub dropped: u64;        // events dropped: their channel's receiver had gone
+  pub unclaimed: u64;      // completions poll was given that were not the driver's
+  pub bytesIn: u64;        // bytes received
+  pub bytesOut: u64;       // bytes sent
 
   pub fn zero() DriverStats {
     new DriverStats(0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64,
@@ -605,54 +605,54 @@ pub struct DriverStats {
 // no I/O and reads no clock
 pub trait Layer {
   // Bytes that came off the socket; an empty buffer is the peer's FIN
-  pub fn wireIn(self &mut, buf IoBuf, now Instant);
+  pub fn wireIn(self: &mut, buf: IoBuf, now: Instant);
   // The next bytes for the socket, moved out; empty when there are none
-  pub fn wireOut(self &mut, now Instant) IoBuf;
+  pub fn wireOut(self: &mut, now: Instant) IoBuf;
   // How many more wire bytes it will take now
-  pub fn wireRoom(self &) usize;
+  pub fn wireRoom(self: &) usize;
   // The protocol's bytes to send
-  pub fn plainIn(self &mut, buf IoBuf);
+  pub fn plainIn(self: &mut, buf: IoBuf);
   // The next of the protocol's bytes that came, moved out; empty when none
-  pub fn plainOut(self &mut) IoBuf;
+  pub fn plainOut(self: &mut) IoBuf;
   // Bytes it holds that are still to go out on the wire
-  pub fn pending(self &) usize;
+  pub fn pending(self: &) usize;
   // Whether the protocol's bytes flow: true once a handshake (if any) is done
-  pub fn isOpen(self &) bool;
+  pub fn isOpen(self: &) bool;
   // Whether the peer's stream has ended and every byte of it was taken
-  pub fn peerEnded(self &) bool;
+  pub fn peerEnded(self: &) bool;
   // No more of the protocol's bytes will be sent: tell the peer (a TLS
   // close_notify; nothing for Plain)
-  pub fn closeSend(self &mut);
+  pub fn closeSend(self: &mut);
   // Whether it has failed (a TLS handshake refused, a record broken): the
   // connection then closes, Failed at Stage.Tls
-  pub fn failed(self &) bool;
+  pub fn failed(self: &) bool;
   // Windows' error number when the OS gave the reason, else 0
-  pub fn failureCode(self &) u32;
+  pub fn failureCode(self: &) u32;
   // Why it failed, in words
-  pub fn failureText(self &) String;
+  pub fn failureText(self: &) String;
   // Whether it has work that may block, to run on the blocking pool (a TLS
   // session's certificate check by the OS, which may fetch over the network)
-  pub fn wantsCall(self &) bool;
+  pub fn wantsCall(self: &) bool;
   // That work, as a pool operation (Op.Call), moved out
-  pub fn takeCall(self &mut) Op;
+  pub fn takeCall(self: &mut) Op;
   // Its answer
-  pub fn callDone(self &mut, c &mut Completion, now Instant);
+  pub fn callDone(self: &mut, c: &mut Completion, now: Instant);
   // What it is and negotiated, for diagnostics ('plain'; a TLS session's
   // version, cipher, ALPN and handshake time)
-  pub fn describe(self &) String;
+  pub fn describe(self: &) String;
 }
 
 const noBound = 0xFFFFFFFFFFFFFFFFusize;
 
 // The plain layer: bytes pass through as they are, each buffer moved whole
 pub struct Plain {
-  inq Chain;
-  outq Chain;
-  ended bool;
+  inq: Chain;
+  outq: Chain;
+  ended: bool;
 
   pub fn make() Plain {new Plain(Chain.make(noBound), Chain.make(noBound), false)}
 
-  pub fn wireIn(self &mut, buf IoBuf, now Instant) {
+  pub fn wireIn(self: &mut, buf: IoBuf, now: Instant) {
     if buf.len() == 0usize {
       ended = true;
       return;
@@ -660,23 +660,23 @@ pub struct Plain {
     inq.push(buf);
   }
 
-  pub fn wireOut(self &mut, now Instant) IoBuf {Plain.front(&mut outq)}
-  pub fn wireRoom(self &) usize {noBound}
-  pub fn plainIn(self &mut, buf IoBuf) {outq.push(buf);}
-  pub fn plainOut(self &mut) IoBuf {Plain.front(&mut inq)}
-  pub fn pending(self &) usize {outq.len()}
-  pub fn isOpen(self &) bool {true}
-  pub fn peerEnded(self &) bool {ended && inq.len() == 0usize}
-  pub fn closeSend(self &mut) {}
-  pub fn failed(self &) bool {false}
-  pub fn failureCode(self &) u32 {0u32}
-  pub fn failureText(self &) String {String.empty()}
-  pub fn wantsCall(self &) bool {false}
-  pub fn takeCall(self &mut) Op {Op.Call(Lane.general(), &noCall, 0u64, IoBuf.empty())}
-  pub fn callDone(self &mut, c &mut Completion, now Instant) {}
-  pub fn describe(self &) String {String.from("plain")}
+  pub fn wireOut(self: &mut, now: Instant) IoBuf {Plain.front(&mut outq)}
+  pub fn wireRoom(self: &) usize {noBound}
+  pub fn plainIn(self: &mut, buf: IoBuf) {outq.push(buf);}
+  pub fn plainOut(self: &mut) IoBuf {Plain.front(&mut inq)}
+  pub fn pending(self: &) usize {outq.len()}
+  pub fn isOpen(self: &) bool {true}
+  pub fn peerEnded(self: &) bool {ended && inq.len() == 0usize}
+  pub fn closeSend(self: &mut) {}
+  pub fn failed(self: &) bool {false}
+  pub fn failureCode(self: &) u32 {0u32}
+  pub fn failureText(self: &) String {String.empty()}
+  pub fn wantsCall(self: &) bool {false}
+  pub fn takeCall(self: &mut) Op {Op.Call(Lane.general(), &noCall, 0u64, IoBuf.empty())}
+  pub fn callDone(self: &mut, c: &mut Completion, now: Instant) {}
+  pub fn describe(self: &) String {String.from("plain")}
 
-  fn front(q &mut Chain) IoBuf {
+  fn front(q: &mut Chain) IoBuf {
     var b = IoBuf.empty();
     match q.popFront() {
       case var s Some {b <=> s;}
@@ -687,7 +687,7 @@ pub struct Plain {
 }
 
 // Plain has no work for the pool
-fn noCall(arg u64, buf &mut IoBuf) Outcome {Outcome.Done(0usize)}
+fn noCall(arg: u64, buf: &mut IoBuf) Outcome {Outcome.Done(0usize)}
 
 // A Plain layer, as a connection holds one
 pub fn plainLayer() Uni[Layer] {new Uni[Plain](Plain.make())}
@@ -697,16 +697,16 @@ pub fn plainLayer() Uni[Layer] {new Uni[Plain](Plain.make())}
 // 'Uni[LayerMaker + ShapeKeeping]', so its 'make' must reshape no collection it
 // reaches through a shared path (the driver calls it with its listener list borrowed)
 pub trait LayerMaker {
-  pub fn make(self &mut) Uni[Layer];
+  pub fn make(self: &mut) Uni[Layer];
 }
 
 // The maker of Plain layers, a plain listener's
 pub struct PlainMaker {
-  pub made u64;      // how many it has made
+  pub made: u64;      // how many it has made
 
   pub fn start() PlainMaker {new PlainMaker(0u64)}
 
-  pub fn make(self &mut) Uni[Layer] {
+  pub fn make(self: &mut) Uni[Layer] {
     made = made + 1u64;
     plainLayer()
   }

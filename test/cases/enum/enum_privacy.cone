@@ -20,7 +20,7 @@ mod enum_privacy;
 
 import stdio use *;
 
-fn show(label &str, n i32) {
+fn show(label: &str, n: i32) {
   printStr(label);
   printStr(" = ");
   printInt(i64.from(n));
@@ -35,12 +35,12 @@ fn show(label &str, n i32) {
 // default only so that the extension below can be built from outside, where
 // its private fields take their defaults.
 enum Gauge {
-  pub id i32;
-  secret i32 = 9;
+  pub id: i32;
+  secret: i32 = 9;
 
   // A method of the enum: each variant has its own clone, and every clone reads
   // another value's privates, the other variant's included
-  pub fn probe(self &, other &imm Gauge) i32 {
+  pub fn probe(self: &, other: &imm Gauge) i32 {
     match other {
       case let l &Low {l.lo + other.secret}
       case let h &High {h.hi + h.twice() + other.secret}
@@ -48,23 +48,23 @@ enum Gauge {
   }
 
   struct Low {
-    lo i32;
-    fn half(self &) i32 {lo / 2}
+    lo: i32;
+    fn half(self: &) i32 {lo / 2}
     // A variant's method reads its sibling's private field and calls its
     // sibling's private method
-    pub fn peekHigh(self &, h &High) i32 {h.hi * 100 + h.twice()}
+    pub fn peekHigh(self: &, h: &High) i32 {h.hi * 100 + h.twice()}
   }
 
   struct High {
-    hi i32;
-    fn twice(self &) i32 {hi * 2}
+    hi: i32;
+    fn twice(self: &) i32 {hi * 2}
     // ... and writes one
-    pub fn lower(self &, l &mut Low) {l.lo = l.lo + hi;}
+    pub fn lower(self: &, l: &mut Low) {l.lo = l.lo + hi;}
   }
 
   // A static function reads a variant's private field and calls its private
   // method through a match on the enum
-  pub fn reading(g &imm Gauge) i32 {
+  pub fn reading(g: &imm Gauge) i32 {
     match g {
       case let l &Low {l.lo * 10 + l.half()}
       case let h &High {h.hi * 10 + h.twice()}
@@ -72,7 +72,7 @@ enum Gauge {
   }
 
   // ... writes one through a match on the value, and hands the value back
-  pub fn raised(g Gauge) Gauge {
+  pub fn raised(g: Gauge) Gauge {
     match g {
       case var l Low {l.lo = l.lo + 1; l}
       case var h High {h.hi = h.hi + 1; h}
@@ -80,15 +80,15 @@ enum Gauge {
   }
 
   // ... and builds a variant, giving the private fields their values
-  pub fn low(id i32, v i32) Low {Low(id, 7, v)}
-  pub fn high(id i32, v i32) High {High(id, 5, v)}
+  pub fn low(id: i32, v: i32) Low {Low(id, 7, v)}
+  pub fn high(id: i32, v: i32) High {High(id, 5, v)}
 }
 
 fn oneEnum() {
-  var a Gauge.Low = Gauge.low(1, 10);      // secret 7, lo 10
+  var a: Gauge.Low = Gauge.low(1, 10);      // secret 7, lo 10
   let b = Gauge.high(2, 3);       // secret 5, hi 3
-  let ga Gauge = a;
-  let gb Gauge = b;
+  let ga: Gauge = a;
+  let gb: Gauge = b;
   show("static-reads-variant-private", Gauge.reading(&imm ga));    // 10*10 + 10/2 = 105
   show("static-calls-variant-private", Gauge.reading(&imm gb));    // 3*10 + 3*2 = 36
   show("enum-method-on-low-reads-high", (&a).probe(&imm gb));      // 3 + 6 + 5 = 14
@@ -109,8 +109,8 @@ fn oneEnum() {
 // value's private field bare, and the static function 'peek' reads a copy's
 // private field through a match.
 enum Rich extends Gauge {
-  pub fn peer(self &imm, base &Gauge.Low) i32 {base.lo * 100 + base.half() * 10 + secret + peek(self)}
-  fn peek(r &imm Rich) i32 {
+  pub fn peer(self: &imm, base: &Gauge.Low) i32 {base.lo * 100 + base.half() * 10 + secret + peek(self)}
+  fn peek(r: &imm Rich) i32 {
     match r {
       case let l &Low {l.lo * 1000}
       else {0}
@@ -118,13 +118,13 @@ enum Rich extends Gauge {
   }
 
   struct Mid {
-    mid i32 = 8;
-    pub fn copyLow(self &, v i32) Rich.Low {Rich.Low(1, 2, v)}
-    pub fn copyHigh(self &, v i32) Rich.High {Rich.High(1, 3, v)}
-    pub fn sum(self &, copy &Rich.Low, base &Gauge.Low) i32 {
+    mid: i32 = 8;
+    pub fn copyLow(self: &, v: i32) Rich.Low {Rich.Low(1, 2, v)}
+    pub fn copyHigh(self: &, v: i32) Rich.High {Rich.High(1, 3, v)}
+    pub fn sum(self: &, copy: &Rich.Low, base: &Gauge.Low) i32 {
       copy.lo * 100 + base.lo * 10 + copy.half() + base.secret
     }
-    pub fn fromRich(self &, r &imm Rich) i32 {
+    pub fn fromRich(self: &, r: &imm Rich) i32 {
       match r {
         case let l &Low {l.lo + l.secret}
         case let h &High {h.hi + h.twice() + h.secret}
@@ -140,15 +140,15 @@ fn extension() {
   let high = (&mid).copyHigh(6);        // secret 3, hi 6
   let base = Gauge.low(1, 3);           // secret 7, lo 3
   show("extension-reads-copy-and-base-private", (&mid).sum(&copy, &base)); // 400 + 30 + 2 + 7 = 439
-  let rl Rich = copy;
-  let rh Rich = high;
-  let rm Rich = mid;
+  let rl: Rich = copy;
+  let rh: Rich = high;
+  let rm: Rich = mid;
   show("extension-matches-copy-low", (&mid).fromRich(&imm rl));   // 4 + 2 = 6
   show("extension-matches-copy-high", (&mid).fromRich(&imm rh));  // 6 + 12 + 3 = 21
   show("extension-matches-own-variant", (&mid).fromRich(&imm rm)); // 8 + 9 = 17
   // The copy's clone of Gauge's 'probe' is the extension's code, and reads
   // the private members of a value of the base
-  let gh Gauge = Gauge.high(3, 4);      // secret 5, hi 4
+  let gh: Gauge = Gauge.high(3, 4);      // secret 5, hi 4
   show("copied-method-reads-base-private", (&copy).probe(&imm gh)); // 4 + 8 + 5 = 17
   show("extension-own-code-reads-copy-and-base-private", (&imm copy).peer(&base)); // 300 + 1*10 + 2 + 4*1000 = 4312
 }
@@ -161,9 +161,9 @@ fn extension() {
 // match ends in 'else': inside a generic enum's code, arms for every variant are
 // not yet counted as exhaustive.
 enum Stash[T] {
-  count i32 = 6;
+  count: i32 = 6;
 
-  pub fn tally(self &, other &imm Stash[T]) i32 {
+  pub fn tally(self: &, other: &imm Stash[T]) i32 {
     match other {
       case let f &Full[T] {f.count + f.size()}
       else {other.count}
@@ -171,15 +171,15 @@ enum Stash[T] {
   }
 
   struct Full {
-    item T;
-    fn size(self &) i32 {10}
-    pub fn swapFrom(self &mut, other &Full[T]) {item = other.item;}
+    item: T;
+    fn size(self: &) i32 {10}
+    pub fn swapFrom(self: &mut, other: &Full[T]) {item = other.item;}
   }
 
   struct Empty {
-    pub fn fill(self &, c i32, v T) Full[T] {Full[T](c, v)}
-    pub fn peek(self &, f &Full[T], d T) T {f.item + d}
-    pub fn itemOf(self &, s &imm Stash[T]) T {
+    pub fn fill(self: &, c: i32, v: T) Full[T] {Full[T](c, v)}
+    pub fn peek(self: &, f: &Full[T], d: T) T {f.item + d}
+    pub fn itemOf(self: &, s: &imm Stash[T]) T {
       match s {
         case let f &Full[T] {f.item}
         else {T.from(countOf(s))}
@@ -188,22 +188,22 @@ enum Stash[T] {
   }
 
   // A static function reads the enum's private field through a value
-  fn countOf(s &Stash[T]) i32 {s.count}
+  fn countOf(s: &Stash[T]) i32 {s.count}
 }
 
 fn generic() {
   let empty = Stash.Empty[i64];        // count 6, by default
-  var full Stash.Full[i64] = (&empty).fill(3, 40);      // count 3, item 40
+  var full: Stash.Full[i64] = (&empty).fill(3, 40);      // count 3, item 40
   let other = (&empty).fill(4, 50);      // count 4, item 50
-  let sf Stash[i64] = full;
-  let se Stash[i64] = empty;
+  let sf: Stash[i64] = full;
+  let se: Stash[i64] = empty;
   show("generic-variant-matches-sibling-private", i32.from((&empty).itemOf(&imm sf)));  // 40
   show("generic-static-reads-enum-private", i32.from((&empty).itemOf(&imm se)));        // 6
   show("generic-variant-reads-sibling-private", i32.from((&empty).peek(&full, 2))); // 40 + 2 = 42
   show("generic-enum-method-reads-private", (&empty).tally(&imm sf));              // 3 + 10 = 13
   show("generic-enum-method-reads-enum-private", (&full).tally(&imm se));          // 6
   (&mut full).swapFrom(&other);
-  let sw Stash[i64] = full;
+  let sw: Stash[i64] = full;
   show("generic-variant-writes-other-private", i32.from((&empty).itemOf(&imm sw)));     // 50
 }
 

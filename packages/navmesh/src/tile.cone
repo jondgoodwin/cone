@@ -23,82 +23,82 @@
 // page), counterclockwise; the outward normal of an edge from a to b is
 // (-(b.z - a.z), (b.x - a.x)) in x and z.
 
-pub const NoRef u64 = 0u64;
+pub const NoRef: u64 = 0u64;
 
 pub struct Link {
-  pub to u64;          // the polygon beyond
-  pub edge i32;        // the edge of this polygon it is through
-  pub side i32;        // -1 inside the tile; else the side of the tile it crosses
-  pub tmin f32;        // across a portal: the part of the edge (0 to 1 from its first vertex) that overlaps
-  pub tmax f32;
+  pub to: u64;          // the polygon beyond
+  pub edge: i32;        // the edge of this polygon it is through
+  pub side: i32;        // -1 inside the tile; else the side of the tile it crosses
+  pub tmin: f32;        // across a portal: the part of the edge (0 to 1 from its first vertex) that overlaps
+  pub tmax: f32;
 }
 
 pub struct Tile {
-  pub tx i32;
-  pub tz i32;
-  pub salt u32;
-  pub built bool;
-  pub verts List[Vec3];
-  pub pverts List[i32];      // MaxVerts a polygon, -1 after the last
-  pub pnei List[i32];        // MaxVerts a polygon: neighbour polygon, -1, or PortalFlag | side
-  pub pcount List[i32];
-  pub parea List[u8];
-  pub pbmin List[Vec3];
-  pub pbmax List[Vec3];
-  pub linkStart List[i32];   // polyCount + 1 offsets into 'links'
-  pub links List[Link];
+  pub tx: i32;
+  pub tz: i32;
+  pub salt: u32;
+  pub built: bool;
+  pub verts: List[Vec3];
+  pub pverts: List[i32];      // MaxVerts a polygon, -1 after the last
+  pub pnei: List[i32];        // MaxVerts a polygon: neighbour polygon, -1, or PortalFlag | side
+  pub pcount: List[i32];
+  pub parea: List[u8];
+  pub pbmin: List[Vec3];
+  pub pbmax: List[Vec3];
+  pub linkStart: List[i32];   // polyCount + 1 offsets into 'links'
+  pub links: List[Link];
 
-  pub fn empty(tx i32, tz i32) Tile {
+  pub fn empty(tx: i32, tz: i32) Tile {
     new Tile(tx, tz, 0u32, false, List[Vec3].empty(), List[i32].empty(), List[i32].empty(), List[i32].empty(),
       List[u8].empty(), List[Vec3].empty(), List[Vec3].empty(), List[i32].empty(), List[Link].empty())
   }
 
-  pub fn polyCount(self &) usize { pcount.len() }
-  pub fn vertOf(self &, p usize, k usize) Vec3 { *verts[usize.from(*pverts[p * 6usize + k])] }
+  pub fn polyCount(self: &) usize { pcount.len() }
+  pub fn vertOf(self: &, p: usize, k: usize) Vec3 { *verts[usize.from(*pverts[p * 6usize + k])] }
 }
 
 pub struct OffMeshConn {
-  pub id u32;
-  pub a Vec3;
-  pub b Vec3;
-  pub radius f32;
-  pub bidirectional bool;
-  pub area u8;
-  pub enabled bool;
-  pub refA u64;        // the polygons nearest its ends, NoRef when there is none
-  pub refB u64;
-  pub posA Vec3;       // the points on the mesh its ends meet
-  pub posB Vec3;
+  pub id: u32;
+  pub a: Vec3;
+  pub b: Vec3;
+  pub radius: f32;
+  pub bidirectional: bool;
+  pub area: u8;
+  pub enabled: bool;
+  pub refA: u64;        // the polygons nearest its ends, NoRef when there is none
+  pub refB: u64;
+  pub posA: Vec3;       // the points on the mesh its ends meet
+  pub posB: Vec3;
 }
 
 pub struct NavMesh {
-  pub params NavParams;
-  pub origin Vec3;       // the corner of tile (0, 0): lowest x, y and z of the input
-  pub yRange f32;
-  pub tilesW i32;
-  pub tilesH i32;
-  pub tiles List[Tile];
-  pub off List[OffMeshConn];
-  pub nextOffId u32;
+  pub params: NavParams;
+  pub origin: Vec3;       // the corner of tile (0, 0): lowest x, y and z of the input
+  pub yRange: f32;
+  pub tilesW: i32;
+  pub tilesH: i32;
+  pub tiles: List[Tile];
+  pub off: List[OffMeshConn];
+  pub nextOffId: u32;
 
-  pub fn tileWorld(self &) f32 { f32.from(params.tileSize) * params.cellSize }
+  pub fn tileWorld(self: &) f32 { f32.from(params.tileSize) * params.cellSize }
 
-  pub fn tileIndex(self &, tx i32, tz i32) i32 {
+  pub fn tileIndex(self: &, tx: i32, tz: i32) i32 {
     if tx < 0i32 || tz < 0i32 || tx >= tilesW || tz >= tilesH { return -1i32; }
     tz * tilesW + tx
   }
 
   // The reference of polygon p of tile index t
-  pub fn makeRef(self &, t i32, p usize) u64 {
+  pub fn makeRef(self: &, t: i32, p: usize) u64 {
     let tile = tiles[usize.from(t)];
     (u64.from(tile.salt) << 32u64) | (u64.from(t) << 16u64) | u64.from(p)
   }
 
-  pub fn refTile(self &, r u64) i32 { i32.from((r >> 16u64) & 65535u64) }
-  pub fn refPoly(self &, r u64) usize { usize.from(r & 65535u64) }
+  pub fn refTile(self: &, r: u64) i32 { i32.from((r >> 16u64) & 65535u64) }
+  pub fn refPoly(self: &, r: u64) usize { usize.from(r & 65535u64) }
 
   // Whether 'r' names a polygon that still exists
-  pub fn isValid(self &, r u64) bool {
+  pub fn isValid(self: &, r: u64) bool {
     if r == NoRef { return false; }
     let t = self.refTile(r);
     if t < 0i32 || usize.from(t) >= tiles.len() { return false; }
@@ -107,26 +107,26 @@ pub struct NavMesh {
     self.refPoly(r) < tile.polyCount()
   }
 
-  pub fn polyArea(self &, r u64) u8 {
+  pub fn polyArea(self: &, r: u64) u8 {
     (*tiles[usize.from(self.refTile(r))].parea[self.refPoly(r)])
   }
 
-  pub fn polyVertCount(self &, r u64) usize {
+  pub fn polyVertCount(self: &, r: u64) usize {
     usize.from(*tiles[usize.from(self.refTile(r))].pcount[self.refPoly(r)])
   }
 
-  pub fn polyVert(self &, r u64, k usize) Vec3 {
+  pub fn polyVert(self: &, r: u64, k: usize) Vec3 {
     tiles[usize.from(self.refTile(r))].vertOf(self.refPoly(r), k)
   }
 
-  pub fn polyCount(self &) usize {
+  pub fn polyCount(self: &) usize {
     var n = 0usize;
     var i = 0usize;
     while i < tiles.len() { n = n + tiles[i].polyCount(); i = i + 1usize; }
     n
   }
 
-  pub fn tileCoordOf(self &, x f32, z f32) Vec2 {
+  pub fn tileCoordOf(self: &, x: f32, z: f32) Vec2 {
     let tw = self.tileWorld();
     new Vec2(floorf((x - origin.x) / tw), floorf((z - origin.z) / tw))
   }
@@ -134,7 +134,7 @@ pub struct NavMesh {
 
 // ---- building ----
 
-fn triNormalY(a Vec3, b Vec3, c Vec3) f32 {
+fn triNormalY(a: Vec3, b: Vec3, c: Vec3) f32 {
   let e0 = b - a;
   let e1 = c - a;
   let n = e0.cross(e1);
@@ -144,7 +144,7 @@ fn triNormalY(a Vec3, b Vec3, c Vec3) f32 {
 }
 
 // Build, from 'input', the tile (tx, tz) into a Tile (not yet linked)
-pub fn buildTile(nav &NavMesh, input &NavInput, tx i32, tz i32) Tile {
+pub fn buildTile(nav: &NavMesh, input: &NavInput, tx: i32, tz: i32) Tile {
   let p = nav.params;
   let bs = p.borderSize();
   let size = p.tileSize + 2i32 * bs;
@@ -203,7 +203,7 @@ pub fn buildTile(nav &NavMesh, input &NavInput, tx i32, tz i32) Tile {
   tileFromMesh(nav, &pm, tx, tz)
 }
 
-fn tileFromMesh(nav &NavMesh, pm &PolyMesh, tx i32, tz i32) Tile {
+fn tileFromMesh(nav: &NavMesh, pm: &PolyMesh, tx: i32, tz: i32) Tile {
   let p = nav.params;
   var tile = Tile.empty(tx, tz);
   let ox = nav.origin.x + f32.from(tx * p.tileSize) * p.cellSize;
@@ -244,7 +244,7 @@ fn tileFromMesh(nav &NavMesh, pm &PolyMesh, tx i32, tz i32) Tile {
 }
 
 // The tile's links, recomputed from the tile and its built neighbours
-pub fn connectTile(nav &mut NavMesh, t i32) {
+pub fn connectTile(nav: &mut NavMesh, t: i32) {
   let ti = usize.from(t);
   let np = nav.tiles[ti].polyCount();
   var starts = List[i32].withCapacity(np + 1usize);
@@ -325,7 +325,7 @@ pub fn connectTile(nav &mut NavMesh, t i32) {
   nav.tiles[ti].links = links;
 }
 
-fn edgeHeightAt(a Vec3, b Vec3, alongZ bool, at f32) f32 {
+fn edgeHeightAt(a: Vec3, b: Vec3, alongZ: bool, at: f32) f32 {
   let a0 = if alongZ { a.z } else { a.x };
   let a1 = if alongZ { b.z } else { b.x };
   if a1 == a0 { return (a.y + b.y) * 0.5; }

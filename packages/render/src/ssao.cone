@@ -12,22 +12,22 @@
 
 // How SSAO is done: a quality tier is a settings value
 pub struct SsaoSettings {
-  pub enabled bool = false;
+  pub enabled: bool = false;
   // The radius of the occlusion, in the camera's units (metres)
-  pub radius f32 = 0.6;
+  pub radius: f32 = 0.6;
   // The visibility raised to this: more contrast in the creases
-  pub power f32 = 1.5;
+  pub power: f32 = 1.5;
   // How much of it is applied (0 to 1)
-  pub strength f32 = 0.85;
+  pub strength: f32 = 0.85;
   // The share of the radius over which an occluder fades out
-  pub falloff f32 = 0.6;
+  pub falloff: f32 = 0.6;
   // Slices through each point and steps along each side of a slice
-  pub slices u32 = 2u32;
-  pub steps u32 = 8u32;
+  pub slices: u32 = 2u32;
+  pub steps: u32 = 8u32;
   // The radius never spans more than this many pixels
-  pub maxPixels f32 = 96.;
+  pub maxPixels: f32 = 96.;
   // The relative depth difference that fades the blur's and the upsample's weights
-  pub depthSensitivity f32 = 30.;
+  pub depthSensitivity: f32 = 30.;
 
   // 3 slices of 10 steps: for a discrete GPU
   pub fn high() SsaoSettings { new SsaoSettings(enabled: true, slices: 3u32, steps: 10u32) }
@@ -39,35 +39,35 @@ pub struct SsaoSettings {
 
 // What the passes' immediates hold (ssao.slang's SsaoImmediates)
 struct SsaoImmediates {
-  radius f32;
-  power f32;
-  falloff f32;
-  strength f32;
-  slices u32;
-  steps u32;
-  noise f32;
-  maxPixels f32;
-  directionX f32;
-  directionY f32;
-  depthSensitivity f32;
-  pad f32;
+  radius: f32;
+  power: f32;
+  falloff: f32;
+  strength: f32;
+  slices: u32;
+  steps: u32;
+  noise: f32;
+  maxPixels: f32;
+  directionX: f32;
+  directionY: f32;
+  depthSensitivity: f32;
+  pad: f32;
 }
 
 pub struct SsaoPass {
-  pub shader ShaderModule;
-  pub layout BindGroupLayout;
-  pub pipelineLayout PipelineLayout;
-  pub aoPipeline RenderPipeline;
-  pub blurPipeline RenderPipeline;
-  pub applyPipeline RenderPipeline;
-  pub ao0 Texture;                 // half resolution, rgba8: the AO, then blurred
-  pub ao1 Texture;
-  pub groupAo BindGroup;           // reads nothing but the depth
-  pub groupBlurH BindGroup;        // reads ao0
-  pub groupBlurV BindGroup;        // reads ao1
-  pub groupApply BindGroup;        // reads ao0
+  pub shader: ShaderModule;
+  pub layout: BindGroupLayout;
+  pub pipelineLayout: PipelineLayout;
+  pub aoPipeline: RenderPipeline;
+  pub blurPipeline: RenderPipeline;
+  pub applyPipeline: RenderPipeline;
+  pub ao0: Texture;                 // half resolution, rgba8: the AO, then blurred
+  pub ao1: Texture;
+  pub groupAo: BindGroup;           // reads nothing but the depth
+  pub groupBlurH: BindGroup;        // reads ao0
+  pub groupBlurV: BindGroup;        // reads ao1
+  pub groupApply: BindGroup;        // reads ao0
 
-  pub fn create(device &mut Device, frameBuffer &Buffer, dv &TextureView) SsaoPass {
+  pub fn create(device: &mut Device, frameBuffer: &Buffer, dv: &TextureView) SsaoPass {
     var shader = device.createShaderModule(&SSAO_SPIRV);
     let entries = [new BindGroupLayoutEntry(binding: 0u32, visibility: SHADER_STAGE_FRAGMENT),
       new BindGroupLayoutEntry(binding: 1u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE,
@@ -93,15 +93,15 @@ pub struct SsaoPass {
       groupBlurV, groupApply)
   }
 
-  pub fn isValid(self &) bool {
+  pub fn isValid(self: &) bool {
     aoPipeline.isValid() && blurPipeline.isValid() && applyPipeline.isValid() && ao0.isValid() && ao1.isValid()
       && groupAo.isValid()
   }
 
   // The half-resolution textures for a frame of 'width' by 'height' (tiny if
   // not 'enabled'), and the groups over them and the scene's depth
-  pub fn remake(self &mut, device &mut Device, enabled bool, width u32, height u32, depth &TextureView,
-      frameBuffer &Buffer) {
+  pub fn remake(self: &mut, device: &mut Device, enabled: bool, width: u32, height: u32, depth: &TextureView,
+      frameBuffer: &Buffer) {
     let w = if enabled { (width + 1u32) / 2u32 } else { 1u32 };
     let h = if enabled { (height + 1u32) / 2u32 } else { 1u32 };
     let desc = new TextureDescriptor(w, h, TEXTURE_FORMAT_RGBA8_UNORM,
@@ -119,7 +119,7 @@ pub struct SsaoPass {
   // Compute the occlusion of the scene's depth, blur it, and darken the
   // frame 'hdr' by it. 'frame' is the frame number (the noise moves with it
   // when 'moving', so that temporal AA averages it away)
-  pub fn record(self &mut, encoder &mut CommandEncoder, hdr &Texture, s &SsaoSettings, frame u32, moving bool) {
+  pub fn record(self: &mut, encoder: &mut CommandEncoder, hdr: &Texture, s: &SsaoSettings, frame: u32, moving: bool) {
     let noise = if moving { (f32.from(frame % 16u32) + 0.5) / 16. } else { 0. };
     let base = new SsaoImmediates(s.radius, s.power, s.falloff, s.strength, s.slices, s.steps, noise, s.maxPixels, 1., 0.,
       s.depthSensitivity, 0.);
@@ -134,7 +134,7 @@ pub struct SsaoPass {
   }
 }
 
-fn aoGroup(device &mut Device, layout &BindGroupLayout, frameBuffer &Buffer, depth &TextureView, source &TextureView)
+fn aoGroup(device: &mut Device, layout: &BindGroupLayout, frameBuffer: &Buffer, depth: &TextureView, source: &TextureView)
     BindGroup {
   let entries = [BindGroupEntry.buffer(0u32, frameBuffer), BindGroupEntry.texture(1u32, depth),
     BindGroupEntry.texture(2u32, source)];
@@ -143,7 +143,7 @@ fn aoGroup(device &mut Device, layout &BindGroupLayout, frameBuffer &Buffer, dep
 
 // spirv-begin ssao.spv SSAO_SPIRV
 // Written by tools/shaders/shaders.py from ssao.slang (sha256 b208ce31f37041bee9ca903a88e2ad5dde071e82321622427dbcea018dab571a): do not edit.
-let SSAO_SPIRV Array[u32, 5807] = [
+let SSAO_SPIRV: Array[u32, 5807] = [
   0x07230203u32, 0x00010500u32, 0x00280000u32, 0x00000555u32, 0x00000000u32, 0x00020011u32,
   0x00000001u32, 0x0006000bu32, 0x00000071u32, 0x4c534c47u32, 0x6474732eu32, 0x3035342eu32,
   0x00000000u32, 0x0003000eu32, 0x00000000u32, 0x00000001u32, 0x000a000fu32, 0x00000000u32,

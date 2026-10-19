@@ -6,24 +6,24 @@
 // snapped to their lines) and a PolyMesh built.
 
 struct QMesh {
-  pos List[Vec3];
-  flag List[u32];
-  rho List[f32];
-  fcount List[u32];
-  fidx List[u32];
+  pos: List[Vec3];
+  flag: List[u32];
+  rho: List[f32];
+  fcount: List[u32];
+  fidx: List[u32];
 
   fn empty() QMesh {
     new QMesh(List[Vec3].empty(), List[u32].empty(), List[f32].empty(), List[u32].empty(), List[u32].empty())
   }
 
-  fn faceCount(self &) usize { fcount.len() }
+  fn faceCount(self: &) usize { fcount.len() }
 
-  fn addVertex(self &mut, p Vec3, fl u32, r f32) u32 {
+  fn addVertex(self: &mut, p: Vec3, fl: u32, r: f32) u32 {
     pos.push(p); flag.push(fl); rho.push(r);
     u32.from(pos.len() - 1usize)
   }
 
-  fn addFace(self &mut, vs &List[u32]) {
+  fn addFace(self: &mut, vs: &List[u32]) {
     fcount.push(u32.from(vs.len()));
     var i = 0usize;
     while i < vs.len() { fidx.push(*vs[i]); i = i + 1usize; }
@@ -32,7 +32,7 @@ struct QMesh {
 
 // A polygon of n corners vs (counterclockwise) cut into quads round a vertex
 // at its middle (and one triangle if n is odd); 3 and 4 are left whole
-fn addPolygon(qm &mut QMesh, vs &List[u32], splits &mut usize) {
+fn addPolygon(qm: &mut QMesh, vs: &List[u32], splits: &mut usize) {
   let n = vs.len();
   if n <= 4usize { qm.addFace(vs); return; }
   var c = zero3();
@@ -61,7 +61,7 @@ fn addPolygon(qm &mut QMesh, vs &List[u32], splits &mut usize) {
 }
 
 // The faces of the extraction on the vertices they use
-fn assemble(qd &Quads, splits &mut usize) QMesh {
+fn assemble(qd: &Quads, splits: &mut usize) QMesh {
   var qm = QMesh.empty();
   var remap = List[u32].withCapacity(qd.pos.len());
   var i = 0usize;
@@ -90,7 +90,7 @@ fn assemble(qd &Quads, splits &mut usize) QMesh {
 // Boundary loops of up to 'maxLoop' corners that lie on the surface (their
 // middle within half a lattice step of it) closed with a face (quads round a
 // vertex at the middle if there are more than four corners). Returns how many.
-fn fillHoles(qm &mut QMesh, idx &SurfaceIndex, maxLoop usize, splits &mut usize) usize {
+fn fillHoles(qm: &mut QMesh, idx: &SurfaceIndex, maxLoop: usize, splits: &mut usize) usize {
   // Directed edges as the faces have them
   var keys = List[u64].empty();
   var at = 0usize;
@@ -168,18 +168,18 @@ fn fillHoles(qm &mut QMesh, idx &SurfaceIndex, maxLoop usize, splits &mut usize)
 }
 
 struct TriEdge {
-  k u64;
-  f u32;
+  k: u64;
+  f: u32;
 }
 
-fn cornerAngle(a Vec3, b Vec3, c Vec3) f32 {
+fn cornerAngle(a: Vec3, b: Vec3, c: Vec3) f32 {
   acos(clampf(unit(a - b).dot(unit(c - b)), -1., 1.)) * 57.29578
 }
 
 // Pairs of triangles sharing an edge merged into one quad where all four
 // corners come out between 35 and 145 degrees (as Blender's Tris to Quads),
 // greedily from the first. Returns how many pairs were merged.
-fn pairTriangles(qm &mut QMesh) usize {
+fn pairTriangles(qm: &mut QMesh) usize {
   var es = List[TriEdge].empty();
   var at = 0usize;
   var starts = List[usize].empty();
@@ -197,7 +197,7 @@ fn pairTriangles(qm &mut QMesh) usize {
     at = at + n;
     f = f + 1usize;
   }
-  es.sortBy(fn(a &TriEdge, b &TriEdge) i32 { if a.k < b.k {-1i32} elif a.k > b.k {1i32} else {0i32} });
+  es.sortBy(fn(a: &TriEdge, b: &TriEdge) i32 { if a.k < b.k {-1i32} elif a.k > b.k {1i32} else {0i32} });
   var gone = List[u32].empty();
   gone.resize(qm.fcount.len(), 0u32);
   var quads = List[u32].empty();   // four vertices each
@@ -278,7 +278,7 @@ fn pairTriangles(qm &mut QMesh) usize {
 }
 
 // The first place in a sorted list not below k
-fn lowerBound(keys &List[u64], k u64) usize {
+fn lowerBound(keys: &List[u64], k: u64) usize {
   var lo = 0usize;
   var hi = keys.len();
   while lo < hi {
@@ -292,11 +292,11 @@ fn lowerBound(keys &List[u64], k u64) usize {
 
 // The straight pieces of the creases, boundaries and guides, to snap vertices to
 struct Lines {
-  a List[Vec3];
-  b List[Vec3];
-  kind List[u32];
+  a: List[Vec3];
+  b: List[Vec3];
+  kind: List[u32];
 
-  fn of(w &Work) Lines {
+  fn of(w: &Work) Lines {
     var l = new Lines(List[Vec3].empty(), List[Vec3].empty(), List[u32].empty());
     var i = 0usize;
     while i < w.fa.len() {
@@ -309,7 +309,7 @@ struct Lines {
   }
 
   // The point of the lines of the kinds in 'bits' nearest p, and how far
-  fn nearest(self &, p Vec3, bits u32) Vec3 {
+  fn nearest(self: &, p: Vec3, bits: u32) Vec3 {
     var best = p;
     var bd = 3.0e38f;
     var i = 0usize;
@@ -335,7 +335,7 @@ const SnapBits = 7u32;      // FeatBoundary | FeatCrease | FeatGuide
 // moves along it only (its neighbours on the line averaged) and is snapped to
 // it; a corner stays; the rest move toward their neighbours' mean in the
 // tangent plane and go to the nearest point of the source.
-fn settle(pm &mut PolyMesh, flag &List[u32], idx &SurfaceIndex, lines &Lines, iters u32, axis i32, off f32, project bool) {
+fn settle(pm: &mut PolyMesh, flag: &List[u32], idx: &SurfaceIndex, lines: &Lines, iters: u32, axis: i32, off: f32, project: bool) {
   let nv = pm.vertexCount();
   var stack = List[u32].empty();
   var it = 0u32;
@@ -387,7 +387,7 @@ fn settle(pm &mut PolyMesh, flag &List[u32], idx &SurfaceIndex, lines &Lines, it
 
 // The reflection of the mesh in a plane joined to it, vertices on the plane
 // shared, the copy's faces reversed
-fn mirrorJoin(qm &QMesh, axis u32, off f32) QMesh {
+fn mirrorJoin(qm: &QMesh, axis: u32, off: f32) QMesh {
   var out = QMesh.empty();
   let nv = qm.pos.len();
   var i = 0usize;
@@ -430,6 +430,6 @@ fn mirrorJoin(qm &QMesh, axis u32, off f32) QMesh {
 }
 
 // A PolyMesh of it; what could not be added is said
-fn toPoly(qm &QMesh, problems &mut List[String]) PolyMesh {
+fn toPoly(qm: &QMesh, problems: &mut List[String]) PolyMesh {
   PolyMesh.fromPolygons(qm.pos.view(), qm.fcount.view(), qm.fidx.view(), problems)
 }

@@ -34,25 +34,25 @@ import actors;
 
 // A connection: closing it prints a line
 struct Conn {
-  pub url u64;
-  fn final(self &amp;uni) { print &lt;- "  close ", url, "\n"; }
+  pub url: u64;
+  fn final(self: &amp;uni) { print &lt;- "  close ", url, "\n"; }
 }
 
 struct Buffer {
-  pub size u64;
+  pub size: u64;
 }
 
 actor Net {
-  pub async do read(self, url u64) Buffer {
+  pub async do read(self, url: u64) Buffer {
     print &lt;- "  read ", url, "\n";
     new Buffer(url * 100u64)
   }
 }
 
 actor Fetcher {
-  net Net;
+  net: Net;
 
-  pub async do fetch(self, url u64) Buffer {
+  pub async do fetch(self, url: u64) Buffer {
     let conn = new Conn(url);             // opened
     let buf = await net.read(conn.url);   // conn waits, with the method
     print &lt;- "  fetched ", buf.size, "\n";
@@ -61,10 +61,10 @@ actor Fetcher {
 }
 
 actor Page {
-  fetcher Fetcher;
-  body u64;
+  fetcher: Fetcher;
+  body: u64;
 
-  pub async do load(self, u u64) {
+  pub async do load(self, u: u64) {
     print &lt;- "load ", u, "\n";
     let b = await fetcher.fetch(u);       // pauses here
     body = b.size;                        // and resumes when the answer comes
@@ -137,15 +137,15 @@ loaded 700
 		down, onto a helper or a type the actor owns:</p>
 <pre>
 actor Reporter {
-  clock Clock;
-  last u64;
+  clock: Clock;
+  last: u64;
 
   pub async do report(self) {
     let t = await clock.now();    // the 'await', at the top of the behaviour
     last = self.format(t);        // the synchronous work, pushed down
   }
 
-  fn format(self &amp;, t u64) u64 {
+  fn format(self: &amp;, t: u64) u64 {
     t * 1000u64 + last
   }
 
@@ -170,8 +170,8 @@ owns, to run between the awaits.
 		order:</p>
 <pre>
 struct Note {
-  pub n u64;
-  fn final(self &amp;uni) {say("  drop", n);}
+  pub n: u64;
+  fn final(self: &amp;uni) {say("  drop", n);}
 }
 
 actor Clock {
@@ -179,7 +179,7 @@ actor Clock {
 }
 
 actor Logger {
-  clock Clock;
+  clock: Clock;
 
   pub async do log(self) u64 {
     let first = new Note(1u64);
@@ -214,10 +214,10 @@ actor Logger {
 		a function, since what it points at outlives every function; for the same reason it crosses an
 		<span class="pre">await</span>:
 <pre>
-let limit u64 = 100u64;
+let limit: u64 = 100u64;
 
 actor Gauge {
-  clock Clock;
+  clock: Clock;
 
   pub async do check(self) u64 {
     let max = &amp;limit;                     // a borrow of a global: 'static
@@ -231,11 +231,11 @@ actor Gauge {
 		as long as the borrow lasts, so the borrow ends at the <span class="pre">await</span> and the lock is given back
 		there. To reach the value again, the method borrows it again:
 <pre>
-struct Count {pub n u64;}
+struct Count {pub n: u64;}
 
 actor Tally {
-  count Arc[Mutex, Count];
-  clock Clock;
+  count: Arc[Mutex, Count];
+  clock: Clock;
 
   pub async do bump(self) u64 {
     let c = &amp;mut *count;                  // takes the lock
@@ -262,8 +262,8 @@ actor Tally {
 		after its end gets, pointing at the <span class="pre">await</span> as where it ended:</p>
 <pre>
 actor Meter {
-  clock Clock;
-  reading u64;
+  clock: Clock;
+  reading: u64;
 
   pub async do stale(self) {
     let r = &amp;reading;
@@ -299,11 +299,11 @@ actor Counter {
 }
 
 actor Shelf {
-  counter Counter;
-  slots Array[u64, 4];
-  total u64;
+  counter: Counter;
+  slots: Array[u64, 4];
+  total: u64;
 
-  fn put(self, n u64) {total = total + n;}
+  fn put(self, n: u64) {total = total + n;}
 
   pub async do stock(self) u64 {
     slots[await counter.next()] = 7u64;   // slots is reached after the 'await'
@@ -359,13 +359,13 @@ never what a call made. Bind what the call makes to a local first, and use the l
 		before the list is borrowed, in the order written, and appended after it:</p>
 <pre>
 actor Lane {
-  pub async do pick(self, n u64) u64 {n}
+  pub async do pick(self, n: u64) u64 {n}
 }
 
 actor Board {
-  lane Lane;
-  cells Array[Array[u64, 3], 2];
-  marks List[u64];
+  lane: Lane;
+  cells: Array[Array[u64, 3], 2];
+  marks: List[u64];
 
   pub async do fill(self) u64 {
     cells[await lane.pick(1u64)][await lane.pick(2u64)] = 5u64;                 // cells[1][2]
@@ -384,10 +384,10 @@ actor Board {
 		answers once, when it returns, from whichever path it returns by:</p>
 <pre>
 actor Cache {
-  net Net;
-  hot u64;
+  net: Net;
+  hot: u64;
 
-  pub async do get(self, url u64) u64 {
+  pub async do get(self, url: u64) u64 {
     if url == hot {
       return 1u64;                        // answered here, at once
     }
@@ -409,11 +409,11 @@ actor Cache {
 		their answers collected later:</p>
 <pre>
 actor Stock {
-  pub async do price(self, item u64) u64 {item * 3u64}
+  pub async do price(self, item: u64) u64 {item * 3u64}
 }
 
 actor Basket {
-  stock Stock;
+  stock: Stock;
 
   pub async do total(self) u64 {
     let apples = stock.price(4u64);     // sent: a future comes back at once
@@ -450,24 +450,24 @@ actor Basket {
 		<span class="pre">await</span> could take the value again:</p>
 <pre>
 struct Report is Move {
-  pub lines u64;
+  pub lines: u64;
 }
 
 actor Printer {
-  pub async do render(self, n u64) Report {new Report(n * 2u64)}
+  pub async do render(self, n: u64) Report {new Report(n * 2u64)}
 }
 
 actor Archive {
-  pub async do keep(self, f actors.Future[u64]) u64 {
+  pub async do keep(self, f: actors.Future[u64]) u64 {
     let n = await f;                    // the value arrives here
     n + 1u64
   }
 }
 
 actor Office {
-  printer Printer;
-  stock Stock;
-  archive Archive;
+  printer: Printer;
+  stock: Stock;
+  archive: Archive;
 
   pub async do file(self) u64 {
     let r = printer.render(10u64);      // a Future[Report], which moves
@@ -485,7 +485,7 @@ actor Office {
 		<span class="pre">r</span> a second time is refused, as any use of a moved value is:</p>
 <pre>
 actor Desk {
-  printer Printer;
+  printer: Printer;
 
   pub async do twice(self) u64 {
     let r = printer.render(10u64);
@@ -536,8 +536,8 @@ actor Log {
 }
 
 actor Writer {
-  log Log;
-  saved bool;
+  log: Log;
+  saved: bool;
 
   pub async do save(self) {
     await log.flush();            // refused: flush sends no answer
@@ -554,7 +554,7 @@ status saying whether it worked -- and await that.
 		it sends the message and forgets it.</p>
 <pre>
 actor Keeper {
-  log Log;
+  log: Log;
 
   pub async do keep(self) {
     log.flush();                  // sent, and forgotten
@@ -578,9 +578,9 @@ await that.
 		legal, but poor practice:</p>
 <pre>
 actor Sizes {
-  net Net;
+  net: Net;
 
-  pub async do total(self, n u64) u64 {
+  pub async do total(self, n: u64) u64 {
     var sum = 0u64;
     each i in 0u64 ..&lt; n {
       let b = await net.read(i);          // one request at a time
@@ -624,8 +624,8 @@ actor Sizes {
 		<span class="pre">compute</span> is a plain function:</p>
 <pre>
 actor Waiter {
-  clock Clock;
-  last u64;
+  clock: Clock;
+  last: u64;
 
   pub async do onFunction(self) {
     last = await compute();       // refused: compute's u64 is no future

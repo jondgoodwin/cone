@@ -10,20 +10,20 @@
 // on it.
 mod module_c_fnref_reject;
 
-struct Vec3 { pub x f32; pub y f32; pub z f32; }
+struct Vec3 { pub x: f32; pub y: f32; pub z: f32; }
 
 // A function with a C name, C's convention: its reference is '&fn @c'
-fn @c cfun(v Vec3) f32 { v.x }
+fn @c cfun(v: Vec3) f32 { v.x }
 // Cone's own: its reference is a plain '&fn'
-fn cone(v Vec3) f32 { v.y }
+fn cone(v: Vec3) f32 { v.y }
 
 struct Holder {
-  pub viaC &fn @c (Vec3) f32;
-  pub viaCone &fn(Vec3) f32;
+  pub viaC: &fn @c (Vec3) f32;
+  pub viaCone: &fn(Vec3) f32;
 }
 
-fn takesC(f &fn @c (Vec3) f32) f32 { f(new Vec3(1., 2., 3.)) }
-fn takesCone(f &fn(Vec3) f32) f32 { f(new Vec3(1., 2., 3.)) }
+fn takesC(f: &fn @c (Vec3) f32) f32 { f(new Vec3(1., 2., 3.)) }
+fn takesCone(f: &fn(Vec3) f32) f32 { f(new Vec3(1., 2., 3.)) }
 
 fn returnsC() &fn @c (Vec3) f32 {     //~ ErrorInvType:15 "This is the declared function's return type" follow-on
   &cone                             //~ ErrorFnRefConv:3 "is a reference to a Cone function"
@@ -34,20 +34,20 @@ fn returnsCone() &fn(Vec3) f32 {      //~ ErrorInvType:18 "This is the declared 
 
 fn main() {
   // The same kind on both sides compiles
-  let okC &fn @c (Vec3) f32 = &cfun;
-  let okCone &fn(Vec3) f32 = &cone;
+  let okC: &fn @c (Vec3) f32 = &cfun;
+  let okCone: &fn(Vec3) f32 = &cone;
   takesC(&cfun);
   takesCone(&cone);
   let okHolder = new Holder(&cfun, &cone);
 
   // An initializer
-  let a &fn @c (Vec3) f32 = &cone;    //~ ErrorFnRefConv:29 "Cone function, and `&fn @c (Vec3) f32`"
-  let b &fn(Vec3) f32 = &cfun;        //~ ErrorFnRefConv:25 "C-named function, and `&fn(Vec3) f32`"
+  let a: &fn @c (Vec3) f32 = &cone;    //~ ErrorFnRefConv:30 "Cone function, and `&fn @c (Vec3) f32`"
+  let b: &fn(Vec3) f32 = &cfun;        //~ ErrorFnRefConv:26 "C-named function, and `&fn(Vec3) f32`"
 
   // An assignment
-  var m &fn @c (Vec3) f32 = &cfun;
+  var m: &fn @c (Vec3) f32 = &cfun;
   m = &cone;                          //~ ErrorFnRefConv:7 "Cone function"
-  var n &fn(Vec3) f32 = &cone;
+  var n: &fn(Vec3) f32 = &cone;
   n = &cfun;                          //~ ErrorFnRefConv:7 "C-named function"
 
   // An argument
@@ -61,15 +61,15 @@ fn main() {
                                       //~^ ErrorFnRefConv:29 "is a reference to a C-named function"
 
   // A callable calls in Cone's convention, so a C-named function is none
-  let call &<fn(Vec3) f32 = &cfun;    //~ ErrorFnRefConv:29 "a callable"
-  let callCone &<fn(Vec3) f32 = &cone;
+  let call: &<fn(Vec3) f32 = &cfun;    //~ ErrorFnRefConv:30 "a callable"
+  let callCone: &<fn(Vec3) f32 = &cone;
 
-  // A generic's function signature, '[F fn(...)]', is a Cone function's too
+  // A generic's function signature, '[F: fn(...)]', is a Cone function's too
   boundCone(&cone, new Vec3(1., 2., 3.));
   boundCone(&cfun, new Vec3(1., 2., 3.));   //~ ErrorWhereUnmet:12 "fn @c (Vec3) f32"
 }
 
-fn boundCone[F fn(v Vec3) f32](f &F, v Vec3) f32 { f(v) }
+fn boundCone[F: fn(v: Vec3) f32](f: &F, v: Vec3) f32 { f(v) }
 
 // '@c' marks a plain function reference, not a callable
-fn viaCallable(f &<fn @c (Vec3) f32) {}   //~ ErrorFnRefConv:18 "A callable"
+fn viaCallable(f: &<fn @c (Vec3) f32) {}   //~ ErrorFnRefConv:19 "A callable"

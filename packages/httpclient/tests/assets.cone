@@ -64,27 +64,27 @@ import httpclient use *;
 const tokSrv = 100u64;
 
 struct Srv {
-  pub drv httpconn.Driver;
-  pub pool Pool;
-  pub accepted u64;
-  pub open u64;
-  pub maxOpen u64;
-  pub requests u64;
-  pub closedOnce bool;
-  pub order List[String];
-  pub reqs List[httpconn.ReqId];
-  pub conns List[httpconn.ConnId];
-  pub methods List[Method];
-  pub targets List[String];
-  pub bodies List[String];
-  pub auths List[String];
-  pub cookies List[String];
-  pub streams List[httpconn.ReqId];
-  pub sent List[u64];
-  pub totals List[u64];
+  pub drv: httpconn.Driver;
+  pub pool: Pool;
+  pub accepted: u64;
+  pub open: u64;
+  pub maxOpen: u64;
+  pub requests: u64;
+  pub closedOnce: bool;
+  pub order: List[String];
+  pub reqs: List[httpconn.ReqId];
+  pub conns: List[httpconn.ConnId];
+  pub methods: List[Method];
+  pub targets: List[String];
+  pub bodies: List[String];
+  pub auths: List[String];
+  pub cookies: List[String];
+  pub streams: List[httpconn.ReqId];
+  pub sent: List[u64];
+  pub totals: List[u64];
 }
 
-fn server(pool Pool) Srv {
+fn server(pool: Pool) Srv {
   new Srv(drv: httpconn.Driver.make(httpconn.Config.make(), pool), pool: pool, accepted: 0u64,
     open: 0u64, maxOpen: 0u64, requests: 0u64, closedOnce: false, order: List[String].empty(),
     reqs: List[httpconn.ReqId].empty(), conns: List[httpconn.ConnId].empty(), methods: List[Method].empty(),
@@ -93,7 +93,7 @@ fn server(pool Pool) Srv {
     totals: List[u64].empty())
 }
 
-fn listen(sv &mut Srv, lp &mut Loop) u16 {
+fn listen(sv: &mut Srv, lp: &mut Loop) u16 {
   var port = 0u16;
   match sv.drv.listen(lp, SocketAddr.localhost(0u16), httpconn.Sink.Here(tokSrv)) {
     case let r Ok {
@@ -107,7 +107,7 @@ fn listen(sv &mut Srv, lp &mut Loop) u16 {
   port
 }
 
-fn reply(sv &mut Srv, req httpconn.ReqId, head bool, status u16, location &Array[u8], body &Array[u8]) {
+fn reply(sv: &mut Srv, req: httpconn.ReqId, head: bool, status: u16, location: &Array[u8], body: &Array[u8]) {
   var h = ResponseHead.make(status);
   if location.len > 0usize {h.headers.add("Location", location);}
   sv.drv.respond(req, h, BodyLength.sized(u64.from(body.len)));
@@ -119,7 +119,7 @@ fn reply(sv &mut Srv, req httpconn.ReqId, head bool, status u16, location &Array
   }
 }
 
-fn number(s &str) u64 {
+fn number(s: &str) u64 {
   match collections.parseUInt(s) {
     case let v Some {v}
     case is None[u64] {0u64}
@@ -127,7 +127,7 @@ fn number(s &str) u64 {
 }
 
 // Stream j's next pieces, as many as the connection takes now
-fn pumpStream(sv &mut Srv, j usize) {
+fn pumpStream(sv: &mut Srv, j: usize) {
   let req = *sv.streams[j];
   while *sv.sent[j] < *sv.totals[j] {
     let at = *sv.sent[j];
@@ -150,7 +150,7 @@ fn pumpStream(sv &mut Srv, j usize) {
   dropStream(sv, j);
 }
 
-fn dropStream(sv &mut Srv, j usize) {
+fn dropStream(sv: &mut Srv, j: usize) {
   let last = sv.streams.len() - 1usize;
   sv.streams.swap(j, last);
   sv.sent.swap(j, last);
@@ -160,7 +160,7 @@ fn dropStream(sv &mut Srv, j usize) {
   sv.totals.pop();
 }
 
-fn findStream(sv &Srv, req httpconn.ReqId) usize {
+fn findStream(sv: &Srv, req: httpconn.ReqId) usize {
   var j = 0usize;
   while j < sv.streams.len() {
     if *sv.streams[j] == req {return j;}
@@ -170,7 +170,7 @@ fn findStream(sv &Srv, req httpconn.ReqId) usize {
 }
 
 // The answer to request k, read whole
-fn answer(sv &mut Srv, lp &mut Loop, k usize) {
+fn answer(sv: &mut Srv, lp: &mut Loop, k: usize) {
   let req = *sv.reqs[k];
   let full = sv.targets[k].copy();
   let t = full.view();
@@ -236,7 +236,7 @@ fn answer(sv &mut Srv, lp &mut Loop, k usize) {
   }
 }
 
-fn findReq(sv &Srv, req httpconn.ReqId) usize {
+fn findReq(sv: &Srv, req: httpconn.ReqId) usize {
   var k = 0usize;
   while k < sv.reqs.len() {
     if *sv.reqs[k] == req {return k;}
@@ -245,7 +245,7 @@ fn findReq(sv &Srv, req httpconn.ReqId) usize {
   sv.reqs.len()
 }
 
-fn forget(sv &mut Srv, k usize) {
+fn forget(sv: &mut Srv, k: usize) {
   let last = sv.reqs.len() - 1usize;
   sv.reqs.swap(k, last);
   sv.conns.swap(k, last);
@@ -263,14 +263,14 @@ fn forget(sv &mut Srv, k usize) {
   sv.cookies.pop();
 }
 
-fn fieldOr(h &Headers, name &str) String {
+fn fieldOr(h: &Headers, name: &str) String {
   match h.get(name) {
     case let v Some {String.fromBytes(v)}
     case is None[&Array[u8]] {String.from("-")}
   }
 }
 
-fn serve(sv &mut Srv, lp &mut Loop, e &mut httpconn.Event) {
+fn serve(sv: &mut Srv, lp: &mut Loop, e: &mut httpconn.Event) {
   let kind = e.kind;
   if kind == httpconn.EventKind.Accepted {
     sv.accepted = sv.accepted + 1u64;
@@ -308,7 +308,7 @@ fn serve(sv &mut Srv, lp &mut Loop, e &mut httpconn.Event) {
 
 // One turn of the loop: the client's completions to it, the server's to
 // its driver; the server's events answered; the client's appended to out
-fn step(cl &mut Client, sv &mut Srv, lp &mut Loop, out &mut List[Event], until Instant) {
+fn step(cl: &mut Client, sv: &mut Srv, lp: &mut Loop, out: &mut List[Event], until: Instant) {
   var sevs = List[httpconn.Event].empty();
   cl.pump(lp, out);
   sv.drv.pump(lp, &mut sevs);
@@ -337,13 +337,13 @@ fn step(cl &mut Client, sv &mut Srv, lp &mut Loop, out &mut List[Event], until I
 }
 
 // The server's every connection reset, and its buffers home
-fn stopServer(sv &mut Srv, lp &mut Loop) {
+fn stopServer(sv: &mut Srv, lp: &mut Loop) {
   sv.drv.abortAll(lp);
   var sevs = List[httpconn.Event].empty();
   sv.drv.pump(lp, &mut sevs);
 }
 
-fn url(port u16, path &str) String {
+fn url(port: u16, path: &str) String {
   var u = String.from("http://127.0.0.1:");
   u.appendUInt(u64.from(port));
   u.append(path);
@@ -355,15 +355,15 @@ fn url(port u16, path &str) String {
 // ---------------------------------------------------------------------------
 
 struct Seen {
-  pub status u16;
-  pub body String;
-  pub url String;
-  pub kinds String;          // each event's kind's first letter, in order
-  pub finals u64;
-  pub last EventKind;
-  pub failure String;
-  pub stage Stage;
-  pub timing Timing;
+  pub status: u16;
+  pub body: String;
+  pub url: String;
+  pub kinds: String;          // each event's kind's first letter, in order
+  pub finals: u64;
+  pub last: EventKind;
+  pub failure: String;
+  pub stage: Stage;
+  pub timing: Timing;
 }
 
 fn seen() Seen {
@@ -371,7 +371,7 @@ fn seen() Seen {
     last: EventKind.Done, failure: String.empty(), stage: Stage.Url, timing: Timing.zero())
 }
 
-fn note(cl &mut Client, s &mut Seen, e &mut Event) {
+fn note(cl: &mut Client, s: &mut Seen, e: &mut Event) {
   let n = eventName(e.kind);
   s.kinds.appendByte(n[0usize]);
   if e.kind == EventKind.Response {
@@ -392,7 +392,7 @@ fn note(cl &mut Client, s &mut Seen, e &mut Event) {
 }
 
 // Drive until fetch id has its final answer, its events noted in s
-fn finishOf(cl &mut Client, sv &mut Srv, lp &mut Loop, id FetchId, s &mut Seen) {
+fn finishOf(cl: &mut Client, sv: &mut Srv, lp: &mut Loop, id: FetchId, s: &mut Seen) {
   var out = List[Event].empty();
   let giveUp = Instant.now() + Duration.fromSeconds(10i64);
   let before = s.finals;
@@ -410,7 +410,7 @@ fn finishOf(cl &mut Client, sv &mut Srv, lp &mut Loop, id FetchId, s &mut Seen) 
 }
 
 // A request sent and driven to its final answer: what was seen
-fn fetchSeen(cl &mut Client, sv &mut Srv, lp &mut Loop, r Request) Seen {
+fn fetchSeen(cl: &mut Client, sv: &mut Srv, lp: &mut Loop, r: Request) Seen {
   var s = seen();
   let id = cl.send(lp, r, Sink.Here(1u64));
   finishOf(cl, sv, lp, id, &mut s);
@@ -418,7 +418,7 @@ fn fetchSeen(cl &mut Client, sv &mut Srv, lp &mut Loop, r Request) Seen {
 }
 
 // Drive for a while
-fn idleFor(cl &mut Client, sv &mut Srv, lp &mut Loop, d Duration) {
+fn idleFor(cl: &mut Client, sv: &mut Srv, lp: &mut Loop, d: Duration) {
   var out = List[Event].empty();
   let until = Instant.now() + d;
   while Instant.now() < until {
@@ -438,17 +438,17 @@ const regions = 4u32;
 
 // The tier: what it wants, and what it has heard of each tile
 struct Tier {
-  pub ids List[FetchId];
-  pub intents List[Intent];
-  pub scores List[i64];
-  pub regions List[u32];
-  pub finals List[u32];          // final answers heard
-  pub kinds List[EventKind];     // the last one
-  pub after List[u32];           // events heard after a final answer
-  pub bodies List[String];
-  pub dispatched List[Instant];
-  pub groups List[CancelGroup];  // one per region
-  pub frames u32;
+  pub ids: List[FetchId];
+  pub intents: List[Intent];
+  pub scores: List[i64];
+  pub regions: List[u32];
+  pub finals: List[u32];          // final answers heard
+  pub kinds: List[EventKind];     // the last one
+  pub after: List[u32];           // events heard after a final answer
+  pub bodies: List[String];
+  pub dispatched: List[Instant];
+  pub groups: List[CancelGroup];  // one per region
+  pub frames: u32;
 }
 
 fn tier() Tier {
@@ -465,7 +465,7 @@ fn tier() Tier {
 
 // A tile's intent: ten the frame waits on, then in view, likely soon,
 // speculative
-fn intentOf(t u32) Intent {
+fn intentOf(t: u32) Intent {
   if t < 10u32 {Intent.Urgent}
   elif t < 60u32 {Intent.Visible}
   elif t < 110u32 {Intent.Prefetch}
@@ -473,16 +473,16 @@ fn intentOf(t u32) Intent {
 }
 
 // Its screen-space error: a score, all different
-fn errorOf(t u32) i64 {i64.from((t * 37u32) % 163u32)}
+fn errorOf(t: u32) i64 {i64.from((t * 37u32) % 163u32)}
 
-fn tileUrl(port u16, t u32) String {
+fn tileUrl(port: u16, t: u32) String {
   var p = String.from("/order/t");
   p.appendUInt(u64.from(t));
   url(port, p.view())
 }
 
 // Ask for tile t, of region r
-fn want(tr &mut Tier, cl &mut Client, lp &mut Loop, port u16, t u32, intent Intent, score i64, frameEnd Instant) {
+fn want(tr: &mut Tier, cl: &mut Client, lp: &mut Loop, port: u16, t: u32, intent: Intent, score: i64, frameEnd: Instant) {
   let r = t % regions;
   var req = Request.get(tileUrl(port, t).view());
   req.intent = intent;
@@ -501,7 +501,7 @@ fn want(tr &mut Tier, cl &mut Client, lp &mut Loop, port u16, t u32, intent Inte
 }
 
 // The frame's arrival phase: what came, within the budget
-fn arrivals(tr &mut Tier, cl &mut Client, sv &mut Srv, lp &mut Loop, budget Duration) {
+fn arrivals(tr: &mut Tier, cl: &mut Client, sv: &mut Srv, lp: &mut Loop, budget: Duration) {
   var out = List[Event].empty();
   step(cl, sv, lp, &mut out, Instant.now() + budget);
   var k = 0usize;
@@ -526,7 +526,7 @@ fn arrivals(tr &mut Tier, cl &mut Client, sv &mut Srv, lp &mut Loop, budget Dura
 }
 
 // Whether tile a goes before tile b, by the rules
-fn first(tr &Tier, a usize, b usize) bool {
+fn first(tr: &Tier, a: usize, b: usize) bool {
   let ra = intentRank(*tr.intents[a]);
   let rb = intentRank(*tr.intents[b]);
   if ra != rb {return ra < rb;}
@@ -534,12 +534,12 @@ fn first(tr &Tier, a usize, b usize) bool {
   a < b
 }
 
-fn intentRank(i Intent) u32 {
+fn intentRank(i: Intent) u32 {
   if i == Intent.Urgent {0u32} elif i == Intent.Visible {1u32} elif i == Intent.Prefetch {2u32} else {3u32}
 }
 
 // The tiles the origin should see, in order: those not cancelled, sorted
-fn expected(tr &Tier, skip &List[u32]) String {
+fn expected(tr: &Tier, skip: &List[u32]) String {
   var left = List[usize].empty();
   var t = 0usize;
   while t < tr.ids.len() {
@@ -570,7 +570,7 @@ fn expected(tr &Tier, skip &List[u32]) String {
   out
 }
 
-fn orderSince(sv &Srv, from usize) String {
+fn orderSince(sv: &Srv, from: usize) String {
   var out = String.empty();
   var k = from;
   while k < sv.order.len() {
@@ -586,7 +586,7 @@ fn orderSince(sv &Srv, from usize) String {
 
 // One run of the tier over a client with 'conns' connections to the
 // origin: what it checked
-fn run(pool Pool, lp &mut Loop, sv &mut Srv, port u16, conns u32, exactOrder bool) {
+fn run(pool: Pool, lp: &mut Loop, sv: &mut Srv, port: u16, conns: u32, exactOrder: bool) {
   var cfg = Config.make();
   cfg.maxPerOrigin = conns;
   var cl = Client.make(cfg, pool);

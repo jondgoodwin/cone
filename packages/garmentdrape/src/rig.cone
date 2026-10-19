@@ -19,17 +19,17 @@ pub const PROXY_BOX = 2u32;
 
 // One collision shape on a bone, in the bone's frame in the bind pose
 pub struct Proxy {
-  pub bone usize;
-  pub kind u32;          // PROXY_CAPSULE or PROXY_BOX
-  pub a Vec3;            // a capsule's start; a box's centre
-  pub b Vec3;            // a capsule's end; a box's half extents
-  pub radius f32;        // a capsule's radius
-  pub rotation Quat;     // a box's orientation
+  pub bone: usize;
+  pub kind: u32;          // PROXY_CAPSULE or PROXY_BOX
+  pub a: Vec3;            // a capsule's start; a box's centre
+  pub b: Vec3;            // a capsule's end; a box's half extents
+  pub radius: f32;        // a capsule's radius
+  pub rotation: Quat;     // a box's orientation
 }
 
 // The signed distance from 'p' to a proxy posed by 'model' (the bone's model transform), negative inside; for a box
 // outside, the distance to the box (exact); inside, the depth to the nearest face
-pub fn proxyDistance(pr &Proxy, model &Transform3, p Vec3) f32 {
+pub fn proxyDistance(pr: &Proxy, model: &Transform3, p: Vec3) f32 {
   if pr.kind == PROXY_CAPSULE {
     let a = model.transformPoint(pr.a);
     let b = model.transformPoint(pr.b);
@@ -54,14 +54,14 @@ pub fn proxyDistance(pr &Proxy, model &Transform3, p Vec3) f32 {
 
 // The three eigenvectors of a symmetric 3 x 3 matrix, longest first
 struct Eigen3 {
-  e1 Vec3;
-  e2 Vec3;
-  e3 Vec3;
+  e1: Vec3;
+  e2: Vec3;
+  e3: Vec3;
 }
 
 // Jacobi's method on [c00 c01 c02; c01 c11 c12; c02 c12 c22]: rotate away the largest off-diagonal element until none is
 // left; the columns of the product of the rotations are the eigenvectors
-fn eigen3(c00 f32, c01 f32, c02 f32, c11 f32, c12 f32, c22 f32) Eigen3 {
+fn eigen3(c00: f32, c01: f32, c02: f32, c11: f32, c12: f32, c22: f32) Eigen3 {
   var a = [c00, c01, c02, c01, c11, c12, c02, c12, c22];
   var v = [1.f, 0., 0., 0., 1., 0., 0., 0., 1.];
   var sweep = 0;
@@ -123,23 +123,23 @@ fn eigen3(c00 f32, c01 f32, c02 f32, c11 f32, c12 f32, c22 f32) Eigen3 {
     new Vec3(v[order[2]], v[3usize + order[2]], v[6usize + order[2]]))
 }
 
-pub fn fabsf(a f32) f32 inline { libc.fabsf(a) }
-pub fn fminf(a f32, b f32) f32 inline { if a < b { a } else { b } }
-pub fn fmaxf(a f32, b f32) f32 inline { if a > b { a } else { b } }
-pub fn fclampf(v f32, lo f32, hi f32) f32 inline { if v < lo { lo } elif v > hi { hi } else { v } }
-pub fn smooth01(x f32) f32 { let t = fclampf(x, 0., 1.); t * t * (3. - 2. * t) }
+pub fn fabsf(a: f32) f32 inline { libc.fabsf(a) }
+pub fn fminf(a: f32, b: f32) f32 inline { if a < b { a } else { b } }
+pub fn fmaxf(a: f32, b: f32) f32 inline { if a > b { a } else { b } }
+pub fn fclampf(v: f32, lo: f32, hi: f32) f32 inline { if v < lo { lo } elif v > hi { hi } else { v } }
+pub fn smooth01(x: f32) f32 { let t = fclampf(x, 0., 1.); t * t * (3. - 2. * t) }
 
 // A body: skeleton, bind pose, skinned mesh and the proxies fitted to it
 pub struct BodyRig {
-  pub skeleton Skeleton;
-  pub restModels List[Transform3];     // each bone's model transform in the bind pose
-  pub bindInverse List[Mat4];          // and its inverse
-  pub mesh Mesh;                       // the body as modelled (the bind pose)
-  pub skin Skin;                       // four joints and weights a vertex of 'mesh'
-  pub proxies List[Proxy];
+  pub skeleton: Skeleton;
+  pub restModels: List[Transform3];     // each bone's model transform in the bind pose
+  pub bindInverse: List[Mat4];          // and its inverse
+  pub mesh: Mesh;                       // the body as modelled (the bind pose)
+  pub skin: Skin;                       // four joints and weights a vertex of 'mesh'
+  pub proxies: List[Proxy];
 
   // A rig from a skeleton and a skinned mesh: the bind pose is the skeleton's rest pose
-  pub fn make(skeleton Skeleton, mesh Mesh, skin Skin) BodyRig {
+  pub fn make(skeleton: Skeleton, mesh: Mesh, skin: Skin) BodyRig {
     var models = List[Transform3].empty();
     let rp = skeleton.restPose();
     skeleton.modelTransforms(&rp, &mut models);
@@ -153,10 +153,10 @@ pub struct BodyRig {
     new BodyRig(skeleton, models, inv, mesh, skin, proxies)
   }
 
-  pub fn boneCount(self &) usize { skeleton.boneCount() }
+  pub fn boneCount(self: &) usize { skeleton.boneCount() }
 
   // The skinning matrices for a pose: bone models times the bind pose's inverses, one a bone
-  pub fn skinMatrices(self &, models &List[Transform3], out &mut List[Mat4]) {
+  pub fn skinMatrices(self: &, models: &List[Transform3], out: &mut List[Mat4]) {
     out.clear();
     var i = 0usize;
     while i < models.len() {
@@ -167,7 +167,7 @@ pub struct BodyRig {
 
   // The colliders the proxies make in the world with the bones at 'models', each grown by 'inflate' metres
   // (a layer under it: the thickness of what is worn beneath)
-  pub fn colliders(self &, models &List[Transform3], inflate f32, out &mut List[Collider]) {
+  pub fn colliders(self: &, models: &List[Transform3], inflate: f32, out: &mut List[Collider]) {
     out.clear();
     var i = 0usize;
     while i < proxies.len() {
@@ -183,7 +183,7 @@ pub struct BodyRig {
   }
 
   // The signed distance from 'p' to the nearest proxy, the bones at 'models', grown by 'inflate'; negative inside
-  pub fn distance(self &, models &List[Transform3], inflate f32, p Vec3) f32 {
+  pub fn distance(self: &, models: &List[Transform3], inflate: f32, p: Vec3) f32 {
     var best = 1e30f;
     var i = 0usize;
     while i < proxies.len() {
@@ -195,7 +195,7 @@ pub struct BodyRig {
   }
 
   // The same, over the proxies of the bones that are `seen` only
-  pub fn distanceSeen(self &, models &List[Transform3], inflate f32, seen &List[bool], p Vec3) f32 {
+  pub fn distanceSeen(self: &, models: &List[Transform3], inflate: f32, seen: &List[bool], p: Vec3) f32 {
     var best = 1e30f;
     var i = 0usize;
     while i < proxies.len() {
@@ -211,7 +211,7 @@ pub struct BodyRig {
   // The bones a garment sees: a bone and everything below it in the skeleton count together (a subtree). With `only`
   // given, just those subtrees; then `ignore`'s subtrees taken out. A bush jacket ignores the arms; a sleeve sees only
   // the arm.
-  pub fn seenBones(self &, only &List[usize], ignore &List[usize]) List[bool] {
+  pub fn seenBones(self: &, only: &List[usize], ignore: &List[usize]) List[bool] {
     var seen = List[bool].empty();
     let n = skeleton.boneCount();
     var b = 0usize;
@@ -228,7 +228,7 @@ pub struct BodyRig {
   }
 
   // Whether bone `b` is one of `roots` or below one
-  pub fn inSubtree(self &, b usize, roots &List[usize]) bool {
+  pub fn inSubtree(self: &, b: usize, roots: &List[usize]) bool {
     var at = i32.from(b);
     while at >= 0i32 {
       var r = 0usize;
@@ -239,7 +239,7 @@ pub struct BodyRig {
   }
 
   // The colliders of the bones that are seen only
-  pub fn collidersSeen(self &, models &List[Transform3], inflate f32, seen &List[bool], out &mut List[Collider]) {
+  pub fn collidersSeen(self: &, models: &List[Transform3], inflate: f32, seen: &List[bool], out: &mut List[Collider]) {
     out.clear();
     var i = 0usize;
     while i < proxies.len() {
@@ -257,7 +257,7 @@ pub struct BodyRig {
   }
 
   // The colliders of the proxies numbered in `which` only (a garment's nearby ones)
-  pub fn collidersFor(self &, models &List[Transform3], inflate f32, which &List[u32], out &mut List[Collider]) {
+  pub fn collidersFor(self: &, models: &List[Transform3], inflate: f32, which: &List[u32], out: &mut List[Collider]) {
     out.clear();
     var k = 0usize;
     while k < which.len() {
@@ -274,7 +274,7 @@ pub struct BodyRig {
 
   // The proxies of the seen bones that come within `reach` metres of any of `points` (in the bind pose): the ones a
   // garment's particles can meet
-  pub fn nearbyProxies(self &, seen &List[bool], points &List[Vec3], reach f32) List[u32] {
+  pub fn nearbyProxies(self: &, seen: &List[bool], points: &List[Vec3], reach: f32) List[u32] {
     var out = List[u32].empty();
     var i = 0usize;
     while i < proxies.len() {
@@ -294,20 +294,20 @@ pub struct BodyRig {
 
   // A rough guide to the nearest bone at the bind pose, by distance to its segment (when a vertex has no
   // weights worth reading)
-  pub fn skinnedPoint(self &, matrices &List[Mat4], v usize, p Vec3) Vec3 {
+  pub fn skinnedPoint(self: &, matrices: &List[Mat4], v: usize, p: Vec3) Vec3 {
     skinPointBy(&skin, v, matrices, p)
   }
 }
 
 // Vertex 'v''s point 'p' under the skinning matrices: render's Skin does the sums
-fn skinPointBy(skin &Skin, v usize, matrices &List[Mat4], p Vec3) Vec3 {
+fn skinPointBy(skin: &Skin, v: usize, matrices: &List[Mat4], p: Vec3) Vec3 {
   skin.skinPoint(v, matrices.view(), p)
 }
 
 // ---- fitting the proxies ----
 
 // A bone's cluster: the vertices it owns (a weight above 0.4 on the bone), in the bone's bind frame
-fn fitProxies(skeleton &Skeleton, models &List[Transform3], mesh &Mesh, skin &Skin) List[Proxy] {
+fn fitProxies(skeleton: &Skeleton, models: &List[Transform3], mesh: &Mesh, skin: &Skin) List[Proxy] {
   var out = List[Proxy].empty();
   let nb = skeleton.boneCount();
   var b = 0usize;
@@ -408,7 +408,7 @@ fn fitProxies(skeleton &Skeleton, models &List[Transform3], mesh &Mesh, skin &Sk
 }
 
 // The rotation whose columns are the orthonormal vectors x, y, z (a right-handed frame)
-fn frameToQuat(x Vec3, y Vec3, z Vec3) Quat {
+fn frameToQuat(x: Vec3, y: Vec3, z: Vec3) Quat {
   // Shepperd's method
   let m00 = x.x; let m10 = x.y; let m20 = x.z;
   let m01 = y.x; let m11 = y.y; let m21 = y.z;

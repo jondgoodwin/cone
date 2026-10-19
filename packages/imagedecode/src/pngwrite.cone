@@ -9,26 +9,26 @@
 
 // How to write the file. Fill in with 'PngWrite.make' and change fields.
 pub struct PngWrite {
-  pub colorType u8;       // 0 grey, 2 RGB, 3 palette, 4 grey+alpha, 6 RGBA
-  pub depth u8;           // 1, 2, 4, 8 or 16, as the colour type allows
-  pub interlace bool;     // Adam7
-  pub filter i32;         // 0 to 4 for every scanline, 5 to choose per scanline
-  pub level i32;          // deflate's level, 0 to 2
-  pub palette List[u8];   // RGB triples, for type 3
-  pub trns List[u8];      // palette alphas, for type 3
-  pub hasKey bool;        // a transparent colour for types 0 and 2 ...
-  pub keyR u16;           // ... its samples (grey in keyR)
-  pub keyG u16;
-  pub keyB u16;
-  pub gamma u32;          // the gAMA chunk's value (gamma * 100000), 0 for none
-  pub srgb bool;          // write an sRGB chunk
+  pub colorType: u8;       // 0 grey, 2 RGB, 3 palette, 4 grey+alpha, 6 RGBA
+  pub depth: u8;           // 1, 2, 4, 8 or 16, as the colour type allows
+  pub interlace: bool;     // Adam7
+  pub filter: i32;         // 0 to 4 for every scanline, 5 to choose per scanline
+  pub level: i32;          // deflate's level, 0 to 2
+  pub palette: List[u8];   // RGB triples, for type 3
+  pub trns: List[u8];      // palette alphas, for type 3
+  pub hasKey: bool;        // a transparent colour for types 0 and 2 ...
+  pub keyR: u16;           // ... its samples (grey in keyR)
+  pub keyG: u16;
+  pub keyB: u16;
+  pub gamma: u32;          // the gAMA chunk's value (gamma * 100000), 0 for none
+  pub srgb: bool;          // write an sRGB chunk
 
-  pub fn make(colorType u8, depth u8) PngWrite {
+  pub fn make(colorType: u8, depth: u8) PngWrite {
     new PngWrite(colorType, depth, false, 5, 2, List[u8].empty(), List[u8].empty(), false, 0u16, 0u16, 0u16, 0u32, false)
   }
 }
 
-fn putBe32(out &mut List[u8], v u32) {
+fn putBe32(out: &mut List[u8], v: u32) {
   out.push(u8.from(v >> 24u32));
   out.push(u8.from((v >> 16u32) & 255u32));
   out.push(u8.from((v >> 8u32) & 255u32));
@@ -36,7 +36,7 @@ fn putBe32(out &mut List[u8], v u32) {
 }
 
 // One chunk: length, the four letters, data, CRC of letters and data
-fn putChunk(out &mut List[u8], crc &Crc32, tag u32, body &Array[u8]) {
+fn putChunk(out: &mut List[u8], crc: &Crc32, tag: u32, body: &Array[u8]) {
   putBe32(out, u32.from(body.len));
   let at = out.len();
   putBe32(out, tag);
@@ -47,7 +47,7 @@ fn putChunk(out &mut List[u8], crc &Crc32, tag u32, body &Array[u8]) {
 }
 
 // The filtered form of a scanline (filter byte first) in 'dst'
-fn filterRow(ft u8, cur &Array[u8], prev &Array[u8], hasPrev bool, len usize, bpp usize, dst &mut List[u8]) {
+fn filterRow(ft: u8, cur: &Array[u8], prev: &Array[u8], hasPrev: bool, len: usize, bpp: usize, dst: &mut List[u8]) {
   dst.clear();
   dst.push(ft);
   var i = 0usize;
@@ -68,7 +68,7 @@ fn filterRow(ft u8, cur &Array[u8], prev &Array[u8], hasPrev bool, len usize, bp
 }
 
 // Pack one scanline of 'n' pixels from samples[at ...] into bytes
-fn packRow(samples &Array[u16], at usize, n usize, channels usize, depth u8, out &mut List[u8]) {
+fn packRow(samples: &Array[u16], at: usize, n: usize, channels: usize, depth: u8, out: &mut List[u8]) {
   out.clear();
   let count = n * channels;
   if depth == 8u8 {
@@ -100,10 +100,10 @@ fn packRow(samples &Array[u16], at usize, n usize, channels usize, depth u8, out
 // row first, each pixel the colour type's channels (grey; red, green, blue;
 // palette index; grey, alpha; red, green, blue, alpha) as numbers below
 // 2^depth. Returns the file's bytes.
-pub fn encodePngSamples(width i32, height i32, samples &Array[u16], o &PngWrite) List[u8] {
+pub fn encodePngSamples(width: i32, height: i32, samples: &Array[u16], o: &PngWrite) List[u8] {
   let crc = Crc32.make();
   var out = List[u8].empty();
-  let sig Array[u8, 8] = [137u8, 80u8, 78u8, 71u8, 13u8, 10u8, 26u8, 10u8];
+  let sig: Array[u8, 8] = [137u8, 80u8, 78u8, 71u8, 13u8, 10u8, 26u8, 10u8];
   var s = 0usize;
   while s < 8usize { out.push(sig[s]); s += 1usize; }
   var ihdr = List[u8].empty();
@@ -225,7 +225,7 @@ pub fn encodePngSamples(width i32, height i32, samples &Array[u16], o &PngWrite)
 // A Raster as a PNG file: RGBA at its depth (8 or 16 bits), or RGB when
 // 'hasAlpha' is false and every alpha is full. An sRGB chunk if the raster's
 // colour space is sRGB.
-pub fn encodePng(r &Raster, level i32) List[u8] {
+pub fn encodePng(r: &Raster, level: i32) List[u8] {
   let n = usize.from(r.width) * usize.from(r.height);
   let rgba = r.hasAlpha;
   var o = PngWrite.make(if rgba {6u8} else {2u8}, if r.depth == 16 {16u8} else {8u8});

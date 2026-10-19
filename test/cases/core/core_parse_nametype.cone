@@ -1,0 +1,66 @@
+// Where a name is followed by its type, a ':' goes between them. The old
+// spelling, the name and then the type with nothing between, is refused with
+// no word about the old way: what it leaves is what the parser says of any
+// stray token.
+//
+// Parse-stage only. One declaration to a case, in the places a name and a
+// type meet: a global, a constant, a function's parameter (with a default, a
+// `self`), a closure's, a function type's, a local and a static. A statement
+// at the global area is read through to its ';', and a parameter list to its
+// closing parenthesis, so a case does not run on into the next. The
+// well-formed spelling of each is in core_nametype, and the other places a
+// type follows a name are in the groups that own them: a field (struct), a
+// type parameter (generic), an enum's integer type (enum).
+
+mod core_parse_nametype;
+
+// A global
+let g1 i64 = 1;          //~ ErrorNoSemi
+                         //~^ ErrorBadGloStmt follow-on
+
+var g2 i64 = 2;          //~ ErrorNoSemi
+                         //~^ ErrorBadGloStmt follow-on
+
+// A constant: the type is not read, so its value is missing
+const K1 i64 = 1;        //~ ErrorNoInit
+                         //~^ ErrorNoSemi follow-on
+                         //~^^ ErrorBadGloStmt follow-on
+
+// A function's parameter, with a default and without
+fn one(n i32) i32 {      //~ ErrorNoRParen
+  n
+}
+
+fn two(a: i32, b i32 = 3) i32 {      //~ ErrorNoRParen
+  a + b
+}
+
+// A method's receiver
+struct Counter {
+  n: i32;
+  fn bump(self &mut) {   //~ ErrorNoRParen
+    n += 1;
+  }
+}
+
+// A parameter of a function type and of a closure
+fn apply(f: &fn(x i32) i32, n: i32) i32 {   //~ ErrorNoRParen
+  f(n)
+}
+
+fn main() {
+  let c = fn (x i32) i32 { x * 2 };   //~ ErrorNoRParen
+  // A local, and a static local
+  let a i32 = 1;         //~ ErrorNoSemi
+  var b i32 = 2;         //~ ErrorNoSemi
+  static var s i32 = 3;  //~ ErrorNoSemi
+  // A local bound by a variant it leaves unless it matches is written without
+  // a ':' (let-else, until the pattern forms are settled); anything else that
+  // is written so is refused
+  let r: Result[i32, i32] = Ok(1);
+  let v Ok = r;          //~ ErrorNoSemi
+  let w Ok = r else { return; };
+  let z: Ok = r else { return; };    //~ ErrorLetElseColon
+  // A ':' with no type after it
+  let q: = 1;            //~ ErrorNoType
+}

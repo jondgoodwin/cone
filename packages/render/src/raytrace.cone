@@ -32,40 +32,40 @@ const RT_KIND_FILM = 2f;
 
 // An instance's look, as rtglass.slang's RtRecord reads it
 struct RtRecord {
-  a Array[f32, 4];                 // base colour rgb (the copy's tint in), metallic
-  b Array[f32, 4];                 // roughness, index of refraction, kind, share that passes
-  c Array[f32, 4];                 // the attenuation colour and distance
-  d Array[f32, 4];                 // the film: least and greatest thickness, index, 1 if there is one
-  e Array[f32, 4];                 // the film's noise: scale, drift, warp, seed
-  f Array[f32, 4];                 // emitted radiance rgb, dispersion
-  geometry Array[u32, 4];          // first normal (in vertices), first index
+  a: Array[f32, 4];                 // base colour rgb (the copy's tint in), metallic
+  b: Array[f32, 4];                 // roughness, index of refraction, kind, share that passes
+  c: Array[f32, 4];                 // the attenuation colour and distance
+  d: Array[f32, 4];                 // the film: least and greatest thickness, index, 1 if there is one
+  e: Array[f32, 4];                 // the film's noise: scale, drift, warp, seed
+  f: Array[f32, 4];                 // emitted radiance rgb, dispersion
+  geometry: Array[u32, 4];          // first normal (in vertices), first index
 }
 
 // A mesh with a bottom-level structure
 struct RtMesh {
-  mesh Ref[MeshSlot];
-  version u32;
-  blas AccelerationStructure;
-  normalBase u32;
-  indexBase u32;
-  usable bool;
+  mesh: Ref[MeshSlot];
+  version: u32;
+  blas: AccelerationStructure;
+  normalBase: u32;
+  indexBase: u32;
+  usable: bool;
 }
 
 pub struct RtScene {
-  pub tlas AccelerationStructure;
-  pub records Buffer;              // the records, a storage buffer (group 3, binding 7)
-  pub normals Buffer;              // every mesh's normals, tight float3s (binding 8)
-  pub indices Buffer;              // every mesh's indices (binding 9)
-  meshes List[RtMesh];
-  normalUsed u32;
-  indexUsed u32;
-  instanceList List[AccelerationStructureInstance];
-  recordList List[RtRecord];
-  resetNext bool;
-  pub count u32;                   // instances in the structure just built
-  pub skipped u32;                 // items left out of it (too many, or not representable)
-  pub built u32;                   // bottom-level structures built so far
-  pub frames u32;                  // structures built so far
+  pub tlas: AccelerationStructure;
+  pub records: Buffer;              // the records, a storage buffer (group 3, binding 7)
+  pub normals: Buffer;              // every mesh's normals, tight float3s (binding 8)
+  pub indices: Buffer;              // every mesh's indices (binding 9)
+  meshes: List[RtMesh];
+  normalUsed: u32;
+  indexUsed: u32;
+  instanceList: List[AccelerationStructureInstance];
+  recordList: List[RtRecord];
+  resetNext: bool;
+  pub count: u32;                   // instances in the structure just built
+  pub skipped: u32;                 // items left out of it (too many, or not representable)
+  pub built: u32;                   // bottom-level structures built so far
+  pub frames: u32;                  // structures built so far
 
   // No ray tracing: not valid
   pub fn none() RtScene {
@@ -73,10 +73,10 @@ pub struct RtScene {
       List[AccelerationStructureInstance].empty(), List[RtRecord].empty(), false, 0u32, 0u32, 0u32, 0u32)
   }
 
-  pub fn isValid(self &) bool { tlas.isValid() && records.isValid() && normals.isValid() && indices.isValid() }
+  pub fn isValid(self: &) bool { tlas.isValid() && records.isValid() && normals.isValid() && indices.isValid() }
 
   // The structure and buffers for a device with ray tracing. Check 'isValid'.
-  pub fn create(device &mut Device) RtScene {
+  pub fn create(device: &mut Device) RtScene {
     var s = RtScene.none();
     if !device.rayTracing { return s; }
     s.tlas = device.createTopLevel(RT_MAX_INSTANCES);
@@ -88,7 +88,7 @@ pub struct RtScene {
 
   // The place of mesh 'h' in 'meshes' if it has a usable structure for 'version', made (and built into 'encoder')
   // if not; -1 if it cannot be made
-  fn meshFor(self &mut, device &mut Device, encoder &mut CommandEncoder, h MeshHandle, m &GpuMesh, version u32) i32 {
+  fn meshFor(self: &mut, device: &mut Device, encoder: &mut CommandEncoder, h: MeshHandle, m: &GpuMesh, version: u32) i32 {
     var i = 0usize;
     var found = false;
     while i < meshes.len() && !found {
@@ -135,8 +135,8 @@ pub struct RtScene {
   // Build this frame's structure from 'items' (the first 'mainEnd' of them): every mesh that is alive and a
   // material that is representable; the bottom-level structures first, into 'encoder', then the top level. The
   // encoder is not in a pass.
-  pub fn update(self &mut, device &mut Device, encoder &mut CommandEncoder, meshPool &Pool[MeshSlot],
-      materialPool &Pool[MaterialSlot], items &List[DrawItem], mainEnd usize) {
+  pub fn update(self: &mut, device: &mut Device, encoder: &mut CommandEncoder, meshPool: &Pool[MeshSlot],
+      materialPool: &Pool[MaterialSlot], items: &List[DrawItem], mainEnd: usize) {
     if resetNext {
       meshes.clear();
       normalUsed = 0u32;
@@ -202,7 +202,7 @@ pub struct RtScene {
 
 // The instance mask of an item with this material: 1 for an opaque surface, 2 for glass or film; 0 if a ray
 // cannot be given it
-fn rtMaskOf(m &MaterialSlot) u32 {
+fn rtMaskOf(m: &MaterialSlot) u32 {
   if m.kind == MATERIAL_PBR {
     let p = m.pbr;
     if p.alphaMode == ALPHA_BLEND {
@@ -216,7 +216,7 @@ fn rtMaskOf(m &MaterialSlot) u32 {
 }
 
 // The record of the material 'm' on a copy tinted 'tint'
-fn rtRecordOf(m &MaterialSlot, tint Color, normalBase u32, indexBase u32) RtRecord {
+fn rtRecordOf(m: &MaterialSlot, tint: Color, normalBase: u32, indexBase: u32) RtRecord {
   var r = new RtRecord([0f, 0f, 0f, 0f], [0f, 0f, 0f, 0f], [1f, 1f, 1f, 1f], [0f, 0f, 0f, 0f], [0f, 0f, 0f, 0f],
     [0f, 0f, 0f, 0f], [normalBase, indexBase, 0u32, 0u32]);
   if m.kind == MATERIAL_PBR {
@@ -247,7 +247,7 @@ fn rtRecordOf(m &MaterialSlot, tint Color, normalBase u32, indexBase u32) RtReco
 
 // spirv-begin pbrxrt.spv PBRXRT_SPIRV
 // Written by tools/shaders/shaders.py from pbrxrt.slang (sha256 856dcfbde1647a0d20cc1f7e65bff746396bd86d64242c6a4dc07794dbc2f27d): do not edit.
-let PBRXRT_SPIRV Array[u32, 96155] = [
+let PBRXRT_SPIRV: Array[u32, 96155] = [
   0x07230203u32, 0x00010500u32, 0x00280000u32, 0x000062cbu32, 0x00000000u32, 0x00020011u32,
   0x00001178u32, 0x00020011u32, 0x00000001u32, 0x000b000au32, 0x5f565053u32, 0x5f52484bu32,
   0x726f7473u32, 0x5f656761u32, 0x66667562u32, 0x735f7265u32, 0x61726f74u32, 0x635f6567u32,

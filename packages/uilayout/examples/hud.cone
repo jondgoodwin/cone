@@ -34,12 +34,12 @@ const GLYPH_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.:/-,+'!?()%";
 const GLYPH_BITS = [11245u32, 27566u32, 14627u32, 27502u32, 31143u32, 31140u32, 14699u32, 23533u32, 29847u32, 4714u32, 23469u32, 18727u32, 24557u32, 27501u32, 11114u32, 27556u32, 11123u32, 27565u32, 14478u32, 29842u32, 23407u32, 23402u32, 23549u32, 23213u32, 23186u32, 29351u32, 31599u32, 11415u32, 25255u32, 25230u32, 23497u32, 31118u32, 14831u32, 29330u32, 31727u32, 31694u32, 2u32, 1040u32, 4772u32, 448u32, 20u32, 1488u32, 9216u32, 9346u32, 25218u32, 5265u32, 17556u32, 21157u32];
 
 struct Canvas {
-  w i32;
-  h i32;
-  px List[u32];                  // 0xRRGGBB
-  clips List[Aabb2];
+  w: i32;
+  h: i32;
+  px: List[u32];                  // 0xRRGGBB
+  clips: List[Aabb2];
 
-  fn make(w i32, h i32) Canvas {
+  fn make(w: i32, h: i32) Canvas {
     var px = List[u32].withCapacity(usize.from(w * h));
     var i = 0;
     while i < w * h {
@@ -49,22 +49,22 @@ struct Canvas {
     new Canvas(w, h, px, List[Aabb2].empty())
   }
 
-  fn clip(self &) Aabb2 {
+  fn clip(self: &) Aabb2 {
     if clips.len() == 0usize {new Aabb2(new Vec2(0., 0.), new Vec2(f32.from(w), f32.from(h)))}
     else {*clips[clips.len() - 1usize]}
   }
 
-  fn pushClip(self &mut, x f32, y f32, cw f32, ch f32) {
+  fn pushClip(self: &mut, x: f32, y: f32, cw: f32, ch: f32) {
     let c = clip();
     clips.push(new Aabb2(new Vec2(maxf(c.min.x, x), maxf(c.min.y, y)), new Vec2(minf(c.max.x, x + cw), minf(c.max.y, y + ch))));
   }
 
-  fn popClip(self &mut) {
+  fn popClip(self: &mut) {
     if clips.len() > 0usize {clips.pop();}
   }
 
   // Blends a colour (0xRRGGBBAA) over the pixel with a coverage in 0..1
-  fn plot(self &mut, x i32, y i32, color u32, cov f32) {
+  fn plot(self: &mut, x: i32, y: i32, color: u32, cov: f32) {
     if x < 0 || y < 0 || x >= w || y >= h || cov <= 0. {return;}
     let c = clip();
     if f32.from(x) + 0.5 < c.min.x || f32.from(x) + 0.5 >= c.max.x || f32.from(y) + 0.5 < c.min.y || f32.from(y) + 0.5 >= c.max.y {return;}
@@ -80,14 +80,14 @@ struct Canvas {
     px.set(i, (r << 16u32) | (g << 8u32) | b);
   }
 
-  fn set(self &mut, x i32, y i32, rgb u32) {
+  fn set(self: &mut, x: i32, y: i32, rgb: u32) {
     if x < 0 || y < 0 || x >= w || y >= h {return;}
     px.set(usize.from(y * w + x), rgb);
   }
 }
 
 // The signed distance from a point to a rounded box (negative inside)
-fn sdRound(px f32, py f32, cx f32, cy f32, hw f32, hh f32, r f32) f32 {
+fn sdRound(px: f32, py: f32, cx: f32, cy: f32, hw: f32, hh: f32, r: f32) f32 {
   let rr = minf(r, minf(hw, hh));
   let qx = absf(px - cx) - (hw - rr);
   let qy = absf(py - cy) - (hh - rr);
@@ -96,7 +96,7 @@ fn sdRound(px f32, py f32, cx f32, cy f32, hw f32, hh f32, r f32) f32 {
   (ox * ox + oy * oy).sqrt() + minf(maxf(qx, qy), 0.) - rr
 }
 
-fn fillRound(c &mut Canvas, x f32, y f32, w f32, h f32, r f32, color u32) {
+fn fillRound(c: &mut Canvas, x: f32, y: f32, w: f32, h: f32, r: f32, color: u32) {
   let clip = c.clip();
   let x0 = i32.from(floorf(maxf(x - 1., clip.min.x)));
   let x1 = i32.from(ceilf(minf(x + w + 1., clip.max.x)));
@@ -114,7 +114,7 @@ fn fillRound(c &mut Canvas, x f32, y f32, w f32, h f32, r f32, color u32) {
   }
 }
 
-fn strokeRound(c &mut Canvas, x f32, y f32, w f32, h f32, r f32, thick f32, color u32) {
+fn strokeRound(c: &mut Canvas, x: f32, y: f32, w: f32, h: f32, r: f32, thick: f32, color: u32) {
   let clip = c.clip();
   let x0 = i32.from(floorf(maxf(x - 1., clip.min.x)));
   let x1 = i32.from(ceilf(minf(x + w + 1., clip.max.x)));
@@ -133,7 +133,7 @@ fn strokeRound(c &mut Canvas, x f32, y f32, w f32, h f32, r f32, thick f32, colo
   }
 }
 
-fn drawLine(c &mut Canvas, ax f32, ay f32, ex f32, ey f32, thick f32, color u32) {
+fn drawLine(c: &mut Canvas, ax: f32, ay: f32, ex: f32, ey: f32, thick: f32, color: u32) {
   let x0 = i32.from(floorf(minf(ax, ex) - thick - 1.));
   let x1 = i32.from(ceilf(maxf(ax, ex) + thick + 1.));
   let y0 = i32.from(floorf(minf(ay, ey) - thick - 1.));
@@ -159,7 +159,7 @@ fn drawLine(c &mut Canvas, ax f32, ay f32, ex f32, ey f32, thick f32, color u32)
 }
 
 // An annular sector (thick > 0) or a pie (thick 0), angles clockwise on the screen from +x
-fn drawArc(c &mut Canvas, cx f32, cy f32, r f32, a0 f32, a1 f32, thick f32, color u32) {
+fn drawArc(c: &mut Canvas, cx: f32, cy: f32, r: f32, a0: f32, a1: f32, thick: f32, color: u32) {
   let x0 = i32.from(floorf(cx - r - 2.));
   let x1 = i32.from(ceilf(cx + r + 2.));
   let y0 = i32.from(floorf(cy - r - 2.));
@@ -192,7 +192,7 @@ fn drawArc(c &mut Canvas, cx f32, cy f32, r f32, a0 f32, a1 f32, thick f32, colo
   }
 }
 
-fn glyphOf(ch u8) u32 {
+fn glyphOf(ch: u8) u32 {
   var c = ch;
   if c >= 'a' && c <= 'z' {c = c - 32u8;}
   var i = 0usize;
@@ -203,18 +203,18 @@ fn glyphOf(ch u8) u32 {
   0u32
 }
 
-fn textScale(size f32) i32 {
+fn textScale(size: f32) i32 {
   let s = i32.from(floorf(size / 7. + 0.5));
   if s < 1 {1} else {s}
 }
 
 // The text closure the Ui is given: 4 pixels a character per unit of scale, 8 high
-fn measureText(t &str, font u32, size f32) Vec2 {
+fn measureText(t: &str, font: u32, size: f32) Vec2 {
   let s = f32.from(textScale(size));
   new Vec2(f32.from(t.len()) * 4. * s, 8. * s)
 }
 
-fn drawText(c &mut Canvas, x f32, y f32, w f32, h f32, t &str, size f32, color u32, align u32) {
+fn drawText(c: &mut Canvas, x: f32, y: f32, w: f32, h: f32, t: &str, size: f32, color: u32, align: u32) {
   let s = textScale(size);
   let tw = f32.from(t.len()) * 4. * f32.from(s) - f32.from(s);
   var ox = x;
@@ -251,7 +251,7 @@ fn drawText(c &mut Canvas, x f32, y f32, w f32, h f32, t &str, size f32, color u
 }
 
 // The textures a renderer would hold, as functions of (u, v): the map (7) and some icons
-fn sampleTexture(tex u32, u f32, v f32) u32 {
+fn sampleTexture(tex: u32, u: f32, v: f32) u32 {
   if tex == 7u32 {
     let h = sin(u * 31.) + sin(v * 23.) * 0.8 + sin((u + v) * 17.) * 0.6 + sin((u - v) * 11.);
     let road = absf(sin((u * 0.8 + v * 1.3) * 29.));
@@ -314,7 +314,7 @@ fn sampleTexture(tex u32, u f32, v f32) u32 {
   rgb(200u32, 80u32, 200u32)
 }
 
-fn drawImage(c &mut Canvas, x f32, y f32, w f32, h f32, tex u32, u0 f32, v0 f32, u1 f32, v1 f32, radius f32) {
+fn drawImage(c: &mut Canvas, x: f32, y: f32, w: f32, h: f32, tex: u32, u0: f32, v0: f32, u1: f32, v1: f32, radius: f32) {
   let clip = c.clip();
   let xa = i32.from(floorf(maxf(x, clip.min.x)));
   let xb = i32.from(ceilf(minf(x + w, clip.max.x)));
@@ -337,7 +337,7 @@ fn drawImage(c &mut Canvas, x f32, y f32, w f32, h f32, tex u32, u0 f32, v0 f32,
   }
 }
 
-fn paint(c &mut Canvas, list &DrawList) {
+fn paint(c: &mut Canvas, list: &DrawList) {
   c.clips.clear();
   var i = 0usize;
   while i < list.cmds.len() {
@@ -357,14 +357,14 @@ fn paint(c &mut Canvas, list &DrawList) {
 
 // ---- BMP output ----
 
-fn put32(out &mut List[u8], v u32) {
+fn put32(out: &mut List[u8], v: u32) {
   out.push(u8.from(v & 0xFFu32));
   out.push(u8.from((v >> 8u32) & 0xFFu32));
   out.push(u8.from((v >> 16u32) & 0xFFu32));
   out.push(u8.from((v >> 24u32) & 0xFFu32));
 }
 
-fn saveBmp(file &String, c &Canvas) bool {
+fn saveBmp(file: &String, c: &Canvas) bool {
   let rowSize = (c.w * 3 + 3) / 4 * 4;
   let pixelBytes = rowSize * c.h;
   var out = List[u8].withCapacity(usize.from(54 + pixelBytes));
@@ -410,7 +410,7 @@ fn saveBmp(file &String, c &Canvas) bool {
 
 // ---- the world behind the HUD ----
 
-fn paintBackdrop(c &mut Canvas) {
+fn paintBackdrop(c: &mut Canvas) {
   var y = 0;
   while y < c.h {
     let t = f32.from(y) / f32.from(c.h);
@@ -435,16 +435,16 @@ fn paintBackdrop(c &mut Canvas) {
 
 // ---- the scene ----
 
-fn centreX(ui &Ui, id usize) f32 {ui.nodes[id].gx + ui.nodes[id].w * 0.5}
-fn centreY(ui &Ui, id usize) f32 {ui.nodes[id].gy + ui.nodes[id].h * 0.5}
+fn centreX(ui: &Ui, id: usize) f32 {ui.nodes[id].gx + ui.nodes[id].w * 0.5}
+fn centreY(ui: &Ui, id: usize) f32 {ui.nodes[id].gy + ui.nodes[id].h * 0.5}
 
-fn labelRow(ui &mut Ui, parent usize, text &str, w f32) usize {
+fn labelRow(ui: &mut Ui, parent: usize, text: &str, w: f32) usize {
   let l = label(ui, parent, text);
   ui.setSize(l, w, -1.);
   l
 }
 
-fn main(argc i32, argv **u8) i32 {
+fn main(argc: i32, argv: **u8) i32 {
   var dir = String.from(".");
   var a = 1;
   while a < argc {
@@ -463,7 +463,7 @@ fn main(argc i32, argv **u8) i32 {
   }
 
   var ui = Ui.make(960., 600.);
-  var m = fn(t &str, font u32, size f32) Vec2 { measureText(t, font, size) };
+  var m = fn(t: &str, font: u32, size: f32) Vec2 { measureText(t, font, size) };
 
   // items
   let coin = ui.inv.defineType("coin", 101u32, 99u32, 0u32, 1u32, 0xffd700ffu32);

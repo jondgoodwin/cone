@@ -24,54 +24,54 @@ pub const R_TETHER = 8u32;        // long range tethers
 pub const R_LIMIT = 9u32;         // strain limiting
 
 pub struct StepView is Sendable {
-  pub pos *Vec3;
-  pub prev *Vec3;
-  pub vel *Vec3;
-  pub force *Vec3;
-  pub invMass *f32;
-  pub tris *u32;
-  pub triForce *Vec3;
-  pub adjStart *u32;
-  pub adj *u32;
-  pub dist *DistanceC;
-  pub bend *BendC;
-  pub curves *CurveC;
-  pub tethers *TetherC;
-  pub h f32;               // the substep
-  pub hBend f32;           // the time the bend constraints take this substep (a multiple of h)
-  pub first bool;          // the first iteration of the substep: every multiplier is zero
-  pub damp f32;            // 1 / (1 + damping h)
-  pub omega f32;           // over-relaxation of the stretch projections (1: none)
-  pub strainCap f32;       // 1 + the strain limit
-  pub gravity Vec3;
-  pub wind Vec3;
-  pub windOn bool;
-  pub rho f32;
-  pub skin f32;
-  pub drag f32;
-  pub lift f32;
+  pub pos: *Vec3;
+  pub prev: *Vec3;
+  pub vel: *Vec3;
+  pub force: *Vec3;
+  pub invMass: *f32;
+  pub tris: *u32;
+  pub triForce: *Vec3;
+  pub adjStart: *u32;
+  pub adj: *u32;
+  pub dist: *DistanceC;
+  pub bend: *BendC;
+  pub curves: *CurveC;
+  pub tethers: *TetherC;
+  pub h: f32;               // the substep
+  pub hBend: f32;           // the time the bend constraints take this substep (a multiple of h)
+  pub first: bool;          // the first iteration of the substep: every multiplier is zero
+  pub damp: f32;            // 1 / (1 + damping h)
+  pub omega: f32;           // over-relaxation of the stretch projections (1: none)
+  pub strainCap: f32;       // 1 + the strain limit
+  pub gravity: Vec3;
+  pub wind: Vec3;
+  pub windOn: bool;
+  pub rho: f32;
+  pub skin: f32;
+  pub drag: f32;
+  pub lift: f32;
   // a lattice of wind velocities (SoftBody.windGrid), nx by ny by nz, x fastest; gnx 0: none
-  pub grid *Vec3;
-  pub gridOrigin Vec3;
-  pub gridInv f32;         // 1 / cell
-  pub gnx u32;
-  pub gny u32;
-  pub gnz u32;
+  pub grid: *Vec3;
+  pub gridOrigin: Vec3;
+  pub gridInv: f32;         // 1 / cell
+  pub gnx: u32;
+  pub gny: u32;
+  pub gnz: u32;
 }
 
 // The wind at p: trilinear between the lattice's samples (held at the edge
 // beyond it), or the one velocity the step was given when there is no lattice
-fn windAt(v &StepView, p Vec3) Vec3 {
+fn windAt(v: &StepView, p: Vec3) Vec3 {
   if v.gnx == 0u32 { return v.wind; }
   sampleWindGrid(v.grid, v.gridOrigin, v.gridInv, v.gnx, v.gny, v.gnz, p)
 }
 
-fn clampIndex(t f32, n u32) f32 {
+fn clampIndex(t: f32, n: u32) f32 {
   let top = f32.from(n - 1u32);
   if t < 0. {0.} elif t > top {top} else {t}
 }
 
-pub fn sampleWindGrid(grid *Vec3, origin Vec3, inv f32, nx u32, ny u32, nz u32, p Vec3) Vec3 {
+pub fn sampleWindGrid(grid: *Vec3, origin: Vec3, inv: f32, nx: u32, ny: u32, nz: u32, p: Vec3) Vec3 {
   let fx = clampIndex((p.x - origin.x) * inv, nx);
   let fy = clampIndex((p.y - origin.y) * inv, ny);
   let fz = clampIndex((p.z - origin.z) * inv, nz);
@@ -108,7 +108,7 @@ pub fn sampleWindGrid(grid *Vec3, origin Vec3, inv f32, nx u32, ny u32, nz u32, 
 // minimax fit given in Abramowitz and Stegun 4.4.49's spirit, refit for degree 9),
 // then unfolded to the quadrant. The libm call it replaces was a quarter of a
 // bend's cost; a bend error of 1e-5 rad is far below what the constraint resolves.
-fn atan2Fast(y f32, x f32) f32 inline {
+fn atan2Fast(y: f32, x: f32) f32 inline {
   let ax = fabs(x);
   let ay = fabs(y);
   let hi = if ax > ay {ax} else {ay};
@@ -123,7 +123,7 @@ fn atan2Fast(y f32, x f32) f32 inline {
   r
 }
 
-fn windTriRange(v &StepView, lo usize, hi usize) {
+fn windTriRange(v: &StepView, lo: usize, hi: usize) {
   let wind = v.wind;
   let rho = v.rho;
   var t = lo;
@@ -159,7 +159,7 @@ fn windTriRange(v &StepView, lo usize, hi usize) {
   }
 }
 
-fn windGatherRange(v &StepView, lo usize, hi usize) {
+fn windGatherRange(v: &StepView, lo: usize, hi: usize) {
   var i = lo;
   while i < hi {
     var f = new Vec3(0., 0., 0.);
@@ -176,7 +176,7 @@ fn windGatherRange(v &StepView, lo usize, hi usize) {
   }
 }
 
-fn predictRange(v &StepView, lo usize, hi usize) {
+fn predictRange(v: &StepView, lo: usize, hi: usize) {
   let h = v.h;
   var i = lo;
   while i < hi {
@@ -192,7 +192,7 @@ fn predictRange(v &StepView, lo usize, hi usize) {
   }
 }
 
-fn velocityRange(v &StepView, lo usize, hi usize) {
+fn velocityRange(v: &StepView, lo: usize, hi: usize) {
   let k = (1. / v.h) * v.damp;
   var i = lo;
   while i < hi {
@@ -207,7 +207,7 @@ fn velocityRange(v &StepView, lo usize, hi usize) {
 // At the first iteration the multiplier is zero and the correction is
 // -C / (wa + wb + alpha / h^2); it is stored as the constraint's multiplier,
 // whose size over h^2 is the force (breaking reads it).
-fn distRange(v &StepView, lo usize, hi usize) {
+fn distRange(v: &StepView, lo: usize, hi: usize) {
   let inv2 = 1. / (v.h * v.h);
   let first = v.first;
   var k = lo;
@@ -244,7 +244,7 @@ fn distRange(v &StepView, lo usize, hi usize) {
 // value (Muller et al. 2007 "Position Based Dynamics", with the gradients of
 // Bridson, Marino and Fedkiw 2003 and the angle from atan2 of unnormalised
 // quantities, as the unfused form has always had). The divisions are shared.
-fn bendRange(v &StepView, lo usize, hi usize) {
+fn bendRange(v: &StepView, lo: usize, hi: usize) {
   let hb = v.hBend;
   let inv2 = 1. / (hb * hb);
   let first = v.first;
@@ -309,7 +309,7 @@ fn bendRange(v &StepView, lo usize, hi usize) {
 //
 // Provot 1995: a stretch edge longer than rest * (1 + limit) is brought back to that length, shared by
 // inverse mass. Taken a batch at a time like the stretch constraints.
-fn limitRange(v &StepView, lo usize, hi usize) {
+fn limitRange(v: &StepView, lo: usize, hi: usize) {
   let cap = v.strainCap;
   var k = lo;
   while k < hi {
@@ -340,7 +340,7 @@ fn limitRange(v &StepView, lo usize, hi usize) {
 // A particle farther from its anchor than its tether is brought back by the excess (an inequality:
 // slack costs nothing). The anchor is a pin and never moves, so no two tethers touch the same
 // particle's position and they may be taken in any order, or at once.
-fn tetherRange(v &StepView, lo usize, hi usize) {
+fn tetherRange(v: &StepView, lo: usize, hi: usize) {
   var k = lo;
   while k < hi {
     let t = *(v.tethers + k);
@@ -366,7 +366,7 @@ fn tetherRange(v &StepView, lo usize, hi usize) {
 // C = |H| with gradients K_i H / |H|; the compliance is the hinge's times (e h_c h_d)^2, so a fold of theta
 // costs theta^2 / (2 compliance) as in the dihedral constraint. No angle, no cross product, no
 // per-constraint divisions but two: it costs about what a stretch constraint does.
-fn bendCurvRange(v &StepView, lo usize, hi usize) {
+fn bendCurvRange(v: &StepView, lo: usize, hi: usize) {
   let hb = v.hBend;
   let inv2 = 1. / (hb * hb);
   let first = v.first;
@@ -407,7 +407,7 @@ fn bendCurvRange(v &StepView, lo usize, hi usize) {
 }
 
 // ---- rope curvature ----
-fn curveRange(v &StepView, lo usize, hi usize) {
+fn curveRange(v: &StepView, lo: usize, hi: usize) {
   let inv2 = 1. / (v.h * v.h);
   let first = v.first;
   var k = lo;
@@ -443,7 +443,7 @@ fn curveRange(v &StepView, lo usize, hi usize) {
 }
 
 // Run one kind of loop over [lo, hi)
-pub fn runRegion(v &StepView, kind u32, lo usize, hi usize) {
+pub fn runRegion(v: &StepView, kind: u32, lo: usize, hi: usize) {
   if kind == R_DIST { distRange(v, lo, hi); }
   elif kind == R_BEND { bendRange(v, lo, hi); }
   elif kind == R_PREDICT { predictRange(v, lo, hi); }

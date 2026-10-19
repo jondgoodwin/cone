@@ -59,7 +59,7 @@ typedef struct StructNode {
     uint8_t holdsatomic;   // itypeHoldsAtomic's remembered answer (HoldsTraced*, read as "holds an atomic value"), once the type is checked
     uint8_t tagstate;       // Whether 'tagnbr' is settled yet, and whether it is below zero (TagState)
     uint8_t threadbound;    // itypeThreadBound's remembered answer (CarriesBorrow*, read as "bound to its thread"), once the type is checked
-    uint8_t callmut;        // On a callable trait (fnSigCallTrait): its '()' takes 'self &mut', else 'self &'
+    uint8_t callmut;        // On a callable trait (fnSigCallTrait): its '()' takes 'self: &mut', else 'self: &'
     struct FnSigNode *callsig;     // The signature a callable trait stands for; NULL for every other type
 } StructNode;
 
@@ -195,9 +195,9 @@ Name *structLentVia(StructNode *type);
 void structLendView(TypeCheckState *pstate, StructNode *type, INode **objp, INode *lexnode);
 
 // Is this a method of an enum, with a body, whose receiver names the enum
-// ('self &Lamp', 'self &mut Lamp', 'self Lamp')? Such a method is one function
+// ('self: &Lamp', 'self: &mut Lamp', 'self Lamp')? Such a method is one function
 // over the whole enum, not a default copied into each variant: a receiver written
-// 'self &' or 'self &Self' is the variant's.
+// 'self: &' or 'self: &Self' is the variant's.
 int structIsWholeEnumMethod(INode *meth);
 
 // Is this a method with a body that takes 'self' by value ('self', 'var self')?

@@ -78,7 +78,7 @@ is one operand of the `&&`s at the top of what was written. A condition is a
 whose `exp` is a use of the type parameter it constrains and whose `typ` is a use
 of the trait or type it `is` — or an `OrLogicTag` or `AndLogicTag` `LogicNode`
 joining two conditions. `where T is A and T is B` is two elements; `where T is A
-or T is B` one, an `or`; `T is A + B` and `[T A + B]` are two clauses, and inside
+or T is B` one, an `or`; `T is A + B` and `[T: A + B]` are two clauses, and inside
 a `||` alternative a `&&` of them. A generic type's list is its
 `GenericInfo`'s; every function's, generic or a generic type's method, is
 `FnDclNode.where`, so a method that is not generic still has one. Being ordinary
@@ -142,12 +142,12 @@ brands").
 sits at the same offset as `VarDclNode.namesym` and `NameUseNode.namesym`, which
 is what makes the casts in the three `*NameRes` functions safe. `annot` is what
 was written after the parameter's name, each `+`-joined name, or NULL. `valtype`
-is the integer type of a **value parameter**, `[N usize]` (below), NULL for a
+is the integer type of a **value parameter**, `[N: usize]` (below), NULL for a
 type parameter.
 
-**Why the annotation is one slot, of no fixed meaning.** `[T ___]` is where a
+**Why the annotation is one slot, of no fixed meaning.** `[T: ___]` is where a
 parameter will be annotated with more than a constraint: a type, making a value
-parameter, `[N usize]`, and a kind, `[e Expr]`, `[b Block]`, `[M Module]` — Jon's
+parameter, `[N: usize]`, and a kind, `[e: Expr]`, `[b: Block]`, `[M: Module]` — Jon's
 direction that generic and macro parameters be typed like any parameter, by
 *"the kind of a parameter"* [Jon 26 Sep]. So
 the parser reads whatever names are there into `annot` without deciding, and
@@ -175,19 +175,19 @@ globals in `clone.c`.
 ## Parse
 
 `parseGenericParms` is `[ Ident annot? (, Ident annot?)* ]`, where `annot` is a
-type (`parseType`) and more joined by `+`, beginning with a name; a `+` with
+`:` and a type (`parseType`) and more joined by `+`, beginning with a name; a `+` with
 no type after it is `ErrorNoType` (`parseTypeReq`). **No
 defaults.** An empty list is `ErrorNoGenParms`. `annotate` says whether the
 declaration takes annotations: a generic function or type does, and the name
 after the parameter's goes into `annot` (Shape, above); a parameter ends at its
-`,` or the `]`, so `[T A B]` is the unclosed-list `ErrorBadTok` rather than a
-second parameter. A lifetime after a `+`, `[T + 'a]` or `[T A + 'a]`, is a
+`,` or the `]`, so `[T: A B]` is the unclosed-list `ErrorBadTok` rather than a
+second parameter. A lifetime after a `+`, `[T + 'a]` or `[T: A + 'a]`, is a
 lifetime bound, not an annotation (`parseBoundAdd`): a function's go to the
 `bounds` order `parseFn` adds to its signature's, and a generic type's are
 refused, `ErrorLifetimeBound`.
 
 **A function signature is a bound too**, written bare after `fn`: the first
-annotation or one after a `+` (`F fn(a &T, b &T) i32`), and the name after
+annotation or one after a `+` (`F: fn(a: &T, b: &T) i32`), and the name after
 `is` in a `where` clause. `parseFnBound` reads it as the signature after `&fn`
 is read (`parseFnSig` with `reftype` set, then `parseFnSigSettle` as a type: a
 parameter may be written as its type alone), with `inlist` set so that a comma
@@ -240,7 +240,7 @@ the base, wherever it is written. A refused condition drops its entry, and
 recovery skips to the next entry, the type's `where` or its block. A `where` after
 the list is the type's requirement, as it always was.
 
-**The inline form takes no `||`.** `[T A + B]` requires every trait it names, and
+**The inline form takes no `||`.** `[T: A + B]` requires every trait it names, and
 `parseGenericParms` refuses `||` after them, `ErrorGenParmOr`, dropping that
 parameter's annotation and skipping to its `,` or `]`: a choice is written in a
 `where` clause [Jon 27 Sep].
@@ -288,9 +288,9 @@ instance (`genericIsTypeInstance`: a reference type, a call whose head names a
 generic type, or a region applied to a type, `Uni[str]`, whose declaration is asked
 by what its `is` list wrote, `regionStructWritesRegionRef`, since it need not be
 resolved yet), in a `where` clause and not in a condition on an `is` entry. The inline slot takes the
-same, `[T, S Stack[T]]`. The arguments are resolved with every parameter hooked
+same, `[T, S: Stack[T]]`. The arguments are resolved with every parameter hooked
 (`genericParmsNameRes` hooks them all, then resolves what follows each), so a
-bound names a parameter written after it as well as before: `[S Stack[T], T]`. A generic trait named
+bound names a parameter written after it as well as before: `[S: Stack[T], T]`. A generic trait named
 with no arguments names no trait, `ErrorGenParmConstr` inline and `ErrorWhereTrait`
 in a clause, each saying to give the arguments. A subject that is anything
 else is `ErrorWhereSubject`, and a name that is neither `ErrorWhereTrait`; a name
@@ -442,7 +442,7 @@ false diagnostic. The cost is silent acceptance — see Hazards.
    against its argument's type (`genericInferType`), capturing by `Name` the
    argument's type wherever the parameter's names a generic parameter. The match
    descends through a pointer, a reference and an array reference to what each
-   points at (`p *T` given a `*Fin` captures `Fin`), accepting both the type
+   points at (`p: *T` given a `*Fin` captures `Fin`), accepting both the type
    tags and the template's dereference, borrow and allocate tags (Clone,
    above). A managed
    reference type, `Rc[mut, T]`, is still the call it was written as, and
@@ -454,7 +454,7 @@ false diagnostic. The cost is silent acceptance — see Hazards.
    matches an argument that is an instance of the same generic, found in the
    generic's memo, type argument by type argument; a variant passed for its
    enum is matched as its enum's instance. A function signature, reached
-   through a function reference parameter (`f &fn(a A) R`), matches the
+   through a function reference parameter (`f &fn(a: A) R`), matches the
    signature of the function the argument references, each parameter type and
    then the return type, provided both have as many parameters. An argument
    type naming a generic's own type parameter — the signature of `&half`, a
@@ -472,7 +472,7 @@ false diagnostic. The cost is silent acceptance — see Hazards.
    use keeps the `FlagQualified` of the name it stands for, so the second is
    never rewritten to `self.pick` (`genericKeepQualified`).
 
-   **A type parameter that only a bound names** — `T` in `[T, S Stack[T]]` — is
+   **A type parameter that only a bound names** — `T` in `[T, S: Stack[T]]` — is
    inferred last, from the bound (`genericInferFromBounds`, for a function, a
    generic method and a generic type's literal), when a slot is still empty after
    the arguments. For each clause of the `where` list whose name is a generic trait
@@ -487,14 +487,14 @@ false diagnostic. The cost is silent acceptance — see Hazards.
    methods contradict one another, naming the method. A slot an argument already
    filled stays. No associated type is
    involved: a structural trait has no impl to look an answer up in, so the
-   methods are the only place it can be read. A signature bound, `F fn() T`, is
+   methods are the only place it can be read. A signature bound, `F: fn() T`, is
    read the same way off the argument: a function type's signature is matched
    with the bound's whole (`genericInferType`'s signature case), a struct's
    `()` method (the one candidate with the bound's parameters and a receiver)
    after its receiver.
 
    **An array or a slice given for a parameter bounded by a generic trait** —
-   `xs &C` with `C Iterable[A, I]`, given `&arr` or a `&Array[T]` slice — has no
+   `xs: &C` with `C Iterable[A, I]`, given `&arr` or a `&Array[T]` slice — has no
    struct for `C` to be: a slice names no type there, and an array has no methods
    of its own to read the bound off. `genericInferArrayBound` captures `C` as the
    body `Array[T]` of the element (`fnCallArrayBody`, the instance core declares,
@@ -504,7 +504,7 @@ false diagnostic. The cost is silent acceptance — see Hazards.
    clause naming a generic trait; any other parameter of the shape `&T`, given a
    slice, is matched as ever.
 
-   **An unsuffixed number literal passed for a bare type parameter** (`v T`;
+   **An unsuffixed number literal passed for a bare type parameter** (`v: T`;
    a `ULitTag` or `FLitTag` with `FlagUnkType`, `genericArgIsAdaptable`) does not capture in the
    first pass, as an untyped `null` does not: it is whichever number type is
    wanted. `genericInferFnParms` runs in three steps: every other argument, then
@@ -540,7 +540,7 @@ false diagnostic. The cost is silent acceptance — see Hazards.
    expectation the result does not match captures nothing and the call is judged
    as with none. The step sits after the arguments and the bounds and before the
    literals take their default, in a function and in a type literal alike, so
-   `let n i64 = add(2000000000, 2000000000)` adds `i64`s. A method gets it through
+   `let n: i64 = add(2000000000, 2000000000)` adds `i64`s. A method gets it through
    `genericMethodInstance`, and `typeLitNewCheck` for `new Box(5)`. A slot still
    empty is reported by `genericMissingParms`, which names the parameters and the
    brackets to write, and the call becomes an error node, so no second diagnostic
@@ -680,7 +680,7 @@ instance.
 
 ### Value parameters
 
-**`[N usize]` is a generic parameter whose argument is a number.** Name
+**`[N: usize]` is a generic parameter whose argument is a number.** Name
 resolution (`genericConstraintsNameRes`) takes a parameter whose annotation is
 an integer type out of the constraints and records the type in
 `GenVarDclNode.valtype`; a float, `bool` or `char` type, a second annotation
@@ -699,7 +699,7 @@ in the brackets, `dot[3](a, b)`, or inferred: `genericInferType` has an
 captures the number where the parameter's size is a use of a value parameter
 (`genericCaptureValue`; two sizes for one parameter are `ErrorGenValueClash`) and
 goes on into the element types, so nested arrays and a slice of arrays give a
-number each. A value parameter used as a whole type, `x N`, captures nothing
+number each. A value parameter used as a whole type, `x: N`, captures nothing
 (`genericCaptureType`).
 
 **`genericSubstitute` takes the bracketed list of a function with a value
@@ -773,7 +773,7 @@ Every other question a clause asks is
   requirement and each candidate the type has for it (`fnCallDemandCandidates`),
   since signatures compare only once checked. Under `Monomorph` a requirement's
   `Self` is the type asked about (`fnSigVrefEqual`'s `selftype`), since the
-  instance calls that type's own method: `o &Self` is met by its `o &Self`. The
+  instance calls that type's own method: `o: &Self` is met by its `o: &Self`. The
   match is otherwise exact, and a virtual reference's is exact throughout. A **marker** — a trait requiring
   nothing of a value, the compiler's own built-in traits among them — is never
   fitted: every type would fit it, so fitting it would say nothing.
@@ -792,7 +792,7 @@ Every other question a clause asks is
   are different traits, and a type may fit both.
 
 **A signature bound is no trait.** A clause whose `typ` is a `FnSigNode`
-(`F is fn(a &T, b &T) i32`, from the inline slot or a `where`) is resolved as
+(`F is fn(a: &T, b: &T) i32`, from the inline slot or a `where`) is resolved as
 the signature after `&fn` is, its types naming the generic's parameters, and
 vetted by `genericConditionNameRes` (refused in a condition on an `is` entry,
 `ErrorUnbuiltIsCond`). At the arguments `genericConditionValue` makes the
@@ -818,7 +818,7 @@ finds the bound (`genericParmBound`: the clause whose subject is the parameter
 the argument's parameter is, or is a reference to), reads the other type
 parameters off the call's other arguments (`genericInferType`), and a parameter
 named only in the bound of another those settled (`T` in `[T, V RandomAccess[T],
-F fn(x &T) bool]`) off that argument's methods (`genericInferFromBounds`, as the
+F: fn(x &T) bool]`) off that argument's methods (`genericInferFromBounds`, as the
 call's own inference reads it), and clones the bound with them
 ([closure](closure.md)). The refusal is `ErrorWhereUnmet`,
 spelling the signature as written (`spelled`), as it comes to here
@@ -850,7 +850,7 @@ node settles to `errorType` (`itypeTypeCheck`), so what uses it is quiet. A
 clause naming an instance of a generic trait says why the argument does not fit
 it (`genericFitWhy`): the first method the trait requires that the type lacks, or
 has only with another signature, each spelled as the instance's types come to
-(`genericSigCat`: `pop(self &mut) Option[i64]`), then a field likewise; a non-struct
+(`genericSigCat`: `pop(self: &mut) Option[i64]`), then a field likewise; a non-struct
 is told only a struct fits by its methods. A method the type has only as a generic
 one is said so and its signature is not spelled, since it is written in type
 parameters that are not types (spelling it was `ErrorUnreachable`, "a request for
@@ -861,7 +861,7 @@ instance is never memoized, so each use asking for it is refused where it is.
 **An argument that is `errorType` is refused without a report.** A type
 parameter inferred from a value whose initializer was already refused
 (`let f = (a, b) => false;`, `ErrorClosureParm`, then `viaGen(f)` with
-`[F fn(a i64, b i64) bool]`) is bound to `errorType`, which meets no clause and
+`[F: fn(a: i64, b: i64) bool]`) is bound to `errorType`, which meets no clause and
 has no name to say so with: the message asked `inodeGetName` of it and ended in
 `ErrorUnreachable`. `genericRequirementsMetIn` answers 0 for it with nothing
 printed, the report that made the value bad being the one (`closure_typecheck_cascade_imm`).
@@ -886,7 +886,7 @@ argument is still being laid out** (`structLayoutUnsettled`: a struct whose
 check has not ended, an enum with a variant not yet laid out, or a tuple, an
 array or an instance of a generic holding one in its elements or arguments),
 when whether its
-values move is not yet known: `struct Node { kids List[Node]; }` makes
+values move is not yet known: `struct Node { kids: List[Node]; }` makes
 `List[Node]` inside Node's own layout, and `T is Copy` would be answered for a
 Node that has not yet found it moves. Then `genericAbsentMembers` does not
 decide the members with a clause (`late`, handed on as `CloneState.late`):
@@ -1028,7 +1028,7 @@ concrete function's path component is its identifier alone, and so is a trait
 default's cloned into an ordinary implementer — its `instnode` is the
 implementing struct, not a call, so it is a copy rather than an instance. An
 instance's component is wrapped `I…E` around its **type arguments**, never the
-parameter types, so `fn tag[T](a i32)` at `i32` and at `f32` are two symbols;
+parameter types, so `fn tag[T](a: i32)` at `i32` and at `f32` are two symbols;
 and a generic *type*'s instance carries its arguments as an owner, which is why
 `fn tally(self) i64` does not collide across instances. `nameType` spells
 every argument, structural ones included — tuple, array, signature, void, the
@@ -1079,7 +1079,7 @@ are [Names and Namespaces](../../../../doc/design/names-and-namespaces.md), "Sym
   call, never cleared; a loop over a list in the evaluator must not share its
   counter with an inner loop (`nodesFor` counts down in `cnt`).
 - **A bounded generic's body is checked against the argument type, not the
-  trait.** In `drain[T, S Stack[T]]`, a call `s.push(v)` is judged in each
+  trait.** In `drain[T, S: Stack[T]]`, a call `s.push(v)` is judged in each
   instance by the argument's own method, which the constraint has already shown
   to have the trait's signature at those arguments. A call of a method the trait
   does not declare is accepted whenever every argument happens to have it.

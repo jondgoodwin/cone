@@ -26,17 +26,17 @@
 // A blend: what it changes ('axis', a number of 'blendAxis'), the step it was made with, and per unit of it the
 // vertices' and the named points' moves
 pub struct Blend {
-  pub axis usize;
-  pub step f32;
-  pub dPos List[Vec3];
-  pub dPoints List[Vec3];
+  pub axis: usize;
+  pub step: f32;
+  pub dPos: List[Vec3];
+  pub dPoints: List[Vec3];
 }
 
 // The base of one sex and its blends
 pub struct BlendSet {
-  pub base Body;
-  pub blends List[Blend];
-  pub response List[f32];      // MEASURE_COUNT x (measured blends): how measure i moves per unit of blend j
+  pub base: Body;
+  pub blends: List[Blend];
+  pub response: List[f32];      // MEASURE_COUNT x (measured blends): how measure i moves per unit of blend j
 }
 
 // The axes: 0 to 14 the measures (measures.cone's order, the head's breadth last), then the head and face
@@ -58,9 +58,9 @@ pub const AXIS_COUNT = 29usize;
 
 // The measured axes the solve is over: the trunk's and limbs' (1 to 13; the biacromial is the skeleton's, and
 // is weighted directly, as the head's breadth is)
-fn solved(axis usize) bool { axis >= 1usize && axis <= 13usize }
+fn solved(axis: usize) bool { axis >= 1usize && axis <= 13usize }
 
-pub fn axisValue(m &Measures, axis usize) f32 {
+pub fn axisValue(m: &Measures, axis: usize) f32 {
   if axis < MEASURE_COUNT { return measureAt(m, axis); }
   if axis == AXIS_HEAD_LENGTH { return m.headLength; }
   if axis == AXIS_FACE_LENGTH { return m.faceLength; }
@@ -78,7 +78,7 @@ pub fn axisValue(m &Measures, axis usize) f32 {
   m.bust
 }
 
-fn setAxis(m &mut Measures, axis usize, v f32) {
+fn setAxis(m: &mut Measures, axis: usize, v: f32) {
   if axis < MEASURE_COUNT { setMeasure(m, axis, v); return; }
   if axis == AXIS_HEAD_LENGTH { m.headLength = v; return; }
   if axis == AXIS_FACE_LENGTH { m.faceLength = v; return; }
@@ -96,7 +96,7 @@ fn setAxis(m &mut Measures, axis usize, v f32) {
   m.bust = v;
 }
 
-pub fn axisName(axis usize) String {
+pub fn axisName(axis: usize) String {
   if axis < MEASURE_COUNT { return measureName(axis); }
   let names = ["head length", "face length", "cheek breadth", "jaw breadth", "brow", "nose", "nose width", "lips", "chin",
     "cheekbones", "jaw", "muscle", "belly", "bust"];
@@ -104,13 +104,13 @@ pub fn axisName(axis usize) String {
 }
 
 // The step a blend is made with: a measure's 4 per cent (a centimetre or so), a character's 0.25
-fn stepOf(m &Measures, axis usize) f32 {
+fn stepOf(m: &Measures, axis: usize) f32 {
   if axis <= AXIS_JAW_BREADTH { return 0.04 * axisValue(m, axis); }
   0.25
 }
 
 // The base body of a sex and its blends; 'levels' of subdivision
-pub fn buildBlendSet(sex u32, levels u32) BlendSet {
+pub fn buildBlendSet(sex: u32, levels: u32) BlendSet {
   let bm = if sex == MALE { averageMan() } else { averageWoman() };
   let gains = fitGains(&bm, levels, 4);
   let base = assembleBody(&bm, &gains, levels);
@@ -152,7 +152,7 @@ pub fn buildBlendSet(sex u32, levels u32) BlendSet {
 }
 
 // The body measured, its surface's quads as they are
-pub fn measuredOfBody(b &Body) Measured {
+pub fn measuredOfBody(b: &Body) Measured {
   let nb = b.headStart;
   var pos = List[Vec3].empty();
   var w = List[f32].empty();
@@ -167,7 +167,7 @@ pub fn measuredOfBody(b &Body) Measured {
 }
 
 // Solve a x = y for the n x n matrix a (rows), by Gauss's elimination with partial pivoting
-fn solveLinear(a &List[f32], y &List[f32], n usize) List[f32] {
+fn solveLinear(a: &List[f32], y: &List[f32], n: usize) List[f32] {
   var m = List[f32].empty();
   var i = 0usize;
   while i < n {
@@ -211,7 +211,7 @@ fn solveLinear(a &List[f32], y &List[f32], n usize) List[f32] {
 }
 
 // A person's blend weights, one a blend of the set (units of each blend's axis)
-pub fn blendWeights(set &BlendSet, m &Measures) List[f32] {
+pub fn blendWeights(set: &BlendSet, m: &Measures) List[f32] {
   let bm = &set.base.measures;
   let k = bm.height / m.height;        // the person's measures at the base's height
   var w = List[f32].empty();
@@ -243,7 +243,7 @@ pub fn blendWeights(set &BlendSet, m &Measures) List[f32] {
 }
 
 // The skeleton whose rest pose puts the joints at 'joints' (model space), the humanoid's bones and turns
-fn skeletonAt(height f32, joints &List[Vec3], like &Skeleton) Skeleton {
+fn skeletonAt(height: f32, joints: &List[Vec3], like: &Skeleton) Skeleton {
   var s = humanoid(height);
   // the sockets and the turns are the humanoid's; the translations the joints'
   var i = 0usize;
@@ -276,14 +276,14 @@ fn skeletonAt(height f32, joints &List[Vec3], like &Skeleton) Skeleton {
 }
 
 // A person's body: the base of their sex with the blends at their weights, scaled to their height
-pub fn personBody(set &BlendSet, m &Measures) Body {
+pub fn personBody(set: &BlendSet, m: &Measures) Body {
   let w = blendWeights(set, m);
   bodyFromWeights(set, m, &w, m.height / set.base.measures.height)
 }
 
 // The base with the blends at weights 'w' (one a blend), scaled by 'scale': a person's body (personBody), or a step on
 // the way to it (the stages' pictures apply the blends a group at a time)
-pub fn bodyFromWeights(set &BlendSet, m &Measures, w &List[f32], scale f32) Body {
+pub fn bodyFromWeights(set: &BlendSet, m: &Measures, w: &List[f32], scale: f32) Body {
   let base = &set.base;
   var pos = List[Vec3].empty();
   var v = 0usize;

@@ -48,18 +48,18 @@ const HIZ_BATCH_BYTES = 16u64;
 const HIZ_UNIFORM_BYTES = 96u64;
 
 // A float's bits
-fn bitsOf(x f32) u32 {
+fn bitsOf(x: f32) u32 {
   var v = x;
   *(&v as *u32)
 }
 
-fn floorPow2(n u32) u32 {
+fn floorPow2(n: u32) u32 {
   var p = 1u32;
   while p * 2u32 <= n { p = p * 2u32; }
   p
 }
 
-fn log2Floor(n u32) u32 {
+fn log2Floor(n: u32) u32 {
   var l = 0u32;
   var p = 1u32;
   while p * 2u32 <= n {
@@ -70,50 +70,50 @@ fn log2Floor(n u32) u32 {
 }
 
 pub struct HiZ {
-  shader ShaderModule;
-  cullLayout BindGroupLayout;
-  cullPipelineLayout PipelineLayout;
-  cullPipeline ComputePipeline;
-  finalizePipeline ComputePipeline;
-  buildLayout BindGroupLayout;
-  buildPipelineLayout PipelineLayout;
-  level0Pipeline ComputePipeline;
-  reducePipeline ComputePipeline;
-  pub pyramid Texture;             // the farthest depth, level 0 a power of two a side
-  pub levelWidth u32;
-  pub levelHeight u32;
-  pub levels u32;
-  buildGroups List[BindGroup];     // a dispatch a level: the depth, the level written, the level read
-  depthKey TextureView;            // the depth view they were made for
-  uniform0 Buffer;
-  uniform1 Buffer;
-  sourceInstances Buffer;          // the candidates' instances, as the instance buffer holds them
-  candidates Buffer;               // their boxes, batches and words
-  batchTable Buffer;
-  work Buffer;                     // the counters of each pass, then a flag a candidate
-  args Buffer;                     // the indirect draws of each pass
-  readback Buffer;
-  capCandidates u32;
-  capBatches u32;
-  capArgs u32;
-  group0 BindGroup;
-  group1 BindGroup;
-  groupKey u64;
-  buffersGen u32;
-  pub prevViewProjection Mat4;     // the camera the pyramid was made with
-  pub valid bool;                  // whether the pyramid holds a frame
-  pub sourceData List[f32];        // this frame's candidates, gathered on the CPU
-  pub candidateData List[u32];
-  pub batchData List[u32];
-  pub argData0 List[u32];
-  pub argData1 List[u32];
-  pub candidateCount u32;
-  pub batchCount u32;
-  pub drawCount u32;
-  pub passed0 u32;                 // what the last frame's two passes passed (read by 'readStats')
-  pub passed1 u32;
+  shader: ShaderModule;
+  cullLayout: BindGroupLayout;
+  cullPipelineLayout: PipelineLayout;
+  cullPipeline: ComputePipeline;
+  finalizePipeline: ComputePipeline;
+  buildLayout: BindGroupLayout;
+  buildPipelineLayout: PipelineLayout;
+  level0Pipeline: ComputePipeline;
+  reducePipeline: ComputePipeline;
+  pub pyramid: Texture;             // the farthest depth, level 0 a power of two a side
+  pub levelWidth: u32;
+  pub levelHeight: u32;
+  pub levels: u32;
+  buildGroups: List[BindGroup];     // a dispatch a level: the depth, the level written, the level read
+  depthKey: TextureView;            // the depth view they were made for
+  uniform0: Buffer;
+  uniform1: Buffer;
+  sourceInstances: Buffer;          // the candidates' instances, as the instance buffer holds them
+  candidates: Buffer;               // their boxes, batches and words
+  batchTable: Buffer;
+  work: Buffer;                     // the counters of each pass, then a flag a candidate
+  args: Buffer;                     // the indirect draws of each pass
+  readback: Buffer;
+  capCandidates: u32;
+  capBatches: u32;
+  capArgs: u32;
+  group0: BindGroup;
+  group1: BindGroup;
+  groupKey: u64;
+  buffersGen: u32;
+  pub prevViewProjection: Mat4;     // the camera the pyramid was made with
+  pub valid: bool;                  // whether the pyramid holds a frame
+  pub sourceData: List[f32];        // this frame's candidates, gathered on the CPU
+  pub candidateData: List[u32];
+  pub batchData: List[u32];
+  pub argData0: List[u32];
+  pub argData1: List[u32];
+  pub candidateCount: u32;
+  pub batchCount: u32;
+  pub drawCount: u32;
+  pub passed0: u32;                 // what the last frame's two passes passed (read by 'readStats')
+  pub passed1: u32;
 
-  pub fn create(device &mut Device, instances &Buffer, boneBases &Buffer, width u32, height u32) HiZ {
+  pub fn create(device: &mut Device, instances: &Buffer, boneBases: &Buffer, width: u32, height: u32) HiZ {
     var shader = device.createShaderModule(&HIZ_SPIRV);
     let cullEntries = [
       new BindGroupLayoutEntry(binding: 0u32, visibility: SHADER_STAGE_COMPUTE),
@@ -180,13 +180,13 @@ pub struct HiZ {
       List[u32].empty(), 0u32, 0u32, 0u32, 0u32, 0u32)
   }
 
-  pub fn isValid(self &) bool {
+  pub fn isValid(self: &) bool {
     cullPipeline.isValid() && finalizePipeline.isValid() && level0Pipeline.isValid() && reducePipeline.isValid()
       && group0.isValid() && group1.isValid() && pyramid.isValid()
   }
 
   // A frame's gathering begins: nothing is a candidate yet
-  pub fn beginFrame(self &mut) {
+  pub fn beginFrame(self: &mut) {
     sourceData.clear();
     candidateData.clear();
     batchData.clear();
@@ -200,7 +200,7 @@ pub struct HiZ {
   // A batch that can be culled: its survivors go to 'dest0' in the first
   // draw and 'dest1' in the second; one indirect draw a group of 'mesh'.
   // Gives its place in the batch table.
-  pub fn addBatch(self &mut, dest0 u32, dest1 u32, mesh &GpuMesh) u32 {
+  pub fn addBatch(self: &mut, dest0: u32, dest1: u32, mesh: &GpuMesh) u32 {
     let index = batchCount;
     batchData.push(dest0);
     batchData.push(dest1);
@@ -228,7 +228,7 @@ pub struct HiZ {
 
   // A candidate of batch 'batch': its box (centre, half size), its instance
   // (the model matrix and tint as the instance buffer holds them) and its word
-  pub fn addCandidate(self &mut, batch u32, center Vec3, half Vec3, model &Mat4, tint Color, word u32) {
+  pub fn addCandidate(self: &mut, batch: u32, center: Vec3, half: Vec3, model: &Mat4, tint: Color, word: u32) {
     candidateData.push(bitsOf(center.x));
     candidateData.push(bitsOf(center.y));
     candidateData.push(bitsOf(center.z));
@@ -251,7 +251,7 @@ pub struct HiZ {
 
   // The size a pyramid for a depth buffer of 'width' by 'height' has, made
   // again if the depth buffer's size changed
-  pub fn ensurePyramid(self &mut, device &mut Device, width u32, height u32) {
+  pub fn ensurePyramid(self: &mut, device: &mut Device, width: u32, height: u32) {
     let w = floorPow2(width);
     let h = floorPow2(height);
     if w == levelWidth && h == levelHeight && pyramid.isValid() { return; }
@@ -268,7 +268,7 @@ pub struct HiZ {
     groupKey = 0u64;
   }
 
-  fn growBuffer(self &mut, device &mut Device, buffer &mut Buffer, bytes u64, usage u32) bool {
+  fn growBuffer(self: &mut, device: &mut Device, buffer: &mut Buffer, bytes: u64, usage: u32) bool {
     if bytes <= buffer.size { return false; }
     var size = if buffer.size < HIZ_MIN_BYTES { HIZ_MIN_BYTES } else { buffer.size };
     while size < bytes { size = size * 2u64; }
@@ -281,8 +281,8 @@ pub struct HiZ {
   // write the passes' parameters: 'viewProjection' is this frame's camera,
   // 'instances' and 'boneBases' the renderer's buffers the survivors are
   // copied into ('instanceCapacity' says when they were made again)
-  pub fn upload(self &mut, device &mut Device, instances &Buffer, boneBases &Buffer, instanceCapacity u32,
-      viewProjection &Mat4) {
+  pub fn upload(self: &mut, device: &mut Device, instances: &Buffer, boneBases: &Buffer, instanceCapacity: u32,
+      viewProjection: &Mat4) {
     let n = u64.from(candidateCount);
     let b = u64.from(batchCount);
     let d = u64.from(drawCount);
@@ -329,7 +329,7 @@ pub struct HiZ {
     self.writeUniform(device, &uniform1, viewProjection, levels, true, 1u32);
   }
 
-  fn writeUniform(self &, device &mut Device, buffer &Buffer, m &Mat4, levelCount u32, usable bool, pass u32) {
+  fn writeUniform(self: &, device: &mut Device, buffer: &Buffer, m: &Mat4, levelCount: u32, usable: bool, pass: u32) {
     var words = new Array[u32, 24] <- fill 0u32;
     var k = 0usize;
     while k < 16usize {
@@ -349,7 +349,7 @@ pub struct HiZ {
 
   // The first pass: test every candidate against the last frame's pyramid
   // and copy the passing ones to the first draw's places
-  pub fn recordFirst(self &mut, encoder &mut CommandEncoder) {
+  pub fn recordFirst(self: &mut, encoder: &mut CommandEncoder) {
     var pass = encoder.beginComputePass();
     pass.setPipeline(&cullPipeline);
     pass.setBindGroup(0u32, &group0);
@@ -361,7 +361,7 @@ pub struct HiZ {
 
   // Make the pyramid of the depth just drawn ('depth', 'width' by 'height'),
   // then the second pass: test the flagged candidates against it
-  pub fn recordSecond(self &mut, device &mut Device, encoder &mut CommandEncoder, depth &TextureView, width u32, height u32) {
+  pub fn recordSecond(self: &mut, device: &mut Device, encoder: &mut CommandEncoder, depth: &TextureView, width: u32, height: u32) {
     // The build's groups, for this depth view
     if buildGroups.len() != usize.from(levels) || !depthKey.sameView(depth) {
       buildGroups.clear();
@@ -405,13 +405,13 @@ pub struct HiZ {
   }
 
   // The camera this frame's pyramid was made with, for the next frame's first pass
-  pub fn finishFrame(self &mut, viewProjection &Mat4) {
+  pub fn finishFrame(self: &mut, viewProjection: &Mat4) {
     prevViewProjection = *viewProjection;
     valid = true;
   }
 
   // Copy the counters for 'readStats' (after the frame is done)
-  pub fn copyStats(self &mut, device &mut Device, encoder &mut CommandEncoder) {
+  pub fn copyStats(self: &mut, device: &mut Device, encoder: &mut CommandEncoder) {
     let bytes = 2u64 * u64.from(batchCount) * 4u64;
     if bytes == 0u64 { return; }
     if readback.size < bytes {
@@ -424,7 +424,7 @@ pub struct HiZ {
 
   // What the passes of the last frame that copied its counters passed, once the
   // GPU is done with it (the device idle): instances drawn by the first draw and by the second
-  pub fn readStats(self &mut) {
+  pub fn readStats(self: &mut) {
     let words = readback.mappedRange() as *u32;
     let b = usize.from(batchCount);
     var p0 = 0u32;
@@ -442,7 +442,7 @@ pub struct HiZ {
 
 // spirv-begin hiz.spv HIZ_SPIRV
 // Written by tools/shaders/shaders.py from hiz.slang (sha256 41d9b96ea0deda8d17efd467e10d8521d4d5bde898f40fdfe5ff25b1cda5831a): do not edit.
-let HIZ_SPIRV Array[u32, 4130] = [
+let HIZ_SPIRV: Array[u32, 4130] = [
   0x07230203u32, 0x00010500u32, 0x00280000u32, 0x00000419u32, 0x00000000u32, 0x00020011u32,
   0x00000001u32, 0x000b000au32, 0x5f565053u32, 0x5f52484bu32, 0x726f7473u32, 0x5f656761u32,
   0x66667562u32, 0x735f7265u32, 0x61726f74u32, 0x635f6567u32, 0x7373616cu32, 0x00000000u32,

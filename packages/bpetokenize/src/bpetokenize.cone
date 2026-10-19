@@ -170,7 +170,7 @@ pub enum BuildErrorKind {
   // More tokens than ids of 32 bits can number
   TooManyTokens;
 
-  pub fn copy(self &BuildErrorKind) BuildErrorKind {
+  pub fn copy(self: &BuildErrorKind) BuildErrorKind {
     match self {
       case is MissingByteToken { BuildErrorKind.MissingByteToken }
       case is BadMerge { BuildErrorKind.BadMerge }
@@ -185,19 +185,19 @@ pub enum BuildErrorKind {
 
 // Why a tokenizer could not be built
 pub struct BuildError {
-  pub kind BuildErrorKind;
+  pub kind: BuildErrorKind;
   // Which byte, merge or special token: see each kind
-  pub index usize;
-  pub reason String;
+  pub index: usize;
+  pub reason: String;
 
   // One line for a person: 'bpetokenize: merge 3 ("he llo") names a token that is not in the vocabulary'
-  pub fn message(self &) String {
+  pub fn message(self: &) String {
     var out = String.from("bpetokenize: ");
     out.append(reason.view());
     out
   }
 
-  pub fn copy(self &) BuildError {
+  pub fn copy(self: &) BuildError {
     new BuildError(kind.copy(), index, reason.copy())
   }
 }
@@ -205,12 +205,12 @@ pub struct BuildError {
 // Why ids could not be decoded
 pub struct DecodeError {
   // The place in the ids of the one at fault
-  pub position usize;
-  pub id u32;
+  pub position: usize;
+  pub id: u32;
   // How many tokens the vocabulary has
-  pub vocabSize usize;
+  pub vocabSize: usize;
 
-  pub fn message(self &) String {
+  pub fn message(self: &) String {
     var out = String.from("bpetokenize: token id ");
     out.appendUInt(u64.from(id));
     out.append(" at position ");
@@ -221,15 +221,15 @@ pub struct DecodeError {
     out
   }
 
-  pub fn copy(self &) DecodeError {
+  pub fn copy(self: &) DecodeError {
     new DecodeError(position, id, vocabSize)
   }
 }
 
 // One merge rule: the two tokens that join (as vocabulary text) and nothing else
 pub struct MergePair {
-  pub left String;
-  pub right String;
+  pub left: String;
+  pub right: String;
 }
 
 // -------- the tokenizer --------
@@ -240,12 +240,12 @@ const noLink = 0xFFFFFFFFFFFFFFFFusize;
 
 // Working memory for encoding, kept from word to word within one call
 struct Work {
-  scan Scan;
-  ends List[usize];
-  sym List[u32];
-  prev List[usize];
-  next List[usize];
-  heap List[u64];
+  scan: Scan;
+  ends: List[usize];
+  sym: List[u32];
+  prev: List[usize];
+  next: List[usize];
+  heap: List[u64];
 
   fn empty() Work {
     new Work(Scan.empty(), List[usize].empty(), List[u32].empty(), List[usize].empty(), List[usize].empty(),
@@ -256,22 +256,22 @@ struct Work {
 // A vocabulary and its merges, ready to encode and decode
 pub struct Tokenizer {
   // token text -> id (the first id, for a text listed twice)
-  vocab Dict[String, u32];
+  vocab: Dict[String, u32];
   // The bytes each id decodes to, one after another in 'pool'; id i is
   // pool[starts[i] ..< starts[i + 1]]
-  pool List[u8];
-  starts List[usize];
-  isSpecial List[bool];
+  pool: List[u8];
+  starts: List[usize];
+  isSpecial: List[bool];
   // The special tokens, the longest text first, and which bytes one can begin with
-  specialIds List[u32];
-  specialFirst List[bool];
+  specialIds: List[u32];
+  specialFirst: List[bool];
   // (left id << 32 | right id) -> (rank << 32 | result id)
-  merges Dict[u64, u64];
+  merges: Dict[u64, u64];
   // The id of each of the 256 single-byte tokens
-  byteIds List[u32];
-  pre PreTokenizer;
+  byteIds: List[u32];
+  pre: PreTokenizer;
 
-  fn blank(pre PreTokenizer) Tokenizer {
+  fn blank(pre: PreTokenizer) Tokenizer {
     new Tokenizer(Dict[String, u32].deterministic(), List[u8].empty(), List[usize].empty(), List[bool].empty(),
       List[u32].empty(), List[bool].empty(), Dict[u64, u64].deterministic(), List[u32].empty(), pre)
   }
@@ -279,7 +279,7 @@ pub struct Tokenizer {
   // -------- building --------
 
   // The vocabulary, special tokens and byte tokens
-  fn loadVocabulary(self &mut, tokens &Array[String], special &Array[String]) Option[BuildError] {
+  fn loadVocabulary(self: &mut, tokens: &Array[String], special: &Array[String]) Option[BuildError] {
     if tokens.len >= 0xFFFFFFFFusize {
       return Some[BuildError](new BuildError(BuildErrorKind.TooManyTokens, tokens.len,
         String.from("there are more tokens than ids of 32 bits can number")));
@@ -314,7 +314,7 @@ pub struct Tokenizer {
     starts.push(0usize);
     i = 0usize;
     while i < tokens.len {
-      let text &Array[u8] = tokens[i].view();
+      let text: &Array[u8] = tokens[i].view();
       if self.special(i) {
         pushAll(&mut pool, text);
       }
@@ -357,7 +357,7 @@ pub struct Tokenizer {
 
   // Put special token id among the specials, the longest text first (and, among
   // equals, the earlier id first)
-  fn addSpecial(self &mut, id u32) {
+  fn addSpecial(self: &mut, id: u32) {
     let len = self.lengthOf(usize.from(id));
     var at = specialIds.len();
     while at > 0usize {
@@ -377,15 +377,15 @@ pub struct Tokenizer {
   }
 
   // Reading by value what the Lists hold
-  fn special(self &, id usize) bool { isSpecial.view()[id] }
-  fn startOf(self &, id usize) usize { starts.view()[id] }
-  fn lengthOf(self &, id usize) usize {
+  fn special(self: &, id: usize) bool { isSpecial.view()[id] }
+  fn startOf(self: &, id: usize) usize { starts.view()[id] }
+  fn lengthOf(self: &, id: usize) usize {
     let s = starts.view();
     s[id + 1usize] - s[id]
   }
 
   // One merge rule, the index'th in the list
-  fn addMerge(self &mut, index usize, left &str, right &str) Option[BuildError] {
+  fn addMerge(self: &mut, index: usize, left: &str, right: &str) Option[BuildError] {
     var l = 0u32;
     var r = 0u32;
     match vocab.getCopy(left) {
@@ -413,7 +413,7 @@ pub struct Tokenizer {
     None
   }
 
-  fn mergeFault(self &, kind BuildErrorKind, index usize, left &str, right &str, what &str) BuildError {
+  fn mergeFault(self: &, kind: BuildErrorKind, index: usize, left: &str, right: &str, what: &str) BuildError {
     var why = String.from("merge ");
     why.appendUInt(u64.from(index));
     why.append(" (\"");
@@ -428,7 +428,7 @@ pub struct Tokenizer {
   // Make a tokenizer from the vocabulary (token i has id i), the merges as
   // 'left right' text, best first, the special tokens' texts, and the cut
   // made before merging
-  pub fn build(tokens &Array[String], merges &Array[String], special &Array[String], pre PreTokenizer)
+  pub fn build(tokens: &Array[String], merges: &Array[String], special: &Array[String], pre: PreTokenizer)
       Result[Tokenizer, BuildError] {
     var t = Tokenizer.blank(pre);
     match t.loadVocabulary(tokens, special) {
@@ -437,7 +437,7 @@ pub struct Tokenizer {
     }
     var i = 0usize;
     while i < merges.len {
-      let text &Array[u8] = merges[i].view();
+      let text: &Array[u8] = merges[i].view();
       // split at the first space that is not the first byte
       var sp = 1usize;
       while sp < text.len && text[sp] != ' ' { sp = sp + 1usize; }
@@ -460,7 +460,7 @@ pub struct Tokenizer {
   }
 
   // The same, with the merges as pairs of tokens
-  pub fn buildPairs(tokens &Array[String], merges &Array[MergePair], special &Array[String], pre PreTokenizer)
+  pub fn buildPairs(tokens: &Array[String], merges: &Array[MergePair], special: &Array[String], pre: PreTokenizer)
       Result[Tokenizer, BuildError] {
     var t = Tokenizer.blank(pre);
     match t.loadVocabulary(tokens, special) {
@@ -481,44 +481,44 @@ pub struct Tokenizer {
   // -------- asking --------
 
   // How many tokens (ids 0 up to, not including, this)
-  pub fn vocabSize(self &) usize { isSpecial.len() }
+  pub fn vocabSize(self: &) usize { isSpecial.len() }
 
   // How many distinct merge rules the tokenizer applies
-  pub fn mergeCount(self &) usize { merges.len() }
+  pub fn mergeCount(self: &) usize { merges.len() }
 
-  pub fn preTokenizer(self &) &PreTokenizer { &pre }
+  pub fn preTokenizer(self: &) &PreTokenizer { &pre }
 
   // The id of the token with this vocabulary text (in the vocabulary's own
   // spelling: 'toByteLevel' of its bytes), or None
-  pub fn tokenId(self &, text &str) Option[u32] { vocab.getCopy(text) }
+  pub fn tokenId(self: &, text: &str) Option[u32] { vocab.getCopy(text) }
 
   // The bytes an id decodes to, or None for an id outside the vocabulary
-  pub fn tokenBytes(self &, id u32) Option[&Array[u8]] {
+  pub fn tokenBytes(self: &, id: u32) Option[&Array[u8]] {
     if usize.from(id) >= isSpecial.len() { return None; }
     let from = self.startOf(usize.from(id));
     Some[&Array[u8]](&pool.view()[from..<from + self.lengthOf(usize.from(id))])
   }
 
   // Whether the id is a special token (false outside the vocabulary)
-  pub fn isSpecialToken(self &, id u32) bool {
+  pub fn isSpecialToken(self: &, id: u32) bool {
     if usize.from(id) >= isSpecial.len() { return false; }
     self.special(usize.from(id))
   }
 
   // The id of a single byte's token
-  pub fn byteToken(self &, b u8) u32 { byteIds.view()[usize.from(b)] }
+  pub fn byteToken(self: &, b: u8) u32 { byteIds.view()[usize.from(b)] }
 
   // -------- encoding --------
 
   // The ids of a text, special tokens recognised
-  pub fn encode(self &, text &Array[u8]) List[u32] {
+  pub fn encode(self: &, text: &Array[u8]) List[u32] {
     var out = List[u32].empty();
     self.encodeWith(text, true, &mut out);
     out
   }
 
   // The ids of a text, with a special token's text encoded like any other text
-  pub fn encodePlain(self &, text &Array[u8]) List[u32] {
+  pub fn encodePlain(self: &, text: &Array[u8]) List[u32] {
     var out = List[u32].empty();
     self.encodeWith(text, false, &mut out);
     out
@@ -526,7 +526,7 @@ pub struct Tokenizer {
 
   // Append the ids of a text to out; 'parseSpecial' says whether a special
   // token's text in the input is its token
-  pub fn encodeWith(self &, text &Array[u8], parseSpecial bool, out &mut List[u32]) {
+  pub fn encodeWith(self: &, text: &Array[u8], parseSpecial: bool, out: &mut List[u32]) {
     var work = Work.empty();
     var segment = 0usize;
     var pos = 0usize;
@@ -550,7 +550,7 @@ pub struct Tokenizer {
 
   // The id of the longest special token that text has at pos, or deadSymbol
   // (which is no id) when there is none
-  fn specialAt(self &, text &Array[u8], pos usize) u32 {
+  fn specialAt(self: &, text: &Array[u8], pos: usize) u32 {
     let ids = specialIds.view();
     var k = 0usize;
     while k < ids.len {
@@ -564,7 +564,7 @@ pub struct Tokenizer {
   }
 
   // Text with no special token in it: cut into words, each merged alone
-  fn encodeSegment(self &, text &Array[u8], work &mut Work, out &mut List[u32]) {
+  fn encodeSegment(self: &, text: &Array[u8], work: &mut Work, out: &mut List[u32]) {
     work.ends.clear();
     pieceEndsWith(&pre, text, &mut work.ends, &mut work.scan);
     var start = 0usize;
@@ -578,7 +578,7 @@ pub struct Tokenizer {
   }
 
   // The pair at symbol i and the symbol after it, in the heap if a rule joins it
-  fn queuePair(self &, sym &Array[u32], next &Array[usize], heap &mut List[u64], i usize) {
+  fn queuePair(self: &, sym: &Array[u32], next: &Array[usize], heap: &mut List[u64], i: usize) {
     let j = next[i];
     if j == noLink { return; }
     let key = (u64.from(sym[i]) << 32u64) | u64.from(sym[j]);
@@ -589,7 +589,7 @@ pub struct Tokenizer {
   }
 
   // One word's bytes merged into tokens, appended to out
-  fn mergeWord(self &, word &Array[u8], work &mut Work, out &mut List[u32]) {
+  fn mergeWord(self: &, word: &Array[u8], work: &mut Work, out: &mut List[u32]) {
     let n = word.len;
     if n == 1usize {
       out.push(byteIds.view()[usize.from(word[0usize])]);
@@ -653,7 +653,7 @@ pub struct Tokenizer {
   // Append the bytes of the ids to out and answer how many bytes that is; with
   // 'skipSpecial', the special tokens add nothing. An id outside the vocabulary
   // is an error and leaves out as it was.
-  pub fn decodeInto(self &, ids &Array[u32], skipSpecial bool, out &mut List[u8]) Result[usize, DecodeError] {
+  pub fn decodeInto(self: &, ids: &Array[u32], skipSpecial: bool, out: &mut List[u8]) Result[usize, DecodeError] {
     let size = isSpecial.len();
     var i = 0usize;
     while i < ids.len {
@@ -677,7 +677,7 @@ pub struct Tokenizer {
   }
 
   // The bytes of the ids
-  pub fn decode(self &, ids &Array[u32]) Result[List[u8], DecodeError] {
+  pub fn decode(self: &, ids: &Array[u32]) Result[List[u8], DecodeError] {
     var out = List[u8].empty();
     match self.decodeInto(ids, false, &mut out) {
       case let e Error { return Error[List[u8], DecodeError](e.copy()); }
@@ -688,14 +688,14 @@ pub struct Tokenizer {
 }
 
 // Every byte of b, appended
-fn pushAll(out &mut List[u8], b &Array[u8]) {
+fn pushAll(out: &mut List[u8], b: &Array[u8]) {
   var i = 0usize;
   while i < b.len { out.push(b[i]); i = i + 1usize; }
 }
 
 // -------- a min-heap of u64 --------
 
-fn heapPush(h &mut List[u64], v u64) {
+fn heapPush(h: &mut List[u64], v: u64) {
   h.push(v);
   let a = h.viewMut();
   var i = a.len - 1usize;
@@ -710,7 +710,7 @@ fn heapPush(h &mut List[u64], v u64) {
 }
 
 // Remove and answer the least; the heap is not empty
-fn heapPop(h &mut List[u64]) u64 {
+fn heapPop(h: &mut List[u64]) u64 {
   let a = h.viewMut();
   let top = a[0usize];
   let last = a[a.len - 1usize];
@@ -743,7 +743,7 @@ fn heapPop(h &mut List[u64]) u64 {
 // that start. A program that prints text as ids are generated prints this
 // many bytes of what it has decoded so far and keeps the rest for the next
 // token. Bytes that are not UTF-8 are counted whole.
-pub fn utf8Complete(b &Array[u8]) usize {
+pub fn utf8Complete(b: &Array[u8]) usize {
   var back = 1usize;
   while back <= 3usize && back <= b.len && (b[b.len - back] & 0xC0u8) == 0x80u8 { back = back + 1usize; }
   if back > 3usize || back > b.len { return b.len; }

@@ -17,52 +17,52 @@ pub const FAR = 3.4028235e38f;
 // once the item is removed the Proxy reaches nothing (the slot's generation
 // has moved on, even after another item takes the slot).
 pub struct Proxy {
-  pub slot u32;
-  pub gen u32;
+  pub slot: u32;
+  pub gen: u32;
 
   pub fn none() Proxy {new Proxy(NONE, 0u32)}
   pub fn isNone(self) bool {slot == NONE}
-  pub fn `==`(self, o Proxy) bool {slot == o.slot && gen == o.gen}
+  pub fn `==`(self, o: Proxy) bool {slot == o.slot && gen == o.gen}
 }
 
 // A ray hit on an item's box: the handle, the proxy, and the multiple of the
 // ray's direction at which the ray enters the box (0 if it starts inside)
-pub struct Hit[T Copy] {
-  pub handle T;
-  pub proxy Proxy;
-  pub t f32;
+pub struct Hit[T: Copy] {
+  pub handle: T;
+  pub proxy: Proxy;
+  pub t: f32;
 }
 
 // An item found by a nearest-neighbour query, with its squared distance from
 // the query point to its box (0 if the point is inside)
-pub struct Neighbor[T Copy] {
-  pub handle T;
-  pub proxy Proxy;
-  pub distSq f32;
+pub struct Neighbor[T: Copy] {
+  pub handle: T;
+  pub proxy: Proxy;
+  pub distSq: f32;
 }
 
 // Two items whose boxes overlap, in the order of their slots
-pub struct Pair[T Copy] {
-  pub a T;
-  pub b T;
-  pub pa Proxy;
-  pub pb Proxy;
+pub struct Pair[T: Copy] {
+  pub a: T;
+  pub b: T;
+  pub pa: Proxy;
+  pub pb: Proxy;
 }
 
 // What changed in the set of overlapping pairs since the last update
-pub struct PairEvents[T Copy] {
-  pub added List[Pair[T]];
-  pub removed List[Pair[T]];
+pub struct PairEvents[T: Copy] {
+  pub added: List[Pair[T]];
+  pub removed: List[Pair[T]];
 
   pub fn create() PairEvents[T] {new PairEvents[T](List[Pair[T]].empty(), List[Pair[T]].empty())}
-  pub fn clear(self &mut) {
+  pub fn clear(self: &mut) {
     added.clear();
     removed.clear();
   }
 }
 
 // The last u32 of a list, taken off it (NONE for an empty one)
-fn popU32(l &mut List[u32]) u32 {
+fn popU32(l: &mut List[u32]) u32 {
   var r = NONE;
   match l.pop() {
     case let s Some { r = s; }
@@ -73,33 +73,33 @@ fn popU32(l &mut List[u32]) u32 {
 
 // -------- small numeric helpers (geomath keeps its own private) --------
 
-fn minf(a f32, b f32) f32 inline {if a < b {a} else {b}}
-fn maxf(a f32, b f32) f32 inline {if a > b {a} else {b}}
-fn absf(a f32) f32 inline {if a < 0. {-a} else {a}}
+fn minf(a: f32, b: f32) f32 inline {if a < b {a} else {b}}
+fn maxf(a: f32, b: f32) f32 inline {if a > b {a} else {b}}
+fn absf(a: f32) f32 inline {if a < 0. {-a} else {a}}
 
 // The cell an f32 coordinate falls in on a grid of 'size' from 'origin'
 // (kept within 21 bits either side of zero, so a key can pack three of them)
-fn cellOf(x f32, origin f32, invSize f32) i32 inline {
+fn cellOf(x: f32, origin: f32, invSize: f32) i32 inline {
   let f = libc.floorf((x - origin) * invSize);
   let c = if f < -1048576. {-1048576.} else if f > 1048575. {1048575.} else {f};
   i32.from(c)
 }
 
 // The surface area of a box: the cost measure of the surface area heuristic
-fn area(b Aabb3) f32 inline {
+fn area(b: Aabb3) f32 inline {
   let d = b.max - b.min;
   2. * (d.x * d.y + d.y * d.z + d.z * d.x)
 }
 
 // Squared distance from a point to a box (0 inside)
-fn distSqPointBox(p Vec3, b Aabb3) f32 inline {
+fn distSqPointBox(p: Vec3, b: Aabb3) f32 inline {
   let dx = maxf(maxf(b.min.x - p.x, p.x - b.max.x), 0.);
   let dy = maxf(maxf(b.min.y - p.y, p.y - b.max.y), 0.);
   let dz = maxf(maxf(b.min.z - p.z, p.z - b.max.z), 0.);
   dx * dx + dy * dy + dz * dz
 }
 
-fn containsBox(outer Aabb3, inner Aabb3) bool inline {
+fn containsBox(outer: Aabb3, inner: Aabb3) bool inline {
   outer.min.x <= inner.min.x && outer.min.y <= inner.min.y && outer.min.z <= inner.min.z
     && outer.max.x >= inner.max.x && outer.max.y >= inner.max.y && outer.max.z >= inner.max.z
 }
@@ -116,7 +116,7 @@ pub const ALL_PLANES = 63u32;
 // answer: the plane-coherency optimisation of Assarsson and Moller, "Optimized
 // View Frustum Culling Algorithms for Bounding Boxes" (2000). The answers
 // agree with Frustum.testAabb: NONE is Outside, 0 is Inside, else Intersecting.
-fn cullMask(f &Frustum, b &Aabb3, mask u32) u32 {
+fn cullMask(f: &Frustum, b: &Aabb3, mask: u32) u32 {
   var out = 0u32;
   var i = 0usize;
   while i < 6usize {
@@ -144,11 +144,11 @@ fn cullMask(f &Frustum, b &Aabb3, mask u32) u32 {
 // as it is and handled by a branch in the test (the origin must then lie
 // between that axis's faces), so no infinity or NaN arises from 0 * inf.
 pub struct RayQ {
-  pub o Vec3;
-  pub d Vec3;
-  pub inv Vec3;
+  pub o: Vec3;
+  pub d: Vec3;
+  pub inv: Vec3;
 
-  pub fn from(r Ray3) RayQ {
+  pub fn from(r: Ray3) RayQ {
     let inv = new Vec3(if r.direction.x != 0. {1. / r.direction.x} else {0.},
       if r.direction.y != 0. {1. / r.direction.y} else {0.},
       if r.direction.z != 0. {1. / r.direction.z} else {0.});
@@ -159,7 +159,7 @@ pub struct RayQ {
 // Where the ray enters the box (slab method; Kay and Kajiya 1986), as a
 // multiple of the direction; 0 if it starts inside; -1 if it misses or the
 // entry is beyond 'maxT'. The box is closed: touching counts.
-fn rayBox(r &RayQ, b &Aabb3, maxT f32) f32 {
+fn rayBox(r: &RayQ, b: &Aabb3, maxT: f32) f32 {
   var tNear = 0.f;
   var tFar = maxT;
   if r.d.x != 0. {
@@ -192,20 +192,20 @@ fn rayBox(r &RayQ, b &Aabb3, maxT f32) f32 {
 // with its lower-bound distance 'key'. 'c' and 'h' carry a node's cell
 // (the octree's centre and half-size); the BVH ignores them.
 struct HeapEntry {
-  key f32;
-  id u32;
-  isItem bool;
-  c Vec3;
-  h f32;
+  key: f32;
+  id: u32;
+  isItem: bool;
+  c: Vec3;
+  h: f32;
 }
 
 struct MinHeap {
-  a List[HeapEntry];
+  a: List[HeapEntry];
 
   fn create() MinHeap {new MinHeap(List[HeapEntry].withCapacity(256usize))}
-  fn len(self &) usize {a.len()}
+  fn len(self: &) usize {a.len()}
 
-  fn push(self &mut, e HeapEntry) {
+  fn push(self: &mut, e: HeapEntry) {
     a.push(e);
     var i = a.len() - 1usize;
     while i > 0usize {
@@ -216,7 +216,7 @@ struct MinHeap {
     }
   }
 
-  fn pop(self &mut) HeapEntry {
+  fn pop(self: &mut) HeapEntry {
     let last = a.len() - 1usize;
     a.swap(0usize, last);
     var top = new HeapEntry(0., 0u32, false, new Vec3(0., 0., 0.), 0.);
@@ -243,12 +243,12 @@ struct MinHeap {
 // -------- a set of slots seen --------
 
 struct Seen {
-  bits List[u64];
+  bits: List[u64];
 
   fn create() Seen {new Seen(List[u64].empty())}
 
   // Marks a slot; true if it was not marked before
-  fn mark(self &mut, slot u32) bool {
+  fn mark(self: &mut, slot: u32) bool {
     let w = usize.from(slot >> 6u32);
     while self.bits.len() <= w {self.bits.push(0u64);}
     let bit = 1u64 << u64.from(slot & 63u32);

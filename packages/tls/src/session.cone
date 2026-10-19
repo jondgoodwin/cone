@@ -47,36 +47,36 @@ pub enum SessionEvent {
 
 // One TLS connection, in either role (see the package's header, SESSIONS)
 pub struct Session is Move {
-  ssl *u8;
-  rbio *u8;           // the network's bytes, for OpenSSL to read
-  wbio *u8;           // OpenSSL's bytes, for the network
-  arrivals *u8;       // a resuming client's: sessions OpenSSL handed over, not yet cached
-  state Shared;
-  isServer bool;
-  kind VerifyKind;
-  pins List[u8];
-  resume bool;
-  lane Lane;
-  offline bool;
-  host String;
-  phase u32;
-  events u32;
-  verifyWanted bool;  // the chain is ready for the OS's verifier
-  ownError bool;      // the error was this package's verdict: OpenSSL's that follows is not the cause
-  verifyAt Instant;
-  verifyTime Duration;
-  begun bool;         // its first handshake bytes have gone out or come in
-  begunAt Instant;
-  handshakeTime Duration;
-  wasOpen bool;
-  mayRead bool;       // bytes have come since a read last found none
-  eof bool;           // the transport's stream has ended
-  gotClose bool;      // the peer's close_notify came
-  endTold bool;       // ...or the end without one has been reported
-  sentClose bool;
-  err TlsError;
+  ssl: *u8;
+  rbio: *u8;           // the network's bytes, for OpenSSL to read
+  wbio: *u8;           // OpenSSL's bytes, for the network
+  arrivals: *u8;       // a resuming client's: sessions OpenSSL handed over, not yet cached
+  state: Shared;
+  isServer: bool;
+  kind: VerifyKind;
+  pins: List[u8];
+  resume: bool;
+  lane: Lane;
+  offline: bool;
+  host: String;
+  phase: u32;
+  events: u32;
+  verifyWanted: bool;  // the chain is ready for the OS's verifier
+  ownError: bool;      // the error was this package's verdict: OpenSSL's that follows is not the cause
+  verifyAt: Instant;
+  verifyTime: Duration;
+  begun: bool;         // its first handshake bytes have gone out or come in
+  begunAt: Instant;
+  handshakeTime: Duration;
+  wasOpen: bool;
+  mayRead: bool;       // bytes have come since a read last found none
+  eof: bool;           // the transport's stream has ended
+  gotClose: bool;      // the peer's close_notify came
+  endTold: bool;       // ...or the end without one has been reported
+  sentClose: bool;
+  err: TlsError;
 
-  fn blank(st Shared, server bool) Session {
+  fn blank(st: Shared, server: bool) Session {
     let s = &*st;
     var pins = List[u8].empty();
     var k = 0usize;
@@ -103,7 +103,7 @@ pub struct Session is Move {
       endTold: false, sentClose: false, err: TlsError.none())
   }
 
-  fn client(st Shared, serverName &str) Session {
+  fn client(st: Shared, serverName: &str) Session {
     var s = Session.blank(st, false);
     s.host = String.from(serverName);
     SSL_set_connect_state(s.ssl);
@@ -127,7 +127,7 @@ pub struct Session is Move {
     s
   }
 
-  fn server(st Shared) Session {
+  fn server(st: Shared) Session {
     var s = Session.blank(st, true);
     SSL_set_accept_state(s.ssl);
     s
@@ -138,7 +138,7 @@ pub struct Session is Move {
   // ---------------------------------------------------------------------------
 
   // Ciphertext that arrived: every byte is taken (how many)
-  pub fn feed(self &mut, cipher &Array[u8]) usize {
+  pub fn feed(self: &mut, cipher: &Array[u8]) usize {
     if cipher.len == 0usize || phase == pFailed {return cipher.len;}
     self.begin();
     var put = 0usize;
@@ -150,7 +150,7 @@ pub struct Session is Move {
   }
 
   // The transport's stream has ended (a TCP FIN)
-  pub fn feedEnd(self &mut) {
+  pub fn feedEnd(self: &mut) {
     if eof {return;}
     eof = true;
     mayRead = true;
@@ -160,10 +160,10 @@ pub struct Session is Move {
   }
 
   // Bytes ready to go out on the wire
-  pub fn pending(self &) usize {BIO_ctrl_pending(wbio)}
+  pub fn pending(self: &) usize {BIO_ctrl_pending(wbio)}
 
   // Copy bytes to go out into out: how many
-  pub fn transmit(self &mut, out &mut Array[u8]) usize {
+  pub fn transmit(self: &mut, out: &mut Array[u8]) usize {
     if out.len == 0usize {return 0usize;}
     var got = 0usize;
     if BIO_read_ex(wbio, &mut out[0usize] as *u8, out.len, &mut got) != 1i32 {return 0usize;}
@@ -172,7 +172,7 @@ pub struct Session is Move {
   }
 
   // The handshake's clock starts with its first bytes, out or in
-  fn begin(self &mut) {
+  fn begin(self: &mut) {
     if begun {return;}
     begun = true;
     begunAt = Instant.now();
@@ -180,7 +180,7 @@ pub struct Session is Move {
 
   // Plaintext to protect and send: how many bytes were taken, all of them
   // once the session is open, none before
-  pub fn write(self &mut, plain &Array[u8]) usize {
+  pub fn write(self: &mut, plain: &Array[u8]) usize {
     if phase != pOpen || sentClose || plain.len == 0usize {return 0usize;}
     ERR_clear_error();
     var put = 0usize;
@@ -190,17 +190,17 @@ pub struct Session is Move {
   }
 
   // Whether plaintext may be waiting to be read
-  pub fn canRead(self &) bool {phase == pOpen && mayRead && !gotClose}
+  pub fn canRead(self: &) bool {phase == pOpen && mayRead && !gotClose}
 
   // Plaintext that came, into out: how many bytes; 0 when none is ready.
   // TLS 1.3's tickets, which come after the handshake, are taken in here
-  pub fn read(self &mut, out &mut Array[u8]) usize {
+  pub fn read(self: &mut, out: &mut Array[u8]) usize {
     let got = self.readSome(out);
     self.harvest();
     got
   }
 
-  fn readSome(self &mut, out &mut Array[u8]) usize {
+  fn readSome(self: &mut, out: &mut Array[u8]) usize {
     if phase != pOpen || gotClose || out.len == 0usize {return 0usize;}
     ERR_clear_error();
     var got = 0usize;
@@ -228,7 +228,7 @@ pub struct Session is Move {
   }
 
   // Queue close_notify: no more plaintext will be written
-  pub fn close(self &mut) {
+  pub fn close(self: &mut) {
     if sentClose {return;}
     sentClose = true;
     if phase != pOpen {return;}
@@ -243,7 +243,7 @@ pub struct Session is Move {
   // ---------------------------------------------------------------------------
 
   // What has happened, once each, in the order the kinds are listed
-  pub fn pollEvent(self &mut) SessionEvent {
+  pub fn pollEvent(self: &mut) SessionEvent {
     if (events & evHandshake) != 0u32 {
       events = events & ~evHandshake;
       return SessionEvent.HandshakeDone;
@@ -264,24 +264,24 @@ pub struct Session is Move {
   }
 
   // The handshake is done: plaintext flows
-  pub fn isOpen(self &) bool {phase == pOpen}
+  pub fn isOpen(self: &) bool {phase == pOpen}
 
   // The handshake has not ended yet (waiting for the OS's verifier too)
-  pub fn isHandshaking(self &) bool {phase == pHandshake || phase == pVerify}
+  pub fn isHandshaking(self: &) bool {phase == pHandshake || phase == pVerify}
 
-  pub fn isFailed(self &) bool {phase == pFailed}
+  pub fn isFailed(self: &) bool {phase == pFailed}
 
   // The peer's stream has ended, and every byte of it has been read
-  pub fn peerEnded(self &) bool {gotClose || (eof && !mayRead)}
+  pub fn peerEnded(self: &) bool {gotClose || (eof && !mayRead)}
 
   // Why it failed (TlsError.none() while it has not)
-  pub fn error(self &) &TlsError {&err}
+  pub fn error(self: &) &TlsError {&err}
 
   // Whether close_notify has been queued
-  pub fn closed(self &) bool {sentClose}
+  pub fn closed(self: &) bool {sentClose}
 
   // What it negotiated
-  pub fn info(self &) TlsInfo {
+  pub fn info(self: &) TlsInfo {
     var ap = null as *u8;
     var alen = 0u32;
     SSL_get0_alpn_selected(ssl, &mut ap, &mut alen);
@@ -299,7 +299,7 @@ pub struct Session is Move {
   // ---------------------------------------------------------------------------
 
   // Drive the handshake as far as the bytes it has allow
-  fn advance(self &mut) {
+  fn advance(self: &mut) {
     while phase == pHandshake {
       ERR_clear_error();
       let r = SSL_do_handshake(ssl);
@@ -332,7 +332,7 @@ pub struct Session is Move {
   }
 
   // Pinning: the end certificate's public key against the pins, now
-  fn checkPins(self &mut) {
+  fn checkPins(self: &mut) {
     let chain = SSL_get_peer_cert_chain(ssl);
     var hash = new Array[u8, 32] <- fill 0u8;
     var found = false;
@@ -361,7 +361,7 @@ pub struct Session is Move {
   }
 
   // The session fails: its error, reported once
-  fn fail(self &mut, kind TlsErrorKind, code u32, detail &str) {
+  fn fail(self: &mut, kind: TlsErrorKind, code: u32, detail: &str) {
     if phase == pFailed {return;}
     if !ownError {err = TlsError.make(kind, code, detail);}
     phase = pFailed;
@@ -371,7 +371,7 @@ pub struct Session is Move {
   }
 
   // OpenSSL said e: why, as a TlsError
-  fn failFromSsl(self &mut, e i32) {
+  fn failFromSsl(self: &mut, e: i32) {
     var text = String.empty();
     let first = sslErrors(&mut text);
     if ownError {
@@ -411,7 +411,7 @@ pub struct Session is Move {
         d.append(" (");
         d.appendUInt(u64.from(alert));
         d.append(")");
-        var k TlsErrorKind = TlsErrorKind.Alert;
+        var k: TlsErrorKind = TlsErrorKind.Alert;
         if alert == 70u32 {k = TlsErrorKind.ProtocolVersion;}
         elif alert == 120u32 {k = TlsErrorKind.NoAlpnMatch;}
         self.fail(k, alert, d.view());
@@ -435,12 +435,12 @@ pub struct Session is Move {
 
   // Whether the handshake waits for the OS's verifier, its job not yet
   // handed out
-  pub fn wantsVerify(self &) bool {verifyWanted}
+  pub fn wantsVerify(self: &) bool {verifyWanted}
 
   // The OS's verifier as a pool operation on the client's 'verifyLane': the
   // chain the server sent and the name asked for, in a buffer from pool.
   // Its completion goes to verifyDone
-  pub fn verifyOp(self &mut, pool &Pool) Op {
+  pub fn verifyOp(self: &mut, pool: &Pool) Op {
     var job = List[u8].empty();
     self.verifyJob(&mut job);
     var b = IoBuf.empty();
@@ -457,7 +457,7 @@ pub struct Session is Move {
   }
 
   // The OS's verifier's answer, from the pool
-  pub fn verifyDone(self &mut, c &mut Completion) {
+  pub fn verifyDone(self: &mut, c: &mut Completion) {
     if phase != pVerify {return;}
     verifyTime = Instant.now() - verifyAt;
     if c.isDone() && c.buf.len() >= 4usize {
@@ -474,7 +474,7 @@ pub struct Session is Move {
 
   // The OS's verifier, run here: it blocks, perhaps fetching over the
   // network. For a program with no loop
-  pub fn verifyNow(self &mut) {
+  pub fn verifyNow(self: &mut) {
     if !verifyWanted {return;}
     var job = List[u8].empty();
     self.verifyJob(&mut job);
@@ -485,7 +485,7 @@ pub struct Session is Move {
 
   // The job: the name, then the chain the server sent, each certificate in
   // DER (see verify.cone)
-  fn verifyJob(self &mut, job &mut List[u8]) {
+  fn verifyJob(self: &mut, job: &mut List[u8]) {
     verifyWanted = false;
     verifyAt = Instant.now();
     nVerifications.add(1u64);
@@ -516,7 +516,7 @@ pub struct Session is Move {
   }
 
   // The verdict: 0 trusted, else the OS's error; the handshake goes on
-  fn verified(self &mut, code u32) {
+  fn verified(self: &mut, code: u32) {
     if phase != pVerify {return;}
     if code == 0u32 {
       SSL_set_ex_data(ssl, 0i32, verdictTrusted as *u8);
@@ -536,7 +536,7 @@ pub struct Session is Move {
   // The sessions OpenSSL handed over since the last harvest, into the
   // context's cache: OpenSSL's call has returned, so its lock is taken
   // here, one statement for each, and no call into OpenSSL is under way
-  fn harvest(self &mut) {
+  fn harvest(self: &mut) {
     if arrivals as usize == 0usize {return;}
     let n = *(arrivals as *usize);
     var k = 0usize;
@@ -548,7 +548,7 @@ pub struct Session is Move {
     *(arrivals as *usize) = 0usize;
   }
 
-  fn final(self &uni) {
+  fn final(self: &uni) {
     if arrivals as usize != 0usize {
       self.harvest();
       SSL_set_ex_data(ssl, ticketSlot(), null);
@@ -580,7 +580,7 @@ pub struct Session is Move {
 
 // Whether a server's name is an IP address (written as one) rather than a
 // DNS name
-fn isAddress(name &str) bool {
+fn isAddress(name: &str) bool {
   if name.isEmpty() {return false;}
   var k = 0usize;
   while k < name.len() {
@@ -593,7 +593,7 @@ fn isAddress(name &str) bool {
 }
 
 // The kind of a certificate error OpenSSL's verify result names
-fn certKindOfVerifyResult(vr i32) TlsErrorKind {
+fn certKindOfVerifyResult(vr: i32) TlsErrorKind {
   if vr == x509Expired || vr == x509NotYetValid {TlsErrorKind.CertExpired}
   elif vr == x509HostnameMismatch || vr == x509IpMismatch {TlsErrorKind.CertNameMismatch}
   elif vr == x509UnableToGetIssuer || vr == x509UnableToGetIssuerLocally || vr == x509DepthZeroSelfSigned ||
@@ -603,7 +603,7 @@ fn certKindOfVerifyResult(vr i32) TlsErrorKind {
 }
 
 // The SHA-256 of a certificate's public key, its DER SubjectPublicKeyInfo
-fn spkiSha256(x *u8, out &mut Array[u8, 32]) bool {
+fn spkiSha256(x: *u8, out: &mut Array[u8, 32]) bool {
   let pk = X509_get_X509_PUBKEY(x);
   if pk as usize == 0usize {return false;}
   let len = i2d_X509_PUBKEY(pk, null);
@@ -617,14 +617,14 @@ fn spkiSha256(x *u8, out &mut Array[u8, 32]) bool {
   ok
 }
 
-fn putU32(l &mut List[u8], v u32) {
+fn putU32(l: &mut List[u8], v: u32) {
   l.push(u8.from(v & 255u32));
   l.push(u8.from((v >> 8u32) & 255u32));
   l.push(u8.from((v >> 16u32) & 255u32));
   l.push(u8.from(v >> 24u32));
 }
 
-fn appendBytes(l &mut List[u8], b &Array[u8]) {
+fn appendBytes(l: &mut List[u8], b: &Array[u8]) {
   var k = 0usize;
   while k < b.len {
     l.push(b[k]);

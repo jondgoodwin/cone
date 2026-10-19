@@ -35,22 +35,22 @@ import process;
 import actors;
 import aio use IoLimits;
 
-fn take(rx &mut Receiver[u64]) u64 {
+fn take(rx: &mut Receiver[u64]) u64 {
   match rx.recv() {
     case let v Some {v}
     else {999u64}
   }
 }
 
-fn b(v bool) u64 {if v {1u64} else {0u64}}
+fn b(v: bool) u64 {if v {1u64} else {0u64}}
 
-fn ms(since Instant) u64 {
+fn ms(since: Instant) u64 {
   let n = since.elapsed().millis();
   if n < 0i64 {0u64} else {u64.from(n)}
 }
 
 // How a run ended: 1 done, 2 cancelled, 3 timed out, 4 a failure of the system
-fn endedBy(r &Result[process.Output, IoError]) u64 {
+fn endedBy(r: &Result[process.Output, IoError]) u64 {
   match r {
     case let e &Error {
       if e.isCancelled() {2u64}
@@ -61,7 +61,7 @@ fn endedBy(r &Result[process.Output, IoError]) u64 {
   }
 }
 
-fn codeOf(r &Result[process.Output, IoError]) u64 {
+fn codeOf(r: &Result[process.Output, IoError]) u64 {
   match r {
     case let e &Error {u64.from(e.code)}
     else {0u64}
@@ -69,7 +69,7 @@ fn codeOf(r &Result[process.Output, IoError]) u64 {
 }
 
 // The Output an answer holds, a blank one for a failure
-fn outputOf(r Result[process.Output, IoError]) process.Output {
+fn outputOf(r: Result[process.Output, IoError]) process.Output {
   var res = r;
   var o = new process.Output(0u32, 0u32, false, String.empty(), String.empty());
   match &mut res {
@@ -92,7 +92,7 @@ fn echoArgs() List[String] {
 }
 
 // A command line that takes about 'secs' seconds
-fn slowLine(secs u64) String {
+fn slowLine(secs: u64) String {
   var s = String.empty();
   if isWindows() {
     s.append("cmd /c ping -n ");
@@ -106,7 +106,7 @@ fn slowLine(secs u64) String {
 }
 
 actor Runner {
-  out Sender[u64];
+  out: Sender[u64];
 
   pub async do basic(self) {
     {
@@ -161,7 +161,7 @@ actor Runner {
 
 // A child that says hello
 actor Echoer {
-  pub async do go(self, out Sender[u64]) {
+  pub async do go(self, out: Sender[u64]) {
     let args = echoArgs();
     let r = await aio.run(args.view());
     let how = endedBy(&r);
@@ -172,7 +172,7 @@ actor Echoer {
 
 // A child of about a second
 actor Slow {
-  pub async do go(self, out Sender[u64]) {
+  pub async do go(self, out: Sender[u64]) {
     let r = await aio.runLine(slowLine(1u64).view());
     let how = endedBy(&r);
     let o = outputOf(r);
@@ -182,7 +182,7 @@ actor Slow {
 
 // Five 100 ms sleeps while the child runs
 actor Napper {
-  pub async do go(self, out Sender[u64]) {
+  pub async do go(self, out: Sender[u64]) {
     var k = 0u64;
     while k < 5u64 {
       let nap = await aio.sleep(Duration.fromMillis(100i64));
@@ -194,7 +194,7 @@ actor Napper {
 
 // A child that holds a thread of the pool's lane for a second, then is stopped
 actor Holder {
-  pub async do go(self, out Sender[u64]) {
+  pub async do go(self, out: Sender[u64]) {
     let r = await aio.runLine(slowLine(5u64).view(), new process.Options(timeout: Duration.fromMillis(1000i64)));
     let how = endedBy(&r);
     let o = outputOf(r);
@@ -204,7 +204,7 @@ actor Holder {
 
 // A child queued behind the four, in a group main cancels
 actor Waiter {
-  pub async do go(self, g CancelGroup, out Sender[u64]) {
+  pub async do go(self, g: CancelGroup, out: Sender[u64]) {
     let t = Instant.now();
     let r = await aio.runLineIn(slowLine(1u64).view(), new process.Options(), "", IoLimits.within(g));
     out.send(endedBy(&r));
@@ -214,7 +214,7 @@ actor Waiter {
 
 // A running child under a deadline
 actor Deadliner {
-  pub async do go(self, out Sender[u64]) {
+  pub async do go(self, out: Sender[u64]) {
     let t = Instant.now();
     let r = await aio.runLineIn(slowLine(5u64).view(), new process.Options(timeout: Duration.fromMillis(1500i64)), "",
       IoLimits.until(t + Duration.fromMillis(100i64)));
@@ -228,8 +228,8 @@ actor Deadliner {
 
 fn main() i32 {
   initAll();
-  var tx Sender[u64];
-  var rx Receiver[u64];
+  var tx: Sender[u64];
+  var rx: Receiver[u64];
   tx, rx = Channel[u64].make();
   let r = new Runner(tx.clone());
   r.basic();

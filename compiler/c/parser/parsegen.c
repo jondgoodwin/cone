@@ -1,6 +1,6 @@
 /** Parse a generator, and generate what it stands for
  *
- * 'fn walk(t &Tree, n i32) yields &Node { ... yield node; ... yield each sub; ... }'
+ * 'fn walk(t: &Tree, n: i32) yields &Node { ... yield node; ... yield each sub; ... }'
  * declares a generator: a function that hands its caller values one at a time,
  * suspended at each 'yield' until it is asked for the next. Calling it runs
  * nothing: it returns a value that holds the parameters, and every call of that
@@ -10,22 +10,22 @@
  * reported at the generator's name, Lexer.genat):
  *
  *   struct walk.Gen is Iterator[&Node] {               the generator's value, declaring what it is
- *     let t &'a Tree;  let n i32;                      the parameters, as the author wrote them, under names no source can spell
- *     state' u32;                                      where the body resumes
- *     pub fn next(self &mut) Option[&'a Node] {...}    the author's body
- *     fn final(self &uni) {}                           what the frame's drop hangs on
- *     fn walk.yield(v &Node) Option[&Node] inline {Some[&Node](v)}    what a 'yield' hands the caller
+ *     let t: &'a Tree;  let n: i32;                    the parameters, as the author wrote them, under names no source can spell
+ *     state': u32;                                     where the body resumes
+ *     pub fn next(self: &mut) Option[&'a Node] {...}    the author's body
+ *     fn final(self: &uni) {}                           what the frame's drop hangs on
+ *     fn walk.yield(v: &Node) Option[&Node] inline {Some[&Node](v)}    what a 'yield' hands the caller
  *     fn walk.none() Option[&Node] {None[&Node]}                      what its end hands the caller
  *   }
- *   fn walk(t &Tree, n i32) walk.Gen {new walk.Gen(t, n, 0u32)}     the generator, made
+ *   fn walk(t: &Tree, n: i32) walk.Gen {new walk.Gen(t, n, 0u32)}     the generator, made
  *
- * A generator may be generic, 'fn items[T](l &List[T]) yields &T': the struct is
+ * A generator may be generic, 'fn items[T](l: &List[T]) yields &T': the struct is
  * 'items.Gen[T]', taking the function's type parameters as they are written, and
  * the constructor makes 'new items.Gen[T](l, 0u32)'. An instance of the struct
  * is a clone of it like any generic type's, and a generator of its own
  * (yieldGenCloned).
  *
- * A generator may be a method of a struct, 'fn walk(self &) yields &Node' inside
+ * A generator may be a method of a struct, 'fn walk(self: &) yields &Node' inside
  * 'struct Tree[T]'. The struct is 'Tree.walk.Gen[T]', made beside the type with
  * the type's parameters (and the method's own after them), and the constructor,
  * returned in the author's place, is the type's method. The receiver is held in a
@@ -179,7 +179,7 @@ typedef struct GenParm {
     char *type, *typeend;   // Its type; just past its name where none is written
     char *nameend;          // Just past its name
     int typed;              // Its type is written
-    int bare;               // It is a receiver written without its pointee: 'self &', 'self &mut'
+    int bare;               // It is a receiver written without its pointee: 'self: &', 'self: &mut'
     char *valueend;         // Just past its default value, or its type where there is none
 } GenParm;
 
@@ -480,7 +480,7 @@ FnDclNode *parseGenFinish(ParseState *parse, FnDclNode *fn, GenSig *sig, GenCtx 
     }
 
     // The type itself as the receiver's field names it, where the method wrote
-    // 'self' or 'self &' and left the type to be inferred
+    // 'self' or 'self: &' and left the type to be inferred
     GenText selftext = {NULL, 0, 0};
     if (type) {
         genName(&selftext, type->namesym);
@@ -556,22 +556,22 @@ FnDclNode *parseGenFinish(ParseState *parse, FnDclNode *fn, GenSig *sig, GenCtx 
         int d1 = 0, d2 = 0;
         parseGenAnnotate(&g, typestart, parms[i].typeend, life, &d1, &d2);
         if (isrecv && (!parms[i].typed || parms[i].bare)) {
-            genPuts(&g, " ");
+            genPuts(&g, parms[i].typed ? " " : ": ");
             genPutn(&g, selftext.text, selftext.len);
         }
         genPuts(&g, ";\n");
     }
     genPuts(&g, "  ");
     genSlot(&g, GenState);
-    genPuts(&g, " u32;\n  pub fn next(self &mut) Option[");
+    genPuts(&g, ": u32;\n  pub fn next(self: &mut) Option[");
     genPutn(&g, ytype.text, ytype.len);
-    genPuts(&g, "] {}\n  fn final(self &uni) {}\n");
+    genPuts(&g, "] {}\n  fn final(self: &uni) {}\n");
 
     // What a 'yield' hands the caller, and what the end does: functions of the
     // struct, so that each instance of a generic generator has its own
     genPuts(&g, "  fn ");
     genSlot(&g, GenYield);
-    genPuts(&g, "(v ");
+    genPuts(&g, "(v: ");
     genPutn(&g, yplain.text, yplain.len);
     genPuts(&g, ") Option[");
     genPutn(&g, yplain.text, yplain.len);
@@ -654,7 +654,7 @@ FnDclNode *parseGenFinish(ParseState *parse, FnDclNode *fn, GenSig *sig, GenCtx 
     modAddNode(mod, state->namesym, (INode *)state);
     FnDclNode *nonefn = (FnDclNode *)parseGenMember(state, names[GenNone], FnDclTag);
     FnDclNode *ctor = (FnDclNode *)parseFn(parse, ParseMayName | ParseMayImpl);
-    ctor->overloadsym = fn->overloadsym;    // 'fn forward overload iter(self &) yields &T'
+    ctor->overloadsym = fn->overloadsym;    // 'fn forward overload iter(self: &) yields &T'
     if (!lexIsToken(EofToken))
         errorMsgLex(ErrorNoEof, "The declarations generated for generator %s did not parse whole.", &fn->namesym->namestr);
     lexPop();
@@ -738,7 +738,7 @@ INode *parseYield(ParseState *parse) {
     }
     if (ctx == NULL) {
         errorMsgNode((INode *)node, ErrorYieldPlace,
-            "'yield' stands only in the body of a function declared with 'yields', a generator: 'fn walk(t &Tree) yields &Node { ... yield n; ... }'.");
+            "'yield' stands only in the body of a function declared with 'yields', a generator: 'fn walk(t: &Tree) yields &Node { ... yield n; ... }'.");
         if (!parseIsEndOfStatement())
             parseAnyExpr(parse);
         parseEndOfStatement();

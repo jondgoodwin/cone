@@ -31,31 +31,31 @@ fn preference() u32 {
 
 // A buffer to make: these words uploaded, or (when 'words' is empty) this many zero words
 struct BufSpec {
-  words List[u32];
-  zeros usize;
+  words: List[u32];
+  zeros: usize;
 }
 
 // What a case records: six numbers and a type
 struct Shape {
-  a usize;
-  b usize;
-  c usize;
-  d usize;
-  e usize;
-  f usize;
-  qt u32;
+  a: usize;
+  b: usize;
+  c: usize;
+  d: usize;
+  e: usize;
+  f: usize;
+  qt: u32;
 }
 
-fn spec(words List[u32]) BufSpec { new BufSpec(words, 0usize) }
+fn spec(words: List[u32]) BufSpec { new BufSpec(words, 0usize) }
 
-fn zeroSpec(n usize) BufSpec { new BufSpec(List[u32].empty(), n) }
+fn zeroSpec(n: usize) BufSpec { new BufSpec(List[u32].empty(), n) }
 
-fn floatSpec(rng &mut Rng, n usize, amp f32) BufSpec { spec(floatWords(syntheticFloats(rng, n, amp).view())) }
+fn floatSpec(rng: &mut Rng, n: usize, amp: f32) BufSpec { spec(floatWords(syntheticFloats(rng, n, amp).view())) }
 
 // Run the recorder 'times' times in a job over the held buffers (or, the first time, the specs'), and wait: the
 // microseconds from submit to the answer
-fn runOnce(device &mut Device, kernels &Kernels, works &mut Works, held &mut List[Buffer], specs &List[BufSpec],
-    shape &Shape, record &fn(&Kernels, &mut Job, &mut Device, &Array[u32], &Shape) bool, times usize, first bool) f64 {
+fn runOnce(device: &mut Device, kernels: &Kernels, works: &mut Works, held: &mut List[Buffer], specs: &List[BufSpec],
+    shape: &Shape, record: &fn(&Kernels, &mut Job, &mut Device, &Array[u32], &Shape) bool, times: usize, first: bool) f64 {
   var job = Job.make(device);
   var slots = List[u32].empty();
   var i = 0usize;
@@ -91,8 +91,8 @@ fn runOnce(device &mut Device, kernels &Kernels, works &mut Works, held &mut Lis
 }
 
 // Microseconds for one dispatch: (t51 - t1) / 50, the median of 5
-fn timeCase(device &mut Device, kernels &Kernels, works &mut Works, specs &List[BufSpec], shape &Shape,
-    record &fn(&Kernels, &mut Job, &mut Device, &Array[u32], &Shape) bool) f64 {
+fn timeCase(device: &mut Device, kernels: &Kernels, works: &mut Works, specs: &List[BufSpec], shape: &Shape,
+    record: &fn(&Kernels, &mut Job, &mut Device, &Array[u32], &Shape) bool) f64 {
   var held = List[Buffer].empty();
   runOnce(device, kernels, works, &mut held, specs, shape, record, 1usize, true);   // uploads, untimed
   var diffs = List[f64].empty();
@@ -116,53 +116,53 @@ fn timeCase(device &mut Device, kernels &Kernels, works &mut Works, specs &List[
   *diffs[2usize]
 }
 
-fn recMatvec(k &Kernels, job &mut Job, device &mut Device, slots &Array[u32], s &Shape) bool {
+fn recMatvec(k: &Kernels, job: &mut Job, device: &mut Device, slots: &Array[u32], s: &Shape) bool {
   k.matvec(job, device, slots[0usize], slots[1usize], slots[2usize], s.qt, s.a, s.b)
 }
 
-fn recMatmul(k &Kernels, job &mut Job, device &mut Device, slots &Array[u32], s &Shape) bool {
+fn recMatmul(k: &Kernels, job: &mut Job, device: &mut Device, slots: &Array[u32], s: &Shape) bool {
   k.matmul(job, device, slots[0usize], slots[1usize], slots[2usize], s.qt, s.a, s.b, s.c)
 }
 
-fn recRms(k &Kernels, job &mut Job, device &mut Device, slots &Array[u32], s &Shape) bool {
+fn recRms(k: &Kernels, job: &mut Job, device: &mut Device, slots: &Array[u32], s: &Shape) bool {
   k.rmsnorm(job, device, slots[0usize], slots[1usize], slots[2usize], s.a, s.b, 0.00001)
 }
 
-fn recRope(k &Kernels, job &mut Job, device &mut Device, slots &Array[u32], s &Shape) bool {
+fn recRope(k: &Kernels, job: &mut Job, device: &mut Device, slots: &Array[u32], s: &Shape) bool {
   k.rope(job, device, slots[0usize], slots[1usize], s.a, s.b, s.c, s.c, s.d, 0u32)
 }
 
-fn recSoftmax(k &Kernels, job &mut Job, device &mut Device, slots &Array[u32], s &Shape) bool {
+fn recSoftmax(k: &Kernels, job: &mut Job, device: &mut Device, slots: &Array[u32], s: &Shape) bool {
   k.softmax(job, device, slots[0usize], slots[1usize], s.a, s.b)
 }
 
-fn recAttention(k &Kernels, job &mut Job, device &mut Device, slots &Array[u32], s &Shape) bool {
+fn recAttention(k: &Kernels, job: &mut Job, device: &mut Device, slots: &Array[u32], s: &Shape) bool {
   // a = tokens, b = heads, c = kv heads, d = head dim, e = pos0, f = maxSeq
   k.attention(job, device, slots[0usize], slots[1usize], slots[2usize], slots[3usize], slots[4usize], s.a, s.b, s.c, s.d, s.e, s.f,
     1.0 / f32.from(libc.sqrt(f64.from(s.d))))
 }
 
-fn recAppend(k &Kernels, job &mut Job, device &mut Device, slots &Array[u32], s &Shape) bool {
+fn recAppend(k: &Kernels, job: &mut Job, device: &mut Device, slots: &Array[u32], s: &Shape) bool {
   k.kvAppend(job, device, slots[0usize], slots[1usize], s.a, s.b, s.c)
 }
 
-fn recSilu(k &Kernels, job &mut Job, device &mut Device, slots &Array[u32], s &Shape) bool {
+fn recSilu(k: &Kernels, job: &mut Job, device: &mut Device, slots: &Array[u32], s: &Shape) bool {
   k.silu(job, device, slots[0usize], slots[1usize], s.a)
 }
 
-fn recGelu(k &Kernels, job &mut Job, device &mut Device, slots &Array[u32], s &Shape) bool {
+fn recGelu(k: &Kernels, job: &mut Job, device: &mut Device, slots: &Array[u32], s: &Shape) bool {
   k.gelu(job, device, slots[0usize], slots[1usize], s.a)
 }
 
-fn recAdd(k &Kernels, job &mut Job, device &mut Device, slots &Array[u32], s &Shape) bool {
+fn recAdd(k: &Kernels, job: &mut Job, device: &mut Device, slots: &Array[u32], s: &Shape) bool {
   k.add(job, device, slots[0usize], slots[1usize], slots[2usize], s.a)
 }
 
-fn recMul(k &Kernels, job &mut Job, device &mut Device, slots &Array[u32], s &Shape) bool {
+fn recMul(k: &Kernels, job: &mut Job, device: &mut Device, slots: &Array[u32], s: &Shape) bool {
   k.mul(job, device, slots[0usize], slots[1usize], slots[2usize], s.a)
 }
 
-fn typeName(qt u32) &str {
+fn typeName(qt: u32) &str {
   if qt == QTYPE_F32 { return "F32 "; }
   if qt == QTYPE_F16 { return "F16 "; }
   if qt == QTYPE_Q8_0 { return "Q8_0"; }
@@ -170,13 +170,13 @@ fn typeName(qt u32) &str {
   "Q6_K"
 }
 
-fn pad(s &str, width usize) {
+fn pad(s: &str, width: usize) {
   var n = s.len;
   printStr(s);
   while n < width { printStr(" "); n = n + 1usize; }
 }
 
-fn matvecCase(device &mut Device, kernels &Kernels, works &mut Works, rng &mut Rng, qt u32, rows usize, cols usize) {
+fn matvecCase(device: &mut Device, kernels: &Kernels, works: &mut Works, rng: &mut Rng, qt: u32, rows: usize, cols: usize) {
   match syntheticMatrix(rng, qt, rows, cols) {
     case let m Some {
       var specs = List[BufSpec].empty();
@@ -191,7 +191,7 @@ fn matvecCase(device &mut Device, kernels &Kernels, works &mut Works, rng &mut R
   }
 }
 
-fn matmulCase(device &mut Device, kernels &Kernels, works &mut Works, rng &mut Rng, qt u32, rows usize, cols usize, batch usize) {
+fn matmulCase(device: &mut Device, kernels: &Kernels, works: &mut Works, rng: &mut Rng, qt: u32, rows: usize, cols: usize, batch: usize) {
   match syntheticMatrix(rng, qt, rows, cols) {
     case let m Some {
       var specs = List[BufSpec].empty();
@@ -207,7 +207,7 @@ fn matmulCase(device &mut Device, kernels &Kernels, works &mut Works, rng &mut R
   }
 }
 
-fn line(name &str, us f64) {
+fn line(name: &str, us: f64) {
   pad(name, 54usize);
   printFloat(us);
   printStr(" us\n");

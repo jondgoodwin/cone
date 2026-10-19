@@ -27,7 +27,7 @@
 		/* the first statement of a module's designated file, or of a one-file module's file; 'extends' names one module already in reach, a sister or one this module imports;
 		   'is' names the one module trait this module conforms to, by one name it can reach */
 	modtrait_stmt ::= 'pub'? 'mod' 'trait' ident_token ('{' modtraitmember* '}' | ';')
-	modtraitmember ::= 'pub'? (fn_type block? | dcl_word ident_token type? ('=' literal)? ';')
+	modtraitmember ::= 'pub'? (fn_type block? | dcl_word ident_token (':' type)? ('=' literal)? ';')
 		/* a function or a global: with a body or an initial value a default, without one a requirement.
 		   Not generic, and no overload name. Anywhere among a module's statements */
 	defaultfold ::= 'use' ('*' ('but' ident_token (',' ident_token)*)? | namelist | '{' namelist ','? '}')
@@ -40,7 +40,7 @@
 	use_stmt ::= 'pub'? 'use' genqualname (folditems | '{' folditems ','? '}')? ';'
 		/* folds in a namespace the module reaches without an import: an enum's variants, the enum named alone, never an instance of a generic one;
 		   or a submodule's public names, the submodule named by its name or a path through submodules. Never an imported module */
-	var_stmt ::= dcl_word ident_token type? (',' ident_token type?)* ('=' append_exp (',' append_exp)*)? foldclause? ';'
+	var_stmt ::= dcl_word ident_token (':' type)? (',' ident_token (':' type)?)* ('=' append_exp (',' append_exp)*)? foldclause? ';'
 		/* a fold clause only on a module's global, an 'extern' one included: a local, a parameter and a type's static have no namespace to fold into */
 		/* Not built yet: more than one name in a declaration. The compiler takes one name per declaration today, and refuses 'let a, b = 1, 2;' */
 	fn_stmt ::= fn_type block
@@ -49,7 +49,7 @@
 	if_stmt ::= 'if' logic_exp block ( ('elif' | 'else' 'if') logic_exp block )* ( 'else' block )?
 		/* 'else if' is the same as 'elif' */
 	letelse_stmt ::= dcl_word ident_token type '=' exp 'else' block ';'
-		/* binds a variant of the value (the type names only the variant) or leaves: the block must end in 'return', 'break', 'continue' or a call that does not return */
+		/* binds a variant of the value (the type names only the variant, written with no ':' as a pattern binding is) or leaves: the block must end in 'return', 'break', 'continue' or a call that does not return */
 	match_stmt ::= 'match' exp ('using' exp)? ('into' var_list)? ('with' exp ('into' var_list)? block)+ ('else' block)?
 	while_stmt ::= (lifetime_token ':')? 'while' logic_exp? block ('else' block)?
 		/* with no condition the loop never runs out, and takes no 'else'; with a condition, the loop is an expression only when it has an 'else',
@@ -111,14 +111,14 @@
 		   a field's type, a variable's type. Inside a parenthesised or bracketed list (a parameter list,
 		   a function type's own parameter list, arguments, a tuple, type arguments) the comma continues
 		   the list, so a signature there has one return type, and several values are a tuple:
-		   '(f &amp;fn(u32) (u32, u32), x u32)' */
-	fnparm ::= dcl_word? ident_token type? ('=' (literal | ident))?
+		   '(f: &amp;fn(u32) (u32, u32), x: u32)' */
+	fnparm ::= dcl_word? ident_token (':' type)? ('=' (literal | ident))?
 	structtype ::= 'struct' 'trait'? ident_token? genparms? baseclause* whereclause? ('{' structstmt (',' structstmt)* '}')?
 	genparms ::= '[' genparm (',' genparm)* ']'
-	genparm ::= ident_token ((genqualname | sigbound) ('+' genbound)* | ('+' lifetime_token)+)? | lifetime_token
-		/* what follows the name names traits, all required, which constrain the parameter as a whereclause does
+	genparm ::= ident_token ((':' (genqualname | sigbound) ('+' genbound)*) | ('+' lifetime_token)+)? | lifetime_token
+		/* what follows the name and its ':' names traits, all required, which constrain the parameter as a whereclause does
 		   ('||' is not taken here); a type or a kind there, a value or kind parameter, is not built.
-		   A function signature written bare, 'F fn(a &amp;T, b &amp;T) i32', is a bound too (sigbound).
+		   A function signature written bare, 'F: fn(a: &amp;T, b: &amp;T) i32', is a bound too (sigbound).
 		   A lifetime after a '+' is a bound, on a generic function's type parameter only: what a value of it
 		   holds lasts that long.
 		   A macro's or a generic module's parameter takes none. A lifetime only in a struct's or an enum's
@@ -128,7 +128,7 @@
 		/* an ad hoc structural trait: the type has a pub '()' method whose parameters after its receiver, and whose
 		   return type, are exactly these (names do not matter, and a parameter may be written as its type alone);
 		   a plain function referenced, '&amp;byAge', meets it as it is. One return type, and no 'inline' or 'where'.
-		   A '+' after it joins the next bound, as in 'F fn() + Sendable'. Not a macro's or a module's parameter,
+		   A '+' after it joins the next bound, as in 'F: fn() + Sendable'. Not a macro's or a module's parameter,
 		   and not a condition on a type's 'is' entry */
 	whereclause ::= 'where' whereor
 	whereor ::= whereand ('||' whereand)*
@@ -136,7 +136,7 @@
 	whereand ::= whereterm ('&amp;&amp;' whereterm)*   /* '&amp;&amp;' binds tighter than '||', as in an expression */
 	whereterm ::= '(' whereor ')' | whereitem | wherebound | wherelife
 	whereitem ::= ident_token 'is' (genqualname | sigbound) ('+' genbound)*
-		/* each name a trait, or a type, met by that type alone ('T is bool'), or a function signature, 'F is fn(a &amp;T) i32';
+		/* each name a trait, or a type, met by that type alone ('T is bool'), or a function signature, 'F is fn(a: &amp;T) i32';
 		   the subject is a type parameter of the generic, or of the generic type the function is a method of;
 		   on a generic's own parameters a requirement, on a method over its type's a condition for the method existing.
 		   A lifetime after a '+' is a bound, as in wherebound */
@@ -167,7 +167,7 @@
 	behaviourstmt ::= 'pub'? 'async' 'do' ident_token '(' fnparm (',' fnparm)* ')' type? block
 		/* an actor's behaviour: its first parameter 'self'; 'async' and 'do' mean nothing apart */
 	unbuiltkind ::= 'actor' 'trait' ident_token? ('{' structstmt* '}')?   /* accepted, not implemented */
-	enumtype ::= 'enum' '@unsized'? ident_token genparms? nbrtype? (('extends' genqualname) | isaclause)? whereclause? '{' enumstmt* '}'
+	enumtype ::= 'enum' '@unsized'? ident_token genparms? (':' nbrtype)? (('extends' genqualname) | isaclause)? whereclause? '{' enumstmt* '}'
 		/* 'extends' names another enum, a generic one with its type arguments, whose variants
 		   this one holds copies of; such an enum declares only variants in its body, writes
 		   no integer type of its own, and names no isaclause: its base's comes with the copies.

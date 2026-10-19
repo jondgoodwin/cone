@@ -31,7 +31,7 @@ import path as filepath;
 const W = 1920u32;
 const H = 1080u32;
 
-fn cstrEquals(a *u8, b &str) bool {
+fn cstrEquals(a: *u8, b: &str) bool {
   var i = 0usize;
   while i < b.len() {
     if *(a + i) != b[i] { return false; }
@@ -40,11 +40,11 @@ fn cstrEquals(a *u8, b &str) bool {
   *(a + b.len()) == 0u8
 }
 
-fn clampf(v f32, lo f32, hi f32) f32 { if v < lo { lo } elif v > hi { hi } else { v } }
+fn clampf(v: f32, lo: f32, hi: f32) f32 { if v < lo { lo } elif v > hi { hi } else { v } }
 
-fn seconds(from u64, to u64) f64 { f64.from(to - from) / f64.from(sdl.GetPerformanceFrequency()) }
+fn seconds(from: u64, to: u64) f64 { f64.from(to - from) / f64.from(sdl.GetPerformanceFrequency()) }
 
-fn scatter(n u32) f32 {
+fn scatter(n: u32) f32 {
   var x = n * 747796405u32 + 2891336453u32;
   x = ((x >> ((x >> 28u32) + 4u32)) ^ x) * 277803737u32;
   x = (x >> 22u32) ^ x;
@@ -52,11 +52,11 @@ fn scatter(n u32) f32 {
 }
 
 // The ground: a slope rising away from the cabin, with swells
-fn heightAt(x f32, z f32) f32 {
+fn heightAt(x: f32, z: f32) f32 {
   0. - 0.2 * z + 0.9 * libc.sinf(x * 0.07 + 1.) * libc.cosf(z * 0.05) + 0.4 * libc.sinf(x * 0.19 + z * 0.13)
 }
 
-fn groundMesh(x0 f32, x1 f32, z0 f32, z1 f32, n i32) Mesh {
+fn groundMesh(x0: f32, x1: f32, z0: f32, z1: f32, n: i32) Mesh {
   var m = Mesh.empty();
   var j = 0;
   while j <= n {
@@ -88,13 +88,13 @@ fn groundMesh(x0 f32, x1 f32, z0 f32, z1 f32, n i32) Mesh {
   m
 }
 
-fn boxAt(center Vec3, half Vec3, yaw f32, roll f32) Mesh {
+fn boxAt(center: Vec3, half: Vec3, yaw: f32, roll: f32) Mesh {
   var m = Mesh.cube(1.);
   m.transform(Mat4.fromTrs(center, Quat.angleAxis(yaw, new Vec3(0., 1., 0.)) * Quat.angleAxis(roll, new Vec3(0., 0., 1.)), half));
   m
 }
 
-fn imageCopy(t &Image) Image {
+fn imageCopy(t: &Image) Image {
   var img = new Image(t.width, t.height, t.channels, List[u8].withCapacity(t.pixels.len()));
   var i = 0usize;
   while i < t.pixels.len() {
@@ -104,7 +104,7 @@ fn imageCopy(t &Image) Image {
   img
 }
 
-fn imageOf(t &TexelMap) Image {
+fn imageOf(t: &TexelMap) Image {
   var img = new Image(t.width, t.height, 4, List[u8].withCapacity(t.pixels.len()));
   var i = 0usize;
   while i < t.pixels.len() {
@@ -117,13 +117,13 @@ fn imageOf(t &TexelMap) Image {
 // ---- Subjects: a tree is a trunk and a crown of cards, turned into levels and an impostor ----
 
 struct Species {
-  name String;
-  image Image;
-  texture TextureHandle;
-  foliage MaterialHandle;
+  name: String;
+  image: Image;
+  texture: TextureHandle;
+  foliage: MaterialHandle;
 }
 
-fn foliageMaterial(renderer &mut Renderer, device &mut Device, image &Image, spec f32) Species {
+fn foliageMaterial(renderer: &mut Renderer, device: &mut Device, image: &Image, spec: f32) Species {
   let tex = renderer.addCutoutTexture(device, image, 0.5);
   var pbr = PbrMaterial.standard(new Color(1., 1., 1., 1.), 0., 0.75);
   pbr.texture = tex;
@@ -138,14 +138,14 @@ fn foliageMaterial(renderer &mut Renderer, device &mut Device, image &Image, spe
 }
 
 struct Subject {
-  name String;
-  lod AutoLod;
-  materials List[MaterialHandle];   // the renderer's, one a part: trunk, crown
-  center Vec3;
-  radius f32;
-  height f32;
-  triangles u32;
-  ms f64;
+  name: String;
+  lod: AutoLod;
+  materials: List[MaterialHandle];   // the renderer's, one a part: trunk, crown
+  center: Vec3;
+  radius: f32;
+  height: f32;
+  triangles: u32;
+  ms: f64;
 }
 
 const KIND_SPRUCE = 0;
@@ -153,8 +153,8 @@ const KIND_FIR = 1;
 const KIND_PINE = 2;
 const KIND_NORFOLK = 3;
 
-fn makeSubject(device &mut Device, renderer &mut Renderer, pipe &ImpostorPipeline, baker &mut ImpostorBaker,
-    settings &AutoLodSettings, sp &Species, trunkMat MaterialHandle, kind i32, seed u32, height f32, bare f32) Subject {
+fn makeSubject(device: &mut Device, renderer: &mut Renderer, pipe: &ImpostorPipeline, baker: &mut ImpostorBaker,
+    settings: &AutoLodSettings, sp: &Species, trunkMat: MaterialHandle, kind: i32, seed: u32, height: f32, bare: f32) Subject {
   let t0 = sdl.GetPerformanceCounter();
   // the cards are finer on a young tree: their size follows its height to a third power
   let cardScale = clampf(libc.powf(height / 20., 0.45), 0.35, 1.);
@@ -181,7 +181,7 @@ fn makeSubject(device &mut Device, renderer &mut Renderer, pipe &ImpostorPipelin
   new Subject(String.from(""), lod, mats, c, rad, height, tris, seconds(t0, t1) * 1000.0)
 }
 
-fn plant(renderer &mut Renderer, s &Subject, model Mat4, tint Color, range f32) {
+fn plant(renderer: &mut Renderer, s: &Subject, model: Mat4, tint: Color, range: f32) {
   var p = 0usize;
   while p < s.lod.chains.len() {
     let full = s.lod.chains[p];
@@ -197,16 +197,16 @@ fn plant(renderer &mut Renderer, s &Subject, model Mat4, tint Color, range f32) 
 // ---- The rig ----
 
 struct Rig {
-  out Texture;
-  pixels Buffer;
-  queries QuerySet;
-  resolved Buffer;
-  stamps Buffer;
-  post Post;
-  fx ImageFx;
+  out: Texture;
+  pixels: Buffer;
+  queries: QuerySet;
+  resolved: Buffer;
+  stamps: Buffer;
+  post: Post;
+  fx: ImageFx;
 }
 
-fn save(folder &str, name &str, img &Image) {
+fn save(folder: &str, name: &str, img: &Image) {
   var path = String.from(folder);
   path <- "/";
   path <- name;
@@ -219,7 +219,7 @@ const LOOK_DAY = 0;
 const LOOK_DUSK = 1;
 const LOOK_NIGHT = 2;
 
-fn lookSky(look i32) Sky {
+fn lookSky(look: i32) Sky {
   var sky = Sky.dusk(radians(40.), radians(30.));
   if look == LOOK_DAY {
     sky.sunDirection = new Vec3(0.45, 0.62, -0.64).normalize();
@@ -250,7 +250,7 @@ fn lookSky(look i32) Sky {
   sky
 }
 
-fn lookLight(look i32) Light {
+fn lookLight(look: i32) Light {
   if look == LOOK_DAY {
     return Light.directional(new Vec3(-0.45, -0.62, 0.64), new Color(3.3, 3.0, 2.6, 1.), new Color(0.30, 0.38, 0.50, 1.));
   }
@@ -260,7 +260,7 @@ fn lookLight(look i32) Light {
   Light.directional(new Vec3(0.3, -0.45, 0.84), new Color(0.05, 0.07, 0.14, 1.), new Color(0.01, 0.014, 0.03, 1.))
 }
 
-fn lookFog(look i32) FogSettings {
+fn lookFog(look: i32) FogSettings {
   var f = FogSettings.high();
   f.maxDistance = 900.;
   f.slices = 64u32;
@@ -278,7 +278,7 @@ fn lookFog(look i32) FogSettings {
   f
 }
 
-fn drawFrame(device &mut Device, renderer &mut Renderer, rig &mut Rig, camera &Camera, light &Light, timed bool) {
+fn drawFrame(device: &mut Device, renderer: &mut Renderer, rig: &mut Rig, camera: &Camera, light: &Light, timed: bool) {
   let empty = DrawList.empty();
   var encoder = device.createCommandEncoder();
   if timed { encoder.writeTimestamp(&rig.queries, 0u32); }
@@ -295,7 +295,7 @@ fn drawFrame(device &mut Device, renderer &mut Renderer, rig &mut Rig, camera &C
   device.waitIdle();
 }
 
-fn shoot(device &mut Device, renderer &mut Renderer, rig &mut Rig, camera &Camera, light &Light, folder &str, name &str) {
+fn shoot(device: &mut Device, renderer: &mut Renderer, rig: &mut Rig, camera: &Camera, light: &Light, folder: &str, name: &str) {
   renderer.time = 1.;
   // two frames: the fog's and the exposure's histories settle
   drawFrame(device, renderer, rig, camera, light, false);
@@ -306,7 +306,7 @@ fn shoot(device &mut Device, renderer &mut Renderer, rig &mut Rig, camera &Camer
   print <- "Shot: "; printStr(name); print <- "\n";
 }
 
-fn sorted(v &mut List[f64]) {
+fn sorted(v: &mut List[f64]) {
   var i = 1usize;
   while i < v.len() {
     let x = *v[i];
@@ -320,7 +320,7 @@ fn sorted(v &mut List[f64]) {
   }
 }
 
-fn soak(device &mut Device, renderer &mut Renderer, rig &mut Rig, camera &Camera, light &Light, name &str, frames u32) {
+fn soak(device: &mut Device, renderer: &mut Renderer, rig: &mut Rig, camera: &Camera, light: &Light, name: &str, frames: u32) {
   var gpus = List[f64].empty();
   var cpus = List[f64].empty();
   var f = 0u32;
@@ -343,7 +343,7 @@ fn soak(device &mut Device, renderer &mut Renderer, rig &mut Rig, camera &Camera
   print <- u64.from(renderer.drawCalls); print <- " draws\n";
 }
 
-fn eyeCamera(eye Vec3, target Vec3, fov f32) Camera {
+fn eyeCamera(eye: Vec3, target: Vec3, fov: f32) Camera {
   var c = Camera.make();
   c.fov = radians(fov);
   c.near = 0.2;
@@ -353,7 +353,7 @@ fn eyeCamera(eye Vec3, target Vec3, fov f32) Camera {
   c
 }
 
-fn main(argc i32, argv **u8) i32 {
+fn main(argc: i32, argv: **u8) i32 {
   var folder = String.from("");
   var soakFrames = 0u32;
   var mint = false;
@@ -511,8 +511,8 @@ fn main(argc i32, argv **u8) i32 {
     let r4 = scatter(n * 7u32 + 4u32);
     n = n + 1u32;
     // which: 0 tall behind (z -8 to -110), 1 middling at the sides, 2 saplings in front (z 2 to 22)
-    var x f32 = 0.;
-    var z f32 = 0.;
+    var x: f32 = 0.;
+    var z: f32 = 0.;
     var group = 0;
     if placed % 5u32 == 4u32 {
       group = 2;

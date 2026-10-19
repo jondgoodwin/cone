@@ -4,9 +4,9 @@
 // 'start', a whole number of triangles, with the material in slot 'material'
 // (three.js's group, glTF's primitive)
 pub struct Group {
-  pub start u32;
-  pub count u32;
-  pub material u32;
+  pub start: u32;
+  pub count: u32;
+  pub material: u32;
 }
 
 // Triangles over vertices. Every list of vertex data that is not empty has
@@ -14,13 +14,13 @@ pub struct Group {
 // facing the side from which it runs counterclockwise. 'groups' is empty when
 // the whole mesh is one material, slot 0.
 pub struct Mesh {
-  pub positions List[Vec3];
-  pub normals List[Vec3];     // unit length, or empty
-  pub uvs List[Vec2];         // texture coordinates, or empty
-  pub colors List[Color];     // or empty
-  pub tangents List[Vec4];    // xyz along u, w the handedness (1 or -1), or empty
-  pub indices List[u32];
-  pub groups List[Group];
+  pub positions: List[Vec3];
+  pub normals: List[Vec3];     // unit length, or empty
+  pub uvs: List[Vec2];         // texture coordinates, or empty
+  pub colors: List[Color];     // or empty
+  pub tangents: List[Vec4];    // xyz along u, w the handedness (1 or -1), or empty
+  pub indices: List[u32];
+  pub groups: List[Group];
 
   // A mesh with nothing in it
   pub fn empty() Mesh {
@@ -28,20 +28,20 @@ pub struct Mesh {
       List[Vec4].empty(), List[u32].empty(), List[Group].empty())
   }
 
-  pub fn vertexCount(self &) usize {positions.len()}
-  pub fn triangleCount(self &) usize {indices.len() / 3usize}
+  pub fn vertexCount(self: &) usize {positions.len()}
+  pub fn triangleCount(self: &) usize {indices.len() / 3usize}
 
   // The smallest box holding every position; empty when there are none
-  pub fn bounds(self &) Aabb3 {Aabb3.fromPoints(positions.view())}
+  pub fn bounds(self: &) Aabb3 {Aabb3.fromPoints(positions.view())}
 
   // Add a material group: 'count' indices from 'start', in slot 'material'
-  pub fn addGroup(self &mut, start u32, count u32, material u32) {
+  pub fn addGroup(self: &mut, start: u32, count: u32, material: u32) {
     groups.push(new Group(start, count, material));
   }
 
   // The unit normal of triangle t, by the right-hand rule on its corners;
   // (0, 0, 0) when it has no area
-  pub fn triangleNormal(self &, t usize) Vec3 {
+  pub fn triangleNormal(self: &, t: usize) Vec3 {
     let a = *positions[usize.from(*indices[3usize * t])];
     let b = *positions[usize.from(*indices[3usize * t + 1usize])];
     let c = *positions[usize.from(*indices[3usize * t + 2usize])];
@@ -53,7 +53,7 @@ pub struct Mesh {
   // one, and the indices become 0, 1, 2, ... (the vertex count is three per
   // triangle). Uvs, colors and tangents are carried to the split vertices;
   // the groups still cover the same triangles.
-  pub fn computeFlatNormals(self &mut) {
+  pub fn computeFlatNormals(self: &mut) {
     let nt = indices.len() / 3usize;
     let hasUv = uvs.len() > 0usize;
     let hasColor = colors.len() > 0usize;
@@ -95,7 +95,7 @@ pub struct Mesh {
   // change with how a polygon was cut into triangles. Vertices are not
   // merged: two vertices at one place (a uv seam) keep their own normals,
   // each from its own triangles. A vertex no triangle uses gets (0, 0, 0).
-  pub fn computeSmoothNormals(self &mut) {
+  pub fn computeSmoothNormals(self: &mut) {
     let n = positions.len();
     var acc = List[Vec3].withCapacity(n);
     var v = 0usize;
@@ -140,7 +140,7 @@ pub struct Mesh {
   // (none, if either is missing: 'tangents' is left empty). A vertex whose
   // triangles give no direction (a pole, a degenerate uv) gets any direction
   // perpendicular to its normal.
-  pub fn computeTangents(self &mut) {
+  pub fn computeTangents(self: &mut) {
     let n = positions.len();
     tangents.clear();
     if normals.len() != n || uvs.len() != n || n == 0usize { return; }
@@ -206,7 +206,7 @@ pub struct Mesh {
   // has is filled for the other: normals (0, 0, 0), uvs (0, 0), colors white,
   // tangents (1, 0, 0, 1). When either has groups, both get them, the one
   // without becoming a single group in slot 0.
-  pub fn append(self &mut, o &Mesh) {
+  pub fn append(self: &mut, o: &Mesh) {
     let n0 = positions.len();
     let n1 = o.positions.len();
     let base = u32.from(n0);
@@ -250,7 +250,7 @@ pub struct Mesh {
   // kept. A placement that mirrors (its determinant is negative) would turn
   // every triangle inside out, so each triangle's winding is reversed too,
   // as glTF does.
-  pub fn transform(self &mut, m Mat4) {
+  pub fn transform(self: &mut, m: Mat4) {
     let nm = Mat3.normalMatrix(m);
     var i = 0usize;
     while i < positions.len() {
@@ -278,7 +278,7 @@ pub struct Mesh {
   }
 
   // The same, by a translation, rotation and scale
-  pub fn transformBy(self &mut, t Transform3) {self.transform(t.toMat4());}
+  pub fn transformBy(self: &mut, t: Transform3) {self.transform(t.toMat4());}
 
   // A sphere of 'radius' centred at the origin, by longitude and latitude:
   // 'nsegments' slices around and as many from pole to pole. The normals point
@@ -289,7 +289,7 @@ pub struct Mesh {
   // the n - 2 bands between circles, 2n(n - 1) triangles. Fewer than 3
   // segments gives an empty mesh. (Pegasus3D's sphere, with its joining of
   // the circles and its vertex count corrected.)
-  pub fn sphere(radius f32, nsegments i32) Mesh {
+  pub fn sphere(radius: f32, nsegments: i32) Mesh {
     var s = Mesh.empty();
     let n = nsegments;
     if n <= 2 { return s; }
@@ -370,7 +370,7 @@ pub struct Mesh {
   // row by row along x from z = -1. The uv (0, 0) is the corner at (-1, 0, 1),
   // and 'uvrepeat' is how many times the texture repeats across it. Fewer than
   // 1 segment gives an empty mesh.
-  pub fn plane(nsegments i32, uvrepeat f32) Mesh {
+  pub fn plane(nsegments: i32, uvrepeat: f32) Mesh {
     var s = Mesh.empty();
     let n = nsegments;
     if n < 1 { return s; }
@@ -416,7 +416,7 @@ pub struct Mesh {
   // two triangles each. Each face's uvs run from (0, 0) at its lower left to
   // (1, 1) at its upper right, seen from outside (the top seen with -z up,
   // the bottom with +z up).
-  pub fn cube(size f32) Mesh {
+  pub fn cube(size: f32) Mesh {
     var s = Mesh.empty();
     s.positions.reserve(24usize);
     s.normals.reserve(24usize);
@@ -445,7 +445,7 @@ pub struct Mesh {
 
 // Pegasus3D's cube: the four corners of each face (top, bottom, back, front,
 // left, right)
-let cubePositions Array[f32, 72] = [
+let cubePositions: Array[f32, 72] = [
   -1f, 1f, -1f,  1f, 1f, -1f,  1f, 1f, 1f,  -1f, 1f, 1f,
   -1f, -1f, -1f,  1f, -1f, -1f,  1f, -1f, 1f,  -1f, -1f, 1f,
   -1f, 1f, -1f,  1f, 1f, -1f,  1f, -1f, -1f,  -1f, -1f, -1f,
@@ -455,17 +455,17 @@ let cubePositions Array[f32, 72] = [
 // Two triangles for each face, counterclockwise seen from outside.
 // (Pegasus3D's ran (0, 1, 2), (0, 2, 3) on every face, which is clockwise on
 // the top, front and left ones.)
-let cubeIndices Array[u32, 36] = [0u32, 2u32, 1u32, 0u32, 3u32, 2u32, 4u32, 5u32, 6u32, 4u32, 6u32, 7u32,
+let cubeIndices: Array[u32, 36] = [0u32, 2u32, 1u32, 0u32, 3u32, 2u32, 4u32, 5u32, 6u32, 4u32, 6u32, 7u32,
   8u32, 9u32, 10u32, 8u32, 10u32, 11u32, 12u32, 14u32, 13u32, 12u32, 15u32, 14u32,
   16u32, 18u32, 17u32, 16u32, 19u32, 18u32, 20u32, 21u32, 22u32, 20u32, 22u32, 23u32];
 // Each face's directions across and up it, seen from outside: their cross
 // product is its outward normal
-let cubeRights Array[f32, 18] = [1f, 0f, 0f,  1f, 0f, 0f,  -1f, 0f, 0f,  1f, 0f, 0f,  0f, 0f, 1f,  0f, 0f, -1f];
-let cubeUps Array[f32, 18] = [0f, 0f, -1f,  0f, 0f, 1f,  0f, 1f, 0f,  0f, 1f, 0f,  0f, 1f, 0f,  0f, 1f, 0f];
+let cubeRights: Array[f32, 18] = [1f, 0f, 0f,  1f, 0f, 0f,  -1f, 0f, 0f,  1f, 0f, 0f,  0f, 0f, 1f,  0f, 0f, -1f];
+let cubeUps: Array[f32, 18] = [0f, 0f, -1f,  0f, 0f, 1f,  0f, 1f, 0f,  0f, 1f, 0f,  0f, 1f, 0f,  0f, 1f, 0f];
 
 // Extend 'dst', which holds data for 'n0' vertices or none, by 'src''s data
 // for 'n1' more, filling for whichever lacks it; nothing when both lack it
-fn appendStream[T](dst &mut List[T], n0 usize, src &List[T], n1 usize, fill T) {
+fn appendStream[T](dst: &mut List[T], n0: usize, src: &List[T], n1: usize, fill: T) {
   if dst.len() == 0usize && src.len() == 0usize { return; }
   while dst.len() < n0 { dst.push(fill); }
   var i = 0usize;
@@ -476,14 +476,14 @@ fn appendStream[T](dst &mut List[T], n0 usize, src &List[T], n1 usize, fill T) {
 }
 
 // The vector made unit length, or (0, 0, 0) if it has none
-fn unitOrZero(v Vec3) Vec3 {
+fn unitOrZero(v: Vec3) Vec3 {
   let len = v.length();
   if len > 0. { v * (1. / len) } else { new Vec3(0., 0., 0.) }
 }
 
 // The angle at corner p of the triangle p, a, b, in radians; 0 when an edge
 // has no length
-fn cornerAngle(p Vec3, a Vec3, b Vec3) f32 {
+fn cornerAngle(p: Vec3, a: Vec3, b: Vec3) f32 {
   let e1 = a - p;
   let e2 = b - p;
   let l = e1.length() * e2.length();
@@ -497,10 +497,10 @@ fn cornerAngle(p Vec3, a Vec3, b Vec3) f32 {
 // The normal of a polygon by Newell's method, of length twice its area
 // (unnormalized): exact for a flat polygon, convex or not, and the best-fit
 // plane's normal for one that is not quite flat
-fn newellNormal(pts &List[Vec3]) Vec3 {
-  var nx f32 = 0.;
-  var ny f32 = 0.;
-  var nz f32 = 0.;
+fn newellNormal(pts: &List[Vec3]) Vec3 {
+  var nx: f32 = 0.;
+  var ny: f32 = 0.;
+  var nz: f32 = 0.;
   let n = pts.len();
   var i = 0usize;
   while i < n {

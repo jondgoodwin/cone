@@ -6,24 +6,24 @@
 // An import line that names another package: the import's name, and the
 // package's index in the registry
 struct Line {
-  pub name String;
-  pub pkg usize;
+  pub name: String;
+  pub pkg: usize;
 }
 
 struct Module {
-  pub name String;
-  pub files List[Path];
-  pub children List[usize];
-  pub hasParent bool;
-  pub parent usize;
-  pub imports List[Import];
-  pub hasExtends bool;
-  pub extended Import;      // from the 'mod' line of its first file
-  pub lines List[Line];    // what resolving its imports found, in import order
-  pub gpu bool;            // in the package's gpu/ folder, at any depth: compiled for the GPU too
+  pub name: String;
+  pub files: List[Path];
+  pub children: List[usize];
+  pub hasParent: bool;
+  pub parent: usize;
+  pub imports: List[Import];
+  pub hasExtends: bool;
+  pub extended: Import;      // from the 'mod' line of its first file
+  pub lines: List[Line];    // what resolving its imports found, in import order
+  pub gpu: bool;            // in the package's gpu/ folder, at any depth: compiled for the GPU too
 }
 
-fn newModule(name &str, file &Path, hasParent bool, parent usize) Module {
+fn newModule(name: &str, file: &Path, hasParent: bool, parent: usize) Module {
   var files = List[Path].empty();
   files.push(file.copy());
   new Module(String.from(name), files, List[usize].empty(), hasParent, parent,
@@ -31,7 +31,7 @@ fn newModule(name &str, file &Path, hasParent bool, parent usize) Module {
 }
 
 // A file's imports join its module's, each once
-fn addImports(m &mut Module, header &Header) {
+fn addImports(m: &mut Module, header: &Header) {
   if header.hasExtends && !m.hasExtends {
     m.hasExtends = true;
     m.extended = header.extended.copy();
@@ -52,11 +52,11 @@ fn addImports(m &mut Module, header &Header) {
 
 // A folder's .cone files and its subfolders, each by name
 struct Listing {
-  pub files List[Path];
-  pub folders List[Path];
+  pub files: List[Path];
+  pub folders: List[Path];
 }
 
-fn coneFiles(folder &Path) Listing {
+fn coneFiles(folder: &Path) Listing {
   var entries = List[fs.DirEntry].empty();
   match fs.readDir(folder) {
     case var ok Ok { entries <=> ok; }
@@ -80,14 +80,14 @@ fn coneFiles(folder &Path) Listing {
 
 // A child's name and place, to sort children by name
 struct Named {
-  pub name String;
-  pub index usize;
+  pub name: String;
+  pub index: usize;
 }
 
-fn byName(a &Named, b &Named) i32 { a.name.compare(b.name.view()) }
+fn byName(a: &Named, b: &Named) i32 { a.name.compare(b.name.view()) }
 
 // Give module m its children, sorted by name
-fn setChildren(mods &mut List[Module], m usize, kids &List[usize]) {
+fn setChildren(mods: &mut List[Module], m: usize, kids: &List[usize]) {
   var named = List[Named].empty();
   var i = 0usize;
   while i < kids.len() {
@@ -110,8 +110,8 @@ fn setChildren(mods &mut List[Module], m usize, kids &List[usize]) {
 // subfolder's files at any depth. A file that opens with its own 'mod' line
 // is a one-file submodule, and a subfolder holding its designated file is a
 // submodule. Answers the module's place in mods.
-fn scanFolderModule(mods &mut List[Module], name &str, folder &Path, designated &Path,
-    hasParent bool, parent usize) Result[usize, String] {
+fn scanFolderModule(mods: &mut List[Module], name: &str, folder: &Path, designated: &Path,
+    hasParent: bool, parent: usize) Result[usize, String] {
   let me = mods.len();
   mods.push(newModule(name, designated, hasParent, parent));
   match scanHeader(designated) {
@@ -186,7 +186,7 @@ fn scanFolderModule(mods &mut List[Module], name &str, folder &Path, designated 
 // An organisational folder's files join the module around it, at any
 // depth. A module cannot sit there, since a module sits directly in its
 // parent's folder.
-fn scanOrganisational(mods &mut List[Module], m usize, folder &Path) Result[void, String] {
+fn scanOrganisational(mods: &mut List[Module], m: usize, folder: &Path) Result[void, String] {
   let listing = coneFiles(folder);
   let folderPlace = native(folder);
   var i = 0usize;
@@ -229,7 +229,7 @@ fn scanOrganisational(mods &mut List[Module], m usize, folder &Path) Result[void
 // folder's, which the compiler's own sweep would not see, since 'src' is not
 // 'name'. Congo lists the files, so the compiler never sweeps. A lone file is
 // a module of its own and nothing beside it joins.
-fn scanPackage(pkg &Package) Result[List[Module], String] {
+fn scanPackage(pkg: &Package) Result[List[Module], String] {
   if !fs.isFile(&pkg.src) {
     let place = shown(&pkg.src);
     return Error[List[Module], String](cat("package ", pkg.name.view(), " has no ", place.view(),
@@ -273,7 +273,7 @@ fn scanPackage(pkg &Package) Result[List[Module], String] {
 // GPU, without src/, into the package's one .spv. A file with no 'mod' line
 // would join no module there, and a folder with no designated file would
 // organise nothing, so each is refused.
-fn scanGpuFolder(pkg &Package, mods &mut List[Module], folder &Path) Result[void, String] {
+fn scanGpuFolder(pkg: &Package, mods: &mut List[Module], folder: &Path) Result[void, String] {
   if pkg.gpu {
     let place = native(folder);
     return Error[void, String](cat(place.view(), ": ", pkg.name.view(),
@@ -372,20 +372,20 @@ fn scanGpuFolder(pkg &Package, mods &mut List[Module], folder &Path) Result[void
 }
 
 // Module m and every module inside it
-fn walkSubtree(mods &List[Module], m usize) List[usize] {
+fn walkSubtree(mods: &List[Module], m: usize) List[usize] {
   var out = List[usize].empty();
   walkFrom(mods, m, &mut out);
   out
 }
 
 // The modules in walk order: each module, then each of its children's walks
-fn walkOrder(mods &List[Module]) List[usize] {
+fn walkOrder(mods: &List[Module]) List[usize] {
   var out = List[usize].empty();
   walkFrom(mods, 0usize, &mut out);
   out
 }
 
-fn walkFrom(mods &List[Module], m usize, out &mut List[usize]) {
+fn walkFrom(mods: &List[Module], m: usize, out: &mut List[usize]) {
   out.push(m);
   var i = 0usize;
   while i < mods[m].children.len() {
@@ -396,7 +396,7 @@ fn walkFrom(mods &List[Module], m usize, out &mut List[usize]) {
 
 // The child of parent named name, the last of that name as a dictionary of
 // them keeps it; answers whether there is one
-fn sisterNamed(mods &List[Module], m usize, name &str, found &mut usize) bool {
+fn sisterNamed(mods: &List[Module], m: usize, name: &str, found: &mut usize) bool {
   if !mods[m].hasParent { return false; }
   let parent = mods[m].parent;
   var any = false;
@@ -412,7 +412,7 @@ fn sisterNamed(mods &List[Module], m usize, name &str, found &mut usize) bool {
   any
 }
 
-fn qualified(mods &List[Module], m usize) String {
+fn qualified(mods: &List[Module], m: usize) String {
   if !mods[m].hasParent { return mods[m].name.copy(); }
   var q = qualified(mods, mods[m].parent);
   q <- ".", mods[m].name.view();
@@ -427,15 +427,15 @@ const edgeExtends = 2u8;
 const edgeImportsName = 3u8;
 
 struct Step {
-  pub from usize;
-  pub kind u8;
-  pub to usize;
-  pub imp Import;
+  pub from: usize;
+  pub kind: u8;
+  pub to: usize;
+  pub imp: Import;
 }
 
 // What a module depends on: each sister it imports or extends, its parent
 // where it imports a name of the parent, and each of its own submodules
-fn edges(mods &List[Module], reg &Registry, m usize) List[Step] {
+fn edges(mods: &List[Module], reg: &Registry, m: usize) List[Step] {
   var out = List[Step].empty();
   var sister = 0usize;
   let module = mods[m];
@@ -463,7 +463,7 @@ fn edges(mods &List[Module], reg &Registry, m usize) List[Step] {
   out
 }
 
-fn stepText(mods &List[Module], s &Step) String {
+fn stepText(mods: &List[Module], s: &Step) String {
   let from = qualified(mods, s.from);
   let to = qualified(mods, s.to);
   if s.kind == edgeContains { return cat(from.view(), " contains ", to.view()); }
@@ -481,7 +481,7 @@ fn stepText(mods &List[Module], s &Step) String {
 // imports a name of its parent closes a loop of two. A loop is refused,
 // naming it, as the compiler would refuse it (ErrorImportLoop); the
 // compiler's own check is the backstop for a direct conec run.
-fn checkModuleLoops(pkg &Package, mods &List[Module], reg &Registry) Result[void, String] {
+fn checkModuleLoops(pkg: &Package, mods: &List[Module], reg: &Registry) Result[void, String] {
   var state = List[u8].empty();
   var i = 0usize;
   while i < mods.len() {
@@ -496,8 +496,8 @@ const unvisited = 0u8;
 const visiting = 1u8;
 const visited = 2u8;
 
-fn visitModule(pkg &Package, mods &List[Module], reg &Registry, m usize,
-    state &mut List[u8], steps &mut List[Step]) Result[void, String] {
+fn visitModule(pkg: &Package, mods: &List[Module], reg: &Registry, m: usize,
+    state: &mut List[u8], steps: &mut List[Step]) Result[void, String] {
   state.set(m, visiting);
   let out = edges(mods, reg, m);
   var e = 0usize;
@@ -523,7 +523,7 @@ fn visitModule(pkg &Package, mods &List[Module], reg &Registry, m usize,
       }
       let last = qualified(mods, to);
       chain <- last.view();
-      var hint &str = "";
+      var hint: &str = "";
       if contains { hint = " A module may not depend on a module that contains it: move what they share into a sister both import."; }
       return Error[void, String](cat("import loop between modules of package ", pkg.name.view(), ": ", chain.view(),
         ". Imports between modules must not loop (", text.view(), ").", hint));

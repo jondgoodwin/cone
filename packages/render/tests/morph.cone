@@ -53,12 +53,12 @@ import render use *;
 
 const SIDES = 16usize;
 const RINGS = 21usize;
-const RADIUS f32 = 0.08;
+const RADIUS: f32 = 0.08;
 const TARGETS = 64usize;
 
 // ---- The tube, its skin and its targets ----
 
-fn tube(skin &mut Skin) Mesh {
+fn tube(skin: &mut Skin) Mesh {
   var m = Mesh.empty();
   var r = 0usize;
   while r < RINGS {
@@ -100,12 +100,12 @@ fn tube(skin &mut Skin) Mesh {
 
 // A small pseudo-random number generator (a linear congruence that stays in
 // 32 bits): the next of 'state', 0 to 1
-fn nextRandom(state &mut u32) f32 {
+fn nextRandom(state: &mut u32) f32 {
   *state = (*state * 1103u32 + 12345u32) % 65521u32;
   f32.from(*state) / 65521.
 }
 
-fn makeTargets(m &Mesh) MorphTargets {
+fn makeTargets(m: &Mesh) MorphTargets {
   let n = m.positions.len();
   var targets = MorphTargets.empty(n);
   let zero = new Vec3(0., 0., 0.);
@@ -166,11 +166,11 @@ fn zeros() List[f32] {
   w
 }
 
-fn absf(x f32) f32 { if x < 0. { 0. - x } else { x } }
+fn absf(x: f32) f32 { if x < 0. { 0. - x } else { x } }
 
 // ---- CPU checks ----
 
-fn cpuChecks(m &Mesh) {
+fn cpuChecks(m: &Mesh) {
   let targets = makeTargets(m);
   let n = m.positions.len();
   expectUInt(u64.from(targets.count()), 64u64, "64 targets");
@@ -275,7 +275,7 @@ fn cpuChecks(m &Mesh) {
 // ---- The GPU ----
 
 // Copy the first 'count' floats of 'buffer' back
-fn readFloats(device &mut Device, buffer &Buffer, count usize) List[f32] {
+fn readFloats(device: &mut Device, buffer: &Buffer, count: usize) List[f32] {
   var back = device.createBuffer(u64.from(count) * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
   var encoder = device.createCommandEncoder();
   encoder.copyBufferToBuffer(buffer, 0u64, &back, 0u64, u64.from(count) * 4u64);
@@ -293,8 +293,8 @@ fn readFloats(device &mut Device, buffer &Buffer, count usize) List[f32] {
 }
 
 // A morphed copy made, its copying of the base's streams submitted and done
-fn makeCopy(device &mut Device, morpher &mut Morpher, renderer &mut Renderer, base MeshHandle, set MorphSetHandle,
-    keepPrevious bool) MorphHandle {
+fn makeCopy(device: &mut Device, morpher: &mut Morpher, renderer: &mut Renderer, base: MeshHandle, set: MorphSetHandle,
+    keepPrevious: bool) MorphHandle {
   var encoder = device.createCommandEncoder();
   let copy = morpher.addCopy(device, &mut encoder, renderer, base, set, keepPrevious);
   device.queue.submit(encoder.finish());
@@ -304,7 +304,7 @@ fn makeCopy(device &mut Device, morpher &mut Morpher, renderer &mut Renderer, ba
 }
 
 // A frame's pre-pass: the copies' work recorded and run
-fn runUpdate(device &mut Device, morpher &mut Morpher, renderer &Renderer) u32 {
+fn runUpdate(device: &mut Device, morpher: &mut Morpher, renderer: &Renderer) u32 {
   var encoder = device.createCommandEncoder();
   let n = morpher.update(device, &mut encoder, renderer);
   device.queue.submit(encoder.finish());
@@ -314,12 +314,12 @@ fn runUpdate(device &mut Device, morpher &mut Morpher, renderer &Renderer) u32 {
 }
 
 // The positions buffer of the mesh 'h' the renderer holds
-fn positionsOf(renderer &Renderer, h MeshHandle) &Buffer { &renderer.meshes[h.slot].current().positions }
-fn normalsOf(renderer &Renderer, h MeshHandle) &Buffer { &renderer.meshes[h.slot].current().normals }
+fn positionsOf(renderer: &Renderer, h: MeshHandle) &Buffer { &renderer.meshes[h.slot].current().positions }
+fn normalsOf(renderer: &Renderer, h: MeshHandle) &Buffer { &renderer.meshes[h.slot].current().normals }
 
 // The largest difference between two lists of floats
-fn worstDifference(a &List[f32], b &List[f32]) f32 {
-  var worst f32 = 0.;
+fn worstDifference(a: &List[f32], b: &List[f32]) f32 {
+  var worst: f32 = 0.;
   var i = 0usize;
   while i < a.len() && i < b.len() {
     let d = absf(*a[i] - *b[i]);
@@ -330,7 +330,7 @@ fn worstDifference(a &List[f32], b &List[f32]) f32 {
 }
 
 // Whether two lists hold the same bits
-fn sameBits(a &List[f32], b &List[f32]) bool {
+fn sameBits(a: &List[f32], b: &List[f32]) bool {
   if a.len() != b.len() { return false; }
   var i = 0usize;
   while i < a.len() {
@@ -340,7 +340,7 @@ fn sameBits(a &List[f32], b &List[f32]) bool {
   true
 }
 
-fn flat3(points &List[Vec3]) List[f32] {
+fn flat3(points: &List[Vec3]) List[f32] {
   var out = List[f32].empty();
   var i = 0usize;
   while i < points.len() {
@@ -353,16 +353,16 @@ fn flat3(points &List[Vec3]) List[f32] {
 }
 
 // The two bones' skinning matrices with bone 1 turned 'angle' about +z at the joint
-fn bent(angle f32) Array[Mat4, 2] {
+fn bent(angle: f32) Array[Mat4, 2] {
   let bind1 = Mat4.fromTranslation(new Vec3(0., 0.5, 0.));
   let posed1 = Mat4.fromTrs(new Vec3(0., 0.5, 0.), Quat.angleAxis(angle, new Vec3(0., 0., 1.)), new Vec3(1., 1., 1.));
   [Mat4.identity(), skinningMatrix(posed1, bind1)]
 }
 
 // Channel 'c' of pixel ('x', 'y') of a 64 x 64 rgba8 image at 'p'
-fn px(p *u8, x usize, y usize, c usize) i64 { i64.from(*(p + (y * 64usize + x) * 4usize + c)) }
+fn px(p: *u8, x: usize, y: usize, c: usize) i64 { i64.from(*(p + (y * 64usize + x) * 4usize + c)) }
 
-fn covered(p *u8, viewProjection Mat4, w Vec3) bool {
+fn covered(p: *u8, viewProjection: Mat4, w: Vec3) bool {
   let ndc = viewProjection.projectPoint(w);
   let fx = (ndc.x + 1.) * 0.5 * 64.;
   let fy = (1. - ndc.y) * 0.5 * 64.;
@@ -372,8 +372,8 @@ fn covered(p *u8, viewProjection Mat4, w Vec3) bool {
   px(p, x, y, 0usize) > px(p, x, y, 2usize)
 }
 
-fn drawFrame(renderer &mut Renderer, device &mut Device, morpher &mut Morpher, color &Texture, depth &Texture,
-    readback &Buffer, camera &Camera, light &Light, list &DrawList) {
+fn drawFrame(renderer: &mut Renderer, device: &mut Device, morpher: &mut Morpher, color: &Texture, depth: &Texture,
+    readback: &Buffer, camera: &Camera, light: &Light, list: &DrawList) {
   var encoder = device.createCommandEncoder();
   morpher.update(device, &mut encoder, renderer);
   renderer.render(device, &mut encoder, color, depth, camera, light, list);
@@ -383,13 +383,13 @@ fn drawFrame(renderer &mut Renderer, device &mut Device, morpher &mut Morpher, c
   device.waitIdle();
 }
 
-fn bytesOfList[T](list &List[T]) *u8 {
+fn bytesOfList[T](list: &List[T]) *u8 {
   let v = list.view();
   &v[0] as *u8
 }
 
 // 6. The compute twin carrying the pre-pass's output by the bones
-fn skinTwin(device &mut Device, morphed &Buffer, skin &Skin, pose &Array[Mat4, 2], count usize) List[f32] {
+fn skinTwin(device: &mut Device, morphed: &Buffer, skin: &Skin, pose: &Array[Mat4, 2], count: usize) List[f32] {
   let n = u32.from(count);
   let storage = BUFFER_USAGE_STORAGE | BUFFER_USAGE_COPY_DST;
   var joints = device.createBuffer(u64.from(n) * 4u64, storage);
@@ -431,7 +431,7 @@ fn skinTwin(device &mut Device, morphed &Buffer, skin &Skin, pose &Array[Mat4, 2
     var pass = encoder.beginComputePass();
     pass.setPipeline(&pipeline);
     pass.setBindGroup(0u32, &group);
-    let immediates Array[u32, 1] = [n];
+    let immediates: Array[u32, 1] = [n];
     pass.setImmediates(0u32, &immediates as *u8, 4u32);
     pass.dispatchWorkgroups((n + 63u32) / 64u32);
     pass.end();
@@ -444,9 +444,9 @@ fn skinTwin(device &mut Device, morphed &Buffer, skin &Skin, pose &Array[Mat4, 2
 
 // 8. The shadow of a morphed cube
 struct Shadowing {
-  ground MeshHandle;
-  lit MaterialHandle;
-  pbr MaterialHandle;
+  ground: MeshHandle;
+  lit: MaterialHandle;
+  pbr: MaterialHandle;
 }
 
 const SIDE = 256u32;
@@ -454,7 +454,7 @@ const SIDEZ = 256usize;
 const HEIGHT = 12.f;
 const HALF_VIEW = 4.3676f;
 
-fn sunFrom(elevation f32, azimuth f32, intensity f32, ambient f32) Light {
+fn sunFrom(elevation: f32, azimuth: f32, intensity: f32, ambient: f32) Light {
   let c = cos(elevation);
   let toSun = new Vec3(c * cos(azimuth), sin(elevation), c * sin(azimuth));
   Light.directional(new Vec3(0., 0., 0.) - toSun, Color.gray(intensity), Color.gray(ambient))
@@ -470,11 +470,11 @@ fn topDown() Camera {
   camera
 }
 
-fn px256(p *u8, x usize, y usize) f32 { f32.from(*(p + (y * SIDEZ + x) * 4usize)) }
-fn columnOf(x f32) usize { usize.from(128. + x / HALF_VIEW * 128.) }
-fn rowOf(z f32) usize { usize.from(128. + z / HALF_VIEW * 128.) }
+fn px256(p: *u8, x: usize, y: usize) f32 { f32.from(*(p + (y * SIDEZ + x) * 4usize)) }
+fn columnOf(x: f32) usize { usize.from(128. + x / HALF_VIEW * 128.) }
+fn rowOf(z: f32) usize { usize.from(128. + z / HALF_VIEW * 128.) }
 
-fn shadowTest(device &mut Device, renderer &mut Renderer, morpher &mut Morpher, material MaterialHandle, label &Array[u8]) {
+fn shadowTest(device: &mut Device, renderer: &mut Renderer, morpher: &mut Morpher, material: MaterialHandle, label: &Array[u8]) {
   let targetDesc = new TextureDescriptor(SIDE, SIDE, TEXTURE_FORMAT_RGBA8_UNORM,
     TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
   var color = device.createTexture(&targetDesc);
@@ -546,7 +546,7 @@ fn shadowTest(device &mut Device, renderer &mut Renderer, morpher &mut Morpher, 
 // 1.54 up, at 1.625 times): worked out by hand. So the ground at (-3, -1.2) is in
 // shadow before the move and lit after, and (-3, 3) the other way about (the
 // camera, 14 up, sees 5.0956 each way)
-fn localShadowTest(device &mut Device, renderer &mut Renderer, morpher &mut Morpher, point bool, label &Array[u8]) {
+fn localShadowTest(device: &mut Device, renderer: &mut Renderer, morpher: &mut Morpher, point: bool, label: &Array[u8]) {
   let half = 5.0956f;
   let targetDesc = new TextureDescriptor(SIDE, SIDE, TEXTURE_FORMAT_RGBA8_UNORM,
     TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
@@ -619,7 +619,7 @@ fn localShadowTest(device &mut Device, renderer &mut Renderer, morpher &mut Morp
   renderer.environmentStrength = 1.;
 }
 
-fn rowOf2(z f32, half f32) usize { usize.from(128. + z / half * 128.) }
+fn rowOf2(z: f32, half: f32) usize { usize.from(128. + z / half * 128.) }
 
 fn main() i32 {
   var skin = Skin.empty();
@@ -733,10 +733,10 @@ fn main() i32 {
 
   // ---- 9. Bounds ----
   var c0 = new Vec3(0., 0., 0.);
-  var r0 f32 = 0.;
+  var r0: f32 = 0.;
   renderer.meshBounds(cm, &mut c0, &mut r0);
   var cb = new Vec3(0., 0., 0.);
-  var rb f32 = 0.;
+  var rb: f32 = 0.;
   renderer.meshBounds(base, &mut cb, &mut rb);
   expectFloat(f64.from(r0), f64.from(rb), 1e-7, "weights zero: the copy's sphere is the base's");
   var ws = zeros();
@@ -755,8 +755,8 @@ fn main() i32 {
   runUpdate(&mut device, &mut morpher, &renderer);
   let bend = bent(radians(90.));
   let twin = skinTwin(&mut device, positionsOf(&renderer, cm), &skin, &bend, n);
-  var worstOrder f32 = 0.;
-  var worstWrong f32 = 0.;
+  var worstOrder: f32 = 0.;
+  var worstWrong: f32 = 0.;
   v = 0usize;
   while v < n {
     let morphedCpu = targets.position(v, *m.positions[v], &wm);
@@ -866,7 +866,7 @@ fn main() i32 {
 
 // spirv-begin morphskin.spv MORPHSKIN_SPIRV
 // Written by tools/shaders/shaders.py from morphskin.slang (sha256 ed1f2408b973c23aeb4ad916c87b36870e7e53b86efd9b266cb72c7baf6133b9): do not edit.
-let MORPHSKIN_SPIRV Array[u32, 1052] = [
+let MORPHSKIN_SPIRV: Array[u32, 1052] = [
   0x07230203u32, 0x00010500u32, 0x00280000u32, 0x00000193u32, 0x00000000u32, 0x00020011u32,
   0x00000001u32, 0x000b000au32, 0x5f565053u32, 0x5f52484bu32, 0x726f7473u32, 0x5f656761u32,
   0x66667562u32, 0x735f7265u32, 0x61726f74u32, 0x635f6567u32, 0x7373616cu32, 0x00000000u32,

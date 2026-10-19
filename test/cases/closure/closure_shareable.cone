@@ -5,7 +5,7 @@
 // '+': 'Uni[fn(f32, f32) f32 + Sendable]', '&<fn(i32) i32 + Shareable'.
 //
 // 3D Web's Flock: a closure listing 'hf' ('[hf]', an 'Arc[imm, Grid]') is held as
-// 'Uni[fn(x f32, z f32) f32 + Sendable]' and moved to another thread, which calls it,
+// 'Uni[fn(x: f32, z: f32) f32 + Sendable]' and moved to another thread, which calls it,
 // while main still reads the Grid through its own Arc:
 //   2 * 2 + 3 + 0.5 = 7.5, and main reads scale 2 and bias 0.5.
 //
@@ -22,50 +22,50 @@ import sync use Arc, Mutex, Channel, Sender, Receiver;
 import collections use *;
 import thread;
 
-struct Grid { pub scale f32; pub bias f32; }
-struct Pair { pub a i32; pub b f32; }
-struct Tally { pub hits Atomic[u64]; }
+struct Grid { pub scale: f32; pub bias: f32; }
+struct Pair { pub a: i32; pub b: f32; }
+struct Tally { pub hits: Atomic[u64]; }
 
 // A promise the compiler takes on trust: raw pointers it cannot follow
-struct Handle is Shareable { pub p *u8; }
+struct Handle is Shareable { pub p: *u8; }
 
 // A trait: its references say what the value behind them is
-trait Shape { pub fn area(self &) f32; }
-struct Sq is Shape { pub s f32; pub fn area(self &) f32 { s * s } }
+trait Shape { pub fn area(self: &) f32; }
+struct Sq is Shape { pub s: f32; pub fn area(self: &) f32 { s * s } }
 
-fn areaOf(s &<Shape + Shareable) f32 { s.area() }
-fn areaWhole(s &<Shape + 'static + Shareable + Sendable) f32 { s.area() }
-fn areaOwned(s Uni[Shape + Sendable + Shareable]) f32 { s.area() }
-fn areaShared(s Rc[imm, Shape + Shareable]) f32 { s.area() }
+fn areaOf(s: &<Shape + Shareable) f32 { s.area() }
+fn areaWhole(s: &<Shape + 'static + Shareable + Sendable) f32 { s.area() }
+fn areaOwned(s: Uni[Shape + Sendable + Shareable]) f32 { s.area() }
+fn areaShared(s: Rc[imm, Shape + Shareable]) f32 { s.area() }
 
-fn crosses[T Sendable]() {}
-fn shares[T Shareable]() {}
+fn crosses[T: Sendable]() {}
+fn shares[T: Shareable]() {}
 
-fn runAt(f Uni[fn(x f32, z f32) f32 + Sendable]) f32 { f(2., 3.) }
+fn runAt(f: Uni[fn(x: f32, z: f32) f32 + Sendable]) f32 { f(2., 3.) }
 
 // Closures sent over a channel to a consumer thread, which calls each with 10
-fn drain(rx Receiver[Uni[fn(x i32) i32 + Sendable]]) i32 {
+fn drain(rx: Receiver[Uni[fn(x: i32) i32 + Sendable]]) i32 {
   var rx2 = rx;
   var total = 0;
   var more = true;
   while more {
     match rx2.recv() {
       case let f Some {total = total + f(10);}
-      case is None[Uni[fn(x i32) i32 + Sendable]] {more = false;}
+      case is None[Uni[fn(x: i32) i32 + Sendable]] {more = false;}
     }
   }
   total
 }
 
 // The static form, asked for both
-fn twice[F fn(x i32) i32 + Sendable + Shareable](f &F, x i32) i32 { f(f(x)) }
+fn twice[F: fn(x: i32) i32 + Sendable + Shareable](f: &F, x: i32) i32 { f(f(x)) }
 
 // A callable lent to several readers at once: a '&<fn' says its callable is Shareable
-fn readTwice(f &<fn(x i32) i32 + Shareable, x i32) i32 { f(x) + f(x + 1) }
+fn readTwice(f: &<fn(x: i32) i32 + Shareable, x: i32) i32 { f(x) + f(x + 1) }
 
 // A reference marked '+ Shareable' dropped to one without: fewer promises
-fn plain(f &<fn(x i32) i32, x i32) i32 { f(x) }
-fn dropMark(f &<fn(x i32) i32 + Shareable, x i32) i32 { plain(f, x) }
+fn plain(f: &<fn(x: i32) i32, x: i32) i32 { f(x) }
+fn dropMark(f: &<fn(x: i32) i32 + Shareable, x: i32) i32 { plain(f, x) }
 
 fn main() {
   // What each marker is granted to
@@ -80,13 +80,13 @@ fn main() {
   shares[&Pair]();
   shares[Handle]();
   crosses[Arc[imm, Grid]]();
-  crosses[Uni[fn(x i32) i32 + Sendable]]();
-  shares[Uni[fn(x i32) i32 + Shareable]]();
-  crosses[Uni[fn(x i32) i32 + Sendable + Shareable]]();
+  crosses[Uni[fn(x: i32) i32 + Sendable]]();
+  shares[Uni[fn(x: i32) i32 + Shareable]]();
+  crosses[Uni[fn(x: i32) i32 + Sendable + Shareable]]();
 
   // Flock: the Arc in the closure's list, the closure owned and moved to a thread
   let hf = new Arc[imm, Grid](new Grid(2., 0.5));
-  let sampler = new Uni[fn(x f32, z f32) f32 + Sendable](fn(x f32, z f32) [hf] f32 { x * hf.scale + z + hf.bias });
+  let sampler = new Uni[fn(x: f32, z: f32) f32 + Sendable](fn(x: f32, z: f32) [hf] f32 { x * hf.scale + z + hf.bias });
   let thr = thread.start(sampler, &runAt);
   printStr("thread ");
   printFloat(f64.from(thr.join()));
@@ -98,22 +98,22 @@ fn main() {
 
   // The static form: a closure that copies a number in is Sendable and Shareable
   let k = 10;
-  let add = fn(x i32) [k] i32 { x + k };
+  let add = fn(x: i32) [k] i32 { x + k };
   printStr("twice ");
   printInt(i64.from(twice(&add, 1)));         // (1 + 10) + 10 = 21
   printStr("\n");
 
   // '&<fn + Shareable': lent, and dropped to a plain '&<fn'
   printStr("readTwice ");
-  printInt(i64.from(readTwice(fn(x i32) [k] i32 { x * k }, 3)));   // 30 + 40 = 70
+  printInt(i64.from(readTwice(fn(x: i32) [k] i32 { x * k }, 3)));   // 30 + 40 = 70
   printStr(" ");
-  printInt(i64.from(dropMark(fn(x i32) [k] i32 { x * k }, 2)));   // 20
+  printInt(i64.from(dropMark(fn(x: i32) [k] i32 { x * k }, 2)));   // 20
   printStr("\n");
 
   // A closure that only borrows a number is Shareable (a borrow of a number is read
   // by many), though it cannot cross: it borrows
   let n = 7;
-  let reads = fn(x i32) i32 { x + n };
+  let reads = fn(x: i32) i32 { x + n };
   printStr("borrowed ");
   printInt(i64.from(readTwice(&reads, 1)));   // 8 + 9 = 17
   printStr("\n");
@@ -127,17 +127,17 @@ fn main() {
   printStr(" ");
   printFloat(f64.from(areaOwned(new Uni[Sq](new Sq(2.)))));                 // 4
   printStr(" ");
-  let shared Rc[imm, Shape + Shareable] = new Rc[imm, Sq](new Sq(1.5));
+  let shared: Rc[imm, Shape + Shareable] = new Rc[imm, Sq](new Sq(1.5));
   printFloat(f64.from(areaShared(shared)));                                // 2.25
   printStr("\n");
 
   // Closures sent over a channel: each owner moves to the consumer with what it listed
-  var tx Sender[Uni[fn(x i32) i32 + Sendable]];
-  var rx Receiver[Uni[fn(x i32) i32 + Sendable]];
-  tx, rx = Channel[Uni[fn(x i32) i32 + Sendable]].make();
+  var tx: Sender[Uni[fn(x: i32) i32 + Sendable]];
+  var rx: Receiver[Uni[fn(x: i32) i32 + Sendable]];
+  tx, rx = Channel[Uni[fn(x: i32) i32 + Sendable]].make();
   let consumer = thread.start(rx, &drain);
-  tx <- new Uni[fn(x i32) i32 + Sendable](fn(x i32) [k] i32 { x + k });
-  tx <- new Uni[fn(x i32) i32 + Sendable](fn(x i32) [k] i32 { x * k });
+  tx <- new Uni[fn(x: i32) i32 + Sendable](fn(x: i32) [k] i32 { x + k });
+  tx <- new Uni[fn(x: i32) i32 + Sendable](fn(x: i32) [k] i32 { x * k });
   {
     let last = tx;   // the last sender goes at this block's end, closing the channel
   }

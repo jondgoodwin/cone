@@ -49,13 +49,13 @@
 // vignette and grain are Post's own ('post.finish'), since they need nothing
 // but the tone map; decals are listed each frame.
 pub struct FxSettings {
-  pub aa u32 = AA_NONE;
-  pub taa TaaSettings = new TaaSettings();
-  pub fxaa FxaaSettings = new FxaaSettings();
-  pub exposure ExposureSettings = new ExposureSettings();
-  pub ssao SsaoSettings = new SsaoSettings();
-  pub dof DofSettings = new DofSettings();
-  pub fog FogSettings = new FogSettings();
+  pub aa: u32 = AA_NONE;
+  pub taa: TaaSettings = new TaaSettings();
+  pub fxaa: FxaaSettings = new FxaaSettings();
+  pub exposure: ExposureSettings = new ExposureSettings();
+  pub ssao: SsaoSettings = new SsaoSettings();
+  pub dof: DofSettings = new DofSettings();
+  pub fog: FogSettings = new FogSettings();
 
   // Everything off
   pub fn off() FxSettings { new FxSettings() }
@@ -92,48 +92,48 @@ const SOURCE_SHARP = 3u32;
 const SOURCE_DOF = 4u32;
 
 pub struct ImageFx {
-  pub settings FxSettings;
-  pub width u32;
-  pub height u32;
-  pub outputFormat u32;
-  pub depth Texture;               // the scene's depth, kept for the passes (sampled)
-  pub frameBuffer Buffer;          // fxcommon.slang's FxFrame
-  pub taa TaaPass;
-  pub fxaa FxaaPass;
-  pub exposure ExposurePass;
-  pub ssao SsaoPass;
-  pub decalPass DecalPass;
-  pub dof DofPass;
-  pub fog FogPass;
+  pub settings: FxSettings;
+  pub width: u32;
+  pub height: u32;
+  pub outputFormat: u32;
+  pub depth: Texture;               // the scene's depth, kept for the passes (sampled)
+  pub frameBuffer: Buffer;          // fxcommon.slang's FxFrame
+  pub taa: TaaPass;
+  pub fxaa: FxaaPass;
+  pub exposure: ExposurePass;
+  pub ssao: SsaoPass;
+  pub decalPass: DecalPass;
+  pub dof: DofPass;
+  pub fog: FogPass;
   // The decals of this frame (decal.cone): filled by the program, emptied by 'render'
-  pub decals DecalList;
-  pub sources List[PostSource];    // Post's groups for the frames the passes make (SOURCE_HISTORY0 and on, less one)
+  pub decals: DecalList;
+  pub sources: List[PostSource];    // Post's groups for the frames the passes make (SOURCE_HISTORY0 and on, less one)
   // What is moving this frame (taa.cone): the program fills it after adding
   // the items to the draw list; it is emptied by 'render'
-  pub motion MotionList;
-  pub frameNumber u32;             // frames drawn: the jitter's index
-  pub previousViewProjection Mat4;
-  pub havePrevious bool;
-  pub postRevision u32;
-  pub dirty bool;
-  pub cut bool;                    // the next frame starts afresh (a camera cut): no history
-  pub lastTime f32;
+  pub motion: MotionList;
+  pub frameNumber: u32;             // frames drawn: the jitter's index
+  pub previousViewProjection: Mat4;
+  pub havePrevious: bool;
+  pub postRevision: u32;
+  pub dirty: bool;
+  pub cut: bool;                    // the next frame starts afresh (a camera cut): no history
+  pub lastTime: f32;
   // The seconds a frame lasts, when 'renderer.time' is not kept up to date
-  pub frameTime f32 = 0.016666668;
-  pub jitterPixelsX f32 = 0.;      // the last frame's jitter, in pixels
-  pub jitterPixelsY f32 = 0.;
-  pub velocityDrawn bool = false;  // the last frame had moving objects drawn
+  pub frameTime: f32 = 0.016666668;
+  pub jitterPixelsX: f32 = 0.;      // the last frame's jitter, in pixels
+  pub jitterPixelsY: f32 = 0.;
+  pub velocityDrawn: bool = false;  // the last frame had moving objects drawn
   // What 'renderScene' leaves for 'renderFinish': the seconds the frame lasted, its unjittered
   // view-projection (the next frame's "previous"), and the camera the scene was drawn
   // with (jittered, when temporal AA is on), for anything the program draws into
   // 'post.hdr' between the two (particles: see 'renderScene')
-  pub sceneDt f32 = 0.016666668;
-  pub sceneViewProjection Mat4;
-  pub sceneCamera Camera;
+  pub sceneDt: f32 = 0.016666668;
+  pub sceneViewProjection: Mat4;
+  pub sceneCamera: Camera;
 
   // The passes for frames of 'post''s size, all off. They are made lazily:
   // textures only for what 'configure' turns on.
-  pub fn create(device &mut Device, renderer &Renderer, post &mut Post) ImageFx {
+  pub fn create(device: &mut Device, renderer: &Renderer, post: &mut Post) ImageFx {
     var frameBuffer = device.createBuffer(FX_FRAME_BYTES, BUFFER_USAGE_UNIFORM | BUFFER_USAGE_COPY_DST);
     let tinyDepth = new TextureDescriptor(1u32, 1u32, TEXTURE_FORMAT_DEPTH32_FLOAT,
       TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_TEXTURE_BINDING);
@@ -154,7 +154,7 @@ pub struct ImageFx {
     fx
   }
 
-  pub fn isValid(self &) bool {
+  pub fn isValid(self: &) bool {
     depth.isValid() && frameBuffer.isValid() && taa.isValid() && fxaa.isValid() && exposure.isValid()
       && ssao.isValid() && decalPass.isValid() && dof.isValid() && fog.isValid()
   }
@@ -162,7 +162,7 @@ pub struct ImageFx {
   // Set the passes. Switching a pass on or off, or the antialiasing, makes
   // its textures (waiting for the GPU) at the next frame; the rest of the
   // settings are read every frame and may change at will.
-  pub fn configure(self &mut, s &FxSettings) {
+  pub fn configure(self: &mut, s: &FxSettings) {
     let sharpWas = settings.taa.sharpness > 0.;
     let sharpNow = s.taa.sharpness > 0.;
     if s.aa != settings.aa || s.exposure.enabled != settings.exposure.enabled || sharpWas != sharpNow
@@ -175,10 +175,10 @@ pub struct ImageFx {
   }
 
   // Forget the history: the next frame is a cut (a teleport, a new scene)
-  pub fn cutHistory(self &mut) { cut = true; }
+  pub fn cutHistory(self: &mut) { cut = true; }
 
   // Make the textures and groups the settings call for, for 'post''s size
-  fn remake(self &mut, device &mut Device, renderer &Renderer, post &mut Post) {
+  fn remake(self: &mut, device: &mut Device, renderer: &Renderer, post: &mut Post) {
     // The textures about to be replaced may be named by commands the frame
     // has recorded and not submitted: submit them first (gpu.md, "Lifetimes")
     var flush = device.createCommandEncoder();
@@ -233,8 +233,8 @@ pub struct ImageFx {
   // Draw the scene and run the passes the settings turn on, then bloom, tone
   // map and finish into 'target' (of 'post''s output format; the program's
   // 'post' is sized to it). See the head of this file.
-  pub fn render(self &mut, device &mut Device, encoder &mut CommandEncoder, renderer &mut Renderer, post &mut Post,
-      camera &Camera, light &Light, list &DrawList, target &Texture) {
+  pub fn render(self: &mut, device: &mut Device, encoder: &mut CommandEncoder, renderer: &mut Renderer, post: &mut Post,
+      camera: &Camera, light: &Light, list: &DrawList, target: &Texture) {
     self.renderScene(device, encoder, renderer, post, camera, light, list);
     self.renderFinish(device, encoder, renderer, post, list, target);
   }
@@ -246,8 +246,8 @@ pub struct ImageFx {
   // (the jittered camera, so that temporal AA resolves them with the scene), then
   // calls 'renderFinish' with the same 'list' and 'post'. Nothing it draws is moving as
   // far as temporal AA knows: its history is clipped away where it changed.
-  pub fn renderScene(self &mut, device &mut Device, encoder &mut CommandEncoder, renderer &mut Renderer, post &mut Post,
-      camera &Camera, light &Light, list &DrawList) {
+  pub fn renderScene(self: &mut, device: &mut Device, encoder: &mut CommandEncoder, renderer: &mut Renderer, post: &mut Post,
+      camera: &Camera, light: &Light, list: &DrawList) {
     if dirty || width != post.width || height != post.height || postRevision != post.revision {
       self.remake(device, renderer, post);
     }
@@ -309,8 +309,8 @@ pub struct ImageFx {
 
   // The second half of 'render': the fog, depth of field, temporal AA, the
   // exposure, and the tone map into 'target' (see 'renderScene')
-  pub fn renderFinish(self &mut, device &mut Device, encoder &mut CommandEncoder, renderer &mut Renderer, post &mut Post,
-      list &DrawList, target &Texture) {
+  pub fn renderFinish(self: &mut, device: &mut Device, encoder: &mut CommandEncoder, renderer: &mut Renderer, post: &mut Post,
+      list: &DrawList, target: &Texture) {
     let s = settings;
     let taaOn = s.aa == AA_TAA;
     let fxaaOn = s.aa == AA_FXAA;
@@ -366,8 +366,8 @@ pub struct ImageFx {
 
   // A decal material of these textures (the renderer's handles; a normal or
   // roughness map may be 'TextureHandle.none()'): its number, for 'Decal.at'
-  pub fn addDecalMaterial(self &mut, device &mut Device, renderer &Renderer, albedo TextureHandle, normal TextureHandle,
-      roughness TextureHandle) u32 {
+  pub fn addDecalMaterial(self: &mut, device: &mut Device, renderer: &Renderer, albedo: TextureHandle, normal: TextureHandle,
+      roughness: TextureHandle) u32 {
     decalPass.addMaterial(device, renderer, albedo, normal, roughness)
   }
 }
@@ -375,7 +375,7 @@ pub struct ImageFx {
 // A full-screen pipeline: the triangle of 'fullscreenMain', the fragment
 // entry 'fragment', drawing into a target of 'format', its colour replaced or,
 // if 'blend', added over what is there with premultiplied alpha
-fn fxPipeline(device &mut Device, layout &PipelineLayout, shader &ShaderModule, fragment &str, format u32, blend bool)
+fn fxPipeline(device: &mut Device, layout: &PipelineLayout, shader: &ShaderModule, fragment: &str, format: u32, blend: bool)
     RenderPipeline {
   let attributes = [new VertexAttribute(VERTEX_FORMAT_FLOAT32, 0u64, 0u32)];
   let buffers = [new VertexBufferLayout(arrayStride: 4u64, attributes: &attributes)];
@@ -388,8 +388,8 @@ fn fxPipeline(device &mut Device, layout &PipelineLayout, shader &ShaderModule, 
 
 // One full-screen pass into 'view': cleared first, or, if 'keep', drawn over
 // what it holds; 'group' as group 0, 'size' bytes of immediates from 'data'
-fn fxPass(encoder &mut CommandEncoder, view TextureView, keep bool, pipeline &RenderPipeline, group &BindGroup, data *u8,
-    size u32) {
+fn fxPass(encoder: &mut CommandEncoder, view: TextureView, keep: bool, pipeline: &RenderPipeline, group: &BindGroup, data: *u8,
+    size: u32) {
   let attachment = new RenderPassColorAttachment(view: view, loadOp: if keep { LOAD_OP_LOAD } else { LOAD_OP_CLEAR },
     clearValue: new Color(0., 0., 0., 0.));
   var pass = encoder.beginRenderPass(&attachment);
@@ -405,9 +405,9 @@ fn fxPass(encoder &mut CommandEncoder, view TextureView, keep bool, pipeline &Re
 // 'previous' is last frame's view-projection, used if 'havePrevious'; the jitters are in pixels. The
 // camera's eye is its position, a reflected camera's reflection, and its forward the way it looks in
 // the world (reflected likewise), which is what the fog and the other passes shade from.
-fn writeFxFrame(device &mut Device, buffer &Buffer, camera &Camera, aspect f32, width u32, height u32, previous Mat4,
-    havePrevious bool, jitterX f32, jitterY f32, previousJitterX f32, previousJitterY f32, light &Light, exposure f32,
-    time f32, dt f32, frameNumber u32, cut bool) Mat4 {
+fn writeFxFrame(device: &mut Device, buffer: &Buffer, camera: &Camera, aspect: f32, width: u32, height: u32, previous: Mat4,
+    havePrevious: bool, jitterX: f32, jitterY: f32, previousJitterX: f32, previousJitterY: f32, light: &Light, exposure: f32,
+    time: f32, dt: f32, frameNumber: u32, cut: bool) Mat4 {
   let projection = camera.projectionMatrix(aspect);
   let viewProjection = projection * camera.viewMatrix();
   let inverse = viewProjection.inverse();
@@ -468,7 +468,7 @@ fn writeFxFrame(device &mut Device, buffer &Buffer, camera &Camera, aspect f32, 
 }
 
 // A texture cleared to zero now (in a submission of its own)
-fn clearTexture(device &mut Device, texture &Texture) {
+fn clearTexture(device: &mut Device, texture: &Texture) {
   var encoder = device.createCommandEncoder();
   let attachment = new RenderPassColorAttachment(view: texture.createView(), clearValue: new Color(0., 0., 0., 0.));
   var pass = encoder.beginRenderPass(&attachment);

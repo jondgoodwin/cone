@@ -38,72 +38,72 @@ pub const KEY_D = 68u32;
 pub const KEY_K = 75u32;
 
 pub struct EditorStyle {
-  pub font u32 = 0u32;                 // the host's font id (drawn text carries it)
-  pub size f32 = 14.;
-  pub lineHeight f32 = 0.;             // 0: 1.45 times the size
-  pub mono bool = true;
-  pub gutter bool = true;
-  pub pad f32 = 8.;
-  pub scrollbar f32 = 10.;
-  pub theme SyntaxTheme;
-  pub autoIndent bool = true;
-  pub matchLimit usize = 20000usize;   // how far (in bytes) a bracket is looked for
+  pub font: u32 = 0u32;                 // the host's font id (drawn text carries it)
+  pub size: f32 = 14.;
+  pub lineHeight: f32 = 0.;             // 0: 1.45 times the size
+  pub mono: bool = true;
+  pub gutter: bool = true;
+  pub pad: f32 = 8.;
+  pub scrollbar: f32 = 10.;
+  pub theme: SyntaxTheme;
+  pub autoIndent: bool = true;
+  pub matchLimit: usize = 20000usize;   // how far (in bytes) a bracket is looked for
 
   pub fn make() EditorStyle {new EditorStyle(font: 0u32, theme: SyntaxTheme.dark())}
 }
 
 // A piece of a line drawn in one colour (tokens, the gaps between them, each tab)
 pub struct Run {
-  pub start u32;
-  pub end u32;
-  pub kind u32;
+  pub start: u32;
+  pub end: u32;
+  pub kind: u32;
 }
 
 // A line prepared for drawing: its text, its runs and the x of every byte offset
 pub struct VLine {
-  pub line usize;
-  pub text String;
-  pub runs List[Run];
-  pub xs List[f32];                    // xs[b] = x of byte offset b from the line's start; xs.len() == text.len() + 1
+  pub line: usize;
+  pub text: String;
+  pub runs: List[Run];
+  pub xs: List[f32];                    // xs[b] = x of byte offset b from the line's start; xs.len() == text.len() + 1
 }
 
 pub struct Editor {
-  pub doc Doc;
-  pub node usize;
-  pub style EditorStyle;
-  pub scrollX f32 = 0.;
-  pub scrollY f32 = 0.;
-  pub clipboard String;
-  pub clipboardWritten bool = false;
-  pub focused bool = false;
-  pub caretOn bool = true;             // the host flips this to blink
-  pub revealPending bool = true;
-  pub rebuilds u32 = 0u32;             // draw lists made (a static frame makes none)
-  pub linesTokenized u32 = 0u32;
-  pub matchA usize = 18446744073709551615usize;
-  pub matchB usize = 18446744073709551615usize;
-  startStates List[u32];
-  validUpTo usize = 0usize;            // startStates[0 .. validUpTo] are right
-  vlines List[VLine];
-  charW f32 = 0.;
-  spaceW f32 = 0.;
-  barW f32 = 0.;
-  lineText String;
-  dragging bool = false;
-  sbDrag bool = false;
-  dirty bool = true;
-  lastVersion u64 = 0u64;
-  lastSX f32 = -1.;
-  lastSY f32 = -1.;
-  lastW f32 = -1.;
-  lastH f32 = -1.;
-  lastFocus bool = false;
-  lastCaretOn bool = true;
-  lastCaretSig u64 = 0u64;
-  firstVisible usize = 0usize;
+  pub doc: Doc;
+  pub node: usize;
+  pub style: EditorStyle;
+  pub scrollX: f32 = 0.;
+  pub scrollY: f32 = 0.;
+  pub clipboard: String;
+  pub clipboardWritten: bool = false;
+  pub focused: bool = false;
+  pub caretOn: bool = true;             // the host flips this to blink
+  pub revealPending: bool = true;
+  pub rebuilds: u32 = 0u32;             // draw lists made (a static frame makes none)
+  pub linesTokenized: u32 = 0u32;
+  pub matchA: usize = 18446744073709551615usize;
+  pub matchB: usize = 18446744073709551615usize;
+  startStates: List[u32];
+  validUpTo: usize = 0usize;            // startStates[0 .. validUpTo] are right
+  vlines: List[VLine];
+  charW: f32 = 0.;
+  spaceW: f32 = 0.;
+  barW: f32 = 0.;
+  lineText: String;
+  dragging: bool = false;
+  sbDrag: bool = false;
+  dirty: bool = true;
+  lastVersion: u64 = 0u64;
+  lastSX: f32 = -1.;
+  lastSY: f32 = -1.;
+  lastW: f32 = -1.;
+  lastH: f32 = -1.;
+  lastFocus: bool = false;
+  lastCaretOn: bool = true;
+  lastCaretSig: u64 = 0u64;
+  firstVisible: usize = 0usize;
 
   // An editor in a new hosted node under 'parent', holding 'text'
-  pub fn make(ui &mut Ui, parent usize, text &str) Editor {
+  pub fn make(ui: &mut Ui, parent: usize, text: &str) Editor {
     let node = hostedNode(ui, parent);
     var ed = new Editor(doc: Doc.fromText(text), node: node, style: EditorStyle.make(), clipboard: String.empty(),
       startStates: List[u32].empty(), vlines: List[VLine].empty(), lineText: String.empty());
@@ -111,7 +111,7 @@ pub struct Editor {
     ed
   }
 
-  pub fn setText(self &mut, text &str) {
+  pub fn setText(self: &mut, text: &str) {
     doc.setText(text);
     forgetStates(0usize);
     vlines.clear();
@@ -121,21 +121,21 @@ pub struct Editor {
   }
 
   // The document was changed from outside the widget's own keys: draw again, and keep the caret in view
-  pub fn dirtyAll(self &mut) {
+  pub fn dirtyAll(self: &mut) {
     forgetStates(doc.firstDirtyLine());
     doc.clearDirty();
     dirty = true;
     revealPending = true;
   }
 
-  fn forgetStates(self &mut, fromLine usize) {
+  fn forgetStates(self: &mut, fromLine: usize) {
     if validUpTo > fromLine {validUpTo = fromLine;}
   }
 
-  pub fn lineHeight(self &) f32 {if style.lineHeight > 0. {style.lineHeight} else {style.size * 1.45}}
+  pub fn lineHeight(self: &) f32 {if style.lineHeight > 0. {style.lineHeight} else {style.size * 1.45}}
 
   // The width of the gutter: the line count's digits and padding on both sides
-  pub fn gutterWidth(self &) f32 {
+  pub fn gutterWidth(self: &) f32 {
     if !style.gutter {return 0.;}
     var digits = 1u32;
     var n = doc.lineCount();
@@ -147,14 +147,14 @@ pub struct Editor {
     f32.from(digits) * digitW() + style.pad * 2.
   }
 
-  fn digitW(self &) f32 {if charW > 0. {charW} else {style.size * 0.6}}
+  fn digitW(self: &) f32 {if charW > 0. {charW} else {style.size * 0.6}}
 
-  fn textLeft(self &) f32 {gutterWidth() + style.pad}
+  fn textLeft(self: &) f32 {gutterWidth() + style.pad}
 
   // ---- syntax state ----
 
   // The state a line starts in, tokenizing the lines before it (once) when it is not known yet
-  fn stateAt[T fn(line &str, state u32, out &mut List[Token]) u32](self &mut, line usize, tok &T) u32 {
+  fn stateAt[T: fn(line: &str, state: u32, out: &mut List[Token]) u32](self: &mut, line: usize, tok: &T) u32 {
     if validUpTo == 0usize {
       startStates.clear();
       startStates.push(0u32);
@@ -176,7 +176,7 @@ pub struct Editor {
   // ---- lines ----
 
   // Makes a line ready: text, runs, and x of every byte offset
-  fn buildLine[M fn(text &str, font u32, size f32) Vec2, T fn(line &str, state u32, out &mut List[Token]) u32](self &mut, line usize, m &mut M, tok &T) VLine {
+  fn buildLine[M: fn(text: &str, font: u32, size: f32) Vec2, T: fn(line: &str, state: u32, out: &mut List[Token]) u32](self: &mut, line: usize, m: &mut M, tok: &T) VLine {
     let state = stateAt(line, tok);
     // (the line is kept in a field: the measure function may not be handed a view of a local string, 1085)
     lineText = doc.buffer().lineText(line);
@@ -261,7 +261,7 @@ pub struct Editor {
   }
 
   // The prepared line, from the last refresh if it is there
-  fn vlineIndex(self &, line usize) usize {
+  fn vlineIndex(self: &, line: usize) usize {
     var i = 0usize;
     while i < vlines.len() {
       if vlines[i].line == line {return i;}
@@ -272,16 +272,16 @@ pub struct Editor {
 
   // ---- geometry ----
 
-  fn viewHeight(self &, ui &Ui) f32 {ui.nodes[node].h}
-  fn viewWidth(self &, ui &Ui) f32 {ui.nodes[node].w}
+  fn viewHeight(self: &, ui: &Ui) f32 {ui.nodes[node].h}
+  fn viewWidth(self: &, ui: &Ui) f32 {ui.nodes[node].w}
 
-  fn maxScrollY(self &, ui &Ui) f32 {
+  fn maxScrollY(self: &, ui: &Ui) f32 {
     let total = f32.from(doc.lineCount()) * lineHeight();
     maxf(0., total - viewHeight(ui) + lineHeight())
   }
 
   // The line under a y (in the Ui's pixels)
-  fn lineAtY(self &, ui &Ui, py f32) usize {
+  fn lineAtY(self: &, ui: &Ui, py: f32) usize {
     let ly = py - ui.nodes[node].gy + scrollY;
     let l = floorf(ly / lineHeight());
     if l < 0. {return 0usize;}
@@ -290,7 +290,7 @@ pub struct Editor {
   }
 
   // The byte offset nearest to a point (in the Ui's pixels)
-  fn offsetAt[M fn(text &str, font u32, size f32) Vec2, T fn(line &str, state u32, out &mut List[Token]) u32](self &mut, ui &Ui, px f32, py f32, m &mut M, tok &T) usize {
+  fn offsetAt[M: fn(text: &str, font: u32, size: f32) Vec2, T: fn(line: &str, state: u32, out: &mut List[Token]) u32](self: &mut, ui: &Ui, px: f32, py: f32, m: &mut M, tok: &T) usize {
     let line = lineAtY(ui, py);
     var vi = vlineIndex(line);
     if vi == NOT_FOUND {
@@ -317,7 +317,7 @@ pub struct Editor {
   }
 
   // Scrolls so that a line is a given fraction of the way down the view (0 the top, 0.5 the middle)
-  pub fn showLine(self &mut, ui &Ui, line usize, fraction f32) {
+  pub fn showLine(self: &mut, ui: &Ui, line: usize, fraction: f32) {
     scrollY = clampf(f32.from(line) * lineHeight() - viewHeight(ui) * fraction, 0., maxScrollY(ui));
     revealPending = false;
     dirty = true;
@@ -325,7 +325,7 @@ pub struct Editor {
 
   // Where a document offset is on screen, in the Ui's pixels: the left edge of its character and the middle of its
   // line, as of the last refresh. (-1, -1) when its line is not in view. A script aims its mouse with this
-  pub fn pointOf(self &, ui &Ui, off usize) Vec2 {
+  pub fn pointOf(self: &, ui: &Ui, off: usize) Vec2 {
     let line = doc.buffer().lineOf(off);
     let vi = vlineIndex(line);
     if vi == NOT_FOUND {return new Vec2(-1., -1.);}
@@ -338,7 +338,7 @@ pub struct Editor {
   // ---- events ----
 
   // Whether a paste is waiting in the Ui's queue for this editor (the host fills 'clipboard' first)
-  pub fn needsClipboard(self &, ui &Ui) bool {
+  pub fn needsClipboard(self: &, ui: &Ui) bool {
     var i = 0usize;
     while i < ui.input.hostEvents.len() {
       let h = ui.input.hostEvents[i];
@@ -349,7 +349,7 @@ pub struct Editor {
   }
 
   // Applies the events queued for the node. Pointer positions are hit-tested against the lines as last drawn
-  pub fn pump[M fn(text &str, font u32, size f32) Vec2, T fn(line &str, state u32, out &mut List[Token]) u32](self &mut, ui &mut Ui, m &mut M, tok &T) {
+  pub fn pump[M: fn(text: &str, font: u32, size: f32) Vec2, T: fn(line: &str, state: u32, out: &mut List[Token]) u32](self: &mut, ui: &mut Ui, m: &mut M, tok: &T) {
     let evs = takeHostEvents(ui, node);
     var i = 0usize;
     while i < evs.len() {
@@ -358,7 +358,7 @@ pub struct Editor {
     }
   }
 
-  fn handle[M fn(text &str, font u32, size f32) Vec2, T fn(line &str, state u32, out &mut List[Token]) u32](self &mut, ui &mut Ui, ev Ev, m &mut M, tok &T) {
+  fn handle[M: fn(text: &str, font: u32, size: f32) Vec2, T: fn(line: &str, state: u32, out: &mut List[Token]) u32](self: &mut, ui: &mut Ui, ev: Ev, m: &mut M, tok: &T) {
     let k = ev.kind;
     if k == EK_FOCUS_IN {focused = true; caretOn = true; return;}
     if k == EK_FOCUS_OUT {focused = false; dragging = false; return;}
@@ -430,13 +430,13 @@ pub struct Editor {
   }
 
   // The scroll bar's thumb centred on y
-  fn scrollToBar(self &mut, ui &Ui, ly f32) {
+  fn scrollToBar(self: &mut, ui: &Ui, ly: f32) {
     let h = viewHeight(ui);
     scrollY = clampf((ly / h) * (maxScrollY(ui) + h) - h * 0.5, 0., maxScrollY(ui));
   }
 
   // The text or the carets changed through the editor: show the caret, keep it in view
-  fn touched(self &mut) {
+  fn touched(self: &mut) {
     revealPending = true;
     caretOn = true;
     forgetStates(doc.firstDirtyLine());
@@ -444,7 +444,7 @@ pub struct Editor {
     dirty = true;
   }
 
-  fn onKey(self &mut, ui &mut Ui, code u32, mods u32) {
+  fn onKey(self: &mut, ui: &mut Ui, code: u32, mods: u32) {
     let shift = (mods & MOD_SHIFT) != 0u32;
     let ctrl = (mods & MOD_CTRL) != 0u32;
     let alt = (mods & MOD_ALT) != 0u32;
@@ -493,12 +493,12 @@ pub struct Editor {
     if handled && !alt {touched();} elif handled {touched();}
   }
 
-  fn pageLines(self &, ui &Ui) u32 {
+  fn pageLines(self: &, ui: &Ui) u32 {
     let n = floorf(viewHeight(ui) / lineHeight()) - 1.;
     if n < 1. {1u32} else {u32.from(n)}
   }
 
-  fn copy(self &mut) {
+  fn copy(self: &mut) {
     let s = doc.selectedText();
     if s.len() > 0usize {
       clipboard = s;
@@ -507,7 +507,7 @@ pub struct Editor {
   }
 
   // Ctrl+D: select the word at the caret; again: add the next occurrence of the selection as a caret
-  fn selectNextOccurrence(self &mut) {
+  fn selectNextOccurrence(self: &mut) {
     let c = doc.caret(doc.caretCount() - 1usize);
     if c.isEmpty() {
       doc.selectWordAt(c.head);
@@ -523,7 +523,7 @@ pub struct Editor {
   // ---- bracket matching ----
 
   // Whether the byte at 'off' counts as code (not inside a string, comment or character literal)
-  fn isCodeAt[T fn(line &str, state u32, out &mut List[Token]) u32](self &mut, off usize, tok &T) bool {
+  fn isCodeAt[T: fn(line: &str, state: u32, out: &mut List[Token]) u32](self: &mut, off: usize, tok: &T) bool {
     let line = doc.buffer().lineOf(off);
     let text = doc.buffer().lineText(line);
     let state = stateAt(line, tok);
@@ -543,7 +543,7 @@ pub struct Editor {
   }
 
   // The bracket matching the one at 'off', looking at most 'matchLimit' bytes away, skipping those in strings and comments
-  fn findMatch[T fn(line &str, state u32, out &mut List[Token]) u32](self &mut, off usize, tok &T) usize {
+  fn findMatch[T: fn(line: &str, state: u32, out: &mut List[Token]) u32](self: &mut, off: usize, tok: &T) usize {
     let buf = doc.buffer();
     if off >= buf.len() {return NOT_FOUND;}
     let b = buf.byteAt(off);
@@ -582,7 +582,7 @@ pub struct Editor {
 
   // ---- refresh: the draw list ----
 
-  fn caretSig(self &) u64 {
+  fn caretSig(self: &) u64 {
     var h = 1469598103934665603u64;
     var i = 0usize;
     while i < doc.caretCount() {
@@ -595,7 +595,7 @@ pub struct Editor {
   }
 
   // Makes the draw list again if anything it shows has changed. True when it did
-  pub fn refresh[M fn(text &str, font u32, size f32) Vec2, T fn(line &str, state u32, out &mut List[Token]) u32](self &mut, ui &mut Ui, m &mut M, tok &T) bool {
+  pub fn refresh[M: fn(text: &str, font: u32, size: f32) Vec2, T: fn(line: &str, state: u32, out: &mut List[Token]) u32](self: &mut, ui: &mut Ui, m: &mut M, tok: &T) bool {
     if charW <= 0. {
       charW = m("M", style.font, style.size).x;
       barW = m("|", style.font, style.size).x;
@@ -663,7 +663,7 @@ pub struct Editor {
   }
 
   // Scrolls so the primary caret is inside the view
-  fn reveal[M fn(text &str, font u32, size f32) Vec2, T fn(line &str, state u32, out &mut List[Token]) u32](self &mut, ui &Ui, m &mut M, tok &T) {
+  fn reveal[M: fn(text: &str, font: u32, size: f32) Vec2, T: fn(line: &str, state: u32, out: &mut List[Token]) u32](self: &mut, ui: &Ui, m: &mut M, tok: &T) {
     let c = doc.caret(doc.caretCount() - 1usize);
     let line = doc.buffer().lineOf(c.head);
     let lh = lineHeight();
@@ -681,12 +681,12 @@ pub struct Editor {
     elif x + charW > scrollX + vw {scrollX = x + charW * 2. - vw;}
   }
 
-  fn rectXs(self &, v &VLine, lo usize, hi usize) Vec2 {
+  fn rectXs(self: &, v: &VLine, lo: usize, hi: usize) Vec2 {
     new Vec2(*v.xs[lo], *v.xs[hi])
   }
 
   // The draw list: everything is in the Ui's pixels
-  fn draw(self &mut, ui &mut Ui) {
+  fn draw(self: &mut, ui: &mut Ui) {
     let n = ui.nodes[node];
     let gx = n.gx;
     let gy = n.gy;
@@ -810,7 +810,7 @@ pub struct Editor {
   }
 
   // A background cell behind the character at a document offset
-  fn drawCell(self &, out &mut DrawList, off usize, tx f32, gy f32, color u32) {
+  fn drawCell(self: &, out: &mut DrawList, off: usize, tx: f32, gy: f32, color: u32) {
     let line = doc.buffer().lineOf(off);
     let vi = vlineIndex(line);
     if vi == NOT_FOUND {return;}
@@ -823,11 +823,11 @@ pub struct Editor {
   }
 }
 
-fn minUsize2(a usize, b usize) usize {if a < b {a} else {b}}
+fn minUsize2(a: usize, b: usize) usize {if a < b {a} else {b}}
 
 // The width of a piece of text. The measure function leaves trailing spaces out (as msdftext's layout
 // does), so they are counted here, a space each
-fn spanWidth[M fn(text &str, font u32, size f32) Vec2](m &mut M, s &str, font u32, size f32, spaceW f32) f32 {
+fn spanWidth[M: fn(text: &str, font: u32, size: f32) Vec2](m: &mut M, s: &str, font: u32, size: f32, spaceW: f32) f32 {
   var end = s.len();
   var trailing = 0u32;
   while end > 0usize && s[end - 1usize] == 32u8 {
@@ -840,7 +840,7 @@ fn spanWidth[M fn(text &str, font u32, size f32) Vec2](m &mut M, s &str, font u3
 }
 
 // A code point as UTF-8
-fn utf8Of(cp u32) String {
+fn utf8Of(cp: u32) String {
   var s = String.empty();
   if cp < 128u32 {s.appendByte(u8.from(cp));}
   elif cp < 2048u32 {

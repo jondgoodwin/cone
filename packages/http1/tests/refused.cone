@@ -17,7 +17,7 @@ import iobuf use *;
 import http use *;
 import http1 use *;
 
-fn feed(c &mut Connection, pool &Pool, text &Array[u8], at Instant) {
+fn feed(c: &mut Connection, pool: &Pool, text: &Array[u8], at: Instant) {
   var i = 0usize;
   while i < text.len {
     var b = pool.mustTake(4096usize);
@@ -27,7 +27,7 @@ fn feed(c &mut Connection, pool &Pool, text &Array[u8], at Instant) {
   }
 }
 
-fn drain(c &mut Connection, at Instant) String {
+fn drain(c: &mut Connection, at: Instant) String {
   var s = String.empty();
   while true {
     let b = c.pollTransmit(at);
@@ -41,7 +41,7 @@ fn drain(c &mut Connection, at Instant) String {
 // like; the head and body events by name only. noResponse is the failure's
 const want0 = 0u32;
 
-fn outcome(c &mut Connection, noResponse &mut bool) String {
+fn outcome(c: &mut Connection, noResponse: &mut bool) String {
   var log = String.empty();
   while true {
     match c.pollEvent() {
@@ -75,7 +75,7 @@ fn outcome(c &mut Connection, noResponse &mut bool) String {
 
 // A server reading text fails with why, answers with status, and is to be
 // closed
-fn refuses(pool &Pool, text &Array[u8], why &str, status &str) {
+fn refuses(pool: &Pool, text: &Array[u8], why: &str, status: &str) {
   let t = Instant.fromNanos(1000000000i64);
   var c = Connection.server(Config.make(), *pool, t);
   feed(&mut c, pool, text, t);
@@ -96,7 +96,7 @@ fn refuses(pool &Pool, text &Array[u8], why &str, status &str) {
 }
 
 // A client that asked for a GET and read text fails with why
-fn clientRefuses(pool &Pool, text &Array[u8], close bool, why &str, noResponse bool) {
+fn clientRefuses(pool: &Pool, text: &Array[u8], close: bool, why: &str, noResponse: bool) {
   let t = Instant.fromNanos(1000000000i64);
   var c = Connection.client(Config.make(), *pool, t);
   c.sendRequest(RequestHead.get("/", "h"), BodyLength.empty());
@@ -113,7 +113,7 @@ fn clientRefuses(pool &Pool, text &Array[u8], close bool, why &str, noResponse b
   expect(c.shouldClose(), "...and is to be closed");
 }
 
-fn repeat(s &mut String, piece &str, n usize) {
+fn repeat(s: &mut String, piece: &str, n: usize) {
   var i = 0usize;
   while i < n {
     s.append(piece);
@@ -121,7 +121,7 @@ fn repeat(s &mut String, piece &str, n usize) {
   }
 }
 
-fn smuggling(pool &Pool) {
+fn smuggling(pool: &Pool) {
   refuses(pool, "POST / HTTP/1.1\r\nHost: h\r\nContent-Length: 5\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n",
     "failed malformed: both Transfer-Encoding and Content-Length are given\n", "400 Bad Request");
   refuses(pool, "POST / HTTP/1.1\r\nHost: h\r\nTransfer-Encoding: chunked\r\nContent-Length: 5\r\n\r\n",
@@ -162,7 +162,7 @@ fn smuggling(pool &Pool) {
     "failed malformed: a field's value holds a control character\n", "400 Bad Request");
 }
 
-fn lines(pool &Pool) {
+fn lines(pool: &Pool) {
   refuses(pool, "GET  / HTTP/1.1\r\nHost: h\r\n\r\n",
     "failed malformed: the request target is empty (two spaces together)\n", "400 Bad Request");
   refuses(pool, "GET / HTTP/1.1 \r\nHost: h\r\n\r\n",
@@ -191,7 +191,7 @@ fn lines(pool &Pool) {
     "failed malformed: a field line has no colon\n", "400 Bad Request");
 }
 
-fn bounds(pool &Pool) {
+fn bounds(pool: &Pool) {
   {
     var s = String.from("GET / HTTP/1.1\r\nHost: h\r\n");
     var i = 0usize;
@@ -235,7 +235,7 @@ fn bounds(pool &Pool) {
   }
 }
 
-fn chunks(pool &Pool) {
+fn chunks(pool: &Pool) {
   let head = "POST / HTTP/1.1\r\nHost: h\r\nTransfer-Encoding: chunked\r\n\r\n";
   var s = String.from(head);
   s.append("zz\r\n");
@@ -265,7 +265,7 @@ fn chunks(pool &Pool) {
   refuses(pool, s.view(), "failed malformed: a field's name has a space or a tab in it, or before its colon\n", "400 Bad Request");
 }
 
-fn responses(pool &Pool) {
+fn responses(pool: &Pool) {
   clientRefuses(pool, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nTransfer-Encoding: chunked\r\n\r\n", false,
     "failed malformed: both Transfer-Encoding and Content-Length are given\n", false);
   clientRefuses(pool, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nContent-Length: 3\r\n\r\nab", false,

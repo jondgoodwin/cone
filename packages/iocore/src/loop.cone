@@ -53,48 +53,48 @@ const askedDeadline = 2u32;
 // An operation or a timer, and everything it owns until its answer is
 // delivered. 'ov' must stay first: its address is the record's
 struct Rec {
-  ov Overlapped;
-  wsa WsaBuf;
-  flags u32;
-  index u32;
-  gen u32;
-  state u32;
-  kind u32;
-  asked u32;              // askedCancel, askedDeadline: a cancel has been asked, and why
-  hit bool;               // its deadline has passed: the grace is running, or has run
-  lapses bool;            // a timer: its wheel entry is its group's deadline, earlier than its own time
-  abandon bool;          // decided TimedOut while the kernel or the pool still holds it
-  nextFree u32;
-  handle usize;           // the OS handle the operation is on, for CancelIoEx
-  newSock usize;          // Accept's or Connect's new socket, until registered
-  newHandle Handle;       // ...and its handle once registered
-  family u16;             // Accept's listener's family
-  sock Handle;            // the socket or file the operation names
-  at u64;                 // ReadAt's and WriteAt's offset; Call's argument
-  peer SocketAddr;        // Connect's address
-  lane Lane;              // Call's lane and work, and its job while the pool holds it
-  work WorkFn;
-  job *JobBox;
-  token u64;
-  timer TimerId;          // its deadline's (or grace's) timer, or a timer record's own
-  submitted Instant;
-  dequeued Instant;
-  status u32;             // decided: its outcome
-  n usize;
-  code u32;
-  buf IoBuf;
-  bytes Option[Bytes];
-  target Target;
-  group Option[CancelGroup];
-  addr Array[u8, 96];     // AcceptEx's two addresses; Connect's address
+  ov: Overlapped;
+  wsa: WsaBuf;
+  flags: u32;
+  index: u32;
+  gen: u32;
+  state: u32;
+  kind: u32;
+  asked: u32;              // askedCancel, askedDeadline: a cancel has been asked, and why
+  hit: bool;               // its deadline has passed: the grace is running, or has run
+  lapses: bool;            // a timer: its wheel entry is its group's deadline, earlier than its own time
+  abandon: bool;          // decided TimedOut while the kernel or the pool still holds it
+  nextFree: u32;
+  handle: usize;           // the OS handle the operation is on, for CancelIoEx
+  newSock: usize;          // Accept's or Connect's new socket, until registered
+  newHandle: Handle;       // ...and its handle once registered
+  family: u16;             // Accept's listener's family
+  sock: Handle;            // the socket or file the operation names
+  at: u64;                 // ReadAt's and WriteAt's offset; Call's argument
+  peer: SocketAddr;        // Connect's address
+  lane: Lane;              // Call's lane and work, and its job while the pool holds it
+  work: WorkFn;
+  job: *JobBox;
+  token: u64;
+  timer: TimerId;          // its deadline's (or grace's) timer, or a timer record's own
+  submitted: Instant;
+  dequeued: Instant;
+  status: u32;             // decided: its outcome
+  n: usize;
+  code: u32;
+  buf: IoBuf;
+  bytes: Option[Bytes];
+  target: Target;
+  group: Option[CancelGroup];
+  addr: Array[u8, 96];     // AcceptEx's two addresses; Connect's address
   // Linux: where a socket operation waits when it would block (linux.cone)
-  side u32;               // sideRecv or sideSend while it waits in a handle's queue
-  waitNext u32;
-  waitPrev u32;
-  done usize;             // a send's bytes sent so far
+  side: u32;               // sideRecv or sideSend while it waits in a handle's queue
+  waitNext: u32;
+  waitPrev: u32;
+  done: usize;             // a send's bytes sent so far
 }
 
-fn blankRec(index u32, next u32) Rec {
+fn blankRec(index: u32, next: u32) Rec {
   new Rec(
     ov: new Overlapped(0usize, 0usize, 0u32, 0u32, 0usize),
     wsa: new WsaBuf(0u32, null),
@@ -118,7 +118,7 @@ const recsPerBlock = 64u32;
 // Whether an operation of kind k is held in a JobBox: a pool job, or an
 // external operation; on Linux a file operation too, which is a job of the
 // pool (linux.cone)
-fn boxed(k u32) bool {
+fn boxed(k: u32) bool {
   k == diag.kindCall || k == diag.kindExternal
     || (!isWindows() && (k == diag.kindReadAt || k == diag.kindWriteAt))
 }
@@ -132,17 +132,17 @@ const hDatagram = 4u32;       // a bound UDP socket
 
 // An entry of the handle table
 struct HEntry {
-  pub raw usize;          // the OS's: Windows' handle or socket, Linux's descriptor
-  pub gen u32;
-  pub kind u32;
-  pub family u16;
-  pub nextFree u32;
+  pub raw: usize;          // the OS's: Windows' handle or socket, Linux's descriptor
+  pub gen: u32;
+  pub kind: u32;
+  pub family: u16;
+  pub nextFree: u32;
   // Linux: the operations that would block on it, receives (and accepts) and
   // sends (and a connect), as the records at each queue's ends (linux.cone)
-  pub recvHead u32;
-  pub recvTail u32;
-  pub sendHead u32;
-  pub sendTail u32;
+  pub recvHead: u32;
+  pub recvTail: u32;
+  pub sendHead: u32;
+  pub sendTail: u32;
 }
 
 // The most completions one wait takes from the kernel
@@ -159,35 +159,35 @@ const heldRetryNs = 1000000i64;
 // The completion loop (see the package's header, THE LOOP). Driven by one
 // thread
 pub struct Loop {
-  loopId u64;
-  driverGen u32;          // the last generation 'nextDriverGen' handed out
-  port Arc[imm, Port];
-  portHandle usize;
-  blocks List[*Rec];
-  recCount u32;
-  freeRec u32;
-  kernelHeld u32;         // records the kernel holds: it has not completed them
-  grouped u32;            // records in flight in a cancel group
-  groupsDirty bool;       // a group's cancel has been posted: look at the grouped records
-  decided List[u32];
-  cancels List[u64];      // Linux: socket operations asked to end, answered at the next wait (linux.cone)
-  heldC List[Completion]; // answers held back by a full channel...
-  heldT List[Target];     // ...and where they go
-  handles List[HEntry];
-  freeHandle u32;
-  wheel Wheel;
-  expiries List[Expiry];
-  entries *OverlappedEntry;   // Windows: what one wait takes from the port
-  events *EpollEvent;     // Linux: what one wait takes from epoll
-  timer usize;            // Windows: the high-resolution waitable timer. Linux: the timerfd
-  packet usize;           // its wait completion packet, or 0 when none could be made (Windows)
-  associated bool;        // the packet is associated, and not yet taken from the port; Linux: the timerfd is armed and not yet taken
-  armedFor Instant;       // the instant the timer is set for
-  woken bool;
-  grace Duration;         // after a deadline, how long the kernel has to give the buffer back
-  stats diag.Counters;
-  sub diag.Subscriber;
-  subscribed bool;
+  loopId: u64;
+  driverGen: u32;          // the last generation 'nextDriverGen' handed out
+  port: Arc[imm, Port];
+  portHandle: usize;
+  blocks: List[*Rec];
+  recCount: u32;
+  freeRec: u32;
+  kernelHeld: u32;         // records the kernel holds: it has not completed them
+  grouped: u32;            // records in flight in a cancel group
+  groupsDirty: bool;       // a group's cancel has been posted: look at the grouped records
+  decided: List[u32];
+  cancels: List[u64];      // Linux: socket operations asked to end, answered at the next wait (linux.cone)
+  heldC: List[Completion]; // answers held back by a full channel...
+  heldT: List[Target];     // ...and where they go
+  handles: List[HEntry];
+  freeHandle: u32;
+  wheel: Wheel;
+  expiries: List[Expiry];
+  entries: *OverlappedEntry;   // Windows: what one wait takes from the port
+  events: *EpollEvent;     // Linux: what one wait takes from epoll
+  timer: usize;            // Windows: the high-resolution waitable timer. Linux: the timerfd
+  packet: usize;           // its wait completion packet, or 0 when none could be made (Windows)
+  associated: bool;        // the packet is associated, and not yet taken from the port; Linux: the timerfd is armed and not yet taken
+  armedFor: Instant;       // the instant the timer is set for
+  woken: bool;
+  grace: Duration;         // after a deadline, how long the kernel has to give the buffer back
+  stats: diag.Counters;
+  sub: diag.Subscriber;
+  subscribed: bool;
 
   // A new loop for the calling thread, or the reason there is none
   pub fn make() Result[Loop, IoError] {
@@ -203,7 +203,7 @@ pub struct Loop {
   // A new loop; a panic, at the caller's line, if there can be none. (It
   // does not unwrap make's Result: Cone moves no value out of a matched
   // variant's field, and a Loop has no empty value to swap in)
-  pub fn mustMake(file &Array[u8] = srcFile(), line u32 = srcLine()) Loop {
+  pub fn mustMake(file: &Array[u8] = srcFile(), line: u32 = srcLine()) Loop {
     var port = 0usize;
     var wake = 0usize;
     var tick = 0usize;
@@ -215,7 +215,7 @@ pub struct Loop {
 
   // The loop around a new port (Linux: the epoll instance, and the eventfd
   // and timerfd it watches)
-  fn assemble(port usize, wake usize, tick usize) Loop {
+  fn assemble(port: usize, wake: usize, tick: usize) Loop {
     var timer = tick;
     var packet = 0usize;
     var entries = null as *OverlappedEntry;
@@ -250,7 +250,7 @@ pub struct Loop {
   }
 
   // Its id, unique in the process, as its diagnostics records name it
-  pub fn id(self &) u64 {loopId}
+  pub fn id(self: &) u64 {loopId}
 
   // A generation, 1 to 255, in turn, for a layer above that gives its
   // tokens a mark of its own on this loop (httpconn's drivers): two that
@@ -258,35 +258,35 @@ pub struct Loop {
   // so a late completion of a layer that is gone does not look like the
   // answer a later one with the same mark is waiting for. Per loop; no
   // global
-  pub fn nextDriverGen(self &mut) u64 {
+  pub fn nextDriverGen(self: &mut) u64 {
     driverGen = if driverGen >= 255u32 {1u32} else {driverGen + 1u32};
     u64.from(driverGen)
   }
 
   // Operations and timers submitted and not yet answered
-  pub fn inFlight(self &) u64 {stats.inFlight}
+  pub fn inFlight(self: &) u64 {stats.inFlight}
 
   // Its counters, as they are now
-  pub fn counters(self &) diag.Counters {stats}
+  pub fn counters(self: &) diag.Counters {stats}
 
   // Hand every answer delivered here to s, as a diag.OpRecord
-  pub fn subscribe(self &mut, s diag.Subscriber) {
+  pub fn subscribe(self: &mut, s: diag.Subscriber) {
     sub = s;
     subscribed = true;
   }
 
   // A Waker for this loop: Sendable; copied to share
-  pub fn waker(self &) Waker {new Waker(port)}
+  pub fn waker(self: &) Waker {new Waker(port)}
 
   // How long after an operation's deadline the loop waits for the kernel
   // (or the pool) to answer its cancel and give the buffer back, before it
   // answers TimedOut without the buffer (see the package's header,
   // DEADLINES). 1 ms unless set; zero answers at the deadline itself
-  pub fn setGrace(self &mut, d Duration) {grace = d;}
+  pub fn setGrace(self: &mut, d: Duration) {grace = d;}
 
   // A Request for operation id: a handle whose death cancels it, which may
   // be held on any thread (see the package's header, REQUESTS)
-  pub fn request(self &, id OpId) Request {new Request(new Waker(port), id, !id.isNone())}
+  pub fn request(self: &, id: OpId) Request {new Request(new Waker(port), id, !id.isNone())}
 
   // -------------------------------------------------------------------------
   // Handles
@@ -294,7 +294,7 @@ pub struct Loop {
 
   // A TCP socket listening at addr, for Accept; addr's port 0 has the OS
   // choose one, which localAddr tells
-  pub fn listen(self &mut, addr SocketAddr, backlog i32 = 128i32) Result[Handle, IoError] {
+  pub fn listen(self: &mut, addr: SocketAddr, backlog: i32 = 128i32) Result[Handle, IoError] {
     let s = tcpSocket(addr.family());
     if s == invalidHandle {return Error[Handle, IoError](new IoError(wsaError()));}
     var a = addr;
@@ -330,7 +330,7 @@ pub struct Loop {
   // the OS choose one, which localAddr tells. It is not connected: every
   // datagram it sends names its destination, and every one it receives
   // names its sender
-  pub fn bindUdp(self &mut, addr SocketAddr) Result[Handle, IoError] {
+  pub fn bindUdp(self: &mut, addr: SocketAddr) Result[Handle, IoError] {
     let s = udpSocket(addr.family());
     if s == invalidHandle {return Error[Handle, IoError](new IoError(wsaError()));}
     var a = addr;
@@ -360,7 +360,7 @@ pub struct Loop {
   }
 
   // A bound UDP socket; a panic, at the caller's line, if there can be none
-  pub fn mustBindUdp(self &mut, addr SocketAddr, file &Array[u8] = srcFile(), line u32 = srcLine()) Handle {
+  pub fn mustBindUdp(self: &mut, addr: SocketAddr, file: &Array[u8] = srcFile(), line: u32 = srcLine()) Handle {
     match self.bindUdp(addr) {
       case let r Ok {r}
       case let e Error {panic("iocore: bindUdp failed", file, line)}
@@ -368,7 +368,7 @@ pub struct Loop {
   }
 
   // A listening socket; a panic, at the caller's line, if there can be none
-  pub fn mustListen(self &mut, addr SocketAddr, file &Array[u8] = srcFile(), line u32 = srcLine()) Handle {
+  pub fn mustListen(self: &mut, addr: SocketAddr, file: &Array[u8] = srcFile(), line: u32 = srcLine()) Handle {
     match self.listen(addr) {
       case let r Ok {r}
       case let e Error {panic("iocore: listen failed", file, line)}
@@ -376,7 +376,7 @@ pub struct Loop {
   }
 
   // The address a socket is bound to
-  pub fn localAddr(self &, h Handle) Result[SocketAddr, IoError] {
+  pub fn localAddr(self: &, h: Handle) Result[SocketAddr, IoError] {
     let i = self.handleIndex(h);
     if i == noEntry {return Error[SocketAddr, IoError](new IoError(errorInvalidHandle));}
     let e = handles[usize.from(i)];
@@ -390,7 +390,7 @@ pub struct Loop {
   }
 
   // The address of a connected socket's peer
-  pub fn peerAddr(self &, h Handle) Result[SocketAddr, IoError] {
+  pub fn peerAddr(self: &, h: Handle) Result[SocketAddr, IoError] {
     let raw = self.rawOf(h, hSocket);
     if raw == invalidHandle {return Error[SocketAddr, IoError](new IoError(errorInvalidHandle));}
     var a = new SocketAddr(new Array[u8, 28] <- fill 0u8, 28i32);
@@ -403,8 +403,8 @@ pub struct Loop {
   }
 
   // A file, for ReadAt and WriteAt
-  pub fn openFile(self &mut, path &Path, access Access) Result[Handle, IoError] {
-    let text &Array[u8] = path.view();
+  pub fn openFile(self: &mut, path: &Path, access: Access) Result[Handle, IoError] {
+    let text: &Array[u8] = path.view();
     if isWindows() {
       let w = widen(text);
       if w as usize == 0usize {return Error[Handle, IoError](new IoError(errorNoUnicodeTranslation));}
@@ -442,12 +442,12 @@ pub struct Loop {
   }
 
   // Whether h names something this loop holds
-  pub fn isOpen(self &, h Handle) bool {self.handleIndex(h) != noEntry}
+  pub fn isOpen(self: &, h: Handle) bool {self.handleIndex(h) != noEntry}
 
   // Close what h names: every operation in flight on it is cancelled (each
   // still answers), and h names nothing from now on. False if it named
   // nothing already
-  pub fn close(self &mut, h Handle) bool {
+  pub fn close(self: &mut, h: Handle) bool {
     let i = self.handleIndex(h);
     if i == noEntry {return false;}
     // Linux: what waits on it is answered Cancelled now (a job already
@@ -469,7 +469,7 @@ pub struct Loop {
   // goes after what was sent): its peer's receive ends, Done(0), while this
   // side can still receive. 0, or Winsock's error; a send submitted after
   // it fails. ERROR_INVALID_HANDLE when h is no connected socket
-  pub fn shutdown(self &mut, h Handle) u32 {
+  pub fn shutdown(self: &mut, h: Handle) u32 {
     let raw = self.rawOf(h, hSocket);
     if raw == invalidHandle {return errorInvalidHandle;}
     if iocore.shutdown(raw, sdSend) != 0i32 {return wsaError();}
@@ -480,7 +480,7 @@ pub struct Loop {
   // reset (RST), not finished, and what was not yet sent is dropped. As
   // 'close' otherwise: everything in flight on it is cancelled, and h names
   // nothing from now on. False if it named no socket
-  pub fn reset(self &mut, h Handle) bool {
+  pub fn reset(self: &mut, h: Handle) bool {
     let i = self.handleIndex(h);
     if i == noEntry {return false;}
     if handles[usize.from(i)].kind != hSocket {return false;}
@@ -496,7 +496,7 @@ pub struct Loop {
     true
   }
 
-  fn register(self &mut, raw usize, kind u32, family u16) Handle {
+  fn register(self: &mut, raw: usize, kind: u32, family: u16) Handle {
     if freeHandle == noEntry {
       handles.push(new HEntry(0usize, 1u32, hFree, 0u16, noEntry, noEntry, noEntry, noEntry, noEntry));
       freeHandle = u32.from(handles.len() - 1usize);
@@ -516,7 +516,7 @@ pub struct Loop {
   }
 
   // h's entry, or noEntry if h names nothing
-  fn handleIndex(self &, h Handle) u32 {
+  fn handleIndex(self: &, h: Handle) u32 {
     if h.index == noEntry || usize.from(h.index) >= handles.len() {return noEntry;}
     let e = handles[usize.from(h.index)];
     if e.gen != h.gen || e.kind == hFree {return noEntry;}
@@ -524,7 +524,7 @@ pub struct Loop {
   }
 
   // The OS handle h names, if it is of kind; invalidHandle if not
-  fn rawOf(self &, h Handle, kind u32) usize {
+  fn rawOf(self: &, h: Handle, kind: u32) usize {
     let i = self.handleIndex(h);
     if i == noEntry {return invalidHandle;}
     let e = handles[usize.from(i)];
@@ -536,12 +536,12 @@ pub struct Loop {
   // The in-flight table
   // -------------------------------------------------------------------------
 
-  fn recAt(self &, i u32) *Rec {
+  fn recAt(self: &, i: u32) *Rec {
     *blocks[usize.from(i / recsPerBlock)] + usize.from(i % recsPerBlock)
   }
 
   // A free record, in flight, its submission stamped
-  fn allocRec(self &mut) u32 {
+  fn allocRec(self: &mut) u32 {
     if freeRec == noEntry {
       let block = libc.malloc(usize.from(recsPerBlock) * mem.sizeof[Rec]()) as *Rec;
       if block as usize == 0usize {panic("iocore: out of memory for the in-flight table");}
@@ -576,7 +576,7 @@ pub struct Loop {
   }
 
   // The wheel's token for a record: its generation above its index
-  fn tokenOf(self &, i u32) u64 {
+  fn tokenOf(self: &, i: u32) u64 {
     let r = self.recAt(i) as &Rec;
     (u64.from(r.gen) << 32u64) | u64.from(i)
   }
@@ -585,7 +585,7 @@ pub struct Loop {
   // this pass of poll (or the next one). A record decided already and not
   // yet delivered -- a prompt TimedOut the kernel has now answered after
   // all -- takes the kernel's outcome instead, its buffer back with it
-  fn decide(self &mut, i u32, status u32, n usize, code u32) {
+  fn decide(self: &mut, i: u32, status: u32, n: usize, code: u32) {
     let r = self.recAt(i) as &mut Rec;
     r.status = status;
     r.n = n;
@@ -603,7 +603,7 @@ pub struct Loop {
   // Record i's deadline has passed and the kernel (or the pool) still holds
   // it: answer TimedOut now, without its buffer, which goes home when the
   // kernel gives it back
-  fn abandonRec(self &mut, i u32) {
+  fn abandonRec(self: &mut, i: u32) {
     // Linux: nothing of a socket operation is the kernel's to give back, so
     // it is answered TimedOut with its buffer, never promptly without it
     if !isWindows() && socketKind((self.recAt(i) as &Rec).kind) {
@@ -616,7 +616,7 @@ pub struct Loop {
 
   // Build record i's answer, free the record (or leave it abandoned to the
   // kernel), and send the answer where its target says: how many went to out
-  fn deliver(self &mut, i u32, out &mut List[Completion], at Instant) usize {
+  fn deliver(self: &mut, i: u32, out: &mut List[Completion], at: Instant) usize {
     let r = self.recAt(i) as &mut Rec;
     // A record abandoned to the kernel keeps its buffer, and its bytes, for
     // the kernel; a job's buffer is in its box, which comes back by itself
@@ -635,9 +635,9 @@ pub struct Loop {
         && (r.kind != diag.kindRecvFrom || r.status == diag.outcomeDone || r.code == errorMsgSize) {
       peer = r.peer;
     }
-    var t Target = Target.Here(0u64);
+    var t: Target = Target.Here(0u64);
     t <=> r.target;
-    var g Option[CancelGroup] = None;
+    var g: Option[CancelGroup] = None;
     g <=> r.group;
     match g {
       case is None[CancelGroup] {}
@@ -657,7 +657,7 @@ pub struct Loop {
     self.send(c, t, out)
   }
 
-  fn freeRecord(self &mut, i u32) {
+  fn freeRecord(self: &mut, i: u32) {
     let r = self.recAt(i) as &mut Rec;
     r.state = stFree;
     r.abandon = false;
@@ -667,7 +667,7 @@ pub struct Loop {
 
   // Hand the subscriber an answer this loop sends to another thread (one
   // posted to another loop is recorded there)
-  fn note(self &, c &Completion) {
+  fn note(self: &, c: &Completion) {
     if subscribed {
       let rec = c.record();
       (sub)(&rec);
@@ -675,7 +675,7 @@ pub struct Loop {
   }
 
   // Send answer c where t says: to out (Here: 1) or elsewhere (0)
-  fn send(self &mut, c Completion, t Target, out &mut List[Completion]) usize {
+  fn send(self: &mut, c: Completion, t: Target, out: &mut List[Completion]) usize {
     // A channel's send may find it full: the answer is held, and tried again
     var back = blankCompletion();
     var hold = false;
@@ -727,7 +727,7 @@ pub struct Loop {
   // Send c on a channel without waiting: false when it is taken, or its
   // receiver has gone (c dropped, its buffer home); true when the channel
   // is full, c handed back in 'back'
-  fn tryChan(self &mut, tx &Sender[Completion], c Completion, back &mut Completion) bool {
+  fn tryChan(self: &mut, tx: &Sender[Completion], c: Completion, back: &mut Completion) bool {
     var full = false;
     match tx.trySend(c) {
       case var s Some {
@@ -745,7 +745,7 @@ pub struct Loop {
 
   // Try again the answers a full channel held back: those it takes, or
   // whose receiver has gone, are done with
-  fn retryHeld(self &mut) {
+  fn retryHeld(self: &mut) {
     if heldC.len() == 0usize {return;}
     var k = 0usize;
     while k < heldC.len() {
@@ -755,7 +755,7 @@ pub struct Loop {
       var back = blankCompletion();
       var still = false;
       // Out of the list into a local, to be narrowed to its variant
-      var to Target = Target.Here(0u64);
+      var to: Target = Target.Here(0u64);
       let tslot = &mut heldT[k];
       to <=> *tslot;
       match &mut to {
@@ -780,7 +780,7 @@ pub struct Loop {
   }
 
   // Deliver every decided answer: how many went to out
-  fn flush(self &mut, out &mut List[Completion]) usize {
+  fn flush(self: &mut, out: &mut List[Completion]) usize {
     if decided.len() == 0usize {return 0usize;}
     let at = Instant.now();
     var n = 0usize;
@@ -800,14 +800,14 @@ pub struct Loop {
 
   // Start an operation; its answer goes where 'to' says (see the package's
   // header, OPERATIONS and TARGETS). Its id, for cancel
-  pub fn submit(self &mut, op Op, to Target, file &Array[u8] = srcFile(), line u32 = srcLine()) OpId {
+  pub fn submit(self: &mut, op: Op, to: Target, file: &Array[u8] = srcFile(), line: u32 = srcLine()) OpId {
     self.start(op, to, forever(), None, file, line)
   }
 
   // Start an operation that answers TimedOut if it has not finished by
   // deadline (see the package's header, DEADLINES)
-  pub fn submitBy(self &mut, op Op, to Target, deadline Instant,
-      file &Array[u8] = srcFile(), line u32 = srcLine()) OpId {
+  pub fn submitBy(self: &mut, op: Op, to: Target, deadline: Instant,
+      file: &Array[u8] = srcFile(), line: u32 = srcLine()) OpId {
     self.start(op, to, deadline, None, file, line)
   }
 
@@ -815,19 +815,19 @@ pub struct Loop {
   // its deadline is the tighter of 'deadline' and the group's (forever()
   // for the group's alone). Answered Cancelled at once, never started, when
   // the group is cancelled already (see the package's header, CANCEL GROUPS)
-  pub fn submitIn(self &mut, op Op, to Target, group CancelGroup, deadline Instant,
-      file &Array[u8] = srcFile(), line u32 = srcLine()) OpId {
+  pub fn submitIn(self: &mut, op: Op, to: Target, group: CancelGroup, deadline: Instant,
+      file: &Array[u8] = srcFile(), line: u32 = srcLine()) OpId {
     self.start(op, to, deadline, Some[CancelGroup](group), file, line)
   }
 
   // A timer: it answers Done (n 0) at 'at', to its target, unless cancelled
-  pub fn after(self &mut, at Instant, to Target, file &Array[u8] = srcFile(), line u32 = srcLine()) OpId {
+  pub fn after(self: &mut, at: Instant, to: Target, file: &Array[u8] = srcFile(), line: u32 = srcLine()) OpId {
     self.startTimer(at, to, None, file, line)
   }
 
   // A timer in a cancel group: the group's cancel cancels it
-  pub fn afterIn(self &mut, at Instant, to Target, group CancelGroup,
-      file &Array[u8] = srcFile(), line u32 = srcLine()) OpId {
+  pub fn afterIn(self: &mut, at: Instant, to: Target, group: CancelGroup,
+      file: &Array[u8] = srcFile(), line: u32 = srcLine()) OpId {
     self.startTimer(at, to, Some[CancelGroup](group), file, line)
   }
 
@@ -836,19 +836,19 @@ pub struct Loop {
   // its answer delivered where 'to' says as any operation's is (see the
   // package's header, EXTERNAL OPERATIONS). buf is lent to the completer
   // (IoBuf.empty() for none) and comes back in the answer
-  pub fn external(self &mut, to Target, buf IoBuf, file &Array[u8] = srcFile(), line u32 = srcLine()) Completer {
+  pub fn external(self: &mut, to: Target, buf: IoBuf, file: &Array[u8] = srcFile(), line: u32 = srcLine()) Completer {
     self.startExternal(to, buf, forever(), None, file, line)
   }
 
   // An external operation in a cancel group, with a deadline (forever()
   // for the group's alone)
-  pub fn externalIn(self &mut, to Target, buf IoBuf, group CancelGroup, deadline Instant,
-      file &Array[u8] = srcFile(), line u32 = srcLine()) Completer {
+  pub fn externalIn(self: &mut, to: Target, buf: IoBuf, group: CancelGroup, deadline: Instant,
+      file: &Array[u8] = srcFile(), line: u32 = srcLine()) Completer {
     self.startExternal(to, buf, deadline, Some[CancelGroup](group), file, line)
   }
 
-  fn startExternal(self &mut, to Target, buf IoBuf, deadline Instant, group Option[CancelGroup],
-      file &Array[u8], line u32) Completer {
+  fn startExternal(self: &mut, to: Target, buf: IoBuf, deadline: Instant, group: Option[CancelGroup],
+      file: &Array[u8], line: u32) Completer {
     let token = to.token;
     var t = self.claim(to, file, line);
     let i = self.allocRec();
@@ -886,7 +886,7 @@ pub struct Loop {
 
   // The target's own part of a submit: a status slot is claimed. The target
   // passes through
-  fn claim(self &mut, to Target, file &Array[u8], line u32) Target {
+  fn claim(self: &mut, to: Target, file: &Array[u8], line: u32) Target {
     match &to {
       case let s &Status {
         if !s.board.arm(s.slot) {
@@ -900,7 +900,7 @@ pub struct Loop {
 
   // The group's part of a submit: the record joins it, and the loop is told
   // when it is cancelled. True when it is cancelled already
-  fn join(self &mut, i u32, group Option[CancelGroup]) bool {
+  fn join(self: &mut, i: u32, group: Option[CancelGroup]) bool {
     let r = self.recAt(i) as &mut Rec;
     var g = group;
     r.group <=> g;
@@ -919,8 +919,8 @@ pub struct Loop {
     cancelled
   }
 
-  fn startTimer(self &mut, at Instant, to Target, group Option[CancelGroup],
-      file &Array[u8], line u32) OpId {
+  fn startTimer(self: &mut, at: Instant, to: Target, group: Option[CancelGroup],
+      file: &Array[u8], line: u32) OpId {
     let token = to.token;
     var t = self.claim(to, file, line);
     let i = self.allocRec();
@@ -953,8 +953,8 @@ pub struct Loop {
     new OpId(i, gen)
   }
 
-  fn start(self &mut, op Op, to Target, deadline Instant, group Option[CancelGroup],
-      file &Array[u8], line u32) OpId {
+  fn start(self: &mut, op: Op, to: Target, deadline: Instant, group: Option[CancelGroup],
+      file: &Array[u8], line: u32) OpId {
     let token = to.token;
     var t = self.claim(to, file, line);
     let i = self.allocRec();
@@ -1066,7 +1066,7 @@ pub struct Loop {
   // Hand record p's operation to the kernel or the pool: 0, it holds it now
   // (its completion will come to the port); or the error that stopped it
   // before it was taken
-  fn launch(self &mut, p *Rec) u32 {
+  fn launch(self: &mut, p: *Rec) u32 {
     let r = p as &mut Rec;
     let k = r.kind;
     if k == diag.kindConnect {return self.startConnect(p, r.peer);}
@@ -1094,7 +1094,7 @@ pub struct Loop {
   // now (its completion will come to the port); or the error that stopped it
   // before the kernel took it
 
-  fn startConnect(self &mut, p *Rec, addr SocketAddr) u32 {
+  fn startConnect(self: &mut, p: *Rec, addr: SocketAddr) u32 {
     let r = p as &mut Rec;
     if isWindows() {
       if connectExAddr == 0usize {return errorInvalidParameter;}
@@ -1131,7 +1131,7 @@ pub struct Loop {
     }
   }
 
-  fn startAccept(self &mut, p *Rec, listener Handle) u32 {
+  fn startAccept(self: &mut, p: *Rec, listener: Handle) u32 {
     let r = p as &mut Rec;
     if isWindows() {
       if acceptExAddr == 0usize {return errorInvalidParameter;}
@@ -1159,7 +1159,7 @@ pub struct Loop {
     }
   }
 
-  fn startRecv(self &mut, p *Rec, sock Handle, ready bool) u32 {
+  fn startRecv(self: &mut, p: *Rec, sock: Handle, ready: bool) u32 {
     let r = p as &mut Rec;
     if isWindows() {
       let raw = self.rawOf(sock, hSocket);
@@ -1185,7 +1185,7 @@ pub struct Loop {
     }
   }
 
-  fn startSend(self &mut, p *Rec, sock Handle, data *u8, len usize) u32 {
+  fn startSend(self: &mut, p: *Rec, sock: Handle, data: *u8, len: usize) u32 {
     let r = p as &mut Rec;
     if isWindows() {
       let raw = self.rawOf(sock, hSocket);
@@ -1205,7 +1205,7 @@ pub struct Loop {
   }
 
   // One datagram into the buffer's room, the sender into the record's 'peer'
-  fn startRecvFrom(self &mut, p *Rec, sock Handle) u32 {
+  fn startRecvFrom(self: &mut, p: *Rec, sock: Handle) u32 {
     let r = p as &mut Rec;
     if isWindows() {
       let raw = self.rawOf(sock, hDatagram);
@@ -1229,7 +1229,7 @@ pub struct Loop {
   }
 
   // The buffer as one datagram to the address in the record's 'peer'
-  fn startSendTo(self &mut, p *Rec, sock Handle) u32 {
+  fn startSendTo(self: &mut, p: *Rec, sock: Handle) u32 {
     let r = p as &mut Rec;
     if isWindows() {
       let raw = self.rawOf(sock, hDatagram);
@@ -1249,7 +1249,7 @@ pub struct Loop {
     }
   }
 
-  fn startFile(self &mut, p *Rec, file Handle, at u64, write bool) u32 {
+  fn startFile(self: &mut, p: *Rec, file: Handle, at: u64, write: bool) u32 {
     let r = p as &mut Rec;
     if isWindows() {
       let raw = self.rawOf(file, hFile);
@@ -1280,7 +1280,7 @@ pub struct Loop {
 
   // A job for the blocking pool: boxed with a waker of this loop, its
   // buffer moved into the box, and queued on its lane
-  fn startCall(self &mut, p *Rec) u32 {
+  fn startCall(self: &mut, p: *Rec) u32 {
     let r = p as &mut Rec;
     let l = laneAt(r.lane.id);
     if l as usize == 0usize {return errorInvalidParameter;}
@@ -1303,7 +1303,7 @@ pub struct Loop {
   // Ask an operation or a timer to end (see the package's header, CANCEL):
   // true while its answer is still to come, false once it is decided or for
   // an id that names nothing
-  pub fn cancel(self &mut, id OpId) bool {
+  pub fn cancel(self: &mut, id: OpId) bool {
     if id.isNone() || id.index >= recCount {return false;}
     let r = self.recAt(id.index) as &mut Rec;
     if r.gen != id.gen || r.state != stFlight {return false;}
@@ -1317,7 +1317,7 @@ pub struct Loop {
   // Ask record i's cancel, for 'why': a timer, or a job still queued, is
   // decided at once (a job with its buffer back); the kernel is asked
   // (CancelIoEx); a running job answers when it returns
-  fn askCancel(self &mut, i u32, why u32) {
+  fn askCancel(self: &mut, i: u32, why: u32) {
     let p = self.recAt(i);
     let r = p as &mut Rec;
     let outcome = if why == askedDeadline {diag.outcomeTimedOut} else {diag.outcomeCancelled};
@@ -1349,7 +1349,7 @@ pub struct Loop {
 
   // A cancel group has been cancelled: every operation in flight in a
   // cancelled group is asked to end
-  fn sweepGroups(self &mut) {
+  fn sweepGroups(self: &mut) {
     groupsDirty = false;
     if grouped == 0u32 {return;}
     var i = 0u32;
@@ -1376,7 +1376,7 @@ pub struct Loop {
 
   // The kernel has completed record p, moving 'bytes'
   // (Windows only: Linux's operations are tried by linux.cone, not completed)
-  fn complete(self &mut, p *Rec, bytes u32, at Instant) {
+  fn complete(self: &mut, p: *Rec, bytes: u32, at: Instant) {
     if isWindows() {
       let r = p as &mut Rec;
       kernelHeld = kernelHeld - 1u32;
@@ -1441,7 +1441,7 @@ pub struct Loop {
   // A job has come back from the pool: its record takes its buffer and its
   // outcome; a job answered already (a prompt TimedOut) is dropped, its
   // buffer going home
-  fn completeJob(self &mut, b *JobBox, at Instant) {
+  fn completeJob(self: &mut, b: *JobBox, at: Instant) {
     let j = b as &mut JobBox;
     let i = j.rec;
     if i >= recCount {
@@ -1468,7 +1468,7 @@ pub struct Loop {
   // An accepted or connected socket is finished and registered: 0, or the
   // error that stopped it (the socket is then closed)
   // (Windows only: Linux adopts a socket where it makes or accepts it)
-  fn adopt(self &mut, p *Rec) u32 {
+  fn adopt(self: &mut, p: *Rec) u32 {
     if isWindows() {
       let r = p as &mut Rec;
       let s = r.newSock;
@@ -1502,7 +1502,7 @@ pub struct Loop {
   // when it is its group's deadline that is due, not its own time); an
   // operation's deadline asks its cancel and starts its grace; a grace run
   // out answers TimedOut without the buffer
-  fn fireTimers(self &mut, now Instant) {
+  fn fireTimers(self: &mut, now: Instant) {
     if wheel.isEmpty() {return;}
     wheel.expired(now, &mut expiries);
     var k = 0usize;
@@ -1543,7 +1543,7 @@ pub struct Loop {
 
   // Wait for answers, at most until 'until', and append them to out: how
   // many (see the package's header, POLL)
-  pub fn poll(self &mut, until Instant, out &mut List[Completion]) usize {
+  pub fn poll(self: &mut, until: Instant, out: &mut List[Completion]) usize {
     stats.polls = stats.polls + 1u64;
     woken = false;
     let elsewhere = stats.postsSent + stats.postsDropped + stats.handedOff + stats.handedDropped;
@@ -1584,7 +1584,7 @@ pub struct Loop {
   // Arm the high-resolution timer for wakeAt (unless it already is) and
   // answer the port's own timeout, a backstop a millisecond past it; INFINITE
   // when wakeAt never comes
-  fn armFor(self &mut, wakeAt Instant, now Instant) u32 {
+  fn armFor(self: &mut, wakeAt: Instant, now: Instant) u32 {
     if wakeAt >= forever() {return infinite;}
     if isWindows() {
       let left = (wakeAt - now).nanos();
@@ -1610,7 +1610,7 @@ pub struct Loop {
 
   // One wait in the kernel, for at most ms, and what it brought processed:
   // how many answers posted by other loops went to out
-  fn dequeue(self &mut, ms u32, out &mut List[Completion]) usize {
+  fn dequeue(self: &mut, ms: u32, out: &mut List[Completion]) usize {
     if isWindows() {
       var got = 0u32;
       let ok = GetQueuedCompletionStatusEx(portHandle, entries, batch, &mut got, ms, 0i32);
@@ -1647,7 +1647,7 @@ pub struct Loop {
   // A packet another thread posted to the loop (the same on both systems):
   // a job come home, a wake, a cancel, a cancelled group, an answer for this
   // loop. How many answers went to out
-  fn handlePacket(self &mut, key usize, ov *u8, at Instant, out &mut List[Completion]) usize {
+  fn handlePacket(self: &mut, key: usize, ov: *u8, at: Instant, out: &mut List[Completion]) usize {
     var n = 0usize;
     if key == keyJob {
       self.completeJob(ov as *JobBox, at);
@@ -1680,7 +1680,7 @@ pub struct Loop {
   // Its death: cancel and drain (I18)
   // -------------------------------------------------------------------------
 
-  fn final(self &uni) {
+  fn final(self: &uni) {
     port.closed.store(true);
     // Every handle's operations cancelled, all before any is closed (a
     // socket closed first would end its peer's receive as the end of the

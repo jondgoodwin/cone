@@ -34,41 +34,41 @@ import collections use *;
 import libc;
 
 var @threadlocal log = 0i64;
-fn note(d i64) { log = log * 10i64 + d; }
+fn note(d: i64) { log = log * 10i64 + d; }
 
 struct Fin {
-  pub n i64;
-  fn final(self &uni) { note(n); }
+  pub n: i64;
+  fn final(self: &uni) { note(n); }
 }
 
 struct Pt {
-  pub x i64;
-  pub y i64;
-  pub fn sum(self &) i64 { x + y }
+  pub x: i64;
+  pub y: i64;
+  pub fn sum(self: &) i64 { x + y }
 }
 
 // A counting region: its header first, then the tallies
 struct Counting {
-  header MemRegion;
-  allocs usize;
-  releases usize;
-  live isize;
+  header: MemRegion;
+  allocs: usize;
+  releases: usize;
+  live: isize;
 }
 
-fn countAlloc(r *MemRegion, bytes usize, align usize) *u8 {
+fn countAlloc(r: *MemRegion, bytes: usize, align: usize) *u8 {
   let c = r as *Counting;
   (*c).allocs = (*c).allocs + 1usize;
   (*c).live = (*c).live + isize.from(bytes);
   libc.malloc(bytes)
 }
 
-fn countResize(r *MemRegion, block *u8, oldBytes usize, newBytes usize, align usize) *u8 {
+fn countResize(r: *MemRegion, block: *u8, oldBytes: usize, newBytes: usize, align: usize) *u8 {
   let c = r as *Counting;
   (*c).live = (*c).live + isize.from(newBytes) - isize.from(oldBytes);
   libc.realloc(block, newBytes)
 }
 
-fn countRelease(r *MemRegion, block *u8, bytes usize) {
+fn countRelease(r: *MemRegion, block: *u8, bytes: usize) {
   if block as usize == 0usize { return; }
   let c = r as *Counting;
   (*c).releases = (*c).releases + 1usize;
@@ -80,20 +80,20 @@ fn newCounting() Counting {
   new Counting(new MemRegion(&countAlloc, &countResize, &countRelease), 0usize, 0usize, 0isize)
 }
 
-fn regionOf(c &mut Counting) *MemRegion { (c as *Counting) as *MemRegion }
+fn regionOf(c: &mut Counting) *MemRegion { (c as *Counting) as *MemRegion }
 
-fn tally(c &Counting, allocs u64, releases u64, live i64, label &Array[u8]) {
+fn tally(c: &Counting, allocs: u64, releases: u64, live: i64, label: &Array[u8]) {
   let ok = u64.from(c.allocs) == allocs && u64.from(c.releases) == releases && i64.from(c.live) == live;
   expect(ok, label);
 }
 
 // A value that holds two lists and hands its region on to both
 struct Mesh is CarriesRegion {
-  pub pts List[f32];
-  pub ids List[u32];
-  pub region *MemRegion;
+  pub pts: List[f32];
+  pub ids: List[u32];
+  pub region: *MemRegion;
 
-  pub fn init(self &new, n usize, region *MemRegion) {
+  pub fn init(self: &new, n: usize, region: *MemRegion) {
     *self = new Mesh(pts: new List[f32](n, region), ids: new List[u32](n, region), region: region);
   }
 }
@@ -118,7 +118,7 @@ fn plain() {
 // for (built first and copied in, the Mesh would lie after both). The arena has
 // room for all three in its one block, so the order of the addresses is the order
 // of the bumps
-fn fill(m &mut Mesh) {
+fn fill(m: &mut Mesh) {
   m.pts.push(1.5f32);
   m.ids.push(7u32);
 }
@@ -145,8 +145,8 @@ fn inplace() {
 // A value with a 'final' that another construction is built from: that one is
 // made first and is finalized last
 struct Wrap {
-  pub v i64;
-  fn final(self &uni) { note(v); }
+  pub v: i64;
+  fn final(self: &uni) { note(v); }
 }
 
 fn argsFirst() {
@@ -213,14 +213,14 @@ fn composition() {
 
 // Nodes of a dynamic arena holding each other's keys
 struct Node['=a] {
-  pub val i64;
-  pub next Option[&'=a mut Node['=a]];
+  pub val: i64;
+  pub next: Option[&'=a mut Node['=a]];
 }
 
 // n nodes allocated into the arena it is lent, each holding the key of the one
 // before it; the last made comes back
-fn chain(ar &mut DynArena['=a], n i64) Option[&'=a mut Node['=a]] {
-  var head Option[&'=a mut Node['=a]] = None[&'=a mut Node['=a]];
+fn chain(ar: &mut DynArena['=a], n: i64) Option[&'=a mut Node['=a]] {
+  var head: Option[&'=a mut Node['=a]] = None[&'=a mut Node['=a]];
   var i = 0i64;
   while i < n {
     head = Some(new ar[Node](i, head));
@@ -229,7 +229,7 @@ fn chain(ar &mut DynArena['=a], n i64) Option[&'=a mut Node['=a]] {
   head
 }
 
-fn total(ar &DynArena['=a], first Option[&'=a mut Node['=a]]) i64 {
+fn total(ar: &DynArena['=a], first: Option[&'=a mut Node['=a]]) i64 {
   var sum = 0i64;
   var at = first;
   while {

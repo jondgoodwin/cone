@@ -26,41 +26,41 @@
 
 // The three channels' distances at a point
 pub struct Rgb {
-  pub r f64;
-  pub g f64;
-  pub b f64;
+  pub r: f64;
+  pub g: f64;
+  pub b: f64;
 
   pub fn median(self) f64 {
     fmax64(fmin64(r, g), fmin64(fmax64(r, g), b))
   }
 }
 
-fn fmin64(a f64, b f64) f64 { if a < b { return a; } b }
-fn fmax64(a f64, b f64) f64 { if a > b { return a; } b }
+fn fmin64(a: f64, b: f64) f64 { if a < b { return a; } b }
+fn fmax64(a: f64, b: f64) f64 { if a > b { return a; } b }
 
 const FAR = 1.0e240;
 
 // The nearest edge of each channel (by index into the shape's edges) and the
 // distance and curve parameter to it: msdfgen's MultiDistanceSelector
 struct Selector {
-  d Array[SignedDist, 3];
-  e Array[i32, 3];
-  t Array[f64, 3];
-  pseudo bool;                // resolve to the pseudo-distance (else the true distance)
+  d: Array[SignedDist, 3];
+  e: Array[i32, 3];
+  t: Array[f64, 3];
+  pseudo: bool;                // resolve to the pseudo-distance (else the true distance)
 
-  fn fresh(pseudo bool) Selector {
+  fn fresh(pseudo: bool) Selector {
     let far = new SignedDist(-FAR, 1.0);
     new Selector([far, far, far], [-1i32, -1i32, -1i32], [0.0, 0.0, 0.0], pseudo)
   }
 
-  fn reset(self &mut) {
+  fn reset(self: &mut) {
     let far = new SignedDist(-FAR, 1.0);
     d = [far, far, far];
     e = [-1i32, -1i32, -1i32];
     t = [0.0, 0.0, 0.0];
   }
 
-  fn addEdge(self &mut, shape &Shape, index usize, p Pt) {
+  fn addEdge(self: &mut, shape: &Shape, index: usize, p: Pt) {
     let edge = *shape.edges[index];
     var param = 0.0;
     let sd = edge.signedDistance(p, &mut param);
@@ -75,7 +75,7 @@ struct Selector {
     }
   }
 
-  fn merge(self &mut, o &Selector) {
+  fn merge(self: &mut, o: &Selector) {
     var ch = 0usize;
     while ch < 3usize {
       if nearer(o.d[ch], d[ch]) {
@@ -89,7 +89,7 @@ struct Selector {
 
   // The channels' distances, with the pseudo-distance in place of the true
   // one where the nearest point is the end of an edge
-  fn resolve(self &, shape &Shape, p Pt) Rgb {
+  fn resolve(self: &, shape: &Shape, p: Pt) Rgb {
     var out = new Array[f64, 3] <- fill 0.0;
     var ch = 0usize;
     while ch < 3usize {
@@ -104,12 +104,12 @@ struct Selector {
   }
 }
 
-fn absf64(v f64) f64 { if v < 0.0 { return -v; } v }
+fn absf64(v: f64) f64 { if v < 0.0 { return -v; } v }
 
 // The multi-channel distance at 'p' of a shape: each contour's own, combined
 // by msdfgen's OverlappingContourCombiner. 'sels' holds a selector a
 // contour.
-fn distanceAt(shape &Shape, sels &mut List[Selector], p Pt, pseudo bool) Rgb {
+fn distanceAt(shape: &Shape, sels: &mut List[Selector], p: Pt, pseudo: bool) Rgb {
   var shapeSel = Selector.fresh(pseudo);
   var innerSel = Selector.fresh(pseudo);
   var outerSel = Selector.fresh(pseudo);
@@ -180,15 +180,15 @@ fn distanceAt(shape &Shape, sels &mut List[Selector], p Pt, pseudo bool) Rgb {
 
 // A field of texels, three channels each (f32, distance / range + 1/2), row 0 the top
 pub struct Field {
-  pub width u32;
-  pub height u32;
-  pub data List[f32];
+  pub width: u32;
+  pub height: u32;
+  pub data: List[f32];
 
-  pub fn texel(self &, x u32, y u32, ch u32) f32 {
+  pub fn texel(self: &, x: u32, y: u32, ch: u32) f32 {
     *data[usize.from((y * width + x) * 3u32 + ch)]
   }
 
-  pub fn median(self &, x u32, y u32) f32 {
+  pub fn median(self: &, x: u32, y: u32) f32 {
     let i = usize.from((y * width + x) * 3u32);
     let r = *data[i];
     let g = *data[i + 1usize];
@@ -197,35 +197,35 @@ pub struct Field {
   }
 }
 
-fn fminf(a f32, b f32) f32 { if a < b { return a; } b }
-fn fmaxf(a f32, b f32) f32 { if a > b { return a; } b }
+fn fminf(a: f32, b: f32) f32 { if a < b { return a; } b }
+fn fmaxf(a: f32, b: f32) f32 { if a > b { return a; } b }
 
 // How a shape sits in a field: the texel at column x, row y has its centre at
 // the shape point ((x + 1/2) / scale - tx, (height - y - 1/2) / scale - ty)
 pub struct Frame {
-  pub width u32;
-  pub height u32;
-  pub scale f64;              // texels per font unit
-  pub tx f64;                 // font units added to x before scaling
-  pub ty f64;
-  pub range f64;              // the whole width of distances the field holds, font units
+  pub width: u32;
+  pub height: u32;
+  pub scale: f64;              // texels per font unit
+  pub tx: f64;                 // font units added to x before scaling
+  pub ty: f64;
+  pub range: f64;              // the whole width of distances the field holds, font units
 
   // Where the shape point 'p' falls, in continuous texel coordinates where a
   // texel's centre is at its integer index (x right, y down the rows)
-  pub fn toTexel(self &, p Pt) Pt {
+  pub fn toTexel(self: &, p: Pt) Pt {
     new Pt((p.x + tx) * scale - 0.5, f64.from(height) - 0.5 - (p.y + ty) * scale)
   }
 
   // The shape point at the centre of texel (x, y)
-  pub fn pointOf(self &, x f64, y f64) Pt {
+  pub fn pointOf(self: &, x: f64, y: f64) Pt {
     new Pt((x + 0.5) / scale - tx, (f64.from(height) - y - 0.5) / scale - ty)
   }
 }
 
 // The multi-channel field of a coloured shape
-pub fn generateMsdf(shape &Shape, frame &Frame) Field { generate(shape, frame, true) }
+pub fn generateMsdf(shape: &Shape, frame: &Frame) Field { generate(shape, frame, true) }
 
-fn generate(shape &Shape, frame &Frame, pseudo bool) Field {
+fn generate(shape: &Shape, frame: &Frame, pseudo: bool) Field {
   var data = List[f32].withCapacity(usize.from(frame.width * frame.height * 3u32));
   var sels = List[Selector].empty();
   var ci = 0usize;
@@ -249,7 +249,7 @@ fn generate(shape &Shape, frame &Frame, pseudo bool) Field {
 // The single-channel signed distance field of a shape (positive inside):
 // the nearest true distance, with msdfgen's contour combiner and no
 // pseudo-distance. The check the multi-channel field is compared with.
-pub fn generateSdf(shape &Shape, frame &Frame) Field {
+pub fn generateSdf(shape: &Shape, frame: &Frame) Field {
   var white = Shape.empty();
   white.contours = List[Contour].empty();
   var ci = 0usize;
@@ -271,7 +271,7 @@ pub fn generateSdf(shape &Shape, frame &Frame) Field {
 // on; the median of the interpolated channels, sampled between them, must
 // then not cross the 1/2 line where the medians do not (and cross it only
 // once where they do).
-fn clashes(f &Field, ax u32, ay u32, qx u32, qy u32) bool {
+fn clashes(f: &Field, ax: u32, ay: u32, qx: u32, qy: u32) bool {
   let ia = usize.from((ay * f.width + ax) * 3u32);
   let ib = usize.from((qy * f.width + qx) * 3u32);
   let ma = f.median(ax, ay);
@@ -301,7 +301,7 @@ fn clashes(f &Field, ax u32, ay u32, qx u32, qy u32) bool {
 // two neighbouring texels, as msdfgen finds them: a channel whose value
 // crosses 1/2 between them, at a place where that channel is the median of
 // the interpolated three (else it is not the outline that crosses there).
-fn edgeBetween(f &Field, ax u32, ay u32, qx u32, qy u32) u32 {
+fn edgeBetween(f: &Field, ax: u32, ay: u32, qx: u32, qy: u32) u32 {
   let ia = usize.from((ay * f.width + ax) * 3u32);
   let ib = usize.from((qy * f.width + qx) * 3u32);
   var mask = 0u32;
@@ -327,7 +327,7 @@ fn edgeBetween(f &Field, ax u32, ay u32, qx u32, qy u32) u32 {
 
 // Whether replacing a texel by its median would change a channel in 'mask'
 // (so it must be kept: it carries the edge)
-fn holdsEdge(f &Field, x u32, y u32, mask u32) bool {
+fn holdsEdge(f: &Field, x: u32, y: u32, mask: u32) bool {
   let i = usize.from((y * f.width + x) * 3u32);
   let m = f.median(x, y);
   ((mask & 1u32) != 0u32 && *f.data[i] != m) || ((mask & 2u32) != 0u32 && *f.data[i + 1usize] != m)
@@ -342,7 +342,7 @@ fn holdsEdge(f &Field, x u32, y u32, mask u32) bool {
 // would move that channel: 'edgeBetween', 'holdsEdge'), and the four texels
 // around each corner where two edges that share fewer than two channels meet.
 // Returns how many texels were replaced.
-pub fn correctErrors(f &mut Field, shape &Shape, frame &Frame) u32 {
+pub fn correctErrors(f: &mut Field, shape: &Shape, frame: &Frame) u32 {
   let w = f.width;
   let h = f.height;
   var protect = List[bool].withCapacity(usize.from(w * h));

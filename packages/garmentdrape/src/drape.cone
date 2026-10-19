@@ -24,29 +24,29 @@
 
 // A garment as draped on one body
 pub struct Garment {
-  pub name String;
-  pub layer u32;
-  pub thickness f32;
-  pub soft SoftBody;
-  pub bind List[Vec3];          // each particle's draped place in the bind pose
-  pub loose List[f32];          // 0 tight (skinned), 1 free (simulated)
-  pub reach List[f32];          // how far a free particle may stray from the skinned place (metres)
-  pub joints List[u32];         // four a particle
-  pub weights List[f32];        // and their weights
-  pub atlasWidth f32;           // the pattern sheet the uvs index, metres
-  pub atlasHeight f32;
-  pub panelOffsets List[Vec2];  // where each panel's flat box starts in the sheet
-  pub vertexAttr List[Vec4];    // for each output vertex: metres to the hem, to a free edge, to a seam, and v down its panel
-  pub inflate f32;              // the layer offset its collisions use (the thickness of everything beneath)
-  pub seen List[bool];          // the bones whose proxies it collides with
-  pub proxyIdx List[u32];       // and of those, the proxies it can reach (the ones it is given as colliders)
-  pub targetPrev List[Vec3];    // where the skin puts each particle: last frame's and this frame's (hybrid.cone)
-  pub target List[Vec3];
-  pub before List[Vec3];        // scratch: each particle's place before the pull toward its target
-  pub primed bool = false;
-  pub substeps u32 = 4u32;
-  pub damping f32 = 0.6;
-  pub follow f32 = 0.3;         // how much of its distance to the skinned place a half-loose particle closes a substep, at looseness 0.5
+  pub name: String;
+  pub layer: u32;
+  pub thickness: f32;
+  pub soft: SoftBody;
+  pub bind: List[Vec3];          // each particle's draped place in the bind pose
+  pub loose: List[f32];          // 0 tight (skinned), 1 free (simulated)
+  pub reach: List[f32];          // how far a free particle may stray from the skinned place (metres)
+  pub joints: List[u32];         // four a particle
+  pub weights: List[f32];        // and their weights
+  pub atlasWidth: f32;           // the pattern sheet the uvs index, metres
+  pub atlasHeight: f32;
+  pub panelOffsets: List[Vec2];  // where each panel's flat box starts in the sheet
+  pub vertexAttr: List[Vec4];    // for each output vertex: metres to the hem, to a free edge, to a seam, and v down its panel
+  pub inflate: f32;              // the layer offset its collisions use (the thickness of everything beneath)
+  pub seen: List[bool];          // the bones whose proxies it collides with
+  pub proxyIdx: List[u32];       // and of those, the proxies it can reach (the ones it is given as colliders)
+  pub targetPrev: List[Vec3];    // where the skin puts each particle: last frame's and this frame's (hybrid.cone)
+  pub target: List[Vec3];
+  pub before: List[Vec3];        // scratch: each particle's place before the pull toward its target
+  pub primed: bool = false;
+  pub substeps: u32 = 4u32;
+  pub damping: f32 = 0.6;
+  pub follow: f32 = 0.3;         // how much of its distance to the skinned place a half-loose particle closes a substep, at looseness 0.5
 
   pub fn empty() Garment {
     new Garment(String.empty(), 0u32, 0.006, SoftBody.empty(), List[Vec3].empty(), List[f32].empty(), List[f32].empty(),
@@ -54,10 +54,10 @@ pub struct Garment {
       List[u32].empty(), List[Vec3].empty(), List[Vec3].empty(), List[Vec3].empty(), false, 4u32, 0.6, 0.3)
   }
 
-  pub fn particleCount(self &) usize { soft.pos.len() }
+  pub fn particleCount(self: &) usize { soft.pos.len() }
 
   // How many particles are tight enough to be skinned outright
-  pub fn tightCount(self &) usize {
+  pub fn tightCount(self: &) usize {
     var n = 0usize;
     var i = 0usize;
     while i < loose.len() { if *loose[i] <= TIGHT { n = n + 1usize; } i = i + 1usize; }
@@ -69,20 +69,20 @@ pub struct Garment {
 pub const TIGHT = 0.02f;
 
 pub struct Draped {
-  pub garment Garment;
-  pub ok bool;
-  pub why String;
-  pub steps u32;                // drape steps run
-  pub settledSpeed f32;         // the fastest particle at the end (m/s)
-  pub worstStrain f32;          // the longest edge against its rest, as a fraction over
-  pub inside u32;               // particles left inside a body proxy
+  pub garment: Garment;
+  pub ok: bool;
+  pub why: String;
+  pub steps: u32;                // drape steps run
+  pub settledSpeed: f32;         // the fastest particle at the end (m/s)
+  pub worstStrain: f32;          // the longest edge against its rest, as a fraction over
+  pub inside: u32;               // particles left inside a body proxy
 }
 
-fn failed(why &str) Draped {
+fn failed(why: &str) Draped {
   new Draped(Garment.empty(), false, String.from(why), 0u32, 0., 0., 0u32)
 }
 
-fn edgeIndex(base usize, nu u32, nv u32, edge u32, k u32) usize {
+fn edgeIndex(base: usize, nu: u32, nv: u32, edge: u32, k: u32) usize {
   let cols = usize.from(nu) + 1usize;
   if edge == EDGE_TOP { return base + usize.from(k); }
   if edge == EDGE_BOTTOM { return base + usize.from(nv) * cols + usize.from(k); }
@@ -90,11 +90,11 @@ fn edgeIndex(base usize, nu u32, nv u32, edge u32, k u32) usize {
   base + usize.from(k) * cols + usize.from(nu)
 }
 
-fn edgeCount(nu u32, nv u32, edge u32) u32 {
+fn edgeCount(nu: u32, nv: u32, edge: u32) u32 {
   if edge == EDGE_TOP || edge == EDGE_BOTTOM { nu + 1u32 } else { nv + 1u32 }
 }
 
-fn findRoot(parent &mut List[u32], i usize) usize {
+fn findRoot(parent: &mut List[u32], i: usize) usize {
   var x = i;
   while usize.from(*parent[x]) != x {
     let p = usize.from(*parent[x]);
@@ -106,7 +106,7 @@ fn findRoot(parent &mut List[u32], i usize) usize {
 
 // How far from `origin` along `dir` the body's proxy (grown by `inflate`) is first `gap` clear of the point: -1 if the
 // origin is already clear of the body
-fn marchOut(rig &BodyRig, seen &List[bool], below &LayerSurface, inflate f32, origin Vec3, dir Vec3, gap f32) f32 {
+fn marchOut(rig: &BodyRig, seen: &List[bool], below: &LayerSurface, inflate: f32, origin: Vec3, dir: Vec3, gap: f32) f32 {
   if clearOf(rig, seen, below, inflate, origin, gap) { return -1.; }
   var t = 0.f;
   var lastIn = 0.f;
@@ -134,7 +134,7 @@ fn marchOut(rig &BodyRig, seen &List[bool], below &LayerSurface, inflate f32, or
 }
 
 // Whether a point is clear of the body (by the gap) and of the layers beneath (by their clearance)
-fn clearOf(rig &BodyRig, seen &List[bool], below &LayerSurface, inflate f32, p Vec3, gap f32) bool {
+fn clearOf(rig: &BodyRig, seen: &List[bool], below: &LayerSurface, inflate: f32, p: Vec3, gap: f32) bool {
   if rig.distanceSeen(&rig.restModels, inflate, seen, p) < gap { return false; }
   if below.nx == 0u32 { return true; }
   let q = below.pushOut(p);
@@ -142,14 +142,14 @@ fn clearOf(rig &BodyRig, seen &List[bool], below &LayerSurface, inflate f32, p V
 }
 
 // The id of a vertex's panel-space key, for rest lengths: the two particles, smaller first
-fn pairKey(a u32, b u32) u64 {
+fn pairKey(a: u32, b: u32) u64 {
   if a < b { (u64.from(a) << 32u64) | u64.from(b) } else { (u64.from(b) << 32u64) | u64.from(a) }
 }
 
 // Skin transfer from the nearest body vertex among those the garment sees (a vertex whose weight is mostly on the bones it
 // sees: a sleeve takes the arm's weights, a bodice the trunk's, so a particle ringing the shoulder is not bound to the
 // chest because a chest vertex happens to be nearer), its four joints and weights
-fn transferSkin(rig &BodyRig, seen &List[bool], p Vec3, joints &mut List[u32], weights &mut List[f32]) {
+fn transferSkin(rig: &BodyRig, seen: &List[bool], p: Vec3, joints: &mut List[u32], weights: &mut List[f32]) {
   var bd = [1e30f, 1e30, 1e30];
   var bi = [0usize, 0usize, 0usize];
   var v = 0usize;
@@ -225,7 +225,7 @@ fn transferSkin(rig &BodyRig, seen &List[bool], p Vec3, joints &mut List[u32], w
 
 // Gravity-drape a soft body whose tight particles are pinned, for `frames` steps of 1/60 s; the layer push after each
 // substep. The fastest particle at the end.
-pub fn settle(soft &mut SoftBody, workers &mut Workers, below &LayerSurface, frames u32) f32 {
+pub fn settle(soft: &mut SoftBody, workers: &mut Workers, below: &LayerSurface, frames: u32) f32 {
   let dt = 1.f / 60.;
   var f = 0u32;
   while f < frames {
@@ -248,7 +248,7 @@ pub fn settle(soft &mut SoftBody, workers &mut Workers, below &LayerSurface, fra
 
 // Drop the stretch constraints between two pinned particles and the bends over four: a pin does not move, so the
 // constraint never does anything, and the colour batches are the shorter for it
-pub fn pruneRigid(soft &mut SoftBody) {
+pub fn pruneRigid(soft: &mut SoftBody) {
   var k = 0usize;
   while k < soft.dist.len() {
     let c = *soft.dist[k];
@@ -277,7 +277,7 @@ pub fn pruneRigid(soft &mut SoftBody) {
 // or more), not a contact depth. Handed to the velocity it would throw the particle away at metres a second; whole, it
 // can put a particle caught in a crease on the other side of the next triangle, and back, every substep. Five millimetres
 // a substep clears the deepest penetration in a few substeps and cannot flip a particle across a fold.
-pub fn pushOutOfSurface(surface &LayerSurface, soft &mut SoftBody, maxMove f32) {
+pub fn pushOutOfSurface(surface: &LayerSurface, soft: &mut SoftBody, maxMove: f32) {
   if surface.nx == 0u32 { return; }
   var i = 0usize;
   while i < soft.pos.len() {
@@ -302,7 +302,7 @@ pub fn pushOutOfSurface(surface &LayerSurface, soft &mut SoftBody, maxMove f32) 
 // Drape `pattern` on `rig` over what `below` is (the layers beneath, as a surface already built; empty for the first
 // layer) with the body's proxies grown by `inflate` (the thickness beneath). `threads` is how many threads the drape
 // simulation may use.
-pub fn drape(pattern &Pattern, rig &BodyRig, inflate f32, below &LayerSurface, threads u32) Draped {
+pub fn drape(pattern: &Pattern, rig: &BodyRig, inflate: f32, below: &LayerSurface, threads: u32) Draped {
   let np = pattern.panels.len();
   if np == 0usize { return failed("the pattern has no panels"); }
   let seen = rig.seenBones(&pattern.only, &pattern.ignore);

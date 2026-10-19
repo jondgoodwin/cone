@@ -32,38 +32,38 @@ pub const JOINT_CONE = 1u32;
 pub const JOINT_HINGE = 2u32;
 
 pub struct JointLimit {
-  pub kind u32;
-  pub axis Vec3;     // hinge: its unit axis, in model space
-  pub half f32;      // cone: half-angle, radians
-  pub lo f32;        // hinge: smallest angle from the reference, radians
-  pub hi f32;        // hinge: largest
+  pub kind: u32;
+  pub axis: Vec3;     // hinge: its unit axis, in model space
+  pub half: f32;      // cone: half-angle, radians
+  pub lo: f32;        // hinge: smallest angle from the reference, radians
+  pub hi: f32;        // hinge: largest
 
   pub fn free() JointLimit { new JointLimit(JOINT_FREE, new Vec3(0., 1., 0.), 0., 0., 0.) }
-  pub fn cone(half f32) JointLimit { new JointLimit(JOINT_CONE, new Vec3(0., 1., 0.), half, 0., 0.) }
-  pub fn hinge(axis Vec3, lo f32, hi f32) JointLimit { new JointLimit(JOINT_HINGE, axis.normalize(), 0., lo, hi) }
+  pub fn cone(half: f32) JointLimit { new JointLimit(JOINT_CONE, new Vec3(0., 1., 0.), half, 0., 0.) }
+  pub fn hinge(axis: Vec3, lo: f32, hi: f32) JointLimit { new JointLimit(JOINT_HINGE, axis.normalize(), 0., lo, hi) }
 }
 
 // What a solve achieved: the iterations used and the distance from the end to the target
 pub struct ChainResult {
-  pub iterations u32;
-  pub error f32;
+  pub iterations: u32;
+  pub error: f32;
 }
 
-fn pt(l &List[Vec3], i usize) Vec3 { *l[i] }
+fn pt(l: &List[Vec3], i: usize) Vec3 { *l[i] }
 
-fn perpendicular(v Vec3) Vec3 {
+fn perpendicular(v: Vec3) Vec3 {
   if absf(v.x) < 0.9 { return new Vec3(1., 0., 0.).cross(v).normalize(); }
   new Vec3(0., 1., 0.).cross(v).normalize()
 }
 
 // A limit seen from the other end of the chain: a cone is the same; a hinge's
 // range is negated (the turn from the far segment back to the near one)
-fn reversed(lim &JointLimit) JointLimit {
+fn reversed(lim: &JointLimit) JointLimit {
   new JointLimit(lim.kind, lim.axis, lim.half, -lim.hi, -lim.lo)
 }
 
 // The unit direction 'd' brought inside limit 'lim' about the unit reference 'ref'
-pub fn constrainDirection(d Vec3, ref Vec3, lim &JointLimit) Vec3 {
+pub fn constrainDirection(d: Vec3, ref: Vec3, lim: &JointLimit) Vec3 {
   if lim.kind == JOINT_CONE {
     let c = clampf(d.dot(ref), -1., 1.);
     let ang = acos(c);
@@ -89,7 +89,7 @@ pub fn constrainDirection(d Vec3, ref Vec3, lim &JointLimit) Vec3 {
 // The segments' directions brought inside their limits from the base out,
 // each segment's length and the base point kept (the points beyond move
 // with it)
-pub fn enforceLimits(points &mut List[Vec3], lens &List[f32], limits &List[JointLimit], baseDir Vec3) {
+pub fn enforceLimits(points: &mut List[Vec3], lens: &List[f32], limits: &List[JointLimit], baseDir: Vec3) {
   let n = lens.len();
   var ref = baseDir;
   var i = 0usize;
@@ -107,8 +107,8 @@ pub fn enforceLimits(points &mut List[Vec3], lens &List[f32], limits &List[Joint
   }
 }
 
-pub fn chainLength(lens &List[f32]) f32 {
-  var s f32 = 0.;
+pub fn chainLength(lens: &List[f32]) f32 {
+  var s: f32 = 0.;
   var i = 0usize;
   while i < lens.len() { s = s + (*lens[i]); i = i + 1usize; }
   s
@@ -121,8 +121,8 @@ pub fn chainLength(lens &List[f32]) f32 {
 // point staying put. A target beyond the chain's reach stretches it straight
 // at the target (its limits still applied). Stops when the end is within
 // 'tolerance' of the target or after 'maxIterations'.
-pub fn solveFabrik(points &mut List[Vec3], lens &List[f32], limits &List[JointLimit], baseDir Vec3, target Vec3,
-    tolerance f32, maxIterations u32) ChainResult {
+pub fn solveFabrik(points: &mut List[Vec3], lens: &List[f32], limits: &List[JointLimit], baseDir: Vec3, target: Vec3,
+    tolerance: f32, maxIterations: u32) ChainResult {
   let n = lens.len();
   let base = pt(points, 0usize);
   var it = 0u32;
@@ -174,8 +174,8 @@ pub fn solveFabrik(points &mut List[Vec3], lens &List[f32], limits &List[JointLi
 // more slowly than FABRIK and tends to bend the joints near the end first,
 // but each step is a pure rotation about a joint, which suits a rig whose
 // joints are rotations.
-pub fn solveCcd(points &mut List[Vec3], lens &List[f32], limits &List[JointLimit], baseDir Vec3, target Vec3,
-    tolerance f32, maxIterations u32) ChainResult {
+pub fn solveCcd(points: &mut List[Vec3], lens: &List[f32], limits: &List[JointLimit], baseDir: Vec3, target: Vec3,
+    tolerance: f32, maxIterations: u32) ChainResult {
   let n = lens.len();
   var it = 0u32;
   var err = (pt(points, n) - target).length();
@@ -205,8 +205,8 @@ pub fn solveCcd(points &mut List[Vec3], lens &List[f32], limits &List[JointLimit
 // The joint positions of bone 'first' and its first children, 'count' of
 // them, in model space; 'lens' gets the segment lengths from the rest
 // offsets and 'bones' the bone numbers
-pub fn chainPoints(skel &Skeleton, models &List[Transform3], first usize, count usize, points &mut List[Vec3],
-    lens &mut List[f32], bones &mut List[usize]) {
+pub fn chainPoints(skel: &Skeleton, models: &List[Transform3], first: usize, count: usize, points: &mut List[Vec3],
+    lens: &mut List[f32], bones: &mut List[usize]) {
   points.clear();
   lens.clear();
   bones.clear();
@@ -228,7 +228,7 @@ pub fn chainPoints(skel &Skeleton, models &List[Transform3], first usize, count 
 // smallest rotation from where it points now, so twist stays. 'models' is
 // current for the first bone and the bones before it, and is brought up to
 // date. The last bone keeps its local rotation.
-pub fn applyChain(skel &Skeleton, pose &mut Pose, models &mut List[Transform3], bones &List[usize], points &List[Vec3]) {
+pub fn applyChain(skel: &Skeleton, pose: &mut Pose, models: &mut List[Transform3], bones: &List[usize], points: &List[Vec3]) {
   let n = bones.len();
   var k = 0usize;
   while k + 1usize < n {

@@ -6,15 +6,15 @@
 // the packages it imports, in the order first seen, and each module's import
 // lines (in its Module)
 struct Unit {
-  pub pkg usize;
-  pub mods List[Module];
-  pub deps List[usize];
-  pub kernels bool;      // what is compiled for the GPU holds compute entry points
-  pub hasGpu bool;       // it has a gpu/ folder
-  pub gpuDeps List[usize];   // the packages its gpu/ folder imports, first-seen order
+  pub pkg: usize;
+  pub mods: List[Module];
+  pub deps: List[usize];
+  pub kernels: bool;      // what is compiled for the GPU holds compute entry points
+  pub hasGpu: bool;       // it has a gpu/ folder
+  pub gpuDeps: List[usize];   // the packages its gpu/ folder imports, first-seen order
 }
 
-fn holds(list &List[usize], v usize) bool {
+fn holds(list: &List[usize], v: usize) bool {
   var i = 0usize;
   while i < list.len() {
     if *list[i] == v { return true; }
@@ -27,7 +27,7 @@ fn holds(list &List[usize], v usize) bool {
 // of a sister is answered inside the package, and one of a name of its
 // parent too: those get no line. An import of 'core' names the prelude,
 // which the compiler loads from the same include file its package line names.
-fn resolveImports(reg &Registry, p usize, scanned List[Module]) Result[Unit, String] {
+fn resolveImports(reg: &Registry, p: usize, scanned: List[Module]) Result[Unit, String] {
   var mods = scanned;
   var deps = List[usize].empty();
   let pkg = reg.packages[p];
@@ -133,7 +133,7 @@ fn resolveImports(reg &Registry, p usize, scanned List[Module]) Result[Unit, Str
 
 // The refusal of a gpu/ module's import or extends of src/: a sister there,
 // or a name of the root module, whose designated file is in src/
-fn gpuUsesSrc(pkg &Package, imp &Import, verb &str, mods &List[Module], isSister bool, sister usize) String {
+fn gpuUsesSrc(pkg: &Package, imp: &Import, verb: &str, mods: &List[Module], isSister: bool, sister: usize) String {
   var what = String.empty();
   if isSister {
     let place = shown(mods[sister].files[0usize]);
@@ -147,7 +147,7 @@ fn gpuUsesSrc(pkg &Package, imp &Import, verb &str, mods &List[Module], isSister
     ", and gpu/ may not use src/: gpu/ is compiled for the GPU without src/. Move what both need into gpu/, which src/ may use")
 }
 
-fn importsOf(m &Module) List[Import] {
+fn importsOf(m: &Module) List[Import] {
   var out = List[Import].empty();
   var i = 0usize;
   while i < m.imports.len() {
@@ -158,7 +158,7 @@ fn importsOf(m &Module) List[Import] {
 }
 
 // An import line for name, replacing one already there
-fn addLine(m &mut Module, name &str, pkg usize) {
+fn addLine(m: &mut Module, name: &str, pkg: usize) {
   var i = 0usize;
   while i < m.lines.len() {
     if m.lines[i].name.equals(name) {
@@ -172,7 +172,7 @@ fn addLine(m &mut Module, name &str, pkg usize) {
 
 // The first import of name in the package, in walk order; of its gpu/
 // folder only, where asked
-fn firstImport(unit &Unit, name &str, gpuOnly bool = false) Import {
+fn firstImport(unit: &Unit, name: &str, gpuOnly: bool = false) Import {
   let order = walkOrder(&unit.mods);
   var w = 0usize;
   while w < order.len() {
@@ -190,13 +190,13 @@ fn firstImport(unit &Unit, name &str, gpuOnly bool = false) Import {
 // The packages of a build, each scanned once, and the order they are built
 // in, each after what it imports: 'order' holds places in 'units'
 struct Plan {
-  pub units List[Unit];
-  pub order List[usize];
-  pub state Dict[String, u8];
-  pub stack List[usize];
+  pub units: List[Unit];
+  pub order: List[usize];
+  pub state: Dict[String, u8];
+  pub stack: List[usize];
 
   // The unit of the package named name, in the order
-  pub fn unitNamed(self &, reg &Registry, name &str, found &mut usize) bool {
+  pub fn unitNamed(self: &, reg: &Registry, name: &str, found: &mut usize) bool {
     var i = 0usize;
     while i < order.len() {
       let u = *order[i];
@@ -209,12 +209,12 @@ struct Plan {
     false
   }
 
-  pub fn stateOf(self &, name &str) u8 {
+  pub fn stateOf(self: &, name: &str) u8 {
     if !state.contains(name) { return unvisited; }
     *state[name]
   }
 
-  pub fn visit(self &mut, reg &Registry, p usize) Result[void, String] {
+  pub fn visit(self: &mut, reg: &Registry, p: usize) Result[void, String] {
     let name = reg.packages[p].name.view();
     state.insert(String.from(name), visiting);
     var scanned = List[Module].empty();
@@ -271,7 +271,7 @@ struct Plan {
   }
 }
 
-fn depsOf(unit &Unit) List[usize] {
+fn depsOf(unit: &Unit) List[usize] {
   var out = List[usize].empty();
   var i = 0usize;
   while i < unit.deps.len() {
@@ -291,7 +291,7 @@ fn emptyPlan() Plan {
 // itself imports (libc), which are C packages, given no prelude by the
 // compiler, and so built before it. A package core imports, built on its
 // own, needs no core at all.
-fn buildOrder(reg &Registry, top usize) Result[Plan, String] {
+fn buildOrder(reg: &Registry, top: usize) Result[Plan, String] {
   var plan = emptyPlan();
   let topName = reg.packages[top].name.view();
   if topName != "core" {
@@ -323,14 +323,14 @@ fn buildOrder(reg &Registry, top usize) Result[Plan, String] {
 // rests on (libc). Each is built before core and gets no prelude, so its
 // description has no package line for core, whose include file does not
 // exist yet when it is compiled.
-fn preludeNeeds(plan &Plan, reg &Registry) List[usize] {
+fn preludeNeeds(plan: &Plan, reg: &Registry) List[usize] {
   var needs = List[usize].empty();
   var core = 0usize;
   if plan.unitNamed(reg, "core", &mut core) { needsOf(plan, reg, core, &mut needs); }
   needs
 }
 
-fn needsOf(plan &Plan, reg &Registry, u usize, needs &mut List[usize]) {
+fn needsOf(plan: &Plan, reg: &Registry, u: usize, needs: &mut List[usize]) {
   var i = 0usize;
   while i < plan.units[u].deps.len() {
     let dep = *plan.units[u].deps[i];
@@ -351,7 +351,7 @@ fn needsOf(plan &Plan, reg &Registry, u usize, needs &mut List[usize]) {
 // answered by libc's line, in every description that has core's. The
 // prelude's line is also where conec loads the prelude from. A package core
 // imports gets neither: it is built before core, and has no prelude.
-fn closure(plan &Plan, reg &Registry, u usize) List[usize] {
+fn closure(plan: &Plan, reg: &Registry, u: usize) List[usize] {
   var seen = List[usize].empty();
   let p = plan.units[u].pkg;
   var core = 0usize;
@@ -366,7 +366,7 @@ fn closure(plan &Plan, reg &Registry, u usize) List[usize] {
   seen
 }
 
-fn closureOf(plan &Plan, reg &Registry, u usize, seen &mut List[usize]) {
+fn closureOf(plan: &Plan, reg: &Registry, u: usize, seen: &mut List[usize]) {
   var i = 0usize;
   while i < plan.units[u].deps.len() {
     let dep = *plan.units[u].deps[i];
@@ -384,14 +384,14 @@ fn closureOf(plan &Plan, reg &Registry, u usize, seen &mut List[usize]) {
 // its object. Every package of a build is compiled into that one folder,
 // each before what imports it, so the file is there, and current, when an
 // importer's compile reads it.
-fn includeFor(pkg &Package, out &Path) Path {
+fn includeFor(pkg: &Package, out: &Path) Path {
   let file = cat(pkg.name.view(), ".cone");
   out.join(file.view())
 }
 
 // A path as a build description writes it: absolute, with '/', since the
 // description is read as Cone source and a backslash begins an escape
-fn conePath(p &Path) String {
+fn conePath(p: &Path) String {
   let abs = resolved(p);
   var s = String.from(abs.view());
   s.replace("\"", "\\\"");
@@ -401,7 +401,7 @@ fn conePath(p &Path) String {
 // The build description of one package; 'out' is the folder the include
 // files of the packages it imports are in. Its lines end as Python's
 // write_text ends them on Windows, in '\r\n'.
-fn description(reg &Registry, unit &Unit, mode &str, output &str, out &Path, packages &List[usize]) String {
+fn description(reg: &Registry, unit: &Unit, mode: &str, output: &str, out: &Path, packages: &List[usize]) String {
   let pkg = reg.packages[unit.pkg];
   let label = pkg.label();
   var text = String.empty();
@@ -428,7 +428,7 @@ fn description(reg &Registry, unit &Unit, mode &str, output &str, out &Path, pac
   text
 }
 
-fn emit(reg &Registry, unit &Unit, m usize, depth usize, out &Path, text &mut String) {
+fn emit(reg: &Registry, unit: &Unit, m: usize, depth: usize, out: &Path, text: &mut String) {
   var pad = String.empty();
   var d = 0usize;
   while d < depth {

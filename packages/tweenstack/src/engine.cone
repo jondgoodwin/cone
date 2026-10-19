@@ -50,46 +50,46 @@ pub const END_SUPERSEDED = 2u32;
 // A marker carries the marker's id, argument and the clip time it is at; a
 // repeat the number of iterations completed (count); an end its reason.
 pub struct AnimEvent {
-  pub kind u32;
-  pub handle u32;
-  pub id u32;
-  pub arg f32;
-  pub time f32;
-  pub count u32;
-  pub reason u32;
+  pub kind: u32;
+  pub handle: u32;
+  pub id: u32;
+  pub arg: f32;
+  pub time: f32;
+  pub count: u32;
+  pub reason: u32;
 }
 
-pub fn newEvent(kind u32, handle u32) AnimEvent {
+pub fn newEvent(kind: u32, handle: u32) AnimEvent {
   new AnimEvent(kind, handle, 0u32, 0., 0., 0u32, 0u32)
 }
 
 pub struct Running {
-  pub id u32;
-  pub root Anim;
-  pub startAt f64;
-  pub clock f64;
-  pub prevClock f64;
-  pub rate f32;
-  pub paused bool;
-  pub status u32;
-  pub state List[f32];
-  pub goals List[Value];
-  pub goalSeq List[u32];
+  pub id: u32;
+  pub root: Anim;
+  pub startAt: f64;
+  pub clock: f64;
+  pub prevClock: f64;
+  pub rate: f32;
+  pub paused: bool;
+  pub status: u32;
+  pub state: List[f32];
+  pub goals: List[Value];
+  pub goalSeq: List[u32];
   // the fields it writes: (target << 32) | property, each once
-  pub keys List[u64];
+  pub keys: List[u64];
   // it has taken the fields it writes (when it began)
-  pub claimed bool;
+  pub claimed: bool;
   // when it finished, in the registry's time, and its own clock then: where
   // it can be put back from if time runs backward
-  pub doneAt f64;
-  pub doneClock f64;
+  pub doneAt: f64;
+  pub doneClock: f64;
   // what each of its fields held when it took them (parallel to 'keys'), the
   // value they go back to if time runs back to before its start
-  pub befores List[Value];
-  pub befHas List[bool];
-  pub beforeSet bool;
+  pub befores: List[Value];
+  pub befHas: List[bool];
+  pub beforeSet: bool;
 
-  pub fn make(id u32, root &Anim, startAt f64, status u32) Running {
+  pub fn make(id: u32, root: &Anim, startAt: f64, status: u32) Running {
     var st = List[f32].empty();
     var i = 0usize;
     while i < root.size * SLOT { st.push(0.); i = i + 1usize; }
@@ -102,9 +102,9 @@ pub struct Running {
   }
 }
 
-pub fn keyOf(target u32, prop u32) u64 { u64.from(target) * 4294967296u64 + u64.from(prop) }
+pub fn keyOf(target: u32, prop: u32) u64 { u64.from(target) * 4294967296u64 + u64.from(prop) }
 
-fn addKey(out &mut List[u64], k u64) {
+fn addKey(out: &mut List[u64], k: u64) {
   var i = 0usize;
   while i < out.len() {
     if *out[i] == k { return; }
@@ -114,7 +114,7 @@ fn addKey(out &mut List[u64], k u64) {
 }
 
 // Every field a tree can write
-pub fn gatherKeys(a &Anim, out &mut List[u64]) {
+pub fn gatherKeys(a: &Anim, out: &mut List[u64]) {
   match a {
     case let g Group {
       var i = 0usize;
@@ -136,7 +136,7 @@ pub fn gatherKeys(a &Anim, out &mut List[u64]) {
 }
 
 // The goal slot of a stepped kind
-fn slotOf(a &Anim) u32 {
+fn slotOf(a: &Anim) u32 {
   match a {
     case let c Chase { c.slot }
     case let s Spring { s.slot }
@@ -145,7 +145,7 @@ fn slotOf(a &Anim) u32 {
 }
 
 // The value a transition, chase or spring goes to
-fn toOf(a &Anim) Value {
+fn toOf(a: &Anim) Value {
   match a {
     case let t Transition { t.to }
     case let c Chase { c.to }
@@ -155,33 +155,33 @@ fn toOf(a &Anim) Value {
 }
 
 
-pub fn ldf(l &List[f32], i usize) f32 { *l[i] }
+pub fn ldf(l: &List[f32], i: usize) f32 { *l[i] }
 
-fn stValue(r &Running, o usize, kind u32) Value {
+fn stValue(r: &Running, o: usize, kind: u32) Value {
   new Value(kind, ldf(&r.state, o), ldf(&r.state, o + 1usize), ldf(&r.state, o + 2usize), ldf(&r.state, o + 3usize))
 }
 
-fn stPut(r &mut Running, o usize, v Value) {
+fn stPut(r: &mut Running, o: usize, v: Value) {
   r.state.set(o, v.x); r.state.set(o + 1usize, v.y); r.state.set(o + 2usize, v.z); r.state.set(o + 3usize, v.w);
 }
 
-fn stGet(r &Running, o usize) f32 { ldf(&r.state, o) }
-fn stSet(r &mut Running, o usize, v f32) { r.state.set(o, v); }
+fn stGet(r: &Running, o: usize) f32 { ldf(&r.state, o) }
+fn stSet(r: &mut Running, o: usize, v: f32) { r.state.set(o, v); }
 
 // The goal of a stepped node: the one the host last set on its slot, else its own
-fn goalOf(r &Running, a &Anim) Value {
+fn goalOf(r: &Running, a: &Anim) Value {
   let s = usize.from(slotOf(a));
   if s < r.goals.len() && *r.goalSeq[s] > 0u32 { return *r.goals[s]; }
   toOf(a)
 }
 
-fn seqOfSlot(r &Running, slot u32) f32 {
+fn seqOfSlot(r: &Running, slot: u32) f32 {
   let s = usize.from(slot);
   if s < r.goalSeq.len() { return f32.from(*r.goalSeq[s]); }
   0.
 }
 
-fn goalSeqOf(r &Running, a &Anim) f32 { seqOfSlot(r, slotOf(a)) }
+fn goalSeqOf(r: &Running, a: &Anim) f32 { seqOfSlot(r, slotOf(a)) }
 
 // ---------------------------------------------------------------------------
 // Phase
@@ -191,12 +191,12 @@ pub const PH_ACTIVE = 1u32;
 pub const PH_AFTER = 2u32;
 
 pub struct Phase {
-  pub state u32;
-  pub loc f64;
-  pub u f64;
+  pub state: u32;
+  pub loc: f64;
+  pub u: f64;
 }
 
-fn dirMap(dir u32, k f64, p f64, d f64) f64 {
+fn dirMap(dir: u32, k: f64, p: f64, d: f64) f64 {
   if dir == DIR_REVERSE { return d - p; }
   if dir == DIR_ALTERNATE {
     let odd = k - 2.0f64 * libc.floor(k / 2.0f64);
@@ -205,7 +205,7 @@ fn dirMap(dir u32, k f64, p f64, d f64) f64 {
   p
 }
 
-pub fn phaseOf(a &Anim, t f64) Phase {
+pub fn phaseOf(a: &Anim, t: f64) Phase {
   let r = a.rateOf();
   let u = (t - f64.from(a.delay)) * r;
   let dir = if a.isStepped() { DIR_NORMAL } else { a.direction };
@@ -227,7 +227,7 @@ pub fn phaseOf(a &Anim, t f64) Phase {
 }
 
 // The pre-order index of a group's i-th member, given the group's own
-fn kidIndex(a &Anim, ix usize, i usize) usize {
+fn kidIndex(a: &Anim, ix: usize, i: usize) usize {
   var k = ix + 1usize;
   match a {
     case let g Group {
@@ -242,7 +242,7 @@ fn kidIndex(a &Anim, ix usize, i usize) usize {
 
 // The node has run its course at time t (see the header of animators.cone for
 // the stepped kinds)
-pub fn nodeFinished(r &Running, a &Anim, ix usize, t f64) bool {
+pub fn nodeFinished(r: &Running, a: &Anim, ix: usize, t: f64) bool {
   let ph = phaseOf(a, t);
   if ph.state == PH_BEFORE { return false; }
   if a.isStepped() {
@@ -274,26 +274,26 @@ pub fn nodeFinished(r &Running, a &Anim, ix usize, t f64) bool {
 // nodes in tree order, so for a field two of its nodes write at once the
 // later wins.
 pub struct Emit {
-  pub target u32;
-  pub prop u32;
-  pub value Value;
+  pub target: u32;
+  pub prop: u32;
+  pub value: Value;
 }
 
 pub struct Filter {
-  pub on bool;
-  pub target u32;
-  pub prop u32;
+  pub on: bool;
+  pub target: u32;
+  pub prop: u32;
 }
 
-fn emit(filt &Filter, target u32, prop u32, v Value, out &mut List[Emit]) {
+fn emit(filt: &Filter, target: u32, prop: u32, v: Value, out: &mut List[Emit]) {
   if filt.on && (target != filt.target || prop != filt.prop) { return; }
   out.push(new Emit(target, prop, v));
 }
 
-fn clampf(x f32, lo f32, hi f32) f32 { if x < lo { lo } elif x > hi { hi } else { x } }
+fn clampf(x: f32, lo: f32, hi: f32) f32 { if x < lo { lo } elif x > hi { hi } else { x } }
 
 // A spring's value at time tl into its segment, from the state at offset o
-fn springAt(r &Running, kind u32, zeta f32, omega f32, o usize, tl f32) Value {
+fn springAt(r: &Running, kind: u32, zeta: f32, omega: f32, o: usize, tl: f32) Value {
   let goal = stValue(r, o + 5usize, kind);
   if stGet(r, o + 18usize) > 0.5 { return goal; }
   if kind == TK_QUAT {
@@ -314,7 +314,7 @@ fn springAt(r &Running, kind u32, zeta f32, omega f32, o usize, tl f32) Value {
 // Walk a node and push what it writes at time t (in its parent's timeline).
 // 'force' makes an ended node write its end whatever its hold says (the last
 // write of a run is its end).
-pub fn collectNode(r &Running, a &Anim, ix usize, t f64, force bool, filt &Filter, out &mut List[Emit]) {
+pub fn collectNode(r: &Running, a: &Anim, ix: usize, t: f64, force: bool, filt: &Filter, out: &mut List[Emit]) {
   let ph = phaseOf(a, t);
   if ph.state == PH_BEFORE && (a.hold & HOLD_START) == 0u32 { return; }
   if ph.state == PH_AFTER && (a.hold & HOLD_END) == 0u32 && !force { return; }
@@ -385,7 +385,7 @@ pub fn collectNode(r &Running, a &Anim, ix usize, t f64, force bool, filt &Filte
 }
 
 // What the running animator writes now
-pub fn collectRun(r &Running, force bool, filt &Filter, out &mut List[Emit]) {
+pub fn collectRun(r: &Running, force: bool, filt: &Filter, out: &mut List[Emit]) {
   collectNode(r, &r.root,0usize, r.clock, force, filt, out);
 }
 
@@ -398,19 +398,19 @@ pub const PK_SPRING = 2u32;
 
 // A node that must capture something when it begins
 pub struct Pend {
-  pub ix usize;
-  pub kind u32;
-  pub target u32;
-  pub prop u32;
-  pub vkind u32;
-  pub hasFrom bool;
-  pub from Value;
-  pub to Value;
-  pub inheritVel bool;
-  pub slot u32;
+  pub ix: usize;
+  pub kind: u32;
+  pub target: u32;
+  pub prop: u32;
+  pub vkind: u32;
+  pub hasFrom: bool;
+  pub from: Value;
+  pub to: Value;
+  pub inheritVel: bool;
+  pub slot: u32;
 }
 
-pub fn findPending(r &Running, a &Anim, ix usize, t f64, out &mut List[Pend]) {
+pub fn findPending(r: &Running, a: &Anim, ix: usize, t: f64, out: &mut List[Pend]) {
   if (a.flags & F_NEEDS_INIT) == 0u32 { return; }
   let ph = phaseOf(a, t);
   if ph.state == PH_BEFORE { return; }
@@ -443,7 +443,7 @@ pub fn findPending(r &Running, a &Anim, ix usize, t f64, out &mut List[Pend]) {
 
 // Set the state of a pending node: 'shown' is what its field shows now (if
 // 'hasShown'), 'vel' how fast it is changing
-pub fn applyPending(r &mut Running, p &Pend, hasShown bool, shown Value, vel Value) {
+pub fn applyPending(r: &mut Running, p: &Pend, hasShown: bool, shown: Value, vel: Value) {
   let o = p.ix * SLOT;
   var from = p.from;
   var v0 = Value.rest(p.vkind);
@@ -469,7 +469,7 @@ pub fn applyPending(r &mut Running, p &Pend, hasShown bool, shown Value, vel Val
 
 // No part of the running animator needs stepping or has been retargeted: its
 // whole output is a function of its start moment and its parameters
-pub fn nodePure(r &Running, a &Anim, ix usize) bool {
+pub fn nodePure(r: &Running, a: &Anim, ix: usize) bool {
   match a {
     case is Chase { false }
     case is Spring { stGet(r, ix * SLOT + 19usize) < 0.5 }
@@ -491,10 +491,10 @@ pub fn nodePure(r &Running, a &Anim, ix usize) bool {
 
 // How far apart two values of a kind are: the length of the difference for
 // numbers, vectors and colours; the angle between two rotations, in radians
-fn valueDistance(kind u32, a Value, b Value) f32 {
+fn valueDistance(kind: u32, a: Value, b: Value) f32 {
   if kind == TK_QUAT { return quatAngle(a.asQuat(), b.asQuat()); }
   let n = kindComps(kind);
-  var sum f32 = 0.;
+  var sum: f32 = 0.;
   var i = 0usize;
   while i < n {
     let d = b.get(i) - a.get(i);
@@ -505,7 +505,7 @@ fn valueDistance(kind u32, a Value, b Value) f32 {
 }
 
 // Step a stepped leaf over its internal time c0 to c1 (c0 < c1, both inside its life)
-fn stepLeaf(r &mut Running, a &Anim, ix usize, c0 f64, c1 f64) {
+fn stepLeaf(r: &mut Running, a: &Anim, ix: usize, c0: f64, c1: f64) {
   let o = ix * SLOT;
   if stGet(r, o) < 0.5 { return; }
   let seq = goalSeqOf(r, a);
@@ -551,7 +551,7 @@ fn stepLeaf(r &mut Running, a &Anim, ix usize, c0 f64, c1 f64) {
 }
 
 // Move a spring to a new goal at its internal time c, carrying position and velocity
-fn retargetSpring(r &mut Running, kind u32, zeta f32, omega f32, o usize, c f32, goal Value) {
+fn retargetSpring(r: &mut Running, kind: u32, zeta: f32, omega: f32, o: usize, c: f32, goal: Value) {
   let tl = c - stGet(r, o + 17usize);
   let wasDone = stGet(r, o + 18usize) > 0.5;
   stSet(r, o + 19usize, 1.);
@@ -597,7 +597,7 @@ fn retargetSpring(r &mut Running, kind u32, zeta f32, omega f32, o usize, c f32,
 
 // Advance a node over its parent's time t0 to t1: step the stepped parts
 // forward (if 'step') and raise the markers crossed (if 'markers'), either way
-pub fn advanceNode(r &mut Running, a &Anim, ix usize, t0 f64, t1 f64, step bool, markers bool, evs &mut List[AnimEvent]) {
+pub fn advanceNode(r: &mut Running, a: &Anim, ix: usize, t0: f64, t1: f64, step: bool, markers: bool, evs: &mut List[AnimEvent]) {
   if (a.flags & (F_STEPPED | F_MARKERS)) == 0u32 { return; }
   let rt = a.rateOf();
   let u0 = (t0 - f64.from(a.delay)) * rt;
@@ -672,7 +672,7 @@ pub fn advanceNode(r &mut Running, a &Anim, ix usize, t0 f64, t1 f64, step bool,
 // The iterations the root completed moving from internal time u0 to u1
 // (forward), for 'repeated' events: the counts, one per iteration boundary
 // crossed that is not the end
-pub fn repeatsCrossed(a &Anim, t0 f64, t1 f64, evs &mut List[AnimEvent], handle u32) {
+pub fn repeatsCrossed(a: &Anim, t0: f64, t1: f64, evs: &mut List[AnimEvent], handle: u32) {
   if a.isStepped() { return; }
   let d = f64.from(a.life);
   let n = f64.from(a.iterations());

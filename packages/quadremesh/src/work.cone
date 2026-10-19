@@ -12,20 +12,20 @@ const FeatGuide = 4u32;
 
 const NoVertex = 0xFFFFFFFFu32;
 
-fn ekey(a u32, b u32) u64 {
+fn ekey(a: u32, b: u32) u64 {
   if a < b { (u64.from(a) << 32u64) | u64.from(b) } else { (u64.from(b) << 32u64) | u64.from(a) }
 }
-fn keyLo(k u64) u32 { u32.from(k >> 32u64) }
-fn keyHi(k u64) u32 { u32.from(k & 0xFFFFFFFFu64) }
+fn keyLo(k: u64) u32 { u32.from(k >> 32u64) }
+fn keyHi(k: u64) u32 { u32.from(k & 0xFFFFFFFFu64) }
 
-fn sortKeys(keys &mut List[u64]) {
-  keys.sortBy(fn(a &u64, b &u64) i32 {
+fn sortKeys(keys: &mut List[u64]) {
+  keys.sortBy(fn(a: &u64, b: &u64) i32 {
     if *a < *b {-1i32} elif *a > *b {1i32} else {0i32}
   });
 }
 
 // The sorted list without its repeats
-fn uniqueKeys(keys &List[u64]) List[u64] {
+fn uniqueKeys(keys: &List[u64]) List[u64] {
   var out = List[u64].withCapacity(keys.len());
   var i = 0usize;
   while i < keys.len() {
@@ -36,7 +36,7 @@ fn uniqueKeys(keys &List[u64]) List[u64] {
 }
 
 // Where a key is in a sorted list, or the list's length
-fn findKey(keys &List[u64], k u64) usize {
+fn findKey(keys: &List[u64], k: u64) usize {
   var lo = 0usize;
   var hi = keys.len();
   while lo < hi {
@@ -47,7 +47,7 @@ fn findKey(keys &List[u64], k u64) usize {
   keys.len()
 }
 
-fn copyOf[T](src &List[T]) List[T] {
+fn copyOf[T](src: &List[T]) List[T] {
   var out = List[T].withCapacity(src.len());
   var i = 0usize;
   while i < src.len() {
@@ -57,28 +57,28 @@ fn copyOf[T](src &List[T]) List[T] {
   out
 }
 
-fn absf(a f32) f32 { if a < 0. {-a} else {a} }
-fn minf(a f32, b f32) f32 { if a < b {a} else {b} }
-fn maxf(a f32, b f32) f32 { if a > b {a} else {b} }
-fn clampf(v f32, lo f32, hi f32) f32 { if v < lo {lo} elif v > hi {hi} else {v} }
-fn rnd(x f32) f32 { libc.floorf(x + 0.5) }
-fn unit(v Vec3) Vec3 {
+fn absf(a: f32) f32 { if a < 0. {-a} else {a} }
+fn minf(a: f32, b: f32) f32 { if a < b {a} else {b} }
+fn maxf(a: f32, b: f32) f32 { if a > b {a} else {b} }
+fn clampf(v: f32, lo: f32, hi: f32) f32 { if v < lo {lo} elif v > hi {hi} else {v} }
+fn rnd(x: f32) f32 { libc.floorf(x + 0.5) }
+fn unit(v: Vec3) Vec3 {
   let len = v.length();
   if len > 0.0000000001 { v * (1. / len) } else { new Vec3(0., 0., 0.) }
 }
 fn zero3() Vec3 { new Vec3(0., 0., 0.) }
-fn isZero3(v Vec3) bool { v.x == 0. && v.y == 0. && v.z == 0. }
-fn coord(p Vec3, axis u32) f32 { if axis == 0u32 {p.x} elif axis == 1u32 {p.y} else {p.z} }
+fn isZero3(v: Vec3) bool { v.x == 0. && v.y == 0. && v.z == 0. }
+fn coord(p: Vec3, axis: u32) f32 { if axis == 0u32 {p.x} elif axis == 1u32 {p.y} else {p.z} }
 
 // A hash of an integer, for the field's first guess
-fn hash32(x u32) u32 {
+fn hash32(x: u32) u32 {
   var h = x * 747796405u32 + 2891336453u32;
   h = ((h >> ((h >> 28u32) + 4u32)) ^ h) * 277803737u32;
   (h >> 22u32) ^ h
 }
 
 // A unit vector in the tangent plane of n, turned by an arbitrary angle
-fn anyTangent(n Vec3, seed u32) Vec3 {
+fn anyTangent(n: Vec3, seed: u32) Vec3 {
   let ax = if absf(n.x) < 0.6 { new Vec3(1., 0., 0.) } else { new Vec3(0., 1., 0.) };
   let e1 = unit(ax - n * ax.dot(n));
   let e2 = n.cross(e1);
@@ -87,29 +87,29 @@ fn anyTangent(n Vec3, seed u32) Vec3 {
 }
 
 // The tangent vector of n nearest v, unit; none if v is along n
-fn toTangent(n Vec3, v Vec3) Vec3 { unit(v - n * v.dot(n)) }
+fn toTangent(n: Vec3, v: Vec3) Vec3 { unit(v - n * v.dot(n)) }
 
 // ---------------------------------------------------------------- the mesh
 
 struct Work {
-  pos List[Vec3];
-  idx List[u32];            // three a triangle
-  dens List[f32];           // per vertex: the density asked for
-  fa List[u32];             // feature edges
-  fb List[u32];
-  fk List[u32];
+  pos: List[Vec3];
+  idx: List[u32];            // three a triangle
+  dens: List[f32];           // per vertex: the density asked for
+  fa: List[u32];             // feature edges
+  fb: List[u32];
+  fk: List[u32];
 
   fn empty() Work {
     new Work(List[Vec3].empty(), List[u32].empty(), List[f32].empty(), List[u32].empty(), List[u32].empty(), List[u32].empty())
   }
 
-  fn triCount(self &) usize { idx.len() / 3usize }
+  fn triCount(self: &) usize { idx.len() / 3usize }
 
-  fn addFeature(self &mut, a u32, b u32, k u32) {
+  fn addFeature(self: &mut, a: u32, b: u32, k: u32) {
     fa.push(a); fb.push(b); fk.push(k);
   }
 
-  fn area(self &) f32 {
+  fn area(self: &) f32 {
     var sum = 0.f;
     var t = 0usize;
     while t < idx.len() {
@@ -126,7 +126,7 @@ struct Work {
 // The source cut into triangles. Creases: an edge whose two faces turn by more
 // than 'creaseAngle' (radians; 0 or less: none), or whose "crease" channel is
 // above 0 when 'useChannel'. Guides: pairs of source vertices.
-fn workFrom(m &PolyMesh, creaseAngle f32, useChannel bool, guides &List[u32], densityChannel &str) Work {
+fn workFrom(m: &PolyMesh, creaseAngle: f32, useChannel: bool, guides: &List[u32], densityChannel: &str) Work {
   var w = Work.empty();
   let nv = m.vertexCount();
   let dch = if densityChannel.len() > 0usize { m.findFloatChannel(VertexDomain, densityChannel) } else { NoIndex };
@@ -181,7 +181,7 @@ fn workFrom(m &PolyMesh, creaseAngle f32, useChannel bool, guides &List[u32], de
 // Every edge longer than 'maxLen' split at its middle, until none is, the
 // triangles cut to match (one, two or three edges of a triangle split) and the
 // feature edges split with them
-fn splitLong(w &mut Work, maxLen f32) {
+fn splitLong(w: &mut Work, maxLen: f32) {
   let limit2 = maxLen * maxLen;
   var round = 0;
   while round < 14 {
@@ -291,7 +291,7 @@ fn splitLong(w &mut Work, maxLen f32) {
 // The half of the mesh on one side of an axis-aligned plane (the side where
 // coordinate - offset >= 0, or its opposite), cut along the plane exactly,
 // with the vertices it does not use dropped.
-fn clipHalf(w &Work, axis u32, off f32, positive bool) Work {
+fn clipHalf(w: &Work, axis: u32, off: f32, positive: bool) Work {
   let nv = w.pos.len();
   var s = List[f32].withCapacity(nv);
   var v = 0usize;
@@ -385,7 +385,7 @@ fn clipHalf(w &Work, axis u32, off f32, positive bool) Work {
 }
 
 // Edges with one triangle only are the boundary: added as features
-fn markBoundary(w &mut Work) {
+fn markBoundary(w: &mut Work) {
   var keys = List[u64].empty();
   var t = 0usize;
   while t < w.idx.len() {
@@ -410,7 +410,7 @@ fn markBoundary(w &mut Work) {
 
 // Area-weighted vertex normals (unit) and a third of the adjoining triangles'
 // area to each vertex
-fn vertexData(w &Work, nrm &mut List[Vec3], area &mut List[f32]) {
+fn vertexData(w: &Work, nrm: &mut List[Vec3], area: &mut List[f32]) {
   let nv = w.pos.len();
   var acc = List[Vec3].withCapacity(nv);
   nrm.clear();
@@ -443,15 +443,15 @@ fn vertexData(w &Work, nrm &mut List[Vec3], area &mut List[f32]) {
 
 // Vertex neighbours in compressed rows, each with a weight
 struct Graph {
-  start List[u32];          // n + 1
-  nbr List[u32];
-  wt List[f32];
+  start: List[u32];          // n + 1
+  nbr: List[u32];
+  wt: List[f32];
 
-  fn count(self &) usize { start.len() - 1usize }
+  fn count(self: &) usize { start.len() - 1usize }
 }
 
 // A graph from directed (a, b, weight) entries; repeats of a pair add
-fn graphFrom(n usize, ca &List[u32], cb &List[u32], cw &List[f32]) Graph {
+fn graphFrom(n: usize, ca: &List[u32], cb: &List[u32], cw: &List[f32]) Graph {
   var cnt = List[u32].withCapacity(n + 1usize);
   var i = 0usize;
   while i <= n { cnt.push(0u32); i = i + 1usize; }
@@ -517,7 +517,7 @@ fn graphFrom(n usize, ca &List[u32], cb &List[u32], cw &List[f32]) Graph {
 }
 
 // The mesh's own graph, with cotangent weights held to a sensible range
-fn meshGraph(w &Work) Graph {
+fn meshGraph(w: &Work) Graph {
   let n = w.pos.len();
   var ca = List[u32].withCapacity(w.idx.len() * 2usize);
   var cb = List[u32].withCapacity(w.idx.len() * 2usize);

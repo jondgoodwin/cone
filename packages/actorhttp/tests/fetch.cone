@@ -44,32 +44,32 @@ import aio use IoLimits;
 //   /hang              nothing at all
 // ---------------------------------------------------------------------------
 
-let halt Atomic[u32];
+let halt: Atomic[u32];
 
 fn @initpure init() {
   halt = Atomic[u32].of(0u32);
 }
 
 struct Srv {
-  pub drv httpconn.Driver;
-  pub pool Pool;
-  pub accepted u64;
-  pub requests u64;
-  pub reqs List[httpconn.ReqId];
-  pub methods List[Method];
-  pub targets List[String];
-  pub bodies List[String];
-  pub streams List[httpconn.ReqId];
-  pub sent List[u64];
-  pub totals List[u64];
+  pub drv: httpconn.Driver;
+  pub pool: Pool;
+  pub accepted: u64;
+  pub requests: u64;
+  pub reqs: List[httpconn.ReqId];
+  pub methods: List[Method];
+  pub targets: List[String];
+  pub bodies: List[String];
+  pub streams: List[httpconn.ReqId];
+  pub sent: List[u64];
+  pub totals: List[u64];
 }
 
 struct Report {
-  pub accepted u64;
-  pub requests u64;
+  pub accepted: u64;
+  pub requests: u64;
 }
 
-fn reply(sv &mut Srv, req httpconn.ReqId, head bool, status u16, body &Array[u8]) {
+fn reply(sv: &mut Srv, req: httpconn.ReqId, head: bool, status: u16, body: &Array[u8]) {
   sv.drv.respond(req, ResponseHead.make(status), BodyLength.sized(u64.from(body.len)));
   if body.len > 0usize && !head {
     var b = sv.pool.mustTake(body.len);
@@ -79,14 +79,14 @@ fn reply(sv &mut Srv, req httpconn.ReqId, head bool, status u16, body &Array[u8]
   }
 }
 
-fn number(s &str) u64 {
+fn number(s: &str) u64 {
   match collections.parseUInt(s) {
     case let v Some {v}
     case is None[u64] {0u64}
   }
 }
 
-fn dropStream(sv &mut Srv, j usize) {
+fn dropStream(sv: &mut Srv, j: usize) {
   let last = sv.streams.len() - 1usize;
   sv.streams.swap(j, last);
   sv.sent.swap(j, last);
@@ -97,7 +97,7 @@ fn dropStream(sv &mut Srv, j usize) {
 }
 
 // Stream j's next pieces, as many as the connection takes now
-fn pumpStream(sv &mut Srv, j usize) {
+fn pumpStream(sv: &mut Srv, j: usize) {
   let req = *sv.streams[j];
   while *sv.sent[j] < *sv.totals[j] {
     let at = *sv.sent[j];
@@ -120,7 +120,7 @@ fn pumpStream(sv &mut Srv, j usize) {
   dropStream(sv, j);
 }
 
-fn findStream(sv &Srv, req httpconn.ReqId) usize {
+fn findStream(sv: &Srv, req: httpconn.ReqId) usize {
   var j = 0usize;
   while j < sv.streams.len() {
     if *sv.streams[j] == req {return j;}
@@ -129,7 +129,7 @@ fn findStream(sv &Srv, req httpconn.ReqId) usize {
   sv.streams.len()
 }
 
-fn findReq(sv &Srv, req httpconn.ReqId) usize {
+fn findReq(sv: &Srv, req: httpconn.ReqId) usize {
   var k = 0usize;
   while k < sv.reqs.len() {
     if *sv.reqs[k] == req {return k;}
@@ -138,7 +138,7 @@ fn findReq(sv &Srv, req httpconn.ReqId) usize {
   sv.reqs.len()
 }
 
-fn forget(sv &mut Srv, k usize) {
+fn forget(sv: &mut Srv, k: usize) {
   let last = sv.reqs.len() - 1usize;
   sv.reqs.swap(k, last);
   sv.methods.swap(k, last);
@@ -151,7 +151,7 @@ fn forget(sv &mut Srv, k usize) {
 }
 
 // The answer to request k, read whole
-fn answer(sv &mut Srv, k usize) {
+fn answer(sv: &mut Srv, k: usize) {
   let req = *sv.reqs[k];
   let full = sv.targets[k].copy();
   let path = full.view();
@@ -197,7 +197,7 @@ fn answer(sv &mut Srv, k usize) {
   }
 }
 
-fn serveEvent(sv &mut Srv, e &mut httpconn.Event) {
+fn serveEvent(sv: &mut Srv, e: &mut httpconn.Event) {
   let kind = e.kind;
   if kind == httpconn.EventKind.Accepted {
     sv.accepted = sv.accepted + 1u64;
@@ -225,7 +225,7 @@ fn serveEvent(sv &mut Srv, e &mut httpconn.Event) {
   }
 }
 
-fn serve(portTx Sender[u16]) Report {
+fn serve(portTx: Sender[u16]) Report {
   let pool = Pool.make();
   var lp = Loop.mustMake();
   var sv = new Srv(drv: httpconn.Driver.make(httpconn.Config.make(), pool), pool: pool, accepted: 0u64,
@@ -261,21 +261,21 @@ fn serve(portTx Sender[u16]) Report {
 // What Prober says
 // ---------------------------------------------------------------------------
 
-fn url(port u16, path &str) String {
+fn url(port: u16, path: &str) String {
   var u = String.from("http://127.0.0.1:");
   u.appendUInt(u64.from(port));
   u.append(path);
   u
 }
 
-fn kindWord(e &FetchError) &str {
+fn kindWord(e: &FetchError) &str {
   if e.isCancelled() {"cancelled"}
   elif e.isTimedOut() {"timed out"}
   else {"failed"}
 }
 
 // How a fetch ended: the status and body, or the kind of error (and stage)
-fn say(what &str, r Result[Response, FetchError]) Result[Response, FetchError] {
+fn say(what: &str, r: Result[Response, FetchError]) Result[Response, FetchError] {
   printStr(what);
   printStr(": ");
   match &r {
@@ -303,17 +303,17 @@ fn say(what &str, r Result[Response, FetchError]) Result[Response, FetchError] {
   r
 }
 
-fn note(what &str, yes bool) {
+fn note(what: &str, yes: bool) {
   printStr(what);
   if yes {printStr(": yes\n");} else {printStr(": NO\n");}
 }
 
-fn waitedAtLeast(t0 Instant, ms i64) bool {
+fn waitedAtLeast(t0: Instant, ms: i64) bool {
   t0.elapsed() >= Duration.fromMillis(ms)
 }
 
 // Whether a body of 300,000 bytes is right: byte i is i % 251
-fn bigRight(r Result[Response, FetchError]) bool {
+fn bigRight(r: Result[Response, FetchError]) bool {
   match r {
     case let ok Ok {
       let v = ok.body.view();
@@ -330,7 +330,7 @@ fn bigRight(r Result[Response, FetchError]) bool {
 }
 
 // Whether a response answered from /redirect/0
-fn landedAt(r Result[Response, FetchError], expected &str) bool {
+fn landedAt(r: Result[Response, FetchError], expected: &str) bool {
   match r {
     case let ok Ok {ok.url.view() == expected}
     else {false}
@@ -338,14 +338,14 @@ fn landedAt(r Result[Response, FetchError], expected &str) bool {
 }
 
 actor Prober {
-  client Client;
+  client: Client;
 
   // Runs while run is paused at an await: ends the group's operations
-  pub async do stop(self, g CancelGroup) {
+  pub async do stop(self, g: CancelGroup) {
     g.cancel();
   }
 
-  pub async do run(self, port u16, done OneshotSender[u64]) {
+  pub async do run(self, port: u16, done: OneshotSender[u64]) {
     // The plain ones
     say("get", await client.get(url(port, "/hello").view()));
     var post = Request.make("POST", url(port, "/echo").view());
@@ -454,9 +454,9 @@ actor Prober {
 // of the handle and makes POSTs whose bodies are its own, and checks that
 // each echo is the one it sent
 actor Worker {
-  client Client;
+  client: Client;
 
-  pub async do work(self, port u16, id u64, rounds u64, tally Sender[u64]) {
+  pub async do work(self, port: u16, id: u64, rounds: u64, tally: Sender[u64]) {
     var wrong = 0u64;
     var k = 0u64;
     while k < rounds {
@@ -481,13 +481,13 @@ actor Worker {
 
 // A client dropped while its fetch is paused: the fetch ends Cancelled
 actor Dropper {
-  client Client;
+  client: Client;
 
   pub async do release(self) {
     client = Client.none();
   }
 
-  pub async do run(self, port u16, done OneshotSender[u64]) {
+  pub async do run(self, port: u16, done: OneshotSender[u64]) {
     say("client dropped under a fetch", await client.get(url(port, "/hang").view()));
     var d = done;
     d.send(1u64);
@@ -496,8 +496,8 @@ actor Dropper {
 
 fn main() i32 {
   initAll();
-  var portTx Sender[u16];
-  var portRx Receiver[u16];
+  var portTx: Sender[u16];
+  var portRx: Receiver[u16];
   portTx, portRx = Channel[u16].make();
   let server = thread.start(portTx, &serve);
   var port = 0u16;
@@ -505,8 +505,8 @@ fn main() i32 {
     case let p Some {port = p;}
     case is None[u16] {}
   }
-  var tx OneshotSender[u64];
-  var rx OneshotReceiver[u64];
+  var tx: OneshotSender[u64];
+  var rx: OneshotReceiver[u64];
   tx, rx = Oneshot[u64].make();
   {
     let p = new Prober(Client.standard());
@@ -515,8 +515,8 @@ fn main() i32 {
   rx.recv();
 
   // Eight Workers at once, thirty POSTs each, over the one shared client
-  var tallyTx Sender[u64];
-  var tallyRx Receiver[u64];
+  var tallyTx: Sender[u64];
+  var tallyRx: Receiver[u64];
   tallyTx, tallyRx = Channel[u64].make();
   {
     let shared = Client.standard();
@@ -541,8 +541,8 @@ fn main() i32 {
   printStr("\n");
 
   // A client dropped under a fetch
-  var tx2 OneshotSender[u64];
-  var rx2 OneshotReceiver[u64];
+  var tx2: OneshotSender[u64];
+  var rx2: OneshotReceiver[u64];
   tx2, rx2 = Oneshot[u64].make();
   {
     let d = new Dropper(Client.standard());

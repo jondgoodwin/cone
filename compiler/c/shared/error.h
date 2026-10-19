@@ -403,7 +403,7 @@ enum ErrorCode {
     ErrorInitNone = 1211,       // No 'init' takes a construction's arguments, or several the struct declares do: one it declares is preferred to the implicit field-wise one
     ErrorInitCall = 1212,       // A type called without 'new', 'Point(1, 2)', or an 'init' called by name: a value is constructed 'new Point(1, 2)'
     ErrorPermNew = 1213,        // '&new' other than as the 'self' of a method that returns nothing: it is an initializer's reference to memory not yet filled
-    ErrorInitDcl = 1214,        // A struct's method named 'init' that does not take 'self &new' first, or returns a value: an init fills its value in place
+    ErrorInitDcl = 1214,        // A struct's method named 'init' that does not take 'self: &new' first, or returns a value: an init fills its value in place
     ErrorInitSelf = 1215,       // In an init, 'self' used before '*self = value' fills it on every path, used other than through '*self', a field or a method call, or not filled when it returns
 
     // Allocation, 'new Rc[mut, Node](1)' and 'trynew' (ir/exp/allocate.c, ir/exp/typelit.c, ir/types/reference.c)
@@ -661,7 +661,7 @@ enum ErrorCode {
     ErrorShapeStore = 1426,         // A store through another name that replaces a shape-changing value whole (a list, a string, an owner such as a 'Uni'), or an element of one that owns something, while a borrow into it, through a path other references share, is still to be used
 
     // What a collector reaches in memory a type points to (ir/types/struct.c, region.c)
-    ErrorGcTraceElementsShape = 1440,  // A type declaring GcTraceElements whose 'gcTraceElements' is not 'fn gcTraceElements(self &mut) I', I a cursor declaring 'is Iterator[&mut E]' with E a sized type
+    ErrorGcTraceElementsShape = 1440,  // A type declaring GcTraceElements whose 'gcTraceElements' is not 'fn gcTraceElements(self: &mut) I', I a cursor declaring 'is Iterator[&mut E]' with E a sized type
     ErrorTraceRoot = 1441,  // A local, parameter, or value of a traced region, of a type that needs tracing and cannot be traced
     ErrorTraceKey = 1442,   // A type argument that holds a traced reference, of a GcTraceElements type whose gcTraceElements does not reach it: a Dict's key, which a collector that moved it would leave hashed where it was
 
@@ -698,7 +698,7 @@ enum ErrorCode {
     ErrorFnRefConv = 1503,      // A function reference given where one marked for the other calling convention is wanted: a C-named function's '&fn @c (...)' where a Cone function's '&fn (...)' is wanted, or the reverse. Neither converts to the other, so the mismatch is refused where it is written and never becomes a call that passes its values wrongly
 
     // A callable's by-value parameter or result (ir/types/fnsig.c)
-    ErrorFnRefByValue = 1506,   // A callable given where a signature is wanted that differs from it in a parameter or the result held by value that is not one layout: a variant for its enum (`&mk` returning `Shape.Circle` as `&fn(n i32) Shape`, `&area` taking `Shape` as `&fn(s Shape.Circle) i32`) or the reverse. The same on every route a callable meets a signature by: a function reference, a callable `&<fn`, `Uni[fn(sig)]`, a generic's `fn(sig)` constraint, a trait's method (a virtual reference, a generic bound, `is`) and a module trait's function. A call through the wanted signature would pass or read the value as another, and no cast converts it, so it is refused where it is written and a wrapper function converts
+    ErrorFnRefByValue = 1506,   // A callable given where a signature is wanted that differs from it in a parameter or the result held by value that is not one layout: a variant for its enum (`&mk` returning `Shape.Circle` as `&fn(n: i32) Shape`, `&area` taking `Shape` as `&fn(s: Shape.Circle) i32`) or the reverse. The same on every route a callable meets a signature by: a function reference, a callable `&<fn`, `Uni[fn(sig)]`, a generic's `fn(sig)` constraint, a trait's method (a virtual reference, a generic bound, `is`) and a module trait's function. A call through the wanted signature would pass or read the value as another, and no cast converts it, so it is refused where it is written and a wrapper function converts
 
     // A virtual reference that may write sees each field at exactly the trait's type (ir/types/fnsig.c, ir/types/reference.c)
     ErrorVtableField = 1504,    // A struct viewed as a trait behind a virtual reference that may write (`&<mut`, `&<uni`, `Uni[Trait]`) whose field the trait requires has a narrower type than the trait gives it (a `Shape.Circle` where the trait says `Shape`): a store through the trait would leave a value of another type in the field
@@ -717,6 +717,9 @@ enum ErrorCode {
     // A binary or octal literal that is malformed (parser/lexer.c lexScanNumber)
     ErrorRadixDigit = 1512,     // A binary or octal literal with no digit after its prefix (`0b`, `0o`, `0b_`) or with a digit its radix does not have (`0b2`, `0o8`): 'b' takes 0 and 1 and 'o' takes 0 to 7. Pointed at the digit that is wrong, or at the prefix's letter when there is none. Hex is not held to this rule: `0x` is read as zero
     ErrorRadixFloat = 1513,     // A binary or octal literal written with a fraction, an exponent or a float suffix (`0b1.0`, `0o7e2`, `0b1f32`): it is a whole number. Pointed at the '.', the 'e' or 'p', or the suffix. A '.' before a name is the call of a method (`0b101.abs`) and a '..' is the range
+
+    // A let-else binding written with a ':' (parser/parsefnflow.c)
+    ErrorLetElseColon = 1514,   // A local declared with a ':' and a type that is followed by 'else': `let n: Ok = r else ...`. A let-else binds the payload of a variant of the value, a pattern, and names only the variant after the binding, with no ':' (`let n Ok = r else ...`); the type after a ':' is the binding's own, which a payload is not. Pointed at the binding
 
     // Warnings
     WarnCode = 3000,

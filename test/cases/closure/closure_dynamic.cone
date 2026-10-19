@@ -1,8 +1,8 @@
 // A callable used dynamically: '&<fn(sig)' and '&<mut fn(sig)' take anything with
 // a pub '()' of that signature, and 'Uni[fn(sig)]' and 'Rc[fn(sig)]' own one. A
 // closure, a struct of the author's with a '()' and a plain function meet the
-// same parameter; '&<' reads (the '()' takes 'self &'), '&<mut' may change
-// state ('self &mut'). A closure literal given to either is lent as a
+// same parameter; '&<' reads (the '()' takes 'self: &'), '&<mut' may change
+// state ('self: &mut'). A closure literal given to either is lent as a
 // temporary of the statement. An owner is made from one value that holds
 // something, and its death finalizes what the closure kept. Every value is
 // worked out by hand and written at its line.
@@ -14,29 +14,29 @@ mod closure_dynamic;
 import stdio use *;
 import collections use *;
 
-alias Profile = fn(u i32) i32;
+alias Profile = fn(u: i32) i32;
 
 struct Triple {
-  pub k i32;
-  pub fn `()`(self &, x i32) i32 { x * k }
+  pub k: i32;
+  pub fn `()`(self: &, x: i32) i32 { x * k }
 }
 
 struct Tally {
-  pub n i32;
-  pub fn `()`(self &mut, x i32) i32 { n = n + x; n }
+  pub n: i32;
+  pub fn `()`(self: &mut, x: i32) i32 { n = n + x; n }
 }
 
-fn succ(x i32) i32 { x + 1 }
+fn succ(x: i32) i32 { x + 1 }
 
-fn apply(f &<fn(x i32) i32, x i32) i32 { f(x) }
-fn applyMut(f &<mut fn(x i32) i32, x i32) i32 { f(x) }
-fn viaAlias(f &<Profile, u i32) i32 { f(u) }
-fn run(f Uni[fn(x i32) i32], x i32) i32 { f(x) }
-fn share(f Rc[imm, fn(x i32) i32], x i32) i32 { f(x) }
-fn shareMut(f Rc[mut, fn(x i32) i32], x i32) i32 { f(x) }
+fn apply(f: &<fn(x: i32) i32, x: i32) i32 { f(x) }
+fn applyMut(f: &<mut fn(x: i32) i32, x: i32) i32 { f(x) }
+fn viaAlias(f: &<Profile, u: i32) i32 { f(u) }
+fn run(f: Uni[fn(x: i32) i32], x: i32) i32 { f(x) }
+fn share(f: Rc[imm, fn(x: i32) i32], x: i32) i32 { f(x) }
+fn shareMut(f: Rc[mut, fn(x: i32) i32], x: i32) i32 { f(x) }
 
 // The signature names a type parameter, which the other arguments give
-fn countWhere[T](xs &List[T], pred &<fn(x &T) bool) i32 {
+fn countWhere[T](xs: &List[T], pred: &<fn(x: &T) bool) i32 {
   var n = 0;
   each x in xs.iter() { if pred(x) { n = n + 1; } }
   n
@@ -44,7 +44,7 @@ fn countWhere[T](xs &List[T], pred &<fn(x &T) bool) i32 {
 
 // The closure behind a '&<mut' is not known here, and may have captured the list it is
 // iterating (a push moves the block 'iter' reads), so the list is lent '&imm': nothing can write it
-fn visit[T](xs &imm List[T], f &<mut fn(x &T)) {
+fn visit[T](xs: &imm List[T], f: &<mut fn(x: &T)) {
   each x in xs.iter() { f(x); }
 }
 
@@ -55,48 +55,48 @@ fn numbers() List[i32] {
 }
 
 struct Tool {
-  pub scale i32;
-  pub fn applied(self &, f &<fn(x i32) i32, x i32) i32 { f(x) * scale }
+  pub scale: i32;
+  pub fn applied(self: &, f: &<fn(x: i32) i32, x: i32) i32 { f(x) * scale }
 }
 
-fn pickOne overload pick(f &<fn(x i32) i32, x i32) i32 { f(x) }
-fn pickTwo overload pick(f &<fn(x i32, y i32) i32, x i32) i32 { f(x, x) }
+fn pickOne overload pick(f: &<fn(x: i32) i32, x: i32) i32 { f(x) }
+fn pickTwo overload pick(f: &<fn(x: i32, y: i32) i32, x: i32) i32 { f(x, x) }
 
 // A bare signature is a type argument: the owner of one is what the field holds
 struct Applied[F] {
-  pub f Uni[F];
-  pub fn go(self &mut, x i32) i32 { f(x) }
+  pub f: Uni[F];
+  pub fn go(self: &mut, x: i32) i32 { f(x) }
 }
 
 struct Fin {
-  pub n i64;
-  fn final(self &uni) { printStr("F"); printInt(n); printStr(" "); }
+  pub n: i64;
+  fn final(self: &uni) { printStr("F"); printInt(n); printStr(" "); }
 }
 
-fn keeping(n i64) Uni[fn(x i64) i64] {
-  new Uni[fn(x i64) i64](fn(x i64) [h = new Fin(n)] i64 { h.n + x })
+fn keeping(n: i64) Uni[fn(x: i64) i64] {
+  new Uni[fn(x: i64) i64](fn(x: i64) [h = new Fin(n)] i64 { h.n + x })
 }
 
 // A plain function's stub forwards every kind of parameter and return as it came:
 // a struct by value, a borrow, a number, nothing returned, six numbers
 struct V3 {
-  pub x f32; pub y f32; pub z f32;
+  pub x: f32; pub y: f32; pub z: f32;
 }
 
-fn len2(v V3) f32 { v.x * v.x + v.y * v.y + v.z * v.z }
-fn add3(a V3, b &V3, k f32) V3 { new V3(a.x + b.x * k, a.y + b.y * k, a.z + b.z * k) }
-fn note(n i32) { printInt(n); printStr("!"); }
-fn weigh(a i64, b i64, c i64, d i64, e i64, f i64) i64 { a + b * 2 + c * 3 + d * 4 + e * 5 + f * 6 }
+fn len2(v: V3) f32 { v.x * v.x + v.y * v.y + v.z * v.z }
+fn add3(a: V3, b: &V3, k: f32) V3 { new V3(a.x + b.x * k, a.y + b.y * k, a.z + b.z * k) }
+fn note(n: i32) { printInt(n); printStr("!"); }
+fn weigh(a: i64, b: i64, c: i64, d: i64, e: i64, f: i64) i64 { a + b * 2 + c * 3 + d * 4 + e * 5 + f * 6 }
 
-fn callLen(f &<fn(v V3) f32, v V3) f32 { f(v) }
-fn callAdd(f &<fn(a V3, b &V3, k f32) V3, a V3, b &V3) V3 { f(a, b, 2.0) }
-fn callNote(f &<fn(n i32), n i32) { f(n); }
-fn callWeigh(f &<fn(a i64, b i64, c i64, d i64, e i64, f i64) i64) i64 { f(1i64, 1i64, 1i64, 1i64, 1i64, 1i64) }
+fn callLen(f: &<fn(v: V3) f32, v: V3) f32 { f(v) }
+fn callAdd(f: &<fn(a: V3, b: &V3, k: f32) V3, a: V3, b: &V3) V3 { f(a, b, 2.0) }
+fn callNote(f: &<fn(n: i32), n: i32) { f(n); }
+fn callWeigh(f: &<fn(a: i64, b: i64, c: i64, d: i64, e: i64, f: i64) i64) i64 { f(1i64, 1i64, 1i64, 1i64, 1i64, 1i64) }
 
 fn main() {
   // A closure, a struct and a plain function, to one parameter
   let off = 10;
-  let shift = fn(x i32) i32 { x + off };
+  let shift = fn(x: i32) i32 { x + off };
   var tri = new Triple(3);
   print <- apply(&shift, 5), "\n";         // 15
   print <- apply(&tri, 5), "\n";           // 15
@@ -110,15 +110,15 @@ fn main() {
   print <- applyMut(&mut tally, 7), "\n";  // 12
   print <- tally.n, "\n";                  // 12
   var total = 0;
-  var adder = fn(x i32) i32 { total += x; total };
+  var adder = fn(x: i32) i32 { total += x; total };
   print <- applyMut(&mut adder, 3), "\n";  // 3
   print <- applyMut(&mut adder, 4), "\n";  // 7
   print <- total, "\n";                    // 7
 
   // A literal is lent for the statement
   print <- apply(x => x * 2, 21), "\n";                                // 42
-  print <- apply(fn(x i32) i32 { x + off }, 1), "\n";                 // 11
-  print <- applyMut(fn(x i32) i32 { total += x; total }, 10), "\n";   // 17
+  print <- apply(fn(x: i32) i32 { x + off }, 1), "\n";                 // 11
+  print <- applyMut(fn(x: i32) i32 { total += x; total }, 10), "\n";   // 17
   print <- total, "\n";                                                // 17
   let tool = new Tool(10);
   print <- tool.applied(x => x + 2, 3), "\n";                          // 50
@@ -130,31 +130,31 @@ fn main() {
   let limit = 4;
   print <- countWhere(&xs, x => *x > limit), "\n";                     // 3
   var seen = 0;
-  visit(&imm xs, fn(x &i32) { seen += *x; });
+  visit(&imm xs, fn(x: &i32) { seen += *x; });
   print <- seen, "\n";                                                 // 27
 
   // Owners, made from a closure value or a struct
-  var owned Uni[fn(x i32) i32] = new Uni[fn(x i32) i32](fn(x i32) [var sum = 100] i32 { sum += x; sum });
+  var owned: Uni[fn(x: i32) i32] = new Uni[fn(x: i32) i32](fn(x: i32) [var sum = 100] i32 { sum += x; sum });
   print <- owned(1), "\n";                 // 101
   print <- applyMut(owned, 2), "\n";       // 103
   print <- run(owned, 3), "\n";            // 106
-  let shared = new Rc[imm, fn(x i32) i32](new Triple(4));
+  let shared = new Rc[imm, fn(x: i32) i32](new Triple(4));
   let again = shared;
   print <- share(shared, 5), "\n";         // 20
   print <- share(again, 6), "\n";          // 24
   print <- apply(shared, 7), "\n";         // 28
-  let cell = new Rc[mut, fn(x i32) i32](fn(x i32) [var n = 0] i32 { n += x; n });
+  let cell = new Rc[mut, fn(x: i32) i32](fn(x: i32) [var n = 0] i32 { n += x; n });
   let cell2 = cell;
   print <- shareMut(cell, 5), "\n";        // 5
   print <- shareMut(cell2, 6), "\n";       // both see one state: 11
-  var ap = new Applied[fn(x i32) i32](new Uni[fn(x i32) i32](fn(x i32) [b = 100] i32 { x + b }));
+  var ap = new Applied[fn(x: i32) i32](new Uni[fn(x: i32) i32](fn(x: i32) [b = 100] i32 { x + b }));
   print <- ap.go(5), "\n";                 // 105
 
   // What an owner's closure kept is finalized when it dies, newest first
   {
     let a = keeping(10);
     printInt(a(1)); printStr("\n");        // 11
-    let b = new Uni[fn(x i64) i64](new Pair(new Fin(20)));
+    let b = new Uni[fn(x: i64) i64](new Pair(new Fin(20)));
     printInt(b(2)); printStr("\n");        // 22
   }
   printStr("done\n");                      // F20 F10 done
@@ -170,6 +170,6 @@ fn main() {
 }
 
 struct Pair {
-  pub fin Fin;
-  pub fn `()`(self &, x i64) i64 { fin.n + x }
+  pub fin: Fin;
+  pub fn `()`(self: &, x: i64) i64 { fin.n + x }
 }

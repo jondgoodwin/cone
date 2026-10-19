@@ -627,7 +627,7 @@ static int reshapeCallBody(FnCallNode *call, FnDclNode *meth, int recvunique, IN
             ba = ((CastNode *)ba)->exp;
         INode *wt = reshapeParmType(callee, k, arg);
         // A virtual call's receiver ('&<mut Trait', a '&<mut fn' called) hides the type behind
-        // it, and the trait method's declared 'self &mut Trait' names no fields: the call is
+        // it, and the trait method's declared 'self: &mut Trait' names no fields: the call is
         // asked of the virtual reference it was made through, which may reach any container
         if (k == 0 && (call->flags & FlagVDisp) && at->tag == VirtRefTag && wt->tag == RefTag
                 && (permGetFlags(((RefNode *)wt)->perm) & MayWrite))

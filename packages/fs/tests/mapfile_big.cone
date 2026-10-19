@@ -26,21 +26,21 @@ import fs;
 
 extern {
   // Windows: the stream's handle, made sparse; a position past 32 bits
-  fn @c _fileno(stream *libc.FILE) i32;
-  fn @c _get_osfhandle(fd i32) isize;
-  fn @c(system) DeviceIoControl(h usize, code u32, inBuf *u8, inLen u32, outBuf *u8, outLen u32,
-    returned &mut u32, overlapped *u8) i32;
-  fn @c _fseeki64(stream *libc.FILE, offset i64, whence i32) i32;
+  fn @c _fileno(stream: *libc.FILE) i32;
+  fn @c _get_osfhandle(fd: i32) isize;
+  fn @c(system) DeviceIoControl(h: usize, code: u32, inBuf: *u8, inLen: u32, outBuf: *u8, outLen: u32,
+    returned: &mut u32, overlapped: *u8) i32;
+  fn @c _fseeki64(stream: *libc.FILE, offset: i64, whence: i32) i32;
   // Linux
-  fn @c fseeko(stream *libc.FILE, offset i64, whence i32) i32;
+  fn @c fseeko(stream: *libc.FILE, offset: i64, whence: i32) i32;
 }
 
 const fsctlSetSparse = 0x000900C4u32;
 
 // The test's folder: TEMP's absolute path and the name, after checking
 // that it is that and nothing shorter
-fn makeRoot(name &str) Path {
-  var variable cstr = "TMPDIR";
+fn makeRoot(name: &str) Path {
+  var variable: cstr = "TMPDIR";
   if isWindows() { variable = "TEMP"; }
   let temp = libc.getenv(variable);
   require(temp != null || !isWindows(), "TEMP is set");
@@ -57,17 +57,17 @@ fn makeRoot(name &str) Path {
 }
 
 // Seek a stream to a position of 64 bits: whether it worked
-fn seekTo(f *libc.FILE, at i64) bool {
+fn seekTo(f: *libc.FILE, at: i64) bool {
   if isWindows() {_fseeki64(f, at, 0i32) == 0i32} else {fseeko(f, at, 0i32) == 0i32}
 }
 
 // Write bytes at a position of the stream
-fn putAt(f *libc.FILE, at i64, bytes &Array[u8]) bool {
+fn putAt(f: *libc.FILE, at: i64, bytes: &Array[u8]) bool {
   seekTo(f, at) && libc.fwrite(bytes as *u8, 1usize, bytes.len, f) == bytes.len
 }
 
 // Whether the map holds these bytes at the position
-fn markerAt(v &Array[u8], at usize, bytes &Array[u8]) bool {
+fn markerAt(v: &Array[u8], at: usize, bytes: &Array[u8]) bool {
   var i = 0usize;
   var same = true;
   while i < bytes.len {
@@ -79,7 +79,7 @@ fn markerAt(v &Array[u8], at usize, bytes &Array[u8]) bool {
 
 // Whether every byte from 'from' (inclusive) to 'to' is zero, looking at one
 // byte in every 'step'
-fn zeroBetween(v &Array[u8], from usize, to usize, step usize) bool {
+fn zeroBetween(v: &Array[u8], from: usize, to: usize, step: usize) bool {
   var i = from;
   var zero = true;
   while i < to {
@@ -89,7 +89,7 @@ fn zeroBetween(v &Array[u8], from usize, to usize, step usize) bool {
   zero
 }
 
-fn bigFile(root &Path) {
+fn bigFile(root: &Path) {
   let p = root.join("big.bin");
   var c = String.from(p.view());
   let f = libc.fopen(c.cstr(), "wb");
@@ -100,9 +100,9 @@ fn bigFile(root &Path) {
     let h = _get_osfhandle(_fileno(f)) as usize;
     sparse = DeviceIoControl(h, fsctlSetSparse, null, 0u32, null, 0u32, &mut returned, null) != 0i32;
   }
-  let head &Array[u8] = "HEAD-MARKER";
-  let straddle &Array[u8] = "ACROSS-4GiB";
-  let tail &Array[u8] = "TAIL-AT-5GiB";
+  let head: &Array[u8] = "HEAD-MARKER";
+  let straddle: &Array[u8] = "ACROSS-4GiB";
+  let tail: &Array[u8] = "TAIL-AT-5GiB";
   // 4 GiB - 4: the marker's first four bytes are below the boundary and the rest above
   let straddleAt = 4294967292usize;
   // 5 GiB + 3

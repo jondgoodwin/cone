@@ -37,23 +37,23 @@ import aio use Socket, IoLimits;
 const rounds = 2000u64;
 
 struct Got {
-  pub done Atomic[u64];        // rounds whose read ended Done
-  pub cancelled Atomic[u64];   // ...Cancelled
-  pub other Atomic[u64];       // ...anything else
-  pub bytes Atomic[u64];       // bytes the reads took
-  pub wrote Atomic[u64];       // writes answered
-  pub badWrite Atomic[u64];    // ...not with 1 byte
-  pub spin Atomic[u64];        // what Writer's spinning adds to, so it is not optimised away
+  pub done: Atomic[u64];        // rounds whose read ended Done
+  pub cancelled: Atomic[u64];   // ...Cancelled
+  pub other: Atomic[u64];       // ...anything else
+  pub bytes: Atomic[u64];       // bytes the reads took
+  pub wrote: Atomic[u64];       // writes answered
+  pub badWrite: Atomic[u64];    // ...not with 1 byte
+  pub spin: Atomic[u64];        // what Writer's spinning adds to, so it is not optimised away
 }
 
-let got Got;
+let got: Got;
 
 fn @initpure init() {
   got = new Got(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
     Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64));
 }
 
-fn socketOf(r Result[Socket, IoError]) Socket {
+fn socketOf(r: Result[Socket, IoError]) Socket {
   var res = r;
   var s = Socket.none();
   match &mut res {
@@ -64,7 +64,7 @@ fn socketOf(r Result[Socket, IoError]) Socket {
 }
 
 // Wait a while, in a way the compiler leaves alone
-fn spinFor(n u64) {
+fn spinFor(n: u64) {
   var k = 0u64;
   while k < n {
     got.spin.add(1u64);
@@ -73,14 +73,14 @@ fn spinFor(n u64) {
 }
 
 actor Writer {
-  pool Pool;
-  conns List[Socket];
+  pool: Pool;
+  conns: List[Socket];
 
-  pub async do attach(self, s Socket) {
+  pub async do attach(self, s: Socket) {
     conns.push(s);
   }
 
-  pub async do push(self, spin u64) {
+  pub async do push(self, spin: u64) {
     spinFor(spin);
     var b = pool.mustTake(16usize);
     let one = [7u8];
@@ -97,14 +97,14 @@ actor Writer {
 }
 
 actor Racer {
-  pool Pool;
+  pool: Pool;
 
-  pub async do stop(self, g CancelGroup, spin u64) {
+  pub async do stop(self, g: CancelGroup, spin: u64) {
     spinFor(spin);
     g.cancel();
   }
 
-  pub async do run(self, writer Writer, finished OneshotSender[u64]) {
+  pub async do run(self, writer: Writer, finished: OneshotSender[u64]) {
     let l = await aio.listen(SocketAddr.localhost(0u16));
     let ls = socketOf(l);
     let a = await ls.localAddr();
@@ -160,8 +160,8 @@ actor Racer {
 
 fn main() i32 {
   initAll();
-  var tx OneshotSender[u64];
-  var rx OneshotReceiver[u64];
+  var tx: OneshotSender[u64];
+  var rx: OneshotReceiver[u64];
   tx, rx = Oneshot[u64].make();
   {
     let writer = new Writer(Pool.make(), List[Socket].empty());

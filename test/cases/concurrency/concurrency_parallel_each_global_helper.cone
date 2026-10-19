@@ -23,16 +23,16 @@ mod concurrency_parallel_each_global_helper;
 import collections use *;
 import actors;
 
-struct Item { pub n i64; }
+struct Item { pub n: i64; }
 
-var counter i64 = 0i64;
-var other i64 = 0i64;
-var table Array[i64, 4] = [0i64, 0i64, 0i64, 0i64];
-var items List[Item];
-var box Item = new Item(0i64);
-var @threadlocal depth i64 = 0i64;
-let limit i64 = 10i64;
-let hits Atomic[i64];
+var counter: i64 = 0i64;
+var other: i64 = 0i64;
+var table: Array[i64, 4] = [0i64, 0i64, 0i64, 0i64];
+var items: List[Item];
+var box: Item = new Item(0i64);
+var @threadlocal depth: i64 = 0i64;
+let limit: i64 = 10i64;
+let hits: Atomic[i64];
 
 fn @initpure init() {
   items = List[Item].empty();
@@ -50,12 +50,12 @@ fn swapping() { counter <=> other; }
 fn grow() { items.push(new Item(1i64)); }
 
 // two functions that call each other, one of which writes
-fn ping(n i64) { if n > 0i64 { pong(n - 1i64); } }
-fn pong(n i64) { counter = n; ping(n); }
+fn ping(n: i64) { if n > 0i64 { pong(n - 1i64); } }
+fn pong(n: i64) { counter = n; ping(n); }
 
 struct Meter {
-  pub reads i64;
-  pub fn tick(self &mut) { counter = counter + 1i64; }
+  pub reads: i64;
+  pub fn tick(self: &mut) { counter = counter + 1i64; }
 }
 
 // ---- readers and others
@@ -65,59 +65,59 @@ fn peekLimit() i64 { limit }
 fn count() { hits.add(1i64); }
 fn mine() i64 { var k = 0i64; k = k + 1i64; k }
 fn threadOwn() { depth = depth + 1i64; }
-fn ownItem(it &mut Item) { it.n = it.n + 1i64; }
+fn ownItem(it: &mut Item) { it.n = it.n + 1i64; }
 
 // ---- the loops
 
-fn direct(n usize) {
+fn direct(n: usize) {
   parallel each i in 0usize ..< n {
     counter = counter + 1i64;                  //~ ErrorParWrite "may not write counter"
   }
 }
 
-fn byHelper(n usize) {
+fn byHelper(n: usize) {
   parallel each i in 0usize ..< n {
     assign();                                  //~ ErrorParWrite "may not call 'assign', which writes the global 'counter'"
   }
 }
 
-fn byTwo(n usize) {
+fn byTwo(n: usize) {
   parallel each i in 0usize ..< n {
     viaTwo();                                  //~ ErrorParWrite "may not call 'viaTwo', which calls 'assign', which writes the global 'counter'"
   }
 }
 
-fn byElement(n usize) {
+fn byElement(n: usize) {
   parallel each i in 0usize ..< n {
     element();                                 //~ ErrorParWrite "which writes the global 'table'"
   }
 }
 
-fn byField(n usize) {
+fn byField(n: usize) {
   parallel each i in 0usize ..< n {
     field();                                   //~ ErrorParWrite "which writes the global 'box'"
   }
 }
 
-fn bySwap(n usize) {
+fn bySwap(n: usize) {
   parallel each i in 0usize ..< n {
     swapping();                                //~ ErrorParWrite "which writes the global"
   }
 }
 
-fn byMethodOnGlobal(n usize) {
+fn byMethodOnGlobal(n: usize) {
   parallel each i in 0usize ..< n {
     grow();                                    //~ ErrorParWrite "which writes the global 'items'"
   }
 }
 
-fn byRecursion(n usize) {
+fn byRecursion(n: usize) {
   parallel each i in 0usize ..< n {
     ping(3i64);                                //~ ErrorParWrite "which writes the global 'counter'"
   }
 }
 
-fn byMethod(n usize) {
+fn byMethod(n: usize) {
   parallel each i in 0usize ..< n {
     var mine = new Meter(0i64);
     mine.tick();                               //~ ErrorParWrite "which writes the global 'counter'"
@@ -125,7 +125,7 @@ fn byMethod(n usize) {
 }
 
 // A helper that writes through a '&mut' parameter is still refused as before (#510)
-fn byParam(l &mut List[Item], n usize) {
+fn byParam(l: &mut List[Item], n: usize) {
   parallel each i in 0usize ..< n {
     ownItem(&mut l[0usize]);                   //~ ErrorParWrite "may not lend for writing l"
   }
@@ -133,7 +133,7 @@ fn byParam(l &mut List[Item], n usize) {
 
 // ---- allowed
 
-fn reads(n usize) {
+fn reads(n: usize) {
   parallel each i in 0usize ..< n {
     let a = peek();
     let b = peekLimit();
@@ -141,26 +141,26 @@ fn reads(n usize) {
   }
 }
 
-fn atomics(n usize) {
+fn atomics(n: usize) {
   parallel each i in 0usize ..< n {
     count();
   }
 }
 
-fn threadLocals(n usize) {
+fn threadLocals(n: usize) {
   parallel each i in 0usize ..< n {
     threadOwn();
   }
 }
 
-fn ownItems(l &uni List[Item]) {
+fn ownItems(l: &uni List[Item]) {
   parallel each x in l.mutItems() {
     x.n = x.n + 1i64;
   }
 }
 
 // the writing helpers outside a parallel loop are the ordinary single-thread code
-fn sequential(n usize) {
+fn sequential(n: usize) {
   each i in 0usize ..< n {
     assign();
     viaTwo();

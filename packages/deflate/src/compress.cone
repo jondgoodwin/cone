@@ -34,11 +34,11 @@
 
 // A bit writer: bits go in least-significant first
 struct BitWriter {
-  pub out List[u8];
-  pub acc u64;
-  pub n u32;
+  pub out: List[u8];
+  pub acc: u64;
+  pub n: u32;
 
-  pub fn put(self &mut, value u32, bits u32) {
+  pub fn put(self: &mut, value: u32, bits: u32) {
     acc = acc | (u64.from(value) << u64.from(n));
     n = n + bits;
     while n >= 8u32 {
@@ -49,7 +49,7 @@ struct BitWriter {
   }
 
   // A Huffman code goes in most-significant bit first
-  pub fn putCode(self &mut, code u32, bits u32) {
+  pub fn putCode(self: &mut, code: u32, bits: u32) {
     var rev = 0u32;
     var i = 0u32;
     while i < bits {
@@ -60,22 +60,22 @@ struct BitWriter {
   }
 
   // Pad to a byte boundary
-  pub fn align(self &mut) {
+  pub fn align(self: &mut) {
     if n > 0u32 { self.put(0u32, 8u32 - n); }
   }
 }
 
 // A Huffman code for the encoder: bit length and canonical code of each symbol
 struct Code {
-  pub lens List[u8];
-  pub codes List[u32];
+  pub lens: List[u8];
+  pub codes: List[u32];
 }
 
 // Code lengths for symbols with frequencies 'freq' (first 'n'), no longer
 // than 'maxBits'. A symbol with frequency 0 gets length 0. Fewer than two
 // used symbols: the used one (or symbol 0) gets length 1, which every inflater
 // accepts.
-fn huffmanLengths(freq &Array[u32], n usize, maxBits u8) List[u8] {
+fn huffmanLengths(freq: &Array[u32], n: usize, maxBits: u8) List[u8] {
   var f = List[u32].withCapacity(n);
   var i = 0usize;
   while i < n { f.push(freq[i]); i += 1usize; }
@@ -96,7 +96,7 @@ fn huffmanLengths(freq &Array[u32], n usize, maxBits u8) List[u8] {
 }
 
 // Huffman's merge by repeatedly joining the two lightest trees
-fn huffmanOnce(freq &Array[u32], n usize) List[u8] {
+fn huffmanOnce(freq: &Array[u32], n: usize) List[u8] {
   var lens = List[u8].withCapacity(n);
   var i = 0usize;
   while i < n { lens.push(0u8); i += 1usize; }
@@ -161,7 +161,7 @@ fn huffmanOnce(freq &Array[u32], n usize) List[u8] {
 }
 
 // The canonical codes of RFC 1951 3.2.2 for the lengths
-fn canonicalCodes(lens &Array[u8], n usize) List[u32] {
+fn canonicalCodes(lens: &Array[u8], n: usize) List[u32] {
   var count = List[u32].empty();
   var i = 0usize;
   while i < 17usize { count.push(0u32); i += 1usize; }
@@ -192,30 +192,30 @@ fn canonicalCodes(lens &Array[u8], n usize) List[u32] {
   codes
 }
 
-fn makeCode(lens List[u8]) Code {
+fn makeCode(lens: List[u8]) Code {
   let codes = canonicalCodes(lens.view(), lens.len());
   new Code(lens, codes)
 }
 
 // The length code (257 to 285) and the extra bits a match length takes
-fn lengthSymbol(len usize) usize {
+fn lengthSymbol(len: usize) usize {
   var s = 28usize;
   while usize.from(lenBase[s]) > len { s -= 1usize; }
   s
 }
 
-fn distSymbol(d usize) usize {
+fn distSymbol(d: usize) usize {
   var s = 29usize;
   while usize.from(distBase[s]) > d { s -= 1usize; }
   s
 }
 
-fn hash3(d &Array[u8], i usize) usize {
+fn hash3(d: &Array[u8], i: usize) usize {
   usize.from(((u32.from(d[i]) << 10u32) ^ (u32.from(d[i + 1usize]) << 5u32) ^ u32.from(d[i + 2usize])) & 32767u32)
 }
 
 // Write tokens [from, to) with the codes
-fn writeTokenCodes(w &mut BitWriter, tokens &Array[u32], from usize, to usize, lit &Code, dist &Code) {
+fn writeTokenCodes(w: &mut BitWriter, tokens: &Array[u32], from: usize, to: usize, lit: &Code, dist: &Code) {
   var i = from;
   while i < to {
     let t = tokens[i];
@@ -236,12 +236,12 @@ fn writeTokenCodes(w &mut BitWriter, tokens &Array[u32], from usize, to usize, l
 }
 
 // Write tokens [from, to) with the codes and the end-of-block code
-fn writeTokens(w &mut BitWriter, tokens &Array[u32], from usize, to usize, lit &Code, dist &Code) {
+fn writeTokens(w: &mut BitWriter, tokens: &Array[u32], from: usize, to: usize, lit: &Code, dist: &Code) {
   writeTokenCodes(w, tokens, from, to, lit, dist);
   w.putCode(*lit.codes[256usize], u32.from(*lit.lens[256usize]));
 }
 
-fn fixedCodes(lit &mut Code, dist &mut Code) {
+fn fixedCodes(lit: &mut Code, dist: &mut Code) {
   var l = List[u8].empty();
   var i = 0usize;
   while i < 288usize {
@@ -256,7 +256,7 @@ fn fixedCodes(lit &mut Code, dist &mut Code) {
 }
 
 // A dynamic block of tokens [from, to)
-fn writeDynamicBlock(w &mut BitWriter, tokens &Array[u32], from usize, to usize, last bool) {
+fn writeDynamicBlock(w: &mut BitWriter, tokens: &Array[u32], from: usize, to: usize, last: bool) {
   var lf = List[u32].empty();
   var i = 0usize;
   while i < 286usize { lf.push(0u32); i += 1usize; }

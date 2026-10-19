@@ -1,5 +1,5 @@
 // What the thread check refuses. A generic asks for it with the built-in
-// marker 'Sendable' ('[T Sendable]', 'where T is Sendable'), as thread.start
+// marker 'Sendable' ('[T: Sendable]', 'where T is Sendable'), as thread.start
 // and sync's channel types do, and an instance whose argument is not one is
 // refused where it is asked for (ErrorNotSendable), naming what binds the
 // argument to its thread and where that sits in it. A type is bound when it
@@ -32,50 +32,50 @@ mod concurrency_typecheck_sendable;
 import sync use *;
 import thread;
 
-fn crosses[T Sendable]() {}
+fn crosses[T: Sendable]() {}
 
-struct Point {pub x i32; pub y i32;}
+struct Point {pub x: i32; pub y: i32;}
 
 // Holds a borrow
-struct Holds {pub p &mut Point;}
+struct Holds {pub p: &mut Point;}
 
 // Holds an owner whose permission is not race-safe
-struct Owns {pub p Rc[mut, Point];}
+struct Owns {pub p: Rc[mut, Point];}
 
 // Holds one deeper down, in a field's field
-struct Inner {pub r &mut i32;}
-struct Outer {pub id u64; pub inner Inner;}
+struct Inner {pub r: &mut i32;}
+struct Outer {pub id: u64; pub inner: Inner;}
 
 // One variant holds a raw pointer
 enum Msg {
   struct Stop {}
-  struct Data {pub v u64;}
-  struct Ptr {pub p *u64;}
+  struct Data {pub v: u64;}
+  struct Ptr {pub p: *u64;}
 }
 
 // Reaches itself through an owner, and holds a raw pointer beside
-struct Linked {pub next Option[Uni[Linked]]; pub raw *u8;}
+struct Linked {pub next: Option[Uni[Linked]]; pub raw: *u8;}
 
 // Declares Sendable: taken at its word, but only where T is Sendable
-struct Carrier[T] is Sendable {pub p *T;}
+struct Carrier[T] is Sendable {pub p: *T;}
 
 // A traced region
 struct Tr is RegionRef, Traced {
-  fn alloc(size usize) *u8 inline { malloc(size) }
-  fn mark(self &uni Tr, slot *usize, perm u32, mode u32) { }
+  fn alloc(size: usize) *u8 inline { malloc(size) }
+  fn mark(self: &uni Tr, slot: *usize, perm: u32, mode: u32) { }
 }
 
-struct Wrap[T] {pub v T;}
+struct Wrap[T] {pub v: T;}
 
 // Asks for a channel of itself while it is being laid out
 struct Looped {
-  pub back Sender[Looped];   //~ ErrorNotSendable "Looped.w.v is &mut i32, a borrowed reference"
-  pub w Wrap[&mut i32];
+  pub back: Sender[Looped];   //~ ErrorNotSendable "Looped.w.v is &mut i32, a borrowed reference"
+  pub w: Wrap[&mut i32];
 }
 
-fn bump(n &mut i32) i32 {*n + 1i32}
+fn bump(n: &mut i32) i32 {*n + 1i32}
 
-fn shared(n i32) Rc[imm, Point] {new Rc[imm, Point](n, n)}
+fn shared(n: i32) Rc[imm, Point] {new Rc[imm, Point](n, n)}
 
 fn main() {
   crosses[&mut Point]();     //~ ErrorNotSendable "and &mut Point is not Sendable: it is a borrowed reference, and no borrow may leave its thread"
@@ -105,5 +105,5 @@ fn main() {
   let v = thread.start(&mut n, &bump);   //~ ErrorNotSendable "not how a variable was declared: a local declared 'var x = 5' holds a number, which is Sendable"
 
   // A channel of what may not cross is refused where it is made
-  var tx Sender[&mut Point];   //~ ErrorNotSendable "Sender requires T is Sendable"
+  var tx: Sender[&mut Point];   //~ ErrorNotSendable "Sender requires T is Sendable"
 }

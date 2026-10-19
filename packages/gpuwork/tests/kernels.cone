@@ -67,18 +67,18 @@ import iobuf use IoBuf;
 
 // cone-kernels-begin
 struct Scale {
-  pub factor f32;
-  pub offset f32;
+  pub factor: f32;
+  pub offset: f32;
 }
 
 struct P3 {
-  pub x f32;
-  pub y f32;
-  pub z f32;
+  pub x: f32;
+  pub y: f32;
+  pub z: f32;
 }
 
 // out[i] = a[i] * factor + offset
-fn @compute(64) scale(inv Invocation, s Scale, a &Array[f32], out &mut Array[f32]) {
+fn @compute(64) scale(inv: Invocation, s: Scale, a: &Array[f32], out: &mut Array[f32]) {
   let i = usize.from(inv.globalId[0]);
   if i < out.len {
     out[i] = a[i] * s.factor + s.offset;
@@ -86,7 +86,7 @@ fn @compute(64) scale(inv Invocation, s Scale, a &Array[f32], out &mut Array[f32
 }
 
 // Each point's squared length, for as many points as there are
-fn @compute(64) lengths(inv Invocation, points &Array[P3], out &mut Array[f32]) {
+fn @compute(64) lengths(inv: Invocation, points: &Array[P3], out: &mut Array[f32]) {
   let i = usize.from(inv.globalId[0]);
   if i < points.len && i < out.len {
     let p = points[i];
@@ -95,7 +95,7 @@ fn @compute(64) lengths(inv Invocation, points &Array[P3], out &mut Array[f32]) 
 }
 
 // A hash of each cell of a 2-D grid, from its seed and its place
-fn @compute(8, 8) hash2(inv Invocation, seeds &Array[u32], out &mut Array[u32]) {
+fn @compute(8, 8) hash2(inv: Invocation, seeds: &Array[u32], out: &mut Array[u32]) {
   let i = usize.from(inv.globalId[0] + inv.groupCount[0] * 8u32 * inv.globalId[1]);
   if i < out.len {
     var h = seeds[i % seeds.len] ^ (inv.globalId[0] * 73856093u32) ^ (inv.globalId[1] * 19349663u32);
@@ -106,8 +106,8 @@ fn @compute(8, 8) hash2(inv Invocation, seeds &Array[u32], out &mut Array[u32]) 
 }
 
 // Seven buffers, the most a Cone kernel binds
-fn @compute(64) seven(inv Invocation, a &Array[u32], b &Array[u32], c &Array[u32], d &Array[u32], e &Array[u32], f &Array[u32],
-    out &mut Array[u32]) {
+fn @compute(64) seven(inv: Invocation, a: &Array[u32], b: &Array[u32], c: &Array[u32], d: &Array[u32], e: &Array[u32], f: &Array[u32],
+    out: &mut Array[u32]) {
   let i = usize.from(inv.globalId[0]);
   if i < out.len {
     out[i] = a[i] + 2u32 * b[i] + 3u32 * c[i] + 5u32 * d[i] + 7u32 * e[i] + 11u32 * f[i];
@@ -115,7 +115,7 @@ fn @compute(64) seven(inv Invocation, a &Array[u32], b &Array[u32], c &Array[u32
 }
 
 // Invocation 37 indexes past the end; every other writes its id plus one
-fn @compute(64) oob(inv Invocation, out &mut Array[u32]) {
+fn @compute(64) oob(inv: Invocation, out: &mut Array[u32]) {
   let i = usize.from(inv.globalId[0]);
   if inv.globalId[0] == 37u32 { out[i + out.len] = 1u32; }
   if i < out.len { out[i] = inv.globalId[0] + 1u32; }
@@ -123,7 +123,7 @@ fn @compute(64) oob(inv Invocation, out &mut Array[u32]) {
 fn oobLine() u32 { srcLine() - 3u32 }
 
 // Invocations 5 and 77 fail an assert; every other writes twice its id
-fn @compute(64) checked(inv Invocation, out &mut Array[u32]) {
+fn @compute(64) checked(inv: Invocation, out: &mut Array[u32]) {
   let g = inv.globalId[0];
   assert(g != 5u32 && g != 77u32, "not five or seventy-seven");
   let i = usize.from(g);
@@ -132,7 +132,7 @@ fn @compute(64) checked(inv Invocation, out &mut Array[u32]) {
 fn checkedLine() u32 { srcLine() - 4u32 }
 
 // Invocation 3 panics
-fn @compute(64) panics(inv Invocation, out &mut Array[u32]) {
+fn @compute(64) panics(inv: Invocation, out: &mut Array[u32]) {
   if inv.globalId[0] == 3u32 { panic("three"); }
   let i = usize.from(inv.globalId[0]);
   if i < out.len { out[i] = 9u32; }
@@ -140,7 +140,7 @@ fn @compute(64) panics(inv Invocation, out &mut Array[u32]) {
 fn panicsLine() u32 { srcLine() - 4u32 }
 
 // Invocation 9 takes a range of its output running 4 past the end
-fn @compute(64) window(inv Invocation, out &mut Array[u32]) {
+fn @compute(64) window(inv: Invocation, out: &mut Array[u32]) {
   let i = usize.from(inv.globalId[0]);
   if i < out.len {
     let end = if inv.globalId[0] == 9u32 { out.len + 4usize } else { i + 1usize };
@@ -154,7 +154,7 @@ fn windowLine() u32 { srcLine() - 4u32 }
 // is a multiple of 3 claims the next slot of 'out' with an atomic counter
 // and writes its value there. Which value lands in which slot is whichever
 // invocation came first; the count and the values kept are not.
-fn @compute(64) compact(inv Invocation, input &Array[u32], count &mut Array[Atomic[u32]], out &mut Array[u32]) {
+fn @compute(64) compact(inv: Invocation, input: &Array[u32], count: &mut Array[Atomic[u32]], out: &mut Array[u32]) {
   let i = usize.from(inv.globalId[0]);
   if i < input.len && input[i] % 3u32 == 0u32 {
     let slot = count[0usize].addOrdered(1u32, MemOrder.Relaxed);
@@ -164,7 +164,7 @@ fn @compute(64) compact(inv Invocation, input &Array[u32], count &mut Array[Atom
 
 // Order-free i32 atomics: the least, the greatest and the sum of the
 // inputs, the same whatever order the invocations come in
-fn @compute(64) extremes(inv Invocation, input &Array[i32], acc &mut Array[Atomic[i32]]) {
+fn @compute(64) extremes(inv: Invocation, input: &Array[i32], acc: &mut Array[Atomic[i32]]) {
   let i = usize.from(inv.globalId[0]);
   if i < input.len {
     let v = input[i];
@@ -179,9 +179,9 @@ fn @compute(64) extremes(inv Invocation, input &Array[i32], acc &mut Array[Atomi
 // adds the tile up in index order. Its barrier makes its twin run a
 // workgroup's invocations together; run one at a time, in order, the last
 // would find every other's write already there too.
-var @workgroup tile Array[u32, 64];
+var @workgroup tile: Array[u32, 64];
 
-fn @compute(64) groupSums(inv Invocation, input &Array[u32], sums &mut Array[u32]) {
+fn @compute(64) groupSums(inv: Invocation, input: &Array[u32], sums: &mut Array[u32]) {
   let g = usize.from(inv.globalId[0]);
   let l = usize.from(inv.localIndex);
   tile[l] = if g < input.len { input[g] } else { 0u32 };
@@ -202,9 +202,9 @@ fn @compute(64) groupSums(inv Invocation, input &Array[u32], sums &mut Array[u32
 // add it in, all wait. An invocation reads what invocations after it in the
 // one-at-a-time order wrote, so only a twin running the workgroup together
 // gives the GPU's answer.
-var @workgroup scanTile Array[u32, 64];
+var @workgroup scanTile: Array[u32, 64];
 
-fn @compute(64) groupScan(inv Invocation, input &Array[u32], out &mut Array[u32]) {
+fn @compute(64) groupScan(inv: Invocation, input: &Array[u32], out: &mut Array[u32]) {
   let g = usize.from(inv.globalId[0]);
   let l = usize.from(inv.localIndex);
   scanTile[l] = if g < input.len { input[g] } else { 0u32 };
@@ -224,9 +224,9 @@ fn @compute(64) groupScan(inv Invocation, input &Array[u32], out &mut Array[u32]
 // the invocations still at work adds in the partial sum of its partner in
 // the upper half, which in the one-at-a-time order has not yet written it.
 // The tree fixes the order of every addition, so the sum is bit for bit.
-var @workgroup sumTile Array[f32, 128];
+var @workgroup sumTile: Array[f32, 128];
 
-fn @compute(128) treeSums(inv Invocation, input &Array[f32], sums &mut Array[f32]) {
+fn @compute(128) treeSums(inv: Invocation, input: &Array[f32], sums: &mut Array[f32]) {
   let g = usize.from(inv.globalId[0]);
   let l = usize.from(inv.localIndex);
   sumTile[l] = if g < input.len { input[g] } else { 0.0 };
@@ -244,7 +244,7 @@ fn @compute(128) treeSums(inv Invocation, input &Array[f32], sums &mut Array[f32
 // mixed seed into 'work', waits at storageBarrier, and then reads the word
 // of its mirror in the workgroup (local (7 - x, 3 - y)), which half the
 // invocations write after them in the one-at-a-time order
-fn @compute(8, 4) mirror(inv Invocation, seeds &Array[u32], work &mut Array[u32], out &mut Array[u32]) {
+fn @compute(8, 4) mirror(inv: Invocation, seeds: &Array[u32], work: &mut Array[u32], out: &mut Array[u32]) {
   let width = inv.groupCount[0] * 8u32;
   let gx = inv.globalId[0];
   let gy = inv.globalId[1];
@@ -260,7 +260,7 @@ fn @compute(8, 4) mirror(inv Invocation, seeds &Array[u32], work &mut Array[u32]
 
 // cone-spirv-begin KERNELS_SPIRV
 // Written by tests/kernels.py from the kernels above (sha256 c3926d00a356d84c1cbbd6038a0e5ff80d46a335582fc4fbe9cdd51704d1ea56): do not edit.
-let KERNELS_SPIRV Array[u32, 13345] = [
+let KERNELS_SPIRV: Array[u32, 13345] = [
   0x07230203u32, 0x00010600u32, 0x002b0017u32, 0x00000f3du32, 0x00000000u32, 0x00020011u32,
   0x00000001u32, 0x0003000eu32, 0x00000000u32, 0x00000001u32, 0x0039000fu32, 0x00000005u32,
   0x00000295u32, 0x6c616373u32, 0x00000065u32, 0x000001d4u32, 0x00000208u32, 0x00000235u32,
@@ -2490,20 +2490,20 @@ let KERNELS_SPIRV Array[u32, 13345] = [
 // cone-spirv-end
 
 // A direct twin of the wrong shape: a struct where 'lengths' binds a slice
-fn wrongShape(inv Invocation, s Scale, out &mut Array[f32]) {}
+fn wrongShape(inv: Invocation, s: Scale, out: &mut Array[f32]) {}
 
 // hash2's twin through the Words adapter
-fn hashTwin(inv Invocation, buffers &Array[Words]) {
+fn hashTwin(inv: Invocation, buffers: &Array[Words]) {
   hash2(inv, buffers[0usize].u32s(), buffers[1usize].u32sMut());
 }
 
 // compact's twin through the Words adapter: the counter its atomic view
-fn compactTwin(inv Invocation, buffers &Array[Words]) {
+fn compactTwin(inv: Invocation, buffers: &Array[Words]) {
   compact(inv, buffers[0usize].u32s(), buffers[1usize].atomicU32s(), buffers[2usize].u32sMut());
 }
 
 // Sort 'w' ascending (insertion sort: a test's few hundred words)
-fn sortWords(w &mut List[u32]) {
+fn sortWords(w: &mut List[u32]) {
   let v = w.viewMut();
   var i = 1usize;
   while i < v.len {
@@ -2518,7 +2518,7 @@ fn sortWords(w &mut List[u32]) {
   }
 }
 
-fn sameWords(a &Array[u32], b &Array[u32]) bool {
+fn sameWords(a: &Array[u32], b: &Array[u32]) bool {
   if a.len != b.len { return false; }
   var i = 0usize;
   while i < a.len {
@@ -2531,7 +2531,7 @@ fn sameWords(a &Array[u32], b &Array[u32]) bool {
 // Run 'kernel' (compact) on its twin over 'input', a zero counter and an
 // output as long as the input, and expect the GPU's count and, sorted, its
 // values kept
-fn compactOnTwin(kernel &Kernel, input &List[u32], gpuCount u32, gpuKept &Array[u32], what &str) {
+fn compactOnTwin(kernel: &Kernel, input: &List[u32], gpuCount: u32, gpuKept: &Array[u32], what: &str) {
   var buffers = List[List[u32]].empty();
   var copy = List[u32].empty();
   var i = 0usize;
@@ -2562,10 +2562,10 @@ fn preference() u32 {
 }
 
 // The 32 bits of an f32 ('as' reinterprets)
-fn bits(f f32) u32 { f as u32 }
+fn bits(f: f32) u32 { f as u32 }
 
 // 'count' zero words
-fn zeros(count usize) List[u32] {
+fn zeros(count: usize) List[u32] {
   var l = List[u32].withCapacity(count);
   var i = 0usize;
   while i < count {
@@ -2576,7 +2576,7 @@ fn zeros(count usize) List[u32] {
 }
 
 // 'count' words, word i 'a * i + b'
-fn ramp(count usize, a u32, b u32) List[u32] {
+fn ramp(count: usize, a: u32, b: u32) List[u32] {
   var l = List[u32].withCapacity(count);
   var i = 0u32;
   while usize.from(i) < count {
@@ -2586,7 +2586,7 @@ fn ramp(count usize, a u32, b u32) List[u32] {
   l
 }
 
-fn sameStr(a &Array[u8], b &Array[u8]) bool {
+fn sameStr(a: &Array[u8], b: &Array[u8]) bool {
   if a.len != b.len { return false; }
   var i = 0usize;
   while i < a.len {
@@ -2598,7 +2598,7 @@ fn sameStr(a &Array[u8], b &Array[u8]) bool {
 
 // Run 'kernel' over 'buffers' on the GPU and its twin on the CPU, and
 // expect every word written the same
-fn parity(device &mut Device, kernel &Kernel, buffers &List[List[u32]], x u32, y u32, what &str) {
+fn parity(device: &mut Device, kernel: &Kernel, buffers: &List[List[u32]], x: u32, y: u32, what: &str) {
   let p = checkParity(device, kernel, buffers, x, y);
   expectBool(p.ran, true, what);
   if !expect(p.exact(), what) {
@@ -2622,7 +2622,7 @@ fn parity(device &mut Device, kernel &Kernel, buffers &List[List[u32]], x u32, y
 // barriers is caught by a run that differs, if any does
 const RUNS = 100u32;
 
-fn parityRuns(device &mut Device, kernel &Kernel, buffers &List[List[u32]], x u32, y u32, what &str) {
+fn parityRuns(device: &mut Device, kernel: &Kernel, buffers: &List[List[u32]], x: u32, y: u32, what: &str) {
   var bad = 0u32;
   var first = new Parity(false, 0u64, 0u64, 0u32, 0u64, 0u32, 0u32);
   var r = 0u32;
@@ -2658,7 +2658,7 @@ fn parityRuns(device &mut Device, kernel &Kernel, buffers &List[List[u32]], x u3
 // A job of one dispatch of 'kernel' (one read-write binding, 'n' words, in
 // 'groups' workgroups), read back, submitted Here and waited for: its
 // Completion, and the words read back
-fn runOne(device &mut Device, works &mut Works, kernel &Kernel, n usize, groups u32, done &mut List[Completion]) {
+fn runOne(device: &mut Device, works: &mut Works, kernel: &Kernel, n: usize, groups: u32, done: &mut List[Completion]) {
   var job = Job.make(device);
   let out = job.give(zeroed(device, n));
   job.dispatch(device, kernel, &[out], groups);
@@ -2668,12 +2668,12 @@ fn runOne(device &mut Device, works &mut Works, kernel &Kernel, n usize, groups 
 }
 
 // Expect failure 'f' to be as described
-fn expectFailure(f &KernelFailure, kernel &str, dispatch u32, count u32, kind u32, line u32, x u32, index u32,
-    what &str) {
+fn expectFailure(f: &KernelFailure, kernel: &str, dispatch: u32, count: u32, kind: u32, line: u32, x: u32, index: u32,
+    what: &str) {
   var ok = sameStr(f.kernel.view(), kernel) && f.dispatch == dispatch && f.count == count && f.kind == kind
     && sameStr(f.file.view(), "kernels.cone") && f.line == line && f.invocation[0usize] == x
     && f.invocation[1usize] == 0u32 && f.invocation[2usize] == 0u32 && f.index == index;
-  let kindText &str = f.kindName();
+  let kindText: &str = f.kindName();
   expect(kindText.len() > 0usize && kindText != "unknown failure", "a failure's kind is named");
   if !expect(ok, what) {
     printStr("  got: ");

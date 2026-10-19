@@ -20,11 +20,11 @@ mod concurrency_parallel_each_closure_alias;
 import collections use *;
 import actors;
 
-struct Rgb { pub r f32; pub g f32; }
-struct Texel { pub h f32; pub c Rgb; }
-struct Params { scale f32; bias f32; }
+struct Rgb { pub r: f32; pub g: f32; }
+struct Texel { pub h: f32; pub c: Rgb; }
+struct Params { scale: f32; bias: f32; }
 
-pub fn fillGrid[T, F fn(x i32, y i32) T](out &uni List[T], width usize, f &F) {
+pub fn fillGrid[T, F: fn(x: i32, y: i32) T](out: &uni List[T], width: usize, f: &F) {
   parallel each y, row in out.mutChunks(width).indexed() {
     each x, t in row.mutItems().indexed() {
       *t = f(i32.from(x), i32.from(y));       //~ ErrorParAlias "borrows 'scale' (&ro f32), which could point at one of them"
@@ -36,31 +36,31 @@ pub fn fillGrid[T, F fn(x i32, y i32) T](out &uni List[T], width usize, f &F) {
 }
 
 // A default capture of the f32 parameter, borrowed
-fn caseA(out &uni List[f32], scale f32) {
+fn caseA(out: &uni List[f32], scale: f32) {
   fillGrid(out, 4usize, (x, y) => scale * f32.from(x));
 }
 
 // A separate List[f32], captured by default and read by index
-fn caseC(out &uni List[f32], table &List[f32]) {
+fn caseC(out: &uni List[f32], table: &List[f32]) {
   fillGrid(out, 4usize, (x, y) => *table[usize.from(x)]);
 }
 
 // An output struct holding an f32, and an f32 borrowed
-fn caseTexel(out &uni List[Texel], scale f32) {
+fn caseTexel(out: &uni List[Texel], scale: f32) {
   fillGrid(out, 4usize, (x, y) => new Texel(scale * f32.from(x), new Rgb(0., 0.)));
 }
 
 // A local, not a parameter
-fn caseLocal(out &uni List[f32]) {
+fn caseLocal(out: &uni List[f32]) {
   let depth = 2.f;
   fillGrid(out, 4usize, (x, y) => depth * f32.from(x));
 }
 
 // Free: a borrowed i32, a borrowed struct of f32 values, a copy by the state list, and
 // a separate list of another type
-fn caseFree(out &uni List[f32], n i32, p &Params, scale f32, ids &List[u32]) {
+fn caseFree(out: &uni List[f32], n: i32, p: &Params, scale: f32, ids: &List[u32]) {
   fillGrid(out, 4usize, (x, y) => f32.from(n + x));
   fillGrid(out, 4usize, (x, y) => p.scale * f32.from(x));
-  fillGrid(out, 4usize, fn(x i32, y i32) [scale] f32 { scale * f32.from(x) });
+  fillGrid(out, 4usize, fn(x: i32, y: i32) [scale] f32 { scale * f32.from(x) });
   fillGrid(out, 4usize, (x, y) => f32.from(*ids[usize.from(x)]));
 }

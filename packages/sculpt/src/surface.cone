@@ -45,34 +45,34 @@ pub const CullBack = 2u32;
 // point, the weights on the triangle's three corners, how far (from the query
 // point, or along the ray), and the triangle's unit normal
 pub struct SurfaceHit {
-  pub tri u32;
-  pub face u32;
-  pub point Vec3;
-  pub bary DVec3;           // in f64, so blended values are rounded once
-  pub distance f32;
-  pub normal Vec3;
+  pub tri: u32;
+  pub face: u32;
+  pub point: Vec3;
+  pub bary: DVec3;           // in f64, so blended values are rounded once
+  pub distance: f32;
+  pub normal: Vec3;
 
   pub fn none() SurfaceHit {
     new SurfaceHit(NoIndex, NoIndex, new Vec3(0., 0., 0.), new DVec3(0.0, 0.0, 0.0), 0., new Vec3(0., 0., 0.))
   }
-  pub fn found(self &) bool { tri != NoIndex }
+  pub fn found(self: &) bool { tri != NoIndex }
 }
 
 pub struct SurfaceIndex {
-  pos List[DVec3];          // per vertex
-  nrm List[Vec3];           // per vertex: its unit normal
-  tv List[u32];             // per triangle corner (3 a triangle): its vertex
-  tc List[u32];             // per triangle corner: the mesh's corner (half-edge)
-  tf List[u32];             // per triangle: its face
-  tlo List[Vec3];           // per triangle: its box
-  thi List[Vec3];
-  tree Bvh;                 // over the triangles
-  vlist List[u32];          // the vertices some triangle uses
-  vtree Bvh;                // over those
-  vtri List[u32];           // per vertex: the first triangle using it, NoIndex for none
+  pos: List[DVec3];          // per vertex
+  nrm: List[Vec3];           // per vertex: its unit normal
+  tv: List[u32];             // per triangle corner (3 a triangle): its vertex
+  tc: List[u32];             // per triangle corner: the mesh's corner (half-edge)
+  tf: List[u32];             // per triangle: its face
+  tlo: List[Vec3];           // per triangle: its box
+  thi: List[Vec3];
+  tree: Bvh;                 // over the triangles
+  vlist: List[u32];          // the vertices some triangle uses
+  vtree: Bvh;                // over those
+  vtri: List[u32];           // per vertex: the first triangle using it, NoIndex for none
 
   // The index of a mesh
-  pub fn of(m &PolyMesh) SurfaceIndex {
+  pub fn of(m: &PolyMesh) SurfaceIndex {
     let nv = m.vertexCount();
     var pos = List[DVec3].withCapacity(nv);
     var v = 0usize;
@@ -141,24 +141,24 @@ pub struct SurfaceIndex {
   // The index over a TriMesh's triangles (voxel remesh's), sharing its
   // triangulation and tree: it answers 'nearest' and 'ray' only, having no
   // vertex normals or vertex tree
-  fn ofTriMesh(t &TriMesh, tree &Bvh) SurfaceIndex {
+  fn ofTriMesh(t: &TriMesh, tree: &Bvh) SurfaceIndex {
     new SurfaceIndex(copyList(&t.pos), List[Vec3].empty(), copyList(&t.tv), copyList(&t.tc), copyList(&t.tf),
       copyList(&t.tlo), copyList(&t.thi),
       new Bvh(copyList(&tree.lo), copyList(&tree.hi), copyList(&tree.first), copyList(&tree.count), copyList(&tree.items)),
       List[u32].empty(), Bvh.build(&List[Vec3].empty(), &List[Vec3].empty()), List[u32].empty())
   }
 
-  pub fn triangleCount(self &) usize { tf.len() }
+  pub fn triangleCount(self: &) usize { tf.len() }
 
   // Triangle t's corner positions
-  fn corners(self &, t usize, a &mut DVec3, b &mut DVec3, c &mut DVec3) {
+  fn corners(self: &, t: usize, a: &mut DVec3, b: &mut DVec3, c: &mut DVec3) {
     *a = *pos[usize.from(*tv[3usize * t])];
     *b = *pos[usize.from(*tv[3usize * t + 1usize])];
     *c = *pos[usize.from(*tv[3usize * t + 2usize])];
   }
 
   // Triangle t's unit normal, (0, 0, 0) for a triangle of no area
-  pub fn triangleNormal(self &, t u32) Vec3 {
+  pub fn triangleNormal(self: &, t: u32) Vec3 {
     var a = new DVec3(0.0, 0.0, 0.0);
     var b = a;
     var c = a;
@@ -169,7 +169,7 @@ pub struct SurfaceIndex {
   }
 
   // A hit on triangle t at weights w, as seen from p
-  fn hitAt(self &, t usize, w DVec3, p DVec3, dist f64) SurfaceHit {
+  fn hitAt(self: &, t: usize, w: DVec3, p: DVec3, dist: f64) SurfaceHit {
     var a = new DVec3(0.0, 0.0, 0.0);
     var b = a;
     var c = a;
@@ -179,14 +179,14 @@ pub struct SurfaceIndex {
   }
 
   // The surface point nearest p, within 'maxDistance' of it (0 or less: any)
-  pub fn nearest(self &, p Vec3, maxDistance f32) SurfaceHit {
+  pub fn nearest(self: &, p: Vec3, maxDistance: f32) SurfaceHit {
     var stack = List[u32].empty();
     self.nearestWith(p, maxDistance, &mut stack)
   }
 
   // The same with the walk's stack handed in (cleared first), so a loop of
   // queries makes none
-  pub fn nearestWith(self &, p Vec3, maxDistance f32, stack &mut List[u32]) SurfaceHit {
+  pub fn nearestWith(self: &, p: Vec3, maxDistance: f32, stack: &mut List[u32]) SurfaceHit {
     if tf.len() == 0usize { return SurfaceHit.none(); }
     let pd = DVec3.from(p);
     var bestD = if maxDistance > 0. { f64.from(maxDistance) * f64.from(maxDistance) } else { 1.0e300 };
@@ -239,12 +239,12 @@ pub struct SurfaceIndex {
   // The vertex nearest p that a triangle uses, within 'maxDistance' (0 or
   // less: any), as a hit with weight 1 on that vertex's corner of the first
   // triangle that uses it
-  pub fn nearestVertex(self &, p Vec3, maxDistance f32) SurfaceHit {
+  pub fn nearestVertex(self: &, p: Vec3, maxDistance: f32) SurfaceHit {
     var stack = List[u32].empty();
     self.nearestVertexWith(p, maxDistance, &mut stack)
   }
 
-  pub fn nearestVertexWith(self &, p Vec3, maxDistance f32, stack &mut List[u32]) SurfaceHit {
+  pub fn nearestVertexWith(self: &, p: Vec3, maxDistance: f32, stack: &mut List[u32]) SurfaceHit {
     if vlist.len() == 0usize { return SurfaceHit.none(); }
     let pd = DVec3.from(p);
     var bestD = if maxDistance > 0. { f64.from(maxDistance) * f64.from(maxDistance) } else { 1.0e300 };
@@ -292,12 +292,12 @@ pub struct SurfaceIndex {
   // The first triangle the ray from 'origin' along 'dir' meets, within
   // 'maxDistance' along it (0 or less: any), the distance measured along the
   // unit direction; none if 'dir' has no length
-  pub fn ray(self &, origin Vec3, dir Vec3, maxDistance f32, cull u32) SurfaceHit {
+  pub fn ray(self: &, origin: Vec3, dir: Vec3, maxDistance: f32, cull: u32) SurfaceHit {
     var stack = List[u32].empty();
     self.rayWith(origin, dir, maxDistance, cull, &mut stack)
   }
 
-  pub fn rayWith(self &, origin Vec3, dir Vec3, maxDistance f32, cull u32, stack &mut List[u32]) SurfaceHit {
+  pub fn rayWith(self: &, origin: Vec3, dir: Vec3, maxDistance: f32, cull: u32, stack: &mut List[u32]) SurfaceHit {
     if tf.len() == 0usize { return SurfaceHit.none(); }
     let o = DVec3.from(origin);
     let dl = DVec3.from(dir).length();
@@ -342,7 +342,7 @@ pub struct SurfaceIndex {
 
   // The nearer of the rays from p along dir and along -dir (the one along
   // dir on a tie)
-  pub fn rayBothWays(self &, p Vec3, dir Vec3, maxDistance f32, cull u32, stack &mut List[u32]) SurfaceHit {
+  pub fn rayBothWays(self: &, p: Vec3, dir: Vec3, maxDistance: f32, cull: u32, stack: &mut List[u32]) SurfaceHit {
     let fwd = self.rayWith(p, dir, maxDistance, cull, stack);
     let back = self.rayWith(p, new Vec3(-dir.x, -dir.y, -dir.z), maxDistance, cull, stack);
     if fwd.tri == NoIndex { return back; }
@@ -352,7 +352,7 @@ pub struct SurfaceIndex {
 
   // How far along the ray from 'origin' along 'dir' triangle t is met, -1 for
   // a miss: the test 'ray' makes of every triangle it reaches
-  pub fn rayOnTri(self &, t u32, origin Vec3, dir Vec3) f32 {
+  pub fn rayOnTri(self: &, t: u32, origin: Vec3, dir: Vec3) f32 {
     var a = new DVec3(0.0, 0.0, 0.0);
     var b = a;
     var c = a;
@@ -364,7 +364,7 @@ pub struct SurfaceIndex {
   }
 
   // The point of triangle t nearest p
-  pub fn nearestOnTri(self &, t u32, p Vec3) SurfaceHit {
+  pub fn nearestOnTri(self: &, t: u32, p: Vec3) SurfaceHit {
     var a = new DVec3(0.0, 0.0, 0.0);
     var b = a;
     var c = a;
@@ -381,7 +381,7 @@ pub struct SurfaceIndex {
   // dot product; the nearer, then the lower number, on a tie), as the point
   // of it nearest p: the "best matching normal" choice of Blender's Data
   // Transfer. Triangles of no area are never chosen.
-  pub fn bestNormal(self &, p Vec3, n Vec3, maxDistance f32) SurfaceHit {
+  pub fn bestNormal(self: &, p: Vec3, n: Vec3, maxDistance: f32) SurfaceHit {
     var stack = List[u32].empty();
     let near = self.nearestWith(p, maxDistance, &mut stack);
     if near.tri == NoIndex { return near; }
@@ -409,7 +409,7 @@ pub struct SurfaceIndex {
 
   // A hit's normal interpolated from the vertex normals, unit ((0, 0, 0) if
   // they cancel); the triangle's own for a hit that found nothing
-  pub fn smoothNormal(self &, hit &SurfaceHit) Vec3 {
+  pub fn smoothNormal(self: &, hit: &SurfaceHit) Vec3 {
     if hit.tri == NoIndex { return hit.normal; }
     let t = usize.from(hit.tri);
     let n = *nrm[usize.from(*tv[3usize * t])] * f32.from(hit.bary.x) + *nrm[usize.from(*tv[3usize * t + 1usize])] * f32.from(hit.bary.y)
@@ -419,11 +419,11 @@ pub struct SurfaceIndex {
   }
 
   // Vertex v's unit normal
-  pub fn vertexNormal(self &, v u32) Vec3 { *nrm[usize.from(v)] }
+  pub fn vertexNormal(self: &, v: u32) Vec3 { *nrm[usize.from(v)] }
 
   // The surface point whose interpolated normal line passes through p (see
   // the top), within 'maxDistance' of p
-  pub fn targetNormal(self &, p Vec3, maxDistance f32) SurfaceHit {
+  pub fn targetNormal(self: &, p: Vec3, maxDistance: f32) SurfaceHit {
     var stack = List[u32].empty();
     let near = self.nearestWith(p, maxDistance, &mut stack);
     if near.tri == NoIndex { return near; }
@@ -477,7 +477,7 @@ pub struct SurfaceIndex {
   // normal line passes through p, by Gauss-Newton on (u, w) from the centre;
   // the squared distance from p to that point, or -1 for none inside the
   // triangle
-  fn solveNormalLine(self &, t usize, p DVec3, wts &mut DVec3) f64 {
+  fn solveNormalLine(self: &, t: usize, p: DVec3, wts: &mut DVec3) f64 {
     var a = new DVec3(0.0, 0.0, 0.0);
     var b = a;
     var c = a;
@@ -533,7 +533,7 @@ pub struct SurfaceIndex {
 // ---- queries' pieces ----
 
 // The squared distance from p to the box from lo to hi
-fn boxDist2(p DVec3, lo Vec3, hi Vec3) f64 {
+fn boxDist2(p: DVec3, lo: Vec3, hi: Vec3) f64 {
   let lx = f64.from(lo.x);
   let ly = f64.from(lo.y);
   let lz = f64.from(lo.z);
@@ -547,7 +547,7 @@ fn boxDist2(p DVec3, lo Vec3, hi Vec3) f64 {
 }
 
 // Whether the ray (o, d) meets the box from lo to hi at a distance of at most tmax
-fn rayMeetsBox(o DVec3, d DVec3, lo Vec3, hi Vec3, tmax f64) bool {
+fn rayMeetsBox(o: DVec3, d: DVec3, lo: Vec3, hi: Vec3, tmax: f64) bool {
   var t0 = 0.0;
   var t1 = tmax;
   var axis = 0u32;
@@ -575,7 +575,7 @@ fn rayMeetsBox(o DVec3, d DVec3, lo Vec3, hi Vec3, tmax f64) bool {
 // weights of the point in 'w'; -1 for a miss, a triangle of no area, a ray
 // parallel to it, or one culled. The plane's normal n = (b - a) x (c - a)
 // faces the ray's origin when n . d < 0
-fn rayTriangle(o DVec3, d DVec3, a DVec3, b DVec3, c DVec3, cull u32, w &mut DVec3) f64 {
+fn rayTriangle(o: DVec3, d: DVec3, a: DVec3, b: DVec3, c: DVec3, cull: u32, w: &mut DVec3) f64 {
   let n = crossD(b - a, c - a);
   let n2 = n.dot(n);
   if !(n2 > 0.0) { return -1.0; }

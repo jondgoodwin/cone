@@ -9,49 +9,49 @@
 mod enum_typecheck_trait_pattern;
 
 trait Measured {
-  pub fn size(self &) i32;
+  pub fn size(self: &) i32;
 }
 
 trait Grower {
-  pub fn grow(self &mut, n i32);
+  pub fn grow(self: &mut, n: i32);
 }
 
 trait Named {
-  pub fn label(self &) i32;
+  pub fn label(self: &) i32;
 }
 
 trait Gauge {
-  pub fn level(self &) i32;
+  pub fn level(self: &) i32;
 }
 
 // Nobody declares it
 trait Nothing {
-  pub fn nothing(self &) i32;
+  pub fn nothing(self: &) i32;
 }
 
 // Declared on the whole enum, which no variant has a copy of
 trait Wholly {
-  pub fn whole(self &) i32;
+  pub fn whole(self: &) i32;
 }
 
 enum Shape {
   struct Circle is Measured, Grower {
-    pub r i32;
-    pub fn size(self &) i32 {r * 10}
-    pub fn grow(self &mut, n i32) {r = r + n;}
+    pub r: i32;
+    pub fn size(self: &) i32 {r * 10}
+    pub fn grow(self: &mut, n: i32) {r = r + n;}
   }
   struct Square is Measured {
-    pub s i32;
-    pub fn size(self &) i32 {s * 100}
+    pub s: i32;
+    pub fn size(self: &) i32 {s * 100}
   }
   struct Third {
-    pub t i32;
+    pub t: i32;
   }
-  pub fn whole(self &Shape) i32 {1}
+  pub fn whole(self: &Shape) i32 {1}
 }
 
 // A variant after a trait that names it
-fn variantAfter(s &Shape) i32 {
+fn variantAfter(s: &Shape) i32 {
   match s {
     case let m Measured {m.size()}
     case is Circle {1}         //~ ErrorMatchUnreachable
@@ -60,7 +60,7 @@ fn variantAfter(s &Shape) i32 {
 }
 
 // A trait after the variants it names
-fn traitAfter(s &Shape) i32 {
+fn traitAfter(s: &Shape) i32 {
   match s {
     case is Circle {1}
     case is Square {2}
@@ -70,7 +70,7 @@ fn traitAfter(s &Shape) i32 {
 }
 
 // The same trait twice
-fn twice(s &Shape) i32 {
+fn twice(s: &Shape) i32 {
   match s {
     case is Measured {1}
     case is Measured {2}         //~ ErrorMatchUnreachable
@@ -79,7 +79,7 @@ fn twice(s &Shape) i32 {
 }
 
 // An 'else' after the trait and the variant left cover everything
-fn elseAfter(s &Shape) i32 {
+fn elseAfter(s: &Shape) i32 {
   match s {
     case is Measured {1}
     case is Third {7}
@@ -88,7 +88,7 @@ fn elseAfter(s &Shape) i32 {
 }
 
 // What a trait case leaves out has to be covered
-fn leavesOut(s &Shape) i32 {
+fn leavesOut(s: &Shape) i32 {
   match s {         //~ ErrorMatchNotExhaustive "does not cover Third"
                     //~^ ErrorInvType follow-on
     case is Measured {1}
@@ -96,7 +96,7 @@ fn leavesOut(s &Shape) i32 {
 }
 
 // A trait that no variant complies with matches nothing
-fn complyingNone(s &Shape) i32 {
+fn complyingNone(s: &Shape) i32 {
   match s {
     case is Nothing {1}         //~ ErrorPatTraitNone "No variant of Shape complies with Nothing"
     else {0}
@@ -104,7 +104,7 @@ fn complyingNone(s &Shape) i32 {
 }
 
 // ... and a method over the whole enum belongs to no variant
-fn wholeEnumMethod(s &Shape) i32 {
+fn wholeEnumMethod(s: &Shape) i32 {
   match s {
     case is Wholly {1}         //~ ErrorPatTraitNone "a method over the whole enum"
     else {0}
@@ -112,7 +112,7 @@ fn wholeEnumMethod(s &Shape) i32 {
 }
 
 // A virtual reference is a borrow of something: a value matched has none to lend
-fn byValue(s Shape) i32 {
+fn byValue(s: Shape) i32 {
   match s {
     case let m Measured {m.size()}         //~ ErrorPatTraitBind "only a borrowed reference can lend one"
     case is Third {7}
@@ -120,7 +120,7 @@ fn byValue(s Shape) i32 {
 }
 
 // ... nor has an owner, which can only be asked
-fn owner(s Rc[imm, Shape]) i32 {
+fn owner(s: Rc[imm, Shape]) i32 {
   match s {
     case let m Measured {m.size()}         //~ ErrorPatTraitBind "only a borrowed reference can lend one"
     case is Third {7}
@@ -128,7 +128,7 @@ fn owner(s Rc[imm, Shape]) i32 {
 }
 
 // ... and the binding is a virtual reference, not a plain one
-fn plainReference(s &Shape) i32 {
+fn plainReference(s: &Shape) i32 {
   match s {         //~ ErrorNoElse
                     //~^ ErrorInvType follow-on
     case let m &Measured {m.size()}         //~ ErrorPatTraitBind "not a plain reference to Measured"
@@ -138,7 +138,7 @@ fn plainReference(s &Shape) i32 {
 
 // The matched reference supplies the permission: a read-only one lends a read-only
 // virtual reference, which cannot call what writes
-fn readOnly(s &Shape) i32 {
+fn readOnly(s: &Shape) i32 {
   match s {
     case let g Grower {g.grow(1); 1}         //~ ErrorNoCandidate "accepts the call's arguments"
     else {0}
@@ -147,7 +147,7 @@ fn readOnly(s &Shape) i32 {
 
 // An open trait has no trait patterns: its values were made from concrete types, and it
 // can only be narrowed back to one
-fn open(n &<Named) i32 {
+fn open(n: &<Named) i32 {
   match n {
     case let g Gauge {g.level()}         //~ ErrorPatTrait "A trait pattern is for an enum"
                                           //~^ ErrorNoMeth follow-on
@@ -155,7 +155,7 @@ fn open(n &<Named) i32 {
   }
 }
 
-fn openTest(n &<Named) i32 {
+fn openTest(n: &<Named) i32 {
   if n is Gauge {1}         //~ ErrorPatTrait "A trait pattern is for an enum"
   else {0}
 }
@@ -163,20 +163,20 @@ fn openTest(n &<Named) i32 {
 // An enum laid out as a pointer has no tag to choose a vtable by: it can be tested, not bound
 enum Link {
   struct Node is Measured {
-    pub p &i32;
-    pub fn size(self &) i32 {*p}
+    pub p: &i32;
+    pub fn size(self: &) i32 {*p}
   }
   struct Empty {}
 }
 
-fn pointerLayout(l &Link) i32 {
+fn pointerLayout(l: &Link) i32 {
   match l {
     case is Measured {1}
     case is Empty {0}
   }
 }
 
-fn pointerLayoutBound(l &Link) i32 {
+fn pointerLayoutBound(l: &Link) i32 {
   match l {
     case let m Measured {m.size()}         //~ ErrorPatTraitBind "laid out as a pointer"
     case is Empty {0}

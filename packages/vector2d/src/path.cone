@@ -16,11 +16,11 @@
 const V2_PI = 3.14159265f;
 const V2_TWO_PI = 6.2831853f;
 
-fn minf(a f32, b f32) f32 { if a < b { return a; } b }
-fn maxf(a f32, b f32) f32 { if a > b { return a; } b }
-fn absf(a f32) f32 { if a < 0. { return -a; } a }
-fn clampf(v f32, lo f32, hi f32) f32 { if v < lo { return lo; } if v > hi { return hi; } v }
-fn ceilCount(v f32) u32 {
+fn minf(a: f32, b: f32) f32 { if a < b { return a; } b }
+fn maxf(a: f32, b: f32) f32 { if a > b { return a; } b }
+fn absf(a: f32) f32 { if a < 0. { return -a; } a }
+fn clampf(v: f32, lo: f32, hi: f32) f32 { if v < lo { return lo; } if v > hi { return hi; } v }
+fn ceilCount(v: f32) u32 {
   if v <= 1. { return 1u32; }
   if v > 400. { return 400u32; }
   u32.from(libc.ceilf(v))
@@ -28,30 +28,30 @@ fn ceilCount(v f32) u32 {
 
 // An affine transform of the plane: x' = a x + c y + e, y' = b x + d y + f
 pub struct Mat2D {
-  pub a f32;
-  pub b f32;
-  pub c f32;
-  pub d f32;
-  pub e f32;
-  pub f f32;
+  pub a: f32;
+  pub b: f32;
+  pub c: f32;
+  pub d: f32;
+  pub e: f32;
+  pub f: f32;
 
   pub fn identity() Mat2D { new Mat2D(1., 0., 0., 1., 0., 0.) }
-  pub fn translation(x f32, y f32) Mat2D { new Mat2D(1., 0., 0., 1., x, y) }
-  pub fn scaling(x f32, y f32) Mat2D { new Mat2D(x, 0., 0., y, 0., 0.) }
+  pub fn translation(x: f32, y: f32) Mat2D { new Mat2D(1., 0., 0., 1., x, y) }
+  pub fn scaling(x: f32, y: f32) Mat2D { new Mat2D(x, 0., 0., y, 0., 0.) }
   // Turned 'angle' radians (clockwise on a y-down screen)
-  pub fn rotation(angle f32) Mat2D {
+  pub fn rotation(angle: f32) Mat2D {
     let c = cos(angle);
     let s = sin(angle);
     new Mat2D(c, s, -s, c, 0., 0.)
   }
 
   // self applied after 'o' (o first)
-  pub fn then(self, o Mat2D) Mat2D {
+  pub fn then(self, o: Mat2D) Mat2D {
     new Mat2D(a * o.a + c * o.b, b * o.a + d * o.b, a * o.c + c * o.d, b * o.c + d * o.d,
       a * o.e + c * o.f + e, b * o.e + d * o.f + f)
   }
 
-  pub fn apply(self, p Vec2) Vec2 { new Vec2(a * p.x + c * p.y + e, b * p.x + d * p.y + f) }
+  pub fn apply(self, p: Vec2) Vec2 { new Vec2(a * p.x + c * p.y + e, b * p.x + d * p.y + f) }
 
   // The factor lengths are scaled by on average: the square root of |determinant|
   pub fn meanScale(self) f32 { absf(a * d - b * c).sqrt() }
@@ -65,38 +65,38 @@ pub const CMD_CLOSE = 4u8;
 
 // A flattened subpath
 pub struct Subpath {
-  pub pts List[Vec2];
-  pub closed bool;
+  pub pts: List[Vec2];
+  pub closed: bool;
 }
 
 pub struct VectorPath {
-  pub cmds List[u8];
-  pub pts List[Vec2];
-  cur Vec2;
-  start Vec2;
+  pub cmds: List[u8];
+  pub pts: List[Vec2];
+  cur: Vec2;
+  start: Vec2;
 
   pub fn make() VectorPath { new VectorPath(List[u8].empty(), List[Vec2].empty(), new Vec2(0., 0.), new Vec2(0., 0.)) }
 
-  pub fn clear(self &mut) {
+  pub fn clear(self: &mut) {
     cmds.clear();
     pts.clear();
   }
 
-  pub fn moveTo(self &mut, x f32, y f32) {
+  pub fn moveTo(self: &mut, x: f32, y: f32) {
     cmds.push(CMD_MOVE);
     pts.push(new Vec2(x, y));
     cur = new Vec2(x, y);
     start = cur;
   }
 
-  pub fn lineTo(self &mut, x f32, y f32) {
+  pub fn lineTo(self: &mut, x: f32, y: f32) {
     if cmds.len() == 0usize { self.moveTo(x, y); return; }
     cmds.push(CMD_LINE);
     pts.push(new Vec2(x, y));
     cur = new Vec2(x, y);
   }
 
-  pub fn quadTo(self &mut, cx f32, cy f32, x f32, y f32) {
+  pub fn quadTo(self: &mut, cx: f32, cy: f32, x: f32, y: f32) {
     if cmds.len() == 0usize { self.moveTo(cx, cy); }
     cmds.push(CMD_QUAD);
     pts.push(new Vec2(cx, cy));
@@ -104,7 +104,7 @@ pub struct VectorPath {
     cur = new Vec2(x, y);
   }
 
-  pub fn cubicTo(self &mut, c1x f32, c1y f32, c2x f32, c2y f32, x f32, y f32) {
+  pub fn cubicTo(self: &mut, c1x: f32, c1y: f32, c2x: f32, c2y: f32, x: f32, y: f32) {
     if cmds.len() == 0usize { self.moveTo(c1x, c1y); }
     cmds.push(CMD_CUBIC);
     pts.push(new Vec2(c1x, c1y));
@@ -113,18 +113,18 @@ pub struct VectorPath {
     cur = new Vec2(x, y);
   }
 
-  pub fn close(self &mut) {
+  pub fn close(self: &mut) {
     if cmds.len() == 0usize { return; }
     cmds.push(CMD_CLOSE);
     cur = start;
   }
 
-  pub fn isEmpty(self &) bool { cmds.len() == 0usize }
-  pub fn current(self &) Vec2 { cur }
+  pub fn isEmpty(self: &) bool { cmds.len() == 0usize }
+  pub fn current(self: &) Vec2 { cur }
 
   // A circular arc about (cx, cy) from angle a0 to a1 (radians; a1 < a0 runs
   // the other way), joined to the current point by a line (or starting the path)
-  pub fn arc(self &mut, cx f32, cy f32, r f32, a0 f32, a1 f32) {
+  pub fn arc(self: &mut, cx: f32, cy: f32, r: f32, a0: f32, a1: f32) {
     let sweep = a1 - a0;
     var pieces = u32.from(libc.ceilf(absf(sweep) / (V2_PI * 0.5) - 0.0001));
     if pieces < 1u32 { pieces = 1u32; }
@@ -147,7 +147,7 @@ pub struct VectorPath {
     }
   }
 
-  pub fn ellipse(self &mut, cx f32, cy f32, rx f32, ry f32) {
+  pub fn ellipse(self: &mut, cx: f32, cy: f32, rx: f32, ry: f32) {
     let k = 0.5522847498f;
     self.moveTo(cx + rx, cy);
     self.cubicTo(cx + rx, cy + ry * k, cx + rx * k, cy + ry, cx, cy + ry);
@@ -157,9 +157,9 @@ pub struct VectorPath {
     self.close();
   }
 
-  pub fn circle(self &mut, cx f32, cy f32, r f32) { self.ellipse(cx, cy, r, r); }
+  pub fn circle(self: &mut, cx: f32, cy: f32, r: f32) { self.ellipse(cx, cy, r, r); }
 
-  pub fn rect(self &mut, x f32, y f32, w f32, h f32) {
+  pub fn rect(self: &mut, x: f32, y: f32, w: f32, h: f32) {
     self.moveTo(x, y);
     self.lineTo(x + w, y);
     self.lineTo(x + w, y + h);
@@ -168,7 +168,7 @@ pub struct VectorPath {
   }
 
   // A rectangle with corners of radius r (held to half the shorter side)
-  pub fn roundRect(self &mut, x f32, y f32, w f32, h f32, radius f32) {
+  pub fn roundRect(self: &mut, x: f32, y: f32, w: f32, h: f32, radius: f32) {
     let r = minf(radius, minf(w, h) * 0.5);
     if r <= 0. { self.rect(x, y, w, h); return; }
     let k = 0.5522847498f * r;
@@ -185,7 +185,7 @@ pub struct VectorPath {
   }
 
   // The path through 'points', closed or not
-  pub fn polyline(self &mut, points &Array[Vec2], closed bool) {
+  pub fn polyline(self: &mut, points: &Array[Vec2], closed: bool) {
     var i = 0usize;
     while i < points.len {
       if i == 0usize { self.moveTo(points[i].x, points[i].y); } else { self.lineTo(points[i].x, points[i].y); }
@@ -195,7 +195,7 @@ pub struct VectorPath {
   }
 }
 
-fn pushPoint(c &mut Subpath, p Vec2) {
+fn pushPoint(c: &mut Subpath, p: Vec2) {
   let n = c.pts.len();
   if n > 0usize {
     let q = *c.pts[n - 1usize];

@@ -24,21 +24,21 @@ mod collection_flow_freeze_inferred;
 import collections use *;
 import libc;
 
-struct Pt { pub x i64; pub y i64; }
+struct Pt { pub x: i64; pub y: i64; }
 
 // Written above the type it uses, and the type's methods declared in the other
 // order: which types change shape is read from the bodies wherever they are
-fn earlyUse(w &mut Early, p Pt) i64 {
+fn earlyUse(w: &mut Early, p: Pt) i64 {
   let e = w.first();
   w.add(p);                     //~ ErrorShapeReshape
   e.x
 }
 
 struct Early {
-  items List[Pt];
+  items: List[Pt];
 
-  fn add(self &mut, p Pt) { items.push(p); }
-  fn first(self &) &Pt { items[0usize] }
+  fn add(self: &mut, p: Pt) { items.push(p); }
+  fn first(self: &) &Pt { items[0usize] }
 }
 
 // A function its type's only writing method calls, which calls it back: its
@@ -47,16 +47,16 @@ struct Early {
 fn make() Late { new Late(List[Pt].empty()) }
 
 struct Late {
-  items List[Pt];
+  items: List[Pt];
 
-  fn first(self &) &Pt { items[0usize] }
-  fn add(self &mut, p Pt) {
+  fn first(self: &) &Pt { items[0usize] }
+  fn add(self: &mut, p: Pt) {
     items.push(p);
     if items.len() > 100usize { touch(self, p); }
   }
 }
 
-fn touch(l &mut Late, p Pt) i64 {
+fn touch(l: &mut Late, p: Pt) i64 {
   let e = l.first();
   l.add(p);                     //~ ErrorShapeReshape
   e.x
@@ -64,13 +64,13 @@ fn touch(l &mut Late, p Pt) i64 {
 
 // A struct wrapping a List
 struct Bag {
-  items List[Pt];
+  items: List[Pt];
 
-  fn first(self &) &Pt { items[0usize] }
-  fn add(self &mut, p Pt) { items.push(p); }
+  fn first(self: &) &Pt { items[0usize] }
+  fn add(self: &mut, p: Pt) { items.push(p); }
 }
 
-fn bagThenAdd(bag &mut Bag, p Pt) i64 {
+fn bagThenAdd(bag: &mut Bag, p: Pt) i64 {
   let e = bag.first();
   bag.add(p);                   //~ ErrorShapeReshape
   e.x
@@ -78,13 +78,13 @@ fn bagThenAdd(bag &mut Bag, p Pt) i64 {
 
 // A struct holding one: the methods are the Bag's, called through a field
 struct Shelf {
-  bag Bag;
+  bag: Bag;
 
-  fn first(self &) &Pt { bag.first() }
-  fn add(self &mut, p Pt) { bag.add(p); }
+  fn first(self: &) &Pt { bag.first() }
+  fn add(self: &mut, p: Pt) { bag.add(p); }
 }
 
-fn shelfThenAdd(shelf &mut Shelf, p Pt) i64 {
+fn shelfThenAdd(shelf: &mut Shelf, p: Pt) i64 {
   let e = shelf.first();
   shelf.add(p);                 //~ ErrorShapeReshape
   e.x
@@ -92,9 +92,9 @@ fn shelfThenAdd(shelf &mut Shelf, p Pt) i64 {
 
 // Through a field of 'self'
 struct Holder {
-  bag Bag;
+  bag: Bag;
 
-  fn growWhileHeld(self &mut, p Pt) i64 {
+  fn growWhileHeld(self: &mut, p: Pt) i64 {
     let e = bag.first();
     bag.add(p);                 //~ ErrorShapeReshape
     e.x
@@ -103,13 +103,13 @@ struct Holder {
 
 // A block owned through a pointer field
 struct Raw {
-  ptr *i64;
-  used usize;
-  cap usize;
+  ptr: *i64;
+  used: usize;
+  cap: usize;
 
-  fn init(self &new) { *self = new Raw(null, 0usize, 0usize); }
-  fn first(self &) &i64 { ptr as &i64 }
-  fn add(self &mut, v i64) {
+  fn init(self: &new) { *self = new Raw(null, 0usize, 0usize); }
+  fn first(self: &) &i64 { ptr as &i64 }
+  fn add(self: &mut, v: i64) {
     if used == cap {
       ptr = libc.realloc(ptr as *u8, (cap + 4usize) * mem.sizeof[i64]()) as *i64;
       cap = cap + 4usize;
@@ -119,7 +119,7 @@ struct Raw {
   }
 }
 
-fn rawThenAdd(r &mut Raw, v i64) i64 {
+fn rawThenAdd(r: &mut Raw, v: i64) i64 {
   let e = r.first();
   r.add(v);                     //~ ErrorShapeReshape
   *e
@@ -127,14 +127,14 @@ fn rawThenAdd(r &mut Raw, v i64) i64 {
 
 // A block owned through a member, with no pointer field of its own
 struct Table {
-  raw Raw;
+  raw: Raw;
 
-  fn init(self &new) { *self = new Table(new Raw()); }
-  fn first(self &) &i64 { raw.first() }
-  fn add(self &mut, v i64) { raw.add(v); }
+  fn init(self: &new) { *self = new Table(new Raw()); }
+  fn first(self: &) &i64 { raw.first() }
+  fn add(self: &mut, v: i64) { raw.add(v); }
 }
 
-fn tableThenAdd(t &mut Table, v i64) i64 {
+fn tableThenAdd(t: &mut Table, v: i64) i64 {
   let e = t.first();
   t.add(v);                     //~ ErrorShapeReshape
   *e
@@ -142,14 +142,14 @@ fn tableThenAdd(t &mut Table, v i64) i64 {
 
 // A pointer handed to C, which the compiler cannot read: taken to reshape
 struct Mapped {
-  ptr *u8;
-  len usize;
+  ptr: *u8;
+  len: usize;
 
-  fn first(self &) &u8 { ptr as &u8 }
-  fn fill(self &mut, v u8) { libc.memset(ptr, i32.from(v), len); }
+  fn first(self: &) &u8 { ptr as &u8 }
+  fn fill(self: &mut, v: u8) { libc.memset(ptr, i32.from(v), len); }
 }
 
-fn mappedThenFill(m &mut Mapped) u8 {
+fn mappedThenFill(m: &mut Mapped) u8 {
   let e = m.first();
   m.fill(7u8);                  //~ ErrorShapeReshape
   *e
@@ -157,20 +157,20 @@ fn mappedThenFill(m &mut Mapped) u8 {
 
 // Two methods that call each other, the second replacing the pointer
 struct Ring {
-  ptr *i64;
-  cap usize;
+  ptr: *i64;
+  cap: usize;
 
-  fn first(self &) &i64 { ptr as &i64 }
-  fn spin(self &mut, n usize) {
+  fn first(self: &) &i64 { ptr as &i64 }
+  fn spin(self: &mut, n: usize) {
     if n > 0usize { self.land(n - 1usize); }
   }
-  fn land(self &mut, n usize) {
+  fn land(self: &mut, n: usize) {
     if n > 0usize { self.spin(n); }
     else { ptr = libc.realloc(ptr as *u8, 64usize) as *i64; }
   }
 }
 
-fn ringThenSpin(r &mut Ring) i64 {
+fn ringThenSpin(r: &mut Ring) i64 {
   let e = r.first();
   r.spin(2usize);               //~ ErrorShapeReshape
   *e

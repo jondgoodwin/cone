@@ -12,20 +12,20 @@
 mod trait_typecheck_vref;
 
 trait Shape {
-  pub fn area(self &) i32;
+  pub fn area(self: &) i32;
 }
 
 struct Rect {
-  pub w i32;
-  fn area(self &) i32 {w}
+  pub w: i32;
+  fn area(self: &) i32 {w}
 }
 
 // Declares nothing the trait asks for
 struct Blob {
-  pub z i32;
+  pub z: i32;
 }
 
-fn virtualArea(s &<Shape) i32 {
+fn virtualArea(s: &<Shape) i32 {
   s.area()
 }
 
@@ -37,33 +37,33 @@ fn virtualArea(s &<Shape) i32 {
 // implementation of it -- so neither a widening conversion nor a borrow
 // satisfies one. trait_success runs the conforming cases.
 trait Scaler {
-  pub fn scaled(self &, factor i32) i32;
+  pub fn scaled(self: &, factor: i32) i32;
 }
 
 // The right name and arity, the wrong parameter type. i32 coerces to f32 at a
 // call, and that is exactly what must not make this conform.
 struct WrongParmType {
-  pub w i32;
+  pub w: i32;
 
-  fn scaled(self &, factor f32) i32 {w}
+  fn scaled(self: &, factor: f32) i32 {w}
 }
 
 // The right name, arity and value type, reached through a reference. A
 // reference to the required type is not the required type.
 struct RefInsteadOfValue {
-  pub w i32;
+  pub w: i32;
 
-  fn scaled(self &, factor &i32) i32 {w}
+  fn scaled(self: &, factor: &i32) i32 {w}
 }
 
 // The right parameter types, one too many of them
 struct TooManyParms {
-  pub w i32;
+  pub w: i32;
 
-  fn scaled(self &, factor i32, extra i32) i32 {w}
+  fn scaled(self: &, factor: i32, extra: i32) i32 {w}
 }
 
-fn virtualScaled(s &<Scaler) i32 {
+fn virtualScaled(s: &<Scaler) i32 {
   s.scaled(3)
 }
 
@@ -75,40 +75,40 @@ fn virtualScaled(s &<Scaler) i32 {
 // that is where it is reported -- once, when the first virtual reference to the
 // trait asks for a vtable, rather than once per coercion site.
 trait Sizer {
-  pub fn size(self &) i32;
-  pub fn pick[T](self &, v T) T;   //~ ErrorGenericVtable:7 "unusable behind a virtual reference"
+  pub fn size(self: &) i32;
+  pub fn pick[T](self: &, v: T) T;   //~ ErrorGenericVtable:7 "unusable behind a virtual reference"
 }
 
 // A default body does: a generic default has no slot, since it is cloned into the types
 // that declare the trait and reached through them, so it makes the trait no less usable
 // behind a virtual reference.
 trait Defaulter {
-  pub fn tally(self &) i32;
-  pub fn pick[T](self &, v T) T {v}
+  pub fn tally(self: &) i32;
+  pub fn pick[T](self: &, v: T) T {v}
 }
 
 // Declares everything both traits ask for, the generic method included, and
 // reaches neither of them through a virtual reference.
 struct Boxy {
-  pub w i32;
+  pub w: i32;
 
-  fn size(self &) i32 {w}
-  fn tally(self &) i32 {w}
-  fn pick[T](self &, v T) T {v}
+  fn size(self: &) i32 {w}
+  fn tally(self: &) i32 {w}
+  fn pick[T](self: &, v: T) T {v}
 }
 
 // A generic method that is private, and a generic function with no receiver,
 // are neither vtable slots nor requirements, so neither costs the trait its
 // virtual reference. Nothing is reported against Quiet, and Quill coerces.
 trait Quiet {
-  pub fn span(self &) i32;
-  fn hidden[T](self &, v T) T {v}
-  pub fn make[T](v T) T {v}
+  pub fn span(self: &) i32;
+  fn hidden[T](self: &, v: T) T {v}
+  pub fn make[T](v: T) T {v}
 }
 
 struct Quill {
-  pub w i32;
-  fn span(self &) i32 {w}
+  pub w: i32;
+  fn span(self: &) i32 {w}
 }
 
 // A requirement naming 'Self' other than as '&<Self' is met, for a constraint
@@ -117,12 +117,12 @@ struct Quill {
 // behind it may be any complying type, so its slot has no one type for 'Self'.
 // mod-substitution.html#restrictions, "What a virtual reference cannot reach".
 trait Same {
-  pub fn same(self &, o &Self) bool;
+  pub fn same(self: &, o: &Self) bool;
 }
 
 struct Twin is Same {
-  pub w i32;
-  pub fn same(self &, o &Self) bool {w == o.w}
+  pub w: i32;
+  pub fn same(self: &, o: &Self) bool {w == o.w}
 }
 
 fn misuse() {
@@ -132,11 +132,11 @@ fn misuse() {
   // A trait whose implementations differ in size has no one size, so it is not
   // a type a value can have. Only a virtual reference to one is usable, and
   // that is what the diagnostic names as the remedy.
-  var bare Shape;   //~ ErrorNoSize:7 "implementations may differ in size"
+  var bare: Shape;   //~ ErrorNoSize:7 "implementations may differ in size"
 
   // A virtual reference's target must be a trait; a number has no vtable to build
-  let toNumber &<i32 = &r;   //~ ErrorInvType:16 "must be to a trait"
-                            //~^ ErrorInvType:24 "does not match variable's declared type" follow-on
+  let toNumber: &<i32 = &r;   //~ ErrorInvType:17 "must be to a trait"
+                            //~^ ErrorInvType:25 "does not match variable's declared type" follow-on
 
   // A plain struct is refused for the same reason, and this is the spelling that
   // used to crash rather than say so. Writing '&<Rect' directly was caught in
@@ -145,20 +145,20 @@ fn misuse() {
   // a trait allocates, and read a NULL one. Whether a virtual reference to a
   // struct should instead work is a language question, and
   // workitems/Types. Struct and Union carries it.
-  let toStruct &<Rect = &r;   //~ ErrorInvType:16 "must be to a trait"
-                             //~^ ErrorInvType:25 "does not match variable's declared type" follow-on
+  let toStruct: &<Rect = &r;   //~ ErrorInvType:17 "must be to a trait"
+                             //~^ ErrorInvType:26 "does not match variable's declared type" follow-on
 
   // Blob satisfies nothing Shape requires, so no vtable can be built for it and
   // the reference does not coerce
-  let fromBlob &<Shape = &b;   //~ ErrorInvType:26 "does not match variable's declared type"
+  let fromBlob: &<Shape = &b;   //~ ErrorInvType:27 "does not match variable's declared type"
 
   // The same rejection at a call, where the parameter is what asks
   virtualArea(&b);   //~ ErrorInvType:15 "does not match declared parameter"
 
   // A virtual reference does not silently become a plain one again: the
   // concrete type has to be recovered by matching on it
-  let ok &<Shape = &r;
-  let back &Rect = ok;   //~ ErrorInvType:20 "does not match variable's declared type"
+  let ok: &<Shape = &r;
+  let back: &Rect = ok;   //~ ErrorInvType:21 "does not match variable's declared type"
 
   // A parameter the requirement does not declare exactly is a parameter the
   // requirement is not satisfied by, however readily it would coerce at a call
@@ -173,15 +173,15 @@ fn misuse() {
   // it, and a second coercion to the same trait repeats the consequence without
   // repeating the complaint about the trait.
   let boxy = new Boxy(7);
-  let sized &<Sizer = &boxy;        //~ ErrorInvType:23 "does not match variable's declared type" follow-on
-  let sizedAgain &<Sizer = &boxy;   //~ ErrorInvType:28 "does not match variable's declared type" follow-on
-  let tallied &<Defaulter = &boxy;
+  let sized: &<Sizer = &boxy;        //~ ErrorInvType:24 "does not match variable's declared type" follow-on
+  let sizedAgain: &<Sizer = &boxy;   //~ ErrorInvType:29 "does not match variable's declared type" follow-on
+  let tallied: &<Defaulter = &boxy;
 
   // The private and static generic members leave Quiet's virtual reference alone
   let quill = new Quill(8);
-  let spanned &<Quiet = &quill;
+  let spanned: &<Quiet = &quill;
 
   // Twin is Same, and is not viewed through it
   let twin = new Twin(9);
-  let same &<Same = &twin;   //~ ErrorInvType:21 "does not match variable's declared type"
+  let same: &<Same = &twin;   //~ ErrorInvType:22 "does not match variable's declared type"
 }

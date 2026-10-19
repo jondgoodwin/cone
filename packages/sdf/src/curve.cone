@@ -39,36 +39,36 @@
 // A curve a shape can be repeated along
 pub trait Curve {
   // Its length
-  fn length(self &) f32;
+  fn length(self: &) f32;
   // The arc length, from 0 to the length, of its point nearest p
-  fn nearest(self &, p Vec3) f32;
+  fn nearest(self: &, p: Vec3) f32;
   // Its frame at arc length s
-  fn frameAt(self &, s f32) CurveFrame;
+  fn frameAt(self: &, s: f32) CurveFrame;
 }
 
 // A shape repeated along a curve
 pub trait Repeated {
   // Copy 'index' at 'q' (the point in its frame: x along the normal, y the
   // binormal, z the tangent), 'u' the way along the curve, from 0 to 1
-  fn repeatedDistance(self &, q Vec3, index i32, u f32) f32;
+  fn repeatedDistance(self: &, q: Vec3, index: i32, u: f32) f32;
   // The radius of a ball about the copy's origin that holds all of it
-  fn bound(self &, index i32, u f32) f32;
+  fn bound(self: &, index: i32, u: f32) f32;
 }
 
 // Whether a copy whose ball of radius 'b' is 'dd' away (squared) from p
 // can be nearer than 'd'
-fn mayBeNearer(dd f32, b f32, d f32) bool {
+fn mayBeNearer(dd: f32, b: f32, d: f32) bool {
   let lim = d + b;
   lim > 0. && dd < lim * lim
 }
 
 // The shape repeated 'count' times along the curve, at the point p: the
 // exact union of the copies
-pub fn repeatAlong[C Curve, S Repeated](curve &C, shape &S, p Vec3, count i32) f32 {
+pub fn repeatAlong[C: Curve, S: Repeated](curve: &C, shape: &S, p: Vec3, count: i32) f32 {
   let n = if count < 1 { 1 } else { count };
   let len = curve.length();
   // The copy whose origin is nearest
-  var best f32 = 3.4028235e38;
+  var best: f32 = 3.4028235e38;
   var bestK = 0;
   var k = 0;
   while k < n {
@@ -109,13 +109,13 @@ pub fn repeatAlong[C Curve, S Repeated](curve &C, shape &S, p Vec3, count i32) f
 
 // Copy k's frame of 'count' along 'curve', at (k + 1/2) length / count, as
 // 'repeatAlong' finds it: what an owner keeps for each cell
-pub fn curveCellFrame[C Curve](curve &C, k i32, count i32) CurveFrame {
+pub fn curveCellFrame[C: Curve](curve: &C, k: i32, count: i32) CurveFrame {
   let n = if count < 1 { 1 } else { count };
   curve.frameAt((f32.from(k) + 0.5) / f32.from(n) * curve.length())
 }
 
 // The cells of 'curve' written into 'out', as many as it holds
-pub fn curveCells[C Curve](curve &C, out &mut Array[CurveFrame]) {
+pub fn curveCells[C: Curve](curve: &C, out: &mut Array[CurveFrame]) {
   let n = i32.from(out.len());
   var k = 0;
   while k < n {
@@ -126,14 +126,14 @@ pub fn curveCells[C Curve](curve &C, out &mut Array[CurveFrame]) {
 
 // A view of a curve's cells' frames, one per cell, in order along it
 pub struct CurveCells['a] {
-  pub frames &'a Array[CurveFrame];
+  pub frames: &'a Array[CurveFrame];
 }
 
 // 'repeatAlong' over cells already found: the same copies in the same
 // frames, so the same result, bit for bit
-pub fn repeatAlongCells[S Repeated](cells &CurveCells, shape &S, p Vec3) f32 {
+pub fn repeatAlongCells[S: Repeated](cells: &CurveCells, shape: &S, p: Vec3) f32 {
   let n = i32.from(cells.frames.len());
-  var best f32 = 3.4028235e38;
+  var best: f32 = 3.4028235e38;
   var bestK = 0;
   var k = 0;
   while k < n {
@@ -165,7 +165,7 @@ pub fn repeatAlongCells[S Repeated](cells &CurveCells, shape &S, p Vec3) f32 {
 // ---- Arc ----
 
 // Below this curl (radians) an arc is a straight segment
-const STRAIGHT f32 = 0.0001;
+const STRAIGHT: f32 = 0.0001;
 
 // A circular arc in the plane z = 0, 'length' long, starting at the origin
 // heading up +y and turning towards +x through 'curl' radians in all (0
@@ -174,22 +174,22 @@ const STRAIGHT f32 = 0.0001;
 // the binormal fixed): the binormal is +z, the normal points away from the
 // centre (-x at the start), the tangent along the arc.
 pub struct Arc is Curve {
-  pub len f32;                 // its length
-  pub curl f32;
-  pub radius f32;              // len / curl, or 0 when straight
+  pub len: f32;                 // its length
+  pub curl: f32;
+  pub radius: f32;              // len / curl, or 0 when straight
 
-  pub fn make(length f32, curl f32) Arc {
+  pub fn make(length: f32, curl: f32) Arc {
     let c = if curl < 0. { 0. } else { curl };
     if c < STRAIGHT { return new Arc(length, 0., 0.); }
     new Arc(length, c, length / c)
   }
 
-  pub fn length(self &) f32 { len }
+  pub fn length(self: &) f32 { len }
 
   // Its point at arc length s (beyond the ends, along the end tangents)
-  pub fn point(self &, s f32) Vec3 { self.frameAt(s).origin }
+  pub fn point(self: &, s: f32) Vec3 { self.frameAt(s).origin }
 
-  pub fn frameAt(self &, s f32) CurveFrame {
+  pub fn frameAt(self: &, s: f32) CurveFrame {
     if radius == 0. {
       return new CurveFrame(new Vec3(0., s, 0.), new Vec3(-1., 0., 0.), new Vec3(0., 0., 1.), new Vec3(0., 1., 0.));
     }
@@ -204,11 +204,11 @@ pub struct Arc is Curve {
       new Vec3(0., 0., 1.), tangent)
   }
 
-  pub fn nearest(self &, p Vec3) f32 { self.project(p).s }
+  pub fn nearest(self: &, p: Vec3) f32 { self.project(p).s }
 
   // The arc's point nearest p: its arc length s, and p's distance from it
   // (computed without trigonometry while s is inside the arc)
-  pub fn project(self &, p Vec3) ArcProjection {
+  pub fn project(self: &, p: Vec3) ArcProjection {
     if radius == 0. {
       let s = clampf(p.y, 0., len);
       return new ArcProjection(s, len3(new Vec3(p.x, p.y - s, p.z)));
@@ -229,7 +229,7 @@ pub struct Arc is Curve {
   }
 
   // The arc cut into 'count' cells, for 'repeatAlongArc'
-  pub fn cells(self &, count i32) ArcCells {
+  pub fn cells(self: &, count: i32) ArcCells {
     let n = if count < 1 { 1 } else { count };
     let step = len / f32.from(n);
     if radius == 0. { return new ArcCells(n, step, 1., 0., 1., 0.); }
@@ -240,8 +240,8 @@ pub struct Arc is Curve {
 
 // Where a point projects onto an arc
 pub struct ArcProjection {
-  pub s f32;                   // the arc length of the nearest point
-  pub distance f32;            // how far the point is from it
+  pub s: f32;                   // the arc length of the nearest point
+  pub distance: f32;            // how far the point is from it
 }
 
 // An arc cut into cells: the cosine and sine of the first cell's angle
@@ -249,16 +249,16 @@ pub struct ArcProjection {
 // stepping along the cells needs no trigonometry (each next angle's cosine
 // and sine by the sum formulas, the same arithmetic on every machine)
 pub struct ArcCells {
-  pub count i32;
-  pub step f32;                // each cell's length
-  pub firstCos f32;
-  pub firstSin f32;
-  pub turnCos f32;
-  pub turnSin f32;
+  pub count: i32;
+  pub step: f32;                // each cell's length
+  pub firstCos: f32;
+  pub firstSin: f32;
+  pub turnCos: f32;
+  pub turnSin: f32;
 }
 
 // Cell k's frame on the arc, from the cosine c and sine s of its angle
-fn arcCellFrame(arc &Arc, cells &ArcCells, k i32, c f32, s f32) CurveFrame {
+fn arcCellFrame(arc: &Arc, cells: &ArcCells, k: i32, c: f32, s: f32) CurveFrame {
   if arc.radius == 0. {
     return new CurveFrame(new Vec3(0., (f32.from(k) + 0.5) * cells.step, 0.), new Vec3(-1., 0., 0.), new Vec3(0., 0., 1.),
       new Vec3(0., 1., 0.));
@@ -269,10 +269,10 @@ fn arcCellFrame(arc &Arc, cells &ArcCells, k i32, c f32, s f32) CurveFrame {
 
 // 'repeatAlong' on an arc, the same exact union, its cells' frames stepped
 // round by rotation instead of by trigonometry
-pub fn repeatAlongArc[S Repeated](arc &Arc, cells &ArcCells, shape &S, p Vec3) f32 {
+pub fn repeatAlongArc[S: Repeated](arc: &Arc, cells: &ArcCells, shape: &S, p: Vec3) f32 {
   let n = cells.count;
   // The copy whose origin is nearest
-  var best f32 = 3.4028235e38;
+  var best: f32 = 3.4028235e38;
   var bestK = 0;
   var bestC = cells.firstCos;
   var bestS = cells.firstSin;
@@ -327,23 +327,23 @@ pub fn repeatAlongArc[S Repeated](arc &Arc, cells &ArcCells, shape &S, p Vec3) f
 // tens of points. A repetition along it is fastest over its cells found
 // once ('curveCellFrame', 'CurveCells', 'repeatAlongCells').
 pub struct PathCurve['a] is Curve {
-  pub frames &'a Array[CurveFrame];
-  pub distances &'a Array[f32];     // each frame's arc length, never falling
-  pub total f32;               // the last arc length, 0 if none
+  pub frames: &'a Array[CurveFrame];
+  pub distances: &'a Array[f32];     // each frame's arc length, never falling
+  pub total: f32;               // the last arc length, 0 if none
 
   // The view of 'frames' at arc lengths 'distances'
-  pub fn make(frames &'a Array[CurveFrame], distances &'a Array[f32]) PathCurve['a] {
+  pub fn make(frames: &'a Array[CurveFrame], distances: &'a Array[f32]) PathCurve['a] {
     let total = if distances.len() > 0usize { distances[distances.len() - 1usize] } else { 0. };
     new PathCurve(frames, distances, total)
   }
 
-  pub fn length(self &) f32 { total }
+  pub fn length(self: &) f32 { total }
 
-  pub fn nearest(self &, p Vec3) f32 {
+  pub fn nearest(self: &, p: Vec3) f32 {
     let n = frames.len();
     if n < 2usize { return 0.; }
-    var best f32 = 3.4028235e38;
-    var bestS f32 = 0.;
+    var best: f32 = 3.4028235e38;
+    var bestS: f32 = 0.;
     var i = 0usize;
     while i + 1usize < n {
       let a = frames[i].origin;
@@ -365,7 +365,7 @@ pub struct PathCurve['a] is Curve {
   // The frame at arc length s, blended between the frames at the ends of
   // the piece holding it (sculpt's frameAtDistance); beyond the ends, the
   // end frames carried along their tangents
-  pub fn frameAt(self &, s f32) CurveFrame {
+  pub fn frameAt(self: &, s: f32) CurveFrame {
     let n = frames.len();
     let first = frames[0usize];
     if n == 1usize || total <= 0. {

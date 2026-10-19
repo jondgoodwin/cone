@@ -31,12 +31,12 @@ mod kernels;
 import stdio use *;
 
 struct Part {
-  pub w Array[f32, 4];
-  pub k u32;
+  pub w: Array[f32, 4];
+  pub k: u32;
 }
 
 // A compute kernel: run once per invocation, 64 to a workgroup
-fn @compute(64) bake(inv Invocation, parts &amp;Array[Part], out &amp;mut Array[f32]) {
+fn @compute(64) bake(inv: Invocation, parts: &amp;Array[Part], out: &amp;mut Array[f32]) {
   let i = usize.from(inv.globalId[0]);
   if i &lt; out.len {
     out[i] = parts[i].w[0] * f32.from(parts[i].k);
@@ -44,10 +44,10 @@ fn @compute(64) bake(inv Invocation, parts &amp;Array[Part], out &amp;mut Array[
 }
 
 fn main() {
-  let parts Array[Part, 4] = [
+  let parts: Array[Part, 4] = [
     new Part([1.5, 0.0, 0.0, 0.0], 2u32), new Part([2.0, 0.0, 0.0, 0.0], 3u32),
     new Part([0.5, 0.0, 0.0, 0.0], 8u32), new Part([4.0, 0.0, 0.0, 0.0], 1u32)];
-  var out Array[f32, 4] = [0.0, 0.0, 0.0, 0.0];
+  var out: Array[f32, 4] = [0.0, 0.0, 0.0, 0.0];
 
   // On the CPU the kernel is an ordinary function: a loop plays the invocations
   each g in 0u32 ..&lt; 4u32 {
@@ -195,7 +195,7 @@ OpenCL form has kernels of another kind.
 	<h3 id="closures">Closures on the GPU</h3>
 	<p>A <a href="mod-substitution.html">closure</a> may be written in GPU code in its static form only: given to a generic
 		bound by a signature, as in <span class="pre">shade(p =&gt; p.dot(p) - radius * radius, pt)</span> for
-		<span class="pre">fn shade[F fn(p Vec3) f32](f &amp;F, p Vec3) f32</span>. The generic is instanced for the closure and
+		<span class="pre">fn shade[F: fn(p: Vec3) f32](f: &amp;F, p: Vec3) f32</span>. The generic is instanced for the closure and
 		inlined into the kernel with every other call, so the closure is only some locals of the invocation, and a
 		hand-written struct with a <span class="pre">()</span> method goes through the same generic. A closure holds what a
 		GPU has: numbers, structs and arrays of them, and borrows of memory the GPU has (a local, a buffer's slice), whether
@@ -231,8 +231,8 @@ OpenCL form has kernels of another kind.
 			<span class="pre">panic</span>, which a GPU records, are there. A binding's inline function that calls what it
 			wraps (<span class="pre">libc.errno()</span>) is refused where a kernel calls it.</li>
 	</ul>
-	<p>Calling a function by name, a generic bound by a signature or a trait (<span class="pre">[F fn(...)]</span>,
-		<span class="pre">[S Shape]</span>, inlined), a borrow of a local or of a buffer's slice, atomics, and building a struct
+	<p>Calling a function by name, a generic bound by a signature or a trait (<span class="pre">[F: fn(...)]</span>,
+		<span class="pre">[S: Shape]</span>, inlined), a borrow of a local or of a buffer's slice, atomics, and building a struct
 		as a value are the way to do the same. Locks need an owner, or the <span class="pre">sync</span> package, so a lock is
 		refused as they are; the packages that hold threads, locks, files and collections are not marked for the GPU, so
 		Congo refuses the build that imports them, naming the import, before the compiler is run.</p>
@@ -293,7 +293,7 @@ OpenCL form has kernels of another kind.
 	<h2 id="atomics">Atomics</h2>
 	<p>Invocations that must count together, or claim places in an output one at a time, need a number whose every change
 		is indivisible:</p>
-<pre><code>fn @compute(64) compact(inv Invocation, input &amp;Array[u32], count &amp;mut Array[Atomic[u32]], out &amp;mut Array[u32]) {
+<pre><code>fn @compute(64) compact(inv: Invocation, input: &amp;Array[u32], count: &amp;mut Array[Atomic[u32]], out: &amp;mut Array[u32]) {
   let i = usize.from(inv.globalId[0]);
   if i &lt; input.len &amp;&amp; input[i] % 3u32 == 0u32 {
     let slot = count[0usize].addOrdered(1u32, MemOrder.Relaxed);
@@ -324,9 +324,9 @@ OpenCL form has kernels of another kind.
 	<p>A buffer lives in the GPU's main memory, which is far from its cores. Invocations of one workgroup that work together
 		share faster memory of their own. This prefix sum adds up each workgroup's 256 numbers in place, every invocation
 		ending with the sum of those before it and its own:</p>
-<pre><code>var @workgroup scan Array[u32, 256];
+<pre><code>var @workgroup scan: Array[u32, 256];
 
-fn @compute(256) prefix(inv Invocation, input &amp;Array[u32], out &amp;mut Array[u32]) {
+fn @compute(256) prefix(inv: Invocation, input: &amp;Array[u32], out: &amp;mut Array[u32]) {
   let g = usize.from(inv.globalId[0]);
   let l = usize.from(inv.localIndex);
   scan[l] = if g &lt; input.len {input[g]} else {0u32};
@@ -372,7 +372,7 @@ pub fn @intrinsic storageBarrier()</code></pre>
 
 	<h3 id="cpubarriers">Barriers on the CPU</h3>
 <pre><code>pub extern {
-  fn setBarrierHook(hook &amp;fn(ctx *u8, kind u32), ctx *u8);
+  fn setBarrierHook(hook: &amp;fn(ctx: *u8, kind: u32), ctx: *u8);
   fn clearBarrierHook();
 }</code></pre>
 	<p>On the CPU a kernel is an ordinary function, and what a barrier must do depends on how the program runs it. Run one
@@ -389,12 +389,12 @@ pub fn @intrinsic storageBarrier()</code></pre>
 		on threads of their own, and a thread that set none runs a kernel one invocation at a time as before. On the CPU
 		memory is the same for both kinds, so one barrier serves both. Both are core's, the work conestd's, and on a GPU the
 		hook is never called. In outline:</p>
-<pre><code>fn wait(ctx *u8, kind u32) {
+<pre><code>fn wait(ctx: *u8, kind: u32) {
   let b = ctx as *Barrier;     // the program's own: a count and a generation, say
   ...                          // every invocation's thread waits here for the others
 }
 
-fn lane(l Lane) {              // one invocation of each workgroup, on its own thread
+fn lane(l: Lane) {              // one invocation of each workgroup, on its own thread
   setBarrierHook(&amp;wait, l.bar as *u8);
   ...                          // the kernel, called for this thread's invocations
   clearBarrierHook();

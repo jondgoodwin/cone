@@ -20,18 +20,18 @@
 // walks note the multi-cube items they have seen.
 
 struct GridEntry {
-  slot u32;
-  next u32;
+  slot: u32;
+  next: u32;
 }
 
 // A block of cubes: [x0..x1] x [y0..y1] x [z0..z1], inclusive
 struct CellRange {
-  x0 i32;
-  y0 i32;
-  z0 i32;
-  x1 i32;
-  y1 i32;
-  z1 i32;
+  x0: i32;
+  y0: i32;
+  z0: i32;
+  x1: i32;
+  y1: i32;
+  z1: i32;
 
   fn volume(self) i64 {
     (i64.from(x1) - i64.from(x0) + 1i64) * (i64.from(y1) - i64.from(y0) + 1i64)
@@ -39,49 +39,49 @@ struct CellRange {
   }
 }
 
-fn cellKey(x i32, y i32, z i32) u64 inline {
+fn cellKey(x: i32, y: i32, z: i32) u64 inline {
   ((u64.from(x + 1048576i32) & 2097151u64) << 42u64) | ((u64.from(y + 1048576i32) & 2097151u64) << 21u64)
     | (u64.from(z + 1048576i32) & 2097151u64)
 }
 
-pub struct HashGrid[T Copy] {
-  items Items[T];
-  cells Dict[u64, u32];     // cube -> first entry of its list
-  entries List[GridEntry];
-  freeEntry u32;
-  size f32;
-  inv f32;
-  maxCells i64;
-  big List[u32];            // oversize items' slots
-  lo Vec3;                  // cube range of everything listed in cubes (conservative: only grows)
-  hi Vec3;
-  anyCells bool;
-  pairs PairBook;
-  moved List[u32];
-  pendingRemoved List[Pair[T]];
+pub struct HashGrid[T: Copy] {
+  items: Items[T];
+  cells: Dict[u64, u32];     // cube -> first entry of its list
+  entries: List[GridEntry];
+  freeEntry: u32;
+  size: f32;
+  inv: f32;
+  maxCells: i64;
+  big: List[u32];            // oversize items' slots
+  lo: Vec3;                  // cube range of everything listed in cubes (conservative: only grows)
+  hi: Vec3;
+  anyCells: bool;
+  pairs: PairBook;
+  moved: List[u32];
+  pendingRemoved: List[Pair[T]];
 
   // A grid of cubes 'cellSize' on a side
-  pub fn create(cellSize f32) HashGrid[T] {
+  pub fn create(cellSize: f32) HashGrid[T] {
     new HashGrid[T](Items[T].create(), Dict[u64, u32].empty(), List[GridEntry].empty(), NONE, cellSize,
       1. / cellSize, 512i64, List[u32].empty(), new Vec3(0., 0., 0.), new Vec3(0., 0., 0.), false,
       PairBook.create(), List[u32].empty(), List[Pair[T]].empty())
   }
 
-  pub fn len(self &) usize {items.count}
-  pub fn contains(self &, p Proxy) bool {items.alive(p)}
-  pub fn handle(self &, p Proxy) T {items.list[usize.from(p.slot)].handle}
-  pub fn box(self &, p Proxy) Aabb3 {items.list[usize.from(p.slot)].box}
-  pub fn pairBox(self &, p Proxy) Aabb3 {box(p)}
+  pub fn len(self: &) usize {items.count}
+  pub fn contains(self: &, p: Proxy) bool {items.alive(p)}
+  pub fn handle(self: &, p: Proxy) T {items.list[usize.from(p.slot)].handle}
+  pub fn box(self: &, p: Proxy) Aabb3 {items.list[usize.from(p.slot)].box}
+  pub fn pairBox(self: &, p: Proxy) Aabb3 {box(p)}
 
   // The number of cubes holding items
-  pub fn cellCount(self &) usize {cells.len()}
+  pub fn cellCount(self: &) usize {cells.len()}
 
-  fn rangeOf(self &, b Aabb3) CellRange {
+  fn rangeOf(self: &, b: Aabb3) CellRange {
     new CellRange(cellOf(b.min.x, 0., inv), cellOf(b.min.y, 0., inv), cellOf(b.min.z, 0., inv),
       cellOf(b.max.x, 0., inv), cellOf(b.max.y, 0., inv), cellOf(b.max.z, 0., inv))
   }
 
-  fn newEntry(self &mut, slot u32, next u32) u32 {
+  fn newEntry(self: &mut, slot: u32, next: u32) u32 {
     if freeEntry != NONE {
       let e = freeEntry;
       freeEntry = entries[usize.from(e)].next;
@@ -93,7 +93,7 @@ pub struct HashGrid[T Copy] {
     u32.from(entries.len() - 1usize)
   }
 
-  fn headOf(self &, key u64) u32 {
+  fn headOf(self: &, key: u64) u32 {
     var r = NONE;
     match cells.getCopy(&key) {
       case let h Some { r = h; }
@@ -102,7 +102,7 @@ pub struct HashGrid[T Copy] {
     r
   }
 
-  fn addToCells(self &mut, slot u32, b Aabb3) {
+  fn addToCells(self: &mut, slot: u32, b: Aabb3) {
     let si = usize.from(slot);
     let rg = rangeOf(b);
     if rg.volume() > maxCells {
@@ -140,7 +140,7 @@ pub struct HashGrid[T Copy] {
     }
   }
 
-  fn removeFromCells(self &mut, slot u32) {
+  fn removeFromCells(self: &mut, slot: u32) {
     let si = usize.from(slot);
     if items.list[si].x == 0u32 {
       // oversize: out of the list, the last one taking its place
@@ -168,7 +168,7 @@ pub struct HashGrid[T Copy] {
     }
   }
 
-  fn dropEntry(self &mut, key u64, slot u32) {
+  fn dropEntry(self: &mut, key: u64, slot: u32) {
     var prev = NONE;
     var cur = headOf(key);
     while cur != NONE {
@@ -189,21 +189,21 @@ pub struct HashGrid[T Copy] {
     }
   }
 
-  fn flagMoved(self &mut, slot u32) {
+  fn flagMoved(self: &mut, slot: u32) {
     if !items.list[usize.from(slot)].moved {
       items.list[usize.from(slot)].moved = true;
       moved.push(slot);
     }
   }
 
-  pub fn insert(self &mut, box Aabb3, handle T) Proxy {
+  pub fn insert(self: &mut, box: Aabb3, handle: T) Proxy {
     let p = items.add(box, handle);
     addToCells(p.slot, box);
     flagMoved(p.slot);
     p
   }
 
-  pub fn remove(self &mut, p Proxy) bool {
+  pub fn remove(self: &mut, p: Proxy) bool {
     if !items.alive(p) {return false;}
     let si = usize.from(p.slot);
     removeFromCells(p.slot);
@@ -221,7 +221,7 @@ pub struct HashGrid[T Copy] {
     true
   }
 
-  fn pairOf(self &, sa u32, ha T, sb u32, hb T) Pair[T] {
+  fn pairOf(self: &, sa: u32, ha: T, sb: u32, hb: T) Pair[T] {
     if sa < sb {
       new Pair[T](ha, hb, items.proxyOf(sa), items.proxyOf(sb))
     }
@@ -233,7 +233,7 @@ pub struct HashGrid[T Copy] {
   // The item has a new box; its cube lists change only if the cubes it
   // touches do. 'displacement' is accepted for the same call as the BVH's
   // and not used. Answers whether the lists changed.
-  pub fn move(self &mut, p Proxy, box Aabb3, displacement Vec3) bool {
+  pub fn move(self: &mut, p: Proxy, box: Aabb3, displacement: Vec3) bool {
     if !items.alive(p) {return false;}
     let si = usize.from(p.slot);
     let a = rangeOf(items.list[si].box);
@@ -252,13 +252,13 @@ pub struct HashGrid[T Copy] {
   // ---------------- queries ----------------
 
   // The cubes' range of everything listed (an empty range if nothing is)
-  fn populated(self &) CellRange {
+  fn populated(self: &) CellRange {
     if !anyCells {return new CellRange(0i32, 0i32, 0i32, -1i32, -1i32, -1i32);}
     new CellRange(i32.from(lo.x), i32.from(lo.y), i32.from(lo.z), i32.from(hi.x), i32.from(hi.y), i32.from(hi.z))
   }
 
   // Clips a range to the populated one
-  fn clipRange(self &, r CellRange) CellRange {
+  fn clipRange(self: &, r: CellRange) CellRange {
     let p = populated();
     new CellRange(if r.x0 > p.x0 {r.x0} else {p.x0}, if r.y0 > p.y0 {r.y0} else {p.y0},
       if r.z0 > p.z0 {r.z0} else {p.z0}, if r.x1 < p.x1 {r.x1} else {p.x1},
@@ -266,22 +266,22 @@ pub struct HashGrid[T Copy] {
   }
 
   // Whether walking the range's cubes costs less than scanning the items
-  fn walkable(self &, r CellRange) bool {
+  fn walkable(self: &, r: CellRange) bool {
     r.x0 <= r.x1 && r.y0 <= r.y1 && r.z0 <= r.z1 && r.volume() * 4i64 <= i64.from(items.count) + 16i64
   }
 
-  pub fn overlapAabb[F fn(h T, p Proxy) bool](self &, box Aabb3, visit &mut F) {
+  pub fn overlapAabb[F: fn(h: T, p: Proxy) bool](self: &, box: Aabb3, visit: &mut F) {
     walkBox(box, 0i32, new Sphere(new Vec3(0., 0., 0.), 0.), visit);
   }
 
-  pub fn overlapSphere[F fn(h T, p Proxy) bool](self &, s Sphere, visit &mut F) {
+  pub fn overlapSphere[F: fn(h: T, p: Proxy) bool](self: &, s: Sphere, visit: &mut F) {
     let r = new Vec3(s.radius, s.radius, s.radius);
     walkBox(new Aabb3(s.center - r, s.center + r), 1i32, s, visit);
   }
 
   // The shared walk of the box and the sphere query: 'mode' 0 tests items
   // against the box, 1 against the ball (whose box is 'box').
-  fn walkBox[F fn(h T, p Proxy) bool](self &, box Aabb3, mode i32, ball Sphere, visit &mut F) {
+  fn walkBox[F: fn(h: T, p: Proxy) bool](self: &, box: Aabb3, mode: i32, ball: Sphere, visit: &mut F) {
     let rg = clipRange(rangeOf(box));
     if walkable(rg) {
       var x = rg.x0;
@@ -335,14 +335,14 @@ pub struct HashGrid[T Copy] {
     }
   }
 
-  fn hits(b Aabb3, box Aabb3, mode i32, ball Sphere) bool inline {
+  fn hits(b: Aabb3, box: Aabb3, mode: i32, ball: Sphere) bool inline {
     if mode == 0i32 {b.overlaps(box)} else {ball.overlapsAabb(b)}
   }
 
   // Not wholly outside the frustum. A grid has no hierarchy to prune with:
   // cubes inside the populated range are tested (when that is fewer than the
   // items), otherwise every item is.
-  pub fn frustum[F fn(h T, p Proxy) bool](self &, f &Frustum, visit &mut F) {
+  pub fn frustum[F: fn(h: T, p: Proxy) bool](self: &, f: &Frustum, visit: &mut F) {
     let rg = populated();
     if walkable(rg) {
       var seen = Seen.create();
@@ -398,7 +398,7 @@ pub struct HashGrid[T Copy] {
   // As Bvh.rayCast. The ray walks cube by cube (Amanatides and Woo, "A Fast
   // Voxel Traversal Algorithm for Ray Tracing", 1987) through the populated
   // range, and ends when the next cube is beyond the reach in force.
-  pub fn rayCast[F fn(h T, p Proxy, t f32) f32](self &, ray Ray3, maxT f32, visit &mut F) {
+  pub fn rayCast[F: fn(h: T, p: Proxy, t: f32) f32](self: &, ray: Ray3, maxT: f32, visit: &mut F) {
     let r = RayQ.from(ray);
     var limit = maxT;
     // oversize items first
@@ -478,9 +478,9 @@ pub struct HashGrid[T Copy] {
     }
   }
 
-  pub fn rayNearest(self &, ray Ray3, maxT f32) Option[Hit[T]] {
-    var best Option[Hit[T]] = None;
-    var grab = fn(h T, p Proxy, t f32) f32 {
+  pub fn rayNearest(self: &, ray: Ray3, maxT: f32) Option[Hit[T]] {
+    var best: Option[Hit[T]] = None;
+    var grab = fn(h: T, p: Proxy, t: f32) f32 {
       best = Some(new Hit[T](h, p, t));
       t
     };
@@ -488,15 +488,15 @@ pub struct HashGrid[T Copy] {
     best
   }
 
-  pub fn rayAll[F fn(h T, p Proxy, t f32) bool](self &, ray Ray3, maxT f32, visit &mut F) {
-    var wrap = fn(h T, p Proxy, t f32) f32 {
+  pub fn rayAll[F: fn(h: T, p: Proxy, t: f32) bool](self: &, ray: Ray3, maxT: f32, visit: &mut F) {
+    var wrap = fn(h: T, p: Proxy, t: f32) f32 {
       if visit(h, p, t) {FAR} else {-1.}
     };
     rayCast(ray, maxT, &mut wrap);
   }
 
   // Keeps the best 'k' (nearest first) in 'out'
-  fn offer(out &mut List[Neighbor[T]], k usize, n Neighbor[T]) {
+  fn offer(out: &mut List[Neighbor[T]], k: usize, n: Neighbor[T]) {
     if out.len() == k && n.distSq >= out[k - 1usize].distSq {return;}
     if out.len() < k {out.push(n);}
     else {out.set(k - 1usize, n);}
@@ -511,7 +511,7 @@ pub struct HashGrid[T Copy] {
   // searched in growing shells around the point's cube; a point outside the
   // populated range, or a search that would visit more cubes than there are
   // items, falls back to scanning the items.
-  pub fn nearest(self &, point Vec3, k usize, out &mut List[Neighbor[T]]) {
+  pub fn nearest(self: &, point: Vec3, k: usize, out: &mut List[Neighbor[T]]) {
     out.clear();
     if items.count == 0usize || k == 0usize {return;}
     var i = 0usize;
@@ -594,12 +594,12 @@ pub struct HashGrid[T Copy] {
 
   // ---------------- pairs ----------------
 
-  fn queryBox(self &, box Aabb3, found &mut List[u32]) {
-    var collect = fn(h T, p Proxy) bool { found.push(p.slot); true };
+  fn queryBox(self: &, box: Aabb3, found: &mut List[u32]) {
+    var collect = fn(h: T, p: Proxy) bool { found.push(p.slot); true };
     overlapAabb(box, &mut collect);
   }
 
-  pub fn allPairs(self &, out &mut List[Pair[T]]) {
+  pub fn allPairs(self: &, out: &mut List[Pair[T]]) {
     var found = List[u32].empty();
     var i = 0usize;
     while i < items.list.len() {
@@ -619,7 +619,7 @@ pub struct HashGrid[T Copy] {
     }
   }
 
-  pub fn updatePairs(self &mut, events &mut PairEvents[T]) {
+  pub fn updatePairs(self: &mut, events: &mut PairEvents[T]) {
     var i = 0usize;
     while i < pendingRemoved.len() {
       events.removed.push(*pendingRemoved[i]);
@@ -658,6 +658,6 @@ pub struct HashGrid[T Copy] {
   }
 }
 
-fn clampCell(c i32, lo i32, hi i32) i32 inline {
+fn clampCell(c: i32, lo: i32, hi: i32) i32 inline {
   if c < lo {lo} else if c > hi {hi} else {c}
 }

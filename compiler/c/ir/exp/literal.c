@@ -86,7 +86,7 @@ int litAdoptNullType(INode **nodep, INode *totype) {
     }
     if (totype == unknownType || totype == noCareType) {
         errorMsgNode((INode*)node, ErrorNullNotPtr,
-            "Nothing here says which raw pointer type 'null' is. Give it one where it is wanted, as in 'let p *u8 = null'.");
+            "Nothing here says which raw pointer type 'null' is. Give it one where it is wanted, as in 'let p: *u8 = null'.");
         node->vtype = errorType;
         return 1;
     }
@@ -223,8 +223,8 @@ void litNameRes(NameResState* pstate, IExpNode *node) {
 // lets such a literal stand for any number type -- but as a conversion, and a
 // conversion builds the constant at the default width first. Every bit above
 // the low 32 was dropped there and the result widened back: 'i64arg(5000000000)'
-// passed 705032704, 'var n i64 = 9223372036854775807' stored -1, and
-// 'var n f64 = 5000000000' held 705032704.0. Adopting the type builds the
+// passed 705032704, 'var n: i64 = 9223372036854775807' stored -1, and
+// 'var n: f64 = 5000000000' held 705032704.0. Adopting the type builds the
 // constant once, at the width it is stored at.
 //
 // An integer target retypes the node, and refuses a value it cannot hold. A
@@ -236,7 +236,7 @@ void litNameRes(NameResState* pstate, IExpNode *node) {
 // bool is a number type by tag -- a 1-bit unsigned -- but it is not a width to
 // adopt: its only values are true and false, and a literal reaches it the way
 // any other number does, through isTrue. Adopting it masked the constant to its
-// low bit, so 'var b bool = 2', 'b = 2', a bool return of 2, 'not 2' and
+// low bit, so 'var b: bool = 2', 'b = 2', a bool return of 2, 'not 2' and
 // '2 && 3' all read as false, while 'boolarg(2)' and 'Gauge[2]', which reach
 // bool through coercion instead, read as true.
 int litAdoptNumberType(INode **nodep, INode *totype) {
@@ -492,8 +492,8 @@ int litFoldUntyped(FnCallNode *call) {
 // wrapping it in a conversion. A float literal is not context-typed: '0.5' is
 // an f32 however it is wanted, and reaches an f64 by the implicit widening
 // every f32 value has. Left as a conversion node, the literal stopped being a
-// literal, so every position that requires one refused it -- 'let g f64 = 0.5'
-// as a global, a static, a parameter default and 'const K f64 = 0.5' -- while
+// literal, so every position that requires one refused it -- 'let g: f64 = 0.5'
+// as a global, a static, a parameter default and 'const K: f64 = 0.5' -- while
 // the same initializer was accepted in a function body and as a field default.
 // The value is the f32 widened, exactly what the conversion generated, so no
 // position's value changes. Returns 1 when *nodep is now a literal of the wider
@@ -522,8 +522,8 @@ int litWidenFloat(INode **nodep, INode *totype) {
 // is typed as the constant is, so 'const K = 5' is an i32 and reaches an i64 by
 // the implicit widening every i32 value has. Left as a conversion node, the use
 // stopped being a literal, and every position that requires one refused it --
-// 'let g i64 = K' as a global, a static, a parameter default and
-// 'const K3 i64 = K' -- while a use of the constant's own type was accepted.
+// 'let g: i64 = K' as a global, a static, a parameter default and
+// 'const K3: i64 = K' -- while a use of the constant's own type was accepted.
 // The constant's own literal is left alone, since other uses still read it; the
 // value is the one the conversion generated, sign-extended from a signed type
 // and zero-extended from an unsigned one, so no position's value changes. A
@@ -604,7 +604,7 @@ static int litFitsType(ULitNode *lit) {
 
 // Refuse an integer literal whose value does not fit the integer type it now
 // has, in place of materializing it at that width and silently dropping every
-// bit above it: '300u8' and 'var n u8 = 300' stored 44.
+// bit above it: '300u8' and 'var n: u8 = 300' stored 44.
 //
 // 'defaulted' says the type is the i32 newULitNode gave a literal nothing
 // else typed, which the message says, since the reader wrote no type. Reported
@@ -901,7 +901,7 @@ int slitBorrowRefused(INode *node, INode *totypedcl) {
 // built and checked as that borrow is when written: the temporary lives to the
 // end of the statement and is finalized there, a borrow of it used after that
 // is refused, and a local's initializer extends it to the end of the block
-// ('let r &String = "x"'). The borrow is the one the wanted type names, so the
+// ('let r: &String = "x"'). The borrow is the one the wanted type names, so the
 // permission is its own. Nothing here knows any type: 'T' is whatever declares
 // the function. Answers whether the result meets the wanted type.
 int slitBorrowCoerce(TypeCheckState *pstate, INode **nodep, INode *totype) {

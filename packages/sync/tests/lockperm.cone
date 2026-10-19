@@ -29,11 +29,11 @@ const perThread = 2000u64;
 
 // How many values have been finalized; the gate four pushers wait at; the
 // readers inside and main's word to them
-let finals Atomic[u32];
-let ready Atomic[u32];
-let go Atomic[u32];
-let inside Atomic[u32];
-let release Atomic[bool];
+let finals: Atomic[u32];
+let ready: Atomic[u32];
+let go: Atomic[u32];
+let inside: Atomic[u32];
+let release: Atomic[bool];
 
 fn @initpure init() {
   finals = Atomic[u32].of(0u32);
@@ -44,14 +44,14 @@ fn @initpure init() {
 }
 
 struct Items {
-  pub list List[u64];
-  fn final(self &uni) {finals.add(1u32);}
+  pub list: List[u64];
+  fn final(self: &uni) {finals.add(1u32);}
 }
 alias Shared = Arc[Mutex, Items];
 
 struct Push {
-  pub items Shared;
-  pub k u64;
+  pub items: Shared;
+  pub k: u64;
 }
 
 fn atGate() {
@@ -62,7 +62,7 @@ fn atGate() {
 }
 
 // Push perThread numbers, thread k's being k * 1000000 + i
-fn pushMany(p Push) u64 {
+fn pushMany(p: Push) u64 {
   atGate();
   var i = 0u64;
   while i < perThread {
@@ -73,7 +73,7 @@ fn pushMany(p Push) u64 {
 }
 
 // One race: whether the List came out whole
-fn race(items Shared) bool {
+fn race(items: Shared) bool {
   ready.store(0u32);
   go.store(0u32);
   let a = thread.start(new Push(items, 0u64), &pushMany);
@@ -105,12 +105,12 @@ fn race(items Shared) bool {
 }
 
 struct Settings {
-  pub scale u64;
-  fn final(self &uni) {finals.add(1u32);}
+  pub scale: u64;
+  fn final(self: &uni) {finals.add(1u32);}
 }
 alias Watched = Arc[Rwlock, Settings];
 
-fn reader(s Watched) u64 {
+fn reader(s: Watched) u64 {
   let r = &*s;
   inside.add(1u32);
   while !release.load() {
@@ -121,7 +121,7 @@ fn reader(s Watched) u64 {
   seen
 }
 
-fn writer(s Watched) u32 {
+fn writer(s: Watched) u32 {
   let w = &mut *s;
   w.scale = 20u64;
   inside.load()

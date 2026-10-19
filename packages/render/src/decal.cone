@@ -21,72 +21,72 @@
 
 // A decal's textures: the renderer's handles, and the group that binds them
 pub struct DecalMaterial {
-  pub albedo TextureHandle;
-  pub normal TextureHandle;        // a tangent-space normal map (addNormalTexture), or none
-  pub roughness TextureHandle;     // its green channel (addLinearTexture), or none
-  pub hasNormal bool;
-  pub hasRoughness bool;
-  pub group BindGroup;
+  pub albedo: TextureHandle;
+  pub normal: TextureHandle;        // a tangent-space normal map (addNormalTexture), or none
+  pub roughness: TextureHandle;     // its green channel (addLinearTexture), or none
+  pub hasNormal: bool;
+  pub hasRoughness: bool;
+  pub group: BindGroup;
 }
 
 // One decal in a frame
 pub struct Decal {
-  pub material u32;                // 'ImageFx.addDecalMaterial''s answer
-  pub model Mat4;                  // places the unit cube: its size, its place and which way is up (+y)
-  pub tint Color = new Color(1., 1., 1., 1.);   // multiplies the albedo and its alpha
-  pub fade f32 = 1.;               // 0 to 1: how much of it shows (to fade a footprint out)
-  pub normalStrength f32 = 1.;     // how much its normal map bends the surface's normal (0 to 1)
+  pub material: u32;                // 'ImageFx.addDecalMaterial''s answer
+  pub model: Mat4;                  // places the unit cube: its size, its place and which way is up (+y)
+  pub tint: Color = new Color(1., 1., 1., 1.);   // multiplies the albedo and its alpha
+  pub fade: f32 = 1.;               // 0 to 1: how much of it shows (to fade a footprint out)
+  pub normalStrength: f32 = 1.;     // how much its normal map bends the surface's normal (0 to 1)
   // Used when it has no roughness map: 0.9, the roughness of the ground,
   // moss and dirt decals are meant for (a smoother one shows the sun's sheen
   // at a grazing angle, as wet ground does)
-  pub roughness f32 = 0.9;
+  pub roughness: f32 = 0.9;
   // A surface takes it when the angle between its normal and the decal's up
   // is under 'maxAngle' (radians; 1.2 is 69 degrees), fading over the next 0.1 of the cosine
-  pub maxAngle f32 = 1.2;
+  pub maxAngle: f32 = 1.2;
   // The share of the box's depth faded out at each face (so its depth, the
   // thickness the surface may lie in, has soft limits)
-  pub depthFade f32 = 0.3;
+  pub depthFade: f32 = 0.3;
   // Faded out by distance from the camera: full to 'fadeStart', gone at 'fadeEnd'
-  pub fadeStart f32 = 100.;
-  pub fadeEnd f32 = 120.;
+  pub fadeStart: f32 = 100.;
+  pub fadeEnd: f32 = 120.;
   // Drawn in order, lowest first (a footprint over moss over a stain)
-  pub order i32 = 0;
+  pub order: i32 = 0;
 
   // A decal of 'material' placed by 'model', the rest as they default
-  pub fn at(material u32, model Mat4) Decal { new Decal(material, model) }
+  pub fn at(material: u32, model: Mat4) Decal { new Decal(material, model) }
 }
 
 pub struct DecalList {
-  pub decals List[Decal];
+  pub decals: List[Decal];
 
   pub fn empty() DecalList { new DecalList(List[Decal].empty()) }
-  pub fn clear(self &mut) { decals.clear(); }
-  pub fn len(self &) usize { decals.len() }
-  pub fn add(self &mut, d Decal) { decals.push(d); }
+  pub fn clear(self: &mut) { decals.clear(); }
+  pub fn len(self: &) usize { decals.len() }
+  pub fn add(self: &mut, d: Decal) { decals.push(d); }
 }
 
 // What the pass's immediates hold (decal.slang's DecalImmediates): 112 bytes
 struct DecalImmediates {
-  inverseModel Array[f32, 16];
-  tint Array[f32, 4];
-  a Array[f32, 4];
-  b Array[f32, 4];
+  inverseModel: Array[f32, 16];
+  tint: Array[f32, 4];
+  a: Array[f32, 4];
+  b: Array[f32, 4];
 }
 
 pub struct DecalPass {
-  pub shader ShaderModule;
-  pub materialLayout BindGroupLayout;      // group 1
-  pub passLayout BindGroupLayout;          // group 3
-  pub pipelineLayout PipelineLayout;
-  pub pipeline RenderPipeline;
-  pub sampler Sampler;
-  pub passGroup BindGroup;                 // the frame uniform and the scene's depth
-  pub materials List[DecalMaterial];
-  pub order List[u32];                     // the decals of a frame, sorted
-  pub drawn u32;                           // how many the last frame drew
+  pub shader: ShaderModule;
+  pub materialLayout: BindGroupLayout;      // group 1
+  pub passLayout: BindGroupLayout;          // group 3
+  pub pipelineLayout: PipelineLayout;
+  pub pipeline: RenderPipeline;
+  pub sampler: Sampler;
+  pub passGroup: BindGroup;                 // the frame uniform and the scene's depth
+  pub materials: List[DecalMaterial];
+  pub order: List[u32];                     // the decals of a frame, sorted
+  pub drawn: u32;                           // how many the last frame drew
 
-  pub fn create(device &mut Device, frameLayout &BindGroupLayout, environmentLayout &BindGroupLayout,
-      frameBuffer &Buffer, depth &TextureView) DecalPass {
+  pub fn create(device: &mut Device, frameLayout: &BindGroupLayout, environmentLayout: &BindGroupLayout,
+      frameBuffer: &Buffer, depth: &TextureView) DecalPass {
     var shader = device.createShaderModule(&DECAL_SPIRV);
     let materialEntries = [new BindGroupLayoutEntry(binding: 0u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE),
       new BindGroupLayoutEntry(binding: 1u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE),
@@ -116,10 +116,10 @@ pub struct DecalPass {
       List[DecalMaterial].empty(), List[u32].empty(), 0u32)
   }
 
-  pub fn isValid(self &) bool { pipeline.isValid() && passGroup.isValid() && sampler.isValid() }
+  pub fn isValid(self: &) bool { pipeline.isValid() && passGroup.isValid() && sampler.isValid() }
 
   // The group over the scene's depth made again (it was replaced)
-  pub fn remake(self &mut, device &mut Device, frameBuffer &Buffer, depth &TextureView) {
+  pub fn remake(self: &mut, device: &mut Device, frameBuffer: &Buffer, depth: &TextureView) {
     let passEntriesGroup = [BindGroupEntry.buffer(0u32, frameBuffer), BindGroupEntry.texture(1u32, depth)];
     passGroup = device.createBindGroup(&passLayout, &passEntriesGroup);
   }
@@ -127,8 +127,8 @@ pub struct DecalPass {
   // A decal material of these textures, its number. The renderer has them (its
   // 'addTexture', 'addNormalTexture', 'addLinearTexture'); a map that is
   // 'TextureHandle.none()' is left out.
-  pub fn addMaterial(self &mut, device &mut Device, r &Renderer, albedo TextureHandle, normal TextureHandle,
-      roughness TextureHandle) u32 {
+  pub fn addMaterial(self: &mut, device: &mut Device, r: &Renderer, albedo: TextureHandle, normal: TextureHandle,
+      roughness: TextureHandle) u32 {
     let a = if r.textures.alive(albedo.slot) { albedo } else { r.white };
     let hasNormal = r.textures.alive(normal.slot);
     let hasRoughness = r.textures.alive(roughness.slot);
@@ -146,7 +146,7 @@ pub struct DecalPass {
 
   // Draw the decals of 'list' over 'hdr' (the frame, after the scene): sorted
   // by order, then back to front from the camera at 'eye'
-  pub fn record(self &mut, encoder &mut CommandEncoder, r &Renderer, hdr &Texture, list &DecalList, eye Vec3) {
+  pub fn record(self: &mut, encoder: &mut CommandEncoder, r: &Renderer, hdr: &Texture, list: &DecalList, eye: Vec3) {
     drawn = 0u32;
     if list.decals.len() == 0usize { return; }
     order.clear();
@@ -210,11 +210,11 @@ pub struct DecalPass {
   }
 }
 
-fn cosOf(x f32) f32 { libc.cosf(x) }
+fn cosOf(x: f32) f32 { libc.cosf(x) }
 
 // spirv-begin decal.spv DECAL_SPIRV
 // Written by tools/shaders/shaders.py from decal.slang (sha256 01c4552c6ec16bacb7e344f61f6cf60d54413c6d6963c660f6cc8c5307da15e5): do not edit.
-let DECAL_SPIRV Array[u32, 7037] = [
+let DECAL_SPIRV: Array[u32, 7037] = [
   0x07230203u32, 0x00010500u32, 0x00280000u32, 0x00000700u32, 0x00000000u32, 0x00020011u32,
   0x00000001u32, 0x0006000bu32, 0x00000040u32, 0x4c534c47u32, 0x6474732eu32, 0x3035342eu32,
   0x00000000u32, 0x0003000eu32, 0x00000000u32, 0x00000001u32, 0x000a000fu32, 0x00000000u32,

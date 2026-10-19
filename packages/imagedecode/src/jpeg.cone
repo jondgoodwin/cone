@@ -39,7 +39,7 @@
 // Zigzag order to natural (row-major) position in the 8 x 8 block. The 16
 // extra 63s are libjpeg's guard against a corrupt run length stepping past
 // the end.
-let zigzag Array[u8, 80] = [0u8, 1u8, 8u8, 16u8, 9u8, 2u8, 3u8, 10u8, 17u8, 24u8, 32u8, 25u8, 18u8, 11u8, 4u8, 5u8,
+let zigzag: Array[u8, 80] = [0u8, 1u8, 8u8, 16u8, 9u8, 2u8, 3u8, 10u8, 17u8, 24u8, 32u8, 25u8, 18u8, 11u8, 4u8, 5u8,
   12u8, 19u8, 26u8, 33u8, 40u8, 48u8, 41u8, 34u8, 27u8, 20u8, 13u8, 6u8, 7u8, 14u8, 21u8, 28u8,
   35u8, 42u8, 49u8, 56u8, 57u8, 50u8, 43u8, 36u8, 29u8, 22u8, 15u8, 23u8, 30u8, 37u8, 44u8, 51u8,
   58u8, 59u8, 52u8, 45u8, 38u8, 31u8, 39u8, 46u8, 53u8, 60u8, 61u8, 54u8, 47u8, 55u8, 62u8, 63u8,
@@ -47,11 +47,11 @@ let zigzag Array[u8, 80] = [0u8, 1u8, 8u8, 16u8, 9u8, 2u8, 3u8, 10u8, 17u8, 24u8
 
 // A Huffman table ready to decode
 struct JHuff {
-  pub look List[u16];     // 512 entries by the next 9 bits: length * 256 + symbol, 0 if longer
-  pub maxcode List[i32];  // the largest code of each length 1 to 16 (-1 for none), 17 entries
-  pub valoff List[i32];   // index of the first symbol of a length minus its first code
-  pub vals List[u8];
-  pub present bool;
+  pub look: List[u16];     // 512 entries by the next 9 bits: length * 256 + symbol, 0 if longer
+  pub maxcode: List[i32];  // the largest code of each length 1 to 16 (-1 for none), 17 entries
+  pub valoff: List[i32];   // index of the first symbol of a length minus its first code
+  pub vals: List[u8];
+  pub present: bool;
 
   pub fn empty() JHuff {
     new JHuff(List[u16].empty(), List[i32].empty(), List[i32].empty(), List[u8].empty(), false)
@@ -59,7 +59,7 @@ struct JHuff {
 
   // From the DHT counts of codes of each length and the symbols. false if the
   // counts cannot be a prefix code.
-  pub fn build(self &mut, counts &Array[u8], symbols &Array[u8]) bool {
+  pub fn build(self: &mut, counts: &Array[u8], symbols: &Array[u8]) bool {
     look.clear();
     maxcode.clear();
     valoff.clear();
@@ -111,15 +111,15 @@ struct JHuff {
 // past it, and past the end of the file, it supplies zero bits and counts
 // them.
 struct JBits {
-  pub pos usize;
-  pub acc u64;        // the next bits at the top
-  pub n u32;          // how many bits it holds
-  pub marker u32;     // the marker found (0 none)
-  pub fake u32;       // zero bytes supplied past the data
-  pub bad bool;
+  pub pos: usize;
+  pub acc: u64;        // the next bits at the top
+  pub n: u32;          // how many bits it holds
+  pub marker: u32;     // the marker found (0 none)
+  pub fake: u32;       // zero bytes supplied past the data
+  pub bad: bool;
 }
 
-fn jFill(b &mut JBits, d &Array[u8]) {
+fn jFill(b: &mut JBits, d: &Array[u8]) {
   while b.n <= 56u32 {
     var byte = 0u64;
     if b.marker == 0u32 && b.pos < d.len {
@@ -151,7 +151,7 @@ fn jFill(b &mut JBits, d &Array[u8]) {
 }
 
 // n (0 to 16) bits
-fn jGet(b &mut JBits, d &Array[u8], n u32) i32 {
+fn jGet(b: &mut JBits, d: &Array[u8], n: u32) i32 {
   if n == 0u32 { return 0i32; }
   if b.n < n { jFill(b, d); }
   let v = i32.from(b.acc >> u64.from(64u32 - n));
@@ -160,7 +160,7 @@ fn jGet(b &mut JBits, d &Array[u8], n u32) i32 {
   v
 }
 
-fn jBit(b &mut JBits, d &Array[u8]) i32 {
+fn jBit(b: &mut JBits, d: &Array[u8]) i32 {
   if b.n < 1u32 { jFill(b, d); }
   let v = i32.from(b.acc >> 63u64);
   b.acc = b.acc << 1u64;
@@ -169,7 +169,7 @@ fn jBit(b &mut JBits, d &Array[u8]) i32 {
 }
 
 // The next Huffman symbol, or -1 on a code that is not in the table
-fn jDecode(b &mut JBits, d &Array[u8], h &JHuff) i32 {
+fn jDecode(b: &mut JBits, d: &Array[u8], h: &JHuff) i32 {
   if b.n < 16u32 { jFill(b, d); }
   let e = *h.look[usize.from(b.acc >> 55u64)];
   if e != 0u16 {
@@ -196,46 +196,46 @@ fn jDecode(b &mut JBits, d &Array[u8], h &JHuff) i32 {
 }
 
 // T.81 F.2.2.1: the value of an s-bit number v, signed by its top bit
-fn jExtend(v i32, s i32) i32 {
+fn jExtend(v: i32, s: i32) i32 {
   if v < (1i32 << (s - 1i32)) { return v - (1i32 << s) + 1i32; }
   v
 }
 
 // One component of the frame
 struct JComp {
-  pub id u8;
-  pub h usize;
-  pub v usize;
-  pub tq usize;
-  pub bw usize;        // blocks per row, padded to a whole MCU
-  pub bh usize;        // block rows, padded
-  pub w usize;         // the component's own width in samples (not padded)
-  pub hgt usize;       // and height
-  pub coefs List[i16]; // bw * bh blocks of 64, natural order
-  pub plane List[u8];  // samples after the inverse DCT: bw * 8 wide
+  pub id: u8;
+  pub h: usize;
+  pub v: usize;
+  pub tq: usize;
+  pub bw: usize;        // blocks per row, padded to a whole MCU
+  pub bh: usize;        // block rows, padded
+  pub w: usize;         // the component's own width in samples (not padded)
+  pub hgt: usize;       // and height
+  pub coefs: List[i16]; // bw * bh blocks of 64, natural order
+  pub plane: List[u8];  // samples after the inverse DCT: bw * 8 wide
 }
 
 struct JFrame {
-  pub width usize;
-  pub height usize;
-  pub progressive bool;
-  pub comps List[JComp];
-  pub hmax usize;
-  pub vmax usize;
-  pub mcusX usize;
-  pub mcusY usize;
+  pub width: usize;
+  pub height: usize;
+  pub progressive: bool;
+  pub comps: List[JComp];
+  pub hmax: usize;
+  pub vmax: usize;
+  pub mcusX: usize;
+  pub mcusY: usize;
 }
 
-fn jFail(why &str) Result[Raster, DecodeError] {
+fn jFail(why: &str) Result[Raster, DecodeError] {
   Error[Raster, DecodeError](new DecodeError(String.from(why)))
 }
 
-fn be16u(d &Array[u8], at usize) usize { usize.from(d[at]) * 256usize + usize.from(d[at + 1usize]) }
+fn be16u(d: &Array[u8], at: usize) usize { usize.from(d[at]) * 256usize + usize.from(d[at + 1usize]) }
 
 // ---- the decode of one block ----
 
 // A baseline block (T.81 F.2.2): DC difference, then the AC run/size pairs
-fn blockBaseline(d &Array[u8], b &mut JBits, dc &JHuff, ac &JHuff, pred &mut i32, c &mut Array[i16], off usize) bool {
+fn blockBaseline(d: &Array[u8], b: &mut JBits, dc: &JHuff, ac: &JHuff, pred: &mut i32, c: &mut Array[i16], off: usize) bool {
   let t = jDecode(b, d, dc);
   if t < 0i32 || t > 15i32 { return false; }
   let diff = if t == 0i32 {0i32} else {jExtend(jGet(b, d, u32.from(t)), t)};
@@ -262,7 +262,7 @@ fn blockBaseline(d &Array[u8], b &mut JBits, dc &JHuff, ac &JHuff, pred &mut i32
 }
 
 // Progressive DC first (G.1.2.1): the difference, shifted up by Al
-fn blockDcFirst(d &Array[u8], b &mut JBits, dc &JHuff, pred &mut i32, c &mut Array[i16], off usize, al i32) bool {
+fn blockDcFirst(d: &Array[u8], b: &mut JBits, dc: &JHuff, pred: &mut i32, c: &mut Array[i16], off: usize, al: i32) bool {
   let t = jDecode(b, d, dc);
   if t < 0i32 || t > 15i32 { return false; }
   let diff = if t == 0i32 {0i32} else {jExtend(jGet(b, d, u32.from(t)), t)};
@@ -272,14 +272,14 @@ fn blockDcFirst(d &Array[u8], b &mut JBits, dc &JHuff, pred &mut i32, c &mut Arr
 }
 
 // DC refinement: one bit, ORed in at position Al
-fn blockDcRefine(d &Array[u8], b &mut JBits, c &mut Array[i16], off usize, al i32) {
+fn blockDcRefine(d: &Array[u8], b: &mut JBits, c: &mut Array[i16], off: usize, al: i32) {
   if jBit(b, d) != 0i32 { c[off] = c[off] | i16.from(1i32 << al); }
 }
 
 // AC first (G.1.2.2): runs and sizes of coefficients Ss to Se, shifted up by
 // Al, with the end-of-band run shared across blocks
-fn blockAcFirst(d &Array[u8], b &mut JBits, ac &JHuff, c &mut Array[i16], off usize, ss usize, se usize, al i32,
-  eobrun &mut i32) bool {
+fn blockAcFirst(d: &Array[u8], b: &mut JBits, ac: &JHuff, c: &mut Array[i16], off: usize, ss: usize, se: usize, al: i32,
+  eobrun: &mut i32) bool {
   if *eobrun > 0i32 { *eobrun = *eobrun - 1i32; return true; }
   var k = ss;
   while k <= se {
@@ -310,8 +310,8 @@ fn blockAcFirst(d &Array[u8], b &mut JBits, ac &JHuff, c &mut Array[i16], off us
 // AC refinement (G.1.2.3, libjpeg's decode_mcu_AC_refine): new coefficients
 // of magnitude 1 << Al among the zeros, and a correction bit for each one
 // already nonzero that is passed
-fn blockAcRefine(d &Array[u8], b &mut JBits, ac &JHuff, c &mut Array[i16], off usize, ss usize, se usize, al i32,
-  eobrun &mut i32) bool {
+fn blockAcRefine(d: &Array[u8], b: &mut JBits, ac: &JHuff, c: &mut Array[i16], off: usize, ss: usize, se: usize, al: i32,
+  eobrun: &mut i32) bool {
   let p1 = 1i32 << al;
   let m1 = -1i32 << al;
   var k = ss;
@@ -376,22 +376,22 @@ fn blockAcRefine(d &Array[u8], b &mut JBits, ac &JHuff, c &mut Array[i16], off u
 
 // The decoder's state across markers
 struct JState {
-  pub frame JFrame;
-  pub quant List[i32];         // 4 tables of 64, natural order
-  pub hasQuant List[bool];
-  pub dc List[JHuff];          // 4
-  pub ac List[JHuff];
-  pub restart usize;
-  pub adobe bool;
-  pub adobeTransform u8;
-  pub jfif bool;
-  pub orientation i32;
-  pub sawFrame bool;
-  pub scans usize;
+  pub frame: JFrame;
+  pub quant: List[i32];         // 4 tables of 64, natural order
+  pub hasQuant: List[bool];
+  pub dc: List[JHuff];          // 4
+  pub ac: List[JHuff];
+  pub restart: usize;
+  pub adobe: bool;
+  pub adobeTransform: u8;
+  pub jfif: bool;
+  pub orientation: i32;
+  pub sawFrame: bool;
+  pub scans: usize;
 }
 
 // The Exif orientation in an APP1 segment's body (after the length), or 0
-fn exifOrientation(d &Array[u8], start usize, end usize) i32 {
+fn exifOrientation(d: &Array[u8], start: usize, end: usize) i32 {
   // "Exif\0\0" then a TIFF header
   if end < start + 14usize { return 0i32; }
   if d[start] != 'E' || d[start + 1usize] != 'x' || d[start + 2usize] != 'i' || d[start + 3usize] != 'f' { return 0i32; }
@@ -416,18 +416,18 @@ fn exifOrientation(d &Array[u8], start usize, end usize) i32 {
   0i32
 }
 
-fn readU16(d &Array[u8], at usize, little bool) usize {
+fn readU16(d: &Array[u8], at: usize, little: bool) usize {
   if little { return usize.from(d[at]) + usize.from(d[at + 1usize]) * 256usize; }
   usize.from(d[at]) * 256usize + usize.from(d[at + 1usize])
 }
 
-fn readU32(d &Array[u8], at usize, little bool) usize {
+fn readU32(d: &Array[u8], at: usize, little: bool) usize {
   if little { return readU16(d, at, true) + readU16(d, at + 2usize, true) * 65536usize; }
   readU16(d, at, false) * 65536usize + readU16(d, at + 2usize, false)
 }
 
 // Decode a JPEG file. 'orient': apply the Exif orientation to the pixels.
-pub fn decodeJpegWith(data &Array[u8], orient bool) Result[Raster, DecodeError] {
+pub fn decodeJpegWith(data: &Array[u8], orient: bool) Result[Raster, DecodeError] {
   if data.len < 4usize || data[0usize] != 0xFFu8 || data[1usize] != 0xD8u8 {
     return jFail("jpeg: not a JPEG file (no SOI marker)");
   }
@@ -603,12 +603,12 @@ pub fn decodeJpegWith(data &Array[u8], orient bool) Result[Raster, DecodeError] 
 }
 
 // Decode a JPEG file, the Exif orientation applied
-pub fn decodeJpeg(data &Array[u8]) Result[Raster, DecodeError] { decodeJpegWith(data, true) }
+pub fn decodeJpeg(data: &Array[u8]) Result[Raster, DecodeError] { decodeJpegWith(data, true) }
 
 // One scan: the entropy-coded segment from 'start'. Answers the position
 // after the data, or -1 if the data are bad.
-fn decodeScan(d &Array[u8], start usize, st &mut JState, scanComp &List[usize], dcT &List[usize], acT &List[usize],
-  ss usize, se usize, ah i32, al i32) i32 {
+fn decodeScan(d: &Array[u8], start: usize, st: &mut JState, scanComp: &List[usize], dcT: &List[usize], acT: &List[usize],
+  ss: usize, se: usize, ah: i32, al: i32) i32 {
   let progressive = st.frame.progressive;
   let ns = scanComp.len();
   var b = new JBits(start, 0u64, 0u32, 0u32, 0u32, false);

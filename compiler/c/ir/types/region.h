@@ -55,7 +55,7 @@ int regionAllocTakesRecord(INode *region);
 int regionIsTraced(INode *region);
 
 // Does the traced region's 'mark' take each reference's permission and the
-// trace's mode, 'fn mark(self &uni R, slot *usize, perm u32, mode u32)'?
+// trace's mode, 'fn mark(self: &uni R, slot *usize, perm u32, mode u32)'?
 int regionMarkTakesContext(INode *region);
 
 // Whether any struct of this compile declares 'Traced', noted as each struct is

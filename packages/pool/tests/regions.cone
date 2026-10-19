@@ -24,28 +24,28 @@ import pool use *;
 import libc;
 
 struct Counting {
-  header MemRegion;
-  allocs usize;
-  resizes usize;
-  releases usize;
-  live isize;
+  header: MemRegion;
+  allocs: usize;
+  resizes: usize;
+  releases: usize;
+  live: isize;
 }
 
-fn countAlloc(r *MemRegion, bytes usize, align usize) *u8 {
+fn countAlloc(r: *MemRegion, bytes: usize, align: usize) *u8 {
   let c = r as *Counting;
   (*c).allocs = (*c).allocs + 1usize;
   (*c).live = (*c).live + isize.from(bytes);
   libc.malloc(bytes)
 }
 
-fn countResize(r *MemRegion, block *u8, oldBytes usize, newBytes usize, align usize) *u8 {
+fn countResize(r: *MemRegion, block: *u8, oldBytes: usize, newBytes: usize, align: usize) *u8 {
   let c = r as *Counting;
   (*c).resizes = (*c).resizes + 1usize;
   (*c).live = (*c).live + isize.from(newBytes) - isize.from(oldBytes);
   libc.realloc(block, newBytes)
 }
 
-fn countRelease(r *MemRegion, block *u8, bytes usize) {
+fn countRelease(r: *MemRegion, block: *u8, bytes: usize) {
   if block as usize == 0usize { return; }
   let c = r as *Counting;
   (*c).releases = (*c).releases + 1usize;
@@ -57,9 +57,9 @@ fn newCounting() Counting {
   new Counting(new MemRegion(&countAlloc, &countResize, &countRelease), 0usize, 0usize, 0usize, 0isize)
 }
 
-fn regionOf(c &mut Counting) *MemRegion { (c as *Counting) as *MemRegion }
+fn regionOf(c: &mut Counting) *MemRegion { (c as *Counting) as *MemRegion }
 
-fn tally(c &Counting, allocs u64, resizes u64, releases u64, live i64, label &Array[u8]) {
+fn tally(c: &Counting, allocs: u64, resizes: u64, releases: u64, live: i64, label: &Array[u8]) {
   let ok = u64.from(c.allocs) == allocs && u64.from(c.resizes) == resizes
     && u64.from(c.releases) == releases && i64.from(c.live) == live;
   expect(ok, label);
@@ -101,10 +101,10 @@ var @threadlocal spawned = 0i64;
 // Its death notes n (or counts it, if it is of the spawned kind, n = 2), then
 // adds 'count' of the spawned kind, to the pool it reaches through 'home'
 struct Spawner {
-  pub n i64;
-  pub home *u8;
-  pub count i64;
-  fn final(self &uni) {
+  pub n: i64;
+  pub home: *u8;
+  pub count: i64;
+  fn final(self: &uni) {
     if n == 2i64 { spawned = spawned + 1i64; } else { log = log * 10i64 + n; }
     let p = (home as *Pool[Spawner]) as &mut Pool[Spawner];
     var k = 0i64;
@@ -115,7 +115,7 @@ struct Spawner {
   }
 }
 
-fn spawner(p &mut Pool[Spawner], n i64, count i64) Ref[Spawner] {
+fn spawner(p: &mut Pool[Spawner], n: i64, count: i64) Ref[Spawner] {
   let home = (p as *Pool[Spawner]) as *u8;
   p.add(new Spawner(n, home, count))
 }

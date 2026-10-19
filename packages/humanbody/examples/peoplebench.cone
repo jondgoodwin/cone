@@ -52,9 +52,9 @@ const SH = 1440u32;
 // ------------------------------------------------------------------------------ pictures
 
 struct Sheet {
-  raster Raster;
+  raster: Raster;
 
-  fn make(w i32, h i32) Sheet {
+  fn make(w: i32, h: i32) Sheet {
     var r = Raster.empty();
     r.width = w;
     r.height = h;
@@ -65,7 +65,7 @@ struct Sheet {
   }
 
   // A readback 'tw' by 'th' (rows from the top) into the sheet at (x, y)
-  fn put(self &mut, x0 i32, y0 i32, tw i32, th i32, px *u8) {
+  fn put(self: &mut, x0: i32, y0: i32, tw: i32, th: i32, px: *u8) {
     var y = 0;
     while y < th {
       var x = 0;
@@ -81,7 +81,7 @@ struct Sheet {
     }
   }
 
-  fn save(self &, dir &String, name &str) {
+  fn save(self: &, dir: &String, name: &str) {
     let png = encodePng(&raster, 2);
     var full = dir.copy();
     full.append("/");
@@ -93,7 +93,7 @@ struct Sheet {
   }
 }
 
-fn cstrEquals(a *u8, b &str) bool {
+fn cstrEquals(a: *u8, b: &str) bool {
   var i = 0usize;
   while i < b.len() {
     if *(a + i) != b[i] { return false; }
@@ -102,7 +102,7 @@ fn cstrEquals(a *u8, b &str) bool {
   *(a + b.len()) == 0u8
 }
 
-fn argString(p *u8) String {
+fn argString(p: *u8) String {
   var s = String.empty();
   var i = 0usize;
   while *(p + i) != 0u8 { s.appendByte(*(p + i)); i = i + 1usize; }
@@ -112,23 +112,23 @@ fn argString(p *u8) String {
 // ------------------------------------------------------------------------------ the stage
 
 struct Stage {
-  renderer Renderer;
-  post Post;
-  fx ImageFx;
-  morpher Morpher;
-  cloth PipelineHandle;
-  w u32;
-  h u32;
-  color Texture;
-  depth Texture;
-  readback Buffer;
-  sun Light;
-  floorMesh MeshHandle;
-  floorMat MaterialHandle;
-  cube MeshHandle;
-  wood MaterialHandle;
-  barMat MaterialHandle;
-  clay MaterialHandle;
+  renderer: Renderer;
+  post: Post;
+  fx: ImageFx;
+  morpher: Morpher;
+  cloth: PipelineHandle;
+  w: u32;
+  h: u32;
+  color: Texture;
+  depth: Texture;
+  readback: Buffer;
+  sun: Light;
+  floorMesh: MeshHandle;
+  floorMat: MaterialHandle;
+  cube: MeshHandle;
+  wood: MaterialHandle;
+  barMat: MaterialHandle;
+  clay: MaterialHandle;
 }
 
 fn daySky() Sky {
@@ -151,14 +151,14 @@ fn duskSky() Sky {
   s
 }
 
-fn setDay(device &mut Device, st &mut Stage, day bool) {
+fn setDay(device: &mut Device, st: &mut Stage, day: bool) {
   let sky = if day { daySky() } else { duskSky() };
   st.renderer.setSky(device, &sky);
   st.sun = if day { sky.sunLight(new Color(3.0, 2.85, 2.6, 1.), new Color(0.10, 0.11, 0.13, 1.)) }
     else { sky.sunLight(new Color(2.4, 1.35, 0.75, 1.), new Color(0.05, 0.06, 0.10, 1.)) };
 }
 
-fn resize(device &mut Device, st &mut Stage, w u32, h u32) {
+fn resize(device: &mut Device, st: &mut Stage, w: u32, h: u32) {
   if st.w == w && st.h == h { return; }
   let outDesc = new TextureDescriptor(w, h, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
   st.color = device.createTexture(&outDesc);
@@ -170,7 +170,7 @@ fn resize(device &mut Device, st &mut Stage, w u32, h u32) {
   st.h = h;
 }
 
-fn makeStage(device &mut Device) Stage {
+fn makeStage(device: &mut Device) Stage {
   var renderer = Renderer.create(device, TEXTURE_FORMAT_RGBA16_FLOAT, TEXTURE_FORMAT_DEPTH32_FLOAT);
   var post = Post.create(device, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, SW, SH);
   var fx = ImageFx.create(device, &renderer, &mut post);
@@ -205,7 +205,7 @@ fn makeStage(device &mut Device) Stage {
 }
 
 // Draw 'list' 'frames' times (temporal AA converges on a still picture) and read the last back
-fn shoot(device &mut Device, st &mut Stage, camera &Camera, list &DrawList, frames i32) *u8 {
+fn shoot(device: &mut Device, st: &mut Stage, camera: &Camera, list: &DrawList, frames: i32) *u8 {
   st.fx.cut = true;
   var f = 0;
   while f < frames {
@@ -221,16 +221,16 @@ fn shoot(device &mut Device, st &mut Stage, camera &Camera, list &DrawList, fram
   st.readback.mappedRange()
 }
 
-fn floor(list &mut DrawList, st &Stage) {
+fn floor(list: &mut DrawList, st: &Stage) {
   list.add(st.floorMesh, st.floorMat, Mat4.fromTrs(new Vec3(0., -0.5, 0.), Quat.identity(), new Vec3(30., 1., 30.)));
 }
 
-fn box(list &mut DrawList, st &Stage, mat MaterialHandle, c Vec3, half Vec3, yaw f32) {
+fn box(list: &mut DrawList, st: &Stage, mat: MaterialHandle, c: Vec3, half: Vec3, yaw: f32) {
   list.add(st.cube, mat, Mat4.fromTrs(c, Quat.angleAxis(yaw, new Vec3(0., 1., 0.)), half * 2.));
 }
 
 // The faces' rows: 0 neutral, 1 a smile, 2 surprise, 3 "ah", 4 "oo", 5 neutral (a blink is started after)
-fn setFaceRow(ac &mut Actor, row i32) {
+fn setFaceRow(ac: &mut Actor, row: i32) {
   ac.pose = standPose(&ac.body.skeleton);
   ac.rig.clearExpressions(0.01);
   ac.rig.blinking = false;
@@ -254,22 +254,22 @@ fn setFaceRow(ac &mut Actor, row i32) {
 // shoulders, as a cape's do) that grows from nothing at the collar to its depth at the hem, and the normals are
 // found again from the moved surface so the folds catch the light. The simulation is untouched; this is paint.
 struct FoldedView {
-  mesh MeshHandle;
-  material MaterialHandle;
-  scratch Mesh;
-  normals List[Vec3];
-  acc List[Vec3];
+  mesh: MeshHandle;
+  material: MaterialHandle;
+  scratch: Mesh;
+  normals: List[Vec3];
+  acc: List[Vec3];
 }
 
-fn makeFolded(renderer &mut Renderer, device &mut Device, g &Garment, material MaterialHandle) FoldedView {
+fn makeFolded(renderer: &mut Renderer, device: &mut Device, g: &Garment, material: MaterialHandle) FoldedView {
   let mesh = renderer.addDynamicMesh(device, u32.from(outputVertexCount(&g.soft, true)), u32.from(outputIndexCount(&g.soft, true)));
   new FoldedView(mesh, material, Mesh.empty(), List[Vec3].empty(), List[Vec3].empty())
 }
 
 // 'neck' the neck's place (world), 'up' the body's up; 'folds' waves a full turn round, 'depth' at the hem, 'drop'
 // the distance below the neck where the folds reach their depth
-fn drawFolded(v &mut FoldedView, renderer &mut Renderer, device &mut Device, g &Garment, list &mut DrawList, neck Vec3,
-    folds f32, depth f32, drop f32) {
+fn drawFolded(v: &mut FoldedView, renderer: &mut Renderer, device: &mut Device, g: &Garment, list: &mut DrawList, neck: Vec3,
+    folds: f32, depth: f32, drop: f32) {
   writeMesh(&g.soft, &mut v.scratch, true, &mut v.normals);
   let nv = v.scratch.positions.len() / 2usize;
   var i = 0usize;
@@ -324,40 +324,40 @@ fn drawFolded(v &mut FoldedView, renderer &mut Renderer, device &mut Device, g &
 // ------------------------------------------------------------------------------ the people
 
 struct Actor {
-  index usize;
-  name String;
-  body Body;
-  face BodyFace;
-  rig FaceRig;
-  frame FaceFrame;
-  full Wardrobe;
-  under Wardrobe;
-  copyFull MorphHandle;
-  copyUnder MorphHandle;
-  skinMat MaterialHandle;
-  eyeMat MaterialHandle;
-  teethMat MaterialHandle;
-  tongueMat MaterialHandle;
-  cavMat MaterialHandle;
-  hEyes MeshHandle;
-  hEars MeshHandle;
-  hTeeth MeshHandle;
-  hTongue MeshHandle;
-  hCav MeshHandle;
-  fullPieces List[MeshHandle];
-  fullMats List[MaterialHandle];
-  underPieces List[MeshHandle];
-  underMats List[MaterialHandle];
-  capeView List[FoldedView];
-  restInv List[Mat4];
-  pose Pose;
-  models List[Transform3];
-  world List[Transform3];
-  mats List[Mat4];
-  walker Walker;
+  index: usize;
+  name: String;
+  body: Body;
+  face: BodyFace;
+  rig: FaceRig;
+  frame: FaceFrame;
+  full: Wardrobe;
+  under: Wardrobe;
+  copyFull: MorphHandle;
+  copyUnder: MorphHandle;
+  skinMat: MaterialHandle;
+  eyeMat: MaterialHandle;
+  teethMat: MaterialHandle;
+  tongueMat: MaterialHandle;
+  cavMat: MaterialHandle;
+  hEyes: MeshHandle;
+  hEars: MeshHandle;
+  hTeeth: MeshHandle;
+  hTongue: MeshHandle;
+  hCav: MeshHandle;
+  fullPieces: List[MeshHandle];
+  fullMats: List[MaterialHandle];
+  underPieces: List[MeshHandle];
+  underMats: List[MaterialHandle];
+  capeView: List[FoldedView];
+  restInv: List[Mat4];
+  pose: Pose;
+  models: List[Transform3];
+  world: List[Transform3];
+  mats: List[Mat4];
+  walker: Walker;
 }
 
-fn clothMaterial(device &mut Device, st &mut Stage, c Vec3, kind u32) MaterialHandle {
+fn clothMaterial(device: &mut Device, st: &mut Stage, c: Vec3, kind: u32) MaterialHandle {
   let lin = linearOf(c);
   var m = PbrMaterial.standard(lin, 0., 0.78);
   if kind == CLOTH_PLAIN { m.sheenColor = new Color(lin.red * 0.35 + 0.05, lin.green * 0.35 + 0.05, lin.blue * 0.35 + 0.05, 1.); m.sheenRoughness = 0.6; }
@@ -367,7 +367,7 @@ fn clothMaterial(device &mut Device, st &mut Stage, c Vec3, kind u32) MaterialHa
   st.renderer.addPbrMaterial(device, &m)
 }
 
-fn indexedMesh(m &Mesh, idx &List[u32]) Mesh {
+fn indexedMesh(m: &Mesh, idx: &List[u32]) Mesh {
   var out = copyMesh(m);
   out.indices.clear();
   var i = 0usize;
@@ -375,7 +375,7 @@ fn indexedMesh(m &Mesh, idx &List[u32]) Mesh {
   out
 }
 
-fn makeActor(device &mut Device, st &mut Stage, set &BlendSet, p &Person, index usize, workers &mut Workers) Actor {
+fn makeActor(device: &mut Device, st: &mut Stage, set: &BlendSet, p: &Person, index: usize, workers: &mut Workers) Actor {
   var body = personBody(set, &p.measures);
   let face = buildFace(&mut body);
   let full = dressPerson(&body, p, false, 4u32);
@@ -460,7 +460,7 @@ fn makeActor(device &mut Device, st &mut Stage, set &BlendSet, p &Person, index 
 
 // The actor's pose placed in the world at 'at' facing 'yaw': the face's jaw and eyes from its frame, the bones in the
 // world, the skinning matrices
-fn place(a &mut Actor, at Vec3, yaw f32) {
+fn place(a: &mut Actor, at: Vec3, yaw: f32) {
   applyFace(&mut a.pose, &a.face.bones, &a.frame, &a.face.spec, false);
   a.body.skeleton.modelTransforms(&a.pose, &mut a.models);
   let root = new Transform3(at, Quat.angleAxis(yaw, new Vec3(0., 1., 0.)), new Vec3(1., 1., 1.));
@@ -475,13 +475,13 @@ fn place(a &mut Actor, at Vec3, yaw f32) {
   }
 }
 
-fn faceStep(st &mut Stage, a &mut Actor, frames i32) {
+fn faceStep(st: &mut Stage, a: &mut Actor, frames: i32) {
   var k = 0;
   while k < frames { a.rig.update(1. / 60., &mut a.frame); k = k + 1; }
 }
 
 // The cape brought to the pose and let settle for 'frames' sixtieths
-fn settleCape(a &mut Actor, workers &mut Workers, frames i32, snap bool) {
+fn settleCape(a: &mut Actor, workers: &mut Workers, frames: i32, snap: bool) {
   if a.full.capeIndex < 0i32 { return; }
   if snap {
     a.full.outfit.snap(&a.full.rig, &a.world);
@@ -491,7 +491,7 @@ fn settleCape(a &mut Actor, workers &mut Workers, frames i32, snap bool) {
   while k < frames { a.full.outfit.step(&a.full.rig, &a.world, 1. / 60., new Vec3(0.3, 0., 0.2), workers); k = k + 1; }
 }
 
-fn draw(device &mut Device, st &mut Stage, list &mut DrawList, a &mut Actor, dressed bool) {
+fn draw(device: &mut Device, st: &mut Stage, list: &mut DrawList, a: &mut Actor, dressed: bool) {
   st.morpher.setWeights(&mut st.renderer, if dressed { a.copyFull } else { a.copyUnder }, &a.frame.weights);
   let mesh = st.morpher.mesh(if dressed { a.copyFull } else { a.copyUnder });
   list.addSkinned(mesh, a.skinMat, Mat4.identity(), a.mats.view());
@@ -513,11 +513,11 @@ fn draw(device &mut Device, st &mut Stage, list &mut DrawList, a &mut Actor, dre
   }
 }
 
-fn ground(x f32, z f32) f32 { 0. }
+fn ground(x: f32, z: f32) f32 { 0. }
 
 // ------------------------------------------------------------------------------ main
 
-fn main(argc i32, argv **u8) i32 {
+fn main(argc: i32, argv: **u8) i32 {
   var outDir = String.from("C:/src/humanbody-shots");
   var quick = false;
   var firstOnly = false;
@@ -1029,7 +1029,7 @@ fn main(argc i32, argv **u8) i32 {
 // the forms, the blended field, the ring mesh laid on it, the mesh shaded, the base body of the sex and the blends
 // applied a group at a time (the height, the trunk, the limbs, the head and face, the build), the skin, the underwear,
 // the clothes and (the main avatar) the cape
-fn stages(device &mut Device, st &mut Stage, set &BlendSet, p &Person, index usize, outDir &String, workers &mut Workers) {
+fn stages(device: &mut Device, st: &mut Stage, set: &BlendSet, p: &Person, index: usize, outDir: &String, workers: &mut Workers) {
   let m = &p.measures;
   let who = if index == 0usize { "avatar" } else { "woman" };
   let w = 1920u32;
@@ -1151,7 +1151,7 @@ fn stages(device &mut Device, st &mut Stage, set &BlendSet, p &Person, index usi
   }
 }
 
-fn stageShot(device &mut Device, st &mut Stage, camera &Camera, list &DrawList, w u32, h u32, outDir &String, who &str, n i32, name &str) {
+fn stageShot(device: &mut Device, st: &mut Stage, camera: &Camera, list: &DrawList, w: u32, h: u32, outDir: &String, who: &str, n: i32, name: &str) {
   let px = shoot(device, st, camera, list, 10);
   var sheet = Sheet.make(i32.from(w), i32.from(h));
   sheet.put(0, 0, i32.from(w), i32.from(h), px);
@@ -1167,7 +1167,7 @@ fn stageShot(device &mut Device, st &mut Stage, camera &Camera, list &DrawList, 
 
 // The head study (--head): the main avatar's and the average woman's heads sculpted directly (no blends), skinned and
 // painted, front, three-quarter and profile, near: for working on the face quickly
-fn headStudy(device &mut Device, st &mut Stage, outDir &String) {
+fn headStudy(device: &mut Device, st: &mut Stage, outDir: &String) {
   let people = cast();
   let who = [0usize, 6usize];
   var sheet = Sheet.make(i32.from(SW), i32.from(SH));
@@ -1229,7 +1229,7 @@ fn headStudy(device &mut Device, st &mut Stage, outDir &String) {
 // ------------------------------------------------------------------------------ furniture and measures
 
 // A chair: a seat at the seat's height, four legs, a back behind the sit point
-fn chair(list &mut DrawList, st &Stage, seat &Seat) {
+fn chair(list: &mut DrawList, st: &Stage, seat: &Seat) {
   let c = seat.point;
   let y = seat.height;
   box(list, st, st.wood, new Vec3(c.x, y - 0.02, c.z + 0.02), new Vec3(0.23, 0.02, 0.22), 0.);
@@ -1246,7 +1246,7 @@ fn chair(list &mut DrawList, st &Stage, seat &Seat) {
 }
 
 // A bench 'length' long, its seat's top at the centre's height
-fn bench(list &mut DrawList, st &Stage, c Vec3, length f32) {
+fn bench(list: &mut DrawList, st: &Stage, c: Vec3, length: f32) {
   box(list, st, st.wood, new Vec3(c.x, c.y - 0.025, c.z + 0.02), new Vec3(length * 0.5, 0.025, 0.20), 0.);
   var sx = -1.f;
   while sx < 2. {
@@ -1256,7 +1256,7 @@ fn bench(list &mut DrawList, st &Stage, c Vec3, length f32) {
 }
 
 // Bars at the person's landmark heights, as wide as their ANSUR II breadths (the arms out at the shoulders), behind them
-fn measureBars(m &Measures, x f32, pos &mut List[Vec3], idx &mut List[u32]) {
+fn measureBars(m: &Measures, x: f32, pos: &mut List[Vec3], idx: &mut List[u32]) {
   let h = m.height;
   let z = 0.45f;
   let t = 0.0035f;
@@ -1291,21 +1291,21 @@ fn measureBars(m &Measures, x f32, pos &mut List[Vec3], idx &mut List[u32]) {
 // pegasus3d's browser/src/mannequin.cone's body, its tables and lofts copied here as they are (unskinned: it stands in
 // its rest pose), to draw it at the same scale. That file is the truth; this is a reading of it on 15 Oct 2026.
 
-const MQ_TRUNK Array[f32, 72] = [
+const MQ_TRUNK: Array[f32, 72] = [
   0.445, 0.040, 0.030, 0.000, 0.465, 0.105, 0.066, 0.006, 0.500, 0.136, 0.076, 0.009, 0.545, 0.140, 0.072, 0.005,
   0.600, 0.110, 0.062, 0.001, 0.660, 0.110, 0.064, -0.003, 0.720, 0.120, 0.070, -0.006, 0.775, 0.130, 0.065, -0.002,
   0.812, 0.124, 0.056, 0.004, 0.835, 0.098, 0.048, 0.006, 0.850, 0.050, 0.038, 0.005, 0.862, 0.034, 0.034, 0.004,
   0.878, 0.031, 0.034, 0.001, 0.896, 0.040, 0.050, -0.006, 0.930, 0.046, 0.058, -0.004, 0.966, 0.044, 0.054, 0.000,
   0.991, 0.030, 0.038, 0.002, 1.002, 0.008, 0.010, 0.000];
-const MQ_LEG Array[f32, 30] = [0.000, 0.020, 0.000, 0.020, 0.041, 0.000, 0.050, 0.050, 0.000, 0.140, 0.050, -0.003,
+const MQ_LEG: Array[f32, 30] = [0.000, 0.020, 0.000, 0.020, 0.041, 0.000, 0.050, 0.050, 0.000, 0.140, 0.050, -0.003,
   0.220, 0.044, 0.000, 0.295, 0.037, 0.000, 0.355, 0.040, 0.006, 0.445, 0.031, 0.003, 0.541, 0.023, 0.000, 0.556, 0.013, 0.000];
-const MQ_ARM Array[f32, 20] = [0.000, 0.010, 0.010, 0.027, 0.022, 0.035, 0.082, 0.033, 0.162, 0.030, 0.210, 0.026,
+const MQ_ARM: Array[f32, 20] = [0.000, 0.010, 0.010, 0.027, 0.022, 0.035, 0.082, 0.033, 0.162, 0.030, 0.210, 0.026,
   0.246, 0.029, 0.310, 0.024, 0.355, 0.018, 0.365, 0.013];
-const MQ_HAND Array[f32, 15] = [0.00, 0.016, 0.012, 0.25, 0.024, 0.013, 0.60, 0.025, 0.011, 0.90, 0.018, 0.008, 1.00, 0.006, 0.004];
-const MQ_FOOT Array[f32, 18] = [0.00, 0.009, 0.018, 0.07, 0.021, 0.044, 0.28, 0.024, 0.058, 0.55, 0.029, 0.040, 0.85, 0.027, 0.026,
+const MQ_HAND: Array[f32, 15] = [0.00, 0.016, 0.012, 0.25, 0.024, 0.013, 0.60, 0.025, 0.011, 0.90, 0.018, 0.008, 1.00, 0.006, 0.004];
+const MQ_FOOT: Array[f32, 18] = [0.00, 0.009, 0.018, 0.07, 0.021, 0.044, 0.28, 0.024, 0.058, 0.55, 0.029, 0.040, 0.85, 0.027, 0.026,
   1.00, 0.010, 0.012];
 
-fn mqEllipse(n usize, a f32, b f32, cx f32, cy f32) sculpt.Profile {
+fn mqEllipse(n: usize, a: f32, b: f32, cx: f32, cy: f32) sculpt.Profile {
   var pts = List[Vec2].withCapacity(n);
   var k = 0usize;
   while k < n {
@@ -1316,7 +1316,7 @@ fn mqEllipse(n usize, a f32, b f32, cx f32, cy f32) sculpt.Profile {
   sculpt.Profile.fromPoints(pts.view(), true)
 }
 
-fn mqSole(n usize, hw f32, top f32) sculpt.Profile {
+fn mqSole(n: usize, hw: f32, top: f32) sculpt.Profile {
   var pts = List[Vec2].withCapacity(n);
   let half = top * 0.5;
   let mid = half * 0.8;
@@ -1330,7 +1330,7 @@ fn mqSole(n usize, hw f32, top f32) sculpt.Profile {
   sculpt.Profile.fromPoints(pts.view(), true)
 }
 
-fn mqLoft(from Vec3, to Vec3, up Vec3, profiles &List[sculpt.Profile], at &Array[f32]) Mesh {
+fn mqLoft(from: Vec3, to: Vec3, up: Vec3, profiles: &List[sculpt.Profile], at: &Array[f32]) Mesh {
   let ends = [from, to];
   var path = sculpt.Path.fromPoints(&ends, false);
   path.up = up;
@@ -1338,7 +1338,7 @@ fn mqLoft(from Vec3, to Vec3, up Vec3, profiles &List[sculpt.Profile], at &Array
   pm.triangulate(true)
 }
 
-fn mannequinMesh(h f32) Mesh {
+fn mannequinMesh(h: f32) Mesh {
   let skel = humanoid(h);
   let rest = restModels(&skel);
   var body = Mesh.empty();

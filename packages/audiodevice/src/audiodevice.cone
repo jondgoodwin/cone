@@ -36,20 +36,20 @@ const BLOCK_FRAMES = 480usize;
 
 // Why a device did not start
 pub struct DeviceError {
-  pub reason i32;      // 1: SDL's audio would not start, 2: the stream would not open, 3: the feeder died
+  pub reason: i32;      // 1: SDL's audio would not start, 2: the stream would not open, 3: the feeder died
 }
 
 struct Feed is Sendable {
-  rate u32;
-  voices u32;
-  aheadMs u32;
-  engine Engine;
-  status OneshotSender[i32];
+  rate: u32;
+  voices: u32;
+  aheadMs: u32;
+  engine: Engine;
+  status: OneshotSender[i32];
 }
 
 // The feeder thread: opens the stream, reports 0 (or a reason) through
 // 'status', renders and pushes until a quit command, and closes
-fn feeder(init Feed) i32 {
+fn feeder(init: Feed) i32 {
   var f = init;
   if !sdl.InitSubSystem(sdl.INIT_AUDIO) {
     f.status.send(1i32);
@@ -85,23 +85,23 @@ fn feeder(init Feed) i32 {
 
 // A running device and the game thread's way to drive it
 pub struct Started {
-  pub device Device;
-  pub control Control;
+  pub device: Device;
+  pub control: Control;
 }
 
 pub struct Device {
-  worker Option[thread.Thread[i32]];
-  pub rate u32;
+  worker: Option[thread.Thread[i32]];
+  pub rate: u32;
 
   // Open the default playback device at 'rate' Hz stereo and start feeding
   // it from a mixer of 'voices' voices, keeping 'aheadMs' of sound queued.
   // Answers the device and the game thread's Control, or why not.
-  pub fn start(rate u32, voices u32, aheadMs u32) Result[Started, DeviceError] {
-    var c Control;
-    var rx Receiver[Cmd];
+  pub fn start(rate: u32, voices: u32, aheadMs: u32) Result[Started, DeviceError] {
+    var c: Control;
+    var rx: Receiver[Cmd];
     c, rx = commandQueue(DEFAULT_QUEUE);
-    var st OneshotSender[i32];
-    var sr OneshotReceiver[i32];
+    var st: OneshotSender[i32];
+    var sr: OneshotReceiver[i32];
     st, sr = Oneshot[i32].make();
     let engine = Engine.make(f32.from(rate), usize.from(voices), rx);
     let worker = thread.start(new Feed(rate, voices, aheadMs, engine, st), &feeder);
@@ -120,13 +120,13 @@ pub struct Device {
 
   // Stop feeding, close the device and wait for the feeder to end. 'control'
   // must be the one `start` gave; its sounds may be dropped afterwards.
-  pub fn stop(self &mut, control &mut Control) i32 {
+  pub fn stop(self: &mut, control: &mut Control) i32 {
     var sent = false;
     while !sent {
       sent = control.quit();
       if !sent { thread.yieldNow(); }
     }
-    var w Option[thread.Thread[i32]] = None[thread.Thread[i32]];
+    var w: Option[thread.Thread[i32]] = None[thread.Thread[i32]];
     w <=> worker;
     var status = 0i32;
     match w {

@@ -33,28 +33,28 @@ import libc;
 
 // A counting region: its header first, then the tallies
 struct Counting {
-  header MemRegion;
-  allocs usize;
-  resizes usize;
-  releases usize;
-  live isize;
+  header: MemRegion;
+  allocs: usize;
+  resizes: usize;
+  releases: usize;
+  live: isize;
 }
 
-fn countAlloc(r *MemRegion, bytes usize, align usize) *u8 {
+fn countAlloc(r: *MemRegion, bytes: usize, align: usize) *u8 {
   let c = r as *Counting;
   (*c).allocs = (*c).allocs + 1usize;
   (*c).live = (*c).live + isize.from(bytes);
   libc.malloc(bytes)
 }
 
-fn countResize(r *MemRegion, block *u8, oldBytes usize, newBytes usize, align usize) *u8 {
+fn countResize(r: *MemRegion, block: *u8, oldBytes: usize, newBytes: usize, align: usize) *u8 {
   let c = r as *Counting;
   (*c).resizes = (*c).resizes + 1usize;
   (*c).live = (*c).live + isize.from(newBytes) - isize.from(oldBytes);
   libc.realloc(block, newBytes)
 }
 
-fn countRelease(r *MemRegion, block *u8, bytes usize) {
+fn countRelease(r: *MemRegion, block: *u8, bytes: usize) {
   if block as usize == 0usize { return; }
   let c = r as *Counting;
   (*c).releases = (*c).releases + 1usize;
@@ -66,16 +66,16 @@ fn newCounting() Counting {
   new Counting(new MemRegion(&countAlloc, &countResize, &countRelease), 0usize, 0usize, 0usize, 0isize)
 }
 
-fn regionOf(c &mut Counting) *MemRegion { (c as *Counting) as *MemRegion }
+fn regionOf(c: &mut Counting) *MemRegion { (c as *Counting) as *MemRegion }
 
 // What the region was asked, against what is wanted
-fn tally(c &Counting, allocs u64, resizes u64, releases u64, live i64, label &Array[u8]) {
+fn tally(c: &Counting, allocs: u64, resizes: u64, releases: u64, live: i64, label: &Array[u8]) {
   let ok = u64.from(c.allocs) == allocs && u64.from(c.resizes) == resizes
     && u64.from(c.releases) == releases && i64.from(c.live) == live;
   expect(ok, label);
 }
 
-fn expectRef(got Option[&i64], want i64, label &Array[u8]) {
+fn expectRef(got: Option[&i64], want: i64, label: &Array[u8]) {
   match got {
     case let s Some {expectInt(*s, want, label);}
     case is None {expect(false, label);}

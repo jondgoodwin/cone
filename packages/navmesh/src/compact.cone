@@ -17,40 +17,40 @@
 // but is slower and needs the distance field). Small unconnected islands
 // are dropped.
 
-pub const NotConnected i32 = 63i32;
-pub const BorderReg i32 = 32768i32;      // 0x8000: set on the id of a region in a tile's border
+pub const NotConnected: i32 = 63i32;
+pub const BorderReg: i32 = 32768i32;      // 0x8000: set on the id of a region in a tile's border
 
 pub struct CompactHF {
-  pub w i32;
-  pub h i32;
-  pub bmin Vec3;
-  pub cs f32;
-  pub ch f32;
-  pub walkableHeight i32;
-  pub walkableClimb i32;
-  pub borderSize i32;
-  pub cellIndex List[i32];   // the first span of each column
-  pub cellCount List[i32];
-  pub y List[i32];           // floor height
-  pub clear List[i32];       // clearance above it
-  pub reg List[i32];
-  pub con List[u32];         // six bits a side: the layer of the neighbour, 63 none
-  pub area List[u8];
+  pub w: i32;
+  pub h: i32;
+  pub bmin: Vec3;
+  pub cs: f32;
+  pub ch: f32;
+  pub walkableHeight: i32;
+  pub walkableClimb: i32;
+  pub borderSize: i32;
+  pub cellIndex: List[i32];   // the first span of each column
+  pub cellCount: List[i32];
+  pub y: List[i32];           // floor height
+  pub clear: List[i32];       // clearance above it
+  pub reg: List[i32];
+  pub con: List[u32];         // six bits a side: the layer of the neighbour, 63 none
+  pub area: List[u8];
 
-  pub fn spanCount(self &) usize { y.len() }
+  pub fn spanCount(self: &) usize { y.len() }
 
-  pub fn getCon(self &, i usize, dir i32) i32 inline {
+  pub fn getCon(self: &, i: usize, dir: i32) i32 inline {
     i32.from((*con[i] >> u32.from(dir * 6i32)) & 63u32)
   }
 
-  pub fn setCon(self &mut, i usize, dir i32, layer i32) {
+  pub fn setCon(self: &mut, i: usize, dir: i32, layer: i32) {
     let shift = u32.from(dir * 6i32);
     let cleared = *con[i] & ~(63u32 << shift);
     con.set(i, cleared | (u32.from(layer) << shift));
   }
 
   // The span a side of span 'i' (in column x, z) leads to; -1 when none
-  pub fn neighbour(self &, i usize, x i32, z i32, dir i32) i32 {
+  pub fn neighbour(self: &, i: usize, x: i32, z: i32, dir: i32) i32 {
     let c = self.getCon(i, dir);
     if c == NotConnected { return -1i32; }
     let nx = x + dirX(dir);
@@ -60,7 +60,7 @@ pub struct CompactHF {
 }
 
 // The open spans of a heightfield, joined
-pub fn buildCompact(hf &Heightfield, walkableHeight i32, walkableClimb i32, borderSize i32) CompactHF {
+pub fn buildCompact(hf: &Heightfield, walkableHeight: i32, walkableClimb: i32, borderSize: i32) CompactHF {
   let w = hf.w;
   let h = hf.h;
   var c = new CompactHF(w, h, hf.bmin, hf.cs, hf.ch, walkableHeight, walkableClimb, borderSize,
@@ -133,7 +133,7 @@ pub fn buildCompact(hf &Heightfield, walkableHeight i32, walkableClimb i32, bord
 // an unwalkable neighbour, the edge of the heightfield) lose their area:
 // a two-pass chamfer distance (Recast's rcErodeWalkableArea), in units of
 // half a cell
-pub fn erodeWalkableArea(c &mut CompactHF, radius i32) {
+pub fn erodeWalkableArea(c: &mut CompactHF, radius: i32) {
   let w = c.w;
   let h = c.h;
   let n = c.y.len();
@@ -238,7 +238,7 @@ pub fn erodeWalkableArea(c &mut CompactHF, radius i32) {
 
 // An obstacle that marks an area: the spans under its footprint (by the
 // centre of their cell) and between its bottom and top take its area
-pub fn markObstacleArea(c &mut CompactHF, o &Obstacle) {
+pub fn markObstacleArea(c: &mut CompactHF, o: &Obstacle) {
   let e = o.extent();
   let ics = 1. / c.cs;
   let x0 = imax(i32.from(floorf((e.x - c.bmin.x) * ics)), 0i32);
@@ -272,12 +272,12 @@ pub fn markObstacleArea(c &mut CompactHF, o &Obstacle) {
 // ---- regions ----
 
 struct Sweep {
-  id i32;
-  ns i32;
-  nei i32;
+  id: i32;
+  ns: i32;
+  nei: i32;
 }
 
-fn paintRect(c &mut CompactHF, minx i32, maxx i32, minz i32, maxz i32, id i32) {
+fn paintRect(c: &mut CompactHF, minx: i32, maxx: i32, minz: i32, maxz: i32, id: i32) {
   var z = minz;
   while z < maxz {
     var x = minx;
@@ -297,7 +297,7 @@ fn paintRect(c &mut CompactHF, minx i32, maxx i32, minz i32, maxz i32, id i32) {
 
 // Monotone partitioning of the open spans into regions (ids from 1; a span
 // in the border of a tile has BorderReg set on its id); the number of ids used
-pub fn buildRegionsMonotone(c &mut CompactHF, minRegionArea i32) i32 {
+pub fn buildRegionsMonotone(c: &mut CompactHF, minRegionArea: i32) i32 {
   let w = c.w;
   let h = c.h;
   let bs = c.borderSize;
@@ -394,7 +394,7 @@ pub fn buildRegionsMonotone(c &mut CompactHF, minRegionArea i32) i32 {
 
 // A region of fewer than 'minArea' spans that touches no other region
 // (not even a tile's border) is an island too small to stand on: dropped
-fn filterIslands(c &mut CompactHF, nregs i32, minArea i32) {
+fn filterIslands(c: &mut CompactHF, nregs: i32, minArea: i32) {
   var count = List[i32].withCapacity(usize.from(nregs));
   var touches = List[bool].withCapacity(usize.from(nregs));
   var q = 0i32;

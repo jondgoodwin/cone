@@ -39,36 +39,36 @@
 // a + i b is the sum of the transforms, each of which is real because its spectrum is Hermitian).
 
 pub struct CascadeSpec {
-  pub length f32;       // tile size, metres
-  pub n usize;          // samples across, a power of two
-  pub kMin f32;         // the band of wavenumbers, rad/m, [kMin, kMax)
-  pub kMax f32;
+  pub length: f32;       // tile size, metres
+  pub n: usize;          // samples across, a power of two
+  pub kMin: f32;         // the band of wavenumbers, rad/m, [kMin, kMax)
+  pub kMax: f32;
 }
 
 pub struct Cascade {
-  pub spec CascadeSpec;
-  fft Fft;
-  h0re List[f32];
-  h0im List[f32];
-  omega List[f32];
-  pub height List[f32];      // after 'update': the surface height, m
-  pub dispX List[f32];       // the horizontal displacement D (before the choppiness lambda), m
-  pub dispZ List[f32];
-  pub slopeX List[f32];      // the surface slope dh/dx
-  pub slopeZ List[f32];
-  pub dxx List[f32];         // dDx/dx, dDz/dz and dDx/dz (before lambda): the displacement's derivatives
-  pub dzz List[f32];
-  pub dxz List[f32];
-  pub jacobian List[f32];    // J at lambda = the last update's choppiness
-  pub foam List[f32];        // 0 .. 1, persisting from update to update
-  sr List[f32];              // scratch
-  si List[f32];
-  row List[f32];
-  rowI List[f32];
-  varianceSum f64;           // the sum over k of the expected variance of each wave (for tests)
+  pub spec: CascadeSpec;
+  fft: Fft;
+  h0re: List[f32];
+  h0im: List[f32];
+  omega: List[f32];
+  pub height: List[f32];      // after 'update': the surface height, m
+  pub dispX: List[f32];       // the horizontal displacement D (before the choppiness lambda), m
+  pub dispZ: List[f32];
+  pub slopeX: List[f32];      // the surface slope dh/dx
+  pub slopeZ: List[f32];
+  pub dxx: List[f32];         // dDx/dx, dDz/dz and dDx/dz (before lambda): the displacement's derivatives
+  pub dzz: List[f32];
+  pub dxz: List[f32];
+  pub jacobian: List[f32];    // J at lambda = the last update's choppiness
+  pub foam: List[f32];        // 0 .. 1, persisting from update to update
+  sr: List[f32];              // scratch
+  si: List[f32];
+  row: List[f32];
+  rowI: List[f32];
+  varianceSum: f64;           // the sum over k of the expected variance of each wave (for tests)
 
   // The tile's waves for 'sea', each wave's random amplitude from 'seed'
-  pub fn make(spec CascadeSpec, sea &SeaState, seed u32) Cascade {
+  pub fn make(spec: CascadeSpec, sea: &SeaState, seed: u32) Cascade {
     let n = spec.n;
     var c = new Cascade(spec, Fft.make(n), zeros(n * n), zeros(n * n), zeros(n * n), zeros(n * n), zeros(n * n), zeros(n * n),
       zeros(n * n), zeros(n * n), zeros(n * n), zeros(n * n), zeros(n * n), zeros(n * n), zeros(n * n), zeros(n * n), zeros(n * n),
@@ -79,7 +79,7 @@ pub struct Cascade {
 
   // The initial amplitudes and frequencies again, for a new sea state (the same seed: the same random
   // numbers, so the sea changes character without changing which wave is where)
-  pub fn synthesise(self &mut, sea &SeaState, seed u32) {
+  pub fn synthesise(self: &mut, sea: &SeaState, seed: u32) {
     let n = spec.n;
     let dk = 6.28318530718 / spec.length;
     var vsum = 0.0;
@@ -120,11 +120,11 @@ pub struct Cascade {
 
   // The sum of the expected variances of every wave in the band: what the surface's mean square height
   // is expected to be (m^2), the integral of the spectrum over the band
-  pub fn expectedVariance(self &) f64 { varianceSum }
+  pub fn expectedVariance(self: &) f64 { varianceSum }
 
   // Replace every wave with the one wave A cos(k . x - w t + phase), k = 2 pi (mx, mz) / L, w the
   // dispersion relation's at depth 'depth' (for checking the FFT's conventions against the closed form)
-  pub fn setSingleWave(self &mut, mx i32, mz i32, amplitude f32, phase f32, depth f32) {
+  pub fn setSingleWave(self: &mut, mx: i32, mz: i32, amplitude: f32, phase: f32, depth: f32) {
     let n = spec.n;
     var i = 0usize;
     while i < n * n { h0re.set(i, 0.); h0im.set(i, 0.); omega.set(i, 0.); i = i + 1usize; }
@@ -141,7 +141,7 @@ pub struct Cascade {
   }
 
   // Fill the scratch lists with the spectrum of the 'pack'th pair of fields at time t
-  fn fillPack(self &mut, pack i32, t f64) {
+  fn fillPack(self: &mut, pack: i32, t: f64) {
     let n = spec.n;
     {
       let rr = sr.viewMut();
@@ -155,11 +155,11 @@ pub struct Cascade {
           let i = iz * n + ix;
           let j = ((n - iz) % n) * n + ((n - ix) % n);
           let w = *omega[i];
-          var hr f32 = 0.;
-          var hi f32 = 0.;
-          var kxk f32 = 0.;
-          var kzk f32 = 0.;
-          var k f32 = 0.;
+          var hr: f32 = 0.;
+          var hi: f32 = 0.;
+          var kxk: f32 = 0.;
+          var kzk: f32 = 0.;
+          var k: f32 = 0.;
           if w > 0. {
             // wave (ix, iz) at time t: the phase wraps at a whole number of turns to keep f32 accurate
             let ph = f32.from(libc.fmod(f64.from(w) * t, 6.283185307179586));
@@ -181,10 +181,10 @@ pub struct Cascade {
             kzk = kz;
           }
           // the two fields of this pack, as complex spectra (re, im) each
-          var ar f32 = 0.;
-          var ai f32 = 0.;
-          var br f32 = 0.;
-          var bi f32 = 0.;
+          var ar: f32 = 0.;
+          var ai: f32 = 0.;
+          var br: f32 = 0.;
+          var bi: f32 = 0.;
           if k > 0. {
             let ux = kxk / k;
             let uz = kzk / k;
@@ -215,14 +215,14 @@ pub struct Cascade {
   // The surface at time t seconds. 'lambda' is the choppiness, 'foamThreshold' the Jacobian below which
   // foam is made, 'foamGain' how fast, 'foamDecay' the seconds it takes to fade to 1/e, 'dt' the time
   // since the last update (for the foam's fade)
-  pub fn update(self &mut, t f64, lambda f32, foamThreshold f32, foamGain f32, foamDecay f32, dt f32) {
+  pub fn update(self: &mut, t: f64, lambda: f32, foamThreshold: f32, foamGain: f32, foamDecay: f32, dt: f32) {
     self.updateFields(t, lambda);
     self.updateFoam(foamThreshold, foamGain, foamDecay, dt);
   }
 
   // The surface's fields at time t (four inverse FFTs), and the Jacobian this cascade's own displacement
   // has at 'lambda'; the foam is not touched
-  pub fn updateFields(self &mut, t f64, lambda f32) {
+  pub fn updateFields(self: &mut, t: f64, lambda: f32) {
     let n = spec.n;
     var pack = 0;
     while pack < 4 {
@@ -252,7 +252,7 @@ pub struct Cascade {
 
   // Foam from this cascade's own Jacobian: made where it is under 'foamThreshold' (0 to 1 at 'foamGain' a
   // unit below it), faded by exp(-dt / foamDecay) where it is not
-  pub fn updateFoam(self &mut, foamThreshold f32, foamGain f32, foamDecay f32, dt f32) {
+  pub fn updateFoam(self: &mut, foamThreshold: f32, foamGain: f32, foamDecay: f32, dt: f32) {
     var f = 0usize;
     while f < spec.n * spec.n {
       let gen = fclampf((foamThreshold - *jacobian[f]) * foamGain, 0., 1.);
@@ -263,7 +263,7 @@ pub struct Cascade {
   }
 
   // The values at tile coordinates (u, v) in samples (not wrapped), bilinear with wrap-around
-  fn sampleAt(self &, field &List[f32], u f32, v f32) f32 {
+  fn sampleAt(self: &, field: &List[f32], u: f32, v: f32) f32 {
     let n = spec.n;
     let fu = libc.floorf(u);
     let fv = libc.floorf(v);
@@ -283,21 +283,21 @@ pub struct Cascade {
   }
 
   // 'field' at the rest position (x, z) metres (the tile repeats every L)
-  pub fn at(self &, field &List[f32], x f32, z f32) f32 {
+  pub fn at(self: &, field: &List[f32], x: f32, z: f32) f32 {
     let s = f32.from(spec.n) / spec.length;
     self.sampleAt(field, x * s, z * s)
   }
 }
 
-fn zeros(n usize) List[f32] {
+fn zeros(n: usize) List[f32] {
   var l = List[f32].withCapacity(n);
   l.resize(n, 0.);
   l
 }
 
-fn fclampf(v f32, lo f32, hi f32) f32 { if v < lo { lo } elif v > hi { hi } else { v } }
+fn fclampf(v: f32, lo: f32, hi: f32) f32 { if v < lo { lo } elif v > hi { hi } else { v } }
 
-fn wrapIndex(i i32, n usize) usize {
+fn wrapIndex(i: i32, n: usize) usize {
   let m = i32.from(n);
   var r = i % m;
   if r < 0 { r = r + m; }

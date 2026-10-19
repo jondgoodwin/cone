@@ -90,30 +90,30 @@ enum IntrinsicFn {
     SizeofIntrinsic,        // sizeof[T]() usize
     AlignofIntrinsic,       // alignof[T]() usize
     NeedsFinalIntrinsic,    // needsFinal[T]() bool
-    FinalizeIntrinsic,      // finalize[T](p *T)
-    SliceFromPartsIntrinsic,    // sliceFromParts[T](p *T, len usize) &Array[T]
-    SliceFromPartsMutIntrinsic, // sliceFromPartsMut[T](p *T, len usize) &mut Array[T]
-    SliceFromPartsUniIntrinsic, // sliceFromPartsUni[T](p *T, len usize) &uni Array[T]
-    ReadRawIntrinsic,       // readRaw[T](p *T) T
-    WriteRawIntrinsic,      // writeRaw[T](p *T, value T)
-    MoveRawIntrinsic,       // moveRaw[T](to *T, from *T, count usize)
+    FinalizeIntrinsic,      // finalize[T](p: *T)
+    SliceFromPartsIntrinsic,    // sliceFromParts[T](p: *T, len: usize) &Array[T]
+    SliceFromPartsMutIntrinsic, // sliceFromPartsMut[T](p: *T, len: usize) &mut Array[T]
+    SliceFromPartsUniIntrinsic, // sliceFromPartsUni[T](p: *T, len: usize) &uni Array[T]
+    ReadRawIntrinsic,       // readRaw[T](p: *T) T
+    WriteRawIntrinsic,      // writeRaw[T](p: *T, value: T)
+    MoveRawIntrinsic,       // moveRaw[T](to: *T, from: *T, count: usize)
     TypeRecordIntrinsic,    // typeRecord[T]() *TypeRecord
     HoldsTracedIntrinsic,   // holdsTraced[T]() bool
-    TraceIntrinsic,         // trace[T](p *T, mode u32)
-    TraceRootsIntrinsic,    // traceRoots(mode u32)
+    TraceIntrinsic,         // trace[T](p: *T, mode: u32)
+    TraceRootsIntrinsic,    // traceRoots(mode: u32)
     // The atomic operations: each takes its ordering as a constant MemOrder,
     // read at the call (intrinsicCallOrders), not from its instance
-    AtomicLoadIntrinsic,    // atomicLoad[T](p *T, order MemOrder) T
-    AtomicStoreIntrinsic,   // atomicStore[T](p *T, value T, order MemOrder)
-    AtomicSwapIntrinsic,    // atomicSwap[T](p *T, value T, order MemOrder) T
-    AtomicAddIntrinsic,     // atomicAdd[T](p *T, value T, order MemOrder) T
-    AtomicSubIntrinsic,     // atomicSub[T](p *T, value T, order MemOrder) T
-    AtomicAndIntrinsic,     // atomicAnd[T](p *T, value T, order MemOrder) T
-    AtomicOrIntrinsic,      // atomicOr[T](p *T, value T, order MemOrder) T
-    AtomicXorIntrinsic,     // atomicXor[T](p *T, value T, order MemOrder) T
-    AtomicMinIntrinsic,     // atomicMin[T](p *T, value T, order MemOrder) T: signed for a signed T
-    AtomicMaxIntrinsic,     // atomicMax[T](p *T, value T, order MemOrder) T: signed for a signed T
-    AtomicCompareSwapIntrinsic, // atomicCompareSwap[T](p *T, expected T, desired T, success MemOrder, failure MemOrder) T, bool
+    AtomicLoadIntrinsic,    // atomicLoad[T](p: *T, order: MemOrder) T
+    AtomicStoreIntrinsic,   // atomicStore[T](p: *T, value: T, order: MemOrder)
+    AtomicSwapIntrinsic,    // atomicSwap[T](p: *T, value: T, order: MemOrder) T
+    AtomicAddIntrinsic,     // atomicAdd[T](p: *T, value: T, order: MemOrder) T
+    AtomicSubIntrinsic,     // atomicSub[T](p: *T, value: T, order: MemOrder) T
+    AtomicAndIntrinsic,     // atomicAnd[T](p: *T, value: T, order: MemOrder) T
+    AtomicOrIntrinsic,      // atomicOr[T](p: *T, value: T, order: MemOrder) T
+    AtomicXorIntrinsic,     // atomicXor[T](p: *T, value: T, order: MemOrder) T
+    AtomicMinIntrinsic,     // atomicMin[T](p: *T, value: T, order: MemOrder) T: signed for a signed T
+    AtomicMaxIntrinsic,     // atomicMax[T](p: *T, value: T, order: MemOrder) T: signed for a signed T
+    AtomicCompareSwapIntrinsic, // atomicCompareSwap[T](p: *T, expected: T, desired: T, success: MemOrder, failure: MemOrder) T, bool
     // Where the call is written: its source file's name, and its line. Written
     // as a parameter's default value, where each call taking the default is
     // (fnCallFinalizeArgs), which is how 'panic' reports its caller
@@ -130,20 +130,20 @@ enum IntrinsicFn {
     IsLinuxIntrinsic,       // isLinux() bool
     IsMacOSIntrinsic,       // isMacOS() bool
     IsWasmIntrinsic,        // isWasm() bool
-    IsDefinedIntrinsic,     // isDefined(name &Array[u8]) bool
-    DefinedIntIntrinsic,    // definedInt(name &Array[u8]) i64
+    IsDefinedIntrinsic,     // isDefined(name: &Array[u8]) bool
+    DefinedIntIntrinsic,    // definedInt(name: &Array[u8]) i64
     // An integer's bits. Each is also a method of every integer type
     // (corenumber.c), its node carrying that type as its typearg, which is how
     // 'x.leadingZeros()' reaches the same registry entry 'mem.leadingZeros(x)'
     // does. A count of the bits of 0 is defined: the width
-    CountOnesIntrinsic,     // countOnes[T](x T) u32
-    LeadingZerosIntrinsic,  // leadingZeros[T](x T) u32
-    TrailingZerosIntrinsic, // trailingZeros[T](x T) u32
+    CountOnesIntrinsic,     // countOnes[T](x: T) u32
+    LeadingZerosIntrinsic,  // leadingZeros[T](x: T) u32
+    TrailingZerosIntrinsic, // trailingZeros[T](x: T) u32
     // The amount taken modulo the width
-    RotateLeftIntrinsic,    // rotateLeft[T](x T, n u32) T
-    RotateRightIntrinsic,   // rotateRight[T](x T, n u32) T
-    ShlMaskedIntrinsic,     // shlMasked[T](x T, n u32) T
-    ShrMaskedIntrinsic,     // shrMasked[T](x T, n u32) T: arithmetic for a signed T
+    RotateLeftIntrinsic,    // rotateLeft[T](x: T, n: u32) T
+    RotateRightIntrinsic,   // rotateRight[T](x: T, n: u32) T
+    ShlMaskedIntrinsic,     // shlMasked[T](x: T, n: u32) T
+    ShrMaskedIntrinsic,     // shrMasked[T](x: T, n: u32) T: arithmetic for a signed T
     // A GPU workgroup's barriers: every invocation of the workgroup waits there,
     // and what each wrote before it to the workgroup's memory, or to the storage
     // buffers, every other reads after it. The CPU runs a kernel one invocation
@@ -152,7 +152,7 @@ enum IntrinsicFn {
     StorageBarrierIntrinsic,    // storageBarrier()
     // The 128-bit product of two 64-bit numbers, its two halves xored: the
     // mixing step of the wyhash family, one instruction on a 64-bit target
-    MulFoldIntrinsic            // mulFold(a u64, b u64) u64
+    MulFoldIntrinsic            // mulFold(a: u64, b: u64) u64
 };
 
 // A MemOrder, core's enum of the orderings an atomic operation promises, in the
@@ -220,7 +220,7 @@ int coreIsHashTrait(INode *dcl);
 int coreIsIteratorTrait(INode *dcl);
 extern INode *coreIteratorTrait;
 int coreIsHasher(INode *dcl);
-// Core's Erased struct, '{p *u8, rec *TypeRecord}': a value known only by its type
+// Core's Erased struct, '{p *u8, rec: *TypeRecord}': a value known only by its type
 // record, which a trace of it calls (genlTraceErased). Known by its name, its two
 // fields and its package.
 int coreIsErased(INode *dcl);
@@ -235,7 +235,7 @@ StructNode *typeRecordStruct(void);
 // hold it to its signature and remember it for sliceEqFn
 void sliceEqDclNameRes(FnDclNode *fndcl);
 
-// Core's generic 'mem.sliceEq[T](a &Array[T], b &Array[T]) bool', which '==' and '!=' on
+// Core's generic 'mem.sliceEq[T](a: &Array[T], b: &Array[T]) bool', which '==' and '!=' on
 // two slices call (fnCallLowerSliceCompare); NULL before core's declaration is
 // name resolved, or in a compile whose core declares none
 FnDclNode *sliceEqFn(void);

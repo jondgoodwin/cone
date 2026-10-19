@@ -52,20 +52,20 @@ import msdftext use *;
 const W = 640u32;
 const H = 300u32;
 
-fn absf(v f64) f64 { if v < 0.0 { return -v; } v }
+fn absf(v: f64) f64 { if v < 0.0 { return -v; } v }
 
 // Red channel of pixel (x, y) as coverage, 0 to 1
-fn cov(p *u8, x u32, y u32) f64 {
+fn cov(p: *u8, x: u32, y: u32) f64 {
   if x >= W || y >= H { return 0.0; }
   f64.from(*(p + usize.from((y * W + x) * 4u32))) / 255.0
 }
 
-fn chan(p *u8, x u32, y u32, c u32) f64 {
+fn chan(p: *u8, x: u32, y: u32, c: u32) f64 {
   f64.from(*(p + usize.from((y * W + x) * 4u32 + c))) / 255.0
 }
 
 // The sum of coverage over the box [x0, x1) x [y0, y1)
-fn area(p *u8, x0 u32, y0 u32, x1 u32, y1 u32) f64 {
+fn area(p: *u8, x0: u32, y0: u32, x1: u32, y1: u32) f64 {
   var sum = 0.0;
   var y = y0;
   while y < y1 {
@@ -76,14 +76,14 @@ fn area(p *u8, x0 u32, y0 u32, x1 u32, y1 u32) f64 {
   sum
 }
 
-fn floorU(v f64) u32 { if v < 0.0 { return 0u32; } u32.from(libc.floor(v)) }
+fn floorU(v: f64) u32 { if v < 0.0 { return 0u32; } u32.from(libc.floor(v)) }
 
-fn near(got f64, want f64, rel f64, slack f64, label &Array[u8]) {
+fn near(got: f64, want: f64, rel: f64, slack: f64, label: &Array[u8]) {
   expectFloat(got, want, rel * want + slack, label);
 }
 
 // Write the frame as a 24-bit .bmp when MSDFTEXT_SHOTS names a folder
-fn shot(p *u8, name &str) {
+fn shot(p: *u8, name: &str) {
   let env = libc.getenv("MSDFTEXT_SHOTS");
   if (env as usize) == 0usize { return; }
   var file = String.fromCStr(cstr.fromPtr(env));
@@ -128,7 +128,7 @@ fn shot(p *u8, name &str) {
   fs.writeFile(&out, b.view());
 }
 
-fn finish(device &mut Device, encoder &mut CommandEncoder, target &Texture, readback &Buffer) {
+fn finish(device: &mut Device, encoder: &mut CommandEncoder, target: &Texture, readback: &Buffer) {
   encoder.copyTextureToBuffer(target, readback);
   device.queue.submit(encoder.finish());
   device.endFrame();
@@ -136,7 +136,7 @@ fn finish(device &mut Device, encoder &mut CommandEncoder, target &Texture, read
 }
 
 // A pass that clears the target to black and the depth to 'z'
-fn clearAll(encoder &mut CommandEncoder, target &Texture, depth &Texture, z f32) {
+fn clearAll(encoder: &mut CommandEncoder, target: &Texture, depth: &Texture, z: f32) {
   let color = new RenderPassColorAttachment(view: target.createView(), loadOp: LOAD_OP_CLEAR,
     clearValue: new Color(0., 0., 0., 0.));
   let d = new RenderPassDepthStencilAttachment(view: depth.createView(), depthLoadOp: LOAD_OP_CLEAR,
@@ -146,7 +146,7 @@ fn clearAll(encoder &mut CommandEncoder, target &Texture, depth &Texture, z f32)
 }
 
 // The ink of the box [x0, x1) x [y0, y1): the least and greatest column and row holding coverage above 'level'
-fn inkBox(p *u8, x0 u32, y0 u32, x1 u32, y1 u32, level f64, minX &mut u32, maxX &mut u32, minY &mut u32, maxY &mut u32) bool {
+fn inkBox(p: *u8, x0: u32, y0: u32, x1: u32, y1: u32, level: f64, minX: &mut u32, maxX: &mut u32, minY: &mut u32, maxY: &mut u32) bool {
   *minX = 100000u32;
   *minY = 100000u32;
   *maxX = 0u32;
@@ -171,7 +171,7 @@ fn inkBox(p *u8, x0 u32, y0 u32, x1 u32, y1 u32, level f64, minX &mut u32, maxX 
 }
 
 // How many pixels of the row y, from x0 to x1, lie between 10% and 90% coverage
-fn rampWidth(p *u8, y u32, x0 u32, x1 u32) u32 {
+fn rampWidth(p: *u8, y: u32, x0: u32, x1: u32) u32 {
   var n = 0u32;
   var x = x0;
   while x < x1 {
@@ -183,10 +183,10 @@ fn rampWidth(p *u8, y u32, x0 u32, x1 u32) u32 {
 }
 
 // The glyph with codepoint 'cp' in a layout: its placement
-fn placed(layout &TextLayout, i usize) PlacedGlyph { *layout.glyphs[i] }
+fn placed(layout: &TextLayout, i: usize) PlacedGlyph { *layout.glyphs[i] }
 
 // Checks of the overlay text at one size, drawn with its top left at (ox, oy)
-fn checkText(p *u8, font &Font, layout &TextLayout, ox f64, oy f64, size f64, tag &Array[u8]) {
+fn checkText(p: *u8, font: &Font, layout: &TextLayout, ox: f64, oy: f64, size: f64, tag: &Array[u8]) {
   let k = size / 1000.0;
   // Per glyph: the box, the area in k^2 units
   var gi = 0usize;
@@ -249,8 +249,8 @@ fn checkText(p *u8, font &Font, layout &TextLayout, ox f64, oy f64, size f64, ta
   expectFloat(cov(p, floorU(left - 2.0), midY), 0.0, 0.02, tag);
 }
 
-fn world(device &mut Device, text &mut TextRenderer, atlas &mut Atlas, font &Font, target &Texture, depth &Texture,
-    readback &Buffer, p *u8) {
+fn world(device: &mut Device, text: &mut TextRenderer, atlas: &mut Atlas, font: &Font, target: &Texture, depth: &Texture,
+    readback: &Buffer, p: *u8) {
   let aspect = f32.from(W) / f32.from(H);
   var camera = Camera.make();
   camera.lookAt(new Vec3(0., 0., 5.), new Vec3(0., 0., 0.), new Vec3(0., 1., 0.));
@@ -348,7 +348,7 @@ fn world(device &mut Device, text &mut TextRenderer, atlas &mut Atlas, font &Fon
 // made sampleable (a texture the text is drawn into can be read by a later pass). A
 // half float 1.0 is 0x3C00, and the fill of the bar is 1.0 in all three channels,
 // alpha 1; a half float 0 is 0.
-fn hdr(device &mut Device, atlas &mut Atlas, font &Font) {
+fn hdr(device: &mut Device, atlas: &mut Atlas, font: &Font) {
   let size = 128u32;
   let desc = new TextureDescriptor(size, size, TEXTURE_FORMAT_RGBA16_FLOAT,
     TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC | TEXTURE_USAGE_TEXTURE_BINDING);

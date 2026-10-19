@@ -31,26 +31,26 @@ const burst = 5u64;
 
 // What each side tells main
 struct Report {
-  pub count u64;            // datagrams received and checked
-  pub wrong u64;            // datagrams with the wrong bytes, length, sender or order
-  pub notDone u64;          // answers that were not Done
-  pub ownPort u16;          // its own port
-  pub peerPort u16;         // the port it saw every datagram come from (0 until the first)
-  pub counters diag.Counters;
+  pub count: u64;            // datagrams received and checked
+  pub wrong: u64;            // datagrams with the wrong bytes, length, sender or order
+  pub notDone: u64;          // answers that were not Done
+  pub ownPort: u16;          // its own port
+  pub peerPort: u16;         // the port it saw every datagram come from (0 until the first)
+  pub counters: diag.Counters;
 }
 
 struct ServerArgs {
-  pub pool Pool;
-  pub portTx Sender[u16];
+  pub pool: Pool;
+  pub portTx: Sender[u16];
 }
 
 struct ClientArgs {
-  pub pool Pool;
-  pub port u16;
+  pub pool: Pool;
+  pub port: u16;
 }
 
 // Datagram i's length: a spread of sizes, one empty
-fn dgLen(i u64) usize {
+fn dgLen(i: u64) usize {
   let k = i % 8u64;
   if k == 0u64 {1usize}
   elif k == 1u64 {17usize}
@@ -62,14 +62,14 @@ fn dgLen(i u64) usize {
   else {64usize}
 }
 
-fn byteOf(i u64, j usize) u8 {u8.from((i * 37u64 + u64.from(j) * 3u64) % 251u64)}
+fn byteOf(i: u64, j: usize) u8 {u8.from((i * 37u64 + u64.from(j) * 3u64) % 251u64)}
 
 // What the server does to a byte
-fn changed(b u8) u8 {u8.from((u64.from(b) + 1u64) % 256u64)}
+fn changed(b: u8) u8 {u8.from((u64.from(b) + 1u64) % 256u64)}
 
 const notFound = 0xFFFFFFFFusize;
 
-fn find(out &List[Completion], tok u64) usize {
+fn find(out: &List[Completion], tok: u64) usize {
   var k = 0usize;
   while k < out.len() {
     if out[k].token == tok {return k;}
@@ -79,7 +79,7 @@ fn find(out &List[Completion], tok u64) usize {
 }
 
 // Poll until the answer with token tok is in out (or 5 s pass): its index
-fn await1(lp &mut Loop, out &mut List[Completion], tok u64) usize {
+fn await1(lp: &mut Loop, out: &mut List[Completion], tok: u64) usize {
   let until = Instant.now() + Duration.fromSeconds(5i64);
   var k = find(out, tok);
   while k == notFound && Instant.now() < until {
@@ -89,7 +89,7 @@ fn await1(lp &mut Loop, out &mut List[Completion], tok u64) usize {
   k
 }
 
-fn portOf(lp &Loop, h Handle) u16 {
+fn portOf(lp: &Loop, h: Handle) u16 {
   var port = 0u16;
   match lp.localAddr(h) {
     case let a Ok {port = a.port();}
@@ -99,7 +99,7 @@ fn portOf(lp &Loop, h Handle) u16 {
 }
 
 // Echo each datagram, changed, to the address it came from, until all are done
-fn serve(a ServerArgs) Report {
+fn serve(a: ServerArgs) Report {
   var lp = Loop.mustMake();
   let sock = lp.mustBindUdp(SocketAddr.localhost(0u16));
   var rep = new Report(0u64, 0u64, 0u64, portOf(&lp, sock), 0u16, diag.Counters.zero());
@@ -160,7 +160,7 @@ fn serve(a ServerArgs) Report {
 }
 
 // The datagram i, from sock to port, as a SendTo submitted under token tok
-fn sendDg(lp &mut Loop, pool &Pool, sock Handle, port u16, i u64, tok u64) {
+fn sendDg(lp: &mut Loop, pool: &Pool, sock: Handle, port: u16, i: u64, tok: u64) {
   var b = pool.mustTake(2048usize);
   let n = dgLen(i);
   let w = b.whole();
@@ -174,7 +174,7 @@ fn sendDg(lp &mut Loop, pool &Pool, sock Handle, port u16, i u64, tok u64) {
 }
 
 // Whether answer c is datagram i's, changed, from the server's port
-fn isReply(c &Completion, i u64, port u16) bool {
+fn isReply(c: &Completion, i: u64, port: u16) bool {
   if !c.isDone() || c.n != dgLen(i) || c.peer.port() != port {return false;}
   let v = c.buf.view();
   var j = 0usize;
@@ -185,7 +185,7 @@ fn isReply(c &Completion, i u64, port u16) bool {
   true
 }
 
-fn client(a ClientArgs) Report {
+fn client(a: ClientArgs) Report {
   var lp = Loop.mustMake();
   let sock = lp.mustBindUdp(SocketAddr.localhost(0u16));
   var rep = new Report(0u64, 0u64, 0u64, portOf(&lp, sock), a.port, diag.Counters.zero());
@@ -245,8 +245,8 @@ fn main() i32 {
   let total = rounds + burst;
   {
     let pool = Pool.make();
-    var portTx Sender[u16];
-    var portRx Receiver[u16];
+    var portTx: Sender[u16];
+    var portRx: Receiver[u16];
     portTx, portRx = Channel[u16].make();
     let server = thread.start(new ServerArgs(pool, portTx), &serve);
     var port = 0u16;

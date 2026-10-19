@@ -9,10 +9,10 @@
 // first two fields are laid out as a slice is (a pointer, then a count of
 // elements), which a direct twin's slice parameter is read from.
 pub struct Words {
-  ptr *u32;
-  elems usize;                 // a slice binding's elements (its words for a struct)
-  pub len usize;               // its words
-  slice bool;                  // bound as a slice, as the kernel's SPIR-V says
+  ptr: *u32;
+  elems: usize;                 // a slice binding's elements (its words for a struct)
+  pub len: usize;               // its words
+  slice: bool;                  // bound as a slice, as the kernel's SPIR-V says
 
   pub fn u32s(self) &Array[u32] { mem.sliceFromParts[u32](ptr, len) }
   pub fn u32sMut(self) &mut Array[u32] { mem.sliceFromPartsMut[u32](ptr, len) }
@@ -46,7 +46,7 @@ pub const MAX_TOGETHER_INVOCATIONS = 256u32;
 // run, if the kernel has no twin, the buffers are not one for each binding,
 // a direct twin's struct is larger than its buffer, or a kernel with
 // barriers has a workgroup of more than MAX_TOGETHER_INVOCATIONS.
-pub fn runTwin(kernel &Kernel, buffers &mut List[List[u32]], x u32, y u32 = 1u32, z u32 = 1u32) bool {
+pub fn runTwin(kernel: &Kernel, buffers: &mut List[List[u32]], x: u32, y: u32 = 1u32, z: u32 = 1u32) bool {
   if !kernel.hasTwin || buffers.len() != usize.from(kernel.bindings) {
     fail("runTwin: the kernel has no twin, or the buffers are not one for each binding");
     return false;
@@ -118,20 +118,20 @@ pub fn runTwin(kernel &Kernel, buffers &mut List[List[u32]], x u32, y u32 = 1u32
 // lives on the stack of 'runTogether', which joins every thread before it
 // returns.
 struct Together {
-  arrived Atomic[u32];
-  generation Atomic[u32];
-  size u32;                    // invocations a workgroup: the threads
-  kernel *Kernel;
-  words *Words;                // the bindings,
-  count usize;                 // as many
-  groups Array[u32, 3];        // the dispatch's workgroups, each way
+  arrived: Atomic[u32];
+  generation: Atomic[u32];
+  size: u32;                    // invocations a workgroup: the threads
+  kernel: *Kernel;
+  words: *Words;                // the bindings,
+  count: usize;                 // as many
+  groups: Array[u32, 3];        // the dispatch's workgroups, each way
 }
 
 // The barrier: each thread's hook, ctx its Together, whatever the kind (a
 // thread waits for every other at a storageBarrier as at a workgroupBarrier,
 // and the futex's atomics order every write before it, workgroup and storage
 // memory alike, before every read after it)
-fn togetherWait(ctx *u8, kind u32) {
+fn togetherWait(ctx: *u8, kind: u32) {
   let t = ctx as *Together;
   let gen = (*t).generation.load();
   if (*t).arrived.add(1u32) == (*t).size - 1u32 {
@@ -149,15 +149,15 @@ fn togetherWait(ctx *u8, kind u32) {
 // workgroup (its flat local index). Its pointer is to the Together that
 // 'runTogether' keeps alive until every thread is joined.
 struct Lane is Sendable {
-  together *Together;
-  index u32;
+  together: *Together;
+  index: u32;
 }
 
 // One thread's work: its invocation of each workgroup in turn, x fastest, its
 // barrier hook set to the dispatch's barrier; after each workgroup, a wait
 // at that barrier, so that no thread starts the next workgroup, and writes
 // its '@workgroup' globals, while another still reads this one's
-fn runLane(lane Lane) {
+fn runLane(lane: Lane) {
   let t = lane.together;
   let k = (*t).kernel;
   let ctx = t as *u8;
@@ -199,7 +199,7 @@ fn runLane(lane Lane) {
 // global is the workgroup running's own, as on the GPU each workgroup has
 // its own; and nothing resets it between workgroups, as nothing does on the
 // GPU, where workgroup memory starts undefined.
-fn runTogether(kernel &Kernel, view &Array[Words], x u32, y u32, z u32) {
+fn runTogether(kernel: &Kernel, view: &Array[Words], x: u32, y: u32, z: u32) {
   let size = kernel.workgroup[0usize] * kernel.workgroup[1usize] * kernel.workgroup[2usize];
   var t = new Together(Atomic[u32].of(0u32), Atomic[u32].of(0u32), size, kernel as *Kernel,
     if view.len > 0usize { &view[0usize] as *Words } else { null as *Words }, view.len, [x, y, z]);
@@ -218,24 +218,24 @@ fn runTogether(kernel &Kernel, view &Array[Words], x u32, y u32, z u32) {
 // How a kernel's GPU run and its CPU twin compared: every word of every
 // buffer the kernel writes (READ_WRITE), bit for bit
 pub struct Parity {
-  pub ran bool;                // both ran
-  pub compared u64;            // words compared
-  pub mismatched u64;          // words that differ
-  pub firstBinding u32;        // the first that differs: its binding and index,
-  pub firstIndex u64;
-  pub gpuWord u32;             // and the two words
-  pub cpuWord u32;
+  pub ran: bool;                // both ran
+  pub compared: u64;            // words compared
+  pub mismatched: u64;          // words that differ
+  pub firstBinding: u32;        // the first that differs: its binding and index,
+  pub firstIndex: u64;
+  pub gpuWord: u32;             // and the two words
+  pub cpuWord: u32;
 
   // Whether the two agree, every bit of every word written
-  pub fn exact(self &) bool { ran && mismatched == 0u64 && compared > 0u64 }
+  pub fn exact(self: &) bool { ran && mismatched == 0u64 && compared > 0u64 }
 }
 
 // Run 'kernel' on the GPU and its CPU twin on the CPU, each over its own
 // copy of 'buffers' (binding i starting as 'buffers[i]'), in 'x' by 'y' by
 // 'z' workgroups, and compare what each wrote, bit for bit. It waits for the
 // GPU (ending the device's frame): for tests and tools.
-pub fn checkParity(device &mut Device, kernel &Kernel, buffers &List[List[u32]], x u32, y u32 = 1u32,
-    z u32 = 1u32) Parity {
+pub fn checkParity(device: &mut Device, kernel: &Kernel, buffers: &List[List[u32]], x: u32, y: u32 = 1u32,
+    z: u32 = 1u32) Parity {
   var result = new Parity(false, 0u64, 0u64, 0u32, 0u64, 0u32, 0u32);
   if !kernel.hasTwin || buffers.len() != usize.from(kernel.bindings) {
     fail("checkParity: the kernel has no twin, or the buffers are not one for each binding");

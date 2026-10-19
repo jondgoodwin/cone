@@ -21,18 +21,18 @@
 pub const FAR = 64f32;
 
 pub struct GroundMaps {
-  pub originX f32;
-  pub originZ f32;
-  pub size f32;                    // metres across (the raster is square)
-  pub res u32;                     // texels across
-  pub texel f32;                   // metres a texel
-  pub data List[f32];              // channel c, texel (i, j) at c res res + j res + i
-  pub farField List[u8];           // RGBA8, res x res, row 0 at the smallest z: the colour the ground adds up to
+  pub originX: f32;
+  pub originZ: f32;
+  pub size: f32;                    // metres across (the raster is square)
+  pub res: u32;                     // texels across
+  pub texel: f32;                   // metres a texel
+  pub data: List[f32];              // channel c, texel (i, j) at c res res + j res + i
+  pub farField: List[u8];           // RGBA8, res x res, row 0 at the smallest z: the colour the ground adds up to
 
   // Maps over the square from (originX, originZ) 'size' metres each way, 'res'
   // texels across. Height 0, flat, a little damp, in full sun, no path, water,
   // canopy or objects near.
-  pub fn create(originX f32, originZ f32, size f32, res u32) GroundMaps {
+  pub fn create(originX: f32, originZ: f32, size: f32, res: u32) GroundMaps {
     let n = usize.from(res) * usize.from(res);
     var data = List[f32].withCapacity(n * SIGNALS);
     data.resize(n * SIGNALS, 0.);
@@ -45,7 +45,7 @@ pub struct GroundMaps {
     m
   }
 
-  pub fn fill(self &mut, c usize, v f32) {
+  pub fn fill(self: &mut, c: usize, v: f32) {
     let n = usize.from(res) * usize.from(res);
     var k = 0usize;
     while k < n {
@@ -55,21 +55,21 @@ pub struct GroundMaps {
   }
 
   // The world position of texel column i, and row j
-  pub fn worldX(self &, i u32) f32 { originX + (f32.from(i) + 0.5) * texel }
-  pub fn worldZ(self &, j u32) f32 { originZ + (f32.from(j) + 0.5) * texel }
+  pub fn worldX(self: &, i: u32) f32 { originX + (f32.from(i) + 0.5) * texel }
+  pub fn worldZ(self: &, j: u32) f32 { originZ + (f32.from(j) + 0.5) * texel }
 
   // Channel 'c' of texel (i, j)
-  pub fn at(self &, c usize, i u32, j u32) f32 {
+  pub fn at(self: &, c: usize, i: u32, j: u32) f32 {
     let n = usize.from(res) * usize.from(res);
     *data[c * n + usize.from(j) * usize.from(res) + usize.from(i)]
   }
 
-  pub fn set(self &mut, c usize, i u32, j u32, v f32) {
+  pub fn set(self: &mut, c: usize, i: u32, j: u32, v: f32) {
     let n = usize.from(res) * usize.from(res);
     data.set(c * n + usize.from(j) * usize.from(res) + usize.from(i), v);
   }
 
-  fn clampIndex(self &, v i32) u32 {
+  fn clampIndex(self: &, v: i32) u32 {
     if v < 0i32 { return 0u32; }
     if v >= i32.from(res) { return res - 1u32; }
     u32.from(v)
@@ -77,7 +77,7 @@ pub struct GroundMaps {
 
   // Channel 'c' at the world point (x, z): bilinear, clamped at the edge.
   // cover.slang's 'mapSample' is this, operation for operation.
-  pub fn sample(self &, c usize, x f32, z f32) f32 {
+  pub fn sample(self: &, c: usize, x: f32, z: f32) f32 {
     let u = (x - originX) / texel - 0.5;
     let v = (z - originZ) / texel - 0.5;
     let fu = libc.floorf(u);
@@ -97,10 +97,10 @@ pub struct GroundMaps {
     top + (bottom - top) * ty
   }
 
-  pub fn heightAt(self &, x f32, z f32) f32 { self.sample(SIGNAL_HEIGHT, x, z) }
+  pub fn heightAt(self: &, x: f32, z: f32) f32 { self.sample(SIGNAL_HEIGHT, x, z) }
 
   // The ground's unit normal at (x, z), from the height a texel either side
-  pub fn normalAt(self &, x f32, z f32) Vec3 {
+  pub fn normalAt(self: &, x: f32, z: f32) Vec3 {
     let dx = (self.sample(SIGNAL_HEIGHT, x + texel, z) - self.sample(SIGNAL_HEIGHT, x - texel, z)) / (2. * texel);
     let dz = (self.sample(SIGNAL_HEIGHT, x, z + texel) - self.sample(SIGNAL_HEIGHT, x, z - texel)) / (2. * texel);
     let inv = 1. / (dx * dx + 1. + dz * dz).sqrt();
@@ -108,7 +108,7 @@ pub struct GroundMaps {
   }
 
   // All eight signals at (x, z)
-  pub fn signalsAt(self &, x f32, z f32) Array[f32, 8] {
+  pub fn signalsAt(self: &, x: f32, z: f32) Array[f32, 8] {
     [self.sample(0usize, x, z), self.sample(1usize, x, z), self.sample(2usize, x, z), self.sample(3usize, x, z),
       self.sample(4usize, x, z), self.sample(5usize, x, z), self.sample(6usize, x, z), self.sample(7usize, x, z)]
   }
@@ -117,7 +117,7 @@ pub struct GroundMaps {
 
   // The slope channel (degrees from flat) from the heights, by central
   // differences over one texel each side
-  pub fn deriveSlope(self &mut) {
+  pub fn deriveSlope(self: &mut) {
     var j = 0u32;
     while j < res {
       var i = 0u32;
@@ -136,7 +136,7 @@ pub struct GroundMaps {
   // the heightfield, in steps of a texel, each step compared with the ground
   // there) and capped at 1. Soft by one texel of blur. Later, 'shadeByCanopy'
   // dims it under trees.
-  pub fn deriveExposure(self &mut, toSun Vec3, reach f32) {
+  pub fn deriveExposure(self: &mut, toSun: Vec3, reach: f32) {
     let n = usize.from(res) * usize.from(res);
     var raw = List[f32].withCapacity(n);
     raw.resize(n, 0.);
@@ -199,7 +199,7 @@ pub struct GroundMaps {
   }
 
   // Dim exposure under the canopy: exposure x (1 - strength x canopy)
-  pub fn shadeByCanopy(self &mut, strength f32) {
+  pub fn shadeByCanopy(self: &mut, strength: f32) {
     var j = 0u32;
     while j < res {
       var i = 0u32;
@@ -214,7 +214,7 @@ pub struct GroundMaps {
   // The moisture channel from the distance to water: 'dry' far away, rising
   // to 1 at the water's edge as e^(-distance / reach), and a little drier on
   // slopes (water runs off): moisture x (1 - slopeLoss x slope / 45), at least 0
-  pub fn deriveMoisture(self &mut, dry f32, reach f32, slopeLoss f32) {
+  pub fn deriveMoisture(self: &mut, dry: f32, reach: f32, slopeLoss: f32) {
     var j = 0u32;
     while j < res {
       var i = 0u32;
@@ -232,7 +232,7 @@ pub struct GroundMaps {
   // Lower channel 'c' (a distance channel) to the distance to the polyline
   // through 'points' (x, z) less 'halfWidth': a path or a stream of that
   // width. Exact (point to segment), for texels within FAR of it.
-  pub fn addPolylineDistance(self &mut, c usize, points &List[Vec2], halfWidth f32) {
+  pub fn addPolylineDistance(self: &mut, c: usize, points: &List[Vec2], halfWidth: f32) {
     var s = 0usize;
     while s + 1usize < points.len() {
       let a = *points[s];
@@ -242,7 +242,7 @@ pub struct GroundMaps {
     }
   }
 
-  fn addSegmentDistance(self &mut, c usize, a Vec2, b Vec2, halfWidth f32) {
+  fn addSegmentDistance(self: &mut, c: usize, a: Vec2, b: Vec2, halfWidth: f32) {
     let lo = new Vec2(fmin(a.x, b.x) - FAR, fmin(a.y, b.y) - FAR);
     let hi = new Vec2(fmax(a.x, b.x) + FAR, fmax(a.y, b.y) + FAR);
     let i0 = self.clampIndex(i32.from(libc.floorf((lo.x - originX) / texel)));
@@ -269,7 +269,7 @@ pub struct GroundMaps {
 
   // Lower the object-distance channel round a round object (a boulder, a
   // trunk) at (x, z) of 'radius'
-  pub fn addObject(self &mut, x f32, z f32, radius f32) {
+  pub fn addObject(self: &mut, x: f32, z: f32, radius: f32) {
     let p = new Vec2(x, z);
     self.addSegmentDistance(SIGNAL_OBJECT, p, p, radius);
   }
@@ -277,7 +277,7 @@ pub struct GroundMaps {
   // Raise the canopy channel under a tree crown: a disc of 'radius' at (x, z)
   // whose density is 'density' (0 to 1) at the middle and falls to 0 at the
   // rim (a smoothstep), the largest of overlapping crowns kept
-  pub fn addCrown(self &mut, x f32, z f32, radius f32, density f32) {
+  pub fn addCrown(self: &mut, x: f32, z: f32, radius: f32, density: f32) {
     let i0 = self.clampIndex(i32.from(libc.floorf((x - radius - originX) / texel)));
     let i1 = self.clampIndex(i32.from(libc.floorf((x + radius - originX) / texel)) + 1i32);
     let j0 = self.clampIndex(i32.from(libc.floorf((z - radius - originZ) / texel)));
@@ -303,7 +303,7 @@ pub struct GroundMaps {
   // ---- The far-field colour ----
 
   // The colour at (x, z) the far field holds: linear rgb
-  pub fn farColorAt(self &, x f32, z f32) Vec3 {
+  pub fn farColorAt(self: &, x: f32, z: f32) Vec3 {
     if farField.len() == 0usize { return new Vec3(0.2, 0.2, 0.2); }
     let u = (x - originX) / texel - 0.5;
     let v = (z - originZ) / texel - 0.5;
@@ -332,16 +332,16 @@ pub struct GroundMaps {
   }
 }
 
-pub fn fmin(a f32, b f32) f32 { if a < b { a } else { b } }
-pub fn fmax(a f32, b f32) f32 { if a > b { a } else { b } }
-pub fn fclamp(x f32, lo f32, hi f32) f32 { if x < lo { lo } elif x > hi { hi } else { x } }
+pub fn fmin(a: f32, b: f32) f32 { if a < b { a } else { b } }
+pub fn fmax(a: f32, b: f32) f32 { if a > b { a } else { b } }
+pub fn fclamp(x: f32, lo: f32, hi: f32) f32 { if x < lo { lo } elif x > hi { hi } else { x } }
 
-pub fn srgbToLinear(c f32) f32 {
+pub fn srgbToLinear(c: f32) f32 {
   if c <= 0.04045 { return c / 12.92; }
   libc.powf((c + 0.055) / 1.055, 2.4)
 }
 
-pub fn linearToSrgb(c f32) f32 {
+pub fn linearToSrgb(c: f32) f32 {
   if c <= 0.0031308 { return c * 12.92; }
   1.055 * libc.powf(c, 1. / 2.4) - 0.055
 }

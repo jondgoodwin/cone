@@ -17,22 +17,22 @@ fn maxDims() u32 { 4u32 }
 fn maxAlignment() u64 { 0x80000000u64 }
 
 struct Cursor {
-  pos usize;
-  failed bool;
-  err GgufError;
+  pos: usize;
+  failed: bool;
+  err: GgufError;
 
   fn make() Cursor {
     new Cursor(0usize, false, GgufError.make(ErrorKind.Truncated, 0u64, ""))
   }
 
-  fn fail(self &mut, kind ErrorKind, at usize, reason &str) {
+  fn fail(self: &mut, kind: ErrorKind, at: usize, reason: &str) {
     if failed { return; }
     failed = true;
     err = GgufError.make(kind, u64.from(at), reason);
   }
 
   // True when n more bytes are there; otherwise the cursor has failed
-  fn need(self &mut, d &Array[u8], n u64, what &str) bool {
+  fn need(self: &mut, d: &Array[u8], n: u64, what: &str) bool {
     if failed { return false; }
     let left = u64.from(d.len - pos);
     if n > left {
@@ -42,21 +42,21 @@ struct Cursor {
     true
   }
 
-  fn rd8(self &mut, d &Array[u8], what &str) u8 {
+  fn rd8(self: &mut, d: &Array[u8], what: &str) u8 {
     if !self.need(d, 1u64, what) { return 0u8; }
     let v = d[pos];
     pos = pos + 1usize;
     v
   }
 
-  fn rd16(self &mut, d &Array[u8], what &str) u16 {
+  fn rd16(self: &mut, d: &Array[u8], what: &str) u16 {
     if !self.need(d, 2u64, what) { return 0u16; }
     let v = u16.from(d[pos]) | (u16.from(d[pos + 1usize]) << 8u16);
     pos = pos + 2usize;
     v
   }
 
-  fn rd32(self &mut, d &Array[u8], what &str) u32 {
+  fn rd32(self: &mut, d: &Array[u8], what: &str) u32 {
     if !self.need(d, 4u64, what) { return 0u32; }
     let v = u32.from(d[pos]) | (u32.from(d[pos + 1usize]) << 8u32)
           | (u32.from(d[pos + 2usize]) << 16u32) | (u32.from(d[pos + 3usize]) << 24u32);
@@ -64,7 +64,7 @@ struct Cursor {
     v
   }
 
-  fn rd64(self &mut, d &Array[u8], what &str) u64 {
+  fn rd64(self: &mut, d: &Array[u8], what: &str) u64 {
     if !self.need(d, 8u64, what) { return 0u64; }
     var v = 0u64;
     var i = 7usize;
@@ -78,7 +78,7 @@ struct Cursor {
   }
 
   // A string: a u64 length, then that many bytes (no terminator)
-  fn rdString(self &mut, d &Array[u8], what &str) String {
+  fn rdString(self: &mut, d: &Array[u8], what: &str) String {
     let n = self.rd64(d, what);
     if failed { return String.empty(); }
     if !self.need(d, n, what) { return String.empty(); }
@@ -91,7 +91,7 @@ struct Cursor {
 
 // The fewest bytes one element of an array of this type takes in the file, to
 // check a count against the bytes left
-fn minElementBytes(t &ValueType) u64 {
+fn minElementBytes(t: &ValueType) u64 {
   match t {
     case is U8 { 1u64 }
     case is I8 { 1u64 }
@@ -111,7 +111,7 @@ fn minElementBytes(t &ValueType) u64 {
 
 // Reads one value of the type the file named. After a failure the value
 // answered is a placeholder, which the caller drops.
-fn readValue(c &mut Cursor, d &Array[u8], t &ValueType, depth u32) Value {
+fn readValue(c: &mut Cursor, d: &Array[u8], t: &ValueType, depth: u32) Value {
   match t {
     case is U8 { return Value.U8(c.rd8(d, "the file ends inside a value")); }
     case is I8 { return Value.I8(i8.from(c.rd8(d, "the file ends inside a value"))); }
@@ -165,12 +165,12 @@ fn readValue(c &mut Cursor, d &Array[u8], t &ValueType, depth u32) Value {
 // 3 more elements than a 64-bit count holds; 4 a first dimension that is not
 // a whole number of blocks; 5 more bytes than a 64-bit count holds)
 struct Geometry {
-  elements u64;
-  bytes u64;
-  fault u32;
+  elements: u64;
+  bytes: u64;
+  fault: u32;
 }
 
-fn faultText(fault u32) &str {
+fn faultText(fault: u32) &str {
   if fault == 1u32 { return "a tensor has no dimensions or more than 4"; }
   if fault == 2u32 { return "a tensor has a dimension of zero"; }
   if fault == 3u32 { return "a tensor has more elements than a 64-bit count holds"; }
@@ -178,7 +178,7 @@ fn faultText(fault u32) &str {
   "a tensor is more bytes than a 64-bit count holds"
 }
 
-fn geometry(kind &TensorType, dims &Array[u64]) Geometry {
+fn geometry(kind: &TensorType, dims: &Array[u64]) Geometry {
   if dims.len == 0usize || dims.len > usize.from(maxDims()) { return new Geometry(0u64, 0u64, 1u32); }
   var elements = 1u64;
   var i = 0usize;
@@ -197,15 +197,15 @@ fn geometry(kind &TensorType, dims &Array[u64]) Geometry {
 }
 
 // Rounds n up to a multiple of a, a power of two
-fn alignUp(n u64, a u64) u64 { (n + a - 1u64) & ~(a - 1u64) }
+fn alignUp(n: u64, a: u64) u64 { (n + a - 1u64) & ~(a - 1u64) }
 
-fn failed(c &mut Cursor) Result[Model, GgufError] {
+fn failed(c: &mut Cursor) Result[Model, GgufError] {
   var e = GgufError.make(ErrorKind.Truncated, 0u64, "");
   e <=> c.err;
   Error[Model, GgufError](e)
 }
 
-fn problem(kind ErrorKind, at u64, reason &str) Result[Model, GgufError] {
+fn problem(kind: ErrorKind, at: u64, reason: &str) Result[Model, GgufError] {
   Error[Model, GgufError](GgufError.make(kind, at, reason))
 }
 
@@ -213,7 +213,7 @@ fn problem(kind ErrorKind, at u64, reason &str) Result[Model, GgufError] {
 // its bytes. Nothing of the tensors' data is copied: 'Model.tensorBytes' finds it
 // again in the same bytes. Every tensor is checked to lie inside the file, at
 // an offset that keeps the file's alignment.
-pub fn parse(file &Array[u8]) Result[Model, GgufError] {
+pub fn parse(file: &Array[u8]) Result[Model, GgufError] {
   var c = Cursor.make();
 
   // Magic and version

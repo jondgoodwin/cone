@@ -45,40 +45,40 @@ pub const JOINT_BALL = 3;        // a point joint with no limits
 
 // What one bone becomes
 pub struct BoneSpec {
-  pub hasBody bool;       // false: the bone rides with the nearest ancestor that has a body (a clavicle)
-  pub shape i32;
-  pub radius f32;         // capsule, sphere
-  pub halfLen f32;        // capsule: half the length between the hemispheres' centres
-  pub half Vec3;          // box: half extents, in the bone's frame
-  pub center Vec3;        // the shape's centre in the bone's frame (rest)
-  pub axis Vec3;          // a capsule's long axis in the bone's frame
-  pub mass f32;           // kilograms
-  pub joint i32;          // to the parent body
-  pub jointAxis Vec3;     // hinge axis, or twist axis, in this bone's frame at rest
-  pub lo f32;             // hinge range, or twist range, radians
-  pub hi f32;
-  pub cone f32;           // the solver's cone (cone-twist): at least every swing range below
-  pub flex f32;           // cone-twist swing ranges measured from rest: the twist axis' tip may move this
-  pub ext f32;            // far forward (flexion), back (extension), outward (abduction) and inward
-  pub abd f32;            // (adduction); the range is an ellipse of these four quarter-axes
-  pub add f32;
-  pub maxTorque f32;      // N m
-  pub side f32;           // +1 the being's right (+x), -1 left, 0 the middle: which way is 'outward'
+  pub hasBody: bool;       // false: the bone rides with the nearest ancestor that has a body (a clavicle)
+  pub shape: i32;
+  pub radius: f32;         // capsule, sphere
+  pub halfLen: f32;        // capsule: half the length between the hemispheres' centres
+  pub half: Vec3;          // box: half extents, in the bone's frame
+  pub center: Vec3;        // the shape's centre in the bone's frame (rest)
+  pub axis: Vec3;          // a capsule's long axis in the bone's frame
+  pub mass: f32;           // kilograms
+  pub joint: i32;          // to the parent body
+  pub jointAxis: Vec3;     // hinge axis, or twist axis, in this bone's frame at rest
+  pub lo: f32;             // hinge range, or twist range, radians
+  pub hi: f32;
+  pub cone: f32;           // the solver's cone (cone-twist): at least every swing range below
+  pub flex: f32;           // cone-twist swing ranges measured from rest: the twist axis' tip may move this
+  pub ext: f32;            // far forward (flexion), back (extension), outward (abduction) and inward
+  pub abd: f32;            // (adduction); the range is an ellipse of these four quarter-axes
+  pub add: f32;
+  pub maxTorque: f32;      // N m
+  pub side: f32;           // +1 the being's right (+x), -1 left, 0 the middle: which way is 'outward'
 }
 
 pub struct RigSpec {
-  pub bones List[BoneSpec];
-  pub totalMass f32;
-  pub height f32;
-  pub selfCollide bool;       // bodies that are not joined to each other collide with each other
-  pub friction f32;
-  pub linearDamping f32;
-  pub angularDamping f32;
+  pub bones: List[BoneSpec];
+  pub totalMass: f32;
+  pub height: f32;
+  pub selfCollide: bool;       // bodies that are not joined to each other collide with each other
+  pub friction: f32;
+  pub linearDamping: f32;
+  pub angularDamping: f32;
 
-  pub fn boneCount(self &) usize { bones.len() }
+  pub fn boneCount(self: &) usize { bones.len() }
 
   // Total of the bodies' masses
-  pub fn massSum(self &) f32 {
+  pub fn massSum(self: &) f32 {
     var m = 0.f;
     var i = 0usize;
     while i < bones.len() { if bones[i].hasBody { m = m + bones[i].mass; } i = i + 1usize; }
@@ -92,7 +92,7 @@ fn noBody() BoneSpec {
 }
 
 // A capsule along 'dir' from the bone's origin, 'length' long and 'radius' thick (the hemispheres included)
-fn capsuleBone(dir Vec3, length f32, radius f32, mass f32) BoneSpec {
+fn capsuleBone(dir: Vec3, length: f32, radius: f32, mass: f32) BoneSpec {
   var b = noBody();
   b.hasBody = true;
   b.shape = SHAPE_CAPSULE;
@@ -104,7 +104,7 @@ fn capsuleBone(dir Vec3, length f32, radius f32, mass f32) BoneSpec {
   b
 }
 
-fn boxBone(center Vec3, half Vec3, mass f32) BoneSpec {
+fn boxBone(center: Vec3, half: Vec3, mass: f32) BoneSpec {
   var b = noBody();
   b.hasBody = true;
   b.shape = SHAPE_BOX;
@@ -114,7 +114,7 @@ fn boxBone(center Vec3, half Vec3, mass f32) BoneSpec {
   b
 }
 
-fn sphereBone(center Vec3, radius f32, mass f32) BoneSpec {
+fn sphereBone(center: Vec3, radius: f32, mass: f32) BoneSpec {
   var b = noBody();
   b.hasBody = true;
   b.shape = SHAPE_SPHERE;
@@ -124,7 +124,7 @@ fn sphereBone(center Vec3, radius f32, mass f32) BoneSpec {
   b
 }
 
-fn coneTwist(b &mut BoneSpec, axis Vec3, twist f32, flex f32, ext f32, abd f32, add f32, torque f32, side f32) {
+fn coneTwist(b: &mut BoneSpec, axis: Vec3, twist: f32, flex: f32, ext: f32, abd: f32, add: f32, torque: f32, side: f32) {
   b.joint = JOINT_CONETWIST;
   b.jointAxis = axis;
   b.lo = -twist;
@@ -138,7 +138,7 @@ fn coneTwist(b &mut BoneSpec, axis Vec3, twist f32, flex f32, ext f32, abd f32, 
   b.side = side;
 }
 
-fn hingeJoint(b &mut BoneSpec, lo f32, hi f32, torque f32, side f32) {
+fn hingeJoint(b: &mut BoneSpec, lo: f32, hi: f32, torque: f32, side: f32) {
   b.joint = JOINT_HINGE;
   b.jointAxis = new Vec3(1., 0., 0.);
   b.lo = lo;
@@ -149,7 +149,7 @@ fn hingeJoint(b &mut BoneSpec, lo f32, hi f32, torque f32, side f32) {
 
 // The ragdoll of bonepose's humanoid for a being 'height' metres tall weighing 'totalMass' kilograms
 // (the tables in this file's header)
-pub fn humanoidSpec(skel &Skeleton, height f32, totalMass f32) RigSpec {
+pub fn humanoidSpec(skel: &Skeleton, height: f32, totalMass: f32) RigSpec {
   let h = height;
   let m = totalMass;
   let down = new Vec3(0., -1., 0.);
@@ -233,7 +233,7 @@ pub fn humanoidSpec(skel &Skeleton, height f32, totalMass f32) RigSpec {
 // sphere), 'thickness' times the bone's length thick, a cone-twist joint with the same swing and twist at every
 // joint, and masses in proportion to the capsules' volumes summing to 'totalMass'. A creature's author edits the
 // result (a hinge for a knee, a box for a body) rather than writing the whole.
-pub fn genericSpec(skel &Skeleton, totalMass f32, thickness f32, swing f32, twist f32) RigSpec {
+pub fn genericSpec(skel: &Skeleton, totalMass: f32, thickness: f32, swing: f32, twist: f32) RigSpec {
   var bones = List[BoneSpec].empty();
   var volume = 0.f;
   var sizes = List[f32].empty();

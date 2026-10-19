@@ -1,7 +1,7 @@
 // ---- Formats and the rest translated ----
 
 // A texture format's Vulkan format
-fn vkFormat(format u32) u32 {
+fn vkFormat(format: u32) u32 {
   if format == TEXTURE_FORMAT_RGBA8_UNORM { return vulkan.FORMAT_R8G8B8A8_UNORM; }
   if format == TEXTURE_FORMAT_RGBA8_UNORM_SRGB { return vulkan.FORMAT_R8G8B8A8_SRGB; }
   if format == TEXTURE_FORMAT_BGRA8_UNORM { return vulkan.FORMAT_B8G8R8A8_UNORM; }
@@ -14,19 +14,19 @@ fn vkFormat(format u32) u32 {
 }
 
 // The bytes of one texel of a texture format
-fn bytesPerTexel(format u32) u32 {
+fn bytesPerTexel(format: u32) u32 {
   if format == TEXTURE_FORMAT_RGBA16_FLOAT { return 8u32; }
   4u32
 }
 
 // Whether a format may be a storage texture's: WebGPU's storage formats that
 // the layer offers
-fn isStorageFormat(format u32) bool {
+fn isStorageFormat(format: u32) bool {
   format == TEXTURE_FORMAT_R32_FLOAT || format == TEXTURE_FORMAT_R32_UINT || format == TEXTURE_FORMAT_RGBA16_FLOAT
     || format == TEXTURE_FORMAT_RGBA8_UNORM
 }
 
-fn textureFormat(vkFormat u32) u32 {
+fn textureFormat(vkFormat: u32) u32 {
   if vkFormat == vulkan.FORMAT_R8G8B8A8_UNORM { return TEXTURE_FORMAT_RGBA8_UNORM; }
   if vkFormat == vulkan.FORMAT_R8G8B8A8_SRGB { return TEXTURE_FORMAT_RGBA8_UNORM_SRGB; }
   if vkFormat == vulkan.FORMAT_B8G8R8A8_UNORM { return TEXTURE_FORMAT_BGRA8_UNORM; }
@@ -39,12 +39,12 @@ fn textureFormat(vkFormat u32) u32 {
 }
 
 // The aspect of a view of 'vkFormat': depth, or color
-fn aspectOf(vkFormat u32) u32 {
+fn aspectOf(vkFormat: u32) u32 {
   if vkFormat == vulkan.FORMAT_D32_SFLOAT { return vulkan.IMAGE_ASPECT_DEPTH_BIT; }
   vulkan.IMAGE_ASPECT_COLOR_BIT
 }
 
-fn vertexFormat(format u32) u32 {
+fn vertexFormat(format: u32) u32 {
   if format == VERTEX_FORMAT_FLOAT32 { return vulkan.FORMAT_R32_SFLOAT; }
   if format == VERTEX_FORMAT_FLOAT32X2 { return vulkan.FORMAT_R32G32_SFLOAT; }
   if format == VERTEX_FORMAT_FLOAT32X3 { return vulkan.FORMAT_R32G32B32_SFLOAT; }
@@ -54,7 +54,7 @@ fn vertexFormat(format u32) u32 {
   vulkan.FORMAT_UNDEFINED
 }
 
-fn topology(t u32) u32 {
+fn topology(t: u32) u32 {
   if t == PRIMITIVE_TOPOLOGY_POINT_LIST { return vulkan.PRIMITIVE_TOPOLOGY_POINT_LIST; }
   if t == PRIMITIVE_TOPOLOGY_LINE_LIST { return vulkan.PRIMITIVE_TOPOLOGY_LINE_LIST; }
   if t == PRIMITIVE_TOPOLOGY_LINE_STRIP { return vulkan.PRIMITIVE_TOPOLOGY_LINE_STRIP; }
@@ -62,14 +62,14 @@ fn topology(t u32) u32 {
   vulkan.PRIMITIVE_TOPOLOGY_TRIANGLE_LIST
 }
 
-fn blendFactor(f u32) u32 {
+fn blendFactor(f: u32) u32 {
   if f == BLEND_FACTOR_ZERO { return vulkan.BLEND_FACTOR_ZERO; }
   if f == BLEND_FACTOR_SRC_ALPHA { return vulkan.BLEND_FACTOR_SRC_ALPHA; }
   if f == BLEND_FACTOR_ONE_MINUS_SRC_ALPHA { return vulkan.BLEND_FACTOR_ONE_MINUS_SRC_ALPHA; }
   vulkan.BLEND_FACTOR_ONE
 }
 
-fn shaderStages(visibility u32) u32 {
+fn shaderStages(visibility: u32) u32 {
   var stages = 0u32;
   if (visibility & SHADER_STAGE_VERTEX) != 0u32 { stages = stages | vulkan.SHADER_STAGE_VERTEX_BIT; }
   if (visibility & SHADER_STAGE_FRAGMENT) != 0u32 { stages = stages | vulkan.SHADER_STAGE_FRAGMENT_BIT; }
@@ -77,7 +77,7 @@ fn shaderStages(visibility u32) u32 {
   stages
 }
 
-fn descriptorType(kind u32, bufferType u32) u32 {
+fn descriptorType(kind: u32, bufferType: u32) u32 {
   if kind == BINDING_KIND_SAMPLER { return vulkan.DESCRIPTOR_TYPE_SAMPLER; }
   if kind == BINDING_KIND_TEXTURE { return vulkan.DESCRIPTOR_TYPE_SAMPLED_IMAGE; }
   if kind == BINDING_KIND_STORAGE_TEXTURE { return vulkan.DESCRIPTOR_TYPE_STORAGE_IMAGE; }
@@ -89,21 +89,21 @@ fn descriptorType(kind u32, bufferType u32) u32 {
 // ---- Buffers ----
 
 struct BufferBackend {
-  device vulkan.Device;
-  fns DevFns;
-  buffer vulkan.Buffer;
-  memory vulkan.DeviceMemory;
-  mapped *u8;
-  coherent bool;   // mapped memory needing no invalidate before the CPU reads it
+  device: vulkan.Device;
+  fns: DevFns;
+  buffer: vulkan.Buffer;
+  memory: vulkan.DeviceMemory;
+  mapped: *u8;
+  coherent: bool;   // mapped memory needing no invalidate before the CPU reads it
 }
 
 // A buffer of bytes the GPU reads or writes
 pub struct Buffer {
-  backend BufferBackend;
-  pub size u64;
-  pub usage u32;
+  backend: BufferBackend;
+  pub size: u64;
+  pub usage: u32;
 
-  pub fn isValid(self &) bool { backend.memory.h != 0u64 }
+  pub fn isValid(self: &) bool { backend.memory.h != 0u64 }
 
   // No buffer: what a field holds before a buffer is made for it (not valid)
   pub fn none() Buffer {
@@ -118,7 +118,7 @@ pub struct Buffer {
   // Memory); where that memory is not coherent, each call makes the mapping
   // current (vkInvalidateMappedMemoryRanges), so ask for it once the GPU is
   // done, and read through what it answers.
-  pub fn mappedRange(self &) *u8 {
+  pub fn mappedRange(self: &) *u8 {
     if !backend.coherent && (backend.mapped as usize) != 0usize {
       let range = new vulkan.MappedMemoryRange(memory: backend.memory);
       check(backend.fns.invalidateMappedMemoryRanges(backend.device, 1u32, &range as *vulkan.MappedMemoryRange),
@@ -128,7 +128,7 @@ pub struct Buffer {
   }
 
   // Its end, once the GPU is idle
-  fn final(self &uni) {
+  fn final(self: &uni) {
     if backend.buffer.h != 0u64 {
       backend.fns.deviceWaitIdle(backend.device);
       backend.fns.destroyBuffer(backend.device, backend.buffer, nullp());
@@ -148,27 +148,27 @@ pub struct Buffer {
 // it holds. Its end waits for it, if it was submitted, and destroys it; it
 // must come before its Device's.
 pub struct Fence is Move, Sendable {
-  device vulkan.Device;
-  fns DevFns;
-  fence vulkan.Fence;
-  submitted bool;
+  device: vulkan.Device;
+  fns: DevFns;
+  fence: vulkan.Fence;
+  submitted: bool;
 
-  pub fn isValid(self &) bool { fence.h != 0u64 }
+  pub fn isValid(self: &) bool { fence.h != 0u64 }
 
   // Whether it was submitted ('submitSignalling', 'signal'), and so will
   // be signalled
-  pub fn isSubmitted(self &) bool { submitted }
+  pub fn isSubmitted(self: &) bool { submitted }
 
   // Wait at most 'nanos' nanoseconds (0: not at all) for it to be
   // signalled: whether it is. False at once for one never submitted, which
   // nothing will signal.
-  pub fn waitSignalled(self &, nanos u64) bool {
+  pub fn waitSignalled(self: &, nanos: u64) bool {
     if !submitted { return false; }
     var f = fence;
     fns.waitForFences(device, 1u32, &mut f as *vulkan.Fence, vulkan.TRUE, nanos) == vulkan.SUCCESS
   }
 
-  fn final(self &uni) {
+  fn final(self: &uni) {
     if fence.h == 0u64 { return; }
     if submitted {
       var f = fence;
@@ -187,71 +187,71 @@ pub struct Fence is Move, Sendable {
 // 1 x 1). A 3-D texture ('dimension' TEXTURE_DIMENSION_3D) is
 // 'depthOrArrayLayers' deep, and has no layers.
 pub struct TextureDescriptor {
-  pub width u32;
-  pub height u32;
-  pub format u32;                  // TEXTURE_FORMAT_...
-  pub usage u32;                   // TEXTURE_USAGE_... OR-ed
-  pub mipLevelCount u32 = 1u32;
-  pub depthOrArrayLayers u32 = 1u32;
-  pub dimension u32 = TEXTURE_DIMENSION_2D;
+  pub width: u32;
+  pub height: u32;
+  pub format: u32;                  // TEXTURE_FORMAT_...
+  pub usage: u32;                   // TEXTURE_USAGE_... OR-ed
+  pub mipLevelCount: u32 = 1u32;
+  pub depthOrArrayLayers: u32 = 1u32;
+  pub dimension: u32 = TEXTURE_DIMENSION_2D;
 }
 
 // What 'createViewWith' makes: WebGPU's GPUTextureViewDescriptor. A count of
 // 0 is WebGPU's count left out: the rest of the levels; the rest of the
 // layers for an array, six for a cube, one for 2-D.
 pub struct TextureViewDescriptor {
-  pub dimension u32 = TEXTURE_VIEW_DIMENSION_2D;
-  pub baseMipLevel u32 = 0u32;
-  pub mipLevelCount u32 = 0u32;
-  pub baseArrayLayer u32 = 0u32;
-  pub arrayLayerCount u32 = 0u32;
+  pub dimension: u32 = TEXTURE_VIEW_DIMENSION_2D;
+  pub baseMipLevel: u32 = 0u32;
+  pub mipLevelCount: u32 = 0u32;
+  pub baseArrayLayer: u32 = 0u32;
+  pub arrayLayerCount: u32 = 0u32;
 }
 
 struct TextureBackend {
-  image vulkan.Image;
-  view vulkan.ImageView;       // the view: of the whole texture, in a Texture
-  kind u32;                    // KIND_...: the layout it rests in
-  owned bool;                  // made by the device, and ended with the Texture
-  device vulkan.Device;
-  fns DevFns;
-  memory vulkan.DeviceMemory;
-  baseMip u32 = 0u32;          // what the view sees: levels and layers
-  mipCount u32 = 1u32;
-  baseLayer u32 = 0u32;
-  layerCount u32 = 1u32;
-  views *ViewCache = null;  // a device-made texture's; null otherwise
+  image: vulkan.Image;
+  view: vulkan.ImageView;       // the view: of the whole texture, in a Texture
+  kind: u32;                    // KIND_...: the layout it rests in
+  owned: bool;                  // made by the device, and ended with the Texture
+  device: vulkan.Device;
+  fns: DevFns;
+  memory: vulkan.DeviceMemory;
+  baseMip: u32 = 0u32;          // what the view sees: levels and layers
+  mipCount: u32 = 1u32;
+  baseLayer: u32 = 0u32;
+  layerCount: u32 = 1u32;
+  views: *ViewCache = null;  // a device-made texture's; null otherwise
 }
 
 // The views 'createViewWith' has made of a texture, each kept until the
 // texture ends: WebGPU's views are the texture's, not destroyed on their own
 struct ViewCache {
-  count u32;
-  capacity u32;
-  entries *ViewEntry;
+  count: u32;
+  capacity: u32;
+  entries: *ViewEntry;
 }
 
 struct ViewEntry {
-  key u64;                     // the descriptor, packed
-  view vulkan.ImageView;
+  key: u64;                     // the descriptor, packed
+  view: vulkan.ImageView;
 }
 
 // A texture: one the device made ('createTexture'), or a swapchain's, which
 // the swapchain owns (and its depth texture)
 pub struct Texture {
-  backend TextureBackend;
-  pub width u32;
-  pub height u32;
-  pub format u32;                  // TEXTURE_FORMAT_...
-  pub usage u32;                   // TEXTURE_USAGE_...
-  pub mipLevelCount u32 = 1u32;
-  pub depthOrArrayLayers u32 = 1u32;
-  pub dimension u32 = TEXTURE_DIMENSION_2D;
+  backend: TextureBackend;
+  pub width: u32;
+  pub height: u32;
+  pub format: u32;                  // TEXTURE_FORMAT_...
+  pub usage: u32;                   // TEXTURE_USAGE_...
+  pub mipLevelCount: u32 = 1u32;
+  pub depthOrArrayLayers: u32 = 1u32;
+  pub dimension: u32 = TEXTURE_DIMENSION_2D;
 
-  pub fn isValid(self &) bool { backend.view.h != 0u64 }
+  pub fn isValid(self: &) bool { backend.view.h != 0u64 }
 
   // A view of the whole texture (made with it): 2-D, a 2-D array if it
   // has several layers, or 3-D
-  pub fn createView(self &) TextureView {
+  pub fn createView(self: &) TextureView {
     new TextureView(backend, width, height, format)
   }
 
@@ -261,7 +261,7 @@ pub struct Texture {
   // render pass draws into a view of one level and one layer. The view is
   // made once, the first time it is asked for, and kept as long as the
   // texture (an invalid view if it cannot be made: check 'isValid').
-  pub fn createViewWith(self &, desc &TextureViewDescriptor) TextureView {
+  pub fn createViewWith(self: &, desc: &TextureViewDescriptor) TextureView {
     var result = new TextureView(backend, width, height, format);
     result.backend.view = new vulkan.ImageView(0u64);
     if backend.image.h == 0u64 || (backend.views as usize) == 0usize { return result; }
@@ -333,7 +333,7 @@ pub struct Texture {
   }
 
   // Its end, if the device made it, once the GPU is idle
-  fn final(self &uni) {
+  fn final(self: &uni) {
     if backend.owned && backend.image.h != 0u64 {
       backend.fns.deviceWaitIdle(backend.device);
       if backend.view.h != 0u64 { backend.fns.destroyImageView(backend.device, backend.view, nullp()); }
@@ -345,14 +345,14 @@ pub struct Texture {
 }
 
 // A level's width or height: the texture's halved 'level' times, at least 1
-fn mipSize(size u32, level u32) u32 {
+fn mipSize(size: u32, level: u32) u32 {
   let s = size >> level;
   if s == 0u32 { return 1u32; }
   s
 }
 
 // A cache of room for 'capacity' views
-fn newViews(capacity u32) *ViewCache {
+fn newViews(capacity: u32) *ViewCache {
   let cache = libc.calloc(1usize, mem.sizeof[ViewCache]()) as *ViewCache;
   cache.capacity = capacity;
   cache.entries = libc.calloc(usize.from(capacity), mem.sizeof[ViewEntry]()) as *ViewEntry;
@@ -360,7 +360,7 @@ fn newViews(capacity u32) *ViewCache {
 }
 
 // Destroy the views in 'cache', and free it
-fn endViews(fns &DevFns, device vulkan.Device, cache *ViewCache) {
+fn endViews(fns: &DevFns, device: vulkan.Device, cache: *ViewCache) {
   if (cache as usize) == 0usize { return; }
   var i = 0usize;
   while i < usize.from(cache.count) {
@@ -375,17 +375,17 @@ fn endViews(fns &DevFns, device vulkan.Device, cache *ViewCache) {
 // A view of a texture, which a render pass draws into, or a bind group
 // hands shaders to sample
 pub struct TextureView {
-  backend TextureBackend;
-  pub width u32;
-  pub height u32;
-  pub format u32;
+  backend: TextureBackend;
+  pub width: u32;
+  pub height: u32;
+  pub format: u32;
 
-  pub fn isValid(self &) bool { backend.view.h != 0u64 }
+  pub fn isValid(self: &) bool { backend.view.h != 0u64 }
 
   // Whether this view and 'other' are one view of a texture: what
   // 'createViewWith' answers when asked twice for the same levels and
   // layers. An invalid view is the same as none.
-  pub fn sameView(self &, other &TextureView) bool {
+  pub fn sameView(self: &, other: &TextureView) bool {
     backend.view.h != 0u64 && backend.view.h == other.backend.view.h
   }
 }
@@ -393,11 +393,11 @@ pub struct TextureView {
 // What 'getCurrentTexture' answers: a texture to draw into this frame, if
 // 'ok', and the swapchain's depth texture, if it keeps one
 pub struct SurfaceTexture {
-  pub texture Texture;
-  pub depth Texture;
-  pub status u32;                  // SURFACE_TEXTURE_...
+  pub texture: Texture;
+  pub depth: Texture;
+  pub status: u32;                  // SURFACE_TEXTURE_...
 
-  pub fn ok(self &) bool {
+  pub fn ok(self: &) bool {
     status == SURFACE_TEXTURE_SUCCESS_OPTIMAL || status == SURFACE_TEXTURE_SUCCESS_SUBOPTIMAL
   }
 }

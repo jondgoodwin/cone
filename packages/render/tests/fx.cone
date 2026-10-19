@@ -57,7 +57,7 @@ const SIDEZ = 128usize;
 
 // If FX_SHOTS names a folder, the 128 x 128 image at 'p' is written there as
 // 'name'.bmp, to be looked at
-fn shot(p *u8, name &str) {
+fn shot(p: *u8, name: &str) {
   let folder = libc.getenv("FX_SHOTS");
   if (folder as usize) == 0usize { return; }
   var path = String.empty();
@@ -73,9 +73,9 @@ fn shot(p *u8, name &str) {
   image.save(&filepath.Path.from(path.view()));
 }
 
-fn absf(x f32) f32 { if x < 0. { 0. - x } else { x } }
+fn absf(x: f32) f32 { if x < 0. { 0. - x } else { x } }
 
-fn scatter(n u32) f32 {
+fn scatter(n: u32) f32 {
   var x = n * 747796405u32 + 2891336453u32;
   x = ((x >> ((x >> 28u32) + 4u32)) ^ x) * 277803737u32;
   x = (x >> 22u32) ^ x;
@@ -111,25 +111,25 @@ fn preference() u32 {
 }
 
 // sRGB's decoding of a byte, to linear light
-fn linearOf(byte u8) f32 {
+fn linearOf(byte: u8) f32 {
   let v = f32.from(byte) / 255.;
   if v <= 0.04045 { return v / 12.92; }
   libc.powf((v + 0.055) / 1.055, 2.4)
 }
 
 // The pixel (x, y), channel c, of the target at 'p', in linear light
-fn px(p *u8, x usize, y usize, c usize) f32 { linearOf(*(p + (y * SIDEZ + x) * 4usize + c)) }
+fn px(p: *u8, x: usize, y: usize, c: usize) f32 { linearOf(*(p + (y * SIDEZ + x) * 4usize + c)) }
 
 // A renderer, its post and image-quality objects, a target and a readback
 struct Rig {
-  renderer Renderer;
-  post Post;
-  fx ImageFx;
-  color Texture;
-  readback Buffer;
+  renderer: Renderer;
+  post: Post;
+  fx: ImageFx;
+  color: Texture;
+  readback: Buffer;
 }
 
-fn makeRig(device &mut Device) Rig {
+fn makeRig(device: &mut Device) Rig {
   let targetDesc = new TextureDescriptor(SIDE, SIDE, TEXTURE_FORMAT_RGBA8_UNORM_SRGB,
     TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
   var color = device.createTexture(&targetDesc);
@@ -142,7 +142,7 @@ fn makeRig(device &mut Device) Rig {
   new Rig(renderer, post, fx, color, readback)
 }
 
-fn drawScene(device &mut Device, rig &mut Rig, camera &Camera, light &Light, list &DrawList) {
+fn drawScene(device: &mut Device, rig: &mut Rig, camera: &Camera, light: &Light, list: &DrawList) {
   var encoder = device.createCommandEncoder();
   rig.fx.render(device, &mut encoder, &mut rig.renderer, &mut rig.post, camera, light, list, &rig.color);
   encoder.copyTextureToBuffer(&rig.color, &rig.readback);
@@ -152,7 +152,7 @@ fn drawScene(device &mut Device, rig &mut Rig, camera &Camera, light &Light, lis
 }
 
 // The same scene drawn in the two halves a program may draw between
-fn drawSplit(device &mut Device, rig &mut Rig, camera &Camera, light &Light, list &DrawList) {
+fn drawSplit(device: &mut Device, rig: &mut Rig, camera: &Camera, light: &Light, list: &DrawList) {
   var encoder = device.createCommandEncoder();
   rig.fx.renderScene(device, &mut encoder, &mut rig.renderer, &mut rig.post, camera, light, list);
   rig.fx.renderFinish(device, &mut encoder, &mut rig.renderer, &mut rig.post, list, &rig.color);
@@ -164,7 +164,7 @@ fn drawSplit(device &mut Device, rig &mut Rig, camera &Camera, light &Light, lis
 
 // The same scene drawn by the plain path: the renderer and Post, the camera
 // jittered by (jx, jy) pixels
-fn drawPlain(device &mut Device, rig &mut Rig, camera &Camera, light &Light, list &DrawList, jx f32, jy f32) {
+fn drawPlain(device: &mut Device, rig: &mut Rig, camera: &Camera, light: &Light, list: &DrawList, jx: f32, jy: f32) {
   var jittered = *camera;
   jittered.jitterX = 2. * jx / f32.from(SIDE);
   jittered.jitterY = -2. * jy / f32.from(SIDE);
@@ -177,7 +177,7 @@ fn drawPlain(device &mut Device, rig &mut Rig, camera &Camera, light &Light, lis
   device.waitIdle();
 }
 
-fn hashOf(p *u8) u64 {
+fn hashOf(p: *u8) u64 {
   var h = 14695981039346656037u64;
   var i = 0usize;
   while i < usize.from(SIDE * SIDE * 4u32) {
@@ -188,7 +188,7 @@ fn hashOf(p *u8) u64 {
 }
 
 // The root mean square difference of two images of linear light
-fn rms(a &List[f32], b &List[f32]) f32 {
+fn rms(a: &List[f32], b: &List[f32]) f32 {
   var sum = 0.f;
   var i = 0usize;
   while i < a.len() {
@@ -200,7 +200,7 @@ fn rms(a &List[f32], b &List[f32]) f32 {
 }
 
 // The 128 x 128 image at 'p' as linear light, three channels a pixel
-fn grab(p *u8) List[f32] {
+fn grab(p: *u8) List[f32] {
   var out = List[f32].withCapacity(SIDEZ * SIDEZ * 3usize);
   var y = 0usize;
   while y < SIDEZ {
@@ -218,7 +218,7 @@ fn grab(p *u8) List[f32] {
 
 // ---- 1. Everything off ----
 
-fn identity(device &mut Device, name &String) {
+fn identity(device: &mut Device, name: &String) {
   var rig = makeRig(device);
   let p = rig.readback.mappedRange();
   var planeMesh = Mesh.plane(1, 1.);
@@ -259,13 +259,13 @@ fn identity(device &mut Device, name &String) {
 // ---- 2 and 3. Anti-aliasing against a supersample ----
 
 struct Flat {
-  list DrawList;
-  light Light;
-  camera Camera;
+  list: DrawList;
+  light: Light;
+  camera: Camera;
 }
 
 // A disc and a leaf on black, lit by ambient light alone
-fn flatScene(device &mut Device, rig &mut Rig) Flat {
+fn flatScene(device: &mut Device, rig: &mut Rig) Flat {
   rig.post.toneMapper = TONE_MAP_NONE;
   rig.post.bloom = 0.;
   var sphereMesh = Mesh.sphere(1., 24);
@@ -292,7 +292,7 @@ fn flatScene(device &mut Device, rig &mut Rig) Flat {
   new Flat(list, light, camera)
 }
 
-fn antialiasing(device &mut Device) {
+fn antialiasing(device: &mut Device) {
   var rig = makeRig(device);
   let p = rig.readback.mappedRange();
   let scene = flatScene(device, &mut rig);
@@ -368,7 +368,7 @@ fn antialiasing(device &mut Device) {
 }
 
 // A half float's value
-fn halfToFloat(h u16) f32 {
+fn halfToFloat(h: u16) f32 {
   let bits = u32.from(h);
   let exponent = (bits >> 10u32) & 31u32;
   let sign = if (bits & 0x8000u32) != 0u32 { -1.f } else { 1. };
@@ -382,7 +382,7 @@ fn halfToFloat(h u16) f32 {
 // A sphere at x on black, lit by ambient light alone; drawn rigid (placed by
 // its model matrix) or skinned (placed by its one bone), at a position and,
 // for the motion list, where it was
-fn movingList(sphere MeshHandle, skinned MeshHandle, material MaterialHandle, rigid bool, x f32) DrawList {
+fn movingList(sphere: MeshHandle, skinned: MeshHandle, material: MaterialHandle, rigid: bool, x: f32) DrawList {
   var list = DrawList.empty();
   if rigid {
     list.add(sphere, material, Mat4.fromTranslation(new Vec3(x, 0., 0.)));
@@ -393,7 +393,7 @@ fn movingList(sphere MeshHandle, skinned MeshHandle, material MaterialHandle, ri
   list
 }
 
-fn movingObjects(device &mut Device) {
+fn movingObjects(device: &mut Device) {
   var rig = makeRig(device);
   let p = rig.readback.mappedRange();
   rig.post.toneMapper = TONE_MAP_NONE;
@@ -505,7 +505,7 @@ fn movingObjects(device &mut Device) {
 // ---- 4. Auto-exposure ----
 
 // The four floats of the exposure buffer after a frame
-fn readExposure(device &mut Device, rig &mut Rig, back &Buffer) Array[f32, 4] {
+fn readExposure(device: &mut Device, rig: &mut Rig, back: &Buffer) Array[f32, 4] {
   var encoder = device.createCommandEncoder();
   encoder.copyBufferToBuffer(&rig.post.exposureBuffer, 0u64, back, 0u64, 16u64);
   device.queue.submit(encoder.finish());
@@ -517,7 +517,7 @@ fn readExposure(device &mut Device, rig &mut Rig, back &Buffer) Array[f32, 4] {
 
 // Frames of the one luminance 'level' (the camera's background, nothing
 // drawn), settled for 'frames' frames of 'seconds' each; the exposure buffer
-fn settle(device &mut Device, rig &mut Rig, back &Buffer, level f32, s &ExposureSettings, frames u32, seconds f32) Array[f32, 4] {
+fn settle(device: &mut Device, rig: &mut Rig, back: &Buffer, level: f32, s: &ExposureSettings, frames: u32, seconds: f32) Array[f32, 4] {
   var camera = Camera.make();
   camera.background = new Color(level, level, level, 1.);
   let light = Light.directional(new Vec3(0., -1., 0.), new Color(0., 0., 0., 1.), new Color(0., 0., 0., 1.));
@@ -535,7 +535,7 @@ fn settle(device &mut Device, rig &mut Rig, back &Buffer, level f32, s &Exposure
 }
 
 // The pixel (as x and y) a world point lands on, seen by 'camera'
-fn pixelOf(camera &Camera, world Vec3, x &mut usize, y &mut usize) {
+fn pixelOf(camera: &Camera, world: Vec3, x: &mut usize, y: &mut usize) {
   let clip = (camera.projectionMatrix(1.) * camera.viewMatrix()) * new Vec4(world.x, world.y, world.z, 1.);
   let nx = clip.x / clip.w;
   let ny = clip.y / clip.w;
@@ -545,7 +545,7 @@ fn pixelOf(camera &Camera, world Vec3, x &mut usize, y &mut usize) {
 
 // ---- 6. Ambient occlusion ----
 
-fn ambientOcclusion(device &mut Device) {
+fn ambientOcclusion(device: &mut Device) {
   var rig = makeRig(device);
   let p = rig.readback.mappedRange();
   rig.post.toneMapper = TONE_MAP_NONE;
@@ -656,7 +656,7 @@ fn ambientOcclusion(device &mut Device) {
 // ---- 9. Volumetric fog ----
 
 // The ground and a plate 6 above it, which casts a shadow or not
-fn plateScene(plane MeshHandle, cube MeshHandle, material MaterialHandle, casts bool) DrawList {
+fn plateScene(plane: MeshHandle, cube: MeshHandle, material: MaterialHandle, casts: bool) DrawList {
   var list = DrawList.empty();
   list.add(plane, material, Mat4.fromTrs(new Vec3(0., 0., 0.), Quat.identity(), new Vec3(40., 1., 40.)));
   list.add(cube, material, Mat4.fromTrs(new Vec3(0., 6., 0.), Quat.identity(), new Vec3(1., 0.1, 1.)));
@@ -664,7 +664,7 @@ fn plateScene(plane MeshHandle, cube MeshHandle, material MaterialHandle, casts 
   list
 }
 
-fn fogTest(device &mut Device) {
+fn fogTest(device: &mut Device) {
   var rig = makeRig(device);
   let p = rig.readback.mappedRange();
   rig.post.toneMapper = TONE_MAP_NONE;
@@ -745,7 +745,7 @@ fn fogTest(device &mut Device) {
 // ---- 8. Depth of field ----
 
 // The sum and the greatest of the green channel in the 25 x 25 window about (cx, cy)
-fn windowOf(g &List[f32], cx usize, cy usize, sum &mut f32, peak &mut f32) {
+fn windowOf(g: &List[f32], cx: usize, cy: usize, sum: &mut f32, peak: &mut f32) {
   *sum = 0.;
   *peak = 0.;
   var y = cy - 12usize;
@@ -761,7 +761,7 @@ fn windowOf(g &List[f32], cx usize, cy usize, sum &mut f32, peak &mut f32) {
   }
 }
 
-fn depthOfField(device &mut Device) {
+fn depthOfField(device: &mut Device) {
   var rig = makeRig(device);
   let p = rig.readback.mappedRange();
   rig.post.toneMapper = TONE_MAP_NONE;
@@ -819,7 +819,7 @@ fn depthOfField(device &mut Device) {
 
 // ---- 7. Decals ----
 
-fn decalTest(device &mut Device) {
+fn decalTest(device: &mut Device) {
   var rig = makeRig(device);
   let p = rig.readback.mappedRange();
   rig.post.toneMapper = TONE_MAP_NONE;
@@ -963,7 +963,7 @@ fn decalTest(device &mut Device) {
 // ---- 5. Grading, vignette and grain ----
 
 // A uniform frame of 'color' drawn with Post's finish as it is
-fn drawFlat(device &mut Device, rig &mut Rig, color Color) {
+fn drawFlat(device: &mut Device, rig: &mut Rig, color: Color) {
   var camera = Camera.make();
   camera.background = color;
   let light = Light.directional(new Vec3(0., -1., 0.), new Color(0., 0., 0., 1.), new Color(0., 0., 0., 1.));
@@ -971,7 +971,7 @@ fn drawFlat(device &mut Device, rig &mut Rig, color Color) {
   drawScene(device, rig, &camera, &light, &list);
 }
 
-fn finish(device &mut Device) {
+fn finish(device: &mut Device) {
   var rig = makeRig(device);
   let p = rig.readback.mappedRange();
   rig.post.toneMapper = TONE_MAP_NONE;
@@ -1062,14 +1062,14 @@ fn finish(device &mut Device) {
 }
 
 // The linear light of a display-encoded value
-fn decode(v f32) f32 {
+fn decode(v: f32) f32 {
   if v <= 0.04045 { return v / 12.92; }
   libc.powf((v + 0.055) / 1.055, 2.4)
 }
 
-fn log2of(x f32) f32 { libc.logf(x) / 0.6931472 }
+fn log2of(x: f32) f32 { libc.logf(x) / 0.6931472 }
 
-fn exposure(device &mut Device) {
+fn exposure(device: &mut Device) {
   var rig = makeRig(device);
   let p = rig.readback.mappedRange();
   rig.post.toneMapper = TONE_MAP_NONE;

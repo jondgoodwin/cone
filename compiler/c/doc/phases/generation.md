@@ -596,7 +596,7 @@ remaining arguments, and a null type record. A callable trait is in no module's 
 and no struct is registered as its implementer for a function.
 
 **A vtable may contain itself**, through a slot whose method takes or returns a
-virtual reference to the same trait (`fn cmp(self &, o &<Self)`). So `genlVtable`
+virtual reference to the same trait (`fn cmp(self: &, o: &<Self)`). So `genlVtable`
 creates the vtable struct and the fat-pointer struct as named types and stores
 both on the `Vtable` **before** it types any slot. A slot that names the trait's
 virtual reference then gets that stored type, whose vtable body is still empty
@@ -799,7 +799,7 @@ instructions the compiler used to emit itself.
 names one, or a vtable is built for `T` (`genlVtableImpl`), and found again by type (`itypeIsSame`) from a list on the
 generator's state. It is a private global `cone.tyrec.<n>` of core's
 `TypeRecord`, whose layout the compiler checks as it builds the first — two
-`usize`, a function pointer of `fn(p *u8)` and one of `fn(p *u8, mode u32)`, a
+`usize`, a function pointer of `fn(p: *u8)` and one of `fn(p: *u8, mode: u32)`, a
 `u32` — and fills with the value's ABI size and alignment (as `mem.sizeof` and
 `mem.alignof`), its finalizer, its trace, and flags (bit 0, `itypeNeedsFinal`;
 bit 1, `itypeHoldsTraced`). The finalizer of a type that finalizes is a
@@ -838,7 +838,7 @@ fields and a tuple's elements that hold one (`itypeHoldsTraced`), each element
 of a fixed-size array whose element type does, in a loop (`genlEachElem`), and
 the variant an enum's tag picks, by a switch, as `genlEnumDrop` dispatches; the
 nullable-pointer layout, which has no tag, is its one reference — and so is a
-variant of such an enum held as itself (`*t` for `t &Some[Gc[T]]`, a birth),
+variant of such an enum held as itself (`*t` for `t: &Some[Gc[T]]`, a birth),
 whose layout is its enum's (`genlTraceNullableVariant`). It stops at
 every borrow and every pointer: the placement rules keep a traced reference
 from hiding behind them. It does not share the finalizer's walk, which finalizes

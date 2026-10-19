@@ -116,16 +116,16 @@ const MORPH_GROUP_SIZE = 64u32;
 // and by how much. Entries are kept in the order of the targets, vertices
 // ascending within a target.
 pub struct MorphTargets {
-  pub vertexCount usize;            // the mesh's vertices: every target is over these
-  pub targetStart List[u32];        // N + 1 entries: target t's entries are targetStart[t] to targetStart[t + 1] - 1
-  pub vertex List[u32];             // each entry's vertex
-  pub dPos List[Vec3];              // and its displacement of the position,
-  pub dNor List[Vec3];              // of the normal
-  pub dTan List[Vec3];              // and of the tangent's xyz
-  pub maxMove List[f32];            // each target's largest position displacement
+  pub vertexCount: usize;            // the mesh's vertices: every target is over these
+  pub targetStart: List[u32];        // N + 1 entries: target t's entries are targetStart[t] to targetStart[t + 1] - 1
+  pub vertex: List[u32];             // each entry's vertex
+  pub dPos: List[Vec3];              // and its displacement of the position,
+  pub dNor: List[Vec3];              // of the normal
+  pub dTan: List[Vec3];              // and of the tangent's xyz
+  pub maxMove: List[f32];            // each target's largest position displacement
 
   // No targets, over a mesh of 'vertexCount' vertices
-  pub fn empty(vertexCount usize) MorphTargets {
+  pub fn empty(vertexCount: usize) MorphTargets {
     var starts = List[u32].empty();
     starts.push(0u32);
     new MorphTargets(vertexCount, starts, List[u32].empty(), List[Vec3].empty(), List[Vec3].empty(),
@@ -133,26 +133,26 @@ pub struct MorphTargets {
   }
 
   // How many targets
-  pub fn count(self &) usize { targetStart.len() - 1usize }
+  pub fn count(self: &) usize { targetStart.len() - 1usize }
 
   // How many entries in all
-  pub fn entryCount(self &) usize { vertex.len() }
+  pub fn entryCount(self: &) usize { vertex.len() }
 
   // How many vertices target 't' moves
-  pub fn targetEntries(self &, t usize) usize { usize.from(*targetStart[t + 1usize] - *targetStart[t]) }
+  pub fn targetEntries(self: &, t: usize) usize { usize.from(*targetStart[t + 1usize] - *targetStart[t]) }
 
   // Add a target from lists with one displacement a vertex (the lists of
   // gltfimport's MorphTarget): 'positions', 'normals' and 'tangents', any of
   // which may be empty (no displacement of that). A vertex all three leave
   // exactly where they were is not stored. A list of any other length than
   // the mesh's vertices is taken as empty. Answers the target's number.
-  pub fn addDense(self &mut, positions &List[Vec3], normals &List[Vec3], tangents &List[Vec3]) usize {
+  pub fn addDense(self: &mut, positions: &List[Vec3], normals: &List[Vec3], tangents: &List[Vec3]) usize {
     let n = vertexCount;
     let hasP = positions.len() == n;
     let hasN = normals.len() == n;
     let hasT = tangents.len() == n;
     let zero = new Vec3(0., 0., 0.);
-    var biggest f32 = 0.;
+    var biggest: f32 = 0.;
     var v = 0usize;
     while v < n {
       let p = if hasP { *positions[v] } else { zero };
@@ -178,8 +178,8 @@ pub struct MorphTargets {
   // in 'indices' only, 'positions', 'normals' and 'tangents' one for each
   // index (or empty). An index past the mesh is ignored; one given twice
   // keeps the last. Answers the target's number.
-  pub fn addSparse(self &mut, indices &List[u32], positions &List[Vec3], normals &List[Vec3],
-      tangents &List[Vec3]) usize {
+  pub fn addSparse(self: &mut, indices: &List[u32], positions: &List[Vec3], normals: &List[Vec3],
+      tangents: &List[Vec3]) usize {
     let zero = new Vec3(0., 0., 0.);
     var dp = List[Vec3].empty();
     var dn = List[Vec3].empty();
@@ -208,7 +208,7 @@ pub struct MorphTargets {
   // a target; a target past the end of the list has weight 0): the CPU's twin
   // of morph.slang, summing in the same order (the targets ascending, a
   // target of weight 0 left out)
-  pub fn position(self &, v usize, base Vec3, weights &List[f32]) Vec3 {
+  pub fn position(self: &, v: usize, base: Vec3, weights: &List[f32]) Vec3 {
     var p = base;
     var t = 0usize;
     while t < self.count() && t < weights.len() {
@@ -224,7 +224,7 @@ pub struct MorphTargets {
 
   // The normal of vertex 'v', modelled at 'base': morphed, then made unit
   // length (left as it was if no weight reaches the vertex)
-  pub fn normal(self &, v usize, base Vec3, weights &List[f32]) Vec3 {
+  pub fn normal(self: &, v: usize, base: Vec3, weights: &List[f32]) Vec3 {
     var n = base;
     var touched = false;
     var t = 0usize;
@@ -245,7 +245,7 @@ pub struct MorphTargets {
 
   // The tangent's xyz of vertex 'v', modelled at 'base', morphed (glTF: the
   // handedness is not morphed, and the result is not made unit length)
-  pub fn tangent(self &, v usize, base Vec3, weights &List[f32]) Vec3 {
+  pub fn tangent(self: &, v: usize, base: Vec3, weights: &List[f32]) Vec3 {
     var g = base;
     var t = 0usize;
     while t < self.count() && t < weights.len() {
@@ -261,7 +261,7 @@ pub struct MorphTargets {
 
   // The entry of target 't' for vertex 'v', or -1: a binary search of the
   // target's entries, which ascend by vertex
-  pub fn find(self &, t usize, v usize) i64 {
+  pub fn find(self: &, t: usize, v: usize) i64 {
     var lo = usize.from(*targetStart[t]);
     var hi = usize.from(*targetStart[t + 1usize]);
     let want = u32.from(v);
@@ -279,34 +279,34 @@ pub struct MorphTargets {
 // A set of targets uploaded for a base mesh (the compressed per-vertex rows
 // morph.slang reads)
 pub struct MorphSetSlot {
-  rowStart Buffer;
-  entryTarget Buffer;
-  entryDelta Buffer;
-  basePosition Buffer;
-  baseNormal Buffer;
-  vertexCount u32;
-  targetCount u32;
-  maxMove List[f32];         // each target's largest position displacement
+  rowStart: Buffer;
+  entryTarget: Buffer;
+  entryDelta: Buffer;
+  basePosition: Buffer;
+  baseNormal: Buffer;
+  vertexCount: u32;
+  targetCount: u32;
+  maxMove: List[f32];         // each target's largest position displacement
 }
 
 // A morphed copy: its mesh in the renderer and what it is built from
 pub struct MorphCopySlot {
-  set Ref[MorphSetSlot];
-  mesh MeshHandle;
-  previous Buffer;           // last frame's positions, if asked for; else none
-  active Buffer;             // the active list: (target, weight) pairs, 8 bytes each
-  group BindGroup;
-  weights List[f32];         // one a target, as last set
-  pairs List[f32];           // the active list on the CPU: target (as the bits of a u32) and weight
-  activeCount u32;
-  baseRadius f32;
-  dirty bool;                // the weights changed since the last update
-  previousStale bool;        // 'previous' is not yet the frame the positions now are
+  set: Ref[MorphSetSlot];
+  mesh: MeshHandle;
+  previous: Buffer;           // last frame's positions, if asked for; else none
+  active: Buffer;             // the active list: (target, weight) pairs, 8 bytes each
+  group: BindGroup;
+  weights: List[f32];         // one a target, as last set
+  pairs: List[f32];           // the active list on the CPU: target (as the bits of a u32) and weight
+  activeCount: u32;
+  baseRadius: f32;
+  dirty: bool;                // the weights changed since the last update
+  previousStale: bool;        // 'previous' is not yet the frame the positions now are
 }
 
 // A set of targets the Morpher holds
 pub struct MorphSetHandle {
-  pub slot Ref[MorphSetSlot];
+  pub slot: Ref[MorphSetSlot];
 
   pub fn none() MorphSetHandle { new MorphSetHandle(Ref[MorphSetSlot].none()) }
   pub fn isNone(self) bool { slot.isNone() }
@@ -314,7 +314,7 @@ pub struct MorphSetHandle {
 
 // A morphed copy the Morpher holds
 pub struct MorphHandle {
-  pub slot Ref[MorphCopySlot];
+  pub slot: Ref[MorphCopySlot];
 
   pub fn none() MorphHandle { new MorphHandle(Ref[MorphCopySlot].none()) }
   pub fn isNone(self) bool { slot.isNone() }
@@ -322,16 +322,16 @@ pub struct MorphHandle {
 
 // What runs the morph pre-pass. Make one with 'create' and check 'isValid'.
 pub struct Morpher {
-  shader ShaderModule;
-  groupLayout BindGroupLayout;
-  layout PipelineLayout;
-  pipeline ComputePipeline;
-  sets Pool[MorphSetSlot];
-  copies Pool[MorphCopySlot];
-  order List[MorphHandle];         // the live copies, in the order they were made
-  pub dispatches u32 = 0u32;       // how many copies the last 'update' recomputed
+  shader: ShaderModule;
+  groupLayout: BindGroupLayout;
+  layout: PipelineLayout;
+  pipeline: ComputePipeline;
+  sets: Pool[MorphSetSlot];
+  copies: Pool[MorphCopySlot];
+  order: List[MorphHandle];         // the live copies, in the order they were made
+  pub dispatches: u32 = 0u32;       // how many copies the last 'update' recomputed
 
-  pub fn create(device &mut Device) Morpher {
+  pub fn create(device: &mut Device) Morpher {
     let readOnly = BUFFER_BINDING_TYPE_READ_ONLY_STORAGE;
     let entries = [
       new BindGroupLayoutEntry(binding: 0u32, visibility: SHADER_STAGE_COMPUTE, bufferType: readOnly),
@@ -351,13 +351,13 @@ pub struct Morpher {
     new Morpher(shader, groupLayout, layout, pipeline, Pool[MorphSetSlot].empty(), Pool[MorphCopySlot].empty(), List[MorphHandle].empty(), 0u32)
   }
 
-  pub fn isValid(self &) bool { pipeline.isValid() }
+  pub fn isValid(self: &) bool { pipeline.isValid() }
 
   // Upload 'targets' for copies of 'base', the mesh they are targets of (the
   // vertices the renderer's own copy of it has, in its order). Normals the
   // mesh lacks are made smooth, as the renderer makes them. None if the
   // vertex counts differ or the mesh has no vertices.
-  pub fn addSet(self &mut, device &mut Device, targets &MorphTargets, base &Mesh) MorphSetHandle {
+  pub fn addSet(self: &mut, device: &mut Device, targets: &MorphTargets, base: &Mesh) MorphSetHandle {
     let n = base.positions.len();
     if n == 0usize || n != targets.vertexCount { return MorphSetHandle.none(); }
     var withNormals = Mesh.empty();
@@ -444,7 +444,7 @@ pub struct Morpher {
 
   // Take the set 'h' away (its buffers are released when the GPU is done
   // with them). Copies made from it must be removed first.
-  pub fn removeSet(self &mut, device &mut Device, h MorphSetHandle) bool {
+  pub fn removeSet(self: &mut, device: &mut Device, h: MorphSetHandle) bool {
     if !sets.alive(h.slot) { return false; }
     {
       var s = &mut sets[h.slot];
@@ -466,8 +466,8 @@ pub struct Morpher {
   // 'keepPrevious' keeps last frame's positions ('previousPositions'). None
   // if either handle names nothing, the base has other than the set's vertex
   // count, or it is lines.
-  pub fn addCopy(self &mut, device &mut Device, encoder &mut CommandEncoder, renderer &mut Renderer,
-      base MeshHandle, set MorphSetHandle, keepPrevious bool) MorphHandle {
+  pub fn addCopy(self: &mut, device: &mut Device, encoder: &mut CommandEncoder, renderer: &mut Renderer,
+      base: MeshHandle, set: MorphSetHandle, keepPrevious: bool) MorphHandle {
     if !renderer.meshes.alive(base.slot) || !sets.alive(set.slot) { return MorphHandle.none(); }
     let count = sets[set.slot].vertexCount;
     let vertexUsage = BUFFER_USAGE_VERTEX | BUFFER_USAGE_STORAGE | BUFFER_USAGE_COPY_DST | BUFFER_USAGE_COPY_SRC;
@@ -536,7 +536,7 @@ pub struct Morpher {
 
   // Take the copy 'h' away: its mesh leaves the renderer and its buffers are
   // released, the base's shared ones left alone
-  pub fn removeCopy(self &mut, device &mut Device, renderer &mut Renderer, h MorphHandle) bool {
+  pub fn removeCopy(self: &mut, device: &mut Device, renderer: &mut Renderer, h: MorphHandle) bool {
     if !copies.alive(h.slot) { return false; }
     {
       var c = &mut copies[h.slot];
@@ -555,7 +555,7 @@ pub struct Morpher {
   }
 
   // The mesh the copy 'h' is drawn as (none if 'h' names no copy)
-  pub fn mesh(self &, h MorphHandle) MeshHandle {
+  pub fn mesh(self: &, h: MorphHandle) MeshHandle {
     if !copies.alive(h.slot) { return MeshHandle.none(); }
     copies[h.slot].mesh
   }
@@ -563,18 +563,18 @@ pub struct Morpher {
   // The copy's positions of the frame before, for a velocity pass: valid
   // after the copy was made with 'keepPrevious' (the buffer is not valid
   // otherwise), and current as of the last 'update'
-  pub fn previousPositions(self &, h MorphHandle) &Buffer {
+  pub fn previousPositions(self: &, h: MorphHandle) &Buffer {
     &copies[h.slot].previous
   }
 
   // How many targets the copy has weights for
-  pub fn targetCount(self &, h MorphHandle) usize {
+  pub fn targetCount(self: &, h: MorphHandle) usize {
     if !copies.alive(h.slot) { return 0usize; }
     copies[h.slot].weights.len()
   }
 
   // The copy's weights as last set
-  pub fn weights(self &, h MorphHandle, out &mut List[f32]) {
+  pub fn weights(self: &, h: MorphHandle, out: &mut List[f32]) {
     out.clear();
     if !copies.alive(h.slot) { return; }
     let c = copies[h.slot];
@@ -586,7 +586,7 @@ pub struct Morpher {
   }
 
   // How many targets are not zero now (the active list's length)
-  pub fn activeCount(self &, h MorphHandle) u32 {
+  pub fn activeCount(self: &, h: MorphHandle) u32 {
     if !copies.alive(h.slot) { return 0u32; }
     copies[h.slot].activeCount
   }
@@ -596,7 +596,7 @@ pub struct Morpher {
   // sorted by target; if no weight differs from the last call's, nothing is
   // marked to be done. The copy's bounding sphere is made to hold the shape
   // the weights give.
-  pub fn setWeights(self &mut, renderer &mut Renderer, h MorphHandle, weights &List[f32]) {
+  pub fn setWeights(self: &mut, renderer: &mut Renderer, h: MorphHandle, weights: &List[f32]) {
     if !copies.alive(h.slot) { return; }
     var c = &mut copies[h.slot];
     let set = sets[c.set];
@@ -613,7 +613,7 @@ pub struct Morpher {
     if !changed { return; }
     c.pairs.clear();
     c.activeCount = 0u32;
-    var grow f32 = 0.;
+    var grow: f32 = 0.;
     t = 0usize;
     while t < c.weights.len() {
       let w = *c.weights[t];
@@ -633,7 +633,7 @@ pub struct Morpher {
   // call into 'encoder', before the render that draws them. A copy kept
   // 'keepPrevious' first has its positions copied to 'previous'. Answers how
   // many copies were recomputed (also 'dispatches').
-  pub fn update(self &mut, device &mut Device, encoder &mut CommandEncoder, renderer &Renderer) u32 {
+  pub fn update(self: &mut, device: &mut Device, encoder: &mut CommandEncoder, renderer: &Renderer) u32 {
     var count = 0u32;
     // The frame before's positions, copied outside the compute pass
     var i = 0usize;
@@ -664,7 +664,7 @@ pub struct Morpher {
             device.queue.writeBuffer(&c.active, 0u64, bytesOf[f32](&c.pairs), u64.from(c.activeCount) * MORPH_PAIR_BYTES);
           }
           pass.setBindGroup(0u32, &c.group);
-          let immediates Array[u32, 3] = [sets[c.set].vertexCount, c.activeCount, sets[c.set].targetCount];
+          let immediates: Array[u32, 3] = [sets[c.set].vertexCount, c.activeCount, sets[c.set].targetCount];
           pass.setImmediates(0u32, &immediates as *u8, 12u32);
           pass.dispatchWorkgroups((sets[c.set].vertexCount + MORPH_GROUP_SIZE - 1u32) / MORPH_GROUP_SIZE);
           c.dirty = false;
@@ -680,7 +680,7 @@ pub struct Morpher {
 
 // A buffer holding what 'source' holds, copied by the GPU through 'encoder'
 // (none, if 'source' is none)
-fn cloneBuffer(device &mut Device, encoder &mut CommandEncoder, source &Buffer) Buffer {
+fn cloneBuffer(device: &mut Device, encoder: &mut CommandEncoder, source: &Buffer) Buffer {
   if !source.isValid() { return Buffer.none(); }
   var b = device.createBuffer(source.size, source.usage | BUFFER_USAGE_COPY_DST | BUFFER_USAGE_COPY_SRC);
   encoder.copyBufferToBuffer(source, 0u64, &b, 0u64, source.size);
@@ -688,13 +688,13 @@ fn cloneBuffer(device &mut Device, encoder &mut CommandEncoder, source &Buffer) 
 }
 
 // Bytes to the GPU: a buffer of at least 16 bytes holding 'size' bytes from 'data'
-fn uploadWords(device &mut Device, data *u8, size u64, usage u32) Buffer {
+fn uploadWords(device: &mut Device, data: *u8, size: u64, usage: u32) Buffer {
   var b = device.createBuffer(max64(size, 16u64), usage);
   if size > 0u64 && (data as usize) != 0usize { device.queue.writeBuffer(&b, 0u64, data, size); }
   b
 }
 
-fn max64(a u64, b u64) u64 { if a > b { a } else { b } }
+fn max64(a: u64, b: u64) u64 { if a > b { a } else { b } }
 
 // ---- A face rig's weights ----
 
@@ -717,31 +717,31 @@ fn max64(a u64, b u64) u64 { if a > b { a } else { b } }
 // 'Morpher.setWeights'. Nothing is clamped unless 'clampTo' says (glTF
 // allows weights outside 0 to 1, for exaggeration).
 pub struct MorphMixer {
-  pub targetCount usize;
-  values List[f32];              // each channel's value
-  driveChannel List[u32];        // the drives: a channel, a target, a scale
-  driveTarget List[u32];
-  driveScale List[f32];
-  corrA List[u32];               // the correctives: two channels and a target
-  corrB List[u32];
-  corrTarget List[u32];
-  clamped bool;
-  lo f32;
-  hi f32;
+  pub targetCount: usize;
+  values: List[f32];              // each channel's value
+  driveChannel: List[u32];        // the drives: a channel, a target, a scale
+  driveTarget: List[u32];
+  driveScale: List[f32];
+  corrA: List[u32];               // the correctives: two channels and a target
+  corrB: List[u32];
+  corrTarget: List[u32];
+  clamped: bool;
+  lo: f32;
+  hi: f32;
 
-  pub fn make(targetCount usize) MorphMixer {
+  pub fn make(targetCount: usize) MorphMixer {
     new MorphMixer(targetCount, List[f32].empty(), List[u32].empty(), List[u32].empty(), List[f32].empty(),
       List[u32].empty(), List[u32].empty(), List[u32].empty(), false, 0., 1.)
   }
 
   // A new channel, at 0; its number
-  pub fn addChannel(self &mut) usize {
+  pub fn addChannel(self: &mut) usize {
     values.push(0.);
     values.len() - 1usize
   }
 
   // Channel 'channel' adds its value times 'scale' to target 'target'
-  pub fn drive(self &mut, channel usize, target usize, scale f32) {
+  pub fn drive(self: &mut, channel: usize, target: usize, scale: f32) {
     driveChannel.push(u32.from(channel));
     driveTarget.push(u32.from(target));
     driveScale.push(scale);
@@ -749,26 +749,26 @@ pub struct MorphMixer {
 
   // Target 'target' is the corrective of channels 'a' and 'b': its weight is
   // their values' product
-  pub fn corrective(self &mut, a usize, b usize, target usize) {
+  pub fn corrective(self: &mut, a: usize, b: usize, target: usize) {
     corrA.push(u32.from(a));
     corrB.push(u32.from(b));
     corrTarget.push(u32.from(target));
   }
 
   // Channel 'channel' takes 'value'
-  pub fn set(self &mut, channel usize, value f32) {
+  pub fn set(self: &mut, channel: usize, value: f32) {
     if channel < values.len() { values.set(channel, value); }
   }
 
   // The weights end up between 'low' and 'high'
-  pub fn clampTo(self &mut, low f32, high f32) {
+  pub fn clampTo(self: &mut, low: f32, high: f32) {
     clamped = true;
     lo = low;
     hi = high;
   }
 
   // The weight of every target from the channels now, into 'out'
-  pub fn resolve(self &, out &mut List[f32]) {
+  pub fn resolve(self: &, out: &mut List[f32]) {
     out.clear();
     var t = 0usize;
     while t < targetCount {
@@ -807,7 +807,7 @@ pub struct MorphMixer {
 
 // spirv-begin morph.spv MORPH_SPIRV
 // Written by tools/shaders/shaders.py from morph.slang (sha256 7d2e4397d8e1381f50c0d3385dbb3522d268362aad657a419381fb79982a49dc): do not edit.
-let MORPH_SPIRV Array[u32, 1462] = [
+let MORPH_SPIRV: Array[u32, 1462] = [
   0x07230203u32, 0x00010500u32, 0x00280000u32, 0x0000010cu32, 0x00000000u32, 0x00020011u32,
   0x00000001u32, 0x000b000au32, 0x5f565053u32, 0x5f52484bu32, 0x726f7473u32, 0x5f656761u32,
   0x66667562u32, 0x735f7265u32, 0x61726f74u32, 0x635f6567u32, 0x7373616cu32, 0x00000000u32,

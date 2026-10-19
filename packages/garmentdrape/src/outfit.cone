@@ -24,23 +24,23 @@
 // ones, and one grid rebuild a layer. Nothing is allocated per frame after the first.
 
 pub struct Outfit {
-  pub garments List[Garment];
-  pub shells List[Shell];
-  pub matrices List[Mat4];            // the skinning matrices of the present pose
-  pub stack LayerSurface;             // the layers beneath the one being stepped
+  pub garments: List[Garment];
+  pub shells: List[Shell];
+  pub matrices: List[Mat4];            // the skinning matrices of the present pose
+  pub stack: LayerSurface;             // the layers beneath the one being stepped
   // Where the time goes, in nanoseconds summed over the frames since the last `resetCost`: skinning the targets, the
   // colliders and the step's start, the pins, the soft body's substeps, the clamp and pull, the layer push, the shells
   // and the stack between layers
-  pub cost List[i64];
-  pub frames u32 = 0u32;
+  pub cost: List[i64];
+  pub frames: u32 = 0u32;
   // How far outside the layers beneath a garment is kept while it moves (metres). The layers move a centimetre or two a frame,
   // and a particle that gets deeper behind a surface than this is not seen by the push at all, so it is wider than
   // what is drawn: a loose garment stands that far off the one beneath it.
-  pub layerClearance f32 = 0.025;
+  pub layerClearance: f32 = 0.025;
   // How deep behind a layer a skin-driven particle's target can be and still be taken out of it (metres)
-  pub layerReach f32 = 0.0;
+  pub layerReach: f32 = 0.0;
   // Whether the garments are kept outside the layers beneath (for comparing: what the layers do without it)
-  pub keepLayers bool = true;
+  pub keepLayers: bool = true;
 
   // An outfit with nothing on it. The threads its cloth uses are the program's: `step` takes the pool (one pool may serve
   // every outfit of a scene, stepped one after another).
@@ -51,17 +51,17 @@ pub struct Outfit {
     new Outfit(List[Garment].empty(), List[Shell].empty(), List[Mat4].empty(), LayerSurface.empty(), c, 0u32)
   }
 
-  pub fn resetCost(self &mut) {
+  pub fn resetCost(self: &mut) {
     var k = 0usize;
     while k < cost.len() { cost.set(k, 0i64); k = k + 1usize; }
     frames = 0u32;
   }
 
-  pub fn addGarment(self &mut, g Garment) { garments.push(g); }
-  pub fn addShell(self &mut, s Shell) { shells.push(s); }
+  pub fn addGarment(self: &mut, g: Garment) { garments.push(g); }
+  pub fn addShell(self: &mut, s: Shell) { shells.push(s); }
 
   // How many particles are simulated (free) and how many skinned (tight), over all the garments
-  pub fn freeParticles(self &) usize {
+  pub fn freeParticles(self: &) usize {
     var n = 0usize;
     var g = 0usize;
     while g < garments.len() {
@@ -73,7 +73,7 @@ pub struct Outfit {
 
   // Carry every garment to the pose at `models`: each particle goes where the skin takes its draped place, at rest. For
   // the first frame, and after a teleport.
-  pub fn snap(self &mut, rig &BodyRig, models &List[Transform3]) {
+  pub fn snap(self: &mut, rig: &BodyRig, models: &List[Transform3]) {
     rig.skinMatrices(models, &mut matrices);
     var g = 0usize;
     while g < garments.len() {
@@ -95,7 +95,7 @@ pub struct Outfit {
   }
 
   // One frame of `dt` seconds with the bones at `models` and the air moving at `wind`
-  pub fn step(self &mut, rig &BodyRig, models &List[Transform3], dt f32, wind Vec3, workers &mut Workers) {
+  pub fn step(self: &mut, rig: &BodyRig, models: &List[Transform3], dt: f32, wind: Vec3, workers: &mut Workers) {
     let tShells = Instant.now();
     rig.skinMatrices(models, &mut matrices);
     var top = 0u32;
@@ -150,7 +150,7 @@ pub struct Outfit {
 }
 
 // Where the skin puts every particle of `g`, for the matrices of the present pose
-fn computeTargets(g &mut Garment, matrices &List[Mat4]) {
+fn computeTargets(g: &mut Garment, matrices: &List[Mat4]) {
   let n = g.bind.len();
   if g.target.len() != n {
     g.target.clear();
@@ -172,8 +172,8 @@ fn computeTargets(g &mut Garment, matrices &List[Mat4]) {
   }
 }
 
-fn stepGarment(g &mut Garment, rig &BodyRig, models &List[Transform3], matrices &List[Mat4], below &LayerSurface,
-    workers &mut Workers, dt f32, wind Vec3, cost &mut List[i64], layerReach f32) {
+fn stepGarment(g: &mut Garment, rig: &BodyRig, models: &List[Transform3], matrices: &List[Mat4], below: &LayerSurface,
+    workers: &mut Workers, dt: f32, wind: Vec3, cost: &mut List[i64], layerReach: f32) {
   let n = g.soft.pos.len();
   if n == 0usize { return; }
   let t00 = Instant.now();
@@ -282,16 +282,16 @@ fn stepGarment(g &mut Garment, rig &BodyRig, models &List[Transform3], matrices 
 // ---- dressing a body ----
 
 pub struct Dressing {
-  pub outfit Outfit;
-  pub ok bool;
-  pub why String;
+  pub outfit: Outfit;
+  pub ok: bool;
+  pub why: String;
 }
 
 // Dress `rig`: the shells and the patterns put on in order of layer, each layer over the ones beneath. A layer's
 // garments collide with the body's proxies grown by the thickest cloth beneath them, and are draped (and, once worn,
 // pushed) outside the surfaces of the layers beneath. `threads` is how many threads the cloth may use (draping and
 // afterwards).
-pub fn dress(rig &BodyRig, shellSpecs &List[ShellSpec], patterns &List[Pattern], threads u32) Dressing {
+pub fn dress(rig: &BodyRig, shellSpecs: &List[ShellSpec], patterns: &List[Pattern], threads: u32) Dressing {
   var outfit = Outfit.make();
   var below = LayerSurface.empty();
   var inflate = 0.f;
@@ -346,7 +346,7 @@ pub fn dress(rig &BodyRig, shellSpecs &List[ShellSpec], patterns &List[Pattern],
 
 // How well garment `g` stays outside everything beneath it (the shells as last posed, the garments of lower layers
 // as they are): see `measureLayering`
-pub fn layerCheckOf(o &Outfit, g usize) LayerCheck {
+pub fn layerCheckOf(o: &Outfit, g: usize) LayerCheck {
   var beneath = LayerSurface.empty();
   var s = 0usize;
   while s < o.shells.len() {

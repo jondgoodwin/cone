@@ -8,42 +8,42 @@
 // 'apply' is keyframetracks' 'ease' / 'bezierEase'; 'applyOver' is the same
 // for the ramps too, which need the animator's duration.
 pub struct Easing {
-  pub id u32;
-  pub p0 f32;
-  pub p1 f32;
-  pub bez bool;
-  pub x1 f32;
-  pub y1 f32;
-  pub x2 f32;
-  pub y2 f32;
+  pub id: u32;
+  pub p0: f32;
+  pub p1: f32;
+  pub bez: bool;
+  pub x1: f32;
+  pub y1: f32;
+  pub x2: f32;
+  pub y2: f32;
   // seconds of the 1 - cos ramp at each end (0 for none)
-  pub ramp f32;
+  pub ramp: f32;
 
   pub fn linear() Easing { new Easing(EASE_LINEAR, 0., 0., false, 0., 0., 0., 0., 0.) }
-  pub fn of(id u32) Easing { new Easing(id, 0., 0., false, 0., 0., 0., 0., 0.) }
-  pub fn withParams(id u32, p0 f32, p1 f32) Easing { new Easing(id, p0, p1, false, 0., 0., 0., 0., 0.) }
-  pub fn spring(zeta f32, omega f32) Easing { new Easing(EASE_SPRING, zeta, omega, false, 0., 0., 0., 0., 0.) }
-  pub fn bezier(x1 f32, y1 f32, x2 f32, y2 f32) Easing { new Easing(EASE_LINEAR, 0., 0., true, x1, y1, x2, y2, 0.) }
+  pub fn of(id: u32) Easing { new Easing(id, 0., 0., false, 0., 0., 0., 0., 0.) }
+  pub fn withParams(id: u32, p0: f32, p1: f32) Easing { new Easing(id, p0, p1, false, 0., 0., 0., 0., 0.) }
+  pub fn spring(zeta: f32, omega: f32) Easing { new Easing(EASE_SPRING, zeta, omega, false, 0., 0., 0., 0., 0.) }
+  pub fn bezier(x1: f32, y1: f32, x2: f32, y2: f32) Easing { new Easing(EASE_LINEAR, 0., 0., true, x1, y1, x2, y2, 0.) }
 
   // The speed rises as 1 - cos from rest over the first 'seconds', is steady,
   // and falls the same way over the last 'seconds' (at most half the duration
   // each). The progress is then the distance covered as a fraction of the
   // whole. Defined over FIXED end durations, not as a fraction of the
   // duration, so lengthening the animator lengthens only the steady part.
-  pub fn endRamps(seconds f32) Easing { new Easing(EASE_LINEAR, 0., 0., false, 0., 0., 0., 0., seconds) }
+  pub fn endRamps(seconds: f32) Easing { new Easing(EASE_LINEAR, 0., 0., false, 0., 0., 0., 0., seconds) }
 
   // No easing at all: progress is time
   pub fn isLinear(self) bool { id == EASE_LINEAR && !bez && ramp <= 0. }
 
   // The eased progress for progress s (clamped to 0..1). End ramps need the
   // duration to know their share of it: here they act as linear
-  pub fn apply(self, s f32) f32 {
+  pub fn apply(self, s: f32) f32 {
     if bez { return bezierEase(x1, y1, x2, y2, clamp01(s)); }
     ease(id, s, p0, p1)
   }
 
   // The same, for an animator whose iteration lasts 'dur' seconds
-  pub fn applyOver(self, s f32, dur f32) f32 {
+  pub fn applyOver(self, s: f32, dur: f32) f32 {
     if ramp > 0. { return rampProgress(s, dur, ramp); }
     self.apply(s)
   }
@@ -54,7 +54,7 @@ pub struct Easing {
 // steady, and falls the same way over the last 'ramp' (clamped to half the
 // duration). With vmax the steady speed the distance in the rise is
 // vmax (t / 2 - ramp / (2 pi) sin(pi t / ramp)), and the whole is vmax (dur - ramp).
-pub fn rampProgress(s f32, dur f32, ramp f32) f32 {
+pub fn rampProgress(s: f32, dur: f32, ramp: f32) f32 {
   let x = clamp01(s);
   if dur <= 0. || ramp <= 0. { return x; }
   let r = if ramp > dur * 0.5 { dur * 0.5 } else { ramp };
@@ -72,7 +72,7 @@ pub fn rampProgress(s f32, dur f32, ramp f32) f32 {
 
 // The slope of springDisplacement (keyframetracks) at t: the velocity of a
 // damped harmonic oscillator released at displacement d0 with velocity v0
-pub fn springVelocity(zeta f32, omega f32, d0 f32, v0 f32, t f32) f32 {
+pub fn springVelocity(zeta: f32, omega: f32, d0: f32, v0: f32, t: f32) f32 {
   if t <= 0. { return v0; }
   if zeta < 0.9999 {
     let wd = omega * (1. - zeta * zeta).sqrt();
@@ -99,14 +99,14 @@ pub fn springVelocity(zeta f32, omega f32, d0 f32, v0 f32, t f32) f32 {
 // and its velocity (over omega) are under 'eps' times the scale of its
 // release (|d0| + |v0| / omega). From an envelope bound, not a search of the
 // oscillation, so it never ends early.
-pub fn springSettle(zeta f32, omega f32, eps f32) f32 {
+pub fn springSettle(zeta: f32, omega: f32, eps: f32) f32 {
   if omega <= 0. || zeta <= 0. { return 1.0e30; }
   var rate = zeta * omega;
   var grow = 1.f;
   if zeta > 1.0001 {
     rate = omega * (zeta - (zeta * zeta - 1.).sqrt());
   }
-  var t f32 = 0.;
+  var t: f32 = 0.;
   var i = 0;
   while i < 8 {
     if zeta < 0.9999 {
@@ -122,12 +122,12 @@ pub fn springSettle(zeta f32, omega f32, eps f32) f32 {
 
 // Stiffness / damping / mass, as a mass on a spring has them, in the
 // damping ratio and angular frequency the rest of this package uses
-pub fn springZeta(stiffness f32, damping f32, mass f32) f32 { damping / (2. * (stiffness * mass).sqrt()) }
-pub fn springOmegaOf(stiffness f32, mass f32) f32 { (stiffness / mass).sqrt() }
+pub fn springZeta(stiffness: f32, damping: f32, mass: f32) f32 { damping / (2. * (stiffness * mass).sqrt()) }
+pub fn springOmegaOf(stiffness: f32, mass: f32) f32 { (stiffness / mass).sqrt() }
 
 // The rotation that turns the model's forward axis (+Z, glTF's) to 'dir' and
 // keeps its up axis (+Y) towards 'up' as far as it can
-pub fn faceRotation(dir Vec3, up Vec3) Quat {
+pub fn faceRotation(dir: Vec3, up: Vec3) Quat {
   let f = dir.normalize();
   var u = up.normalize();
   if libc.fabsf(f.dot(u)) > 0.9999 {
@@ -158,7 +158,7 @@ pub fn faceRotation(dir Vec3, up Vec3) Quat {
 }
 
 // The angle in radians between two unit quaternions' rotations
-pub fn quatAngle(a Quat, b Quat) f32 {
+pub fn quatAngle(a: Quat, b: Quat) f32 {
   var d = libc.fabsf(a.dot(b));
   if d > 1. { d = 1.; }
   2. * acos(d)

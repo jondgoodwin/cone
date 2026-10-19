@@ -11,7 +11,7 @@ fn fixedFlushTokens() usize { 8192usize }
 fn lookAhead() i64 { 262i64 }
 
 // Candidate positions the matcher looks at for one position, by level
-fn chainLimitOf(level i32) usize {
+fn chainLimitOf(level: i32) usize {
   if level == 1 { return 16usize; }
   48usize
 }
@@ -23,8 +23,8 @@ fn chainLimitOf(level i32) usize {
 // 'maxTokens' and another position is waiting (answers true). 'head' and
 // 'prev' are the hash chains: 'head' by hash the newest position, 'prev' by
 // position (modulo 32768) the one before it with the same hash.
-fn lzScan(buf &Array[u8], base i64, cur &mut i64, head &mut List[i64], prev &mut List[i64], tokens &mut List[u32],
-  chainLimit usize, maxTokens usize, final bool) bool {
+fn lzScan(buf: &Array[u8], base: i64, cur: &mut i64, head: &mut List[i64], prev: &mut List[i64], tokens: &mut List[u32],
+  chainLimit: usize, maxTokens: usize, final: bool) bool {
   let n = buf.len;
   let endPos = base + i64.from(n);
   while *cur < endPos {
@@ -83,7 +83,7 @@ fn lzScan(buf &Array[u8], base i64, cur &mut i64, head &mut List[i64], prev &mut
 // The gzip header of RFC 1952 section 2.3 for 'h': flags for the text mark,
 // the extra field, the name and the comment (a name or comment is cut at a
 // zero byte, which cannot be written); no header CRC-16
-fn writeGzipHeader(out &mut List[u8], h &GzipHeader) {
+fn writeGzipHeader(out: &mut List[u8], h: &GzipHeader) {
   out.push(0x1Fu8);
   out.push(0x8Bu8);
   out.push(8u8);
@@ -125,13 +125,13 @@ fn writeGzipHeader(out &mut List[u8], h &GzipHeader) {
 
 // RFC 1950 section 2.2: CMF 78 (deflate, 32 KiB window), FLG with the
 // check bits; FLEVEL 0 for stored, 2 (the default) otherwise
-fn writeZlibHeader(out &mut List[u8], level i32) {
+fn writeZlibHeader(out: &mut List[u8], level: i32) {
   out.push(0x78u8);
   out.push(if level == 0 {0x01u8} else {0x9Cu8});
 }
 
 // The Adler-32, most significant byte first
-fn writeZlibTrailer(out &mut List[u8], adler u32) {
+fn writeZlibTrailer(out: &mut List[u8], adler: u32) {
   out.push(u8.from(adler >> 24u32));
   out.push(u8.from((adler >> 16u32) & 255u32));
   out.push(u8.from((adler >> 8u32) & 255u32));
@@ -139,7 +139,7 @@ fn writeZlibTrailer(out &mut List[u8], adler u32) {
 }
 
 // The CRC-32 and the size modulo 2^32, least significant byte first
-fn writeGzipTrailer(out &mut List[u8], crc u32, size u64) {
+fn writeGzipTrailer(out: &mut List[u8], crc: u32, size: u64) {
   out.push(u8.from(crc & 255u32));
   out.push(u8.from((crc >> 8u32) & 255u32));
   out.push(u8.from((crc >> 16u32) & 255u32));
@@ -152,7 +152,7 @@ fn writeGzipTrailer(out &mut List[u8], crc u32, size u64) {
 }
 
 // The XFL byte a compressor writes: 4 for the fastest levels, else 0
-fn xflOf(level i32) u8 {
+fn xflOf(level: i32) u8 {
   if level == 0 || level == 1 { return 4u8; }
   0u8
 }
@@ -171,40 +171,40 @@ fn xflOf(level i32) u8 {
 //   }
 //   // NeedInput: feed the next chunk, or def.finish() and pull until Done
 pub struct Deflater {
-  format Format;
-  level i32;
+  format: Format;
+  level: i32;
   // The input window: buf holds the bytes from absolute position 'base' on;
   // 'cur' is the next position to deal with
-  buf List[u8];
-  base i64;
-  cur i64;
-  head List[i64];
-  prev List[i64];
-  tokens List[u32];
+  buf: List[u8];
+  base: i64;
+  cur: i64;
+  head: List[i64];
+  prev: List[i64];
+  tokens: List[u32];
   // The output so far: bw.out holds it, the first 'outPos' bytes delivered
-  bw BitWriter;
-  outPos usize;
-  started bool;
+  bw: BitWriter;
+  outPos: usize;
+  started: bool;
   // Level 1: the single fixed block's header is written
-  fixedOpen bool;
-  finishing bool;
-  done bool;
-  fixLit Code;
-  fixDist Code;
-  haveFixed bool;
+  fixedOpen: bool;
+  finishing: bool;
+  done: bool;
+  fixLit: Code;
+  fixDist: Code;
+  haveFixed: bool;
   // The input's checksums and size, for the trailer
-  adler Adler32;
-  crc Crc32;
-  crcv u32;
-  inTotal u64;
-  gz GzipHeader;
-  outTotal u64;
+  adler: Adler32;
+  crc: Crc32;
+  crcv: u32;
+  inTotal: u64;
+  gz: GzipHeader;
+  outTotal: u64;
 
   // A deflater for 'format' at 'level' (0 stored, 1 fixed Huffman, 2
   // dynamic Huffman; other numbers act as 2). A gzip stream gets a plain
   // header (no time, no name, system 255) unless 'setGzipHeader' is called
   // before the first 'feed'.
-  pub fn make(format Format, level i32) Deflater {
+  pub fn make(format: Format, level: i32) Deflater {
     let lv = if level == 0 {0} elif level == 1 {1} else {2};
     var head = List[i64].empty();
     var prev = List[i64].empty();
@@ -225,14 +225,14 @@ pub struct Deflater {
 
   // The gzip header to write (ignored for the other formats); call it
   // before the first 'feed' or 'pull'
-  pub fn setGzipHeader(self &mut, h &GzipHeader) {
+  pub fn setGzipHeader(self: &mut, h: &GzipHeader) {
     if !started { gz = h.copy(); }
   }
 
   // Appends input. It is copied, so the caller's bytes are its own again at
   // once. Feed in pieces of any size; pull until NeedInput before feeding the
   // next, or the input piles up. Bytes fed after 'finish' are ignored.
-  pub fn feed(self &mut, chunk &Array[u8]) {
+  pub fn feed(self: &mut, chunk: &Array[u8]) {
     if finishing { return; }
     if format == Format.Zlib { adler.update(chunk, 0usize, chunk.len); }
     elif format == Format.Gzip { crcv = crc.update(crcv, chunk, 0usize, chunk.len); }
@@ -244,16 +244,16 @@ pub struct Deflater {
 
   // Says that no more input will come; the stream is then completed by
   // pulling until Done
-  pub fn finish(self &mut) { finishing = true; }
+  pub fn finish(self: &mut) { finishing = true; }
 
   // Bytes of input fed so far
-  pub fn totalIn(self &) u64 { inTotal }
+  pub fn totalIn(self: &) u64 { inTotal }
 
   // Bytes of output delivered so far
-  pub fn totalOut(self &) u64 { outTotal }
+  pub fn totalOut(self: &) u64 { outTotal }
 
   // Whether the stream is complete and every byte of it delivered
-  pub fn isDone(self &) bool { done && outPos >= bw.out.len() }
+  pub fn isDone(self: &) bool { done && outPos >= bw.out.len() }
 
   // Appends compressed bytes to 'out', at most 'max' of them, and answers
   // what it waits for: NeedInput (all input used; feed more or 'finish'),
@@ -261,7 +261,7 @@ pub struct Deflater {
   // comes whole when the block is full, so the compressed bytes lag the input
   // by up to 32768 tokens; 'max' bounds what one pull hands over, not what
   // the deflater holds.
-  pub fn pull(self &mut, out &mut List[u8], max usize) Status {
+  pub fn pull(self: &mut, out: &mut List[u8], max: usize) Status {
     self.begin();
     while bw.out.len() - outPos < max && !done {
       if !self.step() { break; }
@@ -282,7 +282,7 @@ pub struct Deflater {
   // -------- inside --------
 
   // The format's header, once
-  fn begin(self &mut) {
+  fn begin(self: &mut) {
     if started { return; }
     started = true;
     if format == Format.Zlib { writeZlibHeader(&mut bw.out, level); }
@@ -290,7 +290,7 @@ pub struct Deflater {
   }
 
   // Free the delivered front of the output queue, when it is at least half
-  fn trimOutput(self &mut) {
+  fn trimOutput(self: &mut) {
     let total = bw.out.len();
     if outPos > 0usize && outPos >= total - outPos {
       var i = 0usize;
@@ -301,7 +301,7 @@ pub struct Deflater {
   }
 
   // One unit of work; false when it can do nothing without more input
-  fn step(self &mut) bool {
+  fn step(self: &mut) bool {
     self.slide();
     if level == 0 { return self.stepStored(); }
     let full = lzScan(buf.view(), base, &mut cur, &mut head, &mut prev, &mut tokens, chainLimitOf(level),
@@ -320,7 +320,7 @@ pub struct Deflater {
 
   // Drop input that is no longer needed: the matcher reaches back 32768
   // bytes, the stored mode not at all
-  fn slide(self &mut) {
+  fn slide(self: &mut) {
     let used = usize.from(cur - base);
     if used < 98304usize { return; }
     let drop = if level == 0 {used} else {used - 32768usize};
@@ -331,7 +331,7 @@ pub struct Deflater {
     base = base + i64.from(drop);
   }
 
-  fn stepStored(self &mut) bool {
+  fn stepStored(self: &mut) bool {
     let pending = buf.len() - usize.from(cur - base);
     if pending > 65535usize {
       self.storedBlock(65535usize, false);
@@ -346,7 +346,7 @@ pub struct Deflater {
   }
 
   // A stored block of the next n bytes
-  fn storedBlock(self &mut, n usize, last bool) {
+  fn storedBlock(self: &mut, n: usize, last: bool) {
     bw.put(if last {1u32} else {0u32}, 1u32);
     bw.put(0u32, 2u32);
     bw.align();
@@ -358,7 +358,7 @@ pub struct Deflater {
     cur = cur + i64.from(n);
   }
 
-  fn ensureFixed(self &mut) {
+  fn ensureFixed(self: &mut) {
     if haveFixed { return; }
     fixedCodes(&mut fixLit, &mut fixDist);
     haveFixed = true;
@@ -366,7 +366,7 @@ pub struct Deflater {
 
   // The tokens gathered are full: write them out (a level-2 block that is
   // not the last, or a level-1 run of the one fixed block)
-  fn flushTokens(self &mut) {
+  fn flushTokens(self: &mut) {
     if level == 1 {
       self.ensureFixed();
       if !fixedOpen {
@@ -382,7 +382,7 @@ pub struct Deflater {
   }
 
   // The last block, the padding, the trailer
-  fn endStream(self &mut) {
+  fn endStream(self: &mut) {
     if level == 1 {
       self.ensureFixed();
       if !fixedOpen {
@@ -398,7 +398,7 @@ pub struct Deflater {
     self.finishTrailer();
   }
 
-  fn finishTrailer(self &mut) {
+  fn finishTrailer(self: &mut) {
     bw.align();
     if format == Format.Zlib { writeZlibTrailer(&mut bw.out, adler.value()); }
     elif format == Format.Gzip { writeGzipTrailer(&mut bw.out, crcv, inTotal); }

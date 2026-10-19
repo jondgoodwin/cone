@@ -18,33 +18,33 @@
 
 // An open array or object
 struct OpenFrame {
-  pub isObject bool;
+  pub isObject: bool;
   // Elements or members written so far
-  pub count usize;
+  pub count: usize;
   // A key was written and its value is owed
-  pub owed bool;
+  pub owed: bool;
 }
 
 pub struct Writer {
-  pub opts WriteOptions;
-  out String;
-  open List[OpenFrame];
-  wrote bool;
-  failed bool;
-  err JsonError;
+  pub opts: WriteOptions;
+  out: String;
+  open: List[OpenFrame];
+  wrote: bool;
+  failed: bool;
+  err: JsonError;
 
-  pub fn init(self &new, opts WriteOptions) {
+  pub fn init(self: &new, opts: WriteOptions) {
     *self = new Writer(opts, String.empty(), List[OpenFrame].empty(), false, false, JsonError.none());
   }
 
-  fn fail(self &mut, kind ErrorKind, reason &str) {
+  fn fail(self: &mut, kind: ErrorKind, reason: &str) {
     if self.failed { return; }
     self.failed = true;
     self.err = new JsonError(kind, 0usize, 0u32, 0u32, String.from(reason));
   }
 
   // A new line and the indentation for depth levels, when indenting
-  fn lineBreak(self &mut, depth usize) {
+  fn lineBreak(self: &mut, depth: usize) {
     if self.opts.indent == 0usize { return; }
     self.out.appendByte('\n');
     var n = depth * self.opts.indent;
@@ -56,7 +56,7 @@ pub struct Writer {
 
   // Before a value: the comma, the line break, and the check that a value
   // belongs here. False if not.
-  fn beforeValue(self &mut) bool {
+  fn beforeValue(self: &mut) bool {
     if self.failed { return false; }
     if self.open.len() == 0usize {
       if self.wrote {
@@ -81,23 +81,23 @@ pub struct Writer {
     true
   }
 
-  pub fn beginObject(self &mut) {
+  pub fn beginObject(self: &mut) {
     if !self.beforeValue() { return; }
     self.out.appendByte('{');
     self.open.push(new OpenFrame(true, 0usize, false));
   }
 
-  pub fn beginArray(self &mut) {
+  pub fn beginArray(self: &mut) {
     if !self.beforeValue() { return; }
     self.out.appendByte('[');
     self.open.push(new OpenFrame(false, 0usize, false));
   }
 
-  pub fn endObject(self &mut) { self.end(true); }
+  pub fn endObject(self: &mut) { self.end(true); }
 
-  pub fn endArray(self &mut) { self.end(false); }
+  pub fn endArray(self: &mut) { self.end(false); }
 
-  fn end(self &mut, isObject bool) {
+  fn end(self: &mut, isObject: bool) {
     if self.failed { return; }
     if self.open.len() == 0usize || self.open[self.open.len() - 1usize].isObject != isObject {
       if isObject { self.fail(ErrorKind.WriteOrder, "endObject with no object open"); }
@@ -116,7 +116,7 @@ pub struct Writer {
   }
 
   // An object's next name
-  pub fn key(self &mut, name &str) {
+  pub fn key(self: &mut, name: &str) {
     if self.failed { return; }
     if self.open.len() == 0usize || !self.open[self.open.len() - 1usize].isObject {
       self.fail(ErrorKind.WriteOrder, "a key was written outside an object");
@@ -137,7 +137,7 @@ pub struct Writer {
   }
 
   // s as a string in quotes; false, having failed, when it is not UTF-8
-  fn quoted(self &mut, s &Array[u8]) bool {
+  fn quoted(self: &mut, s: &Array[u8]) bool {
     match appendQuoted(&mut self.out, s, self.opts.asciiOnly) {
       case let at Some {
         var m = String.from("a string is not valid UTF-8 at its byte ");
@@ -149,13 +149,13 @@ pub struct Writer {
     }
   }
 
-  pub fn string(self &mut, s &str) {
+  pub fn string(self: &mut, s: &str) {
     if !self.beforeValue() { return; }
     self.quoted(s);
   }
 
   // A number given as its text, which must be RFC 8259's grammar
-  pub fn number(self &mut, text &str) {
+  pub fn number(self: &mut, text: &str) {
     if self.failed { return; }
     if !isNumberText(text) {
       self.fail(ErrorKind.WriteValue, "the number's text is not a JSON number");
@@ -165,18 +165,18 @@ pub struct Writer {
     self.out.append(text);
   }
 
-  pub fn int(self &mut, n i64) {
+  pub fn int(self: &mut, n: i64) {
     if !self.beforeValue() { return; }
     self.out.appendInt(n);
   }
 
-  pub fn uint(self &mut, n u64) {
+  pub fn uint(self: &mut, n: u64) {
     if !self.beforeValue() { return; }
     self.out.appendUInt(n);
   }
 
   // x in the shortest text that reads back as x. NaN and infinity fail.
-  pub fn float(self &mut, x f64) {
+  pub fn float(self: &mut, x: f64) {
     if self.failed { return; }
     match formatF64(x) {
       case let t Some {
@@ -189,18 +189,18 @@ pub struct Writer {
     }
   }
 
-  pub fn boolean(self &mut, b bool) {
+  pub fn boolean(self: &mut, b: bool) {
     if !self.beforeValue() { return; }
     if b { self.out.append("true"); } else { self.out.append("false"); }
   }
 
-  pub fn nullValue(self &mut) {
+  pub fn nullValue(self: &mut) {
     if !self.beforeValue() { return; }
     self.out.append("null");
   }
 
   // A whole tree
-  pub fn value(self &mut, j &Json) {
+  pub fn value(self: &mut, j: &Json) {
     if self.failed { return; }
     // A string is copied before it is handed to the Writer, which changes the
     // shape of its own String as it writes: a borrow of the tree's strings
@@ -234,7 +234,7 @@ pub struct Writer {
   }
 
   // The text, once one value is written and complete; or the first failure
-  pub fn finish(self &mut) Result[String, JsonError] {
+  pub fn finish(self: &mut) Result[String, JsonError] {
     if !self.failed && self.open.len() > 0usize {
       self.fail(ErrorKind.WriteOrder, "finish with an array or object still open");
     }
@@ -251,7 +251,7 @@ pub struct Writer {
 // s in double quotes, escaped, appended to out. None when it is written;
 // Some(offset) of the first byte that is not well-formed UTF-8, with out
 // holding whatever was written before it.
-fn appendQuoted(out &mut String, s &Array[u8], ascii bool) Option[usize] {
+fn appendQuoted(out: &mut String, s: &Array[u8], ascii: bool) Option[usize] {
   out.appendByte('"');
   var i = 0usize;
   while i < s.len {
@@ -299,7 +299,7 @@ fn appendQuoted(out &mut String, s &Array[u8], ascii bool) Option[usize] {
 }
 
 // The character of the len-byte UTF-8 sequence at pos, which is well-formed
-fn utf8Decode(t &Array[u8], pos usize, len usize) u32 {
+fn utf8Decode(t: &Array[u8], pos: usize, len: usize) u32 {
   if len == 2usize { return (u32.from(t[pos] & 0x1Fu8) << 6u32) | u32.from(t[pos + 1usize] & 0x3Fu8); }
   if len == 3usize {
     return (u32.from(t[pos] & 0x0Fu8) << 12u32) | (u32.from(t[pos + 1usize] & 0x3Fu8) << 6u32) | u32.from(t[pos + 2usize] & 0x3Fu8);

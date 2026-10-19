@@ -29,7 +29,7 @@ mod region_traced;
 import stdio use *;
 import libc;
 
-fn line(label &str, n i64) {
+fn line(label: &str, n: i64) {
   printStr(label);
   printInt(n);
   printStr("\n");
@@ -40,18 +40,18 @@ var @threadlocal nextId = 1i64;
 var @threadlocal trHead = 0usize;
 
 struct Tr is RegionRef, Traced {
-  pub id i64;
-  pub next usize;
-  pub ty *TypeRecord;
+  pub id: i64;
+  pub next: usize;
+  pub ty: *TypeRecord;
 
-  fn alloc(size usize, ty *TypeRecord) *u8 {
+  fn alloc(size: usize, ty: *TypeRecord) *u8 {
     let p = malloc(size);
     mem.writeRaw(p as *Tr, new Tr(nextId, trHead, ty));
     nextId = nextId + 1;
     trHead = p as usize;
     p
   }
-  fn mark(self &uni Tr, slot *usize, perm u32, mode u32) {
+  fn mark(self: &uni Tr, slot: *usize, perm: u32, mode: u32) {
     printStr(" mark "); printInt(id);
     printStr("/"); printInt(i64.from(perm));
     printStr("/"); printInt(i64.from(mode));
@@ -61,14 +61,14 @@ struct Tr is RegionRef, Traced {
 // Traced, with the 'mark' that is handed the header alone, and inline, so each
 // trace expands it where it calls it
 struct Tr0 is RegionRef, Traced {
-  pub id i64;
-  fn alloc(size usize) *u8 {
+  pub id: i64;
+  fn alloc(size: usize) *u8 {
     let p = malloc(size);
     mem.writeRaw(p as *Tr0, new Tr0(nextId + 100));
     nextId = nextId + 1;
     p
   }
-  fn mark(self &uni Tr0, slot *usize) inline {
+  fn mark(self: &uni Tr0, slot: *usize) inline {
     printStr(" mark0 "); printInt(id);
   }
 }
@@ -91,49 +91,49 @@ fn traceAll() {
 }
 
 struct Fin {
-  pub v i32;
-  fn final(self &uni) { line("Fin final ", i64.from(v)); }
+  pub v: i32;
+  fn final(self: &uni) { line("Fin final ", i64.from(v)); }
 }
 
-struct Leaf { pub n i32; }
+struct Leaf { pub n: i32; }
 
 struct Pair {
-  pub left Tr[mut, Leaf];
-  pub right Tr[imm, Leaf];
+  pub left: Tr[mut, Leaf];
+  pub right: Tr[imm, Leaf];
 }
 
 // Nesting: a struct holding a struct and a tuple that hold traced references,
 // beside fields that hold none
 struct Outer {
-  pub a i32;
-  pub p Pair;
-  pub t (i64, Tr[mut, Leaf]);
-  pub z f64;
+  pub a: i32;
+  pub p: Pair;
+  pub t: (i64, Tr[mut, Leaf]);
+  pub z: f64;
 }
 
 // A fixed array of traced references, and of structs holding them
 struct Row {
-  pub cells Array[Tr[mut, Leaf], 3];
-  pub pairs Array[Pair, 2];
+  pub cells: Array[Tr[mut, Leaf], 3];
+  pub pairs: Array[Pair, 2];
 }
 
 enum Maybe {
-  struct Has { pub l Tr[mut, Leaf]; pub k i64; }
-  struct Not { pub k i64; }
-  struct Two { pub a Tr[imm, Leaf]; pub b Tr0[mut, Leaf]; }
+  struct Has { pub l: Tr[mut, Leaf]; pub k: i64; }
+  struct Not { pub k: i64; }
+  struct Two { pub a: Tr[imm, Leaf]; pub b: Tr0[mut, Leaf]; }
 }
 
-struct Box[T] { pub v T; }
+struct Box[T] { pub v: T; }
 
 // A traced object holding a traced reference, an 'Rc' owner and a 'Uni'
 // owner: only the traced one is traced; the other two are its finalizer's
 struct Mixed {
-  pub g Tr[mut, Leaf];
-  pub r Rc[mut, Fin];
-  pub s Uni[Fin];
+  pub g: Tr[mut, Leaf];
+  pub r: Rc[mut, Fin];
+  pub s: Uni[Fin];
 }
 
-fn holds[T](label &str) {
+fn holds[T](label: &str) {
   printStr(label);
   if mem.holdsTraced[T]() { printStr(" holds traced"); } else { printStr(" holds none"); }
   printStr(", flags ");
@@ -142,7 +142,7 @@ fn holds[T](label &str) {
 }
 
 // mem.trace, in line, on a local
-fn traceLocal[T](label &str, v &mut T, mode u32) {
+fn traceLocal[T](label: &str, v: &mut T, mode: u32) {
   printStr(label); printStr(":");
   mem.trace[T](v as *T, mode);
   printStr("\n");
@@ -171,15 +171,15 @@ fn main() {
   traceLocal[Outer]("Outer", &mut ou, 6u32);
   var rw = new Row([l1, new Tr[mut, Leaf](5i32), l1], [pr, new Pair(l1, new Tr[imm, Leaf](6i32))]);
   traceLocal[Row]("Row", &mut rw, 7u32);
-  var m1 Maybe = Maybe.Has(l1, 3);
+  var m1: Maybe = Maybe.Has(l1, 3);
   traceLocal[Maybe]("Maybe.Has", &mut m1, 1u32);
-  var m2 Maybe = Maybe.Not(4);
+  var m2: Maybe = Maybe.Not(4);
   traceLocal[Maybe]("Maybe.Not", &mut m2, 1u32);
-  var m3 Maybe = Maybe.Two(l2, new Tr0[mut, Leaf](7i32));
+  var m3: Maybe = Maybe.Two(l2, new Tr0[mut, Leaf](7i32));
   traceLocal[Maybe]("Maybe.Two", &mut m3, 2u32);
-  var o1 Option[Tr[mut, Leaf]] = Some[Tr[mut, Leaf]](new Tr[mut, Leaf](8i32));
+  var o1: Option[Tr[mut, Leaf]] = Some[Tr[mut, Leaf]](new Tr[mut, Leaf](8i32));
   traceLocal[Option[Tr[mut, Leaf]]]("Some", &mut o1, 3u32);
-  var o2 Option[Tr[mut, Leaf]] = None;
+  var o2: Option[Tr[mut, Leaf]] = None;
   traceLocal[Option[Tr[mut, Leaf]]]("None", &mut o2, 3u32);
   var bx = new Box[Tr[mut, Leaf]](l1);
   traceLocal[Box[Tr[mut, Leaf]]]("Box", &mut bx, 4u32);

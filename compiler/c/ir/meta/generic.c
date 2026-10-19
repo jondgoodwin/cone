@@ -315,7 +315,7 @@ static int genericInferStructLiterals(Nodes *genparms, StructNode *genstruct, Fn
 // same kind, the type parameter taking what that argument points at, so
 // 'p *T' given a '*Fin' infers Fin; an array slice parameter also matches
 // the fixed-size array, or reference to one, that a call converts to a slice;
-// a function signature, 'f &fn(a A) R', matches the referenced function's,
+// a function signature, 'f &fn(a: A) R', matches the referenced function's,
 // each parameter type and then the return type, so '&triangle' infers both;
 // and 'List[T]' matches an instance of List, type argument by type argument.
 // A managed reference type, 'Rc[mut, T]', is a call until type check lowers
@@ -653,7 +653,7 @@ static int genericInferFnParms(TypeCheckState *pstate, Nodes *genparms, FnSigNod
 
     // A type parameter still unsaid may be said by where the call's value goes:
     // the function's return type is matched against the type expected of it. This
-    // comes before a literal takes a default, so 'let n i64 = id(5)' is an i64's
+    // comes before a literal takes a default, so 'let n: i64 = id(5)' is an i64's
     // identity, not an i32's widened.
     genericInferFromExpected(genparms, genfnsig->rettype, expectType, inferredgencall);
 
@@ -983,7 +983,7 @@ static int genericConditionNameRes(NameResState *pstate, INode *cond, Nodes *own
             &subject->namesym->namestr);
         ok = 0;
     }
-    // A function signature, 'F is fn(a &T) i32', is a constraint's to name; in a
+    // A function signature, 'F is fn(a: &T) i32', is a constraint's to name; in a
     // condition on an 'is' entry it is not built
     if (clause->typ->tag == FnSigTag) {
         if (ownparms) {
@@ -1383,7 +1383,7 @@ static INode *genericClauseType(CastNode *clause, Nodes *parms, Nodes *args, Gen
 }
 
 // ---------------------------------------------------------------------------
-// A function signature as a bound, 'F fn(a &T, b &T) i32'. It names an ad hoc
+// A function signature as a bound, 'F: fn(a: &T, b: &T) i32'. It names an ad hoc
 // structural trait: a type meets it by having a pub '()' method whose
 // parameters after the receiver, and whose return type, meet the signature's
 // (parameter names do not matter), and a function type, as a plain function
@@ -2084,8 +2084,8 @@ static void genericCondIsWhy(char *buf, size_t size, INode *arg, StructNode *tra
     }
 }
 
-// Append a method's signature as it is written in a trait: 'push(self &mut, v i64)',
-// 'pop(self &mut) Option[i64]'
+// Append a method's signature as it is written in a trait: 'push(self: &mut, v: i64)',
+// 'pop(self: &mut) Option[i64]'
 static void genericSigCat(char *buf, size_t size, FnDclNode *fn) {
     FnSigNode *sig = (FnSigNode*)fn->vtype;
     size_t used = strlen(buf);
@@ -2098,7 +2098,7 @@ static void genericSigCat(char *buf, size_t size, FnDclNode *fn) {
         used = strlen(buf);
         snprintf(buf + used, size - used, "%s%s", first ? "" : ", ", &parm->namesym->namestr);
         INode *dcl = parm->vtype && isTypeNode(parm->vtype) ? itypeGetTypeDcl(parm->vtype) : NULL;
-        // A receiver is written by its permission alone: 'self &mut'
+        // A receiver is written by its permission alone: 'self: &mut'
         INode *region = dcl && dcl->tag == RefTag && ((RefNode*)dcl)->region && isTypeNode(((RefNode*)dcl)->region)
             ? itypeGetTypeDcl(((RefNode*)dcl)->region) : NULL;
         if (first && (fn->flags & FlagMethFld) && region == borrowRef) {
@@ -2107,13 +2107,13 @@ static void genericSigCat(char *buf, size_t size, FnDclNode *fn) {
             Name *permname = perm ? inodeGetName(perm) : NULL;
             used = strlen(buf);
             if (permname == NULL || perm == (INode*)roPerm)
-                snprintf(buf + used, size - used, " &");
+                snprintf(buf + used, size - used, ": &");
             else
-                snprintf(buf + used, size - used, " &%s", &permname->namestr);
+                snprintf(buf + used, size - used, ": &%s", &permname->namestr);
         }
         else if (parm->vtype) {
             used = strlen(buf);
-            snprintf(buf + used, size - used, " ");
+            snprintf(buf + used, size - used, ": ");
             genericTypeNameCat(buf, size, parm->vtype, 0);
         }
         first = 0;
@@ -2170,7 +2170,7 @@ static int genericLayoutWhy(char *buf, size_t size, StructNode *trait, INode *ty
 // Why a type does not fit a generic trait's instance structurally, into 'buf'
 // (empty if nothing is found to say): the first method the trait requires that
 // the type lacks, or has only with another signature, each spelled as the
-// instance's types come to, so 'pop(self &mut) Option[i64]' where the trait
+// instance's types come to, so 'pop(self: &mut) Option[i64]' where the trait
 // is 'Stack[i64]'. '*layout' is set where the reason is a parameter or result held
 // by value that is not one layout (fnSigLayoutDiff), which has its own code
 static void genericFitWhy(char *buf, size_t size, StructNode *trait, INode *type, int *layout) {
@@ -2409,7 +2409,7 @@ static int genericArgsUnsettled(Nodes *args) {
 // instance lacks (cloneStructNode)
 //
 // A member's clause is read from its arguments' layouts. While an argument is
-// still being laid out -- 'struct Node { kids List[Node]; }' asks for List[Node]
+// still being laid out -- 'struct Node { kids: List[Node]; }' asks for List[Node]
 // inside Node's own layout -- what it comes to is not settled, and answering
 // then would answer by the order the declarations happen to be laid out in
 // ('Node' is Copy until its fields say it moves). So with 'late' given, such a
@@ -3477,7 +3477,7 @@ FnSigNode *genericParmBound(FnDclNode *generic, uint32_t pos, INode **refperm) {
     if (generic->genericinfo == NULL || pos >= gsig->parms->used)
         return NULL;
     INode *ptype = ((VarDclNode*)nodesGet(gsig->parms, pos))->vtype;
-    // A borrowed callable, 'f &<fn(a &T) i32': the signature is written in the parameter
+    // A borrowed callable, 'f &<fn(a: &T) i32': the signature is written in the parameter
     if (ptype && ptype->tag == VirtRefTag && ((RefNode*)ptype)->region == (INode*)borrowRef
         && ((RefNode*)ptype)->vtexp->tag == FnSigTag) {
         RefNode *vref = (RefNode*)ptype;
@@ -3544,7 +3544,7 @@ StructNode *genericParmTraitBound(FnDclNode *generic, uint32_t pos, INode **refp
 
 // A callable given to a generic parameter taken as '&F' may only be read:
 // the instance calls it through a borrow that grants no change. One whose '()'
-// takes 'self &mut' is refused here, at the caller's argument and in the
+// takes 'self: &mut' is refused here, at the caller's argument and in the
 // author's terms, before an instance is made whose body would be refused at
 // the call, far from what was written. Answers 0 once reported.
 int genericCallablePermCheck(FnDclNode *generic, Nodes *valueargs, uint32_t firstparm) {
@@ -3612,7 +3612,7 @@ int genericCallablePermCheck(FnDclNode *generic, Nodes *valueargs, uint32_t firs
             written = ((RefNode*)written)->vtexp;
         char *fname = isNameUseNode(written) ? &((NameUseNode*)written)->namesym->namestr : "F";
         errorMsgNode(arg, ErrorCallablePerm,
-            "%s takes `%s` as `&%s`, so the callable may only read its state; %s changes it (its `%s` takes `self &mut`). Take `%s` as `&mut %s` to let it change, or pass a callable that only reads.",
+            "%s takes `%s` as `&%s`, so the callable may only read its state; %s changes it (its `%s` takes `self: &mut`). Take `%s` as `&mut %s` to let it change, or pass a callable that only reads.",
             &generic->namesym->namestr, &parm->namesym->namestr, fname,
             clinfo ? "this closure" : "this one", &methname->namestr, &parm->namesym->namestr, fname);
         return 0;
@@ -3651,12 +3651,12 @@ FnSigNode *genericClosureSig(TypeCheckState *pstate, FnDclNode *generic, Nodes *
         genericInferType(known, info->parms, ((VarDclNode*)nodesGet(gsig->parms, firstparm + j))->vtype, argtype);
     }
     // A parameter named only in the bound of another the arguments settled, 'T' in
-    // '[T, V RandomAccess[T], F fn(x &T) bool]', is read off that argument's methods
+    // '[T, V: RandomAccess[T], F: fn(x: &T) bool]', is read off that argument's methods
     // as the call's own inference will read it
     genericInferFromBounds(info->parms, generic->where, known);
     if (!genericTypeArgsKnown(bound, info->parms, known->args)) {
         // A return type that names a parameter nothing else has settled ('U' in
-        // 'F fn(x T) U', which a map's closure gives) waits for the closure's body:
+        // 'F: fn(x: T) U', which a map's closure gives) waits for the closure's body:
         // the hint then has the parameters alone, and no return type
         FnSigNode *full = (FnSigNode*)bound;
         if (full->tag != FnSigTag)

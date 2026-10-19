@@ -56,37 +56,37 @@ const NoPiece = 255u8;
 
 // sdf's scalar helpers (private to it), written as it writes them, so the
 // mesh is the same bits as when the mesher lived there
-fn minf(a f32, b f32) f32 { if a < b { a } else { b } }
-fn maxf(a f32, b f32) f32 { if a > b { a } else { b } }
-fn absf(a f32) f32 { libc.fabsf(a) }
-fn clampf(v f32, lo f32, hi f32) f32 { minf(maxf(v, lo), hi) }
-fn sqrtf(a f32) f32 { a.sqrt() }
-fn len3(v Vec3) f32 { sqrtf(v.x * v.x + v.y * v.y + v.z * v.z) }
-fn dot3(a Vec3, b Vec3) f32 { a.x * b.x + a.y * b.y + a.z * b.z }
+fn minf(a: f32, b: f32) f32 { if a < b { a } else { b } }
+fn maxf(a: f32, b: f32) f32 { if a > b { a } else { b } }
+fn absf(a: f32) f32 { libc.fabsf(a) }
+fn clampf(v: f32, lo: f32, hi: f32) f32 { minf(maxf(v, lo), hi) }
+fn sqrtf(a: f32) f32 { a.sqrt() }
+fn len3(v: Vec3) f32 { sqrtf(v.x * v.x + v.y * v.y + v.z * v.z) }
+fn dot3(a: Vec3, b: Vec3) f32 { a.x * b.x + a.y * b.y + a.z * b.z }
 
 // A shape made into a surface net: vertices (one per piece of surface in a
 // crossed cell), their gradient normals, and quads, four vertex indices
 // each, counterclockwise seen from outside. 'toMesh' cuts the quads into
 // triangles; 'toPolyMesh' keeps them, for 'validate'
 pub struct SurfaceNet {
-  pub positions List[Vec3];
-  pub normals List[Vec3];
-  pub quads List[u32];
-  pub cellSize f32;
-  pub cellsX u32;               // the grid's cells along x, y and z
-  pub cellsY u32;
-  pub cellsZ u32;
-  pub evaluations u64;          // how many times the shape was asked its distance, in all
-  pub sampled u64;              // of which at the grid's samples (of (cellsX + 1)(cellsY + 1)(cellsZ + 1))
-  pub blocks u32;               // blocks in the sparse pass
-  pub blocksSkipped u32;        // of which were far from the surface
+  pub positions: List[Vec3];
+  pub normals: List[Vec3];
+  pub quads: List[u32];
+  pub cellSize: f32;
+  pub cellsX: u32;               // the grid's cells along x, y and z
+  pub cellsY: u32;
+  pub cellsZ: u32;
+  pub evaluations: u64;          // how many times the shape was asked its distance, in all
+  pub sampled: u64;              // of which at the grid's samples (of (cellsX + 1)(cellsY + 1)(cellsZ + 1))
+  pub blocks: u32;               // blocks in the sparse pass
+  pub blocksSkipped: u32;        // of which were far from the surface
 
-  pub fn vertexCount(self &) usize { positions.len() }
-  pub fn quadCount(self &) usize { quads.len() / 4usize }
+  pub fn vertexCount(self: &) usize { positions.len() }
+  pub fn quadCount(self: &) usize { quads.len() / 4usize }
 
   // Triangles: each quad cut along its shorter diagonal (the first, 0 to 2,
   // when they are equal), the positions and normals as they are
-  pub fn toMesh(self &) mesh.Mesh {
+  pub fn toMesh(self: &) mesh.Mesh {
     var m = mesh.Mesh.empty();
     var i = 0usize;
     while i < positions.len() {
@@ -116,7 +116,7 @@ pub struct SurfaceNet {
 
   // The quads as a half-edge mesh; a quad it cannot add is reported into
   // 'problems' (none should be)
-  pub fn toPolyMesh(self &, problems &mut List[String]) mesh.PolyMesh {
+  pub fn toPolyMesh(self: &, problems: &mut List[String]) mesh.PolyMesh {
     var counts = List[u32].withCapacity(quads.len() / 4usize);
     var q = 0usize;
     while q < quads.len() {
@@ -134,14 +134,14 @@ pub struct SurfaceNet {
 // and o2 = e >> 1 & 1 along axis (a + 2) % 3.
 
 struct NetTables {
-  pieces List[u8];          // for each of the 256 corner signs: how many pieces
-  edgePiece List[u8];         // 12 per sign: each edge's piece, or NoPiece
+  pieces: List[u8];          // for each of the 256 corner signs: how many pieces
+  edgePiece: List[u8];         // 12 per sign: each edge's piece, or NoPiece
 }
 
-fn cornerBit(c u32, axis u32) u32 { (c >> axis) & 1u32 }
+fn cornerBit(c: u32, axis: u32) u32 { (c >> axis) & 1u32 }
 
 // The edge between two corners that differ along one axis
-fn edgeBetween(c0 u32, c1 u32) u32 {
+fn edgeBetween(c0: u32, c1: u32) u32 {
   let d = c0 ^ c1;
   let a = if d == 1u32 { 0u32 } elif d == 2u32 { 1u32 } else { 2u32 };
   assertDebug(d == 1u32 || d == 2u32 || d == 4u32);
@@ -149,28 +149,28 @@ fn edgeBetween(c0 u32, c1 u32) u32 {
 }
 
 // The lower and upper corners of edge e
-fn edgeStart(e u32) u32 {
+fn edgeStart(e: u32) u32 {
   let a = e / 4u32;
   ((e & 1u32) << ((a + 1u32) % 3u32)) | (((e >> 1u32) & 1u32) << ((a + 2u32) % 3u32))
 }
-fn edgeEnd(e u32) u32 { edgeStart(e) | (1u32 << (e / 4u32)) }
+fn edgeEnd(e: u32) u32 { edgeStart(e) | (1u32 << (e / 4u32)) }
 
 // Corner k (0 to 3, in order round it) of the face across 'axis' at 'side'
-fn faceCorner(axis u32, side u32, k u32) u32 {
+fn faceCorner(axis: u32, side: u32, k: u32) u32 {
   let u = 1u32 << ((axis + 1u32) % 3u32);
   let v = 1u32 << ((axis + 2u32) % 3u32);
   let base = side << axis;
   if k == 0u32 { base } elif k == 1u32 { base | u } elif k == 2u32 { base | u | v } else { base | v }
 }
 
-fn findRoot(parent &List[u32], e u32) u32 {
+fn findRoot(parent: &List[u32], e: u32) u32 {
   var r = e;
   while *parent[usize.from(r)] != r { r = *parent[usize.from(r)]; }
   r
 }
 
 // Join two edges' pieces, the smaller root the root
-fn joinEdges(parent &mut List[u32], a u32, b u32) {
+fn joinEdges(parent: &mut List[u32], a: u32, b: u32) {
   let ra = findRoot(parent, a);
   let rb = findRoot(parent, b);
   if ra < rb { parent.set(usize.from(rb), ra); } elif rb < ra { parent.set(usize.from(ra), rb); }
@@ -248,7 +248,7 @@ fn netTables() NetTables {
 // tetrahedron: the tetrahedron's error is first order in h (0.006 on the
 // unit sphere at h = 0.0125, measured), the central differences' second
 // (under 0.0002)
-fn unitGradient[S Shape](shape &S, p Vec3, h f32) Vec3 {
+fn unitGradient[S: Shape](shape: &S, p: Vec3, h: f32) Vec3 {
   let g = gradient(shape, p, h);
   let len = len3(g);
   if len > 0. { g * (1. / len) } else { new Vec3(1., 0., 0.) }
@@ -257,13 +257,13 @@ fn unitGradient[S Shape](shape &S, p Vec3, h f32) Vec3 {
 // ---- The grid ----
 
 // Grid coordinates along (a, a + 1, a + 2) back to (x, y, z)
-fn axisToXyz(a usize, pa usize, pu usize, pv usize, x &mut usize, y &mut usize, z &mut usize) {
+fn axisToXyz(a: usize, pa: usize, pu: usize, pv: usize, x: &mut usize, y: &mut usize, z: &mut usize) {
   if a == 0usize { *x = pa; *y = pu; *z = pv; }
   elif a == 1usize { *y = pa; *z = pu; *x = pv; }
   else { *z = pa; *x = pu; *y = pv; }
 }
 
-fn pickAxis(a usize, x usize, y usize, z usize) usize {
+fn pickAxis(a: usize, x: usize, y: usize, z: usize) usize {
   if a == 0usize { x } elif a == 1usize { y } else { z }
 }
 
@@ -274,7 +274,7 @@ fn pickAxis(a usize, x usize, y usize, z usize) usize {
 // gradient by its distance (towards the surface), kept inside its cell; 0
 // leaves the average of the crossings. With 'sparse', blocks far from the
 // surface are not sampled (the result is the same)
-pub fn surfaceNet[S Shape](shape &S, box Aabb3, cellSize f32, relax u32, sparse bool) SurfaceNet {
+pub fn surfaceNet[S: Shape](shape: &S, box: Aabb3, cellSize: f32, relax: u32, sparse: bool) SurfaceNet {
   let tables = netTables();
   let cs = cellSize;
   let lo = box.min - new Vec3(cs, cs, cs);
@@ -527,7 +527,7 @@ pub fn surfaceNet[S Shape](shape &S, box Aabb3, cellSize f32, relax u32, sparse 
 // own from the field (none is simplified from another), so each is as
 // true to the shape as its cells allow; 'toMesh' makes each a mesh for a
 // renderer's chain of levels
-pub fn netLevels[S Shape](shape &S, box Aabb3, finest f32, count u32, relax u32) List[SurfaceNet] {
+pub fn netLevels[S: Shape](shape: &S, box: Aabb3, finest: f32, count: u32, relax: u32) List[SurfaceNet] {
   var out = List[SurfaceNet].withCapacity(usize.from(count));
   var cell = finest;
   var i = 0u32;

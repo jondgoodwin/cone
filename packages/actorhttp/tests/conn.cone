@@ -46,32 +46,32 @@ import aio use IoLimits;
 //   /hang              nothing at all
 // ---------------------------------------------------------------------------
 
-let halt Atomic[u32];
+let halt: Atomic[u32];
 
 fn @initpure init() {
   halt = Atomic[u32].of(0u32);
 }
 
 struct Srv {
-  pub drv httpconn.Driver;
-  pub pool Pool;
-  pub accepted u64;
-  pub requests u64;
-  pub reqs List[httpconn.ReqId];
-  pub methods List[Method];
-  pub targets List[String];
-  pub bodies List[String];
-  pub streams List[httpconn.ReqId];
-  pub sent List[u64];
-  pub totals List[u64];
+  pub drv: httpconn.Driver;
+  pub pool: Pool;
+  pub accepted: u64;
+  pub requests: u64;
+  pub reqs: List[httpconn.ReqId];
+  pub methods: List[Method];
+  pub targets: List[String];
+  pub bodies: List[String];
+  pub streams: List[httpconn.ReqId];
+  pub sent: List[u64];
+  pub totals: List[u64];
 }
 
 struct Report {
-  pub accepted u64;
-  pub requests u64;
+  pub accepted: u64;
+  pub requests: u64;
 }
 
-fn reply(sv &mut Srv, req httpconn.ReqId, head bool, status u16, body &Array[u8]) {
+fn reply(sv: &mut Srv, req: httpconn.ReqId, head: bool, status: u16, body: &Array[u8]) {
   sv.drv.respond(req, ResponseHead.make(status), BodyLength.sized(u64.from(body.len)));
   if body.len > 0usize && !head {
     var b = sv.pool.mustTake(body.len);
@@ -81,14 +81,14 @@ fn reply(sv &mut Srv, req httpconn.ReqId, head bool, status u16, body &Array[u8]
   }
 }
 
-fn number(s &str) u64 {
+fn number(s: &str) u64 {
   match collections.parseUInt(s) {
     case let v Some {v}
     case is None[u64] {0u64}
   }
 }
 
-fn dropStream(sv &mut Srv, j usize) {
+fn dropStream(sv: &mut Srv, j: usize) {
   let last = sv.streams.len() - 1usize;
   sv.streams.swap(j, last);
   sv.sent.swap(j, last);
@@ -99,7 +99,7 @@ fn dropStream(sv &mut Srv, j usize) {
 }
 
 // Stream j's next pieces, as many as the connection takes now
-fn pumpStream(sv &mut Srv, j usize) {
+fn pumpStream(sv: &mut Srv, j: usize) {
   let req = *sv.streams[j];
   while *sv.sent[j] < *sv.totals[j] {
     let at = *sv.sent[j];
@@ -122,7 +122,7 @@ fn pumpStream(sv &mut Srv, j usize) {
   dropStream(sv, j);
 }
 
-fn findStream(sv &Srv, req httpconn.ReqId) usize {
+fn findStream(sv: &Srv, req: httpconn.ReqId) usize {
   var j = 0usize;
   while j < sv.streams.len() {
     if *sv.streams[j] == req {return j;}
@@ -131,7 +131,7 @@ fn findStream(sv &Srv, req httpconn.ReqId) usize {
   sv.streams.len()
 }
 
-fn findReq(sv &Srv, req httpconn.ReqId) usize {
+fn findReq(sv: &Srv, req: httpconn.ReqId) usize {
   var k = 0usize;
   while k < sv.reqs.len() {
     if *sv.reqs[k] == req {return k;}
@@ -140,7 +140,7 @@ fn findReq(sv &Srv, req httpconn.ReqId) usize {
   sv.reqs.len()
 }
 
-fn forget(sv &mut Srv, k usize) {
+fn forget(sv: &mut Srv, k: usize) {
   let last = sv.reqs.len() - 1usize;
   sv.reqs.swap(k, last);
   sv.methods.swap(k, last);
@@ -153,7 +153,7 @@ fn forget(sv &mut Srv, k usize) {
 }
 
 // The answer to request k, read whole
-fn answer(sv &mut Srv, k usize) {
+fn answer(sv: &mut Srv, k: usize) {
   let req = *sv.reqs[k];
   let full = sv.targets[k].copy();
   let path = full.view();
@@ -199,7 +199,7 @@ fn answer(sv &mut Srv, k usize) {
   }
 }
 
-fn serveEvent(sv &mut Srv, e &mut httpconn.Event) {
+fn serveEvent(sv: &mut Srv, e: &mut httpconn.Event) {
   let kind = e.kind;
   if kind == httpconn.EventKind.Accepted {
     sv.accepted = sv.accepted + 1u64;
@@ -228,13 +228,13 @@ fn serveEvent(sv &mut Srv, e &mut httpconn.Event) {
 }
 
 // The tls package's test certificates
-fn certs(name &str) Path {
+fn certs(name: &str) Path {
   var p = String.from("../../../../../tls/tests/certs/");
   p.append(name);
   Path.fromString(p)
 }
 
-fn readText(name &str) String {
+fn readText(name: &str) String {
   var out = String.empty();
   let file = certs(name);
   match fs.readFile(&file) {
@@ -246,13 +246,13 @@ fn readText(name &str) String {
 
 // The listener's layers: a TLS server session each, from one context
 struct TlsMaker {
-  server tls.Server;
-  pool Pool;
+  server: tls.Server;
+  pool: Pool;
 
-  pub fn make(self &mut) Uni[httpconn.Layer] {new Uni[tls.Stream](server.stream(pool))}
+  pub fn make(self: &mut) Uni[httpconn.Layer] {new Uni[tls.Stream](server.stream(pool))}
 }
 
-fn tlsServer(cert &str, key &str) tls.Server {
+fn tlsServer(cert: &str, key: &str) tls.Server {
   let certFile = certs(cert);
   let keyFile = certs(key);
   match tls.Server.make(tls.ServerConfig.make(&certFile, &keyFile)) {
@@ -266,9 +266,9 @@ fn tlsServer(cert &str, key &str) tls.Server {
 }
 
 // A listening port: plain if s is None, else through TLS
-fn listenOn(sv &mut Srv, lp &mut Loop, s Option[tls.Server]) u16 {
+fn listenOn(sv: &mut Srv, lp: &mut Loop, s: Option[tls.Server]) u16 {
   var port = 0u16;
-  var r Result[httpconn.ListenerId, iocore.IoError] = Error[httpconn.ListenerId, iocore.IoError](iocore.IoError.cancelled());
+  var r: Result[httpconn.ListenerId, iocore.IoError] = Error[httpconn.ListenerId, iocore.IoError](iocore.IoError.cancelled());
   match s {
     case let t Some {
       r = sv.drv.listenWith(lp, SocketAddr.localhost(0u16), new Uni[TlsMaker](new TlsMaker(t, sv.pool)),
@@ -288,7 +288,7 @@ fn listenOn(sv &mut Srv, lp &mut Loop, s Option[tls.Server]) u16 {
   port
 }
 
-fn serve(portTx Sender[u16]) Report {
+fn serve(portTx: Sender[u16]) Report {
   let pool = Pool.make();
   var lp = Loop.mustMake();
   var sv = new Srv(drv: httpconn.Driver.make(httpconn.Config.make(), pool), pool: pool, accepted: 0u64,
@@ -316,14 +316,14 @@ fn serve(portTx Sender[u16]) Report {
 // What Prober says
 // ---------------------------------------------------------------------------
 
-fn kindWord(e &FetchError) &str {
+fn kindWord(e: &FetchError) &str {
   if e.isCancelled() {"cancelled"}
   elif e.isTimedOut() {"timed out"}
   else {"failed"}
 }
 
 // How an exchange ended: the status and body, or the kind of error (and stage)
-fn say(what &str, r Result[Response, FetchError]) {
+fn say(what: &str, r: Result[Response, FetchError]) {
   printStr(what);
   printStr(": ");
   match &r {
@@ -346,7 +346,7 @@ fn say(what &str, r Result[Response, FetchError]) {
   }
 }
 
-fn note(what &str, yes bool) {
+fn note(what: &str, yes: bool) {
   printStr(what);
   if yes {printStr(": yes\n");} else {printStr(": NO\n");}
 }
@@ -357,7 +357,7 @@ fn note(what &str, yes bool) {
 // TLS stage, unless the connection broke first (the peer's reset read, or the
 // connection already closed when the request came), which on a busy machine
 // happens now and then
-fn refusedTls(r Result[Response, FetchError]) bool {
+fn refusedTls(r: Result[Response, FetchError]) bool {
   match &r {
     case let e &Error {
       let s = e.failure.stage;
@@ -368,13 +368,13 @@ fn refusedTls(r Result[Response, FetchError]) bool {
   }
 }
 
-fn waitedAtLeast(t0 Instant, ms i64) bool {
+fn waitedAtLeast(t0: Instant, ms: i64) bool {
   t0.elapsed() >= Duration.fromMillis(ms)
 }
 
 // The Conn an answer holds, swapped out of it: Conn.none() if it failed, and
 // what a failure says is printed
-fn connOf(what &str, r Result[Conn, FetchError]) Conn {
+fn connOf(what: &str, r: Result[Conn, FetchError]) Conn {
   var res = r;
   var c = Conn.none();
   match &mut res {
@@ -395,16 +395,16 @@ fn connOf(what &str, r Result[Conn, FetchError]) Conn {
   c
 }
 
-fn get(path &str) RequestHead {RequestHead.make("GET", path, "127.0.0.1")}
+fn get(path: &str) RequestHead {RequestHead.make("GET", path, "127.0.0.1")}
 
-fn secure(port u16, path &str) String {
+fn secure(port: u16, path: &str) String {
   var u = String.from("https://127.0.0.1:");
   u.appendUInt(u64.from(port));
   u.append(path);
   u
 }
 
-fn plain(port u16, path &str) String {
+fn plain(port: u16, path: &str) String {
   var u = String.from("http://127.0.0.1:");
   u.appendUInt(u64.from(port));
   u.append(path);
@@ -415,12 +415,12 @@ actor Prober {
   // Runs while run is paused at an await, after a while (the request is on
   // the wire by then, so the cancel has a connection to reset): ends the
   // group's operations
-  pub async do stop(self, g CancelGroup) {
+  pub async do stop(self, g: CancelGroup) {
     thread.sleep(Duration.fromMillis(100i64));
     g.cancel();
   }
 
-  pub async do run(self, port u16, goodPort u16, untrustedPort u16, done OneshotSender[u64]) {
+  pub async do run(self, port: u16, goodPort: u16, untrustedPort: u16, done: OneshotSender[u64]) {
     // A plain connection: two requests on it, one server accept
     let c = connOf("connect", await actorhttp.connect("127.0.0.1", port));
     say("get", await c.request(get("/hello"), String.empty()));
@@ -484,9 +484,9 @@ actor Prober {
 
 // A Conn dropped while a request is in flight on it
 actor Dropper {
-  conn Conn;
+  conn: Conn;
 
-  pub async do connect(self, port u16, ready OneshotSender[u64]) {
+  pub async do connect(self, port: u16, ready: OneshotSender[u64]) {
     conn = connOf("dropper connects", await actorhttp.connect("127.0.0.1", port));
     var r = ready;
     r.send(1u64);
@@ -496,7 +496,7 @@ actor Dropper {
     conn = Conn.none();
   }
 
-  pub async do run(self, done OneshotSender[u64]) {
+  pub async do run(self, done: OneshotSender[u64]) {
     say("conn dropped under a request", await conn.request(get("/hang"), String.empty()));
     var d = done;
     d.send(1u64);
@@ -505,8 +505,8 @@ actor Dropper {
 
 fn main() i32 {
   initAll();
-  var portTx Sender[u16];
-  var portRx Receiver[u16];
+  var portTx: Sender[u16];
+  var portRx: Receiver[u16];
   portTx, portRx = Channel[u16].make();
   let server = thread.start(portTx, &serve);
   var ports = List[u16].empty();
@@ -516,8 +516,8 @@ fn main() i32 {
       case is None[u16] {}
     }
   }
-  var tx OneshotSender[u64];
-  var rx OneshotReceiver[u64];
+  var tx: OneshotSender[u64];
+  var rx: OneshotReceiver[u64];
   tx, rx = Oneshot[u64].make();
   {
     let p = new Prober();
@@ -526,11 +526,11 @@ fn main() i32 {
   rx.recv();
 
   // A Conn dropped under a request
-  var rtx OneshotSender[u64];
-  var rrx OneshotReceiver[u64];
+  var rtx: OneshotSender[u64];
+  var rrx: OneshotReceiver[u64];
   rtx, rrx = Oneshot[u64].make();
-  var tx2 OneshotSender[u64];
-  var rx2 OneshotReceiver[u64];
+  var tx2: OneshotSender[u64];
+  var rx2: OneshotReceiver[u64];
   tx2, rx2 = Oneshot[u64].make();
   {
     let d = new Dropper(Conn.none());

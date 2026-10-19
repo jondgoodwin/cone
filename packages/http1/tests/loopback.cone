@@ -37,12 +37,12 @@ const tokRecv = 2u64;
 const tokSend = 3u64;
 
 // The byte at offset k of small body i, of post j, and of the large body
-fn smallByte(i u64, k u64) u8 {u8.from((i * 31u64 + k * 7u64) % 256u64)}
-fn postByte(j u64, k u64) u8 {u8.from(97u64 + (j * 5u64 + k) % 26u64)}
-fn largeByte(k u64) u8 {u8.from((k / 4096u64 + k * 3u64) & 255u64)}
+fn smallByte(i: u64, k: u64) u8 {u8.from((i * 31u64 + k * 7u64) % 256u64)}
+fn postByte(j: u64, k: u64) u8 {u8.from(97u64 + (j * 5u64 + k) % 26u64)}
+fn largeByte(k: u64) u8 {u8.from((k / 4096u64 + k * 3u64) & 255u64)}
 
-fn smallLen(i u64) u64 {64u64 + i % 64u64}
-fn postLen(j u64) u64 {1024u64 + (j * 4099u64) % 23552u64}
+fn smallLen(i: u64) u64 {64u64 + i % 64u64}
+fn postLen(j: u64) u64 {1024u64 + (j * 4099u64) % 23552u64}
 
 // ---------------------------------------------------------------------------
 // The driver, the same for both sides
@@ -51,16 +51,16 @@ fn postLen(j u64) u64 {1024u64 + (j * 4099u64) % 23552u64}
 // One side of the TCP connection: its socket, its protocol core, and what
 // it has in flight
 struct Side {
-  pub sock Handle;
-  pub conn Connection;
-  pub recvOut bool;
-  pub sendsOut u32;
-  pub sockClosed bool;
+  pub sock: Handle;
+  pub conn: Connection;
+  pub recvOut: bool;
+  pub sendsOut: u32;
+  pub sockClosed: bool;
 }
 
 // Hand the kernel what the core has to send, and a buffer to receive into
 // when the core has credit for one; close the socket once the core is done
-fn drive(lp &mut Loop, s &mut Side, pool &Pool) {
+fn drive(lp: &mut Loop, s: &mut Side, pool: &Pool) {
   if s.sock.isNone() || s.sockClosed {return;}
   let now = Instant.now();
   while s.sendsOut < sendDepth {
@@ -81,11 +81,11 @@ fn drive(lp &mut Loop, s &mut Side, pool &Pool) {
 
 // Whether this side is over: its socket closed and nothing of it in flight
 // (so there is nothing left to wait for)
-fn finished(s &Side) bool {s.sockClosed && !s.recvOut && s.sendsOut == 0u32}
+fn finished(s: &Side) bool {s.sockClosed && !s.recvOut && s.sendsOut == 0u32}
 
 // Wait in the loop until something completes or the core's deadline comes,
 // then hand the core what came, and the time
-fn settle(lp &mut Loop, s &mut Side, out &mut List[Completion]) {
+fn settle(lp: &mut Loop, s: &mut Side, out: &mut List[Completion]) {
   var until = forever();
   match s.conn.pollTimeout() {
     case let d Some {until = d;}
@@ -122,24 +122,24 @@ fn settle(lp &mut Loop, s &mut Side, out &mut List[Completion]) {
 // ---------------------------------------------------------------------------
 
 struct ServerArgs {
-  pub portTx Sender[u16];
+  pub portTx: Sender[u16];
 }
 
 struct ServerReport {
-  pub requests u64;
-  pub failures u64;
-  pub exchanges u64;
+  pub requests: u64;
+  pub failures: u64;
+  pub exchanges: u64;
 }
 
 // What the server is answering
 struct Answer {
-  pub route u32;            // 0 none, 1 a small GET, 2 an echo, 3 the large body
-  pub index u64;
-  pub largeOff u64;
-  pub held IoBuf;           // an echo buffer the send queue refused, to retry
+  pub route: u32;            // 0 none, 1 a small GET, 2 an echo, 3 the large body
+  pub index: u64;
+  pub largeOff: u64;
+  pub held: IoBuf;           // an echo buffer the send queue refused, to retry
 }
 
-fn serve(a ServerArgs) ServerReport {
+fn serve(a: ServerArgs) ServerReport {
   let pool = Pool.make();
   var lp = Loop.mustMake();
   let listener = lp.mustListen(SocketAddr.localhost(0u16));
@@ -165,7 +165,7 @@ fn serve(a ServerArgs) ServerReport {
 }
 
 // Act on the server's events: route each request, stream its answer
-fn respond(c &mut Connection, pool &Pool, ans &mut Answer, rep &mut ServerReport) {
+fn respond(c: &mut Connection, pool: &Pool, ans: &mut Answer, rep: &mut ServerReport) {
   // The large body goes out as the send queue has room
   if ans.route == 3u32 {
     while ans.largeOff < largeSize && c.writeRoom() >= largeChunk {
@@ -277,25 +277,25 @@ fn respond(c &mut Connection, pool &Pool, ans &mut Answer, rep &mut ServerReport
 // ---------------------------------------------------------------------------
 
 struct ClientArgs {
-  pub port u16;
+  pub port: u16;
 }
 
 struct ClientReport {
-  pub getRtt Histogram;
-  pub postRtt Histogram;
-  pub getsDone u64;
-  pub postsDone u64;
-  pub largeBytes u64;
-  pub largeTook Duration;
-  pub checkTook Duration;   // of it, the client's checking every byte
-  pub wrong u64;
-  pub badDates u64;
-  pub failures u64;
-  pub peakHeld usize;
-  pub exchanges u64;
+  pub getRtt: Histogram;
+  pub postRtt: Histogram;
+  pub getsDone: u64;
+  pub postsDone: u64;
+  pub largeBytes: u64;
+  pub largeTook: Duration;
+  pub checkTook: Duration;   // of it, the client's checking every byte
+  pub wrong: u64;
+  pub badDates: u64;
+  pub failures: u64;
+  pub peakHeld: usize;
+  pub exchanges: u64;
 }
 
-fn client(a ClientArgs) ClientReport {
+fn client(a: ClientArgs) ClientReport {
   let pool = Pool.make();
   var lp = Loop.mustMake();
   var rep = new ClientReport(Histogram.make(), Histogram.make(), 0u64, 0u64, 0u64, Duration.zero(),
@@ -441,8 +441,8 @@ fn client(a ClientArgs) ClientReport {
 }
 
 fn main() i32 {
-  var portTx Sender[u16];
-  var portRx Receiver[u16];
+  var portTx: Sender[u16];
+  var portRx: Receiver[u16];
   portTx, portRx = Channel[u16].make();
   let server = thread.start(new ServerArgs(portTx), &serve);
   var port = 0u16;

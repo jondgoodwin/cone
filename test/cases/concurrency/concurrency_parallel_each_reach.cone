@@ -27,44 +27,44 @@ import collector;
 import libc;
 
 struct Holder {
-  shared Rc[imm, u64];
-  n u64;
+  shared: Rc[imm, u64];
+  n: u64;
 }
 
-struct Leaf { pub n u64; }
+struct Leaf { pub n: u64; }
 
 // A region counting its owners without atomic operations, and one that says it may
 struct Counted is RegionRef {
-  cnt usize;
-  fn alloc(size usize) *u8 inline { malloc(size) }
-  fn init(self &new) inline { *self = new Counted(1usize); }
-  fn aliasRef(self &uni Counted) inline { cnt = cnt + 1usize; }
-  fn dealiasRef(self &uni Counted) bool inline { cnt = cnt - 1usize; cnt == 0usize }
+  cnt: usize;
+  fn alloc(size: usize) *u8 inline { malloc(size) }
+  fn init(self: &new) inline { *self = new Counted(1usize); }
+  fn aliasRef(self: &uni Counted) inline { cnt = cnt + 1usize; }
+  fn dealiasRef(self: &uni Counted) bool inline { cnt = cnt - 1usize; cnt == 0usize }
 }
 
 struct Safe is RegionRef, ThreadSafe {
-  cnt usize;
-  fn alloc(size usize) *u8 inline { malloc(size) }
-  fn init(self &new) inline { *self = new Safe(1usize); }
-  fn aliasRef(self &uni Safe) inline { mem.atomicAdd[usize](self as *usize, 1usize, MemOrder.Relaxed); }
-  fn dealiasRef(self &uni Safe) bool inline {
+  cnt: usize;
+  fn alloc(size: usize) *u8 inline { malloc(size) }
+  fn init(self: &new) inline { *self = new Safe(1usize); }
+  fn aliasRef(self: &uni Safe) inline { mem.atomicAdd[usize](self as *usize, 1usize, MemOrder.Relaxed); }
+  fn dealiasRef(self: &uni Safe) bool inline {
     mem.atomicSub[usize](self as *usize, 1usize, MemOrder.AcqRel) == 1usize
   }
 }
 
 // A traced region of the program's own
 struct Mine is RegionRef, Traced {
-  pub id i64;
-  fn alloc(size usize) *u8 {
+  pub id: i64;
+  fn alloc(size: usize) *u8 {
     let p = malloc(size);
     mem.writeRaw(p as *Mine, new Mine(1));
     p
   }
-  fn mark(self &uni Mine, slot *usize) {}
+  fn mark(self: &uni Mine, slot: *usize) {}
 }
 
 // 3D Web's probe d1: a helper that copies an Rc it was lent
-fn grab(r &Rc[imm, u64]) u64 {
+fn grab(r: &Rc[imm, u64]) u64 {
   let c = *r;
   *c
 }
@@ -78,7 +78,7 @@ fn probe() {
 }
 
 // Read through, and lent, are reaching too
-fn reads(shared Rc[imm, u64]) {
+fn reads(shared: Rc[imm, u64]) {
   let total = Atomic[u64].of(0u64);
   parallel each i in 0usize ..< 1000usize {
     total.add(*shared);                            //~ ErrorParReach "reaches 'shared'"
@@ -86,7 +86,7 @@ fn reads(shared Rc[imm, u64]) {
 }
 
 // A field beside the Rc, in a struct made here and in one lent
-fn fields(h &Holder) {
+fn fields(h: &Holder) {
   let holder = new Holder(new Rc[imm, u64](3u64), 10u64);
   let total = Atomic[u64].of(0u64);
   parallel each i in 0usize ..< 1000usize {
@@ -96,7 +96,7 @@ fn fields(h &Holder) {
 }
 
 // An element of an array of them, and the pass's item when the items hold one
-fn elements(arr &Array[Rc[imm, u64], 2]) {
+fn elements(arr: &Array[Rc[imm, u64], 2]) {
   let total = Atomic[u64].of(0u64);
   parallel each i in 0usize ..< 1000usize {
     total.add(*arr[1usize]);                     //~ ErrorParReach "reaches 'arr'"
@@ -121,7 +121,7 @@ fn regions() {
 }
 
 // Traced references: Gc, and a region of the program's own
-fn traced(g Gc[imm, u64], m Mine[imm, Leaf]) {
+fn traced(g: Gc[imm, u64], m: Mine[imm, Leaf]) {
   let total = Atomic[u64].of(0u64);
   parallel each i in 0usize ..< 1000usize {
     total.add(*g);                                 //~ ErrorParReach "reaches 'g'"
@@ -130,14 +130,14 @@ fn traced(g Gc[imm, u64], m Mine[imm, Leaf]) {
 }
 
 // The parallel builder keeps the rule in its header, filter and yield
-fn builders(xs &List[u64], shared Rc[imm, u64]) {
+fn builders(xs: &List[u64], shared: Rc[imm, u64]) {
   let a = new List[u64] <- parallel each x in xs yield *shared;              //~ ErrorParReach "reaches 'shared'"
   let b = new List[u64] <- parallel each x in xs if *shared > 3u64 yield *x;  //~ ErrorParReach "reaches 'shared'"
 }
 
 // Allowed: the contents borrowed before the loop, an Arc, an Atomic, a number, an
 // Rc the pass makes, a borrow of a list of numbers
-fn allowed(shared Rc[imm, u64], xs &List[u64]) {
+fn allowed(shared: Rc[imm, u64], xs: &List[u64]) {
   let sv = &*shared;
   let arc = new Arc[imm, u64](5u64);
   let count = Atomic[u64].of(0u64);

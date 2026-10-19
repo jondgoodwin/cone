@@ -21,35 +21,35 @@ import stdio use *;
 
 var @threadlocal log = 0;
 
-fn show(label &str, n i64) {
+fn show(label: &str, n: i64) {
   printStr(label);
   printStr(" = ");
   printInt(n);
   printStr("\n");
 }
 
-fn note(n i32) {
+fn note(n: i32) {
   log = log * 100 + n;
 }
 
 // -------- a finalizing base, enriched --------
 
 struct File {
-  pub fd i32;
-  fn final(self &uni) {
+  pub fd: i32;
+  fn final(self: &uni) {
     note(fd);
   }
 }
 
 struct LoggedFile extends File {
-  pub fn twice(self &) i32 {
+  pub fn twice(self: &) i32 {
     fd + fd
   }
 }
 
 // Down a chain the copy is copied again, and it is still the base's body
 struct AuditedFile extends LoggedFile {
-  pub fn thrice(self &) i32 {
+  pub fn thrice(self: &) i32 {
     fd * 3
   }
 }
@@ -63,17 +63,17 @@ struct BothFile extends File {
 // enrichment's receiver, which is what shows the body was lowered once, as the
 // enrichment's own method, and not lowered a second time over the base's result.
 struct Tracked {
-  pub id i32;
-  fn code(self &) i32 {
+  pub id: i32;
+  fn code(self: &) i32 {
     id + 1
   }
-  fn final(self &uni) {
+  fn final(self: &uni) {
     note(code());
   }
 }
 
 struct TrackedMore extends Tracked {
-  pub fn two(self &) i32 {
+  pub fn two(self: &) i32 {
     2
   }
 }
@@ -82,24 +82,24 @@ struct TrackedMore extends Tracked {
 // base's methods have been. What is copied then is what the base set aside
 // before they were lowered.
 struct Wrapped[T] extends Tracked {
-  pub fn three(self &) i32 {
+  pub fn three(self: &) i32 {
     3
   }
 }
 
 // And so is an enrichment of a generic's instance
 struct Box[T] {
-  pub v T;
-  fn seven(self &) i32 {
+  pub v: T;
+  fn seven(self: &) i32 {
     7
   }
-  fn final(self &uni) {
+  fn final(self: &uni) {
     note(seven());
   }
 }
 
 struct IntBox extends Box[i32] {
-  pub fn get(self &) i32 {
+  pub fn get(self: &) i32 {
     self.v
   }
 }
@@ -108,22 +108,22 @@ struct IntBox extends Box[i32] {
 // enrichment's generated drop is the base's: its own 'final' first, then the
 // field's. An enrichment cannot add a field of its own, so these are all it has.
 struct Inner {
-  pub id i32;
-  fn final(self &uni) {
+  pub id: i32;
+  fn final(self: &uni) {
     note(id);
   }
 }
 
 struct Outer {
-  pub k i32;
-  pub inner Inner;
-  fn final(self &uni) {
+  pub k: i32;
+  pub inner: Inner;
+  fn final(self: &uni) {
     note(k);
   }
 }
 
 struct RichOuter extends Outer {
-  pub fn sum(self &) i32 {
+  pub fn sum(self: &) i32 {
     k + inner.id
   }
 }
@@ -133,14 +133,14 @@ struct RichOuter extends Outer {
 // 'clone' written against 'Self' produces the enrichment in the copy: 'neg' is
 // the enrichment's alone, so calling it on the result is what shows the type
 struct Pt {
-  pub x i32;
-  pub fn clone(self &) Self {
+  pub x: i32;
+  pub fn clone(self: &) Self {
     new Self(x + 1)
   }
 }
 
 struct Pt2 extends Pt {
-  pub fn neg(self &) i32 {
+  pub fn neg(self: &) i32 {
     0 - x
   }
 }
@@ -148,38 +148,38 @@ struct Pt2 extends Pt {
 // -------- each value's life --------
 
 fn enriched() {
-  let f LoggedFile = new File(11);
+  let f: LoggedFile = new File(11);
 }
 
 fn chained() {
-  let f AuditedFile = new File(12);
+  let f: AuditedFile = new File(12);
 }
 
 fn sibling() {
-  let f BothFile = new File(13);
+  let f: BothFile = new File(13);
 }
 
 // A finalizer makes its type a move type, and the enrichment is one too: the
 // value is moved rather than copied, so it is finalized once, by 'g'
 fn movedWithinName() {
-  let f LoggedFile = new File(14);
+  let f: LoggedFile = new File(14);
   let g = f;
 }
 
 fn privateCall() {
-  let t TrackedMore = new Tracked(40);
+  let t: TrackedMore = new Tracked(40);
 }
 
 fn genericEnrichment() {
-  let t Wrapped[i32] = new Tracked(50);
+  let t: Wrapped[i32] = new Tracked(50);
 }
 
 fn genericBase() {
-  let b IntBox = new Box[i32](5);
+  let b: IntBox = new Box[i32](5);
 }
 
 fn finalThenFields() {
-  let r RichOuter = new Outer(21, new Inner(22));
+  let r: RichOuter = new Outer(21, new Inner(22));
 }
 
 fn main() i32 {
@@ -215,7 +215,7 @@ fn main() i32 {
   finalThenFields();
   show("final-then-fields", log);
 
-  let p Pt2 = new Pt(4);
+  let p: Pt2 = new Pt(4);
   let q = (&p).clone();
   show("clone-is-the-enrichment", (&q).neg());
 

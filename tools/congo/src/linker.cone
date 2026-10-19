@@ -5,7 +5,7 @@
 
 // CONEC names the compiler; else the Cone repository's own build,
 // build/x64-release/conec.exe; else 'conec' on PATH
-fn findConec(repo &Path) Result[Path, String] {
+fn findConec(repo: &Path) Result[Path, String] {
   let named = envOr("CONEC", "");
   if !named.isEmpty() {
     let given = Path.from(named.view());
@@ -31,7 +31,7 @@ fn findConec(repo &Path) Result[Path, String] {
 // A stale conec fails good sources in ways that look like a language
 // regression. The repository's build is checked against its sources, as the
 // test runner checks it.
-fn warnIfStale(repo &Path, conec &Path) {
+fn warnIfStale(repo: &Path, conec: &Path) {
   var stamp = new time.Timestamp();
   match fs.stat(conec) {
     case let s Ok { stamp = s.modified; }
@@ -69,9 +69,9 @@ fn warnIfStale(repo &Path, conec &Path) {
 }
 
 // CONESTD names the runtime library; else it is the one built beside conec
-fn findConestd(conec &Path) Result[Path, String] {
+fn findConestd(conec: &Path) Result[Path, String] {
   let named = envOr("CONESTD", "");
-  var lib Path = "";
+  var lib: Path = "";
   if !named.isEmpty() {
     let given = Path.from(named.view());
     lib = given.normalize();
@@ -88,8 +88,8 @@ fn findConestd(conec &Path) Result[Path, String] {
 }
 
 // Arguments for process.run, from slices
-fn argList(a &str, b &str = "", c &str = "", d &str = "", e &str = "", f &str = "",
-    g &str = "", h &str = "", i &str = "") List[String] {
+fn argList(a: &str, b: &str = "", c: &str = "", d: &str = "", e: &str = "", f: &str = "",
+    g: &str = "", h: &str = "", i: &str = "") List[String] {
   var out = List[String].empty();
   out.push(String.from(a));
   if b.len() > 0usize { out.push(String.from(b)); }
@@ -142,7 +142,7 @@ fn findVcvars() Path {
 
 // Git for Windows ships a coreutils link.exe, which is not a linker at all,
 // so an inherited link.exe is trusted only when it says it is Microsoft's
-fn isMsvcLinker(tool &Path) bool {
+fn isMsvcLinker(tool: &Path) bool {
   let place = native(tool);
   let args = argList(place.view(), "/?");
   match process.run(args.view(), new process.Options(timeout: time.Duration.fromSeconds(20))) {
@@ -161,7 +161,7 @@ fn isMsvcLinker(tool &Path) bool {
 // arm64), or "" when nothing says. Its folder says first,
 // bin\Host<host>\<target>, since that is the linker that would run; else
 // what VsDevCmd.bat and vcvars*.bat record, VSCMD_ARG_TGT_ARCH.
-fn msvcTarget(tool &Path) String {
+fn msvcTarget(tool: &Path) String {
   let folder = tool.parent();
   let above = folder.parent();
   var host = String.from(above.name());
@@ -178,7 +178,7 @@ fn msvcTarget(tool &Path) String {
 
 // A folder as os.path.normcase(os.path.normpath()) spells it, with a '\'
 // after it
-fn normFolder(p &str) String {
+fn normFolder(p: &str) String {
   let given = Path.from(p);
   let normal = given.normalize();
   var n = native(&normal);
@@ -193,7 +193,7 @@ fn normFolder(p &str) String {
 // vcvars64.bat puts its own folders in front of what LIB already lists, and
 // an x86 environment's left behind them would still be searched. (PATH
 // keeps its x86 folders: vcvars64.bat's link.exe is found first.)
-fn withoutVsLibs(changes &mut EnvChanges) {
+fn withoutVsLibs(changes: &mut EnvChanges) {
   if !envHas("LIB") { return; }
   var roots = List[String].empty();
   let names = splitText("VSINSTALLDIR WindowsSdkDir UniversalCRTSdkDir", ' ');
@@ -228,15 +228,15 @@ fn withoutVsLibs(changes &mut EnvChanges) {
 // What running vcvars64.bat said: the batch file, and what it printed,
 // which a failure to find link.exe shows
 struct Vcvars {
-  pub ran bool;
-  pub file Path;
-  pub printed String;
+  pub ran: bool;
+  pub file: Path;
+  pub printed: String;
 }
 
 // vcvars64.bat's environment, taken on by Congo itself (for the link, and
 // undone after it), run in the environment Congo has. It keeps what LIB
 // already lists, behind its own folders.
-fn runVcvars(changes &mut EnvChanges) Result[Vcvars, String] {
+fn runVcvars(changes: &mut EnvChanges) Result[Vcvars, String] {
   let vcvars = findVcvars();
   if vcvars.isEmpty() { return Error[Vcvars, String](String.from("no Visual Studio C++ tools (vcvars64.bat) to link with")); }
   let vcvarsText = native(&vcvars);
@@ -244,7 +244,7 @@ fn runVcvars(changes &mut EnvChanges) Result[Vcvars, String] {
   // batch path. The marker divides what vcvars64.bat prints, in the
   // console's code page, from the environment, which 'cmd /u' prints in
   // UTF-16 so that every value arrives whole.
-  let marker &str = "--congo: vcvars64.bat's environment--";
+  let marker: &str = "--congo: vcvars64.bat's environment--";
   let line = cat("cmd /c \"\"", vcvarsText.view(), "\" && echo ", marker, "&& cmd /u /c set\"");
   var out = String.empty();
   var err = String.empty();
@@ -262,7 +262,7 @@ fn runVcvars(changes &mut EnvChanges) Result[Vcvars, String] {
   var printed = String.empty();
   var variables = String.empty();
   // What the batch file printed, then UTF-16: bytes, not text
-  let raw &Array[u8] = out.view();
+  let raw: &Array[u8] = out.view();
   match out.find(marker) {
     case let at Some {
       printed = consoleText(&raw[..<at]);
@@ -299,7 +299,7 @@ fn runVcvars(changes &mut EnvChanges) Result[Vcvars, String] {
 
 // Why no Microsoft link.exe was found: which vcvars64.bat ran and how its
 // output ended, and the folders searched
-fn noLinker(tool &Path, pathList &str, ran &Vcvars) String {
+fn noLinker(tool: &Path, pathList: &str, ran: &Vcvars) String {
   var text = String.from("no Microsoft link.exe: install Visual Studio's C++ tools (Congo runs vcvars64.bat to find it)");
   if !tool.isEmpty() {
     let place = native(tool);
@@ -309,7 +309,7 @@ fn noLinker(tool &Path, pathList &str, ran &Vcvars) String {
     let trimmed = ran.printed.trim();
     let all = splitLines(trimmed.view());
     let from = if all.len() > 15usize {all.len() - 15usize} else {0usize};
-    var said &str = "(the end of it):";
+    var said: &str = "(the end of it):";
     if all.len() == 0usize { said = "nothing"; }
     let batch = native(&ran.file);
     text <- "\nran ", batch.view(), ", which printed "; text.append(said);
@@ -332,13 +332,13 @@ fn noLinker(tool &Path, pathList &str, ran &Vcvars) String {
 // The linker a build links with: link.exe, conestd, and the environment the
 // link runs in, each variable it sets beyond Congo's own
 struct Linker {
-  pub tool Path;
-  pub conestd Path;
-  pub names List[String];
-  pub values List[String];
+  pub tool: Path;
+  pub conestd: Path;
+  pub names: List[String];
+  pub values: List[String];
 
   // Set the link's environment in Congo's own, in changes, for one link
-  pub fn apply(self &, changes &mut EnvChanges) {
+  pub fn apply(self: &, changes: &mut EnvChanges) {
     var i = 0usize;
     while i < names.len() {
       // Copied: 'changes' holds Lists of Strings, and nothing shows they are not these
@@ -361,7 +361,7 @@ fn noLinkerYet() Linker {
 // are: Visual Studio's default Developer Command Prompt links for x86. The
 // environment is worked out in Congo's own and put back after; the Linker
 // holds what it set, for each link.
-fn findLinker(conestd &Path) Result[Linker, String] {
+fn findLinker(conestd: &Path) Result[Linker, String] {
   var changes = noChanges();
   match linkerIn(&mut changes) {
     case let ok Ok {
@@ -384,7 +384,7 @@ fn findLinker(conestd &Path) Result[Linker, String] {
 }
 
 // link.exe, its environment set in Congo's own, in changes
-fn linkerIn(changes &mut EnvChanges) Result[Path, String] {
+fn linkerIn(changes: &mut EnvChanges) Result[Path, String] {
   var ran = new Vcvars(false, Path.from(""), String.empty());
   let startPath = envOr("PATH", "");
   let inherited = which("link.exe", startPath.view());

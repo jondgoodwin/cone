@@ -37,29 +37,29 @@ import actors;
 import sync use Arc, Mutex;
 import collections use List;
 
-fn say(s &str, n u64) {printStr(s); printStr(" "); printUInt(n); printStr("\n");}
+fn say(s: &str, n: u64) {printStr(s); printStr(" "); printUInt(n); printStr("\n");}
 
 // manual: worked example
 struct Conn {
-  pub url u64;
-  fn final(self &uni) {say("  close", url);}
+  pub url: u64;
+  fn final(self: &uni) {say("  close", url);}
 }
 
 struct Buffer {
-  pub size u64;
+  pub size: u64;
 }
 
 actor Net {
-  pub async do read(self, url u64) Buffer {
+  pub async do read(self, url: u64) Buffer {
     say("  read", url);
     new Buffer(url * 100u64)
   }
 }
 
 actor Fetcher {
-  net Net;
+  net: Net;
 
-  pub async do fetch(self, url u64) Buffer {
+  pub async do fetch(self, url: u64) Buffer {
     let conn = new Conn(url);             // opened
     let buf = await net.read(conn.url);   // conn waits, with the method
     say("  fetched", buf.size);
@@ -68,10 +68,10 @@ actor Fetcher {
 }
 
 actor Page {
-  fetcher Fetcher;
-  body u64;
+  fetcher: Fetcher;
+  body: u64;
 
-  pub async do load(self, u u64) {
+  pub async do load(self, u: u64) {
     say("load", u);
     let b = await fetcher.fetch(u);       // pauses here
     body = b.size;                        // and resumes when the reply comes
@@ -82,8 +82,8 @@ actor Page {
 
 // manual: one scope
 struct Note {
-  pub n u64;
-  fn final(self &uni) {say("  drop", n);}
+  pub n: u64;
+  fn final(self: &uni) {say("  drop", n);}
 }
 
 actor Clock {
@@ -91,7 +91,7 @@ actor Clock {
 }
 
 actor Logger {
-  clock Clock;
+  clock: Clock;
 
   pub async do log(self) u64 {
     let first = new Note(1u64);
@@ -104,10 +104,10 @@ actor Logger {
 // manual: end
 
 // manual: static
-let limit u64 = 100u64;
+let limit: u64 = 100u64;
 
 actor Gauge {
-  clock Clock;
+  clock: Clock;
 
   pub async do check(self) u64 {
     let max = &limit;                     // a borrow of a global: 'static
@@ -118,11 +118,11 @@ actor Gauge {
 // manual: end
 
 // manual: lock
-struct Count {pub n u64;}
+struct Count {pub n: u64;}
 
 actor Tally {
-  count Arc[Mutex, Count];
-  clock Clock;
+  count: Arc[Mutex, Count];
+  clock: Clock;
 
   pub async do bump(self) u64 {
     let c = &mut *count;                  // takes the lock
@@ -136,9 +136,9 @@ actor Tally {
 
 // manual: selfactor
 actor Doubler {
-  pub async do double(self, n u64) u64 {n * 2u64}
+  pub async do double(self, n: u64) u64 {n * 2u64}
 
-  pub async do twice(self, n u64) u64 {
+  pub async do twice(self, n: u64) u64 {
     let once = await selfactor.double(n);  // a message to itself
     let again = await selfactor.double(once);
     again
@@ -148,10 +148,10 @@ actor Doubler {
 
 // manual: one reply
 actor Cache {
-  net Net;
-  hot u64;
+  net: Net;
+  hot: u64;
 
-  pub async do get(self, url u64) u64 {
+  pub async do get(self, url: u64) u64 {
     if url == hot {
       return 1u64;                        // answered here, at once
     }
@@ -163,9 +163,9 @@ actor Cache {
 
 // manual: loop
 actor Sizes {
-  net Net;
+  net: Net;
 
-  pub async do total(self, n u64) u64 {
+  pub async do total(self, n: u64) u64 {
     var sum = 0u64;
     each i in 0u64 ..< n {
       let b = await net.read(i);          // one request at a time
@@ -182,11 +182,11 @@ actor Counter {
 }
 
 actor Shelf {
-  counter Counter;
-  slots Array[u64, 4];
-  total u64;
+  counter: Counter;
+  slots: Array[u64, 4];
+  total: u64;
 
-  fn put(self, n u64) {total = total + n;}
+  fn put(self, n: u64) {total = total + n;}
 
   pub async do stock(self) u64 {
     slots[await counter.next()] = 7u64;   // slots is reached after the 'await'
@@ -199,13 +199,13 @@ actor Shelf {
 
 // manual: several awaits in a place
 actor Lane {
-  pub async do pick(self, n u64) u64 {n}
+  pub async do pick(self, n: u64) u64 {n}
 }
 
 actor Board {
-  lane Lane;
-  cells Array[Array[u64, 3], 2];
-  marks List[u64];
+  lane: Lane;
+  cells: Array[Array[u64, 3], 2];
+  marks: List[u64];
 
   pub async do fill(self) u64 {
     cells[await lane.pick(1u64)][await lane.pick(2u64)] = 5u64;                 // cells[1][2]
@@ -224,7 +224,7 @@ actor Board {
 // were it still held, Locker would wait for it, and Mixed for Locker, for
 // good. 7 + 42, then 8 once Locker has added its 1.
 actor Locker {
-  count Arc[Mutex, Count];
+  count: Arc[Mutex, Count];
 
   pub async do now(self) u64 {
     (&mut *count).n += 1u64;
@@ -233,8 +233,8 @@ actor Locker {
 }
 
 actor Mixed {
-  count Arc[Mutex, Count];
-  locker Locker;
+  count: Arc[Mutex, Count];
+  locker: Locker;
 
   pub async do read(self) u64 {
     (&mut *count).n = 7u64;
@@ -244,16 +244,16 @@ actor Mixed {
 }
 
 actor Driver {
-  mixed Mixed;
-  page Page;
-  logger Logger;
-  gauge Gauge;
-  tally Tally;
-  doubler Doubler;
-  cache Cache;
-  sizes Sizes;
-  shelf Shelf;
-  board Board;
+  mixed: Mixed;
+  page: Page;
+  logger: Logger;
+  gauge: Gauge;
+  tally: Tally;
+  doubler: Doubler;
+  cache: Cache;
+  sizes: Sizes;
+  shelf: Shelf;
+  board: Board;
 
   pub async do go(self) {
     say("log", await logger.log());

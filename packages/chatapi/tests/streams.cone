@@ -36,7 +36,7 @@ fn theKey() &str {"sk-test-chatapi-0002"}
 // The mock server
 // ---------------------------------------------------------------------------
 
-fn textOf(j &json.Json) String {
+fn textOf(j: &json.Json) String {
   match j.toText() {
     case var t Ok {
       var s = String.empty();
@@ -49,7 +49,7 @@ fn textOf(j &json.Json) String {
 
 // One chunk of a stream. role and content are left out when empty strings are
 // not meant: hasContent says the delta has a "content" member
-fn chunkJson(role &str, hasContent bool, content &str, finish &str) String {
+fn chunkJson(role: &str, hasContent: bool, content: &str, finish: &str) String {
   var delta = json.Json.newObject();
   if role.len() > 0usize {delta.set("role", json.Json.fromText(role));}
   if hasContent {delta.set("content", json.Json.fromText(content));}
@@ -75,7 +75,7 @@ fn usageChunk() String {
 }
 
 // The chunks of the standard reply 'Hello world', each as the data of an event
-fn standardChunks(withUsage bool) List[String] {
+fn standardChunks(withUsage: bool) List[String] {
   var l = List[String].empty();
   l.push(chunkJson("assistant", true, "", ""));
   l.push(chunkJson("", true, "Hel", ""));
@@ -87,7 +87,7 @@ fn standardChunks(withUsage bool) List[String] {
   l
 }
 
-fn errorJson(message &str, code &str) String {
+fn errorJson(message: &str, code: &str) String {
   var inner = json.Json.newObject();
   inner.set("message", json.Json.fromText(message));
   inner.set("type", json.Json.fromText("invalid_request_error"));
@@ -98,7 +98,7 @@ fn errorJson(message &str, code &str) String {
 }
 
 // The stream as bytes, one event to a block, the line ends as given
-fn streamBytes(chunks &List[String], eol &str, done bool) String {
+fn streamBytes(chunks: &List[String], eol: &str, done: bool) String {
   var s = String.empty();
   each c in chunks {
     s.append("data: ");
@@ -116,10 +116,10 @@ fn streamBytes(chunks &List[String], eol &str, done bool) String {
 
 // Answers one request
 actor Handler {
-  ex Exchange;
-  left Sender[u64];
+  ex: Exchange;
+  left: Sender[u64];
 
-  fn answer(self, status u16, body &str) {
+  fn answer(self, status: u16, body: &str) {
     var head = ResponseHead.make(status);
     head.headers.add("Content-Type", "application/json");
     ex.respond(head, String.from(body));
@@ -138,7 +138,7 @@ actor Handler {
       self.answer(401u16, errorJson("Incorrect API key provided.", "invalid_api_key").view());
       return;
     }
-    var doc json.Json = json.Json.Null;
+    var doc: json.Json = json.Json.Null;
     match json.parse(ex.request.body.view()) {
       case var ok Ok {doc <=> ok;}
       case let e Error {
@@ -265,7 +265,7 @@ actor Handler {
 
 // A stream that says nothing, kept so it is not dropped
 actor Silent {
-  ex Exchange;
+  ex: Exchange;
 
   pub async do start(self) {
     ex.startEvents();
@@ -273,11 +273,11 @@ actor Silent {
 }
 
 actor Acceptor {
-  server Server;
-  left Sender[u64];
-  held List[Silent];
+  server: Server;
+  left: Sender[u64];
+  held: List[Silent];
 
-  pub async do open(self, ports Sender[u16]) {
+  pub async do open(self, ports: Sender[u16]) {
     let r = await actorhttp.listen(SocketAddr.localhost(0u16), ServerConfig.make());
     var res = r;
     match &mut res {
@@ -301,7 +301,7 @@ actor Acceptor {
     server.close();
   }
 
-  fn route(self, ex Exchange) {
+  fn route(self, ex: Exchange) {
     if ex.request.body.view().contains("\"model\":\"silent\"") {
       let s = new Silent(ex);
       s.start();
@@ -317,17 +317,17 @@ actor Acceptor {
 // The client's side
 // ---------------------------------------------------------------------------
 
-fn baseUrl(port u16) String {
+fn baseUrl(port: u16) String {
   var u = String.from("http://127.0.0.1:");
   u.appendUInt(u64.from(port));
   u.append("/v1");
   u
 }
 
-fn yes(b bool) &str {if b {"yes"} else {"NO"}}
+fn yes(b: bool) &str {if b {"yes"} else {"NO"}}
 
 // Text on one line: line feeds as '/'
-fn flat(s &str) String {
+fn flat(s: &str) String {
   var out = String.empty();
   let b = s as &Array[u8];
   var k = 0usize;
@@ -340,7 +340,7 @@ fn flat(s &str) String {
   out
 }
 
-fn showError(e &ChatError) {
+fn showError(e: &ChatError) {
   printStr("  error ");
   // The json package's own words, where it says where and why, are not pinned here
   let text = e.message();
@@ -359,7 +359,7 @@ fn showError(e &ChatError) {
   printStr("\n");
 }
 
-fn showDelta(d &Delta) {
+fn showDelta(d: &Delta) {
   printStr("  delta");
   if d.role.len() > 0usize {
     printStr(" role=");
@@ -388,7 +388,7 @@ fn showDelta(d &Delta) {
   printStr("\n");
 }
 
-fn request(model &str, usage bool) ChatRequest {
+fn request(model: &str, usage: bool) ChatRequest {
   var r = ChatRequest.make(model);
   r.addUser("hi");
   r.includeUsage = usage;
@@ -396,10 +396,10 @@ fn request(model &str, usage bool) ChatRequest {
 }
 
 actor Reader {
-  chat Chat;
+  chat: Chat;
 
   // Open a stream and print every delta, then how it ended
-  pub async do read(self, label String, model String, usage bool, ms i64, done OneshotSender[u64]) {
+  pub async do read(self, label: String, model: String, usage: bool, ms: i64, done: OneshotSender[u64]) {
     printStr(label.view());
     printStr(":\n");
     var lim = IoLimits.none();
@@ -452,7 +452,7 @@ actor Reader {
   }
 
   // A silent stream, ended by its cancel group's cancel (from main)
-  pub async do cancelled(self, group CancelGroup, done OneshotSender[u64]) {
+  pub async do cancelled(self, group: CancelGroup, done: OneshotSender[u64]) {
     printStr("silent, ended by a cancel:\n");
     let opened = await chat.streamIn(request("silent", false), IoLimits.within(group));
     match opened {
@@ -473,7 +473,7 @@ actor Reader {
   }
 
   // The rest of a stream gathered into one reply
-  pub async do whole(self, done OneshotSender[u64]) {
+  pub async do whole(self, done: OneshotSender[u64]) {
     printStr("collect:\n");
     let opened = await chat.stream(request("basic", true));
     match opened {
@@ -508,7 +508,7 @@ actor Reader {
   }
 
   // Reads two deltas of an endless stream and goes: the ChatStream is dropped
-  pub async do leave(self, done OneshotSender[u64]) {
+  pub async do leave(self, done: OneshotSender[u64]) {
     {
       let opened = await chat.stream(request("endless", false));
       match opened {
@@ -533,16 +533,16 @@ actor Reader {
   }
 }
 
-fn take[T](rx &mut Receiver[T], dflt T) T {
+fn take[T](rx: &mut Receiver[T], dflt: T) T {
   match rx.recv() {
     case let v Some {v}
     else {dflt}
   }
 }
 
-fn run1(r &Reader, label &str, model &str, usage bool, ms i64) {
-  var tx OneshotSender[u64];
-  var rx OneshotReceiver[u64];
+fn run1(r: &Reader, label: &str, model: &str, usage: bool, ms: i64) {
+  var tx: OneshotSender[u64];
+  var rx: OneshotReceiver[u64];
   tx, rx = Oneshot[u64].make();
   r.read(String.from(label), String.from(model), usage, ms, tx);
   rx.recv();
@@ -552,11 +552,11 @@ fn main() i32 {
   initAll();
   env.set("CHATAPI_TEST_KEY", theKey());
   env.set("CHATAPI_TEST_WRONGKEY", "sk-wrong-key-9999");
-  var ptx Sender[u16];
-  var prx Receiver[u16];
+  var ptx: Sender[u16];
+  var prx: Receiver[u16];
   ptx, prx = Channel[u16].make();
-  var ltx Sender[u64];
-  var lrx Receiver[u64];
+  var ltx: Sender[u64];
+  var lrx: Receiver[u64];
   ltx, lrx = Channel[u64].make();
   {
     let acceptor = new Acceptor(Server.none(), ltx.clone(), List[Silent].empty());
@@ -579,8 +579,8 @@ fn main() i32 {
 
     {
       let group = CancelGroup.make();
-      var tx OneshotSender[u64];
-      var rx OneshotReceiver[u64];
+      var tx: OneshotSender[u64];
+      var rx: OneshotReceiver[u64];
       tx, rx = Oneshot[u64].make();
       reader.cancelled(group, tx);
       thread.sleep(Duration.fromMillis(400i64));
@@ -589,8 +589,8 @@ fn main() i32 {
     }
 
     {
-      var tx OneshotSender[u64];
-      var rx OneshotReceiver[u64];
+      var tx: OneshotSender[u64];
+      var rx: OneshotReceiver[u64];
       tx, rx = Oneshot[u64].make();
       reader.whole(tx);
       rx.recv();
@@ -604,8 +604,8 @@ fn main() i32 {
 
     // A reader that leaves: the server finds out by a write answering Closed
     {
-      var tx OneshotSender[u64];
-      var rx OneshotReceiver[u64];
+      var tx: OneshotSender[u64];
+      var rx: OneshotReceiver[u64];
       tx, rx = Oneshot[u64].make();
       reader.leave(tx);
       rx.recv();

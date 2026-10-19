@@ -7,7 +7,7 @@ const WORK_USAGE = BUFFER_USAGE_STORAGE | BUFFER_USAGE_COPY_DST | BUFFER_USAGE_C
 // A buffer holding 'words', 32-bit numbers (u32, i32 or f32 bits), in the
 // GPU's own memory. The words are copied now, and into the buffer by the GPU
 // ahead of whatever is submitted next. Check 'isValid'.
-pub fn upload(device &mut Device, words &Array[u32]) Buffer {
+pub fn upload(device: &mut Device, words: &Array[u32]) Buffer {
   let bytes = u64.from(words.len) * 4u64;
   let buffer = device.createBuffer(if bytes == 0u64 { 4u64 } else { bytes }, WORK_USAGE);
   if bytes > 0u64 && buffer.isValid() { device.queue.writeBuffer(&buffer, 0u64, &words[0usize] as *u8, bytes); }
@@ -17,7 +17,7 @@ pub fn upload(device &mut Device, words &Array[u32]) Buffer {
 // A buffer holding one 'value', a struct of 32-bit numbers (or fixed arrays
 // of them): what a kernel's by-value struct parameter is bound to, a small
 // read-only storage buffer. Check 'isValid'.
-pub fn uploadValue[T](device &mut Device, value &T) Buffer {
+pub fn uploadValue[T](device: &mut Device, value: &T) Buffer {
   let bytes = u64.from(mem.sizeof[T]());
   let buffer = device.createBuffer(if bytes == 0u64 { 4u64 } else { bytes }, WORK_USAGE);
   if bytes > 0u64 && buffer.isValid() { device.queue.writeBuffer(&buffer, 0u64, value as *u8, bytes); }
@@ -28,7 +28,7 @@ pub fn uploadValue[T](device &mut Device, value &T) Buffer {
 // zeros are written by the GPU ('queue.clearBuffer', a fill command), ahead
 // of whatever is submitted next, as an upload is; none cross from the CPU.
 // Check 'isValid'.
-pub fn zeroed(device &mut Device, count usize) Buffer {
+pub fn zeroed(device: &mut Device, count: usize) Buffer {
   let bytes = u64.from(count) * 4u64;
   let buffer = device.createBuffer(if bytes == 0u64 { 4u64 } else { bytes }, WORK_USAGE);
   if bytes > 0u64 && buffer.isValid() { device.queue.clearBuffer(&buffer, 0u64, bytes); }
@@ -37,7 +37,7 @@ pub fn zeroed(device &mut Device, count usize) Buffer {
 
 // The words of a buffer the CPU reads (a job's readback, once its job is
 // complete), copied out in one block; none for a buffer the CPU does not map
-pub fn wordsOf(buffer &Buffer) List[u32] {
+pub fn wordsOf(buffer: &Buffer) List[u32] {
   let p = buffer.mappedRange();
   let n = usize.from(buffer.size / 4u64);
   if (p as usize) == 0usize || n == 0usize { return List[u32].withCapacity(n); }
@@ -54,16 +54,16 @@ pub fn wordsOf(buffer &Buffer) List[u32] {
 // recorded and submitted within one frame of the device's (it records into
 // the frame's commands); one submitted in a later frame is refused.
 pub struct Job {
-  buffers List[Buffer];
-  groups List[BindGroup];      // one a dispatch, kept until the GPU is done
-  encoder CommandEncoder;
-  frame u64;                   // the device frame it records into
-  pub failed bool;             // a request was refused: it completes, not ok, without running
-  dispatches u32;              // recorded so far
-  checks List[ErrorCheck];     // a Cone kernel's dispatch: its error buffer, read after
+  buffers: List[Buffer];
+  groups: List[BindGroup];      // one a dispatch, kept until the GPU is done
+  encoder: CommandEncoder;
+  frame: u64;                   // the device frame it records into
+  pub failed: bool;             // a request was refused: it completes, not ok, without running
+  dispatches: u32;              // recorded so far
+  checks: List[ErrorCheck];     // a Cone kernel's dispatch: its error buffer, read after
 
   // An empty job, recording into the device's current frame
-  pub fn make(device &mut Device) Job {
+  pub fn make(device: &mut Device) Job {
     let encoder = device.createCommandEncoder();
     new Job(List[Buffer].empty(), List[BindGroup].empty(), encoder, device.frameNumber, false, 0u32,
       List[ErrorCheck].empty())
@@ -71,13 +71,13 @@ pub struct Job {
 
   // Move 'buffer' into the job: its slot, by which dispatches bind it and
   // the job's Completion hands it back
-  pub fn give(self &mut, buffer Buffer) u32 {
+  pub fn give(self: &mut, buffer: Buffer) u32 {
     buffers.push(buffer);
     u32.from(buffers.len() - 1usize)
   }
 
   // How many buffers it holds
-  pub fn count(self &) u32 { u32.from(buffers.len()) }
+  pub fn count(self: &) u32 { u32.from(buffers.len()) }
 
   // Run 'kernel' in 'x' by 'y' by 'z' workgroups, binding i the buffer in
   // slot 'slots[i]'. It sees what the job's earlier dispatches wrote. Refused
@@ -86,7 +86,7 @@ pub struct Job {
   // A Cone kernel's dispatch is given an error buffer of its own, zeroed,
   // bound after the slots, and copied after the dispatch into one the CPU
   // reads when the job is complete (see the Completion's 'failures').
-  pub fn dispatch(self &mut, device &mut Device, kernel &Kernel, slots &Array[u32], x u32, y u32 = 1u32, z u32 = 1u32) bool {
+  pub fn dispatch(self: &mut, device: &mut Device, kernel: &Kernel, slots: &Array[u32], x: u32, y: u32 = 1u32, z: u32 = 1u32) bool {
     if !kernel.isValid() {
       return self.refuse("dispatch: the kernel is not valid");
     }
@@ -161,7 +161,7 @@ pub struct Job {
   // the Completion's 'words') gives once the job is complete. Refused (and
   // the job failed) for an empty slot or a buffer not made with
   // BUFFER_USAGE_COPY_SRC; the answer is then the slot count.
-  pub fn readback(self &mut, device &mut Device, slot u32) u32 {
+  pub fn readback(self: &mut, device: &mut Device, slot: u32) u32 {
     let s = usize.from(slot);
     if s >= buffers.len() || !buffers[s].isValid() || (buffers[s].usage & BUFFER_USAGE_COPY_SRC) == 0u32 {
       self.refuse("readback: the slot holds no buffer, or one not made with BUFFER_USAGE_COPY_SRC");
@@ -173,7 +173,7 @@ pub struct Job {
     self.give(target)
   }
 
-  fn refuse(self &mut, msg &str) bool {
+  fn refuse(self: &mut, msg: &str) bool {
     fail(msg);
     failed = true;
     false
@@ -186,16 +186,16 @@ pub struct Job {
 // it from, and what a failure's report names (the kernel, the dispatch's
 // place in its job, the module's source files)
 struct ErrorCheck {
-  errors Buffer;
-  read Buffer;
-  kernel String;
-  dispatch u32;
-  fileIds List[u32];
-  fileNames List[String];
-  ran bool;                    // recorded: its copy is read when the job is done
+  errors: Buffer;
+  read: Buffer;
+  kernel: String;
+  dispatch: u32;
+  fileIds: List[u32];
+  fileNames: List[String];
+  ran: bool;                    // recorded: its copy is read when the job is done
 }
 
-fn errorCheck(errors Buffer, read Buffer, kernel &Kernel, dispatch u32) ErrorCheck {
+fn errorCheck(errors: Buffer, read: Buffer, kernel: &Kernel, dispatch: u32) ErrorCheck {
   var names = List[String].empty();
   var ids = List[u32].empty();
   var k = 0usize;
@@ -209,12 +209,12 @@ fn errorCheck(errors Buffer, read Buffer, kernel &Kernel, dispatch u32) ErrorChe
 
 // Where the CPU reads a dispatch's error words, as a number (handed to the
 // watcher thread), or 0 if it was not recorded
-fn errorWordsAt(c &ErrorCheck) usize {
+fn errorWordsAt(c: &ErrorCheck) usize {
   if c.ran { c.read.mappedRange() as usize } else { 0usize }
 }
 
 // Whether the error words at 'at' (errorWordsAt) say an invocation failed
-fn errorsAt(at usize) bool {
+fn errorsAt(at: usize) bool {
   at != 0usize && *(at as *u32) != 0u32
 }
 
@@ -226,18 +226,18 @@ fn errorsAt(at usize) bool {
 // in which invocation (its globalId), and the index out of bounds or the
 // range's end (0 for a panic)
 pub struct KernelFailure {
-  pub kernel String;
-  pub dispatch u32;
-  pub count u32;
-  pub kind u32;
-  pub fileId u32;
-  pub file String;
-  pub line u32;
-  pub invocation Array[u32, 3];
-  pub index u32;
+  pub kernel: String;
+  pub dispatch: u32;
+  pub count: u32;
+  pub kind: u32;
+  pub fileId: u32;
+  pub file: String;
+  pub line: u32;
+  pub invocation: Array[u32, 3];
+  pub index: u32;
 
   // What failed, in words
-  pub fn kindName(self &) &str {
+  pub fn kindName(self: &) &str {
     if kind == FAILED_INDEX { "index out of bounds" }
     elif kind == FAILED_RANGE { "slice range out of bounds" }
     elif kind == FAILED_PANIC { "panic" }
@@ -248,7 +248,7 @@ pub struct KernelFailure {
   // The failure as one line: "kernel 'oob' (dispatch 0) failed: index out
   // of bounds at kernels.cone:57, invocation (37, 0, 0), index 1037; 1
   // invocation failed"
-  pub fn message(self &) String {
+  pub fn message(self: &) String {
     var m = String.from("kernel '");
     m <- kernel.view();
     m <- "' (dispatch ";
@@ -292,7 +292,7 @@ pub struct KernelFailure {
 }
 
 // The failure dispatch 'c' recorded, if any, appended to 'out' and reported
-fn readFailure(c &ErrorCheck, out &mut List[KernelFailure]) {
+fn readFailure(c: &ErrorCheck, out: &mut List[KernelFailure]) {
   let at = errorWordsAt(c);
   if !errorsAt(at) { return; }
   let w = mem.sliceFromParts[u32](at as *u32, usize.from(ERROR_BUFFER_WORDS));

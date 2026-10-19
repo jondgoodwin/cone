@@ -25,7 +25,7 @@ const tokServer = 1000u64;
 const tokConn = 1u64;
 
 // The server's pages: literals, so the result holds no borrow of the target
-fn pageText(target &str) &'static Array[u8] {
+fn pageText(target: &str) &'static Array[u8] {
   if target == "/" {"Hello from Cone's HTTP/1.1 driver.\n"}
   elif target == "/about" {"A server and a client on one completion loop.\n"}
   elif target == "/time" {"The client prints each request's timing.\n"}
@@ -33,7 +33,7 @@ fn pageText(target &str) &'static Array[u8] {
 }
 
 // Answer a request read by a server's driver
-fn answer(drv &mut Driver, e &mut Event, pool &Pool) {
+fn answer(drv: &mut Driver, e: &mut Event, pool: &Pool) {
   let body = pageText(e.request.target.view());
   if body.len == 0usize {
     drv.respond(e.req, ResponseHead.make(404u16), BodyLength.empty());
@@ -48,7 +48,7 @@ fn answer(drv &mut Driver, e &mut Event, pool &Pool) {
   drv.finish(e.req);
 }
 
-fn listenOn(drv &mut Driver, lp &mut Loop) u16 {
+fn listenOn(drv: &mut Driver, lp: &mut Loop) u16 {
   var port = 0u16;
   match drv.listen(lp, SocketAddr.localhost(0u16), Sink.Here(tokServer)) {
     case let r Ok {
@@ -62,7 +62,7 @@ fn listenOn(drv &mut Driver, lp &mut Loop) u16 {
   port
 }
 
-fn printTiming(t &Timing) {
+fn printTiming(t: &Timing) {
   printStr("  (asked to first byte ");
   printUInt(u64.from((t.firstByte - t.submitted).micros()));
   printStr(" us, to done ");
@@ -72,7 +72,7 @@ fn printTiming(t &Timing) {
 
 // Fetch each target in turn on one connection, printing what came; the
 // driver may be serving too (serveHere)
-fn fetchAll(drv &mut Driver, lp &mut Loop, pool &Pool, port u16, targets &Array[&str], serveHere bool) {
+fn fetchAll(drv: &mut Driver, lp: &mut Loop, pool: &Pool, port: u16, targets: &Array[&str], serveHere: bool) {
   let conn = drv.connect(lp, "127.0.0.1", port, Sink.Here(tokConn));
   var next = 0usize;
   var inFlight = false;
@@ -151,11 +151,11 @@ fn fetchAll(drv &mut Driver, lp &mut Loop, pool &Pool, port u16, targets &Array[
 // ---------------------------------------------------------------------------
 
 struct ServerArgs {
-  pub portTx Sender[u16];
-  pub stop Arc[imm, Atomic[bool]];
+  pub portTx: Sender[u16];
+  pub stop: Arc[imm, Atomic[bool]];
 }
 
-fn serve(a ServerArgs) u64 {
+fn serve(a: ServerArgs) u64 {
   let pool = Pool.make();
   var lp = Loop.mustMake();
   var drv = Driver.make(Config.make(), pool);
@@ -180,13 +180,13 @@ fn serve(a ServerArgs) u64 {
 }
 
 // The final answers a driver has given
-fn finals(d &Driver) u64 {
+fn finals(d: &Driver) u64 {
   let s = d.stats();
   s.done + s.failed + s.cancelled + s.timedOut
 }
 
 // A thread that prints a request's events as they come over a channel
-fn printer(rx Receiver[Event]) u64 {
+fn printer(rx: Receiver[Event]) u64 {
   var r = rx;
   var n = 0u64;
   while true {
@@ -213,7 +213,7 @@ fn printer(rx Receiver[Event]) u64 {
 }
 
 fn main() {
-  let targets Array[&str, 3] =["/", "/about", "/time"];
+  let targets: Array[&str, 3] =["/", "/about", "/time"];
   printStr("== one thread: server and client on one Loop ==\n");
   {
     let pool = Pool.make();
@@ -225,8 +225,8 @@ fn main() {
   }
   printStr("== two threads: the server on its own ==\n");
   {
-    var portTx Sender[u16];
-    var portRx Receiver[u16];
+    var portTx: Sender[u16];
+    var portRx: Receiver[u16];
     portTx, portRx = Channel[u16].make();
     let stop = new Arc[imm, Atomic[bool]](Atomic[bool].of(false));
     let server = thread.start(new ServerArgs(portTx, stop), &serve);
@@ -240,8 +240,8 @@ fn main() {
     var drv = Driver.make(Config.make(), pool);
     fetchAll(&mut drv, &mut lp, &pool, port, &targets, false);
     // One more request, its events to another thread by a channel
-    var tx Sender[Event];
-    var rx Receiver[Event];
+    var tx: Sender[Event];
+    var rx: Receiver[Event];
     tx, rx = Channel[Event].bounded(16u64);
     let pr = thread.start(rx, &printer);
     let conn = drv.connect(&mut lp, "127.0.0.1", port, Sink.Here(tokConn));

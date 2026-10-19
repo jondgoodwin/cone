@@ -46,7 +46,7 @@ import aio use IoLimits;
 //   /hang              nothing at all
 // ---------------------------------------------------------------------------
 
-let halt Atomic[u32];
+let halt: Atomic[u32];
 
 fn @initpure init() {
   halt = Atomic[u32].of(0u32);
@@ -54,25 +54,25 @@ fn @initpure init() {
 }
 
 struct Srv {
-  pub drv httpconn.Driver;
-  pub pool Pool;
-  pub accepted u64;
-  pub requests u64;
-  pub reqs List[httpconn.ReqId];
-  pub methods List[Method];
-  pub targets List[String];
-  pub bodies List[String];
-  pub streams List[httpconn.ReqId];
-  pub sent List[u64];
-  pub totals List[u64];
+  pub drv: httpconn.Driver;
+  pub pool: Pool;
+  pub accepted: u64;
+  pub requests: u64;
+  pub reqs: List[httpconn.ReqId];
+  pub methods: List[Method];
+  pub targets: List[String];
+  pub bodies: List[String];
+  pub streams: List[httpconn.ReqId];
+  pub sent: List[u64];
+  pub totals: List[u64];
 }
 
 struct Report {
-  pub accepted u64;
-  pub requests u64;
+  pub accepted: u64;
+  pub requests: u64;
 }
 
-fn reply(sv &mut Srv, req httpconn.ReqId, head bool, status u16, body &Array[u8]) {
+fn reply(sv: &mut Srv, req: httpconn.ReqId, head: bool, status: u16, body: &Array[u8]) {
   sv.drv.respond(req, ResponseHead.make(status), BodyLength.sized(u64.from(body.len)));
   if body.len > 0usize && !head {
     var b = sv.pool.mustTake(body.len);
@@ -82,14 +82,14 @@ fn reply(sv &mut Srv, req httpconn.ReqId, head bool, status u16, body &Array[u8]
   }
 }
 
-fn number(s &str) u64 {
+fn number(s: &str) u64 {
   match collections.parseUInt(s) {
     case let v Some {v}
     case is None[u64] {0u64}
   }
 }
 
-fn dropStream(sv &mut Srv, j usize) {
+fn dropStream(sv: &mut Srv, j: usize) {
   let last = sv.streams.len() - 1usize;
   sv.streams.swap(j, last);
   sv.sent.swap(j, last);
@@ -100,7 +100,7 @@ fn dropStream(sv &mut Srv, j usize) {
 }
 
 // Stream j's next pieces, as many as the connection takes now
-fn pumpStream(sv &mut Srv, j usize) {
+fn pumpStream(sv: &mut Srv, j: usize) {
   let req = *sv.streams[j];
   while *sv.sent[j] < *sv.totals[j] {
     let at = *sv.sent[j];
@@ -123,7 +123,7 @@ fn pumpStream(sv &mut Srv, j usize) {
   dropStream(sv, j);
 }
 
-fn findStream(sv &Srv, req httpconn.ReqId) usize {
+fn findStream(sv: &Srv, req: httpconn.ReqId) usize {
   var j = 0usize;
   while j < sv.streams.len() {
     if *sv.streams[j] == req {return j;}
@@ -132,7 +132,7 @@ fn findStream(sv &Srv, req httpconn.ReqId) usize {
   sv.streams.len()
 }
 
-fn findReq(sv &Srv, req httpconn.ReqId) usize {
+fn findReq(sv: &Srv, req: httpconn.ReqId) usize {
   var k = 0usize;
   while k < sv.reqs.len() {
     if *sv.reqs[k] == req {return k;}
@@ -141,7 +141,7 @@ fn findReq(sv &Srv, req httpconn.ReqId) usize {
   sv.reqs.len()
 }
 
-fn forget(sv &mut Srv, k usize) {
+fn forget(sv: &mut Srv, k: usize) {
   let last = sv.reqs.len() - 1usize;
   sv.reqs.swap(k, last);
   sv.methods.swap(k, last);
@@ -154,7 +154,7 @@ fn forget(sv &mut Srv, k usize) {
 }
 
 // The answer to request k, read whole
-fn answer(sv &mut Srv, k usize) {
+fn answer(sv: &mut Srv, k: usize) {
   let req = *sv.reqs[k];
   let full = sv.targets[k].copy();
   let path = full.view();
@@ -200,7 +200,7 @@ fn answer(sv &mut Srv, k usize) {
   }
 }
 
-fn serveEvent(sv &mut Srv, e &mut httpconn.Event) {
+fn serveEvent(sv: &mut Srv, e: &mut httpconn.Event) {
   let kind = e.kind;
   if kind == httpconn.EventKind.Accepted {
     sv.accepted = sv.accepted + 1u64;
@@ -228,14 +228,14 @@ fn serveEvent(sv &mut Srv, e &mut httpconn.Event) {
   }
 }
 
-fn url(port u16, path &str) String {
+fn url(port: u16, path: &str) String {
   var u = String.from("http://127.0.0.1:");
   u.appendUInt(u64.from(port));
   u.append(path);
   u
 }
 
-fn serve(portTx Sender[u16]) Report {
+fn serve(portTx: Sender[u16]) Report {
   let pool = Pool.make();
   var lp = Loop.mustMake();
   var sv = new Srv(drv: httpconn.Driver.make(httpconn.Config.make(), pool), pool: pool, accepted: 0u64,
@@ -270,10 +270,10 @@ fn serve(portTx Sender[u16]) Report {
 const rounds = 300u64;
 
 // What spinFor adds to, so that it is not optimised away
-let spun Atomic[u64];
+let spun: Atomic[u64];
 
 // Wait a while, in a way the compiler leaves alone
-fn spinFor(n u64) {
+fn spinFor(n: u64) {
   var k = 0u64;
   while k < n {
     spun.add(1u64);
@@ -282,15 +282,15 @@ fn spinFor(n u64) {
 }
 
 actor Racer {
-  client Client;
+  client: Client;
 
   // Runs once the behaviour is paused on its fetch, after spinning a while
-  pub async do stop(self, g CancelGroup, spin u64) {
+  pub async do stop(self, g: CancelGroup, spin: u64) {
     spinFor(spin);
     g.cancel();
   }
 
-  pub async do run(self, port u16, done OneshotSender[u64]) {
+  pub async do run(self, port: u16, done: OneshotSender[u64]) {
     var answered = 0u64;
     var ok = 0u64;
     var cancelled = 0u64;
@@ -336,8 +336,8 @@ actor Racer {
 
 fn main() i32 {
   initAll();
-  var portTx Sender[u16];
-  var portRx Receiver[u16];
+  var portTx: Sender[u16];
+  var portRx: Receiver[u16];
   portTx, portRx = Channel[u16].make();
   let server = thread.start(portTx, &serve);
   var port = 0u16;
@@ -345,8 +345,8 @@ fn main() i32 {
     case let p Some {port = p;}
     case is None[u16] {}
   }
-  var tx OneshotSender[u64];
-  var rx OneshotReceiver[u64];
+  var tx: OneshotSender[u64];
+  var rx: OneshotReceiver[u64];
   tx, rx = Oneshot[u64].make();
   {
     let r = new Racer(Client.standard());

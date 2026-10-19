@@ -477,7 +477,7 @@ void refTypeCheck(TypeCheckState *pstate, RefNode *node) {
     // A type checked once is not checked again, so this is said once
     if (itypeGetTypeDcl(node->perm) == (INode*)newPerm && (!allownew || node->region != borrowRef)) {
         errorMsgNode((INode*)node, ErrorPermNew,
-            "'&new' is the permission of an init's self, a reference to memory not yet filled: 'fn init(self &new, ...)'.");
+            "'&new' is the permission of an init's self, a reference to memory not yet filled: 'fn init(self: &new, ...)'.");
         node->perm = newPermUseNode(uniPerm);
     }
     // A reference in a parameter position parses with no pointee, because

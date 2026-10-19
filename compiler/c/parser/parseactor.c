@@ -1,7 +1,7 @@
 /** Parse an actor declaration, and generate what it stands for
  *
- * 'actor Counter { count u64; fn init(self &new, n u64) {...}; pub async do
- * bump(self, n u64) {...} }' declares an actor: state that lives on, reached by
+ * 'actor Counter { count: u64; fn init(self: &new, n: u64) {...}; pub async do
+ * bump(self, n: u64) {...} }' declares an actor: state that lives on, reached by
  * nothing but messages, each a call of one of its behaviours (its methods
  * declared 'async do'), run later, one at a time, on whichever worker thread of
  * the actors package takes it up. Its methods declared 'fn' -- its 'init', its
@@ -10,17 +10,17 @@
  * into the four declarations the actors package runs an actor by, generated as
  * Cone source and parsed here, in this order:
  *
- *   struct Counter.State {count u64; fn init...; fn bump...} the body as written
+ *   struct Counter.State {count: u64; fn init...; fn bump...} the body as written
  *   struct Counter {                                         the handle
- *     mailbox Arc[opaq, actors.Mailbox[Counter.Msg]];
- *     fn init(self &new, n u64) {
+ *     mailbox: Arc[opaq, actors.Mailbox[Counter.Msg]];
+ *     fn init(self: &new, n: u64) {
  *       let st = actors.makeActor[Counter.State, Counter.Msg](&Counter.dispatch);
  *       mem.writeRaw[Counter.State](st, new Counter.State(n));
  *       *self = new Self(mailbox: actors.startActor[Counter.State, Counter.Msg](st));}
- *     pub fn bump(self &, n u64) {actors.send[Counter.Msg](mailbox, Counter.Msg.bump[n]);}
+ *     pub fn bump(self: &, n: u64) {actors.send[Counter.Msg](mailbox, Counter.Msg.bump[n]);}
  *   }
- *   enum Counter.Msg is Sendable {struct bump {n u64;}}     one variant per behaviour
- *   fn Counter.dispatch(self &mut Counter.State, msg *Counter.Msg) {
+ *   enum Counter.Msg is Sendable {struct bump {n: u64;}}    one variant per behaviour
+ *   fn Counter.dispatch(self: &mut Counter.State, msg: *Counter.Msg) {
  *     if &*msg is &Counter.Msg.bump {let p = (msg as *u8 as usize) as *Counter.Msg.bump; self.bump(actors.take(&(*p).n));}
  *   }
  *
@@ -37,7 +37,7 @@
  *
  * and, once per module, the helper 'actors.take' (a function of the module's
  * own, named as no source can spell), which moves a field out of a message:
- * 'fn actors.take[T + 'static](p &T) T {mem.readRaw[T]((p as *T as usize) as *T)}':
+ * 'fn actors.take[T + 'static](p: &T) T {mem.readRaw[T]((p as *T as usize) as *T)}':
  * what is moved out holds only borrows of the whole program, the only borrows a
  * message carries, and none of the borrow of the node it is read from, which the
  * trip through a number says to the loan walk.
@@ -45,7 +45,7 @@
  * What an 'await' and a message's reply need (compiler/c/doc/phases/parse.md,
  * section 6, and generation.md, "A message's reply"):
  *
- * - a behaviour that returns a value, 'pub async do get(self, k u64) u64', has
+ * - a behaviour that returns a value, 'pub async do get(self, k: u64) u64', has
  *   a second variant, its request awaited, 'struct get'ask {k u64; reply'
  *   actors.Reply;}', the handle a second method sending it, and the dispatch
  *   an arm that answers it; and the handle a third method, 'get'future',
@@ -255,7 +255,7 @@ static void genSlot(GenText *g, uint32_t slot) {
 // A parameter as the author wrote it: its name, its type, and its default
 static void genParm(GenText *g, DclText *text, Name *name) {
     genName(g, name);
-    genPuts(g, " ");
+    genPuts(g, ": ");
     genPutn(g, text->type, text->typeend - text->type);
     if (text->value) {
         genPuts(g, " = ");
@@ -400,7 +400,7 @@ static int parseActorSelf(StructNode *state, FnDclNode *fn) {
             return 1;
     }
     errorMsgNode((INode *)self, ErrorActorMember,
-        "%s's 'self' is actor %s's state, lent to the method for the message it handles: write 'self', which has it 'mut', or 'self &' to only read it (an initializer's is 'self &new', the finalizer's 'self &uni').",
+        "%s's 'self' is actor %s's state, lent to the method for the message it handles: write 'self', which has it 'mut', or 'self: &' to only read it (an initializer's is 'self: &new', the finalizer's 'self: &uni').",
         &fn->namesym->namestr, &state->namesym->namestr);
     return 0;
 }
@@ -550,7 +550,7 @@ static void parseActorMembers(DclTexts *texts, StructNode *state, Name *actornam
         PermNode *selfperm = parseActorPerm((RefNode *)self->vtype);
         if (selfperm != mutPerm && selfperm != roPerm) {
             errorMsgNode((INode *)self, ErrorActorMember,
-                "A behaviour's 'self' is the actor's state, lent for the message: 'self', 'self &' or 'self &mut'.");
+                "A behaviour's 'self' is the actor's state, lent for the message: 'self', 'self: &' or 'self: &mut'.");
             ok = 0;
         }
         // The reply goes back in a message too: a borrow of the whole program
@@ -703,7 +703,7 @@ static int parseActorRuntime(ParseState *parse, StructNode *at, Name *actorname,
     // one that is copied
     genPuts(g, "fn ");
     genSlot(g, GenTake);
-    genPuts(g, "[T + 'static](p &T) T {mem.readRaw[T]((p as *T as usize) as *T)}\n");
+    genPuts(g, "[T + 'static](p: &T) T {mem.readRaw[T]((p as *T as usize) as *T)}\n");
     return 2;
 }
 
@@ -816,7 +816,7 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
         genSlot(&g, GenHidden);
         genPuts(&g, " {\n  ");
         genSlot(&g, GenPending);
-        genPuts(&g, " ");
+        genPuts(&g, ": ");
         genSlot(&g, GenActors);
         genPuts(&g, ".Pending = new ");
         genSlot(&g, GenActors);
@@ -824,7 +824,7 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
         if (answers) {
             genPuts(&g, "  ");
             genSlot(&g, GenAnswer);
-            genPuts(&g, " ");
+            genPuts(&g, ": ");
             genSlot(&g, GenActors);
             genPuts(&g, ".Answer = new ");
             genSlot(&g, GenActors);
@@ -842,7 +842,7 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
     // (actors.regionOf)
     genPuts(&g, "struct ");
     genSlot(&g, GenAllocs);
-    genPuts(&g, " {\n  fn allocRegion(self &mut ");
+    genPuts(&g, " {\n  fn allocRegion(self: &mut ");
     genSlot(&g, GenState);
     genPuts(&g, ") &'static mut ");
     genSlot(&g, GenActors);
@@ -890,13 +890,13 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
                     continue;
                 DclText *text = parseActorText(&texts, (INode *)parm);
                 genName(&ge, parm->namesym);
-                genPuts(&ge, " ");
+                genPuts(&ge, ": ");
                 genPutn(&ge, text->type, text->typeend - text->type);
                 genPuts(&ge, "; ");
             }
             if (asked) {
                 genSlot(&ge, GenEnvelope);
-                genPuts(&ge, " ");
+                genPuts(&ge, ": ");
                 genSlot(&ge, GenActors);
                 genPuts(&ge, ".Reply; ");
             }
@@ -906,9 +906,9 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
     if (awaits) {
         genPuts(&ge, "  struct ");
         genSlot(&ge, GenResume);
-        genPuts(&ge, " {run *u8; data *u8;}\n  struct ");
+        genPuts(&ge, " {run: *u8; data: *u8;}\n  struct ");
         genSlot(&ge, GenResumeId);
-        genPuts(&ge, " {run *u8; id u64; data *u8;}\n");
+        genPuts(&ge, " {run: *u8; id: u64; data: *u8;}\n");
     }
     genPuts(&ge, "}\n");
 
@@ -918,7 +918,7 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
     genName(&g, actorname);
     genPuts(&g, " {\n  ");
     genSlot(&g, GenMailbox);
-    genPuts(&g, " ");
+    genPuts(&g, ": ");
     genSlot(&g, GenSync);
     genPuts(&g, ".Arc[opaq, ");
     genSlot(&g, GenActors);
@@ -932,7 +932,7 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
         int hasfields = 0;
         for (nodelistFor(&state->fields, cnt, nodesp))
             hasfields |= !((*nodesp)->flags & IsMixin);
-        genPuts(&g, (pubflag && !hasfields) ? "  pub fn init(self &new" : "  fn init(self &new");
+        genPuts(&g, (pubflag && !hasfields) ? "  pub fn init(self: &new" : "  fn init(self: &new");
         for (nodelistFor(&state->fields, cnt, nodesp)) {
             FieldDclNode *field = (FieldDclNode *)*nodesp;
             DclText *text = parseActorText(&texts, (INode *)field);
@@ -965,7 +965,7 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
             genPuts(&g, " overload ");
             genName(&g, fn->overloadsym);
         }
-        genPuts(&g, "(self &new");
+        genPuts(&g, "(self: &new");
         INode **parmp;
         uint32_t parmcnt;
         for (nodesFor(((FnSigNode *)fn->vtype)->parms, parmcnt, parmp)) {
@@ -1008,7 +1008,7 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
                     genName(&g, fn->overloadsym);
                 }
             }
-            genPuts(&g, "(self &");
+            genPuts(&g, "(self: &");
             INode **parmp;
             uint32_t parmcnt;
             for (nodesFor(((FnSigNode *)fn->vtype)->parms, parmcnt, parmp)) {
@@ -1021,7 +1021,7 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
                 DclText *text = parseActorText(&texts, (INode *)parm);
                 if (asked) {
                     genName(&g, parm->namesym);
-                    genPuts(&g, " ");
+                    genPuts(&g, ": ");
                     genPutn(&g, text->type, text->typeend - text->type);
                 }
                 else
@@ -1030,7 +1030,7 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
             if (asked) {
                 genPuts(&g, ", ");
                 genSlot(&g, GenEnvelope);
-                genPuts(&g, " ");
+                genPuts(&g, ": ");
                 genSlot(&g, GenActors);
                 genPuts(&g, ".Reply");
             }
@@ -1108,7 +1108,7 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
         }
         genPuts(&g, (fn->flags & FlagPub) ? "  pub fn " : "  fn ");
         genSlot(&g, variant + nasks);
-        genPuts(&g, "(self &");
+        genPuts(&g, "(self: &");
         INode **parmp;
         uint32_t parmcnt;
         for (nodesFor(((FnSigNode *)fn->vtype)->parms, parmcnt, parmp)) {
@@ -1118,7 +1118,7 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
             DclText *text = parseActorText(&texts, (INode *)parm);
             genPuts(&g, ", ");
             genName(&g, parm->namesym);
-            genPuts(&g, " ");
+            genPuts(&g, ": ");
             genPutn(&g, text->type, text->typeend - text->type);
         }
         genPuts(&g, ") ");
@@ -1164,9 +1164,9 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
     // argument moved out of it into the method's call
     genPuts(&g, "fn ");
     genSlot(&g, GenDispatch);
-    genPuts(&g, "(self &mut ");
+    genPuts(&g, "(self: &mut ");
     genSlot(&g, GenState);
-    genPuts(&g, ", msg *");
+    genPuts(&g, ", msg: *");
     genSlot(&g, GenMsg);
     genPuts(&g, ") {\n");
     //
@@ -1288,9 +1288,9 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
     for (uint32_t withid = 0; awaits && withid <= 1; ++withid) {
         genPuts(&g, "fn ");
         genSlot(&g, withid ? GenReplyId : GenReply);
-        genPuts(&g, "(st &");
+        genPuts(&g, "(st: &");
         genSlot(&g, GenState);
-        genPuts(&g, withid ? ", run *u8, id u64, size usize, align usize) " : ", run *u8, size usize, align usize) ");
+        genPuts(&g, withid ? ", run: *u8, id: u64, size: usize, align: usize) " : ", run: *u8, size: usize, align: usize) ");
         genSlot(&g, GenActors);
         genPuts(&g, ".Reply {\n  let r = ");
         genSlot(&g, GenActors);
@@ -1317,7 +1317,7 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
     if (selfs) {
         genPuts(&g, "fn ");
         genSlot(&g, GenSelf);
-        genPuts(&g, "(st &");
+        genPuts(&g, "(st: &");
         genSlot(&g, GenState);
         genPuts(&g, ") ");
         genName(&g, actorname);

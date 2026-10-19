@@ -52,13 +52,13 @@ import thread;
 import sync use *;
 
 struct Work {
-  pub tx SoloSender[u64];
-  pub n u64;
-  pub round u64;
+  pub tx: SoloSender[u64];
+  pub n: u64;
+  pub round: u64;
 }
 
 // Arithmetic the optimizer cannot drop, since its result is used
-fn busy(steps u64, seed u64) u64 {
+fn busy(steps: u64, seed: u64) u64 {
   var x = seed;
   var i = 0u64;
   while i < steps {
@@ -70,7 +70,7 @@ fn busy(steps u64, seed u64) u64 {
 
 // Send 1 to n, working a while before every 16th in rounds that say so:
 // n, plus 0 times the work's result, so the work is kept
-fn produce(work Work) u64 {
+fn produce(work: Work) u64 {
   var w = work;
   let steps = 400u64 * (w.round % 7u64);
   var junk = 0u64;
@@ -87,7 +87,7 @@ fn produce(work Work) u64 {
 
 // Take everything until the channel closes, working after every 16th in
 // rounds that say so: how many, their sum, how many out of order
-fn takeAll(rx &mut Receiver[u64], round u64) u64, u64, u64 {
+fn takeAll(rx: &mut Receiver[u64], round: u64) u64, u64, u64 {
   let steps = 500u64 * (round % 5u64);
   var items = 0u64;
   var sum = 0u64;
@@ -116,12 +116,12 @@ fn takeAll(rx &mut Receiver[u64], round u64) u64, u64, u64 {
 // moment between a send's check for a close and its value's arrival, which
 // the close must wait out
 struct Big {
-  pub n u64;
-  pub pad Array[u64, 512];
+  pub n: u64;
+  pub pad: Array[u64, 512];
 }
 
 // Send 1 to 1000 by send: how many were handed back
-fn produceRefused(tx SoloSender[Big]) u64 {
+fn produceRefused(tx: SoloSender[Big]) u64 {
   var t = tx;
   var back = 0u64;
   var k = 1u64;
@@ -136,21 +136,21 @@ fn produceRefused(tx SoloSender[Big]) u64 {
 }
 
 // A value whose deaths are counted, from any thread
-let deaths Atomic[u64];
+let deaths: Atomic[u64];
 
 fn @initpure init() {
   deaths = Atomic[u64].of(0u64);
 }
 
 struct Counted {
-  pub n u64;
-  fn final(self &uni) {
+  pub n: u64;
+  fn final(self: &uni) {
     deaths.add(1u64);
   }
 }
 
 // Send 20000 counted values: how many were refused
-fn produceCounted(tx SoloSender[Counted]) u64 {
+fn produceCounted(tx: SoloSender[Counted]) u64 {
   var t = tx;
   var refused = 0u64;
   var k = 1u64;
@@ -164,15 +164,15 @@ fn produceCounted(tx SoloSender[Counted]) u64 {
   refused
 }
 
-fn dropReceiver(rx Receiver[Counted]) {}
+fn dropReceiver(rx: Receiver[Counted]) {}
 
 fn main() i32 {
   var items = 0u64;
   var sum = 0u64;
   var disorder = 0u64;
 
-  var tx SoloSender[u64];
-  var rx Receiver[u64];
+  var tx: SoloSender[u64];
+  var rx: Receiver[u64];
   tx, rx = Channel[u64].spsc(64u64);
   let p = thread.start(new Work(tx, 1000000u64, 0u64), &produce);
   items, sum, disorder = takeAll(&mut rx, 0u64);
@@ -181,8 +181,8 @@ fn main() i32 {
   expectUInt(sum, 500000500000u64, "their sum");
   expectUInt(disorder, 0u64, "in order");
 
-  var tx1 SoloSender[u64];
-  var rx1 Receiver[u64];
+  var tx1: SoloSender[u64];
+  var rx1: Receiver[u64];
   tx1, rx1 = Channel[u64].spsc(1u64);
   let p1 = thread.start(new Work(tx1, 200000u64, 0u64), &produce);
   items, sum, disorder = takeAll(&mut rx1, 0u64);
@@ -194,8 +194,8 @@ fn main() i32 {
   var badRounds = 0u64;
   var round = 0u64;
   while round < 3000u64 {
-    var txr SoloSender[u64];
-    var rxr Receiver[u64];
+    var txr: SoloSender[u64];
+    var rxr: Receiver[u64];
     txr, rxr = Channel[u64].spsc(2u64);
     let n = 300u64 + 100u64 * (round % 4u64);
     let pr = thread.start(new Work(txr, n, round), &produce);
@@ -213,8 +213,8 @@ fn main() i32 {
   var refusedAll = 0u64;
   round = 0u64;
   while round < 2000u64 {
-    var txc SoloSender[Big];
-    var rxc Receiver[Big];
+    var txc: SoloSender[Big];
+    var rxc: Receiver[Big];
     txc, rxc = Channel[Big].spsc(4u64);
     let pc = thread.start(txc, &produceRefused);
     var taken = 0u64;
@@ -252,8 +252,8 @@ fn main() i32 {
   var wrongLetIn = 0u32;
   while run < 5u32 {
     deaths.store(0u64);
-    var txd SoloSender[Counted];
-    var rxd Receiver[Counted];
+    var txd: SoloSender[Counted];
+    var rxd: Receiver[Counted];
     txd, rxd = Channel[Counted].spsc(16u64);
     let pd = thread.start(txd, &produceCounted);
     var taken = 0u64;

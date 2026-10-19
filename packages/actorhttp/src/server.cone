@@ -16,20 +16,20 @@ pub enum ServerErrorKind {
 // Why a server call has no answer. A peer that left is not a panic: a write
 // to it answers Closed
 pub struct ServerError {
-  cause ServerErrorKind;
-  pub code u32;           // Failed: the system's error number when it gave one, else 0
-  text String;
+  cause: ServerErrorKind;
+  pub code: u32;           // Failed: the system's error number when it gave one, else 0
+  text: String;
 
-  pub fn failed(code u32, text &str) ServerError {new ServerError(ServerErrorKind.Failed, code, String.from(text))}
+  pub fn failed(code: u32, text: &str) ServerError {new ServerError(ServerErrorKind.Failed, code, String.from(text))}
   pub fn closed() ServerError {new ServerError(ServerErrorKind.Closed, 0u32, String.empty())}
 
-  pub fn kind(self &) ServerErrorKind {cause}
+  pub fn kind(self: &) ServerErrorKind {cause}
 
   // The server or the exchange is over
-  pub fn isClosed(self &) bool {cause == ServerErrorKind.Closed}
+  pub fn isClosed(self: &) bool {cause == ServerErrorKind.Closed}
 
   // 'could not listen: ... (Windows error ...)', or 'closed'
-  pub fn message(self &) String {
+  pub fn message(self: &) String {
     if cause == ServerErrorKind.Closed {return String.from("closed");}
     var out = String.from(text.view());
     if code != 0u32 {
@@ -49,10 +49,10 @@ pub struct ServerError {
 
 // A server's bounds and settings (the package's header, A SERVER)
 pub struct ServerConfig {
-  pub conn httpconn.Config;                // its driver's: protocol bounds and timeouts, buffers, maxConnections
-  pub maxBody usize;                       // the most request body bytes it takes (past it, 413)
-  pub maxPending usize;                    // the most requests that wait for an actor to take them (past it, 503)
-  pub tlsConfig Option[tls.ServerConfig];  // Some: every connection is TLS
+  pub conn: httpconn.Config;                // its driver's: protocol bounds and timeouts, buffers, maxConnections
+  pub maxBody: usize;                       // the most request body bytes it takes (past it, 413)
+  pub maxPending: usize;                    // the most requests that wait for an actor to take them (past it, 503)
+  pub tlsConfig: Option[tls.ServerConfig];  // Some: every connection is TLS
 
   // The defaults: plain HTTP, httpconn's bounds, bodies up to 1 MiB, 1024 requests waiting
   pub fn make() ServerConfig {
@@ -60,7 +60,7 @@ pub struct ServerConfig {
   }
 
   // The same through TLS, with a certificate chain and a key (tls.ServerConfig's)
-  pub fn secure(self, cfg tls.ServerConfig) ServerConfig {
+  pub fn secure(self, cfg: tls.ServerConfig) ServerConfig {
     var c = self;
     c.tlsConfig = Some[tls.ServerConfig](cfg);
     c
@@ -77,13 +77,13 @@ pub const defaultMaxRequestBody = 1048576usize;
 // The request an Exchange holds: its head (method, target, header fields, the
 // Host as 'authority'), its whole body, and where it came from
 pub struct Request {
-  pub head RequestHead;
-  pub body String;
-  pub peer SocketAddr;        // the client's address
-  pub secure bool;            // it came through TLS
+  pub head: RequestHead;
+  pub body: String;
+  pub peer: SocketAddr;        // the client's address
+  pub secure: bool;            // it came through TLS
 
   // The target's path: everything before a '?'
-  pub fn path(self &) &str {
+  pub fn path(self: &) &str {
     let t = head.target.view() as &Array[u8];
     var i = 0usize;
     while i < t.len && t[i] != '?' {i = i + 1usize;}
@@ -91,7 +91,7 @@ pub struct Request {
   }
 
   // The target's query: everything after the '?', or "" if there is none
-  pub fn query(self &) &str {
+  pub fn query(self: &) &str {
     let t = head.target.view() as &Array[u8];
     var i = 0usize;
     while i < t.len && t[i] != '?' {i = i + 1usize;}
@@ -100,10 +100,10 @@ pub struct Request {
   }
 
   // The method's token: 'GET', or an extension's spelling
-  pub fn methodName(self &) &str {head.methodName()}
+  pub fn methodName(self: &) &str {head.methodName()}
 
   // The first value of a header field, as text, or "" when there is none
-  pub fn header(self &, name &str) &Array[u8] {
+  pub fn header(self: &, name: &str) &Array[u8] {
     match head.headers.get(name) {
       case let v Some {v}
       case is None[&Array[u8]] {"" as &Array[u8]}
@@ -121,25 +121,25 @@ pub struct Request {
 // server: it stops listening and refuses what waits (the exchanges already
 // taken go on)
 pub struct Server is Move {
-  id u64;
-  addr SocketAddr;
-  tlsOn bool;
+  id: u64;
+  addr: SocketAddr;
+  tlsOn: bool;
 
   // A Server naming nothing, which closes nothing
   pub fn none() Server {new Server(0u64, SocketAddr.localhost(0u16), false)}
 
-  pub fn isNone(self &) bool {id == 0u64}
+  pub fn isNone(self: &) bool {id == 0u64}
 
   // The address it listens on (its port, if it was asked for 0)
-  pub fn localAddr(self &) SocketAddr {addr}
+  pub fn localAddr(self: &) SocketAddr {addr}
 
-  pub fn port(self &) u16 {addr.port()}
+  pub fn port(self: &) u16 {addr.port()}
 
   // Whether its connections are TLS
-  pub fn isSecure(self &) bool {tlsOn}
+  pub fn isSecure(self: &) bool {tlsOn}
 
   // Another handle to the same server
-  pub fn clone(self &) Server {
+  pub fn clone(self: &) Server {
     if id != 0u64 {
       post[SrvRefJob](new SrvRefJob(id, true));
     }
@@ -150,20 +150,20 @@ pub struct Server is Move {
   // server is closed. Any number of actors may await 'next' at once: each
   // request goes to one of them, in the order they asked. A request waits in
   // the server (up to maxPending of them) until an actor asks for it
-  pub fn next(self &) actors.Awaitable[Result[Exchange, ServerError]] {
+  pub fn next(self: &) actors.Awaitable[Result[Exchange, ServerError]] {
     awaitable[NextJob, Result[Exchange, ServerError]](new NextJob(id, new actors.Reply()))
   }
 
   // Stop listening now: every 'next' waiting is answered Closed, the requests
   // that no actor took are answered 503, and the exchanges taken go on. The
   // handles stay, and name a closed server
-  pub fn close(self &) {
+  pub fn close(self: &) {
     if id != 0u64 {
       post[SrvCloseJob](new SrvCloseJob(id));
     }
   }
 
-  fn final(self &uni) {
+  fn final(self: &uni) {
     if id != 0u64 {
       post[SrvRefJob](new SrvRefJob(id, false));
     }
@@ -173,7 +173,7 @@ pub struct Server is Move {
 // A server listening at addr, plain or through TLS as cfg says: the Server
 // when it is listening, or why it could not (the address in use, a
 // certificate that could not be loaded). Asking for port 0 takes any free one
-pub fn listen(addr SocketAddr, cfg ServerConfig) actors.Awaitable[Result[Server, ServerError]] {
+pub fn listen(addr: SocketAddr, cfg: ServerConfig) actors.Awaitable[Result[Server, ServerError]] {
   awaitable[ListenJob, Result[Server, ServerError]](new ListenJob(addr, cfg, new actors.Reply()))
 }
 
@@ -197,20 +197,20 @@ const phaseOver = 2u32;         // a response whole, or all of it asked for
 // an unsized body ends it cleanly (a stream of events closes), a sized one
 // short of its length resets the connection
 pub struct Exchange is Move {
-  srv u64;
-  slot u32;
-  id u64;
-  phase u32;
-  sized bool;                   // the response body's length is declared
-  length u64;                   // ...and is this
-  written u64;                  // body bytes asked for so far
-  bodyless bool;                // the response has no body bytes (HEAD, 204, 304, a length of 0)
-  pub request Request;
+  srv: u64;
+  slot: u32;
+  id: u64;
+  phase: u32;
+  sized: bool;                   // the response body's length is declared
+  length: u64;                   // ...and is this
+  written: u64;                  // body bytes asked for so far
+  bodyless: bool;                // the response has no body bytes (HEAD, 204, 304, a length of 0)
+  pub request: Request;
 
   // A whole response: the head (status 200 to 599; the framing fields are the
   // core's to write) and the body, '' for none. Not awaited: the response is
   // written as the connection takes it
-  pub fn respond(self &mut, head ResponseHead, body String, file &Array[u8] = srcFile(), line u32 = srcLine()) {
+  pub fn respond(self: &mut, head: ResponseHead, body: String, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
     checkResponseHead(&head, file, line);
     if phase != phaseFresh {die("actorhttp: this exchange has been answered already", file, line);}
     phase = phaseOver;
@@ -219,7 +219,7 @@ pub struct Exchange is Move {
   }
 
   // A whole response of text: the status, a Content-Type of text/plain
-  pub fn text(self &mut, status u16, body &str, file &Array[u8] = srcFile(), line u32 = srcLine()) {
+  pub fn text(self: &mut, status: u16, body: &str, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
     var h = ResponseHead.make(status);
     h.headers.add("Content-Type", "text/plain; charset=utf-8");
     self.respond(h, String.from(body), file, line);
@@ -228,7 +228,7 @@ pub struct Exchange is Move {
   // Begin a streamed response: its head, and its body's length (sized: exactly
   // that many bytes, by 'write'; unsized: chunked; empty: none, the response
   // is whole). Then 'write' and 'finish'. Not awaited
-  pub fn start(self &mut, head ResponseHead, framing BodyLength, file &Array[u8] = srcFile(), line u32 = srcLine()) {
+  pub fn start(self: &mut, head: ResponseHead, framing: BodyLength, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
     checkResponseHead(&head, file, line);
     if phase != phaseFresh {die("actorhttp: this exchange has been answered already", file, line);}
     sized = framing.isSized();
@@ -243,13 +243,13 @@ pub struct Exchange is Move {
   // Begin a stream of server-sent events: 200, 'Content-Type: text/event-stream',
   // 'Cache-Control: no-cache', chunked. Then 'sendEvent' and 'sendComment',
   // and 'finish' (or drop the Exchange) to end the stream
-  pub fn startEvents(self &mut, file &Array[u8] = srcFile(), line u32 = srcLine()) {
+  pub fn startEvents(self: &mut, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
     self.startEventsWith(ResponseHead.make(200u16), file, line);
   }
 
   // The same with a head of the program's: its Content-Type and Cache-Control
   // are set unless it has them
-  pub fn startEventsWith(self &mut, head ResponseHead, file &Array[u8] = srcFile(), line u32 = srcLine()) {
+  pub fn startEventsWith(self: &mut, head: ResponseHead, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
     var h = head;
     if !h.headers.has("Content-Type") {h.headers.add("Content-Type", "text/event-stream");}
     if !h.headers.has("Cache-Control") {h.headers.add("Cache-Control", "no-cache");}
@@ -260,7 +260,7 @@ pub struct Exchange is Move {
   // all (so a program that awaits each write is slowed to its peer's speed),
   // or Closed when the peer has left. A response to a HEAD, or a 204 or 304,
   // takes none: the answer is 0
-  pub fn write(self &mut, data String, file &Array[u8] = srcFile(), line u32 = srcLine())
+  pub fn write(self: &mut, data: String, file: &Array[u8] = srcFile(), line: u32 = srcLine())
       actors.Awaitable[Result[usize, ServerError]] {
     if phase != phaseStreaming {die("actorhttp: write needs a response begun by 'start' and not yet finished", file, line);}
     if sized && written + u64.from(data.len()) > length {
@@ -271,20 +271,20 @@ pub struct Exchange is Move {
   }
 
   // One server-sent event, written (a 'write' of its bytes)
-  pub fn sendEvent(self &mut, ev &sse.Event, file &Array[u8] = srcFile(), line u32 = srcLine())
+  pub fn sendEvent(self: &mut, ev: &sse.Event, file: &Array[u8] = srcFile(), line: u32 = srcLine())
       actors.Awaitable[Result[usize, ServerError]] {
     self.write(ev.encode(), file, line)
   }
 
   // A comment block, the heartbeat that keeps a quiet stream from idling out
-  pub fn sendComment(self &mut, text &str, file &Array[u8] = srcFile(), line u32 = srcLine())
+  pub fn sendComment(self: &mut, text: &str, file: &Array[u8] = srcFile(), line: u32 = srcLine())
       actors.Awaitable[Result[usize, ServerError]] {
     self.write(sse.comment(text), file, line)
   }
 
   // The body is whole: answered with the body's byte count once the response
   // has gone to the connection whole, or Closed if the peer left first
-  pub fn finish(self &mut, file &Array[u8] = srcFile(), line u32 = srcLine())
+  pub fn finish(self: &mut, file: &Array[u8] = srcFile(), line: u32 = srcLine())
       actors.Awaitable[Result[u64, ServerError]] {
     if phase != phaseStreaming {die("actorhttp: finish needs a response begun by 'start' and not yet finished", file, line);}
     if sized && written != length {die("actorhttp: finish short of the length 'start' declared", file, line);}
@@ -293,15 +293,15 @@ pub struct Exchange is Move {
   }
 
   // Whether a response has been begun
-  pub fn isAnswered(self &) bool {phase != phaseFresh}
+  pub fn isAnswered(self: &) bool {phase != phaseFresh}
 
-  fn final(self &uni) {
+  fn final(self: &uni) {
     post[DropExJob](new DropExJob(srv, slot, id));
   }
 }
 
 // What the core would panic at in a response head, found where the call is made
-fn checkResponseHead(h &ResponseHead, file &Array[u8], line u32) {
+fn checkResponseHead(h: &ResponseHead, file: &Array[u8], line: u32) {
   if h.status < 200u16 || h.status > 599u16 {die("actorhttp: a response takes a final status, 200 to 599", file, line);}
   if h.headers.has("Content-Length") || h.headers.has("Transfer-Encoding") {
     die("actorhttp: framing fields are the core's to write; a body's length is said with a BodyLength", file, line);

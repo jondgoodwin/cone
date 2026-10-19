@@ -317,10 +317,10 @@ static int structIsEnumFinal(StructNode *base, FnDclNode *meth) {
 }
 
 // Is this a method of an enum, with a body, whose receiver NAMES THE ENUM? That
-// method is one function over the whole enum: 'fn describe(self &Lamp)', or
+// method is one function over the whole enum: 'fn describe(self: &Lamp)', or
 // '&mut Lamp', or by value 'self Lamp'. It is not copied into the variants, its
 // 'self' is the enum, so 'match self' and 'self is Red' work, and it is
-// generated once. A receiver written 'self &' or 'self &Self' is the
+// generated once. A receiver written 'self: &' or 'self: &Self' is the
 // implementer's instead: the method is a default, copied into each variant.
 // What the receiver names decides, not where the method is declared.
 //
@@ -775,7 +775,7 @@ static void structFoldReceiverWalk(StructNode *type, Name *name, INode **objp, I
 
 // Rewrite the receiver of a call to a method 'type' holds by folding (above).
 // A reference receiver dereferences and reborrows the field it lands on with
-// the reference's own permission, so a method wanting 'self &mut' is reached
+// the reference's own permission, so a method wanting 'self: &mut' is reached
 // through '&mut c' exactly as through '&mut c.engine' written out; a field
 // that is itself a reference is the receiver as it stands. A value receiver
 // stays a value, as the path written out would, and reaches only what a value
@@ -2654,7 +2654,7 @@ void structCarriesRegionCheck(StructNode *node) {
 // A type that holds values in memory it points to -- a collection's block, a
 // pool's slots, an arena's allocations -- cannot be traced by its fields: they
 // hold a raw pointer. It declares 'GcTraceElements' and a method 'fn
-// gcTraceElements(self &mut) I' instead, I a cursor declaring 'is
+// gcTraceElements(self: &mut) I' instead, I a cursor declaring 'is
 // Iterator[&mut E]', giving a writable reference to each element it holds. The
 // element type's own trace is applied to every reference given
 // (genlTraceElements), so a collector that moves what an element refers to
@@ -2677,18 +2677,18 @@ static GcTraceState structGcTraceElements(StructNode *node, INode **elem, char *
     #define TRACE_FAIL(msg) do { *why = msg; return pending ? GcTracePending : GcTraceBad; } while (0)
     INode *meth = iNsTypeFindFnField((INsTypeNode*)node, gcTraceElementsMethodName);
     if (meth == NULL || meth->tag != FnDclTag || !(meth->flags & FlagMethFld))
-        TRACE_FAIL("it declares GcTraceElements, so it declares a method 'fn gcTraceElements(self &mut) I' giving a cursor over writable references to the values it holds, and it declares none");
+        TRACE_FAIL("it declares GcTraceElements, so it declares a method 'fn gcTraceElements(self: &mut) I' giving a cursor over writable references to the values it holds, and it declares none");
     FnDclNode *fn = (FnDclNode*)meth;
     FnSigNode *sig = fn->vtype ? (FnSigNode*)itypeGetTypeDcl(fn->vtype) : NULL;
     if (sig == NULL || sig->tag != FnSigTag)
         TRACE_FAIL("its 'gcTraceElements' is not checked yet");
     if (sig->parms->used != 1)
-        TRACE_FAIL("its 'gcTraceElements' takes nothing but 'self &mut'");
+        TRACE_FAIL("its 'gcTraceElements' takes nothing but 'self: &mut'");
     RefNode *selftype = (RefNode*)itypeGetTypeDcl(iexpGetTypeDcl(nodesGet(sig->parms, 0)));
     if (selftype->tag != RefTag || itypeGetTypeDcl(selftype->region) != borrowRef
         || !(permGetFlags(itypeGetTypeDcl(selftype->perm)) & MayWrite)
         || itypeGetTypeDcl(selftype->vtexp) != (INode*)node)
-        TRACE_FAIL("its 'gcTraceElements' takes nothing but 'self &mut'");
+        TRACE_FAIL("its 'gcTraceElements' takes nothing but 'self: &mut'");
     INode *cursor = itypeGetTypeDcl(sig->rettype);
     if (cursor->tag != StructTag || (cursor->flags & (TraitType | EnumType)))
         TRACE_FAIL("its 'gcTraceElements' must give a cursor: a struct declaring 'is Iterator[&mut E]'");
@@ -4557,7 +4557,7 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
             else
                 hasEnumFld = 1;
             if (((*nodesp)->flags & IsTagField) && ((FieldDclNode*)(*nodesp))->namesym != anonName)
-                errorMsgNode(*nodesp, ErrorInvType, "The discriminant is anonymous: write '_ tag'");
+                errorMsgNode(*nodesp, ErrorInvType, "The discriminant is anonymous: write '_: tag'");
         }
     }
     if (node != structTagWidthDeferred)
@@ -4711,7 +4711,7 @@ static VtableImpl *structMapVtableImpl(StructNode *basenode, StructNode *strnode
             // read-only reference is met only by a '()' that reads
             // and any other trait's method is met by no stronger 'self' than its own,
             // a closure's included: its 'self' is what its body needs, and a literal
-            // that changes state does not meet a trait whose method says 'self &'.
+            // that changes state does not meet a trait whose method says 'self: &'.
             if (basenode->callsig ? !fnSigCallSelfFits(basenode, strmeth)
                 : !fnSigVrefSelfFits(meth, strmeth))
                 return NULL;
@@ -4797,7 +4797,7 @@ void structMakeVtable(StructNode *node) {
         // has to satisfy. It stays the declaring type's own.
         if (!((*nodesp)->flags & FlagMethFld))
             continue;
-        // Nor has an enum's method over the whole enum ('self &Lamp'): it is one
+        // Nor has an enum's method over the whole enum ('self: &Lamp'): it is one
         // function, and no variant has a copy for a slot to point at
         if (structIsWholeEnumMethod(*nodesp))
             continue;

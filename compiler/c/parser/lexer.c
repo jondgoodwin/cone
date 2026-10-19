@@ -1708,28 +1708,7 @@ int lexPeekIsIdent() {
 
 int lexIdentOpensType() {
     char *srcp = lexSkipTrivia(lex->srcp);
-    if (*srcp == '.')
-        return 1;
-    if (*srcp != '[')
-        return 0;
-    int depth = 0;
-    while (*srcp) {
-        switch (*srcp) {
-        case '[': case '(': case '{':
-            ++depth;
-            break;
-        case ']': case ')': case '}':
-            if (--depth == 0)
-                return 1;
-            break;
-        case ';':
-            if (depth == 1)
-                return 0;
-            break;
-        }
-        srcp = lexSkipTrivia(srcp + 1);
-    }
-    return 1;
+    return *srcp == '.' || *srcp == '[';
 }
 
 // Does this source's first statement begin 'mod' or 'pub mod'? The folder sweep

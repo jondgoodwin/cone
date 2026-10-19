@@ -19,35 +19,35 @@
 
 // One client's way through the relay
 struct Leg {
-  client SocketAddr;
-  key String;
-  up UdpSocket;              // the socket this client's datagrams reach the server from
-  toServer LinkSim;
-  toClient LinkSim;
+  client: SocketAddr;
+  key: String;
+  up: UdpSocket;              // the socket this client's datagrams reach the server from
+  toServer: LinkSim;
+  toClient: LinkSim;
 }
 
 // The most receives on one socket that fail one after the other before it is let go
 const relayMaxFailures = 1000u32;
 
 actor Relay {
-  server SocketAddr;
-  toServer LinkConfig;
-  toClient LinkConfig;
-  seed u64;
-  pool Pool;
-  front UdpSocket;
-  legs List[Leg];
-  group CancelGroup;
-  stopped bool;
+  server: SocketAddr;
+  toServer: LinkConfig;
+  toClient: LinkConfig;
+  seed: u64;
+  pool: Pool;
+  front: UdpSocket;
+  legs: List[Leg];
+  group: CancelGroup;
+  stopped: bool;
 
-  fn init(self &new, server SocketAddr, toServer LinkConfig, toClient LinkConfig, seed u64) {
+  fn init(self: &new, server: SocketAddr, toServer: LinkConfig, toClient: LinkConfig, seed: u64) {
     *self = new Self(server: server, toServer: toServer, toClient: toClient, seed: seed, pool: Pool.make(),
       front: UdpSocket.none(), legs: List[Leg].empty(), group: CancelGroup.make(), stopped: false);
   }
 
   // Bind the front socket (on loopback, a port of the system's choice), say
   // which, and start receiving and delivering. The first message
-  async do open(self, up OneshotSender[Result[SocketAddr, IoError]]) {
+  async do open(self, up: OneshotSender[Result[SocketAddr, IoError]]) {
     var tx = up;
     var made = await aio.bindUdp(SocketAddr.localhost(0u16));
     match &mut made {
@@ -70,7 +70,7 @@ actor Relay {
   }
 
   // Stop: end every receive and timer, close every socket, and say so
-  async do stop(self, done OneshotSender[u32]) {
+  async do stop(self, done: OneshotSender[u32]) {
     var tx = done;
     stopped = true;
     let c = group.cancel();
@@ -126,7 +126,7 @@ actor Relay {
   }
 
   // Datagrams from the server to leg n's client
-  async do receiveLeg(self, n usize) {
+  async do receiveLeg(self, n: usize) {
     var failures = 0u32;
     while !stopped && n < legs.len() && failures <= relayMaxFailures {
       let r = await legs[n].up.recvFromIn(pool.mustTake(recvRoom), IoLimits.within(group));
@@ -155,7 +155,7 @@ actor Relay {
   }
 
   // One datagram out of leg n: to the server (upstream) or to the client
-  async do out(self, n usize, upstream bool, data List[u8]) {
+  async do out(self, n: usize, upstream: bool, data: List[u8]) {
     if stopped || n >= legs.len() {return;}
     var b = pool.mustTake(max(data.len(), 1usize));
     b.append(data.view());
@@ -167,7 +167,7 @@ actor Relay {
   }
 
   // The leg of the client at 'key', or legs.len() if it has none
-  fn leg(self &, key &str) usize {
+  fn leg(self: &, key: &str) usize {
     var k = 0usize;
     while k < legs.len() {
       if legs[k].key == key {return k;}
@@ -193,13 +193,13 @@ actor Relay {
 }
 
 pub struct LossyRelay {
-  pub port u16;
-  relay Relay;
+  pub port: u16;
+  relay: Relay;
 
   // Stop the relay and wait for it
-  pub fn stop(self &mut) {
-    var tx OneshotSender[u32];
-    var rx OneshotReceiver[u32];
+  pub fn stop(self: &mut) {
+    var tx: OneshotSender[u32];
+    var rx: OneshotReceiver[u32];
     tx, rx = Oneshot[u32].make();
     relay.stop(tx);
     rx.recv();
@@ -209,11 +209,11 @@ pub struct LossyRelay {
 // Start a relay to the server at 'server': 'toServer' is what happens to the
 // clients' datagrams, 'toClient' to the server's answers. The seed makes the
 // losses repeatable. Clients connect to localhost at 'port'.
-pub fn startLossyRelay(server SocketAddr, toServer LinkConfig, toClient LinkConfig, seed u64) LossyRelay {
+pub fn startLossyRelay(server: SocketAddr, toServer: LinkConfig, toClient: LinkConfig, seed: u64) LossyRelay {
   requireAWorker();
   let relay = new Relay(server, toServer, toClient, seed);
-  var tx OneshotSender[Result[SocketAddr, IoError]];
-  var rx OneshotReceiver[Result[SocketAddr, IoError]];
+  var tx: OneshotSender[Result[SocketAddr, IoError]];
+  var rx: OneshotReceiver[Result[SocketAddr, IoError]];
   tx, rx = Oneshot[Result[SocketAddr, IoError]].make();
   relay.open(tx);
   match rx.recv() {

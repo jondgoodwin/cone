@@ -47,12 +47,12 @@ import groundcover use *;
 
 const W = 1600u32;
 const H = 900u32;
-const SIZE f32 = 240.;
+const SIZE: f32 = 240.;
 const RES = 480u32;
 
 // ---- Arguments ----
 
-fn cstrEquals(a *u8, b &Array[u8]) bool {
+fn cstrEquals(a: *u8, b: &Array[u8]) bool {
   var i = 0usize;
   while i < b.len {
     if *(a + i) != b[i] { return false; }
@@ -61,7 +61,7 @@ fn cstrEquals(a *u8, b &Array[u8]) bool {
   *(a + b.len) == 0u8
 }
 
-fn parseCount(s *u8) i32 {
+fn parseCount(s: *u8) i32 {
   if (s as usize) == 0usize || *s == 0u8 { return -1; }
   var n = 0;
   var i = 0usize;
@@ -76,16 +76,16 @@ fn parseCount(s *u8) i32 {
 
 // ---- The ground ----
 
-fn smooth(e0 f32, e1 f32, x f32) f32 { smoothstep(e0, e1, x) }
+fn smooth(e0: f32, e1: f32, x: f32) f32 { smoothstep(e0, e1, x) }
 
 // The hillside before the stream: rising to the north (+z), rolling
-fn terrain(x f32, z f32) f32 {
+fn terrain(x: f32, z: f32) f32 {
   0.16 * z + 10. * (fbm2(x / 70., z / 70., 3u32) - 0.5) + 2.4 * (fbm2(x / 20., z / 20., 4u32) - 0.5)
     + 0.6 * (fbm2(x / 6., z / 6., 5u32) - 0.5)
 }
 
 // The stream's centre line z at x
-fn streamZ(x f32) f32 { 70. + 14. * sin(x / 38.) + 0.06 * x }
+fn streamZ(x: f32) f32 { 70. + 14. * sin(x / 38.) + 0.06 * x }
 
 fn streamLine() List[Vec2] {
   var p = List[Vec2].empty();
@@ -112,22 +112,22 @@ fn pathLine() List[Vec2] {
 
 // A tree standing on the hill
 struct Tree {
-  x f32;
-  z f32;
-  scale f32;
-  yaw f32;
-  variant usize;
+  x: f32;
+  z: f32;
+  scale: f32;
+  yaw: f32;
+  variant: usize;
 }
 
-fn woodland(x f32, z f32) f32 {
+fn woodland(x: f32, z: f32) f32 {
   let edge = 100. + 22. * (fbm2(x / 50., z / 50., 11u32) - 0.5) * 2.;
   (1. - smooth(78., 108., x + (edge - 100.))) * smooth(112., 140., z + 10. * (fbm2(x / 30., z / 30., 12u32) - 0.5))
 }
 
 struct World {
-  maps GroundMaps;
-  trees List[Tree];
-  boulders List[Vec3];
+  maps: GroundMaps;
+  trees: List[Tree];
+  boulders: List[Vec3];
 }
 
 fn buildWorld() World {
@@ -211,17 +211,17 @@ fn buildWorld() World {
   new World(maps, trees, boulders)
 }
 
-fn pcg4dOf(a i32, b i32) UVec4 { pcg4d(new UVec4(a as u32, b as u32, 77u32, 5u32)) }
+fn pcg4dOf(a: i32, b: i32) UVec4 { pcg4d(new UVec4(a as u32, b as u32, 77u32, 5u32)) }
 
 // Towards the sun: 40 degrees up, from the south-west
 fn sunDirection() Vec3 { new Vec3(-0.5, 0.64, -0.58).normalize() }
 
 // ---- The cover types ----
 
-fn rgb(r f32, g f32, b f32) Color { new Color(r, g, b, 1.) }
+fn rgb(r: f32, g: f32, b: f32) Color { new Color(r, g, b, 1.) }
 
 // Twelve types: objects first (others keep clear of them), then what grows between
-fn coverTypes(fern i32, stone i32, branch i32, shrub i32, shrubFar i32) List[CoverType] {
+fn coverTypes(fern: i32, stone: i32, branch: i32, shrub: i32, shrubFar: i32) List[CoverType] {
   var types = List[CoverType].empty();
 
   // 0: shrubs, scattered on the gentle ground where the woodland thins
@@ -564,7 +564,7 @@ fn coverTypes(fern i32, stone i32, branch i32, shrub i32, shrubFar i32) List[Cov
 // ---- The scene's meshes ----
 
 // A tube along a gently curved line, tapering: a fallen branch lying along +x on the ground
-fn branchTube(length f32, radius f32, bend f32, twig bool) mesh.Mesh {
+fn branchTube(length: f32, radius: f32, bend: f32, twig: bool) mesh.Mesh {
   var m = mesh.Mesh.empty();
   let sides = 6;
   let steps = 8;
@@ -610,7 +610,7 @@ fn branchMeshOf() mesh.Mesh {
   m
 }
 
-fn terrainMesh(maps &GroundMaps) mesh.Mesh {
+fn terrainMesh(maps: &GroundMaps) mesh.Mesh {
   let n = 161;
   let step = SIZE / f32.from(n - 1);
   var m = mesh.Mesh.empty();
@@ -672,7 +672,7 @@ fn waterMesh() mesh.Mesh {
   m
 }
 
-fn farImage(maps &GroundMaps) Image {
+fn farImage(maps: &GroundMaps) Image {
   var img = new Image(i32.from(maps.res), i32.from(maps.res), 3, List[u8].withCapacity(usize.from(maps.res) * usize.from(maps.res) * 3usize));
   var p = 0usize;
   while p < usize.from(maps.res) * usize.from(maps.res) {
@@ -687,27 +687,27 @@ fn farImage(maps &GroundMaps) Image {
 // ---- The frame ----
 
 struct Rig {
-  renderer Renderer;
-  post Post;
-  cover CoverRenderer;
-  out Texture;
-  depth Texture;
-  queries QuerySet;
-  resolved Buffer;
-  tsRead Buffer;
-  pixels Buffer;
-  list DrawList;
-  light Light;
-  phase u32;                       // 0: the cover as it is; 1: only its placement; 2: only its drawing (a diagnostic)
-  waitEach bool;                   // wait for the GPU after every frame (off while measuring throughput)
-  device Device;                   // last: it must outlive what it made
+  renderer: Renderer;
+  post: Post;
+  cover: CoverRenderer;
+  out: Texture;
+  depth: Texture;
+  queries: QuerySet;
+  resolved: Buffer;
+  tsRead: Buffer;
+  pixels: Buffer;
+  list: DrawList;
+  light: Light;
+  phase: u32;                       // 0: the cover as it is; 1: only its placement; 2: only its drawing (a diagnostic)
+  waitEach: bool;                   // wait for the GPU after every frame (off while measuring throughput)
+  device: Device;                   // last: it must outlive what it made
 }
 
-fn seconds(from u64, to u64) f64 {
+fn seconds(from: u64, to: u64) f64 {
   f64.from(to - from) / f64.from(sdl.GetPerformanceFrequency())
 }
 
-fn eyeCamera(maps &GroundMaps, x f32, z f32, above f32, tx f32, tz f32, tAbove f32) Camera {
+fn eyeCamera(maps: &GroundMaps, x: f32, z: f32, above: f32, tx: f32, tz: f32, tAbove: f32) Camera {
   var c = Camera.make();
   c.fov = radians(62.);
   c.near = 0.1;
@@ -717,7 +717,7 @@ fn eyeCamera(maps &GroundMaps, x f32, z f32, above f32, tx f32, tz f32, tAbove f
   c
 }
 
-fn airCamera(eye Vec3, target Vec3) Camera {
+fn airCamera(eye: Vec3, target: Vec3) Camera {
   var c = Camera.make();
   c.fov = radians(62.);
   c.near = 0.5;
@@ -729,8 +729,8 @@ fn airCamera(eye Vec3, target Vec3) Camera {
 
 // Draw one frame at time 'now' into rig.out; answers the GPU's milliseconds for the whole frame and for
 // the cover, if timed, and the CPU's for recording the cover
-fn drawFrame(rig &mut Rig, camera &Camera, now f32, withCover bool, farBlend f32, timed bool, gpuFrame &mut f64,
-    gpuCover &mut f64, cpuCover &mut f64) {
+fn drawFrame(rig: &mut Rig, camera: &Camera, now: f32, withCover: bool, farBlend: f32, timed: bool, gpuFrame: &mut f64,
+    gpuCover: &mut f64, cpuCover: &mut f64) {
   rig.renderer.time = now;
   let env = new CoverEnvironment(light: rig.light, exposure: rig.renderer.exposure, time: now, farBlend: farBlend);
   var encoder = rig.device.createCommandEncoder();
@@ -768,7 +768,7 @@ fn drawFrame(rig &mut Rig, camera &Camera, now f32, withCover bool, farBlend f32
   }
 }
 
-fn shoot(rig &mut Rig, camera &Camera, now f32, withCover bool, farBlend f32, name &String) {
+fn shoot(rig: &mut Rig, camera: &Camera, now: f32, withCover: bool, farBlend: f32, name: &String) {
   var a = 0.0;
   var b = 0.0;
   var c = 0.0;
@@ -784,7 +784,7 @@ fn shoot(rig &mut Rig, camera &Camera, now f32, withCover bool, farBlend f32, na
   if written { print <- "\n"; } else { print <- " could NOT be written\n"; }
 }
 
-fn sorted(v &mut List[f64]) {
+fn sorted(v: &mut List[f64]) {
   var i = 1usize;
   while i < v.len() {
     let x = *v[i];
@@ -798,13 +798,13 @@ fn sorted(v &mut List[f64]) {
   }
 }
 
-fn median(v &mut List[f64]) f64 {
+fn median(v: &mut List[f64]) f64 {
   sorted(v);
   *v[v.len() / 2usize]
 }
 
 // Time 'frames' frames of one view: p50 of the GPU's frame and cover time and the CPU's recording
-fn soak(rig &mut Rig, name &str, camera &Camera, withCover bool, frames u32) {
+fn soak(rig: &mut Rig, name: &str, camera: &Camera, withCover: bool, frames: u32) {
   var gf = List[f64].empty();
   var gc = List[f64].empty();
   var cc = List[f64].empty();
@@ -833,7 +833,7 @@ fn soak(rig &mut Rig, name &str, camera &Camera, withCover bool, frames u32) {
 
 // The throughput of 'frames' frames of one view, back to back with no wait between (the GPU stays busy,
 // so its clocks stay up): the milliseconds a frame takes, wall clock. The difference of two views is a cost.
-fn throughput(rig &mut Rig, name &str, camera &Camera, withCover bool, frames u32) f64 {
+fn throughput(rig: &mut Rig, name: &str, camera: &Camera, withCover: bool, frames: u32) f64 {
   rig.waitEach = false;
   var a = 0.0;
   var b = 0.0;
@@ -858,13 +858,13 @@ fn throughput(rig &mut Rig, name &str, camera &Camera, withCover bool, frames u3
   ms
 }
 
-fn named(prefix &String, suffix &str) String {
+fn named(prefix: &String, suffix: &str) String {
   var s = prefix.copy();
   s <- suffix;
   s
 }
 
-fn main(argc i32, argv **u8) i32 {
+fn main(argc: i32, argv: **u8) i32 {
   var prefix = String.empty();
   var soakFrames = 0;
   var phaseFrames = 0;

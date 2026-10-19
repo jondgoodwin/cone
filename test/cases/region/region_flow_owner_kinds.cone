@@ -12,38 +12,38 @@ import collections use *;
 // Run, each of these read an Item (or a counter) the callee's replacement had freed, after its 'final' had run.
 // region_owner_kinds_success holds what is accepted beside each refusal.
 
-struct Item { pub v i64; fn final(self &uni) { printStr("final "); printInt(v); printStr("\n"); } }
+struct Item { pub v: i64; fn final(self: &uni) { printStr("final "); printInt(v); printStr("\n"); } }
 
 trait Gadget {
-  pub fn count(self &mut) &mut i64;
-  pub fn bump(self &mut);
+  pub fn count(self: &mut) &mut i64;
+  pub fn bump(self: &mut);
 }
 
 struct Real is Gadget {
-  pub n i64;
-  pub fn count(self &mut) &mut i64 { &mut n }
-  pub fn bump(self &mut) { n = n + 1; }
-  fn final(self &uni) { printStr("final real "); printInt(n); printStr("\n"); }
+  pub n: i64;
+  pub fn count(self: &mut) &mut i64 { &mut n }
+  pub fn bump(self: &mut) { n = n + 1; }
+  fn final(self: &uni) { printStr("final real "); printInt(n); printStr("\n"); }
 }
 
-struct Holder { pub g Uni[Gadget]; }
+struct Holder { pub g: Uni[Gadget]; }
 
-fn mkArr(n i64) Uni[Array[Item]] {
+fn mkArr(n: i64) Uni[Array[Item]] {
   var l = List[Item].empty();
   l.push(new Item(n));
   l.push(new Item(n + 100));
   l.freeze()
 }
-fn mkG(n i64) Uni[Gadget] { new Uni[Real](new Real(n)) }
-fn mkR(n i64) Rc[mut, Gadget] { new Rc[mut, Real](new Real(n)) }
+fn mkG(n: i64) Uni[Gadget] { new Uni[Real](new Real(n)) }
+fn mkR(n: i64) Rc[mut, Gadget] { new Rc[mut, Real](new Real(n)) }
 
 // The callees: each stores over the owner it is handed
-fn replaceArr(a &mut Uni[Array[Item]]) { *a = mkArr(9); }
-fn clobberArr(a &mut Uni[Array[Item]], e &mut Item) { *a = mkArr(9); printInt(e.v); }
-fn replaceG(o &mut Uni[Gadget]) { *o = mkG(9); }
-fn clobberG(o &mut Uni[Gadget], c &mut i64) { *o = mkG(9); printInt(*c); }
-fn replaceHolder(h &mut Holder) { h.g = mkG(9); }
-fn replaceR(o &mut Rc[mut, Gadget]) { *o = mkR(9); }
+fn replaceArr(a: &mut Uni[Array[Item]]) { *a = mkArr(9); }
+fn clobberArr(a: &mut Uni[Array[Item]], e: &mut Item) { *a = mkArr(9); printInt(e.v); }
+fn replaceG(o: &mut Uni[Gadget]) { *o = mkG(9); }
+fn clobberG(o: &mut Uni[Gadget], c: &mut i64) { *o = mkG(9); printInt(*c); }
+fn replaceHolder(h: &mut Holder) { h.g = mkG(9); }
+fn replaceR(o: &mut Rc[mut, Gadget]) { *o = mkR(9); }
 
 // ---- An owner of an array
 
@@ -59,13 +59,13 @@ fn arrHeld() i64 {
 }
 
 // Two '&mut' parameters that may be one owner
-fn arrTwoCall(a &mut Uni[Array[Item]], b &mut Uni[Array[Item]]) i64 {
+fn arrTwoCall(a: &mut Uni[Array[Item]], b: &mut Uni[Array[Item]]) i64 {
   let e = &mut a[0usize];
   replaceArr(b);                                                        //~ ErrorShapeReshape
   e.v
 }
 
-fn arrTwoStore(a &mut Uni[Array[Item]], b &mut Uni[Array[Item]]) i64 {
+fn arrTwoStore(a: &mut Uni[Array[Item]], b: &mut Uni[Array[Item]]) i64 {
   let e = &mut a[0usize];
   *b = mkArr(9);                                                        //~ ErrorShapeStore
   e.v
@@ -85,27 +85,27 @@ fn gadgetHeld() i64 {
 }
 
 // Two '&mut' parameters that may be one owner
-fn gadgetTwoCall(a &mut Uni[Gadget], b &mut Uni[Gadget]) i64 {
+fn gadgetTwoCall(a: &mut Uni[Gadget], b: &mut Uni[Gadget]) i64 {
   let c = a.count();
   replaceG(b);                                                          //~ ErrorShapeReshape
   *c
 }
 
-fn gadgetTwoStore(a &mut Uni[Gadget], b &mut Uni[Gadget]) i64 {
+fn gadgetTwoStore(a: &mut Uni[Gadget], b: &mut Uni[Gadget]) i64 {
   let c = a.count();
   *b = mkG(9);                                                          //~ ErrorShapeStore
   *c
 }
 
 // The owner a field of a struct, replaced by a call through another holder
-fn gadgetField(a &mut Holder, b &mut Holder) i64 {
+fn gadgetField(a: &mut Holder, b: &mut Holder) i64 {
   let c = a.g.count();
   replaceHolder(b);                                                     //~ ErrorShapeReshape
   *c
 }
 
 // A counted owner of a trait object
-fn gadgetRc(a &mut Rc[mut, Gadget], b &mut Rc[mut, Gadget]) i64 {
+fn gadgetRc(a: &mut Rc[mut, Gadget], b: &mut Rc[mut, Gadget]) i64 {
   let c = a.count();
   replaceR(b);                                                          //~ ErrorShapeReshape
   *c
@@ -134,7 +134,7 @@ fn gadgetSecond() i64 {
 }
 
 // ... the owner in a field, and a counted one
-fn gadgetHolderBump(h &mut Holder) i64 {
+fn gadgetHolderBump(h: &mut Holder) i64 {
   let c = h.g.count();
   h.g.bump();                                                           //~ ErrorShapeReshape
   *c
@@ -148,9 +148,9 @@ fn gadgetRcBump() i64 {
 }
 
 // The owner lent as a '&<mut' beside a '&<' of it, to one call
-fn both(x &<mut Gadget, y &<Gadget) { x.bump(); }
+fn both(x: &<mut Gadget, y: &<Gadget) { x.bump(); }
 fn bothLent() {
-  let a Uni[Gadget] = mkG(1);
+  let a: Uni[Gadget] = mkG(1);
   both(a, a);                                                           //~ ErrorShapeReshape
 }
 

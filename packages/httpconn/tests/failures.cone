@@ -43,16 +43,16 @@ const tokServer2 = 2000u64;
 const slots = 16usize;
 
 struct Slot {
-  pub status u16;
-  pub bytes u64;
-  pub finals u32;
-  pub after u32;
-  pub kind EventKind;
-  pub stage Stage;
-  pub noResponse bool;
-  pub unsent bool;
-  pub closes u32;
-  pub clean bool;
+  pub status: u16;
+  pub bytes: u64;
+  pub finals: u32;
+  pub after: u32;
+  pub kind: EventKind;
+  pub stage: Stage;
+  pub noResponse: bool;
+  pub unsent: bool;
+  pub closes: u32;
+  pub clean: bool;
 }
 
 fn blankSlot() Slot {
@@ -60,30 +60,30 @@ fn blankSlot() Slot {
 }
 
 struct State {
-  pub req List[Slot];
-  pub conn List[Slot];
-  pub srvFinals List[EventKind];
-  pub srvStages List[Stage];
-  pub srvCloses u32;
-  pub srvClean u32;
-  pub srvData u64;
-  pub lastSrvConn ConnId;     // the server connection of the latest request
-  pub raw List[Raw];          // the program's own completions
+  pub req: List[Slot];
+  pub conn: List[Slot];
+  pub srvFinals: List[EventKind];
+  pub srvStages: List[Stage];
+  pub srvCloses: u32;
+  pub srvClean: u32;
+  pub srvData: u64;
+  pub lastSrvConn: ConnId;     // the server connection of the latest request
+  pub raw: List[Raw];          // the program's own completions
 }
 
 // One of the program's own completions: what it said, its buffer's bytes
 struct Raw {
-  pub token u64;
-  pub done bool;
-  pub n usize;
-  pub handle Handle;
-  pub bytes String;
+  pub token: u64;
+  pub done: bool;
+  pub n: usize;
+  pub handle: Handle;
+  pub bytes: String;
 }
 
 // The server's answers, by target. The request's id and target are lent, not the
 // event: the target is a view of a String in the list the event is in, which the
 // driver, handed here as well, might change
-fn serve(drv &mut Driver, lp &mut Loop, st &mut State, req ReqId, t &str, pool &Pool) {
+fn serve(drv: &mut Driver, lp: &mut Loop, st: &mut State, req: ReqId, t: &str, pool: &Pool) {
   st.lastSrvConn = req.connId();
   if t == "/resetnow" {
     drv.abort(lp, req.connId());
@@ -104,7 +104,7 @@ fn serve(drv &mut Driver, lp &mut Loop, st &mut State, req ReqId, t &str, pool &
   drv.finish(req);
 }
 
-fn note(drv &mut Driver, lp &mut Loop, st &mut State, pool &Pool, events &mut List[Event]) {
+fn note(drv: &mut Driver, lp: &mut Loop, st: &mut State, pool: &Pool, events: &mut List[Event]) {
   var k = 0usize;
   while k < events.len() {
     let e = &mut events[k];
@@ -158,7 +158,7 @@ fn note(drv &mut Driver, lp &mut Loop, st &mut State, pool &Pool, events &mut Li
 
 // One turn of the loop for the driver (and the program's raw operations):
 // wait at most ms
-fn turn(drv &mut Driver, lp &mut Loop, st &mut State, pool &Pool, ms i64) {
+fn turn(drv: &mut Driver, lp: &mut Loop, st: &mut State, pool: &Pool, ms: i64) {
   var events = List[Event].empty();
   drv.pump(lp, &mut events);
   var until = Instant.now() + Duration.fromMillis(ms);
@@ -179,7 +179,7 @@ fn turn(drv &mut Driver, lp &mut Loop, st &mut State, pool &Pool, ms i64) {
 }
 
 // Turns until request tok has its final answer, or ms pass
-fn until(drv &mut Driver, lp &mut Loop, st &mut State, pool &Pool, tok u64, ms i64) {
+fn until(drv: &mut Driver, lp: &mut Loop, st: &mut State, pool: &Pool, tok: u64, ms: i64) {
   let end = Instant.now() + Duration.fromMillis(ms);
   while Instant.now() < end {
     if tok != 0u64 && st.req[usize.from(tok)].finals > 0u32 {return;}
@@ -187,13 +187,13 @@ fn until(drv &mut Driver, lp &mut Loop, st &mut State, pool &Pool, tok u64, ms i
   }
 }
 
-fn get(drv &mut Driver, lp &mut Loop, conn ConnId, target &str, tok u64) ReqId {
+fn get(drv: &mut Driver, lp: &mut Loop, conn: ConnId, target: &str, tok: u64) ReqId {
   drv.request(lp, conn, RequestHead.get(target, "127.0.0.1"), BodyLength.empty(), Sink.Here(tok))
 }
 
 // The raw completion with token tok, taken out of st.raw: its count and
 // its buffer's bytes appended to dest; -1 when none has come
-fn takeRaw(st &mut State, tok u64, dest &mut String) i64 {
+fn takeRaw(st: &mut State, tok: u64, dest: &mut String) i64 {
   var k = 0usize;
   while k < st.raw.len() {
     let c = &mut st.raw[k];
@@ -214,7 +214,7 @@ fn takeRaw(st &mut State, tok u64, dest &mut String) i64 {
   0i64 - 1i64
 }
 
-fn rawHandle(st &mut State, tok u64) Handle {
+fn rawHandle(st: &mut State, tok: u64) Handle {
   var k = 0usize;
   while k < st.raw.len() {
     let c = &mut st.raw[k];
@@ -537,8 +537,8 @@ fn main() i32 {
   expectUInt(pool.stats().lent, 0u64, "every buffer back in the pool");
 
   // Stage and event names are text, a '&str', as a Failure's detail is
-  let stage &str = stageName(Stage.Connect);
-  let kind &str = eventName(EventKind.Failed);
+  let stage: &str = stageName(Stage.Connect);
+  let kind: &str = eventName(EventKind.Failed);
   let made = Failure.make(Stage.Limit, 0u32, ErrorKind.TooLarge, "a bound");
   expect(stage == "connect" && kind == "Failed" && made.message().view() == "limit: too large: a bound",
     "stage and event names are text");

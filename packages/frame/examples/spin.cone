@@ -44,35 +44,35 @@ const spinrate = 0.8f64;
 
 // The simulation's state, which only simulate writes: the angle after the
 // last step, and after the one before
-var @threadlocal angle f32 = 0.;
-var @threadlocal before f32 = 0.;
+var @threadlocal angle: f32 = 0.;
+var @threadlocal before: f32 = 0.;
 
 // What render reads, which only publish writes
-var @threadlocal shownFrom f32 = 0.;
-var @threadlocal shownTo f32 = 0.;
+var @threadlocal shownFrom: f32 = 0.;
+var @threadlocal shownTo: f32 = 0.;
 
 // The GPU side, made by start and released by quit. Its fields die in the
 // order they are declared, so the device outlives what it made, and the
 // instance the device.
 struct Gfx {
-  pub readback Buffer;         // frame 10's pixels, copied in render, read in present
-  pub target SurfaceTexture;   // the swapchain's texture the next frame draws into
-  pub renderer Renderer;
-  pub swapchain SwapChain;
-  pub device Device;
-  pub adapter Adapter;
-  pub surface Surface;
-  pub instance Instance;
-  pub ball MeshHandle;
-  pub material MaterialHandle;
-  pub list DrawList;
-  pub camera Camera;
-  pub light Light;
+  pub readback: Buffer;         // frame 10's pixels, copied in render, read in present
+  pub target: SurfaceTexture;   // the swapchain's texture the next frame draws into
+  pub renderer: Renderer;
+  pub swapchain: SwapChain;
+  pub device: Device;
+  pub adapter: Adapter;
+  pub surface: Surface;
+  pub instance: Instance;
+  pub ball: MeshHandle;
+  pub material: MaterialHandle;
+  pub list: DrawList;
+  pub camera: Camera;
+  pub light: Light;
 }
 
 // Made in start. (A global Option cannot be matched in place, only a borrow
 // of a local can, so each callback swaps it out into a local and back.)
-var gfx Option[Gfx];
+var gfx: Option[Gfx];
 
 // Frames drawn, and the color at the middle of the window on the tenth
 var @threadlocal drawn = 0;
@@ -83,12 +83,12 @@ fn @initpure init() {
 }
 
 fn takeGfx() Option[Gfx] {
-  var g Option[Gfx] = None;
+  var g: Option[Gfx] = None;
   g <=> gfx;
   g
 }
 
-pub fn start(host &mut Host) bool {
+pub fn start(host: &mut Host) bool {
   if !host.hasWindow() { return true; }       // headless: the simulation alone
   var instance = Instance.create("spin");
   var surface = instance.createSurface(host.window().sdlHandle());
@@ -140,7 +140,7 @@ pub fn start(host &mut Host) bool {
 }
 
 // The window's own events are frame's; a resize is the swapchain's
-pub fn event(host &mut Host, e &imm sdl.Event) {
+pub fn event(host: &mut Host, e: &imm sdl.Event) {
   if !host.hasWindow() || !host.window().resized { return; }
   host.window().resized = false;
   let s = host.window().size();
@@ -154,20 +154,20 @@ pub fn event(host &mut Host, e &imm sdl.Event) {
 
 // One step: the angle at the end of it, from the steps taken times the step,
 // so it is exact however many steps a frame runs
-pub fn simulate(host &mut Host, step &imm Step, scratch &mut Arena) {
+pub fn simulate(host: &mut Host, step: &imm Step, scratch: &mut Arena) {
   before = angle;
   let endNs = step.startNs + step.ns;
   angle = f32.from(spinrate * f64.from(endNs) / 1.0e9f64);
 }
 
 // What render will read: the last two steps' angles
-pub fn publish(host &mut Host) {
+pub fn publish(host: &mut Host) {
   shownFrom = before;
   shownTo = angle;
 }
 
 // Record the frame: the sphere 'alpha' of the way from the step before to the last
-pub fn draw(host &mut Host, alpha f32, scratch &mut Arena) {
+pub fn draw(host: &mut Host, alpha: f32, scratch: &mut Arena) {
   let a = shownFrom + (shownTo - shownFrom) * alpha;
   var g = takeGfx();
   match &mut g {
@@ -177,7 +177,7 @@ pub fn draw(host &mut Host, alpha f32, scratch &mut Arena) {
   gfx = g;
 }
 
-fn drawBall(g &mut Gfx, a f32) {
+fn drawBall(g: &mut Gfx, a: f32) {
   if !g.target.ok() { return; }
   let tilt = Quat.angleAxis(0.4, new Vec3(1., 0., 0.));
   g.list.clear();
@@ -199,7 +199,7 @@ fn drawBall(g &mut Gfx, a f32) {
 }
 
 // Show the frame, and wait for the next texture to draw into: the present wait
-pub fn present(host &mut Host) {
+pub fn present(host: &mut Host) {
   var g = takeGfx();
   match &mut g {
     case var some &mut Some { showAndAcquire(&mut *some); }
@@ -208,7 +208,7 @@ pub fn present(host &mut Host) {
   gfx = g;
 }
 
-fn showAndAcquire(g &mut Gfx) {
+fn showAndAcquire(g: &mut Gfx) {
   if g.target.ok() {
     g.swapchain.present(&mut g.device);
     if drawn == 10 && g.readback.size > 0u64 {
@@ -229,7 +229,7 @@ fn showAndAcquire(g &mut Gfx) {
   g.target = g.swapchain.getCurrentTexture(&mut g.device);
 }
 
-pub fn quit(host &mut Host) i32 {
+pub fn quit(host: &mut Host) i32 {
   print <- "Steps "; print <- host.stats.steps; print <- ", simulated ";
   print <- host.simNs(); print <- " ns, angle "; print <- f64.from(angle); print <- "\n";
   if !host.hasWindow() { return 0i32; }
@@ -249,7 +249,7 @@ pub fn quit(host &mut Host) i32 {
   code
 }
 
-fn main(argc i32, argv **u8) i32 {
+fn main(argc: i32, argv: **u8) i32 {
   initAll();
   var config = Config.fromArgs(argc, argv);
   config.setTitle("Cone: a lit, textured, turning sphere");

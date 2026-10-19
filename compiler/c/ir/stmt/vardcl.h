@@ -39,7 +39,7 @@ enum VarFlowTemp {
     VarMoved = 0x0002,          // Variable has been moved
     VarHollow = 0x0004,         // What this owning reference points at, or an element of it, was moved out ('hollowed')
     VarDropFlag = 0x0008,       // Whether it holds its value differs by path: a drop flag says so at run time
-    // An initializer's 'self &new' whose value has not been written yet on some
+    // An initializer's 'self: &new' whose value has not been written yet on some
     // path: set as its function's flow begins, cleared by '*self = value'. Like
     // the others it is joined by union, so a store on only some paths leaves it.
     VarUnfilled = 0x0010,

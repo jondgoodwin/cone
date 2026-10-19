@@ -23,7 +23,7 @@ import thread;
 import sync use *;
 import time use Instant, Duration;
 
-let finals Atomic[u64];
+let finals: Atomic[u64];
 
 fn @initpure init() {
   finals = Atomic[u64].of(0u64);
@@ -31,35 +31,35 @@ fn @initpure init() {
 
 // A value whose death is counted
 struct Tracked is Move {
-  pub v u64;
+  pub v: u64;
 
-  fn final(self &uni) {
+  fn final(self: &uni) {
     finals.add(1u64);
   }
 }
 
-fn got(o Option[u64]) u64 {
+fn got(o: Option[u64]) u64 {
   match o {
     case let s Some {s}
     case is None[u64] {0u64}
   }
 }
 
-fn isNone(o Option[u64]) bool {
+fn isNone(o: Option[u64]) bool {
   match o {
     case is None[u64] {true}
     else {false}
   }
 }
 
-fn sendLater(tx OneshotSender[u64]) bool {
+fn sendLater(tx: OneshotSender[u64]) bool {
   var t = tx;
   thread.sleep(Duration.fromMillis(2i64));
   isNone(t.send(77u64))
 }
 
 // Each of n one-shots' senders arrives on the channel; send its index on it
-fn sender(rx Receiver[OneshotSender[u64]]) u64 {
+fn sender(rx: Receiver[OneshotSender[u64]]) u64 {
   var r = rx;
   var n = 0u64;
   var more = true;
@@ -78,8 +78,8 @@ fn sender(rx Receiver[OneshotSender[u64]]) u64 {
 fn main() i32 {
   // 1. One thread
   {
-    var tx OneshotSender[u64];
-    var rx OneshotReceiver[u64];
+    var tx: OneshotSender[u64];
+    var rx: OneshotReceiver[u64];
     tx, rx = Oneshot[u64].make();
     expect(isNone(rx.tryRecv()), "nothing before the send");
     expect(!rx.isReady(), "and not ready");
@@ -94,9 +94,9 @@ fn main() i32 {
 
   // 2. The sender gone without sending
   {
-    var rx OneshotReceiver[u64];
+    var rx: OneshotReceiver[u64];
     {
-      var tx OneshotSender[u64];
+      var tx: OneshotSender[u64];
       tx, rx = Oneshot[u64].make();
     }
     expect(isNone(rx.recv()), "the sender went: None, at once");
@@ -105,9 +105,9 @@ fn main() i32 {
 
   // 3. The receiver gone
   {
-    var tx OneshotSender[u64];
+    var tx: OneshotSender[u64];
     {
-      var rx OneshotReceiver[u64];
+      var rx: OneshotReceiver[u64];
       tx, rx = Oneshot[u64].make();
     }
     expect(tx.isClosed(), "the receiver went: closed");
@@ -117,16 +117,16 @@ fn main() i32 {
   // 4. Finalized exactly once
   {
     {
-      var tx OneshotSender[Tracked];
-      var rx OneshotReceiver[Tracked];
+      var tx: OneshotSender[Tracked];
+      var rx: OneshotReceiver[Tracked];
       tx, rx = Oneshot[Tracked].make();
       tx.send(new Tracked(1u64));
     }
     expectUInt(finals.load(), 1u64, "sent, never taken, both ends gone: finalized once");
     {
-      var rx OneshotReceiver[Tracked];
+      var rx: OneshotReceiver[Tracked];
       {
-        var tx OneshotSender[Tracked];
+        var tx: OneshotSender[Tracked];
         tx, rx = Oneshot[Tracked].make();
         tx.send(new Tracked(2u64));
       }
@@ -134,8 +134,8 @@ fn main() i32 {
     }
     expectUInt(finals.load(), 2u64, "then the receiver: finalized once");
     {
-      var tx OneshotSender[Tracked];
-      var rx OneshotReceiver[Tracked];
+      var tx: OneshotSender[Tracked];
+      var rx: OneshotReceiver[Tracked];
       tx, rx = Oneshot[Tracked].make();
       tx.send(new Tracked(3u64));
       match rx.recv() {
@@ -152,8 +152,8 @@ fn main() i32 {
     var k = 0u32;
     var ok = 0u32;
     while k < 20u32 {
-      var tx OneshotSender[u64];
-      var rx OneshotReceiver[u64];
+      var tx: OneshotSender[u64];
+      var rx: OneshotReceiver[u64];
       tx, rx = Oneshot[u64].make();
       let t = thread.start(tx, &sendLater);
       if got(rx.recv()) == 77u64 {ok = ok + 1u32;}
@@ -165,8 +165,8 @@ fn main() i32 {
 
   // 6. recvTimeout
   {
-    var tx OneshotSender[u64];
-    var rx OneshotReceiver[u64];
+    var tx: OneshotSender[u64];
+    var rx: OneshotReceiver[u64];
     tx, rx = Oneshot[u64].make();
     let t0 = Instant.now();
     expect(isNone(rx.recvTimeout(Duration.fromMillis(20i64))), "nothing in 20 ms: None");
@@ -177,16 +177,16 @@ fn main() i32 {
 
   // 7. 100,000 across two threads
   {
-    var ctx Sender[OneshotSender[u64]];
-    var crx Receiver[OneshotSender[u64]];
+    var ctx: Sender[OneshotSender[u64]];
+    var crx: Receiver[OneshotSender[u64]];
     ctx, crx = Channel[OneshotSender[u64]].make();
     let t = thread.start(crx, &sender);
     var sum = 0u64;
     var wrong = 0u64;
     var i = 0u64;
     while i < 100000u64 {
-      var tx OneshotSender[u64];
-      var rx OneshotReceiver[u64];
+      var tx: OneshotSender[u64];
+      var rx: OneshotReceiver[u64];
       tx, rx = Oneshot[u64].make();
       ctx.send(tx);
       let v = got(rx.recv());

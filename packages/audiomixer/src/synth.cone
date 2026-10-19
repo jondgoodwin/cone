@@ -31,36 +31,36 @@ pub const MATERIAL_STONE = 2u32;
 const BUBBLES = 8usize;
 
 pub struct Synth {
-  pub kind u32;
-  pub rate f32;
-  pub rng Rng;
-  pub pink PinkNoise;
-  pub brown BrownNoise;
-  pub fa Biquad;
-  pub fb Biquad;
-  pub fc Biquad;
-  pub fd Biquad;
-  pub lfo OnePole;             // slow random modulation
-  pub lfo2 OnePole;            // a faster one
-  pub osc Osc;
-  pub t f32;                   // seconds since the start
-  pub tick u32;                // samples, for retuning filters every so often
-  pub p0 f32;                  // parameters: intensity / material / base pitch
-  pub p1 f32;
-  pub p2 f32;
-  pub s0 f32;                  // recipe state
-  pub s1 f32;
-  pub s2 f32;
-  pub s3 f32;
-  pub s4 f32;
-  pub s5 f32;
-  pub bubPhase Array[f32, 8];
-  pub bubFreq Array[f32, 8];
-  pub bubAmp Array[f32, 8];
-  pub bubDecay Array[f32, 8];
-  pub done bool;
+  pub kind: u32;
+  pub rate: f32;
+  pub rng: Rng;
+  pub pink: PinkNoise;
+  pub brown: BrownNoise;
+  pub fa: Biquad;
+  pub fb: Biquad;
+  pub fc: Biquad;
+  pub fd: Biquad;
+  pub lfo: OnePole;             // slow random modulation
+  pub lfo2: OnePole;            // a faster one
+  pub osc: Osc;
+  pub t: f32;                   // seconds since the start
+  pub tick: u32;                // samples, for retuning filters every so often
+  pub p0: f32;                  // parameters: intensity / material / base pitch
+  pub p1: f32;
+  pub p2: f32;
+  pub s0: f32;                  // recipe state
+  pub s1: f32;
+  pub s2: f32;
+  pub s3: f32;
+  pub s4: f32;
+  pub s5: f32;
+  pub bubPhase: Array[f32, 8];
+  pub bubFreq: Array[f32, 8];
+  pub bubAmp: Array[f32, 8];
+  pub bubDecay: Array[f32, 8];
+  pub done: bool;
 
-  fn base(kind u32, rate f32, seed u32) Synth {
+  fn base(kind: u32, rate: f32, seed: u32) Synth {
     new Synth(kind, rate, Rng.seeded(seed), PinkNoise.seeded(seed + 1u32), BrownNoise.seeded(seed + 2u32),
       Biquad.through(), Biquad.through(), Biquad.through(), Biquad.through(),
       OnePole.cutoff(0.3, rate), OnePole.cutoff(6., rate), Osc.make(WAVE_SINE),
@@ -70,7 +70,7 @@ pub struct Synth {
   }
 
   // Wind: 'intensity' 0 (a breath) to 1 (a gale)
-  pub fn wind(rate f32, seed u32, intensity f32) Synth {
+  pub fn wind(rate: f32, seed: u32, intensity: f32) Synth {
     var s = Synth.base(SYNTH_WIND, rate, seed);
     s.p0 = clampf(intensity, 0., 1.);
     s.lfo = OnePole.cutoff(0.25, rate);
@@ -80,7 +80,7 @@ pub struct Synth {
   }
 
   // A brook: 'intensity' 0 (a trickle) to 1 (a rushing stream)
-  pub fn water(rate f32, seed u32, intensity f32) Synth {
+  pub fn water(rate: f32, seed: u32, intensity: f32) Synth {
     var s = Synth.base(SYNTH_WATER, rate, seed);
     s.p0 = clampf(intensity, 0., 1.);
     s.fa = Biquad.design(FILTER_BANDPASS, 700., 0.6, 0., rate);
@@ -91,7 +91,7 @@ pub struct Synth {
 
   // Fire: 'crackle' 0 to 1 the rate of the pops, 'roar' 0 to 1 the burner's
   // rush (a balloon burner is roar 1; a campfire roar 0.1)
-  pub fn fire(rate f32, seed u32, crackle f32, roar f32) Synth {
+  pub fn fire(rate: f32, seed: u32, crackle: f32, roar: f32) Synth {
     var s = Synth.base(SYNTH_FIRE, rate, seed);
     s.p0 = clampf(crackle, 0., 1.);
     s.p1 = clampf(roar, 0., 1.);
@@ -106,7 +106,7 @@ pub struct Synth {
 
   // One footstep on 'material' (MATERIAL_...), 'weight' 0 (light) to 1
   // (heavy); a different seed is a different step
-  pub fn step(rate f32, seed u32, material u32, weight f32) Synth {
+  pub fn step(rate: f32, seed: u32, material: u32, weight: f32) Synth {
     var s = Synth.base(SYNTH_STEP, rate, seed);
     s.p0 = f32.from(material);
     s.p1 = clampf(weight, 0., 1.);
@@ -130,7 +130,7 @@ pub struct Synth {
 
   // A bird's chirp: 'pitch' Hz (a small bird 5000, a thrush 2500), a
   // random number of syllables of 2 to 4
-  pub fn bird(rate f32, seed u32, pitch f32) Synth {
+  pub fn bird(rate: f32, seed: u32, pitch: f32) Synth {
     var s = Synth.base(SYNTH_BIRD, rate, seed);
     s.p0 = pitch;
     s.p1 = f32.from(2u32 + (s.rng.nextU32() % 3u32));       // syllables
@@ -144,7 +144,7 @@ pub struct Synth {
   // A short startled "ah!" (an open /a/ vowel) at base pitch 'pitch' Hz (a man 110, a woman 200): a glottal pulse train whose pitch jumps up
   // and falls back, through three formant resonators (source-filter synthesis, Fant 1960; the vowel's formants after Peterson and
   // Barney 1952: F1 730, F2 1090, F3 2440 Hz), with a little breath noise. 0.35 s, ending by itself.
-  pub fn voice(rate f32, seed u32, pitch f32) Synth {
+  pub fn voice(rate: f32, seed: u32, pitch: f32) Synth {
     var s = Synth.base(SYNTH_VOICE, rate, seed);
     s.p0 = pitch;
     s.s0 = 0.;                                               // the pulse train's phase
@@ -157,7 +157,7 @@ pub struct Synth {
   }
 
   // The next mono sample, 'rate' Hz
-  pub fn next(self &mut) f32 {
+  pub fn next(self: &mut) f32 {
     let dt = 1. / rate;
     var out = 0.f;
     if kind == SYNTH_WIND { out = windNext(self); }
@@ -172,7 +172,7 @@ pub struct Synth {
   }
 
   // Fill 'out' with 'n' samples
-  pub fn fill(self &mut, out &mut Array[f32], n usize) {
+  pub fn fill(self: &mut, out: &mut Array[f32], n: usize) {
     var i = 0usize;
     while i < n { out[i] = self.next(); i = i + 1usize; }
   }
@@ -182,7 +182,7 @@ pub struct Synth {
 // pink noise through a wide band-pass (the body) and a narrow resonance (the
 // howl); a slowly varying gust level moves both centre frequencies and sets
 // the loudness
-fn windNext(s &mut Synth) f32 {
+fn windNext(s: &mut Synth) f32 {
   // the gust level: low-passed white noise, centred on 0.5, spread by 2.5
   let g = s.lfo.process(s.rng.signed()) * 2.5 + 0.5;
   let gust = clampf(g, 0., 1.);
@@ -198,7 +198,7 @@ fn windNext(s &mut Synth) f32 {
 }
 
 // -------- water --------
-fn waterNext(s &mut Synth) f32 {
+fn waterNext(s: &mut Synth) f32 {
   let bed = s.fa.process(s.brown.next()) * 0.9 * (0.3 + 0.7 * s.p0);
   let hiss = s.fb.process(s.rng.signed()) * 0.05 * s.p0;
   // gurgle: a slow modulation of the bed
@@ -240,7 +240,7 @@ fn waterNext(s &mut Synth) f32 {
 }
 
 // -------- fire --------
-fn fireNext(s &mut Synth) f32 {
+fn fireNext(s: &mut Synth) f32 {
   let flick = clampf(0.6 + s.lfo.process(s.rng.signed()) * 2.5, 0.2, 1.);
   let swell = clampf(0.7 + s.lfo2.process(s.rng.signed()) * 4., 0.3, 1.);
   // rumble: brown noise, low-passed
@@ -265,7 +265,7 @@ fn fireNext(s &mut Synth) f32 {
 // -------- footsteps --------
 // A noise burst and a thump excite the material's resonances. Grass has no
 // ringing: a soft band-passed rustle and a few tiny crunches.
-fn stepNext(s &mut Synth) f32 {
+fn stepNext(s: &mut Synth) f32 {
   let w = 0.4 + 0.6 * s.p1;
   var out = 0.f;
   let thump = (TAU * (70. + 30. * (1. - s.p1)) * s.t).sin() * libc.expf(-s.t * 55.);
@@ -303,8 +303,8 @@ fn stepNext(s &mut Synth) f32 {
 // 28 Hz vibrato of 2% and a weak second harmonic; the amplitude is a smooth
 // sin^0.5 bump.
 // -------- a startled "ah!" --------
-const VOICE_SECONDS f32 = 0.35;
-fn voiceNext(s &mut Synth) f32 {
+const VOICE_SECONDS: f32 = 0.35;
+fn voiceNext(s: &mut Synth) f32 {
   if s.t >= VOICE_SECONDS { s.done = true; return 0.; }
   // The pitch jumps up a fifth and falls back over the sound; a little vibrato
   let u = s.t / VOICE_SECONDS;
@@ -321,7 +321,7 @@ fn voiceNext(s &mut Synth) f32 {
   y * env * 1.6
 }
 
-fn birdNext(s &mut Synth) f32 {
+fn birdNext(s: &mut Synth) f32 {
   let syl = s.s1 + s.s2;
   let n = s.t / syl;
   let idx = libc.floorf(n);

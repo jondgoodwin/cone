@@ -14,72 +14,72 @@ mod collection_flow_store_owner;
 import collections use *;
 import sync use Arc;
 
-struct Item { pub n i64; }
+struct Item { pub n: i64; }
 
 // An owner whose region the program declares
 struct One is RegionRef, Move {
-  fn alloc(size usize) *u8 inline { RawBlocks.alloc(size, 16usize) }
-  fn free(self &uni One) inline { RawBlocks.release(self as *u8); }
+  fn alloc(size: usize) *u8 inline { RawBlocks.alloc(size, 16usize) }
+  fn free(self: &uni One) inline { RawBlocks.release(self as *u8); }
 }
 
-struct Ship { pub fuel i64; pub vec Uni[List[Item]]; }
-struct ShipRc { pub fuel i64; pub vec Rc[mut, List[Item]]; }
-struct ShipArc { pub fuel i64; pub vec Arc[mut, List[Item]]; }
-struct ShipOne { pub fuel i64; pub vec One[List[Item]]; }
-struct ShipList { pub fuel i64; pub vec List[Item]; }
-struct Fleet { pub lead Ship; }
+struct Ship { pub fuel: i64; pub vec: Uni[List[Item]]; }
+struct ShipRc { pub fuel: i64; pub vec: Rc[mut, List[Item]]; }
+struct ShipArc { pub fuel: i64; pub vec: Arc[mut, List[Item]]; }
+struct ShipOne { pub fuel: i64; pub vec: One[List[Item]]; }
+struct ShipList { pub fuel: i64; pub vec: List[Item]; }
+struct Fleet { pub lead: Ship; }
 
 // The measured case: two '&mut' references, the list owned by a 'Uni'
-fn viaRefs(a &mut Ship, b &mut Ship) i64 {
+fn viaRefs(a: &mut Ship, b: &mut Ship) i64 {
   let e = a.vec[0usize];
   b.vec = new Uni[List[Item]](List[Item].empty());   //~ ErrorShapeStore "this store replaces a 'List'"
   e.n
 }
 
 // The owner a shared 'Rc'
-fn viaRc(a &mut ShipRc, b &mut ShipRc) i64 {
+fn viaRc(a: &mut ShipRc, b: &mut ShipRc) i64 {
   let e = a.vec[0usize];
   b.vec = new Rc[mut, List[Item]](List[Item].empty());   //~ ErrorShapeStore "this store replaces a 'List'"
   e.n
 }
 
 // ... an 'Arc'
-fn viaArc(a &mut ShipArc, b &mut ShipArc) i64 {
+fn viaArc(a: &mut ShipArc, b: &mut ShipArc) i64 {
   let e = a.vec[0usize];
   b.vec = new Arc[mut, List[Item]](List[Item].empty());   //~ ErrorShapeStore "this store replaces a 'List'"
   e.n
 }
 
 // ... a region the program declares
-fn viaOne(a &mut ShipOne, b &mut ShipOne) i64 {
+fn viaOne(a: &mut ShipOne, b: &mut ShipOne) i64 {
   let e = a.vec[0usize];
   b.vec = new One[List[Item]](List[Item].empty());   //~ ErrorShapeStore "this store replaces a 'List'"
   e.n
 }
 
 // The whole ship stored over takes its owner with it
-fn wholeShip(a &mut Ship, b &mut Ship, s Ship) i64 {
+fn wholeShip(a: &mut Ship, b: &mut Ship, s: Ship) i64 {
   let e = a.vec[0usize];
   *b = s;                                           //~ ErrorShapeStore "this store replaces a 'List'"
   e.n
 }
 
 // ... also a ship held by value in another struct
-fn nestedShip(a &mut Fleet, b &mut Fleet, s Ship) i64 {
+fn nestedShip(a: &mut Fleet, b: &mut Fleet, s: Ship) i64 {
   let e = a.lead.vec[0usize];
   b.lead = s;                                       //~ ErrorShapeStore "this store replaces a 'List'"
   e.n
 }
 
 // ... or the list reached through the owner and stored over
-fn throughOwner(a &mut Ship, b &mut Ship) i64 {
+fn throughOwner(a: &mut Ship, b: &mut Ship) i64 {
   let e = a.vec[0usize];
   *b.vec = List[Item].empty();                      //~ ErrorShapeStore "this store replaces a 'List'"
   e.n
 }
 
 // Controls, already refused: the list held inline (1426), the same name (1168)
-fn inlineList(a &mut ShipList, b &mut ShipList) i64 {
+fn inlineList(a: &mut ShipList, b: &mut ShipList) i64 {
   let e = a.vec[0usize];
   b.vec = List[Item].empty();                       //~ ErrorShapeStore "this store replaces a 'List'"
   e.n
@@ -94,20 +94,20 @@ fn sameLocal() i64 {
 
 // ... and the same reference twice, which was no better seen before: the borrow
 // through the owner did not freeze the field it was reached by
-fn sameName(a &mut Ship) i64 {
+fn sameName(a: &mut Ship) i64 {
   let e = a.vec[0usize];
   a.vec = new Uni[List[Item]](List[Item].empty());   //~ ErrorShapeStore "this store replaces a 'List'"
   e.n
 }
 
-fn sameNameInline(a &mut ShipList) i64 {
+fn sameNameInline(a: &mut ShipList) i64 {
   let e = a.vec[0usize];
   a.vec = List[Item].empty();                       //~ ErrorShapeStore "this store replaces a 'List'"
   e.n
 }
 
 // ... and a push through another owner (1339)
-fn pushOther(a &mut Ship, b &mut Ship, it Item) i64 {
+fn pushOther(a: &mut Ship, b: &mut Ship, it: Item) i64 {
   let e = a.vec[0usize];
   b.vec.push(it);                                   //~ ErrorShapeReshape "'push' reshapes the 'List' it is called on"
   e.n

@@ -28,11 +28,11 @@ var @threadlocal trHead = 0usize;
 var @threadlocal collectInAlloc = false;
 
 struct Tr is RegionRef, Traced {
-  pub id i64;
-  pub next usize;
-  pub marks i64;
+  pub id: i64;
+  pub next: usize;
+  pub marks: i64;
 
-  fn alloc(size usize, ty *TypeRecord) *u8 {
+  fn alloc(size: usize, ty: *TypeRecord) *u8 {
     // A collector's alloc may collect: this one shows what it would find
     if collectInAlloc {
       printStr("  alloc "); printInt(nextId);
@@ -44,12 +44,12 @@ struct Tr is RegionRef, Traced {
     trHead = p as usize;
     p
   }
-  fn mark(self &uni Tr, slot *usize) {
+  fn mark(self: &uni Tr, slot: *usize) {
     marks = marks + 1;
   }
 }
 
-fn roots(label &str) {
+fn roots(label: &str) {
   mem.traceRoots(0u32);
   printStr(label); printStr(":");
   var at = trHead;
@@ -65,16 +65,16 @@ fn roots(label &str) {
   printStr("\n");
 }
 
-struct Leaf { pub n i64; }
-struct Pair { pub left Tr[mut, Leaf]; pub right Tr[mut, Leaf]; }
-struct Link { pub n i64; pub next Option[Tr[mut, Link]]; }
+struct Leaf { pub n: i64; }
+struct Pair { pub left: Tr[mut, Leaf]; pub right: Tr[mut, Leaf]; }
+struct Link { pub n: i64; pub next: Option[Tr[mut, Link]]; }
 
-fn probe(label &str) i64 {
+fn probe(label: &str) i64 {
   roots(label);
   0
 }
 
-fn both(a Tr[mut, Leaf], b i64) i64 {
+fn both(a: Tr[mut, Leaf], b: i64) i64 {
   a.n + b
 }
 
@@ -95,7 +95,7 @@ fn locals() {
 // -- A callee's frame, and its pop
 //   callee: 4 3x2            keep's mine and l; popped's birth of the argument
 //   popped: 3x2              the birth and k; keep's frame, and Leaf 4, gone
-fn keep(l Tr[mut, Leaf]) Tr[mut, Leaf] {
+fn keep(l: Tr[mut, Leaf]) Tr[mut, Leaf] {
   let mine = new Tr[mut, Leaf](l.n + 10);
   probe("callee");
   l
@@ -110,7 +110,7 @@ fn popped() {
 // and 8, and returns early from inside its 'if'.
 //   deepest: 8 7x2 6x2 5x2
 //   back: 5                  every deep frame popped; the birth remains
-fn deep(k i64, held Tr[mut, Leaf]) {
+fn deep(k: i64, held: Tr[mut, Leaf]) {
   let mine = new Tr[mut, Leaf](k);
   if k == 0 {
     roots("deepest");
@@ -131,7 +131,7 @@ fn recursion() {
 // Then kept is 12, and the loop makes x = 13 (kept), 14 (continue), 15
 // (kept), 16 (break).
 //   looped: 16 15 11         x's slot, kept, s
-fn search(limit i64) Tr[mut, Leaf] {
+fn search(limit: i64) Tr[mut, Leaf] {
   var i = 0i64;
   while i < 10 {
     let x = new Tr[mut, Leaf](i);
@@ -168,7 +168,7 @@ fn loops() {
 //                            the birth of 21; the birth of 20 and the birth
 //                            of the p.left loaded as both's first argument,
 //                            no longer in the Pair
-fn clobber(p Tr[mut, Pair]) i64 {
+fn clobber(p: Tr[mut, Pair]) i64 {
   p.left = new Tr[mut, Leaf](99);
   roots("clobbered");
   0
@@ -182,7 +182,7 @@ fn loaded() {
 // -- Structures built across calls: links 21, 22, 23, each made by its own
 // level's frame and holding the one before; only the head is a root.
 //   chain: 23
-fn chain(n i64) Option[Tr[mut, Link]] {
+fn chain(n: i64) Option[Tr[mut, Link]] {
   if n == 0 {
     return None;
   }
@@ -215,10 +215,10 @@ fn initOrder() {
 //   aggregates: 29x2 28x2 27x2   t and 42's birth; pr and 40's and 41's
 //   generic: 29x2 28x3 27x3      hold's v, a copy of pr, too
 //   inline: 29x3 28x2 27x2       twice's l, in aggregates' frame
-fn hold[T](v T) i64 {
+fn hold[T](v: T) i64 {
   probe("generic")
 }
-fn twice(l Tr[mut, Leaf]) i64 inline {
+fn twice(l: Tr[mut, Leaf]) i64 inline {
   probe("inline");
   l.n * 2
 }

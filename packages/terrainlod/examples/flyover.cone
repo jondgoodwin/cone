@@ -45,7 +45,7 @@ const DEFAULT_FRAMES = 2400;
 
 // ---- The ground ----
 
-fn smooth(a f32, b f32, v f32) f32 {
+fn smooth(a: f32, b: f32, v: f32) f32 {
   let t = if v < a { 0. } elif v > b { 1. } else { (v - a) / (b - a) };
   t * t * (3. - 2. * t)
 }
@@ -54,7 +54,7 @@ fn smooth(a f32, b f32, v f32) f32 {
 // falls off as a Gaussian 5.5 km wide; along it the peaks swell and shrink.
 // The peaks are a ridged multifractal of seven octaves. Foothills and lowland
 // swell under all of it.
-fn mountains(x f32, z f32) f32 {
+fn mountains(x: f32, z: f32) f32 {
   let c = 0.9396926f;
   let s = 0.3420201f;
   let along = x * c + z * s;
@@ -72,7 +72,7 @@ fn mountains(x f32, z f32) f32 {
 
 // ---- The look ----
 
-fn makeLook(debug u32) TerrainLook {
+fn makeLook(debug: u32) TerrainLook {
   var layers = List[TerrainLayer].empty();
   layers.push(TerrainLayer.base(new Color(0.09, 0.15, 0.045, 1.)));                                    // meadow
   layers.push(TerrainLayer.band(new Color(0.035, 0.075, 0.03, 1.), 60., 1250., 90., -0.1, 0.2, 0.05));       // forest
@@ -94,7 +94,7 @@ fn makeLook(debug u32) TerrainLook {
 // The path in the range's own coordinates: along it from -9 km to +9 km, and
 // across it from the southern foothills (-6.5 km) over the crest to 2.5 km
 // beyond, then back to the world's
-fn pathXZ(t f32) Vec2 {
+fn pathXZ(t: f32) Vec2 {
   let along = -9000. + 18000. * t;
   let across = -6500. + 9000. * smooth(0.05, 0.95, t) + 600. * libc.sinf(t * 9.);
   new Vec2(along * 0.9396926 - across * 0.3420201, along * 0.3420201 + across * 0.9396926)
@@ -102,7 +102,7 @@ fn pathXZ(t f32) Vec2 {
 
 // The eye for each frame: along the path, above the ground by a height that
 // grows from 3 m to 3 km, smoothed so the climb is a glide
-fn flightEyes(frames i32) List[Vec3] {
+fn flightEyes(frames: i32) List[Vec3] {
   var raw = List[Vec3].empty();
   var i = 0;
   while i < frames {
@@ -146,7 +146,7 @@ fn flightEyes(frames i32) List[Vec3] {
 
 // The camera for frame 'i' of 'frames': at the eye, looking along the path,
 // the pitch falling from level to 22 degrees down
-fn flightCamera(eyes &List[Vec3], i i32, frames i32, aspectFov f32) Camera {
+fn flightCamera(eyes: &List[Vec3], i: i32, frames: i32, aspectFov: f32) Camera {
   let t = f32.from(i) / f32.from(frames - 1);
   let eye = *eyes[usize.from(i)];
   let ahead = pathXZ(if t + 0.002 > 1. { 1. } else { t + 0.002 });
@@ -166,7 +166,7 @@ fn flightCamera(eyes &List[Vec3], i i32, frames i32, aspectFov f32) Camera {
 
 // ---- Helpers ----
 
-fn cstrEquals(a *u8, b &str) bool {
+fn cstrEquals(a: *u8, b: &str) bool {
   var i = 0usize;
   while i < b.len() {
     if *(a + i) != b[i] { return false; }
@@ -175,7 +175,7 @@ fn cstrEquals(a *u8, b &str) bool {
   *(a + b.len()) == 0u8
 }
 
-fn argInt(s *u8) i32 {
+fn argInt(s: *u8) i32 {
   var v = 0;
   var i = 0usize;
   while *(s + i) >= 48u8 && *(s + i) <= 57u8 {
@@ -185,7 +185,7 @@ fn argInt(s *u8) i32 {
   v
 }
 
-fn cstrToString(s *u8) String {
+fn cstrToString(s: *u8) String {
   var out = String.empty();
   var i = 0usize;
   while *(s + i) != 0u8 {
@@ -196,7 +196,7 @@ fn cstrToString(s *u8) String {
 }
 
 // A half float's bits as an f32
-fn halfToFloat(h u32) f32 {
+fn halfToFloat(h: u32) f32 {
   let sign = if ((h >> 15u32) & 1u32) != 0u32 { -1.f } else { 1. };
   let e = i32.from((h >> 10u32) & 31u32);
   let m = f32.from(h & 1023u32);
@@ -206,7 +206,7 @@ fn halfToFloat(h u32) f32 {
 }
 
 // The p-th percentile (0 to 1) of the values, sorted by insertion
-fn percentile(values &List[f64], p f64) f64 {
+fn percentile(values: &List[f64], p: f64) f64 {
   var v = List[f64].empty();
   var i = 0usize;
   while i < values.len() { v.push(*values[i]); i = i + 1usize; }
@@ -226,34 +226,34 @@ fn percentile(values &List[f64], p f64) f64 {
   *v[at]
 }
 
-fn ms(i Instant) f64 { i.elapsed().secondsF64() * 1000.0 }
+fn ms(i: Instant) f64 { i.elapsed().secondsF64() * 1000.0 }
 
 // What a frame cost
 struct FrameCost {
-  update f64;       // CPU: the walk and new patches
-  record f64;       // CPU: the list, the recording, the submission
-  gpu f64;          // GPU: the render pass
+  update: f64;       // CPU: the walk and new patches
+  record: f64;       // CPU: the list, the recording, the submission
+  gpu: f64;          // GPU: the render pass
 }
 
 struct Stage {
-  device Device;
-  renderer Renderer;
-  post Post;
-  out Texture;
-  hdr Texture;
-  depth Texture;
-  queries QuerySet;
-  resolved Buffer;
-  readback Buffer;
-  w u32;
-  h u32;
+  device: Device;
+  renderer: Renderer;
+  post: Post;
+  out: Texture;
+  hdr: Texture;
+  depth: Texture;
+  queries: QuerySet;
+  resolved: Buffer;
+  readback: Buffer;
+  w: u32;
+  h: u32;
 }
 
 // Update the terrain for 'camera', draw into the HDR frame and the 8-bit
 // output (when 'toOut'), timing the pieces
-fn drawFrame(device &mut Device, renderer &mut Renderer, post &mut Post, terrain &mut Terrain, out &Texture,
-    hdr &Texture, depth &Texture, queries &QuerySet, resolved &Buffer, readback &Buffer, camera &Camera,
-    light &Light, list &mut DrawList, w u32, h u32, raw bool) FrameCost {
+fn drawFrame(device: &mut Device, renderer: &mut Renderer, post: &mut Post, terrain: &mut Terrain, out: &Texture,
+    hdr: &Texture, depth: &Texture, queries: &QuerySet, resolved: &Buffer, readback: &Buffer, camera: &Camera,
+    light: &Light, list: &mut DrawList, w: u32, h: u32, raw: bool) FrameCost {
   let t0 = Instant.now();
   terrain.update(device, renderer, camera, w, h, &mountains);
   let update = ms(t0);
@@ -280,9 +280,9 @@ fn drawFrame(device &mut Device, renderer &mut Renderer, post &mut Post, terrain
   new FrameCost(update, record, gpu)
 }
 
-fn saveShot(device &mut Device, renderer &mut Renderer, post &mut Post, terrain &mut Terrain, out &Texture, hdr &Texture,
-    depth &Texture, queries &QuerySet, resolved &Buffer, readback &Buffer, camera &Camera, light &Light,
-    list &mut DrawList, w u32, h u32, name &String) {
+fn saveShot(device: &mut Device, renderer: &mut Renderer, post: &mut Post, terrain: &mut Terrain, out: &Texture, hdr: &Texture,
+    depth: &Texture, queries: &QuerySet, resolved: &Buffer, readback: &Buffer, camera: &Camera, light: &Light,
+    list: &mut DrawList, w: u32, h: u32, name: &String) {
   // Twice: the first brings in what the camera needs, the second draws it
   drawFrame(device, renderer, post, terrain, out, hdr, depth, queries, resolved, readback, camera, light, list, w, h, false);
   var shot = device.createBuffer(u64.from(w) * u64.from(h) * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
@@ -303,8 +303,8 @@ fn saveShot(device &mut Device, renderer &mut Renderer, post &mut Post, terrain 
 }
 
 // Read the HDR frame (rgba16float) back into floats, 4 a pixel
-fn readHdr(device &mut Device, hdr &Texture, w u32, h u32, camera &Camera, renderer &mut Renderer, terrain &mut Terrain,
-    depth &Texture, light &Light, list &mut DrawList, buffer &Buffer) {
+fn readHdr(device: &mut Device, hdr: &Texture, w: u32, h: u32, camera: &Camera, renderer: &mut Renderer, terrain: &mut Terrain,
+    depth: &Texture, light: &Light, list: &mut DrawList, buffer: &Buffer) {
   list.clear();
   terrain.update(device, renderer, camera, w, h, &mountains);
   terrain.draw(list);
@@ -316,7 +316,7 @@ fn readHdr(device &mut Device, hdr &Texture, w u32, h u32, camera &Camera, rende
   device.waitIdle();
 }
 
-fn main(argc i32, argv **u8) i32 {
+fn main(argc: i32, argv: **u8) i32 {
   var shotsPrefix = String.empty();
   var doCost = false;
   var doCracks = false;

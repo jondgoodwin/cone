@@ -152,7 +152,7 @@ void fnCallPrint(FnCallNode *node) {
 }
 
 // Whether a declaration is a method, or an overload name one of whose
-// candidates is. An enum's method over the whole enum ('self &Lamp') is a
+// candidates is. An enum's method over the whole enum ('self: &Lamp') is a
 // function of its own, not a template, so naming it is naming a function
 static int fnCallNamesTemplateMethod(INode *dcl, int wholeenum) {
     if (dcl->tag == FnDclTag)
@@ -753,10 +753,10 @@ int fnCallIsNever(INode *node) {
 
 // A virtual dispatch's receiver that is an owning virtual reference ('Uni[Trait]',
 // Trait an open trait) is lent to the method as a borrowed one, with the permission the
-// method declares for 'self', as a plain owner is lent to a 'self &' or 'self
+// method declares for 'self', as a plain owner is lent to a 'self: &' or 'self
 // &mut' method: a recast that flow analysis reads as a borrow of what the owner
 // points at (pwOwnedLent), so the owner stays, frozen while the call uses it.
-// Passed as it is, the owner was moved into the call. A 'self &uni' method
+// Passed as it is, the owner was moved into the call. A 'self: &uni' method
 // is lent nothing: the recast to a move type would still move the owner.
 static void fnCallLendVirtOwner(INode **selfp, INode *parmtype) {
     RefNode *owner = (RefNode*)iexpGetTypeDcl(*selfp);
@@ -1047,7 +1047,7 @@ static void fnCallNoCandidate(INode *callnode, enum OverloadMatch status, Name *
 }
 
 // '&x[i]' hands the type's '&[]' a read-only borrow of 'x' as its receiver,
-// which a '&[]' declaring 'self &mut' refuses. That refusal is the rule; what
+// which a '&[]' declaring 'self: &mut' refuses. That refusal is the rule; what
 // this adds is the reason and the spellings that work, reported in place of the
 // bare no-candidate message where a '&mut' receiver would have been accepted.
 // The probe alters nothing. Answer whether it reported.
@@ -1062,7 +1062,7 @@ static int fnCallRefIndexWantsMut(FnCallNode *callnode, INode *foundnode, Name *
     if (iNsTypeFindMethod(foundnode, &mutrecvr, callnode->args, &mutstatus) == NULL)
         return 0;
     errorMsgNode((INode*)callnode, ErrorNoCandidate,
-        "`&x[i]` hands `&[]` a read-only receiver, and this type's `&[]` takes `self &mut`. "
+        "`&x[i]` hands `&[]` a read-only receiver, and this type's `&[]` takes `self: &mut`. "
         "Write `x[i]` to read the element, or `&mut x[i]` to borrow it through a mutable receiver.");
     return 1;
 }
@@ -1105,7 +1105,7 @@ static void fnCallUniFieldSeen(FnCallNode *access, FieldDclNode *fld, INode *lex
 // then lower the node to a function call (objfn+args) or field access (objfn+methfld).
 // A receiver held through a reference or pointer is dereferenced where the selected
 // method declared 'self' by value; a receiver held as a value is borrowed where it
-// declared 'self &' or 'self &mut'; and an operator written on a pointer does not
+// declared 'self: &' or 'self: &mut'; and an operator written on a pointer does not
 // reach through at all.
 // The access reaching field 'fld' on 'obj', positioned on 'lexnode'. For a
 // declared field that is one field access; for a folded copy it is an access
@@ -1178,8 +1178,8 @@ void fnCallDemandCandidates(INode *binding) {
 
 static int fnCallPlaceAsMut(TypeCheckState *pstate, INode **placep);
 
-// A receiver held as a value -- 'v.push(x)' for a 'var v List[i64]' -- reaches
-// a method that declared 'self &' or 'self &mut' by being borrowed, as though
+// A receiver held as a value -- 'v.push(x)' for a 'var v: List[i64]' -- reaches
+// a method that declared 'self: &' or 'self: &mut' by being borrowed, as though
 // '(&v).len()' or '(&mut v).push(x)' had been written: "Cone will automatically
 // transform 'self' to a mutable borrowed reference" (doc/manual/
 // safe-types.html#self, "Coercing a method's self"), as lval operators already
@@ -1187,11 +1187,11 @@ static int fnCallPlaceAsMut(TypeCheckState *pstate, INode **placep);
 // taking 'self' by value is always preferred, and never of a receiver that is
 // already a reference or a pointer: a pointer is not borrowed from.
 //
-// The weakest borrow a candidate accepts is taken: 'ro' first, so a 'self &'
+// The weakest borrow a candidate accepts is taken: 'ro' first, so a 'self: &'
 // method borrows for reading even from a mutable variable, then 'mut', then
-// 'uni' (a 'self &uni' method, which a local lends as '&uni' does). The
+// 'uni' (a 'self: &uni' method, which a local lends as '&uni' does). The
 // borrow is made by borrowMutRef, so its permission and lifetime are the ones a
-// hand-written '&mut v' gets: a 'self &mut' method on an immutable variable is
+// hand-written '&mut v' gets: a 'self: &mut' method on an immutable variable is
 // ErrorBadPerm. A temporary is borrowed where it is, as '&' of it is, and
 // lives to the end of its statement (borrowTempRef).
 // Returns the selected method, with the borrow now the receiver, or NULL.
@@ -1200,7 +1200,7 @@ static FnDclNode *fnCallBorrowReceiver(TypeCheckState *pstate, FnCallNode *calln
     INode *obj = callnode->objfn;
     INode *objtype = iexpGetTypeDcl(obj);
     // A reference is passed as it is, but for an owner (not a borrow) of the type: a
-    // method declaring 'self &Uni[str]' (fnDclTypeCheck) takes the borrow of the owner
+    // method declaring 'self: &Uni[str]' (fnDclTypeCheck) takes the borrow of the owner
     INode *ownerof = objtype->tag == RefTag && itypeGetTypeDcl(((RefNode*)objtype)->region) != borrowRef
         ? itypeGetTypeDcl(((RefNode*)objtype)->vtexp) : NULL;
     if (ownerof ? !isMethodType(ownerof)
@@ -1210,9 +1210,9 @@ static FnDclNode *fnCallBorrowReceiver(TypeCheckState *pstate, FnCallNode *calln
     // borrow would be '&mut *p', a reference made from a pointer
     if (obj->tag == DerefTag && iexpGetTypeDcl(((StarNode*)obj)->vtexp)->tag == PtrTag)
         return NULL;
-    // A type declaring Immutable has 'self &' as 'self &imm', which a 'ro'
+    // A type declaring Immutable has 'self: &' as 'self: &imm', which a 'ro'
     // borrow is not accepted as, so 'imm' is tried between the two
-    // A method declaring 'self &uni' is reached last: a local is unique, so
+    // A method declaring 'self: &uni' is reached last: a local is unique, so
     // lending it 'uni' is the one borrow left, and the borrow keeps every other
     // name from reaching it while the call runs (doc/manual/mem-permissions.html#fromuni,
     // "From uni, for a while")
@@ -1260,7 +1260,7 @@ static FnDclNode *fnCallBorrowReceiver(TypeCheckState *pstate, FnCallNode *calln
 // does (fnCallBorrowReceiver), so the borrow need only be as strong as the
 // strongest 'self' among the type's '<-' methods, and never stronger than
 // the receiver permits:
-// - every '<-' takes 'self &mut': mutable, as it always was (an immutable
+// - every '<-' takes 'self: &mut': mutable, as it always was (an immutable
 //   receiver is refused by the borrow itself);
 // - none does: read-only ('imm' for a type declaring Immutable, which a 'ro'
 //   borrow is not accepted as), so an immutable receiver is appended to
@@ -1755,7 +1755,7 @@ static int fnCallLowerMethodOn(TypeCheckState *pstate, FnCallNode *callnode, INo
     if (foundnode && foundnode->tag == StructTag)
         foundnode = NULL;
     // A value of a variant reaches a method of its enum that takes the whole enum
-    // ('self &Lamp'): the variant has no copy of it, and its receiver is widened to
+    // ('self: &Lamp'): the variant has no copy of it, and its receiver is widened to
     // the enum. A method the variant declares or was given is its own, and is
     // found above.
     if (foundnode == NULL && objdereftype->tag == StructTag) {
@@ -1955,15 +1955,15 @@ static int fnCallLowerMethodOn(TypeCheckState *pstate, FnCallNode *callnode, INo
             callnode->objfn = obj;  // a failed retry leaves the call as it was found
     }
 
-    // A receiver held as a value reaches a method declaring 'self &' or
-    // 'self &mut' by being borrowed (fnCallBorrowReceiver)
+    // A receiver held as a value reaches a method declaring 'self: &' or
+    // 'self: &mut' by being borrowed (fnCallBorrowReceiver)
     if (selected == NULL && status == OverloadNone)
         selected = fnCallBorrowReceiver(pstate, callnode, foundnode, &status);
 
     // An operator's argument that is a borrow of a value that copies freely is
     // read through for a receiver that has to be borrowed as well, 'print <- n'
     // for an 'n' borrowed by 'each': the read-through retry above ran with the
-    // receiver as it is, which a method declaring 'self &' does not accept, so
+    // receiver as it is, which a method declaring 'self: &' does not accept, so
     // it is tried again here against the borrowed receiver. Reached only when
     // nothing accepted the arguments as written.
     if (selected == NULL && status == OverloadNone && !opOnPointer && (callnode->flags & FlagOperator)
@@ -2067,7 +2067,7 @@ static int fnCallLowerMethodOn(TypeCheckState *pstate, FnCallNode *callnode, INo
     // rather than left as a call to a function that does not exist. An intrinsic,
     // such as a payload-free enum's '==', is no function and is not refused. On a
     // variant's value the receiver's type is the variant, whose clone is selected.
-    // A method whose receiver names the enum ('self &Lamp') is one function over
+    // A method whose receiver names the enum ('self: &Lamp') is one function over
     // the whole enum and is called as it is: nothing is read from the tag.
     if (!(callnode->flags & FlagVDisp) && (selected->flags & FlagMethFld)
         && !structIsWholeEnumMethod((INode*)selected)
@@ -2378,7 +2378,7 @@ static int fnCallArrayAsSlice(TypeCheckState *pstate, FnCallNode *node) {
 // such borrow through. Any other is refused rather than read through on one
 // side only, so 'r == v' never says something '*r == v' does not.
 //
-// A referent type that declares the operator for references ('self &', 'other &T')
+// A referent type that declares the operator for references ('self: &', 'other &T')
 // takes the operands as they are. Otherwise both are dereferenced and the value's
 // operator selected, exactly as for '*a == *b'. A reference to a pointer, to
 // another reference or to a slice reads through to that, which then compares as
@@ -3367,7 +3367,7 @@ static int fnCallFieldCall(TypeCheckState *pstate, FnCallNode *node, FieldDclNod
     return 1;
 }
 
-// A parameter that takes a borrowed callable, '&<fn(x i32) i32' or '&<mut fn(...)':
+// A parameter that takes a borrowed callable, '&<fn(x: i32) i32' or '&<mut fn(...)':
 // the signature a closure literal given to it is to fit, and the permission it
 // is lent with. A parameter that takes a borrowed trait with one method,
 // '&<Shape', is the same: the literal fills the method, whose name is in
@@ -3523,7 +3523,7 @@ static FnDclNode *fnCallClosureOverload(TypeCheckState *pstate, FnCallNode *node
         snprintf(names + used, sizeof(names) - used, "%s%s", i ? ", " : "", &viable[i]->namesym->namestr);
     }
     errorMsgNode((INode*)clo, ErrorClosureOverload,
-        "This closure could be given to more than one overload of %s (%s). Write the parameter's types, as in 'fn (p Vec3) { ... }', to say which.",
+        "This closure could be given to more than one overload of %s (%s). Write the parameter's types, as in 'fn (p: Vec3) { ... }', to say which.",
         &written->namestr, names);
     return NULL;
 }
@@ -3617,7 +3617,7 @@ static int fnCallClosureArgs(TypeCheckState *pstate, FnCallNode *node, FnDclNode
 // reached through a step that cannot write lends only what that step lets
 // (borrowOwnerLendRefused: a '&' lends only '&' of an owner), so the dereference
 // that reaches it is typed with the permission of that step, and every use
-// after it -- a field written, a method wanting 'self &mut' -- is held to it.
+// after it -- a field written, a method wanting 'self: &mut' -- is held to it.
 static void fnCallReadThroughRefs(FnCallNode *node) {
     if (!isExpNode(node->objfn) || (node->flags & FlagOperator))
         return;
@@ -4737,7 +4737,7 @@ dispatch:
                     fnCallLowerPtrMethod(node, ptrType);
                 else if (objdereftype->tag == ArrayTag && fnCallLowerSliceMethod(pstate, node))
                     ;
-                // A borrow of an owner ('self &Uni[Node]', a method's receiver form) is
+                // A borrow of an owner ('self: &Uni[Node]', a method's receiver form) is
                 // read through to the owner, whose value's fields and methods these are
                 else if (!ownerread && objdereftype->tag == RefTag
                     && itypeGetTypeDcl(((RefNode*)objdereftype)->region) != borrowRef

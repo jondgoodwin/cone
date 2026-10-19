@@ -9,10 +9,10 @@
 
 mod ref_typecheck_borrow;
 
-fn twice(n u32) u32 { n * 2u }
+fn twice(n: u32) u32 { n * 2u }
 
 struct Counter {
-  pub n i32;
+  pub n: i32;
   pub fn doubled(self) i32 {n + n}
 }
 
@@ -23,24 +23,24 @@ struct Counter {
 // (lifetime_mix_temp_borrowed_argument, lifetime_mix_temp_borrow_extended).
 
 // '&g[i]' hands the type's own '&[]' the read-only borrow '&g' as its receiver.
-// A '&[]' declaring 'self &mut' refuses it, as a read-only reference is refused
-// by any 'self &mut' method, whether 'g' is a mutable value or a read-only
+// A '&[]' declaring 'self: &mut' refuses it, as a read-only reference is refused
+// by any 'self: &mut' method, whether 'g' is a mutable value or a read-only
 // parameter. The message names the spellings that work: 'g[i]' reads the
 // element, and '&mut g[i]' borrows it where 'g' is mutable.
 struct Grid {
-  pub var cells Array[i32, 4];
-  pub fn `[]`(self, index usize) i32 { cells[index] }
-  pub fn `&[]`(self &mut, index usize) &mut i32 { &mut cells[index] }
+  pub var cells: Array[i32, 4];
+  pub fn `[]`(self, index: usize) i32 { cells[index] }
+  pub fn `&[]`(self: &mut, index: usize) &mut i32 { &mut cells[index] }
 }
 
 fn borrowIndexReadOnlyValue() {
   var g = new Grid(cells: [1, 2, 3, 4]);
-  let r = &g[1usize];    //~ ErrorNoCandidate:13 "`&x[i]` hands `&[]` a read-only receiver, and this type's `&[]` takes `self &mut`. Write `x[i]` to read the element, or `&mut x[i]`"
+  let r = &g[1usize];    //~ ErrorNoCandidate:13 "`&x[i]` hands `&[]` a read-only receiver, and this type's `&[]` takes `self: &mut`. Write `x[i]` to read the element, or `&mut x[i]`"
   let v = g[1usize];
   let w = &mut g[1usize];
 }
 
-fn borrowIndexReadOnlyParam(g &Grid, i usize) {
+fn borrowIndexReadOnlyParam(g: &Grid, i: usize) {
   let r = &g[i];         //~ ErrorNoCandidate:13 "hands `&[]` a read-only receiver"
   let v = g[i];
 }
@@ -58,9 +58,9 @@ alias Num = i32;
 alias Twice = Num;
 
 fn derefAliasedNumber() {
-  let a Num = 3;
+  let a: Num = 3;
   let v = *a;            //~ ErrorNotPtr:11 "May only de-reference a simple reference or pointer"
-  let b Twice = 4;
+  let b: Twice = 4;
   let w = *b;            //~ ErrorNotPtr:11
 }
 
@@ -75,7 +75,7 @@ fn derefTooFar() {
 // type is not a reference to another
 fn wrongValueType() {
   var a = 3;
-  let r &f32 = &a;       //~ ErrorInvType:16 "Initialization value's type does not match variable's declared type"
+  let r: &f32 = &a;       //~ ErrorInvType:17 "Initialization value's type does not match variable's declared type"
 }
 
 // A function reference points at code, so there is no value behind it to name.
@@ -92,9 +92,9 @@ fn derefFunctionRef() {
 // initializer, an argument, a return value, or an anonymous 'inline' function
 // borrowed where it is written. Passing a bare 'incr' where a reference is
 // expected is refused already, for any function: a name is never auto-borrowed.
-fn incr(n i32) i32 inline { n + 1 }
-fn applyTo(n i32, f &fn(n i32) i32) i32 { f(n) }
-alias Incr = &fn(n i32) i32;
+fn incr(n: i32) i32 inline { n + 1 }
+fn applyTo(n: i32, f: &fn(n: i32) i32) i32 { f(n) }
+alias Incr = &fn(n: i32) i32;
 
 fn borrowInlineInit() {
   let r = &incr;         //~ ErrorInlineRef:12 "May not borrow a reference to an inline function"
@@ -109,5 +109,5 @@ fn borrowInlineReturn() Incr {
 }
 
 fn borrowInlineAnon() {
-  let r = &fn(n i32) i32 inline { n + 1 };  //~ ErrorInlineRef:12
+  let r = &fn(n: i32) i32 inline { n + 1 };  //~ ErrorInlineRef:12
 }

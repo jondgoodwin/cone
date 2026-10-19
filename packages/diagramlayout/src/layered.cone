@@ -35,34 +35,34 @@ pub const DIR_BT = 2u32;
 pub const DIR_RL = 3u32;
 
 pub struct LayeredOptions {
-  pub direction u32;
-  pub nodeSep f32;                 // between boxes in a layer
-  pub rankSep f32;                 // between layers
-  pub margin f32;
-  pub stability f32;               // 0: a layout from scratch; 1: strongly attached to the earlier positions
-  pub sweeps u32;
-  pub routeEdges bool;
+  pub direction: u32;
+  pub nodeSep: f32;                 // between boxes in a layer
+  pub rankSep: f32;                 // between layers
+  pub margin: f32;
+  pub stability: f32;               // 0: a layout from scratch; 1: strongly attached to the earlier positions
+  pub sweeps: u32;
+  pub routeEdges: bool;
 
   pub fn make() LayeredOptions { new LayeredOptions(DIR_TB, 36., 70., 24., 0., 24u32, true) }
 }
 
 pub struct LayeredStats {
-  pub layers u32;
-  pub dummies u32;
-  pub crossings u32;               // between adjacent layers, dummies counted
-  pub reversed u32;                // edges reversed to break cycles
+  pub layers: u32;
+  pub dummies: u32;
+  pub crossings: u32;               // between adjacent layers, dummies counted
+  pub reversed: u32;                // edges reversed to break cycles
 }
 
 struct Work {
-  nodeOf List[i32];                // vertex -> node id, or -1 for a dummy
-  rank List[i32];
-  ext List[f32];                   // across
-  thick List[f32];                 // along the ranks
-  cx List[f32];                    // across coordinate
-  up List[List[usize]];
-  down List[List[usize]];
-  layers List[List[usize]];
-  pos List[usize];
+  nodeOf: List[i32];                // vertex -> node id, or -1 for a dummy
+  rank: List[i32];
+  ext: List[f32];                   // across
+  thick: List[f32];                 // along the ranks
+  cx: List[f32];                    // across coordinate
+  up: List[List[usize]];
+  down: List[List[usize]];
+  layers: List[List[usize]];
+  pos: List[usize];
 }
 
 fn newWork() Work {
@@ -70,7 +70,7 @@ fn newWork() Work {
     List[List[usize]].empty(), List[List[usize]].empty(), List[List[usize]].empty(), List[usize].empty())
 }
 
-fn addVertex(w &mut Work, node i32, rank i32, ext f32, thick f32) usize {
+fn addVertex(w: &mut Work, node: i32, rank: i32, ext: f32, thick: f32) usize {
   w.nodeOf.push(node);
   w.rank.push(rank);
   w.ext.push(ext);
@@ -84,7 +84,7 @@ fn addVertex(w &mut Work, node i32, rank i32, ext f32, thick f32) usize {
 
 // ---- 1. cycle removal ----
 
-fn dfsCycles(v usize, outs &List[List[usize]], ea &List[usize], eb &List[usize], color &mut List[u32], flip &mut List[bool]) {
+fn dfsCycles(v: usize, outs: &List[List[usize]], ea: &List[usize], eb: &List[usize], color: &mut List[u32], flip: &mut List[bool]) {
   color.set(v, 1u32);
   var k = 0usize;
   while k < outs[v].len() {
@@ -99,7 +99,7 @@ fn dfsCycles(v usize, outs &List[List[usize]], ea &List[usize], eb &List[usize],
 
 // ---- 3. crossings ----
 
-fn countCrossings(w &Work, l usize) u32 {
+fn countCrossings(w: &Work, l: usize) u32 {
   // edges between layer l and l + 1 as (upper position, lower position)
   var a = List[usize].empty();
   var b = List[usize].empty();
@@ -127,27 +127,27 @@ fn countCrossings(w &Work, l usize) u32 {
   n
 }
 
-fn totalCrossings(w &Work) u32 {
+fn totalCrossings(w: &Work) u32 {
   var n = 0u32;
   var l = 0usize;
   while l + 1usize < w.layers.len() { n = n + countCrossings(w, l); l = l + 1usize; }
   n
 }
 
-fn setPositions(w &mut Work, l usize) {
+fn setPositions(w: &mut Work, l: usize) {
   var i = 0usize;
   while i < w.layers[l].len() { w.pos.set(*w.layers[l][i], i); i = i + 1usize; }
 }
 
 // Crossings of the edges at layer l (with the layers either side), for the transpose pass
-fn localCrossings(w &Work, l usize) u32 {
+fn localCrossings(w: &Work, l: usize) u32 {
   var n = 0u32;
   if l > 0usize { n = n + countCrossings(w, l - 1usize); }
   if l + 1usize < w.layers.len() { n = n + countCrossings(w, l); }
   n
 }
 
-fn reorder(w &mut Work, l usize, useUp bool) {
+fn reorder(w: &mut Work, l: usize, useUp: bool) {
   let cnt = w.layers[l].len();
   var key = List[f32].empty();
   // keyed by vertex: fill all with the current position, then neighbours' mean
@@ -175,7 +175,7 @@ fn reorder(w &mut Work, l usize, useUp bool) {
 }
 
 // The crossings among the edges of u and v (to the layers above and below) if u is left of v
-fn crossPair(w &Work, u usize, v usize) u32 {
+fn crossPair(w: &Work, u: usize, v: usize) u32 {
   var n = 0u32;
   var i = 0usize;
   while i < w.up[u].len() {
@@ -192,7 +192,7 @@ fn crossPair(w &Work, u usize, v usize) u32 {
   n
 }
 
-fn transpose(w &mut Work) {
+fn transpose(w: &mut Work) {
   var improved = true;
   var rounds = 0u32;
   while improved && rounds < 8u32 {
@@ -219,7 +219,7 @@ fn transpose(w &mut Work) {
   }
 }
 
-fn copyLayers(w &Work) List[List[usize]] {
+fn copyLayers(w: &Work) List[List[usize]] {
   var out = List[List[usize]].empty();
   var l = 0usize;
   while l < w.layers.len() {
@@ -235,7 +235,7 @@ fn copyLayers(w &Work) List[List[usize]] {
 // ---- 4. coordinates ----
 
 // The nondecreasing y closest to t in the weighted least-squares sense (pool adjacent violators)
-fn isotonic(t &List[f32], wt &List[f32]) List[f32] {
+fn isotonic(t: &List[f32], wt: &List[f32]) List[f32] {
   var mean = List[f32].empty();
   var weight = List[f32].empty();
   var count = List[usize].empty();
@@ -269,7 +269,7 @@ fn isotonic(t &List[f32], wt &List[f32]) List[f32] {
   out
 }
 
-fn edgeWeight(w &Work, a usize, b usize) f32 {
+fn edgeWeight(w: &Work, a: usize, b: usize) f32 {
   let da = *w.nodeOf[a] < 0;
   let db = *w.nodeOf[b] < 0;
   if da && db { return 4.; }
@@ -277,13 +277,13 @@ fn edgeWeight(w &Work, a usize, b usize) f32 {
   1.
 }
 
-fn sepBetween(w &Work, a usize, b usize, o &LayeredOptions) f32 {
+fn sepBetween(w: &Work, a: usize, b: usize, o: &LayeredOptions) f32 {
   let dummy = *w.nodeOf[a] < 0 || *w.nodeOf[b] < 0;
   (*w.ext[a] + *w.ext[b]) * 0.5 + if dummy { o.nodeSep * 0.35 } else { o.nodeSep }
 }
 
 // mode 0: neighbours above, 1: below, 2: both
-fn placeLayer(w &mut Work, l usize, mode u32, anchor &List[f32], hasAnchor &List[bool], o &LayeredOptions) {
+fn placeLayer(w: &mut Work, l: usize, mode: u32, anchor: &List[f32], hasAnchor: &List[bool], o: &LayeredOptions) {
   let cnt = w.layers[l].len();
   if cnt == 0usize { return; }
   var targets = List[f32].empty();
@@ -333,7 +333,7 @@ fn placeLayer(w &mut Work, l usize, mode u32, anchor &List[f32], hasAnchor &List
 }
 
 // Nodes with no edges, in rows from (x0, y) down, wrapping at 'width' (at least 600)
-fn placeLoose(g &mut Graph, loose &List[usize], o &LayeredOptions, x0 f32, y f32, width f32) {
+fn placeLoose(g: &mut Graph, loose: &List[usize], o: &LayeredOptions, x0: f32, y: f32, width: f32) {
   let limit = maxf2(width, 600.);
   var x = 0.0f;
   var rowTop = y;
@@ -356,7 +356,7 @@ fn placeLoose(g &mut Graph, loose &List[usize], o &LayeredOptions, x0 f32, y f32
 // Lays the live nodes of 'g' out in layers and writes their positions (and, if
 // 'routeEdges', their edges' routes). Nodes that have a position ('placed')
 // guide the order and, by 'stability', the coordinates.
-pub fn layoutLayered(g &mut Graph, o &LayeredOptions) LayeredStats {
+pub fn layoutLayered(g: &mut Graph, o: &LayeredOptions) LayeredStats {
   let horizontal = o.direction == DIR_LR || o.direction == DIR_RL;
   var w = newWork();
   var vOf = List[i32].empty();

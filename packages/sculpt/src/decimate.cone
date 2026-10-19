@@ -87,15 +87,15 @@ pub const DecimateSharpWeight = 100.;
 
 // What 'decimateWith' made
 pub struct Decimated {
-  pub mesh PolyMesh;     // the decimated mesh, triangles
-  pub error f32;         // the greatest error of a collapse made: about how far the surface moved there
-  pub collapses u32;     // how many edges collapsed
+  pub mesh: PolyMesh;     // the decimated mesh, triangles
+  pub error: f32;         // the greatest error of a collapse made: about how far the surface moved there
+  pub collapses: u32;     // how many edges collapsed
 }
 
 // The mesh cut to 'ratio' (0 to 1) of its triangles (a face of n corners
 // counts n - 2), rounded to the nearest, by collapsing edges: no error
 // limit, no symmetry, every vertex weighed 1
-pub fn decimate(m &PolyMesh, ratio f32) PolyMesh {
+pub fn decimate(m: &PolyMesh, ratio: f32) PolyMesh {
   var d = decimateWith(m, decimateTarget(m, ratio), -1., DecimateSymmetryNone, "");
   var out = PolyMesh.empty();
   out <=> d.mesh;
@@ -104,13 +104,13 @@ pub fn decimate(m &PolyMesh, ratio f32) PolyMesh {
 
 // The number of triangles 'ratio' (held to 0 to 1) of m's is, rounded to
 // the nearest
-pub fn decimateTarget(m &PolyMesh, ratio f32) u32 {
+pub fn decimateTarget(m: &PolyMesh, ratio: f32) u32 {
   let r = f64.from(clampf(ratio, 0., 1.));
   u32.from(r * f64.from(triangleCount(m)) + 0.5)
 }
 
 // How many triangles m makes, a face of n corners n - 2
-pub fn triangleCount(m &PolyMesh) usize {
+pub fn triangleCount(m: &PolyMesh) usize {
   var n = 0usize;
   var f = 0u32;
   while usize.from(f) < m.faceCount() {
@@ -126,7 +126,7 @@ pub fn triangleCount(m &PolyMesh) usize {
 // mirrored about 'symmetry''s plane (DecimateSymmetryNone, X, Y or Z), each
 // vertex's quadric scaled by its value in the f32 vertex channel named
 // 'weight' ("" for none)
-pub fn decimateWith(m &PolyMesh, faces u32, maxError f32, symmetry u32, weight &str) Decimated {
+pub fn decimateWith(m: &PolyMesh, faces: u32, maxError: f32, symmetry: u32, weight: &str) Decimated {
   var te = List[u32].empty();
   var tf = List[u32].empty();
   var c = startCollapser(m, symmetry, weight, &mut te, &mut tf);
@@ -168,30 +168,30 @@ pub fn decimateWith(m &PolyMesh, faces u32, maxError f32, symmetry u32, weight &
 // A quadric: the sum of squared distances to planes, as the symmetric 4 x 4
 // matrix (A b; b c), A its 3 x 3 part
 struct Quadric {
-  pub a2 f64; pub ab f64; pub ac f64; pub ad f64;
-  pub b2 f64; pub bc f64; pub bd f64;
-  pub c2 f64; pub cd f64;
-  pub d2 f64;
+  pub a2: f64; pub ab: f64; pub ac: f64; pub ad: f64;
+  pub b2: f64; pub bc: f64; pub bd: f64;
+  pub c2: f64; pub cd: f64;
+  pub d2: f64;
 
   fn zero() Quadric {new Quadric(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)}
 
   // w times the squared distance to the plane n . x + d = 0 (n unit length)
-  fn plane(n DVec3, d f64, w f64) Quadric {
+  fn plane(n: DVec3, d: f64, w: f64) Quadric {
     new Quadric(w * n.x * n.x, w * n.x * n.y, w * n.x * n.z, w * n.x * d, w * n.y * n.y, w * n.y * n.z, w * n.y * d,
       w * n.z * n.z, w * n.z * d, w * d * d)
   }
 
-  fn add overload `+`(self, o Quadric) Quadric {
+  fn add overload `+`(self, o: Quadric) Quadric {
     new Quadric(a2 + o.a2, ab + o.ab, ac + o.ac, ad + o.ad, b2 + o.b2, bc + o.bc, bd + o.bd, c2 + o.c2, cd + o.cd,
       d2 + o.d2)
   }
 
-  fn scaled(self, s f64) Quadric {
+  fn scaled(self, s: f64) Quadric {
     new Quadric(a2 * s, ab * s, ac * s, ad * s, b2 * s, bc * s, bd * s, c2 * s, cd * s, d2 * s)
   }
 
   // The quadric at p
-  fn at(self, p DVec3) f64 {
+  fn at(self, p: DVec3) f64 {
     let x = p.x;
     let y = p.y;
     let z = p.z;
@@ -203,7 +203,7 @@ struct Quadric {
   // conditioned: its determinant above 10^-8 of the cube of its trace (an
   // even A has 1/27 of it; one whose planes are all parallel, or all
   // through one line, has 0)
-  fn solve(self, out &mut DVec3) bool {
+  fn solve(self, out: &mut DVec3) bool {
     let c00 = b2 * c2 - bc * bc;
     let c01 = ac * bc - ab * c2;
     let c02 = ab * bc - b2 * ac;
@@ -220,56 +220,56 @@ struct Quadric {
   }
 }
 
-fn absd(a f64) f64 {if a < 0.0 {-a} else {a}}
+fn absd(a: f64) f64 {if a < 0.0 {-a} else {a}}
 
-fn dcross(a DVec3, b DVec3) DVec3 {new DVec3(a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x)}
+fn dcross(a: DVec3, b: DVec3) DVec3 {new DVec3(a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x)}
 
 // The decimation's working state: the triangles, each vertex's triangles,
 // quadrics and channel values, and the heap of edges
 struct Collapser {
-  pub pos List[DVec3];        // per vertex, relative to 'origin'
-  pub origin DVec3;
-  pub quad List[Quadric];     // per vertex
-  pub area List[f64];         // per vertex: its triangles' summed area
-  pub alive List[bool];       // per vertex: not yet collapsed into another
-  pub ver List[u32];          // per vertex: bumped at each change, to tell a stale heap entry
-  pub pinned List[bool];      // per vertex: never moves ("crease_vert" above 0)
-  pub mirror List[u32];       // per vertex: its mirror image, NoIndex for none
-  pub axis u32;               // the symmetry
-  pub tie f64;                // costs within it are alike: (0.000001 of the box's diagonal) squared
-  pub tv List[u32];           // per triangle corner: its vertex
-  pub tAlive List[bool];      // per triangle
-  pub incHead List[u32];      // per vertex: the first node of its triangles' chain
-  pub incNext List[u32];      // per node: the next in its chain
-  pub incTri List[u32];       // per node: its triangle
-  pub nvSlots usize;          // vertex channels
-  pub vvals List[Vec3];       // per vertex channel and vertex: slot * V + v
-  pub ncSlots usize;          // corner channels
-  pub cvals List[Vec3];       // per corner channel and triangle corner: slot * 3T + c
+  pub pos: List[DVec3];        // per vertex, relative to 'origin'
+  pub origin: DVec3;
+  pub quad: List[Quadric];     // per vertex
+  pub area: List[f64];         // per vertex: its triangles' summed area
+  pub alive: List[bool];       // per vertex: not yet collapsed into another
+  pub ver: List[u32];          // per vertex: bumped at each change, to tell a stale heap entry
+  pub pinned: List[bool];      // per vertex: never moves ("crease_vert" above 0)
+  pub mirror: List[u32];       // per vertex: its mirror image, NoIndex for none
+  pub axis: u32;               // the symmetry
+  pub tie: f64;                // costs within it are alike: (0.000001 of the box's diagonal) squared
+  pub tv: List[u32];           // per triangle corner: its vertex
+  pub tAlive: List[bool];      // per triangle
+  pub incHead: List[u32];      // per vertex: the first node of its triangles' chain
+  pub incNext: List[u32];      // per node: the next in its chain
+  pub incTri: List[u32];       // per node: its triangle
+  pub nvSlots: usize;          // vertex channels
+  pub vvals: List[Vec3];       // per vertex channel and vertex: slot * V + v
+  pub ncSlots: usize;          // corner channels
+  pub cvals: List[Vec3];       // per corner channel and triangle corner: slot * 3T + c
   // The collapse 'evaluate' or 'check' chose: 'cOther' into 'cKeep' at
   // 'cPos', a fraction 'cT' of the way from cKeep to cOther, keeping cKeep's
   // place when 'cHalf'
-  pub cFound bool;
-  pub cKeep u32;
-  pub cOther u32;
-  pub cPos DVec3;
-  pub cT f32;
-  pub cCost f64;
-  pub cHalf bool;
+  pub cFound: bool;
+  pub cKeep: u32;
+  pub cOther: u32;
+  pub cPos: DVec3;
+  pub cT: f32;
+  pub cCost: f64;
+  pub cHalf: bool;
   // The heap: entries' numbers in heap order, the first 'hn' in use
-  pub hp List[u32];
-  pub hn usize;
-  pub eCost List[f64];
-  pub eA List[u32];
-  pub eB List[u32];
-  pub eVa List[u32];
-  pub eVb List[u32];
-  pub free List[u32];         // entries free for reuse, the first 'freeN'
-  pub freeN usize;
+  pub hp: List[u32];
+  pub hn: usize;
+  pub eCost: List[f64];
+  pub eA: List[u32];
+  pub eB: List[u32];
+  pub eVa: List[u32];
+  pub eVb: List[u32];
+  pub free: List[u32];         // entries free for reuse, the first 'freeN'
+  pub freeN: usize;
 
   // -------- the heap --------
 
-  fn before(self &, i u32, j u32) bool {
+  fn before(self: &, i: u32, j: u32) bool {
     let ci = *eCost[usize.from(i)];
     let cj = *eCost[usize.from(j)];
     if ci != cj { return ci < cj; }
@@ -279,7 +279,7 @@ struct Collapser {
     *eB[usize.from(i)] < *eB[usize.from(j)]
   }
 
-  fn pushEdge(self &mut, a u32, b u32, cost f64) {
+  fn pushEdge(self: &mut, a: u32, b: u32, cost: f64) {
     var id = 0u32;
     if freeN > 0usize {
       freeN = freeN - 1usize;
@@ -312,13 +312,13 @@ struct Collapser {
   }
 
   // An entry popped and read, kept for reuse
-  fn release(self &mut, id u32) {
+  fn release(self: &mut, id: u32) {
     if freeN < free.len() { free.set(freeN, id); } else { free.push(id); }
     freeN = freeN + 1usize;
   }
 
   // The cheapest entry, taken off the heap
-  fn popMin(self &mut) u32 {
+  fn popMin(self: &mut) u32 {
     let top = *hp[0usize];
     hn = hn - 1usize;
     if hn > 0usize {
@@ -345,7 +345,7 @@ struct Collapser {
   // -------- reading the triangles --------
 
   // The live triangles about v, in its chain's order
-  fn liveTris(self &, v u32) List[u32] {
+  fn liveTris(self: &, v: u32) List[u32] {
     var out = List[u32].withCapacity(16usize);
     var n = *incHead[usize.from(v)];
     while n != NoIndex {
@@ -356,19 +356,19 @@ struct Collapser {
     out
   }
 
-  fn hasVertex(self &, t u32, v u32) bool {
+  fn hasVertex(self: &, t: u32, v: u32) bool {
     let b = 3usize * usize.from(t);
     *tv[b] == v || *tv[b + 1usize] == v || *tv[b + 2usize] == v
   }
 
   // Triangle t's corner at v (3t + k)
-  fn cornerAt(self &, t u32, v u32) usize {
+  fn cornerAt(self: &, t: u32, v: u32) usize {
     let b = 3usize * usize.from(t);
     if *tv[b] == v {b} elif *tv[b + 1usize] == v {b + 1usize} else {b + 2usize}
   }
 
   // Two corners alike in every corner channel
-  fn sameCorner(self &, c1 usize, c2 usize) bool {
+  fn sameCorner(self: &, c1: usize, c2: usize) bool {
     let nc = tv.len();
     var s = 0usize;
     while s < ncSlots {
@@ -381,7 +381,7 @@ struct Collapser {
   }
 
   // Every corner at v alike: v is on no seam
-  fn seamFree(self &, v u32, tris &List[u32]) bool {
+  fn seamFree(self: &, v: u32, tris: &List[u32]) bool {
     if ncSlots == 0usize || tris.len() == 0usize { return true; }
     let first = self.cornerAt(*tris[0usize], v);
     var i = 1usize;
@@ -394,7 +394,7 @@ struct Collapser {
 
   // v's neighbours through 'tris', each with how many of them it is on (1:
   // a boundary edge)
-  fn ring(self &, v u32, tris &List[u32], nb &mut List[u32], cnt &mut List[u32]) {
+  fn ring(self: &, v: u32, tris: &List[u32], nb: &mut List[u32], cnt: &mut List[u32]) {
     var i = 0usize;
     while i < tris.len() {
       let b = 3usize * usize.from(*tris[i]);
@@ -426,7 +426,7 @@ struct Collapser {
 
   // Whether collapsing edge a-b keeps the mesh a manifold: 'flank' the
   // triangles on the edge, ta and tb those about a and b
-  fn topologyOk(self &, a u32, b u32, ta &List[u32], tb &List[u32], flank &List[u32]) bool {
+  fn topologyOk(self: &, a: u32, b: u32, ta: &List[u32], tb: &List[u32], flank: &List[u32]) bool {
     var na = List[u32].withCapacity(16usize);
     var ca = List[u32].withCapacity(16usize);
     var nb = List[u32].withCapacity(16usize);
@@ -497,7 +497,7 @@ struct Collapser {
   }
 
   // Whether 'tris' holds a triangle with vertices w and x and not y
-  fn holds(self &, tris &List[u32], w u32, x u32, y u32) bool {
+  fn holds(self: &, tris: &List[u32], w: u32, x: u32, y: u32) bool {
     var i = 0usize;
     while i < tris.len() {
       let t = *tris[i];
@@ -510,7 +510,7 @@ struct Collapser {
   // Whether moving a and b to p turns no triangle about them over or flat
   // (those on the edge go, so they are not asked); ta and tb hold the
   // triangles about the two, in either order
-  fn flipFree(self &, a u32, b u32, p DVec3, ta &List[u32], tb &List[u32]) bool {
+  fn flipFree(self: &, a: u32, b: u32, p: DVec3, ta: &List[u32], tb: &List[u32]) bool {
     var i = 0usize;
     while i < ta.len() {
       let t = *ta[i];
@@ -527,7 +527,7 @@ struct Collapser {
   }
 
   // Whether triangle t turns over, or loses its area, with a and b moved to p
-  fn flips(self &, t u32, a u32, b u32, p DVec3) bool {
+  fn flips(self: &, t: u32, a: u32, b: u32, p: DVec3) bool {
     let base = 3usize * usize.from(t);
     let v0 = *tv[base];
     let v1 = *tv[base + 1usize];
@@ -546,7 +546,7 @@ struct Collapser {
   // Whether 'other' may collapse into 'keep' in place: each corner at
   // 'other' (in a triangle that stays) matches the corner at 'other' of a
   // triangle on the edge, and every such match agrees at 'keep'
-  fn compatible(self &, keep u32, other u32, tOther &List[u32], flank &List[u32]) bool {
+  fn compatible(self: &, keep: u32, other: u32, tOther: &List[u32], flank: &List[u32]) bool {
     if ncSlots == 0usize { return true; }
     var i = 0usize;
     while i < tOther.len() {
@@ -577,7 +577,7 @@ struct Collapser {
   }
 
   // The triangles of 'ta' on edge a-b
-  fn flanking(self &, ta &List[u32], b u32) List[u32] {
+  fn flanking(self: &, ta: &List[u32], b: u32) List[u32] {
     var out = List[u32].withCapacity(16usize);
     var i = 0usize;
     while i < ta.len() {
@@ -587,20 +587,20 @@ struct Collapser {
     out
   }
 
-  fn onPlane(self &, p DVec3) DVec3 {
+  fn onPlane(self: &, p: DVec3) DVec3 {
     if axis == DecimateSymmetryX { new DVec3(0.0, p.y, p.z) }
     elif axis == DecimateSymmetryY { new DVec3(p.x, 0.0, p.z) }
     else { new DVec3(p.x, p.y, 0.0) }
   }
 
-  fn reflect(self &, p DVec3) DVec3 {
+  fn reflect(self: &, p: DVec3) DVec3 {
     if axis == DecimateSymmetryX { new DVec3(-p.x, p.y, p.z) }
     elif axis == DecimateSymmetryY { new DVec3(p.x, -p.y, p.z) }
     else { new DVec3(p.x, p.y, -p.z) }
   }
 
   // The cost of collapsing to p: the quadric there over the area
-  fn costAt(self &, q Quadric, w f64, p DVec3) f64 {
+  fn costAt(self: &, q: Quadric, w: f64, p: DVec3) f64 {
     var e = q.at(p);
     if w > 0.0 { e = e / w; }
     if e <= tie { 0.0 } else { e }
@@ -608,7 +608,7 @@ struct Collapser {
 
   // The fraction of the way from k to o that p lies, along the edge, held
   // to 0 to 1
-  fn along(self &, k u32, o u32, p DVec3) f32 {
+  fn along(self: &, k: u32, o: u32, p: DVec3) f32 {
     let pk = *pos[usize.from(k)];
     let d = *pos[usize.from(o)] - pk;
     let l2 = d.lengthSquared();
@@ -621,7 +621,7 @@ struct Collapser {
 
   // A candidate collapse, taken when it is cheaper than the one found so
   // far and turns nothing over
-  fn consider(self &mut, keep u32, other u32, p DVec3, half bool, q Quadric, w f64, ta &List[u32], tb &List[u32]) {
+  fn consider(self: &mut, keep: u32, other: u32, p: DVec3, half: bool, q: Quadric, w: f64, ta: &List[u32], tb: &List[u32]) {
     let cost = self.costAt(q, w, p);
     if cFound && cost >= cCost - tie { return; }
     if !self.flipFree(keep, other, p, ta, tb) { return; }
@@ -636,7 +636,7 @@ struct Collapser {
 
   // The cheapest allowed collapse of edge a-b, into the c fields; false
   // when none is allowed
-  fn evaluate(self &mut, a u32, b u32) bool {
+  fn evaluate(self: &mut, a: u32, b: u32) bool {
     cFound = false;
     if a == b || !*alive[usize.from(a)] || !*alive[usize.from(b)] { return false; }
     let ta = self.liveTris(a);
@@ -683,7 +683,7 @@ struct Collapser {
   // Whether the given collapse ('other' into 'keep' at p, in place when
   // 'half') is allowed, setting the c fields when it is: the mirror of a
   // collapse chosen by 'evaluate'
-  fn check(self &mut, keep u32, other u32, p DVec3, half bool) bool {
+  fn check(self: &mut, keep: u32, other: u32, p: DVec3, half: bool) bool {
     cFound = false;
     if keep == other || !*alive[usize.from(keep)] || !*alive[usize.from(other)] { return false; }
     if *pinned[usize.from(other)] || (!half && *pinned[usize.from(keep)]) { return false; }
@@ -710,7 +710,7 @@ struct Collapser {
   // -------- making a collapse --------
 
   // Make the collapse in the c fields; the number of triangles removed
-  fn apply(self &mut) usize {
+  fn apply(self: &mut) usize {
     let keep = cKeep;
     let other = cOther;
     let t = cT;
@@ -837,7 +837,7 @@ struct Collapser {
   }
 
   // v's chain without its dead triangles
-  fn prune(self &mut, v u32) {
+  fn prune(self: &mut, v: u32) {
     var prev = NoIndex;
     var n = *incHead[usize.from(v)];
     while n != NoIndex {
@@ -854,7 +854,7 @@ struct Collapser {
   }
 
   // Cost every edge from v again, into the heap
-  fn requeue(self &mut, v u32) {
+  fn requeue(self: &mut, v: u32) {
     let tris = self.liveTris(v);
     var nb = List[u32].empty();
     var cnt = List[u32].empty();
@@ -871,7 +871,7 @@ struct Collapser {
 
   // Make the collapse 'evaluate' chose, and its mirror image when there is
   // symmetry; the number of triangles removed (0 when the mirror is refused)
-  fn collapseWithMirror(self &mut) usize {
+  fn collapseWithMirror(self: &mut) usize {
     let keep = cKeep;
     let other = cOther;
     let p = cPos;
@@ -927,7 +927,7 @@ struct Collapser {
   }
 
   // v and its mirror no longer mirror each other
-  fn unlinkMirror(self &mut, v u32) {
+  fn unlinkMirror(self: &mut, v: u32) {
     let w = *mirror[usize.from(v)];
     if w != NoIndex && w != v {
       mirror.set(usize.from(w), NoIndex);
@@ -937,7 +937,7 @@ struct Collapser {
 
   // -------- the result --------
 
-  fn finish(self &, m &PolyMesh, te &List[u32], tf &List[u32]) PolyMesh {
+  fn finish(self: &, m: &PolyMesh, te: &List[u32], tf: &List[u32]) PolyMesh {
     let nv = pos.len();
     let nc = tv.len();
     var newIdx = List[u32].withCapacity(nv);
@@ -1015,7 +1015,7 @@ struct Collapser {
 
   // A channel's values to carry: a vertex or corner channel's working values
   // (its slot, counted in vs or cs), else the source's own
-  fn slotValues(self &, m &PolyMesh, domain u32, src List[Vec3], vs &mut usize, cs &mut usize) List[Vec3] {
+  fn slotValues(self: &, m: &PolyMesh, domain: u32, src: List[Vec3], vs: &mut usize, cs: &mut usize) List[Vec3] {
     if domain == VertexDomain {
       let nv = pos.len();
       var out = List[Vec3].withCapacity(nv);
@@ -1046,7 +1046,7 @@ struct Collapser {
 // source edge, of the side coming into it, into te, NoIndex for a cut;
 // each triangle's source face into tf), the quadrics, the channel values,
 // the mirror links, and every edge costed into the heap
-fn startCollapser(m &PolyMesh, symmetry u32, weight &str, te &mut List[u32], tf &mut List[u32]) Collapser {
+fn startCollapser(m: &PolyMesh, symmetry: u32, weight: &str, te: &mut List[u32], tf: &mut List[u32]) Collapser {
   let nv = m.positions.len();
   // The triangles, and each corner's source half-edge
   var tv = List[u32].empty();
@@ -1253,7 +1253,7 @@ fn startCollapser(m &PolyMesh, symmetry u32, weight &str, te &mut List[u32], tf 
   col
 }
 
-fn appendAll(dst &mut List[Vec3], src &List[Vec3]) {
+fn appendAll(dst: &mut List[Vec3], src: &List[Vec3]) {
   var i = 0usize;
   while i < src.len() {
     dst.push(*src[i]);
@@ -1262,7 +1262,7 @@ fn appendAll(dst &mut List[Vec3], src &List[Vec3]) {
 }
 
 // A corner channel's values, one per triangle corner, from its half-edge
-fn appendByCorner(dst &mut List[Vec3], src &List[Vec3], th &List[u32]) {
+fn appendByCorner(dst: &mut List[Vec3], src: &List[Vec3], th: &List[u32]) {
   var i = 0usize;
   while i < th.len() {
     dst.push(*src[usize.from(*th[i])]);
@@ -1272,7 +1272,7 @@ fn appendByCorner(dst &mut List[Vec3], src &List[Vec3], th &List[u32]) {
 
 // Whether edge e, with a face on each side, is a seam: a corner channel's
 // values differ across it at either end
-fn seamEdge(m &PolyMesh, e u32) bool {
+fn seamEdge(m: &PolyMesh, e: u32) bool {
   let h = 2u32 * e;
   let tw = h + 1u32;
   if m.face(h) == NoIndex || m.face(tw) == NoIndex { return false; }
@@ -1282,7 +1282,7 @@ fn seamEdge(m &PolyMesh, e u32) bool {
 }
 
 // Whether two corners (half-edges) differ in any corner channel of m
-fn cornersDiffer(m &PolyMesh, h1 u32, h2 u32) bool {
+fn cornersDiffer(m: &PolyMesh, h1: u32, h2: u32) bool {
   var c = 0usize;
   while c < m.floats.len() {
     if m.floats[c].domain == CornerDomain && m.float(u32.from(c), h1) != m.float(u32.from(c), h2) { return true; }
@@ -1313,7 +1313,7 @@ fn cornersDiffer(m &PolyMesh, h1 u32, h2 u32) bool {
 // within 0.00001 of the box's diagonal of its reflection, itself when it is
 // that close to the plane; NoIndex for none, or when the two do not name
 // each other. All NoIndex without symmetry.
-fn mirrorLinks(pos &List[DVec3], symmetry u32, box Aabb3) List[u32] {
+fn mirrorLinks(pos: &List[DVec3], symmetry: u32, box: Aabb3) List[u32] {
   let n = pos.len();
   var mirror = List[u32].withCapacity(n);
   var v = 0usize;
@@ -1392,7 +1392,7 @@ fn mirrorLinks(pos &List[DVec3], symmetry u32, box Aabb3) List[u32] {
 }
 
 // The cell a coordinate falls in, held to a billion cells either way
-fn dcell(x f64, size f64) i32 {
+fn dcell(x: f64, size: f64) i32 {
   var c = libc.floor(x / size);
   if c < -1000000000.0 { c = -1000000000.0; }
   if c > 1000000000.0 { c = 1000000000.0; }

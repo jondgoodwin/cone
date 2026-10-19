@@ -12,42 +12,42 @@
 
 // A pair of body ids, 'a' the lower
 pub struct BodyPair {
-  pub a u32;
-  pub b u32;
+  pub a: u32;
+  pub b: u32;
 }
 
 pub trait BroadPhase {
   // Add a body (its id must not be in use)
-  pub fn add(self &mut, id u32, box Aabb3, layer u32, mask u32, isStatic bool);
+  pub fn add(self: &mut, id: u32, box: Aabb3, layer: u32, mask: u32, isStatic: bool);
   // The body moved or changed size: its new box
-  pub fn update(self &mut, id u32, box Aabb3);
-  pub fn remove(self &mut, id u32);
+  pub fn update(self: &mut, id: u32, box: Aabb3);
+  pub fn remove(self: &mut, id: u32);
   // Every overlapping pair, sorted
-  pub fn pairs(self &mut, out &mut List[BodyPair]);
+  pub fn pairs(self: &mut, out: &mut List[BodyPair]);
   // Ids of bodies whose boxes overlap 'box' and that accept 'layer' (any layer with mask bit set)
-  pub fn queryBox(self &mut, box Aabb3, mask u32, out &mut List[u32]);
+  pub fn queryBox(self: &mut, box: Aabb3, mask: u32, out: &mut List[u32]);
   // Ids of bodies whose boxes a ray (origin, dir, up to maxT) crosses
-  pub fn queryRay(self &mut, origin Vec3, dir Vec3, maxT f32, mask u32, out &mut List[u32]);
+  pub fn queryRay(self: &mut, origin: Vec3, dir: Vec3, maxT: f32, mask: u32, out: &mut List[u32]);
 }
 
 struct Proxy {
-  alive bool;
-  box Aabb3;
-  layer u32;
-  mask u32;
-  isStatic bool;
+  alive: bool;
+  box: Aabb3;
+  layer: u32;
+  mask: u32;
+  isStatic: bool;
 }
 
 struct SortKey {
-  key f32;
-  id u32;
+  key: f32;
+  id: u32;
 }
 
-fn byKey(a &SortKey, b &SortKey) i32 {
+fn byKey(a: &SortKey, b: &SortKey) i32 {
   if a.key < b.key { -1i32 } else if a.key > b.key { 1i32 } else if a.id < b.id { -1i32 } else if a.id > b.id { 1i32 } else { 0i32 }
 }
 
-fn byPair(a &BodyPair, b &BodyPair) i32 {
+fn byPair(a: &BodyPair, b: &BodyPair) i32 {
   if a.a < b.a { -1i32 } else if a.a > b.a { 1i32 } else if a.b < b.b { -1i32 } else if a.b > b.b { 1i32 } else { 0i32 }
 }
 
@@ -57,13 +57,13 @@ fn byPair(a &BodyPair, b &BodyPair) i32 {
 // Ids index a list of proxies, so they should be small and dense, as body
 // numbers are.
 pub struct SweepAndPrune is BroadPhase {
-  proxies List[Proxy];
-  count usize;
+  proxies: List[Proxy];
+  count: usize;
 
   pub fn empty() SweepAndPrune { new SweepAndPrune(List[Proxy].empty(), 0usize) }
-  pub fn len(self &) usize { count }
+  pub fn len(self: &) usize { count }
 
-  pub fn add(self &mut, id u32, box Aabb3, layer u32, mask u32, isStatic bool) {
+  pub fn add(self: &mut, id: u32, box: Aabb3, layer: u32, mask: u32, isStatic: bool) {
     let i = usize.from(id);
     while proxies.len() <= i {
       proxies.push(new Proxy(false, Aabb3.empty(), 0u32, 0u32, false));
@@ -72,7 +72,7 @@ pub struct SweepAndPrune is BroadPhase {
     proxies.set(i, new Proxy(true, box, layer, mask, isStatic));
   }
 
-  pub fn update(self &mut, id u32, box Aabb3) {
+  pub fn update(self: &mut, id: u32, box: Aabb3) {
     let i = usize.from(id);
     if i < proxies.len() && proxies[i].alive {
       var p = *proxies[i];
@@ -81,7 +81,7 @@ pub struct SweepAndPrune is BroadPhase {
     }
   }
 
-  pub fn remove(self &mut, id u32) {
+  pub fn remove(self: &mut, id: u32) {
     let i = usize.from(id);
     if i < proxies.len() && proxies[i].alive {
       var p = *proxies[i];
@@ -91,7 +91,7 @@ pub struct SweepAndPrune is BroadPhase {
     }
   }
 
-  fn axisOf(self &) usize {
+  fn axisOf(self: &) usize {
     // the axis along which the box centres vary most
     var sum = new Vec3(0., 0., 0.);
     var sq = new Vec3(0., 0., 0.);
@@ -115,7 +115,7 @@ pub struct SweepAndPrune is BroadPhase {
     ax
   }
 
-  pub fn pairs(self &mut, out &mut List[BodyPair]) {
+  pub fn pairs(self: &mut, out: &mut List[BodyPair]) {
     out.clear();
     let ax = axisOf();
     var keys = List[SortKey].empty();
@@ -145,7 +145,7 @@ pub struct SweepAndPrune is BroadPhase {
     out.sortBy(&byPair);
   }
 
-  pub fn queryBox(self &mut, box Aabb3, mask u32, out &mut List[u32]) {
+  pub fn queryBox(self: &mut, box: Aabb3, mask: u32, out: &mut List[u32]) {
     out.clear();
     var i = 0usize;
     while i < proxies.len() {
@@ -154,7 +154,7 @@ pub struct SweepAndPrune is BroadPhase {
     }
   }
 
-  pub fn queryRay(self &mut, origin Vec3, dir Vec3, maxT f32, mask u32, out &mut List[u32]) {
+  pub fn queryRay(self: &mut, origin: Vec3, dir: Vec3, maxT: f32, mask: u32, out: &mut List[u32]) {
     out.clear();
     let inv = new Vec3(if absf(dir.x) > 1.0e-20 { 1. / dir.x } else { 1.0e20 }, if absf(dir.y) > 1.0e-20 { 1. / dir.y } else { 1.0e20 },
                        if absf(dir.z) > 1.0e-20 { 1. / dir.z } else { 1.0e20 });

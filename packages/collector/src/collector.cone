@@ -16,7 +16,7 @@
 //
 //   struct LeafValue {
 //     pub n i64;
-//     fn final(self &uni) { ... }
+//     fn final(self: &uni) { ... }
 //   }
 //   alias Leaf = Gc[mut, LeafValue];
 //   struct Pair { pub left Leaf; pub right Leaf; }
@@ -300,18 +300,18 @@ var @threadlocal nminorWork = 0usize;   // of that, the work of minor collection
 // because a private field is reached only through 'self', and the collector
 // walks lists of headers; a program never holds a header to read them from.
 pub struct Gc is RegionRef, Traced {
-  pub next usize;      // the next object in its list
-  pub gray usize;      // its link in the gray list
-  pub ty *TypeRecord;  // the value's type record: size, alignment, finalizer, trace
-  pub marked u32;      // its colour
-  pub extra u32;       // the bytes it takes beyond its record's, in eights: a body's elements past the one a record counts
+  pub next: usize;      // the next object in its list
+  pub gray: usize;      // its link in the gray list
+  pub ty: *TypeRecord;  // the value's type record: size, alignment, finalizer, trace
+  pub marked: u32;      // its colour
+  pub extra: u32;       // the bytes it takes beyond its record's, in eights: a body's elements past the one a record counts
 
   // 'new Gc[T](...)': the byte count of {header, value}, and T's type record.
   // The value has been evaluated already, so every root is in its slot. A body
   // whose length a reference carries ('Gc[str]', 'Gc[Array[T]]') has the
   // record of one element and as many bytes as its length makes, so the size
   // is what says how many bytes the object takes.
-  fn alloc(size usize, ty *TypeRecord) *u8 {
+  fn alloc(size: usize, ty: *TypeRecord) *u8 {
     readEnv();
     let bytes = bodyBytes(size, ty);
     // The surplus is kept in eights in 32 bits, so a body can be 32 GiB past
@@ -351,7 +351,7 @@ pub struct Gc is RegionRef, Traced {
 
   // A 'Gc' reference was found, by a root or in a value being traced; 'slot'
   // is where it is stored, which this collector, never moving an object, leaves be
-  fn mark(self &uni Gc, slot *usize) {
+  fn mark(self: &uni Gc, slot: *usize) {
     shade(self as *Gc as usize);
   }
 
@@ -359,7 +359,7 @@ pub struct Gc is RegionRef, Traced {
   // marking, and between generational collections, what it refers to is
   // shaded, so no black object -- one marked this collection, or an old one
   // -- can come to hide a white one; otherwise nothing.
-  fn writeBarrier(self &uni Gc) inline {
+  fn writeBarrier(self: &uni Gc) inline {
     if barrierOn {
       shade(self as *Gc as usize);
     }
@@ -390,7 +390,7 @@ pub struct Gc is RegionRef, Traced {
   // step's budget); during one, when a step's worth has been allocated since
   // the last. Under stress, always, with the allocation's own budget. This
   // is the decision a safe point would make instead (see SAFE POINTS).
-  fn workWanted(bytes usize) bool {
+  fn workWanted(bytes: usize) bool {
     if gcPhase == pausePhase {
       if !stressOn && totalBytes + bytes <= trigger {
         return false;
@@ -410,7 +410,7 @@ pub struct Gc is RegionRef, Traced {
   }
 
   // Memory for an object of 'bytes' bytes, unless it would pass the limit
-  fn tryMalloc(bytes usize) *u8 {
+  fn tryMalloc(bytes: usize) *u8 {
     if maxBytes != 0usize && totalBytes + bytes > maxBytes {
       return null;
     }
@@ -418,19 +418,19 @@ pub struct Gc is RegionRef, Traced {
   }
 
   // n rounded up to a multiple of align, a power of two
-  fn roundUp(n usize, align usize) usize {
+  fn roundUp(n: usize, align: usize) usize {
     (n + align - 1usize) & (0usize - align)
   }
 
   // Where the value sits after its header: the {region, permission, value}
   // layout, whose permission takes no room (the compiler refuses a traced
   // region with one that does)
-  fn valueOffset(ty *TypeRecord) usize {
+  fn valueOffset(ty: *TypeRecord) usize {
     roundUp(mem.sizeof[Gc](), (ty as &TypeRecord).align)
   }
 
   // The bytes an object takes, as the compiler sized it for 'alloc'
-  fn objBytes(ty *TypeRecord) usize {
+  fn objBytes(ty: *TypeRecord) usize {
     let rec = ty as &TypeRecord;
     var al = rec.align;
     if al < mem.alignof[Gc]() { al = mem.alignof[Gc](); }
@@ -440,7 +440,7 @@ pub struct Gc is RegionRef, Traced {
   // The bytes an object takes, for a size the compiler asked for: the record's
   // count, or more when the object is a body longer than its one element. Never
   // fewer than the size asked for, so what is allocated is what is counted.
-  fn bodyBytes(size usize, ty *TypeRecord) usize {
+  fn bodyBytes(size: usize, ty: *TypeRecord) usize {
     let rec = ty as &TypeRecord;
     var al = rec.align;
     if al < mem.alignof[Gc]() { al = mem.alignof[Gc](); }
@@ -450,21 +450,21 @@ pub struct Gc is RegionRef, Traced {
   }
 
   // The bytes the object whose header is 'h' takes: as counted when it was made
-  fn heldBytes(h &Gc) usize {
+  fn heldBytes(h: &Gc) usize {
     objBytes(h.ty) + usize.from(h.extra) * 8usize
   }
 
-  fn header(at usize) &mut Gc {
+  fn header(at: usize) &mut Gc {
     at as &mut Gc
   }
 
   // The value of the object whose header is at 'at'
-  fn valueOf(at usize) *u8 {
+  fn valueOf(at: usize) *u8 {
     (at + valueOffset(header(at).ty)) as *u8
   }
 
   // Mark the object at 'at': a white one turns gray, onto the gray list
-  fn shade(at usize) {
+  fn shade(at: usize) {
     let h = header(at);
     if h.marked & whites != 0u32 {
       h.marked = h.marked & finalizedBit;
@@ -603,17 +603,17 @@ pub struct Gc is RegionRef, Traced {
     work + 1usize
   }
 
-  fn listHead(which u32) usize {
+  fn listHead(which: u32) usize {
     if which == 0u32 { allgc } else if which == 1u32 { finobj } else { tobefnz }
   }
-  fn setListHead(which u32, at usize) {
+  fn setListHead(which: u32, at: usize) {
     if which == 0u32 { allgc = at; } else if which == 1u32 { finobj = at; } else { tobefnz = at; }
   }
 
   // Does the object at 'at' end a generational sweep of its list? The first
   // old one does: new objects are pushed at a list's head, so everything
   // after it is older, and old (Acorn's mem_sweeplist, 'tostop')
-  fn endsSweep(at usize) bool {
+  fn endsSweep(at: usize) bool {
     at == 0usize || (sweepGen && header(at).marked & oldBit != 0u32)
   }
 
@@ -725,7 +725,7 @@ pub struct Gc is RegionRef, Traced {
 
   // Work until 'budget' bytes' worth is done, at least one piece, or until
   // the collection ends. The work done.
-  fn runStep(budget usize) usize {
+  fn runStep(budget: usize) usize {
     stepping = true;
     nsteps = nsteps + 1usize;
     var work = 0usize;
@@ -741,13 +741,13 @@ pub struct Gc is RegionRef, Traced {
   }
 
   // Work done, by a minor collection or a full one
-  fn account(work usize, minor bool) {
+  fn account(work: usize, minor: bool) {
     nwork = nwork + work;
     if minor { nminorWork = nminorWork + work; }
   }
 
   // Each object of a list the current white again, not old: its bytes
-  fn unmark(list usize) usize {
+  fn unmark(list: usize) usize {
     var work = 0usize;
     var at = list;
     while at != 0usize {
@@ -771,7 +771,7 @@ pub struct Gc is RegionRef, Traced {
 
   // The sweep and finalizing of the collection in progress, to their end;
   // an emergency runs no finalizer
-  fn finishCollection(emergency bool) usize {
+  fn finishCollection(emergency: bool) usize {
     var work = 0usize;
     while gcPhase == sweepPhase { work = work + sweepOne(); }
     if gcPhase == finalizePhase {
@@ -788,7 +788,7 @@ pub struct Gc is RegionRef, Traced {
   // one, run because memory ran out, runs no finalizer: those wait for the
   // next ordinary collection, their objects and what they reach kept alive
   // until then.
-  fn fullCollect(emergency bool) {
+  fn fullCollect(emergency: bool) {
     if stepping {
       return;
     }
@@ -819,7 +819,7 @@ pub struct Gc is RegionRef, Traced {
   // finalized, each costing its bytes (0: one piece, the least there is).
   // A collection starts if none is running. True if this step finished one.
   // Nothing happens, and false, if collection work is running already.
-  pub fn step(work usize) bool {
+  pub fn step(work: usize) bool {
     if stepping {
       return false;
     }
@@ -833,14 +833,14 @@ pub struct Gc is RegionRef, Traced {
   pub fn stop() { autoOn = false; }
   pub fn start() { autoOn = true; }
   // A step at every allocation, or not; and whether it does (either stress)
-  pub fn setStress(on bool) { readEnv(); stressOn = on; stressFull = false; }
+  pub fn setStress(on: bool) { readEnv(); stressOn = on; stressFull = false; }
   pub fn stressed() bool { readEnv(); stressOn }
   // Generational running, or incremental: from the next sweep on (see THE
   // GENERATIONS); and which is chosen
-  pub fn setGenerational(on bool) { readEnv(); genOn = on; }
+  pub fn setGenerational(on: bool) { readEnv(); genOn = on; }
   pub fn generational() bool { readEnv(); genOn }
   // No more than 'bytes' of objects at once, headers included; 0 is no limit
-  pub fn setLimit(bytes usize) { maxBytes = bytes; }
+  pub fn setLimit(bytes: usize) { maxBytes = bytes; }
 
   // Objects not yet freed: live ones, and finalized ones awaiting the
   // collection that frees them

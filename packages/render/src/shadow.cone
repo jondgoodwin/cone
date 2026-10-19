@@ -67,37 +67,37 @@ const CASTER_SWAY_CUT = 8u32;
 // ('high', 'medium', 'low', the last for an integrated GPU), and the cascades
 // and the map's size are the cost. 'Renderer.setShadows' takes it.
 pub struct ShadowSettings {
-  pub enabled bool = false;
+  pub enabled: bool = false;
   // How many cascades (1 to 4) and the side of each one's map, in texels
   // (the map is a square texture array of 'cascades' layers of 32-bit depth:
   // 4 x 2048 x 2048 is 64 MB)
-  pub cascades u32 = 4u32;
-  pub mapSize u32 = 2048u32;
+  pub cascades: u32 = 4u32;
+  pub mapSize: u32 = 2048u32;
   // How far from the camera shadows reach, in the camera's units (cut to the
   // camera's far plane); beyond it, and the last tenth before it, they fade
-  pub distance f32 = 120.;
+  pub distance: f32 = 120.;
   // The practical split scheme's blend of the logarithmic split (1) and the
   // uniform one (0)
-  pub splitLambda f32 = 0.75;
+  pub splitLambda: f32 = 0.75;
   // The share of a cascade's length, at its far end, over which it blends
   // into the next
-  pub blend f32 = 0.15;
+  pub blend: f32 = 0.15;
   // The filter: taps (1 to 16) over a disk of 'pcfRadius' texels; each tap is
   // the hardware's four-texel comparison, so even 4 taps give a soft edge
-  pub pcfTaps u32 = 12u32;
-  pub pcfRadius f32 = 1.5;
+  pub pcfTaps: u32 = 12u32;
+  pub pcfRadius: f32 = 1.5;
   // The constant depth bias and the normal offset, in texels of the cascade
   // the point is in (so they hold at any map size)
-  pub bias f32 = 1.0;
-  pub normalOffset f32 = 1.5;
+  pub bias: f32 = 1.0;
+  pub normalOffset: f32 = 1.5;
   // The casters' rasterizer slope-scaled depth bias
-  pub slopeBias f32 = 1.5;
+  pub slopeBias: f32 = 1.5;
   // How far towards the sun from a cascade's slice a caster is still drawn
   // (a tall tree outside the slice that shades it): the cascade's near plane
   // lies that far back, and casters in front of it are held at it
-  pub casterDistance f32 = 150.;
+  pub casterDistance: f32 = 150.;
   // Snap each cascade's window to whole texels (off only to see why it is on)
-  pub stabilize bool = true;
+  pub stabilize: bool = true;
 
   // Shadows off: the other fields are left as they are
   pub fn off() ShadowSettings { new ShadowSettings() }
@@ -124,22 +124,22 @@ pub struct ShadowSettings {
 // plane to 1 at the far) and what the receiver and the casters need to know
 // about it
 pub struct CascadeSet {
-  pub count u32;
-  pub matrices Array[Mat4, 4];
-  pub splitFar Array[f32, 4];     // the view depth at which each ends
-  pub splitNear Array[f32, 4];    // and where it begins (a little before the one before ends)
-  pub texelWorld Array[f32, 4];   // the world length of one of its texels
-  pub depthRange Array[f32, 4];   // the world length of its depth, 0 to 1
-  pub bandLen Array[f32, 4];      // the length of the band at its end where it blends into the next
-  pub radius Array[f32, 4];       // half the width of its window, in world length
-  pub centers Array[Vec3, 4];     // the centre of the sphere its slice is fitted to (before snapping)
+  pub count: u32;
+  pub matrices: Array[Mat4, 4];
+  pub splitFar: Array[f32, 4];     // the view depth at which each ends
+  pub splitNear: Array[f32, 4];    // and where it begins (a little before the one before ends)
+  pub texelWorld: Array[f32, 4];   // the world length of one of its texels
+  pub depthRange: Array[f32, 4];   // the world length of its depth, 0 to 1
+  pub bandLen: Array[f32, 4];      // the length of the band at its end where it blends into the next
+  pub radius: Array[f32, 4];       // half the width of its window, in world length
+  pub centers: Array[Vec3, 4];     // the centre of the sphere its slice is fitted to (before snapping)
 }
 
 // The ends of 'count' cascades (1 to 4) between 'near' and 'far' by the
 // practical split scheme: the cascade i (1 to count) ends at
 // lambda n (f / n)^(i / count) + (1 - lambda) (n + (f - n) i / count); the
 // last at 'far' exactly. The unused entries are 'far'.
-pub fn cascadeSplits(near f32, far f32, count u32, lambda f32) Array[f32, 4] {
+pub fn cascadeSplits(near: f32, far: f32, count: u32, lambda: f32) Array[f32, 4] {
   var ends = new Array[f32, 4] <- fill far;
   var i = 1u32;
   while i <= count && i <= MAX_CASCADES {
@@ -162,7 +162,7 @@ pub fn cascadeSplits(near f32, far f32, count u32, lambda f32) Array[f32, 4] {
 // one as sqrt(b^2 k^2 + (b - t)^2); equal when t = (a + b)(1 + k^2) / 2, but
 // the centre may not pass the far plane (a long thin slice is bounded by its
 // far corners, the sphere about them centred on the far plane).
-pub fn sliceSphere(a f32, b f32, tanY f32, aspect f32, center &mut f32) f32 {
+pub fn sliceSphere(a: f32, b: f32, tanY: f32, aspect: f32, center: &mut f32) f32 {
   let k2 = tanY * tanY * (1. + aspect * aspect);
   var t = 0.5 * (a + b) * (1. + k2);
   if t > b { t = b; }
@@ -170,8 +170,8 @@ pub fn sliceSphere(a f32, b f32, tanY f32, aspect f32, center &mut f32) f32 {
   (b * b * k2 + (b - t) * (b - t)).sqrt()
 }
 
-fn sceilf(x f32) f32 { libc.ceilf(x) }
-fn sfloorf(x f32) f32 { libc.floorf(x) }
+fn sceilf(x: f32) f32 { libc.ceilf(x) }
+fn sfloorf(x: f32) f32 { libc.floorf(x) }
 
 // The cascades for 'camera' drawing into a target 'aspect' wide for each
 // unit high, lit by a sun travelling along 'sunDirection' (unit length), as
@@ -179,7 +179,7 @@ fn sfloorf(x f32) f32 { libc.floorf(x) }
 // (or x, for a sun straight down), so a cascade's window depends on the
 // camera's position and the light, and the radius on the field of view and
 // the splits alone.
-pub fn computeCascades(camera &Camera, aspect f32, sunDirection Vec3, s &ShadowSettings) CascadeSet {
+pub fn computeCascades(camera: &Camera, aspect: f32, sunDirection: Vec3, s: &ShadowSettings) CascadeSet {
   var count = s.cascades;
   if count < 1u32 { count = 1u32; }
   if count > MAX_CASCADES { count = MAX_CASCADES; }
@@ -266,7 +266,7 @@ pub fn computeCascades(camera &Camera, aspect f32, sunDirection Vec3, s &ShadowS
 
 // shadowparams.slang's ShadowParams for 'set', as the settings 's' and the
 // camera's forward direction 'forward' have it
-fn shadowParamsFloats(set &CascadeSet, s &ShadowSettings, forward Vec3, enabled bool) Array[f32, 92] {
+fn shadowParamsFloats(set: &CascadeSet, s: &ShadowSettings, forward: Vec3, enabled: bool) Array[f32, 92] {
   var out = new Array[f32, 92] <- fill 0f;
   var c = 0usize;
   while c < 4usize {
@@ -300,25 +300,25 @@ fn shadowParamsFloats(set &CascadeSet, s &ShadowSettings, forward Vec3, enabled 
 // pipeline layouts (the caster group, and with it the lit or the physically
 // based material's group) and the pipelines, depth only
 pub struct ShadowCasters {
-  pub shaderCast ShaderModule;
-  pub shaderCutLit ShaderModule;
-  pub shaderCutPbr ShaderModule;
-  pub layoutOpaque PipelineLayout;     // the caster group; the cascade as the immediate
-  pub layoutLit PipelineLayout;        // and the lit material's group
-  pub layoutPbr PipelineLayout;        // and the physically based material's
-  pub opaque RenderPipeline;
-  pub opaqueSkinned RenderPipeline;
-  pub litCut RenderPipeline;
-  pub litCutSkinned RenderPipeline;
-  pub pbrCut RenderPipeline;
-  pub pbrCutSkinned RenderPipeline;
-  pub sway RenderPipeline;
-  pub swayCut RenderPipeline;
+  pub shaderCast: ShaderModule;
+  pub shaderCutLit: ShaderModule;
+  pub shaderCutPbr: ShaderModule;
+  pub layoutOpaque: PipelineLayout;     // the caster group; the cascade as the immediate
+  pub layoutLit: PipelineLayout;        // and the lit material's group
+  pub layoutPbr: PipelineLayout;        // and the physically based material's
+  pub opaque: RenderPipeline;
+  pub opaqueSkinned: RenderPipeline;
+  pub litCut: RenderPipeline;
+  pub litCutSkinned: RenderPipeline;
+  pub pbrCut: RenderPipeline;
+  pub pbrCutSkinned: RenderPipeline;
+  pub sway: RenderPipeline;
+  pub swayCut: RenderPipeline;
 
   // The pipelines, their rasterizer adding 'slopeBias' times a triangle's
   // depth slope (D3D's and Vulkan's slope-scaled bias) to its depths
-  pub fn create(device &mut Device, casterLayout &BindGroupLayout, materialLayout &BindGroupLayout,
-      pbrMaterialLayout &BindGroupLayout, slopeBias f32) ShadowCasters {
+  pub fn create(device: &mut Device, casterLayout: &BindGroupLayout, materialLayout: &BindGroupLayout,
+      pbrMaterialLayout: &BindGroupLayout, slopeBias: f32) ShadowCasters {
     var shaderCast = device.createShaderModule(&SHADOWCAST_SPIRV);
     var shaderCutLit = device.createShaderModule(&SHADOWCUTLIT_SPIRV);
     var shaderCutPbr = device.createShaderModule(&SHADOWCUTPBR_SPIRV);
@@ -404,7 +404,7 @@ pub struct ShadowCasters {
       opaqueSkinned, litCut, litCutSkinned, pbrCut, pbrCutSkinned, sway, swayCut)
   }
 
-  pub fn isValid(self &) bool {
+  pub fn isValid(self: &) bool {
     opaque.isValid() && opaqueSkinned.isValid() && litCut.isValid() && litCutSkinned.isValid()
       && pbrCut.isValid() && pbrCutSkinned.isValid() && sway.isValid() && swayCut.isValid()
   }
@@ -416,23 +416,23 @@ pub struct ShadowCasters {
 // sampler, the casters' group (the frame's buffers again, without the map)
 // and the casters
 pub struct ShadowState {
-  pub settings ShadowSettings;
-  pub params Buffer;
-  pub sampler Sampler;
-  pub map Texture;
-  pub casterLayout BindGroupLayout;
-  pub casterGroup BindGroup;
-  pub casters ShadowCasters;
-  pub cascades CascadeSet;         // the last frame's
-  pub drawCalls u32;               // how many draws the last frame's shadow passes made
-  pub triangles u64;               // and how many triangles they drew
-  pub passes u32;                  // and how many passes (one a cascade)
+  pub settings: ShadowSettings;
+  pub params: Buffer;
+  pub sampler: Sampler;
+  pub map: Texture;
+  pub casterLayout: BindGroupLayout;
+  pub casterGroup: BindGroup;
+  pub casters: ShadowCasters;
+  pub cascades: CascadeSet;         // the last frame's
+  pub drawCalls: u32;               // how many draws the last frame's shadow passes made
+  pub triangles: u64;               // and how many triangles they drew
+  pub passes: u32;                  // and how many passes (one a cascade)
 
   // The state with shadows off: the stand-in map, the layouts and pipelines
   // (made once; 'frameUniforms', 'instances', 'bones' and 'boneBases' are the
   // renderer's frame group's)
-  pub fn create(device &mut Device, materialLayout &BindGroupLayout, pbrMaterialLayout &BindGroupLayout,
-      frameUniforms &Buffer, instances &Buffer, bones &Buffer, boneBases &Buffer) ShadowState {
+  pub fn create(device: &mut Device, materialLayout: &BindGroupLayout, pbrMaterialLayout: &BindGroupLayout,
+      frameUniforms: &Buffer, instances: &Buffer, bones: &Buffer, boneBases: &Buffer) ShadowState {
     let settings = new ShadowSettings();
     let casterEntries = [new BindGroupLayoutEntry(binding: 0u32, visibility: SHADER_STAGE_VERTEX),
       new BindGroupLayoutEntry(binding: 1u32, visibility: SHADER_STAGE_VERTEX,
@@ -462,20 +462,20 @@ pub struct ShadowState {
     new ShadowState(settings, params, sampler, map, casterLayout, casterGroup, casters, cascades, 0u32, 0u64, 0u32)
   }
 
-  pub fn isValid(self &) bool {
+  pub fn isValid(self: &) bool {
     params.isValid() && sampler.isValid() && map.isValid() && casterGroup.isValid() && casters.isValid()
   }
 
   // A view of the whole map as an array, what the frame group binds
-  pub fn arrayView(self &) TextureView {
+  pub fn arrayView(self: &) TextureView {
     let desc = new TextureViewDescriptor(dimension: TEXTURE_VIEW_DIMENSION_2D_ARRAY);
     map.createViewWith(&desc)
   }
 
   // The casters' group made again, after one of the frame's buffers was
   // replaced
-  pub fn remakeCasterGroup(self &mut, device &mut Device, frameUniforms &Buffer, instances &Buffer, bones &Buffer,
-      boneBases &Buffer) {
+  pub fn remakeCasterGroup(self: &mut, device: &mut Device, frameUniforms: &Buffer, instances: &Buffer, bones: &Buffer,
+      boneBases: &Buffer) {
     let entries = [BindGroupEntry.buffer(0u32, frameUniforms), BindGroupEntry.buffer(1u32, instances),
       BindGroupEntry.buffer(2u32, bones), BindGroupEntry.buffer(3u32, boneBases), BindGroupEntry.buffer(4u32, &params)];
     casterGroup = device.createBindGroup(&casterLayout, &entries);
@@ -483,7 +483,7 @@ pub struct ShadowState {
 
   // The map made again: 'layers' layers of 'size' square, or, for 0 layers,
   // the 1 x 1 stand-in
-  pub fn remakeMap(self &mut, device &mut Device, size u32, layers u32) {
+  pub fn remakeMap(self: &mut, device: &mut Device, size: u32, layers: u32) {
     var side = size;
     var count = layers;
     if count == 0u32 {
@@ -503,7 +503,7 @@ pub struct ShadowState {
 }
 
 // The shadow settings kept within what the shaders and the map support
-fn clampShadowSettings(s &ShadowSettings) ShadowSettings {
+fn clampShadowSettings(s: &ShadowSettings) ShadowSettings {
   var c = *s;
   if c.cascades < 1u32 { c.cascades = 1u32; }
   if c.cascades > MAX_CASCADES { c.cascades = MAX_CASCADES; }
@@ -523,7 +523,7 @@ fn clampShadowSettings(s &ShadowSettings) ShadowSettings {
 
 // The caster pipeline a draw of 'item' (mesh 'm') is drawn with in a
 // shadow pass, or CASTER_NONE if it casts nothing
-fn casterKindOf(r &Renderer, item &DrawItem, m &GpuMesh) u32 {
+fn casterKindOf(r: &Renderer, item: &DrawItem, m: &GpuMesh) u32 {
   if !item.castsShadow || !r.materials.alive(item.material.slot) { return CASTER_NONE; }
   let ms = r.materials[item.material.slot];
   let skinned = m.isSkinned();
@@ -547,7 +547,7 @@ fn casterKindOf(r &Renderer, item &DrawItem, m &GpuMesh) u32 {
 // bounding sphere that touches cascade 'c''s window (the sphere's distance
 // beyond the window's far plane, or to its side, rules it out; in front of
 // the near plane it still casts)
-fn batchTouchesCascade(r &Renderer, list &DrawList, batch &DrawBatch, c usize) bool {
+fn batchTouchesCascade(r: &Renderer, list: &DrawList, batch: &DrawBatch, c: usize) bool {
   let matrix = r.shadow.cascades.matrices[c];
   let radius = r.shadow.cascades.radius[c];
   let range = r.shadow.cascades.depthRange[c];
@@ -577,7 +577,7 @@ fn batchTouchesCascade(r &Renderer, list &DrawList, batch &DrawBatch, c usize) b
 // then the local lights' faces) as a range of the renderer's batches: the
 // pass's own if the scene gathered casters for it (visibility.cone), else the
 // main view's
-fn passBatches(r &Renderer, index usize) SetRange {
+fn passBatches(r: &Renderer, index: usize) SetRange {
   let n = r.vis.sets.len();
   if n > 1usize + index { return *r.vis.sets[1usize + index]; }
   if n > 0usize { return *r.vis.sets[0usize]; }
@@ -589,7 +589,7 @@ fn passBatches(r &Renderer, index usize) SetRange {
 // gathered drawn as it draws them (their instances are in the instance
 // buffer already). Cut-out, skinned and flutter casters have their own
 // pipelines.
-fn recordShadowPasses(r &mut Renderer, device &mut Device, encoder &mut CommandEncoder, list &DrawList) {
+fn recordShadowPasses(r: &mut Renderer, device: &mut Device, encoder: &mut CommandEncoder, list: &DrawList) {
   r.shadow.drawCalls = 0u32;
   r.shadow.triangles = 0u64;
   r.shadow.passes = 0u32;
@@ -671,7 +671,7 @@ fn recordShadowPasses(r &mut Renderer, device &mut Device, encoder &mut CommandE
 
 // spirv-begin shadowcast.spv SHADOWCAST_SPIRV
 // Written by tools/shaders/shaders.py from shadowcast.slang (sha256 a63497d47bca8b0edfe3f669ca8c2feb24905690b040e1474810cbd2426bc716): do not edit.
-let SHADOWCAST_SPIRV Array[u32, 1668] = [
+let SHADOWCAST_SPIRV: Array[u32, 1668] = [
   0x07230203u32, 0x00010500u32, 0x00280000u32, 0x0000025au32, 0x00000000u32, 0x00020011u32,
   0x00000001u32, 0x000b000au32, 0x5f565053u32, 0x5f52484bu32, 0x726f7473u32, 0x5f656761u32,
   0x66667562u32, 0x735f7265u32, 0x61726f74u32, 0x635f6567u32, 0x7373616cu32, 0x00000000u32,
@@ -955,7 +955,7 @@ let SHADOWCAST_SPIRV Array[u32, 1668] = [
 
 // spirv-begin shadowcutlit.spv SHADOWCUTLIT_SPIRV
 // Written by tools/shaders/shaders.py from shadowcutlit.slang (sha256 50004ba7ad58c6b5c0ab405aed6148fddf27b49fff152cc7688a663384b3c973): do not edit.
-let SHADOWCUTLIT_SPIRV Array[u32, 2224] = [
+let SHADOWCUTLIT_SPIRV: Array[u32, 2224] = [
   0x07230203u32, 0x00010500u32, 0x00280000u32, 0x000002d4u32, 0x00000000u32, 0x00020011u32,
   0x00000001u32, 0x000b000au32, 0x5f565053u32, 0x5f52484bu32, 0x726f7473u32, 0x5f656761u32,
   0x66667562u32, 0x735f7265u32, 0x61726f74u32, 0x635f6567u32, 0x7373616cu32, 0x00000000u32,
@@ -1332,7 +1332,7 @@ let SHADOWCUTLIT_SPIRV Array[u32, 2224] = [
 
 // spirv-begin shadowcutpbr.spv SHADOWCUTPBR_SPIRV
 // Written by tools/shaders/shaders.py from shadowcutpbr.slang (sha256 c05d4a695fdb8afc5021b85429c8c257414a5616583ab0b8ea2f9110d9ffd974): do not edit.
-let SHADOWCUTPBR_SPIRV Array[u32, 3640] = [
+let SHADOWCUTPBR_SPIRV: Array[u32, 3640] = [
   0x07230203u32, 0x00010500u32, 0x00280000u32, 0x00000407u32, 0x00000000u32, 0x00020011u32,
   0x00000001u32, 0x000b000au32, 0x5f565053u32, 0x5f52484bu32, 0x726f7473u32, 0x5f656761u32,
   0x66667562u32, 0x735f7265u32, 0x61726f74u32, 0x635f6567u32, 0x7373616cu32, 0x00000000u32,

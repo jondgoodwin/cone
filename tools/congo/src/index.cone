@@ -21,17 +21,17 @@
 // One index registry, cloned into <Congo home>/registry/ and brought up to
 // date once in a run, the first time a name is looked up in it
 struct IndexRegistry {
-  pub url String;
-  pub dir Path;
-  pub refreshed bool;
+  pub url: String;
+  pub dir: Path;
+  pub refreshed: bool;
 }
 
 // An index file, read
 struct IndexEntry {
-  pub name String;
-  pub git String;
-  pub commit String;
-  pub path String;
+  pub name: String;
+  pub git: String;
+  pub commit: String;
+  pub path: String;
 }
 
 fn emptyIndexEntry() IndexEntry {
@@ -40,9 +40,9 @@ fn emptyIndexEntry() IndexEntry {
 
 // What git answered
 struct GitOut {
-  pub code u32;
-  pub out String;
-  pub err String;
+  pub code: u32;
+  pub out: String;
+  pub err: String;
 }
 
 // The index registries the machine config lists, in order: the git URLs (or
@@ -77,20 +77,20 @@ fn registryIndexes() List[String] {
   listed
 }
 
-fn newIndexRegistry(url &str) IndexRegistry {
+fn newIndexRegistry(url: &str) IndexRegistry {
   let home = congoHome();
   let registries = home.join("registry");
   let slug = urlSlug(url);
   new IndexRegistry(String.from(url), registries.join(slug.view()), false)
 }
 
-fn isSlugByte(b u8) bool {
+fn isSlugByte(b: u8) bool {
   (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9') || b == '.' || b == '_' || b == '-'
 }
 
 // A folder name for a repository: its last name, and the first ten hex digits
 // of the SHA-1 of its URL as written, which both Congos compute
-fn urlSlug(url &str) String {
+fn urlSlug(url: &str) String {
   var end = url.len();
   while end > 0usize && (url[end - 1usize] == '/' || url[end - 1usize] == '\\') { end = end - 1usize; }
   var start = end;
@@ -121,7 +121,7 @@ fn urlSlug(url &str) String {
 // git, its output captured. It never asks for a password on a terminal: with
 // no credentials for a URL, git fails and Congo says so. An Error is git not
 // found, or not startable
-fn git(args List[String], dir &Path) Result[GitOut, String] {
+fn git(args: List[String], dir: &Path) Result[GitOut, String] {
   var all = argList("git");
   var i = 0usize;
   while i < args.len() {
@@ -152,7 +152,7 @@ fn git(args List[String], dir &Path) Result[GitOut, String] {
 }
 
 // git's output, trimmed, or what was being done and why git refused
-fn gitOk(args List[String], dir &Path, doing &str) Result[String, String] {
+fn gitOk(args: List[String], dir: &Path, doing: &str) Result[String, String] {
   match git(args, dir) {
     case let ok Ok {
       if ok.code != 0u32 {
@@ -170,7 +170,7 @@ fn gitOk(args List[String], dir &Path, doing &str) Result[String, String] {
   }
 }
 
-fn isHex40or64(s &str) bool {
+fn isHex40or64(s: &str) bool {
   if s.len() != 40usize && s.len() != 64usize { return false; }
   var i = 0usize;
   while i < s.len() {
@@ -181,9 +181,9 @@ fn isHex40or64(s &str) bool {
   true
 }
 
-fn isSeparatorByte(b u8) bool { b == '/' || b == '\\' }
+fn isSeparatorByte(b: u8) bool { b == '/' || b == '\\' }
 
-fn tomlString(text &str) String {
+fn tomlString(text: &str) String {
   var out = String.from("\"");
   var i = 0usize;
   while i < text.len() {
@@ -199,7 +199,7 @@ fn tomlString(text &str) String {
 
 // The text of an index file, as 'congo publish' and tools/registry/make_index.py
 // both write it (LF line ends, on every system)
-fn indexEntryText(name &str, gitUrl &str, commit &str, path &str) String {
+fn indexEntryText(name: &str, gitUrl: &str, commit: &str, path: &str) String {
   let quotedName = tomlString(name);
   let quotedGit = tomlString(gitUrl);
   let quotedCommit = tomlString(commit);
@@ -213,7 +213,7 @@ fn indexEntryText(name &str, gitUrl &str, commit &str, path &str) String {
 
 // Bring an index up to date, once in a run: clone it the first time; after
 // that fetch and take what it has, and offline say so and use the copy there
-fn refreshIndex(idx &mut IndexRegistry) Result[void, String] {
+fn refreshIndex(idx: &mut IndexRegistry) Result[void, String] {
   if idx.refreshed { return succeeded(); }
   idx.refreshed = true;
   let dotGit = idx.dir.join(".git");
@@ -261,7 +261,7 @@ fn refreshIndex(idx &mut IndexRegistry) Result[void, String] {
 
 // The index's entry for a package; false when it has none. An unusable file
 // is an Error
-fn indexEntry(idx &mut IndexRegistry, name &str, entry &mut IndexEntry) Result[bool, String] {
+fn indexEntry(idx: &mut IndexRegistry, name: &str, entry: &mut IndexEntry) Result[bool, String] {
   match refreshIndex(idx) {
     case is Ok {}
     case let e Error { return Error[bool, String](e.copy()); }
@@ -354,7 +354,7 @@ fn indexEntry(idx &mut IndexRegistry, name &str, entry &mut IndexEntry) Result[b
 
 // Delete a folder git made, whose files are read-only (fs.removeAll stops at
 // the first of them)
-fn removeGitTree(folder &Path) {
+fn removeGitTree(folder: &Path) {
   if !fs.exists(folder) { return; }
   let place = native(folder);
   var args = argList("cmd", "/c", "rmdir", "/s", "/q");
@@ -368,7 +368,7 @@ fn removeGitTree(folder &Path) {
 // The repository of an entry at its commit, under <Congo home>/src/, fetched
 // there if it is not already; the folder of the package in it. Packages of one
 // repository at one commit share the checkout.
-fn checkoutSource(entry &IndexEntry) Result[Path, String] {
+fn checkoutSource(entry: &IndexEntry) Result[Path, String] {
   let slug = urlSlug(entry.git.view());
   let home = congoHome();
   let srcs = home.join("src");
@@ -439,7 +439,7 @@ fn checkoutSource(entry &IndexEntry) Result[Path, String] {
 
 // The package of that name from the first index that has it, fetched and
 // added to the registry; false where no index has it
-fn fetchPackage(reg &mut Registry, name &str) Result[bool, String] {
+fn fetchPackage(reg: &mut Registry, name: &str) Result[bool, String] {
   if reg.missedName(name) || !isConeName(name) { return Ok[bool, String](false); }
   var i = 0usize;
   while i < reg.indexes.len() {
@@ -450,7 +450,7 @@ fn fetchPackage(reg &mut Registry, name &str) Result[bool, String] {
       case let e Error { return Error[bool, String](e.copy()); }
     }
     if has {
-      var folder Path = "";
+      var folder: Path = "";
       match checkoutSource(&entry) {
         case var ok Ok { folder <=> ok; }
         case let e Error { return Error[bool, String](e.copy()); }
@@ -487,7 +487,7 @@ fn fetchPackage(reg &mut Registry, name &str) Result[bool, String] {
 // in turn. Nothing happens where no index is configured. The build then
 // resolves every import through the registry as it always did [Jon 23 Sep,
 // hole 12: restore and build stay separate steps].
-fn restore(reg &mut Registry, top usize) Result[void, String] {
+fn restore(reg: &mut Registry, top: usize) Result[void, String] {
   if reg.indexes.len() == 0usize { return succeeded(); }
   if !reg.has("core") {
     match fetchPackage(reg, "core") {
@@ -512,7 +512,7 @@ fn restore(reg &mut Registry, top usize) Result[void, String] {
   succeeded()
 }
 
-fn restoreVisit(reg &mut Registry, p usize, seen &mut List[String]) Result[void, String] {
+fn restoreVisit(reg: &mut Registry, p: usize, seen: &mut List[String]) Result[void, String] {
   let name = reg.packages[p].name.copy();
   var done = false;
   var s = 0usize;
@@ -567,7 +567,7 @@ fn restoreVisit(reg &mut Registry, p usize, seen &mut List[String]) Result[void,
 // <name>.toml (name, git URL, commit, folder) into the index and push it.
 // Publishing moves the pin; it is for whoever can push to the index, which is
 // the credentials git has.
-fn cmdPublish(registryUrl &str, hasRegistry bool) i32 {
+fn cmdPublish(registryUrl: &str, hasRegistry: bool) i32 {
   let pkg = currentPackage();
   let name = pkg.name.copy();
   var urls = List[String].empty();
