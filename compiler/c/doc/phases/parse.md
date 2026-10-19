@@ -1094,6 +1094,7 @@ never be analyzed.
 | `parseCloseTok` | reports `ErrorNoRParen`, scans for the closer, gives up at `;`, `}`, EOF |
 | `parseBlockStart` | on `:`, reports `ErrorColonBlock` and reads what follows as the block; on anything else that is not `{`, reports `ErrorNoLCurly` and scans forward for one |
 | `parseTerm` default | reports `ErrorBadTerm`, consumes one token to avoid an infinite loop, returns `NULL` |
+| `parseArg` after a name that gave `NULL` | an argument whose name `parseTerm` refused (a keyword before its `:`) is already reported; `parseArg` reads the `:` and the value so the list stays in step, and returns `NULL` as a refused term does, so the argument is one diagnostic and nothing looks at a node that is not there |
 | `parseTypeReq` | reports `ErrorNoType` where a required type is missing, consumes nothing, and returns `unknownType`, which nothing analyzes |
 | anonymous placeholders | the declaration parsers substitute `anonName` so the caller always gets a node |
 | `parseModuleFilesParse`'s end-of-file test | `ErrorNoEof` when a module file's global statements stopped short of EOF — the file the compiler was given or one the folder swept in; a stray `}` ends `parseGlobalStmts`, and this is the one place the parser refuses to finish quietly |

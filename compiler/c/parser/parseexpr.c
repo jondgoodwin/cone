@@ -446,6 +446,14 @@ INode *parseTerm(ParseState *parse) {
 INode *parseArg(ParseState *parse) {
     INode *arg = parseContentsAfter(parse, parseSimpleExpr(parse));
     if (lexIsToken(ColonToken)) {
+        // The name failed to parse (a keyword, say: parseTerm reported it and
+        // returned NULL). Read the value after the ':' so the argument list
+        // stays in step, and give no node.
+        if (arg == NULL) {
+            lexNextToken();
+            parseContentsAfter(parse, parseSimpleExpr(parse));
+            return NULL;
+        }
         if (arg->tag != NameUseTag)
             errorMsgNode((INode*)arg, ErrorNoName, "Expected a named identifier");
         arg = (INode*)newNamedValNode(arg);
