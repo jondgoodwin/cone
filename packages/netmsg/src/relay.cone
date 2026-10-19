@@ -47,7 +47,7 @@ actor Relay {
 
   // Bind the front socket (on loopback, a port of the system's choice), say
   // which, and start receiving and delivering. The first message
-  async do open(self, up: OneshotSender[Result[SocketAddr, IoError]]) {
+  async fn open(self, up: OneshotSender[Result[SocketAddr, IoError]]) {
     var tx = up;
     var made = await aio.bindUdp(SocketAddr.localhost(0u16));
     match &mut made {
@@ -70,7 +70,7 @@ actor Relay {
   }
 
   // Stop: end every receive and timer, close every socket, and say so
-  async do stop(self, done: OneshotSender[u32]) {
+  async fn stop(self, done: OneshotSender[u32]) {
     var tx = done;
     stopped = true;
     let c = group.cancel();
@@ -81,7 +81,7 @@ actor Relay {
   }
 
   // Datagrams from clients: each goes through its leg's link to the server
-  async do receiveFront(self) {
+  async fn receiveFront(self) {
     var failures = 0u32;
     while !stopped && failures <= relayMaxFailures {
       let r = await front.recvFromIn(pool.mustTake(recvRoom), IoLimits.within(group));
@@ -126,7 +126,7 @@ actor Relay {
   }
 
   // Datagrams from the server to leg n's client
-  async do receiveLeg(self, n: usize) {
+  async fn receiveLeg(self, n: usize) {
     var failures = 0u32;
     while !stopped && n < legs.len() && failures <= relayMaxFailures {
       let r = await legs[n].up.recvFromIn(pool.mustTake(recvRoom), IoLimits.within(group));
@@ -147,7 +147,7 @@ actor Relay {
   }
 
   // Every millisecond: what the links hold back that is due goes out
-  async do tick(self) {
+  async fn tick(self) {
     while !stopped {
       let r = await aio.sleepIn(Duration.fromMillis(1i64), IoLimits.within(group));
       self.deliver();
@@ -155,7 +155,7 @@ actor Relay {
   }
 
   // One datagram out of leg n: to the server (upstream) or to the client
-  async do out(self, n: usize, upstream: bool, data: List[u8]) {
+  async fn out(self, n: usize, upstream: bool, data: List[u8]) {
     if stopped || n >= legs.len() {return;}
     var b = pool.mustTake(max(data.len(), 1usize));
     b.append(data.view());

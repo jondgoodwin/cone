@@ -1,9 +1,9 @@
 /** Parse an actor declaration, and generate what it stands for
  *
- * 'actor Counter { count: u64; fn init(self: &new, n: u64) {...}; pub async do
+ * 'actor Counter { count: u64; fn init(self: &new, n: u64) {...}; pub async fn
  * bump(self, n: u64) {...} }' declares an actor: state that lives on, reached by
  * nothing but messages, each a call of one of its behaviours (its methods
- * declared 'async do'), run later, one at a time, on whichever worker thread of
+ * declared 'async fn'), run later, one at a time, on whichever worker thread of
  * the actors package takes it up. Its methods declared 'fn' -- its 'init', its
  * 'final', and helpers -- are synchronous, run inside the actor by whatever
  * calls them. No node stands for an actor. The parser turns its declaration
@@ -45,7 +45,7 @@
  * What an 'await' and a message's reply need (compiler/c/doc/phases/parse.md,
  * section 6, and generation.md, "A message's reply"):
  *
- * - a behaviour that returns a value, 'pub async do get(self, k: u64) u64', has
+ * - a behaviour that returns a value, 'pub async fn get(self, k: u64) u64', has
  *   a second variant, its request awaited, 'struct get'ask {k u64; reply'
  *   actors.Reply;}', the handle a second method sending it, and the dispatch
  *   an arm that answers it; and the handle a third method, 'get'future',
@@ -340,7 +340,7 @@ static int parseActorIsInit(FnDclNode *fn) {
     return fn->namesym == initName || fn->overloadsym == initName;
 }
 
-// Was this function of the actor's body declared 'async do', a behaviour?
+// Was this function of the actor's body declared 'async fn', a behaviour?
 static int parseActorIsBehaviour(DclTexts *texts, FnDclNode *fn) {
     INode **nodesp;
     uint32_t cnt;
@@ -491,7 +491,7 @@ static void parseActorMembers(DclTexts *texts, StructNode *state, Name *actornam
         if (!(fn->flags & FlagMethFld)) {
             if (behaviour)
                 errorMsgNode(node, ErrorActorMember,
-                    "%s is declared 'async do', a behaviour of actor %s's, and has no 'self': a behaviour runs on the actor's state, which is its first parameter, 'self'.",
+                    "%s is declared 'async fn', a behaviour of actor %s's, and has no 'self': a behaviour runs on the actor's state, which is its first parameter, 'self'.",
                     &fn->namesym->namestr, &actorname->namestr);
             else if (fn->flags & FlagPub)
                 errorMsgNode(node, ErrorActorMember,
@@ -503,7 +503,7 @@ static void parseActorMembers(DclTexts *texts, StructNode *state, Name *actornam
             continue;
         if (behaviour && (fn->namesym == finalName || parseActorIsInit(fn))) {
             errorMsgNode(node, ErrorActorMember,
-                "An actor's %s is synchronous, declared 'fn': %s. A behaviour, 'async do', is a message the actor runs when it is scheduled.",
+                "An actor's %s is synchronous, declared 'fn': %s. A behaviour, 'async fn', is a message the actor runs when it is scheduled.",
                 fn->namesym == finalName ? "'final'" : "initializer",
                 fn->namesym == finalName ? "it runs as the actor dies" : "it runs on the thread making the actor, before the actor takes any message");
             continue;
@@ -521,7 +521,7 @@ static void parseActorMembers(DclTexts *texts, StructNode *state, Name *actornam
         if (!behaviour) {
             if (fn->flags & FlagPub)
                 errorMsgNode(node, ErrorActorMember,
-                    "%s is a 'fn' of actor %s's: synchronous, run inside the actor by the method that calls it, so nothing outside the actor reaches it, and it is never 'pub'. A message the actor's handle sends is a behaviour, declared 'async do': 'pub async do %s(...)'.",
+                    "%s is a 'fn' of actor %s's: synchronous, run inside the actor by the method that calls it, so nothing outside the actor reaches it, and it is never 'pub'. A message the actor's handle sends is a behaviour, declared 'async fn': 'pub async fn %s(...)'.",
                     &fn->namesym->namestr, &actorname->namestr, &fn->namesym->namestr);
             continue;
         }

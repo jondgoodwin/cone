@@ -75,7 +75,7 @@ typedef struct DclTexts {
     uint32_t awaits;        // How many 'await's the actor's body holds so far
     Nodes *awaiting;        // Each function of the body whose own body holds an 'await' (parseFn)
     uint32_t selfactors;    // How many times the actor's body writes 'selfactor'
-    Nodes *behaviours;      // Each function of the body declared 'async do', a behaviour (parseStruct)
+    Nodes *behaviours;      // Each function of the body declared 'async fn', a behaviour (parseStruct)
 } DclTexts;
 
 typedef struct ParseState {

@@ -1895,7 +1895,7 @@ static int fnCallLowerMethodOn(TypeCheckState *pstate, FnCallNode *callnode, INo
                     &methsym->namestr, &actorname->namestr);
             else
                 errorMsgNode((INode*)callnode, ErrorNotPublic,
-                    "`%s` is a synchronous method of actor %s's, run only inside the actor: its handle sends the actor's behaviours, declared 'async do', and nothing else.",
+                    "`%s` is a synchronous method of actor %s's, run only inside the actor: its handle sends the actor's behaviours, declared 'async fn', and nothing else.",
                     &methsym->namestr, &actorname->namestr);
             return -1;
         }

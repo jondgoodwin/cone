@@ -38,13 +38,13 @@ fn yes(b: bool) &str {if b {"yes"} else {"NO"}}
 actor Feed {
   ex: Exchange;
 
-  pub async do start(self) {
+  pub async fn start(self) {
     ex.startEvents();
     let e1 = sse.Event.named("hello", "first").withId("1");
     let r = await ex.sendEvent(&e1);
   }
 
-  pub async do rest(self) {
+  pub async fn rest(self) {
     let e2 = sse.Event.message("two\nlines").withId("2");
     let r2 = await ex.sendEvent(&e2);
     let r3 = await ex.sendComment("ping");
@@ -58,7 +58,7 @@ actor Feed {
 actor Endless {
   ex: Exchange;
 
-  pub async do run(self, left: Sender[u64]) {
+  pub async fn run(self, left: Sender[u64]) {
     ex.startEvents();
     var n = 0u64;
     var going = true;
@@ -81,7 +81,7 @@ actor Endless {
 actor Resumer {
   ex: Exchange;
 
-  pub async do run(self) {
+  pub async fn run(self) {
     var body = String.from("Last-Event-ID=");
     body.appendBytes(ex.request.header("last-event-id"));
     body.append(" Accept=");
@@ -97,7 +97,7 @@ actor Resumer {
 actor Silent {
   ex: Exchange;
 
-  pub async do run(self) {
+  pub async fn run(self) {
     ex.startEvents();
   }
 }
@@ -106,12 +106,12 @@ actor Silent {
 actor Chunker {
   ex: Exchange;
 
-  pub async do start(self) {
+  pub async fn start(self) {
     ex.start(ResponseHead.make(200u16), BodyLength.unsized());
     let a = await ex.write(String.from("alpha "));
   }
 
-  pub async do rest(self) {
+  pub async fn rest(self) {
     let b = await ex.write(String.from("beta "));
     let c = await ex.write(String.from("gamma"));
     let f = await ex.finish();
@@ -125,7 +125,7 @@ actor Acceptor {
   silents: List[Silent];
   left: Sender[u64];
 
-  pub async do open(self, ports: Sender[u16]) {
+  pub async fn open(self, ports: Sender[u16]) {
     let r = await actorhttp.listen(SocketAddr.localhost(0u16), ServerConfig.make());
     var res = r;
     match &mut res {
@@ -136,16 +136,16 @@ actor Acceptor {
   }
 
   // The "/events" stream may go on
-  pub async do release(self) {
+  pub async fn release(self) {
     if feeds.len() > 0usize {feeds[0usize].rest();}
   }
 
   // The "/chunks" body may go on
-  pub async do releaseChunks(self) {
+  pub async fn releaseChunks(self) {
     if chunkers.len() > 0usize {chunkers[0usize].rest();}
   }
 
-  pub async do serve(self) {
+  pub async fn serve(self) {
     while true {
       let n = await server.next();
       match n {
@@ -155,7 +155,7 @@ actor Acceptor {
     }
   }
 
-  pub async do stop(self) {
+  pub async fn stop(self) {
     server.close();
   }
 
@@ -227,7 +227,7 @@ actor Reader {
   client: Client;
 
   // "/events": every event, the stream ended cleanly
-  pub async do ordered(self, port: u16, acceptor: Acceptor, done: OneshotSender[u64]) {
+  pub async fn ordered(self, port: u16, acceptor: Acceptor, done: OneshotSender[u64]) {
     let r = await client.events(Request.get(url(port, "/events").view()));
     match r {
       case let es Ok {
@@ -268,7 +268,7 @@ actor Reader {
   }
 
   // "/resume": the Last-Event-ID the client sent comes back as data
-  pub async do resume(self, port: u16, done: OneshotSender[u64]) {
+  pub async fn resume(self, port: u16, done: OneshotSender[u64]) {
     var req = Request.get(url(port, "/resume").view());
     req.headers.add("Last-Event-ID", "41");
     let r = await client.events(req);
@@ -292,7 +292,7 @@ actor Reader {
   }
 
   // Two paths that are no event stream
-  pub async do notStreams(self, port: u16, done: OneshotSender[u64]) {
+  pub async fn notStreams(self, port: u16, done: OneshotSender[u64]) {
     let r = await client.events(Request.get(url(port, "/plain").view()));
     match r {
       case let es Ok {
@@ -332,7 +332,7 @@ actor Reader {
   }
 
   // Reads two events of "/endless" and goes: the EventStream is dropped
-  pub async do leave(self, port: u16, done: OneshotSender[u64]) {
+  pub async fn leave(self, port: u16, done: OneshotSender[u64]) {
     {
       let r = await client.events(Request.get(url(port, "/endless").view()));
       match r {
@@ -355,7 +355,7 @@ actor Reader {
   }
 
   // A body in chunks
-  pub async do chunks(self, port: u16, acceptor: Acceptor, done: OneshotSender[u64]) {
+  pub async fn chunks(self, port: u16, acceptor: Acceptor, done: OneshotSender[u64]) {
     let r = await client.stream(Request.get(url(port, "/chunks").view()));
     match r {
       case let bs Ok {
@@ -400,7 +400,7 @@ actor Reader {
   }
 
   // A stream that says nothing, read for a second
-  pub async do silent(self, port: u16, done: OneshotSender[u64]) {
+  pub async fn silent(self, port: u16, done: OneshotSender[u64]) {
     let lim = IoLimits.until(Instant.now() + Duration.fromMillis(1000i64));
     let r = await client.eventsIn(Request.get(url(port, "/silent").view()), lim);
     match r {
