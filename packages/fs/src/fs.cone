@@ -8,11 +8,11 @@
 //   import fs;
 //
 //   fn main() i32 {
-//     mut text = String.empty();
+//     var text = String.empty();
 //     match fs.readFile("notes.txt") {
-//       case mut ok Ok { text <-> ok; }             // the String moved out
-//       case imm e Error {
-//         imm m = e.message();                     // 'readFile notes.txt: No such file or directory'
+//       case let Ok(ok) { text = ok; }              // the String moved out
+//       case let Error(e) {
+//         let m = e.message();                      // 'readFile notes.txt: No such file or directory'
 //         eprintStr(m.view());
 //         return 1i32;
 //       }
@@ -35,7 +35,7 @@
 // commonest question about it. A path holding a NUL byte, which C would read
 // as its end, fails with EINVAL before anything is asked of the system.
 // Cone has no '?' yet, so a caller matches each Result; a value is moved out
-// of a matched 'Ok' by swapping an empty one in ('text <-> ok').
+// of a matched 'Ok' by binding it ('case let Ok(ok) { text = ok; }').
 // Asking whether something is there is not a failure: 'exists', 'isDir' and
 // 'isFile' answer a bool, false for anything they cannot see.
 //
@@ -614,10 +614,8 @@ pub fn walk(root: &Path) Result[List[DirEntry], FsError] {
   var out = List[DirEntry].empty();
   let went = walkInto(root, &mut out);
   match went {
-    case var Error(e) {
-      var err = failure("", "", 0i32);
-      err <-> e;
-      return Error[List[DirEntry], FsError](err);
+    case let Error(e) {
+      return Error[List[DirEntry], FsError](e);
     }
     case is Ok {}
   }
@@ -627,10 +625,8 @@ pub fn walk(root: &Path) Result[List[DirEntry], FsError] {
 fn walkInto(dir: &Path, out: &mut List[DirEntry]) Result[void, FsError] {
   match readDir(dir) {
     case var Error(e) {
-      var err = failure("", "", 0i32);
-      err <-> e;
-      err.op = String.from("walk");
-      return Error[void, FsError](err);
+      e.op = String.from("walk");
+      return Error[void, FsError](e);
     }
     case let Ok(listed) {
       let entries = &listed;
@@ -689,10 +685,8 @@ fn removeTree(path: &Path, kind: u16) Result[void, FsError] {
   }
   match readDir(path) {
     case var Error(e) {
-      var err = failure("", "", 0i32);
-      err <-> e;
-      err.op = String.from("removeAll");
-      return Error[void, FsError](err);
+      e.op = String.from("removeAll");
+      return Error[void, FsError](e);
     }
     case let Ok(listed) {
       let entries = &listed;
@@ -757,10 +751,8 @@ pub fn absolute(path: &Path) Result[Path, FsError] {
     match currentDir() {
       case let Ok(here) { return Ok[Path, FsError](here.join(path).normalize()); }
       case var Error(e) {
-        var err = failure("", "", 0i32);
-        err <-> e;
-        err.op = String.from("absolute");
-        return Error[Path, FsError](err);
+        e.op = String.from("absolute");
+        return Error[Path, FsError](e);
       }
     }
   }
