@@ -77,13 +77,13 @@
 // block, it is zeroed.
 //
 // IoBuf.empty() is a buffer with no block, from no pool, which does nothing
-// when it dies. It exists because Cone moves a value out of a matched
-// Option's variant only by swapping another in: 'b <-> s'. That is how a
-// buffer comes out of 'take' or 'popFront' or a refused 'push':
+// when it dies: what a buffer slot holds when it holds none (a read of no
+// room, the end of a stream), and the start of a buffer that 'take' or
+// 'popFront' or a refused 'push' may or may not fill in:
 //
-//   mut b = IoBuf.empty();
+//   var b = IoBuf.empty();
 //   match pool.take(65536usize) {
-//     case mut s Some {b <-> s;}
+//     case let Some(s) {b = s;}
 //     case is None[IoBuf] {...}               // the pool is full: wait, or fail
 //   }
 //
@@ -500,12 +500,10 @@ pub struct Pool {
   // A buffer of at least size bytes, empty; a panic, reported at the
   // caller's line, when the bound refuses it
   pub fn mustTake(self: &, size: usize, file: &Array[u8] = srcFile(), line: u32 = srcLine()) IoBuf {
-    var b = IoBuf.empty();
     match self.take(size) {
-      case var Some(s) {b <-> s;}
-      case is None[IoBuf] {panic("iobuf: Pool.mustTake refused: the pool's bound is reached", file, line);}
+      case let Some(s) {s}
+      case is None[IoBuf] {panic("iobuf: Pool.mustTake refused: the pool's bound is reached", file, line)}
     }
-    b
   }
 
   // Give every idle block back to the OS
