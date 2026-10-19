@@ -57,7 +57,7 @@ fn socketOf(r: Result[Socket, IoError]) Socket {
   var res = r;
   var s = Socket.none();
   match &mut res {
-    case var ok &mut Ok {s <-> *ok;}
+    case var &mut Ok(ok) {s <-> *ok;}
     else {}
   }
   s
@@ -76,18 +76,18 @@ actor Writer {
   pool: Pool;
   conns: List[Socket];
 
-  pub async do attach(self, s: Socket) {
+  pub async fn attach(self, s: Socket) {
     conns.push(s);
   }
 
-  pub async do push(self, spin: u64) {
+  pub async fn push(self, spin: u64) {
     spinFor(spin);
     var b = pool.mustTake(16usize);
     let one = [7u8];
     b.append(&one);
     let w = await conns[0usize].write(b);
     match w {
-      case let n Ok {
+      case let Ok(n) {
         if n != 1usize {got.badWrite.add(1u64);}
       }
       else {got.badWrite.add(1u64);}
@@ -99,18 +99,18 @@ actor Writer {
 actor Racer {
   pool: Pool;
 
-  pub async do stop(self, g: CancelGroup, spin: u64) {
+  pub async fn stop(self, g: CancelGroup, spin: u64) {
     spinFor(spin);
     g.cancel();
   }
 
-  pub async do run(self, writer: Writer, finished: OneshotSender[u64]) {
+  pub async fn run(self, writer: Writer, finished: OneshotSender[u64]) {
     let l = await aio.listen(SocketAddr.localhost(0u16));
     let ls = socketOf(l);
     let a = await ls.localAddr();
     var port = 0u16;
     match a {
-      case let addr Ok {port = addr.port();}
+      case let Ok(addr) {port = addr.port();}
       else {}
     }
     let c = await aio.connect(SocketAddr.localhost(port));
@@ -133,11 +133,11 @@ actor Racer {
       }
       let r = await rd;
       match r {
-        case let b Ok {
+        case let Ok(b) {
           got.done.add(1u64);
           got.bytes.add(u64.from(b.len()));
         }
-        case let e Error {
+        case let Error(e) {
           if aio.isCancelled(e) {got.cancelled.add(1u64);} else {got.other.add(1u64);}
         }
       }
@@ -149,7 +149,7 @@ actor Racer {
     while more && got.bytes.load() < rounds {
       let r = await srv.readIn(pool.mustTake(64usize), IoLimits.until(Instant.now() + Duration.fromSeconds(5i64)));
       match r {
-        case let b Ok {got.bytes.add(u64.from(b.len()));}
+        case let Ok(b) {got.bytes.add(u64.from(b.len()));}
         else {more = false;}
       }
     }

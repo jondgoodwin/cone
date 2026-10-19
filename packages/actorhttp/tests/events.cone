@@ -38,13 +38,13 @@ fn yes(b: bool) &str {if b {"yes"} else {"NO"}}
 actor Feed {
   ex: Exchange;
 
-  pub async do start(self) {
+  pub async fn start(self) {
     ex.startEvents();
     let e1 = sse.Event.named("hello", "first").withId("1");
     let r = await ex.sendEvent(&e1);
   }
 
-  pub async do rest(self) {
+  pub async fn rest(self) {
     let e2 = sse.Event.message("two\nlines").withId("2");
     let r2 = await ex.sendEvent(&e2);
     let r3 = await ex.sendComment("ping");
@@ -58,7 +58,7 @@ actor Feed {
 actor Endless {
   ex: Exchange;
 
-  pub async do run(self, left: Sender[u64]) {
+  pub async fn run(self, left: Sender[u64]) {
     ex.startEvents();
     var n = 0u64;
     var going = true;
@@ -68,8 +68,8 @@ actor Endless {
       let e = sse.Event.message(line.view());
       let w = await ex.sendEvent(&e);
       match w {
-        case let ok Ok {n = n + 1u64;}
-        case let er Error {going = false;}
+        case let Ok(ok) {n = n + 1u64;}
+        case let Error(er) {going = false;}
       }
       thread.sleep(Duration.fromMillis(5i64));
     }
@@ -81,7 +81,7 @@ actor Endless {
 actor Resumer {
   ex: Exchange;
 
-  pub async do run(self) {
+  pub async fn run(self) {
     var body = String.from("Last-Event-ID=");
     body.appendBytes(ex.request.header("last-event-id"));
     body.append(" Accept=");
@@ -97,7 +97,7 @@ actor Resumer {
 actor Silent {
   ex: Exchange;
 
-  pub async do run(self) {
+  pub async fn run(self) {
     ex.startEvents();
   }
 }
@@ -106,12 +106,12 @@ actor Silent {
 actor Chunker {
   ex: Exchange;
 
-  pub async do start(self) {
+  pub async fn start(self) {
     ex.start(ResponseHead.make(200u16), BodyLength.unsized());
     let a = await ex.write(String.from("alpha "));
   }
 
-  pub async do rest(self) {
+  pub async fn rest(self) {
     let b = await ex.write(String.from("beta "));
     let c = await ex.write(String.from("gamma"));
     let f = await ex.finish();
@@ -125,37 +125,37 @@ actor Acceptor {
   silents: List[Silent];
   left: Sender[u64];
 
-  pub async do open(self, ports: Sender[u16]) {
+  pub async fn open(self, ports: Sender[u16]) {
     let r = await actorhttp.listen(SocketAddr.localhost(0u16), ServerConfig.make());
     var res = r;
     match &mut res {
-      case var ok &mut Ok {server <-> *ok;}
-      case let e &mut Error {printStr("listen failed: "); printStr(e.message().view()); printStr("\n");}
+      case var &mut Ok(ok) {server <-> *ok;}
+      case let &mut Error(e) {printStr("listen failed: "); printStr(e.message().view()); printStr("\n");}
     }
     ports.send(server.port());
   }
 
   // The "/events" stream may go on
-  pub async do release(self) {
+  pub async fn release(self) {
     if feeds.len() > 0usize {feeds[0usize].rest();}
   }
 
   // The "/chunks" body may go on
-  pub async do releaseChunks(self) {
+  pub async fn releaseChunks(self) {
     if chunkers.len() > 0usize {chunkers[0usize].rest();}
   }
 
-  pub async do serve(self) {
+  pub async fn serve(self) {
     while true {
       let n = await server.next();
       match n {
-        case var ok Ok {self.route(ok);}
-        case let e Error {break;}
+        case var Ok(ok) {self.route(ok);}
+        case let Error(e) {break;}
       }
     }
   }
 
-  pub async do stop(self) {
+  pub async fn stop(self) {
     server.close();
   }
 
@@ -227,10 +227,10 @@ actor Reader {
   client: Client;
 
   // "/events": every event, the stream ended cleanly
-  pub async do ordered(self, port: u16, acceptor: Acceptor, done: OneshotSender[u64]) {
+  pub async fn ordered(self, port: u16, acceptor: Acceptor, done: OneshotSender[u64]) {
     let r = await client.events(Request.get(url(port, "/events").view()));
     match r {
-      case let es Ok {
+      case let Ok(es) {
         printStr("events: status ");
         printUInt(u64.from(es.status));
         printStr(", event stream: ");
@@ -241,9 +241,9 @@ actor Reader {
         while going {
           let n = await es.next();
           match n {
-            case let ok Ok {
+            case let Ok(ok) {
               match ok {
-                case let ev Some {
+                case let Some(ev) {
                   show(&ev);
                   count = count + 1u64;
                   if count == 1u64 {acceptor.release();}
@@ -251,7 +251,7 @@ actor Reader {
                 case is None[sse.Event] {going = false;}
               }
             }
-            case let er Error {
+            case let Error(er) {
               printStr("  error: ");
               printStr(why(&er));
               printStr("\n");
@@ -261,41 +261,41 @@ actor Reader {
         }
         say("events read:", count);
       }
-      case let e Error {printStr("events failed\n");}
+      case let Error(e) {printStr("events failed\n");}
     }
     var d = done;
     d.send(1u64);
   }
 
   // "/resume": the Last-Event-ID the client sent comes back as data
-  pub async do resume(self, port: u16, done: OneshotSender[u64]) {
+  pub async fn resume(self, port: u16, done: OneshotSender[u64]) {
     var req = Request.get(url(port, "/resume").view());
     req.headers.add("Last-Event-ID", "41");
     let r = await client.events(req);
     match r {
-      case let es Ok {
+      case let Ok(es) {
         let n = await es.next();
         match n {
-          case let ok Ok {
+          case let Ok(ok) {
             match ok {
-              case let ev Some {show(&ev);}
+              case let Some(ev) {show(&ev);}
               case is None[sse.Event] {printStr("  no event\n");}
             }
           }
-          case let er Error {printStr("  error\n");}
+          case let Error(er) {printStr("  error\n");}
         }
       }
-      case let e Error {printStr("resume failed\n");}
+      case let Error(e) {printStr("resume failed\n");}
     }
     var d = done;
     d.send(1u64);
   }
 
   // Two paths that are no event stream
-  pub async do notStreams(self, port: u16, done: OneshotSender[u64]) {
+  pub async fn notStreams(self, port: u16, done: OneshotSender[u64]) {
     let r = await client.events(Request.get(url(port, "/plain").view()));
     match r {
-      case let es Ok {
+      case let Ok(es) {
         printStr("plain: status ");
         printUInt(u64.from(es.status));
         printStr(", event stream: ");
@@ -303,20 +303,20 @@ actor Reader {
         printStr("\n");
         let n = await es.next();
         match n {
-          case let ok Ok {
+          case let Ok(ok) {
             match ok {
-              case let ev Some {printStr("  an event?\n");}
+              case let Some(ev) {printStr("  an event?\n");}
               case is None[sse.Event] {printStr("  ended with no events\n");}
             }
           }
-          case let er Error {printStr("  error\n");}
+          case let Error(er) {printStr("  error\n");}
         }
       }
-      case let e Error {printStr("plain failed\n");}
+      case let Error(e) {printStr("plain failed\n");}
     }
     let r2 = await client.events(Request.get(url(port, "/other").view()));
     match r2 {
-      case let es Ok {
+      case let Ok(es) {
         printStr("other: status ");
         printUInt(u64.from(es.status));
         printStr(", event stream: ");
@@ -325,29 +325,29 @@ actor Reader {
         printStr(yes(es.isOk()));
         printStr("\n");
       }
-      case let e Error {printStr("other failed\n");}
+      case let Error(e) {printStr("other failed\n");}
     }
     var d = done;
     d.send(1u64);
   }
 
   // Reads two events of "/endless" and goes: the EventStream is dropped
-  pub async do leave(self, port: u16, done: OneshotSender[u64]) {
+  pub async fn leave(self, port: u16, done: OneshotSender[u64]) {
     {
       let r = await client.events(Request.get(url(port, "/endless").view()));
       match r {
-        case let es Ok {
+        case let Ok(es) {
           var got = 0u64;
           while got < 2u64 {
             let n = await es.next();
             match n {
-              case let ok Ok {got = got + 1u64;}
-              case let er Error {got = 100u64;}
+              case let Ok(ok) {got = got + 1u64;}
+              case let Error(er) {got = 100u64;}
             }
           }
           say("endless: events read before leaving:", got);
         }
-        case let e Error {printStr("endless failed\n");}
+        case let Error(e) {printStr("endless failed\n");}
       }
     }
     var d = done;
@@ -355,10 +355,10 @@ actor Reader {
   }
 
   // A body in chunks
-  pub async do chunks(self, port: u16, acceptor: Acceptor, done: OneshotSender[u64]) {
+  pub async fn chunks(self, port: u16, acceptor: Acceptor, done: OneshotSender[u64]) {
     let r = await client.stream(Request.get(url(port, "/chunks").view()));
     match r {
-      case let bs Ok {
+      case let Ok(bs) {
         printStr("chunks: status ");
         printUInt(u64.from(bs.status));
         printStr(", ok: ");
@@ -370,9 +370,9 @@ actor Reader {
         while going {
           let n = await bs.read();
           match n {
-            case let ok Ok {
+            case let Ok(ok) {
               match ok {
-                case let piece Some {
+                case let Some(piece) {
                   all.append(piece.view());
                   pieces = pieces + 1u64;
                   if pieces == 1u64 {acceptor.releaseChunks();}
@@ -380,7 +380,7 @@ actor Reader {
                 case is None[String] {going = false;}
               }
             }
-            case let er Error {
+            case let Error(er) {
               printStr("  error\n");
               going = false;
             }
@@ -393,26 +393,26 @@ actor Reader {
         printStr(yes(pieces >= 2u64));
         printStr("\n");
       }
-      case let e Error {printStr("chunks failed\n");}
+      case let Error(e) {printStr("chunks failed\n");}
     }
     var d = done;
     d.send(1u64);
   }
 
   // A stream that says nothing, read for a second
-  pub async do silent(self, port: u16, done: OneshotSender[u64]) {
+  pub async fn silent(self, port: u16, done: OneshotSender[u64]) {
     let lim = IoLimits.until(Instant.now() + Duration.fromMillis(1000i64));
     let r = await client.eventsIn(Request.get(url(port, "/silent").view()), lim);
     match r {
-      case let es Ok {
+      case let Ok(es) {
         printStr("silent: opened, ");
         let n = await es.next();
         match n {
-          case let ok Ok {printStr("something arrived or it ended\n");}
-          case let er Error {printStr(why(&er)); printStr("\n");}
+          case let Ok(ok) {printStr("something arrived or it ended\n");}
+          case let Error(er) {printStr(why(&er)); printStr("\n");}
         }
       }
-      case let er Error {printStr("silent: "); printStr(why(&er)); printStr(" before it opened\n");}
+      case let Error(er) {printStr("silent: "); printStr(why(&er)); printStr(" before it opened\n");}
     }
     var d = done;
     d.send(1u64);
@@ -421,7 +421,7 @@ actor Reader {
 
 fn take[T](rx: &mut Receiver[T], dflt: T) T {
   match rx.recv() {
-    case let v Some {v}
+    case let Some(v) {v}
     else {dflt}
   }
 }
@@ -468,7 +468,7 @@ fn main() i32 {
     rx.recv();
     // The server finds out by a write that answers Closed
     match lrx.recvTimeout(Duration.fromSeconds(10i64)) {
-      case let n Some {printStr("endless: the server saw its reader leave: "); printStr(yes(n >= 2u64)); printStr("\n");}
+      case let Some(n) {printStr("endless: the server saw its reader leave: "); printStr(yes(n >= 2u64)); printStr("\n");}
       case is None[u64] {printStr("endless: the server never saw its reader leave\n");}
     }
     acceptor.stop();

@@ -61,9 +61,9 @@ enum Fault {
 fn price(d: Drink) i32 {
   let base = match d {
     case Espresso {250}
-    case let l Latte if l.oat {350 + 60 * l.shots}
-    case let l Latte {320 + 60 * l.shots}
-    case let t Tea {200 + 10 * t.minutes}
+    case let Latte(l) if l.oat {350 + 60 * l.shots}
+    case let Latte(l) {320 + 60 * l.shots}
+    case let Tea(t) {200 + 10 * t.minutes}
   };
   if d.size == Size.Large {base + 80} else {base}
 }
@@ -83,15 +83,15 @@ fn main() {
   each code in 1 ..= 5 {
     print &lt;- "#", code, ": ";
     match order(code) {               // a Result is an enum too
-      case let d Ok {
+      case let Ok(d) {
         print &lt;- d.size.ml(), " ml for ", price(d), " cents";
         if d is Tea {print &lt;- " (let it steep)";}
         print &lt;- "\n";
       }
-      case let f Error {
+      case let Error(f) {
         match f {
           case SoldOut {print &lt;- "sold out, sorry\n";}
-          case let n NoSuchCode {print &lt;- "there is no drink ", n, "\n";}
+          case let NoSuchCode(n) {print &lt;- "there is no drink ", n, "\n";}
         }
       }
     }
@@ -171,19 +171,22 @@ Error 1417: This match does not cover Tea: add a case for each, or end the match
 	<ul>
 		<li><span class="pre">case Espresso</span> asks only whether the value is that variant
 			(<span class="pre">case is Espresso</span> says the same).</li>
-		<li><span class="pre">case let l Latte</span> asks the same, and when it is, gives you the latte as
-			<span class="pre">l</span>, with its own fields to read. The binding may be <span class="pre">var</span>,
-			to change it.</li>
+		<li><span class="pre">case let Latte(l)</span> asks the same, and when it is, gives you the latte as
+			<span class="pre">l</span>, with its own fields to read. The <span class="pre">let</span> is in front of the whole pattern; write
+			<span class="pre">var</span> in its place, <span class="pre">case var Latte(l)</span>, to change the binding.</li>
 		<li>A guard narrows a case further, just as it does on a number. The oat-milk latte comes first; a latte
 			without oat milk fails its guard and falls to the next case.</li>
 		<li>For a variant written with a type in parentheses, the name you bind is what it holds:
-			<span class="pre">case let n NoSuchCode</span> makes <span class="pre">n</span> the number itself.</li>
+			<span class="pre">case let NoSuchCode(n)</span> makes <span class="pre">n</span> the number itself.</li>
 	</ul>
 	<p>Inside a pattern the variants are named bare. The match knows which enum it is looking at, so
 		<span class="pre">Latte</span> means <span class="pre">Drink.Latte</span> without being told, and it asks that
 		enum first, whatever else the name might mean nearby. A binding is the variant's value, taken from the value
 		matched: a copy where it copies, and a move where it holds something that moves. Through a borrowed reference
 		it is a reference into the variant, which <a href="mem-borrowing.html">Borrowed references</a> explains.</p>
+	<p>A variant's parentheses hold the one name and nothing else, and a pattern does not nest: to look inside what
+		a variant holds, bind it and match it again in the case. Without the <span class="pre">let</span> or
+		<span class="pre">var</span>, a pattern written like a call is a value, compared with the matched value, not a binding. A <span class="pre">_</span> in the parentheses discards, as it does wherever a name is declared: <span class="pre">case let Ok(_)</span> tests the variant and binds nothing, which <span class="pre">case Ok</span> says plainly.
 	<p>When only one variant matters, a whole match is more than the question needs. <span class="pre">is</span> asks
 		it, true or false, as <span class="pre">d is Tea</span> does in the program. And where the test holds, the
 		compiler knows which variant the value is, so its own fields can be read:</p>
@@ -198,7 +201,7 @@ fn shots(d: Drink) i32 {
 	<p>A binding in an <span class="pre">if</span> tests and hands over the variant in one step, with an
 		<span class="pre">else</span> for when it is something else:</p>
 <pre>
-if let l Latte = d {
+if let Latte(l) = d {
   print &lt;- l.shots, " shots\n";
 } else {
   print &lt;- "no shots\n";
@@ -211,7 +214,7 @@ if let l Latte = d {
 		<span class="pre">panic</span>:</p>
 <pre>
 fn steep(d: Drink) i32 {
-  let t Tea = d else { return 0; };
+  let Tea(t) = d else { return 0; };
   t.minutes                 // steep(Drink.Tea(Size.Large, 5)) is 5
 }
 </pre>

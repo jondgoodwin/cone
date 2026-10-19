@@ -34,7 +34,7 @@ fn yes(b: bool) &str {if b {"yes"} else {"NO"}}
 actor Handler {
   ex: Exchange;
 
-  pub async do run(self) {
+  pub async fn run(self) {
     let path = String.from(ex.request.path());
     let p = path.view();
     if p == "/events" {
@@ -62,12 +62,12 @@ actor Handler {
 actor Acceptor {
   server: Server;
 
-  pub async do open(self, cfg: ServerConfig, ports: Sender[u16], secure: Sender[u64]) {
+  pub async fn open(self, cfg: ServerConfig, ports: Sender[u16], secure: Sender[u64]) {
     let r = await actorhttp.listen(SocketAddr.localhost(0u16), cfg);
     var res = r;
     match &mut res {
-      case var ok &mut Ok {server <-> *ok;}
-      case let e &mut Error {
+      case var &mut Ok(ok) {server <-> *ok;}
+      case let &mut Error(e) {
         printStr("listen failed, with a reason: ");
         printStr(yes(e.message().len() > 0usize && e.kind() == actorhttp.ServerErrorKind.Failed));
         printStr("\n");
@@ -77,20 +77,20 @@ actor Acceptor {
     ports.send(server.port());
   }
 
-  pub async do serve(self) {
+  pub async fn serve(self) {
     while true {
       let n = await server.next();
       match n {
-        case var ok Ok {
+        case var Ok(ok) {
           let h = Handler(ok);
           h.run();
         }
-        case let e Error {break;}
+        case let Error(e) {break;}
       }
     }
   }
 
-  pub async do stop(self) {
+  pub async fn stop(self) {
     server.close();
   }
 }
@@ -110,8 +110,8 @@ fn readText(name: &str) String {
   var out = String.empty();
   let file = certs(name);
   match fs.readFile(&file) {
-    case var r Ok {out <-> r;}
-    case let e Error {}
+    case var Ok(r) {out <-> r;}
+    case let Error(e) {}
   }
   out
 }
@@ -136,13 +136,13 @@ fn say(what: &str, r: Result[Response, FetchError]) {
   printStr(what);
   printStr(": ");
   match &r {
-    case let ok &Ok {
+    case let &Ok(ok) {
       printUInt(u64.from(ok.status));
       printStr(" ");
       printStr(ok.body.view());
       printStr("\n");
     }
-    case let e &Error {
+    case let &Error(e) {
       printStr("failed at ");
       printStr(httpclient.stageName(e.failure.stage));
       printStr("\n");
@@ -156,7 +156,7 @@ fn say(what: &str, r: Result[Response, FetchError]) {
 // happens now and then
 fn refusedTls(r: Result[Response, FetchError]) bool {
   match &r {
-    case let e &Error {
+    case let &Error(e) {
       let s = e.failure.stage;
       e.kind() == actorhttp.FetchErrorKind.Failed && (s == httpclient.Stage.Tls || s == httpclient.Stage.Read ||
         s == httpclient.Stage.Closed)
@@ -167,7 +167,7 @@ fn refusedTls(r: Result[Response, FetchError]) bool {
 
 fn isOk(r: Result[Response, FetchError]) bool {
   match &r {
-    case let ok &Ok {true}
+    case let &Ok(ok) {true}
     else {false}
   }
 }
@@ -176,7 +176,7 @@ actor Prober {
   client: Client;
   plain: Client;
 
-  pub async do run(self, port: u16, done: OneshotSender[u64]) {
+  pub async fn run(self, port: u16, done: OneshotSender[u64]) {
     say("https get", await client.get(url("https", port, "/hello").view()));
     var post = Request.make("POST", url("https", port, "/echo").view());
     post.body = String.from("over tls");
@@ -186,7 +186,7 @@ actor Prober {
     // Events over TLS
     let r = await client.events(Request.get(url("https", port, "/events").view()));
     match r {
-      case let es Ok {
+      case let Ok(es) {
         printStr("events: status ");
         printUInt(u64.from(es.status));
         printStr(", event stream: ");
@@ -196,9 +196,9 @@ actor Prober {
         while going {
           let n = await es.next();
           match n {
-            case let ok Ok {
+            case let Ok(ok) {
               match ok {
-                case let ev Some {
+                case let Some(ev) {
                   printStr("  ");
                   printStr(ev.kind());
                   printStr(": ");
@@ -208,14 +208,14 @@ actor Prober {
                 case is None[sse.Event] {going = false;}
               }
             }
-            case let er Error {
+            case let Error(er) {
               printStr("  error\n");
               going = false;
             }
           }
         }
       }
-      case let e Error {printStr("events failed\n");}
+      case let Error(e) {printStr("events failed\n");}
     }
 
     // A client that does not trust the root, and one that does not speak TLS at all
@@ -234,7 +234,7 @@ actor Prober {
 
 fn take[T](rx: &mut Receiver[T], dflt: T) T {
   match rx.recv() {
-    case let v Some {v}
+    case let Some(v) {v}
     else {dflt}
   }
 }

@@ -154,10 +154,16 @@ such a literal (`0b1.0`, `0o7e2`, `0b1f32`), pointed at the `.`, the `e` or `p`,
 read on as the integer 0 so nothing is said again about it. Hexadecimal is not held to
 these rules (`0x` is read as 0).
 
-`ErrorLetElseColon` is a let-else binding written with a `:` (`let n: Ok = r else {...};`).
-The binding is a pattern that takes the payload of a variant of the value, and the word after it
-names only the variant, with no `:`; a type after a `:` would say what the binding is, which
-the payload is not. Pointed at the binding.
+The three pattern-binding codes are the shape of a name bound inside a variant, after the `let` or
+`var` that is in front of the whole pattern, `case let Some(n)` (`parseBindVarDcl`).
+`ErrorPatBindCount` is a variant whose parentheses hold no name or several (`Some()`,
+`Response(head, body)`): a variant takes exactly one name and is never read by position.
+`ErrorPatBindNested` is anything else in the parentheses (`Some(Ok(x))`, `Some(3)`,
+`Wrapper(f(x))`): patterns do not nest, and a value does not go in them. `ErrorPatBindForm` is a
+binding that is neither a variant with its name inside nor a function's pattern: a name written
+before the variant, a variant with no parentheses, an `=` or an `else` missing from a binding
+that needs one, or a declaration of a name followed by `else`. Without the `let` or `var`, a call
+shaped pattern is a value compared by equality and none of these applies.
 
 `ErrorRangeBare` is a range written with a bare `..` before an end, in an index (`a..b`, `..b`),
 a case pattern or an `each` (`case 'a' .. 'z'`, `each i in 0 .. n`). A bare `..` does not
@@ -511,7 +517,7 @@ member only one variant has, named on a name that was narrowed to it and has sin
 changed by an assignment, a writable borrow of the whole enum, a swap, a reference stored over
 or a branch that did one of these, is `ErrorNarrowStale` (type check); a name narrowed from before
 a loop, used in it, that a change later in the loop reaches by the back edge is
-`ErrorNarrowLoop`; and the `else` of `let n Ok = r else {...};` that falls through to the binding
+`ErrorNarrowLoop`; and the `else` of `let Ok(n) = r else {...};` that falls through to the binding
 is `ErrorLetElse`. Each is reported at the use or the `else`, and the first two name the
 change. `ErrorOwnerNarrow` is an owner (`Rc[mut, Shape]`) narrowed to a variant whose value
 would sit at another offset in its allocation (generation).
@@ -568,10 +574,9 @@ body may not hold, or a form of it not built (a `pub` field, a static, a
 behaviour without `self` or named `init` or `final`, a generic behaviour, a
 macro, `extern`, a `self` of another kind, a generic actor, one naming an
 abstraction), is `ErrorActorMember`; a module declaring one without importing
-the `actors` package is `ErrorActorRuntime`; `async` or `do` without the other,
-or `async do` outside an actor's body, is `ErrorBehaviourWords`, a parse code
-of its own because the two words are one keyword and neither alone is
-anything; and `self.m()` on one of the actor's behaviours where there is no
+the `actors` package is `ErrorActorRuntime`; `async` without `fn`,
+or `async fn` outside an actor's body, is `ErrorBehaviourWords`, a parse code
+of its own because `async` is a keyword that means nothing alone; and `self.m()` on one of the actor's behaviours where there is no
 actor to send it to -- the `final`, a state that is not the method's own
 `self` -- is `ErrorBehaviourSend`; and the state constructed anywhere but where
 the actor is made -- the handle's initializer, and the state's `init` filling

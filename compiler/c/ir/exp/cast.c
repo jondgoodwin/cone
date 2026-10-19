@@ -234,7 +234,7 @@ static void castSumInterior(CastNode *node, RefNode *from, RefNode *to);
 
 // ---- Trait patterns on an enum [topic 7] ----
 //
-// 'case let m Measured' on an enum matches every variant that complies with the trait. It is
+// 'case let Measured(m)' on an enum matches every variant that complies with the trait. It is
 // a test of those variants' tags (no run-time cost beyond the tags), counts toward
 // exhaustiveness as the variants it names, and binds a virtual reference to the trait built
 // from the variant the matched reference points at, its vtable chosen by the tag. Only a
@@ -391,9 +391,10 @@ static int castTraitBind(CastNode *node) {
 // a reference type rather than a borrow.
 CastNode *newMatchValueNode(INode *matchee, INode *value) {
     CastNode *node = newIsNode(matchee, value);
-    inodeLexCopy((INode*)node, value);
+    if (value)  // NULL where parseTerm refused the pattern and reported it
+        inodeLexCopy((INode*)node, value);
     node->flags |= FlagMatchValue;
-    if (isNameUseNode(value))
+    if (value && isNameUseNode(value))
         value->flags |= FlagPattern;
     return node;
 }
@@ -851,7 +852,7 @@ void castTypeCheck(TypeCheckState *pstate, CastNode *node) {
     }
 
     // A pattern's type names the brands the matched value carries, and no others:
-    // 'case let s Some[&'=a T]' rebrands nothing
+    // 'case let Some[&'=a T](s)' rebrands nothing
     if (lifeInvariantSeen && lifeBrandKnown(node->typ, node->typ))
         lifeBrandsCoerce(((IExpNode*)node->exp)->vtype, node->typ, node->typ);
 

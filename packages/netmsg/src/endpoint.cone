@@ -103,13 +103,13 @@ pub actor Endpoint {
   }
 
   // How many connections are open now
-  pub async do connections(self) u32 {
+  pub async fn connections(self) u32 {
     u32.from(slots.len())
   }
 
   // End every connection (each tells its peer), send what is queued, close the
   // socket. Call it before the program ends.
-  pub async do shutdown(self) {
+  pub async fn shutdown(self) {
     if stopped {return;}
     stopped = true;
     var conns = List[Connection].empty();
@@ -120,7 +120,7 @@ pub actor Endpoint {
     }
     while conns.len() > 0usize {
       match conns.pop() {
-        case let c Some { let r = await c.closeAndWait(); }
+        case let Some(c) { let r = await c.closeAndWait(); }
         case is None[Connection] {}
       }
     }
@@ -141,16 +141,16 @@ pub actor Endpoint {
   // Bind the socket at 'bind' and say what it got (the address, with the port
   // the system chose when port 0 was asked) or why it could not; then receive.
   // The first message the endpoint is sent
-  async do open(self, bind: SocketAddr, up: OneshotSender[Result[SocketAddr, IoError]]) {
+  async fn open(self, bind: SocketAddr, up: OneshotSender[Result[SocketAddr, IoError]]) {
     var tx = up;
     var made = await aio.bindUdp(bind);
     match &mut made {
-      case var ok &mut Ok { sock <-> *ok; }
+      case var &mut Ok(ok) { sock <-> *ok; }
       else {}
     }
     if sock.isNone() {
       match &made {
-        case let e &Error { tx.send(Error[SocketAddr, IoError](*e)); }
+        case let &Error(e) { tx.send(Error[SocketAddr, IoError](*e)); }
         else { tx.send(Error[SocketAddr, IoError](IoError(1u32))); }
       }
       return;
@@ -159,7 +159,7 @@ pub actor Endpoint {
     var bound = bind;
     let la = await sock.localAddr();
     match &la {
-      case let a &Ok { bound = *a; }
+      case let &Ok(a) { bound = *a; }
       else {}
     }
     tx.send(Ok[SocketAddr, IoError](bound));
@@ -170,16 +170,16 @@ pub actor Endpoint {
   }
 
   // Receive datagrams, one at a time, until shutdown cancels the receive
-  async do receive(self) {
+  async fn receive(self) {
     var failures = 0u32;
     while !stopped && failures <= maxFailures {
       let r = await sock.recvFromIn(pool.mustTake(recvRoom), IoLimits.within(group));
       match &r {
-        case let ok &Ok {
+        case let &Ok(ok) {
           failures = 0u32;
           self.onDatagram(ok.from, copyBytes(ok.buf.view()));
         }
-        case let e &Error {
+        case let &Error(e) {
           if aio.isCancelled(*e) {return;}
           if !aio.isTruncated(*e) {failures = failures + 1u32;}
         }
@@ -188,7 +188,7 @@ pub actor Endpoint {
   }
 
   // A packet to send: one datagram to 'addr'
-  async do send(self, addr: SocketAddr, data: List[u8]) {
+  async fn send(self, addr: SocketAddr, data: List[u8]) {
     if sock.isNone() {return;}
     var b = pool.mustTake(max(data.len(), 1usize));
     b.append(data.view());
@@ -199,7 +199,7 @@ pub actor Endpoint {
 
   // The timer 'g' of generation 'gen' is for the instant 'at': when it comes,
   // the connections and the dialer that are due are ticked
-  async do wake(self, at: i64, gen: u32, g: CancelGroup) {
+  async fn wake(self, at: i64, gen: u32, g: CancelGroup) {
     let r = await aio.sleepUntilIn(Instant.fromNanos(at), IoLimits.within(g));
     if slept(r) && gen == timerGen && !stopped {
       self.fire();
@@ -211,7 +211,7 @@ pub actor Endpoint {
   // ------------------------------------------------------------------
 
   // A connection says when it next needs a tick
-  async do deadline(self, id: u32, at: i64) {
+  async fn deadline(self, id: u32, at: i64) {
     var i = 0usize;
     while i < slots.len() {
       if slots[i].id == id {
@@ -223,7 +223,7 @@ pub actor Endpoint {
   }
 
   // A connection has ended
-  async do gone(self, id: u32) {
+  async fn gone(self, id: u32) {
     var i = 0usize;
     while i < slots.len() {
       if slots[i].id == id {
@@ -264,7 +264,7 @@ pub actor Endpoint {
     match verdict {
       case is Ignore {}
       case is Reply { self.transmit(from, reply); }
-      case let a Accept { self.admit(from, key.view(), a.session, reply, data.view()); }
+      case let Accept(a) { self.admit(from, key.view(), a.session, reply, data.view()); }
     }
   }
 
@@ -384,7 +384,7 @@ fn max(a: usize, b: usize) usize {
 // Whether a timer ran its course: not cancelled, and not failed
 fn slept(r: Result[void, IoError]) bool {
   match r {
-    case let e Error {false}
+    case let Error(e) {false}
     else {true}
   }
 }
@@ -425,10 +425,10 @@ fn start(server: bool, bind: SocketAddr, remote: SocketAddr, cfg: NetConfig, h: 
   tx, rx = Oneshot[Result[SocketAddr, IoError]].make();
   ep.open(bind, tx);
   match rx.recv() {
-    case let answer Some {
+    case let Some(answer) {
       match &answer {
-        case let a &Ok { return Ok[BoundEndpoint, IoError](BoundEndpoint(ep, a.port(), *a)); }
-        case let e &Error { return Error[BoundEndpoint, IoError](*e); }
+        case let &Ok(a) { return Ok[BoundEndpoint, IoError](BoundEndpoint(ep, a.port(), *a)); }
+        case let &Error(e) { return Error[BoundEndpoint, IoError](*e); }
       }
     }
     case is None[Result[SocketAddr, IoError]] {}
@@ -475,7 +475,7 @@ pub fn connect(server: SocketAddr, cfg: NetConfig, h: EventHandler) Result[Bound
 // field.)
 pub fn mustListen(bind: SocketAddr, cfg: NetConfig, h: EventHandler) BoundEndpoint {
   match &start(true, bind, bind, cfg, h) {
-    case let b &Ok { return *b; }
+    case let &Ok(b) { return *b; }
     else {}
   }
   panic("netmsg: cannot bind the server's UDP socket")
@@ -483,7 +483,7 @@ pub fn mustListen(bind: SocketAddr, cfg: NetConfig, h: EventHandler) BoundEndpoi
 
 pub fn mustConnect(server: SocketAddr, cfg: NetConfig, h: EventHandler) BoundEndpoint {
   match &start(false, clientBindAddress(&server), server, cfg, h) {
-    case let b &Ok { return *b; }
+    case let &Ok(b) { return *b; }
     else {}
   }
   panic("netmsg: cannot bind the client's UDP socket")

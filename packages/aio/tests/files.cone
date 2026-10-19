@@ -29,7 +29,7 @@ fn fileOf(r: Result[File, IoError]) File {
   var res = r;
   var f = File.none();
   match &mut res {
-    case var ok &mut Ok {f <-> *ok;}
+    case var &mut Ok(ok) {f <-> *ok;}
     else {}
   }
   f
@@ -50,7 +50,7 @@ fn num(what: &str, n: u64) {
 // The error code of a failed answer, 0 for a success
 fn codeOf[T](r: Result[T, IoError]) u64 {
   match r {
-    case let e Error {u64.from(e.code)}
+    case let Error(e) {u64.from(e.code)}
     else {0u64}
   }
 }
@@ -58,8 +58,8 @@ fn codeOf[T](r: Result[T, IoError]) u64 {
 // What a write answered: its count, or 1000000 and the error code
 fn countOf(r: Result[usize, IoError]) u64 {
   match r {
-    case let n Ok {u64.from(n)}
-    case let e Error {1000000u64 + u64.from(e.code)}
+    case let Ok(n) {u64.from(n)}
+    case let Error(e) {1000000u64 + u64.from(e.code)}
   }
 }
 
@@ -99,7 +99,7 @@ fn bufOf(r: Result[IoBuf, IoError]) IoBuf {
   var res = r;
   var b = IoBuf.empty();
   match &mut res {
-    case var ok &mut Ok {b <-> *ok;}
+    case var &mut Ok(ok) {b <-> *ok;}
     else {}
   }
   b
@@ -109,7 +109,7 @@ actor Peeker {
   pool: Pool;
 
   // Reads the first block of a file sent to it
-  pub async do peek(self, f: File, done: OneshotSender[u64]) {
+  pub async fn peek(self, f: File, done: OneshotSender[u64]) {
     let b = bufOf(await f.readAt(0u64, pool.mustTake(4096usize)));
     note("the sent file reads in the other actor", b.len() == 4096usize && isBlock(&b, 0usize, 4096usize, 11u8));
     var d = done;
@@ -121,7 +121,7 @@ actor Filer {
   pool: Pool;
   peeker: Peeker;
 
-  pub async do run(self, done: OneshotSender[u64]) {
+  pub async fn run(self, done: OneshotSender[u64]) {
     let name = Path.from("aiofiles.tmp");
 
     let f = fileOf(await aio.openFile(&name, Access.Create));

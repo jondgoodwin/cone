@@ -23,7 +23,7 @@ fn socketOf(r: Result[Socket, IoError]) Socket {
   var res = r;
   var s = Socket.none();
   match &mut res {
-    case var ok &mut Ok {s <-> *ok;}
+    case var &mut Ok(ok) {s <-> *ok;}
     else {}
   }
   s
@@ -31,7 +31,7 @@ fn socketOf(r: Result[Socket, IoError]) Socket {
 
 fn take(rx: &mut Receiver[u64]) u64 {
   match rx.recv() {
-    case let v Some {v}
+    case let Some(v) {v}
     else {999u64}
   }
 }
@@ -39,7 +39,7 @@ fn take(rx: &mut Receiver[u64]) u64 {
 // How an answer ended: 1 done, 2 cancelled, 3 timed out, 4 failed
 fn ended[T](r: Result[T, IoError]) u64 {
   match r {
-    case let e Error {
+    case let Error(e) {
       if aio.isCancelled(e) {2u64}
       elif aio.isTimedOut(e) {3u64}
       else {4u64}
@@ -54,13 +54,13 @@ actor Waiter {
   // A connection whose peer is silent, then a read in g (or under a
   // deadline of 600 ms, if g is not to be used); 'ready' says it is about to
   // read, 'result' how the read ended
-  pub async do hold(self, g: CancelGroup, useGroup: bool, ready: Sender[u64], result: Sender[u64]) {
+  pub async fn hold(self, g: CancelGroup, useGroup: bool, ready: Sender[u64], result: Sender[u64]) {
     let l = await aio.listen(SocketAddr.localhost(0u16));
     let ls = socketOf(l);
     let a = await ls.localAddr();
     var port = 0u16;
     match a {
-      case let addr Ok {port = addr.port();}
+      case let Ok(addr) {port = addr.port();}
       else {}
     }
     let c = await aio.connect(SocketAddr.localhost(port));

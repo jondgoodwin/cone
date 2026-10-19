@@ -23,7 +23,7 @@ fn socketOf(r: Result[Socket, IoError]) Socket {
   var res = r;
   var s = Socket.none();
   match &mut res {
-    case var ok &mut Ok {s <-> *ok;}
+    case var &mut Ok(ok) {s <-> *ok;}
     else {}
   }
   s
@@ -31,7 +31,7 @@ fn socketOf(r: Result[Socket, IoError]) Socket {
 
 fn take[T](rx: &mut Receiver[T], dflt: T) T {
   match rx.recv() {
-    case let v Some {v}
+    case let Some(v) {v}
     else {dflt}
   }
 }
@@ -39,20 +39,20 @@ fn take[T](rx: &mut Receiver[T], dflt: T) T {
 actor Reader {
   pool: Pool;
 
-  pub async do join(self, port: u16, ready: Sender[u64], arrived: Sender[u64]) {
+  pub async fn join(self, port: u16, ready: Sender[u64], arrived: Sender[u64]) {
     let c = await aio.connect(SocketAddr.localhost(port));
     let s = socketOf(c);
     ready.send(1u64);
     let r = await s.read(pool.mustTake(64usize));
     match r {
-      case let b Ok {
+      case let Ok(b) {
         if b.len() == 1usize {
           arrived.send(u64.from(b.view()[0usize]));
         } else {
           arrived.send(100u64 + u64.from(b.len()));
         }
       }
-      case let e Error {arrived.send(1000u64 + u64.from(e.code));}
+      case let Error(e) {arrived.send(1000u64 + u64.from(e.code));}
     }
   }
 }
@@ -61,12 +61,12 @@ actor Hub {
   pool: Pool;
   conns: List[Socket];
 
-  pub async do open(self, ports: Sender[u64]) {
+  pub async fn open(self, ports: Sender[u64]) {
     let l = await aio.listen(SocketAddr.localhost(0u16));
     let ls = socketOf(l);
     let a = await ls.localAddr();
     match a {
-      case let addr Ok {ports.send(u64.from(addr.port()));}
+      case let Ok(addr) {ports.send(u64.from(addr.port()));}
       else {ports.send(0u64);}
     }
     var k = 0u64;
@@ -78,7 +78,7 @@ actor Hub {
     ports.send(k);
   }
 
-  pub async do write(self, wrote: Sender[u64]) {
+  pub async fn write(self, wrote: Sender[u64]) {
     var i = conns.len();
     while i > 0usize {
       i = i - 1usize;
@@ -87,7 +87,7 @@ actor Hub {
       b.append(&one);
       let w = await conns[i].write(b);
       match w {
-        case let n Ok {wrote.send(u64.from(n));}
+        case let Ok(n) {wrote.send(u64.from(n));}
         else {wrote.send(0u64);}
       }
     }

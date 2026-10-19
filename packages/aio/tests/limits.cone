@@ -26,7 +26,7 @@ fn socketOf(r: Result[Socket, IoError]) Socket {
   var res = r;
   var s = Socket.none();
   match &mut res {
-    case var ok &mut Ok {s <-> *ok;}
+    case var &mut Ok(ok) {s <-> *ok;}
     else {}
   }
   s
@@ -44,7 +44,7 @@ fn sayError(what: &str, e: IoError) {
 
 fn say[T](what: &str, r: Result[T, IoError]) {
   match r {
-    case let e Error {sayError(what, e);}
+    case let Error(e) {sayError(what, e);}
     else {
       printStr(what);
       printStr(": done\n");
@@ -66,17 +66,17 @@ actor Prober {
   pool: Pool;
 
   // Runs while run is paused at an await: ends the group's operations
-  pub async do stop(self, g: CancelGroup) {
+  pub async fn stop(self, g: CancelGroup) {
     g.cancel();
   }
 
-  pub async do run(self, done: OneshotSender[u64]) {
+  pub async fn run(self, done: OneshotSender[u64]) {
     let l = await aio.listen(SocketAddr.localhost(0u16));
     let ls = socketOf(l);
     let a = await ls.localAddr();
     var port = 0u16;
     match a {
-      case let addr Ok {port = addr.port();}
+      case let Ok(addr) {port = addr.port();}
       else {}
     }
     let c = await aio.connect(SocketAddr.localhost(port));
@@ -165,7 +165,7 @@ actor Prober {
       big.setLen(big.capacity());
       let w = await cli.writeIn(big, IoLimits.until(Instant.now() + Duration.fromMillis(100i64)));
       match w {
-        case let e Error {
+        case let Error(e) {
           ended = true;
           sayError("write with the peer not reading", e);
         }

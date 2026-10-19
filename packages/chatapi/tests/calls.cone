@@ -50,12 +50,12 @@ fn errorBody(message: &str, kind: &str, code: &str) String {
 
 fn textOf(j: &json.Json) String {
   match j.toText() {
-    case var t Ok {
+    case var Ok(t) {
       var s = String.empty();
       s <-> t;
       s
     }
-    case let e Error {String.from("(unwritable)")}
+    case let Error(e) {String.from("(unwritable)")}
   }
 }
 
@@ -95,7 +95,7 @@ actor Handler {
     ex.respond(head, String.from(body));
   }
 
-  pub async do run(self) {
+  pub async fn run(self) {
     hits.send(1u64);
     let path = String.from(ex.request.path());
     if path.view() != "/v1/chat/completions" {
@@ -115,15 +115,15 @@ actor Handler {
     }
     var doc: json.Json = json.Json.Null;
     match json.parse(ex.request.body.view()) {
-      case var ok Ok {doc <-> ok;}
-      case let e Error {
+      case var Ok(ok) {doc <-> ok;}
+      case let Error(e) {
         self.answer(400u16, errorBody("the body is not JSON", "invalid_request_error", "bad_body").view());
         return;
       }
     }
     var model = String.empty();
     match doc.getText("model") {
-      case let s Some {model = String.from(s);}
+      case let Some(s) {model = String.from(s);}
       case is None {}
     }
     let m = model.view();
@@ -159,27 +159,27 @@ actor Acceptor {
   hits: Sender[u64];
   held: List[Silent];
 
-  pub async do open(self, ports: Sender[u16]) {
+  pub async fn open(self, ports: Sender[u16]) {
     let r = await actorhttp.listen(SocketAddr.localhost(0u16), ServerConfig.make());
     var res = r;
     match &mut res {
-      case var ok &mut Ok {server <-> *ok;}
-      case let e &mut Error {printStr("listen failed: "); printStr(e.message().view()); printStr("\n");}
+      case var &mut Ok(ok) {server <-> *ok;}
+      case let &mut Error(e) {printStr("listen failed: "); printStr(e.message().view()); printStr("\n");}
     }
     ports.send(server.port());
   }
 
-  pub async do serve(self) {
+  pub async fn serve(self) {
     while true {
       let n = await server.next();
       match n {
-        case var ok Ok {self.route(ok);}
-        case let e Error {break;}
+        case var Ok(ok) {self.route(ok);}
+        case let Error(e) {break;}
       }
     }
   }
 
-  pub async do stop(self) {
+  pub async fn stop(self) {
     server.close();
   }
 
@@ -207,7 +207,7 @@ fn baseUrl(port: u16) String {
 
 fn usageText(u: &Option[Usage]) String {
   match u {
-    case let x &Some {
+    case let &Some(x) {
       var s = String.empty();
       s.appendUInt(x.promptTokens);
       s.append("/");
@@ -225,7 +225,7 @@ fn show(label: &str, r: &Result[ChatReply, ChatError]) {
   printStr(label);
   printStr(": ");
   match r {
-    case let ok &Ok {
+    case let &Ok(ok) {
       printStr("ok id=");
       printStr(ok.id.view());
       printStr(" model=");
@@ -238,7 +238,7 @@ fn show(label: &str, r: &Result[ChatReply, ChatError]) {
       printStr(usageText(&ok.usage).view());
       printStr("\n");
     }
-    case let e &Error {
+    case let &Error(e) {
       printStr("error ");
       if e.kind == ChatErrorKind.Transport {
         // The words after the stage are the system's own and differ between systems
@@ -256,8 +256,8 @@ fn show(label: &str, r: &Result[ChatReply, ChatError]) {
 
 fn contentOf(r: &Result[ChatReply, ChatError]) String {
   match r {
-    case let ok &Ok {ok.content.copy()}
-    case let e &Error {String.from("(none)")}
+    case let &Ok(ok) {ok.content.copy()}
+    case let &Error(e) {String.from("(none)")}
   }
 }
 
@@ -278,7 +278,7 @@ fn simple(model: &str) ChatRequest {
 }
 
 actor Prober {
-  pub async do run(self, port: u16, done: OneshotSender[u64]) {
+  pub async fn run(self, port: u16, done: OneshotSender[u64]) {
     env.set("CHATAPI_TEST_KEY", theKey());
     env.set("CHATAPI_TEST_WRONGKEY", "sk-wrong-key-9999");
     let chat = Chat(Client.standard(), Endpoint.make(baseUrl(port).view(), "CHATAPI_TEST_KEY"));
@@ -342,7 +342,7 @@ actor Prober {
     d.send(1u64);
   }
 
-  pub async do refused(self, port: u16, done: OneshotSender[u64]) {
+  pub async fn refused(self, port: u16, done: OneshotSender[u64]) {
     let chat = Chat(Client.standard(), Endpoint.make(baseUrl(port).view(), "CHATAPI_TEST_KEY"));
     let rrefused = await chat.complete(simple("echo"));
     show("refused", &rrefused);
@@ -355,7 +355,7 @@ fn yes(b: bool) &str {if b {"yes"} else {"NO"}}
 
 fn take[T](rx: &mut Receiver[T], dflt: T) T {
   match rx.recv() {
-    case let v Some {v}
+    case let Some(v) {v}
     else {dflt}
   }
 }
@@ -388,8 +388,8 @@ fn main() i32 {
     let req = echoRequest("echo", "sync");
     var hreq = httpclient.Request.get("");
     match httpRequest(&ep, &req, false) {
-      case var ok Ok {hreq <-> ok;}
-      case let e Error {printStr("sync: the request was not built\n");}
+      case var Ok(ok) {hreq <-> ok;}
+      case let Error(e) {printStr("sync: the request was not built\n");}
     }
     var lp = Loop.mustMake();
     var hc = httpclient.Client.make(httpclient.Config.make(), Pool.make());
@@ -406,7 +406,7 @@ fn main() i32 {
     var going = true;
     while going {
       match hrx.recvTimeout(Duration.fromMillis(100i64)) {
-        case let n Some {seen = seen + n;}
+        case let Some(n) {seen = seen + n;}
         case is None[u64] {going = false;}
       }
     }

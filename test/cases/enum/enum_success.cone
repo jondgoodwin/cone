@@ -319,7 +319,7 @@ enum Stocked[T] {
 
 fn stockedItem(s: Stocked[i64]) i64 {
   match s {
-    case let f Full {f.item + i64.from(f.count)}
+    case let Full(f) {f.item + i64.from(f.count)}
     case is Out {0i64}
   }
 }
@@ -430,7 +430,7 @@ use Packet;
 fn packetSize(p: &imm Packet) i32 {
   match p {
     case is &Ping {0}
-    case let d &Payload {i32.from(d.a + d.b + d.c)}
+    case let &Payload(d) {i32.from(d.a + d.b + d.c)}
   }
 }
 
@@ -482,9 +482,9 @@ fn construction() {
 // needs one.
 fn stride(s: &imm Signal) i32 {
   match s {
-    case let h &Halt {0}
-    case let t &Step {t.amount}
-    case let d &Drift {i32.from(d.rateX + d.rateY)}
+    case let &Halt(h) {0}
+    case let &Step(t) {t.amount}
+    case let &Drift(d) {i32.from(d.rateX + d.rateY)}
   }
 }
 
@@ -509,9 +509,9 @@ use Cell;
 
 fn cellValue(c: Cell) i32 {
   match c {
-    case let f Flag {if f.on {i32.from(f.code)} else {-1}}
-    case let n Count {n.n}
-    case let t Tally {i32.from(t.i)}
+    case let Flag(f) {if f.on {i32.from(f.code)} else {-1}}
+    case let Count(n) {n.n}
+    case let Tally(t) {i32.from(t.i)}
   }
 }
 
@@ -558,8 +558,8 @@ fn enumValues() {
 // value-producing expression with no 'else' clause
 fn area(s: &imm Shape) i32 {
   match s {
-    case let c &Circle {c.radius * c.radius}
-    case let r &Rect {r.w * r.h}
+    case let &Circle(c) {c.radius * c.radius}
+    case let &Rect(r) {r.w * r.h}
   }
 }
 
@@ -574,14 +574,14 @@ fn isRect(s: &Shape) i32 {
 // An arm that does not name every variant needs an 'else' to be exhaustive
 fn radiusOr(s: &imm Shape, dflt: i32) i32 {
   match s {
-    case let c &Circle {c.radius}
+    case let &Circle(c) {c.radius}
     else {dflt}
   }
 }
 
 // The single-pattern form of a match is an 'if' whose condition binds
 fn circleRadius(s: &imm Shape) i32 {
-  if let c &Circle = s {
+  if let &Circle(c) = s {
     c.radius
   } else {
     0
@@ -606,30 +606,30 @@ fn matching() {
   var sc: Shape = c;
   var sr: Shape = r;
   match &mut sc {
-    case var cc &mut Circle {cc.radius = cc.radius + 10;}
-    case var rr &mut Rect {rr.w = rr.w + 10;}
+    case var &mut Circle(cc) {cc.radius = cc.radius + 10;}
+    case var &mut Rect(rr) {rr.w = rr.w + 10;}
   }
   match &mut sr {
-    case var cc &mut Circle {cc.radius = cc.radius + 10;}
-    case var rr &mut Rect {rr.w = rr.w + 10;}
+    case var &mut Circle(cc) {cc.radius = cc.radius + 10;}
+    case var &mut Rect(rr) {rr.w = rr.w + 10;}
   }
-  show("mut-binding-writes-through-circle", match &sc {case let cc &Circle {cc.radius} else {99}});
-  show("mut-binding-writes-through-rect", match &sr {case let rr &Rect {rr.w * rr.h} else {99}});
+  show("mut-binding-writes-through-circle", match &sc {case let &Circle(cc) {cc.radius} else {99}});
+  show("mut-binding-writes-through-rect", match &sr {case let &Rect(rr) {rr.w * rr.h} else {99}});
 
   // Other places reached as 'uni', borrowed where they are matched: a field of
   // a local held by value, and a parameter taken by value
   var fr = Framed(Circle(1, 7));
   match &mut fr.s {
-    case var cc &mut Circle {cc.radius = cc.radius + 1;}
+    case var &mut Circle(cc) {cc.radius = cc.radius + 1;}
     else {}
   }
-  show("field-of-local-narrowed", if let cc &Circle = &fr.s {cc.radius} else {0});
+  show("field-of-local-narrowed", if let &Circle(cc) = &fr.s {cc.radius} else {0});
   show("by-value-parameter-narrowed", radiusOfValue(Circle(1, 9)));
 }
 
 fn radiusOfValue(s: Shape) i32 {
   match &s {
-    case let cc &Circle {cc.radius}
+    case let &Circle(cc) {cc.radius}
     else {0}
   }
 }
@@ -657,24 +657,24 @@ alias RectVal = Rect;
 // The same match as 'area', with both arms spelled through an alias
 fn areaAlias(s: &imm Shape) i32 {
   match s {
-    case let c CircleRef {c.radius * c.radius}
-    case let r RectRef {r.w * r.h}
+    case let CircleRef(c) {c.radius * c.radius}
+    case let RectRef(r) {r.w * r.h}
   }
 }
 
 // An alias of an alias, followed to its end
 fn areaAliasOfAlias(s: &imm Shape) i32 {
   match s {
-    case let c CircleRefAgain {c.radius * c.radius}
-    case let r RectRef {r.w * r.h}
+    case let CircleRefAgain(c) {c.radius * c.radius}
+    case let RectRef(r) {r.w * r.h}
   }
 }
 
 // One arm concrete and one aliased: exhaustiveness has to account for both
 fn areaMixedSpelling(s: &imm Shape) i32 {
   match s {
-    case let c &Circle {c.radius * c.radius}
-    case let r RectRef {r.w * r.h}
+    case let &Circle(c) {c.radius * c.radius}
+    case let RectRef(r) {r.w * r.h}
   }
 }
 
@@ -691,14 +691,14 @@ fn whichAlias(s: &Shape) i32 {
 // on the two that were not.
 fn whichValueAlias(s: Shape) i32 {
   match s {
-    case let c CircleVal {1}
-    case let r RectVal {2}
+    case let CircleVal(c) {1}
+    case let RectVal(r) {2}
   }
 }
 
 // The single-pattern 'if' form
 fn circleRadiusAlias(s: &imm Shape) i32 {
-  if let c CircleRef = s {
+  if let CircleRef(c) = s {
     c.radius
   } else {
     0
@@ -709,7 +709,7 @@ fn circleRadiusAlias(s: &imm Shape) i32 {
 // the 'else' is still required
 fn radiusOrAlias(s: &imm Shape, dflt: i32) i32 {
   match s {
-    case let c CircleRef {c.radius}
+    case let CircleRef(c) {c.radius}
     else {dflt}
   }
 }
@@ -735,15 +735,15 @@ fn aliasMatching() {
   var sc: Shape = c;
   var sr: Shape = r;
   match &mut sc {
-    case var cc CircleMut {cc.radius = cc.radius + 10;}
-    case var rr RectMut {rr.w = rr.w + 10;}
+    case var CircleMut(cc) {cc.radius = cc.radius + 10;}
+    case var RectMut(rr) {rr.w = rr.w + 10;}
   }
   match &mut sr {
-    case var cc CircleMut {cc.radius = cc.radius + 10;}
-    case var rr RectMut {rr.w = rr.w + 10;}
+    case var CircleMut(cc) {cc.radius = cc.radius + 10;}
+    case var RectMut(rr) {rr.w = rr.w + 10;}
   }
-  show("alias-mut-binding-writes-through-circle", match &sc {case let cc CircleRef {cc.radius} else {99}});
-  show("alias-mut-binding-writes-through-rect", match &sr {case let rr RectRef {rr.w * rr.h} else {99}});
+  show("alias-mut-binding-writes-through-circle", match &sc {case let CircleRef(cc) {cc.radius} else {99}});
+  show("alias-mut-binding-writes-through-rect", match &sr {case let RectRef(rr) {rr.w * rr.h} else {99}});
 }
 
 // A match on a value rather than a variant compares with '=='
@@ -829,8 +829,8 @@ fn guarded(nbr: i32, cnt: i32) i32 {
 // it does, and with 'None' that makes the match a value without an 'else'.
 fn positiveOr(o: Option[i32]) i32 {
   match o {
-    case let x Some if x > 0 {x}
-    case let x Some {0 - x}
+    case let Some(x) if x > 0 {x}
+    case let Some(x) {0 - x}
     case is None {1000}
   }
 }
@@ -838,9 +838,9 @@ fn positiveOr(o: Option[i32]) i32 {
 // Through a reference, and on an 'is' pattern joined by '|'
 fn wideCircle(s: &imm Shape) i32 {
   match s {
-    case let c &Circle if c.radius > 10 {c.radius * 2}
-    case let c &Circle {c.radius}
-    case let r &Rect if r.w == r.h {100}
+    case let &Circle(c) if c.radius > 10 {c.radius * 2}
+    case let &Circle(c) {c.radius}
+    case let &Rect(r) if r.w == r.h {100}
     else {0}
   }
 }
@@ -855,7 +855,7 @@ fn moving(s: &Signal) i32 {
 // A generic function's match is cloned into each instance, guard and all
 fn pickOver[T](o: Option[T], floor: T) T {
   match o {
-    case let s Some if s > floor {s}
+    case let Some(s) if s > floor {s}
     else {floor}
   }
 }
@@ -945,23 +945,23 @@ fn valueMatching() {
 // every module's automatic import of core carries a public fold on.
 fn unwrapOr(o: Option[i32], dflt: i32) i32 {
   match o {
-    case let s Some[i32] {s}
-    case let n None[i32] {dflt}
+    case let Some[i32](s) {s}
+    case let None[i32](n) {dflt}
   }
 }
 
 fn signedResult(r: Result[i32, i32]) i32 {
   match r {
-    case let k Ok[i32, i32] {k}
-    case let e Error[i32, i32] {0 - e}
+    case let Ok[i32, i32](k) {k}
+    case let Error[i32, i32](e) {0 - e}
   }
 }
 
 // A bool beside a tag is at byte 1, where the i32 variant has padding
 fn boolResult(r: Result[bool, i32]) i32 {
   match r {
-    case let k Ok[bool, i32] {if k {1} else {2}}
-    case let e Error[bool, i32] {3}
+    case let Ok[bool, i32](k) {if k {1} else {2}}
+    case let Error[bool, i32](e) {3}
   }
 }
 
@@ -971,8 +971,8 @@ fn boolResult(r: Result[bool, i32]) i32 {
 // that would not compile.
 fn unwrapNested(o: Option[Option[i32]], dflt: i32) i32 {
   match o {
-    case let s Some[Option[i32]] {unwrapOr(s, dflt)}
-    case let n None[Option[i32]] {dflt}
+    case let Some[Option[i32]](s) {unwrapOr(s, dflt)}
+    case let None[Option[i32]](n) {dflt}
   }
 }
 
@@ -981,8 +981,8 @@ fn unwrapNested(o: Option[Option[i32]], dflt: i32) i32 {
 // consumed only the bare name; the whole group matched by value for that reason.
 fn unwrapRefOr(o: &Option[i32], dflt: i32) i32 {
   match *o {
-    case let s Some[i32] {s}
-    case let n None[i32] {dflt}
+    case let Some[i32](s) {s}
+    case let None[i32](n) {dflt}
   }
 }
 
@@ -1043,8 +1043,8 @@ fn signOf(s: Signs) i32 {
 
 fn qualifiedArea(s: &imm Shape) i32 {
   match s {
-    case let c &Shape.Circle {c.radius * c.radius * 3}
-    case let r &Shape.Rect {r.w * r.h}
+    case let &Shape.Circle(c) {c.radius * c.radius * 3}
+    case let &Shape.Rect(r) {r.w * r.h}
   }
 }
 
@@ -1054,14 +1054,14 @@ fn qualifiedArea(s: &imm Shape) i32 {
 // The guarded arm and the bound 'if' each hold a further conversion of it.
 fn qualifiedAreaByValue(s: Shape) i32 {
   match s {
-    case let c Shape.Circle if c.radius > 5 {0}
-    case let c Shape.Circle {c.radius * c.radius * 3}
-    case let r Shape.Rect {r.w * r.h}
+    case let Shape.Circle(c) if c.radius > 5 {0}
+    case let Shape.Circle(c) {c.radius * c.radius * 3}
+    case let Shape.Rect(r) {r.w * r.h}
   }
 }
 
 fn qualifiedRadiusIf(s: Shape) i32 {
-  if let c Shape.Circle = s {c.radius} else {-1}
+  if let Shape.Circle(c) = s {c.radius} else {-1}
 }
 
 fn quits(k: KeyEvent, w: WindowEvent) i32 {
@@ -1075,8 +1075,8 @@ fn quits(k: KeyEvent, w: WindowEvent) i32 {
 // name is
 fn unwrapQualified(o: Option[i32], dflt: i32) i32 {
   match o {
-    case let s Option.Some[i32] {s}
-    case let n Option.None[i32] {dflt}
+    case let Option.Some[i32](s) {s}
+    case let Option.None[i32](n) {dflt}
   }
 }
 
@@ -1130,14 +1130,14 @@ fn warmth(s: Season) i32 {
 // and its 'elif', and an 'is' test
 fn figureArea(f: &imm Figure) i32 {
   match f {
-    case let s &Square {s.side * s.side}
-    case let t &Tri {t.base * t.height / 2}
+    case let &Square(s) {s.side * s.side}
+    case let &Tri(t) {t.base * t.height / 2}
   }
 }
 
 fn figureWidth(f: &imm Figure) i32 {
-  if let s &Square = f {s.side}
-  elif let t &Tri = f {t.base}
+  if let &Square(s) = f {s.side}
+  elif let &Tri(t) = f {t.base}
   else {0}
 }
 
@@ -1158,14 +1158,14 @@ enum Perhaps[T] {
 
 fn someOr(o: Option[i32], dflt: i32) i32 {
   match o {
-    case let s Some {s}
+    case let Some(s) {s}
     case is None {dflt}
   }
 }
 
 fn surelyOr(p: Perhaps[i64], dflt: i64) i64 {
   match p {
-    case let s Surely {s.value}
+    case let Surely(s) {s.value}
     case is Nothing {dflt}
   }
 }
@@ -1174,7 +1174,7 @@ fn surelyOr(p: Perhaps[i64], dflt: i64) i64 {
 // matched value's enum
 fn someOrAny[T](o: Option[T], dflt: T) T {
   match o {
-    case let s Some {s}
+    case let Some(s) {s}
     else {dflt}
   }
 }
@@ -1462,7 +1462,7 @@ fn trafficCode(t: Traffic) i32 {
   match t {
     case is Stop {1}
     case is Hold {2}
-    case let g Go {g.Hold * 10 + 3}
+    case let Go(g) {g.Hold * 10 + 3}
   }
 }
 
@@ -1490,7 +1490,7 @@ enum Slot[T] {
     pub fn fill(self: &, v: T) Slot[T] {Full[T](count + 1, v)}
     pub fn itemOr(self: &, s: Slot[T], d: T) T {
       match s {
-        case let f Full[T] {f.item}
+        case let Full[T](f) {f.item}
         else {d}
       }
     }
@@ -1517,20 +1517,20 @@ enum Tote[T] {
     pub fn code(self: &, t: Tote[T]) i32 {
       match t {
         case is Stuffed[T] {1}
-        case let h Hollow[T] {h.count + 20}
+        case let Hollow[T](h) {h.count + 20}
       }
     }
     pub fn codeBare(self: &, t: Tote[T]) i32 {
       match t {
         case is Stuffed {3}
-        case let h Hollow {h.count + 40}
+        case let Hollow(h) {h.count + 40}
       }
     }
     // The enum's bare name is this instance, so the parameter's type is bare too
     pub fn codeAllBare(self: &, t: Tote) i32 {
       match t {
         case is Stuffed {7}
-        case let h Tote.Hollow {h.count + 70}
+        case let Tote.Hollow(h) {h.count + 70}
       }
     }
   }
@@ -1538,7 +1538,7 @@ enum Tote[T] {
   struct Hollow {
     pub fn itemOr(self: &, t: &imm Tote[T], d: T) T {
       match t {
-        case let s &Stuffed[T] {s.item}
+        case let &Stuffed[T](s) {s.item}
         case is &Hollow[T] {d}
       }
     }
@@ -1570,7 +1570,7 @@ enum Grove[T] {
     pub fn resow(self: &) Grove {Grove.sow(rows * 10)}
     pub fn weigh(self: &, g: Grove) i64 {
       match g {
-        case let f Fruiting {f.grain + rows}
+        case let Fruiting(f) {f.grain + rows}
         case is Grove.Idle {rows * 100}
       }
     }
@@ -1580,8 +1580,8 @@ enum Grove[T] {
 // Outside the braces the enum is named with its type arguments, as always
 fn groveCode(g: Grove[i64]) i64 {
   match g {
-    case let f Fruiting {f.grain * 100 + f.rows}
-    case let i Idle {i.rows}
+    case let Fruiting(f) {f.grain * 100 + f.rows}
+    case let Idle(i) {i.rows}
   }
 }
 
@@ -1600,8 +1600,8 @@ enum Crop[T] {
     pub fn resow(self: &) Crop[T] {sow(rows + 1)}
     pub fn weigh(self: &, c: Crop[T]) i64 {
       match c {
-        case let r Ripe[T] {i64.from(r.grain) + rows}
-        case let f Fallow[T] {f.rows * 100 + rows}
+        case let Ripe[T](r) {i64.from(r.grain) + rows}
+        case let Fallow[T](f) {f.rows * 100 + rows}
       }
     }
   }
@@ -1824,8 +1824,8 @@ struct Shipment {
 fn crateWeight(c: Crate) i64 {
   var held: Crate = c;
   match held {
-    case let b Bulky {b.kg}
-    case let s Slim {1i64}
+    case let Bulky(b) {b.kg}
+    case let Slim(s) {1i64}
   }
 }
 

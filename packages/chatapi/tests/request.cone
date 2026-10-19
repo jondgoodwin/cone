@@ -15,19 +15,19 @@ import chatapi use *;
 // A header field's value, or "(none)"
 fn field(h: &http.Headers, name: &str) String {
   match h.get(name) {
-    case let v Some {String.fromBytes(v)}
+    case let Some(v) {String.fromBytes(v)}
     case is None[&Array[u8]] {String.from("(none)")}
   }
 }
 
 fn bodyOf(req: &ChatRequest, stream: bool, completionName: bool) String {
   match req.toJson(stream, completionName).toText() {
-    case var t Ok {
+    case var Ok(t) {
       var s = String.empty();
       s <-> t;
       s
     }
-    case let e Error {String.from("(unwritable)")}
+    case let Error(e) {String.from("(unwritable)")}
   }
 }
 
@@ -87,34 +87,34 @@ fn main() i32 {
   env.set("CHATAPI_TEST_KEY", "sk-test-0123456789");
   let ep = Endpoint.make("http://127.0.0.1:9/v1", "CHATAPI_TEST_KEY");
   match httpRequest(&ep, &r, false) {
-    case let ok Ok {
+    case let Ok(ok) {
       expectStr(ok.methodName(), "POST", "posted");
       expectStr(ok.body.view(), bodyOf(&r, false, false).view(), "the body is the JSON");
       expectStr(field(&ok.headers, "Content-Type").view(), "application/json", "Content-Type is JSON");
       expectStr(field(&ok.headers, "Accept").view(), "application/json", "a whole reply is asked for as JSON");
       expectStr(field(&ok.headers, "Authorization").view(), "Bearer sk-test-0123456789", "the key goes in Authorization");
     }
-    case let e Error {expect(false, "a request with a key set is built");}
+    case let Error(e) {expect(false, "a request with a key set is built");}
   }
   match httpRequest(&ep, &r, true) {
-    case let ok Ok {
+    case let Ok(ok) {
       expectStr(field(&ok.headers, "Accept").view(), "text/event-stream", "a stream is asked for as events");
     }
-    case let e Error {expect(false, "a streamed request is built");}
+    case let Error(e) {expect(false, "a streamed request is built");}
   }
 
   // No variable named: no Authorization field
   let open = Endpoint.loopback(1234u16);
   match httpRequest(&open, &r, false) {
-    case let ok Ok {expect(!ok.headers.has("Authorization"), "no key is named: none is sent");}
-    case let e Error {expect(false, "a keyless request is built");}
+    case let Ok(ok) {expect(!ok.headers.has("Authorization"), "no key is named: none is sent");}
+    case let Error(e) {expect(false, "a keyless request is built");}
   }
 
   // A variable that is not set
   let missing = Endpoint.make("http://127.0.0.1:9/v1", "CHATAPI_TEST_NO_SUCH_VARIABLE");
   match httpRequest(&missing, &r, false) {
-    case let ok Ok {expect(false, "an unset key variable is refused");}
-    case let e Error {
+    case let Ok(ok) {expect(false, "an unset key variable is refused");}
+    case let Error(e) {
       expect(e.kind == ChatErrorKind.NoKey, "the error is NoKey");
       expectStr(e.message().view(), "nokey: the environment variable CHATAPI_TEST_NO_SUCH_VARIABLE holds no API key", "...and names the variable");
     }
@@ -124,8 +124,8 @@ fn main() i32 {
   env.set("CHATAPI_TEST_BADKEY", "sk-secret\nInjected: 1");
   let bad = Endpoint.make("http://127.0.0.1:9/v1", "CHATAPI_TEST_BADKEY");
   match httpRequest(&bad, &r, false) {
-    case let ok Ok {expect(false, "a key with a line break is refused");}
-    case let e Error {
+    case let Ok(ok) {expect(false, "a key with a line break is refused");}
+    case let Error(e) {
       expect(e.kind == ChatErrorKind.Request, "the error is Request");
       expect(!e.message().view().contains("sk-secret"), "the error never holds the key");
     }
@@ -133,8 +133,8 @@ fn main() i32 {
 
   // A request that cannot be written
   match httpRequest(&ep, &noModel, false) {
-    case let ok Ok {expect(false, "a request with no model is refused");}
-    case let e Error {expectStr(e.message().view(), "request: the request names no model", "its message");}
+    case let Ok(ok) {expect(false, "a request with no model is refused");}
+    case let Error(e) {expectStr(e.message().view(), "request: the request names no model", "its message");}
   }
 
   // A message that is not UTF-8 cannot be JSON
@@ -143,8 +143,8 @@ fn main() i32 {
   bytes.appendByte(0xFFu8);
   broken.addUser(bytes.view());
   match httpRequest(&ep, &broken, false) {
-    case let ok Ok {expect(false, "text that is not UTF-8 is refused");}
-    case let e Error {expect(e.kind == ChatErrorKind.Request, "text that is not UTF-8 is a Request error");}
+    case let Ok(ok) {expect(false, "text that is not UTF-8 is refused");}
+    case let Error(e) {expect(e.kind == ChatErrorKind.Request, "text that is not UTF-8 is a Request error");}
   }
   done()
 }

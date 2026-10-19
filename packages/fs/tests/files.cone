@@ -37,7 +37,7 @@ fn makeRoot(name: &str) Path {
   let tempPath = if temp != null {Path.from(cstr.fromPtr(temp).view())} else {Path.from("/tmp")};
   var root = Path.from("");
   match fs.absolute(&tempPath) {
-    case let t Ok { root = t.join(name); }
+    case let Ok(t) { root = t.join(name); }
     case is Error { require(false, "TEMP has an absolute path"); }
   }
   let up = root.parent();
@@ -56,7 +56,7 @@ fn shown(root: &Path, message: &String) String {
 // The message of a Result that must have failed, or "<succeeded>"
 fn messageOf[T](root: &Path, r: Result[T, fs.FsError]) String {
   match r {
-    case let e Error { let m = e.message(); shown(root, &m) }
+    case let Error(e) { let m = e.message(); shown(root, &m) }
     case is Ok { String.from("<succeeded>") }
   }
 }
@@ -74,7 +74,7 @@ fn failsWith[T](root: &Path, r: Result[T, fs.FsError], want: &Array[u8], label: 
 // What a file holds, or "<error>"
 fn contents(p: &Path) String {
   match fs.readFile(p) {
-    case var got Ok { var s = String.empty(); s <-> got; s }
+    case var Ok(got) { var s = String.empty(); s <-> got; s }
     case is Error { String.from("<error>") }
   }
 }
@@ -107,7 +107,7 @@ fn wholeFiles(root: &Path) {
   roundTrip(root, "large.bin", large.view(), "ten megabytes");
   let largePath = root.join("large.bin");
   match fs.stat(&largePath) {
-    case let s Ok { expectInt(s.size, 10485760, "stat size of ten megabytes"); }
+    case let Ok(s) { expectInt(s.size, 10485760, "stat size of ten megabytes"); }
     case is Error { expect(false, "stat of ten megabytes"); }
   }
 
@@ -137,7 +137,7 @@ fn failures(root: &Path) {
   failsWith(root, fs.readFile(&missing),
     "readFile <root>/missing.txt: No such file or directory", "read a file not there");
   match fs.readFile(&missing) {
-    case let e Error {
+    case let Error(e) {
       expect(e.notFound(), "not there is notFound");
       expectInt(i64.from(e.code), i64.from(posix.ENOENT), "not there is ENOENT");
       expectStr(e.op.view(), "readFile", "op");
@@ -165,7 +165,7 @@ fn status(root: &Path) {
   let missing = root.join("missing.txt");
   ok(fs.writeFile(&p, "12345"), "write for stat");
   match fs.stat(&p) {
-    case let s Ok {
+    case let Ok(s) {
       expectInt(s.size, 5, "stat size");
       expect(s.isFile, "stat isFile");
       expect(!s.isDir, "stat file is not isDir");
@@ -177,7 +177,7 @@ fn status(root: &Path) {
     case is Error { expect(false, "stat of a file"); }
   }
   match fs.stat(root) {
-    case let s Ok {
+    case let Ok(s) {
       expect(s.isDir, "stat folder isDir");
       expect(!s.isFile, "stat folder is not isFile");
     }
@@ -211,7 +211,7 @@ fn renaming(root: &Path) {
     failsWith(root, fs.rename(&b, &c),
       "rename <root>/b.txt to <root>/c.txt: File exists", "Windows: rename onto a file refused");
     match fs.rename(&b, &c) {
-      case let e Error {
+      case let Error(e) {
         expect(e.alreadyExists(), "rename onto a file is alreadyExists");
         expect(e.path.view() == b.view() && e.other.view() == c.view(), "the error holds both paths");
       }

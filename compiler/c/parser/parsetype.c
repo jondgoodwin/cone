@@ -158,21 +158,12 @@ VarDclNode *parseVarDcl(ParseState *parse, PermNode *defperm, uint16_t flags) {
     // call stands where the type does, and becomes the value once the matched value after '=' is known
     FnCallNode *usingcall = NULL;
     parse->usingdcl = 0;
-    int letelsetype = 0, colontype = 0;
     if ((flags & ParseMayUsing) && lexIsToken(UsingToken))
         usingcall = parseUsingCall(parse);
     else if (lexIsToken(ColonToken)) {
         lexNextToken();
         typep = lex->tokp;
         varnode->vtype = parseTypeReq(parse, "':'");
-        colontype = 1;
-    }
-    // A local bound by a variant it leaves unless it matches, 'let n Ok = r else {...};', names the
-    // variant where a type would be, and writes no ':'. Any other local that does so is refused where
-    // its statement ends without the 'else'
-    else if ((flags & ParseMayUsing) && parseIsTypeStart()) {
-        varnode->vtype = parseType(parse);
-        letelsetype = 1;
     }
     int typed = varnode->vtype != unknownType;
     char *typeendp = lex->prevend;
@@ -233,8 +224,6 @@ VarDclNode *parseVarDcl(ParseState *parse, PermNode *defperm, uint16_t flags) {
     parse->typed = typed;
     parse->typep = typed ? typep : NULL;
     parse->typeendp = typed ? typeendp : NULL;
-    parse->letelsetype = letelsetype;
-    parse->colontype = colontype;
     return varnode;
 }
 
@@ -1130,11 +1119,11 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
                         "A generic type's methods are instantiated with it where it is used, so they are defined in no one place for 'extern' to name.");
                 externflag = FlagExtern;
             }
-            // 'async do': an actor's behaviour, read as a method and noted as
-            // one (parseactor.c). Anywhere else, and either word alone, it is
+            // 'async fn': an actor's behaviour, read as a method and noted as
+            // one (parseactor.c). Anywhere else, and 'async' alone, it is
             // reported and the declaration passed over
             int behaviour = 0;
-            if (lexIsToken(AsyncToken) || lexIsToken(DoToken)) {
+            if (lexIsToken(AsyncToken)) {
                 char where[300];
                 if (parse->dcltexts == NULL)
                     snprintf(where, sizeof(where), "the body of %s %s",

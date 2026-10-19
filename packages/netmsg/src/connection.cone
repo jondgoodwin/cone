@@ -54,7 +54,7 @@ pub actor Connection {
   // is not built; the connection goes on). The same on every kind of
   // connection. If so many messages are waiting that the window is full, the
   // peer is not keeping up and the connection ends with CloseReason.Overflow.
-  pub async do sendReliable(self, data: List[u8]) {
+  pub async fn sendReliable(self, data: List[u8]) {
     if !open {return;}
     if data.len() > peer.maxReliable() {
       self.refuse(true, 0u16, RefusalKind.TooLarge, data.len(), peer.maxReliable());
@@ -62,7 +62,7 @@ pub actor Connection {
     }
     if kind == connDirect {
       match &partner {
-        case let p &Some[Connection] { p.inMessage(data); }
+        case let &Some[Connection](p) { p.inMessage(data); }
         else {}
       }
       return;
@@ -78,7 +78,7 @@ pub actor Connection {
   // room unless a newer value replaces it first, and never resent. At most
   // maxLatestBytes (1171 by default); a larger value, or one for a 65th
   // stream, is refused as a message is (NetEvent.Refused).
-  pub async do sendLatest(self, stream: u16, data: List[u8]) {
+  pub async fn sendLatest(self, stream: u16, data: List[u8]) {
     if !open {return;}
     if data.len() > peer.maxLatest() {
       self.refuse(false, stream, RefusalKind.TooLarge, data.len(), peer.maxLatest());
@@ -86,7 +86,7 @@ pub actor Connection {
     }
     if kind == connDirect {
       match &partner {
-        case let p &Some[Connection] { p.inUpdate(stream, data); }
+        case let &Some[Connection](p) { p.inUpdate(stream, data); }
         else {}
       }
       return;
@@ -101,20 +101,20 @@ pub actor Connection {
   // How much a stream's waiting value counts when a packet cannot carry all of
   // them: its priority grows by 'weight' each packet it waits, and the highest
   // goes first (default 1)
-  pub async do setStreamWeight(self, stream: u16, weight: u32) {
+  pub async fn setStreamWeight(self, stream: u16, weight: u32) {
     if kind != connDirect {
       peer.setStreamWeight(stream, weight);
     }
   }
 
   // End the connection: the other end is told
-  pub async do close(self) {
+  pub async fn close(self) {
     self.closeNow();
   }
 
   // What the connection has measured: round trip time, loss, packets. All
   // zeros for an in-process connection, which has no link
-  pub async do stats(self) ConnectionStats {
+  pub async fn stats(self) ConnectionStats {
     peer.stats()
   }
 
@@ -123,19 +123,19 @@ pub actor Connection {
   // ------------------------------------------------------------------
 
   // End it now and answer when the disconnect packets are handed to the socket
-  async do closeAndWait(self) u32 {
+  async fn closeAndWait(self) u32 {
     self.closeNow();
     0u32
   }
 
   // Join to the other end (in-process and simulated)
-  async do link(self, other: Connection) {
+  async fn link(self, other: Connection) {
     partner = Some[Connection](other);
     self.announce();
   }
 
   // A datagram for this connection arrived
-  async do packet(self, data: List[u8]) {
+  async fn packet(self, data: List[u8]) {
     if !open {return;}
     var evs = List[CoreEvent].empty();
     peer.receive(data.view(), Instant.now(), &mut evs);
@@ -144,24 +144,24 @@ pub actor Connection {
   }
 
   // Time to look at the connection (the endpoint's timer, or the simulation's)
-  async do tick(self) {
+  async fn tick(self) {
     reported = -1i64;
     self.run();
   }
 
-  async do inMessage(self, data: List[u8]) {
+  async fn inMessage(self, data: List[u8]) {
     if open {
       (&mut *handler).call(NetEvent.Message(id, data));
     }
   }
 
-  async do inUpdate(self, stream: u16, data: List[u8]) {
+  async fn inUpdate(self, stream: u16, data: List[u8]) {
     if open {
       (&mut *handler).call(NetEvent.Update(id, stream, data));
     }
   }
 
-  async do inClosed(self) {
+  async fn inClosed(self) {
     self.finish(CloseReason.Remote);
   }
 
@@ -183,7 +183,7 @@ pub actor Connection {
     if !open {return;}
     if kind == connDirect {
       match &partner {
-        case let p &Some[Connection] { p.inClosed(); }
+        case let &Some[Connection](p) { p.inClosed(); }
         else {}
       }
       self.finish(CloseReason.Local);
@@ -214,7 +214,7 @@ pub actor Connection {
         sim.send(now, p);
       } else {
         match &ep {
-          case let e &Some[Endpoint] { e.send(addr, p); }
+          case let &Some[Endpoint](e) { e.send(addr, p); }
           else {}
         }
       }
@@ -223,7 +223,7 @@ pub actor Connection {
       var arrived = List[List[u8]].empty();
       sim.deliver(now, &mut arrived);
       match &partner {
-        case let q &Some[Connection] {
+        case let &Some[Connection](q) {
           each d in arrived.drain() { q.packet(d); }
         }
         else {}
@@ -237,17 +237,17 @@ pub actor Connection {
   fn dispatch(self, var evs: List[CoreEvent]) {
     each e in evs.drain() {
       match e {
-        case var r Reliable {
+        case var Reliable(r) {
           var d = List[u8].empty();
           d <-> r.data;
           if open {(&mut *handler).call(NetEvent.Message(id, d));}
         }
-        case var l Latest {
+        case var Latest(l) {
           var d = List[u8].empty();
           d <-> l.data;
           if open {(&mut *handler).call(NetEvent.Update(id, l.stream, d));}
         }
-        case let c Closed {
+        case let Closed(c) {
           if forced {
             self.finish(forcedReason);
           } else {
@@ -265,7 +265,7 @@ pub actor Connection {
     if at != reported {
       reported = at;
       match &ep {
-        case let e &Some[Endpoint] { e.deadline(id, at); }
+        case let &Some[Endpoint](e) { e.deadline(id, at); }
         else {}
       }
     }
@@ -277,7 +277,7 @@ pub actor Connection {
     open = false;
     (&mut *handler).call(NetEvent.Left(id, reason));
     match &ep {
-      case let e &Some[Endpoint] { e.gone(id); }
+      case let &Some[Endpoint](e) { e.gone(id); }
       else {}
     }
     ep = None[Endpoint];
@@ -334,7 +334,7 @@ struct SimArgs is Sendable {
 fn simMain(var x: SimArgs) u32 {
   while true {
     match x.stop.tryRecv() {
-      case let s Some { break; }
+      case let Some(s) { break; }
       case is None[u32] {}
     }
     thread.sleep(Duration.fromMillis(1i64));

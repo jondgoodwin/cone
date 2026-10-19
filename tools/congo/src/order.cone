@@ -64,7 +64,7 @@ fn resolveImports(reg: &Registry, p: usize, scanned: List[Module]) Result[Unit, 
         // The prelude is loaded already; an explicit import of it names the
         // very file it was loaded from, so the two are one module
         match reg.find("core") {
-          case let c Some {
+          case let Some(c) {
             if !pkg.name.equals("core") { addLine(&mut mods[m], imp.name.view(), c); }
           }
           case is None {}
@@ -72,7 +72,7 @@ fn resolveImports(reg: &Registry, p: usize, scanned: List[Module]) Result[Unit, 
       }
       else {
         match reg.find(imp.name.view()) {
-          case let f Some {
+          case let Some(f) {
             if !holds(&deps, f) { deps.push(f); }
             addLine(&mut mods[m], imp.name.view(), f);
           }
@@ -93,7 +93,7 @@ fn resolveImports(reg: &Registry, p: usize, scanned: List[Module]) Result[Unit, 
   }
   match checkModuleLoops(pkg, &mods, reg) {
     case is Ok {}
-    case let e Error { return Error[Unit, String](e.copy()); }
+    case let Error(e) { return Error[Unit, String](e.copy()); }
   }
   // Only what is compiled for the GPU has its kernels built, so only its
   // source is read past the headers: a marked package's, or its gpu/ folder's
@@ -104,8 +104,8 @@ fn resolveImports(reg: &Registry, p: usize, scanned: List[Module]) Result[Unit, 
       var f = 0usize;
       while f < mods[m].files.len() && !kernels {
         match holdsKernel(mods[m].files[f]) {
-          case let ok Ok { kernels = ok; }
-          case let e Error { return Error[Unit, String](e.copy()); }
+          case let Ok(ok) { kernels = ok; }
+          case let Error(e) { return Error[Unit, String](e.copy()); }
         }
         f = f + 1usize;
       }
@@ -219,13 +219,13 @@ struct Plan {
     state.insert(String.from(name), visiting);
     var scanned = List[Module].empty();
     match scanPackage(reg.packages[p]) {
-      case var ok Ok { scanned <-> ok; }
-      case let e Error { return Error[void, String](e.copy()); }
+      case var Ok(ok) { scanned <-> ok; }
+      case let Error(e) { return Error[void, String](e.copy()); }
     }
     var unit = Unit(p, List[Module].empty(), List[usize].empty(), false, false, List[usize].empty());
     match resolveImports(reg, p, scanned) {
-      case var ok Ok { unit <-> ok; }
-      case let e Error { return Error[void, String](e.copy()); }
+      case var Ok(ok) { unit <-> ok; }
+      case let Error(e) { return Error[void, String](e.copy()); }
     }
     units.push(unit);
     let u = units.len() - 1usize;
@@ -259,7 +259,7 @@ struct Plan {
       if self.stateOf(depName) == unvisited {
         match self.visit(reg, dep) {
           case is Ok {}
-          case let e Error { return Error[void, String](e.copy()); }
+          case let Error(e) { return Error[void, String](e.copy()); }
         }
       }
       d = d + 1usize;
@@ -297,7 +297,7 @@ fn buildOrder(reg: &Registry, top: usize) Result[Plan, String] {
   if topName != "core" {
     var core = 0usize;
     match reg.find("core") {
-      case let c Some { core = c; }
+      case let Some(c) { core = c; }
       case is None {
         let searched = reg.searched();
         return Error[Plan, String](cat("no package named 'core', the prelude, in the registries searched: ", searched.view()));
@@ -305,7 +305,7 @@ fn buildOrder(reg: &Registry, top: usize) Result[Plan, String] {
     }
     match plan.visit(reg, core) {
       case is Ok {}
-      case let e Error { return Error[Plan, String](e.copy()); }
+      case let Error(e) { return Error[Plan, String](e.copy()); }
     }
     if plan.state.contains(topName) {
       // One of core's own imports: built with what it imports, and no core
@@ -314,7 +314,7 @@ fn buildOrder(reg: &Registry, top: usize) Result[Plan, String] {
   }
   match plan.visit(reg, top) {
     case is Ok {}
-    case let e Error { return Error[Plan, String](e.copy()); }
+    case let Error(e) { return Error[Plan, String](e.copy()); }
   }
   Ok[Plan, String](plan)
 }

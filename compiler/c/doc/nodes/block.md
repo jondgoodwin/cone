@@ -196,7 +196,7 @@ statements; the loop below then checks them as built. By the source's type:
   held first unless it is a place.
 
 Each pass of a cursor loop declares its variable from the item:
-`let x = match cursor.next() { case let s Some { s } case is None {
+`let x = match cursor.next() { case let Some(s) { s } case is None {
 break; } }`, built as `match` is desugared (`eachNextItem`), the `break`
 joined to the loop as it is built. Two or more variables take the item through
 a variable of the pass's own, `let -item = ...; let k = -item.0; let v =

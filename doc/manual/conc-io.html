@@ -36,10 +36,10 @@ import aio;
 
 actor Timer {
   // Waits without holding a thread, then says so
-  pub async do ring(self, what: &amp;'static imm str, ms: i64, done: Sender[i64]) {
+  pub async fn ring(self, what: &amp;'static imm str, ms: i64, done: Sender[i64]) {
     let r = await aio.sleep(Duration.fromMillis(ms));
     match r {
-      case let e Error { print &lt;- what, ": the timer failed\n"; }
+      case let Error(e) { print &lt;- what, ": the timer failed\n"; }
       else { print &lt;- what, " is ready after ", ms, " ms\n"; }
     }
     var d = done;
@@ -124,8 +124,8 @@ fn socketOf(r: Result[Socket, IoError]) Socket {
   var res = r;
   var s = Socket.none();
   match &amp;mut res {
-    case var ok &amp;mut Ok {s &lt;-&gt; *ok;}
-    case let e &amp;mut Error {say("failed", u64.from((*e).code));}
+    case var &amp;mut Ok(ok) {s &lt;-&gt; *ok;}
+    case let &amp;mut Error(e) {say("failed", u64.from((*e).code));}
   }
   s
 }
@@ -133,13 +133,13 @@ fn socketOf(r: Result[Socket, IoError]) Socket {
 actor Client {
   pool: Pool;
 
-  pub async do send(self, port: u16) {
+  pub async fn send(self, port: u16) {
     let conn = socketOf(await aio.connect(SocketAddr.localhost(port)));
     var buf = pool.mustTake(64usize);
     buf.append("hello");
     let sent = await conn.write(buf);          // pauses until all of it is sent
     match sent {
-      case let e Error {say("write failed", u64.from(e.code));}
+      case let Error(e) {say("write failed", u64.from(e.code));}
       else {}
     }
   }                                           // conn closes here
@@ -149,17 +149,17 @@ actor Server {
   pool: Pool;
   client: Client;
 
-  pub async do serve(self) u64 {
+  pub async fn serve(self) u64 {
     let listener = socketOf(await aio.listen(SocketAddr.localhost(0u16)));
     let addr = await listener.localAddr();     // the port the system chose
     match addr {
-      case let a Ok {client.send(a.port());}
-      case let e Error {say("no address", u64.from(e.code));}
+      case let Ok(a) {client.send(a.port());}
+      case let Error(e) {say("no address", u64.from(e.code));}
     }
     let conn = socketOf(await listener.accept());
     let none = await conn.read(IoBuf.empty());           // a buffer with no room
     match none {
-      case let e Error {say("no room: error", u64.from(e.code));}
+      case let Error(e) {say("no room: error", u64.from(e.code));}
       else {}
     }
     var total = 0u64;
@@ -167,7 +167,7 @@ actor Server {
     while more {
       let got = await conn.read(pool.mustTake(4096usize));
       match got {
-        case let b Ok {
+        case let Ok(b) {
           if b.len() == 0usize {
             say("end of stream", total);                 // the peer closed
             more = false;
@@ -176,7 +176,7 @@ actor Server {
             total = total + u64.from(b.len());
           }
         }
-        case let e Error {
+        case let Error(e) {
           say("read failed", u64.from(e.code));
           more = false;
         }
@@ -226,7 +226,7 @@ end of stream 5
 		the failure unread, so it is warned. The program still compiles, and the answer is dropped as any unused value
 		is:</p>
 <pre>
-  pub async do careless(self, conn: Socket) {
+  pub async fn careless(self, conn: Socket) {
     await conn.write(pool.mustTake(64usize));   // warned: the answer is thrown away
   }
 </pre>
@@ -274,12 +274,12 @@ answers, so a failure here goes unread: bind it, 'let r = await ...', and match 
 actor Reader {
   pool: Pool;
 
-  pub async do fetch(self, conn: Socket, group: CancelGroup) u64 {
+  pub async fn fetch(self, conn: Socket, group: CancelGroup) u64 {
     let until = Instant.now() + Duration.fromSeconds(5i64);
     let got = await conn.readIn(pool.mustTake(4096usize), IoLimits(Some[CancelGroup](group), until));
     match got {
-      case let b Ok {u64.from(b.len())}
-      case let e Error {
+      case let Ok(b) {u64.from(b.len())}
+      case let Error(e) {
         if aio.isCancelled(e) {say("cancelled", 0u64);}
         elif aio.isTimedOut(e) {say("too slow", 0u64);}
         else {say("failed", u64.from(e.code));}
@@ -336,15 +336,15 @@ actor Reader {
 actor Echo {
   pool: Pool;
 
-  pub async do once(self, u: UdpSocket) {                   // u: bound earlier, by bindUdp
+  pub async fn once(self, u: UdpSocket) {                   // u: bound earlier, by bindUdp
     let r = await u.recvFrom(pool.mustTake(1500usize));
     match r {
-      case let d Ok {
+      case let Ok(d) {
         var reply = pool.mustTake(64usize);
         reply.append("got it");
         let sent = await u.sendTo(d.from, reply);          // back to the sender
       }
-      case let e Error {
+      case let Error(e) {
         if aio.isTruncated(e) {say("too long", 0u64);}     // longer than 1500 bytes
       }
     }
@@ -369,14 +369,14 @@ actor Echo {
 actor Patcher {
   pool: Pool;
 
-  pub async do patch(self, name: Path) u64 {
+  pub async fn patch(self, name: Path) u64 {
     let f = fileOf(await aio.openFile(&amp;name, Access.Update));   // fileOf: as socketOf
     var b = pool.mustTake(5usize);
     b.append("hello");
     let w = await f.writeAt(100u64, b);                     // five bytes at offset 100
     match w {
-      case let n Ok {u64.from(n)}                          // 5
-      case let e Error {u64.from(e.code)}
+      case let Ok(n) {u64.from(n)}                          // 5
+      case let Error(e) {u64.from(e.code)}
     }
   }                                                         // f closes here
 }
@@ -404,11 +404,11 @@ actor Patcher {
 		time, as <span class="pre">iocore</span>'s timer in a cancel group is (<a href="lib-time.html">the time chapter</a>
 		shows the same on a loop).</p>
 <pre>
-  pub async do pause(self, group: CancelGroup) {
+  pub async fn pause(self, group: CancelGroup) {
     // Half a second, unless the group is cancelled first
     let r = await aio.sleepIn(Duration.fromMillis(500i64), IoLimits.within(group));
     match r {
-      case let e Error {say("cancelled", 0u64);}
+      case let Error(e) {say("cancelled", 0u64);}
       else {say("half a second has passed", 0u64);}
     }
   }
@@ -446,15 +446,15 @@ actor Patcher {
 		turn.</p>
 <pre>
 actor Builder {
-  pub async do build(self) u64 {
+  pub async fn build(self) u64 {
     var args = List[String].empty();
     args.push(String.from("conec"));
     args.push(String.from("app.cone"));
     // The compile runs on a pool thread; this actor handles its other messages meanwhile
     let r = await aio.run(args.view(), process.Options(timeout: Duration.fromSeconds(60i64)));
     match r {
-      case let ok Ok {u64.from(ok.exitCode)}
-      case let e Error {u64.from(e.code)}      // 2: no program of that name
+      case let Ok(ok) {u64.from(ok.exitCode)}
+      case let Error(e) {u64.from(e.code)}      // 2: no program of that name
     }
   }
 }
@@ -474,17 +474,17 @@ actor Builder {
 actor Weather {
   client: Client;
 
-  pub async do show(self, url: String, done: OneshotSender[u64]) {
+  pub async fn show(self, url: String, done: OneshotSender[u64]) {
     // The whole response, awaited: this actor handles its other messages
     // meanwhile. It is given ten seconds, and the answer says how it ended
     let r = await client.getIn(url.view(), IoLimits.until(Instant.now() + Duration.fromSeconds(10i64)));
     match r {
-      case let ok Ok {
+      case let Ok(ok) {
         say("status", u64.from(ok.status));
         printStr(ok.body.view());
         printStr("\n");
       }
-      case let e Error {
+      case let Error(e) {
         if e.isTimedOut() {printStr("too slow\n");}
         elif e.isCancelled() {printStr("cancelled\n");}
         else {printStr(e.message().view()); printStr("\n");}

@@ -419,7 +419,7 @@ enum ErrorCode {
     ErrorEntryPlace = 1223,     // 'n of x', 'fill x' or 'k: v' where no '<-' takes it apart: inside a tuple that is itself appended
 
     // The retired 'into' operator (parser/parseexpr.c)
-    ErrorInto = 1224,           // 'x into T': a value converts with 'T.from(x)'; a reference narrows to a variant with a check, by a 'match' or 'if let x &Variant = &value'
+    ErrorInto = 1224,           // 'x into T': a value converts with 'T.from(x)'; a reference narrows to a variant with a check, by a 'match' or 'if let &Variant(x) = &value'
 
     // Construction, continued (ir/exp/assign.c)
     ErrorInitRecurse = 1225,    // In a declared init, '*self = T(...)' whose construction selects that same init: self is filled by the fields' names, 'Point(x: 1, y: 2)'
@@ -506,7 +506,7 @@ enum ErrorCode {
     ErrorAwaitPlace = 1270,     // 'await' outside an actor's behaviour: in a function, a method of another type, or an actor's 'fn' -- its 'init', its 'final' or a synchronous helper -- which no dispatcher runs as a message
     ErrorUnbuiltAwait = 1271,   // An 'await' every seam rule accepted, where its continuation is not built: one not on a behaviour, one whose record holds a traced reference
     ErrorSelfActorPlace = 1272, // 'selfactor' outside an actor's method: in a function, a method of another type, or an actor's 'final'
-    ErrorBehaviourWords = 1273, // 'async' or 'do' without the other, or 'async do' anywhere but in an actor's body: the two words together declare an actor's behaviour, and neither means anything alone
+    ErrorBehaviourWords = 1273, // 'async' without 'fn', or 'async fn' anywhere but in an actor's body: the two words together declare an actor's behaviour, and 'async' means nothing alone
     ErrorAwaitVoid = 1274,      // 'await' on a behaviour that returns nothing, which sends no reply: a caller that needs to know it finished awaits one that declares a return type
     ErrorBehaviourSend = 1275,  // 'self.m()' on one of the actor's own behaviours where it cannot be sent: in its 'final', in a function that is not one of its methods, or through a state that is not the method's own 'self'
 
@@ -672,7 +672,7 @@ enum ErrorCode {
     // Flow typing and let-else (ir/exp/narrow.c, ir/exp/if.c)
     ErrorNarrowStale = 1460,    // A member of one variant named on a name that was narrowed to it and has since been changed: the message names the change
     ErrorNarrowLoop = 1461,     // A name narrowed to a variant from before a loop, used in the loop, which changes it later and comes back to the use
-    ErrorLetElse = 1462,        // The 'else' of 'let n Ok = r else ...' falls through to the binding: it must leave with 'return', 'break', 'continue' or a call that does not return
+    ErrorLetElse = 1462,        // The 'else' of 'let Ok(n) = r else ...' falls through to the binding: it must leave with 'return', 'break', 'continue' or a call that does not return
     ErrorOwnerNarrow = 1463,    // An owner ('Rc[mut, Shape]') narrowed to a variant whose value would sit at another offset in its allocation: the address would have to change
 
     // Trait patterns on a closed family (ir/exp/cast.c)
@@ -718,9 +718,6 @@ enum ErrorCode {
     ErrorRadixDigit = 1512,     // A binary or octal literal with no digit after its prefix (`0b`, `0o`, `0b_`) or with a digit its radix does not have (`0b2`, `0o8`): 'b' takes 0 and 1 and 'o' takes 0 to 7. Pointed at the digit that is wrong, or at the prefix's letter when there is none. Hex is not held to this rule: `0x` is read as zero
     ErrorRadixFloat = 1513,     // A binary or octal literal written with a fraction, an exponent or a float suffix (`0b1.0`, `0o7e2`, `0b1f32`): it is a whole number. Pointed at the '.', the 'e' or 'p', or the suffix. A '.' before a name is the call of a method (`0b101.abs`) and a '..' is the range
 
-    // A let-else binding written with a ':' (parser/parsefnflow.c)
-    ErrorLetElseColon = 1514,   // A local declared with a ':' and a type that is followed by 'else': `let n: Ok = r else ...`. A let-else binds the payload of a variant of the value, a pattern, and names only the variant after the binding, with no ':' (`let n Ok = r else ...`); the type after a ':' is the binding's own, which a payload is not. Pointed at the binding
-
     // A range written with a bare '..' between a start and an end (parser/parseexpr.c, parser/parsefnflow.c)
     ErrorRangeBare = 1515,      // `a .. b` or `..b` in an index, `a .. b` in a case pattern or an `each`: '..' before an end does not say whether the end is included, so it is refused. '..=' includes the end and '..<' stops before it. Pointed at the '..'. Not refused where no end follows (`s[a..]` runs to the end, `s[..]` is the whole), since there is no end to include or leave out
 
@@ -731,6 +728,11 @@ enum ErrorCode {
 
     // A construction is a type's name with parentheses (ir/exp/fncall.c)
     ErrorNewNotRegion = 1519,   // `new` written before a type, `Point(1, 2)`, `List[i32]()`, `Rc[mut, Node](1)`: `new` takes a dynamic region, a value such as an arena, `new a[Node](1)`. A type's value is made by writing its name with parentheses, `Point(1, 2)`, whatever region it is allocated in. Pointed at the `new`
+
+    // A pattern that binds names the variant and puts one name in its parentheses, after 'let' or 'var' (parser/parsefnflow.c parseBindVarDcl)
+    ErrorPatBindCount = 1520,   // A variant pattern whose parentheses hold no name or several (`case let Some()`, `case let Response(head, body)`, `if let Pair(a, b) = p`): a variant takes exactly one binding name and is never read by position. To take a struct variant apart, bind it whole and name its fields. Pointed at the variant
+    ErrorPatBindNested = 1521,  // A variant pattern whose parentheses hold something other than one name (`case let Some(Ok(x))`, `case let Some(3)`, `case let Wrapper(f(x))`): patterns do not nest, and a value does not go in the parentheses. Pointed at what is written in them
+    ErrorPatBindForm = 1522,    // A binding in a pattern, after `case let`, `if let`, `else if let` or a statement `let`, that is neither a variant with its one name in parentheses (`Some(n)`) nor a function's pattern (`rest using prefix("GET ")`): a name written before the variant, a variant with no parentheses, or a `let` that declares a name and then has an `else`. Pointed at what is written
 
     // Warnings
     WarnCode = 3000,

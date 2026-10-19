@@ -261,8 +261,8 @@ fn compileGpu(s: &mut Session, plan: &Plan, u: usize, core: usize) Result[Path, 
   }
   var folders = List[Path].empty();
   match gpuSearchFolders(plan, &s.reg, u, &packages, core, &lead) {
-    case var ok Ok { folders <-> ok; }
-    case let e Error { return Error[Path, String](e.copy()); }
+    case var Ok(ok) { folders <-> ok; }
+    case let Error(e) { return Error[Path, String](e.copy()); }
   }
   let gpuRoot = s.out.join("gpu");
   let work = gpuRoot.join(name.view());
@@ -296,7 +296,7 @@ fn compileGpu(s: &mut Session, plan: &Plan, u: usize, core: usize) Result[Path, 
   }
   match fs.writeFile(&source, text.view()) {
     case is Ok {}
-    case let e Error { fail(fsMessage(&e)); }
+    case let Error(e) { fail(fsMessage(&e)); }
   }
   let spvName = cat(name.view(), ".spv");
   let spv = s.out.join(spvName.view());
@@ -328,7 +328,7 @@ fn compileGpu(s: &mut Session, plan: &Plan, u: usize, core: usize) Result[Path, 
   }
   match fs.rename(&written, &spv) {
     case is Ok {}
-    case let e Error { fail(fsMessage(&e)); }
+    case let Error(e) { fail(fsMessage(&e)); }
   }
   Ok[Path, String](spv)
 }
@@ -337,7 +337,7 @@ fn compileGpu(s: &mut Session, plan: &Plan, u: usize, core: usize) Result[Path, 
 fn removeIfThere(file: &Path) {
   match fs.removeFile(file) {
     case is Ok {}
-    case let e Error {
+    case let Error(e) {
       if !e.notFound() {
         fail(fsMessage(&e));
       }
@@ -363,13 +363,13 @@ fn validateKernels(spv: &Path) Validation {
   var said = String.empty();
   var code = 0u32;
   match process.run(args.view()) {
-    case let ok Ok {
+    case let Ok(ok) {
       said = utf8Text(ok.stdout.view());
       let err = utf8Text(ok.stderr.view());
       said <- err.view();
       code = ok.exitCode;
     }
-    case let e Error { fail(e.message()); }
+    case let Error(e) { fail(e.message()); }
   }
   Validation(true, code == 0u32, said)
 }

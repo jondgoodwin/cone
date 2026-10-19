@@ -32,7 +32,7 @@ fn socketOf(r: Result[Socket, IoError]) Socket {
   var res = r;
   var s = Socket.none();
   match &mut res {
-    case var ok &mut Ok {s <-> *ok;}
+    case var &mut Ok(ok) {s <-> *ok;}
     else {}
   }
   s
@@ -42,7 +42,7 @@ fn connOf(r: Result[Conn, FetchError]) Conn {
   var res = r;
   var c = Conn.none();
   match &mut res {
-    case var ok &mut Ok {c <-> *ok;}
+    case var &mut Ok(ok) {c <-> *ok;}
     else {}
   }
   c
@@ -52,11 +52,11 @@ fn connOf(r: Result[Conn, FetchError]) Conn {
 actor Lister {
   sock: Socket;
 
-  pub async do listen(self, port: OneshotSender[u16]) {
+  pub async fn listen(self, port: OneshotSender[u16]) {
     sock = socketOf(await aio.listen(SocketAddr.localhost(0u16)));
     var p = 0u16;
     match await sock.localAddr() {
-      case let a Ok {p = a.port();}
+      case let Ok(a) {p = a.port();}
       else {}
     }
     var tx = port;
@@ -67,7 +67,7 @@ actor Lister {
 actor Waiter {
   client: Client;
 
-  pub async do serve(self, port: u16, ready: OneshotSender[u64]) {
+  pub async fn serve(self, port: u16, ready: OneshotSender[u64]) {
     let keep = Note(1u64);
     var u = String.from("http://127.0.0.1:");
     u.appendUInt(u64.from(port));
@@ -80,7 +80,7 @@ actor Waiter {
 }
 
 actor Holder {
-  pub async do hold(self, port: u16, ready: OneshotSender[u64]) {
+  pub async fn hold(self, port: u16, ready: OneshotSender[u64]) {
     let keep = Note(2u64);
     let c = connOf(await actorhttp.connect("127.0.0.1", port));
     var r = ready;
@@ -99,7 +99,7 @@ fn main() {
   lister.listen(ptx);
   var port = 0u16;
   match prx.recv() {
-    case let p Some {port = p;}
+    case let Some(p) {port = p;}
     case is None[u16] {}
   }
   printStr("listening\n");

@@ -83,7 +83,7 @@ fn reply(sv: &mut Srv, req: httpconn.ReqId, head: bool, status: u16, body: &Arra
 
 fn number(s: &str) u64 {
   match collections.parseUInt(s) {
-    case let v Some {v}
+    case let Some(v) {v}
     case is None[u64] {0u64}
   }
 }
@@ -238,8 +238,8 @@ fn readText(name: &str) String {
   var out = String.empty();
   let file = certs(name);
   match fs.readFile(&file) {
-    case var r Ok {out <-> r;}
-    case let e Error {}
+    case var Ok(r) {out <-> r;}
+    case let Error(e) {}
   }
   out
 }
@@ -256,11 +256,11 @@ fn tlsServer(cert: &str, key: &str) tls.Server {
   let certFile = certs(cert);
   let keyFile = certs(key);
   match tls.Server.make(tls.ServerConfig.make(&certFile, &keyFile)) {
-    case let r Ok {
+    case let Ok(r) {
       let s = r;
       return s;
     }
-    case let e Error {}
+    case let Error(e) {}
   }
   panic("no TLS server: run the test from its build folder")
 }
@@ -270,20 +270,20 @@ fn listenOn(sv: &mut Srv, lp: &mut Loop, s: Option[tls.Server]) u16 {
   var port = 0u16;
   var r: Result[httpconn.ListenerId, iocore.IoError] = Error[httpconn.ListenerId, iocore.IoError](iocore.IoError.cancelled());
   match s {
-    case let t Some {
+    case let Some(t) {
       r = sv.drv.listenWith(lp, SocketAddr.localhost(0u16), Uni[TlsMaker](TlsMaker(t, sv.pool)),
         httpconn.Sink.Here(1u64));
     }
     else {r = sv.drv.listen(lp, SocketAddr.localhost(0u16), httpconn.Sink.Here(1u64));}
   }
   match r {
-    case let l Ok {
+    case let Ok(l) {
       match sv.drv.localAddr(lp, l) {
-        case let a Ok {port = a.port();}
-        case let e Error {}
+        case let Ok(a) {port = a.port();}
+        case let Error(e) {}
       }
     }
-    case let e Error {}
+    case let Error(e) {}
   }
   port
 }
@@ -327,7 +327,7 @@ fn say(what: &str, r: Result[Response, FetchError]) {
   printStr(what);
   printStr(": ");
   match &r {
-    case let ok &Ok {
+    case let &Ok(ok) {
       printUInt(u64.from(ok.status));
       if ok.body.len() > 0usize {
         printStr(" ");
@@ -335,7 +335,7 @@ fn say(what: &str, r: Result[Response, FetchError]) {
       }
       printStr("\n");
     }
-    case let e &Error {
+    case let &Error(e) {
       printStr(kindWord(e));
       if !e.isCancelled() && !e.isTimedOut() {
         printStr(" at ");
@@ -359,7 +359,7 @@ fn note(what: &str, yes: bool) {
 // happens now and then
 fn refusedTls(r: Result[Response, FetchError]) bool {
   match &r {
-    case let e &Error {
+    case let &Error(e) {
       let s = e.failure.stage;
       e.kind() == actorhttp.FetchErrorKind.Failed && (s == httpclient.Stage.Tls || s == httpclient.Stage.Read ||
         s == httpclient.Stage.Closed)
@@ -378,12 +378,12 @@ fn connOf(what: &str, r: Result[Conn, FetchError]) Conn {
   var res = r;
   var c = Conn.none();
   match &mut res {
-    case var ok &mut Ok {
+    case var &mut Ok(ok) {
       c <-> *ok;
       printStr(what);
       printStr(": connected\n");
     }
-    case let e &mut Error {
+    case let &mut Error(e) {
       printStr(what);
       printStr(": ");
       printStr(kindWord(e));
@@ -415,12 +415,12 @@ actor Prober {
   // Runs while run is paused at an await, after a while (the request is on
   // the wire by then, so the cancel has a connection to reset): ends the
   // group's operations
-  pub async do stop(self, g: CancelGroup) {
+  pub async fn stop(self, g: CancelGroup) {
     thread.sleep(Duration.fromMillis(100i64));
     g.cancel();
   }
 
-  pub async do run(self, port: u16, goodPort: u16, untrustedPort: u16, done: OneshotSender[u64]) {
+  pub async fn run(self, port: u16, goodPort: u16, untrustedPort: u16, done: OneshotSender[u64]) {
     // A plain connection: two requests on it, one server accept
     let c = connOf("connect", await actorhttp.connect("127.0.0.1", port));
     say("get", await c.request(get("/hello"), String.empty()));
@@ -486,17 +486,17 @@ actor Prober {
 actor Dropper {
   conn: Conn;
 
-  pub async do connect(self, port: u16, ready: OneshotSender[u64]) {
+  pub async fn connect(self, port: u16, ready: OneshotSender[u64]) {
     conn = connOf("dropper connects", await actorhttp.connect("127.0.0.1", port));
     var r = ready;
     r.send(1u64);
   }
 
-  pub async do release(self) {
+  pub async fn release(self) {
     conn = Conn.none();
   }
 
-  pub async do run(self, done: OneshotSender[u64]) {
+  pub async fn run(self, done: OneshotSender[u64]) {
     say("conn dropped under a request", await conn.request(get("/hang"), String.empty()));
     var d = done;
     d.send(1u64);
@@ -512,7 +512,7 @@ fn main() i32 {
   var ports = List[u16].empty();
   while ports.len() < 3usize {
     match portRx.recv() {
-      case let p Some {ports.push(p);}
+      case let Some(p) {ports.push(p);}
       case is None[u16] {}
     }
   }

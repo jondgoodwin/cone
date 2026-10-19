@@ -429,7 +429,7 @@ carries its operand's owner** (`Uni[App]` from a `Uni[Spinner]`), adding a vtabl
 to the one owner, so these walks, and `blockResultMove` and the path walk's
 `pwValue`, look through it as through a recast (`flowCastCarries`).
 
-**A match's binding is the matched value.** `case let c Circle` desugars to a
+**A match's binding is the matched value.** `case let Circle(c)` desugars to a
 variable initialized with the matched value converted to its variant (a
 `CastTag` carrying `FlagMatchBind`), and the matched value is held in a variable
 of its own: the match's, for a value that is not a place or a match with a bound
@@ -456,7 +456,7 @@ that variable, so whether the old value is released follows its state on each
 path and its drop flag, and generation tests and sets that flag, `genlStoreTo`).
 A binding by reference holds a copy of the matched
 reference, and a store over it releases nothing. A guard's binding
-(`case let c Circle if g`) is a second binding of the same value, and owns
+(`case let Circle(c) if g`) is a second binding of the same value, and owns
 nothing either. The match's own variable
 (`_`) is named by one name use that every pattern and binding shares (an arm's own
 by the one binding that reads it), so no
@@ -1798,7 +1798,7 @@ afterwards waits in a continuation, a record, until the reply comes. A seam is
 a return to the *dispatcher*, not to the author: the author wrote one method
 with one scope, so what the author can see -- when a value dies and in which
 order -- is what a method without the seam would do. Type check has placed it
-already, in a behaviour, a method declared `async do`; an actor's `fn` --
+already, in a behaviour, a method declared `async fn`; an actor's `fn` --
 its `init`, its `final`, a synchronous helper -- holds none
 (`ErrorAwaitPlace`), and an `await` on a behaviour returning nothing is
 refused there too (`ErrorAwaitVoid`), so flow never sees either. Every rule

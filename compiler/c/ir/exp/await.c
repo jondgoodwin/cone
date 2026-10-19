@@ -95,7 +95,7 @@ static char *actorMethodNotPlaced(FnDclNode *fn) {
     return NULL;
 }
 
-// Where may 'await' stand? In a behaviour, a method declared 'async do': a
+// Where may 'await' stand? In a behaviour, a method declared 'async fn': a
 // seam is a return to the actor's dispatcher, which runs a behaviour as a
 // message. Every 'fn' of an actor -- its 'init', its 'final', a helper -- is
 // synchronous, run inside whatever called it, which a seam cannot cut. NULL
@@ -275,7 +275,7 @@ void awaitTypeCheck(TypeCheckState *pstate, AwaitNode *node, INode *expectType) 
     char *where = awaitNotPlaced(pstate->fn, buf, sizeof(buf));
     if (where)
         errorMsgNode((INode *)node, ErrorAwaitPlace,
-            "'await' stands only in an actor's behaviour, declared 'async do', where the behaviour is cut and returns to the actor's dispatcher to wait. %s",
+            "'await' stands only in an actor's behaviour, declared 'async fn', where the behaviour is cut and returns to the actor's dispatcher to wait. %s",
             where);
     // A behaviour's call awaited is sent awaited, never for a future
     INode *svoperand = actorAwaitOperand;
@@ -541,7 +541,7 @@ static void awaitSplitAdd(FnDclNode *fn, Nodes *awaits) {
     splitawaits[splitcnt++] = awaits;
 }
 
-// A behaviour: a method of an actor's state declared 'async do', which its
+// A behaviour: a method of an actor's state declared 'async fn', which its
 // dispatcher runs for a message sent to it. An 'await' anywhere else was
 // refused where it stands (awaitTypeCheck), so only a behaviour is split
 static int awaitIsMessage(FnDclNode *fn) {

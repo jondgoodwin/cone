@@ -29,19 +29,19 @@ fn badInput(reason: &str) GgufError { GgufError.make(ErrorKind.BadInput, 0u64, r
 // Appends the bytes of one value (not its type code)
 fn putValue(out: &mut List[u8], v: &Value, depth: u32) Option[GgufError] {
   match v {
-    case let x U8 { out.push(*x); }
-    case let x I8 { out.push(u8.from(*x)); }
-    case let x U16 { putHalf(out, *x); }
-    case let x I16 { putHalf(out, u16.from(*x)); }
-    case let x U32 { putLe32(out, *x); }
-    case let x I32 { putLe32(out, u32.from(*x)); }
-    case let x F32 { putLe32(out, *x as u32); }
-    case let x Bool { out.push(if *x { 1u8 } else { 0u8 }); }
-    case let x U64 { putLe64(out, *x); }
-    case let x I64 { putLe64(out, u64.from(*x)); }
-    case let x F64 { putLe64(out, *x as u64); }
-    case let x Str { putStr(out, x.view()); }
-    case let x Items {
+    case let U8(x) { out.push(*x); }
+    case let I8(x) { out.push(u8.from(*x)); }
+    case let U16(x) { putHalf(out, *x); }
+    case let I16(x) { putHalf(out, u16.from(*x)); }
+    case let U32(x) { putLe32(out, *x); }
+    case let I32(x) { putLe32(out, u32.from(*x)); }
+    case let F32(x) { putLe32(out, *x as u32); }
+    case let Bool(x) { out.push(if *x { 1u8 } else { 0u8 }); }
+    case let U64(x) { putLe64(out, *x); }
+    case let I64(x) { putLe64(out, u64.from(*x)); }
+    case let F64(x) { putLe64(out, *x as u64); }
+    case let Str(x) { putStr(out, x.view()); }
+    case let Items(x) {
       if depth >= maxDepth() {
         return Some[GgufError](GgufError.make(ErrorKind.TooDeep, 0u64, "arrays are nested deeper than 8 levels"));
       }
@@ -52,7 +52,7 @@ fn putValue(out: &mut List[u8], v: &Value, depth: u32) Option[GgufError] {
           return Some[GgufError](badInput("an array holds a value of a type other than its element type"));
         }
         match putValue(out, e, depth + 1u32) {
-          case var err Some {
+          case var Some(err) {
             var r = badInput("");
             r <-> err;
             return Some[GgufError](r);
@@ -147,7 +147,7 @@ pub struct Writer {
     }
     var bytes = List[u8].empty();
     match quantize(&kind, values, &mut bytes) {
-      case var e Error {
+      case var Error(e) {
         var err = badInput("");
         err <-> e;
         return Error[usize, GgufError](err);
@@ -164,7 +164,7 @@ pub struct Writer {
     each e in meta {
       if e.key.view() == "general.alignment" {
         match e.value.asU64() {
-          case let a Some { alignment = a; }
+          case let Some(a) { alignment = a; }
           case is None {
             return Error[List[u8], GgufError](GgufError.make(ErrorKind.BadAlignment, 0u64, "general.alignment is not an unsigned integer"));
           }
@@ -187,7 +187,7 @@ pub struct Writer {
       putStr(&mut out, e.key.view());
       putLe32(&mut out, e.value.valueType().code());
       match putValue(&mut out, &e.value, 0u32) {
-        case var err Some {
+        case var Some(err) {
           var r = badInput("");
           r <-> err;
           return Error[List[u8], GgufError](r);

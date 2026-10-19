@@ -11,16 +11,16 @@ import collections use *;
 import gguf use *;
 
 // An Option's value, or the fallback (the language's '||' on an Option is not built yet)
-fn orS(o: Option[&str], d: &str) &str { match o { case let v Some { return v; } case is None { return d; } } }
-fn orU(o: Option[u64], d: u64) u64 { match o { case let v Some { return v; } case is None { return d; } } }
-fn orI(o: Option[i64], d: i64) i64 { match o { case let v Some { return v; } case is None { return d; } } }
-fn orF(o: Option[f64], d: f64) f64 { match o { case let v Some { return v; } case is None { return d; } } }
-fn orB(o: Option[bool], d: bool) bool { match o { case let v Some { return v; } case is None { return d; } } }
-fn orZ(o: Option[usize], d: usize) usize { match o { case let v Some { return v; } case is None { return d; } } }
+fn orS(o: Option[&str], d: &str) &str { match o { case let Some(v) { return v; } case is None { return d; } } }
+fn orU(o: Option[u64], d: u64) u64 { match o { case let Some(v) { return v; } case is None { return d; } } }
+fn orI(o: Option[i64], d: i64) i64 { match o { case let Some(v) { return v; } case is None { return d; } } }
+fn orF(o: Option[f64], d: f64) f64 { match o { case let Some(v) { return v; } case is None { return d; } } }
+fn orB(o: Option[bool], d: bool) bool { match o { case let Some(v) { return v; } case is None { return d; } } }
+fn orZ(o: Option[usize], d: usize) usize { match o { case let Some(v) { return v; } case is None { return d; } } }
 
 fn same(model: &Model, key: &str, want: Value) {
   match model.get(key) {
-    case let v Some { expect(v.same(&want), key); }
+    case let Some(v) { expect(v.same(&want), key); }
     case is None { expect(false, key); }
   }
 }
@@ -65,8 +65,8 @@ fn emptyU32() Value { Value.Items(ValueType.U32, List[Value].empty()) }
 
 fn written(w: &Writer) List[u8] {
   match w.finish() {
-    case var ok Ok { var b = List[u8].empty(); b <-> ok; return b; }
-    case let e Error {
+    case var Ok(ok) { var b = List[u8].empty(); b <-> ok; return b; }
+    case let Error(e) {
       let m = e.message();
       expectStr(m.view(), "<written>", "finish");
       return List[u8].empty();
@@ -82,7 +82,7 @@ fn add(w: &mut Writer, name: &str, kind: TensorType, dims: &Array[u64], seed: u3
   let values = floats(n, seed);
   match w.addValues(name, kind, dims, values.view()) {
     case is Ok {}
-    case let e Error {
+    case let Error(e) {
       let m = e.message();
       expectStr(m.view(), "<added>", name);
     }
@@ -130,12 +130,12 @@ fn metadataFile() List[u8] {
   // put again: the value is replaced, and keeps its place
   w.put("t.u8", Value.U8(201u8));
   match w.finish() {
-    case var ok Ok {
+    case var Ok(ok) {
       var bytes = List[u8].empty();
       bytes <-> ok;
       return bytes;
     }
-    case let e Error {
+    case let Error(e) {
       let m = e.message();
       expectStr(m.view(), "<written>", "metadata file");
       return List[u8].empty();
@@ -145,12 +145,12 @@ fn metadataFile() List[u8] {
 
 fn modelOf(bytes: &List[u8]) Model {
   match parse(bytes.view()) {
-    case var ok Ok {
+    case var Ok(ok) {
       var m = Model.empty();
       m <-> ok;
       return m;
     }
-    case let e Error {
+    case let Error(e) {
       let msg = e.message();
       expectStr(msg.view(), "<parsed>", "parse");
       return Model.empty();
@@ -194,7 +194,7 @@ fn main() i32 {
   expect(!model.has("missing"), "a missing key");
   // a value is not its look-alike of another type
   match model.get("t.u32") {
-    case let v Some { expect(!v.same(&Value.I32(-294967296i32)), "U32 is not I32"); }
+    case let Some(v) { expect(!v.same(&Value.I32(-294967296i32)), "U32 is not I32"); }
     case is None { expect(false, "t.u32"); }
   }
 
@@ -215,7 +215,7 @@ fn main() i32 {
   expect(orB(model.flag("t.true"), false), "flag true");
   expect(!orB(model.flag("t.false"), true), "flag false");
   match model.list("a.str") {
-    case let l Some {
+    case let Some(l) {
       expectUInt(u64.from(l.len()), 3u64, "list length");
       expectStr(orS(l.text(1usize), "?"), "bc", "list text");
       expect((l.text(3usize) is None), "list text out of range");
@@ -224,14 +224,14 @@ fn main() i32 {
     case is None { expect(false, "a.str list"); }
   }
   match model.list("a.u32") {
-    case let l Some {
+    case let Some(l) {
       expect(orI(l.int(2usize), 0i64) == 4000000000i64, "list int");
       expect((l.text(2usize) is None), "list text of an int");
     }
     case is None { expect(false, "a.u32 list"); }
   }
   match model.list("a.f32") {
-    case let l Some { expectFloat(orF(l.float(1usize), 0.0), -2.5, 0.0, "list float"); }
+    case let Some(l) { expectFloat(orF(l.float(1usize), 0.0), -2.5, 0.0, "list float"); }
     case is None { expect(false, "a.f32 list"); }
   }
   expect((model.list("t.u8") is None), "list of a scalar");
@@ -289,7 +289,7 @@ fn main() i32 {
 
   // find and indexOf
   match tm.find("f.q4_k") {
-    case let info Some { expectUInt(info.elements, 512u64, "find"); }
+    case let Some(info) { expectUInt(info.elements, 512u64, "find"); }
     case is None { expect(false, "find"); }
   }
   expect((tm.find("nope") is None), "find misses");
@@ -297,7 +297,7 @@ fn main() i32 {
 
   // The plain floats read back whole
   match tensorToF32(&tm, tfile.view(), tm.tensors[0usize]) {
-    case let got Ok {
+    case let Ok(got) {
       let want = floats(6usize, 1u32);
       var i = 0usize;
       while i < 6usize {
@@ -308,7 +308,7 @@ fn main() i32 {
     case is Error { expect(false, "tensorToF32 of an F32 tensor"); }
   }
   match tensorToF32(&tm, tfile.view(), tm.tensors[1usize]) {
-    case let got Ok {
+    case let Ok(got) {
       let want = floats(5usize, 2u32);
       var i = 0usize;
       while i < 5usize {
@@ -320,7 +320,7 @@ fn main() i32 {
   }
   // A row of the 3-row Q4_0 matrix is the same as that part of the whole
   match tensorToF32(&tm, tfile.view(), tm.tensors[3usize]) {
-    case let whole Ok {
+    case let Ok(whole) {
       var row = List[f32].empty();
       match rowToF32(&tm, tfile.view(), tm.tensors[3usize], 2u64, &mut row) {
         case is Ok {}
@@ -336,7 +336,7 @@ fn main() i32 {
       expect(same, "row 2 is elements 128 to 191 of the whole");
       match rowToF32(&tm, tfile.view(), tm.tensors[3usize], 3u64, &mut row) {
         case is Ok { expect(false, "row 3 of 3 rows"); }
-        case let e Error { expect(e.kind == ErrorKind.BadSize, "row out of range: BadSize"); }
+        case let Error(e) { expect(e.kind == ErrorKind.BadSize, "row out of range: BadSize"); }
       }
     }
     case is Error { expect(false, "tensorToF32 of a Q4_0 tensor"); }

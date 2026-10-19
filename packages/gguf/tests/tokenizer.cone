@@ -11,11 +11,11 @@ import testing use *;
 import collections use *;
 import gguf use *;
 
-fn orS(o: Option[&str], d: &str) &str { match o { case let v Some { return v; } case is None { return d; } } }
-fn orU(o: Option[u64], d: u64) u64 { match o { case let v Some { return v; } case is None { return d; } } }
-fn orI(o: Option[i64], d: i64) i64 { match o { case let v Some { return v; } case is None { return d; } } }
-fn orF(o: Option[f64], d: f64) f64 { match o { case let v Some { return v; } case is None { return d; } } }
-fn orB(o: Option[bool], d: bool) bool { match o { case let v Some { return v; } case is None { return d; } } }
+fn orS(o: Option[&str], d: &str) &str { match o { case let Some(v) { return v; } case is None { return d; } } }
+fn orU(o: Option[u64], d: u64) u64 { match o { case let Some(v) { return v; } case is None { return d; } } }
+fn orI(o: Option[i64], d: i64) i64 { match o { case let Some(v) { return v; } case is None { return d; } } }
+fn orF(o: Option[f64], d: f64) f64 { match o { case let Some(v) { return v; } case is None { return d; } } }
+fn orB(o: Option[bool], d: bool) bool { match o { case let Some(v) { return v; } case is None { return d; } } }
 
 fn tokenText(i: usize) String {
   var s = String.empty();
@@ -71,8 +71,8 @@ fn main() i32 {
 
   var bytes = List[u8].empty();
   match w.finish() {
-    case var ok Ok { bytes <-> ok; }
-    case let e Error {
+    case var Ok(ok) { bytes <-> ok; }
+    case let Error(e) {
       let m = e.message();
       expectStr(m.view(), "<written>", "finish");
     }
@@ -80,9 +80,9 @@ fn main() i32 {
   expect(bytes.len() > 400000usize, "a few hundred kilobytes");
 
   match parse(bytes.view()) {
-    case let m Ok {
+    case let Ok(m) {
       match m.list("tokenizer.ggml.tokens") {
-        case let l Some {
+        case let Some(l) {
           expectUInt(u64.from(l.len()), u64.from(n), "32000 tokens");
           expect(l.elem == ValueType.Str, "an array of strings");
           var bad = 0u32;
@@ -90,7 +90,7 @@ fn main() i32 {
           while i < n {
             let want = tokenText(i);
             match l.text(i) {
-              case let got Some { if got != want.view() { bad = bad + 1u32; } }
+              case let Some(got) { if got != want.view() { bad = bad + 1u32; } }
               case is None { bad = bad + 1u32; }
             }
             i = i + 1usize;
@@ -101,7 +101,7 @@ fn main() i32 {
         case is None { expect(false, "tokens"); }
       }
       match m.list("tokenizer.ggml.scores") {
-        case let l Some {
+        case let Some(l) {
           expectUInt(u64.from(l.len()), u64.from(n), "32000 scores");
           expect(l.elem == ValueType.F32, "an array of f32");
           expectFloat(orF(l.float(31999usize), 0.0), -31999.0, 0.0, "last score");
@@ -110,7 +110,7 @@ fn main() i32 {
         case is None { expect(false, "scores"); }
       }
       match m.list("tokenizer.ggml.token_type") {
-        case let l Some {
+        case let Some(l) {
           expect(l.elem == ValueType.I32, "an array of i32");
           expectInt(orI(l.int(0usize), 0i64), 3i64, "control token");
           expectInt(orI(l.int(100usize), 0i64), 6i64, "byte token");
@@ -119,7 +119,7 @@ fn main() i32 {
         case is None { expect(false, "token types"); }
       }
       match m.list("tokenizer.ggml.merges") {
-        case let l Some {
+        case let Some(l) {
           expectUInt(u64.from(l.len()), 5000u64, "5000 merges");
           expectStr(orS(l.text(4999usize), ""), "t4999 ok", "last merge");
         }
@@ -130,11 +130,11 @@ fn main() i32 {
       expect(orB(m.flag("tokenizer.ggml.add_bos_token"), false), "add_bos");
       // multi-byte UTF-8 tokens survive as bytes
       match m.list("tokenizer.ggml.tokens") {
-        case let l Some { expectStr(orS(l.text(997usize), ""), "é✓tok997", "a UTF-8 token"); }
+        case let Some(l) { expectStr(orS(l.text(997usize), ""), "é✓tok997", "a UTF-8 token"); }
         case is None {}
       }
     }
-    case let e Error {
+    case let Error(e) {
       let msg = e.message();
       expectStr(msg.view(), "<parsed>", "parse");
     }

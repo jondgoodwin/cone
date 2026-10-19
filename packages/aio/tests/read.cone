@@ -49,7 +49,7 @@ fn socketOf(r: Result[Socket, IoError]) Socket {
   var res = r;
   var s = Socket.none();
   match &mut res {
-    case var ok &mut Ok {s <-> *ok;}
+    case var &mut Ok(ok) {s <-> *ok;}
     else {}
   }
   s
@@ -67,7 +67,7 @@ fn same(a: &Array[u8], b: &Array[u8]) bool {
 
 fn codeOf[T](r: Result[T, IoError]) u64 {
   match r {
-    case let e Error {u64.from(e.code)}
+    case let Error(e) {u64.from(e.code)}
     else {0u64}
   }
 }
@@ -75,15 +75,15 @@ fn codeOf[T](r: Result[T, IoError]) u64 {
 actor Client {
   pool: Pool;
 
-  pub async do dial(self, port: u16) {
+  pub async fn dial(self, port: u16) {
     let c = await aio.connect(SocketAddr.localhost(port));
     let s = socketOf(c);
     var b = pool.mustTake(64usize);
     b.append("hello, actor");
     let w = await s.write(b);
     match w {
-      case let n Ok {got.written.store(u64.from(n));}
-      case let e Error {got.written.store(1000000u64 + u64.from(e.code));}
+      case let Ok(n) {got.written.store(u64.from(n));}
+      case let Error(e) {got.written.store(1000000u64 + u64.from(e.code));}
     }
   }
 }
@@ -91,13 +91,13 @@ actor Client {
 actor Server {
   pool: Pool;
 
-  pub async do serve(self, client: Client, done: OneshotSender[u64]) {
+  pub async fn serve(self, client: Client, done: OneshotSender[u64]) {
     let l = await aio.listen(SocketAddr.localhost(0u16));
     let ls = socketOf(l);
     let a = await ls.localAddr();
     var port = 0u16;
     match a {
-      case let addr Ok {port = addr.port();}
+      case let Ok(addr) {port = addr.port();}
       else {}
     }
     got.port.store(u64.from(port));
@@ -110,7 +110,7 @@ actor Server {
     got.noRoom.store(codeOf[IoBuf](none));
     var r = await conn.read(pool.mustTake(4096usize));
     match &mut r {
-      case var ok &mut Ok {
+      case var &mut Ok(ok) {
         var b = IoBuf.empty();
         b <-> *ok;
         got.read.store(u64.from(b.len()));
@@ -118,7 +118,7 @@ actor Server {
         b.clear();
         let rest = await conn.read(b);
         match rest {
-          case let end Ok {
+          case let Ok(end) {
             if end.len() == 0usize {got.ended.store(1u64);}
             got.capacity.store(u64.from(end.capacity()));
           }

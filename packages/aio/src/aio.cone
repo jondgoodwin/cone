@@ -28,7 +28,7 @@
 //   actor Client {
 //     pool Pool;
 //
-//     pub async do send(self, port u16) {
+//     pub async fn send(self, port u16) {
 //       imm conn = socketOf(await aio.connect(SocketAddr.localhost(port)));
 //       mut buf = pool.mustTake(64usize);
 //       buf.append("hello");
@@ -608,7 +608,7 @@ struct OpJob[R] {
 // names one, bounded by its deadline if it has one
 fn submitLimited(lp: &mut Loop, o: Op, to: Target, lim: &IoLimits) {
   match lim.group {
-    case let g Some {lp.submitIn(o, to, g, lim.deadline);}
+    case let Some(g) {lp.submitIn(o, to, g, lim.deadline);}
     else {
       if lim.deadline < forever() {
         lp.submitBy(o, to, lim.deadline);
@@ -738,7 +738,7 @@ struct SleepJob {
     let due = if relative {Instant.now() + after} else {at};
     let to = Target.Hook(0u64, Sink.make(waiting[Result[void, IoError]](rp, &sleepAnswer)));
     match limits.group {
-      case let g Some {
+      case let Some(g) {
         if limits.deadline < forever() {
           lp.afterIn(due, to, g.childUntil(limits.deadline));
         } else {
@@ -765,8 +765,8 @@ struct ListenJob {
     var rp = actors.Reply();
     rp <-> reply;
     match lp.listen(addr) {
-      case let ok Ok {actors.answerNow[Result[Socket, IoError]](rp, Ok[Socket, IoError](Socket(ok)));}
-      case let e Error {actors.answerNow[Result[Socket, IoError]](rp, Error[Socket, IoError](e));}
+      case let Ok(ok) {actors.answerNow[Result[Socket, IoError]](rp, Ok[Socket, IoError](Socket(ok)));}
+      case let Error(e) {actors.answerNow[Result[Socket, IoError]](rp, Error[Socket, IoError](e));}
     }
   }
 }
@@ -780,8 +780,8 @@ struct BindUdpJob {
     var rp = actors.Reply();
     rp <-> reply;
     match lp.bindUdp(addr) {
-      case let ok Ok {actors.answerNow[Result[UdpSocket, IoError]](rp, Ok[UdpSocket, IoError](UdpSocket(ok)));}
-      case let e Error {actors.answerNow[Result[UdpSocket, IoError]](rp, Error[UdpSocket, IoError](e));}
+      case let Ok(ok) {actors.answerNow[Result[UdpSocket, IoError]](rp, Ok[UdpSocket, IoError](UdpSocket(ok)));}
+      case let Error(e) {actors.answerNow[Result[UdpSocket, IoError]](rp, Error[UdpSocket, IoError](e));}
     }
   }
 }
@@ -796,8 +796,8 @@ struct OpenFileJob {
     var rp = actors.Reply();
     rp <-> reply;
     match lp.openFile(&path, access) {
-      case let ok Ok {actors.answerNow[Result[File, IoError]](rp, Ok[File, IoError](File(ok)));}
-      case let e Error {actors.answerNow[Result[File, IoError]](rp, Error[File, IoError](e));}
+      case let Ok(ok) {actors.answerNow[Result[File, IoError]](rp, Ok[File, IoError](File(ok)));}
+      case let Error(e) {actors.answerNow[Result[File, IoError]](rp, Error[File, IoError](e));}
     }
   }
 }
@@ -851,8 +851,8 @@ fn runResult(r: Result[process.Output, process.ProcessError]) Result[process.Out
   var good = false;
   var code = 0u32;
   match &mut res {
-    case var ok &mut Ok {o <-> *ok; good = true;}
-    case let e &mut Error {code = e.code;}
+    case var &mut Ok(ok) {o <-> *ok; good = true;}
+    case let &mut Error(e) {code = e.code;}
   }
   if good {
     return Ok[process.Output, IoError](o);

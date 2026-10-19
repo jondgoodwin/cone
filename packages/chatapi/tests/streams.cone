@@ -38,12 +38,12 @@ fn theKey() &str {"sk-test-chatapi-0002"}
 
 fn textOf(j: &json.Json) String {
   match j.toText() {
-    case var t Ok {
+    case var Ok(t) {
       var s = String.empty();
       s <-> t;
       s
     }
-    case let e Error {String.from("(unwritable)")}
+    case let Error(e) {String.from("(unwritable)")}
   }
 }
 
@@ -125,7 +125,7 @@ actor Handler {
     ex.respond(head, String.from(body));
   }
 
-  pub async do run(self) {
+  pub async fn run(self) {
     let path = String.from(ex.request.path());
     if path.view() != "/v1/chat/completions" || ex.request.methodName() != "POST" {
       ex.text(404u16, "no such path");
@@ -140,8 +140,8 @@ actor Handler {
     }
     var doc: json.Json = json.Json.Null;
     match json.parse(ex.request.body.view()) {
-      case var ok Ok {doc <-> ok;}
-      case let e Error {
+      case var Ok(ok) {doc <-> ok;}
+      case let Error(e) {
         self.answer(400u16, errorJson("the body is not JSON", "bad_body").view());
         return;
       }
@@ -152,12 +152,12 @@ actor Handler {
     }
     var withUsage = false;
     match doc.get("stream_options") {
-      case let so Some {withUsage = so.boolOr("include_usage", false);}
+      case let Some(so) {withUsage = so.boolOr("include_usage", false);}
       case is None {}
     }
     var model = String.empty();
     match doc.getText("model") {
-      case let s Some {model = String.from(s);}
+      case let Some(s) {model = String.from(s);}
       case is None {}
     }
     let m = model.view();
@@ -251,8 +251,8 @@ actor Handler {
         let e = sse.Event.message(c.view());
         let w = await ex.sendEvent(&e);
         match w {
-          case let ok Ok {n = n + 1u64;}
-          case let er Error {going = false;}
+          case let Ok(ok) {n = n + 1u64;}
+          case let Error(er) {going = false;}
         }
         thread.sleep(Duration.fromMillis(5i64));
       }
@@ -267,7 +267,7 @@ actor Handler {
 actor Silent {
   ex: Exchange;
 
-  pub async do start(self) {
+  pub async fn start(self) {
     ex.startEvents();
   }
 }
@@ -277,27 +277,27 @@ actor Acceptor {
   left: Sender[u64];
   held: List[Silent];
 
-  pub async do open(self, ports: Sender[u16]) {
+  pub async fn open(self, ports: Sender[u16]) {
     let r = await actorhttp.listen(SocketAddr.localhost(0u16), ServerConfig.make());
     var res = r;
     match &mut res {
-      case var ok &mut Ok {server <-> *ok;}
-      case let e &mut Error {printStr("listen failed: "); printStr(e.message().view()); printStr("\n");}
+      case var &mut Ok(ok) {server <-> *ok;}
+      case let &mut Error(e) {printStr("listen failed: "); printStr(e.message().view()); printStr("\n");}
     }
     ports.send(server.port());
   }
 
-  pub async do serve(self) {
+  pub async fn serve(self) {
     while true {
       let n = await server.next();
       match n {
-        case var ok Ok {self.route(ok);}
-        case let e Error {break;}
+        case var Ok(ok) {self.route(ok);}
+        case let Error(e) {break;}
       }
     }
   }
 
-  pub async do stop(self) {
+  pub async fn stop(self) {
     server.close();
   }
 
@@ -345,11 +345,11 @@ fn showError(e: &ChatError) {
   // The json package's own words, where it says where and why, are not pinned here
   let text = e.message();
   match text.view().find("json: line") {
-    case let at Some {
+    case let Some(at) {
       printStr(text.sub(0usize, at + 5usize).view());
       printStr(" ...");
       match text.view().find(" (chunk") {
-        case let k Some {printStr(text.sub(k, text.len()).view());}
+        case let Some(k) {printStr(text.sub(k, text.len()).view());}
         case is None {}
       }
     }
@@ -375,7 +375,7 @@ fn showDelta(d: &Delta) {
     printStr(d.finishReason.view());
   }
   match &d.usage {
-    case let u &Some {
+    case let &Some(u) {
       printStr(" usage=");
       printUInt(u.promptTokens);
       printStr("/");
@@ -399,22 +399,22 @@ actor Reader {
   chat: Chat;
 
   // Open a stream and print every delta, then how it ended
-  pub async do read(self, label: String, model: String, usage: bool, ms: i64, done: OneshotSender[u64]) {
+  pub async fn read(self, label: String, model: String, usage: bool, ms: i64, done: OneshotSender[u64]) {
     printStr(label.view());
     printStr(":\n");
     var lim = IoLimits.none();
     if ms > 0i64 {lim = IoLimits.until(Instant.now() + Duration.fromMillis(ms));}
     let opened = await chat.streamIn(request(model.view(), usage), lim);
     match opened {
-      case let cs Ok {
+      case let Ok(cs) {
         var count = 0u64;
         var going = true;
         while going {
           let n = await cs.next();
           match n {
-            case let ok Ok {
+            case let Ok(ok) {
               match ok {
-                case let d Some {
+                case let Some(d) {
                   showDelta(&d);
                   count = count + 1u64;
                 }
@@ -424,7 +424,7 @@ actor Reader {
                 }
               }
             }
-            case let er Error {
+            case let Error(er) {
               showError(&er);
               going = false;
             }
@@ -433,16 +433,16 @@ actor Reader {
         // After an error or the end, there is nothing more
         let after = await cs.next();
         match after {
-          case let ok Ok {
+          case let Ok(ok) {
             match ok {
-              case let d Some {printStr("  MORE after the end\n");}
+              case let Some(d) {printStr("  MORE after the end\n");}
               case is None[Delta] {printStr("  and nothing after\n");}
             }
           }
-          case let er Error {printStr("  ERROR after the end\n");}
+          case let Error(er) {printStr("  ERROR after the end\n");}
         }
       }
-      case let er Error {
+      case let Error(er) {
         printStr("  open failed:\n");
         showError(&er);
       }
@@ -452,18 +452,18 @@ actor Reader {
   }
 
   // A silent stream, ended by its cancel group's cancel (from main)
-  pub async do cancelled(self, group: CancelGroup, done: OneshotSender[u64]) {
+  pub async fn cancelled(self, group: CancelGroup, done: OneshotSender[u64]) {
     printStr("silent, ended by a cancel:\n");
     let opened = await chat.streamIn(request("silent", false), IoLimits.within(group));
     match opened {
-      case let cs Ok {
+      case let Ok(cs) {
         let n = await cs.next();
         match n {
-          case let ok Ok {printStr("  something arrived or it ended\n");}
-          case let er Error {showError(&er);}
+          case let Ok(ok) {printStr("  something arrived or it ended\n");}
+          case let Error(er) {showError(&er);}
         }
       }
-      case let er Error {
+      case let Error(er) {
         printStr("  open failed:\n");
         showError(&er);
       }
@@ -473,14 +473,14 @@ actor Reader {
   }
 
   // The rest of a stream gathered into one reply
-  pub async do whole(self, done: OneshotSender[u64]) {
+  pub async fn whole(self, done: OneshotSender[u64]) {
     printStr("collect:\n");
     let opened = await chat.stream(request("basic", true));
     match opened {
-      case let cs Ok {
+      case let Ok(cs) {
         let r = await cs.collect();
         match r {
-          case let ok Ok {
+          case let Ok(ok) {
             printStr("  id=");
             printStr(ok.id.view());
             printStr(" model=");
@@ -493,39 +493,39 @@ actor Reader {
             printStr(ok.content.view());
             printStr("] usage=");
             match &ok.usage {
-              case let u &Some {printUInt(u.totalTokens);}
+              case let &Some(u) {printUInt(u.totalTokens);}
               case is &None {printStr("none");}
             }
             printStr("\n");
           }
-          case let er Error {showError(&er);}
+          case let Error(er) {showError(&er);}
         }
       }
-      case let er Error {printStr("  open failed\n");}
+      case let Error(er) {printStr("  open failed\n");}
     }
     var d = done;
     d.send(1u64);
   }
 
   // Reads two deltas of an endless stream and goes: the ChatStream is dropped
-  pub async do leave(self, done: OneshotSender[u64]) {
+  pub async fn leave(self, done: OneshotSender[u64]) {
     {
       let opened = await chat.stream(request("endless", false));
       match opened {
-        case let cs Ok {
+        case let Ok(cs) {
           var got = 0u64;
           while got < 2u64 {
             let n = await cs.next();
             match n {
-              case let ok Ok {got = got + 1u64;}
-              case let er Error {got = 100u64;}
+              case let Ok(ok) {got = got + 1u64;}
+              case let Error(er) {got = 100u64;}
             }
           }
           printStr("endless: deltas read before leaving: ");
           printUInt(got);
           printStr("\n");
         }
-        case let er Error {printStr("endless failed\n");}
+        case let Error(er) {printStr("endless failed\n");}
       }
     }
     var d = done;
@@ -535,7 +535,7 @@ actor Reader {
 
 fn take[T](rx: &mut Receiver[T], dflt: T) T {
   match rx.recv() {
-    case let v Some {v}
+    case let Some(v) {v}
     else {dflt}
   }
 }
@@ -610,7 +610,7 @@ fn main() i32 {
       reader.leave(tx);
       rx.recv();
       match lrx.recvTimeout(Duration.fromSeconds(10i64)) {
-        case let n Some {printStr("endless: the server saw its reader leave: "); printStr(yes(n >= 2u64)); printStr("\n");}
+        case let Some(n) {printStr("endless: the server saw its reader leave: "); printStr(yes(n >= 2u64)); printStr("\n");}
         case is None[u64] {printStr("endless: the server never saw its reader leave\n");}
       }
     }

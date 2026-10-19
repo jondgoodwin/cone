@@ -142,7 +142,7 @@ records as the largest single hole in the layer table. The `thread` package's
 OS threads and futex are library ground for one, not the layer. Actors are
 declared (`actor`, the reference manual's "Actors"): fields as private state,
 constructing one by its name and answering its handle, each behaviour (a method declared
-`async do`) a message whose arguments must be Sendable, run one at a time on
+`async fn`) a message whose arguments must be Sendable, run one at a time on
 the `actors` package's runtime (mailboxes, a work-stealing scheduler,
 quiescence), and each method declared `fn` synchronous, run inside the actor
 by its caller. A behaviour may return a value to an `await` in another

@@ -75,7 +75,7 @@ typedef struct DclTexts {
     uint32_t awaits;        // How many 'await's the actor's body holds so far
     Nodes *awaiting;        // Each function of the body whose own body holds an 'await' (parseFn)
     uint32_t selfactors;    // How many times the actor's body writes 'selfactor'
-    Nodes *behaviours;      // Each function of the body declared 'async do', a behaviour (parseStruct)
+    Nodes *behaviours;      // Each function of the body declared 'async fn', a behaviour (parseStruct)
 } DclTexts;
 
 typedef struct ParseState {
@@ -106,8 +106,6 @@ typedef struct ParseState {
     char *typep;            // A variable: where its type is written, and just past it; NULL where none is
     char *typeendp;
     int usingdcl;           // A variable: parseVarDcl read it as bound by a 'using' pattern (its type is the Some it takes the payload of, its value the call)
-    int letelsetype;        // A local: parseVarDcl read a variant after its name with no ':' (only a let-else is written so)
-    int colontype;          // A local: parseVarDcl read its type after a ':' (which a let-else's pattern is not written with)
     // Where a struct's header ends and where its 'is' list does, for the span
     // of the struct just parsed (dclspan.h); written as parseStruct returns
     char *hdrendp;
@@ -138,12 +136,11 @@ void parseDclText(ParseState *parse, INode *dcl, char *type, char *typeend, char
 // actor: 'actor Name { ... }', with the lexer on 'actor' (parseactor.c)
 void parseActor(ParseState *parse, uint16_t pubflag);
 
-// With the lexer on 'async' or 'do': read 'async do' up to the 'do', which
-// parseFn then skips as it does 'fn'. Where the two are not written together,
-// or 'where' is not an actor's body ('where' names what is being declared
-// into, NULL in an actor's), each is reported, and the declaration is read as
-// a function where one follows. Returns whether parseFn should read one
-// (parseactor.c)
+// With the lexer on 'async': read 'async fn' up to the 'fn', which parseFn
+// then reads. Where 'async' stands without 'fn', or 'where' is not an actor's
+// body ('where' names what is being declared into, NULL in an actor's), it is
+// reported and the declaration passed over. Returns whether parseFn should
+// read one (parseactor.c)
 int parseBehaviourWords(char *where);
 
 // parsegen.c: generators, 'fn walk(t: &Tree) yields &Node { ... yield n; ... }'
@@ -266,6 +263,8 @@ INode *parseOr(ParseState *parse);
 // Parse an operand that binds tighter than bitwise or, '|': a case's patterns are
 // joined by a top-level '|'
 INode *parseXor(ParseState *parse);
+// The arguments inside the '(' or '[' the lexer is on, through the closing token
+Nodes *parseArgs(ParseState *parse);
 // Finish a simple expression whose first operand parseOr has already parsed
 INode *parseSimpleExprFrom(ParseState *parse, INode *lhnode);
 // The method a comparison token names ("==", "<", ...), or NULL
