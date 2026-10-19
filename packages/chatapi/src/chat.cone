@@ -30,22 +30,20 @@ pub actor Chat {
 
   // A whole reply: the request is posted and the answer read when it is whole
   pub async fn complete(self, req: ChatRequest) Result[ChatReply, ChatError] {
-    var hreq = httpclient.Request.get("");
-    match httpRequest(&endpoint, &req, false) {
-      case var Ok(ok) {hreq <-> ok;}
+    let hreq = match httpRequest(&endpoint, &req, false) {
+      case let Ok(ok) {ok}
       case let Error(e) {return Error[ChatReply, ChatError](e.copy());}
-    }
+    };
     let r = await client.send(hreq);
     replyOfExchange(&r)
   }
 
   // The same, ended if lim says so (an aio.IoLimits: a cancel group and a deadline)
   pub async fn completeIn(self, req: ChatRequest, lim: IoLimits) Result[ChatReply, ChatError] {
-    var hreq = httpclient.Request.get("");
-    match httpRequest(&endpoint, &req, false) {
-      case var Ok(ok) {hreq <-> ok;}
+    let hreq = match httpRequest(&endpoint, &req, false) {
+      case let Ok(ok) {ok}
       case let Error(e) {return Error[ChatReply, ChatError](e.copy());}
-    }
+    };
     let r = await client.sendIn(hreq, lim);
     replyOfExchange(&r)
   }
@@ -60,11 +58,10 @@ pub actor Chat {
 
   // The same, the whole stream ended if lim says so
   pub async fn streamIn(self, req: ChatRequest, lim: IoLimits) Result[ChatStream, ChatError] {
-    var hreq = httpclient.Request.get("");
-    match httpRequest(&endpoint, &req, true) {
-      case var Ok(ok) {hreq <-> ok;}
+    let hreq = match httpRequest(&endpoint, &req, true) {
+      case let Ok(ok) {ok}
       case let Error(e) {return Error[ChatStream, ChatError](e.copy());}
-    }
+    };
     let r = await client.streamIn(hreq, lim);
     match r {
       case let Ok(bs) {
@@ -157,17 +154,13 @@ pub actor ChatStream {
     var going = true;
     while going {
       match self.step() {
-        case var Item(d) {
-          var x = Delta.empty();
-          x <-> d;
-          out = Ok[Option[Delta], ChatError](Some[Delta](x));
+        case let Item(d) {
+          out = Ok[Option[Delta], ChatError](Some[Delta](d));
           going = false;
         }
         case is End {going = false;}
-        case var Fail(e) {
-          var x = ChatError.make(ChatErrorKind.Stream, "");
-          x <-> e;
-          out = Error[Option[Delta], ChatError](x);
+        case let Fail(e) {
+          out = Error[Option[Delta], ChatError](e);
           going = false;
         }
         case is Need {
@@ -235,11 +228,9 @@ pub actor ChatStream {
       }
       chunks = chunks + 1u64;
       match parseChunk(data) {
-        case var Ok(d) {
+        case let Ok(d) {
           if d.finishReason.len() > 0usize {sawFinish = true;}
-          var x = Delta.empty();
-          x <-> d;
-          return Step.Item(x);
+          return Step.Item(d);
         }
         case let Error(e) {
           over = true;
