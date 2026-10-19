@@ -188,6 +188,20 @@ resolution (`fnCallConstructNameRes`), once, at the `new`, so a program refused 
 checked no further; the word is taken as not written, and the construction goes on as the
 call of the type it is. `trynew` is not refused.
 
+The five field-list codes are about `x.(a, b)`, which names the fields of a struct, or the
+numbered elements of a tuple, `t.(0, 2)` ([destruct](../nodes/destruct.md)). `ErrorFldListForm`
+is a list that holds something that is no name or number (the parser: `x.()`, `x.(a + 1)`,
+`x.(f(1))`), mixes names and numbers, or names a tuple's element or numbers a struct's field
+(type check). `ErrorFldListDup` is a field named twice. `ErrorFldListUnknown` is a name the
+struct has not (the message lists its fields), a field it holds only through another by a `use`
+fold, or a tuple element past the end. `ErrorFldListFinal` is a struct, or a variant whose enum,
+declaring a `final`: its finalizer needs the whole value, so it is not taken apart, whether the
+list is written in the type's module or outside it. `ErrorFldListType` is a list on a value with
+no fields, a number, an array or a function; a generic's body is checked for the type it is
+made for, so a type parameter instantiated with one is refused here. A private field named
+outside its module is `ErrorNotPublic`, as for any field, and a move-type field taken through a
+borrow is `ErrorMoveField`, as `x.a` gives it.
+
 `ErrorMatchNotExhaustive`, `ErrorMatchUnreachable` and `ErrorMatchColumn` are what a match
 must cover. A match that does not cover every variant of its enum, both values of its bool or
 every combination of its columns, and has no `else`, or whose cases cannot be shown to

@@ -1279,6 +1279,9 @@ void flowTempEscape(INode *node, int out) {
     case NotLogicTag:
         flowTempEscape(((LogicNode *)node)->lexp, TempOutNone);
         return;
+    case DestructTag:
+        flowTempEscape(((DestructNode *)node)->exp, flowTempOut(out, ((DestructNode *)node)->vtype));
+        return;
     case OrLogicTag:
     case AndLogicTag:
         flowTempEscape(((LogicNode *)node)->lexp, TempOutNone);
@@ -1517,6 +1520,13 @@ void flowLoadValue(FlowState *fstate, INode **nodep) {
     }
     case NotLogicTag:
         flowLoadValue(fstate, &((LogicNode *)*nodep)->lexp);
+        break;
+    // A value taken apart: all of it moves into the node (a variable holding it
+    // is dead afterwards, and nothing that does not own it may be taken apart),
+    // and the fields not named die with the statement (generation)
+    case DestructTag:
+        flowLoadValue(fstate, &((DestructNode *)*nodep)->exp);
+        flowHandleMoveOrCopy(&((DestructNode *)*nodep)->exp);
         break;
     case OrLogicTag: case AndLogicTag:
     {

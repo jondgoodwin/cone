@@ -1,0 +1,53 @@
+// A field list on a value holding a counted reference. The reference is a holder
+// of a counted value, so each shape must leave the count as the same fields read
+// with a dot would:
+//
+// - a copy kept in a place copies the field it names, one more holder, and the
+//   struct stays as it was (placeCopy, placeCopyK);
+// - a value no place keeps is consumed: the reference it names moves out with its
+//   one holder, and a reference it does not name is let go with the statement
+//   (rvalueK, rvalueR, both).
+//
+// 'Tally' prints every count change: '+n' after an 'aliasRef', '-n' after a
+// 'dealiasRef', 'tfree' when the count reaches zero, and 'F<n>' is the counted
+// value's 'final' (region_held_counted). One holder at the allocation, one more per
+// copy, one fewer per holder going away, locals dying newest first.
+
+mod struct_fields_counted;
+
+import stdio use *;
+import libc;
+
+struct Tally is RegionRef {
+  owners: usize;
+  fn alloc(size: usize) *u8 inline { malloc(size) }
+  fn init(self: &new) inline { *self = Tally(1usize); }
+  fn aliasRef(self: &uni Tally) inline { owners = owners + 1usize; printStr("+"); printInt(i64.from(owners)); printStr(" "); }
+  fn dealiasRef(self: &uni Tally) bool inline { owners = owners - 1usize; printStr("-"); printInt(i64.from(owners)); printStr(" "); owners == 0usize }
+  fn free(self: &uni Tally) inline { printStr("tfree "); libc.free(self as *u8); }
+}
+
+struct Fin {
+  pub n: i64;
+  fn final(self: &uni) { printStr("F"); printInt(n); printStr(" "); }
+}
+
+struct Shared { pub r: Tally[mut, Fin]; pub k: i32; }
+
+fn show(label: &str) { printStr(label); printStr(": "); }
+fn end() { printStr("|\n"); }
+fn mk() Shared { Shared(Tally[mut, Fin](1), 7) }
+
+fn placeCopy() { let s = Shared(Tally[mut, Fin](1), 7); let r = s.(r); show("placeCopy done"); }
+fn placeCopyK() { let s = Shared(Tally[mut, Fin](1), 7); let k = s.(k); show("placeCopyK done"); }
+fn rvalueK() { let k = mk().(k); show("rvalueK done"); }
+fn rvalueR() { let r = mk().(r); show("rvalueR done"); }
+fn both() { let r, k = mk().(r, k); show("both done"); }
+
+fn main() {
+  placeCopy(); end();
+  placeCopyK(); end();
+  rvalueK(); end();
+  rvalueR(); end();
+  both(); end();
+}

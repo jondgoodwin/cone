@@ -1,0 +1,224 @@
+// A value taken apart: `x.(a, b)` names fields of a struct, or elements of a tuple
+// by number, `t.(0, 2)`, and gives their values. One name gives that field's value,
+// not a tuple of one; two or more give a tuple, which a declaration of several
+// names takes apart in turn: `let a, b = x.(p, q);`.
+//
+// On a value the code owns -- a local, a temporary, a by-value parameter or
+// `self` -- the named fields move out, the variable is dead afterwards
+// (struct_fields_flow), and the fields not named die at the end of the statement
+// in the order the struct's own drop would have used (struct_final_owners): the
+// fields that finalize and are not owning references, in field order, then the
+// owning references, in field order. A tuple's go element by element.
+//
+// Each line a finalizer prints is `F` and its number, so the output is the
+// whole assertion: when each value died, and who held it last.
+//
+// Through a reference, or from a place that stays whole because it copies, the
+// fields are read as `x.a` reads them: a copy type copies, and the variable stays
+// alive.
+
+mod struct_fields_take;
+
+import stdio use *;
+
+struct Fin is Move {
+  pub v: i32;
+  fn final(self: &uni) { printStr("F"); printInt(i64.from(v)); printStr(" "); }
+}
+
+struct Hold { pub f: Fin; pub g: Fin; pub k: i32; }
+
+// Owners and finalizers mixed in declaration order, to pin the order the rest dies in
+struct Mixed { pub a: Uni[Fin]; pub b: Fin; pub c: Uni[Fin]; pub d: Fin; pub k: i32; }
+
+struct Pt { pub x: i32; pub y: i32; pub z: i32; }
+
+struct Pair {
+  pub left: Fin;
+  pub right: Fin;
+  // A by-value self is a value owned: both fields move to the result, swapped
+  pub fn swapped(self) (Fin, Fin) { self.(right, left) }
+  // One name gives the field itself
+  pub fn firstOnly(self) Fin { self.(left) }
+}
+
+// A field not `pub` is the module's: a function here names it
+struct Vault { pub id: i32; secret: Fin; pub tag: Fin; }
+
+struct Wrap[T] {
+  pub a: T;
+  pub b: Fin;
+  pub n: i32;
+  pub fn unwrap(self) T { self.(a) }
+}
+
+trait Counted { pub n: i32; }
+struct Tally is Counted { pub n: i32; pub s: Fin; }
+fn count[T: Counted](x: T) i32 { x.(n) }
+fn countBorrowed[T: Counted](x: &T) i32 { x.(n) }
+
+enum Shape {
+  struct Circle { pub r: Fin; pub tag: Fin; }
+  struct Box { pub w: i32; pub h: i32; }
+}
+
+fn mk() Hold { Hold(Fin(1), Fin(2), 3) }
+fn mkMixed() Mixed { Mixed(Uni[Fin](Fin(1)), Fin(2), Uni[Fin](Fin(3)), Fin(4), 9) }
+fn line(s: &str) { printStr(s); printStr("\n"); }
+fn num(n: i32) { printInt(i64.from(n)); printStr(" "); }
+fn eat(f: Fin) { printStr("eat "); }
+
+// A local: the named fields move out, the rest die with the statement, and
+// the moved fields die with their new holders at the end of the function
+fn owned() {
+  let h = mk();
+  let a, k = h.(f, k);
+  printStr("after ");
+  num(k);
+}
+
+// A temporary, taken apart where it is made
+fn temporary() {
+  let g = mk().(g);
+  printStr("after ");
+}
+
+// The result is a value like any other: thrown away it dies at the statement's
+// end, after the fields that were never named
+fn thrownAway() {
+  mk().(f);
+  printStr("after ");
+}
+
+// By-value self, and the tuple it gives
+fn byValue() {
+  let x, y = Pair(Fin(21), Fin(22)).swapped();
+  num(x.v); num(y.v);
+  let only = Pair(Fin(23), Fin(24)).firstOnly();
+  printStr("only ");
+}
+
+// A move value in each position of a tuple; the positions not named die
+fn tuples() {
+  let t = Fin(31), 7, Fin(33), Fin(34);
+  let a, b = t.(0, 2);
+  printStr("taken ");
+  let u = (Fin(41), 8).(1);
+  num(u);
+  let one = (Fin(51), Fin(52)).(1);
+  printStr("one ");
+}
+
+// One name is the field's value, and several are a tuple of them
+fn counts() {
+  let p = Pt(10, 20, 30);
+  let one = p.(y);
+  let two = p.(z, x);
+  let a, b = two;
+  num(one); num(a); num(b);
+}
+
+// The rest dies in the order the struct's own drop uses, which a whole value
+// dying pins beside it
+fn order() {
+  { let w = mkMixed(); }
+  line("<- whole");
+  let k = mkMixed().(k);
+  line("<- rest of all");
+  let k2, d = mkMixed().(k, d);
+  line("<- rest without d");
+  let b = mkMixed().(b);
+  line("<- rest without b");
+}
+
+// A value moved on one path: where it was taken apart the rest died with the
+// statement, and where it was not the whole value dies at the scope's end
+fn conditional(c: bool) {
+  let h = mk();
+  if c { let a = h.(f); printStr("in "); }
+  printStr("end ");
+}
+
+fn loops() {
+  var i = 0;
+  while i < 2 {
+    let h = Hold(Fin(10 + i), Fin(20 + i), i);
+    let a, k = h.(f, k);
+    printStr("body ");
+    i += 1;
+  }
+}
+
+// A struct variant bound whole is taken apart by its field names
+fn shapes(s: Shape) {
+  match s {
+    case let Circle(c) { let r = c.(r); printStr("circle "); }
+    case let Box(b) { let w, h = b.(w, h); num(w + h); printStr("box "); }
+  }
+}
+
+// A moved field is an argument, and the rest dies with the call's statement
+fn argument() {
+  eat(mk().(g));
+  printStr("after ");
+}
+
+// Through a reference, or from a copy kept in a place, the fields are read as
+// `x.a` reads them: copies, and the variable stays alive
+fn borrowed(r: &Pt, m: &mut Pt) {
+  let a, b = r.(x, z);
+  let c = m.(y);
+  m.x = 99;
+  let d, e = m.(x, y);
+  num(a); num(b); num(c); num(d); num(e);
+}
+
+fn copied() {
+  let p = Pt(1, 2, 3);
+  let a, b = p.(x, y);
+  num(a); num(b); num(p.z);
+  // a copy type that is no place stays copy: only the fields named are read
+  let c = Pt(4, 5, 6).(y);
+  num(c);
+}
+
+// Module-wide privacy: this function is in the module of Vault, so it names the private field
+fn privateInside() {
+  let v = Vault(5, Fin(61), Fin(62));
+  let id, s = v.(id, secret);
+  num(id);
+  let t = Vault(6, Fin(63), Fin(64)).(tag);
+  printStr("tag ");
+}
+
+fn generics() {
+  let w = Wrap[Fin](Fin(71), Fin(72), 3);
+  let a = w.unwrap();
+  printStr("unwrapped ");
+  num(Wrap[i32](7, Fin(73), 3).unwrap());
+  num(count(Tally(5, Fin(74))));
+  let t = Tally(8, Fin(75));
+  num(countBorrowed(&t));
+}
+
+fn main() i32 {
+  owned(); line("<- owned");
+  temporary(); line("<- temporary");
+  thrownAway(); line("<- thrown away");
+  byValue(); line("<- by value");
+  tuples(); line("<- tuples");
+  counts(); line("<- counts");
+  order();
+  conditional(true); line("<- conditional true");
+  conditional(false); line("<- conditional false");
+  loops(); line("<- loops");
+  shapes(Shape.Circle(Fin(81), Fin(82))); line("<- circle");
+  shapes(Shape.Box(3, 4)); line("<- box");
+  argument(); line("<- argument");
+  var m = Pt(7, 8, 9);
+  borrowed(&Pt(1, 2, 3), &mut m); line("<- borrowed");
+  copied(); line("<- copied");
+  privateInside(); line("<- private inside");
+  generics(); line("<- generics");
+  0
+}

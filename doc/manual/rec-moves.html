@@ -246,6 +246,29 @@ match names.pop() {
 		This is what lets <span class="pre">each</span> take an item that moves out of a cursor's
 		<span class="pre">Option</span>, as <a href="guide-list.html#changing">drain</a> does.</p>
 
+	<h3 id="fieldlist">Taking fields out of a value you own: a field list</h3>
+	<p>When the code owns the struct, as a variable, a temporary, a by-value parameter or a by-value
+		<span class="pre">self</span> does, a <b>field list</b>, the names in parentheses after a dot, takes the fields it
+		names and lets the rest go. The whole struct moves into the list, so nothing is left with a hole:</p>
+<pre>
+let team = Team(Baton(0), 4);
+let baton, lane = team.(baton, lane);   // both fields come out; the names are the struct's own
+let again = team.(lane);                // Error 1048: This variable's value has been moved out.
+</pre>
+	<p>The fields named come out as a tuple, in the order written, or as the field itself for one name. The variable is
+		gone afterwards, as after any move. The fields not named end at the end of the statement, in the
+		order the struct's own death would take them: the fields that finalize, in the order declared, then the
+		owning references, in the order declared
+		(<a href="mem-lifecycle.html">When a value dies</a>, in Memory). So <span class="pre">make().(lane)</span>
+		gives the lane and finalizes the baton that came with it, when the statement ends.</p>
+	<p>What cannot be taken apart is refused. A struct with a <span class="pre">final</span> method of its own, inside its
+		module or outside, since the method needs every field: <i>Error 1526</i>. A struct the code does not own, one
+		reached through a field of another struct, a borrowed reference or a global, is refused as a single field is,
+		with the same error (1166 for a field, 1120 through a borrow), and so is a sole owner's referent, since taking
+		it apart would hollow the allocation the owner holds. Where nothing is moved, a field list is the dot's: a
+		field list on a reference, or on a struct that copies and is kept in a place, reads the fields as
+		<span class="pre">team.lane</span> would, and the struct stays.</p>
+
 	<h3 id="swap">Getting a value out anyway: swap and :=</h3>
 	<p>Those are real limits on keeping moving values in structs and arrays, and two operators get around them by never
 		leaving a hole. The <b>swap operator</b>, <span class="pre">&lt;-&gt;</span>, exchanges two values, whether they

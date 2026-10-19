@@ -708,11 +708,62 @@ static Nodes *parseIndexArgsIn(ParseState *parse, FnCallNode *fncall) {
     return args;
 }
 
+// Skip what a field list holds that is no name, to the ')' that closes the list
+// (or the end of the statement), the parentheses inside it paired off
+static void parseFieldListSkip(void) {
+    int depth = 0;
+    while (!lexIsToken(SemiToken) && !lexIsToken(RCurlyToken) && !lexIsToken(EofToken)) {
+        if (lexIsToken(LParenToken))
+            ++depth;
+        else if (lexIsToken(RParenToken) && depth-- == 0)
+            return;
+        lexNextToken();
+    }
+}
+
+// Parse the field list of 'x.(a, b)', the '(' being the token the lexer is at:
+// field names, or for a tuple the numbers of its elements. Type check says which
+// the value's type wants, and whether the names fit it.
+static INode *parseFieldList(ParseState *parse, INode *obj) {
+    DestructNode *list = newDestructNode(obj);
+    lexNextToken();
+    if (lexIsToken(RParenToken))
+        errorMsgLex(ErrorFldListForm, "A field list names the fields it takes, `x.(a, b)`; this one names none.");
+    else while (1) {
+        // Only names and numbers go in a list, one then a comma or the end
+        if (lexIsToken(IdentToken))
+            nodesAdd(&list->names, (INode*)newMemberUseNode(lex->val.ident));
+        else if (lexIsToken(IntLitToken))
+            nodesAdd(&list->names, (INode*)newULitNode(lex->val.uintlit, lex->langtype));
+        else {
+            errorMsgLex(ErrorFldListForm, "Name a field, `x.(a, b)`, or number a tuple's element, `t.(0, 2)`; this is neither.");
+            parseFieldListSkip();
+            break;
+        }
+        lexNextToken();
+        if (lexIsToken(CommaToken)) {
+            lexNextToken();
+            continue;
+        }
+        if (!lexIsToken(RParenToken)) {
+            errorMsgLex(ErrorFldListForm, "Name a field, `x.(a, b)`, or number a tuple's element, `t.(0, 2)`; this is neither.");
+            parseFieldListSkip();
+        }
+        break;
+    }
+    parseCloseTok(RParenToken);
+    return (INode*)list;
+}
+
 // Parse a '.'-based method call/field access
 INode *parseDotCall(ParseState *parse, INode *node, uint16_t flags) {
     FnCallNode *fncall = newFnCallNode(node, 0);
     fncall->flags |= flags;
     lexNextToken();
+
+    // 'x.(a, b)': the named fields of x
+    if (lexIsToken(LParenToken))
+        return parseFieldList(parse, node);
 
     // Get field/method name
     if (lexIsToken(IdentToken))

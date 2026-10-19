@@ -733,6 +733,11 @@ enum ErrorCode {
     ErrorPatBindCount = 1520,   // A variant pattern whose parentheses hold no name or several (`case let Some()`, `case let Response(head, body)`, `if let Pair(a, b) = p`): a variant takes exactly one binding name and is never read by position. To take a struct variant apart, bind it whole and name its fields. Pointed at the variant
     ErrorPatBindNested = 1521,  // A variant pattern whose parentheses hold something other than one name (`case let Some(Ok(x))`, `case let Some(3)`, `case let Wrapper(f(x))`): patterns do not nest, and a value does not go in the parentheses. Pointed at what is written in them
     ErrorPatBindForm = 1522,    // A binding in a pattern, after `case let`, `if let`, `else if let` or a statement `let`, that is neither a variant with its one name in parentheses (`Some(n)`) nor a function's pattern (`rest using prefix("GET ")`): a name written before the variant, a variant with no parentheses, or a `let` that declares a name and then has an `else`. Pointed at what is written
+    ErrorFldListForm = 1523,    // A field list, `x.(a, b)`, holding something that is not a field's name or a tuple element's number (`x.(a + 1)`, `x.()`), mixing names and numbers, or naming a tuple's element by name or a struct's field by number. Pointed at the entry
+    ErrorFldListDup = 1524,     // A field list naming the same field twice (`x.(a, a)`): each field is taken once. Pointed at the second
+    ErrorFldListUnknown = 1525, // A field list naming something the value has not: a name that is not a field of the struct (the message lists the fields), a field the struct holds through another, or a tuple element past the end. Pointed at the entry
+    ErrorFldListFinal = 1526,   // A field list taking apart a value whose type has a finalizer: the finalizer needs all of the value, so it cannot be taken apart, in or outside the type's module. Its fields are read through a borrow, or the whole value moved. Pointed at the list
+    ErrorFldListType = 1527,    // A field list on a value that has no fields to name (a number, an array, a function), which includes a generic's body instantiated with such a type. Pointed at the list
 
     // Warnings
     WarnCode = 3000,
