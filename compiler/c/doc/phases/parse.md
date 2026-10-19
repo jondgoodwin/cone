@@ -1098,7 +1098,8 @@ never be analyzed.
 | an `alias` with no `=` | `parseAlias` reports `ErrorAliasEq` just after the name, and still reads the type that follows, so the statement ends where it was written |
 | `parseCloseTok` | reports `ErrorNoRParen`, scans for the closer, gives up at `;`, `}`, EOF |
 | `parseBlockStart` | on `:`, reports `ErrorColonBlock` and reads what follows as the block; on anything else that is not `{`, reports `ErrorNoLCurly` and scans forward for one |
-| `parseTerm` default | reports `ErrorBadTerm`, consumes one token to avoid an infinite loop, returns `NULL` |
+| `parseTerm` default | reports `ErrorBadTerm`, consumes the offending token to avoid an infinite loop unless it is the `;` that ends the statement, and returns `NULL`; every parser that takes a term's result (the operand of a prefix `-`, the entries of a `<-` and their nest count, the entry before `of` or `:`) treats `NULL` as already reported |
+| `parseEntry` after a first expression that gave `NULL` | an entry whose first expression `parseTerm` refused (`x <- else of 3`, `x <- else: 3`) is already reported; `parseEntry` reads past the `of` or `:` and the value after it and returns `NULL`, as `parseArg` does |
 | `parseArg` after a name that gave `NULL` | an argument whose name `parseTerm` refused (a keyword before its `:`) is already reported; `parseArg` reads the `:` and the value so the list stays in step, and returns `NULL` as a refused term does, so the argument is one diagnostic and nothing looks at a node that is not there |
 | `parseTypeReq` | reports `ErrorNoType` where a required type is missing, consumes nothing, and returns `unknownType`, which nothing analyzes |
 | anonymous placeholders | the declaration parsers substitute `anonName` so the caller always gets a node |

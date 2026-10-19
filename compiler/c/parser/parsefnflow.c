@@ -832,7 +832,8 @@ static INode *parseMatchPattern(ParseState *parse, MatchSubject *subject) {
     if (lexIsRangeOp())
         return parseMatchRange(parse, subject, value);
     if (parseCmpOp() != NULL || lexIsToken(IsToken) || lexIsAmpAmp() || lexIsToken(OrOrToken)) {
-        errorMsgNode(value, ErrorPatBare, PatBareMsg);
+        if (value)  // NULL where parseTerm refused the value and reported it
+            errorMsgNode(value, ErrorPatBare, PatBareMsg);
         return parseSimpleExprFrom(parse, value);
     }
     return (INode *)newMatchValueNode(parseMatchUse(subject), value);
