@@ -724,6 +724,11 @@ enum ErrorCode {
     // A range written with a bare '..' between a start and an end (parser/parseexpr.c, parser/parsefnflow.c)
     ErrorRangeBare = 1515,      // `a .. b` or `..b` in an index, `a .. b` in a case pattern or an `each`: '..' before an end does not say whether the end is included, so it is refused. '..=' includes the end and '..<' stops before it. Pointed at the '..'. Not refused where no end follows (`s[a..]` runs to the end, `s[..]` is the whole), since there is no end to include or leave out
 
+    // Several targets and the values they take apart (ir/exp/assign.c, parser/parsefnflow.c)
+    ErrorTargetCount = 1516,    // Two or more targets given a number of values that is not theirs: `a, b = 1, 2, 3`, `let q, r = f()` where `f` gives three values, `a, b, c = 1, 2`. Each target takes exactly one value, and a target for a value the code does not want is written `_`. Pointed at the values
+    ErrorOneTarget = 1517,      // One target that is not a tuple given a list of values: `x = 1, 2, 3` where `x` is an `i32`. A single target takes the whole value it is given, so it is refused unless its type is that tuple; the values are taken apart with a target for each (`a, b, c = 1, 2, 3`), `_` for each unwanted one. Pointed at the values
+    ErrorDestructForm = 1518,   // A declaration of several names that is not written `let a, b = values;`: no `=` after the names (`let a, b;`), a type written on `_` (`let _: i32, b = f()`), or the names followed by `else` or `using`. The names take their values apart from what follows the `=`. Pointed at the names
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

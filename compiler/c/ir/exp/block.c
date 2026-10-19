@@ -219,14 +219,30 @@ static void blockStmtTypeCheck(TypeCheckState *pstate, INode **stmtp, Nodes **ho
     // Flow typing declares hidden variables after the statement that narrows a name,
     // and must know which statement of this block that is (narrow.h)
     INode *svstmt = narrowStmtBegin(*stmtp);
-    if ((*stmtp)->tag != VarDclTag) {
+    // 'let a, b = values;' is the assignment that follows its names' declarations: its values
+    // are the initializer of them all, whose temporaries a borrow extends as a name's own do.
+    // A stand-in for the declaration owns the extension (it has the names' scope)
+    VarDclNode *owner = (*stmtp)->tag == VarDclTag ? (VarDclNode *)*stmtp : NULL;
+    if ((*stmtp)->tag == AssignTag && ((*stmtp)->flags & FlagDestructAssign)) {
+        INode **elemp;
+        uint32_t ecnt;
+        for (nodesFor(((TupleNode *)((AssignNode *)*stmtp)->lval)->elems, ecnt, elemp)) {
+            INode *dcl = isNameUseNode(*elemp) ? ((NameUseNode *)*elemp)->dclnode : NULL;
+            if (dcl && dcl->tag == VarDclTag) {
+                owner = newVarDclNode(anonName, VarDclTag, (INode *)immPerm);
+                owner->scope = ((VarDclNode *)dcl)->scope;
+                break;
+            }
+        }
+    }
+    if (owner == NULL) {
         inodeTypeCheck(pstate, stmtp, noCareType);
         narrowStmtEnd(svstmt);
         return;
     }
     VarDclExtend ext;
     INode *stmt = *stmtp;
-    varDclExtendBegin(pstate, &ext, (VarDclNode *)stmt);
+    varDclExtendBegin(pstate, &ext, owner);
     inodeTypeCheck(pstate, stmtp, noCareType);
     narrowStmtEnd(svstmt);
     Nodes *hoisted = varDclExtendEnd(pstate, &ext);

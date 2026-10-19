@@ -219,6 +219,13 @@ enum NodeTags {
 // nothing can change; the refusal of a write to it says how to change the items instead.
 // 0x0800 is free on a variable as 0x0200 and 0x0400 are.
 #define FlagEachVar   0x0800        // VarDcl: a variable of an 'each' pass over a source (not a range)
+// A name of a declaration of several, 'let q, r = divmod(7, 2);' (parseDestructDcl). The parser
+// declares each name with no value, then the assignment that gives them their values, flagged
+// FlagDestructAssign. A name is not hooked until that assignment's values are resolved, so a value
+// cannot name a variable of the same declaration, and a name with no declared type takes the type
+// of the value it is given. 0x2000 is free on a variable: it is a name use's FlagHollowOut.
+#define FlagDestructDcl 0x2000      // VarDcl: a name of 'let a, b = values;', hooked and typed by its assignment
+#define FlagDestructAssign 0x2000   // Assign: the assignment that declares the names before it ('let a, b = values;')
 
 #define FlagGenMod    0x0001        // Module: Generate code for the module, if true
 #define FlagModDcl    0x0002        // Module: a 'mod' declaration named it, rather than its filename

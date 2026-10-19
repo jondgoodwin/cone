@@ -1,0 +1,251 @@
+// Several targets take several values apart: a declaration, 'let q, r = divmod(7, 2);',
+// and an assignment, 'a, b = b, a'. Each target takes exactly one value, and a
+// '_' is the target of a value the code does not want: the value is evaluated,
+// then dropped at the end of the statement -- its finalizer runs there, not at the
+// end of the block as a variable's would. One target takes the whole of what it
+// is given, a tuple included.
+//
+// - a declaration from a call and from a list of values, 'var' too, with a type
+//   written on some names and not others, '_' in any position, and the values
+//   resolved before the names are declared ('let u, v = v, u' swaps into new names);
+// - an assignment from a call and from a list, '_' in either position, and the
+//   assignment's value, the whole tuple;
+// - '_' dropping a value: a lone '_ = f();', 'let _ = f();', '_' among several,
+//   a variable moved into one;
+// - 'each k, _ in dict' and 'each _, v in dict', and any number of '_' in one;
+// - a destructuring declaration inside a generic function.
+
+mod core_destructure;
+
+import stdio use *;
+import collections use *;
+
+fn show(label: &str, n: i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn divmod(a: i32, b: i32) i32, i32 { a / b, a % b }
+
+fn three() i32, i64, bool { 1, 2, true }
+
+// A value that says when it is dropped
+struct Token {
+  n: i64;
+
+  fn final(self: &uni) {
+    printStr("drop ");
+    printInt(self.n);
+    printStr("\n");
+  }
+}
+
+fn token(n: i64) Token { new Token(n) }
+
+fn tokens(a: i64, b: i64) Token, Token { token(a), token(b) }
+
+fn say(label: &str) {
+  printStr(label);
+  printStr("\n");
+}
+
+// -------- declarations --------
+
+fn declarations() {
+  let q, r = divmod(7, 2);
+  show("call-q", i64.from(q));
+  show("call-r", i64.from(r));
+
+  var x, y = 3, 4;
+  x = x + 10;
+  show("var-x", i64.from(x));
+  show("var-y", i64.from(y));
+
+  // A type on some names and not on others; a literal takes its name's type
+  let big: i64, small: i32 = 5000000000, 6;
+  show("typed-big", big);
+  show("typed-small", i64.from(small));
+  let plain, wide: i64 = 7, 8;
+  show("mixed-plain", i64.from(plain));
+  show("mixed-wide", wide);
+
+  let a, _, c = three();
+  show("skip-middle-a", i64.from(a));
+  show("skip-middle-c", if c { 1i64 } else { 0i64 });
+  let _, last = 8, 9;
+  show("skip-first", i64.from(last));
+
+  // The values are resolved before the names are declared, so these are the
+  // outer 'u' and 'v', swapped into new names
+  let u = 1;
+  let v = 2;
+  {
+    let u, v = v, u;
+    show("shadow-inner-u", i64.from(u));
+    show("shadow-inner-v", i64.from(v));
+  }
+  show("shadow-outer-u", i64.from(u));
+  show("shadow-outer-v", i64.from(v));
+
+  // The values in a loop, each pass its own names
+  var total = 0;
+  var n = 1;
+  while n <= 3 {
+    let quot, rem = divmod(n * 10, 4);
+    total = total + quot * 10 + rem;
+    n = n + 1;
+  }
+  show("in-loop", i64.from(total));
+}
+
+// -------- assignments --------
+
+fn assignments() {
+  var a = 0;
+  var b = 0;
+  a, b = divmod(9, 4);
+  show("assign-call-a", i64.from(a));
+  show("assign-call-b", i64.from(b));
+  a, _ = divmod(20, 3);
+  show("assign-skip-second", i64.from(a));
+  _, b = divmod(20, 3);
+  show("assign-skip-first", i64.from(b));
+  a, b = b, a;
+  show("assign-swap-a", i64.from(a));
+  show("assign-swap-b", i64.from(b));
+
+  // One target takes the whole tuple, the tuple's own type or none
+  var t: (i32, i32) = 1, 2;
+  t = 5, 6;
+  show("whole-0", i64.from(t.0));
+  show("whole-1", i64.from(t.1));
+  let kept = divmod(17, 5);
+  show("whole-let", i64.from(kept.0) * 10 + i64.from(kept.1));
+
+  // An assignment's value is its rval's, so here the whole value tuple
+  let both = (a, b = 1, 2);
+  show("assignment-value", i64.from(both.1));
+  show("assignment-lval", i64.from(a));
+}
+
+// -------- '_' drops its value at the end of the statement --------
+
+fn drops() {
+  say("lone");
+  _ = token(1);
+  say("lone-after");
+
+  let _ = token(2);
+  say("let-after");
+
+  // Of two values, the one '_' takes is dropped at the statement's end and
+  // the other at the block's
+  let kept, _ = tokens(3, 4);
+  say("pair-after");
+  let _, second = tokens(5, 6);
+  say("pair2-after");
+
+  // A variable moved into '_' is dropped there, and not again at the block's end
+  let moved = token(7);
+  _ = moved;
+  say("moved-after");
+
+  var held = token(8);
+  var other = token(9);
+  held, _ = tokens(10, 11);
+  say("assign-after");
+  show("held", held.n);
+  show("kept", kept.n);
+  show("second", second.n);
+  other = token(12);
+  say("end");
+}
+
+// -------- each --------
+
+fn eachUnderscore() {
+  var d = new Dict[i64, i64];
+  d.insert(1i64, 10i64);
+  d.insert(2i64, 20i64);
+  var keys = 0i64;
+  each k, _ in d {
+    keys = keys + *k;
+  }
+  show("each-keys", keys);
+  var values = 0i64;
+  each _, v in d {
+    values = values + *v;
+  }
+  show("each-values", values);
+  var passes = 0i64;
+  each _, _ in d {
+    passes = passes + 1;
+  }
+  show("each-neither", passes);
+
+  // A declaration of several names in the body of an 'each' is not one of its variables
+  var inside = 0i64;
+  each k, v in d {
+    let q, _ = divmod(i32.from(*k) * 10, 3);
+    inside = inside + i64.from(q) + *v;
+  }
+  show("each-body-declaration", inside);
+}
+
+// -------- generic --------
+
+fn swapped[T](a: T, b: T) T, T {
+  let x, y = b, a;
+  x, y
+}
+
+fn generic() {
+  let i, j = swapped(1, 2);
+  show("generic-i", i64.from(i));
+  show("generic-j", i64.from(j));
+  let s, t = swapped(token(20), token(21));
+  show("generic-owned", s.n * 100 + t.n);
+}
+
+// -------- borrowed temporaries --------
+
+fn made(n: i64) i64 {
+  printStr("make ");
+  printInt(n);
+  printStr("\n");
+  n
+}
+
+// Each name is declared as 'let a = &made(1);' declares it: the temporary a borrow
+// in the values is rooted in lives to the block's end, and the values run in order
+fn borrows() {
+  let a, b = &made(1), &made(2);
+  say("borrows-after");
+  show("borrow-a", *a);
+  show("borrow-b", *b);
+  let c, d = made(3), &made(4);
+  show("borrow-mixed", *d + c);
+  let e, _ = &made(5), made(6);
+  show("borrow-skip", *e);
+}
+
+// -------- let and var in one declaration --------
+
+fn mixed() {
+  let fixed, var counter = 1, 10;
+  counter = counter + fixed;
+  show("mixed-fixed", i64.from(fixed));
+  show("mixed-var", i64.from(counter));
+}
+
+fn main() {
+  declarations();
+  assignments();
+  drops();
+  eachUnderscore();
+  generic();
+  borrows();
+  mixed();
+}

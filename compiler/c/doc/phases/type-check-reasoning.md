@@ -493,15 +493,19 @@ there are exactly four helpers — it is a two-by-two:
 | lval | rval | Helper |
 | --- | --- | --- |
 | single | single | `assignSingleCheck` |
-| tuple | tuple | `assignParaCheck` — parallel assignment, element by element |
-| tuple | single | `assignMultRetCheck` — a call returning several values |
-| single | tuple | `assignToOneCheck` |
+| tuple | tuple | `assignParaCheck` — parallel assignment, element by element; as many values as targets |
+| tuple | single | `assignMultRetCheck` — a call returning several values; as many as targets |
+| single | tuple | `assignToOneCheck` — refused, `ErrorOneTarget` |
 
-The single-by-tuple cell splits once more, on the lval's type rather than on a
-tag: an lval whose type resolves to a tuple takes the value tuple whole
-(`assignOneTakesTuple`), through `assignSingleCheck`, as a declaration's
+Each target takes exactly one value, and a count that is not the targets' is
+`ErrorTargetCount`. The single-by-tuple cell splits once more, on the lval's type
+rather than on a tag: an lval whose type resolves to a tuple takes the value tuple
+whole (`assignOneTakesTuple`), through `assignSingleCheck`, as a declaration's
 initial value is. The parser cannot tell `p = 5, 6` for a tuple-typed `p` from
-`x = 7, 8`, which stores `7`, so flow and generation ask the same function.
+`x = 7, 8`, which is refused, so flow and generation ask the same function. A `_`
+target is checked by nothing: it takes the type of its value (`assignAnonTypes`).
+The names of a `let a, b = values;` declared with no type are given their types
+first (`assignDestructInfer`), each the type of the value it takes.
 
 A value tuple is typed from its own values (`vtupleTypeCheck` takes no expected
 type), so where a tuple type is wanted `iexpCoerce`'s `NoMatch` arm coerces it

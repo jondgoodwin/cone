@@ -2985,9 +2985,24 @@ static VarDclNode *genlStoreFlagVar(VarDclNode *var) {
 // Store 'rval' into 'lval', whose address genlAddr has taken already
 static void genlStoreTo(GenState *gen, INode *lval, LLVMValueRef lvalptr, LLVMValueRef rval);
 
-void genlStore(GenState *gen, INode *lval, LLVMValueRef rval) {
-    if (isNameUseNode(lval) && isExpNode(lval) && ((NameUseNode*)lval)->namesym == anonName)
+// The value a '_' target takes is dropped at the end of the statement, as the
+// value of an expression nothing takes is: kept in a slot of its own and
+// finalized with the statement's other temporaries, newest first
+static void genlDiscard(GenState *gen, INode *type, LLVMValueRef val) {
+    if (type == NULL || type == unknownType || type == errorType || !itypeNeedsFinal(type))
         return;
+    TempNode *temp = (TempNode *)memAllocBlk(sizeof(TempNode));
+    memset(temp, 0, sizeof(TempNode));
+    temp->tag = TempTag;
+    temp->vtype = type;
+    genlTempKeep(gen, temp, val);
+}
+
+void genlStore(GenState *gen, INode *lval, LLVMValueRef rval) {
+    if (assignIsAnon(lval)) {
+        genlDiscard(gen, ((IExpNode*)lval)->vtype, rval);
+        return;
+    }
     genlStoreTo(gen, lval, genlAddr(gen, lval), rval);
 }
 
@@ -3474,8 +3489,7 @@ static LLVMValueRef genlTerm(GenState *gen, INode *termnode) {
         }
 
         if (lval->tag != VTupleTag) {
-            // A tuple-typed lval receives a value tuple whole
-            int whole = rval->tag != VTupleTag || assignOneTakesTuple(node);
+            // One target takes the whole value, a value tuple included
             // A seam in the place, 'items[await i] = v': the value is made
             // first and waits in flight across the seam, and the place is
             // reached after it (flow's pwAssign)
@@ -3485,15 +3499,10 @@ static LLVMValueRef genlTerm(GenState *gen, INode *termnode) {
                 LLVMValueRef slot = genlKeepAcross(gen, rval, valtype, valueref);
                 LLVMValueRef lvalptr = genlAddr(gen, lval);
                 valueref = genlKeptAcross(gen, slot, valueref, mark);
-                genlStoreTo(gen, lval, lvalptr, whole ? valueref : LLVMBuildExtractValue(gen->builder, valueref, 0, ""));
+                genlStoreTo(gen, lval, lvalptr, valueref);
             }
-            else if (whole) {
+            else
                 genlStore(gen, lval, valueref); // simple assignment
-            }
-            else {
-                // Assign lval to first value in tuple struct
-                genlStore(gen, lval, LLVMBuildExtractValue(gen->builder, valueref, 0, ""));
-            }
         }
         else {
             // Parallel assignment: each lval to value in tuple struct
