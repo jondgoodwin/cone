@@ -470,31 +470,23 @@ pub enum Sink {
   pub struct Chan {pub tx: Sender[Event];}
 }
 
-// A second sink to the same place: a channel's sender cloned. (The sink
-// is swapped into a local to be matched: Cone narrows only a local's
-// variant, error 1034)
+// A second sink to the same place: a channel's sender cloned
 fn copySink(s: &mut Sink) Sink {
-  var here: Sink = Sink.Here(0u64);
-  here <-> *s;
-  var out: Sink = Sink.Here(here.token);
-  match &here {
-    case let &Chan(c) {out = Sink.Chan(here.token, c.tx.clone());}
+  var out: Sink = Sink.Here(s.token);
+  match s {
+    case let &Chan(c) {out = Sink.Chan(s.token, c.tx.clone());}
     else {}
   }
-  *s <-> here;
   out
 }
 
 // Whether a sink is a channel
 fn isChan(s: &mut Sink) bool {
-  var here: Sink = Sink.Here(0u64);
-  here <-> *s;
   var yes = false;
-  match &here {
+  match s {
     case is &Chan {yes = true;}
     else {}
   }
-  *s <-> here;
   yes
 }
 
@@ -677,12 +669,10 @@ pub struct Plain {
   pub fn describe(self: &) String {String.from("plain")}
 
   fn front(q: &mut Chain) IoBuf {
-    var b = IoBuf.empty();
     match q.popFront() {
-      case var Some(s) {b <-> s;}
-      case is None[IoBuf] {}
+      case let Some(s) {s}
+      case is None[IoBuf] {IoBuf.empty()}
     }
-    b
   }
 }
 

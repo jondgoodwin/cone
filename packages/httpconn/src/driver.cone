@@ -317,10 +317,8 @@ pub struct Driver {
     c.sock = Handle.none();
     c.core = if server {http1.Connection.server(cfg.protocol, pool, now)}
       else {http1.Connection.client(cfg.protocol, pool, now)};
-    var l = layer;
-    c.layer <-> l;
-    var s = sink;
-    c.sink <-> s;
+    c.layer = layer;
+    c.sink = sink;
     c.addrs.clear();
     c.nextAddr = 0usize;
     c.connOp = OpId.none();
@@ -435,12 +433,8 @@ pub struct Driver {
         return;
       }
     }
-    var s: Sink = Sink.Here(0u64);
-    s <-> *sink;
     var back = blankEvent();
-    var sent = sinkTaken;
-    s, sent = trySink(s, e, &mut back);
-    *sink <-> s;
+    let sent = trySink(sink, e, &mut back);
     if sent == sinkFull {
       self.hold(sink, conn, gen, credit, back);
       return;
@@ -503,8 +497,7 @@ pub struct Driver {
       if !stay {
         // Tried: e goes into the channel, or comes back in e2
         var e2 = blankEvent();
-        var sent = sinkTaken;
-        s, sent = trySink(s, e, &mut e2);
+        let sent = trySink(&mut s, e, &mut e2);
         if sent == sinkGone {st.dropped = st.dropped + 1u64;}
         if sent != sinkFull {
           if conn != noEntry {
@@ -527,11 +520,11 @@ pub struct Driver {
       kg.push(gen);
       kn.push(n);
     }
-    heldE <-> ke;
-    heldS <-> ks;
-    heldC <-> kc;
-    heldG <-> kg;
-    heldN <-> kn;
+    heldE = ke;
+    heldS = ks;
+    heldC = kc;
+    heldG = kg;
+    heldN = kn;
   }
 
   // Events for this thread, moved to out: how many
@@ -693,8 +686,9 @@ pub struct Driver {
         case is NeedData {return;}
         case is Paused {return;}
         case is Closed {return;}
-        case var Request(q) {
+        case let Request(q) {
           // A server's request: its record, and the program told
+          let head, body = q.(head, body);
           if c.current != noEntry {self.toFlushing(i, c.current);}
           let ri = self.newReq();
           let r = self.reqAt(ri) as &mut Req;
@@ -702,56 +696,57 @@ pub struct Driver {
           r.conn = i;
           r.connGen = c.gen;
           r.sink = copySink(&mut c.sink);
-          r.isHead = q.head.method == Method.Head;
-          r.body = q.body;
+          r.isHead = head.method == Method.Head;
+          r.body = body;
           r.timing.submitted = now;
           r.timing.started = now;
           c.current = ri;
           st.requests = st.requests + 1u64;
           var ev = Event.make(EventKind.Request, r.sink.token, self.connIdOf(i), self.reqIdOf(ri));
-          ev.request <-> q.head;
-          ev.body = q.body;
+          ev.request = head;
+          ev.body = body;
           self.emit(&mut r.sink, i, c.gen, 0usize, ev);
         }
-        case var Response(p) {
+        case let Response(p) {
           if c.current != noEntry {
+            let head, body = p.(head, body);
             let r = self.reqAt(c.current) as &mut Req;
             r.gotResponse = true;
             r.timing.firstByte = now;
             var ev = Event.make(EventKind.Response, r.sink.token, self.connIdOf(i), self.reqIdOf(c.current));
-            ev.response <-> p.head;
-            ev.body = p.body;
+            ev.response = head;
+            ev.body = body;
             self.emit(&mut r.sink, i, c.gen, 0usize, ev);
           }
         }
-        case var Interim(p) {
+        case let Interim(p) {
           if c.current != noEntry {
             let r = self.reqAt(c.current) as &mut Req;
             r.gotResponse = true;
             var ev = Event.make(EventKind.Interim, r.sink.token, self.connIdOf(i), self.reqIdOf(c.current));
-            ev.response <-> p.head;
+            ev.response = p.(head);
             self.emit(&mut r.sink, i, c.gen, 0usize, ev);
           }
         }
-        case var Data(d) {
+        case let Data(d) {
           let n = d.buf.len();
           if c.current != noEntry {
             let r = self.reqAt(c.current) as &mut Req;
             let credit = if isChan(&mut r.sink) {n} else {0usize};
             var ev = Event.make(EventKind.Data, r.sink.token, self.connIdOf(i), self.reqIdOf(c.current));
-            ev.buf <-> d.buf;
+            ev.buf = d.(buf);
             self.emit(&mut r.sink, i, c.gen, credit, ev);
           } else {
             c.core.release(n);
           }
         }
-        case var End(e) {
+        case let End(e) {
           if c.current != noEntry {
             let ri = c.current;
             let r = self.reqAt(ri) as &mut Req;
             r.readDone = true;
             var ev = Event.make(EventKind.End, r.sink.token, self.connIdOf(i), self.reqIdOf(ri));
-            ev.trailers <-> e.trailers;
+            ev.trailers = e.(trailers);
             self.emit(&mut r.sink, i, c.gen, 0usize, ev);
             if !c.server {
               c.current = noEntry;
@@ -761,15 +756,13 @@ pub struct Driver {
             }
           }
         }
-        case var Failed(f) {
+        case let Failed(f) {
           // The core refused what came, or a deadline of its passed: every
           // request on the connection is answered now; the connection
           // sends what the core still has (a server's error status), then
           // closes
-          var e = HttpError.empty();
-          e <-> f.error;
           c.failed = true;
-          c.failure = Failure(Stage.Http, 0u32, e, false);
+          c.failure = Failure(Stage.Http, 0u32, f.(error), false);
           self.answerAll(lp, i, false);
         }
       }
@@ -869,7 +862,7 @@ pub struct Driver {
     c.readyHit = false;
     var b = IoBuf.empty();
     match pool.take(cfg.recvSize) {
-      case var Some(s) {b <-> s;}
+      case let Some(s) {b = s;}
       case is None[IoBuf] {}
     }
     if b.capacity() == 0usize {
@@ -920,7 +913,7 @@ pub struct Driver {
     if c.eof || c.recvOut || c.readyOut {return;}
     var b = IoBuf.empty();
     match pool.take(lingerSize) {
-      case var Some(s) {b <-> s;}
+      case let Some(s) {b = s;}
       case is None[IoBuf] {}
     }
     if b.capacity() == 0usize {
@@ -1225,7 +1218,7 @@ pub struct Driver {
       case is None[SocketAddr] {
         var b = IoBuf.empty();
         match pool.take(resolveSize) {
-          case var Some(s) {b <-> s;}
+          case let Some(s) {b = s;}
           case is None[IoBuf] {}
         }
         if b.capacity() == 0usize {
@@ -1303,10 +1296,8 @@ pub struct Driver {
     let now = Instant.now();
     let ri = self.newReq();
     let r = self.reqAt(ri) as &mut Req;
-    var s = sink;
-    r.sink <-> s;
-    var h = head;
-    r.head <-> h;
+    r.sink = sink;
+    r.head = head;
     r.body = body;
     r.server = false;
     r.isHead = r.head.method == Method.Head;
@@ -1525,8 +1516,8 @@ pub struct Driver {
     var back = IoBuf.empty();
     var refused = false;
     match c.core.sendData(buf, file, line) {
-      case var Some(s) {
-        back <-> s;
+      case let Some(s) {
+        back = s;
         refused = true;
       }
       case is None[IoBuf] {}
@@ -1719,20 +1710,17 @@ const sinkTaken = 0u32;
 const sinkFull = 1u32;      // full: the event is handed back
 const sinkGone = 2u32;      // its receiver has gone: the event is dropped
 
-// Send e on a channel sink, never waiting; the sink is moved in and handed
-// back, so that it is a local here, to be matched (error 1034 otherwise).
-// A full channel hands e back in 'back'
-fn trySink(s: Sink, e: Event, back: &mut Event) Sink, u32 {
-  var here = s;
+// Send e on a channel sink, never waiting. A full channel hands e back in 'back'
+fn trySink(s: &mut Sink, e: Event, back: &mut Event) u32 {
   var how = sinkTaken;
-  match &here {
+  match s {
     case let &Chan(ch) {
       match ch.tx.trySend(e) {
-        case var Some(r) {
+        case let Some(r) {
           if ch.tx.isClosed() {
             how = sinkGone;
           } else {
-            *back <-> r;
+            *back = r;
             how = sinkFull;
           }
         }
@@ -1741,7 +1729,7 @@ fn trySink(s: Sink, e: Event, back: &mut Event) Sink, u32 {
     }
     else {}
   }
-  here, how
+  how
 }
 
 fn removeAt(l: &mut List[u32], k: usize) {
