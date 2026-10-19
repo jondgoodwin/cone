@@ -57,7 +57,7 @@ typedef struct FlowState {
     VarDclNode *inflight[FlowInflightMax];  // The variable each waiting operand's borrow is of
 } FlowState;
 
-// The walk's conditional depth: how many 'if' arms, later 'elif' conditions,
+// The walk's conditional depth: how many 'if' arms, later 'else if' conditions,
 // right operands of '&&' or '||', and loop bodies enclose the node being
 // walked. A variable records it as it is declared (VarDclNode.flowdepth); a
 // tracked variable changed deeper than that may differ by path (flowDropNote).

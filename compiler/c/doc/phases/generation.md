@@ -1229,7 +1229,7 @@ it pushed, newest first, and pops them (`genlTempsEnd`), each as a local dies
 | Part | Where it ends |
 | --- | --- |
 | a statement | `genlBlock`, after the statement; for a `blockret`, and an inlined body's one `return`, after its value and before the block's `dealias`. In a block flagged `FlagKeepTemps`, an operator's rewrite ([Flow](flow.md), "Temporaries"), after its last statement only |
-| an `if` or `elif` condition, and so a `while`'s | `genlIf`, once the condition is computed, before the branch |
+| an `if` or `else if` condition, and so a `while`'s | `genlIf`, once the condition is computed, before the branch |
 | the right operand of `&&` or `||` | `genlLogic`, before the branch to the phi |
 | an array's repeated value generated in a loop | `genlArrayRun`, each time round, after the element's store |
 
@@ -1968,7 +1968,7 @@ it. So the GPU pipeline and what follows it keep to those shapes:
   returns, one for each failed check, are made one (`genlGpuOneReturn`).
   `structurizecfg` takes no switch: it leaves each of a switch's branches a
   `br i1 undef`, which the validator accepts and the GPU runs as it pleases.
-  simplifycfg makes a switch of an if-elif chain on one integer, so
+  simplifycfg makes a switch of an if-else if chain on one integer, so
   `lower-switch` makes each switch a tree of comparisons just before it
   (`module_target_spirv_switch`). And `structurizecfg` wants every loop
   entered through a preheader, as LLVM's own GPU pipelines hand it loops:

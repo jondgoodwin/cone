@@ -420,10 +420,10 @@ static void parseUsingHold(MatchSubject *subject, VarDclNode *holder) {
 // A pattern a function runs, 'let rest using prefix("GET ")' (parseUsingCall), is bound
 // as 'let rest: Some = prefix(matchee, "GET ")' is, the call being the value matched. In
 // a bound 'if' that is all it takes. In a match the call must run once, when its case is
-// reached and not before, so the case is nested the way an 'elif' that binds is: the
+// reached and not before, so the case is nested the way an 'else if' that binds is: the
 // match's chain goes on in an 'else' block that holds the call's result in a variable
 // and tests it,
-//   { match-arms... else { { let -held = prefix(matchee, "GET "); if -held is Some { let rest = [Some]-held; ... } elif ... } } }
+//   { match-arms... else { { let -held = prefix(matchee, "GET "); if -held is Some { let rest = [Some]-held; ... } else if ... } } }
 // and *nextp is the 'if' the cases after it are added to.
 static void parseBoundMatch(ParseState *parse, IfNode *ifnode, MatchSubject *subject, BlockNode *wrapper, IfNode **nextp) {
     // We will desugar a variable declaration into using a pattern match and re-cast.
@@ -702,19 +702,16 @@ INode *parseIf(ParseState *parse) {
     }
     while (1) {
         // Process final else clause and break loop
-        // Note: this code makes "else if" equivalent to "elif"
-        if (lexIsToken(ElseToken)) {
-            lexNextToken();
-            if (!lexIsToken(IfToken)) {
-                nodesAdd(&ifnode->condblk, elseCond); // else distinguished by a elseCond
-                nodesAdd(&ifnode->condblk, parseExprBlock(parse, 0));
-                break;
-            }
-        }
-        else if (!lexIsToken(ElifToken))
+        if (!lexIsToken(ElseToken))
             break;
+        lexNextToken();
+        if (!lexIsToken(IfToken)) {
+            nodesAdd(&ifnode->condblk, elseCond); // else distinguished by a elseCond
+            nodesAdd(&ifnode->condblk, parseExprBlock(parse, 0));
+            break;
+        }
 
-        // Elif processing
+        // 'else if' processing
         lexNextToken();
         // To handle bound pattern match, we need to de-sugar:
         // - 'if' is wrapped in a block, where we first capture the value in a variable
@@ -870,7 +867,7 @@ INode *parseMatch(ParseState *parse) {
     // 'match' is de-sugared into a block:
     // - a vardcl that captures the expression in a variable, unless it is a place,
     //   which the cases read where it stands (MatchSubject)
-    // - if .. elif .. else sequence for all the match cases
+    // - if .. else if .. else sequence for all the match cases
     BlockNode *blknode = newBlockNode();
     IfNode *ifnode = newIfNode();
     ifnode->flags |= FlagIfMatch;

@@ -45,7 +45,7 @@ void ifPrint(IfNode *ifnode) {
             if (*nodesp == elseCond)
                 inodeFprint("else");
             else {
-                inodeFprint("elif ");
+                inodeFprint("else if ");
                 inodePrintNode(*nodesp);
             }
         }

@@ -136,7 +136,6 @@ void keywordInit() {
     keyAdd("return", RetToken);
     keyAdd("with", WithToken);
     keyAdd("if", IfToken);
-    keyAdd("elif", ElifToken);
     keyAdd("else", ElseToken);
     keyAdd("case", CaseToken);
     keyAdd("match", MatchToken);

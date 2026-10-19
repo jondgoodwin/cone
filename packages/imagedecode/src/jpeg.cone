@@ -131,7 +131,7 @@ fn jFill(b: &mut JBits, d: &Array[u8]) {
         if p >= d.len {
           b.marker = 0xD9u32;
           b.pos = d.len;
-        } elif d[p] == 0u8 {
+        } else if d[p] == 0u8 {
           byte = 0xFFu64;
           b.pos = p + 1usize;
         } else {
@@ -450,7 +450,7 @@ pub fn decodeJpegWith(data: &Array[u8], orient: bool) Result[Raster, DecodeError
     let m = data[pos + 1usize];
     pos += 2usize;
     if m == 0xD9u8 { done = true; }
-    elif m == 0x01u8 || (m >= 0xD0u8 && m <= 0xD8u8) {
+    else if m == 0x01u8 || (m >= 0xD0u8 && m <= 0xD8u8) {
       // standalone: TEM, RSTn (stray), SOI
     } else {
       if pos + 2usize > data.len { return jFail("jpeg: a marker segment is cut off"); }
@@ -476,7 +476,7 @@ pub fn decodeJpegWith(data: &Array[u8], orient: bool) Result[Raster, DecodeError
           st.hasQuant.set(tq, true);
           p += 64usize * (pq + 1usize);
         }
-      } elif m == 0xC4u8 {
+      } else if m == 0xC4u8 {
         // DHT
         var p = body;
         while p < end {
@@ -495,21 +495,21 @@ pub fn decodeJpegWith(data: &Array[u8], orient: bool) Result[Raster, DecodeError
           if tc == 0usize { st.dc.set(th, h); } else { st.ac.set(th, h); }
           p += 17usize + total;
         }
-      } elif m == 0xDDu8 {
+      } else if m == 0xDDu8 {
         if len != 4usize { return jFail("jpeg: bad restart interval"); }
         st.restart = be16u(data, body);
-      } elif m == 0xE1u8 {
+      } else if m == 0xE1u8 {
         let o = exifOrientation(data, body, end);
         if o > 0i32 { st.orientation = o; }
-      } elif m == 0xE0u8 {
+      } else if m == 0xE0u8 {
         if len >= 7usize && data[body] == 'J' && data[body + 1usize] == 'F' { st.jfif = true; }
-      } elif m == 0xEEu8 {
+      } else if m == 0xEEu8 {
         if len >= 14usize && data[body] == 'A' && data[body + 1usize] == 'd' && data[body + 2usize] == 'o'
           && data[body + 3usize] == 'b' && data[body + 4usize] == 'e' {
           st.adobe = true;
           st.adobeTransform = data[body + 11usize];
         }
-      } elif m == 0xC0u8 || m == 0xC1u8 || m == 0xC2u8 {
+      } else if m == 0xC0u8 || m == 0xC1u8 || m == 0xC2u8 {
         if st.sawFrame { return jFail("jpeg: a second frame header"); }
         st.sawFrame = true;
         if data[body] != 8u8 { return jFail("jpeg: only 8-bit samples are supported (not 12-bit)"); }
@@ -555,10 +555,10 @@ pub fn decodeJpegWith(data: &Array[u8], orient: bool) Result[Raster, DecodeError
           cp.coefs.resize(bw * bh * 64usize, 0i16);
           c += 1usize;
         }
-      } elif m == 0xC3u8 || (m >= 0xC5u8 && m <= 0xC7u8) || (m >= 0xC9u8 && m <= 0xCFu8 && m != 0xCCu8) {
+      } else if m == 0xC3u8 || (m >= 0xC5u8 && m <= 0xC7u8) || (m >= 0xC9u8 && m <= 0xCFu8 && m != 0xCCu8) {
         if m >= 0xC9u8 { return jFail("jpeg: arithmetic coding is not supported"); }
         return jFail("jpeg: lossless and hierarchical JPEG are not supported");
-      } elif m == 0xDAu8 {
+      } else if m == 0xDAu8 {
         if !st.sawFrame { return jFail("jpeg: a scan before the frame header"); }
         let ns = usize.from(data[body]);
         if ns < 1usize || ns > 4usize || len != 6usize + 2usize * ns { return jFail("jpeg: bad scan header"); }
@@ -617,8 +617,8 @@ fn decodeScan(d: &Array[u8], start: usize, st: &mut JState, scanComp: &List[usiz
   while k < 4usize { pred.push(0i32); k += 1usize; }
   var eobrun = 0i32;
   // 0 baseline, 1 DC first, 2 DC refine, 3 AC first, 4 AC refine
-  let mode = if !progressive {0i32} elif ss == 0usize {if ah == 0i32 {1i32} else {2i32}}
-    elif ah == 0i32 {3i32} else {4i32};
+  let mode = if !progressive {0i32} else if ss == 0usize {if ah == 0i32 {1i32} else {2i32}}
+    else if ah == 0i32 {3i32} else {4i32};
   // The scan's MCUs: for a single component the blocks in raster order over
   // the component's own size; otherwise the frame's MCUs
   var mcusX = st.frame.mcusX;
@@ -681,11 +681,11 @@ fn decodeScan(d: &Array[u8], start: usize, st: &mut JState, scanComp: &List[usiz
             if mode == 0i32 {
               ok = blockBaseline(d, &mut b, st.dc[dt], st.ac[at], &mut pred[ci],
                 (&mut st.frame.comps[ci]).coefs.viewMut(), off);
-            } elif mode == 1i32 {
+            } else if mode == 1i32 {
               ok = blockDcFirst(d, &mut b, st.dc[dt], &mut pred[ci], (&mut st.frame.comps[ci]).coefs.viewMut(), off, al);
-            } elif mode == 2i32 {
+            } else if mode == 2i32 {
               blockDcRefine(d, &mut b, (&mut st.frame.comps[ci]).coefs.viewMut(), off, al);
-            } elif mode == 3i32 {
+            } else if mode == 3i32 {
               ok = blockAcFirst(d, &mut b, st.ac[at], (&mut st.frame.comps[ci]).coefs.viewMut(), off, ss, se, al, &mut eobrun);
             } else {
               ok = blockAcRefine(d, &mut b, st.ac[at], (&mut st.frame.comps[ci]).coefs.viewMut(), off, ss, se, al, &mut eobrun);
