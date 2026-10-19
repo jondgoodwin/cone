@@ -432,10 +432,9 @@ INode *parseTerm(ParseState *parse) {
         parseTailCheck(node, TailUsed);
         return node;
     }
-    // 'async do' declares an actor's behaviour, in an actor's body: reported,
-    // with either word alone, and the declaration passed over
+    // 'async fn' declares an actor's behaviour, in an actor's body: reported,
+    // as 'async' alone is, and the declaration passed over
     case AsyncToken:
-    case DoToken:
         parseBehaviourWords("a function's body");
         return NULL;
     default:

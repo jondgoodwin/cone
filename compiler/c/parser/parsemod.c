@@ -1516,10 +1516,9 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod, int atmodstart) {
             made = parseFnOrVar(parse, pubflag);
             break;
 
-        // 'async do' declares an actor's behaviour, which only an actor's body
-        // holds: reported, with either word alone, and passed over
+        // 'async fn' declares an actor's behaviour, which only an actor's body
+        // holds: reported, as 'async' alone is, and passed over
         case AsyncToken:
-        case DoToken:
             parseBehaviourWords("a module's own declarations");
             spankind = SpanOther;
             break;

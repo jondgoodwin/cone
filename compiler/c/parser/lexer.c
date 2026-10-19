@@ -166,12 +166,10 @@ void keywordInit() {
     // In an actor's method, the actor's own handle: 'self' is its state,
     // which never leaves it
     keyAdd("selfactor", SelfActorToken);
-    // 'async do' declares an actor's behaviour, a method its handle sends as
-    // a message and its dispatcher runs later. The two words are one keyword
-    // phrase: neither means anything alone, and the parser says so where one
-    // is written without the other (parseBehaviourWords)
+    // 'async fn' declares an actor's behaviour, a method its handle sends as
+    // a message and its dispatcher runs later. 'async' means nothing alone,
+    // and the parser says so where it stands without 'fn' (parseBehaviourWords)
     keyAdd("async", AsyncToken);
-    keyAdd("do", DoToken);
 
     keyAdd("void", VoidToken);
     keyAdd("nil", nilToken);

@@ -506,7 +506,7 @@ enum ErrorCode {
     ErrorAwaitPlace = 1270,     // 'await' outside an actor's behaviour: in a function, a method of another type, or an actor's 'fn' -- its 'init', its 'final' or a synchronous helper -- which no dispatcher runs as a message
     ErrorUnbuiltAwait = 1271,   // An 'await' every seam rule accepted, where its continuation is not built: one not on a behaviour, one whose record holds a traced reference
     ErrorSelfActorPlace = 1272, // 'selfactor' outside an actor's method: in a function, a method of another type, or an actor's 'final'
-    ErrorBehaviourWords = 1273, // 'async' or 'do' without the other, or 'async do' anywhere but in an actor's body: the two words together declare an actor's behaviour, and neither means anything alone
+    ErrorBehaviourWords = 1273, // 'async' without 'fn', or 'async fn' anywhere but in an actor's body: the two words together declare an actor's behaviour, and 'async' means nothing alone
     ErrorAwaitVoid = 1274,      // 'await' on a behaviour that returns nothing, which sends no reply: a caller that needs to know it finished awaits one that declares a return type
     ErrorBehaviourSend = 1275,  // 'self.m()' on one of the actor's own behaviours where it cannot be sent: in its 'final', in a function that is not one of its methods, or through a state that is not the method's own 'self'
 

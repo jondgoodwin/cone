@@ -726,16 +726,14 @@ function the actor's declaration generated for it (`selfActorTypeCheck`,
 (`DclTexts.selfactors`): an actor that writes none, and has no behaviour to
 send through `self.m()`, generates no function for it.
 
-**`async do` is one keyword of two words.** `async` and `do` are each a token
-(`AsyncToken`, `DoToken`), and neither means anything alone. In an actor's
-body, `parseStruct` reads `async do` up to the `do` (`parseBehaviourWords`),
-then the method as a function, `parseFn` skipping the `do` as it skips `fn`,
-and notes it a behaviour (`DclTexts.behaviours`). Either word without the
-other, `async fn`, and `async do` anywhere but an actor's body -- another
-type's body, a module's top level, a function's body -- are
-`ErrorBehaviourWords`, reported at the word, and the declaration is passed over
-whole (to its `;`, or through its `{ ... }`), so nothing in it is reported
-again.
+**`async fn` declares a behaviour.** `async` is a token (`AsyncToken`) that means
+nothing alone. In an actor's body, `parseStruct` reads `async fn` up to the `fn`
+(`parseBehaviourWords`), then the method as a function by `parseFn`, and notes
+it a behaviour (`DclTexts.behaviours`). `async` without `fn`, and `async fn`
+anywhere but an actor's body -- another type's body, a module's top level, a
+function's body -- are `ErrorBehaviourWords`, reported at the word, and the
+declaration is passed over whole (to its `;`, or through its `{ ... }`), so
+nothing in it is reported again.
 
 **It desugars.** `match` becomes a block holding an `if` chain and, for a matched
 value that is not a place, an anonymous capture variable before it (a place is read
@@ -1159,7 +1157,7 @@ numbers.
 | | `parseRetiredTypedef` | the retired `typedef` reported, pointed at `alias` |
 | `parser/parsegen.c` | `parseGenBegin`, `parseGenFinish`, `parseGenParms`, `parseGenAnnotate`, `parseYield`, `parseYieldEach`, `parseGenNone` | a generator: its parameter list read again for where each parameter is written, the struct, `walk.yield`, `walk.none` and the function that makes the generator written as source and parsed with the author's body in `next`, a `yield` and `yield each` read as statements, a `return` made to hand back None (section 6) |
 | `parser/parseactor.c` | `parseActor`, `parseActorMembers`, `parseActorRuntime`, `parseDclText` | an actor: its body read as the state, its members checked, the `actors` package found and bound once per module, and the message enum, the handle and the dispatch function written and parsed, with what its seams, its behaviours returning a value and `selfactor` need (section 6), recorded in its `ActorInfo`; `actor trait` refused |
-| | `parseBehaviourWords` | `async do`, read up to the `do` in an actor's body; either word alone, `async fn`, and `async do` anywhere else `ErrorBehaviourWords`, the declaration passed over (section 6) |
+| | `parseBehaviourWords` | `async fn`, read up to the `fn` in an actor's body; `async` alone, and `async fn` anywhere else `ErrorBehaviourWords`, the declaration passed over (section 6) |
 | `parser/parsehelper.c` | `parseBlockStart`, `parseBlockEnd` | `{` and `}`, with recovery |
 | | `parseEndOfStatement`, `parseSkipToNextStmt`, `parseCloseTok` | the required `;`, and the two resyncs |
 | `parser/parseexpr.c` | `parseAnyExpr`, `parseSimpleExpr` | the two expression entry points |

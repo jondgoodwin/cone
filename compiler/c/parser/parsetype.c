@@ -1130,11 +1130,11 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
                         "A generic type's methods are instantiated with it where it is used, so they are defined in no one place for 'extern' to name.");
                 externflag = FlagExtern;
             }
-            // 'async do': an actor's behaviour, read as a method and noted as
-            // one (parseactor.c). Anywhere else, and either word alone, it is
+            // 'async fn': an actor's behaviour, read as a method and noted as
+            // one (parseactor.c). Anywhere else, and 'async' alone, it is
             // reported and the declaration passed over
             int behaviour = 0;
-            if (lexIsToken(AsyncToken) || lexIsToken(DoToken)) {
+            if (lexIsToken(AsyncToken)) {
                 char where[300];
                 if (parse->dcltexts == NULL)
                     snprintf(where, sizeof(where), "the body of %s %s",

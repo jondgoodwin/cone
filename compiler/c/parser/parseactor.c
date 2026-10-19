@@ -169,7 +169,7 @@ static int parseActorTextHas(char *from, char *to, char *word) {
     return 0;
 }
 
-// ---- 'async do' ----------------------------------------------------------------
+// ---- 'async fn' ----------------------------------------------------------------
 
 // Pass over a declaration that will not be read: up to its ';', or through its
 // '{ ... }', whichever comes first
@@ -183,25 +183,15 @@ static void parseBehaviourSkip() {
 }
 
 int parseBehaviourWords(char *where) {
-    if (lexIsToken(DoToken)) {
+    if (!lexNextIsWord("fn")) {
         errorMsgLex(ErrorBehaviourWords,
-            "'do' means nothing alone: an actor's behaviour is declared 'async do name(self, ...)', and a function 'fn'.");
-        parseBehaviourSkip();
-        return 0;
-    }
-    if (!lexNextIsWord("do")) {
-        if (lexNextIsWord("fn"))
-            errorMsgLex(ErrorBehaviourWords,
-                "'async fn' is not Cone's: 'async' means nothing alone. An actor's behaviour, which runs when the actor is scheduled, is declared 'async do name(self, ...)'; a function, which runs when it is called, is 'fn'.");
-        else
-            errorMsgLex(ErrorBehaviourWords,
-                "'async' means nothing alone: an actor's behaviour is declared 'async do name(self, ...)'.");
+            "'async' means nothing alone: an actor's behaviour is declared 'async fn name(self, ...)'.");
         parseBehaviourSkip();
         return 0;
     }
     if (where) {
         errorMsgLex(ErrorBehaviourWords,
-            "'async do' declares an actor's behaviour, which only an actor's body holds, and this is %s. A function here is declared 'fn'.",
+            "'async fn' declares an actor's behaviour, which only an actor's body holds, and this is %s. A function here is declared 'fn'.",
             where);
         parseBehaviourSkip();
         return 0;
