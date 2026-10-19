@@ -467,17 +467,37 @@ INode *parseArg(ParseState *parse) {
 }
 
 // Parse multiple arguments inside () or []. Return a Nodes containing all argument nodes.
+int parsePatternArgs = 0;
+int parsePatternVar = 0;
+
+// The argument of a variant pattern, 'Some(var n)': a name that may change. It stands as the
+// variable it declares, which only a variant pattern reads (parseVariantPattern).
+static INode *parsePatternVarArg(ParseState *parse) {
+    INode *perm = parseDclWord();
+    if (!lexIsToken(IdentToken)) {
+        errorMsgLex(ErrorNoIdent, "Expected the name 'var' declares");
+        return NULL;
+    }
+    VarDclNode *var = newVarDclNode(lex->val.ident, VarDclTag, perm);
+    lexNextToken();
+    parsePatternVar = 1;
+    return (INode*)var;
+}
+
 Nodes *parseArgs(ParseState *parse) {
     int closetok = lex->toktype == LBracketToken ? RBracketToken : RParenToken;
+    // The first parentheses read while a pattern is, are the variant's: 'var' may name its binding
+    int inpattern = parsePatternArgs && closetok == RParenToken;
+    parsePatternArgs = 0;
     lexNextToken();
     Nodes *args = newNodes(8);
     int svinlist = parse->inlist;
     parse->inlist = 1;
     if (!lexIsToken(closetok)) {
-        nodesAdd(&args, parseArg(parse));
+        nodesAdd(&args, inpattern && lexIsToken(VarToken) ? parsePatternVarArg(parse) : parseArg(parse));
         while (lexIsToken(CommaToken)) {
             lexNextToken();
-            nodesAdd(&args, parseArg(parse));
+            nodesAdd(&args, inpattern && lexIsToken(VarToken) ? parsePatternVarArg(parse) : parseArg(parse));
         }
     }
     parse->inlist = svinlist;
@@ -1146,7 +1166,7 @@ INode *parsePrefix(ParseState *parse) {
 // parses, and the parse error keeps analysis from running.
 static void parseRetiredInto(ParseState *parse) {
     errorMsgLex(ErrorInto,
-        "'into' is retired: a value converts with its type's method, 'T.from(x)', and a reference narrows to a variant with a check, by a 'match' or 'if let x &Variant = &value'.");
+        "'into' is retired: a value converts with its type's method, 'T.from(x)', and a reference narrows to a variant with a check, by a 'match' or 'if let &Variant(x) = &value'.");
     lexNextToken();
     parseType(parse);
 }

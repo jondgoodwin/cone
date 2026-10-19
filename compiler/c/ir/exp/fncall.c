@@ -1931,7 +1931,7 @@ static int fnCallLowerMethodOn(TypeCheckState *pstate, FnCallNode *callnode, INo
             && structIsTypeVariant((StructNode*)objdereftype)) {
             StructNode *variant = (StructNode*)objdereftype;
             errorMsgNode((INode*)callnode, ErrorNoMbr,
-                "`%s` is not a field of %s: %s is declared as a type, so what it holds has no field name. A pattern that binds it, as 'case let n %s', gives the %s.",
+                "`%s` is not a field of %s: %s is declared as a type, so what it holds has no field name. A pattern that binds it, as 'case %s(n)', gives the %s.",
                 &methsym->namestr, &variant->namesym->namestr, &variant->namesym->namestr,
                 &variant->namesym->namestr, itypeName(structTypeVariantField(variant)->vtype));
             return -1;

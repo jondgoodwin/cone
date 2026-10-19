@@ -854,7 +854,7 @@ static void contentsRefuseTryNew(TypeCheckState *pstate, FnCallNode **nodep, INo
     inodeTypeCheckAny(pstate, &node->objfn);
     if (isExpNode(node->objfn) && !inodeIsError(node->objfn) && iexpGetTypeDcl(node->objfn) != errorType)
         errorMsgNode((INode*)node, ErrorTryNewContents,
-            "Contents after '<-' on a 'trynew' are built only for an array's allocation, and not yet for %s. Allocate it with 'trynew' alone, then append on Some: 'let maybe = trynew R[perm, T](...); match maybe { case let s Some[R[perm, T]] { s <- ...; } else {...} }'.",
+            "Contents after '<-' on a 'trynew' are built only for an array's allocation, and not yet for %s. Allocate it with 'trynew' alone, then append on Some: 'let maybe = trynew R[perm, T](...); match maybe { case Some[R[perm, T]](s) { s <- ...; } else {...} }'.",
             built && built->tag == RefTag ? itypeName(((RefNode*)built)->vtexp) : "this value");
     *((INode**)nodep) = newErrorNode((INode*)node);
 }

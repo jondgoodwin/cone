@@ -1,0 +1,115 @@
+// A pattern binds a name inside the variant [match: topic 6a]: 'case Ok(avg)',
+// 'case Some(var n)', 'if let Some(n) = x', 'let Tea(t) = d else {...};'. The parentheses
+// hold exactly one name, with 'var' for a name that may change, or '_' for a variant that
+// is only tested; a variant is never read by position and a pattern does not nest. A
+// binding written in the retired order, a name and then the variant, is refused, and a
+// case that binds stands alone.
+//
+// Parse stage only. Each malformed pattern is in its own function so the parser's
+// resynchronization from one cannot reach the next. The errors are reported where the
+// binding is: at the parentheses for a count, at the thing inside for a nested pattern.
+
+mod enum_parse_variant_binding;
+
+enum Reply {
+  Pong;
+  Number(i32);
+  struct Pair { pub a: i32; pub b: i32; }
+}
+use Reply;
+
+fn calc(n: i32) i32 { n }
+
+// A variant takes one name: none, or several, are refused (the fields of a struct variant
+// are read through the variant bound whole)
+fn noName(r: &Reply) i32 {
+  match r {
+    case Number() { 1 }                   //~ ErrorPatBindCount:16 "A variant binds one name"
+    else { 0 }
+  }
+}
+
+fn severalNames(r: &Reply) i32 {
+  match r {
+    case Pair(a, b) { 1 }                 //~ ErrorPatBindCount:14 "A variant binds one name"
+    else { 0 }
+  }
+}
+
+fn severalNamesIf(r: &Reply) i32 {
+  if let Pair(a, b) = r { 1 } else { 0 }     //~ ErrorPatBindCount:14 "A variant binds one name"
+}
+
+fn severalNamesLetElse(r: &Reply) i32 {
+  let Pair(a, b) = r else { return 0; };     //~ ErrorPatBindCount:11 "A variant binds one name"
+  1
+}
+
+// A pattern does not nest: what is inside the parentheses is a name and nothing else, so
+// a value, a call or another pattern there is refused
+fn nestedPattern(o: Option[Reply]) i32 {
+  match o {
+    case Some(Number(n)) { n }            //~ ErrorPatBindNested:21 "patterns do not nest"
+    else { 0 }
+  }
+}
+
+fn aValue(r: &Reply) i32 {
+  match r {
+    case Number(3) { 1 }                  //~ ErrorPatBindNested:17 "patterns do not nest"
+    else { 0 }
+  }
+}
+
+fn aCall(r: &Reply, x: i32) i32 {
+  match r {
+    case Number(calc(x)) { 1 }            //~ ErrorPatBindNested:21 "patterns do not nest"
+    else { 0 }
+  }
+}
+
+// The name goes inside the variant. A name before the variant, and a 'let' that no function's
+// pattern follows, are refused
+fn nameBeforeVariant(r: &Reply) i32 {
+  match r {
+    case let n Number { n }               //~ ErrorPatBindForm:14 "binds what a function's pattern gives back"
+    else { 0 }
+  }
+}
+
+fn nameBeforeVariantIf(r: &Reply) i32 {
+  if let n Number = r { n } else { 0 }   //~ ErrorPatBindForm:10 "puts the binding inside it"
+}
+
+// A declaration of a name takes no 'else'
+fn declarationElse(r: &Reply) i32 {
+  let n: &Reply = r else { return 0; };  //~ ErrorPatBindForm:7 "takes no 'else'"
+  1
+}
+
+// 'var' goes inside the parentheses with the name, nowhere else
+fn varBeforeVariant(r: &Reply) i32 {
+  if var Number(n) = r { n } else { 0 }  //~ ErrorPatBindForm:10 "written inside the variant"
+}
+
+fn varOutsideTheVariant(r: &Reply) i32 {
+  match r {
+    case var Number(n) { n }              //~ ErrorPatBindForm:20 "binds what a function's pattern gives back"
+    else { 0 }
+  }
+}
+
+// A case that binds stands alone: it is not joined to other patterns with '|'
+fn joinedFirst(r: &Reply) i32 {
+  match r {
+    case Number(n) | Pong { n }           //~ ErrorPatBindJoin:20 "stands alone"
+    else { 0 }
+  }
+}
+
+fn joinedLater(r: &Reply) i32 {
+  match r {
+    case Pong | Number(n) { n }           //~ ErrorPatBindJoin:23 "stands alone"
+    else { 0 }
+  }
+}

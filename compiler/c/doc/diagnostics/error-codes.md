@@ -154,10 +154,16 @@ such a literal (`0b1.0`, `0o7e2`, `0b1f32`), pointed at the `.`, the `e` or `p`,
 read on as the integer 0 so nothing is said again about it. Hexadecimal is not held to
 these rules (`0x` is read as 0).
 
-`ErrorLetElseColon` is a let-else binding written with a `:` (`let n: Ok = r else {...};`).
-The binding is a pattern that takes the payload of a variant of the value, and the word after it
-names only the variant, with no `:`; a type after a `:` would say what the binding is, which
-the payload is not. Pointed at the binding.
+The four pattern-binding codes are the shape of a name bound inside a variant, `Some(n)`,
+`Some(var n)`, `Ok(_)` (`parseVariantPattern`, `parseBindVarDcl`). `ErrorPatBindCount` is a variant
+whose parentheses hold no name or several (`Some()`, `Response(head, body)`): a variant takes
+exactly one name, or `_` to bind nothing, and is never read by position. `ErrorPatBindNested`
+is anything else in the parentheses (`Some(Ok(x))`, `Some(3)`, `Wrapper(f(x))`): patterns do not
+nest, and a call or a constructed value is compared with `== f(x)`. `ErrorPatBindForm` is a binding
+that is neither a variant with its name inside nor a function's pattern: a name written before
+the variant, `var` before a pattern, `var` outside the parentheses, an `=` or an `else` missing
+from a binding that needs one, or a declaration of a name followed by `else`. `ErrorPatBindJoin` is a
+variant that binds a name joined with `|`; a case that binds stands alone, and `Ok(_)` may be joined.
 
 `ErrorRangeBare` is a range written with a bare `..` before an end, in an index (`a..b`, `..b`),
 a case pattern or an `each` (`case 'a' .. 'z'`, `each i in 0 .. n`). A bare `..` does not
@@ -511,7 +517,7 @@ member only one variant has, named on a name that was narrowed to it and has sin
 changed by an assignment, a writable borrow of the whole enum, a swap, a reference stored over
 or a branch that did one of these, is `ErrorNarrowStale` (type check); a name narrowed from before
 a loop, used in it, that a change later in the loop reaches by the back edge is
-`ErrorNarrowLoop`; and the `else` of `let n Ok = r else {...};` that falls through to the binding
+`ErrorNarrowLoop`; and the `else` of `let Ok(n) = r else {...};` that falls through to the binding
 is `ErrorLetElse`. Each is reported at the use or the `else`, and the first two name the
 change. `ErrorOwnerNarrow` is an owner (`Rc[mut, Shape]`) narrowed to a variant whose value
 would sit at another offset in its allocation (generation).
