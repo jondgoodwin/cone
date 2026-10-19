@@ -693,7 +693,7 @@ pub struct Driver {
         case is NeedData {return;}
         case is Paused {return;}
         case is Closed {return;}
-        case var q Request {
+        case var Request(q) {
           // A server's request: its record, and the program told
           if c.current != noEntry {self.toFlushing(i, c.current);}
           let ri = self.newReq();
@@ -713,7 +713,7 @@ pub struct Driver {
           ev.body = q.body;
           self.emit(&mut r.sink, i, c.gen, 0usize, ev);
         }
-        case var p Response {
+        case var Response(p) {
           if c.current != noEntry {
             let r = self.reqAt(c.current) as &mut Req;
             r.gotResponse = true;
@@ -724,7 +724,7 @@ pub struct Driver {
             self.emit(&mut r.sink, i, c.gen, 0usize, ev);
           }
         }
-        case var p Interim {
+        case var Interim(p) {
           if c.current != noEntry {
             let r = self.reqAt(c.current) as &mut Req;
             r.gotResponse = true;
@@ -733,7 +733,7 @@ pub struct Driver {
             self.emit(&mut r.sink, i, c.gen, 0usize, ev);
           }
         }
-        case var d Data {
+        case var Data(d) {
           let n = d.buf.len();
           if c.current != noEntry {
             let r = self.reqAt(c.current) as &mut Req;
@@ -745,7 +745,7 @@ pub struct Driver {
             c.core.release(n);
           }
         }
-        case var e End {
+        case var End(e) {
           if c.current != noEntry {
             let ri = c.current;
             let r = self.reqAt(ri) as &mut Req;
@@ -761,7 +761,7 @@ pub struct Driver {
             }
           }
         }
-        case var f Failed {
+        case var Failed(f) {
           // The core refused what came, or a deadline of its passed: every
           // request on the connection is answered now; the connection
           // sends what the core still has (a server's error status), then
@@ -840,7 +840,7 @@ pub struct Driver {
   fn armTimer(self: &mut, lp: &mut Loop, i: u32) {
     let c = self.connAt(i) as &mut Conn;
     match c.core.pollTimeout() {
-      case let t Some {
+      case let Some(t) {
         if c.timer.isNone() || t < c.timerAt {
           if !c.timer.isNone() {lp.cancel(c.timer);}
           c.timer = lp.after(t, Target.Here(self.tok(kTimer, i, c.gen)));
@@ -869,7 +869,7 @@ pub struct Driver {
     c.readyHit = false;
     var b = IoBuf.empty();
     match pool.take(cfg.recvSize) {
-      case var s Some {b <=> s;}
+      case var Some(s) {b <=> s;}
       case is None[IoBuf] {}
     }
     if b.capacity() == 0usize {
@@ -920,7 +920,7 @@ pub struct Driver {
     if c.eof || c.recvOut || c.readyOut {return;}
     var b = IoBuf.empty();
     match pool.take(lingerSize) {
-      case var s Some {b <=> s;}
+      case var Some(s) {b <=> s;}
       case is None[IoBuf] {}
     }
     if b.capacity() == 0usize {
@@ -1218,14 +1218,14 @@ pub struct Driver {
     let id = self.connIdOf(i);
     if c.state == cFree {return id;}
     match parseV4(host, port) {
-      case let a Some {
+      case let Some(a) {
         c.addrs.push(a);
         self.connectNext(lp, i);
       }
       case is None[SocketAddr] {
         var b = IoBuf.empty();
         match pool.take(resolveSize) {
-          case var s Some {b <=> s;}
+          case var Some(s) {b <=> s;}
           case is None[IoBuf] {}
         }
         if b.capacity() == 0usize {
@@ -1335,7 +1335,7 @@ pub struct Driver {
     var dl = deadline;
     var cancelled = false;
     match group {
-      case let g Some {
+      case let Some(g) {
         if g.isCancelled() {cancelled = true;}
         if g.deadline() < dl {dl = g.deadline();}
       }
@@ -1350,7 +1350,7 @@ pub struct Driver {
       return id;
     }
     match group {
-      case let g Some {
+      case let Some(g) {
         let at = if dl < forever() {dl} else {now + Duration.fromHours(87600i64)};
         r.watch = lp.afterIn(at, Target.Here(self.tok(kWatch, ri, r.gen)), g);
       }
@@ -1387,8 +1387,8 @@ pub struct Driver {
     self.stamp(lp);
     var h = Handle.none();
     match lp.listen(addr) {
-      case let r Ok {h = r;}
-      case let e Error {return Error[ListenerId, IoError](e);}
+      case let Ok(r) {h = r;}
+      case let Error(e) {return Error[ListenerId, IoError](e);}
     }
     let k = u32.from(listeners.len());
     listeners.push(Lst(1u32, true, h, sink, make, 0u32));
@@ -1455,8 +1455,8 @@ pub struct Driver {
     c.sock = comp.handle;
     c.listener = ListenerId(k, gen);
     match lp.peerAddr(c.sock) {
-      case let a Ok {c.peer = a;}
-      case let x Error {}
+      case let Ok(a) {c.peer = a;}
+      case let Error(x) {}
     }
     st.accepted = st.accepted + 1u64;
     var ev = Event.make(EventKind.Accepted, c.sink.token, self.connIdOf(i), ReqId.none());
@@ -1525,7 +1525,7 @@ pub struct Driver {
     var back = IoBuf.empty();
     var refused = false;
     match c.core.sendData(buf, file, line) {
-      case var s Some {
+      case var Some(s) {
         back <=> s;
         refused = true;
       }
@@ -1726,9 +1726,9 @@ fn trySink(s: Sink, e: Event, back: &mut Event) Sink, u32 {
   var here = s;
   var how = sinkTaken;
   match &here {
-    case let ch &Chan {
+    case let &Chan(ch) {
       match ch.tx.trySend(e) {
-        case var r Some {
+        case var Some(r) {
           if ch.tx.isClosed() {
             how = sinkGone;
           } else {

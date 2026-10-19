@@ -26,13 +26,13 @@ fn hexOf(s: &Array[u8]) String {
 // The hex of the string the text holds (a text that is one string)
 fn decoded(text: &str) String {
   match json.parse(text) {
-    case let doc Ok {
+    case let Ok(doc) {
       match doc.asText() {
-        case let s Some { return hexOf(s); }
+        case let Some(s) { return hexOf(s); }
         case is None { return String.from("<not text>"); }
       }
     }
-    case let e Error { return e.message(); }
+    case let Error(e) { return e.message(); }
   }
   String.empty()
 }
@@ -46,8 +46,8 @@ fn reads(text: &str, hex: &str) {
 fn written(s: &str) String {
   let j = json.Json.fromText(s);
   match j.toText() {
-    case let t Ok { t.copy() }
-    case let e Error { e.message() }
+    case let Ok(t) { t.copy() }
+    case let Error(e) { e.message() }
   }
 }
 
@@ -56,8 +56,8 @@ fn writtenAscii(s: &str) String {
   var w = json.Writer(json.WriteOptions(0usize, true));
   w.value(&j);
   match w.finish() {
-    case let t Ok { t.copy() }
-    case let e Error { e.message() }
+    case let Ok(t) { t.copy() }
+    case let Error(e) { e.message() }
   }
 }
 
@@ -110,13 +110,13 @@ fn main() i32 {
 
   // -------- keys with escapes --------
   match json.parse("{\"\\u0061b\":1,\"c\\nd\":2,\"\\ud83d\\ude00\":3,\"\":4}") {
-    case let doc Ok {
+    case let Ok(doc) {
       expectInt(doc.i64Or("ab", -1i64), 1i64, "a key with a \\u escape");
       expectInt(doc.i64Or("c\nd", -1i64), 2i64, "a key with \\n");
       expectInt(doc.i64Or("\xF0\x9F\x98\x80", -1i64), 3i64, "a key that is a surrogate pair");
       expectInt(doc.i64Or("", -1i64), 4i64, "the empty key");
     }
-    case let e Error { expect(false, "keys"); }
+    case let Error(e) { expect(false, "keys"); }
   }
 
   // -------- writing --------
@@ -150,7 +150,7 @@ fn main() i32 {
   let cutJson = json.Json.fromText(cut.view());
   match cutJson.toText() {
     case is Ok { expect(false, "a cut-off character is refused"); }
-    case let e Error {
+    case let Error(e) {
       expect(e.kind is WriteValue, "a cut-off character is a WriteValue error");
       expectUInt(u64.from(e.line), 0u64, "a writing error has no line");
     }
@@ -171,24 +171,24 @@ fn main() i32 {
   all.append("\xC3\xA9\xE2\x82\xAC\xF0\x9F\x98\x80\xF4\x8F\xBF\xBF");
   let text = written(all.view());
   match json.parse(text.view()) {
-    case let doc Ok {
+    case let Ok(doc) {
       match doc.asText() {
-        case let s Some { expectStr(hexOf(s).view(), hexOf(all.view()).view(), "all of ASCII round trips"); }
+        case let Some(s) { expectStr(hexOf(s).view(), hexOf(all.view()).view(), "all of ASCII round trips"); }
         case is None { expect(false, "all of ASCII"); }
       }
     }
-    case let e Error { expectStr(e.message().view(), "<parsed>", "all of ASCII"); }
+    case let Error(e) { expectStr(e.message().view(), "<parsed>", "all of ASCII"); }
   }
   let asciiText = writtenAscii(all.view());
   expect(!asciiText.view().contains("\xC3"), "ascii output has no byte past 127");
   match json.parse(asciiText.view()) {
-    case let doc Ok {
+    case let Ok(doc) {
       match doc.asText() {
-        case let s Some { expectStr(hexOf(s).view(), hexOf(all.view()).view(), "all of ASCII round trips through \\u escapes"); }
+        case let Some(s) { expectStr(hexOf(s).view(), hexOf(all.view()).view(), "all of ASCII round trips through \\u escapes"); }
         case is None { expect(false, "all of ASCII, escaped"); }
       }
     }
-    case let e Error { expectStr(e.message().view(), "<parsed>", "all of ASCII, escaped"); }
+    case let Error(e) { expectStr(e.message().view(), "<parsed>", "all of ASCII, escaped"); }
   }
 
   done()

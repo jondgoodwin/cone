@@ -362,16 +362,16 @@ pub struct Loop {
   // A bound UDP socket; a panic, at the caller's line, if there can be none
   pub fn mustBindUdp(self: &mut, addr: SocketAddr, file: &Array[u8] = srcFile(), line: u32 = srcLine()) Handle {
     match self.bindUdp(addr) {
-      case let r Ok {r}
-      case let e Error {panic("iocore: bindUdp failed", file, line)}
+      case let Ok(r) {r}
+      case let Error(e) {panic("iocore: bindUdp failed", file, line)}
     }
   }
 
   // A listening socket; a panic, at the caller's line, if there can be none
   pub fn mustListen(self: &mut, addr: SocketAddr, file: &Array[u8] = srcFile(), line: u32 = srcLine()) Handle {
     match self.listen(addr) {
-      case let r Ok {r}
-      case let e Error {panic("iocore: listen failed", file, line)}
+      case let Ok(r) {r}
+      case let Error(e) {panic("iocore: listen failed", file, line)}
     }
   }
 
@@ -682,30 +682,30 @@ pub struct Loop {
     var n = 0usize;
     var to = t;
     match &mut to {
-      case let p &mut Post {
+      case let &mut Post(p) {
         if p.waker.post(c) {
           stats.postsSent = stats.postsSent + 1u64;
         } else {
           stats.postsDropped = stats.postsDropped + 1u64;
         }
       }
-      case let ch &mut Chan {
+      case let &mut Chan(ch) {
         self.note(&c);
         hold = self.tryChan(&ch.tx, c, &mut back);
       }
-      case var o &mut Once {
+      case var &mut Once(o) {
         self.note(&c);
         match o.tx.send(c) {
           case is None[Completion] {stats.handedOff = stats.handedOff + 1u64;}
           else {stats.handedDropped = stats.handedDropped + 1u64;}
         }
       }
-      case let s &mut Status {
+      case let &mut Status(s) {
         self.note(&c);
         s.board.put(s.slot, c);
         stats.handedOff = stats.handedOff + 1u64;
       }
-      case var h &mut Hook {
+      case var &mut Hook(h) {
         self.note(&c);
         h.sink.give(c);
         stats.handedOff = stats.handedOff + 1u64;
@@ -730,7 +730,7 @@ pub struct Loop {
   fn tryChan(self: &mut, tx: &Sender[Completion], c: Completion, back: &mut Completion) bool {
     var full = false;
     match tx.trySend(c) {
-      case var s Some {
+      case var Some(s) {
         if tx.isClosed() {
           stats.handedDropped = stats.handedDropped + 1u64;
         } else {
@@ -759,7 +759,7 @@ pub struct Loop {
       let tslot = &mut heldT[k];
       to <=> *tslot;
       match &mut to {
-        case let ch &mut Chan {still = self.tryChan(&ch.tx, c, &mut back);}
+        case let &mut Chan(ch) {still = self.tryChan(&ch.tx, c, &mut back);}
         else {}
       }
       if still {
@@ -861,7 +861,7 @@ pub struct Loop {
     let gen = r.gen;
     var dl = deadline;
     match group {
-      case let s Some {if s.deadline() < dl {dl = s.deadline();}}
+      case let Some(s) {if s.deadline() < dl {dl = s.deadline();}}
       else {}
     }
     if self.join(i, group) {
@@ -888,7 +888,7 @@ pub struct Loop {
   // passes through
   fn claim(self: &mut, to: Target, file: &Array[u8], line: u32) Target {
     match &to {
-      case let s &Status {
+      case let &Status(s) {
         if !s.board.arm(s.slot) {
           panic("iocore: a status slot given an operation while it holds one, or out of range", file, line);
         }
@@ -906,7 +906,7 @@ pub struct Loop {
     r.group <=> g;
     var cancelled = false;
     match r.group {
-      case let s Some {
+      case let Some(s) {
         grouped = grouped + 1u32;
         let w = Waker(port);
         s.register(loopId, &w);
@@ -933,7 +933,7 @@ pub struct Loop {
     // deadline instead; one due at or before it answers Done at its time
     var dl = forever();
     match group {
-      case let s Some {dl = s.deadline();}
+      case let Some(s) {dl = s.deadline();}
       else {}
     }
     if self.join(i, group) {
@@ -969,58 +969,58 @@ pub struct Loop {
     r.ov.hEvent = 0usize;
     // What it is, and what it owns, into the record
     match op {
-      case let o Connect {
+      case let Connect(o) {
         r.kind = diag.kindConnect;
         r.peer = o.addr;
       }
-      case let o Accept {
+      case let Accept(o) {
         r.kind = diag.kindAccept;
         r.sock = o.listener;
       }
-      case var o Recv {
+      case var Recv(o) {
         r.kind = diag.kindRecv;
         r.buf <=> o.buf;
         r.sock = o.sock;
       }
-      case let o RecvReady {
+      case let RecvReady(o) {
         r.kind = diag.kindRecvReady;
         r.sock = o.sock;
       }
-      case var o Send {
+      case var Send(o) {
         r.kind = diag.kindSend;
         r.buf <=> o.buf;
         r.sock = o.sock;
       }
-      case let o SendBytes {
+      case let SendBytes(o) {
         r.kind = diag.kindSend;
         r.bytes = Some[Bytes](o.bytes);
         r.sock = o.sock;
       }
-      case var o ReadAt {
+      case var ReadAt(o) {
         r.kind = diag.kindReadAt;
         r.buf <=> o.buf;
         r.sock = o.file;
         r.at = o.at;
       }
-      case var o WriteAt {
+      case var WriteAt(o) {
         r.kind = diag.kindWriteAt;
         r.buf <=> o.buf;
         r.sock = o.file;
         r.at = o.at;
       }
-      case var o Call {
+      case var Call(o) {
         r.kind = diag.kindCall;
         r.buf <=> o.buf;
         r.lane = o.lane;
         r.work = o.work;
         r.at = o.arg;
       }
-      case var o RecvFrom {
+      case var RecvFrom(o) {
         r.kind = diag.kindRecvFrom;
         r.buf <=> o.buf;
         r.sock = o.sock;
       }
-      case var o SendTo {
+      case var SendTo(o) {
         r.kind = diag.kindSendTo;
         r.buf <=> o.buf;
         r.sock = o.sock;
@@ -1031,7 +1031,7 @@ pub struct Loop {
     // Its deadline: the tighter of its own and its group's
     var dl = deadline;
     match group {
-      case let s Some {if s.deadline() < dl {dl = s.deadline();}}
+      case let Some(s) {if s.deadline() < dl {dl = s.deadline();}}
       else {}
     }
     // Cancelled is a state: an operation in a cancelled group, or whose
@@ -1075,7 +1075,7 @@ pub struct Loop {
     if k == diag.kindRecvReady {return self.startRecv(p, r.sock, true);}
     if k == diag.kindSend {
       match r.bytes {
-        case let b Some {
+        case let Some(b) {
           let v = b.view();
           return self.startSend(p, r.sock, v as *u8, v.len);
         }
@@ -1358,7 +1358,7 @@ pub struct Loop {
       if r.state == stFlight && r.asked == askedNone {
         var hit = false;
         match r.group {
-          case let s Some {hit = s.isCancelled();}
+          case let Some(s) {hit = s.isCancelled();}
           else {}
         }
         if hit {
@@ -1557,7 +1557,7 @@ pub struct Loop {
       if decided.len() == 0usize && cancels.len() == 0usize && now < until {
         var wakeAt = until;
         match wheel.nextExpiry() {
-          case let s Some {if s < wakeAt {wakeAt = s;}}
+          case let Some(s) {if s < wakeAt {wakeAt = s;}}
           case is None[Instant] {}
         }
         if heldC.len() > 0usize {

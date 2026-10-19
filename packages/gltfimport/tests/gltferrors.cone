@@ -48,8 +48,8 @@ fn good() String { make("{\"version\":\"2.0\"}", "", "", "", "") }
 // Whether loading 'json' fails with a reason containing 'want'
 fn fails(json: String, want: &str, label: &str) {
   match loadGltfBytes(json.view(), true) {
-    case let g Ok { expect(false, label); }
-    case let e Error {
+    case let Ok(g) { expect(false, label); }
+    case let Error(e) {
       if !expect(e.reason.contains(want), label) {
         printStr(e.reason.view());
         printStr("\n");
@@ -61,10 +61,10 @@ fn fails(json: String, want: &str, label: &str) {
 fn main() i32 {
   // The undamaged asset loads
   match loadGltfBytes(good().view(), true) {
-    case let g Ok {
+    case let Ok(g) {
       expectInt(i64.from(g.meshes[0usize].primitives[0usize].mesh.positions.len()), 3i64, "the good asset loads");
     }
-    case let e Error { expect(false, e.reason.view()); }
+    case let Error(e) { expect(false, e.reason.view()); }
   }
 
   // Compression: refused by name, with what it would take
@@ -80,8 +80,8 @@ fn main() i32 {
   let dracoPrim = make("{\"version\":\"2.0\"}", "", ",\"extensions\":{\"KHR_draco_mesh_compression\":{\"bufferView\":0,\"attributes\":{\"POSITION\":0}}}", "", "");
   fails(rep(dracoPrim.copy(), "{\"bufferView\":0,\"componentType\"", "{\"componentType\""), "Draco", "Draco primitive without fallback");
   match loadGltfBytes(dracoPrim.view(), true) {
-    case let g Ok { expectInt(i64.from(g.warnings.len()), 1i64, "Draco with uncompressed fallback loads, with a warning"); }
-    case let e Error { expect(false, e.reason.view()); }
+    case let Ok(g) { expectInt(i64.from(g.warnings.len()), 1i64, "Draco with uncompressed fallback loads, with a warning"); }
+    case let Error(e) { expect(false, e.reason.view()); }
   }
   fails(make("{\"version\":\"2.0\"}", "\"extensionsRequired\":[\"KHR_materials_clearcoat\"],", "", "", ""),
     "KHR_materials_clearcoat", "an unknown required extension is named");
@@ -116,11 +116,11 @@ fn main() i32 {
   // Points and lines are skipped with a warning, not a failure
   let lines = make("{\"version\":\"2.0\"}", "", ",\"mode\":1", "", "");
   match loadGltfBytes(lines.view(), true) {
-    case let g Ok {
+    case let Ok(g) {
       expectInt(i64.from(g.meshes[0usize].primitives.len()), 0i64, "a lines primitive is not loaded");
       expectInt(i64.from(g.warnings.len()), 1i64, "and is named in the warnings");
     }
-    case let e Error { expect(false, e.reason.view()); }
+    case let Error(e) { expect(false, e.reason.view()); }
   }
   // GLB damage
   fails(String.from("glTF\x02\x00\x00\x00\x10\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"), "JSON", "a GLB with no JSON chunk");

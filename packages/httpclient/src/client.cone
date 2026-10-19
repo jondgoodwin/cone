@@ -161,8 +161,8 @@ pub struct Client {
     var tlsc: Option[tls.Client] = None;
     var tf = Failure.none();
     match tls.Client.make(tc) {
-      case let r Ok {tlsc = Some[tls.Client](r);}
-      case let e Error {
+      case let Ok(r) {tlsc = Some[tls.Client](r);}
+      case let Error(e) {
         tf = Failure.make(Stage.Tls, e.osError, ErrorKind.Unsupported, e.message().view());
       }
     }
@@ -422,7 +422,7 @@ pub struct Client {
     var cancelled = false;
     let g = f.group;
     match g {
-      case let gv Some {
+      case let Some(gv) {
         if gv.isCancelled() {cancelled = true;}
         if gv.deadline() < dl {dl = gv.deadline();}
       }
@@ -440,7 +440,7 @@ pub struct Client {
     // Its deadline and group, watched by one timer on the loop
     let wt = drv.upperToken(lp, kWatch, (u64.from(f.gen & watchGenMask) << 24u64) | u64.from(fi));
     match g {
-      case let gv Some {
+      case let Some(gv) {
         let at = if dl < forever() {dl} else {now + Duration.fromHours(87600i64)};
         f.watch = lp.afterIn(at, Target.Here(wt), gv);
       }
@@ -957,7 +957,7 @@ pub struct Client {
     }
     let t = tlsc;
     match t {
-      case let c Some {
+      case let Some(c) {
         p.id = drv.connectWith(lp, host.view(), og.port, Uni[tls.Stream](c.stream(host.view(), pool)), sink);
       }
       else {
@@ -1101,7 +1101,7 @@ pub struct Client {
       let n = if left < sendChunk {left} else {sendChunk};
       var b = IoBuf.empty();
       match pool.take(n) {
-        case var s Some {b <=> s;}
+        case var Some(s) {b <=> s;}
         case is None[IoBuf] {}
       }
       if b.capacity() == 0usize {
@@ -1133,7 +1133,7 @@ pub struct Client {
       let status = e.response.status;
       if f.ending == endNone && followsRedirect(status) && f.maxRedirects > 0u32 {
         match e.response.headers.get("Location") {
-          case let loc Some {
+          case let Some(loc) {
             f.following = true;
             f.location = String.fromBytes(loc);
             f.redirectStatus = status;
@@ -1230,8 +1230,8 @@ pub struct Client {
     var next = Url.empty();
     var why = String.empty();
     match f.url.resolve(f.location.view()) {
-      case var r Ok {next <=> r;}
-      case let x Error {why = x.message();}
+      case var Ok(r) {next <=> r;}
+      case let Error(x) {why = x.message();}
     }
     if why.len() == 0usize && !next.isHttp() {why = String.from("it is not an http or https URL");}
     if why.len() > 0usize {
@@ -1320,7 +1320,7 @@ pub struct Client {
     while ready.len() > 0usize {
       var e = blankEvent();
       match ready.pop() {
-        case var s Some {e <=> s;}
+        case var Some(s) {e <=> s;}
         case is None[Event] {}
       }
       evs.push(e);
@@ -1328,7 +1328,7 @@ pub struct Client {
     while evs.len() > 0usize {
       var e = blankEvent();
       match evs.pop() {
-        case var s Some {e <=> s;}
+        case var Some(s) {e <=> s;}
         case is None[Event] {}
       }
       others.push(e);
@@ -1410,7 +1410,7 @@ fn copySink(s: &mut Sink) Sink {
   here <=> *s;
   var out: Sink = Sink.Here(here.token);
   match &here {
-    case let c &Chan {out = Sink.Chan(here.token, c.tx.clone());}
+    case let &Chan(c) {out = Sink.Chan(here.token, c.tx.clone());}
     else {}
   }
   *s <=> here;
@@ -1436,9 +1436,9 @@ fn trySink(s: Sink, e: Event, back: &mut Event) Sink, u32 {
   var here = s;
   var how = sinkTaken;
   match &here {
-    case let ch &Chan {
+    case let &Chan(ch) {
       match ch.tx.trySend(e) {
-        case var r Some {
+        case var Some(r) {
           if ch.tx.isClosed() {
             how = sinkGone;
           } else {
