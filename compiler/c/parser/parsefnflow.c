@@ -480,6 +480,27 @@ static void parseBoundMatch(ParseState *parse, IfNode *ifnode, MatchSubject *sub
             nodesInsert(&wrapper->stmts, (INode*)holder, 0);
     }
 
+    // A '_' declares nothing, as in 'let _, r = f()': 'case let Ok(_)' and 'if let Ok(_) = r' test the
+    // variant and bind nothing, and a guard may follow
+    if (varnode->namesym == anonName && usingcall == NULL && varnode->vtype != unknownType) {
+        isnode->exp = parseMatchUse(subject);
+        isnode->typ = varnode->vtype;
+        if (wrapper == NULL && lexIsToken(IfToken)) {
+            lexNextToken();
+            BlockNode *guardblk = newBlockNode();
+            nodesAdd(&guardblk->stmts, parseSimpleExpr(parse));
+            LogicNode *guarded = newLogicNode(AndLogicTag);
+            guarded->flags |= FlagMatchGuard;
+            guarded->lexp = (INode*)isnode;
+            guarded->rexp = (INode*)guardblk;
+            nodesAdd(&ifnode->condblk, (INode*)guarded);
+        }
+        else
+            nodesAdd(&ifnode->condblk, (INode*)isnode);
+        nodesAdd(&ifnode->condblk, parseExprBlock(parse, 0));
+        return;
+    }
+
     // The test reads the matched value where it is. A binding takes from the
     // matched value only in the arm that runs: from the hidden variable that holds
     // it, or, for a place, from a hidden variable of the arm's own that it is
@@ -574,6 +595,20 @@ static void parseLetElse(ParseState *parse, BlockNode *blk, VarDclNode *varnode)
         nodesAdd(&blk->stmts, (INode*)holder);
     }
     CastNode *isnode = newIsNode(parseMatchUse(&subject), unknownType);
+    // 'let Ok(_) = r else {...};' tests the variant and binds nothing: '_' declares nothing
+    if (varnode->namesym == anonName && !parse->usingdcl) {
+        isnode->typ = varnode->vtype;
+        inodeLexCopy((INode*)isnode, (INode*)varnode);
+        IfNode *testif = newIfNode();
+        testif->flags |= FlagIfLetElse;
+        inodeLexCopy((INode*)testif, (INode*)varnode);
+        nodesAdd(&testif->condblk, (INode*)isnode);
+        nodesAdd(&testif->condblk, (INode*)newBlockNode());
+        nodesAdd(&testif->condblk, elseCond);
+        nodesAdd(&testif->condblk, parseExprBlock(parse, 0));
+        nodesAdd(&blk->stmts, (INode*)testif);
+        return;
+    }
     CastNode *castnode = newConvCastNode(NULL, unknownType);
     VarDclNode *armholder = NULL;
     if (subject.place) {
@@ -612,6 +647,7 @@ static void parseLetElse(ParseState *parse, BlockNode *blk, VarDclNode *varnode)
 // after '=' and the 'else' (parseLetElse).
 static void parseLetPattern(ParseState *parse, BlockNode *blk) {
     FnCallNode *usingcall = NULL;
+    parse->usingdcl = 0;
     VarDclNode *var = parseBindVarDcl(parse, &usingcall);
     // A pattern refused has been said; the rest of the statement is read past, saying nothing more
     int refused = var->vtype == unknownType;
@@ -1903,6 +1939,24 @@ INode *parseExprBlock(ParseState *parse, int isloop) {
                 break;
             }
             VarDclNode *var = parseVarDcl(parse, immPerm, ParseMaySig|ParseMayImpl|ParseMayUsing);
+            // A name and then a variant, 'let n Ok = r else {...};', is no binding: it is refused once and
+            // read past, whole
+            if (var->vtype == unknownType && var->value == NULL && !lexIsToken(CommaToken) && parseIsTypeStart()
+                && lexStatementHasElse()) {
+                errorMsgNode((INode*)var, ErrorPatBindForm,
+                    "A binding that leaves unless it matches names the variant and puts the binding in its parentheses: 'let Tea(t) = d else {...};'.");
+                parseType(parse);
+                if (lexIsToken(AssgnToken)) {
+                    lexNextToken();
+                    parseAnyExpr(parse);
+                }
+                if (lexIsToken(ElseToken)) {
+                    lexNextToken();
+                    parseExprBlock(parse, 0);
+                }
+                parseEndOfStatement();
+                break;
+            }
             // 'let q, r = divmod(7, 2);' declares several names and gives them their values at once
             if (lexIsToken(CommaToken) && !parse->usingdcl) {
                 parseDestructDcl(parse, blk, var);

@@ -1744,6 +1744,26 @@ int lexNextOpensPattern() {
     return depth == 0 && (*srcp == '(' || *srcp == '.');
 }
 
+int lexStatementHasElse() {
+    int depth = 0;
+    for (char *srcp = lex->tokp; *srcp; ++srcp) {
+        char c = *srcp;
+        if (c == '(' || c == '[' || c == '{')
+            ++depth;
+        else if (c == ')' || c == ']' || c == '}') {
+            if (--depth < 0)
+                return 0;
+        }
+        else if (c == ';' && depth == 0)
+            return 0;
+        else if (c == 'e' && depth == 0 && strncmp(srcp, "else", 4) == 0
+            && (srcp == lex->tokp || !(isalnum((unsigned char)srcp[-1]) || srcp[-1] == '_'))
+            && !(isalnum((unsigned char)srcp[4]) || srcp[4] == '_'))
+            return 1;
+    }
+    return 0;
+}
+
 int lexIdentOpensType() {
     char *srcp = lexSkipTrivia(lex->srcp);
     return *srcp == '.' || *srcp == '[';
