@@ -391,9 +391,10 @@ static int castTraitBind(CastNode *node) {
 // a reference type rather than a borrow.
 CastNode *newMatchValueNode(INode *matchee, INode *value) {
     CastNode *node = newIsNode(matchee, value);
-    inodeLexCopy((INode*)node, value);
+    if (value)  // NULL where parseTerm refused the pattern and reported it
+        inodeLexCopy((INode*)node, value);
     node->flags |= FlagMatchValue;
-    if (isNameUseNode(value))
+    if (value && isNameUseNode(value))
         value->flags |= FlagPattern;
     return node;
 }

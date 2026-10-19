@@ -439,7 +439,8 @@ INode *parseTerm(ParseState *parse) {
         return NULL;
     default:
         errorMsgLex(ErrorBadTerm, "Invalid term: expected name, literal, etc.");
-        lexNextToken(); // Avoid infinite loop
+        if (!lexIsToken(SemiToken))
+            lexNextToken(); // Avoid infinite loop
         return NULL;
     }
 }
@@ -1076,13 +1077,14 @@ INode *parsePrefix(ParseState *parse) {
         FnCallNode *node = newFnCallOpname(NULL, minusName, 0);
         lexNextToken();
         INode *argnode = parsePrefix(parse);
-        // A char is no quantity, so a minus before one is left to be refused
-        if (argnode->tag == ULitTag && !(argnode->flags & FlagCharLit)) {
+        // A char is no quantity, so a minus before one is left to be refused.
+        // An operand parseTerm refused is NULL, already reported
+        if (argnode && argnode->tag == ULitTag && !(argnode->flags & FlagCharLit)) {
             ((ULitNode*)argnode)->uintlit = 0 - ((ULitNode*)argnode)->uintlit;
             argnode->flags ^= FlagLitNeg;
             return argnode;
         }
-        else if (argnode->tag == FLitTag) {
+        else if (argnode && argnode->tag == FLitTag) {
             ((FLitNode*)argnode)->floatlit = -((FLitNode*)argnode)->floatlit;
             return argnode;
         }
@@ -1473,6 +1475,13 @@ static INode *parseEntry(ParseState *parse) {
         tag = PairEntryTag;
     else
         return first;
+    // The first expression was refused (parseTerm reported it and gave NULL).
+    // Read the value after 'of' or ':' so the list stays in step, and give no node.
+    if (first == NULL) {
+        lexNextToken();
+        parseEntryValue(parse);
+        return NULL;
+    }
     EntryNode *entry = newEntryNode(tag, first);
     inodeLexCopy((INode*)entry, first);
     lexNextToken();
@@ -1489,7 +1498,8 @@ static INode *parseEntries(ParseState *parse) {
     if (!lexIsToken(CommaToken))
         return entry;
     TupleNode *tuple = newTupleNode(4);
-    inodeLexCopy((INode*)tuple, entry);
+    if (entry)  // a refused entry is NULL, already reported
+        inodeLexCopy((INode*)tuple, entry);
     nodesAdd(&tuple->elems, entry);
     while (lexIsToken(CommaToken)) {
         lexNextToken();
@@ -1503,13 +1513,15 @@ static INode *parseEntries(ParseState *parse) {
 // construction, which is first held in a variable, and one otherwise. Name
 // resolution numbers the scopes of an each's variables as if inside those blocks.
 static void parseEntryNest(INode *entries, uint16_t nest) {
+    if (entries == NULL)  // the entry was refused: parseTerm reported it and gave NULL
+        return;
     if (entries->tag == EachEntryTag)
         ((EntryNode*)entries)->nest = nest;
     else if (entries->tag == VTupleTag) {
         INode **elemp;
         uint32_t cnt;
         for (nodesFor(((TupleNode*)entries)->elems, cnt, elemp)) {
-            if ((*elemp)->tag == EachEntryTag)
+            if (*elemp && (*elemp)->tag == EachEntryTag)
                 ((EntryNode*)*elemp)->nest = nest;
         }
     }
