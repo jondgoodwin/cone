@@ -422,7 +422,7 @@ enum NodeTags {
 // NameUseNode is neither.
 #define FlagQualified 0x0001        // NameUse: reached through a namespace, not written bare
 // A bare name at the root of a pattern -- 'Red' in 'case is Red', 'Circle' in
-// 'case let c &Circle' -- is looked up in the enum of the value being matched
+// 'case let &Circle(c)' -- is looked up in the enum of the value being matched
 // before it is looked up lexically, and that value's type is known only at type
 // check. So the parser marks the name (castPatternMark), name resolution leaves
 // it unbound rather than reporting it when nothing lexical answers, and
