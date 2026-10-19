@@ -963,7 +963,7 @@ class Scenarios(unittest.TestCase):
             pub mod kinds;
 
             pub enum Kind {
-              Small, Large;
+              Small, Large
             }
             """)
         write(self.root / "app.cone", """
