@@ -333,7 +333,7 @@ void refNameRes(NameResState *pstate, RefNode *node) {
             errorMsgNode((INode*)node, ErrorBadTerm, "May not borrow a virtual reference. Coerce from a regular ref.");
         else
             errorMsgNode((INode*)node, ErrorPlusAlloc,
-                "An allocation is written 'new Rc[mut, Rect](...)', the concrete type, and the reference coerces where a virtual one is wanted.");
+                "An allocation is written 'Rc[mut, Rect](...)', the concrete type, and the reference coerces where a virtual one is wanted.");
     }
     // '&Array[T]' written out is the slice type, so it is the
     // slice's node from here on (the borrow of the body of a run-time length)
@@ -385,7 +385,7 @@ static void refRefuseRegionRef(RefNode *node) {
 }
 
 // A managed reference type is written 'R[perm, T]', and so is the one an
-// allocation names, 'new R[perm, T](...)', so the older plus spelling of one,
+// allocation names, 'R[perm, T](...)', so the older plus spelling of one,
 // '+R-perm T', is refused where it was written. Reported once:
 // a node reached twice says it once.
 static void refRefusePlusType(RefNode *node) {
@@ -397,7 +397,7 @@ static void refRefusePlusType(RefNode *node) {
     char *reg = regname ? &regname->namestr : "R";
     char *perm = permname ? &permname->namestr : "uni";
     errorMsgNode((INode*)node, ErrorPlusRefType,
-        "A managed reference type is written '%s[%s, T]', and allocated 'new %s[%s, T](...)'.", reg, perm, reg, perm);
+        "A managed reference type is written '%s[%s, T]', and allocated '%s[%s, T](...)'.", reg, perm, reg, perm);
 }
 
 // Set by fnSigTypeCheck while it checks a signature's 'self', the one place

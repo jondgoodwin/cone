@@ -244,7 +244,7 @@ loop from the header scan, and the compiler again for a direct run
 | module tree | a sister is reached by name, never by a path that walked to her file | `parseImport` |
 | modules and packages | no loop of dependencies — imports, `extends`, containment | `pgmModuleOrder`; Congo's `build_order` and `check_module_loops` |
 | type, member not `pub` | not reachable from outside the module that declares the type, through any value — but from an enum's extension, wherever declared | `fnCallLowerMethod`, `structSeesPrivate` |
-| type, field not `pub` | not settable from outside the type's module by the implicit init (`new Point(...)`) or a variant's literal | `typeLitStructReorder`, `structSeesPrivate` |
+| type, field not `pub` | not settable from outside the type's module by the implicit init (`Point(...)`) or a variant's literal | `typeLitStructReorder`, `structSeesPrivate` |
 | type, `init` not `pub` | no construction by it from outside the type's module | `typeLitNewCheck`, `structSeesPrivate` |
 | type, member not `pub` | does not meet a trait's requirement for code outside the type's module, as a reference to the trait or as a generic's bound; a type that declares the trait with `is` keeps the fit | `structMemberHidden`, `structVirtRefHidden` (`ErrorPrivateMatch`) |
 | `pub` type, `pub` field | names no type private to the module | `fieldDclNameRes` (`ErrorPubFieldPrivType`) |

@@ -35,7 +35,7 @@ pub actor Connection {
 
   fn init(self: &new, kind: u32, id: u32, handler: EventHandler, cfg: NetConfig, session: u64, addr: SocketAddr,
       ep: Option[Endpoint], link: LinkConfig, seed: u64) {
-    *self = new Self(kind: kind, id: id, handler: handler, peer: ConnectionCore.make(cfg, session, Instant.now()),
+    *self = Self(kind: kind, id: id, handler: handler, peer: ConnectionCore.make(cfg, session, Instant.now()),
       open: true, forced: false, forcedReason: CloseReason.Local,
       addr: addr, ep: ep, reported: -1i64,
       partner: None[Connection], sim: LinkSim.make(link, seed));
@@ -301,11 +301,11 @@ pub struct ConnectionPair {
 pub fn pairInProcess(ha: EventHandler, idA: u32, hb: EventHandler, idB: u32) ConnectionPair {
   let cfg = NetConfig.defaults();
   let none = SocketAddr.localhost(0u16);
-  let a = new Connection(connDirect, idA, ha, cfg, 0u64, none, None[Endpoint], LinkConfig.perfect(), 0u64);
-  let b = new Connection(connDirect, idB, hb, cfg, 0u64, none, None[Endpoint], LinkConfig.perfect(), 0u64);
+  let a = Connection(connDirect, idA, ha, cfg, 0u64, none, None[Endpoint], LinkConfig.perfect(), 0u64);
+  let b = Connection(connDirect, idB, hb, cfg, 0u64, none, None[Endpoint], LinkConfig.perfect(), 0u64);
   a.link(b);
   b.link(a);
-  new ConnectionPair(a, b)
+  ConnectionPair(a, b)
 }
 
 // The driver of a simulated pair: a thread that ticks both ends every
@@ -353,8 +353,8 @@ fn simMain(var x: SimArgs) u32 {
 pub fn pairSimulated(cfg: NetConfig, toB: LinkConfig, toA: LinkConfig, seed: u64, ha: EventHandler, idA: u32, hb: EventHandler, idB: u32) SimulatedPair {
   let none = SocketAddr.localhost(0u16);
   let session = 0x5151515151515151u64;
-  let a = new Connection(connSim, idA, ha, cfg, session, none, None[Endpoint], toB, seed);
-  let b = new Connection(connSim, idB, hb, cfg, session, none, None[Endpoint], toA, seed ^ 0xA5A5A5A5A5A5A5A5u64);
+  let a = Connection(connSim, idA, ha, cfg, session, none, None[Endpoint], toB, seed);
+  let b = Connection(connSim, idB, hb, cfg, session, none, None[Endpoint], toA, seed ^ 0xA5A5A5A5A5A5A5A5u64);
   a.link(b);
   b.link(a);
   var stopTx: Sender[u32];
@@ -363,7 +363,7 @@ pub fn pairSimulated(cfg: NetConfig, toB: LinkConfig, toA: LinkConfig, seed: u64
   var doneTx: Sender[u32];
   var doneRx: Receiver[u32];
   doneTx, doneRx = Channel[u32].make();
-  let th = thread.start(new SimArgs(a, b, stopRx, doneTx), &simMain);
+  let th = thread.start(SimArgs(a, b, stopRx, doneTx), &simMain);
   th.detach();
-  new SimulatedPair(a, b, stopTx, doneRx)
+  SimulatedPair(a, b, stopTx, doneRx)
 }

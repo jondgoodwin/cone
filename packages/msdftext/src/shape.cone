@@ -28,9 +28,9 @@ pub struct Pt {
   pub x: f64;
   pub y: f64;
 
-  pub fn add overload `+`(self, o: Pt) Pt inline { new Pt(x + o.x, y + o.y) }
-  pub fn sub overload `-`(self, o: Pt) Pt inline { new Pt(x - o.x, y - o.y) }
-  pub fn scale overload `*`(self, s: f64) Pt inline { new Pt(x * s, y * s) }
+  pub fn add overload `+`(self, o: Pt) Pt inline { Pt(x + o.x, y + o.y) }
+  pub fn sub overload `-`(self, o: Pt) Pt inline { Pt(x - o.x, y - o.y) }
+  pub fn scale overload `*`(self, s: f64) Pt inline { Pt(x * s, y * s) }
   pub fn dot(self, o: Pt) f64 inline { x * o.x + y * o.y }
   pub fn cross(self, o: Pt) f64 inline { x * o.y - y * o.x }
   pub fn length(self) f64 inline { libc.sqrt(x * x + y * y) }
@@ -38,8 +38,8 @@ pub struct Pt {
   // The unit vector; (0, 1) for a zero vector, as msdfgen
   pub fn normalized(self) Pt {
     let l = libc.sqrt(x * x + y * y);
-    if l == 0.0 { return new Pt(0.0, 1.0); }
-    new Pt(x / l, y / l)
+    if l == 0.0 { return Pt(0.0, 1.0); }
+    Pt(x / l, y / l)
   }
 }
 
@@ -136,8 +136,8 @@ pub struct Edge {
   pub c: Pt;
   pub color: u32;
 
-  pub fn line(a: Pt, c: Pt) Edge { new Edge(EDGE_LINE, a, (a + c) * 0.5, c, COLOR_WHITE) }
-  pub fn quad(a: Pt, b: Pt, c: Pt) Edge { new Edge(EDGE_QUAD, a, b, c, COLOR_WHITE) }
+  pub fn line(a: Pt, c: Pt) Edge { Edge(EDGE_LINE, a, (a + c) * 0.5, c, COLOR_WHITE) }
+  pub fn quad(a: Pt, b: Pt, c: Pt) Edge { Edge(EDGE_QUAD, a, b, c, COLOR_WHITE) }
 
   pub fn point(self: &, t: f64) Pt {
     if kind == EDGE_LINE { return a + (c - a) * t; }
@@ -164,16 +164,16 @@ pub struct Edge {
       let endpointDistance = eq.length();
       if *param > 0.0 && *param < 1.0 {
         let ortho = aq.cross(ab) / ab.length();
-        if libc.fabs(ortho) < endpointDistance { return new SignedDist(ortho, 0.0); }
+        if libc.fabs(ortho) < endpointDistance { return SignedDist(ortho, 0.0); }
       }
-      return new SignedDist(nonZeroSign(aq.cross(ab)) * endpointDistance,
+      return SignedDist(nonZeroSign(aq.cross(ab)) * endpointDistance,
         libc.fabs(ab.normalized().dot(eq.normalized())));
     }
     let qa = a - p;
     let ab = b - a;
     let br = a + c - b - b;
     let qa1 = qa;
-    var roots = new Array[f64, 3] <- fill 0.0;
+    var roots = Array[f64, 3]() <- fill 0.0;
     let n = solveCubic(&mut roots, br.dot(br), 3.0 * ab.dot(br), 2.0 * ab.dot(ab) + qa1.dot(br), qa1.dot(ab));
     var minDistance = nonZeroSign(ab.cross(qa)) * qa.length();
     let abab = ab.dot(ab);
@@ -202,11 +202,11 @@ pub struct Edge {
       }
       i = i + 1i32;
     }
-    if *param >= 0.0 && *param <= 1.0 { return new SignedDist(minDistance, 0.0); }
+    if *param >= 0.0 && *param <= 1.0 { return SignedDist(minDistance, 0.0); }
     if *param < 0.5 {
-      return new SignedDist(minDistance, libc.fabs(ab.normalized().dot(qa.normalized())));
+      return SignedDist(minDistance, libc.fabs(ab.normalized().dot(qa.normalized())));
     }
-    new SignedDist(minDistance, libc.fabs((c - b).normalized().dot((c - p).normalized())))
+    SignedDist(minDistance, libc.fabs((c - b).normalized().dot((c - p).normalized())))
   }
 
   // The distance extended past an end along the end's tangent (the pseudo-
@@ -218,14 +218,14 @@ pub struct Edge {
       let aq = p - a;
       if aq.dot(dir) < 0.0 {
         let pseudo = aq.cross(dir);
-        if libc.fabs(pseudo) <= libc.fabs(dist.d) { return new SignedDist(pseudo, 0.0); }
+        if libc.fabs(pseudo) <= libc.fabs(dist.d) { return SignedDist(pseudo, 0.0); }
       }
     } elif param > 1.0 {
       let dir = self.direction(1.0).normalized();
       let bq = p - c;
       if bq.dot(dir) > 0.0 {
         let pseudo = bq.cross(dir);
-        if libc.fabs(pseudo) <= libc.fabs(dist.d) { return new SignedDist(pseudo, 0.0); }
+        if libc.fabs(pseudo) <= libc.fabs(dist.d) { return SignedDist(pseudo, 0.0); }
       }
     }
     dist
@@ -239,8 +239,8 @@ pub struct Edge {
   pub fn sub(self: &, t0: f64, t1: f64) Edge {
     let p0 = self.point(t0);
     let p1 = self.point(t1);
-    if kind == EDGE_LINE { return new Edge(EDGE_LINE, p0, (p0 + p1) * 0.5, p1, color); }
-    new Edge(EDGE_QUAD, p0, p0 + self.direction(t0) * (t1 - t0), p1, color)
+    if kind == EDGE_LINE { return Edge(EDGE_LINE, p0, (p0 + p1) * 0.5, p1, color); }
+    Edge(EDGE_QUAD, p0, p0 + self.direction(t0) * (t1 - t0), p1, color)
   }
 
   // The edge cut into thirds
@@ -258,7 +258,7 @@ pub struct Shape {
   pub edges: List[Edge];
   pub contours: List[Contour];
 
-  pub fn empty() Shape { new Shape(List[Edge].empty(), List[Contour].empty()) }
+  pub fn empty() Shape { Shape(List[Edge].empty(), List[Contour].empty()) }
 
   // The shape of a glyph's outline: each contour's points become lines and
   // quadratics by TrueType's rule (two off-curve points in a row imply an
@@ -300,21 +300,21 @@ pub struct Shape {
           while i < m {
             let i0 = (s + i) % m;
             let i1 = (s + i + 1usize) % m;
-            let p0 = new Pt(*px[i0], *py[i0]);
-            let p1 = new Pt(*px[i1], *py[i1]);
+            let p0 = Pt(*px[i0], *py[i0]);
+            let p1 = Pt(*px[i1], *py[i1]);
             if *pon[i1] {
               if p0.x != p1.x || p0.y != p1.y { shape.edges.push(Edge.line(p0, p1)); }
               i = i + 1usize;
             } else {
               let i2 = (s + i + 2usize) % m;
-              let p2 = new Pt(*px[i2], *py[i2]);
+              let p2 = Pt(*px[i2], *py[i2]);
               if p0.x != p2.x || p0.y != p2.y || p0.x != p1.x || p0.y != p1.y { shape.edges.push(Edge.quad(p0, p1, p2)); }
               i = i + 2usize;
             }
           }
           let count = shape.edges.len() - begin;
           if count > 0usize {
-            shape.contours.push(new Contour(u32.from(begin), u32.from(count), 1i32));
+            shape.contours.push(Contour(u32.from(begin), u32.from(count), 1i32));
           }
         }
       }
@@ -343,7 +343,7 @@ pub struct Shape {
         i = i + 1u32;
       }
       let w = if total > 0.0 { 1i32 } elif total < 0.0 { -1i32 } else { 0i32 };
-      contours.set(ci, new Contour(c.start, c.count, w));
+      contours.set(ci, Contour(c.start, c.count, w));
       ci = ci + 1usize;
     }
   }
@@ -357,7 +357,7 @@ pub struct Shape {
     var i = 0usize;
     while i < edges.len() {
       let e = *edges[i];
-      var pts = new Array[Pt, 3] <- fill e.a;
+      var pts = Array[Pt, 3]() <- fill e.a;
       pts[1] = e.b;
       pts[2] = e.c;
       var k = 0usize;
@@ -370,8 +370,8 @@ pub struct Shape {
       }
       i = i + 1usize;
     }
-    *lo = new Pt(x0, y0);
-    *hi = new Pt(x1, y1);
+    *lo = Pt(x0, y0);
+    *hi = Pt(x1, y1);
   }
 
   // The winding number of the contours round p, by a ray towards +x: not
@@ -393,7 +393,7 @@ pub struct Shape {
       } else {
         let qa = e.a.y - 2.0 * e.b.y + e.c.y;
         let qb = 2.0 * (e.b.y - e.a.y);
-        var roots = new Array[f64, 3] <- fill 0.0;
+        var roots = Array[f64, 3]() <- fill 0.0;
         let n = solveQuadratic(&mut roots, qa, qb, e.a.y - y);
         var k = 0i32;
         while k < n && k < 2i32 {
@@ -418,7 +418,7 @@ pub struct Shape {
   fn onBoundary(self: &, e: Edge, t: f64) bool {
     let p = e.point(t);
     let d = e.direction(t).normalized();
-    let right = new Pt(d.y, -d.x) * 0.25;
+    let right = Pt(d.y, -d.x) * 0.25;
     self.windingAt(p + right) != 0i32 && self.windingAt(p - right) == 0i32
   }
 
@@ -466,7 +466,7 @@ pub struct Shape {
               let c0 = (e.a - prev).cross(dir);
               let c1 = 2.0 * (e.b - e.a).cross(dir);
               let c2 = (e.a - e.b - e.b + e.c).cross(dir);
-              var roots = new Array[f64, 3] <- fill 0.0;
+              var roots = Array[f64, 3]() <- fill 0.0;
               let n = solveQuadratic(&mut roots, c2, c1, c0);
               var k = 0i32;
               while k < n && k < 2i32 {
@@ -590,8 +590,8 @@ pub struct Shape {
     // begins within 'tol' of where its predecessor ends: the cuts were found
     // against short segments, not the curves), snapping each start to the
     // end before it so that the corners are exact
-    var lo = new Pt(0.0, 0.0);
-    var hi = new Pt(0.0, 0.0);
+    var lo = Pt(0.0, 0.0);
+    var hi = Pt(0.0, 0.0);
     self.bounds(&mut lo, &mut hi);
     let tol = fmax64(hi.x - lo.x, hi.y - lo.y) * 0.003;
     var used = List[bool].empty();
@@ -637,7 +637,7 @@ pub struct Shape {
             }
           }
         }
-        made.push(new Contour(u32.from(begin), u32.from(linked.len() - begin), 1i32));
+        made.push(Contour(u32.from(begin), u32.from(linked.len() - begin), 1i32));
       }
       i = i + 1usize;
     }
@@ -778,7 +778,7 @@ pub fn colorEdges(shape: &mut Shape, angleThreshold: f64, seed0: u64) {
         i = i + 1usize;
       }
     }
-    outContours.push(new Contour(u32.from(outBegin), u32.from(outEdges.len() - outBegin), c.winding));
+    outContours.push(Contour(u32.from(outBegin), u32.from(outEdges.len() - outBegin), c.winding));
     ci = ci + 1usize;
   }
   shape.edges = outEdges;

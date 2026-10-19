@@ -846,7 +846,7 @@ an owner's value where the trace passes through it to find what it holds.
 
 **An allocation runs in one order, in every region** (`genlallocref`): the
 value init's arguments are evaluated (`genlNewArgs`; for the implicit init,
-the struct's literal, and for a finished value, `new Rc[i32](5)`, the value
+the struct's literal, and for a finished value, `Rc[i32](5)`, the value
 itself, moved); then `alloc`, and its null check; then the region's `init` and a lock
 permission's fill their parts of the header in place, each called with its
 part's address as its `self`; then a declared init fills the value's part in
@@ -856,7 +856,7 @@ not evaluated before `alloc`) fill it in place, element by element and run by
 run (`genlArrayLitInto`), each value evaluated then; then the reference
 goes to its destination. A declared init fills in place in three other places:
 a local it initializes, a construction written raw,
-`mem.writeRaw[T](p, new T(...))`, whose init is called with `p` as its `self`
+`mem.writeRaw[T](p, T(...))`, whose init is called with `p` as its `self`
 (`genlFnCall`) -- how an actor's state is made in its block, so that its init
 runs on the state where it stays -- and the argument of an inline function that
 writes its parameter that way (next). A `trynew`'s contents are therefore evaluated only
@@ -879,7 +879,7 @@ given to, so the block lives no longer than its owners.
 **A construction built where an inline function puts it**
 (`genlDeferCall`, `genlInlineParm`). An inline function that takes room and
 then moves its parameter into it, as an arena's `alloc` does (`mem.writeRaw(at
-as *T, value)` after the room is taken), would be handed `new T(...)` as a
+as *T, value)` after the room is taken), would be handed `T(...)` as a
 value built in a temporary and copied. Instead the call evaluates its
 arguments in order, the construction's own included (`genlNewArgs`), and leaves
 the construction itself waiting: the function's parameter is a
@@ -1905,12 +1905,12 @@ are in [closure](../nodes/closure.md)): a borrow of a function, `&name`
 (`borrowTypeCheck`), since the calls are inlined and a pointer to code would be an
 indirect call; a reference converted to a virtual reference (`iexpCoerceShape`,
 the `ConvSubtype` case), whose table of code pointers LLVM's SPIR-V backend
-crashes on (its `SPIRV legalize pointer cast pass`); and an allocation, `new` or
+crashes on (its `SPIRV legalize pointer cast pass`); and an allocation, a construction or
 `trynew` of an owner (`allocateValueCheck`), whose allocator call becomes an
 import the Vulkan form does not allow (`Capability Linkage`). Also an owning
 reference type written at all, `Uni[T]`, `Rc[T]`, `Arc[imm, T]`, `Rc[Rwcell, T]`
 (`refTypeCheck` and `refvirtTypeCheck`, `refGpuOwnerCheck`), in any declaration but
-the type a `new` names, which `allocateValueCheck` reports as the allocation it
+the type a construction names, which `allocateValueCheck` reports as the allocation it
 is (`refNewTypeWritten`); a function reference can still arrive as a parameter
 of a function and be passed about, and nothing can make one.
 

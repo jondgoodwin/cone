@@ -111,7 +111,7 @@ pub fn jointLoadOf(j: &Joint, h: f32) (f32, f32) {
 }
 
 pub fn blankJoint(kind: i32, a: u32, b: u32) Joint {
-  new Joint(true, kind, a, b, false, zero3(), zero3(), Quat.identity(), Quat.identity(), false, 0., 0., false, 0., 0.,
+  Joint(true, kind, a, b, false, zero3(), zero3(), Quat.identity(), Quat.identity(), false, 0., 0., false, 0., 0.,
     0., 0., 0., 0.7853982, -0.7853982, 0.7853982, zero3(), zero3(), 0., 0., 0., 0., 0., 0., 0.,
     false, Quat.identity(), 0., 1., 0., zero3(), false, zero3(), zero3(), 0., 0., 0., 0., 0., zero3())
 }
@@ -136,7 +136,7 @@ pub fn jointState(w: &World, j: &Joint) JState {
   let bB = w.bodies[usize.from(j.b)];
   let rA = bA.rot * j.la;
   let rB = bB.rot * j.lb;
-  new JState(usize.from(j.a), usize.from(j.b), bA.invMass, bB.invMass, bA.invInertia, bB.invInertia, rA, rB,
+  JState(usize.from(j.a), usize.from(j.b), bA.invMass, bB.invMass, bA.invInertia, bB.invInertia, rA, rB,
     (bB.pos + rB) - (bA.pos + rA), (bA.rot * j.fa).normalize(), (bB.rot * j.fb).normalize())
 }
 
@@ -150,9 +150,9 @@ pub struct RowBias {
 // A one-sided row at a limit with 'c' of room (negative: past it): inside the
 // room the row only stops the motion that would use it up in a sub-step
 pub fn limitRow(c: f32, useBias: bool, soft: Softness, invH: f32) RowBias {
-  if c > 0. { return new RowBias(c * invH, 1., 0.); }
-  if useBias { return new RowBias(soft.biasRate * c, soft.massScale, soft.impulseScale); }
-  new RowBias(0., 1., 0.)
+  if c > 0. { return RowBias(c * invH, 1., 0.); }
+  if useBias { return RowBias(soft.biasRate * c, soft.massScale, soft.impulseScale); }
+  RowBias(0., 1., 0.)
 }
 
 fn kPoint(s: &JState) Mat3 {
@@ -228,7 +228,7 @@ pub fn hingeAngle(w: &World, j: &Joint) f32 {
 // The slide of a slider joint, metres (0 where it was made)
 pub fn sliderOffset(w: &World, j: &Joint) f32 {
   let s = jointState(w, j);
-  s.d.dot(s.fa * new Vec3(1., 0., 0.))
+  s.d.dot(s.fa * Vec3(1., 0., 0.))
 }
 
 // ---------------------------------------------------------------------------
@@ -237,7 +237,7 @@ pub fn sliderOffset(w: &World, j: &Joint) f32 {
 pub fn warmStartJoint(w: &mut World, ji: usize) {
   let j = w.joints[ji];
   let s = jointState(w, j);
-  let ax = s.fa * new Vec3(1., 0., 0.);
+  let ax = s.fa * Vec3(1., 0., 0.);
   if j.kind == JointPoint || j.kind == JointFixed || j.kind == JointHinge || j.kind == JointConeTwist {
     linApplyVec(w, &s, j.impPoint, s.rA, s.rB);
   }
@@ -254,12 +254,12 @@ pub fn warmStartJoint(w: &mut World, ji: usize) {
   }
   if j.kind == JointDistance {
     let len = s.d.length();
-    let n = if len > 0.000001 { s.d * (1. / len) } else { new Vec3(1., 0., 0.) };
+    let n = if len > 0.000001 { s.d * (1. / len) } else { Vec3(1., 0., 0.) };
     linApply(w, &s, n, s.rA, s.rB, j.impDist + j.impLo - j.impHi);
   }
   if j.kind == JointConeTwist {
-    let xa = s.fa * new Vec3(1., 0., 0.);
-    let xb = s.fb * new Vec3(1., 0., 0.);
+    let xa = s.fa * Vec3(1., 0., 0.);
+    let xb = s.fb * Vec3(1., 0., 0.);
     let sw = xa.cross(xb);
     if j.ellOn { angApply(w, &s, j.ellDir, j.impEll); }
     else if sw.length() > 0.00001 { angApply(w, &s, sw.normalize() * -1., j.impSwing); }
@@ -290,7 +290,7 @@ fn solveOrientationBlock(w: &mut World, ji: usize, s: &JState, useBias: bool, so
   let j = &mut w.joints[ji];
   let q0 = relRot(s);
   let sg = if q0.w < 0. { -1.f } else { 1. };
-  let err = (s.fa * new Vec3(q0.x, q0.y, q0.z)) * (2. * sg);
+  let err = (s.fa * Vec3(q0.x, q0.y, q0.z)) * (2. * sg);
   let jv = w.bodies[s.ib].angVel - w.bodies[s.ia].angVel;
   let kinv = mat3Add(s.iA, s.iB).inverse();
   let bias = if useBias { err * soft.biasRate } else { zero3() };
@@ -312,7 +312,7 @@ fn solveDrive(w: &mut World, ji: usize, s: &JState, h: f32) {
   let j = &mut w.joints[ji];
   let q0 = (relRot(s) * j.driveTarget.conjugate()).normalize();
   let sg = if q0.w < 0. { -1.f } else { 1. };
-  let err = (s.fa * new Vec3(q0.x, q0.y, q0.z)) * (2. * sg);
+  let err = (s.fa * Vec3(q0.x, q0.y, q0.z)) * (2. * sg);
   let jv = w.bodies[s.ib].angVel - w.bodies[s.ia].angVel;
   let kmat = mat3Add(s.iA, s.iB);
   let kinv = kmat.inverse();
@@ -340,8 +340,8 @@ fn solveDrive(w: &mut World, ji: usize, s: &JState, h: f32) {
 // A hinge keeps its two axes together: two angular rows perpendicular to A's axis
 fn solveHingeAlign(w: &mut World, ji: usize, s: &JState, useBias: bool, soft: Softness) {
   let j = &mut w.joints[ji];
-  let axA = s.fa * new Vec3(1., 0., 0.);
-  let axB = s.fb * new Vec3(1., 0., 0.);
+  let axA = s.fa * Vec3(1., 0., 0.);
+  let axB = s.fb * Vec3(1., 0., 0.);
   let c = axA.cross(axB);
   let u1 = perpendicular(axA);
   let u2 = axA.cross(u1);
@@ -363,7 +363,7 @@ fn solveHingeAlign(w: &mut World, ji: usize, s: &JState, useBias: bool, soft: So
 // A slider keeps B on A's axis: two linear rows perpendicular to it
 fn solveSliderPerp(w: &mut World, ji: usize, s: &JState, useBias: bool, soft: Softness) {
   let j = &mut w.joints[ji];
-  let ax = s.fa * new Vec3(1., 0., 0.);
+  let ax = s.fa * Vec3(1., 0., 0.);
   let u1 = perpendicular(ax);
   let u2 = ax.cross(u1);
   let armA = s.rA + s.d;
@@ -436,7 +436,7 @@ fn solveLinearLimits(w: &mut World, ji: usize, s: &JState, axis: Vec3, pos: f32,
 fn solveDistance(w: &mut World, ji: usize, s: &JState, useBias: bool, soft: Softness, invH: f32, h: f32) {
   let j = &mut w.joints[ji];
   let len = s.d.length();
-  let n = if len > 0.000001 { s.d * (1. / len) } else { new Vec3(1., 0., 0.) };
+  let n = if len > 0.000001 { s.d * (1. / len) } else { Vec3(1., 0., 0.) };
   let km = invOrZero(linK(s, n, s.rA, s.rB));
   // the rod or spring toward 'length'
   if j.lower == j.upper || j.hertz > 0. {
@@ -518,8 +518,8 @@ fn solveEllipse(w: &mut World, ji: usize, s: &JState, xa: Vec3, xb: Vec3, useBia
 fn solveConeTwist(w: &mut World, ji: usize, s: &JState, useBias: bool, soft: Softness, invH: f32) {
   let j = &mut w.joints[ji];
   // swing: the angle between the two x axes may not pass the cone
-  let xa = s.fa * new Vec3(1., 0., 0.);
-  let xb = s.fb * new Vec3(1., 0., 0.);
+  let xa = s.fa * Vec3(1., 0., 0.);
+  let xb = s.fb * Vec3(1., 0., 0.);
   let sw = xa.cross(xb);
   let swl = sw.length();
   if j.ellOn {
@@ -562,12 +562,12 @@ pub fn solveJoint(w: &mut World, ji: usize, useBias: bool, invH: f32, h: f32, so
     solveOrientationBlock(w, ji, &s, useBias, soft);
     solvePointBlock(w, ji, &s, useBias, soft);
   } else if kind == JointHinge {
-    let ax = s.fa * new Vec3(1., 0., 0.);
+    let ax = s.fa * Vec3(1., 0., 0.);
     solveAngularLimits(w, ji, &s, ax, twistOf(relRot(&s)), useBias, soft, invH, h);
     solveHingeAlign(w, ji, &s, useBias, soft);
     solvePointBlock(w, ji, &s, useBias, soft);
   } else if kind == JointSlider {
-    let ax = s.fa * new Vec3(1., 0., 0.);
+    let ax = s.fa * Vec3(1., 0., 0.);
     solveLinearLimits(w, ji, &s, ax, s.d.dot(ax), s.rA + s.d, useBias, soft, invH, h);
     solveOrientationBlock(w, ji, &s, useBias, soft);
     solveSliderPerp(w, ji, &s, useBias, soft);

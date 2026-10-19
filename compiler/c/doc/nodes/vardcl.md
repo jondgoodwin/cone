@@ -266,7 +266,7 @@ name becomes and
 `cloneFieldDclNode`'s `memcpy` included, so nothing reaches that laxity; a
 default is always required to be a literal, folded and judged after coercion
 as a global's or a constant's is, since it is type check that makes a
-construction (`new E(1, 2)`) or an array's fill the literal `litIsLiteral`
+construction (`E(1, 2)`) or an array's fill the literal `litIsLiteral`
 accepts, and the fold that makes `R | G` one, but a
 default that is a sibling field's bare name is refused as non-literal before
 type check, which with no `self` around a default could only report there is
@@ -292,7 +292,7 @@ owning reference a dereference reads through — `&mk()`, `&mk().n`,
 `&*mkso()`, never a place reached through a borrowed reference or a pointer);
 so is the owner a recast lends there as a borrow (`let r: &R = mkso()`, read as
 Rust's `&*`). A call's arguments, a method's receiver, a block's statements
-before its final expression and a construction's arguments (`new H(..)`) are
+before its final expression and a construction's arguments (`H(..)`) are
 not extending.
 
 An extended temporary becomes a **hidden local** of the block: a `VarDclNode`

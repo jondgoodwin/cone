@@ -8,7 +8,7 @@ a struct, a method and a call that already mean what they mean.
 it. Name resolution (`closureNameRes`) resolves its parts and notes what its
 body names of the code around it. Type check (`closureTypeCheck`) builds the
 hidden struct, tries the body to find the permissions, and turns the literal into
-`new Hidden(...)`. A name inside the body that names something the closure
+`Hidden(...)`. A name inside the body that names something the closure
 holds is rewritten to the field's access as the body is checked
 (`closureUse`).
 
@@ -122,7 +122,7 @@ function. (`selfmethod` stays reserved.)
    body holds; its parameters are the literal's after a `self` of the struct, its
    body the literal's block. It is checked as any struct is, the method from the
    members queue.
-5. **The literal becomes `new Hidden(state values, &variables)`**, with its
+5. **The literal becomes `Hidden(state values, &variables)`**, with its
    arguments already checked (`typeLitNewArgsChecked`).
 
 **A name in the body is a field.** `nameUseTypeCheck` asks `closureUse` first: a
@@ -221,13 +221,13 @@ trait that already exists.
   carries the parameter's permission, so a literal that changes a variable is a
   `self: &mut` struct behind a `&` and is refused by the callable's own message. A
   literal anywhere else is not lent: to keep one it is moved into an owner.
-- **An owner.** `new Uni[fn(sig)](c)` (`typeLitNewCallable`) takes one value, checks
+- **An owner.** `Uni[fn(sig)](c)` (`typeLitNewCallable`) takes one value, checks
   it against the signature's hint if it is a literal, allocates that value's own
   type and converts the owner to the callable's. **A callable that holds nothing**
   (a zero-size struct) is allocated as any other: the allocation of a value with no
   size asks the region for one byte (`genlallocref`; `allocateZeroSizeOk` lets the
   value check pass only here), and it is freed as any block is, with nothing
-  special at its death. **A plain function** (`new Uni[fn(sig)](&f)`) is held by a
+  special at its death. **A plain function** (`Uni[fn(sig)](&f)`) is held by a
   struct of the compiler's, `closureFnHolder`: one field, the function reference,
   and a `()` that calls it, made as a closure's struct is and owned like it; a
   function whose signature does not meet the callable's (`fnSigMeets`, the one rule:
@@ -272,7 +272,7 @@ method is named for the trait's method, not `()` (`ClosurePlan.method`,
   The instance's `S` is the hidden struct, which meets the bound structurally.
 - **A borrowed reference to the trait** (`&<Shape`, `&<mut Shape`): lent as a
   temporary, as a callable reference is (`fnCallLendParm`).
-- **An owner** (`new Uni[Shape](literal)`): `typeLitNewCallable`, the callable's
+- **An owner** (`Uni[Shape](literal)`): `typeLitNewCallable`, the callable's
   making, for any trait when the one argument is a literal.
 
 A trait with other than one required method, or with a field, is `ErrorClosureTrait`,
@@ -413,7 +413,7 @@ says so, and the object defines the hidden struct's methods, internally
 | `ir/types/struct.c` | `structInheritDefaults` | the trait's default methods cloned into the hidden struct |
 | `ir/exp/fncall.c` | `fnCallLendParm`, `fnCallClosureTraitRefused` | `&<Shape` takes a lent literal; a trait without exactly one required method, or with a field, refuses it |
 | `ir/meta/generic.c` | `genericParmTraitBound` | the plain trait that bounds a parameter a literal is given to |
-| `ir/exp/typelit.c` | `typeLitNewCallable` | `new Uni[fn(sig)](c)` |
+| `ir/exp/typelit.c` | `typeLitNewCallable` | `Uni[fn(sig)](c)` |
 | `genllvm/genltype.c` | `genlFnStubVtable` | the vtable of a plain function's reference |
 | `shared/error.c` | `errorTrialBegin`, `errorTrialEnd`, `errorLoudBegin`, `errorsOwn` | a trial's diagnostics counted and not printed; the loud window of a declaration it did not make |
 | `ir/exp/closure.c` | `closureTrialOwns` | whether a declaration was made by the trial now open |

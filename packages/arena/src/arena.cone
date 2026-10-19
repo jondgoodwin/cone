@@ -8,8 +8,8 @@
 //
 //   fn build() {
 //     mut a = Arena.empty();
-//     imm root = a.alloc(new Node(0, null));
-//     imm leaf = a.alloc(new Node(1, root as *Node));
+//     imm root = a.alloc(Node(0, null));
+//     imm leaf = a.alloc(Node(1, root as *Node));
 //     ...
 //   }   // 'a' dies here: leaf's death, then root's, then the blocks
 //
@@ -37,7 +37,7 @@
 //     mut s = Arena.empty();                 // the scratch
 //     imm seen = s.alloc(List[&mut Tally].empty());
 //     ...count(&mut s, seen, word)...        // lent to the functions that work
-//     new Answer(best.word.copy(), seen.len());  // only values of its own leave
+//     Answer(best.word.copy(), seen.len());  // only values of its own leave
 //   }   // every value in 's' dies here, then its blocks are freed
 //
 // An allocation loans nothing of the arena: Arena declares 'NoLoanMut' (a
@@ -50,7 +50,7 @@
 // (test/cases/region/region_flow_arena_freeze.cone).
 //
 // A borrow into a scratch held inside another value is checked as the bare
-// borrow is: returning 'new Holder(a.alloc(v))', an 'Option' holding one, or
+// borrow is: returning 'Holder(a.alloc(v))', an 'Option' holding one, or
 // one read back out of a list ('*seen[0usize]') is refused, and so is keeping
 // such a value past the scratch and using it.
 //
@@ -70,8 +70,8 @@
 //   fn build(n i32) Chain['=a] {
 //     mut ar = DynArena.empty();          // a brand of its own
 //     mut head Option[&'=a mut Node['=a]] = None[&'=a mut Node['=a]];
-//     ...head = Some(ar.alloc(new Node(i, head)));...   // keys, not borrows
-//     new Chain(ar, head);                // the arena leaves with its keys
+//     ...head = Some(ar.alloc(Node(i, head)));...   // keys, not borrows
+//     Chain(ar, head);                // the arena leaves with its keys
 //   }
 //
 //   fn sum(c &Chain['=a]) i32 { ... c.ar[key].val ... c.ar[key].next ... }
@@ -236,19 +236,19 @@ struct ArenaCore is GcTraceElements {
   // 'run', called with its address when the arena dies.
   fn linkFinal(self: &mut, at: *u8, run: &fn(p: *u8)) {
     let node = (at as usize - mem.sizeof[FinalNode]()) as *FinalNode;
-    mem.writeRaw(node, new FinalNode(finals, run));
+    mem.writeRaw(node, FinalNode(finals, run));
     finals = node;
     nfinals = nfinals + 1usize;
   }
 
   // The values it holds that need tracing, for a collector (see Arena.gcTraceElements)
-  pub fn gcTraceElements(self: &mut) ArenaGcTraceItems { new ArenaGcTraceItems(traced) }
+  pub fn gcTraceElements(self: &mut) ArenaGcTraceItems { ArenaGcTraceItems(traced) }
 
   // A new arena state: no block yet, the three region functions set
   fn make() *MemRegion {
     let core = libc.malloc(mem.sizeof[ArenaCore]()) as *ArenaCore;
     if core as usize == 0usize { panic("arena: out of memory for an arena"); }
-    mem.writeRaw(core, new ArenaCore(new MemRegion(&regionAlloc, &regionResize, &regionRelease),
+    mem.writeRaw(core, ArenaCore(MemRegion(&regionAlloc, &regionResize, &regionRelease),
       null, 0usize, 0usize, null, 0usize, 0usize, null, 0usize));
     core as *MemRegion
   }
@@ -257,7 +257,7 @@ struct ArenaCore is GcTraceElements {
   // allocated here, and put first on the list
   fn noteTraced(self: &mut, p: *u8, rec: *TypeRecord) {
     let node = self.place(mem.sizeof[GcTraceNode](), mem.alignof[GcTraceNode]()) as *GcTraceNode;
-    mem.writeRaw(node, new GcTraceNode(traced, p, rec));
+    mem.writeRaw(node, GcTraceNode(traced, p, rec));
     traced = node;
     ntraced = ntraced + 1usize;
   }
@@ -358,7 +358,7 @@ pub struct Arena is NoLoanMut, GcTraceElements {
 
   // An arena holding nothing, with no block until the first value arrives
   pub fn empty() Arena {
-    new Arena(ArenaCore.make())
+    Arena(ArenaCore.make())
   }
 
   // An arena holding nothing yet, whose first block is allocated now, with
@@ -368,7 +368,7 @@ pub struct Arena is NoLoanMut, GcTraceElements {
     let region = ArenaCore.make();
     let core = coreOf(region);
     core.grow(bytes);
-    new Arena(region)
+    Arena(region)
   }
 
   // Move value into the arena, and a reference to it there. The reference is
@@ -437,13 +437,13 @@ pub struct DynArena['=a] is NoLoanMut {
   // parameter, so each call mints a fresh one for its caller
   pub fn empty() DynArena['=a] {
     let a = Arena.empty();
-    new DynArena(a.region, a)
+    DynArena(a.region, a)
   }
 
   // The same, its first block allocated now with room for 'bytes' of values
   pub fn withRoom(bytes: usize) DynArena['=a] {
     let a = Arena.withRoom(bytes);
-    new DynArena(a.region, a)
+    DynArena(a.region, a)
   }
 
   // Move value into the arena, and a key to it there: good for as long as
@@ -488,7 +488,7 @@ fn newBlock(prev: *Block, room: usize) *Block {
   }
   let blk = RawBlocks.alloc(mem.sizeof[Block]() + room, 16usize) as *Block;
   if blk as usize == 0usize { panic("arena: out of memory for a block"); }
-  mem.writeRaw(blk, new Block(prev));
+  mem.writeRaw(blk, Block(prev));
   blk
 }
 

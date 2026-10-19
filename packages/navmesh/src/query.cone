@@ -25,7 +25,7 @@ pub struct QueryFilter {
   pub cost: List[f32];     // sixteen areas
 
   pub fn standard() QueryFilter {
-    var f = new QueryFilter(65535u32, 0u32, List[f32].withCapacity(16usize));
+    var f = QueryFilter(65535u32, 0u32, List[f32].withCapacity(16usize));
     var i = 0usize;
     while i < 16usize { f.cost.push(1.); i = i + 1usize; }
     f
@@ -104,12 +104,12 @@ fn polyHeight(tile: &Tile, p: usize, x: f32, z: f32) HeightHit {
       let v = (d00x * pz - d00z * px) / den;
       let e = 0.0001f;
       if u >= -e && v >= -e && u + v <= 1. + e {
-        return new HeightHit(true, v0.y + (v1.y - v0.y) * u + (v2.y - v0.y) * v);
+        return HeightHit(true, v0.y + (v1.y - v0.y) * u + (v2.y - v0.y) * v);
       }
     }
     k = k + 1usize;
   }
-  new HeightHit(false, 0.)
+  HeightHit(false, 0.)
 }
 
 pub struct ClosestPoint {
@@ -122,7 +122,7 @@ pub struct ClosestPoint {
 fn closestOnPoly(tile: &Tile, p: usize, pos: Vec3) ClosestPoint {
   if polyPointInside(tile, p, pos) {
     let h = polyHeight(tile, p, pos.x, pos.z);
-    if h.ok { return new ClosestPoint(new Vec3(pos.x, h.y, pos.z), true); }
+    if h.ok { return ClosestPoint(Vec3(pos.x, h.y, pos.z), true); }
   }
   let nv = usize.from(*tile.pcount[p]);
   var best = 3.4e38f;
@@ -140,7 +140,7 @@ fn closestOnPoly(tile: &Tile, p: usize, pos: Vec3) ClosestPoint {
     j = i;
     i = i + 1usize;
   }
-  new ClosestPoint(bp, false)
+  ClosestPoint(bp, false)
 }
 
 pub struct Nearest {
@@ -152,7 +152,7 @@ pub struct Nearest {
 // The polygon nearest 'center' within the box of half extents (hx, hy, hz)
 // whatever its area
 pub fn nearestPolyRaw(nav: &NavMesh, center: Vec3, hx: f32, hy: f32, hz: f32) Nearest {
-  var best = new Nearest(false, NoRef, center);
+  var best = Nearest(false, NoRef, center);
   var bestD = 3.4e38;
   let tw = nav.tileWorld();
   let tx0 = imax(0i32, i32.from(floorf((center.x - hx - nav.origin.x) / tw)));
@@ -183,7 +183,7 @@ pub fn nearestPolyRaw(nav: &NavMesh, center: Vec3, hx: f32, hy: f32, hz: f32) Ne
             }
             if d < bestD {
               bestD = d;
-              best = new Nearest(true, nav.makeRef(ti, p), cp.pos);
+              best = Nearest(true, nav.makeRef(ti, p), cp.pos);
             }
           }
           p = p + 1usize;
@@ -198,7 +198,7 @@ pub fn nearestPolyRaw(nav: &NavMesh, center: Vec3, hx: f32, hy: f32, hz: f32) Ne
 
 // As above, but only polygons the filter lets through
 pub fn findNearestPoly(nav: &NavMesh, center: Vec3, hx: f32, hy: f32, hz: f32, filter: &QueryFilter) Nearest {
-  var best = new Nearest(false, NoRef, center);
+  var best = Nearest(false, NoRef, center);
   var bestD = 3.4e38;
   let tw = nav.tileWorld();
   let tx0 = imax(0i32, i32.from(floorf((center.x - hx - nav.origin.x) / tw)));
@@ -228,7 +228,7 @@ pub fn findNearestPoly(nav: &NavMesh, center: Vec3, hx: f32, hy: f32, hz: f32, f
             }
             if d < bestD {
               bestD = d;
-              best = new Nearest(true, nav.makeRef(ti, p), cp.pos);
+              best = Nearest(true, nav.makeRef(ti, p), cp.pos);
             }
           }
           p = p + 1usize;
@@ -294,18 +294,18 @@ pub fn getPortal(nav: &NavMesh, from: u64, to: u64) PortalFound {
       let v0 = tile.vertOf(p, usize.from(l.edge));
       let v1 = tile.vertOf(p, (usize.from(l.edge) + 1usize) % nv);
       if l.side >= 0i32 && (l.tmin > 0. || l.tmax < 1.) {
-        return new PortalFound(true, v0.lerp(v1, l.tmin), v0.lerp(v1, l.tmax), false, -1i32);
+        return PortalFound(true, v0.lerp(v1, l.tmin), v0.lerp(v1, l.tmax), false, -1i32);
       }
-      return new PortalFound(true, v0, v1, false, -1i32);
+      return PortalFound(true, v0, v1, false, -1i32);
     }
     k = k + 1i32;
   }
   let oc = offMeshBetween(nav, from, to);
   if oc >= 0i32 {
     let c = nav.off[usize.from(oc)];
-    return new PortalFound(true, c.posA, c.posB, true, oc);
+    return PortalFound(true, c.posA, c.posB, true, oc);
   }
-  new PortalFound(false, new Vec3(0., 0., 0.), new Vec3(0., 0., 0.), false, -1i32)
+  PortalFound(false, Vec3(0., 0., 0.), Vec3(0., 0., 0.), false, -1i32)
 }
 
 // ---- A* ----
@@ -316,7 +316,7 @@ pub struct PathResult {
   pub polys: List[u64];
   pub cost: f32;
 
-  pub fn none() PathResult { new PathResult(false, false, List[u64].empty(), 0.) }
+  pub fn none() PathResult { PathResult(false, false, List[u64].empty(), 0.) }
 }
 
 struct Node {
@@ -344,7 +344,7 @@ pub fn findPath(nav: &NavMesh, startRef: u64, endRef: u64, startPos: Vec3, endPo
   var index = Dict[u64, i32].empty();
   var open = MinHeap.empty();
   let hScale = 0.999f;
-  nodes.push(new Node(startPos, 0., startPos.distance(endPos) * hScale, -1i32, startRef, false));
+  nodes.push(Node(startPos, 0., startPos.distance(endPos) * hScale, -1i32, startRef, false));
   index.insert(startRef, 0i32);
   open.push((*nodes[0usize]).total, 0u32);
   var lastBest = 0i32;
@@ -354,7 +354,7 @@ pub fn findPath(nav: &NavMesh, startRef: u64, endRef: u64, startPos: Vec3, endPo
     let top = open.pop();
     let ci = usize.from(top.id);
     if (*nodes[ci]).closed { continue; }
-    nodes.set(ci, new Node((*nodes[ci]).pos, (*nodes[ci]).cost, (*nodes[ci]).total, (*nodes[ci]).parent, (*nodes[ci]).ref, true));
+    nodes.set(ci, Node((*nodes[ci]).pos, (*nodes[ci]).cost, (*nodes[ci]).total, (*nodes[ci]).parent, (*nodes[ci]).ref, true));
     let cur = *nodes[ci];
     if cur.ref == endRef { endNode = i32.from(ci); break; }
     let tile = nav.tiles[usize.from(nav.refTile(cur.ref))];
@@ -419,10 +419,10 @@ pub fn findPath(nav: &NavMesh, startRef: u64, endRef: u64, startPos: Vec3, endPo
       if ni >= 0i32 {
         let old = *nodes[usize.from(ni)];
         if total >= old.total { continue; }
-        nodes.set(usize.from(ni), new Node(npos, cost, total, i32.from(ci), nref, false));
+        nodes.set(usize.from(ni), Node(npos, cost, total, i32.from(ci), nref, false));
       } else {
         ni = i32.from(nodes.len());
-        nodes.push(new Node(npos, cost, total, i32.from(ci), nref, false));
+        nodes.push(Node(npos, cost, total, i32.from(ci), nref, false));
         index.insert(nref, ni);
       }
       open.push(total, u32.from(ni));
@@ -475,9 +475,9 @@ pub fn findStraightPath(nav: &NavMesh, start: Vec3, end: Vec3, path: &List[u64],
   if path.len() == 0usize { return out; }
   let cs = closestPointOnPoly(nav, *path[0usize], start).pos;
   let ce = closestPointOnPoly(nav, *path[path.len() - 1usize], end).pos;
-  out.push(new StraightPoint(cs, StraightStart, *path[0usize]));
+  out.push(StraightPoint(cs, StraightStart, *path[0usize]));
   if path.len() == 1usize {
-    out.push(new StraightPoint(ce, StraightEnd, NoRef));
+    out.push(StraightPoint(ce, StraightEnd, NoRef));
     return out;
   }
   // the portals, an off-mesh move being two points
@@ -487,14 +487,14 @@ pub fn findStraightPath(nav: &NavMesh, start: Vec3, end: Vec3, path: &List[u64],
     let pf = getPortal(nav, *path[i], *path[i + 1usize]);
     if !pf.ok { break; }
     if pf.off {
-      portals.push(new FunnelPortal(pf.left, pf.left, true, *path[i + 1usize]));
-      portals.push(new FunnelPortal(pf.right, pf.right, true, *path[i + 1usize]));
+      portals.push(FunnelPortal(pf.left, pf.left, true, *path[i + 1usize]));
+      portals.push(FunnelPortal(pf.right, pf.right, true, *path[i + 1usize]));
     } else {
-      portals.push(new FunnelPortal(pf.left, pf.right, false, *path[i + 1usize]));
+      portals.push(FunnelPortal(pf.left, pf.right, false, *path[i + 1usize]));
     }
     i = i + 1usize;
   }
-  portals.push(new FunnelPortal(ce, ce, false, NoRef));
+  portals.push(FunnelPortal(ce, ce, false, NoRef));
   var apex = cs;
   var left = cs;
   var right = cs;
@@ -559,11 +559,11 @@ fn addStraight(out: &mut List[StraightPoint], pos: Vec3, flags: u8, ref: u64) {
   if out.len() > 0usize {
     let last = *out[out.len() - 1usize];
     if last.pos.distanceSquared(pos) < 0.000001 {
-      out.set(out.len() - 1usize, new StraightPoint(last.pos, last.flags | flags, ref));
+      out.set(out.len() - 1usize, StraightPoint(last.pos, last.flags | flags, ref));
       return;
     }
   }
-  out.push(new StraightPoint(pos, flags, ref));
+  out.push(StraightPoint(pos, flags, ref));
 }
 
 // The whole thing from two points: nearest polygons, A*, the funnel. The
@@ -578,7 +578,7 @@ pub struct Route {
 }
 
 pub fn findRoute(nav: &NavMesh, start: Vec3, end: Vec3, halfExtents: Vec3, filter: &QueryFilter) Route {
-  var r = new Route(false, false, List[StraightPoint].empty(), List[u64].empty(), 0.);
+  var r = Route(false, false, List[StraightPoint].empty(), List[u64].empty(), 0.);
   let s = findNearestPoly(nav, start, halfExtents.x, halfExtents.y, halfExtents.z, filter);
   let e = findNearestPoly(nav, end, halfExtents.x, halfExtents.y, halfExtents.z, filter);
   if !s.found || !e.found { return r; }
@@ -630,34 +630,34 @@ fn segmentPoly2D(p: Vec3, q: Vec3, tile: &Tile, poly: usize) SegPoly {
     let n = ez * ddx - ex * ddz;
     let d = dz * ex - dx * ez;
     if absf(d) < 0.000001 {
-      if n < 0. { return new SegPoly(false, 0., 0., -1i32, -1i32); }
+      if n < 0. { return SegPoly(false, 0., 0., -1i32, -1i32); }
     } else {
       let t = n / d;
       if d < 0. {
         if t > tmin {
           tmin = t;
           segMin = i32.from(j);
-          if tmin > tmax { return new SegPoly(false, 0., 0., -1i32, -1i32); }
+          if tmin > tmax { return SegPoly(false, 0., 0., -1i32, -1i32); }
         }
       } else {
         if t < tmax {
           tmax = t;
           segMax = i32.from(j);
-          if tmax < tmin { return new SegPoly(false, 0., 0., -1i32, -1i32); }
+          if tmax < tmin { return SegPoly(false, 0., 0., -1i32, -1i32); }
         }
       }
     }
     j = i;
     i = i + 1usize;
   }
-  new SegPoly(true, tmin, tmax, segMin, segMax)
+  SegPoly(true, tmin, tmax, segMin, segMax)
 }
 
 // A segment from 'start' (in polygon 'startRef') to 'end' walked through
 // the polygons it crosses until a wall (or an area the filter refuses)
 // stops it. Detour's dtNavMeshQuery::raycast without the cost
 pub fn raycast(nav: &NavMesh, startRef: u64, start: Vec3, end: Vec3, filter: &QueryFilter) RayHit {
-  var hit = new RayHit(3.4e38, new Vec3(0., 0., 0.), false, List[u64].empty());
+  var hit = RayHit(3.4e38, Vec3(0., 0., 0.), false, List[u64].empty());
   if !nav.isValid(startRef) { return hit; }
   var cur = startRef;
   var guard = 0i32;
@@ -715,7 +715,7 @@ pub fn raycast(nav: &NavMesh, startRef: u64, start: Vec3, end: Vec3, filter: &Qu
       let len = (ex * ex + ez * ez).sqrt();
       // the polygon winds counterclockwise seen from above, so the outward normal of
       // an edge is its direction turned a quarter the other way
-      hit.normal = new Vec3(-ez / len, 0., ex / len);
+      hit.normal = Vec3(-ez / len, 0., ex / len);
       hit.t = tmax;
       hit.hit = true;
       return hit;
@@ -741,7 +741,7 @@ pub struct MoveResult {
 // The point reached by moving from 'startPos' towards 'endPos' along the
 // mesh, sliding along walls, and the polygons passed (Detour's moveAlongSurface)
 pub fn moveAlongSurface(nav: &NavMesh, startRef: u64, startPos: Vec3, endPos: Vec3, filter: &QueryFilter, maxVisited: usize) MoveResult {
-  var res = new MoveResult(startPos, List[u64].empty());
+  var res = MoveResult(startPos, List[u64].empty());
   if !nav.isValid(startRef) { return res; }
   let searchPos = startPos.lerp(endPos, 0.5);
   let searchRad = startPos.distance(endPos) * 0.5 + 0.001;
@@ -816,6 +816,6 @@ pub fn moveAlongSurface(nav: &NavMesh, startRef: u64, startPos: Vec3, endPos: Ve
   // the height of the surface there
   let last = *res.visited[res.visited.len() - 1usize];
   let hh = polyHeightAt(nav, last, bestPos);
-  res.pos = if hh.ok { new Vec3(bestPos.x, hh.y, bestPos.z) } else { bestPos };
+  res.pos = if hh.ok { Vec3(bestPos.x, hh.y, bestPos.z) } else { bestPos };
   res
 }

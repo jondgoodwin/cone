@@ -12,7 +12,7 @@
 //     args.push(String.from("-o"));
 //     args.push(String.from("build/debug"));
 //     args.push(String.from("app.conebuild"));
-//     match process.run(args.view(), new process.Options(timeout: Duration.fromSeconds(60))) {
+//     match process.run(args.view(), process.Options(timeout: Duration.fromSeconds(60))) {
 //       case imm ok Ok {
 //         imm o = &ok;
 //         if o.timedOut { ... }                  // stopped after 60 s
@@ -44,7 +44,7 @@
 //
 // **Paths.** A folder is a 'path' package 'Path': the working folder is the
 // last parameter of 'run' and 'runLine', a '&Path' that defaults to "", the
-// current folder ('process.run(args, new Options(), "build")': a string literal
+// current folder ('process.run(args, Options(), "build")': a string literal
 // there is made a Path for the call, and a Path in a variable is lent, not given
 // away). It is a parameter, not a field of Options, since a field's default
 // must be a constant and a Path cannot be one (a parameter's default literal is
@@ -448,7 +448,7 @@ pub struct ProcessError {
 fn invalidParameter() u32 { if isWindows() {errorInvalidParameter} else {errnoInvalid} }
 
 fn failure(op: &str, program: &str, dir: &Path, code: u32) ProcessError {
-  new ProcessError(String.from(op), String.from(program), dir.copy(), code)
+  ProcessError(String.from(op), String.from(program), dir.copy(), code)
 }
 
 // The system's text for an error number: Windows' own (in English where it
@@ -460,7 +460,7 @@ fn systemText(code: u32) String {
 // Windows' text for an error number, in English where the system has it,
 // with no line end or full stop; 'Windows error N' where it has none
 fn windowsText(code: u32) String {
-  var buf = new Array[u16, 512] <- fill 0u16;
+  var buf = Array[u16, 512]() <- fill 0u16;
   let bp: *u16 = &[]buf as *u16;
   var n = FormatMessageW(formatFromSystem, null, code, english, bp, 512u32, null);
   if n == 0u32 {
@@ -624,7 +624,7 @@ pub fn commandLine(args: &Array[String]) String {
 pub struct Options {
   // Stop it, and every program it started, once this has passed; zero (or
   // less) waits as long as it runs
-  pub timeout: time.Duration = new time.Duration();
+  pub timeout: time.Duration = time.Duration();
   // Share this program's standard input, output and error rather than
   // reading from NUL and capturing what it writes
   pub inherit: bool = false;
@@ -659,7 +659,7 @@ pub struct Output {
 // program that could not be started. It starts in 'dir', a Path lent or a
 // string literal (made one for the call), or in this program's current folder
 // when 'dir' is left out or empty.
-pub fn run(args: &Array[String], opts: Options = new Options(), dir: &Path = "") Result[Output, ProcessError] {
+pub fn run(args: &Array[String], opts: Options = Options(), dir: &Path = "") Result[Output, ProcessError] {
   if args.len == 0usize {
     return Error[Output, ProcessError](failure("run", "", dir, invalidParameter()));
   }
@@ -687,7 +687,7 @@ pub fn run(args: &Array[String], opts: Options = new Options(), dir: &Path = "")
 // Run a command line as it is, for a program that reads its own line by
 // rules of its own, as 'cmd /c' does (on POSIX, the shell's: '/bin/sh -c');
 // otherwise as 'run'
-pub fn runLine(line: &str, opts: Options = new Options(), dir: &Path = "") Result[Output, ProcessError] {
+pub fn runLine(line: &str, opts: Options = Options(), dir: &Path = "") Result[Output, ProcessError] {
   if hasByte(line, 0u8) {
     return Error[Output, ProcessError](failure("runLine", line, dir, invalidParameter()));
   }
@@ -714,7 +714,7 @@ struct Stream {
 }
 
 fn noStream() Stream {
-  new Stream(0usize, new Overlapped(0usize, 0usize, 0u32, 0u32, 0usize), null, String.empty(), false)
+  Stream(0usize, Overlapped(0usize, 0usize, 0u32, 0u32, 0usize), null, String.empty(), false)
 }
 
 // Each pipe a name of its own: this process, this thread, and a count
@@ -737,7 +737,7 @@ fn makePipe(s: &mut Stream) usize {
     let ours = CreateNamedPipeW(wname, pipeAccessInbound | flagOverlapped | flagFirstInstance,
       pipeRejectRemote, 1u32, pipeSize, pipeSize, 0u32, null);
     if ours != invalidHandle {
-      let sa = new SecurityAttributes(24u32, null, 1i32);
+      let sa = SecurityAttributes(24u32, null, 1i32);
       let theirs = CreateFileW(wname, genericWrite, 0u32, &sa, openExisting, 0u32, 0usize);
       libc.free(wname as *u8);
       let event = CreateEventW(null, 1i32, 0i32, null);
@@ -760,7 +760,7 @@ fn makePipe(s: &mut Stream) usize {
 
 // The NUL device, inheritable, to read from or write to
 fn openNul(access: u32) usize {
-  let sa = new SecurityAttributes(24u32, null, 1i32);
+  let sa = SecurityAttributes(24u32, null, 1i32);
   let wname = widen("NUL");
   let h = CreateFileW(wname, access, shareReadWrite, &sa, openExisting, 0u32, 0usize);
   libc.free(wname as *u8);
@@ -980,7 +980,7 @@ fn start(op: &str, program: &str, line: &str, dir: &Path, opts: Options) Result[
 
   // Only those three are inherited: no other handle this program has open,
   // a pipe another thread's run is making among them
-  var handles = new Array[usize, 3] <- fill 0usize;
+  var handles = Array[usize, 3]() <- fill 0usize;
   handles[0usize] = childIn;
   handles[1usize] = childOut;
   handles[2usize] = childErr;
@@ -1005,10 +1005,10 @@ fn start(op: &str, program: &str, line: &str, dir: &Path, opts: Options) Result[
     failed = false;
   }
 
-  var pi = new ProcessInformation(0usize, 0usize, 0u32, 0u32);
+  var pi = ProcessInformation(0usize, 0usize, 0u32, 0u32);
   let timed = opts.timeout > time.Duration.zero();
   if !failed {
-    var si = new StartupInfoEx(112u32, null, null, null,
+    var si = StartupInfoEx(112u32, null, null, null,
       0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32, useStdHandles, 0u16, 0u16, null,
       childIn, childOut, childErr, list);
     var flags = extendedStartupInfo;
@@ -1060,15 +1060,15 @@ fn start(op: &str, program: &str, line: &str, dir: &Path, opts: Options) Result[
   }
 
   // Run as this program's debuggee, its events are handled while it runs
-  var dbg = new Debuggee(!opts.crashReport, pi.hProcess, false, false,
-    new DebugEvent(0u32, 0u32, 0u32, new Array[u64, 20] <- fill 0u64));
+  var dbg = Debuggee(!opts.crashReport, pi.hProcess, false, false,
+    DebugEvent(0u32, 0u32, 0u32, Array[u64, 20]() <- fill 0u64));
 
   // Both outputs at once, so that a child blocked writing one is never
   // waiting on a reader blocked on the other
   var timedOut = false;
   if so.active { readNext(&mut so); }
   if se.active { readNext(&mut se); }
-  var events = new Array[usize, 2] <- fill 0usize;
+  var events = Array[usize, 2]() <- fill 0usize;
   let ep: *usize = &[]events as *usize;
   while so.active || se.active {
     if dbg.on { pump(&mut dbg, 0u32); }
@@ -1140,7 +1140,7 @@ fn start(op: &str, program: &str, line: &str, dir: &Path, opts: Options) Result[
   var err = String.empty();
   out <=> so.data;
   err <=> se.data;
-  Ok[Output, ProcessError](new Output(exitCode, 0u32, timedOut, out, err))
+  Ok[Output, ProcessError](Output(exitCode, 0u32, timedOut, out, err))
 }
 
 // ---------------------------------------------------------------------------
@@ -1220,7 +1220,7 @@ fn startPosix(op: &str, program: &str, args: &Array[String], dir: &Path, opts: O
       return Error[Output, ProcessError](failure(op, program, dir, errnoInvalid));
     }
     cdir = String.from(dir.view());
-    var st = new posix.Stat(0u64, 0u64, 0u16, 0u32, 0u32, 0u32, 0u64, 0i64, 0i64, 0i64, 0i64);
+    var st = posix.Stat(0u64, 0u64, 0u16, 0u32, 0u32, 0u32, 0u64, 0i64, 0i64, 0i64, 0i64);
     if posix.stat(cdir.cstr(), &mut st) != 0i32 {
       return Error[Output, ProcessError](failure(op, program, dir, u32.from(*libc.errno())));
     }
@@ -1258,14 +1258,14 @@ fn startPosix(op: &str, program: &str, args: &Array[String], dir: &Path, opts: O
   // The child's standard input from /dev/null and its output and error to
   // pipes of ours; close-on-exec, so no other program started meanwhile
   // holds them
-  var so = new Reader(-1i32, String.empty());
-  var se = new Reader(-1i32, String.empty());
-  var outFds = new Array[i32, 2] <- fill 0i32;
-  var errFds = new Array[i32, 2] <- fill 0i32;
+  var so = Reader(-1i32, String.empty());
+  var se = Reader(-1i32, String.empty());
+  var outFds = Array[i32, 2]() <- fill 0i32;
+  var errFds = Array[i32, 2]() <- fill 0i32;
   let outp: *i32 = &[]outFds as *i32;
   let errp: *i32 = &[]errFds as *i32;
-  var actions = new Array[u64, 32] <- fill 0u64;
-  var attr = new Array[u64, 64] <- fill 0u64;
+  var actions = Array[u64, 32]() <- fill 0u64;
+  var attr = Array[u64, 64]() <- fill 0u64;
   // (opaque to us, and aligned for the pointers they hold: a block of words)
   let aw: *u64 = &[]actions as *u64;
   let tw: *u64 = &[]attr as *u64;
@@ -1299,11 +1299,11 @@ fn startPosix(op: &str, program: &str, args: &Array[String], dir: &Path, opts: O
 
   // A crash that is not to be reported leaves no core dump for the system to
   // take: the limit is zero for the child, whose it becomes, and put back
-  var saved = new RLimit(0u64, 0u64);
+  var saved = RLimit(0u64, 0u64);
   var limited = false;
   if rc == 0i32 && !opts.crashReport {
     if getLimit(limitCore, &mut saved as *RLimit) == 0i32 {
-      var none = new RLimit(0u64, saved.hard);
+      var none = RLimit(0u64, saved.hard);
       setLimit(limitCore, &mut none as *RLimit);
       limited = true;
     }
@@ -1342,7 +1342,7 @@ fn startPosix(op: &str, program: &str, args: &Array[String], dir: &Path, opts: O
   // waiting on a reader blocked on the other
   var timedOut = false;
   let buf = libc.malloc(65536usize);
-  var polls = new Array[PollFd, 2] <- fill new PollFd(-1i32, pollIn, 0i16);
+  var polls = Array[PollFd, 2]() <- fill PollFd(-1i32, pollIn, 0i16);
   let pp: *PollFd = &[]polls as *PollFd;
   var reading = so.fd >= 0i32 || se.fd >= 0i32;
   while reading {
@@ -1401,7 +1401,7 @@ fn startPosix(op: &str, program: &str, args: &Array[String], dir: &Path, opts: O
   out <=> so.data;
   err <=> se.data;
   let exitCode = if timedOut {stoppedCode} else {exitStatus(status)};
-  Ok[Output, ProcessError](new Output(exitCode, signalOf(status), timedOut, out, err))
+  Ok[Output, ProcessError](Output(exitCode, signalOf(status), timedOut, out, err))
 }
 
 // ---------------------------------------------------------------------------
@@ -1415,7 +1415,7 @@ fn argsPosix() List[String] {
   let f = libc.fopen("/proc/self/cmdline", "rb");
   if f == null { return out; }
   var whole = String.empty();
-  var buf = new Array[u8, 4096] <- fill 0u8;
+  var buf = Array[u8, 4096]() <- fill 0u8;
   let bp: *u8 = &[]buf as *u8;
   var going = true;
   while going {

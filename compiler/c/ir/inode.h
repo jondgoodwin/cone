@@ -285,19 +285,21 @@ enum NodeTags {
 #define FlagRangeIncl 0x0100        // FnCall: the range's end is included ('..=')
 // A literal written in brackets that a '+' allocation takes as its value,
 // '+Rc-mut Node[1]'. The allocation is refused by allocateTypeCheck itself
-// (ErrorPlusAlloc, naming 'new Rc[mut, Node](...)'), so a struct's literal is
+// (ErrorPlusAlloc, naming 'Rc[mut, Node](...)'), so a struct's literal is
 // not refused again as any other bracket construction is (ErrorStructBracket).
 // Set by allocateTypeCheck. 0x0200 is a declaration's
 // FlagPub, and a FnCall is no declaration.
 #define FlagAllocValue 0x0200       // FnCall: a struct literal that is an allocation's value
-// A construction written with 'new', 'new Point(1, 2)'. Set by the parser
-// (parseNew) on the node holding the type and the arguments; type check keeps it
+// A construction, 'Point(1, 2)': a type's name with parentheses, or 'new a[T](1)'
+// in a dynamic region. Set by the parser (parseNew) for 'new' and 'trynew', and by
+// name resolution (fnCallConstructNameRes) on a call of a type, on the node
+// holding the type and the arguments; type check keeps it
 // on what the construction is lowered to: the struct's literal (TypeLitTag) for
 // its implicit 'init', or a call of a declared 'init' that fills the value in
 // place (FnCallTag), whose 'self' generation supplies (genlNew). 0x0800 because
 // a FnCall's own flags stop below it and the type flags that use it are never
 // read off an expression.
-#define FlagNew       0x0800        // FnCall, TypeLit: a construction, 'new T(...)'
+#define FlagNew       0x0800        // FnCall, TypeLit: a construction, 'T(...)'
 // An allocation that may fail, 'trynew Rc[mut, Node](1)', set by the parser
 // (parseNew) beside FlagNew. Name resolution hands the construction the
 // resolved 'Option' in its methfld, which a construction has no other use for
@@ -377,7 +379,7 @@ enum NodeTags {
 #define FlagLockGive  0x0001        // DropFlag: a statement giving a lock's guard back at its borrow's last use
 
 #define FlagQues      0x0001        // Alloc:  Does it return Option[T]?
-// An allocation whose value is an array's contents, 'new Rc[mut, Array[i32, 4]]
+// An allocation whose value is an array's contents, 'Rc[mut, Array[i32, 4]]()
 // <- fill 0': the array literal is not made before 'alloc' and stored, but
 // filled in place in the region's memory once it is had (genlallocref). Set by
 // typeLitNewFilled. 0x0002 is free on an allocation: no type flag uses it.

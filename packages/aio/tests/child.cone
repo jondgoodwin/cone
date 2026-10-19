@@ -71,7 +71,7 @@ fn codeOf(r: &Result[process.Output, IoError]) u64 {
 // The Output an answer holds, a blank one for a failure
 fn outputOf(r: Result[process.Output, IoError]) process.Output {
   var res = r;
-  var o = new process.Output(0u32, 0u32, false, String.empty(), String.empty());
+  var o = process.Output(0u32, 0u32, false, String.empty(), String.empty());
   match &mut res {
     case var ok &mut Ok {o <=> *ok;}
     else {}
@@ -144,12 +144,12 @@ actor Runner {
     }
     {
       let args = echoArgs();
-      let r = await aio.run(args.view(), new process.Options(), "aio-no-such-folder");
+      let r = await aio.run(args.view(), process.Options(), "aio-no-such-folder");
       out.send(endedBy(&r));
     }
     {
       let t = Instant.now();
-      let r = await aio.runLine(slowLine(4u64).view(), new process.Options(timeout: Duration.fromMillis(300i64)));
+      let r = await aio.runLine(slowLine(4u64).view(), process.Options(timeout: Duration.fromMillis(300i64)));
       let how = endedBy(&r);
       let o = outputOf(r);
       out.send(how);
@@ -195,7 +195,7 @@ actor Napper {
 // A child that holds a thread of the pool's lane for a second, then is stopped
 actor Holder {
   pub async do go(self, out: Sender[u64]) {
-    let r = await aio.runLine(slowLine(5u64).view(), new process.Options(timeout: Duration.fromMillis(1000i64)));
+    let r = await aio.runLine(slowLine(5u64).view(), process.Options(timeout: Duration.fromMillis(1000i64)));
     let how = endedBy(&r);
     let o = outputOf(r);
     out.send(b(how == 1u64 && o.timedOut));
@@ -206,7 +206,7 @@ actor Holder {
 actor Waiter {
   pub async do go(self, g: CancelGroup, out: Sender[u64]) {
     let t = Instant.now();
-    let r = await aio.runLineIn(slowLine(1u64).view(), new process.Options(), "", IoLimits.within(g));
+    let r = await aio.runLineIn(slowLine(1u64).view(), process.Options(), "", IoLimits.within(g));
     out.send(endedBy(&r));
     out.send(ms(t));
   }
@@ -216,7 +216,7 @@ actor Waiter {
 actor Deadliner {
   pub async do go(self, out: Sender[u64]) {
     let t = Instant.now();
-    let r = await aio.runLineIn(slowLine(5u64).view(), new process.Options(timeout: Duration.fromMillis(1500i64)), "",
+    let r = await aio.runLineIn(slowLine(5u64).view(), process.Options(timeout: Duration.fromMillis(1500i64)), "",
       IoLimits.until(t + Duration.fromMillis(100i64)));
     out.send(endedBy(&r));
     out.send(ms(t));
@@ -231,7 +231,7 @@ fn main() i32 {
   var tx: Sender[u64];
   var rx: Receiver[u64];
   tx, rx = Channel[u64].make();
-  let r = new Runner(tx.clone());
+  let r = Runner(tx.clone());
   r.basic();
 
   expectUInt(take(&mut rx), 1u64, "echo hello: Done");
@@ -259,7 +259,7 @@ fn main() i32 {
   {
     var k = 0u64;
     while k < 20u64 {
-      let e = new Echoer();
+      let e = Echoer();
       e.go(tx.clone());
       k = k + 1u64;
     }
@@ -275,9 +275,9 @@ fn main() i32 {
   expectUInt(said, 20u64, "twenty children at once: each Done, saying hello");
 
   // A child of a second, and a sleeper meanwhile
-  let slow = new Slow();
+  let slow = Slow();
   slow.go(tx.clone());
-  let nap = new Napper();
+  let nap = Napper();
   nap.go(tx.clone());
   expectUInt(take(&mut rx), 11u64, "a sleeper finishes while the child still runs");
   expectUInt(take(&mut rx), 12u64, "...and the child ends Done, exit code 0");
@@ -286,14 +286,14 @@ fn main() i32 {
   {
     var k = 0u64;
     while k < 4u64 {
-      let h = new Holder();
+      let h = Holder();
       h.go(tx.clone());
       k = k + 1u64;
     }
   }
   thread.sleep(Duration.fromMillis(300i64));
   let g = CancelGroup.make();
-  let w = new Waiter();
+  let w = Waiter();
   w.go(g, tx.clone());
   thread.sleep(Duration.fromMillis(150i64));
   expect(g.cancel(), "the group was live");
@@ -310,7 +310,7 @@ fn main() i32 {
   expectUInt(held, 4u64, "the four children were stopped by their timeouts, Done");
 
   // A running child under a deadline
-  let d = new Deadliner();
+  let d = Deadliner();
   d.go(tx.clone());
   expectUInt(take(&mut rx), 3u64, "a running child under a deadline: TimedOut");
   expect(take(&mut rx) < 1000u64, "...at the deadline, not when the child ended");

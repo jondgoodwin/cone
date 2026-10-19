@@ -166,7 +166,7 @@ struct TaskDeque {
 
 fn nullRec() *LoopRec {null}
 
-fn emptyTask() Task {new Task(nullRec(), 0usize, 0usize)}
+fn emptyTask() Task {Task(nullRec(), 0usize, 0usize)}
 
 fn noDone(arg: *u8) {}
 
@@ -293,7 +293,7 @@ fn runTask(s: *Sched, t: Task) {
   var hi = t.hi;
   while hi - t.lo > grain {
     let mid = t.lo + (hi - t.lo) / 2usize;
-    if !dequePush(d, new Task(rec, mid, hi)) {
+    if !dequePush(d, Task(rec, mid, hi)) {
       break;
     }
     notify(s);
@@ -402,9 +402,9 @@ fn rangeRun(lo: usize, hi: usize, grain: usize, body: PieceFn, data: *u8) {
   }
   ensureRunning();
   let s = running.load() as *Sched;
-  var rec = new LoopRec(hi - lo, g, body, data, &noDone, null, false);
+  var rec = LoopRec(hi - lo, g, body, data, &noDone, null, false);
   let p = &mut rec as *LoopRec;
-  runTask(s, new Task(p, lo, hi));
+  runTask(s, Task(p, lo, hi));
   helpUntilDone(s, p);
 }
 
@@ -426,7 +426,7 @@ pub fn parallelEach(lo: usize, hi: usize, body: PieceFn, data: *u8) {
   ensureRunning();
   let s = running.load() as *Sched;
   let grain = eachGrain(hi - lo, usize.from((*s).nworkers));
-  var job = new EachLoop(body, data, 0usize);
+  var job = EachLoop(body, data, 0usize);
   rangeRun(lo, hi, grain, &gatherPiece, &mut job as *EachLoop as *u8);
   sendGathered(&mut job as *EachLoop);
 }
@@ -507,7 +507,7 @@ fn nullPieceRec() *PieceRec {null}
 // to be running while the compiler's body runs, and passes on the records
 fn gatherPiece(data: *u8, lo: usize, hi: usize) {
   let job = data as *EachLoop;
-  var piece = new Piece(job, lo, nullPieceRec(), curPiece);
+  var piece = Piece(job, lo, nullPieceRec(), curPiece);
   curPiece = &mut piece as *Piece as usize;
   let body = (*job).body;
   body((*job).data, lo, hi);
@@ -620,9 +620,9 @@ pub fn parallelRangeThen[B: fn(lo: usize, hi: usize) + Sendable + Shareable, D: 
   if box as usize == 0usize {
     die("actors: out of memory for a parallel loop");
   }
-  mem.writeRaw[ThenBox](box, new ThenBox(
-    new Uni[imm, fn(lo: usize, hi: usize) + Sendable + Shareable](body),
-    new Uni[fn() + Sendable](onDone)));
+  mem.writeRaw[ThenBox](box, ThenBox(
+    Uni[imm, fn(lo: usize, hi: usize) + Sendable + Shareable](body),
+    Uni[fn() + Sendable](onDone)));
   rangeThen(lo, hi, grain, &thenPiece, box as *u8, &thenDone, box as *u8);
 }
 
@@ -663,11 +663,11 @@ fn rangeThen(lo: usize, hi: usize, grain: usize, body: PieceFn, data: *u8,
   if rec as usize == 0usize {
     die("actors: out of memory for a parallel loop");
   }
-  mem.writeRaw[LoopRec](rec, new LoopRec(hi - lo, g, body, data, onDone, doneArg, true));
+  mem.writeRaw[LoopRec](rec, LoopRec(hi - lo, g, body, data, onDone, doneArg, true));
   mem.atomicAdd[u64](&(*s).liveScheduled as *u64, 1u64, MemOrder.SeqCst);
-  if !dequePush(curDeque(s), new Task(rec, lo, hi)) {
+  if !dequePush(curDeque(s), Task(rec, lo, hi)) {
     // The deque is full: run the loop's first task here, which splits it
-    runTask(s, new Task(rec, lo, hi));
+    runTask(s, Task(rec, lo, hi));
     return;
   }
   notify(s);
@@ -741,7 +741,7 @@ pub fn parSeam(lo: usize, hi: usize, body: PieceFn, caps: *u8, resume: *u8, id: 
   if p as usize == 0usize {
     die("actors: out of memory for a parallel loop");
   }
-  mem.writeRaw[ParPending](p, new ParPending(h, lo, hi, body, caps, resume, id, hasId, null));
+  mem.writeRaw[ParPending](p, ParPending(h, lo, hi, body, caps, resume, id, hasId, null));
   (*h).par = p;
 }
 
@@ -756,7 +756,7 @@ fn startHeld(w: *Worker, h: *Header) {
   if job as usize == 0usize {
     die("actors: out of memory for a parallel loop");
   }
-  mem.writeRaw[EachLoop](job, new EachLoop((*p).body, (*p).caps, 0usize));
+  mem.writeRaw[EachLoop](job, EachLoop((*p).body, (*p).caps, 0usize));
   (*p).job = job;
   rangeThen((*p).lo, (*p).hi, grain, &gatherPiece, job as *u8, &parSeamDone, p as *u8);
 }

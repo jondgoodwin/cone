@@ -116,8 +116,8 @@ lowers to a zero-field struct.
 
 **2. Nothing allocates unless you write an allocation.** There is no garbage
 collector, no hidden boxing, no implicit copy of a large value. An allocation
-is a `new` whose type is a managed reference type — `new Rc[Node](1)`, or
-`new Node(1)` through an alias that names the region once, where the data's
+is a construction whose type is a managed reference type — `Rc[Node](1)`, or
+`Node(1)` through an alias that names the region once, where the data's
 architecture is declared — so allocation is a lexical event, not an inference.
 
 **3. Ownership is declared, so release is static.** Because a region and a

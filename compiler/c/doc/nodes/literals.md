@@ -1,13 +1,13 @@
 Seven literal forms across three source pairs: `nil`, `null`, integer, float and
 string in `literal.c`; the array literal in `arraylit.c`, which **shares its node with the
 array type**; and the type literal in `typelit.c`, which **shares its node with
-a call**. A struct's value is constructed `new Point(1, 2)`, and a construction
+a call**. A struct's value is constructed `Point(1, 2)`, and a construction
 its implicit field-wise init takes is lowered into a type literal; so is a
 number's conversion, `u64.from(count)`. An enum's variant writes its literal with
 parentheses, `Some(x)`, and an empty one by its name alone, `None`; either is lowered here
 from a call or a name (`fnCallVariantCall`, `fnCallVariantTermNameRes`), and the variant's
 literal in brackets, `Some[x]`, is refused (`ErrorVariantBracket`), as a struct's is. An allocation,
-`new Rc[mut, Node](1)`, constructs its value the same way, in the region.
+`Rc[mut, Node](1)`, constructs its value the same way, in the region.
 
 **At a glance.** The parser builds them without deciding types. Name resolution
 resolves each literal's type name, decides that `[…]` is an array literal, and
@@ -51,10 +51,10 @@ clears it.
 **The array node serves both a type and a literal.** The list form `[a,b,c]`
 has empty `dimens`; the fill form, one value stored into every element, has
 `dimens` `[3]` and `elems` `[7]`, and is built only by an array's contents
-repeating a constant, `new Array[i32, 3] <- fill 7` ([fncall](fncall.md), "The
+repeating a constant, `Array[i32, 3]() <- fill 7` ([fncall](fncall.md), "The
 list after `<-`"): the source spelling `[3; 7]` is retired. A list form an
 array's contents build may carry `repeats`, the one place an element stands
-for several: `new Array[i32, 100] <- fill f()` is `elems` `[f(), f()]` with
+for several: `Array[i32, 100]() <- fill f()` is `elems` `[f(), f()]` with
 `repeats` `[1, 99]`, the second copy filling every element after the first.
 `elems` then counts fewer than the array's size, which is its type's. The array type,
 written `Array[i32, 3]`, is the same node tagged
@@ -70,7 +70,7 @@ contents are the scalars (`u8`, row-major) rather than the rows
 ([fncall](fncall.md), "The list after `<-`"). A generic's type argument loses
 it at substitution (`arrayTypeUnshaped`), since one instance serves both
 spellings. On a literal, `nsizes` is how many levels of its type its elements
-are the scalars of: `new Array[i32, 2, 3] <- 1, 2, 3, 4, 5, 6` is a list form
+are the scalars of: `Array[i32, 2, 3]() <- 1, 2, 3, 4, 5, 6` is a list form
 of six `i32`s typed `Array[i32, 2, 3]`, `nsizes` 2, and its fill form's
 `dimens` counts scalars. Such a literal arrives typed, and
 `arrayLitTypeCheck` and `arrayLitCoerce` leave it alone, since its count of
@@ -87,10 +87,13 @@ comma-separated expressions, and **if a `;` follows, swaps** — what it gathere
 becomes `dimens` and a fresh list is gathered into `elems` — only so that name
 resolution can refuse `[n; x]` in both its meanings (below).
 
-A type literal is not built as one. A construction, `new Point(1, 2)`, is an
-`FnCallNode` flagged `FlagNew` (`parseNew`): its `objfn` the type -- a name, a
-path, type arguments in brackets -- and its `args` what is in the parentheses,
-none when they are left off. A bracketed form is an `FnCallNode` with
+A type literal is not built as one. A construction, `Point(1, 2)`, is the
+`FnCallNode` of a call, its `objfn` the type -- a name, a path, type arguments
+in brackets -- and its `args` what is in the parentheses; name resolution marks it
+`FlagNew` once it knows the callee is a type (`fnCallConstructNameRes`). One in a
+dynamic region, `new a[Node](1)`, is flagged `FlagNew` by the parser (`parseNew`),
+its `objfn` the region and the type in brackets, and its `args` none when they
+are left off. A bracketed form is an `FnCallNode` with
 `FlagIndex` from `parseSuffix`, and whether `Some[x]` is an index or an
 instantiation is type check's (a variant's literal is `Some(x)`). `parseArg` wraps
 `name: value` in a `NamedValNode` in every argument list, so refusing the
@@ -119,7 +122,7 @@ naming `i32` or `f64` into a resolved one. A string literal's `vtype` is still
 is refused either way: with a type for x, `[3; i32]`, it is the old spelling of
 an array type (`ErrorArrayTypeOld`, naming `Array[T, n]`), and stays the
 `ArrayTag` it spells, so nothing after reports it again; with a value it is the
-retired fill literal (`ErrorFillLiteral`, naming `new Array[T, n] <- fill x`).
+retired fill literal (`ErrorFillLiteral`, naming `Array[T, n]() <- fill x`).
 A list of one type, `[i32]`, stays an `ArrayTag` with no size, which type check
 refuses. In a generic's template `[2; T]` is neither until `cloneArrayNode`
 decides again on the substituted element ([generic](generic.md)), and refuses it
@@ -326,10 +329,10 @@ the literal's own business but each decided from its tag:
   generation is the constant array of the text, no NUL counted. Any other length
   or element type is the ordinary mismatch.
 - A literal wanted as an owner of `str`, in any region (`slitIsStrOwner`): the
-  node becomes the `AllocateTag` node `new R[str](lit)` builds, typed as the owner
+  node becomes the `AllocateTag` node `R[str](lit)` builds, typed as the owner
   type wanted, its region and permission that type's. Only the literal node
   itself is taken this way; a variable or a call of type `&str` is not, and
-  needs `new`.
+  is constructed as the owner is.
 - A literal wanted as a struct that declares a static function
   `fromLiteral(text &str) Self` (`slitFromLiteralFn`): the node becomes the call
   of it on the literal, built lowered (`newFnCallLower`, `fnCallFinalizeArgs`)
@@ -359,7 +362,7 @@ the literal's own business but each decided from its tag:
   the type check state (its scope, the extension), which a coercion does not
   carry, so it is made one level up, by `iexpCoerceIn`, where the state is at
   hand: a call's arguments (`fnCallFinalizeArgs`), an init's arguments in
-  `new T(...)` (`typeLitInitArgs`) and `iexpTypeCheckCoerce`'s places
+  `T(...)` (`typeLitInitArgs`) and `iexpTypeCheckCoerce`'s places
   (initializer, assignment, ...), and only in a function's body (scope 2
   and up). A bare `iexpCoerce` meets it as no match (`iexpCoerceShape`), so every
   other place -- a global, a constant, a field's default, a
@@ -384,7 +387,7 @@ the literal's own business but each decided from its tag:
   literal, so a candidate that takes the literal as the `&str` it is is never
   ambiguous with a `&T` one (a dictionary's `&K` and `&str` indexes). Two
   candidates that need the conversion are ambiguous as any two are. The
-  selection of a declared init in `new T(...)` falls back the same way
+  selection of a declared init in `T(...)` falls back the same way
   (`typeLitNewChecked`: only when neither a declared init nor the implicit one
   took the arguments), with the same refusals. The implicit init and the
   compiler-declared operators on pointers do not offer it.
@@ -437,7 +440,7 @@ one constant dimension, forced to `usize`, and exactly one value.
 
 Either form's type is built by `newArrayNodeTyped`, already checked, so it
 never passes through `arrayTypeCheck`. **The constructor gives it the element
-type's move-ness itself**, as `arrayTypeCheck` does for a type written out, so `[new Fin(1), new Fin(2)]` moves exactly as `Array[Fin, 2]` does. Move-ness
+type's move-ness itself**, as `arrayTypeCheck` does for a type written out, so `[Fin(1), Fin(2)]` moves exactly as `Array[Fin, 2]` does. Move-ness
 is asked of `itypeIsMove`, not read off the element's flags, because a tuple
 element carries no flag and moves when one of its own elements does.
 
@@ -452,7 +455,7 @@ construction of its value type or a finished value of it
 (a variable, or a field reached through one, with the type in the brackets and a
 `mut` before it if one is written), is an allocation in an arena
 (`typeLitNewInRegion`): the construction is rewritten, before anything of it is
-checked, to the call `a.alloc(new Node(1))` and checked as that, so it answers
+checked, to the call `a.alloc(Node(1))` and checked as that, so it answers
 what that arena's `alloc` answers (a `&mut Node`, or a key for a `DynArena`)
 and is held to the rules that call is. Any other permission, a permission with no
 type, a third argument and a `trynew` are `ErrorRegionNew`. The head is checked
@@ -464,7 +467,7 @@ rule is; an actor's
 state has one, generated for every actor,
 [parse](../phases/parse.md), "Actors"), and the head becomes the call
 `x.allocRegion()`, checked the same way on a copy and so asked to be a region
-value; `new self[T](...)` is `self.allocRegion().alloc(new T(...))` so. (A type
+value; `new self[T](...)` is `self.allocRegion().alloc(T(...))` so. (A type
 that gets its memory from a region is handed the head's region, which is read from
 a copy of the head, so a head that is a call is made twice.) The allocation the construction
 is rewritten to is that region's `alloc`, as a region ref's is, so a region
@@ -478,7 +481,7 @@ with contents, which `contentsLower` hands its literal (`typeLitNewFilled`). Oth
 keeps its brackets). One positional argument whose type is the struct itself
 is a finished value, which needs no construction (`ErrorNewFinished`); an
 allocation takes one as its value instead. A generic
-struct named bare, `new Box(5i64)`, has its type arguments inferred from the
+struct named bare, `Box(5i64)`, has its type arguments inferred from the
 values, as its literal's were (`genericSubstitute`). Its inits are the implicit
 field-wise one and those it declares under the name `init`, one or an overload
 set, each `fn init(self: &new, ...)`. With none declared, the arguments are
@@ -502,7 +505,7 @@ field a value in the literal.
 
 **Type literal** — `typeLitTypeCheck` requires a concrete type, then builds a
 struct's literal. **A struct's literal in brackets is `ErrorStructBracket`**,
-naming `new Point(...)`, unless it came of a construction (`FlagNew`), is a
+naming `Point(...)`, unless it came of a construction (`FlagNew`), is a
 refused `+` allocation's value (`FlagAllocValue`, set by `allocateTypeCheck`,
 which refuses the allocation itself, `ErrorPlusAlloc`, naming the `new` form),
 or is a

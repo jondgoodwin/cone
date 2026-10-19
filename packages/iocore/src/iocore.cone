@@ -277,7 +277,7 @@
 // (between a least and a most, started as jobs wait and leaving after an
 // idle time), so a slow resolver holds up only other look-ups, never the
 // disk. Lane.general() (4 threads, 1,024 queued) and Lane.dns() (2 threads,
-// 256 queued) every process has; 'addLane(new LaneConfig(name: ...,
+// 256 queued) every process has; 'addLane(LaneConfig(name: ...,
 // minThreads: ..., maxThreads: ..., queueBound: ..., idleMillis: ...))' makes
 // more (64 in all), one per storage device for the file service to come. A
 // submit past a lane's bound is answered at once, Failed with ERROR_BUSY,
@@ -456,7 +456,7 @@ pub struct OpId {
   index: u32;
   gen: u32;
 
-  pub fn none() OpId {new OpId(noEntry, 0u32)}
+  pub fn none() OpId {OpId(noEntry, 0u32)}
   pub fn isNone(self) bool {gen == 0u32}
   // As one number, for diagnostics: the generation above the entry
   pub fn number(self) u64 {(u64.from(gen) << 32u64) | u64.from(index)}
@@ -469,7 +469,7 @@ pub struct Handle {
   index: u32;
   gen: u32;
 
-  pub fn none() Handle {new Handle(noEntry, 0u32)}
+  pub fn none() Handle {Handle(noEntry, 0u32)}
   pub fn isNone(self) bool {gen == 0u32}
   pub fn `==`(self, o: Handle) bool {index == o.index && gen == o.gen}
   pub fn `!=`(self, o: Handle) bool {index != o.index || gen != o.gen}
@@ -491,20 +491,20 @@ pub enum IoErrorKind {
 // TimedOut error is no system's failure: its code is 0 and its kind says what
 // it is. A Truncated error is the system's failure with a kind of its own, so
 // that it can be told from the rest: a datagram cut to the room of the buffer
-// that took it, WSAEMSGSIZE, 10040, its code. 'new IoError(code)' is an Os
+// that took it, WSAEMSGSIZE, 10040, its code. 'IoError(code)' is an Os
 // error
 pub struct IoError {
   pub code: u32;
   cause: IoErrorKind = IoErrorKind.Os;
 
   // A received datagram cut to its buffer's room (code 10040, WSAEMSGSIZE)
-  pub fn truncated() IoError {new IoError(10040u32, IoErrorKind.Truncated)}
+  pub fn truncated() IoError {IoError(10040u32, IoErrorKind.Truncated)}
 
   // An operation ended by a cancel
-  pub fn cancelled() IoError {new IoError(0u32, IoErrorKind.Cancelled)}
+  pub fn cancelled() IoError {IoError(0u32, IoErrorKind.Cancelled)}
 
   // An operation ended by its deadline
-  pub fn timedOut() IoError {new IoError(0u32, IoErrorKind.TimedOut)}
+  pub fn timedOut() IoError {IoError(0u32, IoErrorKind.TimedOut)}
 
   // How it came to be
   pub fn kind(self: &) IoErrorKind {cause}
@@ -564,7 +564,7 @@ pub struct SocketAddr {
 
   // a.b.c.d:port
   pub fn v4(a: u8, b: u8, c: u8, d: u8, port: u16) SocketAddr {
-    var s = new SocketAddr(new Array[u8, 28] <- fill 0u8, 16i32);
+    var s = SocketAddr(Array[u8, 28]() <- fill 0u8, 16i32);
     s.raw[0usize] = 2u8;
     s.setPort(port);
     s.raw[4usize] = a;
@@ -580,7 +580,7 @@ pub struct SocketAddr {
 
   // [addr]:port, addr its 16 bytes
   pub fn v6(addr: &Array[u8], port: u16) SocketAddr {
-    var s = new SocketAddr(new Array[u8, 28] <- fill 0u8, 28i32);
+    var s = SocketAddr(Array[u8, 28]() <- fill 0u8, 28i32);
     s.raw[0usize] = afInet6Tag();
     s.setPort(port);
     var i = 0usize;
@@ -593,7 +593,7 @@ pub struct SocketAddr {
 
   // [::1]:port
   pub fn v6Localhost(port: u16) SocketAddr {
-    var s = new SocketAddr(new Array[u8, 28] <- fill 0u8, 28i32);
+    var s = SocketAddr(Array[u8, 28]() <- fill 0u8, 28i32);
     s.raw[0usize] = afInet6Tag();
     s.setPort(port);
     s.raw[23usize] = 1u8;
@@ -625,7 +625,7 @@ pub struct SocketAddr {
 
   // The same family's every address, port 0: what a connecting socket binds to
   fn wildcard(self: &) SocketAddr {
-    var s = new SocketAddr(new Array[u8, 28] <- fill 0u8, size);
+    var s = SocketAddr(Array[u8, 28]() <- fill 0u8, size);
     s.raw[0usize] = raw[0usize];
     s
   }
@@ -710,7 +710,7 @@ pub struct Sink is Move {
   deliver: Uni[fn(c: Completion) + Sendable];
 
   pub fn make(deliver: Uni[fn(c: Completion) + Sendable]) Sink {
-    new Sink(deliver)
+    Sink(deliver)
   }
 
   // Hand the answer on
@@ -756,16 +756,16 @@ pub struct Completion {
 
   // Its diagnostics record
   pub fn record(self: &) diag.OpRecord {
-    new diag.OpRecord(loop, id.number(), kind, status, code, u64.from(n), token,
+    diag.OpRecord(loop, id.number(), kind, status, code, u64.from(n), token,
       submitted, dequeued, delivered)
   }
 }
 
 // A Completion holding nothing, to swap one out of where it is held
 fn blankCompletion() Completion {
-  new Completion(0u64, OpId.none(), 0u64, 0u32, 0u32, 0usize, 0u32, IoBuf.empty(),
-    Handle.none(), new SocketAddr(new Array[u8, 28] <- fill 0u8, 0i32),
-    new Instant(), new Instant(), new Instant())
+  Completion(0u64, OpId.none(), 0u64, 0u32, 0u32, 0usize, 0u32, IoBuf.empty(),
+    Handle.none(), SocketAddr(Array[u8, 28]() <- fill 0u8, 0i32),
+    Instant(), Instant(), Instant())
 }
 
 // ---------------------------------------------------------------------------

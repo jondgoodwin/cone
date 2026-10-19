@@ -28,7 +28,7 @@ fn column(n: usize, points: &mut List[Vec3], lens: &mut List[f32], limits: &mut 
   lens.clear();
   limits.clear();
   var i = 0usize;
-  while i <= n { points.push(new Vec3(0., f32.from(i), 0.)); i = i + 1usize; }
+  while i <= n { points.push(Vec3(0., f32.from(i), 0.)); i = i + 1usize; }
   i = 0usize;
   while i < n { lens.push(1.); limits.push(limit); i = i + 1usize; }
 }
@@ -39,7 +39,7 @@ fn seg(points: &List[Vec3], i: usize) Vec3 { (pt(points, i + 1usize) - pt(points
 // The largest angle between successive segments (the first against 'up'), radians
 fn worstBend(points: &List[Vec3], n: usize) f32 {
   var worst: f32 = 0.;
-  var ref = new Vec3(0., 1., 0.);
+  var ref = Vec3(0., 1., 0.);
   var i = 0usize;
   while i < n {
     let d = seg(points, i);
@@ -67,8 +67,8 @@ fn testFree() {
   var lens = List[f32].empty();
   var limits = List[JointLimit].empty();
   column(4usize, &mut points, &mut lens, &mut limits, JointLimit.free());
-  let up = new Vec3(0., 1., 0.);
-  let target = new Vec3(2., 2., 0.);
+  let up = Vec3(0., 1., 0.);
+  let target = Vec3(2., 2., 0.);
   let r = solveFabrik(&mut points, &lens, &limits, up, target, 0.001, 50u32);
   expectBool(r.error <= 0.001, true, "FABRIK: converged within 1 mm");
   expectBool(r.iterations < 20u32, true, "in fewer than 20 iterations");
@@ -87,7 +87,7 @@ fn testFree() {
 
   // Out of reach: straight at the target, total length 4
   column(4usize, &mut points, &mut lens, &mut limits, JointLimit.free());
-  let far = solveFabrik(&mut points, &lens, &limits, up, new Vec3(30., 40., 0.), 0.001, 50u32);
+  let far = solveFabrik(&mut points, &lens, &limits, up, Vec3(30., 40., 0.), 0.001, 50u32);
   near(pt(&points, 4usize).x, 2.4, 0.0001, "out of reach: stretched along (3,4)/5 to length 4: x");
   near(pt(&points, 4usize).y, 3.2, 0.0001, "y");
   near(far.error, 46., 0.001, "and the error is the shortfall (50 - 4)");
@@ -99,21 +99,21 @@ fn testCone() {
   var limits = List[JointLimit].empty();
   let half = radians(30.);
   column(4usize, &mut points, &mut lens, &mut limits, JointLimit.cone(half));
-  let up = new Vec3(0., 1., 0.);
+  let up = Vec3(0., 1., 0.);
   // Reachable under 30-degree bends by construction: the end of segments at
   // 25, 50, 75 and 100 degrees from vertical (each 25 from the one before):
   // x = sin 25 + sin 50 + sin 75 + sin 100 = 3.139, y = cos 25 + cos 50 + cos 75 + cos 100 = 1.634
-  let easy = solveFabrik(&mut points, &lens, &limits, up, new Vec3(3.139, 1.634, 0.), 0.002, 100u32);
+  let easy = solveFabrik(&mut points, &lens, &limits, up, Vec3(3.139, 1.634, 0.), 0.002, 100u32);
   expectBool(easy.error <= 0.002, true, "cone limits: a target they allow is reached");
   expectBool(worstBend(&points, 4usize) <= half + 0.0005, true, "and no joint bends past 30 degrees");
   column(4usize, &mut points, &mut lens, &mut limits, JointLimit.cone(half));
   // (-3, 0.5): beyond what the limits allow
-  let hard = solveFabrik(&mut points, &lens, &limits, up, new Vec3(-3., 0.5, 0.), 0.002, 100u32);
+  let hard = solveFabrik(&mut points, &lens, &limits, up, Vec3(-3., 0.5, 0.), 0.002, 100u32);
   expectBool(hard.error > 0.3, true, "a target the limits forbid is missed by a distance");
   expectBool(worstBend(&points, 4usize) <= half + 0.0005, true, "yet no joint bends past 30 degrees");
   near(lengthsKept(&points, 4usize), 0., 0.0001, "and the lengths are kept");
   column(4usize, &mut points, &mut lens, &mut limits, JointLimit.cone(half));
-  let cc = solveCcd(&mut points, &lens, &limits, up, new Vec3(-3., 0.5, 0.), 0.002, 100u32);
+  let cc = solveCcd(&mut points, &lens, &limits, up, Vec3(-3., 0.5, 0.), 0.002, 100u32);
   expectBool(cc.error > 0.3, true, "CCD: the forbidden target is missed too");
   expectBool(worstBend(&points, 4usize) <= half + 0.0005, true, "CCD: no joint past 30 degrees");
   // A cone of the base direction as well: the first segment against 'up'
@@ -126,10 +126,10 @@ fn testHinge() {
   var limits = List[JointLimit].empty();
   // Hinge about +z, angles from -90 to 0 degrees: a positive turn about z takes
   // y towards -x, so negative angles bend towards +x
-  let hinge = JointLimit.hinge(new Vec3(0., 0., 1.), radians(-90.), 0.);
+  let hinge = JointLimit.hinge(Vec3(0., 0., 1.), radians(-90.), 0.);
   column(4usize, &mut points, &mut lens, &mut limits, hinge);
-  let up = new Vec3(0., 1., 0.);
-  let r = solveFabrik(&mut points, &lens, &limits, up, new Vec3(2., 2., 0.), 0.002, 100u32);
+  let up = Vec3(0., 1., 0.);
+  let r = solveFabrik(&mut points, &lens, &limits, up, Vec3(2., 2., 0.), 0.002, 100u32);
   expectBool(r.error <= 0.002, true, "hinge: a target on the allowed side is reached");
   var zmax: f32 = 0.;
   var amin: f32 = 0.;
@@ -139,7 +139,7 @@ fn testHinge() {
   while i < 4usize {
     let d = seg(&points, i);
     if absf(d.z) > zmax { zmax = absf(d.z); }
-    let a = atan2(new Vec3(0., 0., 1.).dot(ref.cross(d)), ref.dot(d));
+    let a = atan2(Vec3(0., 0., 1.).dot(ref.cross(d)), ref.dot(d));
     if a < amin { amin = a; }
     if a > amax { amax = a; }
     ref = d;
@@ -149,7 +149,7 @@ fn testHinge() {
   expectBool(amin >= radians(-90.) - 0.001, true, "hinge: no joint past -90 degrees");
   expectBool(amax <= 0.001, true, "hinge: no joint past 0 degrees");
   column(4usize, &mut points, &mut lens, &mut limits, hinge);
-  let wrong = solveFabrik(&mut points, &lens, &limits, up, new Vec3(-2., 2., 0.), 0.002, 100u32);
+  let wrong = solveFabrik(&mut points, &lens, &limits, up, Vec3(-2., 2., 0.), 0.002, 100u32);
   expectBool(wrong.error > 0.5, true, "hinge: a target on the other side is missed (the joints cannot bend that way)");
   expectBool(pt(&points, 4usize).x >= -0.001, true, "and the chain stays on the allowed side");
 }
@@ -169,11 +169,11 @@ fn testBones() {
   near(*lens[1], 0.145 * h, 0.0001, "forearm length");
   let shoulder = pt(&points, 0usize);
   // The target: reachable, in front of the chest
-  let target = shoulder + new Vec3(-0.05, -0.1, -0.35);
+  let target = shoulder + Vec3(-0.05, -0.1, -0.35);
   var limits = List[JointLimit].empty();
   limits.push(JointLimit.free());
   limits.push(JointLimit.free());
-  let r = solveFabrik(&mut points, &lens, &limits, new Vec3(0., -1., 0.), target, 0.0005, 100u32);
+  let r = solveFabrik(&mut points, &lens, &limits, Vec3(0., -1., 0.), target, 0.0005, 100u32);
   applyChain(&s, &mut pose, &mut models, &bones, &points);
   expectBool(r.error <= 0.0005, true, "the arm chain converged");
   let wrist = (*models[HAND_R]).translation;
@@ -188,7 +188,7 @@ fn testBones() {
   var pose2 = s.restPose();
   s.modelTransforms(&pose2, &mut models);
   chainPoints(&s, &models, UPPER_ARM_R, 3usize, &mut points, &mut lens, &mut bones);
-  let r2 = solveCcd(&mut points, &lens, &limits, new Vec3(0., -1., 0.), target, 0.0005, 100u32);
+  let r2 = solveCcd(&mut points, &lens, &limits, Vec3(0., -1., 0.), target, 0.0005, 100u32);
   applyChain(&s, &mut pose2, &mut models, &bones, &points);
   let wrist2 = (*models[HAND_R]).translation;
   near(wrist2.x, target.x, 0.001, "CCD on bones: the wrist reaches the target x");

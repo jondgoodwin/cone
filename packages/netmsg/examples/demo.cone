@@ -65,17 +65,17 @@ actor GameServer {
 
   fn init(self: &new) {
     var b = List[Body].empty();
-    b.push(new Body(1000, 1000, 120, 70));
-    b.push(new Body(5000, 8000, -90, -40));
-    b.push(new Body(9000, 3000, -60, 110));
-    *self = new Self(bodies: b, seats: List[Seat].empty(), ticks: 0u32);
+    b.push(Body(1000, 1000, 120, 70));
+    b.push(Body(5000, 8000, -90, -40));
+    b.push(Body(9000, 3000, -60, 110));
+    *self = Self(bodies: b, seats: List[Seat].empty(), ticks: 0u32);
   }
 
   // Everything the connections tell it arrives here, whichever way they are made
   pub async do onNet(self, ev: NetEvent) {
     match ev {
       case let j Joined {
-        seats.push(new Seat(j.id, j.conn, String.from("?")));
+        seats.push(Seat(j.id, j.conn, String.from("?")));
         var s = String.from("server: client ");
         s.appendUInt(u64.from(j.id));
         s.append(" joined\n");
@@ -209,7 +209,7 @@ actor Player {
   report: Sender[String];
 
   fn init(self: &new, name: String, report: Sender[String]) {
-    *self = new Self(name: name, conn: None[Connection], snapshots: 0u32, lastTick: 0u32, lastX: 0i32, lastY: 0i32,
+    *self = Self(name: name, conn: None[Connection], snapshots: 0u32, lastTick: 0u32, lastX: 0i32, lastY: 0i32,
       heardChat: 0u32, report: report);
   }
 
@@ -298,11 +298,11 @@ actor Player {
 }
 
 fn serverHandler(srv: GameServer) EventHandler {
-  eventHandler(new Uni[fn(ev: NetEvent) + Sendable](fn(ev: NetEvent) [srv] { srv.onNet(ev); }))
+  eventHandler(Uni[fn(ev: NetEvent) + Sendable](fn(ev: NetEvent) [srv] { srv.onNet(ev); }))
 }
 
 fn playerHandler(p: Player) EventHandler {
-  eventHandler(new Uni[fn(ev: NetEvent) + Sendable](fn(ev: NetEvent) [p] { p.onNet(ev); }))
+  eventHandler(Uni[fn(ev: NetEvent) + Sendable](fn(ev: NetEvent) [p] { p.onNet(ev); }))
 }
 
 // ---------------------------------------------------------------------------
@@ -342,9 +342,9 @@ fn inProcess() {
   var rx: Receiver[String];
   tx, rx = Channel[String].make();
   {
-    let srv = new GameServer();
-    let ann = new Player(String.from("Ann"), tx.clone());
-    let bob = new Player(String.from("Bob"), tx.clone());
+    let srv = GameServer();
+    let ann = Player(String.from("Ann"), tx.clone());
+    let bob = Player(String.from("Bob"), tx.clone());
     let pairA = pairInProcess(serverHandler(srv), 1u32, playerHandler(ann), 1u32);
     let pairB = pairInProcess(serverHandler(srv), 2u32, playerHandler(bob), 1u32);
     play(srv, ann, bob, 3i64);
@@ -363,13 +363,13 @@ fn overLoopback() {
   var rx: Receiver[String];
   tx, rx = Channel[String].make();
   {
-    let srv = new GameServer();
+    let srv = GameServer();
     let cfg = NetConfig.defaults();
     let server = mustListen(SocketAddr.localhost(0u16), cfg, serverHandler(srv));
-    let link = new LinkConfig(200u32, 25i64, 10i64, 20u32, 20u32, 30i64);
+    let link = LinkConfig(200u32, 25i64, 10i64, 20u32, 20u32, 30i64);
     var relay = startLossyRelay(SocketAddr.localhost(server.port), link, link, 3u64);
-    let ann = new Player(String.from("Ann"), tx.clone());
-    let bob = new Player(String.from("Bob"), tx.clone());
+    let ann = Player(String.from("Ann"), tx.clone());
+    let bob = Player(String.from("Bob"), tx.clone());
     let ca = mustConnect(SocketAddr.localhost(relay.port), cfg, playerHandler(ann));
     let cb = mustConnect(SocketAddr.localhost(relay.port), cfg, playerHandler(bob));
     thread.sleep(Duration.fromMillis(600i64));
@@ -406,7 +406,7 @@ fn parseAddress(host: &str, port: u16) SocketAddr {
 fn serve(port: u16) {
   print <- "== serving on UDP port ", u64.from(port), " for 60 seconds ==\n";
   {
-    let srv = new GameServer();
+    let srv = GameServer();
     let server = mustListen(SocketAddr.v4(0u8, 0u8, 0u8, 0u8, port), NetConfig.defaults(), serverHandler(srv));
     var i = 0i64;
     while i < 60i64 * 30i64 {
@@ -424,7 +424,7 @@ fn connectTo(host: &str, port: u16, name: &str) {
   var rx: Receiver[String];
   tx, rx = Channel[String].make();
   {
-    let me = new Player(String.from(name), tx);
+    let me = Player(String.from(name), tx);
     let c = mustConnect(parseAddress(host, port), NetConfig.defaults(), playerHandler(me));
     var i = 0i64;
     while i < 8i64 * 30i64 {

@@ -35,7 +35,7 @@ arena's, a pool's, a collection's), and, in a traced value, beside a borrow.
 The traced references on the stack are its **roots**: every function holding
 one links a frame of them (its locals, parameters and temporaries holding one)
 into a chain that `mem.traceRoots` walks, handing each to its region's `mark`.
-Every allocation, `new Gc[mut, Node](1)`, runs in one order: the value
+Every allocation, `Gc[mut, Node](1)`, runs in one order: the value
 init's arguments, `alloc` (memory only), the region's `init` filling the
 header in place, a dynamic permission's `init`, the value's `init` filling
 the value in place, and the reference moved to its destination. In a traced
@@ -52,7 +52,7 @@ locals get none, since a collector traces the stacks again before it ends a
 mark. No more of the protocol below is built: no read barrier, no weak
 reference kind, and no region with global state. Of the strategies that motivate the whole
 design, a tracing collector is written as library code, incremental: the
-`collector` package's region ref `Gc` (`new Gc[mut, T](...)`), Acorn's tri-colour
+`collector` package's region ref `Gc` (`Gc[mut, T](...)`), Acorn's tri-colour
 mark and sweep over those roots and the type records' traces, a step at a
 time inside allocations once the heap passes its trigger (and whole on
 `gc.collect()`), its `writeBarrier` shading what a store puts into an object
@@ -71,7 +71,7 @@ are the actor's state and the records its `await`s have parked, with a non-movin
 space for large objects and a final list for the values that need finalizing; no
 barrier and no stack scan. `new self[T](...)` allocates in it: the actor's state
 has an `allocRegion` method giving it, and a value whose type has one *leads to* a
-region, so `new x[T](...)` is `x.allocRegion().alloc(new T(...))`.
+region, so `new x[T](...)` is `x.allocRegion().alloc(T(...))`.
 The arena and the pool are written only as library values: the
 `arena` package's `Arena`, a dynamic region allocated into by a call on the
 value (`a.alloc(v)`, or `new a[T](...)`, which is that call: the arena value in
@@ -181,8 +181,8 @@ concept. It is named at each allocation site, so the choice is per-object and
 lexically visible:
 
 ```cone
-let person = new Uni[Person]("Tako")     // single-owner: freed when the owner drops
-let shared = new Rc[Person]("Tako")     // counted: freed at zero
+let person = Uni[Person]("Tako")     // single-owner: freed when the owner drops
+let shared = Rc[Person]("Tako")     // counted: freed at zero
 ```
 
 | Region | Is | Strategy |
@@ -311,7 +311,7 @@ Six permissions, each a bit set:
 writing but **not aliasing** — and lacking `MayAlias` is precisely what makes a
 reference carrying it a move type. It is the default for a managed reference
 type whose permission is left out, `Rc[Node]`, and so for an allocation of
-one, `new Rc[Node](1)`, which is why owning references move by default.
+one, `Rc[Node](1)`, which is why owning references move by default.
 
 `opaq` permits nothing, which makes it the safe default where the value type is
 not concrete.
@@ -450,7 +450,7 @@ asked by a constraint (`where T is DynSized`).
 **A body whose length a reference carries has no size to hold.** `str` is never
 a local, a field or a parameter, only the target of a reference; so is
 `Array[T]`, the body of a run-time length, whose borrow is the slice. It is allocated
-by copying a borrow of one, `new Uni[str](view)`, as long as the view, into the
+by copying a borrow of one, `Uni[str](view)`, as long as the view, into the
 memory the region gives. Each owner carries its own count, which is right
 because the body never grows: a growable one would need a count every holder
 sees, and keeps it (`List`, below).

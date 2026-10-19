@@ -39,7 +39,7 @@ pub struct World {
   pub substepSeconds: f32;           // the time of the last sub-step (joint loads are impulses over it)
 
   pub fn make() World {
-    new World(new Vec3(0., -9.81, 0.), Settings.standard(), List[Shape].empty(), List[Body].empty(), List[u32].empty(),
+    World(Vec3(0., -9.81, 0.), Settings.standard(), List[Shape].empty(), List[Body].empty(), List[u32].empty(),
       List[Joint].empty(), SweepAndPrune.empty(), List[Contact].empty(), List[Contact].empty(), List[BodyPair].empty(),
       List[u32].empty(), List[u32].empty(), List[Event].empty(), 0u32, 1u32, 1. / 60., 0., 0usize, 0usize, 0, false, 0.)
   }
@@ -57,7 +57,7 @@ pub struct World {
   // The shape's origin and orientation (what a renderer places the mesh by)
   pub fn transformOf(self: &, id: u32) Rigid {
     let b = bodies[usize.from(id)];
-    new Rigid(b.pos - b.rot * b.comLocal, b.rot)
+    Rigid(b.pos - b.rot * b.comLocal, b.rot)
   }
 
   pub fn positionOf(self: &, id: u32) Vec3 { self.transformOf(id).pos }
@@ -85,7 +85,7 @@ pub struct World {
 
   fn bodyBox(self: &, i: usize, dt: f32) Aabb3 {
     let b = bodies[i];
-    let xf = new Rigid(b.pos - b.rot * b.comLocal, b.rot);
+    let xf = Rigid(b.pos - b.rot * b.comLocal, b.rot);
     shapes[usize.from(b.shape)].bounds(xf).expand(settings.speculativeDistance * 0.5 + self.velMargin(i, dt))
   }
 
@@ -120,11 +120,11 @@ pub struct World {
     let lb = sh.bounds(Rigid.identity());
     let ext = lb.halfExtents();
     let mid = lb.center();
-    let toFar = new Vec3(absf(mid.x - com.x) + ext.x, absf(mid.y - com.y) + ext.y, absf(mid.z - com.z) + ext.z);
+    let toFar = Vec3(absf(mid.x - com.x) + ext.x, absf(mid.y - com.y) + ext.y, absf(mid.z - com.z) + ext.z);
     let radius = toFar.length();
     let minExtent = minf(ext.x, minf(ext.y, ext.z));
     let pos = def.pos + def.rot * com;
-    let body = new Body(true, motion, def.shape, def.layer, def.mask, def.sensor, def.allowSleep, def.bullet, def.userData,
+    let body = Body(true, motion, def.shape, def.layer, def.mask, def.sensor, def.allowSleep, def.bullet, def.userData,
       pos, def.rot, com, def.linVel, def.angVel, mass, if dynamic { 1. / mass } else { 0. }, inertia, invI,
       if dynamic { rotateInertia(def.rot, invI) } else { mat3Diag(0., 0., 0.) }, dynamic && !isIsotropic(inertia),
       def.linearDamping, def.angularDamping, def.gravityFactor, def.material, zero3(), zero3(), radius, minExtent,
@@ -207,10 +207,10 @@ pub struct World {
     let target = pos + rot * b.comLocal;
     bodies[i].linVel = (target - b.pos) * (1. / dt);
     var dq = rot * b.rot.conjugate();
-    if dq.w < 0. { dq = new Quat(-dq.x, -dq.y, -dq.z, -dq.w); }
+    if dq.w < 0. { dq = Quat(-dq.x, -dq.y, -dq.z, -dq.w); }
     let s = (dq.x * dq.x + dq.y * dq.y + dq.z * dq.z).sqrt();
     let ang = 2. * atan2(s, dq.w);
-    bodies[i].angVel = if s > 0.000001 { new Vec3(dq.x, dq.y, dq.z) * (ang / s / dt) } else { zero3() };
+    bodies[i].angVel = if s > 0.000001 { Vec3(dq.x, dq.y, dq.z) * (ang / s / dt) } else { zero3() };
   }
 
   pub fn applyForce(self: &mut, id: u32, f: Vec3) {
@@ -280,7 +280,7 @@ pub struct World {
   // ------------------------------------------------------------------ events
 
   pub fn emit(self: &mut, kind: u32, a: u32, b: u32, point: Vec3, normal: Vec3, depth: f32) {
-    if events.len() < 100000usize { events.push(new Event(kind, a, b, point, normal, depth)); }
+    if events.len() < 100000usize { events.push(Event(kind, a, b, point, normal, depth)); }
   }
 
   // The events since the last call, oldest first
@@ -295,7 +295,7 @@ pub struct World {
   // ------------------------------------------------------------------ joints
 
   // A frame whose x axis is 'axis'
-  fn frameOf(axis: Vec3) Quat { Quat.fromVectors(new Vec3(1., 0., 0.), axis.normalize()) }
+  fn frameOf(axis: Vec3) Quat { Quat.fromVectors(Vec3(1., 0., 0.), axis.normalize()) }
 
   fn addJoint(self: &mut, kind: i32, a: u32, b: u32, anchor: Vec3, axis: Vec3) u32 {
     let bA = bodies[usize.from(a)];
@@ -315,11 +315,11 @@ pub struct World {
 
   // A ball and socket: the two bodies share the world point
   pub fn addPointJoint(self: &mut, a: u32, b: u32, anchor: Vec3) u32 {
-    self.addJoint(JointPoint, a, b, anchor, new Vec3(1., 0., 0.))
+    self.addJoint(JointPoint, a, b, anchor, Vec3(1., 0., 0.))
   }
   // The two bodies held in the pose they have now
   pub fn addFixedJoint(self: &mut, a: u32, b: u32, anchor: Vec3) u32 {
-    self.addJoint(JointFixed, a, b, anchor, new Vec3(1., 0., 0.))
+    self.addJoint(JointFixed, a, b, anchor, Vec3(1., 0., 0.))
   }
   // A door hinge: turns about 'axis' through 'anchor'; angle 0 is the pose it was made in
   pub fn addHinge(self: &mut, a: u32, b: u32, anchor: Vec3, axis: Vec3) u32 {
@@ -347,7 +347,7 @@ pub struct World {
   pub fn setSliderLimits(self: &mut, j: u32, lower: f32, upper: f32) { self.setHingeLimits(j, lower, upper); }
   // A rod of fixed length between two world points (one on each body)
   pub fn addDistance(self: &mut, a: u32, b: u32, anchorA: Vec3, anchorB: Vec3) u32 {
-    let j = self.addJoint(JointDistance, a, b, anchorA, new Vec3(1., 0., 0.));
+    let j = self.addJoint(JointDistance, a, b, anchorA, Vec3(1., 0., 0.));
     let bB = bodies[usize.from(b)];
     joints[usize.from(j)].lb = bB.rot.conjugate() * (anchorB - bB.pos);
     let len = (anchorB - anchorA).length();
@@ -585,8 +585,8 @@ pub struct World {
         let bA = bodies[ia];
         let bB = bodies[ib];
         let margin = settings.speculativeDistance + self.velMargin(ia, dt) + self.velMargin(ib, dt);
-        let xfA = new Rigid(bA.pos - bA.rot * bA.comLocal, bA.rot);
-        let xfB = new Rigid(bB.pos - bB.rot * bB.comLocal, bB.rot);
+        let xfA = Rigid(bA.pos - bA.rot * bA.comLocal, bA.rot);
+        let xfB = Rigid(bB.pos - bB.rot * bB.comLocal, bB.rot);
         out.clear();
         collide(shapes[usize.from(bA.shape)], xfA, shapes[usize.from(bB.shape)], xfB, margin, &mut out);
         let sensor = bA.sensor || bB.sensor;
@@ -904,7 +904,7 @@ pub struct World {
       let reduced = if mA <= 0. { mB } else if mB <= 0. { mA } else { mA * mB / (mA + mB) };
       let rho = if jsoft.massScale >= 1. || jsoft.massScale <= 0. || reduced <= 0. { 1. } else { reduced / maxf(mA, mB) };
       let a2 = jsoft.massScale / (1. - jsoft.massScale);
-      let js = if rho >= 1. { jsoft } else { new Softness(jsoft.biasRate, a2 / (a2 + rho), rho / (a2 + rho)) };
+      let js = if rho >= 1. { jsoft } else { Softness(jsoft.biasRate, a2 / (a2 + rho), rho / (a2 + rho)) };
       solveJoint(self, ji, useBias, invH, h, js);
       a = a + 1usize;
     }
@@ -1048,13 +1048,13 @@ pub struct World {
     while i < bodies.len() {
       let b = bodies[i];
       if isAwakeDynamic(b) && !b.sensor {
-        let now = new Rigid(b.pos - b.rot * b.comLocal, b.rot);
+        let now = Rigid(b.pos - b.rot * b.comLocal, b.rot);
         let disp = now.pos - b.startPos;
         let dist = disp.length();
         let reach = if *jointed[i] { settings.maxSpeculative } else { 0. };
         if dist > settings.ccdThreshold * 2. * b.minExtent && dist > 0.0001 && dist > reach {
           let sh = shapes[usize.from(b.shape)];
-          let startXf = new Rigid(b.startPos, b.startRot);
+          let startXf = Rigid(b.startPos, b.startRot);
           let swept = sh.bounds(startXf).union(sh.bounds(now)).expand(0.01);
           bp.queryBox(swept, b.mask, &mut cands);
           var bestT = 2.f;
@@ -1065,7 +1065,7 @@ pub struct World {
             let eligible = oj != i && o.alive && !o.sensor && (o.layer & b.mask) != 0u32 && (b.layer & o.mask) != 0u32
               && (o.motion == MotionStatic || b.bullet);
             if eligible {
-              let oxf = new Rigid(o.pos - o.rot * o.comLocal, o.rot);
+              let oxf = Rigid(o.pos - o.rot * o.comLocal, o.rot);
               let hit = shapeCast(sh, startXf, disp, shapes[usize.from(o.shape)], oxf);
               // a hit counts if the sweep goes into the surface at more than about 6 degrees: one that
               // grazes it is a body sliding along a surface it rests on, which the contacts handle

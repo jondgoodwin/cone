@@ -62,9 +62,9 @@ pub struct PostFinish {
   pub grade: bool = false;
   // Lift raises the blacks, gain scales the whites, gamma bends the middle
   // (above 1 brightens it); applied in display-encoded (sRGB) values
-  pub lift: Vec3 = new Vec3(0., 0., 0.);
-  pub gamma: Vec3 = new Vec3(1., 1., 1.);
-  pub gain: Vec3 = new Vec3(1., 1., 1.);
+  pub lift: Vec3 = Vec3(0., 0., 0.);
+  pub gamma: Vec3 = Vec3(1., 1., 1.);
+  pub gain: Vec3 = Vec3(1., 1., 1.);
   pub saturation: f32 = 1.;
   // How much of the 3-D table's result is mixed in (0: none; the table starts
   // as the identity, so a table not set changes nothing)
@@ -78,7 +78,7 @@ pub struct PostFinish {
   // Film grain's strength (display-encoded value, about 0.02 is gentle)
   pub grain: f32 = 0.;
 
-  pub fn off() PostFinish { new PostFinish() }
+  pub fn off() PostFinish { PostFinish() }
 }
 
 pub struct Post {
@@ -111,12 +111,12 @@ pub struct Post {
   // 'height'. Check 'isValid'.
   pub fn create(device: &mut Device, outputFormat: u32, width: u32, height: u32) Post {
     var shader = device.createShaderModule(&POST_SPIRV);
-    let entries = [new BindGroupLayoutEntry(binding: 0u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE),
-      new BindGroupLayoutEntry(binding: 1u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE),
-      new BindGroupLayoutEntry(binding: 2u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_SAMPLER),
-      new BindGroupLayoutEntry(binding: 3u32, visibility: SHADER_STAGE_FRAGMENT,
+    let entries = [BindGroupLayoutEntry(binding: 0u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE),
+      BindGroupLayoutEntry(binding: 1u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE),
+      BindGroupLayoutEntry(binding: 2u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_SAMPLER),
+      BindGroupLayoutEntry(binding: 3u32, visibility: SHADER_STAGE_FRAGMENT,
         bufferType: BUFFER_BINDING_TYPE_READ_ONLY_STORAGE),
-      new BindGroupLayoutEntry(binding: 4u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE,
+      BindGroupLayoutEntry(binding: 4u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE,
         viewDimension: TEXTURE_VIEW_DIMENSION_3D)];
     var layout = device.createBindGroupLayout(&entries);
     let layouts = [&layout];
@@ -124,7 +124,7 @@ pub struct Post {
     var downPipeline = postPipeline(device, &pipelineLayout, &shader, "downsampleMain", TEXTURE_FORMAT_RGBA16_FLOAT);
     var upPipeline = postPipeline(device, &pipelineLayout, &shader, "upsampleMain", TEXTURE_FORMAT_RGBA16_FLOAT);
     var toneMapPipeline = postPipeline(device, &pipelineLayout, &shader, "toneMapMain", outputFormat);
-    let samplerDesc = new SamplerDescriptor(addressModeU: ADDRESS_MODE_CLAMP_TO_EDGE, addressModeV: ADDRESS_MODE_CLAMP_TO_EDGE,
+    let samplerDesc = SamplerDescriptor(addressModeU: ADDRESS_MODE_CLAMP_TO_EDGE, addressModeV: ADDRESS_MODE_CLAMP_TO_EDGE,
       addressModeW: ADDRESS_MODE_CLAMP_TO_EDGE);
     var sampler = device.createSampler(&samplerDesc);
     let w = umax(width, 2u32);
@@ -137,7 +137,7 @@ pub struct Post {
     let one: Array[f32, 4] = [1., 1., 1., 1.];
     device.queue.writeBuffer(&exposureBuffer, 0u64, &one as *u8, 16u64);
     var table = identityTable(device, 16u32);
-    var post = new Post(outputFormat, w, h, hdr, bloomDown, bloomUp, levels, shader, layout, pipelineLayout, downPipeline,
+    var post = Post(outputFormat, w, h, hdr, bloomDown, bloomUp, levels, shader, layout, pipelineLayout, downPipeline,
       upPipeline, toneMapPipeline, sampler, List[BindGroup].empty(), exposureBuffer, table, 16u32, 0u32, 0u32,
       PostFinish.off());
     post.makeGroups(device);
@@ -161,7 +161,7 @@ pub struct Post {
     var flush = device.createCommandEncoder();
     device.queue.submit(flush.finish());
     device.waitIdle();
-    let desc = new TextureDescriptor(size, size, TEXTURE_FORMAT_RGBA8_UNORM,
+    let desc = TextureDescriptor(size, size, TEXTURE_FORMAT_RGBA8_UNORM,
       TEXTURE_USAGE_TEXTURE_BINDING | TEXTURE_USAGE_COPY_DST, depthOrArrayLayers: size, dimension: TEXTURE_DIMENSION_3D);
     table = device.createTexture(&desc);
     device.queue.writeTexture(&table, &rgba[0] as *u8, size * 4u32);
@@ -260,7 +260,7 @@ pub struct Post {
   pub fn sourceGroups(self: &mut, device: &mut Device, view: &TextureView) PostSource {
     let tableView = tableView3d(&table);
     let top = levelView(&bloomUp, 0u32);
-    new PostSource(pairGroup(device, &layout, view, view, &sampler, &exposureBuffer, &tableView),
+    PostSource(pairGroup(device, &layout, view, view, &sampler, &exposureBuffer, &tableView),
       pairGroup(device, &layout, view, &top, &sampler, &exposureBuffer, &tableView))
   }
 
@@ -332,13 +332,13 @@ pub struct PostSource {
 
 fn plainImmediates(texelX: f32, texelY: f32, mode: u32, strength: f32, exposure: f32, toneMapper: u32, bloomScale: f32)
     PostImmediates {
-  new PostImmediates(texelX, texelY, mode, strength, exposure, toneMapper, bloomScale, 0u32,
+  PostImmediates(texelX, texelY, mode, strength, exposure, toneMapper, bloomScale, 0u32,
     [0., 0., 0., 1.], [1., 1., 1., 0.], [1., 1., 1., 1.], [0., 0., 0., 0.], [0., 0., 0., 0.])
 }
 
 // A 3-D view of the whole table
 fn tableView3d(table: &Texture) TextureView {
-  let desc = new TextureViewDescriptor(dimension: TEXTURE_VIEW_DIMENSION_3D);
+  let desc = TextureViewDescriptor(dimension: TEXTURE_VIEW_DIMENSION_3D);
   table.createViewWith(&desc)
 }
 
@@ -346,7 +346,7 @@ fn tableView3d(table: &Texture) TextureView {
 // (r, g, b) / (size - 1), so that the table read at coordinate v x (size - 1)
 // / size + 0.5 / size answers v
 fn identityTable(device: &mut Device, size: u32) Texture {
-  let desc = new TextureDescriptor(size, size, TEXTURE_FORMAT_RGBA8_UNORM,
+  let desc = TextureDescriptor(size, size, TEXTURE_FORMAT_RGBA8_UNORM,
     TEXTURE_USAGE_TEXTURE_BINDING | TEXTURE_USAGE_COPY_DST, depthOrArrayLayers: size, dimension: TEXTURE_DIMENSION_3D);
   var texture = device.createTexture(&desc);
   var data = List[u8].withCapacity(usize.from(size * size * size * 4u32));
@@ -391,20 +391,20 @@ fn umin(a: u32, b: u32) u32 { if a < b { a } else { b } }
 fn levelSize(size: u32, level: u32) u32 { umax(size >> level, 1u32) }
 
 fn frameTexture(device: &mut Device, width: u32, height: u32) Texture {
-  let desc = new TextureDescriptor(width, height, TEXTURE_FORMAT_RGBA16_FLOAT,
+  let desc = TextureDescriptor(width, height, TEXTURE_FORMAT_RGBA16_FLOAT,
     TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_TEXTURE_BINDING);
   device.createTexture(&desc)
 }
 
 // A chain of 'levels' levels from half of 'width' by 'height'
 fn chainTexture(device: &mut Device, width: u32, height: u32, levels: u32) Texture {
-  let desc = new TextureDescriptor(umax(width / 2u32, 1u32), umax(height / 2u32, 1u32), TEXTURE_FORMAT_RGBA16_FLOAT,
+  let desc = TextureDescriptor(umax(width / 2u32, 1u32), umax(height / 2u32, 1u32), TEXTURE_FORMAT_RGBA16_FLOAT,
     TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_TEXTURE_BINDING, umax(levels, 1u32));
   device.createTexture(&desc)
 }
 
 fn levelView(texture: &Texture, level: u32) TextureView {
-  let desc = new TextureViewDescriptor(baseMipLevel: level, mipLevelCount: 1u32);
+  let desc = TextureViewDescriptor(baseMipLevel: level, mipLevelCount: 1u32);
   texture.createViewWith(&desc)
 }
 
@@ -418,7 +418,7 @@ fn pairGroup(device: &mut Device, layout: &BindGroupLayout, first: &TextureView,
 
 fn postPass(encoder: &mut CommandEncoder, view: TextureView, pipeline: &RenderPipeline, group: &BindGroup,
     data: &PostImmediates) {
-  let attachment = new RenderPassColorAttachment(view: view, clearValue: new Color(0., 0., 0., 1.));
+  let attachment = RenderPassColorAttachment(view: view, clearValue: Color(0., 0., 0., 1.));
   var pass = encoder.beginRenderPass(&attachment);
   pass.setPipeline(pipeline);
   pass.setBindGroup(0u32, group);
@@ -429,9 +429,9 @@ fn postPass(encoder: &mut CommandEncoder, view: TextureView, pipeline: &RenderPi
 
 fn postPipeline(device: &mut Device, layout: &PipelineLayout, shader: &ShaderModule, entry: &str, format: u32)
     RenderPipeline {
-  let attributes = [new VertexAttribute(VERTEX_FORMAT_FLOAT32, 0u64, 0u32)];
-  let buffers = [new VertexBufferLayout(arrayStride: 4u64, attributes: &attributes)];
-  let desc = new RenderPipelineDescriptor(layout: layout, vertexModule: shader, vertexEntryPoint: "fullscreenMain",
+  let attributes = [VertexAttribute(VERTEX_FORMAT_FLOAT32, 0u64, 0u32)];
+  let buffers = [VertexBufferLayout(arrayStride: 4u64, attributes: &attributes)];
+  let desc = RenderPipelineDescriptor(layout: layout, vertexModule: shader, vertexEntryPoint: "fullscreenMain",
     buffers: &buffers[..<0], fragmentModule: shader, fragmentEntryPoint: entry, colorFormat: format);
   device.createRenderPipeline(&desc)
 }

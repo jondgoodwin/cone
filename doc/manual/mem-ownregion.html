@@ -18,7 +18,7 @@
 		the same way: reference counting that traces now and then to break its cycles, say, or a collector that traces within
 		a thread and counts between threads. This page covers how a region ref is written, the methods the compiler calls and
 		when, single and counted ownership, traced regions for collectors, and a value that leads to a region. Afterwards you
-		can write a memory management strategy of your own and use it with <span class="pre">new</span>:</p>
+		can write a memory management strategy of your own and allocate with it:</p>
 
 <pre>
 mod counted;
@@ -30,7 +30,7 @@ import libc;
 struct Counted is RegionRef {
   owners: usize;
   fn alloc(size: usize) *u8 { libc.malloc(size) }
-  fn init(self: &amp;new) { *self = new Counted(1usize); }
+  fn init(self: &amp;new) { *self = Counted(1usize); }
   fn aliasRef(self: &amp;uni Counted) {
     owners = owners + 1usize;
     print &lt;- "owners ";
@@ -56,7 +56,7 @@ struct Note {
 }
 
 fn main() i32 {
-  let a = new Counted[mut, Note](7);
+  let a = Counted[mut, Note](7);
   {
     let b = a;                        // another owner: aliasRef
     print &lt;- b.n;
@@ -74,8 +74,8 @@ fn main() i32 {
 	<p>A region ref is a struct that declares the built-in trait <span class="pre">RegionRef</span>; there is no separate
 		declaration for one. Its fields are the bookkeeping kept with every value the region allocates (a count, say), and its
 		methods are the ones the compiler calls when a value is allocated, when an owning reference is copied or goes away, and
-		when a value is freed. It is named in a <span class="pre">new</span> like any other region,
-		<span class="pre">new Counted[mut, Note](7)</span>. Every method is optional, an absent method's operation does not
+		when a value is freed. It is named in an allocation like any other region,
+		<span class="pre">Counted[mut, Note](7)</span>. Every method is optional, an absent method's operation does not
 		happen, and what a region ref leaves out says what it does:</p>
 	<ul>
 		<li><span class="pre">fn alloc(size: usize) *u8</span> gets the memory. It answers null for a failure, rather than an
@@ -104,7 +104,7 @@ fn main() i32 {
 	<p>The compiler calls these methods at key events in the life of an owning reference. Each is handed the
 		bookkeeping, not the value. A region ref's methods are ordinary Cone code, not trusted code.</p>
 	<p id="alloc"><b><span class="pre">fn alloc(size: usize) *u8</span></b>, static, is called whenever
-		<span class="pre">new</span> makes an owning reference, after the value initializer's arguments are evaluated. The
+		an allocation makes an owning reference, after the value initializer's arguments are evaluated. The
 		compiler supplies the size of the value to be stored, enlarged to include the region's bookkeeping (the count, say)
 		and a lock permission's, and a null answer fails. After <span class="pre">alloc</span>, the compiler initializes any
 		lock permission's fields, then moves the pointer past the bookkeeping to the value, and fills the value from its
@@ -114,7 +114,7 @@ fn main() i32 {
 		finalize a value of any type itself (an owning slice's is its element type's).</p>
 	<p id="init"><b><span class="pre">fn init(self: &amp;new)</span></b> is an
 		<a href="rec-methods.html#initializer">initializer</a>, run right after <span class="pre">alloc</span> on the
-		bookkeeping, which it fills in place: <span class="pre">*self = new Counted(1usize)</span>.</p>
+		bookkeeping, which it fills in place: <span class="pre">*self = Counted(1usize)</span>.</p>
 	<p id="aliasref"><b><span class="pre">fn aliasRef(self: &amp;uni R)</span></b> is called whenever a new shared copy of
 		the reference is made. <b><span class="pre">fn dealiasRef(self: &amp;uni R) bool</span></b> is called whenever an
 		owning reference is destroyed, usually when the variable holding it reaches the end of its scope, and also when a
@@ -125,9 +125,9 @@ fn main() i32 {
 		<span class="pre">free</span>, which disposes of any resources the value holds.</p>
 
 	<h3 id="inregion">Constructing in a region</h3>
-	<p>The value's own initializer runs in the region too. <span class="pre">new Counted[mut, Node](1)</span> runs Node's
+	<p>The value's own initializer runs in the region too. <span class="pre">Counted[mut, Node](1)</span> runs Node's
 		initializer on the memory the region allocated, after the region's own <span class="pre">init</span> has filled its
-		bookkeeping. One given a finished Node instead, <span class="pre">new Counted[mut, Node](done)</span>, moves it in and
+		bookkeeping. One given a finished Node instead, <span class="pre">Counted[mut, Node](done)</span>, moves it in and
 		runs no initializer (<a href="mem-regions.html#inplace">a construction fills its value in place</a>):</p>
 <pre>
 mod inregion;
@@ -140,7 +140,7 @@ struct Counted is RegionRef {
   fn alloc(size: usize) *u8 { libc.malloc(size) }
   fn init(self: &amp;new) {
     print &lt;- "region init\n";
-    *self = new Counted(1usize);
+    *self = Counted(1usize);
   }
   fn aliasRef(self: &amp;uni Counted) { owners = owners + 1usize; }
   fn dealiasRef(self: &amp;uni Counted) bool {
@@ -157,20 +157,20 @@ struct Node {
   pub n: i32;
   pub fn init(self: &amp;new, k: i32) {
     print &lt;- "node init\n";
-    *self = new Node(n: k * 10);
+    *self = Node(n: k * 10);
   }
   fn final(self: &amp;uni) { print &lt;- "node final "; print &lt;- n; print &lt;- "\n"; }
 }
 
 fn main() i32 {
   {
-    let a = new Counted[mut, Node](1);    // Node's initializer runs, on the region's memory
+    let a = Counted[mut, Node](1);    // Node's initializer runs, on the region's memory
     print &lt;- a.n;
     print &lt;- "\n";
   }
   {
-    let done = new Node(5);
-    let b = new Counted[mut, Node](done); // a finished Node moves in: no initializer runs
+    let done = Node(5);
+    let b = Counted[mut, Node](done); // a finished Node moves in: no initializer runs
     print &lt;- "moved in\n";
   }
   0i32
@@ -178,7 +178,7 @@ fn main() i32 {
 </pre>
 	<p>The first block prints <span class="pre">region init</span>, <span class="pre">node init</span>,
 		<span class="pre">10</span>, <span class="pre">node final 10</span> and <span class="pre">free</span>. The second prints
-		<span class="pre">node init</span> (for <span class="pre">new Node(5)</span>), <span class="pre">region init</span>,
+		<span class="pre">node init</span> (for <span class="pre">Node(5)</span>), <span class="pre">region init</span>,
 		<span class="pre">moved in</span>, <span class="pre">node final 50</span> and <span class="pre">free</span>.</p>
 
 	<h2 id="owners">Single owner, shared, and counted</h2>
@@ -212,7 +212,7 @@ fn consume(p: Unique[mut, Point]) {
 }                                     // the owner ends here
 
 fn main() i32 {
-  let p = new Unique[mut, Point](3, 4);
+  let p = Unique[mut, Point](3, 4);
   consume(p);                         // moved: p may not be used again
   print &lt;- "after\n";
   0i32
@@ -247,7 +247,7 @@ struct Heapy is RegionRef, Traced {
   seen: usize;
   fn alloc(size: usize) *u8 {
     let p = malloc(size);
-    mem.writeRaw(p as *Heapy, new Heapy(0usize));
+    mem.writeRaw(p as *Heapy, Heapy(0usize));
     p
   }
   fn mark(self: &amp;uni Heapy, slot: *usize) {
@@ -260,9 +260,9 @@ struct Leaf { pub n: i64; }
 struct Pair { pub left: Heapy[mut, Leaf]; pub right: Heapy[mut, Leaf]; }
 
 fn main() i32 {
-  let l = new Heapy[mut, Leaf](1);
-  let r = new Heapy[mut, Leaf](2);
-  let pair = new Pair(l, r);
+  let l = Heapy[mut, Leaf](1);
+  let r = Heapy[mut, Leaf](2);
+  let pair = Pair(l, r);
   print &lt;- pair.left.n + pair.right.n;
   print &lt;- "\n";
   0i32
@@ -311,9 +311,11 @@ fn main() i32 {
 		with <a href="mem-gc.html">Garbage collection</a>.</p>
 
 	<h2 id="regionvalue">A value that leads to a region</h2>
-	<p>A dynamic region, such as an arena, is a value rather than a module, and a <span class="pre">new</span> can name the
-		value in place of a type: <span class="pre">new a[Node](1, 2)</span> allocates in that value's region. The compiler
-		reads it as <span class="pre">a.alloc(new Node(1, 2))</span>, so what comes back is what that call returns (an arena
+	<p>A dynamic region, such as an arena, is a value rather than a module, and so is named by a <span class="pre">new</span> that
+		names the value in place of a type: <span class="pre">new a[Node](1, 2)</span> allocates in that value's region. A
+		static region is named by a type, and its allocations are constructions like any other; <span class="pre">new</span> is
+		written for a dynamic region only. The compiler
+		reads it as <span class="pre">a.alloc(Node(1, 2))</span>, so what comes back is what that call returns (an arena
 		returns a borrowed <span class="pre">&amp;mut</span> reference to the value). The head of such a
 		<span class="pre">new</span> must be a region value, or a value that <i>leads to</i> one:</p>
 	<ul>
@@ -321,7 +323,7 @@ fn main() i32 {
 			<span class="pre">*MemRegion</span>, as an <span class="pre">Arena</span>'s and a <span class="pre">DynArena</span>'s
 			are.</li>
 		<li>A value that <b>leads to</b> one has a type with an <span class="pre">allocRegion</span> method giving the region
-			value, and <span class="pre">new x[T](...)</span> is <span class="pre">x.allocRegion().alloc(new T(...))</span>. The
+			value, and <span class="pre">new x[T](...)</span> is <span class="pre">x.allocRegion().alloc(T(...))</span>. The
 			head's call is made again to hand the region to a type that gets its memory from one, so it should lend nothing still
 			borrowed when it is called again.</li>
 	</ul>
@@ -342,8 +344,8 @@ struct Scene {
 }
 
 fn main() i32 {
-  var s = new Scene(Arena.empty());
-  let n = new s[Node](1, 2);                // s.allocRegion().alloc(new Node(1, 2))
+  var s = Scene(Arena.empty());
+  let n = new s[Node](1, 2);                // s.allocRegion().alloc(Node(1, 2))
   printInt(n.b);                            // 2
   printStr("\n");
   0i32

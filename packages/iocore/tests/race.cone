@@ -54,7 +54,7 @@ const sendEarlyNs = 10000i64;   // a byte's send starts this much before its mom
 // xorshift64*: a cheap generator, one per thread
 struct Rng {
   s: u64;
-  pub fn make(seed: u64) Rng {new Rng(seed | 1u64)}
+  pub fn make(seed: u64) Rng {Rng(seed | 1u64)}
   pub fn next(self: &mut) u64 {
     s = s ^ (s >> 12u64);
     s = s ^ (s << 25u64);
@@ -151,7 +151,7 @@ fn peer(p: Peer) u64 {
   k = 0usize;
   while k < socks.len() {
     var b = q.pool.mustTake(1usize);
-    var one = new Array[u8, 1] <- fill u8.from(k);
+    var one = Array[u8, 1]() <- fill u8.from(k);
     b.append(&one[0usize ..< 1usize]);
     lp.submit(Op.Send(*socks[k], b), Target.Here(0u64));
     k = k + 1usize;
@@ -202,7 +202,7 @@ struct Tally {
   pub wrongBytes: u64;       // a Done receive that did not take exactly its one byte
   pub promptless: u64;       // TimedOut without its buffer
 
-  pub fn zero() Tally {new Tally(0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64)}
+  pub fn zero() Tally {Tally(0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64)}
 }
 
 // Take one round's answers from out: tokens are round * conns + i; the
@@ -302,8 +302,8 @@ struct Moments {
 // a byte sent takes some microseconds to reach its receive, where a cancel
 // or a deadline acts in the loop itself
 fn plan(rng: &mut Rng, t0: Instant, early: i64) Moments {
-  var m = new Moments(new Array[i64, 50] <- fill 0i64, new Array[i64, 50] <- fill 0i64,
-    new Array[i64, 50] <- fill 0i64);
+  var m = Moments(Array[i64, 50]() <- fill 0i64, Array[i64, 50]() <- fill 0i64,
+    Array[i64, 50]() <- fill 0i64);
   var i = 0u64;
   while i < conns {
     let moment = t0 + Duration.fromNanos(i64.from((i * windowNs) / conns + rng.below(windowNs / conns)));
@@ -337,7 +337,7 @@ fn orderCancels(lp: &Loop, ctx: &Sender[Order], m: &Moments, reqs: &mut List[Req
     a = a + 1usize;
   }
   // reqs[j] is the j-th operation with a cancel: find each one's place
-  var rank = new Array[usize, 50] <- fill 0usize;
+  var rank = Array[usize, 50]() <- fill 0usize;
   var j = 0usize;
   i = 0usize;
   while i < usize.from(conns) {
@@ -377,7 +377,7 @@ fn main() i32 {
     var cdone: Sender[u64];
     var cdoneRx: Receiver[u64];
     cdone, cdoneRx = Channel[u64].make();
-    let cthread = thread.start(new Canceller(crx, cdone), &canceller);
+    let cthread = thread.start(Canceller(crx, cdone), &canceller);
     var rng = Rng.make(0x2545F4914F6CDD1Du64);
 
     // -----------------------------------------------------------------------
@@ -400,7 +400,7 @@ fn main() i32 {
       var pdone: Sender[u64];
       var pdoneRx: Receiver[u64];
       pdone, pdoneRx = Channel[u64].make();
-      let pthread = thread.start(new Peer(port, prx, pdone, pool), &peer);
+      let pthread = thread.start(Peer(port, prx, pdone, pool), &peer);
       var accepted = List[Handle].empty();
       var i = 0u64;
       while i < conns {
@@ -415,7 +415,7 @@ fn main() i32 {
       }
       out.clear();
       // socks[n] is the connection the peer numbered n
-      var socks = new Array[Handle, 50] <- fill Handle.none();
+      var socks = Array[Handle, 50]() <- fill Handle.none();
       k = 0usize;
       while k < accepted.len() {
         lp.submit(Op.Recv(*accepted[k], pool.mustTake(1usize)), Target.Here(u64.from(k)));
@@ -450,7 +450,7 @@ fn main() i32 {
           j = j + 1u64;
         }
         // The peer sends in time order; operation n's socket is socks[n]
-        var pl = new Plan(new Array[i64, 50] <- fill 0i64, new Array[u32, 50] <- fill 0u32);
+        var pl = Plan(Array[i64, 50]() <- fill 0i64, Array[u32, 50]() <- fill 0u32);
         var order = List[usize].empty();
         j = 0u64;
         while j < conns {
@@ -476,7 +476,7 @@ fn main() i32 {
         let cancelGroup = rng.below(4u64) == 0u64;
         orderCancels(&lp, &ctx, &m, &mut reqs, g, t0 + Duration.fromNanos(i64.from(rng.below(windowNs))), cancelGroup);
         lead = nextLead(began0.elapsed().nanos());
-        var ended = new Array[u32, 50] <- fill 9u32;
+        var ended = Array[u32, 50]() <- fill 9u32;
         collect(&mut lp, &mut out, &mut t, round, &mut ended, true, round % 2u64 == 0u64);
         pdoneRx.recv();
         cdoneRx.recv();
@@ -527,7 +527,7 @@ fn main() i32 {
     // -----------------------------------------------------------------------
     {
       lp.setGrace(Duration.zero());
-      let lane = addLane(new LaneConfig(name: "race", maxThreads: 4u32));
+      let lane = addLane(LaneConfig(name: "race", maxThreads: 4u32));
       var t = Tally.zero();
       let began = Instant.now();
       var round = 0u64;
@@ -549,7 +549,7 @@ fn main() i32 {
         let cancelGroup = rng.below(4u64) == 0u64;
         orderCancels(&lp, &ctx, &m, &mut reqs, g, t0 + Duration.fromNanos(i64.from(rng.below(windowNs))), cancelGroup);
         lead = nextLead(began0.elapsed().nanos());
-        var ended = new Array[u32, 50] <- fill 9u32;
+        var ended = Array[u32, 50]() <- fill 9u32;
         collect(&mut lp, &mut out, &mut t, round, &mut ended, false, round % 2u64 == 0u64);
         cdoneRx.recv();
         round = round + 1u64;

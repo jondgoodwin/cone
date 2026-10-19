@@ -23,7 +23,7 @@ pub struct DayConfig {
   // per cent lit, and a full moon's 0.25 lux (own; 0.1 to 0.3 lux is what
   // measurements of the full moon give, from memory)
   pub fn standard() DayConfig {
-    new DayConfig(45. * (pi / 180.), 140., 2.5, 0.85, 0.25)
+    DayConfig(45. * (pi / 180.), 140., 2.5, 0.85, 0.25)
   }
 }
 
@@ -74,18 +74,18 @@ pub struct DaySky {
     // in 6 degrees, 0.77 per degree)
     let below = if eDeg < 1. { eDeg - 1. } else { 0. };
     let scale = pre.zenithY * libc.expf(0.65 * below);
-    new DaySky(hour, sun, moon, e, pre, config.turbidity, config.moonLit, config.moonLux,
+    DaySky(hour, sun, moon, e, pre, config.turbidity, config.moonLit, config.moonLux,
       smoothstepf(6., 1., eDeg), scale, libc.expf(0. - maxf(0., 0. - eDeg) / 7.),
       smoothstepf(0.5, -3., eDeg) * (1. - smoothstepf(-3., -10., eDeg)),
       smoothstepf(-4., -14., eDeg),
-      new Vec3(0., sin(config.latitude), 0. - cos(config.latitude)), hour * (pi / 12.), config.latitude)
+      Vec3(0., sin(config.latitude), 0. - cos(config.latitude)), hour * (pi / 12.), config.latitude)
   }
 
   // The sky's radiance in direction 'dir' (unit length): Preetham's and the
   // twilight patch's blend, and the night's floor, nits, linear RGB. No
   // stars, sun or moon in it: they are drawn over it.
   pub fn radiance(self: &, dir: Vec3) Vec3 {
-    var c = new Vec3(0., 0., 0.);
+    var c = Vec3(0., 0., 0.);
     if twilightMix < 1. { c = preetham.radiance(dir, sunDir) * (1. - twilightMix); }
     if twilightMix > 0. { c = c + self.twilight(dir) * twilightMix; }
     c + nightSky()
@@ -122,10 +122,10 @@ pub struct DaySky {
   // The sun's last degree is faded out (own), so the light goes with it.
   pub fn sunIrradiance(self: &) Vec3 {
     let vis = smoothstepf(-1., 1., sunElevation * (180. / pi));
-    if vis <= 0. { return new Vec3(0., 0., 0.); }
+    if vis <= 0. { return Vec3(0., 0., 0.); }
     let m = airMass(sunDir.y);
     let t = transmittance(turbidity, m, 1.);
-    new Vec3(SUN_TOP * t.x * vis, SUN_TOP * t.y * vis, SUN_TOP * t.z * vis)
+    Vec3(SUN_TOP * t.x * vis, SUN_TOP * t.y * vis, SUN_TOP * t.z * vis)
   }
 
   // The light a high cloud takes from the sun, lux: the sun's colour through
@@ -136,11 +136,11 @@ pub struct DaySky {
   pub fn cloudIrradiance(self: &) Vec3 {
     let eDeg = sunElevation * (180. / pi);
     let vis = smoothstepf(-6., -0.5, eDeg);
-    if vis <= 0. { return new Vec3(0., 0., 0.); }
+    if vis <= 0. { return Vec3(0., 0., 0.); }
     let held = if eDeg < 0.5 { 0.5 * (pi / 180.) } else { sunElevation };
     let m = airMass(sin(held));
     let t = transmittance(turbidity, m, 0.4);
-    new Vec3(SUN_TOP * t.x * vis, SUN_TOP * t.y * vis, SUN_TOP * t.z * vis)
+    Vec3(SUN_TOP * t.x * vis, SUN_TOP * t.y * vis, SUN_TOP * t.z * vis)
   }
 
   // The moon's irradiance, lux: the full moon's, as the lit share squared
@@ -149,7 +149,7 @@ pub struct DaySky {
   pub fn moonIrradiance(self: &) Vec3 {
     let w = smoothstepf(-2., -7., sunElevation * (180. / pi));
     let lux = moonLux * moonLit * moonLit * w;
-    new Vec3(lux * moonColor().x, lux * moonColor().y, lux * moonColor().z)
+    Vec3(lux * moonColor().x, lux * moonColor().y, lux * moonColor().z)
   }
 
   // The ambient radiance, nits: the sky's radiance averaged over the
@@ -163,7 +163,7 @@ pub struct DaySky {
     let sl = (sunDir.x * sunDir.x + sunDir.z * sunDir.z).sqrt();
     let ax = if sl > 0.0001 { sunDir.x / sl } else { 0. };
     let az = if sl > 0.0001 { sunDir.z / sl } else { 1. };
-    var sum = self.radiance(new Vec3(0., 1., 0.)) * 0.25;
+    var sum = self.radiance(Vec3(0., 1., 0.)) * 0.25;
     var k = 0;
     while k < 4 {
       // Round the compass from the sun's azimuth, a quarter turn at a time
@@ -171,16 +171,16 @@ pub struct DaySky {
       let cx = ax * cos(a) - az * sin(a);
       let cz = ax * sin(a) + az * cos(a);
       let c45 = (0.5f).sqrt();
-      sum = sum + self.radiance(new Vec3(cx * c45, c45, cz * c45)) * 0.125;
+      sum = sum + self.radiance(Vec3(cx * c45, c45, cz * c45)) * 0.125;
       let s75 = sin(75. * (pi / 180.));
       let c75 = cos(75. * (pi / 180.));
-      sum = sum + self.radiance(new Vec3(cx * s75, c75, cz * s75)) * 0.0625;
+      sum = sum + self.radiance(Vec3(cx * s75, c75, cz * s75)) * 0.0625;
       k = k + 1;
     }
     let sun = self.sunIrradiance();
     let horizontal = lumaOf(sun) * maxf(sunDir.y, 0.);
     let bounce = horizontal * 0.06 / pi;
-    new Vec3(sum.x + bounce * 1.0 + nightAmbient().x, sum.y + bounce * 0.85 + nightAmbient().y,
+    Vec3(sum.x + bounce * 1.0 + nightAmbient().x, sum.y + bounce * 0.85 + nightAmbient().y,
       sum.z + bounce * 0.65 + nightAmbient().z)
   }
 
@@ -189,7 +189,7 @@ pub struct DaySky {
     let sun = self.sunIrradiance();
     let moon = self.moonIrradiance();
     let bySun = lumaOf(sun) >= lumaOf(moon);
-    new DayLighting(if bySun { sunDir } else { moonDir }, if bySun { sun } else { moon }, sun, moon, self.ambient())
+    DayLighting(if bySun { sunDir } else { moonDir }, if bySun { sun } else { moon }, sun, moon, self.ambient())
   }
 
   // The numbers 'analyticdaylight.slang''s DaySkyParams reads, appended to
@@ -229,16 +229,16 @@ pub const SUN_RADIUS = 0.011f;
 // lit surface, nits (the full moon's is about 2500 to 6000; from memory)
 pub const MOON_RADIUS = 0.035f;
 pub const MOON_RADIANCE = 2500.f;
-fn moonColor() Vec3 { new Vec3(0.80, 0.92, 1.10) }
+fn moonColor() Vec3 { Vec3(0.80, 0.92, 1.10) }
 // The sky's radiance with no sun or moon at all, nits: a deep blue
-fn nightSky() Vec3 { new Vec3(0.0035, 0.0065, 0.016) }
+fn nightSky() Vec3 { Vec3(0.0035, 0.0065, 0.016) }
 // The ambient the night never goes below, nits
-fn nightAmbient() Vec3 { new Vec3(0.020, 0.032, 0.068) }
+fn nightAmbient() Vec3 { Vec3(0.020, 0.032, 0.068) }
 // The twilight palette, each times the unit
-fn twZenith() Vec3 { new Vec3(0.40, 0.70, 1.60) }
-fn twHorizon() Vec3 { new Vec3(1.45, 0.95, 0.90) }
-fn twGlow() Vec3 { new Vec3(7.0, 2.0, 0.45) }
-fn twVenus() Vec3 { new Vec3(0.9, 0.55, 0.65) }
+fn twZenith() Vec3 { Vec3(0.40, 0.70, 1.60) }
+fn twHorizon() Vec3 { Vec3(1.45, 0.95, 0.90) }
+fn twGlow() Vec3 { Vec3(7.0, 2.0, 0.45) }
+fn twVenus() Vec3 { Vec3(0.9, 0.55, 0.65) }
 
 fn maxf(a: f32, b: f32) f32 { if a > b { a } else { b } }
 
@@ -276,7 +276,7 @@ fn cosT_of(deg: f32) f32 { cos(deg * (pi / 180.)) }
 // (A.1 (S): Rayleigh, Angstrom's aerosol with alpha 1.3, and ozone)
 pub fn transmittance(t: f32, m: f32, share: f32) Vec3 {
   let beta = 0.04608 * t - 0.04586;
-  new Vec3(libc.expf(0. - m * share * opticalDepth(0.65, beta, 6.7)),
+  Vec3(libc.expf(0. - m * share * opticalDepth(0.65, beta, 6.7)),
     libc.expf(0. - m * share * opticalDepth(0.55, beta, 8.5)),
     libc.expf(0. - m * share * opticalDepth(0.45, beta, 0.3)))
 }

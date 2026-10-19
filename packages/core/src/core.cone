@@ -77,11 +77,11 @@ pub struct @opaque str {
   // byte that is not part of well-formed UTF-8 reads as U+FFFD, one for each
   // such byte, so every char given is valid. Code points, not graphemes: a
   // letter and its combining accent are two.
-  pub fn chars(self: &) StrChars inline { new StrChars(self, 0usize) }
+  pub fn chars(self: &) StrChars inline { StrChars(self, 0usize) }
 
   // The code points with the byte index each starts at, a cursor whose 'next'
   // gives a StrCharIndex (its 'offset' and its 'ch')
-  pub fn charIndices(self: &) StrCharIndices inline { new StrCharIndices(self, 0usize) }
+  pub fn charIndices(self: &) StrCharIndices inline { StrCharIndices(self, 0usize) }
 
   // How many code points there are, counted by walking the text (O(n)); 'len' is
   // the byte count. The count of what 'chars' gives.
@@ -257,21 +257,21 @@ pub struct @opaque Array[T] {
   }
 
   // A cursor over the elements, front to back: 'next' gives a borrow of each
-  pub fn iter(self: &) ArrayIter[T] { new ArrayIter[T](self, 0usize) }
+  pub fn iter(self: &) ArrayIter[T] { ArrayIter[T](self, 0usize) }
 
   // A parallel view of the elements, for the reductions that run on the actors'
   // workers: 'xs.parallel().sum()', 'fold' and 'findFirst' (the actors package
   // runs them; the module imports it). Its items are borrows, as 'iter' gives
-  pub fn parallel(self: &) ParallelSlice[T] { new ParallelSlice[T](self) }
+  pub fn parallel(self: &) ParallelSlice[T] { ParallelSlice[T](self) }
 
   // The elements with their positions: 'next' gives a tuple of the position and
   // a borrow of the element, and 'each i, x in a.indexed()' unpacks it
-  pub fn indexed(self: &) ArrayIndexed[T] { new ArrayIndexed[T](self, 0usize) }
+  pub fn indexed(self: &) ArrayIndexed[T] { ArrayIndexed[T](self, 0usize) }
 
   // The elements for changing in place: a cursor whose 'next' gives a '&mut' of each
   // element, so 'each x in a.mutItems()' gives 'x' as a '&mut'. Its 'indexed()' gives
   // the position with the '&mut' item; a bare 'a.indexed()' lends '&' on any slice
-  pub fn mutItems(self: &mut) ArrayMutItems[T] { new ArrayMutItems[T](self, 0usize) }
+  pub fn mutItems(self: &mut) ArrayMutItems[T] { ArrayMutItems[T](self, 0usize) }
 
   // The elements in runs of 'n', for reading: each item is a slice of 'n' elements,
   // the last of what is left if 'n' does not divide the count. A panic if 'n' is 0.
@@ -280,7 +280,7 @@ pub struct @opaque Array[T] {
     if n == 0usize {
       panic("chunks: the chunk size is 0", file, line);
     }
-    new ArrayChunks[T](self, n, 0usize)
+    ArrayChunks[T](self, n, 0usize)
   }
 
   // The elements in runs of 'n', for changing in place: each item is a '&mut' slice
@@ -290,7 +290,7 @@ pub struct @opaque Array[T] {
     if n == 0usize {
       panic("mutChunks: the chunk size is 0", file, line);
     }
-    new ArrayMutChunks[T](self, n, 0usize)
+    ArrayMutChunks[T](self, n, 0usize)
   }
 
   // The elements as rows of 'N': 'a.asArrays[3]()' is the same memory seen as a slice of
@@ -368,12 +368,12 @@ pub struct ArrayChunks['a, T] is Iterator[&Array[T]] {
     }
     let cut = if at == self.len() { items.len } else { pos + at * size };
     let p = items as *T;
-    (new ArrayChunks[T](mem.sliceFromParts[T](p, cut), size, pos),
-      new ArrayChunks[T](mem.sliceFromParts[T](p + cut, items.len - cut), size, 0usize))
+    (ArrayChunks[T](mem.sliceFromParts[T](p, cut), size, pos),
+      ArrayChunks[T](mem.sliceFromParts[T](p + cut, items.len - cut), size, 0usize))
   }
 
   // The runs with their numbers, counted from 0 as the runs it gives are
-  pub fn indexed(self) ChunksIndexed['a, T] { new ChunksIndexed[T](self, 0usize) }
+  pub fn indexed(self) ChunksIndexed['a, T] { ChunksIndexed[T](self, 0usize) }
 
   // The runs left, as a parallel view (see Array's 'parallel'): the cursor itself, whose
   // 'len' and 'at' the reductions cut it by
@@ -383,7 +383,7 @@ pub struct ArrayChunks['a, T] is Iterator[&Array[T]] {
   // pairs of a run and what the other gives, ending with the shorter. When the other
   // is one that can be cut and walked by position too, so is the zip (a Zip)
   pub fn zip[B, J: Iterator[B]](self, other: J) Zip[&'a Array[T], B, ArrayChunks['a, T], J] {
-    new Zip[&Array[T], B, ArrayChunks[T], J](self, other)
+    Zip[&Array[T], B, ArrayChunks[T], J](self, other)
   }
 }
 
@@ -449,14 +449,14 @@ pub struct ArrayMutChunks['a, T] is Iterator[&mut Array[T]] {
     }
     let cut = if at == self.len() { items.len } else { pos + at * size };
     let p = items as *T;
-    (new ArrayMutChunks[T](mem.sliceFromPartsMut[T](p, cut), size, pos),
-      new ArrayMutChunks[T](mem.sliceFromPartsMut[T](p + cut, items.len - cut), size, 0usize))
+    (ArrayMutChunks[T](mem.sliceFromPartsMut[T](p, cut), size, pos),
+      ArrayMutChunks[T](mem.sliceFromPartsMut[T](p + cut, items.len - cut), size, 0usize))
   }
 
-  pub fn indexed(self) MutChunksIndexed['a, T] { new MutChunksIndexed[T](self, 0usize) }
+  pub fn indexed(self) MutChunksIndexed['a, T] { MutChunksIndexed[T](self, 0usize) }
 
   pub fn zip[B, J: Iterator[B]](self, other: J) Zip[&'a mut Array[T], B, ArrayMutChunks['a, T], J] {
-    new Zip[&mut Array[T], B, ArrayMutChunks[T], J](self, other)
+    Zip[&mut Array[T], B, ArrayMutChunks[T], J](self, other)
   }
 }
 
@@ -503,7 +503,7 @@ pub struct ArrayIter['a, T] is Iterator[&T] {
 
   // The elements left, as a parallel view (see Array's 'parallel')
   pub fn parallel(self) ParallelSlice['a, T] {
-    new ParallelSlice[T](mem.sliceFromParts[T]((items as *T) + pos, items.len - pos))
+    ParallelSlice[T](mem.sliceFromParts[T]((items as *T) + pos, items.len - pos))
   }
 
   pub fn split(self: &, at: usize) (ArrayIter['a, T], ArrayIter['a, T]) {
@@ -512,8 +512,8 @@ pub struct ArrayIter['a, T] is Iterator[&T] {
     }
     let p = items as *T;
     let cut = pos + at;
-    (new ArrayIter[T](mem.sliceFromParts[T](p, cut), pos),
-      new ArrayIter[T](mem.sliceFromParts[T](p + cut, items.len - cut), 0usize))
+    (ArrayIter[T](mem.sliceFromParts[T](p, cut), pos),
+      ArrayIter[T](mem.sliceFromParts[T](p + cut, items.len - cut), 0usize))
   }
 }
 
@@ -571,10 +571,10 @@ pub struct ArrayMutItems['a, T] is Iterator[&mut T] {
   }
 
   // The same with the positions: the item is a '&mut' too
-  pub fn indexed(self) MutItemsIndexed['a, T] { new MutItemsIndexed[T](items, pos) }
+  pub fn indexed(self) MutItemsIndexed['a, T] { MutItemsIndexed[T](items, pos) }
 
   pub fn zip[B, J: Iterator[B]](self, other: J) Zip[&'a mut T, B, ArrayMutItems['a, T], J] {
-    new Zip[&mut T, B, ArrayMutItems[T], J](self, other)
+    Zip[&mut T, B, ArrayMutItems[T], J](self, other)
   }
 }
 
@@ -626,12 +626,12 @@ pub struct Zip[A, B, I: Iterator[A], J: Iterator[B]] is Iterator[(A, B)] {
 
   // The pairs with their numbers, counted from 0: a tuple of the number and
   // what each source gives
-  pub fn indexed(self) ZipIndexed[A, B, I, J] { new ZipIndexed[A, B, I, J](self, 0usize) }
+  pub fn indexed(self) ZipIndexed[A, B, I, J] { ZipIndexed[A, B, I, J](self, 0usize) }
 
   // A third source walked beside the two: a Zip3, whose items are flat triples (not a
   // pair and a third), so that three variables unpack them. It ends with the shortest
   pub fn zip[C, K: Iterator[C]](self, other: K) Zip3[A, B, C, I, J, K] {
-    new Zip3[A, B, C, I, J, K](self.first, self.second, other)
+    Zip3[A, B, C, I, J, K](self.first, self.second, other)
   }
 
   // When BOTH sources can be walked by position (RandomAccess) and cut
@@ -655,7 +655,7 @@ pub struct Zip[A, B, I: Iterator[A], J: Iterator[B]] is Iterator[(A, B)] {
       where I is ParallelIterable[A, I] && J is ParallelIterable[B, J] {
     let f = first.split(at);
     let s = second.split(at);
-    (new Zip[A, B, I, J](f.0, s.0), new Zip[A, B, I, J](f.1, s.1))
+    (Zip[A, B, I, J](f.0, s.0), Zip[A, B, I, J](f.1, s.1))
   }
 }
 
@@ -718,7 +718,7 @@ pub struct Zip3[A, B, C, I: Iterator[A], J: Iterator[B], K: Iterator[C]] is Iter
 
   // The triples with their numbers, counted from 0: a flat tuple of the number and
   // what each source gives
-  pub fn indexed(self) Zip3Indexed[A, B, C, I, J, K] { new Zip3Indexed[A, B, C, I, J, K](self, 0usize) }
+  pub fn indexed(self) Zip3Indexed[A, B, C, I, J, K] { Zip3Indexed[A, B, C, I, J, K](self, 0usize) }
 
   pub fn len(self: &) usize
       where I is RandomAccess[A] && J is RandomAccess[B] && K is RandomAccess[C] {
@@ -742,7 +742,7 @@ pub struct Zip3[A, B, C, I: Iterator[A], J: Iterator[B], K: Iterator[C]] is Iter
     let f = first.split(at);
     let s = second.split(at);
     let t = third.split(at);
-    (new Zip3[A, B, C, I, J, K](f.0, s.0, t.0), new Zip3[A, B, C, I, J, K](f.1, s.1, t.1))
+    (Zip3[A, B, C, I, J, K](f.0, s.0, t.0), Zip3[A, B, C, I, J, K](f.1, s.1, t.1))
   }
 }
 
@@ -781,7 +781,7 @@ pub struct Zip3Indexed[A, B, C, I: Iterator[A], J: Iterator[B], K: Iterator[C]] 
 // what their 'iter' cursors give, and ends with the shorter of the two
 pub fn zip[A, I, C: Iterable[A, I], B, J, D: Iterable[B, J]](xs: &C, ys: &D) Zip[A, B, I, J]
     where I is Iterator[A] && J is Iterator[B] {
-  new Zip[A, B, I, J](xs.iter(), ys.iter())
+  Zip[A, B, I, J](xs.iter(), ys.iter())
 }
 
 // 'cstr', a borrowed C string: one pointer to bytes that end in a NUL, which is
@@ -803,13 +803,13 @@ pub struct cstr {
   // that end in a NUL and stay as they are while the cstr is used: this is the
   // way from C's raw pointers (an 'argv' entry, what 'getenv' answers when it
   // is not null) to a cstr.
-  pub fn fromPtr(ptr: *u8) cstr inline { new cstr(ptr) }
+  pub fn fromPtr(ptr: *u8) cstr inline { cstr(ptr) }
 
   // What a literal becomes where a cstr is wanted. A literal's bytes are
   // followed by a NUL, in the program for as long as it runs.
   pub fn fromLiteral(text: &str) cstr inline {
     let b: &Array[u8] = text;
-    new cstr(b as *u8)
+    cstr(b as *u8)
   }
 
   // The C string of an owner of text, which keeps a NUL after its bytes. A NUL
@@ -819,7 +819,7 @@ pub struct cstr {
     if libc.memchr(b as *u8, 0i32, b.len) != null {
       panic("cstr: text holding a NUL byte cannot be a C string", file, line);
     }
-    new cstr(b as *u8)
+    cstr(b as *u8)
   }
 
   // The pointer, for a C function that takes a buffer and not a string
@@ -963,7 +963,7 @@ pub struct StrCharIndices['a] is Iterator[StrCharIndex] {
     let b: &Array[u8] = text;
     if pos >= b.len { return None; }
     let width = strCharWidth(b, pos);
-    let at = new StrCharIndex(pos, strCharValue(b, pos, width));
+    let at = StrCharIndex(pos, strCharValue(b, pos, width));
     pos = pos + width;
     Some[StrCharIndex](at)
   }
@@ -1019,12 +1019,12 @@ pub trait Iterator[T] {
   // The items through 'f': the closure is typed from the item and its result is the
   // new item's type, 'xs.iter().map(x => *x * k)'
   pub fn map[U, F: fn(x: T) U](self, f: F) IterMap[T, U, Self, F] inline {
-    new IterMap[T, U, Self, F](self, f)
+    IterMap[T, U, Self, F](self, f)
   }
 
   // The items 'f' answers true for. 'f' is given a borrow of the item
   pub fn filter[F: fn(x: &T) bool](self, f: F) IterFilter[T, Self, F] inline {
-    new IterFilter[T, Self, F](self, f)
+    IterFilter[T, Self, F](self, f)
   }
 
   // At most the first n items. n is any integer, a literal included. The method is
@@ -1032,12 +1032,12 @@ pub trait Iterator[T] {
   // made, the cursor of a cursor of a cursor without end: a generic method is made
   // when called
   pub fn take[N: Integer](self, n: N) IterTake[T, Self] inline {
-    new IterTake[T, Self](self, usize.from(n))
+    IterTake[T, Self](self, usize.from(n))
   }
 
   // The items after the first n (none when there are not more than n)
   pub fn skip[N: Integer](self, n: N) IterSkip[T, Self] inline {
-    new IterSkip[T, Self](self, usize.from(n))
+    IterSkip[T, Self](self, usize.from(n))
   }
 
   // The terminal methods walk the chain once, from where the cursor is, and leave it
@@ -1085,7 +1085,7 @@ pub trait Iterator[T] {
   // 'other' is any cursor (an Iterator[U]), not a collection: the function 'zip(&xs, &ys)'
   // is the one for two collections
   pub fn zip[U, J: Iterator[U]](self, other: J) Zip[T, U, Self, J] inline {
-    new Zip[T, U, Self, J](self, other)
+    Zip[T, U, Self, J](self, other)
   }
 
   // The items with their positions, counted from 0: a tuple of the position (a usize)
@@ -1093,7 +1093,7 @@ pub trait Iterator[T] {
   // own 'indexed' (a list's, an array's, a zip's) is the counted loop or the cursor
   // that has it; this is the one for every other cursor, a generator, a reader, a chain.
   // An item that lends stays lending inside the tuple
-  pub fn indexed(self) IterIndexed[T, Self] inline { new IterIndexed[T, Self](self, 0usize) }
+  pub fn indexed(self) IterIndexed[T, Self] inline { IterIndexed[T, Self](self, 0usize) }
 
   // How many items there are
   pub fn count(self: &mut) usize inline {
@@ -1504,7 +1504,7 @@ pub struct Rc is RegionRef {
   cnt: u32;
   seen: u32;
   fn alloc(size: usize) *u8 inline {RawBlocks.alloc(size, 16usize)}
-  fn init(self: &new) inline {*self = new Rc(1u32, 0u32);}
+  fn init(self: &new) inline {*self = Rc(1u32, 0u32);}
   fn aliasRef(self: &uni Rc) inline {
     if cnt == 4294967295u32 {panic("Rc: more than 4294967295 owners of one value");}
     cnt = cnt + 1u32;
@@ -1541,7 +1541,7 @@ pub struct Rc is RegionRef {
 pub struct Rwcell is LockPermission {
   // 0 free, n > 0 held by n read-only borrows, -1 by one that may write
   borrows: isize;
-  fn init(self: &new) inline {*self = new Rwcell(0isize);}
+  fn init(self: &new) inline {*self = Rwcell(0isize);}
   // The acquiring methods are handed where the borrow is, which the panic names
   fn acquireMut(self: &uni Rwcell, file: &Array[u8], line: u32) inline {
     if borrows != 0isize {
@@ -1955,7 +1955,7 @@ pub struct Atomic[T] is AtomicValue, Move where T is Integer || T is bool || T i
   value: T;
 
   // A new atomic value holding v
-  pub fn of(v: T) Atomic[T] {new Atomic[T](v)}
+  pub fn of(v: T) Atomic[T] {Atomic[T](v)}
 
   // The value, taken out of an Atomic held by value, which nobody else can be
   // reaching: an ordinary read
@@ -2188,7 +2188,7 @@ pub struct Hasher {
   // A hasher with this seed: the same numbers for the same feed on every run,
   // and different seeds give different numbers
   pub fn withSeed(seed: u64) Hasher inline {
-    new Hasher(seed ^ mem.mulFold(seed ^ 0x2d358dccaa6c78a5u64, 0x8bb84b93962eacc9u64))
+    Hasher(seed ^ mem.mulFold(seed ^ 0x2d358dccaa6c78a5u64, 0x8bb84b93962eacc9u64))
   }
 
   // Feed a word

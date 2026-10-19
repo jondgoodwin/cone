@@ -108,8 +108,8 @@ pub struct Coupled {
   pub couplings: u32 = 1u32;   // contacts and anchors sharing the body this substep (mass splitting)
 
   pub fn make(pos: Vec3, rot: Quat, invMass: f32, invInertia: Mat3) Coupled {
-    new Coupled(pos, rot, new Vec3(0., 0., 0.), new Vec3(0., 0., 0.), invMass, invInertia,
-      new Vec3(0., 0., 0.), new Vec3(0., 0., 0.))
+    Coupled(pos, rot, Vec3(0., 0., 0.), Vec3(0., 0., 0.), invMass, invInertia,
+      Vec3(0., 0., 0.), Vec3(0., 0., 0.))
   }
 
   // The velocity of the body's material point at world position p
@@ -198,20 +198,20 @@ pub struct Collider {
   pub body: u32 = NO_BODY;
 
   pub fn sphere(center: Vec3, radius: f32) Collider {
-    new Collider(COLLIDER_SPHERE, center, new Vec3(0., 0., 0.), radius, Quat.identity())
+    Collider(COLLIDER_SPHERE, center, Vec3(0., 0., 0.), radius, Quat.identity())
   }
 
   pub fn capsule(start: Vec3, end: Vec3, radius: f32) Collider {
-    new Collider(COLLIDER_CAPSULE, start, end, radius, Quat.identity())
+    Collider(COLLIDER_CAPSULE, start, end, radius, Quat.identity())
   }
 
   pub fn box(center: Vec3, halfExtents: Vec3, rotation: Quat) Collider {
-    new Collider(COLLIDER_BOX, center, halfExtents, 0., rotation)
+    Collider(COLLIDER_BOX, center, halfExtents, 0., rotation)
   }
 
   // The half space below the plane through 'point' with unit 'normal'
   pub fn plane(point: Vec3, normal: Vec3) Collider {
-    new Collider(COLLIDER_PLANE, point, normal.normalize(), 0., Quat.identity())
+    Collider(COLLIDER_PLANE, point, normal.normalize(), 0., Quat.identity())
   }
 }
 
@@ -278,7 +278,7 @@ pub struct SoftBody {
   pub batchesSerial: bool = false; // a colouring ran out of colours: one thread only
   pub anyBreakable: bool = false;  // some constraint has a break force
   // ---- settings ----
-  pub gravity: Vec3 = new Vec3(0., -9.81, 0.);
+  pub gravity: Vec3 = Vec3(0., -9.81, 0.);
   pub damping: f32 = 0.2;       // velocity damping, per second
   pub substeps: u32 = 10u32;
   pub iterations: u32 = 1u32;
@@ -311,7 +311,7 @@ pub struct SoftBody {
   // constraints in fewer passes, so a cloth hung from an edge stretches less for the same
   // cost; 1 is plain Gauss-Seidel.
   pub relaxation: f32 = 1.;
-  pub gridOrigin: Vec3 = new Vec3(0., 0., 0.);
+  pub gridOrigin: Vec3 = Vec3(0., 0., 0.);
   pub gridCell: f32 = 1.;
   pub gridNx: u32 = 0u32;
   pub gridNy: u32 = 0u32;
@@ -320,14 +320,14 @@ pub struct SoftBody {
   pub stepH: f32 = 0.;
   pub stepSubs: u32 = 0u32;
   pub stepIndex: u32 = 0u32;
-  pub stepWind: Vec3 = new Vec3(0., 0., 0.);
+  pub stepWind: Vec3 = Vec3(0., 0., 0.);
 
   // A body with nothing in it
   pub fn empty() SoftBody {
-    new SoftBody(List[Vec3].empty(), List[Vec3].empty(), List[f32].empty(), List[f32].empty(),
+    SoftBody(List[Vec3].empty(), List[Vec3].empty(), List[f32].empty(), List[f32].empty(),
       List[Vec3].empty(), List[u32].empty(), List[u32].empty(), List[Vec2].empty(), List[u32].empty(),
       List[DistanceC].empty(), List[BendC].empty(), List[CurveC].empty(), List[TetherC].empty(),
-      new PressureC(false, 0., 1., 0., 0.),
+      PressureC(false, 0., 1., 0., 0.),
       List[Collider].empty(), List[Heightfield].empty(), List[Anchor].empty(),
       Transform3.identity(), Transform3.identity(),
       List[Coupled].empty(), List[BodyAnchor].empty(), List[BreakEvent].empty(), List[Vec3].empty(),
@@ -341,12 +341,12 @@ pub struct SoftBody {
   // Add a particle of 'm' kilograms at p, at rest; its number
   pub fn addParticle(self: &mut, p: Vec3, m: f32) u32 {
     pos.push(p);
-    vel.push(new Vec3(0., 0., 0.));
+    vel.push(Vec3(0., 0., 0.));
     mass.push(m);
     invMass.push(1. / m);
     rest.push(p);
     prev.push(p);
-    force.push(new Vec3(0., 0., 0.));
+    force.push(Vec3(0., 0., 0.));
     u32.from(pos.len() - 1usize)
   }
 
@@ -366,7 +366,7 @@ pub struct SoftBody {
 
   // Attach particle i to the anchor frame at 'offset' in the frame, and put it there
   pub fn attachAt(self: &mut, i: u32, offset: Vec3) {
-    anchors.push(new Anchor(i, offset));
+    anchors.push(Anchor(i, offset));
     invMass.set(usize.from(i), 0.);
     pos.set(usize.from(i), frameTo.transformPoint(offset));
   }
@@ -406,20 +406,20 @@ pub struct SoftBody {
     windGrid.clear();
     var k = 0usize;
     while k < usize.from(nx) * usize.from(ny) * usize.from(nz) {
-      windGrid.push(new Vec3(0., 0., 0.));
+      windGrid.push(Vec3(0., 0., 0.));
       k = k + 1usize;
     }
   }
 
   // The axis-aligned box the particles fill: (lowest corner, highest corner)
   pub fn bounds(self: &) (Vec3, Vec3) {
-    var lo = new Vec3(1e30, 1e30, 1e30);
-    var hi = new Vec3(-1e30, -1e30, -1e30);
+    var lo = Vec3(1e30, 1e30, 1e30);
+    var hi = Vec3(-1e30, -1e30, -1e30);
     var i = 0usize;
     while i < pos.len() {
       let p = *pos[i];
-      lo = new Vec3(fmin(lo.x, p.x), fmin(lo.y, p.y), fmin(lo.z, p.z));
-      hi = new Vec3(fmax(hi.x, p.x), fmax(hi.y, p.y), fmax(hi.z, p.z));
+      lo = Vec3(fmin(lo.x, p.x), fmin(lo.y, p.y), fmin(lo.z, p.z));
+      hi = Vec3(fmax(hi.x, p.x), fmax(hi.y, p.y), fmax(hi.z, p.z));
       i = i + 1usize;
     }
     (lo, hi)
@@ -436,7 +436,7 @@ pub struct SoftBody {
   pub fn attachBody(self: &mut, i: u32, body: u32, p: Vec3, breakForce: f32) {
     let c = *bodies[usize.from(body)];
     let off = c.rot.conjugate() * (p - c.pos);
-    bodyAnchors.push(new BodyAnchor(i, body, off, breakForce));
+    bodyAnchors.push(BodyAnchor(i, body, off, breakForce));
     invMass.set(usize.from(i), 0.);
     pos.set(usize.from(i), p);
     if breakForce >= 0. { anyBreakable = true; }
@@ -477,7 +477,7 @@ pub struct SoftBody {
       invMass.push(*other.invMass[i]);
       rest.push(*other.rest[i]);
       prev.push(*other.prev[i]);
-      force.push(new Vec3(0., 0., 0.));
+      force.push(Vec3(0., 0., 0.));
       i = i + 1usize;
     }
     i = 0usize;
@@ -504,26 +504,26 @@ pub struct SoftBody {
     i = 0usize;
     while i < other.dist.len() {
       let c = *other.dist[i];
-      dist.push(new DistanceC(c.a + base, c.b + base, c.rest, c.compliance, 0., c.breakForce));
+      dist.push(DistanceC(c.a + base, c.b + base, c.rest, c.compliance, 0., c.breakForce));
       i = i + 1usize;
     }
     i = 0usize;
     while i < other.bend.len() {
       let c = *other.bend[i];
-      bend.push(new BendC(c.a + base, c.b + base, c.c + base, c.d + base, c.rest, c.compliance, 0.,
+      bend.push(BendC(c.a + base, c.b + base, c.c + base, c.d + base, c.rest, c.compliance, 0.,
         c.k0, c.k1, c.k2, c.k3, c.gain2));
       i = i + 1usize;
     }
     i = 0usize;
     while i < other.curves.len() {
       let c = *other.curves[i];
-      curves.push(new CurveC(c.a + base, c.b + base, c.c + base, c.rest, c.compliance, 0.));
+      curves.push(CurveC(c.a + base, c.b + base, c.c + base, c.rest, c.compliance, 0.));
       i = i + 1usize;
     }
     i = 0usize;
     while i < other.tethers.len() {
       let t = *other.tethers[i];
-      tethers.push(new TetherC(t.particle + base, t.anchor + base, t.maxLength));
+      tethers.push(TetherC(t.particle + base, t.anchor + base, t.maxLength));
       i = i + 1usize;
     }
     i = 0usize;
@@ -546,14 +546,14 @@ pub struct SoftBody {
   // Add a stretch constraint between a and b, held at their present distance
   pub fn addDistance(self: &mut, a: u32, b: u32, compliance: f32) {
     let d = (*pos[usize.from(a)]).distance(*pos[usize.from(b)]);
-    dist.push(new DistanceC(a, b, d, compliance, 0.));
+    dist.push(DistanceC(a, b, d, compliance, 0.));
   }
 
   // Add a bending constraint across edge a-b of triangles (a, b, c) and (b, a, d),
   // held at their present dihedral angle
   pub fn addBend(self: &mut, a: u32, b: u32, c: u32, d: u32, compliance: f32) {
     let theta = dihedralAngle(*pos[usize.from(a)], *pos[usize.from(b)], *pos[usize.from(c)], *pos[usize.from(d)]);
-    bend.push(new BendC(a, b, c, d, theta, compliance, 0.));
+    bend.push(BendC(a, b, c, d, theta, compliance, 0.));
   }
 
   // Make the material 'factor' times as large in every direction: every rest
@@ -579,7 +579,7 @@ pub struct SoftBody {
   // held at their present curvature
   pub fn addCurve(self: &mut, a: u32, b: u32, c: u32, compliance: f32) {
     let q = *pos[usize.from(a)] - *pos[usize.from(b)] * 2. + *pos[usize.from(c)];
-    curves.push(new CurveC(a, b, c, q.length(), compliance, 0.));
+    curves.push(CurveC(a, b, c, q.length(), compliance, 0.));
   }
 
   // The volume of the closed mesh the triangles make (positive when outward-wound)
@@ -628,4 +628,4 @@ pub struct SoftBody {
 }
 
 // The field that is nowhere
-fn noField(p: Vec3) Vec4 {new Vec4(0., 1., 0., 1e30)}
+fn noField(p: Vec3) Vec4 {Vec4(0., 1., 0., 1e30)}

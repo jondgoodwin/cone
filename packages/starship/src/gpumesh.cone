@@ -32,7 +32,7 @@ struct GpuTimes {
   pub relaxing: i64;      // relaxation, normals and the quads cut again
   pub reading: i64;       // the mesh read back and the slabs joined
 
-  pub fn zero() GpuTimes { new GpuTimes(0i64, 0i64, 0i64, 0i64) }
+  pub fn zero() GpuTimes { GpuTimes(0i64, 0i64, 0i64, 0i64) }
   pub fn total(self: &) i64 { sampling + meshing + relaxing + reading }
 }
 
@@ -102,7 +102,7 @@ struct ShipMesher {
   pub fn make(device: &Device) ShipMesher {
     let spirv = readSpirv("starship.spv");
     let s = spirv.view();
-    new ShipMesher(
+    ShipMesher(
       Kernel.make(device, s, "blocks", &[READ, READ, READ_WRITE, READ_WRITE]),
       Kernel.make(device, s, "sample", &[READ, READ, READ, READ, READ_WRITE]),
       Kernel.make(device, s, "probe", &[READ, READ, READ, READ_WRITE]),
@@ -144,14 +144,14 @@ struct ShipMesher {
       var works = Works.make();
       var job = Job.make(device);
       let shipSlot = job.give(uploadValue(device, ship));
-      let whole = new Sweep(grid, 0u32, grid.samplesZ, sp, blockCount, 0u32, 0u32, cell * 0.1);
+      let whole = Sweep(grid, 0u32, grid.samplesZ, sp, blockCount, 0u32, 0u32, cell * 0.1);
       let wholeSlot = job.give(uploadValue(device, &whole));
       let centres = job.give(scratch(device, u64.from(blockCount)));
       let far = job.give(scratch(device, u64.from(blockCount)));
       if sparse {
         job.dispatch(device, &blocks, &[wholeSlot, shipSlot, centres, far], groupsX(blockCount), groupsY(blockCount));
       }
-      let sweep = new Sweep(grid, z0, layers, sp, n, 0u32, 0u32, cell * 0.1);
+      let sweep = Sweep(grid, z0, layers, sp, n, 0u32, 0u32, cell * 0.1);
       let sweepSlot = job.give(uploadValue(device, &sweep));
       let out = job.give(scratch(device, u64.from(n)));
       job.dispatch(device, &sample, &[sweepSlot, shipSlot, centres, far, out], groupsX(n), groupsY(n));
@@ -217,7 +217,7 @@ struct ShipMesher {
     var works = Works.make();
     var job = Job.make(device);
     let shipSlot = job.give(uploadValue(device, ship));
-    let whole = new Sweep(grid, 0u32, grid.samplesZ, sp, blockCount, 0u32, 0u32, h);
+    let whole = Sweep(grid, 0u32, grid.samplesZ, sp, blockCount, 0u32, 0u32, h);
     let wholeSlot = job.give(uploadValue(device, &whole));
     let centres = job.give(scratch(device, if sparse { u64.from(blockCount) } else { 1u64 }));
     let far = job.give(scratch(device, if sparse { u64.from(blockCount) } else { 1u64 }));
@@ -230,7 +230,7 @@ struct ShipMesher {
       let z0 = *slabs[2usize * k];
       let layers = *slabs[2usize * k + 1usize];
       let n = grid.samplesX * grid.samplesY * layers;
-      let sweep = new Sweep(grid, z0, layers, sp, n, 0u32, 0u32, h);
+      let sweep = Sweep(grid, z0, layers, sp, n, 0u32, 0u32, h);
       let sweepSlot = job.give(uploadValue(device, &sweep));
       let out = job.give(scratch(device, u64.from(n)));
       job.dispatch(device, &sample, &[sweepSlot, shipSlot, centres, far, out], groupsX(n), groupsY(n));
@@ -256,7 +256,7 @@ struct ShipMesher {
     while k < nslabs {
       let z0 = *slabs[2usize * k];
       let layers = *slabs[2usize * k + 1usize];
-      let slabGrid = new SampleGrid(grid.point(0u32, 0u32, z0), grid.cellSize, grid.samplesX, grid.samplesY, layers);
+      let slabGrid = SampleGrid(grid.point(0u32, 0u32, z0), grid.cellSize, grid.samplesX, grid.samplesY, layers);
       var b = Buffer.none();
       {
         let r = &mut samples[k];
@@ -282,10 +282,10 @@ struct ShipMesher {
       let nq = net.triangleCount / 2u32;
       var rjob = Job.make(device);
       let ss = rjob.give(uploadValue(device, ship));
-      let sweep7 = new Sweep(grid, z0, layers, sp, nv, 0u32, 7u32, h);
-      let sweep6 = new Sweep(grid, z0, layers, sp, nv, 1u32, 6u32, h);
-      let sweepV = new Sweep(grid, z0, layers, sp, nv, 0u32, 0u32, h);
-      let sweepQ = new Sweep(grid, z0, layers, sp, nq, 0u32, 0u32, h);
+      let sweep7 = Sweep(grid, z0, layers, sp, nv, 0u32, 7u32, h);
+      let sweep6 = Sweep(grid, z0, layers, sp, nv, 1u32, 6u32, h);
+      let sweepV = Sweep(grid, z0, layers, sp, nv, 0u32, 0u32, h);
+      let sweepQ = Sweep(grid, z0, layers, sp, nq, 0u32, 0u32, h);
       let all7 = rjob.give(uploadValue(device, &sweep7));
       let grad6 = rjob.give(uploadValue(device, &sweep6));
       let verts = rjob.give(uploadValue(device, &sweepV));

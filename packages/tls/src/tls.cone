@@ -21,7 +21,7 @@
 //     match tls.Client.make(tls.ClientConfig.make()) {     // Windows' verifier, ALPN http/1.1
 //       case imm c Ok {
 //         imm conn = drv.connectWith(&mut lp, "example.com", 443u16,
-//           new Uni[tls.Stream](c.stream("example.com", pool)), Sink.Here(1u64));
+//           Uni[tls.Stream](c.stream("example.com", pool)), Sink.Here(1u64));
 //         drv.request(&mut lp, conn, RequestHead.get("/", "example.com"), BodyLength.empty(), Sink.Here(2u64));
 //         ... drv.poll(&mut lp, forever(), &mut events), as for plain HTTP ...
 //       }
@@ -35,9 +35,9 @@
 //   struct TlsMaker {
 //     server tls.Server;     // tls.Server.make(tls.ServerConfig.make("cert.pem", "key.pem"))
 //     pool Pool;
-//     pub fn make(self: &mut) Uni[Layer] {new Uni[tls.Stream](server.stream(pool));}
+//     pub fn make(self: &mut) Uni[Layer] {Uni[tls.Stream](server.stream(pool));}
 //   }
-//   drv.listenWith(&mut lp, addr, new Uni[TlsMaker](new TlsMaker(server, pool)), Sink.Here(100u64));
+//   drv.listenWith(&mut lp, addr, Uni[TlsMaker](TlsMaker(server, pool)), Sink.Here(100u64));
 //
 //   ClientConfig.make()  c.verify c.alpn c.minVersion c.maxVersion      (CONFIGURATION)
 //     c.resume c.backend c.verifyLane c.offline                         (RESUMPTION)
@@ -262,10 +262,10 @@ pub struct Verifier {
   pins: List[u8];       // Pinned: 32 bytes for each key
 
   // The operating system's: on Windows, its chain engine and SSL policy
-  pub fn platform() Verifier {new Verifier(VerifyKind.Platform, String.empty(), List[u8].empty())}
+  pub fn platform() Verifier {Verifier(VerifyKind.Platform, String.empty(), List[u8].empty())}
 
   // FOR DEVELOPMENT: these roots alone, in PEM, one or more certificates
-  pub fn roots(pem: &Array[u8]) Verifier {new Verifier(VerifyKind.Roots, String.fromBytes(pem), List[u8].empty())}
+  pub fn roots(pem: &Array[u8]) Verifier {Verifier(VerifyKind.Roots, String.fromBytes(pem), List[u8].empty())}
 
   // FOR DEVELOPMENT: a server whose public key's SHA-256 is one of these,
   // each 64 hex digits, separated by spaces or commas. A malformed one is a
@@ -290,12 +290,12 @@ pub struct Verifier {
       k = k + 64usize;
     }
     if pins.len() == 0usize {panic("tls: no pinned SHA-256 given", file, line);}
-    new Verifier(VerifyKind.Pinned, String.empty(), pins)
+    Verifier(VerifyKind.Pinned, String.empty(), pins)
   }
 
   // FOR DEVELOPMENT ONLY: nothing is checked (see the package's header)
   pub fn insecureDevelopmentOnly() Verifier {
-    new Verifier(VerifyKind.Insecure, String.empty(), List[u8].empty())
+    Verifier(VerifyKind.Insecure, String.empty(), List[u8].empty())
   }
 }
 
@@ -321,7 +321,7 @@ pub struct ClientConfig {
   pub fn make() ClientConfig {
     var alpn = List[String].empty();
     alpn.push(String.from("http/1.1"));
-    new ClientConfig(verify: Verifier.platform(), alpn: alpn, minVersion: TlsVersion.Tls12,
+    ClientConfig(verify: Verifier.platform(), alpn: alpn, minVersion: TlsVersion.Tls12,
       maxVersion: TlsVersion.Tls13, resume: true, backend: Backend.Auto,
       verifyLane: defaultVerifyLane(), offline: false)
   }
@@ -339,7 +339,7 @@ pub struct ServerConfig {
   pub fn make(certFile: &Path, keyFile: &Path) ServerConfig {
     var alpn = List[String].empty();
     alpn.push(String.from("http/1.1"));
-    new ServerConfig(certFile: certFile.copy(), keyFile: keyFile.copy(), alpn: alpn,
+    ServerConfig(certFile: certFile.copy(), keyFile: keyFile.copy(), alpn: alpn,
       minVersion: TlsVersion.Tls12, maxVersion: TlsVersion.Tls13, backend: Backend.Auto)
   }
 }
@@ -386,12 +386,12 @@ pub struct TlsError {
   pub detail: String;    // what was wrong, one line
 
   pub fn make(kind: TlsErrorKind, code: u32, detail: &str) TlsError {
-    new TlsError(kind, code, 0u32, String.from(detail))
+    TlsError(kind, code, 0u32, String.from(detail))
   }
 
   pub fn none() TlsError {TlsError.make(TlsErrorKind.Backend, 0u32, "")}
 
-  pub fn copy(self: &) TlsError {new TlsError(kind, code, osError, detail.copy())}
+  pub fn copy(self: &) TlsError {TlsError(kind, code, osError, detail.copy())}
 
   // 'certificate untrusted: A certificate chain processed, but terminated
   // in a root certificate which is not trusted by the trust provider.
@@ -468,7 +468,7 @@ let nTruncated: Atomic[u64];
 
 // The counters, as they are now
 pub fn stats() TlsStats {
-  new TlsStats(nHandshakes.load(), nResumed.load(), nFailures.load(), nVerifications.load(),
+  TlsStats(nHandshakes.load(), nResumed.load(), nFailures.load(), nVerifications.load(),
     nCloseSent.load(), nCloseReceived.load(), nTruncated.load())
 }
 
@@ -487,7 +487,7 @@ let laneOnce: Once;
 let laneMade: Atomic[u32];
 
 fn makeLane() {
-  let lane = addLane(new LaneConfig(name: "tls verify", maxThreads: 4u32, queueBound: 256u32));
+  let lane = addLane(LaneConfig(name: "tls verify", maxThreads: 4u32, queueBound: 256u32));
   laneMade.store(lane.id);
 }
 
@@ -496,7 +496,7 @@ fn makeLane() {
 // up a name's lookup or a file
 pub fn defaultVerifyLane() Lane {
   laneOnce.callOnce(&makeLane);
-  new Lane(laneMade.load())
+  Lane(laneMade.load())
 }
 
 // ---------------------------------------------------------------------------

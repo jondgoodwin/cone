@@ -188,7 +188,7 @@ enum TokenTypes {
     IntoToken,     // 'into'
     InlineToken,   // 'inline'
     WhereToken,    // 'where', which opens a generic's constraints
-    NewToken,      // 'new': a construction, 'new Point(1, 2)', and an initializer's permission, '&new'
+    NewToken,      // 'new': a construction, 'Point(1, 2)', and an initializer's permission, '&new'
     TrynewToken,   // 'trynew': an allocation that may fail, 'trynew Rc[mut, Node](1)', giving an Option
     AwaitToken,    // 'await': in an actor's behaviour, wait for what is awaited; the behaviour is cut there, a seam
     YieldToken,    // 'yield': in a function declared 'yields', hand the caller a value and wait to be resumed; 'yield each' hands on a sub-generator's

@@ -78,7 +78,7 @@ fn main() i32 {
   var counter = device.createBuffer(4u64, BUFFER_USAGE_STORAGE | BUFFER_USAGE_COPY_SRC);
   var readback = device.createBuffer(4096u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
   let r = readback.mappedRange();
-  var data = new Array[u32, 200] <- fill 0u32;
+  var data = Array[u32, 200]() <- fill 0u32;
   var i = 0usize;
   while i < usize.from(COUNT) {
     data[i] = u32.from(i) + 7u32;
@@ -87,23 +87,23 @@ fn main() i32 {
   device.queue.writeBuffer(&input, 0u64, &data as *u8, u64.from(COUNT) * 4u64);
 
   let entries = [
-    new BindGroupLayoutEntry(binding: 0u32, visibility: SHADER_STAGE_COMPUTE, bufferType: BUFFER_BINDING_TYPE_READ_ONLY_STORAGE),
-    new BindGroupLayoutEntry(binding: 1u32, visibility: SHADER_STAGE_COMPUTE, bufferType: BUFFER_BINDING_TYPE_STORAGE),
-    new BindGroupLayoutEntry(binding: 2u32, visibility: SHADER_STAGE_COMPUTE, bufferType: BUFFER_BINDING_TYPE_STORAGE),
-    new BindGroupLayoutEntry(binding: 3u32, visibility: SHADER_STAGE_COMPUTE, bufferType: BUFFER_BINDING_TYPE_STORAGE),
-    new BindGroupLayoutEntry(binding: 4u32, visibility: SHADER_STAGE_COMPUTE, bufferType: BUFFER_BINDING_TYPE_STORAGE)];
+    BindGroupLayoutEntry(binding: 0u32, visibility: SHADER_STAGE_COMPUTE, bufferType: BUFFER_BINDING_TYPE_READ_ONLY_STORAGE),
+    BindGroupLayoutEntry(binding: 1u32, visibility: SHADER_STAGE_COMPUTE, bufferType: BUFFER_BINDING_TYPE_STORAGE),
+    BindGroupLayoutEntry(binding: 2u32, visibility: SHADER_STAGE_COMPUTE, bufferType: BUFFER_BINDING_TYPE_STORAGE),
+    BindGroupLayoutEntry(binding: 3u32, visibility: SHADER_STAGE_COMPUTE, bufferType: BUFFER_BINDING_TYPE_STORAGE),
+    BindGroupLayoutEntry(binding: 4u32, visibility: SHADER_STAGE_COMPUTE, bufferType: BUFFER_BINDING_TYPE_STORAGE)];
   var groupLayout = device.createBindGroupLayout(&entries);
   let groupLayouts = [&groupLayout];
   var layout = device.createPipelineLayout(&groupLayouts, 8u32);
   var shader = device.createShaderModule(&COMPUTE_SPIRV);
   require(shader.isValid() && layout.isValid(), "the shader and the pipeline layout");
-  let squareDesc = new ComputePipelineDescriptor(layout: &layout, module: &shader, entryPoint: "squareMain");
+  let squareDesc = ComputePipelineDescriptor(layout: &layout, module: &shader, entryPoint: "squareMain");
   var squarePipeline = device.createComputePipeline(&squareDesc);
-  let chainDesc = new ComputePipelineDescriptor(layout: &layout, module: &shader, entryPoint: "chainMain");
+  let chainDesc = ComputePipelineDescriptor(layout: &layout, module: &shader, entryPoint: "chainMain");
   var chainPipeline = device.createComputePipeline(&chainDesc);
-  let argumentsDesc = new ComputePipelineDescriptor(layout: &layout, module: &shader, entryPoint: "argumentsMain");
+  let argumentsDesc = ComputePipelineDescriptor(layout: &layout, module: &shader, entryPoint: "argumentsMain");
   var argumentsPipeline = device.createComputePipeline(&argumentsDesc);
-  let countDesc = new ComputePipelineDescriptor(layout: &layout, module: &shader, entryPoint: "countMain");
+  let countDesc = ComputePipelineDescriptor(layout: &layout, module: &shader, entryPoint: "countMain");
   var countPipeline = device.createComputePipeline(&countDesc);
   require(squarePipeline.isValid() && chainPipeline.isValid() && argumentsPipeline.isValid()
     && countPipeline.isValid(), "the four compute pipelines");
@@ -114,14 +114,14 @@ fn main() i32 {
   require(group.isValid(), "the bind group");
 
   // The indirect draw's target and pipeline
-  let targetDesc = new TextureDescriptor(16u32, 16u32, TEXTURE_FORMAT_RGBA8_UNORM,
+  let targetDesc = TextureDescriptor(16u32, 16u32, TEXTURE_FORMAT_RGBA8_UNORM,
     TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
   var target = device.createTexture(&targetDesc);
   var pixels = device.createBuffer(1024u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
   var drawLayout = device.createEmptyPipelineLayout(0u32);
-  let noAttributes = [new VertexAttribute(VERTEX_FORMAT_FLOAT32, 0u64, 0u32)];
-  let noBuffers = [new VertexBufferLayout(arrayStride: 4u64, attributes: &noAttributes)];
-  let drawDesc = new RenderPipelineDescriptor(layout: &drawLayout, vertexModule: &shader, buffers: &noBuffers[..<0],
+  let noAttributes = [VertexAttribute(VERTEX_FORMAT_FLOAT32, 0u64, 0u32)];
+  let noBuffers = [VertexBufferLayout(arrayStride: 4u64, attributes: &noAttributes)];
+  let drawDesc = RenderPipelineDescriptor(layout: &drawLayout, vertexModule: &shader, buffers: &noBuffers[..<0],
     fragmentModule: &shader, colorFormat: TEXTURE_FORMAT_RGBA8_UNORM);
   var drawPipeline = device.createRenderPipeline(&drawDesc);
   require(target.isValid() && drawPipeline.isValid(), "the draw's target and pipeline");
@@ -155,7 +155,7 @@ fn main() i32 {
   }
   if timing { encoder.writeTimestamp(&queries, 1u32); }
   {
-    let attachment = new RenderPassColorAttachment(view: target.createView(), clearValue: new Color(0., 0., 0., 1.));
+    let attachment = RenderPassColorAttachment(view: target.createView(), clearValue: Color(0., 0., 0., 1.));
     var pass = encoder.beginRenderPass(&attachment);
     pass.setPipeline(&drawPipeline);
     pass.drawIndirect(&arguments, 16u64);
@@ -233,12 +233,12 @@ fn main() i32 {
   let twice = [&groupLayout, &groupLayout];
   var tooMany = device.createPipelineLayout(&twice, 0u32);
   expectBool(tooMany.isValid(), false, "10 storage buffers in one stage refused");
-  let halfStorage = [new BindGroupLayoutEntry(binding: 0u32, visibility: SHADER_STAGE_COMPUTE,
+  let halfStorage = [BindGroupLayoutEntry(binding: 0u32, visibility: SHADER_STAGE_COMPUTE,
     kind: BINDING_KIND_STORAGE_TEXTURE, storageAccess: STORAGE_TEXTURE_ACCESS_READ_WRITE,
     format: TEXTURE_FORMAT_RGBA16_FLOAT, viewDimension: TEXTURE_VIEW_DIMENSION_3D)];
   var readWriteHalf = device.createBindGroupLayout(&halfStorage);
   expectBool(readWriteHalf.isValid(), false, "an rgba16float storage texture read and written refused");
-  let vertexWrites = [new BindGroupLayoutEntry(binding: 0u32, visibility: SHADER_STAGE_VERTEX,
+  let vertexWrites = [BindGroupLayoutEntry(binding: 0u32, visibility: SHADER_STAGE_VERTEX,
     bufferType: BUFFER_BINDING_TYPE_STORAGE)];
   var vertexStorage = device.createBindGroupLayout(&vertexWrites);
   expectBool(vertexStorage.isValid(), false, "a storage buffer the vertex stage writes refused");

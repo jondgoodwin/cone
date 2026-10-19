@@ -22,9 +22,9 @@ int typeLitStructReorder(FnCallNode *arrlit, StructNode *strnode, int private);
 // Check the type literal node
 void typeLitTypeCheck(TypeCheckState *pstate, FnCallNode *lit);
 
-// 'new Point(1, 2)': select the init the arguments call for, and lower the
+// 'Point(1, 2)': select the init the arguments call for, and lower the
 // construction to the struct's literal (its implicit init) or to a call of a
-// declared init, which fills the value in place. 'new Rc[mut, Node](1)', and
+// declared init, which fills the value in place. 'Rc[mut, Node](1)', and
 // 'trynew', allocate it in a region: an AllocateTag node holding the value's
 // construction. 'expectType' is what the construction is wanted as, from which a
 // generic struct named without its type arguments takes those its values leave
@@ -32,18 +32,23 @@ void typeLitTypeCheck(TypeCheckState *pstate, FnCallNode *lit);
 void typeLitNewCheck(TypeCheckState *pstate, FnCallNode **nodep, INode *expectType);
 void typeLitNewArgsChecked(TypeCheckState *pstate, FnCallNode **nodep);
 
-// The construction an init's '*self = new T(...)' fills its self with, while
+// The construction an init's '*self = T(...)' fills its self with, while
 // it is checked (assignTypeCheck): the one place but its handle's initializer
 // an actor's state may be constructed
 extern INode *typeLitSelfFill;
 
-// 'new Rc[mut, Array[i32, 4]] <- fill 0': the allocation whose value is the
+// 'Rc[mut, Array[i32, 4]]() <- fill 0': the allocation whose value is the
 // array literal of its contents, filled in place; NULL when refused
 INode *typeLitNewFilled(TypeCheckState *pstate, FnCallNode **nodep, RefNode *reftype, INode *lit);
 
 // Is this type-checked value one 'new' constructs: a construction, or a struct
 // that is not a variant written in brackets?
 int typeLitIsConstruction(INode *node);
+
+// Is this name-resolved type expression of a 'new' a dynamic region's, 'a[Node]':
+// a variable or a path of fields, then brackets? The one construction 'new' is
+// written before.
+int typeLitNewNamesRegionValue(INode *type);
 
 // Check the value a number's 'from' converts; 0 when it does not convert
 int typeLitNbrFromCheck(FnCallNode *conv, INode *type);

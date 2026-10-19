@@ -20,8 +20,8 @@ pub struct ServerError {
   pub code: u32;           // Failed: the system's error number when it gave one, else 0
   text: String;
 
-  pub fn failed(code: u32, text: &str) ServerError {new ServerError(ServerErrorKind.Failed, code, String.from(text))}
-  pub fn closed() ServerError {new ServerError(ServerErrorKind.Closed, 0u32, String.empty())}
+  pub fn failed(code: u32, text: &str) ServerError {ServerError(ServerErrorKind.Failed, code, String.from(text))}
+  pub fn closed() ServerError {ServerError(ServerErrorKind.Closed, 0u32, String.empty())}
 
   pub fn kind(self: &) ServerErrorKind {cause}
 
@@ -36,7 +36,7 @@ pub struct ServerError {
       out.append(" (Windows error ");
       out.appendUInt(u64.from(code));
       out.append(": ");
-      out.append(new IoError(code).message().view());
+      out.append(IoError(code).message().view());
       out.append(")");
     }
     out
@@ -56,7 +56,7 @@ pub struct ServerConfig {
 
   // The defaults: plain HTTP, httpconn's bounds, bodies up to 1 MiB, 1024 requests waiting
   pub fn make() ServerConfig {
-    new ServerConfig(httpconn.Config.make(), defaultMaxRequestBody, 1024usize, None)
+    ServerConfig(httpconn.Config.make(), defaultMaxRequestBody, 1024usize, None)
   }
 
   // The same through TLS, with a certificate chain and a key (tls.ServerConfig's)
@@ -126,7 +126,7 @@ pub struct Server is Move {
   tlsOn: bool;
 
   // A Server naming nothing, which closes nothing
-  pub fn none() Server {new Server(0u64, SocketAddr.localhost(0u16), false)}
+  pub fn none() Server {Server(0u64, SocketAddr.localhost(0u16), false)}
 
   pub fn isNone(self: &) bool {id == 0u64}
 
@@ -141,9 +141,9 @@ pub struct Server is Move {
   // Another handle to the same server
   pub fn clone(self: &) Server {
     if id != 0u64 {
-      post[SrvRefJob](new SrvRefJob(id, true));
+      post[SrvRefJob](SrvRefJob(id, true));
     }
-    new Server(id, addr, tlsOn)
+    Server(id, addr, tlsOn)
   }
 
   // The next request, whole, as an Exchange to answer; or Closed when the
@@ -151,7 +151,7 @@ pub struct Server is Move {
   // request goes to one of them, in the order they asked. A request waits in
   // the server (up to maxPending of them) until an actor asks for it
   pub fn next(self: &) actors.Awaitable[Result[Exchange, ServerError]] {
-    awaitable[NextJob, Result[Exchange, ServerError]](new NextJob(id, new actors.Reply()))
+    awaitable[NextJob, Result[Exchange, ServerError]](NextJob(id, actors.Reply()))
   }
 
   // Stop listening now: every 'next' waiting is answered Closed, the requests
@@ -159,13 +159,13 @@ pub struct Server is Move {
   // handles stay, and name a closed server
   pub fn close(self: &) {
     if id != 0u64 {
-      post[SrvCloseJob](new SrvCloseJob(id));
+      post[SrvCloseJob](SrvCloseJob(id));
     }
   }
 
   fn final(self: &uni) {
     if id != 0u64 {
-      post[SrvRefJob](new SrvRefJob(id, false));
+      post[SrvRefJob](SrvRefJob(id, false));
     }
   }
 }
@@ -174,7 +174,7 @@ pub struct Server is Move {
 // when it is listening, or why it could not (the address in use, a
 // certificate that could not be loaded). Asking for port 0 takes any free one
 pub fn listen(addr: SocketAddr, cfg: ServerConfig) actors.Awaitable[Result[Server, ServerError]] {
-  awaitable[ListenJob, Result[Server, ServerError]](new ListenJob(addr, cfg, new actors.Reply()))
+  awaitable[ListenJob, Result[Server, ServerError]](ListenJob(addr, cfg, actors.Reply()))
 }
 
 // ---------------------------------------------------------------------------
@@ -215,7 +215,7 @@ pub struct Exchange is Move {
     if phase != phaseFresh {die("actorhttp: this exchange has been answered already", file, line);}
     phase = phaseOver;
     written = u64.from(body.len());
-    post[RespondJob](new RespondJob(srv, slot, id, head, body));
+    post[RespondJob](RespondJob(srv, slot, id, head, body));
   }
 
   // A whole response of text: the status, a Content-Type of text/plain
@@ -237,7 +237,7 @@ pub struct Exchange is Move {
     let none = framing.isEmpty() || (framing.isSized() && framing.length == 0u64);
     bodyless = request.head.method == Method.Head || st == 204u16 || st == 304u16 || none;
     phase = if none {phaseOver} else {phaseStreaming};
-    post[StartJob](new StartJob(srv, slot, id, head, framing));
+    post[StartJob](StartJob(srv, slot, id, head, framing));
   }
 
   // Begin a stream of server-sent events: 200, 'Content-Type: text/event-stream',
@@ -267,7 +267,7 @@ pub struct Exchange is Move {
       die("actorhttp: write past the length 'start' declared", file, line);
     }
     written = written + u64.from(data.len());
-    awaitable[WriteJob, Result[usize, ServerError]](new WriteJob(srv, slot, id, data, new actors.Reply()))
+    awaitable[WriteJob, Result[usize, ServerError]](WriteJob(srv, slot, id, data, actors.Reply()))
   }
 
   // One server-sent event, written (a 'write' of its bytes)
@@ -289,14 +289,14 @@ pub struct Exchange is Move {
     if phase != phaseStreaming {die("actorhttp: finish needs a response begun by 'start' and not yet finished", file, line);}
     if sized && written != length {die("actorhttp: finish short of the length 'start' declared", file, line);}
     phase = phaseOver;
-    awaitable[FinishJob, Result[u64, ServerError]](new FinishJob(srv, slot, id, new actors.Reply()))
+    awaitable[FinishJob, Result[u64, ServerError]](FinishJob(srv, slot, id, actors.Reply()))
   }
 
   // Whether a response has been begun
   pub fn isAnswered(self: &) bool {phase != phaseFresh}
 
   fn final(self: &uni) {
-    post[DropExJob](new DropExJob(srv, slot, id));
+    post[DropExJob](DropExJob(srv, slot, id));
   }
 }
 

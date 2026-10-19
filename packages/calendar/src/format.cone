@@ -33,7 +33,7 @@ struct Scan {
   pub reason: String;
 }
 
-fn newScan() Scan { new Scan(0usize, false, 0usize, String.empty()) }
+fn newScan() Scan { Scan(0usize, false, 0usize, String.empty()) }
 
 // The first failure is the one kept
 fn failAt(s: &mut Scan, at: usize, reason: &str) {
@@ -48,7 +48,7 @@ fn fail(s: &mut Scan, reason: &str) { failAt(s, s.pos, reason); }
 fn scanError(s: &mut Scan) TimeError {
   var reason = String.empty();
   reason <=> s.reason;
-  new TimeError(s.at, reason)
+  TimeError(s.at, reason)
 }
 
 fn isDigit(c: u8) bool { c >= '0' && c <= '9' }
@@ -223,10 +223,10 @@ fn scanDate(text: &Array[u8], s: &mut Scan) Date {
   oneByte(text, s, '-', "expected '-' after the month");
   let dayAt = s.pos;
   let day = digits(text, s, 2usize, "the day");
-  if s.failed { return new Date(); }
+  if s.failed { return Date(); }
   if month < 1i64 || month > 12i64 {
     outOfRange(s, monthAt, "month", month, "01 to 12");
-    return new Date();
+    return Date();
   }
   let last = daysInMonth(year, month);
   if day < 1i64 || day > last {
@@ -240,9 +240,9 @@ fn scanDate(text: &Array[u8], s: &mut Scan) Date {
     m.appendInt(last);
     m.append(" days");
     failAt(s, dayAt, m.view());
-    return new Date();
+    return Date();
   }
-  new Date(i32.from(year), i8.from(month), i8.from(day))
+  Date(i32.from(year), i8.from(month), i8.from(day))
 }
 
 // hh:mm:ss and, when fraction allows it, '.' and one to nine digits
@@ -262,14 +262,14 @@ fn scanTime(text: &Array[u8], s: &mut Scan, fraction: bool) TimeOfDay {
     while s.pos < text.len && isDigit(text[s.pos]) {
       if s.pos - start == 9usize {
         fail(s, "more than nine digits of a fraction of a second: a nanosecond is the finest");
-        return new TimeOfDay();
+        return TimeOfDay();
       }
       nanos = nanos * 10i64 + i64.from(text[s.pos] - '0');
       s.pos = s.pos + 1usize;
     }
     if s.pos == start {
       fail(s, "expected a digit after '.'");
-      return new TimeOfDay();
+      return TimeOfDay();
     }
     var n = s.pos - start;
     while n < 9usize {
@@ -277,7 +277,7 @@ fn scanTime(text: &Array[u8], s: &mut Scan, fraction: bool) TimeOfDay {
       n = n + 1usize;
     }
   }
-  if s.failed { return new TimeOfDay(); }
+  if s.failed { return TimeOfDay(); }
   if hour > 23i64 {
     outOfRange(s, hourAt, "hour", hour, "00 to 23");
   }
@@ -290,8 +290,8 @@ fn scanTime(text: &Array[u8], s: &mut Scan, fraction: bool) TimeOfDay {
   elif second > 59i64 {
     outOfRange(s, secondAt, "second", second, "00 to 59");
   }
-  if s.failed { return new TimeOfDay(); }
-  new TimeOfDay(i8.from(hour), i8.from(minute), i8.from(second), i32.from(nanos))
+  if s.failed { return TimeOfDay(); }
+  TimeOfDay(i8.from(hour), i8.from(minute), i8.from(second), i32.from(nanos))
 }
 
 // The offset from UTC that ends a date-time, in minutes: 'Z' (or 'z') is 0,
@@ -350,7 +350,7 @@ fn scanDateTime(text: &Array[u8], s: &mut Scan) DateTime {
   let tod = scanTime(text, s, true);
   let offset = scanOffset(text, s);
   scanEnd(text, s, "the date-time");
-  if s.failed { return new DateTime(); }
+  if s.failed { return DateTime(); }
   // Local time is UTC plus the offset, so UTC is local time less it
   DateTime.fromParts(date, tod) - Duration.fromMinutes(offset)
 }
@@ -358,12 +358,12 @@ fn scanDateTime(text: &Array[u8], s: &mut Scan) DateTime {
 // The Timestamp of dt, or, for one outside a Timestamp's range, a failure
 // at 'at'
 fn timestampOrFail(dt: DateTime, s: &mut Scan, at: usize) Timestamp {
-  if s.failed { return new Timestamp(); }
+  if s.failed { return Timestamp(); }
   match timestampOf(dt) {
     case let t Some { t }
     case is None {
       failAt(s, at, "the moment is outside a Timestamp's range, 1677-09-21T00:12:43.145224192Z to 2262-04-11T23:47:16.854775807Z");
-      new Timestamp()
+      Timestamp()
     }
   }
 }
@@ -485,7 +485,7 @@ fn parseHttp(text: &Array[u8], now: Timestamp) Result[Timestamp, TimeError] {
   var month = 0i64;
   var day = 0i64;
   var dayAt = 0usize;
-  var tod = new TimeOfDay();
+  var tod = TimeOfDay();
   if form == 0i32 {
     literal(text, &mut s, ", ", "expected ', ' after the day's name");
     dayAt = s.pos;
@@ -547,7 +547,7 @@ fn parseHttp(text: &Array[u8], now: Timestamp) Result[Timestamp, TimeError] {
   }
   scanEnd(text, &mut s, "the date");
   // The day must be in the month, and the day's name the date's
-  var dt = new DateTime();
+  var dt = DateTime();
   if !s.failed {
     match Date.fromYmd(year, month, day) {
       case let d Some {

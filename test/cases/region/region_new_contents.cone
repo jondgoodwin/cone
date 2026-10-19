@@ -1,5 +1,5 @@
 // An allocation takes contents after '<-' as a construction does, and fills
-// its value in place: 'new Rc[mut, Array[i32, 4]] <- fill 0' allocates the
+// its value in place: 'Rc[mut, Array[i32, 4]]() <- fill 0' allocates the
 // block and fills the array inside the region's memory, an element at a
 // time, with no array built elsewhere and copied in. Every entry form is
 // taken, and an array written with several sizes is filled with its scalars,
@@ -13,7 +13,7 @@
 // A growable collection's allocation with contents appends them through the
 // reference, as its value construction appends to the value.
 //
-// The finished-value form, 'new Rc[mut, Array[i32, 4]](new Array[i32, 4] <-
+// The finished-value form, 'Rc[mut, Array[i32, 4]](Array[i32, 4]() <-
 // fill 0)', is region_new_value's; a traced region's, under a collector
 // stepping at every allocation, is the collector package's 'contents' test.
 
@@ -34,7 +34,7 @@ fn show(label: &str, n: i64) {
 struct Loud is RegionRef {
   pub count: usize;
   fn alloc(size: usize) *u8 { printStr("alloc\n"); libc.malloc(size) }
-  fn init(self: &new) { printStr("region init\n"); *self = new Loud(1usize); }
+  fn init(self: &new) { printStr("region init\n"); *self = Loud(1usize); }
   fn aliasRef(self: &uni Loud) inline { count = count + 1usize; }
   fn dealiasRef(self: &uni Loud) bool inline { count = count - 1usize; count == 0usize }
   fn free(self: &uni Loud) { printStr("free\n"); libc.free(self as *u8); }
@@ -59,47 +59,47 @@ fn loudValue(n: i32) i32 {
 }
 
 fn regions() {
-  let rc = new Rc[mut, Array[i32, 4]] <- fill 5;
+  let rc = Rc[mut, Array[i32, 4]]() <- fill 5;
   show("rc", i64.from(rc[0] + rc[3]));
-  let so = new Uni[Array[i32, 4]] <- 1, 2, fill 3;
+  let so = Uni[Array[i32, 4]]() <- 1, 2, fill 3;
   show("so", i64.from(so[0] * 100 + so[1] * 10 + so[3]));
-  let sole = new Rc[Array[i64, 3]] <- 2 of 4, 6;
+  let sole = Rc[Array[i64, 3]]() <- 2 of 4, 6;
   show("rc-uni", sole[0] * 100 + sole[1] * 10 + sole[2]);
   // Each element its own allocation, each evaluated in turn
-  let owners = new Rc[mut, Array[Rc[mut, i32], 3]] <- fill new Rc[mut, i32](counter());
+  let owners = Rc[mut, Array[Rc[mut, i32], 3]]() <- fill Rc[mut, i32](counter());
   show("owners", i64.from(*owners[0] * 100 + *owners[1] * 10 + *owners[2]));
 }
 
 fn scalars() {
   // Several sizes: the scalars, row by row
-  let grid = new Rc[mut, Array[i32, 2, 3]] <- 1, 2, 3, 4, 5, 6;
+  let grid = Rc[mut, Array[i32, 2, 3]]() <- 1, 2, 3, 4, 5, 6;
   show("grid-row-0", i64.from(grid[0][0] * 100 + grid[0][1] * 10 + grid[0][2]));
   show("grid-row-1", i64.from(grid[1][0] * 100 + grid[1][1] * 10 + grid[1][2]));
-  let cube = new Uni[Array[u8, 2, 3, 4]] <- 5 of 1u8, fill 2u8;
+  let cube = Uni[Array[u8, 2, 3, 4]]() <- 5 of 1u8, fill 2u8;
   show("cube", i64.from(cube[0][1][0]) * 10 + i64.from(cube[0][1][1]));
   // Nested, the rows
-  let rows = new Rc[mut, Array[Array[i32, 2], 2]] <- new Array[i32, 2] <- (7, 8), [9, 10];
+  let rows = Rc[mut, Array[Array[i32, 2], 2]]() <- Array[i32, 2]() <- (7, 8), [9, 10];
   show("nested-rows", i64.from(rows[0][1] * 100 + rows[1][1]));
   // Through a written alias of the reference type
-  let aliased = new GridRef <- fill 3;
+  let aliased = GridRef() <- fill 3;
   show("alias", i64.from(aliased[1][2]));
 }
 alias GridRef = Rc[mut, Array[i32, 2, 3]];
 
 fn large() {
   // A million scalars, null and not, filled in the region's memory
-  let zeros = new Rc[mut, Array[i32, 1000, 1000]] <- fill 0;
+  let zeros = Rc[mut, Array[i32, 1000, 1000]]() <- fill 0;
   show("million-zeros", i64.from(zeros[0][0] + zeros[999][999]));
-  let sevens = new Rc[mut, Array[i32, 1000, 1000]] <- 1, fill 7;
+  let sevens = Rc[mut, Array[i32, 1000, 1000]]() <- 1, fill 7;
   show("million-sevens", i64.from(sevens[0][0]) * 10 + i64.from(sevens[999][999]));
-  let counted = new Uni[Array[i32, 1000000]] <- fill counter();
+  let counted = Uni[Array[i32, 1000000]]() <- fill counter();
   show("million-counted-first", i64.from(counted[0]));
   show("million-counted-last", i64.from(counted[999999]));
 }
 
 fn order() {
   printStr("-- order\n");
-  let loud = new Loud[mut, Array[i32, 3]] <- loudValue(1), 2 of loudValue(2);
+  let loud = Loud[mut, Array[i32, 3]]() <- loudValue(1), 2 of loudValue(2);
   show("loud", i64.from(loud[0] * 100 + loud[1] * 10 + loud[2]));
 }
 
@@ -121,10 +121,10 @@ fn fallible() {
 
 fn collection() {
   // A List's allocation with contents appends them through the reference
-  let list = new Rc[mut, List[i32]](10) <- 1, 2, 3;
+  let list = Rc[mut, List[i32]](10) <- 1, 2, 3;
   show("list-len", i64.from(list.len()));
   show("list-items", i64.from(*list[0] * 100 + *list[1] * 10 + *list[2]));
-  let full = new Rc[mut, List[i32]](4) <- 9, fill 8;
+  let full = Rc[mut, List[i32]](4) <- 9, fill 8;
   show("list-fill-len", i64.from(full.len()));
   show("list-fill-last", i64.from(*full[3]));
 }

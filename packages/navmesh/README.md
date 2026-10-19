@@ -19,7 +19,7 @@ let params = NavParams.standard();     // cells 0.3 x 0.2 m; agent 0.4 m radius,
 var nav = buildNavMesh(&mut input, &params);
 
 let filter = QueryFilter.standard();
-let route = findRoute(&nav, start, goal, new Vec3(2., 4., 2.), &filter);   // the corners, start to end
+let route = findRoute(&nav, start, goal, Vec3(2., 4., 2.), &filter);   // the corners, start to end
 
 input.setObstacleEnabled(door, false);     // the door opens
 rebuildDirty(&mut nav, &mut input);        // only the tiles it touches are rebuilt

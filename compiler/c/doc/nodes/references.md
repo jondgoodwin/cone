@@ -8,7 +8,7 @@ and `+`, `+<` without knowing whether it is a type or a constructor.
 Name resolution decides by asking whether the operand is a type. A managed
 reference *type*, `Rc[mut, Node]`, is not built by the parser at all: it is a
 bracketed call until type check lowers it into this node ("The managed
-reference type", below), and an allocation, `new Rc[mut, Node](1)`, is a
+reference type", below), and an allocation, `Rc[mut, Node](1)`, is a
 construction until type check makes it an `AllocateTag` node
 ("Allocation"). Type check builds the *result* type, records a
 lifetime, and interns. Flow moves or copies an allocation's value and enforces the
@@ -143,12 +143,12 @@ The differences are worth knowing:
   only the prefixed term instead would make `&x.a` mean `(&x).a` — typed as the
   field but returning the field's address, which generation cannot catch.
 
-An allocation is written `new Rc[mut, Node](1)` or, with a finished value,
-`new Rc[i32](5)` (below, "Allocation"). The `+` spelling, `+Rc-mut 5`, is
+An allocation is written `Rc[mut, Node](1)` or, with a finished value,
+`Rc[i32](5)` (below, "Allocation"). The `+` spelling, `+Rc-mut 5`, is
 refused whatever its value. `parsePlus` builds every `+` node marked
 `plusSpelled`. With a value operand it becomes an `AllocateTag` at name
 resolution, and `allocateTypeCheck` refuses it (`ErrorPlusAlloc`, naming the
-`new` or `trynew` form, with `(...)` for a construction and `(value)` for any
+`Rc[...](...)` or `trynew` form, with `(...)` for a construction and `(value)` for any
 other value, a type with no name of its own written `T`). With a type operand it
 is a `RefTag` or `VirtRefTag` type, which type check refuses
 (`refRefusePlusType`, `ErrorPlusRefType`), naming the bracket spelling. A match
@@ -244,7 +244,7 @@ what carries `&&T`.
 
 **A virtual reference may not be borrowed or allocated** — `ErrorBadTerm`,
 "Coerce from a regular ref.", and for the retired allocation `+<Rc-mut
-Rect[3]`, `ErrorPlusAlloc`, naming `new Rc[mut, Rect](...)` and the coercion.
+Rect[3]`, `ErrorPlusAlloc`, naming `Rc[mut, Rect](...)` and the coercion.
 There is nothing to construct *from*: the fat
 pointer's second word is a vtable, selected either by scanning the trait's
 implementations for the concrete source struct or, from a reference to an enum, by
@@ -311,10 +311,10 @@ Two details worth keeping: an unspecified permission becomes `ro` for a concrete
 type and `opaq` otherwise; and `&[]` of a **non-array** is deliberately a
 one-element slice.
 
-### Allocation: `new Rc[mut, Node](1)` and `trynew`
+### Allocation: `Rc[mut, Node](1)` and `trynew`
 
-`new` with a managed reference type, written out or through an alias of one
-(`new Node(1)` for `alias Node = Gc[mut, NodeValue]`), or with a type
+A construction of a managed reference type, written out or through an alias of one
+(`Node(1)` for `alias Node = Gc[mut, NodeValue]`), or of a type
 parameter whose argument is one, allocates. `typeLitNewCheck` checks the
 type, and finding a `RefTag` hands it to `typeLitNewAllocate`, which builds
 the `AllocateTag` node: its region and permission the reference type's, its
@@ -340,7 +340,7 @@ holds the one, and the other's value is a trait's.
   struct declares no init, nothing otherwise), and if its type is the struct
   itself, `itypeIsSame` after aliases, with no coercion, it is the finished
   value and becomes `vtexp` as it is. Otherwise `vtexp` is the construction
-  `new NodeValue(...)`, a new `FlagNew` node over the same arguments, checked
+  `NodeValue(...)`, a new `FlagNew` node over the same arguments, checked
   by `typeLitNewChecked` told the one argument is already checked; its init is
   selected as for any value. A reference to the struct, or another struct,
   is not the struct itself, and goes to the inits.
@@ -357,14 +357,14 @@ holds the one, and the other's value is a trait's.
   length", below).
 
 A generic's instance decides by its own types, since a template is checked
-only as each instance: `new Rc[T](x)` with `x` a `T` is the finished value in
+only as each instance: `Rc[T](x)` with `x` a `T` is the finished value in
 every instance.
 
 Outside an allocation, a struct's construction given its own finished value,
-`new Point(p)`, is `ErrorNewFinished` (`typeLitNewChecked`): a value is
+`Point(p)`, is `ErrorNewFinished` (`typeLitNewChecked`): a value is
 constructed once.
 
-`new Plain[mut, i32](5)`, a permission given to what is no region, is refused
+`Plain[mut, i32](5)`, a permission given to what is no region, is refused
 by `fnCallRefusePermArg` as the same head in a type is (`ErrorPermNotRegion`),
 before `typeLitNewChecked` would report it as no type.
 
@@ -372,14 +372,14 @@ before `typeLitNewChecked` would report it as no type.
 
 `allocateTypeCheck` is the refused `+` spelling: it defaults the permission to
 `uni`, checks the value, reports `ErrorPlusAlloc`, and goes on as
-`allocateValueCheck` so that nothing after it reports again. A `new`
+`allocateValueCheck` so that nothing after it reports again. A constructed
 allocation reaches `allocateValueCheck` directly, its value already checked.
 
 `allocateValueCheck`: default the permission to `uni` (`imm` for a value whose
 type declares `Immutable`); refuse an abstract or
 zero-size value type (an array literal's dimension is a constant there as
 everywhere, so an allocated array is a fixed-size one, reached by a thin
-reference); build the result type, a `RefTag`, unless `new` gave it the one it
+reference); build the result type, a `RefTag`, unless the construction gave it the one it
 wrote; then
 `inodeTypeCheckAny` on it — **that line is load-bearing**, because it is what
 routes to `refTypeCheck` and therefore what populates `typeinfo`, which
@@ -898,7 +898,7 @@ an `@unsized` enum are neither, and their references are thin.
   address and its length, `slitTypeCheck` types it as that reference, and it is a
   borrow of the whole program (global scope). It is copied into an owner of the
   body wherever one is wanted (`slitCoerce`): the node becomes the allocation
-  `new R[str](lit)` builds, with no `new` written. Only the literal node itself is,
+  `R[str](lit)` builds, with no construction written. Only the literal node itself is,
   never another `&str` ([literals](literals.md)).
 - **Allocation.** There is no value to construct or move in. `typeLitAllocValue`
   takes exactly one argument, coerced to a `&str` borrow, as the allocation's

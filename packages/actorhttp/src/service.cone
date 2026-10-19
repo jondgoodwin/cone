@@ -14,7 +14,7 @@ struct Slots[T] {
   ptrs: List[*T];
   free: List[u32];
 
-  fn make() Slots[T] {new Slots[T](List[*T].empty(), List[u32].empty())}
+  fn make() Slots[T] {Slots[T](List[*T].empty(), List[u32].empty())}
 
   // A free slot, holding 'blank' if it is a new one
   fn take(self: &mut, blank: T) usize {
@@ -64,7 +64,7 @@ struct Wait {
 }
 
 fn blankWait() Wait {
-  new Wait(reply: new actors.Reply(), resp: httpclient.Response.blank(), tooBig: false, limit: 0usize,
+  Wait(reply: actors.Reply(), resp: httpclient.Response.blank(), tooBig: false, limit: 0usize,
     fetch: httpclient.FetchId.none(), req: httpconn.ReqId.none(), body: String.empty(), sent: 0usize,
     conn: 0usize, bodyDone: false, stream: noStream)
 }
@@ -108,8 +108,8 @@ struct ConnRec {
 }
 
 fn blankConn() ConnRec {
-  new ConnRec(used: false, id: 0u64, conn: httpconn.ConnId.none(), connecting: false, open: false,
-    closed: false, dropped: false, busy: 0u32, reply: new actors.Reply())
+  ConnRec(used: false, id: 0u64, conn: httpconn.ConnId.none(), connecting: false, open: false,
+    closed: false, dropped: false, busy: 0u32, reply: actors.Reply())
 }
 
 // A sink's token for a connection's own events (Connected, Closed): this bit
@@ -128,7 +128,7 @@ struct Service {
 
   fn make() Service {
     let pool = Pool.make();
-    new Service(pool: pool, clients: List[*ClientRec].empty(),
+    Service(pool: pool, clients: List[*ClientRec].empty(),
       drv: httpconn.Driver.make(httpconn.Config.make(), pool), conns: Slots[ConnRec].make(),
       xwaits: Slots[Wait].make(), srvs: List[*SrvRec].empty())
   }
@@ -297,7 +297,7 @@ struct Service {
       c.open = true;
       if c.connecting {
         c.connecting = false;
-        answerConn(c, Ok[Conn, FetchError](new Conn(c.id)));
+        answerConn(c, Ok[Conn, FetchError](Conn(c.id)));
       }
     } elif k == httpconn.EventKind.Closed {
       c.open = false;
@@ -348,7 +348,7 @@ struct Service {
     } elif e.isTerminal() {
       let c = conns.at(w.conn) as &mut ConnRec;
       if c.busy > 0u32 {c.busy = c.busy - 1u32;}
-      w.resp.timing = new httpclient.Timing(e.timing.submitted, e.timing.started, e.timing.firstByte,
+      w.resp.timing = httpclient.Timing(e.timing.submitted, e.timing.started, e.timing.firstByte,
         e.timing.ended, 1u32, 0u32, false);
       if k == httpconn.EventKind.Done {
         w.resp.outcome = httpclient.EventKind.Done;
@@ -423,7 +423,7 @@ struct Service {
 
 // A wait's reply carries v back to the actor awaiting it
 fn answer[R](w: &mut Wait, v: R) {
-  var rp = new actors.Reply();
+  var rp = actors.Reply();
   rp <=> w.reply;
   actors.answerNow[R](rp, v);
 }
@@ -444,7 +444,7 @@ const sendChunk = 16384usize;
 
 // A connect's reply carries v back to the actor awaiting it
 fn answerConn(c: &mut ConnRec, v: Result[Conn, FetchError]) {
-  var rp = new actors.Reply();
+  var rp = actors.Reply();
   rp <=> c.reply;
   actors.answerNow[Result[Conn, FetchError]](rp, v);
 }
@@ -528,7 +528,7 @@ struct CreateClientJob {
     c <=> cfg;
     let p = libc.malloc(mem.sizeof[ClientRec]()) as *ClientRec;
     if p as usize == 0usize {die("actorhttp: out of memory for a client");}
-    mem.writeRaw[ClientRec](p, new ClientRec(id, 1u32, false, maxBody, httpclient.Client.make(c, sv.pool),
+    mem.writeRaw[ClientRec](p, ClientRec(id, 1u32, false, maxBody, httpclient.Client.make(c, sv.pool),
       Slots[Wait].make(), Slots[StreamRec].make()));
     sv.clients.push(p);
   }
@@ -559,7 +559,7 @@ struct FetchJob {
   pub reply: actors.Reply;
 
   fn run(self: &mut, lp: &mut Loop, sv: &mut Service) {
-    var rp = new actors.Reply();
+    var rp = actors.Reply();
     rp <=> reply;
     let k = sv.findClient(id);
     if k >= sv.clients.len() {
@@ -592,7 +592,7 @@ struct ConnectJob {
   pub reply: actors.Reply;
 
   fn run(self: &mut, lp: &mut Loop, sv: &mut Service) {
-    var rp = new actors.Reply();
+    var rp = actors.Reply();
     rp <=> reply;
     let slot = sv.conns.take(blankConn());
     let c = sv.conns.at(slot) as &mut ConnRec;
@@ -612,7 +612,7 @@ struct ConnectJob {
     tc <=> cfg;
     match tls.Client.make(tc) {
       case let t Ok {
-        c.conn = sv.drv.connectWith(lp, name.view(), port, new Uni[tls.Stream](t.stream(name.view(), sv.pool)), sink);
+        c.conn = sv.drv.connectWith(lp, name.view(), port, Uni[tls.Stream](t.stream(name.view(), sv.pool)), sink);
       }
       case let x Error {
         c.connecting = false;
@@ -635,7 +635,7 @@ struct ExchangeJob {
   pub reply: actors.Reply;
 
   fn run(self: &mut, lp: &mut Loop, sv: &mut Service) {
-    var rp = new actors.Reply();
+    var rp = actors.Reply();
     rp <=> reply;
     let k = sv.findConn(id);
     if k >= sv.conns.len() {

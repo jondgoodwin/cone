@@ -62,7 +62,7 @@ pub struct Goal {
   pub fly: bool;          // true: be in the air; false: be on the ground (landing at the target)
   pub maxBank: f32;       // radians
 
-  pub fn make(target: Vec3, airspeed: f32, fly: bool) Goal { new Goal(target, airspeed, fly, 0.7) }
+  pub fn make(target: Vec3, airspeed: f32, fly: bool) Goal { Goal(target, airspeed, fly, 0.7) }
 }
 
 // The pilot's commands, which the autopilot makes from a Goal (or the caller makes)
@@ -82,10 +82,10 @@ struct Frame {
 
 fn bodyFrame(yaw: f32, pitch: f32, bank: f32) Frame {
   let cp = cos(pitch);
-  let f = new Vec3(-sin(yaw) * cp, sin(pitch), -cos(yaw) * cp);
-  let r0 = new Vec3(cos(yaw), 0., -sin(yaw));
+  let f = Vec3(-sin(yaw) * cp, sin(pitch), -cos(yaw) * cp);
+  let r0 = Vec3(cos(yaw), 0., -sin(yaw));
   let u0 = r0.cross(f).normalize();
-  new Frame(f, r0 * cos(bank) - u0 * sin(bank), u0 * cos(bank) + r0 * sin(bank))
+  Frame(f, r0 * cos(bank) - u0 * sin(bank), u0 * cos(bank) + r0 * sin(bank))
 }
 
 fn wrapAngle(a: f32) f32 { a - 2. * pi * libc.floorf(a / (2. * pi) + 0.5) }
@@ -136,8 +136,8 @@ pub struct Flier {
     let aero = Aero.make(ar, params.cd0, params.oswald, params.stallAngle);
     var m = WingMotion.still();
     m.fold = 1.;
-    new Flier(params, aero, new Vec3(pos.x, pos.y + standHeight, pos.z), new Vec3(0., 0., 0.), new Vec3(0., 0., 0.), yaw, 0., 0., 0.2, m, 0., 0.,
-      MODE_GROUNDED, true, standHeight, 1., 4.0, 4.0, 2.2, pivot, 0., 0., 0., 0., new Commands(0., 0.2, 0., 0., 0.), 0., false, 0., 10., 0.)
+    Flier(params, aero, Vec3(pos.x, pos.y + standHeight, pos.z), Vec3(0., 0., 0.), Vec3(0., 0., 0.), yaw, 0., 0., 0.2, m, 0., 0.,
+      MODE_GROUNDED, true, standHeight, 1., 4.0, 4.0, 2.2, pivot, 0., 0., 0., 0., Commands(0., 0.2, 0., 0., 0.), 0., false, 0., 10., 0.)
   }
 
   pub fn weight(self: &) f32 { params.mass * 9.81 }
@@ -153,13 +153,13 @@ pub struct Flier {
 
   // The world transform that puts the model's pivot at the centre, facing the heading
   pub fn world(self: &) Transform3 {
-    let q = Quat.angleAxis(yaw, new Vec3(0., 1., 0.));
-    new Transform3(pos - q * pivot, q, new Vec3(1., 1., 1.))
+    let q = Quat.angleAxis(yaw, Vec3(0., 1., 0.));
+    Transform3(pos - q * pivot, q, Vec3(1., 1., 1.))
   }
 
   // The body's pitch and bank turn it about its pivot: the root bone's rotation
   pub fn attitude(self: &) Quat {
-    Quat.angleAxis(pitch, new Vec3(1., 0., 0.)) * Quat.angleAxis(0. - bank, new Vec3(0., 0., 1.))
+    Quat.angleAxis(pitch, Vec3(1., 0., 0.)) * Quat.angleAxis(0. - bank, Vec3(0., 0., 1.))
   }
 
   // ------------------------------------------------------------------ forces
@@ -169,7 +169,7 @@ pub struct Flier {
   fn forces(self: &mut) Vec3 {
     let fr = bodyFrame(yaw, pitch, bank);
     let vair = vel - wind;
-    var total = new Vec3(0., -self.weight(), 0.);
+    var total = Vec3(0., -self.weight(), 0.);
     let p = &params;
     let semi = 0.5 * p.span;
     let radius = p.radiusFrac * semi * (1. - 0.5 * motion.fold);
@@ -262,7 +262,7 @@ pub struct Flier {
       bankCmd = 0.;
       brakeCmd = 0.;
     }
-    new Commands(eff, alphaCmd, bankCmd, brakeCmd, vzd)
+    Commands(eff, alphaCmd, bankCmd, brakeCmd, vzd)
   }
 
   // ------------------------------------------------------------------ the step
@@ -350,37 +350,37 @@ pub struct Flier {
         // The ground carries the weight and holds the height; the legs run or brake. Only an upward net force
         // (the wings carrying more than the weight) takes the creature off it.
         if meanLift <= self.weight() || !goal.fly || (mode == MODE_TAKEOFF && !leapDone) {
-          a = new Vec3(a.x, 0., a.z);
-          let hdir = new Vec3(-sin(yaw), 0., -cos(yaw));
+          a = Vec3(a.x, 0., a.z);
+          let hdir = Vec3(-sin(yaw), 0., -cos(yaw));
           if mode == MODE_TAKEOFF { a = a + hdir * runAccel; }
           else {
-            let vh = new Vec3(vel.x, 0., vel.z);
+            let vh = Vec3(vel.x, 0., vel.z);
             let sh = vh.length();
             if sh > 0.001 { a = a - vh * (brake / sh); }
           }
-          vel = new Vec3(vel.x, 0., vel.z);
+          vel = Vec3(vel.x, 0., vel.z);
         } else {
           onGround = false;
         }
       }
       vel = vel + a * h;
-      if onGround && mode != MODE_TAKEOFF && (vel.x * vel.x + vel.z * vel.z) < 0.0004 { vel = new Vec3(0., 0., 0.); }
+      if onGround && mode != MODE_TAKEOFF && (vel.x * vel.x + vel.z * vel.z) < 0.0004 { vel = Vec3(0., 0., 0.); }
       pos = pos + vel * h;
       // The ground
       let floorY = ground(pos.x, pos.z) + standHeight;
       if !onGround && pos.y <= floorY && vel.y <= 0. {
-        pos = new Vec3(pos.x, floorY, pos.z);
-        vel = new Vec3(vel.x, 0., vel.z);
+        pos = Vec3(pos.x, floorY, pos.z);
+        vel = Vec3(vel.x, 0., vel.z);
         onGround = true;
         if !goal.fly { mode = MODE_GROUNDED; } else { mode = MODE_TAKEOFF; leapDone = false; }
       } else if onGround {
-        pos = new Vec3(pos.x, floorY, pos.z);
+        pos = Vec3(pos.x, floorY, pos.z);
       }
       // The leap at the end of the run
       if mode == MODE_TAKEOFF && onGround && !leapDone {
         let sp2 = vel.length();
         if sp2 > 1.4 * self.stallSpeed() {
-          vel = new Vec3(vel.x, leap, vel.z);
+          vel = Vec3(vel.x, leap, vel.z);
           leapDone = true;
           onGround = false;
           mode = MODE_CLIMB;
@@ -407,9 +407,9 @@ pub struct Flier {
 // at body pitch = `alpha` (so the angle of attack is alpha) and the flap at `effort`: (the forward force, the lift) in
 // newtons. Used to tune a wing and to test the model; the forward force is the thrust less the drag.
 pub fn averageForces(params: &WingParams, speed: f32, alpha: f32, effort: f32) Vec2 {
-  var fl = Flier.make(params.copy(), new Vec3(0., 0., 0.), 0., 0.3, new Vec3(0., 0., 0.));
+  var fl = Flier.make(params.copy(), Vec3(0., 0., 0.), 0., 0.3, Vec3(0., 0., 0.));
   fl.onGround = false;
-  fl.vel = new Vec3(0., 0., -speed);
+  fl.vel = Vec3(0., 0., -speed);
   fl.pitch = alpha;
   fl.motion.fold = 0.;
   fl.motion.amp = if effort > 0.06 { 1. } else { 0. };
@@ -431,7 +431,7 @@ pub fn averageForces(params: &WingParams, speed: f32, alpha: f32, effort: f32) V
     n = n + 1.;
     t = t + dt;
   }
-  new Vec2(sf / n, sl / n)
+  Vec2(sf / n, sl / n)
 }
 
 fn fmaxf4(a: f32, b: f32) f32 { if a > b { return a; } b }
@@ -447,7 +447,7 @@ pub struct TuckPose {
   pub foot: f32;
 
   // The default: the ankle back and a little down from the hip, the foot folded flat against the shin
-  pub fn legs() TuckPose { new TuckPose(new Vec3(0., -0.20, 0.50), -1.1) }
+  pub fn legs() TuckPose { TuckPose(Vec3(0., -0.20, 0.50), -1.1) }
 }
 
 // Lay the flight on a ground pose: `ground` is the pose the legs have on the ground (leggedgait's, or the rest pose); the
@@ -462,7 +462,7 @@ pub fn compose(flier: &Flier, rig: &Rig, wings: &Wings, tucked: &TuckPose, groun
   let q = flier.attitude();
   let place = flier.pivot + q * (restRoot - flier.pivot);
   if !flier.onGround || flier.tuck > 0.001 {
-    out.locals.set(root, new Transform3(place, q, new Vec3(1., 1., 1.)));
+    out.locals.set(root, Transform3(place, q, Vec3(1., 1., 1.)));
   }
   poseWings(rig, wings, &flier.params, &flier.motion, &mut out);
   // The legs tucked: each ankle moves from where the ground pose has it toward its tucked place (the hip's place
@@ -485,15 +485,15 @@ pub fn compose(flier: &Flier, rig: &Rig, wings: &Wings, tucked: &TuckPose, groun
         let side = if rig.chains[ch].side == 0i32 { 1. } else { f32.from(rig.chains[ch].side) };
         // The knee bends toward where it bent at rest
         var pole = kp - (hp + ap) * 0.5;
-        if pole.length() < 0.0005 { pole = new Vec3(0., 0., -1.); }
+        if pole.length() < 0.0005 { pole = Vec3(0., 0., -1.); }
         let hipNow = (*models[hip]).translation;
-        let tuckedAt = hipNow + q * new Vec3(tucked.ankle.x * side, tucked.ankle.y * reach, tucked.ankle.z * reach);
+        let tuckedAt = hipNow + q * Vec3(tucked.ankle.x * side, tucked.ankle.y * reach, tucked.ankle.z * reach);
         let now = (*models[ankle]).translation;
         let want = now.lerp(tuckedAt, flier.tuck);
         aimLimbRange(skel, &mut out, &mut models, hip, want, q * pole.normalize(), 0.15, pi - 0.02);
         if rig.chains[ch].bones.len() > 3usize {
           // The foot folded back against the shin
-          let foot = Quat.angleAxis(tucked.foot * flier.tuck, new Vec3(1., 0., 0.));
+          let foot = Quat.angleAxis(tucked.foot * flier.tuck, Vec3(1., 0., 0.));
           skel.setModelRotation(&mut out, &models, ankle, q * foot);
           skel.recompose(&out, &mut models, ankle);
         }

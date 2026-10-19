@@ -146,7 +146,7 @@ four helpers:**
 
 Then `vtype` becomes the rval's type.
 
-**An init's `*self = new T(...)` may not run the init it is in.** After an
+**An init's `*self = T(...)` may not run the init it is in.** After an
 ordinary single assignment, `assignInitRecurse` asks whether the lval is
 `*self` of the function being checked and the rval a construction lowered to
 a call of that same function: a declared init is preferred to the implicit

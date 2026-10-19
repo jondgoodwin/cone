@@ -404,7 +404,7 @@ never misses the memo and never expands again. **A use given type arguments is
 the exception**: `Box[i32]` inside `Box[T]` names another instance, and `Box[T]`
 names this one through the memo, so `cloneFnCallNode` puts the template back as
 the head of any call whose arguments are types (`fnCallHasTypeArgs`). A
-construction or a variant's literal — `new Box(v)`, `Mb.No` — builds this
+construction or a variant's literal — `Box(v)`, `Mb.No` — builds this
 instance and stays mapped. Only a generic
 *type* is reserved: a generic function named bare in its own body is a call whose
 type arguments are inferred, as it is anywhere else. A generic *module* maps its
@@ -541,7 +541,7 @@ false diagnostic. The cost is silent acceptance — see Hazards.
    as with none. The step sits after the arguments and the bounds and before the
    literals take their default, in a function and in a type literal alike, so
    `let n: i64 = add(2000000000, 2000000000)` adds `i64`s. A method gets it through
-   `genericMethodInstance`, and `typeLitNewCheck` for `new Box(5)`. A slot still
+   `genericMethodInstance`, and `typeLitNewCheck` for `Box(5)`. A slot still
    empty is reported by `genericMissingParms`, which names the parameters and the
    brackets to write, and the call becomes an error node, so no second diagnostic
    follows.

@@ -68,7 +68,7 @@
 //   locks, declares 'is Sendable', a promise the compiler takes on trust
 //   (tests/counter.cone).
 //
-// 'thread.startWith(new thread.Options(name: "worker", stackSize: s), arg, &f)'
+// 'thread.startWith(thread.Options(name: "worker", stackSize: s), arg, &f)'
 // does the same with options, each of which has a default:
 //
 // - 'name' (text, "" by default) is copied when the thread starts, so the
@@ -479,7 +479,7 @@ fn launchPosix(entry: Entry, pkt: *u8, info: *Info, stackSize: usize) usize {
     result = pthread_create(&mut handle as *usize, null, entry, pkt);
   }
   else {
-    var attr = new PthreadAttr(0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
+    var attr = PthreadAttr(0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
     pthread_attr_init(&mut attr as *PthreadAttr);
     let size = if stackSize < minPosixStack {minPosixStack} else {stackSize};
     result = pthread_attr_setstacksize(&mut attr as *PthreadAttr, size);
@@ -509,7 +509,7 @@ pub struct Options {
 // A new thread running f(arg), with no name and the default stack. 'arg' is
 // moved in.
 pub fn start[A: Sendable + 'static, R: Sendable + 'static](arg: A, f: &fn(a: A) R) Thread[R] {
-  startWith[A, R](new Options(), arg, f)
+  startWith[A, R](Options(), arg, f)
 }
 
 // A new thread running f(arg), named and with the stack 'opts' says
@@ -544,7 +544,7 @@ pub struct Thread[R] {
   handle: usize;
 
   fn made(pkt: *u8, result: *R, info: *Info, handle: usize) Thread[R] {
-    new Thread[R](pkt, result, info, handle)
+    Thread[R](pkt, result, info, handle)
   }
 
   // Wait for the thread to finish, and answer what its function returned
@@ -599,7 +599,7 @@ pub struct Thread[R] {
 pub struct ThreadRef is Sendable {
   info: *Info;
 
-  fn of(info: *Info) ThreadRef { new ThreadRef(info) }
+  fn of(info: *Info) ThreadRef { ThreadRef(info) }
 
   // The thread's OS id, its name, and making its parking token available
   pub fn id(self: &) u32 { infoId(info) }
@@ -609,7 +609,7 @@ pub struct ThreadRef is Sendable {
   // Another ThreadRef to the same thread
   pub fn copy(self: &) ThreadRef {
     infoHold(info);
-    new ThreadRef(info)
+    ThreadRef(info)
   }
 
   fn final(self: &uni) { infoRelease(info); }
@@ -667,8 +667,8 @@ fn sleepWindows(ns: u64) {
 
 // POSIX's nanosleep, resumed for the time left when a signal ends it early
 fn sleepPosix(ns: u64) {
-  var request = new Timespec(i64.from(ns / nsPerSecond), i64.from(ns % nsPerSecond));
-  var left = new Timespec(0i64, 0i64);
+  var request = Timespec(i64.from(ns / nsPerSecond), i64.from(ns % nsPerSecond));
+  var left = Timespec(0i64, 0i64);
   while nanosleep(&mut request as *Timespec, &mut left as *Timespec) != 0i32 && *libc.errno() == eintr {
     request = left;
   }

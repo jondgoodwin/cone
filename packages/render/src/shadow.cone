@@ -100,21 +100,21 @@ pub struct ShadowSettings {
   pub stabilize: bool = true;
 
   // Shadows off: the other fields are left as they are
-  pub fn off() ShadowSettings { new ShadowSettings() }
+  pub fn off() ShadowSettings { ShadowSettings() }
 
   // 4 cascades of 2048, 16 taps: for a discrete GPU
   pub fn high() ShadowSettings {
-    new ShadowSettings(enabled: true, cascades: 4u32, mapSize: 2048u32, pcfTaps: 16u32, pcfRadius: 1.5)
+    ShadowSettings(enabled: true, cascades: 4u32, mapSize: 2048u32, pcfTaps: 16u32, pcfRadius: 1.5)
   }
 
   // 3 cascades of 1536, 8 taps
   pub fn medium() ShadowSettings {
-    new ShadowSettings(enabled: true, cascades: 3u32, mapSize: 1536u32, pcfTaps: 8u32, pcfRadius: 1.5)
+    ShadowSettings(enabled: true, cascades: 3u32, mapSize: 1536u32, pcfTaps: 8u32, pcfRadius: 1.5)
   }
 
   // 2 cascades of 1024, 4 taps: for an integrated GPU
   pub fn low() ShadowSettings {
-    new ShadowSettings(enabled: true, cascades: 2u32, mapSize: 1024u32, pcfTaps: 4u32, pcfRadius: 1.25,
+    ShadowSettings(enabled: true, cascades: 2u32, mapSize: 1024u32, pcfTaps: 4u32, pcfRadius: 1.25,
       distance: 60.)
   }
 }
@@ -140,7 +140,7 @@ pub struct CascadeSet {
 // lambda n (f / n)^(i / count) + (1 - lambda) (n + (f - n) i / count); the
 // last at 'far' exactly. The unused entries are 'far'.
 pub fn cascadeSplits(near: f32, far: f32, count: u32, lambda: f32) Array[f32, 4] {
-  var ends = new Array[f32, 4] <- fill far;
+  var ends = Array[f32, 4]() <- fill far;
   var i = 1u32;
   while i <= count && i <= MAX_CASCADES {
     let t = f32.from(i) / f32.from(count);
@@ -189,25 +189,25 @@ pub fn computeCascades(camera: &Camera, aspect: f32, sunDirection: Vec3, s: &Sha
   if far > camera.far { far = camera.far; }
   if far <= near { far = near * 2.; }
   let ends = cascadeSplits(near, far, count, s.splitLambda);
-  var set = new CascadeSet(count, new Array[Mat4, 4] <- fill Mat4.identity(), ends, new Array[f32, 4] <- fill 0f,
-    new Array[f32, 4] <- fill 0f, new Array[f32, 4] <- fill 0f, new Array[f32, 4] <- fill 0f,
-    new Array[f32, 4] <- fill 0f, new Array[Vec3, 4] <- fill new Vec3(0., 0., 0.));
+  var set = CascadeSet(count, Array[Mat4, 4]() <- fill Mat4.identity(), ends, Array[f32, 4]() <- fill 0f,
+    Array[f32, 4]() <- fill 0f, Array[f32, 4]() <- fill 0f, Array[f32, 4]() <- fill 0f,
+    Array[f32, 4]() <- fill 0f, Array[Vec3, 4]() <- fill Vec3(0., 0., 0.));
 
   // The camera's axes in the world: right, up and back (its own +z)
   let place = camera.placement();
   let eye = place.translation();
-  let forward = new Vec3(-place.m[8], -place.m[9], -place.m[10]).normalize();
+  let forward = Vec3(-place.m[8], -place.m[9], -place.m[10]).normalize();
   let size = f32.from(s.mapSize);
   // How many texels at the map's edge the filter and the normal offset can
   // reach beyond a point, which the window must leave room for
   let pad = sceilf(s.pcfRadius + s.normalOffset) + 2.;
-  let towardsSun = new Vec3(0., 0., 0.) - sunDirection;
-  var up = new Vec3(0., 1., 0.);
-  if towardsSun.y > 0.99 || towardsSun.y < -0.99 { up = new Vec3(1., 0., 0.); }
+  let towardsSun = Vec3(0., 0., 0.) - sunDirection;
+  var up = Vec3(0., 1., 0.);
+  if towardsSun.y > 0.99 || towardsSun.y < -0.99 { up = Vec3(1., 0., 0.); }
   // The sun's view: the sun's direction as -z, the origin of the world as
   // the point it looks at (a translation of the whole scene does not change
   // the cascades' shape, and the snapping lattice is the world's)
-  let sunView = Mat4.lookAt(towardsSun, new Vec3(0., 0., 0.), up);
+  let sunView = Mat4.lookAt(towardsSun, Vec3(0., 0., 0.), up);
   let tanY = tan(camera.fov * 0.5);
 
   var i = 0usize;
@@ -267,7 +267,7 @@ pub fn computeCascades(camera: &Camera, aspect: f32, sunDirection: Vec3, s: &Sha
 // shadowparams.slang's ShadowParams for 'set', as the settings 's' and the
 // camera's forward direction 'forward' have it
 fn shadowParamsFloats(set: &CascadeSet, s: &ShadowSettings, forward: Vec3, enabled: bool) Array[f32, 92] {
-  var out = new Array[f32, 92] <- fill 0f;
+  var out = Array[f32, 92]() <- fill 0f;
   var c = 0usize;
   while c < 4usize {
     var k = 0usize;
@@ -331,76 +331,76 @@ pub struct ShadowCasters {
 
     // The vertex streams each variant reads, each in a buffer of its own
     // (the locations are those Slang gives its inputs, in order)
-    let positionAt0 = [new VertexAttribute(VERTEX_FORMAT_FLOAT32X3, 0u64, 0u32)];
-    let uvAt1 = [new VertexAttribute(VERTEX_FORMAT_FLOAT32X2, 0u64, 1u32)];
-    let jointsAt1 = [new VertexAttribute(VERTEX_FORMAT_UINT8X4, 0u64, 1u32)];
-    let weightsAt2 = [new VertexAttribute(VERTEX_FORMAT_UNORM8X4, 0u64, 2u32)];
-    let jointsAt2 = [new VertexAttribute(VERTEX_FORMAT_UINT8X4, 0u64, 2u32)];
-    let weightsAt3 = [new VertexAttribute(VERTEX_FORMAT_UNORM8X4, 0u64, 3u32)];
-    let swayAt1 = [new VertexAttribute(VERTEX_FORMAT_FLOAT32X4, 0u64, 1u32)];
-    let swayAt2 = [new VertexAttribute(VERTEX_FORMAT_FLOAT32X4, 0u64, 2u32)];
-    let position = new VertexBufferLayout(arrayStride: 12u64, attributes: &positionAt0);
-    let uv = new VertexBufferLayout(arrayStride: 8u64, attributes: &uvAt1);
+    let positionAt0 = [VertexAttribute(VERTEX_FORMAT_FLOAT32X3, 0u64, 0u32)];
+    let uvAt1 = [VertexAttribute(VERTEX_FORMAT_FLOAT32X2, 0u64, 1u32)];
+    let jointsAt1 = [VertexAttribute(VERTEX_FORMAT_UINT8X4, 0u64, 1u32)];
+    let weightsAt2 = [VertexAttribute(VERTEX_FORMAT_UNORM8X4, 0u64, 2u32)];
+    let jointsAt2 = [VertexAttribute(VERTEX_FORMAT_UINT8X4, 0u64, 2u32)];
+    let weightsAt3 = [VertexAttribute(VERTEX_FORMAT_UNORM8X4, 0u64, 3u32)];
+    let swayAt1 = [VertexAttribute(VERTEX_FORMAT_FLOAT32X4, 0u64, 1u32)];
+    let swayAt2 = [VertexAttribute(VERTEX_FORMAT_FLOAT32X4, 0u64, 2u32)];
+    let position = VertexBufferLayout(arrayStride: 12u64, attributes: &positionAt0);
+    let uv = VertexBufferLayout(arrayStride: 8u64, attributes: &uvAt1);
     let opaqueBuffers = [position];
-    let opaqueSkinnedBuffers = [position, new VertexBufferLayout(arrayStride: 4u64, attributes: &jointsAt1),
-      new VertexBufferLayout(arrayStride: 4u64, attributes: &weightsAt2)];
+    let opaqueSkinnedBuffers = [position, VertexBufferLayout(arrayStride: 4u64, attributes: &jointsAt1),
+      VertexBufferLayout(arrayStride: 4u64, attributes: &weightsAt2)];
     let cutBuffers = [position, uv];
-    let cutSkinnedBuffers = [position, uv, new VertexBufferLayout(arrayStride: 4u64, attributes: &jointsAt2),
-      new VertexBufferLayout(arrayStride: 4u64, attributes: &weightsAt3)];
-    let swayBuffers = [position, new VertexBufferLayout(arrayStride: 16u64, attributes: &swayAt1)];
-    let swayCutBuffers = [position, uv, new VertexBufferLayout(arrayStride: 16u64, attributes: &swayAt2)];
+    let cutSkinnedBuffers = [position, uv, VertexBufferLayout(arrayStride: 4u64, attributes: &jointsAt2),
+      VertexBufferLayout(arrayStride: 4u64, attributes: &weightsAt3)];
+    let swayBuffers = [position, VertexBufferLayout(arrayStride: 16u64, attributes: &swayAt1)];
+    let swayCutBuffers = [position, uv, VertexBufferLayout(arrayStride: 16u64, attributes: &swayAt2)];
 
-    let opaqueDesc = new RenderPipelineDescriptor(layout: &layoutOpaque, vertexModule: &shaderCast,
+    let opaqueDesc = RenderPipelineDescriptor(layout: &layoutOpaque, vertexModule: &shaderCast,
       vertexEntryPoint: "vertexOpaque", buffers: &opaqueBuffers, fragmentModule: &shaderCast,
       fragmentEntryPoint: "fragmentOpaque", colorFormat: TEXTURE_FORMAT_UNDEFINED, cullMode: CULL_MODE_NONE,
       depthFormat: TEXTURE_FORMAT_DEPTH32_FLOAT, depthWriteEnabled: true, depthCompare: COMPARE_FUNCTION_LESS,
       depthBiasSlopeScale: slopeBias);
     var opaque = device.createRenderPipeline(&opaqueDesc);
-    let opaqueSkinnedDesc = new RenderPipelineDescriptor(layout: &layoutOpaque, vertexModule: &shaderCast,
+    let opaqueSkinnedDesc = RenderPipelineDescriptor(layout: &layoutOpaque, vertexModule: &shaderCast,
       vertexEntryPoint: "vertexOpaqueSkinned", buffers: &opaqueSkinnedBuffers, fragmentModule: &shaderCast,
       fragmentEntryPoint: "fragmentOpaque", colorFormat: TEXTURE_FORMAT_UNDEFINED, cullMode: CULL_MODE_NONE,
       depthFormat: TEXTURE_FORMAT_DEPTH32_FLOAT, depthWriteEnabled: true, depthCompare: COMPARE_FUNCTION_LESS,
       depthBiasSlopeScale: slopeBias);
     var opaqueSkinned = device.createRenderPipeline(&opaqueSkinnedDesc);
 
-    let litCutDesc = new RenderPipelineDescriptor(layout: &layoutLit, vertexModule: &shaderCutLit,
+    let litCutDesc = RenderPipelineDescriptor(layout: &layoutLit, vertexModule: &shaderCutLit,
       vertexEntryPoint: "vertexCut", buffers: &cutBuffers, fragmentModule: &shaderCutLit,
       fragmentEntryPoint: "fragmentCut", colorFormat: TEXTURE_FORMAT_UNDEFINED, cullMode: CULL_MODE_NONE,
       depthFormat: TEXTURE_FORMAT_DEPTH32_FLOAT, depthWriteEnabled: true, depthCompare: COMPARE_FUNCTION_LESS,
       depthBiasSlopeScale: slopeBias);
     var litCut = device.createRenderPipeline(&litCutDesc);
-    let litCutSkinnedDesc = new RenderPipelineDescriptor(layout: &layoutLit, vertexModule: &shaderCutLit,
+    let litCutSkinnedDesc = RenderPipelineDescriptor(layout: &layoutLit, vertexModule: &shaderCutLit,
       vertexEntryPoint: "vertexCutSkinned", buffers: &cutSkinnedBuffers, fragmentModule: &shaderCutLit,
       fragmentEntryPoint: "fragmentCut", colorFormat: TEXTURE_FORMAT_UNDEFINED, cullMode: CULL_MODE_NONE,
       depthFormat: TEXTURE_FORMAT_DEPTH32_FLOAT, depthWriteEnabled: true, depthCompare: COMPARE_FUNCTION_LESS,
       depthBiasSlopeScale: slopeBias);
     var litCutSkinned = device.createRenderPipeline(&litCutSkinnedDesc);
 
-    let pbrCutDesc = new RenderPipelineDescriptor(layout: &layoutPbr, vertexModule: &shaderCutPbr,
+    let pbrCutDesc = RenderPipelineDescriptor(layout: &layoutPbr, vertexModule: &shaderCutPbr,
       vertexEntryPoint: "vertexCut", buffers: &cutBuffers, fragmentModule: &shaderCutPbr,
       fragmentEntryPoint: "fragmentCut", colorFormat: TEXTURE_FORMAT_UNDEFINED, cullMode: CULL_MODE_NONE,
       depthFormat: TEXTURE_FORMAT_DEPTH32_FLOAT, depthWriteEnabled: true, depthCompare: COMPARE_FUNCTION_LESS,
       depthBiasSlopeScale: slopeBias);
     var pbrCut = device.createRenderPipeline(&pbrCutDesc);
-    let pbrCutSkinnedDesc = new RenderPipelineDescriptor(layout: &layoutPbr, vertexModule: &shaderCutPbr,
+    let pbrCutSkinnedDesc = RenderPipelineDescriptor(layout: &layoutPbr, vertexModule: &shaderCutPbr,
       vertexEntryPoint: "vertexCutSkinned", buffers: &cutSkinnedBuffers, fragmentModule: &shaderCutPbr,
       fragmentEntryPoint: "fragmentCut", colorFormat: TEXTURE_FORMAT_UNDEFINED, cullMode: CULL_MODE_NONE,
       depthFormat: TEXTURE_FORMAT_DEPTH32_FLOAT, depthWriteEnabled: true, depthCompare: COMPARE_FUNCTION_LESS,
       depthBiasSlopeScale: slopeBias);
     var pbrCutSkinned = device.createRenderPipeline(&pbrCutSkinnedDesc);
-    let swayDesc = new RenderPipelineDescriptor(layout: &layoutPbr, vertexModule: &shaderCutPbr,
+    let swayDesc = RenderPipelineDescriptor(layout: &layoutPbr, vertexModule: &shaderCutPbr,
       vertexEntryPoint: "vertexSway", buffers: &swayBuffers, fragmentModule: &shaderCutPbr,
       fragmentEntryPoint: "fragmentOpaque", colorFormat: TEXTURE_FORMAT_UNDEFINED, cullMode: CULL_MODE_NONE,
       depthFormat: TEXTURE_FORMAT_DEPTH32_FLOAT, depthWriteEnabled: true, depthCompare: COMPARE_FUNCTION_LESS,
       depthBiasSlopeScale: slopeBias);
     var sway = device.createRenderPipeline(&swayDesc);
-    let swayCutDesc = new RenderPipelineDescriptor(layout: &layoutPbr, vertexModule: &shaderCutPbr,
+    let swayCutDesc = RenderPipelineDescriptor(layout: &layoutPbr, vertexModule: &shaderCutPbr,
       vertexEntryPoint: "vertexCutSway", buffers: &swayCutBuffers, fragmentModule: &shaderCutPbr,
       fragmentEntryPoint: "fragmentCut", colorFormat: TEXTURE_FORMAT_UNDEFINED, cullMode: CULL_MODE_NONE,
       depthFormat: TEXTURE_FORMAT_DEPTH32_FLOAT, depthWriteEnabled: true, depthCompare: COMPARE_FUNCTION_LESS,
       depthBiasSlopeScale: slopeBias);
     var swayCut = device.createRenderPipeline(&swayCutDesc);
-    new ShadowCasters(shaderCast, shaderCutLit, shaderCutPbr, layoutOpaque, layoutLit, layoutPbr, opaque,
+    ShadowCasters(shaderCast, shaderCutLit, shaderCutPbr, layoutOpaque, layoutLit, layoutPbr, opaque,
       opaqueSkinned, litCut, litCutSkinned, pbrCut, pbrCutSkinned, sway, swayCut)
   }
 
@@ -433,24 +433,24 @@ pub struct ShadowState {
   // renderer's frame group's)
   pub fn create(device: &mut Device, materialLayout: &BindGroupLayout, pbrMaterialLayout: &BindGroupLayout,
       frameUniforms: &Buffer, instances: &Buffer, bones: &Buffer, boneBases: &Buffer) ShadowState {
-    let settings = new ShadowSettings();
-    let casterEntries = [new BindGroupLayoutEntry(binding: 0u32, visibility: SHADER_STAGE_VERTEX),
-      new BindGroupLayoutEntry(binding: 1u32, visibility: SHADER_STAGE_VERTEX,
+    let settings = ShadowSettings();
+    let casterEntries = [BindGroupLayoutEntry(binding: 0u32, visibility: SHADER_STAGE_VERTEX),
+      BindGroupLayoutEntry(binding: 1u32, visibility: SHADER_STAGE_VERTEX,
         bufferType: BUFFER_BINDING_TYPE_READ_ONLY_STORAGE),
-      new BindGroupLayoutEntry(binding: 2u32, visibility: SHADER_STAGE_VERTEX,
+      BindGroupLayoutEntry(binding: 2u32, visibility: SHADER_STAGE_VERTEX,
         bufferType: BUFFER_BINDING_TYPE_READ_ONLY_STORAGE),
-      new BindGroupLayoutEntry(binding: 3u32, visibility: SHADER_STAGE_VERTEX,
+      BindGroupLayoutEntry(binding: 3u32, visibility: SHADER_STAGE_VERTEX,
         bufferType: BUFFER_BINDING_TYPE_READ_ONLY_STORAGE),
-      new BindGroupLayoutEntry(binding: 4u32, visibility: SHADER_STAGE_VERTEX)];
+      BindGroupLayoutEntry(binding: 4u32, visibility: SHADER_STAGE_VERTEX)];
     var casterLayout = device.createBindGroupLayout(&casterEntries);
     var params = device.createBuffer(SHADOW_PARAMS_BYTES, BUFFER_USAGE_UNIFORM | BUFFER_USAGE_COPY_DST);
-    let zeros = new Array[f32, 484] <- fill 0f;
+    let zeros = Array[f32, 484]() <- fill 0f;
     device.queue.writeBuffer(&params, 0u64, &zeros as *u8, SHADOW_PARAMS_BYTES);
-    let samplerDesc = new SamplerDescriptor(magFilter: FILTER_MODE_LINEAR, minFilter: FILTER_MODE_LINEAR,
+    let samplerDesc = SamplerDescriptor(magFilter: FILTER_MODE_LINEAR, minFilter: FILTER_MODE_LINEAR,
       addressModeU: ADDRESS_MODE_CLAMP_TO_EDGE, addressModeV: ADDRESS_MODE_CLAMP_TO_EDGE,
       addressModeW: ADDRESS_MODE_CLAMP_TO_EDGE, compare: COMPARE_FUNCTION_LESS_EQUAL);
     var sampler = device.createSampler(&samplerDesc);
-    let mapDesc = new TextureDescriptor(1u32, 1u32, TEXTURE_FORMAT_DEPTH32_FLOAT,
+    let mapDesc = TextureDescriptor(1u32, 1u32, TEXTURE_FORMAT_DEPTH32_FLOAT,
       TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_TEXTURE_BINDING, 1u32, 1u32);
     var map = device.createTexture(&mapDesc);
     let groupEntries = [BindGroupEntry.buffer(0u32, frameUniforms), BindGroupEntry.buffer(1u32, instances),
@@ -458,8 +458,8 @@ pub struct ShadowState {
     var casterGroup = device.createBindGroup(&casterLayout, &groupEntries);
     var casters = ShadowCasters.create(device, &casterLayout, materialLayout, pbrMaterialLayout, settings.slopeBias);
     let camera = Camera.make();
-    let cascades = computeCascades(&camera, 1., new Vec3(0., -1., 0.), &settings);
-    new ShadowState(settings, params, sampler, map, casterLayout, casterGroup, casters, cascades, 0u32, 0u64, 0u32)
+    let cascades = computeCascades(&camera, 1., Vec3(0., -1., 0.), &settings);
+    ShadowState(settings, params, sampler, map, casterLayout, casterGroup, casters, cascades, 0u32, 0u64, 0u32)
   }
 
   pub fn isValid(self: &) bool {
@@ -468,7 +468,7 @@ pub struct ShadowState {
 
   // A view of the whole map as an array, what the frame group binds
   pub fn arrayView(self: &) TextureView {
-    let desc = new TextureViewDescriptor(dimension: TEXTURE_VIEW_DIMENSION_2D_ARRAY);
+    let desc = TextureViewDescriptor(dimension: TEXTURE_VIEW_DIMENSION_2D_ARRAY);
     map.createViewWith(&desc)
   }
 
@@ -490,7 +490,7 @@ pub struct ShadowState {
       side = 1u32;
       count = 1u32;
     }
-    let desc = new TextureDescriptor(side, side, TEXTURE_FORMAT_DEPTH32_FLOAT,
+    let desc = TextureDescriptor(side, side, TEXTURE_FORMAT_DEPTH32_FLOAT,
       TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_TEXTURE_BINDING, 1u32, count);
     // The old map's first layout change may still be in the commands the
     // frame has recorded and not submitted, and a texture dropped before
@@ -558,9 +558,9 @@ fn batchTouchesCascade(r: &Renderer, list: &DrawList, batch: &DrawBatch, c: usiz
     let center = item.model * m.center;
     // The most the copy's matrix stretches the sphere (the length of its
     // longest column)
-    let sx = item.model.transformVector(new Vec3(1., 0., 0.)).length();
-    let sy = item.model.transformVector(new Vec3(0., 1., 0.)).length();
-    let sz = item.model.transformVector(new Vec3(0., 0., 1.)).length();
+    let sx = item.model.transformVector(Vec3(1., 0., 0.)).length();
+    let sy = item.model.transformVector(Vec3(0., 1., 0.)).length();
+    let sz = item.model.transformVector(Vec3(0., 0., 1.)).length();
     var s = sx;
     if sy > s { s = sy; }
     if sz > s { s = sz; }
@@ -581,7 +581,7 @@ fn passBatches(r: &Renderer, index: usize) SetRange {
   let n = r.vis.sets.len();
   if n > 1usize + index { return *r.vis.sets[1usize + index]; }
   if n > 0usize { return *r.vis.sets[0usize]; }
-  new SetRange(0usize, r.batches.len())
+  SetRange(0usize, r.batches.len())
 }
 
 // Record the shadow passes of 'list': one depth-only pass a cascade of
@@ -596,9 +596,9 @@ fn recordShadowPasses(r: &mut Renderer, device: &mut Device, encoder: &mut Comma
   let count = r.shadow.cascades.count;
   var c = 0u32;
   while c < count {
-    let viewDesc = new TextureViewDescriptor(dimension: TEXTURE_VIEW_DIMENSION_2D, baseArrayLayer: c,
+    let viewDesc = TextureViewDescriptor(dimension: TEXTURE_VIEW_DIMENSION_2D, baseArrayLayer: c,
       arrayLayerCount: 1u32);
-    let attachment = new RenderPassDepthStencilAttachment(view: r.shadow.map.createViewWith(&viewDesc),
+    let attachment = RenderPassDepthStencilAttachment(view: r.shadow.map.createViewWith(&viewDesc),
       depthLoadOp: LOAD_OP_CLEAR, depthStoreOp: STORE_OP_STORE);
     var pass = encoder.beginDepthPass(&attachment);
     let cascade = c;

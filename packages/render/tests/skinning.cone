@@ -58,8 +58,8 @@ fn tube(skin: &mut Skin) Mesh {
     var k = 0usize;
     while k < SIDES {
       let a = 2. * pi * f32.from(k) / f32.from(SIDES);
-      m.positions.push(new Vec3(RADIUS * cos(a), y, RADIUS * sin(a)));
-      m.normals.push(new Vec3(cos(a), 0., sin(a)));
+      m.positions.push(Vec3(RADIUS * cos(a), y, RADIUS * sin(a)));
+      m.normals.push(Vec3(cos(a), 0., sin(a)));
       skin.push(0u32, 1u32, 0u32, 0u32, 1. - w1, w1, 0., 0.);
       k = k + 1usize;
     }
@@ -89,8 +89,8 @@ fn tube(skin: &mut Skin) Mesh {
 
 // The two bones' skinning matrices with bone 1 turned 'angle' about +z at the joint
 fn bent(angle: f32) Array[Mat4, 2] {
-  let bind1 = Mat4.fromTranslation(new Vec3(0., 0.5, 0.));
-  let posed1 = Mat4.fromTrs(new Vec3(0., 0.5, 0.), Quat.angleAxis(angle, new Vec3(0., 0., 1.)), new Vec3(1., 1., 1.));
+  let bind1 = Mat4.fromTranslation(Vec3(0., 0.5, 0.));
+  let posed1 = Mat4.fromTrs(Vec3(0., 0.5, 0.), Quat.angleAxis(angle, Vec3(0., 0., 1.)), Vec3(1., 1., 1.));
   [Mat4.identity(), skinningMatrix(posed1, bind1)]
 }
 
@@ -116,7 +116,7 @@ fn uncoveredRings(p: *u8, viewProjection: Mat4, skin: &Skin, model: Mat4, pose: 
   var misses = 0u32;
   var r = 1usize;
   while r + 1usize < RINGS {
-    let centre = new Vec3(0., f32.from(r) * 0.05, 0.);
+    let centre = Vec3(0., f32.from(r) * 0.05, 0.);
     if !covered(p, viewProjection, model * skin.skinPoint(r * SIDES, pose, centre)) { misses = misses + 1u32; }
     r = r + 1usize;
   }
@@ -196,16 +196,16 @@ fn main() i32 {
     let rv = rows.view();
     device.queue.writeBuffer(&pose, 0u64, &rv[0] as *u8, 2u64 * BONE_BYTES);
     let entries = [
-      new BindGroupLayoutEntry(binding: 4u32, visibility: SHADER_STAGE_COMPUTE, bufferType: BUFFER_BINDING_TYPE_READ_ONLY_STORAGE),
-      new BindGroupLayoutEntry(binding: 5u32, visibility: SHADER_STAGE_COMPUTE, bufferType: BUFFER_BINDING_TYPE_READ_ONLY_STORAGE),
-      new BindGroupLayoutEntry(binding: 6u32, visibility: SHADER_STAGE_COMPUTE, bufferType: BUFFER_BINDING_TYPE_READ_ONLY_STORAGE),
-      new BindGroupLayoutEntry(binding: 7u32, visibility: SHADER_STAGE_COMPUTE, bufferType: BUFFER_BINDING_TYPE_READ_ONLY_STORAGE),
-      new BindGroupLayoutEntry(binding: 8u32, visibility: SHADER_STAGE_COMPUTE, bufferType: BUFFER_BINDING_TYPE_STORAGE)];
+      BindGroupLayoutEntry(binding: 4u32, visibility: SHADER_STAGE_COMPUTE, bufferType: BUFFER_BINDING_TYPE_READ_ONLY_STORAGE),
+      BindGroupLayoutEntry(binding: 5u32, visibility: SHADER_STAGE_COMPUTE, bufferType: BUFFER_BINDING_TYPE_READ_ONLY_STORAGE),
+      BindGroupLayoutEntry(binding: 6u32, visibility: SHADER_STAGE_COMPUTE, bufferType: BUFFER_BINDING_TYPE_READ_ONLY_STORAGE),
+      BindGroupLayoutEntry(binding: 7u32, visibility: SHADER_STAGE_COMPUTE, bufferType: BUFFER_BINDING_TYPE_READ_ONLY_STORAGE),
+      BindGroupLayoutEntry(binding: 8u32, visibility: SHADER_STAGE_COMPUTE, bufferType: BUFFER_BINDING_TYPE_STORAGE)];
     var groupLayout = device.createBindGroupLayout(&entries);
     let groupLayouts = [&groupLayout];
     var layout = device.createPipelineLayout(&groupLayouts, 4u32);
     var shader = device.createShaderModule(&SKINTWIN_SPIRV);
-    let desc = new ComputePipelineDescriptor(layout: &layout, module: &shader, entryPoint: "skinMain");
+    let desc = ComputePipelineDescriptor(layout: &layout, module: &shader, entryPoint: "skinMain");
     var pipeline = device.createComputePipeline(&desc);
     require(pipeline.isValid(), "the compute twin's pipeline");
     let groupEntries = [BindGroupEntry.buffer(4u32, &positions), BindGroupEntry.buffer(5u32, &joints),
@@ -231,7 +231,7 @@ fn main() i32 {
     var v = 0usize;
     while v < n {
       let want = skin.skinPoint(v, &bend, *m.positions[v]);
-      let g = new Vec3(*(got + v * 3usize), *(got + v * 3usize + 1usize), *(got + v * 3usize + 2usize));
+      let g = Vec3(*(got + v * 3usize), *(got + v * 3usize + 1usize), *(got + v * 3usize + 2usize));
       let d = g.distance(want);
       if d > worst { worst = d; }
       let travel = want.distance(*m.positions[v]);
@@ -246,10 +246,10 @@ fn main() i32 {
   }
 
   // ---- 3. Drawn ----
-  let target = new TextureDescriptor(64u32, 64u32, TEXTURE_FORMAT_RGBA8_UNORM,
+  let target = TextureDescriptor(64u32, 64u32, TEXTURE_FORMAT_RGBA8_UNORM,
     TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
   var color = device.createTexture(&target);
-  let depthDesc = new TextureDescriptor(64u32, 64u32, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
+  let depthDesc = TextureDescriptor(64u32, 64u32, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
   var depth = device.createTexture(&depthDesc);
   var readback = device.createBuffer(16384u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
   let p = readback.mappedRange();
@@ -258,17 +258,17 @@ fn main() i32 {
   var camera = Camera.make();
   camera.projection = Orthogonal;
   camera.viewHeight = 1.;
-  camera.lookAt(new Vec3(0., 0.5, 3.), new Vec3(0., 0.5, 0.), new Vec3(0., 1., 0.));
-  camera.background = new Color(0.2, 0.4, 0.6, 1.);
+  camera.lookAt(Vec3(0., 0.5, 3.), Vec3(0., 0.5, 0.), Vec3(0., 1., 0.));
+  camera.background = Color(0.2, 0.4, 0.6, 1.);
   let viewProjection = camera.projectionMatrix(1.) * camera.viewMatrix();
-  let headOn = Light.directional(new Vec3(0., 0., -1.), Color.gray(1.8849556), Color.gray(0.2));
+  let headOn = Light.directional(Vec3(0., 0., -1.), Color.gray(1.8849556), Color.gray(0.2));
   let h = renderer.addSkinnedMesh(&mut device, &m, &skin);
   expect(renderer.isSkinned(h), "the mesh is skinned");
-  let redMaterial = Material.plain(new Color(1., 0., 0., 1.));
+  let redMaterial = Material.plain(Color(1., 0., 0., 1.));
   let red = renderer.addMaterial(&mut device, &redMaterial);
   let modelA = Mat4.identity();
-  let modelB = Mat4.fromTranslation(new Vec3(0.6, -0.4, 0.));
-  let modelC = Mat4.fromTranslation(new Vec3(-0.8, -0.4, 0.));
+  let modelB = Mat4.fromTranslation(Vec3(0.6, -0.4, 0.));
+  let modelC = Mat4.fromTranslation(Vec3(-0.8, -0.4, 0.));
   let bendB = bent(radians(-45.));
   var list = DrawList.empty();
   list.addSkinned(h, red, modelA, &bend);
@@ -283,13 +283,13 @@ fn main() i32 {
     "A: every ring's centre, skinned on the CPU, drawn on the tube");
   expectUInt(u64.from(uncoveredRings(p, viewProjection, &skin, modelB, &bendB)), 0u64,
     "B: every ring's centre, with its own bones, drawn on the tube");
-  expect(!covered(p, viewProjection, new Vec3(0., 0.9, 0.)), "A's upper half is not where it was modelled");
-  expect(!covered(p, viewProjection, new Vec3(0.6, 0.5, 0.)), "nor B's");
-  expect(covered(p, viewProjection, new Vec3(-0.8, 0.5, 0.)), "C, with no bones, drawn straight, as modelled");
-  expect(covered(p, viewProjection, new Vec3(-0.35, 0.5, 0.)), "A's arm, turned to -x");
+  expect(!covered(p, viewProjection, Vec3(0., 0.9, 0.)), "A's upper half is not where it was modelled");
+  expect(!covered(p, viewProjection, Vec3(0.6, 0.5, 0.)), "nor B's");
+  expect(covered(p, viewProjection, Vec3(-0.8, 0.5, 0.)), "C, with no bones, drawn straight, as modelled");
+  expect(covered(p, viewProjection, Vec3(-0.35, 0.5, 0.)), "A's arm, turned to -x");
 
   // ---- 4. Physically based ----
-  let shiny = PbrMaterial.standard(new Color(1., 0., 0., 1.), 0., 0.5);
+  let shiny = PbrMaterial.standard(Color(1., 0., 0., 1.), 0., 0.5);
   let pbr = renderer.addPbrMaterial(&mut device, &shiny);
   renderer.environmentStrength = 0.;        // lit by the sun alone: red stays red
   list.clear();
@@ -298,10 +298,10 @@ fn main() i32 {
   expectUInt(u64.from(renderer.drawCalls), 1u64, "the physically based skinned draw");
   expectUInt(u64.from(uncoveredRings(p, viewProjection, &skin, modelA, &bend)), 0u64,
     "A in the physically based material: every ring's centre on the tube");
-  expect(!covered(p, viewProjection, new Vec3(0., 0.9, 0.)), "and its upper half bent away");
+  expect(!covered(p, viewProjection, Vec3(0., 0.9, 0.)), "and its upper half bent away");
 
   // ---- 5. Bounds ----
-  var centre = new Vec3(0., 0., 0.);
+  var centre = Vec3(0., 0., 0.);
   var radius: f32 = 0.;
   renderer.meshBounds(h, &mut centre, &mut radius);
   // The bind pose's sphere: centre (0, 0.5, 0), radius sqrt(0.5^2 + 0.08^2)

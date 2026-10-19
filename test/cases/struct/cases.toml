@@ -101,7 +101,7 @@
 #   so; struct_flow_new refuses a field written before an init's self is
 #   filled.
 #
-# Initializers -- construction, 'new T(...)', and the inits it runs -- are
+# Initializers -- construction, 'T(...)', and the inits it runs -- are
 # struct_new, struct_typecheck_new and struct_flow_new.
 
 support = ["structmeter.cone"]
@@ -849,7 +849,7 @@ contains = [
   "@table = internal constant [3 x %Shape] [%Shape { i8 1, [3 x i8] zeroinitializer, i32 0, [8 x i8] zeroinitializer, [0 x i64] zeroinitializer }, %Shape { i8 2,",
 ]
 
-# Construction, 'new T(...)', and the inits it runs: the implicit field-wise
+# Construction, 'T(...)', and the inits it runs: the implicit field-wise
 # one and those a struct declares, which fill the value in place. Its own file
 # because its claims are which init the arguments selected and where the value
 # was built, which no other success file asks.
@@ -984,7 +984,7 @@ diagnostics = 13
 category = "reject"
 description = "A field or method named like an imported module hides it inside its type: the module written in a method's signature, a field's default or a body is refused rather than crashing, the signature's refusal naming both fixes (rename the import, or reach the module through this module's own name), the module's own name where the import renamed it; a static function calling a method bare is refused; what a failed signature returns is not walked by flow"
 tags = ["typecheck", "flow"]
-diagnostics = 10
+diagnostics = 12
 
 [scenario.struct_member_module_outside]
 category = "run"
@@ -1021,12 +1021,34 @@ diagnostics = 4
 
 [scenario.struct_typecheck_new]
 category = "reject"
-description = "Constructions refused: the bracket form, a type called, 'new' on what is not a struct, arguments no init or several declared inits take, an init called by name, an init filling self by position with itself, a declared init in a global, a finished value of the struct; and inits declared in a shape a construction cannot run, and '&new' anywhere but an init's self"
+description = "Constructions refused: the bracket form, a number or an enum constructed, a value called, arguments no init or several declared inits take, an init called by name, an init filling self by position with itself, a declared init in a global, a finished value of the struct; and inits declared in a shape a construction cannot run, and '&new' anywhere but an init's self"
 tags = ["typecheck"]
-diagnostics = 20
+diagnostics = 18
 
 [scenario.struct_typecheck_methods]
 category = "reject"
 description = "Method, field and operator accesses a struct's type cannot answer, including a private 'isTrue' a coercion to bool injects a call to, and a '&mut'-self method on an immutable variable; a private member reached from elsewhere in its module is not refused"
 tags = ["typecheck"]
 diagnostics = 21
+
+# 'new' takes a dynamic region and nothing else: before a type it is refused
+# once, at the 'new', whatever the type is and wherever it is allocated, and the
+# construction goes on as the call of the type it is. Name resolution stage, so
+# a program refused here reaches no type check: every line is that refusal.
+[scenario.struct_nameres_new]
+category = "reject"
+description = "'new' written before a type is refused at the 'new', once: a struct, one with no parentheses, a generic struct with its type arguments written or inferred, a collection with a size and with contents, an owner of a region and an alias of one, a type through a module, a generic's parameter, a borrow of a construction, an array, a number, an enum's variant, and a construction among another's arguments"
+tags = ["nameres"]
+diagnostics = 16
+
+# A construction is a type's name with parentheses, for every type, and the
+# compiler decides from the type whether a region allocates: a struct by
+# position and by name, a type with a '()' method told from its value called, a
+# declared init, a generic with its type arguments written and inferred, a
+# generic's parameter called, a variant, collections and arrays with contents,
+# an owner of a region written out and through an alias, a borrow of a
+# construction, constructions inside constructions, and 'trynew'.
+[scenario.struct_construct_name]
+category = "run"
+description = "A construction is the type's name with parentheses for every type: a struct, a type with a '()' method, a declared init, a generic struct, a generic's parameter, a variant, a collection with a size and with contents, an array, an owner of a region and an alias of one, a borrow of a construction, a construction among another's arguments and as a receiver, and 'trynew'"
+tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]

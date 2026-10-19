@@ -41,7 +41,7 @@ actor Relay {
   stopped: bool;
 
   fn init(self: &new, server: SocketAddr, toServer: LinkConfig, toClient: LinkConfig, seed: u64) {
-    *self = new Self(server: server, toServer: toServer, toClient: toClient, seed: seed, pool: Pool.make(),
+    *self = Self(server: server, toServer: toServer, toClient: toClient, seed: seed, pool: Pool.make(),
       front: UdpSocket.none(), legs: List[Leg].empty(), group: CancelGroup.make(), stopped: false);
   }
 
@@ -55,7 +55,7 @@ actor Relay {
       else {}
     }
     if front.isNone() {
-      tx.send(Error[SocketAddr, IoError](new IoError(1u32)));
+      tx.send(Error[SocketAddr, IoError](IoError(1u32)));
       return;
     }
     var bound = SocketAddr.localhost(0u16);
@@ -114,7 +114,7 @@ actor Relay {
           }
           if up.isNone() {return;}
           let n = u64.from(legs.len());
-          legs.push(new Leg(client, key, up,
+          legs.push(Leg(client, key, up,
             LinkSim.make(toServer, seed + 2u64 * n), LinkSim.make(toClient, seed + 2u64 * n + 1u64)));
           selfactor.receiveLeg(legs.len() - 1usize);
           found = legs.len() - 1usize;
@@ -211,7 +211,7 @@ pub struct LossyRelay {
 // losses repeatable. Clients connect to localhost at 'port'.
 pub fn startLossyRelay(server: SocketAddr, toServer: LinkConfig, toClient: LinkConfig, seed: u64) LossyRelay {
   requireAWorker();
-  let relay = new Relay(server, toServer, toClient, seed);
+  let relay = Relay(server, toServer, toClient, seed);
   var tx: OneshotSender[Result[SocketAddr, IoError]];
   var rx: OneshotReceiver[Result[SocketAddr, IoError]];
   tx, rx = Oneshot[Result[SocketAddr, IoError]].make();
@@ -219,7 +219,7 @@ pub fn startLossyRelay(server: SocketAddr, toServer: LinkConfig, toClient: LinkC
   match rx.recv() {
     case let answer Some {
       match &answer {
-        case let a &Ok { return new LossyRelay(a.port(), relay); }
+        case let a &Ok { return LossyRelay(a.port(), relay); }
         else {}
       }
     }

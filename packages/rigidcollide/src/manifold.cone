@@ -48,17 +48,17 @@ pub struct Manifold {
 
 pub const NoSub = 0xffffffffu32;
 
-fn zeroPoint() ContactPoint { new ContactPoint(new Vec3(0., 0., 0.), new Vec3(0., 0., 0.), 0.) }
+fn zeroPoint() ContactPoint { ContactPoint(Vec3(0., 0., 0.), Vec3(0., 0., 0.), 0.) }
 
 pub fn emptyManifold() Manifold {
-  new Manifold(new Vec3(0., 1., 0.), 0usize, [zeroPoint(), zeroPoint(), zeroPoint(), zeroPoint()], 0u32, 0u32, NoSub, NoSub)
+  Manifold(Vec3(0., 1., 0.), 0usize, [zeroPoint(), zeroPoint(), zeroPoint(), zeroPoint()], 0u32, 0u32, NoSub, NoSub)
 }
 
 fn singleContact(n: Vec3, onA: Vec3, onB: Vec3, depth: f32) Manifold {
   var m = emptyManifold();
   m.normal = n;
   m.count = 1usize;
-  m.points[0usize] = new ContactPoint(onA, onB, depth);
+  m.points[0usize] = ContactPoint(onA, onB, depth);
   m
 }
 
@@ -68,7 +68,7 @@ fn flipManifold(m: Manifold) Manifold {
   o.normal = -m.normal;
   var i = 0usize;
   while i < m.count {
-    o.points[i] = new ContactPoint(m.points[i].onB, m.points[i].onA, m.points[i].depth);
+    o.points[i] = ContactPoint(m.points[i].onB, m.points[i].onA, m.points[i].depth);
     i = i + 1usize;
   }
   o.partA = m.partB; o.partB = m.partA; o.subA = m.subB; o.subB = m.subA;
@@ -95,7 +95,7 @@ pub struct Poly {
 }
 
 pub fn newPoly() Poly {
-  new Poly(0usize, new Array[Vec3, 16] <- fill new Vec3(0., 0., 0.))
+  Poly(0usize, Array[Vec3, 16]() <- fill Vec3(0., 0., 0.))
 }
 
 // The polygon, edge or point of the shape that faces along dir (world space),
@@ -119,7 +119,7 @@ pub fn supportingFace(p: &Prim, x: Rigid, dir: Vec3) Poly {
     while k < 4usize {
       let su = if k == 0usize || k == 3usize { -hu } else { hu };
       let sv = if k == 0usize || k == 1usize { -hv } else { hv };
-      var q = new Vec3(0., 0., 0.);
+      var q = Vec3(0., 0., 0.);
       q = vecSet(q, ax, hn);
       q = vecSet(q, u, su);
       q = vecSet(q, v, sv);
@@ -182,8 +182,8 @@ pub fn supportingFace(p: &Prim, x: Rigid, dir: Vec3) Poly {
       // cylinder's side line: the side line is up to radius * (1 - cos tilt) too high or low at a tilt of 8 degrees
       let lp = ld.normalize();
       let off = lp * p.radius;
-      out.add(x.apply(new Vec3(0., p.half.y, 0.) + off));
-      out.add(x.apply(new Vec3(0., -p.half.y, 0.) + off));
+      out.add(x.apply(Vec3(0., p.half.y, 0.) + off));
+      out.add(x.apply(Vec3(0., -p.half.y, 0.) + off));
       return out;
     }
   }
@@ -194,7 +194,7 @@ pub fn supportingFace(p: &Prim, x: Rigid, dir: Vec3) Poly {
       var k = 0usize;
       while k < 12usize {
         let ang = f32.from(k) * (2. * pi / 12.) * (if ld.y < 0. { -1. } else { 1. });
-        out.add(x.apply(new Vec3(p.radius * cos(ang), y, p.radius * sin(ang))));
+        out.add(x.apply(Vec3(p.radius * cos(ang), y, p.radius * sin(ang))));
         k = k + 1usize;
       }
       return out;
@@ -203,8 +203,8 @@ pub fn supportingFace(p: &Prim, x: Rigid, dir: Vec3) Poly {
       let h = (ld.x * ld.x + ld.z * ld.z).sqrt();
       let ux = ld.x / h * p.radius;
       let uz = ld.z / h * p.radius;
-      out.add(x.apply(new Vec3(ux, p.half.y, uz)));
-      out.add(x.apply(new Vec3(ux, -p.half.y, uz)));
+      out.add(x.apply(Vec3(ux, p.half.y, uz)));
+      out.add(x.apply(Vec3(ux, -p.half.y, uz)));
       return out;
     }
   }
@@ -216,7 +216,7 @@ pub fn supportingFace(p: &Prim, x: Rigid, dir: Vec3) Poly {
 // Clipping
 
 fn polyCentroid(poly: &Poly) Vec3 {
-  var c = new Vec3(0., 0., 0.);
+  var c = Vec3(0., 0., 0.);
   var i = 0usize;
   while i < poly.n { c = c + poly.p[i]; i = i + 1usize; }
   c * (1. / f32.from(poly.n))
@@ -282,7 +282,7 @@ struct PointBuf {
 }
 
 fn newPointBuf() PointBuf {
-  new PointBuf(0usize, new Array[ContactPoint, 16] <- fill zeroPoint())
+  PointBuf(0usize, Array[ContactPoint, 16]() <- fill zeroPoint())
 }
 
 // Cut a set of contact points to four (Jolt's PruneContactPoints)
@@ -296,7 +296,7 @@ fn reducePoints(pts: &PointBuf, n: Vec3) Manifold {
     m.count = cnt;
     return m;
   }
-  var used = new Array[bool, 16] <- fill false;
+  var used = Array[bool, 16]() <- fill false;
   var i = 0usize;
   // 1: the deepest
   var i1 = 0usize;
@@ -370,7 +370,7 @@ pub fn clipFaces(faceA: &Poly, faceB: &Poly, n: Vec3, margin: f32) Manifold {
 fn polyNormal(f: &Poly) Vec3 {
   let c = (f.p[1usize] - f.p[0usize]).cross(f.p[2usize] - f.p[0usize]);
   let l = c.length();
-  if l > 0.0000001 { c * (1. / l) } else { new Vec3(0., 0., 0.) }
+  if l > 0.0000001 { c * (1. / l) } else { Vec3(0., 0., 0.) }
 }
 
 // The same with the reference face chosen by the caller (the face whose plane
@@ -382,7 +382,7 @@ pub fn clipFacesRef(faceA: &Poly, faceB: &Poly, n0: Vec3, margin: f32, refIsA: b
   // different error at every pose, and a body resting on it bobs by it. When the normal is within 2.5 degrees of
   // the reference face's own, the face's normal is the contact normal (Jolt does the same for a face contact).
   var n = n0;
-  var fUnit = new Vec3(0., 0., 0.);
+  var fUnit = Vec3(0., 0., 0.);
   let refFace = if refIsA && faceA.n >= 3usize { faceA } else { faceB };
   if refFace.n >= 3usize {
     fUnit = polyNormal(refFace);
@@ -395,7 +395,7 @@ pub fn clipFacesRef(faceA: &Poly, faceB: &Poly, n0: Vec3, margin: f32, refIsA: b
     }
   }
   var clipped = newPoly();
-  var r0 = new Vec3(0., 0., 0.);
+  var r0 = Vec3(0., 0., 0.);
   var aRef = false;
   if refIsA && faceA.n >= 3usize {
     clipped = clipToSides(faceB, faceA, n);
@@ -440,10 +440,10 @@ fn facePoint(q: Vec3, r0: Vec3, n: Vec3, fu: Vec3, refIsA: bool) ContactPoint {
   let c = fu.dot(n);
   if refIsA {
     let depth = if absf(c) > 0.2 { fu.dot(r0 - q) / c } else { n.dot(r0 - q) };
-    return new ContactPoint(q + n * depth, q, depth);
+    return ContactPoint(q + n * depth, q, depth);
   }
   let depth = if absf(c) > 0.2 { fu.dot(q - r0) / c } else { n.dot(q - r0) };
-  new ContactPoint(q, q - n * depth, depth)
+  ContactPoint(q, q - n * depth, depth)
 }
 
 // ---------------------------------------------------------------------------
@@ -467,7 +467,7 @@ fn collideSphereSphere(ra: f32, pa: Vec3, rb: f32, pb: Vec3, margin: f32) Manifo
   let d = pb - pa;
   let l = d.length();
   if l > ra + rb + margin { return emptyManifold(); }
-  let n = if l > 1.0e-7 { d * (1. / l) } else { new Vec3(0., 1., 0.) };
+  let n = if l > 1.0e-7 { d * (1. / l) } else { Vec3(0., 1., 0.) };
   singleContact(n, pa + n * ra, pb - n * rb, ra + rb - l)
 }
 
@@ -513,11 +513,11 @@ pub fn closestSegments(p1: Vec3, q1: Vec3, p2: Vec3, q2: Vec3) SegPoints {
       else if t > 1. { t = 1.; s = clampf((b - c) / a, 0., 1.); }
     }
   }
-  new SegPoints(s, t, p1 + d1 * s, p2 + d2 * t)
+  SegPoints(s, t, p1 + d1 * s, p2 + d2 * t)
 }
 
 fn capsuleEnds(p: &Prim, x: Rigid) Array[Vec3, 2] {
-  [x.apply(new Vec3(0., p.half.y, 0.)), x.apply(new Vec3(0., -p.half.y, 0.))]
+  [x.apply(Vec3(0., p.half.y, 0.)), x.apply(Vec3(0., -p.half.y, 0.))]
 }
 
 fn collideSphereCapsule(s: &Prim, xs: Rigid, c: &Prim, xc: Rigid, margin: f32) Manifold {
@@ -535,7 +535,7 @@ fn collideCapsuleCapsule(a: &Prim, xa: Rigid, b: &Prim, xb: Rigid, margin: f32) 
   let d = sp.c2 - sp.c1;
   let l = d.length();
   if l > ra + rb + margin { return emptyManifold(); }
-  var n = new Vec3(0., 1., 0.);
+  var n = Vec3(0., 1., 0.);
   if l > 1.0e-6 {
     n = d * (1. / l);
   } else {
@@ -565,7 +565,7 @@ fn collideCapsuleCapsule(a: &Prim, xa: Rigid, b: &Prim, xb: Rigid, margin: f32) 
         let tb = if absf(sb1 - sb0) > 1.0e-6 { (sa - sb0) / (sb1 - sb0) } else { 0. };
         let pb = eb[0usize].lerp(eb[1usize], tb);
         let depth = ra + rb - n.dot(pb - pa);
-        m.points[k] = new ContactPoint(pa + n * ra, pb - n * rb, depth);
+        m.points[k] = ContactPoint(pa + n * ra, pb - n * rb, depth);
         k = k + 1usize;
       }
       m.count = 2usize;
@@ -589,7 +589,7 @@ struct SatResult {
 }
 
 fn boxAxes(x: Rigid) Array[Vec3, 3] {
-  [x.rot * new Vec3(1., 0., 0.), x.rot * new Vec3(0., 1., 0.), x.rot * new Vec3(0., 0., 1.)]
+  [x.rot * Vec3(1., 0., 0.), x.rot * Vec3(0., 1., 0.), x.rot * Vec3(0., 0., 1.)]
 }
 
 fn satBoxBox(a: &Prim, xa: Rigid, b: &Prim, xb: Rigid, margin: f32) SatResult {
@@ -614,7 +614,7 @@ fn satBoxBox(a: &Prim, xa: Rigid, b: &Prim, xb: Rigid, margin: f32) SatResult {
     let ra = ha[i];
     let rb = hb[0usize] * absR[i][0usize] + hb[1usize] * absR[i][1usize] + hb[2usize] * absR[i][2usize];
     let s = absf(tw.dot(ax[i])) - ra - rb;
-    if s > margin { return new SatResult(false, ax[0usize], s, false, 0usize, 0usize); }
+    if s > margin { return SatResult(false, ax[0usize], s, false, 0usize, 0usize); }
     if s > bestFace { bestFace = s; faceAxis = ax[i]; faceI = i; faceIsB = false; }
     i = i + 1usize;
   }
@@ -623,7 +623,7 @@ fn satBoxBox(a: &Prim, xa: Rigid, b: &Prim, xb: Rigid, margin: f32) SatResult {
     let ra = ha[0usize] * absR[0usize][i] + ha[1usize] * absR[1usize][i] + ha[2usize] * absR[2usize][i];
     let rb = hb[i];
     let s = absf(tw.dot(bx[i])) - ra - rb;
-    if s > margin { return new SatResult(false, ax[0usize], s, false, 0usize, 0usize); }
+    if s > margin { return SatResult(false, ax[0usize], s, false, 0usize, 0usize); }
     if s > bestFace { bestFace = s; faceAxis = bx[i]; faceI = i; faceIsB = true; }
     i = i + 1usize;
   }
@@ -649,7 +649,7 @@ fn satBoxBox(a: &Prim, xa: Rigid, b: &Prim, xb: Rigid, margin: f32) SatResult {
           k = k + 1usize;
         }
         let s = absf(tw.dot(axis)) - ra - rb;
-        if s > margin { return new SatResult(false, ax[0usize], s, false, 0usize, 0usize); }
+        if s > margin { return SatResult(false, ax[0usize], s, false, 0usize, 0usize); }
         if s > bestEdge { bestEdge = s; edgeAxis = axis; ei = i; ej = j; }
       }
       j = j + 1usize;
@@ -659,10 +659,10 @@ fn satBoxBox(a: &Prim, xa: Rigid, b: &Prim, xb: Rigid, margin: f32) SatResult {
   // Faces win unless an edge axis is clearly less penetrating
   if bestEdge > bestFace + 0.002 + 0.02 * absf(bestFace) {
     let n = if edgeAxis.dot(tw) < 0. { -edgeAxis } else { edgeAxis };
-    return new SatResult(true, n, bestEdge, true, ei, ej);
+    return SatResult(true, n, bestEdge, true, ei, ej);
   }
   let n = if faceAxis.dot(tw) < 0. { -faceAxis } else { faceAxis };
-  new SatResult(true, n, bestFace, false, faceI, if faceIsB { 1usize } else { 0usize })
+  SatResult(true, n, bestFace, false, faceI, if faceIsB { 1usize } else { 0usize })
 }
 
 fn collideBoxBox(a: &Prim, xa: Rigid, b: &Prim, xb: Rigid, margin: f32) Manifold {
@@ -744,12 +744,12 @@ struct AxisGap {
 fn axisGap(r: f32, p0: f32, p1: f32, p2: f32) AxisGap {
   let lo = minf(p0, minf(p1, p2));
   let hi = maxf(p0, maxf(p1, p2));
-  if lo + hi >= 0. { return new AxisGap(lo - r, false); }
-  new AxisGap(-hi - r, true)
+  if lo + hi >= 0. { return AxisGap(lo - r, false); }
+  AxisGap(-hi - r, true)
 }
 
 fn satBoxTriangle(bx: &Prim, xb: Rigid, a: Vec3, b: Vec3, c: Vec3, margin: f32) TriSat {
-  let none = new TriSat(false, new Vec3(0., 1., 0.), 0., 0, 0usize, 0usize);
+  let none = TriSat(false, Vec3(0., 1., 0.), 0., 0, 0usize, 0usize);
   let ax = boxAxes(xb);
   let h = [bx.half.x, bx.half.y, bx.half.z];
   let v0 = a - xb.pos;
@@ -806,10 +806,10 @@ fn satBoxTriangle(bx: &Prim, xb: Rigid, a: Vec3, b: Vec3, c: Vec3, margin: f32) 
   // and faces win unless an edge axis is clearly less penetrating
   let bestFaceAll = maxf(gt.gap, bestFace);
   if bestEdge > bestFaceAll + 0.002 + 0.02 * absf(bestFaceAll) {
-    return new TriSat(true, edgeAxis, bestEdge, 2, ei, ej);
+    return TriSat(true, edgeAxis, bestEdge, 2, ei, ej);
   }
-  if gt.gap >= bestFace - 0.0005 { return new TriSat(true, tAxis, gt.gap, 0, 0usize, 0usize); }
-  new TriSat(true, faceAxis, bestFace, 1, faceI, 0usize)
+  if gt.gap >= bestFace - 0.0005 { return TriSat(true, tAxis, gt.gap, 0, 0usize, 0usize); }
+  TriSat(true, faceAxis, bestFace, 1, faceI, 0usize)
 }
 
 // The box is A and the triangle B (the normal runs from the box to the triangle)

@@ -47,7 +47,7 @@ pub struct CharacterSettings {
 
   // A person-sized capsule: 'height' tall in all, 'radius' round, climbing steps of 0.4 m and slopes to 45 degrees
   pub fn person(radius: f32, height: f32) CharacterSettings {
-    new CharacterSettings(radius, maxf(0.01, height * 0.5 - radius), 0.7853982, 0.4, 0.02, 0.35, 0xffffffffu32, 70., 9.81, 55., 1.)
+    CharacterSettings(radius, maxf(0.01, height * 0.5 - radius), 0.7853982, 0.4, 0.02, 0.35, 0xffffffffu32, 70., 9.81, 55., 1.)
   }
 }
 
@@ -68,31 +68,31 @@ pub struct Character {
   pub landSpeed: f32;            // the speed it hit the ground at, in the update it landed (else 0): a hard landing's measure
 
   pub fn make(s: CharacterSettings, pos: Vec3) Character {
-    new Character(s, Shape.single(Prim.capsule(s.radius, s.halfHeight)), pos, zero3(), false, NoBody, new Vec3(0., 1., 0.), pos,
-      zero3(), false, new Vec3(0., 1., 0.), 0., zero3(), 0.)
+    Character(s, Shape.single(Prim.capsule(s.radius, s.halfHeight)), pos, zero3(), false, NoBody, Vec3(0., 1., 0.), pos,
+      zero3(), false, Vec3(0., 1., 0.), 0., zero3(), 0.)
   }
 
   // The capsule's placement with its feet at 'at'
-  pub fn placement(self: &, at: Vec3) Rigid { Rigid.at(at + new Vec3(0., s.halfHeight + s.radius, 0.)) }
+  pub fn placement(self: &, at: Vec3) Rigid { Rigid.at(at + Vec3(0., s.halfHeight + s.radius, 0.)) }
   // The point at the middle of the capsule
-  pub fn center(self: &) Vec3 { pos + new Vec3(0., s.halfHeight + s.radius, 0.) }
+  pub fn center(self: &) Vec3 { pos + Vec3(0., s.halfHeight + s.radius, 0.) }
   pub fn teleport(self: &mut, p: Vec3) { pos = p; vel = zero3(); grounded = false; groundBody = NoBody; }
 }
 
 // ---------------------------------------------------------------------------
 
-fn upV() Vec3 { new Vec3(0., 1., 0.) }
-fn downV() Vec3 { new Vec3(0., -1., 0.) }
+fn upV() Vec3 { Vec3(0., 1., 0.) }
+fn downV() Vec3 { Vec3(0., -1., 0.) }
 
 // The nearest hit of the capsule moved from 'from' by 'disp'
 fn sweepCapsule(w: &mut World, ch: &Character, from: Vec3, disp: Vec3) WorldCastHit {
-  let f = new QueryFilter(ch.s.mask, NoBody, false);
+  let f = QueryFilter(ch.s.mask, NoBody, false);
   worldShapeCast(w, &ch.shape, ch.placement(from), disp, f)
 }
 
 // Push the capsule out of whatever it overlaps (a platform moving into it, a spawn in a wall)
 fn depenetrate(w: &mut World, ch: &mut Character) {
-  let f = new QueryFilter(ch.s.mask, NoBody, false);
+  let f = QueryFilter(ch.s.mask, NoBody, false);
   var it = 0;
   var cs = List[BodyManifold].empty();
   // surfaces nearer than a quarter of the skin are pushed back to half of it
@@ -149,7 +149,7 @@ fn slideMove(w: &mut World, ch: &Character, start: Vec3, disp: Vec3, push: bool,
     // slide along the surface; a steep one is a wall for any move that would climb it
     var slid = remaining - nS * remaining.dot(nS);
     if nS.y < cosSlope && nS.y > 0.0001 && slid.y > 0. {
-      let hn = new Vec3(nS.x, 0., nS.z);
+      let hn = Vec3(nS.x, 0., nS.z);
       let hl = hn.length();
       if hl > 0.0001 {
         let hnn = hn * (1. / hl);
@@ -206,7 +206,7 @@ fn tryStep(w: &mut World, ch: &Character, start: Vec3, dispH: Vec3, dt: f32, out
   let nS = downHit.normal * -1.;
   if nS.y < cosSlope { return false; }
   let drop = maxf(0., downHit.fraction * dropMax - skin);
-  *out = new Vec3(over.x, ahead.y - drop, over.z);
+  *out = Vec3(over.x, ahead.y - drop, over.z);
   *floorBody = downHit.body;
   true
 }
@@ -234,7 +234,7 @@ pub fn updateCharacter(w: &mut World, ch: &mut Character, wish: Vec3, jump: f32,
   depenetrate(w, ch);
 
   // what it wants to do
-  let wishH = new Vec3(wish.x, 0., wish.z);
+  let wishH = Vec3(wish.x, 0., wish.z);
   var jumped = false;
   var v = zero3();
   if wasGrounded {
@@ -251,7 +251,7 @@ pub fn updateCharacter(w: &mut World, ch: &mut Character, wish: Vec3, jump: f32,
     // sliding down a wall of a slope: keep the speed it has and let gravity add to it
     v = ch.vel + up * (-ch.s.gravity * dt);
   } else {
-    v = new Vec3(wishH.x, maxf(ch.vel.y - ch.s.gravity * dt, -ch.s.maxFallSpeed), wishH.z);
+    v = Vec3(wishH.x, maxf(ch.vel.y - ch.s.gravity * dt, -ch.s.maxFallSpeed), wishH.z);
   }
   let rising = jumped || (!wasGrounded && !wasSteep && v.y > 0.0001);
   let stepStart = ch.pos;
@@ -263,12 +263,12 @@ pub fn updateCharacter(w: &mut World, ch: &mut Character, wish: Vec3, jump: f32,
   let dispH = wishH * dt;
   var stepped = false;
   if wasGrounded && !jumped && dispH.length() > 0.0001 {
-    let gotH = new Vec3(end.x - stepStart.x, 0., end.z - stepStart.z).length();
+    let gotH = Vec3(end.x - stepStart.x, 0., end.z - stepStart.z).length();
     if gotH < dispH.length() - 0.002 {
       var at = zero3();
       if tryStep(w, ch, stepStart, dispH, dt, &mut at, &mut floorBody) {
-        let gotStep = new Vec3(at.x - stepStart.x, 0., at.z - stepStart.z).length();
-        if gotStep > gotH + 0.002 { end = at; stepped = true; vel = new Vec3(wishH.x, 0., wishH.z); }
+        let gotStep = Vec3(at.x - stepStart.x, 0., at.z - stepStart.z).length();
+        if gotStep > gotH + 0.002 { end = at; stepped = true; vel = Vec3(wishH.x, 0., wishH.z); }
       }
     }
   }
@@ -282,7 +282,7 @@ pub fn updateCharacter(w: &mut World, ch: &mut Character, wish: Vec3, jump: f32,
       let nS = hit.normal * -1.;
       if nS.y >= cosSlope {
         ch.pos = ch.pos - up * maxf(0., hit.fraction * ch.s.stickDistance - ch.s.skin);
-        vel = new Vec3(vel.x, 0., vel.z);
+        vel = Vec3(vel.x, 0., vel.z);
         snapped = true;
       }
     }
@@ -292,12 +292,12 @@ pub fn updateCharacter(w: &mut World, ch: &mut Character, wish: Vec3, jump: f32,
     // (An edge ahead of the foot, on the climb to a step, must not do this: its normal leans back.)
     let leaving = !hit.hit || (hit.normal * -1.).dot(wishH) > 0.;
     if !snapped && leaving {
-      let rayHit = worldRayCast(w, ch.pos + up * 0.05, downV(), ch.s.stickDistance + 0.05, new QueryFilter(ch.s.mask, NoBody, false));
+      let rayHit = worldRayCast(w, ch.pos + up * 0.05, downV(), ch.s.stickDistance + 0.05, QueryFilter(ch.s.mask, NoBody, false));
       if rayHit.hit && rayHit.normal.y >= cosSlope {
         let drop = rayHit.t - 0.05 - ch.s.skin;
         if drop > 0.001 {
           ch.pos = slideMove(w, ch, ch.pos, downV() * drop, false, dt);
-          vel = new Vec3(vel.x, 0., vel.z);
+          vel = Vec3(vel.x, 0., vel.z);
           // the slide off the edge may leave it short of the floor: finish the drop
           let again = sweepCapsule(w, ch, ch.pos, downV() * ch.s.stickDistance);
           if again.hit && again.normal.y <= -cosSlope {

@@ -1,6 +1,6 @@
 `FnCallNode` is the compiler's busiest node. One shape — `objfn`, `methfld`,
 `args` — serves function calls, method calls, operator applications, field
-access, array indexing, constructions (`new Point(1, 2)`), variants' literals,
+access, array indexing, constructions (`Point(1, 2)`), variants' literals,
 number conversions, generic instantiation and macro calls. Type check is where
 they separate.
 
@@ -38,7 +38,7 @@ flags carry the rest of what the source said:
 | `FlagLvalOp` | the operator needs an lval receiver (`++`, `--`, `<-`, op-assign) |
 | `FlagOpAssgn` | an operator-assignment such as `+=` |
 | `FlagOperator` | **the source wrote an operator, not a named member access** |
-| `FlagNew` | a construction, `new Point(1, 2)`; kept on what type check lowers it to |
+| `FlagNew` | a construction, `Point(1, 2)` or `new a[Node](1)`: set by the parser on `new`, by name resolution on a call of a type (`fnCallConstructNameRes`); kept on what type check lowers it to |
 | `FlagTryNew` | beside `FlagNew`, a construction written `trynew`; its `methfld` holds the bound `Option` from name resolution to type check |
 | `FlagAllocValue` | a struct's bracketed literal that a refused `+` allocation takes as its value, which type check refuses there with its own code (`ErrorPlusAlloc`) rather than `ErrorStructBracket` |
 
@@ -65,11 +65,13 @@ Built from: a call `f(a)`, an index `a[i]`, a member access `a.b`, every binary
 and unary operator, a generic instantiation `Box[i64]`, a managed reference
 type `Rc[mut, Node]`, `?T` for `Option[T]`, a variant's literal `Some(x)`, `None` or `None[i32]` (a
 struct's in brackets is refused), a number's conversion `u64.from(count)`, a member access
-like any other, and a construction, `new Point(1, 2)` or the allocation
-`new Rc[mut, Node](1)`: `parseNew`, a term, takes `new`, the type (a name,
+like any other, and a construction in a dynamic region, `new a[Node](1)`:
+`parseNew`, a term, takes `new`, the region and the type made in it (a name,
 `.` paths and bracketed type arguments) and the parenthesized arguments, left
 off when there are none, into one node flagged `FlagNew`; suffixes after the
-parentheses apply to the value. `trynew` builds the same node, flagged
+parentheses apply to the value. A construction of a type, `Point(1, 2)` or the
+allocation `Rc[mut, Node](1)`, is no node of its own: it is the call `f(a)`
+that it looks like, and name resolution marks it (below). `trynew` builds the same node, flagged
 `FlagTryNew` as well, inside an `Option` node tagged `QuesTag`, as `?T`
 parses, which name resolution takes apart (`allocateQuesNameRes`): the
 construction replaces it, holding the bound `Option` in its `methfld`.
@@ -187,7 +189,8 @@ base, is refused by stage 2's type receiver.
 `fnCallTypeCheck` in three stages. This is the map worth carrying.
 
 **A construction (`FlagNew`) is handed whole to `typeLitNewCheck`** before any
-stage ([literals](literals.md), "Construction"), which selects the init its
+stage (a call of a type that only substitution made one, `T(1)`, is marked first,
+`fnCallIsTypeCall`) ([literals](literals.md), "Construction"), which selects the init its
 arguments call for and lowers it to the struct's literal or to a call of a
 declared init (below, "Construction"); a managed reference type there makes
 it an allocation, the `AllocateTag` node holding the value's construction or
@@ -262,7 +265,7 @@ reject an overload name everywhere else. Bail if `objfn` is already marked
 
 - **A type**, with `FlagIndex` → retag `TypeLitTag` and hand to
   `typeLitTypeCheck`, which builds a variant's literal, refuses a struct's
-  (`ErrorStructBracket`, naming `new Point(...)`; at a `+` allocation's value,
+  (`ErrorStructBracket`, naming `Point(...)`; at a `+` allocation's value,
   `ErrorPlusAlloc` instead), and refuses a number type, `u64[count]`, with
   `ErrorNbrBracket` naming `u64.from(...)`: its conversion is the method.
   Refused there, at type check, so a type reached through an alias or a type
@@ -271,8 +274,11 @@ reject an overload name everywhere else. Bail if `objfn` is already marked
   the base is not a namespace until later: an alias, a number type's member
   other than `from`, a generic instance, a generic parameter. `ErrorUnkName`,
   naming what a path may pass through.
-- **A type**, with neither, called `Point(1, 2)` → `ErrorInitCall`: a type is
-  not called, its value is constructed with `new`.
+- **A type**, with neither, called `Point(1, 2)` → a construction: the node is
+  marked (`fnCallMarkConstruction`) and handed to `typeLitNewCheck` with its
+  arguments checked. Name resolution marks the calls whose callee is a type
+  then, and stage 0 the ones only a generic's substitution made one; this one
+  is a callee that is a type only once checked (an alias).
 - **A bare method or field name** (`FlagMethFld`, not `FlagQualified`) →
   rewrite to `self.method`, synthesizing a resolved `self` from parameter 0.
   Outside a method there is no `self`, so it is `ErrorUnkName`, "there is no
@@ -535,7 +541,7 @@ names a variant, or a variant with its type arguments, is the variant's literal:
 `fnCallVariantCall` marks the node `FlagIndex | FlagCtorParen` and the call goes on
 as the literal always did, a generic variant inferring from its values and from
 where it goes (`genericSubstitute`). An empty variant's parentheses are
-`ErrorVariantEmptyCall`; a struct called is still `ErrorInitCall`. A name that is
+`ErrorVariantEmptyCall`; a struct called is its construction, not a variant's. A name that is
 an empty variant is made the same literal by name resolution
 ([name-resolution](../phases/name-resolution.md), "What it retags"). The literal
 written in square brackets, `Some[5]`, `None[]`, `Some[i32][5]`, lacks
@@ -813,7 +819,7 @@ that made it bad being the one; an ambiguity is still reported.
 
 `contentsLower` (`ir/exp/contents.c`) takes apart a `<-` whose argument is a
 tuple of entries or an `EntryNode`, or whose receiver is a construction,
-`new` or `trynew` (`contentsIsAppend`). A construction's type is checked
+`Point(1, 2)`, `new a[Node](1)` or `trynew` (`contentsIsAppend`). A construction's type is checked
 first, unless it is a generic struct named bare, whose arguments infer it
 (`contentsBuiltType`), since an array, an allocation of one, or anything else
 lowers differently. `EntryNode` is one struct for the entry forms, the
@@ -863,11 +869,11 @@ value. Its `first` is an expression resolved like any other, which a
   variables agree with the ones `eachLower` gives. An array's contents refuse
   an `each` (`ErrorArrayContents`), whose count is not known.
 - **After a construction**, the construction becomes a variable the contents
-  are appended to, and the block's value: `{ var built = new T(...); built <-
+  are appended to, and the block's value: `{ var built = T(...); built <-
   contents; built }`, so the construction fills the variable in place. An
   allocation of a collection is this form too, the variable its reference and
   the contents appended through it.
-- **After an array's construction**, `new Array[T, n] <- ...`, there is no
+- **After an array's construction**, `Array[T, n]() <- ...`, there is no
   `<-` to call, so the contents become an `ArrayLitTag` node typed as the
   array (`contentsLowerArray`). Every count is a constant, `fill` given what
   is left, and they add to the size exactly (`ErrorArrayContents`; a pair is
@@ -893,7 +899,7 @@ value. Its `first` is an expression resolved like any other, which a
   argument reaches its instance without its shape (`arrayTypeUnshaped`, at
   the clone's substitution), since one instance serves both spellings of a
   type: through a parameter the entries are rows.
-- **After an allocation of an array**, `new Rc[mut, Array[T, n]] <- ...`, the
+- **After an allocation of an array**, `Rc[mut, Array[T, n]]() <- ...`, the
   contents become the same literal, typed as the value type, and the
   allocation's value (`contentsLowerAlloc`, `typeLitNewFilled`), flagged
   `FlagAllocFill`: generation fills it in place after the region's and the

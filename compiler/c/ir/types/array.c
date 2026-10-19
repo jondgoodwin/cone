@@ -70,7 +70,7 @@ static void arrayRefuseFillSpelling(INode *node) {
 // is constructed with its contents, as any collection's are
 static void arrayRefuseFillLiteral(INode *node) {
     errorMsgNode(node, ErrorFillLiteral,
-        "'[n; x]' is no longer written: an array of n values is constructed with its contents, 'new Array[T, n] <- fill x' (or '<- n of x').");
+        "'[n; x]' is no longer written: an array of n values is constructed with its contents, 'Array[T, n]() <- fill x' (or '<- n of x').");
 }
 
 // Clone array

@@ -3,10 +3,10 @@
 // call the C library and tally what they were asked: allocations, resizes,
 // releases of a block (a null one is nothing and is not counted), and the bytes
 // handed out and not yet given back. A collection is made in it by passing it
-// as the construction's last argument, 'new List[i64](region)'. Every expected
+// as the construction's last argument, 'List[i64](region)'. Every expected
 // count is worked out by hand from the growth rules:
 // - a List's block is 4 values, then doubles (4, 8, 16, 32, 64, 128 for a hundred),
-//   its first block coming from a resize of nothing; 'new List[i64](50, r)'
+//   its first block coming from a resize of nothing; 'List[i64](50, r)'
 //   allocates 50 slots at once and doubles to 100 at the 51st value;
 // - a Deque's growth allocates a new block and releases the old (6 blocks of a
 //   hundred values, 5 released on the way);
@@ -19,7 +19,7 @@
 //   index (5 bytes a bucket and 8: 648) and the dense entries of 24 bytes, room
 //   for 7/8 of the buckets (112 * 24 = 2688), 3336 in all, the dense one resized
 //   at each growth and the index allocated;
-// - a String is a List[u8] and its NUL: 'new String(100, r)' allocates 101,
+// - a String is a List[u8] and its NUL: 'String(100, r)' allocates 101,
 //   a 101st byte doubles it to 202;
 // - a block the region cannot hand to a Uni, because the owner frees it with the
 //   C library, is moved to one of the heap's and the region's given back.
@@ -63,7 +63,7 @@ fn countRelease(r: *MemRegion, block: *u8, bytes: usize) {
 }
 
 fn newCounting() Counting {
-  new Counting(new MemRegion(&countAlloc, &countResize, &countRelease), 0usize, 0usize, 0usize, 0isize)
+  Counting(MemRegion(&countAlloc, &countResize, &countRelease), 0usize, 0usize, 0usize, 0isize)
 }
 
 fn regionOf(c: &mut Counting) *MemRegion { (c as *Counting) as *MemRegion }
@@ -85,7 +85,7 @@ fn expectRef(got: Option[&i64], want: i64, label: &Array[u8]) {
 fn listGrows() {
   var c = newCounting();
   {
-    var l = new List[i64](regionOf(&mut c));
+    var l = List[i64](regionOf(&mut c));
     tally(&c, 0, 0, 0, 0, "an empty list in a region asks it for nothing");
     var i = 0i64;
     while i < 100i64 { l.push(i); i = i + 1i64; }
@@ -100,7 +100,7 @@ fn listGrows() {
 fn listCapacity() {
   var c = newCounting();
   {
-    var l = new List[i64](50usize, regionOf(&mut c));
+    var l = List[i64](50usize, regionOf(&mut c));
     tally(&c, 1, 0, 0, 400, "a starting size allocates it at once");
     var i = 0i64;
     while i < 50i64 { l.push(i); i = i + 1i64; }
@@ -114,7 +114,7 @@ fn listCapacity() {
 fn dequeGrows() {
   var c = newCounting();
   {
-    var d = new Deque[i64](regionOf(&mut c));
+    var d = Deque[i64](regionOf(&mut c));
     var i = 0i64;
     while i < 100i64 { d.push(i); i = i + 1i64; }
     tally(&c, 6, 0, 5, 1024, "a deque allocates each larger block and releases the one before");
@@ -123,7 +123,7 @@ fn dequeGrows() {
   }
   tally(&c, 6, 0, 6, 0, "its death gave the last back");
   {
-    let d = new Deque[i64](20usize, regionOf(&mut c));
+    let d = Deque[i64](20usize, regionOf(&mut c));
     tally(&c, 7, 0, 6, 160, "a deque with a starting size allocates it");
   }
   tally(&c, 7, 0, 7, 0, "and gives it back");
@@ -132,7 +132,7 @@ fn dequeGrows() {
 fn dictGrows() {
   var c = newCounting();
   {
-    var d = new Dict[i64, i64](regionOf(&mut c));
+    var d = Dict[i64, i64](regionOf(&mut c));
     tally(&c, 0, 0, 0, 0, "an empty dict in a region asks it for nothing");
     var i = 0i64;
     while i < 100i64 { d.insert(i, i * 2i64); i = i + 1i64; }
@@ -147,7 +147,7 @@ fn dictGrows() {
 fn dictCapacity() {
   var c = newCounting();
   {
-    var d = new Dict[i64, i64](100usize, regionOf(&mut c));
+    var d = Dict[i64, i64](100usize, regionOf(&mut c));
     tally(&c, 1, 0, 0, 2184, "room for a hundred is one table of 128 buckets");
     expect(d.capacity() >= 100usize, "with room for a hundred entries");
     var i = 0i64;
@@ -160,7 +160,7 @@ fn dictCapacity() {
 fn orderedGrows() {
   var c = newCounting();
   {
-    var d = new OrderedDict[i64, i64](regionOf(&mut c));
+    var d = OrderedDict[i64, i64](regionOf(&mut c));
     var i = 0i64;
     while i < 100i64 { d.insert(i, i * 2i64); i = i + 1i64; }
     tally(&c, 5, 5, 4, 3336, "five indexes allocated, four released, the dense block resized five times");
@@ -173,7 +173,7 @@ fn orderedGrows() {
 fn orderedCapacity() {
   var c = newCounting();
   {
-    var d = new OrderedDict[i64, i64](100usize, regionOf(&mut c));
+    var d = OrderedDict[i64, i64](100usize, regionOf(&mut c));
     tally(&c, 1, 1, 0, 3336, "room for a hundred is an index of 128 buckets and its dense entries");
     var i = 0i64;
     while i < 100i64 { d.insert(i, i); i = i + 1i64; }
@@ -185,7 +185,7 @@ fn orderedCapacity() {
 fn setGrows() {
   var c = newCounting();
   {
-    var s = new Set[i64](regionOf(&mut c));
+    var s = Set[i64](regionOf(&mut c));
     var i = 0i64;
     while i < 100i64 { s.insert(i); i = i + 1i64; }
     tally(&c, 5, 0, 4, 1160, "a set grows its dictionary's table through the region");
@@ -193,7 +193,7 @@ fn setGrows() {
   }
   tally(&c, 5, 0, 5, 0, "its death gave the table back");
   {
-    var s = new Set[i64](100usize, regionOf(&mut c));
+    var s = Set[i64](100usize, regionOf(&mut c));
     tally(&c, 6, 0, 5, 1160, "a set with a starting size allocates its table");
     var i = 0i64;
     while i < 100i64 { s.insert(i); i = i + 1i64; }
@@ -205,7 +205,7 @@ fn setGrows() {
 fn stringGrows() {
   var c = newCounting();
   {
-    var s = new String(100usize, regionOf(&mut c));
+    var s = String(100usize, regionOf(&mut c));
     tally(&c, 1, 0, 0, 101, "a string with room for a hundred bytes holds a hundred and the NUL");
     var i = 0usize;
     while i < 100usize { s.appendByte('a'); i = i + 1usize; }
@@ -222,7 +222,7 @@ fn stringGrows() {
 fn stringPads() {
   var c = newCounting();
   {
-    var s = new String(regionOf(&mut c));
+    var s = String(regionOf(&mut c));
     s.append("7");
     tally(&c, 0, 1, 0, 4, "a first byte makes a block of four");
     s.padStart(10usize, '0');
@@ -237,7 +237,7 @@ fn stringPads() {
 fn freezes() {
   var c = newCounting();
   {
-    var l = new List[i64](regionOf(&mut c));
+    var l = List[i64](regionOf(&mut c));
     l.push(1i64);
     l.push(2i64);
     l.push(3i64);
@@ -248,7 +248,7 @@ fn freezes() {
     expectInt(owner[2usize], 3, "and the last is 3");
   }
   {
-    var s = new String(regionOf(&mut c));
+    var s = String(regionOf(&mut c));
     s.append("abc");
     let owner = s.freeze();
     tally(&c, 0, 2, 2, 0, "a frozen string gave its block back too");

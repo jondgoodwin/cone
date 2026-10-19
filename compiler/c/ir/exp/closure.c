@@ -11,7 +11,7 @@
  *   state entry, a field holding a borrow for each variable the body names, and
  *   '()' holding the body. A name inside the body that names one of them is
  *   rewritten to the field's access when the body is checked (closureUse). The
- *   literal itself becomes 'new Hidden(state values, &variables)'.
+ *   literal itself becomes 'Hidden(state values, &variables)'.
  *
  * Whether a borrow is '&' or '&mut', and whether '()' takes 'self: &' or 'self
  * &mut', is what the body does with it. It is found by trying: the body is

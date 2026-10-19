@@ -168,13 +168,13 @@ pub struct World {
   pub pumping: bool;
 
   pub fn make() World {
-    var w = new World(0., List[Entity].empty(), List[String].empty(), List[ItemDef].empty(),
+    var w = World(0., List[Entity].empty(), List[String].empty(), List[ItemDef].empty(),
       List[Inventory].empty(), List[Slot].empty(), List[Attachment].empty(), List[Door].empty(),
       List[Interactable].empty(), List[Viewer].empty(), List[Prop].empty(), List[Grab].empty(),
       List[TriggerVolume].empty(), List[Occupant].empty(), List[Rule].empty(), List[Cond].empty(),
       List[Action].empty(), List[TimerRec].empty(), List[Event].empty(), List[Event].empty(), false);
     // id 0 is "none"
-    w.ents.push(new Entity(false, 0u32, Transform3.identity(), false, 0u32, 0u32));
+    w.ents.push(Entity(false, 0u32, Transform3.identity(), false, 0u32, 0u32));
     w
   }
 
@@ -183,17 +183,17 @@ pub struct World {
   // A new thing of a class, at the origin
   pub fn create(self: &mut, class: u32) u32 {
     let id = u32.from(ents.len());
-    ents.push(new Entity(true, class, Transform3.identity(), false, 0u32, 0u32));
+    ents.push(Entity(true, class, Transform3.identity(), false, 0u32, 0u32));
     id
   }
 
   // A thing that already has an id elsewhere (a part the browser's registry numbered)
   pub fn adopt(self: &mut, id: u32, class: u32) u32 {
     while ents.len() <= usize.from(id) {
-      ents.push(new Entity(false, 0u32, Transform3.identity(), false, 0u32, 0u32));
+      ents.push(Entity(false, 0u32, Transform3.identity(), false, 0u32, 0u32));
     }
     let old = *ents[usize.from(id)];
-    ents.set(usize.from(id), new Entity(true, class, old.xf, old.tracked, old.itemKind, old.itemCount));
+    ents.set(usize.from(id), Entity(true, class, old.xf, old.tracked, old.itemKind, old.itemCount));
     id
   }
 
@@ -202,7 +202,7 @@ pub struct World {
   pub fn decreate(self: &mut, id: u32) {
     if self.exists(id) {
       let e = *ents[usize.from(id)];
-      ents.set(usize.from(id), new Entity(false, e.class, e.xf, false, e.itemKind, e.itemCount));
+      ents.set(usize.from(id), Entity(false, e.class, e.xf, false, e.itemKind, e.itemCount));
     }
   }
 
@@ -219,7 +219,7 @@ pub struct World {
   pub fn setPosition(self: &mut, id: u32, p: Vec3) {
     if self.exists(id) {
       var e = *ents[usize.from(id)];
-      e.xf = new Transform3(p, e.xf.rotation, e.xf.scale);
+      e.xf = Transform3(p, e.xf.rotation, e.xf.scale);
       ents.set(usize.from(id), e);
     }
   }
@@ -231,7 +231,7 @@ pub struct World {
   pub fn positionOf(self: &, id: u32) Vec3 { self.transformOf(id).translation }
 
   // The way a thing faces: its loc +z turned into the world
-  pub fn forwardOf(self: &, id: u32) Vec3 { self.transformOf(id).rotation * new Vec3(0., 0., 1.) }
+  pub fn forwardOf(self: &, id: u32) Vec3 { self.transformOf(id).rotation * Vec3(0., 0., 1.) }
 
   // Whether trigger volumes watch it
   pub fn setTracked(self: &mut, id: u32, tracked: bool) {
@@ -264,11 +264,11 @@ pub struct World {
 
   // Queue an event (the world's own and the program's: a click, a signal)
   pub fn post(self: &mut, kind: u32, subject: u32, other: u32, key: u32, value: Value, old: Value) {
-    queue.push(new Event(kind, subject, other, key, value, old, now));
+    queue.push(Event(kind, subject, other, key, value, old, now));
   }
 
   fn emit(self: &mut, kind: u32, subject: u32, other: u32, key: u32, value: Value) {
-    queue.push(new Event(kind, subject, other, key, value, Value.none(), now));
+    queue.push(Event(kind, subject, other, key, value, Value.none(), now));
   }
 
   // The events that happened since the last call, oldest first
@@ -294,7 +294,7 @@ pub struct World {
       head = head + 1usize;
       guard = guard + 1usize;
       if guard > 2048usize {
-        log.push(new Event(EV_OVERFLOW, 0u32, 0u32, 0u32, Value.none(), Value.none(), now));
+        log.push(Event(EV_OVERFLOW, 0u32, 0u32, 0u32, Value.none(), Value.none(), now));
         break;
       }
       log.push(ev);
@@ -334,19 +334,19 @@ pub struct World {
   fn setPropQuiet(self: &mut, e: u32, key: u32, v: Value) {
     let i = self.propIndex(e, key);
     if i == NONE_INDEX {
-      props.push(new Prop(e, key, v));
+      props.push(Prop(e, key, v));
       self.emit2(EV_PROP_CHANGED, e, 0u32, key, v, Value.none());
     } else {
       let old = (*props[i]).value;
       if !old.same(v) {
-        props.set(i, new Prop(e, key, v));
+        props.set(i, Prop(e, key, v));
         self.emit2(EV_PROP_CHANGED, e, 0u32, key, v, old);
       }
     }
   }
 
   fn emit2(self: &mut, kind: u32, subject: u32, other: u32, key: u32, value: Value, old: Value) {
-    queue.push(new Event(kind, subject, other, key, value, old, now));
+    queue.push(Event(kind, subject, other, key, value, old, now));
   }
 
   // ----------------------------------------------------------------- doors
@@ -490,18 +490,18 @@ pub struct World {
   // Define an item kind; the kind number (from 1) is what everything else names
   pub fn defineItem(self: &mut, name: &str, maxStack: u32, weight: f32, unique: bool) u32 {
     let s = self.sym(name);
-    itemDefs.push(new ItemDef(s, maxStack, weight, unique));
+    itemDefs.push(ItemDef(s, maxStack, weight, unique));
     u32.from(itemDefs.len())
   }
 
   fn defOf(self: &, kind: u32) ItemDef {
-    if kind == 0u32 || usize.from(kind) > itemDefs.len() { return new ItemDef(0u32, 1u32, 0., true); }
+    if kind == 0u32 || usize.from(kind) > itemDefs.len() { return ItemDef(0u32, 1u32, 0., true); }
     *itemDefs[usize.from(kind) - 1usize]
   }
 
   // Give a thing an inventory of some slots and a weight limit (0 for none)
   pub fn addInventory(self: &mut, owner: u32, maxSlots: u32, maxWeight: f32) {
-    invs.push(new Inventory(owner, maxSlots, maxWeight));
+    invs.push(Inventory(owner, maxSlots, maxWeight));
   }
 
   fn invIndex(self: &, owner: u32) usize {
@@ -613,12 +613,12 @@ pub struct World {
     while i < slots.len() {
       let s = *slots[i];
       if s.count == 0u32 {
-        slots.set(i, new Slot(owner, kind, count, entity));
+        slots.set(i, Slot(owner, kind, count, entity));
         return;
       }
       i = i + 1usize;
     }
-    slots.push(new Slot(owner, kind, count, entity));
+    slots.push(Slot(owner, kind, count, entity));
   }
 
   // Hold a unique thing (a bag) in a slot. False when there is no room.
@@ -686,7 +686,7 @@ pub struct World {
     var en = *ents[usize.from(e)];
     en.itemKind = kind;
     en.itemCount = count;
-    en.xf = new Transform3(at, Quat.identity(), new Vec3(1., 1., 1.));
+    en.xf = Transform3(at, Quat.identity(), Vec3(1., 1., 1.));
     ents.set(usize.from(e), en);
     e
   }
@@ -794,7 +794,7 @@ pub struct World {
   // Fix a thing to a bone of another (a bag to a hand) with an offset from the bone
   pub fn attach(self: &mut, child: u32, parent: u32, bone: u32, offset: Transform3) {
     self.detachQuiet(child);
-    atts.push(new Attachment(child, parent, ATT_SOCKET, bone, offset, true));
+    atts.push(Attachment(child, parent, ATT_SOCKET, bone, offset, true));
     self.emit(EV_ATTACHED, child, parent, bone, Value.none());
     self.pump();
   }
@@ -805,7 +805,7 @@ pub struct World {
     if !self.exists(e) { return false; }
     self.invRemoveEntityQuiet(agent, e);
     self.detachQuiet(e);
-    atts.push(new Attachment(e, agent, ATT_SOCKET, bone, offset, true));
+    atts.push(Attachment(e, agent, ATT_SOCKET, bone, offset, true));
     self.emit(EV_ATTACHED, e, agent, bone, Value.none());
     self.pump();
     true
@@ -824,7 +824,7 @@ pub struct World {
 
   fn attachContainerQuiet(self: &mut, child: u32, parent: u32) {
     self.detachQuiet(child);
-    atts.push(new Attachment(child, parent, ATT_CONTAINER, 0u32, Transform3.identity(), true));
+    atts.push(Attachment(child, parent, ATT_CONTAINER, 0u32, Transform3.identity(), true));
     self.emit(EV_ATTACHED, child, parent, 0u32, Value.none());
   }
 
@@ -877,7 +877,7 @@ pub struct World {
   // ---------------------------------------------------------- interactables
 
   pub fn addInteractable(self: &mut, e: u32, range: f32, viewCos: f32, needFront: bool, front: Vec3, verbs: u32) {
-    inter.push(new Interactable(e, range, viewCos, needFront, front, verbs, true));
+    inter.push(Interactable(e, range, viewCos, needFront, front, verbs, true));
   }
 
   fn interIndex(self: &, e: u32) usize {
@@ -921,7 +921,7 @@ pub struct World {
       if (*viewers[i]).agent == agent { return i; }
       i = i + 1usize;
     }
-    viewers.push(new Viewer(agent, 0u32, 0u32));
+    viewers.push(Viewer(agent, 0u32, 0u32));
     viewers.len() - 1usize
   }
 
@@ -950,13 +950,13 @@ pub struct World {
     while i < inter.len() {
       let it = *inter[i];
       if it.enabled && (it.verbs & VERB_USE) != 0u32 && self.exists(it.entity) && self.reach(agent, it) == 0u32 {
-        cands.push(new Candidate(it.entity, self.positionOf(it.entity), 0.));
+        cands.push(Candidate(it.entity, self.positionOf(it.entity), 0.));
       }
       i = i + 1usize;
     }
     let vi = self.viewerIndex(agent);
     var v = *viewers[vi];
-    let p = new TargetParams(50., pi, 4., 1., 0.75, true);
+    let p = TargetParams(50., pi, 4., 1., 0.75, true);
     let pick = best(eye, forward, &cands, &p, v.focus, cast);
     if pick != v.focus {
       if v.focus != 0u32 { self.emit(EV_UNFOCUS, v.focus, agent, 0u32, Value.none()); }
@@ -1037,7 +1037,7 @@ pub struct World {
     if why != 0u32 { self.deny(e, holder, why); self.pump(); return false; }
     self.grabEndQuiet(holder, false);
     let origin = self.positionOf(e);
-    grabs.push(new Grab(holder, e, hand - origin, origin, new Vec3(0., 0., 0.), frequency, breakDistance, true));
+    grabs.push(Grab(holder, e, hand - origin, origin, Vec3(0., 0., 0.), frequency, breakDistance, true));
     self.emit(EV_GRAB, e, holder, 0u32, Value.none());
     self.pump();
     true
@@ -1083,11 +1083,11 @@ pub struct World {
   // --------------------------------------------------------------- triggers
 
   pub fn addSphereTrigger(self: &mut, e: u32, radius: f32, mask: u32) {
-    volumes.push(new TriggerVolume(e, SHAPE_SPHERE, radius, new Vec3(0., 0., 0.), mask, true));
+    volumes.push(TriggerVolume(e, SHAPE_SPHERE, radius, Vec3(0., 0., 0.), mask, true));
   }
 
   pub fn addBoxTrigger(self: &mut, e: u32, half: Vec3, mask: u32) {
-    volumes.push(new TriggerVolume(e, SHAPE_BOX, 0., half, mask, true));
+    volumes.push(TriggerVolume(e, SHAPE_BOX, 0., half, mask, true));
   }
 
   pub fn setTrigger(self: &mut, e: u32, enabled: bool) {
@@ -1147,7 +1147,7 @@ pub struct World {
           m = m + 1usize;
         }
         if !was {
-          fresh.push(new Occupant(tid, who, now));
+          fresh.push(Occupant(tid, who, now));
           self.emit(EV_ENTER, tid, who, 0u32, Value.none());
         }
         n = n + 1usize;
@@ -1177,7 +1177,7 @@ pub struct World {
 
   // Ring 'name' for 'owner' after 'delay' seconds, and every 'repeat' after if nonzero
   pub fn startTimer(self: &mut, owner: u32, name: u32, delay: f32, repeat: f32) {
-    timers.push(new TimerRec(owner, name, now + delay, repeat, true));
+    timers.push(TimerRec(owner, name, now + delay, repeat, true));
   }
 
   pub fn cancelTimer(self: &mut, owner: u32, name: u32) {
@@ -1203,7 +1203,7 @@ pub struct World {
       }
       if pick == NONE_INDEX { break; }
       var t = *timers[pick];
-      queue.push(new Event(EV_TIMER, t.owner, 0u32, t.name, Value.none(), Value.none(), t.at));
+      queue.push(Event(EV_TIMER, t.owner, 0u32, t.name, Value.none(), Value.none(), t.at));
       if t.repeat > 0.0001 { t.at = t.at + t.repeat; } else { t.alive = false; }
       timers.set(pick, t);
     }
@@ -1214,16 +1214,16 @@ pub struct World {
   // Add a rule "on <event pattern>": 0 in subject, other or key matches any.
   // It starts enabled and has no conditions or actions. Returns its id (from 1).
   pub fn addRule(self: &mut, onKind: u32, subject: u32, other: u32, key: u32, byMask: u32, once: bool) u32 {
-    rules.push(new Rule(onKind, subject, other, key, byMask, true, once, false, 0u32));
+    rules.push(Rule(onKind, subject, other, key, byMask, true, once, false, 0u32));
     u32.from(rules.len())
   }
 
   pub fn ruleIf(self: &mut, rule: u32, kind: u32, entity: u32, key: u32, op: u32, num: f32) {
-    conds.push(new Cond(rule, kind, entity, key, op, num));
+    conds.push(Cond(rule, kind, entity, key, op, num));
   }
 
   pub fn ruleDo(self: &mut, rule: u32, kind: u32, target: u32, key: u32, value: Value, num: f32, num2: f32) {
-    acts.push(new Action(rule, kind, target, key, value, num, num2));
+    acts.push(Action(rule, kind, target, key, value, num, num2));
   }
 
   pub fn setRuleEnabled(self: &mut, rule: u32, enabled: bool) {

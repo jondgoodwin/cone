@@ -1836,7 +1836,7 @@ void gcStopgapCheckDcl(INode *node, INode *type, const char *where) {
 // A 'parallel each' body reads an actor-local reference but allocates none:
 // its passes run at the same time and hold no writable path to the actor's
 // region (the actor's state is a shared borrow there), and nothing may allocate
-// in it while they run. An allocation in the region, 'new ActorGc[...]', and a
+// in it while they run. An allocation in the region, 'ActorGc[...]()', and a
 // call of the actor's allocator, which 'new self[T](...)' is, are refused.
 static ParSet gcPieceReported;
 

@@ -1,11 +1,12 @@
 // Constructions the type check refuses, and inits declared in a shape a
 // construction cannot run.
 //
-// A struct's value is constructed with 'new' and its init's arguments in
-// parentheses; the bracket form, and the type called like a function, are
-// both refused, naming what to write. 'new' builds a struct's value only: a
-// number converts with its 'from', an enum's variant keeps its brackets, and
-// a finished value is not constructed again. An init must take the arguments: one
+// A struct's value is constructed by its name and its init's arguments in
+// parentheses; the bracket form is refused, naming what to write. A
+// construction is of a struct's value only: a number converts with its 'from',
+// an enum is not constructed, and a finished value is not constructed again
+// (a variant's construction is the enum's, enum_typecheck_construction; 'new'
+// before a type is struct_nameres_new's). An init must take the arguments: one
 // the struct declares, preferred to the implicit field-wise one, and only one
 // of those it declares. Inside an init, filling self by position with the init
 // itself is refused. An init fills its value in place,
@@ -26,8 +27,8 @@ struct Vec2 {
   pub x: i32;
   pub y: i32;
 
-  pub fn ofLength overload init(self: &new, len: i32) { *self = new Vec2(len, 0); }
-  pub fn diagonal overload init(self: &new, d: i32, flip: bool, scale: i32) { *self = new Vec2(d, d); }
+  pub fn ofLength overload init(self: &new, len: i32) { *self = Vec2(len, 0); }
+  pub fn diagonal overload init(self: &new, d: i32, flip: bool, scale: i32) { *self = Vec2(d, d); }
 }
 
 // Two declared inits that take the same arguments: a declared init is
@@ -36,8 +37,8 @@ struct Rival {
   pub a: i32;
   pub b: i32;
 
-  pub fn narrow overload init(self: &new, a: i32, b: i32) { *self = new Rival(a: b, b: a); }
-  pub fn wide overload init(self: &new, a: i64, b: i64) { *self = new Rival(a: 0, b: 0); }
+  pub fn narrow overload init(self: &new, a: i32, b: i32) { *self = Rival(a: b, b: a); }
+  pub fn wide overload init(self: &new, a: i64, b: i64) { *self = Rival(a: 0, b: 0); }
 }
 
 // An init filling self by position, where the declared init is preferred:
@@ -45,24 +46,24 @@ struct Rival {
 struct Seeded {
   pub seed: i32;
 
-  pub fn init(self: &new, n: i32) { *self = new Seeded(n); }           //~ ErrorInitRecurse:45 "'new Seeded(field: value)'"
+  pub fn init(self: &new, n: i32) { *self = Seeded(n); }           //~ ErrorInitRecurse:45 "'Seeded(field: value)'"
 }
 
 struct Mirror[T] {
   pub a: T;
   pub b: T;
 
-  pub fn init(self: &new, a: T, b: T) { *self = new Mirror[T](b, a); }  //~ ErrorInitRecurse:49 "'new Mirror(field: value)'"
+  pub fn init(self: &new, a: T, b: T) { *self = Mirror[T](b, a); }  //~ ErrorInitRecurse:49 "'Mirror(field: value)'"
 }
 
 fn mirrored() {
-  let m = new Mirror[i32](1, 2);
+  let m = Mirror[i32](1, 2);
 }
 
 struct Sealed {
   pub n: i32;
 
-  fn init(self: &new, a: i32, b: i32) { *self = new Sealed(a + b); }
+  fn init(self: &new, a: i32, b: i32) { *self = Sealed(a + b); }
 }
 
 enum Shape {
@@ -71,40 +72,40 @@ enum Shape {
 }
 
 fn brackets() {
-  let p = Point[1, 2];             //~ ErrorStructBracket:16 "'new Point(...)'"
-  let q = Point(1, 2);             //~ ErrorInitCall:16 "'new Point(...)'"
+  let p = Point[1, 2];             //~ ErrorStructBracket:16 "'Point(...)'"
+  let q = Point(1, 2);             // a type called is its construction
 }
 
 fn notStructs() {
-  let n = new u32(5);              //~ ErrorNewType:11 "u32.from(value)"
-  let c = new Shape.Circle(2);     //~ ErrorNewType:11 "constructed without 'new'"
-  let s = new Shape(2);            //~ ErrorNewType:11 "not a struct"
+  let n = u32(5);              //~ ErrorNewType:11 "u32.from(value)"
+  let c = Shape.Circle(2);     // a variant is constructed by its name
+  let s = Shape(2);            //~ ErrorNewType:11 "not a struct"
   let v = 3;
-  let w = new v(1);                //~ ErrorNewType:15 "not one"
+  let w = v(1);                    //~ ErrorNoMbr:12 "not found"
 }
 
 fn noInit() {
-  let a = new Vec2(1, 2, 3, 4);    //~ ErrorInitNone:11 "No init of Vec2"
-  let b = new Rival(1, 2);         //~ ErrorInitNone:11 "More than one init Rival declares"
+  let a = Vec2(1, 2, 3, 4);    //~ ErrorInitNone:11 "No init of Vec2"
+  let b = Rival(1, 2);         //~ ErrorInitNone:11 "More than one init Rival declares"
   // A private init is its module's, so this one is not refused; code outside
   // the module is (module_privacy_typecheck)
-  let c = new Sealed(1, 2);
+  let c = Sealed(1, 2);
 }
 
 // A finished value of the struct needs no construction: only an allocation
-// takes one, as its value, 'new Rc[Point](p)'. Refused whether the struct has
+// takes one, as its value, 'Rc[Point](p)'. Refused whether the struct has
 // only the implicit init or declares its own.
 fn finished() {
-  let p = new Point(1, 2);
-  let q = new Point(p);            //~ ErrorNewFinished:11 "already a value of Point"
-  let v = new Vec2(3);
-  let w = new Vec2(v);             //~ ErrorNewFinished:11 "already a value of Vec2"
+  let p = Point(1, 2);
+  let q = Point(p);            //~ ErrorNewFinished:11 "already a value of Point"
+  let v = Vec2(3);
+  let w = Vec2(v);             //~ ErrorNewFinished:11 "already a value of Vec2"
 }
 
 // An init is no method of a value: called on one, it finds no receiver it
 // takes, and called on an init's self, which it would take, it is refused
 fn initsRunOnlyInConstructions() {
-  var v = new Vec2(4);
+  var v = Vec2(4);
   v.ofLength(5);                   //~ ErrorNoCandidate:4 "No method declared by `ofLength`"
 }
 
@@ -114,21 +115,21 @@ struct Again {
   pub fn two overload init(self: &new, a: i32, b: i32) {
     self.init(a + b);              //~ ErrorInitCall:9 "runs only in a construction"
   }
-  pub fn one overload init(self: &new, a: i32) { *self = new Again(n: a); }
+  pub fn one overload init(self: &new, a: i32) { *self = Again(n: a); }
 }
 
 // A global's value is built before anything runs, so it takes only a literal:
 // the implicit init's construction of literals is one, a declared init's call
 // is not
-let made = new Vec2(4);            //~ ErrorNotLit
+let made = Vec2(4);            //~ ErrorNotLit
 
 // An init fills its value in place and returns nothing, and '&new' is its
 // self's alone
 struct Shapes {
   pub n: i32;
 
-  fn init(n: i32) Shapes { new Shapes(n) }                 //~ ErrorInitDcl:3 "fills its value in place"
-  fn reset(self: &new) { *self = new Shapes(0); }           //~ ErrorPermNew:3 "the self of a struct's init"
+  fn init(n: i32) Shapes { Shapes(n) }                 //~ ErrorInitDcl:3 "fills its value in place"
+  fn reset(self: &new) { *self = Shapes(0); }           //~ ErrorPermNew:3 "the self of a struct's init"
 }
 
 struct Measured {

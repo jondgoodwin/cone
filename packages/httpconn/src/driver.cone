@@ -175,7 +175,7 @@ pub struct Driver {
   // A driver whose connections take cfg's bounds and buffers from pool
   pub fn make(cfg: Config, pool: Pool, file: &Array[u8] = srcFile(), line: u32 = srcLine()) Driver {
     let number = u64.from(takeNumber(file, line));
-    new Driver(cfg: cfg, pool: pool, tokBase: tokTop | (number << numberShift),
+    Driver(cfg: cfg, pool: pool, tokBase: tokTop | (number << numberShift),
       connBlocks: List[*Conn].empty(), connCount: 0u32, freeConn: noEntry, liveConns: 0u32,
       reqBlocks: List[*Req].empty(), reqCount: 0u32, freeReq: noEntry,
       listeners: List[Lst].empty(), acceptsOut: 0u32, rearm: false,
@@ -266,26 +266,26 @@ pub struct Driver {
     id.index
   }
 
-  fn connIdOf(self: &, i: u32) ConnId {new ConnId(i, (self.connAt(i) as &Conn).gen)}
+  fn connIdOf(self: &, i: u32) ConnId {ConnId(i, (self.connAt(i) as &Conn).gen)}
 
   fn reqIdOf(self: &, ri: u32) ReqId {
     let r = self.reqAt(ri) as &Req;
-    new ReqId(new ConnId(r.conn, r.connGen), ri, r.gen)
+    ReqId(ConnId(r.conn, r.connGen), ri, r.gen)
   }
 
   fn blankConn(self: &, next: u32) Conn {
-    new Conn(gen: 1u32, state: cFree, nextFree: next, server: false, listener: ListenerId.none(),
-      sock: Handle.none(), core: http1.Connection.client(cfg.protocol, pool, new Instant()),
+    Conn(gen: 1u32, state: cFree, nextFree: next, server: false, listener: ListenerId.none(),
+      sock: Handle.none(), core: http1.Connection.client(cfg.protocol, pool, Instant()),
       layer: plainLayer(), sink: Sink.Here(0u64), addrs: List[SocketAddr].empty(), nextAddr: 0usize,
-      connOp: OpId.none(), callOp: OpId.none(), connectBy: new Instant(), peer: SocketAddr.localhost(0u16),
+      connOp: OpId.none(), callOp: OpId.none(), connectBy: Instant(), peer: SocketAddr.localhost(0u16),
       recvOut: false, readyOut: false, readyHit: false, sendsOut: 0u32, eof: false, eofFed: false,
-      shut: false, closeAsked: false, timer: OpId.none(), timerAt: new Instant(), current: noEntry,
+      shut: false, closeAsked: false, timer: OpId.none(), timerAt: Instant(), current: noEntry,
       waiting: List[u32].empty(), flushing: List[u32].empty(), failed: false, failure: Failure.none(),
       dirty: false, held: 0u32, inAtStart: 0u64)
   }
 
   fn blankReq(self: &, next: u32) Req {
-    new Req(gen: 1u32, state: rFree, nextFree: next, conn: noEntry, connGen: 0u32, server: false,
+    Req(gen: 1u32, state: rFree, nextFree: next, conn: noEntry, connGen: 0u32, server: false,
       sink: Sink.Here(0u64), head: RequestHead.empty(), body: BodyLength.empty(), isHead: false,
       watch: OpId.none(), wrote: false, responded: false, finished: false, readDone: false,
       gotResponse: false, wantWritable: false, timing: Timing.zero())
@@ -351,7 +351,7 @@ pub struct Driver {
     let c = self.connAt(i) as &mut Conn;
     c.state = cFree;
     c.gen = nextGen(c.gen);
-    c.core = http1.Connection.client(cfg.protocol, pool, new Instant());
+    c.core = http1.Connection.client(cfg.protocol, pool, Instant());
     c.layer = plainLayer();
     c.sink = Sink.Here(0u64);
     c.addrs.clear();
@@ -561,7 +561,7 @@ pub struct Driver {
   // The latest a poll of the loop may wait to (see the package's header,
   // THE DRIVER)
   pub fn wakeAt(self: &) Instant {
-    if dirty.len() > 0usize || ready.len() > 0usize {return new Instant();}
+    if dirty.len() > 0usize || ready.len() > 0usize {return Instant();}
     if heldE.len() > 0usize {return Instant.now() + Duration.fromNanos(heldRetryNs);}
     forever()
   }
@@ -575,7 +575,7 @@ pub struct Driver {
     var limit = until;
     let w = self.wakeAt();
     if w < limit {limit = w;}
-    if n > 0usize {limit = new Instant();}
+    if n > 0usize {limit = Instant();}
     var cs = List[Completion].empty();
     cs <=> comps;
     lp.poll(limit, &mut cs);
@@ -769,7 +769,7 @@ pub struct Driver {
           var e = HttpError.empty();
           e <=> f.error;
           c.failed = true;
-          c.failure = new Failure(Stage.Http, 0u32, e, false);
+          c.failure = Failure(Stage.Http, 0u32, e, false);
           self.answerAll(lp, i, false);
         }
       }
@@ -1378,7 +1378,7 @@ pub struct Driver {
   // Listen at addr: each connection accepted is a server connection, its
   // life and its requests told to sink (see the package's header, SERVING)
   pub fn listen(self: &mut, lp: &mut Loop, addr: SocketAddr, sink: Sink) Result[ListenerId, IoError] {
-    self.listenWith(lp, addr, new Uni[PlainMaker](PlainMaker.start()), sink)
+    self.listenWith(lp, addr, Uni[PlainMaker](PlainMaker.start()), sink)
   }
 
   // Listen, each accepted connection's bytes passing through a layer 'make'
@@ -1391,14 +1391,14 @@ pub struct Driver {
       case let e Error {return Error[ListenerId, IoError](e);}
     }
     let k = u32.from(listeners.len());
-    listeners.push(new Lst(1u32, true, h, sink, make, 0u32));
+    listeners.push(Lst(1u32, true, h, sink, make, 0u32));
     self.armAccepts(lp, k);
-    Ok[ListenerId, IoError](new ListenerId(k, 1u32))
+    Ok[ListenerId, IoError](ListenerId(k, 1u32))
   }
 
   // The address a listener is bound to (its port, when it asked for 0)
   pub fn localAddr(self: &, lp: &Loop, l: ListenerId) Result[SocketAddr, IoError] {
-    if l.index >= u32.from(listeners.len()) {return Error[SocketAddr, IoError](new IoError(6u32));}
+    if l.index >= u32.from(listeners.len()) {return Error[SocketAddr, IoError](IoError(6u32));}
     lp.localAddr(listeners[usize.from(l.index)].sock)
   }
 
@@ -1453,7 +1453,7 @@ pub struct Driver {
     let i = self.newConn(true, layer, sink, now);
     let c = self.connAt(i) as &mut Conn;
     c.sock = comp.handle;
-    c.listener = new ListenerId(k, gen);
+    c.listener = ListenerId(k, gen);
     match lp.peerAddr(c.sock) {
       case let a Ok {c.peer = a;}
       case let x Error {}
@@ -1634,13 +1634,13 @@ pub struct Driver {
     var k = 0u32;
     while k < u32.from(listeners.len()) {
       let g = listeners[usize.from(k)].gen;
-      self.stopListening(lp, new ListenerId(k, g));
+      self.stopListening(lp, ListenerId(k, g));
       k = k + 1u32;
     }
     var i = 0u32;
     while i < connCount {
       let c = self.connAt(i) as &Conn;
-      if c.state != cFree {self.abort(lp, new ConnId(i, c.gen));}
+      if c.state != cFree {self.abort(lp, ConnId(i, c.gen));}
       i = i + 1u32;
     }
   }
@@ -1766,7 +1766,7 @@ fn removeValue(l: &mut List[u32], v: u32) {
 
 // host as an IPv4 address written as one ('127.0.0.1'), with port
 fn parseV4(host: &str, port: u16) Option[SocketAddr] {
-  var parts = new Array[u8, 4] <- fill 0u8;
+  var parts = Array[u8, 4]() <- fill 0u8;
   var part = 0usize;
   var v = 0u32;
   var digits = 0u32;

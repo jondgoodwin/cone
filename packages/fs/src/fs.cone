@@ -179,7 +179,7 @@ pub struct FsError {
 }
 
 fn failure(op: &str, p: &Path, code: i32) FsError {
-  new FsError(String.from(op), p.copy(), Path.from(""), code)
+  FsError(String.from(op), p.copy(), Path.from(""), code)
 }
 
 fn fail[T](op: &str, p: &Path, code: i32) Result[T, FsError] {
@@ -246,7 +246,7 @@ pub struct FileInfo {
 }
 
 fn emptyStat() posix.Stat {
-  new posix.Stat(0u64, 0u64, 0u16, 0u32, 0u32, 0u32, 0u64, 0i64, 0i64, 0i64, 0i64)
+  posix.Stat(0u64, 0u64, 0u16, 0u32, 0u32, 0u32, 0u64, 0i64, 0i64, 0i64, 0i64)
 }
 
 // The size, time and kind of what a path names, following a link
@@ -257,7 +257,7 @@ pub fn stat(path: &Path) Result[FileInfo, FsError] {
   var st = emptyStat();
   if posix.stat(c.cstr(), &mut st) != 0i32 { return fail[FileInfo]("stat", path, lastErrno()); }
   let kind = st.st_mode & posix.S_IFMT;
-  Ok[FileInfo, FsError](new FileInfo(st.st_size, time.Timestamp.fromUnixSeconds(st.st_mtime),
+  Ok[FileInfo, FsError](FileInfo(st.st_size, time.Timestamp.fromUnixSeconds(st.st_mtime),
     kind == posix.S_IFDIR, kind == posix.S_IFREG))
 }
 
@@ -307,7 +307,7 @@ pub fn readFile(path: &Path) Result[String, FsError] {
   let f = libc.fopen(c.cstr(), "rb");
   if f == null { return fail[String]("readFile", path, openErrno(path)); }
   var out = String.empty();
-  var buf = new Array[u8, 65536] <- fill 0u8;
+  var buf = Array[u8, 65536]() <- fill 0u8;
   let bp: *u8 = &[]buf as *u8;
   var going = true;
   while going {
@@ -402,7 +402,7 @@ pub struct MappedFile is Move, Sendable {
   ptr: *u8;          // the view's first byte; null for an empty file
   bytes: usize;      // the file's size when it was mapped
 
-  fn empty() MappedFile { new MappedFile(null, 0usize) }
+  fn empty() MappedFile { MappedFile(null, 0usize) }
 
   // The file's size in bytes, as it was when mapped
   pub fn size(self: &) usize { bytes }
@@ -466,7 +466,7 @@ fn mapWindows(path: &Path, f: *libc.FILE) Result[MappedFile, FsError] {
   let code = GetLastError();
   CloseHandle(map);
   if view as usize == 0usize { return fail[MappedFile]("mapFile", path, errnoOfWindows(code)); }
-  Ok[MappedFile, FsError](new MappedFile(view, usize.from(n)))
+  Ok[MappedFile, FsError](MappedFile(view, usize.from(n)))
 }
 
 // Linux: the size is the offset of the end; map it private and read-only
@@ -478,7 +478,7 @@ fn mapLinux(path: &Path, f: *libc.FILE) Result[MappedFile, FsError] {
   let n = usize.from(end);
   let view = mmap(null, n, protRead, mapPrivate, fd, 0i64);
   if view as usize == mmapFailed { return fail[MappedFile]("mapFile", path, lastErrno()); }
-  Ok[MappedFile, FsError](new MappedFile(view, n))
+  Ok[MappedFile, FsError](MappedFile(view, n))
 }
 
 // -------- names --------
@@ -488,13 +488,13 @@ fn mapLinux(path: &Path, f: *libc.FILE) Result[MappedFile, FsError] {
 // refuses, EEXIST for a file and EACCES for a folder, and nothing changes.
 pub fn rename(from: &Path, to: &Path) Result[void, FsError] {
   if hasNul(from) || hasNul(to) {
-    return Error[void, FsError](new FsError(String.from("rename"), from.copy(), to.copy(), posix.EINVAL));
+    return Error[void, FsError](FsError(String.from("rename"), from.copy(), to.copy(), posix.EINVAL));
   }
   useUtf8();
   var a = cText(from);
   var b = cText(to);
   if libc.rename(a.cstr(), b.cstr()) != 0i32 {
-    return Error[void, FsError](new FsError(String.from("rename"), from.copy(), to.copy(), lastErrno()));
+    return Error[void, FsError](FsError(String.from("rename"), from.copy(), to.copy(), lastErrno()));
   }
   succeeded()
 }
@@ -593,7 +593,7 @@ pub fn readDir(path: &Path) Result[List[DirEntry], FsError] {
         t = if kind == posix.S_IFLNK {posix.DT_LNK} elif kind == posix.S_IFDIR {posix.DT_DIR}
           elif kind == posix.S_IFREG {posix.DT_REG} else {posix.DT_UNKNOWN};
       }
-      out.push(new DirEntry(String.from(name), full,
+      out.push(DirEntry(String.from(name), full,
         t == posix.DT_DIR, t == posix.DT_REG, t == posix.DT_LNK));
     }
     e = posix.readdir(dir);
@@ -637,7 +637,7 @@ fn walkInto(dir: &Path, out: &mut List[DirEntry]) Result[void, FsError] {
       var i = 0usize;
       while i < entries.len() {
         let entry = entries[i];
-        out.push(new DirEntry(entry.name.copy(), entry.path.copy(), entry.isDir, entry.isFile, entry.isLink));
+        out.push(DirEntry(entry.name.copy(), entry.path.copy(), entry.isDir, entry.isFile, entry.isLink));
         if entry.isDir {
           let below = walkInto(&entry.path, out);
           if below is Error { return below; }

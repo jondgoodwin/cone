@@ -24,11 +24,11 @@ pub struct DofSettings {
   pub taps: u32 = 32u32;
 
   // 48 taps: for a discrete GPU
-  pub fn high() DofSettings { new DofSettings(enabled: true, taps: 48u32) }
+  pub fn high() DofSettings { DofSettings(enabled: true, taps: 48u32) }
   // 32 taps
-  pub fn medium() DofSettings { new DofSettings(enabled: true, taps: 32u32) }
+  pub fn medium() DofSettings { DofSettings(enabled: true, taps: 32u32) }
   // 16 taps and a smaller reach: for an integrated GPU
-  pub fn low() DofSettings { new DofSettings(enabled: true, taps: 16u32, maxCoc: 10.) }
+  pub fn low() DofSettings { DofSettings(enabled: true, taps: 16u32, maxCoc: 10.) }
 }
 
 // What the passes' immediates hold (dof.slang's DofImmediates)
@@ -60,23 +60,23 @@ pub struct DofPass {
 
   pub fn create(device: &mut Device, frameBuffer: &Buffer, scene: &TextureView, depth: &TextureView) DofPass {
     var shader = device.createShaderModule(&DOF_SPIRV);
-    let entries = [new BindGroupLayoutEntry(binding: 0u32, visibility: SHADER_STAGE_FRAGMENT),
-      new BindGroupLayoutEntry(binding: 1u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_SAMPLER),
-      new BindGroupLayoutEntry(binding: 2u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE),
-      new BindGroupLayoutEntry(binding: 3u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE,
+    let entries = [BindGroupLayoutEntry(binding: 0u32, visibility: SHADER_STAGE_FRAGMENT),
+      BindGroupLayoutEntry(binding: 1u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_SAMPLER),
+      BindGroupLayoutEntry(binding: 2u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE),
+      BindGroupLayoutEntry(binding: 3u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE,
         sampleType: TEXTURE_SAMPLE_TYPE_DEPTH),
-      new BindGroupLayoutEntry(binding: 4u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE),
-      new BindGroupLayoutEntry(binding: 5u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE)];
+      BindGroupLayoutEntry(binding: 4u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE),
+      BindGroupLayoutEntry(binding: 5u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE)];
     var layout = device.createBindGroupLayout(&entries);
     let layouts = [&layout];
     var pipelineLayout = device.createPipelineLayout(&layouts, 32u32);
     var preparePipeline = fxPipeline(device, &pipelineLayout, &shader, "prepareMain", TEXTURE_FORMAT_RGBA16_FLOAT, false);
     var gatherPipeline = fxPipeline(device, &pipelineLayout, &shader, "gatherMain", TEXTURE_FORMAT_RGBA16_FLOAT, false);
     var compositePipeline = fxPipeline(device, &pipelineLayout, &shader, "compositeMain", TEXTURE_FORMAT_RGBA16_FLOAT, false);
-    let samplerDesc = new SamplerDescriptor(addressModeU: ADDRESS_MODE_CLAMP_TO_EDGE, addressModeV: ADDRESS_MODE_CLAMP_TO_EDGE,
+    let samplerDesc = SamplerDescriptor(addressModeU: ADDRESS_MODE_CLAMP_TO_EDGE, addressModeV: ADDRESS_MODE_CLAMP_TO_EDGE,
       addressModeW: ADDRESS_MODE_CLAMP_TO_EDGE);
     var sampler = device.createSampler(&samplerDesc);
-    let tiny = new TextureDescriptor(1u32, 1u32, TEXTURE_FORMAT_RGBA16_FLOAT,
+    let tiny = TextureDescriptor(1u32, 1u32, TEXTURE_FORMAT_RGBA16_FLOAT,
       TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_TEXTURE_BINDING);
     var prepared = device.createTexture(&tiny);
     var blurred = device.createTexture(&tiny);
@@ -86,7 +86,7 @@ pub struct DofPass {
     var groupPrepare = dofGroup(device, &layout, frameBuffer, &sampler, scene, depth, &bv, &bv);
     var groupGather = dofGroup(device, &layout, frameBuffer, &sampler, scene, depth, &pv, &pv);
     var groupComposite = dofGroup(device, &layout, frameBuffer, &sampler, scene, depth, &bv, &bv);
-    new DofPass(shader, layout, pipelineLayout, preparePipeline, gatherPipeline, compositePipeline, sampler, prepared,
+    DofPass(shader, layout, pipelineLayout, preparePipeline, gatherPipeline, compositePipeline, sampler, prepared,
       blurred, output, groupPrepare, groupGather, groupComposite)
   }
 
@@ -103,9 +103,9 @@ pub struct DofPass {
     let h = if enabled { height } else { 1u32 };
     let hw = if enabled { (width + 1u32) / 2u32 } else { 1u32 };
     let hh = if enabled { (height + 1u32) / 2u32 } else { 1u32 };
-    let half = new TextureDescriptor(hw, hh, TEXTURE_FORMAT_RGBA16_FLOAT,
+    let half = TextureDescriptor(hw, hh, TEXTURE_FORMAT_RGBA16_FLOAT,
       TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_TEXTURE_BINDING);
-    let full = new TextureDescriptor(w, h, TEXTURE_FORMAT_RGBA16_FLOAT,
+    let full = TextureDescriptor(w, h, TEXTURE_FORMAT_RGBA16_FLOAT,
       TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_TEXTURE_BINDING);
     prepared = device.createTexture(&half);
     blurred = device.createTexture(&half);
@@ -121,7 +121,7 @@ pub struct DofPass {
   pub fn record(self: &mut, encoder: &mut CommandEncoder, s: &DofSettings, height: u32, frame: u32, moving: bool) {
     let scale = f32.from(height) / 1080.;
     let noise = if moving { (f32.from(frame % 8u32) + 0.5) / 8. } else { 0. };
-    let data = new DofImmediates(s.focusDistance, s.focalLength / s.aperture, s.focalLength,
+    let data = DofImmediates(s.focusDistance, s.focalLength / s.aperture, s.focalLength,
       f32.from(height) / s.sensorHeight, s.maxCoc * scale, s.strength, s.taps, noise);
     fxPass(encoder, prepared.createView(), false, &preparePipeline, &groupPrepare, &data as *u8, 32u32);
     fxPass(encoder, blurred.createView(), false, &gatherPipeline, &groupGather, &data as *u8, 32u32);

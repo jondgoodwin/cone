@@ -73,7 +73,7 @@ fn buildStem(p: &TreeParams, rng: &mut Rng, job: Job, trunk: f32, tree: &mut Tre
     // The bend still owed (a split's, a kink's), half of it each segment
     pitch = pitch + pend.x * 0.5;
     let yaw2 = yaw + pend.y * 0.5;
-    pend = new Vec2(pend.x * 0.5, pend.y * 0.5);
+    pend = Vec2(pend.x * 0.5, pend.y * 0.5);
     q = yawQ(pitchQ(q, pitch), yaw2);
     // Attraction up: the axis turned towards the vertical, more the more it leans
     if p.attractionUp != 0. && lv >= 1 {
@@ -101,7 +101,7 @@ fn buildStem(p: &TreeParams, rng: &mut Rng, job: Job, trunk: f32, tree: &mut Tre
         let ky = lp.kinkAngle * libc.sinf(az);
         q = yawQ(pitchQ(q, kx), ky);
         frames.set(frames.len() - 1usize, q);
-        pend = new Vec2(pend.x - kx * p.kinkRecover, pend.y - ky * p.kinkRecover);
+        pend = Vec2(pend.x - kx * p.kinkRecover, pend.y - ky * p.kinkRecover);
       }
     }
     // Splits: whole clones by error carry; each clone leaves at the split angle
@@ -121,8 +121,8 @@ fn buildStem(p: &TreeParams, rng: &mut Rng, job: Job, trunk: f32, tree: &mut Tre
         let qc = (Quat.angleAxis(radians(sa), (q * ax)) * q).normalize();
         let rem = job.length * (1. - z);
         let rz = radiusAt(p, lv, job.radius, z, job.gen == 0) * radScale;
-        jobs.push(new Job(lv, job.parent, pos, qc, rem, rz * 0.7,
-          job.share * rem / maxf(0.001, job.length), new Vec2(0. - sa * 0.5, 0.), job.gen + 1));
+        jobs.push(Job(lv, job.parent, pos, qc, rem, rz * 0.7,
+          job.share * rem / maxf(0.001, job.length), Vec2(0. - sa * 0.5, 0.), job.gen + 1));
         q = (Quat.angleAxis(radians(0. - sa * 0.35), (q * ax)) * q).normalize();
         radScale = radScale * 0.8;
       }
@@ -154,7 +154,7 @@ fn buildStem(p: &TreeParams, rng: &mut Rng, job: Job, trunk: f32, tree: &mut Tre
   if lv == 0 && job.gen == 0 && p.stubs > 0 {
     stubs = makeStubs(p, rng, &pts, &rad, &frames);
   }
-  tree.stems.push(new Stem(lv, job.parent, pts, rad, frames, job.length));
+  tree.stems.push(Stem(lv, job.parent, pts, rad, frames, job.length));
   // each a stem of its own (level 1, 'dead'), two points, bark and nothing more
   var sk = 0usize;
   while sk < stubs.len() {
@@ -168,7 +168,7 @@ fn buildStem(p: &TreeParams, rng: &mut Rng, job: Job, trunk: f32, tree: &mut Tre
     var sf = List[Quat].withCapacity(2usize);
     sf.push(sb.q);
     sf.push(sb.q);
-    tree.stems.push(new Stem(1, si, sp, sr, sf, sb.len, true));
+    tree.stems.push(Stem(1, si, sp, sr, sf, sb.len, true));
     sk = sk + 1usize;
   }
 }
@@ -194,7 +194,7 @@ fn makeStubs(p: &TreeParams, rng: &mut Rng, pts: &List[Vec3], rad: &List[f32], f
     let along = (t - p.stubFrom) / maxf(0.001, p.stubTo - p.stubFrom);
     let len = p.stubLength * (1. - 0.65 * along) * (0.5 + 0.9 * rng.unit());
     let r = clampf(radiusAtT(rad, t) * 0.1, 0.012, 0.045);
-    out.push(new Stub(at, qc, len, r));
+    out.push(Stub(at, qc, len, r));
     k = k + 1;
   }
   out
@@ -304,7 +304,7 @@ fn placeChildren(p: &TreeParams, rng: &mut Rng, job: Job, trunk: f32, pts: &List
         else { minf(rp, rp * libc.powf(ratio, p.ratioPower)) };
       if cl > 0.02 && rc > 0. && !dropped {
         // the radius at the base: radiusAt tapers from 'radius', so start at rc
-        jobs.push(new Job(c, si, at, qc, cl, rc, 1., new Vec2(0., 0.), 0));
+        jobs.push(Job(c, si, at, qc, cl, rc, 1., Vec2(0., 0.), 0));
       }
       made = made + 1;
       j = j + 1;
@@ -331,7 +331,7 @@ fn placeSites(p: &TreeParams, rng: &mut Rng, pts: &List[Vec3], frames: &List[Qua
       let r = roll + 360. / f32.from(per) * f32.from(j);
       let qr = rollQ(qa, r);
       // the side a leaf leaves in: the frame's x
-      sites.push(new LeafSite(at, axisOf(qa), qr * v3(1., 0., 0.), si, t, k));
+      sites.push(LeafSite(at, axisOf(qa), qr * v3(1., 0., 0.), si, t, k));
       j = j + 1;
     }
     k = k + 1;
@@ -341,11 +341,11 @@ fn placeSites(p: &TreeParams, rng: &mut Rng, pts: &List[Vec3], frames: &List[Qua
 // Grow the tree 'p' describes: the same params give the same tree
 pub fn grow(p: &TreeParams) Tree {
   var rng = Rng.make(p.seed);
-  var tree = new Tree(List[Stem].empty(), List[LeafSite].empty(), 0., 0.);
+  var tree = Tree(List[Stem].empty(), List[LeafSite].empty(), 0., 0.);
   var jobs = List[Job].empty();
   let l0 = p.levelParams[0usize];
   let trunk = (p.scale + p.scaleV * rng.signed()) * (l0.length + l0.lengthV * rng.signed());
-  jobs.push(new Job(0, -1, v3(0., 0., 0.), Quat.identity(), trunk, trunk * p.ratio, 1., new Vec2(0., 0.), 0));
+  jobs.push(Job(0, -1, v3(0., 0., 0.), Quat.identity(), trunk, trunk * p.ratio, 1., Vec2(0., 0.), 0));
   var next = 0usize;
   while next < jobs.len() {
     let job = *jobs[next];

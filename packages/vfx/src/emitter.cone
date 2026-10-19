@@ -56,8 +56,8 @@ pub struct Emitter {
   // 1 m/s, living a second, under no force, 0.1 m across, fading out over
   // the last half of life
   pub fn make() Emitter {
-    let white = new Color(1., 1., 1., 1.);
-    new Emitter(0u32, 100., 1., 0., SHAPE_POINT, 0., 0., 1., 0., 0., new Vec3(0., 0., 0.), 0., 1., 0., 0.,
+    let white = Color(1., 1., 1., 1.);
+    Emitter(0u32, 100., 1., 0., SHAPE_POINT, 0., 0., 1., 0., 0., Vec3(0., 0., 0.), 0., 1., 0., 0.,
       0.1, 0.1, 0., 0., 0., 0.5, [white, white, white, white], [0., 0.33, 0.66, 1.], 0.25)
   }
 
@@ -76,7 +76,7 @@ pub struct Event {
   pub placement: Mat4;          // the emitter's frame in the world
 
   // An event at 'start', never stopping
-  pub fn at(seed: u32, start: f64, placement: Mat4) Event { new Event(seed, start, NEVER, placement) }
+  pub fn at(seed: u32, start: f64, placement: Mat4) Event { Event(seed, start, NEVER, placement) }
 }
 
 // What a particle is at an age
@@ -136,19 +136,19 @@ pub struct EmitterParams {
     }
     let keys = emitter.colors;
     let at = emitter.colorAt;
-    new EmitterParams(
-      [new Vec4(m[0], m[1], m[2], m[3]), new Vec4(m[4], m[5], m[6], m[7]), new Vec4(m[8], m[9], m[10], m[11]),
-        new Vec4(m[12], m[13], m[14], m[15])],
-      new Vec4(f32.from(elapsed), 1. / emitter.rate, emitter.lifetime, emitter.lifetimeJitter),
-      new Vec4(f32.from(emitter.shape), emitter.radius, cos(emitter.spread), emitter.speed),
-      new Vec4(emitter.speedJitter, drag, emitter.stretch, emitter.sizeJitter),
-      new Vec4(emitter.gravity.x, emitter.gravity.y, emitter.gravity.z, emitter.buoyancy),
-      new Vec4(cooling, emitter.wobble, emitter.wobbleRate, emitter.trailTime),
-      new Vec4(emitter.sizeStart, emitter.sizeEnd, inverse(emitter.fadeIn), inverse(emitter.fadeOut)),
+    EmitterParams(
+      [Vec4(m[0], m[1], m[2], m[3]), Vec4(m[4], m[5], m[6], m[7]), Vec4(m[8], m[9], m[10], m[11]),
+        Vec4(m[12], m[13], m[14], m[15])],
+      Vec4(f32.from(elapsed), 1. / emitter.rate, emitter.lifetime, emitter.lifetimeJitter),
+      Vec4(f32.from(emitter.shape), emitter.radius, cos(emitter.spread), emitter.speed),
+      Vec4(emitter.speedJitter, drag, emitter.stretch, emitter.sizeJitter),
+      Vec4(emitter.gravity.x, emitter.gravity.y, emitter.gravity.z, emitter.buoyancy),
+      Vec4(cooling, emitter.wobble, emitter.wobbleRate, emitter.trailTime),
+      Vec4(emitter.sizeStart, emitter.sizeEnd, inverse(emitter.fadeIn), inverse(emitter.fadeOut)),
       [colorVec(keys[0]), colorVec(keys[1]), colorVec(keys[2]), colorVec(keys[3])],
-      new Vec4(at[0], at[1], at[2], at[3]),
-      new Vec4(inverse(at[1] - at[0]), inverse(at[2] - at[1]), inverse(at[3] - at[2]), 0.),
-      new UVec4(event.seed, emitter.layer, first, count))
+      Vec4(at[0], at[1], at[2], at[3]),
+      Vec4(inverse(at[1] - at[0]), inverse(at[2] - at[1]), inverse(at[3] - at[2]), 0.),
+      UVec4(event.seed, emitter.layer, first, count))
   }
 
   // The same, the elapsed time 'elapsed' since the event and every index
@@ -160,7 +160,7 @@ pub struct EmitterParams {
 
   // Its 68 words, as the GPU reads them
   pub fn words(self: &) Array[u32, 68] {
-    var w = new Array[u32, 68] <- fill 0u32;
+    var w = Array[u32, 68]() <- fill 0u32;
     var i = 0usize;
     while i < 4usize {
       putVec(&mut w, 4usize * i, column[i]);
@@ -190,7 +190,7 @@ fn putVec(w: &mut Array[u32, 68], at: usize, v: Vec4) {
   w[at + 3usize] = v.w as u32;
 }
 
-fn colorVec(c: Color) Vec4 { new Vec4(c.red, c.green, c.blue, c.alpha) }
+fn colorVec(c: Color) Vec4 { Vec4(c.red, c.green, c.blue, c.alpha) }
 
 // 1 / x, or 0 for 0 (what turns a fade or a span off)
 fn inverse(x: f32) f32 { if x > 0. { 1. / x } else { 0. } }
@@ -219,8 +219,8 @@ fn mix(a: Vec4, b: Vec4, s: f32) Vec4 { a + (b - a) * s }
 
 // Particle 'index' of 'e' at 'age' seconds: vfx.slang's particleAt
 pub fn particleAt(e: &EmitterParams, index: u32, age: f32) Particle {
-  let h1 = pcg4d(new UVec4(index, e.seeds.x, e.seeds.y, 0u32));
-  let h2 = pcg4d(new UVec4(index, e.seeds.x, e.seeds.y, 1u32));
+  let h1 = pcg4d(UVec4(index, e.seeds.x, e.seeds.y, 0u32));
+  let h2 = pcg4d(UVec4(index, e.seeds.x, e.seeds.y, 1u32));
   let lifetime = e.timing.z * (1. + e.timing.w * toSigned(h1.x));
   let speed = e.launch.w * (1. + e.motion.x * toSigned(h1.y));
 
@@ -230,22 +230,22 @@ pub fn particleAt(e: &EmitterParams, index: u32, age: f32) Particle {
   if sq < 0. { sq = 0.; }
   let sinTheta = sq.sqrt();
   let phi = TAU * toUnit(h1.w);
-  let direction = new Vec3(sinTheta * cos(phi), cosTheta, sinTheta * sin(phi));
+  let direction = Vec3(sinTheta * cos(phi), cosTheta, sinTheta * sin(phi));
 
   // Where it is born, in the emitter's frame
-  var start = new Vec3(0., 0., 0.);
+  var start = Vec3(0., 0., 0.);
   let shape = u32.from(e.launch.x);
   if shape == SHAPE_DISC {
     let r = e.launch.y * toUnit(h2.x).sqrt();
     let psi = TAU * toUnit(h2.y);
-    start = new Vec3(r * cos(psi), 0., r * sin(psi));
+    start = Vec3(r * cos(psi), 0., r * sin(psi));
   } elif shape == SHAPE_SPHERE {
     let z = toSigned(h2.x);
     var rs = 1. - z * z;
     if rs < 0. { rs = 0.; }
     let ring = rs.sqrt();
     let psi = TAU * toUnit(h2.y);
-    start = new Vec3(ring * cos(psi), z, ring * sin(psi)) * e.launch.y;
+    start = Vec3(ring * cos(psi), z, ring * sin(psi)) * e.launch.y;
   }
   let p0 = place(e, start, 1.);
   let v0 = place(e, direction * speed, 0.);
@@ -296,7 +296,7 @@ pub fn particleAt(e: &EmitterParams, index: u32, age: f32) Particle {
   if fade < 0. { fade = 0.; }
   color.w = color.w * fade;
   let size = (e.sizes.x + (e.sizes.y - e.sizes.x) * life) * (1. + e.motion.w * toSigned(h2.w));
-  new Particle(position, velocity, size, color, life, age >= 0. && age < lifetime)
+  Particle(position, velocity, size, color, life, age >= 0. && age < lifetime)
 }
 
 // Particle 'index' at the elapsed time 'e' was bound at: vfx.slang's

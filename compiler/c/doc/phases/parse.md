@@ -378,7 +378,7 @@ permissions the rest of the compiler knows. Every place that decides a declarati
 starts here asks `lexIsDclStart`, which also accepts a `PermToken`, so that an
 `imm` or `mut` written where a declaration's word belongs is reported with the
 word to write instead (`ErrorDclWord`) and the declaration still parses. The permission `new` is the exception: `new` is a keyword token
-(`NewToken`), since it also begins a construction, and `newPerm` is not bound
+(`NewToken`), since it also names a dynamic region, and `newPerm` is not bound
 to its name. Being no identifier, a permission is no term either: inside `[...]`,
 where `Rc[mut, Node]` writes one, `parseIndexArg` takes it as the permission
 it names. To the language they are reserved words all the same: the manual lists
@@ -585,7 +585,7 @@ other), so `(1, 2 of 0)` is a list and `(a + b) of 2` a parenthesized count.
 A construction followed by `<-` inside a comma list -- an argument, a named
 value, an array literal's element, an entry -- takes one entry
 (`parseContentsAfter`), leaving the comma to the list it is in; several are
-parenthesized, `draw(new List[i32] <- (1, 2), x)`. At a statement's level the
+parenthesized, `draw(List[i32]() <- (1, 2), x)`. At a statement's level the
 construction is the left of an ordinary `<-` and takes the whole list.
 
 **`parseSimpleExprFrom` resumes the cascade** above an operand already parsed
@@ -691,16 +691,21 @@ such a declaration end without a body.
 
 ## 6. What the parser decides that you would expect it not to
 
-**`new` is two things, told by where it is.** In a value it begins a
-construction, a term (`parseNew`): the type -- a name, `.` paths, bracketed
-type arguments -- then the init's arguments in parentheses, left off when
-there are none, into one `FnCallNode` flagged `FlagNew`; the suffixes after
-the parentheses apply to the value. Whether it constructs a value or
-allocates, `new Rc[mut, Node](1)`, is type check's to say, from the type.
-`trynew` is the same term flagged `FlagTryNew` too, wrapped in the `Option`
-node `?T` builds (`QuesTag`), which name resolution takes apart. After `&` inside a type
+**`new` is two things, told by where it is.** In a value it names a dynamic
+region, a term (`parseNew`): the region -- a name, `.` paths -- and the type
+made in it in brackets, `new a[Node](1)`, then the init's arguments in
+parentheses, left off when there are none, into one `FnCallNode` flagged
+`FlagNew`; the suffixes after the parentheses apply to the value. The parser
+cannot tell a region from a type, so a type written after `new` parses the same,
+and is refused by name resolution (`ErrorNewNotRegion`). A construction of a
+type has no word at all: `Point(1, 2)`, `List[i32](100)` and `Rc[mut, Node](1)`
+parse as the calls they look like, and name resolution marks the calls whose
+callee is a type. For the same reason `parseIsConstruction`, which lets a `<-`
+follow a construction inside a comma list, takes any plain call for one.
+`trynew` is the same term as `new` flagged `FlagTryNew` too, wrapped in the
+`Option` node `?T` builds (`QuesTag`), which name resolution takes apart. After `&` inside a type
 (`ParseState.intype`, which `parseType` sets) it is the permission of an
-init's `self`, `&new`; in a value, `&new Point(1, 2)` is a borrow of a
+init's `self`, `&new`; in a value, `&Point(1, 2)` is a borrow of a
 construction, a temporary, which the borrow's type check refuses.
 
 **`await` is a prefix operator, at `parsePrefix`'s level.** `await x` waits for
@@ -798,7 +803,7 @@ through a reference, which lays out nothing of its target. A method declared
 **The actor is real before its state's `init` runs.** Each of the handle's
 initializers makes the actor's block first (`actors.makeActor`, its mailbox
 busy), writes the state's construction into it raw, `` `#mem`.writeRaw(st,
-new Counter.State(args)) ``, which generation fills in place
+Counter.State(args)) ``, which generation fills in place
 ([Generation](generation.md), `genlFnCall`), so the state's init runs on the
 state where it stays, and then starts the actor (`actors.startActor`), which
 queues it if the init sent it anything. So `selfactor` and `self.m()` are good
@@ -806,7 +811,7 @@ in the init and in what it calls, and the init's messages run after it.
 `` `#mem` `` is core's `mem`, bound privately, so that an initializer's
 parameter named `mem` does not hide it, and `` `#state'` `` the local holding the
 block. The state is constructed nowhere else, by an init or by its fields'
-names, but by the init filling its `self`, `*self = new Self(field: value)`
+names, but by the init filling its `self`, `*self = Self(field: value)`
 (`ErrorActorStateInit`, `typeLitNewChecked`, which `assignTypeCheck` tells of
 the fill through `typeLitSelfFill`); and it is a move type whatever its fields
 (`structTypeCheck`), so its value is never copied out of the actor.
@@ -888,7 +893,7 @@ struct walk.Gen { let t: &'a Tree; state': u32;
                   pub fn next(self: &mut) Option[&'a Node] {}  fn final(self: &uni) {}
                   fn walk.yield(v: &Node) Option[&Node] inline {Some[&Node](v);}
                   fn walk.none() Option[&Node] {None[&Node];} }
-fn walk(t: &Tree) walk.Gen {new walk.Gen(t, 0u32);}
+fn walk(t: &Tree) walk.Gen {walk.Gen(t, 0u32);}
 ```
 
 and gives `next` the author's body, ended with a call of `walk.none` unless it
@@ -934,7 +939,7 @@ of a generic type finds its own. A bare *method* name is refused
 **A generic generator** copies the type parameters as they are written, the type's
 (`ParseState.tparms`, recorded by `parseStruct`) and then the function's (`GenSig`),
 onto the struct, and passes them by name where the struct is written: the
-constructor is `fn walk[T](l: &List[T]) walk.Gen[T]` and makes `new walk.Gen[T](l, 0u32)`.
+constructor is `fn walk[T](l: &List[T]) walk.Gen[T]` and makes `walk.Gen[T](l, 0u32)`.
 An instance of the struct is cloned from this template like any generic type's
 (`cloneStructNode`), and `yieldGenCloned` gives the clone its own `GenInfo`, its
 `next`, `none` and state found in the clone by name, which is why a generator

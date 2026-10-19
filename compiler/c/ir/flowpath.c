@@ -2661,7 +2661,7 @@ static void pwScopeEnd(uint32_t from) {
 
 // The same, as a block hands on 'value' to the holder it goes to: that value
 // is still being made, so a variable ending while it carries a loan of it is
-// reported at once ('let h = { let x = ..; new H(&x); }')
+// reported at once ('let h = { let x = ..; H(&x); }')
 static void pwScopeEndHanding(uint32_t from, PathSet *value) {
     uint32_t mark = loanFlightMark();
     loanFlightPush(value, 0);

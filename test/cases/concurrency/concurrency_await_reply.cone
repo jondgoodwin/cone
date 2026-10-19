@@ -47,7 +47,7 @@ struct Tally {
 let tally: Tally;
 
 fn @initpure init() {
-  tally = new Tally(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+  tally = Tally(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
     Atomic[u64].of(0u64), Atomic[u64].of(0u64));
 }
 
@@ -76,10 +76,10 @@ struct Tick {
 actor Net {
   pub async do read(self, id: u64) Buf {
     say("  read", id);
-    new Buf(id * 10u64)
+    Buf(id * 10u64)
   }
   pub async do size(self, id: u64) u64 {id + 1u64}
-  pub async do count(self, id: u64) Tick {new Tick(id + 1000u64)}
+  pub async do count(self, id: u64) Tick {Tick(id + 1000u64)}
 }
 
 actor Fetcher {
@@ -88,9 +88,9 @@ actor Fetcher {
   pub async do fetch(self, url: u64) Buf {
     if url == 0u64 {
       say("  fetch at once", url);
-      return new Buf(0u64);
+      return Buf(0u64);
     }
-    let conn = new Conn(url);
+    let conn = Conn(url);
     say("  fetch", url);
     let buf = await net.read(conn.id);
     say("  fetched", buf.n);
@@ -98,7 +98,7 @@ actor Fetcher {
   }
 
   pub async do tick(self, id: u64) Tick {
-    let q = new Quiet(id);
+    let q = Quiet(id);
     let t = await net.count(id);
     t
   }
@@ -117,7 +117,7 @@ actor Page {
   }
 
   pub async do two(self, u: u64) u64 {
-    let keep = new Conn(99u64);
+    let keep = Conn(99u64);
     let a = await fetcher.fetch(u);
     let b = await fetcher.fetch(u + 1u64);
     say("  two", a.n + b.n + keep.id);
@@ -139,7 +139,7 @@ actor Page {
   }
 
   pub async do held(self, i: u64) {
-    let q = new Quiet(i);
+    let q = Quiet(i);
     let t = await fetcher.tick(i);
     tally.sum.add(t.n + q.n);
     tally.resumed.add(1u64);
@@ -185,10 +185,10 @@ actor Driver {
 fn main() {
   initAll();
   {
-    let net = new Net();
-    let fetcher = new Fetcher(net);
-    let page = new Page(fetcher, 0u64);
-    let d = new Driver(page, fetcher, net);
+    let net = Net();
+    let fetcher = Fetcher(net);
+    let page = Page(fetcher, 0u64);
+    let d = Driver(page, fetcher, net);
     d.go();
   }
   finalAll();

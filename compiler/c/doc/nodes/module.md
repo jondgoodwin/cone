@@ -1920,7 +1920,7 @@ finalizer in exactly the reverse, the root first, after it.
 let handler: Handler;
 
 fn @initpure init() {
-    handler = new Handler(1);
+    handler = Handler(1);
 }
 
 fn final() {
@@ -2662,7 +2662,7 @@ region promises), and calls them at the reference events only it can see
 
 | Method | Called when | If absent |
 |---|---|---|
-| `fn alloc(size: usize) *u8`, or `fn alloc(size: usize, ty: *TypeRecord) *u8`, static | `new R[perm, T](...)` allocates, before anything else of the allocation's but the init's arguments; `size` is the whole allocation, header included; `ty`, where it is declared, is the value type's record; null fails | the allocation is refused (`ErrorBadAlloc`) |
+| `fn alloc(size: usize) *u8`, or `fn alloc(size: usize, ty: *TypeRecord) *u8`, static | `R[perm, T](...)` allocates, before anything else of the allocation's but the init's arguments; `size` is the whole allocation, header included; `ty`, where it is declared, is the value type's record; null fails | the allocation is refused (`ErrorBadAlloc`) |
 | `fn init(self: &new)`, an init ([struct](struct.md), "Initializers") | right after `alloc`, on the header, which it fills in place | the header is left as allocated |
 | `fn aliasRef(self: &uni R)` | a copy of an owning reference becomes another owner | a copy calls nothing: it is a **move** where the region is `Move`, and free where it is not |
 | `fn dealiasRef(self: &uni R) bool` | an owner goes away; answers whether it was the last | an owner's going asks nothing: where the region is `Move` it is the value's death; where it is not, it does nothing — the value never dies by an owner and the compiler never frees it, left to the region's own loop (a collector's, an arena's) |
@@ -2800,7 +2800,7 @@ an `Rc` (a barrier is told of a store, which a value behind an owner does not ma
 The actor reaches its region by a method of its state, `allocRegion` (a provisional
 name, as is the general rule it carries, that `new x[T](...)` allocates in the region
 `x` leads to), generated for every actor ([Parse](../phases/parse.md), "Actors"), and
-`new self[T](...)` is `self.allocRegion().alloc(new T(...))`
+`new self[T](...)` is `self.allocRegion().alloc(T(...))`
 ([Literals](literals.md), "Construction"). The region is a record the actor's
 `Header` points to (null till the first `allocRegion`) and the collector is the `actors` package's own (`packages/actors/src/gc.cone`,
 nothing to import): the runtime asks the region to collect after each message and
@@ -3004,7 +3004,7 @@ a reference names is a type, and that is what is built.
   the loop, and the fold passes do not retry it: a struct is resolved once.
   Measured: `alpha` imports `beta`, then re-exports `delta`'s `Inner`, and
   declares `struct Box { pub v: Inner use get; }`; `beta` imports `alpha` and
-  writes `var g: alpha.Box = new alpha.Box(new delta.Inner(3i64)) use get;`. The loop is
+  writes `var g: alpha.Box = alpha.Box(delta.Inner(3i64)) use get;`. The loop is
   reported, then `Inner` unknown in `Box`, and `get` failing to fold: three
   diagnostics where one is the cause. The global's type itself waits
   for a late name (`modFoldAwaits`); what that type's declaration names does not.

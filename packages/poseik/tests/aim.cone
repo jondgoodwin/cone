@@ -28,7 +28,7 @@ fn near(got: f32, want: f32, within: f32, label: &Array[u8]) bool {
 }
 
 fn angleFromAhead(models: &List[Transform3], bone: usize) f32 {
-  let f = (*models[bone]).rotation * new Vec3(0., 0., -1.);
+  let f = (*models[bone]).rotation * Vec3(0., 0., -1.);
   acos(clampf(-f.z, -1., 1.))
 }
 
@@ -40,10 +40,10 @@ fn testLook() {
   s.modelTransforms(&pose, &mut models);
   let eye = s.socketModel(&models, SOCKET_EYE).translation;
   near(eye.y, 1.638, 0.0001, "eye height");
-  let r = lookAt(&s, &mut pose, &mut models, eye + new Vec3(-1., 0., -1.), 1., &cfg);
+  let r = lookAt(&s, &mut pose, &mut models, eye + Vec3(-1., 0., -1.), 1., &cfg);
   expectBool(r.clamped, false, "45 degrees is inside the range");
   near(r.yaw, radians(45.), 0.0001, "yaw 45");
-  let f = (*models[HEAD]).rotation * new Vec3(0., 0., -1.);
+  let f = (*models[HEAD]).rotation * Vec3(0., 0., -1.);
   near(f.x, -0.70711, 0.001, "head forward x");
   near(f.y, 0., 0.001, "y");
   near(f.z, -0.70711, 0.001, "z");
@@ -60,24 +60,24 @@ fn testLook() {
   // Behind: clamped to 80 degrees left
   var p2 = s.restPose();
   s.modelTransforms(&p2, &mut models);
-  let back = lookAt(&s, &mut p2, &mut models, new Vec3(-0.5, 1.6, 5.), 1., &cfg);
+  let back = lookAt(&s, &mut p2, &mut models, Vec3(-0.5, 1.6, 5.), 1., &cfg);
   expectBool(back.clamped, true, "a target behind is clamped");
   near(back.yaw, radians(80.), 0.0001, "to 80 degrees");
-  let fb = (*models[HEAD]).rotation * new Vec3(0., 0., -1.);
+  let fb = (*models[HEAD]).rotation * Vec3(0., 0., -1.);
   near(fb.x, -sin(radians(80.)) * cos(back.pitch), 0.001, "head forward x");
   near(fb.z, -cos(radians(80.)) * cos(back.pitch), 0.001, "z");
 
   // Straight up: pitch 50
   var p3 = s.restPose();
   s.modelTransforms(&p3, &mut models);
-  let up = lookAt(&s, &mut p3, &mut models, new Vec3(0., 20., -0.001), 1., &cfg);
+  let up = lookAt(&s, &mut p3, &mut models, Vec3(0., 20., -0.001), 1., &cfg);
   expectBool(up.clamped, true, "straight up is clamped");
-  near(((*models[HEAD]).rotation * new Vec3(0., 0., -1.)).y, 0.76604, 0.001, "head forward y = sin 50");
+  near(((*models[HEAD]).rotation * Vec3(0., 0., -1.)).y, 0.76604, 0.001, "head forward y = sin 50");
 
   // Half weight
   var p4 = s.restPose();
   s.modelTransforms(&p4, &mut models);
-  lookAt(&s, &mut p4, &mut models, eye + new Vec3(-1., 0., -1.), 0.5, &cfg);
+  lookAt(&s, &mut p4, &mut models, eye + Vec3(-1., 0., -1.), 0.5, &cfg);
   near(angleFromAhead(&models, HEAD), radians(22.5), 0.001, "half weight: 22.5 degrees");
 }
 
@@ -88,15 +88,15 @@ fn testReach() {
   var models = List[Transform3].empty();
   s.modelTransforms(&pose, &mut models);
   let shoulder = (*models[UPPER_ARM_R]).translation;
-  let target = new Vec3(0.20, 1.20, -0.45);
-  let rot = Quat.angleAxis(pi / 2., new Vec3(1., 0., 0.));
+  let target = Vec3(0.20, 1.20, -0.45);
+  let rot = Quat.angleAxis(pi / 2., Vec3(1., 0., 0.));
   let r = reachHand(&s, &mut pose, &mut models, true, target, rot, elbowPole(true), 1.);
   expectBool(r.reached, true, "reachable");
   let grip = s.socketModel(&models, SOCKET_HAND_R_GRIP);
   near(grip.translation.x, target.x, 0.001, "grip x on the target");
   near(grip.translation.y, target.y, 0.001, "grip y");
   near(grip.translation.z, target.z, 0.001, "grip z");
-  let palm = grip.rotation * new Vec3(0., 1., 0.);
+  let palm = grip.rotation * Vec3(0., 1., 0.);
   near(palm.z, 1., 0.001, "the grip's y axis points at +z (a quarter turn about x takes y to z), as the target's does");
   near(absf(grip.rotation.dot(rot)), 1., 0.001, "the grip's orientation is the target's");
   let elbow = (*models[FOREARM_R]).translation;
@@ -108,20 +108,20 @@ fn testReach() {
   // Out of reach
   var p2 = s.restPose();
   s.modelTransforms(&p2, &mut models);
-  let far = reachHand(&s, &mut p2, &mut models, true, new Vec3(0.2, 1.2, -2.), rot, elbowPole(true), 1.);
+  let far = reachHand(&s, &mut p2, &mut models, true, Vec3(0.2, 1.2, -2.), rot, elbowPole(true), 1.);
   expectBool(far.reached, false, "2 m away is not reached");
   let w2 = (*models[HAND_R]).translation;
   near((w2 - shoulder).length(), (0.188 + 0.145) * h, 0.001, "the arm is straight at its full length");
-  let toward = (new Vec3(0.2, 1.2, -2.) - shoulder).normalize();
+  let toward = (Vec3(0.2, 1.2, -2.) - shoulder).normalize();
   near((w2 - shoulder).normalize().dot(toward), 1., 0.001, "and points at the target");
 
   // Left hand, and a weight of 0 leaves the pose alone
   var p3 = s.restPose();
   s.modelTransforms(&p3, &mut models);
   let before = (*models[HAND_L]).translation;
-  reachHand(&s, &mut p3, &mut models, false, new Vec3(-0.2, 1.2, -0.45), rot, elbowPole(false), 0.);
+  reachHand(&s, &mut p3, &mut models, false, Vec3(-0.2, 1.2, -0.45), rot, elbowPole(false), 0.);
   near((*models[HAND_L]).translation.y, before.y, 0.001, "weight 0: the hand stays where it was");
-  reachHand(&s, &mut p3, &mut models, false, new Vec3(-0.2, 1.2, -0.45), rot, elbowPole(false), 1.);
+  reachHand(&s, &mut p3, &mut models, false, Vec3(-0.2, 1.2, -0.45), rot, elbowPole(false), 1.);
   near(s.socketModel(&models, SOCKET_HAND_L_GRIP).translation.x, -0.2, 0.001, "the left grip reaches its target");
 }
 

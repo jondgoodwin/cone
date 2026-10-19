@@ -260,7 +260,7 @@ int arrayLitCoerce(ArrayNode *arrlit, INode *totypedcl) {
 //
 // The list form '[a, b]' gives every element a holder of its own, so each value
 // is moved or copied exactly as a function call's argument is. An array's
-// contents that repeat a value, 'new Array[Handle, 2] <- fill new Handle(9)',
+// contents that repeat a value, 'Array[Handle, 2]() <- fill Handle(9)',
 // are this form, the value's expression copied into each element
 // (contentsLowerArray), so a move value is moved once per element, and a
 // variable moved by one is gone for the next, by the ordinary move rule. An

@@ -615,11 +615,11 @@ class Scenarios(unittest.TestCase):
             import b;
 
             pub fn start(n: i64) b.Counter {
-              new b.Counter(n, 5i64)
+              b.Counter(n, 5i64)
             }
 
             pub fn advance(c: b.Counter) b.Counter {
-              new b.Counter(c.next(), c.step)
+              b.Counter(c.next(), c.step)
             }
             """)
         write(self.root / "app.cone", """
@@ -641,7 +641,7 @@ class Scenarios(unittest.TestCase):
             }
             """)
         run = self.congo("run", "app.cone", cwd=self.root)
-        # start(30) is new Counter(30, 5), whose next() is 30+5 = 35, from b's
+        # start(30) is Counter(30, 5), whose next() is 30+5 = 35, from b's
         # object. Advanced twice: (35, 5), then (40, 5), built in a's object
         self.assertEqual(self.program_output(run), "35\n40\n5\n")
         compiled = [line.split()[1] for line in run.stdout.splitlines()
@@ -690,7 +690,7 @@ class Scenarios(unittest.TestCase):
             pub struct Bag {
               items: List[Pt];
 
-              pub fn empty() Bag { new Bag(List[Pt].empty()) }
+              pub fn empty() Bag { Bag(List[Pt].empty()) }
               pub fn first(self: &) &Pt { items[0usize] }
               pub fn add(self: &mut, p: Pt) { items.push(p); }
             }
@@ -699,7 +699,7 @@ class Scenarios(unittest.TestCase):
             pub struct Shelf is Sendable {
               items: List[Pt];
 
-              pub fn empty() Shelf { new Shelf(List[Pt].empty()) }
+              pub fn empty() Shelf { Shelf(List[Pt].empty()) }
               pub fn first(self: &) &Pt { items[0usize] }
               pub fn add(self: &mut, p: Pt) { items.push(p); }
             }
@@ -708,7 +708,7 @@ class Scenarios(unittest.TestCase):
             pub struct Gauge {
               n: i64;
 
-              pub fn start(n: i64) Gauge { new Gauge(n) }
+              pub fn start(n: i64) Gauge { Gauge(n) }
               pub fn peek(self: &) &i64 { &n }
               pub fn bump(self: &mut) { n = n + 1; }
             }
@@ -736,8 +736,8 @@ class Scenarios(unittest.TestCase):
               stdio.print <- viaGauge(&mut g);
               stdio.print <- "\\n";
               var bag = shapes.Bag.empty();
-              bag.add(new shapes.Pt(7i64, 0i64));
-              stdio.print <- usedFirst(&mut bag, new shapes.Pt(8i64, 0i64));
+              bag.add(shapes.Pt(7i64, 0i64));
+              stdio.print <- usedFirst(&mut bag, shapes.Pt(8i64, 0i64));
               stdio.print <- "\\n";
               0i32
             }
@@ -939,7 +939,7 @@ class Scenarios(unittest.TestCase):
               pub b: i64;
 
               pub fn swap(self) Stack {
-                new Stack(b, a)
+                Stack(b, a)
               }
             }
 
@@ -973,7 +973,7 @@ class Scenarios(unittest.TestCase):
             import coll;
 
             fn main() i32 {
-              let s = new coll.Stack(3i64, 4i64).swap();
+              let s = coll.Stack(3i64, 4i64).swap();
               stdio.print <- s.a;
               stdio.print <- "\\n";
               stdio.print <- coll.total(s);
@@ -984,7 +984,7 @@ class Scenarios(unittest.TestCase):
             }
             """)
         run = self.congo("run", "app.cone", cwd=self.root)
-        # new Stack(3, 4) swapped is (4, 3): a is 4; total is 4 + 3 from vec's
+        # Stack(3, 4) swapped is (4, 3): a is 4; total is 4 + 3 from vec's
         # object, plus 100 from vec.cell's; 20 is Large, whose code is 2
         self.assertEqual(self.program_output(run), "4\n107\n2\n")
         out = next((self.root / "home" / "lone").glob("app-*")) / "debug"
@@ -1716,7 +1716,7 @@ class Testing(unittest.TestCase):
               count: u64;
 
               pub fn init(self: &new, start: u64) {
-                *self = new Self(count: start);
+                *self = Self(count: start);
               }
 
               pub async do ping(self, n: u64) {
@@ -1736,7 +1736,7 @@ class Testing(unittest.TestCase):
             }
 
             pub fn useHidden(p: Pinger) {
-              let h = new Hidden();
+              let h = Hidden();
               h.hello(3u64, p);
             }
             """)
@@ -1749,7 +1749,7 @@ class Testing(unittest.TestCase):
             fn main() {
               initAll();
               {
-                let p = new pinger.Pinger(5u64);
+                let p = pinger.Pinger(5u64);
                 p.ping(10u64);
                 pinger.useHidden(p);
               }
@@ -1804,11 +1804,11 @@ class Testing(unittest.TestCase):
               total: u64;
 
               pub fn init(self: &new) {
-                *self = new Self(entries: List[Entry].empty(), total: 0u64);
+                *self = Self(entries: List[Entry].empty(), total: 0u64);
               }
 
               pub async do add(self, n: u64) {
-                entries.push(new Entry(scale(n), Kind.Large));
+                entries.push(Entry(scale(n), Kind.Large));
                 total = total + entries[entries.len() - 1usize].weight();
               }
 
@@ -1827,12 +1827,12 @@ class Testing(unittest.TestCase):
               last: Mark;
 
               pub async do touch(self) {
-                last = new Mark(last.at + 1u64);
+                last = Mark(last.at + 1u64);
               }
             }
 
             pub fn stamp() Stamp {
-              new Stamp(new Mark(0u64))
+              Stamp(Mark(0u64))
             }
             """)
         write(pkg / "tests" / "useit.cone", """
@@ -1844,7 +1844,7 @@ class Testing(unittest.TestCase):
             fn main() {
               initAll();
               {
-                let t = new tally.Tally();
+                let t = tally.Tally();
                 t.add(1u64);
                 t.add(2u64);
                 let s = tally.stamp();

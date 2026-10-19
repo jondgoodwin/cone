@@ -4,7 +4,7 @@
 pub struct Ticket {
   pub id: u64;
 
-  pub fn none() Ticket { new Ticket(0u64) }
+  pub fn none() Ticket { Ticket(0u64) }
   pub fn isNone(self) bool { id == 0u64 }
   pub fn `==`(self, o: Ticket) bool { id == o.id }
   pub fn `!=`(self, o: Ticket) bool { id != o.id }
@@ -227,8 +227,8 @@ pub struct Works {
     var tx: Sender[Watch];
     var rx: Receiver[Watch];
     tx, rx = Channel[Watch].make();
-    new Works(List[InFlight].empty(), List[List[BindGroup]].empty(), 0u64, tx, rx,
-      new Arc[imm, WatchState](new WatchState(Atomic[u64].of(0u64), Atomic[u32].of(0u32), Atomic[u32].of(0u32))),
+    Works(List[InFlight].empty(), List[List[BindGroup]].empty(), 0u64, tx, rx,
+      Arc[imm, WatchState](WatchState(Atomic[u64].of(0u64), Atomic[u32].of(0u32), Atomic[u32].of(0u32))),
       None, false, 0u32, 0u64)
   }
 
@@ -252,7 +252,7 @@ pub struct Works {
   pub fn submit(self: &mut, device: &mut Device, job: Job, to: Target) Ticket {
     var j = job;
     lastId = lastId + 1u64;
-    let ticket = new Ticket(lastId);
+    let ticket = Ticket(lastId);
     var ok = !j.failed;
     if ok && j.frame != device.frameNumber {
       fail("submit: the job was recorded in an earlier frame");
@@ -284,7 +284,7 @@ pub struct Works {
         errorWords.push(errorWordsAt(j.checks[k]));
         k = k + 1usize;
       }
-      tx.send(new Watch(Some[Fence](fence), to, ticket.id, ok, false, errorWords));
+      tx.send(Watch(Some[Fence](fence), to, ticket.id, ok, false, errorWords));
     } elif ok {
       ok = device.queue.submit(j.encoder.finish());
     }
@@ -294,7 +294,7 @@ pub struct Works {
     groups <=> j.groups;
     var checks = List[ErrorCheck].empty();
     checks <=> j.checks;
-    jobs.push(new InFlight(ticket, token, j.frame, ok, Instant.now(), buffers, groups, true, isLoop, seq, checks));
+    jobs.push(InFlight(ticket, token, j.frame, ok, Instant.now(), buffers, groups, true, isLoop, seq, checks));
     ticket
   }
 
@@ -306,8 +306,8 @@ pub struct Works {
     var spareRx: Receiver[Watch];
     spareTx, spareRx = Channel[Watch].make();
     spareRx <=> rx;
-    let t = thread.startWith[WatchArgs, u32](new thread.Options(name: "gpuwork watcher"),
-      new WatchArgs(spareRx, state), &watch);
+    let t = thread.startWith[WatchArgs, u32](thread.Options(name: "gpuwork watcher"),
+      WatchArgs(spareRx, state), &watch);
     watcherId = t.id();
     watcher = Some[thread.Thread[u32]](t);
   }
@@ -366,7 +366,7 @@ pub struct Works {
           }
         }
         e.checks.clear();
-        out.push(new Completion(e.ticket, e.token, e.ok && failures.len() == 0usize, buffers, e.frame,
+        out.push(Completion(e.ticket, e.token, e.ok && failures.len() == 0usize, buffers, e.frame,
           e.submitted, now, failures));
         e.live = false;
         n = n + 1usize;
@@ -433,7 +433,7 @@ pub struct Works {
   // buffers with it.
   fn final(self: &uni) {
     if !started { return; }
-    tx.send(new Watch(None, Target.Here(0u64), 0u64, false, true, List[usize].empty()));
+    tx.send(Watch(None, Target.Here(0u64), 0u64, false, true, List[usize].empty()));
     while state.stopped.load() == 0u32 { sync.futexWait(&state.stopped, 0u32); }
   }
 }

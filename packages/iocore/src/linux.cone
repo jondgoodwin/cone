@@ -272,7 +272,7 @@ fn fdOf(raw: usize) i32 {i32.from(raw)}
 // reading and writing both, and for the peer's close; a socket
 fn lxWatch(epfd: usize, fd: usize, entry: u32, gen: u32) u32 {
   if isWindows() {return errorInvalidParameter;}
-  var ev = new EpollEvent(epollIn | epollOut | epollRdHup | epollEt, entry, gen);
+  var ev = EpollEvent(epollIn | epollOut | epollRdHup | epollEt, entry, gen);
   if epoll_ctl(fdOf(epfd), epollCtlAdd, fdOf(fd), &mut ev as *EpollEvent) != 0i32 {return errnoCode(lastErrno());}
   0u32
 }
@@ -280,7 +280,7 @@ fn lxWatch(epfd: usize, fd: usize, entry: u32, gen: u32) u32 {
 // A level-triggered watch on a descriptor of the loop's own
 fn lxWatchOwn(epfd: usize, fd: usize, datum: u32) bool {
   if isWindows() {return false;}
-  var ev = new EpollEvent(epollIn, datum, 0u32);
+  var ev = EpollEvent(epollIn, datum, 0u32);
   epoll_ctl(fdOf(epfd), epollCtlAdd, fdOf(fd), &mut ev as *EpollEvent) == 0i32
 }
 
@@ -553,7 +553,7 @@ fn lxTry(lp: &mut Loop, i: u32, at: Instant) u32 {
       err = lastErrno();
     }
     if err == 0i32 {
-      var a = new Array[u8, 28] <- fill 0u8;
+      var a = Array[u8, 28]() <- fill 0u8;
       var alen = 28i32;
       if getpeername(usize.from(fd), &mut a as *u8, &mut alen) != 0i32 {
         if lastErrno() == enotconn {return triedWait;}
@@ -783,7 +783,7 @@ fn lxArm(lp: &mut Loop, wakeAt: Instant, now: Instant) u32 {
   let left = (wakeAt - now).nanos();
   if !lp.associated || lp.armedFor != wakeAt {
     let ns = if left < 1i64 {1i64} else {left};
-    var spec = new ItimerSpec(0i64, 0i64, ns / 1000000000i64, ns % 1000000000i64);
+    var spec = ItimerSpec(0i64, 0i64, ns / 1000000000i64, ns % 1000000000i64);
     timerfd_settime(fdOf(lp.timer), 0i32, &mut spec as *ItimerSpec, null);
     lp.armedFor = wakeAt;
     lp.associated = true;
@@ -873,7 +873,7 @@ fn lxStartFile(lp: &mut Loop, p: *Rec, write: bool) u32 {
   if l as usize == 0usize {return errorInvalidParameter;}
   let dup = sysFcntl(fdOf(raw), fDupfdCloexec, 0i32);
   if dup < 0i32 {return errnoCode(lastErrno());}
-  let b = newBox(&noWork, r.at, new Waker(lp.port), r.index, r.gen, l);
+  let b = newBox(&noWork, r.at, Waker(lp.port), r.index, r.gen, l);
   (b as &mut JobBox).buf <=> r.buf;
   (*b).fd = dup;
   (*b).write = write;
@@ -924,7 +924,7 @@ fn lxResolve(arg: u64, buf: &mut IoBuf) Outcome {
   if isWindows() {return Outcome.Failed(errorInvalidParameter);}
   let name = cstrCopy(buf.view());
   if name as usize == 0usize {return Outcome.Failed(errorNotEnoughMemory);}
-  var hints = new AddrInfoLx(0i32, 0i32, sockStreamLx, 6i32, 0u32, 0u32, null, null, null);
+  var hints = AddrInfoLx(0i32, 0i32, sockStreamLx, 6i32, 0u32, 0u32, null, null, null);
   var res = null as *AddrInfoLx;
   let rc = sysGetaddrinfo(name, null, &mut hints as *AddrInfoLx, &mut res);
   libc.free(name);
@@ -935,7 +935,7 @@ fn lxResolve(arg: u64, buf: &mut IoBuf) Outcome {
   let recSize = mem.sizeof[SocketAddr]();
   while a as usize != 0usize {
     if (*a).addrlen <= 28u32 && buf.room() >= recSize {
-      var s = new SocketAddr(new Array[u8, 28] <- fill 0u8, i32.from((*a).addrlen));
+      var s = SocketAddr(Array[u8, 28]() <- fill 0u8, i32.from((*a).addrlen));
       libc.memcpy(&mut s.raw as *u8, (*a).addr, usize.from((*a).addrlen));
       s.setPort(u16.from(arg));
       buf.append(mem.sliceFromParts(&mut s as *u8, recSize));
@@ -963,7 +963,7 @@ fn lxStat(arg: u64, buf: &mut IoBuf) Outcome {
   }
   // struct stat on x86-64 is 144 bytes: st_mode at 24, st_size at 48 and
   // st_mtim at 88
-  var st = new Array[u64, 18] <- fill 0u64;
+  var st = Array[u64, 18]() <- fill 0u64;
   let rc = sysStat(name.cstr(), &mut st as *u8);
   if rc != 0i32 {return Outcome.Failed(errnoCode(lastErrno()));}
   let mode = u32.from(st[3usize] & 0xFFFFFFFFu64);
@@ -974,7 +974,7 @@ fn lxStat(arg: u64, buf: &mut IoBuf) Outcome {
   if (mode & 0x92u32) == 0u32 {attributes = attributes | 1u32;}
   // A FILETIME counts 100 ns from 1601
   let filetime = u64.from(sec * 10000000i64 + nsec / 100i64 + 116444736000000000i64);
-  var data = new Array[u32, 9] <- fill 0u32;
+  var data = Array[u32, 9]() <- fill 0u32;
   data[0usize] = attributes;
   data[5usize] = u32.from(filetime & 0xFFFFFFFFu64);
   data[6usize] = u32.from(filetime >> 32u64);

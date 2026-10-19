@@ -29,14 +29,14 @@ import geomath use *;
 import libc;
 import buoyancy use *;
 
-fn zero() Vec3 { new Vec3(0., 0., 0.) }
+fn zero() Vec3 { Vec3(0., 0., 0.) }
 
 fn main() i32 {
   let props = WaterProps.sea();
   let rg = props.density * props.gravity;
 
   // 1. the box
-  let box = Hull.box(new Vec3(1., 0.5, 0.25));
+  let box = Hull.box(Vec3(1., 0.5, 0.25));
   expectFloat(f64.from(box.volume), 8.0 * 1.0 * 0.5 * 0.25, 0.0001, "a box's volume is 8 hx hy hz");
   expect(box.centroid.length() < 0.0001, "its centre is the origin");
   var outward = true;
@@ -57,11 +57,11 @@ fn main() i32 {
   var xs = 0;
   while xs < 2 {
     var o = List[Vec2].empty();
-    o.push(new Vec2(-0.5, -0.25));
-    o.push(new Vec2(0.5, -0.25));
-    o.push(new Vec2(0.5, 0.25));
-    o.push(new Vec2(-0.5, 0.25));
-    stations.push(new Station(if xs == 0 { -1. } else { 1. }, o));
+    o.push(Vec2(-0.5, -0.25));
+    o.push(Vec2(0.5, -0.25));
+    o.push(Vec2(0.5, 0.25));
+    o.push(Vec2(-0.5, 0.25));
+    stations.push(Station(if xs == 0 { -1. } else { 1. }, o));
     xs = xs + 1;
   }
   let lofted = Hull.loft(&stations);
@@ -73,24 +73,24 @@ fn main() i32 {
     var k = 0;
     while k < 16 {
       let a = 6.28318530718 * f32.from(k) / 16.;
-      o.push(new Vec2(0.4 * libc.cosf(a), 0.4 * libc.sinf(a)));
+      o.push(Vec2(0.4 * libc.cosf(a), 0.4 * libc.sinf(a)));
       k = k + 1;
     }
-    ring.push(new Station(f32.from(ss) * 1.5, o));
+    ring.push(Station(f32.from(ss) * 1.5, o));
     ss = ss + 1;
   }
   let barrel = Hull.loft(&ring);
   expectFloat(f64.from(barrel.volume), 8.0 * 0.16 * libc.sin(6.283185307179586 / 16.0) * 3.0, 0.0005, "a 16-sided barrel's volume is (n / 2) r^2 sin(2 pi / n) L");
 
   // 3. Archimedes
-  let sunk = hullForces(&box, new Vec3(0., -3., 0.), Quat.identity(), zero(), zero(), new Vec3(0., -3., 0.), (x, z) => 0., &props);
+  let sunk = hullForces(&box, Vec3(0., -3., 0.), Quat.identity(), zero(), zero(), Vec3(0., -3., 0.), (x, z) => 0., &props);
   expectFloat(f64.from(sunk.force.y), f64.from(rg * box.volume), f64.from(rg * box.volume) * 0.0001, "a submerged box gets rho g V upward");
   expect(libc.fabsf(sunk.force.x) + libc.fabsf(sunk.force.z) < 0.5 && sunk.torque.length() < 0.5, "and no sideways force or torque");
 
   // 4. clipped volumes
-  let b2 = Hull.box(new Vec3(1., 0.5, 0.5));
-  let up = hullForces(&b2, new Vec3(0., 0.2, 0.), Quat.identity(), zero(), zero(), new Vec3(0., 0.2, 0.), (x, z) => 0., &props);
-  let down = hullForces(&b2, new Vec3(0., -0.2, 0.), Quat.identity(), zero(), zero(), new Vec3(0., -0.2, 0.), (x, z) => 0., &props);
+  let b2 = Hull.box(Vec3(1., 0.5, 0.5));
+  let up = hullForces(&b2, Vec3(0., 0.2, 0.), Quat.identity(), zero(), zero(), Vec3(0., 0.2, 0.), (x, z) => 0., &props);
+  let down = hullForces(&b2, Vec3(0., -0.2, 0.), Quat.identity(), zero(), zero(), Vec3(0., -0.2, 0.), (x, z) => 0., &props);
   expectFloat(f64.from(up.volume), 0.6, 0.0005, "a box with its centre 0.2 m up displaces 0.6 m^3");
   expectFloat(f64.from(down.volume), 1.4, 0.0005, "and 0.2 m down, 1.4 m^3");
 
@@ -99,15 +99,15 @@ fn main() i32 {
   var ang = 0;
   while ang < 3 {
     let theta = if ang == 0 { 0.f } elif ang == 1 { 0.349066 } else { 1.047198 };
-    let r = hullForces(&b2, zero(), Quat.angleAxis(theta, new Vec3(1., 0., 0.)), zero(), zero(), zero(), (x, z) => 0., &props);
+    let r = hullForces(&b2, zero(), Quat.angleAxis(theta, Vec3(1., 0., 0.)), zero(), zero(), zero(), (x, z) => 0., &props);
     if libc.fabsf(r.volume - 1.) > 0.002 { half = false; }
     ang = ang + 1;
   }
   expect(half, "the surface through the centre of a box cuts it in half at roll 0, 20 and 60 degrees");
 
   // 6. righting torque
-  let flat = Hull.box(new Vec3(1., 0.25, 1.));
-  let tilted = hullForces(&flat, zero(), Quat.angleAxis(0.05, new Vec3(1., 0., 0.)), zero(), zero(), zero(), (x, z) => 0., &props);
+  let flat = Hull.box(Vec3(1., 0.25, 1.));
+  let tilted = hullForces(&flat, zero(), Quat.angleAxis(0.05, Vec3(1., 0., 0.)), zero(), zero(), zero(), (x, z) => 0., &props);
   let gm = 0.25f / 2. + 4. / (12. * 0.25) - 0.25;
   let want = 0. - rg * 1. * gm * libc.sinf(0.05);
   expectFloat(f64.from(tilted.torque.x), f64.from(want), f64.from(libc.fabsf(want)) * 0.05, "the righting torque is -rho g V GM sin(theta), -607 N m within 5 percent");
@@ -119,7 +119,7 @@ fn main() i32 {
 
   // 8. drag by hand
   let v = 2.f;
-  let moving = hullForces(&b2, new Vec3(0., -4., 0.), Quat.identity(), new Vec3(v, 0., 0.), zero(), new Vec3(0., -4., 0.), (x, z) => 0., &props);
+  let moving = hullForces(&b2, Vec3(0., -4., 0.), Quat.identity(), Vec3(v, 0., 0.), zero(), Vec3(0., -4., 0.), (x, z) => 0., &props);
   let s = v / props.referenceSpeed;
   let front = (props.pressureDrag1 * s + props.pressureDrag2 * s * s) * 1.;          // area 1 m^2, cos 1
   let back = (props.suctionDrag1 * s + props.suctionDrag2 * s * s) * 1.;
@@ -131,10 +131,10 @@ fn main() i32 {
   expect(libc.fabsf(moving.drag.y) + libc.fabsf(moving.drag.z) < 0.5, "and along the motion");
 
   // 9. scaling and spin
-  let fast = hullForces(&b2, new Vec3(0., -4., 0.), Quat.identity(), new Vec3(2. * v, 0., 0.), zero(), new Vec3(0., -4., 0.), (x, z) => 0., &props);
+  let fast = hullForces(&b2, Vec3(0., -4., 0.), Quat.identity(), Vec3(2. * v, 0., 0.), zero(), Vec3(0., -4., 0.), (x, z) => 0., &props);
   let ratio = fast.drag.x / moving.drag.x;
   expect(ratio > 3. && ratio < 4.2, "doubling the speed multiplies the drag by between 3 and 4.2");
-  let spun = hullForces(&b2, new Vec3(0., -4., 0.), Quat.identity(), zero(), new Vec3(0., 2., 0.), new Vec3(0., -4., 0.), (x, z) => 0., &props);
+  let spun = hullForces(&b2, Vec3(0., -4., 0.), Quat.identity(), zero(), Vec3(0., 2., 0.), Vec3(0., -4., 0.), (x, z) => 0., &props);
   expect(spun.torque.y < -1., "a spinning body's torque opposes its spin");
   done()
 }

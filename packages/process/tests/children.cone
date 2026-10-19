@@ -166,7 +166,7 @@ fn hexOf(s: &Array[u8]) String {
 // n bytes to each stream, 4096 at a time, in turns: stdout cycles 'a' to 'z'
 // by chunk, stderr 'A' to 'Z'
 fn childStreams(n: usize) i32 {
-  var chunk = new Array[u8, 4096] <- fill 0u8;
+  var chunk = Array[u8, 4096]() <- fill 0u8;
   let cp: *u8 = &[]chunk as *u8;
   var done = 0usize;
   var k = 0usize;
@@ -231,7 +231,7 @@ fn child(a: &List[String], argc: i32, argv: **u8) i32 {
     g.push(String.from("grandchild"));
     g.push(a[3usize].copy());
     g.push(a[4usize].copy());
-    let r = process.run(g.view(), new process.Options(inherit: true));
+    let r = process.run(g.view(), process.Options(inherit: true));
     out("the grandchild ended\n");
     return 0i32;
   }
@@ -243,7 +243,7 @@ fn child(a: &List[String], argc: i32, argv: **u8) i32 {
     return 0i32;
   }
   if mode.equals("stdin") {
-    var buf = new Array[u8, 256] <- fill 0u8;
+    var buf = Array[u8, 256]() <- fill 0u8;
     let bp: *u8 = &[]buf as *u8;
     var total = 0u64;
     var n = libc.fread(bp, 1usize, 256usize, libc.stdin());
@@ -262,13 +262,13 @@ fn child(a: &List[String], argc: i32, argv: **u8) i32 {
     // POSIX keeps the bytes
     let name = a[3usize].view();
     if isWindows() {
-      var wname = new Array[u16, 64] <- fill 0u16;
+      var wname = Array[u16, 64]() <- fill 0u16;
       var i = 0usize;
       while i < name.len && i < 63usize {
         wname[i] = u16.from(name[i]);
         i = i + 1usize;
       }
-      var buf = new Array[u16, 256] <- fill 0u16;
+      var buf = Array[u16, 256]() <- fill 0u16;
       let n = GetEnvironmentVariableW(&[]wname as *u16, &[]buf as *u16, 256u32);
       if n == 0u32 {
         out("<none>");
@@ -340,7 +340,7 @@ fn childCommand(exe: &str, mode: &str) List[String] {
 }
 
 fn emptyOutput() process.Output {
-  new process.Output(0u32, 0u32, false, String.empty(), String.empty())
+  process.Output(0u32, 0u32, false, String.empty(), String.empty())
 }
 
 // The Output of a run that must have started
@@ -430,14 +430,14 @@ fn panics(exe: &str) {
 // code Windows would have given it, and everything else is as without it
 fn crashesUnreported(exe: &str) {
   let c = childCommand(exe, "panic");
-  let o = ran(process.run(c.view(), new process.Options(crashReport: false)), "unreported panic");
+  let o = ran(process.run(c.view(), process.Options(crashReport: false)), "unreported panic");
   expectUInt(u64.from(o.exitCode), osCode(3221226505u64, 134u64), "an unreported panic's exit code");
   expectStr(o.stdout.view(), os("before the panic\r\n", "before the panic\n"), "what it wrote before an unreported panic");
   expectBool(o.stderr.startsWith("panic at "), true, "an unreported panic's line on stderr");
   expectBool(o.stderr.contains("on purpose"), true, "an unreported panic's message on stderr");
 
   // In a job, as a time limit puts it
-  let t = ran(process.run(c.view(), new process.Options(timeout: Duration.fromSeconds(30), crashReport: false)),
+  let t = ran(process.run(c.view(), process.Options(timeout: Duration.fromSeconds(30), crashReport: false)),
     "unreported panic in time");
   expectUInt(u64.from(t.exitCode), osCode(3221226505u64, 134u64), "an unreported panic's exit code, with a time limit");
   expectBool(t.timedOut, false, "an unreported panic in time");
@@ -446,7 +446,7 @@ fn crashesUnreported(exe: &str) {
   // A breakpoint is a crash after the loader's own, which a debugger is given
   // (POSIX: SIGTRAP, 128 and 5)
   let b = childCommand(exe, "break");
-  let k = ran(process.run(b.view(), new process.Options(crashReport: false)), "unreported breakpoint");
+  let k = ran(process.run(b.view(), process.Options(crashReport: false)), "unreported breakpoint");
   expectUInt(u64.from(k.exitCode), osCode(2147483651u64, 133u64), "an unreported breakpoint's exit code, STATUS_BREAKPOINT or SIGTRAP");
   expectStr(k.stdout.view(), os("before the breakpoint\r\n", "before the breakpoint\n"), "what it wrote before the breakpoint");
 
@@ -457,12 +457,12 @@ fn crashesUnreported(exe: &str) {
   if !isWindows() { env.set("CONE_PROCESS_TEST_PLAIN", "1"); }
   var v = childCommand(exe, "env");
   v.push(String.from(os("_NO_DEBUG_HEAP", "CONE_PROCESS_TEST_PLAIN")));
-  let heap = ran(process.run(v.view(), new process.Options(crashReport: false)), "unreported env");
+  let heap = ran(process.run(v.view(), process.Options(crashReport: false)), "unreported env");
   expectStr(heap.stdout.view(), "49", "_NO_DEBUG_HEAP=1, crashes unreported");
   if !isWindows() { env.unset("CONE_PROCESS_TEST_PLAIN"); }
 
   let h = childCommand(exe, "hello");
-  let o2 = ran(process.run(h.view(), new process.Options(crashReport: false)), "unreported hello");
+  let o2 = ran(process.run(h.view(), process.Options(crashReport: false)), "unreported hello");
   expectStr(o2.stdout.view(), os("to stdout\r\n", "to stdout\n"), "stdout captured, crashes unreported");
   expectStr(o2.stderr.view(), os("to stderr\r\n", "to stderr\n"), "stderr captured, crashes unreported");
   expectBool(o2.success(), true, "hello succeeds, crashes unreported");
@@ -470,7 +470,7 @@ fn crashesUnreported(exe: &str) {
   let size = 1048576usize;
   var s = childCommand(exe, "streams");
   s.push(String.from("1048576"));
-  let big = ran(process.run(s.view(), new process.Options(timeout: Duration.fromSeconds(30), crashReport: false)),
+  let big = ran(process.run(s.view(), process.Options(timeout: Duration.fromSeconds(30), crashReport: false)),
     "unreported streams");
   expectBool(big.timedOut, false, "a megabyte each, crashes unreported: in time");
   expectUInt(u64.from(big.stdout.len()), u64.from(size), "a megabyte to stdout, crashes unreported");
@@ -479,7 +479,7 @@ fn crashesUnreported(exe: &str) {
   var z = childCommand(exe, "sleep");
   z.push(String.from("10000"));
   let began = Instant.now();
-  let slept = ran(process.run(z.view(), new process.Options(timeout: Duration.fromMillis(300), crashReport: false)),
+  let slept = ran(process.run(z.view(), process.Options(timeout: Duration.fromMillis(300), crashReport: false)),
     "unreported sleep");
   let took = began.elapsed();
   expectBool(slept.timedOut, true, "a sleeping child stopped by its time limit, crashes unreported");
@@ -492,7 +492,7 @@ fn bigStreams(exe: &str) {
   let size = 1048576usize;
   var c = childCommand(exe, "streams");
   c.push(String.from("1048576"));
-  let o = ran(process.run(c.view(), new process.Options(timeout: Duration.fromSeconds(30))), "streams");
+  let o = ran(process.run(c.view(), process.Options(timeout: Duration.fromSeconds(30))), "streams");
   expectBool(o.timedOut, false, "a megabyte each: in time");
   expectUInt(u64.from(o.stdout.len()), u64.from(size), "a megabyte to stdout");
   expectUInt(u64.from(o.stderr.len()), u64.from(size), "a megabyte to stderr");
@@ -510,7 +510,7 @@ fn timesOut(exe: &str) {
   var c = childCommand(exe, "sleep");
   c.push(String.from("10000"));
   let began = Instant.now();
-  let o = ran(process.run(c.view(), new process.Options(timeout: Duration.fromMillis(300))), "sleep");
+  let o = ran(process.run(c.view(), process.Options(timeout: Duration.fromMillis(300))), "sleep");
   let took = began.elapsed();
   expectBool(o.timedOut, true, "a sleeping child stopped by its time limit");
   expectUInt(u64.from(o.exitCode), 1u64, "a stopped child's exit code");
@@ -523,7 +523,7 @@ fn timesOut(exe: &str) {
   // Given long enough, the same child finishes
   var d = childCommand(exe, "sleep");
   d.push(String.from("50"));
-  let p = ran(process.run(d.view(), new process.Options(timeout: Duration.fromSeconds(20))), "short sleep");
+  let p = ran(process.run(d.view(), process.Options(timeout: Duration.fromSeconds(20))), "short sleep");
   expectBool(p.timedOut, false, "a short sleep in time");
   expectStr(p.stdout.view(), os("woke\r\n", "woke\n"), "a short sleep woke");
 }
@@ -536,7 +536,7 @@ fn treeStopped(exe: &str, root: &Path) {
   c.push(String.from(idFile.view()));
   c.push(String.from("20000"));
   let began = Instant.now();
-  let o = ran(process.run(c.view(), new process.Options(timeout: Duration.fromMillis(1500))), "tree");
+  let o = ran(process.run(c.view(), process.Options(timeout: Duration.fromMillis(1500))), "tree");
   let took = began.elapsed();
   expectBool(o.timedOut, true, "a child waiting on a grandchild stopped");
   expectBool(took < Duration.fromSeconds(8), true, "stopped well before the grandchild would wake");
@@ -572,17 +572,17 @@ fn treeStopped(exe: &str, root: &Path) {
 fn workingFolder(exe: &str, root: &Path) {
   let c = childCommand(exe, "cwd");
   // A Path variable, lent: the same one is given again below
-  let o = ran(process.run(c.view(), new process.Options(), root), "cwd");
+  let o = ran(process.run(c.view(), process.Options(), root), "cwd");
   expectStr(o.stdout.view(), root.view(), "started in the folder given");
 
   // A string literal where the folder is wanted is made a Path: 'C:\Windows'
   // exists on every Windows ('/usr' on every Linux), and the child reads its
   // folder back normalized
   let systemFolder = Path.from(os("C:\\Windows", "/usr"));
-  let w = ran(process.run(c.view(), new process.Options(), &systemFolder), "cwd from a literal");
+  let w = ran(process.run(c.view(), process.Options(), &systemFolder), "cwd from a literal");
   expectStr(w.stdout.view(), os("C:/Windows", "/usr"), "started in a folder given as a literal");
   // And '.' is this program's own folder
-  let dot = ran(process.run(c.view(), new process.Options(), "."), "cwd from '.'");
+  let dot = ran(process.run(c.view(), process.Options(), "."), "cwd from '.'");
   match fs.currentDir() {
     case let d Ok { expectStr(dot.stdout.view(), d.view(), "a literal '.' is this program's folder"); }
     case is Error { expect(false, "this program's folder"); }
@@ -593,13 +593,13 @@ fn workingFolder(exe: &str, root: &Path) {
   var back = String.from(root.view());
   if isWindows() { back.replaceByte('/', '\\'); } else { back.appendByte('/'); }
   let backPath = Path.from(back.view());
-  let b = ran(process.run(c.view(), new process.Options(), &backPath), "cwd with backslashes");
+  let b = ran(process.run(c.view(), process.Options(), &backPath), "cwd with backslashes");
   expectStr(b.stdout.view(), root.view(), "a folder written with '\\'");
 
   // A UTF-8 name
   let utf = root.join("dossier é 日本");
   fs.makeDir(&utf);
-  let u = ran(process.run(c.view(), new process.Options(), &utf), "cwd UTF-8");
+  let u = ran(process.run(c.view(), process.Options(), &utf), "cwd UTF-8");
   expectStr(u.stdout.view(), utf.view(), "a folder named in UTF-8");
 
   // A relative program is found from this program's folder, not the
@@ -608,7 +608,7 @@ fn workingFolder(exe: &str, root: &Path) {
   // with no '/' is looked for in PATH, which is made to hold this program's
   // folder for the purpose)
   var rel = childCommand(os(".\\children.exe", "./children"), "cwd");
-  let r = ran(process.run(rel.view(), new process.Options(), root), "relative program");
+  let r = ran(process.run(rel.view(), process.Options(), root), "relative program");
   expectStr(r.stdout.view(), root.view(), "a relative program, read from this program's folder");
   var oldPath = String.empty();
   if !isWindows() {
@@ -623,7 +623,7 @@ fn workingFolder(exe: &str, root: &Path) {
     env.set("PATH", searched.view());
   }
   var bare = childCommand("children", "cwd");
-  let n = ran(process.run(bare.view(), new process.Options(), root), "program with no extension");
+  let n = ran(process.run(bare.view(), process.Options(), root), "program with no extension");
   expectStr(n.stdout.view(), root.view(), "a program named with no '.exe'");
   if !isWindows() { env.set("PATH", oldPath.view()); }
 
@@ -631,9 +631,9 @@ fn workingFolder(exe: &str, root: &Path) {
   var line = String.from("\"");
   line.append(exe);
   line.append("\" --child cwd");
-  let rl = ran(process.runLine(line.view(), new process.Options(), root), "runLine in a folder");
+  let rl = ran(process.runLine(line.view(), process.Options(), root), "runLine in a folder");
   expectStr(rl.stdout.view(), root.view(), "runLine started in the Path given");
-  let rlw = ran(process.runLine(line.view(), new process.Options(), &systemFolder), "runLine in a literal folder");
+  let rlw = ran(process.runLine(line.view(), process.Options(), &systemFolder), "runLine in a literal folder");
   expectStr(rlw.stdout.view(), os("C:/Windows", "/usr"), "runLine started in a literal folder");
 
   // None of the Paths was consumed by the runs that took it
@@ -649,7 +649,7 @@ fn workingFolder(exe: &str, root: &Path) {
   }
   // An empty Path, given, is the same as none given
   let nowhere = Path.from("");
-  let empty = ran(process.run(c.view(), new process.Options(), &nowhere), "cwd from an empty Path");
+  let empty = ran(process.run(c.view(), process.Options(), &nowhere), "cwd from an empty Path");
   expectStr(empty.stdout.view(), here.stdout.view(), "an empty Path is this program's folder");
 }
 
@@ -668,7 +668,7 @@ fn environment(exe: &str) {
   let held = os("105 110 104 101 114 105 116 101 100 44 32 233 32 26085 26412",
     "105 110 104 101 114 105 116 101 100 44 32 195 169 32 230 151 165 230 156 172");
   expectStr(o.stdout.view(), held, "a variable set before the run, UTF-8 into UTF-16");
-  let d = ran(process.run(c.view(), new process.Options(crashReport: false)), "env, crashes unreported");
+  let d = ran(process.run(c.view(), process.Options(crashReport: false)), "env, crashes unreported");
   expectStr(d.stdout.view(), held, "a variable set before the run, crashes unreported");
   var g = childCommand(exe, "envget");
   g.push(String.from("CONE_PROCESS_TEST"));
@@ -792,7 +792,7 @@ fn inherited(exe: &str) {
   stdio.printStr("a child sharing this output:\n");
   stdio.printFlush();
   let c = childCommand(exe, "hello");
-  let o = ran(process.run(c.view(), new process.Options(inherit: true)), "inherit");
+  let o = ran(process.run(c.view(), process.Options(inherit: true)), "inherit");
   expectUInt(u64.from(o.exitCode), 0u64, "inheriting child's exit code");
   expectStr(o.stdout.view(), "", "nothing captured when inherited");
   expectStr(o.stderr.view(), "", "nothing captured from stderr when inherited");
@@ -812,12 +812,12 @@ fn failures(exe: &str, root: &Path) {
 
   let missing = root.join("missing");
   let c = childCommand(exe, "hello");
-  failedWith(process.run(c.view(), new process.Options(), &missing), exe, root.view(),
+  failedWith(process.run(c.view(), process.Options(), &missing), exe, root.view(),
     u32.from(osCode(267u64, 2u64)),
     os("run <exe> in <root>/missing: The directory name is invalid",
        "run <exe> in <root>/missing: No such file or directory"), "no such folder");
   // The error holds the folder as a Path, and the variable it was made from is as it was
-  match process.run(c.view(), new process.Options(), &missing) {
+  match process.run(c.view(), process.Options(), &missing) {
     case let e Error {
       expectStr(e.dir.view(), missing.view(), "the error holds the working folder given");
       expect(e.dir.isAbsolute(), "and it is a Path");
@@ -826,7 +826,7 @@ fn failures(exe: &str, root: &Path) {
   }
   // A literal folder that is not there, too
   if isWindows() {
-    match process.run(c.view(), new process.Options(), "C:\\cone-process-test-no-such-folder") {
+    match process.run(c.view(), process.Options(), "C:\\cone-process-test-no-such-folder") {
       case let e Error {
         expectStr(e.dir.view(), "C:\\cone-process-test-no-such-folder", "a literal folder held by the error");
         expectUInt(u64.from(e.code), 267u64, "a literal folder not there");
@@ -834,7 +834,7 @@ fn failures(exe: &str, root: &Path) {
       case is Ok { expect(false, "a literal folder not there fails"); }
     }
   } else {
-    match process.run(c.view(), new process.Options(), "/cone-process-test-no-such-folder") {
+    match process.run(c.view(), process.Options(), "/cone-process-test-no-such-folder") {
       case let e Error {
         expectStr(e.dir.view(), "/cone-process-test-no-such-folder", "a literal folder held by the error");
         expectUInt(u64.from(e.code), 2u64, "a literal folder not there");

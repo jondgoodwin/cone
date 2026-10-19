@@ -15,14 +15,14 @@
 //   actor Keeper {
 //     head Option[NodeRef];
 //
-//     fn init(self: &new) { *self = new Self(None[NodeRef]); }
+//     fn init(self: &new) { *self = Self(None[NodeRef]); }
 //
 //     pub async do push(self, n i64) {
 //       head = Some[NodeRef](new self[Node](n, head));   // in the actor's region
 //     }
 //   }
 //
-// 'new self[T](args)' is 'self.allocRegion().alloc(new T(args))': the compiler
+// 'new self[T](args)' is 'self.allocRegion().alloc(T(args))': the compiler
 // gives the state of every actor a method 'allocRegion', answering the actor's
 // 'ActorRegion' (regionOf, below), and a value that has one leads to a region
 // ('new x[T](...)', compiler/c/doc/nodes/literals.md, "Construction"). Only the
@@ -178,13 +178,13 @@ pub struct ActorGc is RegionRef, Traced, ActorLocal {
   pub size: u32;        // the object's bytes, header included, a multiple of 16
   pub flags: u32;
 
-  // 'new ActorGc[mut, T](v)', made through the actor's region ('alloc' of
+  // 'ActorGc[mut, T](v)', made through the actor's region ('alloc' of
   // ActorRegion), which names the actor's region first
   fn alloc(size: usize, ty: *TypeRecord) *u8 {
     let sp = target;
     target = null;
     if sp == null {
-      panic("ActorGc: a value is made in an actor's region by 'new self[T](...)', never by 'new ActorGc[...]' on its own");
+      panic("ActorGc: a value is made in an actor's region by 'new self[T](...)', never by 'ActorGc[...]()' on its own");
     }
     (sp as &mut ActorRegion).allocate(size, ty)
   }
@@ -243,7 +243,7 @@ pub struct GcStats {
 // collections made in it draw their blocks from: its own 'vt', the allocate,
 // resize and release below, which sit beside it IN THIS RECORD, so the address
 // the collections hold is the record's and lasts as long as the actor), and
-// 'new self[T](...)', which is 'self.allocRegion().alloc(new T(...))', is the
+// 'new self[T](...)', which is 'self.allocRegion().alloc(T(...))', is the
 // allocation below.
 pub struct ActorRegion {
   pub region: *MemRegion;         // what collections made here get their blocks from: 'vt', below
@@ -280,7 +280,7 @@ pub struct ActorRegion {
     if g == null {
       panic("ActorGc: out of memory for an actor's region");
     }
-    mem.writeRaw(g, new ActorRegion(null, new MemRegion(&blockAlloc, &blockResize, &blockRelease)));
+    mem.writeRaw(g, ActorRegion(null, MemRegion(&blockAlloc, &blockResize, &blockRelease)));
     (*g).region = (&mut (*g).vt) as *MemRegion;
     g
   }
@@ -289,7 +289,7 @@ pub struct ActorRegion {
   // value made on this thread is in this region
   pub fn alloc[T](self: &mut, v: T) ActorGc[mut, T] {
     target = self as *ActorRegion;
-    new ActorGc[mut, T](v)
+    ActorGc[mut, T](v)
   }
 
   // A value made in the actor's region that nothing changes: the reference is
@@ -300,12 +300,12 @@ pub struct ActorRegion {
   // goes in the brackets, 'new self[imm, T]', or this stays)
   pub fn allocImm[T](self: &mut, v: T) ActorGc[imm, T] {
     target = self as *ActorRegion;
-    new ActorGc[imm, T](v)
+    ActorGc[imm, T](v)
   }
 
   // What the region holds and has done, for tests and tuning
   pub fn stats(self: &) GcStats {
-    new GcStats(self.ncollections, self.nobjects, self.bytes, self.nchunks, self.nlarge, self.ncopied,
+    GcStats(self.ncollections, self.nobjects, self.bytes, self.nchunks, self.nlarge, self.ncopied,
       self.nfinalized, self.nfreed, self.allocated, self.live, self.blocks)
   }
 
@@ -412,7 +412,7 @@ pub struct ActorRegion {
     if c == null {
       return null;
     }
-    mem.writeRaw(c, new Chunk(null, size, mem.sizeof[Chunk](), 0usize));
+    mem.writeRaw(c, Chunk(null, size, mem.sizeof[Chunk](), 0usize));
     if self.last == null {
       self.first = c;
     } else {
@@ -448,7 +448,7 @@ pub struct ActorRegion {
     if p == null {
       return null;
     }
-    mem.writeRaw(p as *ActorGc, new ActorGc(ty, link, u32.from(bytes), flags));
+    mem.writeRaw(p as *ActorGc, ActorGc(ty, link, u32.from(bytes), flags));
     if flags == flagLarge {
       self.large = p as usize;
       self.nlarge = self.nlarge + 1usize;

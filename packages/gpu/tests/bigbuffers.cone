@@ -56,13 +56,13 @@ fn word(p: *u8, i: usize) u32 { *((p + i * 4usize) as *u32) }
 
 // Dispatch probeMain over (big, probes -> out) once, 64 invocations, and copy the 64 words out to 'readback'
 fn probe(device: &mut Device, shader: &ShaderModule, big: &BindGroupEntry, probes: &Buffer, out: &Buffer, readback: &Buffer) *u8 {
-  let layoutEntries = [new BindGroupLayoutEntry(binding: 0u32, visibility: SHADER_STAGE_COMPUTE, bufferType: BUFFER_BINDING_TYPE_READ_ONLY_STORAGE),
-    new BindGroupLayoutEntry(binding: 1u32, visibility: SHADER_STAGE_COMPUTE, bufferType: BUFFER_BINDING_TYPE_READ_ONLY_STORAGE),
-    new BindGroupLayoutEntry(binding: 2u32, visibility: SHADER_STAGE_COMPUTE, bufferType: BUFFER_BINDING_TYPE_STORAGE)];
+  let layoutEntries = [BindGroupLayoutEntry(binding: 0u32, visibility: SHADER_STAGE_COMPUTE, bufferType: BUFFER_BINDING_TYPE_READ_ONLY_STORAGE),
+    BindGroupLayoutEntry(binding: 1u32, visibility: SHADER_STAGE_COMPUTE, bufferType: BUFFER_BINDING_TYPE_READ_ONLY_STORAGE),
+    BindGroupLayoutEntry(binding: 2u32, visibility: SHADER_STAGE_COMPUTE, bufferType: BUFFER_BINDING_TYPE_STORAGE)];
   var groupLayout = device.createBindGroupLayout(&layoutEntries);
   let groupLayouts = [&groupLayout];
   var layout = device.createPipelineLayout(&groupLayouts, 0u32);
-  let desc = new ComputePipelineDescriptor(layout: &layout, module: shader, entryPoint: "probeMain");
+  let desc = ComputePipelineDescriptor(layout: &layout, module: shader, entryPoint: "probeMain");
   var pipeline = device.createComputePipeline(&desc);
   let groupEntries = [*big, BindGroupEntry.buffer(1u32, probes), BindGroupEntry.buffer(2u32, out)];
   var group = device.createBindGroup(&groupLayout, &groupEntries);
@@ -142,7 +142,7 @@ fn main() i32 {
 
   // ---- 1. Over the allocation limit ----
   {
-    var device = adapter.requestComputeDevice(&new ComputeRequest(largeBuffers: true));
+    var device = adapter.requestComputeDevice(&ComputeRequest(largeBuffers: true));
     require(device.isValid(), "a compute device");
     let before = failures();
     let tooBig = device.createBuffer(has.maxMemoryAllocationSize + 1u64, BUFFER_USAGE_STORAGE);
@@ -154,7 +154,7 @@ fn main() i32 {
   {
     var device = adapter.requestDevice();
     require(device.isValid(), "a drawing device");
-    let layoutEntries = [new BindGroupLayoutEntry(binding: 0u32, visibility: SHADER_STAGE_COMPUTE, bufferType: BUFFER_BINDING_TYPE_STORAGE)];
+    let layoutEntries = [BindGroupLayoutEntry(binding: 0u32, visibility: SHADER_STAGE_COMPUTE, bufferType: BUFFER_BINDING_TYPE_STORAGE)];
     var groupLayout = device.createBindGroupLayout(&layoutEntries);
     var b = device.createBuffer(268435456u64, BUFFER_USAGE_STORAGE);
     require(b.isValid(), "a 256 MiB buffer");
@@ -170,7 +170,7 @@ fn main() i32 {
   let planned = failures();
 
   // ---- 3. A 2.5 GiB buffer ----
-  var device = adapter.requestComputeDevice(&new ComputeRequest(largeBuffers: true));
+  var device = adapter.requestComputeDevice(&ComputeRequest(largeBuffers: true));
   require(device.isValid(), "a compute device");
   let ran = has.maxBufferSize >= SIZE && has.maxMemoryAllocationSize >= SIZE && has.maxStorageBufferRange >= SIZE
     && has.largestDeviceLocalHeap >= SIZE + 2u64 * GIB;
@@ -217,7 +217,7 @@ fn main() i32 {
 
     // Sixty-four words, spread: the ends, either side of byte 2^31, chunk boundaries, and others
     let words = SIZE / 4u64;
-    var probes = new Array[u32, 64] <- fill 0u32;
+    var probes = Array[u32, 64]() <- fill 0u32;
     let fixed: Array[u64, 20] = [0u64, 1u64, 2u64, 3u64, words - 1u64, words - 2u64, 536870910u64, 536870911u64, 536870912u64, 536870913u64,
       CHUNK_WORDS - 1u64, CHUNK_WORDS, CHUNK_WORDS + 1u64, 20u64 * CHUNK_WORDS, 20u64 * CHUNK_WORDS + 1u64, 20u64 * CHUNK_WORDS + 777u64,
       39u64 * CHUNK_WORDS, 39u64 * CHUNK_WORDS + 2u64, 32u64 * CHUNK_WORDS - 1u64, 32u64 * CHUNK_WORDS];

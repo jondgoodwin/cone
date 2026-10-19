@@ -27,12 +27,12 @@ fn near(got: f32, want: f32, within: f32, label: &Array[u8]) bool {
 
 fn testChain() {
   var s = Skeleton.empty();
-  let one = new Vec3(1., 1., 1.);
-  let up = new Vec3(0., 1., 0.);
-  let b0 = s.addBone(-1i32, new Transform3(new Vec3(0., 1., 0.), Quat.angleAxis(pi / 2., up), one));
-  let b1 = s.addBone(i32.from(b0), new Transform3(new Vec3(1., 0., 0.), Quat.identity(), one));
-  let b2 = s.addBone(i32.from(b1), new Transform3(new Vec3(0., 0., 1.), Quat.angleAxis(pi / 2., new Vec3(0., 0., 1.)), one));
-  s.addSocket(b2, new Transform3(new Vec3(0., 2., 0.), Quat.identity(), one));
+  let one = Vec3(1., 1., 1.);
+  let up = Vec3(0., 1., 0.);
+  let b0 = s.addBone(-1i32, Transform3(Vec3(0., 1., 0.), Quat.angleAxis(pi / 2., up), one));
+  let b1 = s.addBone(i32.from(b0), Transform3(Vec3(1., 0., 0.), Quat.identity(), one));
+  let b2 = s.addBone(i32.from(b1), Transform3(Vec3(0., 0., 1.), Quat.angleAxis(pi / 2., Vec3(0., 0., 1.)), one));
+  s.addSocket(b2, Transform3(Vec3(0., 2., 0.), Quat.identity(), one));
   expectInt(i64.from(s.boneCount()), 3, "three bones");
   let pose = s.restPose();
   var models = List[Transform3].empty();
@@ -55,7 +55,7 @@ fn testChain() {
 
   // A pose that turns bone 1 a quarter turn about its own z moves bone 2 only
   var turned = s.restPose();
-  turned.setRotation(b1, Quat.angleAxis(pi / 2., new Vec3(0., 0., 1.)));
+  turned.setRotation(b1, Quat.angleAxis(pi / 2., Vec3(0., 0., 1.)));
   s.modelTransforms(&turned, &mut models);
   // Bone 1's z is still world x: bone 2 stays at (1, 1, -1)
   let q2 = (*models[b2]).translation;
@@ -65,7 +65,7 @@ fn testChain() {
   // to the y axis' direction: bone 1's z becomes -y of bone 1... a quarter turn
   // about x takes z to -y, so the offset (0,0,1) goes to (0,-1,0) in bone 1's
   // frame, and bone 1's frame is Ry, which keeps y: bone 2 at (0, 1, -1) + (0,-1,0)
-  turned.setRotation(b1, Quat.angleAxis(pi / 2., new Vec3(1., 0., 0.)));
+  turned.setRotation(b1, Quat.angleAxis(pi / 2., Vec3(1., 0., 0.)));
   s.modelTransforms(&turned, &mut models);
   let r2 = (*models[b2]).translation;
   near(r2.x, 0., 0.00001, "turning bone 1 about its x: x");
@@ -107,13 +107,13 @@ fn testHumanoid() {
 }
 
 fn testSolve() {
-  let origin = new Vec3(0., 0., 0.);
-  let pole = new Vec3(0., 0., 1.);
+  let origin = Vec3(0., 0., 0.);
+  let pole = Vec3(0., 0., 1.);
   // Two unit segments to (1, 1, 0): the middle joint is 1 m from both ends,
   // at (1, 0, 0) or (0, 1, 0) rotated about the line to the target towards the pole:
   // 45 degrees off the line... the law of cosines puts it half way along the
   // line (0.7071, 0.7071) and 0.7071 m to the side, towards +z
-  let a = solveTwoBone(origin, new Vec3(1., 1., 0.), 1., 1., pole, 0.5, 0.98);
+  let a = solveTwoBone(origin, Vec3(1., 1., 0.), 1., 1., pole, 0.5, 0.98);
   near(a.end.x, 1., 0.0005, "reach (1,1,0): end x");
   near(a.end.y, 1., 0.0005, "end y");
   near(a.mid.length(), 1., 0.0005, "the middle joint is a segment from the root");
@@ -125,19 +125,19 @@ fn testSolve() {
   expectBool(a.reached, true, "reached");
 
   // A target far out of reach: clamped to the full length along the line
-  let far = solveTwoBone(origin, new Vec3(5., 0., 0.), 1., 1., pole, 0.5, 0.98);
+  let far = solveTwoBone(origin, Vec3(5., 0., 0.), 1., 1., pole, 0.5, 0.98);
   near(far.end.x, 2., 0.001, "out of reach: the end at the full length");
   near(far.end.y, 0., 0.0001, "on the same line");
   near((far.end - far.mid).length(), 1., 0.001, "second segment kept");
   expectBool(far.reached, false, "not reached");
 
   // A target very near: the interior angle stays at 30 degrees (0.5236)
-  let near1 = solveTwoBone(origin, new Vec3(0., -0.01, 0.), 1., 1., pole, 0.5235988, 0.98);
+  let near1 = solveTwoBone(origin, Vec3(0., -0.01, 0.), 1., 1., pole, 0.5235988, 0.98);
   near(near1.end.length(), (2. - 2. * cos(0.5235988)).sqrt(), 0.0005, "too near: the smallest reach");
   near((near1.end - near1.mid).length(), 1., 0.001, "second segment kept when folded");
 
   // Softening: a target at 0.99 of the full length does not make a straight leg
-  let soft = solveTwoBone(origin, new Vec3(0., -1.98, 0.), 1., 1., pole, 0.5, 0.98);
+  let soft = solveTwoBone(origin, Vec3(0., -1.98, 0.), 1., 1., pole, 0.5, 0.98);
   expectBool(soft.end.length() < 1.99995, true, "a nearly straight limb stops short of straight");
   expectBool(soft.end.length() > 1.97, true, "and not by much");
 }
@@ -149,8 +149,8 @@ fn testAim() {
   var models = List[Transform3].empty();
   s.modelTransforms(&pose, &mut models);
   // The left foot lifted forward and up: ankle at (-0.0955 H, 0.25, -0.30)
-  let target = new Vec3(-0.0955 * h, 0.25, -0.30);
-  let sol = aimLimb(&s, &mut pose, &mut models, THIGH_L, target, new Vec3(0., 0., -1.), 0.5235988);
+  let target = Vec3(-0.0955 * h, 0.25, -0.30);
+  let sol = aimLimb(&s, &mut pose, &mut models, THIGH_L, target, Vec3(0., 0., -1.), 0.5235988);
   let ankle = (*models[FOOT_L]).translation;
   near(ankle.x, target.x, 0.001, "aimed ankle x");
   near(ankle.y, target.y, 0.001, "aimed ankle y");
@@ -168,7 +168,7 @@ fn testAim() {
   expectBool(knee.z < (hip.z + ankle.z) / 2. - 0.05, true, "the knee bends forward");
   expectBool(sol.reached, true, "reachable");
   // An unreachable target: 5 m away, the leg straight towards it
-  let sol2 = aimLimb(&s, &mut pose, &mut models, THIGH_R, new Vec3(0., -5., -5.), new Vec3(0., 0., -1.), 0.5235988);
+  let sol2 = aimLimb(&s, &mut pose, &mut models, THIGH_R, Vec3(0., -5., -5.), Vec3(0., 0., -1.), 0.5235988);
   expectBool(sol2.reached, false, "the far target is not reached");
   let foot = (*models[FOOT_R]).translation;
   let legLen = (0.245 + 0.246) * h;

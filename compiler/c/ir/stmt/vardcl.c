@@ -166,7 +166,7 @@ void varDclHook(NameResState *pstate, VarDclNode *name) {
 // 'if''s or a 'match''s arm, as Rust 2024 extends them; a place an extending
 // borrow reaches extends the value it is part of, or that its owner is
 // reached through. A call's arguments, a method's receiver, a block's other
-// statements and a construction's arguments ('new H(..)') are not extending:
+// statements and a construction's arguments ('H(..)') are not extending:
 // a temporary there ends with its statement, and a borrow of it held past
 // that is refused (flowpath.c).
 //
@@ -416,7 +416,7 @@ static void varDclExtendExp(VarDclExtend *ext, INode **nodep) {
     case ArrayLitTag:
     case TypeLitTag:
     {
-        // A variant's literal ('Some(x)'), not a construction ('new H(x)')
+        // A variant's literal ('Some(x)'), not a construction ('H(x)')
         if (node->tag == TypeLitTag && !(node->flags & FlagIndex))
             return;
         Nodes *elems = node->tag == VTupleTag ? ((TupleNode *)node)->elems
