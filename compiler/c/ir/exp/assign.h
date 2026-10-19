@@ -33,8 +33,11 @@ void assignPrint(AssignNode *node);
 void assignNameRes(NameResState *pstate, AssignNode *node);
 
 // Is this one tuple-typed lval given a value tuple, which it receives whole?
-// Otherwise one lval given a value tuple receives its first value.
+// (One target of any other type given a list of values is refused.)
 int assignOneTakesTuple(AssignNode *node);
+
+// Is this target '_', which takes a value and drops it at the end of the statement?
+int assignIsAnon(INode *node);
 
 // Type check for assignment node
 void assignTypeCheck(TypeCheckState *pstate, AssignNode *node);

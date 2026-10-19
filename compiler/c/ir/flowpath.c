@@ -2406,6 +2406,9 @@ static PathSet *pwCall(FnCallNode *call) {
 // Store a value carrying 'holds' into an lval. 'rvalp' is the value's slot,
 // or NULL where the value is one element of another (a destructuring).
 static void pwStore(INode **lvalp, PathSet *holds, INode **rvalp) {
+    // A '_' stores nothing: what it takes is dropped at the statement's end
+    if (assignIsAnon(*lvalp))
+        return;
     VarDclNode *var = pwNamedVar(*lvalp);
     if (var) {
         if (var->namesym == anonName)
@@ -2492,7 +2495,7 @@ static PathSet *pwAssign(AssignNode *node) {
         uint32_t mark = loanFlightMark();
         if (pwSeams && awaitWithin(node->lval))
             loanFlightPushOf(holds, 0, node->rval);
-        pwStore(&node->lval, holds, node->rval->tag == VTupleTag && !assignOneTakesTuple(node) ? &nodesGet(((TupleNode *)node->rval)->elems, 0) : &node->rval);
+        pwStore(&node->lval, holds, &node->rval);
         loanFlightPop(mark);
     }
     return holds;

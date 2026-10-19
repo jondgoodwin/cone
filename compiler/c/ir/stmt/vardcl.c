@@ -125,17 +125,29 @@ void varDclNameRes(NameResState *pstate, VarDclNode *name) {
         pstate->declaring = svdeclaring;
     }
 
+    // A name of 'let a, b = values;' is hooked by the assignment that gives it its value, once
+    // that value is resolved (varDclHook)
+    if (name->flags & FlagDestructDcl) {
+        name->scope = pstate->scope;
+        return;
+    }
+
     // Variable declaration within a block is a local variable
-    if (pstate->scope > 0) {
-        if (name->namesym->node && pstate->scope == ((VarDclNode*)name->namesym->node)->scope) {
-            errorMsgNode((INode *)name, ErrorDupName, "Name is already defined. Only one allowed.");
-            errorMsgNode((INode*)name->namesym->node, ErrorDupName, "This is the conflicting definition for that name.");
-        }
-        else {
-            name->scope = pstate->scope;
-            // Add name to global name table (containing block will unhook it later)
-            nametblHookNode(name->namesym, (INode*)name);
-        }
+    if (pstate->scope > 0)
+        varDclHook(pstate, name);
+}
+
+// Make a local variable's name the one its block's names mean from here, unless the block already
+// has a name by that
+void varDclHook(NameResState *pstate, VarDclNode *name) {
+    if (name->namesym->node && pstate->scope == ((VarDclNode*)name->namesym->node)->scope) {
+        errorMsgNode((INode *)name, ErrorDupName, "Name is already defined. Only one allowed.");
+        errorMsgNode((INode*)name->namesym->node, ErrorDupName, "This is the conflicting definition for that name.");
+    }
+    else {
+        name->scope = pstate->scope;
+        // Add name to global name table (containing block will unhook it later)
+        nametblHookNode(name->namesym, (INode*)name);
     }
 }
 
@@ -568,6 +580,10 @@ void varDclTypeCheck(TypeCheckState *pstate, VarDclNode *name) {
     // An initializer need not be specified, but if not, it must have a declared type
     if (name->value == NULL) {
         if (name->vtype == unknownType) {
+            // A name of 'let a, b = values;' has the type of the value it is given: its assignment
+            // sets that and checks the declaration then (assignDestructInfer)
+            if (name->flags & FlagDestructDcl)
+                return;
             errorMsgNode((INode*)name, ErrorNoType, "Declared name must specify a type or value");
             return;
         }

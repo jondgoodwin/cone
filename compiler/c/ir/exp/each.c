@@ -275,7 +275,7 @@ static uint32_t eachVarCount(BlockNode *loop) {
     while (n < loop->stmts->used) {
         INode *stmt = nodesGet(loop->stmts, n);
         if (stmt->tag != VarDclTag || ((VarDclNode*)stmt)->value != NULL
-            || ((VarDclNode*)stmt)->vtype != unknownType)
+            || ((VarDclNode*)stmt)->vtype != unknownType || (stmt->flags & FlagDestructDcl))
             break;
         ++n;
     }

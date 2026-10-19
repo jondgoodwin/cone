@@ -66,24 +66,78 @@ place is borrowed, read and written after the seam
 
 `parseAssign` is the loosest binding level and does **not** loop — it recurses
 into `parseAnyExpr` for the right-hand side, so assignment is
-**right-associative**. It handles `=`, `:=`, `<=>` and every op-assign form.
+**right-associative**. It handles `=`, `:=`, `<=>` and every op-assign form. A
+declaration of several names is built by `parseDestructDcl`, which `parseExprBlock`
+calls where a `let` or `var` declaration is followed by a comma.
+
+## Several targets, `_`, and a declaration of several names
+
+Each target takes **exactly one value**, and one target takes **the whole of what
+it is given**. `a, b = f()` and `a, b = x, y` need as many targets as values
+(`ErrorTargetCount`, whichever way the count is off); `x = a, b, c` stores the
+tuple whole where `x` is a tuple of that type, and is `ErrorOneTarget` otherwise.
+A target for a value the code does not want is `_`: it is the whole of the
+statement's way to say "evaluate this and drop it".
+
+**`_` is a target, never a variable.** It is a `NameUse` of `anonName` that name
+resolution leaves unbound (`assignTargetNameRes`), so it has no declaration:
+`assignIsAnon` is the one test for it, and every phase that walks a target asks it
+before reaching for the declaration. Its type is the type of the value it takes
+(`assignAnonTypes`). Flow treats it as any target for the value: the value is
+moved or counted (`flowHandleMoveOrCopy`) and nothing about a variable changes
+(`assignlvalrtype` returns early). Generation drops the value at the statement's
+end: `genlStore` hands it to `genlDiscard`, which keeps it in a temporary's slot
+(`genlTempKeep`) so it is finalized with the statement's other temporaries, newest
+first. `_ = f();` is one target taking the whole value, a tuple included. `let _ =
+f();` is the same statement (`parseExprBlock` builds an assignment, no
+declaration).
+
+**`let a, b = values;` is a declaration written as two things.** `parseDestructDcl`
+adds a `VarDclNode` for each name that is not `_`, with no value and
+`FlagDestructDcl`, and then one `AssignNode` flagged `FlagDestructAssign` whose
+lval is a tuple of uses of those names (bound to their declarations from the
+start) and `_`. Three things are different from a name declared with its value:
+
+- *Name resolution.* The assignment resolves its values first, and only then hooks
+  the names (`varDclHook`); `varDclNameRes` hooks nothing for a flagged name. So
+  `let u, v = v, u` means the outer `u` and `v`, as `let u = v;` would.
+- *Type.* A name with no declared type takes the type of the value it is given
+  (`assignDestructInfer`). A list of values is checked value by value, each as the
+  initializer of a variable (`varDclTypeCheck` with the value set for the call),
+  so a literal takes the type a `let` would give it; one value is checked once and
+  its tuple type read. `varDclTypeCheck` leaves a flagged, untyped name alone
+  until then. A name with a declared type is checked as any assignment checks it.
+- *Count.* The assignment's check refuses a count that is not the targets'.
+
+Flow and generation see an ordinary parallel assignment (`assignParaFlow`,
+`assignMultRetFlow`) to variables that hold nothing yet. A `let` name is given its
+value once, which is how a `let` local without a value is initialized.
+
+**A temporary borrowed in the values does not live to the block's end.** `let a, b
+= &f(), &f();` is refused (`ErrorFrozen`, the borrow outliving its temporary) where `let a = &f();` extends the
+temporary: the extension is a property of one variable's initializer
+(`varDclExtend`), and a destructuring declaration has none.
 
 ## Name resolution
 
-`assignNameRes` walks `lval` and `rval`. Nothing else.
+`assignNameRes` resolves `rval` and the places of `lval`; the targets that are
+`_` name nothing and are left. A flagged assignment resolves its values first, then
+hooks the names it declares.
 
 ## Type check
 
-`assignTypeCheck` checks the lval, then dispatches on whether each side is a
-`VTupleTag`. **That two-by-two is why there are exactly four helpers:**
+`assignTypeCheck` checks the targets (`assignTargetsTypeCheck`), then dispatches
+on whether each side is a `VTupleTag`. **That two-by-two is why there are exactly
+four helpers:**
 
 | lval | rval | Helper | Means |
 | --- | --- | --- | --- |
 | single | single | `assignSingleCheck` | ordinary assignment |
-| tuple | tuple | `assignParaCheck` | parallel assignment, element by element |
-| tuple | single | `assignMultRetCheck` | a call returning several values, destructured |
-| single | tuple | `assignToOneCheck` | one target, several values |
+| tuple | tuple | `assignParaCheck` | parallel assignment, element by element; the counts must agree |
+| tuple | single | `assignMultRetCheck` | a call returning several values, destructured; the counts must agree |
+| single | tuple | `assignToOneCheck` | one target, several values: `ErrorOneTarget` |
 | single, of a tuple type | tuple | `assignSingleCheck` | one target, one tuple value |
+| `_` | tuple | `assignSingleCheck` | one target taking the whole tuple, dropped |
 
 Then `vtype` becomes the rval's type.
 
@@ -102,31 +156,18 @@ ordinary recursion.
 parentheses in `p = (5, 6)` change nothing) gives a `(i64, i64)` variable both
 values, each coerced to its element's type by `vtupleCoerce`, exactly as its
 declaration's `var p: (i64, i64) = 5, 6` does. The parser builds the same nodes
-as for `x = 7, 8`, so only the lval's resolved type tells the two apart:
-`assignOneTakesTuple` asks it, and flow (`assignFlow`, `pwAssign`) and
-generation ask the same function rather than the rval's tag, so all three agree
-that the whole tuple is stored. Extra values are not dropped here: a tuple whose
-count differs from the lval's is refused (`ErrorInvType`), and so is
-`p = (3, 4), 5`, which until 27 September 2026 stored `(3, 4)` under the rule
-below. Before that date every other such assignment compared the lval's tuple
-type with the first value and was refused. `core_tuple_assign` and
-`core_typecheck` pin it.
+as for a list of values given to a variable of another type, so only the lval's
+resolved type tells the two apart: `assignOneTakesTuple` asks it. A tuple whose
+count differs from the lval's is refused (`ErrorInvType`), and so is `p = (3, 4),
+5`. `core_tuple_assign` and `core_typecheck` pin it.
 
-**More values than lvals is accepted, and the extras are still evaluated.** The
-lvals take the leading values; `x = a, b, c` stores `a`, where `x` is not of a
-tuple type. That is the behaviour
-parallel assignment was written with in 2018 (`<=` on the counts, "treat as
-simple assignment with one lval on left"), and generation still extracts
-element 0. Fewer values than lvals is `ErrorBadTerm`. The manual shows only
-matched counts and says nothing either way about extras. Because the
-assignment's value is the whole rval tuple, `assignExtraRvalsCheck` type checks
-each value no lval receives and gives the tuple a type listing every value.
-When the counts match, `assignParaCheck` keeps giving the tuple the lval's type,
-as before. The 2019 move to the new type inference dropped the up-front check of
-the whole rval, and until 23 September 2026 nothing checked an extra: an
-ill-typed one crashed the compiler, and so did any single lval given several
-values, because the value tuple had no type. `core_success` and `core_typecheck`
-pin both forms.
+**A list of values given to one target of another type is refused.** `x = a, b,
+c` where `x` is not a tuple of that type is `ErrorOneTarget`: a single target
+takes the whole of what it is given, and `assignToOneCheck` still type checks the
+values so that an ill-typed one reports its own error beside the count's. The
+assignment's value is the whole rval tuple, so `assignParaCheck` gives it a type
+listing every value as coerced to its target's. `core_success`, `core_typecheck`
+and `core_destructure_reject` pin it.
 
 **Type check does not check mutability.** It coerces and it types. Everything
 about whether the write is *allowed* is flow's.
@@ -150,8 +191,9 @@ it, and releases nothing the new value still is. A parallel assignment
 generation evaluates them all first: `a, b = b, a` swaps two values that move.
 Per target:
 
-1. **The `_` placeholder short-circuits.** An anonymous lval swallows the value
-   and returns early.
+1. **A `_` changes no variable.** `assignlvalrtype` returns early for it; the
+   value is moved or counted like any other and dropped at the statement's end
+   (Generation).
 2. **Write permission.** `iexpGetLvalInfo` walks the lval to its variable,
    computing the effective permission — through derefs, indexes and field
    accesses, taking the reference's permission where one is crossed. Without
@@ -193,19 +235,20 @@ Per target:
 temporary and counts nothing, while a destructured tuple *variable* gets one
 `RefCountNode` over the whole tuple whose `counts` array carries a `+1` per Rc
 element — see [Flow Analysis](../phases/flow.md), "Moves and counting". An
-element assigned to `_` has its count zeroed, since it is stored nowhere. On the
-return side, `flowScopeDealias` walks a `VTupleTag` return element by element
+element a `_` takes is counted like the rest, and the drop at the statement's
+end takes the count back. On the return side, `flowScopeDealias` walks a `VTupleTag` return element by element
 and exempts each from release, so the callee does not free what it is handing
 back.
 
 ## Generation
 
 `genlExpr`'s `AssignTag` case handles `LeftAssign` (evaluate the target's
-content first, that is the node's value) and tuple destructuring on either side
-via `extractvalue`, then `genlStore`.
+content first, that is the node's value) and tuple destructuring on the target
+side via `extractvalue`, then `genlStore`. One target is given the whole value.
 
-`genlStore` **skips a store to the anonymous name entirely**, and otherwise
-releases the lval's previous value before overwriting, after the new value is
+`genlStore` **drops the value a `_` takes at the statement's end** (`genlDiscard`:
+a temporary's slot, finalized with the statement's other temporaries), and
+otherwise releases the lval's previous value before overwriting, after the new value is
 evaluated: an owning reference through the `genlReleaseOwning` scope exit uses
 — a `Uni` reference or slice is freed, an `Rc` one drops a holder, a tuple's
 owning elements each — and anything else with a death in place

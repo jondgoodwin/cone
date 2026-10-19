@@ -77,6 +77,7 @@ void varDclPrint(VarDclNode *fn);
 
 // Name resolution of vardcl
 void varDclNameRes(NameResState *pstate, VarDclNode *node);
+void varDclHook(NameResState *pstate, VarDclNode *node);
 
 // Type check vardcl
 void varDclTypeCheck(TypeCheckState *pstate, VarDclNode *node);

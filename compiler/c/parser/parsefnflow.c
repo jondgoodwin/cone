@@ -1161,7 +1161,16 @@ static INode *parseEachLoop(ParseState *parse, Name *lifesym, int stmtflag, int 
             errorMsgLex(ErrorBadTok, "An 'each' unpacks at most %d variables", EachMaxVars);
             return (INode *)outerblk;
         }
-        elemvars[nelems++] = newVarDclNode(lex->val.ident, VarDclTag, (INode*)immPerm);
+        // A '_' is a position the code does not want: a variable of the pass no name reaches,
+        // so any number of them stand in one 'each'
+        Name *varname = lex->val.ident;
+        if (varname == anonName) {
+            static uint32_t skipcount = 0;
+            char skipname[32];
+            int skiplen = snprintf(skipname, sizeof(skipname), "-skip%u", ++skipcount);
+            varname = nametblFind(skipname, (uint32_t)skiplen);
+        }
+        elemvars[nelems++] = newVarDclNode(varname, VarDclTag, (INode*)immPerm);
         lexNextToken();
         if (!lexIsToken(CommaToken))
             break;
@@ -1599,6 +1608,62 @@ static void parseTailCheckBlock(BlockNode *blk, int used, int viaelse) {
         parseTailCheck(nodesGet(blk->stmts, i), i + 1 == n ? used : TailUnused);
 }
 
+// A use of a name as the target of an assignment, positioned at the declaration it came from
+static INode *parseTargetUse(VarDclNode *var) {
+    NameUseNode *use = newNameUseNode(var->namesym);
+    inodeLexCopy((INode*)use, (INode*)var);
+    return (INode*)use;
+}
+
+// A declaration of several names, 'let q, r = divmod(7, 2);' or 'var a: i32, b = x, y;', the
+// lexer on the first comma after the first name, which parseVarDcl has read (with its type,
+// if it has one). It is written as the declaration of each name that is not '_', with no
+// value (flagged FlagDestructDcl), and then the assignment that gives the names their values
+// at once, 'q, r = divmod(7, 2)', flagged FlagDestructAssign: it hooks the names once the
+// values are resolved and gives a name with no type the type of its value. A '_' declares
+// nothing: it is the assignment's target for a value the code does not want, which is dropped
+// at the end of the statement. The names are added to 'blk' in that order.
+static void parseDestructDcl(ParseState *parse, BlockNode *blk, VarDclNode *first) {
+    PermNode *defperm = itypeGetTypeDcl(first->perm) == (INode*)mutPerm ? mutPerm : immPerm;
+    Nodes *vars = newNodes(4);
+    nodesAdd(&vars, (INode*)first);
+    while (lexIsToken(CommaToken)) {
+        lexNextToken();
+        nodesAdd(&vars, (INode*)parseVarDcl(parse, defperm, ParseMaySig | ParseMayImpl));
+    }
+    VarDclNode *last = (VarDclNode*)nodesLast(vars);
+    if (last->value == NULL) {
+        errorMsgNode((INode*)first, ErrorDestructForm,
+            "A declaration of several names takes its values after an '=': 'let a, b = f();'. Write '_' for each value you do not want.");
+        return;
+    }
+    INode *rval = last->value;
+    last->value = NULL;
+    TupleNode *targets = newTupleNode(vars->used);
+    inodeLexCopy((INode*)targets, (INode*)first);
+    INode **varp;
+    uint32_t cnt;
+    for (nodesFor(vars, cnt, varp)) {
+        VarDclNode *var = (VarDclNode*)*varp;
+        if (var->namesym == anonName) {
+            if (var->vtype != unknownType)
+                errorMsgNode((INode*)var, ErrorDestructForm,
+                    "'_' takes a value and drops it, so it has no type to write: write the type on the names you keep.");
+            nodesAdd(&targets->elems, parseTargetUse(var));
+            continue;
+        }
+        var->flags |= FlagDestructDcl;
+        nodesAdd(&blk->stmts, (INode*)var);
+        NameUseNode *use = (NameUseNode*)parseTargetUse(var);
+        use->dclnode = (INode*)var;     // bound to its declaration from the start (nameUseNameRes)
+        nodesAdd(&targets->elems, (INode*)use);
+    }
+    AssignNode *assign = newAssignNode(NormalAssign, (INode*)targets, rval);
+    inodeLexCopy((INode*)assign, (INode*)first);
+    assign->flags |= FlagDestructAssign;
+    nodesAdd(&blk->stmts, (INode*)assign);
+}
+
 // Parse a block of statements/expressions
 INode *parseExprBlock(ParseState *parse, int isloop) {
     BlockNode *blk = isloop? newLoopBlockNode() : newBlockNode();
@@ -1743,6 +1808,24 @@ INode *parseExprBlock(ParseState *parse, int isloop) {
         case VarToken:
         {
             VarDclNode *var = parseVarDcl(parse, immPerm, ParseMaySig|ParseMayImpl|ParseMayUsing);
+            // 'let q, r = divmod(7, 2);' declares several names and gives them their values at once
+            if (lexIsToken(CommaToken) && !parse->usingdcl && !parse->letelsetype) {
+                parseDestructDcl(parse, blk, var);
+                parseEndOfStatement();
+                break;
+            }
+            // 'let _ = f();' declares nothing: the value is taken by '_' and dropped at the statement's end
+            if (var->namesym == anonName && var->value != NULL && !lexIsToken(ElseToken)
+                && !parse->usingdcl && !parse->letelsetype) {
+                if (var->vtype != unknownType)
+                    errorMsgNode((INode*)var, ErrorDestructForm,
+                        "'_' takes a value and drops it, so it has no type to write.");
+                AssignNode *drop = newAssignNode(NormalAssign, parseTargetUse(var), var->value);
+                inodeLexCopy((INode*)drop, (INode*)var);
+                nodesAdd(&blk->stmts, (INode*)drop);
+                parseEndOfStatement();
+                break;
+            }
             // 'let n Ok = r else {...};' binds a variant or leaves
             if (lexIsToken(ElseToken)) {
                 if (parse->colontype)

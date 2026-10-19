@@ -1,0 +1,50 @@
+// Several targets in the body of a 'parallel each' and of a behaviour: a declaration of
+// several names, 'let a, _ = f(x);', is the body's own and not one of the loop's
+// variables, and '_' in an assignment, '_, *p = f(a);', drops the value it takes.
+// The sum is worked out by hand: a pass for x gives the item 6x, 0 + 6 + 12 + 18 on
+// each of two rows, 72.
+
+mod concurrency_parallel_destructure;
+
+import stdio use *;
+import collections use *;
+import actors;
+
+fn two(n: i64) i64, i64 { n * 2, n * 3 }
+
+actor Acc {
+  total: i64;
+
+  fn init(self: &new) {
+    *self = new Self(total: 0i64);
+  }
+
+  pub async do add(self, n: i64) {
+    let a, _ = two(n);
+    _, total = two(a);
+  }
+
+  pub async do report(self: &) {
+    printStr("actor total = "); printInt(total); printStr("\n");
+  }
+}
+
+fn main() {
+  initAll();
+  actors.configure(new actors.Options(workers: 2u32));
+  var pixels = new Array[i64, 8] <- fill 0i64;
+  parallel each y, row in pixels.mutChunks(4usize).indexed() {
+    each x, p in row.mutItems().indexed() {
+      let a, _ = two(i64.from(x));
+      _, *p = two(a);
+    }
+  }
+  var sum = 0i64;
+  each p in pixels { sum = sum + *p; }
+  printStr("parallel sum = "); printInt(sum); printStr("\n");
+
+  let c = new Acc();
+  c.add(3i64);
+  c.report();
+  finalAll();
+}

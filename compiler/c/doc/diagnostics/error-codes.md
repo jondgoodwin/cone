@@ -165,6 +165,14 @@ say whether the end is in the range, so it is refused with the two spellings tha
 includes the end and `..<` stops before it. Pointed at the `..`, and read on as `..=` so the rest
 of the range is checked. It is not reported where no end follows (`s[a..]` runs to the end, `s[..]` is the whole): there is no end to include or leave out.
 
+`ErrorTargetCount` is two or more targets given a number of values that is not theirs, in a
+declaration (`let q, r = f();`) or an assignment (`a, b = 1, 2, 3`), more or fewer, from a
+call or from a list. Each target takes exactly one value; a target for a value the code does not
+want is `_`. `ErrorOneTarget` is one target that is not a tuple given a list of values (`x = 1,
+2, 3` for an `i32` `x`): a single target takes the whole of what it is given. `ErrorDestructForm`
+is a declaration of several names that is not `let a, b = values;`: no `=` after the names, or a
+type written on `_`, which takes a value and drops it. The values are type checked all the same.
+
 `ErrorMatchNotExhaustive`, `ErrorMatchUnreachable` and `ErrorMatchColumn` are what a match
 must cover. A match that does not cover every variant of its enum, both values of its bool or
 every combination of its columns, and has no `else`, or whose cases cannot be shown to

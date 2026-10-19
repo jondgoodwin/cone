@@ -997,8 +997,7 @@ int flowIsLvalRead(INode *node) {
 // placeholder keeps nothing.
 int flowIsKeptRead(INode *node) {
     if (node->tag == AssignTag) {
-        INode *lval = ((AssignNode *)node)->lval;
-        return !(isNameUseNode(lval) && isExpNode(lval) && ((NameUseNode *)lval)->namesym == anonName);
+        return !assignIsAnon(((AssignNode *)node)->lval);
     }
     return flowIsLvalRead(node);
 }
