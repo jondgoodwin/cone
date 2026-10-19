@@ -2854,7 +2854,9 @@ INode *parseFn(ParseState *parse, uint16_t mayflags) {
                 "A generator is its body: 'yields' declares a function that hands its caller values, so a declaration with no body, an 'extern' one among them, is not built.");
         else if (!(mayflags&ParseMaySig))
             errorMsgNode((INode*)fnnode, ErrorNoImpl, "Function/method must be implemented.");
-        if (!(mayflags&ParseEmbedded))
+        if (mayflags & ParseMemberEnd)
+            parseEndOfMember();
+        else if (!(mayflags&ParseEmbedded))
             parseEndOfStatement();
     }
 
