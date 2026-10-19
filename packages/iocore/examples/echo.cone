@@ -54,8 +54,8 @@ fn serve(a: ServerArgs) ServerReport {
   let listener = lp.mustListen(SocketAddr.localhost(0u16));
   var port = 0u16;
   match lp.localAddr(listener) {
-    case Ok(r) {port = r.port();}
-    case Error(e) {}
+    case let r Ok {port = r.port();}
+    case let e Error {}
   }
   a.portTx.send(port);
   lp.submit(Op.Accept(listener), Target.Here(0u64));
@@ -146,8 +146,8 @@ fn client(a: ClientArgs) ClientReport {
   let t0 = Instant.now();
   if a.withFile {
     match lp.openFile("echo.tmp", Access.Read) {
-      case Ok(r) {fh = r;}
-      case Error(e) {}
+      case let r Ok {fh = r;}
+      case let e Error {}
     }
     while nextRead < depth {
       lp.submit(Op.ReadAt(fh, nextRead * chunk, a.pool.mustTake(usize.from(chunk))), Target.Here(100u64 + nextRead));
@@ -229,8 +229,8 @@ fn writeFile(pool: &Pool) {
   var lp = Loop.mustMake();
   var fh = Handle.none();
   match lp.openFile("echo.tmp", Access.Create) {
-    case Ok(r) {fh = r;}
-    case Error(e) {return;}
+    case let r Ok {fh = r;}
+    case let e Error {return;}
   }
   var out = List[Completion].empty();
   var at = 0u64;
@@ -266,7 +266,7 @@ fn exchange(pool: &Pool, messages: u64, withFile: bool, zeroByte: bool) ClientRe
   let server = thread.start(ServerArgs(*pool, portTx, zeroByte), &serve);
   var port = 0u16;
   match portRx.recv() {
-    case Some(p) {port = p;}
+    case let p Some {port = p;}
     case is None[u16] {}
   }
   let cl = thread.start(ClientArgs(*pool, port, messages, withFile), &client);
@@ -286,8 +286,8 @@ fn service(a: ServiceArgs) Counters {
   var out = List[Completion].empty();
   var fh = Handle.none();
   match lp.openFile("echo.tmp", Access.Read) {
-    case Ok(r) {fh = r;}
-    case Error(e) {return lp.counters();}
+    case let r Ok {fh = r;}
+    case let e Error {return lp.counters();}
   }
   var at = 0u64;
   while at < fileSize {

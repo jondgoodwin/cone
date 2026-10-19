@@ -33,7 +33,7 @@ fn makeRoot(name: &str) Path {
   let tempPath = if temp != null {Path.from(cstr.fromPtr(temp).view())} else {Path.from("/tmp")};
   var root = Path.from("");
   match fs.absolute(&tempPath) {
-    case Ok(t) { root = t.join(name); }
+    case let t Ok { root = t.join(name); }
     case is Error { require(false, "TEMP has an absolute path"); }
   }
   let up = root.parent();
@@ -52,7 +52,7 @@ fn shown(root: &Path, message: &String) String {
 // The message of a Result that must have failed, or "<succeeded>"
 fn messageOf[T](root: &Path, r: Result[T, fs.FsError]) String {
   match r {
-    case Error(e) { let m = e.message(); shown(root, &m) }
+    case let e Error { let m = e.message(); shown(root, &m) }
     case is Ok { String.from("<succeeded>") }
   }
 }
@@ -81,7 +81,7 @@ fn mapsAs(root: &Path, name: &str, data: &Array[u8], label: &Array[u8]) {
   let p = root.join(name);
   ok(fs.writeFile(&p, data), label);
   match fs.mapFile(&p) {
-    case Ok(m) {
+    case let m Ok {
       expect(holds(&m, data), label);
       expectBool(m.isEmpty(), data.len == 0usize, label);
     }
@@ -114,7 +114,7 @@ fn maps(root: &Path) {
   let largePath = root.join("large.bin");
   ok(fs.writeFile(&largePath, large.view()), "write three megabytes");
   match fs.mapFile(&largePath) {
-    case Ok(m) {
+    case let m Ok {
       expectUInt(u64.from(m.size()), u64.from(size), "size of three megabytes");
       let v = m.view();
       var same = true;
@@ -134,7 +134,7 @@ fn maps(root: &Path) {
   let emptyPath = root.join("empty.txt");
   ok(fs.writeFile(&emptyPath, ""), "write an empty file");
   match fs.mapFile(&emptyPath) {
-    case Ok(m) {
+    case let m Ok {
       expectUInt(u64.from(m.size()), 0u64, "an empty file has size 0");
       expect(m.isEmpty(), "an empty file is empty");
       expectUInt(u64.from(m.view().len), 0u64, "an empty file has an empty view");
@@ -145,9 +145,9 @@ fn maps(root: &Path) {
 
   // Two maps of one file at once, and a map moved to another function
   match fs.mapFile(&largePath) {
-    case Ok(a) {
+    case let a Ok {
       match fs.mapFile(&largePath) {
-        case Ok(b) {
+        case let b Ok {
           expect(a.view() == b.view(), "two maps of one file hold the same bytes");
           expect(a.base() as usize != b.base() as usize, "and are two views");
         }
@@ -158,7 +158,7 @@ fn maps(root: &Path) {
     case is Error { expect(false, "map a file twice"); }
   }
   match fs.mapFile(&largePath) {
-    case Ok(var moved) { expect(takeAndCheck(moved, large.view()), "a moved map is still good"); }
+    case var moved Ok { expect(takeAndCheck(moved, large.view()), "a moved map is still good"); }
     case is Error { expect(false, "map to move"); }
   }
 
@@ -194,7 +194,7 @@ fn threads(root: &Path) {
   }
   ok(fs.writeFile(&p, data.view()), "write the file two threads will read");
   match fs.mapFile(&p) {
-    case Ok(var got) {
+    case var got Ok {
       let shared = Arc[imm, fs.MappedFile](got);
       let a = thread.start(shared, &sumOf);
       let b = thread.start(shared, &sumOf);
@@ -217,7 +217,7 @@ fn failures(root: &Path) {
   failsWith(root, fs.mapFile("bad\x00name"), "mapFile bad\x00name: Invalid argument",
     "a NUL in a path is EINVAL");
   match fs.mapFile(&missing) {
-    case Error(e) { expect(e.notFound(), "a missing file is notFound"); }
+    case let e Error { expect(e.notFound(), "a missing file is notFound"); }
     case is Ok { expect(false, "a missing file fails"); }
   }
 }

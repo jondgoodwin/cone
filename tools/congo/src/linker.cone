@@ -34,13 +34,13 @@ fn findConec(repo: &Path) Result[Path, String] {
 fn warnIfStale(repo: &Path, conec: &Path) {
   var stamp = time.Timestamp();
   match fs.stat(conec) {
-    case Ok(s) { stamp = s.modified; }
+    case let s Ok { stamp = s.modified; }
     case is Error { return; }
   }
   let sources = repo.join("compiler/c");
   var entries = List[fs.DirEntry].empty();
   match fs.walk(&sources) {
-    case Ok(var ok) { entries <=> ok; }
+    case var ok Ok { entries <=> ok; }
     case is Error { return; }
   }
   var i = 0usize;
@@ -49,7 +49,7 @@ fn warnIfStale(repo: &Path, conec: &Path) {
     let ext = entry.path.extension();
     if ext == ".c" || ext == ".h" {
       match fs.stat(&entry.path) {
-        case Ok(s) {
+        case let s Ok {
           if s.modified > stamp {
             // The file relative to the repository, as Path.relative_to gives it
             let full = native(&entry.path);
@@ -115,7 +115,7 @@ fn findVcvars() Path {
       "-requires", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64", "-property", "installationPath",
       "-utf8");
     match process.run(args.view()) {
-      case Ok(ok) {
+      case let ok Ok {
         let out = utf8Text(ok.stdout.view());
         let trimmed = out.trim();
         let roots = splitLines(trimmed.view());
@@ -146,7 +146,7 @@ fn isMsvcLinker(tool: &Path) bool {
   let place = native(tool);
   let args = argList(place.view(), "/?");
   match process.run(args.view(), process.Options(timeout: time.Duration.fromSeconds(20))) {
-    case Ok(ok) {
+    case let ok Ok {
       if ok.timedOut { return false; }
       var both = consoleText(ok.stdout.view());
       let err = consoleText(ok.stderr.view());
@@ -250,12 +250,12 @@ fn runVcvars(changes: &mut EnvChanges) Result[Vcvars, String] {
   var err = String.empty();
   var code = 0u32;
   match process.runLine(line.view()) {
-    case Ok(ok) {
+    case let ok Ok {
       out = ok.stdout.copy();
       err = consoleText(ok.stderr.view());
       code = ok.exitCode;
     }
-    case Error(e) {
+    case let e Error {
       fail(e.message());
     }
   }
@@ -264,7 +264,7 @@ fn runVcvars(changes: &mut EnvChanges) Result[Vcvars, String] {
   // What the batch file printed, then UTF-16: bytes, not text
   let raw: &Array[u8] = out.view();
   match out.find(marker) {
-    case Some(at) {
+    case let at Some {
       printed = consoleText(&raw[..<at]);
       // After the line end echo writes
       var from = at + marker.len();
@@ -364,7 +364,7 @@ fn noLinkerYet() Linker {
 fn findLinker(conestd: &Path) Result[Linker, String] {
   var changes = noChanges();
   match linkerIn(&mut changes) {
-    case Ok(ok) {
+    case let ok Ok {
       var linker = Linker(ok.copy(), conestd.copy(), List[String].empty(), List[String].empty());
       var i = 0usize;
       while i < changes.names.len() {
@@ -376,7 +376,7 @@ fn findLinker(conestd: &Path) Result[Linker, String] {
       changes.restore();
       Ok[Linker, String](linker)
     }
-    case Error(e) {
+    case let e Error {
       changes.restore();
       Error[Linker, String](e.copy())
     }
@@ -402,8 +402,8 @@ fn linkerIn(changes: &mut EnvChanges) Result[Path, String] {
   }
   if vcvarsNeeded {
     match runVcvars(changes) {
-      case Ok(var ok) { ran <=> ok; }
-      case Error(e) { return Error[Path, String](e.copy()); }
+      case var ok Ok { ran <=> ok; }
+      case let e Error { return Error[Path, String](e.copy()); }
     }
   }
   let pathList = envOr("PATH", "");

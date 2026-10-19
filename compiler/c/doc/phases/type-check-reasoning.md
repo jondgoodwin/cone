@@ -427,7 +427,7 @@ Two syntaxes and a pattern's binding, all `CastNode`:
 | --- | --- | --- |
 | `x as T` | `newRecastNode` | reinterpret the bits |
 | `x is T` | `newIsNode` | is this the runtime type? |
-| `case &Circle(c)` | `newConvCastNode` (`FlagConvert`, `FlagMatchBind`) | the matched value, narrowed, for the bound variable |
+| `case let c &Circle` | `newConvCastNode` (`FlagConvert`, `FlagMatchBind`) | the matched value, narrowed, for the bound variable |
 
 **Reinterpret requires identical bit size** (`castBitsize`), except to a struct,
 which is unchecked, and never joins pointer-sized `usize` or `isize` to a
@@ -534,7 +534,7 @@ A raw pointer carries none: it is what a region makes its keys from.
 **Comparison.** Every value meeting a type meets its brands:
 `iexpCoerce` ends in `lifeBrandsCoerce`, as do `iexpMultiInfer` (branches
 joining), `iexpSameType` (a swap), a reinterpret cast neither of whose
-sides is a raw pointer, and a pattern's conversion (`case Some[&'=a T](s)`
+sides is a raw pointer, and a pattern's conversion (`case let s Some[&'=a T]`
 names the matched value's brands, no others). Outside a binding, a parameter's name is compared by
 identity (or a `where '=a == '=b` pair), and a name only the result writes is
 bound to the first brand it meets, for the whole function (`lifeBrandAgree`):

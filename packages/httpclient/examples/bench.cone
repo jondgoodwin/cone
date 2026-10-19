@@ -96,8 +96,8 @@ fn readText(name: &str) String {
   var out = String.empty();
   let file = certs(name);
   match fs.readFile(&file) {
-    case Ok(var r) {out <=> r;}
-    case Error(e) {}
+    case var r Ok {out <=> r;}
+    case let e Error {}
   }
   out
 }
@@ -121,13 +121,13 @@ struct ServerArgs {
 fn portOf(drv: &mut httpconn.Driver, lp: &Loop, r: Result[httpconn.ListenerId, iocore.IoError]) u16 {
   var port = 0u16;
   match r {
-    case Ok(l) {
+    case let l Ok {
       match drv.localAddr(lp, l) {
-        case Ok(a) {port = a.port();}
-        case Error(e) {}
+        case let a Ok {port = a.port();}
+        case let e Error {}
       }
     }
-    case Error(e) {}
+    case let e Error {}
   }
   port
 }
@@ -143,12 +143,12 @@ fn serveThread(a: ServerArgs) u64 {
   let serverPem = certs("server.pem");
   let serverKey = certs("server.key");
   match tls.Server.make(tls.ServerConfig.make(&serverPem, &serverKey)) {
-    case Ok(s) {
+    case let s Ok {
       let secure = drv.listenWith(&mut lp, SocketAddr.localhost(0u16), Uni[TlsMaker](TlsMaker(s, pool)),
         httpconn.Sink.Here(1u64));
       a.portTx.send(portOf(&mut drv, &lp, secure));
     }
-    case Error(e) {
+    case let e Error {
       printStr(e.message().view());
       printStr(" (run from the repository's root)\n");
       a.portTx.send(0u16);
@@ -438,11 +438,11 @@ fn main() i32 {
   var plain = 0u16;
   var secure = 0u16;
   match portRx.recv() {
-    case Some(p) {plain = p;}
+    case let p Some {plain = p;}
     case is None[u16] {}
   }
   match portRx.recv() {
-    case Some(p) {secure = p;}
+    case let p Some {secure = p;}
     case is None[u16] {}
   }
   if plain == 0u16 || secure == 0u16 {return 1i32;}

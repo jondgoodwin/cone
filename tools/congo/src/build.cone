@@ -58,12 +58,12 @@ fn buildPackage(repo: &Path, pkg: Package, mode: &str, defines: &List[String]) P
   var s = newSession(repo, readRegistry(folders, &indexes), &out, mode, defines);
   let top = s.reg.add(pkg);
   match build(&mut s, top) {
-    case Ok(var ok) {
+    case var ok Ok {
       var built: Path = "";
       built <=> ok;
       built
     }
-    case Error(e) { fail(e.copy()) }
+    case let e Error { fail(e.copy()) }
   }
 }
 
@@ -74,17 +74,17 @@ fn build(s: &mut Session, top: usize) Result[Path, String] {
   let name = s.reg.packages[top].name.copy();
   match restore(&mut s.reg, top) {
     case is Ok {}
-    case Error(e) { return Error[Path, String](e.copy()); }
+    case let e Error { return Error[Path, String](e.copy()); }
   }
   var plan = emptyPlan();
   match buildOrder(&s.reg, top) {
-    case Ok(var ok) { plan <=> ok; }
-    case Error(e) { return Error[Path, String](e.copy()); }
+    case var ok Ok { plan <=> ok; }
+    case let e Error { return Error[Path, String](e.copy()); }
   }
   var objs = List[Path].empty();
   match compile(s, &plan, top, "", true) {
-    case Ok(var ok) { objs <=> ok; }
-    case Error(e) { return Error[Path, String](e.copy()); }
+    case var ok Ok { objs <=> ok; }
+    case let e Error { return Error[Path, String](e.copy()); }
   }
   if isLibrary {
     let obj = objs[objs.len() - 1usize].copy();
@@ -101,7 +101,7 @@ fn build(s: &mut Session, top: usize) Result[Path, String] {
   let exe = s.out.join(exeName.view());
   match link(s, &plan, &objs, &exe, true) {
     case is Ok {}
-    case Error(e) { return Error[Path, String](e.copy()); }
+    case let e Error { return Error[Path, String](e.copy()); }
   }
   let place = shown(&exe);
   let finished = cat(s.mode.view(), " ", place.view());
@@ -118,29 +118,29 @@ fn build(s: &mut Session, top: usize) Result[Path, String] {
 fn buildProgram(s: &mut Session, file: &Path, dest: &Path) Result[Path, String] {
   var pkg = emptyPackage();
   match lonePackage(file) {
-    case Ok(var ok) { pkg <=> ok; }
-    case Error(e) { return Error[Path, String](e.copy()); }
+    case var ok Ok { pkg <=> ok; }
+    case let e Error { return Error[Path, String](e.copy()); }
   }
   let exeName = cat(pkg.name.view(), ".exe");
   let top = s.reg.add(pkg);
   match restore(&mut s.reg, top) {
     case is Ok {}
-    case Error(e) { return Error[Path, String](e.copy()); }
+    case let e Error { return Error[Path, String](e.copy()); }
   }
   var plan = emptyPlan();
   match buildOrder(&s.reg, top) {
-    case Ok(var ok) { plan <=> ok; }
-    case Error(e) { return Error[Path, String](e.copy()); }
+    case var ok Ok { plan <=> ok; }
+    case let e Error { return Error[Path, String](e.copy()); }
   }
   var objs = List[Path].empty();
   match compile(s, &plan, top, dest, false) {
-    case Ok(var ok) { objs <=> ok; }
-    case Error(e) { return Error[Path, String](e.copy()); }
+    case var ok Ok { objs <=> ok; }
+    case let e Error { return Error[Path, String](e.copy()); }
   }
   let exe = dest.join(exeName.view());
   match link(s, &plan, &objs, &exe, false) {
     case is Ok {}
-    case Error(e) { return Error[Path, String](e.copy()); }
+    case let e Error { return Error[Path, String](e.copy()); }
   }
   Ok[Path, String](exe)
 }
@@ -171,8 +171,8 @@ fn lonePackage(given: &Path) Result[Package, String] {
   if !fs.isFile(&file) { return Error[Package, String](cat("no file ", place.view())); }
   var header = noHeader();
   match scanHeader(&file) {
-    case Ok(var ok) { header <=> ok; }
-    case Error(e) { return Error[Package, String](e.copy()); }
+    case var ok Ok { header <=> ok; }
+    case let e Error { return Error[Package, String](e.copy()); }
   }
   let name = if header.hasMod {header.modName.copy()} else {String.from(file.stem())};
   let fault = nameFault(name.view());
@@ -208,7 +208,7 @@ fn compileUnit(conec: &Path, reg: &Registry, plan: &Plan, u: usize, out: &Path, 
   let text = description(reg, unit, mode, output.view(), includes, &packages);
   match fs.writeFile(&desc, text.view()) {
     case is Ok {}
-    case Error(e) {
+    case let e Error {
       fail(fsMessage(&e));
     }
   }
@@ -217,7 +217,7 @@ fn compileUnit(conec: &Path, reg: &Registry, plan: &Plan, u: usize, out: &Path, 
   let incl = includeFor(pkg, out);
   match fs.removeFile(&incl) {
     case is Ok {}
-    case Error(e) {
+    case let e Error {
       if !e.notFound() {
         fail(fsMessage(&e));
       }
@@ -266,13 +266,13 @@ fn runConec(conec: &Path, defines: &List[String], rest: List[String]) bool {
   var chatter = String.empty();
   var code = 0u32;
   match process.run(args.view()) {
-    case Ok(ok) {
+    case let ok Ok {
       chatter = utf8Text(ok.stdout.view());
       let err = utf8Text(ok.stderr.view());
       chatter <- err.view();
       code = ok.exitCode;
     }
-    case Error(e) {
+    case let e Error {
       fail(e.message());
     }
   }
@@ -297,7 +297,7 @@ fn runConec(conec: &Path, defines: &List[String], rest: List[String]) bool {
 fn makeFolder(folder: &Path) {
   match fs.makeDirAll(folder) {
     case is Ok {}
-    case Error(e) {
+    case let e Error {
       fail(fsMessage(&e));
     }
   }
@@ -314,8 +314,8 @@ fn compile(s: &mut Session, plan: &Plan, top: usize, topOut: &Path, announce: bo
   // error in the source is reported before anything about the machine
   if s.conec.isEmpty() {
     match findConec(&s.repo) {
-      case Ok(var ok) { s.conec <=> ok; }
-      case Error(e) { return Error[List[Path], String](e.copy()); }
+      case var ok Ok { s.conec <=> ok; }
+      case let e Error { return Error[List[Path], String](e.copy()); }
     }
   }
   let out = s.out.copy();
@@ -357,7 +357,7 @@ fn compile(s: &mut Session, plan: &Plan, top: usize, topOut: &Path, announce: bo
     if compiledForGpu && !holdsName(&s.gpuChecked, pkg.name.view()) {
       match checkGpuMarks(plan, &s.reg, u) {
         case is Ok {}
-        case Error(e) {
+        case let e Error {
           changes.restore();
           return Error[List[Path], String](e.copy());
         }
@@ -382,8 +382,8 @@ fn compile(s: &mut Session, plan: &Plan, top: usize, topOut: &Path, announce: bo
       var obj: Path = "";
       match compileUnit(&s.conec, &s.reg, plan, u, &dest, &out, s.mode.view(), &s.defines, isTop,
         announce || !isTop) {
-        case Ok(var ok) { obj <=> ok; }
-        case Error(e) {
+        case var ok Ok { obj <=> ok; }
+        case let e Error {
           changes.restore();
           return Error[List[Path], String](e.copy());
         }
@@ -405,8 +405,8 @@ fn compile(s: &mut Session, plan: &Plan, top: usize, topOut: &Path, announce: bo
     let name = s.reg.packages[plan.units[u].pkg].name.copy();
     if plan.units[u].kernels && hasCore && !s.spvs.contains(name.view()) {
       match compileGpu(s, plan, u, coreUnit) {
-        case Ok(ok) { s.spvs.insert(name, ok.copy()); }
-        case Error(e) {
+        case let ok Ok { s.spvs.insert(name, ok.copy()); }
+        case let e Error {
           changes.restore();
           return Error[List[Path], String](e.copy());
         }
@@ -445,14 +445,14 @@ fn holdsPath(list: &List[Path], p: &Path) bool {
 fn moveAsideIfRunning(exe: &Path) {
   var running: Path = "";
   match process.currentExe() {
-    case Ok(var ok) { running <=> ok; }
+    case var ok Ok { running <=> ok; }
     case is Error { return; }
   }
   if !samePath(&running, exe) { return; }
   let old = Path.fromString(cat(exe.view(), ".old"));
   match fs.removeFile(&old) {
     case is Ok {}
-    case Error(e) {
+    case let e Error {
       if !e.notFound() {
         fail(fsMessage(&e));
       }
@@ -460,7 +460,7 @@ fn moveAsideIfRunning(exe: &Path) {
   }
   match fs.rename(exe, &old) {
     case is Ok {}
-    case Error(e) {
+    case let e Error {
       fail(fsMessage(&e));
     }
   }
@@ -510,7 +510,7 @@ fn runtimeFolders(repo: &Path, paths: &List[Path]) List[Path] {
   if fs.isDir(&deps) {
     var entries = List[fs.DirEntry].empty();
     match fs.readDir(&deps) {
-      case Ok(var ok) { entries <=> ok; }
+      case var ok Ok { entries <=> ok; }
       case is Error {}
     }
     var i = 0usize;
@@ -556,8 +556,8 @@ fn copyRuntime(source: &Path, folder: &Path, name: &str) Result[bool, String] {
 fn copyIfChanged(source: &Path, target: &Path) Result[bool, String] {
   var data = String.empty();
   match fs.readFile(source) {
-    case Ok(var ok) { data <=> ok; }
-    case Error(e) {
+    case var ok Ok { data <=> ok; }
+    case let e Error {
       let why = fsMessage(&e);
       let from = native(source);
       let to = native(target);
@@ -567,14 +567,14 @@ fn copyIfChanged(source: &Path, target: &Path) Result[bool, String] {
   if fs.isFile(target) {
     var there = String.empty();
     match fs.readFile(target) {
-      case Ok(var ok) { there <=> ok; }
+      case var ok Ok { there <=> ok; }
       case is Error {}
     }
     if there.len() == data.len() && there.equals(data.view()) { return Ok[bool, String](false); }
   }
   match fs.writeFile(target, data.view()) {
     case is Ok {}
-    case Error(e) {
+    case let e Error {
       let why = fsMessage(&e);
       let from = native(source);
       let to = native(target);
@@ -593,12 +593,12 @@ fn link(s: &mut Session, plan: &Plan, objs: &List[Path], exe: &Path, announce: b
   if !s.hasLinker {
     var conestd: Path = "";
     match findConestd(&s.conec) {
-      case Ok(var ok) { conestd <=> ok; }
-      case Error(e) { return Error[void, String](e.copy()); }
+      case var ok Ok { conestd <=> ok; }
+      case let e Error { return Error[void, String](e.copy()); }
     }
     match findLinker(&conestd) {
-      case Ok(var ok) { s.linker <=> ok; }
-      case Error(e) { return Error[void, String](e.copy()); }
+      case var ok Ok { s.linker <=> ok; }
+      case let e Error { return Error[void, String](e.copy()); }
     }
     s.hasLinker = true;
   }
@@ -652,8 +652,8 @@ fn link(s: &mut Session, plan: &Plan, objs: &List[Path], exe: &Path, announce: b
       let name = pkg.runtime[j].view();
       if !holdsName(&runtimeNames, name) {
         match findRuntime(&s.repo, name, pkg.name.view(), &folders, &paths) {
-          case Ok(ok) { runtimeFiles.push(ok.copy()); }
-          case Error(e) {
+          case let ok Ok { runtimeFiles.push(ok.copy()); }
+          case let e Error {
             fs.removeFile(exe);
             return Error[void, String](e.copy());
           }
@@ -702,7 +702,7 @@ fn link(s: &mut Session, plan: &Plan, objs: &List[Path], exe: &Path, announce: b
   moveAsideIfRunning(exe);
   match fs.removeFile(exe) {
     case is Ok {}
-    case Error(e) {
+    case let e Error {
       if !e.notFound() {
         fail(fsMessage(&e));
       }
@@ -713,13 +713,13 @@ fn link(s: &mut Session, plan: &Plan, objs: &List[Path], exe: &Path, announce: b
   var code = 0u32;
   var said = String.empty();
   match process.run(command.view()) {
-    case Ok(ok) {
+    case let ok Ok {
       code = ok.exitCode;
       said = consoleText(ok.stdout.view());
       let err = consoleText(ok.stderr.view());
       said <- err.view();
     }
-    case Error(e) {
+    case let e Error {
       fail(e.message());
     }
   }
@@ -748,13 +748,13 @@ fn link(s: &mut Session, plan: &Plan, objs: &List[Path], exe: &Path, announce: b
   i = 0usize;
   while i < runtimeNames.len() {
     match copyRuntime(runtimeFiles[i], &exeFolder, runtimeNames[i].view()) {
-      case Ok(ok) {
+      case let ok Ok {
         if ok && announce {
           let place = shown(runtimeFiles[i]);
           say("Copying", place.view());
         }
       }
-      case Error(e) { return Error[void, String](e.copy()); }
+      case let e Error { return Error[void, String](e.copy()); }
     }
     i = i + 1usize;
   }
@@ -769,13 +769,13 @@ fn link(s: &mut Session, plan: &Plan, objs: &List[Path], exe: &Path, announce: b
       if !samePath(&spvFolder, &exeFolder) {
         let target = exeFolder.join(spv.name());
         match copyIfChanged(&spv, &target) {
-          case Ok(ok) {
+          case let ok Ok {
             if ok && announce {
               let place = shown(&spv);
               say("Copying", place.view());
             }
           }
-          case Error(e) { return Error[void, String](e.copy()); }
+          case let e Error { return Error[void, String](e.copy()); }
         }
       }
     }

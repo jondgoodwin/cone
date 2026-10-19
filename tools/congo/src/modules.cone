@@ -59,8 +59,8 @@ struct Listing {
 fn coneFiles(folder: &Path) Listing {
   var entries = List[fs.DirEntry].empty();
   match fs.readDir(folder) {
-    case Ok(var ok) { entries <=> ok; }
-    case Error(e) {
+    case var ok Ok { entries <=> ok; }
+    case let e Error {
       fail(fsMessage(&e));
     }
   }
@@ -115,8 +115,8 @@ fn scanFolderModule(mods: &mut List[Module], name: &str, folder: &Path, designat
   let me = mods.len();
   mods.push(newModule(name, designated, hasParent, parent));
   match scanHeader(designated) {
-    case Ok(h) { addImports(&mut mods[me], &h); }
-    case Error(e) { return Error[usize, String](e.copy()); }
+    case let h Ok { addImports(&mut mods[me], &h); }
+    case let e Error { return Error[usize, String](e.copy()); }
   }
   var kids = List[usize].empty();
   let listing = coneFiles(folder);
@@ -126,8 +126,8 @@ fn scanFolderModule(mods: &mut List[Module], name: &str, folder: &Path, designat
     if !samePath(file, designated) {
       var header = noHeader();
       match scanHeader(file) {
-        case Ok(var h) { header <=> h; }
-        case Error(e) { return Error[usize, String](e.copy()); }
+        case var h Ok { header <=> h; }
+        case let e Error { return Error[usize, String](e.copy()); }
       }
       if header.hasMod {
         let stem = file.stem();
@@ -166,14 +166,14 @@ fn scanFolderModule(mods: &mut List[Module], name: &str, folder: &Path, designat
             "; rename the folder, its designated file and its 'mod' line"));
         }
         match scanFolderModule(mods, subName, sub, &inner, true, me) {
-          case Ok(k) { kids.push(k); }
-          case Error(e) { return Error[usize, String](e.copy()); }
+          case let k Ok { kids.push(k); }
+          case let e Error { return Error[usize, String](e.copy()); }
         }
       }
       else {
         match scanOrganisational(mods, me, sub) {
           case is Ok {}
-          case Error(e) { return Error[usize, String](e.copy()); }
+          case let e Error { return Error[usize, String](e.copy()); }
         }
       }
     }
@@ -194,8 +194,8 @@ fn scanOrganisational(mods: &mut List[Module], m: usize, folder: &Path) Result[v
     let file = listing.files[i];
     var hasMod = false;
     match scanHeader(file) {
-      case Ok(h) { hasMod = h.hasMod; }
-      case Error(e) { return Error[void, String](e.copy()); }
+      case let h Ok { hasMod = h.hasMod; }
+      case let e Error { return Error[void, String](e.copy()); }
     }
     if hasMod {
       let place = native(file);
@@ -217,7 +217,7 @@ fn scanOrganisational(mods: &mut List[Module], m: usize, folder: &Path) Result[v
     }
     match scanOrganisational(mods, m, sub) {
       case is Ok {}
-      case Error(e) { return Error[void, String](e.copy()); }
+      case let e Error { return Error[void, String](e.copy()); }
     }
     i = i + 1usize;
   }
@@ -239,8 +239,8 @@ fn scanPackage(pkg: &Package) Result[List[Module], String] {
   if pkg.lone {
     mods.push(newModule(pkg.name.view(), &pkg.src, false, 0usize));
     match scanHeader(&pkg.src) {
-      case Ok(h) { addImports(&mut mods[0usize], &h); }
-      case Error(e) { return Error[List[Module], String](e.copy()); }
+      case let h Ok { addImports(&mut mods[0usize], &h); }
+      case let e Error { return Error[List[Module], String](e.copy()); }
     }
     return Ok[List[Module], String](mods);
   }
@@ -251,13 +251,13 @@ fn scanPackage(pkg: &Package) Result[List[Module], String] {
   let rootName = pkg.name.copy();
   match scanFolderModule(&mut mods, rootName.view(), &folder, &pkg.src, false, 0usize) {
     case is Ok {}
-    case Error(e) { return Error[List[Module], String](e.copy()); }
+    case let e Error { return Error[List[Module], String](e.copy()); }
   }
   let gpuFolder = pkg.root.join("gpu");
   if fs.isDir(&gpuFolder) {
     match scanGpuFolder(pkg, &mut mods, &gpuFolder) {
       case is Ok {}
-      case Error(e) { return Error[List[Module], String](e.copy()); }
+      case let e Error { return Error[List[Module], String](e.copy()); }
     }
   }
   Ok[List[Module], String](mods)
@@ -292,8 +292,8 @@ fn scanGpuFolder(pkg: &Package, mods: &mut List[Module], folder: &Path) Result[v
     let file = listing.files[i];
     var header = noHeader();
     match scanHeader(file) {
-      case Ok(var h) { header <=> h; }
-      case Error(e) { return Error[void, String](e.copy()); }
+      case var h Ok { header <=> h; }
+      case let e Error { return Error[void, String](e.copy()); }
     }
     if !header.hasMod {
       let place = native(file);
@@ -330,8 +330,8 @@ fn scanGpuFolder(pkg: &Package, mods: &mut List[Module], folder: &Path) Result[v
         "; rename the folder, its designated file and its 'mod' line"));
     }
     match scanFolderModule(mods, subName, sub, &inner, true, 0usize) {
-      case Ok(k) { found.push(k); }
-      case Error(e) { return Error[void, String](e.copy()); }
+      case let k Ok { found.push(k); }
+      case let e Error { return Error[void, String](e.copy()); }
     }
     i = i + 1usize;
   }
@@ -531,7 +531,7 @@ fn visitModule(pkg: &Package, mods: &List[Module], reg: &Registry, m: usize,
     if *state[to] == unvisited {
       match visitModule(pkg, mods, reg, to, state, steps) {
         case is Ok {}
-        case Error(err) { return Error[void, String](err.copy()); }
+        case let err Error { return Error[void, String](err.copy()); }
       }
     }
     steps.pop();

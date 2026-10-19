@@ -3498,7 +3498,7 @@ static PathSet *pwValue(INode **nodep, int move) {
         if (!(node->flags & FlagConvert) && pwIsOwnedLent((CastNode *)node))
             return pwOwnedLent((CastNode *)node);
         // A conversion moves nothing but an owner it carries; whatever borrow
-        // its value holds came from its operand ('case Some(e)' converts
+        // its value holds came from its operand ('case let e Some' converts
         // the matched 'Option[&T]' to its 'Some[&T]'), of no struct's slot
         PathSet *holds = pwValue(&((CastNode *)node)->exp, flowCastCarries(node) ? move : 0);
         // One into an owning virtual reference ('Uni[Trait]' from a 'Uni[H]')

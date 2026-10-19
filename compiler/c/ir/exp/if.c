@@ -896,7 +896,7 @@ void ifTypeCheck(TypeCheckState *pstate, IfNode *ifnode, INode *expectType) {
     narrowRestore(ifNarrowAfter(armends, livearms, pathenv, !hasElse));
     narrowAnchorAfter((INode*)ifnode, pstate->scope, direct);
 
-    // 'let Ok(n) = r else {...};' goes on to take the variant its test found, so its
+    // 'let n Ok = r else {...};' goes on to take the variant its test found, so its
     // 'else' must leave
     if ((ifnode->flags & FlagIfLetElse) && ifnode->condblk->used >= 2) {
         INode *elseblk = nodesGet(ifnode->condblk, ifnode->condblk->used - 1);

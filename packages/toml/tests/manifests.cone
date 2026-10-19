@@ -27,8 +27,8 @@ import toml;
 fn parsed(text: &Array[u8], label: &Array[u8]) toml.Document {
   var doc = toml.Document();
   match toml.parse(text) {
-    case Ok(var ok) { doc <=> ok; }
-    case Error(e) {
+    case var ok Ok { doc <=> ok; }
+    case let e Error {
       let m = e.message();
       expectStr(m.view(), "<parsed>", label);
     }
@@ -38,14 +38,14 @@ fn parsed(text: &Array[u8], label: &Array[u8]) toml.Document {
 
 fn strValue(t: &toml.Table, key: &str) String {
   match t.getString(key) {
-    case Some(v) { v.copy() }
+    case let v Some { v.copy() }
     case is None { String.from("<none>") }
   }
 }
 
 fn list(t: &toml.Table, key: &str) String {
   match t.getStrings(key) {
-    case Some(v) { String.join(v.view(), "|") }
+    case let v Some { String.join(v.view(), "|") }
     case is None { String.from("<none>") }
   }
 }
@@ -72,13 +72,13 @@ fn oneOf(s: &Array[u8], a: &Array[u8], b: &Array[u8]) bool { s == a || s == b }
 fn checkManifest(file: &Path, folder: &str) String {
   var text = String.empty();
   match fs.readFile(file) {
-    case Ok(var ok) { text <=> ok; }
-    case Error(e) { return e.message(); }
+    case var ok Ok { text <=> ok; }
+    case let e Error { return e.message(); }
   }
   var doc = toml.Document();
   match toml.parse(text.view()) {
-    case Ok(var ok) { doc <=> ok; }
-    case Error(e) { return e.message(); }
+    case var ok Ok { doc <=> ok; }
+    case let e Error { return e.message(); }
   }
   if doc.root.entries.len() > 0usize { return String.from("keys outside any table"); }
   let names = doc.names();
@@ -103,7 +103,7 @@ fn checkManifest(file: &Path, folder: &str) String {
   }
   if pkg.has("targets") {
     match pkg.getStrings("targets") {
-      case Some(t) {
+      case let t Some {
         var native = false;
         var j = 0usize;
         while j < t.len() {
@@ -153,8 +153,8 @@ fn isLinkSection(name: &str) bool {
 fn checkFolder(registry: &Path, label: &Array[u8]) usize {
   var entries = List[fs.DirEntry].empty();
   match fs.readDir(registry) {
-    case Ok(var ok) { entries <=> ok; }
-    case Error(e) {
+    case var ok Ok { entries <=> ok; }
+    case let e Error {
       let m = e.message();
       expectStr(m.view(), "", label);
       return 0usize;
@@ -189,14 +189,14 @@ fn checkFolder(registry: &Path, label: &Array[u8]) usize {
 fn packagesFolder() Path {
   var here = Path.from("");
   match fs.currentDir() {
-    case Ok(var ok) { here <=> ok; }
+    case var ok Ok { here <=> ok; }
     case is Error { return Path.from(""); }
   }
   while !here.isEmpty() {
     let file = here.join("congo.toml");
     if fs.isFile(&file) {
       match fs.readFile(&file) {
-        case Ok(t) {
+        case let t Ok {
           let doc = parsed(t.view(), "a congo.toml above the test");
           if doc.has("package") {
             let name = strValue(doc["package"], "name");
@@ -256,8 +256,8 @@ fn readPackage(packages: &Path, name: &str) toml.Document {
   let file = folder.join("congo.toml");
   var doc = toml.Document();
   match fs.readFile(&file) {
-    case Ok(t) { doc = parsed(t.view(), name); }
-    case Error(e) {
+    case let t Ok { doc = parsed(t.view(), name); }
+    case let e Error {
       let m = e.message();
       expectStr(m.view(), "", name);
     }

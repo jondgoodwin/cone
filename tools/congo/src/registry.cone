@@ -88,14 +88,14 @@ fn isLibraryName(lib: &str) bool {
 // A file's text as Python's read_text gives it: every line end '\n'
 fn readText(file: &Path) Result[String, String] {
   match fs.readFile(file) {
-    case Ok(var ok) {
+    case var ok Ok {
       var text = String.empty();
       text <=> ok;
       text.replace("\r\n", "\n");
       text.replaceByte('\r', '\n');
       Ok[String, String](text)
     }
-    case Error(e) { Error[String, String](fsMessage(&e)) }
+    case let e Error { Error[String, String](fsMessage(&e)) }
   }
 }
 
@@ -103,20 +103,20 @@ fn readText(file: &Path) Result[String, String] {
 fn readToml(file: &Path) Result[toml.Document, String] {
   var text = String.empty();
   match readText(file) {
-    case Ok(var ok) { text <=> ok; }
-    case Error(var e) {
+    case var ok Ok { text <=> ok; }
+    case var e Error {
       var m = String.empty();
       m <=> e;
       return Error[toml.Document, String](m);
     }
   }
   match toml.parse(text.view()) {
-    case Ok(var ok) {
+    case var ok Ok {
       var doc = toml.Document();
       doc <=> ok;
       Ok[toml.Document, String](doc)
     }
-    case Error(e) { Error[toml.Document, String](e.message()) }
+    case let e Error { Error[toml.Document, String](e.message()) }
   }
 }
 
@@ -160,19 +160,19 @@ fn readLinkKeys(file: &Path, table: &toml.Table, label: &str, apply: bool, pkg: 
   var runtime = List[String].empty();
   if table.has("libraries") {
     match table.getStrings("libraries") {
-      case Some(var l) { libraries <=> l; }
+      case var l Some { libraries <=> l; }
       case is None { return cat(place.view(), ": ", label, " libraries must be a list of strings"); }
     }
   }
   if table.has("paths") {
     match table.getStrings("paths") {
-      case Some(var l) { paths <=> l; }
+      case var l Some { paths <=> l; }
       case is None { return cat(place.view(), ": ", label, " paths must be a list of strings"); }
     }
   }
   if table.has("runtime") {
     match table.getStrings("runtime") {
-      case Some(var l) { runtime <=> l; }
+      case var l Some { runtime <=> l; }
       case is None { return cat(place.view(), ": ", label, " runtime must be a list of strings"); }
     }
   }
@@ -273,7 +273,7 @@ fn readTargets(file: &Path, table: &toml.Table, pkg: &mut Package) String {
   let place = native(file);
   var targets = List[String].empty();
   match table.getStrings("targets") {
-    case Some(var l) { targets <=> l; }
+    case var l Some { targets <=> l; }
     case is None {
       return cat(place.view(), ": [package] targets must be a list of targets, such as [\"native\", \"gpu\"]");
     }
@@ -305,8 +305,8 @@ fn readTargets(file: &Path, table: &toml.Table, pkg: &mut Package) String {
 fn readManifest(file: &Path) Result[Package, String] {
   var doc = toml.Document();
   match readToml(file) {
-    case Ok(var ok) { doc <=> ok; }
-    case Error(e) {
+    case var ok Ok { doc <=> ok; }
+    case let e Error {
       return manifestError(file, cat("cannot read the manifest: ", e.view()));
     }
   }
@@ -356,7 +356,7 @@ fn readManifest(file: &Path) Result[Package, String] {
   }
   var pkg = emptyPackage();
   match table.getString("name") {
-    case Some(var n) { pkg.name <=> n; }
+    case var n Some { pkg.name <=> n; }
     case is None {}
   }
   if !isConeName(pkg.name.view()) {
@@ -367,14 +367,14 @@ fn readManifest(file: &Path) Result[Package, String] {
     return manifestError(file, cat("[package] name '", pkg.name.view(), "' ", fault.view(), "; choose another"));
   }
   match table.getString("version") {
-    case Some(var v) { pkg.version <=> v; }
+    case var v Some { pkg.version <=> v; }
     case is None {}
   }
   if !isVersion(pkg.version.view()) {
     return manifestError(file, String.from("[package] version must be MAJOR.MINOR.PATCH, such as \"0.1.0\""));
   }
   match table.getString("output") {
-    case Some(var o) { pkg.output <=> o; }
+    case var o Some { pkg.output <=> o; }
     case is None {}
   }
   if !(pkg.output.equals("executable") || pkg.output.equals("library")) {
@@ -435,15 +435,15 @@ fn registryFolders(repo: &Path) List[Path] {
     let place = native(&config);
     var doc = toml.Document();
     match readToml(&config) {
-      case Ok(var ok) { doc <=> ok; }
-      case Error(e) {
+      case var ok Ok { doc <=> ok; }
+      case let e Error {
         fail(cat(place.view(), ": cannot read the machine config: ", e.view()));
       }
     }
     var listed = List[String].empty();
     if doc.has("registry") && doc["registry"].has("folders") {
       match doc["registry"].getStrings("folders") {
-        case Some(var l) { listed <=> l; }
+        case var l Some { listed <=> l; }
         case is None {
           fail(cat(place.view(), ": [registry] folders must be a list of folder paths"));
         }
@@ -534,8 +534,8 @@ fn readRegistry(folders: List[Path], indexes: &List[String]) Registry {
     else {
       var entries = List[fs.DirEntry].empty();
       match fs.readDir(&folder) {
-        case Ok(var ok) { entries <=> ok; }
-        case Error(e) {
+        case var ok Ok { entries <=> ok; }
+        case let e Error {
           fail(fsMessage(&e));
         }
       }
@@ -544,7 +544,7 @@ fn readRegistry(folders: List[Path], indexes: &List[String]) Registry {
         let manifest = entries[i].path.join("congo.toml");
         if fs.isFile(&manifest) {
           match readManifest(&manifest) {
-            case Ok(var ok) {
+            case var ok Ok {
               var pkg = emptyPackage();
               pkg <=> ok;
               if !reg.byName.contains(pkg.name.view()) {
@@ -553,7 +553,7 @@ fn readRegistry(folders: List[Path], indexes: &List[String]) Registry {
                 reg.byName.insert(name, reg.packages.len() - 1usize);
               }
             }
-            case Error(e) {
+            case let e Error {
               warn(cat("warning: skipped: ", e.view()));
             }
           }

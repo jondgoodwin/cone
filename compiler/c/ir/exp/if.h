@@ -17,7 +17,7 @@ typedef struct IfNode {
 // An 'if' that a 'match' was de-sugared into: the arms are the cases of one match,
 // so type check asks that they cover every value (ifMatchCover)
 #define FlagIfMatch   0x0001        // If
-// The 'if' that 'let Ok(n) = r else {...};' is de-sugared into: its 'else' must leave,
+// The 'if' that 'let n Ok = r else {...};' is de-sugared into: its 'else' must leave,
 // since the binding that follows it takes the variant the test found
 #define FlagIfLetElse 0x0002        // If
 // The cases of a match after one that binds with a function's pattern (parseBoundMatch): the

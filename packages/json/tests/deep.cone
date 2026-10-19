@@ -51,13 +51,13 @@ fn mixed(n: usize) String {
 // The text read and written again is the same text
 fn roundTrips(text: &str, label: &str) {
   match json.parse(text) {
-    case Ok(doc) {
+    case let doc Ok {
       match doc.toText() {
-        case Ok(t) { expect(t.view() == text, label); }
-        case Error(e) { expectStr(e.message().view(), "<written>", label); }
+        case let t Ok { expect(t.view() == text, label); }
+        case let e Error { expectStr(e.message().view(), "<written>", label); }
       }
     }
-    case Error(e) { expectStr(e.message().view(), "<parsed>", label); }
+    case let e Error { expectStr(e.message().view(), "<parsed>", label); }
   }
 }
 
@@ -65,7 +65,7 @@ fn roundTrips(text: &str, label: &str) {
 fn tooDeep(text: &str, col: u32, label: &str) {
   match json.parse(text) {
     case is Ok { expect(false, label); }
-    case Error(e) {
+    case let e Error {
       expect(e.kind is TooDeep, label);
       expectUInt(u64.from(e.column), u64.from(col), label);
       expect(e.reason.view().contains("nested deeper than 512 levels"), label);
@@ -117,7 +117,7 @@ fn main() i32 {
   var failed = false;
   while !finished && !failed {
     match r.next() {
-      case Ok(ev) {
+      case let ev Ok {
         if ev == json.Event.StartArray {
           starts = starts + 1usize;
           if r.depth() > maxDepth { maxDepth = r.depth(); }
@@ -146,15 +146,15 @@ fn main() i32 {
   }
   wide.appendByte(']');
   match json.parse(wide.view()) {
-    case Ok(doc) {
+    case let doc Ok {
       expectUInt(u64.from(doc.len()), 200000u64, "200 000 elements");
       var sum = 0u64;
       i = 0usize;
       while i < doc.len() {
         match doc.at(i) {
-          case Some(v) {
+          case let v Some {
             match v.asU64() {
-              case Ok(n) { sum = sum + n; }
+              case let n Ok { sum = sum + n; }
               case is Error { expect(false, "an element is a number"); }
             }
           }
@@ -164,11 +164,11 @@ fn main() i32 {
       }
       expectUInt(sum, 19999900000u64, "their sum");
       match doc.toText() {
-        case Ok(t) { expect(t.view() == wide.view(), "and written back as they were"); }
-        case Error(e) { expect(false, "wide write"); }
+        case let t Ok { expect(t.view() == wide.view(), "and written back as they were"); }
+        case let e Error { expect(false, "wide write"); }
       }
     }
-    case Error(e) { expectStr(e.message().view(), "<parsed>", "wide"); }
+    case let e Error { expectStr(e.message().view(), "<parsed>", "wide"); }
   }
 
   var members = String.from("{");
@@ -183,14 +183,14 @@ fn main() i32 {
   }
   members.appendByte('}');
   match json.parse(members.view()) {
-    case Ok(doc) {
+    case let doc Ok {
       expectUInt(u64.from(doc.len()), 20000u64, "20 000 members");
       expectInt(doc.i64Or("key0", -1i64), 0i64, "the first member");
       expectInt(doc.i64Or("key19999", -1i64), 39998i64, "the last member");
       expectInt(doc.i64Or("key12345", -1i64), 24690i64, "one between");
       expectInt(doc.i64Or("key20000", -1i64), -1i64, "one that is not there");
     }
-    case Error(e) { expectStr(e.message().view(), "<parsed>", "members"); }
+    case let e Error { expectStr(e.message().view(), "<parsed>", "members"); }
   }
 
   // A megabyte of string, with escapes now and then
@@ -202,22 +202,22 @@ fn main() i32 {
   }
   longText.append("\\n\\u00e9\\ud83d\\ude00\"");
   match json.parse(longText.view()) {
-    case Ok(doc) {
+    case let doc Ok {
       match doc.asText() {
-        case Some(s) {
+        case let s Some {
           expectUInt(u64.from(s.len), 1000000u64 + 1u64 + 2u64 + 4u64, "a megabyte of string");
           match doc.toText() {
-            case Ok(t) {
+            case let t Ok {
               // Written, the é and the face are raw UTF-8, the newline an escape
               expectUInt(u64.from(t.len()), 1000000u64 + 2u64 + 2u64 + 2u64 + 4u64, "written back");
             }
-            case Error(e) { expect(false, "long string write"); }
+            case let e Error { expect(false, "long string write"); }
           }
         }
         case is None { expect(false, "long string is text"); }
       }
     }
-    case Error(e) { expectStr(e.message().view(), "<parsed>", "long string"); }
+    case let e Error { expectStr(e.message().view(), "<parsed>", "long string"); }
   }
 
   done()

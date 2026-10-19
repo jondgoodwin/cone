@@ -35,12 +35,12 @@ fn addressFrom(j: &json.Json) Result[Address, json.JsonError] {
   var street = String.empty();
   var zip = String.empty();
   match j.requireText("street") {
-    case Ok(var s) { street <=> s; }
-    case Error(e) { return Error[Address, json.JsonError](e.copy()); }
+    case var s Ok { street <=> s; }
+    case let e Error { return Error[Address, json.JsonError](e.copy()); }
   }
   match j.requireText("zip") {
-    case Ok(var z) { zip <=> z; }
-    case Error(e) { return Error[Address, json.JsonError](e.copy()); }
+    case var z Ok { zip <=> z; }
+    case let e Error { return Error[Address, json.JsonError](e.copy()); }
   }
   Ok[Address, json.JsonError](Address(street, zip))
 }
@@ -48,31 +48,31 @@ fn addressFrom(j: &json.Json) Result[Address, json.JsonError] {
 fn personFrom(j: &json.Json) Result[Person, json.JsonError] {
   var name = String.empty();
   match j.requireText("name") {
-    case Ok(var n) { name <=> n; }
-    case Error(e) { return Error[Person, json.JsonError](e.copy()); }
+    case var n Ok { name <=> n; }
+    case let e Error { return Error[Person, json.JsonError](e.copy()); }
   }
   var age = 0i64;
   match j.requireI64("age") {
-    case Ok(n) { age = n; }
-    case Error(e) { return Error[Person, json.JsonError](e.copy()); }
+    case let n Ok { age = n; }
+    case let e Error { return Error[Person, json.JsonError](e.copy()); }
   }
   var email: Option[String] = None;
   match j.getText("email") {
-    case Some(s) { email = Some[String](String.from(s)); }
+    case let s Some { email = Some[String](String.from(s)); }
     case is None { }
   }
   var tags = List[String].empty();
   match j.get("tags") {
-    case Some(t) {
+    case let t Some {
       if !t.isArray() {
         return Error[Person, json.JsonError](json.JsonError.shape("the member \"tags\" is not an array"));
       }
       var i = 0usize;
       while i < t.len() {
         match t.at(i) {
-          case Some(v) {
+          case let v Some {
             match v.asText() {
-              case Some(s) { tags.push(String.from(s)); }
+              case let s Some { tags.push(String.from(s)); }
               case is None {
                 var m = String.from("tags[");
                 m.appendUInt(u64.from(i));
@@ -90,13 +90,13 @@ fn personFrom(j: &json.Json) Result[Person, json.JsonError] {
   }
   var address = Address(String.empty(), String.empty());
   match j.require("address") {
-    case Ok(a) {
+    case let a Ok {
       match addressFrom(a) {
-        case Ok(var ok) { address <=> ok; }
-        case Error(e) { return Error[Person, json.JsonError](within("address", &e)); }
+        case var ok Ok { address <=> ok; }
+        case let e Error { return Error[Person, json.JsonError](within("address", &e)); }
       }
     }
-    case Error(e) { return Error[Person, json.JsonError](e.copy()); }
+    case let e Error { return Error[Person, json.JsonError](e.copy()); }
   }
   Ok[Person, json.JsonError](Person(name, age, email, tags, address))
 }
@@ -111,7 +111,7 @@ fn personJson(p: &Person) json.Json {
   o.set("name", json.Json.fromText(p.name.view()));
   o.set("age", json.Json.fromI64(p.age));
   match &p.email {
-    case Some(e) { o.set("email", json.Json.fromText(e.view())); }
+    case let e Some { o.set("email", json.Json.fromText(e.view())); }
     case is None { }
   }
   o.set("tags", tags);
@@ -122,18 +122,18 @@ fn personJson(p: &Person) json.Json {
 // The text mapped to a Person and written again, or the complaint
 fn mapped(text: &str) String {
   match json.parse(text) {
-    case Ok(doc) {
+    case let doc Ok {
       match personFrom(&doc) {
-        case Ok(p) {
+        case let p Ok {
           match personJson(&p).toText() {
-            case Ok(t) { t.copy() }
-            case Error(e) { e.message() }
+            case let t Ok { t.copy() }
+            case let e Error { e.message() }
           }
         }
-        case Error(e) { e.message() }
+        case let e Error { e.message() }
       }
     }
-    case Error(e) { e.message() }
+    case let e Error { e.message() }
   }
 }
 
@@ -143,23 +143,23 @@ fn main() i32 {
 
   // The fields themselves
   match json.parse(whole) {
-    case Ok(doc) {
+    case let doc Ok {
       match personFrom(&doc) {
-        case Ok(p) {
+        case let p Ok {
           expectStr(p.name.view(), "Ada", "name");
           expectInt(p.age, 36i64, "age");
           match &p.email {
-            case Some(e) { expectStr(e.view(), "ada@example.com", "email"); }
+            case let e Some { expectStr(e.view(), "ada@example.com", "email"); }
             case is None { expect(false, "email"); }
           }
           expectUInt(u64.from(p.tags.len()), 2u64, "two tags");
           expectStr(p.tags[1usize].view(), "engines", "second tag");
           expectStr(p.address.zip.view(), "W1", "zip");
         }
-        case Error(e) { expectStr(e.message().view(), "<mapped>", "whole"); }
+        case let e Error { expectStr(e.message().view(), "<mapped>", "whole"); }
       }
     }
-    case Error(e) { expect(false, "whole parse"); }
+    case let e Error { expect(false, "whole parse"); }
   }
 
   // Optional members: missing, null, or the wrong kind are all no email

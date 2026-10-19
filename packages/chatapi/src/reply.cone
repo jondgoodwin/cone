@@ -40,21 +40,21 @@ pub struct Delta {
 
 fn textOr(j: &json.Json, key: &str) String {
   match j.getText(key) {
-    case Some(s) {String.from(s)}
+    case let s Some {String.from(s)}
     case is None {String.empty()}
   }
 }
 
 fn countOf(j: &json.Json, key: &str) u64 {
   match j.getU64(key) {
-    case Some(n) {n}
+    case let n Some {n}
     case is None {0u64}
   }
 }
 
 fn usageOf(j: &json.Json) Option[Usage] {
   match j.get("usage") {
-    case Some(u) {
+    case let u Some {
       if u.isObject() {
         return Some[Usage](Usage(countOf(u, "prompt_tokens"), countOf(u, "completion_tokens"),
           countOf(u, "total_tokens")));
@@ -78,11 +78,11 @@ fn shapeError(what: &str) ChatError {ChatError.make(ChatErrorKind.Decode, what)}
 // {"error": "text"} as some servers do. None when the document holds no error
 fn errorObject(doc: &json.Json, kind: ChatErrorKind, status: u16) Option[ChatError] {
   match doc.get("error") {
-    case Some(e) {
+    case let e Some {
       var err = ChatError.make(kind, "");
       err.status = status;
       match e.asText() {
-        case Some(s) {
+        case let s Some {
           err.detail = String.from(s);
           return Some[ChatError](err);
         }
@@ -92,12 +92,12 @@ fn errorObject(doc: &json.Json, kind: ChatErrorKind, status: u16) Option[ChatErr
         err.detail = textOr(e, "message");
         err.errorType = textOr(e, "type");
         match e.get("code") {
-          case Some(c) {
+          case let c Some {
             match c.asText() {
-              case Some(s) {err.code = String.from(s);}
+              case let s Some {err.code = String.from(s);}
               case is None {
                 match c.numberText() {
-                  case Some(n) {err.code = String.from(n);}
+                  case let n Some {err.code = String.from(n);}
                   case is None {}
                 }
               }
@@ -119,9 +119,9 @@ fn errorObject(doc: &json.Json, kind: ChatErrorKind, status: u16) Option[ChatErr
 // one, else the status and the start of the body
 pub fn apiError(status: u16, body: &Array[u8]) ChatError {
   match json.parse(body) {
-    case Ok(doc) {
+    case let doc Ok {
       match errorObject(&doc, ChatErrorKind.Api, status) {
-        case Some(var e) {
+        case var e Some {
           var out = ChatError.make(ChatErrorKind.Api, "");
           out <=> e;
           return out;
@@ -129,7 +129,7 @@ pub fn apiError(status: u16, body: &Array[u8]) ChatError {
         case is None {}
       }
     }
-    case Error(bad) {}
+    case let bad Error {}
   }
   var d = String.from("the server answered ");
   d.appendUInt(u64.from(status));
@@ -154,8 +154,8 @@ pub fn apiError(status: u16, body: &Array[u8]) ChatError {
 // Read the body of a 200 as the API's chat completion
 pub fn parseReply(text: &Array[u8]) Result[ChatReply, ChatError] {
   match json.parse(text) {
-    case Ok(doc) {replyOf(&doc)}
-    case Error(e) {Error[ChatReply, ChatError](decodeError("the reply", &e))}
+    case let doc Ok {replyOf(&doc)}
+    case let e Error {Error[ChatReply, ChatError](decodeError("the reply", &e))}
   }
 }
 
@@ -164,7 +164,7 @@ fn replyOf(doc: &json.Json) Result[ChatReply, ChatError] {
     return Error[ChatReply, ChatError](shapeError("the reply is not a JSON object"));
   }
   match errorObject(doc, ChatErrorKind.Api, 200u16) {
-    case Some(var e) {
+    case var e Some {
       var out = ChatError.make(ChatErrorKind.Api, "");
       out <=> e;
       return Error[ChatReply, ChatError](out);
@@ -177,12 +177,12 @@ fn replyOf(doc: &json.Json) Result[ChatReply, ChatError] {
   r.created = doc.i64Or("created", 0i64);
   r.usage = usageOf(doc);
   match doc.get("choices") {
-    case Some(cs) {
+    case let cs Some {
       match cs.at(0usize) {
-        case Some(c) {
+        case let c Some {
           r.finishReason = textOr(c, "finish_reason");
           match c.get("message") {
-            case Some(m) {
+            case let m Some {
               r.role = textOr(m, "role");
               r.content = textOr(m, "content");
             }
@@ -229,8 +229,8 @@ pub fn isDone(data: &Array[u8]) bool {
 // that carries an error object is a Stream error
 pub fn parseChunk(text: &Array[u8]) Result[Delta, ChatError] {
   match json.parse(text) {
-    case Ok(doc) {deltaOf(&doc)}
-    case Error(e) {Error[Delta, ChatError](decodeError("a chunk", &e))}
+    case let doc Ok {deltaOf(&doc)}
+    case let e Error {Error[Delta, ChatError](decodeError("a chunk", &e))}
   }
 }
 
@@ -239,7 +239,7 @@ fn deltaOf(doc: &json.Json) Result[Delta, ChatError] {
     return Error[Delta, ChatError](shapeError("a chunk is not a JSON object"));
   }
   match errorObject(doc, ChatErrorKind.Stream, 0u16) {
-    case Some(var e) {
+    case var e Some {
       var out = ChatError.make(ChatErrorKind.Stream, "");
       out <=> e;
       return Error[Delta, ChatError](out);
@@ -251,14 +251,14 @@ fn deltaOf(doc: &json.Json) Result[Delta, ChatError] {
   d.model = textOr(doc, "model");
   d.usage = usageOf(doc);
   match doc.get("choices") {
-    case Some(cs) {
+    case let cs Some {
       if !cs.isArray() {return Error[Delta, ChatError](shapeError("a chunk's \"choices\" is not an array"));}
       // The usage chunk has none; n above 1 is not asked for, so the first is the reply
       match cs.at(0usize) {
-        case Some(c) {
+        case let c Some {
           d.finishReason = textOr(c, "finish_reason");
           match c.get("delta") {
-            case Some(x) {
+            case let x Some {
               d.role = textOr(x, "role");
               d.content = textOr(x, "content");
             }

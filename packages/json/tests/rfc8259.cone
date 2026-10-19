@@ -15,8 +15,8 @@ import json;
 fn parsed(text: &str, label: &str) json.Json {
   var doc: json.Json = json.Json.Null;
   match json.parse(text) {
-    case Ok(var ok) { doc <=> ok; }
-    case Error(e) {
+    case var ok Ok { doc <=> ok; }
+    case let e Error {
       let m = e.message();
       expectStr(m.view(), "<parsed>", label);
     }
@@ -26,12 +26,12 @@ fn parsed(text: &str, label: &str) json.Json {
 
 fn compact(j: &json.Json) String {
   match j.toText() {
-    case Ok(var t) {
+    case var t Ok {
       var s = String.empty();
       s <=> t;
       s
     }
-    case Error(e) { e.message() }
+    case let e Error { e.message() }
   }
 }
 
@@ -39,33 +39,33 @@ fn compact(j: &json.Json) String {
 fn same(a: &json.Json, b: &json.Json) bool {
   match a {
     case is Null { b.isNull() }
-    case Bool(x) { match b.asBool() { case Some(y) { *x == y } case is None { false } } }
-    case Number(x) {
-      match b.numberText() { case Some(y) { x.view() == y } case is None { false } }
+    case let x Bool { match b.asBool() { case let y Some { *x == y } case is None { false } } }
+    case let x Number {
+      match b.numberText() { case let y Some { x.view() == y } case is None { false } }
     }
-    case Text(x) { match b.asText() { case Some(y) { x.view() == y } case is None { false } } }
-    case Array(x) {
+    case let x Text { match b.asText() { case let y Some { x.view() == y } case is None { false } } }
+    case let x Array {
       if b.len() != x.len() || !b.isArray() { return false; }
       var i = 0usize;
       while i < x.len() {
         match b.at(i) {
-          case Some(y) { if !same(x[i], y) { return false; } }
+          case let y Some { if !same(x[i], y) { return false; } }
           case is None { return false; }
         }
         i = i + 1usize;
       }
       true
     }
-    case Object(x) {
+    case let x Object {
       if b.len() != x.len() || !b.isObject() { return false; }
       var i = 0usize;
       while i < x.len() {
         match b.keyAt(i) {
-          case Some(k) { if k != x[i].key.view() { return false; } }
+          case let k Some { if k != x[i].key.view() { return false; } }
           case is None { return false; }
         }
         match b.valueAt(i) {
-          case Some(y) { if !same(&x[i].value, y) { return false; } }
+          case let y Some { if !same(&x[i].value, y) { return false; } }
           case is None { return false; }
         }
         i = i + 1usize;
@@ -81,17 +81,17 @@ fn roundTrips(j: &json.Json, label: &str) {
   let again = parsed(c.view(), label);
   expect(same(j, &again), label);
   match j.toPretty(2usize) {
-    case Ok(p) {
+    case let p Ok {
       let back = parsed(p.view(), label);
       expect(same(j, &back), label);
     }
-    case Error(e) { expect(false, label); }
+    case let e Error { expect(false, label); }
   }
 }
 
 fn text(j: &json.Json, key: &str) String {
   match j.getText(key) {
-    case Some(s) { String.from(s) }
+    case let s Some { String.from(s) }
     case is None { String.from("<none>") }
   }
 }
@@ -102,13 +102,13 @@ fn main() i32 {
   expect(image.isObject(), "image is an object");
   expectUInt(u64.from(image.len()), 1u64, "one member");
   match image.get("Image") {
-    case Some(im) {
+    case let im Some {
       expectInt(im.i64Or("Width", -1i64), 800i64, "width");
       expectInt(im.i64Or("Height", -1i64), 600i64, "height");
       expectStr(text(im, "Title").view(), "View from 15th Floor", "title");
       expectBool(im.boolOr("Animated", true), false, "animated");
       match im.get("Thumbnail") {
-        case Some(th) {
+        case let th Some {
           expectStr(text(th, "Url").view(), "http://www.example.com/image/481989943", "thumbnail url");
           expectInt(th.i64Or("Height", -1i64), 125i64, "thumbnail height");
           expectInt(th.i64Or("Width", -1i64), 100i64, "thumbnail width");
@@ -116,12 +116,12 @@ fn main() i32 {
         case is None { expect(false, "thumbnail"); }
       }
       match im.get("IDs") {
-        case Some(ids) {
+        case let ids Some {
           expectUInt(u64.from(ids.len()), 4u64, "four ids");
           match ids.at(3usize) {
-            case Some(last) {
+            case let last Some {
               match last.asI64() {
-                case Ok(n) { expectInt(n, 38793i64, "last id"); }
+                case let n Ok { expectInt(n, 38793i64, "last id"); }
                 case is Error { expect(false, "last id"); }
               }
             }
@@ -140,7 +140,7 @@ fn main() i32 {
   let places = parsed("[\n  {\n    \"precision\": \"zip\",\n    \"Latitude\":  37.7668,\n    \"Longitude\": -122.3959,\n    \"Address\":   \"\",\n    \"City\":      \"SAN FRANCISCO\",\n    \"State\":     \"CA\",\n    \"Zip\":       \"94107\",\n    \"Country\":   \"US\"\n  },\n  {\n    \"precision\": \"zip\",\n    \"Latitude\":  37.371991,\n    \"Longitude\": -122.026020,\n    \"Address\":   \"\",\n    \"City\":      \"SUNNYVALE\",\n    \"State\":     \"CA\",\n    \"Zip\":       \"94085\",\n    \"Country\":   \"US\"\n  }\n]\n", "places");
   expectUInt(u64.from(places.len()), 2u64, "two places");
   match places.at(0usize) {
-    case Some(p) {
+    case let p Some {
       expectStr(text(p, "City").view(), "SAN FRANCISCO", "first city");
       expectFloat(p.f64Or("Latitude", 0.0), 37.7668, 0.0000000001, "first latitude");
       expectFloat(p.f64Or("Longitude", 0.0), -122.3959, 0.0000000001, "first longitude");
@@ -150,12 +150,12 @@ fn main() i32 {
     case is None { expect(false, "first place"); }
   }
   match places.at(1usize) {
-    case Some(p) {
+    case let p Some {
       // The number's text is kept as written, the trailing zero too
       match p.get("Longitude") {
-        case Some(n) {
+        case let n Some {
           match n.numberText() {
-            case Some(t) { expectStr(t, "-122.026020", "longitude text as written"); }
+            case let t Some { expectStr(t, "-122.026020", "longitude text as written"); }
             case is None { expect(false, "longitude text"); }
           }
         }
@@ -171,17 +171,17 @@ fn main() i32 {
   // Section 2: any value alone is a JSON text
   let hello = parsed("\"Hello world!\"", "string alone");
   match hello.asText() {
-    case Some(s) { expectStr(s, "Hello world!", "string alone"); }
+    case let s Some { expectStr(s, "Hello world!", "string alone"); }
     case is None { expect(false, "string alone is text"); }
   }
   let answer = parsed("42", "number alone");
   match answer.asI64() {
-    case Ok(n) { expectInt(n, 42i64, "number alone"); }
+    case let n Ok { expectInt(n, 42i64, "number alone"); }
     case is Error { expect(false, "number alone"); }
   }
   let yes = parsed("true", "true alone");
   match yes.asBool() {
-    case Some(b) { expectBool(b, true, "true alone"); }
+    case let b Some { expectBool(b, true, "true alone"); }
     case is None { expect(false, "true alone"); }
   }
   expect(parsed("false", "false").isBool(), "false is a bool");
@@ -195,12 +195,12 @@ fn main() i32 {
   // Section 7: "\u005C" is a reverse solidus, "\uD834\uDD1E" the G clef U+1D11E
   let solidus = parsed("\"\\u005C\"", "solidus");
   match solidus.asText() {
-    case Some(s) { expectStr(s, "\\", "\\u005C is a backslash"); }
+    case let s Some { expectStr(s, "\\", "\\u005C is a backslash"); }
     case is None { expect(false, "solidus"); }
   }
   let clef = parsed("\"\\uD834\\uDD1E\"", "clef");
   match clef.asText() {
-    case Some(s) {
+    case let s Some {
       // U+1D11E in UTF-8 is F0 9D 84 9E
       expectUInt(u64.from(s.len), 4u64, "clef is four bytes");
       expectUInt(u64.from(s[0usize]), 0xF0u64, "clef byte 0");

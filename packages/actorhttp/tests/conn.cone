@@ -83,7 +83,7 @@ fn reply(sv: &mut Srv, req: httpconn.ReqId, head: bool, status: u16, body: &Arra
 
 fn number(s: &str) u64 {
   match collections.parseUInt(s) {
-    case Some(v) {v}
+    case let v Some {v}
     case is None[u64] {0u64}
   }
 }
@@ -238,8 +238,8 @@ fn readText(name: &str) String {
   var out = String.empty();
   let file = certs(name);
   match fs.readFile(&file) {
-    case Ok(var r) {out <=> r;}
-    case Error(e) {}
+    case var r Ok {out <=> r;}
+    case let e Error {}
   }
   out
 }
@@ -256,11 +256,11 @@ fn tlsServer(cert: &str, key: &str) tls.Server {
   let certFile = certs(cert);
   let keyFile = certs(key);
   match tls.Server.make(tls.ServerConfig.make(&certFile, &keyFile)) {
-    case Ok(r) {
+    case let r Ok {
       let s = r;
       return s;
     }
-    case Error(e) {}
+    case let e Error {}
   }
   panic("no TLS server: run the test from its build folder")
 }
@@ -270,20 +270,20 @@ fn listenOn(sv: &mut Srv, lp: &mut Loop, s: Option[tls.Server]) u16 {
   var port = 0u16;
   var r: Result[httpconn.ListenerId, iocore.IoError] = Error[httpconn.ListenerId, iocore.IoError](iocore.IoError.cancelled());
   match s {
-    case Some(t) {
+    case let t Some {
       r = sv.drv.listenWith(lp, SocketAddr.localhost(0u16), Uni[TlsMaker](TlsMaker(t, sv.pool)),
         httpconn.Sink.Here(1u64));
     }
     else {r = sv.drv.listen(lp, SocketAddr.localhost(0u16), httpconn.Sink.Here(1u64));}
   }
   match r {
-    case Ok(l) {
+    case let l Ok {
       match sv.drv.localAddr(lp, l) {
-        case Ok(a) {port = a.port();}
-        case Error(e) {}
+        case let a Ok {port = a.port();}
+        case let e Error {}
       }
     }
-    case Error(e) {}
+    case let e Error {}
   }
   port
 }
@@ -327,7 +327,7 @@ fn say(what: &str, r: Result[Response, FetchError]) {
   printStr(what);
   printStr(": ");
   match &r {
-    case &Ok(ok) {
+    case let ok &Ok {
       printUInt(u64.from(ok.status));
       if ok.body.len() > 0usize {
         printStr(" ");
@@ -335,7 +335,7 @@ fn say(what: &str, r: Result[Response, FetchError]) {
       }
       printStr("\n");
     }
-    case &Error(e) {
+    case let e &Error {
       printStr(kindWord(e));
       if !e.isCancelled() && !e.isTimedOut() {
         printStr(" at ");
@@ -359,7 +359,7 @@ fn note(what: &str, yes: bool) {
 // happens now and then
 fn refusedTls(r: Result[Response, FetchError]) bool {
   match &r {
-    case &Error(e) {
+    case let e &Error {
       let s = e.failure.stage;
       e.kind() == actorhttp.FetchErrorKind.Failed && (s == httpclient.Stage.Tls || s == httpclient.Stage.Read ||
         s == httpclient.Stage.Closed)
@@ -378,12 +378,12 @@ fn connOf(what: &str, r: Result[Conn, FetchError]) Conn {
   var res = r;
   var c = Conn.none();
   match &mut res {
-    case &mut Ok(var ok) {
+    case var ok &mut Ok {
       c <=> *ok;
       printStr(what);
       printStr(": connected\n");
     }
-    case &mut Error(e) {
+    case let e &mut Error {
       printStr(what);
       printStr(": ");
       printStr(kindWord(e));
@@ -512,7 +512,7 @@ fn main() i32 {
   var ports = List[u16].empty();
   while ports.len() < 3usize {
     match portRx.recv() {
-      case Some(p) {ports.push(p);}
+      case let p Some {ports.push(p);}
       case is None[u16] {}
     }
   }

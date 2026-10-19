@@ -240,7 +240,7 @@ side is an error, let such an operand abstain (`inodeIsProvisionalType`) —
 **A reference in a pattern stays a reference type** whatever its referent's
 name means for now: `refNameRes` asks `castPatternPending` too, because a
 pattern's bare root is bound at type check and may be unbound, or mean a value
-lexically, until then. `case &Circle(c)` is a narrowing, never a borrow.
+lexically, until then. `case let c &Circle` is a narrowing, never a borrow.
 
 **Two sites rewrite a parent's pointer**: `allocateQuesNameRes` collapses `&x?`
 into the allocation node with `FlagQues` set, and `fnCallNameResPath` replaces

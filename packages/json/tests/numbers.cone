@@ -18,12 +18,12 @@ extern {
 
 fn describe(r: Result[i64, json.NumberError]) String {
   match r {
-    case Ok(n) {
+    case let n Ok {
       var s = String.from("ok ");
       s.appendInt(n);
       s
     }
-    case Error(e) {
+    case let e Error {
       match e {
         case is NotANumber { String.from("not a number") }
         case is NotInteger { String.from("not an integer") }
@@ -35,12 +35,12 @@ fn describe(r: Result[i64, json.NumberError]) String {
 
 fn describeU(r: Result[u64, json.NumberError]) String {
   match r {
-    case Ok(n) {
+    case let n Ok {
       var s = String.from("ok ");
       s.appendUInt(n);
       s
     }
-    case Error(e) {
+    case let e Error {
       match e {
         case is NotANumber { String.from("not a number") }
         case is NotInteger { String.from("not an integer") }
@@ -63,7 +63,7 @@ fn uint(text: &str, want: &str) {
 // The f64 the text reads as, its bits
 fn bitsOf(text: &str) u64 {
   match json.numberF64(text) {
-    case Ok(x) { x as u64 }
+    case let x Ok { x as u64 }
     case is Error { 0xDEADBEEFDEADBEEFu64 }
   }
 }
@@ -75,7 +75,7 @@ fn float(text: &str, want: u64) {
 fn outOfRange(text: &str) {
   match json.numberF64(text) {
     case is Ok { expect(false, text); }
-    case Error(e) {
+    case let e Error {
       match e {
         case is OutOfRange { expect(true, text); }
         else { expect(false, text); }
@@ -90,7 +90,7 @@ fn grammar(text: &str, ok: bool) {
 
 fn shortest(x: f64, want: &str) {
   match json.formatF64(x) {
-    case Some(s) { expectStr(s.view(), want, want); }
+    case let s Some { expectStr(s.view(), want, want); }
     case is None { expectStr("<none>", want, want); }
   }
 }
@@ -116,7 +116,7 @@ fn strtodBits(text: &str) u64 {
 // The text read by this package and by strtod must be the same f64
 fn agree(text: &str, label: &str) bool {
   match json.numberF64(text) {
-    case Ok(x) { return expectUInt(x as u64, strtodBits(text), label); }
+    case let x Ok { return expectUInt(x as u64, strtodBits(text), label); }
     case is Error { return expect(false, label); }
   }
   false
@@ -278,25 +278,25 @@ fn main() i32 {
     z = z + 1usize;
   }
   match json.parse(big.view()) {
-    case Ok(doc) {
+    case let doc Ok {
       match doc.numberText() {
-        case Some(t) { expectStr(t, big.view(), "a 400 digit number is kept as written"); }
+        case let t Some { expectStr(t, big.view(), "a 400 digit number is kept as written"); }
         case is None { expect(false, "400 digit number text"); }
       }
       match doc.toText() {
-        case Ok(t) { expectStr(t.view(), big.view(), "and written as it was"); }
-        case Error(e) { expect(false, "400 digit write"); }
+        case let t Ok { expectStr(t.view(), big.view(), "and written as it was"); }
+        case let e Error { expect(false, "400 digit write"); }
       }
       match doc.asI64() {
         case is Ok { expect(false, "400 digits is no i64"); }
-        case Error(e) { expect(true, "400 digits is no i64"); }
+        case let e Error { expect(true, "400 digits is no i64"); }
       }
       match doc.asF64() {
         case is Ok { expect(false, "400 digits is no f64"); }
-        case Error(e) { expect(true, "400 digits is no f64"); }
+        case let e Error { expect(true, "400 digits is no f64"); }
       }
     }
-    case Error(e) { expect(false, "400 digit parse"); }
+    case let e Error { expect(false, "400 digit parse"); }
   }
   // 1 followed by 300 zeros is an f64
   var big300 = String.from("1");
@@ -386,7 +386,7 @@ fn main() i32 {
     if ((bits >> 52u64) & 0x7FFu64) == 0x7FFu64 { bits = bits & 0x800FFFFFFFFFFFFFu64; }
     let x = bits as f64;
     match json.formatF64(x) {
-      case Some(t) {
+      case let t Some {
         if bitsOf(t.view()) != bits {
           disagree = disagree + 1usize;
           expectStr(t.view(), "<reads back as the same f64>", "round trip");
@@ -426,7 +426,7 @@ fn main() i32 {
       s.appendInt(e);
     }
     match json.numberF64(s.view()) {
-      case Ok(x) {
+      case let x Ok {
         if (x as u64) != strtodBits(s.view()) {
           disagree = disagree + 1usize;
           expectStr(s.view(), "<same as strtod>", "decimal against strtod");

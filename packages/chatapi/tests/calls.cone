@@ -50,12 +50,12 @@ fn errorBody(message: &str, kind: &str, code: &str) String {
 
 fn textOf(j: &json.Json) String {
   match j.toText() {
-    case Ok(var t) {
+    case var t Ok {
       var s = String.empty();
       s <=> t;
       s
     }
-    case Error(e) {String.from("(unwritable)")}
+    case let e Error {String.from("(unwritable)")}
   }
 }
 
@@ -115,15 +115,15 @@ actor Handler {
     }
     var doc: json.Json = json.Json.Null;
     match json.parse(ex.request.body.view()) {
-      case Ok(var ok) {doc <=> ok;}
-      case Error(e) {
+      case var ok Ok {doc <=> ok;}
+      case let e Error {
         self.answer(400u16, errorBody("the body is not JSON", "invalid_request_error", "bad_body").view());
         return;
       }
     }
     var model = String.empty();
     match doc.getText("model") {
-      case Some(s) {model = String.from(s);}
+      case let s Some {model = String.from(s);}
       case is None {}
     }
     let m = model.view();
@@ -163,8 +163,8 @@ actor Acceptor {
     let r = await actorhttp.listen(SocketAddr.localhost(0u16), ServerConfig.make());
     var res = r;
     match &mut res {
-      case &mut Ok(var ok) {server <=> *ok;}
-      case &mut Error(e) {printStr("listen failed: "); printStr(e.message().view()); printStr("\n");}
+      case var ok &mut Ok {server <=> *ok;}
+      case let e &mut Error {printStr("listen failed: "); printStr(e.message().view()); printStr("\n");}
     }
     ports.send(server.port());
   }
@@ -173,8 +173,8 @@ actor Acceptor {
     while true {
       let n = await server.next();
       match n {
-        case Ok(var ok) {self.route(ok);}
-        case Error(e) {break;}
+        case var ok Ok {self.route(ok);}
+        case let e Error {break;}
       }
     }
   }
@@ -207,7 +207,7 @@ fn baseUrl(port: u16) String {
 
 fn usageText(u: &Option[Usage]) String {
   match u {
-    case &Some(x) {
+    case let x &Some {
       var s = String.empty();
       s.appendUInt(x.promptTokens);
       s.append("/");
@@ -225,7 +225,7 @@ fn show(label: &str, r: &Result[ChatReply, ChatError]) {
   printStr(label);
   printStr(": ");
   match r {
-    case &Ok(ok) {
+    case let ok &Ok {
       printStr("ok id=");
       printStr(ok.id.view());
       printStr(" model=");
@@ -238,7 +238,7 @@ fn show(label: &str, r: &Result[ChatReply, ChatError]) {
       printStr(usageText(&ok.usage).view());
       printStr("\n");
     }
-    case &Error(e) {
+    case let e &Error {
       printStr("error ");
       if e.kind == ChatErrorKind.Transport {
         // The words after the stage are the system's own and differ between systems
@@ -256,8 +256,8 @@ fn show(label: &str, r: &Result[ChatReply, ChatError]) {
 
 fn contentOf(r: &Result[ChatReply, ChatError]) String {
   match r {
-    case &Ok(ok) {ok.content.copy()}
-    case &Error(e) {String.from("(none)")}
+    case let ok &Ok {ok.content.copy()}
+    case let e &Error {String.from("(none)")}
   }
 }
 
@@ -355,7 +355,7 @@ fn yes(b: bool) &str {if b {"yes"} else {"NO"}}
 
 fn take[T](rx: &mut Receiver[T], dflt: T) T {
   match rx.recv() {
-    case Some(v) {v}
+    case let v Some {v}
     else {dflt}
   }
 }
@@ -388,8 +388,8 @@ fn main() i32 {
     let req = echoRequest("echo", "sync");
     var hreq = httpclient.Request.get("");
     match httpRequest(&ep, &req, false) {
-      case Ok(var ok) {hreq <=> ok;}
-      case Error(e) {printStr("sync: the request was not built\n");}
+      case var ok Ok {hreq <=> ok;}
+      case let e Error {printStr("sync: the request was not built\n");}
     }
     var lp = Loop.mustMake();
     var hc = httpclient.Client.make(httpclient.Config.make(), Pool.make());
@@ -406,7 +406,7 @@ fn main() i32 {
     var going = true;
     while going {
       match hrx.recvTimeout(Duration.fromMillis(100i64)) {
-        case Some(n) {seen = seen + n;}
+        case let n Some {seen = seen + n;}
         case is None[u64] {going = false;}
       }
     }

@@ -419,7 +419,7 @@ enum ErrorCode {
     ErrorEntryPlace = 1223,     // 'n of x', 'fill x' or 'k: v' where no '<-' takes it apart: inside a tuple that is itself appended
 
     // The retired 'into' operator (parser/parseexpr.c)
-    ErrorInto = 1224,           // 'x into T': a value converts with 'T.from(x)'; a reference narrows to a variant with a check, by a 'match' or 'if let &Variant(x) = &value'
+    ErrorInto = 1224,           // 'x into T': a value converts with 'T.from(x)'; a reference narrows to a variant with a check, by a 'match' or 'if let x &Variant = &value'
 
     // Construction, continued (ir/exp/assign.c)
     ErrorInitRecurse = 1225,    // In a declared init, '*self = T(...)' whose construction selects that same init: self is filled by the fields' names, 'Point(x: 1, y: 2)'
@@ -672,7 +672,7 @@ enum ErrorCode {
     // Flow typing and let-else (ir/exp/narrow.c, ir/exp/if.c)
     ErrorNarrowStale = 1460,    // A member of one variant named on a name that was narrowed to it and has since been changed: the message names the change
     ErrorNarrowLoop = 1461,     // A name narrowed to a variant from before a loop, used in the loop, which changes it later and comes back to the use
-    ErrorLetElse = 1462,        // The 'else' of 'let Ok(n) = r else ...' falls through to the binding: it must leave with 'return', 'break', 'continue' or a call that does not return
+    ErrorLetElse = 1462,        // The 'else' of 'let n Ok = r else ...' falls through to the binding: it must leave with 'return', 'break', 'continue' or a call that does not return
     ErrorOwnerNarrow = 1463,    // An owner ('Rc[mut, Shape]') narrowed to a variant whose value would sit at another offset in its allocation: the address would have to change
 
     // Trait patterns on a closed family (ir/exp/cast.c)
@@ -718,7 +718,8 @@ enum ErrorCode {
     ErrorRadixDigit = 1512,     // A binary or octal literal with no digit after its prefix (`0b`, `0o`, `0b_`) or with a digit its radix does not have (`0b2`, `0o8`): 'b' takes 0 and 1 and 'o' takes 0 to 7. Pointed at the digit that is wrong, or at the prefix's letter when there is none. Hex is not held to this rule: `0x` is read as zero
     ErrorRadixFloat = 1513,     // A binary or octal literal written with a fraction, an exponent or a float suffix (`0b1.0`, `0o7e2`, `0b1f32`): it is a whole number. Pointed at the '.', the 'e' or 'p', or the suffix. A '.' before a name is the call of a method (`0b101.abs`) and a '..' is the range
 
-    // 1514 was ErrorLetElseColon, a let-else binding written with a ':'; a binding is now written inside the variant
+    // A let-else binding written with a ':' (parser/parsefnflow.c)
+    ErrorLetElseColon = 1514,   // A local declared with a ':' and a type that is followed by 'else': `let n: Ok = r else ...`. A let-else binds the payload of a variant of the value, a pattern, and names only the variant after the binding, with no ':' (`let n Ok = r else ...`); the type after a ':' is the binding's own, which a payload is not. Pointed at the binding
 
     // A range written with a bare '..' between a start and an end (parser/parseexpr.c, parser/parsefnflow.c)
     ErrorRangeBare = 1515,      // `a .. b` or `..b` in an index, `a .. b` in a case pattern or an `each`: '..' before an end does not say whether the end is included, so it is refused. '..=' includes the end and '..<' stops before it. Pointed at the '..'. Not refused where no end follows (`s[a..]` runs to the end, `s[..]` is the whole), since there is no end to include or leave out
@@ -730,12 +731,6 @@ enum ErrorCode {
 
     // A construction is a type's name with parentheses (ir/exp/fncall.c)
     ErrorNewNotRegion = 1519,   // `new` written before a type, `Point(1, 2)`, `List[i32]()`, `Rc[mut, Node](1)`: `new` takes a dynamic region, a value such as an arena, `new a[Node](1)`. A type's value is made by writing its name with parentheses, `Point(1, 2)`, whatever region it is allocated in. Pointed at the `new`
-
-    // A variant pattern binds one name inside the variant (parser/parsefnflow.c parseVariantPattern, parseBindVarDcl)
-    ErrorPatBindCount = 1520,   // A variant pattern whose parentheses hold no name or several (`case Some()`, `case Response(head, body)`, `if let Pair(a, b) = p`): a variant takes exactly one binding name, or `_` to bind nothing, and is never read by position. To take a struct variant apart, bind it whole and name its fields. Pointed at the pattern
-    ErrorPatBindNested = 1521,  // A variant pattern whose parentheses hold something other than a name, `var` and a name, or `_` (`case Some(Ok(x))`, `case Some(3)`, `case Wrapper(f(x))`): patterns do not nest, and a call or a constructed value is compared with `== f(x)`. Pointed at what is written in the parentheses
-    ErrorPatBindForm = 1522,    // A binding in a pattern, after `case`, `if`, `elif` or `let`, that is neither a variant with its binding inside (`Some(n)`, `Some(var n)`, `Ok(_)`) nor a function's pattern (`let rest using prefix("GET ")`): a name written before the variant, a variant with no parentheses where a binding is wanted, `var` before the variant, or a `let` that declares a name and then has an `else`. Pointed at what is written
-    ErrorPatBindJoin = 1523,    // A variant pattern that binds a name joined to another pattern with `|` (`case Some(n) | None`, `case None | Some(n)`): a case that binds stands alone. A pattern that binds nothing, `Ok(_)`, may be joined. Pointed at the `|` or the pattern
 
     // Warnings
     WarnCode = 3000,

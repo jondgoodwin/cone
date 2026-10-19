@@ -707,9 +707,9 @@ static INode *parseYieldEach(ParseState *parse, INode *src, YieldNode *at) {
     genSlot(&g, GenSource);
     genPuts(&g, "; while true { match ");
     genSlot(&g, GenSub);
-    genPuts(&g, ".next() { case Some(");
+    genPuts(&g, ".next() { case let ");
     genSlot(&g, GenItem);
-    genPuts(&g, ") { yield ");
+    genPuts(&g, " Some { yield ");
     genSlot(&g, GenItem);
     genPuts(&g, "; } case is None { break; } } } }");
     Lexer *gen = lexNew(g.text, lex->url);

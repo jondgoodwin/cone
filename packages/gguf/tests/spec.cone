@@ -11,9 +11,9 @@ import testing use *;
 import collections use *;
 import gguf use *;
 
-fn orS(o: Option[&str], d: &str) &str { match o { case Some(v) { return v; } case is None { return d; } } }
-fn orU(o: Option[u64], d: u64) u64 { match o { case Some(v) { return v; } case is None { return d; } } }
-fn orF(o: Option[f64], d: f64) f64 { match o { case Some(v) { return v; } case is None { return d; } } }
+fn orS(o: Option[&str], d: &str) &str { match o { case let v Some { return v; } case is None { return d; } } }
+fn orU(o: Option[u64], d: u64) u64 { match o { case let v Some { return v; } case is None { return d; } } }
+fn orF(o: Option[f64], d: f64) f64 { match o { case let v Some { return v; } case is None { return d; } } }
 
 struct Bld {
   out: List[u8];
@@ -76,7 +76,7 @@ fn hand(version: u32, alignmentKv: u32) List[u8] {
 
 fn check(bytes: &List[u8], version: u32, alignment: u64, label: &str) {
   match parse(bytes.view()) {
-    case Ok(m) {
+    case let m Ok {
       expectUInt(u64.from(m.version), u64.from(version), label);
       expectUInt(m.alignment, alignment, label);
       expectUInt(u64.from(m.meta.len()), if alignment == 32u64 { 4u64 } else { 5u64 }, label);
@@ -85,7 +85,7 @@ fn check(bytes: &List[u8], version: u32, alignment: u64, label: &str) {
       expectUInt(orU(m.uint("llama.block_count"), 0u64), 32u64, label);
       expectFloat(orF(m.float("llama.rope.freq_base"), 0.0), 10000.0, 0.0, label);
       match m.list("tokenizer.ggml.tokens") {
-        case Some(l) {
+        case let l Some {
           expectUInt(u64.from(l.len()), 3u64, label);
           expectStr(orS(l.text(0usize), ""), "<unk>", label);
           expectStr(orS(l.text(2usize), ""), "ab", label);
@@ -108,20 +108,20 @@ fn check(bytes: &List[u8], version: u32, alignment: u64, label: &str) {
       expectUInt(m.tensors[1usize].rowCount(), 2u64, label);
       // w dequantises: -8 .. 7.5; v is 1 2 3 4
       match tensorToF32(&m, bytes.view(), m.tensors[0usize]) {
-        case Ok(w) {
+        case let w Ok {
           expectFloat(f64.from(*w[0usize]), -8.0, 0.0, label);
           expectFloat(f64.from(*w[31usize]), 7.5, 0.0, label);
         }
         case is Error { expect(false, label); }
       }
       match tensorToF32(&m, bytes.view(), m.tensors[1usize]) {
-        case Ok(v) {
+        case let v Ok {
           expectFloat(f64.from(*v[0usize]) + f64.from(*v[1usize]) * 10.0 + f64.from(*v[2usize]) * 100.0 + f64.from(*v[3usize]) * 1000.0, 4321.0, 0.0, label);
         }
         case is Error { expect(false, label); }
       }
     }
-    case Error(e) {
+    case let e Error {
       let msg = e.message();
       expectStr(msg.view(), "<parsed>", label);
     }
