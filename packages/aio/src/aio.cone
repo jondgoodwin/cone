@@ -19,7 +19,7 @@
 //     mut res = r;
 //     mut s = Socket.none();
 //     match &mut res {
-//       case mut ok &mut Ok {s <=> *ok;}
+//       case mut ok &mut Ok {s <-> *ok;}
 //       else {}
 //     }
 //     s;
@@ -99,7 +99,7 @@
 // than a count alone; a failed read's buffer goes home to its pool. A write's
 // success is the count written, all of the buffer, which goes home. Accept's,
 // connect's and listen's is the new Socket, which comes out of the Result by
-// a swap ('s <=> *ok', with 's' a Socket.none()), since Cone does not
+// a swap ('s <-> *ok', with 's' a Socket.none()), since Cone does not
 // yet move a value out of a matched variant's field.
 //
 // CANCEL AND DEADLINES. An operation is answered exactly once, as in iocore:
@@ -596,9 +596,9 @@ struct OpJob[R] {
   // holds the reply, in its group if it has one
   fn run(self: &mut, lp: &mut Loop) {
     var rp = actors.Reply();
-    rp <=> reply;
+    rp <-> reply;
     var o: Op = Op.RecvReady(Handle.none());
-    o <=> op;
+    o <-> op;
     let to = Target.Hook(0u64, Sink.make(waiting[R](rp, answer)));
     submitLimited(lp, o, to, &limits);
   }
@@ -634,7 +634,7 @@ fn waiting[R](rp: actors.Reply, answer: &fn(c: &mut Completion) R) Uni[fn(c: Com
     var done = c;
     let v = answer(&mut done);
     var back = actors.Reply();
-    back <=> reply;
+    back <-> reply;
     actors.answerNow[R](back, v);
   })
 }
@@ -653,7 +653,7 @@ fn endError(c: &Completion) IoError {
 fn readAnswer(c: &mut Completion) Result[IoBuf, IoError] {
   if c.status == diag.outcomeDone {
     var b = IoBuf.empty();
-    b <=> c.buf;
+    b <-> c.buf;
     return Ok[IoBuf, IoError](b);
   }
   Error[IoBuf, IoError](endError(c))
@@ -682,7 +682,7 @@ fn msgSizeCode() u32 {10040u32}
 fn datagramAnswer(c: &mut Completion) Result[Datagram, IoError] {
   if c.status == diag.outcomeDone {
     var b = IoBuf.empty();
-    b <=> c.buf;
+    b <-> c.buf;
     return Ok[Datagram, IoError](Datagram(b, c.peer));
   }
   if c.status == diag.outcomeFailed && c.code == msgSizeCode() {
@@ -734,7 +734,7 @@ struct SleepJob {
 
   fn run(self: &mut, lp: &mut Loop) {
     var rp = actors.Reply();
-    rp <=> reply;
+    rp <-> reply;
     let due = if relative {Instant.now() + after} else {at};
     let to = Target.Hook(0u64, Sink.make(waiting[Result[void, IoError]](rp, &sleepAnswer)));
     match limits.group {
@@ -763,7 +763,7 @@ struct ListenJob {
 
   fn run(self: &mut, lp: &mut Loop) {
     var rp = actors.Reply();
-    rp <=> reply;
+    rp <-> reply;
     match lp.listen(addr) {
       case let Ok(ok) {actors.answerNow[Result[Socket, IoError]](rp, Ok[Socket, IoError](Socket(ok)));}
       case let Error(e) {actors.answerNow[Result[Socket, IoError]](rp, Error[Socket, IoError](e));}
@@ -778,7 +778,7 @@ struct BindUdpJob {
 
   fn run(self: &mut, lp: &mut Loop) {
     var rp = actors.Reply();
-    rp <=> reply;
+    rp <-> reply;
     match lp.bindUdp(addr) {
       case let Ok(ok) {actors.answerNow[Result[UdpSocket, IoError]](rp, Ok[UdpSocket, IoError](UdpSocket(ok)));}
       case let Error(e) {actors.answerNow[Result[UdpSocket, IoError]](rp, Error[UdpSocket, IoError](e));}
@@ -794,7 +794,7 @@ struct OpenFileJob {
 
   fn run(self: &mut, lp: &mut Loop) {
     var rp = actors.Reply();
-    rp <=> reply;
+    rp <-> reply;
     match lp.openFile(&path, access) {
       case let Ok(ok) {actors.answerNow[Result[File, IoError]](rp, Ok[File, IoError](File(ok)));}
       case let Error(e) {actors.answerNow[Result[File, IoError]](rp, Error[File, IoError](e));}
@@ -851,7 +851,7 @@ fn runResult(r: Result[process.Output, process.ProcessError]) Result[process.Out
   var good = false;
   var code = 0u32;
   match &mut res {
-    case var &mut Ok(ok) {o <=> *ok; good = true;}
+    case var &mut Ok(ok) {o <-> *ok; good = true;}
     case let &mut Error(e) {code = e.code;}
   }
   if good {
@@ -876,7 +876,7 @@ fn runWork(arg: u64, buf: &mut IoBuf) Outcome {
   } else {
     r = runResult(process.run(st.args.view(), st.opts, &st.dir));
   }
-  st.out <=> r;
+  st.out <-> r;
   if st.state.swap(runFinished()) == runAbandoned() {
     freeRun(p);
     return Outcome.Failed(abortedCode());
@@ -895,7 +895,7 @@ fn runAnswer(c: &mut Completion) Result[process.Output, IoError] {
   let p = usize.from(c.token) as *RunState;
   if c.status == diag.outcomeDone {
     var ans = noOutput();
-    ans <=> (*p).out;
+    ans <-> (*p).out;
     freeRun(p);
     return ans;
   }
@@ -922,11 +922,11 @@ struct RunJob {
 
   fn run(self: &mut, lp: &mut Loop) {
     var rp = actors.Reply();
-    rp <=> reply;
+    rp <-> reply;
     var a = List[String].empty();
-    a <=> args;
+    a <-> args;
     var l = String.empty();
-    l <=> line;
+    l <-> line;
     let st = libc.malloc(mem.sizeof[RunState]()) as *RunState;
     if st as usize == 0usize {
       die("aio: out of memory for a child process");
@@ -946,7 +946,7 @@ struct LocalAddrJob {
 
   fn run(self: &mut, lp: &mut Loop) {
     var rp = actors.Reply();
-    rp <=> reply;
+    rp <-> reply;
     actors.answerNow[Result[SocketAddr, IoError]](rp, lp.localAddr(h));
   }
 }

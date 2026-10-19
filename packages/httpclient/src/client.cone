@@ -157,7 +157,7 @@ pub struct Client {
     var c = cfg;
     c.conn.protocol.idleTimeout = c.idleTimeout;
     var tc = tls.ClientConfig.make();
-    tc <=> c.tlsConfig;
+    tc <-> c.tlsConfig;
     var tlsc: Option[tls.Client] = None;
     var tf = Failure.none();
     match tls.Client.make(tc) {
@@ -383,22 +383,22 @@ pub struct Client {
     let fi = self.newFetch();
     let f = self.fetchAt(fi) as &mut Fetch;
     var s = sink;
-    f.sink <=> s;
+    f.sink <-> s;
     f.method = r.method;
-    f.methodText <=> r.methodText;
-    f.url <=> r.url;
-    f.headers <=> r.headers;
+    f.methodText <-> r.methodText;
+    f.url <-> r.url;
+    f.headers <-> r.headers;
     if !f.headers.has("User-Agent") {
       // Copied: the fields hold Strings, and nothing shows the config's is none of them
       let agent = cfg.userAgent.copy();
       f.headers.add("User-Agent", agent.view());
     }
     if !f.headers.has("Accept") {f.headers.add("Accept", "*/*");}
-    f.body <=> r.body;
+    f.body <-> r.body;
     f.intent = r.intent;
     f.score = r.score;
     f.deadline = r.deadline;
-    f.group <=> r.group;
+    f.group <-> r.group;
     f.maxRedirects = if r.maxRedirects == useConfig {cfg.maxRedirects} else {r.maxRedirects};
     f.seq = seq;
     seq = seq + 1u64;
@@ -626,11 +626,11 @@ pub struct Client {
       return;
     }
     var s: Sink = Sink.Here(0u64);
-    s <=> f.sink;
+    s <-> f.sink;
     var back = blankEvent();
     var sent = sinkTaken;
     s, sent = trySink(s, e, &mut back);
-    f.sink <=> s;
+    f.sink <-> s;
     if sent == sinkFull {
       self.hold(fi, credit, back);
       return;
@@ -666,10 +666,10 @@ pub struct Client {
     while k < heldE.len() {
       var e = blankEvent();
       let es = &mut heldE[k];
-      e <=> *es;
+      e <-> *es;
       var s: Sink = Sink.Here(0u64);
       let ss = &mut heldS[k];
-      s <=> *ss;
+      s <-> *ss;
       let fi = *heldF[k];
       let gen = *heldG[k];
       let n = *heldN[k];
@@ -704,12 +704,12 @@ pub struct Client {
       kn.push(n);
       kq.push(q);
     }
-    heldE <=> ke;
-    heldS <=> ks;
-    heldF <=> kf;
-    heldG <=> kg;
-    heldN <=> kn;
-    heldQ <=> kq;
+    heldE <-> ke;
+    heldS <-> ks;
+    heldF <-> kf;
+    heldG <-> kg;
+    heldN <-> kn;
+    heldQ <-> kq;
   }
 
   // Events for this thread, moved to out: how many
@@ -717,14 +717,14 @@ pub struct Client {
     let n = ready.len();
     if n == 0usize {return 0usize;}
     if out.len() == 0usize {
-      *out <=> ready;
+      *out <-> ready;
       return n;
     }
     var k = 0usize;
     while k < n {
       var e = blankEvent();
       let slot = &mut ready[k];
-      e <=> *slot;
+      e <-> *slot;
       out.push(e);
       k = k + 1usize;
     }
@@ -758,7 +758,7 @@ pub struct Client {
     if w < limit {limit = w;}
     if n > 0usize {limit = Instant();}
     var cs = List[Completion].empty();
-    cs <=> comps;
+    cs <-> comps;
     lp.poll(limit, &mut cs);
     var k = 0usize;
     while k < cs.len() {
@@ -767,7 +767,7 @@ pub struct Client {
       k = k + 1usize;
     }
     cs.clear();
-    comps <=> cs;
+    comps <-> cs;
     n + self.pump(lp, out)
   }
 
@@ -809,7 +809,7 @@ pub struct Client {
   // many
   fn takeDriverEvents(self: &mut, lp: &mut Loop) usize {
     var evs = List[httpconn.Event].empty();
-    evs <=> dev;
+    evs <-> dev;
     let n = drv.pump(lp, &mut evs);
     var k = 0usize;
     while k < evs.len() {
@@ -836,7 +836,7 @@ pub struct Client {
       }
     }
     evs.clear();
-    dev <=> evs;
+    dev <-> evs;
     n
   }
 
@@ -1101,7 +1101,7 @@ pub struct Client {
       let n = if left < sendChunk {left} else {sendChunk};
       var b = IoBuf.empty();
       match pool.take(n) {
-        case var Some(s) {b <=> s;}
+        case var Some(s) {b <-> s;}
         case is None[IoBuf] {}
       }
       if b.capacity() == 0usize {
@@ -1145,7 +1145,7 @@ pub struct Client {
       }
       f.delivered = true;
       var ev = Event.make(EventKind.Response, f.sink.token, self.idOf(fi));
-      ev.response <=> e.response;
+      ev.response <-> e.response;
       ev.body = e.body;
       ev.url = f.url.text();
       self.emit(fi, 0usize, ev);
@@ -1162,7 +1162,7 @@ pub struct Client {
         return;
       }
       var ev = Event.make(EventKind.Data, f.sink.token, self.idOf(fi));
-      ev.buf <=> e.buf;
+      ev.buf <-> e.buf;
       if isChan(&mut f.sink) {
         self.emit(fi, n, ev);
       } else {
@@ -1172,7 +1172,7 @@ pub struct Client {
     } elif k == httpconn.EventKind.End {
       if f.following {return;}
       var ev = Event.make(EventKind.End, f.sink.token, self.idOf(fi));
-      ev.trailers <=> e.trailers;
+      ev.trailers <-> e.trailers;
       self.emit(fi, 0usize, ev);
     } elif k == httpconn.EventKind.Writable {
       self.sendBody(lp, fi);
@@ -1230,7 +1230,7 @@ pub struct Client {
     var next = Url.empty();
     var why = String.empty();
     match f.url.resolve(f.location.view()) {
-      case var Ok(r) {next <=> r;}
+      case var Ok(r) {next <-> r;}
       case let Error(x) {why = x.message();}
     }
     if why.len() == 0usize && !next.isHttp() {why = String.from("it is not an http or https URL");}
@@ -1264,7 +1264,7 @@ pub struct Client {
       next.fragment = f.url.fragment.copy();
       next.hasFragment = true;
     }
-    f.url <=> next;
+    f.url <-> next;
     f.timing.redirects = f.timing.redirects + 1u32;
     f.retries = 0u32;
     st.redirects = st.redirects + 1u64;
@@ -1290,14 +1290,14 @@ pub struct Client {
       while k < evs.len() {
         var e = blankEvent();
         let slot = &mut evs[k];
-        e <=> *slot;
+        e <-> *slot;
         k = k + 1usize;
         if e.id != id {
           others.push(e);
         } elif e.kind == EventKind.Response {
           resp.status = e.response.status;
-          resp.headers <=> e.response.headers;
-          resp.url <=> e.url;
+          resp.headers <-> e.response.headers;
+          resp.url <-> e.url;
         } elif e.kind == EventKind.Data {
           let n = e.buf.len();
           if resp.body.len() + n > limit {
@@ -1309,7 +1309,7 @@ pub struct Client {
           self.release(id, n);
         } elif e.isTerminal() {
           resp.outcome = e.kind;
-          resp.failure <=> e.failure;
+          resp.failure <-> e.failure;
           resp.timing = e.timing;
           going = false;
         }
@@ -1320,7 +1320,7 @@ pub struct Client {
     while ready.len() > 0usize {
       var e = blankEvent();
       match ready.pop() {
-        case var Some(s) {e <=> s;}
+        case var Some(s) {e <-> s;}
         case is None[Event] {}
       }
       evs.push(e);
@@ -1328,12 +1328,12 @@ pub struct Client {
     while evs.len() > 0usize {
       var e = blankEvent();
       match evs.pop() {
-        case var Some(s) {e <=> s;}
+        case var Some(s) {e <-> s;}
         case is None[Event] {}
       }
       others.push(e);
     }
-    ready <=> others;
+    ready <-> others;
     resp
   }
 
@@ -1407,26 +1407,26 @@ const sinkGone = 2u32;
 // error 1034)
 fn copySink(s: &mut Sink) Sink {
   var here: Sink = Sink.Here(0u64);
-  here <=> *s;
+  here <-> *s;
   var out: Sink = Sink.Here(here.token);
   match &here {
     case let &Chan(c) {out = Sink.Chan(here.token, c.tx.clone());}
     else {}
   }
-  *s <=> here;
+  *s <-> here;
   out
 }
 
 // Whether a sink is a channel
 fn isChan(s: &mut Sink) bool {
   var here: Sink = Sink.Here(0u64);
-  here <=> *s;
+  here <-> *s;
   var yes = false;
   match &here {
     case is &Chan {yes = true;}
     else {}
   }
-  *s <=> here;
+  *s <-> here;
   yes
 }
 
@@ -1442,7 +1442,7 @@ fn trySink(s: Sink, e: Event, back: &mut Event) Sink, u32 {
           if ch.tx.isClosed() {
             how = sinkGone;
           } else {
-            *back <=> r;
+            *back <-> r;
             how = sinkFull;
           }
         }

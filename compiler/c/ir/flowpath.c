@@ -2567,7 +2567,7 @@ static void pwSwap(SwapNode *node) {
     // Each side is a store of the other's value. A side that is part of a
     // holder ('h.r', 'a[1]', 'g.h.r') is stored into as pwStore stores into
     // one: the holder there holds the other side's loans from here on, so
-    // 'h.r <=> t' keeps what 't' borrowed alive while 'h' is used.
+    // 'h.r <-> t' keeps what 't' borrowed alive while 'h' is used.
     for (int i = 0; i < 2; ++i) {
         if (!found[i])
             continue;

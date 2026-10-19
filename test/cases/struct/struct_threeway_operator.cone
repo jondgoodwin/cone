@@ -1,0 +1,94 @@
+// A type defines '<=>' as it defines '==': an operator method, `<=>`, called by
+// the three-way comparison. This pins a struct that declares it on values, one that
+// declares it on references (the operator a comparison of references finds; a
+// value does not reach it, as with '==': struct_threeway_refused), one whose '<=>' answers something other than -1, 0 or 1
+// (nothing makes the answer an i32 but the built-in types), and a '<=>' built from
+// the built-in comparisons of its fields: a number's, then a text's. A struct
+// that declares '<=>' gets no '<': that is struct_threeway_refused.
+// Every printed value was checked by hand against the source.
+
+mod struct_threeway_operator;
+
+import stdio use *;
+
+struct Version {
+  pub major: i32;
+  pub minor: i32;
+
+  // The first field that differs decides
+  pub fn `<=>`(self, other: Version) i32 {
+    if major != other.major { major <=> other.major } else { minor <=> other.minor }
+  }
+}
+
+struct Label {
+  pub text: &str;
+  pub rank: u8;
+
+  pub fn `<=>`(self: &, other: &Label) i32 {
+    let byrank = rank <=> other.rank;
+    if byrank != 0 { byrank } else { text <=> other.text }
+  }
+}
+
+// An answer that is not an i32: how far apart two are, and in which direction
+struct Gauge {
+  pub level: i64;
+
+  pub fn `<=>`(self, other: Gauge) i64 {
+    level - other.level
+  }
+}
+
+fn show(label: &str, n: i64) {
+  printStr(label);
+  printStr(" ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn byValue() {
+  let v1 = Version(1, 4);
+  let v2 = Version(1, 9);
+  let v3 = Version(2, 0);
+  show("version minor less", v1 <=> v2);
+  show("version minor greater", v2 <=> v1);
+  show("version major greater", v3 <=> v2);
+  show("version major less", v1 <=> v3);
+  show("version same", v2 <=> Version(1, 9));
+  match v1 <=> v3 {
+    case -1 { printStr("older\n"); }
+    case 0 { printStr("same\n"); }
+    case 1 { printStr("newer\n"); }
+    else { printStr("unordered\n"); }
+  }
+}
+
+fn through(a: &Label, b: &Label) i32 { a <=> b }
+
+fn byReference() {
+  let x = Label("apple", 2);
+  let y = Label("pear", 2);
+  let z = Label("zebra", 1);
+  show("label text less", &x <=> &y);
+  show("label text greater", &y <=> &x);
+  show("label rank less", &z <=> &x);
+  show("label rank greater", &x <=> &z);
+  show("label same", &x <=> &x);
+  show("label through a reference", through(&x, &y));
+  show("label through a reference greater", through(&y, &x));
+}
+
+fn anyAnswer() {
+  let a = Gauge(70);
+  let b = Gauge(25);
+  show("gauge apart", a <=> b);
+  show("gauge apart the other way", b <=> a);
+  show("gauge same", a <=> Gauge(70));
+}
+
+fn main() {
+  byValue();
+  byReference();
+  anyAnswer();
+}

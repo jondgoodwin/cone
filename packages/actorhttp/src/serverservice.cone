@@ -89,7 +89,7 @@ struct TlsMaker {
 
 fn answerTo[R](rp: &mut actors.Reply, v: R) {
   var r = actors.Reply();
-  r <=> *rp;
+  r <-> *rp;
   actors.answerNow[R](r, v);
 }
 
@@ -142,7 +142,7 @@ fn onServerEvent(srv: &mut SrvRec, lp: &mut Loop, pool: Pool, e: &mut httpconn.E
     x.id = newId();
     x.req = e.req;
     x.stage = exReading;
-    x.head <=> e.request;
+    x.head <-> e.request;
     x.peer = srv.drv.peer(e.conn);
     x.isHead = x.head.method == Method.Head;
     let key = e.req.number();
@@ -202,7 +202,7 @@ fn readyEx(srv: &mut SrvRec, pool: Pool, slot: usize) {
   if srv.whead < srv.waiters.len() {
     var rp = actors.Reply();
     let w = &mut srv.waiters[srv.whead];
-    rp <=> *w;
+    rp <-> *w;
     srv.whead = srv.whead + 1usize;
     if srv.whead == srv.waiters.len() {
       srv.waiters.clear();
@@ -225,8 +225,8 @@ fn deliverEx(srv: &mut SrvRec, slot: usize, rp: actors.Reply) {
   x.stage = exOut;
   x.handle = true;
   var r = Request(RequestHead.empty(), String.empty(), x.peer, srv.secure);
-  r.head <=> x.head;
-  r.body <=> x.body;
+  r.head <-> x.head;
+  r.body <-> x.body;
   let ex = Exchange(srv.id, u32.from(slot), x.id, 0u32, false, 0u64, 0u64, false, r);
   actors.answerNow[Result[Exchange, ServerError]](rp, Ok[Exchange, ServerError](ex));
 }
@@ -240,7 +240,7 @@ fn answerText(srv: &mut SrvRec, pool: Pool, x: &mut ExRec, status: u16, text: &s
   var b = IoBuf.empty();
   if !x.isHead && n > 0usize {
     match pool.take(n) {
-      case var Some(s) {b <=> s;}
+      case var Some(s) {b <-> s;}
       case is None[IoBuf] {}
     }
   }
@@ -303,7 +303,7 @@ fn pumpWrites(srv: &mut SrvRec, lp: &mut Loop, pool: Pool, x: &mut ExRec) {
       let n = if left < sendChunk {left} else {sendChunk};
       var b = IoBuf.empty();
       match pool.take(n) {
-        case var Some(s) {b <=> s;}
+        case var Some(s) {b <-> s;}
         case is None[IoBuf] {}
       }
       if b.capacity() == 0usize {
@@ -387,11 +387,11 @@ struct ListenJob {
 
   fn run(self: &mut, lp: &mut Loop, sv: &mut Service) {
     var rp = actors.Reply();
-    rp <=> reply;
+    rp <-> reply;
     var c = ServerConfig.make();
-    c <=> cfg;
+    c <-> cfg;
     var tcfg: Option[tls.ServerConfig] = None;
-    tcfg <=> c.tlsConfig;
+    tcfg <-> c.tlsConfig;
     var drv = httpconn.Driver.make(c.conn, sv.pool);
     var res: Result[httpconn.ListenerId, IoError] = Error[httpconn.ListenerId, IoError](IoError.cancelled());
     var secure = false;
@@ -471,7 +471,7 @@ struct NextJob {
 
   fn run(self: &mut, lp: &mut Loop, sv: &mut Service) {
     var rp = actors.Reply();
-    rp <=> reply;
+    rp <-> reply;
     let k = sv.findSrv(id);
     if k >= sv.srvs.len() {
       answerTo[Result[Exchange, ServerError]](&mut rp, Error[Exchange, ServerError](ServerError.closed()));
@@ -547,14 +547,14 @@ struct RespondJob {
     let x = loc.ex as &mut ExRec;
     if x.over || x.responded {return;}
     var h = ResponseHead.empty();
-    h <=> head;
+    h <-> head;
     let st = h.status;
     let n = body.len();
     let framing = if st == 204u16 || st == 304u16 {BodyLength.empty()} else {BodyLength.sized(u64.from(n))};
     beginResponse(s, x, h, framing);
     if !x.bodyless {
       var w = PendingWrite(String.empty(), 0usize, actors.Reply(), false);
-      w.data <=> body;
+      w.data <-> body;
       x.writes.push(w);
       x.finishing = true;
       pumpWrites(s, lp, sv.pool, x);
@@ -577,7 +577,7 @@ struct StartJob {
     let x = loc.ex as &mut ExRec;
     if x.over || x.responded {return;}
     var h = ResponseHead.empty();
-    h <=> head;
+    h <-> head;
     beginResponse(s, x, h, framing);
   }
 }
@@ -592,7 +592,7 @@ struct WriteJob {
 
   fn run(self: &mut, lp: &mut Loop, sv: &mut Service) {
     var rp = actors.Reply();
-    rp <=> reply;
+    rp <-> reply;
     let loc = locate(sv, srv, slot, id);
     if loc.ex as usize == 0usize {
       answerTo[Result[usize, ServerError]](&mut rp, Error[usize, ServerError](ServerError.closed()));
@@ -609,8 +609,8 @@ struct WriteJob {
       return;
     }
     var w = PendingWrite(String.empty(), 0usize, actors.Reply(), true);
-    w.data <=> data;
-    w.reply <=> rp;
+    w.data <-> data;
+    w.reply <-> rp;
     x.writes.push(w);
     pumpWrites(s, lp, sv.pool, x);
   }
@@ -625,7 +625,7 @@ struct FinishJob {
 
   fn run(self: &mut, lp: &mut Loop, sv: &mut Service) {
     var rp = actors.Reply();
-    rp <=> reply;
+    rp <-> reply;
     let loc = locate(sv, srv, slot, id);
     if loc.ex as usize == 0usize {
       answerTo[Result[u64, ServerError]](&mut rp, Error[u64, ServerError](ServerError.closed()));
@@ -641,7 +641,7 @@ struct FinishJob {
       }
       return;
     }
-    x.finishReply <=> rp;
+    x.finishReply <-> rp;
     x.hasFinishReply = true;
     x.finishing = true;
     pumpWrites(s, lp, sv.pool, x);

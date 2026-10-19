@@ -116,7 +116,7 @@ enum TokenTypes {
     LessDashToken,     // '<-'
     AssgnToken,        // '='
     LAssgnToken,       // ':='
-    SwapToken,         // '<=>'
+    SwapToken,         // '<->'
     FatArrowToken,     // '=>': a closure's short form, 'x => x * 2'
     IsToken,           // 'is'
     EqToken,           // '=='
@@ -125,6 +125,7 @@ enum TokenTypes {
     NotSameToken,      // '!=='
     LtToken,           // '<'
     LeToken,           // '<='
+    ThreeWayToken,     // '<=>': three-way comparison
     GtToken,           // '>'
     GeToken,           // '>='
     ShlToken,          // '<<'

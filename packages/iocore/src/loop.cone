@@ -623,7 +623,7 @@ pub struct Loop {
     let keep = r.abandon && !boxed(r.kind);
     var b = IoBuf.empty();
     if !keep {
-      b <=> r.buf;
+      b <-> r.buf;
       r.bytes = None;
     }
     if r.abandon {stats.promptTimeouts = stats.promptTimeouts + 1u64;}
@@ -636,9 +636,9 @@ pub struct Loop {
       peer = r.peer;
     }
     var t: Target = Target.Here(0u64);
-    t <=> r.target;
+    t <-> r.target;
     var g: Option[CancelGroup] = None;
-    g <=> r.group;
+    g <-> r.group;
     match g {
       case is None[CancelGroup] {}
       else {grouped = grouped - 1u32;}
@@ -734,7 +734,7 @@ pub struct Loop {
         if tx.isClosed() {
           stats.handedDropped = stats.handedDropped + 1u64;
         } else {
-          *back <=> s;
+          *back <-> s;
           full = true;
         }
       }
@@ -751,22 +751,22 @@ pub struct Loop {
     while k < heldC.len() {
       var c = blankCompletion();
       let slot = &mut heldC[k];
-      c <=> *slot;
+      c <-> *slot;
       var back = blankCompletion();
       var still = false;
       // Out of the list into a local, to be narrowed to its variant
       var to: Target = Target.Here(0u64);
       let tslot = &mut heldT[k];
-      to <=> *tslot;
+      to <-> *tslot;
       match &mut to {
         case let &mut Chan(ch) {still = self.tryChan(&ch.tx, c, &mut back);}
         else {}
       }
       if still {
         let again = &mut heldC[k];
-        back <=> *again;
+        back <-> *again;
         let tagain = &mut heldT[k];
-        to <=> *tagain;
+        to <-> *tagain;
         k = k + 1usize;
       } else {
         // Done with: the last goes into its place
@@ -854,10 +854,10 @@ pub struct Loop {
     let i = self.allocRec();
     let r = self.recAt(i) as &mut Rec;
     r.token = token;
-    r.target <=> t;
+    r.target <-> t;
     r.kind = diag.kindExternal;
     var b = buf;
-    r.buf <=> b;
+    r.buf <-> b;
     let gen = r.gen;
     var dl = deadline;
     match group {
@@ -875,7 +875,7 @@ pub struct Loop {
       return Completer(null, OpId(i, gen), Waker(port));
     }
     let box = newBox(&noWork, 0u64, Waker(port), i, gen, null);
-    (box as &mut JobBox).buf <=> r.buf;
+    (box as &mut JobBox).buf <-> r.buf;
     (*box).state = boxRunning;
     r.job = box;
     if dl < forever() {
@@ -903,7 +903,7 @@ pub struct Loop {
   fn join(self: &mut, i: u32, group: Option[CancelGroup]) bool {
     let r = self.recAt(i) as &mut Rec;
     var g = group;
-    r.group <=> g;
+    r.group <-> g;
     var cancelled = false;
     match r.group {
       case let Some(s) {
@@ -927,7 +927,7 @@ pub struct Loop {
     let r = self.recAt(i) as &mut Rec;
     r.kind = diag.kindTimer;
     r.token = token;
-    r.target <=> t;
+    r.target <-> t;
     let gen = r.gen;
     // A timer due after its group's deadline answers TimedOut at the
     // deadline instead; one due at or before it answers Done at its time
@@ -961,7 +961,7 @@ pub struct Loop {
     let p = self.recAt(i);
     let r = p as &mut Rec;
     r.token = token;
-    r.target <=> t;
+    r.target <-> t;
     r.ov.internal = 0usize;
     r.ov.internalHigh = 0usize;
     r.ov.offset = 0u32;
@@ -979,7 +979,7 @@ pub struct Loop {
       }
       case var Recv(o) {
         r.kind = diag.kindRecv;
-        r.buf <=> o.buf;
+        r.buf <-> o.buf;
         r.sock = o.sock;
       }
       case let RecvReady(o) {
@@ -988,7 +988,7 @@ pub struct Loop {
       }
       case var Send(o) {
         r.kind = diag.kindSend;
-        r.buf <=> o.buf;
+        r.buf <-> o.buf;
         r.sock = o.sock;
       }
       case let SendBytes(o) {
@@ -998,31 +998,31 @@ pub struct Loop {
       }
       case var ReadAt(o) {
         r.kind = diag.kindReadAt;
-        r.buf <=> o.buf;
+        r.buf <-> o.buf;
         r.sock = o.file;
         r.at = o.at;
       }
       case var WriteAt(o) {
         r.kind = diag.kindWriteAt;
-        r.buf <=> o.buf;
+        r.buf <-> o.buf;
         r.sock = o.file;
         r.at = o.at;
       }
       case var Call(o) {
         r.kind = diag.kindCall;
-        r.buf <=> o.buf;
+        r.buf <-> o.buf;
         r.lane = o.lane;
         r.work = o.work;
         r.at = o.arg;
       }
       case var RecvFrom(o) {
         r.kind = diag.kindRecvFrom;
-        r.buf <=> o.buf;
+        r.buf <-> o.buf;
         r.sock = o.sock;
       }
       case var SendTo(o) {
         r.kind = diag.kindSendTo;
-        r.buf <=> o.buf;
+        r.buf <-> o.buf;
         r.sock = o.sock;
         r.peer = o.addr;
       }
@@ -1285,9 +1285,9 @@ pub struct Loop {
     let l = laneAt(r.lane.id);
     if l as usize == 0usize {return errorInvalidParameter;}
     let b = newBox(r.work, r.at, Waker(port), r.index, r.gen, l);
-    (b as &mut JobBox).buf <=> r.buf;
+    (b as &mut JobBox).buf <-> r.buf;
     if !enqueueBox(b) {
-      r.buf <=> (b as &mut JobBox).buf;
+      r.buf <-> (b as &mut JobBox).buf;
       dropBox(b);
       return errorBusy;
     }
@@ -1334,7 +1334,7 @@ pub struct Loop {
     }
     if boxed(r.kind) {
       if r.job as usize != 0usize && removeBox(r.job) {
-        r.buf <=> (r.job as &mut JobBox).buf;
+        r.buf <-> (r.job as &mut JobBox).buf;
         dropBox(r.job);
         r.job = null;
         self.decide(i, outcome, 0usize, 0u32);
@@ -1387,7 +1387,7 @@ pub struct Loop {
           r.newSock = invalidHandle;
         }
         var b = IoBuf.empty();
-        b <=> r.buf;
+        b <-> r.buf;
         r.bytes = None;
         stats.lateReturns = stats.lateReturns + 1u64;
         self.freeRecord(r.index);
@@ -1456,7 +1456,7 @@ pub struct Loop {
     }
     r.job = null;
     r.dequeued = at;
-    r.buf <=> j.buf;
+    r.buf <-> j.buf;
     var status = j.status;
     if status == diag.outcomeCancelled && r.asked == askedDeadline {
       status = diag.outcomeTimedOut;
@@ -1714,7 +1714,7 @@ pub struct Loop {
         } elif boxed(r.kind) {
           if r.kind == diag.kindExternal && r.job as usize != 0usize {(*r.job).asked.store(1u32);}
           if r.job as usize != 0usize && removeBox(r.job) {
-            r.buf <=> (r.job as &mut JobBox).buf;
+            r.buf <-> (r.job as &mut JobBox).buf;
             dropBox(r.job);
           }
           r.job = null;

@@ -325,6 +325,20 @@ static void nbrBitMethods(NbrNode *nbrtype) {
     }
 }
 
+// A number type's three-way comparison, 'a <=> b': an i32 -1, 0 or 1. Made once
+// every number type exists, since the answer is an i32. A bool has none, being
+// no quantity; a char has one, as it has the orderings.
+static void nbrThreeWayMethod(NbrNode *nbrtype) {
+    NameUseNode *selftype = newNameUseNode(nbrtype->namesym);
+    selftype->dclnode = (INode*)nbrtype;
+    FnSigNode *sig = newFnSigNode();
+    sig->rettype = (INode*)i32Type;
+    nodesAdd(&sig->parms, (INode *)newVarDclFull(nametblFind("a", 1), VarDclTag, (INode*)selftype, newPermUseNode(immPerm), NULL));
+    nodesAdd(&sig->parms, (INode *)newVarDclFull(nametblFind("b", 1), VarDclTag, (INode*)selftype, newPermUseNode(immPerm), NULL));
+    iNsTypeAddFn((INsTypeNode*)nbrtype, newFnDclNode(threeWayName, FlagMethFld | FlagPub, (INode *)sig,
+        (INode *)newIntrinsicNode(nbrtype->tag == IntNbrTag ? SCmpIntrinsic : CmpIntrinsic)));
+}
+
 // The 'hash' every integer type and bool has, which core's Hash trait requires
 // of a type: 'x.hash(h)' feeds the value's bits to the hasher. The compiler
 // grants those types Hash (genericTypeIs) and this gives the grant its method,
@@ -377,6 +391,11 @@ void stdNbrInit(int ptrsize) {
         i8Type, i16Type, i32Type, i64Type, isizeType};
     for (size_t i = 0; i < sizeof(integers) / sizeof(integers[0]); ++i)
         nbrBitMethods(integers[i]);
+
+    NbrNode *ordered[] = {charType, u8Type, u16Type, u32Type, u64Type, usizeType,
+        i8Type, i16Type, i32Type, i64Type, isizeType, f32Type, f64Type};
+    for (size_t i = 0; i < sizeof(ordered) / sizeof(ordered[0]); ++i)
+        nbrThreeWayMethod(ordered[i]);
 
     ptrType = newPtrTypeMethods();
     refType = newRefTypeMethods();

@@ -1408,14 +1408,19 @@ void lexNextTokenx() {
                 lexReturnPuncTok(NotToken, 1);
             }
 
-        // '<' and '<='
+        // '<', '<=', '<=>' (three-way comparison), '<-' (send) and '<->' (swap)
         case '<':
             if (*(srcp + 1) == '-') {
-                lexReturnPuncTok(LessDashToken, 2);
+                if (*(srcp + 2) == '>') {
+                    lexReturnPuncTok(SwapToken, 3);
+                }
+                else {
+                    lexReturnPuncTok(LessDashToken, 2);
+                }
             }
             else if (*(srcp + 1) == '=') {
                 if (*(srcp + 2) == '>') {
-                    lexReturnPuncTok(SwapToken, 3);
+                    lexReturnPuncTok(ThreeWayToken, 3);
                 }
                 else {
                     lexReturnPuncTok(LeToken, 2);

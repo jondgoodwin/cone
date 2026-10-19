@@ -1300,6 +1300,7 @@ char *parseCmpOp() {
     case NotSameToken: return "!==";
     case LtToken:  return "<";
     case LeToken:  return "<=";
+    case ThreeWayToken: return "<=>";
     case GtToken:  return ">";
     case GeToken:  return ">=";
     default:       return NULL;

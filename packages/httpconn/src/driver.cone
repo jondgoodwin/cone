@@ -318,9 +318,9 @@ pub struct Driver {
     c.core = if server {http1.Connection.server(cfg.protocol, pool, now)}
       else {http1.Connection.client(cfg.protocol, pool, now)};
     var l = layer;
-    c.layer <=> l;
+    c.layer <-> l;
     var s = sink;
-    c.sink <=> s;
+    c.sink <-> s;
     c.addrs.clear();
     c.nextAddr = 0usize;
     c.connOp = OpId.none();
@@ -436,11 +436,11 @@ pub struct Driver {
       }
     }
     var s: Sink = Sink.Here(0u64);
-    s <=> *sink;
+    s <-> *sink;
     var back = blankEvent();
     var sent = sinkTaken;
     s, sent = trySink(s, e, &mut back);
-    *sink <=> s;
+    *sink <-> s;
     if sent == sinkFull {
       self.hold(sink, conn, gen, credit, back);
       return;
@@ -485,10 +485,10 @@ pub struct Driver {
     while k < heldE.len() {
       var e = blankEvent();
       let es = &mut heldE[k];
-      e <=> *es;
+      e <-> *es;
       var s: Sink = Sink.Here(0u64);
       let ss = &mut heldS[k];
-      s <=> *ss;
+      s <-> *ss;
       let conn = *heldC[k];
       let gen = *heldG[k];
       let n = *heldN[k];
@@ -527,11 +527,11 @@ pub struct Driver {
       kg.push(gen);
       kn.push(n);
     }
-    heldE <=> ke;
-    heldS <=> ks;
-    heldC <=> kc;
-    heldG <=> kg;
-    heldN <=> kn;
+    heldE <-> ke;
+    heldS <-> ks;
+    heldC <-> kc;
+    heldG <-> kg;
+    heldN <-> kn;
   }
 
   // Events for this thread, moved to out: how many
@@ -539,14 +539,14 @@ pub struct Driver {
     let n = ready.len();
     if n == 0usize {return 0usize;}
     if out.len() == 0usize {
-      *out <=> ready;
+      *out <-> ready;
       return n;
     }
     var k = 0usize;
     while k < n {
       var e = blankEvent();
       let slot = &mut ready[k];
-      e <=> *slot;
+      e <-> *slot;
       out.push(e);
       k = k + 1usize;
     }
@@ -577,7 +577,7 @@ pub struct Driver {
     if w < limit {limit = w;}
     if n > 0usize {limit = Instant();}
     var cs = List[Completion].empty();
-    cs <=> comps;
+    cs <-> comps;
     lp.poll(limit, &mut cs);
     var k = 0usize;
     while k < cs.len() {
@@ -586,7 +586,7 @@ pub struct Driver {
       k = k + 1usize;
     }
     cs.clear();
-    comps <=> cs;
+    comps <-> cs;
     n + self.pump(lp, out)
   }
 
@@ -596,7 +596,7 @@ pub struct Driver {
     self.retryHeld();
     if rearm {self.rearmAccepts(lp);}
     while dirty.len() > 0usize {
-      work <=> dirty;
+      work <-> dirty;
       var k = 0usize;
       while k < work.len() {
         let i = *work[k];
@@ -672,7 +672,7 @@ pub struct Driver {
     removeAt(&mut c.waiting, 0usize);
     let r = self.reqAt(ri) as &mut Req;
     var h = RequestHead.empty();
-    h <=> r.head;
+    h <-> r.head;
     c.core.sendRequest(h, r.body);
     r.state = rActive;
     r.timing.started = now;
@@ -709,7 +709,7 @@ pub struct Driver {
           c.current = ri;
           st.requests = st.requests + 1u64;
           var ev = Event.make(EventKind.Request, r.sink.token, self.connIdOf(i), self.reqIdOf(ri));
-          ev.request <=> q.head;
+          ev.request <-> q.head;
           ev.body = q.body;
           self.emit(&mut r.sink, i, c.gen, 0usize, ev);
         }
@@ -719,7 +719,7 @@ pub struct Driver {
             r.gotResponse = true;
             r.timing.firstByte = now;
             var ev = Event.make(EventKind.Response, r.sink.token, self.connIdOf(i), self.reqIdOf(c.current));
-            ev.response <=> p.head;
+            ev.response <-> p.head;
             ev.body = p.body;
             self.emit(&mut r.sink, i, c.gen, 0usize, ev);
           }
@@ -729,7 +729,7 @@ pub struct Driver {
             let r = self.reqAt(c.current) as &mut Req;
             r.gotResponse = true;
             var ev = Event.make(EventKind.Interim, r.sink.token, self.connIdOf(i), self.reqIdOf(c.current));
-            ev.response <=> p.head;
+            ev.response <-> p.head;
             self.emit(&mut r.sink, i, c.gen, 0usize, ev);
           }
         }
@@ -739,7 +739,7 @@ pub struct Driver {
             let r = self.reqAt(c.current) as &mut Req;
             let credit = if isChan(&mut r.sink) {n} else {0usize};
             var ev = Event.make(EventKind.Data, r.sink.token, self.connIdOf(i), self.reqIdOf(c.current));
-            ev.buf <=> d.buf;
+            ev.buf <-> d.buf;
             self.emit(&mut r.sink, i, c.gen, credit, ev);
           } else {
             c.core.release(n);
@@ -751,7 +751,7 @@ pub struct Driver {
             let r = self.reqAt(ri) as &mut Req;
             r.readDone = true;
             var ev = Event.make(EventKind.End, r.sink.token, self.connIdOf(i), self.reqIdOf(ri));
-            ev.trailers <=> e.trailers;
+            ev.trailers <-> e.trailers;
             self.emit(&mut r.sink, i, c.gen, 0usize, ev);
             if !c.server {
               c.current = noEntry;
@@ -767,7 +767,7 @@ pub struct Driver {
           // sends what the core still has (a server's error status), then
           // closes
           var e = HttpError.empty();
-          e <=> f.error;
+          e <-> f.error;
           c.failed = true;
           c.failure = Failure(Stage.Http, 0u32, e, false);
           self.answerAll(lp, i, false);
@@ -869,7 +869,7 @@ pub struct Driver {
     c.readyHit = false;
     var b = IoBuf.empty();
     match pool.take(cfg.recvSize) {
-      case var Some(s) {b <=> s;}
+      case var Some(s) {b <-> s;}
       case is None[IoBuf] {}
     }
     if b.capacity() == 0usize {
@@ -920,7 +920,7 @@ pub struct Driver {
     if c.eof || c.recvOut || c.readyOut {return;}
     var b = IoBuf.empty();
     match pool.take(lingerSize) {
-      case var Some(s) {b <=> s;}
+      case var Some(s) {b <-> s;}
       case is None[IoBuf] {}
     }
     if b.capacity() == 0usize {
@@ -1124,7 +1124,7 @@ pub struct Driver {
           c.layer.wireIn(IoBuf.empty(), now);
         } else {
           var b = IoBuf.empty();
-          b <=> comp.buf;
+          b <-> comp.buf;
           c.layer.wireIn(b, now);
         }
         self.markDirty(index);
@@ -1225,7 +1225,7 @@ pub struct Driver {
       case is None[SocketAddr] {
         var b = IoBuf.empty();
         match pool.take(resolveSize) {
-          case var Some(s) {b <=> s;}
+          case var Some(s) {b <-> s;}
           case is None[IoBuf] {}
         }
         if b.capacity() == 0usize {
@@ -1304,9 +1304,9 @@ pub struct Driver {
     let ri = self.newReq();
     let r = self.reqAt(ri) as &mut Req;
     var s = sink;
-    r.sink <=> s;
+    r.sink <-> s;
     var h = head;
-    r.head <=> h;
+    r.head <-> h;
     r.body = body;
     r.server = false;
     r.isHead = r.head.method == Method.Head;
@@ -1526,7 +1526,7 @@ pub struct Driver {
     var refused = false;
     match c.core.sendData(buf, file, line) {
       case var Some(s) {
-        back <=> s;
+        back <-> s;
         refused = true;
       }
       case is None[IoBuf] {}
@@ -1732,7 +1732,7 @@ fn trySink(s: Sink, e: Event, back: &mut Event) Sink, u32 {
           if ch.tx.isClosed() {
             how = sinkGone;
           } else {
-            *back <=> r;
+            *back <-> r;
             how = sinkFull;
           }
         }

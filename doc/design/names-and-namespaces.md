@@ -739,9 +739,9 @@ Itanium has the operator and Cone's own where it does not
 | `or` `\|` | `eo` `^` | `ls` `<<` | `rs` `>>` | `ix` `[]` | `cl` `()` |
 | `pp` `++` | `mm` `--` | `pL` `+=` | `mI` `-=` | `mL` `*=` | `dV` `/=` |
 | `rM` `%=` | `aN` `&=` | `oR` `\|=` | `eO` `^=` | `lS` `<<=` | `rS` `>>=` |
-| `la` `<-` | `rx` `&[]` | `pP` postfix `++` | `mM` postfix `--` | | |
+| `ss` `<=>` | `la` `<-` | `rx` `&[]` | `pP` postfix `++` | `mM` postfix `--` | |
 
-The last row is Cone's own. Postfix `++` and `--` are interned as `+++` and
+`la`, `rx`, `pP` and `mM` are Cone's own. Postfix `++` and `--` are interned as `+++` and
 `---`, which is how the demangler prints them. `!` is a logic node and never a
 method, and unary `-` is the ordinary name `_neg`, so Itanium's `nt` and `ng`
 are read by the demangler and spelled by nothing.

@@ -66,8 +66,8 @@ boundary with name resolution earlier than expected.
 one current token — `toktype`, a value union, and `langtype` for a literal's
 explicit type suffix. There is no peek, no pushback, no token buffer. The parser
 is strictly LL(1) at the token level. What lookahead exists is character-level
-inside the scanner: a few characters for maximal-munch operators (`<=>`, `+[]`,
-`&[]`, `>>=`), and a rewind inside `lexScanChar`, which scans an alphanumeric
+inside the scanner: a few characters for maximal-munch operators (`<->`, `<=>`,
+`+[]`, `&[]`, `>>=`), and a rewind inside `lexScanChar`, which scans an alphanumeric
 run and then checks for a closing `'` to tell a lifetime (`'a`) from a character
 literal. Two reach past the current token, still at the character level and
 lexing nothing. `lexNextIsWord` reads the source after it for a keyword, which
@@ -541,7 +541,7 @@ tightest, in `parseexpr.c`:
 - **`!` binds looser than comparison**, and `parseCmp` is non-associative —
   one comparison per level, so `a < b < c` does not chain.
 - **Assignment is right-associative.** `parseAssign` does not loop; it recurses
-  into `parseAnyExpr` for the right-hand side, as do `:=`, `<=>` and every
+  into `parseAnyExpr` for the right-hand side, as do `:=`, `<->` and every
   op-assign form.
 
 **`&&` is the logical and where an operand precedes it.** The lexer keeps `&&` as
@@ -554,8 +554,10 @@ reports a condition as a pattern. `||` is one token (`OrOrToken`), the logical
 or, and `!` the one `NotToken`; `and`, `or` and `not` are ordinary names.
 
 `parseCmpOp` is the comparison level's one list of operators — `==`, `!=`,
-`===`, `!==` and the four orderings — and a `match` pattern reads the same list
-(section 6). The lexer takes `===` and `!==` whole ahead of `==` and `!=`.
+`===`, `!==`, the four orderings and the three-way `<=>` — and a `match` pattern
+reads the same list (section 6). The lexer takes `===` and `!==` whole ahead of
+`==` and `!=`, `<=>` whole ahead of `<=`, and `<->` (the swap, a `SwapToken`) whole
+ahead of `<-`: a `<-` directly followed by `>` is the swap, never a send.
 
 Two entry points: `parseAnyExpr` (= `parseAssign`) is the full expression;
 `parseSimpleExpr` (= `parseOrExpr`) excludes comma and assignment and is what

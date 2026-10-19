@@ -197,7 +197,7 @@ struct Service {
     self.sweepServers(lp);
     self.sweep();
     var cs = List[Completion].empty();
-    cs <=> *comps;
+    cs <-> *comps;
     lp.poll(limit, &mut cs);
     var j = 0usize;
     while j < cs.len() {
@@ -206,7 +206,7 @@ struct Service {
       j = j + 1usize;
     }
     cs.clear();
-    *comps <=> cs;
+    *comps <-> cs;
   }
 
   // A completion goes to the client or the driver whose it is; any other
@@ -331,7 +331,7 @@ struct Service {
     let k = e.kind;
     if k == httpconn.EventKind.Response {
       w.resp.status = e.response.status;
-      w.resp.headers <=> e.response.headers;
+      w.resp.headers <-> e.response.headers;
     } elif k == httpconn.EventKind.Data {
       let n = e.buf.len();
       if w.resp.body.len() + n > w.limit {
@@ -378,7 +378,7 @@ struct Service {
       let n = if left < sendChunk {left} else {sendChunk};
       var b = IoBuf.empty();
       match pool.take(n) {
-        case var Some(s) {b <=> s;}
+        case var Some(s) {b <-> s;}
         case is None[IoBuf] {}
       }
       if b.capacity() == 0usize {
@@ -424,7 +424,7 @@ struct Service {
 // A wait's reply carries v back to the actor awaiting it
 fn answer[R](w: &mut Wait, v: R) {
   var rp = actors.Reply();
-  rp <=> w.reply;
+  rp <-> w.reply;
   actors.answerNow[R](rp, v);
 }
 
@@ -435,7 +435,7 @@ fn answerResponse(w: &mut Wait, v: Result[httpclient.Response, FetchError]) {
 // The response a wait gathered, moved out
 fn takeResponse(w: &mut Wait) httpclient.Response {
   var r = httpclient.Response.blank();
-  r <=> w.resp;
+  r <-> w.resp;
   r
 }
 
@@ -445,7 +445,7 @@ const sendChunk = 16384usize;
 // A connect's reply carries v back to the actor awaiting it
 fn answerConn(c: &mut ConnRec, v: Result[Conn, FetchError]) {
   var rp = actors.Reply();
-  rp <=> c.reply;
+  rp <-> c.reply;
   actors.answerNow[Result[Conn, FetchError]](rp, v);
 }
 
@@ -481,8 +481,8 @@ fn onFetchEvent(rec: &mut ClientRec, lp: &mut Loop, e: &mut httpclient.Event) {
   let k = e.kind;
   if k == httpclient.EventKind.Response {
     w.resp.status = e.response.status;
-    w.resp.headers <=> e.response.headers;
-    w.resp.url <=> e.url;
+    w.resp.headers <-> e.response.headers;
+    w.resp.url <-> e.url;
   } elif k == httpclient.EventKind.Data {
     let n = e.buf.len();
     if w.resp.body.len() + n > w.limit {
@@ -525,7 +525,7 @@ struct CreateClientJob {
 
   fn run(self: &mut, lp: &mut Loop, sv: &mut Service) {
     var c = httpclient.Config.make();
-    c <=> cfg;
+    c <-> cfg;
     let p = libc.malloc(mem.sizeof[ClientRec]()) as *ClientRec;
     if p as usize == 0usize {die("actorhttp: out of memory for a client");}
     mem.writeRaw[ClientRec](p, ClientRec(id, 1u32, false, maxBody, httpclient.Client.make(c, sv.pool),
@@ -560,21 +560,21 @@ struct FetchJob {
 
   fn run(self: &mut, lp: &mut Loop, sv: &mut Service) {
     var rp = actors.Reply();
-    rp <=> reply;
+    rp <-> reply;
     let k = sv.findClient(id);
     if k >= sv.clients.len() {
       var w = blankWait();
-      w.reply <=> rp;
+      w.reply <-> rp;
       answerResponse(&mut w, Error[httpclient.Response, FetchError](FetchError.cancelled()));
       return;
     }
     let rec = sv.clientAt(k) as &mut ClientRec;
     let slot = rec.waits.take(blankWait());
     let w = rec.waits.at(slot) as &mut Wait;
-    w.reply <=> rp;
+    w.reply <-> rp;
     w.limit = rec.maxBody;
     var r = httpclient.Request.get("");
-    r <=> req;
+    r <-> req;
     w.fetch = rec.client.send(lp, r, httpclient.Sink.Here(u64.from(slot)));
   }
 }
@@ -593,13 +593,13 @@ struct ConnectJob {
 
   fn run(self: &mut, lp: &mut Loop, sv: &mut Service) {
     var rp = actors.Reply();
-    rp <=> reply;
+    rp <-> reply;
     let slot = sv.conns.take(blankConn());
     let c = sv.conns.at(slot) as &mut ConnRec;
     c.used = true;
     c.id = newId();
     c.connecting = true;
-    c.reply <=> rp;
+    c.reply <-> rp;
     let sink = httpconn.Sink.Here(connBit | u64.from(slot));
     // The driver is handed a copy of the host: it holds Strings, and nothing
     // shows the job's is none of them
@@ -609,7 +609,7 @@ struct ConnectJob {
       return;
     }
     var tc = tls.ClientConfig.make();
-    tc <=> cfg;
+    tc <-> cfg;
     match tls.Client.make(tc) {
       case let Ok(t) {
         c.conn = sv.drv.connectWith(lp, name.view(), port, Uni[tls.Stream](t.stream(name.view(), sv.pool)), sink);
@@ -636,11 +636,11 @@ struct ExchangeJob {
 
   fn run(self: &mut, lp: &mut Loop, sv: &mut Service) {
     var rp = actors.Reply();
-    rp <=> reply;
+    rp <-> reply;
     let k = sv.findConn(id);
     if k >= sv.conns.len() {
       var w = blankWait();
-      w.reply <=> rp;
+      w.reply <-> rp;
       answerResponse(&mut w, Error[httpclient.Response, FetchError](FetchError.failed(
         httpclient.Failure.make(httpclient.Stage.Closed, 0u32, ErrorKind.Closed, "the connection names nothing"))));
       return;
@@ -648,14 +648,14 @@ struct ExchangeJob {
     let c = sv.conns.at(k) as &mut ConnRec;
     let slot = sv.xwaits.take(blankWait());
     let w = sv.xwaits.at(slot) as &mut Wait;
-    w.reply <=> rp;
+    w.reply <-> rp;
     w.limit = defaultMaxBody;
     w.conn = k;
-    w.body <=> body;
+    w.body <-> body;
     c.busy = c.busy + 1u32;
     let length = if w.body.len() > 0usize {BodyLength.sized(u64.from(w.body.len()))} else {BodyLength.empty()};
     var h = RequestHead.empty();
-    h <=> head;
+    h <-> head;
     let sink = httpconn.Sink.Here(u64.from(slot));
     match group {
       case let Some(g) {w.req = sv.drv.requestIn(lp, c.conn, h, length, sink, g, deadline);}
