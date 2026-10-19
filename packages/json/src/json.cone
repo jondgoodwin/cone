@@ -7,11 +7,11 @@
 //   import json;
 //
 //   fn main() i32 {
-//     mut doc json.Json = json.Json.Null;
+//     var doc json.Json = json.Json.Null;
 //     match json.parse("{\"name\": \"hello\", \"size\": 12, \"tags\": [\"a\", \"b\"]}") {
-//       case mut ok Ok { doc <-> ok; }                // the tree moved out
-//       case imm e Error {
-//         imm m = e.message();                       // 'json: line 1, column 9: ...'
+//       case let Ok(ok) { doc = ok; }                 // the tree moved out
+//       case let Error(e) {
+//         let m = e.message();                        // 'json: line 1, column 9: ...'
 //         printStr(m.view());
 //         return 1i32;
 //       }
@@ -94,7 +94,7 @@
 //   'line' (from 1, counting '\n') and 'column' (from 1, in bytes), and a
 //   'reason' that says what was expected; 'message()' is the one line. Cone
 //   has no '?' yet, so a caller matches the Result, moving the value out of
-//   a matched 'Ok' by swapping an empty one in ('doc <-> ok'). The accessors
+//   a matched 'Ok' by binding it ('case let Ok(ok) { doc = ok; }'). The accessors
 //   ask nothing of the caller beyond that: a missing or mistyped member is an
 //   Option's None, not a failure.
 // - Mapping to structs is by hand. There is no reflection and no derive, so
@@ -254,11 +254,7 @@ pub enum Json {
   // The shortest text that reads back as x; null for NaN and infinity
   pub fn fromF64(x: f64) Json {
     match formatF64(x) {
-      case var Some(t) {
-        var s = String.empty();
-        s <-> t;
-        Json.Number(s)
-      }
+      case let Some(t) { Json.Number(t) }
       case is None { Json.Null }
     }
   }
@@ -642,7 +638,7 @@ pub fn parseWith(text: &Array[u8], opts: &Options) Result[Json, JsonError] {
     }
     if ev == Event.EndObject || ev == Event.EndArray {
       match stack.pop() {
-        case var Some(f) { v <-> f.value; }
+        case let Some(f) { v = f.(value); }
         case is None { }
       }
     }
@@ -652,7 +648,7 @@ pub fn parseWith(text: &Array[u8], opts: &Options) Result[Json, JsonError] {
     else if ev == Event.False { v = Json.Bool(false); }
     // Null stays
     if stack.len() == 0usize {
-      root <-> v;
+      root = v;
     }
     else {
       let top = stack.len() - 1usize;
