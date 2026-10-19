@@ -703,11 +703,13 @@ void parseExternFnCheck(FnDclNode *fn) {
 }
 
 // Parse function or variable, as it may be preceded by a qualifier
-// Return NULL if not either
-INode *parseFnOrVar(ParseState *parse, uint16_t flags) {
+// Return NULL if not either. 'member' is set for an item of an 'extern' block's
+// braces, whose last declaration needs no ';' before the '}' (parseEndOfMember)
+static INode *parseFnOrVarIn(ParseState *parse, uint16_t flags, int member) {
 
     if (lexIsToken(FnToken)) {
-        FnDclNode *node = (FnDclNode*)parseFn(parse, (flags&FlagExtern)? (ParseMayName | ParseMaySig) : (ParseMayName | ParseMayImpl));
+        FnDclNode *node = (FnDclNode*)parseFn(parse, ((flags&FlagExtern)? (ParseMayName | ParseMaySig) : (ParseMayName | ParseMayImpl))
+            | (member ? ParseMemberEnd : 0));
         node->flags |= flags;
         parseExternFnCheck(node);
         // A bare '@c' in a module that already gives its functions C names says
@@ -752,7 +754,10 @@ INode *parseFnOrVar(ParseState *parse, uint16_t flags) {
                 "'@workgroup' global %s may not have an initial value: each workgroup's copy starts undefined, and its invocations write what they will read, before a barrier.",
                 &node->namesym->namestr);
         node->flowtempflags |= VarInitialized;   // Globals always hold a valid value
-        parseEndOfStatement();
+        if (member)
+            parseEndOfMember();
+        else
+            parseEndOfStatement();
         modAddNode(parse->mod, node->namesym, (INode*)node);
         return (INode*)node;
     }
@@ -761,6 +766,10 @@ INode *parseFnOrVar(ParseState *parse, uint16_t flags) {
         parseSkipToNextStmt();
         return NULL;
     }
+}
+
+INode *parseFnOrVar(ParseState *parse, uint16_t flags) {
+    return parseFnOrVarIn(parse, flags, 0);
 }
 
 // Parse a global area statement (within a module)
@@ -891,9 +900,14 @@ static ModTraitNode *parseModTrait(ParseState *parse, uint16_t pubflag) {
     }
     parseBlockStart();
     while (!parseBlockEnd()) {
+        // A lone ';' is an empty declaration, as in a type's braces
+        if (lexIsToken(SemiToken)) {
+            lexNextToken();
+            continue;
+        }
         uint16_t memberpub = parsePub();
         if (lexIsToken(FnToken)) {
-            FnDclNode *fn = (FnDclNode*)parseFn(parse, ParseMayName | ParseMaySig | ParseMayImpl);
+            FnDclNode *fn = (FnDclNode*)parseFn(parse, ParseMayName | ParseMaySig | ParseMayImpl | ParseMemberEnd);
             fn->flags |= memberpub;
             if (fn->genericinfo)
                 errorMsgNode((INode*)fn, ErrorModTraitBody,
@@ -908,7 +922,7 @@ static ModTraitNode *parseModTrait(ParseState *parse, uint16_t pubflag) {
             VarDclNode *var = parseVarDcl(parse, immPerm, ParseMayImpl | ParseMaySig);
             var->flags |= memberpub;
             var->flowtempflags |= VarInitialized;   // A global always holds a valid value
-            parseEndOfStatement();
+            parseEndOfMember();
             modTraitAddMember(trait, (INode*)var);
         }
         else {
@@ -1491,11 +1505,16 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod, int atmodstart) {
                 parseBlockStart();
                 spankind = SpanExternBlock;
                 while (!parseBlockEnd()) {
+                    // A lone ';' is an empty declaration, as in a type's braces
+                    if (lexIsToken(SemiToken)) {
+                        lexNextToken();
+                        continue;
+                    }
                     char *itemat = lex->tokp;
                     uint16_t itemflag = extflag | parsePub();
                     char *itemkw = lex->tokp;
                     if (lexIsToken(FnToken) || lexIsDclStart()) {
-                        INode *item = parseFnOrVar(parse, itemflag);
+                        INode *item = parseFnOrVarIn(parse, itemflag, 1);
                         if (item)
                             parseSpan(parse, &items, item, itemat, itemkw, SpanDcl);
                     }

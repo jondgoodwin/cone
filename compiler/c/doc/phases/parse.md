@@ -534,6 +534,12 @@ declaration, skipped. Between two declarations that do not end in a block the
 by `parseVariantItem` (a bare name, or a name and a type in parentheses, then an
 optional tag value), and ends as one declaration.
 
+A module trait's body (`parseModTrait`) and an `extern { }` block
+(`parseGlobalStmts`) follow the same rule: a lone `;` is skipped as an empty
+declaration, a function is read with `ParseMemberEnd`, and a global ends with
+`parseEndOfMember` (an extern block's items go through `parseFnOrVarIn` with its
+`member` set; a module's own statements keep `parseEndOfStatement`).
+
 ## 3. The precedence cascade
 
 Hand-written recursive descent, one function per level. A level that **loops**
