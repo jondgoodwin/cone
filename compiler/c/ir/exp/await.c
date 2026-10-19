@@ -752,6 +752,8 @@ static int awaitWalk(INode *node, int check, uint32_t *bad) {
         return awaitWalk(((RefNode *)node)->vtexp, check, bad);
     case NotLogicTag:
         return awaitWalk(((LogicNode *)node)->lexp, check, bad);
+    case DestructTag:
+        return awaitWalk(((DestructNode *)node)->exp, check, bad);
     case OrLogicTag:
     case AndLogicTag:
     {
@@ -837,6 +839,8 @@ static void awaitReportIn(INode *node, char *why, uint32_t *bad) {
         awaitReportIn(((RefNode *)node)->vtexp, why, bad); return;
     case NotLogicTag:
         awaitReportIn(((LogicNode *)node)->lexp, why, bad); return;
+    case DestructTag:
+        awaitReportIn(((DestructNode *)node)->exp, why, bad); return;
     case OrLogicTag: case AndLogicTag:
         awaitReportIn(((LogicNode *)node)->lexp, why, bad);
         awaitReportIn(((LogicNode *)node)->rexp, why, bad);

@@ -76,7 +76,9 @@ that it looks like, and name resolution marks it (below). `trynew` builds the sa
 parses, which name resolution takes apart (`allocateQuesNameRes`): the
 construction replaces it, holding the bound `Option` in its `methfld`.
 `parseDotCall`, `parseSuffix`, `parseArgs` and the whole precedence cascade
-all build this node.
+all build this node. A `.` followed by `(` is the exception: a field list,
+`x.(a, b)`, is a `DestructNode` ([destruct](destruct.md)), which type check
+lowers to the member accesses this node makes where nothing is moved.
 
 `<-` is an operator application too, its one argument what follows it: one
 entry, or a `TupleNode` of several (`parseAppend`, `parseEntries`). An entry

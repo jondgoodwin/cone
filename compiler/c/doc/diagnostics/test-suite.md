@@ -478,6 +478,20 @@ Some facts belong to the file rather than a line:
   is written `<masked>` before it is compared with the `.err` file, which
   writes `<masked>` in its place (a thread's identity in a panic's report,
   `exception_thread`).
+- **A longer limit for a scenario that needs one**, `timeout = <seconds>`, a
+  positive finite number (an integer or a float), for a scenario of any
+  category. The runner gives every process it starts 20 seconds (`--timeout`
+  changes that); a program that is slow when the machine is busy would
+  otherwise read as a failure, so the scenario states what it needs. The key
+  applies to every process the scenario starts: the compile of each package it
+  `link`s, the C compiler for a `.c` it links, its own compile, the link and the
+  program. It replaces the default. An explicit `--timeout` replaces the
+  default as well, and where a scenario has a key too the larger of the two
+  applies, so `--timeout 90` lengthens a scenario that asked for 60 and
+  `--timeout 5` leaves it at 60. A boolean, a string, 0, a negative number,
+  `inf` and `nan` are refused, with a message naming the scenario. Say why on
+  the same line: a raised limit hides a slowdown, so the key is for a cost
+  that varies with the machine's load, not for one that has grown.
 
 ### Two choices, for lowering and codegen defects
 
@@ -607,7 +621,10 @@ The demangler lives in `test/run.py`, and every run begins by reading the
 scheme's worked examples through it (`--selftest` does only that). A grammar
 change that broke a reading therefore stops the run as one fault, and the
 scenarios then check conec's encoder against the demangler on the symbols it
-actually emits; `struct_methods` is where a punycoded name does so.
+actually emits; `struct_methods` is where a punycoded name does so. The same
+start-up check covers the `timeout` key (`timeout_selftest`): what is accepted,
+each refusal, the limit chosen against `--timeout`, and the key read through a
+`cases.toml` for every category.
 
 ### `cases.toml` keys
 
@@ -630,6 +647,10 @@ xfail       = false          # omit unless true
 category     = "run"
 program_exit = "abort"       # the program's own status; "abort" for a panic
 stderr_mask  = ['(?<=panic in thread )\d+']  # each match compared as '<masked>'
+
+[scenario.concurrency_actors_fanin]
+category = "run"
+timeout  = 60                # seconds per process, where the default 20 is too few under load
 
 [scenario.module_build_link]
 category    = "run"

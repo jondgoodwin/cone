@@ -3519,6 +3519,12 @@ static PathSet *pwValue(INode **nodep, int move) {
     case NotLogicTag:
         pwValue(&((LogicNode *)node)->lexp, 0);
         return NULL;
+    // The fields taken hold what the value held, under no struct's slot
+    case DestructTag:
+    {
+        PathSet *holds = pwValue(&((DestructNode *)node)->exp, 1);
+        return pwCarries(((IExpNode *)node)->vtype) ? pathSetUntagged(holds) : NULL;
+    }
     case OrLogicTag:
     case AndLogicTag:
     {

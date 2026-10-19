@@ -283,6 +283,8 @@ int siVisit(INode *node, SiVisitFn fn, void *ctx) {
         return siVisit(((RefNode *)node)->vtexp, fn, ctx);
     case NotLogicTag:
         return siVisit(((LogicNode *)node)->lexp, fn, ctx);
+    case DestructTag:
+        return siVisit(((DestructNode *)node)->exp, fn, ctx);
     case OrLogicTag:
     case AndLogicTag:
         return siVisit(((LogicNode *)node)->lexp, fn, ctx) || siVisit(((LogicNode *)node)->rexp, fn, ctx);

@@ -1,0 +1,93 @@
+// A value taken apart is moved whole into the field list, so what refuses a move
+// refuses it, and the variable that held it is dead afterwards. Flow stage.
+//
+// - After `h.(f, g)` the variable `h` is moved out, and any later use is refused
+//   as after any move; so is a second field list on it.
+// - What does not own its value cannot be taken apart: a field of another struct
+//   (`i.h.(f)` would leave `i` with a hole), a parameter's referent through a
+//   reference, a sole owner's referent. These are refused as `x.f` is refused
+//   for a move-type field: ErrorMoveField, ErrorMoveOut.
+// - A field that copies is read through a reference, a field or an owner as
+//   `x.a` reads it; those lines are not refused.
+// - A variable moved on one path may not be used after it, and a field list in a
+//   loop moves the variable each pass.
+
+mod struct_fields_flow;
+
+struct Fin is Move {
+  pub v: i32;
+}
+
+struct Hold { pub f: Fin; pub g: Fin; pub k: i32; }
+struct Inner { pub h: Hold; pub n: i32; }
+struct Plain { pub a: i32; pub b: i32; }
+
+fn mk() Hold { Hold(Fin(1), Fin(2), 3) }
+
+fn useAfter() i32 {
+  let h = mk();
+  let a, b = h.(f, g);
+  h.k                                   //~ ErrorMove:3 "moved out"
+}
+
+fn twice() {
+  let h = mk();
+  let a = h.(f);
+  let b = h.(g);                        //~ ErrorMove:11 "moved out"
+}
+
+fn byParameter(h: Hold) i32 {
+  let f = h.(f);
+  h.k                                   //~ ErrorMove:3 "moved out"
+}
+
+fn onOnePath(c: bool) {
+  let h = mk();
+  if c { let a = h.(f); }
+  let b = h.(g);                        //~ ErrorMove:11 "moved out"
+}
+
+fn inLoop() {
+  let h = mk();
+  var i = 0;
+  while i < 2 {
+    let a = h.(f);                      //~ ErrorMove:13 "moved out"
+    i += 1;
+  }
+}
+
+fn ofField(i: Inner) {
+  let f = i.h.(f);                      //~ ErrorMoveField:12 "field 'h'"
+}
+
+fn throughReference(r: &Hold) {
+  let f = r.(f);                        //~ ErrorMoveField:14 "field 'f'"
+}
+
+fn throughMutReference(r: &mut Hold) {
+  let f, k = r.(f, k);                  //~ ErrorMoveField:17 "field 'f'"
+}
+
+fn throughOwner() {
+  let u = Uni[Hold](Fin(1), Fin(2), 3);
+  let f = u.(f);                        //~ ErrorMoveField:14 "field 'f'"
+}
+
+fn dereferenced(r: &Hold) {
+  let f = (*r).(f);                     //~ ErrorMoveOut:12 "borrowed"
+}
+
+fn global() {
+  let f = theGlobal.(f);                //~ ErrorInvType:11 "global variable"
+}
+
+var theGlobal = Hold(Fin(1), Fin(2), 3);
+
+// Not refused: a field that copies is read through a reference, an owner, and a
+// field of a struct that moves, as `x.a` is
+fn copies(p: &Plain, w: &Inner, u: Uni[Plain]) i32 {
+  let a = p.(a);
+  let n = w.(n);
+  let b = u.(b);
+  a + n + b
+}

@@ -159,6 +159,7 @@ enum NodeTags {
     YieldTag,       // 'yield x': a generator's seam, where its body hands the caller a value and waits to be resumed (YieldNode)
     SelfActorTag,   // 'selfactor': the actor's own handle, lowered at type check (SelfActorNode)
     ClosureTag,     // 'fn (x: i32) [n = 0] { ... }' or 'x => x * 2': a closure literal, lowered at type check to a value of a hidden struct (ClosureNode)
+    DestructTag,    // 'x.(a, b)': the named fields of a value (DestructNode); type check lowers it to field accesses where the value stays whole
     AbsenceTag,   // unique, unclonable node for absence of info
 
     // Unnamed type node

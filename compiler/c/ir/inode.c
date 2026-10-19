@@ -133,6 +133,8 @@ void inodePrintNode(INode *node) {
         awaitPrint((AwaitNode *)node); break;
     case YieldTag:
         yieldPrint((YieldNode *)node); break;
+    case DestructTag:
+        destructPrint((DestructNode *)node); break;
     case AwaitReplyTag:
         inodeFprint("(reply)"); break;
     case SelfActorTag:
@@ -315,6 +317,8 @@ void inodeNameRes(NameResState *pstate, INode **node) {
         awaitNameRes(pstate, (AwaitNode *)*node); break;
     case YieldTag:
         yieldNameRes(pstate, (YieldNode *)*node); break;
+    case DestructTag:
+        destructNameRes(pstate, (DestructNode *)*node); break;
     // 'selfactor' names nothing: type check finds the actor it is in
     case SelfActorTag:
         break;
@@ -563,6 +567,8 @@ static void inodeTypeCheckWalkNode(TypeCheckState *pstate, INode **node, INode *
         awaitTypeCheck(pstate, (AwaitNode *)*node, expectType); break;
     case YieldTag:
         yieldTypeCheck(pstate, (YieldNode *)*node); break;
+    case DestructTag:
+        destructTypeCheck(pstate, node); break;
     case AwaitReplyTag:
         break;
     case SelfActorTag:
@@ -852,6 +858,7 @@ static NodeTagFacts nodeTagFacts[NodeTagCount] = {
     [YieldEntryTag] = {ExpGroup, 0, 0},
     [AwaitTag] = {ExpGroup, 0, 0},
     [YieldTag] = {ExpGroup, 0, 0},
+    [DestructTag] = {ExpGroup, 0, 0},
     [AwaitReplyTag] = {ExpGroup, 0, 0},
     [SelfActorTag] = {ExpGroup, 0, 0},
     [ClosureTag] = {ExpGroup, 0, 0},
