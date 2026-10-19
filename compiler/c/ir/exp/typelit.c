@@ -1115,7 +1115,7 @@ static void typeLitNewChecked(TypeCheckState *pstate, FnCallNode **nodep, int ar
         // Neither a declared init nor the implicit one takes the arguments,
         // and one is a string literal: ask the declared inits again with a
         // literal also lent as a temporary to a '&T' ('new File("x")' for
-        // 'init(self: &new, p &Path)'), as a call's selection falls back to it
+        // 'init(self: &new, p: &Path)'), as a call's selection falls back to it
         if (viable == 0 && !typeLitImplicitViable(strnode, node->args) && slitAnyText(NULL, node->args)) {
             slitBorrowFallback(1);
             candp = firstp;

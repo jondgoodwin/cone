@@ -2084,7 +2084,7 @@ static void genericCondIsWhy(char *buf, size_t size, INode *arg, StructNode *tra
     }
 }
 
-// Append a method's signature as it is written in a trait: 'push(self: &mut, v i64)',
+// Append a method's signature as it is written in a trait: 'push(self: &mut, v: i64)',
 // 'pop(self: &mut) Option[i64]'
 static void genericSigCat(char *buf, size_t size, FnDclNode *fn) {
     FnSigNode *sig = (FnSigNode*)fn->vtype;
@@ -2107,13 +2107,13 @@ static void genericSigCat(char *buf, size_t size, FnDclNode *fn) {
             Name *permname = perm ? inodeGetName(perm) : NULL;
             used = strlen(buf);
             if (permname == NULL || perm == (INode*)roPerm)
-                snprintf(buf + used, size - used, " &");
+                snprintf(buf + used, size - used, ": &");
             else
-                snprintf(buf + used, size - used, " &%s", &permname->namestr);
+                snprintf(buf + used, size - used, ": &%s", &permname->namestr);
         }
         else if (parm->vtype) {
             used = strlen(buf);
-            snprintf(buf + used, size - used, " ");
+            snprintf(buf + used, size - used, ": ");
             genericTypeNameCat(buf, size, parm->vtype, 0);
         }
         first = 0;

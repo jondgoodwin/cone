@@ -1388,7 +1388,7 @@ and the compiler knows nothing else of that type. What it brings:
 ### Hash
 
 `Hash` is an ordinary trait, declared in core (`pub trait Hash { pub fn
-hash(self: &, h &mut Hasher); }`), that the compiler knows by its name and
+hash(self: &, h: &mut Hasher); }`), that the compiler knows by its name and
 package, as it knows `TypeRecord` (`coreIsHashTrait`, `coreIsHasher`,
 `ir/stmt/intrinsic.c`). It is not one of the built-in markers: it has a method,
 so a type that writes a `hash` of the right signature fits it structurally

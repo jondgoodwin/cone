@@ -10,14 +10,14 @@
  * reported at the generator's name, Lexer.genat):
  *
  *   struct walk.Gen is Iterator[&Node] {               the generator's value, declaring what it is
- *     let t &'a Tree;  let n i32;                      the parameters, as the author wrote them, under names no source can spell
- *     state' u32;                                      where the body resumes
+ *     let t: &'a Tree;  let n: i32;                    the parameters, as the author wrote them, under names no source can spell
+ *     state': u32;                                     where the body resumes
  *     pub fn next(self: &mut) Option[&'a Node] {...}    the author's body
  *     fn final(self: &uni) {}                           what the frame's drop hangs on
- *     fn walk.yield(v &Node) Option[&Node] inline {Some[&Node](v)}    what a 'yield' hands the caller
+ *     fn walk.yield(v: &Node) Option[&Node] inline {Some[&Node](v)}    what a 'yield' hands the caller
  *     fn walk.none() Option[&Node] {None[&Node]}                      what its end hands the caller
  *   }
- *   fn walk(t &Tree, n i32) walk.Gen {new walk.Gen(t, n, 0u32)}     the generator, made
+ *   fn walk(t: &Tree, n: i32) walk.Gen {new walk.Gen(t, n, 0u32)}     the generator, made
  *
  * A generator may be generic, 'fn items[T](l: &List[T]) yields &T': the struct is
  * 'items.Gen[T]', taking the function's type parameters as they are written, and

@@ -1,7 +1,7 @@
 /** Parse an actor declaration, and generate what it stands for
  *
- * 'actor Counter { count u64; fn init(self: &new, n u64) {...}; pub async do
- * bump(self, n u64) {...} }' declares an actor: state that lives on, reached by
+ * 'actor Counter { count: u64; fn init(self: &new, n: u64) {...}; pub async do
+ * bump(self, n: u64) {...} }' declares an actor: state that lives on, reached by
  * nothing but messages, each a call of one of its behaviours (its methods
  * declared 'async do'), run later, one at a time, on whichever worker thread of
  * the actors package takes it up. Its methods declared 'fn' -- its 'init', its
@@ -10,17 +10,17 @@
  * into the four declarations the actors package runs an actor by, generated as
  * Cone source and parsed here, in this order:
  *
- *   struct Counter.State {count u64; fn init...; fn bump...} the body as written
+ *   struct Counter.State {count: u64; fn init...; fn bump...} the body as written
  *   struct Counter {                                         the handle
- *     mailbox Arc[opaq, actors.Mailbox[Counter.Msg]];
- *     fn init(self: &new, n u64) {
+ *     mailbox: Arc[opaq, actors.Mailbox[Counter.Msg]];
+ *     fn init(self: &new, n: u64) {
  *       let st = actors.makeActor[Counter.State, Counter.Msg](&Counter.dispatch);
  *       mem.writeRaw[Counter.State](st, new Counter.State(n));
  *       *self = new Self(mailbox: actors.startActor[Counter.State, Counter.Msg](st));}
- *     pub fn bump(self: &, n u64) {actors.send[Counter.Msg](mailbox, Counter.Msg.bump[n]);}
+ *     pub fn bump(self: &, n: u64) {actors.send[Counter.Msg](mailbox, Counter.Msg.bump[n]);}
  *   }
- *   enum Counter.Msg is Sendable {struct bump {n u64;}}     one variant per behaviour
- *   fn Counter.dispatch(self: &mut Counter.State, msg *Counter.Msg) {
+ *   enum Counter.Msg is Sendable {struct bump {n: u64;}}    one variant per behaviour
+ *   fn Counter.dispatch(self: &mut Counter.State, msg: *Counter.Msg) {
  *     if &*msg is &Counter.Msg.bump {let p = (msg as *u8 as usize) as *Counter.Msg.bump; self.bump(actors.take(&(*p).n));}
  *   }
  *
