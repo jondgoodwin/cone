@@ -231,7 +231,7 @@ void ifExhaustCheck(IfNode *ifnode, CastNode *condition) {
 // and says which of them only by running.
 //
 // Each case is a row of cells, one for each value matched: '_' is a wild cell, a variant
-// (or 'or' of variants, or 'true' / 'false', or a number or character written out) the
+// (or '|' of variants, or 'true' / 'false', or a number or character written out) the
 // set of values it names, and anything else an "other" cell. A row with an "other" cell is not counted toward covering, or
 // toward making a later case unreachable. A guarded case is not counted toward covering.
 
@@ -441,7 +441,7 @@ static INode *matchCaseStart(INode *cond) {
     return cond;
 }
 
-// The columns of a case's condition, left to right: a row joins them with 'and'
+// The columns of a case's condition, left to right: a row joins them with '&&'
 static int matchFlattenRow(INode *cond, INode **out, int max) {
     if (cond->tag == AndLogicTag && (cond->flags & FlagMatchRow)) {
         int n = matchFlattenRow(((LogicNode*)cond)->lexp, out, max);

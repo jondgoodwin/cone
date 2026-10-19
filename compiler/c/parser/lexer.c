@@ -146,9 +146,6 @@ void keywordInit() {
     keyAdd("by", ByToken);
     keyAdd("break", BreakToken);
     keyAdd("continue", ContinueToken);
-    keyAdd("not", NotToken);
-    keyAdd("or", OrToken);
-    keyAdd("and", AndToken);
     keyAdd("as", AsToken);
     keyAdd("is", IsToken);
     keyAdd("into", IntoToken);
@@ -1367,9 +1364,13 @@ void lexNextTokenx() {
                 lexReturnPuncTok(AmperToken, 1);
             }
 
-        case '|': 
+        // '|', '|=' and '||'
+        case '|':
             if (*(srcp + 1) == '=') {
                 lexReturnPuncTok(OrEqToken, 2);
+            }
+            else if (*(srcp + 1) == '|') {
+                lexReturnPuncTok(OrOrToken, 2);
             }
             else {
                 lexReturnPuncTok(BarToken, 1);
@@ -1645,7 +1646,7 @@ int lexNextOpensValue() {
     char c = *srcp;
     if (isalpha((unsigned char)c) || c == '_' || (c & 0x80)) {
         // A name opens a value, unless it is a word that continues an expression
-        static char *infix[] = {"and", "or", "as", "into", "is", "of", NULL};
+        static char *infix[] = {"as", "into", "is", "of", NULL};
         for (char **word = infix; *word; ++word) {
             if (lexIsWordAt(srcp, *word))
                 return 0;

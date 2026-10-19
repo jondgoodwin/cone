@@ -44,11 +44,11 @@ defined and sees advantages in it.** ▸ **For whoever builds it: checking a
 template requires knowing what its parameters guarantee, which is what its
 constraints say.** Constraints are built, and checked at each instance only;
 checking the body against them where it is declared is the part still owed.
-**Under an `or`, the plan is Go's rule** [Jon 27 Sep, accepting Penny's
-proposal]: a body governed by `T is A or T is B` may rely only on what *every*
+**Under a `||`, the plan is Go's rule** [Jon 27 Sep, accepting Penny's
+proposal]: a body governed by `T is A || T is B` may rely only on what *every*
 alternative supports — what `A` and `B` both give — as Go's union constraints
-let a generic body use only the operations every type in the union has. So `or`
-does not stand in the way of declaration checking; `not`, which says nothing of
+let a generic body use only the operations every type in the union has. So `||`
+does not stand in the way of declaration checking; `!`, which says nothing of
 what a type can do, would, and is not built.
 
 **A constraint is checked by evaluating it, once every argument is known**
@@ -73,13 +73,13 @@ every instance, so that a package's and its importers' copies merge
 | `where` | a generic type's constraints, as conditions (below); NULL for a function, whose are its `FnDcl`'s |
 
 **A `where` list holds conditions, every one of which must hold.** Each element
-is one operand of the `and`s at the top of what was written. A condition is a
+is one operand of the `&&`s at the top of what was written. A condition is a
 **clause**, `T is Name` — an `IsTag` `CastNode`, the node `p is Mobile` makes,
 whose `exp` is a use of the type parameter it constrains and whose `typ` is a use
 of the trait or type it `is` — or an `OrLogicTag` or `AndLogicTag` `LogicNode`
 joining two conditions. `where T is A and T is B` is two elements; `where T is A
 or T is B` one, an `or`; `T is A + B` and `[T A + B]` are two clauses, and inside
-an `or` alternative an `and` of them. A generic type's list is its
+a `||` alternative a `&&` of them. A generic type's list is its
 `GenericInfo`'s; every function's, generic or a generic type's method, is
 `FnDclNode.where`, so a method that is not generic still has one. Being ordinary
 nodes over name uses, the conditions are cloned like any other: in an instance's
@@ -209,22 +209,22 @@ Anything else after a parameter name is still the unclosed-list `ErrorBadTok`.
 **`parseWhere`** reads the `where` clause, which stands just before the block:
 after a function's signature (and `inline`), and after a type's name, type
 parameters and `is`/`extends` clauses. It is an expression over clauses, as an
-expression is over values: `or` of `and`s of terms (`parseWhereOr`,
-`parseWhereAnd`), so `and` binds tighter, and a term (`parseWhereTerm`) is `(`
+expression is over values: `||` of `&&`s of terms (`parseWhereOr`,
+`parseWhereAnd`), so `&&` binds tighter, and a term (`parseWhereTerm`) is `(`
 a whole condition `)`, `Ident is Name (+ Name)*`, each name read by
 `parseTypeName`, a lifetime comparison, or a lifetime bound, `Ident + 'a`, or a
 lifetime after a `+` in an `is` clause, `T is Name + 'a` (`T is 'a` is
 `ErrorWhereForm`: `T` is no lifetime). A comparison and a bound go to the
 declaration's order and stand in the condition as a marker
-(`parseLifeClause`), so an `or` over one is found and refused,
-`ErrorLifetimeOr`, as is a `not` before a comparison; a `not` before a bound's
-subject is the `not` that is refused everywhere. The condition's top-level `and`s are split into the list's
+(`parseLifeClause`), so a `||` over one is found and refused,
+`ErrorLifetimeOr`, as is a `!` before a comparison; a `!` before a bound's
+subject is the `!` that is refused everywhere. The condition's top-level `&&`s are split into the list's
 elements (`parseWhereAdd`), appended to the function's `where` or the type's
 `GenericInfo.where`. Every other shape is `ErrorWhereForm`, the clause adds
 nothing, and the rest of it is skipped to the block: a subject that is not a
 name followed by `is` (a relation, `T < Y`; a constraint on a type expression,
-`Option[T] is Node`), `not` before a clause or after its `is`, `is` with no name
-after it, an `and` or `or` with no clause after it, and a `(` never closed. A type
+`Option[T] is Node`), `!` before a clause or after its `is`, `is` with no name
+after it, a `&&` or `||` with no clause after it, and a `(` never closed. A type
 with no type parameters writing one is `ErrorWhereNoParms` here; a function's is
 known only at name resolution.
 
@@ -233,15 +233,15 @@ known only at name resolution.
 functions, so it takes the same forms and refuses the same ones, and also a
 lifetime comparison, which no instance could decide; the refusals name it a
 condition on an `is` entry (`parseInIsCond`). It is kept whole, one condition, not
-split at its `and`s, since it decides one entry rather than listing requirements.
+split at its `&&`s, since it decides one entry rather than listing requirements.
 `parseStruct` holds the entry apart, in `StructNode.condis`, as a placeholder
 field whose `vtype` is the trait and whose `value` is the condition; it is never
 the base, wherever it is written. A refused condition drops its entry, and
 recovery skips to the next entry, the type's `where` or its block. A `where` after
 the list is the type's requirement, as it always was.
 
-**The inline form takes no `or`.** `[T A + B]` requires every trait it names, and
-`parseGenericParms` refuses `or` after them, `ErrorGenParmOr`, dropping that
+**The inline form takes no `||`.** `[T A + B]` requires every trait it names, and
+`parseGenericParms` refuses `||` after them, `ErrorGenParmOr`, dropping that
 parameter's annotation and skipping to its `,` or `]`: a choice is written in a
 `where` clause [Jon 27 Sep].
 
@@ -295,7 +295,7 @@ with no arguments names no trait, `ErrorGenParmConstr` inline and `ErrorWhereTra
 in a clause, each saying to give the arguments. A subject that is anything
 else is `ErrorWhereSubject`, and a name that is neither `ErrorWhereTrait`; a name
 that bound nothing was reported as unknown where it was resolved. A condition
-with any clause refused is dropped whole, since an `or` missing a side would say
+with any clause refused is dropped whole, since a `||` missing a side would say
 something else. What is left is the list, the annotations' clauses first. Only
 the `where` clause may name a type; in the inline slot a type means a value
 parameter (Shape, above). A function that is neither generic nor a member of a
@@ -747,7 +747,7 @@ Every other question a clause asks is
   never a reference; and core's `Hash`, a trait with a method, is granted to
   every integer type and `bool` as well (`coreIsHashTrait`; [struct](struct.md),
   "Hash"), and to an owner of `str`, `Uni[str]` and `Rc[str]` (`genericIsTextOwner`).
-  `Integer or bool or Pointer` is exactly what an atomic
+  `Integer || bool || Pointer` is exactly what an atomic
   operation takes (`intrinsicIsAtomicType`), so core's `Atomic[T]` requires just
   what its `AtomicValue` marker admits. `Sendable` is the thread check's, and is
   asked of the walk (`itypeThreadBound`) before anything else: it is granted to
@@ -824,13 +824,13 @@ call's own inference reads it), and clones the bound with them
 spelling the signature as written (`spelled`), as it comes to here
 (`genericFnSigCat`) and what the argument has instead (`genericSigMeetWhy`).
 
-**A condition is evaluated whole** (`genericConditionValue`), `or` and `and` as
+**A condition is evaluated whole** (`genericConditionValue`), `||` and `&&` as
 in an expression, the right side asked only where the left does not decide it,
 to one of three values: true, false, or unknown — turning on a parameter not
 bound here. A lone clause is decided where its subject is one of the parameters
 being bound, with that parameter's argument; one over a parameter bound earlier
 (its subject substituted by the clone) was decided then, and is unknown here.
-Inside an `or` or an `and` a substituted subject is asked as it stands, since
+Inside a `||` or a `&&` a substituted subject is asked as it stands, since
 the whole is decided here. `genericUnmetCondition` finds the first condition
 that is false; an unknown one is left to where its parameter is bound. So a
 generic method's condition joining its type's parameter and its own, `where T is
@@ -841,8 +841,8 @@ exists there — and decided, as a requirement, at the method's instance.
 `genericMemoize`, on a memo miss and before anything is cloned, asks
 `genericRequirementsMet`: an unmet condition is `ErrorWhereUnmet` at the use
 asking for the instance — the call, the type literal, the type named — naming
-the generic, the clause and the argument, or, for a condition joined by `or` or
-`and`, the whole condition (`genericConditionCat`) and the arguments it turned on
+the generic, the clause and the argument, or, for a condition joined by `||` or
+`&&`, the whole condition (`genericConditionCat`) and the arguments it turned on
 (`genericBindingsCat`), and an error node stands for the instance,
 so nothing inside the generic is checked against arguments it was never meant
 for. A variant answers to its enum's clauses. A type position holding the error
@@ -1066,7 +1066,7 @@ are [Names and Namespaces](../../../../doc/design/names-and-namespaces.md), "Sym
   use was copied into an instance of that generic.
 - **A `where` list's nodes are expression nodes that are never checked as
   expressions.** Its clauses are the `IsTag` nodes a runtime `p is Mobile`
-  makes, and its joins the `LogicNode`s of `and` and `or`; only name resolution
+  makes, and its joins the `LogicNode`s of `&&` and `||`; only name resolution
   (`genericConditionNameRes`) and the evaluator read them. A walk that type
   checked or generated one would take a compile-time question for a runtime
   test.

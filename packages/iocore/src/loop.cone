@@ -119,8 +119,8 @@ const recsPerBlock = 64u32;
 // external operation; on Linux a file operation too, which is a job of the
 // pool (linux.cone)
 fn boxed(k u32) bool {
-  k == diag.kindCall or k == diag.kindExternal
-    or (not isWindows() and (k == diag.kindReadAt or k == diag.kindWriteAt))
+  k == diag.kindCall || k == diag.kindExternal
+    || (!isWindows() && (k == diag.kindReadAt || k == diag.kindWriteAt))
 }
 
 // What a handle is
@@ -286,7 +286,7 @@ pub struct Loop {
 
   // A Request for operation id: a handle whose death cancels it, which may
   // be held on any thread (see the package's header, REQUESTS)
-  pub fn request(self &, id OpId) Request {new Request(new Waker(port), id, not id.isNone())}
+  pub fn request(self &, id OpId) Request {new Request(new Waker(port), id, !id.isNone())}
 
   // -------------------------------------------------------------------------
   // Handles
@@ -300,12 +300,12 @@ pub struct Loop {
     var a = addr;
     // Winsock's listen, named through the module: Loop's own 'listen' is
     // the bare name here
-    if not isWindows() {
+    if !isWindows() {
       // A restarted server may bind its port again while old connections linger
       var one = 1i32;
       setsockopt(s, solSocketLx, soReuseAddr, &mut one as *u8, 4i32);
     }
-    if bind(s, &mut a as *u8, a.size) != 0i32 or iocore.listen(s, backlog) != 0i32 {
+    if bind(s, &mut a as *u8, a.size) != 0i32 || iocore.listen(s, backlog) != 0i32 {
       let code = wsaError();
       closeRaw(hSocket, s);
       return Error[Handle, IoError](new IoError(code));
@@ -517,9 +517,9 @@ pub struct Loop {
 
   // h's entry, or noEntry if h names nothing
   fn handleIndex(self &, h Handle) u32 {
-    if h.index == noEntry or usize.from(h.index) >= handles.len() {return noEntry;}
+    if h.index == noEntry || usize.from(h.index) >= handles.len() {return noEntry;}
     let e = handles[usize.from(h.index)];
-    if e.gen != h.gen or e.kind == hFree {return noEntry;}
+    if e.gen != h.gen || e.kind == hFree {return noEntry;}
     h.index
   }
 
@@ -593,7 +593,7 @@ pub struct Loop {
     r.abandon = false;
     if r.state == stDecided {return;}
     r.state = stDecided;
-    if not r.timer.isNone() {
+    if !r.timer.isNone() {
       wheel.cancel(r.timer);
       r.timer = TimerId.none();
     }
@@ -606,7 +606,7 @@ pub struct Loop {
   fn abandonRec(self &mut, i u32) {
     // Linux: nothing of a socket operation is the kernel's to give back, so
     // it is answered TimedOut with its buffer, never promptly without it
-    if not isWindows() and socketKind((self.recAt(i) as &Rec).kind) {
+    if !isWindows() && socketKind((self.recAt(i) as &Rec).kind) {
       lxCancel(self, i, diag.outcomeTimedOut);
       return;
     }
@@ -620,9 +620,9 @@ pub struct Loop {
     let r = self.recAt(i) as &mut Rec;
     // A record abandoned to the kernel keeps its buffer, and its bytes, for
     // the kernel; a job's buffer is in its box, which comes back by itself
-    let keep = r.abandon and not boxed(r.kind);
+    let keep = r.abandon && !boxed(r.kind);
     var b = IoBuf.empty();
-    if not keep {
+    if !keep {
       b <=> r.buf;
       r.bytes = None;
     }
@@ -632,7 +632,7 @@ pub struct Loop {
     // receive that took no datagram (a truncated one did)
     var peer = new SocketAddr(new Array[u8, 28] <- fill 0u8, 0i32);
     if r.peer.size > 0i32
-        and (r.kind != diag.kindRecvFrom or r.status == diag.outcomeDone or r.code == errorMsgSize) {
+        && (r.kind != diag.kindRecvFrom || r.status == diag.outcomeDone || r.code == errorMsgSize) {
       peer = r.peer;
     }
     var t Target = Target.Here(0u64);
@@ -889,7 +889,7 @@ pub struct Loop {
   fn claim(self &mut, to Target, file &Array[u8], line u32) Target {
     match &to {
       case let s &Status {
-        if not s.board.arm(s.slot) {
+        if !s.board.arm(s.slot) {
           panic("iocore: a status slot given an operation while it holds one, or out of range", file, line);
         }
       }
@@ -1055,7 +1055,7 @@ pub struct Loop {
     } elif r.state == stFlight {
       // (Linux: an operation the socket took at once is decided already, and
       // needs neither a deadline nor the kernel's holding)
-      if isWindows() and r.kind != diag.kindCall {kernelHeld = kernelHeld + 1u32;}
+      if isWindows() && r.kind != diag.kindCall {kernelHeld = kernelHeld + 1u32;}
       if dl < forever() {
         r.timer = wheel.insert(dl, self.tokenOf(i));
       }
@@ -1286,7 +1286,7 @@ pub struct Loop {
     if l as usize == 0usize {return errorInvalidParameter;}
     let b = newBox(r.work, r.at, new Waker(port), r.index, r.gen, l);
     (b as &mut JobBox).buf <=> r.buf;
-    if not enqueueBox(b) {
+    if !enqueueBox(b) {
       r.buf <=> (b as &mut JobBox).buf;
       dropBox(b);
       return errorBusy;
@@ -1304,9 +1304,9 @@ pub struct Loop {
   // true while its answer is still to come, false once it is decided or for
   // an id that names nothing
   pub fn cancel(self &mut, id OpId) bool {
-    if id.isNone() or id.index >= recCount {return false;}
+    if id.isNone() || id.index >= recCount {return false;}
     let r = self.recAt(id.index) as &mut Rec;
-    if r.gen != id.gen or r.state != stFlight {return false;}
+    if r.gen != id.gen || r.state != stFlight {return false;}
     if r.asked == askedNone {
       stats.cancelsAsked = stats.cancelsAsked + 1u64;
       self.askCancel(id.index, askedCancel);
@@ -1333,7 +1333,7 @@ pub struct Loop {
       return;
     }
     if boxed(r.kind) {
-      if r.job as usize != 0usize and removeBox(r.job) {
+      if r.job as usize != 0usize && removeBox(r.job) {
         r.buf <=> (r.job as &mut JobBox).buf;
         dropBox(r.job);
         r.job = null;
@@ -1355,7 +1355,7 @@ pub struct Loop {
     var i = 0u32;
     while i < recCount {
       let r = self.recAt(i) as &mut Rec;
-      if r.state == stFlight and r.asked == askedNone {
+      if r.state == stFlight && r.asked == askedNone {
         var hit = false;
         match r.group {
           case let s Some {hit = s.isCancelled();}
@@ -1396,7 +1396,7 @@ pub struct Loop {
       r.dequeued = at;
       let status = r.ov.internal & 0xFFFFFFFFusize;
       let n = usize.from(bytes);
-      if status == statusBufferOverflow and r.kind == diag.kindRecvFrom {
+      if status == statusBufferOverflow && r.kind == diag.kindRecvFrom {
         // The datagram was longer than the buffer's room: the room is filled,
         // the rest of it is lost, and the answer says so (WSAEMSGSIZE)
         r.buf.setLen(r.buf.len() + n);
@@ -1404,10 +1404,10 @@ pub struct Loop {
         return;
       }
       if status == statusSuccess {
-        if r.kind == diag.kindRecv or r.kind == diag.kindReadAt or r.kind == diag.kindRecvFrom {
+        if r.kind == diag.kindRecv || r.kind == diag.kindReadAt || r.kind == diag.kindRecvFrom {
           r.buf.setLen(r.buf.len() + n);
         }
-        if r.kind == diag.kindAccept or r.kind == diag.kindConnect {
+        if r.kind == diag.kindAccept || r.kind == diag.kindConnect {
           let code = self.adopt(p);
           if code != 0u32 {
             self.decide(r.index, diag.outcomeFailed, 0usize, code);
@@ -1429,7 +1429,7 @@ pub struct Loop {
         }
       } elif status == statusEndOfFile {
         self.decide(r.index, diag.outcomeDone, 0usize, 0u32);
-      } elif status == statusInvalidBufferSize and r.kind == diag.kindSendTo {
+      } elif status == statusInvalidBufferSize && r.kind == diag.kindSendTo {
         // A datagram larger than UDP carries: what Winsock's own call calls WSAEMSGSIZE
         self.decide(r.index, diag.outcomeFailed, 0usize, errorMsgSize);
       } else {
@@ -1449,7 +1449,7 @@ pub struct Loop {
       return;
     }
     let r = self.recAt(i) as &mut Rec;
-    if r.gen != j.gen or r.job != b or (r.state != stFlight and r.state != stDecided) {
+    if r.gen != j.gen || r.job != b || (r.state != stFlight && r.state != stDecided) {
       stats.lateReturns = stats.lateReturns + 1u64;
       dropBox(b);
       return;
@@ -1458,7 +1458,7 @@ pub struct Loop {
     r.dequeued = at;
     r.buf <=> j.buf;
     var status = j.status;
-    if status == diag.outcomeCancelled and r.asked == askedDeadline {
+    if status == diag.outcomeCancelled && r.asked == askedDeadline {
       status = diag.outcomeTimedOut;
     }
     self.decide(i, status, if status == diag.outcomeDone {j.n} else {0usize}, j.code);
@@ -1477,7 +1477,7 @@ pub struct Loop {
       if r.kind == diag.kindAccept {
         var listener = r.handle;
         rc = setsockopt(s, solSocket, soUpdateAcceptContext, &mut listener as *u8, 8i32);
-        if rc == 0i32 and CreateIoCompletionPort(s, portHandle, keyIo, 0u32) == 0usize {
+        if rc == 0i32 && CreateIoCompletionPort(s, portHandle, keyIo, 0u32) == 0usize {
           let code = GetLastError();
           closesocket(s);
           return code;
@@ -1513,12 +1513,12 @@ pub struct Loop {
       k = k + 1usize;
       if i >= recCount {continue;}
       let r = self.recAt(i) as &mut Rec;
-      if r.gen != gen or r.state != stFlight {continue;}
+      if r.gen != gen || r.state != stFlight {continue;}
       r.timer = TimerId.none();
       if r.kind == diag.kindTimer {
         r.dequeued = now;
         self.decide(i, if r.lapses {diag.outcomeTimedOut} else {diag.outcomeDone}, 0usize, 0u32);
-      } elif not r.hit {
+      } elif !r.hit {
         // The deadline
         r.hit = true;
         if r.asked == askedNone {self.askCancel(i, askedDeadline);}
@@ -1554,7 +1554,7 @@ pub struct Loop {
       // How long the kernel may keep us: not at all when answers are ready
       // or a timer is due
       var ms = 0u32;
-      if decided.len() == 0usize and cancels.len() == 0usize and now < until {
+      if decided.len() == 0usize && cancels.len() == 0usize && now < until {
         var wakeAt = until;
         match wheel.nextExpiry() {
           case let s Some {if s < wakeAt {wakeAt = s;}}
@@ -1570,7 +1570,7 @@ pub struct Loop {
       let after = Instant.now();
       self.fireTimers(after);
       n = n + self.flush(out);
-      if n > 0usize or woken or after >= until {return n;}
+      if n > 0usize || woken || after >= until {return n;}
       // Answers sent elsewhere -- another loop, a channel, a one-shot, a
       // status slot -- are progress too: the driver may be waiting for its
       // operations to be done
@@ -1588,12 +1588,12 @@ pub struct Loop {
     if wakeAt >= forever() {return infinite;}
     if isWindows() {
       let left = (wakeAt - now).nanos();
-      if packet != 0usize and (not associated or armedFor != wakeAt) {
+      if packet != 0usize && (!associated || armedFor != wakeAt) {
         // Relative, in 100 ns units: negative
         var due = 0i64 - (left + 99i64) / 100i64;
         SetWaitableTimer(timer, &due, 0i32, null, null, 0i32);
         armedFor = wakeAt;
-        if not associated {
+        if !associated {
           var already = 0u8;
           if NtAssociateWaitCompletionPacket(packet, portHandle, timer, keyTimer as *u8, null,
               0i32, 0usize, &mut already as *u8) == 0i32 {
@@ -1615,8 +1615,8 @@ pub struct Loop {
       var got = 0u32;
       let ok = GetQueuedCompletionStatusEx(portHandle, entries, batch, &mut got, ms, 0i32);
       if ms != 0u32 {stats.waits = stats.waits + 1u64;}
-      if ok == 0i32 or got == 0u32 {
-        if ms != 0u32 and ms != infinite {stats.waitTimeouts = stats.waitTimeouts + 1u64;}
+      if ok == 0i32 || got == 0u32 {
+        if ms != 0u32 && ms != infinite {stats.waitTimeouts = stats.waitTimeouts + 1u64;}
         return 0usize;
       }
       let at = Instant.now();
@@ -1708,19 +1708,19 @@ pub struct Loop {
     while i < recCount {
       let p = self.recAt(i);
       let r = p as &mut Rec;
-      if r.state == stFlight or r.state == stAbandoned {
+      if r.state == stFlight || r.state == stAbandoned {
         if r.kind == diag.kindTimer {
           self.decide(i, diag.outcomeCancelled, 0usize, 0u32);
         } elif boxed(r.kind) {
-          if r.kind == diag.kindExternal and r.job as usize != 0usize {(*r.job).asked.store(1u32);}
-          if r.job as usize != 0usize and removeBox(r.job) {
+          if r.kind == diag.kindExternal && r.job as usize != 0usize {(*r.job).asked.store(1u32);}
+          if r.job as usize != 0usize && removeBox(r.job) {
             r.buf <=> (r.job as &mut JobBox).buf;
             dropBox(r.job);
           }
           r.job = null;
           self.decide(i, diag.outcomeCancelled, 0usize, 0u32);
         } elif isWindows() {
-          if r.kind == diag.kindConnect and r.newSock != invalidHandle {
+          if r.kind == diag.kindConnect && r.newSock != invalidHandle {
             CancelIoEx(r.newSock, null);
           } else {
             CancelIoEx(r.handle, p as *u8);

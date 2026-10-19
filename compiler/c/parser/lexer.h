@@ -106,11 +106,10 @@ enum TokenTypes {
     AmperToken,        // '&'
     ArrayRefToken,     // '&[]'
     VirtRefToken,      // '&<'
-    AndToken,          // 'and'
     BarToken,          // '|'
-    OrToken,           // 'or'
+    OrOrToken,         // '||': logical or
     CaretToken,        // '^'
-    NotToken,          // '!'
+    NotToken,          // '!': logical not
     QuesToken,         // '?'
     TildeToken,        // '~'
     LessDashToken,     // '<-'
@@ -242,7 +241,7 @@ int lexNextIsWord(char *word);
 // Is the current token a '&' with another '&' directly against it ('&&')? The
 // lexer keeps '&&' as two '&' tokens, because it is two borrows in a type or a
 // prefix ('&&Pt', '&&x'); only a parser holding an operand reads it as the
-// operator Cone does not have, and refuses it. The lexer is left where it was.
+// logical and. The lexer is left where it was.
 int lexIsAmpAmp();
 // In a function-reference type's parameter list, does the name the lexer is on
 // begin a type ('geomath.Vec3', 'List[i32]') rather than name a parameter?

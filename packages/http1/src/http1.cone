@@ -356,11 +356,11 @@ pub struct Connection is Move {
       eof = true;
       return;
     }
-    if closed or failed {return;}
+    if closed || failed {return;}
     if input.len() + n > cfg.maxBuffered {panic("http1: handleInput past the read credit", file, line);}
     input.push(buf);
     bytesIn = bytesIn + u64.from(n);
-    if rs == ReadState.Idle and not clientRole and not headArmed {
+    if rs == ReadState.Idle && !clientRole && !headArmed {
       // A request's first byte: its head timeout starts (pollEvent skips
       // any empty lines before it, then reads the head)
       idleArmed = false;
@@ -377,12 +377,12 @@ pub struct Connection is Move {
   // The next bytes to send, moved out: an empty IoBuf when there are none
   pub fn pollTransmit(self &mut, at Instant) IoBuf {
     now = at;
-    if armHead and ws == WriteState.Done and not holding {
+    if armHead && ws == WriteState.Done && !holding {
       headAt = at + cfg.headTimeout;
       headArmed = true;
       armHead = false;
     }
-    if armExpect and holding {
+    if armExpect && holding {
       expectAt = at + cfg.expectTimeout;
       expectArmed = true;
       armExpect = false;
@@ -393,7 +393,7 @@ pub struct Connection is Move {
         case var s Some {b <=> s;}
         case is None[IoBuf] {}
       }
-    } elif tail.len() > 0usize and not holding {
+    } elif tail.len() > 0usize && !holding {
       b <=> tail;
     }
     bytesOut = bytesOut + u64.from(b.len());
@@ -402,14 +402,14 @@ pub struct Connection is Move {
 
   // The one Instant the driver must wake at and call handleTimeout, or None
   pub fn pollTimeout(self &) Option[Instant] {
-    if closed or failed {return None;}
+    if closed || failed {return None;}
     var any = false;
     var best = Instant.fromNanos(0x7FFFFFFFFFFFFFFFi64);
     if headArmed {
       any = true;
       if headAt < best {best = headAt;}
     }
-    if bodyArmed and self.inBody() and not self.blocked() {
+    if bodyArmed && self.inBody() && !self.blocked() {
       any = true;
       if bodyAt < best {best = bodyAt;}
     }
@@ -427,22 +427,22 @@ pub struct Connection is Move {
   // The driver woke at 'at': act on every deadline due
   pub fn handleTimeout(self &mut, at Instant) {
     now = at;
-    if closed or failed {return;}
-    if expectArmed and at >= expectAt {
+    if closed || failed {return;}
+    if expectArmed && at >= expectAt {
       expectArmed = false;
       self.releaseHeld();
     }
-    if headArmed and at >= headAt {
+    if headArmed && at >= headAt {
       headArmed = false;
       self.fail(ErrorKind.TimedOut, 408u16, "no whole head within headTimeout");
       return;
     }
-    if bodyArmed and self.inBody() and not self.blocked() and at >= bodyAt {
+    if bodyArmed && self.inBody() && !self.blocked() && at >= bodyAt {
       bodyArmed = false;
       self.fail(ErrorKind.TimedOut, 408u16, "the body stalled for bodyTimeout");
       return;
     }
-    if idleArmed and at >= idleAt {
+    if idleArmed && at >= idleAt {
       idleArmed = false;
       closed = true;
     }
@@ -452,7 +452,7 @@ pub struct Connection is Move {
   pub fn pollEvent(self &mut) Event {
     while true {
       if failed {
-        if not failureOut {return self.failedEvent();}
+        if !failureOut {return self.failedEvent();}
         return Event.Closed;
       }
       if closed {return Event.Closed;}
@@ -470,8 +470,8 @@ pub struct Connection is Move {
         }
         // A server between requests: RFC 9112 (2.2) lets a server skip
         // empty lines before a request line
-        while input.len() >= 2usize and input.matchesAt(0usize, "\r\n") {input.advance(2usize);}
-        if input.len() == 1usize and input.byteAt(0usize) == '\r' and not eof {return Event.NeedData;}
+        while input.len() >= 2usize && input.matchesAt(0usize, "\r\n") {input.advance(2usize);}
+        if input.len() == 1usize && input.byteAt(0usize) == '\r' && !eof {return Event.NeedData;}
         if input.len() > 0usize {
           self.startHead();
           continue;
@@ -496,7 +496,7 @@ pub struct Connection is Move {
       }
       if rs == ReadState.ChunkEnd {
         // A client takes an LF alone for the CRLF (RFC 9112, 2.2)
-        if clientRole and input.len() >= 1usize and input.byteAt(0usize) == '\n' {
+        if clientRole && input.len() >= 1usize && input.byteAt(0usize) == '\n' {
           input.advance(1usize);
           rs = ReadState.ChunkSize;
           continue;
@@ -505,7 +505,7 @@ pub struct Connection is Move {
           if eof {return self.closedMidBody();}
           return Event.NeedData;
         }
-        if not input.matchesAt(0usize, "\r\n") {
+        if !input.matchesAt(0usize, "\r\n") {
           self.fail(ErrorKind.Malformed, 400u16, "a chunk's data is not followed by CRLF");
           continue;
         }
@@ -520,7 +520,7 @@ pub struct Connection is Move {
       }
       if rs == ReadState.Trailers {return self.readTrailers();}
       if rs == ReadState.UntilClose {
-        if input.len() == 0usize and eof {return self.endMessage(Headers.empty());}
+        if input.len() == 0usize && eof {return self.endMessage(Headers.empty());}
         return self.deliver();
       }
       if rs == ReadState.Done {
@@ -535,7 +535,7 @@ pub struct Connection is Move {
 
   // How many more bytes handleInput will take now
   pub fn readCredit(self &) usize {
-    if closed or failed or eof {return 0usize;}
+    if closed || failed || eof {return 0usize;}
     if input.len() >= cfg.maxBuffered {0usize} else {cfg.maxBuffered - input.len()}
   }
 
@@ -543,7 +543,7 @@ pub struct Connection is Move {
   pub fn release(self &mut, n usize) {
     let wasBlocked = self.blocked();
     outstanding = if n >= outstanding {0usize} else {outstanding - n};
-    if wasBlocked and not self.blocked() and self.inBody() {
+    if wasBlocked && !self.blocked() && self.inBody() {
       bodyAt = now + cfg.bodyTimeout;
       bodyArmed = true;
     }
@@ -563,21 +563,21 @@ pub struct Connection is Move {
   // Whether a request may be sent now: a client, open, with no exchange in
   // progress
   pub fn canSendRequest(self &) bool {
-    clientRole and not closed and not failed and not eof and ws == WriteState.Idle and rs == ReadState.Idle
+    clientRole && !closed && !failed && !eof && ws == WriteState.Idle && rs == ReadState.Idle
   }
 
   // A client's request: its head now, its body (if any) by sendData and
   // finish. One at a time: anything but canSendRequest() is a program error
   pub fn sendRequest(self &mut, head RequestHead, body BodyLength, file &Array[u8] = srcFile(), line u32 = srcLine()) {
-    if not clientRole {panic("http1: sendRequest on a server's connection", file, line);}
-    if not self.canSendRequest() {panic("http1: sendRequest while an exchange is in progress or the connection is closed (no pipelining)", file, line);}
+    if !clientRole {panic("http1: sendRequest on a server's connection", file, line);}
+    if !self.canSendRequest() {panic("http1: sendRequest while an exchange is in progress or the connection is closed (no pipelining)", file, line);}
     let name = head.methodName();
-    if not isToken(name) {panic("http1: the request's method is not a token", file, line);}
+    if !isToken(name) {panic("http1: the request's method is not a token", file, line);}
     if head.method == Method.Connect {panic("http1: CONNECT is not supported", file, line);}
-    if not isTargetText(head.target.view()) {panic("http1: the request's target is empty or holds a space or a control character", file, line);}
-    if not isTargetText(head.authority.view()) {panic("http1: a request needs an authority, written as Host, without spaces", file, line);}
+    if !isTargetText(head.target.view()) {panic("http1: the request's target is empty or holds a space or a control character", file, line);}
+    if !isTargetText(head.authority.view()) {panic("http1: a request needs an authority, written as Host, without spaces", file, line);}
     if head.headers.has("Host") {panic("http1: Host is written from the head's authority, not its fields", file, line);}
-    if head.headers.has("Content-Length") or head.headers.has("Transfer-Encoding") {
+    if head.headers.has("Content-Length") || head.headers.has("Transfer-Encoding") {
       panic("http1: framing fields are the core's to write: say the body's length with a BodyLength", file, line);
     }
     idleArmed = false;
@@ -598,19 +598,19 @@ pub struct Connection is Move {
       self.put("Transfer-Encoding: chunked\r\n");
       ws = WriteState.Chunked;
     } else {
-      if head.method == Method.Post or head.method == Method.Put or head.method == Method.Patch {
+      if head.method == Method.Post || head.method == Method.Put || head.method == Method.Patch {
         self.put("Content-Length: 0\r\n");
       }
       ws = WriteState.Done;
     }
     self.put("\r\n");
-    keepAlive = not head.headers.hasToken("Connection", "close");
+    keepAlive = !head.headers.hasToken("Connection", "close");
     headInFlight = head.method == Method.Head;
     abandoned = false;
     rs = ReadState.Head;
     sawBytes = false;
     armHead = true;
-    if ws != WriteState.Done and head.headers.hasToken("Expect", "100-continue") {
+    if ws != WriteState.Done && head.headers.hasToken("Expect", "100-continue") {
       self.flushTail();
       holding = true;
       armExpect = true;
@@ -622,21 +622,21 @@ pub struct Connection is Move {
   // error; after the connection has failed, it does nothing
   pub fn sendResponse(self &mut, head ResponseHead, body BodyLength, file &Array[u8] = srcFile(), line u32 = srcLine()) {
     if clientRole {panic("http1: sendResponse on a client's connection", file, line);}
-    if closed or failed {return;}
-    if not requestSeen or ws != WriteState.Idle {panic("http1: sendResponse with no request awaiting one", file, line);}
+    if closed || failed {return;}
+    if !requestSeen || ws != WriteState.Idle {panic("http1: sendResponse with no request awaiting one", file, line);}
     let status = head.status;
-    if status < 200u16 or status > 599u16 {panic("http1: sendResponse takes a final status, 200 to 599: a 1xx goes by sendInterim", file, line);}
-    if head.headers.has("Content-Length") or head.headers.has("Transfer-Encoding") {
+    if status < 200u16 || status > 599u16 {panic("http1: sendResponse takes a final status, 200 to 599: a 1xx goes by sendInterim", file, line);}
+    if head.headers.has("Content-Length") || head.headers.has("Transfer-Encoding") {
       panic("http1: framing fields are the core's to write: say the body's length with a BodyLength", file, line);
     }
     requestSeen = false;
-    let noBody = answeringHead or status == 204u16 or status == 304u16;
+    let noBody = answeringHead || status == 204u16 || status == 304u16;
     if head.headers.hasToken("Connection", "close") {keepAlive = false;}
-    if not noBody and body.isUnsized() and peer10 {keepAlive = false;}
+    if !noBody && body.isUnsized() && peer10 {keepAlive = false;}
     self.putStatusLine(status);
     self.putFields(&head.headers);
     if noBody {
-      if body.isSized() and status != 204u16 {
+      if body.isSized() && status != 204u16 {
         self.put("Content-Length: ");
         self.putNum(body.length, 10u64);
         self.put("\r\n");
@@ -659,7 +659,7 @@ pub struct Connection is Move {
       self.put("Content-Length: 0\r\n");
       ws = WriteState.Done;
     }
-    if not keepAlive and not head.headers.hasToken("Connection", "close") {self.put("Connection: close\r\n");}
+    if !keepAlive && !head.headers.hasToken("Connection", "close") {self.put("Connection: close\r\n");}
     self.put("\r\n");
     if ws == WriteState.Done {self.endExchange();}
   }
@@ -667,9 +667,9 @@ pub struct Connection is Move {
   // A server's interim response, a 1xx other than 101, before its final one
   pub fn sendInterim(self &mut, head ResponseHead, file &Array[u8] = srcFile(), line u32 = srcLine()) {
     if clientRole {panic("http1: sendInterim on a client's connection", file, line);}
-    if closed or failed {return;}
-    if not requestSeen or ws != WriteState.Idle {panic("http1: sendInterim with no request awaiting a response", file, line);}
-    if head.status < 100u16 or head.status > 199u16 or head.status == 101u16 {panic("http1: sendInterim takes a 1xx other than 101", file, line);}
+    if closed || failed {return;}
+    if !requestSeen || ws != WriteState.Idle {panic("http1: sendInterim with no request awaiting a response", file, line);}
+    if head.status < 100u16 || head.status > 199u16 || head.status == 101u16 {panic("http1: sendInterim takes a 1xx other than 101", file, line);}
     self.putStatusLine(head.status);
     self.putFields(&head.headers);
     self.put("\r\n");
@@ -683,15 +683,15 @@ pub struct Connection is Move {
   // the queue is past its watermark. Sending with no body under way, or past
   // a Content-Length, is a program error
   pub fn sendData(self &mut, buf IoBuf, file &Array[u8] = srcFile(), line u32 = srcLine()) Option[IoBuf] {
-    if closed or failed or abandoned {return None;}
-    if ws != WriteState.Sized and ws != WriteState.Chunked and ws != WriteState.UntilClose {
+    if closed || failed || abandoned {return None;}
+    if ws != WriteState.Sized && ws != WriteState.Chunked && ws != WriteState.UntilClose {
       panic("http1: sendData with no body being sent", file, line);
     }
     let n = buf.len();
     if n == 0usize {return None;}
-    if ws == WriteState.Sized and u64.from(n) > wremaining {panic("http1: sendData past the body's Content-Length", file, line);}
+    if ws == WriteState.Sized && u64.from(n) > wremaining {panic("http1: sendData past the body's Content-Length", file, line);}
     let q = self.queued();
-    if q > 0usize and q + n > cfg.writeWatermark {return Some[IoBuf](buf);}
+    if q > 0usize && q + n > cfg.writeWatermark {return Some[IoBuf](buf);}
     if ws == WriteState.Chunked {
       self.putNum(u64.from(n), 16u64);
       self.put("\r\n");
@@ -712,10 +712,10 @@ pub struct Connection is Move {
   // The body is whole, and these trailer fields follow it (a chunked body
   // only: trailers on any other is a program error)
   pub fn finishWith(self &mut, trailers Headers, file &Array[u8] = srcFile(), line u32 = srcLine()) {
-    if closed or failed or abandoned or ws == WriteState.Done or ws == WriteState.Idle {return;}
-    if ws == WriteState.Sized and wremaining != 0u64 {panic("http1: finish short of the body's Content-Length", file, line);}
-    if ws != WriteState.Chunked and not trailers.isEmpty() {panic("http1: trailer fields go only after a chunked body", file, line);}
-    if trailers.has("Content-Length") or trailers.has("Transfer-Encoding") or trailers.has("Host") {
+    if closed || failed || abandoned || ws == WriteState.Done || ws == WriteState.Idle {return;}
+    if ws == WriteState.Sized && wremaining != 0u64 {panic("http1: finish short of the body's Content-Length", file, line);}
+    if ws != WriteState.Chunked && !trailers.isEmpty() {panic("http1: trailer fields go only after a chunked body", file, line);}
+    if trailers.has("Content-Length") || trailers.has("Transfer-Encoding") || trailers.has("Host") {
       panic("http1: a trailer may not be a framing field or Host", file, line);
     }
     if ws == WriteState.Chunked {
@@ -732,11 +732,11 @@ pub struct Connection is Move {
 
   // Whether the connection has ended, cleanly or not: nothing more will be
   // read
-  pub fn isClosed(self &) bool {closed or failed}
+  pub fn isClosed(self &) bool {closed || failed}
 
   // Whether the driver should close the socket now: the connection has
   // ended and everything it had to send has been taken
-  pub fn shouldClose(self &) bool {(closed or failed) and out.len() == 0usize and tail.len() == 0usize}
+  pub fn shouldClose(self &) bool {(closed || failed) && out.len() == 0usize && tail.len() == 0usize}
 
   // End the connection now, dropping whatever was not yet sent: HTTP/1.1's
   // only way to cancel an exchange
@@ -752,8 +752,8 @@ pub struct Connection is Move {
   // ------------------------------------------------------------- reading, inside
 
   fn inBody(self &) bool {
-    rs == ReadState.Sized or rs == ReadState.ChunkSize or rs == ReadState.ChunkData or
-      rs == ReadState.ChunkEnd or rs == ReadState.Trailers or rs == ReadState.UntilClose
+    rs == ReadState.Sized || rs == ReadState.ChunkSize || rs == ReadState.ChunkData ||
+      rs == ReadState.ChunkEnd || rs == ReadState.Trailers || rs == ReadState.UntilClose
   }
 
   // Waiting on the consumer to release credit
@@ -763,7 +763,7 @@ pub struct Connection is Move {
   fn startHead(self &mut) {
     rs = ReadState.Head;
     idleArmed = false;
-    if not headArmed {
+    if !headArmed {
       headAt = now + cfg.headTimeout;
       headArmed = true;
     }
@@ -784,9 +784,9 @@ pub struct Connection is Move {
   // The connection fails with e. A server that has not begun a response
   // answers with e's status first, when configured to
   fn failWith(self &mut, e HttpError) {
-    if failed or closed {return;}
+    if failed || closed {return;}
     failure = e;
-    failure.noResponse = clientRole and not sawBytes and rs == ReadState.Head;
+    failure.noResponse = clientRole && !sawBytes && rs == ReadState.Head;
     failed = true;
     headArmed = false;
     bodyArmed = false;
@@ -795,7 +795,7 @@ pub struct Connection is Move {
     holding = false;
     var h = Chain.make(noBound);
     h <=> held;
-    if not clientRole and cfg.autoErrorResponse and failure.status != 0u16 and ws == WriteState.Idle and
+    if !clientRole && cfg.autoErrorResponse && failure.status != 0u16 && ws == WriteState.Idle &&
         failure.kind != ErrorKind.Closed {
       self.putStatusLine(failure.status);
       self.put("Connection: close\r\nContent-Length: 0\r\n\r\n");
@@ -823,7 +823,7 @@ pub struct Connection is Move {
       headScan = 0usize;
     }
     let have = headBuf.len();
-    if input.len() > have and have < cfg.maxHeadBytes {
+    if input.len() > have && have < cfg.maxHeadBytes {
       let room = headBuf.spare();
       let n = input.copyOut(have, room);
       headBuf.setLen(have + n);
@@ -834,8 +834,8 @@ pub struct Connection is Move {
     while i < lim {
       let c = v[i];
       if c == '\n' {
-        let bare = i == 0usize or v[i - 1usize] != '\r';
-        if bare and not clientRole {
+        let bare = i == 0usize || v[i - 1usize] != '\r';
+        if bare && !clientRole {
           self.fail(ErrorKind.Malformed, 400u16, "a line ends in an LF without its CR");
           return 0usize;
         }
@@ -843,15 +843,15 @@ pub struct Connection is Move {
           // A response's line may end in an LF alone (RFC 9112, 2.2): its
           // head ends at a line with nothing before its CR or LF
           let lineAt = if bare {i} else {i - 1usize};
-          if lineAt == 0usize or v[lineAt - 1usize] == '\n' {
+          if lineAt == 0usize || v[lineAt - 1usize] == '\n' {
             headScan = 0usize;
             return i + 1usize;
           }
-        } elif i >= 3usize and v[i - 2usize] == '\n' and v[i - 3usize] == '\r' {
+        } elif i >= 3usize && v[i - 2usize] == '\n' && v[i - 3usize] == '\r' {
           headScan = 0usize;
           return i + 1usize;
         }
-      } elif i > 0usize and v[i - 1usize] == '\r' {
+      } elif i > 0usize && v[i - 1usize] == '\r' {
         self.fail(ErrorKind.Malformed, 400u16, "a CR is not followed by its LF");
         return 0usize;
       }
@@ -902,7 +902,7 @@ pub struct Connection is Move {
       if first > cfg.maxLineBytes {
         bad(&mut err, ErrorKind.TooLarge, 414u16, "the request line is longer than maxLineBytes");
       } else {
-        ok = parseRequestLine(&h[0usize ..< first], &mut head, &mut err) and
+        ok = parseRequestLine(&h[0usize ..< first], &mut head, &mut err) &&
           parseFields(h, lineNext(h, first), &cfg, true, true, &mut head.headers, &mut host, &mut hosts, &mut err);
       }
     }
@@ -910,19 +910,19 @@ pub struct Connection is Move {
     if ok {
       let http10 = head.version == Version.Http10;
       if hosts > 1usize {ok = bad(&mut err, ErrorKind.Malformed, 400u16, "the request has more than one Host");}
-      elif hosts == 0usize and not http10 {ok = bad(&mut err, ErrorKind.Malformed, 400u16, "an HTTP/1.1 request has no Host");}
+      elif hosts == 0usize && !http10 {ok = bad(&mut err, ErrorKind.Malformed, 400u16, "an HTTP/1.1 request has no Host");}
       elif head.method == Method.Connect {ok = bad(&mut err, ErrorKind.Unsupported, 501u16, "CONNECT is not supported");}
     }
     var mode = 0u32;
     var n = 0u64;
     if ok {ok = framingOf(&head.headers, true, head.version == Version.Http10, &mut mode, &mut n, &mut err);}
-    if not ok {
+    if !ok {
       self.failWith(err);
       return self.failedEvent();
     }
     head.authority <=> host;
     peer10 = head.version == Version.Http10;
-    keepAlive = not peer10 and not head.headers.hasToken("Connection", "close");
+    keepAlive = !peer10 && !head.headers.hasToken("Connection", "close");
     answeringHead = head.method == Method.Head;
     requestSeen = true;
     sawBytes = false;
@@ -944,28 +944,28 @@ pub struct Connection is Move {
       if first > cfg.maxLineBytes {
         bad(&mut err, ErrorKind.TooLarge, 0u16, "the status line is longer than maxLineBytes");
       } else {
-        ok = parseStatusLine(&h[0usize ..< first], &mut head, &mut err) and
+        ok = parseStatusLine(&h[0usize ..< first], &mut head, &mut err) &&
           parseFields(h, lineNext(h, first), &cfg, false, false, &mut head.headers, &mut host, &mut hosts, &mut err);
       }
     }
     self.consumeHead(len);
-    if ok and head.status == 101u16 {ok = bad(&mut err, ErrorKind.Unsupported, 0u16, "101 Switching Protocols: upgrades are not supported");}
+    if ok && head.status == 101u16 {ok = bad(&mut err, ErrorKind.Unsupported, 0u16, "101 Switching Protocols: upgrades are not supported");}
     var mode = 0u32;
     var n = 0u64;
     if ok {ok = framingOf(&head.headers, false, head.version == Version.Http10, &mut mode, &mut n, &mut err);}
-    if not ok {
+    if !ok {
       self.failWith(err);
       return self.failedEvent();
     }
     if isInformational(head.status) {
       // An interim response: the final one is still to come
-      if head.status == 100u16 and holding {
+      if head.status == 100u16 && holding {
         expectArmed = false;
         self.releaseHeld();
       }
       // The head timeout starts again for the final head, once the whole
       // request has been handed over
-      if ws == WriteState.Done and not holding {
+      if ws == WriteState.Done && !holding {
         headAt = now + cfg.headTimeout;
         headArmed = true;
       } else {
@@ -985,11 +985,11 @@ pub struct Connection is Move {
       keepAlive = false;
       ws = WriteState.Done;
     }
-    if headInFlight or not responseHasBody(Method.Get, head.status) {
+    if headInFlight || !responseHasBody(Method.Get, head.status) {
       mode = frameEmpty;
       n = 0u64;
     }
-    if head.version == Version.Http10 or head.headers.hasToken("Connection", "close") or mode == frameClose {
+    if head.version == Version.Http10 || head.headers.hasToken("Connection", "close") || mode == frameClose {
       keepAlive = false;
     }
     let body = self.startBody(mode, n);
@@ -1029,7 +1029,7 @@ pub struct Connection is Move {
     }
     if self.blocked() {return Event.Paused;}
     var n = avail;
-    if rs != ReadState.UntilClose and remaining < n {n = remaining;}
+    if rs != ReadState.UntilClose && remaining < n {n = remaining;}
     var buf = IoBuf.empty();
     if u64.from(input.firstLen()) <= n {
       match input.popFront() {
@@ -1069,7 +1069,7 @@ pub struct Connection is Move {
           at = p;
           found = true;
           skip = 1usize;
-          if at > 0usize and input.byteAt(at - 1usize) == '\r' {
+          if at > 0usize && input.byteAt(at - 1usize) == '\r' {
             at = at - 1usize;
             skip = 2usize;
           }
@@ -1099,14 +1099,14 @@ pub struct Connection is Move {
     }
     match input.findByte('\r') {
       case let p Some {
-        if p < upTo and p + 1usize < input.len() {
+        if p < upTo && p + 1usize < input.len() {
           self.fail(ErrorKind.Malformed, 400u16, "a CR in a chunk's size line is not followed by its LF");
           return false;
         }
       }
       case is None[usize] {}
     }
-    if not found {
+    if !found {
       if input.len() > cfg.maxChunkLineBytes {
         self.fail(ErrorKind.TooLarge, 400u16, "a chunk's size line is longer than maxChunkLineBytes");
         return false;
@@ -1142,7 +1142,7 @@ pub struct Connection is Move {
       tmp.setLen(k);
       ok = parseChunkLine(tmp.view(), &cfg, &mut size, &mut err);
     }
-    if not ok {
+    if !ok {
       self.failWith(err);
       return false;
     }
@@ -1158,7 +1158,7 @@ pub struct Connection is Move {
 
   // The trailer section after the last chunk: End once it is whole
   fn readTrailers(self &mut) Event {
-    if clientRole and input.len() >= 1usize and input.byteAt(0usize) == '\n' {
+    if clientRole && input.len() >= 1usize && input.byteAt(0usize) == '\n' {
       input.advance(1usize);
       return self.endMessage(Headers.empty());
     }
@@ -1183,10 +1183,10 @@ pub struct Connection is Move {
     var ok = false;
     {
       let h = headBuf.view();
-      ok = parseFields(h, 0usize, &cfg, not clientRole, false, &mut trailers, &mut host, &mut hosts, &mut err);
+      ok = parseFields(h, 0usize, &cfg, !clientRole, false, &mut trailers, &mut host, &mut hosts, &mut err);
     }
     self.consumeHead(len);
-    if not ok {
+    if !ok {
       self.failWith(err);
       return self.failedEvent();
     }
@@ -1197,7 +1197,7 @@ pub struct Connection is Move {
   fn endMessage(self &mut, trailers Headers) Event {
     rs = ReadState.Done;
     bodyArmed = false;
-    if clientRole and ws != WriteState.Done {
+    if clientRole && ws != WriteState.Done {
       // The response ended while the request's body was still being sent
       abandoned = true;
       keepAlive = false;
@@ -1213,16 +1213,16 @@ pub struct Connection is Move {
   // When both messages are whole the exchange is over: the connection is
   // kept for the next, or it closes
   fn endExchange(self &mut) {
-    if not clientRole and ws == WriteState.Done and rs != ReadState.Done {
+    if !clientRole && ws == WriteState.Done && rs != ReadState.Done {
       // Answered before the request's body was read: the rest of it cannot
       // be told from the next request, so the connection closes
       exchanges = exchanges + 1u64;
       closed = true;
       return;
     }
-    if rs != ReadState.Done or ws != WriteState.Done {return;}
+    if rs != ReadState.Done || ws != WriteState.Done {return;}
     exchanges = exchanges + 1u64;
-    if keepAlive and not eof {
+    if keepAlive && !eof {
       rs = ReadState.Idle;
       ws = WriteState.Idle;
       remaining = 0u64;
@@ -1305,7 +1305,7 @@ pub struct Connection is Move {
   // whole after it
   fn putBuf(self &mut, buf IoBuf) {
     let n = buf.len();
-    if n <= smallCopy and n <= tail.room() {
+    if n <= smallCopy && n <= tail.room() {
       tail.append(buf.view());
       return;
     }
@@ -1341,7 +1341,7 @@ pub struct Connection is Move {
   // 100 Continue came, or the wait for it ended: the held body goes out
   // after the head, before what has gathered since
   fn releaseHeld(self &mut) {
-    if not holding {return;}
+    if !holding {return;}
     holding = false;
     while held.len() > 0usize {
       var b = IoBuf.empty();
@@ -1360,7 +1360,7 @@ fn isTargetText(s &Array[u8]) bool {
   if s.len == 0usize {return false;}
   var i = 0usize;
   while i < s.len {
-    if s[i] <= 0x20u8 or s[i] >= 0x7Fu8 {return false;}
+    if s[i] <= 0x20u8 || s[i] >= 0x7Fu8 {return false;}
     i = i + 1usize;
   }
   true

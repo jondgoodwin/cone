@@ -132,7 +132,7 @@ fn driveMany(d Driving) u32 {
     var c = d.cl.session("localhost");
     var s = d.srv.session();
     pump(&mut c, &mut s, &mut cin, &mut sin);
-    if c.isOpen() and c.info().resumed {resumed = resumed + 1u32;}
+    if c.isOpen() && c.info().resumed {resumed = resumed + 1u32;}
     k = k + 1u32;
   }
   resumed
@@ -158,8 +158,8 @@ fn refused(label &str, c &mut tls.Session, s &mut tls.Session, want tls.TlsError
     printStr(c.error().message().view());
     printStr("\n");
   }
-  expect(c.isFailed() and c.error().kind == want, label);
-  expect(not c.isOpen() and not s.isOpen(), "neither side is open");
+  expect(c.isFailed() && c.error().kind == want, label);
+  expect(!c.isOpen() && !s.isOpen(), "neither side is open");
 }
 
 fn main() i32 {
@@ -176,7 +176,7 @@ fn main() i32 {
   var cin = String.empty();
   var sin = String.empty();
   pump(&mut c, &mut s, &mut cin, &mut sin);
-  require(c.isOpen() and s.isOpen(), "the handshake is done on both sides");
+  require(c.isOpen() && s.isOpen(), "the handshake is done on both sides");
   expect(c.pollEvent() == tls.SessionEvent.HandshakeDone, "the client hears HandshakeDone");
   expect(c.pollEvent() == tls.SessionEvent.Nothing, "once");
   expect(s.pollEvent() == tls.SessionEvent.HandshakeDone, "the server hears HandshakeDone");
@@ -193,7 +193,7 @@ fn main() i32 {
   expect(ci.version == tls.TlsVersion.Tls13, "TLS 1.3 by default");
   expectStr(ci.alpn.view(), "http/1.1", "ALPN chose http/1.1");
   expectStr(s.info().alpn.view(), "http/1.1", "the server says so too");
-  expect(not ci.resumed, "a first session is not resumed");
+  expect(!ci.resumed, "a first session is not resumed");
   expectUInt(u64.from(c.write("GET / HTTP/1.1\r\n\r\n")), 18u64, "the client writes");
   pump(&mut c, &mut s, &mut cin, &mut sin);
   expectStr(sin.view(), "GET / HTTP/1.1\r\n\r\n", "the server reads it");
@@ -214,11 +214,11 @@ fn main() i32 {
   c.close();
   pump(&mut c, &mut s, &mut cin, &mut sin);
   expect(s.peerEnded(), "the server sees the client's close_notify");
-  expect(s.info().closeNotify and not s.info().truncated, "...as close_notify, not a cut");
+  expect(s.info().closeNotify && !s.info().truncated, "...as close_notify, not a cut");
   expect(s.pollEvent() == tls.SessionEvent.PeerClosed, "the server hears PeerClosed");
   s.close();
   pump(&mut c, &mut s, &mut cin, &mut sin);
-  expect(c.peerEnded() and c.info().closeNotify, "the client sees the server's");
+  expect(c.peerEnded() && c.info().closeNotify, "the client sees the server's");
   let after = tls.stats();
   expectUInt(after.closeNotifySent - before.closeNotifySent, 2u64, "two close_notify sent");
   expectUInt(after.closeNotifyReceived - before.closeNotifyReceived, 2u64, "two received");
@@ -244,7 +244,7 @@ fn main() i32 {
   var c1 = cc.session("localhost");
   var s1 = srv.session();
   pump(&mut c1, &mut s1, &mut cin, &mut sin);
-  require(c1.isOpen() and not c1.info().resumed, "at once: the first, a full handshake");
+  require(c1.isOpen() && !c1.info().resumed, "at once: the first, a full handshake");
   expectUInt(u64.from(cc.cachedSessions()), 2u64, "at once: the first, still open, has given two tickets");
   var c2 = cc.session("localhost");
   var c3 = cc.session("localhost");
@@ -256,11 +256,11 @@ fn main() i32 {
   pump(&mut c2, &mut s2, &mut cin, &mut sin);
   pump(&mut c3, &mut s3, &mut cin, &mut sin);
   pump(&mut c4, &mut s4, &mut cin, &mut sin);
-  require(c2.isOpen() and c3.isOpen() and c4.isOpen(), "at once: three more handshakes");
+  require(c2.isOpen() && c3.isOpen() && c4.isOpen(), "at once: three more handshakes");
   expect(c1.isOpen(), "at once: the first is still open");
-  expect(c2.info().resumed and s2.info().resumed, "at once: the second resumes, the first still open");
-  expect(c3.info().resumed and s3.info().resumed, "at once: the third, opened with it, resumes too");
-  expect(not c4.info().resumed and not s4.info().resumed, "at once: the fourth finds no ticket left (each is used once)");
+  expect(c2.info().resumed && s2.info().resumed, "at once: the second resumes, the first still open");
+  expect(c3.info().resumed && s3.info().resumed, "at once: the third, opened with it, resumes too");
+  expect(!c4.info().resumed && !s4.info().resumed, "at once: the fourth finds no ticket left (each is used once)");
   expectUInt(u64.from(cc.cachedSessions()), 4u64, "at once: one new ticket from each resumed, two from the full");
   // Five opened at once with nothing cached, five full handshakes: ten
   // tickets for one server, of which the newest eight are kept
@@ -280,7 +280,7 @@ fn main() i32 {
   pump(&mut f3, &mut g3, &mut cin, &mut sin);
   pump(&mut f4, &mut g4, &mut cin, &mut sin);
   pump(&mut f5, &mut g5, &mut cin, &mut sin);
-  expect(f5.isOpen() and not f5.info().resumed, "five full handshakes at once");
+  expect(f5.isOpen() && !f5.info().resumed, "five full handshakes at once");
   expectUInt(u64.from(cx.cachedSessions()), 8u64, "ten tickets for one server: eight kept");
   expectUInt(u64.from(cx.cachedSessions()) + u64.from(cc.cachedSessions()), 12u64, "...in its own context");
 
@@ -292,7 +292,7 @@ fn main() i32 {
   var x = String.empty();
   pump(&mut c, &mut s, &mut x, &mut sin);
   expectStr(cin.view(), "last words", "what came before the end is read");
-  expect(c.peerEnded() and c.info().truncated and not c.info().closeNotify, "the end with no close_notify is truncated");
+  expect(c.peerEnded() && c.info().truncated && !c.info().closeNotify, "the end with no close_notify is truncated");
 
   // TLS 1.2, and its resumption
   var c12cfg = tls.ClientConfig.make();
@@ -314,14 +314,14 @@ fn main() i32 {
   var e2 = srv.session();
   pump(&mut d1, &mut e1, &mut cin, &mut sin);
   pump(&mut d2, &mut e2, &mut cin, &mut sin);
-  expect(d1.isOpen() and d1.info().resumed and e1.info().resumed, "TLS 1.2: a second connection resumes, the first open");
-  expect(d2.isOpen() and d2.info().resumed and e2.info().resumed, "TLS 1.2: and a third, at once: the session is used again");
+  expect(d1.isOpen() && d1.info().resumed && e1.info().resumed, "TLS 1.2: a second connection resumes, the first open");
+  expect(d2.isOpen() && d2.info().resumed && e2.info().resumed, "TLS 1.2: and a third, at once: the session is used again");
   expectUInt(u64.from(cl12.cachedSessions()), 1u64, "TLS 1.2: one session kept for the server");
   c = cl12.session("never.example");
   c = cl12.session("localhost");
   s = srv.session();
   pump(&mut c, &mut s, &mut cin, &mut sin);
-  expect(c.isOpen() and c.info().resumed, "a TLS 1.2 session is resumed");
+  expect(c.isOpen() && c.info().resumed, "a TLS 1.2 session is resumed");
 
   // Threads: four drive TLS 1.3 sessions from one client context at once,
   // two TLS 1.2. The context holds four tickets, and each resumed session
@@ -400,7 +400,7 @@ fn main() i32 {
   c.feed(&buf[0usize ..< n]);
   expect(c.wantsVerify(), "the handshake waits for the OS's verifier");
   expect(c.pollEvent() == tls.SessionEvent.VerifyNeeded, "and says so");
-  expect(c.isHandshaking() and not c.isOpen(), "still handshaking");
+  expect(c.isHandshaking() && !c.isOpen(), "still handshaking");
   refused("the OS's verifier, offline", &mut c, &mut s, tls.TlsErrorKind.CertUntrusted);
   expectUInt(u64.from(c.error().osError), 0x800B0109u64, "CERT_E_UNTRUSTEDROOT");
   expect(c.pollEvent() == tls.SessionEvent.Failed, "the client hears Failed");
@@ -428,7 +428,7 @@ fn main() i32 {
   c = clh2.session("localhost");
   s = srv.session();
   refused("ALPN", &mut c, &mut s, tls.TlsErrorKind.NoAlpnMatch);
-  expect(s.isFailed() and s.error().kind == tls.TlsErrorKind.NoAlpnMatch, "the server refused it");
+  expect(s.isFailed() && s.error().kind == tls.TlsErrorKind.NoAlpnMatch, "the server refused it");
 
   // Nothing checked: development only
   let anyone = client(tls.Verifier.insecureDevelopmentOnly());
@@ -443,11 +443,11 @@ fn main() i32 {
   printStr("garbage: ");
   printStr(kindName(&c));
   printStr("\n");
-  expect(c.isFailed() and c.error().kind == tls.TlsErrorKind.Protocol, "garbage is a protocol error");
+  expect(c.isFailed() && c.error().kind == tls.TlsErrorKind.Protocol, "garbage is a protocol error");
   // The end of the stream during a handshake
   c = cl.session("localhost");
   c.feedEnd();
-  expect(c.isFailed() and c.error().kind == tls.TlsErrorKind.Protocol, "the end during the handshake");
+  expect(c.isFailed() && c.error().kind == tls.TlsErrorKind.Protocol, "the end during the handshake");
 
   // Contexts that cannot be made
   let missingPem = certs("missing.pem");

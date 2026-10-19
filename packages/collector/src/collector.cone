@@ -319,10 +319,10 @@ pub struct Gc is RegionRef, Traced {
     if (bytes - objBytes(ty)) / 8usize > 4294967295usize {
       return null;
     }
-    if !stepping and autoOn {
+    if !stepping && autoOn {
       // The limit caps the heap, so a heap held under one is collected (and
       // finalized) in the ordinary way, not only in emergencies
-      if stressFull or (maxBytes != 0usize and totalBytes + bytes > maxBytes) {
+      if stressFull || (maxBytes != 0usize && totalBytes + bytes > maxBytes) {
         fullCollect(false);
       }
       else if workWanted(bytes) {
@@ -330,7 +330,7 @@ pub struct Gc is RegionRef, Traced {
       }
     }
     var p = tryMalloc(bytes);
-    if p as usize == 0usize and !stepping {
+    if p as usize == 0usize && !stepping {
       fullCollect(true);
       p = tryMalloc(bytes);
     }
@@ -392,14 +392,14 @@ pub struct Gc is RegionRef, Traced {
   // is the decision a safe point would make instead (see SAFE POINTS).
   fn workWanted(bytes usize) bool {
     if gcPhase == pausePhase {
-      if !stressOn and totalBytes + bytes <= trigger {
+      if !stressOn && totalBytes + bytes <= trigger {
         return false;
       }
       debt = if stressOn {bytes} else {stepSize};
       return true;
     }
     debt = debt + bytes;
-    stressOn or debt >= stepSize
+    stressOn || debt >= stepSize
   }
 
   // The step the bytes allocated have paid for
@@ -411,7 +411,7 @@ pub struct Gc is RegionRef, Traced {
 
   // Memory for an object of 'bytes' bytes, unless it would pass the limit
   fn tryMalloc(bytes usize) *u8 {
-    if maxBytes != 0usize and totalBytes + bytes > maxBytes {
+    if maxBytes != 0usize && totalBytes + bytes > maxBytes {
       return null;
     }
     libc.malloc(bytes)
@@ -530,7 +530,7 @@ pub struct Gc is RegionRef, Traced {
     }
     var prev = 0usize;
     var at = finobj;
-    while at != 0usize and header(at).marked & oldBit == 0u32 {
+    while at != 0usize && header(at).marked & oldBit == 0u32 {
       let h = header(at);
       let nxt = h.next;
       if h.marked & whites != 0u32 {
@@ -590,9 +590,9 @@ pub struct Gc is RegionRef, Traced {
       backoff = backoff - 1usize;
       full = true;
     }
-    sweepGen = genOn and !full;
+    sweepGen = genOn && !full;
     barrierOn = sweepGen;
-    if minorMark and sweepGen { nminor = nminor + 1usize; }
+    if minorMark && sweepGen { nminor = nminor + 1usize; }
     if !minorMark { sinceFull = 0usize; }
     curWhite = whites ^ curWhite;
     ncollections = ncollections + 1usize;
@@ -614,7 +614,7 @@ pub struct Gc is RegionRef, Traced {
   // old one does: new objects are pushed at a list's head, so everything
   // after it is older, and old (Acorn's mem_sweeplist, 'tostop')
   fn endsSweep(at usize) bool {
-    at == 0usize or (sweepGen and header(at).marked & oldBit != 0u32)
+    at == 0usize || (sweepGen && header(at).marked & oldBit != 0u32)
   }
 
   // Sweep the next object: freed if it carries the dead white. A survivor is
@@ -624,7 +624,7 @@ pub struct Gc is RegionRef, Traced {
   // finalizing begins, if anything was separated.
   fn sweepOne() usize {
     var at = if sweepAt == 0usize {listHead(sweepList)} else {header(sweepAt).next};
-    while sweepList < 2u32 and endsSweep(at) {
+    while sweepList < 2u32 && endsSweep(at) {
       sweepList = sweepList + 1u32;
       sweepAt = 0usize;
       at = listHead(sweepList);
@@ -646,7 +646,7 @@ pub struct Gc is RegionRef, Traced {
       // A sweep that made the old generation white again did so for a full
       // marking: it starts with the next allocation, before what the old
       // generation holds of garbage grows further
-      if minorMark and !sweepGen { trigger = 0usize; }
+      if minorMark && !sweepGen { trigger = 0usize; }
       oldGen = sweepGen;
       gcPhase = if tobefnz != 0usize {finalizePhase} else {pausePhase};
       return 1usize;
@@ -667,7 +667,7 @@ pub struct Gc is RegionRef, Traced {
       libc.free(at as *u8);
     }
     else {
-      if !sweepGen or h.marked & keptBit != 0u32 {
+      if !sweepGen || h.marked & keptBit != 0u32 {
         // A full sweep's survivor, or one only finalizable garbage reaches
         // (and the separated objects themselves): the new white, young. No
         // live object can reach it, so no black one holds it
@@ -732,9 +732,9 @@ pub struct Gc is RegionRef, Traced {
     var going = true;
     while going {
       let piece = stepOne();
-      account(piece, minorMark and (gcPhase == markPhase or sweepGen));
+      account(piece, minorMark && (gcPhase == markPhase || sweepGen));
       work = work + piece;
-      going = work < budget and gcPhase != pausePhase;
+      going = work < budget && gcPhase != pausePhase;
     }
     stepping = false;
     work
@@ -798,7 +798,7 @@ pub struct Gc is RegionRef, Traced {
       work = unmarkAll();
       gcPhase = pausePhase;
     }
-    account(finishCollection(emergency), minorMark and sweepGen);
+    account(finishCollection(emergency), minorMark && sweepGen);
     if oldGen {
       work = work + unmarkAll();
     }

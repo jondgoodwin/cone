@@ -498,7 +498,7 @@ trait Peek[T] {
 
 fn drain[T, S Stack[T]](s &amp;mut S) Option[T] {s.pop()}
 fn fillTwo[S Stack[i64]](s &amp;mut S, a i64, b i64) {s.push(a); s.push(b);}
-fn peeked[T, S](s &amp;mut S) Option[T] where S is Stack[T] and S is Peek[T] {s.peek()}
+fn peeked[T, S](s &amp;mut S) Option[T] where S is Stack[T] &amp;&amp; S is Peek[T] {s.peek()}
 fn both[T, S Stack[T] + Peek[T]](s &amp;mut S) {}
 </pre>
 	<p>A type fits <span class="pre">Stack[i64]</span> as it fits any trait, by having the methods the trait
@@ -541,7 +541,7 @@ push(self &amp;mut, v bool), but Stack[i64] requires push(self &amp;mut, v i64).
 		supertypes of the signature's and a result that is a subtype, where the difference is a recast with no
 		conversion. It is written
 		in the square brackets or in a <span class="pre">where</span> clause, and joins other constraints with
-		<span class="pre">+</span> or <span class="pre">and</span>. The generic's body calls the parameter directly,
+		<span class="pre">+</span> or <span class="pre">&amp;&amp;</span>. The generic's body calls the parameter directly,
 		<span class="pre">order(x, y)</span>, in each instance, and the permission it takes the parameter by decides what
 		that call may do: <span class="pre">&amp;F</span> reaches a <span class="pre">()</span> that takes
 		<span class="pre">self &amp;</span>, <span class="pre">&amp;mut F</span> one that takes <span class="pre">self
@@ -625,7 +625,7 @@ taper(2, &amp;new Doubler());      // a struct whose '()' is (u f32) f32: taperO
 	<h3 id="where">where clauses</h3>
 	<p>The same constraints may instead be written as a <span class="pre">where</span> clause just before the block,
 		after a function's signature or after a type's name and its <span class="pre">is</span> list. Each clause is
-		<span class="pre">T is Name</span>, clauses are joined with <span class="pre">and</span>, and a clause may join
+		<span class="pre">T is Name</span>, clauses are joined with <span class="pre">&amp;&amp;</span>, and a clause may join
 		traits with <span class="pre">+</span> as the square brackets do. These declarations say exactly what their
 		bracketed forms say:</p>
 <pre>
@@ -633,7 +633,7 @@ fn twice[T](x T) T where T is Integer {
   x + x
 }
 
-fn fill[T](dst &amp;mut Array[T], v T) where T is Integer and T is Copy {
+fn fill[T](dst &amp;mut Array[T], v T) where T is Integer &amp;&amp; T is Copy {
   each i in 0usize ..&lt; dst.len() { dst[i] = v; }
 }
 
@@ -642,36 +642,36 @@ struct Num[T] where T is Integer {
 }
 </pre>
 	<p>A <span class="pre">where</span> clause may also offer a choice, which the square brackets cannot: clauses
-		joined with <span class="pre">or</span> are met when any of them is. <span class="pre">and</span> binds tighter
-		than <span class="pre">or</span>, as in an expression, and parentheses group. A clause may name a type instead of
+		joined with <span class="pre">||</span> are met when any of them is. <span class="pre">&amp;&amp;</span> binds tighter
+		than <span class="pre">||</span>, as in an expression, and parentheses group. A clause may name a type instead of
 		a trait, <span class="pre">T is bool</span>, met by that type alone, and the type may be written out as an
 		instance: <span class="pre">K is Uni[str]</span>, or <span class="pre">U is Option[T]</span> (met when
 		<span class="pre">U</span> is the <span class="pre">Option</span> of whatever <span class="pre">T</span> is). Core
-		declares its atomic values so: <span class="pre">pub struct Atomic[T] is AtomicValue, Move where T is Integer or
-		T is bool or T is Pointer</span>. With three traits of your own, <span class="pre">A</span>,
+		declares its atomic values so: <span class="pre">pub struct Atomic[T] is AtomicValue, Move where T is Integer ||
+		T is bool || T is Pointer</span>. With three traits of your own, <span class="pre">A</span>,
 		<span class="pre">B</span> and <span class="pre">C</span>:</p>
 <pre>
-fn loose[T](x &amp;T) where T is A and T is B or T is C {}     // (A and B) or C
-fn tight[T](x &amp;T) where T is A and (T is B or T is C) {}   // A and (B or C)
+fn loose[T](x &amp;T) where T is A &amp;&amp; T is B || T is C {}     // (A &amp;&amp; B) || C
+fn tight[T](x &amp;T) where T is A &amp;&amp; (T is B || T is C) {}   // A &amp;&amp; (B || C)
 </pre>
 	<p>The whole clause is evaluated once the type arguments are known, and a use whose arguments make it false is
 		refused, naming it whole: "Atomic requires T is Integer or T is bool or T is Pointer, and it is false for T =
-		f64." <span class="pre">not</span> is not built, and neither is <span class="pre">or</span> in the square
-		brackets, where every trait named is required: <span class="pre">[T A or B]</span> is refused, and is written
-		<span class="pre">[T] ... where T is A or T is B</span>.</p>
+		f64." <span class="pre">!</span> is not built, and neither is <span class="pre">||</span> in the square
+		brackets, where every trait named is required: <span class="pre">[T A || B]</span> is refused, and is written
+		<span class="pre">[T] ... where T is A || T is B</span>.</p>
 	<p>A <span class="pre">where</span> clause also orders lifetimes (<a href="mem-lifetimes.html#where">Lifetime
 		annotations</a>): <span class="pre">'a &gt;= 'b</span> says <span class="pre">'a</span> lasts at least as long as
 		<span class="pre">'b</span>, and <span class="pre">'a == 'b</span> each as long as the other. Such a clause may be
 		written on any function, generic or not, over the lifetimes its signature names, and on a struct over the
-		lifetimes it declares, and joins lifetime and type clauses by <span class="pre">and</span>:</p>
+		lifetimes it declares, and joins lifetime and type clauses by <span class="pre">&amp;&amp;</span>:</p>
 <pre>
-fn pick[T](x &amp;'a T, y &amp;'b T) &amp;'b T where 'a &gt;= 'b and T is Copy {
+fn pick[T](x &amp;'a T, y &amp;'b T) &amp;'b T where 'a &gt;= 'b &amp;&amp; T is Copy {
   x
 }
 </pre>
-	<p>A lifetime comparison is never an alternative of an <span class="pre">or</span>, nor under a
-		<span class="pre">not</span>: a lifetime is never instanced, so no instance settles which alternative holds, and
-		the body could rely on none of them. Clauses over types keep their <span class="pre">or</span>.</p>
+	<p>A lifetime comparison is never an alternative of a <span class="pre">||</span>, nor under a
+		<span class="pre">!</span>: a lifetime is never instanced, so no instance settles which alternative holds, and
+		the body could rely on none of them. Clauses over types keep their <span class="pre">||</span>.</p>
 	<p id="bounds">A generic function's type parameter may carry a <i>lifetime bound</i>, <span class="pre">T +
 		'a</span>: any borrow inside a value of type <span class="pre">T</span> lives at least as long as
 		<span class="pre">'a</span>, a lifetime the signature names (<a href="mem-lifetimes.html#bounds">Lifetime
@@ -687,8 +687,8 @@ fn post[T](d &amp;mut &amp;'a R, x T) where T is Show + 'a {}
 </pre>
 	<p>A bound alone is <span class="pre">T + 'a</span>, not <span class="pre">T is 'a</span>, since
 		<span class="pre">T</span> is no lifetime. A bound joins the rest of a <span class="pre">where</span> clause by
-		<span class="pre">and</span> only, as a lifetime comparison does, and an <span class="pre">or</span> or a
-		<span class="pre">not</span> over one is refused. A generic type's parameter takes no bound yet.</p>
+		<span class="pre">&amp;&amp;</span> only, as a lifetime comparison does, and a <span class="pre">||</span> or a
+		<span class="pre">!</span> over one is refused. A generic type's parameter takes no bound yet.</p>
 
 	<h3 id="methodwhere">A method that exists only for some instances</h3>
 	<p>On a method of a generic type, a <span class="pre">where</span> clause over the type's parameters is not a
@@ -719,12 +719,12 @@ Error 1187: No method add for Cell[bool]: it exists only where T is Integer, and
 		<span class="pre">Cell[bool]</span> does not, whether the trait is asked for by a constraint or by a
 		<a href="mod-substitution.html#virtref">virtual reference</a>. A generic method's own <span class="pre">where</span>
 		clause over its own type parameters is a requirement, as a generic function's is. One joining the type's
-		parameter and its own with <span class="pre">or</span>, <span class="pre">where T is Integer or U is bool</span>,
+		parameter and its own with <span class="pre">||</span>, <span class="pre">where T is Integer || U is bool</span>,
 		cannot be decided until both are known, so the method exists in every instance of the type, and the whole clause
 		is a requirement where the method's instance is made.</p>
-	<p>A condition joined by <span class="pre">or</span> works the same way. Core's <span class="pre">Atomic[T]</span>
+	<p>A condition joined by <span class="pre">||</span> works the same way. Core's <span class="pre">Atomic[T]</span>
 		(<a href="conc-primitives.html#atomic">Atomic values</a>) has an <span class="pre">add</span> <span class="pre">where
-		T is Integer</span> and a <span class="pre">bitOr</span> <span class="pre">where T is Integer or T is bool</span>,
+		T is Integer</span> and a <span class="pre">bitOr</span> <span class="pre">where T is Integer || T is bool</span>,
 		so an <span class="pre">Atomic[bool]</span> has <span class="pre">bitOr</span> and no <span class="pre">add</span>,
 		and an <span class="pre">Atomic[*Node]</span> has neither.</p>
 
@@ -792,14 +792,14 @@ struct Labelled[T] is Show if T is Show {
 	<h3 id="notbuilt">Constraints not built yet</h3>
 	<p><i>Not built yet:</i> a <span class="pre">where</span> clause is meant to be able to say more than
 		<span class="pre">T is Name</span>: a relationship between two type parameters, and a constraint on a type
-		expression rather than a parameter. <span class="pre">struct Xyz[T, Y] where T &lt; Y and Option[T] is
+		expression rather than a parameter. <span class="pre">struct Xyz[T, Y] where T &lt; Y &amp;&amp; Option[T] is
 		Node;</span> would say that <span class="pre">T</span> is a supertype of <span class="pre">Y</span> and that an
 		optional <span class="pre">T</span> is a valid <span class="pre">Node</span>. Neither form is built, nor
-		<span class="pre">not</span>, nor a constraint on a generic module's or a macro's parameters, nor a condition on
+		<span class="pre">!</span>, nor a constraint on a generic module's or a macro's parameters, nor a condition on
 		an <span class="pre">is</span> entry of a trait or of an enum's variant, nor a lifetime bound on a generic
 		type's parameter. A generic's body is checked only in each instance, as it always has been, not against its
-		constraints where it is declared. When it is, a body under an <span class="pre">or</span> will be held to what
-		<i>every</i> alternative supports: under <span class="pre">where T is Integer or T is bool</span>, a body may use
+		constraints where it is declared. When it is, a body under a <span class="pre">||</span> will be held to what
+		<i>every</i> alternative supports: under <span class="pre">where T is Integer || T is bool</span>, a body may use
 		what integers and <span class="pre">bool</span> both have, such as <span class="pre">^</span>, and not
 		<span class="pre">+</span>, which only one of them has.</p>
 

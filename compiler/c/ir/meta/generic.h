@@ -129,10 +129,10 @@ INode *genericStructArgExpect(TypeCheckState *pstate, StructNode *generic, Nodes
 // Does a generic variant have a type parameter none of its fields names ('None')?
 int genericVariantParmUnnamed(StructNode *variant);
 
-// Constraints:'where T is Name and ... or ...', and the inline '[T Name + Name]'.
+// Constraints:'where T is Name && ... || ...', and the inline '[T Name + Name]'.
 //
 // A 'where' list holds conditions, every one of which must hold: the operands
-// of the 'and's at the top of what was written, each in its own element. A
+// of the '&&'s at the top of what was written, each in its own element. A
 // condition is a clause, 'T is Name' -- an IsTag CastNode whose 'exp' is a use
 // of the type parameter it constrains and whose 'typ' is a use of the trait --
 // or an OrLogicTag or AndLogicTag LogicNode joining two conditions. A generic

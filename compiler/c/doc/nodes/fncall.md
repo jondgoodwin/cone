@@ -327,7 +327,7 @@ reject an overload name everywhere else. Bail if `objfn` is already marked
   `!=`, on the pointer, and a virtual reference refuses it, so neither asks a
   referent. A type declaring its own `!=` keeps it, an enum's intrinsic pair
   is declared together, and a type declaring neither is reported missing its
-  `!=`. A `==` that selects nothing is reported once, under `==`, and the `not`
+  `!=`. A `==` that selects nothing is reported once, under `==`, and the `!`
   carries `errorType` on.
 
 **Stage 3 — dispatch on the receiver's type tag.**
@@ -498,7 +498,7 @@ lent to it read-only where it lies (`fnCallLendEnumOperand`: a place is borrowed
 a temporary borrowed to the end of its statement, a reference passed as it is),
 so an enum that moves is compared as one that copies is and nothing is moved into
 the comparison; the node becomes a call of `-eq` with those two arguments. `!=`
-is `not (a == b)`, as for any type declaring only `==` (`fnCallNeFromEq`). Where
+is `!(a == b)`, as for any type declaring only `==` (`fnCallNeFromEq`). Where
 no `-eq` was made, because a variant carries fields and declares no `==`, the
 call is refused with `ErrorEnumEquality`, naming the first such variant and its
 fields.
@@ -511,9 +511,9 @@ nothing with an effect is dropped), and the other is the enum or one of its vari
 (`structVariantEnum`), a value or a borrow, the call becomes `other is &Variant` on a
 read-only borrow of the other operand, with no `-eq` and no `==` of any variant
 needed. The test is built here and put in the call's place by `fnCallTypeCheck`
-(`fnCallTagTest`), under the `not` for `!=`. An empty variant on the left has no `==`
+(`fnCallTagTest`), under the `!` for `!=`. An empty variant on the left has no `==`
 to select, so `fnCallTypeCheck` tries the same lowering before dispatch, deriving
-the `not` itself. Two variants that both carry fields are not of this shape.
+the `!` itself. Two variants that both carry fields are not of this shape.
 
 **An operator's argument that is a call is checked after its receiver for `==`,
 `!=` and `<-`**, where the argument first is the order operators otherwise keep (a
@@ -929,7 +929,7 @@ refused there is an init called on `self` inside another init.
 
 `FnCallTag` (a real call, or a construction by a declared init), `FldAccessTag`, `ArrIndexTag`, `TypeLitTag`, a
 generic instance, a macro expansion, a block of applications, or — for a
-derived `!=` — a call wrapped in a `not` that replaces it in the tree. Anything after
+derived `!=` — a call wrapped in a `!` that replaces it in the tree. Anything after
 type check that still sees an un-lowered `FnCallTag` with `methfld` set is
 looking at a bug.
 

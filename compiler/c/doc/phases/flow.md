@@ -1136,8 +1136,8 @@ arm's end takes what the arm changed (`pathDelta`) and rolls back; the join sets
 each fact any arm changed to the union over the arms (`pathJoin`), an arm that
 did not change it contributing its value at the fork, so a join costs what the
 arms changed rather than the state's size. An `if`'s branches are paths from
-the state its conditions leave, a missing `else` a path of its own; an `and`'s
-or `or`'s right operand is an arm; a `break` or `continue` ends the blocks it
+the state its conditions leave, a missing `else` a path of its own; a `&&`'s
+or `||`'s right operand is an arm; a `break` or `continue` ends the blocks it
 leaves and deposits its path with the block it names (`pwJump`), and a block
 joins its fall-through end with every `break` that left it; a `return` ends
 every scope of the function, as a jump ends the blocks it leaves, and then the
@@ -1184,7 +1184,7 @@ which holds what that value carries if its type can, and which is pushed on a
 stack of the temporaries the statements being walked made. Where generation
 finalizes them, they end, the newest first (`pwTempsEnd`): at each statement's
 end (`pwStmts`), with a `break`'s or a used block's value still in flight;
-at an `if` condition's end; at the end of an `and`'s or `or`'s right operand.
+at an `if` condition's end; at the end of a `&&`'s or `||`'s right operand.
 Ending is the access a variable's scope end is, so a holder still holding a
 borrow of one and used later is refused at the temporary — `let r =
 id(mkso(3)); r.n` is Rust's E0716 — and a block value carrying one is refused
@@ -1729,7 +1729,7 @@ struct of plain data, a borrowed reference, a raw pointer, which could only ever
 be uninitialized, never moved, and are otherwise untracked, as a local given its
 value where it is declared is) — moved, hollowed or stored over
 deeper in the conditional structure than it was declared (`flowDepth`: an
-`if`'s arms and its later conditions, the right operand of `and` and `or`, a
+`if`'s arms and its later conditions, the right operand of `&&` and `||`, a
 loop's body; `flowDropNote`), or moved or hollowed by only some of the values a
 block or an `if` hands on. A function the gate does not mark keeps the main
 walk's lists, which are right for it: every change to a tracked variable is

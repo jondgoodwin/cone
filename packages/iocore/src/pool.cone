@@ -73,7 +73,7 @@ fn newBox(work WorkFn, arg u64, w Waker, rec u32, gen u32, lane *LaneState) *Job
 // A box's end: its buffer goes home, its waker (if it still has one) goes,
 // and so does its file descriptor
 fn dropBox(b *JobBox) {
-  if not isWindows() {
+  if !isWindows() {
     if (*b).fd >= 0i32 {sysClose((*b).fd);}
   }
   mem.finalize[JobBox](b);
@@ -182,7 +182,7 @@ fn @initpure makeDefaultLanes() {
   addLaneLocked(new LaneConfig(name: "iocore dns", maxThreads: 2u32, queueBound: 256u32));
   // Linux: the files' own, for ReadAt and WriteAt (linux.cone); its queue is
   // deep, since a refused file operation is no one's to retry
-  if not isWindows() {
+  if !isWindows() {
     addLaneLocked(new LaneConfig(name: "iocore files", maxThreads: 4u32, queueBound: 65536u32));
   }
 }
@@ -208,7 +208,7 @@ fn @initpure addLaneLocked(cfg LaneConfig) Lane {
   if p as usize == 0usize {panic("iocore: out of memory for a lane");}
   var name = new Array[u8, 32] <- fill 0u8;
   var k = 0usize;
-  while k < cfg.name.len() and k < 31usize {
+  while k < cfg.name.len() && k < 31usize {
     name[k] = cfg.name[k];
     k = k + 1usize;
   }
@@ -227,7 +227,7 @@ fn @initpure addLaneLocked(cfg LaneConfig) Lane {
   // The threads it keeps even when idle
   let s = p as &mut LaneState;
   var started = 0u32;
-  while started < s.minThreads and started < s.maxThreads {
+  while started < s.minThreads && started < s.maxThreads {
     s.threads = s.threads + 1u32;
     s.started = s.started + 1u64;
     startWorker(p);
@@ -266,7 +266,7 @@ fn worker(a WorkerArg) {
       s.idle = s.idle + 1u32;
       let signalled = s.ready.condWaitTimeout(&s.lock, s.idleFor);
       s.idle = s.idle - 1u32;
-      if s.head as usize == 0usize and not signalled and s.threads > s.minThreads {
+      if s.head as usize == 0usize && !signalled && s.threads > s.minThreads {
         s.threads = s.threads - 1u32;
         s.lock.unlock();
         return;
@@ -309,7 +309,7 @@ fn settleBox(b *JobBox, o Outcome) {
   w <=> j.waker;
   match w {
     case let s Some {
-      if not s.postJob(b) {dropBox(b);}
+      if !s.postJob(b) {dropBox(b);}
     }
     else {dropBox(b);}
   }
@@ -346,7 +346,7 @@ fn enqueueBox(b *JobBox) bool {
   // More queued than threads idle to take them: one more thread, while the
   // lane may have one
   var grow = false;
-  if s.queued > s.idle and s.threads < s.maxThreads {
+  if s.queued > s.idle && s.threads < s.maxThreads {
     s.threads = s.threads + 1u32;
     s.started = s.started + 1u64;
     grow = true;
@@ -413,7 +413,7 @@ fn resolveWork(arg u64, buf &mut IoBuf) Outcome {
     var a = res;
     let recSize = mem.sizeof[SocketAddr]();
     while a as usize != 0usize {
-      if (*a).addrlen <= 28usize and buf.room() >= recSize {
+      if (*a).addrlen <= 28usize && buf.room() >= recSize {
         var s = new SocketAddr(new Array[u8, 28] <- fill 0u8, i32.from((*a).addrlen));
         libc.memcpy(&mut s.raw as *u8, (*a).addr, (*a).addrlen);
         s.setPort(u16.from(arg));
@@ -508,7 +508,7 @@ fn readFileWork(arg u64, buf &mut IoBuf) Outcome {
     let ok = ReadFile(h, buf.base(), want, &mut got as *u32, &mut ov as *u8);
     let code = if ok == 0i32 {GetLastError()} else {0u32};
     CloseHandle(h);
-    if ok == 0i32 and code != errorHandleEof {return Outcome.Failed(code);}
+    if ok == 0i32 && code != errorHandleEof {return Outcome.Failed(code);}
     buf.setLen(usize.from(got));
     Outcome.Done(usize.from(got))
   } else {

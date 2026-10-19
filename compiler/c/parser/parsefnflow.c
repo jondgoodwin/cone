@@ -447,8 +447,8 @@ static void parseBoundMatch(ParseState *parse, IfNode *ifnode, MatchSubject *sub
     // A match's case may end in an 'if' guard, which may name the variable. The
     // variable is declared in the arm, which the guard is not in, so the guard is
     // a block that binds it again, to the same conversion of the same value:
-    //   'case let x T if g {...}'  ->  'is T and {let x = [T]v; g}' then '{let x = [T]v; ...}'
-    // Being an 'and', the condition is not an 'is', so exhaustiveness does not
+    //   'case let x T if g {...}'  ->  'is T && {let x = [T]v; g}' then '{let x = [T]v; ...}'
+    // Being a '&&', the condition is not an 'is', so exhaustiveness does not
     // count the arm, which is right: the guard may fail. The guard reads the
     // binding before the arm is chosen, so it takes nothing from a place the arms
     // after it test: what it binds is copied if it is plain data, and viewed through
@@ -613,7 +613,7 @@ INode *parseIf(ParseState *parse) {
 
 // Finish a range pattern, whose lower bound is parsed and whose '..' or '..<'
 // is the current token. It tests the matched value against both bounds:
-// 'a .. b' is 'v >= a and v <= b', and 'a ..< b' is 'v >= a and v < b'.
+// 'a .. b' is 'v >= a && v <= b', and 'a ..< b' is 'v >= a && v < b'.
 static INode *parseMatchRange(ParseState *parse, MatchSubject *subject, INode *lower) {
     // All three nodes take the operator's position, so a matched value that
     // cannot be ordered is reported at the '..'
@@ -624,7 +624,7 @@ static INode *parseMatchRange(ParseState *parse, MatchSubject *subject, INode *l
     LogicNode *range = newLogicNode(AndLogicTag);
     lexNextToken();
     nodesAdd(&gecall->args, lower);
-    nodesAdd(&upcall->args, parseOr(parse));
+    nodesAdd(&upcall->args, parseXor(parse));
     range->lexp = (INode *)gecall;
     range->rexp = (INode *)upcall;
     return (INode *)range;
@@ -647,10 +647,13 @@ static INode *parseMatchWild() {
 // - a value alone, '2', '"s"', 'K', means equality with the matched value; a
 //   bare name is asked of the matched value's enum first, so the test waits for
 //   type check to become '==' or 'is' (newMatchValueNode)
-// A condition, 'not b' or 'n > 3', is refused (ErrorPatBare): as a value alone it
+// A condition, '!b' or 'n > 3', is refused (ErrorPatBare): as a value alone it
 // would be compared with the matched value, and whether it should be is not
-// decided. It is parsed to its end, its own 'or' included, so that it is
+// decided. It is parsed to its end, its own '||' included, so that it is
 // reported once.
+// A pattern's value is read one level above bitwise or, so that a '|' after it
+// joins the next pattern (parseMatchColumn); a bitwise or in a pattern's value
+// is written in parentheses.
 // - '_' takes any value, and is a pattern of 'match a, b' alone (parseMatchWild)
 #define PatBareMsg "A condition is not a pattern: a value alone is compared with the matched value. Write the comparison with the matched value left out, as '>3', or put the condition in an 'if' guard."
 static INode *parseMatchPattern(ParseState *parse, MatchSubject *subject) {
@@ -683,7 +686,7 @@ static INode *parseMatchPattern(ParseState *parse, MatchSubject *subject) {
     if (cmpop != NULL) {
         FnCallNode *callnode = newFnCallOp(parseMatchUse(subject), cmpop, 2);
         lexNextToken();
-        nodesAdd(&callnode->args, parseOr(parse));
+        nodesAdd(&callnode->args, parseXor(parse));
         return (INode *)callnode;
     }
     if (lexIsToken(NotToken)) {
@@ -691,7 +694,7 @@ static INode *parseMatchPattern(ParseState *parse, MatchSubject *subject) {
         errorMsgNode(cond, ErrorPatBare, PatBareMsg);
         return cond;
     }
-    INode *value = parseOr(parse);
+    INode *value = parseXor(parse);
     // A bare name here may name a variant of the matched value's enum, which is a
     // test and no construction; type check decides (newMatchValueNode)
     if (value && value->tag == NameUseTag)
@@ -700,14 +703,14 @@ static INode *parseMatchPattern(ParseState *parse, MatchSubject *subject) {
         value->flags &= ~FlagValueTermCall;
     if (lexIsRangeOp())
         return parseMatchRange(parse, subject, value);
-    if (parseCmpOp() != NULL || lexIsToken(IsToken) || lexIsToken(AndToken) || lexIsAmpAmp()) {
+    if (parseCmpOp() != NULL || lexIsToken(IsToken) || lexIsAmpAmp() || lexIsToken(OrOrToken)) {
         errorMsgNode(value, ErrorPatBare, PatBareMsg);
         return parseSimpleExprFrom(parse, value);
     }
     return (INode *)newMatchValueNode(parseMatchUse(subject), value);
 }
 
-// The patterns of one value of a match, joined by 'or'. In a column of 'match a, b'
+// The patterns of one value of a match, joined by '|'. In a column of 'match a, b'
 // a pattern binds no variable: whether one should is not decided, so it is refused
 // and read as the 'is' test it would be.
 static INode *parseMatchColumn(ParseState *parse, MatchSubject *subject) {
@@ -723,7 +726,7 @@ static INode *parseMatchColumn(ParseState *parse, MatchSubject *subject) {
     }
     else
         cond = parseMatchPattern(parse, subject);
-    while (lexIsToken(OrToken)) {
+    while (lexIsToken(BarToken)) {
         LogicNode *ornode = newLogicNode(OrLogicTag);
         lexNextToken();
         ornode->lexp = cond;
@@ -789,8 +792,8 @@ INode *parseMatch(ParseState *parse) {
             }
 
             // Anything else is, for each value matched, one or more patterns joined
-            // by 'or', the values' patterns separated by commas, then an optional
-            // 'if' guard. The columns of a row are joined by 'and' (FlagMatchRow).
+            // by '|', the values' patterns separated by commas, then an optional
+            // 'if' guard. The columns of a row are joined by '&&' (FlagMatchRow).
             INode *cond = NULL;
             int missing = 0;
             for (int i = 0; i < ncols; ++i) {
@@ -1017,7 +1020,7 @@ static INode *parseRangeFlag(VarDclNode *flag, INode *lexnode) {
     return no;
 }
 
-// 'a and b' or 'a or b' of two conditions
+// 'a && b' or 'a || b' of two conditions
 static INode *parseRangeLogic(uint16_t tag, INode *left, INode *right, INode *lexnode) {
     LogicNode *logic = newLogicNode(tag);
     inodeLexCopy((INode*)logic, lexnode);
@@ -1421,7 +1424,7 @@ static INode *parseEachLoop(ParseState *parse, Name *lifesym, int stmtflag, int 
         // resolution find the step to copy ahead of a 'continue'.
         loopnode->flags |= FlagLoopStep;
         if (donedcl) {
-            // 'if done or !(guard) {...else...}'
+            // 'if done || !(guard) {...else...}'
             LogicNode *notiter = newLogicNode(NotLogicTag);
             inodeLexCopy((INode*)notiter, iter);
             notiter->lexp = guard;
@@ -1791,14 +1794,14 @@ static void parseWhereSkip() {
 // only what a refusal calls the condition differs.
 static int parseInIsCond = 0;
 
-// 'not' is not built [Jon 27 Sep]: a clause says what a type is
+// '!' is not built [Jon 27 Sep]: a clause says what a type is
 static void parseWhereNot() {
     errorMsgLex(ErrorWhereForm, parseInIsCond
-        ? "'not' is not built: a condition on an 'is' entry says what a type parameter is, and clauses are joined by 'and' and 'or'."
-        : "'not' is not built: a 'where' clause says what a type parameter is, and clauses are joined by 'and' and 'or'.");
+        ? "'!' is not built: a condition on an 'is' entry says what a type parameter is, and clauses are joined by '&&' and '||'."
+        : "'!' is not built: a 'where' clause says what a type parameter is, and clauses are joined by '&&' and '||'.");
 }
 
-// Join two conditions with 'and' or 'or', positioned where the left one is
+// Join two conditions with '&&' or '||', positioned where the left one is
 static INode *parseWhereJoin(int16_t tag, INode *lhs, INode *rhs) {
     LogicNode *join = newLogicNode(tag);
     // A lifetime comparison stands in a condition as a node with no position
@@ -1811,8 +1814,8 @@ static INode *parseWhereJoin(int16_t tag, INode *lhs, INode *rhs) {
 static INode *parseWhereOr(ParseState *parse, LifeOrder **orderp);
 
 // What a lifetime comparison leaves in a condition: it is recorded in the
-// order as it is read, and stands in the condition only so that an 'or' or a
-// 'not' over it is found and refused
+// order as it is read, and stands in the condition only so that a '||' or a
+// '!' over it is found and refused
 static INode parseLifeClauseNode;
 #define parseLifeClause (&parseLifeClauseNode)
 
@@ -1876,7 +1879,7 @@ static int parseWhereBounds = 0;
 // A type parameter's lifetime bound, with the lexer on the lifetime after its
 // '+': ''+T' >= ''a' in '*orderp', the declaration's order (lifetime.h,
 // "Lifetime bounds"), where 'ok' allows one. Stands in a condition as a
-// lifetime comparison does, so that an 'or' or a 'not' over it is refused.
+// lifetime comparison does, so that a '||' or a '!' over it is refused.
 static INode *parseBoundAdd(LifeOrder **orderp, int ok, Name *tparm) {
     INode *at = (INode*)newNameUseNode(lex->val.ident);
     Name *life = lex->val.ident;
@@ -1896,7 +1899,7 @@ static INode *parseBoundAdd(LifeOrder **orderp, int ok, Name *tparm) {
 }
 
 // One term of a 'where' condition: 'T is Name', a trait joined to another by
-// '+' as in the inline form (the two clauses joined by 'and'), a lifetime
+// '+' as in the inline form (the two clauses joined by '&&'), a lifetime
 // bound, 'T + 'a' or 'T is Name + 'a', a lifetime comparison, or a condition
 // in parentheses. NULL, reported, for anything else.
 static INode *parseWhereTerm(ParseState *parse, LifeOrder **orderp) {
@@ -1923,9 +1926,9 @@ static INode *parseWhereTerm(ParseState *parse, LifeOrder **orderp) {
     if (lexIsToken(LifetimeToken))
         return parseWhereLife(parse, orderp);
     if (lexIsToken(NotToken)) {
-        // Over a lifetime comparison, 'not' is refused for what it would mean
+        // Over a lifetime comparison, '!' is refused for what it would mean
         if (lexPeekIsLifetime()) {
-            errorMsgLex(ErrorLifetimeOr, "A lifetime comparison is never under 'not': a lifetime is never instanced, so the body could rely on nothing it would say.");
+            errorMsgLex(ErrorLifetimeOr, "A lifetime comparison is never under '!': a lifetime is never instanced, so the body could rely on nothing it would say.");
             return NULL;
         }
         parseWhereNot();
@@ -2001,10 +2004,11 @@ static INode *parseWhereTerm(ParseState *parse, LifeOrder **orderp) {
     }
 }
 
-// Terms joined by 'and', which binds tighter than 'or', as in an expression
+// Terms joined by '&&', which binds tighter than '||', as in an expression
 static INode *parseWhereAnd(ParseState *parse, LifeOrder **orderp) {
     INode *lhs = parseWhereTerm(parse, orderp);
-    while (lhs && lexIsToken(AndToken)) {
+    while (lhs && lexIsAmpAmp()) {
+        lexNextToken();
         lexNextToken();
         INode *rhs = parseWhereTerm(parse, orderp);
         lhs = rhs ? parseWhereJoin(AndLogicTag, lhs, rhs) : NULL;
@@ -2012,18 +2016,18 @@ static INode *parseWhereAnd(ParseState *parse, LifeOrder **orderp) {
     return lhs;
 }
 
-// A whole condition: 'and'-joined terms, joined by 'or'. A lifetime comparison
+// A whole condition: '&&'-joined terms, joined by '||'. A lifetime comparison
 // may not be an alternative: a lifetime is never instanced, so no instance
 // settles which alternative holds, and the body could rely on none of them.
 static INode *parseWhereOr(ParseState *parse, LifeOrder **orderp) {
     INode *lhs = parseWhereAnd(parse, orderp);
-    while (lhs && lexIsToken(OrToken)) {
+    while (lhs && lexIsToken(OrOrToken)) {
         INode *orat = (INode*)newNameUseNode(anonName);
         lexNextToken();
         INode *rhs = parseWhereAnd(parse, orderp);
         if (rhs && (parseWhereHasLife(lhs) || parseWhereHasLife(rhs))) {
             errorMsgNode(orat, ErrorLifetimeOr,
-                "A lifetime comparison is joined to the rest of a 'where' clause by 'and' only: a lifetime is never instanced, so an 'or' would leave the body nothing it could rely on.");
+                "A lifetime comparison is joined to the rest of a 'where' clause by '&&' only: a lifetime is never instanced, so a '||' would leave the body nothing it could rely on.");
             return NULL;
         }
         lhs = rhs ? parseWhereJoin(OrLogicTag, lhs, rhs) : NULL;
@@ -2031,7 +2035,7 @@ static INode *parseWhereOr(ParseState *parse, LifeOrder **orderp) {
     return lhs;
 }
 
-// Append a condition to a 'where' list, each operand of an 'and' at its top
+// Append a condition to a 'where' list, each operand of a '&&' at its top
 // an element of its own, in the order written. A lifetime comparison is in
 // the order already, and is no element.
 static void parseWhereAdd(Nodes **wherep, INode *cond) {
@@ -2051,12 +2055,12 @@ static void parseWhereAdd(Nodes **wherep, INode *cond) {
 // Parse a 'where' clause, with the lexer on 'where', appending its condition
 // to '*wherep' (generic.h), left NULL where it holds no clause about a type:
 // 'T is Name', a trait joined to another by '+' as in the inline form,
-// clauses joined by 'and' and 'or', 'and' binding tighter, and parentheses
+// clauses joined by '&&' and '||', '&&' binding tighter, and parentheses
 // grouping. A lifetime comparison, ''a >= 'b' or ''a == 'b', goes to
 // '*orderp' instead (lifetime.h), NULL where the declaration has no lifetimes
 // to order. What else the manual shows a clause saying -- a relation between
 // two type parameters, 'T < Y', and a constraint on a type expression,
-// 'Option[T] is Node' -- and 'not' are not built, and are refused here: a
+// 'Option[T] is Node' -- and '!' are not built, and are refused here: a
 // refused clause adds nothing, and the rest of it is skipped. A type
 // parameter's lifetime bound, 'T + 'a' or 'T is Name + 'a', goes to
 // '*orderp' as ''+T' >= ''a' where 'bounds' allows one (lifetime.h,
@@ -2075,7 +2079,7 @@ void parseWhere(ParseState *parse, Nodes **wherep, LifeOrder **orderp, int bound
 
 // Parse the condition on one entry of a type's 'is' list, with the lexer on
 // its 'if': 'is Move if T is Move'. It is read as a 'where' clause's condition
-// is -- 'T is Name', '+'-joined traits, clauses joined by 'and' and 'or',
+// is -- 'T is Name', '+'-joined traits, clauses joined by '&&' and '||',
 // grouped by parentheses -- and kept whole, since it decides one entry rather
 // than being a list of requirements. No lifetime takes part. NULL, reported,
 // where it is refused; what is left of it is then skipped to the next entry,
@@ -2213,8 +2217,8 @@ Nodes *parseGenericParms(ParseState *parse, int annotate, LifeParms **lifes, Lif
             // Every trait named here is required; a choice between them is
             // said in a 'where' clause [Jon 27 Sep]. The annotation is
             // dropped, so nothing it only half says is asked of the arguments.
-            if (lexIsToken(OrToken)) {
-                errorMsgLex(ErrorGenParmOr, "The traits after a type parameter are joined with '+', each required. A choice between them is written in a 'where' clause: 'where T is A or T is B'.");
+            if (lexIsToken(OrOrToken)) {
+                errorMsgLex(ErrorGenParmOr, "The traits after a type parameter are joined with '+', each required. A choice between them is written in a 'where' clause: 'where T is A || T is B'.");
                 parm->annot = NULL;
                 while (!lexIsToken(CommaToken) && !lexIsToken(RBracketToken)) {
                     if (lexIsToken(SemiToken) || lexIsToken(LCurlyToken) || lexIsToken(RCurlyToken) || lexIsToken(EofToken))

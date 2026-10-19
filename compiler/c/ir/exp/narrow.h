@@ -31,7 +31,7 @@ void narrowFnBegin(NarrowFnSave *save);
 void narrowFnEnd(NarrowFnSave *save);
 
 // 'cond', a type checked condition, is known true (or false): what that says of the
-// names it tests. The second form is for the right operand of 'and' or 'or', where the
+// names it tests. The second form is for the right operand of '&&' or '||', where the
 // knowledge is good for that operand alone.
 void narrowAssume(INode *cond, int truth);
 void narrowAssumeLocal(INode *cond, int truth);

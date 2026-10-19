@@ -130,7 +130,7 @@ fn note(drv &mut Driver, lp &mut Loop, st &mut State, pool &Pool, events &mut Li
         let target = e.request.target.copy();
         serve(drv, lp, st, e.req, target.view(), pool);
       }
-    } elif e.token >= 100u64 and e.token < 200u64 {
+    } elif e.token >= 100u64 && e.token < 200u64 {
       let s = &mut st.conn[usize.from(e.token - 100u64)];
       if e.kind == EventKind.Closed {
         s.closes = s.closes + 1u32;
@@ -169,7 +169,7 @@ fn turn(drv &mut Driver, lp &mut Loop, st &mut State, pool &Pool, ms i64) {
   var k = 0usize;
   while k < comps.len() {
     let c = &mut comps[k];
-    if not drv.complete(lp, c) {
+    if !drv.complete(lp, c) {
       st.raw.push(new Raw(c.token, c.isDone(), c.n, c.handle, String.fromBytes(c.buf.view())));
     }
     k = k + 1usize;
@@ -182,7 +182,7 @@ fn turn(drv &mut Driver, lp &mut Loop, st &mut State, pool &Pool, ms i64) {
 fn until(drv &mut Driver, lp &mut Loop, st &mut State, pool &Pool, tok u64, ms i64) {
   let end = Instant.now() + Duration.fromMillis(ms);
   while Instant.now() < end {
-    if tok != 0u64 and st.req[usize.from(tok)].finals > 0u32 {return;}
+    if tok != 0u64 && st.req[usize.from(tok)].finals > 0u32 {return;}
     turn(drv, lp, st, pool, 5i64);
   }
 }
@@ -266,8 +266,8 @@ fn main() i32 {
     expect(s.kind == EventKind.Failed, "1: Failed");
     expect(s.stage == Stage.Read, "1: ...at Read");
     expect(s.noResponse, "1: ...no byte of a response");
-    expect(not s.unsent, "1: ...the request was sent");
-    expect(st.conn[0usize].closes == 1u32 and not st.conn[0usize].clean, "1: the connection: Closed, not clean");
+    expect(!s.unsent, "1: ...the request was sent");
+    expect(st.conn[0usize].closes == 1u32 && !st.conn[0usize].clean, "1: the connection: Closed, not clean");
     expect(st.conn[0usize].stage == Stage.Read, "1: ...at Read");
   }
 
@@ -276,7 +276,7 @@ fn main() i32 {
     let c = drv.connect(&mut lp, "127.0.0.1", port, Sink.Here(101u64));
     get(&mut drv, &mut lp, c, "/resetmid", 2u64);
     let end = Instant.now() + Duration.fromSeconds(3i64);
-    while st.req[2usize].bytes < 1000u64 and Instant.now() < end {
+    while st.req[2usize].bytes < 1000u64 && Instant.now() < end {
       turn(&mut drv, &mut lp, &mut st, &pool, 5i64);
     }
     expectUInt(st.req[2usize].bytes, 1000u64, "2: 1,000 body bytes read");
@@ -286,7 +286,7 @@ fn main() i32 {
     expectUInt(u64.from(s.status), 200u64, "2: the head came");
     expect(s.kind == EventKind.Failed, "2: Failed");
     expect(s.stage == Stage.Read, "2: ...at Read");
-    expect(not s.noResponse, "2: ...not noResponse: the response had begun");
+    expect(!s.noResponse, "2: ...not noResponse: the response had begun");
   }
 
   // 3. The client resets while uploading
@@ -299,8 +299,8 @@ fn main() i32 {
     // The body's first 64 KiB, once the request is under way
     let end = Instant.now() + Duration.fromSeconds(3i64);
     var sent = false;
-    while st.srvData - dataBefore < 65536u64 and Instant.now() < end {
-      if not sent {
+    while st.srvData - dataBefore < 65536u64 && Instant.now() < end {
+      if !sent {
         var b = pool.mustTake(65536usize);
         b.setLen(65536usize);
         match drv.sendData(r, b) {
@@ -315,7 +315,7 @@ fn main() i32 {
     until(&mut drv, &mut lp, &mut st, &pool, 0u64, 200i64);
     expect(st.req[3usize].kind == EventKind.Cancelled, "3: the client's request: Cancelled");
     expectUInt(u64.from(st.srvFinals.len() - srvBefore), 1u64, "3: the server's: one final answer");
-    expect(*st.srvFinals[srvBefore] == EventKind.Failed and *st.srvStages[srvBefore] == Stage.Read,
+    expect(*st.srvFinals[srvBefore] == EventKind.Failed && *st.srvStages[srvBefore] == Stage.Read,
       "3: ...Failed at Read");
   }
 
@@ -325,11 +325,11 @@ fn main() i32 {
     lp.submit(Op.Connect(SocketAddr.localhost(port)), Target.Here(1u64));
     var h = Handle.none();
     let end = Instant.now() + Duration.fromSeconds(3i64);
-    while h.isNone() and Instant.now() < end {
+    while h.isNone() && Instant.now() < end {
       turn(&mut drv, &mut lp, &mut st, &pool, 5i64);
       h = rawHandle(&mut st, 1u64);
     }
-    require(not h.isNone(), "4: the raw client connected");
+    require(!h.isNone(), "4: the raw client connected");
     var b = pool.mustTake(256usize);
     b.append("GET /ok HTTP/1.1\r\nHost: h\r\n\r\n");
     lp.submit(Op.Send(h, b), Target.Here(2u64));
@@ -337,14 +337,14 @@ fn main() i32 {
     var sentDone = false;
     var ended = false;
     var recvOut = false;
-    while not ended and Instant.now() < end {
+    while !ended && Instant.now() < end {
       turn(&mut drv, &mut lp, &mut st, &pool, 5i64);
       var scratch = String.empty();
-      if not sentDone and takeRaw(&mut st, 2u64, &mut scratch) > 0i64 {
+      if !sentDone && takeRaw(&mut st, 2u64, &mut scratch) > 0i64 {
         sentDone = true;
         expectUInt(u64.from(lp.shutdown(h)), 0u64, "4: the raw client shuts its sending side");
       }
-      if sentDone and not recvOut {
+      if sentDone && !recvOut {
         lp.submit(Op.Recv(h, pool.mustTake(4096usize)), Target.Here(3u64));
         recvOut = true;
       }
@@ -373,16 +373,16 @@ fn main() i32 {
     get(&mut drv, &mut lp, c, "/raw", 5u64);
     var h = Handle.none();
     let end = Instant.now() + Duration.fromSeconds(3i64);
-    while h.isNone() and Instant.now() < end {
+    while h.isNone() && Instant.now() < end {
       turn(&mut drv, &mut lp, &mut st, &pool, 5i64);
       h = rawHandle(&mut st, 4u64);
     }
-    require(not h.isNone(), "5: the raw server accepted");
+    require(!h.isNone(), "5: the raw server accepted");
     // Read the request's head, then answer and shut the sending side
     var req = String.empty();
     var recvOut = false;
-    while not req.contains("\r\n\r\n") and Instant.now() < end {
-      if not recvOut {
+    while !req.contains("\r\n\r\n") && Instant.now() < end {
+      if !recvOut {
         lp.submit(Op.Recv(h, pool.mustTake(4096usize)), Target.Here(6u64));
         recvOut = true;
       }
@@ -394,10 +394,10 @@ fn main() i32 {
     b.append("HTTP/1.1 200 OK\r\nX-Kind: until-close\r\n\r\nall of this, until the close");
     lp.submit(Op.Send(h, b), Target.Here(7u64));
     var shut = false;
-    while st.req[5usize].finals == 0u32 and Instant.now() < end {
+    while st.req[5usize].finals == 0u32 && Instant.now() < end {
       turn(&mut drv, &mut lp, &mut st, &pool, 5i64);
       var scratch = String.empty();
-      if not shut and takeRaw(&mut st, 7u64, &mut scratch) > 0i64 {
+      if !shut && takeRaw(&mut st, 7u64, &mut scratch) > 0i64 {
         lp.shutdown(h);
         shut = true;
       }
@@ -406,7 +406,7 @@ fn main() i32 {
     let s = st.req[5usize];
     expect(s.kind == EventKind.Done, "5: Done");
     expectUInt(s.bytes, 28u64, "5: ...the whole body, to the close");
-    expect(st.conn[3usize].closes == 1u32 and st.conn[3usize].clean, "5: the connection closed cleanly");
+    expect(st.conn[3usize].closes == 1u32 && st.conn[3usize].clean, "5: the connection closed cleanly");
     lp.close(h);
     lp.close(l);
     // The raw receive outstanding, if any, ends with the socket
@@ -438,9 +438,9 @@ fn main() i32 {
     var events = List[Event].empty();
     d7.pump(&mut lp, &mut events);
     note(&mut drv, &mut lp, &mut st, &pool, &mut events);
-    expect(st.conn[6usize].closes == 1u32 and st.conn[6usize].stage == Stage.Limit, "7: the second: Closed at Limit");
-    expect(st.req[8usize].kind == EventKind.Failed and st.req[8usize].unsent, "7: ...its request Failed, unsent");
-    expect(d7.isOpen(a) or d7.live() == 1u32, "7: the first goes on");
+    expect(st.conn[6usize].closes == 1u32 && st.conn[6usize].stage == Stage.Limit, "7: the second: Closed at Limit");
+    expect(st.req[8usize].kind == EventKind.Failed && st.req[8usize].unsent, "7: ...its request Failed, unsent");
+    expect(d7.isOpen(a) || d7.live() == 1u32, "7: the first goes on");
     d7.abortAll(&mut lp);
     d7.pump(&mut lp, &mut events);
     events.clear();
@@ -484,7 +484,7 @@ fn main() i32 {
       var q = 0usize;
       while q < comps.len() {
         let cp = &mut comps[q];
-        if not drv.complete(&mut lp, cp) {d8.complete(&mut lp, cp);}
+        if !drv.complete(&mut lp, cp) {d8.complete(&mut lp, cp);}
         q = q + 1usize;
       }
       comps.clear();
@@ -494,7 +494,7 @@ fn main() i32 {
       q = 0usize;
       while q < events.len() {
         let e = &mut events[q];
-        if e.token == tokServer2 and e.kind == EventKind.Request {
+        if e.token == tokServer2 && e.kind == EventKind.Request {
           d8.respond(e.req, ResponseHead.make(200u16), BodyLength.sized(2u64));
           var b = pool.mustTake(16usize);
           b.append("ok");
@@ -540,7 +540,7 @@ fn main() i32 {
   let stage &str = stageName(Stage.Connect);
   let kind &str = eventName(EventKind.Failed);
   let made = Failure.make(Stage.Limit, 0u32, ErrorKind.TooLarge, "a bound");
-  expect(stage == "connect" and kind == "Failed" and made.message().view() == "limit: too large: a bound",
+  expect(stage == "connect" && kind == "Failed" && made.message().view() == "limit: too large: a bound",
     "stage and event names are text");
   done()
 }

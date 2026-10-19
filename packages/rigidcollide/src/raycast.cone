@@ -24,7 +24,7 @@ pub fn noHit() RayHit { new RayHit(false, bigNumber, new Vec3(0., 1., 0.), 0u32,
 
 fn hitAt(t f32, n Vec3) RayHit { new RayHit(true, t, n, 0u32, NoSub) }
 
-fn nearer(a RayHit, b RayHit) RayHit { if b.hit and (not a.hit or b.t < a.t) { b } else { a } }
+fn nearer(a RayHit, b RayHit) RayHit { if b.hit && (!a.hit || b.t < a.t) { b } else { a } }
 
 fn raySphere(o Vec3, d Vec3, c Vec3, r f32, maxT f32) RayHit {
   let m = o - c;
@@ -51,7 +51,7 @@ fn rayBox(o Vec3, d Vec3, h Vec3, maxT f32) RayHit {
     let da = vecGet(d, ax);
     let ha = vecGet(h, ax);
     if absf(da) < 1.0e-12 {
-      if oa < -ha or oa > ha { return noHit(); }
+      if oa < -ha || oa > ha { return noHit(); }
     } else {
       let inv = 1. / da;
       var t1 = (-ha - oa) * inv;
@@ -76,21 +76,21 @@ fn rayCylinderSide(o Vec3, d Vec3, r f32, hy f32, maxT f32) RayHit {
   let disc = b * b - a * c;
   if disc < 0. { return noHit(); }
   let t = (-b - disc.sqrt()) / a;
-  if t < 0. or t > maxT { return noHit(); }
+  if t < 0. || t > maxT { return noHit(); }
   let p = o + d * t;
   if absf(p.y) > hy { return noHit(); }
   hitAt(t, new Vec3(p.x, 0., p.z).normalize())
 }
 
 fn rayCylinder(o Vec3, d Vec3, r f32, hy f32, maxT f32) RayHit {
-  if o.x * o.x + o.z * o.z <= r * r and absf(o.y) <= hy { return hitAt(0., -d.normalize()); }
+  if o.x * o.x + o.z * o.z <= r * r && absf(o.y) <= hy { return hitAt(0., -d.normalize()); }
   var best = rayCylinderSide(o, d, r, hy, maxT);
   if absf(d.y) > 1.0e-12 {
     var k = 0usize;
     while k < 2usize {
       let y = if k == 0usize { hy } else { -hy };
       let t = (y - o.y) / d.y;
-      if t >= 0. and t <= maxT {
+      if t >= 0. && t <= maxT {
         let p = o + d * t;
         if p.x * p.x + p.z * p.z <= r * r {
           best = nearer(best, hitAt(t, new Vec3(0., if k == 0usize { 1. } else { -1. }, 0.)));
@@ -148,12 +148,12 @@ fn rayTriangle(o Vec3, d Vec3, a Vec3, b Vec3, c Vec3, maxT f32) RayHit {
   let inv = 1. / det;
   let s = o - a;
   let u = s.dot(pv) * inv;
-  if u < 0. or u > 1. { return noHit(); }
+  if u < 0. || u > 1. { return noHit(); }
   let q = s.cross(e1);
   let v = d.dot(q) * inv;
-  if v < 0. or u + v > 1. { return noHit(); }
+  if v < 0. || u + v > 1. { return noHit(); }
   let t = e2.dot(q) * inv;
-  if t < 0. or t > maxT { return noHit(); }
+  if t < 0. || t > maxT { return noHit(); }
   let n = e1.cross(e2).normalize();
   hitAt(t, if n.dot(d) > 0. { -n } else { n })
 }
@@ -205,7 +205,7 @@ fn rayMesh(p &Prim, o Vec3, d Vec3, maxT f32) RayHit {
 
 fn rayHeightfield(p &Prim, o Vec3, d Vec3, maxT f32) RayHit {
   var best = noHit();
-  if p.cols < 2u32 or p.rows < 2u32 { return best; }
+  if p.cols < 2u32 || p.rows < 2u32 { return best; }
   // Walk the cells along the ray's footprint, in grid units
   let gx = (o.x - p.origin.x) / p.spacing.x;
   let gz = (o.z - p.origin.z) / p.spacing.y;
@@ -216,13 +216,13 @@ fn rayHeightfield(p &Prim, o Vec3, d Vec3, maxT f32) RayHit {
   // Clip the footprint to the grid box (in t)
   var t0 = 0.f;
   var t1 = maxT;
-  if absf(dx) < 1.0e-12 { if gx < 0. or gx > f32.from(cw) { return best; } }
+  if absf(dx) < 1.0e-12 { if gx < 0. || gx > f32.from(cw) { return best; } }
   else {
     let ta = (0. - gx) / dx;
     let tb = (f32.from(cw) - gx) / dx;
     t0 = maxf(t0, minf(ta, tb)); t1 = minf(t1, maxf(ta, tb));
   }
-  if absf(dz) < 1.0e-12 { if gz < 0. or gz > f32.from(ch) { return best; } }
+  if absf(dz) < 1.0e-12 { if gz < 0. || gz > f32.from(ch) { return best; } }
   else {
     let ta = (0. - gz) / dz;
     let tb = (f32.from(ch) - gz) / dz;
@@ -244,7 +244,7 @@ fn rayHeightfield(p &Prim, o Vec3, d Vec3, maxT f32) RayHit {
   let deltaX = if absf(dx) < 1.0e-12 { bigNumber } else { absf(1. / dx) };
   let deltaZ = if absf(dz) < 1.0e-12 { bigNumber } else { absf(1. / dz) };
   var guard = 0u32;
-  while ci >= 0i32 and ci < cw and cj >= 0i32 and cj < ch and guard < 100000u32 {
+  while ci >= 0i32 && ci < cw && cj >= 0i32 && cj < ch && guard < 100000u32 {
     guard = guard + 1u32;
     let cell = usize.from(u32.from(cj)) * usize.from(p.cols - 1u32) + usize.from(u32.from(ci));
     var s = 0usize;
@@ -256,7 +256,7 @@ fn rayHeightfield(p &Prim, o Vec3, d Vec3, maxT f32) RayHit {
     }
     // stop once the next cell starts beyond the best hit
     let tNext = minf(nextX, nextZ);
-    if best.hit and tNext > best.t { break; }
+    if best.hit && tNext > best.t { break; }
     if tNext > t1 { break; }
     if nextX < nextZ { nextX = nextX + deltaX; ci = ci + stepX; } else { nextZ = nextZ + deltaZ; cj = cj + stepZ; }
   }
@@ -286,7 +286,7 @@ pub fn rayCast(s &Shape, x Rigid, origin Vec3, dir Vec3, maxT f32) RayHit {
   while i < s.leaves.len() {
     let xp = x * s.leaves[i].xf;
     let h = rayPrim(&s.leaves[i].prim, xp.unapply(origin), xp.unrotate(dir), if best.hit { best.t } else { maxT });
-    if h.hit and (not best.hit or h.t < best.t) { best = new RayHit(true, h.t, xp.rotate(h.normal), u32.from(i), h.sub); }
+    if h.hit && (!best.hit || h.t < best.t) { best = new RayHit(true, h.t, xp.rotate(h.normal), u32.from(i), h.sub); }
     i = i + 1usize;
   }
   best

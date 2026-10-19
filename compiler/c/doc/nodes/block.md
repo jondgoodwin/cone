@@ -42,7 +42,7 @@ caused, were measured.*
 a macro body, and the wrapper blocks pattern-matching builds — is regular.
 
 **`while` and `each` are lowered here, not later.** `while cond {…}` gets
-`if not cond { break }` inserted at index 0. `each x in a ..< b by s` (`a .. b`
+`if !cond { break }` inserted at index 0. `each x in a ..< b by s` (`a .. b`
 runs through `b`) becomes an
 outer block holding the range's first value (`first`, a hidden variable), its end
 unless the end is a literal (`end`, read once, before the first pass, as the step is), the
@@ -53,7 +53,7 @@ reader's) and the count of steps taken (`n`), plus a loop block that begins with
 (`c >= b`) going down; which way a range goes is the sign of its step, read off
 a literal step by the parser, or, for a step that is not a literal, held in a
 hidden variable (`by`, evaluated once) whose two signs are held in two more
-(`up` and `down`, so the guard is `(up and c < b) or (down and c > b)`; a step of
+(`up` and `down`, so the guard is `(up && c < b) || (down && c > b)`; a step of
 zero is neither, and runs no pass). With no `by` the range goes up. The variable
 is a new one on every pass and cannot be written;
 the loop steps its counter, whose uses are bound as the parser builds them, so a
@@ -87,7 +87,7 @@ the loop keeps the body's statements where they are and adds only to its head.
 
 **A header `if`, and the loop's `else`.** A filter, `each p in src if cond {…}`
 (`parseEachFilter`, which the header of an `each` entry of `<-` reads with the same call),
-becomes `if not cond { continue }` as the first statement of the body after the
+becomes `if !cond { continue }` as the first statement of the body after the
 pass's variables, built by `parseEachFilterStmt`; for a range the `continue`
 carries the step like any other. A trailing `if` on `break`, `continue` or
 `return` is the same jump inside an `if` arm (`parseJumpEnd`). The `if` after
@@ -102,13 +102,13 @@ then an expression: `blockElseFinish` flags the block `FlagLoopElse` and ends
 it with a `break` carrying its last expression (or nil, or nothing when it ends
 in a `return`, `break` or `continue`), aimed at the loop it leaves
 (`FlagBreakAimed`, which `breakNameRes` keeps). `while cond {…} else {…}` puts it
-where `if not cond { break }` goes. An `each` over anything but a range puts it
+where `if !cond { break }` goes. An `each` over anything but a range puts it
 first among the loop's statements, ahead of the reader's variables so that it
 cannot name them, and `eachLower` takes it out to make the exit of the counted
 loop or of the cursor's `None` arm. A range has several places it runs out
 (the guard, and the steps that stop a counter wrapping or reaching its bound),
 and one `else`: they set a hidden flag instead of breaking, and the guard
-`if flag or not (guard) {…else…}` leaves at the top of the next pass.
+`if flag || !(guard) {…else…}` leaves at the top of the next pass.
 
 **`parallel each` is parsed as `each` is**, with `FlagParallel` beside `FlagEach`.
 `parallel` is an ordinary name (`parallelName`) that `parseExprBlock` takes for the
@@ -417,7 +417,7 @@ for `Zip3Indexed`, the position first), unpacked from the tuple its `at` gives. 
 three-way zip is a struct of its own, not a `Zip` of a `Zip`, so that its item is
 one flat tuple that three variables unpack; its `len` is the shortest's and its
 `split` cuts all three at one place. It has `len` (the shorter's), `at`
-and `split` only where both sources do (`where I is RandomAccess[A] and J is
+and `split` only where both sources do (`where I is RandomAccess[A] && J is
 RandomAccess[B]`; the core traits `RandomAccess` and `ParallelIterable`, met by
 the methods), so a zip with a source that cannot be cut or walked by position has
 no `len` or `at`, and `parallelEachLower` refuses it with that reason

@@ -129,7 +129,7 @@ fn slideMove(w &mut World, ch &Character, start Vec3, disp Vec3, push bool, dt f
     if len < 0.00001 { break; }
     let dir = remaining * (1. / len);
     let hit = sweepCapsule(w, ch, pos, remaining);
-    if not hit.hit {
+    if !hit.hit {
       pos = pos + remaining;
       break;
     }
@@ -139,7 +139,7 @@ fn slideMove(w &mut World, ch &Character, start Vec3, disp Vec3, push bool, dt f
     pos = pos + dir * adv;
     remaining = dir * (len - adv);
     // shove a dynamic body: the character's momentum into it
-    if push and ch.s.pushStrength > 0. and dt > 0. {
+    if push && ch.s.pushStrength > 0. && dt > 0. {
       let b = w.bodies[usize.from(hit.body)];
       if b.motion == MotionDynamic {
         let speedInto = maxf(0., -remaining.dot(nS) / dt);
@@ -148,7 +148,7 @@ fn slideMove(w &mut World, ch &Character, start Vec3, disp Vec3, push bool, dt f
     }
     // slide along the surface; a steep one is a wall for any move that would climb it
     var slid = remaining - nS * remaining.dot(nS);
-    if nS.y < cosSlope and nS.y > 0.0001 and slid.y > 0. {
+    if nS.y < cosSlope && nS.y > 0.0001 && slid.y > 0. {
       let hn = new Vec3(nS.x, 0., nS.z);
       let hl = hn.length();
       if hl > 0.0001 {
@@ -202,7 +202,7 @@ fn tryStep(w &mut World, ch &Character, start Vec3, dispH Vec3, dt f32, out &mut
   // down onto the floor
   let dropMax = raise + skin * 2.;
   let downHit = sweepCapsule(w, ch, ahead, downV() * dropMax);
-  if not downHit.hit { return false; }
+  if !downHit.hit { return false; }
   let nS = downHit.normal * -1.;
   if nS.y < cosSlope { return false; }
   let drop = maxf(0., downHit.fraction * dropMax - skin);
@@ -223,7 +223,7 @@ pub fn updateCharacter(w &mut World, ch &mut Character, wish Vec3, jump f32, dt 
   ch.platformYaw = 0.;
 
   // carried by the ground it stood on
-  if ch.grounded and w.isAlive(ch.groundBody) {
+  if ch.grounded && w.isAlive(ch.groundBody) {
     let gv = w.pointVelocity(ch.groundBody, ch.groundPoint);
     ch.groundVelocity = gv;
     ch.platformYaw = w.angularVelocity(ch.groundBody).y * dt;
@@ -253,7 +253,7 @@ pub fn updateCharacter(w &mut World, ch &mut Character, wish Vec3, jump f32, dt 
   } else {
     v = new Vec3(wishH.x, maxf(ch.vel.y - ch.s.gravity * dt, -ch.s.maxFallSpeed), wishH.z);
   }
-  let rising = jumped or (not wasGrounded and not wasSteep and v.y > 0.0001);
+  let rising = jumped || (!wasGrounded && !wasSteep && v.y > 0.0001);
   let stepStart = ch.pos;
   var end = slideMove(w, ch, stepStart, v * dt, true, dt);
   var vel = (end - stepStart) * (1. / dt);
@@ -262,7 +262,7 @@ pub fn updateCharacter(w &mut World, ch &mut Character, wish Vec3, jump f32, dt 
   // stairs: on the ground, asked to walk, got less far than asked
   let dispH = wishH * dt;
   var stepped = false;
-  if wasGrounded and not jumped and dispH.length() > 0.0001 {
+  if wasGrounded && !jumped && dispH.length() > 0.0001 {
     let gotH = new Vec3(end.x - stepStart.x, 0., end.z - stepStart.z).length();
     if gotH < dispH.length() - 0.002 {
       var at = zero3();
@@ -275,7 +275,7 @@ pub fn updateCharacter(w &mut World, ch &mut Character, wish Vec3, jump f32, dt 
   ch.pos = end;
 
   // stick to the floor it was on
-  if wasGrounded and not jumped and not stepped {
+  if wasGrounded && !jumped && !stepped {
     var snapped = false;
     let hit = sweepCapsule(w, ch, ch.pos, downV() * ch.s.stickDistance);
     if hit.hit {
@@ -290,17 +290,17 @@ pub fn updateCharacter(w &mut World, ch &mut Character, wish Vec3, jump f32, dt 
     // far to stand on. If that edge is behind the foot (its normal leans the way it is walking: it is leaving the
     // edge) a ray straight down from the middle of the foot finds the floor below; follow it down, sliding off.
     // (An edge ahead of the foot, on the climb to a step, must not do this: its normal leans back.)
-    let leaving = not hit.hit or (hit.normal * -1.).dot(wishH) > 0.;
-    if not snapped and leaving {
+    let leaving = !hit.hit || (hit.normal * -1.).dot(wishH) > 0.;
+    if !snapped && leaving {
       let rayHit = worldRayCast(w, ch.pos + up * 0.05, downV(), ch.s.stickDistance + 0.05, new QueryFilter(ch.s.mask, NoBody, false));
-      if rayHit.hit and rayHit.normal.y >= cosSlope {
+      if rayHit.hit && rayHit.normal.y >= cosSlope {
         let drop = rayHit.t - 0.05 - ch.s.skin;
         if drop > 0.001 {
           ch.pos = slideMove(w, ch, ch.pos, downV() * drop, false, dt);
           vel = new Vec3(vel.x, 0., vel.z);
           // the slide off the edge may leave it short of the floor: finish the drop
           let again = sweepCapsule(w, ch, ch.pos, downV() * ch.s.stickDistance);
-          if again.hit and again.normal.y <= -cosSlope {
+          if again.hit && again.normal.y <= -cosSlope {
             ch.pos = ch.pos - up * maxf(0., again.fraction * ch.s.stickDistance - ch.s.skin);
           }
         }
@@ -324,18 +324,18 @@ pub fn updateCharacter(w &mut World, ch &mut Character, wish Vec3, jump f32, dt 
     ch.groundVelocity = w.pointVelocity(floorBody, ch.pos);
   } else if gh.hit {
     let nS = gh.normal * -1.;
-    if nS.y >= cosSlope and not rising {
+    if nS.y >= cosSlope && !rising {
       ch.grounded = true;
       ch.groundBody = gh.body;
       ch.groundNormal = nS;
       ch.groundPoint = gh.pointB;
       ch.groundVelocity = w.pointVelocity(gh.body, gh.pointB);
-    } else if nS.y < cosSlope and nS.y > 0.0001 and not rising {
+    } else if nS.y < cosSlope && nS.y > 0.0001 && !rising {
       ch.onSteep = true;
       ch.steepNormal = nS;
     }
   }
-  ch.landSpeed = if ch.grounded and not wasGrounded { maxf(0., -v.y) } else { 0. };
+  ch.landSpeed = if ch.grounded && !wasGrounded { maxf(0., -v.y) } else { 0. };
   if ch.grounded {
     vel = zero3();
     // loads a dynamic body it stands on with its weight

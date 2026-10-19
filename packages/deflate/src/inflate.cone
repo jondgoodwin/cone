@@ -267,7 +267,7 @@ pub struct Inflater {
   pub fn pull(self &mut, out &mut List[u8], max usize) Status {
     if failed { return Status.Failed; }
     let s = self.advance(max);
-    if not failed { bi.unpad(); }
+    if !failed { bi.unpad(); }
     self.deliver(out);
     self.dropUsedInput();
     s
@@ -310,7 +310,7 @@ pub struct Inflater {
         let s = if format == Format.Zlib {self.zlibTrailer()} else {self.gzipTrailer()};
         if s != Status.Done { result = s; break; }
         members = members + 1u32;
-        stage = if format == Format.Gzip and multi {Stage.Between} else {Stage.End};
+        stage = if format == Format.Gzip && multi {Stage.Between} else {Stage.End};
       } elif stage == Stage.Between {
         let s = self.betweenMembers();
         if s != Status.Done { result = s; break; }
@@ -367,7 +367,7 @@ pub struct Inflater {
   fn dropUsedInput(self &mut) {
     let used = bi.pos - usize.from(bi.nbits / 8u32);
     let total = bi.buf.len();
-    if used > 0usize and used >= total - used {
+    if used > 0usize && used >= total - used {
       var i = 0usize;
       while i < total - used { bi.buf.set(i, *bi.buf[used + i]); i = i + 1usize; }
       bi.buf.truncate(total - used);
@@ -383,7 +383,7 @@ pub struct Inflater {
     if bi.buf.len() - bi.pos < 2usize { return self.starved("zlib: the stream is too short"); }
     let cmf = u32.from(*bi.buf[bi.pos]);
     let flg = u32.from(*bi.buf[bi.pos + 1usize]);
-    if (cmf & 15u32) != 8u32 or (cmf >> 4u32) > 7u32 {
+    if (cmf & 15u32) != 8u32 || (cmf >> 4u32) > 7u32 {
       self.fail(ErrorKind.BadHeader, "zlib: not deflate with a window of 32 KiB or less");
       return Status.Failed;
     }
@@ -465,7 +465,7 @@ pub struct Inflater {
   // After a gzip member: padding zeros (as gzip tools allow), another member,
   // or the end of the input
   fn betweenMembers(self &mut) Status {
-    while bi.pos < bi.buf.len() and *bi.buf[bi.pos] == 0u8 { bi.pos = bi.pos + 1usize; }
+    while bi.pos < bi.buf.len() && *bi.buf[bi.pos] == 0u8 { bi.pos = bi.pos + 1usize; }
     if bi.pos >= bi.buf.len() {
       if finished { stage = Stage.End; return Status.Done; }
       return Status.NeedInput;
@@ -477,7 +477,7 @@ pub struct Inflater {
       }
       return Status.NeedInput;
     }
-    if *bi.buf[bi.pos] != 0x1Fu8 or *bi.buf[bi.pos + 1usize] != 0x8Bu8 {
+    if *bi.buf[bi.pos] != 0x1Fu8 || *bi.buf[bi.pos + 1usize] != 0x8Bu8 {
       self.fail(ErrorKind.TrailingData, "gzip: bytes after the last member are not another member");
       return Status.Failed;
     }
@@ -551,7 +551,7 @@ pub struct Inflater {
       phase = Phase.Codes;
     } elif kind == 2u32 {
       self.dynamicTables();
-      if not failed { phase = Phase.Codes; }
+      if !failed { phase = Phase.Codes; }
     } else {
       self.fail(ErrorKind.BadBlock, "invalid block type");
     }
@@ -610,7 +610,7 @@ pub struct Inflater {
     let nlen = usize.from(bi.getBits(5u32)) + 257usize;
     let ndist = usize.from(bi.getBits(5u32)) + 1usize;
     let ncode = usize.from(bi.getBits(4u32)) + 4usize;
-    if nlen > 286usize or ndist > 30usize {
+    if nlen > 286usize || ndist > 30usize {
       self.fail(ErrorKind.BadBlock, "too many length or distance codes");
       return;
     }
@@ -623,7 +623,7 @@ pub struct Inflater {
       i = i + 1usize;
     }
     var cl = Huffman.empty();
-    if not cl.build(lengths.view(), 19usize) {
+    if !cl.build(lengths.view(), 19usize) {
       self.fail(ErrorKind.BadBlock, "bad code-length code");
       return;
     }
@@ -673,7 +673,7 @@ pub struct Inflater {
       return;
     }
     litIsFixed = false;
-    if not lit.build(lengths.view(), nlen) {
+    if !lit.build(lengths.view(), nlen) {
       self.fail(ErrorKind.BadBlock, "bad literal/length code");
       return;
     }
@@ -681,7 +681,7 @@ pub struct Inflater {
     var dl = List[u8].withCapacity(ndist);
     i = 0usize;
     while i < ndist { dl.push(*lengths[nlen + i]); i = i + 1usize; }
-    if not dist.build(dl.view(), ndist) {
+    if !dist.build(dl.view(), ndist) {
       self.fail(ErrorKind.BadBlock, "bad distance code");
       return;
     }
@@ -712,7 +712,7 @@ pub struct Inflater {
     // A match whose copy a limit cut short
     if copyLen > 0usize {
       let n = if copyLen < cap {copyLen} else {cap};
-      if limited and n < copyLen {
+      if limited && n < copyLen {
         self.fail(ErrorKind.TooLarge, "output larger than expected");
         return Status.Failed;
       }
@@ -721,7 +721,7 @@ pub struct Inflater {
       copyLen = copyLen - n;
     }
     while copyLen == 0usize {
-      if produced >= cap and not limited {
+      if produced >= cap && !limited {
         result = Status.MoreOutput;
         break;
       }
@@ -749,7 +749,7 @@ pub struct Inflater {
         } else {
           value = usize.from(lenBase[li]) + usize.from(bi.getBits(u32.from(lenExtra[li])));
           let ds = bi.decode(&dist);
-          if ds < 0i32 or ds >= 30i32 {
+          if ds < 0i32 || ds >= 30i32 {
             kind = 3i32;
             why = "invalid distance code";
           } else {
@@ -798,7 +798,7 @@ pub struct Inflater {
           break;
         }
         let n = if value < cap - produced {value} else {cap - produced};
-        if limited and n < value {
+        if limited && n < value {
           self.fail(ErrorKind.TooLarge, "output larger than expected");
           result = Status.Failed;
           break;
@@ -809,7 +809,7 @@ pub struct Inflater {
         copyDist = d;
       }
     }
-    if result == Status.Done and copyLen > 0usize { result = Status.MoreOutput; }
+    if result == Status.Done && copyLen > 0usize { result = Status.MoreOutput; }
     *room = *room - produced;
     outTotal = outTotal + u64.from(produced);
     result
@@ -846,7 +846,7 @@ fn le32(b &Array[u8], p usize) u32 {
 fn parseGzipHeader(b &Array[u8], p0 usize, crc &Crc32, h &mut GzipHeader) i64 {
   let n = b.len;
   if n - p0 < 10usize { return -1i64; }
-  if b[p0] != 0x1Fu8 or b[p0 + 1usize] != 0x8Bu8 { return -2i64; }
+  if b[p0] != 0x1Fu8 || b[p0 + 1usize] != 0x8Bu8 { return -2i64; }
   if b[p0 + 2usize] != 8u8 { return -3i64; }
   let flg = b[p0 + 3usize];
   if (flg & 0xE0u8) != 0u8 { return -4i64; }

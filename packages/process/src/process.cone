@@ -422,11 +422,11 @@ pub struct ProcessError {
   // specified', or 'run conec in build/x: The directory name is invalid'
   pub fn message(self &) String {
     var out = String.from(op.view());
-    if not program.isEmpty() {
+    if !program.isEmpty() {
       out.append(" ");
       out.append(program.view());
     }
-    if not dir.isEmpty() {
+    if !dir.isEmpty() {
       out.append(" in ");
       out.append(dir.view());
     }
@@ -439,7 +439,7 @@ pub struct ProcessError {
   // Whether it failed because there is no such program (or no folder on its
   // path), ERROR_FILE_NOT_FOUND or ERROR_PATH_NOT_FOUND; on POSIX ENOENT
   pub fn notFound(self &) bool {
-    if isWindows() {code == errorFileNotFound or code == errorPathNotFound} else {code == errnoNoEntry}
+    if isWindows() {code == errorFileNotFound || code == errorPathNotFound} else {code == errnoNoEntry}
   }
 }
 
@@ -552,7 +552,7 @@ fn quoteArg(out &mut String, a &Array[u8]) {
   var i = 0usize;
   while i < a.len {
     let c = a[i];
-    if c == ' ' or c == '\t' or c == '\n' or c == 0x0Bu8 or c == '"' { plain = false; }
+    if c == ' ' || c == '\t' || c == '\n' || c == 0x0Bu8 || c == '"' { plain = false; }
     i = i + 1usize;
   }
   if plain {
@@ -588,7 +588,7 @@ fn quoteArg(out &mut String, a &Array[u8]) {
 // all. So it is quoted only where it holds a space or a tab, or is empty,
 // and can hold no '"', which 'run' refuses.
 fn quoteProgram(out &mut String, p &Array[u8]) {
-  if p.len > 0usize and not hasByte(p, ' ') and not hasByte(p, '\t') {
+  if p.len > 0usize && !hasByte(p, ' ') && !hasByte(p, '\t') {
     out.append(p as &str);
     return;
   }
@@ -651,7 +651,7 @@ pub struct Output {
   pub stderr String;
 
   // It finished in time, with exit code 0
-  pub fn success(self &) bool { exitCode == 0u32 and not timedOut }
+  pub fn success(self &) bool { exitCode == 0u32 && !timedOut }
 }
 
 // Run a program and wait for it: args[0] is the program, the rest its
@@ -672,7 +672,7 @@ pub fn run(args &Array[String], opts Options = new Options(), dir &Path = "") Re
     i = i + 1usize;
   }
   // The program's name may not hold a '"' on Windows, which cannot write it
-  if isWindows() and hasByte(program, '"') {
+  if isWindows() && hasByte(program, '"') {
     return Error[Output, ProcessError](failure("run", program, dir, errorInvalidName));
   }
   if isWindows() {
@@ -741,7 +741,7 @@ fn makePipe(s &mut Stream) usize {
       let theirs = CreateFileW(wname, genericWrite, 0u32, &sa, openExisting, 0u32, 0usize);
       libc.free(wname as *u8);
       let event = CreateEventW(null, 1i32, 0i32, null);
-      if theirs == invalidHandle or event == 0usize {
+      if theirs == invalidHandle || event == 0usize {
         closeIf(theirs);
         closeIf(event);
         CloseHandle(ours);
@@ -771,7 +771,7 @@ fn openNul(access u32) usize {
 // where it has none
 fn inheritStd(which u32, access u32) usize {
   let h = GetStdHandle(which);
-  if h != 0usize and h != invalidHandle {
+  if h != 0usize && h != invalidHandle {
     var copy = 0usize;
     let me = GetCurrentProcess();
     if DuplicateHandle(me, h, me, &mut copy, 0u32, 1i32, duplicateSameAccess) != 0i32 {
@@ -782,7 +782,7 @@ fn inheritStd(which u32, access u32) usize {
 }
 
 fn closeIf(h usize) {
-  if h != 0usize and h != invalidHandle { CloseHandle(h); }
+  if h != 0usize && h != invalidHandle { CloseHandle(h); }
 }
 
 // Start the next read; a pipe the child has closed, all its handles gone,
@@ -809,10 +809,10 @@ fn harvest(s &mut Stream) {
 // Stop reading: cancel the read in flight, and wait until Windows is done
 // with the buffer, keeping whatever it brought
 fn cancel(s &mut Stream) {
-  if not s.active { return; }
+  if !s.active { return; }
   CancelIoEx(s.pipe, &mut s.ov);
   var got = 0u32;
-  if GetOverlappedResult(s.pipe, &mut s.ov, &mut got, 1i32) != 0i32 and got > 0u32 {
+  if GetOverlappedResult(s.pipe, &mut s.ov, &mut got, 1i32) != 0i32 && got > 0u32 {
     s.data.appendBytes(mem.sliceFromParts(s.buf, usize.from(got)));
   }
   s.active = false;
@@ -827,7 +827,7 @@ fn closeStream(s &mut Stream) {
 // Milliseconds left until deadline, rounded up, for a wait; INFINITE when
 // there is none
 fn remaining(timed bool, deadline time.Instant) u32 {
-  if not timed { return infinite; }
+  if !timed { return infinite; }
   let left = (deadline - time.Instant.now()).nanos();
   if left <= 0i64 { return 0u32; }
   let ms = (left + 999999i64) / 1000000i64;
@@ -863,13 +863,13 @@ struct Debuggee {
 // the child's own handlers, the loader's breakpoint aside
 fn pump(d &mut Debuggee, ms u32) bool {
   var within = ms;
-  while not d.exited and WaitForDebugEvent(&mut d.ev, within) != 0i32 {
+  while !d.exited && WaitForDebugEvent(&mut d.ev, within) != 0i32 {
     within = 0u32;
     var status = dbgContinue;
     if d.ev.code == exceptionDebugEvent {
       let code = u32.from(d.ev.u[0usize]);
       let firstChance = u32.from(d.ev.u[19usize]) != 0u32;
-      if firstChance and code == statusBreakpoint and not d.seenBreakpoint {
+      if firstChance && code == statusBreakpoint && !d.seenBreakpoint {
         d.seenBreakpoint = true;
       }
       elif firstChance {
@@ -879,7 +879,7 @@ fn pump(d &mut Debuggee, ms u32) bool {
         status = dbgNotHandled;
       }
     }
-    elif d.ev.code == createProcessDebugEvent or d.ev.code == loadDllDebugEvent {
+    elif d.ev.code == createProcessDebugEvent || d.ev.code == loadDllDebugEvent {
       // The image's file, the debugger's to close
       closeIf(usize.from(d.ev.u[0usize]));
     }
@@ -906,21 +906,21 @@ fn debuggeeEnvironment() *u16 {
   var i = 0usize;
   while *(block + i) != 0u16 {
     var j = 0usize;
-    while j < name.len and *(block + i + j) == u16.from(name[j]) { j = j + 1usize; }
+    while j < name.len && *(block + i + j) == u16.from(name[j]) { j = j + 1usize; }
     if j == name.len { found = true; }
     while *(block + i) != 0u16 { i = i + 1usize; }
     i = i + 1usize;
   }
   let added &Array[u8] = "_NO_DEBUG_HEAP=1";
   var extra = 0usize;
-  if not found { extra = added.len + 1usize; }
+  if !found { extra = added.len + 1usize; }
   let out = libc.malloc((i + extra + 1usize) * 2usize) as *u16;
   var k = 0usize;
   while k < i {
     *(out + k) = *(block + k);
     k = k + 1usize;
   }
-  if not found {
+  if !found {
     var m = 0usize;
     while m < added.len {
       *(out + k) = u16.from(added[m]);
@@ -939,7 +939,7 @@ fn debuggeeEnvironment() *u16 {
 // slice of it when there are a debuggee's events to handle between
 fn waitFor(timed bool, deadline time.Instant, debugging bool) u32 {
   let left = remaining(timed, deadline);
-  if debugging and left > debugSlice {debugSlice} else {left}
+  if debugging && left > debugSlice {debugSlice} else {left}
 }
 
 // Start line, read what it writes, wait for it
@@ -949,7 +949,7 @@ fn start(op &str, program &str, line &str, dir &Path, opts Options) Result[Outpu
     return Error[Output, ProcessError](failure(op, program, dir, errorNoUnicodeTranslation));
   }
   var wdir *u16 = null;
-  if not dir.isEmpty() {
+  if !dir.isEmpty() {
     if hasByte(dir.view(), 0u8) {
       libc.free(wline as *u8);
       return Error[Output, ProcessError](failure(op, program, dir, errorInvalidParameter));
@@ -990,7 +990,7 @@ fn start(op &str, program &str, line &str, dir &Path, opts Options) Result[Outpu
   let list = libc.malloc(listSize);
   var failed = true;
   var code = 0u32;
-  if childIn == 0usize or childOut == 0usize or childErr == 0usize {
+  if childIn == 0usize || childOut == 0usize || childErr == 0usize {
     code = GetLastError();
   }
   elif InitializeProcThreadAttributeList(list, 1u32, 0u32, &mut listSize) == 0i32 {
@@ -1007,14 +1007,14 @@ fn start(op &str, program &str, line &str, dir &Path, opts Options) Result[Outpu
 
   var pi = new ProcessInformation(0usize, 0usize, 0u32, 0u32);
   let timed = opts.timeout > time.Duration.zero();
-  if not failed {
+  if !failed {
     var si = new StartupInfoEx(112u32, null, null, null,
       0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32, useStdHandles, 0u16, 0u16, null,
       childIn, childOut, childErr, list);
     var flags = extendedStartupInfo;
     if timed { flags = flags | createSuspended; }
     var environment *u16 = null;
-    if not opts.crashReport {
+    if !opts.crashReport {
       flags = flags | debugOnlyThisProcess;
       environment = debuggeeEnvironment();
       if environment as usize != 0usize { flags = flags | unicodeEnvironment; }
@@ -1051,7 +1051,7 @@ fn start(op &str, program &str, line &str, dir &Path, opts Options) Result[Outpu
   var deadline = time.Instant.fromNanos(0i64);
   if timed {
     job = CreateJobObjectW(null, null);
-    if job != 0usize and AssignProcessToJobObject(job, pi.hProcess) == 0i32 {
+    if job != 0usize && AssignProcessToJobObject(job, pi.hProcess) == 0i32 {
       CloseHandle(job);
       job = 0usize;
     }
@@ -1060,7 +1060,7 @@ fn start(op &str, program &str, line &str, dir &Path, opts Options) Result[Outpu
   }
 
   // Run as this program's debuggee, its events are handled while it runs
-  var dbg = new Debuggee(not opts.crashReport, pi.hProcess, false, false,
+  var dbg = new Debuggee(!opts.crashReport, pi.hProcess, false, false,
     new DebugEvent(0u32, 0u32, 0u32, new Array[u64, 20] <- fill 0u64));
 
   // Both outputs at once, so that a child blocked writing one is never
@@ -1070,7 +1070,7 @@ fn start(op &str, program &str, line &str, dir &Path, opts Options) Result[Outpu
   if se.active { readNext(&mut se); }
   var events = new Array[usize, 2] <- fill 0usize;
   let ep *usize = &[]events as *usize;
-  while so.active or se.active {
+  while so.active || se.active {
     if dbg.on { pump(&mut dbg, 0u32); }
     var n = 0u32;
     if so.active {
@@ -1087,7 +1087,7 @@ fn start(op &str, program &str, line &str, dir &Path, opts Options) Result[Outpu
     var within = remaining(timed, deadline);
     if dbg.on { within = 0u32; }
     let r = WaitForMultipleObjects(n, ep, 0i32, within);
-    if r == waitTimeout and dbg.on and not (timed and remaining(timed, deadline) == 0u32) {
+    if r == waitTimeout && dbg.on && !(timed && remaining(timed, deadline) == 0u32) {
       // Nothing read: wait for its next event, for a slice at most
       pump(&mut dbg, waitFor(timed, deadline, true));
     }
@@ -1102,7 +1102,7 @@ fn start(op &str, program &str, line &str, dir &Path, opts Options) Result[Outpu
       cancel(&mut so);
       cancel(&mut se);
     }
-    elif so.active and events[usize.from(r)] == so.ov.hEvent {
+    elif so.active && events[usize.from(r)] == so.ov.hEvent {
       harvest(&mut so);
     }
     else {
@@ -1112,8 +1112,8 @@ fn start(op &str, program &str, line &str, dir &Path, opts Options) Result[Outpu
 
   if dbg.on {
     // Its events until it exits, or its time runs out
-    while not pump(&mut dbg, waitFor(timed, deadline, true)) and not timedOut {
-      if timed and remaining(timed, deadline) == 0u32 {
+    while !pump(&mut dbg, waitFor(timed, deadline, true)) && !timedOut {
+      if timed && remaining(timed, deadline) == 0u32 {
         timedOut = true;
         stop(job, pi.hProcess);
       }
@@ -1121,10 +1121,10 @@ fn start(op &str, program &str, line &str, dir &Path, opts Options) Result[Outpu
     // Stopped, it still has its last events to give: for up to ten seconds,
     // and then it is let go
     var waits = 0u32;
-    while not pump(&mut dbg, 50u32) and waits < 200u32 { waits = waits + 1u32; }
-    if not dbg.exited { DebugActiveProcessStop(pi.dwProcessId); }
+    while !pump(&mut dbg, 50u32) && waits < 200u32 { waits = waits + 1u32; }
+    if !dbg.exited { DebugActiveProcessStop(pi.dwProcessId); }
   }
-  elif not timedOut and WaitForSingleObject(pi.hProcess, remaining(timed, deadline)) == waitTimeout {
+  elif !timedOut && WaitForSingleObject(pi.hProcess, remaining(timed, deadline)) == waitTimeout {
     timedOut = true;
     stop(job, pi.hProcess);
   }
@@ -1161,7 +1161,7 @@ fn closeFdIf(fd i32) {
 // Milliseconds left until deadline, rounded up, for a poll; -1, no limit,
 // when there is none
 fn remainingMs(timed bool, deadline time.Instant) i32 {
-  if not timed { return -1i32; }
+  if !timed { return -1i32; }
   let left = (deadline - time.Instant.now()).nanos();
   if left <= 0i64 { return 0i32; }
   let ms = (left + 999999i64) / 1000000i64;
@@ -1204,7 +1204,7 @@ fn readReady(r &mut Reader, buf *u8) {
   if n > 0isize {
     r.data.appendBytes(mem.sliceFromParts(buf, usize.from(n)));
   }
-  elif n == 0isize or *libc.errno() != errnoInterrupted {
+  elif n == 0isize || *libc.errno() != errnoInterrupted {
     closeFd(r.fd);
     r.fd = -1i32;
   }
@@ -1215,7 +1215,7 @@ fn readReady(r &mut Reader, buf *u8) {
 fn startPosix(op &str, program &str, args &Array[String], dir &Path, opts Options) Result[Output, ProcessError] {
   // The working folder must be a folder there is
   var cdir = String.empty();
-  if not dir.isEmpty() {
+  if !dir.isEmpty() {
     if hasByte(dir.view(), 0u8) {
       return Error[Output, ProcessError](failure(op, program, dir, errnoInvalid));
     }
@@ -1236,7 +1236,7 @@ fn startPosix(op &str, program &str, args &Array[String], dir &Path, opts Option
   let name = args[0usize].view();
   var file = String.from(name);
   let named &Array[u8] = name;
-  if not dir.isEmpty() and hasByte(named, '/') and named[0usize] != '/' {
+  if !dir.isEmpty() && hasByte(named, '/') && named[0usize] != '/' {
     let here = posix.getcwd(null, 0usize);
     if here != null {
       file = String.fromCStr(cstr.fromPtr(here));
@@ -1274,7 +1274,7 @@ fn startPosix(op &str, program &str, args &Array[String], dir &Path, opts Option
   let timed = opts.timeout > time.Duration.zero();
   var rc = actionsInit(ap);
   if rc == 0i32 { rc = attrInit(tp); }
-  if rc == 0i32 and not opts.inherit {
+  if rc == 0i32 && !opts.inherit {
     if makePipe2(outp, closeOnExec) != 0i32 {
       rc = *libc.errno();
     }
@@ -1291,8 +1291,8 @@ fn startPosix(op &str, program &str, args &Array[String], dir &Path, opts Option
       if rc == 0i32 { rc = actionsDup2(ap, errFds[1usize], 2i32); }
     }
   }
-  if rc == 0i32 and cdir.len() > 0usize { rc = actionsChdir(ap, cdir.cstr()); }
-  if rc == 0i32 and timed {
+  if rc == 0i32 && cdir.len() > 0usize { rc = actionsChdir(ap, cdir.cstr()); }
+  if rc == 0i32 && timed {
     rc = attrFlags(tp, spawnSetGroup);
     if rc == 0i32 { rc = attrGroup(tp, 0i32); }
   }
@@ -1301,7 +1301,7 @@ fn startPosix(op &str, program &str, args &Array[String], dir &Path, opts Option
   // take: the limit is zero for the child, whose it becomes, and put back
   var saved = new RLimit(0u64, 0u64);
   var limited = false;
-  if rc == 0i32 and not opts.crashReport {
+  if rc == 0i32 && !opts.crashReport {
     if getLimit(limitCore, &mut saved as *RLimit) == 0i32 {
       var none = new RLimit(0u64, saved.hard);
       setLimit(limitCore, &mut none as *RLimit);
@@ -1324,7 +1324,7 @@ fn startPosix(op &str, program &str, args &Array[String], dir &Path, opts Option
   libc.free(argv as *u8);
   // The child's ends are the child's now: with ours closed, a pipe ends when
   // the child, and whatever it started, has closed it
-  if not opts.inherit and so.fd >= 0i32 {
+  if !opts.inherit && so.fd >= 0i32 {
     closeFd(outFds[1usize]);
     closeFd(errFds[1usize]);
   }
@@ -1344,7 +1344,7 @@ fn startPosix(op &str, program &str, args &Array[String], dir &Path, opts Option
   let buf = libc.malloc(65536usize);
   var polls = new Array[PollFd, 2] <- fill new PollFd(-1i32, pollIn, 0i16);
   let pp *PollFd = &[]polls as *PollFd;
-  var reading = so.fd >= 0i32 or se.fd >= 0i32;
+  var reading = so.fd >= 0i32 || se.fd >= 0i32;
   while reading {
     polls[0usize].fd = so.fd;
     polls[0usize].revents = 0i16;
@@ -1361,9 +1361,9 @@ fn startPosix(op &str, program &str, args &Array[String], dir &Path, opts Option
       if *libc.errno() != errnoInterrupted { reading = false; }
     }
     else {
-      if so.fd >= 0i32 and polls[0usize].revents != 0i16 { readReady(&mut so, buf); }
-      if se.fd >= 0i32 and polls[1usize].revents != 0i16 { readReady(&mut se, buf); }
-      reading = so.fd >= 0i32 or se.fd >= 0i32;
+      if so.fd >= 0i32 && polls[0usize].revents != 0i16 { readReady(&mut so, buf); }
+      if se.fd >= 0i32 && polls[1usize].revents != 0i16 { readReady(&mut se, buf); }
+      reading = so.fd >= 0i32 || se.fd >= 0i32;
     }
   }
   libc.free(buf);
@@ -1373,13 +1373,13 @@ fn startPosix(op &str, program &str, args &Array[String], dir &Path, opts Option
   // Wait for the child, until its time runs out
   var status = 0i32;
   var reaped = false;
-  if timed and not timedOut {
-    while not reaped and not timedOut {
+  if timed && !timedOut {
+    while !reaped && !timedOut {
       let w = waitPid(pid, &mut status as *i32, waitNoHang);
       if w == pid {
         reaped = true;
       }
-      elif w < 0i32 and *libc.errno() != errnoInterrupted {
+      elif w < 0i32 && *libc.errno() != errnoInterrupted {
         reaped = true;
       }
       elif remainingMs(timed, deadline) == 0i32 {
@@ -1392,9 +1392,9 @@ fn startPosix(op &str, program &str, args &Array[String], dir &Path, opts Option
       }
     }
   }
-  while not reaped {
+  while !reaped {
     let w = waitPid(pid, &mut status as *i32, 0i32);
-    if w == pid or *libc.errno() != errnoInterrupted { reaped = true; }
+    if w == pid || *libc.errno() != errnoInterrupted { reaped = true; }
   }
   var out = String.empty();
   var err = String.empty();

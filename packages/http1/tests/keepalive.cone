@@ -170,7 +170,7 @@ fn exchange(c &mut Connection, s &mut Connection, pool &Pool, sv &mut Serving, h
     c.sendRequest(head, BodyLength.empty());
   }
   var rounds = 0u32;
-  while not g.ended and not g.closed and rounds < 10u32 {
+  while !g.ended && !g.closed && rounds < 10u32 {
     pump(c, s);
     serve(s, pool, sv);
     pump(c, s);
@@ -188,19 +188,19 @@ fn reuse(pool &Pool) {
   while n < 200u64 {
     var g = got();
     let kind = n % 4u64;
-    if kind == 0u64 or kind == 1u64 {
+    if kind == 0u64 || kind == 1u64 {
       var t = String.from("/get/");
       t.appendUInt(n * 37u64);
       exchange(&mut c, &mut s, pool, &mut sv, RequestHead.get(t.view(), "h"), "", false, &mut g);
       let want = usize.from((n * 37u64) % 300u64);
       let v = g.body.view();
-      var ok = g.status == 200u16 and v.len == want;
+      var ok = g.status == 200u16 && v.len == want;
       var i = 0usize;
-      while ok and i < v.len {
+      while ok && i < v.len {
         if v[i] != bodyByte(n * 37u64, u64.from(i)) {ok = false;}
         i = i + 1usize;
       }
-      if not ok {wrong = wrong + 1u64;}
+      if !ok {wrong = wrong + 1u64;}
     } elif kind == 2u64 {
       var text = String.empty();
       var i = 0u64;
@@ -209,24 +209,24 @@ fn reuse(pool &Pool) {
         i = i + 1u64;
       }
       exchange(&mut c, &mut s, pool, &mut sv, RequestHead.make("POST", "/echo", "h"), text.view(), true, &mut g);
-      if g.status != 200u16 or not g.body.equals(text.view()) {wrong = wrong + 1u64;}
+      if g.status != 200u16 || !g.body.equals(text.view()) {wrong = wrong + 1u64;}
     } else {
       if n % 8u64 == 3u64 {
         exchange(&mut c, &mut s, pool, &mut sv, RequestHead.make("HEAD", "/h", "h"), "", false, &mut g);
       } else {
         exchange(&mut c, &mut s, pool, &mut sv, RequestHead.get("/204", "h"), "", false, &mut g);
       }
-      if g.body.len() != 0usize or not g.ended {wrong = wrong + 1u64;}
+      if g.body.len() != 0usize || !g.ended {wrong = wrong + 1u64;}
     }
-    if not g.ended or g.closed or g.failed {wrong = wrong + 1u64;}
+    if !g.ended || g.closed || g.failed {wrong = wrong + 1u64;}
     n = n + 1u64;
   }
   expectUInt(wrong, 0u64, "200 exchanges on one connection, every body right");
   expectUInt(c.exchangeCount(), 200u64, "the client counted 200");
   expectUInt(s.exchangeCount(), 200u64, "so did the server");
   expectUInt(sv.requests, 200u64, "200 requests read");
-  expect(c.canSendRequest() and not s.isClosed(), "and the connection is still open");
-  expect(c.bytesSent() == s.bytesReceived() and s.bytesSent() == c.bytesReceived(), "every byte sent was received");
+  expect(c.canSendRequest() && !s.isClosed(), "and the connection is still open");
+  expect(c.bytesSent() == s.bytesReceived() && s.bytesSent() == c.bytesReceived(), "every byte sent was received");
 }
 
 fn closing(pool &Pool) {
@@ -240,9 +240,9 @@ fn closing(pool &Pool) {
     exchange(&mut c, &mut s, pool, &mut sv, h, "", false, &mut g);
     pump(&mut c, &mut s);
     read(&mut c, &mut g);
-    expect(g.ended and g.body.len() == 5usize, "the response to 'Connection: close'");
-    expect(c.isClosed() and c.shouldClose(), "the client closes after it");
-    expect(s.isClosed() and s.shouldClose(), "so does the server");
+    expect(g.ended && g.body.len() == 5usize, "the response to 'Connection: close'");
+    expect(c.isClosed() && c.shouldClose(), "the client closes after it");
+    expect(s.isClosed() && s.shouldClose(), "so does the server");
   }
   {
     var c = Connection.client(Config.make(), *pool, at());
@@ -254,8 +254,8 @@ fn closing(pool &Pool) {
     c.handleInput(IoBuf.empty(), at());    // the server closed its end
     var g2 = got();
     read(&mut c, &mut g2);
-    expect(g2.closed and not g2.failed, "the server finished while idle: closed, cleanly");
-    expect(not c.canSendRequest(), "and no request may follow");
+    expect(g2.closed && !g2.failed, "the server finished while idle: closed, cleanly");
+    expect(!c.canSendRequest(), "and no request may follow");
   }
   {
     // A request whose body the server answers before reading: both close
@@ -269,14 +269,14 @@ fn closing(pool &Pool) {
     expect(s.isClosed(), "the server answered before the body: it will close");
     pump(&mut c, &mut s);
     read(&mut c, &mut g);
-    expect(g.status == 413u16 and g.ended, "the client reads the early answer");
+    expect(g.status == 413u16 && g.ended, "the client reads the early answer");
     expect(c.isClosed(), "and closes: its body is abandoned");
     var refused = false;
     match c.sendData(fill(pool, 0u64, 100usize)) {
       case is Some {refused = true;}
       case is None[IoBuf] {}
     }
-    expect(not refused and c.queued() == 0usize, "what it still sends is dropped");
+    expect(!refused && c.queued() == 0usize, "what it still sends is dropped");
   }
   {
     var c = Connection.client(Config.make(), *pool, at());
@@ -284,7 +284,7 @@ fn closing(pool &Pool) {
     c.abort();
     var g = got();
     read(&mut c, &mut g);
-    expect(g.closed and c.shouldClose() and c.queued() == 0usize, "an abort ends it at once, its output dropped");
+    expect(g.closed && c.shouldClose() && c.queued() == 0usize, "an abort ends it at once, its output dropped");
   }
 }
 

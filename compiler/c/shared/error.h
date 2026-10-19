@@ -261,8 +261,8 @@ enum ErrorCode {
     // One import of a module per module: a second is refused, identical or not [Jon 23 Sep]
     ErrorDupImport = 1116,      // A second import of one module: the same import again, or one that differs in what its 'use' clause folds or in its 'pub'; likewise a second standalone 'use' of one submodule
 
-    // A match's patterns: values alone, 'is', comparison and range patterns joined by 'or'
-    ErrorPatBare = 1117,        // A condition where a match expects a pattern, 'not b' or 'n > 3': a value alone is compared with the matched value, and whether a condition may stand for a pattern is not decided
+    // A match's patterns: values alone, 'is', comparison and range patterns joined by '|'
+    ErrorPatBare = 1117,        // A condition where a match expects a pattern, '!b' or 'n > 3': a value alone is compared with the matched value, and whether a condition may stand for a pattern is not decided
 
     // A path through an abstraction: 'Trait.name', 'Enum.name'
     ErrorAbstractMeth = 1118,   // A trait's or enum's method named through it, which owns no code for it: each implementer or variant owns a copy
@@ -354,14 +354,14 @@ enum ErrorCode {
     ErrorAtomicValueType = 1184, // An atomic value's one field of a type no atomic operation acts on: not an integer of 8 to 64 bits, a bool or a raw pointer
     ErrorAtomicValueConst = 1185, // A 'const' whose type holds an atomic value: each use of a const is a fresh copy, which no atomic operation could share
 
-    // Generic constraints: 'where T is Name and ... or ...', and '[T Name + Name]' (parser/parsefnflow.c, parseWhere; ir/meta/generic.c)
+    // Generic constraints: 'where T is Name && ... || ...', and '[T Name + Name]' (parser/parsefnflow.c, parseWhere; ir/meta/generic.c)
     ErrorWhereUnmet = 1186,     // An instance of a generic function or type whose type arguments do not meet one of its constraints
     ErrorWhereAbsent = 1187,    // A method or function of a generic type's instance that does not exist there, its 'where' clause unmet
-    ErrorWhereForm = 1188,      // A 'where' clause not of the form built: 'T is Name', '+'-joined traits, clauses joined by 'and' and 'or', grouped by parentheses
+    ErrorWhereForm = 1188,      // A 'where' clause not of the form built: 'T is Name', '+'-joined traits, clauses joined by '&&' and '||', grouped by parentheses
     ErrorWhereSubject = 1189,   // A 'where' clause's subject that is not a type parameter of the generic or of the generic type it is a member of
     ErrorWhereTrait = 1190,     // What a 'where' clause's subject 'is' names no trait: a generic type, or a generic trait given no type arguments
     ErrorWhereNoParms = 1191,   // A 'where' clause on a declaration with no type parameters to constrain: not generic, nor a member of a generic type
-    ErrorGenParmOr = 1192,      // 'or' after a type parameter's traits, '[T A or B]': those are all required, and a choice is written in a 'where' clause
+    ErrorGenParmOr = 1192,      // '||' after a type parameter's traits, '[T A || B]': those are all required, and a choice is written in a 'where' clause
 
     // The built-in marker 'ThreadSafe' (ir/types/region.c, regionThreadSafeUseCheck)
     ErrorThreadSafeUse = 1193,  // 'ThreadSafe' declared by a type that is not a region ref: a struct not declaring 'RegionRef', a trait, an enum or a variant
@@ -438,7 +438,7 @@ enum ErrorCode {
     ErrorLifetimePlace = 1232,  // A lifetime named where none is checked: outside a function's signature or a struct's fields, on a borrow, in a function's brackets, or ''static' inside a parameter's reference
     ErrorLifetimeUndeclared = 1233, // A lifetime a struct's fields or a 'where' clause name that is not declared: a struct's second undeclared name, a borrow of none in a struct declaring lifetimes, a name no type of the signature holds
     ErrorLifetimeArgs = 1234,   // A use naming lifetimes its type does not declare, or not as many as it declares
-    ErrorLifetimeOr = 1235,     // A lifetime comparison under 'or' or 'not' in a 'where' clause: lifetimes are never instanced, so only 'and' joins one
+    ErrorLifetimeOr = 1235,     // A lifetime comparison under '||' or '!' in a 'where' clause: lifetimes are never instanced, so only '&&' joins one
 
     // A type's members (ir/stmt/fielddcl.c)
     ErrorPubFieldPrivType = 1236, // A 'pub' field whose type names a type private to its module: code outside the module would reach into a type it cannot name
@@ -708,7 +708,7 @@ enum ErrorCode {
 
     ErrorDclWord = 1508,        // 'imm' or 'mut' where a declaration's word is expected (`imm n = 3;`, `mut n i32;`, `pub imm id i32`, `fn f(mut self)`, `case imm x Some`): they are the permissions of a reference, and a declaration starts with 'let' (a name that never changes) or 'var' (a name that may be given a new value). The word is read as the one that replaces it, so the declaration is checked as written
 
-    ErrorAndAnd = 1509,         // '&&' written as an operator after an operand (`ready && go()`): Cone has no '&&'; logical and is 'and'. '&&' would otherwise read as the bitwise '&' of a borrow of the right side, which evaluates that side whatever the left is. It is refused at the operator and read as 'and', so nothing after it is reported twice. '&&' before an operand or in a type is two borrows and is unchanged, and so is `a & &b` written with a space
+    // 1509 was ErrorAndAnd, '&&' refused between two operands; '&&' is now the logical and
 
     // A block's last line and its value (parser/parsefnflow.c parseTailCheck; ir/exp/closure.c closureContextTail)
     ErrorTailSemi = 1510,       // A block whose value is used (a function that returns a value, a block after '=', as an argument or operand or after 'return', the last line of a block whose own value is used, an 'if' or 'match' arm in such a place) ends its last line, an expression or a statement that ends in a block, in ';'. A ';' delimits statements, so the block ends in an empty statement, which has no value: the ';' is left off where the value is used. The ';' is not the author's to keep whatever the line's type is, so a line that gives no value is refused as well. Pointed at the ';'

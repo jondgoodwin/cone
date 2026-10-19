@@ -68,7 +68,7 @@ mod path;
 import collections use String, List;
 
 // Whether a byte separates names: '/', and on Windows '\' too
-pub fn isSeparator(b u8) bool { b == '/' or (isWindows() and b == '\\') }
+pub fn isSeparator(b u8) bool { b == '/' || (isWindows() && b == '\\') }
 
 // How a path starts: the length of its volume ('C:' is 2, '\\server\share'
 // its whole length), and the length of the volume and the root together,
@@ -78,22 +78,22 @@ struct Prefix {
   pub whole usize;
 }
 
-fn isLetter(b u8) bool { (b >= 'a' and b <= 'z') or (b >= 'A' and b <= 'Z') }
+fn isLetter(b u8) bool { (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') }
 
 fn prefixOf(p &Array[u8]) Prefix {
   // POSIX: no volume, and a root alone
-  if not isWindows() {
-    if p.len >= 1usize and p[0usize] == '/' { return new Prefix(0usize, 1usize); }
+  if !isWindows() {
+    if p.len >= 1usize && p[0usize] == '/' { return new Prefix(0usize, 1usize); }
     return new Prefix(0usize, 0usize);
   }
   // A share: two separators, a server, a separator, a share
-  if p.len >= 2usize and isSeparator(p[0usize]) and isSeparator(p[1usize]) {
+  if p.len >= 2usize && isSeparator(p[0usize]) && isSeparator(p[1usize]) {
     var i = 2usize;
-    while i < p.len and not isSeparator(p[i]) { i = i + 1usize; }
+    while i < p.len && !isSeparator(p[i]) { i = i + 1usize; }
     let serverEnd = i;
-    if serverEnd > 2usize and serverEnd < p.len {
+    if serverEnd > 2usize && serverEnd < p.len {
       i = serverEnd + 1usize;
-      while i < p.len and not isSeparator(p[i]) { i = i + 1usize; }
+      while i < p.len && !isSeparator(p[i]) { i = i + 1usize; }
       if i > serverEnd + 1usize {
         // A share always has its root, written or not
         let whole = if i < p.len {i + 1usize} else {i};
@@ -102,12 +102,12 @@ fn prefixOf(p &Array[u8]) Prefix {
     }
   }
   // A drive
-  if p.len >= 2usize and isLetter(p[0usize]) and p[1usize] == ':' {
-    let whole = if p.len > 2usize and isSeparator(p[2usize]) {3usize} else {2usize};
+  if p.len >= 2usize && isLetter(p[0usize]) && p[1usize] == ':' {
+    let whole = if p.len > 2usize && isSeparator(p[2usize]) {3usize} else {2usize};
     return new Prefix(2usize, whole);
   }
   // A root alone
-  if p.len >= 1usize and isSeparator(p[0usize]) { return new Prefix(0usize, 1usize); }
+  if p.len >= 1usize && isSeparator(p[0usize]) { return new Prefix(0usize, 1usize); }
   new Prefix(0usize, 0usize)
 }
 
@@ -119,22 +119,22 @@ fn isShare(p &Array[u8], pre &Prefix) bool { pre.volume > 2usize }
 // ('\\server\share\x'); on POSIX, a root
 fn absoluteOf(p &Array[u8]) bool {
   let pre = prefixOf(p);
-  if not isWindows() { return pre.whole == 1usize; }
-  isShare(p, &pre) or (pre.volume == 2usize and pre.whole == 3usize)
+  if !isWindows() { return pre.whole == 1usize; }
+  isShare(p, &pre) || (pre.volume == 2usize && pre.whole == 3usize)
 }
 
 // Where a path's names end once the separators after its last are left
 // off, never cutting into its volume and root
 fn trimmedEnd(p &Array[u8], pre &Prefix) usize {
   var end = p.len;
-  while end > pre.whole and isSeparator(p[end - 1usize]) { end = end - 1usize; }
+  while end > pre.whole && isSeparator(p[end - 1usize]) { end = end - 1usize; }
   end
 }
 
 // Where its last name starts, at or after the prefix
 fn lastNameStart(p &Array[u8], pre &Prefix, end usize) usize {
   var i = end;
-  while i > pre.whole and not isSeparator(p[i - 1usize]) { i = i - 1usize; }
+  while i > pre.whole && !isSeparator(p[i - 1usize]) { i = i - 1usize; }
   i
 }
 
@@ -147,7 +147,7 @@ fn lastNameStart(p &Array[u8], pre &Prefix, end usize) usize {
 fn joinOf(a &Array[u8], b &Array[u8]) String {
   if b.len == 0usize { return String.fromBytes(a); }
   let bpre = prefixOf(b);
-  if a.len == 0usize or bpre.volume > 0usize { return String.fromBytes(b); }
+  if a.len == 0usize || bpre.volume > 0usize { return String.fromBytes(b); }
   if bpre.whole > 0usize {
     let apre = prefixOf(a);
     var out = String.fromBytes(&a[..<apre.volume]);
@@ -156,8 +156,8 @@ fn joinOf(a &Array[u8], b &Array[u8]) String {
   }
   var out = String.fromBytes(a);
   let apre = prefixOf(a);
-  let driveAlone = apre.volume == 2usize and apre.whole == 2usize and a.len == 2usize;
-  if not isSeparator(a[a.len - 1usize]) and not driveAlone { out.appendByte('/'); }
+  let driveAlone = apre.volume == 2usize && apre.whole == 2usize && a.len == 2usize;
+  if !isSeparator(a[a.len - 1usize]) && !driveAlone { out.appendByte('/'); }
   out.appendBytes(b);
   out
 }
@@ -171,7 +171,7 @@ fn parentOf(p &Array[u8]) String {
   let pre = prefixOf(p);
   let end = trimmedEnd(p, &pre);
   var i = lastNameStart(p, &pre, end);
-  while i > pre.whole and isSeparator(p[i - 1usize]) { i = i - 1usize; }
+  while i > pre.whole && isSeparator(p[i - 1usize]) { i = i - 1usize; }
   String.fromBytes(&p[..<i])
 }
 
@@ -198,7 +198,7 @@ fn partsOf(p &Array[u8]) List[String] {
   var start = pre.whole;
   var i = pre.whole;
   while i <= p.len {
-    if i == p.len or isSeparator(p[i]) {
+    if i == p.len || isSeparator(p[i]) {
       if i > start { out.push(String.fromBytes(&p[start..<i])); }
       start = i + 1usize;
     }
@@ -225,8 +225,8 @@ fn normalizeOf(p &Array[u8]) String {
   let pre = prefixOf(p);
   var out = String.fromBytes(&p[..<pre.whole]);
   out.replaceByte('\\', '/');
-  if isShare(p, &pre) and pre.whole == pre.volume { out.appendByte('/'); }
-  let rooted = isShare(p, &pre) or (pre.whole > pre.volume);
+  if isShare(p, &pre) && pre.whole == pre.volume { out.appendByte('/'); }
+  let rooted = isShare(p, &pre) || (pre.whole > pre.volume);
   let base = out.len();
   // The names kept so far are out's bytes after base; 'kept' counts them,
   // and 'ups' how many of the first are '..'
@@ -235,21 +235,21 @@ fn normalizeOf(p &Array[u8]) String {
   var start = pre.whole;
   var i = pre.whole;
   while i <= p.len {
-    if i == p.len or isSeparator(p[i]) {
+    if i == p.len || isSeparator(p[i]) {
       let part = &p[start..<i];
-      if part.len == 0usize or part == "." {
+      if part.len == 0usize || part == "." {
         // nothing to keep
       }
       elif part == ".." {
         if kept > ups {
           // Drop the last name kept, and the '/' before it
           var cut = out.len();
-          while cut > base and out[cut - 1usize] != '/' { cut = cut - 1usize; }
+          while cut > base && out[cut - 1usize] != '/' { cut = cut - 1usize; }
           if cut > base { cut = cut - 1usize; }
           out = out.sub(0usize, cut);
           kept = kept - 1usize;
         }
-        elif not rooted {
+        elif !rooted {
           if kept > 0usize { out.appendByte('/'); }
           out.append("..");
           kept = kept + 1usize;

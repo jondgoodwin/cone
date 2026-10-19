@@ -680,7 +680,7 @@ pub fn makeActor[S, M Sendable](dispatch &fn(s &mut S, m *M)) *S {
   ensureRunning();
   let stub = libc.malloc(mem.sizeof[Link]()) as *Link;
   let room = libc.malloc(mem.sizeof[S]() + 1usize);
-  if stub as usize == 0usize or room as usize == 0usize {
+  if stub as usize == 0usize || room as usize == 0usize {
     die("actors: out of memory for an actor");
   }
   (*stub).next = nullLink();
@@ -774,7 +774,7 @@ fn runBatch[S, M Sendable](h *Header, limit u32) u32 {
   }
   // A behaviour that begins a 'parallel each' returns, and the actor then runs
   // nothing more until the loop has finished: runActor begins it
-  while n < limit and (*h).par as usize == 0usize {
+  while n < limit && (*h).par as usize == 0usize {
     let node = mailPop(h);
     if node as usize == 0usize {
       curActor = 0usize;
@@ -793,7 +793,7 @@ fn runBatch[S, M Sendable](h *Header, limit u32) u32 {
 // behaviour began is still to run its passes, which hold the references they
 // read where no collection finds them.
 fn afterMessage(h *Header, st *u8, rec *TypeRecord) {
-  if (*h).gc as usize == 0usize or (*h).par as usize != 0usize {
+  if (*h).gc as usize == 0usize || (*h).par as usize != 0usize {
     return;
   }
   collectIfDue((*h).gc as &mut ActorRegion, st, rec);
@@ -885,7 +885,7 @@ pub struct Reply is Sendable {
 // Whether the reply goes anywhere: to an actor that awaits it, or into a
 // future
 fn wanted(r &Reply) bool {
-  r.to as usize != 0usize or r.cell as usize != 0usize
+  r.to as usize != 0usize || r.cell as usize != 0usize
 }
 
 // The round-up of n to a multiple of a, a power of two
@@ -1096,7 +1096,7 @@ pub struct Pending is GcTraceElements {
       return;
     }
     var i = 0usize;
-    while count != 0usize and i < cap {
+    while count != 0usize && i < cap {
       let v = *(slots + i);
       if v & 1usize == 0usize {
         let block = v as *u8;
@@ -1361,7 +1361,7 @@ fn schedule(h *Header) {
     die("actors: an actor made runnable after the runtime stopped");
   }
   let w = me as *Worker;
-  if w as usize != 0usize and (*w).sched as usize == s as usize {
+  if w as usize != 0usize && (*w).sched as usize == s as usize {
     let startedp = &(*w).started as *u64;
     mem.atomicStore[u64](startedp, mem.atomicLoad[u64](startedp, MemOrder.Relaxed) + 1u64, MemOrder.SeqCst);
     localPush(w, h);
@@ -1516,7 +1516,7 @@ fn injectPop(s *Sched, w *Worker) *Header {
   }
   var last = first;
   var k = 1u64;
-  while k <= extra and (*last).link as usize != 0usize {
+  while k <= extra && (*last).link as usize != 0usize {
     last = (*last).link;
     k = k + 1u64;
   }
@@ -1556,8 +1556,8 @@ fn notify(s *Sched) {
 fn foundAway(w *Worker) {
   let s = (*w).sched;
   mem.atomicStore[u32](&(*s).searching as *u32, 0u32, MemOrder.SeqCst);
-  if ld64(&(*s).injectLen as *u64) != 0u64 or ld64(&(*w).tail as *u64) != ld64(&(*w).head as *u64)
-      or taskWork(s) {
+  if ld64(&(*s).injectLen as *u64) != 0u64 || ld64(&(*w).tail as *u64) != ld64(&(*w).head as *u64)
+      || taskWork(s) {
     notify(s);
   }
 }
@@ -1612,7 +1612,7 @@ fn stealActor(w *Worker) *Header {
 
 // Whether any queue holds an actor or a loop piece, looked at without taking one
 fn anyWork(s *Sched) bool {
-  if ld64(&(*s).injectLen as *u64) != 0u64 or taskWork(s) {
+  if ld64(&(*s).injectLen as *u64) != 0u64 || taskWork(s) {
     return true;
   }
   var i = 0u32;
@@ -1642,7 +1642,7 @@ fn runActor(w *Worker, h *Header) {
     startHeld(w, h);
     return;
   }
-  if n < (*s).batch and mailMarkIdle(h) {
+  if n < (*s).batch && mailMarkIdle(h) {
     let release = (*h).release;
     release(h);
     let endedp = &(*w).ended as *u64;
@@ -1676,7 +1676,7 @@ fn idle(w *Worker) bool {
     mem.atomicSub[u32](&(*s).sleepers as *u32, 1u32, MemOrder.SeqCst);
     return false;
   }
-  if asleep == (*s).nworkers and ld32(&(*s).done as *u32) != 0u32 {
+  if asleep == (*s).nworkers && ld32(&(*s).done as *u32) != 0u32 {
     mem.atomicAdd[u32](&(*s).quiet as *u32, 1u32, MemOrder.SeqCst);
     sync.futexWake(&(*s).quiet);
   }
@@ -1748,7 +1748,7 @@ fn quiescent(s *Sched) bool {
     started = started + ld64(&(*workerAt(s, i)).started as *u64);
     i = i + 1u32;
   }
-  started == ended and ld64(&(*s).liveScheduled as *u64) == 0u64
+  started == ended && ld64(&(*s).liveScheduled as *u64) == 0u64
 }
 
 // ---------------------------------------------------------------------------
@@ -1857,7 +1857,7 @@ fn startWorkers() {
   // Never freed: stats() reads them after the stop has freed the rest.
   let slotBytes = mem.sizeof[StatSlot]();
   let block = libc.calloc(usize.from(n) + 1usize, slotBytes) as usize;
-  if s as usize == 0usize or ws as usize == 0usize or ts as usize == 0usize or block == 0usize {
+  if s as usize == 0usize || ws as usize == 0usize || ts as usize == 0usize || block == 0usize {
     die("actors: out of memory for the runtime");
   }
   let slots = (block + slotBytes - 1usize) / slotBytes * slotBytes;
@@ -1937,7 +1937,7 @@ fn opSpent() {
 fn idleNow(s *Sched) bool {
   let spent = opsEnded.loadOrdered(MemOrder.SeqCst);
   let started = opsStarted.loadOrdered(MemOrder.SeqCst);
-  started == spent and quiescent(s) and opsStarted.loadOrdered(MemOrder.SeqCst) == started
+  started == spent && quiescent(s) && opsStarted.loadOrdered(MemOrder.SeqCst) == started
 }
 
 // INTERIM (the package's header, WAITING FOR IDLE): wait until no actor is

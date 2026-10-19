@@ -158,11 +158,11 @@ pub struct FsError {
   // or 'rename a.txt to b.txt: File exists'
   pub fn message(self &) String {
     var out = String.from(op.view());
-    if not path.isEmpty() {
+    if !path.isEmpty() {
       out.append(" ");
       out.append(path.view());
     }
-    if not other.isEmpty() {
+    if !other.isEmpty() {
       out.append(" to ");
       out.append(other.view());
     }
@@ -224,9 +224,9 @@ fn useUtf8() {
 
 fn setUtf8() {
   // POSIX hands a name's bytes to the system as they are
-  if not isWindows() { return; }
+  if !isWindows() { return; }
   let now = libc.setlocale(libc.LC_CTYPE, null);
-  if now != null and libc.strcmp(cstr.fromPtr(now), "C") == 0i32 {
+  if now != null && libc.strcmp(cstr.fromPtr(now), "C") == 0i32 {
     libc.setlocale(libc.LC_CTYPE, &".UTF-8" as *u8);
   }
 }
@@ -296,7 +296,7 @@ pub fn isFile(path &Path) bool { kindOf(path) == posix.S_IFREG }
 // failure, before errno changes.
 fn openErrno(path &Path) i32 {
   let code = lastErrno();
-  if code == posix.EACCES and isDir(path) {posix.EISDIR} else {code}
+  if code == posix.EACCES && isDir(path) {posix.EISDIR} else {code}
 }
 
 // The whole of a file, its bytes as they are: text or not, NULs included
@@ -381,9 +381,9 @@ const mmapFailed = 0xFFFFFFFFFFFFFFFFusize;     // MAP_FAILED, (void*)-1
 
 // The POSIX error number for a Windows error number from the calls above
 fn errnoOfWindows(code u32) i32 {
-  if code == 2u32 or code == 3u32 { posix.ENOENT }                  // file / path not found
-  elif code == 5u32 or code == 32u32 or code == 33u32 { posix.EACCES }  // denied, sharing, lock
-  elif code == 8u32 or code == 14u32 or code == 1450u32 or code == 1455u32 or code == 1453u32 {
+  if code == 2u32 || code == 3u32 { posix.ENOENT }                  // file / path not found
+  elif code == 5u32 || code == 32u32 || code == 33u32 { posix.EACCES }  // denied, sharing, lock
+  elif code == 8u32 || code == 14u32 || code == 1450u32 || code == 1455u32 || code == 1453u32 {
     posix.ENOMEM       // not enough memory, address space or system resources
   }
   elif code == 87u32 { posix.EINVAL }
@@ -438,7 +438,7 @@ pub fn mapFile(path &Path) Result[MappedFile, FsError] {
   useUtf8();
   let kind = kindOf(path);
   if kind == posix.S_IFDIR { return fail[MappedFile]("mapFile", path, posix.EISDIR); }
-  if kind != 0u16 and kind != posix.S_IFREG { return fail[MappedFile]("mapFile", path, posix.EINVAL); }
+  if kind != 0u16 && kind != posix.S_IFREG { return fail[MappedFile]("mapFile", path, posix.EINVAL); }
   var c = cText(path);
   let f = libc.fopen(c.cstr(), "rb");
   if f == null { return fail[MappedFile]("mapFile", path, openErrno(path)); }
@@ -487,7 +487,7 @@ fn mapLinux(path &Path, f *libc.FILE) Result[MappedFile, FsError] {
 // same volume. Where 'to' is already there, POSIX replaces it; Windows
 // refuses, EEXIST for a file and EACCES for a folder, and nothing changes.
 pub fn rename(from &Path, to &Path) Result[void, FsError] {
-  if hasNul(from) or hasNul(to) {
+  if hasNul(from) || hasNul(to) {
     return Error[void, FsError](new FsError(String.from("rename"), from.copy(), to.copy(), posix.EINVAL));
   }
   useUtf8();
@@ -529,7 +529,7 @@ pub fn makeDirAll(path &Path) Result[void, FsError] {
   if kind == posix.S_IFDIR { return succeeded(); }
   if kind != 0u16 { return fail[void]("makeDirAll", path, posix.ENOTDIR); }
   let up = path.parent();
-  if not up.isEmpty() and up.view() != path.view() {
+  if !up.isEmpty() && up.view() != path.view() {
     let made = makeDirAll(&up);
     if made is Error { return made; }
   }
@@ -537,7 +537,7 @@ pub fn makeDirAll(path &Path) Result[void, FsError] {
   if posix.mkdir(c.cstr(), 0x1FFu32) != 0i32 {
     let code = lastErrno();
     // Made meanwhile by someone else, or named with a '..' that mkdir read
-    if not isDir(path) { return fail[void]("makeDirAll", path, code); }
+    if !isDir(path) { return fail[void]("makeDirAll", path, code); }
   }
   succeeded()
 }
@@ -583,7 +583,7 @@ pub fn readDir(path &Path) Result[List[DirEntry], FsError] {
     let entry = e as &posix.dirent;
     let np *u8 = &[]entry.d_name as *u8;
     let name = cstr.fromPtr(np).view();
-    if name != "." and name != ".." {
+    if name != "." && name != ".." {
       var t = entry.d_type;
       let full = path.join(name);
       // A file system that does not say what an entry is (POSIX allows it)
@@ -661,8 +661,8 @@ pub fn removeAll(path &Path) Result[void, FsError] {
   let n = path.normalize();
   let up = n.parent();
   let last = lastName(path);
-  if path.isEmpty() or last == "." or last == ".." or n.view() == "."
-    or n.view() == ".." or n.view().endsWith("/..") or up.view() == n.view() {
+  if path.isEmpty() || last == "." || last == ".." || n.view() == "."
+    || n.view() == ".." || n.view().endsWith("/..") || up.view() == n.view() {
     return fail[void]("removeAll", path, posix.EINVAL);
   }
   useUtf8();
@@ -750,7 +750,7 @@ pub fn setCurrentDir(path &Path) Result[void, FsError] {
 pub fn absolute(path &Path) Result[Path, FsError] {
   if hasNul(path) { return fail[Path]("absolute", path, posix.EINVAL); }
   if path.isEmpty() { return currentDir(); }
-  if not isWindows() {
+  if !isWindows() {
     // POSIX's realpath asks the file system (the path must be there, links
     // are followed); this reads the text alone, as Windows' does: the
     // current folder, then the path, normalized

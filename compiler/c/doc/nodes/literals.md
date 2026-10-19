@@ -151,7 +151,7 @@ coercion in [Type Check Reasoning](../phases/type-check-reasoning.md),
 "Coercion", which makes any non-zero value true. `litAdoptNumberType` returns 0
 for it, so both of its callers fall through to that coercion and every position
 agrees. `typemgmt_success` pins all of them — initializer, assignment, argument,
-return value, struct-literal field, `if`, `not`, `and` and `or` — each with a
+return value, struct-literal field, `if`, `!`, `&&` and `||` — each with a
 value whose low bit is 0, because `1` and `-1` read the same either way.
 `true` and `false` are built carrying `bool`, never `FlagUnkType`, so the rule
 never reaches them. `char` is refused too: an integer is no code point until it
@@ -637,7 +637,7 @@ constants (followed through any constant naming another):
   (`litFoldOp`): `+ - * / %`, `& | ^ << >>`, unary `-` and `~`, the six
   comparisons (a `bool`), and the `isTrue` a coercion to `bool` injects; the
   operators on `bool` itself among them;
-- `not`, `and` and `or` over `bool` constants;
+- `!`, `&&` and `||` over `bool` constants;
 - a number's conversion, `T.from(x)` (a `TypeLitTag` of a number type) and the
   `FlagConvert` cast a coercion's widening injects, by `litFoldConvert`, which
   does what `genlConvert` generates;

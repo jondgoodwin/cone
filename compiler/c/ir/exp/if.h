@@ -28,9 +28,9 @@ typedef struct IfNode {
 // whether or not its other cases cover every value, so an 'else' that cannot run is no error
 #define FlagIfMatchUsing 0x0008     // If
 #define MatchMaxColumns 8           // the values a 'match a, b, ...' may take
-// The logic nodes of a match's conditions: the 'and' that joins the patterns of one
-// row of 'match a, b' (one per column), and the 'and' that adds an 'if' guard to the
-// pattern before it. An 'and' of neither kind is a range pattern.
+// The logic nodes of a match's conditions: the '&&' that joins the patterns of one
+// row of 'match a, b' (one per column), and the '&&' that adds an 'if' guard to the
+// pattern before it. A '&&' of neither kind is a range pattern.
 #define FlagMatchRow  0x0001        // Logic: joins the columns of a row
 #define FlagMatchGuard 0x0002       // Logic: a guard after the pattern
 // A literal 'true' that stands for '_', a column's pattern that matches any value

@@ -226,7 +226,7 @@ fn exchange(drv &mut Driver, lp &mut Loop, sv &mut Srv, cl &mut Cli, events &mut
     let req = drv.request(lp, conn, head, BodyLength.sized(u64.from(body.len)), Sink.Here(tokReq));
     var sent = false;
     let giveUp = Instant.now() + Duration.fromSeconds(10i64);
-    while not sent and Instant.now() < giveUp {
+    while !sent && Instant.now() < giveUp {
       var b = sv.pool.mustTake(body.len);
       b.append(body);
       match drv.sendData(req, b) {
@@ -239,7 +239,7 @@ fn exchange(drv &mut Driver, lp &mut Loop, sv &mut Srv, cl &mut Cli, events &mut
     }
   }
   let giveUp = Instant.now() + Duration.fromSeconds(10i64);
-  while cl.finals == before and Instant.now() < giveUp {step(drv, lp, sv, cl, events);}
+  while cl.finals == before && Instant.now() < giveUp {step(drv, lp, sv, cl, events);}
   requireUInt(cl.finals, before + 1u64, "the request has its final answer in time");
 }
 
@@ -247,7 +247,7 @@ fn exchange(drv &mut Driver, lp &mut Loop, sv &mut Srv, cl &mut Cli, events &mut
 fn waitClosed(drv &mut Driver, lp &mut Loop, sv &mut Srv, cl &mut Cli, events &mut List[Event],
     clientClosed u64, serverClosed u64) {
   let giveUp = Instant.now() + Duration.fromSeconds(10i64);
-  while (cl.closed < clientClosed or sv.closed < serverClosed) and Instant.now() < giveUp {
+  while (cl.closed < clientClosed || sv.closed < serverClosed) && Instant.now() < giveUp {
     step(drv, lp, sv, cl, events);
   }
   requireUInt(cl.closed, clientClosed, "the client's connection closed");
@@ -292,7 +292,7 @@ fn main() i32 {
   let good = listenOn(&mut drv, &mut lp, server("server.pem", "server.key"), pool, tokGood);
   let expiredPort = listenOn(&mut drv, &mut lp, server("expired.pem", "expired.key"), pool, tokExpired);
   let untrustedPort = listenOn(&mut drv, &mut lp, server("untrusted.pem", "untrusted.key"), pool, tokUntrusted);
-  require(good != 0u16 and expiredPort != 0u16 and untrustedPort != 0u16, "three servers listen");
+  require(good != 0u16 && expiredPort != 0u16 && untrustedPort != 0u16, "three servers listen");
   var sv = new Srv(pool: pool, req: ReqId.none(), target: String.empty(), body: String.empty(),
     pieces: 99u32, accepted: 0u64, requests: 0u64, dones: 0u64, closed: 0u64, clean: 0u64);
   var cl = new Cli(status: 0u16, body: String.empty(), finals: 0u64, last: EventKind.Done,
@@ -326,7 +326,7 @@ fn main() i32 {
   var oks = 0u64;
   while k < 50usize {
     exchange(&mut drv, &mut lp, &mut sv, &mut cl, &mut events, conn, RequestHead.get("/hello", "localhost"), "");
-    if cl.last == EventKind.Done and cl.status == 200u16 and cl.body.view() == helloBody() {oks = oks + 1u64;}
+    if cl.last == EventKind.Done && cl.status == 200u16 && cl.body.view() == helloBody() {oks = oks + 1u64;}
     k = k + 1usize;
   }
   expectUInt(oks, 50u64, "50 GETs kept alive, each answered");
@@ -348,7 +348,7 @@ fn main() i32 {
   let conn2 = drv.connectWith(&mut lp, "127.0.0.1", good, new Uni[tls.Stream](roots.stream("localhost", pool)),
     Sink.Here(tokConn));
   exchange(&mut drv, &mut lp, &mut sv, &mut cl, &mut events, conn2, RequestHead.get("/hello", "localhost"), "");
-  expect(cl.last == EventKind.Done and cl.status == 200u16, "a second connection's GET");
+  expect(cl.last == EventKind.Done && cl.status == 200u16, "a second connection's GET");
   expectUInt(tls.stats().resumed - closing.resumed, 2u64, "...resumed, on both sides");
   drv.close(&mut lp, conn2);
   waitClosed(&mut drv, &mut lp, &mut sv, &mut cl, &mut events, 2u64, 2u64);
@@ -361,7 +361,7 @@ fn main() i32 {
   let connA = drv.connectWith(&mut lp, "127.0.0.1", good, new Uni[tls.Stream](fresh.stream("localhost", pool)),
     Sink.Here(tokConn));
   exchange(&mut drv, &mut lp, &mut sv, &mut cl, &mut events, connA, RequestHead.get("/hello", "localhost"), "");
-  expect(cl.last == EventKind.Done and cl.status == 200u16, "at once: the first connection's GET");
+  expect(cl.last == EventKind.Done && cl.status == 200u16, "at once: the first connection's GET");
   expectUInt(u64.from(fresh.cachedSessions()), 2u64, "at once: the first, open, has given two tickets");
   let connB = drv.connectWith(&mut lp, "127.0.0.1", good, new Uni[tls.Stream](fresh.stream("localhost", pool)),
     Sink.Here(tokConn));
@@ -369,9 +369,9 @@ fn main() i32 {
     Sink.Here(tokConn));
   expectUInt(u64.from(fresh.cachedSessions()), 0u64, "at once: the second and third took one each");
   exchange(&mut drv, &mut lp, &mut sv, &mut cl, &mut events, connB, RequestHead.get("/hello", "localhost"), "");
-  expect(cl.last == EventKind.Done and cl.status == 200u16, "at once: the second connection's GET");
+  expect(cl.last == EventKind.Done && cl.status == 200u16, "at once: the second connection's GET");
   exchange(&mut drv, &mut lp, &mut sv, &mut cl, &mut events, connC, RequestHead.get("/hello", "localhost"), "");
-  expect(cl.last == EventKind.Done and cl.status == 200u16, "at once: the third connection's GET");
+  expect(cl.last == EventKind.Done && cl.status == 200u16, "at once: the third connection's GET");
   let atOnceAfter = tls.stats();
   expectUInt(atOnceAfter.handshakes - atOnce.handshakes, 6u64, "at once: three handshakes, on each side");
   expectUInt(atOnceAfter.resumed - atOnce.resumed, 4u64, "at once: the second and third resumed, on each side");
@@ -388,7 +388,7 @@ fn main() i32 {
     expiredPort, "certificate has expired");
   refused("untrusted root", &mut drv, &mut lp, &mut sv, &mut cl, &mut events, roots.stream("localhost", pool),
     untrustedPort, "unable to get local issuer certificate");
-  expect(not cl.failure.contains("Windows"), "OpenSSL's reasons, not the OS's");
+  expect(!cl.failure.contains("Windows"), "OpenSSL's reasons, not the OS's");
 
   // Pinning: the server's key, and another
   let pin = readText("server.pin");
@@ -396,7 +396,7 @@ fn main() i32 {
   let conn3 = drv.connectWith(&mut lp, "127.0.0.1", good, new Uni[tls.Stream](pinned.stream("localhost", pool)),
     Sink.Here(tokConn));
   exchange(&mut drv, &mut lp, &mut sv, &mut cl, &mut events, conn3, RequestHead.get("/hello", "localhost"), "");
-  expect(cl.last == EventKind.Done and cl.status == 200u16, "pinned: the server's key is accepted");
+  expect(cl.last == EventKind.Done && cl.status == 200u16, "pinned: the server's key is accepted");
   drv.close(&mut lp, conn3);
   refused("pinned, another key", &mut drv, &mut lp, &mut sv, &mut cl, &mut events, pinned.stream("localhost", pool),
     untrustedPort, "no pinned key matches");
@@ -411,7 +411,7 @@ fn main() i32 {
 
   // Every connection ends; nothing is left
   let giveUp = Instant.now() + Duration.fromSeconds(10i64);
-  while drv.live() > 0u32 and Instant.now() < giveUp {step(&mut drv, &mut lp, &mut sv, &mut cl, &mut events);}
+  while drv.live() > 0u32 && Instant.now() < giveUp {step(&mut drv, &mut lp, &mut sv, &mut cl, &mut events);}
   expectUInt(u64.from(drv.live()), 0u64, "no connection left");
   drv.abortAll(&mut lp);
   let t = drv.stats();

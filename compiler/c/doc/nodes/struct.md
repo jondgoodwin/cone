@@ -460,7 +460,7 @@ type declares that trait, and the trait requires a member by this name. Only a
 member the trait names is reached: another private member of the same type, or one
 of a second trait the generic does not bound by, stays refused, and so does a call
 written anywhere that is not such an instance's body. The field read is not a
-separate path; `x.id` goes through the same lookup. A clause under an `or` reaches
+separate path; `x.id` goes through the same lookup. A clause under a `||` reaches
 nothing (the body may rely only on what every alternative gives). Pinned by
 `trait_priv_is_generic` (runs) and `trait_typecheck_priv_is_generic` (refusals).
 

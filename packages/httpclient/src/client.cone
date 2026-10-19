@@ -151,7 +151,7 @@ pub struct Client {
   // TLS context is made now from cfg.tls; if that fails (a root bundle with
   // no certificate), every https fetch fails with why (Stage.Tls)
   pub fn make(cfg Config, pool Pool, file &Array[u8] = srcFile(), line u32 = srcLine()) Client {
-    if cfg.maxPerOrigin == 0u32 or cfg.maxTotal == 0u32 {
+    if cfg.maxPerOrigin == 0u32 || cfg.maxTotal == 0u32 {
       panic("httpclient: maxPerOrigin and maxTotal are at least 1", file, line);
     }
     var c = cfg;
@@ -228,9 +228,9 @@ pub struct Client {
 
   // The live fetch id names, or noEntry
   fn fetchIndex(self &, id FetchId) u32 {
-    if id.isNone() or id.index >= fetchCount {return noEntry;}
+    if id.isNone() || id.index >= fetchCount {return noEntry;}
     let f = self.fetchAt(id.index) as &Fetch;
-    if f.gen != id.gen or f.state == fFree {return noEntry;}
+    if f.gen != id.gen || f.state == fFree {return noEntry;}
     id.index
   }
 
@@ -345,7 +345,7 @@ pub struct Client {
     var k = 0usize;
     while k < origins.len() {
       let og = *origins[k] as &Origin;
-      if og.port == port and og.secure == secure and og.host.view() == u.host.view() {return u32.from(k);}
+      if og.port == port && og.secure == secure && og.host.view() == u.host.view() {return u32.from(k);}
       k = k + 1usize;
     }
     let o = libc.malloc(mem.sizeof[Origin]()) as *Origin;
@@ -373,10 +373,10 @@ pub struct Client {
   // program error: a panic at the caller's line
   pub fn send(self &mut, lp &mut Loop, req Request, sink Sink, file &Array[u8] = srcFile(), line u32 = srcLine()) FetchId {
     var r = req;
-    if not isToken(r.methodName()) {panic("httpclient: the request's method is not a token", file, line);}
+    if !isToken(r.methodName()) {panic("httpclient: the request's method is not a token", file, line);}
     if r.method == Method.Connect {panic("httpclient: CONNECT is not supported", file, line);}
     if r.headers.has("Host") {panic("httpclient: Host is written from the request's URL, not its fields", file, line);}
-    if r.headers.has("Content-Length") or r.headers.has("Transfer-Encoding") {
+    if r.headers.has("Content-Length") || r.headers.has("Transfer-Encoding") {
       panic("httpclient: framing fields are the client's to write, from the request's body", file, line);
     }
     let now = Instant.now();
@@ -388,12 +388,12 @@ pub struct Client {
     f.methodText <=> r.methodText;
     f.url <=> r.url;
     f.headers <=> r.headers;
-    if not f.headers.has("User-Agent") {
+    if !f.headers.has("User-Agent") {
       // Copied: the fields hold Strings, and nothing shows the config's is none of them
       let agent = cfg.userAgent.copy();
       f.headers.add("User-Agent", agent.view());
     }
-    if not f.headers.has("Accept") {f.headers.add("Accept", "*/*");}
+    if !f.headers.has("Accept") {f.headers.add("Accept", "*/*");}
     f.body <=> r.body;
     f.intent = r.intent;
     f.score = r.score;
@@ -406,11 +406,11 @@ pub struct Client {
     st.fetches = st.fetches + 1u64;
     let id = self.idOf(fi);
     // Answered at once: a bad URL, a full queue, a cancelled group, a past deadline
-    if not r.urlError.isNone() {
+    if !r.urlError.isNone() {
       self.refuse(lp, fi, Stage.Url, r.urlError.message().view());
       return id;
     }
-    if not f.url.isHttp() {
+    if !f.url.isHttp() {
       self.refuse(lp, fi, Stage.Url, "only http and https URLs are fetched");
       return id;
     }
@@ -482,7 +482,7 @@ pub struct Client {
   // this thread handed it: credit back to its connection, which reads again
   pub fn release(self &mut, id FetchId, n usize) {
     let fi = self.fetchIndex(id);
-    if fi == noEntry or n == 0usize {return;}
+    if fi == noEntry || n == 0usize {return;}
     let f = self.fetchAt(fi) as &mut Fetch;
     let m = if n < f.held {n} else {f.held};
     if m == 0usize {return;}
@@ -557,11 +557,11 @@ pub struct Client {
   fn finishFetch(self &mut, lp &mut Loop, fi u32, how u32, fl Failure) {
     let f = self.fetchAt(fi) as &mut Fetch;
     if f.state == fFree {return;}
-    if f.state == fQueued and f.origin != noEntry {
+    if f.state == fQueued && f.origin != noEntry {
       let og = self.originAt(f.origin) as &mut Origin;
       if removeValue(&mut og.queue, fi) {queuedN = queuedN - 1u32;}
     }
-    if not f.watch.isNone() {
+    if !f.watch.isNone() {
       lp.cancel(f.watch);
       f.watch = OpId.none();
     }
@@ -574,7 +574,7 @@ pub struct Client {
     var failure = fl;
     if how == endDone {
       st.done = st.done + 1u64;
-    } elif how == endFailed or how == endLimit {
+    } elif how == endFailed || how == endLimit {
       st.failed = st.failed + 1u64;
       k = EventKind.Failed;
       if how == endLimit {
@@ -601,11 +601,11 @@ pub struct Client {
   // (see the package's header, RETRIES)
   fn canRetry(self &, fi u32, fl &Failure) bool {
     let f = self.fetchAt(fi) as &Fetch;
-    if f.delivered or f.ending != endNone or f.retries >= cfg.maxRetries {return false;}
+    if f.delivered || f.ending != endNone || f.retries >= cfg.maxRetries {return false;}
     let s = fl.stage;
-    if s != Stage.Read and s != Stage.Write and s != Stage.Closed {return false;}
+    if s != Stage.Read && s != Stage.Write && s != Stage.Closed {return false;}
     if fl.unsent {return true;}
-    fl.error.noResponse and isIdempotent(f.method)
+    fl.error.noResponse && isIdempotent(f.method)
   }
 
   // ---------------------------------------------------------------------------
@@ -617,7 +617,7 @@ pub struct Client {
   fn emit(self &mut, fi u32, credit usize, e Event) {
     st.events = st.events + 1u64;
     let f = self.fetchAt(fi) as &mut Fetch;
-    if not isChan(&mut f.sink) {
+    if !isChan(&mut f.sink) {
       ready.push(e);
       return;
     }
@@ -682,14 +682,14 @@ pub struct Client {
         if *blocked[j] == key {stay = true;}
         j = j + 1usize;
       }
-      if not stay {
+      if !stay {
         var e2 = blankEvent();
         var sent = sinkTaken;
         s, sent = trySink(s, e, &mut e2);
         if sent == sinkGone {st.dropped = st.dropped + 1u64;}
         if sent != sinkFull {
           let f = self.fetchAt(fi) as &mut Fetch;
-          if f.gen == gen and f.state != fFree and f.heldEvents > 0u32 {f.heldEvents = f.heldEvents - 1u32;}
+          if f.gen == gen && f.state != fFree && f.heldEvents > 0u32 {f.heldEvents = f.heldEvents - 1u32;}
           if n > 0usize {drv.release(q, n);}
           continue;
         }
@@ -739,7 +739,7 @@ pub struct Client {
   // The latest a poll of the loop may wait to (see the package's header,
   // THE CLIENT)
   pub fn wakeAt(self &) Instant {
-    if ready.len() > 0usize or wantSchedule {return new Instant();}
+    if ready.len() > 0usize || wantSchedule {return new Instant();}
     var w = drv.wakeAt();
     if heldE.len() > 0usize {
       let h = Instant.now() + Duration.fromNanos(heldRetryNs);
@@ -763,7 +763,7 @@ pub struct Client {
     var k = 0usize;
     while k < cs.len() {
       let c = &mut cs[k];
-      if not self.complete(lp, c) {st.unclaimed = st.unclaimed + 1u64;}
+      if !self.complete(lp, c) {st.unclaimed = st.unclaimed + 1u64;}
       k = k + 1usize;
     }
     cs.clear();
@@ -775,13 +775,13 @@ pub struct Client {
   // or one of its own timers), which takes what it needs from it
   pub fn complete(self &mut, lp &mut Loop, comp &mut Completion) bool {
     if drv.complete(lp, comp) {return true;}
-    if not drv.isUpperToken(comp.token) {return false;}
+    if !drv.isUpperToken(comp.token) {return false;}
     let n = comp.token & 0xFFFFFFFFFFu64;
     let fi = u32.from(n & u64.from(genMask));
     let gen = u32.from((n >> 24u64) & u64.from(watchGenMask));
     if fi >= fetchCount {return true;}
     let f = self.fetchAt(fi) as &mut Fetch;
-    if (f.gen & watchGenMask) != gen or f.state == fFree or f.watch != comp.id {return true;}
+    if (f.gen & watchGenMask) != gen || f.state == fFree || f.watch != comp.id {return true;}
     f.watch = OpId.none();
     self.cancelFetch(lp, fi, if comp.status == diag.outcomeDone {endTimedOut} else {endCancelled});
     true
@@ -799,7 +799,7 @@ pub struct Client {
         wantSchedule = false;
         did = self.schedule(lp);
       }
-      if not did and got == 0usize {break;}
+      if !did && got == 0usize {break;}
       rounds = rounds + 1u32;
     }
     self.handOver(out)
@@ -821,7 +821,7 @@ pub struct Client {
       if (t & tokReq) != 0u64 {
         if index < fetchCount {
           let f = self.fetchAt(index) as &Fetch;
-          if f.gen == gen and f.state == fActive and f.req == e.req {
+          if f.gen == gen && f.state == fActive && f.req == e.req {
             self.onRequest(lp, index, e);
             continue;
           }
@@ -831,7 +831,7 @@ pub struct Client {
       } elif (t & tokConn) != 0u64 {
         if index < connCount {
           let p = self.connAt(index) as &PConn;
-          if p.gen == gen and p.state != pFree {self.onConn(lp, index, e);}
+          if p.gen == gen && p.state != pFree {self.onConn(lp, index, e);}
         }
       }
     }
@@ -877,8 +877,8 @@ pub struct Client {
     // first exchange) fails what waits for its origin, when nothing else is
     // open to it: they would meet the same failure
     let s = e.failure.stage;
-    let establishing = was == pConnecting or (p.uses <= 1u32 and s == httpconn.Stage.Tls);
-    if not e.clean and establishing and og.open == og.connecting {
+    let establishing = was == pConnecting || (p.uses <= 1u32 && s == httpconn.Stage.Tls);
+    if !e.clean && establishing && og.open == og.connecting {
       let fl = Failure.fromConn(&e.failure);
       while og.queue.len() > 0usize {
         let fi = *og.queue[0usize];
@@ -913,7 +913,7 @@ pub struct Client {
   // free again
   fn connEnded(self &mut, lp &mut Loop, pc u32) {
     let p = self.connAt(pc) as &mut PConn;
-    if p.state == pBusy and drv.isIdle(p.id) {
+    if p.state == pBusy && drv.isIdle(p.id) {
       self.connDone(lp, pc);
     } else {
       self.retire(lp, pc, false);
@@ -927,7 +927,7 @@ pub struct Client {
     let og = self.originAt(p.origin) as &mut Origin;
     if p.state == pIdle {removeValue(&mut og.idle, pc);}
     if p.state == pConnecting {og.connecting = og.connecting - 1u32;}
-    if p.state != pClosing and p.state != pFree {
+    if p.state != pClosing && p.state != pFree {
       og.open = og.open - 1u32;
       total = total - 1u32;
     }
@@ -951,7 +951,7 @@ pub struct Client {
     // The driver is handed a copy of the host: it holds Strings, and nothing shows
     // the origin's is none of them
     let host = og.host.copy();
-    if not og.secure {
+    if !og.secure {
       p.id = drv.connect(lp, host.view(), og.port, sink);
       return;
     }
@@ -980,7 +980,7 @@ pub struct Client {
     var o = 0usize;
     while o < origins.len() {
       let og = *origins[o] as &mut Origin;
-      if og.queue.len() == 0usize and og.idle.len() > 0usize {
+      if og.queue.len() == 0usize && og.idle.len() > 0usize {
         let pc = *og.idle[0usize];
         self.retire(lp, pc, true);
         return true;
@@ -1026,10 +1026,10 @@ pub struct Client {
     var o = 0u32;
     while o < u32.from(origins.len()) {
       let og = self.originAt(o) as &mut Origin;
-      while og.queue.len() > 0usize and og.idle.len() > 0usize {
+      while og.queue.len() > 0usize && og.idle.len() > 0usize {
         let pc = *og.idle[og.idle.len() - 1usize];
         let p = self.connAt(pc) as &mut PConn;
-        if not drv.isIdle(p.id) {
+        if !drv.isIdle(p.id) {
           // It is closing under us (the server's close, its idle timeout)
           self.retire(lp, pc, false);
           continue;
@@ -1050,9 +1050,9 @@ pub struct Client {
       o = 0u32;
       while o < u32.from(origins.len()) {
         let og = self.originAt(o) as &Origin;
-        if og.queue.len() > usize.from(og.connecting) and og.open < cfg.maxPerOrigin {
+        if og.queue.len() > usize.from(og.connecting) && og.open < cfg.maxPerOrigin {
           let fi = *og.queue[self.firstIn(o)];
-          if bestF == noEntry or self.before(fi, bestF) {
+          if bestF == noEntry || self.before(fi, bestF) {
             bestO = o;
             bestF = fi;
           }
@@ -1060,7 +1060,7 @@ pub struct Client {
         o = o + 1u32;
       }
       if bestO == noEntry {break;}
-      if total >= cfg.maxTotal and not self.closeAnIdle(lp) {break;}
+      if total >= cfg.maxTotal && !self.closeAnIdle(lp) {break;}
       self.openConn(lp, bestO);
       did = true;
     }
@@ -1131,7 +1131,7 @@ pub struct Client {
     if k == httpconn.EventKind.Response {
       f.timing.firstByte = Instant.now();
       let status = e.response.status;
-      if f.ending == endNone and followsRedirect(status) and f.maxRedirects > 0u32 {
+      if f.ending == endNone && followsRedirect(status) && f.maxRedirects > 0u32 {
         match e.response.headers.get("Location") {
           case let loc Some {
             f.following = true;
@@ -1155,7 +1155,7 @@ pub struct Client {
         // A redirect's body: read and dropped, cut off past drainLimit
         drv.release(f.req, n);
         f.drained = f.drained + n;
-        if f.drained > drainLimit and not f.cutting {
+        if f.drained > drainLimit && !f.cutting {
           f.cutting = true;
           drv.cancel(lp, f.req);
         }
@@ -1187,7 +1187,7 @@ pub struct Client {
     } elif k == httpconn.EventKind.Failed {
       self.connEnded(lp, f.conn);
       let fl = Failure.fromConn(&e.failure);
-      if f.ending == endLimit or f.ending == endCancelled or f.ending == endTimedOut {
+      if f.ending == endLimit || f.ending == endCancelled || f.ending == endTimedOut {
         self.finishFetch(lp, fi, if f.ending == endLimit {endLimit} else {endFailed}, fl);
       } elif self.canRetry(fi, &fl) {
         f.retries = f.retries + 1u32;
@@ -1196,14 +1196,14 @@ pub struct Client {
       } else {
         self.finishFetch(lp, fi, endFailed, fl);
       }
-    } elif k == httpconn.EventKind.Cancelled or k == httpconn.EventKind.TimedOut {
+    } elif k == httpconn.EventKind.Cancelled || k == httpconn.EventKind.TimedOut {
       self.connEnded(lp, f.conn);
-      if f.cutting and f.ending == endNone {
+      if f.cutting && f.ending == endNone {
         self.follow(lp, fi);
       } elif f.ending == endFailed {
         self.finishFetch(lp, fi, endFailed,
           Failure.make(Stage.Limit, 0u32, ErrorKind.TooLarge, "the buffer pool refused a buffer for the request's body"));
-      } elif f.ending == endTimedOut or f.ending == endLimit {
+      } elif f.ending == endTimedOut || f.ending == endLimit {
         self.finishFetch(lp, fi, f.ending, Failure.none());
       } elif k == httpconn.EventKind.TimedOut {
         self.finishFetch(lp, fi, endTimedOut, Failure.none());
@@ -1233,7 +1233,7 @@ pub struct Client {
       case var r Ok {next <=> r;}
       case let x Error {why = x.message();}
     }
-    if why.len() == 0usize and not next.isHttp() {why = String.from("it is not an http or https URL");}
+    if why.len() == 0usize && !next.isHttp() {why = String.from("it is not an http or https URL");}
     if why.len() > 0usize {
       var d = String.from("the Location '");
       d.append(f.location.view());
@@ -1243,9 +1243,9 @@ pub struct Client {
       return;
     }
     // 303 makes it a GET (a HEAD stays one), as 301 and 302 do of a POST
-    let toGet = (status == 303u16 and f.method != Method.Head) or
-      ((status == 301u16 or status == 302u16) and f.method == Method.Post);
-    if toGet and f.method != Method.Get {
+    let toGet = (status == 303u16 && f.method != Method.Head) ||
+      ((status == 301u16 || status == 302u16) && f.method == Method.Post);
+    if toGet && f.method != Method.Get {
       f.method = Method.Get;
       f.methodText = String.empty();
       f.body = String.empty();
@@ -1255,12 +1255,12 @@ pub struct Client {
       f.headers.remove("Content-Location");
     }
     // Credentials never cross origins
-    if not next.sameOrigin(&f.url) {
+    if !next.sameOrigin(&f.url) {
       f.headers.remove("Authorization");
       f.headers.remove("Proxy-Authorization");
       f.headers.remove("Cookie");
     }
-    if not next.hasFragment and f.url.hasFragment {
+    if !next.hasFragment && f.url.hasFragment {
       next.fragment = f.url.fragment.copy();
       next.hasFragment = true;
     }
@@ -1391,7 +1391,7 @@ pub fn getWhole(text &str, limit usize) Response {
 
 // Whether a status is a redirect the client follows
 fn followsRedirect(s u16) bool {
-  s == 301u16 or s == 302u16 or s == 303u16 or s == 307u16 or s == 308u16
+  s == 301u16 || s == 302u16 || s == 303u16 || s == 307u16 || s == 308u16
 }
 
 // An event holding nothing, to swap one out of where it is held

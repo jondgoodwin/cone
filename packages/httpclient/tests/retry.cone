@@ -89,7 +89,7 @@ fn reply(sv &mut Srv, req httpconn.ReqId, head bool, status u16, location &Array
   var h = ResponseHead.make(status);
   if location.len > 0usize {h.headers.add("Location", location);}
   sv.drv.respond(req, h, BodyLength.sized(u64.from(body.len)));
-  if body.len > 0usize and not head {
+  if body.len > 0usize && !head {
     var b = sv.pool.mustTake(body.len);
     b.append(body);
     sv.drv.sendData(req, b);
@@ -153,7 +153,7 @@ fn answer(sv &mut Srv, lp &mut Loop, k usize) {
   let full = sv.targets[k].copy();
   let t = full.view();
   var q = 0usize;
-  while q < t.len and t[q] != '?' {q = q + 1usize;}
+  while q < t.len && t[q] != '?' {q = q + 1usize;}
   let path = &t[0usize ..< q];
   let query = &t[(if q < t.len {q + 1usize} else {q}) ..];
   let head = *sv.methods[k] == Method.Head;
@@ -167,13 +167,13 @@ fn answer(sv &mut Srv, lp &mut Loop, k usize) {
   } elif path == "/close" {
     sv.drv.abort(lp, *sv.conns[k]);
   } elif path == "/closeonce" {
-    if not sv.closedOnce {
+    if !sv.closedOnce {
       sv.closedOnce = true;
       sv.drv.abort(lp, *sv.conns[k]);
     } else {
       reply(sv, req, head, 200u16, "", "second");
     }
-  } elif path.len > 10usize and &path[0usize ..< 10usize] == "/redirect/" {
+  } elif path.len > 10usize && &path[0usize ..< 10usize] == "/redirect/" {
     let n = number(&path[10usize ..]);
     if n == 0u64 {
       reply(sv, req, head, 200u16, "", "landed");
@@ -182,7 +182,7 @@ fn answer(sv &mut Srv, lp &mut Loop, k usize) {
       loc.appendUInt(n - 1u64);
       reply(sv, req, head, 302u16, loc.view(), "moved");
     }
-  } elif path.len > 8usize and &path[0usize ..< 8usize] == "/status/" {
+  } elif path.len > 8usize && &path[0usize ..< 8usize] == "/status/" {
     reply(sv, req, head, u16.from(number(&path[8usize ..])), query, "moved");
   } elif path == "/headers" {
     var b = String.from("auth=");
@@ -194,7 +194,7 @@ fn answer(sv &mut Srv, lp &mut Loop, k usize) {
     b.append(";body=");
     b.append(if sv.bodies[k].len() == 0usize {"-"} else {sv.bodies[k].view()});
     reply(sv, req, head, 200u16, "", b.view());
-  } elif path.len > 5usize and &path[0usize ..< 5usize] == "/big/" {
+  } elif path.len > 5usize && &path[0usize ..< 5usize] == "/big/" {
     let n = number(&path[5usize ..]);
     sv.drv.respond(req, ResponseHead.make(200u16), BodyLength.sized(n));
     sv.streams.push(req);
@@ -207,7 +207,7 @@ fn answer(sv &mut Srv, lp &mut Loop, k usize) {
     b.setLen(65536usize);
     sv.drv.sendData(req, b);
   } elif path == "/hang" {
-  } elif path.len > 7usize and &path[0usize ..< 7usize] == "/order/" {
+  } elif path.len > 7usize && &path[0usize ..< 7usize] == "/order/" {
     reply(sv, req, head, 200u16, "", &path[7usize ..]);
   } else {
     reply(sv, req, head, 200u16, "", "hello");
@@ -295,13 +295,13 @@ fn step(cl &mut Client, sv &mut Srv, lp &mut Loop, out &mut List[Event], until I
   if a < limit {limit = a;}
   let b = sv.drv.wakeAt();
   if b < limit {limit = b;}
-  if out.len() > 0usize or sevs.len() > 0usize {limit = new Instant();}
+  if out.len() > 0usize || sevs.len() > 0usize {limit = new Instant();}
   var comps = List[Completion].empty();
   lp.poll(limit, &mut comps);
   var k = 0usize;
   while k < comps.len() {
     let c = &mut comps[k];
-    if not cl.complete(lp, c) {sv.drv.complete(lp, c);}
+    if !cl.complete(lp, c) {sv.drv.complete(lp, c);}
     k = k + 1usize;
   }
   comps.clear();
@@ -374,7 +374,7 @@ fn finishOf(cl &mut Client, sv &mut Srv, lp &mut Loop, id FetchId, s &mut Seen) 
   var out = List[Event].empty();
   let giveUp = Instant.now() + Duration.fromSeconds(10i64);
   let before = s.finals;
-  while s.finals == before and Instant.now() < giveUp {
+  while s.finals == before && Instant.now() < giveUp {
     step(cl, sv, lp, &mut out, giveUp);
     var k = 0usize;
     while k < out.len() {
@@ -417,7 +417,7 @@ fn main() i32 {
   var sv = server(pool);
   let port = listen(&mut sv, &mut lp);
   let port2 = listen(&mut sv, &mut lp);
-  require(port != 0u16 and port2 != 0u16, "the server listens on two ports: two origins");
+  require(port != 0u16 && port2 != 0u16, "the server listens on two ports: two origins");
   var cl = Client.make(Config.make(), pool);
 
   // ---- Retries ----
@@ -436,7 +436,7 @@ fn main() i32 {
   post.body = String.from("once only");
   let p = fetchSeen(&mut cl, &mut sv, &mut lp, post);
   expect(p.last == EventKind.Failed, "POST reset: Failed");
-  expect(p.stage == Stage.Read or p.stage == Stage.Closed, "...the connection reset under it");
+  expect(p.stage == Stage.Read || p.stage == Stage.Closed, "...the connection reset under it");
   expectUInt(u64.from(p.timing.attempts), 1u64, "...one attempt, no retry");
   expectUInt(cl.stats().retries, 1u64, "stats: still one retry");
 
@@ -445,7 +445,7 @@ fn main() i32 {
   var put = Request.make("PUT", url(port, "/closeonce").view());
   put.body = String.from("twice is once");
   let u = fetchSeen(&mut cl, &mut sv, &mut lp, put);
-  expect(u.last == EventKind.Done and u.timing.attempts == 2u32, "PUT reset once: Done on its second attempt");
+  expect(u.last == EventKind.Done && u.timing.attempts == 2u32, "PUT reset once: Done on its second attempt");
 
   // A server that always resets: maxRetries (2) retries, then Failed
   let before = sv.requests;
@@ -453,7 +453,7 @@ fn main() i32 {
   expect(a.last == EventKind.Failed, "always reset: Failed");
   expectUInt(u64.from(a.timing.attempts), 3u64, "...after three attempts");
   expectUInt(sv.requests - before, 3u64, "...the server saw three");
-  expect(a.failure.startsWith("read: closed: a receive failed") or a.failure.startsWith("closed: closed:"),
+  expect(a.failure.startsWith("read: closed: a receive failed") || a.failure.startsWith("closed: closed:"),
     "...the connection's failure");
 
   // Never once a response has begun: a body cut off mid-way is not retried
@@ -477,18 +477,18 @@ fn main() i32 {
   var lim = Request.get(url(port, "/redirect/3").view());
   lim.maxRedirects = 2u32;
   let l2 = fetchSeen(&mut cl, &mut sv, &mut lp, lim);
-  expect(l2.last == EventKind.Failed and l2.stage == Stage.Redirect, "a limit of two: Failed at the third");
+  expect(l2.last == EventKind.Failed && l2.stage == Stage.Redirect, "a limit of two: Failed at the third");
   expectStr(l2.failure.view(), "redirect: too large: more than 2 redirects", "...saying so");
 
   let ten = fetchSeen(&mut cl, &mut sv, &mut lp, Request.get(url(port, "/redirect/10").view()));
-  expect(ten.last == EventKind.Done and ten.timing.redirects == 10u32, "ten redirects: the default limit, Done");
+  expect(ten.last == EventKind.Done && ten.timing.redirects == 10u32, "ten redirects: the default limit, Done");
   let eleven = fetchSeen(&mut cl, &mut sv, &mut lp, Request.get(url(port, "/redirect/11").view()));
   expectStr(eleven.failure.view(), "redirect: too large: more than 10 redirects", "eleven: Failed");
 
   var none = Request.get(url(port, "/redirect/3").view());
   none.maxRedirects = 0u32;
   let z = fetchSeen(&mut cl, &mut sv, &mut lp, none);
-  expect(z.last == EventKind.Done and z.status == 302u16, "a limit of 0: the 302 is the answer");
+  expect(z.last == EventKind.Done && z.status == 302u16, "a limit of 0: the 302 is the answer");
   expectStr(z.body.view(), "moved", "...with its body");
 
   // 303 and 301 make a POST a GET, its body gone; 307 keeps both
@@ -536,7 +536,7 @@ fn main() i32 {
     "redirect: malformed: the Location 'ftp://example.com/' cannot be followed: it is not an http or https URL",
     "a Location of another scheme: Failed");
   let noLoc = fetchSeen(&mut cl, &mut sv, &mut lp, Request.get(url(port, "/status/302").view()));
-  expect(noLoc.last == EventKind.Done and noLoc.status == 302u16, "a 302 with no Location: the answer itself");
+  expect(noLoc.last == EventKind.Done && noLoc.status == 302u16, "a 302 with no Location: the answer itself");
 
   // Every fetch answered once; every buffer home
   let s = cl.stats();

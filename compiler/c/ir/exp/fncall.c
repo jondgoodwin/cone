@@ -2285,7 +2285,7 @@ static char *fnCallSliceElemNoEq(INode *elemtype, char *buf, size_t size) {
 
 // '==' on two slices compares their elements (doc/manual/lib-collections.html,
 // "Comparison"): equal when the counts are and each element is '==' to its
-// partner. '!=' arrives here as '==' under a 'not' (fnCallNeFromEq) unless the
+// partner. '!=' arrives here as '==' under a '!' (fnCallNeFromEq) unless the
 // elements have no '==', which is reported under the '!=' that was written. A
 // slice has no order, so an ordering is refused.
 //
@@ -4561,7 +4561,7 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
     }
 
     // A derived '!=': this node becomes the '==' application, lowered below like
-    // any other, and a 'not' takes its place in the tree
+    // any other, and a '!' takes its place in the tree
     LogicNode *derivedne = NULL;
     if (fnCallNeFromEq(node, objtype)) {
         ((NameUseNode*)node->methfld)->namesym = eqName;
@@ -4808,7 +4808,7 @@ dispatch:
     }
 
     // A comparison with an empty variant is the test of its tag
-    // (fnCallLowerEnumTagTest), standing where the call, or the 'not' of it, stood
+    // (fnCallLowerEnumTagTest), standing where the call, or the '!' of it, stood
 tagtested:
     if (fnCallTagTestFor == node) {
         if (derivedne)
@@ -4819,8 +4819,8 @@ tagtested:
         fnCallTagTest = NULL;
     }
 
-    // 'not' takes a bool, which a '==' returning anything else reaches through
-    // isTrue. A '==' that selected nothing has been reported, and the 'not' carries
+    // '!' takes a bool, which a '==' returning anything else reaches through
+    // isTrue. A '==' that selected nothing has been reported, and the '!' carries
     // that on rather than earning a second diagnostic.
     if (derivedne) {
         if (node->vtype == unknownType || node->vtype == errorType)

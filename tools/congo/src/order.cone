@@ -38,26 +38,26 @@ fn resolveImports(reg &Registry, p usize, scanned List[Module]) Result[Unit, Str
     let imports = importsOf(mods[m]);
     // A module of gpu/ is compiled for the GPU without src/, so it may not
     // use src/: not a sister there, and not a name of the root [Jon 3 Oct]
-    let fromGpu = mods[m].gpu and mods[m].hasParent and not mods[mods[m].parent].gpu;
+    let fromGpu = mods[m].gpu && mods[m].hasParent && !mods[mods[m].parent].gpu;
     var sister = 0usize;
-    if fromGpu and mods[m].hasExtends and sisterNamed(&mods, m, mods[m].extended.name.view(), &mut sister) and not mods[sister].gpu {
+    if fromGpu && mods[m].hasExtends && sisterNamed(&mods, m, mods[m].extended.name.view(), &mut sister) && !mods[sister].gpu {
       return Error[Unit, String](gpuUsesSrc(pkg, &mods[m].extended, "extends", &mods, true, sister));
     }
     var i = 0usize;
     while i < imports.len() {
       let imp = imports[i];
-      if not imp.hasName {
+      if !imp.hasName {
         let place = imp.location();
         return Error[Unit, String](cat(place.view(), ": import ", imp.written.view(),
           ": a Congo build imports a package by its name, not by a path"));
       }
       elif sisterNamed(&mods, m, imp.name.view(), &mut sister) {
         // a sister, answered inside the package
-        if fromGpu and not mods[sister].gpu {
+        if fromGpu && !mods[sister].gpu {
           return Error[Unit, String](gpuUsesSrc(pkg, imp, "import", &mods, true, sister));
         }
       }
-      elif fromGpu and not imp.name.equals("core") and not reg.has(imp.name.view()) {
+      elif fromGpu && !imp.name.equals("core") && !reg.has(imp.name.view()) {
         return Error[Unit, String](gpuUsesSrc(pkg, imp, "import", &mods, false, 0usize));
       }
       elif imp.name.equals("core") {
@@ -65,7 +65,7 @@ fn resolveImports(reg &Registry, p usize, scanned List[Module]) Result[Unit, Str
         // very file it was loaded from, so the two are one module
         match reg.find("core") {
           case let c Some {
-            if not pkg.name.equals("core") { addLine(&mut mods[m], imp.name.view(), c); }
+            if !pkg.name.equals("core") { addLine(&mut mods[m], imp.name.view(), c); }
           }
           case is None {}
         }
@@ -73,12 +73,12 @@ fn resolveImports(reg &Registry, p usize, scanned List[Module]) Result[Unit, Str
       else {
         match reg.find(imp.name.view()) {
           case let f Some {
-            if not holds(&deps, f) { deps.push(f); }
+            if !holds(&deps, f) { deps.push(f); }
             addLine(&mut mods[m], imp.name.view(), f);
           }
           case is None {
             // A name of the parent, which the compiler resolves
-            if not mods[m].hasParent {
+            if !mods[m].hasParent {
               let place = imp.location();
               let searched = reg.searched();
               return Error[Unit, String](cat(place.view(), ": import ", imp.name.view(), ": no package named '", imp.name.view(),
@@ -99,10 +99,10 @@ fn resolveImports(reg &Registry, p usize, scanned List[Module]) Result[Unit, Str
   // source is read past the headers: a marked package's, or its gpu/ folder's
   var kernels = false;
   var m = 0usize;
-  while m < mods.len() and not kernels {
-    if pkg.gpu or mods[m].gpu {
+  while m < mods.len() && !kernels {
+    if pkg.gpu || mods[m].gpu {
       var f = 0usize;
-      while f < mods[m].files.len() and not kernels {
+      while f < mods[m].files.len() && !kernels {
         match holdsKernel(mods[m].files[f]) {
           case let ok Ok { kernels = ok; }
           case let e Error { return Error[Unit, String](e.copy()); }
@@ -122,7 +122,7 @@ fn resolveImports(reg &Registry, p usize, scanned List[Module]) Result[Unit, Str
       var l = 0usize;
       while l < mods[g].lines.len() {
         let dep = mods[g].lines[l].pkg;
-        if not reg.packages[dep].name.equals("core") and not holds(&gpuDeps, dep) { gpuDeps.push(dep); }
+        if !reg.packages[dep].name.equals("core") && !holds(&gpuDeps, dep) { gpuDeps.push(dep); }
         l = l + 1usize;
       }
     }
@@ -178,7 +178,7 @@ fn firstImport(unit &Unit, name &str, gpuOnly bool = false) Import {
   while w < order.len() {
     let m = *order[w];
     var i = 0usize;
-    while i < unit.mods[m].imports.len() and (unit.mods[m].gpu or not gpuOnly) {
+    while i < unit.mods[m].imports.len() && (unit.mods[m].gpu || !gpuOnly) {
       if unit.mods[m].imports[i].name.equals(name) { return unit.mods[m].imports[i].copy(); }
       i = i + 1usize;
     }
@@ -210,7 +210,7 @@ struct Plan {
   }
 
   pub fn stateOf(self &, name &str) u8 {
-    if not state.contains(name) { return unvisited; }
+    if !state.contains(name) { return unvisited; }
     *state[name]
   }
 
@@ -237,7 +237,7 @@ struct Plan {
       let depName = reg.packages[dep].name.view();
       if self.stateOf(depName) == visiting {
         var at = 0usize;
-        while not reg.packages[units[*stack[at]].pkg].name.equals(depName) { at = at + 1usize; }
+        while !reg.packages[units[*stack[at]].pkg].name.equals(depName) { at = at + 1usize; }
         var chain = String.empty();
         var text = String.empty();
         var j = at;
@@ -334,7 +334,7 @@ fn needsOf(plan &Plan, reg &Registry, u usize, needs &mut List[usize]) {
   var i = 0usize;
   while i < plan.units[u].deps.len() {
     let dep = *plan.units[u].deps[i];
-    if not holds(needs, dep) {
+    if !holds(needs, dep) {
       needs.push(dep);
       var du = 0usize;
       if plan.unitNamed(reg, reg.packages[dep].name.view(), &mut du) { needsOf(plan, reg, du, needs); }
@@ -355,9 +355,9 @@ fn closure(plan &Plan, reg &Registry, u usize) List[usize] {
   var seen = List[usize].empty();
   let p = plan.units[u].pkg;
   var core = 0usize;
-  if not reg.packages[p].name.equals("core") and plan.unitNamed(reg, "core", &mut core) {
+  if !reg.packages[p].name.equals("core") && plan.unitNamed(reg, "core", &mut core) {
     let needs = preludeNeeds(plan, reg);
-    if not holds(&needs, p) {
+    if !holds(&needs, p) {
       closureOf(plan, reg, core, &mut seen);
       seen.push(plan.units[core].pkg);
     }
@@ -370,7 +370,7 @@ fn closureOf(plan &Plan, reg &Registry, u usize, seen &mut List[usize]) {
   var i = 0usize;
   while i < plan.units[u].deps.len() {
     let dep = *plan.units[u].deps[i];
-    if not holds(seen, dep) {
+    if !holds(seen, dep) {
       var du = 0usize;
       if plan.unitNamed(reg, reg.packages[dep].name.view(), &mut du) { closureOf(plan, reg, du, seen); }
       seen.push(dep);

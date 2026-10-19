@@ -1201,8 +1201,8 @@ INode *parseShift(ParseState *parse) {
 INode *parseAnd(ParseState *parse) {
     INode *lhnode = parseShift(parse);
     while (1) {
-        // '&&' after an operand is not the bitwise and of a borrow ('a & &b' is
-        // written with a space); parseAndLogicFrom refuses it and reads it as 'and'
+        // '&&' after an operand is the logical and, not the bitwise and of a
+        // borrow ('a & &b' is written with a space); parseAndLogicFrom reads it
         if (lexIsToken(AmperToken) && !lexIsAmpAmp()) {
             FnCallNode *node = newFnCallOpname(lhnode, andName, 2);
             lexNextToken();
@@ -1285,7 +1285,7 @@ INode *parseCmp(ParseState *parse) {
     return parseCmpFrom(parse, parseOr(parse));
 }
 
-// Parse 'not' logical operator
+// Parse '!' logical operator
 INode *parseNotLogic(ParseState *parse) {
     if (lexIsToken(NotToken)) {
         parse->entryparen = 0;
@@ -1297,17 +1297,12 @@ INode *parseNotLogic(ParseState *parse) {
     return parseCmp(parse);
 }
 
-// Parse 'and' logical operator, following a left operand already parsed
+// Parse '&&' logical operator, following a left operand already parsed. The
+// lexer keeps '&&' as two '&' tokens; after an operand they are the logical and.
 static INode *parseAndLogicFrom(ParseState *parse, INode *lhnode) {
-    while (lexIsToken(AndToken) || lexIsAmpAmp()) {
+    while (lexIsAmpAmp()) {
         LogicNode *node = newLogicNode(AndLogicTag);
-        // Cone has no '&&': 'and' is logical and, and '&&' once read as the
-        // bitwise '&' of a borrow, which never short-circuits. Refused at the
-        // operator and read as 'and', so nothing after it is reported twice.
-        if (lexIsAmpAmp()) {
-            errorMsgLex(ErrorAndAnd, "Cone has no '&&': write 'and' for logical and, which does not evaluate its right side when the left is false.");
-            lexNextToken();
-        }
+        lexNextToken();
         lexNextToken();
         node->lexp = lhnode;
         node->rexp = parseNotLogic(parse);
@@ -1316,14 +1311,14 @@ static INode *parseAndLogicFrom(ParseState *parse, INode *lhnode) {
     return lhnode;
 }
 
-// Parse 'and' logical operator
+// Parse '&&' logical operator
 INode *parseAndLogic(ParseState *parse) {
     return parseAndLogicFrom(parse, parseNotLogic(parse));
 }
 
-// Parse 'or' logical operator, following a left operand already parsed
+// Parse '||' logical operator, following a left operand already parsed
 static INode *parseOrExprFrom(ParseState *parse, INode *lhnode) {
-    while (lexIsToken(OrToken)) {
+    while (lexIsToken(OrOrToken)) {
         LogicNode *node = newLogicNode(OrLogicTag);
         lexNextToken();
         node->lexp = lhnode;
@@ -1333,7 +1328,7 @@ static INode *parseOrExprFrom(ParseState *parse, INode *lhnode) {
     return lhnode;
 }
 
-// Parse 'or' logical operator
+// Parse '||' logical operator
 INode *parseOrExpr(ParseState *parse) {
     return parseOrExprFrom(parse, parseAndLogic(parse));
 }
