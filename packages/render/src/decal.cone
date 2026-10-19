@@ -11,7 +11,7 @@
 //
 //   imm moss = fx.addDecalMaterial(&mut device, &renderer, mossAlbedo, mossNormal, TextureHandle.none());
 //   ...
-//   mut d = Decal.at(moss, Mat4.fromTrs(position, Quat.identity(), new Vec3(1.5, 0.6, 1.5)));
+//   mut d = Decal.at(moss, Mat4.fromTrs(position, Quat.identity(), Vec3(1.5, 0.6, 1.5)));
 //   d.fade = 0.8;
 //   fx.decals.add(d);
 //
@@ -33,7 +33,7 @@ pub struct DecalMaterial {
 pub struct Decal {
   pub material: u32;                // 'ImageFx.addDecalMaterial''s answer
   pub model: Mat4;                  // places the unit cube: its size, its place and which way is up (+y)
-  pub tint: Color = new Color(1., 1., 1., 1.);   // multiplies the albedo and its alpha
+  pub tint: Color = Color(1., 1., 1., 1.);   // multiplies the albedo and its alpha
   pub fade: f32 = 1.;               // 0 to 1: how much of it shows (to fade a footprint out)
   pub normalStrength: f32 = 1.;     // how much its normal map bends the surface's normal (0 to 1)
   // Used when it has no roughness map: 0.9, the roughness of the ground,
@@ -53,13 +53,13 @@ pub struct Decal {
   pub order: i32 = 0;
 
   // A decal of 'material' placed by 'model', the rest as they default
-  pub fn at(material: u32, model: Mat4) Decal { new Decal(material, model) }
+  pub fn at(material: u32, model: Mat4) Decal { Decal(material, model) }
 }
 
 pub struct DecalList {
   pub decals: List[Decal];
 
-  pub fn empty() DecalList { new DecalList(List[Decal].empty()) }
+  pub fn empty() DecalList { DecalList(List[Decal].empty()) }
   pub fn clear(self: &mut) { decals.clear(); }
   pub fn len(self: &) usize { decals.len() }
   pub fn add(self: &mut, d: Decal) { decals.push(d); }
@@ -88,31 +88,31 @@ pub struct DecalPass {
   pub fn create(device: &mut Device, frameLayout: &BindGroupLayout, environmentLayout: &BindGroupLayout,
       frameBuffer: &Buffer, depth: &TextureView) DecalPass {
     var shader = device.createShaderModule(&DECAL_SPIRV);
-    let materialEntries = [new BindGroupLayoutEntry(binding: 0u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE),
-      new BindGroupLayoutEntry(binding: 1u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE),
-      new BindGroupLayoutEntry(binding: 2u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE),
-      new BindGroupLayoutEntry(binding: 3u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_SAMPLER)];
+    let materialEntries = [BindGroupLayoutEntry(binding: 0u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE),
+      BindGroupLayoutEntry(binding: 1u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE),
+      BindGroupLayoutEntry(binding: 2u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE),
+      BindGroupLayoutEntry(binding: 3u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_SAMPLER)];
     var materialLayout = device.createBindGroupLayout(&materialEntries);
-    let passEntries = [new BindGroupLayoutEntry(binding: 0u32, visibility: SHADER_STAGE_FRAGMENT),
-      new BindGroupLayoutEntry(binding: 1u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE,
+    let passEntries = [BindGroupLayoutEntry(binding: 0u32, visibility: SHADER_STAGE_FRAGMENT),
+      BindGroupLayoutEntry(binding: 1u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE,
         sampleType: TEXTURE_SAMPLE_TYPE_DEPTH)];
     var passLayout = device.createBindGroupLayout(&passEntries);
     let groups = [frameLayout, &materialLayout, environmentLayout, &passLayout];
     var pipelineLayout = device.createPipelineLayout(&groups, 112u32);
-    let attributes = [new VertexAttribute(VERTEX_FORMAT_FLOAT32, 0u64, 0u32)];
-    let buffers = [new VertexBufferLayout(arrayStride: 4u64, attributes: &attributes)];
-    let desc = new RenderPipelineDescriptor(layout: &pipelineLayout, vertexModule: &shader, buffers: &buffers[..<0],
+    let attributes = [VertexAttribute(VERTEX_FORMAT_FLOAT32, 0u64, 0u32)];
+    let buffers = [VertexBufferLayout(arrayStride: 4u64, attributes: &attributes)];
+    let desc = RenderPipelineDescriptor(layout: &pipelineLayout, vertexModule: &shader, buffers: &buffers[..<0],
       fragmentModule: &shader, colorFormat: TEXTURE_FORMAT_RGBA16_FLOAT, cullMode: CULL_MODE_FRONT,
       blendEnabled: true, colorSrcFactor: BLEND_FACTOR_ONE, colorDstFactor: BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
       alphaSrcFactor: BLEND_FACTOR_ONE, alphaDstFactor: BLEND_FACTOR_ONE_MINUS_SRC_ALPHA);
     var pipeline = device.createRenderPipeline(&desc);
-    let samplerDesc = new SamplerDescriptor(mipmapFilter: FILTER_MODE_LINEAR, maxAnisotropy: 8u32,
+    let samplerDesc = SamplerDescriptor(mipmapFilter: FILTER_MODE_LINEAR, maxAnisotropy: 8u32,
       addressModeU: ADDRESS_MODE_CLAMP_TO_EDGE, addressModeV: ADDRESS_MODE_CLAMP_TO_EDGE,
       addressModeW: ADDRESS_MODE_CLAMP_TO_EDGE);
     var sampler = device.createSampler(&samplerDesc);
     let passEntriesGroup = [BindGroupEntry.buffer(0u32, frameBuffer), BindGroupEntry.texture(1u32, depth)];
     var passGroup = device.createBindGroup(&passLayout, &passEntriesGroup);
-    new DecalPass(shader, materialLayout, passLayout, pipelineLayout, pipeline, sampler, passGroup,
+    DecalPass(shader, materialLayout, passLayout, pipelineLayout, pipeline, sampler, passGroup,
       List[DecalMaterial].empty(), List[u32].empty(), 0u32)
   }
 
@@ -140,7 +140,7 @@ pub struct DecalPass {
     let entries = [BindGroupEntry.texture(0u32, &av), BindGroupEntry.texture(1u32, &nv), BindGroupEntry.texture(2u32, &rv),
       BindGroupEntry.sampler(3u32, &sampler)];
     var group = device.createBindGroup(&materialLayout, &entries);
-    materials.push(new DecalMaterial(a, n, rough, hasNormal, hasRoughness, group));
+    materials.push(DecalMaterial(a, n, rough, hasNormal, hasRoughness, group));
     u32.from(materials.len() - 1usize)
   }
 
@@ -174,7 +174,7 @@ pub struct DecalPass {
       i = i + 1usize;
     }
     if order.len() == 0usize { return; }
-    let attachment = new RenderPassColorAttachment(view: hdr.createView(), loadOp: LOAD_OP_LOAD, clearValue: new Color(0., 0., 0., 0.));
+    let attachment = RenderPassColorAttachment(view: hdr.createView(), loadOp: LOAD_OP_LOAD, clearValue: Color(0., 0., 0., 0.));
     var pass = encoder.beginRenderPass(&attachment);
     pass.setPipeline(&pipeline);
     pass.setBindGroup(0u32, &r.frameGroup);
@@ -194,7 +194,7 @@ pub struct DecalPass {
       var flags = 0u32;
       if m.hasNormal { flags = flags | 1u32; }
       if m.hasRoughness { flags = flags | 2u32; }
-      var data = new DecalImmediates(new Array[f32, 16] <- fill 0f, [d.tint.red, d.tint.green, d.tint.blue, d.tint.alpha],
+      var data = DecalImmediates(Array[f32, 16]() <- fill 0f, [d.tint.red, d.tint.green, d.tint.blue, d.tint.alpha],
         [d.fade, d.normalStrength, d.roughness, cosOf(d.maxAngle)],
         [d.depthFade, d.fadeStart, d.fadeEnd, f32.from(flags)]);
       var k = 0usize;

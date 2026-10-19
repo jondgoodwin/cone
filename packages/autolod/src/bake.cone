@@ -103,11 +103,11 @@ pub struct ImpostorBaker {
   // A baker for frames of 'frameSize' pixels: its two renderers, targets and
   // read-back buffers. Make one and bake with it as often as wanted. Check 'isValid'.
   pub fn create(device: &mut Device, frameSize: u32) ImpostorBaker {
-    let colourDesc = new TextureDescriptor(frameSize, frameSize, TEXTURE_FORMAT_RGBA8_UNORM_SRGB,
+    let colourDesc = TextureDescriptor(frameSize, frameSize, TEXTURE_FORMAT_RGBA8_UNORM_SRGB,
       TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
-    let normalDesc = new TextureDescriptor(frameSize, frameSize, TEXTURE_FORMAT_RGBA8_UNORM,
+    let normalDesc = TextureDescriptor(frameSize, frameSize, TEXTURE_FORMAT_RGBA8_UNORM,
       TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
-    let depthDesc = new TextureDescriptor(frameSize, frameSize, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
+    let depthDesc = TextureDescriptor(frameSize, frameSize, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
     var colourTarget = device.createTexture(&colourDesc);
     var normalTarget = device.createTexture(&normalDesc);
     var depthTarget = device.createTexture(&depthDesc);
@@ -117,9 +117,9 @@ pub struct ImpostorBaker {
     var albedoRenderer = Renderer.create(device, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, TEXTURE_FORMAT_DEPTH32_FLOAT);
     var normalRenderer = Renderer.create(device, TEXTURE_FORMAT_RGBA8_UNORM, TEXTURE_FORMAT_DEPTH32_FLOAT);
     let sampleTypes = [TEXTURE_SAMPLE_TYPE_FLOAT];
-    let desc = new CustomPipeline(spirv: &IMPOSTORBAKE_SPIRV, textures: &sampleTypes, streams: 3u32, paramBytes: 48u64);
+    let desc = CustomPipeline(spirv: &IMPOSTORBAKE_SPIRV, textures: &sampleTypes, streams: 3u32, paramBytes: 48u64);
     let normalPipeline = normalRenderer.addPipeline(device, &desc);
-    new ImpostorBaker(frameSize, albedoRenderer, normalRenderer, normalPipeline, colourTarget, normalTarget, depthTarget,
+    ImpostorBaker(frameSize, albedoRenderer, normalRenderer, normalPipeline, colourTarget, normalTarget, depthTarget,
       colourRead, normalRead)
   }
 
@@ -134,12 +134,12 @@ pub struct ImpostorBaker {
     let grid = s.grid;
     let size = usize.from(grid * frameSize);
     let framed = s.framedRadius(radius);
-    var albedo = new Image(i32.from(size), i32.from(size), 4, List[u8].withCapacity(size * size * 4usize));
+    var albedo = Image(i32.from(size), i32.from(size), 4, List[u8].withCapacity(size * size * 4usize));
     albedo.pixels.resize(size * size * 4usize, 0u8);
-    var normals = new Image(i32.from(size), i32.from(size), 4, List[u8].withCapacity(size * size * 4usize));
+    var normals = Image(i32.from(size), i32.from(size), 4, List[u8].withCapacity(size * size * 4usize));
     normals.pixels.resize(size * size * 4usize, 0u8);
     if grid < 2u32 || s.frameSize != frameSize || parts.len() == 0usize || !self.isValid() {
-      return new ImpostorAtlas(albedo, normals, grid, frameSize, s.hemisphere, center, framed, 0.);
+      return ImpostorAtlas(albedo, normals, grid, frameSize, s.hemisphere, center, framed, 0.);
     }
 
     // The parts in both renderers
@@ -182,7 +182,7 @@ pub struct ImpostorBaker {
       normalList.add(*normalMeshes[p], *normalMaterials[p], Mat4.identity());
       p = p + 1usize;
     }
-    let flatLight = Light.directional(new Vec3(0., -1., 0.), new Color(0., 0., 0., 1.), new Color(1., 1., 1., 1.));
+    let flatLight = Light.directional(Vec3(0., -1., 0.), Color(0., 0., 0., 1.), Color(1., 1., 1., 1.));
 
     var frameNumber = 0u32;
     while frameNumber < grid * grid {
@@ -198,7 +198,7 @@ pub struct ImpostorBaker {
       camera.lookAt(center + dir * (framed * 2.), center, basis.up);
 
       // 1. colour and coverage
-      camera.background = new Color(0., 0., 0., 0.);
+      camera.background = Color(0., 0., 0., 0.);
       drawPass(device, &mut self.albedoRenderer, &self.colourTarget, &self.depthTarget, &self.colourRead, &camera,
         &flatLight, &albedoList);
       copyFrame(self.colourRead.mappedRange(), &mut albedo, i, j, size, frameSize);
@@ -212,7 +212,7 @@ pub struct ImpostorBaker {
         self.normalRenderer.setCustomParams(device, *normalMaterials[p], &params);
         p = p + 1usize;
       }
-      camera.background = new Color(0.5, 0.5, 1., 0.5);
+      camera.background = Color(0.5, 0.5, 1., 0.5);
       drawPass(device, &mut self.normalRenderer, &self.normalTarget, &self.depthTarget, &self.normalRead, &camera,
         &flatLight, &normalList);
       copyFrame(self.normalRead.mappedRange(), &mut normals, i, j, size, frameSize);
@@ -232,7 +232,7 @@ pub struct ImpostorBaker {
     }
     let porosity = porosityOf(&albedo, grid, frameSize);
     dilateAtlas(&mut albedo, &mut normals, grid, frameSize, s.dilate);
-    new ImpostorAtlas(albedo, normals, grid, frameSize, s.hemisphere, center, framed, porosity)
+    ImpostorAtlas(albedo, normals, grid, frameSize, s.hemisphere, center, framed, porosity)
   }
 }
 
@@ -342,8 +342,8 @@ fn dilateAtlas(albedo: &mut Image, normals: &mut Image, grid: u32, frameSize: u3
             if *filled[y * f + x] == 0u8 {
               // the mean of the filled four-neighbours
               var count = 0u32;
-              var sum = new Vec3(0., 0., 0.);
-              var sumN = new Vec4(0., 0., 0., 0.);
+              var sum = Vec3(0., 0., 0.);
+              var sumN = Vec4(0., 0., 0., 0.);
               var n = 0usize;
               while n < 4usize {
                 var sx = x;
@@ -354,9 +354,9 @@ fn dilateAtlas(albedo: &mut Image, normals: &mut Image, grid: u32, frameSize: u3
                 if n == 3usize { if y > 0usize { sy = y - 1usize; } }
                 if (sx != x || sy != y) && *filled[sy * f + sx] != 0u8 {
                   let at = ((y0 + sy) * size + x0 + sx) * 4usize;
-                  sum = sum + new Vec3(f32.from(*albedo.pixels[at]), f32.from(*albedo.pixels[at + 1usize]),
+                  sum = sum + Vec3(f32.from(*albedo.pixels[at]), f32.from(*albedo.pixels[at + 1usize]),
                     f32.from(*albedo.pixels[at + 2usize]));
-                  sumN = sumN + new Vec4(f32.from(*normals.pixels[at]), f32.from(*normals.pixels[at + 1usize]),
+                  sumN = sumN + Vec4(f32.from(*normals.pixels[at]), f32.from(*normals.pixels[at + 1usize]),
                     f32.from(*normals.pixels[at + 2usize]), f32.from(*normals.pixels[at + 3usize]));
                   count = count + 1u32;
                 }

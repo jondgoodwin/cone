@@ -94,7 +94,7 @@ pub actor Endpoint {
     let salt = rng.next();
     let gateSeed = rng.next();
     let g = CancelGroup.make();
-    *self = new Self(server: server, cfg: cfg, handler: handler, pool: Pool.make(), sock: UdpSocket.none(),
+    *self = Self(server: server, cfg: cfg, handler: handler, pool: Pool.make(), sock: UdpSocket.none(),
       group: g, timer: g.child(), timerGen: 0u32, inflight: 0usize,
       gate: ChallengeGate.make(gateSeed), slots: List[ConnectionSlot].empty(), nextId: 1u32,
       armed: -1i64, stopped: false,
@@ -151,7 +151,7 @@ pub actor Endpoint {
     if sock.isNone() {
       match &made {
         case let e &Error { tx.send(Error[SocketAddr, IoError](*e)); }
-        else { tx.send(Error[SocketAddr, IoError](new IoError(1u32))); }
+        else { tx.send(Error[SocketAddr, IoError](IoError(1u32))); }
       }
       return;
     }
@@ -349,9 +349,9 @@ pub actor Endpoint {
     }
     let id = nextId;
     nextId = nextId + 1u32;
-    let conn = new Connection(connUdp, id, handler, cfg, session, from,
+    let conn = Connection(connUdp, id, handler, cfg, session, from,
       Some[Endpoint](selfactor), LinkConfig.perfect(), 0u64);
-    slots.push(new ConnectionSlot(String.from(key), id, conn, session, Instant.now().nanos()));
+    slots.push(ConnectionSlot(String.from(key), id, conn, session, Instant.now().nanos()));
     self.transmit(from, accept);
   }
 
@@ -361,9 +361,9 @@ pub actor Endpoint {
     match ev {
       case is Connected {
         let id = 1u32;
-        let conn = new Connection(connUdp, id, handler, cfg, dialer.sessionId(), remote,
+        let conn = Connection(connUdp, id, handler, cfg, dialer.sessionId(), remote,
           Some[Endpoint](selfactor), LinkConfig.perfect(), 0u64);
-        slots.push(new ConnectionSlot(String.from(remoteKey.view()), id, conn, dialer.sessionId(), Instant.now().nanos()));
+        slots.push(ConnectionSlot(String.from(remoteKey.view()), id, conn, dialer.sessionId(), Instant.now().nanos()));
         dialing = false;
         // The datagram that connected us may be a payload packet
         conn.packet(data);
@@ -419,7 +419,7 @@ fn requireAWorker() {
 // address the socket got
 fn start(server: bool, bind: SocketAddr, remote: SocketAddr, cfg: NetConfig, h: EventHandler) Result[BoundEndpoint, IoError] {
   requireAWorker();
-  let ep = new Endpoint(server, cfg, h, remote, freshSeed());
+  let ep = Endpoint(server, cfg, h, remote, freshSeed());
   var tx: OneshotSender[Result[SocketAddr, IoError]];
   var rx: OneshotReceiver[Result[SocketAddr, IoError]];
   tx, rx = Oneshot[Result[SocketAddr, IoError]].make();
@@ -427,13 +427,13 @@ fn start(server: bool, bind: SocketAddr, remote: SocketAddr, cfg: NetConfig, h: 
   match rx.recv() {
     case let answer Some {
       match &answer {
-        case let a &Ok { return Ok[BoundEndpoint, IoError](new BoundEndpoint(ep, a.port(), *a)); }
+        case let a &Ok { return Ok[BoundEndpoint, IoError](BoundEndpoint(ep, a.port(), *a)); }
         case let e &Error { return Error[BoundEndpoint, IoError](*e); }
       }
     }
     case is None[Result[SocketAddr, IoError]] {}
   }
-  Error[BoundEndpoint, IoError](new IoError(1u32))
+  Error[BoundEndpoint, IoError](IoError(1u32))
 }
 
 // What a client binds its UDP socket to, port 0, for a server at 'server': the

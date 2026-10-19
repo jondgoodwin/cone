@@ -800,10 +800,10 @@ import testing use *;
 import geomath use *;
 
 fn main() i32 {
-  let q = Quat.angleAxis(pi / 2., new Vec3(0., 0., 1.));
+  let q = Quat.angleAxis(pi / 2., Vec3(0., 0., 1.));
   requireFloat(q.dot(q), 1., 0.00001, "a unit quaternion");
-  expectFloat(q.rotate(new Vec3(1., 0., 0.)).y, 1., 0.00001, "x turns to y");
-  expectInt(new IRect(10, 20, 640, 480).w, 640, "width");
+  expectFloat(q.rotate(Vec3(1., 0., 0.)).y, 1., 0.00001, "x turns to y");
+  expectInt(IRect(10, 20, 640, 480).w, 640, "width");
   done()
 }
 ```

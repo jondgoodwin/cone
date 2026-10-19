@@ -29,7 +29,7 @@ pub struct ParticleLayer {
   pub duration: f32 = 0.;
 
   pub fn make(cls: &ParticleClass) ParticleLayer {
-    new ParticleLayer(*cls, new Vec3(0., 0., 0.), new Vec3(0., 1., 0.))
+    ParticleLayer(*cls, Vec3(0., 0., 0.), Vec3(0., 1., 0.))
   }
 }
 
@@ -43,7 +43,7 @@ pub struct FlipbookLayer {
   pub roll: f32 = 6.2831855;         // a random roll within this many radians, from the seed
 
   pub fn make(desc: &FlipbookDesc) FlipbookLayer {
-    new FlipbookLayer(*desc, new Color(1., 1., 1., 1.), new Vec3(0., 0., 0.))
+    FlipbookLayer(*desc, Color(1., 1., 1., 1.), Vec3(0., 0., 0.))
   }
 }
 
@@ -58,11 +58,11 @@ pub struct DistortionLayer {
   pub rise: f32 = 1.;
 
   pub fn ring(radius: f32, duration: f32, strength: f32) DistortionLayer {
-    new DistortionLayer(DISTORT_RING, new Vec3(0., 0., 0.), 0., duration, radius, strength)
+    DistortionLayer(DISTORT_RING, Vec3(0., 0., 0.), 0., duration, radius, strength)
   }
 
   pub fn haze(radius: f32, duration: f32, strength: f32) DistortionLayer {
-    new DistortionLayer(DISTORT_HAZE, new Vec3(0., 0., 0.), 0., duration, radius, strength)
+    DistortionLayer(DISTORT_HAZE, Vec3(0., 0., 0.), 0., duration, radius, strength)
   }
 }
 
@@ -76,7 +76,7 @@ pub struct Effect {
   pub shakes: List[ShakeLayer];
 
   pub fn empty() Effect {
-    new Effect(List[ParticleLayer].empty(), List[FlipbookLayer].empty(), List[LightLayer].empty(),
+    Effect(List[ParticleLayer].empty(), List[FlipbookLayer].empty(), List[LightLayer].empty(),
       List[DistortionLayer].empty(), List[DebrisLayer].empty(), List[DecalLayer].empty(), List[ShakeLayer].empty())
   }
 
@@ -171,7 +171,7 @@ pub struct EffectPlayer {
 
   // A player into frames of 'colorFormat' (the HDR frame's), its particle pool 'capacity' strong
   pub fn create(device: &mut Device, colorFormat: u32, capacity: u32) EffectPlayer {
-    new EffectPlayer(ParticleSystem.create(device, colorFormat, capacity), FlipbookSystem.create(device, colorFormat),
+    EffectPlayer(ParticleSystem.create(device, colorFormat, capacity), FlipbookSystem.create(device, colorFormat),
       DistortionSystem.create(device, colorFormat), EffectLights.create(), DebrisSet.create(), CameraShake.make(),
       LowResLayer.create(device, colorFormat), List[Registered].empty(), List[Playing].empty(), List[ActiveDecal].empty())
   }
@@ -189,7 +189,7 @@ pub struct EffectPlayer {
   // The ground the particles and debris bounce on (a horizontal plane at height 'y')
   pub fn setGround(self: &mut, y: f32) {
     particles.groundOn = true;
-    particles.groundNormal = new Vec3(0., 1., 0.);
+    particles.groundNormal = Vec3(0., 1., 0.);
     particles.groundOffset = -y;
     debris.groundY = y;
   }
@@ -210,13 +210,13 @@ pub struct EffectPlayer {
       i = i + 1usize;
     }
     let length = effect.length();
-    registered.push(new Registered(effect, classIds, atlasIds, length));
+    registered.push(Registered(effect, classIds, atlasIds, length));
     u32.from(registered.len() - 1usize)
   }
 
   fn nextSeed(self: &mut, base: u32, salt: u32) u32 {
     counter = counter + 1u32;
-    let h = pcg4d(new UVec4(base, salt, counter, 0x9e3779b9u32));
+    let h = pcg4d(UVec4(base, salt, counter, 0x9e3779b9u32));
     h.x
   }
 
@@ -226,7 +226,7 @@ pub struct EffectPlayer {
     if usize.from(id) >= registered.len() { return; }
     let ri = usize.from(id);
     let a = axis.normalize();
-    let basisA = if libc.fabsf(a.y) < 0.9 { new Vec3(0., 1., 0.) } else { new Vec3(1., 0., 0.) };
+    let basisA = if libc.fabsf(a.y) < 0.9 { Vec3(0., 1., 0.) } else { Vec3(1., 0., 0.) };
     let side = basisA.cross(a).normalize();
     let across = a.cross(side).normalize();
     // What is set going now and runs itself: lights, flipbooks, distortions, decals
@@ -239,7 +239,7 @@ pub struct EffectPlayer {
     i = 0usize;
     while i < registered[ri].effect.flipbooks.len() {
       let l = *registered[ri].effect.flipbooks[i];
-      let roll = (toUnit(pcg4d(new UVec4(seed, u32.from(i), 77u32, 1u32)).x) - 0.5) * l.roll;
+      let roll = (toUnit(pcg4d(UVec4(seed, u32.from(i), 77u32, 1u32)).x) - 0.5) * l.roll;
       flipbooks.play(*registered[ri].atlasIds[i], origin + localToWorld(l.offset, side, a, across), l.size,
         now + l.delay, l.duration, roll, l.tint);
       i = i + 1usize;
@@ -247,19 +247,19 @@ pub struct EffectPlayer {
     i = 0usize;
     while i < registered[ri].effect.distortions.len() {
       let l = *registered[ri].effect.distortions[i];
-      distortion.add(new DistortionSprite(origin + localToWorld(l.offset, side, a, across), l.radius, now + l.delay,
+      distortion.add(DistortionSprite(origin + localToWorld(l.offset, side, a, across), l.radius, now + l.delay,
         l.duration, l.kind, l.strength, l.width, l.rise, seed + 31u32 * u32.from(i)));
       i = i + 1usize;
     }
     i = 0usize;
     while i < registered[ri].effect.decals.len() {
       let l = *registered[ri].effect.decals[i];
-      let roll = l.roll + toUnit(pcg4d(new UVec4(seed, u32.from(i), 79u32, 2u32)).x) * 2. * pi;
-      decals.push(new ActiveDecal(l, origin + localToWorld(l.offset, side, a, across), a, now + l.delay, roll));
+      let roll = l.roll + toUnit(pcg4d(UVec4(seed, u32.from(i), 79u32, 2u32)).x) * 2. * pi;
+      decals.push(ActiveDecal(l, origin + localToWorld(l.offset, side, a, across), a, now + l.delay, roll));
       i = i + 1usize;
     }
-    let ev = new Playing(id, origin, a, side, across, velocity, seed, now, false,
-      new Array[f32, 12] <- fill 0f, new Array[bool, 24] <- fill false);
+    let ev = Playing(id, origin, a, side, across, velocity, seed, now, false,
+      Array[f32, 12]() <- fill 0f, Array[bool, 24]() <- fill false);
     // A finished slot is reused before the list grows
     var s = 0usize;
     var placed = false;
@@ -354,9 +354,9 @@ pub struct EffectPlayer {
           var k = 1.f;
           if age < a.layer.fadeIn { k = age / a.layer.fadeIn; }
           elif age > a.layer.fadeIn + a.layer.hold { k = 1. - (age - a.layer.fadeIn - a.layer.hold) / a.layer.fadeOut; }
-          let q = Quat.angleAxis(a.roll, a.axis) * Quat.fromVectors(new Vec3(0., 1., 0.), a.axis);
+          let q = Quat.angleAxis(a.roll, a.axis) * Quat.fromVectors(Vec3(0., 1., 0.), a.axis);
           var decal = Decal.at(a.layer.material, Mat4.fromTrs(a.origin + a.axis * (a.layer.depth * 0.3), q,
-            new Vec3(a.layer.size, a.layer.depth, a.layer.size)));
+            Vec3(a.layer.size, a.layer.depth, a.layer.size)));
           decal.tint = a.layer.tint;
           decal.fade = k;
           decal.order = a.layer.order;

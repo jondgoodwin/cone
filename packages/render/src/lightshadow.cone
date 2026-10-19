@@ -76,21 +76,21 @@ pub struct LightShadowSettings {
   // gone and nothing pops. (No bonus then: it is not needed.)
   pub fade: f32 = 0.;
 
-  pub fn off() LightShadowSettings { new LightShadowSettings() }
+  pub fn off() LightShadowSettings { LightShadowSettings() }
 
   // 24 layers of 1024, 12 taps: a discrete GPU
   pub fn high() LightShadowSettings {
-    new LightShadowSettings(enabled: true, tileSize: 1024u32, maxViews: 24u32, pcfTaps: 12u32)
+    LightShadowSettings(enabled: true, tileSize: 1024u32, maxViews: 24u32, pcfTaps: 12u32)
   }
 
   // 24 layers of 512, 8 taps
   pub fn medium() LightShadowSettings {
-    new LightShadowSettings(enabled: true, tileSize: 512u32, maxViews: 24u32, pcfTaps: 8u32)
+    LightShadowSettings(enabled: true, tileSize: 512u32, maxViews: 24u32, pcfTaps: 8u32)
   }
 
   // 12 layers of 256, 4 taps: an integrated GPU
   pub fn low() LightShadowSettings {
-    new LightShadowSettings(enabled: true, tileSize: 256u32, maxViews: 12u32, pcfTaps: 4u32, pcfRadius: 1.25)
+    LightShadowSettings(enabled: true, tileSize: 256u32, maxViews: 12u32, pcfTaps: 4u32, pcfRadius: 1.25)
   }
 }
 
@@ -129,10 +129,10 @@ pub struct LocalShadows {
   pub triangles: u64;
 
   pub fn create(device: &mut Device) LocalShadows {
-    let mapDesc = new TextureDescriptor(1u32, 1u32, TEXTURE_FORMAT_DEPTH32_FLOAT,
+    let mapDesc = TextureDescriptor(1u32, 1u32, TEXTURE_FORMAT_DEPTH32_FLOAT,
       TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_TEXTURE_BINDING, 1u32, 1u32);
     var map = device.createTexture(&mapDesc);
-    new LocalShadows(new LightShadowSettings(), map, List[u32].empty(), List[u32].empty(), List[f32].empty(),
+    LocalShadows(LightShadowSettings(), map, List[u32].empty(), List[u32].empty(), List[f32].empty(),
       List[u32].empty(), List[u32].empty(), List[f32].empty(), List[f32].empty(), 0u32, 0u32, 0u32, 0u32, 0u64)
   }
 
@@ -140,7 +140,7 @@ pub struct LocalShadows {
 
   // A view of the whole map as an array, what the frame group binds
   pub fn arrayView(self: &) TextureView {
-    let desc = new TextureViewDescriptor(dimension: TEXTURE_VIEW_DIMENSION_2D_ARRAY);
+    let desc = TextureViewDescriptor(dimension: TEXTURE_VIEW_DIMENSION_2D_ARRAY);
     map.createViewWith(&desc)
   }
 
@@ -153,7 +153,7 @@ pub struct LocalShadows {
       side = 1u32;
       count = 1u32;
     }
-    let desc = new TextureDescriptor(side, side, TEXTURE_FORMAT_DEPTH32_FLOAT,
+    let desc = TextureDescriptor(side, side, TEXTURE_FORMAT_DEPTH32_FLOAT,
       TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_TEXTURE_BINDING, 1u32, count);
     // See ShadowState.remakeMap: submit what the frame has recorded first
     var flush = device.createCommandEncoder();
@@ -182,18 +182,18 @@ fn pushMatrix(out: &mut List[f32], m: &Mat4) {
 // The faces of a point light's cube, in the order the receiver counts them:
 // +x, -x, +y, -y, +z, -z
 fn faceDirection(face: u32) Vec3 {
-  if face == 0u32 { return new Vec3(1., 0., 0.); }
-  if face == 1u32 { return new Vec3(-1., 0., 0.); }
-  if face == 2u32 { return new Vec3(0., 1., 0.); }
-  if face == 3u32 { return new Vec3(0., -1., 0.); }
-  if face == 4u32 { return new Vec3(0., 0., 1.); }
-  new Vec3(0., 0., -1.)
+  if face == 0u32 { return Vec3(1., 0., 0.); }
+  if face == 1u32 { return Vec3(-1., 0., 0.); }
+  if face == 2u32 { return Vec3(0., 1., 0.); }
+  if face == 3u32 { return Vec3(0., -1., 0.); }
+  if face == 4u32 { return Vec3(0., 0., 1.); }
+  Vec3(0., 0., -1.)
 }
 
 fn faceUp(face: u32) Vec3 {
-  if face == 2u32 { return new Vec3(0., 0., 1.); }
-  if face == 3u32 { return new Vec3(0., 0., -1.); }
-  new Vec3(0., 1., 0.)
+  if face == 2u32 { return Vec3(0., 0., 1.); }
+  if face == 3u32 { return Vec3(0., 0., -1.); }
+  Vec3(0., 1., 0.)
 }
 
 // Choose which lights cast a shadow this frame, and make their views (see the
@@ -232,7 +232,7 @@ fn selectLocalShadows(ls: &mut LightSet) bool {
     let flag = *ls.shadows.flags[i];
     if (flag & 1u32) != 0u32 && ls.isLit(i) && i < ls.reachRows.len() && *ls.reachRows[i] > 0u32 {
       let b = i * LIGHT_FLOATS;
-      let p = new Vec3(*ls.rows[b], *ls.rows[b + 1usize], *ls.rows[b + 2usize]);
+      let p = Vec3(*ls.rows[b], *ls.rows[b + 1usize], *ls.rows[b + 2usize]);
       let range = *ls.rows[b + 3usize];
       var score = range * range / (1. + (p - ls.eye).lengthSquared());
       if *previous[i] != NO_VIEW && s.fade <= 0. { score = score * 1.4; }
@@ -263,12 +263,12 @@ fn selectLocalShadows(ls: &mut LightSet) bool {
     let spot = *ls.rows[b + 11usize] > 0.5;
     let need = if spot { 1u32 } else { 6u32 };
     if used + need > s.maxViews { continue; }
-    let p = new Vec3(*ls.rows[b], *ls.rows[b + 1usize], *ls.rows[b + 2usize]);
+    let p = Vec3(*ls.rows[b], *ls.rows[b + 1usize], *ls.rows[b + 2usize]);
     let range = *ls.rows[b + 3usize];
     ls.shadows.base.set(row, used);
     if spot {
-      let axis = new Vec3(*ls.rows[b + 8usize], *ls.rows[b + 9usize], *ls.rows[b + 10usize]);
-      let up = if axis.y > 0.99 || axis.y < -0.99 { new Vec3(1., 0., 0.) } else { new Vec3(0., 1., 0.) };
+      let axis = Vec3(*ls.rows[b + 8usize], *ls.rows[b + 9usize], *ls.rows[b + 10usize]);
+      let up = if axis.y > 0.99 || axis.y < -0.99 { Vec3(1., 0., 0.) } else { Vec3(0., 1., 0.) };
       var fov = 2. * *ls.rows[b + 15usize] + radians(FACE_GUARD);
       if fov > radians(170.) { fov = radians(170.); }
       let m = viewMatrixOf(p, axis, up, fov, s.near, range);
@@ -305,7 +305,7 @@ fn selectLocalShadows(ls: &mut LightSet) bool {
       let row = usize.from(*ls.shadows.candRows[c]);
       if *ls.shadows.base[row] == NO_VIEW {
         let b = row * LIGHT_FLOATS;
-        let p = new Vec3(*ls.rows[b], *ls.rows[b + 1usize], *ls.rows[b + 2usize]);
+        let p = Vec3(*ls.rows[b], *ls.rows[b + 1usize], *ls.rows[b + 2usize]);
         let range = *ls.rows[b + 3usize];
         let score = range * range / (1. + (p - ls.eye).lengthSquared());
         if score > left { left = score; }
@@ -318,7 +318,7 @@ fn selectLocalShadows(ls: &mut LightSet) bool {
         let row = usize.from(*ls.shadows.candRows[c]);
         if *ls.shadows.base[row] != NO_VIEW {
           let b = row * LIGHT_FLOATS;
-          let p = new Vec3(*ls.rows[b], *ls.rows[b + 1usize], *ls.rows[b + 2usize]);
+          let p = Vec3(*ls.rows[b], *ls.rows[b + 1usize], *ls.rows[b + 2usize]);
           let range = *ls.rows[b + 3usize];
           let score = range * range / (1. + (p - ls.eye).lengthSquared());
           var f = (score / left - 1.) / s.fade;
@@ -388,9 +388,9 @@ fn batchInView(r: &Renderer, list: &DrawList, batch: &DrawBatch, m: &Mat4) bool 
     let item = list.items[usize.from(r.keys[usize.from(batch.first + j)].item)];
     let mesh = r.meshes[item.mesh.slot].current();
     let center = item.model * mesh.center;
-    let sx = item.model.transformVector(new Vec3(1., 0., 0.)).length();
-    let sy = item.model.transformVector(new Vec3(0., 1., 0.)).length();
-    let sz = item.model.transformVector(new Vec3(0., 0., 1.)).length();
+    let sx = item.model.transformVector(Vec3(1., 0., 0.)).length();
+    let sy = item.model.transformVector(Vec3(0., 1., 0.)).length();
+    let sz = item.model.transformVector(Vec3(0., 0., 1.)).length();
     var s = sx;
     if sy > s { s = sy; }
     if sz > s { s = sz; }
@@ -410,7 +410,7 @@ fn recordLocalShadowPasses(r: &mut Renderer, device: &mut Device, encoder: &mut 
   let views = r.lights.shadows.viewsUsed;
   if views == 0u32 { return; }
   let s = r.lights.shadows.settings;
-  var data = new Array[f32, 392] <- fill 0f;
+  var data = Array[f32, 392]() <- fill 0f;
   data[0] = f32.from(s.tileSize);
   data[1] = s.pcfRadius;
   data[2] = s.bias;
@@ -424,8 +424,8 @@ fn recordLocalShadowPasses(r: &mut Renderer, device: &mut Device, encoder: &mut 
   device.queue.writeBuffer(&r.shadow.params, SHADOW_SUN_BYTES, &data as *u8, 1568u64);
   var v = 0u32;
   while v < views {
-    let viewDesc = new TextureViewDescriptor(dimension: TEXTURE_VIEW_DIMENSION_2D, baseArrayLayer: v, arrayLayerCount: 1u32);
-    let attachment = new RenderPassDepthStencilAttachment(view: r.lights.shadows.map.createViewWith(&viewDesc),
+    let viewDesc = TextureViewDescriptor(dimension: TEXTURE_VIEW_DIMENSION_2D, baseArrayLayer: v, arrayLayerCount: 1u32);
+    let attachment = RenderPassDepthStencilAttachment(view: r.lights.shadows.map.createViewWith(&viewDesc),
       depthLoadOp: LOAD_OP_CLEAR, depthStoreOp: STORE_OP_STORE);
     var pass = encoder.beginDepthPass(&attachment);
     let immediate = 4u32 + v;

@@ -34,9 +34,9 @@ const SIZE = 160u32;
 fn subject() Mesh {
   var m = Mesh.sphere(1., 20);
   var cube = Mesh.cube(0.9);
-  cube.transform(Mat4.fromTranslation(new Vec3(0.75, 0.1, 0.2)));
+  cube.transform(Mat4.fromTranslation(Vec3(0.75, 0.1, 0.2)));
   m.append(&cube);
-  m.transform(Mat4.fromTranslation(new Vec3(0., 1.4, 0.)));
+  m.transform(Mat4.fromTranslation(Vec3(0., 1.4, 0.)));
   m
 }
 
@@ -99,24 +99,24 @@ fn main() i32 {
   require(adapter.isValid(), "an adapter");
   var device = adapter.requestDevice();
   require(device.isValid(), "a device");
-  let target = new TextureDescriptor(SIZE, SIZE, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
-  let depthDesc = new TextureDescriptor(SIZE, SIZE, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_TEXTURE_BINDING);
-  let rig = new Rig(device.createTexture(&target), device.createTexture(&depthDesc),
+  let target = TextureDescriptor(SIZE, SIZE, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
+  let depthDesc = TextureDescriptor(SIZE, SIZE, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_TEXTURE_BINDING);
+  let rig = Rig(device.createTexture(&target), device.createTexture(&depthDesc),
     device.createBuffer(u64.from(SIZE) * u64.from(SIZE) * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST));
   var renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, TEXTURE_FORMAT_DEPTH32_FLOAT);
   require(renderer.isValid(), "a renderer");
 
-  let material = Material.plain(new Color(0.8, 0.5, 0.3, 1.));
+  let material = Material.plain(Color(0.8, 0.5, 0.3, 1.));
   let subjectMesh = subject();
   let mesh = renderer.addMesh(&mut device, &subjectMesh);
   let matHandle = renderer.addMaterial(&mut device, &material);
   var baker = ImpostorBaker.create(&mut device, 64u32);
   var parts = List[BakePart].empty();
-  parts.push(new BakePart(subject(), material, Image.empty()));
-  var center = new Vec3(0., 0., 0.);
+  parts.push(BakePart(subject(), material, Image.empty()));
+  var center = Vec3(0., 0., 0.);
   var radius = 0.f;
   boundingSphereOf(&subjectMesh, &mut center, &mut radius);
-  var settings = new ImpostorSettings();
+  var settings = ImpostorSettings();
   settings.frameSize = 64u32;
   settings.grid = 6u32;
   let atlas = baker.bake(&mut device, &parts, center, radius, &settings);
@@ -132,24 +132,24 @@ fn main() i32 {
   expectUInt(u64.from(chain.lastPlainLevel(1usize)), 0u64, "a shadow pass falls back from the card to the mesh");
   expectUInt(u64.from(chain.lastPlainLevel(0usize)), 0u64, "and keeps the mesh");
 
-  let light = Light.directional(new Vec3(-0.5, -0.8, -0.35), new Color(2.6, 2.4, 2.0, 1.), new Color(0.35, 0.4, 0.5, 1.));
-  let dir = new Vec3(0.4, 0.5, 0.7).normalize();
+  let light = Light.directional(Vec3(-0.5, -0.8, -0.35), Color(2.6, 2.4, 2.0, 1.), Color(0.35, 0.4, 0.5, 1.));
+  let dir = Vec3(0.4, 0.5, 0.7).normalize();
   var camera = Camera.make();
   camera.fov = radians(30.);
   camera.near = 0.5;
   camera.far = 400.;
-  camera.background = new Color(0.2, 0.4, 0.6, 1.);
+  camera.background = Color(0.2, 0.4, 0.6, 1.);
   // the size in pixels is radius / (distance tan(fov/2)) x 160: 100 px at
   let tanHalf = libc.tanf(radians(15.));
   let nearDistance = radius / (100. / f32.from(SIZE) * tanHalf);
   let farDistance = radius / (30. / f32.from(SIZE) * tanHalf);
 
-  var item = renderer.addSceneItem(mesh, matHandle, Mat4.identity(), new Color(1., 1., 1., 1.));
+  var item = renderer.addSceneItem(mesh, matHandle, Mat4.identity(), Color(1., 1., 1., 1.));
   require(renderer.setSceneLod(item, &chain), "the chain set");
   var empty = DrawList.empty();
 
   // near: the mesh
-  camera.lookAt(center + dir * nearDistance, center, new Vec3(0., 1., 0.));
+  camera.lookAt(center + dir * nearDistance, center, Vec3(0., 1., 0.));
   let nearScene = shoot(&mut device, &mut renderer, &rig, &camera, &light, &empty);
   expectUInt(u64.from(renderer.vis.stats.drawn), 1u64, "near: one item drawn");
   var meshList = DrawList.empty();
@@ -160,9 +160,9 @@ fn main() i32 {
   expect(coveredCount(&nearScene) > 1500, "near: the subject is on screen");
 
   // far: the card
-  item = renderer.addSceneItem(mesh, matHandle, Mat4.identity(), new Color(1., 1., 1., 1.));
+  item = renderer.addSceneItem(mesh, matHandle, Mat4.identity(), Color(1., 1., 1., 1.));
   renderer.setSceneLod(item, &chain);
-  camera.lookAt(center + dir * farDistance, center, new Vec3(0., 1., 0.));
+  camera.lookAt(center + dir * farDistance, center, Vec3(0., 1., 0.));
   let farScene = shoot(&mut device, &mut renderer, &rig, &camera, &light, &empty);
   expectUInt(u64.from(renderer.vis.stats.drawn), 1u64, "far: one item drawn");
   renderer.clearScene();
@@ -179,14 +179,14 @@ fn main() i32 {
   var hideChain = LodChain.empty(0.1);
   hideChain.add(mesh, 60.);
   hideChain.add(hidden, 0.);
-  item = renderer.addSceneItem(mesh, matHandle, Mat4.identity(), new Color(1., 1., 1., 1.));
+  item = renderer.addSceneItem(mesh, matHandle, Mat4.identity(), Color(1., 1., 1., 1.));
   renderer.setSceneLod(item, &hideChain);
   let farHidden = shoot(&mut device, &mut renderer, &rig, &camera, &light, &empty);
   expectInt(i64.from(coveredCount(&farHidden)), 0i64, "a chain ending in an empty mesh draws nothing far away");
   renderer.clearScene();
 
   // the cross-fade: pull the camera out over frames
-  item = renderer.addSceneItem(mesh, matHandle, Mat4.identity(), new Color(1., 1., 1., 1.));
+  item = renderer.addSceneItem(mesh, matHandle, Mat4.identity(), Color(1., 1., 1., 1.));
   renderer.setSceneLod(item, &chain);
   var sawFading = false;
   var sawTwo = false;
@@ -194,7 +194,7 @@ fn main() i32 {
   while f < 24 {
     let t = f32.from(f) / 23.;
     let dist = nearDistance + (farDistance - nearDistance) * t;
-    camera.lookAt(center + dir * dist, center, new Vec3(0., 1., 0.));
+    camera.lookAt(center + dir * dist, center, Vec3(0., 1., 0.));
     renderer.vis.settings.timeStep = 0.05;
     renderer.vis.settings.fadeSeconds = 0.3;
     shoot(&mut device, &mut renderer, &rig, &camera, &light, &empty);
@@ -208,9 +208,9 @@ fn main() i32 {
   // shadows on
   let shadows = ShadowSettings.medium();
   renderer.setShadows(&mut device, &shadows);
-  camera.lookAt(center + dir * farDistance, center, new Vec3(0., 1., 0.));
+  camera.lookAt(center + dir * farDistance, center, Vec3(0., 1., 0.));
   shoot(&mut device, &mut renderer, &rig, &camera, &light, &empty);
-  camera.lookAt(center + dir * nearDistance, center, new Vec3(0., 1., 0.));
+  camera.lookAt(center + dir * nearDistance, center, Vec3(0., 1., 0.));
   shoot(&mut device, &mut renderer, &rig, &camera, &light, &empty);
 
   expectUInt(u64.from(failures()), 0u64, "no Vulkan call failed");

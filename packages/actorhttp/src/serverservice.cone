@@ -50,10 +50,10 @@ struct ExRec {
 }
 
 fn blankEx() ExRec {
-  new ExRec(used: false, id: 0u64, req: httpconn.ReqId.none(), head: RequestHead.empty(), body: String.empty(),
+  ExRec(used: false, id: 0u64, req: httpconn.ReqId.none(), head: RequestHead.empty(), body: String.empty(),
     peer: SocketAddr.localhost(0u16), stage: exReading, rejected: false, isHead: false, bodyless: false,
     responded: false, chunked: false, sized: false, length: 0u64, written: 0u64, finishing: false,
-    finished: false, finishReply: new actors.Reply(), hasFinishReply: false, writes: List[PendingWrite].empty(),
+    finished: false, finishReply: actors.Reply(), hasFinishReply: false, writes: List[PendingWrite].empty(),
     wi: 0usize, handle: false, over: false, ok: false)
 }
 
@@ -84,11 +84,11 @@ struct TlsMaker {
   server: tls.Server;
   pool: Pool;
 
-  pub fn make(self: &mut) Uni[httpconn.Layer] {new Uni[tls.Stream](server.stream(pool))}
+  pub fn make(self: &mut) Uni[httpconn.Layer] {Uni[tls.Stream](server.stream(pool))}
 }
 
 fn answerTo[R](rp: &mut actors.Reply, v: R) {
-  var r = new actors.Reply();
+  var r = actors.Reply();
   r <=> *rp;
   actors.answerNow[R](r, v);
 }
@@ -200,7 +200,7 @@ fn onServerEvent(srv: &mut SrvRec, lp: &mut Loop, pool: Pool, e: &mut httpconn.E
 fn readyEx(srv: &mut SrvRec, pool: Pool, slot: usize) {
   let x = srv.exs.at(slot) as &mut ExRec;
   if srv.whead < srv.waiters.len() {
-    var rp = new actors.Reply();
+    var rp = actors.Reply();
     let w = &mut srv.waiters[srv.whead];
     rp <=> *w;
     srv.whead = srv.whead + 1usize;
@@ -224,10 +224,10 @@ fn deliverEx(srv: &mut SrvRec, slot: usize, rp: actors.Reply) {
   let x = srv.exs.at(slot) as &mut ExRec;
   x.stage = exOut;
   x.handle = true;
-  var r = new Request(RequestHead.empty(), String.empty(), x.peer, srv.secure);
+  var r = Request(RequestHead.empty(), String.empty(), x.peer, srv.secure);
   r.head <=> x.head;
   r.body <=> x.body;
-  let ex = new Exchange(srv.id, u32.from(slot), x.id, 0u32, false, 0u64, 0u64, false, r);
+  let ex = Exchange(srv.id, u32.from(slot), x.id, 0u32, false, 0u64, 0u64, false, r);
   actors.answerNow[Result[Exchange, ServerError]](rp, Ok[Exchange, ServerError](ex));
 }
 
@@ -386,7 +386,7 @@ struct ListenJob {
   pub reply: actors.Reply;
 
   fn run(self: &mut, lp: &mut Loop, sv: &mut Service) {
-    var rp = new actors.Reply();
+    var rp = actors.Reply();
     rp <=> reply;
     var c = ServerConfig.make();
     c <=> cfg;
@@ -400,7 +400,7 @@ struct ListenJob {
         match tls.Server.make(t) {
           case let s Ok {
             secure = true;
-            res = drv.listenWith(lp, addr, new Uni[TlsMaker](new TlsMaker(s, sv.pool)), httpconn.Sink.Here(0u64));
+            res = drv.listenWith(lp, addr, Uni[TlsMaker](TlsMaker(s, sv.pool)), httpconn.Sink.Here(0u64));
           }
           case let x Error {
             answerTo[Result[Server, ServerError]](&mut rp, Error[Server, ServerError](
@@ -421,11 +421,11 @@ struct ListenJob {
         let id = newId();
         let p = libc.malloc(mem.sizeof[SrvRec]()) as *SrvRec;
         if p as usize == 0usize {die("actorhttp: out of memory for a server");}
-        mem.writeRaw[SrvRec](p, new SrvRec(id, 1u32, false, false, secure, c.maxBody, c.maxPending, drv, l,
+        mem.writeRaw[SrvRec](p, SrvRec(id, 1u32, false, false, secure, c.maxBody, c.maxPending, drv, l,
           Slots[ExRec].make(), Dict[u64, usize].empty(), List[usize].empty(), 0usize,
           List[actors.Reply].empty(), 0usize, 0usize));
         sv.srvs.push(p);
-        answerTo[Result[Server, ServerError]](&mut rp, Ok[Server, ServerError](new Server(id, bound, secure)));
+        answerTo[Result[Server, ServerError]](&mut rp, Ok[Server, ServerError](Server(id, bound, secure)));
       }
       case let e Error {
         answerTo[Result[Server, ServerError]](&mut rp, Error[Server, ServerError](
@@ -470,7 +470,7 @@ struct NextJob {
   pub reply: actors.Reply;
 
   fn run(self: &mut, lp: &mut Loop, sv: &mut Service) {
-    var rp = new actors.Reply();
+    var rp = actors.Reply();
     rp <=> reply;
     let k = sv.findSrv(id);
     if k >= sv.srvs.len() {
@@ -514,9 +514,9 @@ struct Located {
 
 fn locate(sv: &Service, sid: u64, slot: u32, id: u64) Located {
   let k = sv.findSrv(sid);
-  if k >= sv.srvs.len() {return new Located(null, null);}
+  if k >= sv.srvs.len() {return Located(null, null);}
   let srv = sv.srvAt(k);
-  new Located(srv, exOf(srv as &SrvRec, slot, id))
+  Located(srv, exOf(srv as &SrvRec, slot, id))
 }
 
 // Begin an exchange's response: its head and the framing of its body
@@ -553,7 +553,7 @@ struct RespondJob {
     let framing = if st == 204u16 || st == 304u16 {BodyLength.empty()} else {BodyLength.sized(u64.from(n))};
     beginResponse(s, x, h, framing);
     if !x.bodyless {
-      var w = new PendingWrite(String.empty(), 0usize, new actors.Reply(), false);
+      var w = PendingWrite(String.empty(), 0usize, actors.Reply(), false);
       w.data <=> body;
       x.writes.push(w);
       x.finishing = true;
@@ -591,7 +591,7 @@ struct WriteJob {
   pub reply: actors.Reply;
 
   fn run(self: &mut, lp: &mut Loop, sv: &mut Service) {
-    var rp = new actors.Reply();
+    var rp = actors.Reply();
     rp <=> reply;
     let loc = locate(sv, srv, slot, id);
     if loc.ex as usize == 0usize {
@@ -608,7 +608,7 @@ struct WriteJob {
       answerTo[Result[usize, ServerError]](&mut rp, Error[usize, ServerError](ServerError.closed()));
       return;
     }
-    var w = new PendingWrite(String.empty(), 0usize, new actors.Reply(), true);
+    var w = PendingWrite(String.empty(), 0usize, actors.Reply(), true);
     w.data <=> data;
     w.reply <=> rp;
     x.writes.push(w);
@@ -624,7 +624,7 @@ struct FinishJob {
   pub reply: actors.Reply;
 
   fn run(self: &mut, lp: &mut Loop, sv: &mut Service) {
-    var rp = new actors.Reply();
+    var rp = actors.Reply();
     rp <=> reply;
     let loc = locate(sv, srv, slot, id);
     if loc.ex as usize == 0usize {

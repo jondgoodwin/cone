@@ -70,7 +70,7 @@ pub struct SceneHandle {
   pub slot: u32;
   pub gen: u32;
 
-  pub fn none() SceneHandle { new SceneHandle(SCENE_NONE, 0u32) }
+  pub fn none() SceneHandle { SceneHandle(SCENE_NONE, 0u32) }
   pub fn isNone(self: &) bool { slot == SCENE_NONE }
 }
 
@@ -128,7 +128,7 @@ pub struct VisibilitySettings {
 
   // Everything off
   pub fn off() VisibilitySettings {
-    new VisibilitySettings(false, false, false, false, false, false, 1., 0.5, 0.4, 0.0166667, 0.25, false)
+    VisibilitySettings(false, false, false, false, false, false, 1., 0.5, 0.4, 0.0166667, 0.25, false)
   }
 }
 
@@ -207,10 +207,10 @@ pub struct Visibility {
   pub depthSampled: bool = false;   // set by 'render' while the depth buffer it draws with can be sampled (occlusion needs it)
 
   pub fn create(margin: f32) Visibility {
-    var s = new VisibilitySettings();
+    var s = VisibilitySettings();
     s.margin = margin;
-    new Visibility(s, List[SceneItem].empty(), List[u32].empty(), Bvh[u32].create(margin), List[LodChain].empty(),
-      List[LodSlot].empty(), 0u32, List[u32].empty(), new VisibilityStats(), List[SetRange].empty())
+    Visibility(s, List[SceneItem].empty(), List[u32].empty(), Bvh[u32].create(margin), List[LodChain].empty(),
+      List[LodSlot].empty(), 0u32, List[u32].empty(), VisibilityStats(), List[SetRange].empty())
   }
 
   // How many items the scene holds
@@ -241,24 +241,24 @@ pub struct Visibility {
       reuse = true;
     }
     let proxy = tree.insert(world, slot);
-    let item = new SceneItem(true, gen, mesh, material, model, tint, 1u32, true, true, world.center(),
+    let item = SceneItem(true, gen, mesh, material, model, tint, 1u32, true, true, world.center(),
       world.halfExtents(), sc, r, boundsCenter, boundsHalf, boundsRadius, proxy, -1i32, 0., 0., 0.);
     if reuse {
       items.set(usize.from(slot), item);
       var k = 0usize;
       while k < LOD_SLOTS {
-        lodSlots.set(usize.from(slot) * LOD_SLOTS + k, new LodSlot(0u32, 0u32, 1., 0u32));
+        lodSlots.set(usize.from(slot) * LOD_SLOTS + k, LodSlot(0u32, 0u32, 1., 0u32));
         k = k + 1usize;
       }
     } else {
       items.push(item);
       var k = 0usize;
       while k < LOD_SLOTS {
-        lodSlots.push(new LodSlot(0u32, 0u32, 1., 0u32));
+        lodSlots.push(LodSlot(0u32, 0u32, 1., 0u32));
         k = k + 1usize;
       }
     }
-    new SceneHandle(slot, gen)
+    SceneHandle(slot, gen)
   }
 
   // Take an item out; its handle reaches nothing from now on
@@ -277,7 +277,7 @@ pub struct Visibility {
     var i = 0usize;
     while i < items.len() {
       let it = items[i];
-      if it.alive { self.remove(new SceneHandle(u32.from(i), it.gen)); }
+      if it.alive { self.remove(SceneHandle(u32.from(i), it.gen)); }
       i = i + 1usize;
     }
   }
@@ -412,7 +412,7 @@ pub struct Visibility {
     if lodSlot >= LOD_SLOTS { lodSlot = 0usize; }
     slotFrames.set(lodSlot, *slotFrames[lodSlot] + 1u32);
     frame = *slotFrames[lodSlot];
-    stats = new VisibilityStats();
+    stats = VisibilityStats();
     let n = items.len();
     stats.items = u32.from(self.count());
     if n == 0usize { return; }
@@ -507,14 +507,14 @@ pub struct Visibility {
     }
     if prev != level && t < 1. {
       // Two levels, each by a share of the pixels that together make the range's share (fade.slang)
-      out.push(new DrawItem(levelMesh(&chains, it, prev), levelMaterial(&chains, it, prev), it.model, it.tint, NO_BONES, it.layers,
+      out.push(DrawItem(levelMesh(&chains, it, prev), levelMaterial(&chains, it, prev), it.model, it.tint, NO_BONES, it.layers,
         it.castsShadow, 1. - (1. - t) * v, it.occludable));
-      out.push(new DrawItem(levelMesh(&chains, it, level), levelMaterial(&chains, it, level), it.model, it.tint, NO_BONES, it.layers,
+      out.push(DrawItem(levelMesh(&chains, it, level), levelMaterial(&chains, it, level), it.model, it.tint, NO_BONES, it.layers,
         it.castsShadow, 0. - t * v, it.occludable));
       stats.fading = stats.fading + 1u32;
       stats.drawn = stats.drawn + 2u32;
     } else {
-      out.push(new DrawItem(levelMesh(&chains, it, level), levelMaterial(&chains, it, level), it.model, it.tint, NO_BONES, it.layers,
+      out.push(DrawItem(levelMesh(&chains, it, level), levelMaterial(&chains, it, level), it.model, it.tint, NO_BONES, it.layers,
         it.castsShadow, if v < 1. { 1. - v } else { 0. }, it.occludable));
       stats.drawn = stats.drawn + 1u32;
     }
@@ -571,7 +571,7 @@ pub struct Visibility {
               // A level with a material of its own (an impostor card) casts nothing: the last plain one casts
               mesh = *chain.levels[chain.lastPlainLevel(level)];
             }
-            out.push(new DrawItem(mesh, it.material, it.model, it.tint, NO_BONES, it.layers, true, 0., false));
+            out.push(DrawItem(mesh, it.material, it.model, it.tint, NO_BONES, it.layers, true, 0., false));
             stats.casters = stats.casters + 1u32;
           }
         }
@@ -644,9 +644,9 @@ fn worldBox(m: &Mat4, c: Vec3, h: Vec3) Aabb3 {
 
 // The most 'm' stretches a length: its longest column
 fn maxScale(m: &Mat4) f32 {
-  let sx = m.transformVector(new Vec3(1., 0., 0.)).length();
-  let sy = m.transformVector(new Vec3(0., 1., 0.)).length();
-  let sz = m.transformVector(new Vec3(0., 0., 1.)).length();
+  let sx = m.transformVector(Vec3(1., 0., 0.)).length();
+  let sy = m.transformVector(Vec3(0., 1., 0.)).length();
+  let sz = m.transformVector(Vec3(0., 0., 1.)).length();
   var s = sx;
   if sy > s { s = sy; }
   if sz > s { s = sz; }
@@ -659,6 +659,6 @@ fn maxScale(m: &Mat4) f32 {
 pub fn casterVolume(matrix: &Mat4) Frustum {
   var f = Frustum.fromMatrix(*matrix);
   let near = f.planes[4];
-  f.planes[4] = new Plane(near.normal, near.d + 1000000.);
+  f.planes[4] = Plane(near.normal, near.d + 1000000.);
   f
 }

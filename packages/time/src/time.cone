@@ -42,10 +42,10 @@
 //   ==  !=  <  <=  >  >=            compared as their nanoseconds are
 //   d.abs()  d.isZero()  d.isNegative()
 //
-// 'new Duration()' is zero too, and is the spelling a field's or a
+// 'Duration()' is zero too, and is the spelling a field's or a
 // parameter's default takes, since a default must be a constant and a call
-// is not one: 'pub timeout Duration = new Duration();'. Likewise 'new
-// Instant()' is the steady clock's origin and 'new Timestamp()' the epoch.
+// is not one: 'pub timeout Duration = Duration();'. Likewise 'new
+// Instant()' is the steady clock's origin and 'Timestamp()' the epoch.
 //
 // OVERFLOW is whatever Cone's i64 arithmetic does, which today is to wrap,
 // two's complement, with no check and no panic: 'Duration.fromHours(n)' for
@@ -177,7 +177,7 @@ fn steadyWindows() i64 {
 }
 
 fn steadyPosix() i64 {
-  var ts = new PosixTimespec(0i64, 0i64);
+  var ts = PosixTimespec(0i64, 0i64);
   clock_gettime(clockMonotonic, &mut ts as *PosixTimespec);
   ts.sec * nsPerSecond + ts.nsec
 }
@@ -188,7 +188,7 @@ fn steadyPosix() i64 {
 
 // UTC now, in nanoseconds since 1970
 fn utcNs() i64 {
-  var ts = new libc.Timespec(0i64, 0i32);
+  var ts = libc.Timespec(0i64, 0i32);
   libc.timespec_get(&mut ts as *libc.Timespec, libc.TIME_UTC);
   ts.tv_sec * nsPerSecond + i64.from(ts.tv_nsec)
 }
@@ -207,13 +207,13 @@ const nsPerHour = 3600000000000i64;
 pub struct Duration {
   ns: i64 = 0i64;
 
-  pub fn zero() Duration {new Duration(0i64)}
-  pub fn fromNanos(n: i64) Duration {new Duration(n)}
-  pub fn fromMicros(n: i64) Duration {new Duration(n * nsPerMicro)}
-  pub fn fromMillis(n: i64) Duration {new Duration(n * nsPerMilli)}
-  pub fn fromSeconds(n: i64) Duration {new Duration(n * nsPerSecond)}
-  pub fn fromMinutes(n: i64) Duration {new Duration(n * nsPerMinute)}
-  pub fn fromHours(n: i64) Duration {new Duration(n * nsPerHour)}
+  pub fn zero() Duration {Duration(0i64)}
+  pub fn fromNanos(n: i64) Duration {Duration(n)}
+  pub fn fromMicros(n: i64) Duration {Duration(n * nsPerMicro)}
+  pub fn fromMillis(n: i64) Duration {Duration(n * nsPerMilli)}
+  pub fn fromSeconds(n: i64) Duration {Duration(n * nsPerSecond)}
+  pub fn fromMinutes(n: i64) Duration {Duration(n * nsPerMinute)}
+  pub fn fromHours(n: i64) Duration {Duration(n * nsPerHour)}
 
   // The whole count of each unit, toward zero
   pub fn nanos(self) i64 {ns}
@@ -231,13 +231,13 @@ pub struct Duration {
 
   pub fn isZero(self) bool {ns == 0i64}
   pub fn isNegative(self) bool {ns < 0i64}
-  pub fn abs(self) Duration {if ns < 0i64 {new Duration(0i64 - ns)} else {self}}
+  pub fn abs(self) Duration {if ns < 0i64 {Duration(0i64 - ns)} else {self}}
 
-  pub fn add overload `+`(self, o: Duration) Duration {new Duration(ns + o.ns)}
-  pub fn sub overload `-`(self, o: Duration) Duration {new Duration(ns - o.ns)}
-  pub fn neg overload `-`(self) Duration {new Duration(0i64 - ns)}
-  pub fn mul overload `*`(self, n: i64) Duration {new Duration(ns * n)}
-  pub fn div overload `/`(self, n: i64) Duration {new Duration(ns / n)}
+  pub fn add overload `+`(self, o: Duration) Duration {Duration(ns + o.ns)}
+  pub fn sub overload `-`(self, o: Duration) Duration {Duration(ns - o.ns)}
+  pub fn neg overload `-`(self) Duration {Duration(0i64 - ns)}
+  pub fn mul overload `*`(self, n: i64) Duration {Duration(ns * n)}
+  pub fn div overload `/`(self, n: i64) Duration {Duration(ns / n)}
 
   pub fn eq overload `==`(self, o: Duration) bool {ns == o.ns}
   pub fn lt overload `<`(self, o: Duration) bool {ns < o.ns}
@@ -254,15 +254,15 @@ pub struct Duration {
 pub struct Instant {
   ns: i64 = 0i64;
 
-  pub fn now() Instant {new Instant(steadyNs())}
-  pub fn fromNanos(n: i64) Instant {new Instant(n)}
+  pub fn now() Instant {Instant(steadyNs())}
+  pub fn fromNanos(n: i64) Instant {Instant(n)}
   pub fn nanos(self) i64 {ns}
 
   // The time since this moment
   pub fn elapsed(self) Duration {Duration.fromNanos(steadyNs() - ns)}
 
-  pub fn later overload `+`(self, d: Duration) Instant {new Instant(ns + d.nanos())}
-  pub fn earlier overload `-`(self, d: Duration) Instant {new Instant(ns - d.nanos())}
+  pub fn later overload `+`(self, d: Duration) Instant {Instant(ns + d.nanos())}
+  pub fn earlier overload `-`(self, d: Duration) Instant {Instant(ns - d.nanos())}
   pub fn since overload `-`(self, o: Instant) Duration {Duration.fromNanos(ns - o.ns)}
 
   pub fn eq overload `==`(self, o: Instant) bool {ns == o.ns}
@@ -281,9 +281,9 @@ pub struct Instant {
 pub struct Timestamp {
   ns: i64 = 0i64;
 
-  pub fn now() Timestamp {new Timestamp(utcNs())}
-  pub fn fromUnixSeconds(s: i64) Timestamp {new Timestamp(s * nsPerSecond)}
-  pub fn fromUnixNanos(n: i64) Timestamp {new Timestamp(n)}
+  pub fn now() Timestamp {Timestamp(utcNs())}
+  pub fn fromUnixSeconds(s: i64) Timestamp {Timestamp(s * nsPerSecond)}
+  pub fn fromUnixNanos(n: i64) Timestamp {Timestamp(n)}
 
   // Whole seconds since the epoch, rounded down: toward the past
   pub fn unixSeconds(self) i64 {
@@ -292,8 +292,8 @@ pub struct Timestamp {
   }
   pub fn unixNanos(self) i64 {ns}
 
-  pub fn later overload `+`(self, d: Duration) Timestamp {new Timestamp(ns + d.nanos())}
-  pub fn earlier overload `-`(self, d: Duration) Timestamp {new Timestamp(ns - d.nanos())}
+  pub fn later overload `+`(self, d: Duration) Timestamp {Timestamp(ns + d.nanos())}
+  pub fn earlier overload `-`(self, d: Duration) Timestamp {Timestamp(ns - d.nanos())}
   pub fn since overload `-`(self, o: Timestamp) Duration {Duration.fromNanos(ns - o.ns)}
 
   pub fn eq overload `==`(self, o: Timestamp) bool {ns == o.ns}
@@ -313,8 +313,8 @@ pub struct Clock {
   pub synthetic: bool;
   at: Instant;
 
-  pub fn real() Clock {new Clock(false, Instant.fromNanos(0i64))}
-  pub fn synth() Clock {new Clock(true, Instant.fromNanos(0i64))}
+  pub fn real() Clock {Clock(false, Instant.fromNanos(0i64))}
+  pub fn synth() Clock {Clock(true, Instant.fromNanos(0i64))}
 
   // The clock's time now
   pub fn now(self: &) Instant {

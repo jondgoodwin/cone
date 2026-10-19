@@ -61,7 +61,7 @@ struct NetPlan {
   passes: List[NetPass];
 
   fn empty() NetPlan {
-    new NetPlan(List[u32].empty(), List[u64].empty(), List[List[u32]].empty(), List[NetPass].empty())
+    NetPlan(List[u32].empty(), List[u64].empty(), List[List[u32]].empty(), List[NetPass].empty())
   }
 
   fn add(self: &mut, kind: u32, size: u64, words: List[u32]) u32 {
@@ -85,7 +85,7 @@ struct NetPlan {
       s.push(slots[i]);
       i = i + 1usize;
     }
-    passes.push(new NetPass(kernel, s, invocations));
+    passes.push(NetPass(kernel, s, invocations));
   }
 
   // The words of the largest slot
@@ -118,7 +118,7 @@ fn valueWords[T](value: &T) List[u32] {
 // upon level, until one block is left, which one invocation scans), and each
 // block then scanned from its sum's start
 fn planScan(plan: &mut NetPlan, items: u32, count: u32) {
-  let step = plan.words(valueWords(&new gridnet.ScanStep(count)));
+  let step = plan.words(valueWords(&gridnet.ScanStep(count)));
   if count <= gridnet.ScanBlock {
     let base = plan.zeros(1u64);
     plan.pass(KScanApply, &[step, items, base], 1u32);
@@ -162,7 +162,7 @@ fn planCounts(grid: SampleGrid, tables: &List[u32]) NetPlan {
   plan.pass(KCountQuads, &[SGrid, STables, SConfigs, SQuadStarts], samples);
   planScan(&mut plan, SCellStarts, cells + 1u32);
   planScan(&mut plan, SQuadStarts, samples + 1u32);
-  let totals = plan.words(valueWords(&new gridnet.NetTotals(cells, samples)));
+  let totals = plan.words(valueWords(&gridnet.NetTotals(cells, samples)));
   let out = plan.scratch(2u64);
   plan.pass(KGather, &[totals, SCellStarts, SQuadStarts, out], 1u32);
   plan
@@ -240,7 +240,7 @@ pub struct GridNet {
   pub indices: Buffer;
 
   fn failed(grid: SampleGrid, samples: Buffer) GridNet {
-    new GridNet(false, grid, 0u32, 0u32, samples, Buffer.none(), Buffer.none(), Buffer.none(), Buffer.none())
+    GridNet(false, grid, 0u32, 0u32, samples, Buffer.none(), Buffer.none(), Buffer.none(), Buffer.none())
   }
 
   // The net read back to the CPU as a SurfaceNet: its quads made again from
@@ -267,8 +267,8 @@ pub struct GridNet {
     if !self.readWords(device, &mut p, &mut n, &mut ix) { return m; }
     var v = 0usize;
     while v < usize.from(vertexCount) && 3usize * v + 2usize < p.len() && 3usize * v + 2usize < n.len() {
-      m.positions.push(new Vec3(*p[3usize * v] as f32, *p[3usize * v + 1usize] as f32, *p[3usize * v + 2usize] as f32));
-      m.normals.push(new Vec3(*n[3usize * v] as f32, *n[3usize * v + 1usize] as f32, *n[3usize * v + 2usize] as f32));
+      m.positions.push(Vec3(*p[3usize * v] as f32, *p[3usize * v + 1usize] as f32, *p[3usize * v + 2usize] as f32));
+      m.normals.push(Vec3(*n[3usize * v] as f32, *n[3usize * v + 1usize] as f32, *n[3usize * v + 2usize] as f32));
       v = v + 1usize;
     }
     var i = 0usize;
@@ -323,8 +323,8 @@ fn netOfWords(grid: SampleGrid, p: &List[u32], n: &List[u32], ix: &List[u32], ve
   var normals = List[Vec3].withCapacity(nv);
   var v = 0usize;
   while v < nv && 3usize * v + 2usize < p.len() && 3usize * v + 2usize < n.len() {
-    positions.push(new Vec3(*p[3usize * v] as f32, *p[3usize * v + 1usize] as f32, *p[3usize * v + 2usize] as f32));
-    normals.push(new Vec3(*n[3usize * v] as f32, *n[3usize * v + 1usize] as f32, *n[3usize * v + 2usize] as f32));
+    positions.push(Vec3(*p[3usize * v] as f32, *p[3usize * v + 1usize] as f32, *p[3usize * v + 2usize] as f32));
+    normals.push(Vec3(*n[3usize * v] as f32, *n[3usize * v + 1usize] as f32, *n[3usize * v + 2usize] as f32));
     v = v + 1usize;
   }
   let nq = usize.from(triangles) / 2usize;
@@ -341,7 +341,7 @@ fn netOfWords(grid: SampleGrid, p: &List[u32], n: &List[u32], ix: &List[u32], ve
     }
     q = q + 1usize;
   }
-  new SurfaceNet(positions, normals, quads, grid.cellSize, grid.samplesX - 1u32, grid.samplesY - 1u32,
+  SurfaceNet(positions, normals, quads, grid.cellSize, grid.samplesX - 1u32, grid.samplesY - 1u32,
     grid.samplesZ - 1u32, 0u64, u64.from(grid.sampleCount()), 0u32, 0u32)
 }
 
@@ -364,7 +364,7 @@ pub struct GridMesher {
   pub fn make(device: &Device) GridMesher {
     let spirv = readSpirv("sdfmesh.spv");
     let s = spirv.view();
-    var m = new GridMesher(
+    var m = GridMesher(
       Kernel.make(device, s, "classify", &[READ, READ, READ, READ_WRITE, READ_WRITE]),
       Kernel.make(device, s, "countQuads", &[READ, READ, READ, READ_WRITE]),
       Kernel.make(device, s, "scanTotals", &[READ, READ, READ_WRITE]),
@@ -482,7 +482,7 @@ pub struct GridMesher {
     if done2.len() != 1usize { return GridNet.failed(grid, Buffer.none()); }
     let c2 = &mut done2[0usize];
     let ok = c2.ok;
-    new GridNet(ok, grid, vertices, 2u32 * quads, c2.take(SSamples), c2.take(*outs[0usize]), c2.take(*outs[1usize]),
+    GridNet(ok, grid, vertices, 2u32 * quads, c2.take(SSamples), c2.take(*outs[0usize]), c2.take(*outs[1usize]),
       c2.take(*outs[2usize]), c2.take(*outs[3usize]))
   }
 

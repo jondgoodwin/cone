@@ -1,4 +1,4 @@
-// The parallel builder, 'new List[T] <- parallel each x in src [if c] yield v':
+// The parallel builder, 'List[T]() <- parallel each x in src [if c] yield v':
 // the passes of the loop run at the same time on the actors' workers (four,
 // started for it), each piece of consecutive passes appending to a list of its
 // own, and the lists are joined in the order of the passes before the list is
@@ -67,7 +67,7 @@ fn same(a: &List[u64], b: &List[u64]) bool {
 }
 
 fn numbered(n: u64) List[u64] {
-  var l = new List[u64];
+  var l = List[u64]();
   var k = 0u64;
   while k < n {
     l.push(k * 7u64 % 1013u64);
@@ -79,16 +79,16 @@ fn numbered(n: u64) List[u64] {
 // ---- number ranges ----
 
 fn ranges() {
-  let par = new List[u64] <- parallel each i in 0usize ..< 3000usize yield weigh(u64.from(i));
-  let plain = new List[u64] <- each i in 0usize ..< 3000usize yield weigh(u64.from(i));
+  let par = List[u64]() <- parallel each i in 0usize ..< 3000usize yield weigh(u64.from(i));
+  let plain = List[u64]() <- each i in 0usize ..< 3000usize yield weigh(u64.from(i));
   report("range < over uneven work", same(&par, &plain) && par.len() == 3000usize);
 
-  let par2 = new List[u64] <- parallel each i in 10usize ..= 2500usize yield weigh(u64.from(i));
-  let plain2 = new List[u64] <- each i in 10usize ..= 2500usize yield weigh(u64.from(i));
+  let par2 = List[u64]() <- parallel each i in 10usize ..= 2500usize yield weigh(u64.from(i));
+  let plain2 = List[u64]() <- each i in 10usize ..= 2500usize yield weigh(u64.from(i));
   report("range <=", same(&par2, &plain2) && par2.len() == 2491usize);
 
   // The order, on its own: pass i yields i, so the list is 0, 1, 2, ...
-  let order = new List[usize] <- parallel each i in 0usize ..< 20000usize yield i;
+  let order = List[usize]() <- parallel each i in 0usize ..< 20000usize yield i;
   var inorder = order.len() == 20000usize;
   var k = 0usize;
   while k < order.len() {
@@ -97,15 +97,15 @@ fn ranges() {
   }
   report("range < in the order of the passes, 20000 of them", inorder);
 
-  let one = new List[usize] <- parallel each i in 7usize ..= 7usize yield i;
+  let one = List[usize]() <- parallel each i in 7usize ..= 7usize yield i;
   report("range <= of one number", one.len() == 1usize && *one[0usize] == 7usize);
-  let empty = new List[usize] <- parallel each i in 5usize ..< 5usize yield i;
+  let empty = List[usize]() <- parallel each i in 5usize ..< 5usize yield i;
   report("an empty range gives an empty list", empty.len() == 0usize);
-  let reversed = new List[usize] <- parallel each i in 6usize ..< 5usize yield i;
+  let reversed = List[usize]() <- parallel each i in 6usize ..< 5usize yield i;
   report("a reversed range gives an empty list", reversed.len() == 0usize);
 
   // -20 .. 29, through zero
-  let signed = new List[i64] <- parallel each i in -20i64 ..< 30i64 yield i * 3i64 - 7i64;
+  let signed = List[i64]() <- parallel each i in -20i64 ..< 30i64 yield i * 3i64 - 7i64;
   var signedok = signed.len() == 50usize;
   var s = 0usize;
   while s < signed.len() {
@@ -115,22 +115,22 @@ fn ranges() {
   report("a signed range through zero", signedok);
 
   // 250 ..= 255, the last the type's maximum
-  let top = new List[u8] <- parallel each i in 250u8 ..= 255u8 yield i;
+  let top = List[u8]() <- parallel each i in 250u8 ..= 255u8 yield i;
   report("a range ending at the type's maximum", top.len() == 6usize && *top[0usize] == 250u8 && *top[5usize] == 255u8);
 }
 
 // ---- arrays, slices, lists ----
 
 fn doubledSlice(s: &Array[u64]) List[u64] {
-  new List[u64] <- parallel each x in s yield weigh(*x)
+  List[u64]() <- parallel each x in s yield weigh(*x)
 }
 
 fn plainSlice(s: &Array[u64]) List[u64] {
-  new List[u64] <- each x in s yield weigh(*x)
+  List[u64]() <- each x in s yield weigh(*x)
 }
 
 fn viaRef(a: &Array[u64, 8]) List[u64] {
-  new List[u64] <- parallel each x in a yield *x * 3u64
+  List[u64]() <- parallel each x in a yield *x * 3u64
 }
 
 struct Pt {
@@ -140,8 +140,8 @@ struct Pt {
 
 fn sources() {
   let a = [3u64, 4u64, 5u64, 6u64, 7u64, 8u64, 9u64, 10u64];
-  let fromarray = new List[u64] <- parallel each x in a yield weigh(*x);
-  let plainarray = new List[u64] <- each x in a yield weigh(*x);
+  let fromarray = List[u64]() <- parallel each x in a yield weigh(*x);
+  let plainarray = List[u64]() <- each x in a yield weigh(*x);
   report("an array", same(&fromarray, &plainarray));
 
   let threes = viaRef(&a);
@@ -150,35 +150,35 @@ fn sources() {
   report("a part of an array", same(&doubledSlice(&a[2usize..<6usize]), &plainSlice(&a[2usize..<6usize])) && doubledSlice(&a[2usize..<6usize]).len() == 4usize);
   report("an empty part of an array", doubledSlice(&a[3usize..<3usize]).len() == 0usize);
 
-  let lit = new List[u64] <- parallel each x in [100u64, 200u64, 300u64] yield *x + 1u64;
+  let lit = List[u64]() <- parallel each x in [100u64, 200u64, 300u64] yield *x + 1u64;
   report("a literal array", lit.len() == 3usize && *lit[0usize] == 101u64 && *lit[2usize] == 301u64);
 
   let l = numbered(5000u64);
-  let fromlist = new List[u64] <- parallel each x in l yield weigh(*x);
-  let plainlist = new List[u64] <- each x in l yield weigh(*x);
+  let fromlist = List[u64]() <- parallel each x in l yield weigh(*x);
+  let plainlist = List[u64]() <- each x in l yield weigh(*x);
   report("a list of 5000", same(&fromlist, &plainlist) && fromlist.len() == 5000usize);
   report("the source list is whole afterwards", l.len() == 5000usize);
 
   let few = numbered(2u64);
-  let fromfew = new List[u64] <- parallel each x in few yield *x + 1u64;
+  let fromfew = List[u64]() <- parallel each x in few yield *x + 1u64;
   report("fewer passes than workers", fromfew.len() == 2usize && *fromfew[0usize] == 1u64 && *fromfew[1usize] == 8u64);
 
-  let none = new List[u64];
-  let fromnone = new List[u64] <- parallel each x in none yield *x;
+  let none = List[u64]();
+  let fromnone = List[u64]() <- parallel each x in none yield *x;
   report("an empty list", fromnone.len() == 0usize);
 
-  var pts = new List[Pt];
-  pts.push(new Pt(1u64, 2u64));
-  pts.push(new Pt(10u64, 20u64));
-  pts.push(new Pt(100u64, 200u64));
-  let fields = new List[u64] <- parallel each p in pts yield p.x * 1000u64 + p.y;
+  var pts = List[Pt]();
+  pts.push(Pt(1u64, 2u64));
+  pts.push(Pt(10u64, 20u64));
+  pts.push(Pt(100u64, 200u64));
+  let fields = List[u64]() <- parallel each p in pts yield p.x * 1000u64 + p.y;
   report("a list of structs, read through the borrow", fields.len() == 3usize && *fields[0usize] == 1002u64
     && *fields[1usize] == 10020u64 && *fields[2usize] == 100200u64);
 
   // The list the passes read is the one built onto: the passes only read it, and the
   // pieces are joined onto it after the last pass, so the receiver's mutable borrow
   // and the source's read-only one are two aliases of one local (11 Oct 2026)
-  var grown = new List[u64];
+  var grown = List[u64]();
   grown <- 1u64, 2u64, 3u64;
   grown <- parallel each x in grown yield *x * 10u64;
   report("a list read from and built onto at once", grown.len() == 6usize && *grown[0usize] == 1u64
@@ -189,21 +189,21 @@ fn sources() {
 
 fn filters() {
   let l = numbered(4000u64);
-  let par = new List[u64] <- parallel each x in l if weigh(*x) % 3u64 == 0u64 yield weigh(*x);
-  let plain = new List[u64] <- each x in l if weigh(*x) % 3u64 == 0u64 yield weigh(*x);
+  let par = List[u64]() <- parallel each x in l if weigh(*x) % 3u64 == 0u64 yield weigh(*x);
+  let plain = List[u64]() <- each x in l if weigh(*x) % 3u64 == 0u64 yield weigh(*x);
   report("a filter over a list of uneven work", same(&par, &plain) && par.len() > 100usize && par.len() < 4000usize);
 
-  let never = new List[u64] <- parallel each x in l if *x > 100000u64 yield *x;
+  let never = List[u64]() <- parallel each x in l if *x > 100000u64 yield *x;
   report("a filter that is never true", never.len() == 0usize);
-  let always = new List[u64] <- parallel each x in l if *x < 100000u64 yield *x;
+  let always = List[u64]() <- parallel each x in l if *x < 100000u64 yield *x;
   report("a filter that is always true", same(&always, &l));
 
   let a = [5u64, 6u64, 7u64, 8u64, 9u64, 10u64];
-  let odd = new List[u64] <- parallel each x in a if *x % 2u64 == 1u64 yield *x;
+  let odd = List[u64]() <- parallel each x in a if *x % 2u64 == 1u64 yield *x;
   report("a filter over an array", odd.len() == 3usize && *odd[0usize] == 5u64 && *odd[1usize] == 7u64 && *odd[2usize] == 9u64);
 
   // The matches of a range keep the order of the passes: multiples of 7
-  let sevens = new List[usize] <- parallel each i in 0usize ..< 30000usize if i % 7usize == 0usize yield i;
+  let sevens = List[usize]() <- parallel each i in 0usize ..< 30000usize if i % 7usize == 0usize yield i;
   var inorder = sevens.len() == 4286usize;
   var k = 0usize;
   while k < sevens.len() {
@@ -229,8 +229,8 @@ fn word(n: u64) String {
 
 fn moving() {
   let l = numbered(3000u64);
-  let par = new List[String] <- parallel each x in l yield word(*x);
-  let plain = new List[String] <- each x in l yield word(*x);
+  let par = List[String]() <- parallel each x in l yield word(*x);
+  let plain = List[String]() <- each x in l yield word(*x);
   var sameStrings = par.len() == plain.len();
   var k = 0usize;
   while sameStrings && k < par.len() {
@@ -239,8 +239,8 @@ fn moving() {
   }
   report("Strings made in the body", sameStrings && par.len() == 3000usize);
 
-  let tags = new List[Tag] <- parallel each x in l if *x % 2u64 == 0u64 yield new Tag(word(*x), *x);
-  let plaintags = new List[Tag] <- each x in l if *x % 2u64 == 0u64 yield new Tag(word(*x), *x);
+  let tags = List[Tag]() <- parallel each x in l if *x % 2u64 == 0u64 yield Tag(word(*x), *x);
+  let plaintags = List[Tag]() <- each x in l if *x % 2u64 == 0u64 yield Tag(word(*x), *x);
   var sameTags = tags.len() == plaintags.len() && tags.len() > 0usize;
   var t = 0usize;
   while sameTags && t < tags.len() {
@@ -254,14 +254,14 @@ fn moving() {
 
 fn forms() {
   let l = numbered(1000u64);
-  let drained = new List[u64] <- parallel each l;
+  let drained = List[u64]() <- parallel each l;
   report("the drain form, '<- parallel each src'", same(&drained, &l));
 
-  let mixed = new List[u64] <- 7u64, parallel each x in l yield *x + 1u64, 9u64;
+  let mixed = List[u64]() <- 7u64, parallel each x in l yield *x + 1u64, 9u64;
   report("among other entries", mixed.len() == 1002usize && *mixed[0usize] == 7u64 && *mixed[1usize] == 1u64
     && *mixed[1000usize] == *l[999usize] + 1u64 && *mixed[1001usize] == 9u64);
 
-  var onto = new List[u64];
+  var onto = List[u64]();
   onto <- 1u64, 2u64, 3u64;
   onto <- parallel each i in 0usize ..< 5000usize yield u64.from(i);
   var ontook = onto.len() == 5003usize && *onto[0usize] == 1u64 && *onto[2usize] == 3u64;
@@ -274,12 +274,12 @@ fn forms() {
 
   // 'parallel' is a word only directly before 'each': as an entry it is a name
   let parallel = 5u64;
-  let named = new List[u64] <- parallel, parallel + 1u64, parallel each x in l yield *x;
+  let named = List[u64]() <- parallel, parallel + 1u64, parallel each x in l yield *x;
   report("'parallel' as a name among the entries", named.len() == 1002usize && *named[0usize] == 5u64
     && *named[1usize] == 6u64 && *named[2usize] == *l[0usize] && *named[1001usize] == *l[999usize]);
 
   // Two builders in one list of entries
-  let two = new List[u64] <- parallel each i in 0usize ..< 100usize yield u64.from(i), parallel each i in 0usize ..< 100usize yield u64.from(i) + 1000u64;
+  let two = List[u64]() <- parallel each i in 0usize ..< 100usize yield u64.from(i), parallel each i in 0usize ..< 100usize yield u64.from(i) + 1000u64;
   report("two builders in one list", two.len() == 200usize && *two[99usize] == 99u64 && *two[100usize] == 1000u64 && *two[199usize] == 1099u64);
 }
 
@@ -288,7 +288,7 @@ fn forms() {
 fn changing() {
   var l = numbered(2000u64);
   let before = numbered(2000u64);
-  let out = new List[u64] <- parallel each x in l.mutItems() yield *x + 1u64;
+  let out = List[u64]() <- parallel each x in l.mutItems() yield *x + 1u64;
   var ok = out.len() == 2000usize;
   var k = 0usize;
   while k < out.len() {
@@ -301,7 +301,7 @@ fn changing() {
 // ---- where it is written ----
 
 fn doubleAll[T](xs: &List[T]) List[T] where T is Copy {
-  new List[T] <- parallel each x in xs yield *x
+  List[T]() <- parallel each x in xs yield *x
 }
 
 struct Scaler {
@@ -309,13 +309,13 @@ struct Scaler {
   items: List[u64];
 
   fn scaled(self: &) List[u64] {
-    new List[u64] <- parallel each x in items yield *x * scale
+    List[u64]() <- parallel each x in items yield *x * scale
   }
 }
 
 // A function a pass calls, which has a builder of its own
 fn rowSum(r: u64) u64 {
-  let row = new List[u64] <- parallel each c in 0usize ..< 30usize yield weigh(r * 100u64 + u64.from(c));
+  let row = List[u64]() <- parallel each c in 0usize ..< 30usize yield weigh(r * 100u64 + u64.from(c));
   var total = 0u64;
   each v in row {
     total = total + *v;
@@ -326,14 +326,14 @@ fn rowSum(r: u64) u64 {
 fn places() {
   let l = numbered(2500u64);
   report("a builder in a generic function", same(&doubleAll(&l), &l));
-  let sc = new Scaler(3u64, numbered(800u64));
+  let sc = Scaler(3u64, numbered(800u64));
   let r = sc.scaled();
   report("a builder in a method, a field read in the yield",
     r.len() == 800usize && *r[5usize] == *sc.items[5usize] * 3u64 && *r[799usize] == *sc.items[799usize] * 3u64);
 
   // 40 rows of 30 cells, a builder inside a builder's pass
-  let rows = new List[u64] <- parallel each r in 0usize ..< 40usize yield rowSum(u64.from(r));
-  var plainrows = new List[u64];
+  let rows = List[u64]() <- parallel each r in 0usize ..< 40usize yield rowSum(u64.from(r));
+  var plainrows = List[u64]();
   each r in 0usize ..< 40usize {
     var total = 0u64;
     each c in 0usize ..< 30usize {
@@ -346,7 +346,7 @@ fn places() {
   // Outside variables are read in the header and the yield
   let base = 11u64;
   let limit = 2000u64;
-  let outside = new List[u64] <- parallel each i in 0usize ..< 3000usize if u64.from(i) < limit yield u64.from(i) * base + limit;
+  let outside = List[u64]() <- parallel each i in 0usize ..< 3000usize if u64.from(i) < limit yield u64.from(i) * base + limit;
   var outsideok = outside.len() == 2000usize;
   var k = 0usize;
   while k < outside.len() {
@@ -383,7 +383,7 @@ fn threadBit(i: usize, ran: &Atomic[u64]) u64 {
 
 fn spread() {
   let ran = Atomic[u64].of(0u64);      // bit i: worker i ran a pass; bit 63: a thread that is no worker
-  let out = new List[u64] <- parallel each i in 0usize ..< 400usize yield threadBit(i, &ran);
+  let out = List[u64]() <- parallel each i in 0usize ..< 400usize yield threadBit(i, &ran);
   var inorder = out.len() == 400usize;
   var k = 0usize;
   while k < out.len() {
@@ -396,7 +396,7 @@ fn spread() {
 
 fn main() {
   initAll();
-  actors.configure(new actors.Options(workers: 4u32));
+  actors.configure(actors.Options(workers: 4u32));
 
   ranges();
   sources();

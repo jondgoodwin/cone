@@ -95,10 +95,10 @@ pub struct Session is Move {
     let r = BIO_new(BIO_s_mem());
     let w = BIO_new(BIO_s_mem());
     SSL_set_bio(ssl, r, w);
-    new Session(ssl: ssl, rbio: r, wbio: w, arrivals: null, state: st, isServer: server, kind: kind, pins: pins,
+    Session(ssl: ssl, rbio: r, wbio: w, arrivals: null, state: st, isServer: server, kind: kind, pins: pins,
       resume: resume, lane: lane, offline: offline, host: String.empty(), phase: pHandshake,
-      events: 0u32, verifyWanted: false, ownError: false, verifyAt: new Instant(),
-      verifyTime: Duration.zero(), begun: false, begunAt: new Instant(), handshakeTime: Duration.zero(),
+      events: 0u32, verifyWanted: false, ownError: false, verifyAt: Instant(),
+      verifyTime: Duration.zero(), begun: false, begunAt: Instant(), handshakeTime: Duration.zero(),
       wasOpen: false, mayRead: false, eof: false, gotClose: false,
       endTold: false, sentClose: false, err: TlsError.none())
   }
@@ -288,7 +288,7 @@ pub struct Session is Move {
     var alpn = String.empty();
     if alen > 0u32 {alpn.appendBytes(mem.sliceFromParts(ap, usize.from(alen)));}
     let v = if SSL_version(ssl) == tls13Version {TlsVersion.Tls13} else {TlsVersion.Tls12};
-    new TlsInfo(version: v, versionName: String.from(cText(SSL_get_version(ssl))),
+    TlsInfo(version: v, versionName: String.from(cText(SSL_get_version(ssl))),
       cipher: String.from(cText(SSL_CIPHER_get_name(SSL_get_current_cipher(ssl)))), alpn: alpn,
       resumed: SSL_session_reused(ssl) == 1i32, verifiedBy: kind, handshakeTime: handshakeTime,
       verifyTime: verifyTime, closeNotify: gotClose, truncated: eof && !gotClose)
@@ -334,7 +334,7 @@ pub struct Session is Move {
   // Pinning: the end certificate's public key against the pins, now
   fn checkPins(self: &mut) {
     let chain = SSL_get_peer_cert_chain(ssl);
-    var hash = new Array[u8, 32] <- fill 0u8;
+    var hash = Array[u8, 32]() <- fill 0u8;
     var found = false;
     if chain as usize != 0usize && OPENSSL_sk_num(chain) > 0i32 {
       if spkiSha256(OPENSSL_sk_value(chain, 0i32), &mut hash) {

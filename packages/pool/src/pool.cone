@@ -14,8 +14,8 @@
 //
 //   fn play() {
 //     mut world = Pool[Npc].empty();
-//     imm orc = world.add(new Npc(10, Ref[Npc].none()));
-//     imm elf = world.add(new Npc(8, orc));     // the elf targets the orc
+//     imm orc = world.add(Npc(10, Ref[Npc].none()));
+//     imm elf = world.add(Npc(8, orc));     // the elf targets the orc
 //     world.remove(orc);                        // the orc dies
 //     match world.get(world[elf].target) {
 //       case imm s Some { ...s.hp... }
@@ -150,13 +150,13 @@ pub struct Ref[T] is Hash {
   gen: u32;
 
   // A reference to nothing: never alive in any pool
-  pub fn none() Ref[T] { new Ref[T](noSlot, 0u32) }
+  pub fn none() Ref[T] { Ref[T](noSlot, 0u32) }
 
   // A reference naming a slot and a generation directly, as 'slot()' and
   // 'generation()' gave them. A value's generation is always odd, and an even
   // one is taken as the odd one after it, so a Ref made up this way can only
   // ever name a value a pool holds, never a free slot.
-  pub fn of(slot: u32, generation: u32) Ref[T] { new Ref[T](slot, generation | 1u32) }
+  pub fn of(slot: u32, generation: u32) Ref[T] { Ref[T](slot, generation | 1u32) }
 
   // Whether it is none()
   pub fn isNone(self) bool { gen == 0u32 }
@@ -189,29 +189,29 @@ pub struct Pool[T] is ShapeChanging, CarriesRegion, GcTraceElements {
   stale: *Stale;     // blocks replaced while one ran, or null
   region: *MemRegion;   // where the block comes from and goes back to
 
-  // An empty pool, 'new Pool[Npc]': no block until the first value arrives. The
+  // An empty pool, 'Pool[Npc]()': no block until the first value arrives. The
   // last argument of every init is the region the block will come from
   // (collections' List has the whole of it), which a construction that names
   // none leaves out and is handed the heap's.
   pub fn initEmpty overload init(self: &new, region: *MemRegion) {
-    *self = new Pool[T](null, 0u32, 0u32, noSlot, 0u32, 0u32, 4294967295u32, 0u32, null, region);
+    *self = Pool[T](null, 0u32, 0u32, noSlot, 0u32, 0u32, 4294967295u32, 0u32, null, region);
   }
 
-  // An empty pool whose block has room for n values, 'new Pool[Npc](100)'
+  // An empty pool whose block has room for n values, 'Pool[Npc](100)'
   pub fn initCapacity overload init(self: &new, n: usize, region: *MemRegion) {
-    var p = new Pool[T](null, 0u32, 0u32, noSlot, 0u32, 0u32, 4294967295u32, 0u32, null, region);
+    var p = Pool[T](null, 0u32, 0u32, noSlot, 0u32, 0u32, 4294967295u32, 0u32, null, region);
     p.reserveSlots(n);
     *self = p;
   }
 
   // An empty pool: no block until the first value arrives
   pub fn empty() Pool[T] {
-    new Pool[T](null, 0u32, 0u32, noSlot, 0u32, 0u32, 4294967295u32, 0u32, null, heapRegion())
+    Pool[T](null, 0u32, 0u32, noSlot, 0u32, 0u32, 4294967295u32, 0u32, null, heapRegion())
   }
 
   // An empty pool whose block already has room for n values
   pub fn withCapacity(n: usize) Pool[T] {
-    var p = new Pool[T](null, 0u32, 0u32, noSlot, 0u32, 0u32, 4294967295u32, 0u32, null, heapRegion());
+    var p = Pool[T](null, 0u32, 0u32, noSlot, 0u32, 0u32, 4294967295u32, 0u32, null, heapRegion());
     p.reserveSlots(n);
     p
   }
@@ -222,7 +222,7 @@ pub struct Pool[T] is ShapeChanging, CarriesRegion, GcTraceElements {
   // and 0 as 1.
   pub fn withLastGeneration(last: u32) Pool[T] {
     let odd = if last == 0u32 {1u32} else if (last & 1u32) == 0u32 {last - 1u32} else {last};
-    new Pool[T](null, 0u32, 0u32, noSlot, 0u32, 0u32, odd, 0u32, null, heapRegion())
+    Pool[T](null, 0u32, 0u32, noSlot, 0u32, 0u32, odd, 0u32, null, heapRegion())
   }
 
   // How many values it holds, how many slots its block has room for, and how
@@ -234,7 +234,7 @@ pub struct Pool[T] is ShapeChanging, CarriesRegion, GcTraceElements {
   // How a collector reaches what the pool holds, in its block: a writable
   // reference to the value in each occupied slot (a free or retired slot holds
   // none), in slot order
-  pub fn gcTraceElements(self: &mut) PoolGcTraceItems[T] { new PoolGcTraceItems[T](self, 0u32) }
+  pub fn gcTraceElements(self: &mut) PoolGcTraceItems[T] { PoolGcTraceItems[T](self, 0u32) }
 
   // Move value in, and a reference to it there
   pub fn add(self: &mut, value: T) Ref[T] {
@@ -346,7 +346,7 @@ pub struct Pool[T] is ShapeChanging, CarriesRegion, GcTraceElements {
       let node = libc.malloc(mem.sizeof[Stale]()) as *Stale;
       if fresh as usize == 0usize || node as usize == 0usize { outOfMemory(); }
       libc.memcpy(fresh, slots as *u8, usize.from(cap) * size);
-      mem.writeRaw(node, new Stale(stale, slots as *u8, usize.from(cap) * size));
+      mem.writeRaw(node, Stale(stale, slots as *u8, usize.from(cap) * size));
       stale = node;
       slots = fresh as *Slot[T];
     }

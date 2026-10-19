@@ -35,7 +35,7 @@ struct Tally is RegionRef {
   owners: usize;
   serial: u32;
   fn alloc(size: usize) *u8 inline { line("alloc ", size); malloc(size) }
-  fn init(self: &new) inline { printStr("init\n"); *self = new Tally(1usize, 42u32); }
+  fn init(self: &new) inline { printStr("init\n"); *self = Tally(1usize, 42u32); }
   fn aliasRef(self: &uni Tally) inline { owners = owners + 1usize; line("alias, owners ", owners); }
   fn dealiasRef(self: &uni Tally) bool inline { owners = owners - 1usize; line("dealias, owners ", owners); owners == 0usize }
   // A bare 'free' here is this method; C's is reached through its package
@@ -50,7 +50,7 @@ struct Solo is RegionRef, Move {
 struct Kept is RegionRef {
   owners: usize;
   fn alloc(size: usize) *u8 inline { line("kept alloc ", size); malloc(size) }
-  fn init(self: &new) inline { *self = new Kept(1usize); }
+  fn init(self: &new) inline { *self = Kept(1usize); }
   fn aliasRef(self: &uni Kept) inline { owners = owners + 1usize; line("kept alias, owners ", owners); }
   fn free(self: &uni Kept) inline { printStr("kept free\n"); libc.free(self as *u8); }
 }
@@ -74,7 +74,7 @@ struct Logged {
 // Two copies made and dropped in an inner block, then the original
 fn counted() {
   printStr("-- counted\n");
-  let a = new Tally[imm, i32](5);
+  let a = Tally[imm, i32](5);
   {
     let b = a;
     let c = b;
@@ -87,14 +87,14 @@ fn counted() {
 fn peek(r: Tally[imm, i32]) i32 { *r }
 fn passed() {
   printStr("-- passed\n");
-  let a = new Tally[imm, i32](6);
+  let a = Tally[imm, i32](6);
   line("value ", usize.from(peek(a)));
 }
 
 // A single owner: the copy is a move, and it dies once
 fn single() {
   printStr("-- single\n");
-  let s = new Solo[imm, i32](7);
+  let s = Solo[imm, i32](7);
   let t = s;
   line("value ", usize.from(*t));
 }
@@ -105,8 +105,8 @@ fn single() {
 // alias) here, the inner allocation in 'finalized'.
 fn nested() {
   printStr("-- nested\n");
-  let a = new Tally[imm, i32](9);
-  let h = new Solo[Holder](a);
+  let a = Tally[imm, i32](9);
+  let h = Solo[Holder](a);
   line("through the holder ", usize.from(*h.r));
 }
 
@@ -116,13 +116,13 @@ fn nested() {
 // 'free'
 fn finalized() {
   printStr("-- finalized\n");
-  let h = new Solo[Logged](new Tally[imm, i32](8));
+  let h = Solo[Logged](Tally[imm, i32](8));
 }
 
 // Counted up and never down: no dealiasRef, no death, no free
 fn neverDies() {
   printStr("-- never dies\n");
-  let a = new Kept[imm, i32](3);
+  let a = Kept[imm, i32](3);
   {
     let b = a;
     line("value ", usize.from(*b));
@@ -134,7 +134,7 @@ fn neverDies() {
 // calls dealiasRef, whose true is the death
 fn askedOnce() {
   printStr("-- asked\n");
-  let s = new Asked[imm, i32](4);
+  let s = Asked[imm, i32](4);
   let t = s;
   line("value ", usize.from(*t));
 }

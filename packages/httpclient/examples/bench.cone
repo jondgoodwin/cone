@@ -52,7 +52,7 @@ extern {
 // (PROCESS_MEMORY_COUNTERS_EX), Linux's data size (VmData)
 fn privateBytes() u64 {
   if isWindows() {
-    var c = new Array[usize, 10] <- fill 0usize;
+    var c = Array[usize, 10]() <- fill 0usize;
     let p = &mut c as *u8;
     *(p as *u32) = 80u32;
     K32GetProcessMemoryInfo(GetCurrentProcess(), p, 80u32);
@@ -67,7 +67,7 @@ fn privateBytes() u64 {
 fn dataBytes() u64 {
   let f = libc.fopen("/proc/self/statm", "rb");
   if f == null {return 0u64;}
-  var buf = new Array[u8, 256] <- fill 0u8;
+  var buf = Array[u8, 256]() <- fill 0u8;
   let bp: *u8 = &[]buf as *u8;
   let n = libc.fread(bp, 1usize, 255usize, f);
   libc.fclose(f);
@@ -110,7 +110,7 @@ struct TlsMaker {
   server: tls.Server;
   pool: Pool;
 
-  pub fn make(self: &mut) Uni[httpconn.Layer] {new Uni[tls.Stream](server.stream(pool))}
+  pub fn make(self: &mut) Uni[httpconn.Layer] {Uni[tls.Stream](server.stream(pool))}
 }
 
 struct ServerArgs {
@@ -144,7 +144,7 @@ fn serveThread(a: ServerArgs) u64 {
   let serverKey = certs("server.key");
   match tls.Server.make(tls.ServerConfig.make(&serverPem, &serverKey)) {
     case let s Ok {
-      let secure = drv.listenWith(&mut lp, SocketAddr.localhost(0u16), new Uni[TlsMaker](new TlsMaker(s, pool)),
+      let secure = drv.listenWith(&mut lp, SocketAddr.localhost(0u16), Uni[TlsMaker](TlsMaker(s, pool)),
         httpconn.Sink.Here(1u64));
       a.portTx.send(portOf(&mut drv, &lp, secure));
     }
@@ -195,7 +195,7 @@ struct Run {
 // n GETs of base, 'inFlight' asked for at a time; 'cold': every idle
 // connection closed before the next is asked for
 fn gets(cl: &mut Client, lp: &mut Loop, base: &str, n: u64, inFlight: u64, cold: bool) Run {
-  var run = new Run(n, Histogram.make(), 0u64, 0u64, Duration.zero(), 0u64, 0u64);
+  var run = Run(n, Histogram.make(), 0u64, 0u64, Duration.zero(), 0u64, 0u64);
   let s0 = cl.stats();
   var asked = 0u64;
   var out = List[Event].empty();
@@ -264,7 +264,7 @@ fn tlsConfig() Config {
 
 // A full handshake every time: each GET on a client of its own
 fn freshClients(lp: &mut Loop, pool: Pool, base: &str, n: u64) Run {
-  var run = new Run(n, Histogram.make(), 0u64, 0u64, Duration.zero(), 0u64, 0u64);
+  var run = Run(n, Histogram.make(), 0u64, 0u64, Duration.zero(), 0u64, 0u64);
   let t0 = Instant.now();
   var k = 0u64;
   while k < n {
@@ -295,7 +295,7 @@ fn sameLoop(pool: Pool, n: u64) Run {
   base.appendUInt(u64.from(port));
   base.append("/x");
   var cl = Client.make(Config.make(), pool);
-  var run = new Run(n, Histogram.make(), 0u64, 0u64, Duration.zero(), 0u64, 0u64);
+  var run = Run(n, Histogram.make(), 0u64, 0u64, Duration.zero(), 0u64, 0u64);
   var out = List[Event].empty();
   var sevs = List[httpconn.Event].empty();
   var comps = List[iocore.Completion].empty();
@@ -312,7 +312,7 @@ fn sameLoop(pool: Pool, n: u64) Run {
     var limit = cl.wakeAt();
     let w = sdrv.wakeAt();
     if w < limit {limit = w;}
-    if out.len() > 0usize || sevs.len() > 0usize {limit = new Instant();}
+    if out.len() > 0usize || sevs.len() > 0usize {limit = Instant();}
     lp.poll(limit, &mut comps);
     var k = 0usize;
     while k < comps.len() {
@@ -433,8 +433,8 @@ fn main() i32 {
   var portTx: Sender[u16];
   var portRx: Receiver[u16];
   portTx, portRx = Channel[u16].make();
-  let stop = new Arc[imm, Atomic[bool]](Atomic[bool].of(false));
-  let srv = thread.start(new ServerArgs(portTx, stop), &serveThread);
+  let stop = Arc[imm, Atomic[bool]](Atomic[bool].of(false));
+  let srv = thread.start(ServerArgs(portTx, stop), &serveThread);
   var plain = 0u16;
   var secure = 0u16;
   match portRx.recv() {

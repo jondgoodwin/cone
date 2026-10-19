@@ -42,11 +42,11 @@ pub struct GripShape {
   pub closed: HandPose;
 }
 
-pub fn shapePower() GripShape { new GripShape(String.from("power"), posePowerOpen(), posePowerClosed()) }
-pub fn shapePinch() GripShape { new GripShape(String.from("pinch"), posePinchOpen(), posePinchClosed()) }
-pub fn shapeHook() GripShape { new GripShape(String.from("hook"), poseHookOpen(), poseHookClosed()) }
-pub fn shapeFlat() GripShape { new GripShape(String.from("flat palm"), poseFlat(), poseFlat()) }
-pub fn shapeClaw() GripShape { new GripShape(String.from("claw"), poseRelaxed(), poseClaw()) }
+pub fn shapePower() GripShape { GripShape(String.from("power"), posePowerOpen(), posePowerClosed()) }
+pub fn shapePinch() GripShape { GripShape(String.from("pinch"), posePinchOpen(), posePinchClosed()) }
+pub fn shapeHook() GripShape { GripShape(String.from("hook"), poseHookOpen(), poseHookClosed()) }
+pub fn shapeFlat() GripShape { GripShape(String.from("flat palm"), poseFlat(), poseFlat()) }
+pub fn shapeClaw() GripShape { GripShape(String.from("claw"), poseRelaxed(), poseClaw()) }
 
 // A segment touching a prop
 pub struct Contact {
@@ -113,7 +113,7 @@ pub fn palmClearance(spec: &HandSpec, wrist: &Transform3, surface: &PropSurface)
   let c = spec.palmCentre;
   let hy = spec.palmHalf.y * 0.8;
   let hz = spec.palmHalf.z * 0.8;
-  let offsets = [new Vec3(0., 0., 0.), new Vec3(0., -hy, -hz), new Vec3(0., -hy, hz), new Vec3(0., hy, -hz), new Vec3(0., hy, hz)];
+  let offsets = [Vec3(0., 0., 0.), Vec3(0., -hy, -hz), Vec3(0., -hy, hz), Vec3(0., hy, -hz), Vec3(0., hy, hz)];
   var best = 1000000.f;
   var i = 0usize;
   while i < 5usize {
@@ -172,7 +172,7 @@ fn closeFinger(spec: &HandSpec, shape: &GripShape, f: usize, wrist: &Transform3,
       var deepest = 0usize;
       var s = 0usize;
       while s < 3usize {
-        var dummy = new Vec3(0., 0., 0.);
+        var dummy = Vec3(0., 0., 0.);
         if segmentClearance(spec, f, &hit, wrist, surface, s, &mut dummy) < -squash { deepest = s; }
         s = s + 1usize;
       }
@@ -209,10 +209,10 @@ pub fn measure(spec: &HandSpec, pose: &HandPose, wrist: &Transform3, surface: &P
     var any = false;
     var s = 0usize;
     while s < 3usize {
-      var at = new Vec3(0., 0., 0.);
+      var at = Vec3(0., 0., 0.);
       let c = segmentClearance(spec, f, pose, wrist, surface, s, &mut at);
       if c < 0.001 {
-        contacts.push(new Contact(f, s, at, c));
+        contacts.push(Contact(f, s, at, c));
         any = true;
       }
       if -c > deepest { deepest = -c; }
@@ -221,15 +221,15 @@ pub fn measure(spec: &HandSpec, pose: &HandPose, wrist: &Transform3, surface: &P
     if any { touching = touching + 1usize; }
     f = f + 1usize;
   }
-  new GripResult(pose.copy(), contacts, touching, deepest, palmClearance(spec, wrist, surface))
+  GripResult(pose.copy(), contacts, touching, deepest, palmClearance(spec, wrist, surface))
 }
 
 // ---- placement ----
 
 // The rotation that takes the hand frame's x axis to 'x' and its y axis to 'y' (perpendicular unit vectors)
 pub fn frameFrom(x: Vec3, y: Vec3) Quat {
-  let q1 = Quat.fromVectors(new Vec3(0., 1., 0.), y);
-  let xa = q1 * new Vec3(1., 0., 0.);
+  let q1 = Quat.fromVectors(Vec3(0., 1., 0.), y);
+  let xa = q1 * Vec3(1., 0., 0.);
   let ang = atan2(y.dot(xa.cross(x)), xa.dot(x));
   Quat.angleAxis(ang, y) * q1
 }
@@ -237,8 +237,8 @@ pub fn frameFrom(x: Vec3, y: Vec3) Quat {
 // A direction perpendicular to 'a', as near to 'ref' as can be
 fn perpendicularTo(a: Vec3, ref: Vec3) Vec3 {
   var p = ref - a * ref.dot(a);
-  if p.length() < 0.001 { p = new Vec3(1., 0., 0.) - a * a.x; }
-  if p.length() < 0.001 { p = new Vec3(0., 0., 1.) - a * a.z; }
+  if p.length() < 0.001 { p = Vec3(1., 0., 0.) - a * a.x; }
+  if p.length() < 0.001 { p = Vec3(0., 0., 1.) - a * a.z; }
   p.normalize()
 }
 
@@ -256,7 +256,7 @@ pub fn cylinderGrip(spec: &HandSpec, a: Vec3, b: Vec3, radius: f32, u: f32, roll
   let ry = -fingerDir;
   let q = frameFrom(rx, ry);
   let contact = a + (b - a) * u + out * radius;
-  new Transform3(contact - q * spec.gripCentre, q, new Vec3(1., 1., 1.))
+  Transform3(contact - q * spec.gripCentre, q, Vec3(1., 1., 1.))
 }
 
 // The grip's wrist moved out along 'outward' until the open hand (the shape's open pose) and the palm just clear the surface
@@ -275,18 +275,18 @@ pub fn fitGrip(spec: &HandSpec, shape: &GripShape, wrist0: Transform3, outward: 
   // Slide out until the open hand is clear
   var moved = 0.;
   while moved < reach && !openClear(spec, shape, &wrist, surface, squash) {
-    wrist = new Transform3(wrist.translation + outward * 0.0005, wrist.rotation, wrist.scale);
+    wrist = Transform3(wrist.translation + outward * 0.0005, wrist.rotation, wrist.scale);
     moved = moved + 0.0005;
   }
   // Then, if asked to settle, in, while it stays clear and the palm is not yet touching
   var tried = 0.;
   while settle && tried < reach && palmClearance(spec, &wrist, surface) > 0.001 {
-    let next = new Transform3(wrist.translation - outward * 0.0005, wrist.rotation, wrist.scale);
+    let next = Transform3(wrist.translation - outward * 0.0005, wrist.rotation, wrist.scale);
     if !openClear(spec, shape, &next, surface, squash) { break; }
     wrist = next;
     tried = tried + 0.0005;
   }
-  new GripFit(wrist, closeOn(spec, shape, &wrist, surface, squash, 31u32))
+  GripFit(wrist, closeOn(spec, shape, &wrist, surface, squash, 31u32))
 }
 
 // Whether the open hand's fingers and palm are clear of the surface

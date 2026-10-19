@@ -144,7 +144,7 @@ pub struct Kernels {
 
   // The pipelines, made once on this device; check 'isValid'
   pub fn make(device: &Device) Kernels {
-    new Kernels(
+    Kernels(
       Kernel.make(device, &MATVEC_SPIRV, "matvecMain", &[READ, READ, READ, READ_WRITE]),
       Kernel.make(device, &MATMUL_SPIRV, "matmulMain", &[READ, READ, READ, READ_WRITE]),
       Kernel.make(device, &RMSNORM_SPIRV, "rmsnormMain", &[READ, READ, READ, READ_WRITE]),
@@ -182,7 +182,7 @@ pub struct Kernels {
     if !fits(wByteOffset + rows * rb) { return false; }
     let gx = foldX(rows);
     let gy = foldY(rows);
-    let p = giveParams(job, device,&new MatvecParams(u32.from(rows), u32.from(cols), u32.from(rb), gx, u32.from(wByteOffset),
+    let p = giveParams(job, device,&MatvecParams(u32.from(rows), u32.from(cols), u32.from(rb), gx, u32.from(wByteOffset),
       u32.from(xOffset), u32.from(yOffset), qtype));
     job.dispatch(device, &matvecK, &[p, w, x, y], gx, gy)
   }
@@ -203,7 +203,7 @@ pub struct Kernels {
     let gx = (rows + 15usize) / 16usize;
     let gy = (batch + 15usize) / 16usize;
     if gx > MAX_GROUPS || gy > MAX_GROUPS { return false; }
-    let p = giveParams(job, device,&new MatmulParams(u32.from(rows), u32.from(cols), u32.from(batch), u32.from(rb),
+    let p = giveParams(job, device,&MatmulParams(u32.from(rows), u32.from(cols), u32.from(batch), u32.from(rb),
       u32.from(wByteOffset), u32.from(xOffset), u32.from(yOffset), qtype));
     job.dispatch(device, &matmulK, &[p, w, x, y], u32.from(gx), u32.from(gy))
   }
@@ -212,7 +212,7 @@ pub struct Kernels {
   // workgroup for each row, so at most 65535 rows.
   pub fn rmsnorm(self: &, job: &mut Job, device: &mut Device, x: u32, w: u32, y: u32, n: usize, rows: usize, eps: f32) bool {
     if n == 0usize || rows == 0usize || rows > MAX_GROUPS || !fits(n) || !fits(n * rows) { return false; }
-    let p = giveParams(job, device,&new RmsnormParams(u32.from(n), u32.from(rows), eps, 0u32));
+    let p = giveParams(job, device,&RmsnormParams(u32.from(n), u32.from(rows), eps, 0u32));
     job.dispatch(device, &rmsnormK, &[p, x, w, y], u32.from(rows))
   }
 
@@ -227,7 +227,7 @@ pub struct Kernels {
     let gx = foldX(groups);
     let gy = foldY(groups);
     if usize.from(gy) > MAX_GROUPS { return false; }
-    let p = giveParams(job, device,&new RopeParams(u32.from(tokens), u32.from(nHeads), u32.from(headDim), u32.from(ropeDim),
+    let p = giveParams(job, device,&RopeParams(u32.from(tokens), u32.from(nHeads), u32.from(headDim), u32.from(ropeDim),
       u32.from(pos0), mode, gx, 0u32));
     job.dispatch(device, &ropeK, &[p, freqs, x], gx, gy)
   }
@@ -235,7 +235,7 @@ pub struct Kernels {
   // Softmax of each of 'rows' rows of 'n' (x and y rows * n f32s). One workgroup for each row.
   pub fn softmax(self: &, job: &mut Job, device: &mut Device, x: u32, y: u32, n: usize, rows: usize) bool {
     if n == 0usize || rows == 0usize || rows > MAX_GROUPS || !fits(n * rows) { return false; }
-    let p = giveParams(job, device,&new SoftmaxParams(u32.from(n), u32.from(rows), 0u32, 0u32));
+    let p = giveParams(job, device,&SoftmaxParams(u32.from(n), u32.from(rows), 0u32, 0u32));
     job.dispatch(device, &softmaxK, &[p, x, y], u32.from(rows))
   }
 
@@ -247,7 +247,7 @@ pub struct Kernels {
     if nTokens == 0usize || nHeads == 0usize || nKvHeads == 0usize || headDim == 0usize { return false; }
     if nHeads % nKvHeads != 0usize || pos0 + nTokens > maxSeq || nHeads > MAX_GROUPS || nTokens > MAX_GROUPS { return false; }
     if !fits(maxSeq * nKvHeads * headDim) || !fits(nTokens * nHeads * maxSeq) || !fits(nTokens * nHeads * headDim) { return false; }
-    let p = giveParams(job, device,&new AttentionParams(u32.from(nTokens), u32.from(nHeads), u32.from(nKvHeads),
+    let p = giveParams(job, device,&AttentionParams(u32.from(nTokens), u32.from(nHeads), u32.from(nKvHeads),
       u32.from(headDim), u32.from(pos0), u32.from(maxSeq), scale, 0u32));
     job.dispatch(device, &attentionK, &[p, q, kCache, vCache, scores, out], u32.from(nHeads), u32.from(nTokens))
   }
@@ -260,7 +260,7 @@ pub struct Kernels {
     let gx = foldX(groups);
     let gy = foldY(groups);
     if usize.from(gy) > MAX_GROUPS { return false; }
-    let p = giveParams(job, device,&new KvAppendParams(u32.from(nTokens), u32.from(kvDim), u32.from(pos0), gx));
+    let p = giveParams(job, device,&KvAppendParams(u32.from(nTokens), u32.from(kvDim), u32.from(pos0), gx));
     job.dispatch(device, &kvAppendK, &[p, src, cache], gx, gy)
   }
 
@@ -271,7 +271,7 @@ pub struct Kernels {
     let gx = foldX(groups);
     let gy = foldY(groups);
     if usize.from(gy) > MAX_GROUPS { return false; }
-    let p = giveParams(job, device,&new ElementParams(u32.from(n), gx, 0u32, 0u32));
+    let p = giveParams(job, device,&ElementParams(u32.from(n), gx, 0u32, 0u32));
     // the params buffer goes first: the slots passed are the others, after it
     if slots.len == 2usize { return job.dispatch(device, kernel, &[p, slots[0usize], slots[1usize]], gx, gy); }
     job.dispatch(device, kernel, &[p, slots[0usize], slots[1usize], slots[2usize]], gx, gy)

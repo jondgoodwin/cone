@@ -168,7 +168,7 @@
 	actortype ::= 'actor' ident_token '{' (structstmt | behaviourstmt)* '}'
 		/* its fields are its private state, never 'pub'; each behaviour is a message, whose parameters
 		   and returned value are Sendable; each 'fn' method is synchronous and never 'pub' ('init' and
-		   'final' as a struct's); no static, macro, 'extern' or 'use'. 'new Name(args)' runs its 'init'
+		   'final' as a struct's); no static, macro, 'extern' or 'use'. 'Name(args)' runs its 'init'
 		   and answers its handle. Needs 'import actors' */
 	behaviourstmt ::= 'pub'? 'async' 'do' ident_token '(' fnparm (',' fnparm)* ')' type? block
 		/* an actor's behaviour: its first parameter 'self'; 'async' and 'do' mean nothing apart */
@@ -236,7 +236,7 @@
 	addr ::= ('&'|'&<'|'&[]') perm_type? (fn_stmt | prefix_exp)
 		/* '&[]' only borrows: there is no owning array reference, and '+[]' is refused */
 	plus_alloc ::= '?'? '+' ident_token ('-' perm_type)? prefix_exp
-		/* the retired allocation spelling, refused: every allocation is a new_exp, 'new Rc[i32](5)'.
+		/* the retired allocation spelling, refused: every allocation is a construction, 'Rc[i32](5)'.
 		   It stays only as a match pattern's owning reference type, '+Rc-mut Circle', whose spelling
 		   is an open design question */
 	suffix_exp ::= term suffix*
@@ -246,16 +246,18 @@
 		   and a '..' before an end, 'a..b' or '..b', is refused: with no end there is nothing to include or leave out,
 		   so 'a..' and '..' alone are accepted). They never hold a value's
 		   contents: an enum variant is constructed with parentheses, 'Some(x)', and an empty one by its name alone,
-		   'None'. A struct's value is built with 'new' */
+		   'None'. A struct's value is built as they are, by its name and parentheses, 'Point(1, 2)': a call whose callee is a type */
 	property ::= ident_token | symbol_token | integer_token
 	term ::=  literal | ident_token | pseudo | '(' exp ')' | new_exp | if_stmt | match_stmt | while_stmt | each_stmt | block
 		/* an 'if', a 'match', a loop or a block is a term, so it may be an operand: 'if c {1;} else {2;} + 10' adds to what the 'if' gives */
-	new_exp ::= ('new' | 'trynew') ident_token ('.' ident_token)* ('[' type (',' type)* ']')* ('(' (contents_exp (',' contents_exp)*)? ')')?
-		/* a construction, its type then its initializer's arguments: 'new Point(1, 2)', and its contents
-		   after '<-' (entries): 'new List[i32](100) <- fill 0'; an array takes contents only. A managed reference
-		   type, or an alias of one, allocates: 'new Rc[mut, Node](1)', or, given one finished value of the
-		   value type, moves it in: 'new Rc[i32](5)'. 'trynew' takes only a managed reference
-		   type, and gives an Option of it, None when memory runs out */
+	new_exp ::= ('new' ident_token ('.' ident_token)* '[' type (',' type)* ']' | 'trynew' ident_token ('.' ident_token)* ('[' type (',' type)* ']')*) ('(' (contents_exp (',' contents_exp)*)? ')')?
+		/* 'new' names a dynamic region, a region whose state is a value, and the type made in it: 'new a[Node](1)',
+		   'new self[List[i64]](16)'. A name before the brackets that is a type, not a variable or a path of
+		   fields, is refused. Every other construction is a call of its type (a suffix_exp): its initializer's
+		   arguments in parentheses, 'Point(1, 2)', and its contents after '<-' (entries): 'List[i32](100) <- fill 0';
+		   an array takes contents only. A managed reference type, or an alias of one, allocates:
+		   'Rc[mut, Node](1)', or, given one finished value of the value type, moves it in: 'Rc[i32](5)'.
+		   'trynew' takes only a managed reference type, and gives an Option of it, None when memory runs out */
 	genqualname ::= ident_token ('.' ident_token)* ('[' typearg (',' typearg)* ']')?
 	typearg ::= type | lifetime_token
 		/* a lifetime only in a type of a function's signature or of a struct's field: a struct's lifetimes,
@@ -270,7 +272,7 @@
 	literal ::= float_token | integer_token | text_token | symbol_token | 'true' | 'false' | 'null' | array_lit
 		/* 'null' is the null raw pointer, of the pointer type it is wanted as */
 	array_lit ::= '[' contents_exp (',' contents_exp)* ']'
-		/* '[n; x]', the fill literal, is retired: 'new Array[T, n] <- fill x' */
+		/* '[n; x]', the fill literal, is retired: 'Array[T, n]() <- fill x' */
 	float_token ::= (('0'-'9') ('0'-'9')*) '.' ('0'-'9')* (('e'|'E') ('-'|'+')? ('0'-'9')+)?
 	integer_token ::= (('0'-'9') ('0'-'9')*) | '0x' (('0'-'9')|('a'-'f')|('A'-'F'))+
 	lifetime_token ::= '\'' ident_token

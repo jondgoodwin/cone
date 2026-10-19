@@ -55,7 +55,7 @@ pub struct SwapChain {
   // the device's frame if it is not begun. Check 'ok()' on what it answers:
   // a minimized window has none (SKIPPED), and draws nothing.
   pub fn getCurrentTexture(self: &mut, device: &mut Device) SurfaceTexture {
-    var result = new SurfaceTexture(noTexture(), noTexture(), SURFACE_TEXTURE_ERROR);
+    var result = SurfaceTexture(noTexture(), noTexture(), SURFACE_TEXTURE_ERROR);
     if (backend.device as *u8 as usize) == 0usize { return result; }
     if backend.hasImage {
       fail("getCurrentTexture called twice without a present between");
@@ -75,7 +75,7 @@ pub struct SwapChain {
     let slot = usize.from(device.queue.backend.frameIndex);
     var index = 0u32;
     var r = backend.fns.acquireNextImageKHR(backend.device, backend.swapchain, NO_TIMEOUT, backend.acquire[slot],
-      new vulkan.Fence(0u64), &mut index);
+      vulkan.Fence(0u64), &mut index);
     if r == vulkan.ERROR_OUT_OF_DATE_KHR {
       backend.stale = true;
       if !self.configure() {
@@ -83,7 +83,7 @@ pub struct SwapChain {
         return result;
       }
       r = backend.fns.acquireNextImageKHR(backend.device, backend.swapchain, NO_TIMEOUT, backend.acquire[slot],
-        new vulkan.Fence(0u64), &mut index);
+        vulkan.Fence(0u64), &mut index);
       if r == vulkan.ERROR_OUT_OF_DATE_KHR {
         result.status = SURFACE_TEXTURE_OUTDATED;
         return result;
@@ -113,12 +113,12 @@ pub struct SwapChain {
           vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT, vulkan.ACCESS_2_NONE,
           vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT, vulkan.ACCESS_2_NONE);
         check(device.queue.fns.endCommandBuffer(cmd), "vkEndCommandBuffer");
-        submitCommands(&mut device.queue, cmd, new vulkan.Fence(0u64), 0u32, null);
+        submitCommands(&mut device.queue, cmd, vulkan.Fence(0u64), 0u32, null);
         backend.initialized[i] = true;
       }
     }
-    result.texture = new Texture(new TextureBackend(backend.images[i], backend.views[i], KIND_SURFACE, false,
-      backend.device, backend.fns, new vulkan.DeviceMemory(0u64)), width, height, format, TEXTURE_USAGE_RENDER_ATTACHMENT);
+    result.texture = Texture(TextureBackend(backend.images[i], backend.views[i], KIND_SURFACE, false,
+      backend.device, backend.fns, vulkan.DeviceMemory(0u64)), width, height, format, TEXTURE_USAGE_RENDER_ATTACHMENT);
 
     // The depth texture, moved to its attachment layout when it is new
     if backend.depthView.h != 0u64 {
@@ -127,8 +127,8 @@ pub struct SwapChain {
         if !isNull(cmd) { firstLayout(&backend.fns, cmd, backend.depthImage, KIND_DEPTH); }
         backend.depthReady = true;
       }
-      result.depth = new Texture(new TextureBackend(backend.depthImage, backend.depthView, KIND_DEPTH, false,
-        backend.device, backend.fns, new vulkan.DeviceMemory(0u64)), width, height, depthFormat, TEXTURE_USAGE_RENDER_ATTACHMENT);
+      result.depth = Texture(TextureBackend(backend.depthImage, backend.depthView, KIND_DEPTH, false,
+        backend.device, backend.fns, vulkan.DeviceMemory(0u64)), width, height, depthFormat, TEXTURE_USAGE_RENDER_ATTACHMENT);
     }
     result
   }
@@ -140,13 +140,13 @@ pub struct SwapChain {
     if !backend.hasImage { return false; }
     backend.hasImage = false;
     let i = usize.from(backend.current);
-    let signal = new vulkan.SemaphoreSubmitInfo(semaphore: backend.renderDone[i],
+    let signal = vulkan.SemaphoreSubmitInfo(semaphore: backend.renderDone[i],
       stageMask: vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
     if !endFrameSignalling(device, 1u32, &signal as *vulkan.SemaphoreSubmitInfo) { return false; }
     var sem = backend.renderDone[i];
     var sc = backend.swapchain;
     var index = backend.current;
-    let pi = new vulkan.PresentInfoKHR(waitSemaphoreCount: 1u32, pWaitSemaphores: &mut sem as *vulkan.Semaphore,
+    let pi = vulkan.PresentInfoKHR(waitSemaphoreCount: 1u32, pWaitSemaphores: &mut sem as *vulkan.Semaphore,
       swapchainCount: 1u32, pSwapchains: &mut sc as *vulkan.SwapchainKHR, pImageIndices: &mut index as *u32,
       pResults: null);
     let r = device.queue.fns.queuePresentKHR(device.queue.backend.handle, &pi);
@@ -192,7 +192,7 @@ pub struct SwapChain {
       check(backend.ifns.getPhysicalDeviceSurfaceFormatsKHR(backend.physical, backend.surface, &mut n,
         null), "vkGetPhysicalDeviceSurfaceFormatsKHR");
       var formats = List[vulkan.SurfaceFormatKHR].empty();
-      formats.resize(usize.from(n), new vulkan.SurfaceFormatKHR(0u32, 0u32));
+      formats.resize(usize.from(n), vulkan.SurfaceFormatKHR(0u32, 0u32));
       let r = backend.ifns.getPhysicalDeviceSurfaceFormatsKHR(backend.physical, backend.surface, &mut n,
         formats.viewMut() as *vulkan.SurfaceFormatKHR);
       if r != vulkan.INCOMPLETE { check(r, "vkGetPhysicalDeviceSurfaceFormatsKHR"); }
@@ -229,11 +229,11 @@ pub struct SwapChain {
 
     fns.deviceWaitIdle(device);
     let old = backend.swapchain;
-    let ci = new vulkan.SwapchainCreateInfoKHR(surface: backend.surface, minImageCount: count,
-      imageFormat: backend.format, imageColorSpace: backend.colorSpace, imageExtent: new vulkan.Extent2D(w, h),
+    let ci = vulkan.SwapchainCreateInfoKHR(surface: backend.surface, minImageCount: count,
+      imageFormat: backend.format, imageColorSpace: backend.colorSpace, imageExtent: vulkan.Extent2D(w, h),
       imageUsage: backend.usage, pQueueFamilyIndices: null, preTransform: caps.currentTransform,
       oldSwapchain: old);
-    var sc = new vulkan.SwapchainKHR(0u64);
+    var sc = vulkan.SwapchainKHR(0u64);
     let made = check(fns.createSwapchainKHR(device, &ci, nullp(), &mut sc), "vkCreateSwapchainKHR");
     self.release();
     if old.h != 0u64 { fns.destroySwapchainKHR(device, old, nullp()); }
@@ -245,7 +245,7 @@ pub struct SwapChain {
     var n = 0u32;
     check(fns.getSwapchainImagesKHR(device, sc, &mut n, null), "vkGetSwapchainImagesKHR");
     var found = List[vulkan.Image].empty();
-    found.resize(usize.from(n), new vulkan.Image(0u64));
+    found.resize(usize.from(n), vulkan.Image(0u64));
     check(fns.getSwapchainImagesKHR(device, sc, &mut n, found.viewMut() as *vulkan.Image), "vkGetSwapchainImagesKHR");
     found.truncate(usize.from(n));
     if n > MAX_SWAPCHAIN_IMAGES { n = MAX_SWAPCHAIN_IMAGES; }
@@ -255,15 +255,15 @@ pub struct SwapChain {
       k = k + 1usize;
     }
     backend.count = n;
-    let sci = new vulkan.SemaphoreCreateInfo();
+    let sci = vulkan.SemaphoreCreateInfo();
     var i = 0usize;
     while i < usize.from(n) {
-      let vci = new vulkan.ImageViewCreateInfo(image: backend.images[i], format: backend.format,
-        components: new vulkan.ComponentMapping(), subresourceRange: new vulkan.ImageSubresourceRange());
-      var view = new vulkan.ImageView(0u64);
+      let vci = vulkan.ImageViewCreateInfo(image: backend.images[i], format: backend.format,
+        components: vulkan.ComponentMapping(), subresourceRange: vulkan.ImageSubresourceRange());
+      var view = vulkan.ImageView(0u64);
       check(fns.createImageView(device, &vci, nullp(), &mut view), "vkCreateImageView");
       backend.views[i] = view;
-      var sem = new vulkan.Semaphore(0u64);
+      var sem = vulkan.Semaphore(0u64);
       check(fns.createSemaphore(device, &sci, nullp(), &mut sem), "vkCreateSemaphore");
       backend.renderDone[i] = sem;
       backend.initialized[i] = false;
@@ -272,9 +272,9 @@ pub struct SwapChain {
 
     // The depth texture, at the new size
     if backend.depthFormat != vulkan.FORMAT_UNDEFINED {
-      var image = new vulkan.Image(0u64);
-      var memory = new vulkan.DeviceMemory(0u64);
-      var view = new vulkan.ImageView(0u64);
+      var image = vulkan.Image(0u64);
+      var memory = vulkan.DeviceMemory(0u64);
+      var view = vulkan.ImageView(0u64);
       makeImage(&fns, device, &backend.memory, w, h, backend.depthFormat, vulkan.IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
         &mut image, &mut memory, &mut view);
       backend.depthImage = image;
@@ -302,9 +302,9 @@ pub struct SwapChain {
     if backend.depthView.h != 0u64 { backend.fns.destroyImageView(backend.device, backend.depthView, nullp()); }
     if backend.depthImage.h != 0u64 { backend.fns.destroyImage(backend.device, backend.depthImage, nullp()); }
     if backend.depthMemory.h != 0u64 { backend.fns.freeMemory(backend.device, backend.depthMemory, nullp()); }
-    backend.depthView = new vulkan.ImageView(0u64);
-    backend.depthImage = new vulkan.Image(0u64);
-    backend.depthMemory = new vulkan.DeviceMemory(0u64);
+    backend.depthView = vulkan.ImageView(0u64);
+    backend.depthImage = vulkan.Image(0u64);
+    backend.depthMemory = vulkan.DeviceMemory(0u64);
   }
 
   fn final(self: &uni) {

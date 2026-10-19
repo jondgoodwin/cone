@@ -29,7 +29,7 @@ pub struct TextStyle {
 
   // Plain text in 'color': no outline, no shadow
   pub fn plain(color: Color) TextStyle {
-    new TextStyle(color, new Color(0., 0., 0., 1.), 0., new Color(0., 0., 0., 0.), new Vec2(0., 0.), 0.)
+    TextStyle(color, Color(0., 0., 0., 1.), 0., Color(0., 0., 0., 0.), Vec2(0., 0.), 0.)
   }
 }
 
@@ -77,35 +77,35 @@ pub struct TextRenderer {
   // texture of 'depthFormat'. Check 'isValid'.
   pub fn create(device: &mut Device, atlas: &Atlas, overlayFormat: u32, worldFormat: u32, depthFormat: u32) TextRenderer {
     var shader = device.createShaderModule(&MSDFTEXT_SPIRV);
-    let entries = [new BindGroupLayoutEntry(binding: 0u32, visibility: SHADER_STAGE_VERTEX | SHADER_STAGE_FRAGMENT),
-      new BindGroupLayoutEntry(binding: 1u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE),
-      new BindGroupLayoutEntry(binding: 2u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_SAMPLER)];
+    let entries = [BindGroupLayoutEntry(binding: 0u32, visibility: SHADER_STAGE_VERTEX | SHADER_STAGE_FRAGMENT),
+      BindGroupLayoutEntry(binding: 1u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE),
+      BindGroupLayoutEntry(binding: 2u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_SAMPLER)];
     var groupLayout = device.createBindGroupLayout(&entries);
     let groupLayouts = [&groupLayout];
     var layout = device.createPipelineLayout(&groupLayouts, 0u32);
-    let attributes = [new VertexAttribute(VERTEX_FORMAT_FLOAT32X4, 0u64, 0u32),
-      new VertexAttribute(VERTEX_FORMAT_FLOAT32X4, 16u64, 1u32)];
-    let buffers = [new VertexBufferLayout(arrayStride: QUAD_BYTES, stepMode: VERTEX_STEP_MODE_INSTANCE, attributes: &attributes)];
+    let attributes = [VertexAttribute(VERTEX_FORMAT_FLOAT32X4, 0u64, 0u32),
+      VertexAttribute(VERTEX_FORMAT_FLOAT32X4, 16u64, 1u32)];
+    let buffers = [VertexBufferLayout(arrayStride: QUAD_BYTES, stepMode: VERTEX_STEP_MODE_INSTANCE, attributes: &attributes)];
     // Premultiplied alpha: the shader composes its layers itself
-    let overlayDesc = new RenderPipelineDescriptor(layout: &layout, vertexModule: &shader, vertexEntryPoint: "vertexMain",
+    let overlayDesc = RenderPipelineDescriptor(layout: &layout, vertexModule: &shader, vertexEntryPoint: "vertexMain",
       buffers: &buffers, fragmentModule: &shader, fragmentEntryPoint: "fragmentMain", colorFormat: overlayFormat,
       blendEnabled: true, colorSrcFactor: BLEND_FACTOR_ONE, colorDstFactor: BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
       alphaSrcFactor: BLEND_FACTOR_ONE, alphaDstFactor: BLEND_FACTOR_ONE_MINUS_SRC_ALPHA);
     var overlayPipeline = device.createRenderPipeline(&overlayDesc);
-    let worldDesc = new RenderPipelineDescriptor(layout: &layout, vertexModule: &shader, vertexEntryPoint: "vertexMain",
+    let worldDesc = RenderPipelineDescriptor(layout: &layout, vertexModule: &shader, vertexEntryPoint: "vertexMain",
       buffers: &buffers, fragmentModule: &shader, fragmentEntryPoint: "fragmentMain", colorFormat: worldFormat,
       depthFormat: depthFormat, depthWriteEnabled: false, depthCompare: COMPARE_FUNCTION_LESS_EQUAL,
       blendEnabled: true, colorSrcFactor: BLEND_FACTOR_ONE, colorDstFactor: BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
       alphaSrcFactor: BLEND_FACTOR_ONE, alphaDstFactor: BLEND_FACTOR_ONE_MINUS_SRC_ALPHA);
     var worldPipeline = device.createRenderPipeline(&worldDesc);
-    let samplerDesc = new SamplerDescriptor(addressModeU: ADDRESS_MODE_CLAMP_TO_EDGE, addressModeV: ADDRESS_MODE_CLAMP_TO_EDGE,
+    let samplerDesc = SamplerDescriptor(addressModeU: ADDRESS_MODE_CLAMP_TO_EDGE, addressModeV: ADDRESS_MODE_CLAMP_TO_EDGE,
       addressModeW: ADDRESS_MODE_CLAMP_TO_EDGE);
     var sampler = device.createSampler(&samplerDesc);
-    let textureDesc = new TextureDescriptor(atlas.config.width, atlas.config.height, TEXTURE_FORMAT_RGBA8_UNORM,
+    let textureDesc = TextureDescriptor(atlas.config.width, atlas.config.height, TEXTURE_FORMAT_RGBA8_UNORM,
       TEXTURE_USAGE_TEXTURE_BINDING | TEXTURE_USAGE_COPY_DST);
     var texture = device.createTexture(&textureDesc);
     var view = texture.createView();
-    new TextRenderer(shader, groupLayout, layout, overlayPipeline, worldPipeline, sampler, texture, view, 0u32,
+    TextRenderer(shader, groupLayout, layout, overlayPipeline, worldPipeline, sampler, texture, view, 0u32,
       f32.from(atlas.config.pxRange), f32.from(atlas.config.emPx), f32.from(atlas.config.width),
       f32.from(atlas.config.height), List[TextSlot].empty(), 0u32, 0u64)
   }
@@ -129,8 +129,8 @@ pub struct TextRenderer {
       BindGroupEntry.sampler(2u32, &sampler)];
     var group = device.createBindGroup(&groupLayout, &entries);
     let index = u32.from(slots.len());
-    slots.push(new TextSlot(instances, 1u32, uniforms, group, 0u32, space));
-    new TextHandle(index)
+    slots.push(TextSlot(instances, 1u32, uniforms, group, 0u32, space));
+    TextHandle(index)
   }
 
   pub fn textCount(self: &) usize { slots.len() }
@@ -167,7 +167,7 @@ pub struct TextRenderer {
     }
     slot.count = n;
     // TextParams
-    var p = new Array[f32, 36] <- fill 0f;
+    var p = Array[f32, 36]() <- fill 0f;
     var k = 0usize;
     while k < 16usize { p[k] = transform.m[k]; k = k + 1usize; }
     p[16] = style.color.red;
@@ -222,8 +222,8 @@ pub struct TextRenderer {
   pub fn renderOverlay(self: &mut, encoder: &mut CommandEncoder, target: &Texture) {
     drawCalls = 0u32;
     glyphs = 0u64;
-    let color = new RenderPassColorAttachment(view: target.createView(), loadOp: LOAD_OP_LOAD,
-      clearValue: new Color(0., 0., 0., 0.));
+    let color = RenderPassColorAttachment(view: target.createView(), loadOp: LOAD_OP_LOAD,
+      clearValue: Color(0., 0., 0., 0.));
     var pass = encoder.beginRenderPass(&color);
     self.drawSlots(&mut pass, &overlayPipeline, SPACE_OVERLAY);
     pass.end();
@@ -234,9 +234,9 @@ pub struct TextRenderer {
   pub fn renderWorld(self: &mut, encoder: &mut CommandEncoder, target: &Texture, depth: &Texture) {
     drawCalls = 0u32;
     glyphs = 0u64;
-    let color = new RenderPassColorAttachment(view: target.createView(), loadOp: LOAD_OP_LOAD,
-      clearValue: new Color(0., 0., 0., 0.));
-    let depthAttachment = new RenderPassDepthStencilAttachment(view: depth.createView(), depthLoadOp: LOAD_OP_LOAD,
+    let color = RenderPassColorAttachment(view: target.createView(), loadOp: LOAD_OP_LOAD,
+      clearValue: Color(0., 0., 0., 0.));
+    let depthAttachment = RenderPassDepthStencilAttachment(view: depth.createView(), depthLoadOp: LOAD_OP_LOAD,
       depthStoreOp: STORE_OP_DISCARD);
     var pass = encoder.beginRenderPassWithDepth(&color, &depthAttachment);
     self.drawSlots(&mut pass, &worldPipeline, SPACE_WORLD);
@@ -249,7 +249,7 @@ pub struct TextRenderer {
 // The transform for overlay text with its top left at pixel (x, y) of a
 // target 'width' x 'height' pixels: the text's units are pixels, y down
 pub fn overlayTransform(width: f32, height: f32, x: f32, y: f32) Mat4 {
-  Mat4.orthographic(0., width, height, 0., -1., 1.) * Mat4.fromTranslation(new Vec3(x, y, 0.))
+  Mat4.orthographic(0., width, height, 0., -1., 1.) * Mat4.fromTranslation(Vec3(x, y, 0.))
 }
 
 // The transform for text placed in the world. 'placement' is the text's
@@ -258,8 +258,8 @@ pub fn overlayTransform(width: f32, height: f32, x: f32, y: f32) Mat4 {
 // block's point (anchorX, anchorY) (0 to 1 across and down; (0.5, 0.5) its
 // middle) is at the placement's origin. 'viewProjection' is the camera's.
 pub fn worldTransform(viewProjection: Mat4, placement: Mat4, text: &TextLayout, anchorX: f32, anchorY: f32) Mat4 {
-  viewProjection * placement * Mat4.fromScale(new Vec3(1., -1., 1.))
-    * Mat4.fromTranslation(new Vec3(-anchorX * text.width, -anchorY * text.height, 0.))
+  viewProjection * placement * Mat4.fromScale(Vec3(1., -1., 1.))
+    * Mat4.fromTranslation(Vec3(-anchorX * text.width, -anchorY * text.height, 0.))
 }
 
 // A placement at 'position' facing the camera: spherical (the text square to
@@ -268,22 +268,22 @@ pub fn worldTransform(viewProjection: Mat4, placement: Mat4, text: &TextLayout, 
 pub fn billboardPlacement(camera: &Camera, position: Vec3, cylindrical: bool) Mat4 {
   let c = camera.placement();
   if !cylindrical {
-    let right = new Vec3(c.m[0], c.m[1], c.m[2]).normalize();
-    let up = new Vec3(c.m[4], c.m[5], c.m[6]).normalize();
-    let back = new Vec3(c.m[8], c.m[9], c.m[10]).normalize();
+    let right = Vec3(c.m[0], c.m[1], c.m[2]).normalize();
+    let up = Vec3(c.m[4], c.m[5], c.m[6]).normalize();
+    let back = Vec3(c.m[8], c.m[9], c.m[10]).normalize();
     return basisMatrix(right, up, back, position);
   }
   let eye = c.translation();
-  let toCamera = new Vec3(eye.x - position.x, 0., eye.z - position.z);
-  let back = if toCamera.lengthSquared() < 1.0e-12 { new Vec3(0., 0., 1.) } else { toCamera.normalize() };
-  let up = new Vec3(0., 1., 0.);
+  let toCamera = Vec3(eye.x - position.x, 0., eye.z - position.z);
+  let back = if toCamera.lengthSquared() < 1.0e-12 { Vec3(0., 0., 1.) } else { toCamera.normalize() };
+  let up = Vec3(0., 1., 0.);
   let right = up.cross(back).normalize();
   basisMatrix(right, up, back, position)
 }
 
 // The placement whose axes are 'x', 'y' and 'z' (unit vectors) at 'origin'
 pub fn basisMatrix(x: Vec3, y: Vec3, z: Vec3, origin: Vec3) Mat4 {
-  new Mat4([x.x, x.y, x.z, 0f, y.x, y.y, y.z, 0f, z.x, z.y, z.z, 0f, origin.x, origin.y, origin.z, 1f])
+  Mat4([x.x, x.y, x.z, 0f, y.x, y.y, y.z, 0f, z.x, z.y, z.z, 0f, origin.x, origin.y, origin.z, 1f])
 }
 
 // spirv-begin msdftext.spv MSDFTEXT_SPIRV

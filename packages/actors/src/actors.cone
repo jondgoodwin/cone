@@ -15,12 +15,12 @@
 //
 //   actor Counter {
 //     count u64;
-//     fn init(self: &new, start u64) {*self = new Self(count: start);}
+//     fn init(self: &new, start u64) {*self = Self(count: start);}
 //     pub async do add(self, n u64) {count = count + n;}
 //   }
 //
 //   fn main() {
-//     imm c = new Counter(0u64);         // the first actor starts the workers
+//     imm c = Counter(0u64);         // the first actor starts the workers
 //     c.add(5u64);                       // a message: queued, run later
 //     c.add(7u64);                       // run after the first
 //   }                                    // then the program's final waits until all is quiet
@@ -109,8 +109,8 @@
 //           mailbox Arc[opaq, actors.Mailbox[Counter.Msg]];
 //           fn init(self: &new, start u64) {
 //             imm st = actors.makeActor[Counter.State, Counter.Msg](&Counter.dispatch);
-//             mem.writeRaw[Counter.State](st, new Counter.State(start));
-//             *self = new Self(mailbox: actors.startActor[Counter.State, Counter.Msg](st));
+//             mem.writeRaw[Counter.State](st, Counter.State(start));
+//             *self = Self(mailbox: actors.startActor[Counter.State, Counter.Msg](st));
 //           }
 //           pub fn add(self: &, n u64) {
 //             actors.send[Counter.Msg](mailbox, Counter.Msg.add[n]);
@@ -319,7 +319,7 @@
 // chooses their number with 'actors.configure' in its 'main', which runs after
 // every initializer, and a program with no actor must start no thread (the
 // initializer only sets the module's own globals). 'actors.configure(
-// new actors.Options(workers: n, batch: b))', called before the first actor
+// actors.Options(workers: n, batch: b))', called before the first actor
 // starts, sets n workers (0, the default, is one per logical processor,
 // thread.parallelism()) and a batch limit b (actors.defaultBatch, 100, by
 // default; 0 is taken as 1); called once they have started, it is a panic.
@@ -611,7 +611,7 @@ struct Header {
 pub struct Mailbox[M: Sendable] is Sendable {
   hdr: Header;
 
-  fn made(h: Header) Mailbox[M] {new Mailbox[M](h)}
+  fn made(h: Header) Mailbox[M] {Mailbox[M](h)}
 
   // The actor's death: its state finalized, then its mailbox's last node
   // freed; Arc frees the block, state and all, after this
@@ -663,7 +663,7 @@ fn finalizeState[S, M: Sendable](h: *Header) {
 // initializer generated for each of the state's calls:
 //
 //   imm st = actors.makeActor[S, M](&dispatch);   the block, the state unmade
-//   mem.writeRaw[S](st, new S(...));               the init, filling it in place
+//   mem.writeRaw[S](st, S(...));               the init, filling it in place
 //   actors.startActor[S, M](st)                    the handle's owner
 
 // A new actor's block, its state not yet made: where the state goes, for its
@@ -685,9 +685,9 @@ pub fn makeActor[S, M: Sendable](dispatch: &fn(s: &mut S, m: *M)) *S {
   }
   (*stub).next = nullLink();
   var f = dispatch;
-  let h = new Header(stub, stub, nullHeader(),
+  let h = Header(stub, stub, nullHeader(),
     &runBatch[S, M], &releaseHold[M], &finalizeState[S, M], *(&mut f as **u8));
-  let b = new Arc[opaq, Block[S, M]](Mailbox[M].made(h), mem.readRaw[S](room as *S));
+  let b = Arc[opaq, Block[S, M]](Mailbox[M].made(h), mem.readRaw[S](room as *S));
   libc.free(room);
   // The owner of the block, put away uncounted as its address, which is the
   // Header's: startActor remakes it
@@ -926,7 +926,7 @@ pub fn replyNode[S, M: Sendable](st: &S, size: usize, align: usize) Reply {
     die("actors: out of memory for a reply");
   }
   holdArc[M](h);
-  new Reply(h, n as *Link, n + off)
+  Reply(h, n as *Link, n + off)
 }
 
 // Where the reply's value goes
@@ -990,7 +990,7 @@ pub fn answerNow[R](rp: Reply, v: R) {
 // returns the value answers it (answerAt, and the compiler's resume
 // functions).
 pub struct Answer {
-  reply: Reply = new Reply();
+  reply: Reply = Reply();
   held: u8 = 0u8;
 }
 
@@ -1002,7 +1002,7 @@ pub fn ask(slot: &mut Answer, rp: Reply) {
   slot.held = 1u8;
 }
 pub fn askNone(slot: &mut Answer) {
-  slot.reply = new Reply();
+  slot.reply = Reply();
   slot.held = 1u8;
 }
 
@@ -1080,7 +1080,7 @@ pub struct Pending is GcTraceElements {
   // seams' types: each record, as an Erased value, is traced by its own type
   // record's trace (a parked record is a root between messages)
   pub fn gcTraceElements(self: &mut) PendingWalk {
-    new PendingWalk(slots, cap, 0usize)
+    PendingWalk(slots, cap, 0usize)
   }
 
   // An actor that dies with records parked abandons them: each record is
@@ -1196,8 +1196,8 @@ pub fn parkReserve(p: &mut Pending, size: usize, drop: *u8, trace: *u8) u64 {
     tracefn = mem.readRaw[&fn(record: *u8, mode: u32)](&mut t as *(&fn(record: *u8, mode: u32)));
     flags = 3u32;
   }
-  mem.writeRaw[TypeRecord](recordType(block), new TypeRecord(size, 16usize, dropfn, tracefn, flags));
-  mem.writeRaw[Erased](block as *Erased, new Erased(block + recordHead, recordType(block)));
+  mem.writeRaw[TypeRecord](recordType(block), TypeRecord(size, 16usize, dropfn, tracefn, flags));
+  mem.writeRaw[Erased](block as *Erased, Erased(block + recordHead, recordType(block)));
   *slot = block as usize;
   p.count = p.count + 1usize;
   u64.from(id)
@@ -1241,7 +1241,7 @@ pub struct Awaitable[R] is Move {
   // An operation from the closure that starts it (a closure literal, or any
   // callable of that signature)
   pub fn make[F: fn(rp: Reply)](start: F) Awaitable[R] {
-    new Awaitable[R](new Uni[fn(rp: Reply)](start))
+    Awaitable[R](Uni[fn(rp: Reply)](start))
   }
 }
 
@@ -1877,7 +1877,7 @@ fn startWorkers() {
     (*w).index = i;
     (*w).rng = (2463534242u32 ^ ((i + 1u32) * 7919u32)) | 1u32;
     mem.writeRaw[thread.Thread[u32]](ts + usize.from(i),
-      thread.startWith(new thread.Options(name: "actors worker"), new WorkerArg(w), &workerMain));
+      thread.startWith(thread.Options(name: "actors worker"), WorkerArg(w), &workerMain));
     i = i + 1u32;
   }
 }
@@ -1996,10 +1996,10 @@ fn stopWorkers() {
 pub fn stats() Stats {
   let n = statWorkers.load();
   if n == 0u32 {
-    return new Stats(0u32, 0u64, 0u64, 0u64, 0u64);
+    return Stats(0u32, 0u64, 0u64, 0u64, 0u64);
   }
   let slots = statSlots.load();
-  var st = new Stats(n, 0u64, 0u64, 0u64, taskStealsTotal.loadOrdered(MemOrder.Relaxed));
+  var st = Stats(n, 0u64, 0u64, 0u64, taskStealsTotal.loadOrdered(MemOrder.Relaxed));
   var i = 0u32;
   while i < n {
     let slot = (slots + usize.from(i) * mem.sizeof[StatSlot]()) as *StatSlot;

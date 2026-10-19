@@ -14,7 +14,7 @@
 // import: it needs nothing of the OS (as Rust keeps its atomics in
 // 'core::sync::atomic'). core.cone's ATOMIC VALUES section is its guide.
 //
-//   Arc            Rc whose count is atomic: 'new Arc[imm, T](...)'  (SHARED OWNERS)
+//   Arc            Rc whose count is atomic: 'Arc[imm, T](...)'  (SHARED OWNERS)
 //   futexWait, futexWaitTimeout, futexWake, futexWakeAll         (THE FUTEX)
 //   Mutex          one thread at a time                          (THE LOCKS)
 //   Rwlock         many readers, or one writer
@@ -78,7 +78,7 @@
 // reaches the value unlocked:
 //
 //   alias Counter = Arc[Mutex, Count];
-//   imm c = new Counter(0u64);   // allocated with its Mutex, unlocked
+//   imm c = Counter(0u64);   // allocated with its Mutex, unlocked
 //   {
 //     imm n = &mut *c;           // takes the lock, waiting while another holds it
 //     n.total += 1u64;           // n's last use: the lock is given back after it
@@ -342,16 +342,16 @@ fn die(msg: &str, file: &str = srcFile(), line: u32 = srcLine()) Never {
 //
 //   import sync use Arc;              // or 'use *'
 //
-//   imm m = new Arc[imm, Message]("read by two threads");
+//   imm m = Arc[imm, Message]("read by two threads");
 //   imm a = thread.start(m, &reader); // start copies m: one owner more
 //
 // 'Arc' is core's 'Rc' whose count several threads may change at once: each
 // change is one atomic instruction, so owners of one value may be copied and
 // dropped on different threads and the value still dies exactly once, after
-// the last. It is spelled as 'Rc' is -- 'new Arc[imm, T](...)', 'Arc[T]',
+// the last. It is spelled as 'Rc' is -- 'Arc[imm, T](...)', 'Arc[T]',
 // 'Arc[mut, T]' -- and named as any of the module's types is: 'Arc' once
 // it is folded into the module, or 'sync.Arc' after a plain 'import sync'
-// ('new sync.Arc[imm, T](...)'). It lives
+// ('sync.Arc[imm, T](...)'). It lives
 // here rather than beside 'Rc' in core, whose names are in every module, as
 // Rust keeps its Arc in 'sync' and out of the prelude: a module
 // that does not fold it in keeps 'Arc' for its own use, and one that folds
@@ -387,7 +387,7 @@ fn die(msg: &str, file: &str = srcFile(), line: u32 = srcLine()) Never {
 pub struct Arc is RegionRef, ThreadSafe {
   cnt: usize;
   fn alloc(size: usize) *u8 inline {RawBlocks.alloc(size, 16usize)}
-  fn init(self: &new) inline {*self = new Arc(1usize);}
+  fn init(self: &new) inline {*self = Arc(1usize);}
   fn aliasRef(self: &uni Arc) inline {
     mem.atomicAdd[usize](self as *usize, 1usize, MemOrder.Relaxed);
   }
@@ -559,12 +559,12 @@ pub struct Mutex is Move, LockPermission, ThreadSafe {
   state: Atomic[u32];
 
   // An unlocked Mutex
-  pub fn make() Mutex {new Mutex(state: Atomic[u32].of(mutexUnlocked))}
+  pub fn make() Mutex {Mutex(state: Atomic[u32].of(mutexUnlocked))}
 
   // As a lock permission: unlocked in a new allocation's header, and taken by
   // every borrow through the reference, read-only or not, since a Mutex has
   // one lock. Called by the compiler alone
-  fn init(self: &new) inline {*self = new Mutex(state: Atomic[u32].of(mutexUnlocked));}
+  fn init(self: &new) inline {*self = Mutex(state: Atomic[u32].of(mutexUnlocked));}
   fn acquireMut(self: &opaq) inline {self.lock();}
   fn releaseMut(self: &opaq) inline {self.unlock();}
 
@@ -679,13 +679,13 @@ pub struct Rwlock is Move, LockPermission, ThreadSafe {
   writerNotify: Atomic[u32];
 
   // An unlocked Rwlock
-  pub fn make() Rwlock {new Rwlock(state: Atomic[u32].of(0u32), writerNotify: Atomic[u32].of(0u32))}
+  pub fn make() Rwlock {Rwlock(state: Atomic[u32].of(0u32), writerNotify: Atomic[u32].of(0u32))}
 
   // As a lock permission: unlocked in a new allocation's header; a borrow
   // that may write takes the write lock, a read-only one a read lock. Called
   // by the compiler alone
   fn init(self: &new) inline {
-    *self = new Rwlock(state: Atomic[u32].of(0u32), writerNotify: Atomic[u32].of(0u32));
+    *self = Rwlock(state: Atomic[u32].of(0u32), writerNotify: Atomic[u32].of(0u32));
   }
   fn acquireMut(self: &opaq) inline {self.writeLock();}
   fn releaseMut(self: &opaq) inline {self.writeUnlock();}
@@ -916,7 +916,7 @@ pub struct Rwlock is Move, LockPermission, ThreadSafe {
 pub struct Condvar is Move {
   seq: Atomic[u32];
 
-  pub fn make() Condvar {new Condvar(Atomic[u32].of(0u32))}
+  pub fn make() Condvar {Condvar(Atomic[u32].of(0u32))}
 
   fn word(self: &opaq) *u32 {&(*(self as *Condvar)).seq as *u32}
 
@@ -974,7 +974,7 @@ pub struct Once is Move {
   state: Atomic[u32];
 
   // A Once whose function has not run
-  pub fn make() Once {new Once(Atomic[u32].of(onceIncomplete))}
+  pub fn make() Once {Once(Atomic[u32].of(onceIncomplete))}
 
   fn word(self: &opaq) *u32 {&(*(self as *Once)).state as *u32}
 
@@ -1642,7 +1642,7 @@ fn chanInit[T](c: *Chan[T], b: *Block[T], ring: *Cell[T], mask: u64) {
 pub struct Sender[T: Sendable] is Sendable {
   chan: *Chan[T];
 
-  fn made(c: *Chan[T]) Sender[T] {new Sender[T](c)}
+  fn made(c: *Chan[T]) Sender[T] {Sender[T](c)}
 
   // Put v on the channel: None once it is there. A bounded channel's send
   // waits while it is full; an unbounded one's never waits. If the receiver
@@ -1753,7 +1753,7 @@ pub struct Sender[T: Sendable] is Sendable {
   // the count cannot reach 0 meanwhile, and nothing is published by it.
   pub fn clone(self: &) Sender[T] {
     mem.atomicAdd[u64](&(*chan).senders as *u64, 1u64, MemOrder.Relaxed);
-    new Sender[T](chan)
+    Sender[T](chan)
   }
 
   // Whether the channel is closed, by the receiver's close or its going:
@@ -1794,7 +1794,7 @@ pub struct SoloSender[T: Sendable] is Sendable {
   room: u64;                    // the position at which the ring was last seen full
 
   fn made(c: *Chan[T], ring: *T, mask: u64) SoloSender[T] {
-    new SoloSender[T](c, ring, mask, 0u64, mask + 1u64)
+    SoloSender[T](c, ring, mask, 0u64, mask + 1u64)
   }
 
   // Put v on the channel, waiting while it is full: None once it is there,
@@ -1924,7 +1924,7 @@ pub struct Receiver[T: Sendable] is Sendable {
   limit: u64;                   // single-sender: the senders' index as last read
 
   fn made(c: *Chan[T], b: *Block[T], ring: *Cell[T], mask: u64, solo: bool) Receiver[T] {
-    new Receiver[T](c, 0u64, b, ring, mask, solo, 0u64)
+    Receiver[T](c, 0u64, b, ring, mask, solo, 0u64)
   }
 
   // Each way of receiving asks which kind the channel is once, at the top,
@@ -2348,7 +2348,7 @@ pub struct Oneshot[T: Sendable] {
     (*s).state = oneEmpty;
     (*s).sides = 2u32;
     (*s).gone = 0u32;
-    new OneshotSender[T](s, false), new OneshotReceiver[T](s)
+    OneshotSender[T](s, false), OneshotReceiver[T](s)
   }
 }
 

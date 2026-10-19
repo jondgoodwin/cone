@@ -39,11 +39,11 @@ pub struct Form {
   pub iterations: u32;     // refinement steps taken
 
   pub fn make(kind: u32, params: List[f64]) Form {
-    new Form(kind, params, true, 0usize, 0.0, 0.0, 0u32)
+    Form(kind, params, true, 0usize, 0.0, 0.0, 0u32)
   }
 
   pub fn failed(kind: u32) Form {
-    new Form(kind, List[f64].empty(), false, 0usize, 0.0, 0.0, 0u32)
+    Form(kind, List[f64].empty(), false, 0usize, 0.0, 0.0, 0u32)
   }
 
   pub fn name(self: &) &str {
@@ -60,13 +60,13 @@ pub struct Form {
   pub fn param(self: &, k: usize) f32 { f32.from(*params[k]) }
 }
 
-fn pv(p: &List[f64], k: usize) DVec3 { new DVec3(*p[k], *p[k + 1usize], *p[k + 2usize]) }
+fn pv(p: &List[f64], k: usize) DVec3 { DVec3(*p[k], *p[k + 1usize], *p[k + 2usize]) }
 
 // The rotation (as nine numbers, row-major) for the rotation vector w: about
 // w's direction by its length (Rodrigues)
 fn rotationOf(w: DVec3) List[f64] {
   let th = w.length();
-  let k = if th > 1.0e-12 { w * (1.0 / th) } else { new DVec3(0.0, 0.0, 1.0) };
+  let k = if th > 1.0e-12 { w * (1.0 / th) } else { DVec3(0.0, 0.0, 1.0) };
   let s = if th > 1.0e-12 { libc.sin(th) } else { 0.0 };
   let c = if th > 1.0e-12 { libc.cos(th) } else { 1.0 };
   let t = 1.0 - c;
@@ -84,15 +84,15 @@ fn rotationVectorOf(r: &List[f64]) DVec3 {
   if cs > 1.0 { cs = 1.0; }
   if cs < -1.0 { cs = -1.0; }
   let th = libc.acos(cs);
-  let ax = new DVec3(*r[7] - *r[5], *r[2] - *r[6], *r[3] - *r[1]);
+  let ax = DVec3(*r[7] - *r[5], *r[2] - *r[6], *r[3] - *r[1]);
   if th < 1.0e-9 { return ax * 0.5; }
   if th > 3.14159 {
     // A half turn: the axis from the diagonal, signs from the off-diagonals
     let kx = sqrtd((*r[0] + 1.0) * 0.5);
     let ky = sqrtd((*r[4] + 1.0) * 0.5);
     let kz = sqrtd((*r[8] + 1.0) * 0.5);
-    var v = new DVec3(kx, if *r[1] + *r[3] < 0.0 { -ky } else { ky }, if *r[2] + *r[6] < 0.0 { -kz } else { kz });
-    if kx < 1.0e-6 { v = new DVec3(0.0, ky, if *r[5] + *r[7] < 0.0 { -kz } else { kz }); }
+    var v = DVec3(kx, if *r[1] + *r[3] < 0.0 { -ky } else { ky }, if *r[2] + *r[6] < 0.0 { -kz } else { kz });
+    if kx < 1.0e-6 { v = DVec3(0.0, ky, if *r[5] + *r[7] < 0.0 { -kz } else { kz }); }
     return v * th;
   }
   ax * (th / (2.0 * libc.sin(th)))
@@ -143,7 +143,7 @@ fn ellipsoidDistance(q: DVec3, a: f64, b: f64, c: f64) f64 {
 fn quadricValue(p: &List[f64], x: DVec3, grad: &mut DVec3) f64 {
   let v = *p[0] * x.x * x.x + *p[1] * x.y * x.y + *p[2] * x.z * x.z + *p[3] * x.x * x.y + *p[4] * x.x * x.z
     + *p[5] * x.y * x.z + *p[6] * x.x + *p[7] * x.y + *p[8] * x.z + *p[9];
-  *grad = new DVec3(2.0 * *p[0] * x.x + *p[3] * x.y + *p[4] * x.z + *p[6],
+  *grad = DVec3(2.0 * *p[0] * x.x + *p[3] * x.y + *p[4] * x.z + *p[6],
     2.0 * *p[1] * x.y + *p[3] * x.x + *p[5] * x.z + *p[7],
     2.0 * *p[2] * x.z + *p[4] * x.x + *p[5] * x.y + *p[8]);
   v
@@ -152,7 +152,7 @@ fn quadricValue(p: &List[f64], x: DVec3, grad: &mut DVec3) f64 {
 // The distance from x to a quadric's surface by repeated first-order steps
 // (x moved by -f grad / |grad|^2 until it lies on the surface); signed by f at x
 fn quadricDistance(p: &List[f64], x: DVec3) f64 {
-  var g = new DVec3(0.0, 0.0, 0.0);
+  var g = DVec3(0.0, 0.0, 0.0);
   let f0 = quadricValue(p, x, &mut g);
   var q = x;
   var it = 0;
@@ -189,7 +189,7 @@ fn distanceTo(kind: u32, p: &List[f64], x: DVec3) f64 {
   } elif kind == FormEllipsoid || kind == FormEllipsoidAxis {
     let r = rotationOf(pv(p, 6usize));
     let v = x - pv(p, 0usize);
-    let q = new DVec3(*r[0] * v.x + *r[3] * v.y + *r[6] * v.z, *r[1] * v.x + *r[4] * v.y + *r[7] * v.z,
+    let q = DVec3(*r[0] * v.x + *r[3] * v.y + *r[6] * v.z, *r[1] * v.x + *r[4] * v.y + *r[7] * v.z,
       *r[2] * v.x + *r[5] * v.y + *r[8] * v.z);
     ellipsoidDistance(q, absd(*p[3]) + 1.0e-12, absd(*p[4]) + 1.0e-12, absd(*p[5]) + 1.0e-12)
   } elif kind == FormQuadric {
@@ -212,7 +212,7 @@ pub fn formDistance(f: &Form, x: Vec3) f32 {
 // The ellipsoid's three axis directions (unit vectors) as the columns of its rotation
 pub fn ellipsoidAxis(f: &Form, k: usize) Vec3 {
   let r = rotationOf(pv(&f.params, 6usize));
-  new Vec3(f32.from(*r[k]), f32.from(*r[3usize + k]), f32.from(*r[6usize + k]))
+  Vec3(f32.from(*r[k]), f32.from(*r[3usize + k]), f32.from(*r[6usize + k]))
 }
 
 // A form's centre: a plane's point, a sphere's or ellipsoid's centre, a cylinder's
@@ -232,8 +232,8 @@ pub fn formCenter(f: &Form) Vec3 {
     a.set(6usize, *f.params[4]); a.set(7usize, *f.params[5]); a.set(8usize, 2.0 * *f.params[2]);
     var b = List[f64].empty();
     b.push(-*f.params[6]); b.push(-*f.params[7]); b.push(-*f.params[8]);
-    if solveLinear(&mut a, &mut b, 3usize) { new Vec3(f32.from(*b[0]), f32.from(*b[1]), f32.from(*b[2])) }
-    else { new Vec3(0., 0., 0.) }
+    if solveLinear(&mut a, &mut b, 3usize) { Vec3(f32.from(*b[0]), f32.from(*b[1]), f32.from(*b[2])) }
+    else { Vec3(0., 0., 0.) }
   } else {
     pv(&f.params, 0usize).toVec3()
   }

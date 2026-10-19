@@ -95,7 +95,7 @@ fn shot(p: *u8, name: &str) {
   b.push('B');
   b.push('M');
   // File header (after 'BM'): size, reserved, offset; info header: 40, w, h, planes 1 + bpp 24, then zeros
-  var words = new Array[u32, 13] <- fill 0u32;
+  var words = Array[u32, 13]() <- fill 0u32;
   words[0] = size;
   words[2] = 54u32;
   words[3] = 40u32;
@@ -137,9 +137,9 @@ fn finish(device: &mut Device, encoder: &mut CommandEncoder, target: &Texture, r
 
 // A pass that clears the target to black and the depth to 'z'
 fn clearAll(encoder: &mut CommandEncoder, target: &Texture, depth: &Texture, z: f32) {
-  let color = new RenderPassColorAttachment(view: target.createView(), loadOp: LOAD_OP_CLEAR,
-    clearValue: new Color(0., 0., 0., 0.));
-  let d = new RenderPassDepthStencilAttachment(view: depth.createView(), depthLoadOp: LOAD_OP_CLEAR,
+  let color = RenderPassColorAttachment(view: target.createView(), loadOp: LOAD_OP_CLEAR,
+    clearValue: Color(0., 0., 0., 0.));
+  let d = RenderPassDepthStencilAttachment(view: depth.createView(), depthLoadOp: LOAD_OP_CLEAR,
     depthStoreOp: STORE_OP_STORE, depthClearValue: z);
   var pass = encoder.beginRenderPassWithDepth(&color, &d);
   pass.end();
@@ -253,18 +253,18 @@ fn world(device: &mut Device, text: &mut TextRenderer, atlas: &mut Atlas, font: 
     readback: &Buffer, p: *u8) {
   let aspect = f32.from(W) / f32.from(H);
   var camera = Camera.make();
-  camera.lookAt(new Vec3(0., 0., 5.), new Vec3(0., 0., 0.), new Vec3(0., 1., 0.));
+  camera.lookAt(Vec3(0., 0., 5.), Vec3(0., 0., 0.), Vec3(0., 1., 0.));
   let vp = camera.projectionMatrix(aspect) * camera.viewMatrix();
   // The depth of the origin: what the scene left
-  let wall = vp.projectPoint(new Vec3(0., 0., 0.)).z;
+  let wall = vp.projectPoint(Vec3(0., 0., 0.)).z;
   let opts = LayoutOptions.make(1.0);
   let layout = layoutText(font, atlas, "AI", &opts);
-  let white = TextStyle.plain(new Color(1., 1., 1., 1.));
+  let white = TextStyle.plain(Color(1., 1., 1., 1.));
   // In front of the wall (z = 3, left) and behind it (z = -2, right)
   let front = text.addText(device, SPACE_WORLD);
   let hidden = text.addText(device, SPACE_WORLD);
-  let frontAt = Mat4.fromTranslation(new Vec3(-1.4, 0., 3.));
-  let hiddenAt = Mat4.fromTranslation(new Vec3(1.4, 0., -2.));
+  let frontAt = Mat4.fromTranslation(Vec3(-1.4, 0., 3.));
+  let hiddenAt = Mat4.fromTranslation(Vec3(1.4, 0., -2.));
   text.set(device, front, &layout, &white, worldTransform(vp, frontAt, &layout, 0.5, 0.5));
   text.set(device, hidden, &layout, &white, worldTransform(vp, hiddenAt, &layout, 0.5, 0.5));
   text.syncAtlas(device, atlas);
@@ -278,7 +278,7 @@ fn world(device: &mut Device, text: &mut TextRenderer, atlas: &mut Atlas, font: 
   expect(leftInk > 400.0, "world text in front of the wall is drawn");
   expectFloat(rightInk, 0.0, 0.001, "world text behind the wall is not");
   // Its middle is where the anchor projects
-  let centre = vp.projectPoint(new Vec3(-1.4, 0., 3.));
+  let centre = vp.projectPoint(Vec3(-1.4, 0., 3.));
   var ax = 0u32;
   var bx = 0u32;
   var ay = 0u32;
@@ -294,13 +294,13 @@ fn world(device: &mut Device, text: &mut TextRenderer, atlas: &mut Atlas, font: 
   text.clearText(hidden);
 
   // Billboards: the camera off to the side
-  camera.lookAt(new Vec3(5., 2., 4.), new Vec3(0., 0., 0.), new Vec3(0., 1., 0.));
+  camera.lookAt(Vec3(5., 2., 4.), Vec3(0., 0., 0.), Vec3(0., 1., 0.));
   let vp2 = camera.projectionMatrix(aspect) * camera.viewMatrix();
   let farZ = 1.0f;
   let billboard = text.addText(device, SPACE_WORLD);
   let sign = text.addText(device, SPACE_WORLD);
   // The billboard at the origin; the sign (fixed, turned 60 degrees about y) beside it
-  let facing = billboardPlacement(&camera, new Vec3(0., 0., 0.), false);
+  let facing = billboardPlacement(&camera, Vec3(0., 0., 0.), false);
   text.set(device, billboard, &layout, &white, worldTransform(vp2, facing, &layout, 0.5, 0.5));
   var encoder2 = device.createCommandEncoder();
   clearAll(&mut encoder2, target, depth, farZ);
@@ -318,16 +318,16 @@ fn world(device: &mut Device, text: &mut TextRenderer, atlas: &mut Atlas, font: 
   let inkH = 0.7;
   let ratio = f64.from(bx1 - bx0 + 1u32) / f64.from(by1 - by0 + 1u32);
   expectFloat(ratio, inkW / inkH, 0.06 * (inkW / inkH), "spherical billboard keeps the text's proportions seen from the side");
-  let c2 = vp2.projectPoint(new Vec3(0., 0., 0.));
+  let c2 = vp2.projectPoint(Vec3(0., 0., 0.));
   let px2 = (f64.from(c2.x) + 1.0) * 0.5 * f64.from(W);
   let py2 = (1.0 - f64.from(c2.y)) * 0.5 * f64.from(H);
   expectFloat(f64.from(bx0 + bx1) * 0.5, px2, 0.12 * f64.from(bx1 - bx0), "billboard centred on its anchor");
 
   // The same text as a fixed sign turned 60 degrees about y, and seen head-on
   text.clearText(billboard);
-  camera.lookAt(new Vec3(0., 0., 5.), new Vec3(0., 0., 0.), new Vec3(0., 1., 0.));
+  camera.lookAt(Vec3(0., 0., 5.), Vec3(0., 0., 0.), Vec3(0., 1., 0.));
   let vp3 = camera.projectionMatrix(aspect) * camera.viewMatrix();
-  let turned = Mat4.fromQuat(Quat.angleAxis(radians(60.), new Vec3(0., 1., 0.)));
+  let turned = Mat4.fromQuat(Quat.angleAxis(radians(60.), Vec3(0., 1., 0.)));
   text.set(device, sign, &layout, &white, worldTransform(vp3, turned, &layout, 0.5, 0.5));
   var encoder3 = device.createCommandEncoder();
   clearAll(&mut encoder3, target, depth, farZ);
@@ -350,10 +350,10 @@ fn world(device: &mut Device, text: &mut TextRenderer, atlas: &mut Atlas, font: 
 // alpha 1; a half float 0 is 0.
 fn hdr(device: &mut Device, atlas: &mut Atlas, font: &Font) {
   let size = 128u32;
-  let desc = new TextureDescriptor(size, size, TEXTURE_FORMAT_RGBA16_FLOAT,
+  let desc = TextureDescriptor(size, size, TEXTURE_FORMAT_RGBA16_FLOAT,
     TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC | TEXTURE_USAGE_TEXTURE_BINDING);
   var target = device.createTexture(&desc);
-  let depthDesc = new TextureDescriptor(size, size, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
+  let depthDesc = TextureDescriptor(size, size, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
   var depth = device.createTexture(&depthDesc);
   var readback = device.createBuffer(u64.from(size * size * 8u32), BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
   let q = readback.mappedRange();
@@ -361,7 +361,7 @@ fn hdr(device: &mut Device, atlas: &mut Atlas, font: &Font) {
     TEXTURE_FORMAT_DEPTH32_FLOAT);
   require(text.isValid(), "the half-float text renderer");
   let layout = layoutText(font, atlas, "I", &LayoutOptions.make(100.0));
-  let white = TextStyle.plain(new Color(1., 1., 1., 1.));
+  let white = TextStyle.plain(Color(1., 1., 1., 1.));
   let overlay = text.addText(device, SPACE_OVERLAY);
   // The bar: x 20 + 10 to 20 + 30, y 10 + 80 - 70 = 20 to 90
   text.set(device, overlay, &layout, &white, overlayTransform(f32.from(size), f32.from(size), 20., 10.));
@@ -386,7 +386,7 @@ fn hdr(device: &mut Device, atlas: &mut Atlas, font: &Font) {
   }
   // World text into it too (a placement in front of a camera, depth cleared to 1)
   var camera = Camera.make();
-  camera.lookAt(new Vec3(0., 0., 5.), new Vec3(0., 0., 0.), new Vec3(0., 1., 0.));
+  camera.lookAt(Vec3(0., 0., 5.), Vec3(0., 0., 0.), Vec3(0., 1., 0.));
   let vp = camera.projectionMatrix(1.) * camera.viewMatrix();
   let world = text.addText(device, SPACE_WORLD);
   let sign = layoutText(font, atlas, "I", &LayoutOptions.make(2.0));
@@ -417,10 +417,10 @@ fn main() i32 {
   var device = adapter.requestDevice();
   require(device.isValid(), "a device");
 
-  let targetDesc = new TextureDescriptor(W, H, TEXTURE_FORMAT_RGBA8_UNORM,
+  let targetDesc = TextureDescriptor(W, H, TEXTURE_FORMAT_RGBA8_UNORM,
     TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
   var target = device.createTexture(&targetDesc);
-  let depthDesc = new TextureDescriptor(W, H, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
+  let depthDesc = TextureDescriptor(W, H, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
   var depth = device.createTexture(&depthDesc);
   var readback = device.createBuffer(u64.from(W * H * 4u32), BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
   let p = readback.mappedRange();
@@ -433,7 +433,7 @@ fn main() i32 {
       require(text.isValid(), "the text renderer");
       let big = layoutText(&font, &mut atlas, "AIOi", &LayoutOptions.make(200.0));
       let small = layoutText(&font, &mut atlas, "AIOi", &LayoutOptions.make(12.0));
-      let white = TextStyle.plain(new Color(1., 1., 1., 1.));
+      let white = TextStyle.plain(Color(1., 1., 1., 1.));
       let hBig = text.addText(&mut device, SPACE_OVERLAY);
       let hSmall = text.addText(&mut device, SPACE_OVERLAY);
       text.set(&mut device, hBig, &big, &white, overlayTransform(f32.from(W), f32.from(H), 20., 10.));
@@ -482,11 +482,11 @@ fn main() i32 {
 
       // 2. Effects
       let one = layoutText(&font, &mut atlas, "I", &LayoutOptions.make(200.0));
-      var style = TextStyle.plain(new Color(1., 1., 1., 1.));
-      style.outlineColor = new Color(1., 0., 0., 1.);
+      var style = TextStyle.plain(Color(1., 1., 1., 1.));
+      style.outlineColor = Color(1., 0., 0., 1.);
       style.outlineWidth = 10.;
-      style.shadowColor = new Color(0., 0., 1., 1.);
-      style.shadowOffset = new Vec2(8., 8.);
+      style.shadowColor = Color(0., 0., 1., 1.);
+      style.shadowOffset = Vec2(8., 8.);
       let fx = text.addText(&mut device, SPACE_OVERLAY);
       text.set(&mut device, fx, &one, &style, overlayTransform(f32.from(W), f32.from(H), 100., 20.));
       text.syncAtlas(&mut device, &atlas);
@@ -508,9 +508,9 @@ fn main() i32 {
       // the outline reaches 190: blue shows only where the outline does not cover: none here. Shadow beyond
       // the outline needs a larger offset; check it separately.
       text.clearText(fx);
-      var style2 = TextStyle.plain(new Color(1., 1., 1., 1.));
-      style2.shadowColor = new Color(0., 0., 1., 1.);
-      style2.shadowOffset = new Vec2(12., 12.);
+      var style2 = TextStyle.plain(Color(1., 1., 1., 1.));
+      style2.shadowColor = Color(0., 0., 1., 1.);
+      style2.shadowOffset = Vec2(12., 12.);
       text.set(&mut device, fx, &one, &style2, overlayTransform(f32.from(W), f32.from(H), 100., 20.));
       var encoder2 = device.createCommandEncoder();
       clearAll(&mut encoder2, &target, &depth, 1.);

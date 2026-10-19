@@ -41,8 +41,8 @@ fn lathe(profile: &List[Vec2], segments: i32, smooth: bool) Mesh {
     var j = 0;
     while j <= segments {
       let a = 2. * pi * f32.from(j) / f32.from(segments);
-      m.positions.push(new Vec3(p.x * cos(a), p.y, p.x * sin(a)));
-      m.uvs.push(new Vec2(f32.from(j) / f32.from(segments), f32.from(i) / f32.from(rings - 1usize)));
+      m.positions.push(Vec3(p.x * cos(a), p.y, p.x * sin(a)));
+      m.uvs.push(Vec2(f32.from(j) / f32.from(segments), f32.from(i) / f32.from(rings - 1usize)));
       j = j + 1;
     }
     i = i + 1usize;
@@ -89,7 +89,7 @@ fn lathe(profile: &List[Vec2], segments: i32, smooth: bool) Mesh {
   m
 }
 
-fn pt(r: f32, y: f32) Vec2 { new Vec2(r, y) }
+fn pt(r: f32, y: f32) Vec2 { Vec2(r, y) }
 
 // A unit cylinder along y (radius 1, from 0 to 1), a limb when placed by 'limb'
 fn cylinderProfile() List[Vec2] {
@@ -124,17 +124,17 @@ fn limb(a: Vec3, b: Vec3, radius: f32) Mat4 {
   let axis = b - a;
   let length = axis.length();
   let y = axis.normalize();
-  let helper = if y.y < 0.9 && y.y > -0.9 { new Vec3(0., 1., 0.) } else { new Vec3(1., 0., 0.) };
+  let helper = if y.y < 0.9 && y.y > -0.9 { Vec3(0., 1., 0.) } else { Vec3(1., 0., 0.) };
   let x = helper.cross(y).normalize();
   let z = y.cross(x);
-  new Mat4([x.x * radius, x.y * radius, x.z * radius, 0f, y.x * length, y.y * length, y.z * length, 0f,
+  Mat4([x.x * radius, x.y * radius, x.z * radius, 0f, y.x * length, y.y * length, y.z * length, 0f,
     z.x * radius, z.y * radius, z.z * radius, 0f, a.x, a.y, a.z, 1f])
 }
 
 // A soap bubble's look: a film of glass of no thickness (the index 1.33 of soapy water), its thickness
 // swirling between 'lo' and 'hi' nanometres, noise of 'seed'
 fn bubbleLook(lo: f32, hi: f32, seed: u32, scale: f32) PbrMaterial {
-  var m = PbrMaterial.glassOf(new Color(1., 1., 1., 1.), 1.33, 0., new Color(1., 1., 1., 1.), 1., 0.).iridescent(lo, hi, 1.33, seed);
+  var m = PbrMaterial.glassOf(Color(1., 1., 1., 1.), 1.33, 0., Color(1., 1., 1., 1.), 1., 0.).iridescent(lo, hi, 1.33, seed);
   m.filmScale = scale;
   m.filmDrift = 0.12;
   m.filmWarp = 2.2;
@@ -173,7 +173,7 @@ fn parseCount(s: *u8) u32 {
 
 // Two images of one size side by side
 fn sideBySide(left: &Image, right: &Image) Image {
-  var img = new Image(left.width + right.width, left.height, 3, List[u8].withCapacity(usize.from((left.width + right.width) * left.height * 3)));
+  var img = Image(left.width + right.width, left.height, 3, List[u8].withCapacity(usize.from((left.width + right.width) * left.height * 3)));
   var y = 0;
   while y < left.height {
     var x = 0;
@@ -300,9 +300,9 @@ fn main(argc: i32, argv: **u8) i32 {
     print <- "The renderer could not be made\n";
     return 1;
   }
-  let outDesc = new TextureDescriptor(w, h, TEXTURE_FORMAT_RGBA8_UNORM, TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
+  let outDesc = TextureDescriptor(w, h, TEXTURE_FORMAT_RGBA8_UNORM, TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
   var out = device.createTexture(&outDesc);
-  let depthDesc = new TextureDescriptor(w, h, TEXTURE_FORMAT_DEPTH32_FLOAT,
+  let depthDesc = TextureDescriptor(w, h, TEXTURE_FORMAT_DEPTH32_FLOAT,
     TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_TEXTURE_BINDING);
   var depth = device.createTexture(&depthDesc);
   var readback = device.createBuffer(u64.from(w * h * 4u32), BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
@@ -311,30 +311,30 @@ fn main(argc: i32, argv: **u8) i32 {
 
   // A low warm sun behind the figure and a dusk sky, which is also what the glass reflects
   var sky = Sky.dusk(radians(24.), radians(-150.));
-  sky.zenith = new Color(0.10, 0.17, 0.40, 1.);
-  sky.horizon = new Color(0.60, 0.40, 0.40, 1.);
-  sky.line = new Color(1.6, 0.9, 0.55, 1.);
+  sky.zenith = Color(0.10, 0.17, 0.40, 1.);
+  sky.horizon = Color(0.60, 0.40, 0.40, 1.);
+  sky.line = Color(1.6, 0.9, 0.55, 1.);
   sky.lineWidth = 0.03;
   renderer.setSky(&mut device, &sky);
-  let light = sky.sunLight(new Color(3.4, 2.4, 1.7, 1.), new Color(0.05, 0.05, 0.07, 1.));
+  let light = sky.sunLight(Color(3.4, 2.4, 1.7, 1.), Color(0.05, 0.05, 0.07, 1.));
   renderer.setShadows(&mut device, &ShadowSettings.medium());
   renderer.setReflections(&if preference == POWER_PREFERENCE_LOW_POWER { ReflectionSettings.low() } else { ReflectionSettings.high() });
 
   // The materials
-  let chess = renderer.addTexture(&mut device, &Image.checker(512, 512, 8, 8, new Color(0.60, 0.52, 0.40, 1.),
-    new Color(0.10, 0.075, 0.07, 1.)));
-  var floorLook = PbrMaterial.standard(new Color(1., 1., 1., 1.), 0., 0.35).coated(1., 0.05).reflective(1.);
+  let chess = renderer.addTexture(&mut device, &Image.checker(512, 512, 8, 8, Color(0.60, 0.52, 0.40, 1.),
+    Color(0.10, 0.075, 0.07, 1.)));
+  var floorLook = PbrMaterial.standard(Color(1., 1., 1., 1.), 0., 0.35).coated(1., 0.05).reflective(1.);
   floorLook.texture = chess;
-  let stripes = renderer.addTexture(&mut device, &Image.checker(512, 512, 8, 1, new Color(0.80, 0.10, 0.08, 1.),
-    new Color(0.88, 0.84, 0.74, 1.)));
-  var columnLook = PbrMaterial.standard(new Color(1., 1., 1., 1.), 0., 0.5);
+  let stripes = renderer.addTexture(&mut device, &Image.checker(512, 512, 8, 1, Color(0.80, 0.10, 0.08, 1.),
+    Color(0.88, 0.84, 0.74, 1.)));
+  var columnLook = PbrMaterial.standard(Color(1., 1., 1., 1.), 0., 0.5);
   columnLook.texture = stripes;
-  let cloakLook = PbrMaterial.standard(new Color(0.05, 0.06, 0.20, 1.), 0., 0.85).velvet(new Color(0.35, 0.30, 0.70, 1.), 0.5);
-  let skinLook = PbrMaterial.standard(new Color(0.80, 0.52, 0.42, 1.), 0., 0.55).scattering(1., new Color(3., 1., 0.6, 1.), 1.);
-  let goldLook = PbrMaterial.standard(new Color(1.0, 0.72, 0.30, 1.), 1., 0.25).reflective(1.);
-  let greenLook = PbrMaterial.standard(new Color(0.08, 0.50, 0.20, 1.), 0., 0.45);
-  let crystalLook = PbrMaterial.glassOf(new Color(1., 1., 1., 1.), 1.5, 0.17, new Color(0.96, 0.98, 1., 1.), 1.5, 0.);
-  let cobaltLook = PbrMaterial.glassOf(new Color(1., 1., 1., 1.), 1.5, 0.07, new Color(0.15, 0.30, 1., 1.), 0.08, 0.);
+  let cloakLook = PbrMaterial.standard(Color(0.05, 0.06, 0.20, 1.), 0., 0.85).velvet(Color(0.35, 0.30, 0.70, 1.), 0.5);
+  let skinLook = PbrMaterial.standard(Color(0.80, 0.52, 0.42, 1.), 0., 0.55).scattering(1., Color(3., 1., 0.6, 1.), 1.);
+  let goldLook = PbrMaterial.standard(Color(1.0, 0.72, 0.30, 1.), 1., 0.25).reflective(1.);
+  let greenLook = PbrMaterial.standard(Color(0.08, 0.50, 0.20, 1.), 0., 0.45);
+  let crystalLook = PbrMaterial.glassOf(Color(1., 1., 1., 1.), 1.5, 0.17, Color(0.96, 0.98, 1., 1.), 1.5, 0.);
+  let cobaltLook = PbrMaterial.glassOf(Color(1., 1., 1., 1.), 1.5, 0.07, Color(0.15, 0.30, 1., 1.), 0.08, 0.);
   let floorM = renderer.addPbrMaterial(&mut device, &floorLook);
   let columnM = renderer.addPbrMaterial(&mut device, &columnLook);
   let cloakM = renderer.addPbrMaterial(&mut device, &cloakLook);
@@ -363,26 +363,26 @@ fn main(argc: i32, argv: **u8) i32 {
 
   // The scene
   var list = DrawList.empty();
-  list.add(plane, floorM, Mat4.fromTrs(new Vec3(0., 0., 0.), Quat.identity(), new Vec3(3., 1., 3.)));
+  list.add(plane, floorM, Mat4.fromTrs(Vec3(0., 0., 0.), Quat.identity(), Vec3(3., 1., 3.)));
   // Things behind the crystal ball, to be seen through it
-  list.add(cylinder, columnM, Mat4.fromTrs(new Vec3(-0.02, 0., -0.34), Quat.identity(), new Vec3(0.065, 0.55, 0.065)));
-  list.add(ball, goldM, Mat4.fromTrs(new Vec3(0.17, 0.07, -0.26), Quat.identity(), new Vec3(0.07, 0.07, 0.07)));
-  list.add(block, greenM, Mat4.fromTrs(new Vec3(-0.26, 0.05, -0.22), Quat.angleAxis(radians(25.), new Vec3(0., 1., 0.)),
-    new Vec3(0.1, 0.1, 0.1)));
+  list.add(cylinder, columnM, Mat4.fromTrs(Vec3(-0.02, 0., -0.34), Quat.identity(), Vec3(0.065, 0.55, 0.065)));
+  list.add(ball, goldM, Mat4.fromTrs(Vec3(0.17, 0.07, -0.26), Quat.identity(), Vec3(0.07, 0.07, 0.07)));
+  list.add(block, greenM, Mat4.fromTrs(Vec3(-0.26, 0.05, -0.22), Quat.angleAxis(radians(25.), Vec3(0., 1., 0.)),
+    Vec3(0.1, 0.1, 0.1)));
   // The figure
   let fx = -0.30f;
-  list.add(cloak, cloakM, Mat4.fromTranslation(new Vec3(fx, 0., 0.)));
-  list.add(ball, skinM, Mat4.fromTrs(new Vec3(fx, 0.515, 0.012), Quat.identity(), new Vec3(0.043, 0.050, 0.047)));
-  let shoulder = new Vec3(fx + 0.07, 0.40, 0.02);
-  let elbow = new Vec3(fx + 0.15, 0.285, 0.085);
-  let hand = new Vec3(fx + 0.215, 0.235, 0.12);
+  list.add(cloak, cloakM, Mat4.fromTranslation(Vec3(fx, 0., 0.)));
+  list.add(ball, skinM, Mat4.fromTrs(Vec3(fx, 0.515, 0.012), Quat.identity(), Vec3(0.043, 0.050, 0.047)));
+  let shoulder = Vec3(fx + 0.07, 0.40, 0.02);
+  let elbow = Vec3(fx + 0.15, 0.285, 0.085);
+  let hand = Vec3(fx + 0.215, 0.235, 0.12);
   list.add(cylinder, cloakM, limb(shoulder, elbow, 0.024));
   list.add(cylinder, cloakM, limb(elbow, hand, 0.019));
-  list.add(ball, skinM, Mat4.fromTrs(hand, Quat.identity(), new Vec3(0.024, 0.020, 0.024)));
+  list.add(ball, skinM, Mat4.fromTrs(hand, Quat.identity(), Vec3(0.024, 0.020, 0.024)));
   // The crystal ball, resting on the open hand, and the cobalt one behind it
-  let crystalCentre = new Vec3(fx + 0.235, 0.325, 0.12);
-  list.add(ball, crystalM, Mat4.fromTrs(crystalCentre, Quat.identity(), new Vec3(0.085, 0.085, 0.085)));
-  list.add(ball, cobaltM, Mat4.fromTrs(new Vec3(fx + 0.30, 0.255, -0.02), Quat.identity(), new Vec3(0.032, 0.032, 0.032)));
+  let crystalCentre = Vec3(fx + 0.235, 0.325, 0.12);
+  list.add(ball, crystalM, Mat4.fromTrs(crystalCentre, Quat.identity(), Vec3(0.085, 0.085, 0.085)));
+  list.add(ball, cobaltM, Mat4.fromTrs(Vec3(fx + 0.30, 0.255, -0.02), Quat.identity(), Vec3(0.032, 0.032, 0.032)));
   // The bubbles drifting to the right
   let bubbleX: Array[f32, 8] = [0.16, 0.27, 0.25, 0.37, 0.33, 0.08, 0.42, -0.04];
   let bubbleY: Array[f32, 8] = [0.34, 0.27, 0.43, 0.36, 0.21, 0.24, 0.47, 0.46];
@@ -390,25 +390,25 @@ fn main(argc: i32, argv: **u8) i32 {
   let bubbleR: Array[f32, 8] = [0.060, 0.045, 0.034, 0.055, 0.028, 0.022, 0.030, 0.018];
   b = 0usize;
   while b < 8usize {
-    list.add(ball, *bubbleMaterials[b], Mat4.fromTrs(new Vec3(bubbleX[b], bubbleY[b], bubbleZ[b]), Quat.identity(),
-      new Vec3(bubbleR[b], bubbleR[b], bubbleR[b])));
+    list.add(ball, *bubbleMaterials[b], Mat4.fromTrs(Vec3(bubbleX[b], bubbleY[b], bubbleZ[b]), Quat.identity(),
+      Vec3(bubbleR[b], bubbleR[b], bubbleR[b])));
     b = b + 1usize;
   }
 
   var camera = Camera.make();
   camera.near = 0.05;
   camera.far = 30.;
-  camera.background = new Color(0.02, 0.025, 0.05, 1.);
-  let up = new Vec3(0., 1., 0.);
+  camera.background = Color(0.02, 0.025, 0.05, 1.);
+  let up = Vec3(0., 1., 0.);
   if view == 1 {
     camera.fov = radians(26.);
-    camera.lookAt(new Vec3(-0.02, 0.36, 0.78), new Vec3(fx + 0.235, 0.31, 0.06), up);
+    camera.lookAt(Vec3(-0.02, 0.36, 0.78), Vec3(fx + 0.235, 0.31, 0.06), up);
   } elif view == 2 {
     camera.fov = radians(26.);
-    camera.lookAt(new Vec3(0.12, 0.34, 0.80), new Vec3(0.28, 0.32, 0.12), up);
+    camera.lookAt(Vec3(0.12, 0.34, 0.80), Vec3(0.28, 0.32, 0.12), up);
   } else {
     camera.fov = radians(36.);
-    camera.lookAt(new Vec3(0.02, 0.40, 1.22), new Vec3(0.02, 0.28, 0.), up);
+    camera.lookAt(Vec3(0.02, 0.40, 1.22), Vec3(0.02, 0.28, 0.), up);
   }
 
   // The timing

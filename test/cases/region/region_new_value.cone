@@ -1,6 +1,6 @@
 // An allocation's one argument may be a finished value of the value type,
 // which is moved in, as though every type had an init taking a finished value
-// of itself: 'new Rc[i32](5)'. A type no init constructs (a number, an array,
+// of itself: 'Rc[i32](5)'. A type no init constructs (a number, an array,
 // a tuple, an enum) takes exactly that one value, coerced to it, so a number
 // literal adopts the value type and a variant becomes its enum. A struct's one
 // argument is the finished value when its type is the struct itself, after
@@ -30,7 +30,7 @@ fn show(label: &str, n: i64) {
 struct Loud is RegionRef {
   pub count: usize;
   fn alloc(size: usize) *u8 { printStr("alloc\n"); libc.malloc(size) }
-  fn init(self: &new) { printStr("region init\n"); *self = new Loud(1usize); }
+  fn init(self: &new) { printStr("region init\n"); *self = Loud(1usize); }
   fn aliasRef(self: &uni Loud) inline { count = count + 1usize; }
   fn dealiasRef(self: &uni Loud) bool inline { count = count - 1usize; count == 0usize }
   fn free(self: &uni Loud) { printStr("free\n"); libc.free(self as *u8); }
@@ -52,7 +52,7 @@ struct Seeded {
   pub seed: i64;
   pub fn init(self: &new, n: i64) {
     printStr("seeded init\n");
-    *self = new Seeded(seed: n * 10);
+    *self = Seeded(seed: n * 10);
   }
 }
 alias Seed = Seeded;
@@ -65,44 +65,44 @@ fn value(n: i64) i64 {
 }
 
 fn seeded(n: i64) Seeded {
-  new Seeded(n)
+  Seeded(n)
 }
 
 fn regions() {
-  let so = new Uni[i64](1);
+  let so = Uni[i64](1);
   show("so", *so);
-  let rc = new Rc[mut, i64](2);
+  let rc = Rc[mut, i64](2);
   show("rc", *rc);
-  let arc = new Arc[imm, i64](3);
+  let arc = Arc[imm, i64](3);
   show("arc", *arc);
-  let rcw = new rcweak.Rcw[mut, i64](4);
+  let rcw = rcweak.Rcw[mut, i64](4);
   show("rcw", *rcw);
-  let loud = new Loud[i64](5);
+  let loud = Loud[i64](5);
   show("loud", *loud);
 }
 
 fn values() {
   // A number literal adopts the value type
-  let wide = new Rc[u64](6);
+  let wide = Rc[u64](6);
   show("number", i64.from(*wide));
 
   // A variable, moved in
   let n = 7i64;
-  let vn = new Uni[i64](n);
+  let vn = Uni[i64](n);
   show("variable", *vn);
 
   // A call's result
-  let call = new Rc[imm, i64](value(8));
+  let call = Rc[imm, i64](value(8));
   show("call", *call);
 
   // An array literal and a tuple
-  let arr = new Rc[mut, Array[i64, 3]]([9, 10, 11]);
+  let arr = Rc[mut, Array[i64, 3]]([9, 10, 11]);
   show("array", arr[0] + arr[1] + arr[2]);
-  let tup = new Uni[(i64, i64)]((12, 13));
+  let tup = Uni[(i64, i64)]((12, 13));
   show("tuple", tup.0 * 100 + tup.1);
 
   // A variant, which becomes its enum
-  let opt = new Uni[Option[i64]](Some(14i64));
+  let opt = Uni[Option[i64]](Some(14i64));
   match *opt {
     case let s Some[i64] { show("variant", s); }
     else { show("variant-none", 0); }
@@ -111,33 +111,33 @@ fn values() {
 
 fn structs() {
   // A struct's own value is moved in: no init runs
-  let s = new Seeded(2);
-  let moved = new Rc[mut, Seeded](s);
+  let s = Seeded(2);
+  let moved = Rc[mut, Seeded](s);
   show("struct-moved", moved.seed);
   // Through an alias of the struct, the same
-  let t = new Seeded(3);
-  let aliased = new Uni[Seed](t);
+  let t = Seeded(3);
+  let aliased = Uni[Seed](t);
   show("struct-alias", aliased.seed);
   // A call's result of the struct is a finished value too
-  let made = new Uni[Seeded](seeded(4));
+  let made = Uni[Seeded](seeded(4));
   show("struct-call", made.seed);
   // Anything else goes to the inits: here the declared one
-  let built = new Rc[mut, Seeded](5);
+  let built = Rc[mut, Seeded](5);
   show("struct-init", built.seed);
 
   // The implicit init: the fields, or a finished value
-  let p = new Point(1, 2);
-  let pmoved = new Uni[Point](p);
+  let p = Point(1, 2);
+  let pmoved = Uni[Point](p);
   show("point-moved", pmoved.x * 10 + pmoved.y);
-  let pbuilt = new Uni[Point](3, 4);
+  let pbuilt = Uni[Point](3, 4);
   show("point-init", pbuilt.x * 10 + pbuilt.y);
 }
 
 fn order() {
   printStr("-- order\n");
-  let n = new Loud[mut, i64](value(20));
+  let n = Loud[mut, i64](value(20));
   show("stored", *n);
-  let s = new Loud[mut, Seeded](seeded(21));
+  let s = Loud[mut, Seeded](seeded(21));
   show("stored-struct", s.seed);
 }
 
@@ -147,7 +147,7 @@ fn fallible() {
     case let x Some[Uni[i64]] { show("trynew-some", *x); }
     else { show("trynew-none", 0); }
   }
-  let p = new Point(3, 1);
+  let p = Point(3, 1);
   let none = trynew NeverAllocs[mut, Point](p);
   match none {
     case let x Some[NeverAllocs[mut, Point]] { show("trynew-failing", x.x); }

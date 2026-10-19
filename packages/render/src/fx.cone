@@ -50,32 +50,32 @@
 // but the tone map; decals are listed each frame.
 pub struct FxSettings {
   pub aa: u32 = AA_NONE;
-  pub taa: TaaSettings = new TaaSettings();
-  pub fxaa: FxaaSettings = new FxaaSettings();
-  pub exposure: ExposureSettings = new ExposureSettings();
-  pub ssao: SsaoSettings = new SsaoSettings();
-  pub dof: DofSettings = new DofSettings();
-  pub fog: FogSettings = new FogSettings();
+  pub taa: TaaSettings = TaaSettings();
+  pub fxaa: FxaaSettings = FxaaSettings();
+  pub exposure: ExposureSettings = ExposureSettings();
+  pub ssao: SsaoSettings = SsaoSettings();
+  pub dof: DofSettings = DofSettings();
+  pub fog: FogSettings = FogSettings();
 
   // Everything off
-  pub fn off() FxSettings { new FxSettings() }
+  pub fn off() FxSettings { FxSettings() }
 
   // For a discrete GPU: temporal AA (16 samples, sharpened), auto-exposure
   // and ambient occlusion
   pub fn high() FxSettings {
-    new FxSettings(aa: AA_TAA, taa: TaaSettings.high(), exposure: new ExposureSettings(enabled: true),
+    FxSettings(aa: AA_TAA, taa: TaaSettings.high(), exposure: ExposureSettings(enabled: true),
       ssao: SsaoSettings.high())
   }
 
   // For a middling GPU: temporal AA of 8 samples, auto-exposure, cheaper AO
   pub fn medium() FxSettings {
-    new FxSettings(aa: AA_TAA, taa: TaaSettings.medium(), exposure: new ExposureSettings(enabled: true, stride: 3u32),
+    FxSettings(aa: AA_TAA, taa: TaaSettings.medium(), exposure: ExposureSettings(enabled: true, stride: 3u32),
       ssao: SsaoSettings.medium())
   }
 
   // For an integrated GPU: FXAA and a cheap auto-exposure
   pub fn low() FxSettings {
-    new FxSettings(aa: AA_FXAA, exposure: new ExposureSettings(enabled: true, stride: 4u32))
+    FxSettings(aa: AA_FXAA, exposure: ExposureSettings(enabled: true, stride: 4u32))
   }
 }
 
@@ -135,7 +135,7 @@ pub struct ImageFx {
   // textures only for what 'configure' turns on.
   pub fn create(device: &mut Device, renderer: &Renderer, post: &mut Post) ImageFx {
     var frameBuffer = device.createBuffer(FX_FRAME_BYTES, BUFFER_USAGE_UNIFORM | BUFFER_USAGE_COPY_DST);
-    let tinyDepth = new TextureDescriptor(1u32, 1u32, TEXTURE_FORMAT_DEPTH32_FLOAT,
+    let tinyDepth = TextureDescriptor(1u32, 1u32, TEXTURE_FORMAT_DEPTH32_FLOAT,
       TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_TEXTURE_BINDING);
     var depth = device.createTexture(&tinyDepth);
     var taa = TaaPass.create(device, &renderer.frameLayout, &renderer.materialLayout, &renderer.pbrMaterialLayout, &frameBuffer);
@@ -147,7 +147,7 @@ pub struct ImageFx {
     let tinyHdrView = post.hdr.createView();
     var dof = DofPass.create(device, &frameBuffer, &tinyHdrView, &tinyDepthView);
     var fog = FogPass.create(device, &renderer.shadow, &frameBuffer, &tinyDepthView);
-    var fx = new ImageFx(new FxSettings(), 0u32, 0u32, post.outputFormat, depth, frameBuffer, taa, fxaa, exposure, ssao,
+    var fx = ImageFx(FxSettings(), 0u32, 0u32, post.outputFormat, depth, frameBuffer, taa, fxaa, exposure, ssao,
       decalPass, dof, fog, DecalList.empty(), List[PostSource].empty(), MotionList.empty(), 0u32, Mat4.identity(), false, 0u32, true, true, 0.,
       sceneViewProjection: Mat4.identity(), sceneCamera: Camera.make());
     fx.remake(device, renderer, post);
@@ -189,7 +189,7 @@ pub struct ImageFx {
     width = w;
     height = h;
     outputFormat = post.outputFormat;
-    let depthDesc = new TextureDescriptor(w, h, TEXTURE_FORMAT_DEPTH32_FLOAT,
+    let depthDesc = TextureDescriptor(w, h, TEXTURE_FORMAT_DEPTH32_FLOAT,
       TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_TEXTURE_BINDING);
     depth = device.createTexture(&depthDesc);
     let taaOn = settings.aa == AA_TAA;
@@ -377,9 +377,9 @@ pub struct ImageFx {
 // if 'blend', added over what is there with premultiplied alpha
 fn fxPipeline(device: &mut Device, layout: &PipelineLayout, shader: &ShaderModule, fragment: &str, format: u32, blend: bool)
     RenderPipeline {
-  let attributes = [new VertexAttribute(VERTEX_FORMAT_FLOAT32, 0u64, 0u32)];
-  let buffers = [new VertexBufferLayout(arrayStride: 4u64, attributes: &attributes)];
-  let desc = new RenderPipelineDescriptor(layout: layout, vertexModule: shader, vertexEntryPoint: "fullscreenMain",
+  let attributes = [VertexAttribute(VERTEX_FORMAT_FLOAT32, 0u64, 0u32)];
+  let buffers = [VertexBufferLayout(arrayStride: 4u64, attributes: &attributes)];
+  let desc = RenderPipelineDescriptor(layout: layout, vertexModule: shader, vertexEntryPoint: "fullscreenMain",
     buffers: &buffers[..<0], fragmentModule: shader, fragmentEntryPoint: fragment, colorFormat: format,
     blendEnabled: blend, colorSrcFactor: BLEND_FACTOR_ONE, colorDstFactor: BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
     alphaSrcFactor: BLEND_FACTOR_ONE, alphaDstFactor: BLEND_FACTOR_ONE_MINUS_SRC_ALPHA);
@@ -390,8 +390,8 @@ fn fxPipeline(device: &mut Device, layout: &PipelineLayout, shader: &ShaderModul
 // what it holds; 'group' as group 0, 'size' bytes of immediates from 'data'
 fn fxPass(encoder: &mut CommandEncoder, view: TextureView, keep: bool, pipeline: &RenderPipeline, group: &BindGroup, data: *u8,
     size: u32) {
-  let attachment = new RenderPassColorAttachment(view: view, loadOp: if keep { LOAD_OP_LOAD } else { LOAD_OP_CLEAR },
-    clearValue: new Color(0., 0., 0., 0.));
+  let attachment = RenderPassColorAttachment(view: view, loadOp: if keep { LOAD_OP_LOAD } else { LOAD_OP_CLEAR },
+    clearValue: Color(0., 0., 0., 0.));
   var pass = encoder.beginRenderPass(&attachment);
   pass.setPipeline(pipeline);
   pass.setBindGroup(0u32, group);
@@ -413,14 +413,14 @@ fn writeFxFrame(device: &mut Device, buffer: &Buffer, camera: &Camera, aspect: f
   let inverse = viewProjection.inverse();
   let before = if havePrevious { previous } else { viewProjection };
   let place = camera.placement();
-  var forward = new Vec3(-place.m[8], -place.m[9], -place.m[10]).normalize();
+  var forward = Vec3(-place.m[8], -place.m[9], -place.m[10]).normalize();
   if camera.reflected {
-    let n = new Vec3(camera.mirror.x, camera.mirror.y, camera.mirror.z);
+    let n = Vec3(camera.mirror.x, camera.mirror.y, camera.mirror.z);
     forward = forward - n * (2. * n.dot(forward));
   }
   let eye = camera.position();
-  let towards = new Vec3(0., 0., 0.) - light.direction;
-  var data = new Array[f32, 84] <- fill 0f;
+  let towards = Vec3(0., 0., 0.) - light.direction;
+  var data = Array[f32, 84]() <- fill 0f;
   var k = 0usize;
   while k < 16usize {
     data[k] = viewProjection.m[k];
@@ -470,7 +470,7 @@ fn writeFxFrame(device: &mut Device, buffer: &Buffer, camera: &Camera, aspect: f
 // A texture cleared to zero now (in a submission of its own)
 fn clearTexture(device: &mut Device, texture: &Texture) {
   var encoder = device.createCommandEncoder();
-  let attachment = new RenderPassColorAttachment(view: texture.createView(), clearValue: new Color(0., 0., 0., 0.));
+  let attachment = RenderPassColorAttachment(view: texture.createView(), clearValue: Color(0., 0., 0., 0.));
   var pass = encoder.beginRenderPass(&attachment);
   pass.end();
   device.queue.submit(encoder.finish());

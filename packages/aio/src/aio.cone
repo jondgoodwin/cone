@@ -65,7 +65,7 @@
 //   f.readAtIn(at, buf, lim)  f.writeAtIn(at, buf, lim)
 //   u.recvFromIn(buf, lim)  u.sendToIn(addr, buf, lim)
 //                           the same eight, limited by lim, a IoLimits    (CANCEL AND DEADLINES)
-//   IoLimits.none()  IoLimits.until(deadline)  IoLimits.within(group)  new IoLimits(group, deadline)
+//   IoLimits.none()  IoLimits.until(deadline)  IoLimits.within(group)  IoLimits(group, deadline)
 //   aio.sleep(d)  aio.sleepUntil(at)   a pause of d (a Duration) / until at (an Instant)
 //                                                                Result[void, IoError]
 //   aio.sleepIn(d, lim)  aio.sleepUntilIn(at, lim)   the same two, limited by lim     (SLEEPING)
@@ -387,7 +387,7 @@ fn newJob[J](body: J) *u8 {
   if p as usize == 0usize {
     die("aio: out of memory for an operation");
   }
-  (*p).head = new JobHead(nullJob(), &runJob[J], &dropJob[J]);
+  (*p).head = JobHead(nullJob(), &runJob[J], &dropJob[J]);
   mem.writeRaw[J](&(*p).body as *J, body);
   p as *u8
 }
@@ -450,7 +450,7 @@ fn startIo() {
     die("aio: out of memory for the I/O thread");
   }
   mem.writeRaw[thread.Thread[u32]](&(*t).os as *thread.Thread[u32],
-    thread.startWith(new thread.Options(name: "aio I/O"), new IoArg(t as usize), &ioMain));
+    thread.startWith(thread.Options(name: "aio I/O"), IoArg(t as usize), &ioMain));
   while (*t).ready.load() == 0u32 {
     sync.futexWait(&(*t).ready, 0u32);
   }
@@ -551,7 +551,7 @@ struct JobHold is Move {
 
 // The operation awaited: its job, made now, started by the 'await'
 fn awaitable[J, R](body: J) actors.Awaitable[R] {
-  actors.Awaitable[R].make(fn(rp: actors.Reply) [var held = new JobHold(newJob[J](body))] {
+  actors.Awaitable[R].make(fn(rp: actors.Reply) [var held = JobHold(newJob[J](body))] {
     startJob[J](held.take(), rp);
   })
 }
@@ -559,19 +559,19 @@ fn awaitable[J, R](body: J) actors.Awaitable[R] {
 // What limits an awaited operation (the package's header, CANCEL AND
 // DEADLINES): a cancel group, one cancel of which ends it, and an absolute
 // deadline, the tighter of it and the group's. Made by 'none', 'until' or
-// 'within', or by hand: 'new IoLimits(Some[CancelGroup](g), d)'
+// 'within', or by hand: 'IoLimits(Some[CancelGroup](g), d)'
 pub struct IoLimits {
   pub group: Option[CancelGroup];
   pub deadline: Instant;
 
   // Neither: the operation ends when it finishes
-  pub fn none() IoLimits {new IoLimits(None, forever())}
+  pub fn none() IoLimits {IoLimits(None, forever())}
 
   // Answered TimedOut if not finished by deadline
-  pub fn until(deadline: Instant) IoLimits {new IoLimits(None, deadline)}
+  pub fn until(deadline: Instant) IoLimits {IoLimits(None, deadline)}
 
   // Ended by the group's cancel, and by its deadline if it has one
-  pub fn within(group: CancelGroup) IoLimits {new IoLimits(Some[CancelGroup](group), forever())}
+  pub fn within(group: CancelGroup) IoLimits {IoLimits(Some[CancelGroup](group), forever())}
 }
 
 // Whether an operation ended because it was cancelled: its group's cancel, or
@@ -595,7 +595,7 @@ struct OpJob[R] {
   // Start the operation on the I/O thread's Loop, its answer to a hook that
   // holds the reply, in its group if it has one
   fn run(self: &mut, lp: &mut Loop) {
-    var rp = new actors.Reply();
+    var rp = actors.Reply();
     rp <=> reply;
     var o: Op = Op.RecvReady(Handle.none());
     o <=> op;
@@ -627,13 +627,13 @@ fn submitLimited(lp: &mut Loop, o: Op, to: Target, lim: &IoLimits) {
 // reply's envelope dropped with the hook). A hook that dies undelivered
 // abandons what awaits it the same way, the reply it holds dying with it
 fn waiting[R](rp: actors.Reply, answer: &fn(c: &mut Completion) R) Uni[fn(c: Completion) + Sendable] {
-  new Uni[fn(c: Completion) + Sendable](fn(c: Completion) [var reply = rp, answer] {
+  Uni[fn(c: Completion) + Sendable](fn(c: Completion) [var reply = rp, answer] {
     if abandoning {
       return;
     }
     var done = c;
     let v = answer(&mut done);
-    var back = new actors.Reply();
+    var back = actors.Reply();
     back <=> reply;
     actors.answerNow[R](back, v);
   })
@@ -647,7 +647,7 @@ fn waiting[R](rp: actors.Reply, answer: &fn(c: &mut Completion) R) Uni[fn(c: Com
 fn endError(c: &Completion) IoError {
   if c.status == diag.outcomeCancelled {return IoError.cancelled();}
   if c.status == diag.outcomeTimedOut {return IoError.timedOut();}
-  new IoError(c.code)
+  IoError(c.code)
 }
 
 fn readAnswer(c: &mut Completion) Result[IoBuf, IoError] {
@@ -668,7 +668,7 @@ fn writeAnswer(c: &mut Completion) Result[usize, IoError] {
 
 fn socketAnswer(c: &mut Completion) Result[Socket, IoError] {
   if c.status == diag.outcomeDone {
-    return Ok[Socket, IoError](new Socket(c.handle));
+    return Ok[Socket, IoError](Socket(c.handle));
   }
   Error[Socket, IoError](endError(c))
 }
@@ -683,7 +683,7 @@ fn datagramAnswer(c: &mut Completion) Result[Datagram, IoError] {
   if c.status == diag.outcomeDone {
     var b = IoBuf.empty();
     b <=> c.buf;
-    return Ok[Datagram, IoError](new Datagram(b, c.peer));
+    return Ok[Datagram, IoError](Datagram(b, c.peer));
   }
   if c.status == diag.outcomeFailed && c.code == msgSizeCode() {
     return Error[Datagram, IoError](IoError.truncated());
@@ -716,7 +716,7 @@ fn statAnswer(c: &mut Completion) Result[FileStat, IoError] {
 }
 
 fn opAwaitable[R](op: Op, answer: &fn(c: &mut Completion) R, limits: IoLimits) actors.Awaitable[R] {
-  awaitable[OpJob[R], R](new OpJob[R](op, limits, new actors.Reply(), answer))
+  awaitable[OpJob[R], R](OpJob[R](op, limits, actors.Reply(), answer))
 }
 
 // A timer, started on the I/O thread's Loop: it answers Done at 'at' (or, if
@@ -733,7 +733,7 @@ struct SleepJob {
   pub reply: actors.Reply;
 
   fn run(self: &mut, lp: &mut Loop) {
-    var rp = new actors.Reply();
+    var rp = actors.Reply();
     rp <=> reply;
     let due = if relative {Instant.now() + after} else {at};
     let to = Target.Hook(0u64, Sink.make(waiting[Result[void, IoError]](rp, &sleepAnswer)));
@@ -762,10 +762,10 @@ struct ListenJob {
   pub reply: actors.Reply;
 
   fn run(self: &mut, lp: &mut Loop) {
-    var rp = new actors.Reply();
+    var rp = actors.Reply();
     rp <=> reply;
     match lp.listen(addr) {
-      case let ok Ok {actors.answerNow[Result[Socket, IoError]](rp, Ok[Socket, IoError](new Socket(ok)));}
+      case let ok Ok {actors.answerNow[Result[Socket, IoError]](rp, Ok[Socket, IoError](Socket(ok)));}
       case let e Error {actors.answerNow[Result[Socket, IoError]](rp, Error[Socket, IoError](e));}
     }
   }
@@ -777,10 +777,10 @@ struct BindUdpJob {
   pub reply: actors.Reply;
 
   fn run(self: &mut, lp: &mut Loop) {
-    var rp = new actors.Reply();
+    var rp = actors.Reply();
     rp <=> reply;
     match lp.bindUdp(addr) {
-      case let ok Ok {actors.answerNow[Result[UdpSocket, IoError]](rp, Ok[UdpSocket, IoError](new UdpSocket(ok)));}
+      case let ok Ok {actors.answerNow[Result[UdpSocket, IoError]](rp, Ok[UdpSocket, IoError](UdpSocket(ok)));}
       case let e Error {actors.answerNow[Result[UdpSocket, IoError]](rp, Error[UdpSocket, IoError](e));}
     }
   }
@@ -793,10 +793,10 @@ struct OpenFileJob {
   pub reply: actors.Reply;
 
   fn run(self: &mut, lp: &mut Loop) {
-    var rp = new actors.Reply();
+    var rp = actors.Reply();
     rp <=> reply;
     match lp.openFile(&path, access) {
-      case let ok Ok {actors.answerNow[Result[File, IoError]](rp, Ok[File, IoError](new File(ok)));}
+      case let ok Ok {actors.answerNow[Result[File, IoError]](rp, Ok[File, IoError](File(ok)));}
       case let e Error {actors.answerNow[Result[File, IoError]](rp, Error[File, IoError](e));}
     }
   }
@@ -831,11 +831,11 @@ fn runFinished() u32 {3u32}
 fn abortedCode() u32 {errorOperationAborted}
 
 fn noOutput() Result[process.Output, IoError] {
-  Error[process.Output, IoError](new IoError(abortedCode()))
+  Error[process.Output, IoError](IoError(abortedCode()))
 }
 
 fn blankOutput() process.Output {
-  new process.Output(0u32, 0u32, false, String.empty(), String.empty())
+  process.Output(0u32, 0u32, false, String.empty(), String.empty())
 }
 
 fn freeRun(p: *RunState) {
@@ -857,7 +857,7 @@ fn runResult(r: Result[process.Output, process.ProcessError]) Result[process.Out
   if good {
     return Ok[process.Output, IoError](o);
   }
-  Error[process.Output, IoError](new IoError(systemCode(code)))
+  Error[process.Output, IoError](IoError(systemCode(code)))
 }
 
 // On a pool thread: run the program, wait for it, and leave the answer in the
@@ -921,7 +921,7 @@ struct RunJob {
   pub reply: actors.Reply;
 
   fn run(self: &mut, lp: &mut Loop) {
-    var rp = new actors.Reply();
+    var rp = actors.Reply();
     rp <=> reply;
     var a = List[String].empty();
     a <=> args;
@@ -931,7 +931,7 @@ struct RunJob {
     if st as usize == 0usize {
       die("aio: out of memory for a child process");
     }
-    mem.writeRaw[RunState](st, new RunState(Atomic[u32].of(runPending()), isLine, l, a, opts, dir.copy(), noOutput()));
+    mem.writeRaw[RunState](st, RunState(Atomic[u32].of(runPending()), isLine, l, a, opts, dir.copy(), noOutput()));
     let key = u64.from(st as usize);
     let pool = Pool.make();
     let to = Target.Hook(key, Sink.make(waiting[Result[process.Output, IoError]](rp, &runAnswer)));
@@ -945,7 +945,7 @@ struct LocalAddrJob {
   pub reply: actors.Reply;
 
   fn run(self: &mut, lp: &mut Loop) {
-    var rp = new actors.Reply();
+    var rp = actors.Reply();
     rp <=> reply;
     actors.answerNow[Result[SocketAddr, IoError]](rp, lp.localAddr(h));
   }
@@ -972,7 +972,7 @@ pub struct Socket is Move {
 
   // A Socket naming nothing, which closes nothing: to swap one out of a
   // Result, or into a field before one is there
-  pub fn none() Socket {new Socket(Handle.none())}
+  pub fn none() Socket {Socket(Handle.none())}
 
   pub fn isNone(self: &) bool {h.isNone()}
 
@@ -1015,12 +1015,12 @@ pub struct Socket is Move {
   // The address the socket is bound to: a listening socket's port, where the
   // system chose it
   pub fn localAddr(self: &) actors.Awaitable[Result[SocketAddr, IoError]] {
-    awaitable[LocalAddrJob, Result[SocketAddr, IoError]](new LocalAddrJob(h, new actors.Reply()))
+    awaitable[LocalAddrJob, Result[SocketAddr, IoError]](LocalAddrJob(h, actors.Reply()))
   }
 
   fn final(self: &uni) {
     if !h.isNone() {
-      enqueue(newJob[CloseJob](new CloseJob(h)));
+      enqueue(newJob[CloseJob](CloseJob(h)));
     }
   }
 }
@@ -1045,7 +1045,7 @@ pub struct UdpSocket is Move {
 
   // A UdpSocket naming nothing, which closes nothing: to swap one out of a
   // Result, or into a field before one is there
-  pub fn none() UdpSocket {new UdpSocket(Handle.none())}
+  pub fn none() UdpSocket {UdpSocket(Handle.none())}
 
   pub fn isNone(self: &) bool {h.isNone()}
 
@@ -1081,12 +1081,12 @@ pub struct UdpSocket is Move {
 
   // The address the socket is bound to: its port, where the system chose it
   pub fn localAddr(self: &) actors.Awaitable[Result[SocketAddr, IoError]] {
-    awaitable[LocalAddrJob, Result[SocketAddr, IoError]](new LocalAddrJob(h, new actors.Reply()))
+    awaitable[LocalAddrJob, Result[SocketAddr, IoError]](LocalAddrJob(h, actors.Reply()))
   }
 
   fn final(self: &uni) {
     if !h.isNone() {
-      enqueue(newJob[CloseJob](new CloseJob(h)));
+      enqueue(newJob[CloseJob](CloseJob(h)));
     }
   }
 }
@@ -1102,7 +1102,7 @@ pub struct File is Move {
 
   // A File naming nothing, which closes nothing: to swap one out of a
   // Result, or into a field before one is there
-  pub fn none() File {new File(Handle.none())}
+  pub fn none() File {File(Handle.none())}
 
   pub fn isNone(self: &) bool {h.isNone()}
 
@@ -1135,26 +1135,26 @@ pub struct File is Move {
 
   fn final(self: &uni) {
     if !h.isNone() {
-      enqueue(newJob[CloseJob](new CloseJob(h)));
+      enqueue(newJob[CloseJob](CloseJob(h)));
     }
   }
 }
 
 // The file at path, opened as access says (the package's header, A FILE)
 pub fn openFile(path: &Path, access: Access) actors.Awaitable[Result[File, IoError]] {
-  awaitable[OpenFileJob, Result[File, IoError]](new OpenFileJob(path.copy(), access, new actors.Reply()))
+  awaitable[OpenFileJob, Result[File, IoError]](OpenFileJob(path.copy(), access, actors.Reply()))
 }
 
 // A TCP socket listening at addr, for accept; port 0 has the system choose
 // one, which localAddr tells
 pub fn listen(addr: SocketAddr) actors.Awaitable[Result[Socket, IoError]] {
-  awaitable[ListenJob, Result[Socket, IoError]](new ListenJob(addr, new actors.Reply()))
+  awaitable[ListenJob, Result[Socket, IoError]](ListenJob(addr, actors.Reply()))
 }
 
 // A UDP socket bound to addr, for recvFrom and sendTo; port 0 has the system
 // choose one, which localAddr tells
 pub fn bindUdp(addr: SocketAddr) actors.Awaitable[Result[UdpSocket, IoError]] {
-  awaitable[BindUdpJob, Result[UdpSocket, IoError]](new BindUdpJob(addr, new actors.Reply()))
+  awaitable[BindUdpJob, Result[UdpSocket, IoError]](BindUdpJob(addr, actors.Reply()))
 }
 
 // A TCP socket connected to addr
@@ -1174,7 +1174,7 @@ pub fn sleep(d: Duration) actors.Awaitable[Result[void, IoError]] {
 
 // A sleep ended if lim says so (the package's header, SLEEPING)
 pub fn sleepIn(d: Duration, lim: IoLimits) actors.Awaitable[Result[void, IoError]] {
-  awaitable[SleepJob, Result[void, IoError]](new SleepJob(Instant.now(), d, true, lim, new actors.Reply()))
+  awaitable[SleepJob, Result[void, IoError]](SleepJob(Instant.now(), d, true, lim, actors.Reply()))
 }
 
 // Pauses until the instant 'at' (one already past is Ok at once): Ok(nil)
@@ -1184,7 +1184,7 @@ pub fn sleepUntil(at: Instant) actors.Awaitable[Result[void, IoError]] {
 
 // A sleepUntil ended if lim says so (the package's header, SLEEPING)
 pub fn sleepUntilIn(at: Instant, lim: IoLimits) actors.Awaitable[Result[void, IoError]] {
-  awaitable[SleepJob, Result[void, IoError]](new SleepJob(at, Duration.zero(), false, lim, new actors.Reply()))
+  awaitable[SleepJob, Result[void, IoError]](SleepJob(at, Duration.zero(), false, lim, actors.Reply()))
 }
 
 // ---------------------------------------------------------------------------
@@ -1240,7 +1240,7 @@ fn copyArgs(args: &Array[String]) List[String] {
 
 fn runAwaitable(isLine: bool, line: &str, args: List[String], opts: process.Options, dir: &Path, lim: IoLimits) actors.Awaitable[Result[process.Output, IoError]] {
   awaitable[RunJob, Result[process.Output, IoError]](
-    new RunJob(isLine, String.from(line), args, opts, dir.copy(), lim, new actors.Reply()))
+    RunJob(isLine, String.from(line), args, opts, dir.copy(), lim, actors.Reply()))
 }
 
 // Runs args[0] with the rest as its arguments, in the folder dir (the current
@@ -1251,7 +1251,7 @@ fn runAwaitable(isLine: bool, line: &str, args: List[String], opts: process.Opti
 // The behaviour pauses meanwhile, and a thread of the blocking pool waits for
 // the child (the package's header, CHILD PROCESSES). 'opts' is the process
 // package's Options: a 'timeout' stops the child and everything it started
-pub fn run(args: &Array[String], opts: process.Options = new process.Options(), dir: &Path = "") actors.Awaitable[Result[process.Output, IoError]] {
+pub fn run(args: &Array[String], opts: process.Options = process.Options(), dir: &Path = "") actors.Awaitable[Result[process.Output, IoError]] {
   runAwaitable(false, "", copyArgs(args), opts, dir, IoLimits.none())
 }
 
@@ -1265,7 +1265,7 @@ pub fn runIn(args: &Array[String], opts: process.Options, dir: &Path, lim: IoLim
 
 // Runs a command line written out by hand, as the process package's 'runLine'
 // ('cmd /c ...' on Windows; the shell's '/bin/sh -c' line on Linux)
-pub fn runLine(line: &str, opts: process.Options = new process.Options(), dir: &Path = "") actors.Awaitable[Result[process.Output, IoError]] {
+pub fn runLine(line: &str, opts: process.Options = process.Options(), dir: &Path = "") actors.Awaitable[Result[process.Output, IoError]] {
   runAwaitable(true, line, List[String].empty(), opts, dir, IoLimits.none())
 }
 

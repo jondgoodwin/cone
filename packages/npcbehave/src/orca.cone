@@ -60,21 +60,21 @@ pub struct OrcaWorld {
 
   pub fn make(timeHorizon: f32, neighborDist: f32, maxNeighbors: usize) OrcaWorld {
     let m = if maxNeighbors > 16usize { 16usize } else { maxNeighbors };
-    new OrcaWorld(List[OrcaAgent].empty(), List[Circle].empty(), timeHorizon, neighborDist, m,
+    OrcaWorld(List[OrcaAgent].empty(), List[Circle].empty(), timeHorizon, neighborDist, m,
       List[Vec2].empty(), List[OrcaLine].empty(), List[OrcaLine].empty(), List[usize].empty(), List[f32].empty(), 0u32, 0.05)
   }
 
   pub fn addAgent(self: &mut, pos: Vec2, radius: f32, maxSpeed: f32) usize {
-    agents.push(new OrcaAgent(pos, new Vec2(0., 0.), new Vec2(0., 0.), radius, maxSpeed));
-    newVel.push(new Vec2(0., 0.));
+    agents.push(OrcaAgent(pos, Vec2(0., 0.), Vec2(0., 0.), radius, maxSpeed));
+    newVel.push(Vec2(0., 0.));
     agents.len() - 1usize
   }
 
-  pub fn addObstacle(self: &mut, center: Vec2, radius: f32) { obstacles.push(new Circle(center, radius)); }
+  pub fn addObstacle(self: &mut, center: Vec2, radius: f32) { obstacles.push(Circle(center, radius)); }
 
   pub fn setPreferred(self: &mut, i: usize, v: Vec2) {
     let a = *agents[i];
-    agents.set(i, new OrcaAgent(a.pos, a.vel, v, a.radius, a.maxSpeed));
+    agents.set(i, OrcaAgent(a.pos, a.vel, v, a.radius, a.maxSpeed));
   }
 
   // Moves every agent for 'dt' seconds: first all the new velocities from the
@@ -90,7 +90,7 @@ pub struct OrcaWorld {
     while i < agents.len() {
       let a = *agents[i];
       let v = *newVel[i];
-      agents.set(i, new OrcaAgent(a.pos + v * dt, v, a.pref, a.radius, a.maxSpeed));
+      agents.set(i, OrcaAgent(a.pos + v * dt, v, a.pref, a.radius, a.maxSpeed));
       i = i + 1usize;
     }
   }
@@ -129,8 +129,8 @@ pub struct OrcaWorld {
     let distSq = relPos.lengthSquared();
     let r = me.radius + otherRadius + margin;
     let rSq = r * r;
-    var dir = new Vec2(0., 0.);
-    var u = new Vec2(0., 0.);
+    var dir = Vec2(0., 0.);
+    var u = Vec2(0., 0.);
     if distSq > rSq {
       // Not yet touching: the cone ahead, cut off at the time horizon
       let invT = 1. / timeHorizon;
@@ -141,15 +141,15 @@ pub struct OrcaWorld {
         // Closest to the cut-off circle
         let wLen = wLenSq.sqrt();
         let unitW = w * (1. / wLen);
-        dir = new Vec2(unitW.y, -unitW.x);
+        dir = Vec2(unitW.y, -unitW.x);
         u = unitW * (r * invT - wLen);
       } else {
         // Closest to a leg of the cone
         let leg = (distSq - rSq).sqrt();
         if relPos.cross(w) > 0. {
-          dir = new Vec2(relPos.x * leg - relPos.y * r, relPos.x * r + relPos.y * leg) * (1. / distSq);
+          dir = Vec2(relPos.x * leg - relPos.y * r, relPos.x * r + relPos.y * leg) * (1. / distSq);
         } else {
-          dir = new Vec2(relPos.x * leg + relPos.y * r, -relPos.x * r + relPos.y * leg) * (-1. / distSq);
+          dir = Vec2(relPos.x * leg + relPos.y * r, -relPos.x * r + relPos.y * leg) * (-1. / distSq);
         }
         u = dir * relVel.dot(dir) - relVel;
       }
@@ -159,10 +159,10 @@ pub struct OrcaWorld {
       let w = relVel - relPos * invStep;
       let wLen = w.length();
       let unitW = if wLen > 0.000001 { w * (1. / wLen) } else { relPos.normalize() * -1. };
-      dir = new Vec2(unitW.y, -unitW.x);
+      dir = Vec2(unitW.y, -unitW.x);
       u = unitW * (r * invStep - wLen);
     }
-    lines.push(new OrcaLine(me.vel + u * share, dir));
+    lines.push(OrcaLine(me.vel + u * share, dir));
   }
 
   fn computeVelocity(self: &mut, i: usize, dt: f32) Vec2 {
@@ -179,18 +179,18 @@ pub struct OrcaWorld {
     while k < obstacles.len() {
       let c = *obstacles[k];
       if me.pos.distanceSquared(c.center) < (neighborDist + c.radius) * (neighborDist + c.radius) {
-        self.addLine(me, c.center, new Vec2(0., 0.), c.radius, 1., dt);
+        self.addLine(me, c.center, Vec2(0., 0.), c.radius, 1., dt);
       }
       k = k + 1usize;
     }
-    var result = new Vec2(0., 0.);
+    var result = Vec2(0., 0.);
     // The preferred velocity is nudged by up to a ten-thousandth of a metre
     // a second in a hashed direction. Without it, a perfectly symmetric
     // meeting (two agents head on, a ring crossing at its centre) has no
     // reason to pass on one side rather than the other, and they brake to a
     // stop (van den Berg's own RVO2 examples do the same, with a random nudge)
     let ang = unitHash(1234u32, u32.from(i), steps) * 2. * pi;
-    let pref = me.pref + new Vec2(cos(ang), sin(ang)) * 0.0001;
+    let pref = me.pref + Vec2(cos(ang), sin(ang)) * 0.0001;
     let fail = lp2(&lines, me.maxSpeed, pref, false, &mut result);
     if fail < lines.len() { self.lp3(fail, me.maxSpeed, &mut result); }
     result
@@ -213,16 +213,16 @@ pub struct OrcaWorld {
             if li.dir.dot(lj.dir) > 0. {
               // Same direction: nothing to add
             } else {
-              proj.push(new OrcaLine((li.point + lj.point) * 0.5, (lj.dir - li.dir).normalize()));
+              proj.push(OrcaLine((li.point + lj.point) * 0.5, (lj.dir - li.dir).normalize()));
             }
           } else {
             let p = li.point + li.dir * (lj.dir.cross(li.point - lj.point) / det);
-            proj.push(new OrcaLine(p, (lj.dir - li.dir).normalize()));
+            proj.push(OrcaLine(p, (lj.dir - li.dir).normalize()));
           }
           j = j + 1usize;
         }
         let saved = *result;
-        let fail = lp2(&proj, radius, new Vec2(-li.dir.y, li.dir.x), true, result);
+        let fail = lp2(&proj, radius, Vec2(-li.dir.y, li.dir.x), true, result);
         if fail < proj.len() { *result = saved; }
         distance = li.dir.cross(li.point - *result);
       }

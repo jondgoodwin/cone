@@ -65,7 +65,7 @@ pub struct Kernel {
   // given its error buffer, so at most MAX_CONE_KERNEL_BINDINGS. Check
   // 'isValid'.
   pub fn make(device: &Device, spirv: &Array[u32], entryPoint: &str, access: &Array[u32]) Kernel {
-    var acc = new Array[u32, 8] <- fill 0u32;
+    var acc = Array[u32, 8]() <- fill 0u32;
     var ok = true;
     var fileIds = List[u32].empty();
     var fileNames = List[String].empty();
@@ -87,14 +87,14 @@ pub struct Kernel {
         ok = false;
       } else {
         acc[i] = a;
-        entries.push(new BindGroupLayoutEntry(binding: u32.from(i), visibility: SHADER_STAGE_COMPUTE,
+        entries.push(BindGroupLayoutEntry(binding: u32.from(i), visibility: SHADER_STAGE_COMPUTE,
           bufferType: if a == READ { BUFFER_BINDING_TYPE_READ_ONLY_STORAGE } else { BUFFER_BINDING_TYPE_STORAGE }));
       }
       i = i + 1usize;
     }
     // The error buffer: read-write, after the last of the kernel's buffers
     if ok && isCone {
-      entries.push(new BindGroupLayoutEntry(binding: u32.from(access.len), visibility: SHADER_STAGE_COMPUTE,
+      entries.push(BindGroupLayoutEntry(binding: u32.from(access.len), visibility: SHADER_STAGE_COMPUTE,
         bufferType: BUFFER_BINDING_TYPE_STORAGE));
     }
     let size = workgroupOf(spirv, entryPoint);
@@ -102,19 +102,19 @@ pub struct Kernel {
       fail("Kernel.make: the SPIR-V has no compute entry point of that name, with a fixed workgroup size");
       ok = false;
     }
-    var shapes = new Array[u32, 8] <- fill SHAPE_UNKNOWN;
-    var strides = new Array[u32, 8] <- fill 4u32;
+    var shapes = Array[u32, 8]() <- fill SHAPE_UNKNOWN;
+    var strides = Array[u32, 8]() <- fill 4u32;
     if ok { shapesOf(spirv, entryPoint, u32.from(access.len), &mut shapes, &mut strides); }
     // Refused: an empty module, which makes an invalid pipeline
     var shader = device.createShaderModule(if ok { spirv } else { &spirv[0usize..<0usize] });
     var groupLayout = device.createBindGroupLayout(entries.view());
     let groupLayouts = [&groupLayout];
     var layout = device.createPipelineLayout(&groupLayouts, 0u32);
-    let desc = new ComputePipelineDescriptor(layout: &layout, module: &shader, entryPoint: entryPoint);
+    let desc = ComputePipelineDescriptor(layout: &layout, module: &shader, entryPoint: entryPoint);
     var pipeline = device.createComputePipeline(&desc);
-    new Kernel(shader, groupLayout, layout, pipeline, acc, u32.from(access.len), size, new Uni[imm, TwinFn](fn(inv: Invocation, buffers: &Array[Words]) {}), false, isCone,
+    Kernel(shader, groupLayout, layout, pipeline, acc, u32.from(access.len), size, Uni[imm, TwinFn](fn(inv: Invocation, buffers: &Array[Words]) {}), false, isCone,
       String.from(entryPoint), fileIds, fileNames, shapes, strides, false,
-      new Array[u32, 8] <- fill 0u32, ok && hasBarriers(spirv, entryPoint))
+      Array[u32, 8]() <- fill 0u32, ok && hasBarriers(spirv, entryPoint))
   }
 
   pub fn isValid(self: &) bool { pipeline.isValid() }
@@ -123,7 +123,7 @@ pub struct Kernel {
   // dispatch, with the dispatch's buffers as words, in the same order as the
   // kernel's bindings
   pub fn setTwin(self: &mut, f: &fn(Invocation, &Array[Words])) {
-    twin = new Uni[imm, TwinFn](f);
+    twin = Uni[imm, TwinFn](f);
     hasTwin = true;
     hasDirect = false;
   }
@@ -136,40 +136,40 @@ pub struct Kernel {
   // Refused if the count is not the kernel's bindings, or a parameter is a
   // struct where the SPIR-V binds a slice (see 'fits').
   pub fn setTwin1[A](self: &mut, f: &fn(Invocation, A)) {
-    if self.directFits(1u32) && self.fits[A](0usize) { self.setDirect(new Uni[imm, TwinFn](fn(inv: Invocation, w: &Array[Words]) [f] { f(inv, param[A](&w[0usize])); })); }
+    if self.directFits(1u32) && self.fits[A](0usize) { self.setDirect(Uni[imm, TwinFn](fn(inv: Invocation, w: &Array[Words]) [f] { f(inv, param[A](&w[0usize])); })); }
   }
   pub fn setTwin2[A, B](self: &mut, f: &fn(Invocation, A, B)) {
     if self.directFits(2u32) && self.fits[A](0usize) && self.fits[B](1usize) {
-      self.setDirect(new Uni[imm, TwinFn](fn(inv: Invocation, w: &Array[Words]) [f] { f(inv, param[A](&w[0usize]), param[B](&w[1usize])); }));
+      self.setDirect(Uni[imm, TwinFn](fn(inv: Invocation, w: &Array[Words]) [f] { f(inv, param[A](&w[0usize]), param[B](&w[1usize])); }));
     }
   }
   pub fn setTwin3[A, B, C](self: &mut, f: &fn(Invocation, A, B, C)) {
     if self.directFits(3u32) && self.fits[A](0usize) && self.fits[B](1usize) && self.fits[C](2usize) {
-      self.setDirect(new Uni[imm, TwinFn](fn(inv: Invocation, w: &Array[Words]) [f] { f(inv, param[A](&w[0usize]), param[B](&w[1usize]), param[C](&w[2usize])); }));
+      self.setDirect(Uni[imm, TwinFn](fn(inv: Invocation, w: &Array[Words]) [f] { f(inv, param[A](&w[0usize]), param[B](&w[1usize]), param[C](&w[2usize])); }));
     }
   }
   pub fn setTwin4[A, B, C, D](self: &mut, f: &fn(Invocation, A, B, C, D)) {
     if self.directFits(4u32) && self.fits[A](0usize) && self.fits[B](1usize) && self.fits[C](2usize)
         && self.fits[D](3usize) {
-      self.setDirect(new Uni[imm, TwinFn](fn(inv: Invocation, w: &Array[Words]) [f] { f(inv, param[A](&w[0usize]), param[B](&w[1usize]), param[C](&w[2usize]), param[D](&w[3usize])); }));
+      self.setDirect(Uni[imm, TwinFn](fn(inv: Invocation, w: &Array[Words]) [f] { f(inv, param[A](&w[0usize]), param[B](&w[1usize]), param[C](&w[2usize]), param[D](&w[3usize])); }));
     }
   }
   pub fn setTwin5[A, B, C, D, E](self: &mut, f: &fn(Invocation, A, B, C, D, E)) {
     if self.directFits(5u32) && self.fits[A](0usize) && self.fits[B](1usize) && self.fits[C](2usize)
         && self.fits[D](3usize) && self.fits[E](4usize) {
-      self.setDirect(new Uni[imm, TwinFn](fn(inv: Invocation, w: &Array[Words]) [f] { f(inv, param[A](&w[0usize]), param[B](&w[1usize]), param[C](&w[2usize]), param[D](&w[3usize]), param[E](&w[4usize])); }));
+      self.setDirect(Uni[imm, TwinFn](fn(inv: Invocation, w: &Array[Words]) [f] { f(inv, param[A](&w[0usize]), param[B](&w[1usize]), param[C](&w[2usize]), param[D](&w[3usize]), param[E](&w[4usize])); }));
     }
   }
   pub fn setTwin6[A, B, C, D, E, F](self: &mut, f: &fn(Invocation, A, B, C, D, E, F)) {
     if self.directFits(6u32) && self.fits[A](0usize) && self.fits[B](1usize) && self.fits[C](2usize)
         && self.fits[D](3usize) && self.fits[E](4usize) && self.fits[F](5usize) {
-      self.setDirect(new Uni[imm, TwinFn](fn(inv: Invocation, w: &Array[Words]) [f] { f(inv, param[A](&w[0usize]), param[B](&w[1usize]), param[C](&w[2usize]), param[D](&w[3usize]), param[E](&w[4usize]), param[F](&w[5usize])); }));
+      self.setDirect(Uni[imm, TwinFn](fn(inv: Invocation, w: &Array[Words]) [f] { f(inv, param[A](&w[0usize]), param[B](&w[1usize]), param[C](&w[2usize]), param[D](&w[3usize]), param[E](&w[4usize]), param[F](&w[5usize])); }));
     }
   }
   pub fn setTwin7[A, B, C, D, E, F, G](self: &mut, f: &fn(Invocation, A, B, C, D, E, F, G)) {
     if self.directFits(7u32) && self.fits[A](0usize) && self.fits[B](1usize) && self.fits[C](2usize)
         && self.fits[D](3usize) && self.fits[E](4usize) && self.fits[F](5usize) && self.fits[G](6usize) {
-      self.setDirect(new Uni[imm, TwinFn](fn(inv: Invocation, w: &Array[Words]) [f] { f(inv, param[A](&w[0usize]), param[B](&w[1usize]), param[C](&w[2usize]), param[D](&w[3usize]), param[E](&w[4usize]), param[F](&w[5usize]), param[G](&w[6usize])); }));
+      self.setDirect(Uni[imm, TwinFn](fn(inv: Invocation, w: &Array[Words]) [f] { f(inv, param[A](&w[0usize]), param[B](&w[1usize]), param[C](&w[2usize]), param[D](&w[3usize]), param[E](&w[4usize]), param[F](&w[5usize]), param[G](&w[6usize])); }));
     }
   }
 
@@ -281,7 +281,7 @@ pub fn readSpirv(file: &Path) List[u32] {
 // The workgroup size of compute entry point 'name' in 'spirv' (OpEntryPoint
 // GLCompute, then its OpExecutionMode LocalSize), or zeros if there is none
 fn workgroupOf(spirv: &Array[u32], name: &str) Array[u32, 3] {
-  var size = new Array[u32, 3] <- fill 0u32;
+  var size = Array[u32, 3]() <- fill 0u32;
   let id = entryIdOf(spirv, name);
   var i = 5usize;                  // past the header
   while i < spirv.len {

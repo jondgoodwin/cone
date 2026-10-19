@@ -64,8 +64,8 @@ fn groundMesh(x0: f32, x1: f32, z0: f32, z1: f32, n: i32) Mesh {
     while i <= n {
       let x = x0 + (x1 - x0) * f32.from(i) / f32.from(n);
       let z = z0 + (z1 - z0) * f32.from(j) / f32.from(n);
-      m.positions.push(new Vec3(x, heightAt(x, z), z));
-      m.uvs.push(new Vec2(x * 0.2, z * 0.2));
+      m.positions.push(Vec3(x, heightAt(x, z), z));
+      m.uvs.push(Vec2(x * 0.2, z * 0.2));
       i = i + 1;
     }
     j = j + 1;
@@ -90,12 +90,12 @@ fn groundMesh(x0: f32, x1: f32, z0: f32, z1: f32, n: i32) Mesh {
 
 fn boxAt(center: Vec3, half: Vec3, yaw: f32, roll: f32) Mesh {
   var m = Mesh.cube(1.);
-  m.transform(Mat4.fromTrs(center, Quat.angleAxis(yaw, new Vec3(0., 1., 0.)) * Quat.angleAxis(roll, new Vec3(0., 0., 1.)), half));
+  m.transform(Mat4.fromTrs(center, Quat.angleAxis(yaw, Vec3(0., 1., 0.)) * Quat.angleAxis(roll, Vec3(0., 0., 1.)), half));
   m
 }
 
 fn imageCopy(t: &Image) Image {
-  var img = new Image(t.width, t.height, t.channels, List[u8].withCapacity(t.pixels.len()));
+  var img = Image(t.width, t.height, t.channels, List[u8].withCapacity(t.pixels.len()));
   var i = 0usize;
   while i < t.pixels.len() {
     img.pixels.push(*t.pixels[i]);
@@ -105,7 +105,7 @@ fn imageCopy(t: &Image) Image {
 }
 
 fn imageOf(t: &TexelMap) Image {
-  var img = new Image(t.width, t.height, 4, List[u8].withCapacity(t.pixels.len()));
+  var img = Image(t.width, t.height, 4, List[u8].withCapacity(t.pixels.len()));
   var i = 0usize;
   while i < t.pixels.len() {
     img.pixels.push(*t.pixels[i]);
@@ -125,7 +125,7 @@ struct Species {
 
 fn foliageMaterial(renderer: &mut Renderer, device: &mut Device, image: &Image, spec: f32) Species {
   let tex = renderer.addCutoutTexture(device, image, 0.5);
-  var pbr = PbrMaterial.standard(new Color(1., 1., 1., 1.), 0., 0.75);
+  var pbr = PbrMaterial.standard(Color(1., 1., 1., 1.), 0., 0.75);
   pbr.texture = tex;
   pbr.alphaMode = ALPHA_MASK;
   pbr.alphaCutoff = 0.5;
@@ -134,7 +134,7 @@ fn foliageMaterial(renderer: &mut Renderer, device: &mut Device, image: &Image, 
   pbr.specularScale = spec;
   pbr.transmission = 0.9;
   pbr.transmissionPower = 4.;
-  new Species(String.from(""), imageCopy(image), tex, renderer.addPbrMaterial(device, &pbr))
+  Species(String.from(""), imageCopy(image), tex, renderer.addPbrMaterial(device, &pbr))
 }
 
 struct Subject {
@@ -164,13 +164,13 @@ fn makeSubject(device: &mut Device, renderer: &mut Renderer, pipe: &ImpostorPipe
   if kind == KIND_PINE { params = whitePineMature(seed, height, bare); fp = whitePineFoliage(seed + 7u32, cardScale); }
   if kind == KIND_NORFOLK { params = norfolkPine(seed, height); fp = norfolkFoliage(seed + 7u32, cardScale); }
   let tree = grow(&params);
-  let tube = new TubeParams();
+  let tube = TubeParams();
   let trunk = branchMesh(&tree, &tube);
   let crown = foliageMesh(&tree, &fp);
   let tris = u32.from(trunk.triangleCount()) + u32.from(crown.triangleCount());
   var parts = List[BakePart].empty();
-  parts.push(new BakePart(trunk, Material.plain(new Color(0.12, 0.08, 0.05, 1.)), Image.empty()));
-  parts.push(new BakePart(crown, Material.plain(new Color(1., 1., 1., 1.)).cutOut(0.5), imageCopy(&sp.image), true));
+  parts.push(BakePart(trunk, Material.plain(Color(0.12, 0.08, 0.05, 1.)), Image.empty()));
+  parts.push(BakePart(crown, Material.plain(Color(1., 1., 1., 1.)).cutOut(0.5), imageCopy(&sp.image), true));
   let lod = autoLod(device, renderer, pipe, baker, &parts, settings);
   var mats = List[MaterialHandle].empty();
   mats.push(trunkMat);
@@ -178,7 +178,7 @@ fn makeSubject(device: &mut Device, renderer: &mut Renderer, pipe: &ImpostorPipe
   let t1 = sdl.GetPerformanceCounter();
   let c = lod.center;
   let rad = lod.radius;
-  new Subject(String.from(""), lod, mats, c, rad, height, tris, seconds(t0, t1) * 1000.0)
+  Subject(String.from(""), lod, mats, c, rad, height, tris, seconds(t0, t1) * 1000.0)
 }
 
 fn plant(renderer: &mut Renderer, s: &Subject, model: Mat4, tint: Color, range: f32) {
@@ -186,7 +186,7 @@ fn plant(renderer: &mut Renderer, s: &Subject, model: Mat4, tint: Color, range: 
   while p < s.lod.chains.len() {
     let full = s.lod.chains[p];
     // the trunk takes a plain dark tint; the crown's is the age colour
-    let t = if p == 0usize { new Color(1., 1., 1., 1.) } else { tint };
+    let t = if p == 0usize { Color(1., 1., 1., 1.) } else { tint };
     let item = renderer.addSceneItem(*full.levels[0usize], *s.materials[p], model, t);
     renderer.setSceneLod(item, full);
     if range > 0. { renderer.setSceneRange(item, 0., range, range * 0.08); }
@@ -222,42 +222,42 @@ const LOOK_NIGHT = 2;
 fn lookSky(look: i32) Sky {
   var sky = Sky.dusk(radians(40.), radians(30.));
   if look == LOOK_DAY {
-    sky.sunDirection = new Vec3(0.45, 0.62, -0.64).normalize();
-    sky.sunColor = new Color(60., 55., 45., 1.);
-    sky.zenith = new Color(0.10, 0.22, 0.52, 1.);
-    sky.horizon = new Color(0.55, 0.66, 0.80, 1.);
+    sky.sunDirection = Vec3(0.45, 0.62, -0.64).normalize();
+    sky.sunColor = Color(60., 55., 45., 1.);
+    sky.zenith = Color(0.10, 0.22, 0.52, 1.);
+    sky.horizon = Color(0.55, 0.66, 0.80, 1.);
     sky.horizonSharpness = 2.5;
-    sky.glow = new Color(0.22, 0.20, 0.14, 1.);
+    sky.glow = Color(0.22, 0.20, 0.14, 1.);
     sky.glowSharpness = 12.;
-    sky.ground = new Color(0.12, 0.14, 0.10, 1.);
+    sky.ground = Color(0.12, 0.14, 0.10, 1.);
   } elif look == LOOK_DUSK {
     sky = Sky.dusk(radians(9.), radians(200.));
-    sky.sunDirection = new Vec3(0.2, 0.16, -0.97).normalize();
-    sky.zenith = new Color(0.12, 0.17, 0.32, 1.);
-    sky.horizon = new Color(0.95, 0.62, 0.42, 1.);
-    sky.glow = new Color(1.2, 0.5, 0.2, 1.);
-    sky.sunColor = new Color(60., 28., 10., 1.);
+    sky.sunDirection = Vec3(0.2, 0.16, -0.97).normalize();
+    sky.zenith = Color(0.12, 0.17, 0.32, 1.);
+    sky.horizon = Color(0.95, 0.62, 0.42, 1.);
+    sky.glow = Color(1.2, 0.5, 0.2, 1.);
+    sky.sunColor = Color(60., 28., 10., 1.);
   } else {
-    sky.sunDirection = new Vec3(-0.3, 0.45, -0.84).normalize();
-    sky.sunColor = new Color(0., 0., 0., 1.);
-    sky.zenith = new Color(0.004, 0.008, 0.03, 1.);
-    sky.horizon = new Color(0.03, 0.05, 0.10, 1.);
+    sky.sunDirection = Vec3(-0.3, 0.45, -0.84).normalize();
+    sky.sunColor = Color(0., 0., 0., 1.);
+    sky.zenith = Color(0.004, 0.008, 0.03, 1.);
+    sky.horizon = Color(0.03, 0.05, 0.10, 1.);
     sky.horizonSharpness = 2.5;
-    sky.glow = new Color(0., 0., 0., 1.);
+    sky.glow = Color(0., 0., 0., 1.);
     sky.glowSharpness = 8.;
-    sky.ground = new Color(0.004, 0.005, 0.008, 1.);
+    sky.ground = Color(0.004, 0.005, 0.008, 1.);
   }
   sky
 }
 
 fn lookLight(look: i32) Light {
   if look == LOOK_DAY {
-    return Light.directional(new Vec3(-0.45, -0.62, 0.64), new Color(3.3, 3.0, 2.6, 1.), new Color(0.30, 0.38, 0.50, 1.));
+    return Light.directional(Vec3(-0.45, -0.62, 0.64), Color(3.3, 3.0, 2.6, 1.), Color(0.30, 0.38, 0.50, 1.));
   }
   if look == LOOK_DUSK {
-    return Light.directional(new Vec3(-0.2, -0.16, 0.97), new Color(3.6, 1.9, 0.9, 1.), new Color(0.22, 0.20, 0.30, 1.));
+    return Light.directional(Vec3(-0.2, -0.16, 0.97), Color(3.6, 1.9, 0.9, 1.), Color(0.22, 0.20, 0.30, 1.));
   }
-  Light.directional(new Vec3(0.3, -0.45, 0.84), new Color(0.05, 0.07, 0.14, 1.), new Color(0.01, 0.014, 0.03, 1.))
+  Light.directional(Vec3(0.3, -0.45, 0.84), Color(0.05, 0.07, 0.14, 1.), Color(0.01, 0.014, 0.03, 1.))
 }
 
 fn lookFog(look: i32) FogSettings {
@@ -266,14 +266,14 @@ fn lookFog(look: i32) FogSettings {
   f.slices = 64u32;
   if look == LOOK_DAY {
     f.density = 0.0007;
-    f.albedo = new Color(0.7, 0.78, 0.92, 1.);
+    f.albedo = Color(0.7, 0.78, 0.92, 1.);
   } elif look == LOOK_DUSK {
     f.density = 0.0016;
-    f.albedo = new Color(1., 0.68, 0.45, 1.);
+    f.albedo = Color(1., 0.68, 0.45, 1.);
     f.anisotropy = 0.7;
   } else {
     f.density = 0.0018;
-    f.albedo = new Color(0.08, 0.12, 0.22, 1.);
+    f.albedo = Color(0.08, 0.12, 0.22, 1.);
   }
   f
 }
@@ -348,8 +348,8 @@ fn eyeCamera(eye: Vec3, target: Vec3, fov: f32) Camera {
   c.fov = radians(fov);
   c.near = 0.2;
   c.far = 2500.;
-  c.lookAt(eye, target, new Vec3(0., 1., 0.));
-  c.background = new Color(0.4, 0.55, 0.8, 1.);
+  c.lookAt(eye, target, Vec3(0., 1., 0.));
+  c.background = Color(0.4, 0.55, 0.8, 1.);
   c
 }
 
@@ -391,7 +391,7 @@ fn main(argc: i32, argv: **u8) i32 {
   if !adapter.isValid() { print <- "No GPU\n"; return 1i32; }
   print <- "Adapter: "; printStr(adapter.name.view()); print <- "\n";
   var device = adapter.requestDevice();
-  let outDesc = new TextureDescriptor(W, H, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
+  let outDesc = TextureDescriptor(W, H, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
   var out = device.createTexture(&outDesc);
   var renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA16_FLOAT, TEXTURE_FORMAT_DEPTH32_FLOAT);
   var post = Post.create(&mut device, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, W, H);
@@ -401,7 +401,7 @@ fn main(argc: i32, argv: **u8) i32 {
   var stamps = device.createBuffer(16u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
   var pixels = device.createBuffer(u64.from(W) * u64.from(H) * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
   if !renderer.isValid() || !post.isValid() || !fx.isValid() || !queries.isValid() { print <- "The renderer could not be made\n"; return 1i32; }
-  var rig = new Rig(out, pixels, queries, resolved, stamps, post, fx);
+  var rig = Rig(out, pixels, queries, resolved, stamps, post, fx);
   renderer.setShadows(&mut device, &ShadowSettings.medium());
 
   // the paint
@@ -429,9 +429,9 @@ fn main(argc: i32, argv: **u8) i32 {
   let firSp = foliageMaterial(&mut renderer, &mut device, &firImg, spec);
   let pineSp = foliageMaterial(&mut renderer, &mut device, &pineImg, spec);
   let norfolkSp = foliageMaterial(&mut renderer, &mut device, &norfolkImg, spec);
-  let trunkMat = renderer.addPbrMaterial(&mut device, &PbrMaterial.standard(new Color(0.07, 0.045, 0.03, 1.), 0., 1.));
+  let trunkMat = renderer.addPbrMaterial(&mut device, &PbrMaterial.standard(Color(0.07, 0.045, 0.03, 1.), 0., 1.));
 
-  var settings = new AutoLodSettings();
+  var settings = AutoLodSettings();
   var baker = ImpostorBaker.create(&mut device, settings.impostor.frameSize);
   let pipe = makeImpostorPipeline(&mut renderer, &mut device);
   if !baker.isValid() || !pipe.isValid(&renderer) { print <- "The baker could not be made\n"; return 1i32; }
@@ -457,45 +457,45 @@ fn main(argc: i32, argv: **u8) i32 {
   }
 
   // the world
-  let groundMat = renderer.addPbrMaterial(&mut device, &PbrMaterial.standard(new Color(0.09, 0.13, 0.035, 1.), 0., 1.));
+  let groundMat = renderer.addPbrMaterial(&mut device, &PbrMaterial.standard(Color(0.09, 0.13, 0.035, 1.), 0., 1.));
   let groundMeshHandle = renderer.addMesh(&mut device, &groundMesh(-500., 500., -400., 500., 220));
-  let woodMat = renderer.addPbrMaterial(&mut device, &PbrMaterial.standard(new Color(0.30, 0.16, 0.07, 1.), 0., 0.7));
-  let roofMat = renderer.addPbrMaterial(&mut device, &PbrMaterial.standard(new Color(0.06, 0.06, 0.07, 1.), 0., 0.8));
-  let stoneMat = renderer.addPbrMaterial(&mut device, &PbrMaterial.standard(new Color(0.22, 0.21, 0.19, 1.), 0., 0.9));
-  var glow = PbrMaterial.standard(new Color(0.2, 0.12, 0.05, 1.), 0., 0.5);
-  glow.emissive = new Color(1., 0.6, 0.25, 1.);
+  let woodMat = renderer.addPbrMaterial(&mut device, &PbrMaterial.standard(Color(0.30, 0.16, 0.07, 1.), 0., 0.7));
+  let roofMat = renderer.addPbrMaterial(&mut device, &PbrMaterial.standard(Color(0.06, 0.06, 0.07, 1.), 0., 0.8));
+  let stoneMat = renderer.addPbrMaterial(&mut device, &PbrMaterial.standard(Color(0.22, 0.21, 0.19, 1.), 0., 0.9));
+  var glow = PbrMaterial.standard(Color(0.2, 0.12, 0.05, 1.), 0., 0.5);
+  glow.emissive = Color(1., 0.6, 0.25, 1.);
   glow.emissiveStrength = 1.4;
   let glowMat = renderer.addPbrMaterial(&mut device, &glow);
-  let dark = new Color(1., 1., 1., 1.);
+  let dark = Color(1., 1., 1., 1.);
 
   renderer.clearScene();
   renderer.addSceneItem(groundMeshHandle, groundMat, Mat4.identity(), dark);
   // the cabin: 10 x 7 body, a gable roof of two slabs, a stone chimney and pillars, lit windows
   let gy = heightAt(0., 0.);
-  let body = boxAt(new Vec3(0., gy + 2.2, 0.), new Vec3(5., 2.4, 3.5), 0., 0.);
+  let body = boxAt(Vec3(0., gy + 2.2, 0.), Vec3(5., 2.4, 3.5), 0., 0.);
   let bodyH = renderer.addMesh(&mut device, &body);
   renderer.addSceneItem(bodyH, woodMat, Mat4.identity(), dark);
   // roof slabs: tilted about the x axis for a gable along x
   var slabs = Mesh.empty();
   var sl = Mesh.cube(1.);
-  sl.transform(Mat4.fromTrs(new Vec3(0., gy + 5.4, 1.6), Quat.angleAxis(0.55, new Vec3(1., 0., 0.)), new Vec3(5.8, 0.12, 2.6)));
+  sl.transform(Mat4.fromTrs(Vec3(0., gy + 5.4, 1.6), Quat.angleAxis(0.55, Vec3(1., 0., 0.)), Vec3(5.8, 0.12, 2.6)));
   slabs.append(&sl);
   var sr = Mesh.cube(1.);
-  sr.transform(Mat4.fromTrs(new Vec3(0., gy + 5.4, -1.6), Quat.angleAxis(-0.55, new Vec3(1., 0., 0.)), new Vec3(5.8, 0.12, 2.6)));
+  sr.transform(Mat4.fromTrs(Vec3(0., gy + 5.4, -1.6), Quat.angleAxis(-0.55, Vec3(1., 0., 0.)), Vec3(5.8, 0.12, 2.6)));
   slabs.append(&sr);
   renderer.addSceneItem(renderer.addMesh(&mut device, &slabs), roofMat, Mat4.identity(), dark);
   var stone = Mesh.empty();
-  stone.append(&boxAt(new Vec3(-3.2, gy + 4.5, -1.5), new Vec3(0.6, 3.2, 0.6), 0., 0.));
+  stone.append(&boxAt(Vec3(-3.2, gy + 4.5, -1.5), Vec3(0.6, 3.2, 0.6), 0., 0.));
   var k = 0;
   while k < 4 {
-    stone.append(&boxAt(new Vec3(-3.9 + f32.from(k) * 2.6, gy + 0.9, 3.9), new Vec3(0.42, 1.0, 0.42), 0., 0.));
+    stone.append(&boxAt(Vec3(-3.9 + f32.from(k) * 2.6, gy + 0.9, 3.9), Vec3(0.42, 1.0, 0.42), 0., 0.));
     k = k + 1;
   }
   renderer.addSceneItem(renderer.addMesh(&mut device, &stone), stoneMat, Mat4.identity(), dark);
   var win = Mesh.empty();
   k = 0;
   while k < 4 {
-    win.append(&boxAt(new Vec3(-3.6 + f32.from(k) * 2.4, gy + 2.4, 3.52), new Vec3(0.55, 0.8, 0.04), 0., 0.));
+    win.append(&boxAt(Vec3(-3.6 + f32.from(k) * 2.4, gy + 2.4, 3.52), Vec3(0.55, 0.8, 0.04), 0., 0.));
     k = k + 1;
   }
   renderer.addSceneItem(renderer.addMesh(&mut device, &win), glowMat, Mat4.identity(), dark);
@@ -530,7 +530,7 @@ fn main(argc: i32, argv: **u8) i32 {
     // keep the cabin's footprint, its apron and the pillars' bed clear
     if x > -8.5 && x < 8.5 && z > -7. && z < 7. { continue; }
     var which = 0usize;
-    var tint = new Color(1., 1., 1., 1.);
+    var tint = Color(1., 1., 1., 1.);
     var scale = 1.f;
     if group == 0 {
       which = if r2 < 0.3 { 0usize } elif r2 < 0.5 { 1usize } elif r2 < 0.8 { 2usize } elif r2 < 0.92 { 3usize } else { 4usize };
@@ -545,7 +545,7 @@ fn main(argc: i32, argv: **u8) i32 {
       scale = 0.8 + 0.4 * r3;
       tint = ageTint(0.05 + 0.1 * r4, 1., n);
     }
-    let model = Mat4.fromTrs(new Vec3(x, heightAt(x, z), z), Quat.angleAxis(r4 * 6.2831853, new Vec3(0., 1., 0.)), new Vec3(scale, scale, scale));
+    let model = Mat4.fromTrs(Vec3(x, heightAt(x, z), z), Quat.angleAxis(r4 * 6.2831853, Vec3(0., 1., 0.)), Vec3(scale, scale, scale));
     plant(&mut renderer, subjects[which], model, tint, 1800.);
     placed = placed + 1u32;
   }
@@ -554,17 +554,17 @@ fn main(argc: i32, argv: **u8) i32 {
   // the Norfolk pine on its own, on a flat apron far to the side
   let nx = 400.f;
   let nz = 100.f;
-  renderer.addSceneItem(renderer.addMesh(&mut device, &groundMesh(nx - 40., nx + 40., nz - 40., nz + 40., 8)), groundMat, Mat4.fromTrs(new Vec3(0., 0.2, 0.), Quat.identity(), new Vec3(1., 1., 1.)), dark);
-  plant(&mut renderer, subjects[10usize], Mat4.fromTrs(new Vec3(nx, heightAt(nx, nz), nz), Quat.identity(), new Vec3(1., 1., 1.)), ageTint(0.55, 0.3, 5u32), 1800.);
+  renderer.addSceneItem(renderer.addMesh(&mut device, &groundMesh(nx - 40., nx + 40., nz - 40., nz + 40., 8)), groundMat, Mat4.fromTrs(Vec3(0., 0.2, 0.), Quat.identity(), Vec3(1., 1., 1.)), dark);
+  plant(&mut renderer, subjects[10usize], Mat4.fromTrs(Vec3(nx, heightAt(nx, nz), nz), Quat.identity(), Vec3(1., 1., 1.)), ageTint(0.55, 0.3, 5u32), 1800.);
 
   // the views
-  let eyeClose = new Vec3(-7., heightAt(-7., -16.) + 1.7, -16.);
-  let eyeEdge = new Vec3(16., heightAt(16., 30.) + 2., 30.);
-  let eyeFar = new Vec3(60., heightAt(60., 230.) + 18., 230.);
-  let camClose = eyeCamera(eyeClose, new Vec3(0., heightAt(0., -34.) + 9., -34.), 62.);
-  let camEdge = eyeCamera(eyeEdge, new Vec3(-2., heightAt(0., 0.) + 6., -8.), 55.);
-  let camFar = eyeCamera(eyeFar, new Vec3(0., heightAt(0., -20.) + 10., -20.), 34.);
-  let camNorfolk = eyeCamera(new Vec3(nx + 3., heightAt(nx, nz) + 7., nz + 46.), new Vec3(nx, heightAt(nx, nz) + 9., nz), 36.);
+  let eyeClose = Vec3(-7., heightAt(-7., -16.) + 1.7, -16.);
+  let eyeEdge = Vec3(16., heightAt(16., 30.) + 2., 30.);
+  let eyeFar = Vec3(60., heightAt(60., 230.) + 18., 230.);
+  let camClose = eyeCamera(eyeClose, Vec3(0., heightAt(0., -34.) + 9., -34.), 62.);
+  let camEdge = eyeCamera(eyeEdge, Vec3(-2., heightAt(0., 0.) + 6., -8.), 55.);
+  let camFar = eyeCamera(eyeFar, Vec3(0., heightAt(0., -20.) + 10., -20.), 34.);
+  let camNorfolk = eyeCamera(Vec3(nx + 3., heightAt(nx, nz) + 7., nz + 46.), Vec3(nx, heightAt(nx, nz) + 9., nz), 36.);
 
   var look = 0;
   while look < 3 {

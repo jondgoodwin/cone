@@ -37,7 +37,7 @@ struct Leaf { pub n: u64; }
 struct Counted is RegionRef {
   cnt: usize;
   fn alloc(size: usize) *u8 inline { malloc(size) }
-  fn init(self: &new) inline { *self = new Counted(1usize); }
+  fn init(self: &new) inline { *self = Counted(1usize); }
   fn aliasRef(self: &uni Counted) inline { cnt = cnt + 1usize; }
   fn dealiasRef(self: &uni Counted) bool inline { cnt = cnt - 1usize; cnt == 0usize }
 }
@@ -45,7 +45,7 @@ struct Counted is RegionRef {
 struct Safe is RegionRef, ThreadSafe {
   cnt: usize;
   fn alloc(size: usize) *u8 inline { malloc(size) }
-  fn init(self: &new) inline { *self = new Safe(1usize); }
+  fn init(self: &new) inline { *self = Safe(1usize); }
   fn aliasRef(self: &uni Safe) inline { mem.atomicAdd[usize](self as *usize, 1usize, MemOrder.Relaxed); }
   fn dealiasRef(self: &uni Safe) bool inline {
     mem.atomicSub[usize](self as *usize, 1usize, MemOrder.AcqRel) == 1usize
@@ -57,7 +57,7 @@ struct Mine is RegionRef, Traced {
   pub id: i64;
   fn alloc(size: usize) *u8 {
     let p = malloc(size);
-    mem.writeRaw(p as *Mine, new Mine(1));
+    mem.writeRaw(p as *Mine, Mine(1));
     p
   }
   fn mark(self: &uni Mine, slot: *usize) {}
@@ -70,7 +70,7 @@ fn grab(r: &Rc[imm, u64]) u64 {
 }
 
 fn probe() {
-  let shared = new Rc[imm, u64](7u64);
+  let shared = Rc[imm, u64](7u64);
   let total = Atomic[u64].of(0u64);
   parallel each i in 0usize ..< 1000usize {
     total.add(grab(&shared));                      //~ ErrorParReach "reaches 'shared'"
@@ -87,7 +87,7 @@ fn reads(shared: Rc[imm, u64]) {
 
 // A field beside the Rc, in a struct made here and in one lent
 fn fields(h: &Holder) {
-  let holder = new Holder(new Rc[imm, u64](3u64), 10u64);
+  let holder = Holder(Rc[imm, u64](3u64), 10u64);
   let total = Atomic[u64].of(0u64);
   parallel each i in 0usize ..< 1000usize {
     total.add(holder.n);                           //~ ErrorParReach "reaches 'holder'"
@@ -109,8 +109,8 @@ fn elements(arr: &Array[Rc[imm, u64], 2]) {
 // A region of the program's own: counted without atomics is refused; one declaring
 // ThreadSafe is allowed
 fn regions() {
-  let counted = new Counted[imm, Leaf](5u64);
-  let safe = new Safe[imm, Leaf](5u64);
+  let counted = Counted[imm, Leaf](5u64);
+  let safe = Safe[imm, Leaf](5u64);
   let total = Atomic[u64].of(0u64);
   parallel each i in 0usize ..< 1000usize {
     total.add(counted.n);                          //~ ErrorParReach "reaches 'counted'"
@@ -131,21 +131,21 @@ fn traced(g: Gc[imm, u64], m: Mine[imm, Leaf]) {
 
 // The parallel builder keeps the rule in its header, filter and yield
 fn builders(xs: &List[u64], shared: Rc[imm, u64]) {
-  let a = new List[u64] <- parallel each x in xs yield *shared;              //~ ErrorParReach "reaches 'shared'"
-  let b = new List[u64] <- parallel each x in xs if *shared > 3u64 yield *x;  //~ ErrorParReach "reaches 'shared'"
+  let a = List[u64]() <- parallel each x in xs yield *shared;              //~ ErrorParReach "reaches 'shared'"
+  let b = List[u64]() <- parallel each x in xs if *shared > 3u64 yield *x;  //~ ErrorParReach "reaches 'shared'"
 }
 
 // Allowed: the contents borrowed before the loop, an Arc, an Atomic, a number, an
 // Rc the pass makes, a borrow of a list of numbers
 fn allowed(shared: Rc[imm, u64], xs: &List[u64]) {
   let sv = &*shared;
-  let arc = new Arc[imm, u64](5u64);
+  let arc = Arc[imm, u64](5u64);
   let count = Atomic[u64].of(0u64);
   let k = 4u64;
   parallel each x in xs {
-    let made = new Rc[imm, u64](*x);
+    let made = Rc[imm, u64](*x);
     let again = made;
     count.add(*sv + *arc + k + *again);
   }
-  let ys = new List[u64] <- parallel each x in xs yield *x + *sv;
+  let ys = List[u64]() <- parallel each x in xs yield *x + *sv;
 }

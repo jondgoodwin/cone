@@ -67,7 +67,7 @@ struct Job {
 }
 
 fn newJob(n: usize) Job {
-  new Job(libc.calloc(n, 8usize) as *u64, libc.calloc(n, 1usize) as *u8,
+  Job(libc.calloc(n, 8usize) as *u64, libc.calloc(n, 1usize) as *u8,
     Atomic[u64].of(0u64), Atomic[u64].of(0u64))
 }
 
@@ -200,7 +200,7 @@ fn finished(f: *Finish) {
 
 fn main() {
   initAll();
-  actors.configure(new actors.Options(workers: 4u32));
+  actors.configure(actors.Options(workers: 4u32));
 
   // uneven work, results as the plain loop's: the body borrows the job
   {
@@ -278,14 +278,14 @@ fn main() {
     actors.parallelRange(0usize, n, 16usize, &plainBody);
     report("a plain function as the body: every item as the plain loop's", exactly(&plain, n, 0usize, n));
     var j = newJob(n);
-    let w = new Worker(&j as *Job);
+    let w = Worker(&j as *Job);
     actors.parallelRange(0usize, n, 16usize, &w);
     report("a struct with a '()' as the body: every item as the plain loop's", exactly(&j, n, 0usize, n));
   }
 
   // work spread over more than one thread
   {
-    var sp = new Spread(Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+    var sp = Spread(Atomic[u64].of(0u64), Atomic[u64].of(0u64));
     let spp = &mut sp as *Spread;
     actors.parallelRange(0usize, 64usize, 1usize, fn(lo: usize, hi: usize) [spp] { bodySpread(spp, lo, hi); });
     report("spread: every item run", sp.items.load() == 64u64);
@@ -301,10 +301,10 @@ fn main() {
     // counted, and a loaded machine can run every piece without one worker
     // stealing from another (it failed 16 in 1000 runs with 24 runs at once).
     let stolenBefore = actors.stats().taskSteals;
-    var held = new Spread(Atomic[u64].of(0u64), Atomic[u64].of(0u64));
-    var fin = new Finish(Atomic[u64].of(0u64), Atomic[u64].of(0u64), newJob(1usize));
-    let heldp = new SpreadRef(&mut held as *Spread);
-    let finp = new FinishRef(&mut fin as *Finish);
+    var held = Spread(Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+    var fin = Finish(Atomic[u64].of(0u64), Atomic[u64].of(0u64), newJob(1usize));
+    let heldp = SpreadRef(&mut held as *Spread);
+    let finp = FinishRef(&mut fin as *Finish);
     actors.parallelRangeThen(0usize, 64usize, 1usize,
       fn(lo: usize, hi: usize) [heldp] { bodySpread(heldp.p, lo, hi); },
       fn() [finp] { finished(finp.p); });
@@ -320,8 +320,8 @@ fn main() {
   // the scheduled form
   {
     let n = 8000usize;
-    var f = new Finish(Atomic[u64].of(0u64), Atomic[u64].of(0u64), newJob(n));
-    let fp = new FinishRef(&mut f as *Finish);
+    var f = Finish(Atomic[u64].of(0u64), Atomic[u64].of(0u64), newJob(n));
+    let fp = FinishRef(&mut f as *Finish);
     actors.parallelRangeThen(0usize, n, 16usize,
       fn(lo: usize, hi: usize) [fp] { bodyUneven(&(*fp.p).job, lo, hi); },
       fn() [fp] { finished(fp.p); });
@@ -331,15 +331,15 @@ fn main() {
     report("scheduled: every item as the plain loop's", exactly(&f.job, n, 0usize, n));
     report("scheduled: onDone called once", f.calls.load() == 1u64);
 
-    var e = new Finish(Atomic[u64].of(0u64), Atomic[u64].of(0u64), newJob(10usize));
-    let ep = new FinishRef(&mut e as *Finish);
+    var e = Finish(Atomic[u64].of(0u64), Atomic[u64].of(0u64), newJob(10usize));
+    let ep = FinishRef(&mut e as *Finish);
     actors.parallelRangeThen(5usize, 5usize, 16usize,
       fn(lo: usize, hi: usize) [ep] { bodyUneven(&(*ep.p).job, lo, hi); },
       fn() [ep] { finished(ep.p); });
     report("scheduled, empty: onDone called before it returns", e.calls.load() == 1u64 && e.job.calls.load() == 0u64);
 
-    var t = new Finish(Atomic[u64].of(0u64), Atomic[u64].of(0u64), newJob(10usize));
-    let tp = new FinishRef(&mut t as *Finish);
+    var t = Finish(Atomic[u64].of(0u64), Atomic[u64].of(0u64), newJob(10usize));
+    let tp = FinishRef(&mut t as *Finish);
     actors.parallelRangeThen(2usize, 6usize, 16usize,
       fn(lo: usize, hi: usize) [tp] { bodyUneven(&(*tp.p).job, lo, hi); },
       fn() [tp] { finished(tp.p); });

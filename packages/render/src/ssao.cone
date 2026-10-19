@@ -30,11 +30,11 @@ pub struct SsaoSettings {
   pub depthSensitivity: f32 = 30.;
 
   // 3 slices of 10 steps: for a discrete GPU
-  pub fn high() SsaoSettings { new SsaoSettings(enabled: true, slices: 3u32, steps: 10u32) }
+  pub fn high() SsaoSettings { SsaoSettings(enabled: true, slices: 3u32, steps: 10u32) }
   // 2 slices of 8 steps
-  pub fn medium() SsaoSettings { new SsaoSettings(enabled: true, slices: 2u32, steps: 8u32) }
+  pub fn medium() SsaoSettings { SsaoSettings(enabled: true, slices: 2u32, steps: 8u32) }
   // 2 slices of 5 steps, a smaller reach: for an integrated GPU
-  pub fn low() SsaoSettings { new SsaoSettings(enabled: true, slices: 2u32, steps: 5u32, maxPixels: 48.) }
+  pub fn low() SsaoSettings { SsaoSettings(enabled: true, slices: 2u32, steps: 5u32, maxPixels: 48.) }
 }
 
 // What the passes' immediates hold (ssao.slang's SsaoImmediates)
@@ -69,17 +69,17 @@ pub struct SsaoPass {
 
   pub fn create(device: &mut Device, frameBuffer: &Buffer, dv: &TextureView) SsaoPass {
     var shader = device.createShaderModule(&SSAO_SPIRV);
-    let entries = [new BindGroupLayoutEntry(binding: 0u32, visibility: SHADER_STAGE_FRAGMENT),
-      new BindGroupLayoutEntry(binding: 1u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE,
+    let entries = [BindGroupLayoutEntry(binding: 0u32, visibility: SHADER_STAGE_FRAGMENT),
+      BindGroupLayoutEntry(binding: 1u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE,
         sampleType: TEXTURE_SAMPLE_TYPE_DEPTH),
-      new BindGroupLayoutEntry(binding: 2u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE)];
+      BindGroupLayoutEntry(binding: 2u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE)];
     var layout = device.createBindGroupLayout(&entries);
     let layouts = [&layout];
     var pipelineLayout = device.createPipelineLayout(&layouts, 48u32);
     var aoPipeline = fxPipeline(device, &pipelineLayout, &shader, "aoMain", TEXTURE_FORMAT_RGBA8_UNORM, false);
     var blurPipeline = fxPipeline(device, &pipelineLayout, &shader, "blurMain", TEXTURE_FORMAT_RGBA8_UNORM, false);
     var applyPipeline = fxPipeline(device, &pipelineLayout, &shader, "applyMain", TEXTURE_FORMAT_RGBA16_FLOAT, true);
-    let tiny = new TextureDescriptor(1u32, 1u32, TEXTURE_FORMAT_RGBA8_UNORM,
+    let tiny = TextureDescriptor(1u32, 1u32, TEXTURE_FORMAT_RGBA8_UNORM,
       TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_TEXTURE_BINDING);
     var ao0 = device.createTexture(&tiny);
     var ao1 = device.createTexture(&tiny);
@@ -89,7 +89,7 @@ pub struct SsaoPass {
     var groupBlurH = aoGroup(device, &layout, frameBuffer, dv, &v0);
     var groupBlurV = aoGroup(device, &layout, frameBuffer, dv, &v1);
     var groupApply = aoGroup(device, &layout, frameBuffer, dv, &v0);
-    new SsaoPass(shader, layout, pipelineLayout, aoPipeline, blurPipeline, applyPipeline, ao0, ao1, groupAo, groupBlurH,
+    SsaoPass(shader, layout, pipelineLayout, aoPipeline, blurPipeline, applyPipeline, ao0, ao1, groupAo, groupBlurH,
       groupBlurV, groupApply)
   }
 
@@ -104,7 +104,7 @@ pub struct SsaoPass {
       frameBuffer: &Buffer) {
     let w = if enabled { (width + 1u32) / 2u32 } else { 1u32 };
     let h = if enabled { (height + 1u32) / 2u32 } else { 1u32 };
-    let desc = new TextureDescriptor(w, h, TEXTURE_FORMAT_RGBA8_UNORM,
+    let desc = TextureDescriptor(w, h, TEXTURE_FORMAT_RGBA8_UNORM,
       TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_TEXTURE_BINDING);
     ao0 = device.createTexture(&desc);
     ao1 = device.createTexture(&desc);
@@ -121,7 +121,7 @@ pub struct SsaoPass {
   // when 'moving', so that temporal AA averages it away)
   pub fn record(self: &mut, encoder: &mut CommandEncoder, hdr: &Texture, s: &SsaoSettings, frame: u32, moving: bool) {
     let noise = if moving { (f32.from(frame % 16u32) + 0.5) / 16. } else { 0. };
-    let base = new SsaoImmediates(s.radius, s.power, s.falloff, s.strength, s.slices, s.steps, noise, s.maxPixels, 1., 0.,
+    let base = SsaoImmediates(s.radius, s.power, s.falloff, s.strength, s.slices, s.steps, noise, s.maxPixels, 1., 0.,
       s.depthSensitivity, 0.);
     fxPass(encoder, ao0.createView(), false, &aoPipeline, &groupAo, &base as *u8, 48u32);
     var horizontal = base;

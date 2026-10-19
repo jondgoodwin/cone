@@ -3,12 +3,12 @@
 // that call the C library and tally what they were asked: allocations,
 // resizes, releases of a block, and the bytes handed out and not yet given
 // back. A pool is made in it by passing it as the construction's last
-// argument, 'new Pool[i64](region)'. Every expected count is worked out by
+// argument, 'Pool[i64](region)'. Every expected count is worked out by
 // hand from the growth rules:
 // - a slot of Pool[i64] is a generation, a free-list link and the value: 16
 //   bytes. The block starts at 4 slots, from a resize of nothing, then
 //   doubles: ten values make 4, 8 and 16 slots, three resizes, the last block
-//   256 bytes. 'new Pool[i64](10, r)' makes room for exactly ten (160 bytes)
+//   256 bytes. 'Pool[i64](10, r)' makes room for exactly ten (160 bytes)
 //   at once, and an eleventh doubles it to twenty (320);
 // - a slot of Pool[Spawner] is 8 bytes of generation and link and a 24-byte
 //   value: 32. A value whose 'final' adds twenty more while it is dying in a
@@ -54,7 +54,7 @@ fn countRelease(r: *MemRegion, block: *u8, bytes: usize) {
 }
 
 fn newCounting() Counting {
-  new Counting(new MemRegion(&countAlloc, &countResize, &countRelease), 0usize, 0usize, 0usize, 0isize)
+  Counting(MemRegion(&countAlloc, &countResize, &countRelease), 0usize, 0usize, 0usize, 0isize)
 }
 
 fn regionOf(c: &mut Counting) *MemRegion { (c as *Counting) as *MemRegion }
@@ -68,7 +68,7 @@ fn tally(c: &Counting, allocs: u64, resizes: u64, releases: u64, live: i64, labe
 fn grows() {
   var c = newCounting();
   {
-    var p = new Pool[i64](regionOf(&mut c));
+    var p = Pool[i64](regionOf(&mut c));
     tally(&c, 0, 0, 0, 0, "an empty pool in a region asks it for nothing");
     var last = Ref[i64].none();
     var i = 0i64;
@@ -83,7 +83,7 @@ fn grows() {
 fn capacity() {
   var c = newCounting();
   {
-    var p = new Pool[i64](10usize, regionOf(&mut c));
+    var p = Pool[i64](10usize, regionOf(&mut c));
     tally(&c, 0, 1, 0, 160, "a starting size makes the block at once, room for exactly ten");
     expectUInt(u64.from(p.capacity()), 10, "ten slots");
     var i = 0i64;
@@ -109,7 +109,7 @@ struct Spawner {
     let p = (home as *Pool[Spawner]) as &mut Pool[Spawner];
     var k = 0i64;
     while k < count {
-      p.add(new Spawner(2, home, 0));
+      p.add(Spawner(2, home, 0));
       k = k + 1i64;
     }
   }
@@ -117,13 +117,13 @@ struct Spawner {
 
 fn spawner(p: &mut Pool[Spawner], n: i64, count: i64) Ref[Spawner] {
   let home = (p as *Pool[Spawner]) as *u8;
-  p.add(new Spawner(n, home, count))
+  p.add(Spawner(n, home, count))
 }
 
 fn growsWhileDying() {
   var c = newCounting();
   {
-    var p = new Pool[Spawner](regionOf(&mut c));
+    var p = Pool[Spawner](regionOf(&mut c));
     let a = spawner(&mut p, 1, 20);
     spawner(&mut p, 3, 0);
     spawner(&mut p, 3, 0);

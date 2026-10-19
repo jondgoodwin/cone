@@ -117,8 +117,8 @@ fn compare(a: &List[f32], b: &List[f32], peak: &mut f32) f32 {
 // eye at (-3, 0, 0), 'width' across
 fn wall(cube: MeshHandle, material: MaterialHandle, distance: f32, width: f32) DrawList {
   var list = DrawList.empty();
-  let turned = Quat.angleAxis(radians(90.), new Vec3(0., 1., 0.));
-  list.add(cube, material, Mat4.fromTrs(new Vec3(-3. + distance, 0., 0.), turned, new Vec3(width, width, 0.1)));
+  let turned = Quat.angleAxis(radians(90.), Vec3(0., 1., 0.));
+  list.add(cube, material, Mat4.fromTrs(Vec3(-3. + distance, 0., 0.), turned, Vec3(width, width, 0.1)));
   list
 }
 
@@ -149,22 +149,22 @@ fn main() i32 {
   var readback = device.createBuffer(131072u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
   let p = readback.mappedRange();
   let cube = renderer.addMesh(&mut device, &Mesh.cube(0.5));
-  let gray = renderer.addMaterial(&mut device, &Material.plain(new Color(0.5, 0.5, 0.5, 1.)));
-  let pale = renderer.addMaterial(&mut device, &Material.plain(new Color(0.8, 0.7, 0.5, 1.)));
+  let gray = renderer.addMaterial(&mut device, &Material.plain(Color(0.5, 0.5, 0.5, 1.)));
+  let pale = renderer.addMaterial(&mut device, &Material.plain(Color(0.8, 0.7, 0.5, 1.)));
 
   // The plain camera at the reflected eye, and the reflected one that sees what it sees
   var plain = Camera.make();
-  plain.lookAt(new Vec3(-3., 0., 0.), new Vec3(3., 0., 0.), new Vec3(0., 1., 0.));
+  plain.lookAt(Vec3(-3., 0., 0.), Vec3(3., 0., 0.), Vec3(0., 1., 0.));
   var seer = Camera.make();
-  seer.lookAt(new Vec3(1.5, 0., 2.598), new Vec3(-1.5, 0., -2.598), new Vec3(0., 1., 0.));
-  let plane = mirrorPlane(new Vec3(0., 0., 0.), new Vec3(0.866, 0., 0.5), new Vec3(1.5, 0., 2.598));
+  seer.lookAt(Vec3(1.5, 0., 2.598), Vec3(-1.5, 0., -2.598), Vec3(0., 1., 0.));
+  let plane = mirrorPlane(Vec3(0., 0., 0.), Vec3(0.866, 0., 0.5), Vec3(1.5, 0., 2.598));
   let reflected = seer.reflectedAbout(plane);
   // The eye of the reflected camera is the plain camera's
   expectFloat(f64.from(reflected.position().x), -3.0, 0.01, "the reflected camera's eye is the plain camera's (x)");
   expectFloat(f64.from(reflected.position().z), 0.0, 0.01, "the reflected camera's eye is the plain camera's (z)");
 
   // ---- 1. The distance the fog recovers ----
-  let ambientOnly = Light.directional(new Vec3(0., -1., 0.), new Color(0., 0., 0., 1.), new Color(1., 1., 1., 1.));
+  let ambientOnly = Light.directional(Vec3(0., -1., 0.), Color(0., 0., 0., 1.), Color(1., 1., 1., 1.));
   require(view.enableFog(&mut renderer, &mut device), "the view's fog made");
   let extinction = 0.1f;
   let columns = [64usize, 38usize, 90usize];
@@ -176,21 +176,21 @@ fn main() i32 {
     let distance = depths[w];
     let wallList = wall(cube, gray, distance, if distance < 10. { 20. } else { 60. });
     // The unfogged pictures
-    view.fog = new FogSettings(enabled: false);
+    view.fog = FogSettings(enabled: false);
     picture(&mut view, &mut renderer, &mut device, &reflected, &ambientOnly, &wallList, &readback);
-    var bareReflected = new Array[f32, 3] <- fill 0f;
+    var bareReflected = Array[f32, 3]() <- fill 0f;
     var c = 0usize;
     while c < 3usize { bareReflected[c] = around(p, columns[c], 64usize); c = c + 1usize; }
     picture(&mut view, &mut renderer, &mut device, &plain, &ambientOnly, &wallList, &readback);
-    var barePlain = new Array[f32, 3] <- fill 0f;
+    var barePlain = Array[f32, 3]() <- fill 0f;
     c = 0usize;
     while c < 3usize { barePlain[c] = around(p, columns[c], 64usize); c = c + 1usize; }
     // The fogged ones
-    view.fog = new FogSettings(enabled: true, density: extinction, albedo: new Color(0., 0., 0., 1.), temporal: 1.,
+    view.fog = FogSettings(enabled: true, density: extinction, albedo: Color(0., 0., 0., 1.), temporal: 1.,
       maxDistance: 120.);
     view.cutFog();
     picture(&mut view, &mut renderer, &mut device, &reflected, &ambientOnly, &wallList, &readback);
-    var seenReflected = new Array[f32, 3] <- fill 0f;
+    var seenReflected = Array[f32, 3]() <- fill 0f;
     c = 0usize;
     while c < 3usize { seenReflected[c] = recovered(around(p, columns[c], 64usize), bareReflected[c], extinction); c = c + 1usize; }
     view.cutFog();
@@ -216,15 +216,15 @@ fn main() i32 {
 
   // ---- 2. The picture of a scene with scattering ----
   var scene = DrawList.empty();
-  scene.add(cube, pale, Mat4.fromTrs(new Vec3(55., -1.6, 0.), Quat.identity(), new Vec3(100., 0.1, 100.)));
-  scene.add(cube, gray, Mat4.fromTrs(new Vec3(7., -0.5, 1.), Quat.angleAxis(0.4, new Vec3(0., 1., 0.)), new Vec3(2., 2., 2.)));
-  scene.add(cube, pale, Mat4.fromTrs(new Vec3(12., 0., -2.5), Quat.identity(), new Vec3(2.5, 3., 2.5)));
-  scene.add(cube, gray, Mat4.fromTrs(new Vec3(22., 0.5, 3.), Quat.identity(), new Vec3(4., 4., 4.)));
-  let sun = Light.directional(new Vec3(-0.5, -0.7, 0.5).normalize(), new Color(3., 3., 3., 1.), new Color(0.3, 0.35, 0.4, 1.));
-  view.fog = new FogSettings(enabled: false);
+  scene.add(cube, pale, Mat4.fromTrs(Vec3(55., -1.6, 0.), Quat.identity(), Vec3(100., 0.1, 100.)));
+  scene.add(cube, gray, Mat4.fromTrs(Vec3(7., -0.5, 1.), Quat.angleAxis(0.4, Vec3(0., 1., 0.)), Vec3(2., 2., 2.)));
+  scene.add(cube, pale, Mat4.fromTrs(Vec3(12., 0., -2.5), Quat.identity(), Vec3(2.5, 3., 2.5)));
+  scene.add(cube, gray, Mat4.fromTrs(Vec3(22., 0.5, 3.), Quat.identity(), Vec3(4., 4., 4.)));
+  let sun = Light.directional(Vec3(-0.5, -0.7, 0.5).normalize(), Color(3., 3., 3., 1.), Color(0.3, 0.35, 0.4, 1.));
+  view.fog = FogSettings(enabled: false);
   picture(&mut view, &mut renderer, &mut device, &plain, &sun, &scene, &readback);
   let bare = grab(p);
-  view.fog = new FogSettings(enabled: true, density: 0.03, heightDensity: 0.05, heightFalloff: 0.3, baseHeight: -1.5,
+  view.fog = FogSettings(enabled: true, density: 0.03, heightDensity: 0.05, heightFalloff: 0.3, baseHeight: -1.5,
     anisotropy: 0.6, temporal: 1., maxDistance: 80.);
   view.cutFog();
   picture(&mut view, &mut renderer, &mut device, &plain, &sun, &scene, &readback);
@@ -241,7 +241,7 @@ fn main() i32 {
   expect(worst < 0.01 * peak, "the reflected camera's fogged picture is the plain camera's");
 
   // ---- 3. Fog enabled but off ----
-  view.fog = new FogSettings(enabled: false);
+  view.fog = FogSettings(enabled: false);
   picture(&mut view, &mut renderer, &mut device, &reflected, &sun, &scene, &readback);
   let off = grab(p);
   var unfogged = RenderView.create(&mut renderer, &mut device, 128u32, 128u32);
@@ -251,7 +251,7 @@ fn main() i32 {
   unfogged.release(&mut renderer, &mut device);
 
   // ---- 4. The history ----
-  view.fog = new FogSettings(enabled: true, density: 0.03, heightDensity: 0.05, heightFalloff: 0.3, baseHeight: -1.5,
+  view.fog = FogSettings(enabled: true, density: 0.03, heightDensity: 0.05, heightFalloff: 0.3, baseHeight: -1.5,
     anisotropy: 0.6, maxDistance: 80.);
   view.cutFog();
   picture(&mut view, &mut renderer, &mut device, &plain, &sun, &scene, &readback);
@@ -266,12 +266,12 @@ fn main() i32 {
   // The low tier's cells and slices remake the volume (a stall, before the picture is recorded)
   // and the fog is still right, within 15% of the distance
   let nearWall = wall(cube, gray, 6., 20.);
-  view.fog = new FogSettings(enabled: false);
+  view.fog = FogSettings(enabled: false);
   picture(&mut view, &mut renderer, &mut device, &reflected, &ambientOnly, &nearWall, &readback);
   let bareNear = around(p, 90usize, 64usize);
   view.fog = FogSettings.low();
   view.fog.density = extinction;
-  view.fog.albedo = new Color(0., 0., 0., 1.);
+  view.fog.albedo = Color(0., 0., 0., 1.);
   view.fog.temporal = 1.;
   picture(&mut view, &mut renderer, &mut device, &reflected, &ambientOnly, &nearWall, &readback);
   let lowSeen = recovered(around(p, 90usize, 64usize), bareNear, extinction);

@@ -16,10 +16,10 @@ pub struct QueryFilter {
   pub exclude: u32;
   pub sensors: bool;
 
-  pub fn all() QueryFilter { new QueryFilter(0xffffffffu32, NoBody, false) }
-  pub fn layers(mask: u32) QueryFilter { new QueryFilter(mask, NoBody, false) }
-  pub fn without(self: &, id: u32) QueryFilter { new QueryFilter(mask, id, sensors) }
-  pub fn withSensors(self: &) QueryFilter { new QueryFilter(mask, exclude, true) }
+  pub fn all() QueryFilter { QueryFilter(0xffffffffu32, NoBody, false) }
+  pub fn layers(mask: u32) QueryFilter { QueryFilter(mask, NoBody, false) }
+  pub fn without(self: &, id: u32) QueryFilter { QueryFilter(mask, id, sensors) }
+  pub fn withSensors(self: &) QueryFilter { QueryFilter(mask, exclude, true) }
 }
 
 fn accepts(f: &QueryFilter, b: &Body, id: u32) bool {
@@ -36,7 +36,7 @@ pub struct WorldRayHit {
   pub sub: u32;         // mesh triangle, else NoSub
 }
 
-pub fn noWorldRay() WorldRayHit { new WorldRayHit(false, NoBody, bigNumber, zero3(), new Vec3(0., 1., 0.), 0u32, NoSub) }
+pub fn noWorldRay() WorldRayHit { WorldRayHit(false, NoBody, bigNumber, zero3(), Vec3(0., 1., 0.), 0u32, NoSub) }
 
 // The nearest body the ray (origin, dir) hits within maxT
 pub fn worldRayCast(w: &mut World, origin: Vec3, dir: Vec3, maxT: f32, f: QueryFilter) WorldRayHit {
@@ -48,10 +48,10 @@ pub fn worldRayCast(w: &mut World, origin: Vec3, dir: Vec3, maxT: f32, f: QueryF
     let id = *ids[k];
     let b = w.bodies[usize.from(id)];
     if accepts(&f, b, id) {
-      let xf = new Rigid(b.pos - b.rot * b.comLocal, b.rot);
+      let xf = Rigid(b.pos - b.rot * b.comLocal, b.rot);
       let h = rayCast(w.shapes[usize.from(b.shape)], xf, origin, dir, maxT);
       if h.hit && h.t < best.t {
-        best = new WorldRayHit(true, id, h.t, origin + dir * h.t, h.normal, h.part, h.sub);
+        best = WorldRayHit(true, id, h.t, origin + dir * h.t, h.normal, h.part, h.sub);
       }
     }
     k = k + 1usize;
@@ -68,12 +68,12 @@ pub struct WorldCastHit {
   pub pointB: Vec3;     // on the body
 }
 
-pub fn noWorldCast() WorldCastHit { new WorldCastHit(false, NoBody, 1., new Vec3(0., 1., 0.), zero3(), zero3()) }
+pub fn noWorldCast() WorldCastHit { WorldCastHit(false, NoBody, 1., Vec3(0., 1., 0.), zero3(), zero3()) }
 
 // Sweep a shape along disp (translation only) and report the first body it meets. A body the
 // shape already touches at the start (within 0.1 mm) counts only if the sweep goes into it.
 pub fn worldShapeCast(w: &mut World, shape: &Shape, xf: Rigid, disp: Vec3, f: QueryFilter) WorldCastHit {
-  let swept = shape.bounds(xf).union(shape.bounds(new Rigid(xf.pos + disp, xf.rot)));
+  let swept = shape.bounds(xf).union(shape.bounds(Rigid(xf.pos + disp, xf.rot)));
   var ids = List[u32].empty();
   w.bp.queryBox(swept, f.mask, &mut ids);
   var best = noWorldCast();
@@ -82,11 +82,11 @@ pub fn worldShapeCast(w: &mut World, shape: &Shape, xf: Rigid, disp: Vec3, f: Qu
     let id = *ids[k];
     let b = w.bodies[usize.from(id)];
     if accepts(&f, b, id) {
-      let bxf = new Rigid(b.pos - b.rot * b.comLocal, b.rot);
+      let bxf = Rigid(b.pos - b.rot * b.comLocal, b.rot);
       let h = shapeCast(shape, xf, disp, w.shapes[usize.from(b.shape)], bxf);
       if h.hit && !(h.fraction < 0.0001 && h.normal.dot(disp) <= 0.001 * disp.length()) {
         if !best.hit || h.fraction < best.fraction {
-          best = new WorldCastHit(true, id, h.fraction, h.normal, h.pointA, h.pointB);
+          best = WorldCastHit(true, id, h.fraction, h.normal, h.pointA, h.pointB);
         }
       }
     }
@@ -105,7 +105,7 @@ pub fn worldOverlap(w: &mut World, shape: &Shape, xf: Rigid, f: QueryFilter, out
     let id = *ids[k];
     let b = w.bodies[usize.from(id)];
     if accepts(&f, b, id) {
-      let bxf = new Rigid(b.pos - b.rot * b.comLocal, b.rot);
+      let bxf = Rigid(b.pos - b.rot * b.comLocal, b.rot);
       if overlaps(shape, xf, w.shapes[usize.from(b.shape)], bxf) { out.push(id); }
     }
     k = k + 1usize;
@@ -129,12 +129,12 @@ pub fn worldContacts(w: &mut World, shape: &Shape, xf: Rigid, margin: f32, f: Qu
     let id = *ids[k];
     let b = w.bodies[usize.from(id)];
     if accepts(&f, b, id) {
-      let bxf = new Rigid(b.pos - b.rot * b.comLocal, b.rot);
+      let bxf = Rigid(b.pos - b.rot * b.comLocal, b.rot);
       ms.clear();
       collide(shape, xf, w.shapes[usize.from(b.shape)], bxf, margin, &mut ms);
       var m = 0usize;
       while m < ms.len() {
-        if ms[m].count > 0usize { out.push(new BodyManifold(id, *ms[m])); }
+        if ms[m].count > 0usize { out.push(BodyManifold(id, *ms[m])); }
         m = m + 1usize;
       }
     }

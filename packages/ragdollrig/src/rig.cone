@@ -114,7 +114,7 @@ pub struct Ragdoll {
       let pBone = placement.pos + placement.rot * bm.translation;
       // the shape and its frame
       var shapeRot = Quat.identity();
-      if bs.shape == SHAPE_CAPSULE { shapeRot = Quat.fromVectors(new Vec3(0., 1., 0.), bs.axis.normalize()); }
+      if bs.shape == SHAPE_CAPSULE { shapeRot = Quat.fromVectors(Vec3(0., 1., 0.), bs.axis.normalize()); }
       let shape = Shape.single(primOf(bs));
       let bound = shape.bounds(Rigid.identity()).halfExtents();
       let shapeId = w.addShape(shape);
@@ -130,7 +130,7 @@ pub struct Ragdoll {
       def.angularDamping = spec.angularDamping;
       def.userData = tag * 64u32 + u32.from(i);
       let body = w.createBody(def);
-      var link = new Link(i, body, parentLink, NoBody, JOINT_NONE, bs.center, shapeRot, zero3(), zero3(), zero3(), zero3(),
+      var link = Link(i, body, parentLink, NoBody, JOINT_NONE, bs.center, shapeRot, zero3(), zero3(), zero3(), zero3(),
         bs.lo, bs.hi, bs.cone, bs.flex, bs.ext, bs.abd, bs.add, bs.mass, bs.maxTorque, bound.length(), Quat.identity());
       if parentLink >= 0i32 && bs.joint != JOINT_NONE {
         let pl = *links[usize.from(parentLink)];
@@ -147,11 +147,11 @@ pub struct Ragdoll {
           link.joint = w.addConeTwist(pl.body, body, pBone, axisW, bs.cone);
           w.setTwistLimits(link.joint, bs.lo, bs.hi);
           // flexion is towards the being's front (-z), abduction away from its middle
-          var f = placement.rot * new Vec3(0., 0., -1.);
+          var f = placement.rot * Vec3(0., 0., -1.);
           f = f - axisW * f.dot(axisW);
-          if f.length() < 0.2 { f = placement.rot * new Vec3(0., 1., 0.); f = f - axisW * f.dot(axisW); }
+          if f.length() < 0.2 { f = placement.rot * Vec3(0., 1., 0.); f = f - axisW * f.dot(axisW); }
           f = f.normalize();
-          var a = placement.rot * new Vec3(bs.side, 0., 0.);
+          var a = placement.rot * Vec3(bs.side, 0., 0.);
           a = a - axisW * a.dot(axisW);
           if a.length() < 0.2 { a = axisW.cross(f); }
           a = a.normalize();
@@ -170,7 +170,7 @@ pub struct Ragdoll {
     var prev = List[Vec3].empty();
     i = 0usize;
     while i < links.len() { prev.push(zero3()); i = i + 1usize; }
-    new Ragdoll(links, boneLink, carrier, tag, spec.massSum(), spec.height, 1., 0.05, 1.5, 0., Quat.identity(), 6., true,
+    Ragdoll(links, boneLink, carrier, tag, spec.massSum(), spec.height, 1., 0.05, 1.5, 0., Quat.identity(), 6., true,
       prev, List[Impact].empty(), 0., 0., zero3(), zero3(), false, 0, 0., 0.15, 0.4, false, 0u32)
   }
 
@@ -217,7 +217,7 @@ pub struct Ragdoll {
   // The world bone transform for 'link' given its body's pose (the shape origin and orientation)
   fn boneFromBody(self: &, link: &Link, bodyPos: Vec3, bodyRot: Quat) Rigid {
     let r = (bodyRot * link.shapeRot.conjugate()).normalize();
-    new Rigid(bodyPos - r * link.center, r)
+    Rigid(bodyPos - r * link.center, r)
   }
 
   // ------------------------------------------------------------------ pose to bodies
@@ -275,10 +275,10 @@ pub struct Ragdoll {
       w.setTransform(id, *p1[k], *q1[k]);
       w.setLinearVelocity(id, (*p1[k] - *p0[k]) * inv + extra);
       var dq = (*q1[k]) * (*q0[k]).conjugate();
-      if dq.w < 0. { dq = new Quat(-dq.x, -dq.y, -dq.z, -dq.w); }
+      if dq.w < 0. { dq = Quat(-dq.x, -dq.y, -dq.z, -dq.w); }
       let s = (dq.x * dq.x + dq.y * dq.y + dq.z * dq.z).sqrt();
       let ang = 2. * atan2(s, dq.w);
-      w.setAngularVelocity(id, if s > 0.000001 { new Vec3(dq.x, dq.y, dq.z) * (ang / s * inv) } else { zero3() });
+      w.setAngularVelocity(id, if s > 0.000001 { Vec3(dq.x, dq.y, dq.z) * (ang / s * inv) } else { zero3() });
       k = k + 1usize;
     }
     resetEvents(self, w);
@@ -294,7 +294,7 @@ pub struct Ragdoll {
     let inv = placement.inverse();
     var mRot = List[Quat].empty();
     var mPos = List[Vec3].empty();
-    let one = new Vec3(1., 1., 1.);
+    let one = Vec3(1., 1., 1.);
     let n = skel.boneCount();
     var i = 0usize;
     while i < n {
@@ -308,10 +308,10 @@ pub struct Ragdoll {
         rm = (inv.rot * bt.rot).normalize();
         pm = inv.rot * bt.pos + inv.pos;
         if p < 0i32 {
-          out.locals.set(i, new Transform3(pm, rm, one));
+          out.locals.set(i, Transform3(pm, rm, one));
         } else {
           let lt = *base.locals[i];
-          out.locals.set(i, new Transform3(lt.translation, ((*mRot[usize.from(p)]).conjugate() * rm).normalize(), one));
+          out.locals.set(i, Transform3(lt.translation, ((*mRot[usize.from(p)]).conjugate() * rm).normalize(), one));
         }
       } else {
         let lt = *base.locals[i];
@@ -397,11 +397,11 @@ fn primOf(bs: &BoneSpec) Prim {
 pub fn shapeLowest(bs: &BoneSpec, pos: Vec3, rot: Quat) f32 {
   if bs.shape == SHAPE_SPHERE { return pos.y - bs.radius; }
   if bs.shape == SHAPE_CAPSULE {
-    let axisW = rot * new Vec3(0., 1., 0.);
+    let axisW = rot * Vec3(0., 1., 0.);
     return pos.y - absf(axisW.y) * bs.halfLen - bs.radius;
   }
-  let ex = rot * new Vec3(1., 0., 0.);
-  let ey = rot * new Vec3(0., 1., 0.);
-  let ez = rot * new Vec3(0., 0., 1.);
+  let ex = rot * Vec3(1., 0., 0.);
+  let ey = rot * Vec3(0., 1., 0.);
+  let ez = rot * Vec3(0., 0., 1.);
   pos.y - (absf(ex.y) * bs.half.x + absf(ey.y) * bs.half.y + absf(ez.y) * bs.half.z)
 }

@@ -186,10 +186,10 @@ actor Acceptor {
   fn route(self, ex: Exchange) {
     if ex.request.body.view().contains("\"model\":\"hang\"") {
       hits.send(1u64);
-      held.push(new Silent(ex));
+      held.push(Silent(ex));
       return;
     }
-    let h = new Handler(ex, hits.clone());
+    let h = Handler(ex, hits.clone());
     h.run();
   }
 }
@@ -281,7 +281,7 @@ actor Prober {
   pub async do run(self, port: u16, done: OneshotSender[u64]) {
     env.set("CHATAPI_TEST_KEY", theKey());
     env.set("CHATAPI_TEST_WRONGKEY", "sk-wrong-key-9999");
-    let chat = new Chat(Client.standard(), Endpoint.make(baseUrl(port).view(), "CHATAPI_TEST_KEY"));
+    let chat = Chat(Client.standard(), Endpoint.make(baseUrl(port).view(), "CHATAPI_TEST_KEY"));
 
     // The echo: the body the server saw comes back as the reply's text
     let echo = await chat.complete(echoRequest("echo", "Say \"hi\""));
@@ -291,12 +291,12 @@ actor Prober {
     printStr("\n");
 
     // A wrong key: 401 with the API's error object
-    let wrong = new Chat(Client.standard(), Endpoint.make(baseUrl(port).view(), "CHATAPI_TEST_WRONGKEY"));
+    let wrong = Chat(Client.standard(), Endpoint.make(baseUrl(port).view(), "CHATAPI_TEST_WRONGKEY"));
     let rwrongkey = await wrong.complete(simple("echo"));
     show("wrong key", &rwrongkey);
 
     // No key variable set; a request with no messages: neither is sent
-    let nokey = new Chat(Client.standard(), Endpoint.make(baseUrl(port).view(), "CHATAPI_TEST_UNSET"));
+    let nokey = Chat(Client.standard(), Endpoint.make(baseUrl(port).view(), "CHATAPI_TEST_UNSET"));
     let rnokey = await nokey.complete(simple("echo"));
     show("no key", &rnokey);
     let rnomessages = await chat.complete(ChatRequest.make("echo"));
@@ -343,7 +343,7 @@ actor Prober {
   }
 
   pub async do refused(self, port: u16, done: OneshotSender[u64]) {
-    let chat = new Chat(Client.standard(), Endpoint.make(baseUrl(port).view(), "CHATAPI_TEST_KEY"));
+    let chat = Chat(Client.standard(), Endpoint.make(baseUrl(port).view(), "CHATAPI_TEST_KEY"));
     let rrefused = await chat.complete(simple("echo"));
     show("refused", &rrefused);
     var d = done;
@@ -369,7 +369,7 @@ fn main() i32 {
   var hrx: Receiver[u64];
   htx, hrx = Channel[u64].make();
   {
-    let acceptor = new Acceptor(Server.none(), htx.clone(), List[Silent].empty());
+    let acceptor = Acceptor(Server.none(), htx.clone(), List[Silent].empty());
     acceptor.open(ptx.clone());
     let port = take[u16](&mut prx, 0u16);
     acceptor.serve();
@@ -377,7 +377,7 @@ fn main() i32 {
       var tx: OneshotSender[u64];
       var rx: OneshotReceiver[u64];
       tx, rx = Oneshot[u64].make();
-      let p = new Prober();
+      let p = Prober();
       p.run(port, tx);
       rx.recv();
     }
@@ -418,14 +418,14 @@ fn main() i32 {
     var ptx2: Sender[u16];
     var prx2: Receiver[u16];
     ptx2, prx2 = Channel[u16].make();
-    let gone = new Acceptor(Server.none(), htx.clone(), List[Silent].empty());
+    let gone = Acceptor(Server.none(), htx.clone(), List[Silent].empty());
     gone.open(ptx2.clone());
     let deadPort = take[u16](&mut prx2, 0u16);
     gone.stop();
     var tx: OneshotSender[u64];
     var rx: OneshotReceiver[u64];
     tx, rx = Oneshot[u64].make();
-    let p2 = new Prober();
+    let p2 = Prober();
     p2.refused(deadPort, tx);
     rx.recv();
   }

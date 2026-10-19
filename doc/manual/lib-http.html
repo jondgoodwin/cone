@@ -661,7 +661,7 @@ fn route(drv: &amp;mut Driver, pool: &amp;Pool, p: Pending) {
 // What the server does with one event of its own
 fn serve(drv: &amp;mut Driver, pool: &amp;Pool, pending: &amp;mut List[Pending], e: &amp;mut Event) {
   if e.kind == EventKind.Request {
-    pending.push(new Pending(e.req, e.request.method, e.request.target.copy(), String.empty()));
+    pending.push(Pending(e.req, e.request.method, e.request.target.copy(), String.empty()));
   } elif e.kind == EventKind.Data {
     let k = find(pending, e.req);
     if k &lt; pending.len() {(&amp;mut pending[k]).body.appendBytes(e.buf.view());}
@@ -1005,8 +1005,8 @@ fn main() {
   var portTx: Sender[u16];
   var portRx: Receiver[u16];
   portTx, portRx = Channel[u16].make();
-  let stop = new Arc[imm, Atomic[bool]](Atomic[bool].of(false));
-  let server = thread.start(new ServerArgs(portTx, stop), &amp;serverThread);
+  let stop = Arc[imm, Atomic[bool]](Atomic[bool].of(false));
+  let server = thread.start(ServerArgs(portTx, stop), &amp;serverThread);
   var port = 0u16;
   match portRx.recv() {
     case let p Some {port = p;}
@@ -1302,13 +1302,13 @@ struct TlsMaker {
   server: tls.Server;
   pool: Pool;
 
-  pub fn make(self: &amp;mut) Uni[httpconn.Layer] {new Uni[tls.Stream](server.stream(pool))}
+  pub fn make(self: &amp;mut) Uni[httpconn.Layer] {Uni[tls.Stream](server.stream(pool))}
 }
 
 // ... and where the plain server called drv.listen:
 match tls.Server.make(tls.ServerConfig.make(&amp;certFile, &amp;keyFile)) {
   case let tlsServer Ok {
-    let maker = new Uni[TlsMaker](new TlsMaker(tlsServer, pool));
+    let maker = Uni[TlsMaker](TlsMaker(tlsServer, pool));
     match drv.listenWith(&amp;mut lp, SocketAddr.localhost(0u16), maker, httpconn.Sink.Here(100u64)) {
       ...
     }
@@ -1438,7 +1438,7 @@ asking the OS: Failed, tls: closed: certificate untrusted (Windows error 2148204
 // Move what each side has to send to the other until neither has any;
 // what each reads is appended to its string
 fn pump(c: &amp;mut tls.Session, s: &amp;mut tls.Session, cin: &amp;mut String, sin: &amp;mut String) {
-  var buf = new Array[u8, 20000] &lt;- fill 0u8;
+  var buf = Array[u8, 20000]() &lt;- fill 0u8;
   var moved = true;
   while moved {
     moved = false;
@@ -1554,7 +1554,7 @@ tls: certificate name mismatch: hostname mismatch (OpenSSL's verify result 62)
 	<h3 id="tls-streams">Streams</h3>
 	<p>A <span class="pre">Stream</span> is a <span class="pre">Session</span> with buffers, in the shape of
 		httpconn's <span class="pre">Layer</span>: <span class="pre">client.stream(serverName, pool)</span> and
-		<span class="pre">server.stream(pool)</span> make one, and <span class="pre">new Uni[tls.Stream](...)</span>
+		<span class="pre">server.stream(pool)</span> make one, and <span class="pre">Uni[tls.Stream](...)</span>
 		slots it into <span class="pre">drv.connectWith</span> or a <span class="pre">LayerMaker</span>. The protocol's
 		bytes handed to it before the handshake is done wait and go out after it. A stream that fails reports it once
 		its last bytes (an alert, usually) have gone out. <span class="pre">st.session()</span> reaches the session.</p>

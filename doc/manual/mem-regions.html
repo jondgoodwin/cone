@@ -8,7 +8,7 @@
   <body>
 		<div id="header">
 			<a href="/"><div id="title">Cone</div></a>
-			<div id="sub">Regions and owning references: new and Uni</div>
+			<div id="sub">Regions and owning references: Uni and allocation</div>
 		</div>
 
     <div class="text">
@@ -17,7 +17,7 @@
 		outlive the function that made it, a node in a tree, a record kept for later, needs memory of its own, and
 		something to decide when to give it back. In Cone that something is a <b>region</b>, and each region is one of
 		the strategies from the <a href="memory.html">opening tour</a>. This page covers what every region shares:
-		allocating with <span class="pre">new</span>, the owning reference you get back, and when a value is freed, with
+		allocating a value in one, the owning reference you get back, and when a value is freed, with
 		the simplest region, the single owner <span class="pre">Uni</span>. Afterwards you can build data that lives as
 		long as you need:</p>
 
@@ -34,9 +34,9 @@ struct Node {
   fn final(self: &amp;uni) { print &lt;- "free ", value, "\n"; }
 }
 
-// new allocates a node that outlives this function: its owner is returned
+// Uni[Node](...) allocates a node that outlives this function: its owner is returned
 fn node(v: i32, left: Option[Uni[Node]], right: Option[Uni[Node]]) Uni[Node] {
-  new Uni[Node](v, left, right)
+  Uni[Node](v, left, right)
 }
 
 fn leaf(v: i32) Option[Uni[Node]] {
@@ -112,11 +112,12 @@ free 3
 			must be checked before use.</li>
 	</ul>
 
-	<h2 id="new">Allocating a value: new</h2>
-	<p>Like every <a href="rec-methods.html#initializer">construction</a>, an allocation begins with
-		<span class="pre">new</span>. What follows is the type of owning reference wanted back:</p>
+	<h2 id="new">Allocating a value</h2>
+	<p>Like every <a href="rec-methods.html#initializer">construction</a>, an allocation is written with the name of the type
+		constructed, and here it is the type of owning reference wanted back. The compiler allocates because the type is an
+		owning reference:</p>
 <pre>
-let node = new Rc[mut, Node](1);
+let node = Rc[mut, Node](1);
 </pre>
 	<ul>
 		<li><b>The region ref</b> names the region that allocates the value and manages its life: here
@@ -135,10 +136,10 @@ let node = new Rc[mut, Node](1);
 	</ul>
 	<p>The parentheses hold the arguments of the value's <a href="rec-methods.html#initializer">initializer</a>,
 		chosen as for any construction: here <span class="pre">Node</span>'s implicit initializer, which takes its fields in
-		order. Empty parentheses may be left off. What comes back is an owning reference of the type written,
+		order. The parentheses are written even when empty, since the name alone is the type. What comes back is an owning reference of the type written,
 		<span class="pre">Rc[mut, Node]</span>.</p>
 	<p id="empty">A value of no size cannot be allocated: there is no owning reference to a value of an empty struct,
-		<span class="pre">new Uni[Empty]()</span> (<i>Error 1013: May not allocate a value of abstract or zero-size type</i>).</p>
+		<span class="pre">Uni[Empty]()</span> (<i>Error 1013: May not allocate a value of abstract or zero-size type</i>).</p>
 
 	<h3 id="value">Allocating a finished value</h3>
 	<p>The parentheses may instead hold one finished value of the value type, which is moved into the new allocation, as
@@ -147,33 +148,33 @@ let node = new Rc[mut, Node](1);
 		exactly one value, converted to the value type as a variable's initial value is: a number literal takes on the value
 		type, and an enum's variant becomes its enum:</p>
 <pre>
-let count = new Rc[u64](5);                            // the literal is a u64
-let grid = new Rc[mut, Array[i32, 3]]([1, 2, 3]);
-let pair = new Uni[(i32, f32)]((1, 2.0));
-let maybe = new Uni[Option[i32]](Some(3));
-let name = new Arc[imm, String](String.from("x"));     // a call's result
-let list = new Rc[mut, List[Fin]](items);              // items is moved in
+let count = Rc[u64](5);                            // the literal is a u64
+let grid = Rc[mut, Array[i32, 3]]([1, 2, 3]);
+let pair = Uni[(i32, f32)]((1, 2.0));
+let maybe = Uni[Option[i32]](Some(3));
+let name = Arc[imm, String](String.from("x"));     // a call's result
+let list = Rc[mut, List[Fin]](items);              // items is moved in
 </pre>
 	<p>A struct's allocation is told apart by type: when exactly one argument is given and its type is the struct itself
 		(through an <a href="mod-namespaces.html">alias</a> as well), it is the finished value, moved in, and no initializer
 		runs; otherwise the arguments go to the struct's initializers, as for any construction. A reference to the struct, or
 		a value that would only convert to it, is not the struct itself:</p>
 <pre>
-let s = new Seeded(4);                  // Seeded's init runs
-let byInit = new Rc[Seeded](5);         // Seeded's init runs again, on 5
-let moved = new Rc[Seeded](s);          // s is moved in; no init runs
+let s = Seeded(4);                  // Seeded's init runs
+let byInit = Rc[Seeded](5);         // Seeded's init runs again, on 5
+let moved = Rc[Seeded](s);          // s is moved in; no init runs
 </pre>
-	<p>A value is constructed once: <span class="pre">new Point(p)</span>, where <span class="pre">p</span> is already a
+	<p>A value is constructed once: <span class="pre">Point(p)</span>, where <span class="pre">p</span> is already a
 		Point, is refused (<i>Error 1227: This is already a value of Point, which needs no construction: use it as it is, or
-		allocate it with 'new R[perm, Point](value)'</i>).</p>
+		allocate it with 'R[perm, Point](value)'</i>).</p>
 	<p>An <a href="mod-namespaces.html">alias</a> of an owning reference type allocates the same way, so a program that
 		names its reference type once writes its allocations with that name. And to make a
 		<a href="mod-substitution.html">virtual reference</a>, allocate the concrete type and let the reference coerce where
 		the virtual one is wanted:</p>
 <pre>
 alias Node = Gc[mut, NodeValue];
-let leaf = new Node(1);                             // a Gc[mut, NodeValue]
-let shape: Rc[mut, Shape] = new Rc[mut, Circle](5);  // Shape a trait, Circle a struct that is one
+let leaf = Node(1);                             // a Gc[mut, NodeValue]
+let shape: Rc[mut, Shape] = Rc[mut, Circle](5);  // Shape a trait, Circle a struct that is one
 </pre>
 
 	<h3 id="contents">Allocating with contents</h3>
@@ -185,11 +186,11 @@ let shape: Rc[mut, Shape] = new Rc[mut, Circle](5);  // Shape a trait, Circle a 
 		allocation then takes nothing in parentheses. A collection's contents are appended through the new reference once
 		it is made, as they are appended to a value it constructs:</p>
 <pre>
-let zeros = new Rc[mut, Array[i32, 1000, 1000]] &lt;- fill 0;
-let grid = new Uni[Array[i32, 2, 3]] &lt;- 1, 2, 3, 4, 5, 6;
-let names = new Rc[mut, List[i32]](10) &lt;- 1, 2, 3;
+let zeros = Rc[mut, Array[i32, 1000, 1000]]() &lt;- fill 0;
+let grid = Uni[Array[i32, 2, 3]]() &lt;- 1, 2, 3, 4, 5, 6;
+let names = Rc[mut, List[i32]](10) &lt;- 1, 2, 3;
 </pre>
-	<p>Today a single owner of a collection does not take contents this way: <span class="pre">new Uni[List[i32]](10)
+	<p>Today a single owner of a collection does not take contents this way: <span class="pre">Uni[List[i32]](10)
 		&lt;- 1, 2, 3</span> is refused with a misleading <i>Error 1048: This variable's value has been moved out</i>. Allocate
 		it, then push.</p>
 
@@ -213,7 +214,7 @@ let names = new Rc[mut, List[i32]](10) &lt;- 1, 2, 3;
 <pre>
 let bytes: &amp;Array[u8] = "hello";
 let view = bytes as &amp;str;                    // a borrow of the bytes: 5 of them
-let text = new Rc[str](view);                // a copy, in Rc's memory
+let text = Rc[str](view);                // a copy, in Rc's memory
 let same = trynew Uni[str](view);             // an Option, None if memory ran out
 printStr(text);                              // lent as a borrow, which is the &amp;str printStr takes
 </pre>
@@ -221,10 +222,10 @@ printStr(text);                              // lent as a borrow, which is the &
 		that lasts as long as the program, so it may be sent to another thread. The text is followed by a zero byte for C
 		that the count leaves out, and an owner of <span class="pre">str</span> keeps one after its bytes too
 		(<a href="lib-string.html#cstr">C strings</a>). Wherever an owner of <span class="pre">str</span> is wanted, in any
-		region, a literal (and only a literal) is copied into one without <span class="pre">new</span>; any other
-		<span class="pre">&amp;str</span> is copied with <span class="pre">new</span> as above:</p>
+		region, a literal (and only a literal) is copied into one without being constructed; any other
+		<span class="pre">&amp;str</span> is copied by constructing the owner as above:</p>
 <pre>
-let name: Uni[str] = "Padma";                  // new Uni[str]("Padma"), copied from read-only memory
+let name: Uni[str] = "Padma";                  // Uni[str]("Padma"), copied from read-only memory
 fn greet(who: Rc[str]) {..}
 greet("Jayne");                              // the same copy, into an Rc
 </pre>
@@ -235,7 +236,7 @@ greet("Jayne");                              // the same copy, into an Rc
 	<p>Where a read-only borrow of such a type is wanted, <span class="pre">&amp;String</span> for one, the literal is
 		borrowed from a temporary made the same way: <span class="pre">&amp;String.fromLiteral("core")</span>, written out.
 		The temporary lasts to the end of the statement and is dropped there, like any temporary a borrow points at (a
-		function's parameter and an <span class="pre">init</span>'s, in <span class="pre">new File("x")</span>, are given
+		function's parameter and an <span class="pre">init</span>'s, in <span class="pre">File("x")</span>, are given
 		one alike); a local's initializer keeps it to the end of the block, as <span class="pre">let r = &amp;make()</span>
 		does (<a href="mem-borrowing.html#temporary">Borrowing a temporary</a>). It is lent only to a borrow that cannot
 		write (<span class="pre">&amp;mut String</span> is refused, since what is written to the temporary is lost with it),
@@ -264,12 +265,12 @@ let r: &amp;String = "core";                      // the temporary lasts as long
 		in a region and reached by a thin reference whose type carries the size. Its contents follow the allocation after
 		<span class="pre">&lt;-</span> and fill it in the region's memory (<a href="#contents">above</a>); an array already
 		made is moved in from the parentheses. Today that array must be named first: an array construction written inside
-		the parentheses, <span class="pre">new Rc[mut, Array[i32, 4]](new Array[i32, 4] &lt;- 1, 2, 3, 4)</span>, is refused
+		the parentheses, <span class="pre">Rc[mut, Array[i32, 4]](Array[i32, 4]() &lt;- 1, 2, 3, 4)</span>, is refused
 		with a misleading <i>Error 1226</i>.
 <pre>
-let grid = new Rc[mut, Array[i32, 4]] &lt;- fill 0i32;   // grid's type: Rc[mut, Array[i32, 4]]
-let four = new Array[i32, 4] &lt;- 1, 2, 3, 4;
-let made = new Rc[mut, Array[i32, 4]](four);          // four is moved in
+let grid = Rc[mut, Array[i32, 4]]() &lt;- fill 0i32;   // grid's type: Rc[mut, Array[i32, 4]]
+let four = Array[i32, 4]() &lt;- 1, 2, 3, 4;
+let made = Rc[mut, Array[i32, 4]](four);          // four is moved in
 </pre></li>
 	<li><b>An owner of <span class="pre">Array[T]</span></b>, when the number of elements is chosen at run time and
 		never changes: <span class="pre">Uni[Array[T]]</span>, <span class="pre">Rc[Array[T]]</span>,
@@ -287,15 +288,15 @@ let made = new Rc[mut, Array[i32, 4]](four);          // four is moved in
 <pre>
 fn sum(xs: &amp;Array[i32]) i32 { var t = 0; each x in xs { t += *x; } t }
 
-let primes = new Array[i32, 4] &lt;- 2, 3, 5, 7;
-let shared = new Rc[imm, Array[i32]](&amp;primes);   // a copy: a pointer and a count, 16 bytes
+let primes = Array[i32, 4]() &lt;- 2, 3, 5, 7;
+let shared = Rc[imm, Array[i32]](&amp;primes);   // a copy: a pointer and a count, 16 bytes
 let total = sum(shared);                         // lent as the &amp;Array[i32] sum takes: 17
 let middle = &amp;shared[1usize ..&lt; 3usize];         // a borrowed range of it
 </pre></li>
 	<li><b>A collection</b>, when the length is chosen at run time and may grow or shrink, which is exactly what a
 		<span class="pre">List</span> is: a pointer to its elements, how many there are, and how many it has room for. A list
 		held in a local is used directly; one that several owners share is a managed reference to it,
-		<span class="pre">new Rc[mut, List[i32]](names)</span>. The length of a shared list lives once, in the list, where
+		<span class="pre">Rc[mut, List[i32]](names)</span>. The length of a shared list lives once, in the list, where
 		every owner sees the same count; a length carried in each copy of a reference could not stay in step when the list
 		grows. That is why there is no owning reference to a growable array, and writing <span class="pre">+[]</span>, as a
 		type or an allocation, is an error that says so (<i>Error 1203: There is no owning array reference '+[]'</i>).</li>
@@ -330,7 +331,7 @@ var list = List[Gc[imm, Leaf]].empty();
 		<span class="pre">Rc[Node]</span> is <span class="pre">Rc[uni, Node]</span>. The region ref is a struct declaring
 		<span class="pre">is RegionRef</span>; a permission given to anything else is an error. A generic region ref takes its
 		own brackets first, then the reference's: <span class="pre">R[A][mut, Node]</span>, allocated as any other,
-		<span class="pre">new R[A][mut, Node](1)</span>. When the value type is an open trait, the reference is a
+		<span class="pre">R[A][mut, Node](1)</span>. When the value type is an open trait, the reference is a
 		<a href="mod-substitution.html">virtual reference</a>, which carries a table of methods beside its pointer
 		(<span class="pre">Rc[mut, Shape]</span>); when it is a body whose length the reference carries, it is a
 		<a href="#dynbody">pointer and a count</a> (<span class="pre">Uni[str]</span>); for any other value type, an enum
@@ -375,7 +376,7 @@ let shape: &amp;Shape = &amp;someDot;     // a reference to a variant coerces to
 		it, more owning references to the same value are made by copying an existing one, by assignment or by passing it to
 		a function:</p>
 <pre>
-let node = new Rc[imm, Node](4);
+let node = Rc[imm, Node](4);
 let node2 = node;            // node2 and node point at the same value
 </pre>
 
@@ -392,7 +393,7 @@ let node2 = node;            // node2 and node point at the same value
 	<p>An allocation can fail, rarely, when the region cannot get enough memory. How a program finds out depends on how the
 		allocation is written:</p>
 	<ul>
-		<li><b><span class="pre">new</span></b>: the program <a href="safe-panics.html#panic">panics</a> and shuts down,
+		<li><b>A construction</b>, <span class="pre">Rc[mut, Node](1)</span>: the program <a href="safe-panics.html#panic">panics</a> and shuts down,
 			naming the line of the allocation and the size it asked for: <span class="pre">out of memory allocating 24
 			bytes</span>.</li>
 		<li><b><span class="pre">trynew</span></b>: the allocation gives back an <a href="guide-enums.html#option">Option</a>
@@ -471,8 +472,8 @@ fn keep(n: Uni[mut, Node]) {..}   // Error 1507: Uni has one owner per value, wh
 		the value in place, where it was allocated, or the finished value is stored there, or an array's contents fill it,
 		each value evaluated then. Last, the owning reference goes where the expression puts it:</p>
 <pre>
-let p = new Rc[mut, Pair](make(1), make(2));  // make(1), make(2), then alloc, then Pair's init
-let q = new Rc[mut, Pair](makePair());        // makePair(), then alloc, then the store
+let p = Rc[mut, Pair](make(1), make(2));  // make(1), make(2), then alloc, then Pair's init
+let q = Rc[mut, Pair](makePair());        // makePair(), then alloc, then the store
 </pre>
 	<p id="inplace">A construction always fills its value in place, where the value goes, so no copy is made.
 		Declaring a variable with a construction hands the initializer the variable's own memory, and allocating one hands

@@ -34,7 +34,7 @@ pub struct HandKey {
   pub close: f32;             // 0 the pose as it is, 1 closed on the prop
   pub pose: HandPose;
 
-  pub fn make(pose: HandPose) HandKey { new HandKey(new Vec3(0., 0., 0.), new Vec3(0., 0., 0.), 0., pose) }
+  pub fn make(pose: HandPose) HandKey { HandKey(Vec3(0., 0., 0.), Vec3(0., 0., 0.), 0., pose) }
 
   pub fn flat(self: &) List[f32] {
     var out = List[f32].empty();
@@ -50,14 +50,14 @@ pub struct HandKey {
     var p = HandPose.zero();
     var i = 0usize;
     while i < FINGERS * DOF { p.v.set(i, *v[7usize + i]); i = i + 1usize; }
-    new HandKey(new Vec3(*v[0], *v[1], *v[2]), new Vec3(*v[3], *v[4], *v[5]), *v[6], p)
+    HandKey(Vec3(*v[0], *v[1], *v[2]), Vec3(*v[3], *v[4], *v[5]), *v[6], p)
   }
 
   // The wrist's offset as a transform
   pub fn offset(self: &) Transform3 {
     let angle = rotation.length();
     let q = if angle > 0.000001 { Quat.angleAxis(angle, rotation * (1. / angle)) } else { Quat.identity() };
-    new Transform3(translation, q, new Vec3(1., 1., 1.))
+    Transform3(translation, q, Vec3(1., 1., 1.))
   }
 }
 
@@ -71,9 +71,9 @@ pub struct HandMotion {
   pub keys: List[MotionKey];
   pub period: f32;
 
-  pub fn make(name: &str, period: f32) HandMotion { new HandMotion(String.from(name), List[MotionKey].empty(), period) }
+  pub fn make(name: &str, period: f32) HandMotion { HandMotion(String.from(name), List[MotionKey].empty(), period) }
 
-  pub fn add(self: &mut, time: f32, key: HandKey) { keys.push(new MotionKey(time, key)); }
+  pub fn add(self: &mut, time: f32, key: HandKey) { keys.push(MotionKey(time, key)); }
 
   // The key at time 't' (taken round the period)
   pub fn sample(self: &, t: f32) HandKey {
@@ -124,7 +124,7 @@ pub struct TaskBlend {
   pub clock: f32;
 
   pub fn make() TaskBlend {
-    new TaskBlend(List[HandMotion].empty(), List[f32].empty(), List[f32].empty(), List[f32].empty(), 0.)
+    TaskBlend(List[HandMotion].empty(), List[f32].empty(), List[f32].empty(), List[f32].empty(), 0.)
   }
 
   // Add a motion with weight 'weight' at first: its number
@@ -211,12 +211,12 @@ pub fn oscillate(name: &str, translationAmp: Vec3, rotationAmp: Vec3, period: f3
 
 // Turn: the wrist rolls about the forearm (the hand's y axis) by +-'roll' radians
 pub fn turnMotion(roll: f32, period: f32, pose: &HandPose, close: f32) HandMotion {
-  oscillate("turn", new Vec3(0., 0., 0.), new Vec3(0., roll, 0.), period, pose, close)
+  oscillate("turn", Vec3(0., 0., 0.), Vec3(0., roll, 0.), period, pose, close)
 }
 
 // Swing: the wrist hinges about its bending axis (across the hand: z) by +-'angle', a hammer's stroke
 pub fn swingMotion(angle: f32, period: f32, pose: &HandPose, close: f32) HandMotion {
-  oscillate("swing", new Vec3(0., 0., 0.), new Vec3(0., 0., angle), period, pose, close)
+  oscillate("swing", Vec3(0., 0., 0.), Vec3(0., 0., angle), period, pose, close)
 }
 
 // Press: the palm leans into the surface by 'depth' metres along its normal and eases off
@@ -238,8 +238,8 @@ pub fn pressMotion(spec: &HandSpec, depth: f32, period: f32, pose: &HandPose) Ha
 fn keyAt(spec: &HandSpec, along: f32, lean: f32, roll: f32, pose: &HandPose, close: f32) HandKey {
   var k = HandKey.make(pose.copy());
   // 'along' is distance towards the fingertips (the hand's -y); 'lean' the palm's push into the surface
-  k.translation = new Vec3(0., -along, 0.) + spec.palmNormal * lean;
-  k.rotation = new Vec3(0., 0., roll * spec.h);
+  k.translation = Vec3(0., -along, 0.) + spec.palmNormal * lean;
+  k.rotation = Vec3(0., 0., roll * spec.h);
   k.close = close;
   k
 }
@@ -277,11 +277,11 @@ pub fn evaluateKey(spec: &HandSpec, shape: &GripShape, base: &Transform3, key: &
     // Lifted until the palm and every finger of the key's own pose are clear (the fingers then close from there)
     var lifted = 0.;
     while lifted < 0.05 && !poseClear(spec, &key.pose, &wrist, surface, squash) {
-      wrist = new Transform3(wrist.translation + up * 0.0005, wrist.rotation, wrist.scale);
+      wrist = Transform3(wrist.translation + up * 0.0005, wrist.rotation, wrist.scale);
       lifted = lifted + 0.0005;
     }
   }
-  let trial = new GripShape(String.from("key"), key.pose.copy(), shape.closed.copy());
+  let trial = GripShape(String.from("key"), key.pose.copy(), shape.closed.copy());
   var closedOn = closeOn(spec, &trial, &wrist, surface, squash, 31u32);
   // (the spline may overshoot the closure a little; past 0 to 1 it would pull the fingers through the prop)
   var pose = lerpPose(&key.pose, &closedOn.pose, clampf(key.close, 0., 1.));
@@ -289,11 +289,11 @@ pub fn evaluateKey(spec: &HandSpec, shape: &GripShape, base: &Transform3, key: &
   // A pose in between can chord through a curved prop: with 'rest', lift a little more and close again
   var again = 0;
   while rest && result.deepest > squash * 1.5 && again < 40 {
-    wrist = new Transform3(wrist.translation + up * 0.002, wrist.rotation, wrist.scale);
+    wrist = Transform3(wrist.translation + up * 0.002, wrist.rotation, wrist.scale);
     closedOn = closeOn(spec, &trial, &wrist, surface, squash, 31u32);
     pose = lerpPose(&key.pose, &closedOn.pose, clampf(key.close, 0., 1.));
     result = measure(spec, &pose, &wrist, surface);
     again = again + 1;
   }
-  new HandFrame(wrist, pose.copy(), result)
+  HandFrame(wrist, pose.copy(), result)
 }

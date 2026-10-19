@@ -9,9 +9,9 @@
 //   import collections use *;
 //
 //   fn main() {
-//     mut seen = new List[String] <- String.from("core");
+//     mut seen = List[String]() <- String.from("core");
 //     seen.push(String.from("stdio"));
-//     mut counts = new Dict[String, i64] <- String.from("core"): 1;
+//     mut counts = Dict[String, i64]() <- String.from("core"): 1;
 //     if counts.contains("core") { ... *counts["core"] ... }
 //   }
 //
@@ -29,9 +29,9 @@
 // allocate, resize and release a block, held as a collection's last field
 // ('region'), and every block comes from it and goes back to it. A construction
 // that names none is handed the heap's ('heapRegion()': the raw blocks layer's
-// 'alloc', 'resize' and 'release', a static object that is never null), so 'new List[i64]' and
+// 'alloc', 'resize' and 'release', a static object that is never null), so 'List[i64]()' and
 // 'List[i64].empty()' behave as they always have. Another is passed as the
-// construction's last argument, 'new List[i64](100, r)', where 'r' is a '*MemRegion'.
+// construction's last argument, 'List[i64](100, r)', where 'r' is a '*MemRegion'.
 // A collection holding others hands them its own region where they are made
 // inside it (a String its List, a Set its Dict), and a block no region can own
 // -- what 'freeze' hands to a 'Uni', which gives it back to the raw blocks layer -- is
@@ -72,14 +72,14 @@
 // arguments are, so a List[&mut Point] is not. A String is Sendable by its
 // List[u8]. Nothing here is safe to change from two threads at once.
 //
-// A collection is constructed with 'new': 'new List[i64]' has no block yet,
-// 'new List[i64](100)' room for exactly 100, and the values it starts with
-// follow '<-', each appended in turn: 'new List[i64](100) <- fill 0', 'new
+// A collection is constructed with 'new': 'List[i64]()' has no block yet,
+// 'List[i64](100)' room for exactly 100, and the values it starts with
+// follow '<-', each appended in turn: 'List[i64](100) <- fill 0', 'new
 // Dict[String, i64] <- String.from("a"): 1' (a dictionary's '<-' takes a key
 // and a value, and inserts them). Every collection takes a starting size the
-// same way: 'new Deque[i64](100)', 'new String(100)' (bytes, and the NUL after
-// them), and for the tables, 'new Dict[String, i64](100)', 'new
-// OrderedDict[String, i64](100)' and 'new Set[String](100)', room for 100
+// same way: 'Deque[i64](100)', 'String(100)' (bytes, and the NUL after
+// them), and for the tables, 'Dict[String, i64](100)', 'new
+// OrderedDict[String, i64](100)' and 'Set[String](100)', room for 100
 // entries without growing (rounded up to the table's size), as is 'new
 // Pool[Npc](100)' for its slots. A function a type offers without a receiver
 // makes one too: 'List[i64].empty()', 'List[i64].withCapacity(n)' (never less
@@ -147,15 +147,15 @@ pub struct List[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
   // 'str''s are a String's: its 'len', written once on the body
   use Array[T] via view but iter, mutItems, mutChunks, mutArrays;
 
-  // An empty list, 'new List[i32]': no block until the first value arrives. The
+  // An empty list, 'List[i32]()': no block until the first value arrives. The
   // last argument of every init is the region the list's block will come from,
   // which a construction that names none leaves out and is handed the heap's.
-  pub fn initEmpty overload init(self: &new, region: *MemRegion) { *self = new List(null, 0usize, 0usize, region); }
+  pub fn initEmpty overload init(self: &new, region: *MemRegion) { *self = List(null, 0usize, 0usize, region); }
 
-  // An empty list whose block has room for exactly n values, 'new List[i32](100)',
-  // which is what its contents' 'fill' fills: 'new List[i32](100) <- fill 0'
+  // An empty list whose block has room for exactly n values, 'List[i32](100)',
+  // which is what its contents' 'fill' fills: 'List[i32](100) <- fill 0'
   pub fn initCapacity overload init(self: &new, n: usize, region: *MemRegion) {
-    *self = new List(null, 0usize, 0usize, region);
+    *self = List(null, 0usize, 0usize, region);
     if n > 0usize {
       self.ptr = blockNew[T](region, n);
       self.cap = n;
@@ -163,11 +163,11 @@ pub struct List[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
   }
 
   // An empty list: no block until the first value arrives
-  pub fn empty() List { new List(null, 0usize, 0usize, heapRegion()) }
+  pub fn empty() List { List(null, 0usize, 0usize, heapRegion()) }
 
   // An empty list whose block already has room for n values
   pub fn withCapacity(n: usize) List {
-    var l = new List(null, 0usize, 0usize, heapRegion());
+    var l = List(null, 0usize, 0usize, heapRegion());
     l.reserve(n);
     l
   }
@@ -295,7 +295,7 @@ pub struct List[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
   // A cursor over its values, front to back, which 'each x in list' walks: 'next'
   // gives a borrow of each in turn until it answers None. The list may not
   // change while the cursor, or a borrow it gave, is used
-  pub fn iter(self: &) ListIter[T] { new ListIter[T](self, ptr, used, 0usize) }
+  pub fn iter(self: &) ListIter[T] { ListIter[T](self, ptr, used, 0usize) }
 
   // A mutable slice of every value it holds, for changing them in place:
   // what a function that fills a slice writes into, a C function included.
@@ -314,13 +314,13 @@ pub struct List[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
   // 'x' is a '&mut' of each. It is a cursor over the mutable slice 'viewMut' lends
   // (so the loop is a counted one, as for any slice), and the list may not be read or
   // changed otherwise while the loop runs
-  pub fn mutItems(self: &mut) ArrayMutItems[T] { new ArrayMutItems[T](mem.sliceFromPartsMut(ptr, used), 0usize) }
+  pub fn mutItems(self: &mut) ArrayMutItems[T] { ArrayMutItems[T](mem.sliceFromPartsMut(ptr, used), 0usize) }
 
   // How a collector reaches what the list holds, in its block: a writable
   // reference to each value, which it traces as the value is traced (and, where
   // it moves what a value refers to, rewrites in place). A list of numbers holds
   // nothing a collector need find, and this costs it nothing.
-  pub fn gcTraceElements(self: &mut) ArrayMutItems[T] { new ArrayMutItems[T](mem.sliceFromPartsMut(ptr, used), 0usize) }
+  pub fn gcTraceElements(self: &mut) ArrayMutItems[T] { ArrayMutItems[T](mem.sliceFromPartsMut(ptr, used), 0usize) }
 
   // The values in runs of 'n' for changing in place, each run a '&mut' slice
   // (the last may be shorter): the mutable slice's 'mutChunks'. The list may not
@@ -344,7 +344,7 @@ pub struct List[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
   pub fn drain(self: &mut) ListDrain[T] {
     let n = used;
     used = 0usize;
-    new ListDrain[T](self, ptr, n, 0usize)
+    ListDrain[T](self, ptr, n, 0usize)
   }
 
   // The list is consumed: its values stay where they are, in the block it
@@ -374,7 +374,7 @@ pub struct List[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
     mem.sliceFromPartsUni(p, n) as Uni[Array[T]]
   }
 
-  // THE PARALLEL BUILDER. 'new List[T] <- parallel each x in src yield v' is built
+  // THE PARALLEL BUILDER. 'List[T]() <- parallel each x in src yield v' is built
   // from these three, which the compiler calls and a program does not. Each piece
   // of the loop (a run of consecutive passes, on whichever worker) appends to a
   // list of its own, an 'emptyPiece' (the pieces never touch each other's), and
@@ -382,11 +382,11 @@ pub struct List[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
   // piece has, 'joinPieces' moves the pieces' values onto the end of this list in
   // the order of the passes that made them, by where each piece began, and gives
   // the pieces' blocks back. The bag is made first, 'pieceBag'.
-  pub fn pieceBag(self: &) PieceBag { new PieceBag(0usize) }
+  pub fn pieceBag(self: &) PieceBag { PieceBag(0usize) }
 
   // (A piece is built on a worker of its own, so it is the heap's, not the
   // list's region, whose owner may not allow two threads in at once)
-  pub fn emptyPiece(self: &) List[T] { new List[T](null, 0usize, 0usize, heapRegion()) }
+  pub fn emptyPiece(self: &) List[T] { List[T](null, 0usize, 0usize, heapRegion()) }
 
   // The list of the piece that began at pass 'lo', kept in the bag (a piece that
   // appended nothing is not kept). The bag's stack is pushed atomically: the
@@ -394,7 +394,7 @@ pub struct List[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
   pub fn depositPiece(self: &, bag: &mut PieceBag, lo: usize, piece: List[T]) {
     if piece.used == 0usize { return; }
     let node = libc.malloc(mem.sizeof[PieceNode[T]]()) as *PieceNode[T];
-    mem.writeRaw(node, new PieceNode[T](0usize, lo, piece));
+    mem.writeRaw(node, PieceNode[T](0usize, lo, piece));
     let headp = &mut bag.head as *usize;
     var seen = 0usize;
     var pushed = false;
@@ -557,7 +557,7 @@ pub struct ListIter['a, T] is Iterator[&T] {
     if at > end - pos {
       panic("ListIter.split: the index is past the end");
     }
-    (new ListIter[T](list, ptr, pos + at, pos), new ListIter[T](list, ptr, end, pos + at))
+    (ListIter[T](list, ptr, pos + at, pos), ListIter[T](list, ptr, end, pos + at))
   }
 }
 
@@ -610,14 +610,14 @@ pub struct Deque[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
   cap: usize;
   region: *MemRegion;
 
-  // An empty deque, 'new Deque[i32]': no block until the first value arrives.
+  // An empty deque, 'Deque[i32]()': no block until the first value arrives.
   // The last argument of every init is the region the block will come from
   // (see List)
-  pub fn initEmpty overload init(self: &new, region: *MemRegion) { *self = new Deque(null, 0usize, 0usize, 0usize, region); }
+  pub fn initEmpty overload init(self: &new, region: *MemRegion) { *self = Deque(null, 0usize, 0usize, 0usize, region); }
 
-  // An empty deque whose block has room for exactly n values, 'new Deque[i32](100)'
+  // An empty deque whose block has room for exactly n values, 'Deque[i32](100)'
   pub fn initCapacity overload init(self: &new, n: usize, region: *MemRegion) {
-    *self = new Deque(null, 0usize, 0usize, 0usize, region);
+    *self = Deque(null, 0usize, 0usize, 0usize, region);
     if n > 0usize {
       self.ptr = blockNew[T](region, n);
       self.cap = n;
@@ -625,11 +625,11 @@ pub struct Deque[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
   }
 
   // An empty deque: no block until the first value arrives
-  pub fn empty() Deque { new Deque(null, 0usize, 0usize, 0usize, heapRegion()) }
+  pub fn empty() Deque { Deque(null, 0usize, 0usize, 0usize, heapRegion()) }
 
   // An empty deque whose block already has room for n values
   pub fn withCapacity(n: usize) Deque {
-    var d = new Deque(null, 0usize, 0usize, 0usize, heapRegion());
+    var d = Deque(null, 0usize, 0usize, 0usize, heapRegion());
     d.reserve(n);
     d
   }
@@ -641,7 +641,7 @@ pub struct Deque[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
 
   // How a collector reaches what the deque holds, in its block: a writable
   // reference to each value, front to back (see List)
-  pub fn gcTraceElements(self: &mut) DequeGcTraceItems[T] { new DequeGcTraceItems[T](self, 0usize) }
+  pub fn gcTraceElements(self: &mut) DequeGcTraceItems[T] { DequeGcTraceItems[T](self, 0usize) }
 
   // Make room for 'more' values beyond those it holds. A block too small is
   // replaced by one twice its size, or exactly big enough if that is more, and
@@ -731,10 +731,10 @@ pub struct Deque[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
 
   // A cursor over its values, front to back: 'next' gives a borrow of each in
   // turn until it answers None. The deque may not change while it is used.
-  pub fn items(self: &) DequeItems[T] { new DequeItems[T](self, 0usize) }
+  pub fn items(self: &) DequeItems[T] { DequeItems[T](self, 0usize) }
 
   // The same cursor under the name 'each x in deque' walks it by
-  pub fn iter(self: &) DequeItems[T] { new DequeItems[T](self, 0usize) }
+  pub fn iter(self: &) DequeItems[T] { DequeItems[T](self, 0usize) }
 
   // The slot of the value at position i, which may be the one just past the last
   // when the caller is about to fill it
@@ -831,25 +831,25 @@ pub struct String is ShapeChanging, Hash, CarriesRegion {
 
   use str via view but len, isEmpty, cstr, `[]`, trim, eq, `==`, hash;
 
-  // An empty String, 'new String': no block until the first byte arrives. The
+  // An empty String, 'String()': no block until the first byte arrives. The
   // last argument of every init is the region the bytes will sit in (see List),
   // which the String hands its List
   pub fn initEmpty overload init(self: &new, region: *MemRegion) {
-    *self = new String(new List[u8](region));
+    *self = String(List[u8](region));
   }
 
-  // An empty String with room for n bytes (and the NUL after them), 'new String(100)'
+  // An empty String with room for n bytes (and the NUL after them), 'String(100)'
   pub fn initCapacity overload init(self: &new, n: usize, region: *MemRegion) {
-    if n == 0usize { *self = new String(new List[u8](region)); }
-    else { *self = new String(new List[u8](n + 1usize, region)); }
+    if n == 0usize { *self = String(List[u8](region)); }
+    else { *self = String(List[u8](n + 1usize, region)); }
   }
 
-  pub fn empty() String { new String(List[u8].empty()) }
+  pub fn empty() String { String(List[u8].empty()) }
 
   // An empty String with room for n bytes (and the NUL after them)
   pub fn withCapacity(n: usize) String {
     if n == 0usize { return String.empty(); }
-    new String(List[u8].withCapacity(n + 1usize))
+    String(List[u8].withCapacity(n + 1usize))
   }
 
   // A String holding a copy of this text
@@ -987,7 +987,7 @@ pub struct String is ShapeChanging, Hash, CarriesRegion {
   }
 
   pub fn appendUInt overload `<-`(self: &mut, n: u64) {
-    var digits = new Array[u8, 20] <- fill 0u8;
+    var digits = Array[u8, 20]() <- fill 0u8;
     var count = 0usize;
     var rest = n;
     var going = true;
@@ -1072,7 +1072,7 @@ pub struct String is ShapeChanging, Hash, CarriesRegion {
   pub fn replace(self: &mut, from: &str, to: &str) {
     let v = self.raw();
     let f: &Array[u8] = from;
-    var out = new String(v.len, buf.region);
+    var out = String(v.len, buf.region);
     var i = 0usize;
     if f.len == 0usize {
       while i < v.len { out.append(to); out.appendByte(v[i]); i = i + 1usize; }
@@ -1099,7 +1099,7 @@ pub struct String is ShapeChanging, Hash, CarriesRegion {
   // bytes, so a character beyond ASCII counts each of its UTF-8 bytes.
   pub fn padStart(self: &mut, width: usize, fill: u8 = ' ') {
     if buf.used >= width { return; }
-    var out = new String(width, buf.region);
+    var out = String(width, buf.region);
     var n = width - buf.used;
     while n > 0usize { out.appendByte(fill); n = n - 1usize; }
     out.appendBytes(self.raw());
@@ -1374,28 +1374,28 @@ pub struct Dict[K: Hash, V] is ShapeChanging, Sendable, CarriesRegion, GcTraceEl
   hasher: Hasher;    // starts every key's hash: the seed, mixed
   region: *MemRegion;   // where the block comes from and goes back to
 
-  // An empty dictionary, 'new Dict[String, i64]': no block until the first entry
+  // An empty dictionary, 'Dict[String, i64]()': no block until the first entry
   // arrives. Its seed is the process's, so its order differs from run to run.
   // The last argument of every init is the region the block will come from (see
   // List), which a construction that names none leaves out and is handed the heap's.
   pub fn initEmpty overload init(self: &new, region: *MemRegion) {
-    *self = new Dict(null, null, 0usize, 0usize, 0usize, Hasher.seeded(), region);
+    *self = Dict(null, null, 0usize, 0usize, 0usize, Hasher.seeded(), region);
   }
 
   // An empty dictionary whose block already has room for n entries without
   // growing (rounded up to the table's size, so 'capacity' may be more),
-  // 'new Dict[String, i64](100)'
+  // 'Dict[String, i64](100)'
   pub fn initCapacity overload init(self: &new, n: usize, region: *MemRegion) {
-    var d = new Dict(null, null, 0usize, 0usize, 0usize, Hasher.seeded(), region);
+    var d = Dict(null, null, 0usize, 0usize, 0usize, Hasher.seeded(), region);
     if n > 0usize { d.resize(capacityBuckets(n)); }
     *self = d;
   }
 
-  pub fn empty() Dict { new Dict(null, null, 0usize, 0usize, 0usize, Hasher.seeded(), heapRegion()) }
+  pub fn empty() Dict { Dict(null, null, 0usize, 0usize, 0usize, Hasher.seeded(), heapRegion()) }
 
   // An empty dictionary whose block already has room for n entries without growing
   pub fn withCapacity(n: usize) Dict {
-    var d = new Dict(null, null, 0usize, 0usize, 0usize, Hasher.seeded(), heapRegion());
+    var d = Dict(null, null, 0usize, 0usize, 0usize, Hasher.seeded(), heapRegion());
     if n > 0usize { d.resize(capacityBuckets(n)); }
     d
   }
@@ -1406,7 +1406,7 @@ pub struct Dict[K: Hash, V] is ShapeChanging, Sendable, CarriesRegion, GcTraceEl
 
   // An empty dictionary with this seed: a key hashes to what 'Hasher.withSeed(seed)'
   // makes of what it feeds, and another seed shuffles the order
-  pub fn withSeed(seed: u64) Dict { new Dict(null, null, 0usize, 0usize, 0usize, Hasher.withSeed(seed), heapRegion()) }
+  pub fn withSeed(seed: u64) Dict { Dict(null, null, 0usize, 0usize, 0usize, Hasher.withSeed(seed), heapRegion()) }
 
   // How many entries it holds, and how many it holds before it next grows
   pub fn len(self: &) usize { items }
@@ -1425,7 +1425,7 @@ pub struct Dict[K: Hash, V] is ShapeChanging, Sendable, CarriesRegion, GcTraceEl
       let slot = (slots + found) as &mut DictEntry[K, V];
       mem.finalize(&slot.key as *K);
       let old = mem.readRaw(&slot.value as *V);
-      mem.writeRaw(slots + found, new DictEntry[K, V](key, value));
+      mem.writeRaw(slots + found, DictEntry[K, V](key, value));
       return Some[V](old);
     }
     self.fill(self.roomFor(hash, found), hash, key, value);
@@ -1564,17 +1564,17 @@ pub struct Dict[K: Hash, V] is ShapeChanging, Sendable, CarriesRegion, GcTraceEl
   // now, with 'next' until it answers None, in the table's order: different on
   // every run unless it was made with 'deterministic' or 'withSeed'. The table
   // may not change while one is used.
-  pub fn keys(self: &) DictKeys[K, V] { new DictKeys[K, V](self, 0usize) }
-  pub fn values(self: &) DictValues[K, V] { new DictValues[K, V](self, 0usize) }
-  pub fn entries(self: &) DictEntries[K, V] { new DictEntries[K, V](self, 0usize) }
+  pub fn keys(self: &) DictKeys[K, V] { DictKeys[K, V](self, 0usize) }
+  pub fn values(self: &) DictValues[K, V] { DictValues[K, V](self, 0usize) }
+  pub fn entries(self: &) DictEntries[K, V] { DictEntries[K, V](self, 0usize) }
 
   // How a collector reaches what the dictionary holds, in its block: a
   // writable reference to each value (see List); the keys are not walked
-  pub fn gcTraceElements(self: &mut) DictGcTraceItems[K, V] { new DictGcTraceItems[K, V](self, 0usize) }
+  pub fn gcTraceElements(self: &mut) DictGcTraceItems[K, V] { DictGcTraceItems[K, V](self, 0usize) }
 
   // A cursor over its pairs, which 'each k, v in dict' walks: 'next' gives a
   // pair of borrows, a key and its value, in the table's order
-  pub fn iter(self: &) DictPairs[K, V] { new DictPairs[K, V](self, 0usize) }
+  pub fn iter(self: &) DictPairs[K, V] { DictPairs[K, V](self, 0usize) }
 
   // The hash of a key: the key fed to this dictionary's hasher. '(*key)' and
   // not 'key': a Uni[str] or Rc[str] key is a reference itself, and a method
@@ -1653,7 +1653,7 @@ pub struct Dict[K: Hash, V] is ShapeChanging, Sendable, CarriesRegion, GcTraceEl
     if mem.readRaw[u8](ctrl + i) == ctrlEmpty { left = left - 1usize; }
     ctrlSet(ctrl, mask, i, hashTag(hash));
     items = items + 1usize;
-    mem.writeRaw(slots + i, new DictEntry[K, V](key, value));
+    mem.writeRaw(slots + i, DictEntry[K, V](key, value));
   }
 
   // Remove the entry in bucket i: its key is finalized, its value moved out.
@@ -1846,26 +1846,26 @@ pub struct OrderedDict[K: Hash, V] is ShapeChanging, Sendable, CarriesRegion, Gc
   hasher: Hasher;
   region: *MemRegion;                  // where both blocks come from and go back to
 
-  // An empty dictionary, 'new OrderedDict[String, i64]': no block until the
+  // An empty dictionary, 'OrderedDict[String, i64]()': no block until the
   // first entry arrives. The last argument of every init is the region the
   // blocks will come from (see List)
   pub fn initEmpty overload init(self: &new, region: *MemRegion) {
-    *self = new OrderedDict(null, null, null, 0usize, 0usize, 0usize, Hasher.seeded(), region);
+    *self = OrderedDict(null, null, null, 0usize, 0usize, 0usize, Hasher.seeded(), region);
   }
 
   // An empty dictionary whose blocks already have room for n entries without
-  // growing (rounded up to the table's size), 'new OrderedDict[String, i64](100)'
+  // growing (rounded up to the table's size), 'OrderedDict[String, i64](100)'
   pub fn initCapacity overload init(self: &new, n: usize, region: *MemRegion) {
-    var d = new OrderedDict(null, null, null, 0usize, 0usize, 0usize, Hasher.seeded(), region);
+    var d = OrderedDict(null, null, null, 0usize, 0usize, 0usize, Hasher.seeded(), region);
     if n > 0usize { d.resize(capacityBuckets(n)); }
     *self = d;
   }
 
-  pub fn empty() OrderedDict { new OrderedDict(null, null, null, 0usize, 0usize, 0usize, Hasher.seeded(), heapRegion()) }
+  pub fn empty() OrderedDict { OrderedDict(null, null, null, 0usize, 0usize, 0usize, Hasher.seeded(), heapRegion()) }
 
   // An empty dictionary whose blocks already have room for n entries without growing
   pub fn withCapacity(n: usize) OrderedDict {
-    var d = new OrderedDict(null, null, null, 0usize, 0usize, 0usize, Hasher.seeded(), heapRegion());
+    var d = OrderedDict(null, null, null, 0usize, 0usize, 0usize, Hasher.seeded(), heapRegion());
     if n > 0usize { d.resize(capacityBuckets(n)); }
     d
   }
@@ -1876,7 +1876,7 @@ pub struct OrderedDict[K: Hash, V] is ShapeChanging, Sendable, CarriesRegion, Gc
   // An empty dictionary with this seed: a key hashes to what 'Hasher.withSeed(seed)'
   // makes of what it feeds
   pub fn withSeed(seed: u64) OrderedDict {
-    new OrderedDict(null, null, null, 0usize, 0usize, 0usize, Hasher.withSeed(seed), heapRegion())
+    OrderedDict(null, null, null, 0usize, 0usize, 0usize, Hasher.withSeed(seed), heapRegion())
   }
 
   // How many entries it holds, and how many it holds before it next grows
@@ -1895,7 +1895,7 @@ pub struct OrderedDict[K: Hash, V] is ShapeChanging, Sendable, CarriesRegion, Gc
       let slot = at as &mut OrderedEntry[K, V];
       mem.finalize(&slot.key as *K);
       let old = mem.readRaw(&slot.value as *V);
-      mem.writeRaw(at, new OrderedEntry[K, V](hash, key, value));
+      mem.writeRaw(at, OrderedEntry[K, V](hash, key, value));
       return Some[V](old);
     }
     self.fill(self.roomFor(hash, found), hash, key, value);
@@ -2034,17 +2034,17 @@ pub struct OrderedDict[K: Hash, V] is ShapeChanging, Sendable, CarriesRegion, Gc
   // Cursors over what it holds, each giving a borrow into the table for reading
   // now, with 'next' until it answers None, in the order of insertion. The
   // table may not change while one is used.
-  pub fn keys(self: &) OrderedKeys[K, V] { new OrderedKeys[K, V](self, 0usize) }
-  pub fn values(self: &) OrderedValues[K, V] { new OrderedValues[K, V](self, 0usize) }
-  pub fn entries(self: &) OrderedEntries[K, V] { new OrderedEntries[K, V](self, 0usize) }
+  pub fn keys(self: &) OrderedKeys[K, V] { OrderedKeys[K, V](self, 0usize) }
+  pub fn values(self: &) OrderedValues[K, V] { OrderedValues[K, V](self, 0usize) }
+  pub fn entries(self: &) OrderedEntries[K, V] { OrderedEntries[K, V](self, 0usize) }
 
   // How a collector reaches what the dictionary holds, in its dense block: a
   // writable reference to each value, in the order of insertion (see Dict.gcTraceElements)
-  pub fn gcTraceElements(self: &mut) OrderedDictGcTraceItems[K, V] { new OrderedDictGcTraceItems[K, V](self, 0usize) }
+  pub fn gcTraceElements(self: &mut) OrderedDictGcTraceItems[K, V] { OrderedDictGcTraceItems[K, V](self, 0usize) }
 
   // A cursor over its pairs, which 'each k, v in dict' walks: 'next' gives a
   // pair of borrows, a key and its value, in the order of insertion
-  pub fn iter(self: &) OrderedPairs[K, V] { new OrderedPairs[K, V](self, 0usize) }
+  pub fn iter(self: &) OrderedPairs[K, V] { OrderedPairs[K, V](self, 0usize) }
 
   // The hash of a key: the key fed to this dictionary's hasher
   fn hashOf[B](self: &, key: &B) u64 {
@@ -2147,7 +2147,7 @@ pub struct OrderedDict[K: Hash, V] is ShapeChanging, Sendable, CarriesRegion, Gc
     ctrlSet(ctrl, mask, b, hashTag(hash));
     let p = count;
     mem.writeRaw[u32](index + b, u32.from(p));
-    mem.writeRaw(dense +p, new OrderedEntry[K, V](hash, key, value));
+    mem.writeRaw(dense +p, OrderedEntry[K, V](hash, key, value));
     count = p + 1usize;
     p
   }
@@ -2337,28 +2337,28 @@ struct Member {}
 pub struct Set[T: Hash] is ShapeChanging, Sendable, CarriesRegion {
   dict: Dict[T, Member];
 
-  // An empty set, 'new Set[String]'. Its seed is the process's. The last
+  // An empty set, 'Set[String]()'. Its seed is the process's. The last
   // argument of every init is the region the block will come from (see List),
   // which the set hands its dictionary
-  pub fn initEmpty overload init(self: &new, region: *MemRegion) { *self = new Set(new Dict[T, Member](region)); }
+  pub fn initEmpty overload init(self: &new, region: *MemRegion) { *self = Set(Dict[T, Member](region)); }
 
   // An empty set whose block already has room for n elements without growing
-  // (rounded up to the table's size), 'new Set[String](100)'
+  // (rounded up to the table's size), 'Set[String](100)'
   pub fn initCapacity overload init(self: &new, n: usize, region: *MemRegion) {
-    *self = new Set(new Dict[T, Member](n, region));
+    *self = Set(Dict[T, Member](n, region));
   }
 
-  pub fn empty() Set { new Set(Dict[T, Member].empty()) }
+  pub fn empty() Set { Set(Dict[T, Member].empty()) }
 
   // An empty set whose block already has room for n elements without growing
-  pub fn withCapacity(n: usize) Set { new Set(Dict[T, Member].withCapacity(n)) }
+  pub fn withCapacity(n: usize) Set { Set(Dict[T, Member].withCapacity(n)) }
 
   // An empty set with a fixed seed: the same elements inserted in the same
   // order are visited in the same order on every run
-  pub fn deterministic() Set { new Set(Dict[T, Member].deterministic()) }
+  pub fn deterministic() Set { Set(Dict[T, Member].deterministic()) }
 
   // An empty set with this seed
-  pub fn withSeed(seed: u64) Set { new Set(Dict[T, Member].withSeed(seed)) }
+  pub fn withSeed(seed: u64) Set { Set(Dict[T, Member].withSeed(seed)) }
 
   pub fn len(self: &) usize { dict.len() }
   pub fn capacity(self: &) usize { dict.capacity() }
@@ -2368,7 +2368,7 @@ pub struct Set[T: Hash] is ShapeChanging, Sendable, CarriesRegion {
   // holds stays, and the item given dies
   pub fn insert(self: &mut, item: T) bool {
     let before = dict.len();
-    dict.getOrInsert(item, new Member());
+    dict.getOrInsert(item, Member());
     dict.len() > before
   }
 
@@ -2402,10 +2402,10 @@ pub struct Set[T: Hash] is ShapeChanging, Sendable, CarriesRegion {
 
   // A cursor over its elements: 'next' gives a borrow of each in turn, in the
   // table's order, until it answers None
-  pub fn items(self: &) SetItems[T] { new SetItems[T](dict.keys()) }
+  pub fn items(self: &) SetItems[T] { SetItems[T](dict.keys()) }
 
   // The same cursor under the name 'each x in set' walks it by
-  pub fn iter(self: &) SetItems[T] { new SetItems[T](dict.keys()) }
+  pub fn iter(self: &) SetItems[T] { SetItems[T](dict.keys()) }
 }
 
 // A cursor over a set's elements

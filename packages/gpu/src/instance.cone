@@ -21,7 +21,7 @@ pub struct Instance {
   // 'isValid': without a Vulkan 1.3 loader it is not, and why has gone to
   // stderr.
   pub fn create(appName: &str) Instance {
-    var result = new Instance(new InstanceBackend(0usize as vulkan.Instance, new vulkan.DebugUtilsMessengerEXT(0u64), false,
+    var result = Instance(InstanceBackend(0usize as vulkan.Instance, vulkan.DebugUtilsMessengerEXT(0u64), false,
       noInstFns()), false, false, false);
     if !vulkan.available() {
       fail("no Vulkan loader (vulkan-1.dll) was found, or it lacks its global functions");
@@ -45,7 +45,7 @@ pub struct Instance {
 
     // The extensions a surface needs (SDL's answer for this platform), and
     // debug utils if the loader has them
-    var exts = new Array[*u8, 12] <- fill null;
+    var exts = Array[*u8, 12]() <- fill null;
     var count = 0u32;
     let surfaceExts = sdl.Vulkan_GetInstanceExtensions(&mut count);
     if !surfaceExts || count > 10u32 {
@@ -77,11 +77,11 @@ pub struct Instance {
       next = next + 1u32;
     }
     let on: Array[u32, 1] = [vulkan.TRUE];
-    let setting = [new vulkan.LayerSettingEXT(pLayerName: layerName, pSettingName: &"validate_sync" as *u8,
+    let setting = [vulkan.LayerSettingEXT(pLayerName: layerName, pSettingName: &"validate_sync" as *u8,
         valueCount: 1u32, pValues: &on as *u8),
-      new vulkan.LayerSettingEXT(pLayerName: layerName, pSettingName: &"syncval_shader_accesses_heuristic" as *u8,
+      vulkan.LayerSettingEXT(pLayerName: layerName, pSettingName: &"syncval_shader_accesses_heuristic" as *u8,
         valueCount: 1u32, pValues: &on as *u8)];
-    let settings = new vulkan.LayerSettingsCreateInfoEXT(settingCount: 2u32,
+    let settings = vulkan.LayerSettingsCreateInfoEXT(settingCount: 2u32,
       pSettings: &setting as *vulkan.LayerSettingEXT);
     var chain = nullp();
     if result.syncValidation { chain = &settings as *u8; }
@@ -91,29 +91,29 @@ pub struct Instance {
     let severities = vulkan.DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | vulkan.DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
     let types = vulkan.DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | vulkan.DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT
       | vulkan.DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
-    let dbg = new vulkan.DebugUtilsMessengerCreateInfoEXT(messageSeverity: severities,
+    let dbg = vulkan.DebugUtilsMessengerCreateInfoEXT(messageSeverity: severities,
       messageType: types, pfnUserCallback: &onDebugMessage, pUserData: nullp());
-    let dbgChained = new vulkan.DebugUtilsMessengerCreateInfoEXT(pNext: chain, messageSeverity: severities,
+    let dbgChained = vulkan.DebugUtilsMessengerCreateInfoEXT(pNext: chain, messageSeverity: severities,
       messageType: types, pfnUserCallback: &onDebugMessage, pUserData: nullp());
     if result.debugMessages { chain = &dbgChained as *u8; }
     var name = String.from(appName);
-    let app = new vulkan.ApplicationInfo(pApplicationName: name.cstr().ptr(), pEngineName: &"Cone gpu" as *u8);
+    let app = vulkan.ApplicationInfo(pApplicationName: name.cstr().ptr(), pEngineName: &"Cone gpu" as *u8);
     var layerCount = 0u32;
     if result.validation { layerCount = 1u32; }
-    let ci = new vulkan.InstanceCreateInfo(pNext: chain, pApplicationInfo: &app as *vulkan.ApplicationInfo,
+    let ci = vulkan.InstanceCreateInfo(pNext: chain, pApplicationInfo: &app as *vulkan.ApplicationInfo,
       enabledLayerCount: layerCount, ppEnabledLayerNames: &layers as **u8,
       enabledExtensionCount: next, ppEnabledExtensionNames: &exts as **u8);
     var handle = 0usize as vulkan.Instance;
     if !check(vulkan.createInstance(&ci, nullp(), &mut handle), "vkCreateInstance") { return result; }
     result.backend.handle = handle;
-    result.backend.fns = new Arc[imm, vulkan.InstanceFns](vulkan.InstanceFns.load(handle));
+    result.backend.fns = Arc[imm, vulkan.InstanceFns](vulkan.InstanceFns.load(handle));
     let ifns = result.backend.fns;
     if ifns.missing != 0u32 {
       fail("the Vulkan instance lacks some of its functions");
       return result;
     }
     if result.debugMessages && ifns.hasDebugUtils() {
-      var messenger = new vulkan.DebugUtilsMessengerEXT(0u64);
+      var messenger = vulkan.DebugUtilsMessengerEXT(0u64);
       if check(ifns.createDebugUtilsMessengerEXT(handle, &dbg, nullp(), &mut messenger), "vkCreateDebugUtilsMessengerEXT") {
         result.backend.messenger = messenger;
       }
@@ -127,13 +127,13 @@ pub struct Instance {
   // The surface of a window made for Vulkan (window's 'openVulkan', whose
   // 'sdlHandle' this takes). Check 'isValid'.
   pub fn createSurface(self: &, window: *sdl.Window) Surface {
-    var surface = new vulkan.SurfaceKHR(0u64);
+    var surface = vulkan.SurfaceKHR(0u64);
     if self.isValid() {
       if !sdl.Vulkan_CreateSurface(window, backend.handle as *u8, nullp(), &mut surface.h) {
         fail("SDL could not make a Vulkan surface of the window");
       }
     }
-    new Surface(new SurfaceBackend(backend.handle, surface, backend.fns))
+    Surface(SurfaceBackend(backend.handle, surface, backend.fns))
   }
 
   // The GPU to draw to 'surface' with: one supporting Vulkan 1.3, dynamic
@@ -171,7 +171,7 @@ pub struct Instance {
     }
     if chosenScore == 0 {
       fail("no GPU supports Vulkan 1.3 with dynamic rendering and synchronization2 (and presents to the surface)");
-      return new Adapter(new AdapterBackend(chosen, 0u32, backend.fns), String.from(""), ADAPTER_TYPE_UNKNOWN, String.from(""), 0u32, 0u32);
+      return Adapter(AdapterBackend(chosen, 0u32, backend.fns), String.from(""), ADAPTER_TYPE_UNKNOWN, String.from(""), 0u32, 0u32);
     }
     var props = zeroed[vulkan.PhysicalDeviceProperties]();
     backend.fns.getPhysicalDeviceProperties(chosen, &mut props);
@@ -187,7 +187,7 @@ pub struct Instance {
     if props.deviceType == vulkan.PHYSICAL_DEVICE_TYPE_DISCRETE_GPU { kind = ADAPTER_TYPE_DISCRETE_GPU; }
     if props.deviceType == vulkan.PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU { kind = ADAPTER_TYPE_INTEGRATED_GPU; }
     if props.deviceType == vulkan.PHYSICAL_DEVICE_TYPE_CPU { kind = ADAPTER_TYPE_CPU; }
-    new Adapter(new AdapterBackend(chosen, chosenFamily, backend.fns), name, kind, version, props.vendorID, props.deviceID)
+    Adapter(AdapterBackend(chosen, chosenFamily, backend.fns), name, kind, version, props.vendorID, props.deviceID)
   }
 
   // Its end, after every object made from it
@@ -216,8 +216,8 @@ fn adapterScore(ifns: &InstFns, physical: vulkan.PhysicalDevice, surface: vulkan
   if props.apiVersion < vulkan.API_VERSION_1_3 { return 0; }
   if !hasDeviceExtension(ifns, physical, "VK_KHR_swapchain") { return 0; }
 
-  var f13 = new vulkan.PhysicalDeviceVulkan13Features();
-  var f2 = new vulkan.PhysicalDeviceFeatures2(pNext: &mut f13 as *u8, features: zeroed[vulkan.PhysicalDeviceFeatures]());
+  var f13 = vulkan.PhysicalDeviceVulkan13Features();
+  var f2 = vulkan.PhysicalDeviceFeatures2(pNext: &mut f13 as *u8, features: zeroed[vulkan.PhysicalDeviceFeatures]());
   ifns.getPhysicalDeviceFeatures2(physical, &mut f2);
   if f13.dynamicRendering != vulkan.TRUE || f13.synchronization2 != vulkan.TRUE { return 0; }
 
@@ -259,7 +259,7 @@ pub struct Surface {
 
   // No surface: for 'requestAdapter' when nothing is to be presented
   // (WebGPU's compatibleSurface left out)
-  pub fn none() Surface { new Surface(new SurfaceBackend(0usize as vulkan.Instance, new vulkan.SurfaceKHR(0u64), noInstFns())) }
+  pub fn none() Surface { Surface(SurfaceBackend(0usize as vulkan.Instance, vulkan.SurfaceKHR(0u64), noInstFns())) }
 
   fn final(self: &uni) {
     if self.isValid() { backend.fns.destroySurfaceKHR(backend.instance, backend.surface, nullp()); }
@@ -302,10 +302,10 @@ pub struct Adapter {
         || !hasDeviceExtension(&backend.fns, backend.physical, "VK_KHR_deferred_host_operations") {
       return false;
     }
-    var rq = new vulkan.PhysicalDeviceRayQueryFeaturesKHR();
-    var accel = new vulkan.PhysicalDeviceAccelerationStructureFeaturesKHR(pNext: &mut rq as *u8);
-    var address = new vulkan.PhysicalDeviceBufferDeviceAddressFeatures(pNext: &mut accel as *u8);
-    var available = new vulkan.PhysicalDeviceFeatures2(pNext: &mut address as *u8, features: zeroed[vulkan.PhysicalDeviceFeatures]());
+    var rq = vulkan.PhysicalDeviceRayQueryFeaturesKHR();
+    var accel = vulkan.PhysicalDeviceAccelerationStructureFeaturesKHR(pNext: &mut rq as *u8);
+    var address = vulkan.PhysicalDeviceBufferDeviceAddressFeatures(pNext: &mut accel as *u8);
+    var available = vulkan.PhysicalDeviceFeatures2(pNext: &mut address as *u8, features: zeroed[vulkan.PhysicalDeviceFeatures]());
     backend.fns.getPhysicalDeviceFeatures2(backend.physical, &mut available);
     address.bufferDeviceAddress == vulkan.TRUE && accel.accelerationStructure == vulkan.TRUE && rq.rayQuery == vulkan.TRUE
   }
@@ -313,12 +313,12 @@ pub struct Adapter {
   // The same, with ray tracing asked for or not: a device made with 'false' draws as one on a GPU
   // that has none (to show the fallback on a GPU that has it). With 'true' on a GPU without it, no
   // ray tracing either; check 'device.rayTracing'.
-  pub fn requestDeviceWith(self: &, rayTracing: bool) Device { self.makeDevice(rayTracing, &new ComputeRequest()) }
+  pub fn requestDeviceWith(self: &, rayTracing: bool) Device { self.makeDevice(rayTracing, &ComputeRequest()) }
 
   // What this GPU offers for compute (features.cone): 16-bit floats, 8-bit storage, the integer dot product,
   // the subgroup, and its buffer and memory limits, as a plain value
   pub fn computeCapabilities(self: &) ComputeCapabilities {
-    if !self.isValid() { return new ComputeCapabilities(); }
+    if !self.isValid() { return ComputeCapabilities(); }
     queryCompute(&backend.fns, backend.physical)
   }
 
@@ -330,7 +330,7 @@ pub struct Adapter {
     backend.fns.getPhysicalDeviceMemoryProperties(backend.physical, &mut memory);
     var h = 0usize;
     while h < usize.from(memory.memoryHeapCount) && h < 16usize {
-      heaps.push(new MemoryHeapInfo(memory.memoryHeaps[h].size, (memory.memoryHeaps[h].flags & vulkan.MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0u32));
+      heaps.push(MemoryHeapInfo(memory.memoryHeaps[h].size, (memory.memoryHeaps[h].flags & vulkan.MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0u32));
       h = h + 1usize;
     }
     heaps
@@ -342,17 +342,17 @@ pub struct Adapter {
   pub fn requestComputeDevice(self: &, request: &ComputeRequest) Device { self.makeDevice(false, request) }
 
   fn makeDevice(self: &, rayTracing: bool, request: &ComputeRequest) Device {
-    var result = new Device(new DeviceBackend(0usize as vulkan.Device, noDevFns(), backend.fns, backend.physical, backend.queueFamily,
-      new vulkan.RayFns()), new CommandQueue(zeroed[QueueBackend](), noDevFns()), 0u64);
+    var result = Device(DeviceBackend(0usize as vulkan.Device, noDevFns(), backend.fns, backend.physical, backend.queueFamily,
+      vulkan.RayFns()), CommandQueue(zeroed[QueueBackend](), noDevFns()), 0u64);
     if !self.isValid() { return result; }
 
     let priorities: Array[f32, 1] = [1.];
-    let qci = new vulkan.DeviceQueueCreateInfo(queueFamilyIndex: backend.queueFamily, queueCount: 1u32,
+    let qci = vulkan.DeviceQueueCreateInfo(queueFamilyIndex: backend.queueFamily, queueCount: 1u32,
       pQueuePriorities: &priorities as *f32);
     let useRay = rayTracing && self.supportsRayTracing();
-    var rqf = new vulkan.PhysicalDeviceRayQueryFeaturesKHR(rayQuery: vulkan.TRUE);
-    var accelf = new vulkan.PhysicalDeviceAccelerationStructureFeaturesKHR(pNext: &mut rqf as *u8, accelerationStructure: vulkan.TRUE);
-    var addressf = new vulkan.PhysicalDeviceBufferDeviceAddressFeatures(pNext: &mut accelf as *u8, bufferDeviceAddress: vulkan.TRUE);
+    var rqf = vulkan.PhysicalDeviceRayQueryFeaturesKHR(rayQuery: vulkan.TRUE);
+    var accelf = vulkan.PhysicalDeviceAccelerationStructureFeaturesKHR(pNext: &mut rqf as *u8, accelerationStructure: vulkan.TRUE);
+    var addressf = vulkan.PhysicalDeviceBufferDeviceAddressFeatures(pNext: &mut accelf as *u8, bufferDeviceAddress: vulkan.TRUE);
 
     // The compute features: those asked for that the GPU has (features.cone). Vulkan 1.1 and 1.2's feature
     // structures are chained only when one is asked for, so a device asking for none is made exactly as it
@@ -361,13 +361,13 @@ pub struct Adapter {
     let has = queryCompute(&backend.fns, backend.physical);
     let on = enabledCompute(&has, request);
     let chained = request.wantsFeatures() && !useRay;
-    var f12 = new vulkan.PhysicalDeviceVulkan12Features(
+    var f12 = vulkan.PhysicalDeviceVulkan12Features(
       storageBuffer8BitAccess: vkBool(on.storage8Bit), uniformAndStorageBuffer8BitAccess: vkBool(on.storage8Bit),
       shaderFloat16: vkBool(on.float16Arithmetic), shaderInt8: vkBool(on.int8Arithmetic),
       shaderSubgroupExtendedTypes: vkBool(on.subgroupExtendedTypes));
-    var f11 = new vulkan.PhysicalDeviceVulkan11Features(pNext: &mut f12 as *u8,
+    var f11 = vulkan.PhysicalDeviceVulkan11Features(pNext: &mut f12 as *u8,
       storageBuffer16BitAccess: vkBool(on.storage16Bit), uniformAndStorageBuffer16BitAccess: vkBool(on.storage16Bit));
-    let f13 = new vulkan.PhysicalDeviceVulkan13Features(
+    let f13 = vulkan.PhysicalDeviceVulkan13Features(
       pNext: if useRay { &mut addressf as *u8 } elif chained { &mut f11 as *u8 } else { null },
       synchronization2: vulkan.TRUE, dynamicRendering: vulkan.TRUE, shaderIntegerDotProduct: vkBool(on.integerDotProduct));
     let exts: Array[*u8, 4] = [&"VK_KHR_swapchain" as *u8, &"VK_KHR_acceleration_structure" as *u8,
@@ -377,7 +377,7 @@ pub struct Adapter {
     // trilinearly only ('Device.maxAnisotropy' is 0)
     var props = zeroed[vulkan.PhysicalDeviceProperties]();
     backend.fns.getPhysicalDeviceProperties(backend.physical, &mut props);
-    var available = new vulkan.PhysicalDeviceFeatures2(pNext: null, features: zeroed[vulkan.PhysicalDeviceFeatures]());
+    var available = vulkan.PhysicalDeviceFeatures2(pNext: null, features: zeroed[vulkan.PhysicalDeviceFeatures]());
     backend.fns.getPhysicalDeviceFeatures2(backend.physical, &mut available);
     var enabled = zeroed[vulkan.PhysicalDeviceFeatures]();
     if available.features.raw[vulkan.FEATURE_SAMPLER_ANISOTROPY] == vulkan.TRUE && props.limits.maxSamplerAnisotropy >= 1. {
@@ -397,14 +397,14 @@ pub struct Adapter {
     if request.largeBuffers && result.maxStorageBuffersPerStage > MAX_BIND_GROUPS * MAX_BINDINGS {
       result.maxStorageBuffersPerStage = MAX_BIND_GROUPS * MAX_BINDINGS;       // a layer has at most 4 groups of 16 bindings
     }
-    let dci = new vulkan.DeviceCreateInfo(pNext: &f13 as *u8, queueCreateInfoCount: 1u32,
+    let dci = vulkan.DeviceCreateInfo(pNext: &f13 as *u8, queueCreateInfoCount: 1u32,
       pQueueCreateInfos: &qci as *vulkan.DeviceQueueCreateInfo, ppEnabledLayerNames: null,
       enabledExtensionCount: if useRay { 4u32 } else { 1u32 }, ppEnabledExtensionNames: &exts as **u8,
       pEnabledFeatures: &enabled as *vulkan.PhysicalDeviceFeatures);
     var device = 0usize as vulkan.Device;
     if !check(backend.fns.createDevice(backend.physical, &dci, nullp(), &mut device), "vkCreateDevice") { return result; }
     result.backend.device = device;
-    result.backend.fns = new Arc[imm, vulkan.DeviceFns](vulkan.DeviceFns.load(&*backend.fns, device));
+    result.backend.fns = Arc[imm, vulkan.DeviceFns](vulkan.DeviceFns.load(&*backend.fns, device));
     result.queue.fns = result.backend.fns;
     let fns = result.backend.fns;
     if fns.missing != 0u32 {
@@ -433,17 +433,17 @@ pub struct Adapter {
     }
 
     // Each frame in flight: its fence, and thread 0's command pool
-    let fci = new vulkan.FenceCreateInfo();
+    let fci = vulkan.FenceCreateInfo();
     // (a command buffer that begins again after a flush has run it resets itself)
-    let pci = new vulkan.CommandPoolCreateInfo(
+    let pci = vulkan.CommandPoolCreateInfo(
       flags: vulkan.COMMAND_POOL_CREATE_TRANSIENT_BIT | vulkan.COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
       queueFamilyIndex: backend.queueFamily);
     var i = 0usize;
     while i < 2usize {
-      var fence = new vulkan.Fence(0u64);
+      var fence = vulkan.Fence(0u64);
       check(fns.createFence(device, &fci, nullp(), &mut fence), "vkCreateFence");
       result.queue.backend.frames[i].fence = fence;
-      var pool = new vulkan.CommandPool(0u64);
+      var pool = vulkan.CommandPool(0u64);
       check(fns.createCommandPool(device, &pci, nullp(), &mut pool), "vkCreateCommandPool");
       result.queue.backend.frames[i].pool = pool;
       i = i + 1usize;

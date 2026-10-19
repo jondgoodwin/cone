@@ -284,12 +284,12 @@ its values would arrive wrong, and neither converts to the other. Make the funct
 <pre>
 fn returned() Uni[fn(x: i32) i32] {
   let k = 3;
-  return new Uni[fn(x: i32) i32](fn(x: i32) i32 { x * k });    // ERROR
+  return Uni[fn(x: i32) i32](fn(x: i32) i32 { x * k });    // ERROR
 }
 
 fn listed() Uni[fn(x: i32) i32] {
   let k = 3;
-  return new Uni[fn(x: i32) i32](fn(x: i32) [k] i32 { x * k });   // its own copy of k
+  return Uni[fn(x: i32) i32](fn(x: i32) [k] i32 { x * k });   // its own copy of k
 }
 </pre>
 <pre>
@@ -326,7 +326,7 @@ fn listed(seen: &amp;mut Seen) i64 {
 fn owned() i64 {
   let base = 5i64;
   let k = 3i64;
-  var seen = new Seen(List[&amp;i64].empty());
+  var seen = Seen(List[&amp;i64].empty());
   seen.items.push(&amp;base);
   seen.count(x =&gt; *x &gt; k)   // fine: this function owns seen
 }
@@ -354,9 +354,9 @@ struct Button {
   pub fn press(self: &amp;mut, n: i32) { onClick(n); }
 }
 
-let w = new Window(7);
-var b = new Button(1, new Uni[fn(n: i32)](fn(n: i32) { }));
-b.setHandler(new Uni[fn(n: i32)](fn(n: i32) [id = w.id] { print &lt;- id + n, "\n"; }));
+let w = Window(7);
+var b = Button(1, Uni[fn(n: i32)](fn(n: i32) { }));
+b.setHandler(Uni[fn(n: i32)](fn(n: i32) [id = w.id] { print &lt;- id + n, "\n"; }));
 b.press(5);      // 12
 </pre>
 	<p>The click handler is allocated in the single-owner region, so it is freed when it is replaced or discarded. Its
@@ -402,8 +402,8 @@ fn succ(x: i32) i32 { x + 1 }
 
 let off = 10;
 let shift = fn(x: i32) i32 { x + off };
-let t = new Triple(3);
-var tally = new Count(0);
+let t = Triple(3);
+var tally = Count(0);
 
 apply(&amp;shift, 5);              // 15: a closure
 apply(&amp;t, 5);                  // 15: a struct with a '()'
@@ -437,27 +437,27 @@ applyMut(fn(x: i32) i32 { total += x; total; }, 10);       // total is changed
 	<p>A literal is lent only as an argument. To keep one, move it into an owner.</p>
 
 	<h4 id="owner">An owner of a closure</h4>
-	<p><span class="pre">new Uni[fn(sig)](value)</span> takes one value, a closure literal or a struct with a
+	<p><span class="pre">Uni[fn(sig)](value)</span> takes one value, a closure literal or a struct with a
 		<span class="pre">()</span> of the signature, moves it into an allocation of its own, and gives the owner of that as
 		the callable. The literal's parameter types may come from the signature. The same holds for
 		<span class="pre">Rc</span>:</p>
 <pre>
-var owned: Uni[fn(x: i32) i32] = new Uni[fn(x: i32) i32](fn(x: i32) [var sum = 100] i32 { sum += x; sum });
+var owned: Uni[fn(x: i32) i32] = Uni[fn(x: i32) i32](fn(x: i32) [var sum = 100] i32 { sum += x; sum });
 owned(1);             // 101
 applyMut(owned, 2);   // 103: an owner is lent as &amp;&lt;mut
 run(owned, 3);        // 106: or handed on whole, moved
 
-let shared = new Rc[imm, fn(x: i32) i32](new Triple(4));
+let shared = Rc[imm, fn(x: i32) i32](Triple(4));
 let again = shared;   // another holder of the same closure
 </pre>
 	<p>The owner holds whatever the closure holds, and finalizes it when the last owner dies. A closure that holds
 		nothing is allocated like any other. A plain function is wrapped by giving its reference,
-		<span class="pre">new Uni[fn(sig)](&amp;f)</span>; a function of another signature, or a value with no
+		<span class="pre">Uni[fn(sig)](&amp;f)</span>; a function of another signature, or a value with no
 		<span class="pre">()</span> of the signature, is an error. An owner outlives the function that made it, so the
 		closure in it may not borrow a local: the refusal is the one in <a href="#goes">Where a closure may go</a>.</p>
 	<p>A parameter of type <span class="pre">Uni[fn(sig)]</span> takes an owner, and a closure literal is not one, so a
 		literal given straight to it is refused (for one whose parameter types are left out, error 1391, "The type of a is
-		not written, and nothing here says what it is"). Wrap it: <span class="pre">c.set(new Uni[fn(a: i64, b: i64)
+		not written, and nothing here says what it is"). Wrap it: <span class="pre">c.set(Uni[fn(a: i64, b: i64)
 		bool]((a, b) =&gt; a &lt; b))</span>. A <span class="pre">let</span> given a closure whose parameter types are left
 		out is refused the same way, even where the <span class="pre">let</span> is written with a
 		<span class="pre">&amp;&lt;fn(sig)</span> type.</p>

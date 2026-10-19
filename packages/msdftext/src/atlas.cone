@@ -15,7 +15,7 @@ pub struct AtlasConfig {
   pub height: u32;
   pub cornerAngle: f64;       // radians: a turn beyond this is a corner (msdfgen's default 3)
 
-  pub fn standard() AtlasConfig { new AtlasConfig(48.0, 6.0, 1024u32, 1024u32, 3.0) }
+  pub fn standard() AtlasConfig { AtlasConfig(48.0, 6.0, 1024u32, 1024u32, 3.0) }
 }
 
 // Where a glyph is in the atlas and how it is drawn. The quad is in ems from
@@ -55,8 +55,8 @@ pub struct SkylinePacker {
 
   pub fn make(width: u32, height: u32) SkylinePacker {
     var nodes = List[SkyNode].empty();
-    nodes.push(new SkyNode(0u32, 0u32, width));
-    new SkylinePacker(width, height, nodes)
+    nodes.push(SkyNode(0u32, 0u32, width));
+    SkylinePacker(width, height, nodes)
   }
 
   // The y a w x h rectangle would rest at starting at node i, or the height of the bin plus one if it does not fit
@@ -104,13 +104,13 @@ pub struct SkylinePacker {
     var rebuilt = List[SkyNode].empty();
     i = 0usize;
     while i < bestI { rebuilt.push(*nodes[i]); i = i + 1usize; }
-    rebuilt.push(new SkyNode(x, bestY + h, w));
+    rebuilt.push(SkyNode(x, bestY + h, w));
     while i < nodes.len() {
       let n = *nodes[i];
       if n.x + n.w <= x + w {
         // wholly covered
       } elif n.x < x + w {
-        rebuilt.push(new SkyNode(x + w, n.y, n.x + n.w - (x + w)));
+        rebuilt.push(SkyNode(x + w, n.y, n.x + n.w - (x + w)));
       } else {
         rebuilt.push(n);
       }
@@ -123,7 +123,7 @@ pub struct SkylinePacker {
       let n = *rebuilt[i];
       if merged.len() > 0usize && (*merged[merged.len() - 1usize]).y == n.y {
         let last = *merged[merged.len() - 1usize];
-        merged.set(merged.len() - 1usize, new SkyNode(last.x, last.y, last.w + n.w));
+        merged.set(merged.len() - 1usize, SkyNode(last.x, last.y, last.w + n.w));
       } else {
         merged.push(n);
       }
@@ -158,7 +158,7 @@ pub struct Atlas {
       pixels.push(255u8);
       i = i + 1usize;
     }
-    new Atlas(config, pixels, List[GlyphEntry].empty(), List[i32].empty(), SkylinePacker.make(config.width, config.height),
+    Atlas(config, pixels, List[GlyphEntry].empty(), List[i32].empty(), SkylinePacker.make(config.width, config.height),
       0u32, 0u32, 0u32, 0u32)
   }
 
@@ -185,13 +185,13 @@ pub struct Atlas {
     let o = font.outline(glyph);
     var shape = Shape.fromOutline(&o);
     if shape.edges.len() == 0usize {
-      entries.push(new GlyphEntry(glyph, true, 0u32, 0u32, 0u32, 0u32, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, advance));
+      entries.push(GlyphEntry(glyph, true, 0u32, 0u32, 0u32, 0u32, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, advance));
       return i32.from(entries.len() - 1usize);
     }
     if shape.resolveOverlaps() { resolved = resolved + 1u32; }
     colorEdges(&mut shape, config.cornerAngle, 0u64);
-    var lo = new Pt(0.0, 0.0);
-    var hi = new Pt(0.0, 0.0);
+    var lo = Pt(0.0, 0.0);
+    var hi = Pt(0.0, 0.0);
     shape.bounds(&mut lo, &mut hi);
     let s = config.emPx / em;                          // texels per font unit
     let margin = libc.ceil(config.pxRange * 0.5) + 1.0;
@@ -201,7 +201,7 @@ pub struct Atlas {
     var cy = 0u32;
     // One texel of gap on the right and below, so linear filtering never reads a neighbour
     if !packer.pack(w + 1u32, h + 1u32, &mut cx, &mut cy) { return -2i32; }
-    let frame = new Frame(w, h, s, margin / s - lo.x, margin / s - lo.y, config.pxRange / s);
+    let frame = Frame(w, h, s, margin / s - lo.x, margin / s - lo.y, config.pxRange / s);
     var field = generateMsdf(&shape, &frame);
     fixedTexels = fixedTexels + correctErrors(&mut field, &shape, &frame);
     var y = 0u32;
@@ -228,7 +228,7 @@ pub struct Atlas {
     let ah = f32.from(config.height);
     let left = f32.from((lo.x - margin / s) / em);
     let bottom = f32.from((lo.y - margin / s) / em);
-    entries.push(new GlyphEntry(glyph, false, cx, cy, w, h,
+    entries.push(GlyphEntry(glyph, false, cx, cy, w, h,
       f32.from(cx) / aw, f32.from(cy) / ah, f32.from(cx + w) / aw, f32.from(cy + h) / ah,
       left, bottom, left + f32.from(f64.from(w) / config.emPx), bottom + f32.from(f64.from(h) / config.emPx), advance));
     i32.from(entries.len() - 1usize)
