@@ -1798,7 +1798,7 @@ afterwards waits in a continuation, a record, until the reply comes. A seam is
 a return to the *dispatcher*, not to the author: the author wrote one method
 with one scope, so what the author can see -- when a value dies and in which
 order -- is what a method without the seam would do. Type check has placed it
-already, in a behaviour, a method declared `async do`; an actor's `fn` --
+already, in a behaviour, a method declared `async fn`; an actor's `fn` --
 its `init`, its `final`, a synchronous helper -- holds none
 (`ErrorAwaitPlace`), and an `await` on a behaviour returning nothing is
 refused there too (`ErrorAwaitVoid`), so flow never sees either. Every rule

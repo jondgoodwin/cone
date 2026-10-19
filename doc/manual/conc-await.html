@@ -43,7 +43,7 @@ struct Buffer {
 }
 
 actor Net {
-  pub async do read(self, url: u64) Buffer {
+  pub async fn read(self, url: u64) Buffer {
     print &lt;- "  read ", url, "\n";
     Buffer(url * 100u64)
   }
@@ -52,7 +52,7 @@ actor Net {
 actor Fetcher {
   net: Net;
 
-  pub async do fetch(self, url: u64) Buffer {
+  pub async fn fetch(self, url: u64) Buffer {
     let conn = Conn(url);             // opened
     let buf = await net.read(conn.url);   // conn waits, with the method
     print &lt;- "  fetched ", buf.size, "\n";
@@ -64,7 +64,7 @@ actor Page {
   fetcher: Fetcher;
   body: u64;
 
-  pub async do load(self, u: u64) {
+  pub async fn load(self, u: u64) {
     print &lt;- "load ", u, "\n";
     let b = await fetcher.fetch(u);       // pauses here
     body = b.size;                        // and resumes when the answer comes
@@ -140,7 +140,7 @@ actor Reporter {
   clock: Clock;
   last: u64;
 
-  pub async do report(self) {
+  pub async fn report(self) {
     let t = await clock.now();    // the 'await', at the top of the behaviour
     last = self.format(t);        // the synchronous work, pushed down
   }
@@ -155,7 +155,7 @@ actor Reporter {
 }
 </pre>
 <pre>
-Error 1270: 'await' stands only in an actor's behaviour, declared 'async do', where the behaviour is cut and
+Error 1270: 'await' stands only in an actor's behaviour, declared 'async fn', where the behaviour is cut and
 returns to the actor's dispatcher to wait. This one is in stamp, a 'fn' of actor Reporter's: synchronous, run
 inside the method that calls it, which cannot pause partway through a call. An 'await' belongs at the top of a
 behaviour: await there, and push the synchronous work down, onto a helper like this one or a type the actor
@@ -175,13 +175,13 @@ struct Note {
 }
 
 actor Clock {
-  pub async do now(self) u64 {42u64}
+  pub async fn now(self) u64 {42u64}
 }
 
 actor Logger {
   clock: Clock;
 
-  pub async do log(self) u64 {
+  pub async fn log(self) u64 {
     let first = Note(1u64);
     let second = Note(2u64);
     let t = await clock.now();
@@ -219,7 +219,7 @@ let limit: u64 = 100u64;
 actor Gauge {
   clock: Clock;
 
-  pub async do check(self) u64 {
+  pub async fn check(self) u64 {
     let max = &amp;limit;                     // a borrow of a global: 'static
     let t = await clock.now();
     *max - t                             // still valid after the 'await': 58
@@ -237,7 +237,7 @@ actor Tally {
   count: Arc[Mutex, Count];
   clock: Clock;
 
-  pub async do bump(self) u64 {
+  pub async fn bump(self) u64 {
     let c = &amp;mut *count;                  // takes the lock
     c.n += 1u64;
     let t = await clock.now();            // gives it back
@@ -265,13 +265,13 @@ actor Meter {
   clock: Clock;
   reading: u64;
 
-  pub async do stale(self) {
+  pub async fn stale(self) {
     let r = &amp;reading;
     let t = await clock.now();  // refused: r's borrow ends here, and r is used below
     reading = *r + t;
   }
 
-  pub async do fresh(self) {
+  pub async fn fresh(self) {
     let t = await clock.now();
     let r = &amp;reading;           // borrowed after the 'await'
     reading = *r + t;
@@ -295,7 +295,7 @@ method returns to its actor's dispatcher to wait, and 'c' is used again at 80:5.
 		the answer comes, as the first thing the behaviour does when it resumes:</p>
 <pre>
 actor Counter {
-  pub async do next(self) u64 {2u64}
+  pub async fn next(self) u64 {2u64}
 }
 
 actor Shelf {
@@ -305,7 +305,7 @@ actor Shelf {
 
   fn put(self, n: u64) {total = total + n;}
 
-  pub async do stock(self) u64 {
+  pub async fn stock(self) u64 {
     slots[await counter.next()] = 7u64;   // slots is reached after the 'await'
     self.put(await counter.next());       // and so is self, put's receiver
     total += await counter.next();        // total is read and written after it
@@ -334,11 +334,11 @@ actor Shelf {
 		first. In <span class="pre">Meter</span>, where <span class="pre">add</span> is a function taking a
 		<span class="pre">&amp;u64</span> and a number, and <span class="pre">compute</span> one returning a number:</p>
 <pre>
-  pub async do fromCall(self) {
+  pub async fn fromCall(self) {
     reading = add(&amp;compute(), await clock.now());  // refused: compute() made what is borrowed
   }
 
-  pub async do bound(self) {
+  pub async fn bound(self) {
     let c = compute();
     reading = add(&amp;c, await clock.now());          // c is borrowed after the 'await'
   }
@@ -359,7 +359,7 @@ never what a call made. Bind what the call makes to a local first, and use the l
 		before the list is borrowed, in the order written, and appended after it:</p>
 <pre>
 actor Lane {
-  pub async do pick(self, n: u64) u64 {n}
+  pub async fn pick(self, n: u64) u64 {n}
 }
 
 actor Board {
@@ -367,7 +367,7 @@ actor Board {
   cells: Array[Array[u64, 3], 2];
   marks: List[u64];
 
-  pub async do fill(self) u64 {
+  pub async fn fill(self) u64 {
     cells[await lane.pick(1u64)][await lane.pick(2u64)] = 5u64;                 // cells[1][2]
     cells[await lane.pick(0u64)][0u64] &lt;=&gt; cells[await lane.pick(1u64)][2u64];  // both sides
     (cells[0][1], cells[await lane.pick(1u64)][await lane.pick(1u64)]) = (7u64, 8u64);
@@ -387,7 +387,7 @@ actor Cache {
   net: Net;
   hot: u64;
 
-  pub async do get(self, url: u64) u64 {
+  pub async fn get(self, url: u64) u64 {
     if url == hot {
       return 1u64;                        // answered here, at once
     }
@@ -409,13 +409,13 @@ actor Cache {
 		their answers collected later:</p>
 <pre>
 actor Stock {
-  pub async do price(self, item: u64) u64 {item * 3u64}
+  pub async fn price(self, item: u64) u64 {item * 3u64}
 }
 
 actor Basket {
   stock: Stock;
 
-  pub async do total(self) u64 {
+  pub async fn total(self) u64 {
     let apples = stock.price(4u64);     // sent: a future comes back at once
     let pears = stock.price(5u64);      // both requests are in flight
     let a = await apples;               // waits for the first
@@ -454,11 +454,11 @@ struct Report is Move {
 }
 
 actor Printer {
-  pub async do render(self, n: u64) Report {Report(n * 2u64)}
+  pub async fn render(self, n: u64) Report {Report(n * 2u64)}
 }
 
 actor Archive {
-  pub async do keep(self, f: actors.Future[u64]) u64 {
+  pub async fn keep(self, f: actors.Future[u64]) u64 {
     let n = await f;                    // the value arrives here
     n + 1u64
   }
@@ -469,13 +469,13 @@ actor Office {
   stock: Stock;
   archive: Archive;
 
-  pub async do file(self) u64 {
+  pub async fn file(self) u64 {
     let r = printer.render(10u64);      // a Future[Report], which moves
     let report = await r;               // the Report is taken out of it
     report.lines
   }
 
-  pub async do pass(self) u64 {
+  pub async fn pass(self) u64 {
     let f = stock.price(2u64);
     await archive.keep(f)              // the future goes to Archive
   }
@@ -487,7 +487,7 @@ actor Office {
 actor Desk {
   printer: Printer;
 
-  pub async do twice(self) u64 {
+  pub async fn twice(self) u64 {
     let r = printer.render(10u64);
     let report = await r;
     let again = await r;          // refused: r moved into the first 'await'
@@ -531,15 +531,15 @@ behaviour owing it (request 1) ended without answering
 		and the caller awaits that.</p>
 <pre>
 actor Log {
-  pub async do flush(self) {}             // owes its caller nothing
-  pub async do commit(self) bool {true}  // answers with a status
+  pub async fn flush(self) {}             // owes its caller nothing
+  pub async fn commit(self) bool {true}  // answers with a status
 }
 
 actor Writer {
   log: Log;
   saved: bool;
 
-  pub async do save(self) {
+  pub async fn save(self) {
     await log.flush();            // refused: flush sends no answer
     saved = await log.commit();   // waits until commit has run, and learns whether it worked
   }
@@ -556,7 +556,7 @@ status saying whether it worked -- and await that.
 actor Keeper {
   log: Log;
 
-  pub async do keep(self) {
+  pub async fn keep(self) {
     log.flush();                  // sent, and forgotten
     let f = log.flush();          // refused: flush gives no future
   }
@@ -580,7 +580,7 @@ await that.
 actor Sizes {
   net: Net;
 
-  pub async do total(self, n: u64) u64 {
+  pub async fn total(self, n: u64) u64 {
     var sum = 0u64;
     each i in 0u64 ..&lt; n {
       let b = await net.read(i);          // one request at a time
@@ -627,11 +627,11 @@ actor Waiter {
   clock: Clock;
   last: u64;
 
-  pub async do onFunction(self) {
+  pub async fn onFunction(self) {
     last = await compute();       // refused: compute's u64 is no future
   }
 
-  pub async do repeated(self) {
+  pub async fn repeated(self) {
     var v = List[u64].empty();
     v &lt;- 3 of await clock.now();  // not built: among the entries a '&lt;-' appends
   }

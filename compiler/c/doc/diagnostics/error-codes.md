@@ -574,10 +574,9 @@ body may not hold, or a form of it not built (a `pub` field, a static, a
 behaviour without `self` or named `init` or `final`, a generic behaviour, a
 macro, `extern`, a `self` of another kind, a generic actor, one naming an
 abstraction), is `ErrorActorMember`; a module declaring one without importing
-the `actors` package is `ErrorActorRuntime`; `async` or `do` without the other,
-or `async do` outside an actor's body, is `ErrorBehaviourWords`, a parse code
-of its own because the two words are one keyword and neither alone is
-anything; and `self.m()` on one of the actor's behaviours where there is no
+the `actors` package is `ErrorActorRuntime`; `async` without `fn`,
+or `async fn` outside an actor's body, is `ErrorBehaviourWords`, a parse code
+of its own because `async` is a keyword that means nothing alone; and `self.m()` on one of the actor's behaviours where there is no
 actor to send it to -- the `final`, a state that is not the method's own
 `self` -- is `ErrorBehaviourSend`; and the state constructed anywhere but where
 the actor is made -- the handle's initializer, and the state's `init` filling

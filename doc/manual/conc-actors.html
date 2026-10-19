@@ -33,12 +33,12 @@ actor Store {
   total: u64;
 
   // Fire and forget: no return type, no await
-  pub async do add(self, k: u64) {
+  pub async fn add(self, k: u64) {
     total = self.plus(k);
   }
 
   // A cheap query: a return type, no await
-  pub async do count(self) u64 { total }
+  pub async fn count(self) u64 { total }
 
   // Synchronous: an ordinary call, inside the actor
   fn plus(self: &amp;, k: u64) u64 { total + k }
@@ -48,7 +48,7 @@ actor Client {
   store: Store;
 
   // Awaits, owes nobody: an await, no return type
-  pub async do run(self) {
+  pub async fn run(self) {
     store.add(5u64);
     store.add(7u64);
     let c = await store.count();
@@ -58,7 +58,7 @@ actor Client {
   }
 
   // The full handshake: an await and a return type
-  pub async do report(self) u64 {
+  pub async fn report(self) u64 {
     let c = await store.count();
     c * 10u64
   }
@@ -97,13 +97,13 @@ report 120
 		<a href="conc-await.html">Awaiting and futures</a> takes apart in full.</p>
 
 	<h2 id="behaviours">Behaviours and synchronous methods</h2>
-	<p>A method declared <span class="pre">async do</span> is a <b>behaviour</b>: it runs asynchronously, when the actor
-		is scheduled, and an <span class="pre">await</span> on one waits for its answer. <span class="pre">async do</span>
-		is one keyword of two words, and neither means anything alone. <span class="pre">async</span> says when the
-		behaviour runs, and pairs with <span class="pre">await</span>; <span class="pre">do</span> is the declaration's
-		verb, as <span class="pre">fn</span> is a function's. Written without the other, either is refused:</p>
+	<p>A method declared <span class="pre">async fn</span> is a <b>behaviour</b>: it runs asynchronously, when the actor
+		is scheduled, and an <span class="pre">await</span> on one waits for its answer. <span class="pre">async</span>
+		says when the behaviour runs, and pairs with <span class="pre">await</span>; <span class="pre">fn</span> is the
+		declaration's verb, as it is a function's. <span class="pre">async</span> means nothing alone, and written
+		without <span class="pre">fn</span> it is refused:</p>
 <pre>
-Error 1273: 'async' means nothing alone: an actor's behaviour is declared 'async do name(self, ...)'.
+Error 1273: 'async' means nothing alone: an actor's behaviour is declared 'async fn name(self, ...)'.
 </pre>
 	<p>A behaviour never starts on the sender's thread, as an asynchronous function may in some designs: a send only
 		queues the message, so no thread but the one running the actor ever touches its state.</p>
@@ -131,11 +131,11 @@ actor Counter {
     *self = Self(count: start);
   }
 
-  pub async do add(self, n: u64) {  // a behaviour: sent as a message
+  pub async fn add(self, n: u64) {  // a behaviour: sent as a message
     count = count + n;
   }
 
-  pub async do report(self: &amp;, to: Printer) {   // carries another actor's handle
+  pub async fn report(self: &amp;, to: Printer) {   // carries another actor's handle
     to.show(self.doubled());
   }
 
@@ -147,7 +147,7 @@ actor Counter {
 }
 
 actor Printer {
-  pub async do show(self, n: u64) {
+  pub async fn show(self, n: u64) {
     print &lt;- "doubled: ", n, "\n";
   }
 }
@@ -217,7 +217,7 @@ actor Starter {
     selfactor.note(2u64);
   }
 
-  pub async do note(self, k: u64) {
+  pub async fn note(self, k: u64) {
     count = count + k;
     print &lt;- "note ", count, "\n";
   }
@@ -280,9 +280,9 @@ note 3
 		<span class="pre">await</span> on one of its own behaviours:</p>
 <pre>
 actor Doubler {
-  pub async do double(self, n: u64) u64 { n * 2u64 }
+  pub async fn double(self, n: u64) u64 { n * 2u64 }
 
-  pub async do twice(self, n: u64) u64 {
+  pub async fn twice(self, n: u64) u64 {
     let once = await selfactor.double(n);  // a message to itself
     let again = await selfactor.double(once);
     again
@@ -303,14 +303,14 @@ actor Doubler {
 		when its dispatcher takes up a message for it. A synchronous method is called, as a struct's is:</p>
 <pre>
 actor Echo {
-  pub async do start(self) {
+  pub async fn start(self) {
     print &lt;- "start\n";
     self.later(1u64);             // a send to itself: start goes on at once
     self.relay();                 // a synchronous helper, an ordinary call
     print &lt;- "start ends\n";
   }
 
-  async do later(self, k: u64) {
+  async fn later(self, k: u64) {
     print &lt;- "later ", k, "\n";
     if k == 2u64 {
       self.finish();
@@ -321,15 +321,15 @@ actor Echo {
     later(2u64);                  // 'self.later(2)': a send, from a helper too
   }
 
-  async do finish(self) {
+  async fn finish(self) {
     let d = await self.double(21u64);
     print &lt;- "finish ", d, "\n";
     self.show(d / 2u64 - 11u64);
   }
 
-  async do double(self, k: u64) u64 { k * 2u64 }
+  async fn double(self, k: u64) u64 { k * 2u64 }
 
-  async do show(self, k: u64) {
+  async fn show(self, k: u64) {
     print &lt;- "show ", k, "\n";
   }
 }
@@ -363,11 +363,11 @@ show 10
 actor Keeper {
   count: u64;
 
-  pub async do start(self) {
+  pub async fn start(self) {
     var s = Self(count: 5u64);    // refused: a state in no actor
   }
 
-  pub async do peek(self) {
+  pub async fn peek(self) {
     let s = *self;                    // refused: the state is not copied out
   }
 }

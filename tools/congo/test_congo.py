@@ -1719,7 +1719,7 @@ class Testing(unittest.TestCase):
                 *self = Self(count: start);
               }
 
-              pub async do ping(self, n: u64) {
+              pub async fn ping(self, n: u64) {
                 count = count + n;
               }
 
@@ -1729,7 +1729,7 @@ class Testing(unittest.TestCase):
             }
 
             actor Hidden {
-              pub async do hello(self, n: u64, p: Pinger) {
+              pub async fn hello(self, n: u64, p: Pinger) {
                 printStr("hidden "); printUInt(n); printStr("\\n");
                 p.ping(n);
               }
@@ -1807,7 +1807,7 @@ class Testing(unittest.TestCase):
                 *self = Self(entries: List[Entry].empty(), total: 0u64);
               }
 
-              pub async do add(self, n: u64) {
+              pub async fn add(self, n: u64) {
                 entries.push(Entry(scale(n), Kind.Large));
                 total = total + entries[entries.len() - 1usize].weight();
               }
@@ -1826,7 +1826,7 @@ class Testing(unittest.TestCase):
             pub actor Stamp {
               last: Mark;
 
-              pub async do touch(self) {
+              pub async fn touch(self) {
                 last = Mark(last.at + 1u64);
               }
             }

@@ -32,8 +32,8 @@ import sync use Arc, Mutex; import collections use List;
 struct Count {pub n: u64;}
 
 actor Clock {
-  pub async do now(self) u64 {42u64}
-  pub async do tick(self) {}
+  pub async fn now(self) u64 {42u64}
+  pub async fn tick(self) {}
 }
 
 fn compute() u64 {5u64}
@@ -44,13 +44,13 @@ actor Meter {
   clock: Clock;
   reading: u64;
 
-  pub async do stale(self) {
+  pub async fn stale(self) {
     let r = &reading;
     let t = await clock.now();  //~ ErrorFrozen "The borrow 'r' holds of '*self' (made at 48:13) ends at this 'await', where the method returns to its actor's dispatcher to wait, and 'r' is used again at 50:16"
     reading = *r + t;
   }
 
-  pub async do fresh(self) {
+  pub async fn fresh(self) {
     let t = await clock.now();
     let r = &reading;           // borrowed after the 'await'
     reading = *r + t;
@@ -58,11 +58,11 @@ actor Meter {
 // manual: end
 
 // manual: from a call
-  pub async do fromCall(self) {
+  pub async fn fromCall(self) {
     reading = add(&compute(), await clock.now());  //~ ErrorAwaitLeftCall "This borrow, written to the left of an 'await' in the same statement, is made by a call or a temporary, and is used after the 'await'. The rest of the statement runs after the 'await', which ends every borrow: only a plain path -- a local, 'self', a field, an element at a plain index -- is reached again there, never what a call made. Bind what the call makes to a local first, and use the local here."
   }
 
-  pub async do bound(self) {
+  pub async fn bound(self) {
     let c = compute();
     reading = add(&c, await clock.now());          // c is borrowed after the 'await'
   }
@@ -74,7 +74,7 @@ actor Tally {
   count: Arc[Mutex, Count];
   clock: Clock;
 
-  pub async do held(self) {
+  pub async fn held(self) {
     let c = &mut *count;          // takes the lock
     let t = await clock.now();    //~ ErrorFrozen "The borrow 'c' holds through the lock taken at 78:19 (made at 78:13) ends at this 'await', where the method returns to its actor's dispatcher to wait, and 'c' is used again at 80:5"
     c.n += t;
@@ -87,7 +87,7 @@ actor Reporter {
   clock: Clock;
   last: u64;
 
-  pub async do report(self) {
+  pub async fn report(self) {
     let t = await clock.now();    // the 'await', at the top of the behaviour
     last = self.format(t);        // the synchronous work, pushed down
   }
@@ -104,15 +104,15 @@ actor Reporter {
 
 // manual: nothing returned
 actor Log {
-  pub async do flush(self) {}             // owes its caller nothing
-  pub async do commit(self) bool {true}  // answers with a status
+  pub async fn flush(self) {}             // owes its caller nothing
+  pub async fn commit(self) bool {true}  // answers with a status
 }
 
 actor Writer {
   log: Log;
   saved: bool;
 
-  pub async do save(self) {
+  pub async fn save(self) {
     await log.flush();            //~ ErrorAwaitVoid "flush returns nothing, so it sends none"
     saved = await log.commit();   // waits until commit has run, and learns whether it worked
   }
@@ -124,11 +124,11 @@ actor Waiter {
   clock: Clock;
   last: u64;
 
-  pub async do onFunction(self) {
+  pub async fn onFunction(self) {
     last = await compute();       //~ ErrorAwaitNotFuture "awaits a u64, which is none of them"
   }
 
-  pub async do repeated(self) {
+  pub async fn repeated(self) {
     var v = List[u64].empty();
     v <- 3 of await clock.now();  //~ ErrorUnbuiltAwait "it stands among the entries a '<-' appends"
   }
@@ -141,13 +141,13 @@ struct Report is Move {
 }
 
 actor Printer {
-  pub async do render(self, n: u64) Report {Report(n * 2u64)}
+  pub async fn render(self, n: u64) Report {Report(n * 2u64)}
 }
 
 actor Desk {
   printer: Printer;
 
-  pub async do twice(self) u64 {
+  pub async fn twice(self) u64 {
     let r = printer.render(10u64);
     let report = await r;
     let again = await r;          //~ ErrorMove "This variable's value has been moved out"
@@ -160,7 +160,7 @@ actor Desk {
 actor Keeper {
   log: Log;
 
-  pub async do keep(self) {
+  pub async fn keep(self) {
     log.flush();                  // sent, and forgotten
     let f = log.flush();          //~ ErrorFutureVoid "flush returns nothing, so its call gives no future to keep"
   }

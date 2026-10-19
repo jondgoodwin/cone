@@ -1,6 +1,6 @@
 /** Handling for 'await' nodes
  *
- * 'await x', in an actor's behaviour (a method declared 'async do'), waits
+ * 'await x', in an actor's behaviour (a method declared 'async fn'), waits
  * for x: the behaviour is cut there, a seam, where it returns to the actor's
  * dispatcher, and what it needs after the seam waits in a continuation until
  * x is answered. Type check places an 'await' -- in a behaviour, never in a
