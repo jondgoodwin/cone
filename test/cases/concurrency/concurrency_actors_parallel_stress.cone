@@ -17,17 +17,17 @@ import time;
 import actors;
 
 struct Counts {
-  pub failures Atomic[u64];
-  pub loops Atomic[u64];
+  pub failures: Atomic[u64];
+  pub loops: Atomic[u64];
 }
 
-let counts Counts;
+let counts: Counts;
 
 fn @initpure init() {
   counts = new Counts(Atomic[u64].of(0u64), Atomic[u64].of(0u64));
 }
 
-fn mix(i u64, n u64) u64 {
+fn mix(i: u64, n: u64) u64 {
   var x = i + 1u64;
   var k = 0u64;
   while k < n {
@@ -37,7 +37,7 @@ fn mix(i u64, n u64) u64 {
   x
 }
 
-fn work(i u64) u64 {
+fn work(i: u64) u64 {
   (i * 7u64) % 31u64 * 4u64
 }
 
@@ -45,11 +45,11 @@ fn work(i u64) u64 {
 // the workers: Sendable on trust, the loop's owner keeping the array alive
 // until it has finished
 struct Out is Sendable {
-  pub p *u64;
+  pub p: *u64;
 }
 
 // The items from 'base' on, which an inner loop fills
-fn bodyCell(out *u64, base usize, lo usize, hi usize) {
+fn bodyCell(out: *u64, base: usize, lo: usize, hi: usize) {
   var i = base + lo;
   while i < base + hi {
     *(out + i) = mix(u64.from(i), work(u64.from(i)));
@@ -58,10 +58,10 @@ fn bodyCell(out *u64, base usize, lo usize, hi usize) {
 }
 
 // nest 1: this body calls parallelRange over its items too
-fn bodyFill(out *u64, nest u64, lo usize, hi usize) {
+fn bodyFill(out: *u64, nest: u64, lo: usize, hi: usize) {
   if nest == 1u64 {
     // an inner loop over this piece's items, in a loop of its own
-    actors.parallelRange(0usize, hi - lo, 4usize, fn(a usize, b usize) [out, lo] { bodyCell(out, lo, a, b); });
+    actors.parallelRange(0usize, hi - lo, 4usize, fn(a: usize, b: usize) [out, lo] { bodyCell(out, lo, a, b); });
     return;
   }
   var i = lo;
@@ -71,7 +71,7 @@ fn bodyFill(out *u64, nest u64, lo usize, hi usize) {
   }
 }
 
-fn correct(out *u64, n usize) bool {
+fn correct(out: *u64, n: usize) bool {
   var i = 0usize;
   while i < n {
     if *(out + i) != mix(u64.from(i), work(u64.from(i))) {
@@ -83,12 +83,12 @@ fn correct(out *u64, n usize) bool {
 }
 
 // One blocking loop, checked
-fn oneLoop(iter u64, id u64) {
+fn oneLoop(iter: u64, id: u64) {
   let n = usize.from(1u64 + (iter * 37u64 + id * 101u64) % 3000u64);
   let grain = usize.from(1u64 + iter % 40u64);
   let out = libc.calloc(n, 8usize) as *u64;
   let nest = if iter % 5u64 == 0u64 {1u64} else {0u64};
-  actors.parallelRange(0usize, n, grain, fn(lo usize, hi usize) [out, nest] { bodyFill(out, nest, lo, hi); });
+  actors.parallelRange(0usize, n, grain, fn(lo: usize, hi: usize) [out, nest] { bodyFill(out, nest, lo, hi); });
   if !correct(out, n) {
     counts.failures.add(1u64);
   }
@@ -98,17 +98,17 @@ fn oneLoop(iter u64, id u64) {
 
 // One scheduled loop, awaited through its onDone
 struct Waiting {
-  pub flag Atomic[u64];
-  pub out *u64;
-  pub n usize;
+  pub flag: Atomic[u64];
+  pub out: *u64;
+  pub n: usize;
 }
 
 // The Waiting a scheduled loop's onDone is handed
 struct WaitingRef is Sendable {
-  pub p *Waiting;
+  pub p: *Waiting;
 }
 
-fn waitingDone(w *Waiting) {
+fn waitingDone(w: *Waiting) {
   if !correct((*w).out, (*w).n) {
     counts.failures.add(1u64);
   }
@@ -116,14 +116,14 @@ fn waitingDone(w *Waiting) {
   (*w).flag.store(1u64);
 }
 
-fn oneScheduled(iter u64, id u64) {
+fn oneScheduled(iter: u64, id: u64) {
   let n = usize.from(1u64 + (iter * 53u64 + id * 17u64) % 2000u64);
   let out = libc.calloc(n, 8usize) as *u64;
   var w = new Waiting(Atomic[u64].of(0u64), out, n);
   let o = new Out(out);
   let wr = new WaitingRef(&mut w as *Waiting);
   actors.parallelRangeThen(0usize, n, usize.from(1u64 + iter % 17u64),
-    fn(lo usize, hi usize) [o] { bodyFill(o.p, 0u64, lo, hi); },
+    fn(lo: usize, hi: usize) [o] { bodyFill(o.p, 0u64, lo, hi); },
     fn() [wr] { waitingDone(wr.p); });
   while w.flag.load() == 0u64 {
     thread.sleep(time.Duration.fromMillis(1));
@@ -132,10 +132,10 @@ fn oneScheduled(iter u64, id u64) {
 }
 
 struct Who is Sendable {
-  pub id u64;
+  pub id: u64;
 }
 
-fn threadMain(who Who) u64 {
+fn threadMain(who: Who) u64 {
   var iter = 0u64;
   while iter < 100u64 {
     oneLoop(iter, who.id);
@@ -148,7 +148,7 @@ fn threadMain(who Who) u64 {
 }
 
 actor Driver {
-  pub async do go(self, id u64) {
+  pub async do go(self, id: u64) {
     var iter = 0u64;
     while iter < 30u64 {
       oneLoop(iter, id);

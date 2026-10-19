@@ -16,25 +16,25 @@
 // from forward) on the asked side of the current target's bearing.
 
 pub struct Candidate {
-  pub id u32;
-  pub pos Vec3;
-  pub radius f32;
+  pub id: u32;
+  pub pos: Vec3;
+  pub radius: f32;
 }
 
 // What a ray cast found. The caller's closure fills it.
 pub struct RayHit {
-  pub hit bool;
-  pub dist f32;
-  pub id u32;
+  pub hit: bool;
+  pub dist: f32;
+  pub id: u32;
 }
 
 pub struct TargetParams {
-  pub range f32;
-  pub halfAngle f32;        // radians
-  pub angleWeight f32;
-  pub distWeight f32;
-  pub stickiness f32;       // the current target's cost is multiplied by this
-  pub useSight bool;        // require line of sight
+  pub range: f32;
+  pub halfAngle: f32;        // radians
+  pub angleWeight: f32;
+  pub distWeight: f32;
+  pub stickiness: f32;       // the current target's cost is multiplied by this
+  pub useSight: bool;        // require line of sight
 
   // 20 m, a 45 degree cone, angle counts twice as much as distance, 0.75 stickiness
   pub fn standard() TargetParams { new TargetParams(20., pi / 4., 2., 1., 0.75, true) }
@@ -43,7 +43,7 @@ pub struct TargetParams {
 // True when nothing blocks the line from 'eye' to the candidate: the cast
 // (origin, unit direction, max distance) meets nothing, or the candidate itself
 // first, or something no nearer than the candidate's surface.
-pub fn clearLine(eye Vec3, c &Candidate, cast &<fn(o Vec3, d Vec3, m f32) RayHit) bool {
+pub fn clearLine(eye: Vec3, c: &Candidate, cast: &<fn(o: Vec3, d: Vec3, m: f32) RayHit) bool {
   let v = c.pos - eye;
   let dist = v.length();
   if dist < 0.0001 { return true; }
@@ -55,7 +55,7 @@ pub fn clearLine(eye Vec3, c &Candidate, cast &<fn(o Vec3, d Vec3, m f32) RayHit
 
 // The cost of candidate c from the eye looking along 'forward' (unit), or a
 // negative number when it is not valid
-pub fn cost(eye Vec3, forward Vec3, c &Candidate, p &TargetParams, current bool, cast &<fn(o Vec3, d Vec3, m f32) RayHit) f32 {
+pub fn cost(eye: Vec3, forward: Vec3, c: &Candidate, p: &TargetParams, current: bool, cast: &<fn(o: Vec3, d: Vec3, m: f32) RayHit) f32 {
   let v = c.pos - eye;
   let dist = v.length();
   if dist - c.radius > p.range { return -1.; }
@@ -74,7 +74,7 @@ pub fn cost(eye Vec3, forward Vec3, c &Candidate, p &TargetParams, current bool,
 }
 
 // The best valid candidate's id, or 0. 'current' is the id now targeted (0 for none).
-pub fn best(eye Vec3, forward Vec3, cands &List[Candidate], p &TargetParams, current u32, cast &<fn(o Vec3, d Vec3, m f32) RayHit) u32 {
+pub fn best(eye: Vec3, forward: Vec3, cands: &List[Candidate], p: &TargetParams, current: u32, cast: &<fn(o: Vec3, d: Vec3, m: f32) RayHit) u32 {
   var bestId = 0u32;
   var bestCost = 1000000.f;
   var i = 0usize;
@@ -92,13 +92,13 @@ pub fn best(eye Vec3, forward Vec3, cands &List[Candidate], p &TargetParams, cur
 
 // The bearing of a point: the signed angle, about 'up', from 'forward' to the
 // direction of v, positive to the viewer's right (forward x up points right)
-pub fn bearing(forward Vec3, up Vec3, v Vec3) f32 {
+pub fn bearing(forward: Vec3, up: Vec3, v: Vec3) f32 {
   let f = (forward - up * forward.dot(up));
   let r = f.cross(up);
   atan2(v.dot(r), v.dot(f))
 }
 
-fn wrapAngle(a f32) f32 {
+fn wrapAngle(a: f32) f32 {
   var x = a;
   while x > pi { x = x - 2. * pi; }
   while x <= -pi { x = x + 2. * pi; }
@@ -109,8 +109,8 @@ fn wrapAngle(a f32) f32 {
 // beyond the current one's on the side 'dir' (+1 right, -1 left), valid by
 // range and sight but not by the cone (the lock may have turned the view).
 // Returns 'current' when nothing lies that way.
-pub fn switchTo(eye Vec3, forward Vec3, up Vec3, dir f32, cands &List[Candidate], p &TargetParams, current u32,
-    cast &<fn(o Vec3, d Vec3, m f32) RayHit) u32 {
+pub fn switchTo(eye: Vec3, forward: Vec3, up: Vec3, dir: f32, cands: &List[Candidate], p: &TargetParams, current: u32,
+    cast: &<fn(o: Vec3, d: Vec3, m: f32) RayHit) u32 {
   var curBearing = 0.f;
   var found = false;
   var i = 0usize;
@@ -142,29 +142,29 @@ pub fn switchTo(eye Vec3, forward Vec3, up Vec3, dir f32, cands &List[Candidate]
 
 // A lock-on: the target kept until it is lost for 'grace' seconds
 pub struct LockOn {
-  pub target u32;
-  pub lostFor f32;
-  pub grace f32;
+  pub target: u32;
+  pub lostFor: f32;
+  pub grace: f32;
 
-  pub fn make(grace f32) LockOn { new LockOn(0u32, 0., grace) }
+  pub fn make(grace: f32) LockOn { new LockOn(0u32, 0., grace) }
 
-  pub fn isLocked(self &) bool { target != 0u32 }
+  pub fn isLocked(self: &) bool { target != 0u32 }
 
   // Lock onto the best candidate in view, if any. Returns the target.
-  pub fn acquire(self &mut, eye Vec3, forward Vec3, cands &List[Candidate], p &TargetParams,
-      cast &<fn(o Vec3, d Vec3, m f32) RayHit) u32 {
+  pub fn acquire(self: &mut, eye: Vec3, forward: Vec3, cands: &List[Candidate], p: &TargetParams,
+      cast: &<fn(o: Vec3, d: Vec3, m: f32) RayHit) u32 {
     target = best(eye, forward, cands, p, 0u32, cast);
     lostFor = 0.;
     target
   }
 
-  pub fn release(self &mut) { target = 0u32; lostFor = 0.; }
+  pub fn release(self: &mut) { target = 0u32; lostFor = 0.; }
 
   // Keep the lock through dt seconds: a locked target stays while within 1.25 x
   // range and in sight, whatever the view; once lost for 'grace' seconds the
   // lock drops. Returns the target (0 once dropped).
-  pub fn update(self &mut, dt f32, eye Vec3, cands &List[Candidate], p &TargetParams,
-      cast &<fn(o Vec3, d Vec3, m f32) RayHit) u32 {
+  pub fn update(self: &mut, dt: f32, eye: Vec3, cands: &List[Candidate], p: &TargetParams,
+      cast: &<fn(o: Vec3, d: Vec3, m: f32) RayHit) u32 {
     if target == 0u32 { return 0u32; }
     var ok = false;
     var i = 0usize;
@@ -182,8 +182,8 @@ pub struct LockOn {
   }
 
   // Switch to the neighbour on one side: dir +1 right, -1 left
-  pub fn switchSide(self &mut, dir f32, eye Vec3, forward Vec3, up Vec3, cands &List[Candidate], p &TargetParams,
-      cast &<fn(o Vec3, d Vec3, m f32) RayHit) u32 {
+  pub fn switchSide(self: &mut, dir: f32, eye: Vec3, forward: Vec3, up: Vec3, cands: &List[Candidate], p: &TargetParams,
+      cast: &<fn(o: Vec3, d: Vec3, m: f32) RayHit) u32 {
     if target != 0u32 { target = switchTo(eye, forward, up, dir, cands, p, target, cast); }
     target
   }
@@ -194,14 +194,14 @@ pub struct LockOn {
 // cone's half angle, strength) -> 0..1, so a game can shape the pull; 'defaultBlend'
 // is a linear fall-off from the strength at the centre to nothing at the edge.
 // The result is the normalised linear blend of the two unit directions.
-pub fn defaultBlend(angle f32, maxAngle f32, strength f32) f32 {
+pub fn defaultBlend(angle: f32, maxAngle: f32, strength: f32) f32 {
   if angle >= maxAngle { return 0.; }
   strength * (1. - angle / maxAngle)
 }
 
-pub fn aimAssist(eye Vec3, aim Vec3, cands &List[Candidate], p &TargetParams, strength f32,
-    blend &<fn(angle f32, maxAngle f32, strength f32) f32,
-    cast &<fn(o Vec3, d Vec3, m f32) RayHit) Vec3 {
+pub fn aimAssist(eye: Vec3, aim: Vec3, cands: &List[Candidate], p: &TargetParams, strength: f32,
+    blend: &<fn(angle: f32, maxAngle: f32, strength: f32) f32,
+    cast: &<fn(o: Vec3, d: Vec3, m: f32) RayHit) Vec3 {
   let id = best(eye, aim, cands, p, 0u32, cast);
   if id == 0u32 { return aim; }
   var pos = eye;

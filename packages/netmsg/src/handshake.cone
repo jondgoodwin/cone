@@ -41,22 +41,22 @@ pub fn freshSeed() u64 {
 pub enum GateVerdict {
   Ignore;                                  // not for it
   Reply;                                   // send the reply it wrote back to the address
-  pub struct Accept {pub session u64;}     // a client proved its address: here is its session; the reply is its Accept
+  pub struct Accept {pub session: u64;}     // a client proved its address: here is its session; the reply is its Accept
 }
 
 // The server's side of the handshake, holding one secret key
 pub struct ChallengeGate {
-  k0 u64;
-  k1 u64;
+  k0: u64;
+  k1: u64;
 
   // A gate with a key of 128 bits made from 'seed', which should be secret and
   // unpredictable (freshSeed())
-  pub fn make(seed u64) ChallengeGate {
+  pub fn make(seed: u64) ChallengeGate {
     var rng = Rng.make(seed);
     new ChallengeGate(rng.next(), rng.next())
   }
 
-  fn cookie(self &, addr &str, salt u64, epoch i64) u64 {
+  fn cookie(self: &, addr: &str, salt: u64, epoch: i64) u64 {
     var m = List[u8].empty();
     putU64(&mut m, salt);
     putU64(&mut m, u64.from(epoch));
@@ -67,7 +67,7 @@ pub struct ChallengeGate {
   // Look at a datagram that came from 'addr' (its address as text) and is
   // not part of a connection. 'reply' is cleared and, for Reply and Accept,
   // holds the datagram to send back.
-  pub fn handle(self &, addr &str, data &Array[u8], now Instant, reply &mut List[u8]) GateVerdict {
+  pub fn handle(self: &, addr: &str, data: &Array[u8], now: Instant, reply: &mut List[u8]) GateVerdict {
     reply.clear();
     var c = PacketReader.start();
     let magic = c.rdU32(data);
@@ -99,7 +99,7 @@ pub struct ChallengeGate {
 
   // The datagram that tells a client its connection was refused (the server
   // is full)
-  pub fn denied(salt u64) List[u8] {
+  pub fn denied(salt: u64) List[u8] {
     var p = List[u8].withCapacity(13usize);
     putU32(&mut p, protocolId);
     putU8(&mut p, kindDenied);
@@ -108,7 +108,7 @@ pub struct ChallengeGate {
   }
 
   // The client salt in a Response datagram, or 0 if it is not one
-  pub fn saltOf(data &Array[u8]) u64 {
+  pub fn saltOf(data: &Array[u8]) u64 {
     var c = PacketReader.start();
     let magic = c.rdU32(data);
     let kind = c.rdU8(data);
@@ -135,29 +135,29 @@ pub enum HandshakeEvent {
 
 // The client's side of the handshake
 pub struct ClientHandshake {
-  cfg NetConfig;
-  salt u64;
-  cookie u64;
-  session u64;
-  state HandshakeState;
-  startedAt i64;
-  lastSent i64;
-  refused bool;
+  cfg: NetConfig;
+  salt: u64;
+  cookie: u64;
+  session: u64;
+  state: HandshakeState;
+  startedAt: i64;
+  lastSent: i64;
+  refused: bool;
 
   // A connection attempt that begins now, under 'salt' (freshSeed())
-  pub fn make(cfg NetConfig, salt u64, now Instant) ClientHandshake {
+  pub fn make(cfg: NetConfig, salt: u64, now: Instant) ClientHandshake {
     new ClientHandshake(cfg, salt, 0u64, 0u64, HandshakeState.Requesting, now.nanos(), now.nanos() - cfg.connectRetryMs * msNs2, false)
   }
 
-  pub fn handshakeState(self &) HandshakeState {state}
-  pub fn isConnected(self &) bool {state == HandshakeState.Connected}
-  pub fn isFailed(self &) bool {state == HandshakeState.Failed}
-  pub fn wasRefused(self &) bool {refused}
-  pub fn sessionId(self &) u64 {session}
+  pub fn handshakeState(self: &) HandshakeState {state}
+  pub fn isConnected(self: &) bool {state == HandshakeState.Connected}
+  pub fn isFailed(self: &) bool {state == HandshakeState.Failed}
+  pub fn wasRefused(self: &) bool {refused}
+  pub fn sessionId(self: &) u64 {session}
 
   // When to call poll next: the next Request or Response is due, or the
   // attempt times out
-  pub fn nextDeadline(self &) Instant {
+  pub fn nextDeadline(self: &) Instant {
     var at = startedAt + cfg.connectTimeoutMs * msNs2;
     if state == HandshakeState.Requesting || state == HandshakeState.Responding {
       let retry = lastSent + cfg.connectRetryMs * msNs2;
@@ -169,7 +169,7 @@ pub struct ClientHandshake {
   // Append the datagram due, if any: a Request or a Response (each repeated
   // every connectRetryMs until answered). The attempt fails when
   // connectTimeoutMs pass with no Accept.
-  pub fn poll(self &mut, now Instant, out &mut List[List[u8]]) {
+  pub fn poll(self: &mut, now: Instant, out: &mut List[List[u8]]) {
     let t = now.nanos();
     if state != HandshakeState.Requesting && state != HandshakeState.Responding {return;}
     if t - startedAt >= cfg.connectTimeoutMs * msNs2 {
@@ -196,7 +196,7 @@ pub struct ClientHandshake {
   // Accept connects; a Denied is a refusal. A payload packet of the right
   // session also connects (the Accept may have been lost): the caller gives
   // that packet to the connection, too.
-  pub fn receive(self &mut, data &Array[u8]) HandshakeEvent {
+  pub fn receive(self: &mut, data: &Array[u8]) HandshakeEvent {
     if state != HandshakeState.Requesting && state != HandshakeState.Responding {return HandshakeEvent.Nothing;}
     var c = PacketReader.start();
     let magic = c.rdU32(data);

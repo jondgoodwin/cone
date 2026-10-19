@@ -10,26 +10,26 @@
 
 // One level of the hierarchy. The finest has the working mesh's vertices.
 struct Level {
-  pos List[Vec3];
-  nrm List[Vec3];
-  area List[f32];
-  rho List[f32];            // the lattice spacing at each vertex
-  g Graph;
-  cori List[Vec3];          // the orientation a constraint fixes (zero: free)
-  ckind List[u32];          // 0 free, 1 on a line along cori, 2 pinned at the point
+  pos: List[Vec3];
+  nrm: List[Vec3];
+  area: List[f32];
+  rho: List[f32];            // the lattice spacing at each vertex
+  g: Graph;
+  cori: List[Vec3];          // the orientation a constraint fixes (zero: free)
+  ckind: List[u32];          // 0 free, 1 on a line along cori, 2 pinned at the point
 
-  fn count(self &) usize { pos.len() }
+  fn count(self: &) usize { pos.len() }
 }
 
 struct Cand {
-  s f32;
-  a u32;
-  b u32;
+  s: f32;
+  a: u32;
+  b: u32;
 }
 
 // The rotation of o (a tangent at n) by a quarter turn that lies nearest r, and
 // its negative: o, n x o, -o or -(n x o)
-fn alignRot(r Vec3, o Vec3, n Vec3) Vec3 {
+fn alignRot(r: Vec3, o: Vec3, n: Vec3) Vec3 {
   let t = n.cross(o);
   let d0 = r.dot(o);
   let d1 = r.dot(t);
@@ -41,7 +41,7 @@ fn alignRot(r Vec3, o Vec3, n Vec3) Vec3 {
 }
 
 // The next, coarser level, pairs of vertices merged by the best scores
-fn coarsen(l &Level, ups &mut List[List[u32]]) Level {
+fn coarsen(l: &Level, ups: &mut List[List[u32]]) Level {
   let n = l.count();
   var cands = List[Cand].withCapacity(l.g.nbr.len() / 2usize);
   var i = 0usize;
@@ -66,7 +66,7 @@ fn coarsen(l &Level, ups &mut List[List[u32]]) Level {
     }
     i = i + 1usize;
   }
-  cands.sortBy(fn(a &Cand, b &Cand) i32 {
+  cands.sortBy(fn(a: &Cand, b: &Cand) i32 {
     if a.s > b.s {-1i32} elif a.s < b.s {1i32} else {0i32}
   });
   var mate = List[u32].withCapacity(n);
@@ -162,7 +162,7 @@ fn coarsen(l &Level, ups &mut List[List[u32]]) Level {
 
 // ---------------------------------------------------------------- orientation
 
-fn initOrientation(l &Level) List[Vec3] {
+fn initOrientation(l: &Level) List[Vec3] {
   var o = List[Vec3].withCapacity(l.count());
   var i = 0usize;
   while i < l.count() {
@@ -175,7 +175,7 @@ fn initOrientation(l &Level) List[Vec3] {
 
 // Gauss-Seidel: each vertex takes the weighted sum of its neighbours' vectors,
 // each turned by the quarter turns that put it nearest, then made tangent
-fn smoothOrientation(l &Level, o &mut List[Vec3], iters u32) {
+fn smoothOrientation(l: &Level, o: &mut List[Vec3], iters: u32) {
   var it = 0u32;
   while it < iters {
     var i = 0usize;
@@ -201,7 +201,7 @@ fn smoothOrientation(l &Level, o &mut List[Vec3], iters u32) {
 }
 
 // A finer level's field from its parents', made tangent
-fn upsampleOrientation(fine &Level, up &List[u32], coarse &List[Vec3]) List[Vec3] {
+fn upsampleOrientation(fine: &Level, up: &List[u32], coarse: &List[Vec3]) List[Vec3] {
   var o = List[Vec3].withCapacity(fine.count());
   var i = 0usize;
   while i < fine.count() {
@@ -219,7 +219,7 @@ fn upsampleOrientation(fine &Level, up &List[u32], coarse &List[Vec3]) List[Vec3
 
 // q put in the tangent plane of p and moved by lattice steps to the one
 // nearest p; a line constraint keeps only the step along o, a pinned one is p
-fn reduceQ(q Vec3, p Vec3, n Vec3, o Vec3, rho f32, kind u32) Vec3 {
+fn reduceQ(q: Vec3, p: Vec3, n: Vec3, o: Vec3, rho: f32, kind: u32) Vec3 {
   if kind == 2u32 { return p; }
   let dd = q - p;
   let d = dd - n * dd.dot(n);
@@ -231,14 +231,14 @@ fn reduceQ(q Vec3, p Vec3, n Vec3, o Vec3, rho f32, kind u32) Vec3 {
 }
 
 // The lattice point (q, o, n, rho) nearest m
-fn latticeNear(q Vec3, o Vec3, n Vec3, rho f32, m Vec3) Vec3 {
+fn latticeNear(q: Vec3, o: Vec3, n: Vec3, rho: f32, m: Vec3) Vec3 {
   let dd = m - q;
   let d = dd - n * dd.dot(n);
   let t = n.cross(o);
   q + o * (rnd(d.dot(o) / rho) * rho) + t * (rnd(d.dot(t) / rho) * rho)
 }
 
-fn initPosition(l &Level, o &List[Vec3]) List[Vec3] {
+fn initPosition(l: &Level, o: &List[Vec3]) List[Vec3] {
   var q = List[Vec3].withCapacity(l.count());
   var i = 0usize;
   while i < l.count() {
@@ -248,7 +248,7 @@ fn initPosition(l &Level, o &List[Vec3]) List[Vec3] {
   q
 }
 
-fn upsamplePosition(fine &Level, up &List[u32], coarse &List[Vec3], o &List[Vec3]) List[Vec3] {
+fn upsamplePosition(fine: &Level, up: &List[u32], coarse: &List[Vec3], o: &List[Vec3]) List[Vec3] {
   var q = List[Vec3].withCapacity(fine.count());
   var i = 0usize;
   while i < fine.count() {
@@ -261,7 +261,7 @@ fn upsamplePosition(fine &Level, up &List[u32], coarse &List[Vec3], o &List[Vec3
 // How well the fields agree over the level's edges: the mean angle between a
 // vertex's orientation and its neighbours' (radians, after the quarter turns),
 // and the mean disagreement of the lattices at an edge's middle, in steps
-fn fieldError(l &Level, o &List[Vec3], q &List[Vec3], angle &mut f32, lattice &mut f32) {
+fn fieldError(l: &Level, o: &List[Vec3], q: &List[Vec3], angle: &mut f32, lattice: &mut f32) {
   var sa = 0.f;
   var sl = 0.f;
   var cnt = 0.f;
@@ -289,7 +289,7 @@ fn fieldError(l &Level, o &List[Vec3], q &List[Vec3], angle &mut f32, lattice &m
 // The step from a point qi of one lattice to the nearest point of lattice j
 // (origin qj, axis oj, normal nj, spacing rj, standing at pj): what moving the
 // first lattice by it would make of the two
-fn latticeOffset(qi Vec3, pj Vec3, qj Vec3, oj Vec3, nj Vec3, rj f32) Vec3 {
+fn latticeOffset(qi: Vec3, pj: Vec3, qj: Vec3, oj: Vec3, nj: Vec3, rj: f32) Vec3 {
   let qp = qi - nj * (qi - pj).dot(nj);
   latticeNear(qj, oj, nj, rj, qp) - qp
 }
@@ -298,7 +298,7 @@ fn latticeOffset(qi Vec3, pj Vec3, qj Vec3, oj Vec3, nj Vec3, rj f32) Vec3 {
 // the mean, over its neighbours, of the step to the nearest point of the
 // neighbour's lattice (the energy of Jakob et al. (2015): the least distance
 // between a point of one lattice and a point of the other)
-fn smoothPosition(l &Level, o &List[Vec3], q &mut List[Vec3], iters u32) {
+fn smoothPosition(l: &Level, o: &List[Vec3], q: &mut List[Vec3], iters: u32) {
   var it = 0u32;
   while it < iters {
     var i = 0usize;

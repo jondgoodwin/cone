@@ -18,26 +18,26 @@ import time use Duration, Instant;
 const perProducer = 2000u64;
 const slots = 4u64;
 
-let m Mutex;
-let notEmpty Condvar;
-let notFull Condvar;
+let m: Mutex;
+let notEmpty: Condvar;
+let notFull: Condvar;
 
 // The buffer, guarded by m: a ring of slots, where the oldest is, and how many.
 // They are atomics, read and written relaxed with no ordering of their own: what
 // orders them is m
-let ring Array[Atomic[u64], 4];
-let head Atomic[u64];
-let count Atomic[u64];
+let ring: Array[Atomic[u64], 4];
+let head: Atomic[u64];
+let count: Atomic[u64];
 
 // For notifyAll: a flag guarded by m, and how many are waiting on it
-let flag Atomic[bool];
-let waiting Atomic[u32];
+let flag: Atomic[bool];
+let waiting: Atomic[u32];
 
-fn rd(a &Atomic[u64]) u64 {
+fn rd(a: &Atomic[u64]) u64 {
   a.loadOrdered(MemOrder.Relaxed)
 }
 
-fn wr(a &Atomic[u64], v u64) {
+fn wr(a: &Atomic[u64], v: u64) {
   a.storeOrdered(v, MemOrder.Relaxed);
 }
 
@@ -52,7 +52,7 @@ fn @initpure init() {
   waiting = Atomic[u32].of(0u32);
 }
 
-fn put(v u64) {
+fn put(v: u64) {
   m.lock();
   while rd(&count) == slots {
     notFull.condWait(&m);
@@ -77,7 +77,7 @@ fn take() u64 {
 }
 
 // Producer k puts k * 1000000 + 1 .. k * 1000000 + perProducer
-fn produce(k u64) u64 {
+fn produce(k: u64) u64 {
   var i = 1u64;
   while i <= perProducer {
     put(k * 1000000u64 + i);
@@ -87,7 +87,7 @@ fn produce(k u64) u64 {
 }
 
 // A consumer takes perProducer items: their sum
-fn consume(k u64) u64 {
+fn consume(k: u64) u64 {
   var sum = 0u64;
   var i = 0u64;
   while i < perProducer {
@@ -114,7 +114,7 @@ fn handoff() bool {
 }
 
 // Wait under m until the flag is set
-fn awaitFlag(n u32) u32 {
+fn awaitFlag(n: u32) u32 {
   m.lock();
   waiting.add(1u32);
   while !flag.loadOrdered(MemOrder.Relaxed) {

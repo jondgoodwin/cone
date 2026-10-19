@@ -15,29 +15,29 @@ import libc;
 import llvmc;
 
 extern {
-  fn @c(system) VirtualAlloc(addr *u8, size usize, kind u32, protect u32) *u8;
-  fn @c mmap(addr *u8, size usize, protect i32, flags i32, fd i32, offset i64) *u8;
+  fn @c(system) VirtualAlloc(addr: *u8, size: usize, kind: u32, protect: u32) *u8;
+  fn @c mmap(addr: *u8, size: usize, protect: i32, flags: i32, fd: i32, offset: i64) *u8;
 }
 
-fn expect(ok bool, label &str) {
+fn expect(ok: bool, label: &str) {
   if !ok { print <- "FAILED: ", label, "\n"; }
 }
 
 // ---- the IR ----
 
-fn param2(ret *llvmc.Type, a *llvmc.Type, b *llvmc.Type) *llvmc.Type {
-  var params Array[*llvmc.Type, 2] = [a, b];
+fn param2(ret: *llvmc.Type, a: *llvmc.Type, b: *llvmc.Type) *llvmc.Type {
+  var params: Array[*llvmc.Type, 2] = [a, b];
   llvmc.FunctionType(ret, &params[0], 2u32, 0i32)
 }
 
-fn namedParams(f *llvmc.Value, a &str, b &str) {
+fn namedParams(f: *llvmc.Value, a: &str, b: &str) {
   llvmc.SetValueName2(llvmc.GetParam(f, 0u32), llvmc.bytesOf(a), a.len());
   if b.len() > 0usize {
     llvmc.SetValueName2(llvmc.GetParam(f, 1u32), llvmc.bytesOf(b), b.len());
   }
 }
 
-fn buildAdd(ctx *llvmc.Context, m *llvmc.Module, bld *llvmc.Builder, i32t *llvmc.Type) {
+fn buildAdd(ctx: *llvmc.Context, m: *llvmc.Module, bld: *llvmc.Builder, i32t: *llvmc.Type) {
   let f = llvmc.AddFunction(m, "add", param2(i32t, i32t, i32t));
   namedParams(f, "a", "b");
   llvmc.PositionBuilderAtEnd(bld, llvmc.AppendBasicBlockInContext(ctx, f, "entry"));
@@ -45,7 +45,7 @@ fn buildAdd(ctx *llvmc.Context, m *llvmc.Module, bld *llvmc.Builder, i32t *llvmc
 }
 
 // max(a, b): a compare, a branch to two blocks that join in a phi
-fn buildMax(ctx *llvmc.Context, m *llvmc.Module, bld *llvmc.Builder, i32t *llvmc.Type) {
+fn buildMax(ctx: *llvmc.Context, m: *llvmc.Module, bld: *llvmc.Builder, i32t: *llvmc.Type) {
   let f = llvmc.AddFunction(m, "max", param2(i32t, i32t, i32t));
   namedParams(f, "a", "b");
   let a = llvmc.GetParam(f, 0u32);
@@ -63,15 +63,15 @@ fn buildMax(ctx *llvmc.Context, m *llvmc.Module, bld *llvmc.Builder, i32t *llvmc
   llvmc.BuildBr(bld, join);
   llvmc.PositionBuilderAtEnd(bld, join);
   let phi = llvmc.BuildPhi(bld, i32t, "result");
-  var values Array[*llvmc.Value, 2] = [a, b];
-  var blocks Array[*llvmc.BasicBlock, 2] = [first, second];
+  var values: Array[*llvmc.Value, 2] = [a, b];
+  var blocks: Array[*llvmc.BasicBlock, 2] = [first, second];
   llvmc.AddIncoming(phi, &values[0], &blocks[0], 2u32);
   llvmc.BuildRet(bld, phi);
 }
 
 // sumto(n): 0 + 1 + ... + (n - 1), a loop with two phis
-fn buildSumTo(ctx *llvmc.Context, m *llvmc.Module, bld *llvmc.Builder, i32t *llvmc.Type) {
-  var params Array[*llvmc.Type, 1] = [i32t];
+fn buildSumTo(ctx: *llvmc.Context, m: *llvmc.Module, bld: *llvmc.Builder, i32t: *llvmc.Type) {
+  var params: Array[*llvmc.Type, 1] = [i32t];
   let f = llvmc.AddFunction(m, "sumto", llvmc.FunctionType(i32t, &params[0], 1u32, 0i32));
   namedParams(f, "n", "");
   let n = llvmc.GetParam(f, 0u32);
@@ -89,9 +89,9 @@ fn buildSumTo(ctx *llvmc.Context, m *llvmc.Module, bld *llvmc.Builder, i32t *llv
   let i2 = llvmc.BuildAdd(bld, i, one, "i2");
   let more = llvmc.BuildICmp(bld, llvmc.IntPredicate.IntSLT, i2, n, "more");
   llvmc.BuildCondBr(bld, more, loop, done);
-  var iv Array[*llvmc.Value, 2] = [zero, i2];
-  var av Array[*llvmc.Value, 2] = [zero, acc2];
-  var bb Array[*llvmc.BasicBlock, 2] = [entry, loop];
+  var iv: Array[*llvmc.Value, 2] = [zero, i2];
+  var av: Array[*llvmc.Value, 2] = [zero, acc2];
+  var bb: Array[*llvmc.BasicBlock, 2] = [entry, loop];
   llvmc.AddIncoming(i, &iv[0], &bb[0], 2u32);
   llvmc.AddIncoming(acc, &av[0], &bb[0], 2u32);
   llvmc.PositionBuilderAtEnd(bld, done);
@@ -99,8 +99,8 @@ fn buildSumTo(ctx *llvmc.Context, m *llvmc.Module, bld *llvmc.Builder, i32t *llv
 }
 
 // classify(n): a switch, 0 -> 100, 1 -> 200, 5 -> 500, anything else 7
-fn buildClassify(ctx *llvmc.Context, m *llvmc.Module, bld *llvmc.Builder, i32t *llvmc.Type) {
-  var params Array[*llvmc.Type, 1] = [i32t];
+fn buildClassify(ctx: *llvmc.Context, m: *llvmc.Module, bld: *llvmc.Builder, i32t: *llvmc.Type) {
+  var params: Array[*llvmc.Type, 1] = [i32t];
   let f = llvmc.AddFunction(m, "classify", llvmc.FunctionType(i32t, &params[0], 1u32, 0i32));
   namedParams(f, "n", "");
   let entry = llvmc.AppendBasicBlockInContext(ctx, f, "entry");
@@ -125,23 +125,23 @@ fn buildClassify(ctx *llvmc.Context, m *llvmc.Module, bld *llvmc.Builder, i32t *
   llvmc.BuildBr(bld, join);
   llvmc.PositionBuilderAtEnd(bld, join);
   let phi = llvmc.BuildPhi(bld, i32t, "answer");
-  var vals Array[*llvmc.Value, 4] = [llvmc.ConstInt(i32t, 7u64, 0i32), llvmc.ConstInt(i32t, 100u64, 0i32),
+  var vals: Array[*llvmc.Value, 4] = [llvmc.ConstInt(i32t, 7u64, 0i32), llvmc.ConstInt(i32t, 100u64, 0i32),
     llvmc.ConstInt(i32t, 200u64, 0i32), llvmc.ConstInt(i32t, 500u64, 0i32)];
-  var blks Array[*llvmc.BasicBlock, 4] = [other, c0, c1, c5];
+  var blks: Array[*llvmc.BasicBlock, 4] = [other, c0, c1, c5];
   llvmc.AddIncoming(phi, &vals[0], &blks[0], 4u32);
   llvmc.BuildRet(bld, phi);
 }
 
 // ---- the object's bytes ----
 
-fn le16(p *u8, at usize) usize { usize.from(p[at]) | (usize.from(p[at + 1usize]) << 8usize) }
-fn le32(p *u8, at usize) usize { le16(p, at) | (le16(p, at + 2usize) << 16usize) }
-fn le64(p *u8, at usize) usize { le32(p, at) | (le32(p, at + 4usize) << 32usize) }
+fn le16(p: *u8, at: usize) usize { usize.from(p[at]) | (usize.from(p[at + 1usize]) << 8usize) }
+fn le32(p: *u8, at: usize) usize { le16(p, at) | (le16(p, at + 2usize) << 16usize) }
+fn le64(p: *u8, at: usize) usize { le32(p, at) | (le32(p, at + 4usize) << 32usize) }
 
 // Whether the zero-ended text at 'at' is 'name'; 'inline' is a COFF short name, whose 8 bytes have no
 // zero after them when the name fills them
-fn nameIs(p *u8, at usize, name &str, inline8 bool) bool {
-  let want &Array[u8] = name;
+fn nameIs(p: *u8, at: usize, name: &str, inline8: bool) bool {
+  let want: &Array[u8] = name;
   var i = 0usize;
   var same = true;
   while same && i < want.len {
@@ -153,7 +153,7 @@ fn nameIs(p *u8, at usize, name &str, inline8 bool) bool {
 
 // Where in the object file the code of the function 'name' begins, and 0 when the object has no such
 // function or its section has relocations (which this test does not apply)
-fn codeOffset(obj *u8, name &str) usize {
+fn codeOffset(obj: *u8, name: &str) usize {
   var found = 0usize;
   if isWindows() {
     // COFF: a 20-byte header, 40-byte section headers, 18-byte symbols, then the string table
@@ -218,8 +218,8 @@ fn codeOffset(obj *u8, name &str) usize {
 
 // ---- running it ----
 
-fn executableCopy(obj *u8, size usize) *u8 {
-  var block *u8 = null;
+fn executableCopy(obj: *u8, size: usize) *u8 {
+  var block: *u8 = null;
   if isWindows() {
     block = VirtualAlloc(null, size, 0x3000u32, 0x40u32);          // commit and reserve, execute-read-write
   } else {
@@ -257,7 +257,7 @@ fn main() i32 {
   // A machine for the host, and the module laid out for it
   let triple = llvmc.defaultTargetTriple();
   expect(triple.len() > 0usize, "the host has a default triple");
-  var target *llvmc.Target = null;
+  var target: *llvmc.Target = null;
   match llvmc.targetFromTriple(triple.cstr()) {
     case let t Ok { target = t; }
     case let why Error { print <- "no target: ", why.view(), "\n"; }
@@ -276,8 +276,8 @@ fn main() i32 {
     case is None { print <- "object file written\n"; }
     case let why Some { print <- "emit failed: ", why.view(), "\n"; }
   }
-  var buffer *llvmc.MemoryBuffer = null;
-  var message *u8 = null;
+  var buffer: *llvmc.MemoryBuffer = null;
+  var message: *u8 = null;
   let failed = llvmc.TargetMachineEmitToMemoryBuffer(tm, m, llvmc.CodeGenFileType.ObjectFile, &message, &buffer);
   expect(failed == 0i32, "the object in a memory buffer");
   let size = llvmc.GetBufferSize(buffer);
@@ -287,7 +287,7 @@ fn main() i32 {
   // The file read back is the buffer
   let file = libc.fopen("object-test.o", "rb");
   expect(file != null, "the object file opens");
-  var onDisk List[u8] = List[u8].empty();
+  var onDisk: List[u8] = List[u8].empty();
   onDisk.resize(size + 1usize, 0u8);
   let got = libc.fread(onDisk.viewMut() as *u8, 1usize, size + 1usize, file);
   libc.fclose(file);
@@ -309,10 +309,10 @@ fn main() i32 {
   let classAt = codeOffset(bytes, "classify");
   expect(addAt > 0usize && maxAt > 0usize && sumAt > 0usize && classAt > 0usize, "all four symbols found, with no relocations");
   if image != null && addAt > 0usize && maxAt > 0usize && sumAt > 0usize && classAt > 0usize {
-    let add = (image + addAt) as &fn @c (a i32, b i32) i32;
-    let max = (image + maxAt) as &fn @c (a i32, b i32) i32;
-    let sumto = (image + sumAt) as &fn @c (n i32) i32;
-    let classify = (image + classAt) as &fn @c (n i32) i32;
+    let add = (image + addAt) as &fn @c (a: i32, b: i32) i32;
+    let max = (image + maxAt) as &fn @c (a: i32, b: i32) i32;
+    let sumto = (image + sumAt) as &fn @c (n: i32) i32;
+    let classify = (image + classAt) as &fn @c (n: i32) i32;
     print <- "add(20, 22) = ", add(20i32, 22i32), "\n";
     print <- "add(-5, 3) = ", add(0i32 - 5i32, 3i32), "\n";
     print <- "max(3, 9) = ", max(3i32, 9i32), "\n";

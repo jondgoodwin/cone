@@ -11,28 +11,28 @@
 mod enum_typecheck_flow_typing;
 
 enum Shape {
-  struct Circle { pub radius i32; }
-  struct Rect { pub w i32; }
+  struct Circle { pub radius: i32; }
+  struct Rect { pub w: i32; }
   struct Dot {}
 }
 use Shape;
 
-fn reshape(s &mut Shape) { *s = Shape.Rect(1); }
+fn reshape(s: &mut Shape) { *s = Shape.Rect(1); }
 
 // No test, no narrowing
-fn untested(s Shape) {
+fn untested(s: Shape) {
   s.radius;                              //~ ErrorNoMbr "radius"
 }
 
 // A test elsewhere narrows only where it holds
-fn outsideBranch(s Shape) {
+fn outsideBranch(s: Shape) {
   if s is Circle { s.radius; }
   s.radius;                              //~ ErrorNoMbr "radius"
 }
 
 // A value that is not known to be a variant ends it, and the message names it
-fn changedToUnknown(other Shape) {
-  var s Shape = Shape.Circle(1);
+fn changedToUnknown(other: Shape) {
+  var s: Shape = Shape.Circle(1);
   s.radius;
   s = other;
   s.radius;                              //~ ErrorNarrowStale "was changed at 37:3"
@@ -40,20 +40,20 @@ fn changedToUnknown(other Shape) {
 
 // ... a writable borrow of the whole enum, which a call may store another variant through
 fn borrowedWhole() {
-  var s Shape = Shape.Circle(1);
+  var s: Shape = Shape.Circle(1);
   reshape(&mut s);
   s.radius;                              //~ ErrorNarrowStale "was changed at"
 }
 
 // ... and a path where one branch changed it
-fn oneBranch(c bool, other Shape) {
-  var s Shape = Shape.Circle(1);
+fn oneBranch(c: bool, other: Shape) {
+  var s: Shape = Shape.Circle(1);
   if c { s = other; }
   s.radius;                              //~ ErrorNarrowStale "was changed at"
 }
 
 // ... a reference stored over
-fn throughReference(s &mut Shape, other Shape) {
+fn throughReference(s: &mut Shape, other: Shape) {
   if s is Circle {
     *s = other;
     s.radius;                            //~ ErrorNarrowStale "was changed at"
@@ -61,8 +61,8 @@ fn throughReference(s &mut Shape, other Shape) {
 }
 
 // A narrowing from before a loop, a change later in it, and the next pass
-fn loopCarried(other Shape) {
-  var s Shape = Shape.Circle(1);
+fn loopCarried(other: Shape) {
+  var s: Shape = Shape.Circle(1);
   var n = 0;
   while n < 3 {
     s.radius;                            //~ ErrorNarrowLoop "does not hold on the next pass"
@@ -72,8 +72,8 @@ fn loopCarried(other Shape) {
 }
 
 // ... where the loop tests again, it holds
-fn loopTestsAgain(other Shape) {
-  var s Shape = Shape.Circle(1);
+fn loopTestsAgain(other: Shape) {
+  var s: Shape = Shape.Circle(1);
   var n = 0;
   while n < 3 {
     if s is Circle { s.radius; }
@@ -83,50 +83,50 @@ fn loopTestsAgain(other Shape) {
 }
 
 // The name stays the whole enum where a variant is wanted
-fn takesCircle(c Circle) {}
-fn notAVariant(s Shape) {
+fn takesCircle(c: Circle) {}
+fn notAVariant(s: Shape) {
   if s is Circle {
     takesCircle(s);                      //~ ErrorInvType "does not match"
   }
 }
 
 // A binding that outlives an early exit leaves in its 'else'
-fn fallsThrough(r Result[i32, i32]) i32 {
+fn fallsThrough(r: Result[i32, i32]) i32 {
   let n Ok = r else { 0; };              //~ ErrorLetElse "must leave"
   return n;
 }
 
 // -------- a reference others may share, and the calls between the test and the use --------
 
-fn toRect(s &mut Shape) bool { *s = Shape.Rect(1); true }
+fn toRect(s: &mut Shape) bool { *s = Shape.Rect(1); true }
 
 // Nothing follows the reference between the test and the declaration of the local that
 // holds it (or, in one condition, its use), so a call made between ends the narrowing,
 // whichever route the reshape takes: through the name itself, or through another
-fn betweenInCondition(s &mut Shape) i32 {
+fn betweenInCondition(s: &mut Shape) i32 {
   if s is Circle && toRect(s) && s.radius > 0 { return 1; }   //~ ErrorNarrowStale "the call at"
   return 0;
 }
-fn betweenInAnother(s &mut Shape, t &mut Shape) i32 {
+fn betweenInAnother(s: &mut Shape, t: &mut Shape) i32 {
   if s is Circle && toRect(t) && s.radius > 0 { return 1; }   //~ ErrorNarrowStale "the call at"
   return 0;
 }
-fn betweenThenBlock(s &mut Shape, t &mut Shape) i32 {
+fn betweenThenBlock(s: &mut Shape, t: &mut Shape) i32 {
   if s is Circle && toRect(t) { return s.radius; }             //~ ErrorNarrowStale "the call at"
   return 0;
 }
-fn betweenAfterExit(s &mut Shape, t &mut Shape) i32 {
+fn betweenAfterExit(s: &mut Shape, t: &mut Shape) i32 {
   if s is Rect || s is Dot || toRect(t) { return 0; }
   return s.radius;                                              //~ ErrorNarrowStale "the call at"
 }
 
-fn betweenStore(s &mut Shape, t &mut Shape) i32 {
+fn betweenStore(s: &mut Shape, t: &mut Shape) i32 {
   if s is Circle && { *t = Shape.Rect(1); true } && s.radius > 0 { return 1; }   //~ ErrorNarrowStale "the store at"
   return 0;
 }
 
 // A call before the test, or a number's operator or a field between, is none
-fn beforeTest(s &mut Shape, t &mut Shape) i32 {
+fn beforeTest(s: &mut Shape, t: &mut Shape) i32 {
   if toRect(t) && s is Circle && s.radius > 0 { return s.radius; }
   return 0;
 }

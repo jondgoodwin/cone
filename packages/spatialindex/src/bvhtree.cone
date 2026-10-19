@@ -15,30 +15,30 @@
 //    to a leaf.
 
 struct BvhNode {
-  box Aabb3;
-  parent u32;   // the parent; for a free node, the next free node
-  a u32;        // child 1; for a leaf, the item slot
-  b u32;        // child 2; NONE for a leaf
-  height i32;   // 0 for a leaf
+  box: Aabb3;
+  parent: u32;   // the parent; for a free node, the next free node
+  a: u32;        // child 1; for a leaf, the item slot
+  b: u32;        // child 2; NONE for a leaf
+  height: i32;   // 0 for a leaf
 }
 
 // What a bulk build works on: a leaf and where its box centre is
 struct BuildItem {
-  node u32;
-  cent Vec3;
-  box Aabb3;
+  node: u32;
+  cent: Vec3;
+  box: Aabb3;
 }
 
 struct BvhTree {
-  nodes List[BvhNode];
-  root u32;
-  free u32;
+  nodes: List[BvhNode];
+  root: u32;
+  free: u32;
 
   fn create() BvhTree {new BvhTree(List[BvhNode].empty(), NONE, NONE)}
 
-  fn isLeaf(self &, n u32) bool {nodes[usize.from(n)].b == NONE}
+  fn isLeaf(self: &, n: u32) bool {nodes[usize.from(n)].b == NONE}
 
-  fn alloc(self &mut) u32 {
+  fn alloc(self: &mut) u32 {
     if free != NONE {
       let n = free;
       free = nodes[usize.from(n)].parent;
@@ -53,19 +53,19 @@ struct BvhTree {
     n
   }
 
-  fn release(self &mut, n u32) {
+  fn release(self: &mut, n: u32) {
     nodes[usize.from(n)].parent = free;
     nodes[usize.from(n)].height = -1i32;
     free = n;
   }
 
-  fn clear(self &mut) {
+  fn clear(self: &mut) {
     nodes.clear();
     root = NONE;
     free = NONE;
   }
 
-  fn newLeaf(self &mut, slot u32, fat Aabb3) u32 {
+  fn newLeaf(self: &mut, slot: u32, fat: Aabb3) u32 {
     let n = alloc();
     nodes[usize.from(n)].box = fat;
     nodes[usize.from(n)].a = slot;
@@ -77,7 +77,7 @@ struct BvhTree {
   // ---- dynamic insertion and removal ----
 
   // Puts a leaf (already holding its box) into the tree
-  fn insertLeaf(self &mut, leaf u32) {
+  fn insertLeaf(self: &mut, leaf: u32) {
     if root == NONE {
       root = leaf;
       nodes[usize.from(leaf)].parent = NONE;
@@ -123,7 +123,7 @@ struct BvhTree {
   }
 
   // From a node to the root: rebalance, then refit height and box
-  fn walkUp(self &mut, from u32) {
+  fn walkUp(self: &mut, from: u32) {
     var index = from;
     while index != NONE {
       index = balance(index);
@@ -136,7 +136,7 @@ struct BvhTree {
   }
 
   // Takes a leaf out of the tree (the leaf node stays allocated)
-  fn removeLeaf(self &mut, leaf u32) {
+  fn removeLeaf(self: &mut, leaf: u32) {
     if leaf == root {
       root = NONE;
       return;
@@ -163,7 +163,7 @@ struct BvhTree {
   // Box2D 2.4's rotation: if one child of 'ia' is two taller than the other,
   // lift the taller one over 'ia' (swapping 'ia' with it) and keep, of the
   // lifted node's children, the taller under it. Returns the new top.
-  fn balance(self &mut, ia u32) u32 {
+  fn balance(self: &mut, ia: u32) u32 {
     let a = usize.from(ia);
     if nodes[a].b == NONE || nodes[a].height < 2i32 {return ia;}
     let ib = nodes[a].a;
@@ -247,7 +247,7 @@ struct BvhTree {
   // ---- refit ----
 
   // Recomputes the boxes of every ancestor of a leaf from its children
-  fn refitUp(self &mut, from u32) {
+  fn refitUp(self: &mut, from: u32) {
     var index = from;
     while index != NONE {
       let c1 = nodes[usize.from(index)].a;
@@ -259,7 +259,7 @@ struct BvhTree {
 
   // Recomputes every internal node's box, children before parents, given the
   // leaf boxes as they now stand. Heights are left as they are.
-  fn refitAll(self &mut) {
+  fn refitAll(self: &mut) {
     if root == NONE {return;}
     var order = List[u32].empty();
     var stack = List[u32].empty();
@@ -282,7 +282,7 @@ struct BvhTree {
 
   // The SAH cost of the tree: the internal nodes' areas over the root's
   // (Macdonald and Booth), lower is better; 0 for no tree
-  fn sahCost(self &) f32 {
+  fn sahCost(self: &) f32 {
     if root == NONE {return 0.;}
     var total = 0.f;
     var stack = List[u32].empty();
@@ -303,7 +303,7 @@ struct BvhTree {
 
   // Throws the tree away and builds one over the given leaves (nodes already
   // allocated with their boxes) by binned SAH
-  fn buildFrom(self &mut, work &mut List[BuildItem]) {
+  fn buildFrom(self: &mut, work: &mut List[BuildItem]) {
     if work.len() == 0usize {
       root = NONE;
       return;
@@ -312,7 +312,7 @@ struct BvhTree {
     nodes[usize.from(root)].parent = NONE;
   }
 
-  fn buildRange(self &mut, work &mut List[BuildItem], lo usize, hi usize) u32 {
+  fn buildRange(self: &mut, work: &mut List[BuildItem], lo: usize, hi: usize) u32 {
     if hi - lo == 1usize {return work[lo].node;}
     // bounds of the centroids
     var cb = Aabb3.empty();
@@ -415,13 +415,13 @@ struct BvhTree {
   }
 }
 
-fn maxi(a i32, b i32) i32 inline {if a > b {a} else {b}}
+fn maxi(a: i32, b: i32) i32 inline {if a > b {a} else {b}}
 
-fn axisOf(v Vec3, axis i32) f32 inline {
+fn axisOf(v: Vec3, axis: i32) f32 inline {
   if axis == 0i32 {v.x} else if axis == 1i32 {v.y} else {v.z}
 }
 
-fn binOf(c f32, lo f32, scale f32) usize inline {
+fn binOf(c: f32, lo: f32, scale: f32) usize inline {
   let k = i32.from((c - lo) * scale);
   if k < 0i32 {0usize} else if k > 15i32 {15usize} else {usize.from(k)}
 }

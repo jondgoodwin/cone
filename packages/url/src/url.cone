@@ -86,38 +86,38 @@ import collections use List, String;
 // Characters
 // ---------------------------------------------------------------------------
 
-fn isAlpha(c u8) bool {(c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')}
-fn isDigit(c u8) bool {c >= '0' && c <= '9'}
-fn isHex(c u8) bool {isDigit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')}
-fn lower(c u8) u8 {if c >= 'A' && c <= 'Z' {c + 32u8} else {c}}
+fn isAlpha(c: u8) bool {(c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')}
+fn isDigit(c: u8) bool {c >= '0' && c <= '9'}
+fn isHex(c: u8) bool {isDigit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')}
+fn lower(c: u8) u8 {if c >= 'A' && c <= 'Z' {c + 32u8} else {c}}
 
-fn hexValue(c u8) u8 {
+fn hexValue(c: u8) u8 {
   if isDigit(c) {c - '0'}
   elif c >= 'a' && c <= 'f' {c - 'a' + 10u8}
   else {c - 'A' + 10u8}
 }
 
-fn hexDigit(n u8) u8 {if n < 10u8 {'0' + n} else {'A' + n - 10u8}}
+fn hexDigit(n: u8) u8 {if n < 10u8 {'0' + n} else {'A' + n - 10u8}}
 
 // RFC 3986's unreserved characters: a letter, a digit, '-', '.', '_', '~'
-pub fn isUnreserved(c u8) bool {isAlpha(c) || isDigit(c) || c == '-' || c == '.' || c == '_' || c == '~'}
+pub fn isUnreserved(c: u8) bool {isAlpha(c) || isDigit(c) || c == '-' || c == '.' || c == '_' || c == '~'}
 
 // RFC 3986's sub-delims: ! $ & ' ( ) * + , ; =
-pub fn isSubDelim(c u8) bool {
+pub fn isSubDelim(c: u8) bool {
   c == '!' || c == '$' || c == '&' || c == '\'' || c == '(' || c == ')' || c == '*' || c == '+' ||
     c == ',' || c == ';' || c == '='
 }
 
 // A C0 control character or DEL
-fn isControl(c u8) bool {c < 0x20u8 || c == 0x7Fu8}
+fn isControl(c: u8) bool {c < 0x20u8 || c == 0x7Fu8}
 
 // A byte a path, query or fragment has percent-encoded when it is read
-fn needsEncoding(c u8) bool {
+fn needsEncoding(c: u8) bool {
   c == ' ' || c == '"' || c == '<' || c == '>' || c == '\\' || c == '^' || c == '`' || c == '{' ||
     c == '|' || c == '}' || c >= 0x80u8
 }
 
-fn appendEncoded(out &mut String, c u8) {
+fn appendEncoded(out: &mut String, c: u8) {
   out.appendByte('%');
   out.appendByte(hexDigit(c >> 4u8));
   out.appendByte(hexDigit(c & 15u8));
@@ -125,7 +125,7 @@ fn appendEncoded(out &mut String, c u8) {
 
 // A host as written in an authority: in brackets when IPv6. The host is lent to
 // this, so the caller, whose 'out' is its own String, has shown it is no part of it
-fn appendHost(out &mut String, host &str, bracketed bool) {
+fn appendHost(out: &mut String, host: &str, bracketed: bool) {
   if bracketed {
     out.append("[");
     out.append(host);
@@ -137,8 +137,8 @@ fn appendHost(out &mut String, host &str, bracketed bool) {
 
 // s with every byte that is not unreserved percent-encoded: a value for a
 // query or a path segment
-pub fn encodeComponent(text &str) String {
-  let s &Array[u8] = text;
+pub fn encodeComponent(text: &str) String {
+  let s: &Array[u8] = text;
   var out = String.withCapacity(s.len);
   var i = 0usize;
   while i < s.len {
@@ -150,8 +150,8 @@ pub fn encodeComponent(text &str) String {
 
 // s with its percent-encoding undone; None when a '%' is not followed by
 // two hex digits
-pub fn decode(text &str) Option[String] {
-  let s &Array[u8] = text;
+pub fn decode(text: &str) Option[String] {
+  let s: &Array[u8] = text;
   var out = String.withCapacity(s.len);
   var i = 0usize;
   while i < s.len {
@@ -173,15 +173,15 @@ pub fn decode(text &str) Option[String] {
 
 // Why a URL could not be read: where, and what was wrong
 pub struct UrlError {
-  pub at usize;           // the byte offset in the text, after the ends were trimmed
-  pub why String;
+  pub at: usize;           // the byte offset in the text, after the ends were trimmed
+  pub why: String;
 
-  pub fn make(at usize, why &str) UrlError {new UrlError(at, String.from(why))}
+  pub fn make(at: usize, why: &str) UrlError {new UrlError(at, String.from(why))}
   pub fn none() UrlError {new UrlError(0usize, String.empty())}
-  pub fn isNone(self &) bool {why.len() == 0usize}
+  pub fn isNone(self: &) bool {why.len() == 0usize}
 
   // 'url: a port is 0 to 65535 (at 22)'
-  pub fn message(self &) String {
+  pub fn message(self: &) String {
     var out = String.from("url: ");
     out.append(why.view());
     out.append(" (at ");
@@ -201,25 +201,25 @@ pub enum HostKind {
 }
 
 // The default port of a scheme: 80 for http, 443 for https, 0 for any other
-pub fn defaultPort(scheme &str) u16 {
+pub fn defaultPort(scheme: &str) u16 {
   if scheme == "http" {80u16} elif scheme == "https" {443u16} else {0u16}
 }
 
 // A URL, or during resolution a reference, as its parts (see the package's
 // header)
 pub struct Url {
-  pub scheme String;        // lower case; empty in a reference that has none
-  pub hasAuthority bool;    // '//' was there
-  pub userinfo String;      // before '@', as written (httpclient sends none of it)
-  pub host String;          // lower case; an IPv6 address without its brackets
-  pub hostKind HostKind;
-  pub port u16;
-  pub hasPort bool;         // a port was written
-  pub path String;
-  pub query String;
-  pub hasQuery bool;        // '?' was there (the query may be empty)
-  pub fragment String;
-  pub hasFragment bool;
+  pub scheme: String;        // lower case; empty in a reference that has none
+  pub hasAuthority: bool;    // '//' was there
+  pub userinfo: String;      // before '@', as written (httpclient sends none of it)
+  pub host: String;          // lower case; an IPv6 address without its brackets
+  pub hostKind: HostKind;
+  pub port: u16;
+  pub hasPort: bool;         // a port was written
+  pub path: String;
+  pub query: String;
+  pub hasQuery: bool;        // '?' was there (the query may be empty)
+  pub fragment: String;
+  pub hasFragment: bool;
 
   // No parts: a reference that is empty
   pub fn empty() Url {
@@ -229,7 +229,7 @@ pub struct Url {
   }
 
   // An absolute URL read from text (see the package's header, READING)
-  pub fn parse(text &str) Result[Url, UrlError] {
+  pub fn parse(text: &str) Result[Url, UrlError] {
     var u = Url.empty();
     let t = trimEnds(text);
     let e = parseInto(t, &mut u);
@@ -241,27 +241,27 @@ pub struct Url {
   }
 
   // The reference ref resolved against this URL (RFC 3986, 5.2)
-  pub fn resolve(self &, ref &str) Result[Url, UrlError] {resolveRef(self, ref)}
+  pub fn resolve(self: &, ref: &str) Result[Url, UrlError] {resolveRef(self, ref)}
 
   // Another Url with the same parts
-  pub fn copy(self &) Url {
+  pub fn copy(self: &) Url {
     new Url(scheme: scheme.copy(), hasAuthority: hasAuthority, userinfo: userinfo.copy(), host: host.copy(),
       hostKind: hostKind, port: port, hasPort: hasPort, path: path.copy(), query: query.copy(),
       hasQuery: hasQuery, fragment: fragment.copy(), hasFragment: hasFragment)
   }
 
   // Whether the scheme is http or https
-  pub fn isHttp(self &) bool {scheme.view() == "http" || scheme.view() == "https"}
+  pub fn isHttp(self: &) bool {scheme.view() == "http" || scheme.view() == "https"}
 
   // Whether the scheme is https
-  pub fn isSecure(self &) bool {scheme.view() == "https"}
+  pub fn isSecure(self: &) bool {scheme.view() == "https"}
 
   // The port written, or the scheme's default
-  pub fn effectivePort(self &) u16 {if hasPort {port} else {defaultPort(scheme.view())}}
+  pub fn effectivePort(self: &) u16 {if hasPort {port} else {defaultPort(scheme.view())}}
 
   // Host and port as HTTP writes them in Host: the port only when it is not
   // the scheme's default
-  pub fn authority(self &) String {
+  pub fn authority(self: &) String {
     var out = String.empty();
     appendHost(&mut out, host.view(), hostKind == HostKind.Ipv6);
     if hasPort && port != defaultPort(scheme.view()) {
@@ -273,7 +273,7 @@ pub struct Url {
 
   // 'https://example.com:443': scheme, host and port, the port always
   // written
-  pub fn origin(self &) String {
+  pub fn origin(self: &) String {
     var out = scheme.copy();
     out.append("://");
     appendHost(&mut out, host.view(), hostKind == HostKind.Ipv6);
@@ -283,13 +283,13 @@ pub struct Url {
   }
 
   // Whether o has the same scheme, host and port
-  pub fn sameOrigin(self &, o &Url) bool {
+  pub fn sameOrigin(self: &, o: &Url) bool {
     scheme.view() == o.scheme.view() && host.view() == o.host.view() &&
       self.effectivePort() == o.effectivePort()
   }
 
   // The request target: the path (at least '/') and the query
-  pub fn target(self &) String {
+  pub fn target(self: &) String {
     var out = if path.len() == 0usize {String.from("/")} else {path.copy()};
     if hasQuery {
       out.append("?");
@@ -299,7 +299,7 @@ pub struct Url {
   }
 
   // The URL as text (see the package's header, WRITING)
-  pub fn text(self &) String {
+  pub fn text(self: &) String {
     var out = String.empty();
     if scheme.len() > 0usize {
       out.append(scheme.view());
@@ -331,7 +331,7 @@ pub struct Url {
 // ---------------------------------------------------------------------------
 
 // text without the spaces and C0 controls at either end
-fn trimEnds(text &Array[u8]) &Array[u8] {
+fn trimEnds(text: &Array[u8]) &Array[u8] {
   var a = 0usize;
   var b = text.len;
   while a < b && text[a] <= 0x20u8 {a = a + 1usize;}
@@ -340,7 +340,7 @@ fn trimEnds(text &Array[u8]) &Array[u8] {
 }
 
 // Whether s is a scheme: a letter, then letters, digits, '+', '-', '.'
-fn isScheme(s &Array[u8]) bool {
+fn isScheme(s: &Array[u8]) bool {
   if s.len == 0usize || !isAlpha(s[0usize]) {return false;}
   var i = 1usize;
   while i < s.len {
@@ -353,7 +353,7 @@ fn isScheme(s &Array[u8]) bool {
 
 // A path, query or fragment's text, made tidy (see READING): its error, or
 // none
-fn tidy(s &Array[u8], base usize, out &mut String) UrlError {
+fn tidy(s: &Array[u8], base: usize, out: &mut String) UrlError {
   var i = 0usize;
   while i < s.len {
     let c = s[i];
@@ -367,7 +367,7 @@ fn tidy(s &Array[u8], base usize, out &mut String) UrlError {
 // A reference's parts, read from t into u by RFC 3986's appendix B: its
 // error, or none. Nothing is required: Url.parse and resolution check what
 // they need
-fn parseInto(t &Array[u8], u &mut Url) UrlError {
+fn parseInto(t: &Array[u8], u: &mut Url) UrlError {
   // The scheme: before a ':' that comes before any '/', '?' or '#'
   var i = 0usize;
   while i < t.len && t[i] != ':' && t[i] != '/' && t[i] != '?' && t[i] != '#' {i = i + 1usize;}
@@ -417,7 +417,7 @@ fn parseInto(t &Array[u8], u &mut Url) UrlError {
 }
 
 // '[userinfo@]host[:port]', a at offset base of the text
-fn parseAuthority(a &Array[u8], base usize, u &mut Url) UrlError {
+fn parseAuthority(a: &Array[u8], base: usize, u: &mut Url) UrlError {
   // The user information: before the last '@'
   var at = a.len;
   var k = 0usize;
@@ -496,7 +496,7 @@ fn parseAuthority(a &Array[u8], base usize, u &mut Url) UrlError {
 }
 
 // Whether s is an IPv4 address in dotted decimal: four numbers, 0 to 255
-fn isIpv4(s &Array[u8]) bool {
+fn isIpv4(s: &Array[u8]) bool {
   var parts = 0u32;
   var digits = 0u32;
   var v = 0u32;
@@ -520,7 +520,7 @@ fn isIpv4(s &Array[u8]) bool {
 }
 
 // Whether s is an IPv6 address as RFC 4291 writes one (section 2.2)
-fn isIpv6(s &Array[u8]) bool {
+fn isIpv6(s: &Array[u8]) bool {
   var groups = 0u32;
   var elided = false;
   var i = 0usize;
@@ -560,7 +560,7 @@ fn isIpv6(s &Array[u8]) bool {
 
 // The checks and tidying an absolute URL takes once read: its error, or
 // none
-fn finish(u &mut Url) UrlError {
+fn finish(u: &mut Url) UrlError {
   if u.isHttp() {
     if !u.hasAuthority || u.host.len() == 0usize {return UrlError.make(0usize, "an http or https URL has a host");}
   }
@@ -574,8 +574,8 @@ fn finish(u &mut Url) UrlError {
 // ---------------------------------------------------------------------------
 
 // path without its '.' and '..' segments (RFC 3986, 5.2.4)
-pub fn removeDotSegments(text &str) String {
-  let path &Array[u8] = text;
+pub fn removeDotSegments(text: &str) String {
+  let path: &Array[u8] = text;
   var out = String.withCapacity(path.len);
   var i = 0usize;
   let n = path.len;
@@ -611,7 +611,7 @@ pub fn removeDotSegments(text &str) String {
 }
 
 // s without its last segment and the '/' before it
-fn dropLastSegment(s &String) String {
+fn dropLastSegment(s: &String) String {
   let v = s.view();
   var k = v.len;
   while k > 0usize {
@@ -622,7 +622,7 @@ fn dropLastSegment(s &String) String {
 }
 
 // base's path merged with a relative path (RFC 3986, 5.2.3)
-fn merge(base &Url, rel &str) String {
+fn merge(base: &Url, rel: &str) String {
   if base.hasAuthority && base.path.len() == 0usize {
     var out = String.from("/");
     out.append(rel);
@@ -638,7 +638,7 @@ fn merge(base &Url, rel &str) String {
 
 // The reference ref resolved against base, an absolute URL (RFC 3986,
 // 5.2.2), and checked as Url.parse checks one
-pub fn resolveRef(base &Url, ref &str) Result[Url, UrlError] {
+pub fn resolveRef(base: &Url, ref: &str) Result[Url, UrlError] {
   var r = Url.empty();
   let e = parseInto(trimEnds(ref), &mut r);
   if !e.isNone() {return Error[Url, UrlError](e);}

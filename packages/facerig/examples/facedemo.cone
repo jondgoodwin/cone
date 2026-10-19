@@ -48,7 +48,7 @@ import path use Path;
 const TILE_W = 480;
 const TILE_H = 560;
 
-fn imageOf(p &Pixels) Image {
+fn imageOf(p: &Pixels) Image {
   var img = new Image(p.width, p.height, 4, List[u8].empty());
   var i = 0usize;
   while i < p.rgba.len() { img.pixels.push(*p.rgba[i]); i = i + 1usize; }
@@ -56,18 +56,18 @@ fn imageOf(p &Pixels) Image {
 }
 
 // The jaw's matrix for a frame: about the hinge, then the thrust
-fn jawMatrix(spec &FaceSpec, f &FaceFrame) Mat4 {
+fn jawMatrix(spec: &FaceSpec, f: &FaceFrame) Mat4 {
   let p = spec.jawPivot;
   Mat4.fromTranslation(p + new Vec3(0., 0., -f.jawThrust)) * Mat4.fromQuat(f.jawRot) * Mat4.fromTranslation(-p)
 }
 
 struct Sheet {
-  raster Raster;
-  tilesAcross i32;
-  tileW i32;
-  tileH i32;
+  raster: Raster;
+  tilesAcross: i32;
+  tileW: i32;
+  tileH: i32;
 
-  fn make(tilesAcross i32, tilesDown i32, tileW i32, tileH i32) Sheet {
+  fn make(tilesAcross: i32, tilesDown: i32, tileW: i32, tileH: i32) Sheet {
     var r = Raster.empty();
     r.width = tilesAcross * tileW;
     r.height = tilesDown * tileH;
@@ -78,7 +78,7 @@ struct Sheet {
   }
 
   // Copy a tile-sized readback (rows from the top) into tile 'n'
-  fn put(self &mut, n i32, px *u8) {
+  fn put(self: &mut, n: i32, px: *u8) {
     let tx = (n % tilesAcross) * tileW;
     let ty = (n / tilesAcross) * tileH;
     var y = 0;
@@ -96,7 +96,7 @@ struct Sheet {
     }
   }
 
-  fn save(self &, dir &String, name &str) {
+  fn save(self: &, dir: &String, name: &str) {
     let png = encodePng(&raster, 2);
     var full = dir.copy();
     full.append("/");
@@ -107,7 +107,7 @@ struct Sheet {
   }
 }
 
-fn cstrEquals(a *u8, b &str) bool {
+fn cstrEquals(a: *u8, b: &str) bool {
   var i = 0usize;
   while i < b.len() {
     if *(a + i) != b[i] { return false; }
@@ -116,14 +116,14 @@ fn cstrEquals(a *u8, b &str) bool {
   *(a + b.len()) == 0u8
 }
 
-fn argString(p *u8) String {
+fn argString(p: *u8) String {
   var s = String.empty();
   var i = 0usize;
   while *(p + i) != 0u8 { s.appendByte(*(p + i)); i = i + 1usize; }
   s
 }
 
-fn parseCount(s &String) i32 {
+fn parseCount(s: &String) i32 {
   var n = 0;
   var i = 0usize;
   while i < s.len() { n = n * 10 + i32.from(s[i] - '0'); i = i + 1usize; }
@@ -132,26 +132,26 @@ fn parseCount(s &String) i32 {
 
 // What the head is drawn from
 struct Handles {
-  head MeshHandle;       // the morphed copy
-  eye MeshHandle;
-  upper MeshHandle;
-  lower MeshHandle;
-  tongue MeshHandle;
-  cavity MeshHandle;
-  skin MaterialHandle;
-  eyeMat MaterialHandle;
-  teeth MaterialHandle;
-  tongueMat MaterialHandle;
-  cavityMat MaterialHandle;
+  head: MeshHandle;       // the morphed copy
+  eye: MeshHandle;
+  upper: MeshHandle;
+  lower: MeshHandle;
+  tongue: MeshHandle;
+  cavity: MeshHandle;
+  skin: MaterialHandle;
+  eyeMat: MaterialHandle;
+  teeth: MaterialHandle;
+  tongueMat: MaterialHandle;
+  cavityMat: MaterialHandle;
 }
 
 // The head's placement for a frame: turned about the base of the neck
-fn headMatrix(f &FaceFrame) Mat4 {
+fn headMatrix(f: &FaceFrame) Mat4 {
   let c = new Vec3(0., -0.12, 0.02);
   Mat4.fromTranslation(c) * Mat4.fromQuat(f.head) * Mat4.fromTranslation(-c)
 }
 
-fn buildList(list &mut DrawList, h &Handles, head &TestHead, f &FaceFrame) {
+fn buildList(list: &mut DrawList, h: &Handles, head: &TestHead, f: &FaceFrame) {
   list.clear();
   let hm = headMatrix(f);
   let jaw = jawMatrix(&head.spec, f);
@@ -169,8 +169,8 @@ fn buildList(list &mut DrawList, h &Handles, head &TestHead, f &FaceFrame) {
   list.add(h.cavity, h.cavityMat, hm);
 }
 
-fn drawFace(device &mut Device, renderer &mut Renderer, morpher &mut Morpher, copy MorphHandle, h &Handles, head &TestHead,
-    f &FaceFrame, camera &Camera, sun &Light, color &Texture, depth &Texture, readback &Buffer, list &mut DrawList) {
+fn drawFace(device: &mut Device, renderer: &mut Renderer, morpher: &mut Morpher, copy: MorphHandle, h: &Handles, head: &TestHead,
+    f: &FaceFrame, camera: &Camera, sun: &Light, color: &Texture, depth: &Texture, readback: &Buffer, list: &mut DrawList) {
   morpher.setWeights(renderer, copy, &f.weights);
   buildList(list, h, head, f);
   var encoder = device.createCommandEncoder();
@@ -183,21 +183,21 @@ fn drawFace(device &mut Device, renderer &mut Renderer, morpher &mut Morpher, co
 }
 
 // A rig stepped for 'frames' sixtieths of a second
-fn step(rig &mut FaceRig, frame &mut FaceFrame, frames i32) {
+fn step(rig: &mut FaceRig, frame: &mut FaceFrame, frames: i32) {
   var i = 0;
   while i < frames { rig.update(1. / 60., frame); i = i + 1; }
 }
 
-fn freshRig(head &TestHead, units &List[UnitDef], targets &FaceTargets) FaceRig {
+fn freshRig(head: &TestHead, units: &List[UnitDef], targets: &FaceTargets) FaceRig {
   FaceRig.make(&head.spec, units, targets, 20261013u32)
 }
 
-fn lidClosure(units &List[UnitDef], f &FaceFrame) f32 {
+fn lidClosure(units: &List[UnitDef], f: &FaceFrame) f32 {
   let i = findUnit(units, AU_BLINK, SIDE_RIGHT);
   *f.units[usize.from(i)]
 }
 
-fn main(argc i32, argv **u8) i32 {
+fn main(argc: i32, argv: **u8) i32 {
   var outDir = String.from("face-shots");
   var quick = false;
   var costFrames = 120;

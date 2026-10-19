@@ -19,104 +19,104 @@ mod collection_flow_reshape_owner;
 
 import collections use *;
 
-struct Item { pub label String; }
+struct Item { pub label: String; }
 
-trait Grower { pub fn growFirst(self &mut, s &str); }
+trait Grower { pub fn growFirst(self: &mut, s: &str); }
 
 struct Ed is Grower {
-  pub items List[Item];
-  pub fn growFirst(self &mut, s &str) {
+  pub items: List[Item];
+  pub fn growFirst(self: &mut, s: &str) {
     let r = &mut items[0usize];
     r.label.append(s);
   }
-  pub fn replaceFirst(self &mut, s &str, newText &str) {
+  pub fn replaceFirst(self: &mut, s: &str, newText: &str) {
     items[0usize].label = String.from(newText);
   }
-  pub fn clearAll(self &mut, s &str) {
+  pub fn clearAll(self: &mut, s: &str) {
     items.clear();
   }
 }
 
 // The owner's own methods, which replace the String the view points into and free the list
-fn viaReplace(ed &mut Ed, src &mut Ed) {
+fn viaReplace(ed: &mut Ed, src: &mut Ed) {
   ed.replaceFirst(src.items[0usize].label.view(), "x");       //~ ErrorShapeReshape
 }
 
-fn viaClear(ed &mut Ed, src &mut Ed) {
+fn viaClear(ed: &mut Ed, src: &mut Ed) {
   ed.clearAll(src.items[0usize].label.view());                //~ ErrorShapeReshape
 }
 
 // Through a trait bound, instanced to the owner
-fn viaBound[T Grower](g &mut T, src &mut Ed) {
+fn viaBound[T: Grower](g: &mut T, src: &mut Ed) {
   g.growFirst(src.items[0usize].label.view());                //~ ErrorShapeReshape
 }
 
 // (a generic function is checked where it is instanced)
-fn useBound(a &mut Ed, b &mut Ed) {
+fn useBound(a: &mut Ed, b: &mut Ed) {
   viaBound(a, b);
 }
 
 // Through a generic struct made of the owner
-struct Holder[T Grower] {
-  pub v T;
-  pub fn run(self &mut, s &str) { v.growFirst(s); }
+struct Holder[T: Grower] {
+  pub v: T;
+  pub fn run(self: &mut, s: &str) { v.growFirst(s); }
 }
 
-fn viaHolder(h &mut Holder[Ed], src &mut Ed) {
+fn viaHolder(h: &mut Holder[Ed], src: &mut Ed) {
   h.run(src.items[0usize].label.view());                      //~ ErrorShapeReshape
 }
 
 // A field path two levels down
-struct Mid { pub ed Ed; pub tag i32; }
+struct Mid { pub ed: Ed; pub tag: i32; }
 struct Outer {
-  pub mid Mid;
-  pub note String;
-  pub fn growVia(self &mut, s &str) { mid.ed.growFirst(s); }
+  pub mid: Mid;
+  pub note: String;
+  pub fn growVia(self: &mut, s: &str) { mid.ed.growFirst(s); }
 }
 
-fn viaOuter(o &mut Outer, src &mut Ed) {
+fn viaOuter(o: &mut Outer, src: &mut Ed) {
   o.growVia(src.items[0usize].label.view());                  //~ ErrorShapeReshape
 }
 
 // An element of a List[String], by the list's method, and by a '&mut String' made of another
 struct Names {
-  pub list List[String];
-  pub fn growFirst(self &mut, s &str) {
+  pub list: List[String];
+  pub fn growFirst(self: &mut, s: &str) {
     let r = &mut list[0usize];
     r.append(s);
   }
 }
 
-fn cat(dst &mut String, v &str) { dst.append(v); }
+fn cat(dst: &mut String, v: &str) { dst.append(v); }
 
-fn viaNames(a &mut Names, b &mut Names) {
+fn viaNames(a: &mut Names, b: &mut Names) {
   a.growFirst(b.list[0usize].view());                         //~ ErrorShapeReshape
 }
 
-fn viaMutString(a &mut Names, b &mut Names) {
+fn viaMutString(a: &mut Names, b: &mut Names) {
   let r = &mut a.list[0usize];
   cat(r, b.list[0usize].view());                              //~ ErrorShapeReshape
 }
 
-fn viaMutStringItem(a &mut Ed, b &mut Ed) {
+fn viaMutStringItem(a: &mut Ed, b: &mut Ed) {
   let r = &mut a.items[0usize];
   cat(&mut r.label, b.items[0usize].label.view());            //~ ErrorShapeReshape
 }
 
 // A variant of an enum, reached by the enum
 enum Shape {
-  struct Circle { pub name String; }
-  struct Square { pub s i32; }
+  struct Circle { pub name: String; }
+  struct Square { pub s: i32; }
 }
 
-fn growShape(sh &mut Shape, s &str) {
+fn growShape(sh: &mut Shape, s: &str) {
   match sh {
     case var c Circle { c.name.append(s); }
     else { }
   }
 }
 
-fn viaVariant(a &mut Shape, b &mut Shape) {
+fn viaVariant(a: &mut Shape, b: &mut Shape) {
   match b {
     case var c Circle { growShape(a, c.name.view()); }        //~ ErrorShapeReshape
     else { }
@@ -125,32 +125,32 @@ fn viaVariant(a &mut Shape, b &mut Shape) {
 
 // A list of lists, by a chain of indexes, and a second reference to the list
 struct Inner {
-  pub adv List[i64];
-  pub n i64;
+  pub adv: List[i64];
+  pub n: i64;
 }
 
-struct UI { pub fields List[Inner]; }
+struct UI { pub fields: List[Inner]; }
 
-fn chainTwoRefs(a &mut UI, b &mut UI) i64 {
+fn chainTwoRefs(a: &mut UI, b: &mut UI) i64 {
   let e = a.fields[0usize].adv[0usize];
   b.fields[0usize].adv.push(1);                               //~ ErrorShapeReshape
   *e
 }
 
-fn chainOneRef(a &mut UI) i64 {
+fn chainOneRef(a: &mut UI) i64 {
   let e = a.fields[0usize].adv[0usize];
   a.fields[0usize].adv.push(1);                               //~ ErrorShapeReshape
   *e
 }
 
-fn chainListTwoRefs(a &mut List[Inner], b &mut List[Inner]) i64 {
+fn chainListTwoRefs(a: &mut List[Inner], b: &mut List[Inner]) i64 {
   let e = a[0usize].adv[0usize];
   let m = &mut b[0usize];
   m.adv.push(1);                                              //~ ErrorShapeReshape
   *e
 }
 
-fn chainListOneRef(a &mut List[Inner]) i64 {
+fn chainListOneRef(a: &mut List[Inner]) i64 {
   let e = a[0usize].adv[0usize];
   let m = &mut a[0usize];
   m.adv.push(1);                                              //~ ErrorShapeReshape

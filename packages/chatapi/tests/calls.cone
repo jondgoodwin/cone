@@ -37,7 +37,7 @@ fn theKey() &str {"sk-test-chatapi-0001"}
 // The mock server
 // ---------------------------------------------------------------------------
 
-fn errorBody(message &str, kind &str, code &str) String {
+fn errorBody(message: &str, kind: &str, code: &str) String {
   var inner = json.Json.newObject();
   inner.set("message", json.Json.fromText(message));
   inner.set("type", json.Json.fromText(kind));
@@ -48,7 +48,7 @@ fn errorBody(message &str, kind &str, code &str) String {
   textOf(&o)
 }
 
-fn textOf(j &json.Json) String {
+fn textOf(j: &json.Json) String {
   match j.toText() {
     case var t Ok {
       var s = String.empty();
@@ -60,7 +60,7 @@ fn textOf(j &json.Json) String {
 }
 
 // A chat completion with one choice
-fn completion(content json.Json, finish &str) String {
+fn completion(content: json.Json, finish: &str) String {
   var msg = json.Json.newObject();
   msg.set("role", json.Json.fromText("assistant"));
   msg.set("content", content);
@@ -86,10 +86,10 @@ fn completion(content json.Json, finish &str) String {
 
 // Answers one request
 actor Handler {
-  ex Exchange;
-  hits Sender[u64];
+  ex: Exchange;
+  hits: Sender[u64];
 
-  fn answer(self, status u16, body &str) {
+  fn answer(self, status: u16, body: &str) {
     var head = ResponseHead.make(status);
     head.headers.add("Content-Type", "application/json");
     ex.respond(head, String.from(body));
@@ -113,7 +113,7 @@ actor Handler {
       self.answer(401u16, errorBody("Incorrect API key provided.", "invalid_request_error", "invalid_api_key").view());
       return;
     }
-    var doc json.Json = json.Json.Null;
+    var doc: json.Json = json.Json.Null;
     match json.parse(ex.request.body.view()) {
       case var ok Ok {doc <=> ok;}
       case let e Error {
@@ -151,15 +151,15 @@ actor Handler {
 
 // A request that is never answered, and kept so that it is not dropped (a dropped exchange is answered 500)
 actor Silent {
-  ex Exchange;
+  ex: Exchange;
 }
 
 actor Acceptor {
-  server Server;
-  hits Sender[u64];
-  held List[Silent];
+  server: Server;
+  hits: Sender[u64];
+  held: List[Silent];
 
-  pub async do open(self, ports Sender[u16]) {
+  pub async do open(self, ports: Sender[u16]) {
     let r = await actorhttp.listen(SocketAddr.localhost(0u16), ServerConfig.make());
     var res = r;
     match &mut res {
@@ -183,7 +183,7 @@ actor Acceptor {
     server.close();
   }
 
-  fn route(self, ex Exchange) {
+  fn route(self, ex: Exchange) {
     if ex.request.body.view().contains("\"model\":\"hang\"") {
       hits.send(1u64);
       held.push(new Silent(ex));
@@ -198,14 +198,14 @@ actor Acceptor {
 // The client's side
 // ---------------------------------------------------------------------------
 
-fn baseUrl(port u16) String {
+fn baseUrl(port: u16) String {
   var u = String.from("http://127.0.0.1:");
   u.appendUInt(u64.from(port));
   u.append("/v1");
   u
 }
 
-fn usageText(u &Option[Usage]) String {
+fn usageText(u: &Option[Usage]) String {
   match u {
     case let x &Some {
       var s = String.empty();
@@ -221,7 +221,7 @@ fn usageText(u &Option[Usage]) String {
 }
 
 // What a call gave, on a line. An error message that holds the key is a failure of the package
-fn show(label &str, r &Result[ChatReply, ChatError]) {
+fn show(label: &str, r: &Result[ChatReply, ChatError]) {
   printStr(label);
   printStr(": ");
   match r {
@@ -254,14 +254,14 @@ fn show(label &str, r &Result[ChatReply, ChatError]) {
   }
 }
 
-fn contentOf(r &Result[ChatReply, ChatError]) String {
+fn contentOf(r: &Result[ChatReply, ChatError]) String {
   match r {
     case let ok &Ok {ok.content.copy()}
     case let e &Error {String.from("(none)")}
   }
 }
 
-fn echoRequest(model &str, text &str) ChatRequest {
+fn echoRequest(model: &str, text: &str) ChatRequest {
   var r = ChatRequest.make(model);
   r.addSystem("You are a mock.");
   r.addUser(text);
@@ -271,14 +271,14 @@ fn echoRequest(model &str, text &str) ChatRequest {
   r
 }
 
-fn simple(model &str) ChatRequest {
+fn simple(model: &str) ChatRequest {
   var r = ChatRequest.make(model);
   r.addUser("hi");
   r
 }
 
 actor Prober {
-  pub async do run(self, port u16, done OneshotSender[u64]) {
+  pub async do run(self, port: u16, done: OneshotSender[u64]) {
     env.set("CHATAPI_TEST_KEY", theKey());
     env.set("CHATAPI_TEST_WRONGKEY", "sk-wrong-key-9999");
     let chat = new Chat(Client.standard(), Endpoint.make(baseUrl(port).view(), "CHATAPI_TEST_KEY"));
@@ -342,7 +342,7 @@ actor Prober {
     d.send(1u64);
   }
 
-  pub async do refused(self, port u16, done OneshotSender[u64]) {
+  pub async do refused(self, port: u16, done: OneshotSender[u64]) {
     let chat = new Chat(Client.standard(), Endpoint.make(baseUrl(port).view(), "CHATAPI_TEST_KEY"));
     let rrefused = await chat.complete(simple("echo"));
     show("refused", &rrefused);
@@ -351,9 +351,9 @@ actor Prober {
   }
 }
 
-fn yes(b bool) &str {if b {"yes"} else {"NO"}}
+fn yes(b: bool) &str {if b {"yes"} else {"NO"}}
 
-fn take[T](rx &mut Receiver[T], dflt T) T {
+fn take[T](rx: &mut Receiver[T], dflt: T) T {
   match rx.recv() {
     case let v Some {v}
     else {dflt}
@@ -362,11 +362,11 @@ fn take[T](rx &mut Receiver[T], dflt T) T {
 
 fn main() i32 {
   initAll();
-  var ptx Sender[u16];
-  var prx Receiver[u16];
+  var ptx: Sender[u16];
+  var prx: Receiver[u16];
   ptx, prx = Channel[u16].make();
-  var htx Sender[u64];
-  var hrx Receiver[u64];
+  var htx: Sender[u64];
+  var hrx: Receiver[u64];
   htx, hrx = Channel[u64].make();
   {
     let acceptor = new Acceptor(Server.none(), htx.clone(), List[Silent].empty());
@@ -374,8 +374,8 @@ fn main() i32 {
     let port = take[u16](&mut prx, 0u16);
     acceptor.serve();
     {
-      var tx OneshotSender[u64];
-      var rx OneshotReceiver[u64];
+      var tx: OneshotSender[u64];
+      var rx: OneshotReceiver[u64];
       tx, rx = Oneshot[u64].make();
       let p = new Prober();
       p.run(port, tx);
@@ -415,15 +415,15 @@ fn main() i32 {
     printStr("\n");
 
     // A server that is gone
-    var ptx2 Sender[u16];
-    var prx2 Receiver[u16];
+    var ptx2: Sender[u16];
+    var prx2: Receiver[u16];
     ptx2, prx2 = Channel[u16].make();
     let gone = new Acceptor(Server.none(), htx.clone(), List[Silent].empty());
     gone.open(ptx2.clone());
     let deadPort = take[u16](&mut prx2, 0u16);
     gone.stop();
-    var tx OneshotSender[u64];
-    var rx OneshotReceiver[u64];
+    var tx: OneshotSender[u64];
+    var rx: OneshotReceiver[u64];
     tx, rx = Oneshot[u64].make();
     let p2 = new Prober();
     p2.refused(deadPort, tx);

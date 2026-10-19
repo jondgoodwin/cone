@@ -42,45 +42,45 @@ pub const MAX_LEVELS = 16usize;
 // normals from differences two samples out (the coarser level's own stencil)
 pub const BORDER = 2u32;
 
-fn fmin(a f32, b f32) f32 { if a < b { a } else { b } }
-fn fmax(a f32, b f32) f32 { if a > b { a } else { b } }
-fn fclamp(v f32, lo f32, hi f32) f32 { if v < lo { lo } elif v > hi { hi } else { v } }
+fn fmin(a: f32, b: f32) f32 { if a < b { a } else { b } }
+fn fmax(a: f32, b: f32) f32 { if a > b { a } else { b } }
+fn fclamp(v: f32, lo: f32, hi: f32) f32 { if v < lo { lo } elif v > hi { hi } else { v } }
 
 // What a terrain is made from
 pub struct TerrainConfig {
-  pub cell f32;             // the finest level's cell, metres
-  pub nodeCells u32;        // cells along a node's side: a power of two, 8 to 128
-  pub horizon f32;          // the farthest ground drawn, metres
-  pub pixelsPerCell f32;    // the screen size a cell is held to (its geometric error), pixels
-  pub maxSlope f32;         // the largest rise over run the height function has (a Lipschitz bound)
-  pub minHeight f32;        // the least and greatest height it has; a node outside the view is
-  pub maxHeight f32;        // skipped by these before any of its heights are computed
-  pub cacheNodes u32;       // height patches kept for reuse
-  pub morphFraction f32;    // where a level's morph band starts, as a share of its range
-  pub skirt f32;            // how far a node's edge skirts hang, in its cells (0: no skirts)
+  pub cell: f32;             // the finest level's cell, metres
+  pub nodeCells: u32;        // cells along a node's side: a power of two, 8 to 128
+  pub horizon: f32;          // the farthest ground drawn, metres
+  pub pixelsPerCell: f32;    // the screen size a cell is held to (its geometric error), pixels
+  pub maxSlope: f32;         // the largest rise over run the height function has (a Lipschitz bound)
+  pub minHeight: f32;        // the least and greatest height it has; a node outside the view is
+  pub maxHeight: f32;        // skipped by these before any of its heights are computed
+  pub cacheNodes: u32;       // height patches kept for reuse
+  pub morphFraction: f32;    // where a level's morph band starts, as a share of its range
+  pub skirt: f32;            // how far a node's edge skirts hang, in its cells (0: no skirts)
 
   pub fn make() TerrainConfig {
     new TerrainConfig(1., 32u32, 40000., 4., 2., -1000., 6000., 6144u32, 0.6, 0.15)
   }
 
   // The samples along a patch's side: the grid's, and the borders
-  pub fn patchSide(self &) u32 { nodeCells + 1u32 + 2u32 * BORDER }
+  pub fn patchSide(self: &) u32 { nodeCells + 1u32 + 2u32 * BORDER }
 }
 
 // The levels of a terrain: their cells, node sizes, morph starts and ranges
 pub struct LodLevels {
-  pub count u32;
-  pub cell List[f32];         // c_l
-  pub size List[f32];         // s_l
-  pub morphStart List[f32];   // S_l
-  pub rangeEnd List[f32];     // R_l
-  pub k f32;                  // the view's pixels per radian over the pixels a cell is held to
+  pub count: u32;
+  pub cell: List[f32];         // c_l
+  pub size: List[f32];         // s_l
+  pub morphStart: List[f32];   // S_l
+  pub rangeEnd: List[f32];     // R_l
+  pub k: f32;                  // the view's pixels per radian over the pixels a cell is held to
 
   // The levels for 'cfg' seen at 'k': the screen-space factor
   // 'viewportHeight / (2 tan(fov / 2) pixelsPerCell)', at which a cell of c
   // metres is 'pixelsPerCell' tall at k c metres. Levels are made until a
   // range reaches the horizon.
-  pub fn build(cfg &TerrainConfig, k f32) LodLevels {
+  pub fn build(cfg: &TerrainConfig, k: f32) LodLevels {
     var cells = List[f32].empty();
     var sizes = List[f32].empty();
     var starts = List[f32].empty();
@@ -88,7 +88,7 @@ pub struct LodLevels {
     var c = cfg.cell;
     let n = f32.from(cfg.nodeCells);
     let m = cfg.maxSlope;
-    var prevEnd f32 = 0.;
+    var prevEnd: f32 = 0.;
     var l = 0usize;
     var done = false;
     while !done && l < MAX_LEVELS {
@@ -115,15 +115,15 @@ pub struct LodLevels {
     new LodLevels(u32.from(l), cells, sizes, starts, ends, k)
   }
 
-  pub fn cellAt(self &, level u32) f32 { *cell[usize.from(level)] }
-  pub fn sizeAt(self &, level u32) f32 { *size[usize.from(level)] }
-  pub fn startAt(self &, level u32) f32 { *morphStart[usize.from(level)] }
-  pub fn endAt(self &, level u32) f32 { *rangeEnd[usize.from(level)] }
-  pub fn top(self &) u32 { count - 1u32 }
+  pub fn cellAt(self: &, level: u32) f32 { *cell[usize.from(level)] }
+  pub fn sizeAt(self: &, level: u32) f32 { *size[usize.from(level)] }
+  pub fn startAt(self: &, level: u32) f32 { *morphStart[usize.from(level)] }
+  pub fn endAt(self: &, level: u32) f32 { *rangeEnd[usize.from(level)] }
+  pub fn top(self: &) u32 { count - 1u32 }
 
   // How far a vertex at distance 'd' from the camera has morphed to the
   // next coarser level: 0 before the morph band, 1 after it
-  pub fn morphFactor(self &, level u32, d f32) f32 {
+  pub fn morphFactor(self: &, level: u32, d: f32) f32 {
     let s = *morphStart[usize.from(level)];
     let e = *rangeEnd[usize.from(level)];
     fclamp((d - s) / (e - s), 0., 1.)
@@ -132,12 +132,12 @@ pub struct LodLevels {
 
 // The screen-space factor of a view: a cell of c metres is held to
 // 'pixelsPerCell' pixels at k c metres
-pub fn screenFactor(viewportHeight f32, fov f32, pixelsPerCell f32) f32 {
+pub fn screenFactor(viewportHeight: f32, fov: f32, pixelsPerCell: f32) f32 {
   viewportHeight / (2. * libc.tanf(fov * 0.5) * pixelsPerCell)
 }
 
 // The key of the node (level, ix, iz) in the cache
-pub fn nodeKey(level u32, ix i32, iz i32) u64 {
+pub fn nodeKey(level: u32, ix: i32, iz: i32) u64 {
   let off = 134217728i64;
   (u64.from(level) << 56u64) | (u64.from(i64.from(ix) + off) << 28u64) | u64.from(i64.from(iz) + off)
 }
@@ -150,8 +150,8 @@ pub fn nodeKey(level u32, ix i32, iz i32) u64 {
 // numbers. The coordinates are computed from integer lattice indices in f64
 // and rounded once, so two nodes sharing a lattice point ask the source for
 // the very same (x, z).
-pub fn buildHeights(cfg &TerrainConfig, level u32, ix i32, iz i32, cell f32,
-    source &<fn(x f32, z f32) f32) List[f32] {
+pub fn buildHeights(cfg: &TerrainConfig, level: u32, ix: i32, iz: i32, cell: f32,
+    source: &<fn(x: f32, z: f32) f32) List[f32] {
   let side = cfg.patchSide();
   var out = List[f32].withCapacity(usize.from(side * side));
   let n = i64.from(cfg.nodeCells);
@@ -174,13 +174,13 @@ pub fn buildHeights(cfg &TerrainConfig, level u32, ix i32, iz i32, cell f32,
 }
 
 // The patch's height at lattice (i, j) of its node (BORDER outside -> 0..side)
-pub fn patchAt(heights &List[f32], side u32, i i32, j i32) f32 {
+pub fn patchAt(heights: &List[f32], side: u32, i: i32, j: i32) f32 {
   let b = i32.from(BORDER);
   *heights[usize.from((j + b) * i32.from(side) + (i + b))]
 }
 
 // The least and greatest of the node's own grid heights (without borders)
-pub fn patchRange(heights &List[f32], side u32, nodeCells u32, lo &mut f32, hi &mut f32) {
+pub fn patchRange(heights: &List[f32], side: u32, nodeCells: u32, lo: &mut f32, hi: &mut f32) {
   var l = 3.4028235e38f;
   var h = -3.4028235e38f;
   var j = 0i32;
@@ -209,7 +209,7 @@ pub fn patchRange(heights &List[f32], side u32, nodeCells u32, lo &mut f32, hi &
 // (a + 1, b) to (a, b + 1) when it is odd, and that rule holds at every
 // level, so the finer quads' diagonals lie along the coarser ones and the
 // morphed surface is exactly the coarser level's.
-pub fn coarseHeight(heights &List[f32], side u32, i i32, j i32) f32 {
+pub fn coarseHeight(heights: &List[f32], side: u32, i: i32, j: i32) f32 {
   let oi = (i & 1i32) != 0i32;
   let oj = (j & 1i32) != 0i32;
   if !oi && !oj { return patchAt(heights, side, i, j); }
@@ -225,14 +225,14 @@ pub fn coarseHeight(heights &List[f32], side u32, i i32, j i32) f32 {
 }
 
 // The vertex (i, j)'s height morphed by 'k' (0 its own level's, 1 the coarser's)
-pub fn vertexHeight(heights &List[f32], side u32, i i32, j i32, k f32) f32 {
+pub fn vertexHeight(heights: &List[f32], side: u32, i: i32, j: i32, k: f32) f32 {
   let fine = patchAt(heights, side, i, j);
   if k <= 0. { return fine; }
   fine + (coarseHeight(heights, side, i, j) - fine) * k
 }
 
 // Distance from 'p' to a box (zero inside it)
-pub fn boxDistance(px f32, py f32, pz f32, minx f32, miny f32, minz f32, maxx f32, maxy f32, maxz f32) f32 {
+pub fn boxDistance(px: f32, py: f32, pz: f32, minx: f32, miny: f32, minz: f32, maxx: f32, maxy: f32, maxz: f32) f32 {
   let dx = fmax(fmax(minx - px, px - maxx), 0.);
   let dy = fmax(fmax(miny - py, py - maxy), 0.);
   let dz = fmax(fmax(minz - pz, pz - maxz), 0.);

@@ -54,25 +54,25 @@ const FAMILY_SEED = 2010u32;
 const GALLERY = 25u32;
 const RANGE = 400u32;
 
-fn v(x f32, y f32, z f32) Vec3 { new Vec3(x, y, z) }
+fn v(x: f32, y: f32, z: f32) Vec3 { new Vec3(x, y, z) }
 fn up() Vec3 { v(0., 1., 0.) }
-fn clampF(x f32, lo f32, hi f32) f32 { if x < lo {lo} elif x > hi {hi} else {x} }
+fn clampF(x: f32, lo: f32, hi: f32) f32 { if x < lo {lo} elif x > hi {hi} else {x} }
 
 // ======== a horn's shape ========
 
 struct Shape {
-  pub length f32;    // along its path, metres
-  pub girth f32;     // the base's radius over the length
-  pub bend f32;      // how far the tip turns from upright, radians (a circular arc)
-  pub heading f32;   // which way it bends, radians round from +x towards +z
-  pub twist f32;     // the outline's turn from base to tip, radians
-  pub taper f32;     // radius = base (1 - u)^taper, u the fraction along
-  pub blade f32;     // the outline's width over its depth (1 round)
+  pub length: f32;    // along its path, metres
+  pub girth: f32;     // the base's radius over the length
+  pub bend: f32;      // how far the tip turns from upright, radians (a circular arc)
+  pub heading: f32;   // which way it bends, radians round from +x towards +z
+  pub twist: f32;     // the outline's turn from base to tip, radians
+  pub taper: f32;     // radius = base (1 - u)^taper, u the fraction along
+  pub blade: f32;     // the outline's width over its depth (1 round)
 }
 
 // The path: a circular arc of 'bend' radians and the horn's length, as one
 // cubic Bezier (the arc's usual four-thirds-tangent fit)
-fn hornPath(s &Shape) Path {
+fn hornPath(s: &Shape) Path {
   let side = v(cos(s.heading), 0., sin(s.heading));
   let origin = v(0., 0., 0.);
   if s.bend < 0.02 { return Path.line(origin, up() * s.length, RINGS); }
@@ -83,14 +83,14 @@ fn hornPath(s &Shape) Path {
   Path.fromCubic(new CubicBezier3(origin, up() * k, tip - tipDir * k, tip), RINGS)
 }
 
-fn radiusAt(s &Shape, u f32) f32 {
+fn radiusAt(s: &Shape, u: f32) f32 {
   let r0 = s.girth * s.length;
   r0 * (0.03 + 0.97 * libc.powf(1. - clampF(u, 0., 1.), s.taper))
 }
 
 // The bare horn: the blade swept along the path, each ring scaled by the
 // taper, a closure carrying this horn's dials.
-fn bareHorn(s &Shape) mesh.PolyMesh {
+fn bareHorn(s: &Shape) mesh.PolyMesh {
   var pts = List[Vec2].withCapacity(usize.from(AROUND));
   let w = libc.sqrtf(s.blade);
   var j = 0u32;
@@ -106,14 +106,14 @@ fn bareHorn(s &Shape) mesh.PolyMesh {
 
 // The horn with its ribs: the "ribs" channel (crest height 1) times the
 // local radius times 'height', displaced along the normals
-fn ribbedHorn(m &mesh.PolyMesh, s &Shape, height f32) mesh.PolyMesh {
+fn ribbedHorn(m: &mesh.PolyMesh, s: &Shape, height: f32) mesh.PolyMesh {
   let ribs = m.findFloatChannel(mesh.VertexDomain, "ribs");
   let along = m.findFloatChannel(mesh.VertexDomain, "along");
   displaceAlongNormal(m, k => m.float(ribs, k) * height * radiusAt(s, m.float(along, k)))
 }
 
 // The "ribs" channel unrolled as an image, AROUND across, RINGS + 1 up
-fn ribMap(m &mesh.PolyMesh, name &str) Image {
+fn ribMap(m: &mesh.PolyMesh, name: &str) Image {
   let ribs = m.findFloatChannel(mesh.VertexDomain, name);
   let w = i32.from(AROUND);
   let h = i32.from(RINGS) + 1;
@@ -168,12 +168,12 @@ fn spires() List[noise.FamilyDial] {
 
 // One individual: its shape and its rib field
 struct Individual {
-  pub shape Shape;
-  pub ribs RibField;
-  pub ribbed bool;
+  pub shape: Shape;
+  pub ribs: RibField;
+  pub ribbed: bool;
 }
 
-fn individual(dials &List[noise.FamilyDial], i u32) Individual {
+fn individual(dials: &List[noise.FamilyDial], i: u32) Individual {
   let lat = noise.familyLatents(FAMILY_SEED, i);
   let heading = 2. * pi * noise.familyUnit(FAMILY_SEED, i, D_HEADING);
   let shape = new Shape(dials[usize.from(D_LENGTH)].draw(FAMILY_SEED, i, D_LENGTH, lat),
@@ -196,7 +196,7 @@ fn individual(dials &List[noise.FamilyDial], i u32) Individual {
 }
 
 // The horn's ribbed mesh. A smooth horn keeps a zero "ribs" channel.
-fn grow(ind &Individual) mesh.PolyMesh {
+fn grow(ind: &Individual) mesh.PolyMesh {
   var bare = bareHorn(&ind.shape);
   if ind.ribbed { ribField(&mut bare, "ribs", &ind.ribs); }
   else { bare.addFloatChannel(mesh.VertexDomain, "ribs", 0.); }
@@ -206,7 +206,7 @@ fn grow(ind &Individual) mesh.PolyMesh {
 // Measured, not dialled: the angle between the path's first and last
 // tangents (degrees), and the fraction of the horn's lower 90% whose rib
 // amplitude (the "ribsAmp" channel ribField writes) is at least 0.3
-fn measuredBend(s &Shape) f32 {
+fn measuredBend(s: &Shape) f32 {
   let path = hornPath(s);
   let frames = path.frames();
   let a = frames[0usize].tangent;
@@ -214,7 +214,7 @@ fn measuredBend(s &Shape) f32 {
   degrees(acos(clampF(a.dot(b), -1., 1.)))
 }
 
-fn measuredCover(m &mesh.PolyMesh) f32 {
+fn measuredCover(m: &mesh.PolyMesh) f32 {
   let amp = m.findFloatChannel(mesh.VertexDomain, "ribsAmp");
   let along = m.findFloatChannel(mesh.VertexDomain, "along");
   if amp == mesh.NoIndex { return 0.; }
@@ -233,7 +233,7 @@ fn measuredCover(m &mesh.PolyMesh) f32 {
 
 // ======== output ========
 
-fn cstrEquals(a *u8, b &str) bool {
+fn cstrEquals(a: *u8, b: &str) bool {
   var i = 0usize;
   while i < b.len() {
     if *(a + i) != b[i] { return false; }
@@ -242,7 +242,7 @@ fn cstrEquals(a *u8, b &str) bool {
   *(a + b.len()) == 0u8
 }
 
-fn appendCstr(s &mut String, c *u8) {
+fn appendCstr(s: &mut String, c: *u8) {
   var i = 0usize;
   while *(c + i) != 0u8 {
     s.appendByte(*(c + i));
@@ -250,14 +250,14 @@ fn appendCstr(s &mut String, c *u8) {
   }
 }
 
-fn named(dir &String, name &str) String {
+fn named(dir: &String, name: &str) String {
   var s = dir.copy();
   s <- "/";
   s <- name;
   s
 }
 
-fn numbered(dir &String, prefix &str, n u32, suffix &str) String {
+fn numbered(dir: &String, prefix: &str, n: u32, suffix: &str) String {
   var s = dir.copy();
   s <- "/";
   s <- prefix;
@@ -267,7 +267,7 @@ fn numbered(dir &String, prefix &str, n u32, suffix &str) String {
   s
 }
 
-fn appendFixed(s &mut String, x f32) {
+fn appendFixed(s: &mut String, x: f32) {
   // three decimals, enough for the plot
   var y = x;
   if y < 0. { *s <- "-"; y = 0. - y; }
@@ -284,17 +284,17 @@ fn appendFixed(s &mut String, x f32) {
 
 // The device is the last field, so it is the last thing let go of
 struct Scene {
-  pub renderer Renderer;
-  pub post Post;
-  pub target Texture;
-  pub depth Texture;
-  pub readback Buffer;
-  pub width u32;
-  pub height u32;
-  pub device Device;
+  pub renderer: Renderer;
+  pub post: Post;
+  pub target: Texture;
+  pub depth: Texture;
+  pub readback: Buffer;
+  pub width: u32;
+  pub height: u32;
+  pub device: Device;
 }
 
-fn shoot(sc &mut Scene, camera &Camera, light &Light, list &DrawList, name &String) bool {
+fn shoot(sc: &mut Scene, camera: &Camera, light: &Light, list: &DrawList, name: &String) bool {
   var encoder = sc.device.createCommandEncoder();
   sc.renderer.render(&mut sc.device, &mut encoder, &sc.post.hdr, &sc.depth, camera, light, list);
   sc.post.apply(&mut encoder, &sc.target);
@@ -314,7 +314,7 @@ fn stageShape() Shape { new Shape(3., 0.12, 0.9, 0., 0., 1., 1.25) }
 // Stage k's rib field: 0 regular, then one term more a stage up to 4 (two
 // vortices, one pair); 5 the regular ribs with only the vortex pair, so the
 // fork is plain to see; 6 every term stronger, three pairs
-fn stageRibs(k u32) RibField {
+fn stageRibs(k: u32) RibField {
   var r = RibField.plain(22., 7u32);
   let aspect = 1.f / (0.12 * 0.6);
   if k == 5u32 { r.defects = 1u32; r.defectAspect = aspect; return r; }
@@ -328,7 +328,7 @@ fn stageRibs(k u32) RibField {
 
 // The margin ring: 7 gently uneven and tightly coupled, 8 more uneven and
 // loosely coupled, 9 very uneven and barely coupled
-fn stageRing(k u32) MarginRing {
+fn stageRing(k: u32) MarginRing {
   var g = MarginRing.plain(22., 7u32);
   if k == 7u32 { g.unevenness = 0.08; }
   if k == 8u32 { g.unevenness = 0.3; g.spreadA = 0.1; g.spreadB = 0.1; }
@@ -337,12 +337,12 @@ fn stageRing(k u32) MarginRing {
 }
 
 const NSTAGES = 10u32;
-let STAGES Array[&str, 10] = ["s0-regular", "s1-warp", "s2-envelope", "s3-per-rib", "s4-vortices", "s4b-vortices-alone",
+let STAGES: Array[&str, 10] = ["s0-regular", "s1-warp", "s2-envelope", "s3-per-rib", "s4-vortices", "s4b-vortices-alone",
   "s5-all-stronger", "rd-weak", "rd-strong", "rd-loose"];
-let PINNED Array[u32, 10] = [0x8df6be8du32, 0xf83f1f4fu32, 0xa7da7560u32, 0x885caf68u32, 0x4aa81c46u32, 0x47bd36bdu32,
+let PINNED: Array[u32, 10] = [0x8df6be8du32, 0xf83f1f4fu32, 0xa7da7560u32, 0x885caf68u32, 0x4aa81c46u32, 0x47bd36bdu32,
   0xb99fa0fdu32, 0x9808749du32, 0xdcf2166au32, 0x77aa8552u32];
 
-fn main(argc i32, argv **u8) i32 {
+fn main(argc: i32, argv: **u8) i32 {
   var dir = String.empty();
   dir <- ".";
   var a = 1;

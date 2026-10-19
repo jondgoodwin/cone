@@ -28,58 +28,58 @@
 const EPSILON = 0.00001f;
 
 struct OrcaLine {
-  point Vec2;
-  dir Vec2;         // unit; the permitted side is its left
+  point: Vec2;
+  dir: Vec2;         // unit; the permitted side is its left
 }
 
 pub struct OrcaAgent {
-  pub pos Vec2;
-  pub vel Vec2;
-  pub pref Vec2;          // the preferred velocity, set by the caller each tick
-  pub radius f32;
-  pub maxSpeed f32;
+  pub pos: Vec2;
+  pub vel: Vec2;
+  pub pref: Vec2;          // the preferred velocity, set by the caller each tick
+  pub radius: f32;
+  pub maxSpeed: f32;
 }
 
 pub struct OrcaWorld {
-  pub agents List[OrcaAgent];
-  pub obstacles List[Circle];
-  pub timeHorizon f32;      // seconds ahead a collision is avoided: 2 to 5 is usual
-  pub neighborDist f32;     // agents farther than this are not considered
-  pub maxNeighbors usize;   // at most 16 nearest are
-  newVel List[Vec2];
-  lines List[OrcaLine];
-  proj List[OrcaLine];
-  nearIdx List[usize];
-  nearDist List[f32];
-  steps u32;
+  pub agents: List[OrcaAgent];
+  pub obstacles: List[Circle];
+  pub timeHorizon: f32;      // seconds ahead a collision is avoided: 2 to 5 is usual
+  pub neighborDist: f32;     // agents farther than this are not considered
+  pub maxNeighbors: usize;   // at most 16 nearest are
+  newVel: List[Vec2];
+  lines: List[OrcaLine];
+  proj: List[OrcaLine];
+  nearIdx: List[usize];
+  nearDist: List[f32];
+  steps: u32;
   // Added to every pair's combined radius when avoiding, so the rounding of
   // f32 and the one-step lag of the least-penetration fallback leave bodies
   // clear of each other rather than touching: 5 cm by default (measured: with
   // 1 cm, a dense crowd of twenty still overlapped by up to 8 mm)
-  pub margin f32;
+  pub margin: f32;
 
-  pub fn make(timeHorizon f32, neighborDist f32, maxNeighbors usize) OrcaWorld {
+  pub fn make(timeHorizon: f32, neighborDist: f32, maxNeighbors: usize) OrcaWorld {
     let m = if maxNeighbors > 16usize { 16usize } else { maxNeighbors };
     new OrcaWorld(List[OrcaAgent].empty(), List[Circle].empty(), timeHorizon, neighborDist, m,
       List[Vec2].empty(), List[OrcaLine].empty(), List[OrcaLine].empty(), List[usize].empty(), List[f32].empty(), 0u32, 0.05)
   }
 
-  pub fn addAgent(self &mut, pos Vec2, radius f32, maxSpeed f32) usize {
+  pub fn addAgent(self: &mut, pos: Vec2, radius: f32, maxSpeed: f32) usize {
     agents.push(new OrcaAgent(pos, new Vec2(0., 0.), new Vec2(0., 0.), radius, maxSpeed));
     newVel.push(new Vec2(0., 0.));
     agents.len() - 1usize
   }
 
-  pub fn addObstacle(self &mut, center Vec2, radius f32) { obstacles.push(new Circle(center, radius)); }
+  pub fn addObstacle(self: &mut, center: Vec2, radius: f32) { obstacles.push(new Circle(center, radius)); }
 
-  pub fn setPreferred(self &mut, i usize, v Vec2) {
+  pub fn setPreferred(self: &mut, i: usize, v: Vec2) {
     let a = *agents[i];
     agents.set(i, new OrcaAgent(a.pos, a.vel, v, a.radius, a.maxSpeed));
   }
 
   // Moves every agent for 'dt' seconds: first all the new velocities from the
   // old state, then all the moves, so the order of agents does not matter
-  pub fn step(self &mut, dt f32) {
+  pub fn step(self: &mut, dt: f32) {
     steps = steps + 1u32;
     var i = 0usize;
     while i < agents.len() {
@@ -96,7 +96,7 @@ pub struct OrcaWorld {
   }
 
   // The nearest agents within neighborDist, up to maxNeighbors, nearest first
-  fn neighbours(self &mut, i usize) {
+  fn neighbours(self: &mut, i: usize) {
     nearIdx.clear();
     nearDist.clear();
     let me = *agents[i];
@@ -123,7 +123,7 @@ pub struct OrcaWorld {
   // One half-plane: me avoiding a body at relative position 'relPos' moving at
   // 'otherVel' with combined radius 'r'; 'share' is the part of the avoiding
   // this agent does (0.5 against another agent, 1 against a static circle)
-  fn addLine(self &mut, me OrcaAgent, otherPos Vec2, otherVel Vec2, otherRadius f32, share f32, dt f32) {
+  fn addLine(self: &mut, me: OrcaAgent, otherPos: Vec2, otherVel: Vec2, otherRadius: f32, share: f32, dt: f32) {
     let relPos = otherPos - me.pos;
     let relVel = me.vel - otherVel;
     let distSq = relPos.lengthSquared();
@@ -165,7 +165,7 @@ pub struct OrcaWorld {
     lines.push(new OrcaLine(me.vel + u * share, dir));
   }
 
-  fn computeVelocity(self &mut, i usize, dt f32) Vec2 {
+  fn computeVelocity(self: &mut, i: usize, dt: f32) Vec2 {
     let me = *agents[i];
     lines.clear();
     self.neighbours(i);
@@ -198,7 +198,7 @@ pub struct OrcaWorld {
 
   // Linear program 3: when the half-planes have no common point, the
   // velocity that is least far outside the worst one, found line by line
-  fn lp3(self &mut, begin usize, radius f32, result &mut Vec2) {
+  fn lp3(self: &mut, begin: usize, radius: f32, result: &mut Vec2) {
     var distance = 0.f;
     var i = begin;
     while i < lines.len() {
@@ -231,11 +231,11 @@ pub struct OrcaWorld {
   }
 }
 
-fn fabsf(a f32) f32 inline { libc.fabsf(a) }
+fn fabsf(a: f32) f32 inline { libc.fabsf(a) }
 
 // Linear program 1: along line 'n' (inside the speed circle) find the point
 // nearest the optimum, subject to lines 0..n-1; false if there is none
-fn lp1(ls &List[OrcaLine], n usize, radius f32, opt Vec2, dirOpt bool, result &mut Vec2) bool {
+fn lp1(ls: &List[OrcaLine], n: usize, radius: f32, opt: Vec2, dirOpt: bool, result: &mut Vec2) bool {
   let ln = *ls[n];
   let dotp = ln.point.dot(ln.dir);
   let disc = dotp * dotp + radius * radius - ln.point.lengthSquared();
@@ -271,7 +271,7 @@ fn lp1(ls &List[OrcaLine], n usize, radius f32, opt Vec2, dirOpt bool, result &m
 // Linear program 2: the point in the speed circle nearest 'opt' (or, with
 // 'dirOpt', farthest along it) inside every half-plane; the number of the
 // first line that cannot be met, or the number of lines if all are
-fn lp2(ls &List[OrcaLine], radius f32, opt Vec2, dirOpt bool, result &mut Vec2) usize {
+fn lp2(ls: &List[OrcaLine], radius: f32, opt: Vec2, dirOpt: bool, result: &mut Vec2) usize {
   if dirOpt {
     *result = opt * radius;
   } elif opt.lengthSquared() > radius * radius {

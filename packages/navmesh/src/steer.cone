@@ -17,14 +17,14 @@
 // agent (Detour's local boundary) to avoid with.
 
 pub struct Corridor {
-  pub pos Vec3;
-  pub target Vec3;
-  pub path List[u64];
+  pub pos: Vec3;
+  pub target: Vec3;
+  pub path: List[u64];
 
   pub fn empty() Corridor { new Corridor(new Vec3(0., 0., 0.), new Vec3(0., 0., 0.), List[u64].empty()) }
 
   // A corridor of one polygon, the position and target at 'pos'
-  pub fn reset(self &mut, ref u64, p Vec3) {
+  pub fn reset(self: &mut, ref: u64, p: Vec3) {
     path.clear();
     path.push(ref);
     pos = p;
@@ -32,20 +32,20 @@ pub struct Corridor {
   }
 
   // The corridor set to a path of polygons to 'tgt'
-  pub fn setPath(self &mut, tgt Vec3, polys &List[u64]) {
+  pub fn setPath(self: &mut, tgt: Vec3, polys: &List[u64]) {
     path.clear();
     var i = 0usize;
     while i < polys.len() { path.push(*polys[i]); i = i + 1usize; }
     target = tgt;
   }
 
-  pub fn firstPoly(self &) u64 { if path.len() == 0usize { return NoRef; } *path[0usize] }
-  pub fn lastPoly(self &) u64 { if path.len() == 0usize { return NoRef; } *path[path.len() - 1usize] }
+  pub fn firstPoly(self: &) u64 { if path.len() == 0usize { return NoRef; } *path[0usize] }
+  pub fn lastPoly(self: &) u64 { if path.len() == 0usize { return NoRef; } *path[path.len() - 1usize] }
 
   // The corners ahead, at most 'maxCorners', the way the agent has to bend:
   // the funnel path of the corridor from the position to the target with the
   // points on top of the position dropped (and nothing after an off-mesh connection)
-  pub fn corners(self &, nav &NavMesh, maxCorners usize) List[StraightPoint] {
+  pub fn corners(self: &, nav: &NavMesh, maxCorners: usize) List[StraightPoint] {
     var out = List[StraightPoint].empty();
     if path.len() == 0usize { return out; }
     let all = findStraightPath(nav, pos, target, &path, maxCorners + 4usize);
@@ -67,7 +67,7 @@ pub struct Corridor {
 
   // The position moved towards 'npos' along the mesh: the position it reaches
   // is kept, and the corridor's start rewritten to the polygons passed
-  pub fn movePosition(self &mut, nav &NavMesh, npos Vec3, filter &QueryFilter) bool {
+  pub fn movePosition(self: &mut, nav: &NavMesh, npos: Vec3, filter: &QueryFilter) bool {
     if path.len() == 0usize { return false; }
     let mv = moveAlongSurface(nav, *path[0usize], pos, npos, filter, 16usize);
     if mv.visited.len() == 0usize { return false; }
@@ -77,7 +77,7 @@ pub struct Corridor {
   }
 
   // The target moved along the mesh: the end of the corridor rewritten the same way
-  pub fn moveTarget(self &mut, nav &NavMesh, npos Vec3, filter &QueryFilter) bool {
+  pub fn moveTarget(self: &mut, nav: &NavMesh, npos: Vec3, filter: &QueryFilter) bool {
     if path.len() == 0usize { return false; }
     let mv = moveAlongSurface(nav, *path[path.len() - 1usize], target, npos, filter, 16usize);
     if mv.visited.len() == 0usize { return false; }
@@ -89,7 +89,7 @@ pub struct Corridor {
   // Try a shortcut: a straight line from the position towards 'next' (a
   // corner ahead), no longer than 'range', and if it stays on the mesh the
   // polygons it passes replace the start of the corridor
-  pub fn optimizeVisibility(self &mut, nav &NavMesh, next Vec3, range f32, filter &QueryFilter) {
+  pub fn optimizeVisibility(self: &mut, nav: &NavMesh, next: Vec3, range: f32, filter: &QueryFilter) {
     if path.len() == 0usize { return; }
     var d = dist2D(pos, next);
     if d < 0.01 { return; }
@@ -103,7 +103,7 @@ pub struct Corridor {
 
   // Whether the first 'maxLookAhead' polygons still exist, pass the filter
   // and join each other
-  pub fn isValid(self &, nav &NavMesh, maxLookAhead usize, filter &QueryFilter) bool {
+  pub fn isValid(self: &, nav: &NavMesh, maxLookAhead: usize, filter: &QueryFilter) bool {
     let n = if path.len() < maxLookAhead { path.len() } else { maxLookAhead };
     var i = 0usize;
     while i < n {
@@ -117,7 +117,7 @@ pub struct Corridor {
 
   // The start of the corridor put back on the mesh at 'safeRef', 'safePos':
   // for an agent whose polygon vanished (a rebuilt tile)
-  pub fn fixStart(self &mut, safeRef u64, safePos Vec3) {
+  pub fn fixStart(self: &mut, safeRef: u64, safePos: Vec3) {
     pos = safePos;
     if path.len() == 0usize { path.push(safeRef); return; }
     if path.len() == 1usize { path.set(0usize, safeRef); return; }
@@ -129,7 +129,7 @@ pub struct Corridor {
 // The old path with its start replaced by the polygons 'visited' went through
 // (start to end of the move): the corridor now starts at the move's end,
 // going back through them to the furthest one the old path has too
-fn mergeStartMoved(path &mut List[u64], visited &List[u64]) {
+fn mergeStartMoved(path: &mut List[u64], visited: &List[u64]) {
   var furthestPath = -1i32;
   var furthestVisited = -1i32;
   var i = i32.from(path.len()) - 1i32;
@@ -159,7 +159,7 @@ fn mergeStartMoved(path &mut List[u64], visited &List[u64]) {
 
 // The same at the other end: 'visited' is the target's move (start to end);
 // the corridor ends at its last polygon, joining the old path where they meet
-fn mergeEndMoved(path &mut List[u64], visited &List[u64]) {
+fn mergeEndMoved(path: &mut List[u64], visited: &List[u64]) {
   var furthestPath = -1i32;
   var furthestVisited = -1i32;
   var i = 0i32;
@@ -188,7 +188,7 @@ fn mergeEndMoved(path &mut List[u64], visited &List[u64]) {
 
 // A shortcut: 'visited' (the polygons a straight ray passed) replaces the
 // start of the path up to the furthest polygon they share
-fn mergeStartShortcut(path &mut List[u64], visited &List[u64]) {
+fn mergeStartShortcut(path: &mut List[u64], visited: &List[u64]) {
   var furthestPath = -1i32;
   var furthestVisited = -1i32;
   var i = i32.from(path.len()) - 1i32;
@@ -220,16 +220,16 @@ fn mergeStartShortcut(path &mut List[u64], visited &List[u64]) {
 // ---- steering ----
 
 pub struct SteerTarget {
-  pub found bool;
-  pub point Vec3;
-  pub offMesh bool;     // the point is the start of an off-mesh connection
-  pub last bool;        // it is the end of the path
+  pub found: bool;
+  pub point: Vec3;
+  pub offMesh: bool;     // the point is the start of an off-mesh connection
+  pub last: bool;        // it is the end of the path
 }
 
 // The point to head for: the first corner ahead farther than 'minDist' from
 // the position (so the agent does not stall on a corner it is already at), or the
 // start of an off-mesh connection, or the end
-pub fn lookAhead(nav &NavMesh, c &Corridor, minDist f32) SteerTarget {
+pub fn lookAhead(nav: &NavMesh, c: &Corridor, minDist: f32) SteerTarget {
   let cs = c.corners(nav, 3usize);
   var i = 0usize;
   while i < cs.len() {
@@ -247,7 +247,7 @@ pub fn lookAhead(nav &NavMesh, c &Corridor, minDist f32) SteerTarget {
 // The velocity that arrives at 'target' (Reynolds, "Steering Behaviors for
 // Autonomous Characters", 1999): towards it at 'maxSpeed' beyond 'slowRadius',
 // slower in proportion within it, none within 'stopRadius'. In x and z
-pub fn arrive(pos Vec3, target Vec3, maxSpeed f32, slowRadius f32, stopRadius f32) Vec3 {
+pub fn arrive(pos: Vec3, target: Vec3, maxSpeed: f32, slowRadius: f32, stopRadius: f32) Vec3 {
   let dx = target.x - pos.x;
   let dz = target.z - pos.z;
   let d = (dx * dx + dz * dz).sqrt();
@@ -258,7 +258,7 @@ pub fn arrive(pos Vec3, target Vec3, maxSpeed f32, slowRadius f32, stopRadius f3
 }
 
 // The velocity that seeks 'target' at 'maxSpeed'
-pub fn seek(pos Vec3, target Vec3, maxSpeed f32) Vec3 {
+pub fn seek(pos: Vec3, target: Vec3, maxSpeed: f32) Vec3 {
   arrive(pos, target, maxSpeed, 0., 0.)
 }
 
@@ -268,26 +268,26 @@ pub fn seek(pos Vec3, target Vec3, maxSpeed f32) Vec3 {
 // It is for one character; between characters, 'localWalls' and the
 // positions of the others are what an avoidance layer works from
 pub struct Follower {
-  pub corridor Corridor;
-  pub maxSpeed f32;
-  pub slowRadius f32;
-  pub stopRadius f32;
-  pub arrived bool;
-  pub velocity Vec3;
+  pub corridor: Corridor;
+  pub maxSpeed: f32;
+  pub slowRadius: f32;
+  pub stopRadius: f32;
+  pub arrived: bool;
+  pub velocity: Vec3;
 
-  pub fn make(maxSpeed f32) Follower {
+  pub fn make(maxSpeed: f32) Follower {
     new Follower(Corridor.empty(), maxSpeed, 1.2, 0.05, false, new Vec3(0., 0., 0.))
   }
 
   // Start along a route from 'start' (the polygon 'startRef') to 'goal'
   // by the path of polygons 'polys'
-  pub fn begin(self &mut, startRef u64, start Vec3, goal Vec3, polys &List[u64]) {
+  pub fn begin(self: &mut, startRef: u64, start: Vec3, goal: Vec3, polys: &List[u64]) {
     corridor.reset(startRef, start);
     corridor.setPath(goal, polys);
     arrived = false;
   }
 
-  pub fn step(self &mut, nav &NavMesh, filter &QueryFilter, dt f32) {
+  pub fn step(self: &mut, nav: &NavMesh, filter: &QueryFilter, dt: f32) {
     if arrived || corridor.path.len() == 0usize { return; }
     let st = lookAhead(nav, &corridor, 0.3);
     if !st.found { arrived = true; velocity = new Vec3(0., 0., 0.); return; }
@@ -312,14 +312,14 @@ pub struct Follower {
 // ---- the walls near a point (Detour's local boundary) ----
 
 pub struct WallSeg {
-  pub a Vec3;
-  pub b Vec3;
+  pub a: Vec3;
+  pub b: Vec3;
 }
 
 // The wall segments of the polygons within 'radius' of 'pos': polygon edges
 // that no passable polygon lies beyond, clipped to nothing: whole edges,
 // those within the radius of the position
-pub fn localWalls(nav &NavMesh, startRef u64, pos Vec3, radius f32, filter &QueryFilter) List[WallSeg] {
+pub fn localWalls(nav: &NavMesh, startRef: u64, pos: Vec3, radius: f32, filter: &QueryFilter) List[WallSeg] {
   var out = List[WallSeg].empty();
   if !nav.isValid(startRef) { return out; }
   var refs = List[u64].empty();

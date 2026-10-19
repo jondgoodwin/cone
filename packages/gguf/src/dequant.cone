@@ -32,18 +32,18 @@
 //         x = d * scales[(element)/16] * (q - 32)
 
 // The f32 of the half at byte p of src
-fn halfAt(src &Array[u8], p usize) f32 {
+fn halfAt(src: &Array[u8], p: usize) f32 {
   halfToF32(u16.from(src[p]) | (u16.from(src[p + 1usize]) << 8u16))
 }
 
-fn le32At(src &Array[u8], p usize) u32 {
+fn le32At(src: &Array[u8], p: usize) u32 {
   u32.from(src[p]) | (u32.from(src[p + 1usize]) << 8u32)
     | (u32.from(src[p + 2usize]) << 16u32) | (u32.from(src[p + 3usize]) << 24u32)
 }
 
 // The 6-bit scale (which is 0) and min (which is 1) of sub-block j of a Q4_K
 // block whose scales begin at byte p
-fn scaleMinK4(src &Array[u8], p usize, j usize, which u32) u32 {
+fn scaleMinK4(src: &Array[u8], p: usize, j: usize, which: u32) u32 {
   if j < 4usize {
     if which == 0u32 { return u32.from(src[p + j] & 63u8); }
     return u32.from(src[p + j + 4usize] & 63u8);
@@ -55,7 +55,7 @@ fn scaleMinK4(src &Array[u8], p usize, j usize, which u32) u32 {
 }
 
 // One block at byte 'at' of src, written to dst from 'out'
-fn dequantBlock(kind &TensorType, src &Array[u8], at usize, dst &mut Array[f32], out usize) {
+fn dequantBlock(kind: &TensorType, src: &Array[u8], at: usize, dst: &mut Array[f32], out: usize) {
   match kind {
     case is F32 { dst[out] = le32At(src, at) as f32; }
     case is F16 { dst[out] = halfAt(src, at); }
@@ -132,7 +132,7 @@ fn dequantBlock(kind &TensorType, src &Array[u8], at usize, dst &mut Array[f32],
 // Reads 'count' elements of this type from the start of src and appends them,
 // as f32, to out. 'count' must be a whole number of blocks and src must hold
 // them. Answers the count.
-pub fn dequantize(kind &TensorType, src &Array[u8], count usize, out &mut List[f32]) Result[usize, GgufError] {
+pub fn dequantize(kind: &TensorType, src: &Array[u8], count: usize, out: &mut List[f32]) Result[usize, GgufError] {
   let bs = kind.blockSize();
   if count % bs != 0usize {
     return Error[usize, GgufError](GgufError.make(ErrorKind.BadSize, 0u64, "the element count is not a whole number of blocks"));
@@ -183,7 +183,7 @@ pub fn dequantize(kind &TensorType, src &Array[u8], count usize, out &mut List[f
 
 // All of tensor t, as f32, in the order of the file (the first dimension
 // varying fastest). 'file' is the bytes the model was read from.
-pub fn tensorToF32(model &Model, file &Array[u8], t &Tensor) Result[List[f32], GgufError] {
+pub fn tensorToF32(model: &Model, file: &Array[u8], t: &Tensor) Result[List[f32], GgufError] {
   var out = List[f32].withCapacity(usize.from(t.elements));
   match dequantize(&t.kind, model.tensorBytes(file, t), usize.from(t.elements), &mut out) {
     case is Ok { Ok[List[f32], GgufError](out) }
@@ -198,7 +198,7 @@ pub fn tensorToF32(model &Model, file &Array[u8], t &Tensor) Result[List[f32], G
 // Row r of tensor t (a row is 'rowLength' elements: the first dimension), as
 // f32, appended to out. The rows of a 2-d weight matrix are what a matrix
 // product dequantises one at a time.
-pub fn rowToF32(model &Model, file &Array[u8], t &Tensor, row u64, out &mut List[f32]) Result[usize, GgufError] {
+pub fn rowToF32(model: &Model, file: &Array[u8], t: &Tensor, row: u64, out: &mut List[f32]) Result[usize, GgufError] {
   if row >= t.rowCount() {
     return Error[usize, GgufError](GgufError.make(ErrorKind.BadSize, 0u64, "the row is past the tensor's last"));
   }

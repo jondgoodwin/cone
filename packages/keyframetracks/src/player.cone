@@ -33,33 +33,33 @@
 pub const EVENT_FINISHED = 4294967295u32;
 
 pub struct Playing {
-  pub clip u32;
-  pub time f64;
-  pub fade f32;
-  pub fadeT f32;
-  pub fadeEase u32;
+  pub clip: u32;
+  pub time: f64;
+  pub fade: f32;
+  pub fadeT: f32;
+  pub fadeEase: u32;
 }
 
 pub struct Layer {
-  pub clip u32;
-  pub time f64;
-  pub weight f32;
+  pub clip: u32;
+  pub time: f64;
+  pub weight: f32;
 }
 
 pub struct Queued {
-  pub clip u32;
-  pub fade f32;
-  pub fadeEase u32;
+  pub clip: u32;
+  pub fade: f32;
+  pub fadeEase: u32;
 }
 
 pub struct Player {
-  pub clips List[Clip];
-  pub plays List[Playing];
-  pub layers List[Layer];
-  pub queue List[Queued];
-  pub rate f32;
-  pub paused bool;
-  pub events List[Fired];
+  pub clips: List[Clip];
+  pub plays: List[Playing];
+  pub layers: List[Layer];
+  pub queue: List[Queued];
+  pub rate: f32;
+  pub paused: bool;
+  pub events: List[Fired];
 
   pub fn make() Player {
     new Player(List[Clip].empty(), List[Playing].empty(), List[Layer].empty(), List[Queued].empty(), 1., false,
@@ -67,13 +67,13 @@ pub struct Player {
   }
 
   // Add a clip; the index it will be played by
-  pub fn addClip(self &mut, clip Clip) u32 {
+  pub fn addClip(self: &mut, clip: Clip) u32 {
     clips.push(clip);
     u32.from(clips.len() - 1usize)
   }
 
   // Start 'clip' now, replacing everything playing, and empty the queue
-  pub fn play(self &mut, clip u32) {
+  pub fn play(self: &mut, clip: u32) {
     plays.clear();
     queue.clear();
     plays.push(new Playing(clip, 0.0f64, 0., 0., EASE_LINEAR));
@@ -81,28 +81,28 @@ pub struct Player {
 
   // Start 'clip' over 'dur' seconds while the current ones fade out; 'easeId'
   // shapes the fade-in (EASE_LINEAR, EASE_SMOOTHSTEP ...)
-  pub fn crossFade(self &mut, clip u32, dur f32, easeId u32) {
+  pub fn crossFade(self: &mut, clip: u32, dur: f32, easeId: u32) {
     if plays.len() == 0usize || dur <= 0. { self.play(clip); return; }
     plays.push(new Playing(clip, 0.0f64, dur, 0., easeId));
   }
 
   // Line up 'clip' behind the current one (see the header), fading in over 'fade'
-  pub fn enqueue(self &mut, clip u32, fade f32, easeId u32) {
+  pub fn enqueue(self: &mut, clip: u32, fade: f32, easeId: u32) {
     queue.push(new Queued(clip, fade, easeId));
   }
 
-  pub fn pause(self &mut) { paused = true; }
-  pub fn resume(self &mut) { paused = false; }
-  pub fn setRate(self &mut, r f32) { rate = r; }
+  pub fn pause(self: &mut) { paused = true; }
+  pub fn resume(self: &mut) { paused = false; }
+  pub fn setRate(self: &mut, r: f32) { rate = r; }
 
   // The newest play's unwrapped clock (0 if nothing plays)
-  pub fn time(self &) f64 {
+  pub fn time(self: &) f64 {
     if plays.len() == 0usize { return 0.0f64; }
     (*plays[plays.len() - 1usize]).time
   }
 
   // Put the newest play at t without raising markers
-  pub fn seek(self &mut, t f64) {
+  pub fn seek(self: &mut, t: f64) {
     if plays.len() == 0usize { return; }
     let k = plays.len() - 1usize;
     var p = *plays[k];
@@ -111,7 +111,7 @@ pub struct Player {
   }
 
   // Put the newest play at t, raising the markers crossed
-  pub fn scrub(self &mut, t f64) {
+  pub fn scrub(self: &mut, t: f64) {
     if plays.len() == 0usize { return; }
     let k = plays.len() - 1usize;
     var p = *plays[k];
@@ -121,7 +121,7 @@ pub struct Player {
   }
 
   // The fade factor of play i: how far in it is (the oldest is always fully in)
-  fn factor(self &, i usize) f32 {
+  fn factor(self: &, i: usize) f32 {
     let p = *plays[i];
     if i == 0usize || p.fade <= 0. { return 1.; }
     let x = p.fadeT / p.fade;
@@ -129,7 +129,7 @@ pub struct Player {
   }
 
   // The weight of each play, oldest first, into 'out'; they sum to 1
-  pub fn weights(self &, out &mut List[f32]) {
+  pub fn weights(self: &, out: &mut List[f32]) {
     out.clear();
     let n = plays.len();
     var i = 0usize;
@@ -142,19 +142,19 @@ pub struct Player {
     }
   }
 
-  pub fn addLayer(self &mut, clip u32, weight f32) usize {
+  pub fn addLayer(self: &mut, clip: u32, weight: f32) usize {
     layers.push(new Layer(clip, 0.0f64, weight));
     layers.len() - 1usize
   }
 
-  pub fn setLayerWeight(self &mut, layer usize, weight f32) {
+  pub fn setLayerWeight(self: &mut, layer: usize, weight: f32) {
     var l = *layers[layer];
     l.weight = weight;
     layers.set(layer, l);
   }
 
   // Move every clock on by dt seconds of real time (times the player's rate)
-  pub fn update(self &mut, dt f32) {
+  pub fn update(self: &mut, dt: f32) {
     if paused { return; }
     let step = f64.from(dt) * f64.from(rate);
     let absStep = if dt * rate < 0. { -(dt * rate) } else { dt * rate };
@@ -208,7 +208,7 @@ pub struct Player {
   // Start the next queued clip when the current one-shot is within its fade of
   // its end. The new play has been going for the part of the fade already
   // elapsed (more than the fade if the old clip ended before this frame)
-  fn advanceQueue(self &mut) {
+  fn advanceQueue(self: &mut) {
     if queue.len() == 0usize || plays.len() == 0usize || rate <= 0. { return; }
     let p = *plays[plays.len() - 1usize];
     let clip = clips[usize.from(p.clip)];
@@ -228,7 +228,7 @@ pub struct Player {
   }
 
   // The properties now: the plays blended by weight, then the additive layers
-  pub fn evaluate(self &) Sample {
+  pub fn evaluate(self: &) Sample {
     var out = Sample.empty();
     var ws = List[f32].empty();
     self.weights(&mut ws);
@@ -259,7 +259,7 @@ pub struct Player {
   }
 
   // The markers crossed (and clips finished) since the last call, in order
-  pub fn takeEvents(self &mut) List[Fired] {
+  pub fn takeEvents(self: &mut) List[Fired] {
     var out = List[Fired].empty();
     var i = 0usize;
     while i < events.len() { out.push(*events[i]); i = i + 1usize; }
@@ -268,7 +268,7 @@ pub struct Player {
   }
 
   // Call 'on' with each pending event, then forget them
-  pub fn dispatch(self &mut, on &<mut fn(e Fired)) {
+  pub fn dispatch(self: &mut, on: &<mut fn(e: Fired)) {
     var i = 0usize;
     while i < events.len() { on(*events[i]); i = i + 1usize; }
     events.clear();

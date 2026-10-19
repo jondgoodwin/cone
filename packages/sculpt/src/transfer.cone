@@ -53,31 +53,31 @@ pub const MapBestNormal = 3u32;
 
 // The mappings per domain, the reach and the mix
 pub struct TransferMap {
-  pub vertex u32;
-  pub edge u32;
-  pub face u32;
-  pub corner u32;
-  pub maxDistance f32;
-  pub factor f32;
+  pub vertex: u32;
+  pub edge: u32;
+  pub face: u32;
+  pub corner: u32;
+  pub maxDistance: f32;
+  pub factor: f32;
 
   // One mapping for every domain, no reach limit, replacing
-  pub fn all(method u32) TransferMap { new TransferMap(method, method, method, method, 0., 1.) }
+  pub fn all(method: u32) TransferMap { new TransferMap(method, method, method, method, 0., 1.) }
 }
 
 // Where a destination element lands: source elements e0, e1, e2 blended by w
 // (NoIndex in e0: nowhere)
 struct Sample {
-  e0 u32;
-  e1 u32;
-  e2 u32;
-  w DVec3;
+  e0: u32;
+  e1: u32;
+  e2: u32;
+  w: DVec3;
 }
 
 fn sampleNone() Sample { new Sample(NoIndex, NoIndex, NoIndex, new DVec3(0.0, 0.0, 0.0)) }
-fn sampleOne(e u32) Sample { new Sample(e, e, e, new DVec3(1.0, 0.0, 0.0)) }
+fn sampleOne(e: u32) Sample { new Sample(e, e, e, new DVec3(1.0, 0.0, 0.0)) }
 
 // A hit's triangle's three vertices (or corners) with the hit's weights
-fn triSample(idx &SurfaceIndex, h SurfaceHit, domain u32) Sample {
+fn triSample(idx: &SurfaceIndex, h: SurfaceHit, domain: u32) Sample {
   if h.tri == NoIndex { return sampleNone(); }
   let k = 3usize * usize.from(h.tri);
   let w = h.bary;
@@ -87,26 +87,26 @@ fn triSample(idx &SurfaceIndex, h SurfaceHit, domain u32) Sample {
 
 // A sample's blend of three values, in f64 and rounded once, so three equal
 // values give that value exactly
-fn blendF(vals &List[f32], s &Sample) f32 {
+fn blendF(vals: &List[f32], s: &Sample) f32 {
   blend3(*vals[usize.from(s.e0)], *vals[usize.from(s.e1)], *vals[usize.from(s.e2)], s.w)
 }
-fn blendV2(vals &List[Vec2], s &Sample) Vec2 {
+fn blendV2(vals: &List[Vec2], s: &Sample) Vec2 {
   let a = *vals[usize.from(s.e0)];
   let b = *vals[usize.from(s.e1)];
   let c = *vals[usize.from(s.e2)];
   new Vec2(blend3(a.x, b.x, c.x, s.w), blend3(a.y, b.y, c.y, s.w))
 }
-fn blendV3(vals &List[Vec3], s &Sample) Vec3 {
+fn blendV3(vals: &List[Vec3], s: &Sample) Vec3 {
   let a = *vals[usize.from(s.e0)];
   let b = *vals[usize.from(s.e1)];
   let c = *vals[usize.from(s.e2)];
   new Vec3(blend3(a.x, b.x, c.x, s.w), blend3(a.y, b.y, c.y, s.w), blend3(a.z, b.z, c.z, s.w))
 }
 
-fn mixF(old f32, now f32, factor f32) f32 { if factor >= 1. { now } else { old + (now - old) * factor } }
+fn mixF(old: f32, now: f32, factor: f32) f32 { if factor >= 1. { now } else { old + (now - old) * factor } }
 
 // Whether a channel is wanted: no filter, or its name among 'names'
-fn nameWanted(name &String, filter bool, names &Array[&str]) bool {
+fn nameWanted(name: &String, filter: bool, names: &Array[&str]) bool {
   if !filter { return true; }
   var i = 0usize;
   while i < names.len {
@@ -121,8 +121,8 @@ fn nameWanted(name &String, filter bool, names &Array[&str]) bool {
 // Channels wanted: all, or with 'filter' those named in 'names'. A destination
 // channel of that name and domain is mixed into by 'factor'; another type of
 // the same name is reported, not touched.
-fn carryChannels(m &PolyMesh, dst &mut PolyMesh, samples &List[List[Sample]], filter bool, names &Array[&str],
-    factor f32, problems &mut List[String]) {
+fn carryChannels(m: &PolyMesh, dst: &mut PolyMesh, samples: &List[List[Sample]], filter: bool, names: &Array[&str],
+    factor: f32, problems: &mut List[String]) {
   var i = 0usize;
   while i < m.floats.len() {
     let domain = m.floats[i].domain;
@@ -220,14 +220,14 @@ fn carryChannels(m &PolyMesh, dst &mut PolyMesh, samples &List[List[Sample]], fi
 
 // Whether dst has a channel of this name and domain of another type than
 // kind (0 f32, 1 Vec2, 2 Vec3)
-fn conflicting(dst &PolyMesh, domain u32, name &String, kind u32) bool {
+fn conflicting(dst: &PolyMesh, domain: u32, name: &String, kind: u32) bool {
   if kind != 0u32 && dst.findFloatChannel(domain, name.view()) != NoIndex { return true; }
   if kind != 1u32 && dst.findVec2Channel(domain, name.view()) != NoIndex { return true; }
   if kind != 2u32 && dst.findVec3Channel(domain, name.view()) != NoIndex { return true; }
   false
 }
 
-fn reportConflict(name &String, problems &mut List[String]) {
+fn reportConflict(name: &String, problems: &mut List[String]) {
   var s = String.from("the channel '");
   s.append(name.view());
   s.append("' is another type in the destination; left as it was");
@@ -238,29 +238,29 @@ fn reportConflict(name &String, problems &mut List[String]) {
 
 // The destination mesh with every channel of the source carried to it (see
 // the top)
-pub fn dataTransfer(dst &PolyMesh, src &PolyMesh, map &TransferMap, problems &mut List[String]) PolyMesh {
-  let none Array[&str, 1] = [""];
+pub fn dataTransfer(dst: &PolyMesh, src: &PolyMesh, map: &TransferMap, problems: &mut List[String]) PolyMesh {
+  let none: Array[&str, 1] = [""];
   dataTransferWith(dst, src, map, false, &none, problems)
 }
 
 // The same for the named channels only
-pub fn dataTransferOnly(dst &PolyMesh, src &PolyMesh, map &TransferMap, names &Array[&str], problems &mut List[String]) PolyMesh {
+pub fn dataTransferOnly(dst: &PolyMesh, src: &PolyMesh, map: &TransferMap, names: &Array[&str], problems: &mut List[String]) PolyMesh {
   dataTransferWith(dst, src, map, true, names, problems)
 }
 
-fn dataTransferWith(dst &PolyMesh, src &PolyMesh, map &TransferMap, filter bool, names &Array[&str],
-    problems &mut List[String]) PolyMesh {
+fn dataTransferWith(dst: &PolyMesh, src: &PolyMesh, map: &TransferMap, filter: bool, names: &Array[&str],
+    problems: &mut List[String]) PolyMesh {
   let idx = SurfaceIndex.of(src);
   dataTransferIndexed(dst, src, &idx, map, filter, names, problems)
 }
 
 // The same with the source's index already made
-fn dataTransferIndexed(dst &PolyMesh, src &PolyMesh, idx &SurfaceIndex, map &TransferMap, filter bool,
-    names &Array[&str], problems &mut List[String]) PolyMesh {
+fn dataTransferIndexed(dst: &PolyMesh, src: &PolyMesh, idx: &SurfaceIndex, map: &TransferMap, filter: bool,
+    names: &Array[&str], problems: &mut List[String]) PolyMesh {
   var out = withPositions(dst, copyList(&dst.positions));
   if src.faceCount() == 0usize || dst.vertexCount() == 0usize { return out; }
   // Which domains the wanted channels live in
-  var need Array[bool, 4] = [false, false, false, false];
+  var need: Array[bool, 4] = [false, false, false, false];
   markDomains(src, filter, names, &mut need);
   var samples = List[List[Sample]].empty();
   var d = 0u32;
@@ -278,7 +278,7 @@ fn dataTransferIndexed(dst &PolyMesh, src &PolyMesh, idx &SurfaceIndex, map &Tra
   out
 }
 
-fn markDomains(m &PolyMesh, filter bool, names &Array[&str], need &mut Array[bool, 4]) {
+fn markDomains(m: &PolyMesh, filter: bool, names: &Array[&str], need: &mut Array[bool, 4]) {
   var i = 0usize;
   while i < m.floats.len() {
     if nameWanted(&m.floats[i].name, filter, names) { need[usize.from(m.floats[i].domain)] = true; }
@@ -297,7 +297,7 @@ fn markDomains(m &PolyMesh, filter bool, names &Array[&str], need &mut Array[boo
 }
 
 // Each element of the destination's domain, where it lands on the source
-fn samplesFor(src &PolyMesh, idx &SurfaceIndex, dst &PolyMesh, domain u32, method u32, maxDistance f32) List[Sample] {
+fn samplesFor(src: &PolyMesh, idx: &SurfaceIndex, dst: &PolyMesh, domain: u32, method: u32, maxDistance: f32) List[Sample] {
   let n = dst.domainSize(domain);
   let vnormals = dst.vertexNormals();
   var out = List[Sample].withCapacity(n);
@@ -373,7 +373,7 @@ fn samplesFor(src &PolyMesh, idx &SurfaceIndex, dst &PolyMesh, domain u32, metho
 }
 
 // The vertex (or corner) of a hit whose weight is the greatest
-fn oneCorner(idx &SurfaceIndex, h &SurfaceHit, domain u32) Sample {
+fn oneCorner(idx: &SurfaceIndex, h: &SurfaceHit, domain: u32) Sample {
   let k = 3usize * usize.from(h.tri);
   let w = h.bary;
   var c = 0usize;
@@ -383,7 +383,7 @@ fn oneCorner(idx &SurfaceIndex, h &SurfaceHit, domain u32) Sample {
 }
 
 // The edge of a face nearest a point
-fn nearestEdge(m &PolyMesh, face u32, p Vec3) u32 {
+fn nearestEdge(m: &PolyMesh, face: u32, p: Vec3) u32 {
   let hs = m.faceHalfedges(face);
   let pd = DVec3.from(p);
   var best = NoIndex;
@@ -402,7 +402,7 @@ fn nearestEdge(m &PolyMesh, face u32, p Vec3) u32 {
 }
 
 // The corner of a face whose vertex is nearest a point
-fn nearestCorner(m &PolyMesh, face u32, p Vec3) u32 {
+fn nearestCorner(m: &PolyMesh, face: u32, p: Vec3) u32 {
   let hs = m.faceHalfedges(face);
   let pd = DVec3.from(p);
   var best = NoIndex;

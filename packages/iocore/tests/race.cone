@@ -53,22 +53,22 @@ const sendEarlyNs = 10000i64;   // a byte's send starts this much before its mom
 
 // xorshift64*: a cheap generator, one per thread
 struct Rng {
-  s u64;
-  pub fn make(seed u64) Rng {new Rng(seed | 1u64)}
-  pub fn next(self &mut) u64 {
+  s: u64;
+  pub fn make(seed: u64) Rng {new Rng(seed | 1u64)}
+  pub fn next(self: &mut) u64 {
     s = s ^ (s >> 12u64);
     s = s ^ (s << 25u64);
     s = s ^ (s >> 27u64);
     s * 2685821657736338717u64
   }
-  pub fn below(self &mut, n u64) u64 {self.next() % n}
+  pub fn below(self: &mut, n: u64) u64 {self.next() % n}
   // A moment within jitterNs of at
-  pub fn near(self &mut, at Instant) Instant {
+  pub fn near(self: &mut, at: Instant) Instant {
     at + Duration.fromNanos(i64.from(self.below(2u64 * jitterNs)) - i64.from(jitterNs))
   }
 }
 
-fn spinUntil(t Instant) {
+fn spinUntil(t: Instant) {
   while Instant.now() < t {}
 }
 
@@ -77,17 +77,17 @@ fn spinUntil(t Instant) {
 // ---------------------------------------------------------------------------
 
 enum Order {
-  pub struct CancelOne {pub at Instant; pub req Request;}
-  pub struct CancelAll {pub at Instant; pub group CancelGroup;}
+  pub struct CancelOne {pub at: Instant; pub req: Request;}
+  pub struct CancelAll {pub at: Instant; pub group: CancelGroup;}
   pub struct EndRound {}
 }
 
 struct Canceller {
-  pub orders Receiver[Order];
-  pub done Sender[u64];
+  pub orders: Receiver[Order];
+  pub done: Sender[u64];
 }
 
-fn canceller(arg Canceller) u64 {
+fn canceller(arg: Canceller) u64 {
   var c = arg;
   var n = 0u64;
   var more = true;
@@ -119,18 +119,18 @@ fn canceller(arg Canceller) u64 {
 
 // One round for the peer: when each socket's byte goes, in time order
 struct Plan {
-  pub at Array[i64, 50];        // instants, as nanoseconds
-  pub sock Array[u32, 50];      // which socket each is for
+  pub at: Array[i64, 50];        // instants, as nanoseconds
+  pub sock: Array[u32, 50];      // which socket each is for
 }
 
 struct Peer {
-  pub port u16;
-  pub plans Receiver[Plan];
-  pub done Sender[u64];
-  pub pool Pool;
+  pub port: u16;
+  pub plans: Receiver[Plan];
+  pub done: Sender[u64];
+  pub pool: Pool;
 }
 
-fn peer(p Peer) u64 {
+fn peer(p: Peer) u64 {
   var q = p;
   var lp = Loop.mustMake();
   var out = List[Completion].empty();
@@ -192,23 +192,23 @@ fn peer(p Peer) u64 {
 // ---------------------------------------------------------------------------
 
 struct Tally {
-  pub done u64;
-  pub cancelled u64;
-  pub timedOut u64;
-  pub failed u64;
-  pub twice u64;            // an answer for an operation already answered
-  pub stale u64;            // an answer from an earlier round
-  pub missing u64;          // operations never answered
-  pub wrongBytes u64;       // a Done receive that did not take exactly its one byte
-  pub promptless u64;       // TimedOut without its buffer
+  pub done: u64;
+  pub cancelled: u64;
+  pub timedOut: u64;
+  pub failed: u64;
+  pub twice: u64;            // an answer for an operation already answered
+  pub stale: u64;            // an answer from an earlier round
+  pub missing: u64;          // operations never answered
+  pub wrongBytes: u64;       // a Done receive that did not take exactly its one byte
+  pub promptless: u64;       // TimedOut without its buffer
 
   pub fn zero() Tally {new Tally(0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64)}
 }
 
 // Take one round's answers from out: tokens are round * conns + i; the
 // outcome of each operation goes in ended[i]
-fn count(t &mut Tally, out &List[Completion], round u64, ended &mut Array[u32, 50], got &mut u64,
-    receives bool) {
+fn count(t: &mut Tally, out: &List[Completion], round: u64, ended: &mut Array[u32, 50], got: &mut u64,
+    receives: bool) {
   var k = 0usize;
   while k < out.len() {
     let c = out[k];
@@ -239,8 +239,8 @@ fn count(t &mut Tally, out &List[Completion], round u64, ended &mut Array[u32, 5
 
 // Poll until n answers of this round are in: draining without waiting, or
 // waiting in the kernel
-fn collect(lp &mut Loop, out &mut List[Completion], t &mut Tally, round u64, ended &mut Array[u32, 50],
-    receives bool, drain bool) {
+fn collect(lp: &mut Loop, out: &mut List[Completion], t: &mut Tally, round: u64, ended: &mut Array[u32, 50],
+    receives: bool, drain: bool) {
   var got = 0u64;
   let limit = Instant.now() + Duration.fromSeconds(10i64);
   while got < conns && Instant.now() < limit {
@@ -255,14 +255,14 @@ fn collect(lp &mut Loop, out &mut List[Completion], t &mut Tally, round u64, end
 // took to set up (its operations submitted, its racers told): the fixed lead,
 // or twice the setup where that is longer, as on a machine that is slow or
 // busy, so that no deadline is past before its operation is submitted
-fn nextLead(setupNs i64) i64 {
+fn nextLead(setupNs: i64) i64 {
   if setupNs * 2i64 > leadNs {setupNs * 2i64} else {leadNs}
 }
 
 // With '-D RACE_REPORT' (congo test race -D RACE_REPORT), how the races
 // ended and how long they took; otherwise nothing, so the test's output
 // stays its checks alone
-fn report(name &str, t &Tally, c &diag.Counters, took Duration) {
+fn report(name: &str, t: &Tally, c: &diag.Counters, took: Duration) {
   if !isDefined("RACE_REPORT") {return;}
   stdio.printStr(name);
   stdio.printStr(": done ");
@@ -285,7 +285,7 @@ fn report(name &str, t &Tally, c &diag.Counters, took Duration) {
 }
 
 // Work for the job race: run until the instant arg (nanoseconds)
-fn spinWork(arg u64, buf &mut IoBuf) Outcome {
+fn spinWork(arg: u64, buf: &mut IoBuf) Outcome {
   spinUntil(Instant.fromNanos(i64.from(arg)));
   Outcome.Done(0usize)
 }
@@ -293,15 +293,15 @@ fn spinWork(arg u64, buf &mut IoBuf) Outcome {
 // One round's plan, made by main: each operation's moment (in time order,
 // so operation i's comes before i + 1's), and its racers
 struct Moments {
-  pub at Array[i64, 50];          // the completion
-  pub cancelAt Array[i64, 50];    // the Request's cancel, or 0 for none
-  pub deadline Array[i64, 50];    // the deadline, or forever's
+  pub at: Array[i64, 50];          // the completion
+  pub cancelAt: Array[i64, 50];    // the Request's cancel, or 0 for none
+  pub deadline: Array[i64, 50];    // the deadline, or forever's
 }
 
 // 'early' is how much sooner than its moment the completion's racer starts:
 // a byte sent takes some microseconds to reach its receive, where a cancel
 // or a deadline acts in the loop itself
-fn plan(rng &mut Rng, t0 Instant, early i64) Moments {
+fn plan(rng: &mut Rng, t0: Instant, early: i64) Moments {
   var m = new Moments(new Array[i64, 50] <- fill 0i64, new Array[i64, 50] <- fill 0i64,
     new Array[i64, 50] <- fill 0i64);
   var i = 0u64;
@@ -317,8 +317,8 @@ fn plan(rng &mut Rng, t0 Instant, early i64) Moments {
 }
 
 // Hand the round's cancels to the canceller, in time order, and its end
-fn orderCancels(lp &Loop, ctx &Sender[Order], m &Moments, reqs &mut List[Request], g CancelGroup,
-    groupAt Instant, cancelGroup bool) {
+fn orderCancels(lp: &Loop, ctx: &Sender[Order], m: &Moments, reqs: &mut List[Request], g: CancelGroup,
+    groupAt: Instant, cancelGroup: bool) {
   // The requests were made in operation order, for those with a cancel;
   // their moments are nearly in order already: an insertion sort
   var order = List[usize].empty();
@@ -371,11 +371,11 @@ fn main() i32 {
     let pool = Pool.make();
     var lp = Loop.mustMake();
     var out = List[Completion].empty();
-    var ctx Sender[Order];
-    var crx Receiver[Order];
+    var ctx: Sender[Order];
+    var crx: Receiver[Order];
     ctx, crx = Channel[Order].make();
-    var cdone Sender[u64];
-    var cdoneRx Receiver[u64];
+    var cdone: Sender[u64];
+    var cdoneRx: Receiver[u64];
     cdone, cdoneRx = Channel[u64].make();
     let cthread = thread.start(new Canceller(crx, cdone), &canceller);
     var rng = Rng.make(0x2545F4914F6CDD1Du64);
@@ -394,11 +394,11 @@ fn main() i32 {
         case let a Ok {port = a.port();}
         case let e Error {}
       }
-      var ptx Sender[Plan];
-      var prx Receiver[Plan];
+      var ptx: Sender[Plan];
+      var prx: Receiver[Plan];
       ptx, prx = Channel[Plan].make();
-      var pdone Sender[u64];
-      var pdoneRx Receiver[u64];
+      var pdone: Sender[u64];
+      var pdoneRx: Receiver[u64];
       pdone, pdoneRx = Channel[u64].make();
       let pthread = thread.start(new Peer(port, prx, pdone, pool), &peer);
       var accepted = List[Handle].empty();

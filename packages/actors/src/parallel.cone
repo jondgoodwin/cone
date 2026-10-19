@@ -117,15 +117,15 @@
 // The body of a loop: a sub-range [lo, hi) of the range, called possibly many
 // times and at once on different pieces. A callable of this signature is what
 // parallelRange and parallelRangeThen take (a closure, a function reference, or
-// a struct with a '()' of it), as a '[F RangeBody + Shareable]'
-pub alias RangeBody = fn(lo usize, hi usize);
+// a struct with a '()' of it), as a '[F: RangeBody + Shareable]'
+pub alias RangeBody = fn(lo: usize, hi: usize);
 
 // How the runtime itself holds a body, and how the compiler's code hands it one:
 // a function reference and a pointer to the record of what the body uses, which
 // the function is given beside a sub-range. The compiler outlines a 'parallel
 // each' loop into such a function (genlpar.c) and calls parallelEach or parSeam
 // with it; parallelRange and parallelRangeThen make one of a callable
-pub alias PieceFn = &fn(data *u8, lo usize, hi usize);
+pub alias PieceFn = &fn(data: *u8, lo: usize, hi: usize);
 
 // How many tasks a deque holds
 const taskCap = 128u64;
@@ -137,20 +137,20 @@ const taskMask = 127u64;
 // a task reads what it needs from it before its own subtraction, since the
 // caller of a blocking loop may return the instant the count reaches zero.
 struct LoopRec {
-  pub remaining usize;         // items not yet run (atomic)
-  pub grain usize;
-  pub body PieceFn;
-  pub data *u8;
-  pub onDone &fn(arg *u8);     // called by the last task, scheduled form only
-  pub doneArg *u8;
-  pub scheduled bool;          // a heap block, with an onDone to call
+  pub remaining: usize;         // items not yet run (atomic)
+  pub grain: usize;
+  pub body: PieceFn;
+  pub data: *u8;
+  pub onDone: &fn(arg: *u8);     // called by the last task, scheduled form only
+  pub doneArg: *u8;
+  pub scheduled: bool;          // a heap block, with an onDone to call
 }
 
 // A task: a range of a loop. It is a plain value; a deque holds copies.
 struct Task {
-  pub rec *LoopRec;
-  pub lo usize;
-  pub hi usize;
+  pub rec: *LoopRec;
+  pub lo: usize;
+  pub hi: usize;
 }
 
 // A queue of tasks under a lock (a Mutex per worker, held for a few
@@ -158,28 +158,28 @@ struct Task {
 // thieves take at the oldest. 'n' is how many it holds, written under the
 // lock, and read without it where a look is enough.
 struct TaskDeque {
-  pub lock sync.Mutex;
-  pub n u64;
-  pub head u64;                // the position of the oldest, counting up for ever
-  pub items Array[Task, 128];
+  pub lock: sync.Mutex;
+  pub n: u64;
+  pub head: u64;                // the position of the oldest, counting up for ever
+  pub items: Array[Task, 128];
 }
 
 fn nullRec() *LoopRec {null}
 
 fn emptyTask() Task {new Task(nullRec(), 0usize, 0usize)}
 
-fn noDone(arg *u8) {}
+fn noDone(arg: *u8) {}
 
-fn tasksOf(w *Worker) *TaskDeque {&(*w).tasks as *TaskDeque}
+fn tasksOf(w: *Worker) *TaskDeque {&(*w).tasks as *TaskDeque}
 
-fn extDeque(s *Sched) *TaskDeque {&(*s).extTasks as *TaskDeque}
+fn extDeque(s: *Sched) *TaskDeque {&(*s).extTasks as *TaskDeque}
 
-fn taskAt(d *TaskDeque, pos u64) *Task {
+fn taskAt(d: *TaskDeque, pos: u64) *Task {
   (&(*d).items as *Task) + usize.from(pos & taskMask)
 }
 
 // Put t at the newest end of d: false, with nothing put, if d is full
-fn dequePush(d *TaskDeque, t Task) bool {
+fn dequePush(d: *TaskDeque, t: Task) bool {
   (*d).lock.lock();
   let n = (*d).n;
   if n >= taskCap {
@@ -194,7 +194,7 @@ fn dequePush(d *TaskDeque, t Task) bool {
 }
 
 // Take the newest task of d into *out: false if there is none
-fn dequePopNewest(d *TaskDeque, out *Task) bool {
+fn dequePopNewest(d: *TaskDeque, out: *Task) bool {
   if ld64(&(*d).n as *u64) == 0u64 {
     return false;
   }
@@ -211,7 +211,7 @@ fn dequePopNewest(d *TaskDeque, out *Task) bool {
 }
 
 // Take the oldest task of d, the largest, into *out: false if there is none
-fn dequeTakeOldest(d *TaskDeque, out *Task) bool {
+fn dequeTakeOldest(d: *TaskDeque, out: *Task) bool {
   if ld64(&(*d).n as *u64) == 0u64 {
     return false;
   }
@@ -229,7 +229,7 @@ fn dequeTakeOldest(d *TaskDeque, out *Task) bool {
 }
 
 // Whether any deque holds a task, looked at without taking one
-fn taskWork(s *Sched) bool {
+fn taskWork(s: *Sched) bool {
   if ld64(&(*s).extTasks.n as *u64) != 0u64 {
     return true;
   }
@@ -245,7 +245,7 @@ fn taskWork(s *Sched) bool {
 
 // The deque of the caller's own tasks: its worker's, or the shared one of a
 // thread that is not a worker of this runtime
-fn curDeque(s *Sched) *TaskDeque {
+fn curDeque(s: *Sched) *TaskDeque {
   let w = me as *Worker;
   if w as usize != 0usize && (*w).sched as usize == s as usize {
     return tasksOf(w);
@@ -257,7 +257,7 @@ fn curDeque(s *Sched) *TaskDeque {
 // *out, false if there is none. w is the thief if it is a worker, so that it
 // does not look in its own deque; its look begins at a worker that moves on
 // at every steal.
-fn stealTask(s *Sched, w *Worker, out *Task) bool {
+fn stealTask(s: *Sched, w: *Worker, out: *Task) bool {
   let n = (*s).nworkers;
   let r = mem.atomicAdd[u32](&(*s).stealRot as *u32, 1u32, MemOrder.Relaxed);
   var i = 0u32;
@@ -281,7 +281,7 @@ fn stealTask(s *Sched, w *Worker, out *Task) bool {
 // Run task t: split it while it is longer than the loop's grain, putting the
 // upper half of each split on top of this thread's deque; run the piece left;
 // count it done
-fn runTask(s *Sched, t Task) {
+fn runTask(s: *Sched, t: Task) {
   let rec = t.rec;
   let body = (*rec).body;
   let data = (*rec).data;
@@ -307,7 +307,7 @@ fn runTask(s *Sched, t Task) {
 // loop: a scheduled loop's block is freed and its onDone called. A blocking
 // loop's record may be gone as soon as the count is zero, so nothing here
 // touches it after the subtraction.
-fn finishItems(s *Sched, rec *LoopRec, n usize, scheduled bool, onDone &fn(arg *u8), doneArg *u8) {
+fn finishItems(s: *Sched, rec: *LoopRec, n: usize, scheduled: bool, onDone: &fn(arg: *u8), doneArg: *u8) {
   let prev = mem.atomicSub[usize](&(*rec).remaining as *usize, n, MemOrder.AcqRel);
   if prev == n && scheduled {
     libc.free(rec as *u8);
@@ -321,7 +321,7 @@ fn finishItems(s *Sched, rec *LoopRec, n usize, scheduled bool, onDone &fn(arg *
 // The caller of a blocking loop works until its count is zero: its own newest
 // task, else the oldest of anyone's; with none to take, the pieces left are
 // running on other workers, so it yields its processor and looks again
-fn helpUntilDone(s *Sched, rec *LoopRec) {
+fn helpUntilDone(s: *Sched, rec: *LoopRec) {
   let remp = &(*rec).remaining as *usize;
   let w = me as *Worker;
   let mine = curDeque(s);
@@ -336,7 +336,7 @@ fn helpUntilDone(s *Sched, rec *LoopRec) {
 }
 
 // A grain of 0 is taken as 1
-fn grainOf(g usize) usize {
+fn grainOf(g: usize) usize {
   if g == 0usize {1usize} else {g}
 }
 
@@ -351,7 +351,7 @@ const minEachGrain = 128usize;
 // The grain 'parallel each' splits to, in the blocking form (parallelEach) and
 // in the form cut at the loop's end (startHeld): about an eighth of an even
 // share of the range for each worker, and never below minEachGrain
-fn eachGrain(len usize, workers usize) usize {
+fn eachGrain(len: usize, workers: usize) usize {
   let g = len / (workers * 8usize);
   if g < minEachGrain {minEachGrain} else {g}
 }
@@ -369,7 +369,7 @@ fn eachGrain(len usize, workers usize) usize {
 // through a reference. Its pieces run at the same time, so it must be
 // Shareable (what it holds is safe to read from several threads, which refuses
 // a body that borrows a variable it changes, or holds an Rc), and it takes
-// `self &`, so a body that changes a variable it borrows is refused.
+// `self: &`, so a body that changes a variable it borrows is refused.
 //
 // This is the low-level form: 'parallel each' sits on parallelEach, which
 // shares its machinery. Beyond what the compiler checks of a body here, it
@@ -379,19 +379,19 @@ fn eachGrain(len usize, workers usize) usize {
 // (this file's header, WHAT THE BODY MAY DO). It may be called from main, from
 // any thread, or from inside an actor's behaviour, where the actor is not run
 // again until it returns; the workers are started if no actor has started them.
-pub fn parallelRange[F fn(lo usize, hi usize) + Shareable](lo usize, hi usize, grain usize, body &F) {
+pub fn parallelRange[F: fn(lo: usize, hi: usize) + Shareable](lo: usize, hi: usize, grain: usize, body: &F) {
   rangeRun(lo, hi, grain, &callBody[F], body as *F as *u8);
 }
 
 // A piece of a loop whose body is a callable: the record is a pointer to it
-fn callBody[F fn(lo usize, hi usize) + Shareable](data *u8, lo usize, hi usize) {
+fn callBody[F: fn(lo: usize, hi: usize) + Shareable](data: *u8, lo: usize, hi: usize) {
   let f = data as &F;
   f(lo, hi);
 }
 
 // The loop of a piece function and its record: what parallelRange, parallelEach
 // and the compiler's loops run on
-fn rangeRun(lo usize, hi usize, grain usize, body PieceFn, data *u8) {
+fn rangeRun(lo: usize, hi: usize, grain: usize, body: PieceFn, data: *u8) {
   if hi <= lo {
     return;
   }
@@ -419,7 +419,7 @@ fn rangeRun(lo usize, hi usize, grain usize, body PieceFn, data *u8) {
 // the compiler has checked them. Unlike parallelRange, it gathers the messages
 // the pieces send to actors and sends them after the loop, in iteration order
 // (SENDS GATHERED, below).
-pub fn parallelEach(lo usize, hi usize, body PieceFn, data *u8) {
+pub fn parallelEach(lo: usize, hi: usize, body: PieceFn, data: *u8) {
   if hi <= lo {
     return;
   }
@@ -456,47 +456,47 @@ pub fn parallelEach(lo usize, hi usize, body PieceFn, data *u8) {
 // ---------------------------------------------------------------------------
 
 // The thread-local: the Piece this thread is running, else 0
-var @threadlocal curPiece usize = 0usize;
+var @threadlocal curPiece: usize = 0usize;
 
 // What parallelEach hands the pieces: the compiler's body and its data, and
 // the pieces that sent something, a stack of records pushed as the pieces end
 // (the head's address, atomic)
 struct EachLoop {
-  pub body PieceFn;
-  pub data *u8;
-  pub records usize;
+  pub body: PieceFn;
+  pub data: *u8;
+  pub records: usize;
 }
 
 // What a piece is while it runs: on the stack of gatherPiece
 struct Piece {
-  pub owner *EachLoop;
-  pub lo usize;
-  pub rec *PieceRec;       // its messages, once it has sent one
-  pub prev usize;          // the piece this thread was running when it began
+  pub owner: *EachLoop;
+  pub lo: usize;
+  pub rec: *PieceRec;       // its messages, once it has sent one
+  pub prev: usize;          // the piece this thread was running when it began
 }
 
 // The messages one piece sent, in the order it sent them
 struct PieceRec {
-  pub next *PieceRec;      // the loop's stack
-  pub lo usize;
-  pub first *Sent;
-  pub last *Sent;
+  pub next: *PieceRec;      // the loop's stack
+  pub lo: usize;
+  pub first: *Sent;
+  pub last: *Sent;
 }
 
 // A message kept: its link, the actor's mailbox, and what delivers it (the
 // message type is known to the function alone)
 struct Sent {
-  pub next *Sent;
-  pub h *Header;
-  pub deliver &fn(e *Sent);
+  pub next: *Sent;
+  pub h: *Header;
+  pub deliver: &fn(e: *Sent);
 }
 
 // A kept message of type M, laid out as a Sent followed by the message
-struct SentMsg[M Sendable] {
-  pub next *Sent;
-  pub h *Header;
-  pub deliver &fn(e *Sent);
-  pub msg M;
+struct SentMsg[M: Sendable] {
+  pub next: *Sent;
+  pub h: *Header;
+  pub deliver: &fn(e: *Sent);
+  pub msg: M;
 }
 
 fn nullSent() *Sent {null}
@@ -505,7 +505,7 @@ fn nullPieceRec() *PieceRec {null}
 
 // The body of every piece of a parallelEach: it makes a Piece for the thread
 // to be running while the compiler's body runs, and passes on the records
-fn gatherPiece(data *u8, lo usize, hi usize) {
+fn gatherPiece(data: *u8, lo: usize, hi: usize) {
   let job = data as *EachLoop;
   var piece = new Piece(job, lo, nullPieceRec(), curPiece);
   curPiece = &mut piece as *Piece as usize;
@@ -528,7 +528,7 @@ fn gatherPiece(data *u8, lo usize, hi usize) {
 // Keep a message sent from the piece this thread is running. The mailbox is
 // held (as the scheduler holds one with a message in it) until it is sent, so
 // that an actor made inside the body cannot die first.
-fn gatherSend[M Sendable](h *Header, msg M) {
+fn gatherSend[M: Sendable](h: *Header, msg: M) {
   let piece = curPiece as *Piece;
   if (*piece).rec as usize == 0usize {
     let rec = libc.calloc(1usize, mem.sizeof[PieceRec]()) as *PieceRec;
@@ -558,7 +558,7 @@ fn gatherSend[M Sendable](h *Header, msg M) {
 
 // Send a kept message on, as 'send' would, and let go of the hold: from inside a
 // piece of an outer loop (a loop in its body) it is kept again, in that piece
-fn sendKept[M Sendable](e *Sent) {
+fn sendKept[M: Sendable](e: *Sent) {
   let k = e as *SentMsg[M];
   let h = (*k).h;
   let msg = mem.readRaw[M](&(*k).msg as *M);
@@ -569,7 +569,7 @@ fn sendKept[M Sendable](e *Sent) {
 
 // After the loop: the records the pieces pushed, in order of where each piece
 // began, each one's messages in the order sent
-fn sendGathered(job *EachLoop) {
+fn sendGathered(job: *EachLoop) {
   var pending = (*job).records as *PieceRec;
   var sorted = nullPieceRec();
   // Insertion by where the piece began: the stack comes in no order
@@ -614,31 +614,31 @@ fn sendGathered(job *EachLoop) {
 // the local would be gone) is the shape of both. The body is Sendable and
 // Shareable, being called from several threads at once, and onDone Sendable.
 // The same trust in the body's rules as parallelRange.
-pub fn parallelRangeThen[B fn(lo usize, hi usize) + Sendable + Shareable, D fn() + Sendable](
-    lo usize, hi usize, grain usize, body B, onDone D) {
+pub fn parallelRangeThen[B: fn(lo: usize, hi: usize) + Sendable + Shareable, D: fn() + Sendable](
+    lo: usize, hi: usize, grain: usize, body: B, onDone: D) {
   let box = libc.malloc(mem.sizeof[ThenBox]()) as *ThenBox;
   if box as usize == 0usize {
     die("actors: out of memory for a parallel loop");
   }
   mem.writeRaw[ThenBox](box, new ThenBox(
-    new Uni[imm, fn(lo usize, hi usize) + Sendable + Shareable](body),
+    new Uni[imm, fn(lo: usize, hi: usize) + Sendable + Shareable](body),
     new Uni[fn() + Sendable](onDone)));
   rangeThen(lo, hi, grain, &thenPiece, box as *u8, &thenDone, box as *u8);
 }
 
 // What parallelRangeThen keeps while the loop runs, in a block of its own
 struct ThenBox {
-  pub body Uni[imm, fn(lo usize, hi usize) + Sendable + Shareable];
-  pub onDone Uni[fn() + Sendable];
+  pub body: Uni[imm, fn(lo: usize, hi: usize) + Sendable + Shareable];
+  pub onDone: Uni[fn() + Sendable];
 }
 
-fn thenPiece(data *u8, lo usize, hi usize) {
+fn thenPiece(data: *u8, lo: usize, hi: usize) {
   let b = data as *ThenBox;
   (*b).body(lo, hi);
 }
 
 // The loop has finished: the block is freed, onDone called, and the owners die
-fn thenDone(arg *u8) {
+fn thenDone(arg: *u8) {
   var b = mem.readRaw[ThenBox](arg as *ThenBox);
   libc.free(arg);
   b.onDone();
@@ -647,8 +647,8 @@ fn thenDone(arg *u8) {
 // The scheduled form over a piece function and its record, as parSeam's loop
 // is: onDone(doneArg) is called by the piece that finishes last, and data must
 // live until then
-fn rangeThen(lo usize, hi usize, grain usize, body PieceFn, data *u8,
-    onDone &fn(arg *u8), doneArg *u8) {
+fn rangeThen(lo: usize, hi: usize, grain: usize, body: PieceFn, data: *u8,
+    onDone: &fn(arg: *u8), doneArg: *u8) {
   let g = grainOf(grain);
   if hi <= lo || hi - lo <= g {
     if hi > lo {
@@ -701,26 +701,26 @@ fn rangeThen(lo usize, hi usize, grain usize, body PieceFn, data *u8,
 // ---------------------------------------------------------------------------
 
 // The actor whose behaviour this worker is running: its Header, else 0
-var @threadlocal curActor usize = 0usize;
+var @threadlocal curActor: usize = 0usize;
 
 // A loop a behaviour began, and how to go on when it has finished
 struct ParPending {
-  pub h *Header;
-  pub lo usize;
-  pub hi usize;
-  pub body PieceFn;            // the compiler's piece, handed 'caps'
-  pub caps *u8;                // the block of copies the pieces read, or 0 (freed when the loop ends)
-  pub resume *u8;              // the seam's resume function
-  pub id u64;                  // the record's slot in the pending table
-  pub hasId bool;              // false where the record is empty
-  pub job *EachLoop;           // the loop's gathering of sends, once it has begun
+  pub h: *Header;
+  pub lo: usize;
+  pub hi: usize;
+  pub body: PieceFn;            // the compiler's piece, handed 'caps'
+  pub caps: *u8;                // the block of copies the pieces read, or 0 (freed when the loop ends)
+  pub resume: *u8;              // the seam's resume function
+  pub id: u64;                  // the record's slot in the pending table
+  pub hasId: bool;              // false where the record is empty
+  pub job: *EachLoop;           // the loop's gathering of sends, once it has begun
 }
 
 fn nullPar() *ParPending {null}
 
 // A block of 'size' bytes for the copies a loop's pieces read, kept by the
 // compiler's code until parSeam hands it over
-pub fn parBlock(size usize) *u8 {
+pub fn parBlock(size: usize) *u8 {
   let b = libc.malloc(size);
   if b as usize == 0usize {
     die("actors: out of memory for a parallel loop");
@@ -732,7 +732,7 @@ pub fn parBlock(size usize) *u8 {
 // the actor whose behaviour is running, to begin once the behaviour has
 // returned. 'resume' is the seam's resume function and 'id' its record's slot
 // in the pending table (hasId false: no record)
-pub fn parSeam(lo usize, hi usize, body PieceFn, caps *u8, resume *u8, id u64, hasId bool) {
+pub fn parSeam(lo: usize, hi: usize, body: PieceFn, caps: *u8, resume: *u8, id: u64, hasId: bool) {
   let h = curActor as *Header;
   if h as usize == 0usize {
     die("actors: a parallel each cut at its end, outside an actor's behaviour");
@@ -747,7 +747,7 @@ pub fn parSeam(lo usize, hi usize, body PieceFn, caps *u8, resume *u8, id u64, h
 
 // Begin the loop h's behaviour noted, on worker w, now that the behaviour has
 // returned: the first task goes on top of w's queue, and w takes it from there
-fn startHeld(w *Worker, h *Header) {
+fn startHeld(w: *Worker, h: *Header) {
   let p = (*h).par;
   (*h).par = nullPar();
   let s = (*w).sched;
@@ -764,7 +764,7 @@ fn startHeld(w *Worker, h *Header) {
 // The loop has finished, on whichever thread ran its last piece: send what its
 // pieces gathered, free what it held, and make the actor runnable with the rest
 // of its behaviour ahead of its mailbox
-fn parSeamDone(arg *u8) {
+fn parSeamDone(arg: *u8) {
   let p = arg as *ParPending;
   let h = (*p).h;
   // The thread may be inside a piece of another loop; these sends are its own

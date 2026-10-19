@@ -36,33 +36,33 @@ pub const LOOP_PINGPONG = 2u32;
 
 // A time in a clip that raises an event when crossed
 pub struct Marker {
-  pub time f32;
-  pub id u32;
-  pub arg f32;
+  pub time: f32;
+  pub id: u32;
+  pub arg: f32;
 }
 
 // A marker that was crossed: the marker's id and argument, the clip time it
 // is at, the unwrapped time of the crossing, whether the clip's own time was
 // running backward then, and which clip (the index the caller gave)
 pub struct Fired {
-  pub id u32;
-  pub arg f32;
-  pub clipTime f32;
-  pub at f64;
-  pub backward bool;
-  pub clip u32;
+  pub id: u32;
+  pub arg: f32;
+  pub clipTime: f32;
+  pub at: f64;
+  pub backward: bool;
+  pub clip: u32;
 }
 
 pub struct Binding {
-  pub target u32;
-  pub prop u32;
-  pub track Track;
+  pub target: u32;
+  pub prop: u32;
+  pub track: Track;
 }
 
-fn floor64(x f64) f64 { libc.floor(x) }
+fn floor64(x: f64) f64 { libc.floor(x) }
 
 // The clip time for an unwrapped time t (see the header for the modes)
-pub fn loopTime64(t f64, length f32, mode u32) f32 {
+pub fn loopTime64(t: f64, length: f32, mode: u32) f32 {
   if length <= 0. { return 0.; }
   let d = f64.from(length);
   if mode == LOOP_ONCE {
@@ -82,20 +82,20 @@ pub fn loopTime64(t f64, length f32, mode u32) f32 {
   f32.from(r)
 }
 
-pub fn loopTime(t f32, length f32, mode u32) f32 { loopTime64(f64.from(t), length, mode) }
+pub fn loopTime(t: f32, length: f32, mode: u32) f32 { loopTime64(f64.from(t), length, mode) }
 
 pub struct Clip {
-  pub name String;
-  pub length f32;
-  pub mode u32;
-  pub bindings List[Binding];
-  pub markers List[Marker];
+  pub name: String;
+  pub length: f32;
+  pub mode: u32;
+  pub bindings: List[Binding];
+  pub markers: List[Marker];
 
-  pub fn make(name &str, mode u32) Clip {
+  pub fn make(name: &str, mode: u32) Clip {
     new Clip(String.from(name), 0., mode, List[Binding].empty(), List[Marker].empty())
   }
 
-  pub fn copy(self &) Clip {
+  pub fn copy(self: &) Clip {
     var c = Clip.make(name.view(), mode);
     c.length = length;
     var i = 0usize;
@@ -109,7 +109,7 @@ pub struct Clip {
   }
 
   // The binding of a property, or -1
-  pub fn find(self &, target u32, prop u32) i64 {
+  pub fn find(self: &, target: u32, prop: u32) i64 {
     var i = 0usize;
     while i < bindings.len() {
       if (*bindings[i]).target == target && (*bindings[i]).prop == prop { return i64.from(i); }
@@ -120,7 +120,7 @@ pub struct Clip {
 
   // Add a track for a property (replacing one already there); the clip's
   // length grows to hold its last key
-  pub fn addTrack(self &mut, target u32, prop u32, track Track) {
+  pub fn addTrack(self: &mut, target: u32, prop: u32, track: Track) {
     let end = track.endTime();
     let i = self.find(target, prop);
     if i >= 0i64 {
@@ -132,8 +132,8 @@ pub struct Clip {
   }
 
   // The length set to the last key of any track (or marker)
-  pub fn fitLength(self &mut) {
-    var end f32 = 0.;
+  pub fn fitLength(self: &mut) {
+    var end: f32 = 0.;
     var i = 0usize;
     while i < bindings.len() {
       let e = bindings[i].track.endTime();
@@ -149,7 +149,7 @@ pub struct Clip {
   }
 
   // A marker at 'time' (kept in time order; equal times keep their order)
-  pub fn addMarker(self &mut, time f32, id u32, arg f32) {
+  pub fn addMarker(self: &mut, time: f32, id: u32, arg: f32) {
     markers.push(new Marker(time, id, arg));
     var k = markers.len() - 1usize;
     while k > 0usize && (*markers[k - 1usize]).time > time {
@@ -160,10 +160,10 @@ pub struct Clip {
   }
 
   // The clip time for an unwrapped time
-  pub fn localTime(self &, t f64) f32 { loopTime64(t, length, mode) }
+  pub fn localTime(self: &, t: f64) f32 { loopTime64(t, length, mode) }
 
   // The properties at a clip time already inside 0..length (no wrapping)
-  pub fn sampleLocal(self &, lt f32, out &mut Sample) {
+  pub fn sampleLocal(self: &, lt: f32, out: &mut Sample) {
     var raw = List[f32].empty();
     var i = 0usize;
     while i < bindings.len() {
@@ -175,10 +175,10 @@ pub struct Clip {
 
   // The properties at the unwrapped time t, into 'out' (which keeps other
   // bindings it has: the properties this clip animates are set)
-  pub fn sampleInto(self &, t f64, out &mut Sample) { self.sampleLocal(self.localTime(t), out); }
+  pub fn sampleInto(self: &, t: f64, out: &mut Sample) { self.sampleLocal(self.localTime(t), out); }
 
   // The properties at the unwrapped time t
-  pub fn sample(self &, t f32) Sample {
+  pub fn sample(self: &, t: f32) Sample {
     var s = Sample.empty();
     self.sampleInto(f64.from(t), &mut s);
     s
@@ -186,7 +186,7 @@ pub struct Clip {
 
   // Join 'src' onto a property's track (made if there is none) with src's
   // time zero at 'offset' (appendTrack's rules); the length grows to hold it
-  pub fn mergeTrack(self &mut, target u32, prop u32, src &Track, offset f32) {
+  pub fn mergeTrack(self: &mut, target: u32, prop: u32, src: &Track, offset: f32) {
     let j = self.find(target, prop);
     var work = if j >= 0i64 { bindings[usize.from(j)].track.copy() } else {
       var e = Track.make(src.kind);
@@ -204,7 +204,7 @@ pub struct Clip {
   // both animate holds this clip's value up to the first key of src's track
   // and follows src's from there (keys of this track later than that are
   // dropped). The length grows to hold it; markers are copied.
-  pub fn appendClip(self &mut, src &Clip, offset f32) {
+  pub fn appendClip(self: &mut, src: &Clip, offset: f32) {
     var i = 0usize;
     while i < src.bindings.len() {
       let tr = src.bindings[i].track.copy();
@@ -221,7 +221,7 @@ pub struct Clip {
 
   // Append to 'out' the markers crossed moving from the unwrapped time a to b,
   // in the order crossed (see the header). 'clipIndex' is stamped on each
-  pub fn crossings(self &, a f64, b f64, clipIndex u32, out &mut List[Fired]) {
+  pub fn crossings(self: &, a: f64, b: f64, clipIndex: u32, out: &mut List[Fired]) {
     if a == b || length <= 0. { return; }
     let back = b < a;
     let lo = if back { b } else { a };
@@ -285,7 +285,7 @@ pub struct Clip {
 // segment that is cut is left linear to the cut) and src takes over from
 // there, and src's first key lands after (not over) a dst key at the same
 // time, so a jump between two steps is kept.
-pub fn appendTrack(dst &mut Track, src &Track, offset f32) {
+pub fn appendTrack(dst: &mut Track, src: &Track, offset: f32) {
   if src.len() == 0usize { return; }
   let start = offset + ld(&src.times, 0usize);
   if dst.len() > 0usize {

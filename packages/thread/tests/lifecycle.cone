@@ -20,8 +20,8 @@ import sync use *;
 import time use Duration;
 
 // A value whose death is counted, and the gate a detached thread waits at
-let deaths Atomic[u32];
-let gate Atomic[u32];
+let deaths: Atomic[u32];
+let gate: Atomic[u32];
 
 fn @initpure init() {
   deaths = Atomic[u32].of(0u32);
@@ -29,8 +29,8 @@ fn @initpure init() {
 }
 
 struct Counted {
-  pub n i64;
-  fn final(self &uni) {
+  pub n: i64;
+  fn final(self: &uni) {
     deaths.add(1u32);
     sync.futexWakeAll(&deaths);
   }
@@ -41,7 +41,7 @@ fn deathCount() u32 {
 }
 
 // Wait until 'deaths' reaches n
-fn awaitDeaths(n u32) {
+fn awaitDeaths(n: u32) {
   var seen = deathCount();
   while seen < n {
     sync.futexWait(&deaths, seen);
@@ -49,20 +49,20 @@ fn awaitDeaths(n u32) {
   }
 }
 
-fn triangle(n i64) i64 {
+fn triangle(n: i64) i64 {
   var sum = 0i64;
   var i = 1i64;
   while i <= n { sum = sum + i; i = i + 1i64; }
   sum
 }
 
-fn slowCounted(n i64) Counted {
+fn slowCounted(n: i64) Counted {
   thread.sleep(Duration.fromMillis(20));
   new Counted(n * 2)
 }
 
 // Waits until main opens the gate, then returns a value whose death is counted
-fn gatedCounted(n i64) Counted {
+fn gatedCounted(n: i64) Counted {
   while gate.load() == 0u32 {
     sync.futexWait(&gate, 0u32);
   }
@@ -74,17 +74,17 @@ fn gatedCounted(n i64) Counted {
 // trust: main reads the word only after the thread is joined, and the
 // thread writes it atomically.
 struct Word is Sendable {
-  pub p *u32;
+  pub p: *u32;
 }
 
 // Sleeps, then writes the word it was given
-fn lateWrite(word Word) {
+fn lateWrite(word: Word) {
   thread.sleep(Duration.fromMillis(30));
   mem.atomicStore[u32](word.p, 7u32, MemOrder.SeqCst);
 }
 
 // Takes an owned value: it dies in the thread, when the function ends
-fn consume(owned Uni[Counted]) i64 {
+fn consume(owned: Uni[Counted]) i64 {
   owned.n + 1
 }
 

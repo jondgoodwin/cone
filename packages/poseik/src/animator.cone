@@ -32,90 +32,90 @@ pub const CMP_FALSE = 3u32;     // at or below 0.5
 pub const CMP_TRIGGER = 4u32;   // above 0.5, and set back to 0 when the transition fires
 
 pub struct AnimState {
-  pub kind u32;        // MOTION_CLIP or MOTION_SPACE
-  pub index usize;     // which clip or blend space
-  pub param usize;     // a blend space's driving parameter
-  pub speed f32;
+  pub kind: u32;        // MOTION_CLIP or MOTION_SPACE
+  pub index: usize;     // which clip or blend space
+  pub param: usize;     // a blend space's driving parameter
+  pub speed: f32;
 }
 
 pub struct Condition {
-  pub param usize;
-  pub cmp u32;
-  pub value f32;
+  pub param: usize;
+  pub cmp: u32;
+  pub value: f32;
 }
 
 pub struct Transition {
-  pub from i32;               // a state, or -1 for any
-  pub to usize;
-  pub conditions List[Condition];
-  pub duration f32;           // the cross-fade, seconds
-  pub exitTime f32;           // the phase the source must have reached, or -1 for none
+  pub from: i32;               // a state, or -1 for any
+  pub to: usize;
+  pub conditions: List[Condition];
+  pub duration: f32;           // the cross-fade, seconds
+  pub exitTime: f32;           // the phase the source must have reached, or -1 for none
 }
 
 pub struct Animator {
-  pub clips List[Clip];
-  pub spaces List[BlendSpace1D];
-  pub states List[AnimState];
-  pub transitions List[Transition];
-  pub params List[f32];
-  pub current usize;
-  pub phase f32;
-  pub fading bool;
-  pub fadeTime f32;
-  pub fadeDuration f32;
-  pub fromState i32;          // the state fading out, or -1 for the frozen pose
-  pub fromPhase f32;
-  pub frozen Pose;
-  pub rest Pose;
+  pub clips: List[Clip];
+  pub spaces: List[BlendSpace1D];
+  pub states: List[AnimState];
+  pub transitions: List[Transition];
+  pub params: List[f32];
+  pub current: usize;
+  pub phase: f32;
+  pub fading: bool;
+  pub fadeTime: f32;
+  pub fadeDuration: f32;
+  pub fromState: i32;          // the state fading out, or -1 for the frozen pose
+  pub fromPhase: f32;
+  pub frozen: Pose;
+  pub rest: Pose;
 
   // An animator whose frozen/blank pose is 'rest'
-  pub fn make(rest &Pose) Animator {
+  pub fn make(rest: &Pose) Animator {
     new Animator(List[Clip].empty(), List[BlendSpace1D].empty(), List[AnimState].empty(), List[Transition].empty(),
       List[f32].empty(), 0usize, 0., false, 0., 0., -1i32, 0., rest.copy(), rest.copy())
   }
 
-  pub fn addClip(self &mut, c Clip) usize { clips.push(c); clips.len() - 1usize }
-  pub fn addSpace(self &mut, s BlendSpace1D) usize { spaces.push(s); spaces.len() - 1usize }
-  pub fn addParam(self &mut, initial f32) usize { params.push(initial); params.len() - 1usize }
-  pub fn setParam(self &mut, p usize, v f32) { params.set(p, v); }
-  pub fn param(self &, p usize) f32 { *params[p] }
+  pub fn addClip(self: &mut, c: Clip) usize { clips.push(c); clips.len() - 1usize }
+  pub fn addSpace(self: &mut, s: BlendSpace1D) usize { spaces.push(s); spaces.len() - 1usize }
+  pub fn addParam(self: &mut, initial: f32) usize { params.push(initial); params.len() - 1usize }
+  pub fn setParam(self: &mut, p: usize, v: f32) { params.set(p, v); }
+  pub fn param(self: &, p: usize) f32 { *params[p] }
 
   // A state playing clip 'index'
-  pub fn addClipState(self &mut, index usize, speed f32) usize {
+  pub fn addClipState(self: &mut, index: usize, speed: f32) usize {
     states.push(new AnimState(MOTION_CLIP, index, 0usize, speed));
     states.len() - 1usize
   }
 
   // A state playing blend space 'index', driven by parameter 'param'
-  pub fn addSpaceState(self &mut, index usize, param usize, speed f32) usize {
+  pub fn addSpaceState(self: &mut, index: usize, param: usize, speed: f32) usize {
     states.push(new AnimState(MOTION_SPACE, index, param, speed));
     states.len() - 1usize
   }
 
   // A transition; add its conditions with 'addCondition' on the number returned
-  pub fn addTransition(self &mut, from i32, to usize, duration f32, exitTime f32) usize {
+  pub fn addTransition(self: &mut, from: i32, to: usize, duration: f32, exitTime: f32) usize {
     transitions.push(new Transition(from, to, List[Condition].empty(), duration, exitTime));
     transitions.len() - 1usize
   }
 
-  pub fn addCondition(self &mut, transition usize, param usize, cmp u32, value f32) {
+  pub fn addCondition(self: &mut, transition: usize, param: usize, cmp: u32, value: f32) {
     let t = &mut transitions[transition];
     t.conditions.push(new Condition(param, cmp, value));
   }
 
-  fn stateDuration(self &, s usize) f32 {
+  fn stateDuration(self: &, s: usize) f32 {
     let st = *states[s];
     if st.kind == MOTION_CLIP { return (*clips[st.index]).duration; }
     spaces[st.index].duration(*params[st.param])
   }
 
-  fn evaluate(self &, s usize, phase f32) Pose {
+  fn evaluate(self: &, s: usize, phase: f32) Pose {
     let st = *states[s];
     if st.kind == MOTION_CLIP { return clips[st.index].samplePhase(phase); }
     spaces[st.index].sample(*params[st.param], phase)
   }
 
-  fn advance(self &, s usize, phase f32, dt f32) f32 {
+  fn advance(self: &, s: usize, phase: f32, dt: f32) f32 {
     let st = *states[s];
     let d = self.stateDuration(s);
     var p = phase + dt * st.speed / d;
@@ -124,7 +124,7 @@ pub struct Animator {
     p
   }
 
-  fn holds(self &, c &Condition) bool {
+  fn holds(self: &, c: &Condition) bool {
     let v = *params[c.param];
     if c.cmp == CMP_GREATER { return v > c.value; }
     if c.cmp == CMP_LESS { return v < c.value; }
@@ -133,7 +133,7 @@ pub struct Animator {
   }
 
   // The pose being shown now: the state, or the fade from the old one to it
-  pub fn output(self &) Pose {
+  pub fn output(self: &) Pose {
     let now = self.evaluate(current, phase);
     if !fading { return now; }
     let u = smoothstep(0., 1., fadeTime / fadeDuration);
@@ -143,7 +143,7 @@ pub struct Animator {
   }
 
   // Advance 'dt' seconds: clocks, then transitions; the pose to show is returned
-  pub fn update(self &mut, dt f32) Pose {
+  pub fn update(self: &mut, dt: f32) Pose {
     phase = self.advance(current, phase, dt);
     if fading {
       fadeTime = fadeTime + dt;

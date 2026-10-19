@@ -168,7 +168,7 @@ def c_wrapper_registry(root: Path, work: Path) -> str:
         paths = ["clib"]
         runtime = ["tri3"]
         """)
-    write(src / "src" / "tri.cone", "mod @c tri;\n\npub extern fn triple(n i32) i32;\n")
+    write(src / "src" / "tri.cone", "mod @c tri;\n\npub extern fn triple(n: i32) i32;\n")
     write(src / "csrc" / "triple.c", "__declspec(dllexport) int triple(int n) { return 3 * n; }\n")
     (src / "clib").mkdir()
     found = shutil.which("cl", path=env["PATH"])

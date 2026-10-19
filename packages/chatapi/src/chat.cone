@@ -3,7 +3,7 @@
 // A whole reply put together from the chunks of a streamed one: the first id,
 // model and role seen, every chunk's text in order, the last finish reason and
 // the usage the stream gave
-pub fn absorb(r &mut ChatReply, d &Delta) {
+pub fn absorb(r: &mut ChatReply, d: &Delta) {
   if r.id.len() == 0usize {r.id = d.id.copy();}
   if r.model.len() == 0usize {r.model = d.model.copy();}
   if r.role.len() == 0usize {r.role = d.role.copy();}
@@ -19,17 +19,17 @@ pub fn absorb(r &mut ChatReply, d &Delta) {
 // it holds the actorhttp Client its calls go through and the Endpoint they go
 // to. Each behaviour answers a Result
 pub actor Chat {
-  client actorhttp.Client;
-  endpoint Endpoint;
+  client: actorhttp.Client;
+  endpoint: Endpoint;
 
   // A Chat over a client (actorhttp.Client.standard() is the usual one; share it with
   // 'clone' to share its connection pools) for an endpoint
-  pub fn init(self &new, client actorhttp.Client, endpoint Endpoint) {
+  pub fn init(self: &new, client: actorhttp.Client, endpoint: Endpoint) {
     *self = new Self(client: client, endpoint: endpoint);
   }
 
   // A whole reply: the request is posted and the answer read when it is whole
-  pub async do complete(self, req ChatRequest) Result[ChatReply, ChatError] {
+  pub async do complete(self, req: ChatRequest) Result[ChatReply, ChatError] {
     var hreq = httpclient.Request.get("");
     match httpRequest(&endpoint, &req, false) {
       case var ok Ok {hreq <=> ok;}
@@ -40,7 +40,7 @@ pub actor Chat {
   }
 
   // The same, ended if lim says so (an aio.IoLimits: a cancel group and a deadline)
-  pub async do completeIn(self, req ChatRequest, lim IoLimits) Result[ChatReply, ChatError] {
+  pub async do completeIn(self, req: ChatRequest, lim: IoLimits) Result[ChatReply, ChatError] {
     var hreq = httpclient.Request.get("");
     match httpRequest(&endpoint, &req, false) {
       case var ok Ok {hreq <=> ok;}
@@ -53,13 +53,13 @@ pub actor Chat {
   // A streamed reply: answered when the response's head arrives, with a
   // ChatStream to read the chunks from, or the error that the status or the
   // transport gives
-  pub async do stream(self, req ChatRequest) Result[ChatStream, ChatError] {
+  pub async do stream(self, req: ChatRequest) Result[ChatStream, ChatError] {
     let r = await selfactor.streamIn(req, IoLimits.none());
     r
   }
 
   // The same, the whole stream ended if lim says so
-  pub async do streamIn(self, req ChatRequest, lim IoLimits) Result[ChatStream, ChatError] {
+  pub async do streamIn(self, req: ChatRequest, lim: IoLimits) Result[ChatStream, ChatError] {
     var hreq = httpclient.Request.get("");
     match httpRequest(&endpoint, &req, true) {
       case var ok Ok {hreq <=> ok;}
@@ -104,7 +104,7 @@ pub actor Chat {
 // says nothing (a server that streams without naming the type is read as
 // events; one that names another, as a server that ignored 'stream' does with
 // application/json, is not)
-fn isEventStream(h &http.Headers) bool {
+fn isEventStream(h: &http.Headers) bool {
   match h.get("Content-Type") {
     case let v Some {
       let t = String.fromBytes(v);
@@ -115,7 +115,7 @@ fn isEventStream(h &http.Headers) bool {
 }
 
 // What an exchange that gave a response, or none, is as a reply
-fn replyOfExchange(r &Result[httpclient.Response, actorhttp.FetchError]) Result[ChatReply, ChatError] {
+fn replyOfExchange(r: &Result[httpclient.Response, actorhttp.FetchError]) Result[ChatReply, ChatError] {
   match r {
     case let ok &Ok {replyOfResponse(ok)}
     case let e &Error {Error[ChatReply, ChatError](transportError(e))}
@@ -142,18 +142,18 @@ enum Step {
 // after which it answers Ok(None). Dropping the last handle cancels the rest
 // of the exchange
 pub actor ChatStream {
-  body actorhttp.BodyStream;
-  reader sse.Reader;
-  queue List[sse.Event];     // events cut from the pieces, not yet read
-  at usize;                  // the next of them
-  chunks u64;                // chunks read, for the error that names one
-  sawFinish bool;            // a chunk carried a finish reason
-  bodyEnd bool;              // the body has ended
-  over bool;                 // '[DONE]' or an error was answered: nothing more is read
+  body: actorhttp.BodyStream;
+  reader: sse.Reader;
+  queue: List[sse.Event];     // events cut from the pieces, not yet read
+  at: usize;                  // the next of them
+  chunks: u64;                // chunks read, for the error that names one
+  sawFinish: bool;            // a chunk carried a finish reason
+  bodyEnd: bool;              // the body has ended
+  over: bool;                 // '[DONE]' or an error was answered: nothing more is read
 
   // The next delta of the reply
   pub async do next(self) Result[Option[Delta], ChatError] {
-    var out Result[Option[Delta], ChatError] = Ok[Option[Delta], ChatError](None);
+    var out: Result[Option[Delta], ChatError] = Ok[Option[Delta], ChatError](None);
     var going = true;
     while going {
       match self.step() {
@@ -217,7 +217,7 @@ pub actor ChatStream {
   }
 
   // Bytes of the body in: the events they complete are queued
-  fn feed(self, piece &Array[u8]) {
+  fn feed(self, piece: &Array[u8]) {
     reader.feed(piece, &mut queue);
   }
 

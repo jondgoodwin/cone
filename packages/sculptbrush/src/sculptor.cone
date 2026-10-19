@@ -38,31 +38,31 @@
 
 // What a stroke reported
 pub struct StrokeReport {
-  pub dabs u32;              // dabs made, mirrored ones counted
-  pub touched u32;           // vertices moved at least once
-  pub maxMove f32;           // the farthest any vertex moved (from where the stroke began)
-  pub longestEdge f32;       // the longest edge at a vertex the stroke moved, at the end
-  pub edgeToRadius f32;      // that over the stroke's radius
-  pub needsDensity bool;     // the surface was stretched thin: subdivide or remesh before going on (edgeToRadius over 0.35)
+  pub dabs: u32;              // dabs made, mirrored ones counted
+  pub touched: u32;           // vertices moved at least once
+  pub maxMove: f32;           // the farthest any vertex moved (from where the stroke began)
+  pub longestEdge: f32;       // the longest edge at a vertex the stroke moved, at the end
+  pub edgeToRadius: f32;      // that over the stroke's radius
+  pub needsDensity: bool;     // the surface was stretched thin: subdivide or remesh before going on (edgeToRadius over 0.35)
 }
 
 // One dab's frame
 pub struct DabCtx {
-  pub c Vec3;         // centre
-  pub n Vec3;         // the area normal (unit)
-  pub dir Vec3;       // the stroke's direction in the tangent plane (unit), or zero
-  pub hasDir bool;
-  pub delta Vec3;     // how far the centre moved since the last dab
-  pub r f32;          // radius
-  pub s f32;          // strength at this place on the stroke
-  pub sign f32;       // +1, or -1 for the inverted action
+  pub c: Vec3;         // centre
+  pub n: Vec3;         // the area normal (unit)
+  pub dir: Vec3;       // the stroke's direction in the tangent plane (unit), or zero
+  pub hasDir: bool;
+  pub delta: Vec3;     // how far the centre moved since the last dab
+  pub r: f32;          // radius
+  pub s: f32;          // strength at this place on the stroke
+  pub sign: f32;       // +1, or -1 for the inverted action
 }
 
 // The vertices a dab touches
 pub struct DabData {
-  pub vs List[u32];      // ascending
-  pub w List[f32];       // each above 0
-  pub nrm List[Vec3];    // the vertex normals at the dab
+  pub vs: List[u32];      // ascending
+  pub w: List[f32];       // each above 0
+  pub nrm: List[Vec3];    // the vertex normals at the dab
 }
 
 // How a dab weighs its vertices
@@ -72,24 +72,24 @@ const ModeDam = 2u32;        // falloff of a narrow ellipse
 const ModeUnit = 3u32;       // 1 for everything within reach (the kernel weighs)
 
 pub struct Sculptor {
-  pub mesh PolyMesh;
-  pub base List[Vec3];       // the persistent base ('captureBase'), for Layer
-  pub hasBase bool;
-  pub start List[Vec3];      // positions as the current stroke began
-  pub grid PointGrid;
-  pub gridBound f32;
-  pub cell f32;
-  pub touchedFlag List[bool];
-  pub touchedList List[u32];
-  pub allowed List[bool];    // per vertex: inside the stroke's face set
-  pub allowedOn bool;
-  pub maskCh u32;
-  pub dabCount u32;
-  pub maxMove f32;
-  pub bigStretch f32;
+  pub mesh: PolyMesh;
+  pub base: List[Vec3];       // the persistent base ('captureBase'), for Layer
+  pub hasBase: bool;
+  pub start: List[Vec3];      // positions as the current stroke began
+  pub grid: PointGrid;
+  pub gridBound: f32;
+  pub cell: f32;
+  pub touchedFlag: List[bool];
+  pub touchedList: List[u32];
+  pub allowed: List[bool];    // per vertex: inside the stroke's face set
+  pub allowedOn: bool;
+  pub maskCh: u32;
+  pub dabCount: u32;
+  pub maxMove: f32;
+  pub bigStretch: f32;
 
   // A sculptor over a copy of the mesh
-  pub fn of(m &PolyMesh) Sculptor {
+  pub fn of(m: &PolyMesh) Sculptor {
     var work = smooth(m, 0., 0u32);
     let nv = work.positions.len();
     var flags = List[bool].withCapacity(nv);
@@ -102,22 +102,22 @@ pub struct Sculptor {
 
   // Remember the positions now as the base that Layer raises from, across strokes
   // (Blender's persistent base); until then Layer raises from where the stroke began
-  pub fn captureBase(self &mut) {
+  pub fn captureBase(self: &mut) {
     base = copyVec3s(&mesh.positions);
     hasBase = true;
   }
 
-  pub fn clearBase(self &mut) {
+  pub fn clearBase(self: &mut) {
     hasBase = false;
   }
 
   // The sculpted mesh (a copy; the sculptor goes on)
-  pub fn finish(self &) PolyMesh {
+  pub fn finish(self: &) PolyMesh {
     smooth(&mesh, 0., 0u32)
   }
 
   // The positions the current surface has, a copy
-  pub fn positionsNow(self &) List[Vec3] { copyVec3s(&mesh.positions) }
+  pub fn positionsNow(self: &) List[Vec3] { copyVec3s(&mesh.positions) }
 
   // -------- one stroke --------
 
@@ -125,7 +125,7 @@ pub struct Sculptor {
   // vertex (found through the stroke's hash, at the stroke's start positions), looking
   // out to a quarter radius, then two, then four. The error is the surface's departure from
   // its tangent plane over an edge, far under a radius. A point with no vertex that near stays.
-  fn snap(self &, p Vec3, rad f32) Vec3 {
+  fn snap(self: &, p: Vec3, rad: f32) Vec3 {
     var near = grid.nearestWithin(p, 0.25 * rad);
     if near == NoIndex { near = grid.nearestWithin(p, 2. * rad); }
     if near == NoIndex { near = grid.nearestWithin(p, 4. * rad); }
@@ -135,7 +135,7 @@ pub struct Sculptor {
     p - n * (p - x).dot(n)
   }
 
-  pub fn stroke(self &mut, st &Stroke) StrokeReport {
+  pub fn stroke(self: &mut, st: &Stroke) StrokeReport {
     let nv = mesh.positions.len();
     // Clear the last stroke's marks
     var k = 0usize;
@@ -183,7 +183,7 @@ pub struct Sculptor {
   }
 
   // The stroke's summary
-  fn report(self &, st &Stroke) StrokeReport {
+  fn report(self: &, st: &Stroke) StrokeReport {
     var longest = 0.f;
     var k = 0usize;
     while k < touchedList.len() {
@@ -204,7 +204,7 @@ pub struct Sculptor {
 
   // -------- dabs along a path --------
 
-  fn runDabs(self &mut, st &Stroke) {
+  fn runDabs(self: &mut, st: &Stroke) {
     // The raw path, then the dab places along it
     var line = List[Vec3].empty();
     let np = st.points.len();
@@ -270,7 +270,7 @@ pub struct Sculptor {
   }
 
   // The dab, then its mirrors
-  fn dabSymmetric(self &mut, st &Stroke, c Vec3, dir Vec3, delta Vec3, t f32, rad f32) {
+  fn dabSymmetric(self: &mut, st: &Stroke, c: Vec3, dir: Vec3, delta: Vec3, t: f32, rad: f32) {
     self.dab(st, c, dir, delta, t, rad);
     let np = st.symmetry.len();
     if np == 0usize { return; }
@@ -296,7 +296,7 @@ pub struct Sculptor {
   }
 
   // One dab
-  fn dab(self &mut, st &Stroke, c Vec3, dir Vec3, delta Vec3, t f32, rad f32) {
+  fn dab(self: &mut, st: &Stroke, c: Vec3, dir: Vec3, delta: Vec3, t: f32, rad: f32) {
     if rad <= 0. { return; }
     let kind = st.brush.kind;
     let s = st.strength * st.strengthCurve.weight(t);
@@ -375,7 +375,7 @@ pub struct Sculptor {
   }
 
   // Write the displacements, mark the vertices moved
-  fn applyDisp(self &mut, d &DabData, disp &List[Vec3]) {
+  fn applyDisp(self: &mut, d: &DabData, disp: &List[Vec3]) {
     var biggest = 0.f;
     var i = 0usize;
     while i < d.vs.len() {
@@ -398,7 +398,7 @@ pub struct Sculptor {
   }
 
   // The mask brush: paint towards 1 (or, inverted, towards 0)
-  fn paintMask(self &mut, cx &DabCtx, d &DabData) {
+  fn paintMask(self: &mut, cx: &DabCtx, d: &DabData) {
     let amount = 0.25 * cx.s;
     var i = 0usize;
     while i < d.vs.len() {
@@ -415,7 +415,7 @@ pub struct Sculptor {
   // The vertices within 'reach' of c, with their weights by 'mode' and the
   // gates, and the area normal. 'masked' is false for the mask brush, which
   // paints where it likes.
-  fn gather(self &, st &Stroke, c Vec3, dir Vec3, rad f32, reach f32, mode u32, masked bool) Gathered {
+  fn gather(self: &, st: &Stroke, c: Vec3, dir: Vec3, rad: f32, reach: f32, mode: u32, masked: bool) Gathered {
     let cands = grid.within(c, reach + gridBound);
     var vs = List[u32].empty();
     var nrms = List[Vec3].empty();
@@ -490,7 +490,7 @@ pub struct Sculptor {
 
   // -------- one movement: grab, elastic deform, move topological, pose --------
 
-  fn moveOnce(self &mut, st &Stroke) {
+  fn moveOnce(self: &mut, st: &Stroke) {
     let np = st.points.len();
     if np < 2usize { return; }
     var c0 = *st.points[0usize];
@@ -523,7 +523,7 @@ pub struct Sculptor {
     }
   }
 
-  fn grabOnce(self &mut, st &Stroke, c Vec3, move Vec3) {
+  fn grabOnce(self: &mut, st: &Stroke, c: Vec3, move: Vec3) {
     let kind = st.brush.kind;
     let s = if st.strength > 1. {1.} else {st.strength};
     var got = new Gathered(new DabData(List[u32].empty(), List[f32].empty(), List[Vec3].empty()), new Vec3(0., 1., 0.));
@@ -552,7 +552,7 @@ pub struct Sculptor {
   }
 
   // Move Topological's dab: weights by distance along the surface
-  fn gatherSurface(self &, st &Stroke, c Vec3) Gathered {
+  fn gatherSurface(self: &, st: &Stroke, c: Vec3) Gathered {
     let maskName = if st.useMask {"mask"} else {""};
     let wts = surfaceBrushWeightsAt(&mesh, c, st.radius, &st.falloff, maskName);
     var out = new DabData(List[u32].empty(), List[f32].empty(), List[Vec3].empty());
@@ -589,7 +589,7 @@ pub struct Sculptor {
   // Pose: the segment under the click, out to 'reach' radii along the surface,
   // turned about the pivot where it meets the rest, by the angle the drag from
   // the click to 'end' makes about the pivot
-  fn poseOnce(self &mut, st &Stroke, c Vec3, end Vec3) {
+  fn poseOnce(self: &mut, st: &Stroke, c: Vec3, end: Vec3) {
     let nv = mesh.positions.len();
     let reach = st.radius * st.brush.reach;
     // Seed the sweep at the vertex nearest the click and its ring
@@ -671,8 +671,8 @@ pub struct Sculptor {
 
 // What a gather returns: the dab's vertices and the area normal
 pub struct Gathered {
-  pub data DabData;
-  pub n Vec3;
+  pub data: DabData;
+  pub n: Vec3;
 }
 
 // How far (in radii) an elastic deform reaches
@@ -680,10 +680,10 @@ const ElasticReach = 3.5f;
 
 // -------- small helpers --------
 
-fn absf(a f32) f32 {if a < 0. {-a} else {a}}
-fn clampf(v f32, lo f32, hi f32) f32 {if v < lo {lo} elif v > hi {hi} else {v}}
+fn absf(a: f32) f32 {if a < 0. {-a} else {a}}
+fn clampf(v: f32, lo: f32, hi: f32) f32 {if v < lo {lo} elif v > hi {hi} else {v}}
 
-fn copyVec3s(src &List[Vec3]) List[Vec3] {
+fn copyVec3s(src: &List[Vec3]) List[Vec3] {
   var out = List[Vec3].withCapacity(src.len());
   var i = 0usize;
   while i < src.len() {
@@ -694,7 +694,7 @@ fn copyVec3s(src &List[Vec3]) List[Vec3] {
 }
 
 // A unit vector perpendicular to n, the same for the same n
-fn fixedAxis(n Vec3) Vec3 {
+fn fixedAxis(n: Vec3) Vec3 {
   let ref = if absf(n.x) < 0.9 {new Vec3(1., 0., 0.)} else {new Vec3(0., 1., 0.)};
   let t = ref - n * ref.dot(n);
   t.normalize()
@@ -703,7 +703,7 @@ fn fixedAxis(n Vec3) Vec3 {
 // The unit normal at a vertex from its faces' corners (the cross product of a
 // corner's two sides is twice the corner triangle's area, so a bigger corner
 // weighs more), (0, 1, 0) for a vertex with no face
-fn vertexNormalOf(m &PolyMesh, pos &List[Vec3], v u32) Vec3 {
+fn vertexNormalOf(m: &PolyMesh, pos: &List[Vec3], v: u32) Vec3 {
   let hs = m.vertexOutgoing(v);
   let p = *pos[usize.from(v)];
   var sum = new Vec3(0., 0., 0.);
@@ -721,14 +721,14 @@ fn vertexNormalOf(m &PolyMesh, pos &List[Vec3], v u32) Vec3 {
 }
 
 // One stroke on a copy of a mesh
-pub fn sculptStroke(m &PolyMesh, st &Stroke) PolyMesh {
+pub fn sculptStroke(m: &PolyMesh, st: &Stroke) PolyMesh {
   var s = Sculptor.of(m);
   s.stroke(st);
   s.finish()
 }
 
 // A recipe: the strokes in order on a copy of a mesh
-pub fn sculptStrokes(m &PolyMesh, strokes &List[Stroke]) PolyMesh {
+pub fn sculptStrokes(m: &PolyMesh, strokes: &List[Stroke]) PolyMesh {
   var s = Sculptor.of(m);
   var i = 0usize;
   while i < strokes.len() {

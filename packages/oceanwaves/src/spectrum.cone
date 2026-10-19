@@ -30,22 +30,22 @@
 pub const GRAVITY = 9.81f32;
 
 pub struct SeaState {
-  pub windSpeed f32;         // m/s at 10 m
-  pub windDirection f32;     // radians from +x toward +z: the way the waves travel
-  pub fetch f32;             // metres of open water the wind has blown over
-  pub depth f32;             // metres (1000: deep)
-  pub peakEnhancement f32;   // JONSWAP's gamma, 3.3
-  pub spread f32;            // multiplies the directional exponent: above 1 narrower, below broader
+  pub windSpeed: f32;         // m/s at 10 m
+  pub windDirection: f32;     // radians from +x toward +z: the way the waves travel
+  pub fetch: f32;             // metres of open water the wind has blown over
+  pub depth: f32;             // metres (1000: deep)
+  pub peakEnhancement: f32;   // JONSWAP's gamma, 3.3
+  pub spread: f32;            // multiplies the directional exponent: above 1 narrower, below broader
 
   // A sea under a wind of 'windSpeed' m/s blowing toward 'windDirection', over 'fetch' metres
-  pub fn make(windSpeed f32, windDirection f32, fetch f32) SeaState {
+  pub fn make(windSpeed: f32, windDirection: f32, fetch: f32) SeaState {
     new SeaState(windSpeed, windDirection, fetch, 1000., 3.3, 1.)
   }
 
   // The sea of a Beaufort force 0 to 12 (the wind speeds the scale's mid-points give, in m/s), over
   // a long fetch: a calm is a mirror, force 4 a moderate breeze with white horses, force 8 a gale,
   // force 10 a storm
-  pub fn beaufort(force i32, windDirection f32) SeaState {
+  pub fn beaufort(force: i32, windDirection: f32) SeaState {
     let speeds = [0.1f, 0.9, 2.4, 4.4, 6.7, 9.4, 12.3, 15.5, 19., 23., 27., 31.5, 36.];
     var f = force;
     if f < 0 { f = 0; }
@@ -54,7 +54,7 @@ pub struct SeaState {
   }
 
   // JONSWAP's alpha
-  pub fn alpha(self &) f32 {
+  pub fn alpha(self: &) f32 {
     let u = fmax(windSpeed, 0.05);
     let a = 0.076 * libc.powf(u * u / (fetch * GRAVITY), 0.22);
     fmax(a, 0.0081)
@@ -62,7 +62,7 @@ pub struct SeaState {
 
   // The peak angular frequency, rad/s: the fetch-limited value, but no lower than the fully developed
   // sea's 0.877 g / U
-  pub fn peakFrequency(self &) f32 {
+  pub fn peakFrequency(self: &) f32 {
     let u = fmax(windSpeed, 0.05);
     let limited = 22. * libc.powf(GRAVITY * GRAVITY / (u * fetch), 1. / 3.);
     let developed = 0.877 * GRAVITY / u;
@@ -70,7 +70,7 @@ pub struct SeaState {
   }
 
   // The frequency spectrum S(w), m^2 s
-  pub fn density(self &, w f32) f32 {
+  pub fn density(self: &, w: f32) f32 {
     if w <= 0.0001 { return 0.; }
     let wp = self.peakFrequency();
     let sigma = if w <= wp { 0.07f } else { 0.09 };
@@ -80,10 +80,10 @@ pub struct SeaState {
   }
 
   // The directional exponent s at frequency w
-  pub fn spreadExponent(self &, w f32) f32 {
+  pub fn spreadExponent(self: &, w: f32) f32 {
     let wp = self.peakFrequency();
     let ratio = w / wp;
-    var s f32 = 0.;
+    var s: f32 = 0.;
     if ratio < 1.05 {
       s = 6.97 * libc.powf(ratio, 4.06);
     } else {
@@ -94,20 +94,20 @@ pub struct SeaState {
   }
 
   // The directional factor D(w, theta): integrates to 1 over theta in [-pi, pi)
-  pub fn direction(self &, w f32, theta f32) f32 {
+  pub fn direction(self: &, w: f32, theta: f32) f32 {
     let s = self.spreadExponent(w);
     let c = libc.fabsf(libc.cosf((theta - windDirection) * 0.5));
     gammaRatio(s) * libc.powf(c, 2. * s)
   }
 
   // The significant wave height implied: 4 sqrt(m0), m0 the integral of S(w) over w
-  pub fn significantHeight(self &) f32 {
+  pub fn significantHeight(self: &) f32 {
     let wp = self.peakFrequency();
     let lo = wp * 0.2;
     let hi = wp * 14.;
     let steps = 6000;
     let dw = (hi - lo) / f32.from(steps);
-    var m0 f64 = 0.0;
+    var m0: f64 = 0.0;
     var i = 0;
     while i < steps {
       let w = lo + (f32.from(i) + 0.5) * dw;
@@ -118,17 +118,17 @@ pub struct SeaState {
   }
 
   // The peak wave period, s, and wavelength, m (deep water)
-  pub fn peakPeriod(self &) f32 { 6.28318530718 / self.peakFrequency() }
-  pub fn peakWavelength(self &) f32 {
+  pub fn peakPeriod(self: &) f32 { 6.28318530718 / self.peakFrequency() }
+  pub fn peakWavelength(self: &) f32 {
     let w = self.peakFrequency();
     6.28318530718 * GRAVITY / (w * w)
   }
 }
 
-fn fmax(a f32, b f32) f32 { if a > b { a } else { b } }
+fn fmax(a: f32, b: f32) f32 { if a > b { a } else { b } }
 
 // ln Gamma(x) by Lanczos' approximation (g = 7, n = 9), for x > 0
-fn lnGamma(x f64) f64 {
+fn lnGamma(x: f64) f64 {
   let c = [0.99999999999980993, 676.5203681218851, -1259.1392167224028, 771.32342877765313,
     -176.61502916214059, 12.507343278686905, -0.13857109526572012, 9.9843695780195716e-6, 1.5056327351493116e-7];
   let xx = x - 1.0;
@@ -143,15 +143,15 @@ fn lnGamma(x f64) f64 {
 }
 
 // Q(s) = Gamma(s + 1) / (2 sqrt(pi) Gamma(s + 1/2)): what makes cos^(2s)(theta / 2) integrate to 1
-fn gammaRatio(s f32) f32 {
+fn gammaRatio(s: f32) f32 {
   let sd = f64.from(s);
   f32.from(libc.exp(lnGamma(sd + 1.0) - lnGamma(sd + 0.5)) / (2.0 * 1.7724538509055159))
 }
 
 // The dispersion relation: w for the wavenumber k at depth d
-pub fn angularFrequency(k f32, depth f32) f32 {
+pub fn angularFrequency(k: f32, depth: f32) f32 {
   let kd = k * depth;
-  var th f32 = 1.;
+  var th: f32 = 1.;
   if kd < 20. {
     let e = libc.expf(2. * kd);
     th = (e - 1.) / (e + 1.);
@@ -160,7 +160,7 @@ pub fn angularFrequency(k f32, depth f32) f32 {
 }
 
 // dw/dk: the group velocity
-pub fn groupVelocity(k f32, depth f32) f32 {
+pub fn groupVelocity(k: f32, depth: f32) f32 {
   let kd = k * depth;
   let w = angularFrequency(k, depth);
   if kd >= 20. { return GRAVITY / (2. * w); }

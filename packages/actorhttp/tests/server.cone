@@ -32,15 +32,15 @@ import actors;
 import actorhttp use Client, Server, ServerConfig, Exchange, FetchError;
 import aio use IoLimits;
 
-fn yes(b bool) &str {if b {"yes"} else {"NO"}}
+fn yes(b: bool) &str {if b {"yes"} else {"NO"}}
 
-fn say(s &str, n u64) {printStr(s); printStr(" "); printUInt(n); printStr("\n");}
+fn say(s: &str, n: u64) {printStr(s); printStr(" "); printUInt(n); printStr("\n");}
 
 // ---------------------------------------------------------------------------
 // The server's side
 // ---------------------------------------------------------------------------
 
-fn bigBody(n usize) String {
+fn bigBody(n: usize) String {
   var b = String.withCapacity(n);
   var i = 0usize;
   while i < n {
@@ -52,8 +52,8 @@ fn bigBody(n usize) String {
 
 // Answers one request
 actor Handler {
-  ex Exchange;
-  finished Sender[u64];      // told how many body bytes each streamed response ended with
+  ex: Exchange;
+  finished: Sender[u64];      // told how many body bytes each streamed response ended with
 
   pub async do run(self) {
     let path = String.from(ex.request.path());
@@ -130,10 +130,10 @@ actor Handler {
 
 // Takes the requests of a server it listens for and gives each to a Handler
 actor Acceptor {
-  server Server;
-  finished Sender[u64];
+  server: Server;
+  finished: Sender[u64];
 
-  pub async do open(self, cfg ServerConfig, ports Sender[u16]) {
+  pub async do open(self, cfg: ServerConfig, ports: Sender[u16]) {
     let r = await actorhttp.listen(SocketAddr.localhost(0u16), cfg);
     var res = r;
     match &mut res {
@@ -144,7 +144,7 @@ actor Acceptor {
   }
 
   // Take requests until the server is closed
-  pub async do serve(self, ended Sender[u64]) {
+  pub async do serve(self, ended: Sender[u64]) {
     var count = 0u64;
     while true {
       let n = await server.next();
@@ -164,7 +164,7 @@ actor Acceptor {
   }
 }
 
-fn dispatch(ex Exchange, finished Sender[u64]) {
+fn dispatch(ex: Exchange, finished: Sender[u64]) {
   let path = String.from(ex.request.path());
   if path.view() == "/none" {return;}       // dropped without an answer
   let h = new Handler(ex, finished);
@@ -175,14 +175,14 @@ fn dispatch(ex Exchange, finished Sender[u64]) {
 // The client's side
 // ---------------------------------------------------------------------------
 
-fn url(port u16, path &str) String {
+fn url(port: u16, path: &str) String {
   var u = String.from("http://127.0.0.1:");
   u.appendUInt(u64.from(port));
   u.append(path);
   u
 }
 
-fn field(r &Response, name &str) String {
+fn field(r: &Response, name: &str) String {
   match r.headers.get(name) {
     case let v Some {String.fromBytes(v)}
     case is None[&Array[u8]] {String.from("(none)")}
@@ -190,7 +190,7 @@ fn field(r &Response, name &str) String {
 }
 
 // How an exchange ended: the status and body, or the kind of error
-fn say2(what &str, r Result[Response, FetchError]) {
+fn say2(what: &str, r: Result[Response, FetchError]) {
   printStr(what);
   printStr(": ");
   match &r {
@@ -210,7 +210,7 @@ fn say2(what &str, r Result[Response, FetchError]) {
   }
 }
 
-fn statusOf(r &Result[Response, FetchError]) u64 {
+fn statusOf(r: &Result[Response, FetchError]) u64 {
   match r {
     case let ok &Ok {u64.from(ok.status)}
     case let e &Error {0u64}
@@ -218,9 +218,9 @@ fn statusOf(r &Result[Response, FetchError]) u64 {
 }
 
 actor Prober {
-  client Client;
+  client: Client;
 
-  pub async do run(self, port u16, done OneshotSender[u64]) {
+  pub async do run(self, port: u16, done: OneshotSender[u64]) {
     say2("hello", await client.get(url(port, "/hello").view()));
     let first = await client.get(url(port, "/hello").view());
     match &first {
@@ -340,9 +340,9 @@ actor Prober {
 
 // Several of these at once, each asking for a few things through one client
 actor Crowd {
-  client Client;
+  client: Client;
 
-  pub async do run(self, port u16, n u64, oks Sender[u64]) {
+  pub async do run(self, port: u16, n: u64, oks: Sender[u64]) {
     var k = 0u64;
     while k < n {
       let r = await client.get(url(port, "/hello").view());
@@ -352,7 +352,7 @@ actor Crowd {
   }
 }
 
-fn take[T](rx &mut Receiver[T], dflt T) T {
+fn take[T](rx: &mut Receiver[T], dflt: T) T {
   match rx.recv() {
     case let v Some {v}
     else {dflt}
@@ -361,15 +361,15 @@ fn take[T](rx &mut Receiver[T], dflt T) T {
 
 fn main() i32 {
   initAll();
-  var ptx Sender[u16];
-  var prx Receiver[u16];
+  var ptx: Sender[u16];
+  var prx: Receiver[u16];
   ptx, prx = Channel[u16].make();
-  var etx Sender[u64];
-  var erx Receiver[u64];
+  var etx: Sender[u64];
+  var erx: Receiver[u64];
   etx, erx = Channel[u64].make();
 
-  var ftx Sender[u64];
-  var frx Receiver[u64];
+  var ftx: Sender[u64];
+  var frx: Receiver[u64];
   ftx, frx = Channel[u64].make();
 
   // The main server, and its actors' answers
@@ -378,8 +378,8 @@ fn main() i32 {
   let port = take[u16](&mut prx, 0u16);
   acceptor.serve(etx.clone());
   {
-    var tx OneshotSender[u64];
-    var rx OneshotReceiver[u64];
+    var tx: OneshotSender[u64];
+    var rx: OneshotReceiver[u64];
     tx, rx = Oneshot[u64].make();
     let p = new Prober(Client.standard());
     p.run(port, tx);
@@ -391,8 +391,8 @@ fn main() i32 {
 
   // Two hundred requests, from four actors at once
   {
-    var otx Sender[u64];
-    var orx Receiver[u64];
+    var otx: Sender[u64];
+    var orx: Receiver[u64];
     otx, orx = Channel[u64].make();
     let shared = Client.standard();
     var crowd = List[Crowd].empty();
@@ -420,8 +420,8 @@ fn main() i32 {
     small.open(cfg, ptx.clone());
     let sport = take[u16](&mut prx, 0u16);
     small.serve(etx.clone());
-    var tx OneshotSender[u64];
-    var rx OneshotReceiver[u64];
+    var tx: OneshotSender[u64];
+    var rx: OneshotReceiver[u64];
     tx, rx = Oneshot[u64].make();
     let p = new Limiter(Client.standard());
     p.run(sport, tx);
@@ -438,8 +438,8 @@ fn main() i32 {
     busy.open(cfg, ptx.clone());
     let bport = take[u16](&mut prx, 0u16);
     // Four requests, each from a client of its own, given a second and a half
-    var stx Sender[u64];
-    var srx Receiver[u64];
+    var stx: Sender[u64];
+    var srx: Receiver[u64];
     stx, srx = Channel[u64].make();
     var singles = List[Single].empty();
     var s = 0u64;
@@ -468,12 +468,12 @@ fn main() i32 {
     // Only now does an actor ask for requests: the two that waited were
     // abandoned by their clients, so it gets the next new one
     busy.serve(etx.clone());
-    var tx OneshotSender[u64];
-    var rx OneshotReceiver[u64];
+    var tx: OneshotSender[u64];
+    var rx: OneshotReceiver[u64];
     tx, rx = Oneshot[u64].make();
     let after = new Prober2(Client.standard());
-    var tx2 OneshotSender[u64];
-    var rx2 OneshotReceiver[u64];
+    var tx2: OneshotSender[u64];
+    var rx2: OneshotReceiver[u64];
     tx2, rx2 = Oneshot[u64].make();
     after.run(bport, tx2);
     rx2.recv();
@@ -485,8 +485,8 @@ fn main() i32 {
   acceptor.stop();
   say("the main server's actor took requests:", take[u64](&mut erx, 99u64));
   {
-    var tx OneshotSender[u64];
-    var rx OneshotReceiver[u64];
+    var tx: OneshotSender[u64];
+    var rx: OneshotReceiver[u64];
     tx, rx = Oneshot[u64].make();
     let p = new Prober2(Client.standard());
     p.refused(port, String.from("closed server"), tx);
@@ -500,8 +500,8 @@ fn main() i32 {
     let hport = take[u16](&mut prx, 0u16);
     holder.release();
     thread.sleep(Duration.fromMillis(200i64));
-    var tx OneshotSender[u64];
-    var rx OneshotReceiver[u64];
+    var tx: OneshotSender[u64];
+    var rx: OneshotReceiver[u64];
     tx, rx = Oneshot[u64].make();
     let p = new Prober2(Client.standard());
     p.refused(hport, String.from("server whose last handle went"), tx);
@@ -514,9 +514,9 @@ fn main() i32 {
 
 // Holds a server's only handle, then lets it go
 actor Holder {
-  server Server;
+  server: Server;
 
-  pub async do open(self, ports Sender[u16]) {
+  pub async do open(self, ports: Sender[u16]) {
     let r = await actorhttp.listen(SocketAddr.localhost(0u16), ServerConfig.make());
     var res = r;
     match &mut res {
@@ -533,9 +533,9 @@ actor Holder {
 
 // The body limit: 413 over it, 200 under it
 actor Limiter {
-  client Client;
+  client: Client;
 
-  pub async do run(self, port u16, done OneshotSender[u64]) {
+  pub async do run(self, port: u16, done: OneshotSender[u64]) {
     var under = Request.make("POST", url(port, "/echo").view());
     under.body = bigBody(500usize);
     let r1 = await client.send(under);
@@ -550,7 +550,7 @@ actor Limiter {
 }
 
 // A response with its body shortened to its length, so that its text is short
-fn shortened(r Result[Response, FetchError]) Result[Response, FetchError] {
+fn shortened(r: Result[Response, FetchError]) Result[Response, FetchError] {
   var res = r;
   match &mut res {
     case var ok &mut Ok {
@@ -567,10 +567,10 @@ fn shortened(r Result[Response, FetchError]) Result[Response, FetchError] {
 // One request from a client of its own, to a server with room for two waiting
 // and nobody to take them
 actor Single {
-  client Client;
+  client: Client;
 
   // One request given ms milliseconds: its status, or 0 if it was not answered
-  pub async do run(self, port u16, ms i64, out Sender[u64]) {
+  pub async do run(self, port: u16, ms: i64, out: Sender[u64]) {
     let lim = IoLimits.until(Instant.now() + Duration.fromMillis(ms));
     let r = await client.getIn(url(port, "/hello").view(), lim);
     out.send(statusOf(&r));
@@ -578,15 +578,15 @@ actor Single {
 }
 
 actor Prober2 {
-  client Client;
+  client: Client;
 
-  pub async do run(self, port u16, done OneshotSender[u64]) {
+  pub async do run(self, port: u16, done: OneshotSender[u64]) {
     say2("after the flood", await client.get(url(port, "/hello").view()));
     var d = done;
     d.send(1u64);
   }
 
-  pub async do refused(self, port u16, label String, done OneshotSender[u64]) {
+  pub async do refused(self, port: u16, label: String, done: OneshotSender[u64]) {
     let r = await client.get(url(port, "/hello").view());
     printStr(label.view());
     match &r {

@@ -33,7 +33,7 @@ import aio use File, IoLimits;
 
 const rounds = 2000u64;
 
-fn fileOf(r Result[File, IoError]) File {
+fn fileOf(r: Result[File, IoError]) File {
   var res = r;
   var f = File.none();
   match &mut res {
@@ -43,13 +43,13 @@ fn fileOf(r Result[File, IoError]) File {
   f
 }
 
-fn note(what &str, yes bool) {
+fn note(what: &str, yes: bool) {
   printStr(what);
   if yes {printStr(": yes\n");} else {printStr(": NO\n");}
 }
 
 // How an operation ended: 0 done, 1 cancelled, 2 timed out, 3 failed
-fn endOf[T](r &Result[T, IoError]) u32 {
+fn endOf[T](r: &Result[T, IoError]) u32 {
   match r {
     case let e Error {
       if e.isCancelled() {1u32}
@@ -60,7 +60,7 @@ fn endOf[T](r &Result[T, IoError]) u32 {
   }
 }
 
-fn say(what &str, how u32) {
+fn say(what: &str, how: u32) {
   printStr(what);
   if how == 0u32 {printStr(": done\n");}
   elif how == 1u32 {printStr(": cancelled\n");}
@@ -69,7 +69,7 @@ fn say(what &str, how u32) {
 }
 
 // A block of n bytes, byte i being i mod 251 xor seed
-fn block(pool &Pool, n usize, seed u8) IoBuf {
+fn block(pool: &Pool, n: usize, seed: u8) IoBuf {
   var b = pool.mustTake(n);
   let room = b.whole();
   var i = 0usize;
@@ -81,7 +81,7 @@ fn block(pool &Pool, n usize, seed u8) IoBuf {
   b
 }
 
-fn isBlock(b &IoBuf, n usize, seed u8) bool {
+fn isBlock(b: &IoBuf, n: usize, seed: u8) bool {
   let v = b.view();
   if v.len != n {return false;}
   var i = 0usize;
@@ -93,7 +93,7 @@ fn isBlock(b &IoBuf, n usize, seed u8) bool {
 }
 
 // The buffer a read's answer holds, or an empty one
-fn bufOf(r Result[IoBuf, IoError]) IoBuf {
+fn bufOf(r: Result[IoBuf, IoError]) IoBuf {
   var res = r;
   var b = IoBuf.empty();
   match &mut res {
@@ -104,31 +104,31 @@ fn bufOf(r Result[IoBuf, IoError]) IoBuf {
 }
 
 struct Tally {
-  pub done Atomic[u64];        // rounds whose operation ended Done
-  pub cancelled Atomic[u64];   // ...Cancelled
-  pub other Atomic[u64];       // ...anything else
-  pub wrong Atomic[u64];       // Done, but with the wrong bytes or count
+  pub done: Atomic[u64];        // rounds whose operation ended Done
+  pub cancelled: Atomic[u64];   // ...Cancelled
+  pub other: Atomic[u64];       // ...anything else
+  pub wrong: Atomic[u64];       // Done, but with the wrong bytes or count
 }
 
-let tally Tally;
+let tally: Tally;
 
 fn @initpure init() {
   tally = new Tally(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64));
 }
 
 actor Prober {
-  pool Pool;
+  pool: Pool;
 
   // Runs while a behaviour is paused at an await: ends the group's operations
-  pub async do stop(self, g CancelGroup) {
+  pub async do stop(self, g: CancelGroup) {
     g.cancel();
   }
 
   // Drops the file, which closes it
-  pub async do release(self, f File) {
+  pub async do release(self, f: File) {
   }
 
-  pub async do run(self, done OneshotSender[u64]) {
+  pub async do run(self, done: OneshotSender[u64]) {
     let name = Path.from("aiolimits.tmp");
     let f = fileOf(await aio.openFile(&name, Access.Create));
     let w = await f.writeAt(0u64, block(&pool, 4096usize, 7u8));
@@ -229,8 +229,8 @@ actor Prober {
 
 fn main() {
   initAll();
-  var tx OneshotSender[u64];
-  var rx OneshotReceiver[u64];
+  var tx: OneshotSender[u64];
+  var rx: OneshotReceiver[u64];
   tx, rx = Oneshot[u64].make();
   {
     let p = new Prober(Pool.make());

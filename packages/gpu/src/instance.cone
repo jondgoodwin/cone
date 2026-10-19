@@ -1,26 +1,26 @@
 // ---- Instance ----
 
 struct InstanceBackend {
-  handle vulkan.Instance;
-  messenger vulkan.DebugUtilsMessengerEXT;
-  loaded bool;             // SDL loaded the Vulkan loader for it
-  fns InstFns;             // the instance's functions, found when it was made
+  handle: vulkan.Instance;
+  messenger: vulkan.DebugUtilsMessengerEXT;
+  loaded: bool;             // SDL loaded the Vulkan loader for it
+  fns: InstFns;             // the instance's functions, found when it was made
 }
 
 // The entry point: Vulkan loaded, an instance made with what a window's
 // surface needs, and validation and debug messages on where they are offered
 pub struct Instance {
-  backend InstanceBackend;
-  pub validation bool;         // the Khronos validation layer is on
-  pub syncValidation bool;     // and its synchronization validation
-  pub debugMessages bool;      // the loader's and layers' warnings and errors are reported
+  backend: InstanceBackend;
+  pub validation: bool;         // the Khronos validation layer is on
+  pub syncValidation: bool;     // and its synchronization validation
+  pub debugMessages: bool;      // the loader's and layers' warnings and errors are reported
 
   // Make an instance for 'appName'. The vulkan package found the Vulkan
   // loader when the program started; SDL loads its own copy (the OS counts
   // both) to name the surface extensions and make surfaces. Check
   // 'isValid': without a Vulkan 1.3 loader it is not, and why has gone to
   // stderr.
-  pub fn create(appName &str) Instance {
+  pub fn create(appName: &str) Instance {
     var result = new Instance(new InstanceBackend(0usize as vulkan.Instance, new vulkan.DebugUtilsMessengerEXT(0u64), false,
       noInstFns()), false, false, false);
     if !vulkan.available() {
@@ -64,7 +64,7 @@ pub struct Instance {
     }
     let layerName = &"VK_LAYER_KHRONOS_validation" as *u8;
     result.validation = hasInstanceLayer(cstr.fromPtr(layerName));
-    let layers Array[*u8, 1] = [layerName];
+    let layers: Array[*u8, 1] = [layerName];
 
     // Synchronization validation, set through the layer's settings: it checks
     // every barrier and semaphore for a hazard between commands. Its shader
@@ -76,7 +76,7 @@ pub struct Instance {
       exts[usize.from(next)] = &"VK_EXT_layer_settings" as *u8;
       next = next + 1u32;
     }
-    let on Array[u32, 1] = [vulkan.TRUE];
+    let on: Array[u32, 1] = [vulkan.TRUE];
     let setting = [new vulkan.LayerSettingEXT(pLayerName: layerName, pSettingName: &"validate_sync" as *u8,
         valueCount: 1u32, pValues: &on as *u8),
       new vulkan.LayerSettingEXT(pLayerName: layerName, pSettingName: &"syncval_shader_accesses_heuristic" as *u8,
@@ -122,11 +122,11 @@ pub struct Instance {
   }
 
   // Whether the instance was made
-  pub fn isValid(self &) bool { (backend.handle as *u8 as usize) != 0usize }
+  pub fn isValid(self: &) bool { (backend.handle as *u8 as usize) != 0usize }
 
   // The surface of a window made for Vulkan (window's 'openVulkan', whose
   // 'sdlHandle' this takes). Check 'isValid'.
-  pub fn createSurface(self &, window *sdl.Window) Surface {
+  pub fn createSurface(self: &, window: *sdl.Window) Surface {
     var surface = new vulkan.SurfaceKHR(0u64);
     if self.isValid() {
       if !sdl.Vulkan_CreateSurface(window, backend.handle as *u8, nullp(), &mut surface.h) {
@@ -143,7 +143,7 @@ pub struct Instance {
   // (WebGPU's) chooses: POWER_PREFERENCE_HIGH_PERFORMANCE a discrete GPU
   // before an integrated one, POWER_PREFERENCE_LOW_POWER the other way round.
   // Check 'isValid'.
-  pub fn requestAdapter(self &, surface &Surface, powerPreference u32) Adapter {
+  pub fn requestAdapter(self: &, surface: &Surface, powerPreference: u32) Adapter {
     var chosen = 0usize as vulkan.PhysicalDevice;
     var chosenFamily = 0u32;
     var chosenScore = 0;
@@ -191,7 +191,7 @@ pub struct Instance {
   }
 
   // Its end, after every object made from it
-  fn final(self &uni) {
+  fn final(self: &uni) {
     if self.isValid() {
       if backend.messenger.h != 0u64 { backend.fns.destroyDebugUtilsMessengerEXT(backend.handle, backend.messenger, nullp()); }
       backend.fns.destroyInstance(backend.handle, nullp());
@@ -204,7 +204,7 @@ pub struct Instance {
 // How well 'physical' suits: 0 if it cannot be used, else higher for the
 // kind of GPU 'powerPreference' prefers; 'family' gets the queue family that
 // draws and presents
-fn adapterScore(ifns &InstFns, physical vulkan.PhysicalDevice, surface vulkan.SurfaceKHR, powerPreference u32, family &mut u32) i32 {
+fn adapterScore(ifns: &InstFns, physical: vulkan.PhysicalDevice, surface: vulkan.SurfaceKHR, powerPreference: u32, family: &mut u32) i32 {
   var discrete = 3;
   var integrated = 2;
   if powerPreference == POWER_PREFERENCE_LOW_POWER {
@@ -246,22 +246,22 @@ fn adapterScore(ifns &InstFns, physical vulkan.PhysicalDevice, surface vulkan.Su
 // ---- Surface ----
 
 struct SurfaceBackend {
-  instance vulkan.Instance;
-  surface vulkan.SurfaceKHR;
-  fns InstFns;                 // its instance's functions
+  instance: vulkan.Instance;
+  surface: vulkan.SurfaceKHR;
+  fns: InstFns;                 // its instance's functions
 }
 
 // A window's surface, which a SwapChain presents to
 pub struct Surface {
-  backend SurfaceBackend;
+  backend: SurfaceBackend;
 
-  pub fn isValid(self &) bool { backend.surface.h != 0u64 }
+  pub fn isValid(self: &) bool { backend.surface.h != 0u64 }
 
   // No surface: for 'requestAdapter' when nothing is to be presented
   // (WebGPU's compatibleSurface left out)
   pub fn none() Surface { new Surface(new SurfaceBackend(0usize as vulkan.Instance, new vulkan.SurfaceKHR(0u64), noInstFns())) }
 
-  fn final(self &uni) {
+  fn final(self: &uni) {
     if self.isValid() { backend.fns.destroySurfaceKHR(backend.instance, backend.surface, nullp()); }
   }
 }
@@ -269,33 +269,33 @@ pub struct Surface {
 // ---- Adapter ----
 
 struct AdapterBackend {
-  physical vulkan.PhysicalDevice;
-  queueFamily u32;
-  fns InstFns;                 // its instance's functions
+  physical: vulkan.PhysicalDevice;
+  queueFamily: u32;
+  fns: InstFns;                 // its instance's functions
 }
 
 // A GPU, and what it is
 pub struct Adapter {
-  backend AdapterBackend;
-  pub name String;             // "Intel(R) UHD Graphics 770"
-  pub adapterType u32;         // ADAPTER_TYPE_...
-  pub backendVersion String;   // the version of the API underneath: "1.3.290" (Vulkan)
-  pub vendorID u32;
-  pub deviceID u32;
+  backend: AdapterBackend;
+  pub name: String;             // "Intel(R) UHD Graphics 770"
+  pub adapterType: u32;         // ADAPTER_TYPE_...
+  pub backendVersion: String;   // the version of the API underneath: "1.3.290" (Vulkan)
+  pub vendorID: u32;
+  pub deviceID: u32;
 
-  pub fn isValid(self &) bool { (backend.physical as *u8 as usize) != 0usize }
+  pub fn isValid(self: &) bool { (backend.physical as *u8 as usize) != 0usize }
 
   // The API underneath
-  pub fn backendName(self &) &str { "Vulkan" }
+  pub fn backendName(self: &) &str { "Vulkan" }
 
   // A device on this GPU, with one queue that draws and presents. Check
   // 'isValid'.
-  pub fn requestDevice(self &) Device { self.requestDeviceWith(true) }
+  pub fn requestDevice(self: &) Device { self.requestDeviceWith(true) }
 
   // Whether this GPU can build acceleration structures and cast rays from shaders (ray queries):
   // VK_KHR_acceleration_structure, VK_KHR_ray_query and buffer device addresses, each with its
   // feature. Ray tracing here is ray query, not the ray-tracing pipeline (see raytracing.cone).
-  pub fn supportsRayTracing(self &) bool {
+  pub fn supportsRayTracing(self: &) bool {
     if !self.isValid() { return false; }
     if !hasDeviceExtension(&backend.fns, backend.physical, "VK_KHR_acceleration_structure")
         || !hasDeviceExtension(&backend.fns, backend.physical, "VK_KHR_ray_query")
@@ -313,17 +313,17 @@ pub struct Adapter {
   // The same, with ray tracing asked for or not: a device made with 'false' draws as one on a GPU
   // that has none (to show the fallback on a GPU that has it). With 'true' on a GPU without it, no
   // ray tracing either; check 'device.rayTracing'.
-  pub fn requestDeviceWith(self &, rayTracing bool) Device { self.makeDevice(rayTracing, &new ComputeRequest()) }
+  pub fn requestDeviceWith(self: &, rayTracing: bool) Device { self.makeDevice(rayTracing, &new ComputeRequest()) }
 
   // What this GPU offers for compute (features.cone): 16-bit floats, 8-bit storage, the integer dot product,
   // the subgroup, and its buffer and memory limits, as a plain value
-  pub fn computeCapabilities(self &) ComputeCapabilities {
+  pub fn computeCapabilities(self: &) ComputeCapabilities {
     if !self.isValid() { return new ComputeCapabilities(); }
     queryCompute(&backend.fns, backend.physical)
   }
 
   // The GPU's memory heaps, in the order Vulkan lists them
-  pub fn memoryHeaps(self &) List[MemoryHeapInfo] {
+  pub fn memoryHeaps(self: &) List[MemoryHeapInfo] {
     var heaps = List[MemoryHeapInfo].empty();
     if !self.isValid() { return heaps; }
     var memory = zeroed[vulkan.PhysicalDeviceMemoryProperties]();
@@ -339,14 +339,14 @@ pub struct Adapter {
   // A device made with the compute features 'request' asks for, each enabled if this GPU has it
   // (features.cone says what, and what 'device.compute' then answers). Ray tracing is not asked for.
   // Check 'isValid'.
-  pub fn requestComputeDevice(self &, request &ComputeRequest) Device { self.makeDevice(false, request) }
+  pub fn requestComputeDevice(self: &, request: &ComputeRequest) Device { self.makeDevice(false, request) }
 
-  fn makeDevice(self &, rayTracing bool, request &ComputeRequest) Device {
+  fn makeDevice(self: &, rayTracing: bool, request: &ComputeRequest) Device {
     var result = new Device(new DeviceBackend(0usize as vulkan.Device, noDevFns(), backend.fns, backend.physical, backend.queueFamily,
       new vulkan.RayFns()), new CommandQueue(zeroed[QueueBackend](), noDevFns()), 0u64);
     if !self.isValid() { return result; }
 
-    let priorities Array[f32, 1] = [1.];
+    let priorities: Array[f32, 1] = [1.];
     let qci = new vulkan.DeviceQueueCreateInfo(queueFamilyIndex: backend.queueFamily, queueCount: 1u32,
       pQueuePriorities: &priorities as *f32);
     let useRay = rayTracing && self.supportsRayTracing();
@@ -370,7 +370,7 @@ pub struct Adapter {
     let f13 = new vulkan.PhysicalDeviceVulkan13Features(
       pNext: if useRay { &mut addressf as *u8 } elif chained { &mut f11 as *u8 } else { null },
       synchronization2: vulkan.TRUE, dynamicRendering: vulkan.TRUE, shaderIntegerDotProduct: vkBool(on.integerDotProduct));
-    let exts Array[*u8, 4] = [&"VK_KHR_swapchain" as *u8, &"VK_KHR_acceleration_structure" as *u8,
+    let exts: Array[*u8, 4] = [&"VK_KHR_swapchain" as *u8, &"VK_KHR_acceleration_structure" as *u8,
       &"VK_KHR_ray_query" as *u8, &"VK_KHR_deferred_host_operations" as *u8];
     // Anisotropic filtering, the one optional core feature asked for: on
     // where the GPU has it (every desktop one does), else samplers filter

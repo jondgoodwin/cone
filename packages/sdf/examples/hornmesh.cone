@@ -65,17 +65,17 @@ const KEY_L = 108u32;
 
 // The horn, as hornmarch has it; moved 1.1 along -x so it turns about its
 // middle
-const LENGTH f32 = 3.4;
-const BASE f32 = 0.34;
-const TAPER f32 = 0.97;
-const CURL f32 = 1.7;
+const LENGTH: f32 = 3.4;
+const BASE: f32 = 0.34;
+const TAPER: f32 = 0.97;
+const CURL: f32 = 1.7;
 const RIBS = 22;
-const RIB_DEPTH f32 = 0.12;
-const OFFSET f32 = 1.1;
+const RIB_DEPTH: f32 = 0.12;
+const OFFSET: f32 = 1.1;
 
 // The meshes: level 0's cells, each next level's twice as large, each
 // vertex relaxed onto the surface once
-const FINEST f32 = 0.01;
+const FINEST: f32 = 0.01;
 const RELAX = 1u32;
 
 // The camera, hornmarch's
@@ -84,7 +84,7 @@ fn target() Vec3 { new Vec3(0., 1.05, 0.) }
 
 // ---- Arguments ----
 
-fn parseCount(s *u8) i32 {
+fn parseCount(s: *u8) i32 {
   if (s as usize) == 0usize || *s == 0u8 { return -1; }
   var n = 0;
   var i = 0usize;
@@ -97,7 +97,7 @@ fn parseCount(s *u8) i32 {
   n
 }
 
-fn cstrEquals(a *u8, b &Array[u8]) bool {
+fn cstrEquals(a: *u8, b: &Array[u8]) bool {
   var i = 0usize;
   while i < b.len {
     if *(a + i) != b[i] { return false; }
@@ -106,7 +106,7 @@ fn cstrEquals(a *u8, b &Array[u8]) bool {
   *(a + b.len) == 0u8
 }
 
-fn appendCstr(s &mut String, c *u8) {
+fn appendCstr(s: &mut String, c: *u8) {
   var i = 0usize;
   while *(c + i) != 0u8 {
     s.appendByte(*(c + i));
@@ -114,13 +114,13 @@ fn appendCstr(s &mut String, c *u8) {
   }
 }
 
-fn onOff(on bool) &str {
+fn onOff(on: bool) &str {
   if on { return "on"; }
   "off"
 }
 
 // 'base' without its '.bmp', then 'suffix' and '.bmp'
-fn shotName(base &String, suffix &str) String {
+fn shotName(base: &String, suffix: &str) String {
   var s = String.empty();
   if base.endsWith(".bmp") { s = base.sub(0usize, base.len() - 4usize); } else { s = base.copy(); }
   s <- suffix;
@@ -131,32 +131,32 @@ fn shotName(base &String, suffix &str) String {
 // ---- The scene ----
 
 // The horn's turn at time t: a quarter turn in 5 s, as hornmarch's
-fn turnAt(t f32) Quat { Quat.angleAxis(t * 0.3, new Vec3(0., 1., 0.)) }
+fn turnAt(t: f32) Quat { Quat.angleAxis(t * 0.3, new Vec3(0., 1., 0.)) }
 
 // The horn's model matrix: its own point p goes to turn (p - (OFFSET, 0, 0))
-fn modelAt(turn Quat) Mat4 {
+fn modelAt(turn: Quat) Mat4 {
   Mat4.fromTrs(new Vec3(0., 0., 0.), turn, new Vec3(1., 1., 1.)) * Mat4.fromTranslation(new Vec3(0. - OFFSET, 0., 0.))
 }
 
 // ---- The check ----
 
-fn pixelOf(viewProjection Mat4, p Vec3, w u32, h u32, x &mut i32, y &mut i32) {
+fn pixelOf(viewProjection: Mat4, p: Vec3, w: u32, h: u32, x: &mut i32, y: &mut i32) {
   let clip = viewProjection * new Vec4(p.x, p.y, p.z, 1.);
   *x = i32.from((clip.x / clip.w + 1.) * 0.5 * f32.from(w));
   *y = i32.from((1. - clip.y / clip.w) * 0.5 * f32.from(h));
 }
 
-fn channel(p *u8, w u32, x i32, y i32, c usize, bgra bool) i32 {
+fn channel(p: *u8, w: u32, x: i32, y: i32, c: usize, bgra: bool) i32 {
   var at = c;
   if bgra { at = 2usize - c; }
   i32.from(*(p + (usize.from(y) * usize.from(w) + usize.from(x)) * 4usize + at))
 }
 
-fn luma(p *u8, w u32, x i32, y i32, bgra bool) i32 {
+fn luma(p: *u8, w: u32, x: i32, y: i32, bgra: bool) i32 {
   channel(p, w, x, y, 0usize, bgra) + channel(p, w, x, y, 1usize, bgra) + channel(p, w, x, y, 2usize, bgra)
 }
 
-fn printPixel(name &str, p *u8, w u32, x i32, y i32, bgra bool) {
+fn printPixel(name: &str, p: *u8, w: u32, x: i32, y: i32, bgra: bool) {
   printStr(name); print <- " at ("; print <- x; print <- ", "; print <- y; print <- "): ";
   print <- channel(p, w, x, y, 0usize, bgra); print <- " "; print <- channel(p, w, x, y, 1usize, bgra); print <- " ";
   print <- channel(p, w, x, y, 2usize, bgra);
@@ -164,7 +164,7 @@ fn printPixel(name &str, p *u8, w u32, x i32, y i32, bgra bool) {
 
 // ---- The demo ----
 
-fn main(argc i32, argv **u8) i32 {
+fn main(argc: i32, argv: **u8) i32 {
   var maxFrames = 0;
   var screenshot = String.empty();
   var objPrefix = String.empty();
@@ -269,7 +269,7 @@ fn main(argc i32, argv **u8) i32 {
   // The levels, each drawn while the horn is at least so many pixels
   // across: level 0 above 500, 1 above 250, 2 above 120, 3 below
   var chain = LodChain.empty(0.1);
-  let minSizes Array[f32, 4] = [500., 250., 120., 0.];
+  let minSizes: Array[f32, 4] = [500., 250., 120., 0.];
   var i = 0usize;
   while i < meshes.len() {
     chain.add(renderer.addMesh(&mut device, meshes[i]), minSizes[i]);
@@ -394,7 +394,7 @@ fn main(argc i32, argv **u8) i32 {
             if written { print <- "\n"; } else { print <- " could NOT be written\n"; shotsWritten = false; }
           }
         } else {
-          let suffixes Array[&Array[u8], 4] = ["-lod1", "-lod2", "-lod3", "-nofilm"];
+          let suffixes: Array[&Array[u8], 4] = ["-lod1", "-lod2", "-lod3", "-nofilm"];
           let name = shotName(&screenshot, suffixes[usize.from(extraShot)] as &str);
           let shot = Image.fromTexels(p, i32.from(w), i32.from(h), bgra);
           let written = shot.save(&Path.from(name.view()));

@@ -16,35 +16,35 @@
 
 // How a cloth looks
 pub struct ClothLook {
-  pub warp Color;                // the thread colours (linear)
-  pub weft Color;
-  pub sheen Color;               // the sheen's colour
-  pub sheenStrength f32;         // 0 none .. 1 velvet
-  pub sheenRoughness f32;        // 0.2 tight and bright .. 1 broad and dull
-  pub soil Color;                // what dirt multiplies the cloth by
-  pub threadsPerMetre f32;       // 400 coarse .. 1500 fine
-  pub bump f32;                  // how deep the weave looks (0 .. 1)
-  pub weave u32;                 // 0 plain, 1 twill, 2 satin
-  pub variety f32;               // thread to thread variety (0 .. 1)
-  pub wear f32;                  // 0 new .. 1 threadbare
-  pub dirt f32;                  // 0 clean .. 1 filthy
-  pub hemDirt f32;               // how far up from the hem the dirt reaches (metres)
-  pub seed u32;
+  pub warp: Color;                // the thread colours (linear)
+  pub weft: Color;
+  pub sheen: Color;               // the sheen's colour
+  pub sheenStrength: f32;         // 0 none .. 1 velvet
+  pub sheenRoughness: f32;        // 0.2 tight and bright .. 1 broad and dull
+  pub soil: Color;                // what dirt multiplies the cloth by
+  pub threadsPerMetre: f32;       // 400 coarse .. 1500 fine
+  pub bump: f32;                  // how deep the weave looks (0 .. 1)
+  pub weave: u32;                 // 0 plain, 1 twill, 2 satin
+  pub variety: f32;               // thread to thread variety (0 .. 1)
+  pub wear: f32;                  // 0 new .. 1 threadbare
+  pub dirt: f32;                  // 0 clean .. 1 filthy
+  pub hemDirt: f32;               // how far up from the hem the dirt reaches (metres)
+  pub seed: u32;
 
   // Rough wool: a coat or a cloak
-  pub fn wool(color Color) ClothLook {
+  pub fn wool(color: Color) ClothLook {
     new ClothLook(color, new Color(color.red * 0.92, color.green * 0.92, color.blue * 0.95, 1.), new Color(0.55, 0.55, 0.58, 1.), 0.35, 0.8,
       new Color(0.42, 0.34, 0.26, 1.), 520., 0.7, 1u32, 0.28, 0.15, 0.20, 0.30, 11u32)
   }
 
   // Plain linen or cotton: a tunic, an apron
-  pub fn linen(color Color) ClothLook {
+  pub fn linen(color: Color) ClothLook {
     new ClothLook(color, new Color(color.red * 0.96, color.green * 0.95, color.blue * 0.9, 1.), new Color(0.7, 0.68, 0.62, 1.), 0.18, 0.9,
       new Color(0.45, 0.38, 0.30, 1.), 480., 0.9, 0u32, 0.35, 0.18, 0.30, 0.35, 23u32)
   }
 
   // Velvet or heavy silk: a cape
-  pub fn velvet(color Color) ClothLook {
+  pub fn velvet(color: Color) ClothLook {
     new ClothLook(color, new Color(color.red * 1.04, color.green * 1.04, color.blue * 1.04, 1.), new Color(color.red * 0.9 + 0.4, color.green * 0.7 + 0.3, color.blue * 0.7 + 0.3, 1.),
       0.95, 0.35, new Color(0.35, 0.3, 0.28, 1.), 900., 0.25, 2u32, 0.12, 0.1, 0.15, 0.2, 37u32)
   }
@@ -53,14 +53,14 @@ pub struct ClothLook {
 pub const CLOTH_PARAM_BYTES = 112u64;
 
 // The cloth pipeline in a renderer; make it once
-pub fn addClothPipeline(renderer &mut Renderer, device &mut Device) PipelineHandle {
+pub fn addClothPipeline(renderer: &mut Renderer, device: &mut Device) PipelineHandle {
   let textures = [TEXTURE_SAMPLE_TYPE_FLOAT];
   let desc = new CustomPipeline(spirv: &CLOTH_SPIRV, textures: &textures, streams: 3u32, paramBytes: CLOTH_PARAM_BYTES,
     cullMode: CULL_MODE_BACK);
   renderer.addPipeline(device, &desc)
 }
 
-pub fn clothParams(look &ClothLook, sheetW f32, sheetH f32, wearGain f32, dirtGain f32) List[f32] {
+pub fn clothParams(look: &ClothLook, sheetW: f32, sheetH: f32, wearGain: f32, dirtGain: f32) List[f32] {
   var p = List[f32].empty();
   p.push(look.warp.red); p.push(look.warp.green); p.push(look.warp.blue); p.push(1.);
   p.push(look.weft.red); p.push(look.weft.green); p.push(look.weft.blue); p.push(1.);
@@ -74,7 +74,7 @@ pub fn clothParams(look &ClothLook, sheetW f32, sheetH f32, wearGain f32, dirtGa
 
 // ---- the pattern sheet ----
 
-fn hashf(x i32, y i32, seed u32) f32 {
+fn hashf(x: i32, y: i32, seed: u32) f32 {
   var h = u32.from(x) * 374761393u32 + u32.from(y) * 668265263u32 + seed * 2246822519u32;
   h = (h ^ (h >> 13u32)) * 1274126177u32;
   h = h ^ (h >> 16u32);
@@ -82,7 +82,7 @@ fn hashf(x i32, y i32, seed u32) f32 {
 }
 
 // Value noise on a lattice of `cell` metres, smooth between lattice points
-fn valueNoise(x f32, y f32, cell f32, seed u32) f32 {
+fn valueNoise(x: f32, y: f32, cell: f32, seed: u32) f32 {
   let gx = x / cell;
   let gy = y / cell;
   let ix = i32.from(libc.floorf(gx));
@@ -98,20 +98,20 @@ fn valueNoise(x f32, y f32, cell f32, seed u32) f32 {
   (a + (b - a) * sx) + ((c + (d - c) * sx) - (a + (b - a) * sx)) * sy
 }
 
-fn fbm2(x f32, y f32, seed u32) f32 {
+fn fbm2(x: f32, y: f32, seed: u32) f32 {
   valueNoise(x, y, 0.16, seed) * 0.5 + valueNoise(x, y, 0.07, seed + 1u32) * 0.3 + valueNoise(x, y, 0.03, seed + 2u32) * 0.2
 }
 
 // A band where cloth is rubbed: wear bands are (v, half width in v, amount) triples on each panel
 pub struct WearBand {
-  pub v f32;
-  pub width f32;
-  pub amount f32;
+  pub v: f32;
+  pub width: f32;
+  pub amount: f32;
 }
 
 // The pattern sheet of a garment: its flat layout at 'texelsPerMetre', painted with dirt (red), wear (green) and the
 // nearness of a seam (blue). `bands` are the places the cloth is rubbed (v down a panel, a half width, an amount)
-pub fn paintSheet(g &Garment, look &ClothLook, bands &List[WearBand], texelsPerMetre f32) Image {
+pub fn paintSheet(g: &Garment, look: &ClothLook, bands: &List[WearBand], texelsPerMetre: f32) Image {
   let w = i32.from(g.atlasWidth * texelsPerMetre) + 1i32;
   let h = i32.from(g.atlasHeight * texelsPerMetre) + 1i32;
   var img = new Image(w, h, 4, List[u8].withCapacity(usize.from(w) * usize.from(h) * 4usize));
@@ -224,12 +224,12 @@ pub fn paintSheet(g &Garment, look &ClothLook, bands &List[WearBand], texelsPerM
   img
 }
 
-fn imax(a i32, b i32) i32 { if a > b { a } else { b } }
-fn imin(a i32, b i32) i32 { if a < b { a } else { b } }
+fn imax(a: i32, b: i32) i32 { if a > b { a } else { b } }
+fn imin(a: i32, b: i32) i32 { if a < b { a } else { b } }
 
 // The material of a garment: its sheet painted and uploaded, its look and the sheet's size as the shader's parameters
-pub fn addClothMaterial(renderer &mut Renderer, device &mut Device, pipeline PipelineHandle, g &Garment, look &ClothLook,
-    bands &List[WearBand]) MaterialHandle {
+pub fn addClothMaterial(renderer: &mut Renderer, device: &mut Device, pipeline: PipelineHandle, g: &Garment, look: &ClothLook,
+    bands: &List[WearBand]) MaterialHandle {
   let sheetImage = paintSheet(g, look, bands, 250.);
   let sheet = renderer.addLinearTexture(device, &sheetImage);
   let params = clothParams(look, g.atlasWidth, g.atlasHeight, 1., 1.);
@@ -239,18 +239,18 @@ pub fn addClothMaterial(renderer &mut Renderer, device &mut Device, pipeline Pip
 
 // A garment's mesh in a renderer, the same size as its soft body's output, rewritten each frame
 pub struct GarmentView {
-  pub mesh MeshHandle;
-  pub material MaterialHandle;
-  scratch Mesh;
-  normals List[Vec3];
+  pub mesh: MeshHandle;
+  pub material: MaterialHandle;
+  scratch: Mesh;
+  normals: List[Vec3];
 
-  pub fn make(renderer &mut Renderer, device &mut Device, g &Garment, material MaterialHandle) GarmentView {
+  pub fn make(renderer: &mut Renderer, device: &mut Device, g: &Garment, material: MaterialHandle) GarmentView {
     let mesh = renderer.addDynamicMesh(device, u32.from(outputVertexCount(&g.soft, true)), u32.from(outputIndexCount(&g.soft, true)));
     new GarmentView(mesh, material, Mesh.empty(), List[Vec3].empty())
   }
 
   // Write the garment's present shape to the GPU and add it to the draw list
-  pub fn draw(self &mut, renderer &mut Renderer, device &mut Device, g &Garment, list &mut DrawList) {
+  pub fn draw(self: &mut, renderer: &mut Renderer, device: &mut Device, g: &Garment, list: &mut DrawList) {
     writeMesh(&g.soft, &mut scratch, true, &mut normals);
     renderer.writeDynamicMesh(device, mesh, &scratch);
     list.add(mesh, material, Mat4.identity());
@@ -259,7 +259,7 @@ pub struct GarmentView {
 
 // spirv-begin cloth.spv CLOTH_SPIRV
 // Written by tools/shaders/shaders.py from cloth.slang (sha256 2b7c5b398302369bd52365de59cba346dedfb241ae62a2ec8e65acc33c4e9d8d): do not edit.
-let CLOTH_SPIRV Array[u32, 5026] = [
+let CLOTH_SPIRV: Array[u32, 5026] = [
   0x07230203u32, 0x00010500u32, 0x00280000u32, 0x0000048fu32, 0x00000000u32, 0x00020011u32,
   0x00000001u32, 0x000b000au32, 0x5f565053u32, 0x5f52484bu32, 0x726f7473u32, 0x5f656761u32,
   0x66667562u32, 0x735f7265u32, 0x61726f74u32, 0x635f6567u32, 0x7373616cu32, 0x00000000u32,

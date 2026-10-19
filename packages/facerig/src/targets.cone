@@ -22,21 +22,21 @@
 // morph pre-pass: 'FaceFrame.weights' has one weight per target.
 
 pub struct FaceTargets {
-  pub vertexCount usize;
-  pub unitTarget List[i32];    // for each unit of the table: its target, or -1
-  pub names List[String];      // each target's name
-  pub start List[u32];         // target t's entries are start[t] to start[t + 1] - 1
-  pub vertex List[u32];
-  pub dPos List[Vec3];
-  pub dNor List[Vec3];
-  pub maxMove List[f32];       // each target's largest displacement of a vertex, metres
+  pub vertexCount: usize;
+  pub unitTarget: List[i32];    // for each unit of the table: its target, or -1
+  pub names: List[String];      // each target's name
+  pub start: List[u32];         // target t's entries are start[t] to start[t + 1] - 1
+  pub vertex: List[u32];
+  pub dPos: List[Vec3];
+  pub dNor: List[Vec3];
+  pub maxMove: List[f32];       // each target's largest displacement of a vertex, metres
 
-  pub fn count(self &) usize { names.len() }
+  pub fn count(self: &) usize { names.len() }
 
-  pub fn entries(self &, t usize) usize { usize.from(*start[t + 1usize] - *start[t]) }
+  pub fn entries(self: &, t: usize) usize { usize.from(*start[t + 1usize] - *start[t]) }
 
   // Target t's vertices, positions and normals as lists, for 'MorphTargets.addSparse'
-  pub fn indicesOf(self &, t usize) List[u32] {
+  pub fn indicesOf(self: &, t: usize) List[u32] {
     var out = List[u32].empty();
     var k = usize.from(*start[t]);
     let e = usize.from(*start[t + 1usize]);
@@ -44,7 +44,7 @@ pub struct FaceTargets {
     out
   }
 
-  pub fn positionsOf(self &, t usize) List[Vec3] {
+  pub fn positionsOf(self: &, t: usize) List[Vec3] {
     var out = List[Vec3].empty();
     var k = usize.from(*start[t]);
     let e = usize.from(*start[t + 1usize]);
@@ -52,7 +52,7 @@ pub struct FaceTargets {
     out
   }
 
-  pub fn normalsOf(self &, t usize) List[Vec3] {
+  pub fn normalsOf(self: &, t: usize) List[Vec3] {
     var out = List[Vec3].empty();
     var k = usize.from(*start[t]);
     let e = usize.from(*start[t + 1usize]);
@@ -61,7 +61,7 @@ pub struct FaceTargets {
   }
 
   // The displacement of vertex 'v' in target 't' (zero when the target does not move it)
-  pub fn displacement(self &, t usize, v usize) Vec3 {
+  pub fn displacement(self: &, t: usize, v: usize) Vec3 {
     var lo = usize.from(*start[t]);
     var hi = usize.from(*start[t + 1usize]);
     while lo < hi {
@@ -74,7 +74,7 @@ pub struct FaceTargets {
   }
 
   // The CPU reference: the mesh's positions with the targets summed in at 'weights' (one a target)
-  pub fn apply(self &, base &Mesh, weights &List[f32]) List[Vec3] {
+  pub fn apply(self: &, base: &Mesh, weights: &List[f32]) List[Vec3] {
     var out = List[Vec3].empty();
     var v = 0usize;
     while v < base.positions.len() { out.push(*base.positions[v]); v = v + 1usize; }
@@ -98,10 +98,10 @@ pub struct FaceTargets {
 
 // A rule's weight at a point: the falloff over the rule's ellipsoid, times the gate
 // (the curves are geomath's 'falloffWeight', shared with sculpt's brushes)
-fn falloff(kind u32, d f32) f32 {falloffWeight(kind, d)}
+fn falloff(kind: u32, d: f32) f32 {falloffWeight(kind, d)}
 
 // The corner angle of a triangle at its first corner
-fn cornerAngle(p Vec3, a Vec3, b Vec3) f32 {
+fn cornerAngle(p: Vec3, a: Vec3, b: Vec3) f32 {
   let u = (a - p).normalize();
   let w = (b - p).normalize();
   acos(clampf(u.dot(w), -1., 1.))
@@ -109,16 +109,16 @@ fn cornerAngle(p Vec3, a Vec3, b Vec3) f32 {
 
 // A rule resolved against a spec: the points it needs, found
 struct Resolved {
-  centre Vec3;
-  pivot Vec3;
-  gatePoint Vec3;
-  hasGate bool;
-  radii Vec3;           // metres
-  angle f32;            // effective, radians
-  rule usize;
+  centre: Vec3;
+  pivot: Vec3;
+  gatePoint: Vec3;
+  hasGate: bool;
+  radii: Vec3;           // metres
+  angle: f32;            // effective, radians
+  rule: usize;
 }
 
-fn resolve(spec &FaceSpec, r &Influence, ruleNo usize, out &mut Resolved) bool {
+fn resolve(spec: &FaceSpec, r: &Influence, ruleNo: usize, out: &mut Resolved) bool {
   let li = spec.index(r.landmark.view());
   if li < 0i32 { return false; }
   out.centre = *spec.points[usize.from(li)];
@@ -145,7 +145,7 @@ fn resolve(spec &FaceSpec, r &Influence, ruleNo usize, out &mut Resolved) bool {
 }
 
 // The displacement one rule gives the point 'p'
-fn ruleDisplacement(r &Influence, res &Resolved, spec &FaceSpec, p Vec3) Vec3 {
+fn ruleDisplacement(r: &Influence, res: &Resolved, spec: &FaceSpec, p: Vec3) Vec3 {
   let q = p - res.centre;
   // The cheap rejections first: outside the ellipsoid's box
   if absf(q.x) >= res.radii.x || absf(q.y) >= res.radii.y || absf(q.z) >= res.radii.z {
@@ -170,7 +170,7 @@ fn ruleDisplacement(r &Influence, res &Resolved, spec &FaceSpec, p Vec3) Vec3 {
 }
 
 // Build the targets of 'units' over 'mesh' (which needs normals), with 'spec'
-pub fn buildTargets(mesh &Mesh, spec &FaceSpec, units &List[UnitDef]) FaceTargets {
+pub fn buildTargets(mesh: &Mesh, spec: &FaceSpec, units: &List[UnitDef]) FaceTargets {
   let n = mesh.positions.len();
   var out = new FaceTargets(n, List[i32].empty(), List[String].empty(), List[u32].empty(), List[u32].empty(),
     List[Vec3].empty(), List[Vec3].empty(), List[f32].empty());
@@ -340,7 +340,7 @@ pub fn buildTargets(mesh &Mesh, spec &FaceSpec, units &List[UnitDef]) FaceTarget
 }
 
 // A list sorted ascending (an insertion into runs would do; a merge sort keeps big faces quick)
-fn sortedAscending(list &List[u32]) List[u32] {
+fn sortedAscending(list: &List[u32]) List[u32] {
   let n = list.len();
   var a = List[u32].empty();
   var i = 0usize;

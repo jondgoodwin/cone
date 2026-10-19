@@ -49,37 +49,37 @@ import time use Duration, Instant;
 
 // Windows'
 extern {
-  fn @c(system) ExitProcess(code u32);
-  fn @c(system) Sleep(ms u32);
+  fn @c(system) ExitProcess(code: u32);
+  fn @c(system) Sleep(ms: u32);
   fn @c(system) GetCurrentProcessId() u32;
-  fn @c(system) OpenProcess(access u32, inherit i32, pid u32) usize;
-  fn @c(system) WaitForSingleObject(h usize, ms u32) u32;
-  fn @c(system) CloseHandle(h usize) i32;
-  fn @c(system) GetEnvironmentVariableW(name *u16, buf *u16, size u32) u32;
+  fn @c(system) OpenProcess(access: u32, inherit: i32, pid: u32) usize;
+  fn @c(system) WaitForSingleObject(h: usize, ms: u32) u32;
+  fn @c(system) CloseHandle(h: usize) i32;
+  fn @c(system) GetEnvironmentVariableW(name: *u16, buf: *u16, size: u32) u32;
   fn @c(system) DebugBreak();
 }
 
 // POSIX's
 extern {
   fn @c getpid() i32;
-  fn @c usleep(us u32) i32;
-  fn @c _exit(code i32);
-  fn @c kill(pid i32, signal i32) i32;
-  fn @c raise(signal i32) i32;
+  fn @c usleep(us: u32) i32;
+  fn @c _exit(code: i32);
+  fn @c kill(pid: i32, signal: i32) i32;
+  fn @c raise(signal: i32) i32;
 }
 
 const synchronize = 0x100000u32;     // SYNCHRONIZE
 
 // The answer for this system: Windows' or POSIX's
-fn os(windows &str, posix &str) &str { if isWindows() {windows} else {posix} }
-fn osCode(windows u64, posix u64) u64 { if isWindows() {windows} else {posix} }
+fn os(windows: &str, posix: &str) &str { if isWindows() {windows} else {posix} }
+fn osCode(windows: u64, posix: u64) u64 { if isWindows() {windows} else {posix} }
 
 // A line end as the C runtime's text mode writes it: '\r\n' on Windows
 fn eol() &str { os("\r\n", "\n") }
 
 // The folder under which the test works: TEMP's on Windows, TMPDIR's or /tmp
 fn tempText() String {
-  var variable cstr = "TMPDIR";
+  var variable: cstr = "TMPDIR";
   if isWindows() { variable = "TEMP"; }
   let temp = libc.getenv(variable);
   require(temp != null || !isWindows(), "TEMP is set");
@@ -87,7 +87,7 @@ fn tempText() String {
 }
 
 // A system's own spelling of a program to sleep, in milliseconds
-fn pause(ms u32) {
+fn pause(ms: u32) {
   if isWindows() {Sleep(ms);} else {usleep(ms * 1000u32);}
 }
 
@@ -98,17 +98,17 @@ fn processId() u32 {
 
 // -------- the child --------
 
-fn out(s &Array[u8]) { libc.fwrite(s as *u8, 1usize, s.len, libc.stdout()); }
-fn err(s &Array[u8]) { libc.fwrite(s as *u8, 1usize, s.len, libc.stderr()); }
+fn out(s: &Array[u8]) { libc.fwrite(s as *u8, 1usize, s.len, libc.stdout()); }
+fn err(s: &Array[u8]) { libc.fwrite(s as *u8, 1usize, s.len, libc.stderr()); }
 
-fn number(s &String) u64 {
+fn number(s: &String) u64 {
   match parseUInt(s.view()) {
     case let n Some { n }
     case is None { 0u64 }
   }
 }
 
-fn isAscii(s &Array[u8]) bool {
+fn isAscii(s: &Array[u8]) bool {
   var i = 0usize;
   while i < s.len {
     if s[i] >= 0x80u8 { return false; }
@@ -119,7 +119,7 @@ fn isAscii(s &Array[u8]) bool {
 
 // The child's arguments, each in hex followed by a ','. Where every one is ASCII,
 // the C runtime's own argv must agree with Windows' parser, or it exits 9.
-fn childArgs(a &List[String], argc i32, argv **u8) i32 {
+fn childArgs(a: &List[String], argc: i32, argv: **u8) i32 {
   var ascii = true;
   var i = 0usize;
   while i < a.len() {
@@ -153,7 +153,7 @@ fn childArgs(a &List[String], argc i32, argv **u8) i32 {
 
 // Bytes as hex, two digits each, so that nothing the C runtime's text mode
 // does to a line end can change them on the way back
-fn hexOf(s &Array[u8]) String {
+fn hexOf(s: &Array[u8]) String {
   var h = String.empty();
   var i = 0usize;
   while i < s.len {
@@ -165,9 +165,9 @@ fn hexOf(s &Array[u8]) String {
 
 // n bytes to each stream, 4096 at a time, in turns: stdout cycles 'a' to 'z'
 // by chunk, stderr 'A' to 'Z'
-fn childStreams(n usize) i32 {
+fn childStreams(n: usize) i32 {
   var chunk = new Array[u8, 4096] <- fill 0u8;
-  let cp *u8 = &[]chunk as *u8;
+  let cp: *u8 = &[]chunk as *u8;
   var done = 0usize;
   var k = 0usize;
   while done < n {
@@ -184,7 +184,7 @@ fn childStreams(n usize) i32 {
   0i32
 }
 
-fn child(a &List[String], argc i32, argv **u8) i32 {
+fn child(a: &List[String], argc: i32, argv: **u8) i32 {
   let mode = a[2usize];
   if mode.equals("args") { return childArgs(a, argc, argv); }
   if mode.equals("hello") {
@@ -244,7 +244,7 @@ fn child(a &List[String], argc i32, argv **u8) i32 {
   }
   if mode.equals("stdin") {
     var buf = new Array[u8, 256] <- fill 0u8;
-    let bp *u8 = &[]buf as *u8;
+    let bp: *u8 = &[]buf as *u8;
     var total = 0u64;
     var n = libc.fread(bp, 1usize, 256usize, libc.stdin());
     while n > 0usize {
@@ -316,7 +316,7 @@ fn child(a &List[String], argc i32, argv **u8) i32 {
 
 // The test's folder: TEMP's absolute path and the name, after checking
 // that it is that and nothing shorter
-fn makeRoot(name &str) Path {
+fn makeRoot(name: &str) Path {
   let tempText = tempText();
   let tempPath = Path.from(tempText.view());
   var root = Path.from("");
@@ -331,7 +331,7 @@ fn makeRoot(name &str) Path {
 }
 
 // This executable, '--child' and a mode
-fn childCommand(exe &str, mode &str) List[String] {
+fn childCommand(exe: &str, mode: &str) List[String] {
   var c = List[String].empty();
   c.push(String.from(exe));
   c.push(String.from("--child"));
@@ -344,7 +344,7 @@ fn emptyOutput() process.Output {
 }
 
 // The Output of a run that must have started
-fn ran(r Result[process.Output, process.ProcessError], label &Array[u8]) process.Output {
+fn ran(r: Result[process.Output, process.ProcessError], label: &Array[u8]) process.Output {
   var o = emptyOutput();
   match r {
     case var ok Ok { o <=> ok; }
@@ -358,7 +358,7 @@ fn ran(r Result[process.Output, process.ProcessError], label &Array[u8]) process
 
 // The message of a run that must have failed, with the strings named
 // replaced, and its code
-fn failedWith(r Result[process.Output, process.ProcessError], exe &str, root &str, code u32, want &Array[u8], label &Array[u8]) {
+fn failedWith(r: Result[process.Output, process.ProcessError], exe: &str, root: &str, code: u32, want: &Array[u8], label: &Array[u8]) {
   match r {
     case let e Error {
       var m = e.message();
@@ -373,7 +373,7 @@ fn failedWith(r Result[process.Output, process.ProcessError], exe &str, root &st
 
 // -------- the parent: the checks --------
 
-fn captured(exe &str) {
+fn captured(exe: &str) {
   let c = childCommand(exe, "hello");
   let o = ran(process.run(c.view()), "hello");
   // The C runtime's standard output is in text mode on Windows: '\n' goes out
@@ -385,7 +385,7 @@ fn captured(exe &str) {
   expectBool(o.timedOut, false, "hello in time");
 }
 
-fn exitsWith(exe &str, code u64) {
+fn exitsWith(exe: &str, code: u64) {
   var c = childCommand(exe, "exit");
   var n = String.empty();
   n.appendUInt(code);
@@ -401,7 +401,7 @@ fn exitsWith(exe &str, code u64) {
   expectStr(o.stdout.view(), "", label.view());
 }
 
-fn exitCodes(exe &str) {
+fn exitCodes(exe: &str) {
   exitsWith(exe, 0u64);
   exitsWith(exe, 1u64);
   exitsWith(exe, 255u64);
@@ -411,7 +411,7 @@ fn exitCodes(exe &str) {
   exitsWith(exe, osCode(4294967295u64, 2u64));
 }
 
-fn panics(exe &str) {
+fn panics(exe: &str) {
   let c = childCommand(exe, "panic");
   let o = ran(process.run(c.view()), "panic");
   // abort, which a Cone panic ends in: the fast-fail code, 0xC0000409; on
@@ -428,7 +428,7 @@ fn panics(exe &str) {
 
 // With 'crashReport: false': a crash ends the child here, with the exit
 // code Windows would have given it, and everything else is as without it
-fn crashesUnreported(exe &str) {
+fn crashesUnreported(exe: &str) {
   let c = childCommand(exe, "panic");
   let o = ran(process.run(c.view(), new process.Options(crashReport: false)), "unreported panic");
   expectUInt(u64.from(o.exitCode), osCode(3221226505u64, 134u64), "an unreported panic's exit code");
@@ -488,7 +488,7 @@ fn crashesUnreported(exe &str) {
     "stopped after 300 ms, not 10 s, crashes unreported");
 }
 
-fn bigStreams(exe &str) {
+fn bigStreams(exe: &str) {
   let size = 1048576usize;
   var c = childCommand(exe, "streams");
   c.push(String.from("1048576"));
@@ -506,7 +506,7 @@ fn bigStreams(exe &str) {
   expectBool(right, true, "each megabyte byte for byte, in order");
 }
 
-fn timesOut(exe &str) {
+fn timesOut(exe: &str) {
   var c = childCommand(exe, "sleep");
   c.push(String.from("10000"));
   let began = Instant.now();
@@ -530,7 +530,7 @@ fn timesOut(exe &str) {
 
 // A child that starts a grandchild and waits for it: the time limit stops
 // both, and the grandchild's process is gone after
-fn treeStopped(exe &str, root &Path) {
+fn treeStopped(exe: &str, root: &Path) {
   let idFile = root.join("grandchild.txt");
   var c = childCommand(exe, "tree");
   c.push(String.from(idFile.view()));
@@ -569,7 +569,7 @@ fn treeStopped(exe &str, root &Path) {
   expectBool(gone, true, "the grandchild stopped with it");
 }
 
-fn workingFolder(exe &str, root &Path) {
+fn workingFolder(exe: &str, root: &Path) {
   let c = childCommand(exe, "cwd");
   // A Path variable, lent: the same one is given again below
   let o = ran(process.run(c.view(), new process.Options(), root), "cwd");
@@ -653,13 +653,13 @@ fn workingFolder(exe &str, root &Path) {
   expectStr(empty.stdout.view(), here.stdout.view(), "an empty Path is this program's folder");
 }
 
-fn standardInput(exe &str) {
+fn standardInput(exe: &str) {
   let c = childCommand(exe, "stdin");
   let o = ran(process.run(c.view()), "stdin");
   expectStr(o.stdout.view(), "0", "standard input is NUL: nothing to read");
 }
 
-fn environment(exe &str) {
+fn environment(exe: &str) {
   env.set("CONE_PROCESS_TEST", "inherited, é 日本");
   var c = childCommand(exe, "env");
   c.push(String.from("CONE_PROCESS_TEST"));
@@ -681,8 +681,8 @@ fn environment(exe &str) {
 }
 
 // Every string of up to four of these
-fn allStrings(list &mut List[String]) {
-  let alphabet &Array[u8] = "a \t\"\\";
+fn allStrings(list: &mut List[String]) {
+  let alphabet: &Array[u8] = "a \t\"\\";
   list.push(String.empty());
   var from = 0usize;
   var len = 1usize;
@@ -705,7 +705,7 @@ fn allStrings(list &mut List[String]) {
 }
 
 // What the child printed, split after each ','
-fn splitComma(s &String) List[String] {
+fn splitComma(s: &String) List[String] {
   var parts = List[String].empty();
   var start = 0usize;
   var i = 0usize;
@@ -719,7 +719,7 @@ fn splitComma(s &String) List[String] {
   parts
 }
 
-fn roundTrip(exe &str, items &List[String], label &Array[u8]) {
+fn roundTrip(exe: &str, items: &List[String], label: &Array[u8]) {
   var c = childCommand(exe, "args");
   var i = 0usize;
   while i < items.len() {
@@ -750,7 +750,7 @@ fn roundTrip(exe &str, items &List[String], label &Array[u8]) {
   expectUInt(u64.from(wrong), 0u64, label);
 }
 
-fn arguments(exe &str) {
+fn arguments(exe: &str) {
   var every = List[String].empty();
   allStrings(&mut every);
   expectUInt(u64.from(every.len()), 781u64, "every string of up to four");
@@ -769,7 +769,7 @@ fn arguments(exe &str) {
   roundTrip(exe, &some, "UTF-8, paths, quotes, the empty string, a line break");
 }
 
-fn rawLine(exe &str) {
+fn rawLine(exe: &str) {
   // The program quoted, then arguments as the line writes them
   var line = String.from("\"");
   line.append(exe);
@@ -787,7 +787,7 @@ fn rawLine(exe &str) {
   }
 }
 
-fn inherited(exe &str) {
+fn inherited(exe: &str) {
   // The child writes into this test's own output, which its .out pins
   stdio.printStr("a child sharing this output:\n");
   stdio.printFlush();
@@ -798,7 +798,7 @@ fn inherited(exe &str) {
   expectStr(o.stderr.view(), "", "nothing captured from stderr when inherited");
 }
 
-fn failures(exe &str, root &Path) {
+fn failures(exe: &str, root: &Path) {
   var none = List[String].empty();
   none.push(String.from("cone-process-test-no-such-program"));
   let r = process.run(none.view());
@@ -874,7 +874,7 @@ fn failures(exe &str, root &Path) {
        "run a\"b: No such file or directory"), "a quote in the program");
 }
 
-fn me(exe &Path) {
+fn me(exe: &Path) {
   expectBool(exe.isAbsolute(), true, "currentExe is absolute");
   expectStr(exe.name(), os("children.exe", "children"), "currentExe names this test");
   expect(!exe.view().contains("\\"), "currentExe is normalized");
@@ -882,7 +882,7 @@ fn me(exe &Path) {
   expectBool(a.len() == 1usize, true, "this test is run with no arguments");
 }
 
-fn main(argc i32, argv **u8) i32 {
+fn main(argc: i32, argv: **u8) i32 {
   let a = process.args();
   if a.len() >= 3usize && a[1usize].equals("--child") { return child(&a, argc, argv); }
 

@@ -81,49 +81,49 @@ pub const defaultLimit = 1048576usize;
 
 // An event (see the package's header, EVENTS)
 pub struct Event {
-  pub name String;      // the event type; empty is "message"
-  pub data String;
-  pub id String;        // the stream's last event id when it was dispatched; empty if none
-  pub retry i64;        // the reconnection time this event's block set, in milliseconds; -1 for none
+  pub name: String;      // the event type; empty is "message"
+  pub data: String;
+  pub id: String;        // the stream's last event id when it was dispatched; empty if none
+  pub retry: i64;        // the reconnection time this event's block set, in milliseconds; -1 for none
 
   // An event of the default type
-  pub fn message(data &str) Event {
+  pub fn message(data: &str) Event {
     new Event(String.empty(), String.from(data), String.empty(), -1i64)
   }
 
   // An event of a type
-  pub fn named(name &str, data &str) Event {
+  pub fn named(name: &str, data: &str) Event {
     new Event(String.from(name), String.from(data), String.empty(), -1i64)
   }
 
   // The same with an id
-  pub fn withId(self, id &str) Event {
+  pub fn withId(self, id: &str) Event {
     var e = self;
     e.id = String.from(id);
     e
   }
 
   // The same telling the client to reconnect after ms milliseconds
-  pub fn withRetry(self, ms i64) Event {
+  pub fn withRetry(self, ms: i64) Event {
     var e = self;
     e.retry = ms;
     e
   }
 
   // Its type, "message" for the default
-  pub fn kind(self &) &str {
+  pub fn kind(self: &) &str {
     if name.len() == 0usize {"message"} else {name.view()}
   }
 
   // The bytes a server sends for it
-  pub fn encode(self &) String {
+  pub fn encode(self: &) String {
     var out = String.empty();
     self.encodeInto(&mut out);
     out
   }
 
   // The same, appended to out
-  pub fn encodeInto(self &, out &mut String) {
+  pub fn encodeInto(self: &, out: &mut String) {
     if name.len() > 0usize {
       let clean = cleaned(name.view(), false);
       out.append("event: ");
@@ -148,7 +148,7 @@ pub struct Event {
 }
 
 // text without its CRs and LFs (and NULs, for an id)
-fn cleaned(text &Array[u8], dropNul bool) String {
+fn cleaned(text: &Array[u8], dropNul: bool) String {
   var out = String.empty();
   var i = 0usize;
   while i < text.len {
@@ -160,7 +160,7 @@ fn cleaned(text &Array[u8], dropNul bool) String {
 }
 
 // One 'field: line' line for each line of text (at least one)
-fn linesOf(field &str, text &Array[u8]) String {
+fn linesOf(field: &str, text: &Array[u8]) String {
   var out = String.empty();
   var start = 0usize;
   var i = 0usize;
@@ -185,7 +185,7 @@ fn linesOf(field &str, text &Array[u8]) String {
 }
 
 // A comment block (see the package's header, COMMENTS): ':' lines and an empty line
-pub fn comment(text &str) String {
+pub fn comment(text: &str) String {
   var out = linesOf("", text);
   out.appendByte(lf);
   out
@@ -197,41 +197,41 @@ pub fn comment(text &str) String {
 
 // Reads an event stream a piece at a time (see the package's header, READING)
 pub struct Reader {
-  line String;           // the line being read
-  eventType String;      // the block's event field
-  dataBuf String;        // the block's data lines, each followed by an LF
-  dataSet bool;          // a data line was seen in the block
-  seenId String;         // the stream's last event id
-  blockRetry i64;        // the block's retry, or -1
-  reconnect i64;         // the stream's reconnection time, or -1
-  afterCr bool;          // the last byte was a CR: an LF now is the same line ending
-  first bool;            // the first line has not been read: a byte order mark may start it
-  limit usize;
-  over bool;
+  line: String;           // the line being read
+  eventType: String;      // the block's event field
+  dataBuf: String;        // the block's data lines, each followed by an LF
+  dataSet: bool;          // a data line was seen in the block
+  seenId: String;         // the stream's last event id
+  blockRetry: i64;        // the block's retry, or -1
+  reconnect: i64;         // the stream's reconnection time, or -1
+  afterCr: bool;          // the last byte was a CR: an LF now is the same line ending
+  first: bool;            // the first line has not been read: a byte order mark may start it
+  limit: usize;
+  over: bool;
 
   // A Reader with the default bound
   pub fn make() Reader {Reader.withLimit(defaultLimit)}
 
   // A Reader holding at most limit bytes of line and gathered data
-  pub fn withLimit(limit usize) Reader {
+  pub fn withLimit(limit: usize) Reader {
     new Reader(String.empty(), String.empty(), String.empty(), false, String.empty(), -1i64, -1i64, false, true,
       limit, false)
   }
 
   // The id of the last event the stream set (empty if none)
-  pub fn lastId(self &) &str {seenId.view()}
+  pub fn lastId(self: &) &str {seenId.view()}
 
   // The reconnection time the stream set, in milliseconds; -1 if it set none
-  pub fn retryMillis(self &) i64 {reconnect}
+  pub fn retryMillis(self: &) i64 {reconnect}
 
   // Whether the stream passed the bound: the Reader takes no more
-  pub fn overflowed(self &) bool {over}
+  pub fn overflowed(self: &) bool {over}
 
   // The bytes held now: a partial line and the data gathered
-  pub fn pending(self &) usize {line.len() + dataBuf.len()}
+  pub fn pending(self: &) usize {line.len() + dataBuf.len()}
 
   // Take the next bytes of the stream; the events they complete are appended to out
-  pub fn feed(self &mut, bytes &Array[u8], out &mut List[Event]) {
+  pub fn feed(self: &mut, bytes: &Array[u8], out: &mut List[Event]) {
     var i = 0usize;
     while i < bytes.len {
       if over {return;}
@@ -252,7 +252,7 @@ pub struct Reader {
   }
 
   // A line is whole
-  fn endLine(self &mut, out &mut List[Event]) {
+  fn endLine(self: &mut, out: &mut List[Event]) {
     // The line is moved out so that the fields can be changed while it is read
     var cur = String.empty();
     cur <=> line;
@@ -280,7 +280,7 @@ pub struct Reader {
     }
   }
 
-  fn field(self &mut, name &Array[u8], value &Array[u8]) {
+  fn field(self: &mut, name: &Array[u8], value: &Array[u8]) {
     if same(name, "data") {
       dataBuf.appendBytes(value);
       dataBuf.appendByte(lf);
@@ -319,7 +319,7 @@ pub struct Reader {
   }
 
   // An empty line: the block's event, if it had data
-  fn dispatch(self &mut, out &mut List[Event]) {
+  fn dispatch(self: &mut, out: &mut List[Event]) {
     if dataSet {
       var d = String.empty();
       d <=> dataBuf;
@@ -336,7 +336,7 @@ pub struct Reader {
 }
 
 // Whether a field name is the lower-case word
-fn same(name &Array[u8], word &str) bool {
+fn same(name: &Array[u8], word: &str) bool {
   let w = word as &Array[u8];
   if name.len != w.len {return false;}
   var i = 0usize;

@@ -30,26 +30,26 @@ import geomath use *;
 import spatialindex use *;
 
 struct Rng {
-  s u64;
-  fn next(self &mut) u64 {
+  s: u64;
+  fn next(self: &mut) u64 {
     s = s ^ (s >> 12u64);
     s = s ^ (s << 25u64);
     s = s ^ (s >> 27u64);
     s * 2685821657736338717u64
   }
-  fn unit(self &mut) f32 {f32.from(next() >> 40u64) / 16777216.}
-  fn range(self &mut, lo f32, hi f32) f32 {lo + (hi - lo) * unit()}
+  fn unit(self: &mut) f32 {f32.from(next() >> 40u64) / 16777216.}
+  fn range(self: &mut, lo: f32, hi: f32) f32 {lo + (hi - lo) * unit()}
 }
 
 struct Queries {
-  boxes List[Aabb3];
-  spheres List[Sphere];
-  rays List[Ray3];
-  points List[Vec3];
-  frusta List[Frustum];
+  boxes: List[Aabb3];
+  spheres: List[Sphere];
+  rays: List[Ray3];
+  points: List[Vec3];
+  frusta: List[Frustum];
 }
 
-fn report(structure &str, scene &str, what &str, ns i64, ops usize, count i64) {
+fn report(structure: &str, scene: &str, what: &str, ns: i64, ops: usize, count: i64) {
   printStr(structure);
   printStr(" | ");
   printStr(scene);
@@ -64,9 +64,9 @@ fn report(structure &str, scene &str, what &str, ns i64, ops usize, count i64) {
   printStr("\n");
 }
 
-fn v3(x f32, y f32, z f32) Vec3 {new Vec3(x, y, z)}
+fn v3(x: f32, y: f32, z: f32) Vec3 {new Vec3(x, y, z)}
 
-fn uniformScene(rng &mut Rng, n usize, world f32) List[Aabb3] {
+fn uniformScene(rng: &mut Rng, n: usize, world: f32) List[Aabb3] {
   var out = List[Aabb3].withCapacity(n);
   var i = 0usize;
   while i < n {
@@ -77,7 +77,7 @@ fn uniformScene(rng &mut Rng, n usize, world f32) List[Aabb3] {
   out
 }
 
-fn clusteredScene(rng &mut Rng, n usize, world f32) List[Aabb3] {
+fn clusteredScene(rng: &mut Rng, n: usize, world: f32) List[Aabb3] {
   var centres = List[Vec3].empty();
   var k = 0;
   while k < 25 {
@@ -98,7 +98,7 @@ fn clusteredScene(rng &mut Rng, n usize, world f32) List[Aabb3] {
   out
 }
 
-fn makeQueries(rng &mut Rng, world f32, count usize) Queries {
+fn makeQueries(rng: &mut Rng, world: f32, count: usize) Queries {
   var q = new Queries(List[Aabb3].empty(), List[Sphere].empty(), List[Ray3].empty(), List[Vec3].empty(), List[Frustum].empty());
   var i = 0usize;
   while i < count {
@@ -122,7 +122,7 @@ fn makeQueries(rng &mut Rng, world f32, count usize) Queries {
 }
 
 // The BVH's other way in: the whole scene at once, built by binned SAH
-fn bulkBvh(scene &str, boxes &List[Aabb3], q &Queries, world f32) {
+fn bulkBvh(scene: &str, boxes: &List[Aabb3], q: &Queries, world: f32) {
   var idx = Bvh[u64].create(0.);
   var handles = List[u64].withCapacity(boxes.len());
   var i = 0usize;
@@ -135,7 +135,7 @@ fn bulkBvh(scene &str, boxes &List[Aabb3], q &Queries, world f32) {
   idx.insertBulk(boxes.view(), handles.view(), &mut proxies);
   report("BVH", scene, "bulk SAH build", t.elapsed().nanos(), boxes.len(), i64.from(idx.len()));
   var hits = 0i64;
-  var cb = fn(h u64, p Proxy) bool { hits = hits + 1i64; true };
+  var cb = fn(h: u64, p: Proxy) bool { hits = hits + 1i64; true };
   let t2 = Instant.now();
   i = 0usize;
   while i < q.boxes.len() {
@@ -152,7 +152,7 @@ fn bulkBvh(scene &str, boxes &List[Aabb3], q &Queries, world f32) {
 
 // The dynamic tree's shape against the bulk one: built by inserts in random
 // order, its quality and query cost, then after 'rebuild' (binned SAH again)
-fn dynamicBvh(scene &str, boxes &List[Aabb3], q &Queries) {
+fn dynamicBvh(scene: &str, boxes: &List[Aabb3], q: &Queries) {
   var idx = Bvh[u64].create(0.);
   var i = 0usize;
   while i < boxes.len() {
@@ -167,7 +167,7 @@ fn dynamicBvh(scene &str, boxes &List[Aabb3], q &Queries) {
   printInt(i64.from(idx.height()));
   printStr("\n");
   var hits = 0i64;
-  var cb = fn(h u64, p Proxy) bool { hits = hits + 1i64; true };
+  var cb = fn(h: u64, p: Proxy) bool { hits = hits + 1i64; true };
   let t1 = Instant.now();
   i = 0usize;
   while i < q.boxes.len() {
@@ -188,7 +188,7 @@ fn dynamicBvh(scene &str, boxes &List[Aabb3], q &Queries) {
   report("BVH", scene, "box overlap, after rebuild", t3.elapsed().nanos(), q.boxes.len(), hits);
 }
 
-fn scene(rng &mut Rng, name &str, n usize, clustered bool, pairsToo bool) {
+fn scene(rng: &mut Rng, name: &str, n: usize, clustered: bool, pairsToo: bool) {
   let world = 10. * libc.powf(f32.from(n), 0.33333334);
   let boxes = if clustered {clusteredScene(rng, n, world)} else {uniformScene(rng, n, world)};
   let q = makeQueries(rng, world, 10000usize);
@@ -217,7 +217,7 @@ fn main() i32 {
 // One structure's run over one scene: build, then each kind of query, then
 // moving a tenth of the items, then pair finding. 'Bvh' and 'Bvh[u64]' and
 // 'Bvh[u64].create(0.)' are filled in by the generator that wrote this copy.
-fn driveBvh(scene &str, boxes &List[Aabb3], world f32, q &Queries, pairsToo bool) {
+fn driveBvh(scene: &str, boxes: &List[Aabb3], world: f32, q: &Queries, pairsToo: bool) {
   var idx = Bvh[u64].create(0.);
   let n = boxes.len();
   var proxies = List[Proxy].withCapacity(n);
@@ -231,7 +231,7 @@ fn driveBvh(scene &str, boxes &List[Aabb3], world f32, q &Queries, pairsToo bool
 
   // boxes
   var hits = 0i64;
-  var cb = fn(h u64, p Proxy) bool { hits = hits + 1i64; true };
+  var cb = fn(h: u64, p: Proxy) bool { hits = hits + 1i64; true };
   t = Instant.now();
   i = 0usize;
   while i < q.boxes.len() {
@@ -262,7 +262,7 @@ fn driveBvh(scene &str, boxes &List[Aabb3], world f32, q &Queries, pairsToo bool
   report("Bvh", scene, "ray nearest", t.elapsed().nanos(), q.rays.len(), found);
 
   var rhits = 0i64;
-  var rcb = fn(h u64, p Proxy, t f32) bool { rhits = rhits + 1i64; true };
+  var rcb = fn(h: u64, p: Proxy, t: f32) bool { rhits = rhits + 1i64; true };
   t = Instant.now();
   i = 0usize;
   while i < q.rays.len() {
@@ -329,7 +329,7 @@ fn driveBvh(scene &str, boxes &List[Aabb3], world f32, q &Queries, pairsToo bool
 // One structure's run over one scene: build, then each kind of query, then
 // moving a tenth of the items, then pair finding. 'Octree' and 'LooseOctree[u64]' and
 // 'LooseOctree[u64].create(v3(world * 0.5, world * 0.5, world * 0.5), world * 0.55, 10i32, 2.)' are filled in by the generator that wrote this copy.
-fn driveOctree(scene &str, boxes &List[Aabb3], world f32, q &Queries, pairsToo bool) {
+fn driveOctree(scene: &str, boxes: &List[Aabb3], world: f32, q: &Queries, pairsToo: bool) {
   var idx = LooseOctree[u64].create(v3(world * 0.5, world * 0.5, world * 0.5), world * 0.55, 10i32, 2.);
   let n = boxes.len();
   var proxies = List[Proxy].withCapacity(n);
@@ -343,7 +343,7 @@ fn driveOctree(scene &str, boxes &List[Aabb3], world f32, q &Queries, pairsToo b
 
   // boxes
   var hits = 0i64;
-  var cb = fn(h u64, p Proxy) bool { hits = hits + 1i64; true };
+  var cb = fn(h: u64, p: Proxy) bool { hits = hits + 1i64; true };
   t = Instant.now();
   i = 0usize;
   while i < q.boxes.len() {
@@ -374,7 +374,7 @@ fn driveOctree(scene &str, boxes &List[Aabb3], world f32, q &Queries, pairsToo b
   report("Octree", scene, "ray nearest", t.elapsed().nanos(), q.rays.len(), found);
 
   var rhits = 0i64;
-  var rcb = fn(h u64, p Proxy, t f32) bool { rhits = rhits + 1i64; true };
+  var rcb = fn(h: u64, p: Proxy, t: f32) bool { rhits = rhits + 1i64; true };
   t = Instant.now();
   i = 0usize;
   while i < q.rays.len() {
@@ -441,7 +441,7 @@ fn driveOctree(scene &str, boxes &List[Aabb3], world f32, q &Queries, pairsToo b
 // One structure's run over one scene: build, then each kind of query, then
 // moving a tenth of the items, then pair finding. 'Grid' and 'HashGrid[u64]' and
 // 'HashGrid[u64].create(3.)' are filled in by the generator that wrote this copy.
-fn driveGrid(scene &str, boxes &List[Aabb3], world f32, q &Queries, pairsToo bool) {
+fn driveGrid(scene: &str, boxes: &List[Aabb3], world: f32, q: &Queries, pairsToo: bool) {
   var idx = HashGrid[u64].create(3.);
   let n = boxes.len();
   var proxies = List[Proxy].withCapacity(n);
@@ -455,7 +455,7 @@ fn driveGrid(scene &str, boxes &List[Aabb3], world f32, q &Queries, pairsToo boo
 
   // boxes
   var hits = 0i64;
-  var cb = fn(h u64, p Proxy) bool { hits = hits + 1i64; true };
+  var cb = fn(h: u64, p: Proxy) bool { hits = hits + 1i64; true };
   t = Instant.now();
   i = 0usize;
   while i < q.boxes.len() {
@@ -486,7 +486,7 @@ fn driveGrid(scene &str, boxes &List[Aabb3], world f32, q &Queries, pairsToo boo
   report("Grid", scene, "ray nearest", t.elapsed().nanos(), q.rays.len(), found);
 
   var rhits = 0i64;
-  var rcb = fn(h u64, p Proxy, t f32) bool { rhits = rhits + 1i64; true };
+  var rcb = fn(h: u64, p: Proxy, t: f32) bool { rhits = rhits + 1i64; true };
   t = Instant.now();
   i = 0usize;
   while i < q.rays.len() {

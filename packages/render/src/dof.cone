@@ -7,21 +7,21 @@
 
 // How depth of field is done: the camera, and the quality
 pub struct DofSettings {
-  pub enabled bool = false;
+  pub enabled: bool = false;
   // The distance in focus (metres), and the lens: its f-number (the lower, the
   // shallower the field: 1.4 to 22) and its focal length (metres)
-  pub focusDistance f32 = 10.;
-  pub aperture f32 = 2.8;
-  pub focalLength f32 = 0.05;
+  pub focusDistance: f32 = 10.;
+  pub aperture: f32 = 2.8;
+  pub focalLength: f32 = 0.05;
   // The sensor's height (metres): 0.024 is full frame
-  pub sensorHeight f32 = 0.024;
+  pub sensorHeight: f32 = 0.024;
   // The largest circle of confusion's diameter, in pixels at 1080 lines (scaled
   // for other heights): bounds the gather
-  pub maxCoc f32 = 14.;
+  pub maxCoc: f32 = 14.;
   // 1 as the lens says; more exaggerates it, 0 turns it off
-  pub strength f32 = 1.;
+  pub strength: f32 = 1.;
   // Taps of the gather (a Vogel disc): more is smoother
-  pub taps u32 = 32u32;
+  pub taps: u32 = 32u32;
 
   // 48 taps: for a discrete GPU
   pub fn high() DofSettings { new DofSettings(enabled: true, taps: 48u32) }
@@ -33,32 +33,32 @@ pub struct DofSettings {
 
 // What the passes' immediates hold (dof.slang's DofImmediates)
 struct DofImmediates {
-  focusDistance f32;
-  apertureDiameter f32;
-  focalLength f32;
-  cocScale f32;
-  maxCoc f32;
-  strength f32;
-  taps u32;
-  noise f32;
+  focusDistance: f32;
+  apertureDiameter: f32;
+  focalLength: f32;
+  cocScale: f32;
+  maxCoc: f32;
+  strength: f32;
+  taps: u32;
+  noise: f32;
 }
 
 pub struct DofPass {
-  pub shader ShaderModule;
-  pub layout BindGroupLayout;
-  pub pipelineLayout PipelineLayout;
-  pub preparePipeline RenderPipeline;
-  pub gatherPipeline RenderPipeline;
-  pub compositePipeline RenderPipeline;
-  pub sampler Sampler;
-  pub prepared Texture;            // half resolution: the frame, with each pixel's circle of confusion
-  pub blurred Texture;             // half resolution: gathered
-  pub output Texture;              // full resolution: the composite
-  pub groupPrepare BindGroup;
-  pub groupGather BindGroup;
-  pub groupComposite BindGroup;
+  pub shader: ShaderModule;
+  pub layout: BindGroupLayout;
+  pub pipelineLayout: PipelineLayout;
+  pub preparePipeline: RenderPipeline;
+  pub gatherPipeline: RenderPipeline;
+  pub compositePipeline: RenderPipeline;
+  pub sampler: Sampler;
+  pub prepared: Texture;            // half resolution: the frame, with each pixel's circle of confusion
+  pub blurred: Texture;             // half resolution: gathered
+  pub output: Texture;              // full resolution: the composite
+  pub groupPrepare: BindGroup;
+  pub groupGather: BindGroup;
+  pub groupComposite: BindGroup;
 
-  pub fn create(device &mut Device, frameBuffer &Buffer, scene &TextureView, depth &TextureView) DofPass {
+  pub fn create(device: &mut Device, frameBuffer: &Buffer, scene: &TextureView, depth: &TextureView) DofPass {
     var shader = device.createShaderModule(&DOF_SPIRV);
     let entries = [new BindGroupLayoutEntry(binding: 0u32, visibility: SHADER_STAGE_FRAGMENT),
       new BindGroupLayoutEntry(binding: 1u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_SAMPLER),
@@ -90,15 +90,15 @@ pub struct DofPass {
       blurred, output, groupPrepare, groupGather, groupComposite)
   }
 
-  pub fn isValid(self &) bool {
+  pub fn isValid(self: &) bool {
     preparePipeline.isValid() && gatherPipeline.isValid() && compositePipeline.isValid() && output.isValid()
       && groupPrepare.isValid()
   }
 
   // The textures for a frame of 'width' by 'height' (tiny when not 'enabled'),
   // reading the frame 'scene' and the depth
-  pub fn remake(self &mut, device &mut Device, enabled bool, width u32, height u32, frameBuffer &Buffer,
-      scene &TextureView, depth &TextureView) {
+  pub fn remake(self: &mut, device: &mut Device, enabled: bool, width: u32, height: u32, frameBuffer: &Buffer,
+      scene: &TextureView, depth: &TextureView) {
     let w = if enabled { width } else { 1u32 };
     let h = if enabled { height } else { 1u32 };
     let hw = if enabled { (width + 1u32) / 2u32 } else { 1u32 };
@@ -118,7 +118,7 @@ pub struct DofPass {
   }
 
   // Blur the frame the groups read into 'output'
-  pub fn record(self &mut, encoder &mut CommandEncoder, s &DofSettings, height u32, frame u32, moving bool) {
+  pub fn record(self: &mut, encoder: &mut CommandEncoder, s: &DofSettings, height: u32, frame: u32, moving: bool) {
     let scale = f32.from(height) / 1080.;
     let noise = if moving { (f32.from(frame % 8u32) + 0.5) / 8. } else { 0. };
     let data = new DofImmediates(s.focusDistance, s.focalLength / s.aperture, s.focalLength,
@@ -129,8 +129,8 @@ pub struct DofPass {
   }
 }
 
-fn dofGroup(device &mut Device, layout &BindGroupLayout, frameBuffer &Buffer, sampler &Sampler, scene &TextureView,
-    depth &TextureView, a &TextureView, b &TextureView) BindGroup {
+fn dofGroup(device: &mut Device, layout: &BindGroupLayout, frameBuffer: &Buffer, sampler: &Sampler, scene: &TextureView,
+    depth: &TextureView, a: &TextureView, b: &TextureView) BindGroup {
   let entries = [BindGroupEntry.buffer(0u32, frameBuffer), BindGroupEntry.sampler(1u32, sampler),
     BindGroupEntry.texture(2u32, scene), BindGroupEntry.texture(3u32, depth), BindGroupEntry.texture(4u32, a),
     BindGroupEntry.texture(5u32, b)];
@@ -139,7 +139,7 @@ fn dofGroup(device &mut Device, layout &BindGroupLayout, frameBuffer &Buffer, sa
 
 // spirv-begin dof.spv DOF_SPIRV
 // Written by tools/shaders/shaders.py from dof.slang (sha256 e2d35327528989bc30915a694020fe7c92ba8c33c1edbc53519ea4f26a2d89cb): do not edit.
-let DOF_SPIRV Array[u32, 3224] = [
+let DOF_SPIRV: Array[u32, 3224] = [
   0x07230203u32, 0x00010500u32, 0x00280000u32, 0x000002b9u32, 0x00000000u32, 0x00020011u32,
   0x00000001u32, 0x0006000bu32, 0x00000085u32, 0x4c534c47u32, 0x6474732eu32, 0x3035342eu32,
   0x00000000u32, 0x0003000eu32, 0x00000000u32, 0x00000001u32, 0x000a000fu32, 0x00000000u32,

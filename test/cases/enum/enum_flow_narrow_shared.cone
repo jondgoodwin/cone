@@ -13,21 +13,21 @@ mod enum_flow_narrow_shared;
 import collections use *;
 
 enum Shape {
-  kind i32;
+  kind: i32;
 
   struct Circle {
-    pub radius i32;
+    pub radius: i32;
   }
 
   struct Rect {
-    pub w i32;
-    h i32;
+    pub w: i32;
+    h: i32;
   }
 }
 use Shape;
 
 // The same name stores another variant over the enum
-fn sameName(s &mut Shape) i32 {
+fn sameName(s: &mut Shape) i32 {
   match s {
     case var c Circle {
       *s = Shape.Rect(1, 2, 3);
@@ -38,11 +38,11 @@ fn sameName(s &mut Shape) i32 {
 }
 
 // A call handed the enum, whose body stores over it
-fn reset(s &mut Shape) {
+fn reset(s: &mut Shape) {
   *s = Shape.Rect(0, 0, 0);
 }
 
-fn viaCall(s &mut Shape) i32 {
+fn viaCall(s: &mut Shape) i32 {
   if let c Circle = s {
     reset(s);
     c.radius                            //~ ErrorVariantReshape "'reset' is handed something that reaches a 'Shape' value"
@@ -51,12 +51,12 @@ fn viaCall(s &mut Shape) i32 {
 }
 
 // ... through what it calls
-fn resetTwice(s &mut Shape) {
+fn resetTwice(s: &mut Shape) {
   reset(s);
   reset(s);
 }
 
-fn viaTwoCalls(s &mut Shape) i32 {
+fn viaTwoCalls(s: &mut Shape) i32 {
   if let c Circle = s {
     resetTwice(s);
     c.radius                            //~ ErrorVariantReshape "'resetTwice' is handed something that reaches a 'Shape' value"
@@ -65,7 +65,7 @@ fn viaTwoCalls(s &mut Shape) i32 {
 }
 
 // Another name for the enum is handed to the call, or stored through
-fn otherName(s &mut Shape, t &mut Shape) i32 {
+fn otherName(s: &mut Shape, t: &mut Shape) i32 {
   match s {
     case let c Circle {
       reset(t);
@@ -75,7 +75,7 @@ fn otherName(s &mut Shape, t &mut Shape) i32 {
   }
 }
 
-fn storeOther(s &mut Shape, t &mut Shape) i32 {
+fn storeOther(s: &mut Shape, t: &mut Shape) i32 {
   match s {
     case let c Circle {
       *t = Shape.Rect(0, 0, 0);
@@ -86,7 +86,7 @@ fn storeOther(s &mut Shape, t &mut Shape) i32 {
 }
 
 // ... or swapped with another value
-fn swapOther(s &mut Shape, t &mut Shape, v Shape) i32 {
+fn swapOther(s: &mut Shape, t: &mut Shape, v: Shape) i32 {
   var u = v;
   match s {
     case let c Circle {
@@ -98,9 +98,9 @@ fn swapOther(s &mut Shape, t &mut Shape, v Shape) i32 {
 }
 
 // A function the compiler cannot see the body of is assumed to
-extern fn mystery(s &mut Shape);
+extern fn mystery(s: &mut Shape);
 
-fn viaUnseen(s &mut Shape) i32 {
+fn viaUnseen(s: &mut Shape) i32 {
   match s {
     case let c Circle {
       mystery(s);
@@ -112,11 +112,11 @@ fn viaUnseen(s &mut Shape) i32 {
 
 // A struct holding the enum is replaced whole
 struct Machine {
-  pub shape Shape;
-  pub count i32;
+  pub shape: Shape;
+  pub count: i32;
 }
 
-fn replaceHolder(m &mut Machine, n Machine) i32 {
+fn replaceHolder(m: &mut Machine, n: Machine) i32 {
   match &m.shape {
     case let c Circle {
       *m = n;
@@ -127,7 +127,7 @@ fn replaceHolder(m &mut Machine, n Machine) i32 {
 }
 
 // The narrowed reference through a 'ro' reference, and a field of a 'mut' one
-fn throughRo(s &Shape, t &mut Shape) i32 {
+fn throughRo(s: &Shape, t: &mut Shape) i32 {
   if let c Circle = s {
     reset(t);
     c.radius                            //~ ErrorVariantReshape "'reset' is handed something that reaches a 'Shape' value"
@@ -135,7 +135,7 @@ fn throughRo(s &Shape, t &mut Shape) i32 {
   else {0}
 }
 
-fn throughField(m &mut Machine) i32 {
+fn throughField(m: &mut Machine) i32 {
   match &mut m.shape {
     case var c Circle {
       m.shape = Shape.Rect(1, 1, 1);
@@ -148,7 +148,7 @@ fn throughField(m &mut Machine) i32 {
 
 // A shared 'Rc[mut, T]' owner's field: another handle stores, or another reference is
 // handed to a call that does
-fn throughOwner(v Shape, t &mut Shape) i32 {
+fn throughOwner(v: Shape, t: &mut Shape) i32 {
   let u = new Rc[mut, Machine](v, 0);
   match &mut u.shape {
     case var c Circle {
@@ -159,7 +159,7 @@ fn throughOwner(v Shape, t &mut Shape) i32 {
   }
 }
 
-fn throughOwnerStore(v Shape) i32 {
+fn throughOwnerStore(v: Shape) i32 {
   let u = new Rc[mut, Machine](v, 0);
   let u2 = u;
   match &mut u.shape {
@@ -178,45 +178,45 @@ enum Slot {
   Empty;
 }
 
-fn first(s &Slot) &i64 {
+fn first(s: &Slot) &i64 {
   match s {
     case let l Full {l[0usize]}
     else {panic("empty")}
   }
 }
 
-fn clear(s &mut Slot) {
+fn clear(s: &mut Slot) {
   *s = Slot.Empty;
 }
 
-fn emptiedUnderneath(a &mut Slot, b &mut Slot) i64 {
+fn emptiedUnderneath(a: &mut Slot, b: &mut Slot) i64 {
   let e = first(a);
   clear(b);
   *e                                    //~ ErrorVariantReshape "'clear' is handed something that reaches a 'Slot' value"
 }
 
 // 'Option[List]' with a 'take' that leaves 'None' behind
-fn take(o &mut Option[List[i64]]) Option[List[i64]] {
-  var t Option[List[i64]] = None;
+fn take(o: &mut Option[List[i64]]) Option[List[i64]] {
+  var t: Option[List[i64]] = None;
   *o <=> t;
   t
 }
 
-fn peek(o &Option[List[i64]]) &i64 {
+fn peek(o: &Option[List[i64]]) &i64 {
   match o {
     case let l Some {l[0usize]}
     else {panic("empty")}
   }
 }
 
-fn tookUnderneath(a &mut Option[List[i64]], b &mut Option[List[i64]]) i64 {
+fn tookUnderneath(a: &mut Option[List[i64]], b: &mut Option[List[i64]]) i64 {
   let e = peek(a);
   let taken = take(b);
   *e                                    //~ ErrorVariantReshape "'take' is handed something that reaches a 'Option' value"
 }
 
 // Matching the 'Option' itself
-fn matchedThenTaken(a &mut Option[List[i64]], b &mut Option[List[i64]]) i64 {
+fn matchedThenTaken(a: &mut Option[List[i64]], b: &mut Option[List[i64]]) i64 {
   match a {
     case let l Some {
       let taken = take(b);

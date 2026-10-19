@@ -13,41 +13,41 @@ mod collection_flow_reshape_global_param;
 
 import collections use *;
 
-struct Item { pub label String; }
+struct Item { pub label: String; }
 
 struct Ed {
-  pub items List[Item];
-  pub fn growFirst(self &mut, s &str) {
+  pub items: List[Item];
+  pub fn growFirst(self: &mut, s: &str) {
     let r = &mut items[0usize];
     r.label.append(s);
   }
 }
 
-var gl Ed;
+var gl: Ed;
 fn @initpure init() { gl = new Ed(List[Item].empty()); }
 
 // A closure in an 'imm' owner, handed on with the view
-struct Holder { pub f Uni[imm, fn(s &str)]; }
-fn useHolder(h &Holder, s &str) { h.f(s); }
+struct Holder { pub f: Uni[imm, fn(s: &str)]; }
+fn useHolder(h: &Holder, s: &str) { h.f(s); }
 
-fn viaHolder(h &Holder, g &mut Ed) {
+fn viaHolder(h: &Holder, g: &mut Ed) {
   useHolder(h, g.items[0usize].label.view());                 //~ ErrorShapeReshape "a 'var' global reaches"
 }
 
 // A '&<fn' handed on with the view
-fn useFn(f &<fn(s &str), s &str) { f(s); }
+fn useFn(f: &<fn(s: &str), s: &str) { f(s); }
 
-fn viaFn(f &<fn(s &str), g &mut Ed) {
+fn viaFn(f: &<fn(s: &str), g: &mut Ed) {
   useFn(f, g.items[0usize].label.view());                     //~ ErrorShapeReshape "a 'var' global reaches"
 }
 
 // The callee called through a '&<fn': its body is not visible
-fn viaInvisible(f &<fn(s &str), g &mut Ed, call &<fn(f &<fn(s &str), s &str)) {
+fn viaInvisible(f: &<fn(s: &str), g: &mut Ed, call: &<fn(f: &<fn(s: &str), s: &str)) {
   call(f, g.items[0usize].label.view());                      //~ ErrorShapeReshape "a 'var' global reaches"
 }
 
 // The view held in a name across a call that runs a closure
-fn held(h &Holder, g &mut Ed) usize {
+fn held(h: &Holder, g: &mut Ed) usize {
   let v = g.items[0usize].label.view();
   useHolder(h, "x");                                          //~ ErrorShapeReshape "a 'var' global reaches"
   v.len

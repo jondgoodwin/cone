@@ -205,7 +205,7 @@ Visibility is checked on the name the caller uses, so an overload set and its ca
 
 Extending a type's overload sets from an extension is intended, but its ownership and collision rules are deferred until extensions are designed. Merging matching `extern` declarations with implementations is likewise deferred.
 
-A generic function or method is a candidate when every one of its type parameters is bound to a function signature (`[F fn(u f32) f32]`, or the same in a `where` clause); any other generic may not name an overload set (`ErrorGenericOverload`), because nothing ranks it against the rest. Such a candidate has no checked signature to compare, so it is judged by its arguments: a parameter that is, or is a reference to, a bound type parameter takes an argument whose type meets the bound, read off it as an inference reads it, and every other parameter is a plain function's. A closure literal among the arguments is matched against the candidates whose parameter there is callable, by parameter count and written types, as it is for any overload, and the generic is then instantiated for the one candidate selected, as a call by its own name instantiates it. Two such candidates a call cannot tell apart are an ambiguity, the error naming both.
+A generic function or method is a candidate when every one of its type parameters is bound to a function signature (`[F: fn(u: f32) f32]`, or the same in a `where` clause); any other generic may not name an overload set (`ErrorGenericOverload`), because nothing ranks it against the rest. Such a candidate has no checked signature to compare, so it is judged by its arguments: a parameter that is, or is a reference to, a bound type parameter takes an argument whose type meets the bound, read off it as an inference reads it, and every other parameter is a plain function's. A closure literal among the arguments is matched against the candidates whose parameter there is callable, by parameter count and written types, as it is for any overload, and the generic is then instantiated for the one candidate selected, as a call by its own name instantiates it. Two such candidates a call cannot tell apart are an ambiguity, the error naming both.
 
 ## Lookup and paths
 
@@ -792,7 +792,7 @@ what that holds, or a struct's lifetimes one by one -- a digit per part (1 the
 result may hold it); then, for each parameter that may be stored through, the
 same digits of every other parameter for what it points at, and, where that is
 a struct declaring lifetimes, a digit saying they are named apart; then `_` —
-so `fn(a &i64, b &'b i64) &i64` is `FG10_R02roxR02roxER02rox` (`lifeSigSpell`).
+so `fn(a: &i64, b: &'b i64) &i64` is `FG10_R02roxR02roxER02rox` (`lifeSigSpell`).
 A struct's lifetimes are never spelled: `Cursor['a]` is `Cursor`.
 
 #### How to read a symbol
@@ -813,9 +813,9 @@ demangler in `test/run.py`:
 | `struct Pt { fn get(self) }` in the root | `_CNvNt2Pt3get` | `Pt.get` — the root contributes nothing |
 | `SubPt.get` in module `sub` | `_CNvNtC3sub5SubPt3get` | `sub.SubPt.get` |
 | private `SubPt._hid` | `_CNvNtC3sub5SubPt4__hid` | `sub.SubPt._hid` — the separator `_` is required before a name beginning with `_` or a digit, so two underscores; privacy is a fact, not a spelling |
-| root generic `fn pick[T](a T, b T)` at `i64` | `_CINv4pickxE` | `pick[i64]` — the type *argument*, once |
+| root generic `fn pick[T](a: T, b: T)` at `i64` | `_CINv4pickxE` | `pick[i64]` — the type *argument*, once |
 | `fn pickSecond[T,U]` at `i64`, `f64` | `_CINv10pickSecondxdE` | `pickSecond[i64,f64]` |
-| `fn dot[N usize]` at 3 | `_CINv3dotLj3_E` | `dot[3]` — the number *argument*, spelled by its type's letter (`j`, `usize`) and its value |
+| `fn dot[N: usize]` at 3 | `_CINv3dotLj3_E` | `dot[3]` — the number *argument*, spelled by its type's letter (`j`, `usize`) and its value |
 | `Holder[i64].tally` | `_CNvINt6HolderxE5tally` | `Holder[i64].tally` — the instance is the owner |
 | `push` of generic module `mod stack[T]`, a submodule of the root, at `i64`; its global `count` | `_CNvIC5stackxE4push`, `_CNvIC5stackxE5count` | `stack[i64].push`, `stack[i64].count` — the module instance is the owner, and its members' components are bare |
 | a method of `struct Entry` in `stack[i64]`; `tally[T]`'s `see` at a type of module `user` | `_CNvNtIC5stackxE5Entry7doubled`, `_CNvIC5tallyNtC4user3TagE3see` | `stack[i64].Entry.doubled`, `tally[user.Tag].see` |

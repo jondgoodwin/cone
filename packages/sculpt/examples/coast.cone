@@ -36,7 +36,7 @@ import sculpt use *;
 
 // ======== output ========
 
-fn putText(out &mut List[u8], s &str) {
+fn putText(out: &mut List[u8], s: &str) {
   var i = 0usize;
   while i < s.len() {
     out.push(s[i]);
@@ -44,27 +44,27 @@ fn putText(out &mut List[u8], s &str) {
   }
 }
 
-fn putInt(out &mut List[u8], n i32) {
+fn putInt(out: &mut List[u8], n: i32) {
   var s = String.empty();
   s <- i64.from(n);
   putText(out, s.view());
 }
 
-fn put32(out &mut List[u8], v u32) {
+fn put32(out: &mut List[u8], v: u32) {
   out.push(u8.from(v & 0xFFu32));
   out.push(u8.from((v >> 8u32) & 0xFFu32));
   out.push(u8.from((v >> 16u32) & 0xFFu32));
   out.push(u8.from((v >> 24u32) & 0xFFu32));
 }
 
-fn writeBytes(name &str, data &List[u8]) {
+fn writeBytes(name: &str, data: &List[u8]) {
   let v = data.view();
   let file = path.Path.from(name);
   if !(fs.writeFile(&file, v) is Ok) { printStr("could not write "); printStr(name); printStr("\n"); }
 }
 
 // A square mask, 'n' pixels across, as a binary PGM
-fn writePgm(name &str, n i32, pix &List[u8]) {
+fn writePgm(name: &str, n: i32, pix: &List[u8]) {
   var out = List[u8].withCapacity(pix.len() + 32usize);
   putText(&mut out, "P5\n");
   putInt(&mut out, n);
@@ -81,7 +81,7 @@ fn writePgm(name &str, n i32, pix &List[u8]) {
 }
 
 // Points with their places, as little-endian (u64 index, f32 x, f32 y)
-fn writePoints(name &str, pts &List[FractalPoint]) {
+fn writePoints(name: &str, pts: &List[FractalPoint]) {
   var out = List[u8].withCapacity(pts.len() * 16usize);
   var i = 0usize;
   while i < pts.len() {
@@ -95,7 +95,7 @@ fn writePoints(name &str, pts &List[FractalPoint]) {
   writeBytes(name, &out);
 }
 
-fn nameOf(prefix &str, a i32, b i32) String {
+fn nameOf(prefix: &str, a: i32, b: i32) String {
   var s = String.from(prefix);
   s <- i64.from(a);
   s <- "-s";
@@ -107,7 +107,7 @@ fn nameOf(prefix &str, a i32, b i32) String {
 
 // ======== the island's base: a jittered 12-gon ========
 
-fn baseOutline(seed u32) Profile {
+fn baseOutline(seed: u32) Profile {
   var pts = List[Vec2].withCapacity(12usize);
   var i = 0;
   while i < 12 {
@@ -120,10 +120,10 @@ fn baseOutline(seed u32) Profile {
 }
 
 // Quilez's exact signed distance to a polygon, negative inside
-fn sdPolygon(p Vec2, v &Array[Vec2]) f32 {
+fn sdPolygon(p: Vec2, v: &Array[Vec2]) f32 {
   let n = v.len;
   var d = (p - v[0usize]).lengthSquared();
-  var s f32 = 1.;
+  var s: f32 = 1.;
   var i = 0usize;
   var j = n - 1usize;
   while i < n {
@@ -148,7 +148,7 @@ fn sdPolygon(p Vec2, v &Array[Vec2]) f32 {
 // ======== rasterizing a closed polyline (even-odd, pixel centres) ========
 
 // Shell sort of xs[from .. to)
-fn sortRange(xs &mut List[f32], from usize, to usize) {
+fn sortRange(xs: &mut List[f32], from: usize, to: usize) {
   let n = to - from;
   var gap = n / 2usize;
   while gap > 0usize {
@@ -169,7 +169,7 @@ fn sortRange(xs &mut List[f32], from usize, to usize) {
 
 // The polygon's inside as an n x n mask of the square centred on (cx, cy),
 // 'half' across each way; row 0 at the top
-fn rasterize(poly &Array[Vec2], n i32, cx f32, cy f32, half f32) List[u8] {
+fn rasterize(poly: &Array[Vec2], n: i32, cx: f32, cy: f32, half: f32) List[u8] {
   let step = 2. * half / f32.from(n);
   let top = cy + half;
   let left = cx - half;
@@ -240,11 +240,11 @@ fn rasterize(poly &Array[Vec2], n i32, cx f32, cy f32, half f32) List[u8] {
 
 // ======== self-crossings of a closed polyline ========
 
-fn orient(a Vec2, b Vec2, c Vec2) f32 { (b - a).cross(c - a) }
+fn orient(a: Vec2, b: Vec2, c: Vec2) f32 { (b - a).cross(c - a) }
 
 // Pairs of non-neighbouring pieces that properly cross, by brute force with
 // a box test first
-fn crossings(p &Array[Vec2]) i64 {
+fn crossings(p: &Array[Vec2]) i64 {
   let n = p.len;
   var lo = List[Vec2].withCapacity(n);
   var hi = List[Vec2].withCapacity(n);
@@ -289,10 +289,10 @@ fn crossings(p &Array[Vec2]) i64 {
 
 // ======== the polyline way ========
 
-const POLY_AMP f32 = 0.6;
+const POLY_AMP: f32 = 0.6;
 
 // Variant k's refinement of seed's island at roughness h
-fn polyDials(k i32, seed u32, levels i32, h f32) Fractal {
+fn polyDials(k: i32, seed: u32, levels: i32, h: f32) Fractal {
   var f = fractal(seed, levels, h, POLY_AMP);
   if k == 1 { f.heteroStrength = 1.6; f.heteroScale = 2.; }
   elif k == 2 { f.amplitude = 0.35; f.tail = 2.; f.tailCap = 6; }
@@ -301,14 +301,14 @@ fn polyDials(k i32, seed u32, levels i32, h f32) Fractal {
 }
 
 // A smooth warp of the plane: each point moved by two fBm's
-fn warpPoint(p Vec2, seed u32) Vec2 {
+fn warpPoint(p: Vec2, seed: u32) Vec2 {
   let q = p * 2.;
   let dx = fbm2(q, seed ^ 0x3A7u32, 4, 2., 0.5).value;
   let dy = fbm2(new Vec2(q.x + 5.25, q.y + 1.25), seed ^ 0x3A7u32, 4, 2., 0.5).value;
   new Vec2(p.x + 0.12 * dx, p.y + 0.12 * dy)
 }
 
-fn polyIsland(k i32, seed u32, levels i32, h f32) Profile {
+fn polyIsland(k: i32, seed: u32, levels: i32, h: f32) Profile {
   let base = baseOutline(seed);
   let f = polyDials(k, seed, levels, h);
   var out = fractalRefine(&base, &f);
@@ -324,17 +324,17 @@ fn polyIsland(k i32, seed u32, levels i32, h f32) Profile {
 
 // ======== the contour way ========
 
-const CONT_AMP f32 = 0.22;
-const CONT_FREQ f32 = 2.5;
+const CONT_AMP: f32 = 0.22;
+const CONT_FREQ: f32 = 2.5;
 
 // fBm whose octaves are each scaled by a smooth field of heavy-tailed
 // magnitudes (|heavySigned| at the octave's lattice points, blended by the
 // quintic fade, divided by their mean of 1.75): most of the coast ordinary,
 // here and there a bump many times the usual size
-fn heavyFbm(p Vec2, seed u32, octaves i32, gain f32) f32 {
-  var sum f32 = 0.;
-  var amp f32 = 1.;
-  var freq f32 = 1.;
+fn heavyFbm(p: Vec2, seed: u32, octaves: i32, gain: f32) f32 {
+  var sum: f32 = 0.;
+  var amp: f32 = 1.;
+  var freq: f32 = 1.;
   var i = 0;
   while i < octaves {
     let q = new Vec2(p.x * freq, p.y * freq);
@@ -359,15 +359,15 @@ fn heavyFbm(p Vec2, seed u32, octaves i32, gain f32) f32 {
   sum
 }
 
-fn heavyAt(x i32, y i32, seed u32) f32 {
+fn heavyAt(x: i32, y: i32, seed: u32) f32 {
   let h = hash2(x, y, seed);
   libc.fabsf(heavySigned(h.x, h.y, 2., 5))
 }
 
-fn fade(t f32) f32 { t * t * t * (t * (t * 6. - 15.) + 10.) }
+fn fade(t: f32) f32 { t * t * t * (t * (t * 6. - 15.) + 10.) }
 
 // Variant k's land field at p: positive on land
-fn contField(k i32, p Vec2, seed u32, h f32, octaves i32, base &Array[Vec2]) f32 {
+fn contField(k: i32, p: Vec2, seed: u32, h: f32, octaves: i32, base: &Array[Vec2]) f32 {
   let q = p * CONT_FREQ;
   let gain = libc.powf(2., -h);
   let n = if k == 1 {
@@ -394,7 +394,7 @@ fn contField(k i32, p Vec2, seed u32, h f32, octaves i32, base &Array[Vec2]) f32
 
 // The field's mask over the square centred on (cx, cy), 'half' across, n
 // pixels a side, pixel (c, r) at the centre computed from its own indices
-fn contMask(k i32, seed u32, h f32, octaves i32, n i32, cx f32, cy f32, half f32) List[u8] {
+fn contMask(k: i32, seed: u32, h: f32, octaves: i32, n: i32, cx: f32, cy: f32, half: f32) List[u8] {
   let base = baseOutline(seed);
   let bv = base.points.view();
   let step = 2. * half / f32.from(n);
@@ -414,7 +414,7 @@ fn contMask(k i32, seed u32, h f32, octaves i32, n i32, cx f32, cy f32, half f32
 
 // ======== experiment 1: polyline against contour ========
 
-fn hName(prefix &str, h i32) String {
+fn hName(prefix: &str, h: i32) String {
   var s = String.from(prefix);
   s <- "0.";
   s <- i64.from(h);
@@ -499,7 +499,7 @@ fn experiment2() {
 
 // ======== experiment 3: zoom consistency ========
 
-fn sameBits(a Vec2, b Vec2) bool { (a.x as u32) == (b.x as u32) && (a.y as u32) == (b.y as u32) }
+fn sameBits(a: Vec2, b: Vec2) bool { (a.x as u32) == (b.x as u32) && (a.y as u32) == (b.y as u32) }
 
 fn experiment3() {
   printStr("== experiment 3: zoom consistency, polyline, seed 1, H 0.5\n");
@@ -543,7 +543,7 @@ fn experiment3() {
 
   // Zoom into an inlet: a window round coarse point 200, 0.02 across
   let c = coarse[200usize].point;
-  let half f32 = 0.01;
+  let half: f32 = 0.01;
   let window = new Aabb2(new Vec2(c.x - half, c.y - half), new Vec2(c.x + half, c.y + half));
   let part = fractalRefineWithin(&base, &fine, window);
   var same = 0;
@@ -595,7 +595,7 @@ fn experiment3() {
   let whole = contMask(0, 1u32, 0.5, 16, 4096, 0., 0., 1.);
   // pixels 2048..2303 across and 1024..1279 down: a 256-pixel window,
   // whose centre is pixel 2176, 1152
-  let step f32 = 2. / 4096.;
+  let step: f32 = 2. / 4096.;
   let wx = -1. + 2048. * step + 128. * step;
   let wy = 1. - 1024. * step - 128. * step;
   let win = contMask(0, 1u32, 0.5, 16, 256, wx, wy, 128. * step);

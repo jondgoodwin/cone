@@ -25,53 +25,53 @@ mod region_body;
 import stdio use *;
 import libc;
 
-fn line(label &str, n usize) {
+fn line(label: &str, n: usize) {
   printStr(label);
   printInt(i64.from(n));
   printStr("\n");
 }
 
 struct Tally is RegionRef {
-  owners usize;
-  serial u32;
-  fn alloc(size usize) *u8 inline { line("alloc ", size); malloc(size) }
-  fn init(self &new) inline { *self = new Tally(1usize, 42u32); }
-  fn aliasRef(self &uni Tally) inline { owners = owners + 1usize; line("alias, owners ", owners); }
-  fn dealiasRef(self &uni Tally) bool inline { owners = owners - 1usize; line("dealias, owners ", owners); owners == 0usize }
-  fn free(self &uni Tally) inline { line("free, serial ", usize.from(serial)); libc.free(self as *u8); }
+  owners: usize;
+  serial: u32;
+  fn alloc(size: usize) *u8 inline { line("alloc ", size); malloc(size) }
+  fn init(self: &new) inline { *self = new Tally(1usize, 42u32); }
+  fn aliasRef(self: &uni Tally) inline { owners = owners + 1usize; line("alias, owners ", owners); }
+  fn dealiasRef(self: &uni Tally) bool inline { owners = owners - 1usize; line("dealias, owners ", owners); owners == 0usize }
+  fn free(self: &uni Tally) inline { line("free, serial ", usize.from(serial)); libc.free(self as *u8); }
 }
 
 struct Solo is RegionRef, Move {
-  fn alloc(size usize) *u8 inline { line("solo alloc ", size); malloc(size) }
-  fn free(self &uni Solo) inline { printStr("solo free\n"); libc.free(self as *u8); }
+  fn alloc(size: usize) *u8 inline { line("solo alloc ", size); malloc(size) }
+  fn free(self: &uni Solo) inline { printStr("solo free\n"); libc.free(self as *u8); }
 }
 
 // A region that prints nothing, and one whose every allocation fails
 struct Plain is RegionRef, Move {
-  fn alloc(size usize) *u8 inline { malloc(size) }
-  fn free(self &uni Plain) inline { libc.free(self as *u8); }
+  fn alloc(size: usize) *u8 inline { malloc(size) }
+  fn free(self: &uni Plain) inline { libc.free(self as *u8); }
 }
 
 struct NoMemory is RegionRef {
-  fn alloc(size usize) *u8 inline { 0usize as *u8 }
+  fn alloc(size: usize) *u8 inline { 0usize as *u8 }
 }
 
 // The bytes a borrow of the string holds, and how many
-fn bytes(s &str) &Array[u8] { s as &Array[u8] }
+fn bytes(s: &str) &Array[u8] { s as &Array[u8] }
 
-fn show(s &str) {
+fn show(s: &str) {
   printStr(bytes(s) as &str);
   printStr("\n");
 }
 
-fn count(s &str) usize { bytes(s).len }
+fn count(s: &str) usize { bytes(s).len }
 
 struct Holder {
-  pub name Tally[imm, str];
+  pub name: Tally[imm, str];
 }
 
 // Two copies made and dropped in an inner block, then the original
-fn counted(v &str) {
+fn counted(v: &str) {
   printStr("-- counted\n");
   let a = new Tally[imm, str](v);
   {
@@ -84,16 +84,16 @@ fn counted(v &str) {
 }
 
 // A copy passed to a call is one more owner, which the callee's parameter drops
-fn read(r Tally[imm, str]) usize { count(r) }
+fn read(r: Tally[imm, str]) usize { count(r) }
 
-fn passed(v &str) {
+fn passed(v: &str) {
   printStr("-- passed\n");
   let a = new Tally[imm, str](v);
   line("len ", read(a));
 }
 
 // A single owner: the copy is a move, and the text dies once
-fn single(v &str) {
+fn single(v: &str) {
   printStr("-- single\n");
   let s = new Solo[str](v);
   let t = s;
@@ -102,18 +102,18 @@ fn single(v &str) {
 
 // An owner held by a value in another region: its death releases the owner
 // the field holds before its own memory goes back
-fn held(v &str) {
+fn held(v: &str) {
   printStr("-- held\n");
   let h = new Solo[Holder](new Holder(new Tally[imm, str](v)));
   show(h.name);
 }
 
 // An owner returned, and one in a tuple
-fn made(v &str) Tally[imm, str] { new Tally[imm, str](v) }
+fn made(v: &str) Tally[imm, str] { new Tally[imm, str](v) }
 
-fn pair(v &str) (Tally[imm, str], i32) { (made(v), 3i32) }
+fn pair(v: &str) (Tally[imm, str], i32) { (made(v), 3i32) }
 
-fn returned(v &str) {
+fn returned(v: &str) {
   printStr("-- returned\n");
   let a = made(v);
   let p = pair(v);
@@ -125,27 +125,27 @@ fn returned(v &str) {
 // The empty string is a header and no bytes
 fn empty() {
   printStr("-- empty\n");
-  let nothing &Array[u8] = "";
+  let nothing: &Array[u8] = "";
   let e = new Tally[imm, str](nothing as &str);
   line("len ", count(e));
 }
 
 // A fallible allocation yields an Option of the owner, None where memory ran out
-fn peek(o &imm Option[Plain[imm, str]]) usize {
+fn peek(o: &imm Option[Plain[imm, str]]) usize {
   match o {
     case let s &Some[Plain[imm, str]] {count(*s)}
     else {0usize}
   }
 }
 
-fn peekNever(o &imm Option[NoMemory[imm, str]]) usize {
+fn peekNever(o: &imm Option[NoMemory[imm, str]]) usize {
   match o {
     case let s &Some[NoMemory[imm, str]] {count(*s)}
     else {0usize}
   }
 }
 
-fn fallible(v &str) {
+fn fallible(v: &str) {
   printStr("-- fallible\n");
   let some = trynew Plain[imm, str](v);
   line("some ", peek(&imm some));
@@ -154,7 +154,7 @@ fn fallible(v &str) {
 }
 
 fn main() {
-  let text &Array[u8] = "hello world";
+  let text: &Array[u8] = "hello world";
   let v = text as &str;
   counted(v);
   passed(v);

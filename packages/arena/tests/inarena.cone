@@ -35,26 +35,26 @@ import libc;
 
 // A counting region: its header first, then the tallies
 struct Counting {
-  header MemRegion;
-  allocs usize;
-  releases usize;
-  live isize;
+  header: MemRegion;
+  allocs: usize;
+  releases: usize;
+  live: isize;
 }
 
-fn countAlloc(r *MemRegion, bytes usize, align usize) *u8 {
+fn countAlloc(r: *MemRegion, bytes: usize, align: usize) *u8 {
   let c = r as *Counting;
   (*c).allocs = (*c).allocs + 1usize;
   (*c).live = (*c).live + isize.from(bytes);
   libc.malloc(bytes)
 }
 
-fn countResize(r *MemRegion, block *u8, oldBytes usize, newBytes usize, align usize) *u8 {
+fn countResize(r: *MemRegion, block: *u8, oldBytes: usize, newBytes: usize, align: usize) *u8 {
   let c = r as *Counting;
   (*c).live = (*c).live + isize.from(newBytes) - isize.from(oldBytes);
   libc.realloc(block, newBytes)
 }
 
-fn countRelease(r *MemRegion, block *u8, bytes usize) {
+fn countRelease(r: *MemRegion, block: *u8, bytes: usize) {
   if block as usize == 0usize { return; }
   let c = r as *Counting;
   (*c).releases = (*c).releases + 1usize;
@@ -66,26 +66,26 @@ fn newCounting() Counting {
   new Counting(new MemRegion(&countAlloc, &countResize, &countRelease), 0usize, 0usize, 0isize)
 }
 
-fn regionOf(c &mut Counting) *MemRegion { (c as *Counting) as *MemRegion }
+fn regionOf(c: &mut Counting) *MemRegion { (c as *Counting) as *MemRegion }
 
-fn tally(c &Counting, allocs u64, releases u64, live i64, label &Array[u8]) {
+fn tally(c: &Counting, allocs: u64, releases: u64, live: i64, label: &Array[u8]) {
   let ok = u64.from(c.allocs) == allocs && u64.from(c.releases) == releases && i64.from(c.live) == live;
   expect(ok, label);
 }
 
 // A struct holding two lists, made in a region it hands to both
 struct Mesh is CarriesRegion {
-  pub pts List[f32];
-  pub ids List[u32];
-  pub region *MemRegion;
+  pub pts: List[f32];
+  pub ids: List[u32];
+  pub region: *MemRegion;
 
-  pub fn init(self &new, n usize, region *MemRegion) {
+  pub fn init(self: &new, n: usize, region: *MemRegion) {
     *self = new Mesh(pts: new List[f32](n, region), ids: new List[u32](n, region), region: region);
   }
 }
 
 // Where the list's block is
-fn at(l &List[i32]) usize { (l[0usize] as *i32) as usize }
+fn at(l: &List[i32]) usize { (l[0usize] as *i32) as usize }
 
 // A list alone in its arena, made empty: its block is asked for when the first
 // value arrives, after the list's own words, so it is the last thing allocated
@@ -231,8 +231,8 @@ fn composition() {
 // The region is the arena's own object: the Arena is moved with its lists in it
 // and they still grow
 struct Holder['=a] {
-  pub ar DynArena['=a];
-  pub list &'=a mut List[i32];
+  pub ar: DynArena['=a];
+  pub list: &'=a mut List[i32];
 }
 
 fn make() Holder['=a] {

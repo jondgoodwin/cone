@@ -5,11 +5,11 @@ pub const SkinCapDome = 1u32;   // an end closed by a rounded cap: a smaller rin
 
 // How the skin is built
 pub struct SkinOptions {
-  pub cuts u32;          // extra rings along each edge, evenly spaced (0: none)
-  pub cap u32;           // SkinCapFlat or SkinCapDome
-  pub smooth f32;        // at a smooth branch, the rings stand this many radii further out
-  pub gap f32;           // at a loose joint, the radii from the node to its rings
-  pub mitreLimit f32;    // the most a ring is widened at a bend (1 / cos of half the turn)
+  pub cuts: u32;          // extra rings along each edge, evenly spaced (0: none)
+  pub cap: u32;           // SkinCapFlat or SkinCapDome
+  pub smooth: f32;        // at a smooth branch, the rings stand this many radii further out
+  pub gap: f32;           // at a loose joint, the radii from the node to its rings
+  pub mitreLimit: f32;    // the most a ring is widened at a bend (1 / cos of half the turn)
 
   pub fn standard() SkinOptions { new SkinOptions(0u32, SkinCapFlat, 0.15, 0.5, 2.) }
 }
@@ -17,24 +17,24 @@ pub struct SkinOptions {
 // What a skin is: the mesh, the bones, the vertex weights and a list of what
 // could not be done as asked
 pub struct Skin {
-  pub mesh PolyMesh;
-  pub rig Armature;
-  pub weights SkinWeights;
-  pub problems List[String];
-  pub limbs u32;
-  pub triangles u32;      // faces of 3 at the junctions, left when no neighbour could join them
+  pub mesh: PolyMesh;
+  pub rig: Armature;
+  pub weights: SkinWeights;
+  pub problems: List[String];
+  pub limbs: u32;
+  pub triangles: u32;      // faces of 3 at the junctions, left when no neighbour could join them
 }
 
 const NoNode = 0xFFFFFFFFu32;
 
-fn maxF(a f32, b f32) f32 { if a > b {a} else {b} }
-fn minF(a f32, b f32) f32 { if a < b {a} else {b} }
+fn maxF(a: f32, b: f32) f32 { if a > b {a} else {b} }
+fn minF(a: f32, b: f32) f32 { if a < b {a} else {b} }
 
 // v without its part along d (d unit)
-fn without(v Vec3, d Vec3) Vec3 { v - d * v.dot(d) }
+fn without(v: Vec3, d: Vec3) Vec3 { v - d * v.dot(d) }
 
 // A unit direction near 'want' square to d; (0, 0, 0) if want lies along d
-fn squareTo(want Vec3, d Vec3) Vec3 {
+fn squareTo(want: Vec3, d: Vec3) Vec3 {
   let w = without(want, d);
   let len = w.length();
   if len > 0.001 * want.length() && len > 0.0000001 { w * (1. / len) } else { new Vec3(0., 0., 0.) }
@@ -43,7 +43,7 @@ fn squareTo(want Vec3, d Vec3) Vec3 {
 // The corner k (0 to 3) of a ring at c: counterclockwise about x cross z ... about the
 // axis the frame was made square to, x along the frame's x, z = x cross axis. The corners
 // are (+x, -z), (-x, -z), (-x, +z), (+x, +z) times the half-extents.
-fn ringCorner(k usize, c Vec3, x Vec3, z Vec3, rx f32, rz f32) Vec3 {
+fn ringCorner(k: usize, c: Vec3, x: Vec3, z: Vec3, rx: f32, rz: f32) Vec3 {
   let sx = if k == 0usize || k == 3usize {1.f} else {-1.};
   let sz = if k >= 2usize {1.f} else {-1.};
   c + x * (sx * rx) + z * (sz * rz)
@@ -52,45 +52,45 @@ fn ringCorner(k usize, c Vec3, x Vec3, z Vec3, rx f32, rz f32) Vec3 {
 // Everything the build keeps while it works
 struct Builder {
   // The graph, read once
-  g SkinGraph;
-  opt SkinOptions;
-  problems List[String];
+  g: SkinGraph;
+  opt: SkinOptions;
+  problems: List[String];
   // Adjacency of the usable edges, by node
-  adjStart List[u32];
-  adjEdges List[u32];
-  usable List[bool];
+  adjStart: List[u32];
+  adjEdges: List[u32];
+  usable: List[bool];
   // Each edge as grown from the root: start and end node, direction, ring x axis, length
-  eStart List[u32];
-  eEnd List[u32];
-  eDir List[Vec3];
-  eX List[Vec3];
-  eLen List[f32];
-  eLimb List[u32];
-  eAlong0 List[f32];       // distance along its limb at the edge's start
-  limbLen List[f32];
-  nParent List[u32];       // the edge that reached the node (NoNode: a root)
-  nRoot List[bool];
-  order List[u32];         // the oriented edges in the order they were reached
+  eStart: List[u32];
+  eEnd: List[u32];
+  eDir: List[Vec3];
+  eX: List[Vec3];
+  eLen: List[f32];
+  eLimb: List[u32];
+  eAlong0: List[f32];       // distance along its limb at the edge's start
+  limbLen: List[f32];
+  nParent: List[u32];       // the edge that reached the node (NoNode: a root)
+  nRoot: List[bool];
+  order: List[u32];         // the oriented edges in the order they were reached
   // Rings: 4 consecutive vertices each, ring r at vertices 4r to 4r + 3
-  ringCentre List[Vec3];
-  ringNormal List[Vec3];
+  ringCentre: List[Vec3];
+  ringNormal: List[Vec3];
   // The two rings (ring numbers) at each end of an edge: [2e] its start, [2e + 1] its end
-  endRing List[u32];
+  endRing: List[u32];
   // Vertices
-  pos List[Vec3];
-  vAlong List[f32];
-  vAround List[f32];
-  vLimb List[f32];
-  vOwner List[u32];        // the edge whose bone moves it most
-  vOther List[u32];        // the edge whose bone shares it (NoNode: none)
-  vW List[f32];            // that other bone's share
+  pos: List[Vec3];
+  vAlong: List[f32];
+  vAround: List[f32];
+  vLimb: List[f32];
+  vOwner: List[u32];        // the edge whose bone moves it most
+  vOther: List[u32];        // the edge whose bone shares it (NoNode: none)
+  vW: List[f32];            // that other bone's share
   // Faces
-  fCount List[u32];
-  fIdx List[u32];
-  fUv List[Vec2];
-  triangles u32;
+  fCount: List[u32];
+  fIdx: List[u32];
+  fUv: List[Vec2];
+  triangles: u32;
 
-  fn make(g SkinGraph, opt SkinOptions) Builder {
+  fn make(g: SkinGraph, opt: SkinOptions) Builder {
     new Builder(g, opt, List[String].empty(), List[u32].empty(), List[u32].empty(), List[bool].empty(),
       List[u32].empty(), List[u32].empty(), List[Vec3].empty(), List[Vec3].empty(), List[f32].empty(),
       List[u32].empty(), List[f32].empty(), List[f32].empty(), List[u32].empty(), List[bool].empty(),
@@ -99,23 +99,23 @@ struct Builder {
       List[u32].empty(), List[f32].empty(), List[u32].empty(), List[u32].empty(), List[Vec2].empty(), 0u32)
   }
 
-  fn degree(self &, n u32) usize { usize.from(*adjStart[usize.from(n) + 1usize] - *adjStart[usize.from(n)]) }
-  fn incident(self &, n u32, i usize) u32 { *adjEdges[usize.from(*adjStart[usize.from(n)]) + i] }
-  fn isLoose(self &, n u32) bool { (*g.flags[usize.from(n)] & SkinLoose) != 0u32 }
+  fn degree(self: &, n: u32) usize { usize.from(*adjStart[usize.from(n) + 1usize] - *adjStart[usize.from(n)]) }
+  fn incident(self: &, n: u32, i: usize) u32 { *adjEdges[usize.from(*adjStart[usize.from(n)]) + i] }
+  fn isLoose(self: &, n: u32) bool { (*g.flags[usize.from(n)] & SkinLoose) != 0u32 }
 
   // The node at the other end of edge e from n
-  fn otherEnd(self &, e u32, n u32) u32 {
+  fn otherEnd(self: &, e: u32, n: u32) u32 {
     if *g.edgeA[usize.from(e)] == n { *g.edgeB[usize.from(e)] } else { *g.edgeA[usize.from(e)] }
   }
 
   // The unit direction from node n along edge e, away from n
-  fn awayFrom(self &, n u32, e u32) Vec3 {
+  fn awayFrom(self: &, n: u32, e: u32) Vec3 {
     (*g.position[usize.from(self.otherEnd(e, n))] - *g.position[usize.from(n)]).normalize()
   }
 
   // ---- the usable edges, and their growth from the roots ----
 
-  fn adjacency(self &mut) {
+  fn adjacency(self: &mut) {
     let nn = g.position.len();
     let ne = g.edgeA.len();
     var count = List[u32].empty();
@@ -170,7 +170,7 @@ struct Builder {
   // Orient every usable edge away from its tree's root, in breadth-first order,
   // and give it its ring x axis: the start node's hint, else the parent edge's
   // axis turned with the least rotation to this edge, else the world x (or z)
-  fn grow(self &mut) {
+  fn grow(self: &mut) {
     let nn = g.position.len();
     let ne = g.edgeA.len();
     var i = 0usize;
@@ -228,7 +228,7 @@ struct Builder {
     }
   }
 
-  fn growFrom(self &mut, root u32, visited &mut List[bool]) {
+  fn growFrom(self: &mut, root: u32, visited: &mut List[bool]) {
     var queue = List[u32].empty();
     queue.push(root);
     var head = 0usize;
@@ -277,7 +277,7 @@ struct Builder {
   // ---- vertices, rings, faces ----
 
   // The along value of the point the fraction s of the way along edge e
-  fn alongOf(self &, e u32, s f32) f32 {
+  fn alongOf(self: &, e: u32, s: f32) f32 {
     let l = usize.from(*eLimb[usize.from(e)]);
     let total = *limbLen[l];
     if total > 0. { (*eAlong0[usize.from(e)] + s * *eLen[usize.from(e)]) / total } else { 0. }
@@ -286,8 +286,8 @@ struct Builder {
   // A ring of 4 vertices: its number. Centre c, the frame (x, axis) it is
   // counterclockwise about, the half-extents; the vertices belong to edge e
   // (their along from the fraction s of it), shared with edge 'other' by w
-  fn addRing(self &mut, c Vec3, x Vec3, axis Vec3, rx f32, rz f32, mitre Vec3, mitreBy f32,
-      e u32, s f32, other u32, w f32) u32 {
+  fn addRing(self: &mut, c: Vec3, x: Vec3, axis: Vec3, rx: f32, rz: f32, mitre: Vec3, mitreBy: f32,
+      e: u32, s: f32, other: u32, w: f32) u32 {
     let z = x.cross(axis);
     let along = self.alongOf(e, s);
     var k = 0usize;
@@ -311,22 +311,22 @@ struct Builder {
     u32.from(ringCentre.len() - 1usize)
   }
 
-  fn setEndRing(self &mut, e u32, atEnd bool, ring u32) {
+  fn setEndRing(self: &mut, e: u32, atEnd: bool, ring: u32) {
     endRing.set(2usize * usize.from(e) + if atEnd {1usize} else {0usize}, ring);
   }
 
-  fn ringAt(self &, e u32, atEnd bool) u32 {
+  fn ringAt(self: &, e: u32, atEnd: bool) u32 {
     *endRing[2usize * usize.from(e) + if atEnd {1usize} else {0usize}]
   }
 
   // Ring r's corner k as seen counterclockwise about 'forward' after skipping
   // 'shift' corners
-  fn cornerOf(self &, r u32, flip bool, shift usize, k usize) u32 {
+  fn cornerOf(self: &, r: u32, flip: bool, shift: usize, k: usize) u32 {
     let m = (k + shift) % 4usize;
     4u32 * r + u32.from(if flip {(4usize - m) % 4usize} else {m})
   }
 
-  fn addFace(self &mut, vs &List[u32], uvs &List[Vec2]) {
+  fn addFace(self: &mut, vs: &List[u32], uvs: &List[Vec2]) {
     fCount.push(u32.from(vs.len()));
     var i = 0usize;
     while i < vs.len() {
@@ -337,7 +337,7 @@ struct Builder {
   }
 
   // A face by vertices, each given its own (around, along) as its uv
-  fn addFaceVerts(self &mut, vs &List[u32]) {
+  fn addFaceVerts(self: &mut, vs: &List[u32]) {
     var uvs = List[Vec2].empty();
     var i = 0usize;
     while i < vs.len() {
@@ -352,7 +352,7 @@ struct Builder {
   // (made here, belonging to edge e, blending with 'nbStart' near the start
   // and 'nbEnd' near the end), no twist: the corner of v met by corner 0 of u
   // is the nearest. The vertices of the end rings are theirs already.
-  fn tube(self &mut, u u32, v u32, cuts u32, e u32, nbStart u32, nbEnd u32) {
+  fn tube(self: &mut, u: u32, v: u32, cuts: u32, e: u32, nbStart: u32, nbEnd: u32) {
     let cu = *ringCentre[usize.from(u)];
     let cv = *ringCentre[usize.from(v)];
     let fwd = cv - cu;
@@ -438,7 +438,7 @@ struct Builder {
   }
 
   // A cap: one quad closing ring r on the side 'out' (a direction)
-  fn capQuad(self &mut, r u32, out Vec3) {
+  fn capQuad(self: &mut, r: u32, out: Vec3) {
     let flip = (*ringNormal[usize.from(r)]).dot(out) < 0.;
     var vs = List[u32].empty();
     var k = 0usize;
@@ -450,7 +450,7 @@ struct Builder {
   }
 
   // The end of a tube closed: flat, or by a dome
-  fn closeEnd(self &mut, r u32, out Vec3, e u32, rx f32, rz f32) {
+  fn closeEnd(self: &mut, r: u32, out: Vec3, e: u32, rx: f32, rz: f32) {
     if opt.cap == SkinCapDome {
       let c = *ringCentre[usize.from(r)];
       let h = 0.6 * (rx + rz) * 0.5;
@@ -481,7 +481,7 @@ struct Builder {
   // ---- the nodes ----
 
   // The edge whose bone shares the ring that edge e has at node n (NoNode: none)
-  fn partner(self &, n u32, e u32) u32 {
+  fn partner(self: &, n: u32, e: u32) u32 {
     let deg = self.degree(n);
     if deg == 2usize && !self.isLoose(n) && self.turnOk(n) {
       let a = self.incident(n, 0usize);
@@ -491,13 +491,13 @@ struct Builder {
   }
 
   // A node of degree two whose two edges do not fold back on each other
-  fn turnOk(self &, n u32) bool {
+  fn turnOk(self: &, n: u32) bool {
     let q1 = self.awayFrom(n, self.incident(n, 0usize));
     let q2 = self.awayFrom(n, self.incident(n, 1usize));
     q1.dot(q2) < 0.9998
   }
 
-  fn node(self &mut, n u32) {
+  fn node(self: &mut, n: u32) {
     let deg = self.degree(n);
     let rx = *g.radiusX[usize.from(n)];
     let rz = *g.radiusZ[usize.from(n)];
@@ -518,7 +518,7 @@ struct Builder {
   }
 
   // A lone node: a box
-  fn isolated(self &mut, n u32) {
+  fn isolated(self: &mut, n: u32) {
     let c = *g.position[usize.from(n)];
     let rx = *g.radiusX[usize.from(n)];
     let rz = *g.radiusZ[usize.from(n)];
@@ -534,7 +534,7 @@ struct Builder {
     self.capQuad(hi, up);
   }
 
-  fn loneRing(self &mut, c Vec3, x Vec3, z Vec3, rx f32, rz f32, axis Vec3) u32 {
+  fn loneRing(self: &mut, c: Vec3, x: Vec3, z: Vec3, rx: f32, rz: f32, axis: Vec3) u32 {
     var k = 0usize;
     while k < 4usize {
       pos.push(ringCorner(k, c, x, z, rx, rz));
@@ -552,7 +552,7 @@ struct Builder {
   }
 
   // A node with two edges
-  fn joint(self &mut, n u32) {
+  fn joint(self: &mut, n: u32) {
     let e1 = self.incident(n, 0usize);
     let e2 = self.incident(n, 1usize);
     // The parent edge first, if there is one
@@ -597,7 +597,7 @@ struct Builder {
     }
   }
 
-  fn looseRing(self &mut, n u32, e u32, gap f32, rx f32, rz f32) u32 {
+  fn looseRing(self: &mut, n: u32, e: u32, gap: f32, rx: f32, rz: f32) u32 {
     let c = *g.position[usize.from(n)] + self.awayFrom(n, e) * gap;
     let atEnd = *eEnd[usize.from(e)] == n;
     self.addRing(c, *eX[usize.from(e)], *eDir[usize.from(e)], rx, rz, new Vec3(0., 0., 0.), 1., e,
@@ -607,7 +607,7 @@ struct Builder {
   // A node with three edges or more: a ring on each edge, standing off far
   // enough that every ring is a face of the convex hull of all the rings'
   // corners; the hull's other faces are the junction
-  fn junction(self &mut, n u32) {
+  fn junction(self: &mut, n: u32) {
     let deg = self.degree(n);
     let rx = *g.radiusX[usize.from(n)];
     let rz = *g.radiusZ[usize.from(n)];
@@ -716,7 +716,7 @@ struct Builder {
 
   // ---- everything ----
 
-  fn edgeSides(self &mut) {
+  fn edgeSides(self: &mut) {
     // The tubes, and the caps at the ends of degree-one nodes
     var o = 0usize;
     while o < order.len() {

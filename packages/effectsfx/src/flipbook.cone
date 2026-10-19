@@ -14,21 +14,21 @@ const BOARD_FRAME_BYTES = 48u64;
 
 // An explosion's description: everything that makes one look different from another
 pub struct FlipbookDesc {
-  pub lightDir Vec3;                // the direction to the baked light (a lit side and a dark one)
-  pub smokeColor Color;             // the soot's albedo
-  pub grid u32 = 8u32;              // frames along a side (grid x grid in all)
-  pub cell u32 = 128u32;            // pixels along a frame's side
-  pub seed u32 = 1u32;
-  pub startRadius f32 = 0.12;       // the fireball's radius at the first frame, in units of the billboard's half width
-  pub endRadius f32 = 0.62;         // and the radius it grows towards
-  pub growth f32 = 5.;              // how fast (1 - e^(-growth t))
-  pub rise f32 = 0.3;               // how far its centre rises over the whole, in the same units
-  pub turbulence f32 = 0.45;        // how much noise bends its edge (it grows with time)
-  pub cooling f32 = 3.2;            // how fast the heat goes (e^(-cooling t))
-  pub brightness f32 = 14.;         // the fire's HDR brightness
-  pub sootStart f32 = 0.12;         // when (a fraction of the whole) the gas starts to darken
-  pub smokeOpacity f32 = 1.;        // the gas's thickness
-  pub ambient f32 = 0.35;           // the smoke's lit floor on its dark side
+  pub lightDir: Vec3;                // the direction to the baked light (a lit side and a dark one)
+  pub smokeColor: Color;             // the soot's albedo
+  pub grid: u32 = 8u32;              // frames along a side (grid x grid in all)
+  pub cell: u32 = 128u32;            // pixels along a frame's side
+  pub seed: u32 = 1u32;
+  pub startRadius: f32 = 0.12;       // the fireball's radius at the first frame, in units of the billboard's half width
+  pub endRadius: f32 = 0.62;         // and the radius it grows towards
+  pub growth: f32 = 5.;              // how fast (1 - e^(-growth t))
+  pub rise: f32 = 0.3;               // how far its centre rises over the whole, in the same units
+  pub turbulence: f32 = 0.45;        // how much noise bends its edge (it grows with time)
+  pub cooling: f32 = 3.2;            // how fast the heat goes (e^(-cooling t))
+  pub brightness: f32 = 14.;         // the fire's HDR brightness
+  pub sootStart: f32 = 0.12;         // when (a fraction of the whole) the gas starts to darken
+  pub smokeOpacity: f32 = 1.;        // the gas's thickness
+  pub ambient: f32 = 0.35;           // the smoke's lit floor on its dark side
 
   pub fn make() FlipbookDesc {
     new FlipbookDesc(lightDir: new Vec3(-0.5, 0.7, 0.5), smokeColor: new Color(0.16, 0.145, 0.13, 1.))
@@ -36,45 +36,45 @@ pub struct FlipbookDesc {
 }
 
 struct Atlas {
-  desc FlipbookDesc;
-  texture Texture;
-  params Buffer;
-  group BindGroup;
+  desc: FlipbookDesc;
+  texture: Texture;
+  params: Buffer;
+  group: BindGroup;
 }
 
 // One billboard playing one flipbook
 pub struct Billboard {
-  pub atlas u32;
-  pub center Vec3;
-  pub size f32;                     // metres: half the width of the quad
-  pub start f32;                    // seconds, the clock 'draw' is given
-  pub duration f32;
-  pub roll f32;                     // radians
-  pub tint Color;                   // multiplies the colour; its alpha is the opacity
+  pub atlas: u32;
+  pub center: Vec3;
+  pub size: f32;                     // metres: half the width of the quad
+  pub start: f32;                    // seconds, the clock 'draw' is given
+  pub duration: f32;
+  pub roll: f32;                     // radians
+  pub tint: Color;                   // multiplies the colour; its alpha is the opacity
 }
 
 pub struct FlipbookSystem {
-  pub shader ShaderModule;
-  pub layout BindGroupLayout;
-  pub pipelineLayout PipelineLayout;
-  pub bakePipeline RenderPipeline;
-  pub drawPipeline RenderPipeline;
-  pub sampler Sampler;
-  pub frameBuffer Buffer;
-  pub boardBuffer Buffer;
-  tinyFx Buffer;
-  tinyBoards Buffer;
-  tinyParams Buffer;
-  tinyAtlas Texture;
-  tinyDepth Texture;
-  atlases List[Atlas];
-  pub boards List[Billboard];
-  boundW u32;
-  boundH u32;
-  pub softness f32 = 0.5;           // metres over which an explosion fades into a surface
-  pub drawn u32 = 0u32;             // billboards drawn last frame
+  pub shader: ShaderModule;
+  pub layout: BindGroupLayout;
+  pub pipelineLayout: PipelineLayout;
+  pub bakePipeline: RenderPipeline;
+  pub drawPipeline: RenderPipeline;
+  pub sampler: Sampler;
+  pub frameBuffer: Buffer;
+  pub boardBuffer: Buffer;
+  tinyFx: Buffer;
+  tinyBoards: Buffer;
+  tinyParams: Buffer;
+  tinyAtlas: Texture;
+  tinyDepth: Texture;
+  atlases: List[Atlas];
+  pub boards: List[Billboard];
+  boundW: u32;
+  boundH: u32;
+  pub softness: f32 = 0.5;           // metres over which an explosion fades into a surface
+  pub drawn: u32 = 0u32;             // billboards drawn last frame
 
-  pub fn create(device &mut Device, colorFormat u32) FlipbookSystem {
+  pub fn create(device: &mut Device, colorFormat: u32) FlipbookSystem {
     var shader = device.createShaderModule(&FLIPBOOK_SPIRV);
     let both = SHADER_STAGE_VERTEX | SHADER_STAGE_FRAGMENT;
     let entries = [
@@ -119,14 +119,14 @@ pub struct FlipbookSystem {
   }
 
   // Make the bind groups again at the next frame (after ImageFx's 'configure')
-  pub fn rebind(self &mut) { boundW = 0u32; }
+  pub fn rebind(self: &mut) { boundW = 0u32; }
 
-  pub fn isValid(self &) bool {
+  pub fn isValid(self: &) bool {
     bakePipeline.isValid() && drawPipeline.isValid() && sampler.isValid() && frameBuffer.isValid() && boardBuffer.isValid()
   }
 
-  fn groupFor(self &, device &mut Device, fx &Buffer, depth &TextureView, atlasView &TextureView, params &Buffer,
-      boards &Buffer, frame &Buffer) BindGroup {
+  fn groupFor(self: &, device: &mut Device, fx: &Buffer, depth: &TextureView, atlasView: &TextureView, params: &Buffer,
+      boards: &Buffer, frame: &Buffer) BindGroup {
     let e = [BindGroupEntry.buffer(0u32, fx), BindGroupEntry.buffer(1u32, frame), BindGroupEntry.buffer(2u32, params),
       BindGroupEntry.texture(3u32, atlasView), BindGroupEntry.sampler(4u32, &sampler), BindGroupEntry.buffer(5u32, boards),
       BindGroupEntry.texture(6u32, depth)];
@@ -135,7 +135,7 @@ pub struct FlipbookSystem {
 
   // Bake 'desc' into an atlas, now (a submission of its own, waited for: a start-up cost). Its
   // number is what 'play' takes.
-  pub fn addFlipbook(self &mut, device &mut Device, desc &FlipbookDesc) u32 {
+  pub fn addFlipbook(self: &mut, device: &mut Device, desc: &FlipbookDesc) u32 {
     let side = desc.grid * desc.cell;
     let texDesc = new TextureDescriptor(side, side, TEXTURE_FORMAT_RGBA16_FLOAT,
       TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_TEXTURE_BINDING | TEXTURE_USAGE_COPY_SRC);
@@ -172,13 +172,13 @@ pub struct FlipbookSystem {
     u32.from(atlases.len() - 1usize)
   }
 
-  pub fn atlasCount(self &) usize { atlases.len() }
+  pub fn atlasCount(self: &) usize { atlases.len() }
 
   // The texture flipbook 'i' was baked into (grid x grid frames, row by row from the top)
-  pub fn atlasTexture(self &, i usize) &Texture { &atlases[i].texture }
+  pub fn atlasTexture(self: &, i: usize) &Texture { &atlases[i].texture }
 
   // The bytes of the baked atlases, for the memory a flipbook costs
-  pub fn atlasBytes(self &) u64 {
+  pub fn atlasBytes(self: &) u64 {
     var total = 0u64;
     var i = 0usize;
     while i < atlases.len() {
@@ -191,14 +191,14 @@ pub struct FlipbookSystem {
 
   // A billboard of flipbook 'atlas' at 'center', 'size' metres to a half width, starting at
   // 'start' and lasting 'duration' seconds
-  pub fn play(self &mut, atlas u32, center Vec3, size f32, start f32, duration f32, roll f32, tint Color) {
+  pub fn play(self: &mut, atlas: u32, center: Vec3, size: f32, start: f32, duration: f32, roll: f32, tint: Color) {
     if usize.from(atlas) >= atlases.len() { return; }
     if boards.len() >= MAX_BOARDS { return; }
     boards.push(new Billboard(atlas, center, size, start, duration, roll, tint));
   }
 
   // Drop the finished billboards
-  pub fn retire(self &mut, now f32) {
+  pub fn retire(self: &mut, now: f32) {
     var kept = List[Billboard].withCapacity(boards.len());
     var i = 0usize;
     while i < boards.len() {
@@ -208,7 +208,7 @@ pub struct FlipbookSystem {
     boards = kept;
   }
 
-  pub fn bindFrame(self &mut, device &mut Device, fx &ImageFx) {
+  pub fn bindFrame(self: &mut, device: &mut Device, fx: &ImageFx) {
     if boundW == fx.width && boundH == fx.height && boundW != 0u32 { return; }
     var depthView = fx.depth.createView();
     var i = 0usize;
@@ -224,8 +224,8 @@ pub struct FlipbookSystem {
   }
 
   // Draw the playing billboards into 'target' (the HDR frame, kept), at clock 'now'
-  pub fn render(self &mut, device &mut Device, encoder &mut CommandEncoder, fx &ImageFx, target &Texture,
-      camera &Camera, now f32, scale f32) {
+  pub fn render(self: &mut, device: &mut Device, encoder: &mut CommandEncoder, fx: &ImageFx, target: &Texture,
+      camera: &Camera, now: f32, scale: f32) {
     drawn = 0u32;
     self.retire(now);
     if boards.len() == 0usize { return; }
@@ -295,7 +295,7 @@ pub struct FlipbookSystem {
 
 // spirv-begin flipbook.spv FLIPBOOK_SPIRV
 // Written by tools/shaders/shaders.py from flipbook.slang (sha256 33ac12181f449136638f0179f17962bbc7bb478966a04fc2c26d902bed36f882): do not edit.
-let FLIPBOOK_SPIRV Array[u32, 11754] = [
+let FLIPBOOK_SPIRV: Array[u32, 11754] = [
   0x07230203u32, 0x00010500u32, 0x00280000u32, 0x00000b5eu32, 0x00000000u32, 0x00020011u32,
   0x00000001u32, 0x000b000au32, 0x5f565053u32, 0x5f52484bu32, 0x726f7473u32, 0x5f656761u32,
   0x66667562u32, 0x735f7265u32, 0x61726f74u32, 0x635f6567u32, 0x7373616cu32, 0x00000000u32,

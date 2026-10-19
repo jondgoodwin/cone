@@ -30,23 +30,23 @@ pub const FormCylinder = 5u32;
 pub const FormCapsule = 6u32;
 
 pub struct Form {
-  pub kind u32;
-  pub params List[f64];
-  pub ok bool;            // false if the fit failed (too few points, a degenerate arrangement)
-  pub count usize;        // points fitted (those with weight above zero)
-  pub rms f64;            // weighted root-mean-square residual
-  pub maxAbs f64;         // greatest absolute residual
-  pub iterations u32;     // refinement steps taken
+  pub kind: u32;
+  pub params: List[f64];
+  pub ok: bool;            // false if the fit failed (too few points, a degenerate arrangement)
+  pub count: usize;        // points fitted (those with weight above zero)
+  pub rms: f64;            // weighted root-mean-square residual
+  pub maxAbs: f64;         // greatest absolute residual
+  pub iterations: u32;     // refinement steps taken
 
-  pub fn make(kind u32, params List[f64]) Form {
+  pub fn make(kind: u32, params: List[f64]) Form {
     new Form(kind, params, true, 0usize, 0.0, 0.0, 0u32)
   }
 
-  pub fn failed(kind u32) Form {
+  pub fn failed(kind: u32) Form {
     new Form(kind, List[f64].empty(), false, 0usize, 0.0, 0.0, 0u32)
   }
 
-  pub fn name(self &) &str {
+  pub fn name(self: &) &str {
     if kind == FormPlane { "plane" }
     elif kind == FormSphere { "sphere" }
     elif kind == FormEllipsoid { "ellipsoid" }
@@ -57,14 +57,14 @@ pub struct Form {
   }
 
   // Parameter k as an f32, for reporting
-  pub fn param(self &, k usize) f32 { f32.from(*params[k]) }
+  pub fn param(self: &, k: usize) f32 { f32.from(*params[k]) }
 }
 
-fn pv(p &List[f64], k usize) DVec3 { new DVec3(*p[k], *p[k + 1usize], *p[k + 2usize]) }
+fn pv(p: &List[f64], k: usize) DVec3 { new DVec3(*p[k], *p[k + 1usize], *p[k + 2usize]) }
 
 // The rotation (as nine numbers, row-major) for the rotation vector w: about
 // w's direction by its length (Rodrigues)
-fn rotationOf(w DVec3) List[f64] {
+fn rotationOf(w: DVec3) List[f64] {
   let th = w.length();
   let k = if th > 1.0e-12 { w * (1.0 / th) } else { new DVec3(0.0, 0.0, 1.0) };
   let s = if th > 1.0e-12 { libc.sin(th) } else { 0.0 };
@@ -78,7 +78,7 @@ fn rotationOf(w DVec3) List[f64] {
 }
 
 // The rotation vector of a rotation matrix (row-major), the inverse of rotationOf
-fn rotationVectorOf(r &List[f64]) DVec3 {
+fn rotationVectorOf(r: &List[f64]) DVec3 {
   let tr = *r[0] + *r[4] + *r[8];
   var cs = (tr - 1.0) * 0.5;
   if cs > 1.0 { cs = 1.0; }
@@ -102,7 +102,7 @@ fn rotationVectorOf(r &List[f64]) DVec3 {
 // at the origin, to its surface, negative inside. Exact: the nearest point is
 // q_i r_i^2 / (r_i^2 + t) where t is the root of sum (r_i q_i / (r_i^2 + t))^2 = 1
 // (Eberly), found by Newton's method kept inside a bracket.
-fn ellipsoidDistance(q DVec3, a f64, b f64, c f64) f64 {
+fn ellipsoidDistance(q: DVec3, a: f64, b: f64, c: f64) f64 {
   let f0 = sqd(q.x / a) + sqd(q.y / b) + sqd(q.z / c) - 1.0;
   let rmin = mind(a, mind(b, c));
   if q.lengthSquared() < 1.0e-24 { return -rmin; }
@@ -140,7 +140,7 @@ fn ellipsoidDistance(q DVec3, a f64, b f64, c f64) f64 {
 }
 
 // The value of a quadric (ten coefficients) at x, and its gradient
-fn quadricValue(p &List[f64], x DVec3, grad &mut DVec3) f64 {
+fn quadricValue(p: &List[f64], x: DVec3, grad: &mut DVec3) f64 {
   let v = *p[0] * x.x * x.x + *p[1] * x.y * x.y + *p[2] * x.z * x.z + *p[3] * x.x * x.y + *p[4] * x.x * x.z
     + *p[5] * x.y * x.z + *p[6] * x.x + *p[7] * x.y + *p[8] * x.z + *p[9];
   *grad = new DVec3(2.0 * *p[0] * x.x + *p[3] * x.y + *p[4] * x.z + *p[6],
@@ -151,7 +151,7 @@ fn quadricValue(p &List[f64], x DVec3, grad &mut DVec3) f64 {
 
 // The distance from x to a quadric's surface by repeated first-order steps
 // (x moved by -f grad / |grad|^2 until it lies on the surface); signed by f at x
-fn quadricDistance(p &List[f64], x DVec3) f64 {
+fn quadricDistance(p: &List[f64], x: DVec3) f64 {
   var g = new DVec3(0.0, 0.0, 0.0);
   let f0 = quadricValue(p, x, &mut g);
   var q = x;
@@ -169,7 +169,7 @@ fn quadricDistance(p &List[f64], x DVec3) f64 {
 }
 
 // The distance from x to the segment a b
-fn segmentDistance(x DVec3, a DVec3, b DVec3) f64 {
+fn segmentDistance(x: DVec3, a: DVec3, b: DVec3) f64 {
   let ab = b - a;
   let len2 = ab.lengthSquared();
   var t = 0.0;
@@ -180,7 +180,7 @@ fn segmentDistance(x DVec3, a DVec3, b DVec3) f64 {
 }
 
 // The signed distance from x to the form given by kind and parameters
-fn distanceTo(kind u32, p &List[f64], x DVec3) f64 {
+fn distanceTo(kind: u32, p: &List[f64], x: DVec3) f64 {
   if kind == FormPlane {
     let n = unitd(pv(p, 3usize));
     n.dot(x - pv(p, 0usize))
@@ -205,19 +205,19 @@ fn distanceTo(kind u32, p &List[f64], x DVec3) f64 {
 }
 
 // The signed distance from a point to a form
-pub fn formDistance(f &Form, x Vec3) f32 {
+pub fn formDistance(f: &Form, x: Vec3) f32 {
   f32.from(distanceTo(f.kind, &f.params, DVec3.from(x)))
 }
 
 // The ellipsoid's three axis directions (unit vectors) as the columns of its rotation
-pub fn ellipsoidAxis(f &Form, k usize) Vec3 {
+pub fn ellipsoidAxis(f: &Form, k: usize) Vec3 {
   let r = rotationOf(pv(&f.params, 6usize));
   new Vec3(f32.from(*r[k]), f32.from(*r[3usize + k]), f32.from(*r[6usize + k]))
 }
 
 // A form's centre: a plane's point, a sphere's or ellipsoid's centre, a cylinder's
 // axis point at the middle of the fitted span, a capsule's axis midpoint
-pub fn formCenter(f &Form) Vec3 {
+pub fn formCenter(f: &Form) Vec3 {
   if f.kind == FormCylinder {
     let d = unitd(pv(&f.params, 3usize));
     let c = pv(&f.params, 0usize) + d * (0.5 * (*f.params[7] + *f.params[8]));

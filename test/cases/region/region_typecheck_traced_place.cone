@@ -39,40 +39,40 @@ import arena;
 import pool;
 
 struct Tr is RegionRef, Traced {
-  fn alloc(size usize) *u8 inline { malloc(size) }
-  fn mark(self &uni Tr, slot *usize, perm u32, mode u32) { }
+  fn alloc(size: usize) *u8 inline { malloc(size) }
+  fn mark(self: &uni Tr, slot: *usize, perm: u32, mode: u32) { }
 }
 
 // Traced, and hearing of stores
 struct TrB is RegionRef, Traced {
-  fn alloc(size usize) *u8 inline { malloc(size) }
-  fn mark(self &uni TrB, slot *usize) { }
-  fn writeBarrier(self &uni TrB) { }
+  fn alloc(size: usize) *u8 inline { malloc(size) }
+  fn mark(self: &uni TrB, slot: *usize) { }
+  fn writeBarrier(self: &uni TrB) { }
 }
 
 // Counted, with no way to say a value was reached before
 struct Counted is RegionRef {
-  pub count usize;
-  fn alloc(size usize) *u8 inline { malloc(size) }
-  fn init(self &new) { *self = new Counted(1usize); }
-  fn aliasRef(self &uni Counted) { count = count + 1usize; }
-  fn dealiasRef(self &uni Counted) bool { count = count - 1usize; count == 0usize }
+  pub count: usize;
+  fn alloc(size: usize) *u8 inline { malloc(size) }
+  fn init(self: &new) { *self = new Counted(1usize); }
+  fn aliasRef(self: &uni Counted) { count = count + 1usize; }
+  fn dealiasRef(self: &uni Counted) bool { count = count - 1usize; count == 0usize }
 }
 
-struct Leaf { pub n i32; }
-struct Pair { pub left Tr[mut, Leaf]; pub right Tr[mut, Leaf]; }
-struct PairB { pub left TrB[mut, Leaf]; }
-struct Fin { pub v i32; fn final(self &uni) { } }
-struct Box { pub b Tr[mut, Leaf]; }
+struct Leaf { pub n: i32; }
+struct Pair { pub left: Tr[mut, Leaf]; pub right: Tr[mut, Leaf]; }
+struct PairB { pub left: TrB[mut, Leaf]; }
+struct Fin { pub v: i32; fn final(self: &uni) { } }
+struct Box { pub b: Tr[mut, Leaf]; }
 
 // Accepted: a traced object holding 'Rc' and 'Uni' owners, a function
 // reference, and a traced object holding another
 struct Mixed {
-  pub g Tr[mut, Leaf];
-  pub r Rc[mut, Fin];
-  pub s Uni[Fin];
-  pub f &fn(x i32) i32;
-  pub p Tr[mut, Pair];
+  pub g: Tr[mut, Leaf];
+  pub r: Rc[mut, Fin];
+  pub s: Uni[Fin];
+  pub f: &fn(x: i32) i32;
+  pub p: Tr[mut, Pair];
 }
 
 // Rule 1 is refused for a region that cannot be passed through, and accepted
@@ -80,62 +80,62 @@ struct Mixed {
 // hold: in fields, however it is held inside, in a generic's instance and in a
 // parameter. A self-referring type is traced once, as a cycle is
 struct RcHolder {
-  pub pr Rc[mut, Pair];
-  pub ok Rc[mut, Leaf];
+  pub pr: Rc[mut, Pair];
+  pub ok: Rc[mut, Leaf];
 }
 struct UniOption {
-  pub o Uni[Option[Tr[mut, Leaf]]];
+  pub o: Uni[Option[Tr[mut, Leaf]]];
 }
 struct Node {
-  pub next Rc[mut, Node];
-  pub g Tr[mut, Leaf];
+  pub next: Rc[mut, Node];
+  pub g: Tr[mut, Leaf];
 }
-struct RcBox[T] { pub v Rc[mut, T]; }
-fn useBox(b &RcBox[Tr[mut, Leaf]]) { }
-fn takesRc(p Rc[mut, Pair]) { }
+struct RcBox[T] { pub v: Rc[mut, T]; }
+fn useBox(b: &RcBox[Tr[mut, Leaf]]) { }
+fn takesRc(p: Rc[mut, Pair]) { }
 
 struct Counts {
-  pub c Counted[mut, Pair];          //~ ErrorTracedHeld "declares no 'visit'"
-  pub ok Counted[mut, Leaf];
+  pub c: Counted[mut, Pair];          //~ ErrorTracedHeld "declares no 'visit'"
+  pub ok: Counted[mut, Leaf];
 }
 struct Barriered {
-  pub b Rc[mut, PairB];              //~ ErrorTracedHeld "writeBarrier"
-  pub ok Uni[Leaf];
+  pub b: Rc[mut, PairB];              //~ ErrorTracedHeld "writeBarrier"
+  pub ok: Uni[Leaf];
 }
 
 // Rule 2: a global
-let gp Pair;                        //~ ErrorTracedGlobal "gp is a global"
+let gp: Pair;                        //~ ErrorTracedGlobal "gp is a global"
 fn @initpure init() { gp = new Pair(new Tr[mut, Leaf](1i32), new Tr[mut, Leaf](2i32)); }
 
 // Rule 3: a traced value holding a borrow
-struct Borrows { pub b &i32; }
-struct HoldsBorrows { pub h (i64, Borrows); }
+struct Borrows { pub b: &i32; }
+struct HoldsBorrows { pub h: (i64, Borrows); }
 
 // Rule 5: an owning virtual reference into a traced region
-trait Shape { fn area(self &) i32; }
-struct Sq is Shape { pub s i32; fn area(self &) i32 { s * s } }
+trait Shape { fn area(self: &) i32; }
+struct Sq is Shape { pub s: i32; fn area(self: &) i32 { s * s } }
 struct Kinds {
-  pub vr Tr[mut, Shape];            //~ ErrorTracedRefKind "a single reference"
+  pub vr: Tr[mut, Shape];            //~ ErrorTracedRefKind "a single reference"
 }
 
 // Rule 6: a lock permission, taking room or not
 struct Lock is LockPermission {
-  pub held i32;
-  fn acquireMut(self &uni Lock) { }
-  fn releaseMut(self &uni Lock) { }
+  pub held: i32;
+  fn acquireMut(self: &uni Lock) { }
+  fn releaseMut(self: &uni Lock) { }
 }
 struct Locked {
-  pub l Tr[Lock, Leaf];              //~ ErrorTracedPerm "a lock permission, Lock, is not built on a traced region"
+  pub l: Tr[Lock, Leaf];              //~ ErrorTracedPerm "a lock permission, Lock, is not built on a traced region"
 }
 struct Unlock is LockPermission {
-  fn acquireMut(self &uni Unlock) { }
-  fn releaseMut(self &uni Unlock) { }
+  fn acquireMut(self: &uni Unlock) { }
+  fn releaseMut(self: &uni Unlock) { }
 }
-struct Unlocked { pub l Tr[Unlock, Leaf]; }  //~ ErrorTracedPerm "a lock permission, Unlock"
+struct Unlocked { pub l: Tr[Unlock, Leaf]; }  //~ ErrorTracedPerm "a lock permission, Unlock"
 
 // Rule 4: the raw moves, directly, from a type that says nothing of how a
 // collector reaches what it places, and through a collection that does (accepted)
-fn raw(p *Pair, q *Pair, v Pair) {
+fn raw(p: *Pair, q: *Pair, v: Pair) {
   mem.writeRaw[Pair](p, v);         //~ ErrorTracedRaw "mem.writeRaw would place Pair"
   mem.moveRaw[Pair](p, q, 1usize);  //~ ErrorTracedRaw "mem.moveRaw would place Pair"
   mem.writeRaw[i32](p as *i32, 5i32);
@@ -144,21 +144,21 @@ fn raw(p *Pair, q *Pair, v Pair) {
 // A container of the program's own that places values in raw memory and does
 // not declare how they are walked
 struct Bag[T] {
-  ptr *T;
-  fn put(self &mut, v T) { mem.writeRaw(ptr, v); }
+  ptr: *T;
+  fn put(self: &mut, v: T) { mem.writeRaw(ptr, v); }
 }
 
 // Rule 7: a root that needs tracing and cannot be traced: a raw pointer to a
 // value that holds a traced reference, held beside one, with no GcTraceElements
 struct Uncovered {
-  pub g Tr[mut, Leaf];
-  pub p *Pair;
+  pub g: Tr[mut, Leaf];
+  pub p: *Pair;
 }
-fn takesUncovered(u &Uncovered) { }
+fn takesUncovered(u: &Uncovered) { }
 struct HoldsUncovered {
-  pub u Tr[mut, Uncovered];           //~ ErrorTraceRoot "may not point at Uncovered"
+  pub u: Tr[mut, Uncovered];           //~ ErrorTraceRoot "may not point at Uncovered"
 }
-fn rootUncovered(u Uncovered) { }      //~ ErrorTraceRoot "cannot be traced"
+fn rootUncovered(u: Uncovered) { }      //~ ErrorTraceRoot "cannot be traced"
 
 fn main() {
   let l = new Tr[mut, Leaf](1i32);
@@ -182,4 +182,4 @@ fn main() {
   let bag = new Bag[Pair](null);                           //~ ErrorTracedRaw "would place Pair"
 }
 
-fn nothing(x i32) i32 { x }
+fn nothing(x: i32) i32 { x }

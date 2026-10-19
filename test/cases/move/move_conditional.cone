@@ -15,75 +15,75 @@ mod move_conditional;
 
 import stdio use *;
 
-fn show(label &str, n i64) {
+fn show(label: &str, n: i64) {
   printStr(label);
   printStr(" ");
   printInt(n);
   printStr("\n");
 }
 
-fn moves[X](x &X) i64 where X is Move { 1 }
-fn copies[X](x &X) i64 where X is Copy { 0 }
+fn moves[X](x: &X) i64 where X is Move { 1 }
+fn copies[X](x: &X) i64 where X is Copy { 0 }
 
 struct Handle is Move {
-  pub id i64;
+  pub id: i64;
 }
 struct Box[T] {
-  pub v T;
+  pub v: T;
 }
 struct Cell[T] {
-  pub v T;
+  pub v: T;
 }
 
 // The future: it holds no T, only a shared reference, which copies
 struct Fut[T] is Move if T is Move {
-  pub c Rc[imm, Cell[T]];
+  pub c: Rc[imm, Cell[T]];
 }
 
 // A condition naming one of two parameters
 struct Pair[A, B] is Move if B is Move {
-  pub n i64;
+  pub n: i64;
 }
 
 // A condition joined by '||' and '&&', grouped
 struct Either[A, B] is Move if A is Move || (B is Move && A is Copy) {
-  pub n i64;
+  pub n: i64;
 }
 
 // Rule 4 wins: the Handle field makes every instance move, the condition
 // false or not
 struct Holds[T] is Move if T is Copy {
-  pub h Handle;
+  pub h: Handle;
 }
 
 // A flat 'is Move', unchanged: every instance moves
 struct Owned[T] is Move {
-  pub n i64;
+  pub n: i64;
 }
 
 // An enum's entry, decided per instance the same way
 enum Signal[T] is Move if T is Move {
   struct Quiet {}
-  struct Loud { pub n i64; }
+  struct Loud { pub n: i64; }
 }
 
 // A struct holding an instance moves as the instance does (rule 4)
 struct Holder {
-  pub f Fut[Handle];
+  pub f: Fut[Handle];
 }
 struct HolderI {
-  pub f Fut[i32];
+  pub f: Fut[i32];
 }
 
 // An instance named as a reference's target inside the type it is about,
 // decided before that type is laid out: Fut[Node] is Move, Fut[NodeC] Copy
 struct Node is Move {
-  pub next ?Rc[imm, Fut[Node]];
+  pub next: ?Rc[imm, Fut[Node]];
 }
 struct NodeC {
-  pub next ?Rc[imm, Fut[NodeC]];
+  pub next: ?Rc[imm, Fut[NodeC]];
 }
-fn probe(a &Fut[Node], b &Fut[NodeC]) i64 {
+fn probe(a: &Fut[Node], b: &Fut[NodeC]) i64 {
   moves(a) + copies(b)
 }
 
@@ -128,11 +128,11 @@ fn main() {
   show("Owned[i32] moves", moves(&new Owned[i32](3)));  // 1
 
   // The enum
-  let s Signal[i32] = Signal.Loud[i32](4);
+  let s: Signal[i32] = Signal.Loud[i32](4);
   let s2 = s;
   let s3 = s;
   show("Signal[i32] copies", copies(&s3));              // 0
-  let t Signal[Handle] = Signal.Quiet;
+  let t: Signal[Handle] = Signal.Quiet;
   show("Signal[Handle] moves", moves(&t));              // 1
 
   // Holding an instance

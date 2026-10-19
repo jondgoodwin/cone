@@ -12,13 +12,13 @@ pub const QTYPE_Q4_K = 12u32;
 pub const QTYPE_Q6_K = 14u32;
 
 // Whether this is one of the five
-pub fn isQType(qtype u32) bool {
+pub fn isQType(qtype: u32) bool {
   qtype == QTYPE_F32 || qtype == QTYPE_F16 || qtype == QTYPE_Q8_0 || qtype == QTYPE_Q4_K || qtype == QTYPE_Q6_K
 }
 
 // The elements in one block: 1 for F32 and F16 (they are not blocked), 32 for Q8_0, 256 for Q4_K and Q6_K.
 // 0 for a type that is not one of the five.
-pub fn blockElems(qtype u32) usize {
+pub fn blockElems(qtype: u32) usize {
   if qtype == QTYPE_F32 || qtype == QTYPE_F16 { return 1usize; }
   if qtype == QTYPE_Q8_0 { return 32usize; }
   if qtype == QTYPE_Q4_K || qtype == QTYPE_Q6_K { return 256usize; }
@@ -28,7 +28,7 @@ pub fn blockElems(qtype u32) usize {
 // The bytes in one block: 4 (F32), 2 (F16), 34 (Q8_0: a half and 32 bytes), 144 (Q4_K: two halves, 12 bytes of
 // six-bit scales and minimums, 128 bytes of nibbles), 210 (Q6_K: 128 bytes of low nibbles, 64 of high bit
 // pairs, 16 signed scales, a half). 0 for a type that is not one of the five.
-pub fn blockBytes(qtype u32) usize {
+pub fn blockBytes(qtype: u32) usize {
   if qtype == QTYPE_F32 { return 4usize; }
   if qtype == QTYPE_F16 { return 2usize; }
   if qtype == QTYPE_Q8_0 { return 34usize; }
@@ -39,7 +39,7 @@ pub fn blockBytes(qtype u32) usize {
 
 // The bytes of one row of 'cols' elements, 0 if the type is not one of the five or 'cols' is not a whole
 // number of its blocks
-pub fn rowBytes(qtype u32, cols usize) usize {
+pub fn rowBytes(qtype: u32, cols: usize) usize {
   let be = blockElems(qtype);
   if be == 0usize || cols % be != 0usize { return 0usize; }
   cols / be * blockBytes(qtype)
@@ -49,7 +49,7 @@ pub fn rowBytes(qtype u32, cols usize) usize {
 
 // The f32 a half-precision value (its 16 bits) stands for: exact for every finite half (the normal ones and
 // the subnormal ones), infinities and NaNs kept
-pub fn f16ToF32(h u16) f32 {
+pub fn f16ToF32(h: u16) f32 {
   let bits = u32.from(h);
   let sign = (bits >> 15u32) & 1u32;
   let exponent = (bits >> 10u32) & 31u32;
@@ -72,7 +72,7 @@ pub fn f16ToF32(h u16) f32 {
 
 // The half-precision value nearest to this f32 (ties to even): overflow to infinity, tiny values to a
 // subnormal half or zero, NaN kept a NaN
-pub fn f32ToF16(f f32) u16 {
+pub fn f32ToF16(f: f32) u16 {
   let bits = f as u32;
   let sign = (bits >> 16u32) & 0x8000u32;
   let e = i32.from((bits >> 23u32) & 255u32);
@@ -101,14 +101,14 @@ pub fn f32ToF16(f f32) u16 {
 
 // ---- Bytes in, bytes out ----
 
-fn byteAt(b &Array[u8], i usize) u32 { u32.from(b[i]) }
+fn byteAt(b: &Array[u8], i: usize) u32 { u32.from(b[i]) }
 
-fn halfAt(b &Array[u8], i usize) f32 { f16ToF32(u16.from(byteAt(b, i) | (byteAt(b, i + 1usize) << 8u32))) }
+fn halfAt(b: &Array[u8], i: usize) f32 { f16ToF32(u16.from(byteAt(b, i) | (byteAt(b, i + 1usize) << 8u32))) }
 
-fn signedAt(b &Array[u8], i usize) i32 { i32.from(i8.from(b[i])) }
+fn signedAt(b: &Array[u8], i: usize) i32 { i32.from(i8.from(b[i])) }
 
 // A byte buffer as the 32-bit words a GPU storage buffer holds: little-endian, the last word padded with zeros
-pub fn packWords(bytes &Array[u8]) List[u32] {
+pub fn packWords(bytes: &Array[u8]) List[u32] {
   var out = List[u32].withCapacity((bytes.len + 3usize) / 4usize);
   var i = 0usize;
   while i < bytes.len {
@@ -125,12 +125,12 @@ pub fn packWords(bytes &Array[u8]) List[u32] {
 }
 
 // Put a half's two bytes (little-endian) on the end of a byte list
-fn pushHalf(out &mut List[u8], h u16) {
+fn pushHalf(out: &mut List[u8], h: u16) {
   out.push(u8.from(h & 255u16));
   out.push(u8.from(h >> 8u16));
 }
 
-fn pushF32(out &mut List[u8], f f32) {
+fn pushF32(out: &mut List[u8], f: f32) {
   let bits = f as u32;
   out.push(u8.from(bits & 255u32));
   out.push(u8.from((bits >> 8u32) & 255u32));
@@ -141,7 +141,7 @@ fn pushF32(out &mut List[u8], f f32) {
 // ---- Encoders (what the tests and a model writer need; the K-quants' are left out) ----
 
 // F32 bytes of these values
-pub fn encodeF32(values &Array[f32]) List[u8] {
+pub fn encodeF32(values: &Array[f32]) List[u8] {
   var out = List[u8].withCapacity(values.len * 4usize);
   var i = 0usize;
   while i < values.len { pushF32(&mut out, values[i]); i = i + 1usize; }
@@ -149,7 +149,7 @@ pub fn encodeF32(values &Array[f32]) List[u8] {
 }
 
 // F16 bytes of these values, each rounded to the nearest half
-pub fn encodeF16(values &Array[f32]) List[u8] {
+pub fn encodeF16(values: &Array[f32]) List[u8] {
   var out = List[u8].withCapacity(values.len * 2usize);
   var i = 0usize;
   while i < values.len { pushHalf(&mut out, f32ToF16(values[i])); i = i + 1usize; }
@@ -159,7 +159,7 @@ pub fn encodeF16(values &Array[f32]) List[u8] {
 // Q8_0 bytes of these values (a whole number of blocks of 32, else nothing): for each block the scale d =
 // max|v| / 127 stored as a half, and each value divided by that half and rounded to the nearest integer, as
 // ggml's quantize_row_q8_0_ref does
-pub fn encodeQ8_0(values &Array[f32]) List[u8] {
+pub fn encodeQ8_0(values: &Array[f32]) List[u8] {
   var out = List[u8].empty();
   if values.len % 32usize != 0usize { return out; }
   var b = 0usize;
@@ -192,7 +192,7 @@ pub fn encodeQ8_0(values &Array[f32]) List[u8] {
 }
 
 // ggml's roundf: to the nearest integer, halves away from zero
-fn roundHalfAway(x f32) f32 {
+fn roundHalfAway(x: f32) f32 {
   if x >= 0.0 { return libc.floorf(x + 0.5); }
   0.0 - libc.floorf(0.5 - x)
 }
@@ -202,7 +202,7 @@ fn roundHalfAway(x f32) f32 {
 // Decode the row of 'cols' elements of type 'qtype' that starts at byte 'at' of 'bytes' into out[0 .. cols].
 // Nothing is written if the type is unknown, 'cols' is not a whole number of blocks, or the row does not fit
 // in 'bytes' or 'out'; the answer is whether it was decoded.
-pub fn dequantizeRow(qtype u32, bytes &Array[u8], at usize, cols usize, out &mut Array[f32]) bool {
+pub fn dequantizeRow(qtype: u32, bytes: &Array[u8], at: usize, cols: usize, out: &mut Array[f32]) bool {
   let rb = rowBytes(qtype, cols);
   if rb == 0usize || at + rb > bytes.len || cols > out.len { return false; }
   if qtype == QTYPE_F32 {
@@ -301,13 +301,13 @@ pub fn dequantizeRow(qtype u32, bytes &Array[u8], at usize, cols usize, out &mut
 }
 
 // Q4_K's six-bit scale number j (0 to 7) from the 12 scale bytes at 'at' (ggml's get_scale_min_k4)
-fn scaleK4(b &Array[u8], at usize, j usize) u32 {
+fn scaleK4(b: &Array[u8], at: usize, j: usize) u32 {
   if j < 4usize { return byteAt(b, at + j) & 63u32; }
   (byteAt(b, at + j + 4usize) & 15u32) | ((byteAt(b, at + j - 4usize) >> 6u32) << 4u32)
 }
 
 // ...and its six-bit minimum number j
-fn minK4(b &Array[u8], at usize, j usize) u32 {
+fn minK4(b: &Array[u8], at: usize, j: usize) u32 {
   if j < 4usize { return byteAt(b, at + j + 4usize) & 63u32; }
   (byteAt(b, at + j + 4usize) >> 4u32) | ((byteAt(b, at + j) >> 6u32) << 4u32)
 }
@@ -317,24 +317,24 @@ fn minK4(b &Array[u8], at usize, j usize) u32 {
 // A weight matrix as the tensor holds it: 'rows' rows of 'cols' elements of one type, each row a whole number
 // of blocks, the rows one after another in 'bytes'. The GPU is given the same bytes as words.
 pub struct QMatrix {
-  pub qtype u32;
-  pub rows usize;
-  pub cols usize;
-  pub bytes List[u8];
+  pub qtype: u32;
+  pub rows: usize;
+  pub cols: usize;
+  pub bytes: List[u8];
 
   // The matrix of these bytes, or None if the type is not one of the five, 'cols' is not a whole number of its
   // blocks, or 'bytes' is not exactly rows * the row's bytes
-  pub fn make(qtype u32, rows usize, cols usize, bytes List[u8]) Option[QMatrix] {
+  pub fn make(qtype: u32, rows: usize, cols: usize, bytes: List[u8]) Option[QMatrix] {
     let rb = rowBytes(qtype, cols);
     if rb == 0usize || bytes.len() != rows * rb { return None; }
     Some[QMatrix](new QMatrix(qtype, rows, cols, bytes))
   }
 
   // Bytes from the start of one row to the next
-  pub fn stride(self &) usize { rowBytes(qtype, cols) }
+  pub fn stride(self: &) usize { rowBytes(qtype, cols) }
 
   // Row 'r' decoded to f32
-  pub fn row(self &, r usize) List[f32] {
+  pub fn row(self: &, r: usize) List[f32] {
     var out = List[f32].withCapacity(cols);
     var i = 0usize;
     while i < cols { out.push(0.0); i = i + 1usize; }
@@ -343,5 +343,5 @@ pub struct QMatrix {
   }
 
   // The bytes as the words a GPU storage buffer holds
-  pub fn words(self &) List[u32] { packWords(bytes.view()) }
+  pub fn words(self: &) List[u32] { packWords(bytes.view()) }
 }

@@ -302,8 +302,8 @@ an importer needs to see it, with a banner saying it is generated:
   body) — is written whole;
 - a private name that such a body reaches is declared too;
 - a global whose members the package folds into its namespace
-  (`pub var config Config = ... pub use *;`) is declared `extern` with the same
-  clause (`pub extern var config Config pub use *;`), so an importer reaches
+  (`pub var config: Config = ... pub use *;`) is declared `extern` with the same
+  clause (`pub extern var config: Config pub use *;`), so an importer reaches
   the folded names as the package does;
 - what the root reaches in one of the package's submodules — a type a public
   function names, what an `inline` body calls, what a `pub use` re-exports — is
@@ -324,7 +324,7 @@ mod a;
 
 import b;
 
-pub extern fn start(n i64) b.Counter;
+pub extern fn start(n: i64) b.Counter;
 ```
 
 A program that imports `a` alone can then use the `b.Counter` that `start`
@@ -348,7 +348,7 @@ manifest names the library:
 ```
 winstr/
     congo.toml          [package] ... and [link] libraries = ["shlwapi"]
-    src/winstr.cone     mod @c("Str") winstr;  pub extern { fn ToIntA(s *u8) i32; }
+    src/winstr.cone     mod @c("Str") winstr;  pub extern { fn ToIntA(s: *u8) i32; }
 ```
 
 - **Its include file is generated, as any package's is.** A C library's
@@ -508,7 +508,7 @@ that is GPU-safe throughout (`noise`, `geomath`, `sdf`, `libc`); a package
 whose GPU code sits beside code that is not uses a `gpu/` folder instead.
 
 **A marked package's kernels are its compute entry points**, written in its
-`src/` like any function (`fn @compute(64) shade(inv Invocation, ...)`; the
+`src/` like any function (`fn @compute(64) shade(inv: Invocation, ...)`; the
 reference manual's *GPU Compute* page). There is no list of them: Congo reads
 a marked package's source to its end, with the header scan's tokens, for
 `fn @compute`, so one in a comment or a string does not count. Compiled for

@@ -28,35 +28,35 @@
 //    the height scaled by the patch noise, its ground height and normal from
 //    the maps.
 
-const TAU f32 = 6.28318530717958647692;
+const TAU: f32 = 6.28318530717958647692;
 
 // An instance placed: what the shaders draw
 pub struct Placed {
-  pub x f32;                       // where it stands (the ground's height at it is 'y')
-  pub y f32;
-  pub z f32;
-  pub height f32;                  // its size (metres)
-  pub yaw f32;                     // radians
-  pub width f32;                   // metres, ring-scaled
-  pub lean f32;                    // radians from upright
-  pub tint f32;                    // a slow noise, 0 to 1: dry and lush patches (colour)
-  pub seed u32;                    // for everything else about it
-  pub nx f32;                      // the ground's normal, x and z (y follows)
-  pub nz f32;
-  pub exposure f32;
+  pub x: f32;                       // where it stands (the ground's height at it is 'y')
+  pub y: f32;
+  pub z: f32;
+  pub height: f32;                  // its size (metres)
+  pub yaw: f32;                     // radians
+  pub width: f32;                   // metres, ring-scaled
+  pub lean: f32;                    // radians from upright
+  pub tint: f32;                    // a slow noise, 0 to 1: dry and lush patches (colour)
+  pub seed: u32;                    // for everything else about it
+  pub nx: f32;                      // the ground's normal, x and z (y follows)
+  pub nz: f32;
+  pub exposure: f32;
 }
 
 // ---- Hashes and noise (cover.slang's gcHash, gcNoise, gcFbm) ----
 
-fn asU32(v i32) u32 { v as u32 }
+fn asU32(v: i32) u32 { v as u32 }
 
 // Four words from a cell and two more
-pub fn cellHash(cx i32, cz i32, a u32, b u32) UVec4 { pcg4d(new UVec4(asU32(cx), asU32(cz), a, b)) }
+pub fn cellHash(cx: i32, cz: i32, a: u32, b: u32) UVec4 { pcg4d(new UVec4(asU32(cx), asU32(cz), a, b)) }
 
-fn fade(t f32) f32 { t * t * t * (t * (t * 6. - 15.) + 10.) }
+fn fade(t: f32) f32 { t * t * t * (t * (t * 6. - 15.) + 10.) }
 
 // Value noise on a lattice, quintic-faded, 0 to 1
-pub fn valueNoise(x f32, z f32, seed u32) f32 {
+pub fn valueNoise(x: f32, z: f32, seed: u32) f32 {
   let fx = libc.floorf(x);
   let fz = libc.floorf(z);
   let ix = i32.from(fx);
@@ -73,18 +73,18 @@ pub fn valueNoise(x f32, z f32, seed u32) f32 {
 }
 
 // Two octaves of value noise, 0 to 1
-pub fn fbm2(x f32, z f32, seed u32) f32 {
+pub fn fbm2(x: f32, z: f32, seed: u32) f32 {
   valueNoise(x, z, seed) * 0.66666667 + valueNoise(x * 2.03 + 17.1, z * 2.03 - 9.7, seed + 1u32) * 0.33333333
 }
 
-pub fn smoothstep(e0 f32, e1 f32, x f32) f32 {
+pub fn smoothstep(e0: f32, e1: f32, x: f32) f32 {
   if e1 <= e0 { if x >= e0 { return 1.; } return 0.; }
   let t = fclamp((x - e0) / (e1 - e0), 0., 1.);
   t * t * (3. - 2. * t)
 }
 
 // A window's value at x
-pub fn windowValue(w &Window, x f32) f32 {
+pub fn windowValue(w: &Window, x: f32) f32 {
   if x < w.a || x >= w.d { return 0.; }
   if x < w.b { return smoothstep(w.a, w.b, x); }
   if x <= w.c { return 1.; }
@@ -92,17 +92,17 @@ pub fn windowValue(w &Window, x f32) f32 {
 }
 
 // The seed of type 'index'
-pub fn typeSeed(t &CoverType, index usize) u32 { pcg(t.seed + 977u32 * u32.from(index)) }
+pub fn typeSeed(t: &CoverType, index: usize) u32 { pcg(t.seed + 977u32 * u32.from(index)) }
 
 // The patch noise of 't' at (x, z), 0 to 1 (1 where the type has no gate)
-pub fn patchAt(t &CoverType, index usize, x f32, z f32) f32 {
+pub fn patchAt(t: &CoverType, index: usize, x: f32, z: f32) f32 {
   if t.patchScale <= 0. { return 1.; }
   let n = fbm2(x / t.patchScale, z / t.patchScale, typeSeed(t, index) + 4242u32);
   smoothstep(t.patchThreshold - t.patchSoftness, t.patchThreshold + t.patchSoftness, n)
 }
 
 // The score of 't' from its windows and its gate alone, no interactions
-pub fn baseScore(t &CoverType, index usize, signals &Array[f32, 8], x f32, z f32) f32 {
+pub fn baseScore(t: &CoverType, index: usize, signals: &Array[f32, 8], x: f32, z: f32) f32 {
   var s = 1f32;
   var k = 0usize;
   while k < SIGNALS {
@@ -119,7 +119,7 @@ pub fn baseScore(t &CoverType, index usize, signals &Array[f32, 8], x f32, z f32
 
 // Which types' scores a type's SHARE interactions need, transitively, as a
 // bit mask (bit i: type i), the type itself included
-pub fn needMask(types &List[CoverType], index usize) u32 {
+pub fn needMask(types: &List[CoverType], index: usize) u32 {
   var mask = 1u32 << u32.from(index);
   var changed = true;
   while changed {
@@ -148,10 +148,10 @@ pub fn needMask(types &List[CoverType], index usize) u32 {
 // by distance (each ring a coarser lattice of bigger, fewer tufts), but ring 0 for a MESH
 // type, whose rings are levels of detail of the same instances: an object does not move
 // as the camera comes near, it changes mesh
-pub fn latticeRing(t &CoverType, ring u32) u32 { if t.kind == KIND_MESH { 0u32 } else { ring } }
+pub fn latticeRing(t: &CoverType, ring: u32) u32 { if t.kind == KIND_MESH { 0u32 } else { ring } }
 
 // The ring k lattice cell of a type
-pub fn ringCell(t &CoverType, ring u32) f32 {
+pub fn ringCell(t: &CoverType, ring: u32) f32 {
   var c = t.cellSize();
   var k = 0u32;
   while k < latticeRing(t, ring) {
@@ -162,7 +162,7 @@ pub fn ringCell(t &CoverType, ring u32) f32 {
 }
 
 // Where a cluster centre of cell (cx, cz) of type 'index' in 'ring' stands, and its hash
-fn centreOf(t &CoverType, index usize, ring u32, cx i32, cz i32, cell f32, h &mut UVec4) Vec2 {
+fn centreOf(t: &CoverType, index: usize, ring: u32, cx: i32, cz: i32, cell: f32, h: &mut UVec4) Vec2 {
   *h = cellHash(cx, cz, typeSeed(t, index), 256u32 + latticeRing(t, ring));
   new Vec2((f32.from(cx) + toUnit(h.x)) * cell, (f32.from(cz) + toUnit(h.y)) * cell)
 }
@@ -170,7 +170,7 @@ fn centreOf(t &CoverType, index usize, ring u32, cx i32, cz i32, cell f32, h &mu
 // How much type 'other' (a NEAR source: one ring, no interactions) stands in
 // the way at (x, z): 1 at an instance, falling to 0 at 'radius', the largest
 // of the neighbouring cells' clusters (their centres)
-pub fn nearOccupancy(types &List[CoverType], other usize, maps &GroundMaps, x f32, z f32, radius f32) f32 {
+pub fn nearOccupancy(types: &List[CoverType], other: usize, maps: &GroundMaps, x: f32, z: f32, radius: f32) f32 {
   let src = types[other];
   let cell = ringCell(src, 0u32);
   let reach = i32.from(libc.ceilf(radius / cell));
@@ -204,8 +204,8 @@ pub fn nearOccupancy(types &List[CoverType], other usize, maps &GroundMaps, x f3
 // The full score of type 'index' at (x, z) whose signals are 'signals': its
 // base score times the way it gives to the types it names. 'scores' holds the
 // full scores of the earlier types it needs (needMask), filled in as it goes.
-pub fn fullScore(types &List[CoverType], index usize, maps &GroundMaps, signals &Array[f32, 8], x f32, z f32,
-    scores &mut Array[f32, 12]) f32 {
+pub fn fullScore(types: &List[CoverType], index: usize, maps: &GroundMaps, signals: &Array[f32, 8], x: f32, z: f32,
+    scores: &mut Array[f32, 12]) f32 {
   let mask = needMask(types, index);
   var i = 0usize;
   while i <= index {
@@ -233,12 +233,12 @@ pub fn fullScore(types &List[CoverType], index usize, maps &GroundMaps, signals 
 
 // Where ring k's outer edge is centred and its half-width: an inner ring's
 // 15% either side of its radius; the last ring fades out between 'fadeStart' and 'range'
-pub fn edgeCentre(t &CoverType, k u32) f32 {
+pub fn edgeCentre(t: &CoverType, k: u32) f32 {
   if k + 1u32 >= t.rings { return (t.range + t.fadeStart) * 0.5; }
   t.ringEnd[usize.from(k)]
 }
 
-pub fn edgeHalf(t &CoverType, k u32) f32 {
+pub fn edgeHalf(t: &CoverType, k: u32) f32 {
   if k + 1u32 >= t.rings { return (t.range - t.fadeStart) * 0.5; }
   // a MESH type's levels of detail switch at a hard edge: the same instance, another mesh
   if t.kind == KIND_MESH { return 0.; }
@@ -247,7 +247,7 @@ pub fn edgeHalf(t &CoverType, k u32) f32 {
 
 // The share of ring k's instances kept at horizontal distance d from the
 // camera: a rise across the previous ring's edge and a fall across its own
-pub fn ringKeep(t &CoverType, k u32, d f32) f32 {
+pub fn ringKeep(t: &CoverType, k: u32, d: f32) f32 {
   var keep = 1f32;
   if k > 0u32 {
     let c = edgeCentre(t, k - 1u32);
@@ -260,7 +260,7 @@ pub fn ringKeep(t &CoverType, k u32, d f32) f32 {
 }
 
 // The nearest and farthest distances at which ring k can keep anything
-pub fn ringSpan(t &CoverType, k u32, near &mut f32, far &mut f32) {
+pub fn ringSpan(t: &CoverType, k: u32, near: &mut f32, far: &mut f32) {
   *near = 0.;
   if k > 0u32 { *near = edgeCentre(t, k - 1u32) - edgeHalf(t, k - 1u32); }
   *far = edgeCentre(t, k) + edgeHalf(t, k);
@@ -270,8 +270,8 @@ pub fn ringSpan(t &CoverType, k u32, near &mut f32, far &mut f32) {
 
 // Place the instances of cell (cx, cz) of type 'index' in 'ring' for a camera
 // at (camX, camZ) onto 'out'. 'scores' is scratch.
-pub fn placeCell(types &List[CoverType], index usize, ring u32, maps &GroundMaps, cx i32, cz i32, camX f32, camZ f32,
-    out &mut List[Placed]) {
+pub fn placeCell(types: &List[CoverType], index: usize, ring: u32, maps: &GroundMaps, cx: i32, cz: i32, camX: f32, camZ: f32,
+    out: &mut List[Placed]) {
   let t = types[index];
   let cell = ringCell(t, ring);
   var h0 = new UVec4(0u32, 0u32, 0u32, 0u32);
@@ -332,12 +332,12 @@ pub fn placeCell(types &List[CoverType], index usize, ring u32, maps &GroundMaps
 // the cluster's reach. The first cell and the cells across; the compute
 // dispatch and the CPU's loop use the same.
 pub struct CellSquare {
-  pub x0 i32;
-  pub z0 i32;
-  pub across u32;
+  pub x0: i32;
+  pub z0: i32;
+  pub across: u32;
 }
 
-pub fn ringHalf(t &CoverType, ring u32) f32 {
+pub fn ringHalf(t: &CoverType, ring: u32) f32 {
   let cell = ringCell(t, ring);
   var near = 0f32;
   var far = 0f32;
@@ -346,20 +346,20 @@ pub fn ringHalf(t &CoverType, ring u32) f32 {
 }
 
 // The square of cells of size 'cell' reaching 'half' metres every way from (camX, camZ)
-pub fn squareOf(cell f32, half f32, camX f32, camZ f32) CellSquare {
+pub fn squareOf(cell: f32, half: f32, camX: f32, camZ: f32) CellSquare {
   let x0 = i32.from(libc.floorf((camX - half) / cell));
   let z0 = i32.from(libc.floorf((camZ - half) / cell));
   let x1 = i32.from(libc.floorf((camX + half) / cell));
   new CellSquare(x0, z0, u32.from(x1 - x0 + 1i32))
 }
 
-pub fn ringSquare(t &CoverType, ring u32, camX f32, camZ f32) CellSquare {
+pub fn ringSquare(t: &CoverType, ring: u32, camX: f32, camZ: f32) CellSquare {
   squareOf(ringCell(t, ring), ringHalf(t, ring), camX, camZ)
 }
 
 // All the instances of type 'index' in 'ring' for a camera at (camX, camZ), in row order
-pub fn placeRing(types &List[CoverType], index usize, ring u32, maps &GroundMaps, camX f32, camZ f32,
-    out &mut List[Placed]) {
+pub fn placeRing(types: &List[CoverType], index: usize, ring: u32, maps: &GroundMaps, camX: f32, camZ: f32,
+    out: &mut List[Placed]) {
   let sq = ringSquare(types[index], ring, camX, camZ);
   var dz = 0u32;
   while dz < sq.across {
@@ -379,7 +379,7 @@ pub fn placeRing(types &List[CoverType], index usize, ring u32, maps &GroundMaps
 // at the footpath (the transition over 'pathSoft' metres from the path's
 // edge), then each type in order laying its colour over it by its coverage,
 // its score times its 'farWeight'.
-pub fn bakeFarField(types &List[CoverType], maps &mut GroundMaps, ground Color, pathColor Color, pathSoft f32) {
+pub fn bakeFarField(types: &List[CoverType], maps: &mut GroundMaps, ground: Color, pathColor: Color, pathSoft: f32) {
   let n = usize.from(maps.res) * usize.from(maps.res) * 4usize;
   maps.farField.clear();
   maps.farField.reserve(n);

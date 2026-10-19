@@ -7,7 +7,7 @@ functions, in the same order of operations, for shaders in `src/sdf.slang`.
 ```cone
 import sdf use *;
 
-fn scene(p Vec3) f32 {
+fn scene(p: Vec3) f32 {
   let body = roundBox(p, new Vec3(1., 0.5, 0.5), 0.1);
   let hole = cylinder(rotate(p, turn), 1., 0.3);
   smoothSubtract(body, hole, 0.05)

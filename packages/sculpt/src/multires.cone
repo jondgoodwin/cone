@@ -62,39 +62,39 @@
 // defaults for 'fromMesh').
 
 pub struct Multires {
-  pub levels List[PolyMesh];      // levels[k]: level k as evaluated; levels[0] is the base
-  pub detail List[List[Vec3]];    // detail[k-1]: level k's, per vertex, (t, b, n) coefficients
-  pub boundary u32;
-  pub fvar u32;
+  pub levels: List[PolyMesh];      // levels[k]: level k as evaluated; levels[0] is the base
+  pub detail: List[List[Vec3]];    // detail[k-1]: level k's, per vertex, (t, b, n) coefficients
+  pub boundary: u32;
+  pub fvar: u32;
 
   // A base and no levels above it, with subdivide's defaults
-  pub fn fromMesh(base &PolyMesh) Multires {
+  pub fn fromMesh(base: &PolyMesh) Multires {
     Multires.fromMeshWith(base, BoundaryEdgeAndCorner, FvarLinearCornersPlus1)
   }
 
   // The same, with the boundary rule (BoundaryEdgeOnly or BoundaryEdgeAndCorner) and the
   // face-varying rule (FvarLinearNone to FvarLinearAll) given
-  pub fn fromMeshWith(base &PolyMesh, boundary u32, fvar u32) Multires {
+  pub fn fromMeshWith(base: &PolyMesh, boundary: u32, fvar: u32) Multires {
     var ls = List[PolyMesh].empty();
     ls.push(copyPolyMesh(base));
     new Multires(ls, List[List[Vec3]].empty(), boundary, fvar)
   }
 
   // How many levels there are above the base
-  pub fn levelCount(self &) u32 {u32.from(detail.len())}
+  pub fn levelCount(self: &) u32 {u32.from(detail.len())}
 
   // Level k's mesh, a copy; the top level for a k past it
-  pub fn evaluate(self &, level u32) PolyMesh {
+  pub fn evaluate(self: &, level: u32) PolyMesh {
     var k = usize.from(level);
     if k >= levels.len() { k = levels.len() - 1usize; }
     copyPolyMesh(levels[k])
   }
 
   // The top level as a plain PolyMesh (Blender's Apply)
-  pub fn apply(self &) PolyMesh {copyPolyMesh(levels[levels.len() - 1usize])}
+  pub fn apply(self: &) PolyMesh {copyPolyMesh(levels[levels.len() - 1usize])}
 
   // One more level, by Catmull-Clark of the top, its detail zero
-  pub fn addLevel(self &mut) {
+  pub fn addLevel(self: &mut) {
     let child = subdivideOnce(levels[levels.len() - 1usize], boundary, fvar);
     var zero = List[Vec3].withCapacity(child.positions.len());
     var i = 0usize;
@@ -111,7 +111,7 @@ pub struct Multires {
   // the detail at this level becomes what the positions leave, and each
   // level above is rebuilt from its own detail, so an edit at the base moves
   // the whole figure and an edit at the top is detail only.
-  pub fn editLevel(self &mut, level u32, positions &List[Vec3]) {
+  pub fn editLevel(self: &mut, level: u32, positions: &List[Vec3]) {
     let k = usize.from(level);
     if k >= levels.len() || positions.len() != levels[k].positions.len() { return; }
     if k > 0usize {
@@ -125,10 +125,10 @@ pub struct Multires {
   }
 
   // The base given new positions (Blender's moving the cage in edit mode)
-  pub fn setBase(self &mut, positions &List[Vec3]) {self.editLevel(0u32, positions);}
+  pub fn setBase(self: &mut, positions: &List[Vec3]) {self.editLevel(0u32, positions);}
 
   // Levels above 'level' dropped (Blender's Delete Higher)
-  pub fn deleteHigher(self &mut, level u32) {
+  pub fn deleteHigher(self: &mut, level: u32) {
     let k = usize.from(level);
     if k + 1usize >= levels.len() { return; }
     levels.truncate(k + 1usize);
@@ -138,7 +138,7 @@ pub struct Multires {
   // Levels below 'level' dropped, that level the new base; the levels above
   // are exactly as they were, since each is made from the level below's
   // positions and its own detail (ZBrush's Del Lower)
-  pub fn deleteLower(self &mut, level u32) {
+  pub fn deleteLower(self: &mut, level: u32) {
     let k = usize.from(level);
     if k == 0usize || k >= levels.len() { return; }
     var nl = List[PolyMesh].withCapacity(levels.len() - k);
@@ -158,7 +158,7 @@ pub struct Multires {
   // the top's first V_k, and the detail is rewritten so that no level above
   // changes. Afterwards each level is a coarser view of the top's own
   // vertices, and its detail is what its subdivision lacks.
-  pub fn bakeDown(self &mut) {
+  pub fn bakeDown(self: &mut) {
     let top = levels.len() - 1usize;
     if top == 0usize { return; }
     let target = copyList[Vec3](&levels[top].positions);
@@ -191,7 +191,7 @@ pub struct Multires {
   }
 
   // Every level above 'from' rebuilt from the one below it and its detail
-  pub fn reevaluate(self &mut, from usize) {
+  pub fn reevaluate(self: &mut, from: usize) {
     var k = from + 1usize;
     while k < levels.len() {
       let ref = refPositions(levels[k - 1usize], boundary);
@@ -210,7 +210,7 @@ pub struct Multires {
   // distance along the reference normal: Multires's compact form of a
   // normal or displacement map, as a baker would sample it. For hi = lo + 1
   // the displacement_tangent is the stored detail.
-  pub fn displacement(self &, lo u32, hi u32) PolyMesh {
+  pub fn displacement(self: &, lo: u32, hi: u32) PolyMesh {
     let top = levels.len() - 1usize;
     var h = usize.from(hi);
     if h > top { h = top; }
@@ -252,13 +252,13 @@ pub struct Multires {
 
 // The positions a mesh's Catmull-Clark subdivision gives its vertices, edge
 // points and face points, in subdivide's numbering, with no topology made
-fn refPositions(m &PolyMesh, boundary u32) List[Vec3] {
+fn refPositions(m: &PolyMesh, boundary: u32) List[Vec3] {
   let sh = sharpnessOf(m);
   refineVertexData(m, &m.positions, boundary, &sh.e, &sh.v)
 }
 
 // A mesh's vertices put at the given positions
-fn setPositions(m &mut PolyMesh, p &List[Vec3]) {
+fn setPositions(m: &mut PolyMesh, p: &List[Vec3]) {
   var i = 0usize;
   while i < p.len() {
     m.positions.set(i, *p[i]);
@@ -268,15 +268,15 @@ fn setPositions(m &mut PolyMesh, p &List[Vec3]) {
 
 // A frame at each vertex: n its unit normal, t a unit tangent
 struct Frames {
-  n List[Vec3];
-  t List[Vec3];
+  n: List[Vec3];
+  t: List[Vec3];
 }
 
 // The frames of a mesh: each vertex's normal (angle-weighted over its faces),
 // and the tangent along its first edge that does not lie along the normal,
 // with the normal's part taken out. A vertex with no faces gets y up. The
 // frame is a function of the mesh's connectivity and positions alone.
-fn smoothFrames(m &PolyMesh) Frames {
+fn smoothFrames(m: &PolyMesh) Frames {
   let nrm = m.vertexNormals();
   let nv = m.positions.len();
   var ns = List[Vec3].withCapacity(nv);
@@ -319,7 +319,7 @@ fn smoothFrames(m &PolyMesh) Frames {
 
 // The detail of positions p against a reference ref, in frames fr: each
 // vertex's offset as (t, b, n) coefficients
-fn detailOf(fr &Frames, ref &List[Vec3], p &List[Vec3]) List[Vec3] {
+fn detailOf(fr: &Frames, ref: &List[Vec3], p: &List[Vec3]) List[Vec3] {
   var out = List[Vec3].withCapacity(p.len());
   var v = 0usize;
   while v < p.len() {
@@ -334,7 +334,7 @@ fn detailOf(fr &Frames, ref &List[Vec3], p &List[Vec3]) List[Vec3] {
 }
 
 // A mesh at its reference positions moved by detail c in the frames fr
-fn addDetail(m &mut PolyMesh, fr &Frames, c &List[Vec3]) {
+fn addDetail(m: &mut PolyMesh, fr: &Frames, c: &List[Vec3]) {
   var v = 0usize;
   while v < c.len() {
     let n = *fr.n[v];

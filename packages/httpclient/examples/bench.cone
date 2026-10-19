@@ -45,7 +45,7 @@ import httpclient use *;
 
 extern {
   fn @c(system) GetCurrentProcess() usize;
-  fn @c(system) K32GetProcessMemoryInfo(process usize, counters *u8, cb u32) i32;
+  fn @c(system) K32GetProcessMemoryInfo(process: usize, counters: *u8, cb: u32) i32;
 }
 
 // The bytes the process has committed for itself: Windows' PrivateUsage
@@ -68,7 +68,7 @@ fn dataBytes() u64 {
   let f = libc.fopen("/proc/self/statm", "rb");
   if f == null {return 0u64;}
   var buf = new Array[u8, 256] <- fill 0u8;
-  let bp *u8 = &[]buf as *u8;
+  let bp: *u8 = &[]buf as *u8;
   let n = libc.fread(bp, 1usize, 255usize, f);
   libc.fclose(f);
   var field = 0u32;
@@ -86,13 +86,13 @@ fn dataBytes() u64 {
   value * 4096u64
 }
 
-fn certs(name &str) Path {
+fn certs(name: &str) Path {
   var p = String.from("packages/tls/tests/certs/");
   p.append(name);
   Path.fromString(p)
 }
 
-fn readText(name &str) String {
+fn readText(name: &str) String {
   var out = String.empty();
   let file = certs(name);
   match fs.readFile(&file) {
@@ -107,18 +107,18 @@ fn readText(name &str) String {
 // ---------------------------------------------------------------------------
 
 struct TlsMaker {
-  server tls.Server;
-  pool Pool;
+  server: tls.Server;
+  pool: Pool;
 
-  pub fn make(self &mut) Uni[httpconn.Layer] {new Uni[tls.Stream](server.stream(pool))}
+  pub fn make(self: &mut) Uni[httpconn.Layer] {new Uni[tls.Stream](server.stream(pool))}
 }
 
 struct ServerArgs {
-  pub portTx Sender[u16];
-  pub stop Arc[imm, Atomic[bool]];
+  pub portTx: Sender[u16];
+  pub stop: Arc[imm, Atomic[bool]];
 }
 
-fn portOf(drv &mut httpconn.Driver, lp &Loop, r Result[httpconn.ListenerId, iocore.IoError]) u16 {
+fn portOf(drv: &mut httpconn.Driver, lp: &Loop, r: Result[httpconn.ListenerId, iocore.IoError]) u16 {
   var port = 0u16;
   match r {
     case let l Ok {
@@ -132,7 +132,7 @@ fn portOf(drv &mut httpconn.Driver, lp &Loop, r Result[httpconn.ListenerId, ioco
   port
 }
 
-fn serveThread(a ServerArgs) u64 {
+fn serveThread(a: ServerArgs) u64 {
   let pool = Pool.make(268435456usize, 268435456usize);
   var lp = Loop.mustMake();
   var cfg = httpconn.Config.make();
@@ -183,18 +183,18 @@ fn serveThread(a ServerArgs) u64 {
 // ---------------------------------------------------------------------------
 
 struct Run {
-  pub n u64;
-  pub lat Histogram;
-  pub done u64;
-  pub bad u64;
-  pub took Duration;
-  pub sent u64;
-  pub reused u64;
+  pub n: u64;
+  pub lat: Histogram;
+  pub done: u64;
+  pub bad: u64;
+  pub took: Duration;
+  pub sent: u64;
+  pub reused: u64;
 }
 
 // n GETs of base, 'inFlight' asked for at a time; 'cold': every idle
 // connection closed before the next is asked for
-fn gets(cl &mut Client, lp &mut Loop, base &str, n u64, inFlight u64, cold bool) Run {
+fn gets(cl: &mut Client, lp: &mut Loop, base: &str, n: u64, inFlight: u64, cold: bool) Run {
   var run = new Run(n, Histogram.make(), 0u64, 0u64, Duration.zero(), 0u64, 0u64);
   let s0 = cl.stats();
   var asked = 0u64;
@@ -233,7 +233,7 @@ fn gets(cl &mut Client, lp &mut Loop, base &str, n u64, inFlight u64, cold bool)
   run
 }
 
-fn report(label &str, r &Run) {
+fn report(label: &str, r: &Run) {
   printStr(label);
   printStr(": ");
   printUInt(r.done);
@@ -263,7 +263,7 @@ fn tlsConfig() Config {
 }
 
 // A full handshake every time: each GET on a client of its own
-fn freshClients(lp &mut Loop, pool Pool, base &str, n u64) Run {
+fn freshClients(lp: &mut Loop, pool: Pool, base: &str, n: u64) Run {
   var run = new Run(n, Histogram.make(), 0u64, 0u64, Duration.zero(), 0u64, 0u64);
   let t0 = Instant.now();
   var k = 0u64;
@@ -286,7 +286,7 @@ fn freshClients(lp &mut Loop, pool Pool, base &str, n u64) Run {
 // One at a time with the server on the client's own Loop and thread (its
 // driver handed its completions), to set beside httpconn's own one-thread
 // measurement: what the client adds to each request
-fn sameLoop(pool Pool, n u64) Run {
+fn sameLoop(pool: Pool, n: u64) Run {
   var lp = Loop.mustMake();
   var sdrv = httpconn.Driver.make(httpconn.Config.make(), pool);
   let l = sdrv.listen(&mut lp, SocketAddr.localhost(0u16), httpconn.Sink.Here(1u64));
@@ -372,7 +372,7 @@ fn sameLoop(pool Pool, n u64) Run {
 // Memory per pooled idle connection
 // ---------------------------------------------------------------------------
 
-fn settle(cl &mut Client, lp &mut Loop) {
+fn settle(cl: &mut Client, lp: &mut Loop) {
   var out = List[Event].empty();
   let until = Instant.now() + Duration.fromMillis(300i64);
   while Instant.now() < until {
@@ -383,7 +383,7 @@ fn settle(cl &mut Client, lp &mut Loop) {
 
 // n GETs at once, their connections then left idle in the pool: the
 // memory that took, printed
-fn fill(cl &mut Client, lp &mut Loop, pool &Pool, base &str, n u32, label &str) {
+fn fill(cl: &mut Client, lp: &mut Loop, pool: &Pool, base: &str, n: u32, label: &str) {
   pool.trim();
   let before = privateBytes();
   let lentBefore = pool.stats().heldBytes - pool.stats().idleBytes;
@@ -409,7 +409,7 @@ fn fill(cl &mut Client, lp &mut Loop, pool &Pool, base &str, n u32, label &str) 
 // Twice: first with the client's and the drivers' tables grown for them
 // (the connections' records, and the requests' for n at once), then again
 // with those tables already grown, their records reused
-fn idleMemory(lp &mut Loop, pool Pool, base &str, n u32, secure bool) {
+fn idleMemory(lp: &mut Loop, pool: Pool, base: &str, n: u32, secure: bool) {
   var cfg = if secure {tlsConfig()} else {Config.make()};
   cfg.maxPerOrigin = n;
   cfg.maxTotal = n;
@@ -430,8 +430,8 @@ fn idleMemory(lp &mut Loop, pool Pool, base &str, n u32, secure bool) {
 }
 
 fn main() i32 {
-  var portTx Sender[u16];
-  var portRx Receiver[u16];
+  var portTx: Sender[u16];
+  var portRx: Receiver[u16];
   portTx, portRx = Channel[u16].make();
   let stop = new Arc[imm, Atomic[bool]](Atomic[bool].of(false));
   let srv = thread.start(new ServerArgs(portTx, stop), &serveThread);

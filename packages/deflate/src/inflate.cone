@@ -26,13 +26,13 @@
 // load into the buffer; 'bits' holds 'nbits' bits, the oldest in the lowest
 // place. Loading past the end supplies zeros (see 'overrun' and 'unpad').
 struct BitIn {
-  buf List[u8];
-  pos usize;
-  bits u64;
-  nbits u32;
+  buf: List[u8];
+  pos: usize;
+  bits: u64;
+  nbits: u32;
 
   // Top up the bit buffer to at least 57 bits
-  fn refill(self &mut) {
+  fn refill(self: &mut) {
     while nbits <= 56u32 {
       let b = if pos < buf.len() {u64.from(*buf[pos])} else {0u64};
       bits = bits | (b << u64.from(nbits));
@@ -42,7 +42,7 @@ struct BitIn {
   }
 
   // Take n (0 to 32) bits
-  fn getBits(self &mut, n u32) u32 {
+  fn getBits(self: &mut, n: u32) u32 {
     if nbits < n { self.refill(); }
     let v = u32.from(bits & ((1u64 << u64.from(n)) - 1u64));
     bits = bits >> u64.from(n);
@@ -52,12 +52,12 @@ struct BitIn {
 
   // Whether more bytes were consumed than the input holds. Zeros past the
   // end are then part of what was taken.
-  fn overrun(self &) bool {
+  fn overrun(self: &) bool {
     pos - usize.from(nbits / 8u32) > buf.len()
   }
 
   // Give back the zeros loaded past the end of the input and not taken
-  fn unpad(self &mut) {
+  fn unpad(self: &mut) {
     if pos > buf.len() {
       let padBits = u32.from(pos - buf.len()) * 8u32;
       nbits = nbits - padBits;
@@ -68,7 +68,7 @@ struct BitIn {
 
   // Drop the bits of a partly used byte and hand the whole bytes the buffer
   // holds back to the input: 'pos' is then the next byte not used
-  fn sync(self &mut) {
+  fn sync(self: &mut) {
     let part = nbits % 8u32;
     pos = pos - usize.from((nbits - part) / 8u32);
     bits = 0u64;
@@ -76,7 +76,7 @@ struct BitIn {
   }
 
   // Decode one symbol with a table. -1 on a bad code.
-  fn decode(self &mut, h &Huffman) i32 {
+  fn decode(self: &mut, h: &Huffman) i32 {
     if nbits < 16u32 { self.refill(); }
     let e = *h.fast[usize.from(bits & ((1u64 << u64.from(FastBits)) - 1u64))];
     if e != 0u16 {
@@ -154,48 +154,48 @@ fn defaultLimit() u64 { 1073741824u64 }
 //   }
 //   // NeedInput: feed the next chunk, or inf.finish() and pull once more
 pub struct Inflater {
-  format Format;
-  bi BitIn;
+  format: Format;
+  bi: BitIn;
   // Input bytes dropped from the front of 'bi.buf' so far
-  inBase u64;
-  finished bool;
-  stage Stage;
-  phase Phase;
-  last bool;
+  inBase: u64;
+  finished: bool;
+  stage: Stage;
+  phase: Phase;
+  last: bool;
   // lit and dist hold the fixed code of RFC 1951 3.2.6
-  litIsFixed bool;
-  lit Huffman;
-  dist Huffman;
-  storedLeft usize;
+  litIsFixed: bool;
+  lit: Huffman;
+  dist: Huffman;
+  storedLeft: usize;
   // A match whose copy is not finished (the output limit of a pull came first)
-  copyLen usize;
-  copyDist usize;
+  copyLen: usize;
+  copyDist: usize;
   // The history and the output: 'hist' ends with the newest output; bytes
   // from 'mark' on have not been delivered, from 'sumMark' on not checksummed,
   // before 'base' belong to an earlier gzip member (a match cannot reach them)
-  hist List[u8];
-  mark usize;
-  sumMark usize;
-  base usize;
+  hist: List[u8];
+  mark: usize;
+  sumMark: usize;
+  base: usize;
   // One-shot use: keep the whole output in 'hist'
-  retain bool;
+  retain: bool;
   // Output so far, all members; the most it may reach
-  outTotal u64;
-  limit u64;
+  outTotal: u64;
+  limit: u64;
   // The current member's output so far, and its checksums
-  memberOut u64;
-  adler Adler32;
-  crc Crc32;
-  crcv u32;
-  multi bool;
-  members u32;
-  header GzipHeader;
-  failed bool;
-  err DeflateError;
+  memberOut: u64;
+  adler: Adler32;
+  crc: Crc32;
+  crcv: u32;
+  multi: bool;
+  members: u32;
+  header: GzipHeader;
+  failed: bool;
+  err: DeflateError;
 
   // An inflater for a stream in 'format'. A gzip stream may hold several
   // members, all inflated one after another (see 'setMultiMember').
-  pub fn make(format Format) Inflater {
+  pub fn make(format: Format) Inflater {
     let startStage = if format == Format.Raw {Stage.Body} else {Stage.Head};
     let table = if format == Format.Gzip {Crc32.make()} else {new Crc32(List[u32].empty())};
     new Inflater(format, new BitIn(List[u8].empty(), 0usize, 0u64, 0u32), 0u64, false, startStage, Phase.BlockHead,
@@ -207,7 +207,7 @@ pub struct Inflater {
   // Appends input. It is copied, so the caller's bytes are its own again at
   // once. Feed in pieces of any size; pull until NeedInput before feeding the
   // next, or the input piles up.
-  pub fn feed(self &mut, chunk &Array[u8]) {
+  pub fn feed(self: &mut, chunk: &Array[u8]) {
     bi.buf.reserve(chunk.len);
     var i = 0usize;
     while i < chunk.len { bi.buf.push(chunk[i]); i = i + 1usize; }
@@ -215,42 +215,42 @@ pub struct Inflater {
 
   // Says that no more input will come: what is still waiting in the decoder
   // is decoded, and a stream that is not complete is then a Truncated failure
-  pub fn finish(self &mut) { finished = true; }
+  pub fn finish(self: &mut) { finished = true; }
 
   // The most output the whole stream may reach, in bytes (1 GiB at first). A
   // stream that would pass it fails with TooLarge, which bounds the memory a
   // hostile stream can ask for: DEFLATE expands at most 1032 to 1.
-  pub fn setLimit(self &mut, bytes u64) { limit = bytes; }
+  pub fn setLimit(self: &mut, bytes: u64) { limit = bytes; }
 
   // Gzip: whether members after the first are read (yes at first, as
   // 'gzip -d' does). With 'false' the stream ends after the first member and
   // whatever follows is left for 'takeRest'.
-  pub fn setMultiMember(self &mut, multi bool) { self.multi = multi; }
+  pub fn setMultiMember(self: &mut, multi: bool) { self.multi = multi; }
 
   // Why the stream failed; meaningful once a pull answered Failed
-  pub fn error(self &) &DeflateError { &err }
+  pub fn error(self: &) &DeflateError { &err }
 
   // Gzip: the header of the member being read, or of the last one read
-  pub fn gzipHeader(self &) &GzipHeader { &header }
+  pub fn gzipHeader(self: &) &GzipHeader { &header }
 
   // Gzip: how many members have been read to their end
-  pub fn memberCount(self &) u32 { members }
+  pub fn memberCount(self: &) u32 { members }
 
   // Bytes of input used up to now (a byte whose bits are partly used counts)
-  pub fn totalIn(self &) u64 {
+  pub fn totalIn(self: &) u64 {
     inBase + u64.from(bi.pos - usize.from(bi.nbits / 8u32))
   }
 
   // Bytes of output produced up to now
-  pub fn totalOut(self &) u64 { outTotal }
+  pub fn totalOut(self: &) u64 { outTotal }
 
   // Whether the stream is complete
-  pub fn isDone(self &) bool { stage == Stage.End }
+  pub fn isDone(self: &) bool { stage == Stage.End }
 
   // After Done: the input bytes that came after the stream (a gzip member's
   // end with 'setMultiMember(false)', a zlib stream's Adler-32, a raw
   // stream's last byte), taken out
-  pub fn takeRest(self &mut) List[u8] {
+  pub fn takeRest(self: &mut) List[u8] {
     var rest = List[u8].empty();
     if stage == Stage.End {
       var i = bi.pos;
@@ -264,7 +264,7 @@ pub struct Inflater {
   // waiting for: NeedInput (all input used), MoreOutput (the limit of this
   // pull came first), Done, or Failed (and the Inflater stays failed).
   // Anything pulled before a failure has been delivered and is good.
-  pub fn pull(self &mut, out &mut List[u8], max usize) Status {
+  pub fn pull(self: &mut, out: &mut List[u8], max: usize) Status {
     if failed { return Status.Failed; }
     let s = self.advance(max);
     if !failed { bi.unpad(); }
@@ -275,7 +275,7 @@ pub struct Inflater {
 
   // -------- the stages --------
 
-  fn fail(self &mut, kind ErrorKind, reason &str) {
+  fn fail(self: &mut, kind: ErrorKind, reason: &str) {
     if failed { return; }
     failed = true;
     err = DeflateError.make(kind, self.totalIn(), reason);
@@ -283,7 +283,7 @@ pub struct Inflater {
 
   // The input ran out where more is needed: wait for more, or if there is no
   // more, fail
-  fn starved(self &mut, reason &str) Status {
+  fn starved(self: &mut, reason: &str) Status {
     if finished {
       self.fail(ErrorKind.Truncated, reason);
       return Status.Failed;
@@ -292,9 +292,9 @@ pub struct Inflater {
   }
 
   // Runs the stages as far as the input and 'max' bytes of output allow
-  fn advance(self &mut, max usize) Status {
+  fn advance(self: &mut, max: usize) Status {
     var room = max;
-    var result Status = Status.Done;
+    var result: Status = Status.Done;
     while true {
       if stage == Stage.Head {
         let s = if format == Format.Zlib {self.zlibHeader()} else {self.gzipHeaderRead()};
@@ -324,7 +324,7 @@ pub struct Inflater {
   }
 
   // The start of a member's data: nothing of an earlier member can be matched
-  fn startMember(self &mut) {
+  fn startMember(self: &mut) {
     phase = Phase.BlockHead;
     last = false;
     copyLen = 0usize;
@@ -335,7 +335,7 @@ pub struct Inflater {
   }
 
   // Checksum the output not yet checksummed
-  fn sumPending(self &mut) {
+  fn sumPending(self: &mut) {
     if sumMark < hist.len() {
       if format == Format.Zlib { adler.update(hist.view(), sumMark, hist.len()); }
       elif format == Format.Gzip { crcv = crc.update(crcv, hist.view(), sumMark, hist.len()); }
@@ -345,7 +345,7 @@ pub struct Inflater {
   }
 
   // Append the output not yet delivered to 'out'; trim the history
-  fn deliver(self &mut, out &mut List[u8]) {
+  fn deliver(self: &mut, out: &mut List[u8]) {
     if retain { return; }
     out.reserve(hist.len() - mark);
     var i = mark;
@@ -364,7 +364,7 @@ pub struct Inflater {
   }
 
   // Drop the front of the input that is used, when that is at least half of it
-  fn dropUsedInput(self &mut) {
+  fn dropUsedInput(self: &mut) {
     let used = bi.pos - usize.from(bi.nbits / 8u32);
     let total = bi.buf.len();
     if used > 0usize && used >= total - used {
@@ -379,7 +379,7 @@ pub struct Inflater {
   // -------- zlib and gzip framing --------
 
   // RFC 1950 section 2.2: CMF, FLG
-  fn zlibHeader(self &mut) Status {
+  fn zlibHeader(self: &mut) Status {
     if bi.buf.len() - bi.pos < 2usize { return self.starved("zlib: the stream is too short"); }
     let cmf = u32.from(*bi.buf[bi.pos]);
     let flg = u32.from(*bi.buf[bi.pos + 1usize]);
@@ -401,7 +401,7 @@ pub struct Inflater {
 
   // RFC 1952 section 2.3, all of it or nothing: if the input ends inside it,
   // wait and read it again from its start
-  fn gzipHeaderRead(self &mut) Status {
+  fn gzipHeaderRead(self: &mut) Status {
     var h = GzipHeader.plain();
     let p = parseGzipHeader(bi.buf.view(), bi.pos, &crc, &mut h);
     if p == -1i64 { return self.starved("gzip: the header is cut off"); }
@@ -431,7 +431,7 @@ pub struct Inflater {
   }
 
   // RFC 1950: the Adler-32, most significant byte first
-  fn zlibTrailer(self &mut) Status {
+  fn zlibTrailer(self: &mut) Status {
     if bi.buf.len() - bi.pos < 4usize { return self.starved("zlib: the Adler-32 is missing"); }
     let p = bi.pos;
     let want = (u32.from(*bi.buf[p]) << 24u32) | (u32.from(*bi.buf[p + 1usize]) << 16u32)
@@ -445,7 +445,7 @@ pub struct Inflater {
   }
 
   // RFC 1952: the CRC-32, then the size modulo 2^32, least significant byte first
-  fn gzipTrailer(self &mut) Status {
+  fn gzipTrailer(self: &mut) Status {
     if bi.buf.len() - bi.pos < 8usize { return self.starved("gzip: the trailer is cut off"); }
     let p = bi.pos;
     let wantCrc = le32(bi.buf.view(), p);
@@ -464,7 +464,7 @@ pub struct Inflater {
 
   // After a gzip member: padding zeros (as gzip tools allow), another member,
   // or the end of the input
-  fn betweenMembers(self &mut) Status {
+  fn betweenMembers(self: &mut) Status {
     while bi.pos < bi.buf.len() && *bi.buf[bi.pos] == 0u8 { bi.pos = bi.pos + 1usize; }
     if bi.pos >= bi.buf.len() {
       if finished { stage = Stage.End; return Status.Done; }
@@ -488,7 +488,7 @@ pub struct Inflater {
   // -------- the DEFLATE data --------
 
   // Runs the blocks: Done when the last one has ended
-  fn body(self &mut, room &mut usize) Status {
+  fn body(self: &mut, room: &mut usize) Status {
     while true {
       if phase == Phase.BlockHead {
         let p0 = bi.pos;
@@ -526,7 +526,7 @@ pub struct Inflater {
   }
 
   // A block's first bits: BFINAL, BTYPE, and whatever the type's header holds
-  fn blockHeader(self &mut) {
+  fn blockHeader(self: &mut) {
     last = bi.getBits(1u32) == 1u32;
     let kind = bi.getBits(2u32);
     if kind == 0u32 {
@@ -559,7 +559,7 @@ pub struct Inflater {
 
   // Copies a stored block's bytes: as many as the input, the room and the
   // block allow
-  fn storedBytes(self &mut, room &mut usize) Status {
+  fn storedBytes(self: &mut, room: &mut usize) Status {
     if storedLeft > 0usize {
       let avail = bi.buf.len() - bi.pos;
       var n = if storedLeft < avail {storedLeft} else {avail};
@@ -585,7 +585,7 @@ pub struct Inflater {
   }
 
   // The fixed Huffman code of RFC 1951 section 3.2.6
-  fn fixedTables(self &mut) {
+  fn fixedTables(self: &mut) {
     if litIsFixed { return; }
     var l = List[u8].withCapacity(288usize);
     var i = 0usize;
@@ -606,7 +606,7 @@ pub struct Inflater {
   // A dynamic block's code tables read from the stream (RFC 1951 3.2.7). A
   // failure it finds may be zeros read past the input's end: the caller asks
   // 'overrun' first.
-  fn dynamicTables(self &mut) {
+  fn dynamicTables(self: &mut) {
     let nlen = usize.from(bi.getBits(5u32)) + 257usize;
     let ndist = usize.from(bi.getBits(5u32)) + 1usize;
     let ncode = usize.from(bi.getBits(4u32)) + 4usize;
@@ -689,7 +689,7 @@ pub struct Inflater {
 
   // Copies up to 'n' bytes of a match: 'dist' bytes back, 'len' long (the
   // copy may overlap what it makes)
-  fn copyMatch(self &mut, len usize, d usize) {
+  fn copyMatch(self: &mut, len: usize, d: usize) {
     var from = hist.len() - d;
     hist.reserve(len);
     var k = 0usize;
@@ -702,13 +702,13 @@ pub struct Inflater {
 
   // One compressed block's symbols until the end-of-block code. Done at the
   // end of the block.
-  fn codes(self &mut, room &mut usize) Status {
+  fn codes(self: &mut, room: &mut usize) Status {
     // How much may still be produced: the room of this pull, and the limit
     let left = if limit > outTotal {limit - outTotal} else {0u64};
     let cap = if left < u64.from(*room) {usize.from(left)} else {*room};
     let limited = cap < *room;
     var produced = 0usize;
-    var result Status = Status.Done;
+    var result: Status = Status.Done;
     // A match whose copy a limit cut short
     if copyLen > 0usize {
       let n = if copyLen < cap {copyLen} else {cap};
@@ -732,7 +732,7 @@ pub struct Inflater {
       var kind = 0i32;
       var value = 0usize;
       var d = 0usize;
-      var why &str = "";
+      var why: &str = "";
       let sym = bi.decode(&lit);
       if sym < 0i32 {
         kind = 3i32;
@@ -819,7 +819,7 @@ pub struct Inflater {
 
   // Runs to the end of the input with no limit on a pull, keeping the whole
   // output in the history. For the one-shot helpers.
-  fn runAll(self &mut) Status {
+  fn runAll(self: &mut) Status {
     retain = true;
     let s = self.advance(18446744073709551615usize);
     self.dropUsedInput();
@@ -827,7 +827,7 @@ pub struct Inflater {
   }
 
   // The output of 'runAll', moved out
-  fn takeOutput(self &mut) List[u8] {
+  fn takeOutput(self: &mut) List[u8] {
     var out = List[u8].empty();
     out <=> hist;
     out
@@ -835,7 +835,7 @@ pub struct Inflater {
 }
 
 // The four bytes at p as a number, least significant first
-fn le32(b &Array[u8], p usize) u32 {
+fn le32(b: &Array[u8], p: usize) u32 {
   u32.from(b[p]) | (u32.from(b[p + 1usize]) << 8u32) | (u32.from(b[p + 2usize]) << 16u32) | (u32.from(b[p + 3usize]) << 24u32)
 }
 
@@ -843,7 +843,7 @@ fn le32(b &Array[u8], p usize) u32 {
 // -1 if the input ends inside it, -2 not a gzip magic, -3 a method that is
 // not deflate, -4 reserved flags set, -5 a name or comment over 1 MiB,
 // -6 the header's own CRC-16 wrong
-fn parseGzipHeader(b &Array[u8], p0 usize, crc &Crc32, h &mut GzipHeader) i64 {
+fn parseGzipHeader(b: &Array[u8], p0: usize, crc: &Crc32, h: &mut GzipHeader) i64 {
   let n = b.len;
   if n - p0 < 10usize { return -1i64; }
   if b[p0] != 0x1Fu8 || b[p0 + 1usize] != 0x8Bu8 { return -2i64; }

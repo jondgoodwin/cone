@@ -23,13 +23,13 @@
 // error of a width can be measured on the surfaces themselves.
 
 // A width as 8, 16 or 32: smaller widths are 8, up to 16 are 16, the rest 32
-fn detailWidth(bits u32) u32 {
+fn detailWidth(bits: u32) u32 {
   if bits <= 8u32 {8u32} elif bits <= 16u32 {16u32} else {32u32}
 }
 
 // How many bytes level 'level''s detail packs to at 'bits' (8, 16 or 32); 0
 // for the base, which has none
-pub fn detailBytes(mr &Multires, level u32, bits u32) usize {
+pub fn detailBytes(mr: &Multires, level: u32, bits: u32) usize {
   if level == 0u32 || usize.from(level) > mr.detail.len() { return 0usize; }
   let n = mr.detail[usize.from(level) - 1usize].len();
   let w = detailWidth(bits);
@@ -37,7 +37,7 @@ pub fn detailBytes(mr &Multires, level u32, bits u32) usize {
 }
 
 // All the levels' detail bytes at 'bits'
-pub fn totalDetailBytes(mr &Multires, bits u32) usize {
+pub fn totalDetailBytes(mr: &Multires, bits: u32) usize {
   var sum = 0usize;
   var k = 1u32;
   while usize.from(k) <= mr.detail.len() {
@@ -47,7 +47,7 @@ pub fn totalDetailBytes(mr &Multires, bits u32) usize {
   sum
 }
 
-fn pushF32(out &mut List[u8], x f32) {
+fn pushF32(out: &mut List[u8], x: f32) {
   let b = x as u32;
   out.push(u8.from(b & 255u32));
   out.push(u8.from((b >> 8u32) & 255u32));
@@ -55,14 +55,14 @@ fn pushF32(out &mut List[u8], x f32) {
   out.push(u8.from((b >> 24u32) & 255u32));
 }
 
-fn readF32(data &Array[u8], at usize) f32 {
+fn readF32(data: &Array[u8], at: usize) f32 {
   let b = u32.from(data[at]) | (u32.from(data[at + 1usize]) << 8u32) | (u32.from(data[at + 2usize]) << 16u32)
     | (u32.from(data[at + 3usize]) << 24u32);
   b as f32
 }
 
 // The integer a coefficient c of scale s is stored as, at range 'top'
-fn quantStep(c f32, s f32, top i32) u32 {
+fn quantStep(c: f32, s: f32, top: i32) u32 {
   if s <= 0. { return u32.from(top + 1); }
   var q = i32.from(libc.floorf(c / s * f32.from(top) + 0.5));
   if q > top { q = top; }
@@ -70,13 +70,13 @@ fn quantStep(c f32, s f32, top i32) u32 {
   u32.from(q + top + 1)
 }
 
-fn pushUInt(out &mut List[u8], u u32, width u32) {
+fn pushUInt(out: &mut List[u8], u: u32, width: u32) {
   out.push(u8.from(u & 255u32));
   if width == 16u32 { out.push(u8.from((u >> 8u32) & 255u32)); }
 }
 
 // Level 'level''s detail as bytes, at 'bits' (8, 16 or 32); empty for the base
-pub fn packDetail(mr &Multires, level u32, bits u32) List[u8] {
+pub fn packDetail(mr: &Multires, level: u32, bits: u32) List[u8] {
   var out = List[u8].withCapacity(detailBytes(mr, level, bits));
   if level == 0u32 || usize.from(level) > mr.detail.len() { return out; }
   let d = mr.detail[usize.from(level) - 1usize];
@@ -91,9 +91,9 @@ pub fn packDetail(mr &Multires, level u32, bits u32) List[u8] {
     }
     return out;
   }
-  var sx f32 = 0.;
-  var sy f32 = 0.;
-  var sz f32 = 0.;
+  var sx: f32 = 0.;
+  var sy: f32 = 0.;
+  var sz: f32 = 0.;
   while v < d.len() {
     if absf(d[v].x) > sx { sx = absf(d[v].x); }
     if absf(d[v].y) > sy { sy = absf(d[v].y); }
@@ -116,7 +116,7 @@ pub fn packDetail(mr &Multires, level u32, bits u32) List[u8] {
 
 // Detail for n vertices read from bytes; empty when the bytes are not the
 // length 'bits' gives
-fn readDetail(data &Array[u8], n usize, bits u32) List[Vec3] {
+fn readDetail(data: &Array[u8], n: usize, bits: u32) List[Vec3] {
   var out = List[Vec3].withCapacity(n);
   let w = detailWidth(bits);
   let want = if w == 32u32 {12usize * n} else {12usize + 3usize * n * usize.from(w / 8u32)};
@@ -158,7 +158,7 @@ fn readDetail(data &Array[u8], n usize, bits u32) List[Vec3] {
 // Level 'level''s detail replaced by what the bytes hold (as packDetail made
 // them at 'bits'), and every level from it up rebuilt; false, and nothing
 // changed, if the bytes are not the right length
-pub fn unpackDetail(mr &mut Multires, level u32, data &Array[u8], bits u32) bool {
+pub fn unpackDetail(mr: &mut Multires, level: u32, data: &Array[u8], bits: u32) bool {
   if level == 0u32 || usize.from(level) > mr.detail.len() { return false; }
   let k = usize.from(level);
   let got = readDetail(data, mr.detail[k - 1usize].len(), bits);
@@ -170,7 +170,7 @@ pub fn unpackDetail(mr &mut Multires, level u32, data &Array[u8], bits u32) bool
 
 // Every level's detail rounded through 'bits' (8, 16 or 32) and the figure
 // rebuilt: what the receiver of that format would have
-pub fn quantizeDetail(mr &mut Multires, bits u32) {
+pub fn quantizeDetail(mr: &mut Multires, bits: u32) {
   var k = 1u32;
   while usize.from(k) <= mr.detail.len() {
     let packed = packDetail(mr, k, bits);
@@ -183,7 +183,7 @@ pub fn quantizeDetail(mr &mut Multires, bits u32) {
 
 // The root-mean-square length of level 'level''s detail vectors: how far, on
 // average, its vertices sit off the smooth surface below
-pub fn detailRms(mr &Multires, level u32) f32 {
+pub fn detailRms(mr: &Multires, level: u32) f32 {
   if level == 0u32 || usize.from(level) > mr.detail.len() { return 0.; }
   let d = mr.detail[usize.from(level) - 1usize];
   if d.len() == 0usize { return 0.; }

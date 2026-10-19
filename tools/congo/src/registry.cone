@@ -4,25 +4,25 @@
 
 // One package of a build: from its manifest, or a lone file standing as one
 struct Package {
-  pub name String;
-  pub version String;          // "" for a lone file, which has none
-  pub output String;           // "executable" or "library"
-  pub root Path;               // the package folder; a lone file's own folder
-  pub src Path;                // the root module's designated file
-  pub lone bool;
-  pub libraries List[String];  // [link] libraries
-  pub linkPaths List[Path];    // [link] paths, absolute
-  pub runtime List[String];    // [link] runtime: DLLs, bare names
-  pub gpu bool;                // [package] targets names "gpu": it may be compiled for the GPU
+  pub name: String;
+  pub version: String;          // "" for a lone file, which has none
+  pub output: String;           // "executable" or "library"
+  pub root: Path;               // the package folder; a lone file's own folder
+  pub src: Path;                // the root module's designated file
+  pub lone: bool;
+  pub libraries: List[String];  // [link] libraries
+  pub linkPaths: List[Path];    // [link] paths, absolute
+  pub runtime: List[String];    // [link] runtime: DLLs, bare names
+  pub gpu: bool;                // [package] targets names "gpu": it may be compiled for the GPU
 
-  pub fn label(self &) String {
+  pub fn label(self: &) String {
     if version.isEmpty() { return name.copy(); }
     cat(name.view(), " v", version.view())
   }
 
   // Where an include file written by hand used to sit, <name>.cone at the
   // package root. Congo no longer reads one, and says so where it finds one.
-  pub fn handInclude(self &) Path {
+  pub fn handInclude(self: &) Path {
     let file = cat(name.view(), ".cone");
     root.join(file.view())
   }
@@ -33,7 +33,7 @@ fn emptyPackage() Package {
     false, List[String].empty(), List[Path].empty(), List[String].empty(), false)
 }
 
-fn copyStrings(from &List[String]) List[String] {
+fn copyStrings(from: &List[String]) List[String] {
   var out = List[String].withCapacity(from.len());
   var i = 0usize;
   while i < from.len() {
@@ -43,7 +43,7 @@ fn copyStrings(from &List[String]) List[String] {
   out
 }
 
-fn copyPaths(from &List[Path]) List[Path] {
+fn copyPaths(from: &List[Path]) List[Path] {
   var out = List[Path].withCapacity(from.len());
   var i = 0usize;
   while i < from.len() {
@@ -54,7 +54,7 @@ fn copyPaths(from &List[Path]) List[Path] {
 }
 
 // MAJOR.MINOR.PATCH, each 0 or a number not starting with 0
-fn isVersion(v &str) bool {
+fn isVersion(v: &str) bool {
   var parts = 0usize;
   var i = 0usize;
   while parts < 3usize {
@@ -71,7 +71,7 @@ fn isVersion(v &str) bool {
 }
 
 // A C library as the linker is told it, without its prefix or suffix
-fn isLibraryName(lib &str) bool {
+fn isLibraryName(lib: &str) bool {
   if lib.len() == 0usize || !isNameByte(lib[0usize]) { return false; }
   var i = 1usize;
   while i < lib.len() {
@@ -86,7 +86,7 @@ fn isLibraryName(lib &str) bool {
 }
 
 // A file's text as Python's read_text gives it: every line end '\n'
-fn readText(file &Path) Result[String, String] {
+fn readText(file: &Path) Result[String, String] {
   match fs.readFile(file) {
     case var ok Ok {
       var text = String.empty();
@@ -100,7 +100,7 @@ fn readText(file &Path) Result[String, String] {
 }
 
 // The TOML document in a file, or the reason it cannot be read
-fn readToml(file &Path) Result[toml.Document, String] {
+fn readToml(file: &Path) Result[toml.Document, String] {
   var text = String.empty();
   match readText(file) {
     case var ok Ok { text <=> ok; }
@@ -120,7 +120,7 @@ fn readToml(file &Path) Result[toml.Document, String] {
   }
 }
 
-fn manifestError(file &Path, m String) Result[Package, String] {
+fn manifestError(file: &Path, m: String) Result[Package, String] {
   let place = native(file);
   Error[Package, String](cat(place.view(), ": ", m.view()))
 }
@@ -133,7 +133,7 @@ fn hostSystem() &str {
   "macos"
 }
 
-fn isSystemName(key &str) bool {
+fn isSystemName(key: &str) bool {
   key == "windows" || key == "linux" || key == "macos"
 }
 
@@ -144,7 +144,7 @@ fn isSystemName(key &str) bool {
 // copies there. A table's keys are checked whether or not it is this system's
 // (a mistake in another system's section is found on every machine), and
 // added to pkg after what is there only when apply. "" or what is wrong.
-fn readLinkKeys(file &Path, table &toml.Table, label &str, apply bool, pkg &mut Package) String {
+fn readLinkKeys(file: &Path, table: &toml.Table, label: &str, apply: bool, pkg: &mut Package) String {
   let place = native(file);
   let keys = table.keys();
   var i = 0usize;
@@ -226,7 +226,7 @@ fn readLinkKeys(file &Path, table &toml.Table, label &str, apply bool, pkg &mut 
 // section adds to it, each list after the plain one's. A section for another
 // system is read, so that a mistake in it is found on every machine, and
 // contributes nothing. Into pkg; "" or what is wrong.
-fn readLink(file &Path, doc &toml.Document, pkg &mut Package) String {
+fn readLink(file: &Path, doc: &toml.Document, pkg: &mut Package) String {
   let place = native(file);
   if doc.has("link") {
     let wrong = readLinkKeys(file, doc["link"], "[link]", true, pkg);
@@ -268,7 +268,7 @@ fn readLink(file &Path, doc &toml.Document, pkg &mut Package) String {
 // Whether it names "gpu", into pkg: GPU compatibility is declared per
 // package, and a GPU build refuses a package that is not marked [Jon 3 Oct
 // 2026]. The spelling is a placeholder. "" or what is wrong.
-fn readTargets(file &Path, table &toml.Table, pkg &mut Package) String {
+fn readTargets(file: &Path, table: &toml.Table, pkg: &mut Package) String {
   if !table.has("targets") { return String.empty(); }
   let place = native(file);
   var targets = List[String].empty();
@@ -302,7 +302,7 @@ fn readTargets(file &Path, table &toml.Table, pkg &mut Package) String {
 // package that needs C libraries linked, a [link] table and a section of it
 // for each system that needs more. There is no dependencies section: the imports in the source are the dependency list,
 // and the registries say where each one is.
-fn readManifest(file &Path) Result[Package, String] {
+fn readManifest(file: &Path) Result[Package, String] {
   var doc = new toml.Document();
   match readToml(file) {
     case var ok Ok { doc <=> ok; }
@@ -326,7 +326,7 @@ fn readManifest(file &Path) Result[Package, String] {
     let parts = splitText(tops[i].view(), '.');
     let key = parts[0usize].view();
     if key != "package" && key != "link" {
-      var extra &str = "";
+      var extra: &str = "";
       if key == "dependencies" { extra = " There is no dependencies section: a package's imports are its dependencies."; }
       return manifestError(file, cat("[", key, "] is not part of a Congo manifest, which holds [package] and [link].", extra));
     }
@@ -424,7 +424,7 @@ fn configPath() Path {
 //
 // A relative folder is relative to the config file's own folder. The indexes
 // are registries of the other kind (index.cone), searched after every folder.
-fn registryFolders(repo &Path) List[Path] {
+fn registryFolders(repo: &Path) List[Path] {
   var folders = List[Path].empty();
   if !repo.isEmpty() {
     let packages = repo.join("packages");
@@ -473,21 +473,21 @@ fn registryFolders(repo &Path) List[Path] {
 // its congo.toml and named by it, not by the subfolder. 'packages' also holds
 // the lone file being built, after the registry's.
 struct Registry {
-  pub folders List[Path];
-  pub packages List[Package];
-  pub byName Dict[String, usize];
-  pub indexes List[IndexRegistry];   // searched after the folders, by fetchPackage
-  pub missed List[String];           // names no index has, so not looked up again
+  pub folders: List[Path];
+  pub packages: List[Package];
+  pub byName: Dict[String, usize];
+  pub indexes: List[IndexRegistry];   // searched after the folders, by fetchPackage
+  pub missed: List[String];           // names no index has, so not looked up again
 
   // The package of that name, or None
-  pub fn find(self &, name &str) Option[usize] {
+  pub fn find(self: &, name: &str) Option[usize] {
     if !byName.contains(name) { return None; }
     Some[usize](*byName[name])
   }
 
-  pub fn has(self &, name &str) bool { byName.contains(name) }
+  pub fn has(self: &, name: &str) bool { byName.contains(name) }
 
-  pub fn missedName(self &, name &str) bool {
+  pub fn missedName(self: &, name: &str) bool {
     var i = 0usize;
     while i < missed.len() {
       if missed[i].equals(name) { return true; }
@@ -497,7 +497,7 @@ struct Registry {
   }
 
   // The folders and indexes searched, for a message
-  pub fn searched(self &) String {
+  pub fn searched(self: &) String {
     if folders.len() == 0usize && indexes.len() == 0usize { return String.from("(no registry folders)"); }
     var out = nativeList(&folders, ", ");
     var i = 0usize;
@@ -510,13 +510,13 @@ struct Registry {
   }
 
   // Add a package that is in no registry (a lone file), answering its index
-  pub fn add(self &mut, pkg Package) usize {
+  pub fn add(self: &mut, pkg: Package) usize {
     packages.push(pkg);
     packages.len() - 1usize
   }
 }
 
-fn readRegistry(folders List[Path], indexes &List[String]) Registry {
+fn readRegistry(folders: List[Path], indexes: &List[String]) Registry {
   var reg = new Registry(folders, List[Package].empty(), Dict[String, usize].empty(),
     List[IndexRegistry].empty(), List[String].empty());
   var x = 0usize;

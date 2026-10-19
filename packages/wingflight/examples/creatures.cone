@@ -46,7 +46,7 @@ import wingflight use *;
 const W = 800u32;
 const H = 450u32;
 
-fn cstrEquals(a *u8, b &str) bool {
+fn cstrEquals(a: *u8, b: &str) bool {
   var i = 0usize;
   while i < b.len() {
     if *(a + i) != b[i] { return false; }
@@ -59,13 +59,13 @@ fn cstrEquals(a *u8, b &str) bool {
 
 // Tapered capsules joined by a smooth union: a distance field (sdf's Shape)
 struct BodyField {
-  a List[Vec3];
-  b List[Vec3];
-  ra List[f32];
-  rb List[f32];
-  k f32;
+  a: List[Vec3];
+  b: List[Vec3];
+  ra: List[f32];
+  rb: List[f32];
+  k: f32;
 
-  pub fn distance(self &, p Vec3) f32 {
+  pub fn distance(self: &, p: Vec3) f32 {
     var d = 3.0e38f;
     var i = 0usize;
     while i < a.len() {
@@ -78,11 +78,11 @@ struct BodyField {
 }
 
 // The body: a capsule on every segment of the rig's joints (a joint to its child) except the feathers' and fingers'
-fn bodyMesh(rig &Rig, cell f32, blend f32, skip &List[bool]) Mesh {
+fn bodyMesh(rig: &Rig, cell: f32, blend: f32, skip: &List[bool]) Mesh {
   var f = new BodyField(List[Vec3].empty(), List[Vec3].empty(), List[f32].empty(), List[f32].empty(), blend);
   var lo = new Vec3(1.0e9, 1.0e9, 1.0e9);
   var hi = new Vec3(-1.0e9, -1.0e9, -1.0e9);
-  var big f32 = 0.;
+  var big: f32 = 0.;
   var i = 0usize;
   while i < rig.boneCount() {
     let p = rig.skeleton.parentOf(i);
@@ -105,7 +105,7 @@ fn bodyMesh(rig &Rig, cell f32, blend f32, skip &List[bool]) Mesh {
   net.toMesh()
 }
 
-fn makeSkin(w &VertexWeights) Skin {
+fn makeSkin(w: &VertexWeights) Skin {
   var s = Skin.empty();
   var v = 0usize;
   while v < w.vertexCount() {
@@ -117,7 +117,7 @@ fn makeSkin(w &VertexWeights) Skin {
 }
 
 // The skinning matrices, one a bone: posed model transform times the inverse of the rest one
-fn boneMatrices(rig &Rig, models &List[Transform3]) List[Mat4] {
+fn boneMatrices(rig: &Rig, models: &List[Transform3]) List[Mat4] {
   let t = skinTransforms(rig, models);
   var out = List[Mat4].empty();
   var i = 0usize;
@@ -131,22 +131,22 @@ fn boneMatrices(rig &Rig, models &List[Transform3]) List[Mat4] {
 // ------------------------------------------------------------------------------ one subject
 
 struct Subject {
-  rig Rig;
-  body MeshHandle;
-  feathers MeshHandle;
-  hasFeathers bool;
-  bodyMat MaterialHandle;
-  featherMat MaterialHandle;
-  vertices usize;
-  triangles usize;
-  weightSteps u32;
-  meshMs f64;
-  weightMs f64;
+  rig: Rig;
+  body: MeshHandle;
+  feathers: MeshHandle;
+  hasFeathers: bool;
+  bodyMat: MaterialHandle;
+  featherMat: MaterialHandle;
+  vertices: usize;
+  triangles: usize;
+  weightSteps: u32;
+  meshMs: f64;
+  weightMs: f64;
 }
 
-fn msSince(t Instant) f64 { f64.from(t.elapsed().nanos()) / 1.0e6 }
+fn msSince(t: Instant) f64 { f64.from(t.elapsed().nanos()) / 1.0e6 }
 
-fn buildSubject(device &mut Device, renderer &mut Renderer, spec RigSpec, feathered bool, bodyColor Color) Subject {
+fn buildSubject(device: &mut Device, renderer: &mut Renderer, spec: RigSpec, feathered: bool, bodyColor: Color) Subject {
   var built = buildRig(&spec);
   let rig = built.take();
   let t0 = Instant.now();
@@ -175,7 +175,7 @@ fn buildSubject(device &mut Device, renderer &mut Renderer, spec RigSpec, feathe
   new Subject(rig, body, feathers, feathered, bodyMat, featherMat, mesh.positions.len(), mesh.indices.len() / 3usize, weights.steps, meshMs, weightMs)
 }
 
-fn addSubject(list &mut DrawList, s &Subject, world &Transform3, models &List[Transform3]) {
+fn addSubject(list: &mut DrawList, s: &Subject, world: &Transform3, models: &List[Transform3]) {
   let bones = boneMatrices(&s.rig, models);
   list.addSkinned(s.body, s.bodyMat, world.toMat4(), bones.view());
   if s.hasFeathers { list.addSkinned(s.feathers, s.featherMat, world.toMat4(), bones.view()); }
@@ -183,17 +183,17 @@ fn addSubject(list &mut DrawList, s &Subject, world &Transform3, models &List[Tr
 
 // ------------------------------------------------------------------------------ the ground
 
-fn bumpy(x f32, z f32) f32 {
+fn bumpy(x: f32, z: f32) f32 {
   let bumps = 0.045 * sin(1.7 * z + 0.4) * cos(1.1 * x) + 0.035 * sin(0.63 * z + 1.3 * x);
   // A rise of half a metre between z = -70 and z = -58, a ridge across the way
   let rise = 0.5 * smoothstep(-58., -70., z);
   bumps + rise
 }
 
-fn flatGround(x f32, z f32) f32 { 0.02 * sin(0.4 * x) * sin(0.3 * z) }
+fn flatGround(x: f32, z: f32) f32 { 0.02 * sin(0.4 * x) * sin(0.3 * z) }
 
 // A heightfield from the ground function: a grid of `step`, its uvs at one to the metre, so the checker shows the ground's motion
-fn terrain(ground &<fn(x f32, z f32) f32, x0 f32, x1 f32, z0 f32, z1 f32, step f32) Mesh {
+fn terrain(ground: &<fn(x: f32, z: f32) f32, x0: f32, x1: f32, z0: f32, z1: f32, step: f32) Mesh {
   var m = Mesh.empty();
   let nx = usize.from((x1 - x0) / step);
   let nz = usize.from((z1 - z0) / step);
@@ -233,24 +233,24 @@ fn terrain(ground &<fn(x f32, z f32) f32, x0 f32, x1 f32, z0 f32, z1 f32, step f
 // ------------------------------------------------------------------------------ the GPU
 
 struct Stage {
-  out Texture;
-  depth Texture;
-  renderer Renderer;
-  post Post;
-  queries QuerySet;
-  resolved Buffer;
-  tick Buffer;
-  shot Buffer;
-  light Light;
-  groundMesh MeshHandle;
-  groundMat MaterialHandle;
+  out: Texture;
+  depth: Texture;
+  renderer: Renderer;
+  post: Post;
+  queries: QuerySet;
+  resolved: Buffer;
+  tick: Buffer;
+  shot: Buffer;
+  light: Light;
+  groundMesh: MeshHandle;
+  groundMat: MaterialHandle;
 }
 
 fn checkerImage() Image {
   Image.checker(256, 256, 8, 8, new Color(0.30, 0.36, 0.20, 1.), new Color(0.24, 0.30, 0.17, 1.))
 }
 
-fn makeStage(device &mut Device, ground &<fn(x f32, z f32) f32) Stage {
+fn makeStage(device: &mut Device, ground: &<fn(x: f32, z: f32) f32) Stage {
   let outDesc = new TextureDescriptor(W, H, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
   var out = device.createTexture(&outDesc);
   let depthDesc = new TextureDescriptor(W, H, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
@@ -282,7 +282,7 @@ fn makeStage(device &mut Device, ground &<fn(x f32, z f32) f32) Stage {
 }
 
 // One frame drawn; the GPU time of 'render' in ms, and the picture written if `name` is not empty
-fn drawFrame(device &mut Device, st &mut Stage, camera &Camera, list &DrawList, name &str) f64 {
+fn drawFrame(device: &mut Device, st: &mut Stage, camera: &Camera, list: &DrawList, name: &str) f64 {
   var encoder = device.createCommandEncoder();
   encoder.writeTimestamp(&st.queries, 0u32);
   st.renderer.render(device, &mut encoder, &st.post.hdr, &st.depth, camera, &st.light, list);
@@ -303,7 +303,7 @@ fn drawFrame(device &mut Device, st &mut Stage, camera &Camera, list &DrawList, 
   ms
 }
 
-fn fileName(dir &str, name &str) String {
+fn fileName(dir: &str, name: &str) String {
   var s = String.from(dir);
   s <- "/";
   s <- name;
@@ -313,7 +313,7 @@ fn fileName(dir &str, name &str) String {
 
 // A camera `distance` from the creature's middle, `swing` radians round from its right side toward its front
 // (0: side on, 1.57: head on), `height` above it, looking a `lead` ahead of the middle
-fn chaseCamera(centre Vec3, yaw f32, distance f32, height f32, lead f32, swing f32) Camera {
+fn chaseCamera(centre: Vec3, yaw: f32, distance: f32, height: f32, lead: f32, swing: f32) Camera {
   var c = Camera.make();
   c.fov = radians(40.);
   c.near = 0.3;
@@ -328,7 +328,7 @@ fn chaseCamera(centre Vec3, yaw f32, distance f32, height f32, lead f32, swing f
 
 // ------------------------------------------------------------------------------ the quadruped
 
-fn quadSpeed(t f32) f32 {
+fn quadSpeed(t: f32) f32 {
   // standing, walk, trot, canter, gallop, then slowing through them to a stop
   if t < 1.0 { return 0.; }
   if t < 3.0 { return 1.35 * smoothstep(1.0, 3.0, t); }
@@ -343,28 +343,28 @@ fn quadSpeed(t f32) f32 {
   0.
 }
 
-fn runQuadruped(device &mut Device, st &mut Stage, subject &Subject, outDir &str) bool {
+fn runQuadruped(device: &mut Device, st: &mut Stage, subject: &Subject, outDir: &str) bool {
   var ok = true;
   var loco = Locomotion.make(&subject.rig);
   let dt = 1.f / 60.;
   let frames = 47 * 60;
   // The path: heading follows a gentle S
-  var x f32 = 0.;
-  var z f32 = 0.;
+  var x: f32 = 0.;
+  var z: f32 = 0.;
   let winStart = [5.0f, 13.0, 21.0, 30.0];
   let winLabel = ["quad-walk", "quad-trot", "quad-canter", "quad-gallop"];
   var winArmed = [false, false, false, false];
   var winCycle0 = [0.f, 0., 0., 0.];
   var winTaken = [0u32, 0u32, 0u32, 0u32];
   var lastGait = String.from(loco.gaitName());
-  var worstPlant f32 = 0.;
-  var worstMiss f32 = 0.;
-  var cpuNs i64 = 0i64;
+  var worstPlant: f32 = 0.;
+  var worstMiss: f32 = 0.;
+  var cpuNs: i64 = 0i64;
   var updates = 0;
   var maxDown = 0usize;
   var minDownMoving = 9usize;
   var f = 0;
-  var t f32 = 0.;
+  var t: f32 = 0.;
   var shots = 0;
   while f < frames {
     let speed = quadSpeed(t);
@@ -426,16 +426,16 @@ fn runQuadruped(device &mut Device, st &mut Stage, subject &Subject, outDir &str
   // The cost: 120 frames of a gallop pose
   var gl = Locomotion.make(&subject.rig);
   gl.force(3i32);
-  var gx f32 = 0.;
-  var gz f32 = 0.;
+  var gx: f32 = 0.;
+  var gz: f32 = 0.;
   var k = 0;
   while k < 240 {
     gz = gz - 9.0 * dt;
     gl.update(&subject.rig, dt, gx, gz, 0., &bumpy);
     k = k + 1;
   }
-  var gpu f64 = 0.0;
-  var cpuDraw i64 = 0i64;
+  var gpu: f64 = 0.0;
+  var cpuDraw: i64 = 0i64;
   k = 0;
   while k < 130 {
     gz = gz - 9.0 * dt;
@@ -456,7 +456,7 @@ fn runQuadruped(device &mut Device, st &mut Stage, subject &Subject, outDir &str
 
 // ------------------------------------------------------------------------------ the flier
 
-fn runFlier(device &mut Device, st &mut Stage, subject &Subject, wings &Wings, outDir &str) bool {
+fn runFlier(device: &mut Device, st: &mut Stage, subject: &Subject, wings: &Wings, outDir: &str) bool {
   var ok = true;
   let rig = &subject.rig;
   // The pivot: the middle of the spine
@@ -474,22 +474,22 @@ fn runFlier(device &mut Device, st &mut Stage, subject &Subject, wings &Wings, o
   let dt = 1.f / 60.;
   var goal = Goal.make(new Vec3(0., 0., 0.), 11.5, false);
   goal.target = new Vec3(0., 0., -400.);
-  var t f32 = 0.;
+  var t: f32 = 0.;
   var lastMode = 99u32;
   var stage = 0;
-  var turnStartYaw f32 = 0.;
-  var maxBank f32 = 0.;
-  var maxAlt f32 = 0.;
-  var yawTotal f32 = 0.;
-  var lastYaw f32 = 0.;
-  var worstPlant f32 = 0.;
+  var turnStartYaw: f32 = 0.;
+  var maxBank: f32 = 0.;
+  var maxAlt: f32 = 0.;
+  var yawTotal: f32 = 0.;
+  var lastYaw: f32 = 0.;
+  var worstPlant: f32 = 0.;
   var beatTaken = 0;
-  var beatPhase0 f32 = 0.;
+  var beatPhase0: f32 = 0.;
   var beatArmed = false;
   var bankShot = false;
   var landed = false;
   var touchdownAt = new Vec3(0., 0., 0.);
-  var cpuNs i64 = 0i64;
+  var cpuNs: i64 = 0i64;
   var steps = 0;
   var shots = 0;
   var f = 0;
@@ -587,7 +587,7 @@ fn runFlier(device &mut Device, st &mut Stage, subject &Subject, wings &Wings, o
   cf.tuck = 1.;
   var cg = Goal.make(new Vec3(0., 12., -400.), 11., true);
   cg.maxBank = 0.7;
-  var gpu f64 = 0.0;
+  var gpu: f64 = 0.0;
   var k = 0;
   while k < 130 {
     cf.update(dt, &cg, &flatGround);
@@ -607,11 +607,11 @@ fn runFlier(device &mut Device, st &mut Stage, subject &Subject, wings &Wings, o
   ok
 }
 
-fn wrapA(a f32) f32 { a - 2. * pi * libc.floorf(a / (2. * pi) + 0.5) }
+fn wrapA(a: f32) f32 { a - 2. * pi * libc.floorf(a / (2. * pi) + 0.5) }
 
 // The wings alone, held still at a few poses and seen from the front and from above: folded, spread, the top and bottom
 // of the stroke, the middle of the upstroke (elbow and wrist flexed)
-fn wingStudy(device &mut Device, st &mut Stage, subject &Subject, wings &Wings, outDir &str) {
+fn wingStudy(device: &mut Device, st: &mut Stage, subject: &Subject, wings: &Wings, outDir: &str) {
   let rig = &subject.rig;
   let params = estimateWing(rig, wings, 1.0);
   let names = ["wing-folded", "wing-spread", "wing-top", "wing-bottom", "wing-upstroke"];
@@ -660,7 +660,7 @@ fn wingStudy(device &mut Device, st &mut Stage, subject &Subject, wings &Wings, 
 
 // ------------------------------------------------------------------------------ main
 
-fn main(argc i32, argv **u8) i32 {
+fn main(argc: i32, argv: **u8) i32 {
   var outDir = String.from("creature-shots");
   var a = 1;
   while a < argc {

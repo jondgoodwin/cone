@@ -31,15 +31,15 @@
 
 // One point of a manifold with what the solver keeps for it
 pub struct CPoint {
-  pub spot Vec3;       // the point on body A, in A's shape frame (matches it to last step's)
-  pub rA Vec3;         // from A's centre of mass to the point, world, at the step's start
-  pub rB Vec3;
-  pub depth f32;       // as the narrow phase found it (negative: apart)
-  pub baseSep f32;     // the separation less what the anchors' offset adds; see solveContact
-  pub nImp f32;        // accumulated normal impulse, per sub-step
-  pub nMass f32;       // effective mass
-  pub relVel f32;      // the closing speed before the solve, for restitution (negative: approaching)
-  pub maxN f32;        // the largest normal impulse this step
+  pub spot: Vec3;       // the point on body A, in A's shape frame (matches it to last step's)
+  pub rA: Vec3;         // from A's centre of mass to the point, world, at the step's start
+  pub rB: Vec3;
+  pub depth: f32;       // as the narrow phase found it (negative: apart)
+  pub baseSep: f32;     // the separation less what the anchors' offset adds; see solveContact
+  pub nImp: f32;        // accumulated normal impulse, per sub-step
+  pub nMass: f32;       // effective mass
+  pub relVel: f32;      // the closing speed before the solve, for restitution (negative: approaching)
+  pub maxN: f32;        // the largest normal impulse this step
 }
 
 pub fn blankPoint() CPoint {
@@ -48,49 +48,49 @@ pub fn blankPoint() CPoint {
 
 // A manifold of up to four points between two bodies
 pub struct Contact {
-  pub a u32;
-  pub b u32;
-  pub partA u32;
-  pub partB u32;
-  pub subA u32;
-  pub subB u32;
-  pub normal Vec3;       // from a to b
-  pub t1 Vec3;
-  pub t2 Vec3;
-  pub count usize;
-  pub pts Array[CPoint, 4];
-  pub friction f32;
-  pub staticFriction f32;
-  pub restitution f32;
-  pub touching bool;     // for events: with hysteresis
-  pub sensor bool;       // reports overlap only
-  pub stamp u32;         // the step that last refreshed it
+  pub a: u32;
+  pub b: u32;
+  pub partA: u32;
+  pub partB: u32;
+  pub subA: u32;
+  pub subB: u32;
+  pub normal: Vec3;       // from a to b
+  pub t1: Vec3;
+  pub t2: Vec3;
+  pub count: usize;
+  pub pts: Array[CPoint, 4];
+  pub friction: f32;
+  pub staticFriction: f32;
+  pub restitution: f32;
+  pub touching: bool;     // for events: with hysteresis
+  pub sensor: bool;       // reports overlap only
+  pub stamp: u32;         // the step that last refreshed it
   // friction at the manifold's centre
-  pub cA Vec3;
-  pub cB Vec3;
-  pub f1 f32;            // accumulated impulses along the tangents, and about the normal
-  pub f2 f32;
-  pub ft f32;
-  pub fm1 f32;           // effective masses
-  pub fm2 f32;
-  pub fmt f32;
-  pub mu f32;            // the coefficient in force this step
-  pub rho f32;           // the points' mean distance from the centre, across the normal
-  pub rolling f32;       // rolling resistance (a length)
-  pub r1 f32;            // accumulated rolling impulses about the tangents
-  pub r2 f32;
-  pub rm1 f32;           // and their effective masses
-  pub rm2 f32;
+  pub cA: Vec3;
+  pub cB: Vec3;
+  pub f1: f32;            // accumulated impulses along the tangents, and about the normal
+  pub f2: f32;
+  pub ft: f32;
+  pub fm1: f32;           // effective masses
+  pub fm2: f32;
+  pub fmt: f32;
+  pub mu: f32;            // the coefficient in force this step
+  pub rho: f32;           // the points' mean distance from the centre, across the normal
+  pub rolling: f32;       // rolling resistance (a length)
+  pub r1: f32;            // accumulated rolling impulses about the tangents
+  pub r2: f32;
+  pub rm1: f32;           // and their effective masses
+  pub rm2: f32;
 }
 
-pub fn blankContact(a u32, b u32) Contact {
+pub fn blankContact(a: u32, b: u32) Contact {
   let p = blankPoint();
   new Contact(a, b, 0u32, 0u32, NoSub, NoSub, new Vec3(0., 1., 0.), new Vec3(1., 0., 0.), new Vec3(0., 0., 1.), 0usize,
     [p, p, p, p], 0.5, 0.6, 0., false, false, 0u32, zero3(), zero3(), 0., 0., 0., 0., 0., 0., 0.5, 0., 0.01, 0., 0., 0., 0.)
 }
 
 // Do two contacts describe the same pair of pieces?
-pub fn sameKey(c &Contact, a u32, b u32, pa u32, pb u32, sa u32, sb u32) bool {
+pub fn sameKey(c: &Contact, a: u32, b: u32, pa: u32, pb: u32, sa: u32, sb: u32) bool {
   c.a == a && c.b == b && c.partA == pa && c.partB == pb && c.subA == sa && c.subB == sb
 }
 
@@ -100,7 +100,7 @@ pub fn sameKey(c &Contact, a u32, b u32, pa u32, pb u32, sa u32, sb u32) bool {
 // Effective masses, the base separation and the closing speed for a contact's
 // points, from the bodies as the step begins. Needs the bodies' world inverse
 // inertia (refreshed by the step).
-pub fn prepareContact(w &mut World, ci usize) {
+pub fn prepareContact(w: &mut World, ci: usize) {
   let c = &mut w.cache[ci];
   let bA = w.bodies[usize.from(c.a)];
   let bB = w.bodies[usize.from(c.b)];
@@ -174,7 +174,7 @@ pub fn prepareContact(w &mut World, ci usize) {
 }
 
 // Apply last step's impulses (or this sub-step's predecessor's) to the bodies
-pub fn warmStartContact(w &mut World, ci usize) {
+pub fn warmStartContact(w: &mut World, ci: usize) {
   let c = w.cache[ci];
   let ia = usize.from(c.a);
   let ib = usize.from(c.b);
@@ -215,7 +215,7 @@ pub fn warmStartContact(w &mut World, ci usize) {
 // One Gauss-Seidel pass over a contact: non-penetration at each point, then
 // friction at the centre. 'useBias' is true in the main solve and false in
 // the relax pass.
-pub fn solveContact(w &mut World, ci usize, useBias bool, reverse bool, invH f32, soft Softness, softStatic Softness) {
+pub fn solveContact(w: &mut World, ci: usize, useBias: bool, reverse: bool, invH: f32, soft: Softness, softStatic: Softness) {
   let c = &mut w.cache[ci];
   let ia = usize.from(c.a);
   let ib = usize.from(c.b);
@@ -348,7 +348,7 @@ pub fn solveContact(w &mut World, ci usize, useBias bool, reverse bool, invH f32
 // Bounce: after the sub-steps, give a point that was closing faster than the
 // threshold the speed it would have kept times the restitution (Newton's law),
 // by one more impulse on top of the solved ones.
-pub fn applyRestitution(w &mut World, ci usize, threshold f32) {
+pub fn applyRestitution(w: &mut World, ci: usize, threshold: f32) {
   let c = &mut w.cache[ci];
   if c.restitution == 0. { return; }
   let ia = usize.from(c.a);

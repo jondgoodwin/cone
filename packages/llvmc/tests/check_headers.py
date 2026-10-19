@@ -121,9 +121,9 @@ def read_cone():
         text = open(path, encoding="utf-8").read()
         for m in re.finditer(r"^  fn (\w+)\((.*?)\)\s*([^;{)]*);", text, flags=re.S | re.M):
             params = [p.strip() for p in re.split(r",(?![^()]*\))", m.group(2)) if p.strip()]
-            funcs[m.group(1)] = ([p.split(None, 1)[1] if " " in p else p for p in params], m.group(3).strip(),
+            funcs[m.group(1)] = ([p.split(":", 1)[1].strip() if ":" in p else p for p in params], m.group(3).strip(),
                                  os.path.basename(path))
-        for m in re.finditer(r"pub enum (\w+) u32 \{(.*?)\}", text, flags=re.S):
+        for m in re.finditer(r"pub enum (\w+): u32 \{(.*?)\}", text, flags=re.S):
             enums[m.group(1)] = {k: int(v) for k, v in re.findall(r"(\w+) = (\d+)", m.group(2))}
         for m in re.finditer(r"^pub const (\w+) = (\d+)u32;", text, flags=re.M):
             consts[m.group(1)] = int(m.group(2))

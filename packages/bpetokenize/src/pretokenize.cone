@@ -29,7 +29,7 @@ const kOther = 3u8;
 // at every character unlike the reference. A text in a listed script splits
 // as the reference does except at those few code points.
 // \p{L}
-let letterRanges Array[u32, 142] = [
+let letterRanges: Array[u32, 142] = [
   0x41u32, 0x5Au32, 0x61u32, 0x7Au32, 0xAAu32, 0xAAu32, 0xB5u32, 0xB5u32, 0xBAu32, 0xBAu32, 0xC0u32,
   0xD6u32, 0xD8u32, 0xF6u32, 0xF8u32, 0x2C1u32, 0x2C6u32, 0x2D1u32, 0x2E0u32, 0x2E4u32, 0x2ECu32,
   0x2ECu32, 0x2EEu32, 0x2EEu32, 0x370u32, 0x374u32, 0x376u32, 0x377u32, 0x37Au32, 0x37Du32, 0x37Fu32,
@@ -49,7 +49,7 @@ let letterRanges Array[u32, 142] = [
 
 // \p{N}: the decimal digits of the common scripts, the superscripts, the number
 // forms (fractions, roman numerals) and the circled and dingbat numbers
-let numberRanges Array[u32, 40] = [
+let numberRanges: Array[u32, 40] = [
   0x30u32, 0x39u32, 0xB2u32, 0xB3u32, 0xB9u32, 0xB9u32, 0xBCu32, 0xBEu32, 0x660u32, 0x669u32, 0x6F0u32,
   0x6F9u32, 0x966u32, 0x96Fu32, 0x9E6u32, 0x9EFu32, 0xE50u32, 0xE59u32, 0x2070u32, 0x2070u32,
   0x2074u32, 0x2079u32, 0x2080u32, 0x2089u32, 0x2150u32, 0x2189u32, 0x2460u32, 0x249Bu32, 0x24EAu32,
@@ -58,14 +58,14 @@ let numberRanges Array[u32, 40] = [
 ];
 
 // \s: Unicode's White_Space, which is complete here
-let spaceRanges Array[u32, 20] = [
+let spaceRanges: Array[u32, 20] = [
   0x9u32, 0xDu32, 0x20u32, 0x20u32, 0x85u32, 0x85u32, 0xA0u32, 0xA0u32, 0x1680u32, 0x1680u32,
   0x2000u32, 0x200Au32, 0x2028u32, 0x2029u32, 0x202Fu32, 0x202Fu32, 0x205Fu32, 0x205Fu32, 0x3000u32,
   0x3000u32
 ];
 
 // Whether cp is in one of the ranges (a sorted list of first, last pairs)
-fn inRanges(t &Array[u32], cp u32) bool {
+fn inRanges(t: &Array[u32], cp: u32) bool {
   var lo = 0usize;
   var hi = t.len / 2usize;
   while lo < hi {
@@ -78,7 +78,7 @@ fn inRanges(t &Array[u32], cp u32) bool {
 }
 
 // The class of a code point; a byte that is no UTF-8 comes as 0x110000 plus the byte
-fn classify(cp u32) u8 {
+fn classify(cp: u32) u8 {
   if cp >= 0x110000u32 { return kOther; }
   if cp < 0x80u32 {
     if (cp >= 0x41u32 && cp <= 0x5Au32) || (cp >= 0x61u32 && cp <= 0x7Au32) { return kLetter; }
@@ -98,15 +98,15 @@ fn classify(cp u32) u8 {
 // 0x110000 plus the byte), its class, and the byte offset it begins at (one
 // more offset than characters: the text's length). Reused from text to text.
 pub struct Scan {
-  cps List[u32];
-  kinds List[u8];
-  offs List[usize];
+  cps: List[u32];
+  kinds: List[u8];
+  offs: List[usize];
 
   pub fn empty() Scan {
     new Scan(List[u32].empty(), List[u8].empty(), List[usize].empty())
   }
 
-  fn load(self &mut, text &Array[u8]) {
+  fn load(self: &mut, text: &Array[u8]) {
     cps.clear();
     kinds.clear();
     offs.clear();
@@ -136,7 +136,7 @@ pub struct Scan {
 // How many characters at i are a contraction ('s 't 're 've 'm 'll 'd), or 0.
 // The Llama 3 expression takes them in either case (ignoreCase), GPT-2's only
 // in lower case.
-fn contractionLength(cps &Array[u32], n usize, i usize, ignoreCase bool) usize {
+fn contractionLength(cps: &Array[u32], n: usize, i: usize, ignoreCase: bool) usize {
   if cps[i] != 0x27u32 || i + 1usize >= n { return 0usize; }
   let c1 = foldCase(cps[i + 1usize], ignoreCase);
   if c1 == 0x73u32 || c1 == 0x74u32 || c1 == 0x6Du32 || c1 == 0x64u32 { return 2usize; }
@@ -148,12 +148,12 @@ fn contractionLength(cps &Array[u32], n usize, i usize, ignoreCase bool) usize {
   0usize
 }
 
-fn foldCase(c u32, ignoreCase bool) u32 {
+fn foldCase(c: u32, ignoreCase: bool) u32 {
   if ignoreCase && c >= 0x41u32 && c <= 0x5Au32 { c + 32u32 } else { c }
 }
 
 // The end of the run of characters of class k that starts at i
-fn runEnd(kinds &Array[u8], n usize, i usize, k u8) usize {
+fn runEnd(kinds: &Array[u8], n: usize, i: usize, k: u8) usize {
   var j = i;
   while j < n && kinds[j] == k { j = j + 1usize; }
   j
@@ -165,7 +165,7 @@ fn runEnd(kinds &Array[u8], n usize, i usize, k u8) usize {
 // (so that the last one can go with the word after it), or all of it at the
 // end of the text; a run of one that is followed by a word is left to the
 // second.
-fn spaceEnd(kinds &Array[u8], n usize, i usize) usize {
+fn spaceEnd(kinds: &Array[u8], n: usize, i: usize) usize {
   let w = runEnd(kinds, n, i, kSpace);
   if w == n { return w; }
   if w - i >= 2usize { return w - 1usize; }
@@ -175,7 +175,7 @@ fn spaceEnd(kinds &Array[u8], n usize, i usize) usize {
 // GPT-2's expression, from encoder.py:
 //   's|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+
 // The end of the piece that begins at character i.
-fn gpt2End(cps &Array[u32], kinds &Array[u8], n usize, i usize) usize {
+fn gpt2End(cps: &Array[u32], kinds: &Array[u8], n: usize, i: usize) usize {
   let c = contractionLength(cps, n, i, false);
   if c > 0usize { return i + c; }
   // an optional space (only U+0020), then a run of one class that is not space
@@ -191,7 +191,7 @@ fn gpt2End(cps &Array[u32], kinds &Array[u8], n usize, i usize) usize {
 //   (?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}{1,3}
 //   | ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+
 // The end of the piece that begins at character i.
-fn llama3End(cps &Array[u32], kinds &Array[u8], n usize, i usize, digits usize) usize {
+fn llama3End(cps: &Array[u32], kinds: &Array[u8], n: usize, i: usize, digits: usize) usize {
   let c = contractionLength(cps, n, i, true);
   if c > 0usize { return i + c; }
   let ci = cps[i];
@@ -249,7 +249,7 @@ pub enum PreTokenizer {
   // The mode a tokenizer's metadata names (llama.cpp's 'tokenizer.ggml.pre' and
   // Hugging Face's pre-tokenizer names are spelt in many ways; these are the
   // ones this package reproduces), or None
-  pub fn fromName(name &str) Option[PreTokenizer] {
+  pub fn fromName(name: &str) Option[PreTokenizer] {
     if name == "gpt2" || name == "gpt-2" || name == "default" { return Some[PreTokenizer](PreTokenizer.Gpt2); }
     if name == "llama3" || name == "llama-3" || name == "llama-bpe" || name == "cl100k" {
       return Some[PreTokenizer](PreTokenizer.Llama3);
@@ -259,7 +259,7 @@ pub enum PreTokenizer {
     None
   }
 
-  pub fn name(self &PreTokenizer) &str {
+  pub fn name(self: &PreTokenizer) &str {
     match self {
       case is Gpt2 { "gpt2" }
       case is Llama3 { "llama3" }
@@ -268,7 +268,7 @@ pub enum PreTokenizer {
     }
   }
 
-  pub fn copy(self &PreTokenizer) PreTokenizer {
+  pub fn copy(self: &PreTokenizer) PreTokenizer {
     match self {
       case is Gpt2 { PreTokenizer.Gpt2 }
       case is Llama3 { PreTokenizer.Llama3 }
@@ -281,7 +281,7 @@ pub enum PreTokenizer {
 // Cuts a text into pieces: appends to 'ends' the byte offset at which each piece
 // ends (the last is the text's length; there are none for an empty text). The
 // pieces are the text between consecutive offsets, and every byte is in one.
-pub fn pieceEndsWith(mode &PreTokenizer, text &Array[u8], ends &mut List[usize], scan &mut Scan) {
+pub fn pieceEndsWith(mode: &PreTokenizer, text: &Array[u8], ends: &mut List[usize], scan: &mut Scan) {
   if text.len == 0usize { return; }
   match mode {
     case is Whole { ends.push(text.len); return; }
@@ -305,7 +305,7 @@ pub fn pieceEndsWith(mode &PreTokenizer, text &Array[u8], ends &mut List[usize],
 }
 
 // The same with a scan of its own
-pub fn pieceEnds(mode &PreTokenizer, text &Array[u8]) List[usize] {
+pub fn pieceEnds(mode: &PreTokenizer, text: &Array[u8]) List[usize] {
   var ends = List[usize].empty();
   var scan = Scan.empty();
   pieceEndsWith(mode, text, &mut ends, &mut scan);

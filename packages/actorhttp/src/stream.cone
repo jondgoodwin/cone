@@ -8,26 +8,26 @@
 // are known when it is made; 'read' awaits the next piece of the body.
 // Dropping it before the body has ended cancels the rest of the fetch
 pub struct BodyStream is Move {
-  client u64;
-  slot u32;
-  id u64;
-  pub status u16;
-  pub headers Headers;
-  pub url String;          // the URL that answered, after any redirects
+  client: u64;
+  slot: u32;
+  id: u64;
+  pub status: u16;
+  pub headers: Headers;
+  pub url: String;          // the URL that answered, after any redirects
 
   // The next piece of the body (the bytes of one receive: any size), or None
   // when the body is whole; or why it ended otherwise. A piece is released to
   // the connection as it is taken, so a reader that awaits slowly slows the
   // sender, never fills memory
-  pub fn read(self &) actors.Awaitable[Result[Option[String], FetchError]] {
+  pub fn read(self: &) actors.Awaitable[Result[Option[String], FetchError]] {
     awaitable[StreamReadJob, Result[Option[String], FetchError]](
       new StreamReadJob(client, slot, id, false, new actors.Reply()))
   }
 
   // Whether the status is a 2xx
-  pub fn isOk(self &) bool {status >= 200u16 && status < 300u16}
+  pub fn isOk(self: &) bool {status >= 200u16 && status < 300u16}
 
-  fn final(self &uni) {
+  fn final(self: &uni) {
     post[StreamDropJob](new StreamDropJob(client, slot, id));
   }
 }
@@ -35,27 +35,27 @@ pub struct BodyStream is Move {
 // A response read as server-sent events (the sse package's): the Reader runs
 // on the service thread as the body arrives, and 'next' awaits the next event
 pub struct EventStream is Move {
-  client u64;
-  slot u32;
-  id u64;
-  pub status u16;
-  pub headers Headers;
-  pub url String;
+  client: u64;
+  slot: u32;
+  id: u64;
+  pub status: u16;
+  pub headers: Headers;
+  pub url: String;
 
   // The next event, or None when the stream has ended cleanly; or why it
   // ended otherwise (a deadline, a cancel, the connection breaking, an event
   // past the reader's limit). A comment (": ping") is no event; the stream's
   // 'id' is each event's, as the sse package's Reader keeps it
-  pub fn next(self &) actors.Awaitable[Result[Option[sse.Event], FetchError]] {
+  pub fn next(self: &) actors.Awaitable[Result[Option[sse.Event], FetchError]] {
     awaitable[StreamReadJob, Result[Option[sse.Event], FetchError]](
       new StreamReadJob(client, slot, id, true, new actors.Reply()))
   }
 
   // Whether the status is a 2xx
-  pub fn isOk(self &) bool {status >= 200u16 && status < 300u16}
+  pub fn isOk(self: &) bool {status >= 200u16 && status < 300u16}
 
   // Whether the server said it is an event stream (a 200 with Content-Type text/event-stream)
-  pub fn isEventStream(self &) bool {
+  pub fn isEventStream(self: &) bool {
     if status != 200u16 {return false;}
     match headers.get("Content-Type") {
       case let v Some {
@@ -66,7 +66,7 @@ pub struct EventStream is Move {
     }
   }
 
-  fn final(self &uni) {
+  fn final(self: &uni) {
     post[StreamDropJob](new StreamDropJob(client, slot, id));
   }
 }

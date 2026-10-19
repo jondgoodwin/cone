@@ -1,11 +1,11 @@
-// A function signature written bare as a generic bound, 'F fn(a &T, b &T) i32',
+// A function signature written bare as a generic bound, 'F fn(a: &T, b: &T) i32',
 // inline and in a 'where' clause (doc/manual/mod-generativity.html). It is met
 // structurally: by any type with a pub '()' method whose parameters after the
 // receiver, and whose return type, are exactly the signature's, and by a plain
 // function referenced, '&byAbs'. The generic's body calls the parameter directly,
 // 'order(x, y)', in each instance, so the parameter's permission picks what the
-// call may do: '&F' reaches a 'self &' '()', '&mut F' a 'self &mut' one and keeps
-// what it changed, and F taken by value one that takes 'self &'.
+// call may do: '&F' reaches a 'self: &' '()', '&mut F' a 'self: &mut' one and keeps
+// what it changed, and F taken by value one that takes 'self: &'.
 //
 // One generic is given a function and a hand-written struct, and each result is
 // worked out by hand below.
@@ -14,24 +14,24 @@ mod generic_fn_bound;
 
 import stdio use *;
 
-fn absv(x i32) i32 { if x < 0i32 {0i32 - x} else {x} }
+fn absv(x: i32) i32 { if x < 0i32 {0i32 - x} else {x} }
 
 // A plain function: order by size without sign
-fn byAbs(a &i32, b &i32) i32 { absv(*a) - absv(*b) }
+fn byAbs(a: &i32, b: &i32) i32 { absv(*a) - absv(*b) }
 
 // A struct with a pub '()': the numbers largest first
 struct Descending {
-  pub fn `()`(self &, a &i32, b &i32) i32 { *b - *a }
+  pub fn `()`(self: &, a: &i32, b: &i32) i32 { *b - *a }
 }
 
 // A '()' that changes the struct: it counts the comparisons it is asked
 struct Counting {
-  pub n i32;
-  pub fn `()`(self &mut, a &i32, b &i32) i32 { n = n + 1i32; absv(*a) - absv(*b) }
+  pub n: i32;
+  pub fn `()`(self: &mut, a: &i32, b: &i32) i32 { n = n + 1i32; absv(*a) - absv(*b) }
 }
 
 // Insertion sort. 'order(a, b)' is negative when a goes before b.
-fn sortBy[T, F fn(a &T, b &T) i32](xs &mut Array[T], order &F) {
+fn sortBy[T, F: fn(a: &T, b: &T) i32](xs: &mut Array[T], order: &F) {
   var i = 1usize;
   while i < xs.len() {
     var j = i;
@@ -46,7 +46,7 @@ fn sortBy[T, F fn(a &T, b &T) i32](xs &mut Array[T], order &F) {
 }
 
 // The same, over '&mut F': the call may change the comparer
-fn sortCounting[T, F fn(a &T, b &T) i32](xs &mut Array[T], order &mut F) {
+fn sortCounting[T, F: fn(a: &T, b: &T) i32](xs: &mut Array[T], order: &mut F) {
   var i = 1usize;
   while i < xs.len() {
     var j = i;
@@ -60,50 +60,50 @@ fn sortCounting[T, F fn(a &T, b &T) i32](xs &mut Array[T], order &mut F) {
   }
 }
 
-fn show(xs &Array[i32, 5]) {
+fn show(xs: &Array[i32, 5]) {
   print <- xs[0usize], " ", xs[1usize], " ", xs[2usize], " ", xs[3usize], " ", xs[4usize], "\n";
 }
 
-fn addOne(x i32) i32 { x + 1i32 }
+fn addOne(x: i32) i32 { x + 1i32 }
 
 struct Adder {
-  pub k i32;
-  pub fn `()`(self &, x i32) i32 { x + k }
+  pub k: i32;
+  pub fn `()`(self: &, x: i32) i32 { x + k }
 }
 
 // A parameter's name does not matter, and a parameter may be written as its type alone
-fn twice[F fn(i32) i32](f &F, v i32) i32 { f(f(v)) }
+fn twice[F: fn(i32) i32](f: &F, v: i32) i32 { f(f(v)) }
 
 // The 'where' form says the same
-fn thrice[F](f &F, v i32) i32 where F is fn(x i32) i32 { f(f(f(v))) }
+fn thrice[F](f: &F, v: i32) i32 where F is fn(x: i32) i32 { f(f(f(v))) }
 
-// F by value reaches a '()' that takes 'self &'
-fn once[F fn(x i32) i32](f F, v i32) i32 { f(v) }
+// F by value reaches a '()' that takes 'self: &'
+fn once[F: fn(x: i32) i32](f: F, v: i32) i32 { f(v) }
 
 // F by value reaches a '()' that takes 'self' by value, and, taken 'mut', one that
-// takes 'self &mut'
+// takes 'self: &mut'
 struct Own {
-  pub k i32;
-  pub fn `()`(self, x i32) i32 { x + k }
+  pub k: i32;
+  pub fn `()`(self, x: i32) i32 { x + k }
 }
 
 struct Chg {
-  pub k i32;
-  pub fn `()`(self &mut, x i32) i32 { k = k + 1i32; x + k }
+  pub k: i32;
+  pub fn `()`(self: &mut, x: i32) i32 { k = k + 1i32; x + k }
 }
 
-fn mutVal[F fn(x i32) i32](var f F, v i32) i32 {
+fn mutVal[F: fn(x: i32) i32](var f: F, v: i32) i32 {
   let first = f(v);
   f(first)
 }
 
 // No parameters, nothing returned, and a second bound joined with '+'
 struct Ticker {
-  pub n i32;
-  pub fn `()`(self &mut) { n = n + 1i32; }
+  pub n: i32;
+  pub fn `()`(self: &mut) { n = n + 1i32; }
 }
 
-fn tick3[F fn() + Sendable](f &mut F) {
+fn tick3[F: fn() + Sendable](f: &mut F) {
   f();
   f();
   f();
@@ -114,35 +114,35 @@ fn tick3[F fn() + Sendable](f &mut F) {
 fn seven() i32 { 7i32 }
 
 struct Eight {
-  pub fn `()`(self &) i64 { 8i64 }
+  pub fn `()`(self: &) i64 { 8i64 }
 }
 
-fn produce[T, F fn() T](f &F) T { f() }
+fn produce[T, F: fn() T](f: &F) T { f() }
 
 // A signature bound in the 'where' clause of a generic type's member
 struct Holder[F] {
-  pub f &F;
-  pub fn run(self &, v i32) i32 where F is fn(x i32) i32 { f(v) }
+  pub f: &F;
+  pub fn run(self: &, v: i32) i32 where F is fn(x: i32) i32 { f(v) }
 }
 
 // The signature first or after another bound, and on a generic type's own parameter
-fn signedFirst[F fn(x i32) i32 + Copy](f &F, v i32) i32 { f(v) }
-fn signedLast[F Copy + fn(x i32) i32](f &F, v i32) i32 { f(v) }
+fn signedFirst[F: fn(x: i32) i32 + Copy](f: &F, v: i32) i32 { f(v) }
+fn signedLast[F: Copy + fn(x: i32) i32](f: &F, v: i32) i32 { f(v) }
 
 // Not the last parameter, with '&&', with '||' (met by either signature), and a
 // signature returning two values
-fn middle[F fn(x i32) i32, T](f &F, v T) i32 { f(1i32) }
-fn andAlso[F, T](f &F, v T) i32 where F is fn(x i32) i32 && T is Copy { f(2i32) }
-fn orElse[F](f &F) i32 where F is fn(x i32) i32 || F is fn(x i64) i32 { 5i32 }
-fn pairSum[F fn(x i32) (i32, i32)](f &F) i32 {
+fn middle[F: fn(x: i32) i32, T](f: &F, v: T) i32 { f(1i32) }
+fn andAlso[F, T](f: &F, v: T) i32 where F is fn(x: i32) i32 && T is Copy { f(2i32) }
+fn orElse[F](f: &F) i32 where F is fn(x: i32) i32 || F is fn(x: i64) i32 { 5i32 }
+fn pairSum[F: fn(x: i32) (i32, i32)](f: &F) i32 {
   let both = f(3i32);
   both.0 + both.1
 }
-fn pairOf(x i32) (i32, i32) { x, x * 2i32 }
+fn pairOf(x: i32) (i32, i32) { x, x * 2i32 }
 
-struct Applied[F fn(x i32) i32] {
-  pub f &F;
-  pub fn run(self &, v i32) i32 { f(v) }
+struct Applied[F: fn(x: i32) i32] {
+  pub f: &F;
+  pub fn run(self: &, v: i32) i32 { f(v) }
 }
 
 fn main() {

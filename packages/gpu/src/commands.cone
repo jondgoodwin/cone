@@ -2,15 +2,15 @@
 
 // Record a layout transition of all of 'image' ('aspect' of it), with the
 // stages and accesses before and after it
-fn transition(fns &DevFns, cmd vulkan.CommandBuffer, image vulkan.Image, aspect u32, oldLayout u32, newLayout u32,
-    srcStage u64, srcAccess u64, dstStage u64, dstAccess u64) {
+fn transition(fns: &DevFns, cmd: vulkan.CommandBuffer, image: vulkan.Image, aspect: u32, oldLayout: u32, newLayout: u32,
+    srcStage: u64, srcAccess: u64, dstStage: u64, dstAccess: u64) {
   transitionRange(fns, cmd, image, new vulkan.ImageSubresourceRange(aspectMask: aspect), oldLayout, newLayout,
     srcStage, srcAccess, dstStage, dstAccess);
 }
 
 // The same, of the levels and layers 'range' names
-fn transitionRange(fns &DevFns, cmd vulkan.CommandBuffer, image vulkan.Image, range vulkan.ImageSubresourceRange, oldLayout u32,
-    newLayout u32, srcStage u64, srcAccess u64, dstStage u64, dstAccess u64) {
+fn transitionRange(fns: &DevFns, cmd: vulkan.CommandBuffer, image: vulkan.Image, range: vulkan.ImageSubresourceRange, oldLayout: u32,
+    newLayout: u32, srcStage: u64, srcAccess: u64, dstStage: u64, dstAccess: u64) {
   let barrier = new vulkan.ImageMemoryBarrier2(srcStageMask: srcStage, srcAccessMask: srcAccess,
     dstStageMask: dstStage, dstAccessMask: dstAccess, oldLayout: oldLayout, newLayout: newLayout, image: image,
     subresourceRange: range);
@@ -21,13 +21,13 @@ fn transitionRange(fns &DevFns, cmd vulkan.CommandBuffer, image vulkan.Image, ra
 }
 
 // The level and layer a view names (a pass draws into one of each)
-fn viewRange(backend &TextureBackend) vulkan.ImageSubresourceRange {
+fn viewRange(backend: &TextureBackend) vulkan.ImageSubresourceRange {
   new vulkan.ImageSubresourceRange(aspectMask: vulkan.IMAGE_ASPECT_COLOR_BIT, baseMipLevel: backend.baseMip,
     levelCount: 1u32, baseArrayLayer: backend.baseLayer, layerCount: 1u32)
 }
 
 // The layout a texture of 'kind' rests in between commands
-fn restLayout(kind u32) u32 {
+fn restLayout(kind: u32) u32 {
   if kind == KIND_SURFACE { return vulkan.IMAGE_LAYOUT_PRESENT_SRC_KHR; }
   if kind == KIND_DEPTH { return vulkan.IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL; }
   if kind == KIND_SAMPLED || kind == KIND_RENDER_SAMPLED { return vulkan.IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; }
@@ -38,7 +38,7 @@ fn restLayout(kind u32) u32 {
 
 // Move a new texture of 'kind' from 'undefined' to the layout it rests in,
 // every level and layer of it
-fn firstLayout(fns &DevFns, cmd vulkan.CommandBuffer, image vulkan.Image, kind u32) {
+fn firstLayout(fns: &DevFns, cmd: vulkan.CommandBuffer, image: vulkan.Image, kind: u32) {
   var aspect = vulkan.IMAGE_ASPECT_COLOR_BIT;
   var stages = vulkan.PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
   if kind == KIND_DEPTH {
@@ -61,22 +61,22 @@ fn firstLayout(fns &DevFns, cmd vulkan.CommandBuffer, image vulkan.Image, kind u
 // ---- Commands ----
 
 struct EncoderBackend {
-  cmd vulkan.CommandBuffer;
-  fns DevFns;
+  cmd: vulkan.CommandBuffer;
+  fns: DevFns;
 }
 
 // Records commands, finished into a CommandBuffer for the queue
 pub struct CommandEncoder {
-  backend EncoderBackend;
+  backend: EncoderBackend;
 
   // Whether it records: not once finished, nor when the frame had no
   // command buffer left for it (refused, and counted, when it was made).
   // What an encoder that does not record is asked to do is not done.
-  pub fn isValid(self &) bool { !isNull(backend.cmd) }
+  pub fn isValid(self: &) bool { !isNull(backend.cmd) }
 
   // Begin drawing into one color attachment, cleared or kept as 'attachment'
   // says
-  pub fn beginRenderPass(self &mut, attachment &RenderPassColorAttachment) RenderPass {
+  pub fn beginRenderPass(self: &mut, attachment: &RenderPassColorAttachment) RenderPass {
     let none = new RenderPassDepthStencilAttachment(new TextureView(new TextureBackend(new vulkan.Image(0u64),
       new vulkan.ImageView(0u64), KIND_NONE, false, 0usize as vulkan.Device, backend.fns, new vulkan.DeviceMemory(0u64)),
       0u32, 0u32, TEXTURE_FORMAT_UNDEFINED));
@@ -84,8 +84,8 @@ pub struct CommandEncoder {
   }
 
   // Begin drawing into a color attachment and a depth attachment
-  pub fn beginRenderPassWithDepth(self &mut, attachment &RenderPassColorAttachment,
-      depth &RenderPassDepthStencilAttachment) RenderPass {
+  pub fn beginRenderPassWithDepth(self: &mut, attachment: &RenderPassColorAttachment,
+      depth: &RenderPassDepthStencilAttachment) RenderPass {
     beginPass(&backend.fns, backend.cmd, attachment, true, depth)
   }
 
@@ -97,21 +97,21 @@ pub struct CommandEncoder {
   // first) and back to the read-only layout at 'end', what the pass wrote
   // visible to the shaders that sample it. Pipelines drawn in it have
   // 'colorFormat' TEXTURE_FORMAT_UNDEFINED.
-  pub fn beginDepthPass(self &mut, depth &RenderPassDepthStencilAttachment) RenderPass {
+  pub fn beginDepthPass(self: &mut, depth: &RenderPassDepthStencilAttachment) RenderPass {
     beginDepthOnly(&backend.fns, backend.cmd, depth)
   }
 
   // Build an acceleration structure (raytracing.cone): all of a bottom level's triangles, or the first
   // 'count' instances written to a top level's 'instances' buffer. Outside a pass. After what was
   // recorded before it, and visible to everything recorded after, a shader's rays included.
-  pub fn buildAccelerationStructure(self &mut, structure &AccelerationStructure, count u32) {
+  pub fn buildAccelerationStructure(self: &mut, structure: &AccelerationStructure, count: u32) {
     recordBuild(self, structure, count);
   }
 
   // Begin dispatching compute shaders (WebGPU's 'beginComputePass'). What
   // earlier commands wrote is visible to its shaders and its indirect
   // dispatches.
-  pub fn beginComputePass(self &mut) ComputePassEncoder {
+  pub fn beginComputePass(self: &mut) ComputePassEncoder {
     if isNull(backend.cmd) {
       return new ComputePassEncoder(new ComputePassBackend(backend.cmd, backend.fns, false, new vulkan.PipelineLayout(0u64), false));
     }
@@ -124,7 +124,7 @@ pub struct CommandEncoder {
   // Write the GPU's clock into query 'queryIndex' of 'querySet' (of
   // timestamps) once every command before it is done. Outside a pass: the
   // time between two is the time the commands between them took.
-  pub fn writeTimestamp(self &mut, querySet &QuerySet, queryIndex u32) {
+  pub fn writeTimestamp(self: &mut, querySet: &QuerySet, queryIndex: u32) {
     if isNull(backend.cmd) { return; }
     if !querySet.isValid() || queryIndex >= querySet.count {
       fail("writeTimestamp: no such query");
@@ -140,8 +140,8 @@ pub struct CommandEncoder {
   // 'resolveQuerySet'. Each query must have been written in this encoder's
   // submission or before. A timestamp is in ticks of 'device.timestampPeriod'
   // nanoseconds, where WebGPU's are nanoseconds.
-  pub fn resolveQuerySet(self &mut, querySet &QuerySet, firstQuery u32, queryCount u32, destination &Buffer,
-      destinationOffset u64) {
+  pub fn resolveQuerySet(self: &mut, querySet: &QuerySet, firstQuery: u32, queryCount: u32, destination: &Buffer,
+      destinationOffset: u64) {
     if isNull(backend.cmd) { return; }
     if !querySet.isValid() || firstQuery + queryCount > querySet.count
         || (destination.usage & BUFFER_USAGE_QUERY_RESOLVE) == 0u32 || (destinationOffset & 255u64) != 0u64
@@ -163,7 +163,7 @@ pub struct CommandEncoder {
   // into 'buffer', from its start, row after row and slice after slice with
   // no gap between them (4 bytes a texel, 8 of rgba16float). WebGPU pads
   // each row to 256 bytes; this does not.
-  pub fn copyTextureToBuffer(self &mut, texture &Texture, buffer &Buffer) {
+  pub fn copyTextureToBuffer(self: &mut, texture: &Texture, buffer: &Buffer) {
     if isNull(backend.cmd) { return; }
     let image = texture.backend.image;
     let rest = restLayout(texture.backend.kind);
@@ -211,8 +211,8 @@ pub struct CommandEncoder {
   // at 'destinationOffset'. What the CPU wrote to a mapped source before the
   // submission is what is copied; a mapped destination holds the bytes once
   // the frame is done.
-  pub fn copyBufferToBuffer(self &mut, source &Buffer, sourceOffset u64, destination &Buffer,
-      destinationOffset u64, size u64) {
+  pub fn copyBufferToBuffer(self: &mut, source: &Buffer, sourceOffset: u64, destination: &Buffer,
+      destinationOffset: u64, size: u64) {
     if isNull(backend.cmd) { return; }
     // After what earlier commands did with either buffer
     memoryBarrier(&backend.fns, backend.cmd, vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT, vulkan.ACCESS_2_MEMORY_WRITE_BIT,
@@ -228,7 +228,7 @@ pub struct CommandEncoder {
 
   // The commands recorded, for the queue to submit. The encoder records
   // nothing more.
-  pub fn finish(self &mut) CommandBuffer {
+  pub fn finish(self: &mut) CommandBuffer {
     let cmd = backend.cmd;
     backend.cmd = nullCommandBuffer();
     if !isNull(cmd) { check(backend.fns.endCommandBuffer(cmd), "vkEndCommandBuffer"); }
@@ -239,8 +239,8 @@ pub struct CommandEncoder {
 // Begin rendering into 'color' and, if 'hasDepth', 'depth': the barriers
 // each needs after what earlier commands did with it, then the whole
 // attachment as the viewport and the scissor rectangle
-fn beginPass(fns &DevFns, cmd vulkan.CommandBuffer, color &RenderPassColorAttachment, hasDepth bool,
-    depth &RenderPassDepthStencilAttachment) RenderPass {
+fn beginPass(fns: &DevFns, cmd: vulkan.CommandBuffer, color: &RenderPassColorAttachment, hasDepth: bool,
+    depth: &RenderPassDepthStencilAttachment) RenderPass {
   // An encoder that does not record begins a pass that records nothing
   if isNull(cmd) {
     return new RenderPass(new PassBackend(cmd, *fns, new vulkan.Image(0u64), 0u32, false, new vulkan.PipelineLayout(0u64),
@@ -310,7 +310,7 @@ fn beginPass(fns &DevFns, cmd vulkan.CommandBuffer, color &RenderPassColorAttach
   let depthInfo = new vulkan.RenderingAttachmentInfo(imageView: depth.view.backend.view,
     imageLayout: vulkan.IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, resolveImageView: new vulkan.ImageView(0u64),
     loadOp: depthLoad, storeOp: depthStore, clearValue: depthClear);
-  var depthPointer *vulkan.RenderingAttachmentInfo = null;
+  var depthPointer: *vulkan.RenderingAttachmentInfo = null;
   if hasDepth { depthPointer = &depthInfo as *vulkan.RenderingAttachmentInfo; }
 
   let ri = new vulkan.RenderingInfo(
@@ -336,7 +336,7 @@ fn beginPass(fns &DevFns, cmd vulkan.CommandBuffer, color &RenderPassColorAttach
 // it names moves to the attachment layout (from the shader-read layout, the
 // earlier samplers done first, or from nothing if it is cleared), the whole
 // view the viewport and the scissor rectangle
-fn beginDepthOnly(fns &DevFns, cmd vulkan.CommandBuffer, depth &RenderPassDepthStencilAttachment) RenderPass {
+fn beginDepthOnly(fns: &DevFns, cmd: vulkan.CommandBuffer, depth: &RenderPassDepthStencilAttachment) RenderPass {
   if isNull(cmd) {
     return new RenderPass(new PassBackend(cmd, *fns, new vulkan.Image(0u64), 0u32, false, new vulkan.PipelineLayout(0u64),
       new vulkan.ImageSubresourceRange()));
@@ -385,7 +385,7 @@ fn beginDepthOnly(fns &DevFns, cmd vulkan.CommandBuffer, depth &RenderPassDepthS
 
 // The viewport from ('x', 'y'), 'w' by 'h', with y down from the top of the
 // attachment, flipped so that clip space's y is up, as WebGPU's is
-fn setViewportFlipped(fns &DevFns, cmd vulkan.CommandBuffer, x f32, y f32, w f32, h f32, minDepth f32, maxDepth f32) {
+fn setViewportFlipped(fns: &DevFns, cmd: vulkan.CommandBuffer, x: f32, y: f32, w: f32, h: f32, minDepth: f32, maxDepth: f32) {
   let vp = new vulkan.Viewport(x, y + h, w, 0. - h, minDepth, maxDepth);
   fns.cmdSetViewport(cmd, 0u32, 1u32, &vp as *vulkan.Viewport);
 }
@@ -394,50 +394,50 @@ fn setViewportFlipped(fns &DevFns, cmd vulkan.CommandBuffer, x f32, y f32, w f32
 // with what it holds at the start (cleared to 'clearValue', or kept) and at
 // the end (stored, or discarded)
 pub struct RenderPassColorAttachment {
-  pub view TextureView;
-  pub loadOp u32 = LOAD_OP_CLEAR;
-  pub storeOp u32 = STORE_OP_STORE;
-  pub clearValue Color;
+  pub view: TextureView;
+  pub loadOp: u32 = LOAD_OP_CLEAR;
+  pub storeOp: u32 = STORE_OP_STORE;
+  pub clearValue: Color;
 }
 
 // A depth attachment of a render pass: the depth texture's view, what is
 // done with its depths at the start (cleared to 'depthClearValue', or kept)
 // and at the end (stored, or discarded)
 pub struct RenderPassDepthStencilAttachment {
-  pub view TextureView;
-  pub depthLoadOp u32 = LOAD_OP_CLEAR;
-  pub depthStoreOp u32 = STORE_OP_STORE;
-  pub depthClearValue f32 = 1.;
+  pub view: TextureView;
+  pub depthLoadOp: u32 = LOAD_OP_CLEAR;
+  pub depthStoreOp: u32 = STORE_OP_STORE;
+  pub depthClearValue: f32 = 1.;
 }
 
 struct PassBackend {
-  cmd vulkan.CommandBuffer;
-  fns DevFns;
-  image vulkan.Image;
-  kind u32;
-  open bool;
-  layout vulkan.PipelineLayout;    // the bound pipeline's
-  range vulkan.ImageSubresourceRange;  // the color attachment's level and layer
+  cmd: vulkan.CommandBuffer;
+  fns: DevFns;
+  image: vulkan.Image;
+  kind: u32;
+  open: bool;
+  layout: vulkan.PipelineLayout;    // the bound pipeline's
+  range: vulkan.ImageSubresourceRange;  // the color attachment's level and layer
   // A depth attachment that is also sampled (beginRenderPassWithDepth): moved
   // back to the read-only layout at 'end'
-  depthImage vulkan.Image = new vulkan.Image(0u64);
-  depthSampled bool = false;
-  depthRange vulkan.ImageSubresourceRange = new vulkan.ImageSubresourceRange();
+  depthImage: vulkan.Image = new vulkan.Image(0u64);
+  depthSampled: bool = false;
+  depthRange: vulkan.ImageSubresourceRange = new vulkan.ImageSubresourceRange();
 }
 
 // Drawing into attachments, begun by 'beginRenderPass' and ended by 'end'
 pub struct RenderPass {
-  backend PassBackend;
+  backend: PassBackend;
 
   // Draw with 'pipeline' from here on
-  pub fn setPipeline(self &mut, pipeline &RenderPipeline) {
+  pub fn setPipeline(self: &mut, pipeline: &RenderPipeline) {
     if isNull(backend.cmd) { return; }
     backend.fns.cmdBindPipeline(backend.cmd, vulkan.PIPELINE_BIND_POINT_GRAPHICS, pipeline.backend.pipeline);
     backend.layout = pipeline.backend.layout;
   }
 
   // Bind 'group' as the pipeline's bind group 'index'
-  pub fn setBindGroup(self &mut, index u32, group &BindGroup) {
+  pub fn setBindGroup(self: &mut, index: u32, group: &BindGroup) {
     if isNull(backend.cmd) { return; }
     if backend.layout.h == 0u64 {
       fail("setBindGroup before setPipeline");
@@ -449,7 +449,7 @@ pub struct RenderPass {
   }
 
   // Read vertex buffer 'slot' of the pipeline from 'buffer', from 'offset'
-  pub fn setVertexBuffer(self &mut, slot u32, buffer &Buffer, offset u64) {
+  pub fn setVertexBuffer(self: &mut, slot: u32, buffer: &Buffer, offset: u64) {
     if isNull(backend.cmd) { return; }
     var b = buffer.backend.buffer;
     var o = offset;
@@ -458,7 +458,7 @@ pub struct RenderPass {
 
   // Read indices ('format': INDEX_FORMAT_UINT16 or _UINT32) from 'buffer',
   // from 'offset'
-  pub fn setIndexBuffer(self &mut, buffer &Buffer, format u32, offset u64) {
+  pub fn setIndexBuffer(self: &mut, buffer: &Buffer, format: u32, offset: u64) {
     if isNull(backend.cmd) { return; }
     var type = vulkan.INDEX_TYPE_UINT32;
     if format == INDEX_FORMAT_UINT16 { type = vulkan.INDEX_TYPE_UINT16; }
@@ -467,7 +467,7 @@ pub struct RenderPass {
 
   // Set 'size' bytes of the immediates, from 'offset' (both multiples of
   // 4), to the bytes at 'data', for the draws after
-  pub fn setImmediates(self &mut, offset u32, data *u8, size u32) {
+  pub fn setImmediates(self: &mut, offset: u32, data: *u8, size: u32) {
     if isNull(backend.cmd) { return; }
     if backend.layout.h == 0u64 {
       fail("setImmediates before setPipeline");
@@ -479,28 +479,28 @@ pub struct RenderPass {
   // Draw into the rectangle from ('x', 'y'), 'width' by 'height' pixels, of
   // the attachments ('y' down from their top), with depths from 'minDepth'
   // to 'maxDepth'
-  pub fn setViewport(self &mut, x f32, y f32, width f32, height f32, minDepth f32, maxDepth f32) {
+  pub fn setViewport(self: &mut, x: f32, y: f32, width: f32, height: f32, minDepth: f32, maxDepth: f32) {
     if isNull(backend.cmd) { return; }
     setViewportFlipped(&backend.fns, backend.cmd, x, y, width, height, minDepth, maxDepth);
   }
 
   // Draw nothing outside the rectangle from ('x', 'y'), 'width' by 'height'
   // pixels ('y' down from the top)
-  pub fn setScissorRect(self &mut, x u32, y u32, width u32, height u32) {
+  pub fn setScissorRect(self: &mut, x: u32, y: u32, width: u32, height: u32) {
     if isNull(backend.cmd) { return; }
     let r = new vulkan.Rect2D(new vulkan.Offset2D(i32.from(x), i32.from(y)), new vulkan.Extent2D(width, height));
     backend.fns.cmdSetScissor(backend.cmd, 0u32, 1u32, &r as *vulkan.Rect2D);
   }
 
   // Draw 'vertexCount' vertices from 'firstVertex', 'instanceCount' times
-  pub fn draw(self &mut, vertexCount u32, instanceCount u32, firstVertex u32, firstInstance u32) {
+  pub fn draw(self: &mut, vertexCount: u32, instanceCount: u32, firstVertex: u32, firstInstance: u32) {
     if isNull(backend.cmd) { return; }
     backend.fns.cmdDraw(backend.cmd, vertexCount, instanceCount, firstVertex, firstInstance);
   }
 
   // Draw 'indexCount' indices from 'firstIndex', each 'baseVertex' added to,
   // 'instanceCount' times
-  pub fn drawIndexed(self &mut, indexCount u32, instanceCount u32, firstIndex u32, baseVertex i32, firstInstance u32) {
+  pub fn drawIndexed(self: &mut, indexCount: u32, instanceCount: u32, firstIndex: u32, baseVertex: i32, firstInstance: u32) {
     if isNull(backend.cmd) { return; }
     backend.fns.cmdDrawIndexed(backend.cmd, indexCount, instanceCount, firstIndex, baseVertex, firstInstance);
   }
@@ -509,7 +509,7 @@ pub struct RenderPass {
   // firstVertex, firstInstance: u32s) read by the GPU from 'buffer' at
   // 'offset' (a multiple of 4): a buffer made with BUFFER_USAGE_INDIRECT,
   // written by a compute pass before this pass, say
-  pub fn drawIndirect(self &mut, buffer &Buffer, offset u64) {
+  pub fn drawIndirect(self: &mut, buffer: &Buffer, offset: u64) {
     if isNull(backend.cmd) { return; }
     if (buffer.usage & BUFFER_USAGE_INDIRECT) == 0u32 || (offset & 3u64) != 0u64 || offset + 16u64 > buffer.size {
       fail("drawIndirect: the buffer has no BUFFER_USAGE_INDIRECT, or the offset is not a multiple of 4 or leaves no room");
@@ -521,7 +521,7 @@ pub struct RenderPass {
   // Draw as 'drawIndexed' does, its five arguments (indexCount,
   // instanceCount, firstIndex, baseVertex an i32, firstInstance) read by the
   // GPU from 'buffer' at 'offset', as 'drawIndirect' reads its four
-  pub fn drawIndexedIndirect(self &mut, buffer &Buffer, offset u64) {
+  pub fn drawIndexedIndirect(self: &mut, buffer: &Buffer, offset: u64) {
     if isNull(backend.cmd) { return; }
     if (buffer.usage & BUFFER_USAGE_INDIRECT) == 0u32 || (offset & 3u64) != 0u64 || offset + 20u64 > buffer.size {
       fail("drawIndexedIndirect: the buffer has no BUFFER_USAGE_INDIRECT, or the offset is not a multiple of 4 or leaves no room");
@@ -533,7 +533,7 @@ pub struct RenderPass {
   // The end of the pass; a swapchain texture goes back to the layout kept
   // between commands, and so does one sampled by later passes, what the pass
   // wrote visible to the shaders that sample it
-  pub fn end(self &mut) {
+  pub fn end(self: &mut) {
     if !backend.open { return; }
     backend.open = false;
     backend.fns.cmdEndRendering(backend.cmd);
@@ -567,10 +567,10 @@ pub struct RenderPass {
 }
 
 struct CommandBufferBackend {
-  cmd vulkan.CommandBuffer;
+  cmd: vulkan.CommandBuffer;
 }
 
 // Recorded commands, to submit once ('device.queue.submit')
 pub struct CommandBuffer {
-  backend CommandBufferBackend;
+  backend: CommandBufferBackend;
 }

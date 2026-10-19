@@ -36,76 +36,76 @@ pub const PL_RIGHT = 2u32;
 pub const OBJECT_CHAR_BYTES = 3usize;      // U+FFFC as UTF-8: EF BF BC
 
 pub struct Style {
-  pub bold bool;
-  pub italic bool;
-  pub underline bool;
-  pub size f32;                 // pixels of em; 0: the block's own size
-  pub color u32;                // 0xRRGGBBAA; 0: the document's text colour
-  pub link u32;                 // 0: none; else a link number the host gives meaning to
-  pub image u32;                // 0: none; else the image's number + 1 (an anchor character)
+  pub bold: bool;
+  pub italic: bool;
+  pub underline: bool;
+  pub size: f32;                 // pixels of em; 0: the block's own size
+  pub color: u32;                // 0xRRGGBBAA; 0: the document's text colour
+  pub link: u32;                 // 0: none; else a link number the host gives meaning to
+  pub image: u32;                // 0: none; else the image's number + 1 (an anchor character)
 
   pub fn plain() Style { new Style(false, false, false, 0.0, 0u32, 0u32, 0u32) }
 }
 
-pub fn sameStyle(a &Style, b &Style) bool {
+pub fn sameStyle(a: &Style, b: &Style) bool {
   a.bold == b.bold && a.italic == b.italic && a.underline == b.underline && a.size == b.size && a.color == b.color
     && a.link == b.link && a.image == b.image
 }
 
 pub struct Run {
-  pub len usize;                // bytes
-  pub style Style;
+  pub len: usize;                // bytes
+  pub style: Style;
 }
 
 pub struct Block {
-  pub kind u32;
-  pub depth u32;                // list nesting, 0 is the outermost
-  pub align u32;
-  pub text String;
-  pub runs List[Run];
+  pub kind: u32;
+  pub depth: u32;                // list nesting, 0 is the outermost
+  pub align: u32;
+  pub text: String;
+  pub runs: List[Run];
 
   pub fn empty() Block { new Block(BK_PARA, 0u32, AL_LEFT, String.empty(), List[Run].empty()) }
 
-  pub fn fromText(text &str, style Style) Block {
+  pub fn fromText(text: &str, style: Style) Block {
     var b = Block.empty();
     b.text = String.from(text);
     if text.len() > 0usize { b.runs.push(new Run(text.len(), style)); }
     b
   }
 
-  pub fn isList(self &) bool { kind == BK_BULLET || kind == BK_NUMBER }
-  pub fn isHeading(self &) bool { kind >= BK_H1 && kind <= BK_H3 }
+  pub fn isList(self: &) bool { kind == BK_BULLET || kind == BK_NUMBER }
+  pub fn isHeading(self: &) bool { kind >= BK_H1 && kind <= BK_H3 }
 }
 
 // An image the document refers to. 'pixels' may be empty (the host draws it from the number).
 pub struct ImageInfo {
-  pub w f32;                    // the size it is shown at, pixels
-  pub h f32;
-  pub place u32;                // PL_...
-  pub alt String;
-  pub pw u32 = 0u32;            // the pixel grid (RGBA8), if the document carries one
-  pub ph u32 = 0u32;
-  pub pixels List[u8];
+  pub w: f32;                    // the size it is shown at, pixels
+  pub h: f32;
+  pub place: u32;                // PL_...
+  pub alt: String;
+  pub pw: u32 = 0u32;            // the pixel grid (RGBA8), if the document carries one
+  pub ph: u32 = 0u32;
+  pub pixels: List[u8];
 }
 
 // A place in the document
 pub struct Pos {
-  pub block usize;
-  pub off usize;                // bytes
+  pub block: usize;
+  pub off: usize;                // bytes
 
-  pub fn le(self &, o &Pos) bool { block < o.block || (block == o.block && off <= o.off) }
-  pub fn lt(self &, o &Pos) bool { block < o.block || (block == o.block && off < o.off) }
-  pub fn same(self &, o &Pos) bool { block == o.block && off == o.off }
+  pub fn le(self: &, o: &Pos) bool { block < o.block || (block == o.block && off <= o.off) }
+  pub fn lt(self: &, o: &Pos) bool { block < o.block || (block == o.block && off < o.off) }
+  pub fn same(self: &, o: &Pos) bool { block == o.block && off == o.off }
 }
 
-pub fn pos(block usize, off usize) Pos { new Pos(block, off) }
+pub fn pos(block: usize, off: usize) Pos { new Pos(block, off) }
 
 // ---- characters ----
 
-pub fn isContByte(b u8) bool { b >= 128u8 && b < 192u8 }
+pub fn isContByte(b: u8) bool { b >= 128u8 && b < 192u8 }
 
 // The offset of the character before 'off'
-pub fn prevCharOff(t &str, off usize) usize {
+pub fn prevCharOff(t: &str, off: usize) usize {
   if off == 0usize { return 0usize; }
   var j = off - 1usize;
   while j > 0usize && isContByte(t[j]) { j = j - 1usize; }
@@ -113,7 +113,7 @@ pub fn prevCharOff(t &str, off usize) usize {
 }
 
 // The offset of the character after 'off'
-pub fn nextCharOff(t &str, off usize) usize {
+pub fn nextCharOff(t: &str, off: usize) usize {
   if off >= t.len() { return t.len(); }
   var j = off + 1usize;
   while j < t.len() && isContByte(t[j]) { j = j + 1usize; }
@@ -121,14 +121,14 @@ pub fn nextCharOff(t &str, off usize) usize {
 }
 
 // 0 space, 1 word, 2 punctuation
-fn wordClass(b u8) u32 {
+fn wordClass(b: u8) u32 {
   if b == 32u8 || b == 9u8 || b == 10u8 { return 0u32; }
   if (b >= 48u8 && b <= 57u8) || (b >= 65u8 && b <= 90u8) || (b >= 97u8 && b <= 122u8) || b == 95u8 || b >= 128u8 { return 1u32; }
   2u32
 }
 
 // Where ctrl+left goes: back over spaces, then over one class of characters
-pub fn prevWordOff(t &str, off usize) usize {
+pub fn prevWordOff(t: &str, off: usize) usize {
   var j = off;
   while j > 0usize && wordClass(t[j - 1usize]) == 0u32 { j = j - 1usize; }
   if j == 0usize { return 0usize; }
@@ -138,7 +138,7 @@ pub fn prevWordOff(t &str, off usize) usize {
 }
 
 // Where ctrl+right goes: over one class of characters, then over spaces
-pub fn nextWordOff(t &str, off usize) usize {
+pub fn nextWordOff(t: &str, off: usize) usize {
   var j = off;
   if j >= t.len() { return t.len(); }
   let c = wordClass(t[j]);
@@ -151,7 +151,7 @@ pub fn nextWordOff(t &str, off usize) usize {
 
 // ---- copies (a List and a String have no copy of their own) ----
 
-pub fn cloneBlock(b &Block) Block {
+pub fn cloneBlock(b: &Block) Block {
   var runs = List[Run].withCapacity(b.runs.len());
   var i = 0usize;
   while i < b.runs.len() {
@@ -161,7 +161,7 @@ pub fn cloneBlock(b &Block) Block {
   new Block(b.kind, b.depth, b.align, String.from(b.text.view()), runs)
 }
 
-pub fn cloneBlocks(blocks &List[Block], first usize, count usize) List[Block] {
+pub fn cloneBlocks(blocks: &List[Block], first: usize, count: usize) List[Block] {
   var out = List[Block].withCapacity(count);
   var i = 0usize;
   while i < count {
@@ -174,7 +174,7 @@ pub fn cloneBlocks(blocks &List[Block], first usize, count usize) List[Block] {
 // ---- runs ----
 
 // Merge neighbours of the same style, drop empty runs
-pub fn normalizeRuns(b &mut Block) {
+pub fn normalizeRuns(b: &mut Block) {
   var out = List[Run].withCapacity(b.runs.len());
   var i = 0usize;
   while i < b.runs.len() {
@@ -194,7 +194,7 @@ pub fn normalizeRuns(b &mut Block) {
 
 // Make a run boundary at byte 'off' (so a style can change from there), returning the index of the
 // run that starts at 'off' (runs.len() when 'off' is the end)
-pub fn splitRunAt(b &mut Block, off usize) usize {
+pub fn splitRunAt(b: &mut Block, off: usize) usize {
   var at = 0usize;
   var i = 0usize;
   while i < b.runs.len() {
@@ -225,7 +225,7 @@ pub fn splitRunAt(b &mut Block, off usize) usize {
 }
 
 // The style a character typed at 'off' takes: that of the character before it (the first run's at the start)
-pub fn styleAt(b &Block, off usize) Style {
+pub fn styleAt(b: &Block, off: usize) Style {
   if b.runs.len() == 0usize { return Style.plain(); }
   var at = 0usize;
   var i = 0usize;
@@ -245,7 +245,7 @@ pub fn styleAt(b &Block, off usize) Style {
 }
 
 // Insert text at 'off' with 'style'
-pub fn insertInBlock(b &mut Block, off usize, text &str, style Style) {
+pub fn insertInBlock(b: &mut Block, off: usize, text: &str, style: Style) {
   if text.len() == 0usize { return; }
   b.text.insert(off, text);
   let i = splitRunAt(b, off);
@@ -266,7 +266,7 @@ pub fn insertInBlock(b &mut Block, off usize, text &str, style Style) {
 }
 
 // Remove bytes lo..hi
-pub fn deleteInBlock(b &mut Block, lo usize, hi usize) {
+pub fn deleteInBlock(b: &mut Block, lo: usize, hi: usize) {
   if hi <= lo { return; }
   let a = splitRunAt(b, lo);
   let z = splitRunAt(b, hi);
@@ -282,7 +282,7 @@ pub fn deleteInBlock(b &mut Block, lo usize, hi usize) {
 }
 
 // The part of the block from 'off' on, as a new block of the same kind; the block keeps the front
-pub fn splitBlockAt(b &mut Block, off usize) Block {
+pub fn splitBlockAt(b: &mut Block, off: usize) Block {
   let a = splitRunAt(b, off);
   var tail = Block.empty();
   tail.kind = b.kind;
@@ -301,7 +301,7 @@ pub fn splitBlockAt(b &mut Block, off usize) Block {
 }
 
 // Put the block 'other' after this block's text
-pub fn appendBlock(b &mut Block, other &Block) {
+pub fn appendBlock(b: &mut Block, other: &Block) {
   let t = String.from(other.text.view());
   b.text.append(t.view());
   var k = 0usize;
@@ -322,13 +322,13 @@ pub const OP_COLOR = 5u32;
 pub const OP_LINK = 6u32;
 
 pub struct StyleOp {
-  pub kind u32;
-  pub on bool;                  // for bold, italic, underline
-  pub num f32;                  // for size
-  pub val u32;                  // for colour and link
+  pub kind: u32;
+  pub on: bool;                  // for bold, italic, underline
+  pub num: f32;                  // for size
+  pub val: u32;                  // for colour and link
 }
 
-pub fn applyOp(s &mut Style, op &StyleOp) {
+pub fn applyOp(s: &mut Style, op: &StyleOp) {
   if op.kind == OP_BOLD { s.bold = op.on; }
   elif op.kind == OP_ITALIC { s.italic = op.on; }
   elif op.kind == OP_UNDERLINE { s.underline = op.on; }
@@ -337,7 +337,7 @@ pub fn applyOp(s &mut Style, op &StyleOp) {
   elif op.kind == OP_LINK { s.link = op.val; }
 }
 
-pub fn hasOp(s &Style, op &StyleOp) bool {
+pub fn hasOp(s: &Style, op: &StyleOp) bool {
   if op.kind == OP_BOLD { return s.bold == op.on; }
   if op.kind == OP_ITALIC { return s.italic == op.on; }
   if op.kind == OP_UNDERLINE { return s.underline == op.on; }
@@ -347,7 +347,7 @@ pub fn hasOp(s &Style, op &StyleOp) bool {
 }
 
 // Apply 'op' to the bytes lo..hi of the block
-pub fn styleRange(b &mut Block, lo usize, hi usize, op &StyleOp) {
+pub fn styleRange(b: &mut Block, lo: usize, hi: usize, op: &StyleOp) {
   if hi <= lo { return; }
   let a = splitRunAt(b, lo);
   let z = splitRunAt(b, hi);
@@ -360,7 +360,7 @@ pub fn styleRange(b &mut Block, lo usize, hi usize, op &StyleOp) {
 }
 
 // Whether every character lo..hi already has what 'op' sets (anchor characters are skipped)
-pub fn rangeHas(b &Block, lo usize, hi usize, op &StyleOp) bool {
+pub fn rangeHas(b: &Block, lo: usize, hi: usize, op: &StyleOp) bool {
   var at = 0usize;
   var any = false;
   var i = 0usize;
@@ -377,7 +377,7 @@ pub fn rangeHas(b &Block, lo usize, hi usize, op &StyleOp) bool {
 }
 
 // The style of the run holding byte 'off' (the anchor's own style for an image character)
-pub fn runStyleAt(b &Block, off usize) Style {
+pub fn runStyleAt(b: &Block, off: usize) Style {
   var at = 0usize;
   var i = 0usize;
   while i < b.runs.len() {
@@ -390,7 +390,7 @@ pub fn runStyleAt(b &Block, off usize) Style {
 }
 
 // The text of the document, blocks joined by line breaks (anchor characters left out)
-pub fn plainText(blocks &List[Block]) String {
+pub fn plainText(blocks: &List[Block]) String {
   var s = String.empty();
   var i = 0usize;
   while i < blocks.len() {

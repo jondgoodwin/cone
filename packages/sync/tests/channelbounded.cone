@@ -18,43 +18,43 @@ import sync use *;
 import time use Duration, Instant;
 
 // A value whose deaths are counted
-var @threadlocal deaths u64 = 0u64;
+var @threadlocal deaths: u64 = 0u64;
 
 struct Counted {
-  pub n u64;
-  fn final(self &uni) {
+  pub n: u64;
+  fn final(self: &uni) {
     deaths = deaths + 1u64;
   }
 }
 
 // The value an Option holds, or 0 for None: what recv answered, or what a
 // send handed back (0 when it was sent)
-fn got(o Option[u64]) u64 {
+fn got(o: Option[u64]) u64 {
   match o {
     case let s Some {s}
     case is None[u64] {0u64}
   }
 }
 
-fn gotCounted(o Option[Counted]) u64 {
+fn gotCounted(o: Option[Counted]) u64 {
   match o {
     case let s Some {s.n}
     case is None[Counted] {0u64}
   }
 }
 
-fn gotOwned(o Option[Uni[Counted]]) u64 {
+fn gotOwned(o: Option[Uni[Counted]]) u64 {
   match o {
     case let s Some {s.n}
     case is None[Uni[Counted]] {0u64}
   }
 }
 
-fn dropSender(tx Sender[u64]) {}
-fn dropReceiver(rx Receiver[Counted]) {}
+fn dropSender(tx: Sender[u64]) {}
+fn dropReceiver(rx: Receiver[Counted]) {}
 
 // How many of 1, 2, 3, ... trySend puts in before one is handed back
-fn fill(tx &Sender[u64]) u64 {
+fn fill(tx: &Sender[u64]) u64 {
   var n = 0u64;
   while got(tx.trySend(n + 1u64)) == 0u64 {
     n = n + 1u64;
@@ -63,8 +63,8 @@ fn fill(tx &Sender[u64]) u64 {
 }
 
 fn capacity() {
-  var tx Sender[u64];
-  var rx Receiver[u64];
+  var tx: Sender[u64];
+  var rx: Receiver[u64];
   tx, rx = Channel[u64].bounded(5u64);
   expectUInt(fill(&tx), 8u64, "5 is rounded up to 8");
   expectUInt(got(tx.trySend(9u64)), 9u64, "trySend on a full channel hands its value back");
@@ -81,20 +81,20 @@ fn capacity() {
   expectUInt(sum, 45u64, "the rest, 2 to 8 and 10");
   expectUInt(got(rx.tryRecv()), 0u64, "and then it is empty");
 
-  var tx0 Sender[u64];
-  var rx0 Receiver[u64];
+  var tx0: Sender[u64];
+  var rx0: Receiver[u64];
   tx0, rx0 = Channel[u64].bounded(0u64);
   expectUInt(fill(&tx0), 1u64, "0 is taken as 1");
-  var tx1 Sender[u64];
-  var rx1 Receiver[u64];
+  var tx1: Sender[u64];
+  var rx1: Receiver[u64];
   tx1, rx1 = Channel[u64].bounded(1u64);
   expectUInt(fill(&tx1), 1u64, "1 holds 1");
-  var tx8 Sender[u64];
-  var rx8 Receiver[u64];
+  var tx8: Sender[u64];
+  var rx8: Receiver[u64];
   tx8, rx8 = Channel[u64].bounded(8u64);
   expectUInt(fill(&tx8), 8u64, "8, a power of two, holds 8");
-  var txk Sender[u64];
-  var rxk Receiver[u64];
+  var txk: Sender[u64];
+  var rxk: Receiver[u64];
   txk, rxk = Channel[u64].bounded(1000u64);
   expectUInt(fill(&txk), 1024u64, "1000 is rounded up to 1024");
 }
@@ -103,8 +103,8 @@ fn capacity() {
 // received before the next: 250 values, the ring's end passed 62 times, at
 // each point of it. Each value is checked against the next number expected.
 fn order() {
-  var tx Sender[u64];
-  var rx Receiver[u64];
+  var tx: Sender[u64];
+  var rx: Receiver[u64];
   tx, rx = Channel[u64].bounded(4u64);
   var next = 1u64;
   var want = 1u64;
@@ -143,8 +143,8 @@ fn order() {
 }
 
 fn timeouts() {
-  var tx Sender[u64];
-  var rx Receiver[u64];
+  var tx: Sender[u64];
+  var rx: Receiver[u64];
   tx, rx = Channel[u64].bounded(2u64);
   tx <- (1u64, 2u64);
   let start = Instant.now();
@@ -163,8 +163,8 @@ fn timeouts() {
 }
 
 fn closing() {
-  var tx Sender[u64];
-  var rx Receiver[u64];
+  var tx: Sender[u64];
+  var rx: Receiver[u64];
   tx, rx = Channel[u64].bounded(2u64);
   tx <- (7u64, 8u64);
   rx.close();
@@ -178,8 +178,8 @@ fn closing() {
   expectUInt(got(rx.recv()), 0u64, "then recv answers None, without waiting");
 
   // The last sender's going closes it; a clone is a second sender
-  var tx1 Sender[u64];
-  var rx1 Receiver[u64];
+  var tx1: Sender[u64];
+  var rx1: Receiver[u64];
   tx1, rx1 = Channel[u64].bounded(4u64);
   let tx2 = tx1.clone();
   tx1 <- 13u64;
@@ -199,8 +199,8 @@ fn closing() {
 fn finalizing() {
   deaths = 0u64;
   {
-    var tx Sender[Counted];
-    var rx Receiver[Counted];
+    var tx: Sender[Counted];
+    var rx: Receiver[Counted];
     tx, rx = Channel[Counted].bounded(64u64);
     var i = 1u64;
     while i <= 50u64 {
@@ -226,8 +226,8 @@ fn finalizing() {
   // Full when the receiver goes: a trySend refused as full, then 4 finalized
   deaths = 0u64;
   {
-    var tx Sender[Counted];
-    var rx Receiver[Counted];
+    var tx: Sender[Counted];
+    var rx: Receiver[Counted];
     tx, rx = Channel[Counted].bounded(4u64);
     var i = 1u64;
     while i <= 4u64 {
@@ -242,8 +242,8 @@ fn finalizing() {
 
   deaths = 0u64;
   {
-    var tx Sender[Uni[Counted]];
-    var rx Receiver[Uni[Counted]];
+    var tx: Sender[Uni[Counted]];
+    var rx: Receiver[Uni[Counted]];
     tx, rx = Channel[Uni[Counted]].bounded(16u64);
     var i = 1u64;
     while i <= 12u64 {

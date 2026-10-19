@@ -47,9 +47,9 @@ import input use *;
 import sdl;
 
 // How far from level a camera may look, short of a quarter turn
-pub const MAX_PITCH f32 = 1.55;
+pub const MAX_PITCH: f32 = 1.55;
 
-fn clampPitch(p f32) f32 {
+fn clampPitch(p: f32) f32 {
   if p > MAX_PITCH { return MAX_PITCH; }
   if p < -MAX_PITCH { return -MAX_PITCH; }
   p
@@ -59,12 +59,12 @@ fn clampPitch(p f32) f32 {
 
 // Where a camera is, and which way it faces (its own -z forward, +y up)
 pub struct Pose {
-  pub origin Vec3;
-  pub orientation Quat;
+  pub origin: Vec3;
+  pub orientation: Quat;
 
   // At 'origin', turned 'yaw' about +y and then tilted 'pitch' about its own
   // +x: looking up by 'pitch', with no roll
-  pub fn look(origin Vec3, yaw f32, pitch f32) Pose {
+  pub fn look(origin: Vec3, yaw: f32, pitch: f32) Pose {
     new Pose(origin, Quat.angleAxis(yaw, new Vec3(0., 1., 0.)) * Quat.angleAxis(pitch, new Vec3(1., 0., 0.)))
   }
 
@@ -88,7 +88,7 @@ pub struct Pose {
 }
 
 // The two poses are the same, exactly
-fn samePose(a Pose, b Pose) bool {
+fn samePose(a: Pose, b: Pose) bool {
   a.origin.x == b.origin.x && a.origin.y == b.origin.y && a.origin.z == b.origin.z
     && a.orientation.x == b.orientation.x && a.orientation.y == b.orientation.y
     && a.orientation.z == b.orientation.z && a.orientation.w == b.orientation.w
@@ -97,26 +97,26 @@ fn samePose(a Pose, b Pose) bool {
 // ---- Orbit ----
 
 pub struct Orbit {
-  pub target Vec3;          // what it goes round
-  pub distance f32;         // how far its eye is from the target
-  pub yaw f32;              // radians: 0 has the eye on the target's +z side
-  pub pitch f32;            // radians: the eye's height above the target's horizon
-  pub turnRate f32;         // radians a window unit of the turn action
-  pub zoomRate f32;         // the share of the distance a notch of zoom takes off
-  pub panRate f32;          // the target's movement, a window unit of pan, per unit of distance
-  pub minDistance f32;
-  pub maxDistance f32;
+  pub target: Vec3;          // what it goes round
+  pub distance: f32;         // how far its eye is from the target
+  pub yaw: f32;              // radians: 0 has the eye on the target's +z side
+  pub pitch: f32;            // radians: the eye's height above the target's horizon
+  pub turnRate: f32;         // radians a window unit of the turn action
+  pub zoomRate: f32;         // the share of the distance a notch of zoom takes off
+  pub panRate: f32;          // the target's movement, a window unit of pan, per unit of distance
+  pub minDistance: f32;
+  pub maxDistance: f32;
 
   // Round 'target', 'distance' away, at 'yaw' and 'pitch'; turning 0.005
   // radians a window unit, 10 % nearer a notch, panning 0.0015 of the
   // distance a unit (the program may fit that to the view: 'fitPan'),
   // from 0.25 to 500 away
-  pub fn make(target Vec3, distance f32, yaw f32, pitch f32) Orbit {
+  pub fn make(target: Vec3, distance: f32, yaw: f32, pitch: f32) Orbit {
     new Orbit(target, distance, yaw, clampPitch(pitch), 0.005, 0.1, 0.0015, 0.25, 500.)
   }
 
   // With its eye at 'eye', looking at 'target'
-  pub fn fromEye(eye Vec3, target Vec3) Orbit {
+  pub fn fromEye(eye: Vec3, target: Vec3) Orbit {
     let offset = eye - target;
     let d = offset.length();
     assertDebug(d > 0.);
@@ -125,13 +125,13 @@ pub struct Orbit {
 
   // Pan so that a point at the target's depth follows the pointer: a view
   // of vertical field 'fov' (radians), 'height' window units high
-  pub fn fitPan(self &mut, fov f32, height f32) {
+  pub fn fitPan(self: &mut, fov: f32, height: f32) {
     if height > 0. { panRate = 2. * tan(fov * 0.5) / height; }
   }
 
   // Put it at 'yaw', 'pitch' and 'distance' round 'target' (a view chosen
   // by the program)
-  pub fn frame(self &mut, target Vec3, distance f32, yaw f32, pitch f32) {
+  pub fn frame(self: &mut, target: Vec3, distance: f32, yaw: f32, pitch: f32) {
     self.target = target;
     self.distance = distance;
     self.yaw = yaw;
@@ -140,13 +140,13 @@ pub struct Orbit {
 
   // Turn by a drag of ('dx', 'dy') window units: right takes the eye left
   // round the target (the target turns with the pointer), down takes it up
-  pub fn turn(self &mut, dx f32, dy f32) {
+  pub fn turn(self: &mut, dx: f32, dy: f32) {
     yaw = yaw - dx * turnRate;
     pitch = clampPitch(pitch + dy * turnRate);
   }
 
   // Nearer by 'notches' (a notch away from the user is one)
-  pub fn zoom(self &mut, notches f32) {
+  pub fn zoom(self: &mut, notches: f32) {
     distance = distance * libc.powf(1. - zoomRate, notches);
     if distance < minDistance { distance = minDistance; }
     if distance > maxDistance { distance = maxDistance; }
@@ -154,43 +154,43 @@ pub struct Orbit {
 
   // Move the target by a drag of ('dx', 'dy') window units: the scene
   // follows the pointer
-  pub fn pan(self &mut, dx f32, dy f32) {
+  pub fn pan(self: &mut, dx: f32, dy: f32) {
     let p = self.pose();
     let scale = panRate * distance;
     target = target + p.right() * (-dx * scale) + p.up() * (dy * scale);
   }
 
   // Where its eye is
-  pub fn eye(self &) Vec3 {
+  pub fn eye(self: &) Vec3 {
     let c = cos(pitch);
     target + new Vec3(sin(yaw) * c, sin(pitch), cos(yaw) * c) * distance
   }
 
   // Its pose: at its eye, facing the target
-  pub fn pose(self &) Pose { Pose.look(self.eye(), yaw, -pitch) }
+  pub fn pose(self: &) Pose { Pose.look(self.eye(), yaw, -pitch) }
 
   // Its view matrix: lookAt from its eye to its target, y up
-  pub fn viewMatrix(self &) Mat4 { Mat4.lookAt(self.eye(), target, new Vec3(0., 1., 0.)) }
+  pub fn viewMatrix(self: &) Mat4 { Mat4.lookAt(self.eye(), target, new Vec3(0., 1., 0.)) }
 }
 
 // ---- Fly ----
 
 pub struct Fly {
-  pub position Vec3;
-  pub yaw f32;              // radians: 0 looks down -z
-  pub pitch f32;            // radians: how far it looks up
-  pub speed f32;            // units a second
-  pub lookRate f32;         // radians a window unit of look
+  pub position: Vec3;
+  pub yaw: f32;              // radians: 0 looks down -z
+  pub pitch: f32;            // radians: how far it looks up
+  pub speed: f32;            // units a second
+  pub lookRate: f32;         // radians a window unit of look
 
   // At 'position', looking 'yaw' round and 'pitch' up; 4 units a second,
   // looking 0.0025 radians a window unit
-  pub fn make(position Vec3, yaw f32, pitch f32) Fly {
+  pub fn make(position: Vec3, yaw: f32, pitch: f32) Fly {
     new Fly(position, yaw, clampPitch(pitch), 4., 0.0025)
   }
 
   // Look by a mouse movement of ('dx', 'dy') window units: right turns
   // right, down looks down
-  pub fn look(self &mut, dx f32, dy f32) {
+  pub fn look(self: &mut, dx: f32, dy: f32) {
     yaw = yaw - dx * lookRate;
     pitch = clampPitch(pitch - dy * lookRate);
   }
@@ -198,7 +198,7 @@ pub struct Fly {
   // Move for 'dt' seconds: 'strafe' right, 'ahead' forward (along the
   // view, up or down as it looks), 'rise' up (along +y), each from -1 to
   // 1; a diagonal no faster than straight
-  pub fn move(self &mut, strafe f32, ahead f32, rise f32, dt f32) {
+  pub fn move(self: &mut, strafe: f32, ahead: f32, rise: f32, dt: f32) {
     let p = self.pose();
     var dir = p.right() * strafe + p.forward() * ahead + new Vec3(0., rise, 0.);
     let len = dir.length();
@@ -206,10 +206,10 @@ pub struct Fly {
     position = position + dir * (speed * dt);
   }
 
-  pub fn pose(self &) Pose { Pose.look(position, yaw, pitch) }
+  pub fn pose(self: &) Pose { Pose.look(position, yaw, pitch) }
 
   // Its view matrix: lookAt from its position along its view, y up
-  pub fn viewMatrix(self &) Mat4 {
+  pub fn viewMatrix(self: &) Mat4 {
     let p = self.pose();
     Mat4.lookAt(position, position + p.forward(), new Vec3(0., 1., 0.))
   }
@@ -223,18 +223,18 @@ pub const FLY = 1;
 
 // The actions the cameras read
 pub struct CameraActions {
-  pub turn Action;      // orbit: two axes, window units
-  pub pan Action;       // orbit: two axes, window units
-  pub zoom Action;      // orbit: one axis, notches
-  pub move Action;      // fly: two axes, (right, forward), each -1 to 1
-  pub rise Action;      // fly: one axis, -1 to 1
-  pub look Action;      // fly: two axes, window units
-  pub toggle Action;    // a button: orbit to fly and back
+  pub turn: Action;      // orbit: two axes, window units
+  pub pan: Action;       // orbit: two axes, window units
+  pub zoom: Action;      // orbit: one axis, notches
+  pub move: Action;      // fly: two axes, (right, forward), each -1 to 1
+  pub rise: Action;      // fly: one axis, -1 to 1
+  pub look: Action;      // fly: two axes, window units
+  pub toggle: Action;    // a button: orbit to fly and back
 
   // Make them in 'ctx', with the standard bindings: turn a left drag, pan a
   // right or middle drag, zoom the wheel; move W, A, S, D, rise Space and
   // sink left Ctrl, look the mouse; toggle C. Keys by scancode.
-  pub fn bind(ctx &mut Context) CameraActions {
+  pub fn bind(ctx: &mut Context) CameraActions {
     let turn = ctx.action("camera.turn", AXIS2);
     ctx.bind(turn, Binding.pointerDelta(1.).whileHeld(sdl.BUTTON_MASK_LEFT));
     let pan = ctx.action("camera.pan", AXIS2);
@@ -260,14 +260,14 @@ pub struct CameraActions {
 
 // An orbit camera and a fly camera, one of them in use
 pub struct CameraControls {
-  pub mode i32;             // ORBIT or FLY
-  pub orbit Orbit;
-  pub fly Fly;
-  pub actions CameraActions;
+  pub mode: i32;             // ORBIT or FLY
+  pub orbit: Orbit;
+  pub fly: Fly;
+  pub actions: CameraActions;
 
   // Orbiting as 'orbit' is, its actions made by 'CameraActions.bind' in
   // 'ctx', the fly camera's switched off there
-  pub fn make(actions CameraActions, orbit Orbit, ctx &mut Context) CameraControls {
+  pub fn make(actions: CameraActions, orbit: Orbit, ctx: &mut Context) CameraControls {
     let p = orbit.eye();
     var c = new CameraControls(ORBIT, orbit, Fly.make(p, orbit.yaw, -orbit.pitch), actions);
     c.enableFor(ctx);
@@ -275,7 +275,7 @@ pub struct CameraControls {
   }
 
   // Switch its actions in 'ctx' on for its mode, and off for the other's
-  fn enableFor(self &mut, ctx &mut Context) {
+  fn enableFor(self: &mut, ctx: &mut Context) {
     let o = mode == ORBIT;
     ctx.setEnabled(actions.turn, o);
     ctx.setEnabled(actions.pan, o);
@@ -289,7 +289,7 @@ pub struct CameraControls {
   // Change to 'to' (ORBIT or FLY), keeping the view: flying from where the
   // orbit's eye was, facing as it faced; or orbiting, at the orbit's last
   // distance, a target that far ahead of where the fly camera was
-  pub fn setMode(self &mut, to i32, ctx &mut Context) {
+  pub fn setMode(self: &mut, to: i32, ctx: &mut Context) {
     assertDebug(to == ORBIT || to == FLY);
     if to == mode { return; }
     if to == FLY {
@@ -308,11 +308,11 @@ pub struct CameraControls {
 
   // Whether the mouse should be in relative mode (the program asks SDL:
   // sdl.SetWindowRelativeMouseMode): while flying
-  pub fn wantsRelativeMouse(self &) bool { mode == FLY }
+  pub fn wantsRelativeMouse(self: &) bool { mode == FLY }
 
   // Move by this frame's actions, over 'dt' seconds; call it just before
   // the view is built. Answers whether the pose changed.
-  pub fn update(self &mut, ctx &mut Context, dt f32) bool {
+  pub fn update(self: &mut, ctx: &mut Context, dt: f32) bool {
     let before = self.pose();
     if ctx.pressed(actions.toggle) {
       if mode == ORBIT { self.setMode(FLY, ctx); } else { self.setMode(ORBIT, ctx); }
@@ -335,12 +335,12 @@ pub struct CameraControls {
   }
 
   // The pose of the camera in use
-  pub fn pose(self &) Pose {
+  pub fn pose(self: &) Pose {
     if mode == ORBIT { orbit.pose() } else { fly.pose() }
   }
 
   // The view matrix of the camera in use (geomath's Mat4.lookAt)
-  pub fn viewMatrix(self &) Mat4 {
+  pub fn viewMatrix(self: &) Mat4 {
     if mode == ORBIT { orbit.viewMatrix() } else { fly.viewMatrix() }
   }
 }

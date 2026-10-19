@@ -29,12 +29,12 @@ pub const GROUP_ALL = 31u32;
 // How far inside its own surface a limb left out of a vertex's field is pulled
 const LIMB_AWAY = 0.15f;
 
-fn reachOfMask(mask u32) Vec4 {
+fn reachOfMask(mask: u32) Vec4 {
   new Vec4(if (mask & GROUP_ARM_L) != 0u32 { 1. } else { 0. }, if (mask & GROUP_ARM_R) != 0u32 { 1. } else { 0. },
     if (mask & GROUP_LEG_L) != 0u32 { 1. } else { 0. }, if (mask & GROUP_LEG_R) != 0u32 { 1. } else { 0. })
 }
 
-fn shareOf(group u32, r Vec4) f32 {
+fn shareOf(group: u32, r: Vec4) f32 {
   if group == GROUP_ARM_L { return r.x; }
   if group == GROUP_ARM_R { return r.y; }
   if group == GROUP_LEG_L { return r.z; }
@@ -46,34 +46,34 @@ const FORM_ELLIPSOID = 0u32;
 const FORM_CAPSULE = 1u32;
 
 pub struct Form {
-  pub kind u32;
-  pub group u32;
-  pub a Vec3;          // an ellipsoid's centre; a capsule's first end
-  pub b Vec3;          // a capsule's second end
-  pub radii Vec3;      // an ellipsoid's radii, in its own frame
-  pub toLocal Quat;    // an ellipsoid's frame: the turn that takes a model-space offset into it
-  pub ra f32;          // a capsule's radii at a and b
-  pub rb f32;
-  pub k f32;           // how much it swells where it blends in
+  pub kind: u32;
+  pub group: u32;
+  pub a: Vec3;          // an ellipsoid's centre; a capsule's first end
+  pub b: Vec3;          // a capsule's second end
+  pub radii: Vec3;      // an ellipsoid's radii, in its own frame
+  pub toLocal: Quat;    // an ellipsoid's frame: the turn that takes a model-space offset into it
+  pub ra: f32;          // a capsule's radii at a and b
+  pub rb: f32;
+  pub k: f32;           // how much it swells where it blends in
 
-  pub fn distance(self &, p Vec3) f32 {
+  pub fn distance(self: &, p: Vec3) f32 {
     if kind == FORM_ELLIPSOID { return ellipsoid(toLocal * (p - a), radii); }
     taperedCapsule(p, a, b, ra, rb)
   }
 }
 
 pub struct Forms {
-  pub forms List[Form];
+  pub forms: List[Form];
 
   pub fn empty() Forms { new Forms(List[Form].empty()) }
 
   // The field of the forms in the groups 'mask'
-  pub fn distance(self &, p Vec3, mask u32) f32 { self.distanceIn(p, reachOfMask(mask)) }
+  pub fn distance(self: &, p: Vec3, mask: u32) f32 { self.distanceIn(p, reachOfMask(mask)) }
 
   // The field with each limb's forms in by a share (x the left arm, y the right, z the left leg, w the
   // right): a limb half in is pulled half of LIMB_AWAY inside its surface, so a vertex's field changes
   // smoothly as its weights do (a hard switch between fields would leave a step where it switches)
-  pub fn distanceIn(self &, p Vec3, reach Vec4) f32 {
+  pub fn distanceIn(self: &, p: Vec3, reach: Vec4) f32 {
     var d = 1000.f;
     var first = true;
     var i = 0usize;
@@ -91,9 +91,9 @@ pub struct Forms {
   }
 
   // Its gradient, by central differences
-  pub fn gradient(self &, p Vec3, mask u32) Vec3 { self.gradientIn(p, reachOfMask(mask)) }
+  pub fn gradient(self: &, p: Vec3, mask: u32) Vec3 { self.gradientIn(p, reachOfMask(mask)) }
 
-  pub fn gradientIn(self &, p Vec3, reach Vec4) Vec3 {
+  pub fn gradientIn(self: &, p: Vec3, reach: Vec4) Vec3 {
     let e = 0.0005f;
     let dx = self.distanceIn(p + new Vec3(e, 0., 0.), reach) - self.distanceIn(p - new Vec3(e, 0., 0.), reach);
     let dy = self.distanceIn(p + new Vec3(0., e, 0.), reach) - self.distanceIn(p - new Vec3(0., e, 0.), reach);
@@ -101,13 +101,13 @@ pub struct Forms {
     new Vec3(dx, dy, dz) * (1. / (2. * e))
   }
 
-  fn ell(self &mut, group u32, c Vec3, radii Vec3, axis Vec3, k f32) {
+  fn ell(self: &mut, group: u32, c: Vec3, radii: Vec3, axis: Vec3, k: f32) {
     // the ellipsoid's y along 'axis'
     let q = Quat.fromVectors(new Vec3(0., 1., 0.), axis.normalize());
     forms.push(new Form(FORM_ELLIPSOID, group, c, c, radii, q.conjugate(), 0., 0., k));
   }
 
-  fn cap(self &mut, group u32, a Vec3, b Vec3, ra f32, rb f32, k f32) {
+  fn cap(self: &mut, group: u32, a: Vec3, b: Vec3, ra: f32, rb: f32, k: f32) {
     forms.push(new Form(FORM_CAPSULE, group, a, b, new Vec3(0., 0., 0.), Quat.identity(), ra, rb, k));
   }
 }
@@ -122,7 +122,7 @@ pub fn unitGains() List[f32] {
 fn tau() f32 { 6.2831853 }
 
 // The forms of a body of measures 'm' standing in the rest pose 'models' of its skeleton, with the gains 'g'
-pub fn bodyForms(m &Measures, models &List[Transform3], g &List[f32]) Forms {
+pub fn bodyForms(m: &Measures, models: &List[Transform3], g: &List[f32]) Forms {
   let h = m.height;
   let hs = h / 1.75;                     // lengths that go with the body's size
   let fem = if m.sex == FEMALE { 1.f } else { 0. };
@@ -286,15 +286,15 @@ pub fn bodyForms(m &Measures, models &List[Transform3], g &List[f32]) Forms {
 // The field of some groups of forms as an sdf Shape (a distance method), for meshing it to look at (the
 // stages' pictures): the body is never made from this mesh
 pub struct FormField {
-  pub forms Forms;
-  pub mask u32;
+  pub forms: Forms;
+  pub mask: u32;
 
-  pub fn distance(self &, p Vec3) f32 { forms.distance(p, mask) }
+  pub fn distance(self: &, p: Vec3) f32 { forms.distance(p, mask) }
 }
 
 // Each form on its own, as a mesh (an ellipsoid a scaled sphere, a capsule two spheres and a lofted side),
 // unblended: what an artist blocks in before blending
-pub fn formsMesh(f &Forms, mask u32) Mesh {
+pub fn formsMesh(f: &Forms, mask: u32) Mesh {
   var out = Mesh.empty();
   var i = 0usize;
   while i < f.forms.len() {

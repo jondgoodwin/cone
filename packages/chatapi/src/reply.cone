@@ -2,20 +2,20 @@
 
 // The tokens a call used, as the server counted them
 pub struct Usage {
-  pub promptTokens u64;
-  pub completionTokens u64;
-  pub totalTokens u64;
+  pub promptTokens: u64;
+  pub completionTokens: u64;
+  pub totalTokens: u64;
 }
 
 // A whole reply: the first choice of the server's answer
 pub struct ChatReply {
-  pub id String;
-  pub model String;           // the model that answered, as the server names it
-  pub created i64;            // seconds since the epoch, or 0 when the server sent none
-  pub role String;            // 'assistant'
-  pub content String;         // the text; empty when the server sent none (null)
-  pub finishReason String;    // 'stop', 'length', ...; empty when the server sent none
-  pub usage Option[Usage];
+  pub id: String;
+  pub model: String;           // the model that answered, as the server names it
+  pub created: i64;            // seconds since the epoch, or 0 when the server sent none
+  pub role: String;            // 'assistant'
+  pub content: String;         // the text; empty when the server sent none (null)
+  pub finishReason: String;    // 'stop', 'length', ...; empty when the server sent none
+  pub usage: Option[Usage];
 
   pub fn empty() ChatReply {
     new ChatReply(String.empty(), String.empty(), 0i64, String.empty(), String.empty(), String.empty(), None)
@@ -24,12 +24,12 @@ pub struct ChatReply {
 
 // One piece of a streamed reply: what one chunk of the stream added
 pub struct Delta {
-  pub id String;
-  pub model String;
-  pub role String;            // set on the first chunk ('assistant'), empty after
-  pub content String;         // the text this chunk adds; may be empty
-  pub finishReason String;    // set on the chunk that ends the reply, empty before
-  pub usage Option[Usage];    // set on the last chunk when the request asked (includeUsage)
+  pub id: String;
+  pub model: String;
+  pub role: String;            // set on the first chunk ('assistant'), empty after
+  pub content: String;         // the text this chunk adds; may be empty
+  pub finishReason: String;    // set on the chunk that ends the reply, empty before
+  pub usage: Option[Usage];    // set on the last chunk when the request asked (includeUsage)
 
   pub fn empty() Delta {
     new Delta(String.empty(), String.empty(), String.empty(), String.empty(), String.empty(), None)
@@ -38,21 +38,21 @@ pub struct Delta {
 
 // -------- reading JSON members --------
 
-fn textOr(j &json.Json, key &str) String {
+fn textOr(j: &json.Json, key: &str) String {
   match j.getText(key) {
     case let s Some {String.from(s)}
     case is None {String.empty()}
   }
 }
 
-fn countOf(j &json.Json, key &str) u64 {
+fn countOf(j: &json.Json, key: &str) u64 {
   match j.getU64(key) {
     case let n Some {n}
     case is None {0u64}
   }
 }
 
-fn usageOf(j &json.Json) Option[Usage] {
+fn usageOf(j: &json.Json) Option[Usage] {
   match j.get("usage") {
     case let u Some {
       if u.isObject() {
@@ -65,18 +65,18 @@ fn usageOf(j &json.Json) Option[Usage] {
   }
 }
 
-fn decodeError(what &str, e &json.JsonError) ChatError {
+fn decodeError(what: &str, e: &json.JsonError) ChatError {
   var d = String.from(what);
   d.append(": ");
   d.append(e.message().view());
   ChatError.make(ChatErrorKind.Decode, d.view())
 }
 
-fn shapeError(what &str) ChatError {ChatError.make(ChatErrorKind.Decode, what)}
+fn shapeError(what: &str) ChatError {ChatError.make(ChatErrorKind.Decode, what)}
 
 // An error object, as the API writes it: {"error": {"message": ..., "type": ..., "code": ...}}, or
 // {"error": "text"} as some servers do. None when the document holds no error
-fn errorObject(doc &json.Json, kind ChatErrorKind, status u16) Option[ChatError] {
+fn errorObject(doc: &json.Json, kind: ChatErrorKind, status: u16) Option[ChatError] {
   match doc.get("error") {
     case let e Some {
       var err = ChatError.make(kind, "");
@@ -117,7 +117,7 @@ fn errorObject(doc &json.Json, kind ChatErrorKind, status u16) Option[ChatError]
 
 // The error a non-2xx answer is: the API's error object if the body holds
 // one, else the status and the start of the body
-pub fn apiError(status u16, body &Array[u8]) ChatError {
+pub fn apiError(status: u16, body: &Array[u8]) ChatError {
   match json.parse(body) {
     case let doc Ok {
       match errorObject(&doc, ChatErrorKind.Api, status) {
@@ -152,14 +152,14 @@ pub fn apiError(status u16, body &Array[u8]) ChatError {
 // -------- a whole reply --------
 
 // Read the body of a 200 as the API's chat completion
-pub fn parseReply(text &Array[u8]) Result[ChatReply, ChatError] {
+pub fn parseReply(text: &Array[u8]) Result[ChatReply, ChatError] {
   match json.parse(text) {
     case let doc Ok {replyOf(&doc)}
     case let e Error {Error[ChatReply, ChatError](decodeError("the reply", &e))}
   }
 }
 
-fn replyOf(doc &json.Json) Result[ChatReply, ChatError] {
+fn replyOf(doc: &json.Json) Result[ChatReply, ChatError] {
   if !doc.isObject() {
     return Error[ChatReply, ChatError](shapeError("the reply is not a JSON object"));
   }
@@ -200,7 +200,7 @@ fn replyOf(doc &json.Json) Result[ChatReply, ChatError] {
 // The reply a response is: its body read as a chat completion if its status
 // is 2xx, the API's error if it is not. For a program that drives
 // httpclient itself with the request 'httpRequest' made
-pub fn replyOfResponse(r &httpclient.Response) Result[ChatReply, ChatError] {
+pub fn replyOfResponse(r: &httpclient.Response) Result[ChatReply, ChatError] {
   if r.outcome != httpclient.EventKind.Done {
     return Error[ChatReply, ChatError](ChatError.make(ChatErrorKind.Transport, r.failure.message().view()));
   }
@@ -211,7 +211,7 @@ pub fn replyOfResponse(r &httpclient.Response) Result[ChatReply, ChatError] {
 }
 
 // The error an actorhttp exchange that gave no response is
-pub fn transportError(e &actorhttp.FetchError) ChatError {
+pub fn transportError(e: &actorhttp.FetchError) ChatError {
   if e.isCancelled() {return ChatError.make(ChatErrorKind.Cancelled, "cancelled");}
   if e.isTimedOut() {return ChatError.make(ChatErrorKind.TimedOut, "deadline passed");}
   ChatError.make(ChatErrorKind.Transport, e.message().view())
@@ -220,21 +220,21 @@ pub fn transportError(e &actorhttp.FetchError) ChatError {
 // -------- a streamed chunk --------
 
 // Whether an event's data is the stream's last word, '[DONE]'
-pub fn isDone(data &Array[u8]) bool {
+pub fn isDone(data: &Array[u8]) bool {
   let t = data as &str;
   t.trim() == "[DONE]"
 }
 
 // The text of one chunk's 'data' (not '[DONE]'): what it adds. A chunk
 // that carries an error object is a Stream error
-pub fn parseChunk(text &Array[u8]) Result[Delta, ChatError] {
+pub fn parseChunk(text: &Array[u8]) Result[Delta, ChatError] {
   match json.parse(text) {
     case let doc Ok {deltaOf(&doc)}
     case let e Error {Error[Delta, ChatError](decodeError("a chunk", &e))}
   }
 }
 
-fn deltaOf(doc &json.Json) Result[Delta, ChatError] {
+fn deltaOf(doc: &json.Json) Result[Delta, ChatError] {
   if !doc.isObject() {
     return Error[Delta, ChatError](shapeError("a chunk is not a JSON object"));
   }

@@ -10,55 +10,55 @@
 mod enum_typecheck_variant;
 
 enum Shape {
-  pub kind i32;
+  pub kind: i32;
 
   struct Circle {
-    pub radius i32;
+    pub radius: i32;
   }
 
   struct Rect {
-    w i32;
-    h i32;
+    w: i32;
+    h: i32;
   }
 }
 use Shape;
 
 // Only the field the enum declares is reachable without knowing the variant. A
 // variant's own field is not, however sure the caller is of which variant it is.
-fn variantFieldThroughEnum(s &Shape) {
+fn variantFieldThroughEnum(s: &Shape) {
   let r = s.radius;     //~ ErrorNoMbr:12 "Method or field `radius` not found"
 }
 
 // A variant is a name of the enum and never a member of its values, so the
 // period that reaches it is through the enum's name, not through a value
-fn variantThroughAValue(s &Shape) {
+fn variantThroughAValue(s: &Shape) {
   let c = s.Circle;     //~ ErrorNoMbr:12 "Method or field `Circle` not found"
 }
 
 // An enum value does not narrow to a variant by assignment
-fn enumToVariant(s Shape) {
-  var c Circle = s;     //~ ErrorInvType:18 "Initialization value's type does not match variable's declared type"
+fn enumToVariant(s: Shape) {
+  var c: Circle = s;     //~ ErrorInvType:19 "Initialization value's type does not match variable's declared type"
 }
 
 // ... nor does a reference to an enum narrow to a reference to a variant
-fn enumRefToVariantRef(s &Shape) {
-  let c &Circle = s;    //~ ErrorInvType:19 "Initialization value's type does not match variable's declared type"
+fn enumRefToVariantRef(s: &Shape) {
+  let c: &Circle = s;    //~ ErrorInvType:20 "Initialization value's type does not match variable's declared type"
 }
 
 // Widening is only free where the reference cannot write: a mutable reference to
 // a variant would let the callee store a different variant through it
-fn takesMutEnum(s &mut Shape) {
+fn takesMutEnum(s: &mut Shape) {
 }
 
 fn mutVariantRefToEnum() {
-  var c Circle = Circle(1, 5);
+  var c: Circle = Circle(1, 5);
   takesMutEnum(&mut c);   //~ ErrorInvType:16 "Expression's type does not match declared parameter"
 }
 
 // An enum's variants are all declared inside it, so nothing outside can join
 // the set later
 struct Outside is Shape {      //~ ErrorInvType:19 "nothing outside may join the set"
-  z i32;
+  z: i32;
 }
 
 // A variant may not hold its own enum by value: the enum is at least as large
@@ -72,14 +72,14 @@ struct Outside is Shape {      //~ ErrorInvType:19 "nothing outside may join the
 // variant and enum again. Before it, this compiled clean and generated a layout
 // with the field simply dropped.
 enum Container {
-  kind i32;
+  kind: i32;
 
   struct Item {
-    n i32;
+    n: i32;
   }
 
   struct Nested {
-    inner Container;   //~ ErrorNoSize:5 "Container contains Nested contains Container by value: infinite size"
+    inner: Container;   //~ ErrorNoSize:5 "Container contains Nested contains Container by value: infinite size"
   }
 }
 
@@ -88,15 +88,15 @@ enum Container {
 // is found in flight, as a plain enum's is.
 enum Crate[T] {
   struct Loose {
-    n T;
+    n: T;
   }
 
   struct Boxed {
-    inner Crate[T];    //~ ErrorNoSize:5 "Crate contains Boxed contains Crate by value"
+    inner: Crate[T];    //~ ErrorNoSize:5 "Crate contains Boxed contains Crate by value"
   }
 }
 
-fn holdsCrate(c &Crate[i32]) {
+fn holdsCrate(c: &Crate[i32]) {
 }
 
 // An enum's method belongs to its variants: each has a clone, and the enum's own
@@ -109,12 +109,12 @@ fn holdsCrate(c &Crate[i32]) {
 // LLVM's verifier or the linker caught. The declaration itself is fine, as
 // enum_success shows.
 enum Reading {
-  pub id i32;
+  pub id: i32;
   pub fn get(self) i32 {id}
   struct Low {}
-  struct High {pub n i32;}
+  struct High {pub n: i32;}
 }
 
-fn readValue(r Reading) i32 {
+fn readValue(r: Reading) i32 {
   r.get()    //~ ErrorEnumValueDispatch:4 "not built for a value receiver"
 }

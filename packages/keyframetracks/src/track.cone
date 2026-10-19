@@ -43,7 +43,7 @@ pub const INTERP_HERMITE = 4u32;
 pub const INTERP_CUBICSPLINE = 4u32;
 
 // The number of floats in a value of 'kind' (a VECN's is its own)
-pub fn kindComps(kind u32) usize {
+pub fn kindComps(kind: u32) usize {
   if kind == TK_VEC2 { return 2usize; }
   if kind == TK_VEC3 { return 3usize; }
   if kind == TK_QUAT || kind == TK_COLOR { return 4usize; }
@@ -52,21 +52,21 @@ pub fn kindComps(kind u32) usize {
 }
 
 // Where a kind's quaternion starts among its floats, or 99 if it has none
-pub fn quatOffset(kind u32) usize {
+pub fn quatOffset(kind: u32) usize {
   if kind == TK_QUAT { return 0usize; }
   if kind == TK_TRANSFORM { return 3usize; }
   99usize
 }
 
-fn ld(l &List[f32], i usize) f32 { *l[i] }
+fn ld(l: &List[f32], i: usize) f32 { *l[i] }
 
 // The unit quaternion the fraction t of the way from a to b along the
 // shortest arc (t outside 0..1 extrapolates along the same great circle).
 // Exact: sin((1-t) theta) a + sin(t theta) b over sin theta, falling back to
 // a normalised straight blend when the two are nearly equal
-pub fn slerpQuat(a Quat, b Quat, t f32) Quat {
+pub fn slerpQuat(a: Quat, b: Quat, t: f32) Quat {
   var d = a.dot(b);
-  var sg f32 = 1.;
+  var sg: f32 = 1.;
   if d < 0. { sg = -1.; d = -d; }
   var w1 = 1. - t;
   var w2 = t;
@@ -81,36 +81,36 @@ pub fn slerpQuat(a Quat, b Quat, t f32) Quat {
 }
 
 pub struct Track {
-  pub kind u32;
-  pub comps usize;
-  pub space u32;
-  pub times List[f32];
-  pub values List[f32];
-  pub interps List[u32];
-  pub eases List[u32];
-  pub shapes List[f32];
-  pub inTan List[f32];
-  pub outTan List[f32];
+  pub kind: u32;
+  pub comps: usize;
+  pub space: u32;
+  pub times: List[f32];
+  pub values: List[f32];
+  pub interps: List[u32];
+  pub eases: List[u32];
+  pub shapes: List[f32];
+  pub inTan: List[f32];
+  pub outTan: List[f32];
 
-  pub fn make(kind u32) Track {
+  pub fn make(kind: u32) Track {
     new Track(kind, kindComps(kind), SPACE_OKLAB, List[f32].empty(), List[f32].empty(), List[u32].empty(),
       List[u32].empty(), List[f32].empty(), List[f32].empty(), List[f32].empty())
   }
 
   // A vector of 'n' floats (morph weights, a parameter set)
-  pub fn makeVecN(n usize) Track {
+  pub fn makeVecN(n: usize) Track {
     new Track(TK_VECN, n, SPACE_OKLAB, List[f32].empty(), List[f32].empty(), List[u32].empty(),
       List[u32].empty(), List[f32].empty(), List[f32].empty(), List[f32].empty())
   }
 
   // A colour track mixed in 'space' (SPACE_OKLAB by default for 'make')
-  pub fn makeColor(space u32) Track {
+  pub fn makeColor(space: u32) Track {
     var t = Track.make(TK_COLOR);
     t.space = space;
     t
   }
 
-  pub fn copy(self &) Track {
+  pub fn copy(self: &) Track {
     var t = Track.make(kind);
     t.comps = comps;
     t.space = space;
@@ -123,23 +123,23 @@ pub struct Track {
     t
   }
 
-  pub fn len(self &) usize { times.len() }
+  pub fn len(self: &) usize { times.len() }
 
   // The time of the last key (0 for none)
-  pub fn endTime(self &) f32 {
+  pub fn endTime(self: &) f32 {
     if times.len() == 0usize { return 0.; }
     ld(&times, times.len() - 1usize)
   }
 
   // Remove every key
-  pub fn clear(self &mut) {
+  pub fn clear(self: &mut) {
     times.clear(); values.clear(); interps.clear(); eases.clear(); shapes.clear(); inTan.clear(); outTan.clear();
   }
 
   // The index of the key at time t (made, with a default linear key of zeros,
   // if there is none): keys stay in time order, and a key at the same time
   // is replaced
-  pub fn place(self &mut, t f32) usize {
+  pub fn place(self: &mut, t: f32) usize {
     let n = times.len();
     var j = n;
     var i = 0usize;
@@ -183,7 +183,7 @@ pub struct Track {
   }
 
   // Remove the keys at or after time t (a later tween takes over from t)
-  pub fn truncateFrom(self &mut, t f32) {
+  pub fn truncateFrom(self: &mut, t: f32) {
     var n = times.len();
     while n > 0usize && ld(&times, n - 1usize) >= t { n = n - 1usize; }
     times.truncate(n);
@@ -197,35 +197,35 @@ pub struct Track {
 
   // ---- adding keys: each returns the key's index, for the setters below ----
 
-  pub fn setRaw(self &mut, idx usize, v0 f32, v1 f32, v2 f32, v3 f32) {
+  pub fn setRaw(self: &mut, idx: usize, v0: f32, v1: f32, v2: f32, v3: f32) {
     values.set(idx * comps, v0);
     if comps > 1usize { values.set(idx * comps + 1usize, v1); }
     if comps > 2usize { values.set(idx * comps + 2usize, v2); }
     if comps > 3usize { values.set(idx * comps + 3usize, v3); }
   }
 
-  pub fn addF32(self &mut, t f32, v f32, interp u32) usize {
+  pub fn addF32(self: &mut, t: f32, v: f32, interp: u32) usize {
     let i = place(t);
     setRaw(i, v, 0., 0., 0.);
     interps.set(i, interp);
     i
   }
 
-  pub fn addVec2(self &mut, t f32, v Vec2, interp u32) usize {
+  pub fn addVec2(self: &mut, t: f32, v: Vec2, interp: u32) usize {
     let i = place(t);
     setRaw(i, v.x, v.y, 0., 0.);
     interps.set(i, interp);
     i
   }
 
-  pub fn addVec3(self &mut, t f32, v Vec3, interp u32) usize {
+  pub fn addVec3(self: &mut, t: f32, v: Vec3, interp: u32) usize {
     let i = place(t);
     setRaw(i, v.x, v.y, v.z, 0.);
     interps.set(i, interp);
     i
   }
 
-  pub fn addQuat(self &mut, t f32, q Quat, interp u32) usize {
+  pub fn addQuat(self: &mut, t: f32, q: Quat, interp: u32) usize {
     let i = place(t);
     setRaw(i, q.x, q.y, q.z, q.w);
     interps.set(i, interp);
@@ -233,7 +233,7 @@ pub struct Track {
   }
 
   // A colour is linear RGBA; an OKLab track stores it converted
-  pub fn addColor(self &mut, t f32, c Color, interp u32) usize {
+  pub fn addColor(self: &mut, t: f32, c: Color, interp: u32) usize {
     let i = place(t);
     if space == SPACE_OKLAB {
       let o = linearToOklab(c);
@@ -246,21 +246,21 @@ pub struct Track {
   }
 
   // A bool or a discrete value (an integer, kept as a float) always steps
-  pub fn addBool(self &mut, t f32, v bool) usize {
+  pub fn addBool(self: &mut, t: f32, v: bool) usize {
     let i = place(t);
     setRaw(i, if v { 1. } else { 0. }, 0., 0., 0.);
     interps.set(i, INTERP_STEP);
     i
   }
 
-  pub fn addInt(self &mut, t f32, v i32) usize {
+  pub fn addInt(self: &mut, t: f32, v: i32) usize {
     let i = place(t);
     setRaw(i, f32.from(v), 0., 0., 0.);
     interps.set(i, INTERP_STEP);
     i
   }
 
-  pub fn addTransform(self &mut, t f32, x Transform3, interp u32) usize {
+  pub fn addTransform(self: &mut, t: f32, x: Transform3, interp: u32) usize {
     let i = place(t);
     let b = i * comps;
     values.set(b, x.translation.x); values.set(b + 1usize, x.translation.y); values.set(b + 2usize, x.translation.z);
@@ -272,7 +272,7 @@ pub struct Track {
   }
 
   // A key of a VECN track
-  pub fn addVecN(self &mut, t f32, v &List[f32], interp u32) usize {
+  pub fn addVecN(self: &mut, t: f32, v: &List[f32], interp: u32) usize {
     let i = place(t);
     var c = 0usize;
     while c < comps && c < v.len() { values.set(i * comps + c, ld(v, c)); c = c + 1usize; }
@@ -282,10 +282,10 @@ pub struct Track {
 
   // ---- how a key leaves for the next ----
 
-  pub fn setInterp(self &mut, idx usize, interp u32) { interps.set(idx, interp); }
+  pub fn setInterp(self: &mut, idx: usize, interp: u32) { interps.set(idx, interp); }
 
   // Linear with the easing 'id' (p0, p1: a back's overshoot, a spring's zeta and omega)
-  pub fn setEase(self &mut, idx usize, id u32, p0 f32, p1 f32) {
+  pub fn setEase(self: &mut, idx: usize, id: u32, p0: f32, p1: f32) {
     interps.set(idx, INTERP_LINEAR);
     eases.set(idx, id);
     shapes.set(idx * 4usize, p0);
@@ -293,7 +293,7 @@ pub struct Track {
   }
 
   // CSS cubic-bezier(x1, y1, x2, y2) on the segment's progress
-  pub fn setBezier(self &mut, idx usize, x1 f32, y1 f32, x2 f32, y2 f32) {
+  pub fn setBezier(self: &mut, idx: usize, x1: f32, y1: f32, x2: f32, y2: f32) {
     interps.set(idx, INTERP_BEZIER);
     shapes.set(idx * 4usize, x1);
     shapes.set(idx * 4usize + 1usize, y1);
@@ -302,7 +302,7 @@ pub struct Track {
   }
 
   // Hermite tangents in value per second: 'in' arrives at this key, 'out' leaves it
-  pub fn setTangents(self &mut, idx usize, tin &List[f32], tout &List[f32]) {
+  pub fn setTangents(self: &mut, idx: usize, tin: &List[f32], tout: &List[f32]) {
     interps.set(idx, INTERP_HERMITE);
     var c = 0usize;
     while c < comps {
@@ -315,7 +315,7 @@ pub struct Track {
   // ---- evaluation ----
 
   // The index k of the last key at or before t (keys 0 to n-2 only)
-  fn segment(self &, t f32) usize {
+  fn segment(self: &, t: f32) usize {
     var lo = 0usize;
     var hi = times.len() - 1usize;
     while hi - lo > 1usize {
@@ -327,7 +327,7 @@ pub struct Track {
 
   // The tangent (value per second) of key j by finite differences over the
   // key times, one-sided at the ends, into out[0..comps]
-  fn catmullTangent(self &, j usize, out &mut List[f32]) {
+  fn catmullTangent(self: &, j: usize, out: &mut List[f32]) {
     let n = times.len();
     var a = j;
     var b = j;
@@ -336,10 +336,10 @@ pub struct Track {
     let dt = ld(&times, b) - ld(&times, a);
     let qo = quatOffset(kind);
     // a quaternion's neighbours are taken in the hemisphere of key j
-    var sa f32 = 1.;
-    var sb f32 = 1.;
+    var sa: f32 = 1.;
+    var sb: f32 = 1.;
     if qo < 99usize {
-      var da f32 = 0.; var db f32 = 0.;
+      var da: f32 = 0.; var db: f32 = 0.;
       var c = 0usize;
       while c < 4usize {
         da = da + ld(&values, a * comps + qo + c) * ld(&values, j * comps + qo + c);
@@ -360,7 +360,7 @@ pub struct Track {
   }
 
   // The value at time t into 'out' (cleared, then 'comps' floats)
-  pub fn evalRaw(self &, t f32, out &mut List[f32]) {
+  pub fn evalRaw(self: &, t: f32, out: &mut List[f32]) {
     out.clear();
     let n = times.len();
     var c = 0usize;
@@ -425,9 +425,9 @@ pub struct Track {
       while c < comps { m0.set(c, ld(&outTan, b0 + c)); m1.set(c, ld(&inTan, b1 + c)); c = c + 1usize; }
     }
     // the end key in the first key's hemisphere (its tangent turns with it)
-    var flip f32 = 1.;
+    var flip: f32 = 1.;
     if qo < 99usize {
-      var d f32 = 0.;
+      var d: f32 = 0.;
       c = 0usize;
       while c < 4usize { d = d + ld(&values, b0 + qo + c) * ld(&values, b1 + qo + c); c = c + 1usize; }
       if d < 0. { flip = -1.; }
@@ -453,7 +453,7 @@ pub struct Track {
 
   // The value at t as a consumer reads it: 'evalRaw', with an OKLab colour
   // converted back to linear RGBA
-  pub fn evalLinear(self &, t f32, out &mut List[f32]) {
+  pub fn evalLinear(self: &, t: f32, out: &mut List[f32]) {
     self.evalRaw(t, out);
     if kind == TK_COLOR && space == SPACE_OKLAB {
       let c = oklabToLinear(new Vec4(ld(out, 0usize), ld(out, 1usize), ld(out, 2usize), ld(out, 3usize)));
@@ -462,7 +462,7 @@ pub struct Track {
   }
 
   // Remove the keys after time t (those at t stay)
-  pub fn truncateAfter(self &mut, t f32) {
+  pub fn truncateAfter(self: &mut, t: f32) {
     var n = times.len();
     while n > 0usize && ld(&times, n - 1usize) > t { n = n - 1usize; }
     times.truncate(n);
@@ -477,7 +477,7 @@ pub struct Track {
   // A blank key on the end at time t (t at or after the last key's), without
   // replacing a key already at t: two keys at one time make a jump (the
   // earlier is the value arriving, the later the value leaving)
-  pub fn appendBlank(self &mut, t f32) usize {
+  pub fn appendBlank(self: &mut, t: f32) usize {
     times.push(t);
     interps.push(INTERP_LINEAR);
     eases.push(0u32);
@@ -489,7 +489,7 @@ pub struct Track {
   }
 
   // The colour as this track stores it (converted if the track mixes in OKLab)
-  pub fn storeColor(self &, c Color, out &mut List[f32]) {
+  pub fn storeColor(self: &, c: Color, out: &mut List[f32]) {
     out.clear();
     if space == SPACE_OKLAB {
       let o = linearToOklab(c);
@@ -501,31 +501,31 @@ pub struct Track {
 
   // ---- typed evaluation ----
 
-  pub fn evalF32(self &, t f32) f32 {
+  pub fn evalF32(self: &, t: f32) f32 {
     var o = List[f32].empty();
     evalRaw(t, &mut o);
     ld(&o, 0usize)
   }
 
-  pub fn evalVec2(self &, t f32) Vec2 {
+  pub fn evalVec2(self: &, t: f32) Vec2 {
     var o = List[f32].empty();
     evalRaw(t, &mut o);
     new Vec2(ld(&o, 0usize), ld(&o, 1usize))
   }
 
-  pub fn evalVec3(self &, t f32) Vec3 {
+  pub fn evalVec3(self: &, t: f32) Vec3 {
     var o = List[f32].empty();
     evalRaw(t, &mut o);
     new Vec3(ld(&o, 0usize), ld(&o, 1usize), ld(&o, 2usize))
   }
 
-  pub fn evalQuat(self &, t f32) Quat {
+  pub fn evalQuat(self: &, t: f32) Quat {
     var o = List[f32].empty();
     evalRaw(t, &mut o);
     new Quat(ld(&o, 0usize), ld(&o, 1usize), ld(&o, 2usize), ld(&o, 3usize))
   }
 
-  pub fn evalColor(self &, t f32) Color {
+  pub fn evalColor(self: &, t: f32) Color {
     var o = List[f32].empty();
     evalRaw(t, &mut o);
     if space == SPACE_OKLAB {
@@ -534,11 +534,11 @@ pub struct Track {
     new Color(ld(&o, 0usize), ld(&o, 1usize), ld(&o, 2usize), ld(&o, 3usize))
   }
 
-  pub fn evalBool(self &, t f32) bool { evalF32(t) >= 0.5 }
+  pub fn evalBool(self: &, t: f32) bool { evalF32(t) >= 0.5 }
 
-  pub fn evalInt(self &, t f32) i32 { i32.from(libc.floorf(evalF32(t) + 0.5)) }
+  pub fn evalInt(self: &, t: f32) i32 { i32.from(libc.floorf(evalF32(t) + 0.5)) }
 
-  pub fn evalTransform(self &, t f32) Transform3 {
+  pub fn evalTransform(self: &, t: f32) Transform3 {
     var o = List[f32].empty();
     evalRaw(t, &mut o);
     new Transform3(new Vec3(ld(&o, 0usize), ld(&o, 1usize), ld(&o, 2usize)),
@@ -563,7 +563,7 @@ pub const GLTF_CUBICSPLINE = 2u32;
 // tangents are already value per second scaled by the segment's duration at
 // evaluation, which is exactly the Hermite form of 'evalRaw', so they are
 // copied as they are.
-pub fn trackFromGltf(kind u32, n usize, interp u32, times &List[f32], output &List[f32]) Track {
+pub fn trackFromGltf(kind: u32, n: usize, interp: u32, times: &List[f32], output: &List[f32]) Track {
   var tr = if kind == TK_VECN { Track.makeVecN(n) } else { Track.make(kind) };
   let comps = tr.comps;
   var k = 0usize;

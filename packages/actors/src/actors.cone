@@ -15,7 +15,7 @@
 //
 //   actor Counter {
 //     count u64;
-//     fn init(self &new, start u64) {*self = new Self(count: start);}
+//     fn init(self: &new, start u64) {*self = new Self(count: start);}
 //     pub async do add(self, n u64) {count = count + n;}
 //   }
 //
@@ -86,7 +86,7 @@
 //
 //   (a) The state, 'Counter.State': a struct of the actor's fields and its
 //       methods, behaviours and synchronous ones alike, as written, a bare
-//       'self' taken as 'self &mut'. It declares nothing about Sendable: it
+//       'self' taken as 'self: &mut'. It declares nothing about Sendable: it
 //       never crosses threads as a value, since only the runtime reaches it
 //       (INSIDE AN ACTOR, below).
 //   (b) The message enum, 'Counter.Msg', declaring Sendable on the strength
@@ -107,12 +107,12 @@
 //
 //         struct Counter {
 //           mailbox Arc[opaq, actors.Mailbox[Counter.Msg]];
-//           fn init(self &new, start u64) {
+//           fn init(self: &new, start u64) {
 //             imm st = actors.makeActor[Counter.State, Counter.Msg](&Counter.dispatch);
 //             mem.writeRaw[Counter.State](st, new Counter.State(start));
 //             *self = new Self(mailbox: actors.startActor[Counter.State, Counter.Msg](st));
 //           }
-//           pub fn add(self &, n u64) {
+//           pub fn add(self: &, n u64) {
 //             actors.send[Counter.Msg](mailbox, Counter.Msg.add[n]);
 //           }
 //         }
@@ -122,7 +122,7 @@
 //       each argument out of it, and calls the behaviour. The node is then freed
 //       with nothing in it finalized, so each argument is moved exactly once.
 //
-//         fn Counter.dispatch(self &mut Counter.State, msg *Counter.Msg) {
+//         fn Counter.dispatch(self: &mut Counter.State, msg *Counter.Msg) {
 //           if &*msg is &Counter.Msg.add {
 //             imm p = msg as *Counter.Msg.add;
 //             self.add(take(&(*p).n));     // take: mem.readRaw of the field
@@ -512,7 +512,7 @@ fn yieldProcessor() {
 }
 
 // A panic, reported at the line calling 'die'
-fn die(msg &str, file &str = srcFile(), line u32 = srcLine()) Never {
+fn die(msg: &str, file: &str = srcFile(), line: u32 = srcLine()) Never {
   panic(msg, file, line)
 }
 
@@ -523,13 +523,13 @@ fn die(msg &str, file &str = srcFile(), line u32 = srcLine()) Never {
 // A node's link, the first thing in every node. The first node of a mailbox
 // (the stub) is a Link alone; every later one is a Node[M].
 struct Link {
-  pub next *Link;
+  pub next: *Link;
 }
 
 // One message in a mailbox: its link, then the message
 struct Node[M] {
-  pub next *Link;
-  pub msg M;
+  pub next: *Link;
+  pub msg: M;
 }
 
 const idleBit = 1usize;
@@ -540,7 +540,7 @@ fn nullHeader() *Header {null}
 
 // Put node n at the end of h's mailbox: whether the mailbox was idle, which
 // makes this sender the one to schedule the actor
-fn mailPush(h *Header, n *Link) bool {
+fn mailPush(h: *Header, n: *Link) bool {
   mem.atomicStore[*Link](&(*n).next as **Link, nullLink(), MemOrder.Relaxed);
   let prev = mem.atomicSwap[*Link](&(*h).head as **Link, n, MemOrder.AcqRel);
   let bits = prev as usize;
@@ -552,7 +552,7 @@ fn mailPush(h *Header, n *Link) bool {
 // The node holding h's next message, which becomes the mailbox's stub, or 0
 // when there is none yet. The stub before it, whose message was taken, is
 // freed. Only the worker running the actor calls this.
-fn mailPop(h *Header) *Link {
+fn mailPop(h: *Header) *Link {
   let t = (*h).tail;
   let next = mem.atomicLoad[*Link](&(*t).next as **Link, MemOrder.Acquire);
   if next as usize != 0usize {
@@ -564,7 +564,7 @@ fn mailPop(h *Header) *Link {
 
 // Mark h's mailbox idle, if it is empty and no push is under way: whether it
 // was marked. A later push then finds the mark and schedules the actor.
-fn mailMarkIdle(h *Header) bool {
+fn mailMarkIdle(h: *Header) bool {
   let t = (*h).tail;
   let headp = &(*h).head as **Link;
   let hd = mem.atomicLoad[*Link](headp, MemOrder.Relaxed);
@@ -590,16 +590,16 @@ fn mailMarkIdle(h *Header) bool {
 // it. It holds raw pointers, which the thread check refuses; Mailbox, which
 // holds it, declares Sendable, since the runtime orders every hand-off.
 struct Header {
-  pub head *Link;                        // senders': the newest node; bit 0, idle
-  pub tail *Link;                        // the running worker's: the stub
-  pub link *Header;                      // the next actor on the inject queue
-  pub run &fn(h *Header, limit u32) u32; // runBatch[S, M]
-  pub release &fn(h *Header);            // releaseHold[M]
-  pub finalize &fn(h *Header);           // finalizeState[S, M]
-  pub dispatch *u8;                      // the actor's dispatch function
-  pub par *ParPending = null;            // a behaviour's 'parallel each' to begin once it has returned (parallel.cone, A PARALLEL EACH IN A BEHAVIOUR)
-  pub ready *ParPending = null;          // ... finished: the rest of the behaviour, to run ahead of the mailbox
-  pub gc *ActorRegion = null;            // the actor's own region: null until the actor first asks for it (INSIDE AN ACTOR, above; gc.cone), a record of its own that never moves
+  pub head: *Link;                        // senders': the newest node; bit 0, idle
+  pub tail: *Link;                        // the running worker's: the stub
+  pub link: *Header;                      // the next actor on the inject queue
+  pub run: &fn(h: *Header, limit: u32) u32; // runBatch[S, M]
+  pub release: &fn(h: *Header);            // releaseHold[M]
+  pub finalize: &fn(h: *Header);           // finalizeState[S, M]
+  pub dispatch: *u8;                      // the actor's dispatch function
+  pub par: *ParPending = null;            // a behaviour's 'parallel each' to begin once it has returned (parallel.cone, A PARALLEL EACH IN A BEHAVIOUR)
+  pub ready: *ParPending = null;          // ... finished: the rest of the behaviour, to run ahead of the mailbox
+  pub gc: *ActorRegion = null;            // the actor's own region: null until the actor first asks for it (INSIDE AN ACTOR, above; gc.cone), a record of its own that never moves
 }
 
 // What an actor's handle owns, 'Arc[opaq, T]': the runtime's part of an actor
@@ -608,31 +608,31 @@ struct Header {
 // else. It declares Sendable, taken on trust: the runtime orders every
 // hand-off of what it holds. It says nothing of the state, which is not in
 // its type, so the state's type is never asked.
-pub struct Mailbox[M Sendable] is Sendable {
-  hdr Header;
+pub struct Mailbox[M: Sendable] is Sendable {
+  hdr: Header;
 
-  fn made(h Header) Mailbox[M] {new Mailbox[M](h)}
+  fn made(h: Header) Mailbox[M] {new Mailbox[M](h)}
 
   // The actor's death: its state finalized, then its mailbox's last node
   // freed; Arc frees the block, state and all, after this
-  fn final(self &uni) {
+  fn final(self: &uni) {
     actorDied(self as *Header);
   }
 }
 
 // The one allocation: the Mailbox first, so that the owner's address is the
 // Header's, then the state
-struct Block[S, M Sendable] {
-  pub mb Mailbox[M];
-  pub state S;
+struct Block[S, M: Sendable] {
+  pub mb: Mailbox[M];
+  pub state: S;
 }
 
 // The state of actor h, whose state is an S
-fn stateOf[S, M Sendable](h *Header) *S {
+fn stateOf[S, M: Sendable](h: *Header) *S {
   &(*(h as *Block[S, M])).state as *S
 }
 
-fn actorDied(h *Header) {
+fn actorDied(h: *Header) {
   let finalize = (*h).finalize;
   finalize(h);
   // The actor's region goes after its state, whose finals may read what they
@@ -648,7 +648,7 @@ fn actorDied(h *Header) {
 
 // Finalize actor h's state: moved out of the block and dropped, so its own
 // 'final' runs, then its fields'
-fn finalizeState[S, M Sendable](h *Header) {
+fn finalizeState[S, M: Sendable](h: *Header) {
   let st = mem.readRaw[S](stateOf[S, M](h));
 }
 
@@ -676,7 +676,7 @@ fn finalizeState[S, M Sendable](h *Header) {
 // dispatch function is handed each message where it lies in its node, and
 // takes it: it moves every field out, and the node is then freed with nothing
 // in it finalized.
-pub fn makeActor[S, M Sendable](dispatch &fn(s &mut S, m *M)) *S {
+pub fn makeActor[S, M: Sendable](dispatch: &fn(s: &mut S, m: *M)) *S {
   ensureRunning();
   let stub = libc.malloc(mem.sizeof[Link]()) as *Link;
   let room = libc.malloc(mem.sizeof[S]() + 1usize);
@@ -691,7 +691,7 @@ pub fn makeActor[S, M Sendable](dispatch &fn(s &mut S, m *M)) *S {
   libc.free(room);
   // The owner of the block, put away uncounted as its address, which is the
   // Header's: startActor remakes it
-  var slot *u8 = null;
+  var slot: *u8 = null;
   mem.writeRaw[Arc[opaq, Block[S, M]]](&mut slot as *(Arc[opaq, Block[S, M]]), b);
   // The collector's knobs read once (gc.cone)
   readEnv();
@@ -703,7 +703,7 @@ pub fn makeActor[S, M Sendable](dispatch &fn(s &mut S, m *M)) *S {
 // from the address, moved, not copied. Its mailbox is marked idle, unless a
 // message was sent while the init ran: then the actor is queued, as a send
 // finding it idle queues it, to run them in the order sent.
-pub fn startActor[S, M Sendable](st *S) Arc[opaq, Mailbox[M]] {
+pub fn startActor[S, M: Sendable](st: *S) Arc[opaq, Mailbox[M]] {
   let h = headerOf[S, M](&*st);
   if !mailMarkIdle(h) {
     holdArc[M](h);
@@ -719,12 +719,12 @@ pub fn startActor[S, M Sendable](st *S) Arc[opaq, Mailbox[M]] {
 // 'parallel each' (a thread running one has curPiece set) the message is kept
 // instead, to be sent after the loop in iteration order (parallel.cone, SENDS
 // GATHERED).
-pub fn send[M Sendable](mb &opaq Mailbox[M], msg M) {
+pub fn send[M: Sendable](mb: &opaq Mailbox[M], msg: M) {
   sendTo[M](mb as *Header, msg);
 }
 
 // send, to the mailbox's header
-fn sendTo[M Sendable](h *Header, msg M) {
+fn sendTo[M: Sendable](h: *Header, msg: M) {
   if curPiece != 0usize {
     gatherSend[M](h, msg);
     return;
@@ -733,7 +733,7 @@ fn sendTo[M Sendable](h *Header, msg M) {
 }
 
 // The message pushed on the mailbox now
-fn sendNow[M Sendable](h *Header, msg M) {
+fn sendNow[M: Sendable](h: *Header, msg: M) {
   if running.load() == 0usize {
     die("actors: a message sent after the runtime stopped");
   }
@@ -750,16 +750,16 @@ fn sendNow[M Sendable](h *Header, msg M) {
 
 // The thread check, asked of an argument of an actor's 'start': v,
 // unchanged, if its type may cross threads; refused where it is written if not
-pub fn sendable[T Sendable](v T) T {v}
+pub fn sendable[T: Sendable](v: T) T {v}
 
 // Run up to limit of the actor's messages, each handed to the dispatch
 // function where it lies in its node, which takes it: how many ran. The node
 // is the mailbox's stub from then on, freed by the next pop or the actor's
 // death, its message never finalized. Only the worker that took the actor
 // from a queue calls this.
-fn runBatch[S, M Sendable](h *Header, limit u32) u32 {
+fn runBatch[S, M: Sendable](h: *Header, limit: u32) u32 {
   var slot = (*h).dispatch;
-  let f = mem.readRaw[&fn(s &mut S, m *M)](&mut slot as *(&fn(s &mut S, m *M)));
+  let f = mem.readRaw[&fn(s: &mut S, m: *M)](&mut slot as *(&fn(s: &mut S, m: *M)));
   let st = stateOf[S, M](h);
   let rec = mem.typeRecord[S]();
   curActor = h as usize;
@@ -792,7 +792,7 @@ fn runBatch[S, M Sendable](h *Header, limit u32) u32 {
 // if it has one, may collect (INSIDE AN ACTOR). Not while a 'parallel each' the
 // behaviour began is still to run its passes, which hold the references they
 // read where no collection finds them.
-fn afterMessage(h *Header, st *u8, rec *TypeRecord) {
+fn afterMessage(h: *Header, st: *u8, rec: *TypeRecord) {
   if (*h).gc as usize == 0usize || (*h).par as usize != 0usize {
     return;
   }
@@ -802,7 +802,7 @@ fn afterMessage(h *Header, st *u8, rec *TypeRecord) {
 // The rest of a behaviour cut at its 'parallel each', run as a reply's dispatch
 // runs a second half (resume, resumeId): the seam's resume function, with the
 // record's id where the record is not empty, and no value
-fn runReady[S](st *S, p *ParPending) {
+fn runReady[S](st: *S, p: *ParPending) {
   let run = (*p).resume;
   let id = (*p).id;
   let hasId = (*p).hasId;
@@ -818,7 +818,7 @@ fn runReady[S](st *S, p *ParPending) {
 // then copied, which counts one more, and both put away uncounted, so that
 // the count is one more and nothing will drop either. It is Arc's own copy,
 // so the count is Arc's (a Relaxed add), whatever Arc's layout.
-fn holdArc[M Sendable](h *Header) {
+fn holdArc[M: Sendable](h: *Header) {
   var slot = h;
   let o = mem.readRaw[Arc[opaq, Mailbox[M]]](&mut slot as *(Arc[opaq, Mailbox[M]]));
   let held = o;
@@ -831,7 +831,7 @@ fn holdArc[M Sendable](h *Header) {
 // The scheduler lets go of its owner: remade from the address and dropped,
 // Arc's own drop (a Release subtract; an Acquire load and the actor's
 // death, Mailbox's finalizer and the free, if it was the last).
-fn releaseHold[M Sendable](h *Header) {
+fn releaseHold[M: Sendable](h: *Header) {
   var slot = h;
   let o = mem.readRaw[Arc[opaq, Mailbox[M]]](&mut slot as *(Arc[opaq, Mailbox[M]]));
 }
@@ -857,17 +857,17 @@ fn releaseHold[M Sendable](h *Header) {
 // 'to' and no 'cell' wants no answer. Sendable on trust, as Mailbox is: the
 // runtime orders every hand-off of it.
 pub struct Reply is Sendable {
-  to *Header = null;
-  node *Link = null;
-  data *u8 = null;
-  cell *u8 = null;
-  op u8 = 0u8;           // 1 for the reply of an awaited operation, counted in opsStarted until it is spent
+  to: *Header = null;
+  node: *Link = null;
+  data: *u8 = null;
+  cell: *u8 = null;
+  op: u8 = 0u8;           // 1 for the reply of an awaited operation, counted in opsStarted until it is spent
 
   // A reply never sent: its node is freed (its resume message holds nothing
   // to finalize) and its count let go. A future's is abandoned: nothing will
   // ever arrive in it, and whoever awaits it is told so. An operation's, sent
   // or never sent, is spent here: it is no longer outstanding (waitUntilIdle)
-  fn final(self &uni) {
+  fn final(self: &uni) {
     if to as usize != 0usize {
       libc.free(node as *u8);
       let release = (*to).release;
@@ -884,18 +884,18 @@ pub struct Reply is Sendable {
 
 // Whether the reply goes anywhere: to an actor that awaits it, or into a
 // future
-fn wanted(r &Reply) bool {
+fn wanted(r: &Reply) bool {
   r.to as usize != 0usize || r.cell as usize != 0usize
 }
 
 // The round-up of n to a multiple of a, a power of two
-fn roundUp(n usize, a usize) usize {
+fn roundUp(n: usize, a: usize) usize {
   (n + a - 1usize) & ~(a - 1usize)
 }
 
 // The Header of the actor whose state is at st: where stateOf finds st,
 // taken back
-fn headerOf[S, M Sendable](st &S) *Header {
+fn headerOf[S, M: Sendable](st: &S) *Header {
   let base = 4096usize as *Header;
   let off = (stateOf[S, M](base) as usize) - 4096usize;
   ((st as *S as usize) - off) as *Header
@@ -903,7 +903,7 @@ fn headerOf[S, M Sendable](st &S) *Header {
 
 // The handle of the actor whose state is at st, its 'selfactor': another
 // owner of its Mailbox, counted, as copying a handle is
-pub fn selfOf[S, M Sendable](st &S) Arc[opaq, Mailbox[M]] {
+pub fn selfOf[S, M: Sendable](st: &S) Arc[opaq, Mailbox[M]] {
   var slot = headerOf[S, M](st);
   let o = mem.readRaw[Arc[opaq, Mailbox[M]]](&mut slot as *(Arc[opaq, Mailbox[M]]));
   let held = o;
@@ -916,7 +916,7 @@ pub fn selfOf[S, M Sendable](st &S) Arc[opaq, Mailbox[M]] {
 // a count of it taken, and the reply's node allocated with room for 'size'
 // bytes aligned to 'align' after the message. The actor's own generated code
 // then writes its resume message into the node (replyPut)
-pub fn replyNode[S, M Sendable](st &S, size usize, align usize) Reply {
+pub fn replyNode[S, M: Sendable](st: &S, size: usize, align: usize) Reply {
   let h = headerOf[S, M](st);
   var a = 8usize;
   if align > 8usize {a = align;}
@@ -930,10 +930,10 @@ pub fn replyNode[S, M Sendable](st &S, size usize, align usize) Reply {
 }
 
 // Where the reply's value goes
-pub fn replyData(r &Reply) *u8 {r.data}
+pub fn replyData(r: &Reply) *u8 {r.data}
 
 // Write the reply's resume message into its node
-pub fn replyPut[M Sendable](r &Reply, msg M) {
+pub fn replyPut[M: Sendable](r: &Reply, msg: M) {
   mem.writeRaw[M](&(*(r.node as *Node[M])).msg as *M, msg);
 }
 
@@ -941,7 +941,7 @@ pub fn replyPut[M Sendable](r &Reply, msg M) {
 // The count the envelope held becomes the scheduler's owner when the push
 // finds the actor idle, as a send's own would; otherwise it is let go
 // A future's reply has had its value written into the future, which arrives
-fn post(r &mut Reply) {
+fn post(r: &mut Reply) {
   let c = r.cell;
   if c as usize != 0usize {
     r.cell = null;
@@ -960,7 +960,7 @@ fn post(r &mut Reply) {
 
 // Push a reply's node n, its value written, to the actor h that awaits it,
 // whose count the envelope held
-fn pushReply(h *Header, n *Link) {
+fn pushReply(h: *Header, n: *Link) {
   if running.load() == 0usize {
     die("actors: a reply sent after the runtime stopped");
   }
@@ -974,7 +974,7 @@ fn pushReply(h *Header, n *Link) {
 
 // A message that returns a value, and holds no 'await', answering its
 // request: the value goes back in the reply
-pub fn answerNow[R](rp Reply, v R) {
+pub fn answerNow[R](rp: Reply, v: R) {
   var r = rp;
   if !wanted(&r) {
     return;
@@ -990,18 +990,18 @@ pub fn answerNow[R](rp Reply, v R) {
 // returns the value answers it (answerAt, and the compiler's resume
 // functions).
 pub struct Answer {
-  reply Reply = new Reply();
-  held u8 = 0u8;
+  reply: Reply = new Reply();
+  held: u8 = 0u8;
 }
 
 // The dispatcher's hand-off, before such a message runs: the request's
 // envelope into the slot; or, for a send with no 'await', no envelope, so
 // that the value is dropped as the message returns it
-pub fn ask(slot &mut Answer, rp Reply) {
+pub fn ask(slot: &mut Answer, rp: Reply) {
   slot.reply = rp;
   slot.held = 1u8;
 }
-pub fn askNone(slot &mut Answer) {
+pub fn askNone(slot: &mut Answer) {
   slot.reply = new Reply();
   slot.held = 1u8;
 }
@@ -1009,13 +1009,13 @@ pub fn askNone(slot &mut Answer) {
 // The address a method's value is kept at, so that the dispatcher takes it
 // only when the method returned one: a temporary that a raw pointer
 // outlives is never finalized where it stands
-pub fn keep[R](r &R) *R {r as *R}
+pub fn keep[R](r: &R) *R {r as *R}
 
 // Where a message's returned value goes, now that it has returned: 0 where
 // a seam took the envelope (the method is parked, and returned no value); 1
 // where nobody waits for the value, which is dropped; else where the reply
 // holds it
-pub fn answerTo(slot &mut Answer) *u8 {
+pub fn answerTo(slot: &mut Answer) *u8 {
   if slot.held == 0u8 {
     return null;
   }
@@ -1026,14 +1026,14 @@ pub fn answerTo(slot &mut Answer) *u8 {
 }
 
 // The value is where answerTo said: the reply is sent, and the slot emptied
-pub fn answered(slot &mut Answer) {
+pub fn answered(slot: &mut Answer) {
   slot.held = 0u8;
   post(&mut slot.reply);
 }
 
 // The dispatcher, after a message that returns a value and holds an 'await'
 // returned: its value is at r, unless a seam parked the message
-pub fn answerAt[R](slot &mut Answer, r *R) {
+pub fn answerAt[R](slot: &mut Answer, r: *R) {
   let d = answerTo(slot);
   if d as usize == 0usize {
     return;
@@ -1051,14 +1051,14 @@ pub fn answerAt[R](slot &mut Answer, r *R) {
 // the seam, which calls its second half -- with the actor's state, the
 // record's id where the record is not empty, and where the returned value
 // is, in the node
-pub fn resume[S](st &mut S, run *u8, data *u8) {
+pub fn resume[S](st: &mut S, run: *u8, data: *u8) {
   var f = run;
-  let fp = mem.readRaw[&fn(s &mut S, data *u8)](&mut f as *(&fn(s &mut S, data *u8)));
+  let fp = mem.readRaw[&fn(s: &mut S, data: *u8)](&mut f as *(&fn(s: &mut S, data: *u8)));
   fp(st, data);
 }
-pub fn resumeId[S](st &mut S, run *u8, id u64, data *u8) {
+pub fn resumeId[S](st: &mut S, run: *u8, id: u64, data: *u8) {
   var f = run;
-  let fp = mem.readRaw[&fn(s &mut S, id u64, data *u8)](&mut f as *(&fn(s &mut S, id u64, data *u8)));
+  let fp = mem.readRaw[&fn(s: &mut S, id: u64, data: *u8)](&mut f as *(&fn(s: &mut S, id: u64, data: *u8)));
   fp(st, id, data);
 }
 
@@ -1071,15 +1071,15 @@ pub fn resumeId[S](st &mut S, run *u8, id u64, data *u8) {
 // is how a collector reaches what a parked record holds; the record follows,
 // recordHead bytes in. Only the actor's own methods touch it, one at a time.
 pub struct Pending is GcTraceElements {
-  slots *usize = null;
-  cap usize = 0usize;
-  free usize = 0usize;     // The first free slot's index + 1, or 0
-  count usize = 0usize;    // How many records are parked
+  slots: *usize = null;
+  cap: usize = 0usize;
+  free: usize = 0usize;     // The first free slot's index + 1, or 0
+  count: usize = 0usize;    // How many records are parked
 
   // How a collector reaches the values the parked records hold, whatever the
   // seams' types: each record, as an Erased value, is traced by its own type
   // record's trace (a parked record is a root between messages)
-  pub fn gcTraceElements(self &mut) PendingWalk {
+  pub fn gcTraceElements(self: &mut) PendingWalk {
     new PendingWalk(slots, cap, 0usize)
   }
 
@@ -1091,7 +1091,7 @@ pub struct Pending is GcTraceElements {
   // at the program's end (the aio package), or the actor that was to answer
   // abandoned its own continuation holding the envelope, or the future it
   // was parked on was abandoned so (futures.cone)
-  fn final(self &uni) {
+  fn final(self: &uni) {
     if slots as usize == 0usize {
       return;
     }
@@ -1114,11 +1114,11 @@ pub struct Pending is GcTraceElements {
 // A cursor over the parked records, each as an Erased value: the first thing
 // in its block
 pub struct PendingWalk is Iterator[&mut Erased] {
-  slots *usize;
-  cap usize;
-  at usize;
+  slots: *usize;
+  cap: usize;
+  at: usize;
 
-  pub fn next(self &mut) Option[&mut Erased] {
+  pub fn next(self: &mut) Option[&mut Erased] {
     while at < cap {
       let v = *(slots + at);
       at = at + 1usize;
@@ -1135,17 +1135,17 @@ pub struct PendingWalk is Iterator[&mut Erased] {
 const recordHead = 64usize;
 
 // The type record of the record in a block: after the Erased value
-fn recordType(block *u8) *TypeRecord {
+fn recordType(block: *u8) *TypeRecord {
   (block + 16usize) as *TypeRecord
 }
 
 // A function that traces nothing, for a record holding no traced reference
-fn noTrace(record *u8, mode u32) {}
+fn noTrace(record: *u8, mode: u32) {}
 
 // A slot for a record of 'size' bytes, its block allocated: the id, which the
 // request's resume message carries. 'drop' is the record's drop function,
-// '&fn(record *u8)', which the table calls if the actor dies with the record
-// parked, and 'trace' the function '&fn(record *u8, mode u32)' handing each
+// '&fn(record: *u8)', which the table calls if the actor dies with the record
+// parked, and 'trace' the function '&fn(record: *u8, mode: u32)' handing each
 // traced reference the record holds to its region (null where it holds none).
 // A PLAIN ID, with no generation: a slot is freed only by the one
 // reply its record is owed, which comes exactly once, and that reply's
@@ -1154,7 +1154,7 @@ fn noTrace(record *u8, mode u32) {}
 // when a timeout or a cancel can free a slot while its reply is still in
 // flight, and nothing has a timeout path yet: an I/O operation's answer
 // comes exactly once too, and its envelope counts the actor the same way.
-pub fn parkReserve(p &mut Pending, size usize, drop *u8, trace *u8) u64 {
+pub fn parkReserve(p: &mut Pending, size: usize, drop: *u8, trace: *u8) u64 {
   if p.free == 0usize {
     var newcap = 8usize;
     if p.cap != 0usize {newcap = p.cap * 2usize;}
@@ -1188,12 +1188,12 @@ pub fn parkReserve(p &mut Pending, size usize, drop *u8, trace *u8) u64 {
     die("actors: out of memory for a continuation");
   }
   var d = drop;
-  let dropfn = mem.readRaw[&fn(record *u8)](&mut d as *(&fn(record *u8)));
+  let dropfn = mem.readRaw[&fn(record: *u8)](&mut d as *(&fn(record: *u8)));
   var tracefn = &noTrace;
   var flags = 1u32;
   if trace as usize != 0usize {
     var t = trace;
-    tracefn = mem.readRaw[&fn(record *u8, mode u32)](&mut t as *(&fn(record *u8, mode u32)));
+    tracefn = mem.readRaw[&fn(record: *u8, mode: u32)](&mut t as *(&fn(record: *u8, mode: u32)));
     flags = 3u32;
   }
   mem.writeRaw[TypeRecord](recordType(block), new TypeRecord(size, 16usize, dropfn, tracefn, flags));
@@ -1204,12 +1204,12 @@ pub fn parkReserve(p &mut Pending, size usize, drop *u8, trace *u8) u64 {
 }
 
 // Where the record parked at id goes in its block, to write it there
-pub fn parked(p &mut Pending, id u64) *u8 {
+pub fn parked(p: &mut Pending, id: u64) *u8 {
   (*(p.slots + usize.from(id)) as *u8) + recordHead
 }
 
 // The reply for id arrived: where its record is, the slot freed
-pub fn unpark(p &mut Pending, id u64) *u8 {
+pub fn unpark(p: &mut Pending, id: u64) *u8 {
   let slot = p.slots + usize.from(id);
   let block = *slot as *u8;
   *slot = p.free * 2usize + 1usize;
@@ -1220,14 +1220,14 @@ pub fn unpark(p &mut Pending, id u64) *u8 {
 
 // A record's block, once its values are moved out: 'record' is where unpark
 // said it was
-pub fn recordFree(record *u8) {
+pub fn recordFree(record: *u8) {
   libc.free(((record as usize) - recordHead) as *u8);
 }
 
 // What an 'await' in a behaviour may wait for besides another actor's reply:
 // an operation started at the seam, an I/O operation above all (the aio
 // package), whose one answer is an R. Its maker erases its type: the operation
-// is a closure the maker wrote, an owner of a 'fn(rp Reply)' holding what the
+// is a closure the maker wrote, an owner of a 'fn(rp: Reply)' holding what the
 // operation needs. The seam calls it, once, with the envelope of the reply the
 // answer goes back in, written as answerNow writes a behaviour's value; and an
 // Awaitable that dies unawaited finalizes the closure and what it holds, which
@@ -1236,12 +1236,12 @@ pub fn recordFree(record *u8) {
 // The compiler generates the seam's call (startAwait). R is in no field: it is
 // the type the 'await' gives, which the closure promises to write
 pub struct Awaitable[R] is Move {
-  start Uni[fn(rp Reply)];
+  start: Uni[fn(rp: Reply)];
 
   // An operation from the closure that starts it (a closure literal, or any
   // callable of that signature)
-  pub fn make[F fn(rp Reply)](start F) Awaitable[R] {
-    new Awaitable[R](new Uni[fn(rp Reply)](start))
+  pub fn make[F: fn(rp: Reply)](start: F) Awaitable[R] {
+    new Awaitable[R](new Uni[fn(rp: Reply)](start))
   }
 }
 
@@ -1249,7 +1249,7 @@ pub struct Awaitable[R] is Move {
 // by the generated code, which finalizes nothing of it, so the closure is moved
 // out here, called, and finalized when the call has returned. Every
 // Awaitable[R] is laid out alike, whatever its R
-pub fn startAwait(a *u8, rp Reply) {
+pub fn startAwait(a: *u8, rp: Reply) {
   var aw = mem.readRaw[Awaitable[u8]](a as *Awaitable[u8]);
   var r = rp;
   r.op = 1u8;
@@ -1279,78 +1279,78 @@ pub const defaultBatch = 100u32;
 
 // One worker: an OS thread with its run queue
 struct Worker {
-  pub before Array[u8, 64];
-  pub head u64;                // stealers' and owner's: the next position to take
-  pub gap Array[u8, 56];
-  pub tail u64;                // owner's: the next position to fill
-  pub started u64;             // activations this worker began (SeqCst stores)
-  pub ended u64;               // activations this worker ended (SeqCst stores)
-  pub gap2 Array[u8, 40];
-  pub sched *Sched;
-  pub index u32;
-  pub tick u32;
-  pub rng u32;
-  pub stat *StatSlot;          // this worker's counts for stats(), in the block that outlives the stop (STATS, below), not in this struct, which the stop frees
-  pub gap3 Array[u8, 80];
-  pub ring Array[*Header, 1024];
-  pub gap4 Array[u8, 64];
-  pub tasks TaskDeque;         // the loop pieces this worker has split off (parallel.cone)
+  pub before: Array[u8, 64];
+  pub head: u64;                // stealers' and owner's: the next position to take
+  pub gap: Array[u8, 56];
+  pub tail: u64;                // owner's: the next position to fill
+  pub started: u64;             // activations this worker began (SeqCst stores)
+  pub ended: u64;               // activations this worker ended (SeqCst stores)
+  pub gap2: Array[u8, 40];
+  pub sched: *Sched;
+  pub index: u32;
+  pub tick: u32;
+  pub rng: u32;
+  pub stat: *StatSlot;          // this worker's counts for stats(), in the block that outlives the stop (STATS, below), not in this struct, which the stop frees
+  pub gap3: Array[u8, 80];
+  pub ring: Array[*Header, 1024];
+  pub gap4: Array[u8, 64];
+  pub tasks: TaskDeque;         // the loop pieces this worker has split off (parallel.cone)
 }
 
 // The runtime: its workers, the inject queue, and how workers sleep
 struct Sched {
-  pub before Array[u8, 64];
-  pub sleepers Atomic[u32];    // workers in the idle path, asleep or about to be
-  pub searching Atomic[u32];   // 1 while a woken worker looks for work
-  pub epoch Atomic[u32];       // the futex word idle workers sleep on
-  pub quiet Atomic[u32];       // the futex word the stop sleeps on
-  pub done Atomic[u32];        // 1 once the stop has begun
-  pub stopping Atomic[u32];    // 1 once the workers are to stop
-  pub gap Array[u8, 40];
-  pub lock sync.Mutex;         // guards the inject queue's list
-  pub injectHead *Header;
-  pub injectTail *Header;
-  pub injectLen u64;           // how many are in it (atomic)
-  pub extStarted u64;          // activations begun off the workers (atomic)
-  pub gap2 Array[u8, 32];
-  pub nworkers u32;
-  pub batch u32;
-  pub workers *Worker;
-  pub threads *thread.Thread[u32];
-  pub extTasks TaskDeque;      // the pieces of a loop begun off the workers (parallel.cone)
-  pub stealRot u32;            // where the next steal of a piece starts looking (atomic)
-  pub liveScheduled u64;       // loops begun with parallelRangeThen not yet finished (atomic)
+  pub before: Array[u8, 64];
+  pub sleepers: Atomic[u32];    // workers in the idle path, asleep or about to be
+  pub searching: Atomic[u32];   // 1 while a woken worker looks for work
+  pub epoch: Atomic[u32];       // the futex word idle workers sleep on
+  pub quiet: Atomic[u32];       // the futex word the stop sleeps on
+  pub done: Atomic[u32];        // 1 once the stop has begun
+  pub stopping: Atomic[u32];    // 1 once the workers are to stop
+  pub gap: Array[u8, 40];
+  pub lock: sync.Mutex;         // guards the inject queue's list
+  pub injectHead: *Header;
+  pub injectTail: *Header;
+  pub injectLen: u64;           // how many are in it (atomic)
+  pub extStarted: u64;          // activations begun off the workers (atomic)
+  pub gap2: Array[u8, 32];
+  pub nworkers: u32;
+  pub batch: u32;
+  pub workers: *Worker;
+  pub threads: *thread.Thread[u32];
+  pub extTasks: TaskDeque;      // the pieces of a loop begun off the workers (parallel.cone)
+  pub stealRot: u32;            // where the next steal of a piece starts looking (atomic)
+  pub liveScheduled: u64;       // loops begun with parallelRangeThen not yet finished (atomic)
 }
 
 // The running runtime, or 0: before the first actor, and once stopped. Every
 // send and reply reads it on whichever thread it runs, while the first actor
 // writes it (startWorkers) and the stop does (stopWorkers): an atomic held by an
 // 'let' global, set to 0 in the module's 'init' (below)
-let running Atomic[usize];
+let running: Atomic[usize];
 
 // The worker this thread is, or 0
-var @threadlocal me usize = 0usize;
+var @threadlocal me: usize = 0usize;
 
-fn workerAt(s *Sched, i u32) *Worker {
+fn workerAt(s: *Sched, i: u32) *Worker {
   (*s).workers + usize.from(i)
 }
 
-fn ringAt(w *Worker, pos u64) **Header {
+fn ringAt(w: *Worker, pos: u64) **Header {
   (&(*w).ring as **Header) + usize.from(pos & queueMask)
 }
 
-fn ld32(p *u32) u32 {mem.atomicLoad[u32](p, MemOrder.SeqCst)}
-fn ld64(p *u64) u64 {mem.atomicLoad[u64](p, MemOrder.SeqCst)}
+fn ld32(p: *u32) u32 {mem.atomicLoad[u32](p, MemOrder.SeqCst)}
+fn ld64(p: *u64) u64 {mem.atomicLoad[u64](p, MemOrder.SeqCst)}
 
 // Add one to a count only its worker writes, which stats() reads meanwhile
-fn tally(p *u64, n u64) {
+fn tally(p: *u64, n: u64) {
   mem.atomicStore[u64](p, mem.atomicLoad[u64](p, MemOrder.Relaxed) + n, MemOrder.Relaxed);
 }
 
 // An actor has become runnable, its mailbox having left idle: count the
 // activation begun, and queue it: on this worker's own queue when a worker
 // sends, else on the inject queue
-fn schedule(h *Header) {
+fn schedule(h: *Header) {
   let s = running.load() as *Sched;
   // Every caller has checked that the runtime runs (a send, a reply) or
   // started it (a new actor), so s is 0 here only if the stop finished
@@ -1374,7 +1374,7 @@ fn schedule(h *Header) {
 
 // Put h on w's own queue; half of it goes to the inject queue when it is
 // full. Wake a sleeping worker to steal when the queue held another already.
-fn localPush(w *Worker, h *Header) {
+fn localPush(w: *Worker, h: *Header) {
   let headp = &(*w).head as *u64;
   let tailp = &(*w).tail as *u64;
   while true {
@@ -1396,7 +1396,7 @@ fn localPush(w *Worker, h *Header) {
 
 // w's queue is full: move half of it, and h, to the inject queue. False when
 // a stealer took from it meanwhile, and there is room again.
-fn overflow(w *Worker, h *Header, hd u64, t u64) bool {
+fn overflow(w: *Worker, h: *Header, hd: u64, t: u64) bool {
   let n = (t - hd) / 2u64;
   // Claim them first, as a stealer would; then they are this thread's alone,
   // and only this thread, their queue's owner, writes their slots
@@ -1423,7 +1423,7 @@ fn overflow(w *Worker, h *Header, hd u64, t u64) bool {
 }
 
 // Take the actor at the front of w's queue, by its owner or a stealer, or 0
-fn queuePop(w *Worker) *Header {
+fn queuePop(w: *Worker) *Header {
   let headp = &(*w).head as *u64;
   let tailp = &(*w).tail as *u64;
   while true {
@@ -1446,7 +1446,7 @@ fn queuePop(w *Worker) *Header {
 
 // Steal half of v's queue into w's own, which is empty: one of them to run,
 // or 0
-fn stealFrom(w *Worker, v *Worker) *Header {
+fn stealFrom(w: *Worker, v: *Worker) *Header {
   let headp = &(*v).head as *u64;
   let tailp = &(*v).tail as *u64;
   let ot = mem.atomicLoad[u64](&(*w).tail as *u64, MemOrder.Relaxed);
@@ -1482,7 +1482,7 @@ fn stealFrom(w *Worker, v *Worker) *Header {
 
 // Put the list first..last, count actors linked through their headers, on
 // the inject queue, and wake a sleeping worker
-fn injectPush(s *Sched, first *Header, last *Header, count u64) {
+fn injectPush(s: *Sched, first: *Header, last: *Header, count: u64) {
   (*s).lock.lock();
   if (*s).injectTail as usize == 0usize {
     (*s).injectHead = first;
@@ -1497,7 +1497,7 @@ fn injectPush(s *Sched, first *Header, last *Header, count u64) {
 
 // Take an actor from the inject queue, and move a few more onto w's own
 // queue: the one to run, or 0
-fn injectPop(s *Sched, w *Worker) *Header {
+fn injectPop(s: *Sched, w: *Worker) *Header {
   let lenp = &(*s).injectLen as *u64;
   if mem.atomicLoad[u64](lenp, MemOrder.SeqCst) == 0u64 {
     return nullHeader();
@@ -1540,7 +1540,7 @@ fn injectPop(s *Sched, w *Worker) *Header {
 }
 
 // Wake one sleeping worker to look for work, unless one is looking already
-fn notify(s *Sched) {
+fn notify(s: *Sched) {
   if ld32(&(*s).sleepers as *u32) == 0u32 {
     return;
   }
@@ -1553,7 +1553,7 @@ fn notify(s *Sched) {
 
 // A worker found work away from its own queue: it is no longer the one
 // looking, and if more work is waiting, another is woken to look
-fn foundAway(w *Worker) {
+fn foundAway(w: *Worker) {
   let s = (*w).sched;
   mem.atomicStore[u32](&(*s).searching as *u32, 0u32, MemOrder.SeqCst);
   if ld64(&(*s).injectLen as *u64) != 0u64 || ld64(&(*w).tail as *u64) != ld64(&(*w).head as *u64)
@@ -1563,7 +1563,7 @@ fn foundAway(w *Worker) {
 }
 
 // The next actor for w to run from its own queue or the inject queue, or 0
-fn findWork(w *Worker) *Header {
+fn findWork(w: *Worker) *Header {
   let s = (*w).sched;
   (*w).tick = (*w).tick + 1u32;
   if (*w).tick % injectEvery == 0u32 {
@@ -1587,7 +1587,7 @@ fn findWork(w *Worker) *Header {
 // Steal an actor, once the worker's own queue, the inject queue and every
 // loop piece (stealTask) have come up empty: half of another worker's queue,
 // starting at one chosen at random. The actor to run, or 0.
-fn stealActor(w *Worker) *Header {
+fn stealActor(w: *Worker) *Header {
   let s = (*w).sched;
   let n = (*s).nworkers;
   var r = (*w).rng;
@@ -1611,7 +1611,7 @@ fn stealActor(w *Worker) *Header {
 }
 
 // Whether any queue holds an actor or a loop piece, looked at without taking one
-fn anyWork(s *Sched) bool {
+fn anyWork(s: *Sched) bool {
   if ld64(&(*s).injectLen as *u64) != 0u64 || taskWork(s) {
     return true;
   }
@@ -1628,7 +1628,7 @@ fn anyWork(s *Sched) bool {
 
 // Run actor h's batch, then queue it again, or mark it idle and let go of
 // the hold taken when it became runnable
-fn runActor(w *Worker, h *Header) {
+fn runActor(w: *Worker, h: *Header) {
   let s = (*w).sched;
   let run = (*h).run;
   let n = run(h, (*s).batch);
@@ -1654,7 +1654,7 @@ fn runActor(w *Worker, h *Header) {
 
 // No work was found: spin a little, then sleep until woken. False once the
 // runtime is stopping.
-fn idle(w *Worker) bool {
+fn idle(w: *Worker) bool {
   let s = (*w).sched;
   var spins = 0u32;
   while spins < idleSpins {
@@ -1687,10 +1687,10 @@ fn idle(w *Worker) bool {
 
 // What a worker thread is handed
 struct WorkerArg is Sendable {
-  pub w *Worker;
+  pub w: *Worker;
 }
 
-fn workerMain(arg WorkerArg) u32 {
+fn workerMain(arg: WorkerArg) u32 {
   let w = arg.w;
   me = w as usize;
   let s = (*w).sched;
@@ -1735,7 +1735,7 @@ fn workerMain(arg WorkerArg) u32 {
 // Whether no actor is active: every activation begun has ended. The ended
 // counts are read first, then the begun: each count only grows, so if the
 // sums agree they agreed at the moment between the two reads.
-fn quiescent(s *Sched) bool {
+fn quiescent(s: *Sched) bool {
   var ended = 0u64;
   var i = 0u32;
   while i < (*s).nworkers {
@@ -1759,26 +1759,26 @@ fn quiescent(s *Sched) bool {
 // How the workers are to run: how many (0, one per logical processor) and
 // how many messages an actor may handle at a turn
 pub struct Options {
-  pub workers u32 = 0u32;
-  pub batch u32 = defaultBatch;
+  pub workers: u32 = 0u32;
+  pub batch: u32 = defaultBatch;
 }
 
 // What the workers have done, counted by them: answered by 'stats'
 pub struct Stats {
-  pub workers u32;
-  pub messages u64;            // messages handled
-  pub activations u64;         // turns: an actor taken from a queue and run
-  pub steals u64;              // times a worker took actors from another's queue
-  pub taskSteals u64;          // loop pieces taken by stealing: from another worker's deque, or from the shared deque (loops begun off the workers) when a worker with no actors to run, or a thread waiting on a loop, takes the oldest piece there (the caller's own loop's, if it began it off the workers); the shared deque's pieces a worker takes ahead of its actors are not counted
+  pub workers: u32;
+  pub messages: u64;            // messages handled
+  pub activations: u64;         // turns: an actor taken from a queue and run
+  pub steals: u64;              // times a worker took actors from another's queue
+  pub taskSteals: u64;          // loop pieces taken by stealing: from another worker's deque, or from the shared deque (loops begun off the workers) when a worker with no actors to run, or a thread waiting on a loop, takes the oldest piece there (the caller's own loop's, if it began it off the workers); the shared deque's pieces a worker takes ahead of its actors are not counted
 }
 
 // What configure set, read when the workers start: atomics, since 'configure'
 // may be called on any thread, held by 'let' globals and set in 'init' (below)
-let chosenWorkers Atomic[u32];
-let chosenBatch Atomic[u32];
+let chosenWorkers: Atomic[u32];
+let chosenBatch: Atomic[u32];
 
 // Starts the workers once, however many threads start a first actor at once
-let startOnce sync.Once;
+let startOnce: sync.Once;
 
 // STATS. 'stats' may be called on any thread at any time, including while the
 // stop frees the Sched and the Workers, so it reads nothing in them. What it
@@ -1792,15 +1792,15 @@ let startOnce sync.Once;
 // Published slots first, then their number, both before the workers run; a
 // 'stats' that finds no number answers all 0.
 struct StatSlot {
-  pub messages u64;            // messages handled
-  pub activations u64;         // turns
-  pub steals u64;              // times a steal took actors from another worker's queue
-  pub gap Array[u8, 40];       // a slot is a cache line, so that no two workers' slots share one
+  pub messages: u64;            // messages handled
+  pub activations: u64;         // turns
+  pub steals: u64;              // times a steal took actors from another worker's queue
+  pub gap: Array[u8, 40];       // a slot is a cache line, so that no two workers' slots share one
 }
 
-let statSlots Atomic[usize];   // the address of the first slot, or 0 before the workers have started
-let statWorkers Atomic[u32];   // how many slots; 0 before the workers have started
-let taskStealsTotal Atomic[u64];   // pieces stealTask took (Relaxed): the oldest of another worker's deque, or of the shared one when a worker idle of actors or a thread waiting on a loop looks there; not what a worker takes from the shared deque ahead of its actors
+let statSlots: Atomic[usize];   // the address of the first slot, or 0 before the workers have started
+let statWorkers: Atomic[u32];   // how many slots; 0 before the workers have started
+let taskStealsTotal: Atomic[u64];   // pieces stealTask took (Relaxed): the oldest of another worker's deque, or of the shared one when a worker idle of actors or a thread waiting on a loop looks there; not what a worker takes from the shared deque ahead of its actors
 
 fn @initpure init() {
   opsStarted = Atomic[u64].of(0u64);
@@ -1828,7 +1828,7 @@ fn final() {
 }
 
 // How the workers are to run, set before the first actor starts them
-pub fn configure(opts Options) {
+pub fn configure(opts: Options) {
   if startOnce.isCompleted() {
     die("actors: configure called after the workers started");
   }
@@ -1884,7 +1884,7 @@ fn startWorkers() {
 
 // Wait until s is quiescent. 'done' says the stop has begun, so that the
 // last worker to go to sleep wakes this thread to look again
-fn quiesce(s *Sched) {
+fn quiesce(s: *Sched) {
   mem.atomicStore[u32](&(*s).done as *u32, 1u32, MemOrder.SeqCst);
   while true {
     let q = ld32(&(*s).quiet as *u32);
@@ -1914,8 +1914,8 @@ pub fn waitQuiet() {
 // many are spent (answered, or dropped without an answer). Each only grows;
 // they are equal when none is outstanding. Not in the Sched, which the stop
 // frees: a reply may be spent while it is freed
-let opsStarted Atomic[u64];
-let opsEnded Atomic[u64];
+let opsStarted: Atomic[u64];
+let opsEnded: Atomic[u64];
 
 // An awaited operation's reply is spent, by its answer (after the answer's
 // push, so that the actor it woke is already counted as scheduled) or by its
@@ -1934,7 +1934,7 @@ fn opSpent() {
 // counts, so equal sums were equal at the moment between; and the started
 // count is read again after quiescent, for an operation an active actor
 // started and an answer then woke and ended, between the two looks
-fn idleNow(s *Sched) bool {
+fn idleNow(s: *Sched) bool {
   let spent = opsEnded.loadOrdered(MemOrder.SeqCst);
   let started = opsStarted.loadOrdered(MemOrder.SeqCst);
   started == spent && quiescent(s) && opsStarted.loadOrdered(MemOrder.SeqCst) == started

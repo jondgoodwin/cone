@@ -33,14 +33,14 @@ const SPIN_LIMIT = 40000u32;   // looks at the generation before a worker parks
 const MIN_PARALLEL = 384usize;
 
 struct WorkerArg is Sendable {
-  pub ctl *u64;
-  pub view *StepView;
-  pub id u32;
-  pub count u32;
+  pub ctl: *u64;
+  pub view: *StepView;
+  pub id: u32;
+  pub count: u32;
 }
 
 // The slice of [lo, hi) that thread t of n runs
-fn sliceOf(lo usize, hi usize, t u32, n u32) (usize, usize) {
+fn sliceOf(lo: usize, hi: usize, t: u32, n: u32) (usize, usize) {
   let total = hi - lo;
   let per = total / usize.from(n);
   let extra = total % usize.from(n);
@@ -50,7 +50,7 @@ fn sliceOf(lo usize, hi usize, t u32, n u32) (usize, usize) {
   (s, e)
 }
 
-fn workerMain(a WorkerArg) i32 {
+fn workerMain(a: WorkerArg) i32 {
   var seen = 0u64;
   while true {
     var spins = 0u32;
@@ -76,10 +76,10 @@ fn workerMain(a WorkerArg) i32 {
 }
 
 pub struct Workers {
-  ctl List[u64];
-  view List[StepView];
-  refs List[thread.ThreadRef];
-  pub count u32;           // threads in all, the stepping thread included
+  ctl: List[u64];
+  view: List[StepView];
+  refs: List[thread.ThreadRef];
+  pub count: u32;           // threads in all, the stepping thread included
 
   // No workers: every region runs on the stepping thread
   pub fn none() Workers {
@@ -87,7 +87,7 @@ pub struct Workers {
   }
 
   // 'count' threads in all (this one and count - 1 more). 1 is none.
-  pub fn make(count u32) Workers {
+  pub fn make(count: u32) Workers {
     var w = Workers.none();
     if count < 2u32 { return w; }
     var i = 0usize;
@@ -107,11 +107,11 @@ pub struct Workers {
     w
   }
 
-  pub fn isParallel(self &) bool {count > 1u32}
+  pub fn isParallel(self: &) bool {count > 1u32}
 
   // Run a loop over [lo, hi) of 'view': this thread's slice, and the others' by
   // the workers; returns when all are done
-  pub fn run(self &mut, view &StepView, kind u32, lo usize, hi usize) {
+  pub fn run(self: &mut, view: &StepView, kind: u32, lo: usize, hi: usize) {
     if count < 2u32 || hi - lo < MIN_PARALLEL {
       runRegion(view, kind, lo, hi);
       return;
@@ -135,7 +135,7 @@ pub struct Workers {
   }
 
   // Tell the workers to leave
-  pub fn stop(self &mut) {
+  pub fn stop(self: &mut) {
     if count < 2u32 { return; }
     let ctl = ctl.viewMut() as *u64;
     mem.atomicStore[u64](ctl + W_STOP, 1u64, MemOrder.SeqCst);
@@ -148,7 +148,7 @@ pub struct Workers {
     count = 1u32;
   }
 
-  fn final(self &uni) {
+  fn final(self: &uni) {
     if count >= 2u32 {
       let ctl = ctl.viewMut() as *u64;
       mem.atomicStore[u64](ctl + W_STOP, 1u64, MemOrder.SeqCst);

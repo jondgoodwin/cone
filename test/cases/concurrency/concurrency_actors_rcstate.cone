@@ -26,45 +26,45 @@ import thread;
 import actors;
 
 struct Results {
-  pub sum Atomic[u64];
-  pub notes Atomic[u64];
-  pub agree Atomic[u64];
-  pub finals Atomic[u64];
+  pub sum: Atomic[u64];
+  pub notes: Atomic[u64];
+  pub agree: Atomic[u64];
+  pub finals: Atomic[u64];
 }
 
-let results Results;
+let results: Results;
 
 fn @initpure init() {
   results = new Results(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64));
 }
 
 struct Log {
-  pub sum u64;
+  pub sum: u64;
 }
 
 struct Count {
-  pub n u64;
+  pub n: u64;
 }
 
 // ---- Keeper: its state holds Rc and Uni owners ----
 
 actor Keeper {
-  log Rc[mut, Log];
-  logToo Rc[mut, Log];
-  count Uni[Count];
+  log: Rc[mut, Log];
+  logToo: Rc[mut, Log];
+  count: Uni[Count];
 
-  fn init(self &new) {
+  fn init(self: &new) {
     let l = new Rc[mut, Log](0u64);
     *self = new Self(l, l, new Uni[Count](0u64));
   }
 
-  pub async do note(self, n u64) {
+  pub async do note(self, n: u64) {
     let c = &mut count.n;
     *c = *c + 1u64;
     add(&mut logToo.sum, n);
   }
 
-  fn final(self &uni) {
+  fn final(self: &uni) {
     results.sum.add(log.sum);
     results.notes.add(count.n);
     if log.sum == logToo.sum {
@@ -75,24 +75,24 @@ actor Keeper {
 }
 
 // Add to a log's sum through a borrow of it
-fn add(s &mut u64, n u64) {
+fn add(s: &mut u64, n: u64) {
   *s = *s + n;
 }
 
 // ---- Auditor: keeps keepers' handles in its state and uses them ----
 
 actor Auditor {
-  watched List[Keeper];
+  watched: List[Keeper];
 
-  fn init(self &new) {
+  fn init(self: &new) {
     *self = new Self(List[Keeper].empty());
   }
 
-  pub async do watch(self, k Keeper) {
+  pub async do watch(self, k: Keeper) {
     watched.push(k);
   }
 
-  pub async do drive(self, times u64) {
+  pub async do drive(self, times: u64) {
     var i = 0usize;
     while i < watched.len() {
       var t = 1u64;
@@ -110,7 +110,7 @@ actor Auditor {
 }
 
 // A thread's work: 50 notes, 1000 each, through the handle it was handed
-fn fromThread(k Keeper) u64 {
+fn fromThread(k: Keeper) u64 {
   var i = 0u64;
   while i < 50u64 {
     k.note(1000u64);

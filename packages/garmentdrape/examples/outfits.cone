@@ -34,19 +34,19 @@ const W = 960u32;
 const H = 640u32;
 
 struct Gfx {
-  renderer Renderer;
-  color Texture;
-  depth Texture;
-  readback Buffer;
-  cubeMesh MeshHandle;
-  ground MaterialHandle;
-  skin MaterialHandle;
-  cloth PipelineHandle;
-  sun Light;
-  prefix *u8;
+  renderer: Renderer;
+  color: Texture;
+  depth: Texture;
+  readback: Buffer;
+  cubeMesh: MeshHandle;
+  ground: MaterialHandle;
+  skin: MaterialHandle;
+  cloth: PipelineHandle;
+  sun: Light;
+  prefix: *u8;
 }
 
-fn save(g &Gfx, name &str, p *u8) bool {
+fn save(g: &Gfx, name: &str, p: *u8) bool {
   if (g.prefix as usize) == 0usize { return true; }
   var file = String.empty();
   var i = 0usize;
@@ -59,9 +59,9 @@ fn save(g &Gfx, name &str, p *u8) bool {
   false
 }
 
-fn slab(center Vec3, size Vec3) Mat4 { Mat4.fromTrs(center, Quat.identity(), size) }
+fn slab(center: Vec3, size: Vec3) Mat4 { Mat4.fromTrs(center, Quat.identity(), size) }
 
-fn sortInto(v &mut List[i64]) {
+fn sortInto(v: &mut List[i64]) {
   var i = 1usize;
   while i < v.len() {
     let x = *v[i];
@@ -72,7 +72,7 @@ fn sortInto(v &mut List[i64]) {
   }
 }
 
-fn cost(what &str, times &mut List[i64]) {
+fn cost(what: &str, times: &mut List[i64]) {
   if times.len() == 0usize { return; }
   sortInto(times);
   print <- what; print <- ": p50 "; print <- *times[times.len() / 2usize]; print <- " us, p95 "; print <- *times[times.len() * 95usize / 100usize];
@@ -81,26 +81,26 @@ fn cost(what &str, times &mut List[i64]) {
 
 // A mannequin and what it wears, with the things the GPU holds for them
 struct Wearer {
-  rig BodyRig;
-  outfit Outfit;
-  bodyMesh MeshHandle;
-  shellMeshes List[MeshHandle];
-  shellMaterials List[MaterialHandle];
-  views List[GarmentView];
-  walker Walker;
-  pose Pose;
-  models List[Transform3];
-  world List[Transform3];
-  mats List[Mat4];
-  baseX f32;
-  kind i32;
+  rig: BodyRig;
+  outfit: Outfit;
+  bodyMesh: MeshHandle;
+  shellMeshes: List[MeshHandle];
+  shellMaterials: List[MaterialHandle];
+  views: List[GarmentView];
+  walker: Walker;
+  pose: Pose;
+  models: List[Transform3];
+  world: List[Transform3];
+  mats: List[Mat4];
+  baseX: f32;
+  kind: i32;
 }
 
-fn bonesOf(b &mut List[usize], a usize, c usize, d usize, e usize, f usize) {
+fn bonesOf(b: &mut List[usize], a: usize, c: usize, d: usize, e: usize, f: usize) {
   b.push(a); b.push(c); b.push(d); b.push(e); b.push(f);
 }
 
-fn shirtSpec(name &str, layer u32) ShellSpec {
+fn shirtSpec(name: &str, layer: u32) ShellSpec {
   var sh = ShellSpec.make(name);
   sh.bones.push(SPINE); sh.bones.push(CHEST); sh.bones.push(CLAVICLE_L); sh.bones.push(CLAVICLE_R);
   sh.bones.push(UPPER_ARM_L); sh.bones.push(UPPER_ARM_R); sh.bones.push(FOREARM_L); sh.bones.push(FOREARM_R);
@@ -108,7 +108,7 @@ fn shirtSpec(name &str, layer u32) ShellSpec {
   sh
 }
 
-fn legsSpec(name &str, layer u32) ShellSpec {
+fn legsSpec(name: &str, layer: u32) ShellSpec {
   var b = ShellSpec.make(name);
   bonesOf(&mut b.bones, PELVIS, THIGH_L, THIGH_R, SHIN_L, SHIN_R);
   b.layer = layer;
@@ -116,7 +116,7 @@ fn legsSpec(name &str, layer u32) ShellSpec {
 }
 
 // Dress a new wearer: `kind` 0 the peasant, 1 the coat, 2 the cape
-fn makeWearer(g &mut Gfx, device &mut Device, kind i32, baseX f32, threads u32) Wearer {
+fn makeWearer(g: &mut Gfx, device: &mut Device, kind: i32, baseX: f32, threads: u32) Wearer {
   let rig = humanoidMannequin(1.75);
   let names = humanoidNames();
   var shells = List[ShellSpec].empty();
@@ -229,7 +229,7 @@ fn makeWearer(g &mut Gfx, device &mut Device, kind i32, baseX f32, threads u32) 
 }
 
 // The wearer's bones in the world: the model space ones carried to the point it stands on
-fn toWorld(w &mut Wearer, at Vec3) {
+fn toWorld(w: &mut Wearer, at: Vec3) {
   let root = new Transform3(at, Quat.identity(), new Vec3(1., 1., 1.));
   w.world.clear();
   var i = 0usize;
@@ -237,7 +237,7 @@ fn toWorld(w &mut Wearer, at Vec3) {
 }
 
 // The wearer standing at rest at its place, its garments carried to the pose
-fn standAtRest(w &mut Wearer) {
+fn standAtRest(w: &mut Wearer) {
   let rp = w.rig.skeleton.restPose();
   w.rig.skeleton.modelTransforms(&rp, &mut w.models);
   toWorld(w, new Vec3(w.baseX, 0., 0.));
@@ -245,7 +245,7 @@ fn standAtRest(w &mut Wearer) {
 }
 
 // One frame of the walk: the walker, the bones in the world, the garments
-fn stepWearer(w &mut Wearer, z f32, speed f32, dt f32, wind Vec3, workers &mut Workers) {
+fn stepWearer(w: &mut Wearer, z: f32, speed: f32, dt: f32, wind: Vec3, workers: &mut Workers) {
   let at = new Vec3(w.baseX, 0., z);
   w.walker.update(&w.rig.skeleton, &mut w.pose, &mut w.models, at, 0., speed, 0., true, &ground, dt);
   toWorld(w, at);
@@ -253,7 +253,7 @@ fn stepWearer(w &mut Wearer, z f32, speed f32, dt f32, wind Vec3, workers &mut W
 }
 
 // Add the wearer to the draw list, its bones at `world`
-fn drawWearer(g &mut Gfx, device &mut Device, w &mut Wearer, list &mut DrawList) {
+fn drawWearer(g: &mut Gfx, device: &mut Device, w: &mut Wearer, list: &mut DrawList) {
   w.rig.skinMatrices(&w.world, &mut w.mats);
   list.addSkinned(w.bodyMesh, g.skin, Mat4.identity(), w.mats.view());
   var s = 0usize;
@@ -271,7 +271,7 @@ fn drawWearer(g &mut Gfx, device &mut Device, w &mut Wearer, list &mut DrawList)
   }
 }
 
-fn drawFrame(g &mut Gfx, device &mut Device, camera &Camera, list &DrawList) {
+fn drawFrame(g: &mut Gfx, device: &mut Device, camera: &Camera, list: &DrawList) {
   var encoder = device.createCommandEncoder();
   g.renderer.render(device, &mut encoder, &g.color, &g.depth, camera, &g.sun, list);
   device.queue.submit(encoder.finish());
@@ -279,7 +279,7 @@ fn drawFrame(g &mut Gfx, device &mut Device, camera &Camera, list &DrawList) {
   device.waitIdle();
 }
 
-fn shoot(g &mut Gfx, device &mut Device, camera &Camera, list &DrawList, name &str) bool {
+fn shoot(g: &mut Gfx, device: &mut Device, camera: &Camera, list: &DrawList, name: &str) bool {
   var encoder = device.createCommandEncoder();
   g.renderer.render(device, &mut encoder, &g.color, &g.depth, camera, &g.sun, list);
   encoder.copyTextureToBuffer(&g.color, &g.readback);
@@ -290,7 +290,7 @@ fn shoot(g &mut Gfx, device &mut Device, camera &Camera, list &DrawList, name &s
   save(g, name, p)
 }
 
-fn camera(eye Vec3, at Vec3) Camera {
+fn camera(eye: Vec3, at: Vec3) Camera {
   var c = Camera.make();
   c.lookAt(eye, at, new Vec3(0., 1., 0.));
   c.fov = radians(34.);
@@ -298,12 +298,12 @@ fn camera(eye Vec3, at Vec3) Camera {
   c
 }
 
-fn ground(z f32, x f32) f32 { 0. }
+fn ground(z: f32, x: f32) f32 { 0. }
 
 // What the package promises, measured on the walk: every garment's particles are finite, none is inside a body proxy
 // the garment sees, and no particle of a layer is behind the surface of the layer beneath it (the shirts' and the
 // waistcoat's). Returns the number of failed checks.
-fn checkWearer(w &mut Wearer, label &str) i32 {
+fn checkWearer(w: &mut Wearer, label: &str) i32 {
   var bad = 0i32;
   var gi = 0usize;
   while gi < w.outfit.garments.len() {

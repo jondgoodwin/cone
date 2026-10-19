@@ -13,97 +13,97 @@ pub const KTriangle = 7;     // three points a, b, c: what a mesh or heightfield
 // A face of a convex hull: the plane normal . x = d, and its vertices, in
 // counterclockwise order seen from outside, are faceIdx[start .. start + count]
 pub struct HullFace {
-  pub normal Vec3;
-  pub d f32;
-  pub start u32;
-  pub count u32;
+  pub normal: Vec3;
+  pub d: f32;
+  pub start: u32;
+  pub count: u32;
 }
 
 // A node of a triangle BVH: its box, and either two children (count 0: the
 // left child is the next node, the right is 'first') or 'count' triangles
 // starting at 'first' in the mesh's reordered triangle list
 pub struct BvhNode {
-  pub lo Vec3;
-  pub hi Vec3;
-  pub first u32;
-  pub count u32;
+  pub lo: Vec3;
+  pub hi: Vec3;
+  pub first: u32;
+  pub count: u32;
 }
 
 // A triangle's corners
 pub struct Tri {
-  pub a Vec3;
-  pub b Vec3;
-  pub c Vec3;
+  pub a: Vec3;
+  pub b: Vec3;
+  pub c: Vec3;
 }
 
 // Volume, centre of mass and inertia (about the centre, unit density)
 pub struct MassProps {
-  pub volume f32;
-  pub com Vec3;
-  pub inertia Mat3;
+  pub volume: f32;
+  pub com: Vec3;
+  pub inertia: Mat3;
 }
 
 // One shape, in its own local space. A closed set told apart by 'kind' (a
 // flat tagged struct, so a pair table can dispatch on two kinds); a shape is
 // built once and then only read, so many bodies may share one.
 pub struct Prim {
-  pub kind i32;
-  pub radius f32;
-  pub half Vec3;
-  pub verts List[Vec3];       // hull and mesh vertices
-  pub faceIdx List[u32];      // hull
-  pub faces List[HullFace];   // hull
-  pub tris List[u32];         // mesh: three vertex numbers a triangle, in BVH order
-  pub triId List[u32];        // mesh: the triangle's number in the order the mesh was given
-  pub bvh List[BvhNode];      // mesh
-  pub edgeActive List[u8];    // mesh, per triangle in BVH order: bit e set if edge e (corner e to e+1) is active
-  pub heights List[f32];      // heightfield: rows of 'cols' samples
-  pub cols u32;
-  pub rows u32;
-  pub spacing Vec2;           // heightfield: metres between samples along x and along z
-  pub origin Vec3;            // heightfield: the place of sample (0, 0)
-  pub a Vec3;                 // triangle
-  pub b Vec3;
-  pub c Vec3;
+  pub kind: i32;
+  pub radius: f32;
+  pub half: Vec3;
+  pub verts: List[Vec3];       // hull and mesh vertices
+  pub faceIdx: List[u32];      // hull
+  pub faces: List[HullFace];   // hull
+  pub tris: List[u32];         // mesh: three vertex numbers a triangle, in BVH order
+  pub triId: List[u32];        // mesh: the triangle's number in the order the mesh was given
+  pub bvh: List[BvhNode];      // mesh
+  pub edgeActive: List[u8];    // mesh, per triangle in BVH order: bit e set if edge e (corner e to e+1) is active
+  pub heights: List[f32];      // heightfield: rows of 'cols' samples
+  pub cols: u32;
+  pub rows: u32;
+  pub spacing: Vec2;           // heightfield: metres between samples along x and along z
+  pub origin: Vec3;            // heightfield: the place of sample (0, 0)
+  pub a: Vec3;                 // triangle
+  pub b: Vec3;
+  pub c: Vec3;
 
-  pub fn blank(kind i32) Prim {
+  pub fn blank(kind: i32) Prim {
     new Prim(kind, 0., new Vec3(0., 0., 0.), List[Vec3].empty(), List[u32].empty(), List[HullFace].empty(),
       List[u32].empty(), List[u32].empty(), List[BvhNode].empty(), List[u8].empty(), List[f32].empty(), 0u32, 0u32,
       new Vec2(1., 1.), new Vec3(0., 0., 0.), new Vec3(0., 0., 0.), new Vec3(0., 0., 0.), new Vec3(0., 0., 0.))
   }
 
-  pub fn sphere(radius f32) Prim { var p = Prim.blank(KSphere); p.radius = radius; p }
-  pub fn box(half Vec3) Prim { var p = Prim.blank(KBox); p.half = half; p }
+  pub fn sphere(radius: f32) Prim { var p = Prim.blank(KSphere); p.radius = radius; p }
+  pub fn box(half: Vec3) Prim { var p = Prim.blank(KBox); p.half = half; p }
   // A capsule whose segment is 2 * halfHeight long: 2 * (halfHeight + radius) tall in all
-  pub fn capsule(radius f32, halfHeight f32) Prim {
+  pub fn capsule(radius: f32, halfHeight: f32) Prim {
     var p = Prim.blank(KCapsule); p.radius = radius; p.half = new Vec3(radius, halfHeight, radius); p
   }
-  pub fn cylinder(radius f32, halfHeight f32) Prim {
+  pub fn cylinder(radius: f32, halfHeight: f32) Prim {
     var p = Prim.blank(KCylinder); p.radius = radius; p.half = new Vec3(radius, halfHeight, radius); p
   }
-  pub fn triangle(a Vec3, b Vec3, c Vec3) Prim {
+  pub fn triangle(a: Vec3, b: Vec3, c: Vec3) Prim {
     var p = Prim.blank(KTriangle); p.a = a; p.b = b; p.c = c; p
   }
 
   // A heightfield of cols x rows samples (row-major, row = z), spaced
   // 'dx' and 'dz' apart, sample (0, 0) at 'origin' (whose y is added to every height)
-  pub fn heightfield(heights List[f32], cols u32, rows u32, dx f32, dz f32, origin Vec3) Prim {
+  pub fn heightfield(heights: List[f32], cols: u32, rows: u32, dx: f32, dz: f32, origin: Vec3) Prim {
     var p = Prim.blank(KHeightfield);
     p.heights = heights; p.cols = cols; p.rows = rows; p.spacing = new Vec2(dx, dz); p.origin = origin; p
   }
 
-  pub fn isConvex(self &) bool {
+  pub fn isConvex(self: &) bool {
     kind == KSphere || kind == KBox || kind == KCapsule || kind == KCylinder || kind == KHull || kind == KTriangle
   }
 
   // The part of the shape that is rounded: GJK works on the core (a point for a
   // sphere, a segment for a capsule) and adds this back (Jolt's convex radius)
-  pub fn coreRadius(self &) f32 {
+  pub fn coreRadius(self: &) f32 {
     if kind == KSphere || kind == KCapsule { radius } else { 0. }
   }
 
   // The farthest point of the shape's core along dir (local space)
-  pub fn supportCore(self &, dir Vec3) Vec3 {
+  pub fn supportCore(self: &, dir: Vec3) Vec3 {
     if kind == KSphere { return new Vec3(0., 0., 0.); }
     if kind == KBox {
       return new Vec3(if dir.x < 0. { -half.x } else { half.x }, if dir.y < 0. { -half.y } else { half.y },
@@ -137,7 +137,7 @@ pub struct Prim {
   }
 
   // The farthest point of the whole shape along dir (local space)
-  pub fn support(self &, dir Vec3) Vec3 {
+  pub fn support(self: &, dir: Vec3) Vec3 {
     let c0 = supportCore(dir);
     if coreRadius() > 0. {
       let l = dir.length();
@@ -147,7 +147,7 @@ pub struct Prim {
   }
 
   // The box round the shape in its own space
-  pub fn localBounds(self &) Aabb3 {
+  pub fn localBounds(self: &) Aabb3 {
     if kind == KSphere { return Aabb3.fromCenter(new Vec3(0., 0., 0.), new Vec3(radius, radius, radius)); }
     if kind == KBox { return new Aabb3(-half, half); }
     if kind == KCapsule { return Aabb3.fromCenter(new Vec3(0., 0., 0.), new Vec3(radius, half.y + radius, radius)); }
@@ -169,7 +169,7 @@ pub struct Prim {
   }
 
   // The box round the shape placed by 'x'
-  pub fn bounds(self &, x Rigid) Aabb3 {
+  pub fn bounds(self: &, x: Rigid) Aabb3 {
     if isConvex() {
       let px = x.apply(support(x.unrotate(new Vec3(1., 0., 0.))));
       let nx = x.apply(support(x.unrotate(new Vec3(-1., 0., 0.))));
@@ -183,7 +183,7 @@ pub struct Prim {
   }
 
   // The surface of a hull (faces fanned) or mesh as triangles, outward wound
-  pub fn surfaceTriangles(self &) List[Tri] {
+  pub fn surfaceTriangles(self: &) List[Tri] {
     var out = List[Tri].empty();
     if kind == KMesh {
       var t = 0usize;
@@ -209,7 +209,7 @@ pub struct Prim {
   }
 
   // The volume, centre of mass and inertia tensor about the centre of mass, at density 1
-  pub fn massProps(self &) MassProps {
+  pub fn massProps(self: &) MassProps {
     if kind == KSphere {
       let v = 4. / 3. * pi * radius * radius * radius;
       let i = 0.4 * v * radius * radius;
@@ -248,7 +248,7 @@ pub struct Prim {
 }
 
 // A local box placed by a transform: the box round it
-pub fn boundsOf(b Aabb3, x Rigid) Aabb3 {
+pub fn boundsOf(b: Aabb3, x: Rigid) Aabb3 {
   let c = b.center();
   let e = b.halfExtents();
   let m = Mat3.fromQuat(x.rot);
@@ -262,7 +262,7 @@ pub fn boundsOf(b Aabb3, x Rigid) Aabb3 {
 // Eberly, "Polyhedral Mass Properties (Revisited)": a closed surface cut
 // into tetrahedra from the origin, whose second moments are summed
 // (V/20 * (sum vi vi^T + S S^T)), then moved to the centre of mass
-pub fn polyhedronProps(tris List[Tri]) MassProps {
+pub fn polyhedronProps(tris: List[Tri]) MassProps {
   var vol = 0.f;
   var cx = 0.f;
   var cy = 0.f;
@@ -312,13 +312,13 @@ pub fn polyhedronProps(tris List[Tri]) MassProps {
 // compound itself, its own parts. A recursive type (it holds a list of itself,
 // which Cone builds since #548), so compounds nest to any depth.
 pub struct Part {
-  pub xf Rigid;
-  pub first usize;
-  pub count usize;
-  pub kids List[Part];
+  pub xf: Rigid;
+  pub first: usize;
+  pub count: usize;
+  pub kids: List[Part];
 }
 
-fn shiftParts(ps &mut List[Part], offset usize) {
+fn shiftParts(ps: &mut List[Part], offset: usize) {
   var i = 0usize;
   while i < ps.len() {
     let r = &mut ps[i];
@@ -331,8 +331,8 @@ fn shiftParts(ps &mut List[Part], offset usize) {
 // A prim and where it sits in the outermost compound's space: what the
 // narrow phase and the queries walk, with every nested transform composed
 pub struct Leaf {
-  pub xf Rigid;
-  pub prim Prim;
+  pub xf: Rigid;
+  pub prim: Prim;
 }
 
 // What a body holds: one prim, or a compound whose parts may be compounds in
@@ -342,20 +342,20 @@ pub struct Leaf {
 // indices into it. 'parts' keeps the nesting itself (each Part names the run of
 // leaves it covers). Both are empty for a plain shape.
 pub struct Shape {
-  pub prim Prim;
-  pub parts List[Part];
-  pub leaves List[Leaf];
+  pub prim: Prim;
+  pub parts: List[Part];
+  pub leaves: List[Leaf];
 
-  pub fn single(p Prim) Shape { new Shape(p, List[Part].empty(), List[Leaf].empty()) }
+  pub fn single(p: Prim) Shape { new Shape(p, List[Part].empty(), List[Leaf].empty()) }
   pub fn compound() Shape { new Shape(Prim.blank(KSphere), List[Part].empty(), List[Leaf].empty()) }
-  pub fn isCompound(self &) bool { leaves.len() > 0usize }
-  pub fn add(self &mut, p Prim, xf Rigid) {
+  pub fn isCompound(self: &) bool { leaves.len() > 0usize }
+  pub fn add(self: &mut, p: Prim, xf: Rigid) {
     let first = leaves.len();
     leaves.push(new Leaf(xf, p));
     parts.push(new Part(xf, first, 1usize, List[Part].empty()));
   }
   // A shape, itself a prim or a compound, placed in this one (it is consumed)
-  pub fn addShape(self &mut, s Shape, xf Rigid) {
+  pub fn addShape(self: &mut, s: Shape, xf: Rigid) {
     var src = s;
     if src.leaves.len() == 0usize {
       var tmp = Prim.blank(KSphere);
@@ -375,9 +375,9 @@ pub struct Shape {
     shiftParts(&mut kids, first);
     parts.push(new Part(xf, first, n, kids));
   }
-  pub fn partCount(self &) usize { if leaves.len() > 0usize { leaves.len() } else { 1usize } }
+  pub fn partCount(self: &) usize { if leaves.len() > 0usize { leaves.len() } else { 1usize } }
 
-  pub fn bounds(self &, x Rigid) Aabb3 {
+  pub fn bounds(self: &, x: Rigid) Aabb3 {
     if leaves.len() == 0usize { return prim.bounds(x); }
     var b = Aabb3.empty();
     var i = 0usize;
@@ -391,7 +391,7 @@ pub struct Shape {
 
   // Mass properties of the whole (leaves' volumes added, the inertia moved to
   // the common centre of mass by the parallel-axis theorem)
-  pub fn massProps(self &) MassProps {
+  pub fn massProps(self: &) MassProps {
     if leaves.len() == 0usize { return prim.massProps(); }
     var vol = 0.f;
     var sum = new Vec3(0., 0., 0.);

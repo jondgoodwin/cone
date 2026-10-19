@@ -11,10 +11,10 @@
 // over a height map would not see well (a mortar joint's depth, a crack):
 // 1 open, lower shut
 pub struct PatternTexel {
-  pub height f32;
-  pub colour Color;
-  pub rough f32;
-  pub cavity f32;
+  pub height: f32;
+  pub colour: Color;
+  pub rough: f32;
+  pub cavity: f32;
 }
 
 // A square tile of PatternTexels, 'size' texels a side and 'tileMetres'
@@ -22,10 +22,10 @@ pub struct PatternTexel {
 // (y + 1/2) / size up the tile, in tile units; the pattern is a function of
 // that point which repeats every 1.
 pub struct PatternField {
-  pub size i32;
-  pub tileMetres f32;
-  pub relief f32;
-  pub texels List[PatternTexel];
+  pub size: i32;
+  pub tileMetres: f32;
+  pub relief: f32;
+  pub texels: List[PatternTexel];
 
   // A field of 'size' squared zero texels, which a baker fills a row to a pass:
   //
@@ -35,7 +35,7 @@ pub struct PatternField {
   //
   // (the texels are one buffer, so that a pass writes all of a texel's values
   // through the one item it is given)
-  pub fn empty(size i32, tileMetres f32, relief f32) PatternField {
+  pub fn empty(size: i32, tileMetres: f32, relief: f32) PatternField {
     let n = usize.from(size * size);
     var texels = List[PatternTexel].withCapacity(n);
     texels.resize(n, new PatternTexel(0., new Color(0., 0., 0., 1.), 0., 0.));
@@ -47,7 +47,7 @@ pub struct PatternField {
 // a row to a pass over every core. 'f' is a closure (or a function) of the
 // pattern's parameters, such as (u, v) => brickTexel(p, u, v); the static bound
 // compiles one copy of the loop per pattern, so the call inlines.
-pub fn fillTexels[F fn(u f32, v f32) PatternTexel](field &uni PatternField, f &F) {
+pub fn fillTexels[F: fn(u: f32, v: f32) PatternTexel](field: &uni PatternField, f: &F) {
   let size = field.size;
   fillGrid(&uni field.texels, usize.from(size), (x, y) => f(texelCentre(x, size), texelCentre(y, size)));
 }
@@ -55,7 +55,7 @@ pub fn fillTexels[F fn(u f32, v f32) PatternTexel](field &uni PatternField, f &F
 // Fills the rows of 'out' ('width' items each, bottom row first) with 'f' of the
 // item's column and row, a row to a pass over every core: the general form of
 // fillTexels, for any item type (a height grid, a struct of a texel's values)
-pub fn fillGrid[T, F fn(x i32, y i32) T](out &uni List[T], width usize, f &F) {
+pub fn fillGrid[T, F: fn(x: i32, y: i32) T](out: &uni List[T], width: usize, f: &F) {
   parallel each y, row in out.mutChunks(width).indexed() {
     each x, t in row.mutItems().indexed() {
       *t = f(i32.from(x), i32.from(y));
@@ -69,7 +69,7 @@ pub fn fillGrid[T, F fn(x i32, y i32) T](out &uni List[T], width usize, f &F) {
 // direction) times the pattern's cavity, base colour (sRGB), ORM, and the
 // height. The wear and grime masks of the TextureSet are all zero: these
 // patterns carry their weathering in their colour.
-pub fn finishField(f &mut PatternField, occlusionRadius f32, occlusionSteps i32) TextureSet {
+pub fn finishField(f: &mut PatternField, occlusionRadius: f32, occlusionSteps: i32) TextureSet {
   let size = f.size;
   let depth = f.relief / f.tileMetres;
   var baseColor = TexelMap.withCapacity(size, size, 3);
@@ -127,50 +127,50 @@ pub fn finishField(f &mut PatternField, occlusionRadius f32, occlusionSteps i32)
 // ---- Small helpers ----
 
 // 'x' less its floor: 0 up to (not including) 1
-pub fn frac(x f32) f32 { x - libc.floorf(x) }
+pub fn frac(x: f32) f32 { x - libc.floorf(x) }
 
 // 'i' taken round 0 to n - 1, for any sign
-pub fn posMod(i i32, n i32) i32 { ((i % n) + n) % n }
+pub fn posMod(i: i32, n: i32) i32 { ((i % n) + n) % n }
 
-pub fn maxF(a f32, b f32) f32 { if a > b { a } else { b } }
-pub fn minF(a f32, b f32) f32 { if a < b { a } else { b } }
+pub fn maxF(a: f32, b: f32) f32 { if a > b { a } else { b } }
+pub fn minF(a: f32, b: f32) f32 { if a < b { a } else { b } }
 
 // 'n' whole features of about 'size' metres across a tile 'tileMetres'
 // wide: at least 'least'
-pub fn wholeCount(tileMetres f32, size f32, least i32) i32 {
+pub fn wholeCount(tileMetres: f32, size: f32, least: i32) i32 {
   let n = i32.from(libc.floorf(tileMetres / size + 0.5));
   if n < least { least } else { n }
 }
 
 // Linear colour from sRGB components in 0 to 255 (how colours are written
 // in this package's defaults)
-pub fn rgb255(r f32, g f32, b f32) Color {
+pub fn rgb255(r: f32, g: f32, b: f32) Color {
   new Color(srgbDecode(r / 255.), srgbDecode(g / 255.), srgbDecode(b / 255.), 1.)
 }
 
-pub fn mixRgb(a Color, b Color, t f32) Color {
+pub fn mixRgb(a: Color, b: Color, t: f32) Color {
   new Color(a.red + (b.red - a.red) * t, a.green + (b.green - a.green) * t, a.blue + (b.blue - a.blue) * t, 1.)
 }
 
-pub fn scaleRgb(a Color, k f32) Color { new Color(a.red * k, a.green * k, a.blue * k, 1.) }
+pub fn scaleRgb(a: Color, k: f32) Color { new Color(a.red * k, a.green * k, a.blue * k, 1.) }
 
 // ---- Periodic hashed noise ----
 
 // A random number in [0, 1) from two integers and a seed
-pub fn unitHash(a i32, b i32, seed u32) f32 { toUnit(hash2(a, b, seed).x) }
+pub fn unitHash(a: i32, b: i32, seed: u32) f32 { toUnit(hash2(a, b, seed).x) }
 
 // Three independent ones
-pub fn unitHash3(a i32, b i32, seed u32) Vec3 {
+pub fn unitHash3(a: i32, b: i32, seed: u32) Vec3 {
   let h = hash2(a, b, seed);
   new Vec3(toUnit(h.x), toUnit(h.y), toUnit(h.z))
 }
 
-fn quintic(t f32) f32 { t * t * t * (t * (t * 6. - 15.) + 10.) }
+fn quintic(t: f32) f32 { t * t * t * (t * (t * 6. - 15.) + 10.) }
 
 // Smooth value noise in [-1, 1] at the tile point (u, v), its lattice
 // 'px' cells across the tile and 'py' up it (they need not be equal, so
 // the grain of wood is long one way), wrapping exactly there
-pub fn valueNoise(u f32, v f32, px i32, py i32, seed u32) f32 {
+pub fn valueNoise(u: f32, v: f32, px: i32, py: i32, seed: u32) f32 {
   let fx = u * f32.from(px);
   let fy = v * f32.from(py);
   let gx = libc.floorf(fx);
@@ -192,10 +192,10 @@ pub fn valueNoise(u f32, v f32, px i32, py i32, seed u32) f32 {
 
 // 'octaves' of valueNoise, each twice the lattice of the last and 'gain'
 // times its amplitude, normalized to [-1, 1]
-pub fn fbmNoise(u f32, v f32, px i32, py i32, seed u32, octaves i32, gain f32) f32 {
-  var sum f32 = 0.;
-  var total f32 = 0.;
-  var amp f32 = 1.;
+pub fn fbmNoise(u: f32, v: f32, px: i32, py: i32, seed: u32, octaves: i32, gain: f32) f32 {
+  var sum: f32 = 0.;
+  var total: f32 = 0.;
+  var amp: f32 = 1.;
   var cx = px;
   var cy = py;
   var i = 0;
@@ -212,10 +212,10 @@ pub fn fbmNoise(u f32, v f32, px i32, py i32, seed u32, octaves i32, gain f32) f
 
 // Ridged fbm in [0, 1]: creases where the noise crosses zero, sharp-edged
 // ridges between (1 - |n|, squared), normalized
-pub fn ridgedNoise(u f32, v f32, px i32, py i32, seed u32, octaves i32, gain f32) f32 {
-  var sum f32 = 0.;
-  var total f32 = 0.;
-  var amp f32 = 1.;
+pub fn ridgedNoise(u: f32, v: f32, px: i32, py: i32, seed: u32, octaves: i32, gain: f32) f32 {
+  var sum: f32 = 0.;
+  var total: f32 = 0.;
+  var amp: f32 = 1.;
   var cx = px;
   var cy = py;
   var i = 0;
@@ -235,17 +235,17 @@ pub fn ridgedNoise(u f32, v f32, px i32, py i32, seed u32, octaves i32, gain f32
 
 // The cell of a jittered grid a point lies in
 pub struct Cell {
-  pub id i32;               // the cell's number, 0 to n * n - 1, by its grid position
-  pub key u32;              // a hash of the cell for per-stone random numbers
-  pub dx f32;               // the point less the cell's feature point, in grid cells
-  pub dy f32;
-  pub dist f32;             // the distance to the feature point, in grid cells
-  pub edge f32;             // the distance to the nearest edge of the cell, in grid cells
+  pub id: i32;               // the cell's number, 0 to n * n - 1, by its grid position
+  pub key: u32;              // a hash of the cell for per-stone random numbers
+  pub dx: f32;               // the point less the cell's feature point, in grid cells
+  pub dy: f32;
+  pub dist: f32;             // the distance to the feature point, in grid cells
+  pub edge: f32;             // the distance to the nearest edge of the cell, in grid cells
 }
 
 // The feature point of the grid cell (i, j), in grid cells, kept inside the
 // cell's middle: offset up to +-0.4 x 'jitter' from its centre
-fn featurePoint(i i32, j i32, n i32, jitter f32, seed u32) Vec2 {
+fn featurePoint(i: i32, j: i32, n: i32, jitter: f32, seed: u32) Vec2 {
   let h = hash2(posMod(i, n), posMod(j, n), seed);
   new Vec2(f32.from(i) + 0.5 + (toUnit(h.x) - 0.5) * 0.8 * jitter, f32.from(j) + 0.5 + (toUnit(h.y) - 0.5) * 0.8 * jitter)
 }
@@ -254,12 +254,12 @@ fn featurePoint(i i32, j i32, n i32, jitter f32, seed u32) Vec2 {
 // points, one to a cell, jittered by 'jitter' (0 a regular grid, 1 the most),
 // wrapping: the pattern repeats every 1. The edge distance is that to the
 // perpendicular bisector with the nearest neighbouring point.
-pub fn voronoi(u f32, v f32, n i32, jitter f32, seed u32) Cell {
+pub fn voronoi(u: f32, v: f32, n: i32, jitter: f32, seed: u32) Cell {
   let px = u * f32.from(n);
   let py = v * f32.from(n);
   let ci = i32.from(libc.floorf(px));
   let cj = i32.from(libc.floorf(py));
-  var best f32 = 1000.;
+  var best: f32 = 1000.;
   var bi = ci;
   var bj = cj;
   var bp = new Vec2(0., 0.);
@@ -277,7 +277,7 @@ pub fn voronoi(u f32, v f32, n i32, jitter f32, seed u32) Cell {
     dj = dj + 1;
   }
   // the edge: the nearest perpendicular bisector among the cells round the winner
-  var edge f32 = 1000.;
+  var edge: f32 = 1000.;
   dj = -2;
   while dj <= 2 {
     var di = -2;

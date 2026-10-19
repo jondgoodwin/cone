@@ -28,25 +28,25 @@ import testing use *;
 import collector;
 
 var @threadlocal log = 0i64;
-fn note(d i64) { log = log * 10 + d; }
+fn note(d: i64) { log = log * 10 + d; }
 
-struct LeafValue { pub n i64; }
+struct LeafValue { pub n: i64; }
 alias Leaf = Gc[mut, LeafValue];
 struct FinValue {
-  pub n i64;
-  fn final(self &uni) { note(n); }
+  pub n: i64;
+  fn final(self: &uni) { note(n); }
 }
 alias Fin = Gc[mut, FinValue];
-struct LinkValue { pub n i64; pub next Option[Link]; }
+struct LinkValue { pub n: i64; pub next: Option[Link]; }
 alias Link = Gc[mut, LinkValue];
-struct BoxValue { pub fin Option[Fin]; }
+struct BoxValue { pub fin: Option[Fin]; }
 alias Box = Gc[mut, BoxValue];
-struct PodValue { pub box Option[Box]; }
+struct PodValue { pub box: Option[Box]; }
 alias Pod = Gc[mut, PodValue];
 struct HolderValue {
-  pub n i64;
-  pub leaf Leaf;
-  fn final(self &uni) { note(n); }
+  pub n: i64;
+  pub leaf: Leaf;
+  fn final(self: &uni) { note(n); }
 }
 alias Holder = Gc[mut, HolderValue];
 
@@ -63,11 +63,11 @@ fn cycle() {
 
 // The colour bits of the object whose value is at p: it sits right after its
 // 32-byte header (every type here is aligned to 8)
-fn isOld(p *u8) bool {
+fn isOld(p: *u8) bool {
   ((p as usize - mem.sizeof[Gc]()) as &Gc).marked & 32u32 != 0u32
 }
 
-fn dropLeaves(k i64) {
+fn dropLeaves(k: i64) {
   var i = 0i64;
   while i < k {
     let l = new Leaf(i);
@@ -85,7 +85,7 @@ fn minorCycle() bool {
 }
 
 // -- Lists of links, born holding the rest: no barrier stores any of them
-fn extend(l Option[Link], k i64) Option[Link] {
+fn extend(l: Option[Link], k: i64) Option[Link] {
   var head = l;
   var i = 0i64;
   while i < k {
@@ -94,36 +94,36 @@ fn extend(l Option[Link], k i64) Option[Link] {
   }
   head
 }
-fn chain(k i64) Option[Link] {
+fn chain(k: i64) Option[Link] {
   extend(None, k)
 }
 // Matched by value: through the 'mut' links an Option hangs from, a reference
 // into it could see another reference empty it while in use
-fn isLink(l Option[Link]) bool {
+fn isLink(l: Option[Link]) bool {
   match l {
     case let s Some[Link] { true }
     else { false }
   }
 }
-fn nOf(l Option[Link]) i64 {
+fn nOf(l: Option[Link]) i64 {
   match l {
     case let s Some[Link] { s.n }
     else { 0 }
   }
 }
-fn nextOf(l Option[Link]) Option[Link] {
+fn nextOf(l: Option[Link]) Option[Link] {
   match l {
     case let s Some[Link] { s.next }
     else { None }
   }
 }
-fn headOld(l Option[Link]) bool {
+fn headOld(l: Option[Link]) bool {
   match l {
     case let s Some[Link] { isOld(&*s as *u8) }
     else { false }
   }
 }
-fn sum(l Option[Link]) i64 {
+fn sum(l: Option[Link]) i64 {
   var at = l;
   var total = 0i64;
   while isLink(at) {
@@ -170,22 +170,22 @@ fn youngGarbage() {
 fn emptyBox() Box {
   new Box(None)
 }
-fn finOf(o Option[Fin]) i64 {
+fn finOf(o: Option[Fin]) i64 {
   match o {
     case let s Some[Fin] { s.n }
     else { -1 }
   }
 }
-fn boxOf(o Option[Box]) i64 {
+fn boxOf(o: Option[Box]) i64 {
   match o {
     case let s Some[Box] { finOf(s.fin) }
     else { -1 }
   }
 }
-fn putNew(o Box, n i64) {
+fn putNew(o: Box, n: i64) {
   o.fin = Some[Fin](new Fin(n));
 }
-fn dropFin(n i64) {
+fn dropFin(n: i64) {
   let f = new Fin(n);
 }
 
@@ -248,7 +248,7 @@ fn caseFinalize() {
 }
 // A young Box, born holding a young Fin (neither stored by a barrier), stored
 // into old p: the barrier shades the Box, and tracing it finds the Fin
-fn putSubtree(p Pod) {
+fn putSubtree(p: Pod) {
   p.box = Some[Box](new Box(Some[Fin](new Fin(5))));
 }
 fn caseSubtree() {

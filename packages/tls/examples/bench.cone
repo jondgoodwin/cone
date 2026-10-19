@@ -49,7 +49,7 @@ import process;
 
 extern {
   fn @c(system) GetCurrentProcess() usize;
-  fn @c(system) K32GetProcessMemoryInfo(process usize, counters *u8, cb u32) i32;
+  fn @c(system) K32GetProcessMemoryInfo(process: usize, counters: *u8, cb: u32) i32;
 }
 
 // The bytes the process has committed for itself: Windows' PrivateUsage
@@ -72,7 +72,7 @@ fn dataBytes() u64 {
   let f = libc.fopen("/proc/self/statm", "rb");
   if f == null {return 0u64;}
   var buf = new Array[u8, 256] <- fill 0u8;
-  let bp *u8 = &[]buf as *u8;
+  let bp: *u8 = &[]buf as *u8;
   let n = libc.fread(bp, 1usize, 255usize, f);
   libc.fclose(f);
   var field = 0u32;
@@ -95,13 +95,13 @@ const tokConn = 0x20000000u64;
 const tokReq = 0x30000000u64;
 const bigPiece = 262144usize;
 
-fn certs(name &str) Path {
+fn certs(name: &str) Path {
   var p = String.from("packages/tls/tests/certs/");
   p.append(name);
   Path.fromString(p)
 }
 
-fn readText(name &str) String {
+fn readText(name: &str) String {
   var out = String.empty();
   let file = certs(name);
   match fs.readFile(&file) {
@@ -124,7 +124,7 @@ fn makeServer() tls.Server {
   panic("no server: run from the repository's root")
 }
 
-fn makeClient(resume bool) tls.Client {
+fn makeClient(resume: bool) tls.Client {
   var cfg = tls.ClientConfig.make();
   cfg.verify = tls.Verifier.roots(readText("ca.pem").view());
   cfg.resume = resume;
@@ -139,20 +139,20 @@ fn makeClient(resume bool) tls.Client {
 }
 
 struct TlsMaker {
-  server tls.Server;
-  pool Pool;
+  server: tls.Server;
+  pool: Pool;
 
-  pub fn make(self &mut) Uni[Layer] {new Uni[tls.Stream](server.stream(pool))}
+  pub fn make(self: &mut) Uni[Layer] {new Uni[tls.Stream](server.stream(pool))}
 }
 
-fn micros(ns u64) {
+fn micros(ns: u64) {
   printUInt(ns / 1000u64);
   printStr(".");
   printUInt((ns / 100u64) % 10u64);
   printStr(" us");
 }
 
-fn report(label &str, h &Histogram) {
+fn report(label: &str, h: &Histogram) {
   printStr(label);
   printStr(": p50 ");
   micros(h.percentile(0.5));
@@ -169,7 +169,7 @@ fn report(label &str, h &Histogram) {
 // 1. In memory
 // ---------------------------------------------------------------------------
 
-fn pump(c &mut tls.Session, s &mut tls.Session) {
+fn pump(c: &mut tls.Session, s: &mut tls.Session) {
   var buf = new Array[u8, 20000] <- fill 0u8;
   var moved = true;
   while moved {
@@ -191,7 +191,7 @@ fn pump(c &mut tls.Session, s &mut tls.Session) {
   }
 }
 
-fn inMemory(n u32) {
+fn inMemory(n: u32) {
   let srv = makeServer();
   var full = Histogram.make();
   var k = 0u32;
@@ -226,7 +226,7 @@ fn inMemory(n u32) {
 // context, its first connection's handshake done and the connection kept,
 // then a second to the same server, timed. It resumes from one of the
 // first's tickets, which came after its handshake
-fn concurrentInMemory(n u32) {
+fn concurrentInMemory(n: u32) {
   let srv = makeServer();
   var second = Histogram.make();
   var resumed = 0u32;
@@ -258,12 +258,12 @@ fn concurrentInMemory(n u32) {
 // ---------------------------------------------------------------------------
 
 struct Serving {
-  pub pool Pool;
-  pub big ReqId;
-  pub left u64;
+  pub pool: Pool;
+  pub big: ReqId;
+  pub left: u64;
 }
 
-fn sendBig(drv &mut Driver, sv &mut Serving) {
+fn sendBig(drv: &mut Driver, sv: &mut Serving) {
   while sv.left > 0u64 {
     let n = if sv.left < u64.from(bigPiece) {usize.from(sv.left)} else {bigPiece};
     var b = sv.pool.mustTake(n);
@@ -279,7 +279,7 @@ fn sendBig(drv &mut Driver, sv &mut Serving) {
 // A server's event: /big streams 'size' bytes; anything else is 64 bytes
 // (The event's kind, request and whether it asks for /big are lent, not the event: it is
 // in a list the driver might change, and its target a view of a String in it.)
-fn serve(drv &mut Driver, sv &mut Serving, kind EventKind, req ReqId, big bool, size u64) {
+fn serve(drv: &mut Driver, sv: &mut Serving, kind: EventKind, req: ReqId, big: bool, size: u64) {
   if kind == EventKind.Request {
     if big {
       drv.respond(req, ResponseHead.make(200u16), BodyLength.sized(size));
@@ -298,7 +298,7 @@ fn serve(drv &mut Driver, sv &mut Serving, kind EventKind, req ReqId, big bool, 
   }
 }
 
-fn listenOn(drv &mut Driver, lp &mut Loop, secure bool, srv &tls.Server, pool Pool) u16 {
+fn listenOn(drv: &mut Driver, lp: &mut Loop, secure: bool, srv: &tls.Server, pool: Pool) u16 {
   var port = 0u16;
   var res = if secure {
     drv.listenWith(lp, SocketAddr.localhost(0u16), new Uni[TlsMaker](new TlsMaker(*srv, pool)), Sink.Here(tokServer))
@@ -317,7 +317,7 @@ fn listenOn(drv &mut Driver, lp &mut Loop, secure bool, srv &tls.Server, pool Po
   port
 }
 
-fn connect(drv &mut Driver, lp &mut Loop, secure bool, cl &tls.Client, pool Pool, port u16, k u64) ConnId {
+fn connect(drv: &mut Driver, lp: &mut Loop, secure: bool, cl: &tls.Client, pool: Pool, port: u16, k: u64) ConnId {
   if secure {
     return drv.connectWith(lp, "127.0.0.1", port, new Uni[tls.Stream](cl.stream("localhost", pool)),
       Sink.Here(tokConn + k));
@@ -329,7 +329,7 @@ fn connect(drv &mut Driver, lp &mut Loop, secure bool, cl &tls.Client, pool Pool
 // 2. Connections
 // ---------------------------------------------------------------------------
 
-fn cycles(label &str, secure bool, resume bool, n u32) {
+fn cycles(label: &str, secure: bool, resume: bool, n: u32) {
   let pool = Pool.make();
   var lp = Loop.mustMake();
   var drv = Driver.make(Config.make(), pool);
@@ -373,7 +373,7 @@ fn cycles(label &str, secure bool, resume bool, n u32) {
 }
 
 // A GET on a connection, driven to its final answer
-fn getOn(drv &mut Driver, lp &mut Loop, sv &mut Serving, events &mut List[Event], c ConnId) {
+fn getOn(drv: &mut Driver, lp: &mut Loop, sv: &mut Serving, events: &mut List[Event], c: ConnId) {
   drv.request(lp, c, RequestHead.get("/x", "localhost"), BodyLength.empty(), Sink.Here(tokReq));
   var going = true;
   while going {
@@ -394,7 +394,7 @@ fn getOn(drv &mut Driver, lp &mut Loop, sv &mut Serving, events &mut List[Event]
 // new client context, its first connection's GET done and the connection
 // kept; then a second connection and its GET, timed from asking for it to
 // the GET's Done; both reset
-fn concurrentCycles(n u32) {
+fn concurrentCycles(n: u32) {
   let pool = Pool.make();
   var lp = Loop.mustMake();
   var drv = Driver.make(Config.make(), pool);
@@ -428,7 +428,7 @@ fn concurrentCycles(n u32) {
 // 3. Bulk
 // ---------------------------------------------------------------------------
 
-fn bulk(label &str, secure bool, size u64) {
+fn bulk(label: &str, secure: bool, size: u64) {
   let pool = Pool.make(268435456usize, 67108864usize);
   var lp = Loop.mustMake();
   var drv = Driver.make(Config.make(), pool);
@@ -482,7 +482,7 @@ fn bulk(label &str, secure bool, size u64) {
 // 4. Memory per idle connection
 // ---------------------------------------------------------------------------
 
-fn idleMemory(n u64) {
+fn idleMemory(n: u64) {
   let pool = Pool.make(268435456usize, 268435456usize);
   var lp = Loop.mustMake();
   var cfg = Config.make();
@@ -564,7 +564,7 @@ fn idleMemory(n u64) {
 }
 
 // Memory per session pair in memory, idle after a handshake and a small exchange
-fn sessionMemory(n u32) {
+fn sessionMemory(n: u32) {
   let srv = makeServer();
   let cl = makeClient(false);
   var cs = List[tls.Session].empty();

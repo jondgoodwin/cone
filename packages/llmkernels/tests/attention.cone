@@ -41,24 +41,24 @@ fn preference() u32 {
   POWER_PREFERENCE_HIGH_PERFORMANCE
 }
 
-fn zerosF(n usize) List[f32] {
+fn zerosF(n: usize) List[f32] {
   var l = List[f32].withCapacity(n);
   var i = 0usize;
   while i < n { l.push(0.0); i = i + 1usize; }
   l
 }
 
-fn attentionUnits(headDim usize, seqLen usize, a f64) f64 {
+fn attentionUnits(headDim: usize, seqLen: usize, a: f64) f64 {
   2.0 * f64.from(headDim + 4usize) * a + 2.0 * (3.0 + 4.0 * a) + f64.from(seqLen + 4usize)
     + f64.from((seqLen + 127usize) / 128usize) + 20.0
 }
 
 struct Stats {
-  worst f64;        // in units of 2^-24 times the largest |v|
-  worstRatio f64;   // the worst of (error / bound), 1 would be at the bound
+  worst: f64;        // in units of 2^-24 times the largest |v|
+  worstRatio: f64;   // the worst of (error / bound), 1 would be at the bound
 }
 
-fn finish(device &mut Device, works &mut Works, job Job, back u32) List[f32] {
+fn finish(device: &mut Device, works: &mut Works, job: Job, back: u32) List[f32] {
   let ticket = works.submit(device, job, Target.Here(1u64));
   var got = List[Completion].empty();
   works.waitFor(device, ticket, &mut got);
@@ -68,8 +68,8 @@ fn finish(device &mut Device, works &mut Works, job Job, back u32) List[f32] {
 }
 
 // Compare the GPU's output with the twin's under the bound: how many elements are outside it
-fn compare(stats &mut Stats, got &List[f32], want &List[f32], q &Array[f32], k &Array[f32], v &Array[f32], nTokens usize,
-    nHeads usize, nKvHeads usize, headDim usize, pos0 usize, scale f32) u64 {
+fn compare(stats: &mut Stats, got: &List[f32], want: &List[f32], q: &Array[f32], k: &Array[f32], v: &Array[f32], nTokens: usize,
+    nHeads: usize, nKvHeads: usize, headDim: usize, pos0: usize, scale: f32) u64 {
   let kvDim = nKvHeads * headDim;
   var bad = 0u64;
   var t = 0usize;
@@ -119,7 +119,7 @@ fn compare(stats &mut Stats, got &List[f32], want &List[f32], q &Array[f32], k &
 }
 
 // Fill a cache of maxSeq positions: real values for positions 0 .. valid - 1, garbage after
-fn filledCache(rng &mut Rng, maxSeq usize, kvDim usize, valid usize) List[f32] {
+fn filledCache(rng: &mut Rng, maxSeq: usize, kvDim: usize, valid: usize) List[f32] {
   var c = syntheticFloats(rng, valid * kvDim, 1.0);
   var i = valid * kvDim;
   while i < maxSeq * kvDim { c.push(GARBAGE); i = i + 1usize; }
@@ -127,8 +127,8 @@ fn filledCache(rng &mut Rng, maxSeq usize, kvDim usize, valid usize) List[f32] {
 }
 
 // One attention call with the caches uploaded as they are
-fn run(device &mut Device, kernels &Kernels, works &mut Works, stats &mut Stats, rng &mut Rng, nTokens usize, nHeads usize,
-    nKvHeads usize, headDim usize, pos0 usize, maxSeq usize) u64 {
+fn run(device: &mut Device, kernels: &Kernels, works: &mut Works, stats: &mut Stats, rng: &mut Rng, nTokens: usize, nHeads: usize,
+    nKvHeads: usize, headDim: usize, pos0: usize, maxSeq: usize) u64 {
   let kvDim = nKvHeads * headDim;
   let q = syntheticFloats(rng, nTokens * nHeads * headDim, 1.5);
   let k = filledCache(rng, maxSeq, kvDim, pos0 + nTokens);
@@ -149,8 +149,8 @@ fn run(device &mut Device, kernels &Kernels, works &mut Works, stats &mut Stats,
 }
 
 // The same, with the caches filled on the GPU by two appends in the job that attends
-fn chained(device &mut Device, kernels &Kernels, works &mut Works, stats &mut Stats, rng &mut Rng, nTokens usize, nHeads usize,
-    nKvHeads usize, headDim usize, pos0 usize, maxSeq usize) u64 {
+fn chained(device: &mut Device, kernels: &Kernels, works: &mut Works, stats: &mut Stats, rng: &mut Rng, nTokens: usize, nHeads: usize,
+    nKvHeads: usize, headDim: usize, pos0: usize, maxSeq: usize) u64 {
   let kvDim = nKvHeads * headDim;
   let total = pos0 + nTokens;
   let q = syntheticFloats(rng, nTokens * nHeads * headDim, 1.5);

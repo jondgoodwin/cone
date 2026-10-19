@@ -25,14 +25,14 @@ pub const COLOR_CYAN = 6u32;
 pub const COLOR_WHITE = 7u32;
 
 pub struct Pt {
-  pub x f64;
-  pub y f64;
+  pub x: f64;
+  pub y: f64;
 
-  pub fn add overload `+`(self, o Pt) Pt inline { new Pt(x + o.x, y + o.y) }
-  pub fn sub overload `-`(self, o Pt) Pt inline { new Pt(x - o.x, y - o.y) }
-  pub fn scale overload `*`(self, s f64) Pt inline { new Pt(x * s, y * s) }
-  pub fn dot(self, o Pt) f64 inline { x * o.x + y * o.y }
-  pub fn cross(self, o Pt) f64 inline { x * o.y - y * o.x }
+  pub fn add overload `+`(self, o: Pt) Pt inline { new Pt(x + o.x, y + o.y) }
+  pub fn sub overload `-`(self, o: Pt) Pt inline { new Pt(x - o.x, y - o.y) }
+  pub fn scale overload `*`(self, s: f64) Pt inline { new Pt(x * s, y * s) }
+  pub fn dot(self, o: Pt) f64 inline { x * o.x + y * o.y }
+  pub fn cross(self, o: Pt) f64 inline { x * o.y - y * o.x }
   pub fn length(self) f64 inline { libc.sqrt(x * x + y * y) }
   pub fn lengthSquared(self) f64 inline { x * x + y * y }
   // The unit vector; (0, 1) for a zero vector, as msdfgen
@@ -46,17 +46,17 @@ pub struct Pt {
 // A distance to an edge and, to break ties between edges at a corner, how
 // head-on the nearest point is (0: the point is straight out from the edge)
 pub struct SignedDist {
-  pub d f64;
-  pub dot f64;
+  pub d: f64;
+  pub dot: f64;
 }
 
-pub fn nonZeroSign(v f64) f64 {
+pub fn nonZeroSign(v: f64) f64 {
   if v > 0.0 { return 1.0; }
   -1.0
 }
 
 // Whether 'a' is nearer than 'b': smaller magnitude, a tie going to the one with the smaller dot
-pub fn nearer(a SignedDist, b SignedDist) bool {
+pub fn nearer(a: SignedDist, b: SignedDist) bool {
   let fa = libc.fabs(a.d);
   let fb = libc.fabs(b.d);
   fa < fb || (fa == fb && a.dot < b.dot)
@@ -64,7 +64,7 @@ pub fn nearer(a SignedDist, b SignedDist) bool {
 
 // msdfgen's equation solvers (Chlumsky; after Numerical Recipes' cubic).
 // The roots go in 'x'; the count is returned (-1: every x).
-fn solveQuadratic(x &mut Array[f64, 3], a f64, b f64, c f64) i32 {
+fn solveQuadratic(x: &mut Array[f64, 3], a: f64, b: f64, c: f64) i32 {
   if a == 0.0 || libc.fabs(b) > 1.0e12 * libc.fabs(a) {
     if b == 0.0 {
       if c == 0.0 { return -1i32; }
@@ -87,7 +87,7 @@ fn solveQuadratic(x &mut Array[f64, 3], a f64, b f64, c f64) i32 {
   0i32
 }
 
-fn solveCubicNormed(x &mut Array[f64, 3], a f64, b f64, c f64) i32 {
+fn solveCubicNormed(x: &mut Array[f64, 3], a: f64, b: f64, c: f64) i32 {
   let a2 = a * a;
   var q = (a2 - 3.0 * b) / 9.0;
   let r = (a * (2.0 * a2 - 9.0 * b) + 27.0 * c) / 54.0;
@@ -117,7 +117,7 @@ fn solveCubicNormed(x &mut Array[f64, 3], a f64, b f64, c f64) i32 {
   1i32
 }
 
-fn solveCubic(x &mut Array[f64, 3], a f64, b f64, c f64, d f64) i32 {
+fn solveCubic(x: &mut Array[f64, 3], a: f64, b: f64, c: f64, d: f64) i32 {
   if a != 0.0 {
     let bn = b / a;
     if libc.fabs(bn) < 1.0e6 { return solveCubicNormed(x, bn, c / a, d / a); }
@@ -130,23 +130,23 @@ pub const PI64 = 3.14159265358979323846;
 // One segment of a contour: a line from 'a' to 'c' ('b' unused), or a
 // quadratic Bezier from 'a' to 'c' with control point 'b'
 pub struct Edge {
-  pub kind u32;
-  pub a Pt;
-  pub b Pt;
-  pub c Pt;
-  pub color u32;
+  pub kind: u32;
+  pub a: Pt;
+  pub b: Pt;
+  pub c: Pt;
+  pub color: u32;
 
-  pub fn line(a Pt, c Pt) Edge { new Edge(EDGE_LINE, a, (a + c) * 0.5, c, COLOR_WHITE) }
-  pub fn quad(a Pt, b Pt, c Pt) Edge { new Edge(EDGE_QUAD, a, b, c, COLOR_WHITE) }
+  pub fn line(a: Pt, c: Pt) Edge { new Edge(EDGE_LINE, a, (a + c) * 0.5, c, COLOR_WHITE) }
+  pub fn quad(a: Pt, b: Pt, c: Pt) Edge { new Edge(EDGE_QUAD, a, b, c, COLOR_WHITE) }
 
-  pub fn point(self &, t f64) Pt {
+  pub fn point(self: &, t: f64) Pt {
     if kind == EDGE_LINE { return a + (c - a) * t; }
     let u = 1.0 - t;
     a * (u * u) + b * (2.0 * u * t) + c * (t * t)
   }
 
   // The derivative at t (not normalised)
-  pub fn direction(self &, t f64) Pt {
+  pub fn direction(self: &, t: f64) Pt {
     if kind == EDGE_LINE { return c - a; }
     (b - a) * (1.0 - t) + (c - b) * t
   }
@@ -154,7 +154,7 @@ pub struct Edge {
   // The nearest point of the edge to p: the signed distance (msdfgen's: the
   // true distance, signed by the side of the edge's direction, positive on the right) and the curve parameter, which is
   // outside [0, 1] where the nearest point is an end, then the end's tangent decides
-  pub fn signedDistance(self &, p Pt, param &mut f64) SignedDist {
+  pub fn signedDistance(self: &, p: Pt, param: &mut f64) SignedDist {
     if kind == EDGE_LINE {
       let aq = p - a;
       let ab = c - a;
@@ -212,7 +212,7 @@ pub struct Edge {
   // The distance extended past an end along the end's tangent (the pseudo-
   // distance of Chlumsky's multi-channel field), where that is nearer than
   // the end itself and the point lies beyond the end; 'dist' is replaced
-  pub fn toPseudoDistance(self &, dist SignedDist, p Pt, param f64) SignedDist {
+  pub fn toPseudoDistance(self: &, dist: SignedDist, p: Pt, param: f64) SignedDist {
     if param < 0.0 {
       let dir = self.direction(0.0).normalized();
       let aq = p - a;
@@ -236,7 +236,7 @@ pub struct Edge {
   // ends and, for its control point, the point t0 plus the tangent there
   // times the length of the piece: the two tangents of a parabola's arc meet
   // halfway along the parameter.
-  pub fn sub(self &, t0 f64, t1 f64) Edge {
+  pub fn sub(self: &, t0: f64, t1: f64) Edge {
     let p0 = self.point(t0);
     let p1 = self.point(t1);
     if kind == EDGE_LINE { return new Edge(EDGE_LINE, p0, (p0 + p1) * 0.5, p1, color); }
@@ -244,19 +244,19 @@ pub struct Edge {
   }
 
   // The edge cut into thirds
-  pub fn third(self &, k u32) Edge { self.sub(f64.from(k) / 3.0, f64.from(k + 1u32) / 3.0) }
+  pub fn third(self: &, k: u32) Edge { self.sub(f64.from(k) / 3.0, f64.from(k + 1u32) / 3.0) }
 }
 
 // A closed contour: edges [start, start + count) of its shape
 pub struct Contour {
-  pub start u32;
-  pub count u32;
-  pub winding i32;
+  pub start: u32;
+  pub count: u32;
+  pub winding: i32;
 }
 
 pub struct Shape {
-  pub edges List[Edge];
-  pub contours List[Contour];
+  pub edges: List[Edge];
+  pub contours: List[Contour];
 
   pub fn empty() Shape { new Shape(List[Edge].empty(), List[Contour].empty()) }
 
@@ -264,7 +264,7 @@ pub struct Shape {
   // quadratics by TrueType's rule (two off-curve points in a row imply an
   // on-curve point halfway; a contour with no on-curve point starts at
   // such a midpoint). Zero-length edges are dropped.
-  pub fn fromOutline(o &Outline) Shape {
+  pub fn fromOutline(o: &Outline) Shape {
     var shape = Shape.empty();
     var first = 0usize;
     var ci = 0usize;
@@ -327,7 +327,7 @@ pub struct Shape {
 
   // Each contour's winding: the sign of the shoelace sum over its edges'
   // end points and quadratic control points (+1 clockwise)
-  pub fn setWindings(self &mut) {
+  pub fn setWindings(self: &mut) {
     var ci = 0usize;
     while ci < contours.len() {
       let c = *contours[ci];
@@ -349,7 +349,7 @@ pub struct Shape {
   }
 
   // The bounding box of the edges' end points and control points: min, max
-  pub fn bounds(self &, lo &mut Pt, hi &mut Pt) {
+  pub fn bounds(self: &, lo: &mut Pt, hi: &mut Pt) {
     var x0 = 1.0e30;
     var y0 = 1.0e30;
     var x1 = -1.0e30;
@@ -376,7 +376,7 @@ pub struct Shape {
 
   // The winding number of the contours round p, by a ray towards +x: not
   // zero inside the filled area (TrueType's rule)
-  pub fn windingAt(self &, p Pt) i32 {
+  pub fn windingAt(self: &, p: Pt) i32 {
     // A ray a hair above p, so that a vertex on it is not counted twice or not at all
     let y = p.y + 1.0e-7;
     var w = 0i32;
@@ -415,7 +415,7 @@ pub struct Shape {
   // Whether the point 'e' has at parameter t is on the boundary of the
   // filled area: the material (the right of the edge's direction) is on one
   // side only
-  fn onBoundary(self &, e Edge, t f64) bool {
+  fn onBoundary(self: &, e: Edge, t: f64) bool {
     let p = e.point(t);
     let d = e.direction(t).normalized();
     let right = new Pt(d.y, -d.x) * 0.25;
@@ -426,7 +426,7 @@ pub struct Shape {
   // cutting each other edge into short straight segments (a line is one; a
   // quadratic 16) and solving the edge against each segment exactly (a line:
   // linearly; a quadratic: a quadratic equation). Unsorted.
-  fn crossings(self &, ei usize, out &mut List[f64]) {
+  fn crossings(self: &, ei: usize, out: &mut List[f64]) {
     let e = *edges[ei];
     var fi = 0usize;
     while fi < edges.len() {
@@ -499,7 +499,7 @@ pub struct Shape {
   // for 'colorEdges', which then finds the new corners where edges cross.
   // Answers whether it changed anything: a shape with no edge inside is left
   // as it was. Call it before 'colorEdges'.
-  pub fn resolveOverlaps(self &mut) bool {
+  pub fn resolveOverlaps(self: &mut) bool {
     var kept = List[Edge].empty();
     var parent = List[usize].empty();         // for each kept piece: its edge, and the parameters it spans
     var starts = List[f64].empty();
@@ -653,7 +653,7 @@ pub struct Shape {
 // The next colour of a cycle: from white or black, the seed picks cyan,
 // magenta or yellow; otherwise the colour's bits rotate, the seed picking
 // the direction; 'banned' (a single channel) is avoided
-fn switchColor(color u32, seed &mut u64, banned u32) u32 {
+fn switchColor(color: u32, seed: &mut u64, banned: u32) u32 {
   let combined = color & banned;
   if combined == COLOR_RED || combined == COLOR_GREEN || combined == COLOR_BLUE {
     return combined ^ COLOR_WHITE;
@@ -671,7 +671,7 @@ fn switchColor(color u32, seed &mut u64, banned u32) u32 {
 }
 
 // Whether the corner between directions a and b (unit vectors) is sharp
-fn isCorner(a Pt, b Pt, crossThreshold f64) bool {
+fn isCorner(a: Pt, b: Pt, crossThreshold: f64) bool {
   a.dot(b) <= 0.0 || libc.fabs(a.cross(b)) > crossThreshold
 }
 
@@ -683,7 +683,7 @@ fn isCorner(a Pt, b Pt, crossThreshold f64) bool {
 // fewer than three), else the colour cycles through cyan, magenta and
 // yellow at each corner. 'seed' varies the cycle. Edges are split in place
 // where the pattern needs it, so contour ranges change.
-pub fn colorEdges(shape &mut Shape, angleThreshold f64, seed0 u64) {
+pub fn colorEdges(shape: &mut Shape, angleThreshold: f64, seed0: u64) {
   let crossThreshold = libc.sin(angleThreshold);
   var seed = seed0;
   var outEdges = List[Edge].empty();

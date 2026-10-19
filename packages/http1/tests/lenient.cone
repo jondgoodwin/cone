@@ -18,7 +18,7 @@ import iobuf use *;
 import http use *;
 import http1 use *;
 
-fn feed(c &mut Connection, pool &Pool, text &Array[u8], at Instant, step usize) {
+fn feed(c: &mut Connection, pool: &Pool, text: &Array[u8], at: Instant, step: usize) {
   var i = 0usize;
   while i < text.len {
     var b = pool.mustTake(4096usize);
@@ -29,7 +29,7 @@ fn feed(c &mut Connection, pool &Pool, text &Array[u8], at Instant, step usize) 
   }
 }
 
-fn drain(c &mut Connection, at Instant) String {
+fn drain(c: &mut Connection, at: Instant) String {
   var s = String.empty();
   while true {
     let b = c.pollTransmit(at);
@@ -39,7 +39,7 @@ fn drain(c &mut Connection, at Instant) String {
   s
 }
 
-fn putFields(out &mut String, h &Headers) {
+fn putFields(out: &mut String, h: &Headers) {
   var i = 0usize;
   while i < h.len() {
     out.append(" [");
@@ -53,7 +53,7 @@ fn putFields(out &mut String, h &Headers) {
 
 // The events a connection gives until it stops, a line each, a body's
 // bytes joined
-fn events(c &mut Connection) String {
+fn events(c: &mut Connection) String {
   var log = String.empty();
   var body = String.empty();
   while true {
@@ -103,7 +103,7 @@ fn events(c &mut Connection) String {
 }
 
 // A client that sent a GET and read response, fed 'step' bytes at a time
-fn clientReads(pool &Pool, response &Array[u8], step usize) String {
+fn clientReads(pool: &Pool, response: &Array[u8], step: usize) String {
   let t = Instant.fromNanos(1000000000i64);
   var c = Connection.client(Config.make(), *pool, t);
   c.sendRequest(RequestHead.get("/x", "h"), BodyLength.empty());
@@ -115,13 +115,13 @@ fn clientReads(pool &Pool, response &Array[u8], step usize) String {
 }
 
 // Read whole and a byte at a time, each giving want
-fn accepts(pool &Pool, response &Array[u8], want &Array[u8], label &Array[u8]) {
+fn accepts(pool: &Pool, response: &Array[u8], want: &Array[u8], label: &Array[u8]) {
   expectStr(clientReads(pool, response, 100000usize).view(), want, label);
   expectStr(clientReads(pool, response, 1usize).view(), want, label);
 }
 
 // A server reading request fails with why, and is to be closed
-fn serverRefuses(pool &Pool, request &Array[u8], why &str) {
+fn serverRefuses(pool: &Pool, request: &Array[u8], why: &str) {
   let t = Instant.fromNanos(1000000000i64);
   var c = Connection.server(Config.make(), *pool, t);
   feed(&mut c, pool, request, t, 100000usize);
@@ -133,7 +133,7 @@ fn serverRefuses(pool &Pool, request &Array[u8], why &str) {
   expect(c.shouldClose() || drain(&mut c, t).len() > 0usize, "...and is to be closed");
 }
 
-fn bareLf(pool &Pool) {
+fn bareLf(pool: &Pool) {
   accepts(pool, "HTTP/1.1 200 OK\nContent-Length: 2\nX-A: 1\n\nhi",
     "response 200 [Content-Length: 2] [X-A: 1]\nbody hi\nend\nreusable\n", "LF alone throughout a head");
   accepts(pool, "HTTP/1.1 200 OK\r\nContent-Length: 2\nX-A: 1\r\n\nhi",
@@ -146,7 +146,7 @@ fn bareLf(pool &Pool) {
     "response 200 [Transfer-Encoding: chunked]\nbody abc\nend [X-Sum: 9] [X-Two: 2]\nreusable\n", "trailers, LF");
 }
 
-fn obsFold(pool &Pool) {
+fn obsFold(pool: &Pool) {
   accepts(pool, "HTTP/1.1 200 OK\r\nX-Long: one\r\n two\r\n\tthree\r\nContent-Length: 0\r\n\r\n",
     "response 200 [X-Long: one two three] [Content-Length: 0]\nend\nreusable\n", "obs-fold unfolded, one space a fold");
   accepts(pool, "HTTP/1.1 200 OK\nX-Long: a\n    b  \nContent-Length: 0\n\n",
@@ -157,7 +157,7 @@ fn obsFold(pool &Pool) {
     "response 200 [Transfer-Encoding: chunked]\nend [X-T: a b]\nreusable\n", "obs-fold in a trailer");
 }
 
-fn stillRefused(pool &Pool) {
+fn stillRefused(pool: &Pool) {
   expectStr(clientReads(pool, "HTTP/1.1 200 OK\r\nX: a\rb\r\n\r\n", 100000usize).view(),
     "failed malformed: a CR is not followed by its LF\nclosed\n", "a client: a bare CR");
   expectStr(clientReads(pool, "HTTP/1.1 200 OK\n folded\nX: 1\n\n", 100000usize).view(),

@@ -11,13 +11,13 @@
 // never a borrow into a List that grows (the discipline httpclient's tables
 // keep). A slot freed is reused
 struct Slots[T] {
-  ptrs List[*T];
-  free List[u32];
+  ptrs: List[*T];
+  free: List[u32];
 
   fn make() Slots[T] {new Slots[T](List[*T].empty(), List[u32].empty())}
 
   // A free slot, holding 'blank' if it is a new one
-  fn take(self &mut, blank T) usize {
+  fn take(self: &mut, blank: T) usize {
     match free.pop() {
       case let i Some {return usize.from(i);}
       else {}
@@ -29,14 +29,14 @@ struct Slots[T] {
     ptrs.len() - 1usize
   }
 
-  fn at(self &, i usize) *T {*ptrs[i]}
+  fn at(self: &, i: usize) *T {*ptrs[i]}
 
-  fn len(self &) usize {ptrs.len()}
+  fn len(self: &) usize {ptrs.len()}
 
   // Slot i is free again
-  fn put(self &mut, i usize) {free.push(u32.from(i));}
+  fn put(self: &mut, i: usize) {free.push(u32.from(i));}
 
-  fn final(self &uni) {
+  fn final(self: &uni) {
     var k = 0usize;
     while k < ptrs.len() {
       let p = *ptrs[k];
@@ -50,17 +50,17 @@ struct Slots[T] {
 // An exchange awaited: the reply its answer goes back in, the response being
 // gathered, and what it needs to end it
 struct Wait {
-  reply actors.Reply;
-  resp httpclient.Response;
-  tooBig bool;                  // the body passed the limit, and the exchange was cancelled for it
-  limit usize;                  // the most body bytes it takes
-  fetch httpclient.FetchId;     // a client's fetch
-  req httpconn.ReqId;           // a connection's request
-  body String;                  // a connection's request body still to send
-  sent usize;                   // ...and how much of it has gone
-  conn usize;                   // a connection's request: its connection's slot
-  bodyDone bool;                // its body has been finished
-  stream usize;                 // a stream's fetch: its slot in the client's streams, else noStream
+  reply: actors.Reply;
+  resp: httpclient.Response;
+  tooBig: bool;                  // the body passed the limit, and the exchange was cancelled for it
+  limit: usize;                  // the most body bytes it takes
+  fetch: httpclient.FetchId;     // a client's fetch
+  req: httpconn.ReqId;           // a connection's request
+  body: String;                  // a connection's request body still to send
+  sent: usize;                   // ...and how much of it has gone
+  conn: usize;                   // a connection's request: its connection's slot
+  bodyDone: bool;                // its body has been finished
+  stream: usize;                 // a stream's fetch: its slot in the client's streams, else noStream
 }
 
 fn blankWait() Wait {
@@ -70,7 +70,7 @@ fn blankWait() Wait {
 }
 
 // A wait slot back to being free (its reply was moved out to answer it)
-fn clearWait(w &mut Wait) {
+fn clearWait(w: &mut Wait) {
   w.tooBig = false;
   w.limit = 0usize;
   w.fetch = httpclient.FetchId.none();
@@ -85,26 +85,26 @@ fn clearWait(w &mut Wait) {
 
 // A client the service owns: its handles counted, its fetches awaited
 struct ClientRec {
-  id u64;
-  refs u32;
-  dying bool;                   // no handle is left: it is ended, and goes when its connections have
-  maxBody usize;
-  client httpclient.Client;
-  waits Slots[Wait];
-  streams Slots[StreamRec];     // the responses actors read as they arrive; each holds a count of 'refs'
+  id: u64;
+  refs: u32;
+  dying: bool;                   // no handle is left: it is ended, and goes when its connections have
+  maxBody: usize;
+  client: httpclient.Client;
+  waits: Slots[Wait];
+  streams: Slots[StreamRec];     // the responses actors read as they arrive; each holds a count of 'refs'
 }
 
 // A connection the service owns, which a Conn names
 struct ConnRec {
-  used bool;
-  id u64;
-  conn httpconn.ConnId;
-  connecting bool;              // its connect's reply is still to be answered
-  open bool;
-  closed bool;
-  dropped bool;                 // its Conn handle has gone
-  busy u32;                     // exchanges in flight on it
-  reply actors.Reply;
+  used: bool;
+  id: u64;
+  conn: httpconn.ConnId;
+  connecting: bool;              // its connect's reply is still to be answered
+  open: bool;
+  closed: bool;
+  dropped: bool;                 // its Conn handle has gone
+  busy: u32;                     // exchanges in flight on it
+  reply: actors.Reply;
 }
 
 fn blankConn() ConnRec {
@@ -119,12 +119,12 @@ const connBit = 0x100000000u64;
 // Everything the service thread keeps: its clients, its driver for the
 // connections a program makes itself, and what is awaited on those
 struct Service {
-  pool Pool;
-  clients List[*ClientRec];
-  drv httpconn.Driver;
-  conns Slots[ConnRec];
-  xwaits Slots[Wait];
-  srvs List[*SrvRec];           // the servers listening, each with a driver of its own
+  pool: Pool;
+  clients: List[*ClientRec];
+  drv: httpconn.Driver;
+  conns: Slots[ConnRec];
+  xwaits: Slots[Wait];
+  srvs: List[*SrvRec];           // the servers listening, each with a driver of its own
 
   fn make() Service {
     let pool = Pool.make();
@@ -133,12 +133,12 @@ struct Service {
       xwaits: Slots[Wait].make(), srvs: List[*SrvRec].empty())
   }
 
-  fn clientAt(self &, k usize) *ClientRec {*clients[k]}
+  fn clientAt(self: &, k: usize) *ClientRec {*clients[k]}
 
-  fn srvAt(self &, k usize) *SrvRec {*srvs[k]}
+  fn srvAt(self: &, k: usize) *SrvRec {*srvs[k]}
 
   // Where the live server id is in its list, or its length
-  fn findSrv(self &, id u64) usize {
+  fn findSrv(self: &, id: u64) usize {
     var k = 0usize;
     while k < srvs.len() {
       let rec = self.srvAt(k) as &SrvRec;
@@ -149,7 +149,7 @@ struct Service {
   }
 
   // Where the live client id is in its list, or its length
-  fn findClient(self &, id u64) usize {
+  fn findClient(self: &, id: u64) usize {
     var k = 0usize;
     while k < clients.len() {
       let rec = self.clientAt(k) as &ClientRec;
@@ -160,7 +160,7 @@ struct Service {
   }
 
   // Where the connection id is in its slots, or their number
-  fn findConn(self &, id u64) usize {
+  fn findConn(self: &, id: u64) usize {
     var k = 0usize;
     while k < conns.len() {
       let c = conns.at(k) as &ConnRec;
@@ -173,7 +173,7 @@ struct Service {
   // One turn: drive everything started, wait in the loop until something
   // completes (or the latest any of it wants a turn), and hand each
   // completion to whose it is
-  fn drive(self &mut, lp &mut Loop, comps &mut List[Completion]) {
+  fn drive(self: &mut, lp: &mut Loop, comps: &mut List[Completion]) {
     var limit = forever();
     var k = 0usize;
     while k < clients.len() {
@@ -211,7 +211,7 @@ struct Service {
 
   // A completion goes to the client or the driver whose it is; any other
   // (the waker's) is dropped
-  fn route(self &mut, lp &mut Loop, c &mut Completion) {
+  fn route(self: &mut, lp: &mut Loop, c: &mut Completion) {
     var k = 0usize;
     while k < clients.len() {
       let rec = self.clientAt(k) as &mut ClientRec;
@@ -229,7 +229,7 @@ struct Service {
 
   // Servers that are closed, with nothing left to answer, leave: their
   // connections (idle ones kept alive) are reset first
-  fn sweepServers(self &mut, lp &mut Loop) {
+  fn sweepServers(self: &mut, lp: &mut Loop) {
     var k = 0usize;
     while k < srvs.len() {
       let srec = self.srvAt(k) as &mut SrvRec;
@@ -252,7 +252,7 @@ struct Service {
   }
 
   // Clients whose handles are gone and whose work is over leave
-  fn sweep(self &mut) {
+  fn sweep(self: &mut) {
     var k = 0usize;
     while k < clients.len() {
       let rec = self.clientAt(k) as &ClientRec;
@@ -273,7 +273,7 @@ struct Service {
 
   // The driver's events for this turn, each to the connection or exchange
   // awaiting it
-  fn pumpConns(self &mut, lp &mut Loop) {
+  fn pumpConns(self: &mut, lp: &mut Loop) {
     var evs = List[httpconn.Event].empty();
     drv.pump(lp, &mut evs);
     var k = 0usize;
@@ -289,7 +289,7 @@ struct Service {
   }
 
   // A connection's own event: it connected, or it is over
-  fn onConnEvent(self &mut, lp &mut Loop, e &mut httpconn.Event) {
+  fn onConnEvent(self: &mut, lp: &mut Loop, e: &mut httpconn.Event) {
     let slot = usize.from(e.token & 0xFFFFFFFFu64);
     let c = conns.at(slot) as &mut ConnRec;
     let k = e.kind;
@@ -311,7 +311,7 @@ struct Service {
   }
 
   // Connection slot k is free again
-  fn freeConn(self &mut, k usize) {
+  fn freeConn(self: &mut, k: usize) {
     let c = conns.at(k) as &mut ConnRec;
     c.used = false;
     c.id = 0u64;
@@ -325,7 +325,7 @@ struct Service {
   }
 
   // An event of an exchange on a connection
-  fn onExchangeEvent(self &mut, lp &mut Loop, e &mut httpconn.Event) {
+  fn onExchangeEvent(self: &mut, lp: &mut Loop, e: &mut httpconn.Event) {
     let slot = usize.from(e.token);
     let w = xwaits.at(slot) as &mut Wait;
     let k = e.kind;
@@ -370,7 +370,7 @@ struct Service {
   }
 
   // As much of exchange slot's body as its connection takes now
-  fn sendBody(self &mut, lp &mut Loop, slot usize) {
+  fn sendBody(self: &mut, lp: &mut Loop, slot: usize) {
     let w = xwaits.at(slot) as &mut Wait;
     if w.bodyDone {return;}
     while w.sent < w.body.len() {
@@ -399,7 +399,7 @@ struct Service {
     drv.finish(w.req);
   }
 
-  fn final(self &uni) {
+  fn final(self: &uni) {
     var k = 0usize;
     while k < clients.len() {
       let p = *clients[k];
@@ -422,18 +422,18 @@ struct Service {
 // ---------------------------------------------------------------------------
 
 // A wait's reply carries v back to the actor awaiting it
-fn answer[R](w &mut Wait, v R) {
+fn answer[R](w: &mut Wait, v: R) {
   var rp = new actors.Reply();
   rp <=> w.reply;
   actors.answerNow[R](rp, v);
 }
 
-fn answerResponse(w &mut Wait, v Result[httpclient.Response, FetchError]) {
+fn answerResponse(w: &mut Wait, v: Result[httpclient.Response, FetchError]) {
   answer[Result[httpclient.Response, FetchError]](w, v);
 }
 
 // The response a wait gathered, moved out
-fn takeResponse(w &mut Wait) httpclient.Response {
+fn takeResponse(w: &mut Wait) httpclient.Response {
   var r = httpclient.Response.blank();
   r <=> w.resp;
   r
@@ -443,7 +443,7 @@ fn takeResponse(w &mut Wait) httpclient.Response {
 const sendChunk = 16384usize;
 
 // A connect's reply carries v back to the actor awaiting it
-fn answerConn(c &mut ConnRec, v Result[Conn, FetchError]) {
+fn answerConn(c: &mut ConnRec, v: Result[Conn, FetchError]) {
   var rp = new actors.Reply();
   rp <=> c.reply;
   actors.answerNow[Result[Conn, FetchError]](rp, v);
@@ -460,7 +460,7 @@ fn limitFailure() httpclient.Failure {
 // ---------------------------------------------------------------------------
 
 // A client's events for this turn, each to the fetch awaiting it
-fn pumpClient(rec &mut ClientRec, lp &mut Loop) {
+fn pumpClient(rec: &mut ClientRec, lp: &mut Loop) {
   var evs = List[httpclient.Event].empty();
   rec.client.pump(lp, &mut evs);
   var k = 0usize;
@@ -471,7 +471,7 @@ fn pumpClient(rec &mut ClientRec, lp &mut Loop) {
   }
 }
 
-fn onFetchEvent(rec &mut ClientRec, lp &mut Loop, e &mut httpclient.Event) {
+fn onFetchEvent(rec: &mut ClientRec, lp: &mut Loop, e: &mut httpclient.Event) {
   let slot = usize.from(e.token);
   let w = rec.waits.at(slot) as &mut Wait;
   if w.stream != noStream {
@@ -519,11 +519,11 @@ fn onFetchEvent(rec &mut ClientRec, lp &mut Loop, e &mut httpclient.Event) {
 
 // A client made on the service thread, for the handle already named by id
 struct CreateClientJob {
-  pub id u64;
-  pub cfg httpclient.Config;
-  pub maxBody usize;
+  pub id: u64;
+  pub cfg: httpclient.Config;
+  pub maxBody: usize;
 
-  fn run(self &mut, lp &mut Loop, sv &mut Service) {
+  fn run(self: &mut, lp: &mut Loop, sv: &mut Service) {
     var c = httpclient.Config.make();
     c <=> cfg;
     let p = libc.malloc(mem.sizeof[ClientRec]()) as *ClientRec;
@@ -537,10 +537,10 @@ struct CreateClientJob {
 // A handle to a client made (true) or dropped (false); the last one's going
 // ends the client: every fetch of it answered Cancelled, its connections reset
 struct RefJob {
-  pub id u64;
-  pub add bool;
+  pub id: u64;
+  pub add: bool;
 
-  fn run(self &mut, lp &mut Loop, sv &mut Service) {
+  fn run(self: &mut, lp: &mut Loop, sv: &mut Service) {
     let k = sv.findClient(id);
     if k >= sv.clients.len() {return;}
     let rec = sv.clientAt(k) as &mut ClientRec;
@@ -554,11 +554,11 @@ struct RefJob {
 
 // A fetch: the request, and the reply its response goes back in
 struct FetchJob {
-  pub id u64;
-  pub req httpclient.Request;
-  pub reply actors.Reply;
+  pub id: u64;
+  pub req: httpclient.Request;
+  pub reply: actors.Reply;
 
-  fn run(self &mut, lp &mut Loop, sv &mut Service) {
+  fn run(self: &mut, lp: &mut Loop, sv: &mut Service) {
     var rp = new actors.Reply();
     rp <=> reply;
     let k = sv.findClient(id);
@@ -585,13 +585,13 @@ struct FetchJob {
 
 // A connection made, plain or through TLS, for the reply that awaits it
 struct ConnectJob {
-  pub host String;
-  pub port u16;
-  pub secure bool;
-  pub cfg tls.ClientConfig;
-  pub reply actors.Reply;
+  pub host: String;
+  pub port: u16;
+  pub secure: bool;
+  pub cfg: tls.ClientConfig;
+  pub reply: actors.Reply;
 
-  fn run(self &mut, lp &mut Loop, sv &mut Service) {
+  fn run(self: &mut, lp: &mut Loop, sv: &mut Service) {
     var rp = new actors.Reply();
     rp <=> reply;
     let slot = sv.conns.take(blankConn());
@@ -627,14 +627,14 @@ struct ConnectJob {
 // A request on a connection: its head and whole body, its limits, and the
 // reply its response goes back in
 struct ExchangeJob {
-  pub id u64;
-  pub head RequestHead;
-  pub body String;
-  pub group Option[CancelGroup];
-  pub deadline Instant;
-  pub reply actors.Reply;
+  pub id: u64;
+  pub head: RequestHead;
+  pub body: String;
+  pub group: Option[CancelGroup];
+  pub deadline: Instant;
+  pub reply: actors.Reply;
 
-  fn run(self &mut, lp &mut Loop, sv &mut Service) {
+  fn run(self: &mut, lp: &mut Loop, sv: &mut Service) {
     var rp = new actors.Reply();
     rp <=> reply;
     let k = sv.findConn(id);
@@ -672,9 +672,9 @@ struct ExchangeJob {
 
 // A Conn dropped: its connection closed (aborted, if exchanges are in flight)
 struct DropConnJob {
-  pub id u64;
+  pub id: u64;
 
-  fn run(self &mut, lp &mut Loop, sv &mut Service) {
+  fn run(self: &mut, lp: &mut Loop, sv: &mut Service) {
     let k = sv.findConn(id);
     if k >= sv.conns.len() {return;}
     let c = sv.conns.at(k) as &mut ConnRec;

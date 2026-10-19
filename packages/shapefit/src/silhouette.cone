@@ -18,12 +18,12 @@
 // is the window's longest side over the resolution).
 
 pub struct View {
-  pub right DVec3;      // the view plane's axes (unit, perpendicular)
-  pub up DVec3;
-  pub forward DVec3;    // the direction the viewer looks along, into the scene
+  pub right: DVec3;      // the view plane's axes (unit, perpendicular)
+  pub up: DVec3;
+  pub forward: DVec3;    // the direction the viewer looks along, into the scene
 
   // The view looking along 'forward', 'up' as high as it can be on the page
-  pub fn look(forward Vec3, up Vec3) View {
+  pub fn look(forward: Vec3, up: Vec3) View {
     let f = unitd(DVec3.from(forward));
     var r = unitd(crossd(f, DVec3.from(up)));
     if r.lengthSquared() < 0.5 { r = perpendicularTo(f); }
@@ -31,7 +31,7 @@ pub struct View {
   }
 
   // The 2-D point of a 3-D point in this view
-  pub fn project(self &, p DVec3) DVec3 { new DVec3(p.dot(right), p.dot(up), p.dot(forward)) }
+  pub fn project(self: &, p: DVec3) DVec3 { new DVec3(p.dot(right), p.dot(up), p.dot(forward)) }
 }
 
 // Front, back, left, right, top and bottom, for a model facing -z with y up (the
@@ -48,7 +48,7 @@ pub fn standardViews() List[View] {
 }
 
 // n views from around the y axis, evenly, the first looking along +z
-pub fn turntableViews(n usize) List[View] {
+pub fn turntableViews(n: usize) List[View] {
   var out = List[View].empty();
   var i = 0usize;
   while i < n {
@@ -61,17 +61,17 @@ pub fn turntableViews(n usize) List[View] {
 
 // The grid: world (x, y) in the view plane to cell (x - x0) * scale, (y - y0) * scale
 pub struct Window {
-  pub x0 f64;
-  pub y0 f64;
-  pub scale f64;      // cells per unit
-  pub w usize;
-  pub h usize;
+  pub x0: f64;
+  pub y0: f64;
+  pub scale: f64;      // cells per unit
+  pub w: usize;
+  pub h: usize;
 
-  pub fn cell(self &) f64 { 1.0 / scale }
+  pub fn cell(self: &) f64 { 1.0 / scale }
 }
 
 // A window that holds both meshes in the view, the longer side 'res' cells, with a margin
-pub fn windowFor(a &PolyMesh, b &PolyMesh, v &View, res usize) Window {
+pub fn windowFor(a: &PolyMesh, b: &PolyMesh, v: &View, res: usize) Window {
   var lox = 1.0e30; var loy = 1.0e30; var hix = -1.0e30; var hiy = -1.0e30;
   var pass = 0;
   while pass < 2 {
@@ -96,7 +96,7 @@ pub fn windowFor(a &PolyMesh, b &PolyMesh, v &View, res usize) Window {
 }
 
 // The covered cells (1) and uncovered (0) of the mesh in the view, row by row from y = y0
-pub fn rasterize(m &PolyMesh, v &View, win &Window) List[u8] {
+pub fn rasterize(m: &PolyMesh, v: &View, win: &Window) List[u8] {
   var cells = List[u8].withCapacity(win.w * win.h);
   var i = 0usize;
   while i < win.w * win.h { cells.push(0u8); i += 1usize; }
@@ -139,7 +139,7 @@ pub fn rasterize(m &PolyMesh, v &View, win &Window) List[u8] {
   cells
 }
 
-pub fn coveredCells(cells &List[u8]) usize {
+pub fn coveredCells(cells: &List[u8]) usize {
   var n = 0usize;
   var i = 0usize;
   while i < cells.len() { if *cells[i] != 0u8 { n += 1usize; } i += 1usize; }
@@ -147,7 +147,7 @@ pub fn coveredCells(cells &List[u8]) usize {
 }
 
 // Area overlap of two coverages on one grid: cells in both over cells in either
-pub fn iou(a &List[u8], b &List[u8]) f32 {
+pub fn iou(a: &List[u8], b: &List[u8]) f32 {
   var both = 0usize;
   var either = 0usize;
   var i = 0usize;
@@ -161,12 +161,12 @@ pub fn iou(a &List[u8], b &List[u8]) f32 {
   if either == 0usize { 1. } else { f32.from(both) / f32.from(either) }
 }
 
-fn filled(cells &List[u8], w usize, h usize, x i64, y i64) bool {
+fn filled(cells: &List[u8], w: usize, h: usize, x: i64, y: i64) bool {
   if x < 0 || y < 0 || x >= i64.from(w) || y >= i64.from(h) { false } else { *cells[usize.from(y) * w + usize.from(x)] != 0u8 }
 }
 
 // The outline of the covered cells as closed loops in the window's world units (see the top)
-pub fn traceOutline(cells &List[u8], win &Window) List[List[Vec2]] {
+pub fn traceOutline(cells: &List[u8], win: &Window) List[List[Vec2]] {
   let w = win.w;
   let h = win.h;
   let cw = w + 1usize;
@@ -229,17 +229,17 @@ pub fn traceOutline(cells &List[u8], win &Window) List[List[Vec2]] {
   loops
 }
 
-fn addEdge(o1 &mut List[u32], o2 &mut List[u32], from usize, to usize) {
+fn addEdge(o1: &mut List[u32], o2: &mut List[u32], from: usize, to: usize) {
   if *o1[from] == NoIndex { o1.set(from, u32.from(to)); } else { o2.set(from, u32.from(to)); }
 }
 
-fn segDistance(p Vec2, a Vec2, b Vec2) f64 {
+fn segDistance(p: Vec2, a: Vec2, b: Vec2) f64 {
   segmentDistance(new DVec3(f64.from(p.x), f64.from(p.y), 0.0), new DVec3(f64.from(a.x), f64.from(a.y), 0.0),
     new DVec3(f64.from(b.x), f64.from(b.y), 0.0))
 }
 
 // Douglas-Peucker on a closed loop: split at the vertex farthest from the first, then each half
-fn simplifyLoop(pts &List[Vec2], tol f64) List[Vec2] {
+fn simplifyLoop(pts: &List[Vec2], tol: f64) List[Vec2] {
   let n = pts.len();
   var far = 0usize;
   var fd = -1.0;
@@ -284,7 +284,7 @@ fn simplifyLoop(pts &List[Vec2], tol f64) List[Vec2] {
 }
 
 // The area enclosed by the loops (outer boundaries add, holes subtract)
-pub fn loopsArea(loops &List[List[Vec2]]) f32 {
+pub fn loopsArea(loops: &List[List[Vec2]]) f32 {
   var a = 0.0;
   var i = 0usize;
   while i < loops.len() {
@@ -302,7 +302,7 @@ pub fn loopsArea(loops &List[List[Vec2]]) f32 {
 }
 
 // The greatest distance from a point of the outline 'a' to the outline 'b', sampled every 'step'
-fn directedHausdorff(a &List[List[Vec2]], b &List[List[Vec2]], step f64) f64 {
+fn directedHausdorff(a: &List[List[Vec2]], b: &List[List[Vec2]], step: f64) f64 {
   var worst = 0.0;
   var i = 0usize;
   while i < a.len() {
@@ -339,19 +339,19 @@ fn directedHausdorff(a &List[List[Vec2]], b &List[List[Vec2]], step f64) f64 {
 }
 
 // The Hausdorff distance between two outlines (the larger of the two directed distances)
-pub fn outlineHausdorff(a &List[List[Vec2]], b &List[List[Vec2]], step f32) f32 {
+pub fn outlineHausdorff(a: &List[List[Vec2]], b: &List[List[Vec2]], step: f32) f32 {
   f32.from(maxd(directedHausdorff(a, b, f64.from(step)), directedHausdorff(b, a, f64.from(step))))
 }
 
 pub struct SilhouetteScore {
-  pub iou f32;             // area overlap, 0 to 1
-  pub hausdorff f32;       // between the outlines, in the meshes' units
-  pub areaA f32;           // the covered area of each, in squared units
-  pub areaB f32;
+  pub iou: f32;             // area overlap, 0 to 1
+  pub hausdorff: f32;       // between the outlines, in the meshes' units
+  pub areaA: f32;           // the covered area of each, in squared units
+  pub areaB: f32;
 }
 
 // Compare two meshes (already in the same frame) from each view
-pub fn compareSilhouettes(a &PolyMesh, b &PolyMesh, views &List[View], res usize) List[SilhouetteScore] {
+pub fn compareSilhouettes(a: &PolyMesh, b: &PolyMesh, views: &List[View], res: usize) List[SilhouetteScore] {
   var out = List[SilhouetteScore].empty();
   var i = 0usize;
   while i < views.len() {

@@ -4,11 +4,11 @@
 // goes where the other is wanted), and an owner in a region that copies, 'Rc[str]',
 // is 'Rc[imm, str]': it is copied, where 'Rc[T]' of an ordinary type is 'uni'
 // and moves. A struct of this file's declares it too, and gets all of it: its
-// 'self &' is 'imm', its 'Rc' copies, a borrow of its immutable value is
+// 'self: &' is 'imm', its 'Rc' copies, a borrow of its immutable value is
 // 'imm', and a 'where T is Immutable' constraint is met by it and by 'str'. A
 // permission that does not write may still be written: 'ro' and 'opaq' on
 // the type, and 'uni' for the one holder, whose 'Rc[uni, str]' moves and
-// whose finalizer receives 'self &uni'.
+// whose finalizer receives 'self: &uni'.
 //
 // Each printed value was checked by hand against the source.
 
@@ -16,34 +16,34 @@ mod ref_immutable;
 
 import stdio use *;
 
-fn show(label &str, n i64) {
+fn show(label: &str, n: i64) {
   printStr(label);
   printStr(" ");
   printInt(n);
   printStr("\n");
 }
 
-fn size(s &str) i64 {i64.from((s as &Array[u8]).len)}
+fn size(s: &str) i64 {i64.from((s as &Array[u8]).len)}
 
 // '&str' and '&imm str' are one type; 'ro' and 'opaq' borrow what '&imm' does
-fn viaImm(s &imm str) i64 {size(s)}
-fn viaRo(s &ro str) i64 {i64.from((s as &Array[u8]).len)}
-fn viaOpaq(s &opaq str) i64 {i64.from(1)}
+fn viaImm(s: &imm str) i64 {size(s)}
+fn viaRo(s: &ro str) i64 {i64.from((s as &Array[u8]).len)}
+fn viaOpaq(s: &opaq str) i64 {i64.from(1)}
 
 // An owner that copies is passed on, and still held by the caller
-fn owned(o Rc[str]) i64 {size(o)}
-fn ownedImm(o Rc[imm, str]) i64 {size(o)}
+fn owned(o: Rc[str]) i64 {size(o)}
+fn ownedImm(o: Rc[imm, str]) i64 {size(o)}
 
 struct Tag is Immutable {
-  pub n i32;
-  pub fn read(self &) i32 {n}
-  pub fn plus(self &, other &Tag) i32 {n + other.n}
+  pub n: i32;
+  pub fn read(self: &) i32 {n}
+  pub fn plus(self: &, other: &Tag) i32 {n + other.n}
 }
 
-// An Immutable type that finalizes: the finalizer receives 'self &uni'
+// An Immutable type that finalizes: the finalizer receives 'self: &uni'
 struct Noisy is Immutable {
-  pub n i32;
-  pub fn final(self &uni) {
+  pub n: i32;
+  pub fn final(self: &uni) {
     printStr("noisy gone\n");
   }
 }
@@ -52,19 +52,19 @@ fn needsImmutable[T]() i64 where T is Immutable {3}
 
 // A link to itself through an owner, whose layout is in flight when the owner is checked
 struct Link is Immutable {
-  pub n i32;
-  pub next Option[Rc[Link]];
+  pub n: i32;
+  pub next: Option[Rc[Link]];
 }
 
 // A generic's field, 'Rc[T]', is 'imm' where T declares Immutable and 'uni' where it does not
 struct Holder[T] {
-  pub r Rc[T];
+  pub r: Rc[T];
 }
 
 fn main() {
-  let bytes &Array[u8] = "hello";
+  let bytes: &Array[u8] = "hello";
   let v = bytes as &str;
-  let w &imm str = v;
+  let w: &imm str = v;
   show("borrow", size(w));
   show("imm", viaImm(v));
   show("ro", viaRo(v));
@@ -89,7 +89,7 @@ fn main() {
   let r3 = r;
   show("rc copies", i64.from(r.read() + r2.read() + r3.read()));
   show("borrowed", i64.from(t.plus(&t)));
-  let lent &Tag = &t;
+  let lent: &Tag = &t;
   show("lent tag", i64.from(lent.n));
 
   // The link is held by the next one and still by its maker

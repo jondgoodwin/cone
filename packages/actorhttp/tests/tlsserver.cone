@@ -25,14 +25,14 @@ import sse;
 import actors;
 import actorhttp use Client, Server, ServerConfig, Exchange, FetchError, EventStream;
 
-fn yes(b bool) &str {if b {"yes"} else {"NO"}}
+fn yes(b: bool) &str {if b {"yes"} else {"NO"}}
 
 // ---------------------------------------------------------------------------
 // The server's side
 // ---------------------------------------------------------------------------
 
 actor Handler {
-  ex Exchange;
+  ex: Exchange;
 
   pub async do run(self) {
     let path = String.from(ex.request.path());
@@ -60,9 +60,9 @@ actor Handler {
 }
 
 actor Acceptor {
-  server Server;
+  server: Server;
 
-  pub async do open(self, cfg ServerConfig, ports Sender[u16], secure Sender[u64]) {
+  pub async do open(self, cfg: ServerConfig, ports: Sender[u16], secure: Sender[u64]) {
     let r = await actorhttp.listen(SocketAddr.localhost(0u16), cfg);
     var res = r;
     match &mut res {
@@ -100,13 +100,13 @@ actor Acceptor {
 // ---------------------------------------------------------------------------
 
 // The tls package's test certificates
-fn certs(name &str) Path {
+fn certs(name: &str) Path {
   var p = String.from("../../../../../tls/tests/certs/");
   p.append(name);
   Path.fromString(p)
 }
 
-fn readText(name &str) String {
+fn readText(name: &str) String {
   var out = String.empty();
   let file = certs(name);
   match fs.readFile(&file) {
@@ -116,7 +116,7 @@ fn readText(name &str) String {
   out
 }
 
-fn url(scheme &str, port u16, path &str) String {
+fn url(scheme: &str, port: u16, path: &str) String {
   var u = String.from(scheme);
   u.append("://127.0.0.1:");
   u.appendUInt(u64.from(port));
@@ -132,7 +132,7 @@ fn trusting() Client {
   Client.make(cfg, actorhttp.defaultMaxBody)
 }
 
-fn say(what &str, r Result[Response, FetchError]) {
+fn say(what: &str, r: Result[Response, FetchError]) {
   printStr(what);
   printStr(": ");
   match &r {
@@ -154,7 +154,7 @@ fn say(what &str, r Result[Response, FetchError]) {
 // ends the request at the TLS stage, unless the connection broke first (the
 // peer's reset read, or it was already closed), which on a busy machine
 // happens now and then
-fn refusedTls(r Result[Response, FetchError]) bool {
+fn refusedTls(r: Result[Response, FetchError]) bool {
   match &r {
     case let e &Error {
       let s = e.failure.stage;
@@ -165,7 +165,7 @@ fn refusedTls(r Result[Response, FetchError]) bool {
   }
 }
 
-fn isOk(r Result[Response, FetchError]) bool {
+fn isOk(r: Result[Response, FetchError]) bool {
   match &r {
     case let ok &Ok {true}
     else {false}
@@ -173,10 +173,10 @@ fn isOk(r Result[Response, FetchError]) bool {
 }
 
 actor Prober {
-  client Client;
-  plain Client;
+  client: Client;
+  plain: Client;
 
-  pub async do run(self, port u16, done OneshotSender[u64]) {
+  pub async do run(self, port: u16, done: OneshotSender[u64]) {
     say("https get", await client.get(url("https", port, "/hello").view()));
     var post = Request.make("POST", url("https", port, "/echo").view());
     post.body = String.from("over tls");
@@ -232,7 +232,7 @@ actor Prober {
   }
 }
 
-fn take[T](rx &mut Receiver[T], dflt T) T {
+fn take[T](rx: &mut Receiver[T], dflt: T) T {
   match rx.recv() {
     case let v Some {v}
     else {dflt}
@@ -241,11 +241,11 @@ fn take[T](rx &mut Receiver[T], dflt T) T {
 
 fn main() i32 {
   initAll();
-  var ptx Sender[u16];
-  var prx Receiver[u16];
+  var ptx: Sender[u16];
+  var prx: Receiver[u16];
   ptx, prx = Channel[u16].make();
-  var stx Sender[u64];
-  var srx Receiver[u64];
+  var stx: Sender[u64];
+  var srx: Receiver[u64];
   stx, srx = Channel[u64].make();
   {
     // A TLS server
@@ -260,8 +260,8 @@ fn main() i32 {
     printStr("\n");
     acceptor.serve();
     {
-      var tx OneshotSender[u64];
-      var rx OneshotReceiver[u64];
+      var tx: OneshotSender[u64];
+      var rx: OneshotReceiver[u64];
       tx, rx = Oneshot[u64].make();
       let p = new Prober(trusting(), Client.standard());
       p.run(port, tx);

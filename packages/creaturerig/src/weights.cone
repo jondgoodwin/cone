@@ -40,29 +40,29 @@
 // solve too slow.
 
 pub struct WeightParams {
-  pub heat f32;            // c in H = c / d^2
-  pub maxIterations u32;   // conjugate gradient, most steps a joint
-  pub tolerance f32;       // and its relative residual
-  pub prune f32;           // a weight under this is dropped
-  pub power f32;           // the envelope's falloff exponent
+  pub heat: f32;            // c in H = c / d^2
+  pub maxIterations: u32;   // conjugate gradient, most steps a joint
+  pub tolerance: f32;       // and its relative residual
+  pub prune: f32;           // a weight under this is dropped
+  pub power: f32;           // the envelope's falloff exponent
 
   pub fn standard() WeightParams { new WeightParams(1., 400u32, 0.0005, 0.02, 4.) }
 }
 
 // Up to four joints and weights a vertex, in the order of the mesh's vertices
 pub struct VertexWeights {
-  pub joints List[u32];    // four a vertex; an unused slot is joint 0, weight 0
-  pub weights List[f32];   // four a vertex, summing to 1
-  pub steps u32;           // heat: the most solver steps any joint took
+  pub joints: List[u32];    // four a vertex; an unused slot is joint 0, weight 0
+  pub weights: List[f32];   // four a vertex, summing to 1
+  pub steps: u32;           // heat: the most solver steps any joint took
 
-  pub fn vertexCount(self &) usize { joints.len() / 4usize }
-  pub fn joint(self &, v usize, k usize) usize { usize.from(*joints[v * 4usize + k]) }
-  pub fn weight(self &, v usize, k usize) f32 { *weights[v * 4usize + k] }
+  pub fn vertexCount(self: &) usize { joints.len() / 4usize }
+  pub fn joint(self: &, v: usize, k: usize) usize { usize.from(*joints[v * 4usize + k]) }
+  pub fn weight(self: &, v: usize, k: usize) f32 { *weights[v * 4usize + k] }
 
   // What joint 'j' carries of vertex 'v' (0 if it is not among the four)
-  pub fn weightOf(self &, v usize, j usize) f32 {
+  pub fn weightOf(self: &, v: usize, j: usize) f32 {
     var k = 0usize;
-    var sum f32 = 0.;
+    var sum: f32 = 0.;
     while k < 4usize {
       if self.joint(v, k) == j { sum = sum + self.weight(v, k); }
       k = k + 1usize;
@@ -73,18 +73,18 @@ pub struct VertexWeights {
 
 // A segment a joint carries: tapered capsule from a to b
 struct Seg {
-  joint u32;
-  a Vec3;
-  b Vec3;
-  ra f32;
-  rb f32;
+  joint: u32;
+  a: Vec3;
+  b: Vec3;
+  ra: f32;
+  rb: f32;
 }
 
 // The distance from p to the capsule's surface (negative inside), and the capsule's radius there
-fn capsuleDistance(p Vec3, s &Seg) Vec3 {
+fn capsuleDistance(p: Vec3, s: &Seg) Vec3 {
   let ab = s.b - s.a;
   let len2 = ab.lengthSquared();
-  var t f32 = 0.;
+  var t: f32 = 0.;
   if len2 > 0.0000000001 { t = clampf((p - s.a).dot(ab) / len2, 0., 1.); }
   let closest = s.a + ab * t;
   let r = s.ra + (s.rb - s.ra) * t;
@@ -93,12 +93,12 @@ fn capsuleDistance(p Vec3, s &Seg) Vec3 {
 
 // The segments of every joint that has a child, and the list of those joints
 struct Carriers {
-  segs List[Seg];
-  joints List[u32];      // the joints that carry something, in bone order
+  segs: List[Seg];
+  joints: List[u32];      // the joints that carry something, in bone order
 }
 
 // Every joint of the rig may carry the surface
-pub fn allJoints(rig &Rig) List[bool] {
+pub fn allJoints(rig: &Rig) List[bool] {
   var out = List[bool].empty();
   var i = 0usize;
   while i < rig.boneCount() { out.push(true); i = i + 1usize; }
@@ -106,7 +106,7 @@ pub fn allJoints(rig &Rig) List[bool] {
 }
 
 // Every joint but those of chains of the given kinds (feathers, say, which carry their own blades and not the body)
-pub fn jointsExcludingKinds(rig &Rig, kinds &List[u32]) List[bool] {
+pub fn jointsExcludingKinds(rig: &Rig, kinds: &List[u32]) List[bool] {
   var out = List[bool].empty();
   var i = 0usize;
   while i < rig.boneCount() {
@@ -120,7 +120,7 @@ pub fn jointsExcludingKinds(rig &Rig, kinds &List[u32]) List[bool] {
   out
 }
 
-fn carriers(rig &Rig, mask &List[bool]) Carriers {
+fn carriers(rig: &Rig, mask: &List[bool]) Carriers {
   var segs = List[Seg].empty();
   var joints = List[u32].empty();
   let n = rig.boneCount();
@@ -150,12 +150,12 @@ fn carriers(rig &Rig, mask &List[bool]) Carriers {
 // The nearest carrying joint of a point, as its index in 'joints', and its distance
 // (to the capsule's surface), floored at a quarter of the capsule's radius
 struct Nearest {
-  slot usize;
-  dist f32;
-  radius f32;
+  slot: usize;
+  dist: f32;
+  radius: f32;
 }
 
-fn slotOf(c &Carriers, joint u32) usize {
+fn slotOf(c: &Carriers, joint: u32) usize {
   var k = 0usize;
   while k < c.joints.len() {
     if *c.joints[k] == joint { return k; }
@@ -164,10 +164,10 @@ fn slotOf(c &Carriers, joint u32) usize {
   0usize
 }
 
-fn nearest(c &Carriers, p Vec3) Nearest {
+fn nearest(c: &Carriers, p: Vec3) Nearest {
   var best = 3.0e38f;
   var bestSlot = 0usize;
-  var bestR f32 = 0.01;
+  var bestR: f32 = 0.01;
   var k = 0usize;
   while k < c.segs.len() {
     let d = capsuleDistance(p, c.segs[k]);
@@ -182,7 +182,7 @@ fn nearest(c &Carriers, p Vec3) Nearest {
 }
 
 // The distance to each carrying joint (the least over its segments)
-fn jointDistances(c &Carriers, p Vec3) List[f32] {
+fn jointDistances(c: &Carriers, p: Vec3) List[f32] {
   var out = List[f32].empty();
   var k = 0usize;
   while k < c.joints.len() { out.push(3.0e38); k = k + 1usize; }
@@ -199,10 +199,10 @@ fn jointDistances(c &Carriers, p Vec3) List[f32] {
 }
 
 // The best four of a vertex's per-joint weights, those under 'prune' dropped, normalised
-fn pickFour(w &List[f32], joints &List[u32], prune f32, outJ &mut List[u32], outW &mut List[f32]) {
+fn pickFour(w: &List[f32], joints: &List[u32], prune: f32, outJ: &mut List[u32], outW: &mut List[f32]) {
   var bj = [0usize, 0usize, 0usize, 0usize];
   var bw = [0.f, 0., 0., 0.];
-  var total f32 = 0.;
+  var total: f32 = 0.;
   var k = 0usize;
   while k < w.len() { total = total + *w[k]; k = k + 1usize; }
   k = 0usize;
@@ -224,7 +224,7 @@ fn pickFour(w &List[f32], joints &List[u32], prune f32, outJ &mut List[u32], out
     }
     k = k + 1usize;
   }
-  var sum f32 = bw[0] + bw[1] + bw[2] + bw[3];
+  var sum: f32 = bw[0] + bw[1] + bw[2] + bw[3];
   if sum <= 0. {
     // Nothing survived: the largest alone
     var best = 0usize;
@@ -244,12 +244,12 @@ fn pickFour(w &List[f32], joints &List[u32], prune f32, outJ &mut List[u32], out
 
 // ---------------------------------------------------------------- envelope
 
-pub fn envelopeWeights(rig &Rig, m &Mesh, params &WeightParams) VertexWeights {
+pub fn envelopeWeights(rig: &Rig, m: &Mesh, params: &WeightParams) VertexWeights {
   envelopeWeightsFor(rig, m, params, &allJoints(rig))
 }
 
 // The same over only the joints marked in `mask` (see jointsExcludingKinds)
-pub fn envelopeWeightsFor(rig &Rig, m &Mesh, params &WeightParams, mask &List[bool]) VertexWeights {
+pub fn envelopeWeightsFor(rig: &Rig, m: &Mesh, params: &WeightParams, mask: &List[bool]) VertexWeights {
   let c = carriers(rig, mask);
   var outJ = List[u32].empty();
   var outW = List[f32].empty();
@@ -273,14 +273,14 @@ pub fn envelopeWeightsFor(rig &Rig, m &Mesh, params &WeightParams, mask &List[bo
 
 // The mesh's cotangent Laplacian in compressed rows, with each vertex's mass
 struct Laplacian {
-  rowStart List[u32];
-  col List[u32];
-  wgt List[f32];
-  diag List[f32];
-  mass List[f32];
+  rowStart: List[u32];
+  col: List[u32];
+  wgt: List[f32];
+  diag: List[f32];
+  mass: List[f32];
 }
 
-fn cotWeight(pc Vec3, pa Vec3, pb Vec3) f32 {
+fn cotWeight(pc: Vec3, pa: Vec3, pb: Vec3) f32 {
   let e1 = pa - pc;
   let e2 = pb - pc;
   let cr = e1.cross(e2).length();
@@ -288,7 +288,7 @@ fn cotWeight(pc Vec3, pa Vec3, pb Vec3) f32 {
   fmaxf(e1.dot(e2) / cr, 0.)
 }
 
-fn buildLaplacian(m &Mesh) Laplacian {
+fn buildLaplacian(m: &Mesh) Laplacian {
   let nv = m.positions.len();
   let nt = m.indices.len() / 3usize;
   var count = List[u32].empty();
@@ -352,7 +352,7 @@ fn buildLaplacian(m &Mesh) Laplacian {
   var diag = List[f32].empty();
   i = 0usize;
   while i < nv {
-    var s f32 = 0.;
+    var s: f32 = 0.;
     var k = usize.from(*start[i]);
     while k < usize.from(*start[i + 1usize]) { s = s + *wgt[k]; k = k + 1usize; }
     diag.push(s);
@@ -362,14 +362,14 @@ fn buildLaplacian(m &Mesh) Laplacian {
 }
 
 // Solve (L + diag(mh)) x = rhs by Jacobi-preconditioned conjugate gradient; the steps taken
-fn solve(lap &Laplacian, mh &List[f32], rhs &List[f32], x &mut List[f32], maxIterations u32, tolerance f32) u32 {
+fn solve(lap: &Laplacian, mh: &List[f32], rhs: &List[f32], x: &mut List[f32], maxIterations: u32, tolerance: f32) u32 {
   let n = rhs.len();
   var r = List[f32].empty();
   var z = List[f32].empty();
   var p = List[f32].empty();
   var ap = List[f32].empty();
   var i = 0usize;
-  var bnorm f64 = 0.;
+  var bnorm: f64 = 0.;
   while i < n {
     x.set(i, 0.);
     r.push(*rhs[i]);
@@ -383,14 +383,14 @@ fn solve(lap &Laplacian, mh &List[f32], rhs &List[f32], x &mut List[f32], maxIte
   }
   if bnorm <= 0. { return 0u32; }
   bnorm = bnorm.sqrt();
-  var rz f64 = 0.;
+  var rz: f64 = 0.;
   i = 0usize;
   while i < n { rz = rz + f64.from(*r[i]) * f64.from(*z[i]); i = i + 1usize; }
   var it = 0u32;
   while it < maxIterations {
     // ap = A p
     i = 0usize;
-    var pap f64 = 0.;
+    var pap: f64 = 0.;
     while i < n {
       let pi = *p[i];
       var s = (*lap.diag[i] + *mh[i]) * pi;
@@ -403,7 +403,7 @@ fn solve(lap &Laplacian, mh &List[f32], rhs &List[f32], x &mut List[f32], maxIte
     }
     if pap <= 0. { return it; }
     let alpha = rz / pap;
-    var rnorm f64 = 0.;
+    var rnorm: f64 = 0.;
     i = 0usize;
     while i < n {
       x.set(i, *x[i] + f32.from(alpha) * (*p[i]));
@@ -414,7 +414,7 @@ fn solve(lap &Laplacian, mh &List[f32], rhs &List[f32], x &mut List[f32], maxIte
     }
     it = it + 1u32;
     if rnorm.sqrt() < f64.from(tolerance) * bnorm { return it; }
-    var rzNew f64 = 0.;
+    var rzNew: f64 = 0.;
     i = 0usize;
     while i < n {
       let d = *lap.diag[i] + *mh[i];
@@ -431,13 +431,13 @@ fn solve(lap &Laplacian, mh &List[f32], rhs &List[f32], x &mut List[f32], maxIte
   it
 }
 
-pub fn heatWeights(rig &Rig, m &Mesh, params &WeightParams) VertexWeights {
+pub fn heatWeights(rig: &Rig, m: &Mesh, params: &WeightParams) VertexWeights {
   heatWeightsFor(rig, m, params, &allJoints(rig))
 }
 
 // The same over only the joints marked in `mask` (see jointsExcludingKinds): the rest carry nothing, and the
 // surface near them goes to the joints that are left
-pub fn heatWeightsFor(rig &Rig, m &Mesh, params &WeightParams, mask &List[bool]) VertexWeights {
+pub fn heatWeightsFor(rig: &Rig, m: &Mesh, params: &WeightParams, mask: &List[bool]) VertexWeights {
   let c = carriers(rig, mask);
   let nv = m.positions.len();
   let nj = c.joints.len();
@@ -491,7 +491,7 @@ pub fn heatWeightsFor(rig &Rig, m &Mesh, params &WeightParams, mask &List[bool])
 
 // The skinning transform of every bone: its posed model transform times the
 // inverse of its rest one (render's skinningMatrix, as a rigid transform)
-pub fn skinTransforms(rig &Rig, models &List[Transform3]) List[Transform3] {
+pub fn skinTransforms(rig: &Rig, models: &List[Transform3]) List[Transform3] {
   var out = List[Transform3].empty();
   var i = 0usize;
   while i < rig.boneCount() {
@@ -503,7 +503,7 @@ pub fn skinTransforms(rig &Rig, models &List[Transform3]) List[Transform3] {
 
 // Where linear blend skinning carries the rest positions 'rest' when the
 // bones are posed at 'models'
-pub fn skinPositions(rig &Rig, w &VertexWeights, rest &List[Vec3], models &List[Transform3]) List[Vec3] {
+pub fn skinPositions(rig: &Rig, w: &VertexWeights, rest: &List[Vec3], models: &List[Transform3]) List[Vec3] {
   let bones = skinTransforms(rig, models);
   var out = List[Vec3].empty();
   var v = 0usize;
@@ -522,5 +522,5 @@ pub fn skinPositions(rig &Rig, w &VertexWeights, rest &List[Vec3], models &List[
 }
 
 // Scalar helpers (poseik has the same two; this package does not import it)
-fn fmaxf(a f32, b f32) f32 { if a > b { return a; } b }
-fn fminf(a f32, b f32) f32 { if a < b { return a; } b }
+fn fmaxf(a: f32, b: f32) f32 { if a > b { return a; } b }
+fn fminf(a: f32, b: f32) f32 { if a < b { return a; } b }

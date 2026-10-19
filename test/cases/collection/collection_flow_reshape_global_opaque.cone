@@ -19,21 +19,21 @@ mod collection_flow_reshape_global_opaque;
 
 import collections use *;
 
-struct Item { pub label String; }
+struct Item { pub label: String; }
 
 struct Ed {
-  pub items List[Item];
-  pub fn growFirst(self &mut, s &str) {
+  pub items: List[Item];
+  pub fn growFirst(self: &mut, s: &str) {
     let r = &mut items[0usize];
     r.label.append(s);
   }
 }
 
-var gl Ed;
-var title String;
-fn grower(s &str) { gl.growFirst(s); }
-fn quiet(s &str) { }
-var hook &fn(s &str);
+var gl: Ed;
+var title: String;
+fn grower(s: &str) { gl.growFirst(s); }
+fn quiet(s: &str) { }
+var hook: &fn(s: &str);
 
 fn @initpure init() {
   gl = new Ed(List[Item].empty());
@@ -42,22 +42,22 @@ fn @initpure init() {
 }
 
 // A function value passed down with the view
-fn callIt(f &fn(s &str), s &str) { f(s); }
+fn callIt(f: &fn(s: &str), s: &str) { f(s); }
 
 fn viaParam() {
   callIt(&grower, gl.items[0usize].label.view());               //~ ErrorShapeReshape "points into a 'var' global"
 }
 
 // The function value held in a struct's field
-struct H { pub f &fn(s &str); }
-fn useIt(h &H, s &str) { h.f(s); }
+struct H { pub f: &fn(s: &str); }
+fn useIt(h: &H, s: &str) { h.f(s); }
 
-fn viaField(h &H) {
+fn viaField(h: &H) {
   useIt(h, gl.items[0usize].label.view());                      //~ ErrorShapeReshape "points into a 'var' global"
 }
 
 // ... held in a 'var' global
-fn useHook(s &str) { hook(s); }
+fn useHook(s: &str) { hook(s); }
 
 fn viaGlobalPtr() {
   useHook(gl.items[0usize].label.view());                       //~ ErrorShapeReshape "points into a 'var' global"
@@ -72,27 +72,27 @@ fn viaLocal() {
 // A C function handed a callback that C calls back (qsort's comparator). The compiler cannot tell what the
 // comparator does, so one that writes the global ('loud') and one that writes nothing ('silent') are
 // refused alike
-extern fn @c qsort(base *u8, n usize, size usize, cmp &fn @c (a *u8, b *u8) i32);
-fn @c loud(a *u8, b *u8) i32 { gl.growFirst("zz"); 0i32 }
-fn @c silent(a *u8, b *u8) i32 { 0i32 }
+extern fn @c qsort(base: *u8, n: usize, size: usize, cmp: &fn @c (a: *u8, b: *u8) i32);
+fn @c loud(a: *u8, b: *u8) i32 { gl.growFirst("zz"); 0i32 }
+fn @c silent(a: *u8, b: *u8) i32 { 0i32 }
 
-fn viaCLoud(buf *u8) usize {
+fn viaCLoud(buf: *u8) usize {
   let v = gl.items[0usize].label.view();
   qsort(buf, 2usize, 1usize, &loud);                            //~ ErrorShapeReshape "points into a 'var' global"
   v.len
 }
 
-fn viaCQuiet(buf *u8) usize {
+fn viaCQuiet(buf: *u8) usize {
   let v = gl.items[0usize].label.view();
   qsort(buf, 2usize, 1usize, &silent);                          //~ ErrorShapeReshape "points into a 'var' global"
   v.len
 }
 
 // An extern handed a struct that holds a '&fn', not the '&fn' itself
-struct Cb { pub f &fn(s &str); pub n i64; }
-extern fn @c takesCb(cb *Cb);
+struct Cb { pub f: &fn(s: &str); pub n: i64; }
+extern fn @c takesCb(cb: *Cb);
 
-fn viaStruct(cb *Cb) usize {
+fn viaStruct(cb: *Cb) usize {
   let v = gl.items[0usize].label.view();
   takesCb(cb);                                                  //~ ErrorShapeReshape "points into a 'var' global"
   v.len
@@ -100,19 +100,19 @@ fn viaStruct(cb *Cb) usize {
 
 // ... or anything else callable it can reach, by one rule: a virtual reference to a closure, and a closure an
 // owner holds, behind a read-only reference
-struct Sink { pub f &<mut fn(s &str); }
-extern fn @c takesSink(sink &Sink);
+struct Sink { pub f: &<mut fn(s: &str); }
+extern fn @c takesSink(sink: &Sink);
 
-fn viaSink(sink &Sink) usize {
+fn viaSink(sink: &Sink) usize {
   let v = gl.items[0usize].label.view();
   takesSink(sink);                                              //~ ErrorShapeReshape "points into a 'var' global"
   v.len
 }
 
-struct Owner { pub f Uni[fn(s &str)]; }
-extern fn @c takesOwner(o &Owner);
+struct Owner { pub f: Uni[fn(s: &str)]; }
+extern fn @c takesOwner(o: &Owner);
 
-fn viaOwner(o &Owner) usize {
+fn viaOwner(o: &Owner) usize {
   let v = gl.items[0usize].label.view();
   takesOwner(o);                                                //~ ErrorShapeReshape "points into a 'var' global"
   v.len

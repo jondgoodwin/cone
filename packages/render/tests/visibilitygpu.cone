@@ -48,25 +48,25 @@ const SIDEZ = 256usize;
 const BYTES = 262144usize;
 
 struct Rng {
-  s u64;
-  fn next(self &mut) u64 {
+  s: u64;
+  fn next(self: &mut) u64 {
     s = s ^ (s >> 12u64);
     s = s ^ (s << 25u64);
     s = s ^ (s >> 27u64);
     s * 2685821657736338717u64
   }
-  fn unit(self &mut) f32 { f32.from(next() >> 40u64) / 16777216. }
-  fn range(self &mut, lo f32, hi f32) f32 { lo + (hi - lo) * unit() }
+  fn unit(self: &mut) f32 { f32.from(next() >> 40u64) / 16777216. }
+  fn range(self: &mut, lo: f32, hi: f32) f32 { lo + (hi - lo) * unit() }
 }
 
-fn absf(x f32) f32 { if x < 0. { 0. - x } else { x } }
+fn absf(x: f32) f32 { if x < 0. { 0. - x } else { x } }
 
-fn near(a f32, b f32, within f32) bool { absf(a - b) <= within }
+fn near(a: f32, b: f32, within: f32) bool { absf(a - b) <= within }
 
-fn px(p *u8, x usize, y usize) f32 { f32.from(*(p + (y * SIDEZ + x) * 4usize)) }
+fn px(p: *u8, x: usize, y: usize) f32 { f32.from(*(p + (y * SIDEZ + x) * 4usize)) }
 
-fn drawFrame(renderer &mut Renderer, device &mut Device, color &Texture, depth &Texture, readback &Buffer,
-    camera &Camera, light &Light, list &DrawList) {
+fn drawFrame(renderer: &mut Renderer, device: &mut Device, color: &Texture, depth: &Texture, readback: &Buffer,
+    camera: &Camera, light: &Light, list: &DrawList) {
   var encoder = device.createCommandEncoder();
   renderer.render(device, &mut encoder, color, depth, camera, light, list);
   encoder.copyTextureToBuffer(color, readback);
@@ -75,7 +75,7 @@ fn drawFrame(renderer &mut Renderer, device &mut Device, color &Texture, depth &
   device.waitIdle();
 }
 
-fn snapshot(p *u8) List[u8] {
+fn snapshot(p: *u8) List[u8] {
   var out = List[u8].withCapacity(BYTES);
   var i = 0usize;
   while i < BYTES {
@@ -86,7 +86,7 @@ fn snapshot(p *u8) List[u8] {
 }
 
 // How many bytes of two pictures differ, and by how much at most
-fn differing(a &List[u8], b &List[u8], worst &mut f32) u32 {
+fn differing(a: &List[u8], b: &List[u8], worst: &mut f32) u32 {
   var n = 0u32;
   *worst = 0.;
   var i = 0usize;
@@ -100,13 +100,13 @@ fn differing(a &List[u8], b &List[u8], worst &mut f32) u32 {
 }
 
 // A picture of a draw list: drawn, read back, copied
-fn pictureOf(renderer &mut Renderer, device &mut Device, color &Texture, depth &Texture, readback &Buffer,
-    camera &Camera, light &Light, list &DrawList) List[u8] {
+fn pictureOf(renderer: &mut Renderer, device: &mut Device, color: &Texture, depth: &Texture, readback: &Buffer,
+    camera: &Camera, light: &Light, list: &DrawList) List[u8] {
   drawFrame(renderer, device, color, depth, readback, camera, light, list);
   snapshot(readback.mappedRange())
 }
 
-fn sun(elevation f32, azimuth f32, intensity f32, ambient f32) Light {
+fn sun(elevation: f32, azimuth: f32, intensity: f32, ambient: f32) Light {
   let c = cos(elevation);
   let toSun = new Vec3(c * cos(azimuth), sin(elevation), c * sin(azimuth));
   Light.directional(new Vec3(0., 0., 0.) - toSun, Color.gray(intensity), Color.gray(ambient))
@@ -115,14 +115,14 @@ fn sun(elevation f32, azimuth f32, intensity f32, ambient f32) Light {
 // ---- 1 to 5: a field of things ----
 
 struct Field {
-  cube MeshHandle;
-  ball MeshHandle;
-  slab MeshHandle;
-  lit List[MaterialHandle];
-  pbr List[MaterialHandle];
+  cube: MeshHandle;
+  ball: MeshHandle;
+  slab: MeshHandle;
+  lit: List[MaterialHandle];
+  pbr: List[MaterialHandle];
 }
 
-fn makeField(renderer &mut Renderer, device &mut Device) Field {
+fn makeField(renderer: &mut Renderer, device: &mut Device) Field {
   let cube = renderer.addMesh(device, &Mesh.cube(1.));
   let ball = renderer.addMesh(device, &Mesh.sphere(1., 24));
   let slab = renderer.addMesh(device, &Mesh.plane(1, 1.));
@@ -141,12 +141,12 @@ fn makeField(renderer &mut Renderer, device &mut Device) Field {
 }
 
 struct Thing {
-  mesh MeshHandle;
-  material u32;
-  model Mat4;
+  mesh: MeshHandle;
+  material: u32;
+  model: Mat4;
 }
 
-fn makeThings(field &Field, count i32) List[Thing] {
+fn makeThings(field: &Field, count: i32) List[Thing] {
   var rng = new Rng(88172645463325252u64);
   var things = List[Thing].empty();
   var i = 0;
@@ -172,7 +172,7 @@ fn viewCamera() Camera {
   camera
 }
 
-fn listOf(things &List[Thing], field &Field, pbr bool) DrawList {
+fn listOf(things: &List[Thing], field: &Field, pbr: bool) DrawList {
   var list = DrawList.empty();
   list.add(field.slab, if pbr { *field.pbr[0usize] } else { *field.lit[0usize] },
     Mat4.fromTrs(new Vec3(0., 0., 0.), Quat.identity(), new Vec3(100., 1., 100.)));
@@ -185,7 +185,7 @@ fn listOf(things &List[Thing], field &Field, pbr bool) DrawList {
   list
 }
 
-fn fillScene(renderer &mut Renderer, things &List[Thing], field &Field, pbr bool) List[SceneHandle] {
+fn fillScene(renderer: &mut Renderer, things: &List[Thing], field: &Field, pbr: bool) List[SceneHandle] {
   var handles = List[SceneHandle].empty();
   handles.push(renderer.addSceneItem(field.slab, if pbr { *field.pbr[0usize] } else { *field.lit[0usize] },
     Mat4.fromTrs(new Vec3(0., 0., 0.), Quat.identity(), new Vec3(100., 1., 100.)), new Color(1., 1., 1., 1.)));
@@ -199,8 +199,8 @@ fn fillScene(renderer &mut Renderer, things &List[Thing], field &Field, pbr bool
   handles
 }
 
-fn fieldChecks(renderer &mut Renderer, device &mut Device, color &Texture, depth &Texture, readback &Buffer, pbr bool,
-    name &Array[u8]) {
+fn fieldChecks(renderer: &mut Renderer, device: &mut Device, color: &Texture, depth: &Texture, readback: &Buffer, pbr: bool,
+    name: &Array[u8]) {
   let field = makeField(renderer, device);
   let things = makeThings(&field, 160);
   let camera = viewCamera();
@@ -261,8 +261,8 @@ fn fieldChecks(renderer &mut Renderer, device &mut Device, color &Texture, depth
 
 // ---- 3. Instancing ----
 
-fn instancingChecks(renderer &mut Renderer, device &mut Device, color &Texture, depth &Texture, readback &Buffer,
-    pbr bool, name &Array[u8]) {
+fn instancingChecks(renderer: &mut Renderer, device: &mut Device, color: &Texture, depth: &Texture, readback: &Buffer,
+    pbr: bool, name: &Array[u8]) {
   let cube = renderer.addMesh(device, &Mesh.cube(1.));
   let c = new Color(0.8, 0.5, 0.2, 1.);
   var materials = List[MaterialHandle].empty();
@@ -330,7 +330,7 @@ fn dark() Light {
   Light.directional(new Vec3(0., -1., 0.), Color.gray(0.), Color.gray(0.))
 }
 
-fn shadowChecks(renderer &mut Renderer, device &mut Device, color &Texture, depth &Texture, readback &Buffer) {
+fn shadowChecks(renderer: &mut Renderer, device: &mut Device, color: &Texture, depth: &Texture, readback: &Buffer) {
   let ground = renderer.addMesh(device, &Mesh.plane(1, 1.));
   let cube = renderer.addMesh(device, &Mesh.cube(1.));
   let m = Material.plain(new Color(0.5, 0.5, 0.5, 1.));
@@ -386,7 +386,7 @@ fn shadowChecks(renderer &mut Renderer, device &mut Device, color &Texture, dept
   renderer.disableShadows(device);
 }
 
-fn localShadowChecks(renderer &mut Renderer, device &mut Device, color &Texture, depth &Texture, readback &Buffer, pointLight bool) {
+fn localShadowChecks(renderer: &mut Renderer, device: &mut Device, color: &Texture, depth: &Texture, readback: &Buffer, pointLight: bool) {
   let ground = renderer.addMesh(device, &Mesh.plane(1, 1.));
   let cube = renderer.addMesh(device, &Mesh.cube(1.));
   let m = Material.plain(new Color(0.5, 0.5, 0.5, 1.));
@@ -437,7 +437,7 @@ fn localShadowChecks(renderer &mut Renderer, device &mut Device, color &Texture,
 // ---- 7 and 8. Levels and ranges, by what share of a footprint each draws ----
 
 // A square 4 across in the plane z = 0 facing 'normal'
-fn quad(normal Vec3) Mesh {
+fn quad(normal: Vec3) Mesh {
   var m = Mesh.empty();
   m.positions.push(new Vec3(-2., -2., 0.));
   m.positions.push(new Vec3(2., -2., 0.));
@@ -454,7 +454,7 @@ fn quad(normal Vec3) Mesh {
   m
 }
 
-fn faceCamera(distance f32) Camera {
+fn faceCamera(distance: f32) Camera {
   var camera = Camera.make();
   camera.fov = radians(40.);
   camera.near = 0.1;
@@ -470,7 +470,7 @@ fn frontLight() Light {
 
 // Of the pixels that 'a' and 'b' draw differently: how many 'p' draws as 'a',
 // as 'b', and as neither
-fn classify(a &List[u8], b &List[u8], p &List[u8], ofA &mut u32, ofB &mut u32, neither &mut u32) u32 {
+fn classify(a: &List[u8], b: &List[u8], p: &List[u8], ofA: &mut u32, ofB: &mut u32, neither: &mut u32) u32 {
   var total = 0u32;
   *ofA = 0u32;
   *ofB = 0u32;
@@ -496,7 +496,7 @@ fn classify(a &List[u8], b &List[u8], p &List[u8], ofA &mut u32, ofB &mut u32, n
   total
 }
 
-fn levelChecks(renderer &mut Renderer, device &mut Device, color &Texture, depth &Texture, readback &Buffer) {
+fn levelChecks(renderer: &mut Renderer, device: &mut Device, color: &Texture, depth: &Texture, readback: &Buffer) {
   let meshA = renderer.addMesh(device, &quad(new Vec3(0., 0., 1.)));
   let meshB = renderer.addMesh(device, &quad(new Vec3(0.6, 0., 0.8)));
   let m = Material.plain(new Color(0.9, 0.9, 0.9, 1.));
@@ -557,7 +557,7 @@ fn levelChecks(renderer &mut Renderer, device &mut Device, color &Texture, depth
   renderer.clearScene();
 }
 
-fn rangeChecks(renderer &mut Renderer, device &mut Device, color &Texture, depth &Texture, readback &Buffer) {
+fn rangeChecks(renderer: &mut Renderer, device: &mut Device, color: &Texture, depth: &Texture, readback: &Buffer) {
   let meshA = renderer.addMesh(device, &quad(new Vec3(0., 0., 1.)));
   let m = Material.plain(new Color(0.9, 0.9, 0.9, 1.));
   let lit = renderer.addMaterial(device, &m);
@@ -602,7 +602,7 @@ fn rangeChecks(renderer &mut Renderer, device &mut Device, color &Texture, depth
 
 // ---- 5. Layers ----
 
-fn layerChecks(renderer &mut Renderer, device &mut Device, color &Texture, depth &Texture, readback &Buffer) {
+fn layerChecks(renderer: &mut Renderer, device: &mut Device, color: &Texture, depth: &Texture, readback: &Buffer) {
   let cube = renderer.addMesh(device, &Mesh.cube(1.));
   let m = Material.plain(new Color(0.9, 0.5, 0.2, 1.));
   let lit = renderer.addMaterial(device, &m);
@@ -628,7 +628,7 @@ fn layerChecks(renderer &mut Renderer, device &mut Device, color &Texture, depth
 
 // ---- 10. Occlusion by the depth pyramid ----
 
-fn boxesCamera(x f32, y f32) Camera {
+fn boxesCamera(x: f32, y: f32) Camera {
   var camera = Camera.make();
   camera.fov = radians(50.);
   camera.near = 0.5;
@@ -638,7 +638,7 @@ fn boxesCamera(x f32, y f32) Camera {
   camera
 }
 
-fn occlusionChecks(renderer &mut Renderer, device &mut Device, color &Texture, readback &Buffer, pbr bool) {
+fn occlusionChecks(renderer: &mut Renderer, device: &mut Device, color: &Texture, readback: &Buffer, pbr: bool) {
   // A depth buffer the pyramid may sample
   let depthDesc = new TextureDescriptor(SIDE, SIDE, TEXTURE_FORMAT_DEPTH32_FLOAT,
     TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_TEXTURE_BINDING);
@@ -735,7 +735,7 @@ fn occlusionChecks(renderer &mut Renderer, device &mut Device, color &Texture, r
 
 // ---- 11. Grouping by hash equals sorting ----
 
-fn groupingChecks(renderer &mut Renderer, device &mut Device, color &Texture, depth &Texture, readback &Buffer) {
+fn groupingChecks(renderer: &mut Renderer, device: &mut Device, color: &Texture, depth: &Texture, readback: &Buffer) {
   let cube = renderer.addMesh(device, &Mesh.cube(1.));
   let ball = renderer.addMesh(device, &Mesh.sphere(1., 8));
   var materials = List[MaterialHandle].empty();

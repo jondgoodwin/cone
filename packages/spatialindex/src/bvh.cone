@@ -15,50 +15,50 @@
 //  - 'rebuild': throw the shape away and rebuild by binned SAH, the best
 //    tree there is, O(n log n). 'insertBulk' loads a lot of items that way.
 
-pub struct Bvh[T Copy] {
-  items Items[T];
-  tree BvhTree;
-  margin f32;
-  pairs PairBook;
-  moved List[u32];
-  pendingRemoved List[Pair[T]];
+pub struct Bvh[T: Copy] {
+  items: Items[T];
+  tree: BvhTree;
+  margin: f32;
+  pairs: PairBook;
+  moved: List[u32];
+  pendingRemoved: List[Pair[T]];
 
   // An empty tree whose leaf boxes are fat by 'margin' on every side
   // (0 makes them exact)
-  pub fn create(margin f32) Bvh[T] {
+  pub fn create(margin: f32) Bvh[T] {
     new Bvh[T](Items[T].create(), BvhTree.create(), margin, PairBook.create(),
       List[u32].empty(), List[Pair[T]].empty())
   }
 
-  pub fn len(self &) usize {items.count}
-  pub fn contains(self &, p Proxy) bool {items.alive(p)}
-  pub fn handle(self &, p Proxy) T {items.list[usize.from(p.slot)].handle}
-  pub fn box(self &, p Proxy) Aabb3 {items.list[usize.from(p.slot)].box}
+  pub fn len(self: &) usize {items.count}
+  pub fn contains(self: &, p: Proxy) bool {items.alive(p)}
+  pub fn handle(self: &, p: Proxy) T {items.list[usize.from(p.slot)].handle}
+  pub fn box(self: &, p: Proxy) Aabb3 {items.list[usize.from(p.slot)].box}
 
   // The box the tree holds for the item: its box grown by the margin
-  pub fn fatBox(self &, p Proxy) Aabb3 {
+  pub fn fatBox(self: &, p: Proxy) Aabb3 {
     tree.nodes[usize.from(items.list[usize.from(p.slot)].x)].box
   }
 
   // The box pairs are judged by (the fat box); the same name on every index
-  pub fn pairBox(self &, p Proxy) Aabb3 {fatBox(p)}
+  pub fn pairBox(self: &, p: Proxy) Aabb3 {fatBox(p)}
 
   // The height of the tree (0 for a single leaf, -1 for none)
-  pub fn height(self &) i32 {
+  pub fn height(self: &) i32 {
     if tree.root == NONE {-1i32} else {tree.nodes[usize.from(tree.root)].height}
   }
 
   // The surface area heuristic cost of the tree's shape; lower is better
-  pub fn sahCost(self &) f32 {tree.sahCost()}
+  pub fn sahCost(self: &) f32 {tree.sahCost()}
 
-  fn flagMoved(self &mut, slot u32) {
+  fn flagMoved(self: &mut, slot: u32) {
     if !items.list[usize.from(slot)].moved {
       items.list[usize.from(slot)].moved = true;
       moved.push(slot);
     }
   }
 
-  pub fn insert(self &mut, box Aabb3, handle T) Proxy {
+  pub fn insert(self: &mut, box: Aabb3, handle: T) Proxy {
     let p = items.add(box, handle);
     let leaf = tree.newLeaf(p.slot, box.expand(margin));
     items.list[usize.from(p.slot)].x = leaf;
@@ -68,7 +68,7 @@ pub struct Bvh[T Copy] {
   }
 
   // Removes the item; false if the proxy was already gone
-  pub fn remove(self &mut, p Proxy) bool {
+  pub fn remove(self: &mut, p: Proxy) bool {
     if !items.alive(p) {return false;}
     let si = usize.from(p.slot);
     let leaf = items.list[si].x;
@@ -90,7 +90,7 @@ pub struct Bvh[T Copy] {
     true
   }
 
-  fn pairOf(self &, sa u32, ha T, sb u32, hb T) Pair[T] {
+  fn pairOf(self: &, sa: u32, ha: T, sb: u32, hb: T) Pair[T] {
     if sa < sb {
       new Pair[T](ha, hb, items.proxyOf(sa), items.proxyOf(sb))
     }
@@ -104,7 +104,7 @@ pub struct Bvh[T Copy] {
   // taken out and put back with a fresh fat box, stretched along
   // 'displacement' (how far the item moved; Box2D's multiplier of 4).
   // Answers whether the tree changed.
-  pub fn move(self &mut, p Proxy, box Aabb3, displacement Vec3) bool {
+  pub fn move(self: &mut, p: Proxy, box: Aabb3, displacement: Vec3) bool {
     if !items.alive(p) {return false;}
     let si = usize.from(p.slot);
     items.list[si].box = box;
@@ -133,7 +133,7 @@ pub struct Bvh[T Copy] {
   // with no change to the tree's shape (cheap, and the tree's quality may
   // fall; see 'sahCost' and 'rebuild'). The leaf's box is exactly the fat
   // box of the new box, so pairs change at once.
-  pub fn moveRefit(self &mut, p Proxy, box Aabb3) bool {
+  pub fn moveRefit(self: &mut, p: Proxy, box: Aabb3) bool {
     if !items.alive(p) {return false;}
     let si = usize.from(p.slot);
     items.list[si].box = box;
@@ -146,7 +146,7 @@ pub struct Bvh[T Copy] {
 
   // Sets an item's box without touching the tree; call 'refit' (or
   // 'rebuild') after setting any number of them
-  pub fn setBox(self &mut, p Proxy, box Aabb3) bool {
+  pub fn setBox(self: &mut, p: Proxy, box: Aabb3) bool {
     if !items.alive(p) {return false;}
     let si = usize.from(p.slot);
     items.list[si].box = box;
@@ -156,10 +156,10 @@ pub struct Bvh[T Copy] {
   }
 
   // Recomputes every internal box from the leaves (after 'setBox')
-  pub fn refit(self &mut) {tree.refitAll();}
+  pub fn refit(self: &mut) {tree.refitAll();}
 
   // Rebuilds the whole tree by binned SAH from the items' present boxes
-  pub fn rebuild(self &mut) {
+  pub fn rebuild(self: &mut) {
     var work = List[BuildItem].withCapacity(items.count + 1usize);
     tree.clear();
     var i = 0usize;
@@ -178,7 +178,7 @@ pub struct Bvh[T Copy] {
   // Puts many items in at once and builds the tree by binned SAH (an empty
   // tree is built afresh; a tree with items is rebuilt with them). The
   // proxies are appended to 'out' in the order of the boxes.
-  pub fn insertBulk(self &mut, boxes &Array[Aabb3], handles &Array[T], out &mut List[Proxy]) {
+  pub fn insertBulk(self: &mut, boxes: &Array[Aabb3], handles: &Array[T], out: &mut List[Proxy]) {
     var i = 0usize;
     while i < boxes.len {
       let p = items.add(boxes[i], handles[i]);
@@ -196,7 +196,7 @@ pub struct Bvh[T Copy] {
   // tree may change during a query.
 
   // Every item whose box touches 'box'
-  pub fn overlapAabb[F fn(h T, p Proxy) bool](self &, box Aabb3, visit &mut F) {
+  pub fn overlapAabb[F: fn(h: T, p: Proxy) bool](self: &, box: Aabb3, visit: &mut F) {
     if tree.root == NONE {return;}
     var stack = new Array[u32, 192] <- fill 0u32;
     var sp = 1usize;
@@ -221,7 +221,7 @@ pub struct Bvh[T Copy] {
   }
 
   // Every item whose box touches the ball
-  pub fn overlapSphere[F fn(h T, p Proxy) bool](self &, s Sphere, visit &mut F) {
+  pub fn overlapSphere[F: fn(h: T, p: Proxy) bool](self: &, s: Sphere, visit: &mut F) {
     if tree.root == NONE {return;}
     var stack = new Array[u32, 192] <- fill 0u32;
     var sp = 1usize;
@@ -248,7 +248,7 @@ pub struct Bvh[T Copy] {
   // Every item whose box is not wholly outside the frustum (geomath's
   // 'testAabb' is conservative near the frustum's corners). A subtree whose
   // box is wholly inside is reported without further tests.
-  pub fn frustum[F fn(h T, p Proxy) bool](self &, f &Frustum, visit &mut F) {
+  pub fn frustum[F: fn(h: T, p: Proxy) bool](self: &, f: &Frustum, visit: &mut F) {
     if tree.root == NONE {return;}
     var stack = new Array[u32, 192] <- fill 0u32;
     var masks = new Array[u32, 192] <- fill 0u32;
@@ -284,7 +284,7 @@ pub struct Bvh[T Copy] {
   // hits; answer anything beyond the reach in force (say FAR) to go on
   // through every hit; answer a negative number to stop. The reach starts at
   // 'maxT'.
-  pub fn rayCast[F fn(h T, p Proxy, t f32) f32](self &, ray Ray3, maxT f32, visit &mut F) {
+  pub fn rayCast[F: fn(h: T, p: Proxy, t: f32) f32](self: &, ray: Ray3, maxT: f32, visit: &mut F) {
     if tree.root == NONE {return;}
     let r = RayQ.from(ray);
     var limit = maxT;
@@ -335,9 +335,9 @@ pub struct Bvh[T Copy] {
   }
 
   // The first item the ray meets within 'maxT' (by the entry into its box)
-  pub fn rayNearest(self &, ray Ray3, maxT f32) Option[Hit[T]] {
-    var best Option[Hit[T]] = None;
-    var grab = fn(h T, p Proxy, t f32) f32 {
+  pub fn rayNearest(self: &, ray: Ray3, maxT: f32) Option[Hit[T]] {
+    var best: Option[Hit[T]] = None;
+    var grab = fn(h: T, p: Proxy, t: f32) f32 {
       best = Some(new Hit[T](h, p, t));
       t
     };
@@ -347,8 +347,8 @@ pub struct Bvh[T Copy] {
 
   // Every item the ray meets within 'maxT', in no particular order, each
   // given to 'visit' with its entry distance; false from it stops
-  pub fn rayAll[F fn(h T, p Proxy, t f32) bool](self &, ray Ray3, maxT f32, visit &mut F) {
-    var wrap = fn(h T, p Proxy, t f32) f32 {
+  pub fn rayAll[F: fn(h: T, p: Proxy, t: f32) bool](self: &, ray: Ray3, maxT: f32, visit: &mut F) {
+    var wrap = fn(h: T, p: Proxy, t: f32) f32 {
       if visit(h, p, t) {FAR} else {-1.}
     };
     rayCast(ray, maxT, &mut wrap);
@@ -356,7 +356,7 @@ pub struct Bvh[T Copy] {
 
   // The 'k' items nearest the point by the distance to their boxes (0 for a
   // box holding the point), nearest first, replacing what 'out' held
-  pub fn nearest(self &, point Vec3, k usize, out &mut List[Neighbor[T]]) {
+  pub fn nearest(self: &, point: Vec3, k: usize, out: &mut List[Neighbor[T]]) {
     out.clear();
     if tree.root == NONE || k == 0usize {return;}
     var heap = MinHeap.create();
@@ -396,7 +396,7 @@ pub struct Bvh[T Copy] {
   // jittering item causes no pair churn (the point of the margin).
 
   // Slots whose leaf boxes touch 'box'
-  fn queryFat(self &, box Aabb3, found &mut List[u32]) {
+  fn queryFat(self: &, box: Aabb3, found: &mut List[u32]) {
     if tree.root == NONE {return;}
     var stack = new Array[u32, 192] <- fill 0u32;
     var sp = 1usize;
@@ -417,7 +417,7 @@ pub struct Bvh[T Copy] {
   }
 
   // Every pair of items whose leaf boxes touch, once each, appended to 'out'
-  pub fn allPairs(self &, out &mut List[Pair[T]]) {
+  pub fn allPairs(self: &, out: &mut List[Pair[T]]) {
     var found = List[u32].empty();
     var i = 0usize;
     while i < items.list.len() {
@@ -442,7 +442,7 @@ pub struct Bvh[T Copy] {
   // to 'events' the pairs that began and the pairs that ended (including
   // those of removed items). The first call after inserting reports every
   // pair as new.
-  pub fn updatePairs(self &mut, events &mut PairEvents[T]) {
+  pub fn updatePairs(self: &mut, events: &mut PairEvents[T]) {
     var i = 0usize;
     while i < pendingRemoved.len() {
       events.removed.push(*pendingRemoved[i]);

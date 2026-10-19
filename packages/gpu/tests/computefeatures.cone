@@ -54,7 +54,7 @@ fn preference() u32 {
 // ---- Half-precision floats, written in Cone ----
 
 // 2 to the power 'e', exactly
-fn pow2(e i32) f64 {
+fn pow2(e: i32) f64 {
   var r = 1.0;
   var k = e;
   while k > 0 { r = r * 2.0; k = k - 1; }
@@ -63,7 +63,7 @@ fn pow2(e i32) f64 {
 }
 
 // 'v' (not negative) rounded to the nearest whole number, a tie to the even one
-fn roundEven(v f64) u32 {
+fn roundEven(v: f64) u32 {
   let t = u32.from(v);
   let d = v - f64.from(t);
   if d > 0.5 { return t + 1u32; }
@@ -73,7 +73,7 @@ fn roundEven(v f64) u32 {
 
 // The half-precision bit pattern nearest 'x', ties to even (the rounding the GPU does for each operation), for
 // the magnitudes the test uses: no NaN, infinities past 65520
-fn toHalf(x f64) u32 {
+fn toHalf(x: f64) u32 {
   var sign = 0u32;
   var a = x;
   if a < 0.0 {
@@ -101,7 +101,7 @@ fn toHalf(x f64) u32 {
 }
 
 // The value of a half-precision bit pattern
-fn fromHalf(h u32) f64 {
+fn fromHalf(h: u32) f64 {
   let s = if (h & 0x8000u32) != 0u32 { -1.0 } else { 1.0 };
   let e = i32.from((h >> 10u32) & 31u32);
   let m = f64.from(h & 1023u32);
@@ -110,30 +110,30 @@ fn fromHalf(h u32) f64 {
 }
 
 // The half nearest 'x', as a value
-fn halve(x f64) f64 { fromHalf(toHalf(x)) }
+fn halve(x: f64) f64 { fromHalf(toHalf(x)) }
 
 // ---- Data ----
 
 // The next number of a small linear congruential generator (31 bits)
-fn next(state &mut u64) u64 {
+fn next(state: &mut u64) u64 {
   *state = (*state * 1103515245u64 + 12345u64) % 2147483648u64;
   *state
 }
 
-fn signedByte(w u32, k u32) i32 {
+fn signedByte(w: u32, k: u32) i32 {
   let v = i32.from((w >> (8u32 * k)) & 255u32);
   if v >= 128 { v - 256 } else { v }
 }
 
-fn unsignedByte(w u32, k u32) i32 { i32.from((w >> (8u32 * k)) & 255u32) }
+fn unsignedByte(w: u32, k: u32) i32 { i32.from((w >> (8u32 * k)) & 255u32) }
 
 // ---- Running a kernel ----
 
 // Dispatch 'entry' of 'shader' over 'buffers' (bindings 0, 1, ...; all storage) in 'groups' workgroups, copy
 // 'bytes' of 'out' into 'readback' (a buffer the CPU maps), and wait for the GPU; the bytes, read through the
 // pointer it answers
-fn run(device &mut Device, shader &ShaderModule, entry &str, buffers &Array[&Buffer], groups u32, out &Buffer,
-    bytes u64, readback &Buffer) *u8 {
+fn run(device: &mut Device, shader: &ShaderModule, entry: &str, buffers: &Array[&Buffer], groups: u32, out: &Buffer,
+    bytes: u64, readback: &Buffer) *u8 {
   var layoutEntries = List[BindGroupLayoutEntry].empty();
   var groupEntries = List[BindGroupEntry].empty();
   var i = 0usize;
@@ -165,16 +165,16 @@ fn run(device &mut Device, shader &ShaderModule, entry &str, buffers &Array[&Buf
   readback.mappedRange()
 }
 
-fn storage(device &mut Device, bytes u64) Buffer {
+fn storage(device: &mut Device, bytes: u64) Buffer {
   device.createBuffer(bytes, BUFFER_USAGE_STORAGE | BUFFER_USAGE_COPY_DST | BUFFER_USAGE_COPY_SRC)
 }
 
-fn word(p *u8, i usize) u32 { *((p + i * 4usize) as *u32) }
-fn f32At(p *u8, i usize) f32 { *((p + i * 4usize) as *f32) }
+fn word(p: *u8, i: usize) u32 { *((p + i * 4usize) as *u32) }
+fn f32At(p: *u8, i: usize) f32 { *((p + i * 4usize) as *f32) }
 
 // spirv-begin cfhalf.spv CFHALF_SPIRV
 // Written by tools/shaders/shaders.py from cfhalf.slang (sha256 93f5129fe601faa54db81ffb85ccd821d28668e121914ca1ae648a5a95376426): do not edit.
-let CFHALF_SPIRV Array[u32, 584] = [
+let CFHALF_SPIRV: Array[u32, 584] = [
   0x07230203u32, 0x00010500u32, 0x00280000u32, 0x0000005eu32, 0x00000000u32, 0x00020011u32,
   0x00001152u32, 0x00020011u32, 0x00000009u32, 0x00020011u32, 0x00000001u32, 0x000b000au32,
   0x5f565053u32, 0x5f52484bu32, 0x726f7473u32, 0x5f656761u32, 0x66667562u32, 0x735f7265u32,
@@ -278,7 +278,7 @@ let CFHALF_SPIRV Array[u32, 584] = [
 
 // spirv-begin cfbytes.spv CFBYTES_SPIRV
 // Written by tools/shaders/shaders.py from cfbytes.slang (sha256 b26b727372e53a41f02f540256c653a0ddba2168910a0940e78d7a9ada1eb43d): do not edit.
-let CFBYTES_SPIRV Array[u32, 361] = [
+let CFBYTES_SPIRV: Array[u32, 361] = [
   0x07230203u32, 0x00010500u32, 0x00280000u32, 0x0000002du32, 0x00000000u32, 0x00020011u32,
   0x00001161u32, 0x00020011u32, 0x00000027u32, 0x00020011u32, 0x00000001u32, 0x000b000au32,
   0x5f565053u32, 0x5f52484bu32, 0x726f7473u32, 0x5f656761u32, 0x66667562u32, 0x735f7265u32,
@@ -345,7 +345,7 @@ let CFBYTES_SPIRV Array[u32, 361] = [
 
 // spirv-begin cfdot.spv CFDOT_SPIRV
 // Written by tools/shaders/shaders.py from cfdot.slang (sha256 9b93b2aa44bb3de0ce8133b5129269623fc6a0b3f93c03f49f5774d0439c8455): do not edit.
-let CFDOT_SPIRV Array[u32, 389] = [
+let CFDOT_SPIRV: Array[u32, 389] = [
   0x07230203u32, 0x00010500u32, 0x00280000u32, 0x00000030u32, 0x00000000u32, 0x00020011u32,
   0x00001783u32, 0x00020011u32, 0x00001782u32, 0x00020011u32, 0x00000001u32, 0x000b000au32,
   0x5f565053u32, 0x5f52484bu32, 0x726f7473u32, 0x5f656761u32, 0x66667562u32, 0x735f7265u32,
@@ -416,7 +416,7 @@ let CFDOT_SPIRV Array[u32, 389] = [
 
 // spirv-begin cfwave.spv CFWAVE_SPIRV
 // Written by tools/shaders/shaders.py from cfwave.slang (sha256 ee40be12c77afc90868c636fd6a389d9d449f80d2ab7d3460fca9f58c91fcc5c): do not edit.
-let CFWAVE_SPIRV Array[u32, 436] = [
+let CFWAVE_SPIRV: Array[u32, 436] = [
   0x07230203u32, 0x00010500u32, 0x00280000u32, 0x00000052u32, 0x00000000u32, 0x00020011u32,
   0x0000003du32, 0x00020011u32, 0x0000003fu32, 0x00020011u32, 0x00000040u32, 0x00020011u32,
   0x00000041u32, 0x00020011u32, 0x00000001u32, 0x000b000au32, 0x5f565053u32, 0x5f52484bu32,
@@ -495,7 +495,7 @@ let CFWAVE_SPIRV Array[u32, 436] = [
 
 // spirv-begin cfquant.spv CFQUANT_SPIRV
 // Written by tools/shaders/shaders.py from cfquant.slang (sha256 3ceb2c210506b4e787bc7a30458af1b6042526f4b1a6483f5a04c69ab105dc01): do not edit.
-let CFQUANT_SPIRV Array[u32, 1218] = [
+let CFQUANT_SPIRV: Array[u32, 1218] = [
   0x07230203u32, 0x00010500u32, 0x00280000u32, 0x0000010au32, 0x00000000u32, 0x00020011u32,
   0x00001152u32, 0x00020011u32, 0x00000009u32, 0x00020011u32, 0x00001783u32, 0x00020011u32,
   0x00001782u32, 0x00020011u32, 0x0000003fu32, 0x00020011u32, 0x00000001u32, 0x000b000au32,
@@ -702,7 +702,7 @@ let CFQUANT_SPIRV Array[u32, 1218] = [
 ];
 // spirv-end
 
-fn yesNo(b bool) &str { if b { "yes" } else { "no" } }
+fn yesNo(b: bool) &str { if b { "yes" } else { "no" } }
 
 fn main() i32 {
   let report = (libc.getenv("GPU_COMPUTE_REPORT") as usize) != 0usize;

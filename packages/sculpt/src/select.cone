@@ -54,17 +54,17 @@ pub const SoftSurface = 1u32;     // along the surface from the selection
 // size about the radius you will ask for. It keeps a copy of the points: a
 // grid built before a stroke moved the mesh answers for the mesh as it was.
 pub struct PointGrid {
-  pub size f32;
-  pub pts List[Vec3];
-  pub head List[u32];
-  pub next List[u32];
-  pub cx List[i32];
-  pub cy List[i32];
-  pub cz List[i32];
-  pub mask u32;
+  pub size: f32;
+  pub pts: List[Vec3];
+  pub head: List[u32];
+  pub next: List[u32];
+  pub cx: List[i32];
+  pub cy: List[i32];
+  pub cz: List[i32];
+  pub mask: u32;
 
   // The grid over 'pts', cells 'size' wide (a size of 0 or less is taken as 1)
-  pub fn build(pts &List[Vec3], size f32) PointGrid {
+  pub fn build(pts: &List[Vec3], size: f32) PointGrid {
     let n = pts.len();
     let cell = if size > 0. {size} else {1.};
     var slots = 1usize;
@@ -95,7 +95,7 @@ pub struct PointGrid {
 
   // The points within 'radius' of 'centre' (their distance at most it), in
   // ascending order
-  pub fn within(self &, centre Vec3, radius f32) List[u32] {
+  pub fn within(self: &, centre: Vec3, radius: f32) List[u32] {
     var out = List[u32].empty();
     if radius < 0. || pts.len() == 0usize { return out; }
     let r2 = radius * radius;
@@ -144,7 +144,7 @@ pub struct PointGrid {
 
   // The nearest point to 'centre' within 'radius' (the lowest-numbered of
   // equals), or NoIndex when there is none
-  pub fn nearestWithin(self &, centre Vec3, radius f32) u32 {
+  pub fn nearestWithin(self: &, centre: Vec3, radius: f32) u32 {
     let near = self.within(centre, radius);
     var best = NoIndex;
     var bestD = SurfaceFar;
@@ -162,20 +162,20 @@ pub struct PointGrid {
   }
 }
 
-fn ascending(a &u32, b &u32) i32 {
+fn ascending(a: &u32, b: &u32) i32 {
   if *a < *b { -1 } elif *a > *b { 1 } else { 0 }
 }
 
 // -------- brush weights --------
 
 // The channel named, or NoIndex for "" or a name with no vertex channel
-fn maskChannelOf(m &PolyMesh, name &str) u32 {
+fn maskChannelOf(m: &PolyMesh, name: &str) u32 {
   if name.len() == 0usize { return NoIndex; }
   m.findFloatChannel(VertexDomain, name)
 }
 
 // The weight left after the mask: w times 1 minus the mask at v
-fn masked(m &PolyMesh, ch u32, v usize, w f32) f32 {
+fn masked(m: &PolyMesh, ch: u32, v: usize, w: f32) f32 {
   if ch == NoIndex || w <= 0. { return w; }
   w * (1. - clampf(m.float(ch, u32.from(v)), 0., 1.))
 }
@@ -183,7 +183,7 @@ fn masked(m &PolyMesh, ch u32, v usize, w f32) f32 {
 // Each vertex's weight for a dab at 'centre': falloff(distance / radius),
 // times 1 minus the vertex float channel 'mask' ("" for none). A radius of 0
 // or less gives every vertex 0.
-pub fn brushWeights(m &PolyMesh, centre Vec3, radius f32, f &Falloff, mask &str) List[f32] {
+pub fn brushWeights(m: &PolyMesh, centre: Vec3, radius: f32, f: &Falloff, mask: &str) List[f32] {
   let nv = m.positions.len();
   let ch = maskChannelOf(m, mask);
   var out = List[f32].withCapacity(nv);
@@ -202,15 +202,15 @@ pub fn brushWeights(m &PolyMesh, centre Vec3, radius f32, f &Falloff, mask &str)
 
 // The vertices a dab gives weight to, and the weights
 pub struct Dab {
-  pub vertices List[u32];    // ascending
-  pub weights List[f32];     // each above 0
+  pub vertices: List[u32];    // ascending
+  pub weights: List[f32];     // each above 0
 }
 
 // The same sparse: only the vertices within the radius whose weight is above
 // 0, found through a grid built over the mesh's positions. For a stroke of
 // many dabs, build the grid once (PointGrid.build(&m.positions, radius)) and
 // call this for each.
-pub fn brushDab(m &PolyMesh, grid &PointGrid, centre Vec3, radius f32, f &Falloff, mask &str) Dab {
+pub fn brushDab(m: &PolyMesh, grid: &PointGrid, centre: Vec3, radius: f32, f: &Falloff, mask: &str) Dab {
   let ch = maskChannelOf(m, mask);
   var out = new Dab(List[u32].empty(), List[f32].empty());
   if radius <= 0. { return out; }
@@ -235,16 +235,16 @@ pub fn brushDab(m &PolyMesh, grid &PointGrid, centre Vec3, radius f32, f &Fallof
 
 // A binary min-heap of (distance, vertex), ties by vertex
 struct DistHeap {
-  pub keys List[f32];
-  pub vals List[u32];
-  pub n usize;
+  pub keys: List[f32];
+  pub vals: List[u32];
+  pub n: usize;
 
-  fn before(self &, i usize, j usize) bool {
+  fn before(self: &, i: usize, j: usize) bool {
     if *keys[i] != *keys[j] { return *keys[i] < *keys[j]; }
     *vals[i] < *vals[j]
   }
 
-  fn push(self &mut, key f32, val u32) {
+  fn push(self: &mut, key: f32, val: u32) {
     if n < keys.len() {
       keys.set(n, key);
       vals.set(n, val);
@@ -267,7 +267,7 @@ struct DistHeap {
   }
 
   // Drop the smallest
-  fn dropTop(self &mut) {
+  fn dropTop(self: &mut) {
     n = n - 1usize;
     if n > 0usize {
       keys.set(0usize, *keys[n]);
@@ -298,7 +298,7 @@ struct DistHeap {
 // h the distance of C from the line AB and 'along' the foot of its
 // perpendicular measured from A: the minimum is at an offset x = -sign(u) |u| h / sqrt(L^2 - u^2)
 // from the foot when |u| < L, and at an end of AB when it falls outside.
-fn triangleUpdate(ta f32, tb f32, a Vec3, b Vec3, c Vec3) f32 {
+fn triangleUpdate(ta: f32, tb: f32, a: Vec3, b: Vec3, c: Vec3) f32 {
   let ca = (c - a).length();
   let cb = (c - b).length();
   let viaA = ta + ca;
@@ -324,7 +324,7 @@ fn triangleUpdate(ta f32, tb f32, a Vec3, b Vec3, c Vec3) f32 {
 // to 'limit' (SurfaceFar for a vertex farther, or not connected). Seed i
 // starts at distance offsets[i] (0 if 'offsets' has no ith), so a centre
 // between vertices can seed the ones round it by their own distances to it.
-pub fn surfaceDistances(m &PolyMesh, seeds &List[u32], offsets &List[f32], limit f32) List[f32] {
+pub fn surfaceDistances(m: &PolyMesh, seeds: &List[u32], offsets: &List[f32], limit: f32) List[f32] {
   let nv = m.positions.len();
   var dist = List[f32].withCapacity(nv);
   var done = List[bool].withCapacity(nv);
@@ -386,8 +386,8 @@ pub fn surfaceDistances(m &PolyMesh, seeds &List[u32], offsets &List[f32], limit
 
 // The corners of face f, improved through the triangle each makes with v (just
 // settled, at distance tv) and a corner next to v in the face
-fn relaxFace(m &PolyMesh, f u32, v u32, tv f32, dist &mut List[f32], done &List[bool], heap &mut DistHeap,
-    limit f32) {
+fn relaxFace(m: &PolyMesh, f: u32, v: u32, tv: f32, dist: &mut List[f32], done: &List[bool], heap: &mut DistHeap,
+    limit: f32) {
   let vs = m.faceVertices(f);
   let n = vs.len();
   var at = 0usize;
@@ -425,8 +425,8 @@ fn relaxFace(m &PolyMesh, f u32, v u32, tv f32, dist &mut List[f32], done &List[
 // Each vertex's weight for a dab by distance along the surface from 'seeds'
 // (with their starting distances 'offsets', see 'surfaceDistances'):
 // falloff(distance / radius) times 1 minus the mask.
-pub fn surfaceBrushWeights(m &PolyMesh, seeds &List[u32], offsets &List[f32], radius f32, f &Falloff,
-    mask &str) List[f32] {
+pub fn surfaceBrushWeights(m: &PolyMesh, seeds: &List[u32], offsets: &List[f32], radius: f32, f: &Falloff,
+    mask: &str) List[f32] {
   let ch = maskChannelOf(m, mask);
   var out = List[f32].withCapacity(m.positions.len());
   if radius <= 0. {
@@ -451,7 +451,7 @@ pub fn surfaceBrushWeights(m &PolyMesh, seeds &List[u32], offsets &List[f32], ra
 // The same for a dab at a point 'centre' on or near the surface: the
 // nearest vertex and its neighbours seed the sweep, each at its straight-line
 // distance from the centre. A mesh with no vertices gives an empty list.
-pub fn surfaceBrushWeightsAt(m &PolyMesh, centre Vec3, radius f32, f &Falloff, mask &str) List[f32] {
+pub fn surfaceBrushWeightsAt(m: &PolyMesh, centre: Vec3, radius: f32, f: &Falloff, mask: &str) List[f32] {
   var seeds = List[u32].empty();
   var offsets = List[f32].empty();
   let nv = m.positions.len();
@@ -487,14 +487,14 @@ pub fn surfaceBrushWeightsAt(m &PolyMesh, centre Vec3, radius f32, f &Falloff, m
 // numbers) weigh 1; every other vertex falloff(distance / radius), the
 // distance to the nearest selected vertex, straight-line (SoftEuclidean) or
 // along the surface (SoftSurface), 0 beyond the radius.
-pub fn softSelect(m &PolyMesh, selected &List[u32], radius f32, f &Falloff, mode u32) List[f32] {
+pub fn softSelect(m: &PolyMesh, selected: &List[u32], radius: f32, f: &Falloff, mode: u32) List[f32] {
   softSelectWith(m, selected, radius, f, mode, "")
 }
 
 // The same, times 1 minus the vertex channel 'mask' ("" for none). A masked
 // vertex that is selected gets 0 as well.
-pub fn softSelectWith(m &PolyMesh, selected &List[u32], radius f32, f &Falloff, mode u32,
-    mask &str) List[f32] {
+pub fn softSelectWith(m: &PolyMesh, selected: &List[u32], radius: f32, f: &Falloff, mode: u32,
+    mask: &str) List[f32] {
   let nv = m.positions.len();
   let ch = maskChannelOf(m, mask);
   var chosen = List[bool].withCapacity(nv);
@@ -555,7 +555,7 @@ pub fn softSelectWith(m &PolyMesh, selected &List[u32], radius f32, f &Falloff, 
 
 // A copy of the mesh with the vertex channel 'name' (made at 'fill' if it
 // is not there) holding 'values'
-fn withVertexChannel(m &PolyMesh, name &str, fill f32, values &List[f32]) PolyMesh {
+fn withVertexChannel(m: &PolyMesh, name: &str, fill: f32, values: &List[f32]) PolyMesh {
   var out = withPositions(m, copyList[Vec3](&m.positions));
   let ch = out.addFloatChannel(VertexDomain, name, fill);
   var v = 0usize;
@@ -569,8 +569,8 @@ fn withVertexChannel(m &PolyMesh, name &str, fill f32, values &List[f32]) PolyMe
 // The soft selection's weights as a vertex channel named 'name' on a copy of
 // the mesh, for the operators that read a weight channel ('smoothWith', the
 // decimator's weight)
-pub fn withSoftSelection(m &PolyMesh, selected &List[u32], radius f32, f &Falloff, mode u32,
-    name &str) PolyMesh {
+pub fn withSoftSelection(m: &PolyMesh, selected: &List[u32], radius: f32, f: &Falloff, mode: u32,
+    name: &str) PolyMesh {
   let w = softSelect(m, selected, radius, f, mode);
   withVertexChannel(m, name, 0., &w)
 }

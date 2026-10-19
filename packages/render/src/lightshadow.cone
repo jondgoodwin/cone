@@ -54,27 +54,27 @@ const FACE_GUARD = 4.f;
 // settings value, as the sun's is (shadow.cone). 'Renderer.setLightShadows'
 // takes it.
 pub struct LightShadowSettings {
-  pub enabled bool = false;
+  pub enabled: bool = false;
   // The side of each view's tile, in texels (a tile is 32-bit depth: 1024 is
   // 4 MB a layer)
-  pub tileSize u32 = 512u32;
+  pub tileSize: u32 = 512u32;
   // How many layers (1 to 24): a spot light's view is one, a point light's six
-  pub maxViews u32 = 24u32;
+  pub maxViews: u32 = 24u32;
   // The filter: taps (1 to 16) over a disk of 'pcfRadius' texels
-  pub pcfTaps u32 = 8u32;
-  pub pcfRadius f32 = 1.5;
+  pub pcfTaps: u32 = 8u32;
+  pub pcfRadius: f32 = 1.5;
   // The constant bias and the normal offset, in texels at the receiver
-  pub bias f32 = 2.0;
-  pub normalOffset f32 = 1.5;
+  pub bias: f32 = 2.0;
+  pub normalOffset: f32 = 1.5;
   // The views' near plane
-  pub near f32 = 0.03;
+  pub near: f32 = 0.03;
   // 0: the lights nearest the camera are shadowed in full, and one that falls out of
   // the budget loses its shadow at once (it keeps its place a while: a bonus to its
   // rank). More than 0 fades them: a shadowed light's shadow is full when the light's
   // rank is 1 + 'fade' times the best light left unshadowed's, and nothing where
   // they are level, so that a light gains or loses its views when its shadow is already
   // gone and nothing pops. (No bonus then: it is not needed.)
-  pub fade f32 = 0.;
+  pub fade: f32 = 0.;
 
   pub fn off() LightShadowSettings { new LightShadowSettings() }
 
@@ -94,7 +94,7 @@ pub struct LightShadowSettings {
   }
 }
 
-fn clampLightShadowSettings(s &LightShadowSettings) LightShadowSettings {
+fn clampLightShadowSettings(s: &LightShadowSettings) LightShadowSettings {
   var c = *s;
   if c.tileSize < 64u32 { c.tileSize = 64u32; }
   if c.tileSize > 4096u32 { c.tileSize = 4096u32; }
@@ -113,22 +113,22 @@ fn clampLightShadowSettings(s &LightShadowSettings) LightShadowSettings {
 // a view; one 1 x 1 layer while they are off), which lights cast and which
 // were chosen this frame, and the views made for them
 pub struct LocalShadows {
-  pub settings LightShadowSettings;
-  pub map Texture;
-  pub flags List[u32];             // a row each: bit 0 casts a shadow if it can, bit 1 was given views last frame
-  pub base List[u32];              // a row each: its first view this frame, or NO_VIEW
-  pub views List[f32];             // 16 floats (a matrix) a view in use
-  pub viewRow List[u32];           // the row of the light each view belongs to
-  pub candRows List[u32];          // scratch: the candidates
-  pub candScore List[f32];
-  pub fade List[f32];              // a row each: the share of its shadow that shows (1 when 'settings.fade' is 0)
-  pub viewsUsed u32;
-  pub lightsShadowed u32;
-  pub passes u32;                  // how many passes the last render made
-  pub drawCalls u32;
-  pub triangles u64;
+  pub settings: LightShadowSettings;
+  pub map: Texture;
+  pub flags: List[u32];             // a row each: bit 0 casts a shadow if it can, bit 1 was given views last frame
+  pub base: List[u32];              // a row each: its first view this frame, or NO_VIEW
+  pub views: List[f32];             // 16 floats (a matrix) a view in use
+  pub viewRow: List[u32];           // the row of the light each view belongs to
+  pub candRows: List[u32];          // scratch: the candidates
+  pub candScore: List[f32];
+  pub fade: List[f32];              // a row each: the share of its shadow that shows (1 when 'settings.fade' is 0)
+  pub viewsUsed: u32;
+  pub lightsShadowed: u32;
+  pub passes: u32;                  // how many passes the last render made
+  pub drawCalls: u32;
+  pub triangles: u64;
 
-  pub fn create(device &mut Device) LocalShadows {
+  pub fn create(device: &mut Device) LocalShadows {
     let mapDesc = new TextureDescriptor(1u32, 1u32, TEXTURE_FORMAT_DEPTH32_FLOAT,
       TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_TEXTURE_BINDING, 1u32, 1u32);
     var map = device.createTexture(&mapDesc);
@@ -136,17 +136,17 @@ pub struct LocalShadows {
       List[u32].empty(), List[u32].empty(), List[f32].empty(), List[f32].empty(), 0u32, 0u32, 0u32, 0u32, 0u64)
   }
 
-  pub fn isValid(self &) bool { map.isValid() }
+  pub fn isValid(self: &) bool { map.isValid() }
 
   // A view of the whole map as an array, what the frame group binds
-  pub fn arrayView(self &) TextureView {
+  pub fn arrayView(self: &) TextureView {
     let desc = new TextureViewDescriptor(dimension: TEXTURE_VIEW_DIMENSION_2D_ARRAY);
     map.createViewWith(&desc)
   }
 
   // The map made again: 'layers' layers of 'size' square, or, for 0 layers,
   // the 1 x 1 stand-in
-  pub fn remakeMap(self &mut, device &mut Device, size u32, layers u32) {
+  pub fn remakeMap(self: &mut, device: &mut Device, size: u32, layers: u32) {
     var side = size;
     var count = layers;
     if count == 0u32 {
@@ -165,13 +165,13 @@ pub struct LocalShadows {
 // A light's view matrix and projection, world to clip: from 'eye' along
 // 'dir' ('up' not parallel to it), 'fov' radians across, depths 'near' to
 // 'far' mapped to 0 to 1
-fn viewMatrixOf(eye Vec3, dir Vec3, up Vec3, fov f32, near f32, far f32) Mat4 {
+fn viewMatrixOf(eye: Vec3, dir: Vec3, up: Vec3, fov: f32, near: f32, far: f32) Mat4 {
   let view = Mat4.lookAt(eye, eye + dir, up);
   let proj = Mat4.perspective(fov, 1., near, far);
   proj * view
 }
 
-fn pushMatrix(out &mut List[f32], m &Mat4) {
+fn pushMatrix(out: &mut List[f32], m: &Mat4) {
   var k = 0usize;
   while k < 16usize {
     out.push(m.m[k]);
@@ -181,7 +181,7 @@ fn pushMatrix(out &mut List[f32], m &Mat4) {
 
 // The faces of a point light's cube, in the order the receiver counts them:
 // +x, -x, +y, -y, +z, -z
-fn faceDirection(face u32) Vec3 {
+fn faceDirection(face: u32) Vec3 {
   if face == 0u32 { return new Vec3(1., 0., 0.); }
   if face == 1u32 { return new Vec3(-1., 0., 0.); }
   if face == 2u32 { return new Vec3(0., 1., 0.); }
@@ -190,7 +190,7 @@ fn faceDirection(face u32) Vec3 {
   new Vec3(0., 0., -1.)
 }
 
-fn faceUp(face u32) Vec3 {
+fn faceUp(face: u32) Vec3 {
   if face == 2u32 { return new Vec3(0., 0., 1.); }
   if face == 3u32 { return new Vec3(0., 0., -1.); }
   new Vec3(0., 1., 0.)
@@ -199,7 +199,7 @@ fn faceUp(face u32) Vec3 {
 // Choose which lights cast a shadow this frame, and make their views (see the
 // budget, at the head of this file); true if the choice is not what it was
 // last frame (the lights' table must be written again)
-fn selectLocalShadows(ls &mut LightSet) bool {
+fn selectLocalShadows(ls: &mut LightSet) bool {
   let n = ls.owners.len();
   let s = ls.shadows.settings;
   // Last frame's choice, kept in each row's flag
@@ -348,7 +348,7 @@ fn selectLocalShadows(ls &mut LightSet) bool {
 // of the matrix 'm' (world to clip, depth 0 to 1): the six planes of its
 // frustum, from the matrix's rows (Gribb and Hartmann, "Fast Extraction of
 // Viewing Frustum Planes from the World-View-Projection Matrix", 2001)
-fn sphereInView(m &Mat4, c Vec3, r f32) bool {
+fn sphereInView(m: &Mat4, c: Vec3, r: f32) bool {
   var p = 0u32;
   while p < 6u32 {
     // The plane's coefficients: row 3 plus or minus a row, row 2 alone for the near plane
@@ -382,7 +382,7 @@ fn sphereInView(m &Mat4, c Vec3, r f32) bool {
 
 // Whether any copy in the batch has a bounding sphere in view 'view' of
 // the lights' views (a matrix as 'viewMatrix' made it)
-fn batchInView(r &Renderer, list &DrawList, batch &DrawBatch, m &Mat4) bool {
+fn batchInView(r: &Renderer, list: &DrawList, batch: &DrawBatch, m: &Mat4) bool {
   var j = 0u32;
   while j < batch.count {
     let item = list.items[usize.from(r.keys[usize.from(batch.first + j)].item)];
@@ -403,7 +403,7 @@ fn batchInView(r &Renderer, list &DrawList, batch &DrawBatch, m &Mat4) bool {
 // Record the lights' shadow passes of 'list': the views' matrices and the
 // filter written to the shadow parameters, then one depth-only pass a view
 // into the map. Nothing if no light was given a view.
-fn recordLocalShadowPasses(r &mut Renderer, device &mut Device, encoder &mut CommandEncoder, list &DrawList) {
+fn recordLocalShadowPasses(r: &mut Renderer, device: &mut Device, encoder: &mut CommandEncoder, list: &DrawList) {
   r.lights.shadows.passes = 0u32;
   r.lights.shadows.drawCalls = 0u32;
   r.lights.shadows.triangles = 0u64;

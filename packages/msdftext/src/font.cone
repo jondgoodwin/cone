@@ -23,9 +23,9 @@ pub const FONT_MISSING_TABLE = 4u32;      // head, maxp, hhea, hmtx, loca, glyf 
 pub const FONT_NO_CMAP = 5u32;            // no cmap subtable of a format read
 
 pub struct FontError {
-  pub code u32;
+  pub code: u32;
 
-  pub fn message(self &) &str {
+  pub fn message(self: &) &str {
     if code == FONT_TOO_SHORT { return "the file is too short"; }
     if code == FONT_NOT_TRUETYPE { return "not a TrueType font"; }
     if code == FONT_CFF { return "CFF outlines are not read yet"; }
@@ -36,75 +36,75 @@ pub struct FontError {
 }
 
 // Big-endian reads from font bytes; beyond the end, 0
-pub fn rdU8(d &Array[u8], o usize) u32 {
+pub fn rdU8(d: &Array[u8], o: usize) u32 {
   if o >= d.len { return 0u32; }
   u32.from(d[o])
 }
 
-pub fn rdU16(d &Array[u8], o usize) u32 {
+pub fn rdU16(d: &Array[u8], o: usize) u32 {
   (rdU8(d, o) << 8u32) | rdU8(d, o + 1usize)
 }
 
-pub fn rdU32(d &Array[u8], o usize) u32 {
+pub fn rdU32(d: &Array[u8], o: usize) u32 {
   (rdU16(d, o) << 16u32) | rdU16(d, o + 2usize)
 }
 
 // A 16-bit two's complement number
-pub fn rdI16(d &Array[u8], o usize) i32 {
+pub fn rdI16(d: &Array[u8], o: usize) i32 {
   let v = i32.from(rdU16(d, o));
   if v >= 32768i32 { return v - 65536i32; }
   v
 }
 
-fn tagOf(a u8, b u8, c u8, e u8) u32 {
+fn tagOf(a: u8, b: u8, c: u8, e: u8) u32 {
   (u32.from(a) << 24u32) | (u32.from(b) << 16u32) | (u32.from(c) << 8u32) | u32.from(e)
 }
 
 // The bounding box of a glyph, in font units
 pub struct GlyphBox {
-  pub xMin i32;
-  pub yMin i32;
-  pub xMax i32;
-  pub yMax i32;
+  pub xMin: i32;
+  pub yMin: i32;
+  pub xMax: i32;
+  pub yMax: i32;
 }
 
 // A glyph's points as the glyf table gives them, in font units (y up):
 // 'ends' holds the index of each contour's last point
 pub struct Outline {
-  pub xs List[f64];
-  pub ys List[f64];
-  pub on List[bool];
-  pub ends List[u32];
+  pub xs: List[f64];
+  pub ys: List[f64];
+  pub on: List[bool];
+  pub ends: List[u32];
 
   pub fn empty() Outline {
     new Outline(List[f64].empty(), List[f64].empty(), List[bool].empty(), List[u32].empty())
   }
 
-  pub fn contourCount(self &) usize { ends.len() }
-  pub fn pointCount(self &) usize { xs.len() }
+  pub fn contourCount(self: &) usize { ends.len() }
+  pub fn pointCount(self: &) usize { xs.len() }
 }
 
 pub struct Font {
-  data List[u8];
-  pub unitsPerEm u32;
-  pub glyphCount u32;
-  pub ascent i32;                // hhea, font units, above the baseline
-  pub descent i32;               // below it, negative
-  pub lineGap i32;
-  locaFormat u32;                // 0: short offsets (halved), 1: long
-  numHMetrics u32;
-  tGlyf u32;
-  tLoca u32;
-  tHmtx u32;
-  tKern u32;
-  tGpos u32;
-  tName u32;
-  cmapOffset u32;                // the chosen subtable
-  cmapFormat u32;
-  kernLookups List[u32];         // GPOS lookup offsets (from the lookup list) of every 'kern' feature
+  data: List[u8];
+  pub unitsPerEm: u32;
+  pub glyphCount: u32;
+  pub ascent: i32;                // hhea, font units, above the baseline
+  pub descent: i32;               // below it, negative
+  pub lineGap: i32;
+  locaFormat: u32;                // 0: short offsets (halved), 1: long
+  numHMetrics: u32;
+  tGlyf: u32;
+  tLoca: u32;
+  tHmtx: u32;
+  tKern: u32;
+  tGpos: u32;
+  tName: u32;
+  cmapOffset: u32;                // the chosen subtable
+  cmapFormat: u32;
+  kernLookups: List[u32];         // GPOS lookup offsets (from the lookup list) of every 'kern' feature
 
   // The table 'tag' of the font at 'base' in 'd': its offset, or 0
-  fn findTable(d &Array[u8], base usize, tag u32) u32 {
+  fn findTable(d: &Array[u8], base: usize, tag: u32) u32 {
     let n = usize.from(rdU16(d, base + 4usize));
     var i = 0usize;
     while i < n {
@@ -116,7 +116,7 @@ pub struct Font {
   }
 
   // A font from the bytes of a .ttf (or the first font of a .ttc), copied.
-  pub fn load(bytes &Array[u8]) Result[Font, FontError] {
+  pub fn load(bytes: &Array[u8]) Result[Font, FontError] {
     if bytes.len < 12usize { return Error[Font, FontError](new FontError(FONT_TOO_SHORT)); }
     var base = 0usize;
     var sfnt = rdU32(bytes, 0usize);
@@ -155,7 +155,7 @@ pub struct Font {
 
   // Choose the cmap subtable: Unicode full repertoire (format 12) first,
   // then Unicode BMP, then anything of a format read
-  fn chooseCmap(self &mut, cmap usize) bool {
+  fn chooseCmap(self: &mut, cmap: usize) bool {
     let d = data.view();
     let n = usize.from(rdU16(d, cmap + 2usize));
     var best = 0u32;
@@ -186,7 +186,7 @@ pub struct Font {
   }
 
   // The glyph for a Unicode code point; 0, the missing glyph, if there is none
-  pub fn glyphOf(self &, cp u32) u32 {
+  pub fn glyphOf(self: &, cp: u32) u32 {
     let d = data.view();
     let t = usize.from(cmapOffset);
     if cmapFormat == 0u32 {
@@ -240,7 +240,7 @@ pub struct Font {
   }
 
   // A glyph's advance width, in font units
-  pub fn advance(self &, glyph u32) u32 {
+  pub fn advance(self: &, glyph: u32) u32 {
     let d = data.view();
     var g = glyph;
     if g >= numHMetrics { g = numHMetrics - 1u32; }
@@ -248,14 +248,14 @@ pub struct Font {
   }
 
   // A glyph's left side bearing, in font units
-  pub fn leftBearing(self &, glyph u32) i32 {
+  pub fn leftBearing(self: &, glyph: u32) i32 {
     let d = data.view();
     if glyph < numHMetrics { return rdI16(d, usize.from(tHmtx) + usize.from(glyph) * 4usize + 2usize); }
     rdI16(d, usize.from(tHmtx) + usize.from(numHMetrics) * 4usize + usize.from(glyph - numHMetrics) * 2usize)
   }
 
   // Where glyph 'glyph''s data starts in the glyf table and its length (0: no outline)
-  fn glyphRange(self &, glyph u32, start &mut usize) usize {
+  fn glyphRange(self: &, glyph: u32, start: &mut usize) usize {
     if glyph >= glyphCount { return 0usize; }
     let d = data.view();
     var a = 0u32;
@@ -273,7 +273,7 @@ pub struct Font {
   }
 
   // A glyph's bounding box from its header; all 0 for a glyph with no outline
-  pub fn glyphBox(self &, glyph u32) GlyphBox {
+  pub fn glyphBox(self: &, glyph: u32) GlyphBox {
     var s = 0usize;
     if self.glyphRange(glyph, &mut s) == 0usize { return new GlyphBox(0i32, 0i32, 0i32, 0i32); }
     let d = data.view();
@@ -283,7 +283,7 @@ pub struct Font {
   // Add glyph 'glyph''s points to 'out', transformed by the 2 x 2 matrix
   // (a b; c d) (x' = a x + c y + dx, y' = b x + d y + dy), as a composite's
   // component asks. 'depth' bounds the nesting of composites.
-  fn addGlyph(self &, glyph u32, out &mut Outline, a f64, b f64, c f64, e f64, dx f64, dy f64, depth u32) {
+  fn addGlyph(self: &, glyph: u32, out: &mut Outline, a: f64, b: f64, c: f64, e: f64, dx: f64, dy: f64, depth: u32) {
     if depth > 6u32 { return; }
     var s = 0usize;
     let len = self.glyphRange(glyph, &mut s);
@@ -409,7 +409,7 @@ pub struct Font {
   }
 
   // The outline of 'glyph' in font units, composites resolved
-  pub fn outline(self &, glyph u32) Outline {
+  pub fn outline(self: &, glyph: u32) Outline {
     var out = Outline.empty();
     self.addGlyph(glyph, &mut out, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0u32);
     out
@@ -418,7 +418,7 @@ pub struct Font {
   // ---- Kerning ----
 
   // Gather the GPOS lookups of every 'kern' feature, for 'kerning'
-  fn readKernFeature(self &mut) {
+  fn readKernFeature(self: &mut) {
     if tGpos == 0u32 { return; }
     let d = data.view();
     let g = usize.from(tGpos);
@@ -448,7 +448,7 @@ pub struct Font {
   }
 
   // The class of glyph 'glyph' in the ClassDef table at 'cd'
-  fn classOf(self &, cd usize, glyph u32) u32 {
+  fn classOf(self: &, cd: usize, glyph: u32) u32 {
     let d = data.view();
     let fmt = rdU16(d, cd);
     if fmt == 1u32 {
@@ -472,7 +472,7 @@ pub struct Font {
   }
 
   // Whether the coverage table at 'cov' covers 'glyph': its index, or -1
-  fn coverageIndex(self &, cov usize, glyph u32) i32 {
+  fn coverageIndex(self: &, cov: usize, glyph: u32) i32 {
     let d = data.view();
     let fmt = rdU16(d, cov);
     let n = rdU16(d, cov + 2usize);
@@ -503,7 +503,7 @@ pub struct Font {
   }
 
   // The XAdvance of a value record of format 'vf' at 'at' (0 if it has none)
-  fn xAdvanceOf(self &, vf u32, at usize) i32 {
+  fn xAdvanceOf(self: &, vf: u32, at: usize) i32 {
     if (vf & 4u32) == 0u32 { return 0i32; }
     var skip = 0usize;
     if (vf & 1u32) != 0u32 { skip = skip + 2usize; }
@@ -512,7 +512,7 @@ pub struct Font {
   }
 
   // The bytes a value record of format 'vf' takes
-  fn valueSize(vf u32) usize {
+  fn valueSize(vf: u32) usize {
     var n = 0usize;
     var v = vf & 0xFFu32;
     while v != 0u32 { if (v & 1u32) != 0u32 { n = n + 2usize; } v = v >> 1u32; }
@@ -520,7 +520,7 @@ pub struct Font {
   }
 
   // One pair-adjustment subtable at 'st': whether it covers (left, right), and the adjustment
-  fn pairPos(self &, st usize, left u32, right u32, found &mut bool) i32 {
+  fn pairPos(self: &, st: usize, left: u32, right: u32, found: &mut bool) i32 {
     let d = data.view();
     let fmt = rdU16(d, st);
     let ci = self.coverageIndex(st + usize.from(rdU16(d, st + 2usize)), left);
@@ -566,7 +566,7 @@ pub struct Font {
   // The horizontal adjustment to add to the advance of 'left' when 'right'
   // follows, in font units (negative closes the gap): the GPOS 'kern' feature
   // where the font has one, else the 'kern' table
-  pub fn kerning(self &, left u32, right u32) i32 {
+  pub fn kerning(self: &, left: u32, right: u32) i32 {
     let d = data.view();
     if kernLookups.len() > 0usize {
       var total = 0i32;
@@ -630,7 +630,7 @@ pub struct Font {
 
   // The English name record 'id' (1 family, 2 style, 13 licence, 14 licence URL)
   // as text, non-ASCII characters replaced by '?'; empty if there is none
-  pub fn nameOf(self &, id u32) String {
+  pub fn nameOf(self: &, id: u32) String {
     var out = String.empty();
     if tName == 0u32 { return out; }
     let d = data.view();

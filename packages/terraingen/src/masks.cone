@@ -30,46 +30,46 @@
 pub const FAR = 64f32;
 
 pub struct Biome {
-  pub name String;
-  pub slopeLo f32;       // degrees
-  pub slopeHi f32;
-  pub slopeSoft f32;
-  pub heightLo f32;      // metres
-  pub heightHi f32;
-  pub heightSoft f32;
-  pub moistLo f32;       // 0..1
-  pub moistHi f32;
-  pub moistSoft f32;
-  pub waterRule i32;     // 0 ignore water, 1 only where there is water, 2 within 'waterNear' metres of it
-  pub waterNear f32;
-  pub priority f32;      // multiplies the fit, so a rare biome can win ties
-  pub color Color;       // the ground's albedo here (linear), for baking a colour map
+  pub name: String;
+  pub slopeLo: f32;       // degrees
+  pub slopeHi: f32;
+  pub slopeSoft: f32;
+  pub heightLo: f32;      // metres
+  pub heightHi: f32;
+  pub heightSoft: f32;
+  pub moistLo: f32;       // 0..1
+  pub moistHi: f32;
+  pub moistSoft: f32;
+  pub waterRule: i32;     // 0 ignore water, 1 only where there is water, 2 within 'waterNear' metres of it
+  pub waterNear: f32;
+  pub priority: f32;      // multiplies the fit, so a rare biome can win ties
+  pub color: Color;       // the ground's albedo here (linear), for baking a colour map
 
-  pub fn make(name &str, slopeLo f32, slopeHi f32, heightLo f32, heightHi f32, moistLo f32, moistHi f32, color Color) Biome {
+  pub fn make(name: &str, slopeLo: f32, slopeHi: f32, heightLo: f32, heightHi: f32, moistLo: f32, moistHi: f32, color: Color) Biome {
     new Biome(String.from(name), slopeLo, slopeHi, 4., heightLo, heightHi, 40., moistLo, moistHi, 0.15, 0, 0., 1., color)
   }
 
-  pub fn water(name &str, color Color) Biome {
+  pub fn water(name: &str, color: Color) Biome {
     new Biome(String.from(name), 0., 90., 4., -10000., 10000., 40., 0., 1., 0.15, 1, 0., 2., color)
   }
 
-  pub fn nearWater(name &str, metres f32, slopeHi f32, color Color) Biome {
+  pub fn nearWater(name: &str, metres: f32, slopeHi: f32, color: Color) Biome {
     new Biome(String.from(name), 0., slopeHi, 4., -10000., 10000., 40., 0., 1., 0.15, 2, metres, 1.5, color)
   }
 }
 
 // A trapezoid-ish soft window: 0.5 at lo and hi, 1 'soft/2' inside them
-fn window(x f32, lo f32, hi f32, soft f32) f32 {
+fn window(x: f32, lo: f32, hi: f32, soft: f32) f32 {
   let a = smooth01((x - lo) / soft + 0.5);
   let b = smooth01((hi - x) / soft + 0.5);
   a * b
 }
 
 pub struct MaskSpec {
-  pub humidity f32;          // 0..1 baseline wetness at sea level
-  pub moistureReach f32;     // metres over which nearness to water wets the ground
-  pub sunDirection Vec3;     // toward the sun, unit
-  pub shadowReach f32;       // metres the horizon march goes
+  pub humidity: f32;          // 0..1 baseline wetness at sea level
+  pub moistureReach: f32;     // metres over which nearness to water wets the ground
+  pub sunDirection: Vec3;     // toward the sun, unit
+  pub shadowReach: f32;       // metres the horizon march goes
 
   pub fn standard() MaskSpec {
     new MaskSpec(0.45, 60., new Vec3(0.5, 0.7, 0.3).normalize(), 1500.)
@@ -77,31 +77,31 @@ pub struct MaskSpec {
 }
 
 pub struct MaskSet {
-  pub w usize;
-  pub h usize;
-  pub cell f32;
-  pub originX f32;
-  pub originZ f32;
-  pub slope List[f32];
-  pub moisture List[f32];
-  pub exposure List[f32];
-  pub flow List[f32];
-  pub river List[f32];
-  pub lake List[f32];
-  pub waterDistance List[f32];
-  pub curvature List[f32];
-  pub biome List[u8];
-  pub weights List[f32];       // biomeCount per sample
-  pub biomeCount usize;
-  pub biomeNames List[String];
+  pub w: usize;
+  pub h: usize;
+  pub cell: f32;
+  pub originX: f32;
+  pub originZ: f32;
+  pub slope: List[f32];
+  pub moisture: List[f32];
+  pub exposure: List[f32];
+  pub flow: List[f32];
+  pub river: List[f32];
+  pub lake: List[f32];
+  pub waterDistance: List[f32];
+  pub curvature: List[f32];
+  pub biome: List[u8];
+  pub weights: List[f32];       // biomeCount per sample
+  pub biomeCount: usize;
+  pub biomeNames: List[String];
 
   // Biome weight b at sample (ix, iz)
-  pub fn weight(self &, b usize, ix usize, iz usize) f32 { *weights[(iz * w + ix) * biomeCount + b] }
+  pub fn weight(self: &, b: usize, ix: usize, iz: usize) f32 { *weights[(iz * w + ix) * biomeCount + b] }
 }
 
 // ---- computing ----
 
-fn index(w usize, h usize, x i32, z i32) usize {
+fn index(w: usize, h: usize, x: i32, z: i32) usize {
   var a = x;
   var b = z;
   if a < 0 { a = 0; }
@@ -113,7 +113,7 @@ fn index(w usize, h usize, x i32, z i32) usize {
 
 // Distance in metres to the nearest sample where 'water' is set, by the two-pass chamfer transform
 // (Borgefors 1986, the 3-4 weights, here 1 and sqrt 2), capped at FAR
-fn distanceToWater(water &List[u8], w usize, h usize, cell f32) List[f32] {
+fn distanceToWater(water: &List[u8], w: usize, h: usize, cell: f32) List[f32] {
   let big = 1.0e9f;
   var d = List[f32].withCapacity(w * h);
   var i = 0usize;
@@ -160,9 +160,9 @@ fn distanceToWater(water &List[u8], w usize, h usize, cell f32) List[f32] {
   d
 }
 
-fn fm(a f32, b f32) f32 { if a < b { a } else { b } }
+fn fm(a: f32, b: f32) f32 { if a < b { a } else { b } }
 
-fn cloneList(l &List[f32]) List[f32] {
+fn cloneList(l: &List[f32]) List[f32] {
   var c = List[f32].withCapacity(l.len());
   var i = 0usize;
   while i < l.len() { c.push(*l[i]); i = i + 1usize; }
@@ -172,7 +172,7 @@ fn cloneList(l &List[f32]) List[f32] {
 // The sun's light on each sample as a share of what flat ground gets, 0 in shadow: n.sun / sun.y
 // (capped at 1), times a horizon test that marches toward the sun for 'reach' metres in steps that
 // grow with distance, shadowed if the ground rises above the ray
-fn exposureOf(hf &Heightfield, toSun Vec3, reach f32) List[f32] {
+fn exposureOf(hf: &Heightfield, toSun: Vec3, reach: f32) List[f32] {
   let w = hf.w;
   let h = hf.h;
   var out = List[f32].withCapacity(w * h);
@@ -211,7 +211,7 @@ fn exposureOf(hf &Heightfield, toSun Vec3, reach f32) List[f32] {
 }
 
 // Compute every mask of the landscape. 'hf' is the final (carved) ground.
-pub fn computeMasks(hf &Heightfield, hy &Hydrology, rm &RiverMaps, spec &MaskSpec, biomes &List[Biome]) MaskSet {
+pub fn computeMasks(hf: &Heightfield, hy: &Hydrology, rm: &RiverMaps, spec: &MaskSpec, biomes: &List[Biome]) MaskSet {
   let w = hf.w;
   let h = hf.h;
   let n = w * h;
@@ -313,14 +313,14 @@ pub fn computeMasks(hf &Heightfield, hy &Hydrology, rm &RiverMaps, spec &MaskSpe
 // units: 0 height (m), 1 slope (degrees), 2 moisture, 3 exposure, 4 path distance, 5 water distance,
 // 6 canopy, 7 object distance
 pub struct GroundSignals {
-  pub res u32;
-  pub originX f32;
-  pub originZ f32;
-  pub size f32;
-  pub channels List[List[f32]];
+  pub res: u32;
+  pub originX: f32;
+  pub originZ: f32;
+  pub size: f32;
+  pub channels: List[List[f32]];
 }
 
-fn bilinear(data &List[f32], w usize, h usize, cell f32, ox f32, oz f32, x f32, z f32) f32 {
+fn bilinear(data: &List[f32], w: usize, h: usize, cell: f32, ox: f32, oz: f32, x: f32, z: f32) f32 {
   let gx = (x - ox) / cell;
   let gz = (z - oz) / cell;
   let fx = libc.floorf(gx);
@@ -336,7 +336,7 @@ fn bilinear(data &List[f32], w usize, h usize, cell f32, ox f32, oz f32, x f32, 
   top + (bottom - top) * tz
 }
 
-pub fn groundSignals(hf &Heightfield, m &MaskSet, originX f32, originZ f32, size f32, res u32) GroundSignals {
+pub fn groundSignals(hf: &Heightfield, m: &MaskSet, originX: f32, originZ: f32, size: f32, res: u32) GroundSignals {
   let n = usize.from(res) * usize.from(res);
   var ch = List[List[f32]].empty();
   var c = 0usize;
@@ -374,7 +374,7 @@ pub fn groundSignals(hf &Heightfield, m &MaskSet, originX f32, originZ f32, size
 // The ground's albedo at each sample, linear rgb (3 floats a sample, row by row): the biomes' colours
 // mixed by their weights, a little darker where the slope is steep (the soil's thin) and varied from
 // sample to sample by a hash so large areas of one biome are not a flat colour
-pub fn bakeAlbedo(m &MaskSet, biomes &List[Biome]) List[f32] {
+pub fn bakeAlbedo(m: &MaskSet, biomes: &List[Biome]) List[f32] {
   let n = m.w * m.h;
   var out = List[f32].withCapacity(n * 3usize);
   var i = 0usize;

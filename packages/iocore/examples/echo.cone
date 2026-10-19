@@ -38,18 +38,18 @@ const chunk = 1048576u64;
 const depth = 4u64;
 
 struct ServerArgs {
-  pub pool Pool;
-  pub portTx Sender[u16];
-  pub zeroByte bool;
+  pub pool: Pool;
+  pub portTx: Sender[u16];
+  pub zeroByte: bool;
 }
 
 struct ServerReport {
-  pub recvKernel Histogram;
-  pub recvDelivery Histogram;
-  pub counters Counters;
+  pub recvKernel: Histogram;
+  pub recvDelivery: Histogram;
+  pub counters: Counters;
 }
 
-fn serve(a ServerArgs) ServerReport {
+fn serve(a: ServerArgs) ServerReport {
   var lp = Loop.mustMake();
   let listener = lp.mustListen(SocketAddr.localhost(0u16));
   var port = 0u16;
@@ -104,28 +104,28 @@ fn serve(a ServerArgs) ServerReport {
 }
 
 struct ClientArgs {
-  pub pool Pool;
-  pub port u16;
-  pub messages u64;
-  pub withFile bool;
+  pub pool: Pool;
+  pub port: u16;
+  pub messages: u64;
+  pub withFile: bool;
 }
 
 struct ClientReport {
-  pub rtt Histogram;
-  pub recvKernel Histogram;
-  pub recvDelivery Histogram;
-  pub sendKernel Histogram;
-  pub sendDelivery Histogram;
-  pub fileKernel Histogram;
-  pub fileDelivery Histogram;
-  pub took Duration;
-  pub fileTook Duration;
-  pub fileBytes u64;
-  pub wrong u64;
-  pub counters Counters;
+  pub rtt: Histogram;
+  pub recvKernel: Histogram;
+  pub recvDelivery: Histogram;
+  pub sendKernel: Histogram;
+  pub sendDelivery: Histogram;
+  pub fileKernel: Histogram;
+  pub fileDelivery: Histogram;
+  pub took: Duration;
+  pub fileTook: Duration;
+  pub fileBytes: u64;
+  pub wrong: u64;
+  pub counters: Counters;
 }
 
-fn fillMsg(b &mut IoBuf, i u64) {
+fn fillMsg(b: &mut IoBuf, i: u64) {
   let room = b.whole();
   var j = 0usize;
   while j < msgSize {
@@ -135,7 +135,7 @@ fn fillMsg(b &mut IoBuf, i u64) {
   b.setLen(msgSize);
 }
 
-fn client(a ClientArgs) ClientReport {
+fn client(a: ClientArgs) ClientReport {
   var lp = Loop.mustMake();
   var rep = new ClientReport(Histogram.make(), Histogram.make(), Histogram.make(), Histogram.make(),
     Histogram.make(), Histogram.make(), Histogram.make(), Duration.zero(), Duration.zero(), 0u64, 0u64, Counters.zero());
@@ -225,7 +225,7 @@ fn client(a ClientArgs) ClientReport {
   rep
 }
 
-fn writeFile(pool &Pool) {
+fn writeFile(pool: &Pool) {
   var lp = Loop.mustMake();
   var fh = Handle.none();
   match lp.openFile("echo.tmp", Access.Create) {
@@ -254,14 +254,14 @@ fn writeFile(pool &Pool) {
   }
 }
 
-fn line(name &str, h &Histogram) {
+fn line(name: &str, h: &Histogram) {
   printStr("  ");
   h.printLine(name);
 }
 
-fn exchange(pool &Pool, messages u64, withFile bool, zeroByte bool) ClientReport, ServerReport {
-  var portTx Sender[u16];
-  var portRx Receiver[u16];
+fn exchange(pool: &Pool, messages: u64, withFile: bool, zeroByte: bool) ClientReport, ServerReport {
+  var portTx: Sender[u16];
+  var portRx: Receiver[u16];
   portTx, portRx = Channel[u16].make();
   let server = thread.start(new ServerArgs(*pool, portTx, zeroByte), &serve);
   var port = 0u16;
@@ -277,11 +277,11 @@ fn exchange(pool &Pool, messages u64, withFile bool, zeroByte bool) ClientReport
 
 // Part 3: the service thread reads and posts each answer to main's loop
 struct ServiceArgs {
-  pub pool Pool;
-  pub to Waker;
+  pub pool: Pool;
+  pub to: Waker;
 }
 
-fn service(a ServiceArgs) Counters {
+fn service(a: ServiceArgs) Counters {
   var lp = Loop.mustMake();
   var out = List[Completion].empty();
   var fh = Handle.none();
@@ -298,7 +298,7 @@ fn service(a ServiceArgs) Counters {
   lp.counters()
 }
 
-fn printCounters(name &str, c &Counters) {
+fn printCounters(name: &str, c: &Counters) {
   printStr("  ");
   printStr(name);
   printStr(": submitted ");
@@ -317,8 +317,8 @@ fn main() i32 {
   writeFile(&pool);
 
   // 1. Echo and the file through one poll
-  var c ClientReport;
-  var s ServerReport;
+  var c: ClientReport;
+  var s: ServerReport;
   c, s = exchange(&pool, 100000u64, true, false);
   printStr("1. 100,000 echoes of 64 bytes, two threads, a 64 MiB file read through the client's poll\n");
   printStr("  ");
@@ -344,11 +344,11 @@ fn main() i32 {
   if c.wrong != 0u64 {printStr("  MESSAGES WRONG\n");}
 
   // 2. Zero-byte receives against direct ones
-  var d ClientReport;
-  var ds ServerReport;
+  var d: ClientReport;
+  var ds: ServerReport;
   d, ds = exchange(&pool, 20000u64, false, false);
-  var z ClientReport;
-  var zs ServerReport;
+  var z: ClientReport;
+  var zs: ServerReport;
   z, zs = exchange(&pool, 20000u64, false, true);
   printStr("2. 20,000 echoes: the server's receive direct, then by RecvReady + Recv (no buffer pinned while idle)\n");
   line("round trip, direct    ", &d.rtt);

@@ -77,7 +77,7 @@
 //   fn sum(c &Chain['=a]) i32 { ... c.ar[key].val ... c.ar[key].next ... }
 //
 // 'ar[key]' reads (a '&T' of the value, '[]'), and in set position --
-// 'ar[key] = v', 'ar[key].f = v', 'ar[key].f += 1', a method taking 'self &mut'
+// 'ar[key] = v', 'ar[key].f = v', 'ar[key].f += 1', a method taking 'self: &mut'
 // -- writes, through '&[]', the value's '&mut'. A key is copied freely, and a
 // value it names may hold keys, of its own arena or another. What a key names
 // lives as long as its arena, past every scope, so it holds no borrow: a key
@@ -160,14 +160,14 @@ import libc;
 
 // The header before each value that needs finalizing
 struct FinalNode {
-  pub next *FinalNode;
-  pub run &fn(p *u8);
+  pub next: *FinalNode;
+  pub run: &fn(p: *u8);
 }
 
 // The header before each block: the block allocated before it, which teardown
 // follows to free them all
 struct Block {
-  pub prev *Block;
+  pub prev: *Block;
 }
 
 // One value the arena holds that a collector must trace (its type holds a traced
@@ -176,17 +176,17 @@ struct Block {
 // it keeps, so the arena, which holds values of many types, gives a collector
 // each of them as an Erased value, which is traced by its type's own trace.
 struct GcTraceNode {
-  pub next *GcTraceNode;
-  pub p *u8;              // an Erased value is these two fields, 'p' and 'rec', as they sit here
-  pub rec *TypeRecord;
+  pub next: *GcTraceNode;
+  pub p: *u8;              // an Erased value is these two fields, 'p' and 'rec', as they sit here
+  pub rec: *TypeRecord;
 }
 
 // A cursor over the values an arena holds that need tracing, newest first: 'next'
 // gives a writable reference to each, as an Erased value
 pub struct ArenaGcTraceItems is Iterator[&mut Erased] {
-  node *GcTraceNode;
+  node: *GcTraceNode;
 
-  pub fn next(self &mut) Option[&mut Erased] {
+  pub fn next(self: &mut) Option[&mut Erased] {
     if node as usize == 0usize { return None; }
     let at = node;
     node = (*at).next;
@@ -202,19 +202,19 @@ const blockBytes = 4096usize;
 // points to as its region ('header' is first, so the object is the region), so
 // that moving the Arena moves neither.
 struct ArenaCore is GcTraceElements {
-  header MemRegion;    // the region: allocate, resize and release, below
-  blocks *Block;       // the newest block, or null
-  top usize;           // the address of its first unused byte
-  limit usize;         // the address just past its end
-  finals *FinalNode;   // the newest header, or null
-  nfinals usize;       // how many headers the list has held
-  nblocks usize;       // how many blocks it holds
-  traced *GcTraceNode;   // the newest value needing a trace, or null
-  ntraced usize;       // how many it has held
+  header: MemRegion;    // the region: allocate, resize and release, below
+  blocks: *Block;       // the newest block, or null
+  top: usize;           // the address of its first unused byte
+  limit: usize;         // the address just past its end
+  finals: *FinalNode;   // the newest header, or null
+  nfinals: usize;       // how many headers the list has held
+  nblocks: usize;       // how many blocks it holds
+  traced: *GcTraceNode;   // the newest value needing a trace, or null
+  ntraced: usize;       // how many it has held
 
   // Room for a value of 'size' bytes aligned to 'align' that needs no
   // finalizing: its address. The caller writes the value there.
-  fn place(self &mut, size usize, align usize) *u8 {
+  fn place(self: &mut, size: usize, align: usize) *u8 {
     self.bump(0usize, align, size) as *u8
   }
 
@@ -224,7 +224,7 @@ struct ArenaCore is GcTraceElements {
   // place first. Whatever that construction allocates in the arena lies after
   // the value in memory and goes onto the list before it, so it is finalized
   // after the value, as a value it was built from is.
-  fn reserveFinal(self &mut, size usize, align usize) *u8 {
+  fn reserveFinal(self: &mut, size: usize, align: usize) *u8 {
     let hdr = mem.sizeof[FinalNode]();
     var al = align;
     if al < mem.alignof[FinalNode]() { al = mem.alignof[FinalNode](); }
@@ -234,7 +234,7 @@ struct ArenaCore is GcTraceElements {
   // The value at 'at', which reserveFinal made room for and which is built
   // now, is put on the list of values the arena finalizes, first: its death is
   // 'run', called with its address when the arena dies.
-  fn linkFinal(self &mut, at *u8, run &fn(p *u8)) {
+  fn linkFinal(self: &mut, at: *u8, run: &fn(p: *u8)) {
     let node = (at as usize - mem.sizeof[FinalNode]()) as *FinalNode;
     mem.writeRaw(node, new FinalNode(finals, run));
     finals = node;
@@ -242,7 +242,7 @@ struct ArenaCore is GcTraceElements {
   }
 
   // The values it holds that need tracing, for a collector (see Arena.gcTraceElements)
-  pub fn gcTraceElements(self &mut) ArenaGcTraceItems { new ArenaGcTraceItems(traced) }
+  pub fn gcTraceElements(self: &mut) ArenaGcTraceItems { new ArenaGcTraceItems(traced) }
 
   // A new arena state: no block yet, the three region functions set
   fn make() *MemRegion {
@@ -255,7 +255,7 @@ struct ArenaCore is GcTraceElements {
 
   // The value at 'p', whose type's record is 'rec', needs tracing: its node is
   // allocated here, and put first on the list
-  fn noteTraced(self &mut, p *u8, rec *TypeRecord) {
+  fn noteTraced(self: &mut, p: *u8, rec: *TypeRecord) {
     let node = self.place(mem.sizeof[GcTraceNode](), mem.alignof[GcTraceNode]()) as *GcTraceNode;
     mem.writeRaw(node, new GcTraceNode(traced, p, rec));
     traced = node;
@@ -267,7 +267,7 @@ struct ArenaCore is GcTraceElements {
   // header ends where the value starts, whatever the value's alignment, since
   // 'align' is then at least the header's and the header's size is a multiple
   // of its alignment, so the header is aligned too.
-  fn bump(self &mut, hdr usize, align usize, size usize) usize {
+  fn bump(self: &mut, hdr: usize, align: usize, size: usize) usize {
     var at = roundUp(top + hdr, align);
     if top == 0usize || at + size > limit {
       self.grow(hdr + size + align);
@@ -279,7 +279,7 @@ struct ArenaCore is GcTraceElements {
 
   // A new block with room for at least 'need' bytes, made the one allocation
   // bumps through. What was left of the one before is not used again.
-  fn grow(self &mut, need usize) {
+  fn grow(self: &mut, need: usize) {
     let room = blockRoom(need);
     let blk = newBlock(blocks, room);
     blocks = blk;
@@ -296,7 +296,7 @@ struct ArenaCore is GcTraceElements {
   // twice the request, so a block that keeps growing finds the room for its next
   // doubling where it is, and is copied once for every block it fills, not at
   // every growth.
-  fn resize(self &mut, block *u8, oldBytes usize, newBytes usize, align usize) *u8 {
+  fn resize(self: &mut, block: *u8, oldBytes: usize, newBytes: usize, align: usize) *u8 {
     if block as usize == 0usize { return self.place(newBytes, align); }
     let at = block as usize;
     if at + oldBytes == top && at + newBytes <= limit {
@@ -317,7 +317,7 @@ struct ArenaCore is GcTraceElements {
   // taken off the list before its value's thunk runs, so a value allocated by
   // a 'final' during teardown is finalized too, and none twice; then every
   // block freed. The blocks all stay until the last finalizer has run.
-  fn teardown(self &mut) {
+  fn teardown(self: &mut) {
     while finals as usize != 0usize {
       let node = finals;
       let hdr = node as &FinalNode;
@@ -335,26 +335,26 @@ struct ArenaCore is GcTraceElements {
 
 // The arena's region, as MemRegion's three functions: each is handed the region,
 // which is the ArenaCore it begins
-fn coreOf(r *MemRegion) &mut ArenaCore {
+fn coreOf(r: *MemRegion) &mut ArenaCore {
   (r as *ArenaCore) as &mut ArenaCore
 }
 
-fn regionAlloc(r *MemRegion, bytes usize, align usize) *u8 {
+fn regionAlloc(r: *MemRegion, bytes: usize, align: usize) *u8 {
   coreOf(r).place(bytes, align)
 }
 
-fn regionResize(r *MemRegion, block *u8, oldBytes usize, newBytes usize, align usize) *u8 {
+fn regionResize(r: *MemRegion, block: *u8, oldBytes: usize, newBytes: usize, align: usize) *u8 {
   coreOf(r).resize(block, oldBytes, newBytes, align)
 }
 
 // Nothing is done with a block given back: the arena's blocks go together
-fn regionRelease(r *MemRegion, block *u8, bytes usize) {}
+fn regionRelease(r: *MemRegion, block: *u8, bytes: usize) {}
 
 pub struct Arena is NoLoanMut, GcTraceElements {
   // The arena's region, which the collections made in it point to: public so
   // that 'new a[T](...)' can hand it to what it makes (typelit.c). Not to be
   // changed.
-  pub region *MemRegion;
+  pub region: *MemRegion;
 
   // An arena holding nothing, with no block until the first value arrives
   pub fn empty() Arena {
@@ -364,7 +364,7 @@ pub struct Arena is NoLoanMut, GcTraceElements {
   // An arena holding nothing yet, whose first block is allocated now, with
   // room for at least 'bytes' of values and their headers: a scratch whose
   // need is known then makes one allocation rather than several
-  pub fn withRoom(bytes usize) Arena {
+  pub fn withRoom(bytes: usize) Arena {
     let region = ArenaCore.make();
     let core = coreOf(region);
     core.grow(bytes);
@@ -386,7 +386,7 @@ pub struct Arena is NoLoanMut, GcTraceElements {
   // the construction waits for that statement. compiler/c/doc/phases/generation.md,
   // "A construction built where an inline function puts it".) The value is put on
   // the finalizer list after it is built, so the list's order is what it was.
-  pub fn alloc[T](self &mut, value T) &mut T inline {
+  pub fn alloc[T](self: &mut, value: T) &mut T inline {
     let core = coreOf(region);
     let at = if mem.needsFinal[T]() {
       core.reserveFinal(mem.sizeof[T](), mem.alignof[T]())
@@ -408,15 +408,15 @@ pub struct Arena is NoLoanMut, GcTraceElements {
   // How a collector reaches what the arena holds, whatever the types: the values
   // whose type holds a traced reference, each as an Erased value, which is traced
   // by its type's own trace. An arena holding none gives none.
-  pub fn gcTraceElements(self &mut) ArenaGcTraceItems { coreOf(region).gcTraceElements() }
+  pub fn gcTraceElements(self: &mut) ArenaGcTraceItems { coreOf(region).gcTraceElements() }
 
   // How many values have been given a finalizer header, and how many blocks
   // it holds: for tests and for tuning, not for correctness
-  pub fn finalizers(self &) usize { coreOf(region).nfinals }
-  pub fn blockCount(self &) usize { coreOf(region).nblocks }
+  pub fn finalizers(self: &) usize { coreOf(region).nfinals }
+  pub fn blockCount(self: &) usize { coreOf(region).nblocks }
 
   // Its death: the values and blocks of its state, then the state
-  fn final(self &uni) {
+  fn final(self: &uni) {
     let core = coreOf(region);
     core.teardown();
     libc.free(region as *u8);
@@ -430,8 +430,8 @@ pub struct Arena is NoLoanMut, GcTraceElements {
 // Its first field is the Arena's region, the same one, so what 'new d[T](...)'
 // makes in it draws from it.
 pub struct DynArena['=a] is NoLoanMut {
-  pub region *MemRegion;
-  ar Arena;
+  pub region: *MemRegion;
+  ar: Arena;
 
   // An arena holding nothing, of a brand of its own: ''=a' is named by no
   // parameter, so each call mints a fresh one for its caller
@@ -441,48 +441,48 @@ pub struct DynArena['=a] is NoLoanMut {
   }
 
   // The same, its first block allocated now with room for 'bytes' of values
-  pub fn withRoom(bytes usize) DynArena['=a] {
+  pub fn withRoom(bytes: usize) DynArena['=a] {
     let a = Arena.withRoom(bytes);
     new DynArena(a.region, a)
   }
 
   // Move value into the arena, and a key to it there: good for as long as
   // the arena lives, wherever it goes, and only through this arena
-  pub fn alloc[T](self &mut, value T) &'=a mut T inline {
+  pub fn alloc[T](self: &mut, value: T) &'=a mut T inline {
     (ar.alloc(value) as *T) as &'=a mut T
   }
 
   // 'ar[key]': the value a key of this arena names, read
-  pub fn `[]`[T](self &, key &'=a T) &T {
+  pub fn `[]`[T](self: &, key: &'=a T) &T {
     (key as *T) as &T
   }
 
-  // 'ar[key] = v', '&mut ar[key]', and a method taking 'self &mut' through it:
+  // 'ar[key] = v', '&mut ar[key]', and a method taking 'self: &mut' through it:
   // the value a key of this arena names, to change
-  pub fn `&[]`[T](self &mut, key &'=a T) &mut T {
+  pub fn `&[]`[T](self: &mut, key: &'=a T) &mut T {
     (key as *T) as &mut T
   }
 
   // How many values have been given a finalizer header, and how many blocks
   // it holds: for tests and for tuning
-  pub fn finalizers(self &) usize { ar.finalizers() }
-  pub fn blockCount(self &) usize { ar.blockCount() }
+  pub fn finalizers(self: &) usize { ar.finalizers() }
+  pub fn blockCount(self: &) usize { ar.blockCount() }
 }
 
 // The room a new block gets: a block's worth, or 'need' if that is more
-fn blockRoom(need usize) usize {
+fn blockRoom(need: usize) usize {
   if need > blockBytes {need} else {blockBytes}
 }
 
 // Twice n, or the most a usize holds if that is more
-fn doubled(n usize) usize {
+fn doubled(n: usize) usize {
   if n > (0usize - 1usize) / 2usize {0usize - 1usize} else {n * 2usize}
 }
 
 // A new block with 'room' bytes after its header, the block before it 'prev'.
 // A block the raw blocks layer cannot give, or whose size does not fit in a
 // usize, is a panic.
-fn newBlock(prev *Block, room usize) *Block {
+fn newBlock(prev: *Block, room: usize) *Block {
   if room > (0usize - 1usize) - mem.sizeof[Block]() {
     panic("arena: a block that large cannot be counted in a usize");
   }
@@ -493,6 +493,6 @@ fn newBlock(prev *Block, room usize) *Block {
 }
 
 // n rounded up to a multiple of align, a power of two
-fn roundUp(n usize, align usize) usize {
+fn roundUp(n: usize, align: usize) usize {
   (n + align - 1usize) & (0usize - align)
 }

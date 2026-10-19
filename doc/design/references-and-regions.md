@@ -189,8 +189,8 @@ let shared = new Rc[Person]("Tako")     // counted: freed at zero
 | --- | --- | --- |
 | `borrowRef` | a sentinel node, not a struct — the default for `&` | none; a borrow owns nothing |
 | `Uni` | `struct Uni is RegionRef, Move` in the core package, `packages/core/src/core.cone`: no fields, `alloc` and `free`, no `aliasRef` | single owner frees |
-| `Rc` | `struct Rc is RegionRef { cnt usize }` in the core package, with `init`, `aliasRef` and `dealiasRef` too | reference counting |
-| `Rcw` | `struct Rcw is RegionRef { strong usize; weak usize }` in the `rcweak` package, `packages/rcweak/src/rcweak.cone`; its `free` gives back one weak count, and the last one frees | reference counting with weak references (`Weak[T]`, a struct) |
+| `Rc` | `struct Rc is RegionRef { cnt: usize }` in the core package, with `init`, `aliasRef` and `dealiasRef` too | reference counting |
+| `Rcw` | `struct Rcw is RegionRef { strong: usize; weak: usize }` in the `rcweak` package, `packages/rcweak/src/rcweak.cone`; its `free` gives back one weak count, and the last one frees | reference counting with weak references (`Weak[T]`, a struct) |
 | user-defined | any struct declaring `is RegionRef` | whatever its methods do |
 
 **`Uni` and `Rc` are Cone source, not built into the compiler**, and nothing in
@@ -262,7 +262,7 @@ functions, admit different vocabularies, and answer different questions:
 
 | | reference permission | declaration word |
 | --- | --- | --- |
-| Written | inside a type: `&mut Point`, `Rc[ro, T]` | before a name: `var x i32` |
+| Written | inside a type: `&mut Point`, `Rc[ro, T]` | before a name: `var x: i32` |
 | Parsed by | `parsePerm`, inside `parseType` | `parseDclWord` |
 | Vocabulary | all six below | `let` and `var`, nothing else |
 | Answers | read, write, alias, share — and move-ness | may this storage's value change |
@@ -278,7 +278,7 @@ Two consequences worth knowing:
 
 - **A declaration word is not part of a function's signature.**
   `fnSigMatches` compares each parameter's *type* and nothing else, so
-  `fn f(var n i32)` and `fn f(n i32)` are one signature and a caller cannot tell
+  `fn f(var n: i32)` and `fn f(n: i32)` are one signature and a caller cannot tell
   them apart. What a caller does see is the permission on a reference
   parameter's *type* — a different thing in the same sentence, which is what
   makes a parameter's own word as private to the body as a local's.
@@ -367,7 +367,7 @@ conversion.
 
 Ordinary, with one consequence worth stating: **a reference answers its own size
 and never consults its target**, which is what makes recursive types
-expressible. `struct S { next &S }` is legal because `&S` never asks `S`
+expressible. `struct S { next: &S }` is legal because `&S` never asks `S`
 anything.
 
 ## What composes out of the axes

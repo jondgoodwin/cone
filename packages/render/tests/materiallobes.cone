@@ -66,7 +66,7 @@ fn powerPreference() u32 {
   POWER_PREFERENCE_HIGH_PERFORMANCE
 }
 
-fn halfToFloat(h u16) f32 {
+fn halfToFloat(h: u16) f32 {
   let bits = u32.from(h);
   let exponent = (bits >> 10u32) & 31u32;
   let sign = if (bits & 0x8000u32) != 0u32 { -1.f } else { 1. };
@@ -76,14 +76,14 @@ fn halfToFloat(h u16) f32 {
 }
 
 // Channel 'c' of pixel ('x', 'y') of the half-float frame at 'p', 'width' texels wide
-fn radiance(p *u8, width u32, x u32, y u32, c usize) f64 {
+fn radiance(p: *u8, width: u32, x: u32, y: u32, c: usize) f64 {
   let h = p as *u16;
   f64.from(halfToFloat(*(h + (usize.from(y) * usize.from(width) + usize.from(x)) * 4usize + c)))
 }
 
 // One frame of 'list' into 'color' (half-float, readable), read back
-fn drawHdr(renderer &mut Renderer, device &mut Device, color &Texture, depth &Texture, readback &Buffer,
-    camera &Camera, light &Light, list &DrawList) {
+fn drawHdr(renderer: &mut Renderer, device: &mut Device, color: &Texture, depth: &Texture, readback: &Buffer,
+    camera: &Camera, light: &Light, list: &DrawList) {
   var encoder = device.createCommandEncoder();
   renderer.render(device, &mut encoder, color, depth, camera, light, list);
   encoder.copyTextureToBuffer(color, readback);
@@ -93,33 +93,33 @@ fn drawHdr(renderer &mut Renderer, device &mut Device, color &Texture, depth &Te
 }
 
 // The mean of the four pixels round the middle of the frame: the one point on the camera's axis
-fn centre(p *u8, c usize) f64 {
+fn centre(p: *u8, c: usize) f64 {
   (radiance(p, SIZE, 31u32, 31u32, c) + radiance(p, SIZE, 32u32, 31u32, c) + radiance(p, SIZE, 31u32, 32u32, c)
     + radiance(p, SIZE, 32u32, 32u32, c)) * 0.25
 }
 
-fn within(got f64, want f64, relative f64, absolute f64) bool {
+fn within(got: f64, want: f64, relative: f64, absolute: f64) bool {
   let d = if got < want { want - got } else { got - want };
   d <= absolute + relative * (if want < 0.0 { -want } else { want })
 }
 
 // ---- The CPU's side ----
 
-fn square(x f64) f64 { x * x }
+fn square(x: f64) f64 { x * x }
 
 // Charlie's sheen distribution and Neubelt's visibility
-fn sheenD(noh f64, alpha f64) f64 {
+fn sheenD(noh: f64, alpha: f64) f64 {
   let invA = 1.0 / alpha;
   let sin2h = if 1.0 - noh * noh > 0.0078125 { 1.0 - noh * noh } else { 0.0078125 };
   (2.0 + invA) * libc.pow(sin2h, invA * 0.5) / (2.0 * 3.14159265358979)
 }
-fn sheenV(nov f64, nol f64) f64 {
+fn sheenV(nov: f64, nol: f64) f64 {
   let v = 1.0 / (4.0 * (nol + nov - nol * nov));
   if v > 1.0 { 1.0 } else { v }
 }
 
 // The sheen lobe's directional albedo: its integral over the hemisphere of light directions (midpoint rule)
-fn sheenAlbedo(nov f64, roughness f64) f64 {
+fn sheenAlbedo(nov: f64, roughness: f64) f64 {
   let alpha = roughness * roughness;
   let vx = libc.sqrt(1.0 - nov * nov);
   var sum = 0.0;
@@ -145,7 +145,7 @@ fn sheenAlbedo(nov f64, roughness f64) f64 {
 }
 
 // d'Eon and Luebke's green skin profile, a sum of five Gaussians (variances in mm2)
-fn profile(r f64) f64 {
+fn profile(r: f64) f64 {
   var sum = 0.0;
   var i = 0;
   while i < 5 {
@@ -158,7 +158,7 @@ fn profile(r f64) f64 {
 }
 
 // Penner and Borshukov's ring integral for the light's cosine 'nol' and a ring of radius 1 / perMm millimetres
-fn diffusion(nol f64, perMm f64) f64 {
+fn diffusion(nol: f64, perMm: f64) f64 {
   let theta = libc.acos(nol);
   if perMm < 0.0001 {
     return if nol > 0.0 { nol } else { 0.0 };
@@ -188,7 +188,7 @@ fn diffusion(nol f64, perMm f64) f64 {
 // How much the caustic volume 'v' (strength 1, the surface height 'top') brightens the sun at the
 // world point (x, 0, z) for the sun direction 'l', at 'time': scenecapture.slang's causticLight, from
 // the physics (the Jacobian of the ray map of four crossing waves), in double precision
-fn causticFactor(wx f64, wz f64, lx f64, ly f64, lz f64, top f64, height f64, wavelength f64, ior f64, time f64) f64 {
+fn causticFactor(wx: f64, wz: f64, lx: f64, ly: f64, lz: f64, top: f64, height: f64, wavelength: f64, ior: f64, time: f64) f64 {
   let depth = top;
   let sx = wx + lx * (depth / ly);
   let sz = wz + lz * (depth / ly);
@@ -221,7 +221,7 @@ fn causticFactor(wx f64, wz f64, lx f64, ly f64, lz f64, top f64, height f64, wa
 }
 
 // The anisotropic lobe's D V (lobes.slang), in double precision
-fn anisotropicDV(at f64, ab f64, toh f64, boh f64, noh f64, tov f64, bov f64, tol f64, bol f64, nov f64, nol f64) f64 {
+fn anisotropicDV(at: f64, ab: f64, toh: f64, boh: f64, noh: f64, tov: f64, bov: f64, tol: f64, bol: f64, nov: f64, nol: f64) f64 {
   let a2 = at * ab;
   let d2 = square(ab * toh) + square(at * boh) + square(a2 * noh);
   let b2 = a2 / d2;
@@ -340,7 +340,7 @@ fn main() i32 {
     let tp = tableBack.mappedRange();
     let sp = sheenBack.mappedRange();
     // The sheen albedo at (n.v, roughness): texel (x, y) is at ((x + 0.5) / 32, (y + 0.5) / 32)
-    let cases Array[u32, 10] = [31u32, 15u32,  15u32, 7u32,  24u32, 20u32,  8u32, 28u32,  20u32, 3u32];
+    let cases: Array[u32, 10] = [31u32, 15u32,  15u32, 7u32,  24u32, 20u32,  8u32, 28u32,  20u32, 3u32];
     var c = 0usize;
     while c < 5usize {
       let x = cases[c * 2usize];
@@ -355,7 +355,7 @@ fn main() i32 {
       c = c + 1usize;
     }
     // The diffusion table: texel (x, y) is n.l = (x + 0.5) / 64 - 1 and v = (y + 0.5) / 64, 1/rho = v^2 / 2 per mm
-    let cases2 Array[u32, 12] = [96u32, 0u32,  100u32, 20u32,  64u32, 24u32,  40u32, 32u32,  70u32, 45u32,  20u32, 40u32];
+    let cases2: Array[u32, 12] = [96u32, 0u32,  100u32, 20u32,  64u32, 24u32,  40u32, 32u32,  70u32, 45u32,  20u32, 40u32];
     c = 0usize;
     while c < 6usize {
       let x = cases2[c * 2usize];
@@ -396,7 +396,7 @@ fn main() i32 {
     list.clear();
     list.add(square1, plain, faceZ);
     drawHdr(&mut renderer, &mut device, &color, &depth, &readback, &camera, &sun, &list);
-    var without Array[f64, 3] = [radiance(p, SIZE, 32u32, 32u32, 0usize), radiance(p, SIZE, 32u32, 32u32, 1usize),
+    var without: Array[f64, 3] = [radiance(p, SIZE, 32u32, 32u32, 0usize), radiance(p, SIZE, 32u32, 32u32, 1usize),
       radiance(p, SIZE, 32u32, 32u32, 2usize)];
     list.clear();
     list.add(square1, cloth, faceZ);

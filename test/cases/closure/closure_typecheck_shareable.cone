@@ -1,10 +1,10 @@
 // What Shareable and Sendable refuse. A closure is a struct of what it borrows
 // and holds, so it is the markers of those: a closure naming an 'Rc[imm, Grid]',
-// or a '&mut' (whose body reads through it with its '()' taking 'self &'), is
+// or a '&mut' (whose body reads through it with its '()' taking 'self: &'), is
 // neither Shareable nor Sendable, and a hand-written struct with a '&mut' field is
 // the same. Each refusal names the variable the closure holds or borrows and says
 // what to list. A body that writes through the '&mut' has a '()' that takes
-// 'self &mut' (a '&' reads and lends only '&' of what it holds), so it is not
+// 'self: &mut' (a '&' reads and lends only '&' of what it holds), so it is not
 // given where a callable that only reads is asked for.
 //
 // closure_shareable holds what is granted.
@@ -17,24 +17,24 @@ import collections use *;
 import thread;
 import actors;
 
-struct Grid { pub n i32; }
+struct Grid { pub n: i32; }
 
 // A hand-written struct with a '&mut' field, and a '()' to be called as a callable
 struct Holder {
-  pub r &mut i32;
-  pub fn `()`(self &, x i32) i32 { x + *r }
+  pub r: &mut i32;
+  pub fn `()`(self: &, x: i32) i32 { x + *r }
 }
 
-fn crosses[T Sendable]() {}
-fn shares[T Shareable]() {}
+fn crosses[T: Sendable]() {}
+fn shares[T: Shareable]() {}
 
-fn needShare[F fn(x i32) i32 + Shareable](f &F) i32 { f(1) }
-fn needSend[F fn(x i32) i32 + Sendable](f &F) i32 { f(1) }
-fn lendShare(f &<fn(x i32) i32 + Shareable) i32 { f(1) }
-fn runSend(f Uni[fn(x i32) i32 + Sendable]) i32 { f(1) }
+fn needShare[F: fn(x: i32) i32 + Shareable](f: &F) i32 { f(1) }
+fn needSend[F: fn(x: i32) i32 + Sendable](f: &F) i32 { f(1) }
+fn lendShare(f: &<fn(x: i32) i32 + Shareable) i32 { f(1) }
+fn runSend(f: Uni[fn(x: i32) i32 + Sendable]) i32 { f(1) }
 
 // A parallel each calling a closure for each item
-pub fn fillGrid[T, F fn(x i32, y i32) T](out &uni List[T], width usize, f &F) {
+pub fn fillGrid[T, F: fn(x: i32, y: i32) T](out: &uni List[T], width: usize, f: &F) {
   parallel each y, row in out.mutChunks(width).indexed() {
     each x, t in row.mutItems().indexed() {
       *t = f(i32.from(x), i32.from(y));       //~ ErrorParReach "the closure passed in, and it borrows 'r' (&mut i32)"
@@ -45,12 +45,12 @@ pub fn fillGrid[T, F fn(x i32, y i32) T](out &uni List[T], width usize, f &F) {
 }
 
 // A trait, and implementers that are neither Shareable nor Sendable
-trait Shape { pub fn area(self &) f32; }
-struct Tangled is Shape { pub r &mut i32; pub fn area(self &) f32 { f32.from(*r) } }
-struct Counted is Shape { pub g Rc[imm, Grid]; pub fn area(self &) f32 { f32.from(g.n) } }
+trait Shape { pub fn area(self: &) f32; }
+struct Tangled is Shape { pub r: &mut i32; pub fn area(self: &) f32 { f32.from(*r) } }
+struct Counted is Shape { pub g: Rc[imm, Grid]; pub fn area(self: &) f32 { f32.from(g.n) } }
 
-fn areaOf(s &<Shape + Shareable) f32 { s.area() }
-fn areaOwned(s Uni[Shape + Sendable]) f32 { s.area() }
+fn areaOf(s: &<Shape + Shareable) f32 { s.area() }
+fn areaOwned(s: Uni[Shape + Sendable]) f32 { s.area() }
 
 fn shapes() {
   var m = 1;
@@ -65,7 +65,7 @@ fn shapes() {
 // Shareable (Rust's &dyn Trait is not Sync): named in a parallel each body it is
 // refused, though what is behind it may be fine. The mark vouches (closure_shareable
 // runs one), and a value that cannot is refused where the reference is made (above)
-fn unmarked(sh &<Shape, f &<fn(x i32) i32, owned Uni[Shape], marked &<Shape + Shareable) f32 {
+fn unmarked(sh: &<Shape, f: &<fn(x: i32) i32, owned: Uni[Shape], marked: &<Shape + Shareable) f32 {
   let total = Atomic[u64].of(0u64);
   parallel each i in 0usize ..< 4usize {
     let a = sh.area();                        //~ ErrorParReach "reaches 'sh', a &<Shape"
@@ -91,15 +91,15 @@ fn types() {
 fn closures() {
   var m = 5;
   let r = &mut m;
-  // Its '()' reads through 'r' and takes 'self &', a closure of a '&mut'
-  let writes = fn(x i32) i32 { *r + x };
+  // Its '()' reads through 'r' and takes 'self: &', a closure of a '&mut'
+  let writes = fn(x: i32) i32 { *r + x };
   needShare(&writes);                         //~ ErrorNotShareable "it borrows 'r' (&mut i32)"
   needSend(&writes);                          //~ ErrorNotSendable "it borrows 'r' (&ro &mut i32)"
   lendShare(&writes);                         //~ ErrorNotShareable "it borrows 'r' (&ro &mut i32)"
 
-  // One that writes through 'r' takes 'self &mut', which a '&F' of a callable that
+  // One that writes through 'r' takes 'self: &mut', which a '&F' of a callable that
   // only reads refuses
-  let changes = fn(x i32) i32 { *r = *r + x; *r };
+  let changes = fn(x: i32) i32 { *r = *r + x; *r };
   needShare(&changes);                        //~ ErrorCallablePerm "this closure changes it"
 
   // A hand-written struct with a '&mut' field, called as a callable
@@ -109,18 +109,18 @@ fn closures() {
 
   // An owner marked Sendable, made from such a closure, and from one listing an Rc
   let rc = new Rc[imm, Grid](new Grid(4));
-  let owned = new Uni[fn(x i32) i32 + Sendable](fn(x i32) i32 { *r + x });   //~ ErrorNotSendable "it borrows 'r' (&ro &mut i32)"
-  let listed = new Uni[fn(x i32) i32 + Sendable](fn(x i32) [rc] i32 { x + rc.n });   //~ ErrorNotSendable "it holds 'rc' (Rc[imm, Grid])"
-  let shared = fn(x i32) [rc] i32 { x + rc.n };
+  let owned = new Uni[fn(x: i32) i32 + Sendable](fn(x: i32) i32 { *r + x });   //~ ErrorNotSendable "it borrows 'r' (&ro &mut i32)"
+  let listed = new Uni[fn(x: i32) i32 + Sendable](fn(x: i32) [rc] i32 { x + rc.n });   //~ ErrorNotSendable "it holds 'rc' (Rc[imm, Grid])"
+  let shared = fn(x: i32) [rc] i32 { x + rc.n };
   needShare(&shared);                         //~ ErrorNotShareable "it holds 'rc' (Rc[imm, Grid])"
 
   // Handed to a parallel each
   var out = new List[f32];
-  fillGrid(&uni out, 4usize, fn(x i32, y i32) f32 { f32.from(*r + x) });
+  fillGrid(&uni out, 4usize, fn(x: i32, y: i32) f32 { f32.from(*r + x) });
   fillGrid(&uni out, 4usize, (x, y) => f32.from(x + rc.n));
-  fillGrid(&uni out, 4usize, fn(x i32, y i32) [rc] f32 { f32.from(x + rc.n) });
+  fillGrid(&uni out, 4usize, fn(x: i32, y: i32) [rc] f32 { f32.from(x + rc.n) });
 }
 
 // A '+' marks a virtual reference, whose type is hidden; a type that is known is asked
-fn marks(g Uni[Grid + Sendable], f Uni[fn(x i32) i32 + Grid]) {}   //~ ErrorMarkUse "a type that is known"
+fn marks(g: Uni[Grid + Sendable], f: Uni[fn(x: i32) i32 + Grid]) {}   //~ ErrorMarkUse "a type that is known"
                                                                   //~^ ErrorMarkUse "other traits are not intersected yet"

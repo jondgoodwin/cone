@@ -16,42 +16,42 @@
 // list threaded through the item records.
 
 struct OctNode {
-  first u32;    // head of the cell's item list
-  child u32;    // the first of its eight children, in octant order; NONE if none
-  parent u32;
-  count u32;    // items in this cell and below
+  first: u32;    // head of the cell's item list
+  child: u32;    // the first of its eight children, in octant order; NONE if none
+  parent: u32;
+  count: u32;    // items in this cell and below
 }
 
-pub struct LooseOctree[T Copy] {
-  items Items[T];
-  nodes List[OctNode];
-  freeBlock u32;   // a freed block of eight nodes, linked through their first's 'child'
-  center Vec3;
-  half f32;
-  maxDepth i32;
-  k f32;
-  pairs PairBook;
-  moved List[u32];
-  pendingRemoved List[Pair[T]];
+pub struct LooseOctree[T: Copy] {
+  items: Items[T];
+  nodes: List[OctNode];
+  freeBlock: u32;   // a freed block of eight nodes, linked through their first's 'child'
+  center: Vec3;
+  half: f32;
+  maxDepth: i32;
+  k: f32;
+  pairs: PairBook;
+  moved: List[u32];
+  pendingRemoved: List[Pair[T]];
 
   // A tree over the cube of half-size 'half' about 'center', whose cells
   // divide at most 'maxDepth' times, with looseness 'k' (1 < k <= 2; 2 is
   // usual)
-  pub fn create(center Vec3, half f32, maxDepth i32, k f32) LooseOctree[T] {
+  pub fn create(center: Vec3, half: f32, maxDepth: i32, k: f32) LooseOctree[T] {
     var nodes = List[OctNode].empty();
     nodes.push(new OctNode(NONE, NONE, NONE, 0u32));
     new LooseOctree[T](Items[T].create(), nodes, NONE, center, half, maxDepth, k, PairBook.create(),
       List[u32].empty(), List[Pair[T]].empty())
   }
 
-  pub fn len(self &) usize {items.count}
-  pub fn contains(self &, p Proxy) bool {items.alive(p)}
-  pub fn handle(self &, p Proxy) T {items.list[usize.from(p.slot)].handle}
-  pub fn box(self &, p Proxy) Aabb3 {items.list[usize.from(p.slot)].box}
-  pub fn pairBox(self &, p Proxy) Aabb3 {box(p)}
+  pub fn len(self: &) usize {items.count}
+  pub fn contains(self: &, p: Proxy) bool {items.alive(p)}
+  pub fn handle(self: &, p: Proxy) T {items.list[usize.from(p.slot)].handle}
+  pub fn box(self: &, p: Proxy) Aabb3 {items.list[usize.from(p.slot)].box}
+  pub fn pairBox(self: &, p: Proxy) Aabb3 {box(p)}
 
   // The number of cells in use (the root included)
-  pub fn cellCount(self &) usize {
+  pub fn cellCount(self: &) usize {
     var n = 1usize;
     var i = 1usize;
     while i < nodes.len() {
@@ -61,24 +61,24 @@ pub struct LooseOctree[T Copy] {
     n
   }
 
-  fn loose(self &, c Vec3, h f32) Aabb3 inline {
+  fn loose(self: &, c: Vec3, h: f32) Aabb3 inline {
     let r = k * h;
     new Aabb3(new Vec3(c.x - r, c.y - r, c.z - r), new Vec3(c.x + r, c.y + r, c.z + r))
   }
 
-  fn childCenter(c Vec3, h f32, octant u32) Vec3 inline {
+  fn childCenter(c: Vec3, h: f32, octant: u32) Vec3 inline {
     let q = h * 0.5;
     new Vec3(if (octant & 1u32) != 0u32 {c.x + q} else {c.x - q},
       if (octant & 2u32) != 0u32 {c.y + q} else {c.y - q},
       if (octant & 4u32) != 0u32 {c.z + q} else {c.z - q})
   }
 
-  fn octantOf(c Vec3, p Vec3) u32 inline {
+  fn octantOf(c: Vec3, p: Vec3) u32 inline {
     (if p.x >= c.x {1u32} else {0u32}) | (if p.y >= c.y {2u32} else {0u32})
       | (if p.z >= c.z {4u32} else {0u32})
   }
 
-  fn makeChildren(self &mut, n u32) {
+  fn makeChildren(self: &mut, n: u32) {
     let ni = usize.from(n);
     if nodes[ni].child != NONE {return;}
     var first = NONE;
@@ -107,7 +107,7 @@ pub struct LooseOctree[T Copy] {
   }
 
   // The cell at 'level' on the way to the point: its node, centre, half-size
-  fn descend(self &mut, level i32, p Vec3, outC &mut Vec3, outH &mut f32) u32 {
+  fn descend(self: &mut, level: i32, p: Vec3, outC: &mut Vec3, outH: &mut f32) u32 {
     var node = 0u32;
     var c = center;
     var h = half;
@@ -126,7 +126,7 @@ pub struct LooseOctree[T Copy] {
   }
 
   // The cell an item with this box belongs in
-  fn cellFor(self &mut, b Aabb3) u32 {
+  fn cellFor(self: &mut, b: Aabb3) u32 {
     let bc = b.center();
     let he = b.halfExtents();
     let e = maxf(he.x, maxf(he.y, he.z));
@@ -155,7 +155,7 @@ pub struct LooseOctree[T Copy] {
     descend(level, bc, &mut c0, &mut h0)
   }
 
-  fn link(self &mut, slot u32, node u32) {
+  fn link(self: &mut, slot: u32, node: u32) {
     let si = usize.from(slot);
     let ni = usize.from(node);
     let head = nodes[ni].first;
@@ -171,7 +171,7 @@ pub struct LooseOctree[T Copy] {
     }
   }
 
-  fn unlink(self &mut, slot u32) {
+  fn unlink(self: &mut, slot: u32) {
     let si = usize.from(slot);
     let node = items.list[si].x;
     let next = items.list[si].y;
@@ -194,21 +194,21 @@ pub struct LooseOctree[T Copy] {
     }
   }
 
-  fn flagMoved(self &mut, slot u32) {
+  fn flagMoved(self: &mut, slot: u32) {
     if !items.list[usize.from(slot)].moved {
       items.list[usize.from(slot)].moved = true;
       moved.push(slot);
     }
   }
 
-  pub fn insert(self &mut, box Aabb3, handle T) Proxy {
+  pub fn insert(self: &mut, box: Aabb3, handle: T) Proxy {
     let p = items.add(box, handle);
     link(p.slot, cellFor(box));
     flagMoved(p.slot);
     p
   }
 
-  pub fn remove(self &mut, p Proxy) bool {
+  pub fn remove(self: &mut, p: Proxy) bool {
     if !items.alive(p) {return false;}
     let si = usize.from(p.slot);
     unlink(p.slot);
@@ -226,7 +226,7 @@ pub struct LooseOctree[T Copy] {
     true
   }
 
-  fn pairOf(self &, sa u32, ha T, sb u32, hb T) Pair[T] {
+  fn pairOf(self: &, sa: u32, ha: T, sb: u32, hb: T) Pair[T] {
     if sa < sb {
       new Pair[T](ha, hb, items.proxyOf(sa), items.proxyOf(sb))
     }
@@ -238,7 +238,7 @@ pub struct LooseOctree[T Copy] {
   // The item has a new box. It stays in its cell if that is still the one it
   // belongs in. 'displacement' is accepted for the same call as the BVH's
   // and not used. Answers whether the item changed cell.
-  pub fn move(self &mut, p Proxy, box Aabb3, displacement Vec3) bool {
+  pub fn move(self: &mut, p: Proxy, box: Aabb3, displacement: Vec3) bool {
     if !items.alive(p) {return false;}
     let si = usize.from(p.slot);
     items.list[si].box = box;
@@ -254,11 +254,11 @@ pub struct LooseOctree[T Copy] {
 
   // ---------------- queries ----------------
 
-  pub fn overlapAabb[F fn(h T, p Proxy) bool](self &, box Aabb3, visit &mut F) {
+  pub fn overlapAabb[F: fn(h: T, p: Proxy) bool](self: &, box: Aabb3, visit: &mut F) {
     walkAabb(0u32, center, half, box, visit);
   }
 
-  fn walkAabb[F fn(h T, p Proxy) bool](self &, node u32, c Vec3, h f32, box Aabb3, visit &mut F) bool {
+  fn walkAabb[F: fn(h: T, p: Proxy) bool](self: &, node: u32, c: Vec3, h: f32, box: Aabb3, visit: &mut F) bool {
     let ni = usize.from(node);
     if nodes[ni].count == 0u32 {return true;}
     if node != 0u32 && !loose(c, h).overlaps(box) {return true;}
@@ -281,11 +281,11 @@ pub struct LooseOctree[T Copy] {
     true
   }
 
-  pub fn overlapSphere[F fn(h T, p Proxy) bool](self &, s Sphere, visit &mut F) {
+  pub fn overlapSphere[F: fn(h: T, p: Proxy) bool](self: &, s: Sphere, visit: &mut F) {
     walkSphere(0u32, center, half, s, visit);
   }
 
-  fn walkSphere[F fn(h T, p Proxy) bool](self &, node u32, c Vec3, h f32, sp Sphere, visit &mut F) bool {
+  fn walkSphere[F: fn(h: T, p: Proxy) bool](self: &, node: u32, c: Vec3, h: f32, sp: Sphere, visit: &mut F) bool {
     let ni = usize.from(node);
     if nodes[ni].count == 0u32 {return true;}
     if node != 0u32 && !sp.overlapsAabb(loose(c, h)) {return true;}
@@ -308,14 +308,14 @@ pub struct LooseOctree[T Copy] {
     true
   }
 
-  pub fn frustum[F fn(h T, p Proxy) bool](self &, f &Frustum, visit &mut F) {
+  pub fn frustum[F: fn(h: T, p: Proxy) bool](self: &, f: &Frustum, visit: &mut F) {
     walkFrustum(0u32, center, half, ALL_PLANES, f, visit);
   }
 
   // 'mask' names the planes the parent cell straddled; the root's own bounds
   // are not tested (it holds whatever fits nowhere deeper, wherever it is),
   // so its items are tested against all six
-  fn walkFrustum[F fn(h T, p Proxy) bool](self &, node u32, c Vec3, h f32, mask u32, f &Frustum, visit &mut F) bool {
+  fn walkFrustum[F: fn(h: T, p: Proxy) bool](self: &, node: u32, c: Vec3, h: f32, mask: u32, f: &Frustum, visit: &mut F) bool {
     let ni = usize.from(node);
     if nodes[ni].count == 0u32 {return true;}
     var m = mask;
@@ -346,13 +346,13 @@ pub struct LooseOctree[T Copy] {
   // As Bvh.rayCast: 'visit' answers the reach from then on, or a negative
   // number to stop. Cells are visited nearest first by the entry into their
   // loose bounds.
-  pub fn rayCast[F fn(h T, p Proxy, t f32) f32](self &, ray Ray3, maxT f32, visit &mut F) {
+  pub fn rayCast[F: fn(h: T, p: Proxy, t: f32) f32](self: &, ray: Ray3, maxT: f32, visit: &mut F) {
     let r = RayQ.from(ray);
     var limit = maxT;
     walkRay(0u32, center, half, r, limit, visit);
   }
 
-  fn walkRay[F fn(h T, p Proxy, t f32) f32](self &, node u32, c Vec3, h f32, r RayQ, limit0 f32, visit &mut F) f32 {
+  fn walkRay[F: fn(h: T, p: Proxy, t: f32) f32](self: &, node: u32, c: Vec3, h: f32, r: RayQ, limit0: f32, visit: &mut F) f32 {
     var limit = limit0;
     let ni = usize.from(node);
     if nodes[ni].count == 0u32 {return limit;}
@@ -406,9 +406,9 @@ pub struct LooseOctree[T Copy] {
     limit
   }
 
-  pub fn rayNearest(self &, ray Ray3, maxT f32) Option[Hit[T]] {
-    var best Option[Hit[T]] = None;
-    var grab = fn(h T, p Proxy, t f32) f32 {
+  pub fn rayNearest(self: &, ray: Ray3, maxT: f32) Option[Hit[T]] {
+    var best: Option[Hit[T]] = None;
+    var grab = fn(h: T, p: Proxy, t: f32) f32 {
       best = Some(new Hit[T](h, p, t));
       t
     };
@@ -416,14 +416,14 @@ pub struct LooseOctree[T Copy] {
     best
   }
 
-  pub fn rayAll[F fn(h T, p Proxy, t f32) bool](self &, ray Ray3, maxT f32, visit &mut F) {
-    var wrap = fn(h T, p Proxy, t f32) f32 {
+  pub fn rayAll[F: fn(h: T, p: Proxy, t: f32) bool](self: &, ray: Ray3, maxT: f32, visit: &mut F) {
+    var wrap = fn(h: T, p: Proxy, t: f32) f32 {
       if visit(h, p, t) {FAR} else {-1.}
     };
     rayCast(ray, maxT, &mut wrap);
   }
 
-  pub fn nearest(self &, point Vec3, k usize, out &mut List[Neighbor[T]]) {
+  pub fn nearest(self: &, point: Vec3, k: usize, out: &mut List[Neighbor[T]]) {
     out.clear();
     if items.count == 0usize || k == 0usize {return;}
     var heap = MinHeap.create();
@@ -459,12 +459,12 @@ pub struct LooseOctree[T Copy] {
 
   // ---------------- pairs ----------------
 
-  fn queryBox(self &, box Aabb3, found &mut List[u32]) {
-    var collect = fn(h T, p Proxy) bool { found.push(p.slot); true };
+  fn queryBox(self: &, box: Aabb3, found: &mut List[u32]) {
+    var collect = fn(h: T, p: Proxy) bool { found.push(p.slot); true };
     overlapAabb(box, &mut collect);
   }
 
-  pub fn allPairs(self &, out &mut List[Pair[T]]) {
+  pub fn allPairs(self: &, out: &mut List[Pair[T]]) {
     var found = List[u32].empty();
     var i = 0usize;
     while i < items.list.len() {
@@ -484,7 +484,7 @@ pub struct LooseOctree[T Copy] {
     }
   }
 
-  pub fn updatePairs(self &mut, events &mut PairEvents[T]) {
+  pub fn updatePairs(self: &mut, events: &mut PairEvents[T]) {
     var i = 0usize;
     while i < pendingRemoved.len() {
       events.removed.push(*pendingRemoved[i]);

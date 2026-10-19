@@ -15,74 +15,74 @@
 
 // How auto-exposure is done
 pub struct ExposureSettings {
-  pub enabled bool = false;
+  pub enabled: bool = false;
   // The luminance the exposure makes of the metered average: 0.18, a middle grey
   // (the frame's average, after the exposure, is the key)
-  pub key f32 = 0.18;
+  pub key: f32 = 0.18;
   // Stops added to the exposure: positive brightens (a weather's offset, an
   // artist's taste)
-  pub compensationEv f32 = 0.;
+  pub compensationEv: f32 = 0.;
   // The exposure's least and greatest, in stops about 1
-  pub minEv f32 = -6.;
-  pub maxEv f32 = 6.;
+  pub minEv: f32 = -6.;
+  pub maxEv: f32 = 6.;
   // The share of the metered pixels, from the dark end, left out, and the
   // share at which the bright tail is cut: the lamp and the sun do not set
   // the exposure
-  pub lowPercent f32 = 0.1;
-  pub highPercent f32 = 0.95;
+  pub lowPercent: f32 = 0.1;
+  pub highPercent: f32 = 0.95;
   // How fast the exposure follows (a rate per second: the share of the way
   // to the target covered in 1 / rate seconds, about): up when the scene went
   // dark (slow, as an eye is), down when it went bright
-  pub speedUp f32 = 1.;
-  pub speedDown f32 = 3.;
+  pub speedUp: f32 = 1.;
+  pub speedDown: f32 = 3.;
   // 0 meters the whole frame evenly, 1 weights the middle most
-  pub centerWeight f32 = 0.;
+  pub centerWeight: f32 = 0.;
   // The range metered, as log2 of the frame's luminance: 'minLog' to
   // 'minLog + logRange'. Darker counts as black and is not metered
-  pub minLog f32 = -10.;
-  pub logRange f32 = 18.;
+  pub minLog: f32 = -10.;
+  pub logRange: f32 = 18.;
   // Every stride-th pixel, each way, is metered (2: a quarter of them)
-  pub stride u32 = 2u32;
+  pub stride: u32 = 2u32;
 }
 
 // What the passes' immediates hold (autoexposure.slang's ExposureImmediates)
 struct ExposureImmediates {
-  width u32;
-  height u32;
-  stride u32;
-  minLog f32;
-  logRange f32;
-  centerWeight f32;
-  key f32;
-  compensationEv f32;
-  minEv f32;
-  maxEv f32;
-  lowPercent f32;
-  highPercent f32;
-  speedUp f32;
-  speedDown f32;
-  dt f32;
-  snap f32;
+  width: u32;
+  height: u32;
+  stride: u32;
+  minLog: f32;
+  logRange: f32;
+  centerWeight: f32;
+  key: f32;
+  compensationEv: f32;
+  minEv: f32;
+  maxEv: f32;
+  lowPercent: f32;
+  highPercent: f32;
+  speedUp: f32;
+  speedDown: f32;
+  dt: f32;
+  snap: f32;
 }
 
 // The exposure that makes a frame of average luminance 'average' a middle
 // grey 'key', 'compensationEv' stops brighter: the formula the pass
 // implements, key / average x 2^compensation
-pub fn exposureFor(average f32, key f32, compensationEv f32) f32 {
+pub fn exposureFor(average: f32, key: f32, compensationEv: f32) f32 {
   key / average * libc.powf(2., compensationEv)
 }
 
 pub struct ExposurePass {
-  pub shader ShaderModule;
-  pub layout BindGroupLayout;
-  pub pipelineLayout PipelineLayout;
-  pub histogramPipeline ComputePipeline;
-  pub resolvePipeline ComputePipeline;
-  pub histogram Buffer;            // 256 words
-  pub groups List[BindGroup];      // one for each frame it may meter (ImageFx's sources)
-  pub snap bool;                   // the next frame jumps to the target
+  pub shader: ShaderModule;
+  pub layout: BindGroupLayout;
+  pub pipelineLayout: PipelineLayout;
+  pub histogramPipeline: ComputePipeline;
+  pub resolvePipeline: ComputePipeline;
+  pub histogram: Buffer;            // 256 words
+  pub groups: List[BindGroup];      // one for each frame it may meter (ImageFx's sources)
+  pub snap: bool;                   // the next frame jumps to the target
 
-  pub fn create(device &mut Device) ExposurePass {
+  pub fn create(device: &mut Device) ExposurePass {
     var shader = device.createShaderModule(&AUTOEXPOSURE_SPIRV);
     let entries = [new BindGroupLayoutEntry(binding: 1u32, visibility: SHADER_STAGE_COMPUTE, kind: BINDING_KIND_TEXTURE),
       new BindGroupLayoutEntry(binding: 2u32, visibility: SHADER_STAGE_COMPUTE, bufferType: BUFFER_BINDING_TYPE_STORAGE),
@@ -98,10 +98,10 @@ pub struct ExposurePass {
     new ExposurePass(shader, layout, pipelineLayout, histogramPipeline, resolvePipeline, histogram, List[BindGroup].empty(), true)
   }
 
-  pub fn isValid(self &) bool { histogramPipeline.isValid() && resolvePipeline.isValid() && histogram.isValid() }
+  pub fn isValid(self: &) bool { histogramPipeline.isValid() && resolvePipeline.isValid() && histogram.isValid() }
 
   // A group that meters the frame 'view' and writes the exposure to 'out'
-  pub fn addSource(self &mut, device &mut Device, view &TextureView, out &Buffer) {
+  pub fn addSource(self: &mut, device: &mut Device, view: &TextureView, out: &Buffer) {
     let groupEntries = [BindGroupEntry.texture(1u32, view), BindGroupEntry.buffer(2u32, &histogram),
       BindGroupEntry.buffer(3u32, out)];
     groups.push(device.createBindGroup(&layout, &groupEntries));
@@ -109,8 +109,8 @@ pub struct ExposurePass {
 
   // Meter the frame group 'source' names (a frame of 'width' by 'height') and
   // adapt the exposure: 'dt' seconds since the last frame
-  pub fn record(self &mut, device &mut Device, encoder &mut CommandEncoder, s &ExposureSettings, source u32, width u32,
-      height u32, dt f32) {
+  pub fn record(self: &mut, device: &mut Device, encoder: &mut CommandEncoder, s: &ExposureSettings, source: u32, width: u32,
+      height: u32, dt: f32) {
     device.queue.clearBuffer(&histogram, 0u64, 1024u64);
     let data = new ExposureImmediates(width, height, s.stride, s.minLog, s.logRange, s.centerWeight, s.key,
       s.compensationEv, s.minEv, s.maxEv, s.lowPercent, s.highPercent, s.speedUp, s.speedDown, dt,
@@ -132,7 +132,7 @@ pub struct ExposurePass {
 
 // spirv-begin autoexposure.spv AUTOEXPOSURE_SPIRV
 // Written by tools/shaders/shaders.py from autoexposure.slang (sha256 1cebef64daf174e482726154b119c873a5543247bd59acbf429280b2349d436c): do not edit.
-let AUTOEXPOSURE_SPIRV Array[u32, 2073] = [
+let AUTOEXPOSURE_SPIRV: Array[u32, 2073] = [
   0x07230203u32, 0x00010500u32, 0x00280000u32, 0x0000018cu32, 0x00000000u32, 0x00020011u32,
   0x00000001u32, 0x000b000au32, 0x5f565053u32, 0x5f52484bu32, 0x726f7473u32, 0x5f656761u32,
   0x66667562u32, 0x735f7265u32, 0x61726f74u32, 0x635f6567u32, 0x7373616cu32, 0x00000000u32,

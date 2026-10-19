@@ -65,37 +65,37 @@ import path;
 // ---- The numbers ----
 
 const SEED = 1783u32;               // the Montgolfiers' year
-const BULGE f32 = 0.045;            // a gore's bulge, per unit of radius
-const TAPE f32 = 2.;                // the load tapes' crease (sharp for two levels)
+const BULGE: f32 = 0.045;            // a gore's bulge, per unit of radius
+const TAPE: f32 = 2.;                // the load tapes' crease (sharp for two levels)
 const LEVELS = 2u32;
 // Paint, sRGB: navy, blue, teal, yellow, red, purple, white, orange, green
-let PAINT Array[f32, 27] = [0.13, 0.15, 0.40, 0.16, 0.34, 0.78, 0.02, 0.60, 0.58, 0.98, 0.86, 0.06,
+let PAINT: Array[f32, 27] = [0.13, 0.15, 0.40, 0.16, 0.34, 0.78, 0.02, 0.60, 0.58, 0.98, 0.86, 0.06,
   0.90, 0.10, 0.08, 0.50, 0.24, 0.74, 0.95, 0.95, 0.92, 0.98, 0.50, 0.06, 0.20, 0.62, 0.20];
 // Each mesh's meshHash: the envelope's levels, the skirt, the rig, the cables, the basket
-let PINNED Array[u32, 6] = [0x7edd6b2du32, 0xd33e9cfbu32, 0x1b592a19u32, 0xf52cf280u32, 0x6ce3bffeu32, 0xcec90de7u32];
-let PARTS Array[&str, 6] = ["envelope-l0", "envelope-l1", "envelope-l2", "skirt", "rig", "basket"];
+let PINNED: Array[u32, 6] = [0x7edd6b2du32, 0xd33e9cfbu32, 0x1b592a19u32, 0xf52cf280u32, 0x6ce3bffeu32, 0xcec90de7u32];
+let PARTS: Array[&str, 6] = ["envelope-l0", "envelope-l1", "envelope-l2", "skirt", "rig", "basket"];
 const WIDTH = 1920u32;
 const HEIGHT = 1080u32;
 
-fn v(x f32, y f32, z f32) Vec3 { new Vec3(x, y, z) }
-fn p2(x f32, y f32) Vec2 { new Vec2(x, y) }
-fn fract(x f32) f32 { x - libc.floorf(x) }
-fn tri(x f32) f32 { libc.fabsf(2. * fract(x) - 1.) }
+fn v(x: f32, y: f32, z: f32) Vec3 { new Vec3(x, y, z) }
+fn p2(x: f32, y: f32) Vec2 { new Vec2(x, y) }
+fn fract(x: f32) f32 { x - libc.floorf(x) }
+fn tri(x: f32) f32 { libc.fabsf(2. * fract(x) - 1.) }
 fn up() Vec3 { v(0., 1., 0.) }
 
 // ---- What differs between balloons ----
 
 struct Look {
-  pub gores u32;            // a multiple of 4: the cables gather at the frame's four corners
-  pub pattern u32;          // 0 chevrons, 1 stepped diagonals, 2 gore stripes with a band
-  pub paint Array[u32, 6];  // indices into PAINT
-  pub fat f32;              // the envelope's width, 1 as photographed
-  pub skirt u32;            // the skirt's paint
+  pub gores: u32;            // a multiple of 4: the cables gather at the frame's four corners
+  pub pattern: u32;          // 0 chevrons, 1 stepped diagonals, 2 gore stripes with a band
+  pub paint: Array[u32, 6];  // indices into PAINT
+  pub fat: f32;              // the envelope's width, 1 as photographed
+  pub skirt: u32;            // the skirt's paint
 
   // A balloon from a seed: its gores, pattern, paints and width
-  pub fn seeded(seed u32) Look {
+  pub fn seeded(seed: u32) Look {
     let h = noise.hash2(1, 0, seed);
-    var paint Array[u32, 6] = [0u32, 0u32, 0u32, 0u32, 0u32, 0u32];
+    var paint: Array[u32, 6] = [0u32, 0u32, 0u32, 0u32, 0u32, 0u32];
     var i = 0usize;
     var last = 99u32;
     while i < 6usize {
@@ -116,7 +116,7 @@ fn diagonals() Look { new Look(24u32, 1u32, [4u32, 3u32, 2u32, 1u32, 5u32, 4u32]
 // ---- The envelope ----
 
 // A gore's panel colour at (u, v) of the lathe's uv: u around, v up from the mouth
-fn paintAt(look &Look, u f32, vv f32) u32 {
+fn paintAt(look: &Look, u: f32, vv: f32) u32 {
   let gores = f32.from(look.gores);
   let g = u32.from(libc.floorf(u * gores));
   if look.pattern == 0u32 {
@@ -125,7 +125,7 @@ fn paintAt(look &Look, u f32, vv f32) u32 {
     if vv < 0.3 { return look.paint[usize.from(g % 3u32)]; }
     if vv > 0.84 { return look.paint[usize.from((g + 1u32) % 3u32)]; }
     let b = u32.from(libc.floorf((vv - 0.3) * 8. + 1.4 * tri(u * gores / 4. + 0.5)));
-    let cycle Array[usize, 4] = [3usize, 4usize, 3usize, 5usize];
+    let cycle: Array[usize, 4] = [3usize, 4usize, 3usize, 5usize];
     return look.paint[cycle[usize.from(b % 4u32)]];
   }
   if look.pattern == 1u32 {
@@ -142,7 +142,7 @@ fn paintAt(look &Look, u f32, vv f32) u32 {
 // The envelope's paint as an image: 'texels' a gore across and 32 times
 // that up, each texel the mean of 2 x 2 samples (so the chevrons' edges are
 // smooth), the load tapes a darker strip a sixteenth of a gore wide
-fn envelopeImage(look &Look, texels i32) Image {
+fn envelopeImage(look: &Look, texels: i32) Image {
   let w = i32.from(look.gores) * texels;
   let h = 32 * texels;
   var img = new Image(w, h, 3, List[u8].withCapacity(usize.from(w * h * 3)));
@@ -151,7 +151,7 @@ fn envelopeImage(look &Look, texels i32) Image {
     var x = 0;
     while x < w {
       let shade = if x % texels < (texels + 15) / 16 { 0.75f } else { 1. };
-      var sum Array[f32, 3] = [0., 0., 0.];
+      var sum: Array[f32, 3] = [0., 0., 0.];
       var s = 0;
       while s < 4 {
         let u = (f32.from(x) + 0.25 + 0.5 * f32.from(s % 2)) / f32.from(w);
@@ -175,7 +175,7 @@ fn envelopeImage(look &Look, texels i32) Image {
 
 // The envelope's cage: the profile lathed, each gore puffed out between its
 // tapes, the tapes creased
-fn envelopeCage(look &Look) mesh.PolyMesh {
+fn envelopeCage(look: &Look) mesh.PolyMesh {
   let f = look.fat;
   let curve = new CubicBezier2(p2(0.24, 0.), p2(0.95 * f, 0.62), p2(1.5 * f, 2.3), p2(0., 2.2));
   let profile = Profile.fromCubic(curve, 24u32);
@@ -206,8 +206,8 @@ fn envelopeCage(look &Look) mesh.PolyMesh {
 }
 
 // The skirt below the mouth, a little narrower at its foot
-fn skirt(look &Look) mesh.PolyMesh {
-  let pts Array[Vec2, 3] = [p2(0.2, -0.15), p2(0.225, -0.07), p2(0.24, 0.)];
+fn skirt(look: &Look) mesh.PolyMesh {
+  let pts: Array[Vec2, 3] = [p2(0.2, -0.15), p2(0.225, -0.07), p2(0.24, 0.)];
   let profile = Profile.fromPoints(&pts, false);
   let s = lathe(&profile, up(), 2. * pi, look.gores * 2u32);
   solidify(&s, 0.006, 0., false, true)
@@ -215,21 +215,21 @@ fn skirt(look &Look) mesh.PolyMesh {
 
 // ---- The rig: burner frame, burner, cables ----
 
-const RING f32 = 0.07;              // the frame's corners from the axis
-const RING_Y f32 = -0.40;
-const TOP_Y f32 = -0.46;            // the basket's rim
-const BASKET f32 = 0.13;            // the basket's corners from the axis
+const RING: f32 = 0.07;              // the frame's corners from the axis
+const RING_Y: f32 = -0.40;
+const TOP_Y: f32 = -0.46;            // the basket's rim
+const BASKET: f32 = 0.13;            // the basket's corners from the axis
 
 // The frame and the burner: steel
 fn frame() mesh.Mesh {
-  let corners Array[Vec3, 4] = [v(RING, RING_Y, 0.), v(0., RING_Y, 0. - RING), v(0. - RING, RING_Y, 0.), v(0., RING_Y, RING)];
+  let corners: Array[Vec3, 4] = [v(RING, RING_Y, 0.), v(0., RING_Y, 0. - RING), v(0. - RING, RING_Y, 0.), v(0., RING_Y, RING)];
   let square = Path.fromPoints(&corners, true);
   let tube = Profile.polygon(6u32, 0.006);
   let ring = sweep(&tube, &square, 0., 1., 1., false);
   let postLine = Path.line(v(BASKET - 0.008, TOP_Y, 0.), v(RING, RING_Y, 0.), 1u32);
   let post = sweep(&tube, &postLine, 0., 1., 1., false);
   let posts = arrayRadial(&post, 4u32, up(), 2. * pi, v(0., 0., 0.), -1.);
-  let can Array[Vec2, 5] = [p2(0., RING_Y - 0.01), p2(0.035, RING_Y - 0.01), p2(0.035, RING_Y + 0.05),
+  let can: Array[Vec2, 5] = [p2(0., RING_Y - 0.01), p2(0.035, RING_Y - 0.01), p2(0.035, RING_Y + 0.05),
     p2(0.024, RING_Y + 0.07), p2(0., RING_Y + 0.07)];
   let canProfile = Profile.fromPoints(&can, false);
   let burner = lathe(&canProfile, up(), 2. * pi, 16u32);
@@ -242,7 +242,7 @@ fn frame() mesh.Mesh {
 }
 
 // The cables: from the foot of each load tape to the frame's nearest corner
-fn cables(look &Look) mesh.Mesh {
+fn cables(look: &Look) mesh.Mesh {
   let g = i32.from(look.gores);
   let wire = Profile.polygon(3u32, 0.0016);
   var quarter = mesh.Mesh.empty();
@@ -271,7 +271,7 @@ fn cables(look &Look) mesh.Mesh {
 
 // Floor, outer wall, rim, inner wall, inner floor: lathed in 4 steps
 fn basketProfile() Profile {
-  let pts Array[Vec2, 6] = [p2(0., TOP_Y - 0.16), p2(BASKET, TOP_Y - 0.16), p2(BASKET, TOP_Y), p2(BASKET - 0.014, TOP_Y),
+  let pts: Array[Vec2, 6] = [p2(0., TOP_Y - 0.16), p2(BASKET, TOP_Y - 0.16), p2(BASKET, TOP_Y), p2(BASKET - 0.014, TOP_Y),
     p2(BASKET - 0.014, TOP_Y - 0.14), p2(0., TOP_Y - 0.14)];
   Profile.fromPoints(&pts, false)
 }
@@ -304,7 +304,7 @@ fn wickerImage() Image {
       let j = i32.from(libc.floorf(cy));
       let strand = if (i + j) % 2 == 0 { sin(pi * fract(cy)) } else { sin(pi * fract(cx)) };
       var shade = (0.45 + 0.55 * strand) * (1. + 0.12 * noise.toSigned(noise.hash2(i, j, SEED).x));
-      var c Array[f32, 3] = [0.80, 0.52, 0.26];
+      var c: Array[f32, 3] = [0.80, 0.52, 0.26];
       if vv > rimFrom - 0.01 && vv < rimTo + 0.01 { c = [0.30, 0.16, 0.08]; shade = 1.; }
       var k = 0usize;
       while k < 3usize {
@@ -321,7 +321,7 @@ fn wickerImage() Image {
 
 // ---- Arguments ----
 
-fn cstrEquals(a *u8, b &str) bool {
+fn cstrEquals(a: *u8, b: &str) bool {
   var i = 0usize;
   while i < b.len() {
     if *(a + i) != b[i] { return false; }
@@ -330,7 +330,7 @@ fn cstrEquals(a *u8, b &str) bool {
   *(a + b.len()) == 0u8
 }
 
-fn appendCstr(s &mut String, c *u8) {
+fn appendCstr(s: &mut String, c: *u8) {
   var i = 0usize;
   while *(c + i) != 0u8 {
     s.appendByte(*(c + i));
@@ -338,14 +338,14 @@ fn appendCstr(s &mut String, c *u8) {
   }
 }
 
-fn named(prefix &String, suffix &str) String {
+fn named(prefix: &String, suffix: &str) String {
   var s = prefix.copy();
   s <- suffix;
   s
 }
 
 // One mesh's counts and hash against the pinned one; written as .obj if asked
-fn report(m &mesh.Mesh, part usize, objPrefix &String) bool {
+fn report(m: &mesh.Mesh, part: usize, objPrefix: &String) bool {
   let h = mesh.meshHash(m);
   printStr(PARTS[part]); print <- ": "; print <- m.vertexCount(); print <- " vertices, ";
   print <- m.triangleCount(); print <- " triangles; hash ";
@@ -368,14 +368,14 @@ fn report(m &mesh.Mesh, part usize, objPrefix &String) bool {
 
 // One balloon on the GPU: its envelope (finest level) and paint
 struct Drawn {
-  pub envelope MeshHandle;
-  pub skirt MeshHandle;
-  pub cables MeshHandle;
-  pub paint MaterialHandle;
-  pub skirtPaint MaterialHandle;
+  pub envelope: MeshHandle;
+  pub skirt: MeshHandle;
+  pub cables: MeshHandle;
+  pub paint: MaterialHandle;
+  pub skirtPaint: MaterialHandle;
 }
 
-fn upload(renderer &mut Renderer, device &mut Device, look &Look, levels u32) Drawn {
+fn upload(renderer: &mut Renderer, device: &mut Device, look: &Look, levels: u32) Drawn {
   let cage = envelopeCage(look);
   let fine = subdivide(&cage, levels);
   let env = fine.triangulate(true);
@@ -394,22 +394,22 @@ fn upload(renderer &mut Renderer, device &mut Device, look &Look, levels u32) Dr
 
 // What every balloon draws alike
 struct Shared {
-  pub frame MeshHandle;
-  pub basket MeshHandle;
-  pub head MeshHandle;
-  pub rope MaterialHandle;
-  pub steel MaterialHandle;
-  pub wicker MaterialHandle;
-  pub cloth MaterialHandle;
+  pub frame: MeshHandle;
+  pub basket: MeshHandle;
+  pub head: MeshHandle;
+  pub rope: MaterialHandle;
+  pub steel: MaterialHandle;
+  pub wicker: MaterialHandle;
+  pub cloth: MaterialHandle;
 }
 
-fn addBalloon(list &mut DrawList, d &Drawn, s &Shared, at Mat4, size f32) {
+fn addBalloon(list: &mut DrawList, d: &Drawn, s: &Shared, at: Mat4, size: f32) {
   list.add(d.envelope, d.paint, at);
   list.add(d.skirt, d.skirtPaint, at);
   list.add(d.cables, s.rope, at);
   list.add(s.frame, s.steel, at);
   list.add(s.basket, s.wicker, at);
-  let heads Array[f32, 4] = [0.04, 0.02, -0.035, -0.03];
+  let heads: Array[f32, 4] = [0.04, 0.02, -0.035, -0.03];
   var k = 0usize;
   while k < 2usize {
     let hp = at * v(heads[k * 2usize], TOP_Y + 0.035, heads[k * 2usize + 1usize]);
@@ -418,7 +418,7 @@ fn addBalloon(list &mut DrawList, d &Drawn, s &Shared, at Mat4, size f32) {
   }
 }
 
-fn main(argc i32, argv **u8) i32 {
+fn main(argc: i32, argv: **u8) i32 {
   var shots = String.empty();
   shots <- "balloon";
   var objPrefix = String.empty();
@@ -519,7 +519,7 @@ fn main(argc i32, argv **u8) i32 {
   var places = List[Vec4].empty();
   places.push(new Vec4(-6., 0., 0., 9.));
   places.push(new Vec4(14., 8., -12., 9.4));
-  let family Array[f32, 24] = [-48., 20., -90., 8.5, 40., -12., -70., 9.5, -12., 38., -150., 10., 85., 26., -160., 9.,
+  let family: Array[f32, 24] = [-48., 20., -90., 8.5, 40., -12., -70., 9.5, -12., 38., -150., 10., 85., 26., -160., 9.,
     -110., -6., -120., 8.8, 20., 60., -260., 9.6];
   var i = 0usize;
   while i < 6usize {
@@ -558,9 +558,9 @@ fn main(argc i32, argv **u8) i32 {
   camera.fov = radians(40.);
   camera.near = 0.5;
   camera.far = 2000.;
-  let names Array[&str, 3] = ["-pair.bmp", "-close.bmp", "-family.bmp"];
-  let eyes Array[Vec3, 3] = [v(3., -18., 44.), v(-16., -6., 13.), v(10., -8., 90.)];
-  let targets Array[Vec3, 3] = [v(4., 10., 0.), v(-6., -0.5, 0.), v(0., 10., -80.)];
+  let names: Array[&str, 3] = ["-pair.bmp", "-close.bmp", "-family.bmp"];
+  let eyes: Array[Vec3, 3] = [v(3., -18., 44.), v(-16., -6., 13.), v(10., -8., 90.)];
+  let targets: Array[Vec3, 3] = [v(4., 10., 0.), v(-6., -0.5, 0.), v(0., 10., -80.)];
   var s = 0usize;
   while s < 3usize {
     camera.lookAt(eyes[s], targets[s], up());

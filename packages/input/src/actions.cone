@@ -23,71 +23,71 @@ const SOURCE_WHEEL = 3;            // the wheel
 
 // An action of a Context, as 'action' made it
 pub struct Action {
-  pub index usize;
+  pub index: usize;
 }
 
 // An action's value this frame
 pub struct ActionValue {
-  pub down bool;          // a button, or any axis binding a key or button: held
-  pub pressed bool;       // it went down this frame
-  pub released bool;      // it went up this frame
-  pub x f32;              // an axis: the sum of what its bindings give
-  pub y f32;
-  pub timestamp u64;      // the latest event that fed it this frame; 0 if none
+  pub down: bool;          // a button, or any axis binding a key or button: held
+  pub pressed: bool;       // it went down this frame
+  pub released: bool;      // it went up this frame
+  pub x: f32;              // an axis: the sum of what its bindings give
+  pub y: f32;
+  pub timestamp: u64;      // the latest event that fed it this frame; 0 if none
 
   pub fn zero() ActionValue { new ActionValue(false, false, false, 0., 0., 0u64) }
 }
 
 // Where an action's value comes from, and how much of it
 pub struct Binding {
-  pub source i32;
-  pub code u32;     // a key's scancode, or a mouse button (sdl.BUTTON_...)
-  pub x f32;        // a key or button held gives an axis (x, y); the pointer
-  pub y f32;        // and the wheel are scaled by x (and y)
-  pub held u32;     // the pointer's movement counts only while these buttons are held
+  pub source: i32;
+  pub code: u32;     // a key's scancode, or a mouse button (sdl.BUTTON_...)
+  pub x: f32;        // a key or button held gives an axis (x, y); the pointer
+  pub y: f32;        // and the wheel are scaled by x (and y)
+  pub held: u32;     // the pointer's movement counts only while these buttons are held
 
   // The key at 'scancode' (sdl.SCANCODE_...): a button, or 1 on an axis
-  pub fn key(scancode u32) Binding { new Binding(SOURCE_KEY, scancode, 1., 0., 0u) }
+  pub fn key(scancode: u32) Binding { new Binding(SOURCE_KEY, scancode, 1., 0., 0u) }
 
   // The key at 'scancode', held, giving ('x', 'y') to an axis: W as (0, 1)
   // and S as (0, -1) on a two-axis 'move'
-  pub fn keyAxis(scancode u32, x f32, y f32) Binding { new Binding(SOURCE_KEY, scancode, x, y, 0u) }
+  pub fn keyAxis(scancode: u32, x: f32, y: f32) Binding { new Binding(SOURCE_KEY, scancode, x, y, 0u) }
 
   // A mouse button (sdl.BUTTON_...): a button, or 1 on an axis
-  pub fn mouseButton(button u8) Binding { new Binding(SOURCE_MOUSE_BUTTON, u32.from(button), 1., 0., 0u) }
+  pub fn mouseButton(button: u8) Binding { new Binding(SOURCE_MOUSE_BUTTON, u32.from(button), 1., 0., 0u) }
 
   // The pointer's movement this frame, in window units times 'scale' (on
   // one axis, its horizontal movement)
-  pub fn pointerDelta(scale f32) Binding { new Binding(SOURCE_POINTER_DELTA, 0u, scale, scale, 0u) }
+  pub fn pointerDelta(scale: f32) Binding { new Binding(SOURCE_POINTER_DELTA, 0u, scale, scale, 0u) }
 
   // The wheel this frame, in notches times 'scale' (on one axis, its turn
   // away from the user)
-  pub fn wheel(scale f32) Binding { new Binding(SOURCE_WHEEL, 0u, scale, scale, 0u) }
+  pub fn wheel(scale: f32) Binding { new Binding(SOURCE_WHEEL, 0u, scale, scale, 0u) }
 
   // The same, counting the pointer's movement only while every button of
   // 'buttons' (sdl.BUTTON_MASK_...) is held: a drag
-  pub fn whileHeld(self, buttons u32) Binding { new Binding(source, code, x, y, buttons) }
+  pub fn whileHeld(self, buttons: u32) Binding { new Binding(source, code, x, y, buttons) }
 }
 
 // An action's state
 struct ActionSlot {
-  kind i32;
-  enabled bool;
-  value ActionValue;
+  kind: i32;
+  enabled: bool;
+  value: ActionValue;
 }
 
 // A binding of an action
 struct BindingSlot {
-  action usize;
-  binding Binding;
+  action: usize;
+  binding: Binding;
 }
 
 // The actions, their bindings, and their values this frame
 pub struct Context {
-  names List[String];
-  actions List[ActionSlot];
-  bindings List[BindingSlot];
-  fedStamps List[u64];      // this frame: the timestamps of the events that fed an action
+  names: List[String];
+  actions: List[ActionSlot];
+  bindings: List[BindingSlot];
+  fedStamps: List[u64];      // this frame: the timestamps of the events that fed an action
 
   pub fn empty() Context {
     new Context(List[String].empty(), List[ActionSlot].empty(), List[BindingSlot].empty(), List[u64].empty())
@@ -95,7 +95,7 @@ pub struct Context {
 
   // A new action named 'name', of value type 'kind' (BUTTON, AXIS1, AXIS2),
   // with no bindings yet
-  pub fn action(self &mut, name &str, kind i32) Action {
+  pub fn action(self: &mut, name: &str, kind: i32) Action {
     assertDebug(kind == BUTTON || kind == AXIS1 || kind == AXIS2);
     names.push(String.from(name));
     actions.push(new ActionSlot(kind, true, ActionValue.zero()));
@@ -103,13 +103,13 @@ pub struct Context {
   }
 
   // Bind 'action' to 'binding' as well as to what it is bound to already
-  pub fn bind(self &mut, action Action, binding Binding) {
+  pub fn bind(self: &mut, action: Action, binding: Binding) {
     assertDebug(action.index < actions.len());
     bindings.push(new BindingSlot(action.index, binding));
   }
 
   // The action named 'name': one made by 'action', or it panics
-  pub fn named(self &, name &str) Action {
+  pub fn named(self: &, name: &str) Action {
     var i = 0usize;
     while i < names.len() {
       if names[i].equals(name) { return new Action(i); }
@@ -119,23 +119,23 @@ pub struct Context {
   }
 
   // The number of actions
-  pub fn len(self &) usize { actions.len() }
+  pub fn len(self: &) usize { actions.len() }
 
   // Switch 'action' on or off. One that is off has no value and feeds on
   // nothing (a controller not in use, its keys left to another).
-  pub fn setEnabled(self &mut, action Action, on bool) {
+  pub fn setEnabled(self: &mut, action: Action, on: bool) {
     var slot = &mut actions[action.index];
     slot.enabled = on;
     if !on { slot.value = ActionValue.zero(); }
   }
 
-  pub fn isEnabled(self &, action Action) bool { actions[action.index].enabled }
+  pub fn isEnabled(self: &, action: Action) bool { actions[action.index].enabled }
 
   // Every action's value from this frame of 'input'. The pointer's
   // movement is taken event by event, each counted if the buttons its
   // binding needs were held when it came, so a drag begun and ended within
   // one frame still turns what it drags.
-  pub fn update(self &mut, input &Input) {
+  pub fn update(self: &mut, input: &Input) {
     fedStamps.clear();
     // What was held last frame, for the presses and releases
     var wasDownList = List[bool].empty();
@@ -246,22 +246,22 @@ pub struct Context {
   }
 
   // An action's value this frame
-  pub fn value(self &, action Action) ActionValue { actions[action.index].value }
+  pub fn value(self: &, action: Action) ActionValue { actions[action.index].value }
 
   // A button: held now
-  pub fn down(self &, action Action) bool { actions[action.index].value.down }
+  pub fn down(self: &, action: Action) bool { actions[action.index].value.down }
 
   // A button: pressed this frame
-  pub fn pressed(self &, action Action) bool { actions[action.index].value.pressed }
+  pub fn pressed(self: &, action: Action) bool { actions[action.index].value.pressed }
 
   // A button: released this frame
-  pub fn released(self &, action Action) bool { actions[action.index].value.released }
+  pub fn released(self: &, action: Action) bool { actions[action.index].value.released }
 
   // One axis
-  pub fn axis1(self &, action Action) f32 { actions[action.index].value.x }
+  pub fn axis1(self: &, action: Action) f32 { actions[action.index].value.x }
 
   // Two axes
-  pub fn axis2(self &, action Action) Vec2 {
+  pub fn axis2(self: &, action: Action) Vec2 {
     let v = actions[action.index].value;
     new Vec2(v.x, v.y)
   }
@@ -269,5 +269,5 @@ pub struct Context {
   // The timestamps of this frame's events that fed an enabled action, in
   // the order they came (each once, however many actions it fed): the
   // events whose effect this frame shows
-  pub fn fed(self &) &Array[u64] { fedStamps.view() }
+  pub fn fed(self: &) &Array[u64] { fedStamps.view() }
 }

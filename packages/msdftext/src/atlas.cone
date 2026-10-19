@@ -9,11 +9,11 @@
 
 // Atlas settings
 pub struct AtlasConfig {
-  pub emPx f64;              // texels to the em
-  pub pxRange f64;           // the whole width of distances a field holds, in texels
-  pub width u32;
-  pub height u32;
-  pub cornerAngle f64;       // radians: a turn beyond this is a corner (msdfgen's default 3)
+  pub emPx: f64;              // texels to the em
+  pub pxRange: f64;           // the whole width of distances a field holds, in texels
+  pub width: u32;
+  pub height: u32;
+  pub cornerAngle: f64;       // radians: a turn beyond this is a corner (msdfgen's default 3)
 
   pub fn standard() AtlasConfig { new AtlasConfig(48.0, 6.0, 1024u32, 1024u32, 3.0) }
 }
@@ -22,45 +22,45 @@ pub struct AtlasConfig {
 // the pen position on the baseline, y up, and holds the glyph with the margin
 // the field's range needs; its uv is the cell.
 pub struct GlyphEntry {
-  pub glyph u32;
-  pub empty bool;            // no outline (a space): nothing to draw
-  pub x u32;
-  pub y u32;
-  pub w u32;
-  pub h u32;
-  pub u0 f32;
-  pub v0 f32;
-  pub u1 f32;
-  pub v1 f32;
-  pub left f32;
-  pub bottom f32;
-  pub right f32;
-  pub top f32;
-  pub advance f32;           // ems
+  pub glyph: u32;
+  pub empty: bool;            // no outline (a space): nothing to draw
+  pub x: u32;
+  pub y: u32;
+  pub w: u32;
+  pub h: u32;
+  pub u0: f32;
+  pub v0: f32;
+  pub u1: f32;
+  pub v1: f32;
+  pub left: f32;
+  pub bottom: f32;
+  pub right: f32;
+  pub top: f32;
+  pub advance: f32;           // ems
 }
 
 struct SkyNode {
-  x u32;
-  y u32;
-  w u32;
+  x: u32;
+  y: u32;
+  w: u32;
 }
 
 // A skyline bottom-left packer: Jukka Jylanki's "A Thousand Ways to Pack the
 // Bin" (2010), the skyline bottom-left variant, as in stb_rect_pack.
 // Rectangles are placed where the skyline is lowest.
 pub struct SkylinePacker {
-  pub width u32;
-  pub height u32;
-  nodes List[SkyNode];
+  pub width: u32;
+  pub height: u32;
+  nodes: List[SkyNode];
 
-  pub fn make(width u32, height u32) SkylinePacker {
+  pub fn make(width: u32, height: u32) SkylinePacker {
     var nodes = List[SkyNode].empty();
     nodes.push(new SkyNode(0u32, 0u32, width));
     new SkylinePacker(width, height, nodes)
   }
 
   // The y a w x h rectangle would rest at starting at node i, or the height of the bin plus one if it does not fit
-  fn fitAt(self &, i usize, w u32, h u32) u32 {
+  fn fitAt(self: &, i: usize, w: u32, h: u32) u32 {
     let n = *nodes[i];
     if n.x + w > width { return height + 1u32; }
     var y = n.y;
@@ -78,7 +78,7 @@ pub struct SkylinePacker {
   }
 
   // Place a w x h rectangle; false if there is no room. Its corner is left in 'px', 'py'.
-  pub fn pack(self &mut, w u32, h u32, px &mut u32, py &mut u32) bool {
+  pub fn pack(self: &mut, w: u32, h: u32, px: &mut u32, py: &mut u32) bool {
     var bestI = nodes.len();
     var bestTop = height + 1u32;
     var bestW = width + 1u32;
@@ -137,17 +137,17 @@ pub struct SkylinePacker {
 }
 
 pub struct Atlas {
-  pub config AtlasConfig;
-  pub pixels List[u8];             // RGBA8, width x height, row 0 the top
-  pub entries List[GlyphEntry];
-  slots List[i32];                 // by glyph number: index into entries, -1 not made, -2 made but full
-  packer SkylinePacker;
-  pub version u32;                 // counts changes to 'pixels'
-  pub generated u32;               // glyph fields generated
-  pub fixedTexels u32;             // texels error correction replaced
-  pub resolved u32;                // glyphs whose overlapping contours were resolved to their boundary
+  pub config: AtlasConfig;
+  pub pixels: List[u8];             // RGBA8, width x height, row 0 the top
+  pub entries: List[GlyphEntry];
+  slots: List[i32];                 // by glyph number: index into entries, -1 not made, -2 made but full
+  packer: SkylinePacker;
+  pub version: u32;                 // counts changes to 'pixels'
+  pub generated: u32;               // glyph fields generated
+  pub fixedTexels: u32;             // texels error correction replaced
+  pub resolved: u32;                // glyphs whose overlapping contours were resolved to their boundary
 
-  pub fn create(config AtlasConfig) Atlas {
+  pub fn create(config: AtlasConfig) Atlas {
     var pixels = List[u8].withCapacity(usize.from(config.width * config.height * 4u32));
     var i = 0usize;
     // Opaque black: outside (all channels 0)
@@ -163,7 +163,7 @@ pub struct Atlas {
   }
 
   // The entry for 'glyph' of 'font', generated if it is new. -1 if the atlas is full.
-  pub fn ensure(self &mut, font &Font, glyph u32) i32 {
+  pub fn ensure(self: &mut, font: &Font, glyph: u32) i32 {
     if slots.len() == 0usize {
       var i = 0u32;
       while i < font.glyphCount { slots.push(-1i32); i = i + 1u32; }
@@ -177,9 +177,9 @@ pub struct Atlas {
   }
 
   // The entry at index 'i' of a successful ensure
-  pub fn entry(self &, i i32) GlyphEntry { *entries[usize.from(u32.from(i))] }
+  pub fn entry(self: &, i: i32) GlyphEntry { *entries[usize.from(u32.from(i))] }
 
-  fn generate(self &mut, font &Font, glyph u32) i32 {
+  fn generate(self: &mut, font: &Font, glyph: u32) i32 {
     let em = f64.from(font.unitsPerEm);
     let advance = f32.from(f64.from(font.advance(glyph)) / em);
     let o = font.outline(glyph);

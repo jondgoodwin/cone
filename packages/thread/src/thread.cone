@@ -205,51 +205,51 @@ import time;
 // A thread's entry, as '_beginthreadex' calls it: its argument, and the exit
 // code. POSIX's 'pthread_create' takes the same function, returning a pointer
 // whose value nothing reads (the thread is joined for its end alone)
-alias Entry = &fn @c (arg *u8) u32;
+alias Entry = &fn @c (arg: *u8) u32;
 
-extern fn @c _beginthreadex(security *u8, stack u32, entry Entry, arg *u8, flags u32, id *u32) usize;
+extern fn @c _beginthreadex(security: *u8, stack: u32, entry: Entry, arg: *u8, flags: u32, id: *u32) usize;
 
 extern {
-  fn @c(system) WaitForSingleObject(handle usize, ms u32) u32;
-  fn @c(system) CloseHandle(handle usize) i32;
+  fn @c(system) WaitForSingleObject(handle: usize, ms: u32) u32;
+  fn @c(system) CloseHandle(handle: usize) i32;
   fn @c(system) GetCurrentThreadId() u32;
   fn @c(system) SwitchToThread() i32;
-  fn @c(system) Sleep(ms u32);
-  fn @c(system) GetActiveProcessorCount(group u16) u32;
-  fn @c(system) CreateWaitableTimerExW(attrs *u8, name *u16, flags u32, access u32) usize;
-  fn @c(system) SetWaitableTimer(timer usize, due *i64, period i32, routine *u8, arg *u8, resume i32) i32;
+  fn @c(system) Sleep(ms: u32);
+  fn @c(system) GetActiveProcessorCount(group: u16) u32;
+  fn @c(system) CreateWaitableTimerExW(attrs: *u8, name: *u16, flags: u32, access: u32) usize;
+  fn @c(system) SetWaitableTimer(timer: usize, due: *i64, period: i32, routine: *u8, arg: *u8, resume: i32) i32;
 }
 
 // POSIX's 'pthread_attr_t', as bytes enough for the C libraries of Linux (56)
 // and macOS (64); only 'pthread_attr_init' and the calls after it look inside
 struct PthreadAttr {
-  w0 u64;
-  w1 u64;
-  w2 u64;
-  w3 u64;
-  w4 u64;
-  w5 u64;
-  w6 u64;
-  w7 u64;
+  w0: u64;
+  w1: u64;
+  w2: u64;
+  w3: u64;
+  w4: u64;
+  w5: u64;
+  w6: u64;
+  w7: u64;
 }
 
 // POSIX's 'struct timespec' on a 64-bit system: 'time_t' and 'long' are both
 // 64 bits
 struct Timespec {
-  sec i64;
-  nsec i64;
+  sec: i64;
+  nsec: i64;
 }
 
 // A pthread_t is an integer the size of a pointer, which is what 'handle' holds
 extern {
-  fn @c pthread_create(thread *usize, attr *PthreadAttr, entry Entry, arg *u8) i32;
-  fn @c pthread_join(thread usize, result *u8) i32;
-  fn @c pthread_detach(thread usize) i32;
-  fn @c pthread_attr_init(attr *PthreadAttr) i32;
-  fn @c pthread_attr_setstacksize(attr *PthreadAttr, size usize) i32;
-  fn @c pthread_attr_destroy(attr *PthreadAttr) i32;
+  fn @c pthread_create(thread: *usize, attr: *PthreadAttr, entry: Entry, arg: *u8) i32;
+  fn @c pthread_join(thread: usize, result: *u8) i32;
+  fn @c pthread_detach(thread: usize) i32;
+  fn @c pthread_attr_init(attr: *PthreadAttr) i32;
+  fn @c pthread_attr_setstacksize(attr: *PthreadAttr, size: usize) i32;
+  fn @c pthread_attr_destroy(attr: *PthreadAttr) i32;
   fn @c sched_yield() i32;
-  fn @c nanosleep(request *Timespec, remaining *Timespec) i32;
+  fn @c nanosleep(request: *Timespec, remaining: *Timespec) i32;
   fn @c cone_threadId() u32;
   fn @c cone_processors() i32;
 }
@@ -274,7 +274,7 @@ fn osYield() {
 }
 
 // Wait for the thread to end, and let go of its handle
-fn osJoin(handle usize) {
+fn osJoin(handle: usize) {
   if isWindows() {
     WaitForSingleObject(handle, infinite);
     CloseHandle(handle);
@@ -285,7 +285,7 @@ fn osJoin(handle usize) {
 }
 
 // Let go of the thread's handle; the thread runs on alone
-fn osDetach(handle usize) {
+fn osDetach(handle: usize) {
   if isWindows() {CloseHandle(handle);} else {pthread_detach(handle);}
 }
 
@@ -294,7 +294,7 @@ fn osDetach(handle usize) {
 // ---------------------------------------------------------------------------
 
 // A panic, reported at the line calling 'die'
-fn die(msg &str, file &str = srcFile(), line u32 = srcLine()) Never {
+fn die(msg: &str, file: &str = srcFile(), line: u32 = srcLine()) Never {
   panic(msg, file, line)
 }
 
@@ -307,10 +307,10 @@ fn die(msg &str, file &str = srcFile(), line u32 = srcLine()) Never {
 // the thread itself while it runs, its handle until joined or detached, and
 // each ThreadRef. The name's bytes follow it in the same block.
 struct Info {
-  pub refs Atomic[u32];    // how many hold it
-  pub id Atomic[u32];      // the OS thread id
-  pub park Atomic[u32];    // the parking state, a futex word
-  pub nameLen u32;
+  pub refs: Atomic[u32];    // how many hold it
+  pub id: Atomic[u32];      // the OS thread id
+  pub park: Atomic[u32];    // the parking state, a futex word
+  pub nameLen: u32;
 }
 
 // The parking states: no token, a token, and a thread asleep waiting for one.
@@ -319,9 +319,9 @@ const parkEmpty = 0u32;
 const parkNotified = 1u32;
 const parkParked = 0xFFFFFFFFu32;
 
-fn infoNew(name &str, refs u32, id u32) *Info {
+fn infoNew(name: &str, refs: u32, id: u32) *Info {
   let size = mem.sizeof[Info]();
-  let nameBytes &Array[u8] = name;
+  let nameBytes: &Array[u8] = name;
   let p = libc.malloc(size + nameBytes.len) as *Info;
   if p as usize == 0usize {
     die("thread: out of memory");
@@ -336,31 +336,31 @@ fn infoNew(name &str, refs u32, id u32) *Info {
   p
 }
 
-fn infoHold(p *Info) {
+fn infoHold(p: *Info) {
   (*p).refs.addOrdered(1u32, MemOrder.Relaxed);
 }
 
-fn infoRelease(p *Info) {
+fn infoRelease(p: *Info) {
   if (*p).refs.subOrdered(1u32, MemOrder.AcqRel) == 1u32 {
     libc.free(p as *u8);
   }
 }
 
-fn infoId(p *Info) u32 {
+fn infoId(p: *Info) u32 {
   (*p).id.loadOrdered(MemOrder.Relaxed)
 }
 
 // The thread's parking word, as the futex takes it
-fn parkWord(p *Info) &Atomic[u32] {
+fn parkWord(p: *Info) &Atomic[u32] {
   &(*p).park as &Atomic[u32]
 }
 
-fn infoName(p *Info) &str {
+fn infoName(p: *Info) &str {
   mem.sliceFromParts[u8]((p as *u8) + mem.sizeof[Info](), usize.from((*p).nameLen)) as &str
 }
 
 // This thread's Info, or 0 before it has one
-var @threadlocal me usize = 0usize;
+var @threadlocal me: usize = 0usize;
 
 // This thread's Info, made the first time a thread 'start' did not begin asks
 // for it. The thread's own hold on it is never released, since nothing runs
@@ -373,7 +373,7 @@ fn mine() *Info {
 }
 
 // Make the thread's token available, waking it if it is parked
-fn unparkInfo(p *Info) {
+fn unparkInfo(p: *Info) {
   if (*p).park.swapOrdered(parkNotified, MemOrder.Release) == parkParked {
     sync.futexWake(parkWord(p));
   }
@@ -388,41 +388,41 @@ fn unparkInfo(p *Info) {
 // reaches it without knowing A). 'result' holds a value once f returns, until
 // 'join' moves it out or the last holder finalizes it.
 struct Packet[A, R] {
-  pub refs Atomic[u32];    // 2 while both thread and handle hold it
-  pub info *Info;
-  pub run &fn(p *u8) u32;  // this packet's 'entry[A, R]', which 'threadStart' calls
-  pub result R;
-  pub f &fn(a A) R;
-  pub arg A;
+  pub refs: Atomic[u32];    // 2 while both thread and handle hold it
+  pub info: *Info;
+  pub run: &fn(p: *u8) u32;  // this packet's 'entry[A, R]', which 'threadStart' calls
+  pub result: R;
+  pub f: &fn(a: A) R;
+  pub arg: A;
 }
 
 // The part of every packet that does not depend on A and R, which is where the
 // new thread finds the function to run
 struct PacketHead {
-  pub refs Atomic[u32];
-  pub info *Info;
-  pub run &fn(p *u8) u32;
+  pub refs: Atomic[u32];
+  pub info: *Info;
+  pub run: &fn(p: *u8) u32;
 }
 
 // What the operating system calls on the new thread: a C-named function, since
 // the system calls it as C does. A generic function has no one symbol for '@c'
 // to name, so the packet carries the Cone function for this A and R and this
 // calls it.
-fn @c threadStart(p *u8) u32 {
+fn @c threadStart(p: *u8) u32 {
   let run = (*(p as *PacketHead)).run;
   run(p)
 }
 
 // Let go of a packet, whatever its argument's type, since 'refs' is its first
 // field: whether this was the last hold on it
-fn packetRelease(pkt *u8) bool {
+fn packetRelease(pkt: *u8) bool {
   (pkt as &Atomic[u32]).subOrdered(1u32, MemOrder.AcqRel) == 1u32
 }
 
 // Where a new thread begins: move the argument out, call f with it, store
 // what f returns. If the handle was detached, nobody will read the result,
 // and the thread finalizes it and frees the block.
-fn entry[A, R](p *u8) u32 {
+fn entry[A, R](p: *u8) u32 {
   let pk = p as *Packet[A, R];
   enter((*pk).info);
   let f = (*pk).f;
@@ -437,7 +437,7 @@ fn entry[A, R](p *u8) u32 {
 }
 
 // The thread takes up its identity, and gives up its hold on it at the end
-fn enter(info *Info) {
+fn enter(info: *Info) {
   me = info as usize;
   (*info).id.storeOrdered(osThreadId(), MemOrder.Relaxed);
 }
@@ -453,7 +453,7 @@ fn leave() {
 // stores the same id itself, for its own 'current()'. Windows tells the
 // starter the new thread's id; POSIX does not, so there the starter waits for
 // the thread to store it, which is the first thing it does.
-fn launch(entry Entry, pkt *u8, info *Info, stackSize usize) usize {
+fn launch(entry: Entry, pkt: *u8, info: *Info, stackSize: usize) usize {
   if isWindows() {
     launchWindows(entry, pkt, info, stackSize)
   }
@@ -464,7 +464,7 @@ fn launch(entry Entry, pkt *u8, info *Info, stackSize usize) usize {
 
 // Each system's calls are a function of their own, called from the branch for
 // that system alone: on the other system it is not part of the program
-fn launchWindows(entry Entry, pkt *u8, info *Info, stackSize usize) usize {
+fn launchWindows(entry: Entry, pkt: *u8, info: *Info, stackSize: usize) usize {
   let stack = if stackSize > 0xFFFFFFFFusize {0xFFFFFFFFu32} else {u32.from(stackSize)};
   var id = 0u32;
   let handle = _beginthreadex(null, stack, entry, pkt, stackIsReservation, &mut id as *u32);
@@ -472,7 +472,7 @@ fn launchWindows(entry Entry, pkt *u8, info *Info, stackSize usize) usize {
   handle
 }
 
-fn launchPosix(entry Entry, pkt *u8, info *Info, stackSize usize) usize {
+fn launchPosix(entry: Entry, pkt: *u8, info: *Info, stackSize: usize) usize {
   var handle = 0usize;
   var result = 0i32;
   if stackSize == 0usize {
@@ -502,18 +502,18 @@ fn launchPosix(entry Entry, pkt *u8, info *Info, stackSize usize) usize {
 // How to start a thread, for 'startWith': its name, and the bytes to reserve
 // for its stack, 0 for the executable's default
 pub struct Options {
-  pub name &str = "";
-  pub stackSize usize = 0usize;
+  pub name: &str = "";
+  pub stackSize: usize = 0usize;
 }
 
 // A new thread running f(arg), with no name and the default stack. 'arg' is
 // moved in.
-pub fn start[A Sendable + 'static, R Sendable + 'static](arg A, f &fn(a A) R) Thread[R] {
+pub fn start[A: Sendable + 'static, R: Sendable + 'static](arg: A, f: &fn(a: A) R) Thread[R] {
   startWith[A, R](new Options(), arg, f)
 }
 
 // A new thread running f(arg), named and with the stack 'opts' says
-pub fn startWith[A Sendable + 'static, R Sendable + 'static](opts Options, arg A, f &fn(a A) R) Thread[R] {
+pub fn startWith[A: Sendable + 'static, R: Sendable + 'static](opts: Options, arg: A, f: &fn(a: A) R) Thread[R] {
   let pk = libc.malloc(mem.sizeof[Packet[A, R]]()) as *Packet[A, R];
   if pk as usize == 0usize {
     die("thread: out of memory");
@@ -538,12 +538,12 @@ pub fn startWith[A Sendable + 'static, R Sendable + 'static](opts Options, arg A
 // A started thread's one owner. 'handle' is the OS's handle to it, and 0 once
 // the handle has been joined or detached, which its finalizer checks.
 pub struct Thread[R] {
-  pkt *u8;
-  result *R;
-  info *Info;
-  handle usize;
+  pkt: *u8;
+  result: *R;
+  info: *Info;
+  handle: usize;
 
-  fn made(pkt *u8, result *R, info *Info, handle usize) Thread[R] {
+  fn made(pkt: *u8, result: *R, info: *Info, handle: usize) Thread[R] {
     new Thread[R](pkt, result, info, handle)
   }
 
@@ -571,18 +571,18 @@ pub struct Thread[R] {
   }
 
   // The thread's OS id, its name, and making its parking token available
-  pub fn id(self &) u32 { infoId(info) }
-  pub fn name(self &) &str { infoName(info) }
-  pub fn unpark(self &) { unparkInfo(info); }
+  pub fn id(self: &) u32 { infoId(info) }
+  pub fn name(self: &) &str { infoName(info) }
+  pub fn unpark(self: &) { unparkInfo(info); }
 
   // A ThreadRef to the thread, to hand to others
-  pub fn threadRef(self &) ThreadRef {
+  pub fn threadRef(self: &) ThreadRef {
     infoHold(info);
     ThreadRef.of(info)
   }
 
   // Dying unjoined joins, and finalizes the result nobody took
-  fn final(self &uni) {
+  fn final(self: &uni) {
     if handle != 0usize {
       osJoin(handle);
       mem.finalize[R](result);
@@ -597,22 +597,22 @@ pub struct Thread[R] {
 // ---------------------------------------------------------------------------
 
 pub struct ThreadRef is Sendable {
-  info *Info;
+  info: *Info;
 
-  fn of(info *Info) ThreadRef { new ThreadRef(info) }
+  fn of(info: *Info) ThreadRef { new ThreadRef(info) }
 
   // The thread's OS id, its name, and making its parking token available
-  pub fn id(self &) u32 { infoId(info) }
-  pub fn name(self &) &str { infoName(info) }
-  pub fn unpark(self &) { unparkInfo(info); }
+  pub fn id(self: &) u32 { infoId(info) }
+  pub fn name(self: &) &str { infoName(info) }
+  pub fn unpark(self: &) { unparkInfo(info); }
 
   // Another ThreadRef to the same thread
-  pub fn copy(self &) ThreadRef {
+  pub fn copy(self: &) ThreadRef {
     infoHold(info);
     new ThreadRef(info)
   }
 
-  fn final(self &uni) { infoRelease(info); }
+  fn final(self: &uni) { infoRelease(info); }
 }
 
 // The thread calling it
@@ -639,7 +639,7 @@ pub fn yieldNow() {
 
 // Sleep at least d, on the high resolution timer where there is one; zero or
 // less gives up the rest of the time slice
-pub fn sleep(d time.Duration) {
+pub fn sleep(d: time.Duration) {
   if d.nanos() <= 0i64 {
     if isWindows() {Sleep(0u32);} else {sched_yield();}
     return;
@@ -648,7 +648,7 @@ pub fn sleep(d time.Duration) {
   if isWindows() {sleepWindows(ns);} else {sleepPosix(ns);}
 }
 
-fn sleepWindows(ns u64) {
+fn sleepWindows(ns: u64) {
   var slept = false;
   let timer = CreateWaitableTimerExW(null, null, timerHighResolution, timerAllAccess);
   if timer != 0usize {
@@ -666,7 +666,7 @@ fn sleepWindows(ns u64) {
 }
 
 // POSIX's nanosleep, resumed for the time left when a signal ends it early
-fn sleepPosix(ns u64) {
+fn sleepPosix(ns: u64) {
   var request = new Timespec(i64.from(ns / nsPerSecond), i64.from(ns % nsPerSecond));
   var left = new Timespec(0i64, 0i64);
   while nanosleep(&mut request as *Timespec, &mut left as *Timespec) != 0i32 && *libc.errno() == eintr {
@@ -675,7 +675,7 @@ fn sleepPosix(ns u64) {
 }
 
 // Nanoseconds as whole milliseconds, rounded up, and short of INFINITE
-fn msCeil(ns u64) u32 {
+fn msCeil(ns: u64) u32 {
   let ms = ns / 1000000u64 + (if ns % 1000000u64 != 0u64 {1u64} else {0u64});
   if ms >= u64.from(infinite) {infinite - 1u32} else {u32.from(ms)}
 }

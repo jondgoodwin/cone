@@ -18,7 +18,7 @@ The file is written to the current directory as stress_<mode>_<n>.cone, or to
 import argparse
 import pathlib
 
-HEADER = ["mod stress;", "", "struct Pt { pub x i64; pub y i64; }", ""]
+HEADER = ["mod stress;", "", "struct Pt { pub x: i64; pub y: i64; }", ""]
 FUNCTIONS = 500   # functions in a 'many', 'plain', 'nest' or 'flat' file
 GROUPS = 4        # groups per function in those files
 

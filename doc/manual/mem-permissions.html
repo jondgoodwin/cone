@@ -26,7 +26,7 @@ import stdio use *;
 import collections use *;
 import thread;
 
-fn total(readings Uni[List[i64]]) i64 {
+fn total(readings: Uni[List[i64]]) i64 {
   var sum = 0i64;
   each r in readings.iter() { sum += *r; }
   sum
@@ -41,7 +41,7 @@ fn main() {
 
   // So it may move to another thread: nobody is left behind to race with it
   let worker = thread.start(readings, &amp;total);
-  let sum i64 = worker.join();
+  let sum: i64 = worker.join();
   print &lt;- "total: ", sum, "\n";
 }
 </pre>
@@ -178,7 +178,7 @@ ref2 = &amp;mut other;   // Error 1017: You do not have permission to modify lva
 		usable in every way:</p>
 <pre>
 let uniref = new Uni[i32](5);
-let bref1 &amp;mut i32 = uniref;     // the owner lends a 'mut' borrow
+let bref1: &amp;mut i32 = uniref;     // the owner lends a 'mut' borrow
 let bref2 = bref1;               // shared with another borrow
 *uniref = 6;                     // Ok: uniref is one more 'mut' alias while the borrows are to be used
 consume(uniref);                 // Error 1168: 'uniref' is borrowed mutably, and that borrow is used again
@@ -196,7 +196,7 @@ consume(uniref);                 // Ok: uniref is unique again (and the value it
 		a shared owning reference, because reading through it would copy out a second owner of a value promised
 		unique:</p>
 <pre>
-fn share(b &amp;Rc[mut, i32]) Rc[mut, i32] { *b }
+fn share(b: &amp;Rc[mut, i32]) Rc[mut, i32] { *b }
 let uniref = new Rc[i32](5);
 let other = share(&amp;uniref);     // Error 1013: a borrowed Rc[i32] is not a borrowed Rc[mut, i32]
 </pre>
@@ -207,7 +207,7 @@ let other = share(&amp;uniref);     // Error 1013: a borrowed Rc[i32] is not a b
 		may be copied:</p>
 <pre>
 let ref = new Rc[i32](5);           // a new owner: uni
-let shared Rc[mut, i32] = ref;      // moved into a shared, mutable owner
+let shared: Rc[mut, i32] = ref;      // moved into a shared, mutable owner
 let also = shared;                  // two owners of the same value
 *also = 7;                          // either may change it
 *ref;                               // Error 1048: This variable's value has been moved out.
@@ -216,7 +216,7 @@ let also = shared;                  // two owners of the same value
 		nor a <span class="pre">mut</span> one <span class="pre">imm</span>: as <span class="pre">mut</span> it can never
 		cross to another thread, and as <span class="pre">imm</span> it can never be changed. <b>Not built yet:</b> moving
 		a <span class="pre">uni</span> owner into a <i>borrowed</i> reference of a shared permission,
-		<span class="pre">let newref &amp;mut i32 = ref;</span>, is meant to be the same permanent move. Today it borrows
+		<span class="pre">let newref: &amp;mut i32 = ref;</span>, is meant to be the same permanent move. Today it borrows
 		instead, and <span class="pre">ref</span> stays usable; only a move into an owning type, as above, consumes it.</p>
 
 	<h2 id="recovery">Getting a permission back</h2>
@@ -233,9 +233,9 @@ let also = shared;                  // two owners of the same value
 			still unique, once that borrow's last use is behind it
 			(<a href="mem-borrowing.html#handle">Passing a borrow on</a>):
 <pre>
-fn peek(r &amp;R) {..}
-fn bump(r &amp;mut R) {..}
-fn twice(r &amp;uni R) {
+fn peek(r: &amp;R) {..}
+fn bump(r: &amp;mut R) {..}
+fn twice(r: &amp;uni R) {
   peek(r);          // lends a fresh, shorter borrow: r is still ours
   bump(r);
   peek(r);
@@ -288,8 +288,8 @@ recover {
 	<p>Take a car whose fields are references:</p>
 <pre>
 struct Car {
-  pub engine &amp;uni Engine;
-  pub owner &amp;mut Person;
+  pub engine: &amp;uni Engine;
+  pub owner: &amp;mut Person;
 }
 </pre>
 	<p>Since <span class="pre">engine</span> is a <span class="pre">uni</span> reference, which moves, the whole
@@ -301,7 +301,7 @@ struct Car {
 	<h3 id="view">Viewpoint adaptation</h3>
 	<p>Now take a read-only borrow of a Car:</p>
 <pre>
-fn handleCar(car &amp;Car) {
+fn handleCar(car: &amp;Car) {
   if car.owner.age &lt; 18 {
     car.owner.age = 18;       // Error 1017: You do not have permission to modify lval
   }
@@ -312,20 +312,20 @@ fn handleCar(car &amp;Car) {
 		<b>viewpoint adaptation</b>: the permission you get is what every reference on the way allows. To read a value,
 		every reference on the path must allow reading; to change it, every one must allow changing. A borrowed reference
 		held in a field is no exception: through a <span class="pre">&amp;Car</span>, <span class="pre">car.owner</span>
-		reads and lends only <span class="pre">&amp;</span>, so calling a <span class="pre">self &amp;mut</span> method
+		reads and lends only <span class="pre">&amp;</span>, so calling a <span class="pre">self: &amp;mut</span> method
 		on it is refused too (<i>Error 1034: Borrowed reference cannot obtain this permission: it is held in a place
 		reached through a reference that only reads</i>). A method that changes what a <span class="pre">&amp;mut</span>
-		field points at takes <span class="pre">self &amp;mut</span>; one declared <span class="pre">self &amp;</span>
+		field points at takes <span class="pre">self: &amp;mut</span>; one declared <span class="pre">self: &amp;</span>
 		may only read through it. Through a <span class="pre">&amp;mut Car</span>, or a Car held by value,
 		<span class="pre">owner</span> keeps its own permission.</p>
 	<p id="fieldperm">A field's own declared permission takes part the same way: what governs access to it is derived
 		from both the field's permission and the struct value's. A field declares none by default, which means
 		<span class="pre">var</span>, so the struct value's permission alone decides. One declared
-		<span class="pre">let</span>, <span class="pre">pub let id i32</span>, is not writable even through a
+		<span class="pre">let</span>, <span class="pre">pub let id: i32</span>, is not writable even through a
 		<span class="pre">&amp;mut</span> to the struct (<i>Error 1017: You do not have permission to modify lval</i>).</p>
 	<p>An owning field is no exception either. For <span class="pre">app Uni[App]</span> in a struct
 		<span class="pre">Holder</span>, through a <span class="pre">&amp;Holder</span> the field lends only
-		<span class="pre">&amp;</span>, so a <span class="pre">self &amp;mut</span> method cannot be called on
+		<span class="pre">&amp;</span>, so a <span class="pre">self: &amp;mut</span> method cannot be called on
 		<span class="pre">h.app</span>. Through a <span class="pre">&amp;mut Holder</span> or an
 		<span class="pre">Rc[mut, Holder]</span> it lends <span class="pre">&amp;mut</span> and
 		<span class="pre">&amp;</span>, but not <span class="pre">&amp;uni</span> or <span class="pre">&amp;imm</span>,
@@ -365,7 +365,7 @@ fn handleCar(car &amp;Car) {
 	<ul>
 		<li><b>The default permission is <span class="pre">imm</span>.</b> A reference to the type written with no
 			permission is <span class="pre">imm</span>: <span class="pre">&amp;str</span> is <span class="pre">&amp;imm
-			str</span>, a method's <span class="pre">self &amp;</span> is <span class="pre">&amp;imm</span>, and an owner in
+			str</span>, a method's <span class="pre">self: &amp;</span> is <span class="pre">&amp;imm</span>, and an owner in
 			a region that copies, written without a permission, is <span class="pre">imm</span> too, so
 			<span class="pre">Rc[str]</span> is <span class="pre">Rc[imm, str]</span> and its owners are copied, where
 			<span class="pre">Rc[T]</span> of an ordinary type is <span class="pre">uni</span> and moves.
@@ -381,10 +381,10 @@ fn handleCar(car &amp;Car) {
 			a unique owner that moves.</li>
 	</ul>
 <pre>
-fn length(s &amp;str) usize { s.len }   // s is &amp;imm str
+fn length(s: &amp;str) usize { s.len }   // s is &amp;imm str
 let a = new Rc[str](view);            // Rc[imm, str]
 let b = a;                            // copied, not moved: a is still held
-fn change(s &amp;mut str) {}              // Error 1297: str declares Immutable, so nothing changes it
+fn change(s: &amp;mut str) {}              // Error 1297: str declares Immutable, so nothing changes it
                                       //   through a reference: 'mut' is refused.
 </pre>
 	<p>The marker is a promise the compiler holds a reference to, not a check of the type's own fields: a struct

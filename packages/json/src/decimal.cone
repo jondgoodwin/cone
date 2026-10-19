@@ -20,16 +20,16 @@ const decMaxShift = 60i32;
 // The value 0.d1d2d3... times 10^dp, the digits 0 to 9 held most significant
 // first, with no trailing zero (zero is no digits)
 struct Dec {
-  pub digits List[u8];
-  pub dp i32;
+  pub digits: List[u8];
+  pub dp: i32;
   // Nonzero digits beyond the 800 were dropped
-  pub trunc bool;
+  pub trunc: bool;
 }
 
 fn decNew() Dec { new Dec(List[u8].empty(), 0i32, false) }
 
 // Trailing zeros off; an empty Dec is zero, and its point is at 0
-fn decTrim(a &mut Dec) {
+fn decTrim(a: &mut Dec) {
   while a.digits.len() > 0usize && *a.digits[a.digits.len() - 1usize] == 0u8 {
     a.digits.pop();
   }
@@ -37,7 +37,7 @@ fn decTrim(a &mut Dec) {
 }
 
 // The Dec holds v exactly
-fn decAssign(a &mut Dec, v u64) {
+fn decAssign(a: &mut Dec, v: u64) {
   a.digits.clear();
   a.trunc = false;
   var rev = List[u8].empty();
@@ -56,7 +56,7 @@ fn decAssign(a &mut Dec, v u64) {
 }
 
 // Divide by 2^k, k from 1 to decMaxShift
-fn decRightShift(a &mut Dec, k i32) {
+fn decRightShift(a: &mut Dec, k: i32) {
   let kk = u64.from(k);
   let nd = a.digits.len();
   var r = 0usize;
@@ -102,7 +102,7 @@ fn decRightShift(a &mut Dec, k i32) {
 }
 
 // Multiply by 2^k, k from 1 to decMaxShift
-fn decLeftShift(a &mut Dec, k i32) {
+fn decLeftShift(a: &mut Dec, k: i32) {
   let kk = u64.from(k);
   // The product's digits, least significant first
   var rev = List[u8].withCapacity(a.digits.len() + 24usize);
@@ -134,7 +134,7 @@ fn decLeftShift(a &mut Dec, k i32) {
 }
 
 // Multiply by 2^k, k any sign
-fn decShift(a &mut Dec, k i32) {
+fn decShift(a: &mut Dec, k: i32) {
   if a.digits.len() == 0usize { return; }
   var left = k;
   if left > 0i32 {
@@ -154,7 +154,7 @@ fn decShift(a &mut Dec, k i32) {
 }
 
 // Whether rounding to nd digits goes up
-fn decShouldRoundUp(a &Dec, nd i32) bool {
+fn decShouldRoundUp(a: &Dec, nd: i32) bool {
   if nd < 0i32 || usize.from(nd) >= a.digits.len() { return false; }
   let at = usize.from(nd);
   let digit = *a.digits[at];
@@ -167,13 +167,13 @@ fn decShouldRoundUp(a &Dec, nd i32) bool {
   digit >= 5u8
 }
 
-fn decRoundDown(a &mut Dec, nd i32) {
+fn decRoundDown(a: &mut Dec, nd: i32) {
   if nd < 0i32 || usize.from(nd) >= a.digits.len() { return; }
   a.digits.truncate(usize.from(nd));
   decTrim(a);
 }
 
-fn decRoundUp(a &mut Dec, nd i32) {
+fn decRoundUp(a: &mut Dec, nd: i32) {
   if nd < 0i32 || usize.from(nd) >= a.digits.len() { return; }
   var i = usize.from(nd);
   while i > 0usize {
@@ -191,13 +191,13 @@ fn decRoundUp(a &mut Dec, nd i32) {
   a.dp = a.dp + 1i32;
 }
 
-fn decRound(a &mut Dec, nd i32) {
+fn decRound(a: &mut Dec, nd: i32) {
   if nd < 0i32 || usize.from(nd) >= a.digits.len() { return; }
   if decShouldRoundUp(a, nd) { decRoundUp(a, nd); } else { decRoundDown(a, nd); }
 }
 
 // The integer part, rounded to nearest-even; beyond a u64, all ones
-fn decRoundedInteger(a &Dec) u64 {
+fn decRoundedInteger(a: &Dec) u64 {
   if a.dp > 20i32 { return 0xFFFFFFFFFFFFFFFFu64; }
   let point = if a.dp > 0i32 {usize.from(a.dp)} else {0usize};
   var i = 0usize;
@@ -217,7 +217,7 @@ fn decRoundedInteger(a &Dec) u64 {
 // -------- Dec to f64 --------
 
 // How far the point is moved to get below 1, by how many places it is out
-fn decPowTab(i i32) i32 {
+fn decPowTab(i: i32) i32 {
   if i == 0i32 { return 1i32; }
   if i == 1i32 { return 3i32; }
   if i == 2i32 { return 6i32; }
@@ -230,7 +230,7 @@ fn decPowTab(i i32) i32 {
 }
 
 // 2^k as an f64, k from -1074 to 1023: every step is exact
-fn pow2(k i32) f64 {
+fn pow2(k: i32) f64 {
   var x = 1.0;
   var i = k;
   while i > 0i32 {
@@ -246,7 +246,7 @@ fn pow2(k i32) f64 {
 
 // The f64 nearest the Dec, the even one on a tie; false when it is too large
 // for an f64. The Dec is used up.
-fn decToF64(a &mut Dec, out &mut f64) bool {
+fn decToF64(a: &mut Dec, out: &mut f64) bool {
   *out = 0.0;
   if a.digits.len() == 0usize { return true; }
   if a.dp > 310i32 { return false; }
@@ -291,7 +291,7 @@ fn decToF64(a &mut Dec, out &mut f64) bool {
 
 // The Dec holds x's exact decimal, cut to the fewest digits that still read
 // back as x. x is finite and positive.
-fn decShortest(a &mut Dec, x f64) {
+fn decShortest(a: &mut Dec, x: f64) {
   let bits = x as u64;
   var mant = bits & ((1u64 << 52u64) - 1u64);
   var exp = i32.from((bits >> 52u64) & 0x7FFu64);
@@ -309,7 +309,7 @@ fn decShortest(a &mut Dec, x f64) {
 
 // Cut a (the exact value of mant * 2^(exp-52)) to the fewest digits that lie
 // between the halves to the neighbouring f64s
-fn decRoundShortest(a &mut Dec, mant u64, exp i32) {
+fn decRoundShortest(a: &mut Dec, mant: u64, exp: i32) {
   if mant == 0u64 {
     a.digits.clear();
     a.dp = 0i32;

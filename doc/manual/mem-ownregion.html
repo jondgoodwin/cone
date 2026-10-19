@@ -28,31 +28,31 @@ import libc;
 
 // A reference-counting region ref: the count lives in the bookkeeping
 struct Counted is RegionRef {
-  owners usize;
-  fn alloc(size usize) *u8 { libc.malloc(size) }
-  fn init(self &amp;new) { *self = new Counted(1usize); }
-  fn aliasRef(self &amp;uni Counted) {
+  owners: usize;
+  fn alloc(size: usize) *u8 { libc.malloc(size) }
+  fn init(self: &amp;new) { *self = new Counted(1usize); }
+  fn aliasRef(self: &amp;uni Counted) {
     owners = owners + 1usize;
     print &lt;- "owners ";
     print &lt;- owners;
     print &lt;- "\n";
   }
-  fn dealiasRef(self &amp;uni Counted) bool {
+  fn dealiasRef(self: &amp;uni Counted) bool {
     owners = owners - 1usize;
     print &lt;- "owners ";
     print &lt;- owners;
     print &lt;- "\n";
     owners == 0usize                 // true: that was the last owner
   }
-  fn free(self &amp;uni Counted) {
+  fn free(self: &amp;uni Counted) {
     print &lt;- "freed\n";
     libc.free(self as *u8);
   }
 }
 
 struct Note {
-  pub n i64;
-  fn final(self &amp;uni) { print &lt;- "final "; print &lt;- n; print &lt;- "\n"; }
+  pub n: i64;
+  fn final(self: &amp;uni) { print &lt;- "final "; print &lt;- n; print &lt;- "\n"; }
 }
 
 fn main() i32 {
@@ -78,12 +78,12 @@ fn main() i32 {
 		<span class="pre">new Counted[mut, Note](7)</span>. Every method is optional, an absent method's operation does not
 		happen, and what a region ref leaves out says what it does:</p>
 	<ul>
-		<li><span class="pre">fn alloc(size usize) *u8</span> gets the memory. It answers null for a failure, rather than an
+		<li><span class="pre">fn alloc(size: usize) *u8</span> gets the memory. It answers null for a failure, rather than an
 			Option. The regions in the core package get it from core's raw blocks layer (<span class="pre">RawBlocks</span>),
 			the one place the heap's bytes come from, which today forwards to C's <span class="pre">malloc</span>,
 			<span class="pre">realloc</span> and <span class="pre">free</span>
 			(<a href="mem-collections.html#heapregion">The heap's region and the raw blocks layer</a>).</li>
-		<li><span class="pre">fn free(self &amp;uni R)</span> gives the block back.</li>
+		<li><span class="pre">fn free(self: &amp;uni R)</span> gives the block back.</li>
 		<li>A region ref that declares the built-in trait <a href="rec-moves.html#movecopy"><span class="pre">Move</span></a> is
 			single-owner: a copy of its reference is a move.</li>
 		<li>A region ref that adds a count is a counted one: an <span class="pre">init</span> that sets the count to one, an
@@ -103,24 +103,24 @@ fn main() i32 {
 	<h2 id="methods">The methods the compiler calls</h2>
 	<p>The compiler calls these methods at key events in the life of an owning reference. Each is handed the
 		bookkeeping, not the value. A region ref's methods are ordinary Cone code, not trusted code.</p>
-	<p id="alloc"><b><span class="pre">fn alloc(size usize) *u8</span></b>, static, is called whenever
+	<p id="alloc"><b><span class="pre">fn alloc(size: usize) *u8</span></b>, static, is called whenever
 		<span class="pre">new</span> makes an owning reference, after the value initializer's arguments are evaluated. The
 		compiler supplies the size of the value to be stored, enlarged to include the region's bookkeeping (the count, say)
 		and a lock permission's, and a null answer fails. After <span class="pre">alloc</span>, the compiler initializes any
 		lock permission's fields, then moves the pointer past the bookkeeping to the value, and fills the value from its
 		initializer, a finished value or contents (<a href="mem-regions.html#order">The order of an allocation</a>). The other
-		form, <span class="pre">fn alloc(size usize, ty *TypeRecord) *u8</span>, is also handed the allocated value's
+		form, <span class="pre">fn alloc(size: usize, ty: *TypeRecord) *u8</span>, is also handed the allocated value's
 		<a href="safe-intrinsics.html">type record</a>: its size, alignment, finalizer and trace, so the region can later
 		finalize a value of any type itself (an owning slice's is its element type's).</p>
-	<p id="init"><b><span class="pre">fn init(self &amp;new)</span></b> is an
+	<p id="init"><b><span class="pre">fn init(self: &amp;new)</span></b> is an
 		<a href="rec-methods.html#initializer">initializer</a>, run right after <span class="pre">alloc</span> on the
 		bookkeeping, which it fills in place: <span class="pre">*self = new Counted(1usize)</span>.</p>
-	<p id="aliasref"><b><span class="pre">fn aliasRef(self &amp;uni R)</span></b> is called whenever a new shared copy of
-		the reference is made. <b><span class="pre">fn dealiasRef(self &amp;uni R) bool</span></b> is called whenever an
+	<p id="aliasref"><b><span class="pre">fn aliasRef(self: &amp;uni R)</span></b> is called whenever a new shared copy of
+		the reference is made. <b><span class="pre">fn dealiasRef(self: &amp;uni R) bool</span></b> is called whenever an
 		owning reference is destroyed, usually when the variable holding it reaches the end of its scope, and also when a
 		reference held by a variable or field is overwritten. It answers whether the last owner is gone, rather than calling
 		<span class="pre">free</span> itself.</p>
-	<p id="free"><b><span class="pre">fn free(self &amp;uni R)</span></b> is called when the region has decided the value is
+	<p id="free"><b><span class="pre">fn free(self: &amp;uni R)</span></b> is called when the region has decided the value is
 		safe to free. When the last owner goes, the compiler runs the value's finalizer before calling
 		<span class="pre">free</span>, which disposes of any resources the value holds.</p>
 
@@ -136,30 +136,30 @@ import stdio use *;
 import libc;
 
 struct Counted is RegionRef {
-  owners usize;
-  fn alloc(size usize) *u8 { libc.malloc(size) }
-  fn init(self &amp;new) {
+  owners: usize;
+  fn alloc(size: usize) *u8 { libc.malloc(size) }
+  fn init(self: &amp;new) {
     print &lt;- "region init\n";
     *self = new Counted(1usize);
   }
-  fn aliasRef(self &amp;uni Counted) { owners = owners + 1usize; }
-  fn dealiasRef(self &amp;uni Counted) bool {
+  fn aliasRef(self: &amp;uni Counted) { owners = owners + 1usize; }
+  fn dealiasRef(self: &amp;uni Counted) bool {
     owners = owners - 1usize;
     owners == 0usize
   }
-  fn free(self &amp;uni Counted) {
+  fn free(self: &amp;uni Counted) {
     print &lt;- "free\n";
     libc.free(self as *u8);
   }
 }
 
 struct Node {
-  pub n i32;
-  pub fn init(self &amp;new, k i32) {
+  pub n: i32;
+  pub fn init(self: &amp;new, k: i32) {
     print &lt;- "node init\n";
     *self = new Node(n: k * 10);
   }
-  fn final(self &amp;uni) { print &lt;- "node final "; print &lt;- n; print &lt;- "\n"; }
+  fn final(self: &amp;uni) { print &lt;- "node final "; print &lt;- n; print &lt;- "\n"; }
 }
 
 fn main() i32 {
@@ -194,19 +194,19 @@ import libc;
 
 // A single-owner region ref: Move means a copy of the reference is a move
 struct Unique is RegionRef, Move {
-  fn alloc(size usize) *u8 {
+  fn alloc(size: usize) *u8 {
     print &lt;- "alloc\n";
     libc.malloc(size)
   }
-  fn free(self &amp;uni Unique) {
+  fn free(self: &amp;uni Unique) {
     print &lt;- "free\n";
     libc.free(self as *u8);
   }
 }
 
-struct Point { pub x i32; pub y i32; }
+struct Point { pub x: i32; pub y: i32; }
 
-fn consume(p Unique[mut, Point]) {
+fn consume(p: Unique[mut, Point]) {
   print &lt;- p.x + p.y;
   print &lt;- "\n";
 }                                     // the owner ends here
@@ -230,8 +230,8 @@ fn main() i32 {
 	<h2 id="traced">Traced regions, for collectors</h2>
 	<p>A region ref that also declares the built-in trait <span class="pre">Traced</span>
 		(<span class="pre">struct Gc is RegionRef, Traced</span>) has its references traced. It declares
-		<span class="pre">fn mark(self &amp;uni R, slot *usize)</span>, or <span class="pre">fn mark(self &amp;uni R, slot *usize,
-		perm u32, mode u32)</span> to be told each reference's permission and the mode it was traced in. Every type record's
+		<span class="pre">fn mark(self: &amp;uni R, slot: *usize)</span>, or <span class="pre">fn mark(self: &amp;uni R, slot: *usize,
+		perm: u32, mode: u32)</span> to be told each reference's permission and the mode it was traced in. Every type record's
 		trace (and <a href="safe-intrinsics.html"><span class="pre">mem.trace</span></a>) hands it the bookkeeping of each of
 		its references a value holds, and the slot the reference is stored in (its first word is the address of the value),
 		which a collector that moves values rewrites. It may not be <span class="pre">Move</span>:</p>
@@ -244,20 +244,20 @@ import libc;
 // A traced region ref: it declares Traced and a mark method. A collector built on it
 // is told, through mark, each reference a value holds, and the slot it is stored in.
 struct Heapy is RegionRef, Traced {
-  seen usize;
-  fn alloc(size usize) *u8 {
+  seen: usize;
+  fn alloc(size: usize) *u8 {
     let p = malloc(size);
     mem.writeRaw(p as *Heapy, new Heapy(0usize));
     p
   }
-  fn mark(self &amp;uni Heapy, slot *usize) {
+  fn mark(self: &amp;uni Heapy, slot: *usize) {
     seen = seen + 1usize;
     print &lt;- "marked\n";
   }
 }
 
-struct Leaf { pub n i64; }
-struct Pair { pub left Heapy[mut, Leaf]; pub right Heapy[mut, Leaf]; }
+struct Leaf { pub n: i64; }
+struct Pair { pub left: Heapy[mut, Leaf]; pub right: Heapy[mut, Leaf]; }
 
 fn main() i32 {
   let l = new Heapy[mut, Leaf](1);
@@ -274,12 +274,12 @@ fn main() i32 {
 	<p>A traced reference may be held only where a collector can find it: in a local, a parameter, a temporary, a value held
 		in one of those, a value a traced region allocated, or behind what a trace passes through. A trace passes through an
 		<span class="pre">Rc</span> or <span class="pre">Uni</span> reference to the traced references its value holds, once for
-		each collection: a counted region ref declares <span class="pre">fn visit(self &amp;uni R, mode u32) bool</span>, which
+		each collection: a counted region ref declares <span class="pre">fn visit(self: &amp;uni R, mode: u32) bool</span>, which
 		answers whether this is the first time its value was reached in the collection whose epoch the trace's mode names, so a
 		value several owners hold, or one round a cycle, is traced once; one that declares neither <span class="pre">Move</span>
 		nor <span class="pre">visit</span> cannot be passed through. A trace also passes through a
 		<a href="mem-collections.html#gctrace">collection</a>, a pool or an arena: a type that declares the built-in trait
-		<span class="pre">GcTraceElements</span> and a method <span class="pre">fn gcTraceElements(self &amp;mut) I</span>,
+		<span class="pre">GcTraceElements</span> and a method <span class="pre">fn gcTraceElements(self: &amp;mut) I</span>,
 		<span class="pre">I</span> a cursor declaring <span class="pre">is Iterator[&amp;mut E]</span>, a writable reference to
 		each value it holds.</p>
 	<p>So the compiler refuses a traced reference held in a global, or in memory placed by
@@ -302,7 +302,7 @@ fn main() i32 {
 		it, and nothing half made. The roots are a chain of frames local to each thread.</p>
 
 	<h3 id="barrier">The write barrier</h3>
-	<p>A traced region ref may also declare <span class="pre">fn writeBarrier(self &amp;uni R)</span>: every store of one of
+	<p>A traced region ref may also declare <span class="pre">fn writeBarrier(self: &amp;uni R)</span>: every store of one of
 		its references into memory that is not a local (a field, an element or a dereference reached through any reference, a
 		borrow included; a swap; <span class="pre">:=</span>) then hands it the bookkeeping of what was stored, just after the
 		store. It is told nothing of where the reference went. Stores into locals, and a new value's contents stored whole, get
@@ -334,11 +334,11 @@ mod scene;
 import stdio use *;
 import arena use *;
 
-struct Node { pub a i64; pub b i64; }
+struct Node { pub a: i64; pub b: i64; }
 
 struct Scene {
-  pub ar Arena;
-  pub fn allocRegion(self &amp;mut) &amp;mut Arena { &amp;mut ar }
+  pub ar: Arena;
+  pub fn allocRegion(self: &amp;mut) &amp;mut Arena { &amp;mut ar }
 }
 
 fn main() i32 {

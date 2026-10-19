@@ -68,19 +68,19 @@ mod path;
 import collections use String, List;
 
 // Whether a byte separates names: '/', and on Windows '\' too
-pub fn isSeparator(b u8) bool { b == '/' || (isWindows() && b == '\\') }
+pub fn isSeparator(b: u8) bool { b == '/' || (isWindows() && b == '\\') }
 
 // How a path starts: the length of its volume ('C:' is 2, '\\server\share'
 // its whole length), and the length of the volume and the root together,
 // which is one more when a separator follows the volume
 struct Prefix {
-  pub volume usize;
-  pub whole usize;
+  pub volume: usize;
+  pub whole: usize;
 }
 
-fn isLetter(b u8) bool { (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') }
+fn isLetter(b: u8) bool { (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') }
 
-fn prefixOf(p &Array[u8]) Prefix {
+fn prefixOf(p: &Array[u8]) Prefix {
   // POSIX: no volume, and a root alone
   if !isWindows() {
     if p.len >= 1usize && p[0usize] == '/' { return new Prefix(0usize, 1usize); }
@@ -113,11 +113,11 @@ fn prefixOf(p &Array[u8]) Prefix {
 
 // Whether the prefix is a share's: a share has its root even when no
 // separator is written after it
-fn isShare(p &Array[u8], pre &Prefix) bool { pre.volume > 2usize }
+fn isShare(p: &Array[u8], pre: &Prefix) bool { pre.volume > 2usize }
 
 // Whether a path is absolute: a drive and a root ('C:\x'), or a share
 // ('\\server\share\x'); on POSIX, a root
-fn absoluteOf(p &Array[u8]) bool {
+fn absoluteOf(p: &Array[u8]) bool {
   let pre = prefixOf(p);
   if !isWindows() { return pre.whole == 1usize; }
   isShare(p, &pre) || (pre.volume == 2usize && pre.whole == 3usize)
@@ -125,14 +125,14 @@ fn absoluteOf(p &Array[u8]) bool {
 
 // Where a path's names end once the separators after its last are left
 // off, never cutting into its volume and root
-fn trimmedEnd(p &Array[u8], pre &Prefix) usize {
+fn trimmedEnd(p: &Array[u8], pre: &Prefix) usize {
   var end = p.len;
   while end > pre.whole && isSeparator(p[end - 1usize]) { end = end - 1usize; }
   end
 }
 
 // Where its last name starts, at or after the prefix
-fn lastNameStart(p &Array[u8], pre &Prefix, end usize) usize {
+fn lastNameStart(p: &Array[u8], pre: &Prefix, end: usize) usize {
   var i = end;
   while i > pre.whole && !isSeparator(p[i - 1usize]) { i = i - 1usize; }
   i
@@ -144,7 +144,7 @@ fn lastNameStart(p &Array[u8], pre &Prefix, end usize) usize {
 // b itself, and b with a root but no volume ('\x') is a's volume and then b.
 // An empty a gives b, and an empty b gives a. Nothing is normalized: 'a/'
 // and '../b' join to 'a/../b'.
-fn joinOf(a &Array[u8], b &Array[u8]) String {
+fn joinOf(a: &Array[u8], b: &Array[u8]) String {
   if b.len == 0usize { return String.fromBytes(a); }
   let bpre = prefixOf(b);
   if a.len == 0usize || bpre.volume > 0usize { return String.fromBytes(b); }
@@ -167,7 +167,7 @@ fn joinOf(a &Array[u8], b &Array[u8]) String {
 // "", the current folder. A path that is only a volume and a root is its own
 // parent: 'C:/' is in 'C:/'. Separators after the last name are left off
 // first, so 'a/b/' is in 'a'. Nothing is normalized: 'a/..' is in 'a'.
-fn parentOf(p &Array[u8]) String {
+fn parentOf(p: &Array[u8]) String {
   let pre = prefixOf(p);
   let end = trimmedEnd(p, &pre);
   var i = lastNameStart(p, &pre, end);
@@ -177,7 +177,7 @@ fn parentOf(p &Array[u8]) String {
 
 // Where the extension of a name starts: at its last dot, unless that is its
 // first byte; at its end when it has none, as '..' has none
-fn extensionStart(n &Array[u8]) usize {
+fn extensionStart(n: &Array[u8]) usize {
   if n == ".." { return n.len; }
   var i = n.len;
   while i > 1usize {
@@ -191,7 +191,7 @@ fn extensionStart(n &Array[u8]) usize {
 // ('C:\', '/', '\\server\share\', 'C:'), then each name, as written, '.' and
 // '..' included, with no separators. Empty names, between two separators
 // or after the last, are left out. "" has no pieces.
-fn partsOf(p &Array[u8]) List[String] {
+fn partsOf(p: &Array[u8]) List[String] {
   let pre = prefixOf(p);
   var out = List[String].empty();
   if pre.whole > 0usize { out.push(String.fromBytes(&p[..<pre.whole])); }
@@ -221,7 +221,7 @@ fn partsOf(p &Array[u8]) List[String] {
 // The drive letter is kept as written. A '..' after a symbolic link is
 // dropped with the link, which on the disk may not be where the link's
 // folder is: this reads text, not the file system.
-fn normalizeOf(p &Array[u8]) String {
+fn normalizeOf(p: &Array[u8]) String {
   let pre = prefixOf(p);
   var out = String.fromBytes(&p[..<pre.whole]);
   out.replaceByte('\\', '/');
@@ -284,52 +284,52 @@ fn normalizeOf(p &Array[u8]) String {
 // ('parent', 'join', 'normalize'). Two paths are equal when their text is the
 // same bytes: 'C:\a' and 'C:/a' are not, until both are normalized.
 pub struct Path is Hash {
-  text String;
+  text: String;
 
   // A Path holding a copy of this text, whatever it is
-  pub fn from(s &str) Path { new Path(String.from(s)) }
+  pub fn from(s: &str) Path { new Path(String.from(s)) }
 
   // A Path holding this String, which it takes
-  pub fn fromString(s String) Path { new Path(s) }
+  pub fn fromString(s: String) Path { new Path(s) }
 
   // What a literal becomes where a Path is wanted
-  pub fn fromLiteral(s &str) Path { Path.from(s) }
+  pub fn fromLiteral(s: &str) Path { Path.from(s) }
 
   // A copy of this one
-  pub fn copy(self &) Path { Path.from(self.view()) }
+  pub fn copy(self: &) Path { Path.from(self.view()) }
 
   // Its text, as written
-  pub fn view(self &) &str { text.view() }
+  pub fn view(self: &) &str { text.view() }
 
-  pub fn isEmpty(self &) bool { text.len() == 0usize }
+  pub fn isEmpty(self: &) bool { text.len() == 0usize }
 
   // Whether it is absolute: a drive and a root ('C:\x'), or a share; on
   // POSIX, a root
-  pub fn isAbsolute(self &) bool { absoluteOf(text.view()) }
+  pub fn isAbsolute(self: &) bool { absoluteOf(text.view()) }
 
   // The volume it starts with, 'C:' or '\\server\share' as written, or ""
   // (always "" on POSIX)
-  pub fn volume(self &) &str {
-    let b &Array[u8] = text.view();
+  pub fn volume(self: &) &str {
+    let b: &Array[u8] = text.view();
     let pre = prefixOf(b);
     &b[..<pre.volume] as &str
   }
 
   // The folder it is in; see 'parentOf' above for the rules
-  pub fn parent(self &) Path { Path.fromString(parentOf(text.view())) }
+  pub fn parent(self: &) Path { Path.fromString(parentOf(text.view())) }
 
   // Its last name: 'c.txt' of 'a/b/c.txt', 'b' of 'a/b/', and "" of a path
   // that is only a volume and a root ('C:/', '/')
-  pub fn name(self &) &str {
-    let b &Array[u8] = text.view();
+  pub fn name(self: &) &str {
+    let b: &Array[u8] = text.view();
     let pre = prefixOf(b);
     let end = trimmedEnd(b, &pre);
     &b[lastNameStart(b, &pre, end)..<end] as &str
   }
 
   // Its last name without its extension: 'b.tar' of 'a/b.tar.gz'
-  pub fn stem(self &) &str {
-    let b &Array[u8] = text.view();
+  pub fn stem(self: &) &str {
+    let b: &Array[u8] = text.view();
     let pre = prefixOf(b);
     let end = trimmedEnd(b, &pre);
     let start = lastNameStart(b, &pre, end);
@@ -339,8 +339,8 @@ pub struct Path is Hash {
 
   // The extension of its last name, from its last dot, the dot included: '.gz'
   // of 'a/b.tar.gz', '.' of 'b.', and "" of 'b' and '.profile'
-  pub fn extension(self &) &str {
-    let b &Array[u8] = text.view();
+  pub fn extension(self: &) &str {
+    let b: &Array[u8] = text.view();
     let pre = prefixOf(b);
     let end = trimmedEnd(b, &pre);
     let start = lastNameStart(b, &pre, end);
@@ -354,19 +354,19 @@ pub struct Path is Hash {
   // a temporary Path, but the text form takes it as the '&str' it is, so no
   // Path is made for it, and any other text is joined without being made a
   // Path first.
-  pub fn joinPath overload join(self &, other &Path) Path { Path.fromString(joinOf(text.view(), other.view())) }
-  pub fn joinText overload join(self &, other &str) Path { Path.fromString(joinOf(text.view(), other)) }
+  pub fn joinPath overload join(self: &, other: &Path) Path { Path.fromString(joinOf(text.view(), other.view())) }
+  pub fn joinText overload join(self: &, other: &str) Path { Path.fromString(joinOf(text.view(), other)) }
 
   // Its pieces in order: the volume and root as written when it has either,
   // then each name; see 'partsOf' above for the rules
-  pub fn parts(self &) List[String] { partsOf(text.view()) }
+  pub fn parts(self: &) List[String] { partsOf(text.view()) }
 
   // The same path spelled one way; see 'normalizeOf' above for the rules
-  pub fn normalize(self &) Path { Path.fromString(normalizeOf(text.view())) }
+  pub fn normalize(self: &) Path { Path.fromString(normalizeOf(text.view())) }
 
   // The same bytes, as another Path or as text
-  pub fn eqPath overload `==`(self &, o &Path) bool { text.view() == o.view() }
-  pub fn eqText overload `==`(self &, o &str) bool { text.view() == o }
+  pub fn eqPath overload `==`(self: &, o: &Path) bool { text.view() == o.view() }
+  pub fn eqText overload `==`(self: &, o: &str) bool { text.view() == o }
 
-  pub fn hash(self &, h &mut Hasher) { text.view().hash(h); }
+  pub fn hash(self: &, h: &mut Hasher) { text.view().hash(h); }
 }

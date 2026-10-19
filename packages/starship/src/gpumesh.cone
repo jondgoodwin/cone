@@ -27,32 +27,32 @@
 
 // The times of one meshing, microseconds, wall clock on the CPU
 struct GpuTimes {
-  pub sampling i64;      // the description uploaded, the blocks and the samples, to the answer
-  pub meshing i64;       // GridMesher, every slab
-  pub relaxing i64;      // relaxation, normals and the quads cut again
-  pub reading i64;       // the mesh read back and the slabs joined
+  pub sampling: i64;      // the description uploaded, the blocks and the samples, to the answer
+  pub meshing: i64;       // GridMesher, every slab
+  pub relaxing: i64;      // relaxation, normals and the quads cut again
+  pub reading: i64;       // the mesh read back and the slabs joined
 
   pub fn zero() GpuTimes { new GpuTimes(0i64, 0i64, 0i64, 0i64) }
-  pub fn total(self &) i64 { sampling + meshing + relaxing + reading }
+  pub fn total(self: &) i64 { sampling + meshing + relaxing + reading }
 }
 
 // What one meshing did
 struct GpuStats {
-  pub samples u64;       // in the whole grid
-  pub slabs u32;
-  pub blocks u32;        // in the sparse pass
-  pub ok bool;
+  pub samples: u64;       // in the whole grid
+  pub slabs: u32;
+  pub blocks: u32;        // in the sparse pass
+  pub ok: bool;
 }
 
-fn micros(t Instant) i64 { (Instant.now() - t).micros() }
+fn micros(t: Instant) i64 { (Instant.now() - t).micros() }
 
 // Workgroups for n invocations of 64 each: x, and y rows of x (the kernels
 // flatten the two)
-fn groupsX(n u32) u32 {
+fn groupsX(n: u32) u32 {
   let g = (n + 63u32) / 64u32;
   if g == 0u32 { 1u32 } elif g <= 65535u32 { g } else { 32768u32 }
 }
-fn groupsY(n u32) u32 {
+fn groupsY(n: u32) u32 {
   let g = (n + 63u32) / 64u32;
   let x = groupsX(n);
   if g <= x { 1u32 } else { (g + x - 1u32) / x }
@@ -64,7 +64,7 @@ const MaxWords = 33554432u64;
 // The slabs of a grid: each one's first sample layer and its layers, at
 // most 'most' layers each (0: as many as a buffer allows), consecutive ones
 // sharing two sample layers
-fn slabsOf(grid SampleGrid, most u32, out &mut List[u32]) {
+fn slabsOf(grid: SampleGrid, most: u32, out: &mut List[u32]) {
   let per = u64.from(grid.samplesX) * u64.from(grid.samplesY);
   var fit = u32.from((MaxWords - 1u64) / per);
   if most > 0u32 && most < fit { fit = most; }
@@ -82,24 +82,24 @@ fn slabsOf(grid SampleGrid, most u32, out &mut List[u32]) {
 
 // A buffer for the kernels to fill, not zeroed (each word is written before
 // any is read)
-fn scratch(device &mut Device, words u64) Buffer {
+fn scratch(device: &mut Device, words: u64) Buffer {
   device.createBuffer(if words == 0u64 { 4u64 } else { 4u64 * words },
     BUFFER_USAGE_STORAGE | BUFFER_USAGE_COPY_DST | BUFFER_USAGE_COPY_SRC)
 }
 
 // shipfield's kernels and sdfmesh's mesher, made once
 struct ShipMesher {
-  blocks Kernel;
-  sample Kernel;
-  probe Kernel;
-  move Kernel;
-  shade Kernel;
-  recut Kernel;
-  layerEnd Kernel;
-  mesher GridMesher;
-  pub slabLayers u32;    // at most this many sample layers a slab (0: as a buffer allows)
+  blocks: Kernel;
+  sample: Kernel;
+  probe: Kernel;
+  move: Kernel;
+  shade: Kernel;
+  recut: Kernel;
+  layerEnd: Kernel;
+  mesher: GridMesher;
+  pub slabLayers: u32;    // at most this many sample layers a slab (0: as a buffer allows)
 
-  pub fn make(device &Device) ShipMesher {
+  pub fn make(device: &Device) ShipMesher {
     let spirv = readSpirv("starship.spv");
     let s = spirv.view();
     new ShipMesher(
@@ -113,7 +113,7 @@ struct ShipMesher {
       GridMesher.make(device), 0u32)
   }
 
-  pub fn isValid(self &) bool {
+  pub fn isValid(self: &) bool {
     blocks.isValid() && sample.isValid() && probe.isValid() && move.isValid() && shade.isValid()
       && recut.isValid() && layerEnd.isValid() && mesher.isValid()
   }
@@ -124,7 +124,7 @@ struct ShipMesher {
   // distance at the same point: how many are the same bits, how many
   // differ in sign, and the most they differ by. True if none differs in
   // sign
-  pub fn checkSamples(self &, device &mut Device, ship &ShipData, box Aabb3, cell f32, sparse bool, band f32) bool {
+  pub fn checkSamples(self: &, device: &mut Device, ship: &ShipData, box: Aabb3, cell: f32, sparse: bool, band: f32) bool {
     let grid = SampleGrid.covering(box, cell);
     var slabs = List[u32].empty();
     slabsOf(grid, slabLayers, &mut slabs);
@@ -135,7 +135,7 @@ struct ShipMesher {
     var compared = 0u64;
     var same = 0u64;
     var flipped = 0u64;
-    var most f32 = 0.;
+    var most: f32 = 0.;
     var k = 0usize;
     while k < nslabs {
       let z0 = *slabs[2usize * k];
@@ -195,8 +195,8 @@ struct ShipMesher {
   // The ship over 'box' in cells 'cell', meshed on the GPU, relaxed 'relax'
   // times, sparse or dense, read back as one mesh; the steps' times into
   // 'times'
-  pub fn meshShip(self &, device &mut Device, ship &ShipData, box Aabb3, cell f32, relax u32, sparse bool,
-      times &mut GpuTimes, stats &mut GpuStats) mesh.Mesh {
+  pub fn meshShip(self: &, device: &mut Device, ship: &ShipData, box: Aabb3, cell: f32, relax: u32, sparse: bool,
+      times: &mut GpuTimes, stats: &mut GpuStats) mesh.Mesh {
     let grid = SampleGrid.covering(box, cell);
     let h = cell * 0.1;
     var slabs = List[u32].empty();
@@ -351,7 +351,7 @@ struct ShipMesher {
 // made only of them (round the grid edges crossing its first sample layer,
 // which the slab before made too) left out, its other indices shifted down
 // by 'drop' and up by the vertices already there
-fn join(out &mut mesh.Mesh, part &mesh.Mesh, drop u32) {
+fn join(out: &mut mesh.Mesh, part: &mesh.Mesh, drop: u32) {
   let base = u32.from(out.positions.len());
   var i = usize.from(drop);
   while i < part.positions.len() {

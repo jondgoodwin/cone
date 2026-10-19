@@ -3,25 +3,25 @@
 // The loader's state. Its fields are public only so the functions beside it
 // can reach them.
 struct Ld {
-  pub json Json;
-  pub root u32;
-  pub buffers List[List[u8]];      // each buffer's bytes (empty when it has none to give)
-  pub available List[bool];        // whether the buffer's bytes were loaded
-  pub baseDir Path;
-  pub canReadFiles bool;
-  pub decodeImages bool;
-  pub gltf Gltf;
-  pub failed bool;
-  pub reason String;
+  pub json: Json;
+  pub root: u32;
+  pub buffers: List[List[u8]];      // each buffer's bytes (empty when it has none to give)
+  pub available: List[bool];        // whether the buffer's bytes were loaded
+  pub baseDir: Path;
+  pub canReadFiles: bool;
+  pub decodeImages: bool;
+  pub gltf: Gltf;
+  pub failed: bool;
+  pub reason: String;
 }
 
-fn ldFail(ld &mut Ld, why &str) {
+fn ldFail(ld: &mut Ld, why: &str) {
   if ld.failed { return; }
   ld.failed = true;
   ld.reason = String.from(why);
 }
 
-fn ldFail2(ld &mut Ld, a &str, b &str) {
+fn ldFail2(ld: &mut Ld, a: &str, b: &str) {
   if ld.failed { return; }
   var s = String.from(a);
   s.append(b);
@@ -29,7 +29,7 @@ fn ldFail2(ld &mut Ld, a &str, b &str) {
   ld.reason = s;
 }
 
-fn ldFailIdx(ld &mut Ld, a &str, i usize, b &str) {
+fn ldFailIdx(ld: &mut Ld, a: &str, i: usize, b: &str) {
   if ld.failed { return; }
   var s = String.from(a);
   s.appendUInt(u64.from(i));
@@ -38,16 +38,16 @@ fn ldFailIdx(ld &mut Ld, a &str, i usize, b &str) {
   ld.reason = s;
 }
 
-fn ldWarn(ld &mut Ld, w &str) {
+fn ldWarn(ld: &mut Ld, w: &str) {
   ld.gltf.warnings.push(String.from(w));
 }
 
 // The root's array called key (accessors, bufferViews, ...), or NoNode
-fn rootArray(ld &Ld, key &str) u32 { ld.json.get(ld.root, key) }
+fn rootArray(ld: &Ld, key: &str) u32 { ld.json.get(ld.root, key) }
 
 // ---- base64 (RFC 4648) ----
 
-fn b64Val(c u8) i32 {
+fn b64Val(c: u8) i32 {
   if c >= 'A' && c <= 'Z' { return i32.from(c - 'A'); }
   if c >= 'a' && c <= 'z' { return i32.from(c - 'a') + 26i32; }
   if c >= '0' && c <= '9' { return i32.from(c - '0') + 52i32; }
@@ -58,7 +58,7 @@ fn b64Val(c u8) i32 {
 
 // The bytes of base64 text from 'start'; false on a character that is not
 // base64 (whitespace is skipped, '=' padding ends the data)
-fn base64Decode(t &Array[u8], start usize, out &mut List[u8]) bool {
+fn base64Decode(t: &Array[u8], start: usize, out: &mut List[u8]) bool {
   var acc = 0u32;
   var bits = 0u32;
   var i = start;
@@ -80,7 +80,7 @@ fn base64Decode(t &Array[u8], start usize, out &mut List[u8]) bool {
 }
 
 // %XX escapes decoded, as a relative uri's file name needs
-fn percentDecode(s &str) String {
+fn percentDecode(s: &str) String {
   var out = String.empty();
   var i = 0usize;
   while i < s.len() {
@@ -98,7 +98,7 @@ fn percentDecode(s &str) String {
 
 // The bytes a uri names: a data: uri (base64 only), or a file beside the
 // asset. false when it cannot be had; 'why' says.
-fn loadUri(ld &Ld, uri &str, out &mut List[u8], why &mut String) bool {
+fn loadUri(ld: &Ld, uri: &str, out: &mut List[u8], why: &mut String) bool {
   if uri.startsWith("data:") {
     // data:[<mediatype>][;base64],<data>
     var comma = 5usize;
@@ -151,7 +151,7 @@ const CtU16 = 5123u32;
 const CtU32 = 5125u32;
 const CtF32 = 5126u32;
 
-fn compBytes(ct u32) usize {
+fn compBytes(ct: u32) usize {
   if ct == CtI8 || ct == CtU8 { return 1usize; }
   if ct == CtI16 || ct == CtU16 { return 2usize; }
   if ct == CtU32 || ct == CtF32 { return 4usize; }
@@ -160,7 +160,7 @@ fn compBytes(ct u32) usize {
 
 // glTF's accessor type names: components per element, and for a matrix its
 // columns and rows
-fn typeShape(t &str, cols &mut usize, rows &mut usize) bool {
+fn typeShape(t: &str, cols: &mut usize, rows: &mut usize) bool {
   *cols = 1usize;
   if t == "SCALAR" { *rows = 1usize; return true; }
   if t == "VEC2" { *rows = 2usize; return true; }
@@ -174,24 +174,24 @@ fn typeShape(t &str, cols &mut usize, rows &mut usize) bool {
 
 // Where an accessor's elements are
 struct Lay {
-  pub ok bool;
-  pub count usize;
-  pub cols usize;
-  pub rows usize;
-  pub ct u32;
-  pub normalized bool;
-  pub hasView bool;
-  pub buf usize;
-  pub start usize;      // byte offset of element 0 in the buffer
-  pub stride usize;
-  pub colBytes usize;   // a matrix column's bytes, padded to 4
+  pub ok: bool;
+  pub count: usize;
+  pub cols: usize;
+  pub rows: usize;
+  pub ct: u32;
+  pub normalized: bool;
+  pub hasView: bool;
+  pub buf: usize;
+  pub start: usize;      // byte offset of element 0 in the buffer
+  pub stride: usize;
+  pub colBytes: usize;   // a matrix column's bytes, padded to 4
 }
 
 fn noLay() Lay { new Lay(false, 0usize, 1usize, 1usize, 0u32, false, false, 0usize, 0usize, 0usize, 0usize) }
 
 // A buffer view's place: its buffer, offset, length and stride; false on a
 // bad view (reported)
-fn viewPlace(ld &mut Ld, vi usize, buf &mut usize, off &mut usize, len &mut usize, stride &mut usize) bool {
+fn viewPlace(ld: &mut Ld, vi: usize, buf: &mut usize, off: &mut usize, len: &mut usize, stride: &mut usize) bool {
   let views = rootArray(ld, "bufferViews");
   let v = ld.json.at(views, vi);
   if v == NoNode { ldFailIdx(ld, "buffer view ", vi, " does not exist"); return false; }
@@ -211,7 +211,7 @@ fn viewPlace(ld &mut Ld, vi usize, buf &mut usize, off &mut usize, len &mut usiz
 }
 
 // The accessor's layout, checked against its buffer
-fn layoutOf(ld &mut Ld, ai usize) Lay {
+fn layoutOf(ld: &mut Ld, ai: usize) Lay {
   let accs = rootArray(ld, "accessors");
   let a = ld.json.at(accs, ai);
   if a == NoNode { ldFailIdx(ld, "accessor ", ai, " does not exist"); return noLay(); }
@@ -248,14 +248,14 @@ fn layoutOf(ld &mut Ld, ai usize) Lay {
   l
 }
 
-fn le16(d &Array[u8], at usize) u32 { u32.from(d[at]) | (u32.from(d[at + 1usize]) << 8u32) }
-fn le32(d &Array[u8], at usize) u32 {
+fn le16(d: &Array[u8], at: usize) u32 { u32.from(d[at]) | (u32.from(d[at + 1usize]) << 8u32) }
+fn le32(d: &Array[u8], at: usize) u32 {
   u32.from(d[at]) | (u32.from(d[at + 1usize]) << 8u32) | (u32.from(d[at + 2usize]) << 16u32) | (u32.from(d[at + 3usize]) << 24u32)
 }
 
 // One component at byte offset 'at' as a float (normalised if asked: the
 // signed formulas of the glTF specification, c / 127 floored at -1, and so on)
-fn compAsFloat(d &Array[u8], at usize, ct u32, normalized bool) f32 {
+fn compAsFloat(d: &Array[u8], at: usize, ct: u32, normalized: bool) f32 {
   if ct == CtF32 { return le32(d, at) as f32; }
   if ct == CtU8 {
     let v = f32.from(u32.from(d[at]));
@@ -283,7 +283,7 @@ fn compAsFloat(d &Array[u8], at usize, ct u32, normalized bool) f32 {
 // All of an accessor as floats, element after element, each 'cols * rows'
 // numbers (a matrix column by column), into 'out' (cleared first). The
 // sparse substitution is applied. false if it fails (reported).
-fn readFloats(ld &mut Ld, ai usize, out &mut List[f32], per &mut usize) bool {
+fn readFloats(ld: &mut Ld, ai: usize, out: &mut List[f32], per: &mut usize) bool {
   out.clear();
   let l = layoutOf(ld, ai);
   if !l.ok { return false; }
@@ -317,7 +317,7 @@ fn readFloats(ld &mut Ld, ai usize, out &mut List[f32], per &mut usize) bool {
 }
 
 // The same for integer accessors (indices, joints), unnormalised
-fn readUints(ld &mut Ld, ai usize, out &mut List[u32], per &mut usize) bool {
+fn readUints(ld: &mut Ld, ai: usize, out: &mut List[u32], per: &mut usize) bool {
   out.clear();
   let l = layoutOf(ld, ai);
   if !l.ok { return false; }
@@ -352,15 +352,15 @@ fn readUints(ld &mut Ld, ai usize, out &mut List[u32], per &mut usize) bool {
 // The sparse description of accessor ai: its count, and where indices and
 // values are. 'count' 0 when it has none.
 struct Sparse {
-  pub count usize;
-  pub idxView usize;
-  pub idxOff usize;
-  pub idxType u32;
-  pub valView usize;
-  pub valOff usize;
+  pub count: usize;
+  pub idxView: usize;
+  pub idxOff: usize;
+  pub idxType: u32;
+  pub valView: usize;
+  pub valOff: usize;
 }
 
-fn sparseOf(ld &Ld, ai usize) Sparse {
+fn sparseOf(ld: &Ld, ai: usize) Sparse {
   let a = ld.json.at(rootArray(ld, "accessors"), ai);
   let sp = ld.json.get(a, "sparse");
   if sp == NoNode { return new Sparse(0usize, 0usize, 0usize, 0u32, 0usize, 0usize); }
@@ -372,7 +372,7 @@ fn sparseOf(ld &Ld, ai usize) Sparse {
 }
 
 // The index of sparse entry k
-fn sparseIndex(ld &mut Ld, s &Sparse, k usize) usize {
+fn sparseIndex(ld: &mut Ld, s: &Sparse, k: usize) usize {
   var buf = 0usize;
   var off = 0usize;
   var len = 0usize;
@@ -387,7 +387,7 @@ fn sparseIndex(ld &mut Ld, s &Sparse, k usize) usize {
   usize.from(le32(d, at))
 }
 
-fn applySparseFloats(ld &mut Ld, ai usize, l &Lay, n usize, out &mut List[f32]) {
+fn applySparseFloats(ld: &mut Ld, ai: usize, l: &Lay, n: usize, out: &mut List[f32]) {
   let s = sparseOf(ld, ai);
   if s.count == 0usize { return; }
   var buf = 0usize;
@@ -417,7 +417,7 @@ fn applySparseFloats(ld &mut Ld, ai usize, l &Lay, n usize, out &mut List[f32]) 
   }
 }
 
-fn applySparseUints(ld &mut Ld, ai usize, l &Lay, n usize, out &mut List[u32]) {
+fn applySparseUints(ld: &mut Ld, ai: usize, l: &Lay, n: usize, out: &mut List[u32]) {
   let s = sparseOf(ld, ai);
   if s.count == 0usize { return; }
   var buf = 0usize;
@@ -444,7 +444,7 @@ fn applySparseUints(ld &mut Ld, ai usize, l &Lay, n usize, out &mut List[u32]) {
 }
 
 // Say, clearly, what a compressed file would take
-fn refuseCompressed(ld &mut Ld, ext &str) {
+fn refuseCompressed(ld: &mut Ld, ext: &str) {
   if ld.failed { return; }
   var m = String.from(ext);
   m.append(" is not supported. ");

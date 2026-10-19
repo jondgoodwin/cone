@@ -46,39 +46,39 @@ const MaxBufferWords = 33554432u64;
 
 // One dispatch of a run: a kernel over slots, so many invocations
 struct NetPass {
-  kernel u32;
-  slots List[u32];
-  invocations u32;
+  kernel: u32;
+  slots: List[u32];
+  invocations: u32;
 }
 
 // A run of the kernels over numbered slots, the same for the GPU (each slot
 // a buffer given to the job in order, so its job slot is its number) and
 // for the twin (each slot a list of words)
 struct NetPlan {
-  kinds List[u32];
-  sizes List[u64];               // words
-  starts List[List[u32]];        // a SlotWords slot's words
-  passes List[NetPass];
+  kinds: List[u32];
+  sizes: List[u64];               // words
+  starts: List[List[u32]];        // a SlotWords slot's words
+  passes: List[NetPass];
 
   fn empty() NetPlan {
     new NetPlan(List[u32].empty(), List[u64].empty(), List[List[u32]].empty(), List[NetPass].empty())
   }
 
-  fn add(self &mut, kind u32, size u64, words List[u32]) u32 {
+  fn add(self: &mut, kind: u32, size: u64, words: List[u32]) u32 {
     kinds.push(kind);
     sizes.push(size);
     starts.push(words);
     u32.from(kinds.len() - 1usize)
   }
-  fn words(self &mut, words List[u32]) u32 {
+  fn words(self: &mut, words: List[u32]) u32 {
     let n = u64.from(words.len());
     self.add(SlotWords, n, words)
   }
-  fn zeros(self &mut, n u64) u32 { self.add(SlotZero, n, List[u32].empty()) }
-  fn scratch(self &mut, n u64) u32 { self.add(SlotScratch, n, List[u32].empty()) }
-  fn drawable(self &mut, n u64) u32 { self.add(SlotDrawable, n, List[u32].empty()) }
+  fn zeros(self: &mut, n: u64) u32 { self.add(SlotZero, n, List[u32].empty()) }
+  fn scratch(self: &mut, n: u64) u32 { self.add(SlotScratch, n, List[u32].empty()) }
+  fn drawable(self: &mut, n: u64) u32 { self.add(SlotDrawable, n, List[u32].empty()) }
 
-  fn pass(self &mut, kernel u32, slots &Array[u32], invocations u32) {
+  fn pass(self: &mut, kernel: u32, slots: &Array[u32], invocations: u32) {
     var s = List[u32].withCapacity(slots.len);
     var i = 0usize;
     while i < slots.len {
@@ -89,7 +89,7 @@ struct NetPlan {
   }
 
   // The words of the largest slot
-  fn largest(self &) u64 {
+  fn largest(self: &) u64 {
     var m = 0u64;
     var i = 0usize;
     while i < sizes.len() {
@@ -101,7 +101,7 @@ struct NetPlan {
 }
 
 // A plain value's words, as a by-value kernel parameter's buffer holds them
-fn valueWords[T](value &T) List[u32] {
+fn valueWords[T](value: &T) List[u32] {
   let n = mem.sizeof[T]() / 4usize;
   let p = value as *u32;
   var out = List[u32].withCapacity(n);
@@ -117,7 +117,7 @@ fn valueWords[T](value &T) List[u32] {
 // place: each block of 256 summed, the sums scanned the same way (level
 // upon level, until one block is left, which one invocation scans), and each
 // block then scanned from its sum's start
-fn planScan(plan &mut NetPlan, items u32, count u32) {
+fn planScan(plan: &mut NetPlan, items: u32, count: u32) {
   let step = plan.words(valueWords(&new gridnet.ScanStep(count)));
   if count <= gridnet.ScanBlock {
     let base = plan.zeros(1u64);
@@ -142,7 +142,7 @@ const SQuadStarts = 5u32;
 // The first part of a run: each cell's config and vertex count, each
 // sample's quad count, both scanned, and the two totals into the plan's
 // last slot (its answer)
-fn planCounts(grid SampleGrid, tables &List[u32]) NetPlan {
+fn planCounts(grid: SampleGrid, tables: &List[u32]) NetPlan {
   var plan = NetPlan.empty();
   let cells = grid.cellCount();
   let samples = grid.sampleCount();
@@ -171,7 +171,7 @@ fn planCounts(grid SampleGrid, tables &List[u32]) NetPlan {
 // The second part, after the first: the vertices and the triangles, into
 // four new slots (positions, normals, vertex cells, indices), whose numbers
 // it answers in 'out'
-fn planMesh(plan &mut NetPlan, grid SampleGrid, vertices u32, quads u32, out &mut List[u32]) {
+fn planMesh(plan: &mut NetPlan, grid: SampleGrid, vertices: u32, quads: u32, out: &mut List[u32]) {
   let positions = plan.drawable(3u64 * u64.from(vertices));
   let normals = plan.drawable(3u64 * u64.from(vertices));
   let cells = plan.scratch(u64.from(vertices));
@@ -186,11 +186,11 @@ fn planMesh(plan &mut NetPlan, grid SampleGrid, vertices u32, quads u32, out &mu
 
 // Workgroups for n invocations of 64 each: x, and y rows of x (a dispatch is
 // at most 65,535 a side; the kernels flatten the two)
-fn groupsX(n u32) u32 {
+fn groupsX(n: u32) u32 {
   let g = (n + 63u32) / 64u32;
   if g == 0u32 { 1u32 } elif g <= 65535u32 { g } else { 32768u32 }
 }
-fn groupsY(n u32) u32 {
+fn groupsY(n: u32) u32 {
   let g = (n + 63u32) / 64u32;
   let x = groupsX(n);
   if g <= x { 1u32 } else { (g + x - 1u32) / x }
@@ -229,24 +229,24 @@ fn packedTables() List[u32] {
 // index buffer), in surfaceNet's order; and the samples, handed back. 'ok'
 // is false when it could not be made (gpuwork says why, on stderr)
 pub struct GridNet {
-  pub ok bool;
-  pub grid SampleGrid;
-  pub vertexCount u32;
-  pub triangleCount u32;
-  pub samples Buffer;
-  pub positions Buffer;
-  pub normals Buffer;
-  pub vertexCells Buffer;
-  pub indices Buffer;
+  pub ok: bool;
+  pub grid: SampleGrid;
+  pub vertexCount: u32;
+  pub triangleCount: u32;
+  pub samples: Buffer;
+  pub positions: Buffer;
+  pub normals: Buffer;
+  pub vertexCells: Buffer;
+  pub indices: Buffer;
 
-  fn failed(grid SampleGrid, samples Buffer) GridNet {
+  fn failed(grid: SampleGrid, samples: Buffer) GridNet {
     new GridNet(false, grid, 0u32, 0u32, samples, Buffer.none(), Buffer.none(), Buffer.none(), Buffer.none())
   }
 
   // The net read back to the CPU as a SurfaceNet: its quads made again from
   // the triangle pairs, so that 'toMesh' gives these triangles back. It
   // waits for the GPU. The buffers stay on the GPU, in the GridNet
-  pub fn readBack(self &mut, device &mut Device) SurfaceNet {
+  pub fn readBack(self: &mut, device: &mut Device) SurfaceNet {
     var p = List[u32].empty();
     var n = List[u32].empty();
     var ix = List[u32].empty();
@@ -259,7 +259,7 @@ pub struct GridNet {
   // The net read back as a mesh.Mesh: the positions, the normals and the
   // GPU's own triangles, its index buffer's words as they are. It waits for
   // the GPU; the buffers stay on the GPU
-  pub fn readBackMesh(self &mut, device &mut Device) mesh.Mesh {
+  pub fn readBackMesh(self: &mut, device: &mut Device) mesh.Mesh {
     var p = List[u32].empty();
     var n = List[u32].empty();
     var ix = List[u32].empty();
@@ -280,7 +280,7 @@ pub struct GridNet {
   }
 
   // The positions', normals' and indices' words, read back
-  fn readWords(self &mut, device &mut Device, pw &mut List[u32], nw &mut List[u32], iw &mut List[u32]) bool {
+  fn readWords(self: &mut, device: &mut Device, pw: &mut List[u32], nw: &mut List[u32], iw: &mut List[u32]) bool {
     if !ok { return false; }
     var works = Works.make();
     var job = Job.make(device);
@@ -317,7 +317,7 @@ pub struct GridNet {
 // A SurfaceNet from the words of its positions, normals and triangles: each
 // pair of triangles one quad again ((a, b, c), (a, c, d) is cut along a to
 // c; (a, b, d), (b, c, d) along b to d; either way the quad is a, b, c, d)
-fn netOfWords(grid SampleGrid, p &List[u32], n &List[u32], ix &List[u32], vertices u32, triangles u32) SurfaceNet {
+fn netOfWords(grid: SampleGrid, p: &List[u32], n: &List[u32], ix: &List[u32], vertices: u32, triangles: u32) SurfaceNet {
   let nv = usize.from(vertices);
   var positions = List[Vec3].withCapacity(nv);
   var normals = List[Vec3].withCapacity(nv);
@@ -350,18 +350,18 @@ fn netOfWords(grid SampleGrid, p &List[u32], n &List[u32], ix &List[u32], vertic
 // gpu/gridnet.cone's kernels, from sdfmesh.spv (which Congo copies beside
 // every program that imports sdfmesh), each with its CPU twin
 pub struct GridMesher {
-  classify Kernel;
-  countQuads Kernel;
-  scanTotals Kernel;
-  scanApply Kernel;
-  gather Kernel;
-  place Kernel;
-  emit Kernel;
-  tables List[u32];
+  classify: Kernel;
+  countQuads: Kernel;
+  scanTotals: Kernel;
+  scanApply: Kernel;
+  gather: Kernel;
+  place: Kernel;
+  emit: Kernel;
+  tables: List[u32];
 
   // The kernels, made on 'device'. Check 'isValid': sdfmesh.spv must be
   // beside the program
-  pub fn make(device &Device) GridMesher {
+  pub fn make(device: &Device) GridMesher {
     let spirv = readSpirv("sdfmesh.spv");
     let s = spirv.view();
     var m = new GridMesher(
@@ -384,21 +384,21 @@ pub struct GridMesher {
   }
 
   // Whether every kernel was made, with its twin
-  pub fn isValid(self &) bool {
+  pub fn isValid(self: &) bool {
     classify.isValid() && countQuads.isValid() && scanTotals.isValid() && scanApply.isValid()
       && gather.isValid() && place.isValid() && emit.isValid()
       && classify.hasTwin && countQuads.hasTwin && scanTotals.hasTwin && scanApply.hasTwin
       && gather.hasTwin && place.hasTwin && emit.hasTwin
   }
 
-  fn kernel(self &, k u32) &Kernel {
+  fn kernel(self: &, k: u32) &Kernel {
     if k == KClassify { &classify } elif k == KCountQuads { &countQuads } elif k == KScanTotals { &scanTotals }
     elif k == KScanApply { &scanApply } elif k == KGather { &gather } elif k == KPlace { &place } else { &emit }
   }
 
   // Record the plan's passes from 'first' into a job whose slots are the
   // plan's
-  fn record(self &, device &mut Device, job &mut Job, plan &NetPlan, first usize) bool {
+  fn record(self: &, device: &mut Device, job: &mut Job, plan: &NetPlan, first: usize) bool {
     var ok = true;
     var i = first;
     while i < plan.passes.len() {
@@ -422,7 +422,7 @@ pub struct GridMesher {
   // fastest, in a buffer gpuwork can bind: one a kernel wrote, or 'upload's),
   // made on the GPU and left there. It waits for the GPU. The samples are
   // handed back in the GridNet
-  pub fn mesh(self &, device &mut Device, grid SampleGrid, samples Buffer) GridNet {
+  pub fn mesh(self: &, device: &mut Device, grid: SampleGrid, samples: Buffer) GridNet {
     // The counts
     var plan = planCounts(grid, &tables);
     if plan.largest() > MaxBufferWords || 6u64 * u64.from(grid.sampleCount()) > 0xffffffffu64 {
@@ -487,7 +487,7 @@ pub struct GridMesher {
   }
 
   // The same of samples on the CPU: uploaded, then meshed on the GPU
-  pub fn meshSamples(self &, device &mut Device, grid SampleGrid, samples &Array[f32]) GridNet {
+  pub fn meshSamples(self: &, device: &mut Device, grid: SampleGrid, samples: &Array[f32]) GridNet {
     let words = mem.sliceFromParts[u32](if samples.len > 0usize { &samples[0usize] as *u32 } else { null as *u32 },
       samples.len);
     self.mesh(device, grid, upload(device, words))
@@ -496,7 +496,7 @@ pub struct GridMesher {
   // The same mesh made by the kernels' CPU twins, one invocation at a time
   // in a fixed order, read out as a SurfaceNet: bit for bit what the GPU
   // makes and 'readBack' reads. Slow; for tests
-  pub fn meshOnTwin(self &, grid SampleGrid, samples &Array[f32]) SurfaceNet {
+  pub fn meshOnTwin(self: &, grid: SampleGrid, samples: &Array[f32]) SurfaceNet {
     var plan = planCounts(grid, &tables);
     var store = List[List[u32]].empty();
     var s = 0usize;
@@ -521,7 +521,7 @@ pub struct GridMesher {
   }
 
   // Run the plan's passes from 'first' on their twins over the slots' words
-  fn runTwins(self &, plan &NetPlan, store &mut List[List[u32]], first usize) {
+  fn runTwins(self: &, plan: &NetPlan, store: &mut List[List[u32]], first: usize) {
     var i = first;
     while i < plan.passes.len() {
       let pass = plan.passes[i];
@@ -546,13 +546,13 @@ pub struct GridMesher {
 }
 
 // Element i of a list moved out, an empty one left in its place
-fn takeBuffer(list &mut List[Buffer], i usize) Buffer {
+fn takeBuffer(list: &mut List[Buffer], i: usize) Buffer {
   var b = Buffer.none();
   let r = &mut list[i];
   b <=> *r;
   b
 }
-fn takeWords(list &mut List[List[u32]], i usize) List[u32] {
+fn takeWords(list: &mut List[List[u32]], i: usize) List[u32] {
   var w = List[u32].empty();
   let r = &mut list[i];
   w <=> *r;
@@ -560,7 +560,7 @@ fn takeWords(list &mut List[List[u32]], i usize) List[u32] {
 }
 
 // Slot s's buffer on the GPU, as the plan starts it
-fn makeBuffer(device &mut Device, plan &NetPlan, s usize) Buffer {
+fn makeBuffer(device: &mut Device, plan: &NetPlan, s: usize) Buffer {
   let kind = *plan.kinds[s];
   if kind == SlotWords { return upload(device, plan.starts[s].view()); }
   if kind == SlotZero { return zeroed(device, usize.from(*plan.sizes[s])); }
@@ -572,7 +572,7 @@ fn makeBuffer(device &mut Device, plan &NetPlan, s usize) Buffer {
 }
 
 // Slot s's words on the twin, as the plan starts it
-fn twinWords(plan &NetPlan, s usize, samples &Array[f32]) List[u32] {
+fn twinWords(plan: &NetPlan, s: usize, samples: &Array[f32]) List[u32] {
   let kind = *plan.kinds[s];
   var out = List[u32].withCapacity(usize.from(*plan.sizes[s]));
   if kind == SlotWords {

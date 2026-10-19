@@ -33,24 +33,24 @@
 // earlier frames' reads.
 
 struct AccelerationStructureBackend {
-  device vulkan.Device;
-  fns DevFns;
-  ray vulkan.RayFns;
-  handle vulkan.AccelerationStructureKHR;
+  device: vulkan.Device;
+  fns: DevFns;
+  ray: vulkan.RayFns;
+  handle: vulkan.AccelerationStructureKHR;
 }
 
 // One instance of a top-level structure: a bottom-level structure placed in the world. 64 bytes,
 // the layout the GPU reads (VkAccelerationStructureInstanceKHR).
 pub struct AccelerationStructureInstance {
   // The object-to-world transform, a 3 x 4 matrix in rows
-  pub transform Array[f32, 12];
+  pub transform: Array[f32, 12];
   // The custom index (low 24 bits; a shader reads it back from the hit) and the visibility mask (high 8: a ray
   // with a mask that shares no bit with it misses the instance)
-  pub indexAndMask u32;
+  pub indexAndMask: u32;
   // The flags in the high 8 bits (INSTANCE_FLAG_...), the low 24 unused
-  pub flags u32;
+  pub flags: u32;
   // The bottom-level structure's 'address'
-  pub structure u64;
+  pub structure: u64;
 }
 
 pub const INSTANCE_FLAG_TRIANGLE_FACING_CULL_DISABLE = 0x1u32;   // both faces of a triangle are hit
@@ -59,19 +59,19 @@ pub const ACCELERATION_STRUCTURE_INSTANCE_BYTES = 64u64;
 
 // An acceleration structure: what rays are cast into
 pub struct AccelerationStructure {
-  backend AccelerationStructureBackend;
-  storage Buffer;                  // the memory it lives in
-  pub scratch Buffer;              // the memory a build works in; given back with 'queue.releaseBuffer' once built, for a bottom level
-  pub instances Buffer;            // a top level's instances (not a bottom level's)
-  pub address u64;                 // its device address, which an instance refers to it by
-  pub top bool;
-  pub capacity u32;                // triangles (bottom level) or most instances (top level)
-  inputAddress u64;                // bottom: the positions' address; top: the instances'
-  indexAddress u64;
-  scratchAddress u64;
-  vertexCount u32;
+  backend: AccelerationStructureBackend;
+  storage: Buffer;                  // the memory it lives in
+  pub scratch: Buffer;              // the memory a build works in; given back with 'queue.releaseBuffer' once built, for a bottom level
+  pub instances: Buffer;            // a top level's instances (not a bottom level's)
+  pub address: u64;                 // its device address, which an instance refers to it by
+  pub top: bool;
+  pub capacity: u32;                // triangles (bottom level) or most instances (top level)
+  inputAddress: u64;                // bottom: the positions' address; top: the instances'
+  indexAddress: u64;
+  scratchAddress: u64;
+  vertexCount: u32;
 
-  pub fn isValid(self &) bool { backend.handle.h != 0u64 }
+  pub fn isValid(self: &) bool { backend.handle.h != 0u64 }
 
   // No structure: what a field holds before one is made for it (not valid)
   pub fn none() AccelerationStructure {
@@ -80,7 +80,7 @@ pub struct AccelerationStructure {
       0u64, 0u32)
   }
 
-  fn final(self &uni) {
+  fn final(self: &uni) {
     if backend.handle.h != 0u64 {
       backend.fns.deviceWaitIdle(backend.device);
       backend.ray.destroyAccelerationStructureKHR(backend.device, backend.handle, nullp());
@@ -88,21 +88,21 @@ pub struct AccelerationStructure {
   }
 }
 
-fn noStructure(device &Device) AccelerationStructure {
+fn noStructure(device: &Device) AccelerationStructure {
   new AccelerationStructure(new AccelerationStructureBackend(device.backend.device, device.backend.fns, device.backend.ray,
     new vulkan.AccelerationStructureKHR(0u64)), Buffer.none(), Buffer.none(), Buffer.none(), 0u64, false, 0u32, 0u64, 0u64, 0u64, 0u32)
 }
 
-fn bufferAddress(device &Device, buffer &Buffer) u64 {
+fn bufferAddress(device: &Device, buffer: &Buffer) u64 {
   let info = new vulkan.BufferDeviceAddressInfo(buffer: buffer.backend.buffer);
   device.backend.ray.getBufferDeviceAddress(device.backend.device, &info)
 }
 
-fn roundUp256(n u64) u64 { ((n + 255u64) / 256u64) * 256u64 }
+fn roundUp256(n: u64) u64 { ((n + 255u64) / 256u64) * 256u64 }
 
 // The structure over one mesh's triangles. The buffers are read when the build is recorded, so they
 // must keep these contents until then (and must not be released before the build is done).
-fn makeBottomLevel(device &mut Device, positions &Buffer, vertexCount u32, indices &Buffer, indexCount u32) AccelerationStructure {
+fn makeBottomLevel(device: &mut Device, positions: &Buffer, vertexCount: u32, indices: &Buffer, indexCount: u32) AccelerationStructure {
   var result = noStructure(device);
   if !device.rayTracing {
     fail("createBottomLevel: the device was made without ray tracing");
@@ -148,10 +148,10 @@ fn makeBottomLevel(device &mut Device, positions &Buffer, vertexCount u32, indic
   result
 }
 
-fn umax64(a u64, b u64) u64 { if a > b { a } else { b } }
+fn umax64(a: u64, b: u64) u64 { if a > b { a } else { b } }
 
 // The structure over up to 'maxInstances' placed bottom-level ones
-fn makeTopLevel(device &mut Device, maxInstances u32) AccelerationStructure {
+fn makeTopLevel(device: &mut Device, maxInstances: u32) AccelerationStructure {
   var result = noStructure(device);
   if !device.rayTracing {
     fail("createTopLevel: the device was made without ray tracing");
@@ -195,7 +195,7 @@ fn makeTopLevel(device &mut Device, maxInstances u32) AccelerationStructure {
 
 // Record the build of 'structure' (all of a bottom level; the first 'count' instances of a top level),
 // after everything recorded before it, and visible to everything after
-fn recordBuild(encoder &mut CommandEncoder, structure &AccelerationStructure, count u32) {
+fn recordBuild(encoder: &mut CommandEncoder, structure: &AccelerationStructure, count: u32) {
   let cmd = encoder.backend.cmd;
   if isNull(cmd) || !structure.isValid() { return; }
   var n = count;
@@ -213,7 +213,7 @@ fn recordBuild(encoder &mut CommandEncoder, structure &AccelerationStructure, co
   let triangles = new vulkan.AccelerationStructureGeometryTrianglesKHR(vertexData: structure.inputAddress,
     maxVertex: structure.vertexCount - 1u32, indexData: structure.indexAddress, flags: vulkan.GEOMETRY_OPAQUE_BIT_KHR);
   let instances = new vulkan.AccelerationStructureGeometryInstancesKHR(data: structure.inputAddress);
-  let geometry *u8 = if structure.top { &instances as *u8 } else { &triangles as *u8 };
+  let geometry: *u8 = if structure.top { &instances as *u8 } else { &triangles as *u8 };
   let info = new vulkan.AccelerationStructureBuildGeometryInfoKHR(
     type: if structure.top { vulkan.ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR } else { vulkan.ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR },
     flags: vulkan.BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR,

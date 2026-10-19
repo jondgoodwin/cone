@@ -18,26 +18,26 @@ import collections use *;
 import sync use *;
 import actors;
 
-struct Leaf { pub n u64; }
+struct Leaf { pub n: u64; }
 
 // A region of the program's own that says it may be shared
 struct Safe is RegionRef, ThreadSafe {
-  cnt usize;
-  fn alloc(size usize) *u8 inline { malloc(size) }
-  fn init(self &new) inline { *self = new Safe(1usize); }
-  fn aliasRef(self &uni Safe) inline { mem.atomicAdd[usize](self as *usize, 1usize, MemOrder.Relaxed); }
-  fn dealiasRef(self &uni Safe) bool inline {
+  cnt: usize;
+  fn alloc(size: usize) *u8 inline { malloc(size) }
+  fn init(self: &new) inline { *self = new Safe(1usize); }
+  fn aliasRef(self: &uni Safe) inline { mem.atomicAdd[usize](self as *usize, 1usize, MemOrder.Relaxed); }
+  fn dealiasRef(self: &uni Safe) bool inline {
     mem.atomicSub[usize](self as *usize, 1usize, MemOrder.AcqRel) == 1usize
   }
 }
 
 // A helper that copies an element of a list it was lent
-fn grabFirst(xs &List[Rc[imm, u64]]) u64 {
+fn grabFirst(xs: &List[Rc[imm, u64]]) u64 {
   let c = *xs[0usize];
   *c
 }
 
-fn lists(xs &List[Rc[imm, u64]]) {
+fn lists(xs: &List[Rc[imm, u64]]) {
   let total = Atomic[u64].of(0u64);
   parallel each i in 0usize ..< 1000usize {
     total.add(grabFirst(xs));                      //~ ErrorParReach "reaches 'xs'"
@@ -47,16 +47,16 @@ fn lists(xs &List[Rc[imm, u64]]) {
   }
 }
 
-fn dicts(d &Dict[u64, Rc[imm, u64]]) {
+fn dicts(d: &Dict[u64, Rc[imm, u64]]) {
   let total = Atomic[u64].of(0u64);
   parallel each i in 0usize ..< 1000usize {
     total.add(u64.from(d.len()));                  //~ ErrorParReach "reaches 'd'"
   }
 }
 
-fn flag(o &Option[Rc[imm, u64]]) u64 { 1u64 }
+fn flag(o: &Option[Rc[imm, u64]]) u64 { 1u64 }
 
-fn options(o &Option[Rc[imm, u64]]) {
+fn options(o: &Option[Rc[imm, u64]]) {
   let total = Atomic[u64].of(0u64);
   parallel each i in 0usize ..< 1000usize {
     total.add(flag(o));                            //~ ErrorParReach "reaches 'o'"
@@ -64,7 +64,7 @@ fn options(o &Option[Rc[imm, u64]]) {
 }
 
 // Allowed: a list of numbers, of Arc, and of a ThreadSafe region of the program's own
-fn allowed(a &List[u32], b &List[Arc[imm, u64]], c &List[Safe[imm, Leaf]], d &Dict[u64, Arc[imm, u64]]) {
+fn allowed(a: &List[u32], b: &List[Arc[imm, u64]], c: &List[Safe[imm, Leaf]], d: &Dict[u64, Arc[imm, u64]]) {
   let total = Atomic[u64].of(0u64);
   parallel each i in 0usize ..< 1000usize {
     total.add(u64.from(a.len()) + u64.from(b.len()) + u64.from(c.len()) + u64.from(d.len()));
@@ -73,11 +73,11 @@ fn allowed(a &List[u32], b &List[Arc[imm, u64]], c &List[Safe[imm, Leaf]], d &Di
 
 // A struct that holds an Rc, named for its number: copy the number out first
 struct Holder {
-  shared Rc[imm, u64];
-  n u64;
+  shared: Rc[imm, u64];
+  n: u64;
 }
 
-fn holder(h &Holder) {
+fn holder(h: &Holder) {
   let total = Atomic[u64].of(0u64);
   parallel each i in 0usize ..< 1000usize {
     total.add(h.n);                                //~ ErrorParReach "Copy what the loop needs into a local before it ('let n = h.n;')"
@@ -88,7 +88,7 @@ fn holder(h &Holder) {
   }
 }
 
-fn counted(shared Rc[imm, u64]) {
+fn counted(shared: Rc[imm, u64]) {
   let total = Atomic[u64].of(0u64);
   parallel each i in 0usize ..< 1000usize {
     total.add(*shared);                            //~ ErrorParReach "Borrow what the body needs before the loop ('let mesh = &*shared;')"
@@ -97,10 +97,10 @@ fn counted(shared Rc[imm, u64]) {
 
 // An actor whose state holds an Rc: 'self.n' in the loop is refused, a local copy is not
 actor Keeper {
-  keep Rc[imm, u64];
-  n u64;
+  keep: Rc[imm, u64];
+  n: u64;
 
-  fn init(self &new) {
+  fn init(self: &new) {
     *self = new Self(keep: new Rc[imm, u64](1u64), n: 3u64);
   }
 

@@ -38,24 +38,24 @@ const PRIM_BYTES = 80u64;
 // ---- the renderer ----
 
 struct Rig {
-  font Font;
-  atlas Atlas;
-  shader ShaderModule;
-  groupLayout BindGroupLayout;
-  layout PipelineLayout;
-  pipeline RenderPipeline;
-  uniforms Buffer;
-  group BindGroup;
-  instances Buffer;
-  capacity u32;
-  text TextRenderer;
-  slots List[TextHandle];
-  target Texture;
-  readback Buffer;
-  prims u32 = 0u32;
-  glyphs u32 = 0u32;
+  font: Font;
+  atlas: Atlas;
+  shader: ShaderModule;
+  groupLayout: BindGroupLayout;
+  layout: PipelineLayout;
+  pipeline: RenderPipeline;
+  uniforms: Buffer;
+  group: BindGroup;
+  instances: Buffer;
+  capacity: u32;
+  text: TextRenderer;
+  slots: List[TextHandle];
+  target: Texture;
+  readback: Buffer;
+  prims: u32 = 0u32;
+  glyphs: u32 = 0u32;
 
-  fn make(device &mut Device, font Font) Rig {
+  fn make(device: &mut Device, font: Font) Rig {
     var atlas = Atlas.create(AtlasConfig.standard());
     // the printable ASCII now, not in the middle of a frame (3 ms a glyph)
     var cp = 32u32;
@@ -93,7 +93,7 @@ struct Rig {
 
   // The list drawn into the target. 'copyOut' also copies the picture to the readback buffer. Nanoseconds
   // spent preparing (prep), recording and submitting (record) and waiting for the GPU (wait) go into 'times'
-  fn paint(self &mut, device &mut Device, list &DrawList, copyOut bool, times &mut List[i64]) {
+  fn paint(self: &mut, device: &mut Device, list: &DrawList, copyOut: bool, times: &mut List[i64]) {
     let t0 = sdl.GetTicksNS();
     var data = List[f32].withCapacity(list.cmds.len() * PRIM_FLOATS);
     var clips = List[f32].empty();
@@ -253,7 +253,7 @@ struct Rig {
       instances = device.createBuffer(u64.from(capacity) * PRIM_BYTES, BUFFER_USAGE_VERTEX | BUFFER_USAGE_COPY_DST);
     }
     if count > 0u32 {
-      let raw *f32 = data.view() as *f32;
+      let raw: *f32 = data.view() as *f32;
       device.queue.writeBuffer(&instances, 0u64, raw as *u8, u64.from(count) * PRIM_BYTES);
     }
     let t1 = sdl.GetTicksNS();
@@ -280,7 +280,7 @@ struct Rig {
   }
 
   // The last picture as a PNG
-  fn savePng(self &, file &Path) {
+  fn savePng(self: &, file: &Path) {
     let px = readback.mappedRange();
     var samples = List[u16].withCapacity(usize.from(W * H * 4u32));
     var i = 0usize;
@@ -294,7 +294,7 @@ struct Rig {
   }
 }
 
-fn pushColor(data &mut List[f32], c u32) {
+fn pushColor(data: &mut List[f32], c: u32) {
   data.push(f32.from((c >> 24u32) & 255u32) / 255.);
   data.push(f32.from((c >> 16u32) & 255u32) / 255.);
   data.push(f32.from((c >> 8u32) & 255u32) / 255.);
@@ -304,8 +304,8 @@ fn pushColor(data &mut List[f32], c u32) {
 // ---- the program's use of the editor ----
 
 // One frame of the Ui and the editor: layout, the queued events applied, the draw list made again if it changed
-fn frame(ui &mut Ui, ed &mut Editor, font &Font, atlas &mut Atlas) {
-  var m = fn(t &str, face u32, size f32) Vec2 {
+fn frame(ui: &mut Ui, ed: &mut Editor, font: &Font, atlas: &mut Atlas) {
+  var m = fn(t: &str, face: u32, size: f32) Vec2 {
     let lay = layoutText(font, atlas, t, &LayoutOptions.make(size));
     new Vec2(lay.width, lay.height)
   };
@@ -314,7 +314,7 @@ fn frame(ui &mut Ui, ed &mut Editor, font &Font, atlas &mut Atlas) {
   ed.refresh(ui, &mut m, &coneTokenizer);
 }
 
-fn click(ui &mut Ui, p Vec2, mods u32) {
+fn click(ui: &mut Ui, p: Vec2, mods: u32) {
   pointerMove(ui, p.x + 1., p.y);
   ui.input.mods = mods;
   pointerDown(ui, BTN_LEFT);
@@ -323,12 +323,12 @@ fn click(ui &mut Ui, p Vec2, mods u32) {
 }
 
 // A key pressed and let go (the Ui keeps the modifiers of the last key event until told otherwise)
-fn press(ui &mut Ui, code u32, mods u32) {
+fn press(ui: &mut Ui, code: u32, mods: u32) {
   keyDown(ui, code, mods);
   keyUp(ui, code, 0u32);
 }
 
-fn typeString(ui &mut Ui, s &str) {
+fn typeString(ui: &mut Ui, s: &str) {
   let n = s.len();
   var i = 0usize;
   while i < n {
@@ -342,30 +342,30 @@ fn typeString(ui &mut Ui, s &str) {
   }
 }
 
-fn p50(v &List[i64]) i64 {
+fn p50(v: &List[i64]) i64 {
   var c = List[i64].empty();
   var i = 0usize;
   while i < v.len() {
     c.push(*v[i]);
     i = i + 1usize;
   }
-  c.sortBy(fn(a &i64, b &i64) i32 { if *a < *b {-1i32} elif *a > *b {1i32} else {0i32} });
+  c.sortBy(fn(a: &i64, b: &i64) i32 { if *a < *b {-1i32} elif *a > *b {1i32} else {0i32} });
   if c.len() == 0usize {0i64} else {*c[c.len() / 2usize]}
 }
 
-fn readText(file &Path) String {
+fn readText(file: &Path) String {
   match fs.readFile(file) {
     case let s Ok { String.from(s.view()) }
     case is Error { String.empty() }
   }
 }
 
-fn describe(label &str, ed &Editor) {
+fn describe(label: &str, ed: &Editor) {
   print <- label, ": ", u64.from(ed.doc.lineCount()), " lines, ", u64.from(ed.doc.caretCount()), " caret(s), draw lists made ",
     u64.from(ed.rebuilds), ", lines tokenized ", u64.from(ed.linesTokenized), "\n";
 }
 
-fn run(device &mut Device, outDir &str, sample &Path) {
+fn run(device: &mut Device, outDir: &str, sample: &Path) {
   let outPath = Path.from(outDir);
   fs.makeDirAll(&outPath);
   // ---- fonts ----
@@ -382,8 +382,8 @@ fn run(device &mut Device, outDir &str, sample &Path) {
   }
 }
 
-fn loadRig(device &mut Device, file &str) Option[Rig] {
-  var rig Option[Rig] = None;
+fn loadRig(device: &mut Device, file: &str) Option[Rig] {
+  var rig: Option[Rig] = None;
   match fs.readFile(&Path.from(file)) {
     case let bytes Ok {
       match Font.load(bytes.view()) {
@@ -396,7 +396,7 @@ fn loadRig(device &mut Device, file &str) Option[Rig] {
   rig
 }
 
-fn shots(device &mut Device, rig &mut Rig, rig2 &mut Rig, outPath &Path, sample &Path) {
+fn shots(device: &mut Device, rig: &mut Rig, rig2: &mut Rig, outPath: &Path, sample: &Path) {
   var times = List[i64].empty();
   var list = DrawList.make();
   let source = readText(sample);
@@ -637,7 +637,7 @@ fn clipboardRoundTrip() {
   var ui = Ui.make(400., 200.);
   var ed = Editor.make(&mut ui, ui.root, "alpha beta gamma\n");
   ui.setSize(ed.node, 400., 200.);
-  var m = fn(t &str, face u32, size f32) Vec2 { new Vec2(f32.from(t.len()) * 8., 20.) };
+  var m = fn(t: &str, face: u32, size: f32) Vec2 { new Vec2(f32.from(t.len()) * 8., 20.) };
   layout(&mut ui, &mut m);
   ed.refresh(&mut ui, &mut m, &coneTokenizer);
   click(&mut ui, new Vec2(100., 10.), 0u32);
@@ -703,7 +703,7 @@ fn main() i32 {
 
 // spirv-begin editorlist.spv EDITORLIST_SPIRV
 // Written by tools/shaders/shaders.py from editorlist.slang (sha256 69791aa713b7d053ae629dc5df94e5a3754738f6cf4d8f5579fdd3e73386df72): do not edit.
-let EDITORLIST_SPIRV Array[u32, 1625] = [
+let EDITORLIST_SPIRV: Array[u32, 1625] = [
   0x07230203u32, 0x00010500u32, 0x00280000u32, 0x0000019bu32, 0x00000000u32, 0x00020011u32,
   0x00000001u32, 0x0006000bu32, 0x00000069u32, 0x4c534c47u32, 0x6474732eu32, 0x3035342eu32,
   0x00000000u32, 0x0003000eu32, 0x00000000u32, 0x00000001u32, 0x0013000fu32, 0x00000000u32,

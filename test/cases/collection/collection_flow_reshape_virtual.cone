@@ -1,7 +1,7 @@
 // A view of a String, or of an element of a List, held across a MUTABLE VIRTUAL call: a call through a
 // '&<mut Trait' receiver, or of a '&<mut fn' closure. The concrete type behind it is hidden, and may be a
 // struct (or a closure that captured one) that holds the very list the view points into; a trait method's
-// declared 'self &mut Trait' names no fields, so the call is asked of the virtual reference it was made
+// declared 'self: &mut Trait' names no fields, so the call is asked of the virtual reference it was made
 // through, which could reach any container. A call through a read-only '&<' reference is not asked: it
 // can write nothing it reaches. collection_reshape_virtual_success holds what is accepted.
 //
@@ -14,44 +14,44 @@ mod collection_flow_reshape_virtual;
 
 import collections use *;
 
-struct Item { pub label String; }
+struct Item { pub label: String; }
 
-trait Grower { pub fn growFirst(self &mut, s &str); }
+trait Grower { pub fn growFirst(self: &mut, s: &str); }
 
 struct Ed is Grower {
-  pub items List[Item];
-  pub fn growFirst(self &mut, s &str) {
+  pub items: List[Item];
+  pub fn growFirst(self: &mut, s: &str) {
     let r = &mut items[0usize];
     r.label.append(s);
   }
 }
 
 // A trait object receiver, handed the view inline and by a name
-fn viaTrait(g &<mut Grower, src &mut Ed) {
+fn viaTrait(g: &<mut Grower, src: &mut Ed) {
   g.growFirst(src.items[0usize].label.view());                //~ ErrorShapeReshape "its body is not visible"
 }
 
-fn viaTraitNamed(g &<mut Grower, src &mut Ed) {
+fn viaTraitNamed(g: &<mut Grower, src: &mut Ed) {
   let item = src.items[0usize];
   g.growFirst(item.label.view());                             //~ ErrorShapeReshape "its body is not visible"
 }
 
 // A dynamic closure: the closure captured 'src' and calls its method
-fn viaClosure(f &<mut fn(s &str), src &mut Ed) {
+fn viaClosure(f: &<mut fn(s: &str), src: &mut Ed) {
   f(src.items[0usize].label.view());                          //~ ErrorShapeReshape "its body is not visible"
 }
 
-fn useClosure(src &mut Ed) {
-  var grow = fn(s &str) { src.growFirst(s); };
+fn useClosure(src: &mut Ed) {
+  var grow = fn(s: &str) { src.growFirst(s); };
   viaClosure(&mut grow, src);
 }
 
 // The visitor idiom: the closure pushes to the list the visitor is iterating
-fn visit[T](xs &List[T], f &<mut fn(x &T)) {
+fn visit[T](xs: &List[T], f: &<mut fn(x: &T)) {
   each x in xs.iter() { f(x); }                               //~ ErrorShapeReshape "its body is not visible"
 }
 
-fn useVisit(list &mut List[i64]) {
-  var grow = fn(x &i64) { list.push(*x); };
+fn useVisit(list: &mut List[i64]) {
+  var grow = fn(x: &i64) { list.push(*x); };
   visit(list, &mut grow);
 }

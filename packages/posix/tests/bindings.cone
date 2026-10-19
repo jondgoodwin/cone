@@ -46,28 +46,28 @@ import stdio use *;
 import libc use * but getenv;
 import posix use *;
 
-fn show(label &str, n i64) {
+fn show(label: &str, n: i64) {
   printStr(label);
   printStr(" = ");
   printInt(n);
   printStr("\n");
 }
 
-fn showText(label &str, text *u8) {
+fn showText(label: &str, text: *u8) {
   printStr(label);
   printStr(" = [");
   printCStr(text);
   printStr("]\n");
 }
 
-fn yes(b bool) i64 {if b {1i64} else {0i64}}
+fn yes(b: bool) i64 {if b {1i64} else {0i64}}
 
-fn same(a *u8, b cstr) i64 {yes(strcmp(cstr.fromPtr(a), b) == 0i32)}
+fn same(a: *u8, b: cstr) i64 {yes(strcmp(cstr.fromPtr(a), b) == 0i32)}
 
 // A type's size in bytes, read off the address of the second of an array of
 // them laid at address zero
 fn sizeOf[T]() usize {
-  let zero *T = null;
+  let zero: *T = null;
   let one = zero + 1;
   one as usize
 }
@@ -80,7 +80,7 @@ fn newFindData() FindData64 {
   new FindData64(0u32, 0i64, 0i64, 0i64, 0i64, new Array[u8, 260] <- fill 0u8)
 }
 
-fn writeFile(name cstr, text cstr) {
+fn writeFile(name: cstr, text: cstr) {
   let f = fopen(name, "wb");
   fwrite(text.ptr(), 1usize, strlen(text), f);
   fclose(f);
@@ -88,7 +88,7 @@ fn writeFile(name cstr, text cstr) {
 
 // What a command prints, read to the end through a pipe into 'buf', which is
 // left NUL-terminated with its final line end taken off; the command's status
-fn capture(command cstr, buf *u8, size usize) i32 {
+fn capture(command: cstr, buf: *u8, size: usize) i32 {
   let pipe = popen(command, "r");
   let got = fread(buf, 1usize, size - 1usize, pipe);
   buf[got] = 0u8;
@@ -98,11 +98,11 @@ fn capture(command cstr, buf *u8, size usize) i32 {
 
 // A command's exit code from pclose's answer: Windows gives it as it is, a
 // POSIX system as 'wait' does, the code in the second byte
-fn exitCode(status i32) i32 {if isWindows() {status} else {status >> 8i32}}
+fn exitCode(status: i32) i32 {if isWindows() {status} else {status >> 8i32}}
 
 // The folder the test works in: TEMP's on Windows, TMPDIR's or /tmp
 fn tempDir() cstr {
-  var dir cstr = "/tmp";
+  var dir: cstr = "/tmp";
   if isWindows() {
     dir = cstr.fromPtr(getenv("TEMP"));
   } else {
@@ -121,14 +121,14 @@ fn layouts() {
 }
 
 fn environment() {
-  let name cstr = "CONE_POSIX_TEST";
+  let name: cstr = "CONE_POSIX_TEST";
   show("setenv", i64.from(setenv(name, "first", 1i32)));
   showText("getenv", getenv(name));
   show("setenv-keep", i64.from(setenv(name, "second", 0i32)));
   showText("getenv-kept", getenv(name));
   show("setenv-replace", i64.from(setenv(name, "second", 1i32)));
   showText("getenv-replaced", getenv(name));
-  let wide cstr = "CONE_POSIX_TEST_É";
+  let wide: cstr = "CONE_POSIX_TEST_É";
   show("setenv-utf8", i64.from(setenv(wide, "日本 é", 1i32)));
   show("getenv-utf8-same", same(getenv(wide), "日本 é"));
   show("unsetenv-utf8", i64.from(unsetenv(wide)));
@@ -140,7 +140,7 @@ fn environment() {
 
 // After the processes have seen it
 fn unsetting() {
-  let name cstr = "CONE_POSIX_TEST";
+  let name: cstr = "CONE_POSIX_TEST";
   show("unsetenv", i64.from(unsetenv(name)));
   show("getenv-after-unsetenv-null", yes(getenv(name) == null));
   show("unsetenv-again", i64.from(unsetenv(name)));
@@ -148,7 +148,7 @@ fn unsetting() {
 
 fn processes() {
   var buf = new Array[u8, 64] <- fill 0u8;
-  let at *u8 = &[]buf as *u8;
+  let at: *u8 = &[]buf as *u8;
   show("popen-status", i64.from(capture("echo hello", at, 64usize)));
   showText("captured", at);
   capture(if isWindows() {"echo %CONE_POSIX_TEST%"} else {"echo $CONE_POSIX_TEST"}, at, 64usize);
@@ -158,7 +158,7 @@ fn processes() {
 }
 
 // Whatever an interrupted run left behind, cleared; each call may fail
-fn clearAway(dir cstr) {
+fn clearAway(dir: cstr) {
   if chdir(dir) == 0i32 {
     remove("a.txt");
     remove("b.txt");
@@ -169,7 +169,7 @@ fn clearAway(dir cstr) {
 }
 
 fn filesAndDirectories() {
-  let dir cstr = "module_package_posix.dir";
+  let dir: cstr = "module_package_posix.dir";
   show("chdir-temp", i64.from(chdir(tempDir())));
   clearAway(dir);
 
@@ -182,8 +182,8 @@ fn filesAndDirectories() {
   // In and back out: getcwd inside is getcwd outside, a separator and the name
   var outside = new Array[u8, 4096] <- fill 0u8;
   var inside = new Array[u8, 4096] <- fill 0u8;
-  let out *u8 = &[]outside as *u8;
-  let in2 *u8 = &[]inside as *u8;
+  let out: *u8 = &[]outside as *u8;
+  let in2: *u8 = &[]inside as *u8;
   show("getcwd-null", yes(getcwd(out, 4096usize) == null));
   show("chdir-in", i64.from(chdir(dir)));
   getcwd(in2, 4096usize);
@@ -200,7 +200,7 @@ fn filesAndDirectories() {
   // realpath, into a buffer and malloc'd: the directory and the file's name.
   // (POSIX's wants the path there, which Windows' does not.)
   var real = new Array[u8, 4096] <- fill 0u8;
-  let rp *u8 = &[]real as *u8;
+  let rp: *u8 = &[]real as *u8;
   realpath("a.txt", rp);
   show("realpath-length", i64.from(strlen(cstr.fromPtr(rp)) - strlen(cstr.fromPtr(in2))));
   let grown = realpath("./sub/../a.txt", null);
@@ -229,7 +229,7 @@ fn filesAndDirectories() {
     var subIsDir = 0i64;
     var going = handle != -1isize;
     while going {
-      let name *u8 = &[]info.name as *u8;
+      let name: *u8 = &[]info.name as *u8;
       if same(name, "a.txt") == 1i64 {aSize = info.size;};
       if same(name, "b.txt") == 1i64 {bSize = info.size;};
       if same(name, "sub") == 1i64 {subIsDir = yes((info.attrib & _A_SUBDIR) != 0u32);};
@@ -275,7 +275,7 @@ fn posixListing() {
   var e = readdir(dir);
   while e != null {
     let entry = e as &dirent;
-    let name *u8 = &[]entry.d_name as *u8;
+    let name: *u8 = &[]entry.d_name as *u8;
     if same(name, ".") == 1i64 || same(name, "..") == 1i64 {
       dots = dots + 1i64;
       if entry.d_type != DT_DIR {dots = dots + 100i64;};

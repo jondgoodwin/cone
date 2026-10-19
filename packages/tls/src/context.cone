@@ -29,29 +29,29 @@ const maxPerServer = 8usize;     // TLS 1.3 tickets kept for one server, at most
 
 // A cached session: which server it is for, and OpenSSL's SSL_SESSION
 struct Cached {
-  key String;
-  sess *u8;
+  key: String;
+  sess: *u8;
 }
 
 // A context's state. It declares Sendable, a promise taken on trust, for
 // OpenSSL's pointers: an SSL_CTX is safe to use from any thread (OpenSSL's
 // own locks), and the cache's sessions are reached only under the Arc's lock
 struct CtxState is Sendable {
-  ctx *u8;
-  server bool;
-  kind VerifyKind;
-  pins List[u8];
-  resume bool;
-  lane Lane;
-  offline bool;
-  alpn *u8;               // a server's: the length (u32), then ALPN's wire format
-  cache List[Cached];     // oldest first
+  ctx: *u8;
+  server: bool;
+  kind: VerifyKind;
+  pins: List[u8];
+  resume: bool;
+  lane: Lane;
+  offline: bool;
+  alpn: *u8;               // a server's: the length (u32), then ALPN's wire format
+  cache: List[Cached];     // oldest first
 
   // A session for 'key' to resume, or null: the newest the cache holds for
   // it. A TLS 1.3 ticket is taken out (it is used once); a TLS 1.2 session
   // stays, and the caller is given a reference of its own. One OpenSSL has
   // marked not resumable (its connection failed) is dropped on the way
-  fn takeCached(self &mut, key &str) *u8 {
+  fn takeCached(self: &mut, key: &str) *u8 {
     var k = cache.len();
     while k > 0usize {
       k = k - 1usize;
@@ -74,7 +74,7 @@ struct CtxState is Sendable {
   // TLS 1.3 ticket joins the server's others, its oldest going past
   // maxPerServer; a TLS 1.2 session replaces what the server had; past
   // maxCached in all, the oldest goes
-  fn putCached(self &mut, key &str, sess *u8) {
+  fn putCached(self: &mut, key: &str, sess: *u8) {
     let tls13 = SSL_SESSION_get_protocol_version(sess) == tls13Version;
     var held = 0usize;
     var k = cache.len();
@@ -99,13 +99,13 @@ struct CtxState is Sendable {
   }
 
   // The entry at k out of the cache, its session freed, the order kept
-  fn dropAt(self &mut, k usize) {
+  fn dropAt(self: &mut, k: usize) {
     SSL_SESSION_free(cache[k].sess);
     self.removeAt(k);
   }
 
   // The entry at k out of the cache, its session the caller's, the order kept
-  fn removeAt(self &mut, k usize) {
+  fn removeAt(self: &mut, k: usize) {
     var j = k;
     while j + 1usize < cache.len() {
       cache.swap(j, j + 1usize);
@@ -114,9 +114,9 @@ struct CtxState is Sendable {
     cache.pop();
   }
 
-  fn cachedCount(self &) usize {cache.len()}
+  fn cachedCount(self: &) usize {cache.len()}
 
-  fn final(self &uni) {
+  fn final(self: &uni) {
     var k = 0usize;
     while k < cache.len() {
       SSL_SESSION_free(cache[k].sess);
@@ -130,7 +130,7 @@ struct CtxState is Sendable {
 alias Shared = Arc[Mutex, CtxState];
 
 // ALPN's wire format: each name after its length in one byte
-fn alpnWire(names &List[String]) List[u8] {
+fn alpnWire(names: &List[String]) List[u8] {
   var out = List[u8].empty();
   var k = 0usize;
   while k < names.len() {
@@ -150,7 +150,7 @@ fn alpnWire(names &List[String]) List[u8] {
 
 // What OpenSSL's error queue says, as one line, the queue emptied; and the
 // first error's code
-fn sslErrors(out &mut String) u32 {
+fn sslErrors(out: &mut String) u32 {
   var first = 0u32;
   var buf = new Array[u8, 256] <- fill 0u8;
   while true {
@@ -167,14 +167,14 @@ fn sslErrors(out &mut String) u32 {
 }
 
 // A context's configuration failed: why
-fn configError(what &str) TlsError {
+fn configError(what: &str) TlsError {
   var d = String.from(what);
   let code = sslErrors(&mut d);
   new TlsError(TlsErrorKind.Config, code, 0u32, d)
 }
 
 // A new SSL_CTX with the versions, options and buffers every one takes
-fn newCtx(method *u8, minV TlsVersion, maxV TlsVersion) *u8 {
+fn newCtx(method: *u8, minV: TlsVersion, maxV: TlsVersion) *u8 {
   ERR_clear_error();
   let ctx = SSL_CTX_new(method);
   if ctx as usize == 0usize {return null;}
@@ -194,11 +194,11 @@ fn newCtx(method *u8, minV TlsVersion, maxV TlsVersion) *u8 {
 // A client's context: what its sessions share (see the package's header,
 // CONFIGURATION). Copied to share it
 pub struct Client {
-  state Shared;
+  state: Shared;
 
   // A client context, or why it could not be made (Config: a root bundle
   // holding no certificate)
-  pub fn make(cfg ClientConfig) Result[Client, TlsError] {
+  pub fn make(cfg: ClientConfig) Result[Client, TlsError] {
     let ctx = newCtx(TLS_client_method(), cfg.minVersion, cfg.maxVersion);
     if ctx as usize == 0usize {return Error[Client, TlsError](configError("SSL_CTX_new failed"));}
     // Sessions are cached here, not in OpenSSL's own cache: OpenSSL hands
@@ -245,19 +245,19 @@ pub struct Client {
 
   // A session with the server named serverName (a DNS name, sent by SNI and
   // checked against its certificate; or an IP address, checked only)
-  pub fn session(self &, serverName &str) Session {Session.client(state, serverName)}
+  pub fn session(self: &, serverName: &str) Session {Session.client(state, serverName)}
 
   // The same, as a Layer for httpconn's driver, its buffers from pool
-  pub fn stream(self &, serverName &str, pool Pool) Stream {
+  pub fn stream(self: &, serverName: &str, pool: Pool) Stream {
     Stream.make(Session.client(state, serverName), pool)
   }
 
   // Sessions kept to resume
-  pub fn cachedSessions(self &) usize {(&*state).cachedCount()}
+  pub fn cachedSessions(self: &) usize {(&*state).cachedCount()}
 }
 
 // The certificates of a PEM bundle into a context's store: how many
-fn loadRoots(ctx *u8, pem &Array[u8]) u32 {
+fn loadRoots(ctx: *u8, pem: &Array[u8]) u32 {
   if pem.len == 0usize {return 0u32;}
   let bio = BIO_new_mem_buf(&pem[0usize] as *u8, i32.from(pem.len));
   let store = SSL_CTX_get_cert_store(ctx);
@@ -281,11 +281,11 @@ fn loadRoots(ctx *u8, pem &Array[u8]) u32 {
 // A server's context (see the package's header, CONFIGURATION). Copied to
 // share it
 pub struct Server {
-  state Shared;
+  state: Shared;
 
   // A server context, or why it could not be made (Config: a file that
   // could not be read, a key that is not the certificate's)
-  pub fn make(cfg ServerConfig) Result[Server, TlsError] {
+  pub fn make(cfg: ServerConfig) Result[Server, TlsError] {
     let ctx = newCtx(TLS_server_method(), cfg.minVersion, cfg.maxVersion);
     if ctx as usize == 0usize {return Error[Server, TlsError](configError("SSL_CTX_new failed"));}
     var cert = String.from(cfg.certFile.view());
@@ -323,16 +323,16 @@ pub struct Server {
   }
 
   // A session with one client
-  pub fn session(self &) Session {Session.server(state)}
+  pub fn session(self: &) Session {Session.server(state)}
 
   // The same, as a Layer for httpconn's driver, its buffers from pool
-  pub fn stream(self &, pool Pool) Stream {Stream.make(Session.server(state), pool)}
+  pub fn stream(self: &, pool: Pool) Stream {Stream.make(Session.server(state), pool)}
 }
 
 // OpenSSL asks a server which of the protocols a client offers it speaks:
 // its own first choice among them, or a fatal no_application_protocol
-fn @c("coneTlsAlpnSelect") alpnSelect(ssl *u8, out &mut *u8, outLen &mut u8, offered *u8,
-    offeredLen u32, arg *u8) i32 {
+fn @c("coneTlsAlpnSelect") alpnSelect(ssl: *u8, out: &mut *u8, outLen: &mut u8, offered: *u8,
+    offeredLen: u32, arg: *u8) i32 {
   let len = *(arg as *u32);
   var chosen = null as *u8;
   var chosenLen = 0u8;
@@ -360,14 +360,14 @@ fn arrivalsMake() *u8 {
 }
 
 // The n-th arrival's place in a block
-fn arrivalAt(b *u8, n usize) *usize {(b + mem.sizeof[usize]() * (1usize + n)) as *usize}
+fn arrivalAt(b: *u8, n: usize) *usize {(b + mem.sizeof[usize]() * (1usize + n)) as *usize}
 
 // OpenSSL hands a client session over to be kept, to resume its server
 // with (SSL_CTX_sess_set_new_cb): a TLS 1.3 ticket after the handshake, a
 // TLS 1.2 session as it ends. It goes on the session's arrivals, nothing of
 // Cone's touched but them and no lock taken; 1 keeps OpenSSL's reference,
 // 0 gives it back (no arrivals block, or the block is full)
-fn @c("coneTlsNewSession") newSession(ssl *u8, sess *u8) i32 {
+fn @c("coneTlsNewSession") newSession(ssl: *u8, sess: *u8) i32 {
   let b = SSL_get_ex_data(ssl, ticketSlot());
   if b as usize == 0usize {return 0i32;}
   let n = *(b as *usize);

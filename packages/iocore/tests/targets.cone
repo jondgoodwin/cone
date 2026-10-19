@@ -28,7 +28,7 @@ import iocore use *;
 import diag;
 import path use Path;
 
-fn waitFor(lp &mut Loop, out &mut List[Completion], n usize) {
+fn waitFor(lp: &mut Loop, out: &mut List[Completion], n: usize) {
   let limit = Instant.now() + Duration.fromSeconds(5i64);
   while out.len() < n && Instant.now() < limit {
     lp.poll(limit, out);
@@ -37,12 +37,12 @@ fn waitFor(lp &mut Loop, out &mut List[Completion], n usize) {
 
 // What a consumer thread found
 struct Got {
-  pub n u64;
-  pub withBuf u64;
-  pub tokens u64;           // the sum of their tokens
+  pub n: u64;
+  pub withBuf: u64;
+  pub tokens: u64;           // the sum of their tokens
 }
 
-fn consume(rx Receiver[Completion]) Got {
+fn consume(rx: Receiver[Completion]) Got {
   var r = rx;
   var g = new Got(0u64, 0u64, 0u64);
   var more = true;
@@ -61,19 +61,19 @@ fn consume(rx Receiver[Completion]) Got {
 
 // A synchronous call: the path to read, and where the answer goes
 struct Call {
-  pub path Path;
-  pub reply OneshotSender[Completion];
+  pub path: Path;
+  pub reply: OneshotSender[Completion];
 }
 
 struct Caller {
-  pub calls Sender[Call];
-  pub wake Waker;
+  pub calls: Sender[Call];
+  pub wake: Waker;
 }
 
 // Ask the service thread for a file, and wait for its answer
-fn caller(c Caller) String {
-  var otx OneshotSender[Completion];
-  var orx OneshotReceiver[Completion];
+fn caller(c: Caller) String {
+  var otx: OneshotSender[Completion];
+  var orx: OneshotReceiver[Completion];
   otx, orx = Oneshot[Completion].make();
   c.calls.send(new Call(Path.from("targets.tmp"), otx));
   c.wake.wake();
@@ -89,11 +89,11 @@ fn caller(c Caller) String {
 
 // A service thread that reads into main's status slots
 struct Reader {
-  pub board StatusArray;
-  pub pool Pool;
+  pub board: StatusArray;
+  pub pool: Pool;
 }
 
-fn reader(r Reader) u64 {
+fn reader(r: Reader) u64 {
   var lp = Loop.mustMake();
   var out = List[Completion].empty();
   var fh = Handle.none();
@@ -132,8 +132,8 @@ fn main() i32 {
 
     // 1. A channel to a consumer thread
     {
-      var tx Sender[Completion];
-      var rx Receiver[Completion];
+      var tx: Sender[Completion];
+      var rx: Receiver[Completion];
       tx, rx = Channel[Completion].make();
       let t = thread.start(rx, &consume);
       var k = 0u64;
@@ -157,8 +157,8 @@ fn main() i32 {
 
     // 2. A bounded channel, full
     {
-      var tx Sender[Completion];
-      var rx Receiver[Completion];
+      var tx: Sender[Completion];
+      var rx: Receiver[Completion];
       tx, rx = Channel[Completion].bounded(1u64);
       let before = lp.counters().held;
       var k = 0u64;
@@ -201,8 +201,8 @@ fn main() i32 {
 
     // 3. A synchronous call through a one-shot
     {
-      var ctx Sender[Call];
-      var crx Receiver[Call];
+      var ctx: Sender[Call];
+      var crx: Receiver[Call];
       ctx, crx = Channel[Call].make();
       let handed = lp.counters().handedOff;
       let t = thread.start(new Caller(ctx, lp.waker()), &caller);
@@ -212,8 +212,8 @@ fn main() i32 {
         lp.poll(limit, &mut out);
         match crx.tryRecv() {
           case var s Some {
-            var reply OneshotSender[Completion];
-            var orx OneshotReceiver[Completion];
+            var reply: OneshotSender[Completion];
+            var orx: OneshotReceiver[Completion];
             reply, orx = Oneshot[Completion].make();
             // The caller's one-shot moves into the target: swapped out of
             // the call, as Cone moves nothing out of a field
@@ -233,9 +233,9 @@ fn main() i32 {
       expectStr(t.join().view(), "cdefghij", "the caller had its answer: the file from byte 2");
 
       // A one-shot whose receiver has gone
-      var otx OneshotSender[Completion];
+      var otx: OneshotSender[Completion];
       {
-        var orx OneshotReceiver[Completion];
+        var orx: OneshotReceiver[Completion];
         otx, orx = Oneshot[Completion].make();
       }
       let dropped = lp.counters().handedDropped;

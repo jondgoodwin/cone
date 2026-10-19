@@ -28,69 +28,69 @@ import sync use *;
 import thread;
 import actors;
 
-let seed u64 = 7u64;
-let table Array[u64, 3] = [1u64, 2u64, 3u64];
+let seed: u64 = 7u64;
+let table: Array[u64, 3] = [1u64, 2u64, 3u64];
 
-struct Point {pub x i32; pub y i32;}
+struct Point {pub x: i32; pub y: i32;}
 
 // Holds a borrow of the whole program
-struct View {pub data &'static imm Array[u64, 3];}
+struct View {pub data: &'static imm Array[u64, 3];}
 
-fn crosses[T Sendable + 'static]() {}
+fn crosses[T: Sendable + 'static]() {}
 
-fn read(p &imm u64) u64 {*p + 1u64}
-fn sumTable(t &imm Array[u64, 3]) u64 {(*t)[0] + (*t)[1] + (*t)[2]}
-fn sumView(v View) u64 {(*v.data)[0] + (*v.data)[2]}
-fn maybe(o Option[&imm u64]) u64 {
+fn read(p: &imm u64) u64 {*p + 1u64}
+fn sumTable(t: &imm Array[u64, 3]) u64 {(*t)[0] + (*t)[1] + (*t)[2]}
+fn sumView(v: View) u64 {(*v.data)[0] + (*v.data)[2]}
+fn maybe(o: Option[&imm u64]) u64 {
   match o {
     case let s Some {*s}
     else {0u64}
   }
 }
-fn same(p &imm u64) &imm u64 {p}
-fn touch(p &opaq u64) u64 {42u64}
-fn moved(p &uni u64) u64 {*p + 100u64}
+fn same(p: &imm u64) &imm u64 {p}
+fn touch(p: &opaq u64) u64 {42u64}
+fn moved(p: &uni u64) u64 {*p + 100u64}
 
 // A 'uni' borrow of the whole program, received through a parameter, goes
 // on to a thread
-fn relay(p &'static uni u64) u64 {
+fn relay(p: &'static uni u64) u64 {
   let t = thread.start(p, &moved);
   t.join()
 }
 
 actor Reader {
-  total u64;
+  total: u64;
 
-  fn init(self &new, p &'static imm u64) {
+  fn init(self: &new, p: &'static imm u64) {
     *self = new Self(total: *p);
   }
 
-  pub async do add(self, p &'static imm u64) {
+  pub async do add(self, p: &'static imm u64) {
     total = total + *p;
   }
 
-  pub async do addTable(self, t &'static imm Array[u64, 3]) {
+  pub async do addTable(self, t: &'static imm Array[u64, 3]) {
     total = total + (*t)[0] + (*t)[1] + (*t)[2];
   }
 
-  pub async do addView(self, v View) {
+  pub async do addView(self, v: View) {
     total = total + (*v.data)[1];
   }
 
-  pub async do hide(self, p &'static opaq u64) {
+  pub async do hide(self, p: &'static opaq u64) {
     total = total + 1000u64;
   }
 
-  pub async do adopt(self, p &'static uni u64) {
+  pub async do adopt(self, p: &'static uni u64) {
     *p = 0u64;
   }
 
-  pub async do report(self &) {
+  pub async do report(self: &) {
     printStr("total "); printUInt(total); printStr("\n");
   }
 }
 
-fn feed(r Reader) u64 {
+fn feed(r: Reader) u64 {
   r.add(&imm seed);
   r.addTable(&imm table);
   0u64
@@ -113,7 +113,7 @@ fn main() {
   let a = thread.start(&imm seed, &read);
   let b = thread.start(&imm table, &sumTable);
   let c = thread.start(new View(&imm table), &sumView);
-  let opt Option[&imm u64] = Some[&imm u64](&imm seed);
+  let opt: Option[&imm u64] = Some[&imm u64](&imm seed);
   let d = thread.start(opt, &maybe);
   let e = thread.start(&opaq seed, &touch);
   printStr("threads ");

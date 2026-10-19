@@ -1,11 +1,11 @@
 // A generic trait as a constraint: 'Stack[T]' with its own type parameter, bounding
-// another type parameter, inline ('[T, S Stack[T]]') or in a 'where' clause
+// another type parameter, inline ('[T, S: Stack[T]]') or in a 'where' clause
 // ('S is Stack[T]'). The trait's type arguments are given, as any use of a
 // generic trait's instance gives them; an argument may be another of the
-// function's parameters or a type ('[S Stack[i64]]').
+// function's parameters or a type ('[S: Stack[i64]]').
 //
-// Traits are structural, so a type fits 'Stack[i64]' by having 'push(self &mut,
-// v i64)' and 'pop(self &mut) Option[i64]', the trait's signatures with T
+// Traits are structural, so a type fits 'Stack[i64]' by having 'push(self: &mut,
+// v i64)' and 'pop(self: &mut) Option[i64]', the trait's signatures with T
 // replaced. Whether it does is decided where the function is instantiated, by
 // the arguments it is given; inside, a call of the trait's methods is checked
 // against the argument type itself, as for any constraint.
@@ -19,14 +19,14 @@ mod generic_trait_bound;
 
 import stdio use *;
 
-fn show(label &str, n i64) {
+fn show(label: &str, n: i64) {
   printStr(label);
   printStr(" ");
   printInt(n);
   printStr("\n");
 }
 
-fn showOpt(label &str, o Option[i64]) {
+fn showOpt(label: &str, o: Option[i64]) {
   match o {
     case let s Some[i64] { show(label, s); }
     case is None { show(label, -1); }
@@ -34,29 +34,29 @@ fn showOpt(label &str, o Option[i64]) {
 }
 
 trait Stack[T] {
-  pub fn push(self &mut, v T);
-  pub fn pop(self &mut) Option[T];
+  pub fn push(self: &mut, v: T);
+  pub fn pop(self: &mut) Option[T];
 }
 
 trait Peek[T] {
-  pub fn peek(self &) Option[T];
+  pub fn peek(self: &) Option[T];
 }
 
 trait Counted {
-  pub fn count(self &) i64;
+  pub fn count(self: &) i64;
 }
 
 // One slot holding the last value pushed, of a fixed type, fitting by its methods
 struct IntSlot {
-  pub n i64;
-  pub has bool;
-  pub pushes i64;
-  pub fn push(self &mut, v i64) {
+  pub n: i64;
+  pub has: bool;
+  pub pushes: i64;
+  pub fn push(self: &mut, v: i64) {
     n = v;
     has = true;
     pushes = pushes + 1;
   }
-  pub fn pop(self &mut) Option[i64] {
+  pub fn pop(self: &mut) Option[i64] {
     if has {
       has = false;
       Some[i64](n)
@@ -65,23 +65,23 @@ struct IntSlot {
       None
     }
   }
-  pub fn peek(self &) Option[i64] {
+  pub fn peek(self: &) Option[i64] {
     if has { Some[i64](n) } else { None }
   }
-  pub fn count(self &) i64 {pushes}
+  pub fn count(self: &) i64 {pushes}
 }
 
 // A generic struct fits for every T, and says so
 struct Slot[T] is Counted {
-  pub v T;
-  pub has bool;
-  pub pushes i64;
-  pub fn push(self &mut, x T) {
+  pub v: T;
+  pub has: bool;
+  pub pushes: i64;
+  pub fn push(self: &mut, x: T) {
     v = x;
     has = true;
     pushes = pushes + 1;
   }
-  pub fn pop(self &mut) Option[T] {
+  pub fn pop(self: &mut) Option[T] {
     if has {
       has = false;
       Some[T](v)
@@ -90,76 +90,76 @@ struct Slot[T] is Counted {
       None
     }
   }
-  pub fn peek(self &) Option[T] {
+  pub fn peek(self: &) Option[T] {
     if has { Some[T](v) } else { None }
   }
-  pub fn count(self &) i64 {pushes}
+  pub fn count(self: &) i64 {pushes}
 }
 
 // The two spellings of one constraint
-fn drain[T, S Stack[T]](s &mut S) Option[T] {
+fn drain[T, S: Stack[T]](s: &mut S) Option[T] {
   s.pop()
 }
 
-fn drainWhere[T, S](s &mut S) Option[T] where S is Stack[T] {
+fn drainWhere[T, S](s: &mut S) Option[T] where S is Stack[T] {
   s.pop()
 }
 
-fn fill[T, S Stack[T]](s &mut S, v T) {
+fn fill[T, S: Stack[T]](s: &mut S, v: T) {
   s.push(v);
 }
 
 // A type for the trait's argument: any S that is a Stack of i64
-fn fillTwo[S Stack[i64]](s &mut S, a i64, b i64) {
+fn fillTwo[S: Stack[i64]](s: &mut S, a: i64, b: i64) {
   s.push(a);
   s.push(b);
 }
 
 // Two bounds on one parameter: a generic trait and a plain one; and two generic
-fn fillCounted[T, S Stack[T] + Counted](s &mut S, v T) i64 {
+fn fillCounted[T, S: Stack[T] + Counted](s: &mut S, v: T) i64 {
   s.push(v);
   s.count()
 }
 
-fn peekThenPop[T, S Stack[T] + Peek[T]](s &mut S) Option[T] {
+fn peekThenPop[T, S: Stack[T] + Peek[T]](s: &mut S) Option[T] {
   let seen = s.peek();
   s.pop()
 }
 
-fn peekWhere[T, S](s &mut S) Option[T] where S is Stack[T] && S is Peek[T] {
+fn peekWhere[T, S](s: &mut S) Option[T] where S is Stack[T] && S is Peek[T] {
   s.peek()
 }
 
 // A bounded generic calling another: with the arguments written, and inferred
-fn refill[T, S Stack[T]](s &mut S, v T) {
+fn refill[T, S: Stack[T]](s: &mut S, v: T) {
   fill[T, S](s, v);
   fill(s, v);
 }
 
-fn drainTwice[T, S Stack[T]](s &mut S) Option[T] {
+fn drainTwice[T, S: Stack[T]](s: &mut S) Option[T] {
   let first = drain(s);
   drain(s)
 }
 
 // A generic type with a generic-trait bound on its own parameter
-struct Holder[T, S Stack[T]] {
-  pub inner S;
-  pub fn take(self &mut) Option[T] {
+struct Holder[T, S: Stack[T]] {
+  pub inner: S;
+  pub fn take(self: &mut) Option[T] {
     inner.pop()
   }
 }
 
 // A type declaring the instance it fits
 struct Declared is Stack[i64] {
-  pub n i64;
-  pub fn push(self &mut, v i64) { n = v; }
-  pub fn pop(self &mut) Option[i64] { Some[i64](n) }
+  pub n: i64;
+  pub fn push(self: &mut, v: i64) { n = v; }
+  pub fn pop(self: &mut) Option[i64] { Some[i64](n) }
 }
 
 // A generic method with a bound of its own
 struct Tool {
-  pub k i64;
-  pub fn viaMethod[T, S Stack[T]](self &, s &mut S) Option[T] {
+  pub k: i64;
+  pub fn viaMethod[T, S: Stack[T]](self: &, s: &mut S) Option[T] {
     s.pop()
   }
 }

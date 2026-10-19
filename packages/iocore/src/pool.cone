@@ -27,9 +27,9 @@
 // Work for the pool: run on one of a lane's threads, given the operation's
 // argument and its buffer, answering how it went (Done with a count, or
 // Failed with an error number)
-pub alias WorkFn = &fn(arg u64, buf &mut IoBuf) Outcome;
+pub alias WorkFn = &fn(arg: u64, buf: &mut IoBuf) Outcome;
 
-fn noWork(arg u64, buf &mut IoBuf) Outcome {Outcome.Done(0usize)}
+fn noWork(arg: u64, buf: &mut IoBuf) Outcome {Outcome.Done(0usize)}
 
 const boxQueued = 0u32;
 const boxRunning = 1u32;
@@ -38,29 +38,29 @@ const boxRemoved = 2u32;
 // One job, from its submit until its answer (see above). Plain memory from
 // libc's malloc
 struct JobBox {
-  work WorkFn;
-  arg u64;
-  buf IoBuf;
-  waker Option[Waker];    // taken out by the thread before it posts the box
-  rec u32;                // the record it answers, and the record's generation
-  gen u32;
-  lane *LaneState;        // null for an external operation's box
-  asked Atomic[u32];      // 1 once the loop has asked the cancel: an external completer reads it
-  state u32;              // boxQueued, boxRunning, boxRemoved: under the lane's lock
-  status u32;             // how the work went
-  n usize;
-  code u32;
-  prev *JobBox;
-  next *JobBox;
-  queuedAt Instant;
+  work: WorkFn;
+  arg: u64;
+  buf: IoBuf;
+  waker: Option[Waker];    // taken out by the thread before it posts the box
+  rec: u32;                // the record it answers, and the record's generation
+  gen: u32;
+  lane: *LaneState;        // null for an external operation's box
+  asked: Atomic[u32];      // 1 once the loop has asked the cancel: an external completer reads it
+  state: u32;              // boxQueued, boxRunning, boxRemoved: under the lane's lock
+  status: u32;             // how the work went
+  n: usize;
+  code: u32;
+  prev: *JobBox;
+  next: *JobBox;
+  queuedAt: Instant;
   // Linux: a file operation, run by the lane's thread on this descriptor (a
   // duplicate of the handle's, closed with the box) at the offset 'arg'; -1
   // for every other job
-  fd i32;
-  write bool;
+  fd: i32;
+  write: bool;
 }
 
-fn newBox(work WorkFn, arg u64, w Waker, rec u32, gen u32, lane *LaneState) *JobBox {
+fn newBox(work: WorkFn, arg: u64, w: Waker, rec: u32, gen: u32, lane: *LaneState) *JobBox {
   let b = libc.malloc(mem.sizeof[JobBox]()) as *JobBox;
   if b as usize == 0usize {panic("iocore: out of memory for a blocking job");}
   mem.writeRaw[JobBox](b, new JobBox(work: work, arg: arg, buf: IoBuf.empty(),
@@ -72,7 +72,7 @@ fn newBox(work WorkFn, arg u64, w Waker, rec u32, gen u32, lane *LaneState) *Job
 
 // A box's end: its buffer goes home, its waker (if it still has one) goes,
 // and so does its file descriptor
-fn dropBox(b *JobBox) {
+fn dropBox(b: *JobBox) {
   if !isWindows() {
     if (*b).fd >= 0i32 {sysClose((*b).fd);}
   }
@@ -86,7 +86,7 @@ fn dropBox(b *JobBox) {
 
 // A lane of the blocking pool (see the package's header, THE BLOCKING POOL)
 pub struct Lane {
-  pub id u32;
+  pub id: u32;
 
   // General work: up to 4 threads, 1,024 queued
   pub fn general() Lane {new Lane(0u32)}
@@ -111,26 +111,26 @@ pub struct Lane {
 // at least and at most, the jobs it queues at most, and how long a thread
 // beyond the least waits idle before it leaves
 pub struct LaneConfig {
-  pub name &str = "iocore";
-  pub minThreads u32 = 0u32;
-  pub maxThreads u32 = 4u32;
-  pub queueBound u32 = 1024u32;
-  pub idleMillis u32 = 10000u32;
+  pub name: &str = "iocore";
+  pub minThreads: u32 = 0u32;
+  pub maxThreads: u32 = 4u32;
+  pub queueBound: u32 = 1024u32;
+  pub idleMillis: u32 = 10000u32;
 }
 
 // A lane's counters
 pub struct LaneStats {
-  pub queued u32;         // jobs waiting now
-  pub maxQueued u32;      // the most ever waiting at once: the queue depth
-  pub running u32;        // jobs running now
-  pub threads u32;        // threads now
-  pub maxThreads u32;
-  pub started u64;        // threads ever started
-  pub ran u64;            // jobs run
-  pub cancelled u64;      // jobs taken out of the queue by a cancel, never run
-  pub refused u64;        // submits refused: the queue was full
-  pub waitNs u64;         // nanoseconds jobs spent queued, in all
-  pub maxWaitNs u64;      // the longest a job was queued
+  pub queued: u32;         // jobs waiting now
+  pub maxQueued: u32;      // the most ever waiting at once: the queue depth
+  pub running: u32;        // jobs running now
+  pub threads: u32;        // threads now
+  pub maxThreads: u32;
+  pub started: u64;        // threads ever started
+  pub ran: u64;            // jobs run
+  pub cancelled: u64;      // jobs taken out of the queue by a cancel, never run
+  pub refused: u64;        // submits refused: the queue was full
+  pub waitNs: u64;         // nanoseconds jobs spent queued, in all
+  pub maxWaitNs: u64;      // the longest a job was queued
 
   pub fn zero() LaneStats {
     new LaneStats(0u32, 0u32, 0u32, 0u32, 0u32, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64)
@@ -140,27 +140,27 @@ pub struct LaneStats {
 // A lane: its queue, its threads and its counts, under its lock. Plain
 // memory from libc's malloc, never freed
 struct LaneState {
-  lock Mutex;
-  ready Condvar;          // its idle threads wait here
-  head *JobBox;
-  tail *JobBox;
-  queued u32;
-  maxQueued u32;
-  bound u32;
-  threads u32;
-  idle u32;               // threads waiting on 'ready'
-  running u32;
-  minThreads u32;
-  maxThreads u32;
-  idleFor Duration;
-  started u64;
-  ran u64;
-  cancelled u64;
-  refused u64;
-  waitNs u64;
-  maxWaitNs u64;
-  name Array[u8, 32];
-  nameLen usize;
+  lock: Mutex;
+  ready: Condvar;          // its idle threads wait here
+  head: *JobBox;
+  tail: *JobBox;
+  queued: u32;
+  maxQueued: u32;
+  bound: u32;
+  threads: u32;
+  idle: u32;               // threads waiting on 'ready'
+  running: u32;
+  minThreads: u32;
+  maxThreads: u32;
+  idleFor: Duration;
+  started: u64;
+  ran: u64;
+  cancelled: u64;
+  refused: u64;
+  waitNs: u64;
+  maxWaitNs: u64;
+  name: Array[u8, 32];
+  nameLen: usize;
 }
 
 const maxLanes = 64u32;
@@ -170,9 +170,9 @@ const maxLanes = 64u32;
 // (iocore.cone); a lane added later is put in under laneLock, and entries are
 // read without the lock, so the count is an atomic and the table's address one,
 // both held by 'let' globals
-let laneLock Mutex;
-let laneTable Atomic[*usize];
-let laneCount Atomic[u32];
+let laneLock: Mutex;
+let laneTable: Atomic[*usize];
+let laneCount: Atomic[u32];
 
 // The two lanes every process has (three on Linux), made by 'init' before any
 // thread can reach them. A lane keeps no thread until it has work, so this
@@ -192,7 +192,7 @@ const filesLane = 2u32;
 
 // A new lane of the blocking pool. At most 64 lanes, the two every process
 // has among them; one more is a panic
-pub fn addLane(cfg LaneConfig, file &Array[u8] = srcFile(), line u32 = srcLine()) Lane {
+pub fn addLane(cfg: LaneConfig, file: &Array[u8] = srcFile(), line: u32 = srcLine()) Lane {
   laneLock.lock();
   if laneCount.load() >= maxLanes {
     laneLock.unlock();
@@ -203,7 +203,7 @@ pub fn addLane(cfg LaneConfig, file &Array[u8] = srcFile(), line u32 = srcLine()
   l
 }
 
-fn @initpure addLaneLocked(cfg LaneConfig) Lane {
+fn @initpure addLaneLocked(cfg: LaneConfig) Lane {
   let p = libc.malloc(mem.sizeof[LaneState]()) as *LaneState;
   if p as usize == 0usize {panic("iocore: out of memory for a lane");}
   var name = new Array[u8, 32] <- fill 0u8;
@@ -237,7 +237,7 @@ fn @initpure addLaneLocked(cfg LaneConfig) Lane {
 }
 
 // Lane id's state, or null when there is no such lane
-fn laneAt(id u32) *LaneState {
+fn laneAt(id: u32) *LaneState {
   if id >= maxLanes {return null;}
   *(laneTable.load() + usize.from(id)) as *LaneState
 }
@@ -245,10 +245,10 @@ fn laneAt(id u32) *LaneState {
 // What a lane's thread is handed: its lane. It declares Sendable, a promise
 // taken on trust: the lane is reached only under its lock
 struct WorkerArg is Sendable {
-  lane *LaneState;
+  lane: *LaneState;
 }
 
-fn startWorker(l *LaneState) {
+fn startWorker(l: *LaneState) {
   let s = l as &mut LaneState;
   let t = thread.startWith(new thread.Options(name: &s.name[0usize ..< s.nameLen] as &str),
     new WorkerArg(l), &worker);
@@ -258,7 +258,7 @@ fn startWorker(l *LaneState) {
 // A lane's thread: take the oldest job, run it outside the lock, post it
 // home; wait while there is none, and leave after the lane's idle time if
 // it has more threads than its least
-fn worker(a WorkerArg) {
+fn worker(a: WorkerArg) {
   let s = a.lane as &mut LaneState;
   s.lock.lock();
   while true {
@@ -289,7 +289,7 @@ fn worker(a WorkerArg) {
 }
 
 // Run a job and post it to its loop; drop it when its loop has gone
-fn runBox(b *JobBox) {
+fn runBox(b: *JobBox) {
   let j = b as &mut JobBox;
   let o = if j.fd >= 0i32 {lxFileJob(j)} else {(j.work)(j.arg, &mut j.buf)};
   settleBox(b, o);
@@ -297,7 +297,7 @@ fn runBox(b *JobBox) {
 
 // A box's outcome is known: post it to its loop, or drop it when its loop
 // has gone
-fn settleBox(b *JobBox, o Outcome) {
+fn settleBox(b: *JobBox, o: Outcome) {
   let j = b as &mut JobBox;
   match o {
     case let d Done {j.status = diag.outcomeDone; j.n = d.n;}
@@ -305,7 +305,7 @@ fn settleBox(b *JobBox, o Outcome) {
     case is Outcome.Cancelled {j.status = diag.outcomeCancelled;}
     case is Outcome.TimedOut {j.status = diag.outcomeTimedOut;}
   }
-  var w Option[Waker] = None;
+  var w: Option[Waker] = None;
   w <=> j.waker;
   match w {
     case let s Some {
@@ -316,7 +316,7 @@ fn settleBox(b *JobBox, o Outcome) {
 }
 
 // Take box b out of its lane's queue: its lock is held
-fn unlinkBox(s &mut LaneState, b *JobBox) {
+fn unlinkBox(s: &mut LaneState, b: *JobBox) {
   let prev = (*b).prev;
   let next = (*b).next;
   if prev as usize == 0usize {s.head = next;} else {(*prev).next = next;}
@@ -327,7 +327,7 @@ fn unlinkBox(s &mut LaneState, b *JobBox) {
 }
 
 // Queue box b on its lane: false when the lane's queue is full (counted)
-fn enqueueBox(b *JobBox) bool {
+fn enqueueBox(b: *JobBox) bool {
   let l = (*b).lane;
   let s = l as &mut LaneState;
   s.lock.lock();
@@ -358,7 +358,7 @@ fn enqueueBox(b *JobBox) bool {
 
 // Take box b out of its lane's queue, if no thread has taken it yet: true
 // when it was taken out (it will never run)
-fn removeBox(b *JobBox) bool {
+fn removeBox(b: *JobBox) bool {
   if (*b).lane as usize == 0usize {return false;}
   let s = (*b).lane as &mut LaneState;
   s.lock.lock();
@@ -380,7 +380,7 @@ fn removeBox(b *JobBox) bool {
 // lane: Done(n), buf holding n addresses, each with 'port', for
 // 'addressesIn'; Failed with Winsock's error when there are none. buf is
 // cleared and holds the name while the work runs
-pub fn resolveOp(host &str, port u16, buf IoBuf) Op {
+pub fn resolveOp(host: &str, port: u16, buf: IoBuf) Op {
   var b = buf;
   b.clear();
   b.append(host);
@@ -388,7 +388,7 @@ pub fn resolveOp(host &str, port u16, buf IoBuf) Op {
 }
 
 // The addresses a resolveOp's buffer holds
-pub fn addressesIn(buf &IoBuf) List[SocketAddr] {
+pub fn addressesIn(buf: &IoBuf) List[SocketAddr] {
   var out = List[SocketAddr].empty();
   let n = buf.len() / mem.sizeof[SocketAddr]();
   var k = 0usize;
@@ -399,7 +399,7 @@ pub fn addressesIn(buf &IoBuf) List[SocketAddr] {
   out
 }
 
-fn resolveWork(arg u64, buf &mut IoBuf) Outcome {
+fn resolveWork(arg: u64, buf: &mut IoBuf) Outcome {
   if isWindows() {
     let w = widen(buf.view());
     if w as usize == 0usize {return Outcome.Failed(errorNoUnicodeTranslation);}
@@ -431,26 +431,26 @@ fn resolveWork(arg u64, buf &mut IoBuf) Outcome {
 
 // A file's metadata, as a statOp's buffer holds it
 pub struct FileStat {
-  pub size u64;
-  pub attributes u32;     // Windows' FILE_ATTRIBUTE_... bits
-  pub modified Timestamp;
+  pub size: u64;
+  pub attributes: u32;     // Windows' FILE_ATTRIBUTE_... bits
+  pub modified: Timestamp;
 
-  pub fn isDir(self &) bool {(attributes & 0x10u32) != 0u32}
+  pub fn isDir(self: &) bool {(attributes & 0x10u32) != 0u32}
 }
 
 // An operation asking a file's metadata on lane: Done, buf holding it for
 // 'fileStatIn'; Failed with Windows' error (ERROR_FILE_NOT_FOUND...). buf
 // is cleared and holds the path while the work runs
-pub fn statOp(path &Path, lane Lane, buf IoBuf) Op {
+pub fn statOp(path: &Path, lane: Lane, buf: IoBuf) Op {
   var b = buf;
   b.clear();
-  let text &Array[u8] = path.view();
+  let text: &Array[u8] = path.view();
   b.append(text);
   Op.Call(lane, &statWork, 0u64, b)
 }
 
 // The metadata a statOp's buffer holds
-pub fn fileStatIn(buf &IoBuf) FileStat {
+pub fn fileStatIn(buf: &IoBuf) FileStat {
   let p = buf.base() as *u32;
   if buf.len() < 36usize {return new FileStat(0u64, 0u32, Timestamp.fromUnixNanos(0i64));}
   // WIN32_FILE_ATTRIBUTE_DATA: attributes, three FILETIMEs (the last
@@ -462,7 +462,7 @@ pub fn fileStatIn(buf &IoBuf) FileStat {
   new FileStat(size, *p, Timestamp.fromUnixNanos(unix100 * 100i64))
 }
 
-fn statWork(arg u64, buf &mut IoBuf) Outcome {
+fn statWork(arg: u64, buf: &mut IoBuf) Outcome {
   if isWindows() {
     let w = widen(buf.view());
     if w as usize == 0usize {return Outcome.Failed(errorNoUnicodeTranslation);}
@@ -483,15 +483,15 @@ fn statWork(arg u64, buf &mut IoBuf) Outcome {
 // read where no completion form is to be had). Done(n), buf holding the n
 // bytes; Done(0) past the end. buf is cleared and holds the path while the
 // work runs
-pub fn readFileOp(path &Path, at u64, lane Lane, buf IoBuf) Op {
+pub fn readFileOp(path: &Path, at: u64, lane: Lane, buf: IoBuf) Op {
   var b = buf;
   b.clear();
-  let text &Array[u8] = path.view();
+  let text: &Array[u8] = path.view();
   b.append(text);
   Op.Call(lane, &readFileWork, at, b)
 }
 
-fn readFileWork(arg u64, buf &mut IoBuf) Outcome {
+fn readFileWork(arg: u64, buf: &mut IoBuf) Outcome {
   if isWindows() {
     let w = widen(buf.view());
     if w as usize == 0usize {return Outcome.Failed(errorNoUnicodeTranslation);}

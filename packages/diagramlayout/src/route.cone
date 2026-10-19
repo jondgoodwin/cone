@@ -25,31 +25,31 @@ pub const FLOW_VERTICAL = 1u32;
 pub const FLOW_HORIZONTAL = 2u32;
 
 pub struct RouteOptions {
-  pub margin f32;                  // clearance round boxes, and the stub's length
-  pub bendCost f32;
-  pub congestion f32;
-  pub flow u32;
+  pub margin: f32;                  // clearance round boxes, and the stub's length
+  pub bendCost: f32;
+  pub congestion: f32;
+  pub flow: u32;
 
   pub fn make() RouteOptions { new RouteOptions(12., 40., 14., FLOW_VERTICAL) }
 }
 
 pub struct RouteStats {
-  pub routed u32;
-  pub fallback u32;                // edges for which no clear route was found (drawn as a straight Z)
-  pub bends u32;
-  pub length f32;
+  pub routed: u32;
+  pub fallback: u32;                // edges for which no clear route was found (drawn as a straight Z)
+  pub bends: u32;
+  pub length: f32;
 }
 
-fn dirX(d u32) f32 { if d == 0u32 { return 1.; } if d == 2u32 { return -1.; } 0. }
-fn dirY(d u32) f32 { if d == 1u32 { return 1.; } if d == 3u32 { return -1.; } 0. }
-fn sideDir(side u32) u32 {
+fn dirX(d: u32) f32 { if d == 0u32 { return 1.; } if d == 2u32 { return -1.; } 0. }
+fn dirY(d: u32) f32 { if d == 1u32 { return 1.; } if d == 3u32 { return -1.; } 0. }
+fn sideDir(side: u32) u32 {
   if side == SIDE_EAST { return 0u32; }
   if side == SIDE_SOUTH { return 1u32; }
   if side == SIDE_WEST { return 2u32; }
   3u32
 }
 
-fn sideFor(g &Graph, a usize, b usize, flow u32) u32 {
+fn sideFor(g: &Graph, a: usize, b: usize, flow: u32) u32 {
   let dx = g.nodes[b].x - g.nodes[a].x;
   let dy = g.nodes[b].y - g.nodes[a].y;
   var vertical = absf2(dy) * (g.nodes[a].w + g.nodes[b].w) >= absf2(dx) * (g.nodes[a].h + g.nodes[b].h);
@@ -63,7 +63,7 @@ fn sideFor(g &Graph, a usize, b usize, flow u32) u32 {
   SIDE_WEST
 }
 
-fn opposite(side u32) u32 {
+fn opposite(side: u32) u32 {
   if side == SIDE_SOUTH { return SIDE_NORTH; }
   if side == SIDE_NORTH { return SIDE_SOUTH; }
   if side == SIDE_EAST { return SIDE_WEST; }
@@ -71,7 +71,7 @@ fn opposite(side u32) u32 {
 }
 
 // The point on 'side' of node n, 'frac' of the way along it
-fn sidePoint(g &Graph, n usize, side u32, frac f32) Vec2 {
+fn sidePoint(g: &Graph, n: usize, side: u32, frac: f32) Vec2 {
   let l = g.left(n);
   let r = g.right(n);
   let t = g.top(n);
@@ -85,10 +85,10 @@ fn sidePoint(g &Graph, n usize, side u32, frac f32) Vec2 {
 // ---- A* heap ----
 
 struct Heap {
-  f List[f32];
-  s List[usize];
+  f: List[f32];
+  s: List[usize];
 
-  fn push(self &mut, cost f32, state usize) {
+  fn push(self: &mut, cost: f32, state: usize) {
     f.push(cost);
     s.push(state);
     var i = f.len() - 1usize;
@@ -101,7 +101,7 @@ struct Heap {
     }
   }
 
-  fn pop(self &mut) usize {
+  fn pop(self: &mut) usize {
     let top = *s[0usize];
     let n = f.len() - 1usize;
     f.set(0usize, *f[n]);
@@ -124,7 +124,7 @@ struct Heap {
   }
 }
 
-fn uniqueSorted(v &List[f32]) List[f32] {
+fn uniqueSorted(v: &List[f32]) List[f32] {
   var idx = List[usize].empty();
   var i = 0usize;
   while i < v.len() { idx.push(i); i = i + 1usize; }
@@ -139,7 +139,7 @@ fn uniqueSorted(v &List[f32]) List[f32] {
   out
 }
 
-fn indexOfCoord(v &List[f32], x f32) usize {
+fn indexOfCoord(v: &List[f32], x: f32) usize {
   var best = 0usize;
   var bd = 1.0e30f;
   var i = 0usize;
@@ -152,17 +152,17 @@ fn indexOfCoord(v &List[f32], x f32) usize {
 }
 
 struct Grid {
-  xs List[f32];
-  ys List[f32];
-  free List[bool];
-  hOpen List[bool];                // the segment from (i, j) to (i + 1, j) clears every box (its middle is outside them)
-  vOpen List[bool];                // from (i, j) to (i, j + 1)
-  hUsed List[f32];                 // the segment from (i, j) to (i + 1, j)
-  vUsed List[f32];                 // from (i, j) to (i, j + 1)
+  xs: List[f32];
+  ys: List[f32];
+  free: List[bool];
+  hOpen: List[bool];                // the segment from (i, j) to (i + 1, j) clears every box (its middle is outside them)
+  vOpen: List[bool];                // from (i, j) to (i, j + 1)
+  hUsed: List[f32];                 // the segment from (i, j) to (i + 1, j)
+  vUsed: List[f32];                 // from (i, j) to (i, j + 1)
 }
 
 // A route from 'a' (leaving in heading 'da') to 'b' (arriving heading 'db'), points of 'grid'; empty if none
-fn search(grid &Grid, ai usize, aj usize, da u32, bi usize, bj usize, db u32, o &RouteOptions) List[Vec2] {
+fn search(grid: &Grid, ai: usize, aj: usize, da: u32, bi: usize, bj: usize, db: u32, o: &RouteOptions) List[Vec2] {
   let nx = grid.xs.len();
   let ny = grid.ys.len();
   let total = nx * ny * 4usize;
@@ -250,7 +250,7 @@ fn search(grid &Grid, ai usize, aj usize, da u32, bi usize, bj usize, db u32, o 
   out
 }
 
-fn markUsed(grid &mut Grid, pts &List[Vec2]) {
+fn markUsed(grid: &mut Grid, pts: &List[Vec2]) {
   let nx = grid.xs.len();
   var p = 1usize;
   while p < pts.len() {
@@ -272,7 +272,7 @@ fn markUsed(grid &mut Grid, pts &List[Vec2]) {
 }
 
 // Drops points that lie on the line between their neighbours, and repeated ones
-fn thin(pts &List[Vec2]) List[Vec2] {
+fn thin(pts: &List[Vec2]) List[Vec2] {
   var out = List[Vec2].empty();
   var i = 0usize;
   while i < pts.len() {
@@ -290,7 +290,7 @@ fn thin(pts &List[Vec2]) List[Vec2] {
 }
 
 // Routes every live edge of 'g' (self loops get a small loop on the east side)
-pub fn routeEdges(g &mut Graph, o &RouteOptions) RouteStats {
+pub fn routeEdges(g: &mut Graph, o: &RouteOptions) RouteStats {
   var stats = new RouteStats(0u32, 0u32, 0u32, 0.);
   let m = o.margin;
   // 1. sides and spread

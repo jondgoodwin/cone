@@ -19,19 +19,19 @@ import collector;
 import actors;
 import libc;
 
-struct Node { pub v u64; }
-struct Wrap { pub g Gc[mut, Node]; pub n u64; }
+struct Node { pub v: u64; }
+struct Wrap { pub g: Gc[mut, Node]; pub n: u64; }
 
 // A traced region of the program's own is refused the same: the rule is judged
 // by what a region declares ('is RegionRef, Traced'), not by its name
 struct Mine is RegionRef, Traced {
-  pub id i64;
-  fn alloc(size usize) *u8 {
+  pub id: i64;
+  fn alloc(size: usize) *u8 {
     let p = malloc(size);
     mem.writeRaw(p as *Mine, new Mine(1));
     p
   }
-  fn mark(self &uni Mine, slot *usize) {}
+  fn mark(self: &uni Mine, slot: *usize) {}
 }
 
 fn ownRegion() {
@@ -56,20 +56,20 @@ fn bodies() {
   }
 }
 
-fn builders(xs &List[u64]) {
+fn builders(xs: &List[u64]) {
   let a = new List[u64] <- parallel each x in xs yield (new Gc[mut, Node](new Node(*x))).v;   //~ ErrorGcStopgap "inside a 'parallel each' body"
   let b = new List[u64] <- parallel each x in xs if (new Gc[mut, Node](new Node(*x))).v > 0u64 yield *x;   //~ ErrorGcStopgap "inside a 'parallel each' body"
 }
 
 // A copy from outside is the copy rule's, once
-fn copied(g Gc[imm, u64]) {
+fn copied(g: Gc[imm, u64]) {
   parallel each i in 0usize ..< 4usize {
     let c = g;                                     //~ ErrorParCopy "may not copy a value of type"
   }
 }
 
 // A loop touching no Gc is as it was
-fn plain(xs &List[u64]) u64 {
+fn plain(xs: &List[u64]) u64 {
   let ys = new List[u64] <- parallel each x in xs yield *x + 1u64;
   u64.from(ys.len())
 }
