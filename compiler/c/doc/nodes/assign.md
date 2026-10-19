@@ -113,10 +113,15 @@ Flow and generation see an ordinary parallel assignment (`assignParaFlow`,
 `assignMultRetFlow`) to variables that hold nothing yet. A `let` name is given its
 value once, which is how a `let` local without a value is initialized.
 
-**A temporary borrowed in the values does not live to the block's end.** `let a, b
-= &f(), &f();` is refused (`ErrorFrozen`, the borrow outliving its temporary) where `let a = &f();` extends the
-temporary: the extension is a property of one variable's initializer
-(`varDclExtend`), and a destructuring declaration has none.
+**The values of a declaration of several names are one initializer.** A temporary a
+borrow in them is rooted in lives to the block's end, as `let a = &f();` extends it
+([vardcl](vardcl.md), "Temporaries an initializer extends"): `let a, b = &f(), &g();`
+walks the value tuple's elements as the extending positions of a tuple, in the order
+they run. `blockStmtTypeCheck` begins the extension for the flagged assignment, with a
+stand-in variable of the names' scope as its owner (so no name's own check begins a
+second one), and `assignTypeCheck` walks the checked values once (`varDclExtendInit`).
+A borrow that is not in an extending position (`id(&f())`) is `ErrorFrozen`, for a name
+declared alone or among several.
 
 ## Name resolution
 

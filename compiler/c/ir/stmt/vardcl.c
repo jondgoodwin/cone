@@ -489,6 +489,14 @@ static void varDclExtend(VarDclExtend *ext, INode **valuep) {
     ext->npending = 0;
 }
 
+// The values of a declaration of several names, 'let a, b = &f(), &g();', are one
+// initializer: each element is an extending position, as the elements of a tuple
+// a single name is given are
+void varDclExtendInit(TypeCheckState *pstate, INode **valuep) {
+    if (pstate->extend)
+        varDclExtend(pstate->extend, valuep);
+}
+
 Nodes *varDclExtendEnd(TypeCheckState *pstate, VarDclExtend *ext) {
     pstate->extend = ext->outer;
     for (uint32_t i = 0; i < ext->ntemps; ++i) {

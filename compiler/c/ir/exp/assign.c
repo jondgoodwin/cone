@@ -399,6 +399,11 @@ void assignTypeCheck(TypeCheckState *pstate, AssignNode *node) {
             assignInitRecurse(pstate, node->lval, node->rval);
         }
     }
+    // The values of 'let a, b = &f(), &g();' are one initializer: a temporary a borrow in it
+    // is rooted in lives to the block's end, as it does for a single name's
+    if ((node->flags & FlagDestructAssign) && node->rval->tag == VTupleTag
+            && ((IExpNode*)node->rval)->vtype != errorType)
+        varDclExtendInit(pstate, &node->rval);
     // What the names assigned hold now: the variant stored, where it is known (narrow.h)
     if (lval->tag == VTupleTag) {
         INode **elemp;

@@ -115,6 +115,9 @@ struct VarDclExtend {
 // hands back the hidden locals to declare before it, in order, or NULL.
 void varDclExtendBegin(TypeCheckState *pstate, VarDclExtend *ext, VarDclNode *var);
 Nodes *varDclExtendEnd(TypeCheckState *pstate, VarDclExtend *ext);
+// The values of a declaration of several names, once checked, as the one initializer
+// whose extending positions are walked (assignTypeCheck)
+void varDclExtendInit(TypeCheckState *pstate, INode **valuep);
 
 // A borrow, type checked within such a statement, of a place whose root
 // 'slot' is a temporary: make the temporary a hidden local, which the borrow
