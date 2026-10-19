@@ -730,11 +730,11 @@ pub struct Loop {
   fn tryChan(self: &mut, tx: &Sender[Completion], c: Completion, back: &mut Completion) bool {
     var full = false;
     match tx.trySend(c) {
-      case var Some(s) {
+      case let Some(s) {
         if tx.isClosed() {
           stats.handedDropped = stats.handedDropped + 1u64;
         } else {
-          *back <-> s;
+          *back = s;
           full = true;
         }
       }
@@ -854,10 +854,9 @@ pub struct Loop {
     let i = self.allocRec();
     let r = self.recAt(i) as &mut Rec;
     r.token = token;
-    r.target <-> t;
+    r.target = t;
     r.kind = diag.kindExternal;
-    var b = buf;
-    r.buf <-> b;
+    r.buf = buf;
     let gen = r.gen;
     var dl = deadline;
     match group {
@@ -902,8 +901,7 @@ pub struct Loop {
   // when it is cancelled. True when it is cancelled already
   fn join(self: &mut, i: u32, group: Option[CancelGroup]) bool {
     let r = self.recAt(i) as &mut Rec;
-    var g = group;
-    r.group <-> g;
+    r.group = group;
     var cancelled = false;
     match r.group {
       case let Some(s) {
@@ -927,7 +925,7 @@ pub struct Loop {
     let r = self.recAt(i) as &mut Rec;
     r.kind = diag.kindTimer;
     r.token = token;
-    r.target <-> t;
+    r.target = t;
     let gen = r.gen;
     // A timer due after its group's deadline answers TimedOut at the
     // deadline instead; one due at or before it answers Done at its time
@@ -961,7 +959,7 @@ pub struct Loop {
     let p = self.recAt(i);
     let r = p as &mut Rec;
     r.token = token;
-    r.target <-> t;
+    r.target = t;
     r.ov.internal = 0usize;
     r.ov.internalHigh = 0usize;
     r.ov.offset = 0u32;
@@ -977,54 +975,61 @@ pub struct Loop {
         r.kind = diag.kindAccept;
         r.sock = o.listener;
       }
-      case var Recv(o) {
+      case let Recv(o) {
+        let buf, sock = o.(buf, sock);
         r.kind = diag.kindRecv;
-        r.buf <-> o.buf;
-        r.sock = o.sock;
+        r.buf = buf;
+        r.sock = sock;
       }
       case let RecvReady(o) {
         r.kind = diag.kindRecvReady;
         r.sock = o.sock;
       }
-      case var Send(o) {
+      case let Send(o) {
+        let buf, sock = o.(buf, sock);
         r.kind = diag.kindSend;
-        r.buf <-> o.buf;
-        r.sock = o.sock;
+        r.buf = buf;
+        r.sock = sock;
       }
       case let SendBytes(o) {
         r.kind = diag.kindSend;
         r.bytes = Some[Bytes](o.bytes);
         r.sock = o.sock;
       }
-      case var ReadAt(o) {
+      case let ReadAt(o) {
+        let buf, file, at = o.(buf, file, at);
         r.kind = diag.kindReadAt;
-        r.buf <-> o.buf;
-        r.sock = o.file;
-        r.at = o.at;
+        r.buf = buf;
+        r.sock = file;
+        r.at = at;
       }
-      case var WriteAt(o) {
+      case let WriteAt(o) {
+        let buf, file, at = o.(buf, file, at);
         r.kind = diag.kindWriteAt;
-        r.buf <-> o.buf;
-        r.sock = o.file;
-        r.at = o.at;
+        r.buf = buf;
+        r.sock = file;
+        r.at = at;
       }
-      case var Call(o) {
+      case let Call(o) {
+        let buf, lane, work, arg = o.(buf, lane, work, arg);
         r.kind = diag.kindCall;
-        r.buf <-> o.buf;
-        r.lane = o.lane;
-        r.work = o.work;
-        r.at = o.arg;
+        r.buf = buf;
+        r.lane = lane;
+        r.work = work;
+        r.at = arg;
       }
-      case var RecvFrom(o) {
+      case let RecvFrom(o) {
+        let buf, sock = o.(buf, sock);
         r.kind = diag.kindRecvFrom;
-        r.buf <-> o.buf;
-        r.sock = o.sock;
+        r.buf = buf;
+        r.sock = sock;
       }
-      case var SendTo(o) {
+      case let SendTo(o) {
+        let buf, sock, addr = o.(buf, sock, addr);
         r.kind = diag.kindSendTo;
-        r.buf <-> o.buf;
-        r.sock = o.sock;
-        r.peer = o.addr;
+        r.buf = buf;
+        r.sock = sock;
+        r.peer = addr;
       }
     }
     let gen = r.gen;
