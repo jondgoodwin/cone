@@ -1297,6 +1297,8 @@ static int genlLendQuiet(INode *node) {
         return genlLendQuiet(((RefNode *)node)->vtexp);
     case NotLogicTag:
         return genlLendQuiet(((LogicNode *)node)->lexp);
+    case DestructTag:
+        return genlLendQuiet(((DestructNode *)node)->exp);
     case OrLogicTag: case AndLogicTag:
         return genlLendQuiet(((LogicNode *)node)->lexp) && genlLendQuiet(((LogicNode *)node)->rexp);
     case VTupleTag:
@@ -3019,6 +3021,76 @@ static void genlDiscard(GenState *gen, INode *type, LLVMValueRef val) {
     genlTempKeep(gen, temp, val);
 }
 
+// A value taken apart, 'x.(a, b)' (DestructNode): the named fields are read out
+// of the value, and are the node's value; one name gives the field, two or more
+// a tuple of them. The fields not named die with the statement, as a '_' target's
+// value does (genlDiscard), in the order the value's own drop would have run
+// them: a struct's, each field that finalizes and is not an owning reference in
+// field order, then each owning reference in field order (genlStructDrop); a
+// tuple's, element by element. The statement finalizes the newest first, so the
+// last to die is kept first.
+static LLVMValueRef genlDestruct(GenState *gen, DestructNode *node) {
+    INode *objtype = iexpGetTypeDcl(node->exp);
+    LLVMValueRef obj = genlExpr(gen, node->exp);
+    uint32_t count = node->names->used;
+    // A variant laid out as a nullable pointer has no struct: its one nameable
+    // field is the whole value
+    int whole = objtype->tag == StructTag && (objtype->flags & NullablePtr) != 0;
+    LLVMValueRef result;
+    if (count == 1)
+        result = whole ? obj : LLVMBuildExtractValue(gen->builder, obj, node->index[0], "taken");
+    else {
+        result = LLVMGetUndef(genlType(gen, node->vtype));
+        for (uint32_t pos = 0; pos < count; ++pos)
+            result = LLVMBuildInsertValue(gen->builder, result,
+                LLVMBuildExtractValue(gen->builder, obj, node->index[pos], "taken"), pos, "taken");
+    }
+    if (whole)
+        return result;
+
+    // The elements of the value that die with the statement, in the order they die
+    uint32_t total = objtype->tag == TTupleTag ? ((TupleNode *)objtype)->elems->used
+        : ((StructNode *)objtype)->fields.used;
+    uint32_t *rest = (uint32_t *)memAllocBlk((total ? total : 1) * sizeof(uint32_t));
+    INode **types = (INode **)memAllocBlk((total ? total : 1) * sizeof(INode *));
+    uint32_t nrest = 0;
+    INode **nodesp;
+    uint32_t cnt;
+    for (int owners = 0; owners <= (objtype->tag == StructTag ? 1 : 0); ++owners) {
+        uint32_t pos = 0;
+        if (objtype->tag == TTupleTag) {
+            for (nodesFor(((TupleNode *)objtype)->elems, cnt, nodesp)) {
+                uint32_t at = pos++;
+                int named = 0;
+                for (uint32_t i = 0; i < count; ++i)
+                    named |= node->index[i] == at;
+                if (!named && itypeNeedsFinal(*nodesp)) {
+                    rest[nrest] = at;
+                    types[nrest++] = *nodesp;
+                }
+            }
+            break;
+        }
+        for (nodelistFor(&((StructNode *)objtype)->fields, cnt, nodesp)) {
+            FieldDclNode *field = (FieldDclNode *)*nodesp;
+            INode *fldtype = itypeGetTypeDcl(field->vtype);
+            int isowner = (fldtype->tag == RefTag || fldtype->tag == VirtRefTag) && regionIsOwning(((RefNode *)fldtype)->region);
+            int named = 0;
+            for (uint32_t i = 0; i < count; ++i)
+                named |= node->index[i] == field->index;
+            if (named || isowner != owners || !itypeNeedsFinal(fldtype))
+                continue;
+            rest[nrest] = field->index;
+            types[nrest++] = field->vtype;
+        }
+    }
+    while (nrest > 0) {
+        --nrest;
+        genlDiscard(gen, types[nrest], LLVMBuildExtractValue(gen->builder, obj, rest[nrest], "rest"));
+    }
+    return result;
+}
+
 void genlStore(GenState *gen, INode *lval, LLVMValueRef rval) {
     if (assignIsAnon(lval)) {
         genlDiscard(gen, ((IExpNode*)lval)->vtype, rval);
@@ -3631,6 +3703,8 @@ static LLVMValueRef genlTerm(GenState *gen, INode *termnode) {
         return genlLogic(gen, (LogicNode*)termnode);
     case NotLogicTag:
         return genlNot(gen, (LogicNode*)termnode);
+    case DestructTag:
+        return genlDestruct(gen, (DestructNode*)termnode);
     case VarDclTag:
         return genlLocalVar(gen, (VarDclNode*)termnode); break;
     case BlockTag:

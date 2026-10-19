@@ -517,6 +517,14 @@ must agree. A return's value tuple was already coerced element by element, by
 The assignment's own type is the rval's type, so an assignment is usable as an
 expression.
 
+A field list, `x.(a, b)`, gives a tuple a value of its own: the named fields of a
+struct, or the numbered elements of a tuple, as a value tuple of their types, or the
+field itself for one name. `destructTypeCheck` lowers it to field accesses, checked
+as `x.a` is, where nothing moves, and keeps it as a `DestructNode` where the value is
+consumed (a move type, or a value no place keeps); [destruct](../nodes/destruct.md)
+says which and why. The tuple it gives is one an assignment's tuple-by-single cell
+takes apart, `let a, b = x.(p, q);`, through `assignMultRetCheck` like a call's.
+
 ## 11. Invariant lifetimes: brands
 
 An invariant lifetime, `'=a`, is checked here and nowhere else, as an

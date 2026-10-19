@@ -257,6 +257,8 @@ static void parWalk(INode *node, ParVisit visit, void *ctx) {
         parWalk(((RefNode*)node)->vtexp, visit, ctx); break;
     case NotLogicTag:
         parWalk(((LogicNode*)node)->lexp, visit, ctx); break;
+    case DestructTag:
+        parWalk(((DestructNode*)node)->exp, visit, ctx); break;
     case OrLogicTag:
     case AndLogicTag:
         parWalk(((LogicNode*)node)->lexp, visit, ctx);

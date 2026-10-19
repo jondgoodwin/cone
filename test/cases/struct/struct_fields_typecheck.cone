@@ -1,0 +1,105 @@
+// A field list, `x.(a, b)`, that the value's type cannot answer. Type-check stage.
+//
+// The names must be the value's own: a struct's fields, each named once, or a
+// tuple's elements, numbered, each once. A type with a finalizer is not taken
+// apart, because its finalizer needs all of it; a struct that merely holds one
+// is, and the finalizer runs on the field when the rest dies. A number, an array
+// or a function has no fields to name. A generic's body is checked for the type
+// it is made for, so its refusals are these.
+
+mod struct_fields_typecheck;
+
+struct Pt { pub x: i32; pub y: i32; }
+
+struct Engine { pub fuel: i32; pub torque: i32; }
+// `fuel` is a name of Car folded in from its engine, not a field Car holds
+struct Car { pub engine: Engine use fuel; pub seats: i32; }
+
+struct Sealed {
+  pub a: i32;
+  pub b: i32;
+  fn final(self: &uni) { }
+}
+// Holding a finalizing field is not having one: this can be taken apart
+struct Holder { pub s: Sealed; pub n: i32; }
+
+enum Latch {
+  struct Open { pub a: i32; pub b: i32; }
+  struct Shut { pub a: i32; }
+  fn final(self: &uni) { }
+}
+
+fn twice(p: Pt) {
+  let a = p.(x, x);                 //~ ErrorFldListDup:17 "`x` is named twice"
+}
+
+fn unknown(p: Pt) {
+  let a = p.(z);                    //~ ErrorFldListUnknown:14 "`z` is not a field of Pt. Its fields are: x, y."
+}
+
+fn unknownSecond(p: Pt) {
+  let a = p.(x, w);                 //~ ErrorFldListUnknown:17 "`w` is not a field of Pt"
+}
+
+fn unknownInTaken(h: Holder) {
+  let a = h.(m);                    //~ ErrorFldListUnknown:14 "`m` is not a field of Holder. Its fields are: s, n."
+}
+
+fn folded(c: Car) {
+  let a = c.(fuel);                 //~ ErrorFldListUnknown:14 "`fuel` is a field Car holds through another of its fields"
+}
+
+fn pastTheEnd(t: (i32, i32)) {
+  let a = t.(2);                    //~ ErrorFldListUnknown:14 "This tuple has 2 elements, numbered 0 to 1; there is no element 2."
+}
+
+fn nameOnTuple(t: (i32, i32)) {
+  let a = t.(x);                    //~ ErrorFldListForm:14 "A tuple's elements are numbered from 0"
+}
+
+fn numberOnStruct(p: Pt) {
+  let a = p.(0);                    //~ ErrorFldListForm:14 "A struct's fields are named"
+}
+
+fn mixed(p: Pt) {
+  let a = p.(x, 1);                 //~ ErrorFldListForm:17 "not both in one list"
+}
+
+fn sealed(s: Sealed) {
+  let a = s.(a);                    //~ ErrorFldListFinal:13 "Sealed has a finalizer, so it cannot be taken apart"
+}
+
+fn sealedTemporary() {
+  let a = Sealed(1, 2).(b);         //~ ErrorFldListFinal:24 "Sealed has a finalizer"
+}
+
+fn variant(l: Latch) {
+  match l {
+    case let Open(o) { let a = o.(a); }   //~ ErrorFldListFinal:34 "Open has a finalizer"
+    case let Shut(s) { let a = s.(a); }   //~ ErrorFldListFinal:34 "Shut has a finalizer"
+  }
+}
+
+// Not refused: the holder has no finalizer of its own
+fn holder(h: Holder) i32 {
+  h.(n)
+}
+
+fn number(n: i32) {
+  let a = n.(x);                    //~ ErrorFldListType:13 "i32 has no fields to take"
+}
+
+fn array(a: Array[i32, 3]) {
+  let b = a.(0);                    //~ ErrorFldListType:13 "an array has no fields to take"
+}
+
+// A generic's body is checked for the type it is made for: a number has no fields
+// to name, and a struct that has them is taken apart
+fn generic[T](x: T) {
+  let a = x.(x);                    //~ ErrorFldListType:13 "i32 has no fields to take"
+}
+
+fn useGeneric() {
+  generic(3);
+  generic(Pt(1, 2));
+}

@@ -763,6 +763,17 @@ tag: the value is the one variant's reference, tested against null. No
 expression places a generated drop's calls, so in a debug build each is placed
 at the type, where a call without a location would fail verification.
 
+**A value taken apart by a field list** (`genlDestruct`, `DestructTag`) is
+generated whole, each named field is read out of it with `extractvalue`, and the
+fields not named that need finalizing end with the statement: each is handed to
+`genlDiscard`, as a `_` target's value is. The statement finalizes its temporaries
+newest first, so they are kept in the **reverse** of the order the value's own drop
+would have used (`genlStructDrop`'s: the fields that finalize and are no owning
+references in field order, then the owning references in field order; a tuple's,
+element by element), and they die in that order. A variant laid out as a
+nullable pointer is only its reference: the one nameable field is the whole value,
+and nothing else is left.
+
 **A copy of a value holding counted references its death releases** (flow's
 `flowHeldCounted`: a struct, an enum, a tuple or an array holding one, however
 deep) reaches `genlAliasHeld` from the `RefCountNode`: the copied value is

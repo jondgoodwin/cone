@@ -104,7 +104,7 @@
 # Initializers -- construction, 'T(...)', and the inits it runs -- are
 # struct_new, struct_typecheck_new and struct_flow_new.
 
-support = ["structmeter.cone"]
+support = ["structmeter.cone", "struct_fields_vault.cone"]
 
 # -------- success --------
 
@@ -1065,3 +1065,56 @@ diagnostics = 16
 category = "run"
 description = "A construction is the type's name with parentheses for every type: a struct, a type with a '()' method, a declared init, a generic struct, a generic's parameter, a variant, a collection with a size and with contents, an array, an owner of a region and an alias of one, a borrow of a construction, a construction among another's arguments and as a receiver, and 'trynew'"
 tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
+
+# A value taken apart, `x.(a, b)`: the named fields of a struct, or the numbered
+# elements of a tuple, `t.(0, 2)`. One name gives the field, two or more give a
+# tuple. Where the value is owned the fields move out and the rest dies with the
+# statement in the order the struct's own drop uses; through a reference, or from
+# a copy kept in a place, the fields are read as `x.a` reads them.
+# struct_fields_take runs every shape; the rest are what is refused: the parse
+# stage, the type check stage, the flow stage (a move out of what does not own
+# its value, a variable used after it was taken apart), and from outside the
+# type's module, which struct_fields_outside compiles and
+# struct_fields_outside_refused refuses.
+
+[scenario.struct_fields_take]
+category = "run"
+description = "Field lists on a local, a temporary, a by-value self and a thrown-away result, a tuple's positions, one name and several, the rest dying with the statement in the struct's own drop order (a whole value dying beside it), a value moved on one path, in a loop, a variant bound whole, as an argument, through references and copies, a private field inside its module, and a generic's"
+tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
+
+[scenario.struct_fields_parse]
+category = "reject"
+description = "A field list that is empty, holds an expression, a call, a number first and a string"
+tags = ["parse"]
+diagnostics = 5
+
+[scenario.struct_fields_typecheck]
+category = "reject"
+description = "A field list naming a field twice, a field the struct has not (the message lists its fields), a field held through another, a tuple element past the end, names and numbers mixed or on the wrong type, a type with a finalizer (a struct, a temporary, an enum's variant; a struct that only holds one is not refused), and a value with no fields (a number, an array, a generic's number)"
+tags = ["typecheck"]
+diagnostics = 16
+
+[scenario.struct_fields_flow]
+category = "reject"
+description = "A value taken apart is moved whole: its variable is dead after, a second list on it, a use on a path after it was taken on another, in a loop; what does not own its value is refused as `x.a` is -- a field of another struct, a reference, a sole owner's referent, a global -- while a copy field read through a reference or an owner is not"
+tags = ["flow"]
+diagnostics = 11
+
+[scenario.struct_fields_outside]
+category = "compile"
+description = "Another module's struct taken apart by its public fields: the private fields it holds are not named and die with the statement"
+tags = ["nameres", "typecheck", "genllvm"]
+
+[scenario.struct_fields_outside_refused]
+category = "reject"
+description = "From outside the type's module a private field may not be named in a field list, and a type with a finalizer may not be taken apart, which is no different outside"
+tags = ["typecheck"]
+diagnostics = 3
+
+# A field list on a value holding a counted reference: a copy kept in a place copies
+# the field named, one more holder; a value no place keeps moves the reference named
+# out with its one holder and lets go the one it does not name with the statement.
+[scenario.struct_fields_counted]
+category = "run"
+description = "A field list on a struct holding a counted reference: the copy kept in a place adds a holder for the field it names and none for the field it does not, and a temporary gives up the reference it names with its one holder and releases the one it does not at the statement's end"
+tags = ["flow", "genllvm", "runtime"]

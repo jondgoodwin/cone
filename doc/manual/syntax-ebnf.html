@@ -235,7 +235,7 @@
 	mult_exp ::= as_exp (('*'|'/'|'%') as_exp)*
 	as_exp ::= prefix_exp ('as' type)*
 		/* 'into' is retired: a value converts with 'f32.from(x)', and a reference narrows to a variant by a match or a bound 'if' */
-	prefix_exp ::= ('-'|'~'|'*'|'++'|'--'|'await') prefix_exp | '.' property suffix* | addr | plus_alloc | suffix_exp
+	prefix_exp ::= ('-'|'~'|'*'|'++'|'--'|'await') prefix_exp | '.' (property | fieldlist) suffix* | addr | plus_alloc | suffix_exp
 		/* a prefix applies to the whole suffixed term after it: '-x[1]' negates the element. '.' with nothing before it is 'this.'.
 		   'await' only in an actor's behaviour; built on a behaviour of an actor that returns a value */
 	addr ::= ('&'|'&<'|'&[]') perm_type? (fn_stmt | prefix_exp)
@@ -245,7 +245,7 @@
 		   It stays only as a match pattern's owning reference type, '+Rc-mut Circle', whose spelling
 		   is an open design question */
 	suffix_exp ::= term suffix*
-	suffix ::= '++'|'--'| ('.' property) | ('(' (contents_exp (',' contents_exp)*)? ')') | ('[' ((contents_exp (',' contents_exp)*) | (simple_exp? ('..=' | '..&lt;') simple_exp | simple_exp? '..'))? ']')
+	suffix ::= '++'|'--'| ('.' (property | fieldlist)) | ('(' (contents_exp (',' contents_exp)*)? ')') | ('[' ((contents_exp (',' contents_exp)*) | (simple_exp? ('..=' | '..&lt;') simple_exp | simple_exp? '..'))? ']')
 		/* square brackets hold type arguments, an index, or a range of indexes, '&amp;s[a..=b]', which makes a slice
 		   (no start is 0; no end is the array's end: 'a..' alone runs to it, while '..=' and '..&lt;' must say where they end,
 		   and a '..' before an end, 'a..b' or '..b', is refused: with no end there is nothing to include or leave out,
@@ -253,6 +253,11 @@
 		   contents: an enum variant is constructed with parentheses, 'Some(x)', and an empty one by its name alone,
 		   'None'. A struct's value is built as they are, by its name and parentheses, 'Point(1, 2)': a call whose callee is a type */
 	property ::= ident_token | symbol_token | integer_token
+	fieldlist ::= '(' (ident_token | integer_token) (',' (ident_token | integer_token))* ')'
+		/* 'x.(a, b)' takes the named fields of a struct, or the numbered elements of a tuple, 't.(0, 2)', and gives their
+		   values: one name gives that field's value, two or more a tuple of them. Names or numbers, not both, each once.
+		   '.(a, b)' with nothing before it is 'this.(a, b)'. A '.' followed by '(' is a field list; a method's call
+		   parentheses come after its name, 'x.f(a, b)' */
 	term ::=  literal | ident_token | pseudo | '(' exp ')' | new_exp | if_stmt | match_stmt | while_stmt | each_stmt | block
 		/* an 'if', a 'match', a loop or a block is a term, so it may be an operand: 'if c {1;} else {2;} + 10' adds to what the 'if' gives */
 	new_exp ::= ('new' ident_token ('.' ident_token)* '[' type (',' type)* ']' | 'trynew' ident_token ('.' ident_token)* ('[' type (',' type)* ']')*) ('(' (contents_exp (',' contents_exp)*)? ')')?

@@ -318,8 +318,11 @@ is — or that is reached through one (`*b.r`, what an owning field points at;
 struct would be left with a hole in it: usable neither whole nor field by field,
 and with no answer to what its death finalizes. The refused move deactivates
 nothing. Swap and left-assignment take a value out of a field, and moving the
-whole struct takes every field with it. A copy-typed field is never walked, so it
-reads out freely.
+whole struct takes every field with it, which is what a field list, `x.(a, b)`,
+does: it moves the whole value into a `DestructNode`, whose operand is moved as a
+call's argument is (`flowLoadValue`, then `flowHandleMoveOrCopy`), so the struct is
+never left with a hole and the node needs no walk of its own for the fields. A
+copy-typed field is never walked, so it reads out freely.
 
 The one exception is a variant's only field (all of a variant declared as a type,
 which a binding reads through the hidden local castBindProject declares), read
