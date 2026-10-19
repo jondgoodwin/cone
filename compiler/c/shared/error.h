@@ -722,7 +722,7 @@ enum ErrorCode {
     ErrorLetElseColon = 1514,   // A local declared with a ':' and a type that is followed by 'else': `let n: Ok = r else ...`. A let-else binds the payload of a variant of the value, a pattern, and names only the variant after the binding, with no ':' (`let n Ok = r else ...`); the type after a ':' is the binding's own, which a payload is not. Pointed at the binding
 
     // A range written with a bare '..' between a start and an end (parser/parseexpr.c, parser/parsefnflow.c)
-    ErrorRangeBare = 1515,      // `a .. b` in an index, a case pattern or an `each`: '..' does not say whether the end is included, so it is refused. '..=' includes the end and '..<' stops before it. Pointed at the '..'. Not refused where no end follows (`s[a..]` runs to the end) or no start precedes it (`s[..]`)
+    ErrorRangeBare = 1515,      // `a .. b` or `..b` in an index, `a .. b` in a case pattern or an `each`: '..' before an end does not say whether the end is included, so it is refused. '..=' includes the end and '..<' stops before it. Pointed at the '..'. Not refused where no end follows (`s[a..]` runs to the end, `s[..]` is the whole), since there is no end to include or leave out
 
     // Warnings
     WarnCode = 3000,

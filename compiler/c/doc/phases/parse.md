@@ -91,9 +91,9 @@ index with `FlagRange`, its arguments the start (a `usize` 0 when none is writte
 the end unless the range runs to it, `FlagRangeIncl` marking an end written with `..=`;
 `x[a..]` runs to the end, and `x[a..<]` and `x[a..=]` are `ErrorBadIndex`. A bare `..`
 (`DotDotToken`) is lexed and says nothing about its end, so it is a range operator only
-where no end follows or no start precedes it (`x[a..]`, `x[..b]`, which reads as `x[..=b]`,
-and `x[..]`); between a start and an end, in an index, a pattern or an `each`, it is
-`ErrorRangeBare` (`parseRangeBare`), pointed at the `..` and read on as `..=`. `...` is
+where no end follows (`x[a..]` runs to the end, `x[..]` is the whole); before an end, in an
+index (`x[a..b]`, `x[..b]`), a pattern or an `each`, it is `ErrorRangeBare`
+(`parseRangeBare`), pointed at the `..` and read on as `..=`. `...` is
 lexed (`EllipsisToken`) only to be refused, `ErrorRangeEllipsis` (`parseRangeEllipsis`), and read
 on as `..=`. A number stops scanning at a `..`, so `0..<3` and `0..=3` are two integers and
 a range, not the float `0.`.
@@ -1184,7 +1184,7 @@ numbers.
 | | `parseMatchPattern`, `parseMatchRange` | one pattern of a case — `is`, a comparison, a range, a value alone, a test by `using` — lowered to the condition that tests the captured value, a value alone to the undecided test `newMatchValueNode` builds; a condition (`!b`, `n > 3`), at the start of a case or after a `|`, is `ErrorPatBare` |
 | | `parseWhile`, `parseEach`, `parseWith`, `parseLifetime` | loop and scope desugaring |
 | | `parseEachLoop`'s range helpers (`parseRangeStepSign`, `parseRangeGuard`, `parseRangeMoved`, `parseRangeStepCall`) | an `each` over a number range: which way the step runs, the guard that lets a pass run, the test that a step wrapped past the type's extreme, and the step itself, finished by type check (`eachRangeStepLower`, `ir/exp/each.c`) |
-| | `parseRangeEllipsis`, `parseRangeBare` | `...` is refused, `ErrorRangeEllipsis`, and a bare `..` between a start and an end, `ErrorRangeBare`, wherever a range operator is read (an index, a pattern, an `each`) |
+| | `parseRangeEllipsis`, `parseRangeBare` | `...` is refused, `ErrorRangeEllipsis`, and a bare `..` before an end, `ErrorRangeBare`, wherever a range operator is read (an index, a pattern, an `each`) |
 | | `parseEachEntry`, `parseEachLoop`, `parseEachYield` | an `each` as an entry of `<-`: the same loop parse as `parseEach`, its body the `yield` (or the pass variable, for a drain) as a `YieldEntryTag` entry |
 | `parser/parsehelper.c` | `parseSpan` | record the statement just parsed as a span (`ir/dclspan.c`, `dclSpanAdd`), taking a function's body or a global's value from where `parseFn` and `parseVarDcl` left it on `ParseState` (`bodyp`, `bodyendp`, `nameendp`, `typed`) |
 | `parser/parsemod.c` | `parseIncludeCheck` | the include-file generator's self-check: a generated include file's text parsed as the package's module, beside the root and outside the program's modules, its imports answered by the root's import lines |

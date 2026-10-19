@@ -572,8 +572,8 @@ void parseRangeEllipsis(void) {
     errorMsgLex(ErrorRangeEllipsis, "'...' is not a range operator. 'a ..= b' runs through b, and 'a ..< b' stops before b.");
 }
 
-// A bare '..' between a start and an end does not say whether the end is
-// included, so it is refused at the token. The caller goes on reading it as
+// A bare '..' before an end does not say whether the end is included, so it is
+// refused at the token. The caller goes on reading it as
 // '..=', which is what '..' once meant, so the rest of the range is checked too.
 void parseRangeBare(void) {
     errorMsgLex(ErrorRangeBare, "'..' does not say whether the range includes its end: write '..<' to stop before the end, or '..=' to include it.");
@@ -601,7 +601,7 @@ static void parseRangeBareAt(LexSpot spot) {
 // that a borrow makes a slice of part of an array (doc/manual/
 // lib-collections.html#subslices, "Subslices"). 'a..=b' includes b and 'a..<b' stops before it; a
 // missing start is 0, and a missing end, 'a..', is the array's end. A bare '..'
-// between a start and an end is refused (parseRangeBare). A range is
+// before an end is refused (parseRangeBare). A range is
 // held on the index as FlagRange, its arguments the start and, unless it runs
 // to the end, the end; FlagRangeIncl says the end was written with '..=' (or '..').
 //
@@ -677,14 +677,14 @@ static Nodes *parseIndexArgsIn(ParseState *parse, FnCallNode *fncall) {
 
     // A range. '..=' runs through its end and '..<' stops before it; a range
     // with no end runs to the array's end, which '..=' and '..<' would both reach.
-    // A '..' between a start and an end is refused; with no start, '..b' is read
-    // as '..=b', and with no end, 'a..' runs to the end
+    // A '..' followed by an end is refused, with a start or without; with no end,
+    // 'a..' runs to the end and '..' is the whole
     fncall->flags |= FlagRange;
     int stopsbefore = lexIsToken(DotDotLessToken);
     int includes = lexIsToken(DotDotEqToken);
     if (lexIsToken(EllipsisToken))
         parseRangeEllipsis();
-    int bare = lexIsToken(DotDotToken) && start != NULL;
+    int bare = lexIsToken(DotDotToken);
     LexSpot dots = {lex->tokp, lex->linep, lex->linenbr};
     lexNextToken();
     if (start == NULL)
