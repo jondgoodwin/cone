@@ -152,7 +152,7 @@ resolution, and `allocateTypeCheck` refuses it (`ErrorPlusAlloc`, naming the
 other value, a type with no name of its own written `T`). With a type operand it
 is a `RefTag` or `VirtRefTag` type, which type check refuses
 (`refRefusePlusType`, `ErrorPlusRefType`), naming the bracket spelling. A match
-pattern's root, `case let c +Rc-mut Circle`, is refused at parse by
+pattern's root, `case let +Rc-mut Circle(c)`, is refused at parse by
 `castPatternMark` (`ErrorPatManaged`): a pattern names only the variant, and the
 matched value supplies the managed reference, its region and permission
 (`castPatternAdoptRef`, [cast](cast.md)).

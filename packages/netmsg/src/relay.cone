@@ -51,7 +51,7 @@ actor Relay {
     var tx = up;
     var made = await aio.bindUdp(SocketAddr.localhost(0u16));
     match &mut made {
-      case var ok &mut Ok { front <=> *ok; }
+      case var &mut Ok(ok) { front <=> *ok; }
       else {}
     }
     if front.isNone() {
@@ -61,7 +61,7 @@ actor Relay {
     var bound = SocketAddr.localhost(0u16);
     let la = await front.localAddr();
     match &la {
-      case let a &Ok { bound = *a; }
+      case let &Ok(a) { bound = *a; }
       else {}
     }
     tx.send(Ok[SocketAddr, IoError](bound));
@@ -89,13 +89,13 @@ actor Relay {
       var data = List[u8].empty();
       var got = false;
       match &r {
-        case let ok &Ok {
+        case let &Ok(ok) {
           client = ok.from;
           data = copyBytes(ok.buf.view());
           got = true;
           failures = 0u32;
         }
-        case let e &Error {
+        case let &Error(e) {
           if aio.isCancelled(*e) {return;}
           if !aio.isTruncated(*e) {failures = failures + 1u32;}
         }
@@ -109,7 +109,7 @@ actor Relay {
           if stopped {return;}
           var up = UdpSocket.none();
           match &mut made {
-            case var ok &mut Ok { up <=> *ok; }
+            case var &mut Ok(ok) { up <=> *ok; }
             else {}
           }
           if up.isNone() {return;}
@@ -131,14 +131,14 @@ actor Relay {
     while !stopped && n < legs.len() && failures <= relayMaxFailures {
       let r = await legs[n].up.recvFromIn(pool.mustTake(recvRoom), IoLimits.within(group));
       match &r {
-        case let ok &Ok {
+        case let &Ok(ok) {
           failures = 0u32;
           if !stopped && n < legs.len() {
             legs[n].toClient.send(Instant.now(), copyBytes(ok.buf.view()));
             self.deliver();
           }
         }
-        case let e &Error {
+        case let &Error(e) {
           if aio.isCancelled(*e) {return;}
           if !aio.isTruncated(*e) {failures = failures + 1u32;}
         }
@@ -217,9 +217,9 @@ pub fn startLossyRelay(server: SocketAddr, toServer: LinkConfig, toClient: LinkC
   tx, rx = Oneshot[Result[SocketAddr, IoError]].make();
   relay.open(tx);
   match rx.recv() {
-    case let answer Some {
+    case let Some(answer) {
       match &answer {
-        case let a &Ok { return LossyRelay(a.port(), relay); }
+        case let &Ok(a) { return LossyRelay(a.port(), relay); }
         else {}
       }
     }

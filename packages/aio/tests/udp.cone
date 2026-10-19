@@ -53,7 +53,7 @@ fn udpOf(r: Result[UdpSocket, IoError]) UdpSocket {
   var res = r;
   var s = UdpSocket.none();
   match &mut res {
-    case var ok &mut Ok {s <=> *ok;}
+    case var &mut Ok(ok) {s <=> *ok;}
     else {}
   }
   s
@@ -61,7 +61,7 @@ fn udpOf(r: Result[UdpSocket, IoError]) UdpSocket {
 
 fn portOf(r: Result[SocketAddr, IoError]) u16 {
   match r {
-    case let a Ok {a.port()}
+    case let Ok(a) {a.port()}
     else {0u16}
   }
 }
@@ -105,12 +105,12 @@ actor Peer {
     m.append("ping over udp");
     let sent = await a.sendTo(to, m);
     match sent {
-      case let n Ok {got.sent.store(u64.from(n));}
-      case let e Error {got.sent.store(1000000u64 + u64.from(e.code));}
+      case let Ok(n) {got.sent.store(u64.from(n));}
+      case let Error(e) {got.sent.store(1000000u64 + u64.from(e.code));}
     }
     var r = await b.recvFrom(pool.mustTake(4096usize));
     match &mut r {
-      case var ok &mut Ok {
+      case var &mut Ok(ok) {
         var buf = IoBuf.empty();
         buf <=> ok.buf;
         got.len.store(u64.from(buf.len()));
@@ -124,7 +124,7 @@ actor Peer {
     let sentEmpty = await a.sendTo(to, pool.mustTake(64usize));
     var e0 = await b.recvFrom(pool.mustTake(4096usize));
     match &mut e0 {
-      case var ok &mut Ok {
+      case var &mut Ok(ok) {
         if ok.buf.len() == 0usize && ok.from.port() == pa {got.emptyOk.store(1u64);}
       }
       else {}
@@ -136,7 +136,7 @@ actor Peer {
     small.setLen(small.capacity() - 6usize);
     let cut = await b.recvFrom(small);
     match cut {
-      case let e Error {
+      case let Error(e) {
         if aio.isTruncated(e) && e.kind() == IoErrorKind.Truncated {got.cut.store(1u64);}
         got.cutCode.store(u64.from(e.code));
         if !aio.isCancelled(e) && !aio.isTimedOut(e) {got.osKind.store(1u64);}
@@ -146,19 +146,19 @@ actor Peer {
     let sentNext = await a.sendTo(to, datagram(&pool, 12usize));
     var next = await b.recvFrom(pool.mustTake(4096usize));
     match &mut next {
-      case var ok &mut Ok {got.whole.store(u64.from(ok.buf.len()));}
+      case var &mut Ok(ok) {got.whole.store(u64.from(ok.buf.len()));}
       else {}
     }
 
     // 4. No room, and a deadline already past
     let none = await b.recvFrom(IoBuf.empty());
     match none {
-      case let e Error {got.noRoom.store(u64.from(e.code));}
+      case let Error(e) {got.noRoom.store(u64.from(e.code));}
       else {}
     }
     let timed = await b.recvFromIn(pool.mustTake(4096usize), IoLimits.until(Instant.fromNanos(1i64)));
     match timed {
-      case let e Error {if aio.isTimedOut(e) {got.late.store(1u64);}}
+      case let Error(e) {if aio.isTimedOut(e) {got.late.store(1u64);}}
       else {}
     }
     var d = done;

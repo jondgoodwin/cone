@@ -99,8 +99,8 @@ actor Handler {
       let c = await ex.write(String.from("three"));
       let f = await ex.finish();
       match f {
-        case let n Ok {finished.send(n);}
-        case let e Error {finished.send(0u64);}
+        case let Ok(n) {finished.send(n);}
+        case let Error(e) {finished.send(0u64);}
       }
     } elif p == "/sized" {
       ex.start(ResponseHead.make(200u16), BodyLength.sized(10u64));
@@ -108,8 +108,8 @@ actor Handler {
       let b = await ex.write(String.from("56789"));
       let f = await ex.finish();
       match f {
-        case let n Ok {finished.send(n);}
-        case let e Error {finished.send(0u64);}
+        case let Ok(n) {finished.send(n);}
+        case let Error(e) {finished.send(0u64);}
       }
     } elif p == "/big" {
       ex.respond(ResponseHead.make(200u16), bigBody(600000usize));
@@ -137,8 +137,8 @@ actor Acceptor {
     let r = await actorhttp.listen(SocketAddr.localhost(0u16), cfg);
     var res = r;
     match &mut res {
-      case var ok &mut Ok {server <=> *ok;}
-      case let e &mut Error {printStr("listen failed: "); printStr(e.message().view()); printStr("\n");}
+      case var &mut Ok(ok) {server <=> *ok;}
+      case let &mut Error(e) {printStr("listen failed: "); printStr(e.message().view()); printStr("\n");}
     }
     ports.send(server.port());
   }
@@ -149,11 +149,11 @@ actor Acceptor {
     while true {
       let n = await server.next();
       match n {
-        case var ok Ok {
+        case var Ok(ok) {
           count = count + 1u64;
           dispatch(ok, finished.clone());
         }
-        case let e Error {break;}
+        case let Error(e) {break;}
       }
     }
     ended.send(count);
@@ -184,7 +184,7 @@ fn url(port: u16, path: &str) String {
 
 fn field(r: &Response, name: &str) String {
   match r.headers.get(name) {
-    case let v Some {String.fromBytes(v)}
+    case let Some(v) {String.fromBytes(v)}
     case is None[&Array[u8]] {String.from("(none)")}
   }
 }
@@ -194,7 +194,7 @@ fn say2(what: &str, r: Result[Response, FetchError]) {
   printStr(what);
   printStr(": ");
   match &r {
-    case let ok &Ok {
+    case let &Ok(ok) {
       printUInt(u64.from(ok.status));
       if ok.body.len() > 0usize {
         printStr(" ");
@@ -202,7 +202,7 @@ fn say2(what: &str, r: Result[Response, FetchError]) {
       }
       printStr("\n");
     }
-    case let e &Error {
+    case let &Error(e) {
       if e.isTimedOut() {printStr("timed out\n");}
       elif e.isCancelled() {printStr("cancelled\n");}
       else {printStr("failed: "); printStr(e.message().view()); printStr("\n");}
@@ -212,8 +212,8 @@ fn say2(what: &str, r: Result[Response, FetchError]) {
 
 fn statusOf(r: &Result[Response, FetchError]) u64 {
   match r {
-    case let ok &Ok {u64.from(ok.status)}
-    case let e &Error {0u64}
+    case let &Ok(ok) {u64.from(ok.status)}
+    case let &Error(e) {0u64}
   }
 }
 
@@ -224,7 +224,7 @@ actor Prober {
     say2("hello", await client.get(url(port, "/hello").view()));
     let first = await client.get(url(port, "/hello").view());
     match &first {
-      case let ok &Ok {printStr("  kept alive: "); printStr(yes(ok.timing.reused)); printStr("\n");}
+      case let &Ok(ok) {printStr("  kept alive: "); printStr(yes(ok.timing.reused)); printStr("\n");}
       else {}
     }
 
@@ -253,16 +253,16 @@ actor Prober {
     // ...and on a connection of the actor's own, whose request body the service thread cuts into pieces
     let cr = await actorhttp.connect("127.0.0.1", port);
     match cr {
-      case let c Ok {
+      case let Ok(c) {
         say2("euros posted on a connection, bytes",
           await c.request(RequestHead.make("POST", "/count", "127.0.0.1"), euros2));
       }
-      case let er Error {printStr("connect failed\n");}
+      case let Error(er) {printStr("connect failed\n");}
     }
 
     let head = await client.send(Request.make("HEAD", url(port, "/head").view()));
     match &head {
-      case let ok &Ok {
+      case let &Ok(ok) {
         printStr("head: ");
         printUInt(u64.from(ok.status));
         printStr(" length ");
@@ -271,11 +271,11 @@ actor Prober {
         printUInt(u64.from(ok.body.len()));
         printStr("\n");
       }
-      case let e &Error {printStr("head failed\n");}
+      case let &Error(e) {printStr("head failed\n");}
     }
     let nc = await client.get(url(port, "/nocontent").view());
     match &nc {
-      case let ok &Ok {printStr("nocontent: "); printUInt(u64.from(ok.status)); printStr(", body bytes "); printUInt(u64.from(ok.body.len())); printStr("\n");}
+      case let &Ok(ok) {printStr("nocontent: "); printUInt(u64.from(ok.status)); printStr(", body bytes "); printUInt(u64.from(ok.body.len())); printStr("\n");}
       else {printStr("nocontent failed\n");}
     }
     say2("missing", await client.get(url(port, "/missing").view()));
@@ -283,7 +283,7 @@ actor Prober {
 
     let st = await client.get(url(port, "/stream").view());
     match &st {
-      case let ok &Ok {
+      case let &Ok(ok) {
         printStr("stream: ");
         printUInt(u64.from(ok.status));
         printStr(" ");
@@ -296,7 +296,7 @@ actor Prober {
     }
     let sz = await client.get(url(port, "/sized").view());
     match &sz {
-      case let ok &Ok {
+      case let &Ok(ok) {
         printStr("sized: ");
         printStr(ok.body.view());
         printStr(" (length ");
@@ -308,7 +308,7 @@ actor Prober {
 
     let big = await client.get(url(port, "/big").view());
     match &big {
-      case let ok &Ok {
+      case let &Ok(ok) {
         let expected = bigBody(600000usize);
         printStr("big: ");
         printUInt(u64.from(ok.body.len()));
@@ -319,7 +319,7 @@ actor Prober {
 
     let bs = await client.get(url(port, "/bigstream").view());
     match &bs {
-      case let ok &Ok {
+      case let &Ok(ok) {
         var expected = String.withCapacity(40usize * 65536usize);
         var i = 0usize;
         while i < 40usize {
@@ -354,7 +354,7 @@ actor Crowd {
 
 fn take[T](rx: &mut Receiver[T], dflt: T) T {
   match rx.recv() {
-    case let v Some {v}
+    case let Some(v) {v}
     else {dflt}
   }
 }
@@ -520,7 +520,7 @@ actor Holder {
     let r = await actorhttp.listen(SocketAddr.localhost(0u16), ServerConfig.make());
     var res = r;
     match &mut res {
-      case var ok &mut Ok {server <=> *ok;}
+      case var &mut Ok(ok) {server <=> *ok;}
       else {}
     }
     ports.send(server.port());
@@ -553,7 +553,7 @@ actor Limiter {
 fn shortened(r: Result[Response, FetchError]) Result[Response, FetchError] {
   var res = r;
   match &mut res {
-    case var ok &mut Ok {
+    case var &mut Ok(ok) {
       let n = ok.body.len();
       ok.body = String.from("(");
       ok.body.appendUInt(u64.from(n));
@@ -590,8 +590,8 @@ actor Prober2 {
     let r = await client.get(url(port, "/hello").view());
     printStr(label.view());
     match &r {
-      case let e &Error {printStr(": refused ("); printStr(yes(e.failure.stage == httpclient.Stage.Connect)); printStr(")\n");}
-      case let ok &Ok {printStr(": ANSWERED\n");}
+      case let &Error(e) {printStr(": refused ("); printStr(yes(e.failure.stage == httpclient.Stage.Connect)); printStr(")\n");}
+      case let &Ok(ok) {printStr(": ANSWERED\n");}
     }
     var d = done;
     d.send(1u64);

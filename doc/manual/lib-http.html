@@ -134,7 +134,7 @@ fn show(label: &amp;str, s: &amp;str) {
 fn main() {
   // Read a URL: it is tidied, and every way of writing it back is a method
   match Url.parse("HTTPS://Example.com:443/a/./b/../c?x=1#top") {
-    case let u Ok {
+    case let Ok(u) {
       show("text     ", u.text().view());
       show("origin   ", u.origin().view());
       show("authority", u.authority().view());
@@ -149,21 +149,21 @@ fn main() {
 
       // Resolve a reference against it
       match u.resolve("../d?y") {
-        case let t Ok {show("resolved ", t.text().view());}
-        case let e Error {show("error    ", e.message().view());}
+        case let Ok(t) {show("resolved ", t.text().view());}
+        case let Error(e) {show("error    ", e.message().view());}
       }
       match u.resolve("//other.example/x") {
-        case let t Ok {show("resolved ", t.text().view());}
-        case let e Error {show("error    ", e.message().view());}
+        case let Ok(t) {show("resolved ", t.text().view());}
+        case let Error(e) {show("error    ", e.message().view());}
       }
     }
-    case let e Error {show("error    ", e.message().view());}
+    case let Error(e) {show("error    ", e.message().view());}
   }
 
   // A refusal says where and why
   match Url.parse("http://example.com:99999/") {
-    case let u Ok {show("text     ", u.text().view());}
-    case let e Error {
+    case let Ok(u) {show("text     ", u.text().view());}
+    case let Error(e) {
       show("error    ", e.message().view());
       printStr("at byte  ");
       printUInt(u64.from(e.at));
@@ -173,24 +173,24 @@ fn main() {
 
   // The same origin, however the default port is written
   match Url.parse("http://a:80/x") {
-    case let a Ok {
+    case let Ok(a) {
       match Url.parse("http://A/y") {
-        case let b Ok {printStr(if a.sameOrigin(&amp;b) {"same origin\n"} else {"other origin\n"});}
-        case let e Error {}
+        case let Ok(b) {printStr(if a.sameOrigin(&amp;b) {"same origin\n"} else {"other origin\n"});}
+        case let Error(e) {}
       }
     }
-    case let e Error {}
+    case let Error(e) {}
   }
 
   // A value for a query, encoded; and decoded again
   let enc = encodeComponent("a b&amp;c=d/é");
   show("encoded  ", enc.view());
   match decode(enc.view()) {
-    case let d Some {show("decoded  ", d.view());}
+    case let Some(d) {show("decoded  ", d.view());}
     case is None[String] {printStr("not decodable\n");}
   }
   match decode("%zz") {
-    case let d Some {show("decoded  ", d.view());}
+    case let Some(d) {show("decoded  ", d.view());}
     case is None[String] {printStr("%zz is not decodable\n");}
   }
 }
@@ -319,7 +319,7 @@ fn main() {
 
   // Names compare ignoring case; the first value comes back
   match req.headers.get("RANGE") {
-    case let v Some {
+    case let Some(v) {
       printStr("Range is ");
       printStr(v as &amp;str);
       printStr("\n");
@@ -360,7 +360,7 @@ fn main() {
   var resp = ResponseHead.make(200u16);
   resp.headers.addUInt("X-Count", 42u64);
   match resp.headers.get("x-count") {
-    case let v Some {printStr(v as &amp;str);}
+    case let Some(v) {printStr(v as &amp;str);}
     case is None[&amp;Array[u8]] {}
   }
   printStr("\n");
@@ -440,7 +440,7 @@ import http1 use *;
 fn events(c: &amp;mut Connection) {
   while true {
     match c.pollEvent() {
-      case var e Request {
+      case var Request(e) {
         printStr("event Request ");
         printStr(e.head.methodName());
         printStr(" ");
@@ -449,14 +449,14 @@ fn events(c: &amp;mut Connection) {
         printStr(e.head.authority.view());
         printStr("\n");
       }
-      case var d Data {
+      case var Data(d) {
         printStr("event Data ");
         printUInt(u64.from(d.buf.len()));
         printStr(" bytes\n");
         c.release(d.buf.len());
       }
       case is End {printStr("event End\n");}
-      case var f Failed {
+      case var Failed(f) {
         printStr("event Failed ");
         printStr(f.error.message().view());
         printStr("\n");
@@ -671,7 +671,7 @@ fn serve(drv: &amp;mut Driver, pool: &amp;Pool, pending: &amp;mut List[Pending],
     if k &lt; pending.len() {
       pending.swap(k, pending.len() - 1usize);
       match pending.pop() {
-        case let p Some {route(drv, pool, p);}
+        case let Some(p) {route(drv, pool, p);}
         case is None[Pending] {}
       }
     }
@@ -705,13 +705,13 @@ fn main() {
   // Listen on any free port of this machine
   var port = 0u16;
   match drv.listen(&amp;mut lp, SocketAddr.localhost(0u16), Sink.Here(tokServer)) {
-    case let l Ok {
+    case let Ok(l) {
       match drv.localAddr(&amp;lp, l) {
-        case let a Ok {port = a.port();}
-        case let e Error {}
+        case let Ok(a) {port = a.port();}
+        case let Error(e) {}
       }
     }
-    case let e Error {printStr(e.message().view());}
+    case let Error(e) {printStr(e.message().view());}
   }
 
   // A client on the same loop asks it three things
@@ -1009,7 +1009,7 @@ fn main() {
   let server = thread.start(ServerArgs(portTx, stop), &amp;serverThread);
   var port = 0u16;
   match portRx.recv() {
-    case let p Some {port = p;}
+    case let Some(p) {port = p;}
     case is None[u16] {}
   }
 
@@ -1031,7 +1031,7 @@ fn main() {
   let still = client.fetchWhole(&amp;mut lp, stay, 65536usize);
   show("GET /old, no redirects", &amp;still);
   match still.headers.get("location") {
-    case let v Some {
+    case let Some(v) {
       printStr("  Location: ");
       printStr(v as &amp;str);
       printStr("\n");
@@ -1307,13 +1307,13 @@ struct TlsMaker {
 
 // ... and where the plain server called drv.listen:
 match tls.Server.make(tls.ServerConfig.make(&amp;certFile, &amp;keyFile)) {
-  case let tlsServer Ok {
+  case let Ok(tlsServer) {
     let maker = Uni[TlsMaker](TlsMaker(tlsServer, pool));
     match drv.listenWith(&amp;mut lp, SocketAddr.localhost(0u16), maker, httpconn.Sink.Here(100u64)) {
       ...
     }
   }
-  case let e Error {printStr(e.message().view());}
+  case let Error(e) {printStr(e.message().view());}
 }
 </pre>
 	<p>Nothing else about the server changes: its requests are the same events, answered the same way. A client
@@ -1475,16 +1475,16 @@ fn main() {
   var rootPem = String.empty();
   let caFile = certs("ca.pem");
   match fs.readFile(&amp;caFile) {
-    case var r Ok {rootPem &lt;=> r;}
-    case let e Error {}
+    case var Ok(r) {rootPem &lt;=> r;}
+    case let Error(e) {}
   }
   var config = tls.ClientConfig.make();
   config.verify = tls.Verifier.roots(rootPem.view());
 
   match server {
-    case let srv Ok {
+    case let Ok(srv) {
       match tls.Client.make(config) {
-        case let cl Ok {
+        case let Ok(cl) {
           // One session each; no socket anywhere
           var c = cl.session("localhost");
           var s = srv.session();
@@ -1532,10 +1532,10 @@ fn main() {
           }
           printStr("\n");
         }
-        case let e Error {printStr(e.message().view());}
+        case let Error(e) {printStr(e.message().view());}
       }
     }
-    case let e Error {printStr(e.message().view());}
+    case let Error(e) {printStr(e.message().view());}
   }
 }
 </pre>

@@ -1145,7 +1145,7 @@ INode *parsePrefix(ParseState *parse) {
 // parses, and the parse error keeps analysis from running.
 static void parseRetiredInto(ParseState *parse) {
     errorMsgLex(ErrorInto,
-        "'into' is retired: a value converts with its type's method, 'T.from(x)', and a reference narrows to a variant with a check, by a 'match' or 'if let x &Variant = &value'.");
+        "'into' is retired: a value converts with its type's method, 'T.from(x)', and a reference narrows to a variant with a check, by a 'match' or 'if let &Variant(x) = &value'.");
     lexNextToken();
     parseType(parse);
 }
