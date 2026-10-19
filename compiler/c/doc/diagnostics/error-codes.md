@@ -159,6 +159,12 @@ The binding is a pattern that takes the payload of a variant of the value, and t
 names only the variant, with no `:`; a type after a `:` would say what the binding is, which
 the payload is not. Pointed at the binding.
 
+`ErrorRangeBare` is a range written with a bare `..` before an end, in an index (`a..b`, `..b`),
+a case pattern or an `each` (`case 'a' .. 'z'`, `each i in 0 .. n`). A bare `..` does not
+say whether the end is in the range, so it is refused with the two spellings that do: `..=`
+includes the end and `..<` stops before it. Pointed at the `..`, and read on as `..=` so the rest
+of the range is checked. It is not reported where no end follows (`s[a..]` runs to the end, `s[..]` is the whole): there is no end to include or leave out.
+
 `ErrorMatchNotExhaustive`, `ErrorMatchUnreachable` and `ErrorMatchColumn` are what a match
 must cover. A match that does not cover every variant of its enum, both values of its bool or
 every combination of its columns, and has no `else`, or whose cases cannot be shown to

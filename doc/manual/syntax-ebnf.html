@@ -55,7 +55,7 @@
 		/* with no condition the loop never runs out, and takes no 'else'; with a condition, the loop is an expression only when it has an 'else',
 		   whose block (outside the loop) gives the value when the condition fails */
 	each_stmt  ::= (lifetime_token ':')? 'each' ident_token (',' ident_token)* 'in' (range_exp | simple_exp) ('by' simple_exp)? ('if' logic_exp)? block ('else' block)?
-		/* 'by' follows a numeric range, a range_exp ('a .. b' through b, 'a ..&lt; b' before b); a range gives one variable, and the other sources
+		/* 'by' follows a numeric range, a range_exp ('a ..= b' through b, 'a ..&lt; b' before b); a range gives one variable, and the other sources
 		   (an array, a slice, a list) one as well; a cursor, or something that gives one, one or several that unpack a tuple item;
 		   'if' skips the items for which its condition is false; the loop is an expression only when it has an 'else' */
 	yield_stmt ::= 'yield' 'each'? exp ';'
@@ -203,9 +203,9 @@
 <pre>
 	logic_exp ::= simple_exp
 		/* a condition. In an 'if' or an 'elif' it may instead bind a variant, 'if let n Some = counts.get("cat") {...}', as letelse_stmt does */
-	range_exp ::= simple_exp ('..' | '..&lt;') simple_exp
+	range_exp ::= simple_exp ('..=' | '..&lt;') simple_exp
 		/* not an operator of an expression, and no value of its own: the source of an each loop, whose bounds are whole
-		   expressions ('0 .. 1 | 2' runs to 3). An index's range is in suffix; a match pattern's range has bitxor_exp bounds, 'case 3 .. 6', and a case's patterns are joined by a top-level '|' */
+		   expressions ('0 ..= 1 | 2' runs to 3). An index's range is in suffix; a match pattern's range has bitxor_exp bounds, 'case 3 ..= 6', and a case's patterns are joined by a top-level '|' */
 	simple_exp ::= or_exp
 		/* from here down, each rule binds tighter than the one above it, and the binary operators are left-associative */
 	or_exp ::= and_exp ('||' and_exp)*
@@ -234,9 +234,11 @@
 		   It stays only as a match pattern's owning reference type, '+Rc-mut Circle', whose spelling
 		   is an open design question */
 	suffix_exp ::= term suffix*
-	suffix ::= '++'|'--'| ('.' property) | ('(' (contents_exp (',' contents_exp)*)? ')') | ('[' ((contents_exp (',' contents_exp)*) | (simple_exp? ('..' | '..&lt;') simple_exp?))? ']')
-		/* square brackets hold type arguments, an index, or a range of indexes, '&amp;s[a..b]', which makes a slice
-		   (no start is 0; no end is the array's end, and '..&lt;' must say where it ends). They never hold a value's
+	suffix ::= '++'|'--'| ('.' property) | ('(' (contents_exp (',' contents_exp)*)? ')') | ('[' ((contents_exp (',' contents_exp)*) | (simple_exp? ('..=' | '..&lt;') simple_exp | simple_exp? '..'))? ']')
+		/* square brackets hold type arguments, an index, or a range of indexes, '&amp;s[a..=b]', which makes a slice
+		   (no start is 0; no end is the array's end: 'a..' alone runs to it, while '..=' and '..&lt;' must say where they end,
+		   and a '..' before an end, 'a..b' or '..b', is refused: with no end there is nothing to include or leave out,
+		   so 'a..' and '..' alone are accepted). They never hold a value's
 		   contents: an enum variant is constructed with parentheses, 'Some(x)', and an empty one by its name alone,
 		   'None'. A struct's value is built with 'new' */
 	property ::= ident_token | symbol_token | integer_token

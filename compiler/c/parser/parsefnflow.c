@@ -611,14 +611,17 @@ INode *parseIf(ParseState *parse) {
     return retnode;
 }
 
-// Finish a range pattern, whose lower bound is parsed and whose '..' or '..<'
+// Finish a range pattern, whose lower bound is parsed and whose '..=' or '..<'
 // is the current token. It tests the matched value against both bounds:
-// 'a .. b' is 'v >= a && v <= b', and 'a ..< b' is 'v >= a && v < b'.
+// 'a ..= b' is 'v >= a && v <= b', and 'a ..< b' is 'v >= a && v < b'. A bare
+// '..' is refused and read as '..='.
 static INode *parseMatchRange(ParseState *parse, MatchSubject *subject, INode *lower) {
     // All three nodes take the operator's position, so a matched value that
-    // cannot be ordered is reported at the '..'
+    // cannot be ordered is reported at the operator
     if (lexIsToken(EllipsisToken))
         parseRangeEllipsis();
+    else if (lexIsToken(DotDotToken))
+        parseRangeBare();
     FnCallNode *gecall = newFnCallOp(parseMatchUse(subject), ">=", 2);
     FnCallNode *upcall = newFnCallOp(parseMatchUse(subject), lexIsToken(DotDotLessToken) ? "<" : "<=", 2);
     LogicNode *range = newLogicNode(AndLogicTag);
@@ -643,7 +646,7 @@ static INode *parseMatchWild() {
 //   value's enum (castPatternMark)
 // - a comparison operator and a value, '==v', '<v', '!=v' and the rest, compares
 //   the matched value, the operator's left operand, with the value
-// - 'a .. b' or 'a ..< b' is a range (parseMatchRange)
+// - 'a ..= b' or 'a ..< b' is a range (parseMatchRange)
 // - a value alone, '2', '"s"', 'K', means equality with the matched value; a
 //   bare name is asked of the matched value's enum first, so the test waits for
 //   type check to become '==' or 'is' (newMatchValueNode)
@@ -1046,7 +1049,7 @@ static INode *parseRangeEndUse(VarDclNode *enddcl, INode *endlit, INode *lexnode
 
 // The test that lets a pass of a range run: the counter has not passed the end
 // in the range's direction ('<=' or '<' going up, '>=' or '>' going down, the end
-// itself passing for '..'). Where the direction is the held step's sign, either way:
+// itself passing for '..='). Where the direction is the held step's sign, either way:
 // '(up and x <= end) or (down and x >= end)'
 static INode *parseRangeGuard(INode *lexnode, VarDclNode *counter, VarDclNode *enddcl, INode *endlit, int incl, int dir,
     VarDclNode *up, VarDclNode *down) {
@@ -1177,13 +1180,16 @@ static INode *parseEachLoop(ParseState *parse, Name *lifesym, int stmtflag, int 
     INode *iter = parseSimpleExpr(parse);
     if (iter == NULL)       // Not a term, and already reported as such
         return (INode *)outerblk;
-    // A number range: 'a .. b' runs through b, 'a ..< b' stops before it, and a
-    // step after 'by' moves it by that much (a negative step counts down)
+    // A number range: 'a ..= b' runs through b, 'a ..< b' stops before it, and a
+    // step after 'by' moves it by that much (a negative step counts down). A bare
+    // '..' is refused and read as '..='
     INode *rangeend = NULL;
     int rangeincl = 0;
     if (lexIsRangeOp()) {
         if (lexIsToken(EllipsisToken))
             parseRangeEllipsis();
+        else if (lexIsToken(DotDotToken))
+            parseRangeBare();
         rangeincl = !lexIsToken(DotDotLessToken);
         lexNextToken();
         rangeend = parseSimpleExpr(parse);
@@ -1201,8 +1207,8 @@ static INode *parseEachLoop(ParseState *parse, Name *lifesym, int stmtflag, int 
             int up = methodnm == ltName || methodnm == leName;
             int incl = methodnm == leName || methodnm == geName;
             errorMsgNode(iter, ErrorEachCompare,
-                "A range is written with '..' or '..<', not as a comparison: 'each i in a %s b' is 'each i in a %s b%s'. '..' runs through its end and '..<' stops before it; counting down takes a negative step.",
-                oldop, incl ? ".." : "..<", up ? "" : " by -1");
+                "A range is written with '..=' or '..<', not as a comparison: 'each i in a %s b' is 'each i in a %s b%s'. '..=' runs through its end and '..<' stops before it; counting down takes a negative step.",
+                oldop, incl ? "..=" : "..<", up ? "" : " by -1");
             rangeincl = incl;
             rangeend = nodesGet(old->args, 0);
             iter = old->objfn;
@@ -1256,7 +1262,7 @@ static INode *parseEachLoop(ParseState *parse, Name *lifesym, int stmtflag, int 
         }
         if (step) {
             errorMsgNode(iter, ErrorParSource,
-                "A 'parallel each' over a number range counts up by one ('parallel each i in 0 ..< n', or '..'): which pass runs first is not defined in parallel, so a count down or a step is not offered.");
+                "A 'parallel each' over a number range counts up by one ('parallel each i in 0 ..< n', or '..='): which pass runs first is not defined in parallel, so a count down or a step is not offered.");
             return (INode *)outerblk;
         }
         parallelEachNames();
@@ -1276,7 +1282,7 @@ static INode *parseEachLoop(ParseState *parse, Name *lifesym, int stmtflag, int 
         return (INode *)outerblk;
     }
 
-    // Assemble logic for a range (with optional step), e.g. 'each x in a .. b by s':
+    // Assemble logic for a range (with optional step), e.g. 'each x in a ..= b by s':
     // { let first = a; var counter = first; var n = 0;
     //   while counter <= b { let x = counter; ... ; { n += 1; counter += s } } }
     // The loop's variable is a new one on every pass, which the body cannot

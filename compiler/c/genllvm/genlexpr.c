@@ -2603,7 +2603,7 @@ void genlBoundsCheck(GenState *gen, INode *site, LLVMValueRef index, LLVMValueRe
 }
 
 // A slice of part of an array or a slice, '&x[a..<b]': the address of element
-// a and the count b - a ('a...b' counts b too), once a <= b <= the count it is
+// a and the count b - a ('a..=b' counts b too), once a <= b <= the count it is
 // taken from is checked at run time, as an index is. The receiver is what the
 // borrow was of: an array (reached directly or through a reference, whose
 // dereference genlAddr reads through), or a slice's dereference. In a nested

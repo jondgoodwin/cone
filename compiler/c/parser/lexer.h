@@ -93,8 +93,9 @@ enum TokenTypes {
     RParenToken,       // ')'
     CommaToken,        // ','
     DotToken,          // '.'
-    DotDotToken,       // '..' range, including its end
+    DotDotToken,       // '..', no range operator: lexed to be refused between two operands
     DotDotLessToken,   // '..<' range, excluding its end
+    DotDotEqToken,     // '..=' range, including its end
     EllipsisToken,     // '...', no range operator: lexed to be refused
     PlusToken,         // '+'
     PlusArrayRefToken, // '+[]', lexed only to be refused (parsePlus)
@@ -224,7 +225,7 @@ extern Lexer *lex;
 #define lexIsDclStart() (lex->toktype == LetToken || lex->toktype == VarToken || lex->toktype == PermToken)
 
 // Is the current token one of the range operators?
-#define lexIsRangeOp() (lex->toktype == DotDotToken || lex->toktype == DotDotLessToken || lex->toktype == EllipsisToken)
+#define lexIsRangeOp() (lex->toktype == DotDotToken || lex->toktype == DotDotLessToken || lex->toktype == DotDotEqToken || lex->toktype == EllipsisToken)
 
 // Lexer functions
 void lexInit(ConeOptions *opt);

@@ -260,6 +260,7 @@ INode *parseLifetime(ParseState *parse, int stmtflag);
 INode *parseSimpleExpr(ParseState *parse);
 // Report '...' (the lexer on it) as the retired range operator it is
 void parseRangeEllipsis(void);
+void parseRangeBare(void);
 // Parse an operand of a comparison: everything that binds tighter than one
 INode *parseOr(ParseState *parse);
 // Parse an operand that binds tighter than bitwise or, '|': a case's patterns are

@@ -1283,15 +1283,18 @@ void lexNextTokenx() {
             lexScanTickedIdent(srcp);
             return;
 
-        // A range operator is two or three periods. Only a match's range
-        // pattern reads one today (guide-conditionals.html); an integer literal already
-        // stops at '..', so '0..3' is a range and not a float.
+        // A range operator is '..<' or '..='; a bare '..' is lexed to be refused
+        // between a start and an end (it ends an open range too, 's[a..]'), and
+        // '...' to be refused. An integer literal already stops at '..', so
+        // '0..=3' is a range and not a float.
         case '.':
             if (*(srcp + 1) == '.') {
                 if (*(srcp + 2) == '.')
                     lexReturnPuncTok(EllipsisToken, 3);
                 if (*(srcp + 2) == '<')
                     lexReturnPuncTok(DotDotLessToken, 3);
+                if (*(srcp + 2) == '=')
+                    lexReturnPuncTok(DotDotEqToken, 3);
                 lexReturnPuncTok(DotDotToken, 2);
             }
             lexReturnPuncTok(DotToken, 1);
