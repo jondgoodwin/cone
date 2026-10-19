@@ -238,36 +238,95 @@ INode *parseUsingSome(FnCallNode *call) {
 // Set while the cases of a match are read, when one of them is a 'using' pattern
 static int parseUsingSeen = 0;
 
-// Parses a variable bound to a pattern match on a value
-// (it looks like, and is returned as, a variable declaration). Where 'usingp' is given,
-// the pattern may be a function's, 'let rest using prefix("GET ")': the call is left in
-// *usingp (NULL when it was no call) and the variable takes the Some of its Option.
+// ---- A variant pattern binds a name inside the variant, after 'let' or 'var' [match: topic 6a] ----
+//
+// 'case let Ok(avg)', 'if let Some(n) = x', 'let Tea(t) = d else {...};', and 'var' for a name that may
+// change. The 'let' or 'var' is in front of the whole pattern, so the line alone says the name in the
+// parentheses is a new binding; without it a call-shaped pattern is a value, compared by equality. The
+// variant may be written as a reference ('let &mut Error(e)') or through its enum or module
+// ('Shape.Circle(c)', 'Some[i32](n)'). It is read as the type expression it looks like (a call) and
+// taken apart here: the parentheses hold exactly one name, and a pattern does not nest.
+
+// Is this a name, or a path through names and type arguments, that could name a type?
+static int parseIsPatternPath(INode *node) {
+    if (node == NULL)
+        return 0;
+    if (node->tag == NameUseTag)
+        return 1;
+    if (node->tag != FnCallTag)
+        return 0;
+    FnCallNode *call = (FnCallNode*)node;
+    if (call->flags & FlagIndex)
+        return call->methfld == NULL && parseIsPatternPath(call->objfn);
+    return call->methfld != NULL && call->args == NULL && !(call->flags & FlagOperator) && parseIsPatternPath(call->objfn);
+}
+
+#define PatBindFormMsg "A pattern that binds names the variant and puts the one name in its parentheses after 'let' or 'var': 'case let Some(n)', 'if let Some(n) = x'. After 'let' may instead go a function's pattern: 'let rest using prefix(\"GET \")'."
+
+// Parses the pattern after the 'let' or 'var' of a binding (it looks like, and is returned as, a
+// variable declaration): a variant with the one name that takes its contents inside its parentheses.
+// Where 'usingp' is given it may instead be a function's pattern, 'let rest using prefix("GET ")': the
+// call is left in *usingp (NULL when it was no call) and the variable takes the Some of its Option.
+// The variable's type is the variant, in the reference that was written around it. A pattern
+// refused has been said once, and comes back as a variable of no type.
 VarDclNode *parseBindVarDcl(ParseState *parse, FnCallNode **usingp) {
     INode *perm = parseDclWord();
 
-    // Obtain variable's name
-    if (!lexIsToken(IdentToken)) {
-        errorMsgLex(ErrorNoIdent, "Expected variable name for declaration");
-        return newVarDclFull(anonName, VarDclTag, unknownType, perm, NULL);
-    }
-    VarDclNode *varnode = newVarDclNode(lex->val.ident, VarDclTag, perm);
-    lexNextToken();
-
-    if (usingp && lexIsToken(UsingToken)) {
+    // A function's pattern names the variable before 'using'
+    if (usingp && lexIsToken(IdentToken) && lexNextIsWord("using")) {
+        VarDclNode *varnode = newVarDclNode(lex->val.ident, VarDclTag, perm);
+        lexNextToken();
         *usingp = parseUsingCall(parse);
         varnode->vtype = *usingp ? parseUsingSome(*usingp) : unknownType;
         return varnode;
     }
 
-    // Get type
-    INode *vtype;
-    if ((vtype = parseType(parse)) != unknownType)
-        varnode->vtype = vtype;
-    else {
-        errorMsgLex(ErrorInvType, "Expected type specification for pattern match binding");
-        varnode->vtype = unknownType;
+    VarDclNode *refused = newVarDclFull(anonName, VarDclTag, unknownType, perm, NULL);
+    INode *value = parseType(parse);
+    if (value == unknownType) {
+        errorMsgLex(ErrorPatBindForm, PatBindFormMsg);
+        return refused;
     }
-
+    // Through the references and pointers written around the variant
+    INode **slot = &value;
+    while (*slot) {
+        INode **pointee = (*slot)->tag == StarTag ? &((StarNode*)*slot)->vtexp
+            : ((*slot)->tag == RefTag || (*slot)->tag == VirtRefTag) ? &((RefNode*)*slot)->vtexp : NULL;
+        if (pointee == NULL || *pointee == NULL)
+            break;
+        slot = pointee;
+    }
+    INode *node = *slot;
+    FnCallNode *call = (node && node->tag == FnCallTag) ? (FnCallNode*)node : NULL;
+    if (call == NULL || call->args == NULL || (call->flags & (FlagIndex | FlagOperator)) || !parseIsPatternPath(call->objfn)) {
+        errorMsgNode(value, ErrorPatBindForm, PatBindFormMsg);
+        // Read past a type left over, so that the rest of the statement parses as written
+        if (parseIsTypeStart())
+            parseType(parse);
+        return refused;
+    }
+    if (call->args->used != 1) {
+        errorMsgNode(node, ErrorPatBindCount,
+            "A variant pattern binds exactly one name: 'case let Some(n)'. To take a struct variant apart, bind it whole and use its fields: 'case let Response(r)', then 'r.head'.");
+        return refused;
+    }
+    INode *arg = nodesGet(call->args, 0);
+    if (arg == NULL)       // the argument has been refused
+        return refused;
+    if (arg->tag != NameUseTag || (arg->flags & FlagQualified)) {
+        errorMsgNode(arg, ErrorPatBindNested,
+            "A pattern binds the contents of a variant whole, to one name; patterns do not nest, and a value does not go in the parentheses. Bind the contents, then match them in the arm: 'case let Some(r)', then 'match r {...}'.");
+        return refused;
+    }
+    VarDclNode *varnode = newVarDclNode(((NameUseNode*)arg)->namesym, VarDclTag, perm);
+    inodeLexCopy((INode*)varnode, arg);
+    // The pattern's type is the variant alone: the call without its parentheses
+    *slot = call->methfld ? (INode*)call : call->objfn;
+    if (call->methfld)
+        call->args = NULL;
+    if ((*slot)->tag == FnCallTag)
+        (*slot)->flags &= ~FlagValueTermCall;
+    varnode->vtype = value;
     return varnode;
 }
 
@@ -421,6 +480,27 @@ static void parseBoundMatch(ParseState *parse, IfNode *ifnode, MatchSubject *sub
             nodesInsert(&wrapper->stmts, (INode*)holder, 0);
     }
 
+    // A '_' declares nothing, as in 'let _, r = f()': 'case let Ok(_)' and 'if let Ok(_) = r' test the
+    // variant and bind nothing, and a guard may follow
+    if (varnode->namesym == anonName && usingcall == NULL && varnode->vtype != unknownType) {
+        isnode->exp = parseMatchUse(subject);
+        isnode->typ = varnode->vtype;
+        if (wrapper == NULL && lexIsToken(IfToken)) {
+            lexNextToken();
+            BlockNode *guardblk = newBlockNode();
+            nodesAdd(&guardblk->stmts, parseSimpleExpr(parse));
+            LogicNode *guarded = newLogicNode(AndLogicTag);
+            guarded->flags |= FlagMatchGuard;
+            guarded->lexp = (INode*)isnode;
+            guarded->rexp = (INode*)guardblk;
+            nodesAdd(&ifnode->condblk, (INode*)guarded);
+        }
+        else
+            nodesAdd(&ifnode->condblk, (INode*)isnode);
+        nodesAdd(&ifnode->condblk, parseExprBlock(parse, 0));
+        return;
+    }
+
     // The test reads the matched value where it is. A binding takes from the
     // matched value only in the arm that runs: from the hidden variable that holds
     // it, or, for a place, from a hidden variable of the arm's own that it is
@@ -447,7 +527,7 @@ static void parseBoundMatch(ParseState *parse, IfNode *ifnode, MatchSubject *sub
     // A match's case may end in an 'if' guard, which may name the variable. The
     // variable is declared in the arm, which the guard is not in, so the guard is
     // a block that binds it again, to the same conversion of the same value:
-    //   'case let x T if g {...}'  ->  'is T && {let x = [T]v; g}' then '{let x = [T]v; ...}'
+    //   'case let T(x) if g {...}'  ->  'is T && {let x = [T]v; g}' then '{let x = [T]v; ...}'
     // Being a '&&', the condition is not an 'is', so exhaustiveness does not
     // count the arm, which is right: the guard may fail. The guard reads the
     // binding before the arm is chosen, so it takes nothing from a place the arms
@@ -480,8 +560,8 @@ static void parseBoundMatch(ParseState *parse, IfNode *ifnode, MatchSubject *sub
     nodesAdd(&ifnode->condblk, (INode*)blknode);
 }
 
-// De-sugar a binding that outlives an early exit, 'let n Ok = r else {...};' [let-else].
-// The variable is the pattern binding of 'if let n Ok = r', declared where it stands
+// De-sugar a binding that outlives an early exit, 'let Ok(n) = r else {...};' [let-else].
+// The variable is the pattern binding of 'if let Ok(n) = r', declared where it stands
 // in its block, and the 'else' is what runs when the pattern does not match: it must
 // leave, since the binding that follows takes the variant the test found. So it is
 // the test, an 'if' with nothing to run when it holds and the 'else' when it does not
@@ -515,6 +595,20 @@ static void parseLetElse(ParseState *parse, BlockNode *blk, VarDclNode *varnode)
         nodesAdd(&blk->stmts, (INode*)holder);
     }
     CastNode *isnode = newIsNode(parseMatchUse(&subject), unknownType);
+    // 'let Ok(_) = r else {...};' tests the variant and binds nothing: '_' declares nothing
+    if (varnode->namesym == anonName && !parse->usingdcl) {
+        isnode->typ = varnode->vtype;
+        inodeLexCopy((INode*)isnode, (INode*)varnode);
+        IfNode *testif = newIfNode();
+        testif->flags |= FlagIfLetElse;
+        inodeLexCopy((INode*)testif, (INode*)varnode);
+        nodesAdd(&testif->condblk, (INode*)isnode);
+        nodesAdd(&testif->condblk, (INode*)newBlockNode());
+        nodesAdd(&testif->condblk, elseCond);
+        nodesAdd(&testif->condblk, parseExprBlock(parse, 0));
+        nodesAdd(&blk->stmts, (INode*)testif);
+        return;
+    }
     CastNode *castnode = newConvCastNode(NULL, unknownType);
     VarDclNode *armholder = NULL;
     if (subject.place) {
@@ -546,6 +640,37 @@ static void parseLetElse(ParseState *parse, BlockNode *blk, VarDclNode *varnode)
     if (armholder != NULL)
         nodesAdd(&blk->stmts, (INode*)armholder);
     nodesAdd(&blk->stmts, (INode*)varnode);
+}
+
+// A statement that binds a variant it leaves unless it matches, 'let Some(n) = x else {...};', with
+// the lexer on its 'let'. The pattern is read as the pattern of an 'if let' is, then the value
+// after '=' and the 'else' (parseLetElse).
+static void parseLetPattern(ParseState *parse, BlockNode *blk) {
+    FnCallNode *usingcall = NULL;
+    parse->usingdcl = 0;
+    VarDclNode *var = parseBindVarDcl(parse, &usingcall);
+    // A pattern refused has been said; the rest of the statement is read past, saying nothing more
+    int refused = var->vtype == unknownType;
+    if (lexIsToken(AssgnToken)) {
+        lexNextToken();
+        var->value = parseAnyExpr(parse);
+    }
+    else if (!refused)
+        errorMsgLex(ErrorPatBindForm, "Expected '=' followed by the value to match against: 'let Some(n) = x else {...};'");
+    if (refused) {
+        if (lexIsToken(ElseToken)) {
+            lexNextToken();
+            parseExprBlock(parse, 0);
+        }
+        return;
+    }
+    if (lexIsToken(ElseToken))
+        parseLetElse(parse, blk, var);
+    else {
+        errorMsgLex(ErrorPatBindForm,
+            "A binding of a variant ends in an 'else' that leaves unless it matches: 'let Some(n) = x else { return; };'. To test and bind in a block, write 'if let Some(n) = x {...}'.");
+        nodesAdd(&blk->stmts, (INode*)var);
+    }
 }
 
 // Parse if statement/expression
@@ -722,7 +847,7 @@ static INode *parseMatchColumn(ParseState *parse, MatchSubject *subject) {
         FnCallNode *usingcall = NULL;
         VarDclNode *var = parseBindVarDcl(parse, &usingcall);
         errorMsgNode((INode*)var, ErrorMatchColumn,
-            "A pattern in a column of 'match a, b' does not bind a variable: write the variant alone, and bind inside the case with 'let x: Some = a'");
+            "A pattern in a column of 'match a, b' does not bind a variable: write the variant alone, and bind inside the case with 'if let Some(n) = a'");
         CastNode *isnode = newIsNode(parseMatchUse(subject), var->vtype);
         castPatternMark(var->vtype);
         cond = (INode *)isnode;
@@ -1807,16 +1932,40 @@ INode *parseExprBlock(ParseState *parse, int isloop) {
         case LetToken:
         case VarToken:
         {
+            // 'let Some(n) = x else {...};' binds a variant or leaves
+            if (!lexIsToken(PermToken) && lexNextOpensPattern()) {
+                parseLetPattern(parse, blk);
+                parseEndOfStatement();
+                break;
+            }
             VarDclNode *var = parseVarDcl(parse, immPerm, ParseMaySig|ParseMayImpl|ParseMayUsing);
+            // A name and then a variant, 'let n Ok = r else {...};', is no binding: it is refused once and
+            // read past, whole
+            if (var->vtype == unknownType && var->value == NULL && !lexIsToken(CommaToken) && parseIsTypeStart()
+                && lexStatementHasElse()) {
+                errorMsgNode((INode*)var, ErrorPatBindForm,
+                    "A binding that leaves unless it matches names the variant and puts the binding in its parentheses: 'let Tea(t) = d else {...};'.");
+                parseType(parse);
+                if (lexIsToken(AssgnToken)) {
+                    lexNextToken();
+                    parseAnyExpr(parse);
+                }
+                if (lexIsToken(ElseToken)) {
+                    lexNextToken();
+                    parseExprBlock(parse, 0);
+                }
+                parseEndOfStatement();
+                break;
+            }
             // 'let q, r = divmod(7, 2);' declares several names and gives them their values at once
-            if (lexIsToken(CommaToken) && !parse->usingdcl && !parse->letelsetype) {
+            if (lexIsToken(CommaToken) && !parse->usingdcl) {
                 parseDestructDcl(parse, blk, var);
                 parseEndOfStatement();
                 break;
             }
             // 'let _ = f();' declares nothing: the value is taken by '_' and dropped at the statement's end
             if (var->namesym == anonName && var->value != NULL && !lexIsToken(ElseToken)
-                && !parse->usingdcl && !parse->letelsetype) {
+                && !parse->usingdcl) {
                 if (var->vtype != unknownType)
                     errorMsgNode((INode*)var, ErrorDestructForm,
                         "'_' takes a value and drops it, so it has no type to write.");
@@ -1826,16 +1975,17 @@ INode *parseExprBlock(ParseState *parse, int isloop) {
                 parseEndOfStatement();
                 break;
             }
-            // 'let n Ok = r else {...};' binds a variant or leaves
-            if (lexIsToken(ElseToken)) {
-                if (parse->colontype)
-                    errorMsgNode((INode*)var, ErrorLetElseColon,
-                        "A variant bound by 'else' is named after the binding with no ':', as in 'let n Ok = r else {...};': the binding is a pattern, and what follows it is the variant, not a type for the binding.");
+            // 'let rest using prefix("GET ") = line else {...};' binds what a function's pattern gives or leaves
+            if (lexIsToken(ElseToken) && parse->usingdcl)
                 parseLetElse(parse, blk, var);
+            else if (lexIsToken(ElseToken)) {
+                errorMsgNode((INode*)var, ErrorPatBindForm,
+                    "A declaration of a name takes no 'else'. A binding that leaves unless it matches names the variant and puts the binding in its parentheses: 'let Some(n) = x else {...};'.");
+                nodesAdd(&blk->stmts, (INode*)var);
+                lexNextToken();
+                parseExprBlock(parse, 0);
             }
             else {
-                if (parse->letelsetype)
-                    errorMsgNode((INode*)var, ErrorNoSemi, "Expected ';' to end the statement");
                 if (parse->usingdcl)
                     errorMsgNode((INode*)var, ErrorUsingForm,
                         "A pattern a function runs may not match, so a binding by 'using' ends in an 'else' that leaves: 'let rest using prefix(\"GET \") = line else { return; };'. To test and bind in a block, write 'if let rest using prefix(\"GET \") = line {...}'.");

@@ -1709,6 +1709,61 @@ int lexPeekIsIdent() {
     return isalpha((unsigned char)srcp[0]) || srcp[0] == '_';
 }
 
+// With the lexer on a 'let' or 'var' that begins a local, does what follows begin a pattern that
+// binds, rather than a declaration of a name? It does when a reference mark begins it ('&mut Err(e)')
+// or a name on the same line is followed by '(', '.' or '[' ('Some(n)', 'Shape.Circle(c)',
+// 'Option[i32](n)'), none of which a declared name may be followed by. Read off the text as
+// lexNextIsWord is.
+int lexNextOpensPattern() {
+    char *srcp = lex->srcp;
+    while (*srcp == ' ' || *srcp == '\t')
+        srcp++;
+    if (*srcp == '&' || *srcp == '*' || *srcp == '+')
+        return 1;
+    if (!(isalpha((unsigned char)*srcp) || *srcp == '_' || (*srcp & 0x80)))
+        return 0;
+    while (isalnum((unsigned char)*srcp) || *srcp == '_' || (*srcp & 0x80))
+        ++srcp;
+    while (*srcp == ' ' || *srcp == '\t')
+        srcp++;
+    if (*srcp == '(' || *srcp == '.')
+        return 1;
+    // Type arguments, 'Option[i32](n)': the brackets are followed by the binding's parentheses or by
+    // a path's next name. A name and the brackets of an array type, 'xs [4; i32]', are no pattern.
+    if (*srcp != '[')
+        return 0;
+    int depth = 0;
+    for (; *srcp && *srcp != '\n'; ++srcp) {
+        if (*srcp == '[')
+            ++depth;
+        else if (*srcp == ']' && --depth == 0) {
+            ++srcp;
+            break;
+        }
+    }
+    return depth == 0 && (*srcp == '(' || *srcp == '.');
+}
+
+int lexStatementHasElse() {
+    int depth = 0;
+    for (char *srcp = lex->tokp; *srcp; ++srcp) {
+        char c = *srcp;
+        if (c == '(' || c == '[' || c == '{')
+            ++depth;
+        else if (c == ')' || c == ']' || c == '}') {
+            if (--depth < 0)
+                return 0;
+        }
+        else if (c == ';' && depth == 0)
+            return 0;
+        else if (c == 'e' && depth == 0 && strncmp(srcp, "else", 4) == 0
+            && (srcp == lex->tokp || !(isalnum((unsigned char)srcp[-1]) || srcp[-1] == '_'))
+            && !(isalnum((unsigned char)srcp[4]) || srcp[4] == '_'))
+            return 1;
+    }
+    return 0;
+}
+
 int lexIdentOpensType() {
     char *srcp = lexSkipTrivia(lex->srcp);
     return *srcp == '.' || *srcp == '[';

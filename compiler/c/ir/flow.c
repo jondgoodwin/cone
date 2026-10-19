@@ -22,7 +22,7 @@ static int flowIsBorrowedRef(INode *exp) {
 
 // The value a match binds this variable to -- the matched value, which the
 // match holds in a variable of its own -- or NULL for any other variable.
-// 'case let c Circle' binds 'c' to the matched value converted to its variant,
+// 'case let Circle(c)' binds 'c' to the matched value converted to its variant,
 // which is the same value under the variant's name, not a second one: the
 // matched value's variable owns it, and is what releases it as its scope ends,
 // as the enum, so that whichever arm runs it is finalized once. So the binding

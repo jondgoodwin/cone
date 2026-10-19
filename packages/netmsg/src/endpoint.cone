@@ -120,7 +120,7 @@ pub actor Endpoint {
     }
     while conns.len() > 0usize {
       match conns.pop() {
-        case let c Some { let r = await c.closeAndWait(); }
+        case let Some(c) { let r = await c.closeAndWait(); }
         case is None[Connection] {}
       }
     }
@@ -145,12 +145,12 @@ pub actor Endpoint {
     var tx = up;
     var made = await aio.bindUdp(bind);
     match &mut made {
-      case var ok &mut Ok { sock <=> *ok; }
+      case var &mut Ok(ok) { sock <=> *ok; }
       else {}
     }
     if sock.isNone() {
       match &made {
-        case let e &Error { tx.send(Error[SocketAddr, IoError](*e)); }
+        case let &Error(e) { tx.send(Error[SocketAddr, IoError](*e)); }
         else { tx.send(Error[SocketAddr, IoError](IoError(1u32))); }
       }
       return;
@@ -159,7 +159,7 @@ pub actor Endpoint {
     var bound = bind;
     let la = await sock.localAddr();
     match &la {
-      case let a &Ok { bound = *a; }
+      case let &Ok(a) { bound = *a; }
       else {}
     }
     tx.send(Ok[SocketAddr, IoError](bound));
@@ -175,11 +175,11 @@ pub actor Endpoint {
     while !stopped && failures <= maxFailures {
       let r = await sock.recvFromIn(pool.mustTake(recvRoom), IoLimits.within(group));
       match &r {
-        case let ok &Ok {
+        case let &Ok(ok) {
           failures = 0u32;
           self.onDatagram(ok.from, copyBytes(ok.buf.view()));
         }
-        case let e &Error {
+        case let &Error(e) {
           if aio.isCancelled(*e) {return;}
           if !aio.isTruncated(*e) {failures = failures + 1u32;}
         }
@@ -264,7 +264,7 @@ pub actor Endpoint {
     match verdict {
       case is Ignore {}
       case is Reply { self.transmit(from, reply); }
-      case let a Accept { self.admit(from, key.view(), a.session, reply, data.view()); }
+      case let Accept(a) { self.admit(from, key.view(), a.session, reply, data.view()); }
     }
   }
 
@@ -384,7 +384,7 @@ fn max(a: usize, b: usize) usize {
 // Whether a timer ran its course: not cancelled, and not failed
 fn slept(r: Result[void, IoError]) bool {
   match r {
-    case let e Error {false}
+    case let Error(e) {false}
     else {true}
   }
 }
@@ -425,10 +425,10 @@ fn start(server: bool, bind: SocketAddr, remote: SocketAddr, cfg: NetConfig, h: 
   tx, rx = Oneshot[Result[SocketAddr, IoError]].make();
   ep.open(bind, tx);
   match rx.recv() {
-    case let answer Some {
+    case let Some(answer) {
       match &answer {
-        case let a &Ok { return Ok[BoundEndpoint, IoError](BoundEndpoint(ep, a.port(), *a)); }
-        case let e &Error { return Error[BoundEndpoint, IoError](*e); }
+        case let &Ok(a) { return Ok[BoundEndpoint, IoError](BoundEndpoint(ep, a.port(), *a)); }
+        case let &Error(e) { return Error[BoundEndpoint, IoError](*e); }
       }
     }
     case is None[Result[SocketAddr, IoError]] {}
@@ -475,7 +475,7 @@ pub fn connect(server: SocketAddr, cfg: NetConfig, h: EventHandler) Result[Bound
 // field.)
 pub fn mustListen(bind: SocketAddr, cfg: NetConfig, h: EventHandler) BoundEndpoint {
   match &start(true, bind, bind, cfg, h) {
-    case let b &Ok { return *b; }
+    case let &Ok(b) { return *b; }
     else {}
   }
   panic("netmsg: cannot bind the server's UDP socket")
@@ -483,7 +483,7 @@ pub fn mustListen(bind: SocketAddr, cfg: NetConfig, h: EventHandler) BoundEndpoi
 
 pub fn mustConnect(server: SocketAddr, cfg: NetConfig, h: EventHandler) BoundEndpoint {
   match &start(false, clientBindAddress(&server), server, cfg, h) {
-    case let b &Ok { return *b; }
+    case let &Ok(b) { return *b; }
     else {}
   }
   panic("netmsg: cannot bind the client's UDP socket")

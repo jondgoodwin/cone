@@ -12,8 +12,8 @@ import json;
 fn parsed(text: &str, label: &str) json.Json {
   var doc: json.Json = json.Json.Null;
   match json.parse(text) {
-    case var ok Ok { doc <=> ok; }
-    case let e Error {
+    case var Ok(ok) { doc <=> ok; }
+    case let Error(e) {
       let m = e.message();
       expectStr(m.view(), "<parsed>", label);
     }
@@ -23,46 +23,46 @@ fn parsed(text: &str, label: &str) json.Json {
 
 fn compact(j: &json.Json) String {
   match j.toText() {
-    case let t Ok { t.copy() }
-    case let e Error { e.message() }
+    case let Ok(t) { t.copy() }
+    case let Error(e) { e.message() }
   }
 }
 
 fn pretty(j: &json.Json, indent: usize) String {
   match j.toPretty(indent) {
-    case let t Ok { t.copy() }
-    case let e Error { e.message() }
+    case let Ok(t) { t.copy() }
+    case let Error(e) { e.message() }
   }
 }
 
 fn same(a: &json.Json, b: &json.Json) bool {
   match a {
     case is Null { b.isNull() }
-    case let x Bool { match b.asBool() { case let y Some { *x == y } case is None { false } } }
-    case let x Number { match b.numberText() { case let y Some { x.view() == y } case is None { false } } }
-    case let x Text { match b.asText() { case let y Some { x.view() == y } case is None { false } } }
-    case let x Array {
+    case let Bool(x) { match b.asBool() { case let Some(y) { *x == y } case is None { false } } }
+    case let Number(x) { match b.numberText() { case let Some(y) { x.view() == y } case is None { false } } }
+    case let Text(x) { match b.asText() { case let Some(y) { x.view() == y } case is None { false } } }
+    case let Array(x) {
       if b.len() != x.len() || !b.isArray() { return false; }
       var i = 0usize;
       while i < x.len() {
         match b.at(i) {
-          case let y Some { if !same(x[i], y) { return false; } }
+          case let Some(y) { if !same(x[i], y) { return false; } }
           case is None { return false; }
         }
         i = i + 1usize;
       }
       true
     }
-    case let x Object {
+    case let Object(x) {
       if b.len() != x.len() || !b.isObject() { return false; }
       var i = 0usize;
       while i < x.len() {
         match b.keyAt(i) {
-          case let k Some { if k != x[i].key.view() { return false; } }
+          case let Some(k) { if k != x[i].key.view() { return false; } }
           case is None { return false; }
         }
         match b.valueAt(i) {
-          case let y Some { if !same(&x[i].value, y) { return false; } }
+          case let Some(y) { if !same(&x[i].value, y) { return false; } }
           case is None { return false; }
         }
         i = i + 1usize;
@@ -74,15 +74,15 @@ fn same(a: &json.Json, b: &json.Json) bool {
 
 fn code(r: Result[String, json.JsonError]) String {
   match r {
-    case let t Ok { t.copy() }
-    case let e Error { e.message() }
+    case let Ok(t) { t.copy() }
+    case let Error(e) { e.message() }
   }
 }
 
 fn numErr(r: Result[i64, json.NumberError]) String {
   match r {
     case is Ok { String.from("ok") }
-    case let e Error { e.message() }
+    case let Error(e) { e.message() }
   }
 }
 
@@ -161,7 +161,7 @@ fn main() i32 {
   expectUInt(u64.from(doc.len()), 12u64, "twelve members");
   expect(doc.has("n") && !doc.has("missing"), "has");
   match doc.getText("name") {
-    case let s Some { expectStr(s, "cone", "getText"); }
+    case let Some(s) { expectStr(s, "cone", "getText"); }
     case is None { expect(false, "getText"); }
   }
   expect(doc.getText("n") is None, "getText of a number is None");
@@ -174,7 +174,7 @@ fn main() i32 {
   expectInt(doc.i64Or("name", 77i64), 77i64, "a string is not an i64: the fallback");
   expectInt(doc.i64Or("missing", 77i64), 77i64, "a missing name: the fallback");
   match doc.getU64("big") {
-    case let n Some { expectUInt(n, 18446744073709551615u64, "getU64"); }
+    case let Some(n) { expectUInt(n, 18446744073709551615u64, "getU64"); }
     case is None { expect(false, "getU64"); }
   }
   expect(doc.getU64("neg") is None, "getU64 of a negative is None");
@@ -185,17 +185,17 @@ fn main() i32 {
   expectBool(doc.boolOr("off", true), false, "boolOr false");
   expectBool(doc.boolOr("n", true), true, "boolOr of a number: the fallback");
   match doc.get("nothing") {
-    case let v Some { expect(v.isNull(), "null member"); }
+    case let Some(v) { expect(v.isNull(), "null member"); }
     case is None { expect(false, "null member"); }
   }
   match doc.get("list") {
-    case let l Some {
+    case let Some(l) {
       expect(l.isArray(), "list is an array");
       expectUInt(u64.from(l.len()), 3u64, "list length");
       match l.at(1usize) {
-        case let v Some {
+        case let Some(v) {
           match v.asI64() {
-            case let n Ok { expectInt(n, 20i64, "list[1] is 20"); }
+            case let Ok(n) { expectInt(n, 20i64, "list[1] is 20"); }
             case is Error { expect(false, "list[1] is 20"); }
           }
         }
@@ -208,17 +208,17 @@ fn main() i32 {
     case is None { expect(false, "list"); }
   }
   match doc.get("obj") {
-    case let o Some { expectInt(o.i64Or("x", 0i64), 1i64, "obj.x"); }
+    case let Some(o) { expectInt(o.i64Or("x", 0i64), 1i64, "obj.x"); }
     case is None { expect(false, "obj"); }
   }
   match doc.keyAt(2usize) {
-    case let k Some { expectStr(k, "neg", "keyAt(2)"); }
+    case let Some(k) { expectStr(k, "neg", "keyAt(2)"); }
     case is None { expect(false, "keyAt"); }
   }
   expect(doc.keyAt(12usize) is None, "keyAt past the end");
   expect(doc.valueAt(12usize) is None, "valueAt past the end");
   match doc.get("text") {
-    case let t Some {
+    case let Some(t) {
       let why = numErr(t.asI64());
       expectStr(why.view(), "the value is not a number", "a string is not a number");
       expect(t.numberText() is None, "numberText of a string");
@@ -255,7 +255,7 @@ fn main() i32 {
   expectStr(compact(&json.Json.fromF64(1.0 / 0.0)).view(), "null", "infinity becomes null");
   expectStr(compact(&json.Json.fromBool(false)).view(), "false", "false");
   match json.Json.fromNumberText("1.50e+3") {
-    case let n Ok { expectStr(compact(&n).view(), "1.50e+3", "a number given as text is kept"); }
+    case let Ok(n) { expectStr(compact(&n).view(), "1.50e+3", "a number given as text is kept"); }
     case is Error { expect(false, "fromNumberText"); }
   }
   expect(json.Json.fromNumberText("01") is Error, "fromNumberText refuses a leading zero");
@@ -266,7 +266,7 @@ fn main() i32 {
   let badNumber = json.Json.Number(String.from("0x10"));
   match badNumber.toText() {
     case is Ok { expect(false, "a bad Number is refused"); }
-    case let e Error { expectStr(e.message().view(), "json: the number's text is not a JSON number", "a bad Number is refused"); }
+    case let Error(e) { expectStr(e.message().view(), "json: the number's text is not a JSON number", "a bad Number is refused"); }
   }
 
   // -------- indented text --------
@@ -372,7 +372,7 @@ fn main() i32 {
   f14.endObject();
   expectStr(code(f14.finish()).view(), "{\"a\":[1]}", "a tree as a member's value");
   match json.Json.fromText("x").toText() {
-    case let t Ok { expectStr(t.view(), "\"x\"", "toText of a string"); }
+    case let Ok(t) { expectStr(t.view(), "\"x\"", "toText of a string"); }
     case is Error { expect(false, "toText of a string"); }
   }
 

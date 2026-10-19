@@ -247,6 +247,12 @@ int lexIsAmpAmp();
 // In a function-reference type's parameter list, does the name the lexer is on
 // begin a type ('geomath.Vec3', 'List[i32]') rather than name a parameter?
 int lexIdentOpensType();
+// With the lexer on the 'let' or 'var' of a local: does a pattern that binds follow
+// ('let Some(n) = x else {...};'), rather than the name of a declaration?
+int lexNextOpensPattern();
+// With the lexer on a token in the middle of a statement: does the word 'else' stand at the statement's
+// own level before its ';'? Read off the text, as lexNextIsWord is.
+int lexStatementHasElse();
 // Is the token after the current one a lifetime ('a)? The lexer is left where it was.
 int lexPeekIsLifetime();
 // Is the token after the current one a name? The lexer is left where it was.

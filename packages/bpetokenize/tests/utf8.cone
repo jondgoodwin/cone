@@ -52,8 +52,8 @@ fn ids(tok: &bpetokenize.Tokenizer, text: &Array[u8], want: &str, label: &str) {
   let shown = show(&got);
   expectStr(shown.view(), want, label);
   match tok.decode(got.view()) {
-    case let bytes Ok { expectStr(bytes.view(), text, label); }
-    case let e Error { let m = e.message(); expectStr(m.view(), "<decoded>", label); }
+    case let Ok(bytes) { expectStr(bytes.view(), text, label); }
+    case let Error(e) { let m = e.message(); expectStr(m.view(), "<decoded>", label); }
   }
 }
 
@@ -70,18 +70,18 @@ fn halfChecks(tok: &bpetokenize.Tokenizer) {
   let shown = show(&got);
   expectStr(shown.view(), "257 152 120", "a cut-off emoji: the first half is a token");
   match tok.decode(got.view()) {
-    case let bytes Ok { expectStr(bytes.view(), part.view(), "a cut-off emoji decodes back"); }
-    case let e Error { let m = e.message(); expectStr(m.view(), "<decoded>", "cut-off emoji"); }
+    case let Ok(bytes) { expectStr(bytes.view(), part.view(), "a cut-off emoji decodes back"); }
+    case let Error(e) { let m = e.message(); expectStr(m.view(), "<decoded>", "cut-off emoji"); }
   }
   // a token that is half a character decodes to half a character
   var seq = List[u32].empty();
   seq.push(257u32);
   match tok.decode(seq.view()) {
-    case let bytes Ok {
+    case let Ok(bytes) {
       expectUInt(u64.from(bytes.len()), 2u64, "token 257 is two bytes");
       expectUInt(u64.from(bpetokenize.utf8Complete(bytes.view())), 0u64, "and no whole character yet");
     }
-    case let e Error { let m = e.message(); expectStr(m.view(), "<decoded>", "half token"); }
+    case let Error(e) { let m = e.message(); expectStr(m.view(), "<decoded>", "half token"); }
   }
 }
 
@@ -99,7 +99,7 @@ struct Lcg {
 fn roundTrip(tok: &bpetokenize.Tokenizer, bytes: &Array[u8], label: &str) bool {
   let got = tok.encode(bytes);
   match tok.decode(got.view()) {
-    case let back Ok { return back.view() == bytes; }
+    case let Ok(back) { return back.view() == bytes; }
     case is Error { return false; }
   }
   false
@@ -189,7 +189,7 @@ fn main() i32 {
   let none = List[String].empty();
 
   match bpetokenize.Tokenizer.build(tokens.view(), merges.view(), none.view(), bpetokenize.PreTokenizer.Gpt2) {
-    case let tok Ok {
+    case let Ok(tok) {
       ids(&tok, "é", "256", "é is one token");
       ids(&tok, "😀", "259", "an emoji is four bytes, merged to one token");
       ids(&tok, "éé", "260", "éé is one word and one token");
@@ -211,19 +211,19 @@ fn main() i32 {
       halfChecks(&tok);
       roundTrips(&tok, "round trips, GPT-2 cut");
     }
-    case let e Error { let m = e.message(); expectStr(m.view(), "<built>", "utf8 vocabulary"); }
+    case let Error(e) { let m = e.message(); expectStr(m.view(), "<built>", "utf8 vocabulary"); }
   }
   match bpetokenize.Tokenizer.build(tokens.view(), merges.view(), none.view(), bpetokenize.PreTokenizer.Llama3) {
-    case let tok Ok { roundTrips(&tok, "round trips, Llama 3 cut"); }
-    case let e Error { let m = e.message(); expectStr(m.view(), "<built>", "utf8 vocabulary"); }
+    case let Ok(tok) { roundTrips(&tok, "round trips, Llama 3 cut"); }
+    case let Error(e) { let m = e.message(); expectStr(m.view(), "<built>", "utf8 vocabulary"); }
   }
   match bpetokenize.Tokenizer.build(tokens.view(), merges.view(), none.view(), bpetokenize.PreTokenizer.Qwen2) {
-    case let tok Ok { roundTrips(&tok, "round trips, Qwen 2 cut"); }
-    case let e Error { let m = e.message(); expectStr(m.view(), "<built>", "utf8 vocabulary"); }
+    case let Ok(tok) { roundTrips(&tok, "round trips, Qwen 2 cut"); }
+    case let Error(e) { let m = e.message(); expectStr(m.view(), "<built>", "utf8 vocabulary"); }
   }
   match bpetokenize.Tokenizer.build(tokens.view(), merges.view(), none.view(), bpetokenize.PreTokenizer.Whole) {
-    case let tok Ok { roundTrips(&tok, "round trips, no cut"); }
-    case let e Error { let m = e.message(); expectStr(m.view(), "<built>", "utf8 vocabulary"); }
+    case let Ok(tok) { roundTrips(&tok, "round trips, no cut"); }
+    case let Error(e) { let m = e.message(); expectStr(m.view(), "<built>", "utf8 vocabulary"); }
   }
   completeChecks();
   done()

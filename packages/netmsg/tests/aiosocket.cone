@@ -25,7 +25,7 @@ fn udpOf(r: Result[UdpSocket, IoError]) UdpSocket {
   var res = r;
   var s = UdpSocket.none();
   match &mut res {
-    case var ok &mut Ok {s <=> *ok;}
+    case var &mut Ok(ok) {s <=> *ok;}
     else {}
   }
   s
@@ -71,10 +71,10 @@ fn bytes(s: &str) List[u8] {
 fn next(rx: &mut Receiver[NetEvent], conn: &mut List[Connection]) String {
   var s = String.empty();
   match rx.recvTimeout(Duration.fromSeconds(3i64)) {
-    case let e Some {
+    case let Some(e) {
       match e {
-        case let j Joined { s.append("J"); conn.push(j.conn); }
-        case let m Message { s.append("M:"); s.append(String.fromBytes(m.data.view()).view()); }
+        case let Joined(j) { s.append("J"); conn.push(j.conn); }
+        case let Message(m) { s.append("M:"); s.append(String.fromBytes(m.data.view()).view()); }
         else { s.append("other"); }
       }
     }
@@ -100,7 +100,7 @@ fn flood() {
     blaster.blast(server.port, 1100u32, 9000usize, txB);
   }
   match rxB.recv() {
-    case let n Some { expectUInt(u64.from(n), 1100u64, "1,100 oversized datagrams were sent"); }
+    case let Some(n) { expectUInt(u64.from(n), 1100u64, "1,100 oversized datagrams were sent"); }
     case is None[u32] { expect(false, "the blaster finished"); }
   }
   let client = mustConnect(SocketAddr.localhost(server.port), cfg, channelHandler(txC));
@@ -123,7 +123,7 @@ fn canBind(port: u16) bool {
   let b = Binder();
   b.tryBind(port, tx);
   match rx.recvTimeout(Duration.fromSeconds(5i64)) {
-    case let ok Some { ok }
+    case let Some(ok) { ok }
     case is None[bool] { false }
   }
 }
@@ -152,7 +152,7 @@ fn bindRefused(port: u16) bool {
   tx, rx = Channel[NetEvent].make();
   let r = listen(SocketAddr.localhost(port), NetConfig.defaults(), channelHandler(tx));
   match &r {
-    case let e &Error { true }
+    case let &Error(e) { true }
     else { false }
   }
 }

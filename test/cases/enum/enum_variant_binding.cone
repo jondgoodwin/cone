@@ -1,0 +1,220 @@
+// A pattern binds a name inside the variant [match: topic 6a]: 'case let Circle(c)',
+// 'if let Some(n) = x', 'let Some(n) = x else {...};'. The 'let' (or 'var') is in front of the
+// whole pattern, and the one name in the variant's parentheses takes the variant's contents:
+// a reference into the matched value for a struct variant matched through a reference, the
+// payload for 'Some'. 'var' in place of 'let' lets the arm change the name. A pattern with
+// neither is no binding: a call-shaped pattern, 'case two()', is a value compared with the
+// matched value, as it always was, and 'case Ok' only tests.
+//
+// The variant may be written through its enum ('Shape.Circle(c)'), with its type arguments
+// ('Some[i32](n)') or as a reference ('var &mut Ok(n)'); an 'if' guard may use the name. Every
+// result is printed, so the output is the whole assertion; the expected lines are worked out
+// by hand in the comments.
+
+mod enum_variant_binding;
+
+import stdio use *;
+
+enum Shape {
+  struct Circle { pub radius: i32; }
+  struct Rect { pub w: i32; pub h: i32; }
+  struct Dot {}
+}
+use Shape;
+
+fn num(n: i32) {
+  printInt(i64.from(n));
+  printStr(" ");
+}
+fn end() {
+  printStr("|\n");
+}
+
+// A reference into the matched value; a guard reads the name:
+// a circle of radius 2 is 12, a 3 by 3 rect 9, a 3 by 4 rect 12, a dot 0
+fn area(s: &Shape) i32 {
+  match s {
+    case let Circle(c) { 3 * c.radius * c.radius }
+    case let Rect(r) if r.w == r.h { r.w * r.w }
+    case let Rect(r) { r.w * r.h }
+    case Dot { 0 }
+  }
+}
+
+// Through the enum: Circle(5) is 5, anything else -1
+fn viaPath(s: &Shape) i32 {
+  match s {
+    case let Shape.Circle(c) { c.radius }
+    else { -1 }
+  }
+}
+
+// With the type argument written: Some(4) is 4, None 0
+fn viaArgs(o: Option[i32]) i32 {
+  match o {
+    case let Some[i32](n) { n }
+    case None { 0 }
+  }
+}
+
+// 'var' changes the arm's own copy: Some(4) gives 5
+fn bump(o: Option[i32]) i32 {
+  match o {
+    case var Some(n) { n = n + 1; n }
+    else { 0 }
+  }
+}
+
+// A variant that is only tested is 'case Ok': Ok is 1, Error 2, joined as usual
+fn kind(r: Result[i32, i32]) i32 {
+  match r {
+    case Ok { 1 }
+    case Error { 2 }
+  }
+}
+fn joined(s: &Shape) i32 {
+  match s {
+    case Circle | Rect { 1 }
+    else { 2 }
+  }
+}
+
+// In an 'if', an 'elif', and a declaration that leaves
+fn viaIf(o: Option[i32]) i32 {
+  if let Some(n) = o { n } else { 0 }
+}
+fn viaElif(r: Result[i32, i32]) i32 {
+  if let Ok(n) = r { n } else if let Error(e) = r { 0 - e } else { 99 }
+}
+fn viaVarIf(o: Option[i32]) i32 {
+  if var Some(n) = o { n = n * 2; n } else { 0 }
+}
+fn leave(o: Option[i32]) i32 {
+  let Some(n) = o else { return 0; };
+  n + 1
+}
+fn leaveVar(o: Option[i32]) i32 {
+  var Some(n) = o else { return 0; };
+  n = n + 100;
+  n
+}
+
+// '_' declares nothing, as it does in 'let _, r = f()': it tests the variant and binds nothing, in a
+// case (with a guard, too), an 'if' and a declaration that leaves
+fn kindDiscard(r: Result[i32, i32]) i32 {
+  match r {
+    case let Ok(_) { 1 }
+    case let Error(_) { 2 }
+  }
+}
+fn discardGuard(o: Option[i32], k: i32) i32 {
+  match o {
+    case let Some(_) if k > 0 { 1 }
+    else { 0 }
+  }
+}
+fn discardIf(o: Option[i32]) i32 {
+  if let Some(_) = o { 1 } else { 0 }
+}
+fn discardLeave(o: Option[i32]) i32 {
+  let Some(_) = o else { return 0; };
+  7
+}
+
+// Written as a reference, the name is a reference into the matched value and 'var' lets
+// the arm write through it: Ok(1) becomes 11
+fn viaRef(r: &mut Result[i32, i32]) {
+  match r {
+    case var &mut Ok(n) { *n = *n + 10; }
+    else { }
+  }
+}
+
+// Told apart: after 'let' a name and 'using' is a function's pattern (and 'case using f()' only
+// tests with one), a variant with its name in parentheses binds, and with no 'let' a call-shaped
+// pattern is a value
+fn prefix(s: &str, p: &str) Option[&str] {
+  if s.startsWith(p) { Some(&s[p.len ..]) } else { None[&str] }
+}
+fn two() i32 { 2 }
+fn viaUsing(line: &str) i32 {
+  match line {
+    case let rest using prefix("GET ") { i32.from(rest.len) }
+    else { 0 }
+  }
+}
+fn isOdd(n: i32) bool { n % 2 == 1 }
+fn viaUsingTest(n: i32) i32 {
+  match n {
+    case using isOdd() { 1 }
+    else { 0 }
+  }
+}
+fn viaValue(n: i32) i32 {
+  match n {
+    case two() { 20 }
+    else { 0 }
+  }
+}
+
+fn main() {
+  // 12 9 12 0 |
+  num(area(&Circle(2)));
+  num(area(&Rect(3, 3)));
+  num(area(&Rect(3, 4)));
+  num(area(&Dot));
+  end();
+  // 5 -1 4 0 5 |
+  num(viaPath(&Circle(5)));
+  num(viaPath(&Dot));
+  num(viaArgs(Some(4)));
+  num(viaArgs(None[i32]));
+  num(bump(Some(4)));
+  end();
+  // 1 2 1 1 2 |
+  num(kind(Ok(1)));
+  num(kind(Error(1)));
+  num(joined(&Circle(1)));
+  num(joined(&Rect(1, 1)));
+  num(joined(&Dot));
+  end();
+  // 8 0 5 -6 16 0 2 0 107 0 |
+  num(viaIf(Some(8)));
+  num(viaIf(None[i32]));
+  num(viaElif(Ok(5)));
+  num(viaElif(Error(6)));
+  num(viaVarIf(Some(8)));
+  num(viaVarIf(None[i32]));
+  num(leave(Some(1)));
+  num(leave(None[i32]));
+  num(leaveVar(Some(7)));
+  num(leaveVar(None[i32]));
+  end();
+  // 1 2 1 0 0 1 0 7 0 |
+  num(kindDiscard(Ok(1)));
+  num(kindDiscard(Error(1)));
+  num(discardGuard(Some(1), 1));
+  num(discardGuard(Some(1), 0));
+  num(discardGuard(None[i32], 1));
+  num(discardIf(Some(8)));
+  num(discardIf(None[i32]));
+  num(discardLeave(Some(1)));
+  num(discardLeave(None[i32]));
+  end();
+  // 11 |
+  var r: Result[i32, i32] = Ok(1);
+  viaRef(&mut r);
+  match r {
+    case let Ok(n) { num(n); }
+    else { }
+  }
+  end();
+  // 3 0 1 0 20 0 |
+  num(viaUsing("GET /ab"));
+  num(viaUsing("PUT /ab"));
+  num(viaUsingTest(3));
+  num(viaUsingTest(4));
+  num(viaValue(2));
+  num(viaValue(3));
+  end();
+}

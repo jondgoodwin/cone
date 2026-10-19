@@ -133,12 +133,12 @@ fn expectationFile(file: &Path, suffix: &str) Path {
 // read
 fn readAll(file: &Path) String {
   match fs.readFile(file) {
-    case var ok Ok {
+    case var Ok(ok) {
       var text = String.empty();
       text <=> ok;
       text
     }
-    case let e Error { fail(fsMessage(&e)) }
+    case let Error(e) { fail(fsMessage(&e)) }
   }
 }
 
@@ -146,7 +146,7 @@ fn readAll(file: &Path) String {
 fn writeAll(file: &Path, text: &str) {
   match fs.writeFile(file, text) {
     case is Ok {}
-    case let e Error { fail(fsMessage(&e)); }
+    case let Error(e) { fail(fsMessage(&e)); }
   }
 }
 
@@ -263,8 +263,8 @@ fn programs(folder: &Path, filter: &str, hasFilter: bool) List[Path] {
   if !fs.isDir(folder) { return found; }
   var entries = List[fs.DirEntry].empty();
   match fs.readDir(folder) {
-    case var ok Ok { entries <=> ok; }
-    case let e Error { fail(fsMessage(&e)); }
+    case var Ok(ok) { entries <=> ok; }
+    case let Error(e) { fail(fsMessage(&e)); }
   }
   var i = 0usize;
   while i < entries.len() {
@@ -291,8 +291,8 @@ fn runTest(s: &mut Session, file: &Path, bless: bool) Verdict {
   let dest = tests.join(stem);
   var exe: Path = "";
   match buildProgram(s, file, &dest) {
-    case var ok Ok { exe <=> ok; }
-    case let e Error { return Verdict(false, e.copy()); }
+    case var Ok(ok) { exe <=> ok; }
+    case let Error(e) { return Verdict(false, e.copy()); }
   }
   // Run in its own build folder, so a file it writes by a relative name
   // lands there and not in the package's source
@@ -305,7 +305,7 @@ fn runTest(s: &mut Session, file: &Path, bless: bool) Verdict {
   // reports it (the process package's "A crash")
   match process.run(args.view(), process.Options(
       timeout: time.Duration.fromSeconds(testTimeoutSeconds), crashReport: false), &dest) {
-    case let ok Ok {
+    case let Ok(ok) {
       if ok.timedOut {
         // What it wrote to stderr says how far it got: a panic's line, say,
         // before an end that never came
@@ -321,7 +321,7 @@ fn runTest(s: &mut Session, file: &Path, bless: bool) Verdict {
       stdout = utf8Decode(ok.stdout.view());
       stderr = utf8Decode(ok.stderr.view());
     }
-    case let e Error { fail(processMessage(&e)); }
+    case let Error(e) { fail(processMessage(&e)); }
   }
   // A program that could not start has nothing to compare, and this line is
   // how a person learns why (no dialog says so)
@@ -363,8 +363,8 @@ fn runTest(s: &mut Session, file: &Path, bless: bool) Verdict {
   var problems = List[String].empty();
   var want = String.empty();
   match expectedExit(file) {
-    case var ok Ok { want <=> ok; }
-    case let e Error { return Verdict(false, e.copy()); }
+    case var Ok(ok) { want <=> ok; }
+    case let Error(e) { return Verdict(false, e.copy()); }
   }
   // Compared in decimal, so a status beyond any exit code's range is
   // simply not the one the test ended with
@@ -463,7 +463,7 @@ fn testPackage(repo: &Path, pkg: Package, mode: &str, filter: &str, hasFilter: b
   let examples = programs(&examplesFolder, filter, hasFilter);
   match build(&mut s, top) {
     case is Ok {}
-    case let e Error {
+    case let Error(e) {
       warn(cat("error: ", e.view()));
       tally.broken = tally.broken + 1u64;
       tally.failures.push(cat(name.view(), ": the package does not build"));
@@ -550,7 +550,7 @@ fn testPackage(repo: &Path, pkg: Package, mode: &str, filter: &str, hasFilter: b
     var detail = String.empty();
     match buildProgram(&mut s, file, &dest) {
       case is Ok {}
-      case let e Error {
+      case let Error(e) {
         passed = false;
         detail = e.copy();
       }
@@ -578,8 +578,8 @@ fn packageManifests(folder: &Path) List[Path] {
   var found = List[Path].empty();
   var entries = List[fs.DirEntry].empty();
   match fs.readDir(folder) {
-    case var ok Ok { entries <=> ok; }
-    case let e Error { fail(fsMessage(&e)); }
+    case var Ok(ok) { entries <=> ok; }
+    case let Error(e) { fail(fsMessage(&e)); }
   }
   var i = 0usize;
   while i < entries.len() {
@@ -598,8 +598,8 @@ fn cmdTest(filter: &str, hasFilter: bool, release: bool, bless: bool, defines: &
   let repo = findRepo();
   var here: Path = "";
   match fs.currentDir() {
-    case var ok Ok { here <=> ok; }
-    case let e Error { fail(fsMessage(&e)); }
+    case var Ok(ok) { here <=> ok; }
+    case let Error(e) { fail(fsMessage(&e)); }
   }
   let own = here.join("congo.toml");
   var manifests = List[Path].empty();
@@ -610,8 +610,8 @@ fn cmdTest(filter: &str, hasFilter: bool, release: bool, bless: bool, defines: &
   while i < manifests.len() {
     var pkg = emptyPackage();
     match readManifest(manifests[i]) {
-      case var ok Ok { pkg <=> ok; }
-      case let e Error { fail(e.copy()); }
+      case var Ok(ok) { pkg <=> ok; }
+      case let Error(e) { fail(e.copy()); }
     }
     let tally = testPackage(&repo, pkg, mode, filter, hasFilter, bless, defines);
     total.add(&tally);

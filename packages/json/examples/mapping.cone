@@ -38,12 +38,12 @@ fn addressFrom(j: &json.Json) Result[Address, json.JsonError] {
   var street = String.empty();
   var zip = String.empty();
   match j.requireText("street") {
-    case var s Ok { street <=> s; }
-    case let e Error { return Error[Address, json.JsonError](e.copy()); }
+    case var Ok(s) { street <=> s; }
+    case let Error(e) { return Error[Address, json.JsonError](e.copy()); }
   }
   match j.requireText("zip") {
-    case var z Ok { zip <=> z; }
-    case let e Error { return Error[Address, json.JsonError](e.copy()); }
+    case var Ok(z) { zip <=> z; }
+    case let Error(e) { return Error[Address, json.JsonError](e.copy()); }
   }
   Ok[Address, json.JsonError](Address(street, zip))
 }
@@ -51,33 +51,33 @@ fn addressFrom(j: &json.Json) Result[Address, json.JsonError] {
 fn personFrom(j: &json.Json) Result[Person, json.JsonError] {
   var name = String.empty();
   match j.requireText("name") {
-    case var n Ok { name <=> n; }
-    case let e Error { return Error[Person, json.JsonError](e.copy()); }
+    case var Ok(n) { name <=> n; }
+    case let Error(e) { return Error[Person, json.JsonError](e.copy()); }
   }
   var age = 0i64;
   match j.requireI64("age") {
-    case let n Ok { age = n; }
-    case let e Error { return Error[Person, json.JsonError](e.copy()); }
+    case let Ok(n) { age = n; }
+    case let Error(e) { return Error[Person, json.JsonError](e.copy()); }
   }
   // May be missing, or null: no email
   var email: Option[String] = None;
   match j.getText("email") {
-    case let s Some { email = Some[String](String.from(s)); }
+    case let Some(s) { email = Some[String](String.from(s)); }
     case is None { }
   }
   // May be missing; if there, an array of strings
   var tags = List[String].empty();
   match j.get("tags") {
-    case let t Some {
+    case let Some(t) {
       if !t.isArray() {
         return Error[Person, json.JsonError](json.JsonError.shape("the member \"tags\" is not an array"));
       }
       var i = 0usize;
       while i < t.len() {
         match t.at(i) {
-          case let v Some {
+          case let Some(v) {
             match v.asText() {
-              case let s Some { tags.push(String.from(s)); }
+              case let Some(s) { tags.push(String.from(s)); }
               case is None {
                 var m = String.from("tags[");
                 m.appendUInt(u64.from(i));
@@ -95,13 +95,13 @@ fn personFrom(j: &json.Json) Result[Person, json.JsonError] {
   }
   var address = Address(String.empty(), String.empty());
   match j.require("address") {
-    case let a Ok {
+    case let Ok(a) {
       match addressFrom(a) {
-        case var ok Ok { address <=> ok; }
-        case let e Error { return Error[Person, json.JsonError](within("address", &e)); }
+        case var Ok(ok) { address <=> ok; }
+        case let Error(e) { return Error[Person, json.JsonError](within("address", &e)); }
       }
     }
-    case let e Error { return Error[Person, json.JsonError](e.copy()); }
+    case let Error(e) { return Error[Person, json.JsonError](e.copy()); }
   }
   Ok[Person, json.JsonError](Person(name, age, email, tags, address))
 }
@@ -116,7 +116,7 @@ fn personJson(p: &Person) json.Json {
   o.set("name", json.Json.fromText(p.name.view()));
   o.set("age", json.Json.fromI64(p.age));
   match &p.email {
-    case let e Some { o.set("email", json.Json.fromText(e.view())); }
+    case let Some(e) { o.set("email", json.Json.fromText(e.view())); }
     case is None { }
   }
   o.set("tags", tags);
@@ -126,9 +126,9 @@ fn personJson(p: &Person) json.Json {
 
 fn show(text: &str) {
   match json.parse(text) {
-    case let doc Ok {
+    case let Ok(doc) {
       match personFrom(&doc) {
-        case let p Ok {
+        case let Ok(p) {
           printStr(p.name.view());
           printStr(" is ");
           printInt(p.age);
@@ -138,18 +138,18 @@ fn show(text: &str) {
           printInt(i64.from(p.tags.len()));
           printStr(" tags\n");
           match personJson(&p).toText() {
-            case let t Ok { printStr(t.view()); printStr("\n"); }
+            case let Ok(t) { printStr(t.view()); printStr("\n"); }
             case is Error { printStr("cannot write\n"); }
           }
         }
-        case let e Error {
+        case let Error(e) {
           let m = e.message();
           printStr(m.view());
           printStr("\n");
         }
       }
     }
-    case let e Error {
+    case let Error(e) {
       let m = e.message();
       printStr(m.view());
       printStr("\n");
