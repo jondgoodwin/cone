@@ -1153,12 +1153,12 @@ subexpression may have emitted branches of its own and split the block.
 `if` builds `endif` first, then per arm a next-condition block and a body
 block. An arm whose last statement is a return, break or continue contributes no
 fallthrough and no phi edge. `while` is not a generation concept: it arrives as
-a loop block containing `if not cond { break }`.
+a loop block containing `if !cond { break }`.
 
 **An arm whose condition is a constant of the build is decided at
 generation.** `genlIf` asks `intrinsicBuildConst` of each condition:
 `isDebugBuild()`, the provisional target-OS and `-D` constants beside it
-(TEMPORARY; its final design is open), or `!`, `and`, `or` of them. A false
+(TEMPORARY; its final design is open), or `!`, `&&`, `||` of them. A false
 arm generates nothing, not even its test; a true one generates its body as the
 `else` would and ends the chain, the arms after it generating nothing. A call
 on an untaken side therefore never reaches the object, in either build, and an
@@ -1168,7 +1168,7 @@ is emitted"). Everything
 before generation still sees both sides ([intrinsic](../nodes/intrinsic.md),
 "Constants of the build drop the untaken side at generation").
 
-Short-circuit `and`/`or` are two blocks and a 2-way `i1` phi. `not` is
+Short-circuit `&&`/`||` are two blocks and a 2-way `i1` phi. `!` is
 `xor i1 %x, true`.
 
 **`FlagInline` functions are inlined by the Cone generator, not by LLVM.** They
@@ -1230,7 +1230,7 @@ it pushed, newest first, and pops them (`genlTempsEnd`), each as a local dies
 | --- | --- |
 | a statement | `genlBlock`, after the statement; for a `blockret`, and an inlined body's one `return`, after its value and before the block's `dealias`. In a block flagged `FlagKeepTemps`, an operator's rewrite ([Flow](flow.md), "Temporaries"), after its last statement only |
 | an `if` or `elif` condition, and so a `while`'s | `genlIf`, once the condition is computed, before the branch |
-| the right operand of `and` or `or` | `genlLogic`, before the branch to the phi |
+| the right operand of `&&` or `||` | `genlLogic`, before the branch to the phi |
 | an array's repeated value generated in a loop | `genlArrayRun`, each time round, after the element's store |
 
 A part's end runs on the one path that reaches it, since every construct that

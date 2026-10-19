@@ -305,7 +305,7 @@ void intrinsicBuildSetup(struct ConeOptions *opt);
 
 // Whether a node is a constant of the build, and its value: a call to
 // isDebugBuild, isWindows, isLinux, isMacOS, isWasm, isDefined or definedInt
-// (whose argument type check held to a string literal), or '!', 'and' or 'or'
+// (whose argument type check held to a string literal), or '!', '&&' or '||'
 // of such constants. Generation reads it to generate only the side of an 'if'
 // the build takes (genlIf), and as the value of each call (genlFnCall)
 int intrinsicBuildConst(INode *node, int64_t *value);

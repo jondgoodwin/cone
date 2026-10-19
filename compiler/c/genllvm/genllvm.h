@@ -30,7 +30,7 @@ typedef struct {
 
 // A temporary made and not yet finalized (TempNode): the slot its value was
 // kept in. The generator keeps a stack of them; the end of a statement, of an
-// 'if' or 'while' condition, or of the right operand of 'and' or 'or'
+// 'if' or 'while' condition, or of the right operand of '&&' or '||'
 // finalizes those its part made, newest first (genlTempsEnd), and a jump
 // finalizes every one made since the block it leaves to began (genlTempsJump).
 typedef struct {

@@ -60,7 +60,7 @@ fn listen(sv &mut Srv, lp &mut Loop) u16 {
 
 fn reply(sv &mut Srv, req httpconn.ReqId, head bool, status u16, body &Array[u8]) {
   sv.drv.respond(req, ResponseHead.make(status), BodyLength.sized(u64.from(body.len)));
-  if body.len > 0usize and not head {
+  if body.len > 0usize && !head {
     var b = sv.pool.mustTake(body.len);
     b.append(body);
     sv.drv.sendData(req, b);
@@ -145,13 +145,13 @@ fn step(cl &mut Client, sv &mut Srv, lp &mut Loop, out &mut List[Event], until I
   if a < limit {limit = a;}
   let b = sv.drv.wakeAt();
   if b < limit {limit = b;}
-  if out.len() > 0usize or sevs.len() > 0usize {limit = new Instant();}
+  if out.len() > 0usize || sevs.len() > 0usize {limit = new Instant();}
   var comps = List[Completion].empty();
   lp.poll(limit, &mut comps);
   var k = 0usize;
   while k < comps.len() {
     let c = &mut comps[k];
-    if not cl.complete(lp, c) {sv.drv.complete(lp, c);}
+    if !cl.complete(lp, c) {sv.drv.complete(lp, c);}
     k = k + 1usize;
   }
   comps.clear();
@@ -210,7 +210,7 @@ fn finishOf(cl &mut Client, sv &mut Srv, lp &mut Loop, id FetchId, s &mut Seen) 
   var out = List[Event].empty();
   let giveUp = Instant.now() + Duration.fromSeconds(10i64);
   let before = s.finals;
-  while s.finals == before and Instant.now() < giveUp {
+  while s.finals == before && Instant.now() < giveUp {
     step(cl, sv, lp, &mut out, giveUp);
     var k = 0usize;
     while k < out.len() {
@@ -233,7 +233,7 @@ fn drain(cl &mut Client, sv &mut Srv, lp &mut Loop, n u64, fails &mut List[Strin
   var dones = 0u64;
   var finals = 0u64;
   let giveUp = Instant.now() + Duration.fromSeconds(10i64);
-  while finals < n and Instant.now() < giveUp {
+  while finals < n && Instant.now() < giveUp {
     step(cl, sv, lp, &mut out, giveUp);
     let o = cl.stats().openNow;
     if o > peakOpen {peakOpen = o;}
@@ -284,7 +284,7 @@ fn main() i32 {
   var sv = server(pool);
   let port = listen(&mut sv, &mut lp);
   let port2 = listen(&mut sv, &mut lp);
-  require(port != 0u16 and port2 != 0u16, "the server listens on two ports: two origins");
+  require(port != 0u16 && port2 != 0u16, "the server listens on two ports: two origins");
   var fails = List[String].empty();
 
   // ---- One client, at most two connections to an origin ----
@@ -303,10 +303,10 @@ fn main() i32 {
     expectStr(s.body.view(), "hello", "its body");
     expectStr(s.url.view(), url(port, "/hello").view(), "the URL that answered");
     expectUInt(u64.from(s.timing.attempts), 1u64, "one attempt");
-    expect(not s.timing.reused, "a new connection");
-    expect(s.timing.queued <= s.timing.dispatched and s.timing.dispatched <= s.timing.firstByte and
+    expect(!s.timing.reused, "a new connection");
+    expect(s.timing.queued <= s.timing.dispatched && s.timing.dispatched <= s.timing.firstByte &&
       s.timing.firstByte <= s.timing.ended, "its timing in order");
-    expect(not cl.isLive(id), "its id names nothing once answered");
+    expect(!cl.isLive(id), "its id names nothing once answered");
 
     // Four more, one after another: the one connection, kept alive
     var k = 0u32;
@@ -315,7 +315,7 @@ fn main() i32 {
       var t = seen();
       let i = cl.get(&mut lp, url(port, "/hello").view(), Sink.Here(1u64));
       finishOf(&mut cl, &mut sv, &mut lp, i, &mut t);
-      if not (t.last == EventKind.Done and t.timing.reused) {reusedAll = false;}
+      if !(t.last == EventKind.Done && t.timing.reused) {reusedAll = false;}
       k = k + 1u32;
     }
     expect(reusedAll, "each later GET on a reused connection");
@@ -385,7 +385,7 @@ fn main() i32 {
     var q = seen();
     let qid = cl.get(&mut lp, url(port, "/hello").view(), Sink.Here(1u64));
     finishOf(&mut cl, &mut sv, &mut lp, qid, &mut q);
-    expect(q.last == EventKind.Failed and q.stage == Stage.Queue, "the third: Failed, Stage.Queue");
+    expect(q.last == EventKind.Failed && q.stage == Stage.Queue, "the third: Failed, Stage.Queue");
     expectStr(q.failure.view(), "queue: too large: maxQueued requests already wait for a connection", "...saying why");
     expectUInt(drain(&mut cl, &mut sv, &mut lp, 2u64, &mut fails), 2u64, "the two before it Done");
     finish(&mut cl, &mut sv, &mut lp);
@@ -410,7 +410,7 @@ fn main() i32 {
     // other its one, and, once the first's queue is empty, the first's idle
     // connections are closed to make room for it
     let s3 = cl.stats();
-    expect(s3.connects >= 4u64 and s3.connects <= 6u64, "four to six connections made");
+    expect(s3.connects >= 4u64 && s3.connects <= 6u64, "four to six connections made");
     expectUInt(s3.connects - s3.closed, 4u64, "four open at the end");
     expectUInt(u64.from(s3.origins), 2u64, "two origins pooled");
     expectUInt(u64.from(s3.openNow), 4u64, "four open, idle");
@@ -422,11 +422,11 @@ fn main() i32 {
     // Linux refuses the connect at once, so the idle connection's close may
     // still be on its way when the fetch has failed: drive until it lands
     let landBy = Instant.now() + Duration.fromSeconds(2i64);
-    while cl.stats().closed - closedBefore < 2u64 and Instant.now() < landBy {
+    while cl.stats().closed - closedBefore < 2u64 && Instant.now() < landBy {
       idleFor(&mut cl, &mut sv, &mut lp, Duration.fromMillis(5i64));
     }
     expectUInt(cl.stats().closed - closedBefore, 2u64, "an idle connection closed to make room, and the failed one");
-    expect(t.last == EventKind.Failed and t.stage == Stage.Connect, "nothing listens on port 1: Failed connecting");
+    expect(t.last == EventKind.Failed && t.stage == Stage.Connect, "nothing listens on port 1: Failed connecting");
     finish(&mut cl, &mut sv, &mut lp);
   }
 
@@ -460,7 +460,7 @@ fn main() i32 {
     var s2 = seen();
     let i2 = cl.get(&mut lp, url(port, "/hello").view(), Sink.Here(1u64));
     finishOf(&mut cl, &mut sv, &mut lp, i2, &mut s2);
-    expect(s2.last == EventKind.Done and not s2.timing.reused, "the next GET on a new connection");
+    expect(s2.last == EventKind.Done && !s2.timing.reused, "the next GET on a new connection");
     finish(&mut cl, &mut sv, &mut lp);
   }
 

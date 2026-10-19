@@ -43,21 +43,21 @@ struct Cursor {
   }
 
   fn rd8(self &mut, d &Array[u8], what &str) u8 {
-    if not self.need(d, 1u64, what) { return 0u8; }
+    if !self.need(d, 1u64, what) { return 0u8; }
     let v = d[pos];
     pos = pos + 1usize;
     v
   }
 
   fn rd16(self &mut, d &Array[u8], what &str) u16 {
-    if not self.need(d, 2u64, what) { return 0u16; }
+    if !self.need(d, 2u64, what) { return 0u16; }
     let v = u16.from(d[pos]) | (u16.from(d[pos + 1usize]) << 8u16);
     pos = pos + 2usize;
     v
   }
 
   fn rd32(self &mut, d &Array[u8], what &str) u32 {
-    if not self.need(d, 4u64, what) { return 0u32; }
+    if !self.need(d, 4u64, what) { return 0u32; }
     let v = u32.from(d[pos]) | (u32.from(d[pos + 1usize]) << 8u32)
           | (u32.from(d[pos + 2usize]) << 16u32) | (u32.from(d[pos + 3usize]) << 24u32);
     pos = pos + 4usize;
@@ -65,7 +65,7 @@ struct Cursor {
   }
 
   fn rd64(self &mut, d &Array[u8], what &str) u64 {
-    if not self.need(d, 8u64, what) { return 0u64; }
+    if !self.need(d, 8u64, what) { return 0u64; }
     var v = 0u64;
     var i = 7usize;
     while true {
@@ -81,7 +81,7 @@ struct Cursor {
   fn rdString(self &mut, d &Array[u8], what &str) String {
     let n = self.rd64(d, what);
     if failed { return String.empty(); }
-    if not self.need(d, n, what) { return String.empty(); }
+    if !self.need(d, n, what) { return String.empty(); }
     let len = usize.from(n);
     let s = String.fromBytes(&d[pos..<pos + len]);
     pos = pos + len;
@@ -145,7 +145,7 @@ fn readValue(c &mut Cursor, d &Array[u8], t &ValueType, depth u32) Value {
           }
           var items = List[Value].withCapacity(usize.from(n));
           var i = 0u64;
-          while i < n and not c.failed {
+          while i < n && !c.failed {
             items.push(readValue(c, d, &et, depth + 1u32));
             i = i + 1u64;
           }
@@ -179,7 +179,7 @@ fn faultText(fault u32) &str {
 }
 
 fn geometry(kind &TensorType, dims &Array[u64]) Geometry {
-  if dims.len == 0usize or dims.len > usize.from(maxDims()) { return new Geometry(0u64, 0u64, 1u32); }
+  if dims.len == 0usize || dims.len > usize.from(maxDims()) { return new Geometry(0u64, 0u64, 1u32); }
   var elements = 1u64;
   var i = 0usize;
   while i < dims.len {
@@ -220,16 +220,16 @@ pub fn parse(file &Array[u8]) Result[Model, GgufError] {
   if file.len < 4usize {
     return problem(ErrorKind.Truncated, 0u64, "the file is shorter than the 4-byte magic");
   }
-  if file[0usize] != 'G' or file[1usize] != 'G' or file[2usize] != 'U' or file[3usize] != 'F' {
+  if file[0usize] != 'G' || file[1usize] != 'G' || file[2usize] != 'U' || file[3usize] != 'F' {
     return problem(ErrorKind.BadMagic, 0u64, "the file does not start with GGUF");
   }
   c.pos = 4usize;
   let version = c.rd32(file, "the file ends inside the header");
   if c.failed { return failed(&mut c); }
-  if version == 0x03000000u32 or version == 0x02000000u32 {
+  if version == 0x03000000u32 || version == 0x02000000u32 {
     return problem(ErrorKind.BigEndian, 4u64, "this is a big-endian GGUF file, which is not read");
   }
-  if version != 2u32 and version != 3u32 {
+  if version != 2u32 && version != 3u32 {
     return problem(ErrorKind.UnsupportedVersion, 4u64, "the version is not 2 or 3");
   }
   let tensorCount = c.rd64(file, "the file ends inside the header");
@@ -248,7 +248,7 @@ pub fn parse(file &Array[u8]) Result[Model, GgufError] {
   // Metadata
   var meta = List[MetaEntry].withCapacity(usize.from(metaCount));
   var i = 0u64;
-  while i < metaCount and not c.failed {
+  while i < metaCount && !c.failed {
     let keyAt = c.pos;
     let key = c.rdString(file, "the file ends inside a metadata key");
     let code = c.rd32(file, "the file ends inside a metadata entry");
@@ -284,19 +284,19 @@ pub fn parse(file &Array[u8]) Result[Model, GgufError] {
       }
     }
   }
-  if alignment == 0u64 or (alignment & (alignment - 1u64)) != 0u64 or alignment > maxAlignment() {
+  if alignment == 0u64 || (alignment & (alignment - 1u64)) != 0u64 || alignment > maxAlignment() {
     return problem(ErrorKind.BadAlignment, 0u64, "general.alignment is not a power of two up to 2^31");
   }
 
   // The tensor table: name, dimensions, type, offset
   var tensors = List[Tensor].withCapacity(usize.from(tensorCount));
   i = 0u64;
-  while i < tensorCount and not c.failed {
+  while i < tensorCount && !c.failed {
     let entryAt = c.pos;
     let name = c.rdString(file, "the file ends inside a tensor name");
     let ndims = c.rd32(file, "the file ends inside a tensor entry");
     if c.failed { break; }
-    if ndims == 0u32 or ndims > maxDims() {
+    if ndims == 0u32 || ndims > maxDims() {
       return problem(ErrorKind.BadDimensions, u64.from(entryAt), faultText(1u32));
     }
     var dims = List[u64].withCapacity(usize.from(ndims));
@@ -343,7 +343,7 @@ pub fn parse(file &Array[u8]) Result[Model, GgufError] {
     if t.offset % alignment != 0u64 {
       return problem(ErrorKind.BadAlignment, dataStart, "a tensor's offset is not a multiple of the alignment");
     }
-    if t.offset > dataLen or t.bytes > dataLen - t.offset {
+    if t.offset > dataLen || t.bytes > dataLen - t.offset {
       return problem(ErrorKind.BadOffset, dataStart + t.offset, "a tensor reaches past the end of the file");
     }
   }

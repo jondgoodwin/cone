@@ -2361,7 +2361,7 @@ static int genlSwitchIs(GenState *gen, SwitchPlan *plan, CastNode *isnode, uint3
     return 1;
 }
 
-// Can this arm's test be labels of the switch? Each alternative of an 'or' must be.
+// Can this arm's test be labels of the switch? Each alternative of a '|' must be.
 static int genlSwitchTest(GenState *gen, SwitchPlan *plan, INode *cond, uint32_t arm) {
     switch (cond->tag) {
     case OrLogicTag:

@@ -260,6 +260,9 @@ INode *parseSimpleExpr(ParseState *parse);
 void parseRangeEllipsis(void);
 // Parse an operand of a comparison: everything that binds tighter than one
 INode *parseOr(ParseState *parse);
+// Parse an operand that binds tighter than bitwise or, '|': a case's patterns are
+// joined by a top-level '|'
+INode *parseXor(ParseState *parse);
 // Finish a simple expression whose first operand parseOr has already parsed
 INode *parseSimpleExprFrom(ParseState *parse, INode *lhnode);
 // The method a comparison token names ("==", "<", ...), or NULL

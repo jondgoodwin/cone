@@ -27,7 +27,7 @@ import diag;
 // Poll until out holds at least n answers, or two seconds pass
 fn waitFor(lp &mut Loop, out &mut List[Completion], n usize) {
   let limit = Instant.now() + Duration.fromSeconds(2i64);
-  while out.len() < n and Instant.now() < limit {
+  while out.len() < n && Instant.now() < limit {
     lp.poll(limit, out);
   }
 }
@@ -66,7 +66,7 @@ fn main() i32 {
     lp.after(t0 + Duration.fromMillis(4i64), Target.Here(2u64));
     let doomed = lp.after(t0 + Duration.fromMillis(3i64), Target.Here(9u64));
     expect(lp.cancel(doomed), "a pending timer's cancel is taken");
-    expect(not lp.cancel(doomed), "asked twice: its answer, Cancelled, is decided already");
+    expect(!lp.cancel(doomed), "asked twice: its answer, Cancelled, is decided already");
     waitFor(&mut lp, &mut out, 4usize);
     requireUInt(u64.from(out.len()), 4u64, "four timer answers");
     expectUInt(out[0usize].token, 9u64, "the cancelled one answers first, at the next poll");
@@ -76,8 +76,8 @@ fn main() i32 {
     expectUInt(out[3usize].token, 3u64, "then 6 ms");
     expect(out[3usize].isDone(), "a timer that fires is Done");
     expect(out[1usize].dequeued >= t0 + Duration.fromMillis(2i64), "never early");
-    expect(not lp.cancel(doomed), "an answered timer's cancel finds nothing");
-    expect(not lp.cancel(OpId.none()), "nor does OpId.none()");
+    expect(!lp.cancel(doomed), "an answered timer's cancel finds nothing");
+    expect(!lp.cancel(OpId.none()), "nor does OpId.none()");
     out.clear();
 
     // 2. A file
@@ -115,7 +115,7 @@ fn main() i32 {
     while k < 4usize {
       let c = out[k];
       if c.token == 29u64 {
-        expect(c.isDone() and c.count() == 0usize, "a read past the end is Done(0)");
+        expect(c.isDone() && c.count() == 0usize, "a read past the end is Done(0)");
       } else {
         expectUInt(u64.from(c.count()), 65536u64, "each read 64 KiB");
         expect(matches(&c.buf, u8.from(c.token - 20u64 + 1u64)), "its bytes are the ones written there");
@@ -124,8 +124,8 @@ fn main() i32 {
     }
     out.clear();
     expect(lp.close(fh), "the file closes");
-    expect(not lp.close(fh), "once");
-    expect(not lp.isOpen(fh), "its handle names nothing now");
+    expect(!lp.close(fh), "once");
+    expect(!lp.isOpen(fh), "its handle names nothing now");
 
     // 3. TCP to itself
     let listener = lp.mustListen(SocketAddr.localhost(0u16));
@@ -149,7 +149,7 @@ fn main() i32 {
       k = k + 1usize;
     }
     out.clear();
-    require(lp.isOpen(server) and lp.isOpen(client), "both ends are handles");
+    require(lp.isOpen(server) && lp.isOpen(client), "both ends are handles");
 
     var hello = pool.mustTake(5usize);
     hello.append("hello");
@@ -177,7 +177,7 @@ fn main() i32 {
     while k < out.len() {
       let c = out[k];
       if c.token == 50u64 {
-        expect(c.isDone() and c.count() == 0usize, "RecvReady is Done(0) once bytes are there");
+        expect(c.isDone() && c.count() == 0usize, "RecvReady is Done(0) once bytes are there");
         expectUInt(u64.from(c.buf.capacity()), 0u64, "and held no buffer");
       } else {
         expectUInt(u64.from(c.count()), 5u64, "shared bytes sent");
@@ -194,7 +194,7 @@ fn main() i32 {
     lp.close(client);
     lp.submit(Op.Recv(server, pool.mustTake(100usize)), Target.Here(60u64));
     waitFor(&mut lp, &mut out, 1usize);
-    expect(out[0usize].isDone() and out[0usize].count() == 0usize, "the end of the stream is Done(0)");
+    expect(out[0usize].isDone() && out[0usize].count() == 0usize, "the end of the stream is Done(0)");
     out.clear();
 
     // 4. A handle that names nothing
@@ -215,17 +215,17 @@ fn main() i32 {
     }
     expect(SocketAddr.localhost(9u16).isLoopback(), "127.0.0.1 is loopback");
     expect(SocketAddr.v4(127u8, 3u8, 4u8, 5u8, 9u16).isLoopback(), "so is all of 127.0.0.0/8");
-    expect(not SocketAddr.v4(126u8, 0u8, 0u8, 1u8, 9u16).isLoopback(), "126.0.0.1 is not");
-    expect(not SocketAddr.v4(0u8, 0u8, 0u8, 0u8, 9u16).isLoopback(), "nor is the IPv4 wildcard");
-    expect(not SocketAddr.v4(10u8, 0u8, 0u8, 7u8, 9u16).isLoopback(), "nor 10.0.0.7");
+    expect(!SocketAddr.v4(126u8, 0u8, 0u8, 1u8, 9u16).isLoopback(), "126.0.0.1 is not");
+    expect(!SocketAddr.v4(0u8, 0u8, 0u8, 0u8, 9u16).isLoopback(), "nor is the IPv4 wildcard");
+    expect(!SocketAddr.v4(10u8, 0u8, 0u8, 7u8, 9u16).isLoopback(), "nor 10.0.0.7");
     expect(SocketAddr.v6Localhost(9u16).isLoopback(), "::1 is loopback");
     {
       let zero6 Array[u8, 16] = [0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8];
       let near6 Array[u8, 16] = [0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 1u8, 1u8];
       let other6 Array[u8, 16] = [0x20u8, 0x01u8, 0x0du8, 0xb8u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 1u8];
-      expect(not SocketAddr.v6(&zero6, 9u16).isLoopback(), "the IPv6 wildcard (::) is not");
-      expect(not SocketAddr.v6(&near6, 9u16).isLoopback(), "nor ::101");
-      expect(not SocketAddr.v6(&other6, 9u16).isLoopback(), "nor 2001:db8::1");
+      expect(!SocketAddr.v6(&zero6, 9u16).isLoopback(), "the IPv6 wildcard (::) is not");
+      expect(!SocketAddr.v6(&near6, 9u16).isLoopback(), "nor ::101");
+      expect(!SocketAddr.v6(&other6, 9u16).isLoopback(), "nor 2001:db8::1");
     }
     let l6 = lp.mustListen(SocketAddr.v6Localhost(0u16));
     var port6 = 0u16;
@@ -236,7 +236,7 @@ fn main() i32 {
     lp.submit(Op.Accept(l6), Target.Here(80u64));
     lp.submit(Op.Connect(SocketAddr.v6Localhost(port6)), Target.Here(81u64));
     waitFor(&mut lp, &mut out, 2usize);
-    expect(out.len() == 2usize and out[0usize].isDone() and out[1usize].isDone(), "accepted and connected over ::1");
+    expect(out.len() == 2usize && out[0usize].isDone() && out[1usize].isDone(), "accepted and connected over ::1");
     out.clear();
 
     let c = lp.counters();

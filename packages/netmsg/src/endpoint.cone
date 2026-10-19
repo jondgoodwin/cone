@@ -98,7 +98,7 @@ pub actor Endpoint {
       group: g, timer: g.child(), timerGen: 0u32, inflight: 0usize,
       gate: ChallengeGate.make(gateSeed), slots: List[ConnectionSlot].empty(), nextId: 1u32,
       armed: -1i64, stopped: false,
-      dialer: ClientHandshake.make(cfg, salt, Instant.now()), dialing: not server,
+      dialer: ClientHandshake.make(cfg, salt, Instant.now()), dialing: !server,
       remote: remote, remoteKey: remote.text());
   }
 
@@ -126,7 +126,7 @@ pub actor Endpoint {
     }
     // The disconnect datagrams are in flight: wait for the socket to take them
     let limit = Instant.now() + Duration.fromMillis(flushMillis);
-    while inflight > 0usize and Instant.now() < limit {
+    while inflight > 0usize && Instant.now() < limit {
       let z = await aio.sleep(Duration.fromMillis(1i64));
     }
     let c = group.cancel();
@@ -163,7 +163,7 @@ pub actor Endpoint {
       else {}
     }
     tx.send(Ok[SocketAddr, IoError](bound));
-    if not server {
+    if !server {
       self.rearm();   // a client starts dialing
     }
     selfactor.receive();
@@ -172,7 +172,7 @@ pub actor Endpoint {
   // Receive datagrams, one at a time, until shutdown cancels the receive
   async do receive(self) {
     var failures = 0u32;
-    while not stopped and failures <= maxFailures {
+    while !stopped && failures <= maxFailures {
       let r = await sock.recvFromIn(pool.mustTake(recvRoom), IoLimits.within(group));
       match &r {
         case let ok &Ok {
@@ -181,7 +181,7 @@ pub actor Endpoint {
         }
         case let e &Error {
           if aio.isCancelled(*e) {return;}
-          if not aio.isTruncated(*e) {failures = failures + 1u32;}
+          if !aio.isTruncated(*e) {failures = failures + 1u32;}
         }
       }
     }
@@ -201,7 +201,7 @@ pub actor Endpoint {
   // the connections and the dialer that are due are ticked
   async do wake(self, at i64, gen u32, g CancelGroup) {
     let r = await aio.sleepUntilIn(Instant.fromNanos(at), IoLimits.within(g));
-    if slept(r) and gen == timerGen and not stopped {
+    if slept(r) && gen == timerGen && !stopped {
       self.fire();
     }
   }
@@ -243,9 +243,9 @@ pub actor Endpoint {
   fn onDatagram(self, from SocketAddr, data List[u8]) {
     if stopped {return;}
     let key = from.text();
-    if not server and key != remoteKey {return;}
+    if !server && key != remoteKey {return;}
     let kind = if data.len() > 4usize {*data[4usize]} else {255u8};
-    if kind == kindPayload or kind == kindDisconnect {
+    if kind == kindPayload || kind == kindDisconnect {
       let k = self.find(key.view());
       if k != notFound {
         slots[k].conn.packet(copyBytes(data.view()));
@@ -255,7 +255,7 @@ pub actor Endpoint {
       }
       return;
     }
-    if not server {
+    if !server {
       self.dial(data);
       return;
     }
@@ -320,7 +320,7 @@ pub actor Endpoint {
       if slots[i].due < at {at = slots[i].due;}
       i = i + 1usize;
     }
-    if at != farFuture and (armed < 0i64 or at < armed) {
+    if at != farFuture && (armed < 0i64 || at < armed) {
       armed = at;
       let c = timer.cancel();
       timer = group.child();
@@ -409,7 +409,7 @@ pub struct BoundEndpoint {
 // Binding takes a second worker when the caller is one: the endpoint binds on
 // the I/O thread and answers from a worker, and this call waits for it
 fn requireAWorker() {
-  if actors.workerIndex() != actors.noWorker and actors.stats().workers < 2u32 {
+  if actors.workerIndex() != actors.noWorker && actors.stats().workers < 2u32 {
     panic("netmsg: listen and connect called from a behaviour need a second worker to bind the socket");
   }
 }

@@ -1,0 +1,108 @@
+// A case joins several patterns with '|'. A pattern's value is read one level above
+// bitwise or, so a '|' at the top of a case's pattern is the joiner, and a bitwise or
+// that is meant as a value is written in parentheses: '(1 | 2)' is the number 3.
+// Ranges, comparisons, 'is' and a column of 'match a, b' join the same way, and
+// '^' and '&' still bind inside a value.
+//
+// Each printed value was checked by hand against the source.
+
+mod enum_match_bar_join;
+
+import stdio use *;
+
+enum Shape {
+  Dot;
+  Blink(i64);
+  struct Circle { pub r i64; }
+}
+
+fn numbers(n i64) i64 {
+  match n {
+    case 0 | 1 { 10 }
+    case 2 | 3 | 4 { 20 }
+    case (8 | 1) { 30 }             // the number 9
+    case 5 ^ 1 | 7 & 6 { 40 }      // the values 5 ^ 1, which is 4, and 7 & 6, which is 6
+    else { 99 }
+  }
+}
+
+fn ranges(c char) i64 {
+  match c {
+    case 'a' .. 'c' | 'x' .. 'z' { 1 }
+    case 'A' | 'B' { 2 }
+    case ' ' | '\t' | '\n' { 3 }
+    else { 0 }
+  }
+}
+
+fn comparisons(n i64) i64 {
+  match n {
+    case < 0 | > 100 { 1 }
+    case == 7 | 8 { 2 }
+    else { 0 }
+  }
+}
+
+fn kinds(s Shape) i64 {
+  match s {
+    case Dot | Blink { 1 }
+    case is Circle { 2 }
+  }
+}
+
+fn guarded(n i64, flag bool) i64 {
+  match n {
+    case 1 | 2 if flag || n == 2 { 1 }
+    case 1 | 2 { 2 }
+    else { 3 }
+  }
+}
+
+fn pairs(a i64, b i64) i64 {
+  match a, b {
+    case 0 | 1, 5 | 6 { 1 }
+    case _, 7 | 8 { 2 }
+    else { 0 }
+  }
+}
+
+fn show(label &str, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn main() {
+  show("zero", numbers(0));                 // 10
+  show("one", numbers(1));                  // 10
+  show("three", numbers(3));                // 20
+  show("nine", numbers(9));                 // 30
+  show("four", numbers(4));                 // 20: the earlier case wins
+  show("six", numbers(6));                  // 40
+  show("other", numbers(5));                // 99
+
+  show("range-b", ranges('b'));             // 1
+  show("range-y", ranges('y'));             // 1
+  show("upper-B", ranges('B'));             // 2
+  show("tab", ranges('\t'));                // 3
+  show("none", ranges('m'));                // 0
+
+  show("below", comparisons(-3));           // 1
+  show("above", comparisons(101));          // 1
+  show("eight", comparisons(8));            // 2
+  show("middle", comparisons(50));          // 0
+
+  show("dot", kinds(Shape.Dot));            // 1
+  show("blink", kinds(Shape.Blink(2)));     // 1
+  show("circle", kinds(Shape.Circle(r: 2)));   // 2
+
+  show("guard-flag", guarded(1, true));     // 1
+  show("guard-two", guarded(2, false));     // 1
+  show("guard-fall", guarded(1, false));    // 2
+  show("guard-else", guarded(5, true));     // 3
+
+  show("pair-one", pairs(1, 6));            // 1
+  show("pair-two", pairs(9, 8));            // 2
+  show("pair-none", pairs(9, 9));           // 0
+}

@@ -193,7 +193,7 @@ type while each call gives its own orderings.
 
 **Constants of the build drop the untaken side at generation.**
 `intrinsicBuildConst` answers whether a node is one of the constants above, or
-`!`, `and` or `or` of them, and its value. `genlIf` asks it of each condition:
+`!`, `&&` or `||` of them, and its value. `genlIf` asks it of each condition:
 a false one's block is not generated at all, and a true one's is generated as
 an `else` would be, with nothing after it. So no call on the untaken side, and
 no reference to its symbol, reaches the object, in a debug build as in a

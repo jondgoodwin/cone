@@ -95,7 +95,7 @@ fn main() i32 {
   expectUInt(u64.from(inf2.gzipHeader().mtime), 1700000000u64, "name: time");
   expectStr(text(inf2.gzipHeader().name.view()).view(), "hello.txt", "name: name");
   expectInt(i64.from(inf2.gzipHeader().comment.len()), 0i64, "name: no comment");
-  expect(not inf2.gzipHeader().text, "name: no text flag");
+  expect(!inf2.gzipHeader().text, "name: no text flag");
 
   out = List[u8].empty();
   let cm = zooStream(&file, "gzhdr-comment");
@@ -156,7 +156,7 @@ fn main() i32 {
       sp.finish();
       st = Status.MoreOutput;
       while st == Status.MoreOutput { piece.clear(); st = sp.pull(&mut piece, 700usize); let_append(&mut got, &piece); }
-      if st != Status.Done or not same(got.view(), out.view()) or sp.memberCount() != 4u32 { badSplit += 1usize; }
+      if st != Status.Done || !same(got.view(), out.view()) || sp.memberCount() != 4u32 { badSplit += 1usize; }
       at += 1usize;
     }
     expectInt(i64.from(badSplit), 0i64, "multi: split at every offset gives the same data and four members");
@@ -180,8 +180,8 @@ fn main() i32 {
     var got2 = List[u8].empty();
     st = Status.MoreOutput;
     while st == Status.MoreOutput { st = again.pull(&mut got2, 100usize); }
-    expect(st == Status.Done and got2.len() == 3000usize, "single-member: the second member is next in the rest");
-    expect(rest.len() > 0usize and rest.len() < multi.len(), "single-member: what is left is the later members");
+    expect(st == Status.Done && got2.len() == 3000usize, "single-member: the second member is next in the rest");
+    expect(rest.len() > 0usize && rest.len() < multi.len(), "single-member: what is left is the later members");
   }
 
   // ---------------- writing the header ----------------
@@ -213,20 +213,20 @@ fn main() i32 {
   // the trailer: CRC-32 of the data, then its length, both little-endian
   let wl = written.len();
   let crcv = crc32(hello);
-  expect(*written[wl - 8usize] == u8.from(crcv & 255u32) and *written[wl - 5usize] == u8.from(crcv >> 24u32) and *written[wl - 4usize] == 17u8
-    and *written[wl - 3usize] == 0u8, "the written trailer: CRC-32 and size");
+  expect(*written[wl - 8usize] == u8.from(crcv & 255u32) && *written[wl - 5usize] == u8.from(crcv >> 24u32) && *written[wl - 4usize] == 17u8
+    && *written[wl - 3usize] == 0u8, "the written trailer: CRC-32 and size");
 
   // a name with a zero byte is cut there; a plain header has no fields
   var cut = GzipHeader.plain();
   cut.name.push('a'); cut.name.push(0u8); cut.name.push('b');
   let w2 = gzipCompressWith(hello, 1, &cut);
-  expect(*w2[3usize] == 8u8 and *w2[10usize] == 'a' and *w2[11usize] == 0u8, "a name is cut at a zero byte");
+  expect(*w2[3usize] == 8u8 && *w2[10usize] == 'a' && *w2[11usize] == 0u8, "a name is cut at a zero byte");
   let p0 = gzipCompress(hello, 0);
   let p1 = gzipCompress(hello, 1);
   let p2 = gzipCompress(hello, 2);
-  expect(*p0[3usize] == 0u8 and *p0[8usize] == 4u8 and *p0[9usize] == 255u8, "plain header, level 0: XFL 4, system 255");
-  expect(*p1[8usize] == 4u8 and *p2[8usize] == 0u8, "plain header: XFL 4 at level 1, 0 at level 2");
-  expect(*p2[4usize] == 0u8 and *p2[5usize] == 0u8 and *p2[6usize] == 0u8 and *p2[7usize] == 0u8, "plain header: no time");
+  expect(*p0[3usize] == 0u8 && *p0[8usize] == 4u8 && *p0[9usize] == 255u8, "plain header, level 0: XFL 4, system 255");
+  expect(*p1[8usize] == 4u8 && *p2[8usize] == 0u8, "plain header: XFL 4 at level 1, 0 at level 2");
+  expect(*p2[4usize] == 0u8 && *p2[5usize] == 0u8 && *p2[6usize] == 0u8 && *p2[7usize] == 0u8, "plain header: no time");
 
   // the streaming deflater writes the same header
   {

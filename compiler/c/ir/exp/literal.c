@@ -237,7 +237,7 @@ void litNameRes(NameResState* pstate, IExpNode *node) {
 // adopt: its only values are true and false, and a literal reaches it the way
 // any other number does, through isTrue. Adopting it masked the constant to its
 // low bit, so 'var b bool = 2', 'b = 2', a bool return of 2, 'not 2' and
-// '2 and 3' all read as false, while 'boolarg(2)' and 'Gauge[2]', which reach
+// '2 && 3' all read as false, while 'boolarg(2)' and 'Gauge[2]', which reach
 // bool through coercion instead, read as true.
 int litAdoptNumberType(INode **nodep, INode *totype) {
     INode *node = *nodep;
@@ -1024,7 +1024,7 @@ int litIsLiteral(INode* node) {
 // static's, a parameter's or a field's default -- an expression of constants
 // is folded into the literal it computes, once it is type checked
 // (litFoldConst). What folds is a built-in number operator, a comparison,
-// 'not', 'and' and 'or', a number's conversion ('T.from(x)', and the widening a
+// '!', '&&' and '||', a number's conversion ('T.from(x)', and the widening a
 // coercion injects) and a reinterpretation with 'as', each of number literals
 // and named constants; inside an array, struct or tuple literal, and under a
 // borrow of an array literal, each element folds on its own. The result is an

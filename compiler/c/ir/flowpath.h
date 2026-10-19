@@ -3,7 +3,7 @@
  *
  * The existing flow walk (flow.c) keeps one running summary per function. This
  * walk keeps state per program point and per path: it forks at each 'if' arm and
- * each 'and'/'or' right operand, joins the arms by taking the union of what each
+ * each '&&'/'||' right operand, joins the arms by taking the union of what each
  * changed, deposits the state at a 'break' or 'continue' with the block it names,
  * and walks a loop body again until the state at its head stops growing. It is
  * read-only: it injects nothing and changes no node, so it may walk a loop body

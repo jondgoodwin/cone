@@ -537,22 +537,20 @@ tightest, in `parseexpr.c`:
 
 - **Bitwise binds tighter than comparison.** `a | b == c` is `a | (b == c)`
   in C and `(a | b) == c` here.
-- **`not` binds looser than comparison**, and `parseCmp` is non-associative —
+- **`!` binds looser than comparison**, and `parseCmp` is non-associative —
   one comparison per level, so `a < b < c` does not chain.
 - **Assignment is right-associative.** `parseAssign` does not loop; it recurses
   into `parseAnyExpr` for the right-hand side, as do `:=`, `<=>` and every
   op-assign form.
 
-**`&&` is refused where an operand precedes it.** The lexer keeps `&&` as two
-`AmperToken`s, because it is two borrows in a type or before an operand
+**`&&` is the logical and where an operand precedes it.** The lexer keeps `&&` as
+two `AmperToken`s, because it is two borrows in a type or before an operand
 (`&&Pt`, `&&x`). `parseAnd` leaves `lexIsAmpAmp` (a `&` with another directly
-against it) unconsumed, and `parseAndLogicFrom` takes it where it takes `and`:
-it reports `ErrorAndAnd` at the operator and reads it as `and`, so the right
-side is an `and`'s and nothing after it is reported twice. `a & &b` (a space)
-and `a & (&b)` stay a bitwise and of a borrow. The same test keeps a `match`
-pattern's `case x && y` on the path that reports a condition as a pattern.
-`||` is not read at all: a second `|` where an operand belongs is
-`ErrorBadTerm`.
+against it) unconsumed, and `parseAndLogicFrom` takes it as the logical and,
+consuming both tokens. `a & &b` (a space) and `a & (&b)` stay a bitwise and of a
+borrow. The same test keeps a `match` pattern's `case x && y` on the path that
+reports a condition as a pattern. `||` is one token (`OrOrToken`), the logical
+or, and `!` the one `NotToken`; `and`, `or` and `not` are ordinary names.
 
 `parseCmpOp` is the comparison level's one list of operators — `==`, `!=`,
 `===`, `!==` and the four orderings — and a `match` pattern reads the same list
@@ -590,7 +588,8 @@ parenthesized, `draw(new List[i32] <- (1, 2), x)`. At a statement's level the
 construction is the left of an ordinary `<-` and takes the whole list.
 
 **`parseSimpleExprFrom` resumes the cascade** above an operand already parsed
-by `parseOr`: the comparison, `and` and `or` levels each have a `...From` form
+by `parseOr` (a match's pattern reads its operand with `parseXor`, so that a `|` is
+left for the joiner): the comparison, `&&` and `||` levels each have a `...From` form
 taking their left operand. It exists for a match's pattern, which cannot tell a
 range (`0 ..< 3`) from a value alone (`3`) or a condition (`n > 3`, refused as
 `ErrorPatBare`) until it has read the first operand and seen what follows it.
@@ -737,9 +736,11 @@ value that is not a place, an anonymous capture variable before it (a place is r
 where it stands, a copy of it written into each test), each case's patterns becoming
 its condition: `is T` an `is`
 node, `<v` (and every comparison) the operator call with the matched value on
-the left, `a .. b` and `a ..< b` two calls joined by `and`, `or` between patterns
-a logical `or`, and an `if` guard an `and` after them. `match a, b` takes a matchee for each
-value and a pattern for each in a case, `_` for any, the patterns of a row joined by `and`
+the left, `a .. b` and `a ..< b` two calls joined by `&&`, a `|` between patterns
+a logical `||` of their conditions, and an `if` guard a `&&` after them. A pattern's
+value is read by `parseXor`, one level above bitwise or, so that a top-level `|` is
+the joiner; a bitwise or meant as a value is written in parentheses. `match a, b` takes a matchee for each
+value and a pattern for each in a case, `_` for any, the patterns of a row joined by `&&`
 ([if](../nodes/if.md)). A pattern a function runs, `using f(args)`, is the call of `f` with the matched value
 inserted as its first argument, a test as the condition itself and a binding as the value of a bound `if`
 over the call, which the cases after it go on in ([if](../nodes/if.md), "Parse").
@@ -1173,12 +1174,12 @@ numbers.
 | | `parseFoldClause` | `use *` with an optional `but` list, or a list of names each with an optional `as`; builds the clause on the field and an alias per listed name, bound by name resolution |
 | | `parseUseSibling`, `parseModUse`, `parseUseAdmits` | a `use` standing as a statement: in a type body it folds a sibling in, and at module scope (`parseGlobalStmts`) it folds an enum's variants or a submodule's names in, held on a `ModUseNode` — which of the two is known only once the source resolves. Both name their source and then share what follows it — every member by default, `*` refused as saying nothing more, a list with `as`, a block, or `but` |
 | `parser/parsefnflow.c` | `parseFn` | function/method declaration, with its `@initpure` after `fn`, before or after `@c`, recorded as `DclInitPure` and not checked, its `@intrinsic`, recorded as `DclIntrinsic` and letting the declaration end without a body, and its `@c`, refused where there is no one symbol for it to name — an anonymous, generic or `inline` fn, an intrinsic, a trait's or a generic type's method (`ErrorCAttr`), and its `@compute(x, y, z)` (`parseComputeAttr`), first or after the others: constant sizes, at least 1, at most 256 invocations and 64 along z (`ErrorComputeSize`), on no method, generic, `inline` fn, intrinsic, `@c` fn or anonymous one (`ErrorComputeAttr`), its signature left to type check (`fnDclComputeCheck`) — **despite the file name, this is where declarations and control flow are parsed, not data flow analysis** |
-| | `parseGenericParms`, `parseWhere`, `parseIsCondition`, `parseMacro` | the type parameter list, shared by `fn`, `struct`, `mod` and `macro`: comma-separated names, each a generic's annotated with `+`-joined names (or a function signature written bare, `parseFnBound`) whose meaning name resolution decides (`or` there is `ErrorGenParmOr`), and a macro's or module's refused an annotation as `ErrorGenParmConstr`; the `where` clause just before a function's or a type's block, `T is Name` (or `T is fn(...) R`) clauses joined by `and` and `or`, `and` binding tighter, grouped by parentheses, any other form `ErrorWhereForm` ([generic](../nodes/generic.md), "Parse"); and the condition after an `is` entry's `if`, read as a `where` clause's is, but kept whole and with no lifetime in it |
+| | `parseGenericParms`, `parseWhere`, `parseIsCondition`, `parseMacro` | the type parameter list, shared by `fn`, `struct`, `mod` and `macro`: comma-separated names, each a generic's annotated with `+`-joined names (or a function signature written bare, `parseFnBound`) whose meaning name resolution decides (`||` there is `ErrorGenParmOr`), and a macro's or module's refused an annotation as `ErrorGenParmConstr`; the `where` clause just before a function's or a type's block, `T is Name` (or `T is fn(...) R`) clauses joined by `&&` and `||`, `&&` binding tighter, grouped by parentheses, any other form `ErrorWhereForm` ([generic](../nodes/generic.md), "Parse"); and the condition after an `is` entry's `if`, read as a `where` clause's is, but kept whole and with no lifetime in it |
 | | `parseExprBlock` | the statement-block loop — the parser's second dispatch table |
 | | `parseIf`, `parseMatch`, `parseBoundMatch`, `parseLetElse` | `if`/`elif`/`else` and the `match`-to-`if` desugaring, and a local declaration followed by `else` (`let n Ok = r else {...};`) as the bound `if` it stands for, stood in its own block's statements ([if](../nodes/if.md)); every pattern's root name is marked (`castPatternMark`) to be looked up in the matched value's enum at type check, as `parseCmp` marks an `is` test's |
-| | `parseMatchColumn`, `parseMatchWild` | the patterns of one value of a match, joined by `or`; in `match a, b` a column that binds is `ErrorMatchColumn`; `_` (`parseMatchWild`) is a literal `true` flagged `FlagMatchAny`, refused in a match of one value |
+| | `parseMatchColumn`, `parseMatchWild` | the patterns of one value of a match, joined by `|`; in `match a, b` a column that binds is `ErrorMatchColumn`; `_` (`parseMatchWild`) is a literal `true` flagged `FlagMatchAny`, refused in a match of one value |
 | | `parseUsingCall`, `parseUsingMatchee`, `parseUsingSome` | a function's pattern after `using` (`UsingToken`): the call, the matched value put in as its first argument, and the `Some` a binding takes; not a call is `ErrorUsingForm`, a match with one that does not end in `else` is `ErrorMatchUsing` |
-| | `parseMatchPattern`, `parseMatchRange` | one pattern of a case — `is`, a comparison, a range, a value alone, a test by `using` — lowered to the condition that tests the captured value, a value alone to the undecided test `newMatchValueNode` builds; a condition (`not b`, `n > 3`), at the start of a case or after an `or`, is `ErrorPatBare` |
+| | `parseMatchPattern`, `parseMatchRange` | one pattern of a case — `is`, a comparison, a range, a value alone, a test by `using` — lowered to the condition that tests the captured value, a value alone to the undecided test `newMatchValueNode` builds; a condition (`!b`, `n > 3`), at the start of a case or after a `|`, is `ErrorPatBare` |
 | | `parseWhile`, `parseEach`, `parseWith`, `parseLifetime` | loop and scope desugaring |
 | | `parseEachLoop`'s range helpers (`parseRangeStepSign`, `parseRangeGuard`, `parseRangeMoved`, `parseRangeStepCall`) | an `each` over a number range: which way the step runs, the guard that lets a pass run, the test that a step wrapped past the type's extreme, and the step itself, finished by type check (`eachRangeStepLower`, `ir/exp/each.c`) |
 | | `parseRangeEllipsis` | `...` is refused, `ErrorRangeEllipsis`, wherever a range operator is read (an index, a pattern, an `each`) |

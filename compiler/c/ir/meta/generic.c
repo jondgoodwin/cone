@@ -1026,7 +1026,7 @@ void genericConstraintsNameRes(NameResState *pstate, Nodes *parms, Nodes **where
     Nodes *clauses = NULL;
 
     // What follows a parameter's name, in the order written: '[T A + B]' says
-    // what 'where T is A and T is B' says. The slot is one for everything a
+    // what 'where T is A && T is B' says. The slot is one for everything a
     // parameter may be annotated with, and what the name resolves to is what
     // it means: a trait constrains a type parameter; a type would make a value
     // parameter and a kind another kind of parameter, and neither is built.
@@ -1083,7 +1083,7 @@ void genericConstraintsNameRes(NameResState *pstate, Nodes *parms, Nodes **where
     }
 
     // Each written condition, kept whole or, where any of its clauses is
-    // refused, dropped whole: an 'or' missing one side would say something else
+    // refused, dropped whole: a '||' missing one side would say something else
     if (*wherep) {
         for (nodesFor(*wherep, cnt, nodesp)) {
             if (genericConditionNameRes(pstate, *nodesp, NULL))
@@ -1573,10 +1573,10 @@ static void genericAskerLeave(GenericAsker *asker) {
     inodeCheckState = asker->saved;
 }
 
-// Evaluate a condition at these arguments, 'or' and 'and' as in an expression,
+// Evaluate a condition at these arguments, '||' and '&&' as in an expression,
 // the right side only where the left does not decide it. A lone clause is
 // decided only where its subject is one of 'parms': a clause over a parameter
-// bound already was decided then. Inside an 'or' or an 'and', a subject the
+// bound already was decided then. Inside a '||' or a '&&', a subject the
 // clone substituted is asked as it stands, since the whole is decided here.
 static WhereValue genericConditionValue(INode *cond, Nodes *parms, Nodes *args, int nested) {
     if (cond->tag == OrLogicTag || cond->tag == AndLogicTag) {
@@ -1723,8 +1723,8 @@ static void genericTemplateNameCat(char *buf, size_t size, INode *node, int dept
         snprintf(buf + used, size - used, "?");
 }
 
-// Append a condition to 'buf' as it reads: 'T is A or T is B', an 'or' inside
-// an 'and' in parentheses ('grouped'), a substituted subject by its type's name
+// Append a condition to 'buf' as it reads: 'T is A || T is B', a '||' inside
+// a '&&' in parentheses ('grouped'), a substituted subject by its type's name
 static void genericConditionCat(char *buf, size_t size, INode *cond, int grouped) {
     size_t used = strlen(buf);
     if (cond->tag == OrLogicTag || cond->tag == AndLogicTag) {
@@ -2296,7 +2296,7 @@ static int genericRequirementsMetIn(FnCallNode *srcgencall, INode *generic, Gene
                 return 0;
         }
     }
-    // A condition joined by 'or' or 'and' is false as a whole, and named whole
+    // A condition joined by '||' or '&&' is false as a whole, and named whole
     if (cond->tag != IsTag) {
         char text[256] = "";
         genericConditionCat(text, sizeof(text), cond, 0);
@@ -2554,7 +2554,7 @@ int genericReportAbsent(INode *errnode, INode *typedcl, Name *name) {
 
 // Does one condition of a generic's bound a parameter by a trait that requires
 // 'member', the parameter's argument being 'type', which declares the trait? An
-// 'and' holds if either side does; an 'or' never does, since a body governed by
+// '&&' holds if either side does; a '||' never does, since a body governed by
 // it may rely only on what every alternative gives.
 static int genericBoundCondReaches(INode *cond, Nodes *parms, Nodes *args, StructNode *type, Name *member) {
     if (cond->tag == AndLogicTag)

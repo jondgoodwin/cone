@@ -2386,7 +2386,7 @@ class GpuKernels(unittest.TestCase):
         // A kernel: one invocation for each point
         pub fn @compute(64) scale(inv Invocation, points &Array[Vec3], out &mut Array[f32]) {
           let i = usize.from(inv.globalId[0usize]);
-          if i < out.len and i < points.len {
+          if i < out.len && i < points.len {
             out[i] = half(points[i].length());
           }
         }
@@ -2636,7 +2636,7 @@ class GpuFolder(unittest.TestCase):
         // A kernel: one invocation for each point
         pub fn @compute(64) scale(inv Invocation, points &Array[Vec3], out &mut Array[f32]) {
           let i = usize.from(inv.globalId[0usize]);
-          if i < out.len and i < points.len {
+          if i < out.len && i < points.len {
             out[i] = maths.half(maths.len(points[i]));
           }
         }
@@ -2712,7 +2712,7 @@ class GpuFolder(unittest.TestCase):
             import shapes;
 
             fn main() i32 {
-              if shapes.quarter(8.) == 2. and shapes.half(8.) == 4. {
+              if shapes.quarter(8.) == 2. && shapes.half(8.) == 4. {
                 stdio.print <- "a quarter of 8 is 2\\n";
               }
               0i32

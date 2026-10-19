@@ -234,8 +234,8 @@ pub struct TimerId {
   pub fn none() TimerId { new TimerId(noEntry, 0u32) }
   pub fn isNone(self) bool { gen == 0u32 }
 
-  pub fn `==`(self, o TimerId) bool { index == o.index and gen == o.gen }
-  pub fn `!=`(self, o TimerId) bool { index != o.index or gen != o.gen }
+  pub fn `==`(self, o TimerId) bool { index == o.index && gen == o.gen }
+  pub fn `!=`(self, o TimerId) bool { index != o.index || gen != o.gen }
 }
 
 // A timer that has fired: which, its token, and the deadline it was armed for
@@ -253,7 +253,7 @@ fn goesBefore(a *Expiry, b *Expiry) bool {
   let y = b as &Expiry;
   let xn = x.deadline.nanos();
   let yn = y.deadline.nanos();
-  xn < yn or (xn == yn and x.seq < y.seq)
+  xn < yn || (xn == yn && x.seq < y.seq)
 }
 
 // Sort the n expiries at p into deadline order, through spare, a block as
@@ -262,7 +262,7 @@ fn goesBefore(a *Expiry, b *Expiry) bool {
 // of 16, each sorted by insertion, back and forth between the blocks
 fn sortExpiries(p *Expiry, spare *Expiry, n usize) {
   var i = 1usize;
-  while i < n and !goesBefore(p + i, p + (i - 1usize)) { i = i + 1usize; }
+  while i < n && !goesBefore(p + i, p + (i - 1usize)) { i = i + 1usize; }
   if i >= n { return; }
   // Insertion sort of each run of 16
   var lo = 0usize;
@@ -272,7 +272,7 @@ fn sortExpiries(p *Expiry, spare *Expiry, n usize) {
     while j < hi {
       let held = *(p + j);
       var k = j;
-      while k > lo and goesBefore(&held as *Expiry, p + (k - 1usize)) {
+      while k > lo && goesBefore(&held as *Expiry, p + (k - 1usize)) {
         *(p + k) = *(p + (k - 1usize));
         k = k - 1usize;
       }
@@ -293,7 +293,7 @@ fn sortExpiries(p *Expiry, spare *Expiry, n usize) {
       var a = lo;
       var b = mid;
       var k = lo;
-      while a < mid and b < hi {
+      while a < mid && b < hi {
         if goesBefore(from + b, from + a) { *(to + k) = *(from + b); b = b + 1usize; }
         else { *(to + k) = *(from + a); a = a + 1usize; }
         k = k + 1usize;
@@ -472,12 +472,12 @@ pub struct Wheel is Sendable {
   pub fn isPending(self &, id TimerId) bool {
     if id.index >= high { return false; }
     let p = (ents + usize.from(id.index)) as &Entry;
-    p.gen == id.gen and p.state != stFree
+    p.gen == id.gen && p.state != stFree
   }
 
   // Whether a pending timer is in the precise set
   pub fn isPrecise(self &, id TimerId) bool {
-    self.isPending(id) and ((ents + usize.from(id.index)) as &Entry).state == stPrecise
+    self.isPending(id) && ((ents + usize.from(id.index)) as &Entry).state == stPrecise
   }
 
   // ----- When to wake -----
@@ -493,7 +493,7 @@ pub struct Wheel is Sendable {
       return Some[Instant](self.tickInstant(d));
     }
     let p = ((ents + usize.from(*(heap))) as &Entry).at;
-    if d != noTick and self.tickInstant(d).nanos() < p {
+    if d != noTick && self.tickInstant(d).nanos() < p {
       return Some[Instant](self.tickInstant(d));
     }
     Some[Instant](Instant.fromNanos(p))
@@ -711,7 +711,7 @@ pub struct Wheel is Sendable {
       let size = usize.from(want) * mem.sizeof[Expiry]();
       let b = libc.realloc(batch as *u8, size);
       let s = libc.realloc(spare as *u8, size);
-      if b as usize == 0usize or s as usize == 0usize { panic("timewheel: out of memory"); }
+      if b as usize == 0usize || s as usize == 0usize { panic("timewheel: out of memory"); }
       batch = b as *Expiry;
       spare = s as *Expiry;
       batchCap = want;
@@ -726,7 +726,7 @@ pub struct Wheel is Sendable {
   fn before(self &, a u32, b u32) bool {
     let pa = (ents + usize.from(a)) as &Entry;
     let pb = (ents + usize.from(b)) as &Entry;
-    pa.at < pb.at or (pa.at == pb.at and pa.seq < pb.seq)
+    pa.at < pb.at || (pa.at == pb.at && pa.seq < pb.seq)
   }
 
   fn heapSet(self &mut, pos u32, i u32) {
@@ -780,7 +780,7 @@ pub struct Wheel is Sendable {
       if l >= heapLen { break; }
       var c = l;
       let r = l + 1u32;
-      if r < heapLen and self.before(*(heap + usize.from(r)), *(heap + usize.from(l))) { c = r; }
+      if r < heapLen && self.before(*(heap + usize.from(r)), *(heap + usize.from(l))) { c = r; }
       let ci = *(heap + usize.from(c));
       if !self.before(ci, i) { break; }
       self.heapSet(pos, ci);

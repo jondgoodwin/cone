@@ -52,7 +52,7 @@ fn paeth(a i32, b i32, c i32) i32 {
   let pa = if p > a {p - a} else {a - p};
   let pb = if p > b {p - b} else {b - p};
   let pc = if p > c {p - c} else {c - p};
-  if pa <= pb and pa <= pc { return a; }
+  if pa <= pb && pa <= pc { return a; }
   if pb <= pc { return b; }
   c
 }
@@ -102,7 +102,7 @@ fn unfilterRow(buf &mut Array[u8], row usize, len usize, prev usize, bpp usize) 
     while i < len {
       let a = if i >= bpp {i32.from(buf[start + i - bpp])} else {0i32};
       let b = if hasPrev {i32.from(buf[prev + i])} else {0i32};
-      let c = if i >= bpp and hasPrev {i32.from(buf[prev + i - bpp])} else {0i32};
+      let c = if i >= bpp && hasPrev {i32.from(buf[prev + i - bpp])} else {0i32};
       buf[start + i] = buf[start + i] + u8.from(paeth(a, b, c));
       i += 1usize;
     }
@@ -137,9 +137,9 @@ fn rowBytes(info &PngInfo, w usize) usize {
 
 // Whether depth and colour type go together (specification table 6)
 fn validDepth(ct u8, d u8) bool {
-  if ct == PngGray { return d == 1u8 or d == 2u8 or d == 4u8 or d == 8u8 or d == 16u8; }
-  if ct == PngPalette { return d == 1u8 or d == 2u8 or d == 4u8 or d == 8u8; }
-  if ct == PngRgb or ct == PngGrayAlpha or ct == PngRgba { return d == 8u8 or d == 16u8; }
+  if ct == PngGray { return d == 1u8 || d == 2u8 || d == 4u8 || d == 8u8 || d == 16u8; }
+  if ct == PngPalette { return d == 1u8 || d == 2u8 || d == 4u8 || d == 8u8; }
+  if ct == PngRgb || ct == PngGrayAlpha || ct == PngRgba { return d == 8u8 || d == 16u8; }
   false
 }
 
@@ -163,10 +163,10 @@ pub fn decodePng(data &Array[u8]) Result[Raster, DecodeError] {
   var sawEnd = false;
   var sawPlte = false;
   var pos = 8usize;
-  while pos + 12usize <= data.len and not sawEnd {
+  while pos + 12usize <= data.len && !sawEnd {
     let len = usize.from(be32(data, pos));
     let tag = be32(data, pos + 4usize);
-    if len > 0x7FFFFFFFusize or pos + 12usize + len > data.len {
+    if len > 0x7FFFFFFFusize || pos + 12usize + len > data.len {
       return pngFail("png: a chunk runs past the end of the file");
     }
     let body = pos + 8usize;
@@ -176,27 +176,27 @@ pub fn decodePng(data &Array[u8]) Result[Raster, DecodeError] {
     }
     if tag == 0x49484452u32 {
       // IHDR
-      if len != 13usize or sawHeader { return pngFail("png: bad IHDR"); }
+      if len != 13usize || sawHeader { return pngFail("png: bad IHDR"); }
       sawHeader = true;
       info.width = be32(data, body);
       info.height = be32(data, body + 4usize);
       info.depth = data[body + 8usize];
       info.colorType = data[body + 9usize];
       info.interlace = data[body + 12usize];
-      if info.width == 0u32 or info.height == 0u32 { return pngFail("png: the picture has no pixels"); }
-      if not validDepth(info.colorType, info.depth) { return pngFail("png: colour type and bit depth do not go together"); }
+      if info.width == 0u32 || info.height == 0u32 { return pngFail("png: the picture has no pixels"); }
+      if !validDepth(info.colorType, info.depth) { return pngFail("png: colour type and bit depth do not go together"); }
       if data[body + 10usize] != 0u8 { return pngFail("png: unknown compression method"); }
       if data[body + 11usize] != 0u8 { return pngFail("png: unknown filter method"); }
       if info.interlace > 1u8 { return pngFail("png: unknown interlace method"); }
-      if usize.from(info.width) > maxPixels or usize.from(info.height) > maxPixels
-        or usize.from(info.width) * usize.from(info.height) > maxPixels {
+      if usize.from(info.width) > maxPixels || usize.from(info.height) > maxPixels
+        || usize.from(info.width) * usize.from(info.height) > maxPixels {
         return pngFail("png: the picture is too large");
       }
-    } elif not sawHeader {
+    } elif !sawHeader {
       return pngFail("png: the first chunk is not IHDR");
     } elif tag == 0x504C5445u32 {
       // PLTE
-      if len % 3usize != 0usize or len == 0usize or len > 768usize { return pngFail("png: bad palette"); }
+      if len % 3usize != 0usize || len == 0usize || len > 768usize { return pngFail("png: bad palette"); }
       info.palette.clear();
       var i = 0usize;
       while i < len { info.palette.push(data[body + i]); i += 1usize; }
@@ -214,10 +214,10 @@ pub fn decodePng(data &Array[u8]) Result[Raster, DecodeError] {
         info.trnsPalette.clear();
         var i = 0usize;
         while i < len { info.trnsPalette.push(data[body + i]); i += 1usize; }
-      } elif info.colorType == PngGray and len == 2usize {
+      } elif info.colorType == PngGray && len == 2usize {
         info.hasKey = true;
         info.keyR = u16.from(data[body]) * 256u16 + u16.from(data[body + 1usize]);
-      } elif info.colorType == PngRgb and len == 6usize {
+      } elif info.colorType == PngRgb && len == 6usize {
         info.hasKey = true;
         info.keyR = u16.from(data[body]) * 256u16 + u16.from(data[body + 1usize]);
         info.keyG = u16.from(data[body + 2usize]) * 256u16 + u16.from(data[body + 3usize]);
@@ -237,9 +237,9 @@ pub fn decodePng(data &Array[u8]) Result[Raster, DecodeError] {
     }
     pos = pos + 12usize + len;
   }
-  if not sawHeader { return pngFail("png: no IHDR"); }
+  if !sawHeader { return pngFail("png: no IHDR"); }
   if idat.len() == 0usize { return pngFail("png: no image data"); }
-  if info.colorType == PngPalette and not sawPlte { return pngFail("png: a palette picture with no palette"); }
+  if info.colorType == PngPalette && !sawPlte { return pngFail("png: a palette picture with no palette"); }
 
   let w = usize.from(info.width);
   let h = usize.from(info.height);
@@ -255,7 +255,7 @@ pub fn decodePng(data &Array[u8]) Result[Raster, DecodeError] {
     while p < 7usize {
       let pw = passSize(info.width, adamX0[p], adamDx[p]);
       let ph = passSize(info.height, adamY0[p], adamDy[p]);
-      if pw > 0usize and ph > 0usize { total = total + ph * (rowBytes(&info, pw) + 1usize); }
+      if pw > 0usize && ph > 0usize { total = total + ph * (rowBytes(&info, pw) + 1usize); }
       p += 1usize;
     }
   }
@@ -275,15 +275,15 @@ pub fn decodePng(data &Array[u8]) Result[Raster, DecodeError] {
   out.width = i32.from(w);
   out.height = i32.from(h);
   out.depth = if sixteen {16} else {8};
-  out.hasAlpha = info.colorType == PngGrayAlpha or info.colorType == PngRgba
-    or info.hasKey or info.trnsPalette.len() > 0usize;
+  out.hasAlpha = info.colorType == PngGrayAlpha || info.colorType == PngRgba
+    || info.hasKey || info.trnsPalette.len() > 0usize;
   out.gamma = info.gamma;
   out.colorSpace = if info.srgb {ColorSpace.Srgb} elif info.gamma == 1. {ColorSpace.Linear}
     elif info.gamma > 0. {ColorSpace.Gamma} else {ColorSpace.Unspecified};
   if sixteen { out.pixels16.resize(w * h * 4usize, 0u16); } else { out.pixels8.resize(w * h * 4usize, 0u8); }
 
   if info.interlace == 0u8 {
-    if not pngPass(raw.viewMut(), 0usize, &info, w, h, 0usize, 1usize, 0usize, 1usize, w, &mut out) {
+    if !pngPass(raw.viewMut(), 0usize, &info, w, h, 0usize, 1usize, 0usize, 1usize, w, &mut out) {
       return pngFail("png: bad scanline filter");
     }
   } else {
@@ -292,8 +292,8 @@ pub fn decodePng(data &Array[u8]) Result[Raster, DecodeError] {
     while p < 7usize {
       let pw = passSize(info.width, adamX0[p], adamDx[p]);
       let ph = passSize(info.height, adamY0[p], adamDy[p]);
-      if pw > 0usize and ph > 0usize {
-        if not pngPass(raw.viewMut(), off, &info, pw, ph, usize.from(adamX0[p]), usize.from(adamDx[p]),
+      if pw > 0usize && ph > 0usize {
+        if !pngPass(raw.viewMut(), off, &info, pw, ph, usize.from(adamX0[p]), usize.from(adamDx[p]),
           usize.from(adamY0[p]), usize.from(adamDy[p]), w, &mut out) {
           return pngFail("png: bad scanline filter");
         }
@@ -324,7 +324,7 @@ fn pngPass(buf &mut Array[u8], off usize, info &PngInfo, pw usize, ph usize, x0 
   var y = 0usize;
   while y < ph {
     let row = off + y * (rb + 1usize);
-    if not unfilterRow(buf, row, rb, prev, bpp) { return false; }
+    if !unfilterRow(buf, row, rb, prev, bpp) { return false; }
     let picY = y0 + y * dy;
     let dst = (picY * w + x0) * 4usize;
     if info.depth == 16u8 {
@@ -360,7 +360,7 @@ fn convertRow8(buf &Array[u8], src usize, info &PngInfo, n usize, at usize, step
     let kr = u8.from(info.keyR & 255u16);
     let kg = u8.from(info.keyG & 255u16);
     let kb = u8.from(info.keyB & 255u16);
-    let keyHigh = info.keyR > 255u16 or info.keyG > 255u16 or info.keyB > 255u16;
+    let keyHigh = info.keyR > 255u16 || info.keyG > 255u16 || info.keyB > 255u16;
     while x < n {
       let s = src + x * 3usize;
       let r = buf[s];
@@ -369,7 +369,7 @@ fn convertRow8(buf &Array[u8], src usize, info &PngInfo, n usize, at usize, step
       dst[o] = r;
       dst[o + 1usize] = g;
       dst[o + 2usize] = b;
-      dst[o + 3usize] = if key and not keyHigh and r == kr and g == kg and b == kb {0u8} else {255u8};
+      dst[o + 3usize] = if key && !keyHigh && r == kr && g == kg && b == kb {0u8} else {255u8};
       o += step;
       x += 1usize;
     }
@@ -419,7 +419,7 @@ fn convertRow8(buf &Array[u8], src usize, info &PngInfo, n usize, at usize, step
         dst[o + 1usize] = g;
         dst[o + 2usize] = g;
         // The key is compared at the file's depth
-        dst[o + 3usize] = if info.hasKey and u32.from(info.keyR) == v {0u8} else {255u8};
+        dst[o + 3usize] = if info.hasKey && u32.from(info.keyR) == v {0u8} else {255u8};
       }
       o += step;
       x += 1usize;
@@ -447,7 +447,7 @@ fn convertRow16(buf &Array[u8], src usize, info &PngInfo, n usize, at usize, ste
       dst[o] = r;
       dst[o + 1usize] = g;
       dst[o + 2usize] = b;
-      dst[o + 3usize] = if info.hasKey and r == info.keyR and g == info.keyG and b == info.keyB {0u16} else {65535u16};
+      dst[o + 3usize] = if info.hasKey && r == info.keyR && g == info.keyG && b == info.keyB {0u16} else {65535u16};
     } elif ct == PngGrayAlpha {
       let s = src + x * 4usize;
       let g = be16(buf, s);
@@ -460,7 +460,7 @@ fn convertRow16(buf &Array[u8], src usize, info &PngInfo, n usize, at usize, ste
       dst[o] = g;
       dst[o + 1usize] = g;
       dst[o + 2usize] = g;
-      dst[o + 3usize] = if info.hasKey and g == info.keyR {0u16} else {65535u16};
+      dst[o + 3usize] = if info.hasKey && g == info.keyR {0u16} else {65535u16};
     }
     o += step;
     x += 1usize;

@@ -58,7 +58,7 @@ typedef struct FlowState {
 } FlowState;
 
 // The walk's conditional depth: how many 'if' arms, later 'elif' conditions,
-// right operands of 'and' or 'or', and loop bodies enclose the node being
+// right operands of '&&' or '||', and loop bodies enclose the node being
 // walked. A variable records it as it is declared (VarDclNode.flowdepth); a
 // tracked variable changed deeper than that may differ by path (flowDropNote).
 extern uint16_t flowDepth;
@@ -269,7 +269,7 @@ INode *flowLockGive(VarDclNode *guard, INode *at);
 // read or thrown away (flowTempRead), or borrowed (flowTempBorrowed); generation
 // keeps the value in a slot of its own and finalizes it, newest first, at the
 // end of the statement that made it, or of the 'if' or 'while' condition, or
-// of the right operand of 'and' or 'or', that made it.
+// of the right operand of '&&' or '||', that made it.
 // A borrow of it may not be used once it is gone: the loan walk roots a borrow
 // of it in 'walkvar', a stand-in variable that ends where it dies
 // (flowpath.c), so a variable holding the borrow and used later is refused.

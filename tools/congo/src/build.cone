@@ -168,7 +168,7 @@ fn loneBuildRoot(file &Path) Path {
 fn lonePackage(given &Path) Result[Package, String] {
   let file = resolved(given);
   let place = native(&file);
-  if not fs.isFile(&file) { return Error[Package, String](cat("no file ", place.view())); }
+  if !fs.isFile(&file) { return Error[Package, String](cat("no file ", place.view())); }
   var header = noHeader();
   match scanHeader(&file) {
     case var ok Ok { header <=> ok; }
@@ -176,11 +176,11 @@ fn lonePackage(given &Path) Result[Package, String] {
   }
   let name = if header.hasMod {header.modName.copy()} else {String.from(file.stem())};
   let fault = nameFault(name.view());
-  if not header.hasMod and not fault.isEmpty() {
+  if !header.hasMod && !fault.isEmpty() {
     return Error[Package, String](cat(place.view(), ": with no 'mod' line it is named by its file: '", name.view(), "' ", fault.view(),
       "; give the file a 'mod' line"));
   }
-  if not fault.isEmpty() {
+  if !fault.isEmpty() {
     return Error[Package, String](cat(place.view(), ": 'mod ", name.view(), "': '", name.view(), "' ", fault.view(),
       "; rename the module, and the file where it is named for it"));
   }
@@ -218,7 +218,7 @@ fn compileUnit(conec &Path, reg &Registry, plan &Plan, u usize, out &Path, inclu
   match fs.removeFile(&incl) {
     case is Ok {}
     case let e Error {
-      if not e.notFound() {
+      if !e.notFound() {
         fail(fsMessage(&e));
       }
     }
@@ -231,16 +231,16 @@ fn compileUnit(conec &Path, reg &Registry, plan &Plan, u usize, out &Path, inclu
   }
   let outText = native(out);
   let descText = native(&desc);
-  if not runConec(conec, defines, argList("-o", outText.view(), descText.view())) {
+  if !runConec(conec, defines, argList("-o", outText.view(), descText.view())) {
     return Error[Path, String](cat("could not compile ", pkg.name.view(), " (build description: ", descText.view(), ")"));
   }
   let objName = cat(pkg.name.view(), ".obj");
   let obj = out.join(objName.view());
-  if not fs.isFile(&obj) {
+  if !fs.isFile(&obj) {
     let place = native(&obj);
     return Error[Path, String](cat("conec wrote no object at ", place.view()));
   }
-  if output.equals("library") and not fs.isFile(&incl) {
+  if output.equals("library") && !fs.isFile(&incl) {
     let place = native(&incl);
     return Error[Path, String](cat("conec wrote no include file for ", pkg.name.view(), " at ", place.view()));
   }
@@ -280,7 +280,7 @@ fn runConec(conec &Path, defines &List[String], rest List[String]) bool {
   var shownLines = List[String].empty();
   var i = 0usize;
   while i < lines.len() {
-    if not isBlank(lines[i].view()) and not lines[i].startsWith("Compile finished") {
+    if !isBlank(lines[i].view()) && !lines[i].startsWith("Compile finished") {
       shownLines.push(lines[i].copy());
     }
     i = i + 1usize;
@@ -339,7 +339,7 @@ fn compile(s &mut Session, plan &Plan, top usize, topOut &Path, announce bool) R
   while i < plan.order.len() {
     let pkg = s.reg.packages[plan.units[*plan.order[i]].pkg];
     let hand = pkg.handInclude();
-    if not pkg.lone and fs.isFile(&hand) and not holdsName(&s.warned, pkg.name.view()) {
+    if !pkg.lone && fs.isFile(&hand) && !holdsName(&s.warned, pkg.name.view()) {
       s.warned.push(pkg.name.copy());
       let place = native(&hand);
       warn(cat("warning: ", place.view(), " is not used: a package's importers compile against the include file its own compile generates, build/<mode>/",
@@ -353,8 +353,8 @@ fn compile(s &mut Session, plan &Plan, top usize, topOut &Path, announce bool) R
   while i < plan.order.len() {
     let u = *plan.order[i];
     let pkg = s.reg.packages[plan.units[u].pkg];
-    let compiledForGpu = plan.units[u].kernels or (plan.units[u].pkg == top and (pkg.gpu or plan.units[u].hasGpu));
-    if compiledForGpu and not holdsName(&s.gpuChecked, pkg.name.view()) {
+    let compiledForGpu = plan.units[u].kernels || (plan.units[u].pkg == top && (pkg.gpu || plan.units[u].hasGpu));
+    if compiledForGpu && !holdsName(&s.gpuChecked, pkg.name.view()) {
       match checkGpuMarks(plan, &s.reg, u) {
         case is Ok {}
         case let e Error {
@@ -372,23 +372,23 @@ fn compile(s &mut Session, plan &Plan, top usize, topOut &Path, announce bool) R
     let u = *plan.order[i];
     let isTop = plan.units[u].pkg == top;
     let name = s.reg.packages[plan.units[u].pkg].name.copy();
-    if not isTop and s.objs.contains(name.view()) {
+    if !isTop && s.objs.contains(name.view()) {
       objs.push(s.objs[name.view()].copy());
     }
     else {
-      let own = isTop and not topOut.isEmpty();
+      let own = isTop && !topOut.isEmpty();
       let dest = if own {topOut.copy()} else {out.copy()};
       makeFolder(&dest);
       var obj Path = "";
       match compileUnit(&s.conec, &s.reg, plan, u, &dest, &out, s.mode.view(), &s.defines, isTop,
-        announce or not isTop) {
+        announce || !isTop) {
         case var ok Ok { obj <=> ok; }
         case let e Error {
           changes.restore();
           return Error[List[Path], String](e.copy());
         }
       }
-      if not own and (not isTop or s.reg.packages[top].output.equals("library")) {
+      if !own && (!isTop || s.reg.packages[top].output.equals("library")) {
         s.objs.insert(name, obj.copy());
       }
       objs.push(obj);
@@ -403,7 +403,7 @@ fn compile(s &mut Session, plan &Plan, top usize, topOut &Path, announce bool) R
   while i < plan.order.len() {
     let u = *plan.order[i];
     let name = s.reg.packages[plan.units[u].pkg].name.copy();
-    if plan.units[u].kernels and hasCore and not s.spvs.contains(name.view()) {
+    if plan.units[u].kernels && hasCore && !s.spvs.contains(name.view()) {
       match compileGpu(s, plan, u, coreUnit) {
         case let ok Ok { s.spvs.insert(name, ok.copy()); }
         case let e Error {
@@ -448,12 +448,12 @@ fn moveAsideIfRunning(exe &Path) {
     case var ok Ok { running <=> ok; }
     case is Error { return; }
   }
-  if not samePath(&running, exe) { return; }
+  if !samePath(&running, exe) { return; }
   let old = Path.fromString(cat(exe.view(), ".old"));
   match fs.removeFile(&old) {
     case is Ok {}
     case let e Error {
-      if not e.notFound() {
+      if !e.notFound() {
         fail(fsMessage(&e));
       }
     }
@@ -478,7 +478,7 @@ fn moveAsideIfRunning(exe &Path) {
 // which tools/deps/fetch.py fills
 fn depsFolder(repo &Path) Path {
   let named = envOr("CONE_DEPS", "");
-  if not named.isEmpty() {
+  if !named.isEmpty() {
     let given = Path.from(named.view());
     return resolved(&given);
   }
@@ -491,7 +491,7 @@ fn envFolders(name &str, out &mut List[Path]) {
   let entries = splitText(listed.view(), ';');
   var i = 0usize;
   while i < entries.len() {
-    if not entries[i].isEmpty() {
+    if !entries[i].isEmpty() {
       let given = Path.from(entries[i].view());
       out.push(given.normalize());
     }
@@ -570,7 +570,7 @@ fn copyIfChanged(source &Path, target &Path) Result[bool, String] {
       case var ok Ok { there <=> ok; }
       case is Error {}
     }
-    if there.len() == data.len() and there.equals(data.view()) { return Ok[bool, String](false); }
+    if there.len() == data.len() && there.equals(data.view()) { return Ok[bool, String](false); }
   }
   match fs.writeFile(target, data.view()) {
     case is Ok {}
@@ -590,7 +590,7 @@ fn copyIfChanged(source &Path, target &Path) Result[bool, String] {
 // other: it defines nothing (as core's does not), and so needs no case of
 // its own. The linker is found at the session's first link.
 fn link(s &mut Session, plan &Plan, objs &List[Path], exe &Path, announce bool) Result[void, String] {
-  if not s.hasLinker {
+  if !s.hasLinker {
     var conestd Path = "";
     match findConestd(&s.conec) {
       case var ok Ok { conestd <=> ok; }
@@ -628,12 +628,12 @@ fn link(s &mut Session, plan &Plan, objs &List[Path], exe &Path, announce bool) 
         if libraries[k].equals(pkg.libraries[j].view()) { seen = true; }
         k = k + 1usize;
       }
-      if not seen { libraries.push(pkg.libraries[j].copy()); }
+      if !seen { libraries.push(pkg.libraries[j].copy()); }
       j = j + 1usize;
     }
     j = 0usize;
     while j < pkg.linkPaths.len() {
-      if not holdsPath(&paths, pkg.linkPaths[j]) { paths.push(pkg.linkPaths[j].copy()); }
+      if !holdsPath(&paths, pkg.linkPaths[j]) { paths.push(pkg.linkPaths[j].copy()); }
       j = j + 1usize;
     }
     i = i + 1usize;
@@ -650,7 +650,7 @@ fn link(s &mut Session, plan &Plan, objs &List[Path], exe &Path, announce bool) 
     var j = 0usize;
     while j < pkg.runtime.len() {
       let name = pkg.runtime[j].view();
-      if not holdsName(&runtimeNames, name) {
+      if !holdsName(&runtimeNames, name) {
         match findRuntime(&s.repo, name, pkg.name.view(), &folders, &paths) {
           case let ok Ok { runtimeFiles.push(ok.copy()); }
           case let e Error {
@@ -703,7 +703,7 @@ fn link(s &mut Session, plan &Plan, objs &List[Path], exe &Path, announce bool) 
   match fs.removeFile(exe) {
     case is Ok {}
     case let e Error {
-      if not e.notFound() {
+      if !e.notFound() {
         fail(fsMessage(&e));
       }
     }
@@ -730,7 +730,7 @@ fn link(s &mut Session, plan &Plan, objs &List[Path], exe &Path, announce bool) 
     while i < units.len() {
       let pkg = reg.packages[plan.units[*units[i]].pkg];
       if pkg.libraries.len() > 0usize {
-        if not named.isEmpty() { named <- "; "; }
+        if !named.isEmpty() { named <- "; "; }
         let libs = String.join(pkg.libraries.view(), ", ");
         named <- pkg.name.view(), " names ", libs.view();
       }
@@ -738,7 +738,7 @@ fn link(s &mut Session, plan &Plan, objs &List[Path], exe &Path, announce bool) 
     }
     let line = String.join(command.view(), " ");
     var m = cat("link failed:\n", line.view(), "\n", said.view());
-    if not named.isEmpty() {
+    if !named.isEmpty() {
       m <- "\nC libraries linked (", named.view(),
         "): the linker looks for each in the folders [link] paths names, then in the folders the LIB environment variable lists";
     }
@@ -749,7 +749,7 @@ fn link(s &mut Session, plan &Plan, objs &List[Path], exe &Path, announce bool) 
   while i < runtimeNames.len() {
     match copyRuntime(runtimeFiles[i], &exeFolder, runtimeNames[i].view()) {
       case let ok Ok {
-        if ok and announce {
+        if ok && announce {
           let place = shown(runtimeFiles[i]);
           say("Copying", place.view());
         }
@@ -766,11 +766,11 @@ fn link(s &mut Session, plan &Plan, objs &List[Path], exe &Path, announce bool) 
     if s.spvs.contains(name) {
       let spv = s.spvs[name].copy();
       let spvFolder = spv.parent();
-      if not samePath(&spvFolder, &exeFolder) {
+      if !samePath(&spvFolder, &exeFolder) {
         let target = exeFolder.join(spv.name());
         match copyIfChanged(&spv, &target) {
           case let ok Ok {
-            if ok and announce {
+            if ok && announce {
               let place = shown(&spv);
               say("Copying", place.view());
             }

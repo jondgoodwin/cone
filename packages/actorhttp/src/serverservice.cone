@@ -99,7 +99,7 @@ fn exOf(srv &SrvRec, slot u32, id u64) *ExRec {
   let s = usize.from(slot);
   if s >= srv.exs.len() {return null;}
   let x = srv.exs.at(s);
-  if (*x).used and (*x).id == id and (*x).stage != exDead {return x;}
+  if (*x).used && (*x).id == id && (*x).stage != exDead {return x;}
   null
 }
 
@@ -152,7 +152,7 @@ fn onServerEvent(srv &mut SrvRec, lp &mut Loop, pool Pool, e &mut httpconn.Event
       x.rejected = true;
       x.stage = exOut;
       answerText(srv, pool, x, 503u16, "the server is closing", true);
-    } elif e.body.isSized() and e.body.length > u64.from(srv.maxBody) {
+    } elif e.body.isSized() && e.body.length > u64.from(srv.maxBody) {
       x.rejected = true;
       x.stage = exOut;
       answerText(srv, pool, x, 413u16, "the request body is too large", true);
@@ -164,7 +164,7 @@ fn onServerEvent(srv &mut SrvRec, lp &mut Loop, pool Pool, e &mut httpconn.Event
     let slot = slotOfReq(srv, e.req);
     if slot < srv.exs.len() {
       let x = srv.exs.at(slot) as &mut ExRec;
-      if x.stage == exReading and not x.rejected {
+      if x.stage == exReading && !x.rejected {
         if x.body.len() + n > srv.maxBody {
           x.rejected = true;
           x.stage = exOut;
@@ -179,7 +179,7 @@ fn onServerEvent(srv &mut SrvRec, lp &mut Loop, pool Pool, e &mut httpconn.Event
     let slot = slotOfReq(srv, e.req);
     if slot < srv.exs.len() {
       let x = srv.exs.at(slot) as &ExRec;
-      if x.stage == exReading and not x.rejected {readyEx(srv, pool, slot);}
+      if x.stage == exReading && !x.rejected {readyEx(srv, pool, slot);}
     }
   } elif k == httpconn.EventKind.Writable {
     let slot = slotOfReq(srv, e.req);
@@ -238,7 +238,7 @@ fn answerText(srv &mut SrvRec, pool Pool, x &mut ExRec, status u16, text &str, c
   if closeAfter {h.headers.add("Connection", "close");}
   let n = text.len;
   var b = IoBuf.empty();
-  if not x.isHead and n > 0usize {
+  if !x.isHead && n > 0usize {
     match pool.take(n) {
       case var s Some {b <=> s;}
       case is None[IoBuf] {}
@@ -283,7 +283,7 @@ fn endEx(srv &mut SrvRec, slot usize, done bool) {
   }
   if x.stage == exReady {
     x.stage = exDead;
-  } elif not x.handle {
+  } elif !x.handle {
     freeEx(srv, slot);
   }
 }
@@ -321,7 +321,7 @@ fn pumpWrites(srv &mut SrvRec, lp &mut Loop, pool Pool, x &mut ExRec) {
         case is None[IoBuf] {taken = true;}
         else {}      // refused: Writable comes when there is room
       }
-      if not taken {return;}
+      if !taken {return;}
       x.writes[x.wi].sent = sent + n;
       x.written = x.written + u64.from(n);
     }
@@ -335,9 +335,9 @@ fn pumpWrites(srv &mut SrvRec, lp &mut Loop, pool Pool, x &mut ExRec) {
   }
   x.writes.clear();
   x.wi = 0usize;
-  if x.finishing and not x.finished {
+  if x.finishing && !x.finished {
     x.finished = true;
-    if x.sized and x.written != x.length {
+    if x.sized && x.written != x.length {
       // A write was made and never awaited, so never sent: the body is short
       // of its length, which only the connection's end can say
       srv.drv.cancel(lp, x.req);
@@ -484,7 +484,7 @@ struct NextJob {
     }
     // The first request waiting that is still alive
     var slot = srv.exs.len();
-    while srv.rhead < srv.ready.len() and slot == srv.exs.len() {
+    while srv.rhead < srv.ready.len() && slot == srv.exs.len() {
       let s = *srv.ready[srv.rhead];
       srv.rhead = srv.rhead + 1usize;
       let x = srv.exs.at(s) as &ExRec;
@@ -526,8 +526,8 @@ fn beginResponse(srv &mut SrvRec, x &mut ExRec, head ResponseHead, framing BodyL
   x.sized = framing.isSized();
   x.length = framing.length;
   x.chunked = framing.isUnsized();
-  x.bodyless = x.isHead or st == 204u16 or st == 304u16 or framing.isEmpty() or
-    (framing.isSized() and framing.length == 0u64);
+  x.bodyless = x.isHead || st == 204u16 || st == 304u16 || framing.isEmpty() ||
+    (framing.isSized() && framing.length == 0u64);
   srv.drv.respond(x.req, head, framing);
   if x.bodyless {x.finished = true;}
 }
@@ -545,14 +545,14 @@ struct RespondJob {
     if loc.ex as usize == 0usize {return;}
     let s = loc.srv as &mut SrvRec;
     let x = loc.ex as &mut ExRec;
-    if x.over or x.responded {return;}
+    if x.over || x.responded {return;}
     var h = ResponseHead.empty();
     h <=> head;
     let st = h.status;
     let n = body.len();
-    let framing = if st == 204u16 or st == 304u16 {BodyLength.empty()} else {BodyLength.sized(u64.from(n))};
+    let framing = if st == 204u16 || st == 304u16 {BodyLength.empty()} else {BodyLength.sized(u64.from(n))};
     beginResponse(s, x, h, framing);
-    if not x.bodyless {
+    if !x.bodyless {
       var w = new PendingWrite(String.empty(), 0usize, new actors.Reply(), false);
       w.data <=> body;
       x.writes.push(w);
@@ -575,7 +575,7 @@ struct StartJob {
     if loc.ex as usize == 0usize {return;}
     let s = loc.srv as &mut SrvRec;
     let x = loc.ex as &mut ExRec;
-    if x.over or x.responded {return;}
+    if x.over || x.responded {return;}
     var h = ResponseHead.empty();
     h <=> head;
     beginResponse(s, x, h, framing);
@@ -600,11 +600,11 @@ struct WriteJob {
     }
     let s = loc.srv as &mut SrvRec;
     let x = loc.ex as &mut ExRec;
-    if x.bodyless and not x.over {
+    if x.bodyless && !x.over {
       answerTo[Result[usize, ServerError]](&mut rp, Ok[usize, ServerError](0usize));
       return;
     }
-    if x.over or not x.responded or x.finishing {
+    if x.over || !x.responded || x.finishing {
       answerTo[Result[usize, ServerError]](&mut rp, Error[usize, ServerError](ServerError.closed()));
       return;
     }
@@ -665,9 +665,9 @@ struct DropExJob {
       freeEx(s, usize.from(slot));
       return;
     }
-    if not x.responded {
+    if !x.responded {
       answerText(s, sv.pool, x, 500u16, "no response was made", false);
-    } elif not x.finished and not x.finishing {
+    } elif !x.finished && !x.finishing {
       if x.chunked {
         x.finishing = true;
         pumpWrites(s, lp, sv.pool, x);

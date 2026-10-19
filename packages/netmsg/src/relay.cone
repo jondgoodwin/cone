@@ -83,7 +83,7 @@ actor Relay {
   // Datagrams from clients: each goes through its leg's link to the server
   async do receiveFront(self) {
     var failures = 0u32;
-    while not stopped and failures <= relayMaxFailures {
+    while !stopped && failures <= relayMaxFailures {
       let r = await front.recvFromIn(pool.mustTake(recvRoom), IoLimits.within(group));
       var client = SocketAddr.localhost(0u16);
       var data = List[u8].empty();
@@ -97,10 +97,10 @@ actor Relay {
         }
         case let e &Error {
           if aio.isCancelled(*e) {return;}
-          if not aio.isTruncated(*e) {failures = failures + 1u32;}
+          if !aio.isTruncated(*e) {failures = failures + 1u32;}
         }
       }
-      if got and not stopped {
+      if got && !stopped {
         let key = client.text();
         var found = self.leg(key.view());
         if found == legs.len() {
@@ -128,19 +128,19 @@ actor Relay {
   // Datagrams from the server to leg n's client
   async do receiveLeg(self, n usize) {
     var failures = 0u32;
-    while not stopped and n < legs.len() and failures <= relayMaxFailures {
+    while !stopped && n < legs.len() && failures <= relayMaxFailures {
       let r = await legs[n].up.recvFromIn(pool.mustTake(recvRoom), IoLimits.within(group));
       match &r {
         case let ok &Ok {
           failures = 0u32;
-          if not stopped and n < legs.len() {
+          if !stopped && n < legs.len() {
             legs[n].toClient.send(Instant.now(), copyBytes(ok.buf.view()));
             self.deliver();
           }
         }
         case let e &Error {
           if aio.isCancelled(*e) {return;}
-          if not aio.isTruncated(*e) {failures = failures + 1u32;}
+          if !aio.isTruncated(*e) {failures = failures + 1u32;}
         }
       }
     }
@@ -148,7 +148,7 @@ actor Relay {
 
   // Every millisecond: what the links hold back that is due goes out
   async do tick(self) {
-    while not stopped {
+    while !stopped {
       let r = await aio.sleepIn(Duration.fromMillis(1i64), IoLimits.within(group));
       self.deliver();
     }
@@ -156,7 +156,7 @@ actor Relay {
 
   // One datagram out of leg n: to the server (upstream) or to the client
   async do out(self, n usize, upstream bool, data List[u8]) {
-    if stopped or n >= legs.len() {return;}
+    if stopped || n >= legs.len() {return;}
     var b = pool.mustTake(max(data.len(), 1usize));
     b.append(data.view());
     if upstream {

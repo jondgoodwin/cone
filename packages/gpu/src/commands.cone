@@ -30,7 +30,7 @@ fn viewRange(backend &TextureBackend) vulkan.ImageSubresourceRange {
 fn restLayout(kind u32) u32 {
   if kind == KIND_SURFACE { return vulkan.IMAGE_LAYOUT_PRESENT_SRC_KHR; }
   if kind == KIND_DEPTH { return vulkan.IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL; }
-  if kind == KIND_SAMPLED or kind == KIND_RENDER_SAMPLED { return vulkan.IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; }
+  if kind == KIND_SAMPLED || kind == KIND_RENDER_SAMPLED { return vulkan.IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; }
   if kind == KIND_STORAGE { return vulkan.IMAGE_LAYOUT_GENERAL; }
   if kind == KIND_DEPTH_SAMPLED { return vulkan.IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL; }
   vulkan.IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
@@ -49,7 +49,7 @@ fn firstLayout(fns &DevFns, cmd vulkan.CommandBuffer, image vulkan.Image, kind u
     aspect = vulkan.IMAGE_ASPECT_DEPTH_BIT;
     stages = vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
   }
-  if kind == KIND_SAMPLED or kind == KIND_RENDER_SAMPLED or kind == KIND_STORAGE {
+  if kind == KIND_SAMPLED || kind == KIND_RENDER_SAMPLED || kind == KIND_STORAGE {
     stages = vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
   }
   let all = new vulkan.ImageSubresourceRange(aspectMask: aspect, levelCount: vulkan.REMAINING_MIP_LEVELS,
@@ -126,7 +126,7 @@ pub struct CommandEncoder {
   // time between two is the time the commands between them took.
   pub fn writeTimestamp(self &mut, querySet &QuerySet, queryIndex u32) {
     if isNull(backend.cmd) { return; }
-    if !querySet.isValid() or queryIndex >= querySet.count {
+    if !querySet.isValid() || queryIndex >= querySet.count {
       fail("writeTimestamp: no such query");
       return;
     }
@@ -143,9 +143,9 @@ pub struct CommandEncoder {
   pub fn resolveQuerySet(self &mut, querySet &QuerySet, firstQuery u32, queryCount u32, destination &Buffer,
       destinationOffset u64) {
     if isNull(backend.cmd) { return; }
-    if !querySet.isValid() or firstQuery + queryCount > querySet.count
-        or (destination.usage & BUFFER_USAGE_QUERY_RESOLVE) == 0u32 or (destinationOffset & 255u64) != 0u64
-        or destinationOffset + u64.from(queryCount) * 8u64 > destination.size {
+    if !querySet.isValid() || firstQuery + queryCount > querySet.count
+        || (destination.usage & BUFFER_USAGE_QUERY_RESOLVE) == 0u32 || (destinationOffset & 255u64) != 0u64
+        || destinationOffset + u64.from(queryCount) * 8u64 > destination.size {
       fail("resolveQuerySet: no such queries, or the buffer has no BUFFER_USAGE_QUERY_RESOLVE, or no room at an offset a multiple of 256");
       return;
     }
@@ -183,7 +183,7 @@ pub struct CommandEncoder {
     // One drawn into and sampled: after the shaders that sampled it too
     if texture.backend.kind == KIND_RENDER_SAMPLED { srcStage = vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT; }
     // A storage texture, or one filled by 'writeTexture': after whatever wrote it
-    if texture.backend.kind == KIND_STORAGE or texture.backend.kind == KIND_SAMPLED {
+    if texture.backend.kind == KIND_STORAGE || texture.backend.kind == KIND_SAMPLED {
       srcStage = vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
       srcAccess = vulkan.ACCESS_2_MEMORY_WRITE_BIT;
     }
@@ -249,7 +249,7 @@ fn beginPass(fns &DevFns, cmd vulkan.CommandBuffer, color &RenderPassColorAttach
   let view = color.view;
   let kind = view.backend.kind;
   let clear = color.loadOp == LOAD_OP_CLEAR;
-  if view.backend.mipCount != 1u32 or view.backend.layerCount != 1u32 {
+  if view.backend.mipCount != 1u32 || view.backend.layerCount != 1u32 {
     fail("beginRenderPass: a pass draws into a view of one level and one layer");
   }
   // What was there is not needed if it is cleared; what wrote it last (an
@@ -262,7 +262,7 @@ fn beginPass(fns &DevFns, cmd vulkan.CommandBuffer, color &RenderPassColorAttach
   var oldLayout = restLayout(kind);
   if clear { oldLayout = vulkan.IMAGE_LAYOUT_UNDEFINED; }
   var srcAccess = vulkan.ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
-  if kind == KIND_SURFACE or kind == KIND_RENDER_SAMPLED { srcAccess = vulkan.ACCESS_2_NONE; }
+  if kind == KIND_SURFACE || kind == KIND_RENDER_SAMPLED { srcAccess = vulkan.ACCESS_2_NONE; }
   var dstAccess = vulkan.ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
   if !clear { dstAccess = dstAccess | vulkan.ACCESS_2_COLOR_ATTACHMENT_READ_BIT; }
   transitionRange(fns, cmd, view.backend.image, viewRange(&view.backend), oldLayout,
@@ -322,7 +322,7 @@ fn beginPass(fns &DevFns, cmd vulkan.CommandBuffer, color &RenderPassColorAttach
   let scissor = new vulkan.Rect2D(new vulkan.Offset2D(0i32, 0i32), new vulkan.Extent2D(view.width, view.height));
   fns.cmdSetScissor(cmd, 0u32, 1u32, &scissor as *vulkan.Rect2D);
   var backend = new PassBackend(cmd, *fns, view.backend.image, kind, true, new vulkan.PipelineLayout(0u64), viewRange(&view.backend));
-  if hasDepth and depthSampled {
+  if hasDepth && depthSampled {
     backend.depthImage = depth.view.backend.image;
     backend.depthSampled = true;
     backend.depthRange = new vulkan.ImageSubresourceRange(aspectMask: vulkan.IMAGE_ASPECT_DEPTH_BIT,
@@ -343,7 +343,7 @@ fn beginDepthOnly(fns &DevFns, cmd vulkan.CommandBuffer, depth &RenderPassDepthS
   }
   let view = depth.view;
   let kind = view.backend.kind;
-  if view.backend.mipCount != 1u32 or view.backend.layerCount != 1u32 {
+  if view.backend.mipCount != 1u32 || view.backend.layerCount != 1u32 {
     fail("beginDepthPass: a pass draws into a view of one level and one layer");
   }
   let range = new vulkan.ImageSubresourceRange(aspectMask: vulkan.IMAGE_ASPECT_DEPTH_BIT, baseMipLevel: view.backend.baseMip,
@@ -511,7 +511,7 @@ pub struct RenderPass {
   // written by a compute pass before this pass, say
   pub fn drawIndirect(self &mut, buffer &Buffer, offset u64) {
     if isNull(backend.cmd) { return; }
-    if (buffer.usage & BUFFER_USAGE_INDIRECT) == 0u32 or (offset & 3u64) != 0u64 or offset + 16u64 > buffer.size {
+    if (buffer.usage & BUFFER_USAGE_INDIRECT) == 0u32 || (offset & 3u64) != 0u64 || offset + 16u64 > buffer.size {
       fail("drawIndirect: the buffer has no BUFFER_USAGE_INDIRECT, or the offset is not a multiple of 4 or leaves no room");
       return;
     }
@@ -523,7 +523,7 @@ pub struct RenderPass {
   // GPU from 'buffer' at 'offset', as 'drawIndirect' reads its four
   pub fn drawIndexedIndirect(self &mut, buffer &Buffer, offset u64) {
     if isNull(backend.cmd) { return; }
-    if (buffer.usage & BUFFER_USAGE_INDIRECT) == 0u32 or (offset & 3u64) != 0u64 or offset + 20u64 > buffer.size {
+    if (buffer.usage & BUFFER_USAGE_INDIRECT) == 0u32 || (offset & 3u64) != 0u64 || offset + 20u64 > buffer.size {
       fail("drawIndexedIndirect: the buffer has no BUFFER_USAGE_INDIRECT, or the offset is not a multiple of 4 or leaves no room");
       return;
     }

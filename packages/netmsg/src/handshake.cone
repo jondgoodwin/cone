@@ -73,7 +73,7 @@ pub struct ChallengeGate {
     let magic = c.rdU32(data);
     let kind = c.rdU8(data);
     let salt = c.rdU64(data);
-    if not c.ok or magic != protocolId {return GateVerdict.Ignore;}
+    if !c.ok || magic != protocolId {return GateVerdict.Ignore;}
     let epoch = now.nanos() / epochNs;
     if kind == kindRequest {
       if data.len < handshakeSize {return GateVerdict.Ignore;}
@@ -86,8 +86,8 @@ pub struct ChallengeGate {
     if kind == kindResponse {
       if data.len < handshakeSize {return GateVerdict.Ignore;}
       let got = c.rdU64(data);
-      if not c.ok {return GateVerdict.Ignore;}
-      if got != self.cookie(addr, salt, epoch) and got != self.cookie(addr, salt, epoch - 1i64) {return GateVerdict.Ignore;}
+      if !c.ok {return GateVerdict.Ignore;}
+      if got != self.cookie(addr, salt, epoch) && got != self.cookie(addr, salt, epoch - 1i64) {return GateVerdict.Ignore;}
       let session = salt ^ got;
       putU32(reply, protocolId);
       putU8(reply, kindAccept);
@@ -113,7 +113,7 @@ pub struct ChallengeGate {
     let magic = c.rdU32(data);
     let kind = c.rdU8(data);
     let salt = c.rdU64(data);
-    if not c.ok or magic != protocolId or kind != kindResponse {return 0u64;}
+    if !c.ok || magic != protocolId || kind != kindResponse {return 0u64;}
     salt
   }
 }
@@ -159,7 +159,7 @@ pub struct ClientHandshake {
   // attempt times out
   pub fn nextDeadline(self &) Instant {
     var at = startedAt + cfg.connectTimeoutMs * msNs2;
-    if state == HandshakeState.Requesting or state == HandshakeState.Responding {
+    if state == HandshakeState.Requesting || state == HandshakeState.Responding {
       let retry = lastSent + cfg.connectRetryMs * msNs2;
       if retry < at {at = retry;}
     }
@@ -171,7 +171,7 @@ pub struct ClientHandshake {
   // connectTimeoutMs pass with no Accept.
   pub fn poll(self &mut, now Instant, out &mut List[List[u8]]) {
     let t = now.nanos();
-    if state != HandshakeState.Requesting and state != HandshakeState.Responding {return;}
+    if state != HandshakeState.Requesting && state != HandshakeState.Responding {return;}
     if t - startedAt >= cfg.connectTimeoutMs * msNs2 {
       state = HandshakeState.Failed;
       return;
@@ -197,15 +197,15 @@ pub struct ClientHandshake {
   // session also connects (the Accept may have been lost): the caller gives
   // that packet to the connection, too.
   pub fn receive(self &mut, data &Array[u8]) HandshakeEvent {
-    if state != HandshakeState.Requesting and state != HandshakeState.Responding {return HandshakeEvent.Nothing;}
+    if state != HandshakeState.Requesting && state != HandshakeState.Responding {return HandshakeEvent.Nothing;}
     var c = PacketReader.start();
     let magic = c.rdU32(data);
     let kind = c.rdU8(data);
-    if not c.ok or magic != protocolId {return HandshakeEvent.Nothing;}
+    if !c.ok || magic != protocolId {return HandshakeEvent.Nothing;}
     if kind == kindChallenge {
       let s = c.rdU64(data);
       let ck = c.rdU64(data);
-      if c.ok and s == salt and state == HandshakeState.Requesting {
+      if c.ok && s == salt && state == HandshakeState.Requesting {
         cookie = ck;
         session = salt ^ ck;
         state = HandshakeState.Responding;
@@ -214,9 +214,9 @@ pub struct ClientHandshake {
       return HandshakeEvent.Nothing;
     }
     if state != HandshakeState.Responding {return HandshakeEvent.Nothing;}
-    if kind == kindAccept or kind == kindPayload {
+    if kind == kindAccept || kind == kindPayload {
       let s = c.rdU64(data);
-      if c.ok and s == session {
+      if c.ok && s == session {
         state = HandshakeState.Connected;
         return HandshakeEvent.Connected;
       }
@@ -224,7 +224,7 @@ pub struct ClientHandshake {
     }
     if kind == kindDenied {
       let s = c.rdU64(data);
-      if c.ok and s == salt {
+      if c.ok && s == salt {
         state = HandshakeState.Failed;
         refused = true;
         return HandshakeEvent.Refused;

@@ -275,7 +275,7 @@ pub struct ConnectionCore {
   // what to do about a peer that is not keeping up. A message of no bytes is
   // a message.
   pub fn sendReliable(self &mut, data &Array[u8]) bool {
-    if state != CoreState.Active or data.len > self.maxReliable() {return false;}
+    if state != CoreState.Active || data.len > self.maxReliable() {return false;}
     let waiting = usize.from(relNext - relOldest);
     if waiting >= reliableWindow {return false;}
     let s = &mut rel[usize.from(relNext) % ringSize];
@@ -297,7 +297,7 @@ pub struct ConnectionCore {
   // when the value is bigger than maxLatest() or the connection already has
   // maxStreams() streams.
   pub fn sendLatest(self &mut, stream u16, data &Array[u8]) bool {
-    if state != CoreState.Active or data.len > self.maxLatest() {return false;}
+    if state != CoreState.Active || data.len > self.maxLatest() {return false;}
     var k = self.findOut(stream);
     if k == notFound {
       if outs.len() >= maxStreams {return false;}
@@ -408,7 +408,7 @@ pub struct ConnectionCore {
     var id = relOldest;
     while id != relNext {
       let s = rel[usize.from(id) % ringSize];
-      if s.used and not s.acked and (s.lastSent < 0i64 or t - s.lastSent >= delay) {return true;}
+      if s.used && !s.acked && (s.lastSent < 0i64 || t - s.lastSent >= delay) {return true;}
       id = id + 1u16;
     }
     false
@@ -435,7 +435,7 @@ pub struct ConnectionCore {
       var id = relOldest;
       while id != relNext {
         let s = rel[usize.from(id) % ringSize];
-        if s.used and not s.acked {
+        if s.used && !s.acked {
           var due = lastSend;
           if s.lastSent >= 0i64 {due = s.lastSent + delay;}
           if due < want {want = due;}
@@ -455,7 +455,7 @@ pub struct ConnectionCore {
     let t = now.nanos();
     if state == CoreState.Closed {return;}
     if state == CoreState.Closing {
-      if not closeSent {
+      if !closeSent {
         var c = 0usize;
         while c < disconnectCopies {
           out.push(self.disconnectPacket());
@@ -476,7 +476,7 @@ pub struct ConnectionCore {
     }
     self.updateMode(t);
     if t < nextSendAt {return;}
-    if self.hasWork(t) or t - lastSend >= cfg.keepAliveMs * msNs {
+    if self.hasWork(t) || t - lastSend >= cfg.keepAliveMs * msNs {
       out.push(self.buildPacket(t));
       nextSendAt = t + self.interval();
       lastSend = t;
@@ -490,7 +490,7 @@ pub struct ConnectionCore {
   // when conditions turn bad again soon after being good, and halves (down to
   // a second) for every ten seconds spent good
   fn updateMode(self &mut, t i64) {
-    if not hasRtt {return;}
+    if !hasRtt {return;}
     let over = srtt > cfg.badRttMs * msNs;
     if good {
       if over {
@@ -566,7 +566,7 @@ pub struct ConnectionCore {
     putU8(&mut p, 0u8);
 
     // The slot this packet is remembered in
-    if sent[usize.from(seq) % ringSize].used and not sent[usize.from(seq) % ringSize].acked {
+    if sent[usize.from(seq) % ringSize].used && !sent[usize.from(seq) % ringSize].acked {
       // Nothing came back for a packet a whole ring ago: count it lost
       self.noteFate(true);
     }
@@ -582,9 +582,9 @@ pub struct ConnectionCore {
     var nRel = 0u8;
     let delay = self.resendDelay();
     var id = relOldest;
-    while id != relNext and nRel < 255u8 {
+    while id != relNext && nRel < 255u8 {
       let s = &mut rel[usize.from(id) % ringSize];
-      if s.used and not s.acked and (s.lastSent < 0i64 or t - s.lastSent >= delay) {
+      if s.used && !s.acked && (s.lastSent < 0i64 || t - s.lastSent >= delay) {
         let need = reliableOverhead + s.data.len();
         if need > budget {break;}
         putU16(&mut p, id);
@@ -615,8 +615,8 @@ pub struct ConnectionCore {
       i = 0usize;
       while i < outs.len() {
         let s = outs[i];
-        if s.pending and latestOverhead + s.data.len() <= budget {
-          if best == notFound or s.acc > outs[best].acc {best = i;}
+        if s.pending && latestOverhead + s.data.len() <= budget {
+          if best == notFound || s.acc > outs[best].acc {best = i;}
         }
         i = i + 1usize;
       }
@@ -654,7 +654,7 @@ pub struct ConnectionCore {
     let magic = c.rdU32(data);
     let kind = c.rdU8(data);
     let sess = c.rdU64(data);
-    if not c.ok or magic != protocolId or sess != session or (kind != kindPayload and kind != kindDisconnect) {
+    if !c.ok || magic != protocolId || sess != session || (kind != kindPayload && kind != kindDisconnect) {
       st.packetsInvalid = st.packetsInvalid + 1u64;
       return false;
     }
@@ -673,7 +673,7 @@ pub struct ConnectionCore {
     let nRel = c.rdU8(data);
     let nLat = c.rdU8(data);
     var i = 0u8;
-    while i < nRel and c.ok {
+    while i < nRel && c.ok {
       let id = c.rdU16(data);
       let lf = c.rdU16(data);
       // The top two bits are reserved for fragmentation (not built): a
@@ -684,7 +684,7 @@ pub struct ConnectionCore {
       i = i + 1u8;
     }
     i = 0u8;
-    while i < nLat and c.ok {
+    while i < nLat && c.ok {
       let stream = c.rdU16(data);
       let seq = c.rdU16(data);
       let lf = c.rdU16(data);
@@ -693,7 +693,7 @@ pub struct ConnectionCore {
       pk.lat.push(new LatestItem(stream, seq, body));
       i = i + 1u8;
     }
-    if not c.ok or c.pos != data.len {
+    if !c.ok || c.pos != data.len {
       st.packetsInvalid = st.packetsInvalid + 1u64;
       return false;
     }
@@ -706,13 +706,13 @@ pub struct ConnectionCore {
       st.packetsDuplicate = st.packetsDuplicate + 1u64;
       return true;
     }
-    if gotAny and seqNewer(remoteSeq, pk.seq) and seqAhead(remoteSeq, pk.seq) >= u16.from(ringSize) {
+    if gotAny && seqNewer(remoteSeq, pk.seq) && seqAhead(remoteSeq, pk.seq) >= u16.from(ringSize) {
       // So old that its slot belongs to a newer packet
       st.packetsDuplicate = st.packetsDuplicate + 1u64;
       return true;
     }
     seen[slot] = u32.from(pk.seq) + 1u32;
-    if not gotAny or seqNewer(pk.seq, remoteSeq) {
+    if !gotAny || seqNewer(pk.seq, remoteSeq) {
       remoteSeq = pk.seq;
       gotAny = true;
     }
@@ -772,7 +772,7 @@ pub struct ConnectionCore {
   fn deliverReliable(self &mut, events &mut List[CoreEvent]) {
     while true {
       let s = &mut recv[usize.from(relDeliver) % ringSize];
-      if not s.used or s.id != relDeliver {return;}
+      if !s.used || s.id != relDeliver {return;}
       var d = List[u8].empty();
       d <=> s.data;
       s.used = false;
@@ -794,7 +794,7 @@ pub struct ConnectionCore {
       }
       i = i + 1u32;
     }
-    if not gotAck or seqNewer(ack, ackedMax) {
+    if !gotAck || seqNewer(ack, ackedMax) {
       ackedMax = ack;
       gotAck = true;
     }
@@ -802,7 +802,7 @@ pub struct ConnectionCore {
     // Release the acknowledged messages at the front of the queue
     while relOldest != relNext {
       let s = &mut rel[usize.from(relOldest) % ringSize];
-      if not s.acked {break;}
+      if !s.acked {break;}
       s.used = false;
       s.data.clear();
       relOldest = relOldest + 1u16;
@@ -811,7 +811,7 @@ pub struct ConnectionCore {
 
   fn ackOne(self &mut, seq u16, t i64) {
     let slot = &mut sent[usize.from(seq) % ringSize];
-    if not slot.used or slot.seq != seq or slot.acked {return;}
+    if !slot.used || slot.seq != seq || slot.acked {return;}
     slot.acked = true;
     let sentAt = slot.sentAt;
     var k = 0usize;
@@ -821,7 +821,7 @@ pub struct ConnectionCore {
       // one already released and its slot reused)
       if usize.from(id - relOldest) < usize.from(relNext - relOldest) {
         let m = &mut rel[usize.from(id) % ringSize];
-        if m.used and m.id == id {m.acked = true;}
+        if m.used && m.id == id {m.acked = true;}
       }
       k = k + 1usize;
     }
@@ -832,7 +832,7 @@ pub struct ConnectionCore {
   fn sampleRtt(self &mut, sample i64) {
     var s = sample;
     if s < 0i64 {s = 0i64;}
-    if not hasRtt {
+    if !hasRtt {
       srtt = s;
       rttvar = s / 2i64;
       hasRtt = true;
@@ -849,10 +849,10 @@ pub struct ConnectionCore {
   fn resolve(self &mut) {
     while scan != nextSeq {
       let slot = sent[usize.from(scan) % ringSize];
-      if slot.used and slot.seq == scan {
+      if slot.used && slot.seq == scan {
         if slot.acked {
           self.noteFate(false);
-        } elif gotAck and seqAhead(ackedMax, scan) > 32u16 {
+        } elif gotAck && seqAhead(ackedMax, scan) > 32u16 {
           self.noteFate(true);
         } else {
           return;

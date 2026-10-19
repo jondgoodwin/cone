@@ -1039,7 +1039,7 @@ void flowHandleMoveOrCopy(INode **nodep) {
 // Flow finds each where it is read or thrown away and wraps it in a TempNode;
 // generation keeps it and finalizes it there. A temporary in an 'if' or
 // 'while' condition dies at the condition's end, and one in the right operand
-// of 'and' or 'or' at that operand's end, since each runs on some paths only.
+// of '&&' or '||' at that operand's end, since each runs on some paths only.
 // *********************
 
 uint32_t flowTempCount = 0;

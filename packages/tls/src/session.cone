@@ -110,7 +110,7 @@ pub struct Session is Move {
     var name = String.from(serverName);
     let cname = name.cstr();
     // SNI carries a DNS name, never an address (RFC 6066)
-    if not isAddress(serverName) {SSL_ctrl(s.ssl, ctrlSetTlsextHostname, 0i64, cname.ptr());}
+    if !isAddress(serverName) {SSL_ctrl(s.ssl, ctrlSetTlsextHostname, 0i64, cname.ptr());}
     // The Roots verifier checks the name in OpenSSL; the others, themselves
     if s.kind == VerifyKind.Roots {SSL_set1_host(s.ssl, cname);}
     if s.resume {
@@ -139,7 +139,7 @@ pub struct Session is Move {
 
   // Ciphertext that arrived: every byte is taken (how many)
   pub fn feed(self &mut, cipher &Array[u8]) usize {
-    if cipher.len == 0usize or phase == pFailed {return cipher.len;}
+    if cipher.len == 0usize || phase == pFailed {return cipher.len;}
     self.begin();
     var put = 0usize;
     BIO_write_ex(rbio, &cipher[0usize] as *u8, cipher.len, &mut put);
@@ -154,7 +154,7 @@ pub struct Session is Move {
     if eof {return;}
     eof = true;
     mayRead = true;
-    if phase == pHandshake or phase == pVerify {
+    if phase == pHandshake || phase == pVerify {
       self.fail(TlsErrorKind.Protocol, 0u32, "the peer closed the connection during the handshake");
     }
   }
@@ -181,7 +181,7 @@ pub struct Session is Move {
   // Plaintext to protect and send: how many bytes were taken, all of them
   // once the session is open, none before
   pub fn write(self &mut, plain &Array[u8]) usize {
-    if phase != pOpen or sentClose or plain.len == 0usize {return 0usize;}
+    if phase != pOpen || sentClose || plain.len == 0usize {return 0usize;}
     ERR_clear_error();
     var put = 0usize;
     if SSL_write_ex(ssl, &plain[0usize] as *u8, plain.len, &mut put) == 1i32 {return put;}
@@ -190,7 +190,7 @@ pub struct Session is Move {
   }
 
   // Whether plaintext may be waiting to be read
-  pub fn canRead(self &) bool {phase == pOpen and mayRead and not gotClose}
+  pub fn canRead(self &) bool {phase == pOpen && mayRead && !gotClose}
 
   // Plaintext that came, into out: how many bytes; 0 when none is ready.
   // TLS 1.3's tickets, which come after the handshake, are taken in here
@@ -201,14 +201,14 @@ pub struct Session is Move {
   }
 
   fn readSome(self &mut, out &mut Array[u8]) usize {
-    if phase != pOpen or gotClose or out.len == 0usize {return 0usize;}
+    if phase != pOpen || gotClose || out.len == 0usize {return 0usize;}
     ERR_clear_error();
     var got = 0usize;
     if SSL_read_ex(ssl, &mut out[0usize] as *u8, out.len, &mut got) == 1i32 {return got;}
     let e = SSL_get_error(ssl, 0i32);
-    if e == sslErrorWantRead or e == sslErrorWantWrite {
+    if e == sslErrorWantRead || e == sslErrorWantWrite {
       mayRead = false;
-      if eof and not gotClose and not endTold {
+      if eof && !gotClose && !endTold {
         // The stream ended with no close_notify: an end all the same
         endTold = true;
         nTruncated.add(1u64);
@@ -267,12 +267,12 @@ pub struct Session is Move {
   pub fn isOpen(self &) bool {phase == pOpen}
 
   // The handshake has not ended yet (waiting for the OS's verifier too)
-  pub fn isHandshaking(self &) bool {phase == pHandshake or phase == pVerify}
+  pub fn isHandshaking(self &) bool {phase == pHandshake || phase == pVerify}
 
   pub fn isFailed(self &) bool {phase == pFailed}
 
   // The peer's stream has ended, and every byte of it has been read
-  pub fn peerEnded(self &) bool {gotClose or (eof and not mayRead)}
+  pub fn peerEnded(self &) bool {gotClose || (eof && !mayRead)}
 
   // Why it failed (TlsError.none() while it has not)
   pub fn error(self &) &TlsError {&err}
@@ -291,7 +291,7 @@ pub struct Session is Move {
     new TlsInfo(version: v, versionName: String.from(cText(SSL_get_version(ssl))),
       cipher: String.from(cText(SSL_CIPHER_get_name(SSL_get_current_cipher(ssl)))), alpn: alpn,
       resumed: SSL_session_reused(ssl) == 1i32, verifiedBy: kind, handshakeTime: handshakeTime,
-      verifyTime: verifyTime, closeNotify: gotClose, truncated: eof and not gotClose)
+      verifyTime: verifyTime, closeNotify: gotClose, truncated: eof && !gotClose)
   }
 
   // ---------------------------------------------------------------------------
@@ -315,7 +315,7 @@ pub struct Session is Move {
         return;
       }
       let e = SSL_get_error(ssl, r);
-      if e == sslErrorWantRead or e == sslErrorWantWrite {return;}
+      if e == sslErrorWantRead || e == sslErrorWantWrite {return;}
       if e == sslErrorWantRetryVerify {
         if kind == VerifyKind.Pinned {
           self.checkPins();
@@ -336,7 +336,7 @@ pub struct Session is Move {
     let chain = SSL_get_peer_cert_chain(ssl);
     var hash = new Array[u8, 32] <- fill 0u8;
     var found = false;
-    if chain as usize != 0usize and OPENSSL_sk_num(chain) > 0i32 {
+    if chain as usize != 0usize && OPENSSL_sk_num(chain) > 0i32 {
       if spkiSha256(OPENSSL_sk_value(chain, 0i32), &mut hash) {
         var k = 0usize;
         while k + 32usize <= pins.len() {
@@ -363,7 +363,7 @@ pub struct Session is Move {
   // The session fails: its error, reported once
   fn fail(self &mut, kind TlsErrorKind, code u32, detail &str) {
     if phase == pFailed {return;}
-    if not ownError {err = TlsError.make(kind, code, detail);}
+    if !ownError {err = TlsError.make(kind, code, detail);}
     phase = pFailed;
     verifyWanted = false;
     events = events | evFailed;
@@ -378,7 +378,7 @@ pub struct Session is Move {
       self.fail(err.kind, err.code, "");
       return;
     }
-    if e == sslErrorSyscall and first == 0u32 {
+    if e == sslErrorSyscall && first == 0u32 {
       self.fail(TlsErrorKind.Protocol, 0u32, "the transport ended");
       return;
     }
@@ -393,7 +393,7 @@ pub struct Session is Move {
       return;
     }
     let reason = errReason(first);
-    if errLib(first) == errLibSsl and (first & errSystemFlag) == 0u32 {
+    if errLib(first) == errLibSsl && (first & errSystemFlag) == 0u32 {
       if reason == reasonCertificateVerifyFailed {
         // OpenSSL's own check, against the Roots verifier's bundle
         let vr = SSL_get_verify_result(ssl);
@@ -404,7 +404,7 @@ pub struct Session is Move {
         self.fail(certKindOfVerifyResult(vr), u32.from(vr), d.view());
         return;
       }
-      if reason >= reasonAlertOffset and reason < reasonAlertOffset + 256u32 {
+      if reason >= reasonAlertOffset && reason < reasonAlertOffset + 256u32 {
         let alert = reason - reasonAlertOffset;
         var d = String.from("the peer sent the fatal alert ");
         d.append(cText(SSL_alert_desc_string_long(i32.from(alert))));
@@ -417,7 +417,7 @@ pub struct Session is Move {
         self.fail(k, alert, d.view());
         return;
       }
-      if reason == reasonUnsupportedProtocol or reason == reasonNoProtocolsAvailable {
+      if reason == reasonUnsupportedProtocol || reason == reasonNoProtocolsAvailable {
         self.fail(TlsErrorKind.ProtocolVersion, first, text.view());
         return;
       }
@@ -460,7 +460,7 @@ pub struct Session is Move {
   pub fn verifyDone(self &mut, c &mut Completion) {
     if phase != pVerify {return;}
     verifyTime = Instant.now() - verifyAt;
-    if c.isDone() and c.buf.len() >= 4usize {
+    if c.isDone() && c.buf.len() >= 4usize {
       self.verified(*(c.buf.base() as *u32));
     } elif c.isDone() {
       self.verified(0x80004005u32);
@@ -475,7 +475,7 @@ pub struct Session is Move {
   // The OS's verifier, run here: it blocks, perhaps fetching over the
   // network. For a program with no loop
   pub fn verifyNow(self &mut) {
-    if not verifyWanted {return;}
+    if !verifyWanted {return;}
     var job = List[u8].empty();
     self.verifyJob(&mut job);
     let code = osVerify(job.view(), offline);
@@ -522,7 +522,7 @@ pub struct Session is Move {
       SSL_set_ex_data(ssl, 0i32, verdictTrusted as *u8);
     } else {
       SSL_set_ex_data(ssl, 0i32, verdictRefused as *u8);
-      if not ownError {
+      if !ownError {
         err = certError(code);
         ownError = true;
       }
@@ -530,7 +530,7 @@ pub struct Session is Move {
     phase = pHandshake;
     self.advance();
     self.harvest();
-    if code != 0u32 and phase != pFailed {self.fail(err.kind, err.code, "");}
+    if code != 0u32 && phase != pFailed {self.fail(err.kind, err.code, "");}
   }
 
   // The sessions OpenSSL handed over since the last harvest, into the
@@ -554,7 +554,7 @@ pub struct Session is Move {
       SSL_set_ex_data(ssl, ticketSlot(), null);
       libc.free(arrivals);
     }
-    if not isServer and resume and wasOpen and phase != pFailed {
+    if !isServer && resume && wasOpen && phase != pFailed {
       // A TLS 1.2 session goes back to the cache: the same one, which stays
       // (putCached keeps one copy), or one the server renewed by a new ticket
       if SSL_version(ssl) != tls13Version {
@@ -586,7 +586,7 @@ fn isAddress(name &str) bool {
   while k < name.len() {
     let c = name[k];
     if c == ':' {return true;}
-    if not ((c >= '0' and c <= '9') or c == '.') {return false;}
+    if !((c >= '0' && c <= '9') || c == '.') {return false;}
     k = k + 1usize;
   }
   true
@@ -594,9 +594,9 @@ fn isAddress(name &str) bool {
 
 // The kind of a certificate error OpenSSL's verify result names
 fn certKindOfVerifyResult(vr i32) TlsErrorKind {
-  if vr == x509Expired or vr == x509NotYetValid {TlsErrorKind.CertExpired}
-  elif vr == x509HostnameMismatch or vr == x509IpMismatch {TlsErrorKind.CertNameMismatch}
-  elif vr == x509UnableToGetIssuer or vr == x509UnableToGetIssuerLocally or vr == x509DepthZeroSelfSigned or
+  if vr == x509Expired || vr == x509NotYetValid {TlsErrorKind.CertExpired}
+  elif vr == x509HostnameMismatch || vr == x509IpMismatch {TlsErrorKind.CertNameMismatch}
+  elif vr == x509UnableToGetIssuer || vr == x509UnableToGetIssuerLocally || vr == x509DepthZeroSelfSigned ||
     vr == x509SelfSignedInChain {TlsErrorKind.CertUntrusted}
   elif vr == x509Revoked {TlsErrorKind.CertRevoked}
   else {TlsErrorKind.CertOther}

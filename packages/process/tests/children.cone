@@ -82,7 +82,7 @@ fn tempText() String {
   var variable cstr = "TMPDIR";
   if isWindows() { variable = "TEMP"; }
   let temp = libc.getenv(variable);
-  require(temp != null or not isWindows(), "TEMP is set");
+  require(temp != null || !isWindows(), "TEMP is set");
   if temp != null {String.from(cstr.fromPtr(temp).view())} else {String.from("/tmp")}
 }
 
@@ -123,7 +123,7 @@ fn childArgs(a &List[String], argc i32, argv **u8) i32 {
   var ascii = true;
   var i = 0usize;
   while i < a.len() {
-    if not isAscii(a[i].view()) { ascii = false; }
+    if !isAscii(a[i].view()) { ascii = false; }
     i = i + 1usize;
   }
   if ascii {
@@ -264,7 +264,7 @@ fn child(a &List[String], argc i32, argv **u8) i32 {
     if isWindows() {
       var wname = new Array[u16, 64] <- fill 0u16;
       var i = 0usize;
-      while i < name.len and i < 63usize {
+      while i < name.len && i < 63usize {
         wname[i] = u16.from(name[i]);
         i = i + 1usize;
       }
@@ -325,7 +325,7 @@ fn makeRoot(name &str) Path {
     case is Error { require(false, "TEMP has an absolute path"); }
   }
   let up = root.parent();
-  let safe = root.isAbsolute() and root.view().endsWith(name) and up.view().len() > 3usize;
+  let safe = root.isAbsolute() && root.view().endsWith(name) && up.view().len() > 3usize;
   require(safe, "the test's folder is under TEMP");
   root
 }
@@ -454,12 +454,12 @@ fn crashesUnreported(exe &str) {
   // UTF-16 (the rest of its environment is this test's: 'environment').
   // POSIX has no such variable added: the child's environment is this
   // program's, here a variable set for the purpose
-  if not isWindows() { env.set("CONE_PROCESS_TEST_PLAIN", "1"); }
+  if !isWindows() { env.set("CONE_PROCESS_TEST_PLAIN", "1"); }
   var v = childCommand(exe, "env");
   v.push(String.from(os("_NO_DEBUG_HEAP", "CONE_PROCESS_TEST_PLAIN")));
   let heap = ran(process.run(v.view(), new process.Options(crashReport: false)), "unreported env");
   expectStr(heap.stdout.view(), "49", "_NO_DEBUG_HEAP=1, crashes unreported");
-  if not isWindows() { env.unset("CONE_PROCESS_TEST_PLAIN"); }
+  if !isWindows() { env.unset("CONE_PROCESS_TEST_PLAIN"); }
 
   let h = childCommand(exe, "hello");
   let o2 = ran(process.run(h.view(), new process.Options(crashReport: false)), "unreported hello");
@@ -484,7 +484,7 @@ fn crashesUnreported(exe &str) {
   let took = began.elapsed();
   expectBool(slept.timedOut, true, "a sleeping child stopped by its time limit, crashes unreported");
   expectUInt(u64.from(slept.exitCode), 1u64, "a stopped child's exit code, crashes unreported");
-  expectBool(took >= Duration.fromMillis(300) and took < Duration.fromSeconds(5), true,
+  expectBool(took >= Duration.fromMillis(300) && took < Duration.fromSeconds(5), true,
     "stopped after 300 ms, not 10 s, crashes unreported");
 }
 
@@ -496,11 +496,11 @@ fn bigStreams(exe &str) {
   expectBool(o.timedOut, false, "a megabyte each: in time");
   expectUInt(u64.from(o.stdout.len()), u64.from(size), "a megabyte to stdout");
   expectUInt(u64.from(o.stderr.len()), u64.from(size), "a megabyte to stderr");
-  var right = o.stdout.len() == size and o.stderr.len() == size;
+  var right = o.stdout.len() == size && o.stderr.len() == size;
   var i = 0usize;
-  while right and i < size {
+  while right && i < size {
     let k = (i / 4096usize) % 26usize;
-    if o.stdout[i] != 'a' + u8.from(k) or o.stderr[i] != 'A' + u8.from(k) { right = false; }
+    if o.stdout[i] != 'a' + u8.from(k) || o.stderr[i] != 'A' + u8.from(k) { right = false; }
     i = i + 1usize;
   }
   expectBool(right, true, "each megabyte byte for byte, in order");
@@ -517,7 +517,7 @@ fn timesOut(exe &str) {
   // On POSIX it was killed by SIGKILL, 9 (the exit code says 1 on both)
   expectUInt(u64.from(o.signal), osCode(0u64, 9u64), "a stopped child's signal");
   expectStr(o.stdout.view(), "", "a stopped child never woke");
-  expectBool(took >= Duration.fromMillis(300) and took < Duration.fromSeconds(5), true, "stopped after 300 ms, not 10 s");
+  expectBool(took >= Duration.fromMillis(300) && took < Duration.fromSeconds(5), true, "stopped after 300 ms, not 10 s");
   expectBool(o.success(), false, "a stopped child is no success");
 
   // Given long enough, the same child finishes
@@ -551,7 +551,7 @@ fn treeStopped(exe &str, root &Path) {
   if isWindows() {
     let h = OpenProcess(synchronize, 0i32, u32.from(id));
     gone = h == 0usize;
-    if not gone {
+    if !gone {
       gone = WaitForSingleObject(h, 3000u32) == 0u32;
       CloseHandle(h);
     }
@@ -560,7 +560,7 @@ fn treeStopped(exe &str, root &Path) {
     // seconds (init reaps it when its parent, killed too, has left it)
     var waited = 0u32;
     gone = kill(i32.from(id), 0i32) != 0i32;
-    while not gone and waited < 3000u32 {
+    while !gone && waited < 3000u32 {
       pause(50u32);
       waited = waited + 50u32;
       gone = kill(i32.from(id), 0i32) != 0i32;
@@ -611,7 +611,7 @@ fn workingFolder(exe &str, root &Path) {
   let r = ran(process.run(rel.view(), new process.Options(), root), "relative program");
   expectStr(r.stdout.view(), root.view(), "a relative program, read from this program's folder");
   var oldPath = String.empty();
-  if not isWindows() {
+  if !isWindows() {
     let exeFolder = Path.from(exe).parent();
     match env.get("PATH") {
       case let held Some { oldPath = held.copy(); }
@@ -625,7 +625,7 @@ fn workingFolder(exe &str, root &Path) {
   var bare = childCommand("children", "cwd");
   let n = ran(process.run(bare.view(), new process.Options(), root), "program with no extension");
   expectStr(n.stdout.view(), root.view(), "a program named with no '.exe'");
-  if not isWindows() { env.set("PATH", oldPath.view()); }
+  if !isWindows() { env.set("PATH", oldPath.view()); }
 
   // 'runLine' takes the folder the same way
   var line = String.from("\"");
@@ -733,7 +733,7 @@ fn roundTrip(exe &str, items &List[String], label &Array[u8]) {
   expectUInt(u64.from(back.len()), u64.from(items.len()), label);
   var wrong = 0usize;
   i = 0usize;
-  while i < items.len() and i < back.len() {
+  while i < items.len() && i < back.len() {
     let sent = hexOf(items[i].view());
     if back[i].view() != sent.view() {
       if wrong < 5usize {
@@ -877,14 +877,14 @@ fn failures(exe &str, root &Path) {
 fn me(exe &Path) {
   expectBool(exe.isAbsolute(), true, "currentExe is absolute");
   expectStr(exe.name(), os("children.exe", "children"), "currentExe names this test");
-  expect(not exe.view().contains("\\"), "currentExe is normalized");
+  expect(!exe.view().contains("\\"), "currentExe is normalized");
   let a = process.args();
   expectBool(a.len() == 1usize, true, "this test is run with no arguments");
 }
 
 fn main(argc i32, argv **u8) i32 {
   let a = process.args();
-  if a.len() >= 3usize and a[1usize].equals("--child") { return child(&a, argc, argv); }
+  if a.len() >= 3usize && a[1usize].equals("--child") { return child(&a, argc, argv); }
 
   var exe = Path.from("");
   match process.currentExe() {

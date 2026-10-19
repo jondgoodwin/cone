@@ -134,12 +134,6 @@ after it is reported twice. A permission that is neither (`ro`, `uni`, `opaq`,
 `mut1`) stays `ErrorInvType`, and `let` or `var` where a name belongs is
 `ErrorNoName` on a function and `ErrorNoIdent` on a variable.
 
-`ErrorAndAnd` is `&&` written as an operator after an operand (parse): Cone has no `&&`,
-and logical and is `and`. It would otherwise read as the bitwise `&` of a borrow of the
-right side, which evaluates that side whatever the left is. The message names `and`, and
-the `&&` is read as `and` so the right side is checked as written. `&&` before an operand
-or in a type is two borrows and is not this error.
-
 `ErrorTailSemi` and `ErrorTailOpen` are the two ways a block's last line, an expression, can
 have the wrong end (parse). A `;` delimits statements, so a block that ends in one ends in an
 empty statement, which has no value: the `;` is left off where the block's value is used and
@@ -370,9 +364,9 @@ an instance of a generic function or type whose arguments do not meet a
 requirement, reported where the program asks for it, whose remedy is the
 argument; `ErrorWhereAbsent` is a method or function an instance of a generic
 type does not have, its `where` clause unmet there, whose remedy is not to call
-it on that instance. A clause joined by `or` fails either way as a whole, under
+it on that instance. A clause joined by `||` fails either way as a whole, under
 the same two codes. Four are the clause's own form: `ErrorWhereForm`, a shape
-not built (a relation, a type expression, `not`) or an unclosed parenthesis,
+not built (a relation, a type expression, `!`) or an unclosed parenthesis,
 refused by the parser; `ErrorWhereSubject`, a subject that is no type parameter
 in scope; `ErrorWhereTrait`, an `is` naming no trait; and `ErrorWhereNoParms`, a
 clause on a declaration with no type parameters to constrain. An annotation after
@@ -383,7 +377,7 @@ given one is. A value parameter, `[N usize]`, has four codes of its own:
 constraint beside it, a `where` clause about it, on a generic type);
 `ErrorGenValueArg`, an argument that is no non-negative integer literal the
 parameter's type holds; `ErrorGenValueClash`, a number inferred two ways; and
-`ErrorGenValueArith`, arithmetic over one in an array's size; `or` there, `[T A or B]`, is `ErrorGenParmOr`, whose remedy is to
+`ErrorGenValueArith`, arithmetic over one in an array's size; `||` there, `[T A || B]`, is `ErrorGenParmOr`, whose remedy is to
 move the choice into a `where` clause.
 
 A condition on one entry of a type's `is` list, `is Move if T is Move`, is written
@@ -430,7 +424,7 @@ none in a struct that declares lifetimes, or a `where` clause ordering one its
 declaration does not have; the remedy is to declare it, or to fix the
 spelling. A use naming a struct's lifetimes otherwise than it declares them —
 too many, too few, or any for a type declaring none — is `ErrorLifetimeArgs`,
-the use's own mistake. A lifetime comparison under `or` or `not` in a `where`
+the use's own mistake. A lifetime comparison under `||` or `!` in a `where`
 clause is `ErrorLifetimeOr`, apart from `ErrorWhereForm`: the form is one the
 clause reads, and refused for what it would mean. A named lifetime that is
 checked and broken is none of these: returned or stored where its lifetime

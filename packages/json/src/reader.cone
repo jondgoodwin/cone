@@ -83,8 +83,8 @@ pub struct Reader['a] {
     while true {
       match self.next() {
         case let ev Ok {
-          if ev == Event.StartObject or ev == Event.StartArray { levels = levels + 1usize; }
-          elif ev == Event.EndObject or ev == Event.EndArray {
+          if ev == Event.StartObject || ev == Event.StartArray { levels = levels + 1usize; }
+          elif ev == Event.EndObject || ev == Event.EndArray {
             // The end of the container the caller is in: no value to skip
             if levels == 0usize { return None; }
             levels = levels - 1usize;
@@ -93,7 +93,7 @@ pub struct Reader['a] {
             return None;
           }
           // A key is followed by its value, which is what is being skipped
-          if levels == 0usize and ev != Event.Key { return None; }
+          if levels == 0usize && ev != Event.Key { return None; }
         }
         case let e Error { return Some[JsonError](e.copy()); }
       }
@@ -110,7 +110,7 @@ pub struct Reader['a] {
   fn skipSpace(self &mut) {
     while self.pos < self.src.len {
       let c = self.src[self.pos];
-      if c != ' ' and c != '\t' and c != '\n' and c != '\r' { return; }
+      if c != ' ' && c != '\t' && c != '\n' && c != '\r' { return; }
       self.pos = self.pos + 1usize;
     }
   }
@@ -159,13 +159,13 @@ pub struct Reader['a] {
         self.tokenStart = self.pos;
         if top == inArray { self.want = Want.NeedValue; } else { self.want = Want.NeedKey; }
       }
-      elif top == inArray and c == ']' {
+      elif top == inArray && c == ']' {
         self.pos = self.pos + 1usize;
         self.stack.pop();
         self.afterValue();
         return Event.EndArray;
       }
-      elif top == inObject and c == '}' {
+      elif top == inObject && c == '}' {
         self.pos = self.pos + 1usize;
         self.stack.pop();
         self.afterValue();
@@ -177,7 +177,7 @@ pub struct Reader['a] {
         return Event.Done;
       }
     }
-    if self.want == Want.NeedKeyOrEnd or self.want == Want.NeedKey {
+    if self.want == Want.NeedKeyOrEnd || self.want == Want.NeedKey {
       if self.pos >= n {
         self.fail(ErrorKind.UnexpectedEnd, n, "the text ends inside an object: expected a key");
         return Event.Done;
@@ -198,7 +198,7 @@ pub struct Reader['a] {
         return Event.Done;
       }
       self.tokenStart = self.pos;
-      if not self.readString() { return Event.Done; }
+      if !self.readString() { return Event.Done; }
       self.skipSpace();
       if self.pos >= n {
         self.fail(ErrorKind.UnexpectedEnd, n, "the text ends after a key: expected ':'");
@@ -226,45 +226,45 @@ pub struct Reader['a] {
         self.afterValue();
         return Event.EndArray;
       }
-      if self.stack.len() > 0usize and *self.stack[self.stack.len() - 1usize] == inArray {
+      if self.stack.len() > 0usize && *self.stack[self.stack.len() - 1usize] == inArray {
         self.fail(ErrorKind.UnexpectedByte, self.pos, "a ',' may not come just before ']'");
         return Event.Done;
       }
     }
     if c == '{' {
-      if not self.open(inObject) { return Event.Done; }
+      if !self.open(inObject) { return Event.Done; }
       self.pos = self.pos + 1usize;
       self.want = Want.NeedKeyOrEnd;
       return Event.StartObject;
     }
     if c == '[' {
-      if not self.open(inArray) { return Event.Done; }
+      if !self.open(inArray) { return Event.Done; }
       self.pos = self.pos + 1usize;
       self.want = Want.NeedValueOrEnd;
       return Event.StartArray;
     }
     if c == '"' {
-      if not self.readString() { return Event.Done; }
+      if !self.readString() { return Event.Done; }
       self.afterValue();
       return Event.Text;
     }
-    if c == '-' or isDigit(c) {
-      if not self.readNumber() { return Event.Done; }
+    if c == '-' || isDigit(c) {
+      if !self.readNumber() { return Event.Done; }
       self.afterValue();
       return Event.Number;
     }
-    if c == 't' or c == 'f' or c == 'n' {
-      if c == 't' and startsAt(self.src, self.pos, "true") {
+    if c == 't' || c == 'f' || c == 'n' {
+      if c == 't' && startsAt(self.src, self.pos, "true") {
         self.pos = self.pos + 4usize;
         self.afterValue();
         return Event.True;
       }
-      if c == 'f' and startsAt(self.src, self.pos, "false") {
+      if c == 'f' && startsAt(self.src, self.pos, "false") {
         self.pos = self.pos + 5usize;
         self.afterValue();
         return Event.False;
       }
-      if c == 'n' and startsAt(self.src, self.pos, "null") {
+      if c == 'n' && startsAt(self.src, self.pos, "null") {
         self.pos = self.pos + 4usize;
         self.afterValue();
         return Event.Null;
@@ -304,7 +304,7 @@ pub struct Reader['a] {
       let start = self.pos;
       while self.pos < n {
         let b = self.src[self.pos];
-        if b == '"' or b == '\\' or b < 0x20u8 or b >= 0x80u8 { break; }
+        if b == '"' || b == '\\' || b < 0x20u8 || b >= 0x80u8 { break; }
         self.pos = self.pos + 1usize;
       }
       if self.pos > start { self.buf.appendBytes(&self.src[start..<self.pos]); }
@@ -335,7 +335,7 @@ pub struct Reader['a] {
         self.pos = self.pos + len;
       }
       else {
-        if not self.readEscape() { return false; }
+        if !self.readEscape() { return false; }
       }
     }
     false
@@ -367,20 +367,20 @@ pub struct Reader['a] {
       }
       self.pos = self.pos + 4usize;
       var cp = hi;
-      if hi >= 0xD800u32 and hi <= 0xDBFFu32 {
+      if hi >= 0xD800u32 && hi <= 0xDBFFu32 {
         // A high surrogate begins a pair: '\u' and a low one must follow
         var lo = 0x10000u32;
-        if self.pos + 1usize < n and self.src[self.pos] == '\\' and self.src[self.pos + 1usize] == 'u' {
+        if self.pos + 1usize < n && self.src[self.pos] == '\\' && self.src[self.pos + 1usize] == 'u' {
           lo = hex4(self.src, self.pos + 2usize);
         }
-        if lo < 0xDC00u32 or lo > 0xDFFFu32 {
+        if lo < 0xDC00u32 || lo > 0xDFFFu32 {
           self.fail(ErrorKind.BadSurrogate, at, "a high surrogate '\\uD800' to '\\uDBFF' must be followed by a low one, '\\uDC00' to '\\uDFFF'");
           return false;
         }
         self.pos = self.pos + 6usize;
         cp = 0x10000u32 + ((hi - 0xD800u32) << 10u32) + (lo - 0xDC00u32);
       }
-      elif hi >= 0xDC00u32 and hi <= 0xDFFFu32 {
+      elif hi >= 0xDC00u32 && hi <= 0xDFFFu32 {
         self.fail(ErrorKind.BadSurrogate, at, "a low surrogate '\\uDC00' to '\\uDFFF' must follow a high one");
         return false;
       }
@@ -403,7 +403,7 @@ pub fn reader(text &'a Array[u8]) Reader['a] {
 
 pub fn readerWith(text &'a Array[u8], opts &'b Options) Reader['a] {
   var start = 0usize;
-  if text.len >= 3usize and text[0usize] == 0xEFu8 and text[1usize] == 0xBBu8 and text[2usize] == 0xBFu8 {
+  if text.len >= 3usize && text[0usize] == 0xEFu8 && text[1usize] == 0xBBu8 && text[2usize] == 0xBFu8 {
     start = 3usize;
   }
   new Reader(text, start, start, usize.from(opts.maxDepth), List[u8].empty(), Want.NeedValue, String.empty(), false, JsonError.none())
@@ -413,13 +413,13 @@ pub fn readerWith(text &'a Array[u8], opts &'b Options) Reader['a] {
 
 // Whether text holds want at pos
 fn startsAt(text &Array[u8], pos usize, want &Array[u8]) bool {
-  pos + want.len <= text.len and &text[pos..<pos + want.len] == want
+  pos + want.len <= text.len && &text[pos..<pos + want.len] == want
 }
 
 fn hexValue(c u8) u32 {
   if isDigit(c) { return u32.from(c - '0'); }
-  if c >= 'a' and c <= 'f' { return u32.from(c - 'a') + 10u32; }
-  if c >= 'A' and c <= 'F' { return u32.from(c - 'A') + 10u32; }
+  if c >= 'a' && c <= 'f' { return u32.from(c - 'a') + 10u32; }
+  if c >= 'A' && c <= 'F' { return u32.from(c - 'A') + 10u32; }
   16u32
 }
 
@@ -446,9 +446,9 @@ fn utf8Length(t &Array[u8], pos usize) usize {
   var more = 0usize;
   var cp = 0u32;
   var least = 0u32;
-  if b >= 0xC2u8 and b <= 0xDFu8 { more = 1usize; cp = u32.from(b & 0x1Fu8); least = 0x80u32; }
-  elif b >= 0xE0u8 and b <= 0xEFu8 { more = 2usize; cp = u32.from(b & 0x0Fu8); least = 0x800u32; }
-  elif b >= 0xF0u8 and b <= 0xF4u8 { more = 3usize; cp = u32.from(b & 0x07u8); least = 0x10000u32; }
+  if b >= 0xC2u8 && b <= 0xDFu8 { more = 1usize; cp = u32.from(b & 0x1Fu8); least = 0x80u32; }
+  elif b >= 0xE0u8 && b <= 0xEFu8 { more = 2usize; cp = u32.from(b & 0x0Fu8); least = 0x800u32; }
+  elif b >= 0xF0u8 && b <= 0xF4u8 { more = 3usize; cp = u32.from(b & 0x07u8); least = 0x10000u32; }
   else { return 0usize; }
   if pos + more >= t.len { return 0usize; }
   var k = 1usize;
@@ -458,7 +458,7 @@ fn utf8Length(t &Array[u8], pos usize) usize {
     cp = (cp << 6u32) | u32.from(c & 0x3Fu8);
     k = k + 1usize;
   }
-  if cp < least or cp > 0x10FFFFu32 or (cp >= 0xD800u32 and cp <= 0xDFFFu32) { return 0usize; }
+  if cp < least || cp > 0x10FFFFu32 || (cp >= 0xD800u32 && cp <= 0xDFFFu32) { return 0usize; }
   more + 1usize
 }
 
@@ -488,7 +488,7 @@ fn appendUtf8(s &mut String, cp u32) {
 fn lineOf(t &Array[u8], offset usize) u32 {
   var line = 1u32;
   var i = 0usize;
-  while i < offset and i < t.len {
+  while i < offset && i < t.len {
     if t[i] == '\n' { line = line + 1u32; }
     i = i + 1usize;
   }
@@ -499,7 +499,7 @@ fn lineOf(t &Array[u8], offset usize) u32 {
 fn columnOf(t &Array[u8], offset usize) u32 {
   var col = 1u32;
   var i = 0usize;
-  while i < offset and i < t.len {
+  while i < offset && i < t.len {
     if t[i] == '\n' { col = 1u32; } else { col = col + 1u32; }
     i = i + 1usize;
   }

@@ -136,7 +136,7 @@ pub struct ComputeCapabilities {
 
   // The GPU has the subgroup operations 'ops' (SUBGROUP_OP_... OR-ed) in compute shaders
   pub fn hasSubgroupOps(self &, ops u32) bool {
-    (subgroupStages & SHADER_STAGE_COMPUTE) != 0u32 and (subgroupOperations & ops) == ops
+    (subgroupStages & SHADER_STAGE_COMPUTE) != 0u32 && (subgroupOperations & ops) == ops
   }
 }
 
@@ -154,7 +154,7 @@ pub struct ComputeRequest {
 
   // Whether any 8-bit, 16-bit, dot product or subgroup-type feature is asked for
   // (these are Vulkan 1.1 and 1.2 feature structures)
-  fn wantsFeatures(self &) bool { float16 or int16 or int8 or integerDotProduct or subgroupExtendedTypes }
+  fn wantsFeatures(self &) bool { float16 || int16 || int8 || integerDotProduct || subgroupExtendedTypes }
 }
 
 // One of the GPU's memory heaps
@@ -194,10 +194,10 @@ fn queryCompute(ifns &InstFns, physical vulkan.PhysicalDevice) ComputeCapabiliti
   ifns.getPhysicalDeviceFeatures2(physical, &mut f2);
 
   r.float16Arithmetic = asBool(f12.shaderFloat16);
-  r.storage16Bit = asBool(f11.storageBuffer16BitAccess) and asBool(f11.uniformAndStorageBuffer16BitAccess);
+  r.storage16Bit = asBool(f11.storageBuffer16BitAccess) && asBool(f11.uniformAndStorageBuffer16BitAccess);
   r.int16Arithmetic = asBool(f2.features.raw[vulkan.FEATURE_SHADER_INT16]);
   r.int8Arithmetic = asBool(f12.shaderInt8);
-  r.storage8Bit = asBool(f12.storageBuffer8BitAccess) and asBool(f12.uniformAndStorageBuffer8BitAccess);
+  r.storage8Bit = asBool(f12.storageBuffer8BitAccess) && asBool(f12.uniformAndStorageBuffer8BitAccess);
   r.subgroupExtendedTypes = asBool(f12.shaderSubgroupExtendedTypes);
   r.integerDotProduct = asBool(f13.shaderIntegerDotProduct);
   r.dot4x8PackedSignedAccelerated = asBool(p13.integerDotProduct4x8BitPackedSignedAccelerated);
@@ -229,7 +229,7 @@ fn queryCompute(ifns &InstFns, physical vulkan.PhysicalDevice) ComputeCapabiliti
   ifns.getPhysicalDeviceMemoryProperties(physical, &mut memory);
   r.heapCount = memory.memoryHeapCount;
   var h = 0usize;
-  while h < usize.from(memory.memoryHeapCount) and h < 16usize {
+  while h < usize.from(memory.memoryHeapCount) && h < 16usize {
     let heap = memory.memoryHeaps[h];
     if (heap.flags & vulkan.MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0u32 {
       r.deviceLocalBytes = r.deviceLocalBytes + heap.size;
@@ -245,13 +245,13 @@ fn queryCompute(ifns &InstFns, physical vulkan.PhysicalDevice) ComputeCapabiliti
 // 'has' with every flag cleared that 'request' did not ask for: what a device made with it holds
 fn enabledCompute(has &ComputeCapabilities, request &ComputeRequest) ComputeCapabilities {
   var r = *has;
-  r.float16Arithmetic = has.float16Arithmetic and request.float16;
-  r.storage16Bit = has.storage16Bit and request.float16;
-  r.int16Arithmetic = has.int16Arithmetic and request.int16;
-  r.int8Arithmetic = has.int8Arithmetic and request.int8;
-  r.storage8Bit = has.storage8Bit and request.int8;
-  r.subgroupExtendedTypes = has.subgroupExtendedTypes and request.subgroupExtendedTypes;
-  r.integerDotProduct = has.integerDotProduct and request.integerDotProduct;
+  r.float16Arithmetic = has.float16Arithmetic && request.float16;
+  r.storage16Bit = has.storage16Bit && request.float16;
+  r.int16Arithmetic = has.int16Arithmetic && request.int16;
+  r.int8Arithmetic = has.int8Arithmetic && request.int8;
+  r.storage8Bit = has.storage8Bit && request.int8;
+  r.subgroupExtendedTypes = has.subgroupExtendedTypes && request.subgroupExtendedTypes;
+  r.integerDotProduct = has.integerDotProduct && request.integerDotProduct;
   r
 }
 
@@ -272,29 +272,29 @@ fn capabilitiesEnabled(spirv &Array[u32], has &ComputeCapabilities) bool {
   var i = 5usize;
   while i < spirv.len {
     let word = spirv[i];
-    if (word & 0xFFFFu32) != 17u32 or (word >> 16u32) != 2u32 or i + 1usize >= spirv.len { return true; }
+    if (word & 0xFFFFu32) != 17u32 || (word >> 16u32) != 2u32 || i + 1usize >= spirv.len { return true; }
     let cap = spirv[i + 1usize];
-    if cap == CAP_FLOAT16 and !has.float16Arithmetic {
+    if cap == CAP_FLOAT16 && !has.float16Arithmetic {
       fail("createShaderModule: the shader uses 16-bit floats (Float16), which the device was not made with (ComputeRequest.float16, on a GPU that has them)");
       return false;
     }
-    if (cap == CAP_STORAGE_BUFFER_16 or cap == CAP_UNIFORM_AND_STORAGE_16) and !has.storage16Bit {
+    if (cap == CAP_STORAGE_BUFFER_16 || cap == CAP_UNIFORM_AND_STORAGE_16) && !has.storage16Bit {
       fail("createShaderModule: the shader keeps 16-bit values in buffers, which the device was not made with (ComputeRequest.float16, on a GPU that has them)");
       return false;
     }
-    if cap == CAP_INT16 and !has.int16Arithmetic {
+    if cap == CAP_INT16 && !has.int16Arithmetic {
       fail("createShaderModule: the shader uses 16-bit integers (Int16), which the device was not made with (ComputeRequest.int16, on a GPU that has them)");
       return false;
     }
-    if cap == CAP_INT8 and !has.int8Arithmetic {
+    if cap == CAP_INT8 && !has.int8Arithmetic {
       fail("createShaderModule: the shader uses 8-bit integers (Int8), which the device was not made with (ComputeRequest.int8, on a GPU that has them)");
       return false;
     }
-    if (cap == CAP_STORAGE_BUFFER_8 or cap == CAP_UNIFORM_AND_STORAGE_8) and !has.storage8Bit {
+    if (cap == CAP_STORAGE_BUFFER_8 || cap == CAP_UNIFORM_AND_STORAGE_8) && !has.storage8Bit {
       fail("createShaderModule: the shader keeps 8-bit values in buffers, which the device was not made with (ComputeRequest.int8, on a GPU that has them)");
       return false;
     }
-    if cap >= CAP_DOT_PRODUCT_INPUT_ALL and cap <= CAP_DOT_PRODUCT and !has.integerDotProduct {
+    if cap >= CAP_DOT_PRODUCT_INPUT_ALL && cap <= CAP_DOT_PRODUCT && !has.integerDotProduct {
       fail("createShaderModule: the shader uses integer dot products, which the device was not made with (ComputeRequest.integerDotProduct, on a GPU that has them)");
       return false;
     }

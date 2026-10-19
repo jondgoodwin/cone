@@ -67,20 +67,20 @@ share the pattern's type node, and the variable takes its type from the cast
 
 `parseMatch` lowers the whole construct into a block plus one `IfNode`:
 `case is T` → an `is` node, `case == v` (or any comparison operator) → that
-operator's call with the scrutinee on the left, `case a ..< b` → `>= a and < b` (`case a .. b` → `>= a and <= b`),
+operator's call with the scrutinee on the left, `case a ..< b` → `>= a && < b` (`case a .. b` → `>= a && <= b`),
 `case let x T` → a bound pattern, `case v` (a value alone) →
 an `is` node flagged `FlagMatchValue` that type check turns into `v`'s variant
-test or `== v` ([cast](cast.md)), `else` → `elseCond`. Patterns joined by `or` → a logical `or` of
-their conditions; an `if g` after them → `cond and g` (the `and` flagged
-`FlagMatchGuard`, so that a guard is told from the `and` of a range pattern). **A held value is one scrutinee node
-pointer shared by every arm**, so a range's two calls and every `or` alternative hold
+test or `== v` ([cast](cast.md)), `else` → `elseCond`. Patterns joined by `|` → a logical `||` of
+their conditions; an `if g` after them → `cond && g` (the `&&` flagged
+`FlagMatchGuard`, so that a guard is told from the `&&` of a range pattern). **A held value is one scrutinee node
+pointer shared by every arm**, so a range's two calls and every `||` alternative hold
 it too; **a place is a separate copy in each test.** The `IfNode` is marked `FlagIfMatch`.
 
 **`match a, b` has one matchee for each value and one pattern for each in a case.**
 Each matchee is a place or held in a variable of its own (`-match1`, … after the first,
 which keeps the anonymous name), evaluated once each, left to right, in the block before
-the `if`. A case's condition is the patterns of its columns, in order, joined by `and`
-nodes flagged `FlagMatchRow` (left-nested, `(c0 and c1) and c2`), then a guard if there
+the `if`. A case's condition is the patterns of its columns, in order, joined by `&&`
+nodes flagged `FlagMatchRow` (left-nested, `(c0 && c1) && c2`), then a guard if there
 is one. `_` is a column's pattern that takes any value: a literal `true` flagged
 `FlagMatchAny` (`parseMatchWild`), so it type checks and generates as the constant it
 looks like and costs nothing at run time. `_` in a match of one value, a case whose
@@ -96,13 +96,13 @@ or are joined as ever when it is none (see [literals](literals.md)).
 **A pattern's first operand decides between a range, a value and a refusal.**
 A pattern beginning with neither `is` nor a comparison operator reads one
 operand (`parseOr`); a following `..` or `..<` makes it a range. A comparison
-operator, `is` or `and` after it makes it a condition (`case n > 3`), and so does
-a leading `not` (`case not b`). A condition is refused, `ErrorPatBare`: a value
+operator, `is` or `&&` after it makes it a condition (`case n > 3`), and so does
+a leading `!` (`case !b`). A condition is refused, `ErrorPatBare`: a value
 alone is compared with the matched value, and the comparison without its left side
 (`case >3`) and an `if` guard say a condition. The refused expression is finished
-(`parseSimpleExprFrom`), its own `or` included, so it is reported once. Anything else is a value alone
+(`parseSimpleExprFrom`), its own `||` included, so it is reported once. Anything else is a value alone
 (`case 1`, `case true`, `case K`, `case Circle`), the same at the start of a
-case and after an `or`.
+case and after a `|`.
 
 **A binding that outlives an early exit, `let n Ok = r else {...};`, is the same bound
 pattern declared where it stands** (`parseLetElse`, from the `PermToken` case of
@@ -123,7 +123,7 @@ call with parentheses; `parseUsingMatchee` inserts the value at index 0 of its a
 comes after the receiver). It is read in three places.
 
 - *A test*, `case using isOdd()`, is a pattern of `parseMatchPattern`: the call is the condition, like any
-  other call a case may hold, so it can be joined by `or`, be a column's pattern and take a guard. A
+  other call a case may hold, so it can be joined by `|`, be a column's pattern and take a guard. A
   call giving an Option is `ErrorUsingForm` (`ifTypeCheck`), not a condition that is not a bool.
 - *A binding in a match*, `case let rest using prefix("GET ")`, must run the call once and read its result
   twice (the test and the binding), which one condition of the flat chain cannot do. So the chain goes on
@@ -157,7 +157,7 @@ declaring its own `x`, from a second conversion that shares the pattern's type
 node (`FlagMatchBind`) — and the arm keeps its own `x` as before.
 
 **What counts toward exhaustiveness is decided on a type checked match, by
-`ifMatchCover`** (below): an `is` test of a variant of a closed enum, an `or` of them,
+`ifMatchCover`** (below): an `is` test of a variant of a closed enum, a `|` of them,
 `v == true` and `v == false` on a `bool`, and `_`. A guarded case does not count (the guard
 may fail). A number or character alone (`v == 5`) is counted only to find one named twice, never
 to cover the match; any other value alone is an `==` call that counts for nothing.
@@ -230,10 +230,10 @@ This is the check of an `if` chain written as an `if`, not of a `match`: a marke
 Runs after the loop of pass 1 on an `IfNode` marked `FlagIfMatch`, unless a condition was
 reported (`condErrors`: the cases are not judged then; an error in an arm's body does not
 stop it). It reads each case as a **row** of cells, one for each value matched, found by
-flattening the `FlagMatchRow` `and`s, with the guard (a `FlagMatchGuard` `and`) taken off and
+flattening the `FlagMatchRow` `&&`s, with the guard (a `FlagMatchGuard` `&&`) taken off and
 noted. A cell (`matchClassify`) is one of:
 
-- **wild** — `_`, or, in an `or`, any alternative that is;
+- **wild** — `_`, or, in a `||`, any alternative that is;
 - **a set** of the values of the column's type, which the first cell that is one gives the
   column: an `is` of a variant of a closed enum (`matchClosedEnum`: the test `ifExhaustCheck`
   used, a trait with no base carrying `HasTagField` or `SameSize`), which is the variant's index
@@ -245,7 +245,7 @@ noted. A cell (`matchClassify`) is one of:
   A column of these counts the literals the cases name (`matchCollectInts`, a pass before the
   cells are made) plus one more value for every other number, which only `_` or `else` takes;
   so they find a number named twice but never cover a match, and the message for an uncovered
-  column of numbers is still the one that asks for `else`. An `or` is the union of its
+  column of numbers is still the one that asks for `else`. A `||` is the union of its
   alternatives'; a cell of another type than the column's is "other";
 - **other** — a comparison, a range, `==` against anything but a bool, integer or character
   literal, a string; anything this logic cannot count.
@@ -307,7 +307,7 @@ iteration left the builder at.
 **A temporary a condition makes dies once the condition is computed**, before
 the conditional branch (`genlTempsEnd`): a later condition runs on some paths
 only, so it cannot wait for the statement's end, and a `while`, which arrives
-as `if not cond { break }`, finalizes its own each pass ([Generation](../phases/generation.md),
+as `if !cond { break }`, finalizes its own each pass ([Generation](../phases/generation.md),
 "Temporaries").
 
 **A marked `if` (`FlagIfMatch`) whose leading arms test one integer, character or
@@ -315,14 +315,14 @@ enum tag is one LLVM `switch`** (`genlIfSwitch`), made before the chain, so flow
 borrows, narrowing and exhaustiveness have all worked on the `if` nodes as written.
 `genlSwitchTest` reads each arm's condition as it was type checked and
 takes it if it is: a `==` of the matched value with a literal of its type or a named constant
-(the built-in integer `==`); `v >= lo and v <= hi` or `v < hi`, the range pattern, spelled out as a label
+(the built-in integer `==`); `v >= lo && v <= hi` or `v < hi`, the range pattern, spelled out as a label
 for each value (at most `SwitchMaxRange`, 128); an `is` of a variant, or of the variants a
-trait pattern names (`CastNode.variants`), a label for each tag; or an `or` of those. The matched value
+trait pattern names (`CastNode.variants`), a label for each tag; or a `|` of those. The matched value
 is the expression the first test reads, generated once before the `switch`
 (a place is read once instead of once for each test; a call was already held in a variable), and for a tag it
 is the enum's tag field, read through the reference if the matched value is one
 (`genlTagLoad`, which `genlIsVariant` uses too). The plan stops at the first arm that is
-`elseCond`, is not such a test (a guard — the `and` flagged `FlagMatchGuard` —, a `match a, b` row, another
+`elseCond`, is not such a test (a guard — the `&&` flagged `FlagMatchGuard` —, a `match a, b` row, another
 comparison, a call, which a function's pattern is, a string, a float), tests a different kind of value than the first, holds a
 nullable-pointer variant or a virtual reference, or would take the switch past `SwitchMaxLabels` (512) labels;
 fewer than `SwitchMinArms` (2) arms stay a chain. A value an earlier arm already has keeps that arm
@@ -355,7 +355,7 @@ aggregate is merged through a slot").
   condition currently being processed. Anything that made the target a non-final
   slot would corrupt the walk. (`ifMatchCover` rewrites after the walk.)
 - **`ifMatchCover` reads the shape type check leaves a condition in**: an `is` node,
-  `or` and `and` logic nodes, a literal, and the call of the `==` a comparison found
+  `||` and `&&` logic nodes, a literal, and the call of the `==` a comparison found
   (callee a name use of the declaration, the matched value first). A lowering that
   changes one of these makes the cell "other" and the match asks for an `else`; it does
   not mis-cover. A match counted wrongly would be the dangerous failure, so a cell is

@@ -81,9 +81,9 @@ fn inRanges(t &Array[u32], cp u32) bool {
 fn classify(cp u32) u8 {
   if cp >= 0x110000u32 { return kOther; }
   if cp < 0x80u32 {
-    if (cp >= 0x41u32 and cp <= 0x5Au32) or (cp >= 0x61u32 and cp <= 0x7Au32) { return kLetter; }
-    if cp >= 0x30u32 and cp <= 0x39u32 { return kNumber; }
-    if cp == 0x20u32 or (cp >= 9u32 and cp <= 13u32) { return kSpace; }
+    if (cp >= 0x41u32 && cp <= 0x5Au32) || (cp >= 0x61u32 && cp <= 0x7Au32) { return kLetter; }
+    if cp >= 0x30u32 && cp <= 0x39u32 { return kNumber; }
+    if cp == 0x20u32 || (cp >= 9u32 && cp <= 13u32) { return kSpace; }
     return kOther;
   }
   if inRanges(&spaceRanges, cp) { return kSpace; }
@@ -137,25 +137,25 @@ pub struct Scan {
 // The Llama 3 expression takes them in either case (ignoreCase), GPT-2's only
 // in lower case.
 fn contractionLength(cps &Array[u32], n usize, i usize, ignoreCase bool) usize {
-  if cps[i] != 0x27u32 or i + 1usize >= n { return 0usize; }
+  if cps[i] != 0x27u32 || i + 1usize >= n { return 0usize; }
   let c1 = foldCase(cps[i + 1usize], ignoreCase);
-  if c1 == 0x73u32 or c1 == 0x74u32 or c1 == 0x6Du32 or c1 == 0x64u32 { return 2usize; }
+  if c1 == 0x73u32 || c1 == 0x74u32 || c1 == 0x6Du32 || c1 == 0x64u32 { return 2usize; }
   if i + 2usize >= n { return 0usize; }
   let c2 = foldCase(cps[i + 2usize], ignoreCase);
-  if (c1 == 0x72u32 and c2 == 0x65u32) or (c1 == 0x76u32 and c2 == 0x65u32) or (c1 == 0x6Cu32 and c2 == 0x6Cu32) {
+  if (c1 == 0x72u32 && c2 == 0x65u32) || (c1 == 0x76u32 && c2 == 0x65u32) || (c1 == 0x6Cu32 && c2 == 0x6Cu32) {
     return 3usize;
   }
   0usize
 }
 
 fn foldCase(c u32, ignoreCase bool) u32 {
-  if ignoreCase and c >= 0x41u32 and c <= 0x5Au32 { c + 32u32 } else { c }
+  if ignoreCase && c >= 0x41u32 && c <= 0x5Au32 { c + 32u32 } else { c }
 }
 
 // The end of the run of characters of class k that starts at i
 fn runEnd(kinds &Array[u8], n usize, i usize, k u8) usize {
   var j = i;
-  while j < n and kinds[j] == k { j = j + 1usize; }
+  while j < n && kinds[j] == k { j = j + 1usize; }
   j
 }
 
@@ -180,7 +180,7 @@ fn gpt2End(cps &Array[u32], kinds &Array[u8], n usize, i usize) usize {
   if c > 0usize { return i + c; }
   // an optional space (only U+0020), then a run of one class that is not space
   var j = i;
-  if cps[i] == 0x20u32 and i + 1usize < n and kinds[i + 1usize] != kSpace { j = i + 1usize; }
+  if cps[i] == 0x20u32 && i + 1usize < n && kinds[i + 1usize] != kSpace { j = i + 1usize; }
   if kinds[j] != kSpace { return runEnd(kinds, n, j, kinds[j]); }
   spaceEnd(kinds, n, i)
 }
@@ -198,22 +198,22 @@ fn llama3End(cps &Array[u32], kinds &Array[u8], n usize, i usize, digits usize) 
   let ki = kinds[i];
   // one character that is not a letter, a number or a line break may begin a word
   if ki == kLetter { return runEnd(kinds, n, i, kLetter); }
-  if ci != 0x0Au32 and ci != 0x0Du32 and ki != kNumber and i + 1usize < n and kinds[i + 1usize] == kLetter {
+  if ci != 0x0Au32 && ci != 0x0Du32 && ki != kNumber && i + 1usize < n && kinds[i + 1usize] == kLetter {
     return runEnd(kinds, n, i + 1usize, kLetter);
   }
   // numbers, at most 'digits' of them
   if ki == kNumber {
     var j = i;
-    while j < n and kinds[j] == kNumber and j - i < digits { j = j + 1usize; }
+    while j < n && kinds[j] == kNumber && j - i < digits { j = j + 1usize; }
     return j;
   }
   // an optional space, a run of other characters, and the line breaks after it
   var o = n;
   if ki == kOther { o = i; }
-  elif ci == 0x20u32 and i + 1usize < n and kinds[i + 1usize] == kOther { o = i + 1usize; }
+  elif ci == 0x20u32 && i + 1usize < n && kinds[i + 1usize] == kOther { o = i + 1usize; }
   if o < n {
     var j = runEnd(kinds, n, o, kOther);
-    while j < n and (cps[j] == 0x0Au32 or cps[j] == 0x0Du32) { j = j + 1usize; }
+    while j < n && (cps[j] == 0x0Au32 || cps[j] == 0x0Du32) { j = j + 1usize; }
     return j;
   }
   // white space that ends in a line break: everything up to the run's last \r or \n
@@ -221,7 +221,7 @@ fn llama3End(cps &Array[u32], kinds &Array[u8], n usize, i usize, digits usize) 
   var p = w;
   while p > i {
     p = p - 1usize;
-    if cps[p] == 0x0Au32 or cps[p] == 0x0Du32 { return p + 1usize; }
+    if cps[p] == 0x0Au32 || cps[p] == 0x0Du32 { return p + 1usize; }
   }
   spaceEnd(kinds, n, i)
 }
@@ -250,12 +250,12 @@ pub enum PreTokenizer {
   // Hugging Face's pre-tokenizer names are spelt in many ways; these are the
   // ones this package reproduces), or None
   pub fn fromName(name &str) Option[PreTokenizer] {
-    if name == "gpt2" or name == "gpt-2" or name == "default" { return Some[PreTokenizer](PreTokenizer.Gpt2); }
-    if name == "llama3" or name == "llama-3" or name == "llama-bpe" or name == "cl100k" {
+    if name == "gpt2" || name == "gpt-2" || name == "default" { return Some[PreTokenizer](PreTokenizer.Gpt2); }
+    if name == "llama3" || name == "llama-3" || name == "llama-bpe" || name == "cl100k" {
       return Some[PreTokenizer](PreTokenizer.Llama3);
     }
     if name == "qwen2" { return Some[PreTokenizer](PreTokenizer.Qwen2); }
-    if name == "whole" or name == "none" { return Some[PreTokenizer](PreTokenizer.Whole); }
+    if name == "whole" || name == "none" { return Some[PreTokenizer](PreTokenizer.Whole); }
     None
   }
 

@@ -620,7 +620,7 @@ pub struct Mutex is Move, LockPermission, ThreadSafe {
     var n = spinLimit;
     while true {
       let state = loadRelaxed(p);
-      if state != mutexLocked or n == 0u32 {
+      if state != mutexLocked || n == 0u32 {
         return state;
       }
       n = n - 1u32;
@@ -666,7 +666,7 @@ fn rwHasWritersWaiting(s u32) bool {(s & rwWritersWaiting) != 0u32}
 // nobody waiting (a waiting writer is preferred, and waiting readers mean
 // the unlocking thread is still deciding whom to wake)
 fn rwIsReadLockable(s u32) bool {
-  (s & rwMask) < rwMaxReaders and !rwHasReadersWaiting(s) and !rwHasWritersWaiting(s)
+  (s & rwMask) < rwMaxReaders && !rwHasReadersWaiting(s) && !rwHasWritersWaiting(s)
 }
 
 // Many readers at once, or one writer alone: a plain, unchecked lock held as
@@ -753,11 +753,11 @@ pub struct Rwlock is Move, LockPermission, ThreadSafe {
   // Give up a read lock; the last reader out wakes a waiting writer
   pub fn readUnlock(self &opaq) {
     let was = mem.atomicSub[u32](self.word(), rwReadLocked, MemOrder.Release);
-    if rwIsUnlocked(was) or rwIsWriteLocked(was) {
+    if rwIsUnlocked(was) || rwIsWriteLocked(was) {
       die("sync: Rwlock.readUnlock of a Rwlock no reader holds\n");
     }
     let s = was - rwReadLocked;
-    if rwIsUnlocked(s) and rwHasWritersWaiting(s) {
+    if rwIsUnlocked(s) && rwHasWritersWaiting(s) {
       self.wakeWriterOrReaders(s);
     }
   }
@@ -813,7 +813,7 @@ pub struct Rwlock is Move, LockPermission, ThreadSafe {
       // the two is not missed
       let seq = mem.atomicLoad[u32](self.notifyWord(), MemOrder.Acquire);
       s = loadRelaxed(p);
-      if rwIsUnlocked(s) or !rwHasWritersWaiting(s) {
+      if rwIsUnlocked(s) || !rwHasWritersWaiting(s) {
         continue;
       }
       rawWait(self.notifyWord(), seq, forever);
@@ -828,7 +828,7 @@ pub struct Rwlock is Move, LockPermission, ThreadSafe {
       die("sync: Rwlock.writeUnlock of a Rwlock no writer holds\n");
     }
     let s = was - rwWriteLocked;
-    if rwHasWritersWaiting(s) or rwHasReadersWaiting(s) {
+    if rwHasWritersWaiting(s) || rwHasReadersWaiting(s) {
       self.wakeWriterOrReaders(s);
     }
   }
@@ -879,7 +879,7 @@ pub struct Rwlock is Move, LockPermission, ThreadSafe {
     var n = spinLimit;
     while true {
       let s = loadRelaxed(p);
-      if !rwIsWriteLocked(s) or rwHasReadersWaiting(s) or rwHasWritersWaiting(s) or n == 0u32 {
+      if !rwIsWriteLocked(s) || rwHasReadersWaiting(s) || rwHasWritersWaiting(s) || n == 0u32 {
         return s;
       }
       n = n - 1u32;
@@ -894,7 +894,7 @@ pub struct Rwlock is Move, LockPermission, ThreadSafe {
     var n = spinLimit;
     while true {
       let s = loadRelaxed(p);
-      if rwIsUnlocked(s) or rwHasWritersWaiting(s) or n == 0u32 {
+      if rwIsUnlocked(s) || rwHasWritersWaiting(s) || n == 0u32 {
         return s;
       }
       n = n - 1u32;
@@ -1385,7 +1385,7 @@ fn ringPark[T](c *Chan[T], timeoutNs u64) {
   mem.atomicStore[u32](&(*c).waiting as *u32, 1u32, MemOrder.SeqCst);
   let tail = mem.atomicLoad[u64](&(*c).tail as *u64, MemOrder.SeqCst);
   let taken = mem.atomicLoad[u64](&(*c).taken as *u64, MemOrder.SeqCst);
-  if (tail & chanClosed) == 0u64 and chanPos(tail) > taken + (*c).mask {
+  if (tail & chanClosed) == 0u64 && chanPos(tail) > taken + (*c).mask {
     rawWait(spacep, seq, timeoutNs);
   }
 }
@@ -1518,7 +1518,7 @@ fn soloWaitRoom[T](c *Chan[T], tail u64, mask u64, timeoutNs u64) {
   flushWrites();
   let taken = mem.atomicLoad[u64](&(*c).taken as *u64, MemOrder.SeqCst);
   let refused = mem.atomicLoad[u32](&(*c).refused as *u32, MemOrder.SeqCst);
-  if refused == 0u32 and tail == taken + mask + 1u64 {
+  if refused == 0u32 && tail == taken + mask + 1u64 {
     rawWait(spacep, seq, timeoutNs);
   }
 }
@@ -1704,7 +1704,7 @@ pub struct Sender[T Sendable] is Sendable {
         block = mem.atomicLoad[*Block[T]](blockp, MemOrder.Acquire);
         continue;
       }
-      if offset + 1u64 == blockCap and spare as usize == 0usize {
+      if offset + 1u64 == blockCap && spare as usize == 0usize {
         spare = blockNew[T]();
       }
       // Claim the position. SeqCst: this is the claim chanWake's Dekker
@@ -1875,7 +1875,7 @@ pub struct SoloSender[T Sendable] is Sendable {
       if tail != room {
         return true;
       }
-      if !mayWait or mem.atomicLoad[u32](&(*c).refused as *u32, MemOrder.Relaxed) != 0u32 {
+      if !mayWait || mem.atomicLoad[u32](&(*c).refused as *u32, MemOrder.Relaxed) != 0u32 {
         return false;
       }
       if spins < spinLimit {
@@ -2053,7 +2053,7 @@ pub struct Receiver[T Sendable] is Sendable {
   pub fn isClosed(self &) bool {
     let tail = mem.atomicLoad[u64](&(*chan).tail as *u64, MemOrder.Acquire);
     if solo {
-      return (tail & soloClosed) != 0u64 or mem.atomicLoad[u32](&(*chan).refused as *u32, MemOrder.Relaxed) != 0u32;
+      return (tail & soloClosed) != 0u64 || mem.atomicLoad[u32](&(*chan).refused as *u32, MemOrder.Relaxed) != 0u32;
     }
     (tail & chanClosed) != 0u64
   }
@@ -2098,7 +2098,7 @@ pub struct Receiver[T Sendable] is Sendable {
     if limit != head {
       return pollReady;
     }
-    if (tail & soloClosed) != 0u64 or mem.atomicLoad[u32](&(*chan).refused as *u32, MemOrder.Relaxed) != 0u32 {
+    if (tail & soloClosed) != 0u64 || mem.atomicLoad[u32](&(*chan).refused as *u32, MemOrder.Relaxed) != 0u32 {
       return pollClosed;
     }
     pollEmpty
@@ -2135,7 +2135,7 @@ pub struct Receiver[T Sendable] is Sendable {
     mem.atomicStore[u32](sleeping, 1u32, MemOrder.SeqCst);
     flushWrites();
     let tail = mem.atomicLoad[u64](&(*c).tail as *u64, MemOrder.SeqCst);
-    if (tail >> soloShift) == head and (tail & soloClosed) == 0u64 {
+    if (tail >> soloShift) == head && (tail & soloClosed) == 0u64 {
       rawWait(sleeping, 1u32, timeoutNs);
     }
     // Relaxed: only this thread sets it to 1, and its next sleep sets it
@@ -2252,7 +2252,7 @@ pub struct Receiver[T Sendable] is Sendable {
     // sender's load then sees the 1 and wakes this thread.
     mem.atomicStore[u32](sleeping, 1u32, MemOrder.SeqCst);
     let tail = mem.atomicLoad[u64](&(*c).tail as *u64, MemOrder.SeqCst);
-    if chanPos(tail) == chanPos(head) and (tail & chanClosed) == 0u64 {
+    if chanPos(tail) == chanPos(head) && (tail & chanClosed) == 0u64 {
       rawWait(sleeping, 1u32, timeoutNs);
     }
     // Relaxed: only this thread sets it to 1, and its next sleep sets it
@@ -2360,7 +2360,7 @@ pub struct OneshotSender[T Sendable] is Sendable {
   // Send v: None once it is there for the receiver; Some(v), handed back,
   // when a value was sent already or the receiver has gone. Never waits.
   pub fn send(self &mut, v T) Option[T] {
-    if sent or mem.atomicLoad[u32](&(*slot).gone as *u32, MemOrder.Acquire) != 0u32 {
+    if sent || mem.atomicLoad[u32](&(*slot).gone as *u32, MemOrder.Acquire) != 0u32 {
       return Some[T](v);
     }
     sent = true;
@@ -2375,13 +2375,13 @@ pub struct OneshotSender[T Sendable] is Sendable {
   // Whether a send would hand its value back: one was sent, or the
   // receiver has gone
   pub fn isClosed(self &) bool {
-    sent or mem.atomicLoad[u32](&(*slot).gone as *u32, MemOrder.Acquire) != 0u32
+    sent || mem.atomicLoad[u32](&(*slot).gone as *u32, MemOrder.Acquire) != 0u32
   }
 
   // A sender going without sending closes the channel: the receiver, asleep
   // or not, finds nothing will come
   fn final(self &uni) {
-    if not sent {
+    if !sent {
       let st = &(*slot).state as *u32;
       if mem.atomicSwap[u32](st, oneClosed, MemOrder.Release) == oneWaiting {
         rawWake(st);
@@ -2424,7 +2424,7 @@ pub struct OneshotReceiver[T Sendable] is Sendable {
   // value was taken
   pub fn isClosed(self &) bool {
     let s = mem.atomicLoad[u32](&(*slot).state as *u32, MemOrder.Acquire);
-    s == oneClosed or s == oneTaken
+    s == oneClosed || s == oneTaken
   }
 
   fn take(self &mut) T {
@@ -2441,14 +2441,14 @@ pub struct OneshotReceiver[T Sendable] is Sendable {
       if s == oneFull {
         return Some[T](self.take());
       }
-      if s == oneClosed or s == oneTaken {
+      if s == oneClosed || s == oneTaken {
         return None;
       }
       if s == oneEmpty {
         var seen = 0u32;
         var done = false;
         seen, done = mem.atomicCompareSwap[u32](st, oneEmpty, oneWaiting, MemOrder.Acquire, MemOrder.Acquire);
-        if not done {
+        if !done {
           continue;
         }
       }

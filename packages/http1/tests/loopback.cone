@@ -61,7 +61,7 @@ struct Side {
 // Hand the kernel what the core has to send, and a buffer to receive into
 // when the core has credit for one; close the socket once the core is done
 fn drive(lp &mut Loop, s &mut Side, pool &Pool) {
-  if s.sock.isNone() or s.sockClosed {return;}
+  if s.sock.isNone() || s.sockClosed {return;}
   let now = Instant.now();
   while s.sendsOut < sendDepth {
     var b = s.conn.pollTransmit(now);
@@ -69,11 +69,11 @@ fn drive(lp &mut Loop, s &mut Side, pool &Pool) {
     lp.submit(Op.Send(s.sock, b), Target.Here(tokSend));
     s.sendsOut = s.sendsOut + 1u32;
   }
-  if not s.recvOut and not s.conn.isClosed() and s.conn.readCredit() >= recvSize {
+  if !s.recvOut && !s.conn.isClosed() && s.conn.readCredit() >= recvSize {
     lp.submit(Op.Recv(s.sock, pool.mustTake(recvSize)), Target.Here(tokRecv));
     s.recvOut = true;
   }
-  if s.conn.shouldClose() and s.sendsOut == 0u32 {
+  if s.conn.shouldClose() && s.sendsOut == 0u32 {
     lp.close(s.sock);
     s.sockClosed = true;
   }
@@ -81,7 +81,7 @@ fn drive(lp &mut Loop, s &mut Side, pool &Pool) {
 
 // Whether this side is over: its socket closed and nothing of it in flight
 // (so there is nothing left to wait for)
-fn finished(s &Side) bool {s.sockClosed and not s.recvOut and s.sendsOut == 0u32}
+fn finished(s &Side) bool {s.sockClosed && !s.recvOut && s.sendsOut == 0u32}
 
 // Wait in the loop until something completes or the core's deadline comes,
 // then hand the core what came, and the time
@@ -109,7 +109,7 @@ fn settle(lp &mut Loop, s &mut Side, out &mut List[Completion]) {
       }
     } elif c.token == tokSend {
       s.sendsOut = s.sendsOut - 1u32;
-      if not c.isDone() {s.conn.abort();}
+      if !c.isDone() {s.conn.abort();}
     }
     k = k + 1usize;
   }
@@ -168,7 +168,7 @@ fn serve(a ServerArgs) ServerReport {
 fn respond(c &mut Connection, pool &Pool, ans &mut Answer, rep &mut ServerReport) {
   // The large body goes out as the send queue has room
   if ans.route == 3u32 {
-    while ans.largeOff < largeSize and c.writeRoom() >= largeChunk {
+    while ans.largeOff < largeSize && c.writeRoom() >= largeChunk {
       var b = pool.mustTake(largeChunk);
       let room = b.whole();
       var i = 0usize;
@@ -358,7 +358,7 @@ fn client(a ClientArgs) ClientReport {
           inFlight = false;
           let took = (Instant.now() - sentAt).nanos();
           if phase == 0u32 {
-            if status != 200u16 or offset != smallLen(n) {rep.wrong = rep.wrong + 1u64;}
+            if status != 200u16 || offset != smallLen(n) {rep.wrong = rep.wrong + 1u64;}
             rep.getRtt.record(took);
             rep.getsDone = rep.getsDone + 1u64;
             n = n + 1u64;
@@ -367,7 +367,7 @@ fn client(a ClientArgs) ClientReport {
               n = 0u64;
             }
           } elif phase == 1u32 {
-            if status != 200u16 or offset != postLen(n) {rep.wrong = rep.wrong + 1u64;}
+            if status != 200u16 || offset != postLen(n) {rep.wrong = rep.wrong + 1u64;}
             rep.postRtt.record(took);
             rep.postsDone = rep.postsDone + 1u64;
             n = n + 1u64;
@@ -376,7 +376,7 @@ fn client(a ClientArgs) ClientReport {
               n = 0u64;
             }
           } else {
-            if status != 200u16 or offset != largeSize {rep.wrong = rep.wrong + 1u64;}
+            if status != 200u16 || offset != largeSize {rep.wrong = rep.wrong + 1u64;}
             rep.largeBytes = offset;
             rep.largeTook = Instant.now() - largeAt;
             phase = 3u32;
@@ -401,7 +401,7 @@ fn client(a ClientArgs) ClientReport {
       }
     }
     // The next request, when the connection is free
-    if not inFlight and not s.sock.isNone() and phase < 3u32 and s.conn.canSendRequest() {
+    if !inFlight && !s.sock.isNone() && phase < 3u32 && s.conn.canSendRequest() {
       sentAt = Instant.now();
       if phase == 0u32 {
         var t = String.from("/small/");
@@ -431,7 +431,7 @@ fn client(a ClientArgs) ClientReport {
       }
       inFlight = true;
     }
-    if phase == 3u32 and not s.conn.isClosed() {s.conn.abort();}
+    if phase == 3u32 && !s.conn.isClosed() {s.conn.abort();}
     drive(&mut lp, &mut s, &pool);
     if finished(&s) {break;}
     settle(&mut lp, &mut s, &mut out);
