@@ -130,8 +130,7 @@ pub actor Endpoint {
       let z = await aio.sleep(Duration.fromMillis(1i64));
     }
     let c = group.cancel();
-    var dead = UdpSocket.none();
-    dead <-> sock;
+    sock = UdpSocket.none();
   }
 
   // ------------------------------------------------------------------
@@ -143,16 +142,14 @@ pub actor Endpoint {
   // The first message the endpoint is sent
   async fn open(self, bind: SocketAddr, up: OneshotSender[Result[SocketAddr, IoError]]) {
     var tx = up;
-    var made = await aio.bindUdp(bind);
-    match &mut made {
-      case var &mut Ok(ok) { sock <-> *ok; }
-      else {}
+    let made = await aio.bindUdp(bind);
+    var failure = IoError(1u32);
+    match made {
+      case let Ok(ok) { sock = ok; }
+      case let Error(e) { failure = e; }
     }
     if sock.isNone() {
-      match &made {
-        case let &Error(e) { tx.send(Error[SocketAddr, IoError](*e)); }
-        else { tx.send(Error[SocketAddr, IoError](IoError(1u32))); }
-      }
+      tx.send(Error[SocketAddr, IoError](failure));
       return;
     }
     // What the system bound: the address asked for, and the port it chose
