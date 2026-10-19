@@ -382,32 +382,33 @@ pub struct Client {
     let now = Instant.now();
     let fi = self.newFetch();
     let f = self.fetchAt(fi) as &mut Fetch;
-    var s = sink;
-    f.sink <-> s;
-    f.method = r.method;
-    f.methodText <-> r.methodText;
-    f.url <-> r.url;
-    f.headers <-> r.headers;
+    let method, methodText, url, headers, body, intent, score, deadline, group, maxRedirects, urlError =
+      r.(method, methodText, url, headers, body, intent, score, deadline, group, maxRedirects, urlError);
+    f.sink = sink;
+    f.method = method;
+    f.methodText = methodText;
+    f.url = url;
+    f.headers = headers;
     if !f.headers.has("User-Agent") {
       // Copied: the fields hold Strings, and nothing shows the config's is none of them
       let agent = cfg.userAgent.copy();
       f.headers.add("User-Agent", agent.view());
     }
     if !f.headers.has("Accept") {f.headers.add("Accept", "*/*");}
-    f.body <-> r.body;
-    f.intent = r.intent;
-    f.score = r.score;
-    f.deadline = r.deadline;
-    f.group <-> r.group;
-    f.maxRedirects = if r.maxRedirects == useConfig {cfg.maxRedirects} else {r.maxRedirects};
+    f.body = body;
+    f.intent = intent;
+    f.score = score;
+    f.deadline = deadline;
+    f.group = group;
+    f.maxRedirects = if maxRedirects == useConfig {cfg.maxRedirects} else {maxRedirects};
     f.seq = seq;
     seq = seq + 1u64;
     f.timing.queued = now;
     st.fetches = st.fetches + 1u64;
     let id = self.idOf(fi);
     // Answered at once: a bad URL, a full queue, a cancelled group, a past deadline
-    if !r.urlError.isNone() {
-      self.refuse(lp, fi, Stage.Url, r.urlError.message().view());
+    if !urlError.isNone() {
+      self.refuse(lp, fi, Stage.Url, urlError.message().view());
       return id;
     }
     if !f.url.isHttp() {
@@ -625,12 +626,8 @@ pub struct Client {
       self.hold(fi, credit, e);
       return;
     }
-    var s: Sink = Sink.Here(0u64);
-    s <-> f.sink;
     var back = blankEvent();
-    var sent = sinkTaken;
-    s, sent = trySink(s, e, &mut back);
-    f.sink <-> s;
+    let sent = trySink(&mut f.sink, e, &mut back);
     if sent == sinkFull {
       self.hold(fi, credit, back);
       return;
@@ -684,8 +681,7 @@ pub struct Client {
       }
       if !stay {
         var e2 = blankEvent();
-        var sent = sinkTaken;
-        s, sent = trySink(s, e, &mut e2);
+        let sent = trySink(&mut s, e, &mut e2);
         if sent == sinkGone {st.dropped = st.dropped + 1u64;}
         if sent != sinkFull {
           let f = self.fetchAt(fi) as &mut Fetch;
@@ -704,12 +700,12 @@ pub struct Client {
       kn.push(n);
       kq.push(q);
     }
-    heldE <-> ke;
-    heldS <-> ks;
-    heldF <-> kf;
-    heldG <-> kg;
-    heldN <-> kn;
-    heldQ <-> kq;
+    heldE = ke;
+    heldS = ks;
+    heldF = kf;
+    heldG = kg;
+    heldN = kn;
+    heldQ = kq;
   }
 
   // Events for this thread, moved to out: how many
@@ -1101,7 +1097,7 @@ pub struct Client {
       let n = if left < sendChunk {left} else {sendChunk};
       var b = IoBuf.empty();
       match pool.take(n) {
-        case var Some(s) {b <-> s;}
+        case let Some(s) {b = s;}
         case is None[IoBuf] {}
       }
       if b.capacity() == 0usize {
@@ -1230,7 +1226,7 @@ pub struct Client {
     var next = Url.empty();
     var why = String.empty();
     match f.url.resolve(f.location.view()) {
-      case var Ok(r) {next <-> r;}
+      case let Ok(r) {next = r;}
       case let Error(x) {why = x.message();}
     }
     if why.len() == 0usize && !next.isHttp() {why = String.from("it is not an http or https URL");}
@@ -1264,7 +1260,7 @@ pub struct Client {
       next.fragment = f.url.fragment.copy();
       next.hasFragment = true;
     }
-    f.url <-> next;
+    f.url = next;
     f.timing.redirects = f.timing.redirects + 1u32;
     f.retries = 0u32;
     st.redirects = st.redirects + 1u64;
@@ -1286,18 +1282,15 @@ pub struct Client {
     var evs = List[Event].empty();
     while going {
       self.poll(lp, forever(), &mut evs);
-      var k = 0usize;
-      while k < evs.len() {
-        var e = blankEvent();
-        let slot = &mut evs[k];
-        e <-> *slot;
-        k = k + 1usize;
+      each e in evs.drain() {
         if e.id != id {
           others.push(e);
         } else if e.kind == EventKind.Response {
-          resp.status = e.response.status;
-          resp.headers <-> e.response.headers;
-          resp.url <-> e.url;
+          let response, url = e.(response, url);
+          let status, headers = response.(status, headers);
+          resp.status = status;
+          resp.headers = headers;
+          resp.url = url;
         } else if e.kind == EventKind.Data {
           let n = e.buf.len();
           if resp.body.len() + n > limit {
@@ -1309,31 +1302,27 @@ pub struct Client {
           self.release(id, n);
         } else if e.isTerminal() {
           resp.outcome = e.kind;
-          resp.failure <-> e.failure;
-          resp.timing = e.timing;
+          let failure, timing = e.(failure, timing);
+          resp.failure = failure;
+          resp.timing = timing;
           going = false;
         }
       }
-      evs.clear();
     }
     // What came for others goes first at the next poll
     while ready.len() > 0usize {
-      var e = blankEvent();
       match ready.pop() {
-        case var Some(s) {e <-> s;}
+        case let Some(e) {evs.push(e);}
         case is None[Event] {}
       }
-      evs.push(e);
     }
     while evs.len() > 0usize {
-      var e = blankEvent();
       match evs.pop() {
-        case var Some(s) {e <-> s;}
+        case let Some(e) {others.push(e);}
         case is None[Event] {}
       }
-      others.push(e);
     }
-    ready <-> others;
+    ready = others;
     resp
   }
 
@@ -1402,47 +1391,37 @@ const sinkTaken = 0u32;
 const sinkFull = 1u32;
 const sinkGone = 2u32;
 
-// A second sink to the same place: a channel's sender cloned. (The sink is
-// swapped into a local to be matched: Cone narrows only a local's variant,
-// error 1034)
+// A second sink to the same place: a channel's sender cloned
 fn copySink(s: &mut Sink) Sink {
-  var here: Sink = Sink.Here(0u64);
-  here <-> *s;
-  var out: Sink = Sink.Here(here.token);
-  match &here {
-    case let &Chan(c) {out = Sink.Chan(here.token, c.tx.clone());}
+  var out: Sink = Sink.Here(s.token);
+  match s {
+    case let &Chan(c) {out = Sink.Chan(s.token, c.tx.clone());}
     else {}
   }
-  *s <-> here;
   out
 }
 
 // Whether a sink is a channel
 fn isChan(s: &mut Sink) bool {
-  var here: Sink = Sink.Here(0u64);
-  here <-> *s;
   var yes = false;
-  match &here {
+  match s {
     case is &Chan {yes = true;}
     else {}
   }
-  *s <-> here;
   yes
 }
 
-// Send e on a channel sink, never waiting; the sink is moved in and handed
-// back. A full channel hands e back in 'back'
-fn trySink(s: Sink, e: Event, back: &mut Event) Sink, u32 {
-  var here = s;
+// Send e on a channel sink, never waiting. A full channel hands e back in 'back'
+fn trySink(s: &mut Sink, e: Event, back: &mut Event) u32 {
   var how = sinkTaken;
-  match &here {
+  match s {
     case let &Chan(ch) {
       match ch.tx.trySend(e) {
-        case var Some(r) {
+        case let Some(r) {
           if ch.tx.isClosed() {
             how = sinkGone;
           } else {
-            *back <-> r;
+            *back = r;
             how = sinkFull;
           }
         }
@@ -1451,7 +1430,7 @@ fn trySink(s: Sink, e: Event, back: &mut Event) Sink, u32 {
     }
     else {}
   }
-  here, how
+  how
 }
 
 fn removeAt(l: &mut List[u32], k: usize) {
