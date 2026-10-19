@@ -175,7 +175,6 @@ enum TokenTypes {
     RetToken,      // 'return'
     WithToken,     // 'with'
     IfToken,       // 'if'
-    ElifToken,     // 'elif'
     ElseToken,     // 'else'
     CaseToken,     // 'case'
     MatchToken,    // 'match'

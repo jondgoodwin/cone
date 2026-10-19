@@ -39,7 +39,7 @@ which failed module verification.
 
 ## Parse
 
-`if` / `elif` / `else` append pairs; `else if` is folded into `elif`.
+`if` / `else if` / `else` append pairs.
 
 **What a match or a bound `if` matches against is decided by its form**
 (`MatchSubject`, `parseMatchSubject`). A *place* -- a name, a field of a place, a
@@ -130,14 +130,14 @@ comes after the receiver). It is read in three places.
 - *A binding in a match*, `case let rest using prefix("GET ")`, must run the call once and read its result
   twice (the test and the binding), which one condition of the flat chain cannot do. So the chain goes on
   in the `else` of the cases before it, which holds the call's result in a variable and the cases after, as
-  an `elif let Some(x) = call` does (`parseBoundMatch`, `usingarm`): `[…, elseCond, { let -using1 =
-  prefix(matchee, "GET "); if -using1 is Some { let rest = [Some]-using1; … } elif … }]`. The cases
+  an `else if let Some(x) = call` does (`parseBoundMatch`, `usingarm`): `[…, elseCond, { let -using1 =
+  prefix(matchee, "GET "); if -using1 is Some { let rest = [Some]-using1; … } else if … }]`. The cases
   after it are an `IfNode` of their own, marked `FlagIfMatchTail`, which `parseMatch` goes on adding to;
   it is not a match for `ifMatchCover`, which judges the first `IfNode`, whose last arm is that `else`. The
   variable is named `-using` and a number, one of a match's own names (`nameIsMatchHolder`).
   `varDclTypeCheck` asks the variable of that name for an Option, `ErrorUsingForm`, and gives it the error
   type otherwise, which `castIsTypeCheck` leaves unreported.
-- *A binding in an `if`, an `elif` and a let-else*, `let rest using prefix("GET ") = line`, reads the call
+- *A binding in an `if`, an `else if` and a let-else*, `let rest using prefix("GET ") = line`, reads the call
   where a type would stand (`parseBindVarDcl`; `parseVarDcl` with `ParseMayUsing`, and `ParseState.usingdcl`
   to say it did), and the value after `=` becomes its first argument: `let Some(rest) = prefix(line, "GET ")`,
   held and bound as any bound `if` is. A declaration of this kind with no `else` is `ErrorUsingForm`.
