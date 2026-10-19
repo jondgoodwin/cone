@@ -358,7 +358,12 @@ static void fnCallAppendNestNameRes(FnCallNode *node) {
     FnCallNode *recv = (FnCallNode*)node->objfn;
     if (recv->methfld != NULL || recv->args == NULL)
         return;
-    // A generic parameter called, 'T() <- ...', is a construction once it is a type
+    // A generic parameter called, 'T() <- ...', is a construction once it is a type.
+    // A macro parameter is the same node kind and is counted the same way, which is
+    // right: 'mk() <- ...' is valid only where 'mk' stands for a type (a construction,
+    // 'build(List[i32])'); for a function or a value the call's result is no lval and
+    // '<-' is refused exactly as when written without the macro, so the nesting never
+    // reaches generation for it
     uint16_t nest = nameUseNames(recv->objfn, GenVarDclTag) ? 2 : 1;
     INode *entries = nodesGet(node->args, 0);
     if (entries->tag == EachEntryTag)
