@@ -107,6 +107,7 @@ typedef struct ParseState {
     char *typeendp;
     int usingdcl;           // A variable: parseVarDcl read it as bound by a 'using' pattern (its type is the Some it takes the payload of, its value the call)
     int letelsetype;        // A local: parseVarDcl read a variant after its name with no ':' (only a let-else is written so)
+    int colontype;          // A local: parseVarDcl read its type after a ':' (which a let-else's pattern is not written with)
     // Where a struct's header ends and where its 'is' list does, for the span
     // of the struct just parsed (dclspan.h); written as parseStruct returns
     char *hdrendp;

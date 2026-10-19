@@ -1738,8 +1738,12 @@ INode *parseExprBlock(ParseState *parse, int isloop) {
         {
             VarDclNode *var = parseVarDcl(parse, immPerm, ParseMaySig|ParseMayImpl|ParseMayUsing);
             // 'let n Ok = r else {...};' binds a variant or leaves
-            if (lexIsToken(ElseToken))
+            if (lexIsToken(ElseToken)) {
+                if (parse->colontype)
+                    errorMsgNode((INode*)var, ErrorLetElseColon,
+                        "A variant bound by 'else' is named after the binding with no ':', as in 'let n Ok = r else {...};': the binding is a pattern, and what follows it is the variant, not a type for the binding.");
                 parseLetElse(parse, blk, var);
+            }
             else {
                 if (parse->letelsetype)
                     errorMsgNode((INode*)var, ErrorNoSemi, "Expected ';' to end the statement");

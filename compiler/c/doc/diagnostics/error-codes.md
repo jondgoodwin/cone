@@ -154,6 +154,11 @@ such a literal (`0b1.0`, `0o7e2`, `0b1f32`), pointed at the `.`, the `e` or `p`,
 read on as the integer 0 so nothing is said again about it. Hexadecimal is not held to
 these rules (`0x` is read as 0).
 
+`ErrorLetElseColon` is a let-else binding written with a `:` (`let n: Ok = r else {...};`).
+The binding is a pattern that takes the payload of a variant of the value, and the word after it
+names only the variant, with no `:`; a type after a `:` would say what the binding is, which
+the payload is not. Pointed at the binding.
+
 `ErrorMatchNotExhaustive`, `ErrorMatchUnreachable` and `ErrorMatchColumn` are what a match
 must cover. A match that does not cover every variant of its enum, both values of its bool or
 every combination of its columns, and has no `else`, or whose cases cannot be shown to

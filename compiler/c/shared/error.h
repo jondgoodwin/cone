@@ -718,6 +718,9 @@ enum ErrorCode {
     ErrorRadixDigit = 1512,     // A binary or octal literal with no digit after its prefix (`0b`, `0o`, `0b_`) or with a digit its radix does not have (`0b2`, `0o8`): 'b' takes 0 and 1 and 'o' takes 0 to 7. Pointed at the digit that is wrong, or at the prefix's letter when there is none. Hex is not held to this rule: `0x` is read as zero
     ErrorRadixFloat = 1513,     // A binary or octal literal written with a fraction, an exponent or a float suffix (`0b1.0`, `0o7e2`, `0b1f32`): it is a whole number. Pointed at the '.', the 'e' or 'p', or the suffix. A '.' before a name is the call of a method (`0b101.abs`) and a '..' is the range
 
+    // A let-else binding written with a ':' (parser/parsefnflow.c)
+    ErrorLetElseColon = 1514,   // A local declared with a ':' and a type that is followed by 'else': `let n: Ok = r else ...`. A let-else binds the payload of a variant of the value, a pattern, and names only the variant after the binding, with no ':' (`let n Ok = r else ...`); the type after a ':' is the binding's own, which a payload is not. Pointed at the binding
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name
