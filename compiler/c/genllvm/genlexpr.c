@@ -1027,7 +1027,7 @@ void genlNewFill(GenState *gen, FnCallNode *fncall, LLVMValueRef *fnargs, LLVMVa
     genlFnCallInternal(gen, SimpleDispatch, fncall->objfn, fncall->args->used + 1, fnargs, NULL);
 }
 
-// A construction by a declared 'init', 'new Point(1, 2)': its arguments are
+// A construction by a declared 'init', 'Point(1, 2)': its arguments are
 // evaluated, then the init is called with 'dest' as its self, the memory it
 // fills in place -- a local's own or, where the value has no place yet, a
 // temporary, whose value is then the construction's. (An allocation's value is
@@ -1061,7 +1061,7 @@ int genlNewInto(GenState *gen, INode *exp, LLVMValueRef dest) {
 //
 // An inline function that places memory and then moves its parameter into it,
 // as a region's 'alloc' does (reserve the room, 'mem.writeRaw(place, value)'),
-// would be handed a construction, 'a.alloc(new Node(1))', as a value built in a
+// would be handed a construction, 'a.alloc(Node(1))', as a value built in a
 // temporary of the caller's and copied into the place. Instead the call's
 // arguments (the construction's too) are evaluated, as any call's are, and
 // the construction itself waits until the function's statement writes its
@@ -1450,7 +1450,7 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
     if (intrinsicBuildConst((INode*)fncall, &buildconst))
         return LLVMConstInt(genlType(gen, fncall->vtype), (uint64_t)buildconst, 1);
 
-    // 'mem.writeRaw[T](p, new T(...))' by a declared init fills p in place: the
+    // 'mem.writeRaw[T](p, T(...))' by a declared init fills p in place: the
     // init runs with p as its self, as an allocation's value is filled
     // (genlallocref), so what the init does with its self's address -- an
     // actor's init sending through its own handle -- reaches where the value

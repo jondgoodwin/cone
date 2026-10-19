@@ -1176,8 +1176,8 @@ with the fields' own shape -- or any whose arguments an untyped literal also
 passes to the fields, since such a literal passes to any number type and an
 integer one to `bool` -- takes every positional construction it is viable
 for. The implicit init is reached by the fields' names, which only it takes:
-inside a declared init, `*self = new T(field: value)` fills the value
-field-wise, and `*self = new T(...)` whose positional arguments select the
+inside a declared init, `*self = T(field: value)` fills the value
+field-wise, and `*self = T(...)` whose positional arguments select the
 init it is in is `ErrorInitRecurse` (`assignInitRecurse`), since filling self
 would run that init again. Only that form is refused: a construction of the
 same init elsewhere in its body -- a child value, or an allocation such as a
@@ -1290,19 +1290,19 @@ What the marker brings:
   does with it, are the type's own; a type that wraps another (`String`'s
   `List[u8]`, `Set`'s `Dict`) passes the region on to it.
 - **The handover** (`ir/exp/typelit.c`): the region is the init's last
-  argument. `typeLitInitViable` counts it as defaulted, so `new List[i32]`,
-  `new List[i32](100)` and the same through an allocation (`new Rc[List[i32]]`)
+  argument. `typeLitInitViable` counts it as defaulted, so `List[i32]()`,
+  `List[i32](100)` and the same through an allocation (`Rc[List[i32]]()`)
   select an init without it written, and `typeLitInitArgs` fills it in with a
   call of `heapRegion()` (`typeLitRegionArg`, type checked at the construction).
-  A construction that passes one, `new List[i32](100, r)`, is coerced to the
-  parameter like any argument. A type's own literal, `new List(null, 0, 0,
+  A construction that passes one, `List[i32](100, r)`, is coerced to the
+  parameter like any argument. A type's own literal, `List(null, 0, 0,
   region)`, is the implicit init and takes all its fields as written.
   The marker is general: any type may declare it, and a type that holds a
   collection passes its own `region` to the field's construction
-  (`new List[f32](n, region)`), so a composite's parts come from the one
+  (`List[f32](n, region)`), so a composite's parts come from the one
   region it was handed.
   A construction whose head names a region value, `new arena[List[i32]](16)`,
-  is `arena.alloc(new List[i32](16))` ([literals](literals.md), "Construction"),
+  is `arena.alloc(List[i32](16))` ([literals](literals.md), "Construction"),
   and a CarriesRegion type made there that names no region is handed the
   region in the head's first field instead of the heap's: `typeLitNewInRegion`
   puts the head's `.region`, read from a copy of the head, in the construction's
@@ -1769,7 +1769,7 @@ already has `ErrorDupName`, with `as` or `but` to settle it.
 `structLendUseOf` whether a lend admits the name; if so `structLendReceiver`
 rewrites the receiver `x` into the call `x.view()`, lowered by
 `fnCallLowerMethod` (the receiver is checked already, and checking it again
-fails on a node that is not idempotent, `new Greeting(..)` among them). Selection
+fails on a node that is not idempotent, `Greeting(..)` among them). Selection
 then goes on against a `&str` receiver, so a value, a borrow, a `Uni[T]` and an
 `Rc[T]` of the lending type all arrive, each by the receiver coercion a method
 call always has. The call's returned borrow keeps the receiver loaned, as any
@@ -2216,7 +2216,7 @@ and `extractvalue`, and `vtblidx` for vtable slots.
 - **A finalizer an enrichment adds runs only while the value is typed as the
   enrichment.** Where the base declares no `final`, the enrichment may declare one,
   and it is this type's drop and not the base's. A value that crosses to the base's
-  name by value is dropped as the base — so `let p: Plain = new PlainFin(1)`, or passing
+  name by value is dropped as the base — so `let p: Plain = PlainFin(1)`, or passing
   a `PlainFin` to a parameter typed `Plain`, runs no finalizer at all. Measured, not
   pinned: nothing refuses it and nothing decides it. A base's own `final` has no
   such gap, since every enrichment carries a copy.

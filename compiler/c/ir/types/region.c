@@ -5,7 +5,7 @@
  * declares the built-in trait 'RegionRef'. The compiler knows no region by
  * name. What it knows is the methods a region may declare, each found by name
  * and each optional, and it calls them at the reference events it alone can
- * see: 'alloc' and 'init' when 'new R[perm, T](...)' allocates, 'aliasRef' when a copy of an
+ * see: 'alloc' and 'init' when 'R[perm, T](...)' allocates, 'aliasRef' when a copy of an
  * owning reference becomes another owner, 'dealiasRef' when an owner goes away,
  * and 'free' once the value is dead. What a region leaves out says what it
  * does, and whether it declares 'Move' says whether a copy is a move and an
@@ -420,7 +420,7 @@ int regionMarkTakesContext(INode *region) {
     return marksig->parms->used == 4;
 }
 
-// At an allocation, 'new R[perm, T](...)': the region is a RegionRef (refTypeCheck reports
+// At an allocation, 'R[perm, T](...)': the region is a RegionRef (refTypeCheck reports
 // one that is not) whose 'alloc' the compiler can call
 void regionAllocTypeCheck(INode *region) {
     StructNode *strnode = regionDcl(region);

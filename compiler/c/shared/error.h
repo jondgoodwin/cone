@@ -397,21 +397,21 @@ enum ErrorCode {
     ErrorNbrBracket = 1207,     // 'u64[count]': a number type takes no '[...]'; a conversion is the method 'u64.from(count)'
     ErrorNbrFrom = 1208,        // A number type's 'from' named without a call, given other than one value, or given a value that does not convert: bool's takes a number, reference or pointer, every other's a number
 
-    // Construction, 'new Point(1, 2)', and the 'init' that fills a value in place (ir/exp/typelit.c, ir/exp/fncall.c, ir/stmt/fndcl.c, ir/flow.c)
-    ErrorStructBracket = 1209,  // 'Point[1, 2]': a struct's value is constructed 'new Point(1, 2)'; an enum's variant is constructed without 'new' (ErrorVariantBracket)
-    ErrorNewType = 1210,        // 'new' given what it cannot construct: not a struct (a number converts with 'from'), an enum's variant, a trait or an enum
+    // Construction, 'Point(1, 2)', and the 'init' that fills a value in place (ir/exp/typelit.c, ir/exp/fncall.c, ir/stmt/fndcl.c, ir/flow.c)
+    ErrorStructBracket = 1209,  // 'Point[1, 2]': a struct's value is constructed 'Point(1, 2)'; an enum's variant likewise, 'Some(5)' (ErrorVariantBracket)
+    ErrorNewType = 1210,        // A construction of what cannot be constructed: not a struct (a number converts with 'from'), an enum's variant, a trait or an enum
     ErrorInitNone = 1211,       // No 'init' takes a construction's arguments, or several the struct declares do: one it declares is preferred to the implicit field-wise one
-    ErrorInitCall = 1212,       // A type called without 'new', 'Point(1, 2)', or an 'init' called by name: a value is constructed 'new Point(1, 2)'
+    ErrorInitCall = 1212,       // An 'init' called by name, 'self.init(1)': an init runs only in a construction, 'Point(1, 2)'
     ErrorPermNew = 1213,        // '&new' other than as the 'self' of a method that returns nothing: it is an initializer's reference to memory not yet filled
     ErrorInitDcl = 1214,        // A struct's method named 'init' that does not take 'self: &new' first, or returns a value: an init fills its value in place
     ErrorInitSelf = 1215,       // In an init, 'self' used before '*self = value' fills it on every path, used other than through '*self', a field or a method call, or not filled when it returns
 
-    // Allocation, 'new Rc[mut, Node](1)' and 'trynew' (ir/exp/allocate.c, ir/exp/typelit.c, ir/types/reference.c)
-    ErrorPlusAlloc = 1216,      // An allocation written with '+', '+Rc 5', '+Rc-mut Node[1]', '?+Rc 5' or '+<Rc-mut Rect[3]': an allocation is written 'new Rc[i32](5)' or 'new Rc[mut, Node](1)', one that may fail 'trynew Rc[i32](5)'
-    ErrorTryNewValue = 1217,    // 'trynew' on a type that is no managed reference: only an allocation in a region may fail; a value is constructed with 'new'
+    // Allocation, 'Rc[mut, Node](1)' and 'trynew' (ir/exp/allocate.c, ir/exp/typelit.c, ir/types/reference.c)
+    ErrorPlusAlloc = 1216,      // An allocation written with '+', '+Rc 5', '+Rc-mut Node[1]', '?+Rc 5' or '+<Rc-mut Rect[3]': an allocation is written 'Rc[i32](5)' or 'Rc[mut, Node](1)', one that may fail 'trynew Rc[i32](5)'
+    ErrorTryNewValue = 1217,    // 'trynew' on a type that is no managed reference: only an allocation in a region may fail; a value is constructed by its name, 'Point(1, 2)'
 
     // Contents after '<-': listed values, 'n of x', 'fill x' and 'k: v' (parser/parseexpr.c, ir/exp/contents.c, ir/types/array.c)
-    ErrorFillLiteral = 1218,    // The fill literal '[n; x]': an array of n copies is constructed with its contents, 'new Array[T, n] <- fill x'
+    ErrorFillLiteral = 1218,    // The fill literal '[n; x]': an array of n copies is constructed with its contents, 'Array[T, n]() <- fill x'
     ErrorRepeatCount = 1219,    // The count of 'n of x' out of 0 through 4294967295, or, in an array's contents, not a constant
     ErrorArrayContents = 1220,  // An array constructed without contents, with init arguments, or with contents that do not fill it exactly
     ErrorFillSize = 1221,       // 'fill x' on a collection that does not say how full it is: it declares no 'len()' or no 'capacity()'
@@ -422,11 +422,11 @@ enum ErrorCode {
     ErrorInto = 1224,           // 'x into T': a value converts with 'T.from(x)'; a reference narrows to a variant with a check, by a 'match' or 'if let x &Variant = &value'
 
     // Construction, continued (ir/exp/assign.c)
-    ErrorInitRecurse = 1225,    // In a declared init, '*self = new T(...)' whose construction selects that same init: self is filled by the fields' names, 'new Point(x: 1, y: 2)'
+    ErrorInitRecurse = 1225,    // In a declared init, '*self = T(...)' whose construction selects that same init: self is filled by the fields' names, 'Point(x: 1, y: 2)'
 
     // Allocation, continued (ir/exp/typelit.c)
-    ErrorAllocValue = 1226,     // An allocation of a type no init constructs (a number, an array, a tuple, an enum or its variant, a reference) given other than one value of it: 'new Rc[i32](5)'
-    ErrorNewFinished = 1227,    // 'new Point(p)', p already a Point: a finished value needs no construction; an allocation takes one as its value, 'new Rc[Point](p)'
+    ErrorAllocValue = 1226,     // An allocation of a type no init constructs (a number, an array, a tuple, an enum or its variant, a reference) given other than one value of it: 'Rc[i32](5)'
+    ErrorNewFinished = 1227,    // 'Point(p)', p already a Point: a finished value needs no construction; an allocation takes one as its value, 'Rc[Point](p)'
     ErrorTryNewContents = 1228, // Contents after '<-' on a 'trynew' that is not an array's allocation: allocate, then append on Some (ir/exp/contents.c)
 
     // Constant expressions, folded where a constant is required (ir/exp/literal.c, litFoldConst)
@@ -520,7 +520,7 @@ enum ErrorCode {
     // 1280 was ErrorAwaitUnused; an awaited operation's unused result is warned, WarnAwaitUnused
 
     // An actor's 'init' runs on the state in the actor's block (parser/parseactor.c)
-    ErrorActorStateInit = 1290, // An actor's state constructed anywhere but the making of the actor (its handle's initializer, and its init's '*self = new Self(...)'), by its fields' names or an 'init': a state in no actor, whose sends reach nothing
+    ErrorActorStateInit = 1290, // An actor's state constructed anywhere but the making of the actor (its handle's initializer, and its init's '*self = Self(...)'), by its fields' names or an 'init': a state in no actor, whose sends reach nothing
 
     // Futures: a behaviour's value stored and awaited later (actors.Future[T])
     ErrorAwaitNotFuture = 1281, // An 'await' on a value that is no future, behaviour's reply or operation: it waits for no answer
@@ -606,7 +606,7 @@ enum ErrorCode {
     ErrorClosureTrait = 1399,   // A closure literal given where a trait is wanted that does not have exactly one required method (and no field) for it to fill
 
     // What a GPU has none of, refused where it is written (ir/exp/borrow.c, ir/exp/allocate.c, ir/iexp.c, ir/types/reference.c, ir/exp/fncall.c, ir/exp/pareach.c, ir/exp/await.c, parser/parseactor.c)
-    ErrorGpuUnavailable = 1400, // In GPU code, what a GPU has none of: a function reference ('&name'), a virtual reference made from a reference, an allocation ('new Uni[T]', 'new Rc[T]', ...), an owning reference type written ('Uni[T]', 'Rc[T]'), an actor, a 'parallel each' or an 'await' (threads), or a call of a C library function that is not math (I/O, the allocator): a GPU has no pointers to code, no tables of them, no allocator, no threads and no operating system
+    ErrorGpuUnavailable = 1400, // In GPU code, what a GPU has none of: a function reference ('&name'), a virtual reference made from a reference, an allocation ('Uni[T]()', 'Rc[T]()', ...), an owning reference type written ('Uni[T]', 'Rc[T]'), an actor, a 'parallel each' or an 'await' (threads), or a call of a C library function that is not math (I/O, the allocator): a GPU has no pointers to code, no tables of them, no allocator, no threads and no operating system
 
     // A virtual reference's trait method met by a stronger 'self' (ir/types/fnsig.c)
     ErrorVtableSelf = 1401,     // A struct viewed as a trait behind a virtual reference (`&<Trait`, `Uni[Trait]`) whose method takes a stronger `self` permission than the trait's method declares
@@ -704,7 +704,7 @@ enum ErrorCode {
     ErrorVtableField = 1504,    // A struct viewed as a trait behind a virtual reference that may write (`&<mut`, `&<uni`, `Uni[Trait]`) whose field the trait requires has a narrower type than the trait gives it (a `Shape.Circle` where the trait says `Shape`): a store through the trait would leave a value of another type in the field
 
     // 'mut' on an owner of a region with one owner per value (ir/types/permission.c)
-    ErrorSoleOwnerMut = 1507,   // 'mut' written on a reference of a region declaring 'Move' (`Uni[mut, T]`, `new Uni[mut, T](...)`, a `Uni[mut, Trait]`): 'mut' is shared mutable, and a region whose values have one owner shares nothing, so the permission means nothing on it. `Uni[T]` is the normal spelling; `imm` stays legal as a promise the value never changes
+    ErrorSoleOwnerMut = 1507,   // 'mut' written on a reference of a region declaring 'Move' (`Uni[mut, T]`, `Uni[mut, T](...)`, a `Uni[mut, Trait]`): 'mut' is shared mutable, and a region whose values have one owner shares nothing, so the permission means nothing on it. `Uni[T]` is the normal spelling; `imm` stays legal as a promise the value never changes
 
     ErrorDclWord = 1508,        // 'imm' or 'mut' where a declaration's word is expected (`imm n = 3;`, `mut n i32;`, `pub imm id i32`, `fn f(mut self)`, `case imm x Some`): they are the permissions of a reference, and a declaration starts with 'let' (a name that never changes) or 'var' (a name that may be given a new value). The word is read as the one that replaces it, so the declaration is checked as written
 
@@ -728,6 +728,9 @@ enum ErrorCode {
     ErrorTargetCount = 1516,    // Two or more targets given a number of values that is not theirs: `a, b = 1, 2, 3`, `let q, r = f()` where `f` gives three values, `a, b, c = 1, 2`. Each target takes exactly one value, and a target for a value the code does not want is written `_`. Pointed at the values
     ErrorOneTarget = 1517,      // One target that is not a tuple given a list of values: `x = 1, 2, 3` where `x` is an `i32`. A single target takes the whole value it is given, so it is refused unless its type is that tuple; the values are taken apart with a target for each (`a, b, c = 1, 2, 3`), `_` for each unwanted one. Pointed at the values
     ErrorDestructForm = 1518,   // A declaration of several names that is not written `let a, b = values;`: no `=` after the names (`let a, b;`), a type written on `_` (`let _: i32, b = f()`), or the names followed by `else` or `using`. The names take their values apart from what follows the `=`. Pointed at the names
+
+    // A construction is a type's name with parentheses (ir/exp/fncall.c)
+    ErrorNewNotRegion = 1519,   // `new` written before a type, `Point(1, 2)`, `List[i32]()`, `Rc[mut, Node](1)`: `new` takes a dynamic region, a value such as an arena, `new a[Node](1)`. A type's value is made by writing its name with parentheses, `Point(1, 2)`, whatever region it is allocated in. Pointed at the `new`
 
     // Warnings
     WarnCode = 3000,

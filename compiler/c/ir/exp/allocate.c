@@ -80,9 +80,9 @@ void allocateTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
     int named = vtag != ArrayTag && vtag != TTupleTag && vtag != FnSigTag && vtag != RefTag
         && vtag != VirtRefTag && vtag != ArrayRefTag && vtag != PtrTag;
     errorMsgNode((INode*)node, ErrorPlusAlloc, typeLitIsConstruction(node->vtexp)
-        ? "An allocation is written '%s %s[%s%s%s](...)', the init's arguments in the parentheses%s%s."
-        : "An allocation is written '%s %s[%s%s%s](value)', the value in the parentheses%s%s.",
-        (node->flags & FlagQues) ? "trynew" : "new", itypeName(node->region),
+        ? "An allocation is written '%s%s[%s%s%s](...)', the init's arguments in the parentheses%s%s."
+        : "An allocation is written '%s%s[%s%s%s](value)', the value in the parentheses%s%s.",
+        (node->flags & FlagQues) ? "trynew " : "", itypeName(node->region),
         uni ? "" : perm, uni ? "" : ", ", named ? itypeName(vtype) : "T",
         named ? "" : ", T ", named ? "" : itypeName(vtype));
     allocateValueCheck(pstate, nodep);
@@ -102,8 +102,8 @@ void allocateValueCheck(TypeCheckState *pstate, RefNode **nodep) {
     // reports again.
     if (flowGpu)
         errorMsgNode((INode*)node, ErrorGpuUnavailable,
-            "In GPU code nothing is allocated, '%s %s[...]': a GPU has no allocator. Keep the value in a local, or in a buffer the kernel is bound.",
-            (node->flags & FlagQues) ? "trynew" : "new", itypeName(node->region));
+            "In GPU code nothing is allocated, '%s%s[...](...)': a GPU has no allocator. Keep the value in a local, or in a buffer the kernel is bound.",
+            (node->flags & FlagQues) ? "trynew " : "", itypeName(node->region));
 
     // The default permission type is 'uni', or 'imm' for a type declaring
     // Immutable

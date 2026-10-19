@@ -7,7 +7,7 @@
  *   xs <- 4 of 0;                   // n values, the value evaluated for each
  *   xs <- fill 0;                   // values until the collection is full
  *   dict <- "a": 1, "b": 2;         // pairs, given to a two-value append
- *   let ys = new List[i32](8) <- fill 0;    // a construction's contents
+ *   let ys = List[i32](8) <- fill 0;    // a construction's contents
  *
  * Every entry lowers to applications of the receiver's '<-' method, against
  * one borrow of the receiver. A construction's contents are appended to the
@@ -95,9 +95,15 @@ void entryNameRes(NameResState *pstate, EntryNode *node) {
     inodeNameRes(pstate, &node->val);
 }
 
-// Is this a construction, 'new T(...)' or 'trynew T(...)', not yet lowered?
+// Is this a construction, 'T(...)', 'new a[T](...)' or 'trynew T(...)', not yet
+// lowered? A call of a generic parameter that substitution made a type is one
+// too, and is marked here as name resolution marks the others.
 static int contentsIsConstruction(INode *node) {
-    return node->tag == FnCallTag && (node->flags & FlagNew)
+    if (node->tag != FnCallTag)
+        return 0;
+    if (fnCallIsTypeCall((FnCallNode*)node))
+        fnCallMarkConstruction((FnCallNode*)node);
+    return (node->flags & FlagNew)
         && !nameUseNames(((FnCallNode*)node)->objfn, FnDclTag);
 }
 
@@ -549,7 +555,7 @@ static Name *contentsBuiltName() {
 
 // A construction's contents are appended to the value it builds, which is
 // then the value of the whole:
-//   { var built = new T(...); built <- contents; built }
+//   { var built = T(...); built <- contents; built }
 // The construction fills the variable in place; the block hands it on.
 static void contentsLowerConstruction(TypeCheckState *pstate, FnCallNode **nodep) {
     FnCallNode *node = *nodep;
@@ -644,7 +650,7 @@ static int contentsArrayShape(ArrayNode *arraydcl, INode *lexnode, uint32_t *lev
     return 1;
 }
 
-// An array's contents are its elements: 'new Array[f32, 4] <- 1.0, fill 0.0'.
+// An array's contents are its elements: 'Array[f32, 4]() <- 1.0, fill 0.0'.
 // An array has no '<-' and no 'init', and its size is fixed, so the contents
 // must give exactly that many values, every count known at compile time. They
 // lower to an array literal of the array's type, which fills the destination
@@ -666,7 +672,7 @@ static INode *contentsArrayLit(TypeCheckState *pstate, FnCallNode *node, INode *
     ArrayNode *arraydcl = (ArrayNode*)itypeGetTypeDcl(arraytype);
     if (ctor->args && ctor->args->used > 0) {
         errorMsgNode((INode*)ctor, ErrorArrayContents,
-            "An array has no init to take arguments: its contents follow '<-', as 'new Array[f32, 4] <- fill 0.0'.");
+            "An array has no init to take arguments: its contents follow '<-', as 'Array[f32, 4]() <- fill 0.0'.");
         return NULL;
     }
     uint32_t levels;
@@ -807,7 +813,7 @@ static void contentsLowerArray(TypeCheckState *pstate, FnCallNode **nodep) {
     *((INode**)nodep) = lit ? lit : newErrorNode((INode*)*nodep);
 }
 
-// An allocation of an array with its contents, 'new Rc[mut, Array[i32, 4]] <-
+// An allocation of an array with its contents, 'Rc[mut, Array[i32, 4]]() <-
 // fill 0', is the allocation whose value is the literal of those contents,
 // which generation fills in place in the region's memory once it is had, an
 // element at a time (genlallocref): no array is built elsewhere and copied in.

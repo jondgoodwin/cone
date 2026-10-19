@@ -151,7 +151,7 @@ void keywordInit() {
     keyAdd("into", IntoToken);
     keyAdd("inline", InlineToken);
     keyAdd("where", WhereToken);
-    // A construction, 'new Point(1, 2)', and the permission of an
+    // A construction, 'Point(1, 2)', and the permission of an
     // initializer's 'self', '&new'
     keyAdd("new", NewToken);
     // An allocation that may fail, 'trynew Rc[mut, Node](1)': an Option of the
@@ -1635,7 +1635,7 @@ static char *lexSkipTrivia(char *srcp) {
 // With the lexer on a name, does what follows it begin a value rather than
 // continue an expression the name begins? Asked of 'fill' at the start of an
 // entry after '<-', which is the contextual word when space and then a value
-// follow it ('xs <- fill 0', 'fill -1', 'fill (a, b)', 'fill new Point(1, 2)')
+// follow it ('xs <- fill 0', 'fill -1', 'fill (a, b)', 'fill Point(1, 2)')
 // and the name otherwise ('xs <- fill;', 'fill(1)', 'fill[0]', 'fill.len()',
 // 'fill + 1', 'fill of 3'). After the space, a token that can do either --
 // '-', '*', '&', '(' and '[' -- is taken as beginning the value, so a variable

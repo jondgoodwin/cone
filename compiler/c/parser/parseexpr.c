@@ -77,14 +77,17 @@ INode *parseArrayLit(ParseState *parse) {
 static Nodes *parseIndexArgs(ParseState *parse, FnCallNode *fncall);
 Nodes *parseArgs(ParseState *parse);
 
-// Parse a construction, 'new Point(1, 2)': 'new', the type, then in
-// parentheses the arguments the type's 'init' takes, which may be left off
-// when there are none ('new Point' is 'new Point()'). The type is a name, a
-// path through namespaces ('geomath.Vec3') and type arguments in brackets
-// ('Pair[i32, f32]'); every '.' and '[' before the parentheses belongs to it,
-// and the suffixes after them apply to the value constructed. Type check
-// selects the 'init' (typeLitNewCheck). A managed reference type,
-// 'new Rc[mut, Node](1)' or an alias of one, allocates in its region, the
+// Parse a construction written with 'new': 'new a[Node](1)', in the dynamic
+// region a, or 'trynew Rc[mut, Node](1)'. After the word comes a name, a path
+// through namespaces ('geomath.Vec3') and type arguments or the type made in the
+// region in brackets ('Pair[i32, f32]', 'a[Node]'), then in parentheses the
+// arguments the type's 'init' takes, which may be left off when there are none;
+// every '.' and '[' before the parentheses belongs to the name, and the suffixes
+// after them apply to the value constructed. A type's construction is its name
+// with parentheses, 'Point(1, 2)', an ordinary call until name resolution marks
+// it (fnCallConstructNameRes), which also refuses 'new' before a type. Type
+// check selects the 'init' (typeLitNewCheck). A managed reference type,
+// 'Rc[mut, Node](1)' or an alias of one, allocates in its region, the
 // parentheses carrying the value's 'init' arguments.
 //
 // 'trynew Rc[mut, Node](1)' is an allocation that may fail, giving an Option
@@ -103,7 +106,7 @@ INode *parseNew(ParseState *parse) {
     }
     lexNextToken();
     if (!lexIsToken(IdentToken))
-        errorMsgLex(ErrorBadTerm, "Expected the type to construct after 'new': 'new Point(1, 2)'");
+        errorMsgLex(ErrorBadTerm, "Expected the dynamic region after 'new': 'new a[Node](1)'");
     INode *type = parseNameUse(parse);
     while (1) {
         if (lexIsToken(DotToken)) {
@@ -878,7 +881,7 @@ INode *parseAmper(ParseState *parse) {
     }
 
     // Static permission (optional). In a type, 'new' is the permission of an
-    // initializer's 'self', '&new'; in a value, '&new Point(1, 2)' is a borrow
+    // initializer's 'self', '&new'; in a value, '&Point(1, 2)' is a borrow
     // of a construction.
     if (lexIsToken(NewToken) && parse->intype) {
         anode->perm = newPermUseNode(newPerm);
@@ -959,7 +962,7 @@ INode *parseAmper(ParseState *parse) {
 // '+Rc-mut 5', and of a reference type, '+Rc-mut Node':
 // - Some reference type ('+' or '+<')
 // - Region and permission annotations
-// An allocation is written 'new Rc[i32](5)' or 'new Rc[mut, Node](1)'
+// An allocation is written 'Rc[i32](5)' or 'Rc[mut, Node](1)'
 // (parseNew); one spelled with '+' is refused at type check (ErrorPlusAlloc),
 // and '+<' at name resolution. A single or virtual reference TYPE is written
 // 'Rc[mut, Node]', and type check refuses this spelling of one (plusSpelled); at a
@@ -1414,9 +1417,18 @@ INode *parseOpEq(ParseState *parse, INode *lval, Name *opeqname) {
     return (INode*)node;
 }
 
-// Is this a construction, 'new Point(1, 2)', which contents may follow after '<-'?
+// Is this a construction, which contents may follow after '<-': 'new a[Node](1)', or
+// 'List[i32](100)', a type's name with parentheses? The parser cannot tell a type
+// from a function, so any plain call is taken for one here, and name resolution
+// has the callee's say (fnCallAppendNestNameRes): the entries of a call that is
+// no construction are nested as a receiver's are that is none.
 static int parseIsConstruction(INode *node) {
-    return node != NULL && node->tag == FnCallTag && (node->flags & FlagNew);
+    if (node == NULL || node->tag != FnCallTag)
+        return 0;
+    FnCallNode *call = (FnCallNode*)node;
+    if (call->flags & FlagNew)
+        return 1;
+    return call->methfld == NULL && call->args != NULL && !(call->flags & (FlagIndex | FlagOperator));
 }
 
 static INode *parseEntry(ParseState *parse);
@@ -1436,7 +1448,7 @@ static INode *parseEntryValue(ParseState *parse) {
 // - 'k: v', a key and its value.
 // An entry that begins with '(' is a parenthesized list of entries
 // (parseTerm), which is how a construction's contents are written inside
-// another comma list: 'draw(new List[i32] <- (1, 2), x)'.
+// another comma list: 'draw(List[i32]() <- (1, 2), x)'.
 static INode *parseEntry(ParseState *parse) {
     if (lexIsToken(EachToken))
         return parseEachEntry(parse);
@@ -1506,8 +1518,8 @@ static void parseEntryNest(INode *entries, uint16_t nest) {
 
 // After a construction inside a comma list -- an argument, a named value, an
 // array literal's element, an entry -- '<-' takes one entry, since the comma
-// after it belongs to the list: 'draw(new List[i32] <- (1, 2), x)' parenthesizes
-// several, and 'f(new Array[f32, 4] <- fill 0.0)' needs nothing more.
+// after it belongs to the list: 'draw(List[i32]() <- (1, 2), x)' parenthesizes
+// several, and 'f(Array[f32, 4]() <- fill 0.0)' needs nothing more.
 // Anything else is returned as it is.
 static INode *parseContentsAfter(ParseState *parse, INode *node) {
     if (!lexIsToken(LessDashToken) || !parseIsConstruction(node))

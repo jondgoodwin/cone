@@ -465,8 +465,8 @@ narrowed) deactivates it as before, and no drop flag follows it.
 
 **The count counts holders.** From the ownership work:
 
-- `new Rc[mut, Pt](2)` creates the object *and* the first reference. Born at 1.
-- `let a = new Rc[mut, Pt](2)` adds no holder — the temporary hands over the reference it
+- `Rc[mut, Pt](2)` creates the object *and* the first reference. Born at 1.
+- `let a = Rc[mut, Pt](2)` adds no holder — the temporary hands over the reference it
   was born with. Still 1.
 - `let b = a` adds one — `a` keeps its reference, `b` gets another. Now 2.
 - A tuple is one holder of each counted reference it carries. `let t = pair()`
@@ -483,7 +483,7 @@ narrowed) deactivates it as before, and no drop flag follows it.
   its own, as a struct literal's fields are: `(r, 5)` over a counted variable
   `r` adds one.
 - An assignment's value is what it stored, and its target keeps it:
-  `a = b = new Rc[mut, Pt](2)` adds one for `a`, `b` holding the first.
+  `a = b = Rc[mut, Pt](2)` adds one for `a`, `b` holding the first.
 
 `flowHandleMoveOrCopy` is the whole decision:
 
@@ -825,7 +825,7 @@ anyway, so freezing it against them would protect nothing. But the part of the
 path *before* the shared reference — the field of a local holding a `Rc[mut, T]`
 owner — is reached as `uni`, and the loan reads it: an access to a place with
 fewer steps than the loan's `sharedlen` meets an alias loan as a shared one, so
-`h.p = new Rc[mut, Pt](..)` or `&mut h.p` while `&mut h.p.x` is live is refused,
+`h.p = Rc[mut, Pt](..)` or `&mut h.p` while `&mut h.p.x` is live is refused,
 since either could release what the borrow points into. A source reached
 through a borrowed reference is never ended by anything done here — reassigning
 `r` leaves `*r` alive — so an alias loan of `*r` conflicts with nothing a
@@ -970,7 +970,7 @@ v`), or through one a struct handed by value holds (`st(w, &x)`, `w` holding a
 borrows past it, and each place in that range is checked and takes the loans
 as a store through a reference there would: a borrow past the target is where
 its near loans point, two or more, anywhere its loans reach. An argument the
-walk cannot key (`st(new W(&mut q), &x)`) is gone by through its own loans. A value may not be stored
+walk cannot key (`st(W(&mut q), &x)`) is gone by through its own loans. A value may not be stored
 into what a reference points at when it carries a borrow of part of what that *same* reference
 points at (`held = buf.view()` in a method, `h.held = h.buf.view()` for `h: &mut H`, or
 `words.push(text.view())` into a list field): the caller lent the whole value, can change or move
@@ -1089,7 +1089,7 @@ carries only a *pin* of the receiver's place — it may not be moved, replaced
 or ended while the result is used — and a second `a.alloc(v)` is no conflict.
 A borrow of a `NoLoanMut` container itself is held as one through a shared
 path is (`pwLend`): it keeps the container alive and promises no more, so two
-`&mut a` may live at once and `a.alloc(new Spawner(2, &mut a))` is one call. The
+`&mut a` may live at once and `a.alloc(Spawner(2, &mut a))` is one call. The
 third marker, `ShapeChanging` (`List`, `Deque`, `String`, `Dict`, `Pool`), makes a
 borrow its method returns freeze a shared receiver path too (`loanFreezeShared`,
 called from `pwCall`): see "What is not held". A type need not declare it: the
@@ -1168,12 +1168,12 @@ an access conflicting with every loan of it: a holder still alive holding one
 — declared outside the block, or before the variable in it and so finalized
 after it — and used afterwards, is refused. That is the borrow kept past its
 source, `{ var a = 1i64; var b: &i64 = &zero; b = &a; r = b } *r`, or `{ var a
-= Arena.empty(); h = new Holder(a.alloc(v)); } h.r`. A variable's lifetime
+= Arena.empty(); h = Holder(a.alloc(v)); } h.r`. A variable's lifetime
 follows what it holds now, so the stores themselves are legal, and so is
 `r` never used again after `a` ends; this is where a borrow kept past its
 source in a variable of the function is refused. A block handing a value on to a holder — its final
 expression, or a `break`'s — keeps what that value carries in flight while its
-variables end (`pwScopeEndHanding`), so `let h = { let x = ..; new H(&x) }`
+variables end (`pwScopeEndHanding`), so `let h = { let x = ..; H(&x) }`
 is refused at `x`.
 
 **Temporaries.** A temporary at the root of a place — read through (`*mkso()`,
@@ -2112,7 +2112,7 @@ droppable noted as holding nothing is never finalized.
   stored over whole or ends must drop that entry; otherwise a seam's record
   (§6, "A seam") misses what is live after it, or keeps what is dead.
 - **A value stored into a field of a variable that holds nothing leaks.**
-  `take(e); e.inner = new Inner(2);` and `var e: Holder; e.inner = new Inner(2);`
+  `take(e); e.inner = Inner(2);` and `var e: Holder; e.inner = Inner(2);`
   finalize nothing of the old field (there is none), and the variable is not
   taken to hold a value by having one field given, so the new field is never
   finalized either. Rust refuses both.

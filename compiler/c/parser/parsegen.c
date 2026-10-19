@@ -17,11 +17,11 @@
  *     fn walk.yield(v: &Node) Option[&Node] inline {Some[&Node](v)}    what a 'yield' hands the caller
  *     fn walk.none() Option[&Node] {None[&Node]}                      what its end hands the caller
  *   }
- *   fn walk(t: &Tree, n: i32) walk.Gen {new walk.Gen(t, n, 0u32)}     the generator, made
+ *   fn walk(t: &Tree, n: i32) walk.Gen {walk.Gen(t, n, 0u32)}     the generator, made
  *
  * A generator may be generic, 'fn items[T](l: &List[T]) yields &T': the struct is
  * 'items.Gen[T]', taking the function's type parameters as they are written, and
- * the constructor makes 'new items.Gen[T](l, 0u32)'. An instance of the struct
+ * the constructor makes 'items.Gen[T](l, 0u32)'. An instance of the struct
  * is a clone of it like any generic type's, and a generator of its own
  * (yieldGenCloned).
  *
@@ -630,7 +630,7 @@ FnDclNode *parseGenFinish(ParseState *parse, FnDclNode *fn, GenSig *sig, GenCtx 
         genPutn(&g, targs.text ? targs.text : "", targs.len);
         genPuts(&g, "]");
     }
-    genPuts(&g, " {new ");
+    genPuts(&g, " {");
     genSlot(&g, GenStruct);
     if (targs.len) {
         genPuts(&g, "[");

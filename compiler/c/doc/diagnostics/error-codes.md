@@ -173,6 +173,15 @@ want is `_`. `ErrorOneTarget` is one target that is not a tuple given a list of 
 is a declaration of several names that is not `let a, b = values;`: no `=` after the names, or a
 type written on `_`, which takes a value and drops it. The values are type checked all the same.
 
+`ErrorNewNotRegion` is `new` written before a type, `new Point(1, 2)`, `new List[i32]()`, `new
+Rc[mut, Node](1)`. A construction is a type's name with parentheses, whatever region it is
+allocated in; `new` is written only before a dynamic region, a region whose state is a value,
+`new a[Node](1)` (a variable or a path of fields followed by brackets, which
+`typeLitNewNamesRegionValue` tells from a type once names are resolved). Reported by name
+resolution (`fnCallConstructNameRes`), once, at the `new`, so a program refused for it is
+checked no further; the word is taken as not written, and the construction goes on as the
+call of the type it is. `trynew` is not refused.
+
 `ErrorMatchNotExhaustive`, `ErrorMatchUnreachable` and `ErrorMatchColumn` are what a match
 must cover. A match that does not cover every variant of its enum, both values of its bool or
 every combination of its columns, and has no `else`, or whose cases cannot be shown to
@@ -202,7 +211,7 @@ a region value, as an actor's state has) is `ErrorRegionHead`.
 declaring `ActorLocal` that is not a traced region ref is `ErrorActorLocalUse`
 (`regionActorLocalUseCheck`). An allocation in an actor-local region from the body of a
 `parallel each` (a call of the actor's `allocRegion`, which `new self[T]` is, or a direct
-`new ActorGc[...]`) is `ErrorActorGcPiece` (`gcPieceVisit`, from the loop's body check and
+`ActorGc[...]()`) is `ErrorActorGcPiece` (`gcPieceVisit`, from the loop's body check and
 again from `actorCheckAll`).
 
 `ErrorGcTraceElementsShape`, `ErrorTraceRoot` and `ErrorTraceKey` are about what a collector

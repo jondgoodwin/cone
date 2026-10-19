@@ -207,7 +207,7 @@ void fieldDclTypeCheck(TypeCheckState *pstate, FieldDclNode *name) {
         else if (!iexpTypeCheckCoerce(pstate, name->vtype, &name->value))
             iexpMismatchMsg(name->value, name->vtype, ErrorInvType, "Initialization value's type does not match variable's declared type");
         // The constant is judged after type check, as a const's value is: it is
-        // type check that makes a construction, 'new E(1, 2)', or an array's
+        // type check that makes a construction, 'E(1, 2)', or an array's
         // fill the literal it is, and type check that an expression of
         // constants is folded into the one it computes (litFoldConst)
         else if (!litFoldConst(&name->value))

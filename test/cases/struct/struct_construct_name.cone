@@ -1,0 +1,136 @@
+// A construction is a type's name with parentheses, for every type, and the
+// compiler decides from the type whether a region allocates. 'new' is written
+// only before a dynamic region, a value such as an arena (region_new_arena).
+// Every form is a call of a type, which is told from a call of a value or of a
+// function by what its callee names (struct_nameres_new refuses 'new' before a
+// type). Every expected line is worked out by hand:
+// - a struct's implicit init takes its fields by position or by name: 3 and 4,
+//   then 9 and 8;
+// - a type with a '()' method is constructed by its name, and the value made
+//   is called by its own: 'Adder(3)' then 'adder(4)' is 7;
+// - a declared init is selected by the arguments, as it was by 'new': 12;
+// - a generic struct with its type arguments written or inferred: 5 and 6;
+// - a generic's parameter called, 'T(a, b)', constructs whatever T is: 1 and 2
+//   for a Point, 7 and 8 for a Pair;
+// - an enum's variant is constructed by its name as it always was: 3;
+// - a collection is constructed by its name, with a size (one value pushed: 1)
+//   or with contents after '<-': 2, 3, 5 (sum 10);
+// - an array is constructed with its contents: 0 + 0 + 0 and 1, 2, 3 (123);
+// - an owner of a region, written out or through an alias of it: 21 and 22,
+//   the counted one shared by a second owner: 23;
+// - a borrow of a construction, '&Point(5, 6)', lent to a parameter: 11;
+// - a construction among the arguments of another and as a receiver: 1 + 2 * 3
+//   + 2 is 9, and 2 + 2 is 4;
+// - an allocation that may fail, 'trynew', is still its own: 31.
+
+mod struct_construct_name;
+
+import stdio use *;
+import collections use *;
+
+struct Point {
+  pub x: i32;
+  pub y: i32;
+}
+
+struct Adder {
+  pub k: i32;
+  pub fn `()`(self: &, n: i32) i32 { k + n }
+}
+
+struct Scaled {
+  pub n: i32;
+  pub fn init(self: &new, a: i32, b: i32) { *self = Scaled(a * b); }
+}
+
+struct Box[T] {
+  pub v: T;
+}
+
+struct Pair[A, B] {
+  pub a: A;
+  pub b: B;
+}
+
+enum Shape {
+  struct Circle { pub r: i32; }
+  struct Square { pub s: i32; }
+}
+
+alias Counted = Rc[mut, Point];
+
+fn make[T](a: i32, b: i32) T { T(a, b) }
+
+fn lent(p: &Point) i32 { p.x + p.y }
+
+fn show(label: &str, n: i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn main() i32 {
+  // a struct, by position and by name
+  let p = Point(3, 4);
+  show("struct", i64.from(p.x * 10 + p.y));
+  let q = Point(y: 8, x: 9);
+  show("named", i64.from(q.x * 10 + q.y));
+
+  // a type with a () method, and the value of it called
+  let adder = Adder(3);
+  show("callable", i64.from(adder(4)));
+
+  // a declared init
+  let s = Scaled(3, 4);
+  show("init", i64.from(s.n));
+
+  // generics
+  let b1 = Box[i32](5);
+  let b2 = Box(6);
+  show("generic", i64.from(b1.v * 10 + b2.v));
+  let m1 = make[Point](1, 2);
+  let m2 = make[Pair[i32, i32]](7, 8);
+  show("parameter", i64.from(m1.x * 10 + m1.y + m2.a * 100 + m2.b * 1000));
+
+  // a variant
+  let c = Shape.Circle(3);
+  show("variant", i64.from(c.r));
+
+  // collections
+  var sized = List[i32](4);
+  sized.push(1);
+  show("sized", i64.from(sized.len()));
+  var filled = List[i32]() <- 2, 3, 5;
+  var total = 0;
+  each v in filled {
+    total = total + v;
+  }
+  show("contents", i64.from(total));
+
+  // arrays
+  let zeros = Array[i32, 3]() <- fill 0;
+  show("fill", i64.from(zeros[0] + zeros[1] + zeros[2]));
+  let rows = Array[i32, 3]() <- 1, 2, 3;
+  show("elements", i64.from(rows[0] * 100 + rows[1] * 10 + rows[2]));
+
+  // owners, written out and through an alias
+  let rc = Rc[mut, Point](Point(10, 11));
+  show("owner", i64.from(rc.x + rc.y));
+  let counted = Counted(Point(10, 12));
+  show("alias", i64.from(counted.x + counted.y));
+  let second = counted;
+  show("shared", i64.from(second.x + second.y + 1));
+
+  // a borrow of a construction, and constructions inside constructions
+  show("borrow", i64.from(lent(&Point(5, 6))));
+  show("nested", i64.from(Pair(Point(1, 2), Point(2, 1)).a.x + Pair(Point(1, 2), Point(2, 1)).b.x * 3 + 2));
+  show("receiver", i64.from(Point(2, 3).x + Point(3, 2).y));
+
+  // an allocation that may fail
+  match trynew Rc[mut, Point](Point(15, 16)) {
+    case let r Some { show("trynew", i64.from(r.x + r.y)); }
+    else { show("trynew", 0); }
+  }
+  0
+}

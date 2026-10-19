@@ -15,8 +15,8 @@
  *     mailbox: Arc[opaq, actors.Mailbox[Counter.Msg]];
  *     fn init(self: &new, n: u64) {
  *       let st = actors.makeActor[Counter.State, Counter.Msg](&Counter.dispatch);
- *       mem.writeRaw[Counter.State](st, new Counter.State(n));
- *       *self = new Self(mailbox: actors.startActor[Counter.State, Counter.Msg](st));}
+ *       mem.writeRaw[Counter.State](st, Counter.State(n));
+ *       *self = Self(mailbox: actors.startActor[Counter.State, Counter.Msg](st));}
  *     pub fn bump(self: &, n: u64) {actors.send[Counter.Msg](mailbox, Counter.Msg.bump[n]);}
  *   }
  *   enum Counter.Msg is Sendable {struct bump {n: u64;}}    one variant per behaviour
@@ -285,13 +285,13 @@ static void genStartOpen(GenText *g) {
     genSlot(g, GenState);
     genPuts(g, "](");
     genSlot(g, GenAt);
-    genPuts(g, ", new ");
+    genPuts(g, ", ");
     genSlot(g, GenState);
     genPuts(g, "(");
 }
 
 static void genStartClose(GenText *g) {
-    genPuts(g, ")); *self = new Self(");
+    genPuts(g, ")); *self = Self(");
     genSlot(g, GenMailbox);
     genPuts(g, ": ");
     genSlot(g, GenActors);
@@ -505,7 +505,7 @@ static void parseActorMembers(DclTexts *texts, StructNode *state, Name *actornam
                     &fn->namesym->namestr, &actorname->namestr);
             else if (fn->flags & FlagPub)
                 errorMsgNode(node, ErrorActorMember,
-                    "%s has no 'self', so it would not run on actor %s: only a behaviour is a message, and an actor is made with 'new'. Declare a function that needs no actor outside it.",
+                    "%s has no 'self', so it would not run on actor %s: only a behaviour is a message, and an actor is made by its name with parentheses. Declare a function that needs no actor outside it.",
                     &fn->namesym->namestr, &actorname->namestr);
             continue;
         }
@@ -818,7 +818,7 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
         genSlot(&g, GenPending);
         genPuts(&g, ": ");
         genSlot(&g, GenActors);
-        genPuts(&g, ".Pending = new ");
+        genPuts(&g, ".Pending = ");
         genSlot(&g, GenActors);
         genPuts(&g, ".Pending();\n");
         if (answers) {
@@ -826,7 +826,7 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
             genSlot(&g, GenAnswer);
             genPuts(&g, ": ");
             genSlot(&g, GenActors);
-            genPuts(&g, ".Answer = new ");
+            genPuts(&g, ".Answer = ");
             genSlot(&g, GenActors);
             genPuts(&g, ".Answer();\n");
         }
@@ -836,7 +836,7 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
     // The state's way to its own region, which every actor carries (in its
     // Header, made with it): a method 'allocRegion' giving the region the
     // actor's values are allocated in, which is what makes 'new self[T](v)' mean
-    // 'self.allocRegion().alloc(new T(v))' (typelit.c, a value that leads to a
+    // 'self.allocRegion().alloc(T(v))' (typelit.c, a value that leads to a
     // region). Read as a struct's of its own and moved into the state like the
     // hidden fields; the region is found from the state by the actors runtime
     // (actors.regionOf)
@@ -1321,7 +1321,7 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
         genSlot(&g, GenState);
         genPuts(&g, ") ");
         genName(&g, actorname);
-        genPuts(&g, " {new ");
+        genPuts(&g, " {");
         genName(&g, actorname);
         genPuts(&g, "(");
         genSlot(&g, GenMailbox);

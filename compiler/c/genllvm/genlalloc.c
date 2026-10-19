@@ -1354,8 +1354,8 @@ static LLVMValueRef genlFatRef(GenState *gen, LLVMTypeRef fattype, LLVMValueRef 
     return LLVMBuildInsertValue(gen->builder, ref, count, 1, "fatcount");
 }
 
-// An allocation, 'new Rc[mut, Node](1)', or of a finished value moved in,
-// 'new Rc[i32](5)': a reference to the value made in its region's memory,
+// An allocation, 'Rc[mut, Node](1)', or of a finished value moved in,
+// 'Rc[i32](5)': a reference to the value made in its region's memory,
 // or, for 'trynew', null (None) when that memory could not be had. In order:
 //
 //   args = the value init's arguments, evaluated   (or the finished value)
@@ -1425,7 +1425,7 @@ LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
 
     // The arguments first, in every region: a declared init's (filled in place
     // below), or the value itself, the implicit init's literal or a finished
-    // value moved in, 'new Rc[i32](5)', stored below
+    // value moved in, 'Rc[i32](5)', stored below
     // An array's contents are not evaluated here but filled in place below
     INode *valnode = allocatenode->vtexp;
     FnCallNode *declinit = valnode->tag == FnCallTag && (valnode->flags & FlagNew) ? (FnCallNode*)valnode : NULL;

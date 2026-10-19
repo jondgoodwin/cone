@@ -105,7 +105,7 @@ void parallelHelperGlobalsCheckAll(void);
 void gcStopgapCheckBody(INode *body, const char *where);
 
 // An allocation in an actor-local region (a call of the actor's 'allocRegion', which
-// 'new self[T](...)' is, or 'new ActorGc[...]') from the body of a 'parallel each'
+// 'new self[T](...)' is, or 'ActorGc[...]()') from the body of a 'parallel each'
 // is refused (ErrorActorGcPiece). This asks it of every such loop in a method of an
 // actor, once type check has finished; the loop's own check asks it as it is made
 void gcPieceCheckBody(INode *body, const char *where);

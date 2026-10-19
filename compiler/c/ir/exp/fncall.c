@@ -125,7 +125,7 @@ int fnCallHasTypeArgs(FnCallNode *node) {
 void fnCallPrint(FnCallNode *node) {
     INode **nodesp;
     uint32_t cnt;
-    // A construction, 'new Point(1, 2)', names its type until type check
+    // A construction, 'Point(1, 2)', names its type until type check
     // lowers it to its declared 'init''s call, whose type it then has
     // 'trynew' holds the bound 'Option' in its methfld until type check
     if (node->flags & FlagNew) {
@@ -309,6 +309,89 @@ static int fnCallNameResPath(NameResState *pstate, FnCallNode **nodep) {
     return 0;
 }
 
+static StructNode *fnCallVariantNamed(INode *node);
+
+// Is this a call of a type, 'Point(1, 2)', 'List[i32](100)', 'Rc[mut, Node](1)': a
+// construction, which the type's name with parentheses is for every type? A call
+// with no member and not an index or an operator, whose callee is a type: a
+// struct, an alias of a type, a generic struct with or without its type
+// arguments, an owner of a region. A variant's construction is a call of a type
+// too, and is its own (fnCallVariantCall). Not met at name resolution, where a
+// generic parameter's use is not yet a type, 'T(1)' says so at type check.
+int fnCallIsTypeCall(FnCallNode *node) {
+    if (node->tag != FnCallTag || node->methfld != NULL || node->args == NULL
+        || (node->flags & (FlagIndex | FlagOperator | FlagNew)))
+        return 0;
+    INode *callee = node->objfn;
+    if (callee == NULL)
+        return 0;
+    // 'Some[i32](5)': a generic variant given its type arguments
+    INode *head = callee;
+    if (callee->tag == FnCallTag && (callee->flags & FlagIndex) && ((FnCallNode*)callee)->methfld == NULL
+        && !(callee->flags & FlagRange))
+        head = ((FnCallNode*)callee)->objfn;
+    if (fnCallVariantNamed(head))
+        return 0;
+    return isTypeNode(callee);
+}
+
+// Mark a call of a type as the construction it is. It stands at the type's name,
+// where 'new' stood, so what is reported of the construction is reported there
+// (a call is otherwise at its parenthesis).
+void fnCallMarkConstruction(FnCallNode *node) {
+    INode *start = node->objfn;
+    while (start->tag == FnCallTag && ((FnCallNode*)start)->objfn != NULL)
+        start = ((FnCallNode*)start)->objfn;
+    inodeLexCopy((INode*)node, start);
+    node->flags |= FlagNew;
+}
+
+// The contents of a '<-' after a call of a type are lowered as a construction's
+// are (contentsLower), blocks nesting the entries' scopes once more than for a
+// receiver that is no construction. The parser guessed from the shape alone
+// (parseIsConstruction); the callee says.
+static void fnCallAppendNestNameRes(FnCallNode *node) {
+    if (!(node->flags & FlagOpAssgn) || node->methfld == NULL || !isNameUseNode(node->methfld)
+        || ((NameUseNode*)node->methfld)->namesym != lessDashName || node->args == NULL || node->args->used != 1
+        || node->objfn->tag != FnCallTag || (node->objfn->flags & (FlagNew | FlagIndex | FlagOperator)))
+        return;
+    FnCallNode *recv = (FnCallNode*)node->objfn;
+    if (recv->methfld != NULL || recv->args == NULL)
+        return;
+    // A generic parameter called, 'T() <- ...', is a construction once it is a type
+    uint16_t nest = nameUseNames(recv->objfn, GenVarDclTag) ? 2 : 1;
+    INode *entries = nodesGet(node->args, 0);
+    if (entries->tag == EachEntryTag)
+        ((EntryNode*)entries)->nest = nest;
+    else if (entries->tag == VTupleTag) {
+        INode **elemp;
+        uint32_t cnt;
+        for (nodesFor(((TupleNode*)entries)->elems, cnt, elemp))
+            if ((*elemp)->tag == EachEntryTag)
+                ((EntryNode*)*elemp)->nest = nest;
+    }
+}
+
+// A construction is a type's name with parentheses, wherever the type is
+// allocated: the call of a type is marked here as the construction it is
+// (FlagNew), for everything between here and generation to ask the one question.
+// 'new' is written only before a DYNAMIC region, a region whose state is a value,
+// 'new a[Node](1)' (typeLitNewNamesRegionValue); before a type it is refused, and
+// the word is then taken as not written, so the call goes on as the construction
+// it names and the program reports nothing more of it. 'trynew' is a
+// construction of its own.
+static void fnCallConstructNameRes(FnCallNode *node) {
+    if (node->flags & FlagNew) {
+        if ((node->flags & FlagTryNew) || typeLitNewNamesRegionValue(node->objfn))
+            return;
+        errorMsgNode((INode*)node, ErrorNewNotRegion,
+            "'new' takes a dynamic region, a value such as an arena: 'new a[Node](1)'. This is a type.");
+        node->flags &= ~FlagNew;
+    }
+    if (fnCallIsTypeCall(node))
+        fnCallMarkConstruction(node);
+}
+
 // Name resolution on 'fncall'
 // - If node is indexing on a type, retag node as a typelit
 // Note: this never name resolves .methfld, which is handled in type checking --
@@ -330,6 +413,10 @@ void fnCallNameRes(NameResState *pstate, FnCallNode **nodep) {
     if (fnCallNameResPath(pstate, nodep))
         return;
     node = *nodep;
+
+    // A call of a type is a construction; 'new' is written before a dynamic region only
+    fnCallConstructNameRes(node);
+    fnCallAppendNestNameRes(node);
 
     // What stands in brackets after a type or a generic is type arguments, so a
     // name there is never an empty variant's construction, 'Array[Lamp.Red, 4]';
@@ -790,7 +877,7 @@ void fnCallFinalizeArgs(TypeCheckState *pstate, FnCallNode *node) {
     if (initdcl && initdcl->tag == FnDclTag && fnDclIsInit((FnDclNode*)initdcl)) {
         INode *owner = inodeGetOwner(initdcl);
         errorMsgNode((INode*)node, ErrorInitCall,
-            "An init runs only in a construction, which gives it memory to fill: 'new %s(...)'.",
+            "An init runs only in a construction, which gives it memory to fill: '%s(...)'.",
             owner && owner->tag == StructTag ? &((StructNode*)owner)->namesym->namestr : "T");
     }
 
@@ -3978,7 +4065,11 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep, INode *expectTy
 static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INode *expectType) {
     FnCallNode *node = *nodep;
 
-    // 'new Point(1, 2)': a construction, which selects one of the type's 'init's
+    // 'T(1)': a call of a type that only a generic's substitution made one
+    if (fnCallIsTypeCall(node))
+        fnCallMarkConstruction(node);
+
+    // 'Point(1, 2)': a construction, which selects one of the type's 'init's
     if (node->flags & FlagNew) {
         typeLitNewCheck(pstate, nodep, expectType);
         return;
@@ -4446,15 +4537,11 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
             node->vtype = errorType;
             return;
         }
-        // A type is not called: a value of it is constructed with 'new', which
-        // runs one of its 'init's (typeLitNewCheck)
-        INode *typedcl = itypeGetTypeDcl(node->objfn);
-        Name *written = isNameUseNode(node->objfn) ? ((NameUseNode*)node->objfn)->namesym
-            : typedcl->tag == StructTag ? ((StructNode*)typedcl)->namesym : NULL;
-        errorMsgNode((INode*)node, ErrorInitCall,
-            "A type is not called: its value is constructed with 'new', 'new %s(...)'.",
-            written ? &written->namestr : "T");
-        node->vtype = errorType;
+        // A type called is a construction, which runs one of its 'init's
+        // (typeLitNewCheck). Name resolution marks the calls whose callee was
+        // a type then; this one is a type only now that its callee is checked
+        fnCallMarkConstruction(node);
+        typeLitNewArgsChecked(pstate, nodep);
         return;
     }
     

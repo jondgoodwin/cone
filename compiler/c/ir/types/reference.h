@@ -46,7 +46,7 @@ typedef struct {
     // reference type it is refused (refTypeCheck), and as a match pattern's root
     // at parse (castPatternMark, ErrorPatManaged). A managed reference type is
     // written 'R[perm, T]' (fnCallLowerManagedRef), and allocated
-    // 'new R[perm, T](...)' (typeLitNewAllocate).
+    // 'R[perm, T](...)' (typeLitNewAllocate).
     uint16_t plusSpelled;
     // Written '&[]' (parseAmper), the retired spelling of a slice, '&Array[T]':
     // refused where name resolution settles that it is a type (arrayRefNameRes,
