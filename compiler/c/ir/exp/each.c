@@ -99,7 +99,7 @@ static INode *eachBreakIf(INode *cond, BlockNode *loop, BlockNode *elseblk, INod
 // parseBoundMatch), with the matched value held in a variable of the block that
 // is the initializer:
 //   { let m = cursor.next();
-//     if m is Some { let s = [Some]m; s } elif m is None { break } }
+//     if m is Some { let s = [Some]m; s } else if m is None { break } }
 // 'scope' is that block's.
 static INode *eachNextItem(INode *cursor, BlockNode *loop, BlockNode *elseblk, uint16_t scope, INode *lexnode) {
     BlockNode *blk = newBlockNode();

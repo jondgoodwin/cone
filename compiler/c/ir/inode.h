@@ -143,7 +143,7 @@ enum NodeTags {
     AndLogicTag,    // and
     IsTag,          // ~~
     BlockTag,       // Block (list of statements)
-    IfTag,          // if .. elif .. else statement
+    IfTag,          // if .. else if .. else statement
     RefCountTag,    // (injected) adds holders to a counted reference's count
     HollowTag,      // (injected) releases an owning reference whose referent, or an element of it, was moved out
     DropFlagTag,    // (injected) a release that runs only when a variable's drop flag says it holds that value

@@ -756,7 +756,7 @@ pub struct Driver {
             if !c.server {
               c.current = noEntry;
               self.finishReq(lp, ri, endDone, Failure.none());
-            } elif r.finished {
+            } else if r.finished {
               self.toFlushing(i, ri);
             }
           }
@@ -948,10 +948,10 @@ pub struct Driver {
     var k: EventKind = EventKind.Done;
     if how == endDone {
       st.done = st.done + 1u64;
-    } elif how == endFailed {
+    } else if how == endFailed {
       st.failed = st.failed + 1u64;
       k = EventKind.Failed;
-    } elif how == endCancelled {
+    } else if how == endCancelled {
       st.cancelled = st.cancelled + 1u64;
       k = EventKind.Cancelled;
     } else {
@@ -974,7 +974,7 @@ pub struct Driver {
       c.failure.stage != Stage.Limit;
     if c.failed && !(waiting && opened) {
       f = c.failure.copy();
-    } elif waiting {
+    } else if waiting {
       f = Failure.make(Stage.Closed, 0u32, ErrorKind.Closed, "the connection closed before the request was sent");
     } else {
       f = Failure.make(Stage.Closed, 0u32, ErrorKind.Closed, "the connection closed before the exchange ended");
@@ -995,7 +995,7 @@ pub struct Driver {
       let ri = *c.flushing[0usize];
       removeAt(&mut c.flushing, 0usize);
       if cancelAll {self.finishReq(lp, ri, endCancelled, Failure.none());}
-      elif sent {self.finishReq(lp, ri, endDone, Failure.none());}
+      else if sent {self.finishReq(lp, ri, endDone, Failure.none());}
       else {self.finishReq(lp, ri, endFailed, self.failureFor(i, ri, false));}
     }
     if c.current != noEntry {
@@ -1003,7 +1003,7 @@ pub struct Driver {
       c.current = noEntry;
       let r = self.reqAt(ri) as &Req;
       if cancelAll {self.finishReq(lp, ri, endCancelled, Failure.none());}
-      elif r.server && r.finished && sent {self.finishReq(lp, ri, endDone, Failure.none());}
+      else if r.server && r.finished && sent {self.finishReq(lp, ri, endDone, Failure.none());}
       else {self.finishReq(lp, ri, endFailed, self.failureFor(i, ri, false));}
     }
     while c.waiting.len() > 0usize {
@@ -1128,39 +1128,39 @@ pub struct Driver {
           c.layer.wireIn(b, now);
         }
         self.markDirty(index);
-      } elif comp.status == diag.outcomeFailed {
+      } else if comp.status == diag.outcomeFailed {
         c.eof = true;
         self.failConn(lp, index, Stage.Read, comp.code, ErrorKind.Closed, "a receive failed: the connection was reset, or broke");
       }
-    } elif kind == kReady {
+    } else if kind == kReady {
       c.readyOut = false;
       if comp.isDone() {
         c.readyHit = true;
         self.markDirty(index);
-      } elif comp.status == diag.outcomeFailed {
+      } else if comp.status == diag.outcomeFailed {
         c.eof = true;
         self.failConn(lp, index, Stage.Read, comp.code, ErrorKind.Closed, "a receive failed: the connection was reset, or broke");
       }
-    } elif kind == kSend {
+    } else if kind == kSend {
       c.sendsOut = c.sendsOut - 1u32;
       if comp.isDone() && comp.n == comp.buf.len() {
         st.bytesOut = st.bytesOut + u64.from(comp.n);
         self.markDirty(index);
-      } elif comp.status != diag.outcomeCancelled {
+      } else if comp.status != diag.outcomeCancelled {
         self.failConn(lp, index, Stage.Write, comp.code, ErrorKind.Closed, "a send failed: the connection was reset, or broke");
       }
-    } elif kind == kTimer {
+    } else if kind == kTimer {
       if comp.id != c.timer {return true;}
       c.timer = OpId.none();
       if !comp.isDone() {return true;}
       if c.state == cClosing {
         // The linger is over
         self.closeNow(lp, index, false, false);
-      } elif c.state == cOpen {
+      } else if c.state == cOpen {
         c.core.handleTimeout(now);
         self.markDirty(index);
       }
-    } elif kind == kResolve {
+    } else if kind == kResolve {
       c.connOp = OpId.none();
       if c.state != cResolving {return true;}
       if comp.isDone() {
@@ -1170,12 +1170,12 @@ pub struct Driver {
         } else {
           self.connectNext(lp, index);
         }
-      } elif comp.status == diag.outcomeTimedOut {
+      } else if comp.status == diag.outcomeTimedOut {
         self.failConn(lp, index, Stage.Resolve, 0u32, ErrorKind.TimedOut, "no address within connectTimeout");
-      } elif comp.status == diag.outcomeFailed {
+      } else if comp.status == diag.outcomeFailed {
         self.failConn(lp, index, Stage.Resolve, comp.code, ErrorKind.Closed, "the name could not be looked up");
       }
-    } elif kind == kConnect {
+    } else if kind == kConnect {
       c.connOp = OpId.none();
       if c.state != cConnecting {return true;}
       if comp.isDone() {
@@ -1186,9 +1186,9 @@ pub struct Driver {
         ev.peer = c.peer;
         self.emit(&mut c.sink, index, c.gen, 0usize, ev);
         self.markDirty(index);
-      } elif comp.status == diag.outcomeTimedOut {
+      } else if comp.status == diag.outcomeTimedOut {
         self.failConn(lp, index, Stage.Connect, 0u32, ErrorKind.TimedOut, "no connection within connectTimeout");
-      } elif comp.status == diag.outcomeFailed {
+      } else if comp.status == diag.outcomeFailed {
         if c.nextAddr < c.addrs.len() && now < c.connectBy {
           self.connectNext(lp, index);
         } else {
@@ -1778,7 +1778,7 @@ fn parseV4(host: &str, port: u16) Option[SocketAddr] {
       part = part + 1usize;
       v = 0u32;
       digits = 0u32;
-    } elif host[k] >= '0' && host[k] <= '9' {
+    } else if host[k] >= '0' && host[k] <= '9' {
       v = v * 10u32 + u32.from(host[k] - '0');
       digits = digits + 1u32;
       if digits > 3u32 {return None;}

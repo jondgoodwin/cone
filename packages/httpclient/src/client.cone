@@ -531,7 +531,7 @@ pub struct Client {
     while i < fetchCount {
       let f = self.fetchAt(i) as &Fetch;
       if f.state == fQueued {self.finishFetch(lp, i, endCancelled, Failure.none());}
-      elif f.state == fActive {(self.fetchAt(i) as &mut Fetch).ending = endCancelled;}
+      else if f.state == fActive {(self.fetchAt(i) as &mut Fetch).ending = endCancelled;}
       i = i + 1u32;
     }
     drv.abortAll(lp);
@@ -543,7 +543,7 @@ pub struct Client {
     let f = self.fetchAt(fi) as &mut Fetch;
     if f.state == fQueued {
       self.finishFetch(lp, fi, how, Failure.none());
-    } elif f.state == fActive {
+    } else if f.state == fActive {
       if f.ending == endNone {f.ending = how;}
       drv.cancel(lp, f.req);
     }
@@ -574,13 +574,13 @@ pub struct Client {
     var failure = fl;
     if how == endDone {
       st.done = st.done + 1u64;
-    } elif how == endFailed || how == endLimit {
+    } else if how == endFailed || how == endLimit {
       st.failed = st.failed + 1u64;
       k = EventKind.Failed;
       if how == endLimit {
         failure = Failure.make(Stage.Limit, 0u32, ErrorKind.TooLarge, "the body is longer than the limit it was fetched with");
       }
-    } elif how == endCancelled {
+    } else if how == endCancelled {
       st.cancelled = st.cancelled + 1u64;
       k = EventKind.Cancelled;
     } else {
@@ -828,7 +828,7 @@ pub struct Client {
         }
         // A request the client no longer follows: its body's credit back
         if e.kind == httpconn.EventKind.Data {drv.release(e.req, e.buf.len());}
-      } elif (t & tokConn) != 0u64 {
+      } else if (t & tokConn) != 0u64 {
         if index < connCount {
           let p = self.connAt(index) as &PConn;
           if p.gen == gen && p.state != pFree {self.onConn(lp, index, e);}
@@ -863,11 +863,11 @@ pub struct Client {
       og.connecting = og.connecting - 1u32;
       og.open = og.open - 1u32;
       total = total - 1u32;
-    } elif was == pIdle {
+    } else if was == pIdle {
       removeValue(&mut og.idle, pc);
       og.open = og.open - 1u32;
       total = total - 1u32;
-    } elif was == pBusy {
+    } else if was == pBusy {
       og.open = og.open - 1u32;
       total = total - 1u32;
     }
@@ -1149,7 +1149,7 @@ pub struct Client {
       ev.body = e.body;
       ev.url = f.url.text();
       self.emit(fi, 0usize, ev);
-    } elif k == httpconn.EventKind.Data {
+    } else if k == httpconn.EventKind.Data {
       let n = e.buf.len();
       if f.following {
         // A redirect's body: read and dropped, cut off past drainLimit
@@ -1169,14 +1169,14 @@ pub struct Client {
         f.held = f.held + n;
         self.emit(fi, 0usize, ev);
       }
-    } elif k == httpconn.EventKind.End {
+    } else if k == httpconn.EventKind.End {
       if f.following {return;}
       var ev = Event.make(EventKind.End, f.sink.token, self.idOf(fi));
       ev.trailers <-> e.trailers;
       self.emit(fi, 0usize, ev);
-    } elif k == httpconn.EventKind.Writable {
+    } else if k == httpconn.EventKind.Writable {
       self.sendBody(lp, fi);
-    } elif k == httpconn.EventKind.Done {
+    } else if k == httpconn.EventKind.Done {
       let pc = f.conn;
       self.connDone(lp, pc);
       if f.following {
@@ -1184,28 +1184,28 @@ pub struct Client {
       } else {
         self.finishFetch(lp, fi, endDone, Failure.none());
       }
-    } elif k == httpconn.EventKind.Failed {
+    } else if k == httpconn.EventKind.Failed {
       self.connEnded(lp, f.conn);
       let fl = Failure.fromConn(&e.failure);
       if f.ending == endLimit || f.ending == endCancelled || f.ending == endTimedOut {
         self.finishFetch(lp, fi, if f.ending == endLimit {endLimit} else {endFailed}, fl);
-      } elif self.canRetry(fi, &fl) {
+      } else if self.canRetry(fi, &fl) {
         f.retries = f.retries + 1u32;
         st.retries = st.retries + 1u64;
         self.enqueue(fi);
       } else {
         self.finishFetch(lp, fi, endFailed, fl);
       }
-    } elif k == httpconn.EventKind.Cancelled || k == httpconn.EventKind.TimedOut {
+    } else if k == httpconn.EventKind.Cancelled || k == httpconn.EventKind.TimedOut {
       self.connEnded(lp, f.conn);
       if f.cutting && f.ending == endNone {
         self.follow(lp, fi);
-      } elif f.ending == endFailed {
+      } else if f.ending == endFailed {
         self.finishFetch(lp, fi, endFailed,
           Failure.make(Stage.Limit, 0u32, ErrorKind.TooLarge, "the buffer pool refused a buffer for the request's body"));
-      } elif f.ending == endTimedOut || f.ending == endLimit {
+      } else if f.ending == endTimedOut || f.ending == endLimit {
         self.finishFetch(lp, fi, f.ending, Failure.none());
-      } elif k == httpconn.EventKind.TimedOut {
+      } else if k == httpconn.EventKind.TimedOut {
         self.finishFetch(lp, fi, endTimedOut, Failure.none());
       } else {
         self.finishFetch(lp, fi, endCancelled, Failure.none());
@@ -1294,11 +1294,11 @@ pub struct Client {
         k = k + 1usize;
         if e.id != id {
           others.push(e);
-        } elif e.kind == EventKind.Response {
+        } else if e.kind == EventKind.Response {
           resp.status = e.response.status;
           resp.headers <-> e.response.headers;
           resp.url <-> e.url;
-        } elif e.kind == EventKind.Data {
+        } else if e.kind == EventKind.Data {
           let n = e.buf.len();
           if resp.body.len() + n > limit {
             let fi = self.fetchIndex(id);
@@ -1307,7 +1307,7 @@ pub struct Client {
             resp.body.appendBytes(e.buf.view());
           }
           self.release(id, n);
-        } elif e.isTerminal() {
+        } else if e.isTerminal() {
           resp.outcome = e.kind;
           resp.failure <-> e.failure;
           resp.timing = e.timing;

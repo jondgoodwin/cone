@@ -1173,7 +1173,7 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
         int slotted = returns && parseActorAwaits(&texts, fn);
         for (int asked = 0; asked <= returns; ++asked) {
             uint32_t variant = asked ? ask++ : 0;
-            genPuts(&g, firstarm ? "  if &*msg is &" : "  elif &*msg is &");
+            genPuts(&g, firstarm ? "  if &*msg is &" : "  else if &*msg is &");
             firstarm = 0;
             genSlot(&g, GenMsg);
             genPuts(&g, ".");
@@ -1248,7 +1248,7 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
     // A reply to one of the actor's own requests: its resume function, the
     // seam's, takes it (the actors package's resume and resumeId)
     for (uint32_t withid = 0; awaits && withid <= 1; ++withid) {
-        genPuts(&g, firstarm ? "  if &*msg is &" : "  elif &*msg is &");
+        genPuts(&g, firstarm ? "  if &*msg is &" : "  else if &*msg is &");
         firstarm = 0;
         genSlot(&g, GenMsg);
         genPuts(&g, ".");

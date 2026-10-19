@@ -2315,7 +2315,7 @@ void genpgm(GenState *gen, ProgramNode *pgm) {
     // returning early, as a module the validator refuses. structurizecfg
     // takes no switch, and makes each of a switch's branches 'br i1 undef',
     // so a switch is first made a tree of branches (lower-switch): simplifycfg
-    // makes one of an if-elif chain on one integer. And every loop is first
+    // makes one of an if-else if chain on one integer. And every loop is first
     // given a preheader (loop-simplify), as LLVM's own GPU pipelines give
     // structurizecfg every loop: simplifycfg folds away the empty block
     // before a loop, and a loop entered straight from a conditional branch
