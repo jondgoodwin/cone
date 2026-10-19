@@ -437,7 +437,7 @@ FoldClause *parseFoldClause(ParseState *parse, int maypub) {
 // end of the statement. Naming the source is what asks for its members, so every
 // one of them is the default and there is no second spelling for it: '*' is
 // refused with 'starmsg'. A name after the source starts a list.
-static void parseUseAdmits(ParseState *parse, FoldClause *fold, char *starmsg) {
+static void parseUseAdmits(ParseState *parse, FoldClause *fold, char *starmsg, int member) {
     fold->star = 1;
     if (lexIsToken(StarToken)) {
         errorMsgLex(ErrorBadFold, "%s", starmsg);
@@ -446,7 +446,10 @@ static void parseUseAdmits(ParseState *parse, FoldClause *fold, char *starmsg) {
     else if (lexIsToken(IdentToken))
         fold->star = 0;
     parseFoldItems(parse, fold, 0);
-    parseEndOfStatement();
+    if (member)
+        parseEndOfMember();
+    else
+        parseEndOfStatement();
 }
 
 // Parse a type body's 'use' clause, with the lexer on the 'use': the sibling
@@ -482,7 +485,7 @@ static FieldDclNode *parseUseSibling(ParseState *parse) {
             errorMsgLex(ErrorNoIdent, "Expected the name of the method this type lends the body through, as in 'use str via view;'");
     }
     parseUseAdmits(parse, fold,
-        "A type body's 'use' brings in every member of what it names already; '*' says nothing more.");
+        "A type body's 'use' brings in every member of what it names already; '*' says nothing more.", 1);
     return use;
 }
 
@@ -514,7 +517,7 @@ ModUseNode *parseModUse(ParseState *parse, uint16_t pubflag) {
     }
     use->source = parseTypeName(parse);
     parseUseAdmits(parse, fold,
-        "A module's 'use' brings in every variant of the enum, or every public name of the submodule, it names already; '*' says nothing more.");
+        "A module's 'use' brings in every variant of the enum, or every public name of the submodule, it names already; '*' says nothing more.", 0);
     return use;
 }
 
@@ -742,6 +745,37 @@ static void parseVariantTagPin(StructNode *substruct) {
     lexNextToken();
 }
 
+// Parse one variant of an enum's variant list, with the lexer just past its name
+// and 'substruct' built for it. A bare name holds nothing; a name and a type in
+// parentheses, 'Ok(i32)', is a variant that holds that type itself, with no name
+// for it and no field to reach it by. Either may pin its tag value, '= 3', after
+// whatever it holds. The same reading serves the first variant of a list and each
+// one after a comma, so any of them may carry a payload.
+//
+// The type is read while the lexer is on it, so that a diagnostic about the
+// variant's field points there, and may name the lifetimes of 'lifeowner', the
+// enum.
+static void parseVariantItem(ParseState *parse, StructNode *strnode, StructNode *lifeowner,
+    StructNode *substruct, uint16_t variantflags, StructNode **prior) {
+    strnode->flags |= HasTagField;
+    substruct->tag = StructTag;
+    substruct->flags |= variantflags;
+    if (lexIsToken(LParenToken)) {
+        lexNextToken();
+        FieldDclNode *contents = newFieldDclNode(payloadName, (INode*)mutPerm);
+        contents->index = 0;
+        contents->flags |= FlagMethFld | FlagPub;
+        StructNode *svlifestruct = parse->lifestruct;
+        parse->lifestruct = lifeowner;
+        contents->vtype = parseTypeReq(parse, "'(' of a variant");
+        parse->lifestruct = svlifestruct;
+        parseCloseTok(RParenToken);
+        structAddField(substruct, contents);
+    }
+    parseVariantTagPin(substruct);
+    parseAddVariant(parse, strnode, substruct, prior);
+}
+
 // An enum with fields in common has a name for everything it holds, so no
 // variant of it is declared as a type, which has none ('Ok(i32);'). Reported at the
 // first such variant, naming the first common field.
@@ -864,7 +898,7 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
     if (named)
         lexNextToken();
 
-    uint16_t methflags = ParseMayName | ParseMayImpl;
+    uint16_t methflags = ParseMayName | ParseMayImpl | ParseMemberEnd;
     if (strnode->flags & TraitType)
         methflags |= ParseMaySig;
 
@@ -1069,6 +1103,14 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
     if (parseHasBlock()) {
         parseBlockStart();
         while (!parseBlockEnd()) {
+            // A lone ';' is an empty declaration: ';' delimits the body's
+            // declarations, so one after the last, one after a declaration that
+            // ends in its own block and one before the first delimit nothing
+            // between them, and are harmless
+            if (lexIsToken(SemiToken)) {
+                lexNextToken();
+                continue;
+            }
             // Where the member starts, at its 'pub', and its keyword after that:
             // each member's span is recorded once it is parsed (dclspan.h)
             char *mstart = lex->tokp;
@@ -1083,7 +1125,7 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
                 VarDclNode *var = parseVarDcl(parse, immPerm, ParseMayImpl | ParseMaySig);
                 var->flags |= FlagStatic | pubflag;
                 iNsTypeAddStatic((INsTypeNode*)strnode, var);
-                parseEndOfStatement();
+                parseEndOfMember();
                 parseSpan(parse, &strnode->spans, (INode*)var, mstart, mkw, SpanDcl);
                 continue;
             }
@@ -1134,7 +1176,7 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
                     continue;
             }
             if (lexIsToken(FnToken) || behaviour) {
-                FnDclNode *fn = (FnDclNode*)parseFn(parse, externflag ? ParseMayName | ParseMaySig : methflags);
+                FnDclNode *fn = (FnDclNode*)parseFn(parse, externflag ? ParseMayName | ParseMaySig | ParseMemberEnd : methflags);
                 if (behaviour)
                     nodesAdd(&parse->dcltexts->behaviours, (INode*)fn);
                 fn->flags |= externflag;
@@ -1236,63 +1278,45 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
                 // In an enum, a bare name is an empty struct variant -- which is
                 // what makes one construct serve both the payload-carrying form
                 // and the plain set of named symbols. What follows the name says
-                // which was written: a separator or a pinned tag value makes it a
-                // variant, and anything else is a common field's type.
-                if (isenum && (lexIsToken(CommaToken) || lexIsToken(SemiToken) || lexIsToken(AssgnToken))) {
-                    strnode->flags |= HasTagField;
+                // which was written: a separator, a pinned tag value or the end of
+                // the body makes it a variant, so does a type in parentheses, 'Ok(i32)', which is a
+                // variant that holds that type itself, with no name for it and no
+                // field to reach it by, and anything else is a common field's
+                // type. A name and a type after a ':' is always a common field
+                // ('time: datetime;'), and so is one whose type is a tuple
+                // ('t: (A, B);').
+                //
+                // The variants are a comma-separated list, and any of them may
+                // carry a payload. The list is one declaration, so it ends as
+                // any does: with the ';', which the '}' closing the body stands
+                // in for on the last.
+                if (isenum && (lexIsToken(CommaToken) || lexIsToken(SemiToken) || lexIsToken(AssgnToken)
+                    || lexIsToken(RCurlyToken) || (!hadperm && lexIsToken(LParenToken)))) {
                     uint16_t variantflags = pubflag | (strnode->flags & FlagPub);
                     StructNode *substruct = newStructNode(field->namesym);
                     inodeLexCopy((INode*)substruct, (INode*)field);  // the name's position
-                    substruct->tag = StructTag;
-                    substruct->flags |= variantflags;
-                    parseVariantTagPin(substruct);
-                    parseAddVariant(parse, strnode, substruct, &priortag);
+                    parseVariantItem(parse, strnode, lifeowner, substruct, variantflags, &priortag);
+                    int listbroke = 0;
                     while (lexIsToken(CommaToken)) {
                         lexNextToken();
                         if (!lexIsToken(IdentToken)) {
                             errorMsgLex(ErrorNoIdent, "Expected the name of the next variant");
+                            listbroke = 1;
                             break;
                         }
                         // On the name, so this one needs no position copied
                         StructNode *next = newStructNode(lex->val.ident);
-                        next->tag = StructTag;
-                        next->flags |= variantflags;
                         lexNextToken();
-                        parseVariantTagPin(next);
-                        parseAddVariant(parse, strnode, next, &priortag);
+                        parseVariantItem(parse, strnode, lifeowner, next, variantflags, &priortag);
                     }
-                    parseEndOfStatement();
-                    parseSpan(parse, &strnode->spans, NULL, mstart, mkw, SpanMember);
-                    continue;
-                }
-
-                // In an enum, a name and a type in parentheses, 'Ok(i32);', is a
-                // variant declared as a type: a variant that holds that type
-                // itself, with no name for it and no field to reach it by. A name
-                // and a type after a ':' is always a common field ('time:
-                // datetime;'), and so is one whose type is a tuple ('t: (A, B);').
-                if (isenum && !hadperm && lexIsToken(LParenToken)) {
-                    lexNextToken();
-                    strnode->flags |= HasTagField;
-                    StructNode *substruct = newStructNode(field->namesym);
-                    inodeLexCopy((INode*)substruct, (INode*)field);  // the name's position
-                    substruct->tag = StructTag;
-                    substruct->flags |= pubflag | (strnode->flags & FlagPub);
-                    // The contents, held in the variant's one field. The field is
-                    // built while the lexer is on the type, so a diagnostic about
-                    // it points there.
-                    FieldDclNode *contents = newFieldDclNode(payloadName, (INode*)mutPerm);
-                    contents->index = 0;
-                    contents->flags |= FlagMethFld | FlagPub;
-                    StructNode *svlifestruct = parse->lifestruct;
-                    parse->lifestruct = lifeowner;
-                    contents->vtype = parseTypeReq(parse, "'(' of a variant");
-                    parse->lifestruct = svlifestruct;
-                    parseCloseTok(RParenToken);
-                    structAddField(substruct, contents);
-                    parseVariantTagPin(substruct);
-                    parseAddVariant(parse, strnode, substruct, &priortag);
-                    parseEndOfStatement();
+                    // A list cut short by a comma with no name after it has been
+                    // reported; what ends it is not reported a second time
+                    if (listbroke) {
+                        if (lexIsToken(SemiToken))
+                            lexNextToken();
+                    }
+                    else
+                        parseEndOfMember();
                     parseSpan(parse, &strnode->spans, NULL, mstart, mkw, SpanMember);
                     continue;
                 }
@@ -1337,7 +1361,7 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
                     hasEnumFld = 1;
                 }
                 structAddField(strnode, field);
-                parseEndOfStatement();
+                parseEndOfMember();
                 parseSpan(parse, &strnode->spans, (INode*)field, mstart, mkw, SpanMember);
             }
             else if (lexIsToken(StructToken)) {

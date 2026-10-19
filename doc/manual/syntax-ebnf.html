@@ -123,7 +123,12 @@
 		   the list, so a signature there has one return type, and several values are a tuple:
 		   '(f: &amp;fn(u32) (u32, u32), x: u32)' */
 	fnparm ::= dcl_word? ident_token (':' type)? ('=' (literal | ident))?
-	structtype ::= 'struct' 'trait'? ident_token? genparms? baseclause* whereclause? ('{' structstmt (',' structstmt)* '}')?
+	structtype ::= 'struct' 'trait'? ident_token? genparms? baseclause* whereclause? structbody?
+	structbody ::= '{' (structstmt | ';')* lastdcl? '}'
+		/* ';' delimits the declarations of a type's braces, a struct's, a trait's, an actor's or an enum's. A declaration
+		   that ends in a block (a method with a body, a struct variant) needs none after it; the last declaration of the body
+		   needs none at all, in lastdcl; and a ';' with nothing before it is an empty declaration, which is harmless */
+	lastdcl ::= (var_stmt | usestmt | variantlist) without its ';'   /* also a method or requirement with no body: 'fn size(self: &amp;) i32' */
 	genparms ::= '[' genparm (',' genparm)* ']'
 	genparm ::= ident_token ((':' (genqualname | sigbound) ('+' genbound)*) | ('+' lifetime_token)+)? | lifetime_token
 		/* what follows the name and its ':' names traits, all required, which constrain the parameter as a whereclause does
@@ -168,16 +173,16 @@
 		   'pub' comes first, as on every declaration: 'use pub' is refused */
 	folditems ::= ident_token ('as' ident_token)? (',' ident_token ('as' ident_token)?)*
 		| 'but' ident_token (',' ident_token)*   /* omitted admits every member of the sibling named */
-	traittype ::= 'trait' ident_token? isaclause? ('{' structstmt* '}')?   /* a synonym for 'struct trait' */
-	actortype ::= 'actor' ident_token '{' (structstmt | behaviourstmt)* '}'
+	traittype ::= 'trait' ident_token? isaclause? structbody?   /* a synonym for 'struct trait' */
+	actortype ::= 'actor' ident_token '{' (structstmt | behaviourstmt | ';')* lastdcl? '}'
 		/* its fields are its private state, never 'pub'; each behaviour is a message, whose parameters
 		   and returned value are Sendable; each 'fn' method is synchronous and never 'pub' ('init' and
 		   'final' as a struct's); no static, macro, 'extern' or 'use'. 'Name(args)' runs its 'init'
 		   and answers its handle. Needs 'import actors' */
 	behaviourstmt ::= 'pub'? 'async' 'fn' ident_token '(' fnparm (',' fnparm)* ')' type? block
 		/* an actor's behaviour: its first parameter 'self'; 'async' means nothing apart from 'fn' */
-	unbuiltkind ::= 'actor' 'trait' ident_token? ('{' structstmt* '}')?   /* accepted, not implemented */
-	enumtype ::= 'enum' '@unsized'? ident_token genparms? (':' nbrtype)? (('extends' genqualname) | isaclause)? whereclause? '{' enumstmt* '}'
+	unbuiltkind ::= 'actor' 'trait' ident_token? structbody?   /* accepted, not implemented */
+	enumtype ::= 'enum' '@unsized'? ident_token genparms? (':' nbrtype)? (('extends' genqualname) | isaclause)? whereclause? '{' (enumstmt | ';')* lastdcl? '}'
 		/* 'extends' names another enum, a generic one with its type arguments, whose variants
 		   this one holds copies of; such an enum declares only variants in its body, writes
 		   no integer type of its own, and names no isaclause: its base's comes with the copies.
@@ -185,7 +190,12 @@
 	enumstmt ::= structstmt | variantlist | 'struct' ident_token ('=' integer_token)? isaclause? structbody?
 		/* a variant's isaclause names open traits beyond its enum, which is its base unwritten */
 	variantlist ::= variant (',' variant)* ';'
-	variant ::= ident_token ('=' integer_token)?
+		/* one declaration: its variants are comma-separated, any of them may hold a value, and the ';' ends it unless it
+		   is the body's last declaration, where the '}' does: 'enum Fault { SoldOut, NoSuchCode(i32) }'. A comma is followed
+		   by another variant's name, never by the '}' or by a struct variant */
+	variant ::= ident_token ('(' type ')')? ('=' integer_token)?
+		/* the type in parentheses is a variant that holds that type itself, with no name for it; an enum with fields in
+		   common writes its variants as structs or bare names, never with one */
 	tagtype ::= 'tag'
 </pre>
 

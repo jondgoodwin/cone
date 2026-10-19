@@ -523,6 +523,17 @@ rather than on whatever the next line happens to start with. A `:` where a
 block should start is `ErrorColonBlock`, reported by name because that is the
 one syntax a reader of older Cone will reach for.
 
+A type's braces (`parseStruct`: a struct, a trait, an actor, an enum) delimit
+their declarations with `;` rather than ending each with one, so the body's last
+declaration needs none: `parseEndOfMember` accepts the `}` that closes the body
+in place of the `;` and otherwise is `parseEndOfStatement`. A `fn` read in such a
+body is passed `ParseMemberEnd` so that a signature with no body (a trait's
+requirement) ends the same way. A lone `;` at the start of a member is an empty
+declaration, skipped. Between two declarations that do not end in a block the
+`;` is still required. An enum's variant list is comma-separated, each item read
+by `parseVariantItem` (a bare name, or a name and a type in parentheses, then an
+optional tag value), and ends as one declaration.
+
 ## 3. The precedence cascade
 
 Hand-written recursive descent, one function per level. A level that **loops**
@@ -1162,7 +1173,7 @@ numbers.
 | `parser/parseactor.c` | `parseActor`, `parseActorMembers`, `parseActorRuntime`, `parseDclText` | an actor: its body read as the state, its members checked, the `actors` package found and bound once per module, and the message enum, the handle and the dispatch function written and parsed, with what its seams, its behaviours returning a value and `selfactor` need (section 6), recorded in its `ActorInfo`; `actor trait` refused |
 | | `parseBehaviourWords` | `async fn`, read up to the `fn` in an actor's body; `async` alone, and `async fn` anywhere else `ErrorBehaviourWords`, the declaration passed over (section 6) |
 | `parser/parsehelper.c` | `parseBlockStart`, `parseBlockEnd` | `{` and `}`, with recovery |
-| | `parseEndOfStatement`, `parseSkipToNextStmt`, `parseCloseTok` | the required `;`, and the two resyncs |
+| | `parseEndOfStatement`, `parseEndOfMember`, `parseSkipToNextStmt`, `parseCloseTok` | the required `;`; the member of a type's braces, whose last needs none before the `}`; and the two resyncs |
 | `parser/parseexpr.c` | `parseAnyExpr`, `parseSimpleExpr` | the two expression entry points |
 | | `parseAssign` … `parseMult`, `parseCast` | the precedence cascade (section 3) |
 | | `parseRetiredInto` | the retired `into` reported, pointed at `T.from(x)` and a checked narrowing |
@@ -1174,7 +1185,7 @@ numbers.
 | | `parseTypeReq` | a type the grammar requires: after `as`, an alias's `=`, `is` in an expression or a case, a `,` in a return list or generic argument list, and a `+` in a type parameter's annotation. None written is `ErrorNoType`, reported just after the token that asked for it; `parseType` alone is for the sites where a type may be left out |
 | | `parseAlias` | `alias Name = target;`: an `AliasDclNode` with `FlagTypeAlias`, its target read as a type expression, the one target built. The statement's shape — a name, `=`, and an expression resolved at compile time — is the one every target takes |
 | | `parseStruct` | struct/trait/enum: the optional `trait` modifier on the kind, generics, the base clauses — the `is` list (an entry followed by `if` and a condition held apart in `condis`, never the base) and the `extends` base, read in a loop so that a type may write both, each once, with `extends` refused on a trait and meaning *the enum whose variants join this one's set* on an enum — fields, methods, macros (a method when parameter 0 is `self`), `extern fn` methods and functions with no body (refused in a trait or a generic type, and before anything but `fn`: `ErrorBadExtern`), an enum's variants in both spellings, tag-field synthesis and the `IsTagField` mark on an enum's discriminant; `@c` on a type is `ErrorCAttr` |
-| | `parseAddVariant`, `parseVariantTagPin` | joining a variant to its enum: the closed flags, the synthesized base link, the tag value written (an integer literal, which may be negative, kept whole in 64 bits; whether it fits the enum's type is type check's question) or assigned in sequence, and its name, bound in the enum's namespace while the node joins the module's list. A variant of an enum that *extends* another stays unassigned unless a value was written, because that enum's numbering continues from its base's last and the base is not resolved yet |
+| | `parseVariantItem`, `parseAddVariant`, `parseVariantTagPin` | one item of an enum's comma-separated variant list, a bare name or a name with a type in parentheses, read the same for the first and for each after a comma; joining a variant to its enum: the closed flags, the synthesized base link, the tag value written (an integer literal, which may be negative, kept whole in 64 bits; whether it fits the enum's type is type check's question) or assigned in sequence, and its name, bound in the enum's namespace while the node joins the module's list. A variant of an enum that *extends* another stays unassigned unless a value was written, because that enum's numbering continues from its base's last and the base is not resolved yet |
 | | `parseEnumExtensionMember` | what an enum extending another may not declare — a member of any kind, since a field or method every variant carries would have to reach its copies of the base's variants too, and a requirement declared there would need every copy to implement it; such a member belongs on the base, and comes along with the copies. Nor a discriminant: none is synthesized for such an enum either, its base's arriving with the fields name resolution splices in |
 | | `parseIsTagType`, `parseTagType` | `tag` recognized where a field's type is written, after the `:`, and nowhere else, so it is not a reserved word |
 | | `parseFnSig`, `parseFnSigSettle` | parameters, `Self` inference, single or tuple return type; several return types separated by commas only outside every list (`ParseState.inlist`, section 1), a signature inside one returning several values parenthesising them. A `&fn` signature's parameter may be its type alone (an `anonName` parameter), and its lone names and `Self` inference wait for `parseFnSigSettle`, called once `parseAmper` or `parseFn` knows whether a body follows (section 4) |

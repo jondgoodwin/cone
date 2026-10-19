@@ -172,6 +172,7 @@ enum ParseFlags {
     ParseInList = 0x0200,         // A comma ends the value: a parameter, whose list the comma continues
     ParseMayThreadLocal = 0x0100, // The variable may be '@threadlocal' or '@workgroup': a module's global
     ParseMayUsing = 0x0080,       // The variable may be bound by a pattern a function runs: a local, 'let rest using prefix("GET ") = line'
+    ParseMemberEnd = 0x0040,      // A member of a type's braces: a signature's ';' may be left off before the '}'
 };
 
 // parsebuild.c
@@ -336,6 +337,8 @@ void parseSkipToNextStmt();
 int parseIsEndOfStatement();
 // Require the ';' that ends every statement not ending in a block
 void parseEndOfStatement();
+// The end of a member of a type's braces: its ';', or the '}' that closes the body
+void parseEndOfMember();
 // Return true if a block starts here: '{', or the ':' the language no longer has
 int parseHasBlock();
 // Expect '{' and consume it

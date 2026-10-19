@@ -1,0 +1,51 @@
+// What an enum body's delimiting ';' still requires.
+//
+// Parse stage only. ';' delimits an enum body's declarations, the last needing none
+// (enum_body_delimiters), so what remains refused is a missing delimiter BETWEEN two
+// declarations that do not end in a block, and a variant list that is not the comma
+// kind. Each diagnostic is placed after the token the missing ';' follows, which is
+// where the fix goes.
+
+mod enum_parse_delimiters;
+
+// A variant list followed by a method: the list needs its ';' before the method
+enum ListThenMethod {
+  A, B  //~ ErrorNoSemi
+  fn n(self: ListThenMethod) i32 {1}
+}
+
+// Two lists with nothing between them
+enum TwoLists {
+  A, B  //~ ErrorNoSemi
+  C, D
+}
+
+// A payload variant is a declaration like any other
+enum PayloadThenName {
+  A(i32)  //~ ErrorNoSemi
+  B
+}
+
+// A comma ends a list only to continue it, with another variant's name; the
+// diagnostic is at the token that is not one
+enum TrailingComma {
+  A, B,
+}  //~ ErrorNoIdent
+
+// A struct variant is a declaration of its own, not an item of a comma list
+enum CommaThenStruct {
+  A,
+  struct B { pub x: i32 }  //~ ErrorNoIdent
+}
+
+// A common field is a declaration of its own too, not an item of a comma list
+enum CommaThenField {
+  A,
+  pub size: i32  //~ ErrorNoIdent
+}
+
+// A comma does not stand for the ';' after a struct variant's block
+enum StructThenComma {
+  struct A { pub x: i32 },  //~ ErrorNoSemi
+  B
+}
