@@ -443,7 +443,7 @@ candidate. `fnCallLowerRefCompare`:
   its other side, so text compares alike in either order.
 - **A referent whose type declares the operator** is asked first with the
   operands as written, so a method declared for references (`self: &`,
-  `other &T`) takes them unchanged. Only when no candidate matches are both
+  `other: &T`) takes them unchanged. Only when no candidate matches are both
   operands dereferenced (`derefInject`, positioned on the comparison) and the
   value's operator selected by `fnCallLowerMethod`, as for `*a == *b`. An
   enum's compiler-declared `==` is reached that way, and so is its refusal,

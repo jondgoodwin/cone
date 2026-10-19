@@ -2003,7 +2003,7 @@ bodies. **The entry runs them** [Jon 23 Sep]: for an executable the compiler
 builds the C `main` itself (`genlEntry`), which calls `cone.initAll`, the
 program's own `main` and `cone.finalAll`, and returns what `main` returned; the
 program's `main` is internal under the symbol `cone.main`. The program's `main`
-is the root's bare Cone-named `main` taking nothing or `(argc i32, argv **u8)`;
+is the root's bare Cone-named `main` taking nothing or `(argc: i32, argv: **u8)`;
 a library compile, a WebAssembly or GPU one, a `main` with a C name (its own C
 entry) and a `main` with other parameters get no entry. A panic (`abort`) or C's
 `exit` ends the process without reaching the final. **A program may still call
@@ -2683,7 +2683,7 @@ region counting its owners (`aliasRef` and `dealiasRef`), not `Move`, and
 declaring `ThreadSafe` exactly where the lock does (`refLockCheck`).
 
 **A region asks for the value's type record by the shape of its `alloc`.** An
-`alloc` taking `ty *TypeRecord` after the size is handed, at each allocation,
+`alloc` taking `ty: *TypeRecord` after the size is handed, at each allocation,
 the record of the allocated value's type (`genlallocref`, asking
 `regionAllocTakesRecord`). The record is core's
 `TypeRecord`, a constant the compiler builds once per type in each object

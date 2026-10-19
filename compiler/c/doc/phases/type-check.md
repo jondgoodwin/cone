@@ -376,7 +376,7 @@ was copyable (`struct_typecheck_layout_reference`).
 **A layout left waiting keeps its expansion depth.** A generic instance made as
 a target is laid out later, outside the instantiation that made it, so the job
 carries `genericInstantiateDepth` and restores it while it runs: an expansion
-through references, `next *Box[Box[T]]`, is still refused at `ErrorInstDepth`.
+through references, `next: *Box[Box[T]]`, is still refused at `ErrorInstDepth`.
 
 **A function's signature is not inside a layout.** `fnDclTypeCheck` holds its
 signature as a layout for the members queue's sake (above), but it holds nothing

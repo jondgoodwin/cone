@@ -736,7 +736,7 @@ LLVM struct, which is why a reference to a trait could not be lowered.
   fields as soon as it is name resolved, before the enum is type checked; type check
   validates the mark and refuses a second one.
 - **`tag` is recognized only where a field's type is written**, so it is not a
-  reserved word and `pub tag i32` still declares a field named `tag`. Written on
+  reserved word and `pub tag: i32` still declares a field named `tag`. Written on
   anything but an enum it is refused here, which is what keeps the type-check rule
   below to one question: does this enum carry more than one.
 - **An enum with no variants is `ErrorNoVariants`.** Its identity is its variant
@@ -1133,7 +1133,7 @@ Steps 9 to 11 are `structCheckMembers`, run from the members queue:
    requirement with no body, inherited as such, is unmet in a struct; a trait
    may pass it on. **`Self` in the requirement is this type**, as it is in a
    default cloned in: `fnSigVrefEqual` is given this type as its `selftype`, so
-   the trait's `o &Self` is met by this type's `o &Self`. Not for a closed
+   the trait's `o: &Self` is met by this type's `o: &Self`. Not for a closed
    trait (`HasTagField` or `SameSize`, an enum among them), whose requirement a
    variant meets exactly as written, since a call through a reference to it
    dispatches by the tag with an argument of any variant; nor when a vtable is
@@ -1285,7 +1285,7 @@ What the marker brings:
 
 - **Its shape** (`structCarriesRegionCheck`, at the end of name resolution,
   beside `structLendsDeclared`): the type declares an init, and every init it
-  declares ends with a parameter `region *MemRegion` that has no default.
+  declares ends with a parameter `region: *MemRegion` that has no default.
   Otherwise `ErrorRegionMark`. Where the type keeps the region, and what it
   does with it, are the type's own; a type that wraps another (`String`'s
   `List[u8]`, `Set`'s `Dict`) passes the region on to it.
@@ -1813,7 +1813,7 @@ integer on Win64, and on SysV x86-64 one INTEGER eightbyte, a `ptr`), and the C-
 cannot import core (core imports libc), declare their strings with it. So the compiler
 makes the struct whole in `stdlibInit` (`cstrTypeDcl`, name resolved, type checked on
 first use, with the field `p`) and binds the name for every module as it does
-`str`. Core's source declares `pub struct cstr { p *u8; ... }` with its methods
+`str`. Core's source declares `pub struct cstr { p: *u8; ... }` with its methods
 (`fromPtr`, `fromLiteral`, `fromOwned`, `ptr`, `len`, `view`), and `stdlibAdoptCStr`
 hands the parser the compiler's node, emptied, for that declaration: a compile
 with core gets core's field and methods, one without (libc's own) the
@@ -2246,7 +2246,7 @@ and `extractvalue`, and `vtblidx` for vtable slots.
   leave a call to a function that does not exist. The same absence is why a
   virtual reference to another trait is built from the variant's vtable and never
   from one for the enum. **The exception is a method whose written receiver names
-  the enum** (`self: &Lamp`, `&mut Lamp`, `self Lamp`; `structIsWholeEnumMethod`,
+  the enum** (`self: &Lamp`, `&mut Lamp`, `self: Lamp`; `structIsWholeEnumMethod`,
   read off the parameter as written, so `Self` and an omitted type are the
   variant's): it is one function over the whole enum. `structInheritTrait` and
   `structEnumCloneOwnMethods` do not clone it, `structMakeVtable` gives it no slot,
@@ -2266,7 +2266,7 @@ and `extractvalue`, and `vtblidx` for vtable slots.
   (`structTakesSelfByValue`: a method with a body whose `self` is not a reference;
   one naming the enum is whole-enum above): each variant's clone has its own
   `Self` for the receiver, a parameter and the result, so
-  `setN(var self, v i32) Self` is `setN(var self: A, v i32) A` in `A`.
+  `setN(var self, v: i32) Self` is `setN(var self: A, v: i32) A` in `A`.
   The enum's own copy says `Self` = the enum, and nothing dispatches it (the call
   on an enum value is refused above), so the copy itself is no requirement:
   `structMakeVtable` gives it no slot. A variant that declares its OWN method of

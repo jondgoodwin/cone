@@ -189,7 +189,7 @@ The value is exactly what the conversion generated, so no position's value
 moves; what moves is that the result is still a literal, which the global,
 static, parameter-default and typed-constant rules ask for ([vardcl](vardcl.md)),
 so `let g: f64 = 0.5` is accepted as it is in a function body. It is still the
-`f32` value: `let g f64 = 0.1f` holds `0.100000001490116…`, as a local, an
+`f32` value: `let g: f64 = 0.1f` holds `0.100000001490116…`, as a local, an
 argument, a return value and a field do. `typemgmt_success` pins the positions
 that require a literal, with values exact in `f32`, and pins that a global and a
 local given the same literal agree.

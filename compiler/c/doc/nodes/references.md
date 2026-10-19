@@ -525,7 +525,7 @@ region: it calls the methods the struct declares, held to their shapes at the
 declaration (`lockPermCheck`, `ErrorLockPermShape`): `acquireMut` and
 `releaseMut`, required; `acquireRead` and `releaseRead`, both or neither; each
 taking only `self`, a borrowed reference to the lock, and returning nothing,
-but that an acquiring one may take `(file &Array[u8], line u32)` after it and is
+but that an acquiring one may take `(file: &Array[u8], line: u32)` after it and is
 then handed the borrow's place in the source; and `init`, run by an
 allocation on the lock in place (`permInitTypeCheck`). The lock is in the
 header, `{region, lock, value}`.
@@ -667,9 +667,9 @@ called. A local, a field of one held by value, or a field reached through a
 **A borrowed reference that may write, held in a place reached through a borrow
 that only reads, reads and lends only `&`.** The permissions of a path are the
 intersection of every reference gone through ([mem-permissions](../../../../doc/manual/mem-permissions.html#view),
-"Viewpoint Adaptation"): `car.owner.age = 18` through a `car &Car` is refused
+"Viewpoint Adaptation"): `car.owner.age = 18` through a `car: &Car` is refused
 though `owner` is a `&mut Person`, as is `target.push(x)` in a `self: &` method of
-a struct holding `target &mut List`. `iexpReachWrites` asks whether every
+a struct holding `target: &mut List`. `iexpReachWrites` asks whether every
 reference the place is reached through (a borrow, a slice, a virtual reference,
 an owner whose own permission cannot write) grants write, looking at the
 references' permissions and not at the slots holding them: a `let` field, or a
@@ -691,7 +691,7 @@ runs.
 **A `&uni` field or element is seen only through `uni` references, or in a holder
 held by value.** "A shared reference cannot see through a uni reference"
 ([mem-permissions](../../../../doc/manual/mem-permissions.html#view), "Viewpoint Adaptation"), and
-"shared" includes `&mut`: `a.holder` with `holder &uni App`, reached through two
+"shared" includes `&mut`: `a.holder` with `holder: &uni App`, reached through two
 `&mut Cell` names of one cell, would hand the one reference that promised to be
 unique to both, and the shape check that guards an element borrowed through a
 shared path (`ErrorShapeReshape`) treats a path through a `uni` link as reached

@@ -177,7 +177,7 @@ whose function gives an Option). A binding in a column of `match a, b` is still 
 
 `ErrorRegionMark`, `ErrorRegionNew` and `ErrorRegionHead` are about a type's memory region. A
 type declaring `CarriesRegion` that declares no init, or an init whose last parameter is not
-`region *MemRegion`, is `ErrorRegionMark` (name resolution). An allocation in a region,
+`region: *MemRegion`, is `ErrorRegionMark` (name resolution). An allocation in a region,
 `new a[T](...)`, written with a `trynew`, a permission other than `mut`, a permission and
 no type, or more than a permission and a type in its brackets is `ErrorRegionNew` (type
 check). One whose head `a` is a value that is not a region (a struct whose first field is a
@@ -662,7 +662,7 @@ place reached through a reference that only reads, lent as a `&mut` or `&uni`
 (a receiver, an argument, an initializer, a `Uni[fn]` called), is `ErrorBadPerm`,
 as a written `&mut` of the same place is; so is a `&mut` or `&uni` borrowed
 reference held in such a place, used where one that may writes is wanted
-(`car.owner.birthday()` through a `car &Car` holding `owner &mut Person`), and a
+(`car.owner.birthday()` through a `car: &Car` holding `owner: &mut Person`), and a
 write through it is `ErrorNoMut`.
 
 `await` has five error codes and a warning. Where it may not stand -- anywhere

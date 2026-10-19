@@ -247,7 +247,7 @@ nothing.
    but any other coercion wraps the value in a node that is not a literal. So
    `let g: f64 = 0.5`,
    `let s: &Array[u8] = "text"` and `const K = 5` then `let g: i64 = K` are legal. A constant is typed as its value is, an untyped
-   integer one as `i32`, so `let b u8 = K` is refused as a type mismatch, since
+   integer one as `i32`, so `let b: u8 = K` is refused as a type mismatch, since
    `i32` does not coerce to `u8`. `constDclTypeCheck` reads the value after
    coercion too, so `const K3: i64 = K` is legal.
 5a. **A function's static joins the function.** `dclInfoJoin` with the function

@@ -94,7 +94,7 @@ symmetric in their cells), `elongate(p, extent)`.
 | `PathCurve.make(frames, distances)` | a view of a path's frames (`&Array[CurveFrame]`) and their arc lengths (`&Array[f32]`), kept by their owner; for a `sculpt.Path`, `path.curveFrames()` and `path.distances()` (sculpt's rotation-minimizing frames) |
 | `curveCellFrame(curve, k, count) CurveFrame` | cell k's frame of `count`, as `repeatAlong` finds it: what an owner keeps, one per cell |
 | `curveCells(curve, out)` | every cell's frame written into `out` (`&mut Array[CurveFrame]`), as many cells as it holds |
-| `CurveCells` | a view of cells' frames (`frames &Array[CurveFrame]`), made where the distance is found: `new CurveCells(list.view())` |
+| `CurveCells` | a view of cells' frames (`frames: &Array[CurveFrame]`), made where the distance is found: `new CurveCells(list.view())` |
 | `repeatAlongCells(cells, shape, p)` | `repeatAlong` over cells already found: the same bits, no frame found per evaluation |
 
 A copy's size and twist are the shape's own functions of `u` (and of its

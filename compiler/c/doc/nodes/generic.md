@@ -442,7 +442,7 @@ false diagnostic. The cost is silent acceptance — see Hazards.
    against its argument's type (`genericInferType`), capturing by `Name` the
    argument's type wherever the parameter's names a generic parameter. The match
    descends through a pointer, a reference and an array reference to what each
-   points at (`p *T` given a `*Fin` captures `Fin`), accepting both the type
+   points at (`p: *T` given a `*Fin` captures `Fin`), accepting both the type
    tags and the template's dereference, borrow and allocate tags (Clone,
    above). A managed
    reference type, `Rc[mut, T]`, is still the call it was written as, and
@@ -494,7 +494,7 @@ false diagnostic. The cost is silent acceptance — see Hazards.
    after its receiver.
 
    **An array or a slice given for a parameter bounded by a generic trait** —
-   `xs &C` with `C Iterable[A, I]`, given `&arr` or a `&Array[T]` slice — has no
+   `xs: &C` with `C Iterable[A, I]`, given `&arr` or a `&Array[T]` slice — has no
    struct for `C` to be: a slice names no type there, and an array has no methods
    of its own to read the bound off. `genericInferArrayBound` captures `C` as the
    body `Array[T]` of the element (`fnCallArrayBody`, the instance core declares,
@@ -504,7 +504,7 @@ false diagnostic. The cost is silent acceptance — see Hazards.
    clause naming a generic trait; any other parameter of the shape `&T`, given a
    slice, is matched as ever.
 
-   **An unsuffixed number literal passed for a bare type parameter** (`v T`;
+   **An unsuffixed number literal passed for a bare type parameter** (`v: T`;
    a `ULitTag` or `FLitTag` with `FlagUnkType`, `genericArgIsAdaptable`) does not capture in the
    first pass, as an untyped `null` does not: it is whichever number type is
    wanted. `genericInferFnParms` runs in three steps: every other argument, then
@@ -699,7 +699,7 @@ in the brackets, `dot[3](a, b)`, or inferred: `genericInferType` has an
 captures the number where the parameter's size is a use of a value parameter
 (`genericCaptureValue`; two sizes for one parameter are `ErrorGenValueClash`) and
 goes on into the element types, so nested arrays and a slice of arrays give a
-number each. A value parameter used as a whole type, `x N`, captures nothing
+number each. A value parameter used as a whole type, `x: N`, captures nothing
 (`genericCaptureType`).
 
 **`genericSubstitute` takes the bracketed list of a function with a value
@@ -773,7 +773,7 @@ Every other question a clause asks is
   requirement and each candidate the type has for it (`fnCallDemandCandidates`),
   since signatures compare only once checked. Under `Monomorph` a requirement's
   `Self` is the type asked about (`fnSigVrefEqual`'s `selftype`), since the
-  instance calls that type's own method: `o &Self` is met by its `o &Self`. The
+  instance calls that type's own method: `o: &Self` is met by its `o: &Self`. The
   match is otherwise exact, and a virtual reference's is exact throughout. A **marker** — a trait requiring
   nothing of a value, the compiler's own built-in traits among them — is never
   fitted: every type would fit it, so fitting it would say nothing.

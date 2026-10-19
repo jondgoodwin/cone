@@ -972,7 +972,7 @@ as a store through a reference there would: a borrow past the target is where
 its near loans point, two or more, anywhere its loans reach. An argument the
 walk cannot key (`st(new W(&mut q), &x)`) is gone by through its own loans. A value may not be stored
 into what a reference points at when it carries a borrow of part of what that *same* reference
-points at (`held = buf.view()` in a method, `h.held = h.buf.view()` for `h &mut H`, or
+points at (`held = buf.view()` in a method, `h.held = h.buf.view()` for `h: &mut H`, or
 `words.push(text.view())` into a list field): the caller lent the whole value, can change or move
 the part the borrow points into after the call, and is told of no store by a call that is handed
 one argument (the call-site check above sees only the other arguments' loans). Written in one
@@ -998,7 +998,7 @@ it is used, the Rust way — the loan is the receiver's own: `list[0usize]`'s
 `self: &mut` and returning a borrow freezes its receiver entirely. A receiver
 taken by reference is a loan whether the call borrows it (`list.push(x)` is
 `(&mut list).push(x)`, the borrow injected) or it is handed a reference (`r.push(x)`
-for `r &uni List` reborrows `*r`, with the permission the method declares for
+for `r: &uni List` reborrows `*r`, with the permission the method declares for
 `self`), or is an owner type check lent to a `self: &` or `self: &mut` method (a
 `Uni[R]`, or a `Uni[App]` dispatched through: the recast `pwOwnedLent` reads,
 a loan of `*a` reached as its owner reaches it, so `a.absorb(a)` moving `a`
@@ -1256,7 +1256,7 @@ its loan (`pwVarDcl` keeps it on the temporary, `pwLend` reads it), so
 `r = (v <- (1, 2))` holds `v`'s loan. A
 borrow a
 call returns carries its receiver's loan as the receiver was reached: through a
-shared path (`l &mut List`, a field of `self`, a `Rc[mut, T]` owner) that loan
+shared path (`l: &mut List`, a field of `self`, a `Rc[mut, T]` owner) that loan
 only keeps the source alive (`LoanAlias`), so `let e = l[0usize]; m.push(p); e.x`
 compiles when `m` is another reference to the same list, and `e` dangles. For
 a container that changes shape (it declares `ShapeChanging`, or is found to
@@ -1270,7 +1270,7 @@ one and a writing one a `LoanExcl` one (`loanFreezeShared`, `loanFreezeWritable`
 path is frozen as a local's is. So
 `let e = l[0usize]; l.push(p); e.x`, the
 same through a struct wrapping a `List` (`bag.first(); bag.add(p)` through
-`bag &mut Bag`) and
+`bag: &mut Bag`) and
 a cursor `var it = dq.items(); dq.push(9); it.next()` are refused, as are a push
 while `let s = l.viewMut()` or `let e = &mut l[0usize]` is held (by the shape check:
 `ErrorShapeReshape`, the path itself staying readable and lendable), and a call
@@ -1579,7 +1579,7 @@ a field by a struct that is not the owner is another value and is not reached. T
 `Item`, and `ed.grow(...)` for an `Ed` that holds the `List[Item]` is not. No owner is recorded
 (and the check asks for any value of the container's type, as before) for a receiver that is no
 field and no such element (`s.view()`), for a field that holds a reference or pointer
-(`r.s.view()` with `s &mut String`: the `String` is some other struct's, which the reference may
+(`r.s.view()` with `s: &mut String`: the `String` is some other struct's, which the reference may
 point at, so the struct with the reference field is not its owner), for a field of a trait or an enum (a type that
 implements it holds the same field), for an element a call returned from other borrows, and for
 a free function's borrowed argument. The receiver of a call that is the container itself, a
@@ -1936,7 +1936,7 @@ local (`loanIsLocal`), or into the generator itself, reached through its `self`
 (the hidden receiver of `next`) without crossing another reference, where the
 parameters it holds by value are. The generator is a value that moves between
 the calls that resume it, so neither stays put. A reborrow through a reference
-the generator holds (a parameter `t &Tree`, whose referent is the caller's), and
+the generator holds (a parameter `t: &Tree`, whose referent is the caller's), and
 what the caller lent through `self`, last across the seam. A holder of an ended
 borrow gets a pending conflict of kind `AccessYield` (`loanYieldPending`), fired
 by its next use as `ErrorFrozen` at the `yield`, worded for it. A lock's guard, or

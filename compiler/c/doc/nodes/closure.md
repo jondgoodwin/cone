@@ -193,7 +193,7 @@ trait that already exists.
   written bare in a type argument or an index (`parseIndexArg`, `parseFnBound`), as
   a term where a type is expected (`parseTerm` with `intype`), and as an alias's
   target (`parseAlias`). A bare signature held by value (`Applied[fn(i32) i32]`
-  with a field `f F`) is `ErrorNoSize`, a function signature being no value;
+  with a field `f: F`) is `ErrorNoSize`, a function signature being no value;
   `Uni[F]` and `&<F` with it as the argument are the callable references.
 - **What meets it.** `structMapVtableImpl` maps a struct's `()` as it does any slot
   and, for a callable trait, asks `fnSigCallSelfFits`: a reference that only reads
