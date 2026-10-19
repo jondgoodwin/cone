@@ -438,7 +438,7 @@ static int flowTakesSoleField(FnCallNode *fld) {
 // field's own or one reached through it -- an element of an array field, what
 // an owning reference field points at -- the struct or tuple holding the field
 // would be left with a hole in it, which it could neither be used with nor
-// finalized with. So nothing moves out of a field: '<=>' swaps a value in and
+// finalized with. So nothing moves out of a field: '<->' swaps a value in and
 // out of it, and moving the whole struct takes every field with it.
 static void flowRefuseMoveField(FnCallNode *fld, INode *top) {
     INode *methfld = fld->methfld;
@@ -447,8 +447,8 @@ static void flowRefuseMoveField(FnCallNode *fld, INode *top) {
         whole = ((CastNode *)whole)->exp;
     if (methfld->tag == ULitTag) {
         errorMsgNode(top, ErrorMoveField,
-            (INode *)fld == whole ? "May not move element %d out of the tuple that holds it. Swap a value in with '<=>', or move the whole tuple."
-                : "May not move a value out through element %d of a tuple, which would be left with a hole in it. Swap a value in with '<=>', or move the whole tuple.",
+            (INode *)fld == whole ? "May not move element %d out of the tuple that holds it. Swap a value in with '<->', or move the whole tuple."
+                : "May not move a value out through element %d of a tuple, which would be left with a hole in it. Swap a value in with '<->', or move the whole tuple.",
             (int)((ULitNode *)methfld)->uintlit);
         return;
     }
@@ -457,13 +457,13 @@ static void flowRefuseMoveField(FnCallNode *fld, INode *top) {
     // reaches by their names: it may borrow or copy one, not move it out
     if (yieldAny() && (INode *)fld == whole && yieldGenOfStruct(iexpGetDerefTypeDcl(fld->objfn))) {
         errorMsgNode(top, ErrorMoveField,
-            "May not move '%s' out of the generator that holds it: a generator keeps its parameters in the value it is, so its body may borrow or copy one, or swap a value in with '<=>', but not move it out.",
+            "May not move '%s' out of the generator that holds it: a generator keeps its parameters in the value it is, so its body may borrow or copy one, or swap a value in with '<->', but not move it out.",
             name);
         return;
     }
     errorMsgNode(top, ErrorMoveField,
-        (INode *)fld == whole ? "May not move field '%s' out of the struct that holds it. Swap a value in with '<=>', or move the whole struct."
-            : "May not move a value out through field '%s', which would leave a hole in the struct that holds it. Swap a value in with '<=>', or move the whole struct.",
+        (INode *)fld == whole ? "May not move field '%s' out of the struct that holds it. Swap a value in with '<->', or move the whole struct."
+            : "May not move a value out through field '%s', which would leave a hole in the struct that holds it. Swap a value in with '<->', or move the whole struct.",
         name);
 }
 
@@ -607,7 +607,7 @@ static void flowMoveSource(INode *node, Nodes **moved, INode *top, MoveParts *pa
                 && (flowOwningLocal(soleref) || soleref->tag == TempTag)
                 && itypeGetTypeDcl(((RefNode *)reftype)->vtexp)->tag == ArrayTag) {
                 errorMsgNode(top, ErrorMoveElem,
-                    "May not move a value out of an element of an array, which would be left with a hole in it. Swap a value in with '<=>', or move the whole array.");
+                    "May not move a value out of an element of an array, which would be left with a hole in it. Swap a value in with '<->', or move the whole array.");
                 return;
             }
         }
@@ -630,7 +630,7 @@ static void flowMoveSource(INode *node, Nodes **moved, INode *top, MoveParts *pa
             && !(isNameUseNode(objfn) && isExpNode(objfn)
                 && ((VarDclNode *)((NameUseNode *)objfn)->dclnode)->scope == 0)) {
             errorMsgNode(top, ErrorMoveElem,
-                "May not move a value out of an element of an array, which would be left with a hole in it. Swap a value in with '<=>', or move the whole array.");
+                "May not move a value out of an element of an array, which would be left with a hole in it. Swap a value in with '<->', or move the whole array.");
             return;
         }
         flowMoveSource(objfn, moved, top, parts);

@@ -30,7 +30,7 @@ INode *cloneSwapNode(CloneState *cstate, SwapNode *node) {
 
 // Serialize swap node
 void swapPrint(SwapNode *node) {
-    inodeFprint("(<=>, ");
+    inodeFprint("(<->, ");
     inodePrintNode(node->lval);
     inodeFprint(", ");
     inodePrintNode(node->rval);
@@ -44,7 +44,7 @@ void swapNameRes(NameResState *pstate, SwapNode *node) {
 }
 
 // Type check one side of a swap as a place stored through. Answer 0 if it is not one.
-// 'x[i] <=> y[j]', 'u.f[i].n <=> u.f[j].n': a swap stores through both of its
+// 'x[i] <-> y[j]', 'u.f[i].n <-> u.f[j].n': a swap stores through both of its
 // sides, so every index in each place is in set position, as an assignment's
 // are (assignTypeCheck): on a type declaring '&[]', each is the element's
 // mutable borrow, and the borrow stands for the place, as on the left of '='

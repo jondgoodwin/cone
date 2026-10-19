@@ -60,13 +60,13 @@ Operator-assignment (`+=`) is **not** this node. `parseOpEq` builds an
 to the base operator's method, `{let tmp = &mut x; *tmp = *tmp + e}`. An `e`
 holding an `await` is made first, into a local of the rewrite, so that the
 place is borrowed, read and written after the seam
-([Flow](../phases/flow.md), "A seam"). `<=>` is a `SwapNode`, its own thing.
+([Flow](../phases/flow.md), "A seam"). `<->` is a `SwapNode`, its own thing.
 
 ## Parse
 
 `parseAssign` is the loosest binding level and does **not** loop — it recurses
 into `parseAnyExpr` for the right-hand side, so assignment is
-**right-associative**. It handles `=`, `:=`, `<=>` and every op-assign form. A
+**right-associative**. It handles `=`, `:=`, `<->` and every op-assign form. A
 declaration of several names is built by `parseDestructDcl`, which `parseExprBlock`
 calls where a `let` or `var` declaration is followed by a comma.
 

@@ -936,7 +936,7 @@ void closureTypeCheck(TypeCheckState *pstate, ClosureNode **nodep, INode *expect
 // Reading the return type off the paths
 
 // A statement that changes something, as the last of a closure's body, is the
-// change and not a value to hand back: 'total += x;', 'n++;', 'a = b;', 'a <=> b;'
+// change and not a value to hand back: 'total += x;', 'n++;', 'a = b;', 'a <-> b;'
 static int closureIsChange(INode *stmt) {
     return stmt->tag == AssignTag || stmt->tag == SwapTag
         || (stmt->tag == FnCallTag && (stmt->flags & FlagLvalOp));

@@ -418,8 +418,8 @@ inside a character. A range of text not borrowed is `ErrorBadIndex`; (3) a byte 
 `str`, found as any struct's is.
 
 **A comparison on a reference compares what it refers to.** A reference reads
-as its value everywhere else — `r.x`, `r.method()` — so `==`, `!=` and the four
-orderings do too, and `===`/`!==` are what ask whether two references point to
+as its value everywhere else — `r.x`, `r.method()` — so `==`, `!=`, the four
+orderings and `<=>` do too, and `===`/`!==` are what ask whether two references point to
 the same place; `refType` and `arrayRefType` declare only those two, as
 `EqIntrinsic` and `NeIntrinsic` on the address (on both words, for a slice).
 Identity is selected by `iNsTypeFindPtrMethod`, which wants the two operands of
@@ -463,7 +463,7 @@ candidate. `fnCallLowerRefCompare`:
 
 **A comparison of two slices compares their elements**
 (`fnCallLowerSliceCompare`): equal when the counts are and each element is `==`
-to its partner. A slice has no order, so an ordering is `ErrorRefNoCompare`.
+to its partner. A slice has no order, so an ordering and `<=>` are `ErrorRefNoCompare`.
 The comparison is core's `mem.sliceEq[T](a &Array[T], b &Array[T]) bool`, a generic
 function whose body is the loop: the node becomes a call of its instance at
 the receiver's element type (`genericMethodInstance`), the receiver its first
@@ -768,7 +768,7 @@ Three adjustments, two of them asymmetric on purpose:
 
 **An index in set position.** `x[i] = v`, `x[i].f = v`, an operator
 changing `x[i]` or a field of it in place, a `&mut` borrow of a place
-through `x[i]`, and either side of a swap (`x[i] <=> y[j]`, `swapTypeCheck`)
+through `x[i]`, and either side of a swap (`x[i] <-> y[j]`, `swapTypeCheck`)
 write to the element, so where `x`'s type declares `&[]` the
 index is lowered as `&mut x[i]` is. The place may be any chain of field reads
 and indexes, `a[g].b[i].n`, of any depth, and every index in it is in set

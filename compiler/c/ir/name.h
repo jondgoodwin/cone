@@ -107,6 +107,7 @@ extern Name *leName;       // "<="
 extern Name *ltName;       // "<"
 extern Name *geName;       // ">="
 extern Name *gtName;       // ">"
+extern Name *threeWayName; // "<=>", three-way comparison
 
 extern Name *parensName;   // "()"
 extern Name *indexName;    // "[]"

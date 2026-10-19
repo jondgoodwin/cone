@@ -2271,9 +2271,10 @@ static Name *fnCallOperatorName(FnCallNode *node) {
 }
 
 // Is this one of the comparisons a reference reads through to its referent for:
-// '==', '!=' and the four orderings?
+// '==', '!=', the four orderings and the three-way '<=>'?
 static int fnCallIsValueCompare(Name *op) {
-    return op == eqName || op == neName || op == ltName || op == leName || op == gtName || op == geName;
+    return op == eqName || op == neName || op == ltName || op == leName || op == gtName || op == geName
+        || op == threeWayName;
 }
 
 // Does a value of this type have a place that '===' can ask about?
@@ -3836,10 +3837,10 @@ static int fnCallArgMayInfer(INode *arg) {
 }
 
 // A number operator that wants both operands the one number type: a sum, difference,
-// product, quotient or remainder, or an ordering comparison
+// product, quotient or remainder, or an ordering comparison, three-way included
 static int fnCallIsNumericOp(Name *op) {
     return op == plusName || op == minusName || op == multName || op == divName || op == remName
-        || op == ltName || op == leName || op == gtName || op == geName;
+        || op == ltName || op == leName || op == gtName || op == geName || op == threeWayName;
 }
 
 // The number type of an operand, when it is a plain number (not a pointer or a reference

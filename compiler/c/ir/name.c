@@ -75,6 +75,7 @@ Name *leName;
 Name *ltName;
 Name *geName;
 Name *gtName;
+Name *threeWayName;
 Name *parensName;
 Name *indexName;
 Name *refIndexName;
@@ -156,7 +157,7 @@ static struct NameOperator {
     {&indexName, "ix"},   {&parensName, "cl"},  {&incrName, "pp"},    {&decrName, "mm"},
     {&plusEqName, "pL"},  {&minusEqName, "mI"}, {&multEqName, "mL"},  {&divEqName, "dV"},
     {&remEqName, "rM"},   {&andEqName, "aN"},   {&orEqName, "oR"},    {&xorEqName, "eO"},
-    {&shlEqName, "lS"},   {&shrEqName, "rS"},
+    {&shlEqName, "lS"},   {&shrEqName, "rS"},   {&threeWayName, "ss"},
     // Cone's own: '<-', '&[]', and the postfix forms of '++' and '--'
     {&lessDashName, "la"}, {&refIndexName, "rx"}, {&incrPostName, "pP"}, {&decrPostName, "mM"},
 };

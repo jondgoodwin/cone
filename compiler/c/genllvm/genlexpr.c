@@ -343,6 +343,15 @@ static LLVMValueRef genlIntResize(GenState *gen, LLVMValueRef val, LLVMTypeRef t
     return val;
 }
 
+// '<=>' on two numbers: the i32 -1, 0 or 1 that is 'greater' minus 'less', each
+// a bool taken as 0 or 1. Two floats neither of which is greater or less than the
+// other, a NaN among them, answer 0.
+static LLVMValueRef genlThreeWay(GenState *gen, LLVMValueRef greater, LLVMValueRef less) {
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(gen->context);
+    return LLVMBuildSub(gen->builder, LLVMBuildZExt(gen->builder, greater, i32, ""),
+        LLVMBuildZExt(gen->builder, less, i32, ""), "");
+}
+
 // '<<' and '>>' on an integer, defined for every amount [Jon 3 Oct 2026]: the
 // bits shifted past either end are gone, so an amount of the width or more
 // leaves 0, or for '>>' on a signed integer the sign in every bit. The amount
@@ -939,6 +948,10 @@ LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint3
             case LeIntrinsic: fncallret = LLVMBuildFCmp(gen->builder, LLVMRealOLE, fnargs[0], fnargs[1], ""); break;
             case GtIntrinsic: fncallret = LLVMBuildFCmp(gen->builder, LLVMRealOGT, fnargs[0], fnargs[1], ""); break;
             case GeIntrinsic: fncallret = LLVMBuildFCmp(gen->builder, LLVMRealOGE, fnargs[0], fnargs[1], ""); break;
+            case CmpIntrinsic:
+                fncallret = genlThreeWay(gen, LLVMBuildFCmp(gen->builder, LLVMRealOGT, fnargs[0], fnargs[1], ""),
+                    LLVMBuildFCmp(gen->builder, LLVMRealOLT, fnargs[0], fnargs[1], ""));
+                break;
             // Intrinsic functions
             case SqrtIntrinsic: 
             {
@@ -987,6 +1000,14 @@ LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint3
             case SGtIntrinsic: fncallret = LLVMBuildICmp(gen->builder, LLVMIntSGT, fnargs[0], fnargs[1], ""); break;
             case GeIntrinsic: fncallret = LLVMBuildICmp(gen->builder, LLVMIntUGE, fnargs[0], fnargs[1], ""); break;
             case SGeIntrinsic: fncallret = LLVMBuildICmp(gen->builder, LLVMIntSGE, fnargs[0], fnargs[1], ""); break;
+            case CmpIntrinsic:
+                fncallret = genlThreeWay(gen, LLVMBuildICmp(gen->builder, LLVMIntUGT, fnargs[0], fnargs[1], ""),
+                    LLVMBuildICmp(gen->builder, LLVMIntULT, fnargs[0], fnargs[1], ""));
+                break;
+            case SCmpIntrinsic:
+                fncallret = genlThreeWay(gen, LLVMBuildICmp(gen->builder, LLVMIntSGT, fnargs[0], fnargs[1], ""),
+                    LLVMBuildICmp(gen->builder, LLVMIntSLT, fnargs[0], fnargs[1], ""));
+                break;
 
             // Bitwise
             case NotIntrinsic: fncallret = LLVMBuildNot(gen->builder, fnargs[0], ""); break;

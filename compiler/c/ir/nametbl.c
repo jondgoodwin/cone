@@ -221,6 +221,7 @@ void nametblInit() {
     ltName = nametblFind("<", 1);
     geName = nametblFind(">=", 2);
     gtName = nametblFind(">", 1);
+    threeWayName = nametblFind("<=>", 3);
 
     parensName = nametblFind("()", 2);
     indexName = nametblFind("[]", 2);

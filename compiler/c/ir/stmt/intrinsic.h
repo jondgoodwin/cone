@@ -40,6 +40,12 @@ enum IntrinsicFn {
     SGtIntrinsic,
     SGeIntrinsic,
 
+    // Three-way comparison, '<=>': an i32 -1, 0 or 1 as the first operand is
+    // less than, equal to or greater than the second. Two floats that are
+    // unordered (a NaN among them) answer 0
+    CmpIntrinsic,
+    SCmpIntrinsic,
+
     // An enum's equivalence, which reads the discriminant. Distinct from
     // EqIntrinsic because both arrive on a struct-shaped LLVM value, where a
     // slice's equality compares two words and an enum's compares one field.

@@ -1,0 +1,198 @@
+// '<=>' is the three-way comparison, an operator method a type may define as
+// it may define '==', built in for every number type, 'char' and text. It
+// answers an i32: -1 when the left operand is less, 1 when it is greater, 0
+// otherwise. The cases below are each built-in comparison and its edges:
+// signed integers (a negative is below a positive, which an unsigned reading
+// of the same bits reverses), unsigned integers at every width (the top half
+// of the range is above the bottom), floats (zero of either sign, infinities,
+// and a NaN, which is neither less nor greater than anything and so answers 0,
+// itself included -- the one place '<=>' disagrees with a total order), text by
+// byte (a prefix first, so a code point's order), references read through to
+// what they refer to, a literal taking the other operand's type, the answer
+// used as an i32 (in arithmetic and as a match subject), and a constant folded
+// at compile time against the same comparison made at run time. The swap this
+// token used to spell is now '<->' (struct_swap_operator).
+// Every printed value was checked by hand against the source.
+
+mod core_threeway_compare;
+
+import collections use *;
+import stdio use *;
+
+fn show(label: &str, n: i32) {
+  printStr(label);
+  printStr(" ");
+  printInt(n);
+  printStr("\n");
+}
+
+const FOLD_LESS = 2i32 <=> 5i32;
+const FOLD_MORE = 7u8 <=> 3u8;
+const FOLD_SAME = -4i64 <=> -4i64;
+const FOLD_NEG = -1i32 <=> 1i32;
+const FOLD_UNSIGNED = 200u8 <=> 100u8;
+const FOLD_FLOAT = 1.5 <=> 0.5;
+
+fn signed() {
+  let lo: i32 = -5;
+  let hi: i32 = 2;
+  show("i32 less", lo <=> hi);
+  show("i32 greater", hi <=> lo);
+  show("i32 same", hi <=> hi);
+  show("i32 min max", -2147483647i32 - 1i32 <=> 2147483647i32);
+  show("i32 max min", 2147483647i32 <=> -2147483647i32 - 1i32);
+  let a: i8 = -128;
+  let b: i8 = 127;
+  show("i8 min max", a <=> b);
+  show("i8 max min", b <=> a);
+  let c: i16 = -300;
+  let d: i16 = 5;
+  show("i16 neg pos", c <=> d);
+  let e: i64 = -9000000000;
+  let f: i64 = 9000000000;
+  show("i64 neg pos", e <=> f);
+  show("i64 pos neg", f <=> e);
+  let g: isize = -1;
+  let h: isize = 0;
+  show("isize neg zero", g <=> h);
+}
+
+fn unsigned() {
+  let lo: u32 = 1;
+  let hi: u32 = 4000000000;
+  show("u32 less", lo <=> hi);
+  show("u32 greater", hi <=> lo);
+  show("u32 same", hi <=> hi);
+  let a: u8 = 200;
+  let b: u8 = 100;
+  show("u8 high low", a <=> b);
+  show("u8 low high", b <=> a);
+  let c: u16 = 65535;
+  let d: u16 = 0;
+  show("u16 max zero", c <=> d);
+  let e: u64 = 18446744073709551615;
+  let f: u64 = 1;
+  show("u64 max one", e <=> f);
+  show("u64 one max", f <=> e);
+  let g: usize = 0;
+  let h: usize = 7;
+  show("usize zero seven", g <=> h);
+  show("char a b", 'a' <=> 'b');
+  show("char b a", 'b' <=> 'a');
+  show("char same", 'z' <=> 'z');
+  show("char astral bmp", '😀' <=> '€');
+}
+
+fn floats() {
+  var z: f64 = 0.0;
+  let nan = z / z;
+  let one: f64 = 1.0;
+  let inf = one / z;
+  let neginf = -one / z;
+  show("f64 less", 1.5 <=> 2.5);
+  show("f64 greater", one <=> 0.25);
+  show("f64 same", one <=> 1.0);
+  show("f64 zero signs", z <=> -z);
+  show("f64 inf above", inf <=> 1.0e300);
+  show("f64 neginf below", neginf <=> -1.0e300);
+  show("f64 inf inf", inf <=> inf);
+  show("f64 neginf inf", neginf <=> inf);
+  show("f64 nan left", nan <=> one);
+  show("f64 nan right", one <=> nan);
+  show("f64 nan nan", nan <=> nan);
+  show("f64 nan inf", nan <=> inf);
+  let a: f32 = 0.5;
+  let b: f32 = 0.25;
+  show("f32 greater", a <=> b);
+  show("f32 less", b <=> a);
+  var zf: f32 = 0.0;
+  let nanf = zf / zf;
+  show("f32 nan", nanf <=> a);
+  show("f32 nan nan", nanf <=> nanf);
+}
+
+fn text() {
+  show("text less", "apple" <=> "apricot");
+  show("text greater", "b" <=> "a");
+  show("text same", "same" <=> "same");
+  show("text prefix first", "ab" <=> "abc");
+  show("text longer last", "abc" <=> "ab");
+  show("text empty", "" <=> "");
+  show("text empty first", "" <=> "a");
+  show("text bytes", "z" <=> "é");
+  show("text multibyte", "é" <=> "è");
+  let word = String.from("pear");
+  show("string view less", word.view() <=> "plum");
+  show("string against text", word <=> "pea");
+  show("text against string", "pea" <=> word);
+  show("string against string", word <=> String.from("pear"));
+}
+
+fn through(x: &i32, y: &i32) i32 { x <=> y }
+
+fn references() {
+  let a: i32 = 3;
+  let b: i32 = 9;
+  show("ref less", through(&a, &b));
+  show("ref greater", through(&b, &a));
+  show("ref same", through(&a, &a));
+  let t: &str = "tea";
+  let u: &str = "tee";
+  show("text ref less", t <=> u);
+}
+
+fn literals() {
+  let x: u8 = 250;
+  show("literal right", x <=> 3);
+  show("literal left", 3 <=> x);
+  let y: f32 = 0.5;
+  show("float literal right", y <=> 0.75);
+  show("float literal left", 0.75 <=> y);
+  let z: i64 = -3;
+  show("negative literal", z <=> -2);
+}
+
+fn used() {
+  let a: i32 = 4;
+  let b: i32 = 8;
+  let r: i32 = a <=> b;
+  show("bound", r);
+  show("arithmetic", (b <=> a) * 10 + (a <=> b) - (a <=> a));
+  match a <=> b {
+    case -1 { printStr("match less\n"); }
+    case 0 { printStr("match same\n"); }
+    case 1 { printStr("match greater\n"); }
+    else { printStr("match other\n"); }
+  }
+  match b <=> a {
+    case -1 { printStr("match less\n"); }
+    case 0 { printStr("match same\n"); }
+    case 1 { printStr("match greater\n"); }
+    else { printStr("match other\n"); }
+  }
+  if (a <=> b) < 0 { printStr("less\n"); }
+  if (a <=> b) == -1 { printStr("exactly -1\n"); }
+  var i: i32 = 0;
+  while (i <=> 3) < 0 { i = i + 1; }
+  show("loop to", i);
+}
+
+fn folded() {
+  show("fold less", FOLD_LESS);
+  show("fold more", FOLD_MORE);
+  show("fold same", FOLD_SAME);
+  show("fold neg", FOLD_NEG);
+  show("fold unsigned", FOLD_UNSIGNED);
+  show("fold float", FOLD_FLOAT);
+}
+
+fn main() {
+  signed();
+  unsigned();
+  floats();
+  text();
+  references();
+  literals();
+  used();
+  folded();
+}

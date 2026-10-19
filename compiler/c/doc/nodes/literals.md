@@ -638,8 +638,8 @@ expression in a function body is generated as written, and LLVM folds it.
 constants (followed through any constant naming another):
 - a call of a number type's operator method whose body is an intrinsic
   (`litFoldOp`): `+ - * / %`, `& | ^ << >>`, unary `-` and `~`, the six
-  comparisons (a `bool`), and the `isTrue` a coercion to `bool` injects; the
-  operators on `bool` itself among them;
+  comparisons (a `bool`), the three-way `<=>` (an `i32`), and the `isTrue` a
+  coercion to `bool` injects; the operators on `bool` itself among them;
 - `!`, `&&` and `||` over `bool` constants;
 - a number's conversion, `T.from(x)` (a `TypeLitTag` of a number type) and the
   `FlagConvert` cast a coercion's widening injects, by `litFoldConvert`, which
