@@ -67,7 +67,7 @@ share the pattern's type node, and the variable takes its type from the cast
 
 `parseMatch` lowers the whole construct into a block plus one `IfNode`:
 `case is T` → an `is` node, `case == v` (or any comparison operator) → that
-operator's call with the scrutinee on the left, `case a ..< b` → `>= a && < b` (`case a .. b` → `>= a && <= b`),
+operator's call with the scrutinee on the left, `case a ..< b` → `>= a && < b` (`case a ..= b` → `>= a && <= b`),
 `case let x T` → a bound pattern, `case v` (a value alone) →
 an `is` node flagged `FlagMatchValue` that type check turns into `v`'s variant
 test or `== v` ([cast](cast.md)), `else` → `elseCond`. Patterns joined by `|` → a logical `||` of
@@ -95,7 +95,7 @@ or are joined as ever when it is none (see [literals](literals.md)).
 
 **A pattern's first operand decides between a range, a value and a refusal.**
 A pattern beginning with neither `is` nor a comparison operator reads one
-operand (`parseOr`); a following `..` or `..<` makes it a range. A comparison
+operand (`parseOr`); a following `..=` or `..<` makes it a range (a bare `..` is refused, `ErrorRangeBare`, and read as `..=`). A comparison
 operator, `is` or `&&` after it makes it a condition (`case n > 3`), and so does
 a leading `!` (`case !b`). A condition is refused, `ErrorPatBare`: a value
 alone is compared with the matched value, and the comparison without its left side

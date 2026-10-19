@@ -559,17 +559,43 @@ static int parseLifeNamed(ParseState *parse, Name *name, INode *at) {
 }
 
 // '...' is no range operator. Said at the token, with the two that are; the
-// caller goes on reading it as '..', so the rest of the range is checked too.
+// caller goes on reading it as '..=', so the rest of the range is checked too.
 void parseRangeEllipsis(void) {
-    errorMsgLex(ErrorRangeEllipsis, "'...' is not a range operator. 'a .. b' runs through b, and 'a ..< b' stops before b.");
+    errorMsgLex(ErrorRangeEllipsis, "'...' is not a range operator. 'a ..= b' runs through b, and 'a ..< b' stops before b.");
+}
+
+// A bare '..' between a start and an end does not say whether the end is
+// included, so it is refused at the token. The caller goes on reading it as
+// '..=', which is what '..' once meant, so the rest of the range is checked too.
+void parseRangeBare(void) {
+    errorMsgLex(ErrorRangeBare, "'..' does not say whether the range includes its end: write '..<' to stop before the end, or '..=' to include it.");
+}
+
+// Where a token began, kept to report it after the lexer has moved on
+typedef struct LexSpot {
+    char *tokp;
+    char *linep;
+    uint32_t linenbr;
+} LexSpot;
+
+static void parseRangeBareAt(LexSpot spot) {
+    LexSpot now = {lex->tokp, lex->linep, lex->linenbr};
+    lex->tokp = spot.tokp;
+    lex->linep = spot.linep;
+    lex->linenbr = spot.linenbr;
+    parseRangeBare();
+    lex->tokp = now.tokp;
+    lex->linep = now.linep;
+    lex->linenbr = now.linenbr;
 }
 
 // Parse the arguments of an index, 'x[...]': a list of expressions, or one range
 // that a borrow makes a slice of part of an array (doc/manual/
-// lib-collections.html#subslices, "Subslices"). 'a..b' includes b and 'a..<b' stops before it; a
-// missing start is 0, and a missing end, 'a..', is the array's end. A range is
+// lib-collections.html#subslices, "Subslices"). 'a..=b' includes b and 'a..<b' stops before it; a
+// missing start is 0, and a missing end, 'a..', is the array's end. A bare '..'
+// between a start and an end is refused (parseRangeBare). A range is
 // held on the index as FlagRange, its arguments the start and, unless it runs
-// to the end, the end; FlagRangeIncl says the end was written with '..'.
+// to the end, the end; FlagRangeIncl says the end was written with '..=' (or '..').
 //
 // The lifetimes a type's use names, 'Cursor['a]', 'Parser['s, 'r]', or
 // 'Cursor['a, T]' beside its type arguments, are taken out of the arguments
@@ -641,23 +667,32 @@ static Nodes *parseIndexArgsIn(ParseState *parse, FnCallNode *fncall) {
         }
     }
 
-    // A range. '..' runs through its end and '..<' stops before it; a range
-    // with no end runs to the array's end, which '..' and '..<' would both reach
+    // A range. '..=' runs through its end and '..<' stops before it; a range
+    // with no end runs to the array's end, which '..=' and '..<' would both reach.
+    // A '..' between a start and an end is refused; with no start, '..b' is read
+    // as '..=b', and with no end, 'a..' runs to the end
     fncall->flags |= FlagRange;
     int stopsbefore = lexIsToken(DotDotLessToken);
+    int includes = lexIsToken(DotDotEqToken);
     if (lexIsToken(EllipsisToken))
         parseRangeEllipsis();
+    int bare = lexIsToken(DotDotToken) && start != NULL;
+    LexSpot dots = {lex->tokp, lex->linep, lex->linenbr};
     lexNextToken();
     if (start == NULL)
         start = (INode*)newULitNode(0, (INode*)usizeType);
     nodesAdd(&args, start);
     if (!lexIsToken(RBracketToken)) {
+        if (bare)
+            parseRangeBareAt(dots);
         nodesAdd(&args, parseSimpleExpr(parse));
         if (!stopsbefore)
             fncall->flags |= FlagRangeIncl;
     }
     else if (stopsbefore)
         errorMsgLex(ErrorBadIndex, "A range that stops before its end, '..<', must say where it ends; 'a..' runs to the end");
+    else if (includes)
+        errorMsgLex(ErrorBadIndex, "A range that includes its end, '..=', must say where it ends; 'a..' runs to the end");
     parseCloseTok(RBracketToken);
     return args;
 }
@@ -1341,7 +1376,7 @@ INode *parseSimpleExpr(ParseState *parse) {
 // Finish parsing a simple expression whose first operand -- everything that
 // binds tighter than a comparison, which parseOr parses -- is already in hand.
 // A match's case reads that much before it can tell a range pattern, whose
-// '..' or '...' follows it, from a condition.
+// '..=' or '..<' follows it, from a condition.
 INode *parseSimpleExprFrom(ParseState *parse, INode *lhnode) {
     return parseOrExprFrom(parse, parseAndLogicFrom(parse, parseCmpFrom(parse, lhnode)));
 }

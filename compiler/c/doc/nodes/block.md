@@ -42,14 +42,14 @@ caused, were measured.*
 a macro body, and the wrapper blocks pattern-matching builds — is regular.
 
 **`while` and `each` are lowered here, not later.** `while cond {…}` gets
-`if !cond { break }` inserted at index 0. `each x in a ..< b by s` (`a .. b`
+`if !cond { break }` inserted at index 0. `each x in a ..< b by s` (`a ..= b`
 runs through `b`) becomes an
 outer block holding the range's first value (`first`, a hidden variable), its end
 unless the end is a literal (`end`, read once, before the first pass, as the step is), the
 loop's **counter** (`counter`, another, no name of the
 reader's) and the count of steps taken (`n`), plus a loop block that begins with the guard and the pass's variable,
 `let x = counter`, and whose **last statement is the synthesized step**, flagged
-`FlagLoopStep`. The guard is `c < b` (`c <= b` for `..`) going up and `c > b`
+`FlagLoopStep`. The guard is `c < b` (`c <= b` for `..=`) going up and `c > b`
 (`c >= b`) going down; which way a range goes is the sign of its step, read off
 a literal step by the parser, or, for a step that is not a literal, held in a
 hidden variable (`by`, evaluated once) whose two signs are held in two more
@@ -115,7 +115,7 @@ and one `else`: they set a hidden flag instead of breaking, and the guard
 word only when `each` follows it directly (`lexNextIsWord`), so it stays usable as
 a variable, a function or a field. A number range is not rewritten to a counter, as
 `each`'s is: its two bounds are held in two hidden variables (`first'`, `last'`),
-the block has three statements, and `FlagParIncl` says `..`. A count down, a
+the block has three statements, and `FlagParIncl` says `..=`. A count down, a
 `by` step and an `else` are refused here (`ErrorParSource`, `ErrorParElse`); a
 header `if` is the same `continue` statement after the pass's variable. As an
 entry of `<-` it is read by `parseEntry` the same way (`parseParallelEachEntry`),

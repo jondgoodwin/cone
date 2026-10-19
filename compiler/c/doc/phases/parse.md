@@ -84,15 +84,19 @@ something that begins a value follow it, so `fill(3)`, `fill[0]`, `fill.n`,
 `fill + 1` and `fill of 3` keep `fill` a name; after the space, a token that
 could go either way (`-`, `*`, `&`, `(`, `[`) is taken as the value's.
 
-**`..` and `..<` are the range tokens** (`DotDotToken`, `DotDotLessToken`), read by a
+**`..=` and `..<` are the range tokens** (`DotDotEqToken`, `DotDotLessToken`), read by a
 match's range pattern, by an index (`parseIndexArgs`) and by an `each` over a number
-range: `..` runs through its end and `..<` stops before it. `x[a..b]` is held as the
+range: `..=` runs through its end and `..<` stops before it. `x[a..=b]` is held as the
 index with `FlagRange`, its arguments the start (a `usize` 0 when none is written) and
-the end unless the range runs to it, `FlagRangeIncl` marking an end written with `..`;
-`x[a..]` runs to the end, and `x[a..<]` is `ErrorBadIndex`. `...` is lexed
-(`EllipsisToken`) only to be refused, `ErrorRangeEllipsis` (`parseRangeEllipsis`), and read
-on as `..`. A number stops scanning at a `..`, so `0..<3` is two integers and a range, not
-the float `0.`.
+the end unless the range runs to it, `FlagRangeIncl` marking an end written with `..=`;
+`x[a..]` runs to the end, and `x[a..<]` and `x[a..=]` are `ErrorBadIndex`. A bare `..`
+(`DotDotToken`) is lexed and says nothing about its end, so it is a range operator only
+where no end follows or no start precedes it (`x[a..]`, `x[..b]`, which reads as `x[..=b]`,
+and `x[..]`); between a start and an end, in an index, a pattern or an `each`, it is
+`ErrorRangeBare` (`parseRangeBare`), pointed at the `..` and read on as `..=`. `...` is
+lexed (`EllipsisToken`) only to be refused, `ErrorRangeEllipsis` (`parseRangeEllipsis`), and read
+on as `..=`. A number stops scanning at a `..`, so `0..<3` and `0..=3` are two integers and
+a range, not the float `0.`.
 
 **A number straight after a `.` is an integer only.** `lexScanNumber` looks at
 the token before it: after a `DotToken` the number names a tuple element, so it
@@ -104,7 +108,7 @@ stops at a `.` and reads no exponent, and `t.1.0` is element 0 of element 1 and
 taken a decimal point or an exponent (`isFloat` is set) a further `.` ends the number, so the
 `.` of `25.0.sqrt()`, `1e2.sqrt()` and `0x1p4.sqrt()` is the method call's. A `.` straight
 after integer digits is a decimal point (`3.` is the float 3.0) unless `lexDotStartsMember`
-sees another `.` or a name after it: `1..4` is a range and `4.sqrt()`, `3.e5` and `1_000.abs`
+sees another `.` or a name after it: `1..=4` is a range and `4.sqrt()`, `3.e5` and `1_000.abs`
 are calls. A float suffix is no name (`0.f`, `1.f32` and `1.f64` stay floats, which
 packages use widely). In a hex literal a name of hex digits alone is a call (`0x1f.foo`)
 unless the hex float's `p` follows it (`0x1.Ep2` is a float). `lexical_float_method` holds
@@ -169,7 +173,7 @@ the literal's own spelling (`atof("0o7")` is 0). Hex's `e` is a digit and its `p
 exponent; a binary or octal literal has neither. A literal reported once is finished as the
 integer 0 with an unsuffixed type, so nothing after it is reported twice, and the digits
 are still all consumed so the token ends where it should. `lexDotStartsMember` needs no case
-for them: a `.` before a name is a call and `..` a range, as after any integer.
+for them: a `.` before a name is a call and `..=` or `..<` a range, as after any integer.
 `lexical_literals_radix` holds the values and `lexical_reject_radix` the refusals;
 `typemgmt_typecheck_litrange` holds the range rule, which reads the spelling.
 
@@ -733,7 +737,7 @@ value that is not a place, an anonymous capture variable before it (a place is r
 where it stands, a copy of it written into each test), each case's patterns becoming
 its condition: `is T` an `is`
 node, `<v` (and every comparison) the operator call with the matched value on
-the left, `a .. b` and `a ..< b` two calls joined by `&&`, a `|` between patterns
+the left, `a ..= b` and `a ..< b` two calls joined by `&&`, a `|` between patterns
 a logical `||` of their conditions, and an `if` guard a `&&` after them. A pattern's
 value is read by `parseXor`, one level above bitwise or, so that a top-level `|` is
 the joiner; a bitwise or meant as a value is written in parentheses. `match a, b` takes a matchee for each
@@ -748,7 +752,7 @@ block whose last statement is the synthesized step,
 flagged `FlagLoopStep`. That step is a block that carries the guard wherever the
 value it steps to could wrap past the type's extreme and pass the loop's guard
 again. For an inclusive range
-without `by` (`a .. b`) it is `{ if x == b {break}; x++ }`, with the
+without `by` (`a ..= b`) it is `{ if x == b {break}; x++ }`, with the
 bound cloned for the second comparison. With `by` it is `{ let prev = x; x += s;
 if x < prev {break} }`, `>` for a range counting down, since a step of more than
 one need not land on the bound and the wrap is only visible after the step, as a
@@ -1179,7 +1183,7 @@ numbers.
 | | `parseMatchPattern`, `parseMatchRange` | one pattern of a case — `is`, a comparison, a range, a value alone, a test by `using` — lowered to the condition that tests the captured value, a value alone to the undecided test `newMatchValueNode` builds; a condition (`!b`, `n > 3`), at the start of a case or after a `|`, is `ErrorPatBare` |
 | | `parseWhile`, `parseEach`, `parseWith`, `parseLifetime` | loop and scope desugaring |
 | | `parseEachLoop`'s range helpers (`parseRangeStepSign`, `parseRangeGuard`, `parseRangeMoved`, `parseRangeStepCall`) | an `each` over a number range: which way the step runs, the guard that lets a pass run, the test that a step wrapped past the type's extreme, and the step itself, finished by type check (`eachRangeStepLower`, `ir/exp/each.c`) |
-| | `parseRangeEllipsis` | `...` is refused, `ErrorRangeEllipsis`, wherever a range operator is read (an index, a pattern, an `each`) |
+| | `parseRangeEllipsis`, `parseRangeBare` | `...` is refused, `ErrorRangeEllipsis`, and a bare `..` between a start and an end, `ErrorRangeBare`, wherever a range operator is read (an index, a pattern, an `each`) |
 | | `parseEachEntry`, `parseEachLoop`, `parseEachYield` | an `each` as an entry of `<-`: the same loop parse as `parseEach`, its body the `yield` (or the pass variable, for a drain) as a `YieldEntryTag` entry |
 | `parser/parsehelper.c` | `parseSpan` | record the statement just parsed as a span (`ir/dclspan.c`, `dclSpanAdd`), taking a function's body or a global's value from where `parseFn` and `parseVarDcl` left it on `ParseState` (`bodyp`, `bodyendp`, `nameendp`, `typed`) |
 | `parser/parsemod.c` | `parseIncludeCheck` | the include-file generator's self-check: a generated include file's text parsed as the package's module, beside the root and outside the program's modules, its imports answered by the root's import lines |

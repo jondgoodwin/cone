@@ -630,9 +630,9 @@ enum ErrorCode {
     // Parallel reductions: 'xs.parallel().sum()' (ir/exp/pareach.c, ir/exp/fncall.c)
     ErrorParReduce = 1410,      // A reduction ('sum', 'fold', 'findFirst') in a module that does not import the actors package its blocks run on; 'parallel()' asked of a source that cannot be cut (an iterator chain, a generator, a file, a channel) or of a number range; or a reduction asked of a parallel view held in a variable
 
-    // The range notation (parser/parsefnflow.c, parser/parseexpr.c): '..' runs through its end, '..<' stops before it
-    ErrorRangeEllipsis = 1411,  // A range written '...', retired: 'a .. b' runs through b, 'a ..< b' stops before it
-    ErrorEachCompare = 1412,    // An 'each' over a comparison, 'each i in 0 < n', retired for the range notation ('0 ..< n', '0 .. n', 'by -1' to count down)
+    // The range notation (parser/parsefnflow.c, parser/parseexpr.c): '..=' runs through its end, '..<' stops before it
+    ErrorRangeEllipsis = 1411,  // A range written '...', retired: 'a ..= b' runs through b, 'a ..< b' stops before it
+    ErrorEachCompare = 1412,    // An 'each' over a comparison, 'each i in 0 < n', retired for the range notation ('0 ..< n', '0 ..= n', 'by -1' to count down)
 
     // Variants declared as a type (parser/parsetype.c, exp/cast.c)
     ErrorTypeVariant = 1413,    // A variant declared as a type, 'Ok(i32);', in an enum that has common fields (every variant of such an enum names what it holds: write it as a struct), or bound through a managed reference, whose contents cannot be lent
@@ -720,6 +720,9 @@ enum ErrorCode {
 
     // A let-else binding written with a ':' (parser/parsefnflow.c)
     ErrorLetElseColon = 1514,   // A local declared with a ':' and a type that is followed by 'else': `let n: Ok = r else ...`. A let-else binds the payload of a variant of the value, a pattern, and names only the variant after the binding, with no ':' (`let n Ok = r else ...`); the type after a ':' is the binding's own, which a payload is not. Pointed at the binding
+
+    // A range written with a bare '..' between a start and an end (parser/parseexpr.c, parser/parsefnflow.c)
+    ErrorRangeBare = 1515,      // `a .. b` in an index, a case pattern or an `each`: '..' does not say whether the end is included, so it is refused. '..=' includes the end and '..<' stops before it. Pointed at the '..'. Not refused where no end follows (`s[a..]` runs to the end) or no start precedes it (`s[..]`)
 
     // Warnings
     WarnCode = 3000,

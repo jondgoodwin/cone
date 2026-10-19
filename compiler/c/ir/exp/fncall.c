@@ -2537,7 +2537,7 @@ static StructNode *fnCallTextOf(INode *objtype) {
     return NULL;
 }
 
-// A range borrowed from text, '&s[a..<b]', '&s[a..]' or '&s[a...b]', is a call
+// A range borrowed from text, '&s[a..<b]', '&s[a..]' or '&s[a..=b]', is a call
 // of the text's 'slice', 'sliceFrom' or 'sliceThrough' on what is being
 // indexed: the method checks the bounds fall between characters and gives a
 // '&str' that keeps the text borrowed, as any method's borrow does. Answers 0,
