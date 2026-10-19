@@ -394,7 +394,7 @@ next pass a null to trip over.
   reason; resolving one beforehand leaks it into the enclosing scope, where the
   matching pop never reaches it. A function's and a type's list goes through
   `genericParmsNameRes`, which hooks every parameter before it resolves what
-  follows any (a bound, `[S Stack[T], T]`), so a bound sees the parameters
+  follows any (a bound, `[S: Stack[T], T]`), so a bound sees the parameters
   declared after it.
 - **`pstate->typenode` is read once** in this phase: `fnDclIsExpanded` asks
   whether a method's type is a trait or a generic, whose every method an

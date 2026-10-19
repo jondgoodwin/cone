@@ -329,7 +329,7 @@ void stdlibInit(int ptrsize) {
     // not seen: refusing every element borrow through a shared path would
     // break common collection code -- reading a 'List[String]' element
     // through a '&List' parameter -- whose alternatives (a '&uni' borrowed
-    // from, so a 'self &uni' method may be called twice) are writable now.
+    // from, so a 'self: &uni' method may be called twice) are writable now.
     // That is a documented hole (mem-borrowing.html).
     shapeChangingTrait = newBuiltinTrait(shapeChangingTraitName);
     noLoanMutTrait = newBuiltinTrait(noLoanMutTraitName);
@@ -346,7 +346,7 @@ void stdlibInit(int ptrsize) {
     // 'GcTraceElements' [PROVISIONAL name]: a type that holds values in memory it
     // points to (a collection's block, a pool's slots, an arena's allocations)
     // says how a garbage collector reaches them, by declaring the trait and a
-    // method 'fn gcTraceElements(self &mut) I', I a cursor declaring 'is
+    // method 'fn gcTraceElements(self: &mut) I', I a cursor declaring 'is
     // Iterator[&mut E]'. The compiler traces each reference the cursor yields as
     // a value of E is traced (structGcTraceElementsCheck); a type with a raw
     // pointer to a value that may need tracing cannot be traced until its author
@@ -395,7 +395,7 @@ void stdlibInit(int ptrsize) {
     // the value holding it). A type may declare it, a promise taken on trust
     // for what the compiler cannot see, except that an instance of a generic
     // one is Shareable only where its type arguments are. Never by names. It
-    // is how a callable states what it may do beside others: '[F fn() +
+    // is how a callable states what it may do beside others: '[F: fn() +
     // Shareable]', '&<fn() + Shareable', and it is what a 'parallel each'
     // body is held to for what it names from outside.
     shareableTrait = newBuiltinTrait(shareableTraitName);

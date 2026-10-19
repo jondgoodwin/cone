@@ -312,7 +312,7 @@ int fnDclIsInit(FnDclNode *fn) {
 }
 
 // A struct's function named 'init', or joining the overload name 'init', is an
-// initializer, and it fills its value in place: 'self &new', a reference to
+// initializer, and it fills its value in place: 'self: &new', a reference to
 // memory that holds no value yet, and nothing returned. '&new' marks nothing
 // else (the parameter's own check refuses it elsewhere, refTypeCheck). A
 // module's 'init' is its own, and not one of these. Returns 0 when the
@@ -326,12 +326,12 @@ static int fnDclInitCheck(TypeCheckState *pstate, FnDclNode *fnnode) {
         return 1;
     if (!named) {
         errorMsgNode((INode*)fnnode, ErrorPermNew,
-            "'self &new' is the self of a struct's init, which fills its value in place: 'fn init(self &new, ...)'.");
+            "'self: &new' is the self of a struct's init, which fills its value in place: 'fn init(self: &new, ...)'.");
         return 0;
     }
     if (!newself) {
         errorMsgNode((INode*)fnnode, ErrorInitDcl,
-            "An init fills its value in place, through a reference to memory that holds no value yet: 'fn init(self &new, ...)'.");
+            "An init fills its value in place, through a reference to memory that holds no value yet: 'fn init(self: &new, ...)'.");
         return 0;
     }
     INode *rettype = itypeGetTypeDcl(((FnSigNode*)fnnode->vtype)->rettype);
@@ -599,7 +599,7 @@ void fnDclTypeCheck(TypeCheckState *pstate, FnDclNode *fnnode) {
             && itypeIsArrayBody((INode*)pstate->typenode)
             && itypeIsSame(((RefNode*)selfdcl)->vtexp, itypeLenBodyElem((INode*)pstate->typenode));
         // A method may ask for the owner of its type, as Rust's 'self: &Rc<Self>'
-        // does: 'self &Uni[str]' is a borrow of an owner of 'str', and a receiver
+        // does: 'self: &Uni[str]' is a borrow of an owner of 'str', and a receiver
         // that is not an owner (a plain '&str') has no such method
         int selfisowner = 0;
         if (selfdcl->tag == RefTag && itypeGetTypeDcl(((RefNode*)selfdcl)->region) == borrowRef) {
@@ -669,7 +669,7 @@ void fnDclTypeCheck(TypeCheckState *pstate, FnDclNode *fnnode) {
         return;
     FlowState fstate;
     flowStateInit(&fstate, (FnSigNode *)fnnode->vtype);
-    // An init's 'self &new' holds no value until '*self = value' fills it
+    // An init's 'self: &new' holds no value until '*self = value' fills it
     VarDclNode *newself = fnDclIsInit(fnnode) ? (VarDclNode *)nodesGet(((FnSigNode *)fnnode->vtype)->parms, 0) : NULL;
     if (newself)
         newself->flowtempflags |= VarUnfilled;

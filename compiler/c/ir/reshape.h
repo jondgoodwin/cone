@@ -26,7 +26,7 @@
  *   another struct holds is another value. A reference that is read-only (`&`, `&imm`) cannot write what
  *   it reaches, and a value this function owns whole is nobody else's;
  * - or it is a mutable virtual call, through a '&<mut Trait' receiver (a '&<mut fn' called is
- *   one): the type behind it is hidden, and the trait method's declared 'self &mut Trait' names
+ *   one): the type behind it is hidden, and the trait method's declared 'self: &mut Trait' names
  *   no fields, so the call is asked of the virtual reference it was made through, which could
  *   reach any container (a closure that captured the list, a struct that holds it);
  * - or, handed nothing that reaches the type, it is a callee that reshapes one

@@ -391,7 +391,7 @@ Mark anything not yet implemented `xfail`: it reports as an expected failure and
 ### Located diagnostics: annotate the line
 
 ```cone
-fn scale(v f32) f32 { v * 2. }
+fn scale(v: f32) f32 { v * 2. }
 
 fn main() {
   let a = scale(1, 2)      //~ ErrorManyArgs:17

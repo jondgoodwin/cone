@@ -65,9 +65,9 @@ extern Name *yieldsName; // "yields": after a function's parameters, it makes th
 extern Name *nextName;  // "next": the method a cursor, and a generator, is walked by
 
 // "tag" -- the discriminant's type. Recognized where a field's type is written
-// and nowhere else, so 'pub tag i32' still declares a field named 'tag'. An
+// and nowhere else, so 'pub tag: i32' still declares a field named 'tag'. An
 // enum places its own discriminant explicitly, for alignment, by writing
-// '_ tag' for it.
+// '_: tag' for it.
 extern Name *tagName;
 
 extern Name *plusEqName;   // "+="

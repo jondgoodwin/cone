@@ -39,7 +39,7 @@ repoint `Self` — so the copy refers to something the original did not, while t
 original's `TypeChecked` mark, so `refTypeCheck` never revisits it to normalize.
 Sharing the record made the memoized LLVM type answer for the original's pointee:
 whichever implementer generated first named it for all of them, so a trait
-default's clones took one another's receiver and `fn f(m &Trait)` took an
+default's clones took one another's receiver and `fn f(m: &Trait)` took an
 implementer's type. `trait_inherited_defaults` pins both.
 
 **A lifetime is two fields, and they answer different questions.** `scope` is
@@ -274,7 +274,7 @@ Check](../phases/type-check.md), "A reference does not demand its target".
 `parseAmper` leaves `vtexp` unknown on purpose, because a reference in a
 parameter position may have its pointee inferred, and a method's `Self`
 inference (`parseFnSig`, or `parseFnSigSettle` for an anonymous function's) is
-the only thing that ever fills one in. Every other spelling — `fn f(s &)`, `&&`,
+the only thing that ever fills one in. Every other spelling — `fn f(s: &)`, `&&`,
 `*&`, `&[]`, `(&, i32)`, `&fn(&) i32`, a non-`self` parameter inside a method — would otherwise
 reach `genlType` still unknown and hand `LLVMPointerType` a NULL element type.
 Every enclosing type reaches these two guards through `itypeTypeCheck` on its
@@ -668,7 +668,7 @@ called. A local, a field of one held by value, or a field reached through a
 that only reads, reads and lends only `&`.** The permissions of a path are the
 intersection of every reference gone through ([mem-permissions](../../../../doc/manual/mem-permissions.html#view),
 "Viewpoint Adaptation"): `car.owner.age = 18` through a `car &Car` is refused
-though `owner` is a `&mut Person`, as is `target.push(x)` in a `self &` method of
+though `owner` is a `&mut Person`, as is `target.push(x)` in a `self: &` method of
 a struct holding `target &mut List`. `iexpReachWrites` asks whether every
 reference the place is reached through (a borrow, a slice, a virtual reference,
 an owner whose own permission cannot write) grants write, looking at the
@@ -684,7 +684,7 @@ write is wanted — a receiver, an argument, an initializer — is refused by
 by value, or a place reached only through references that write is not held to
 this. The borrow a closure makes of a variable (`RefNode.capture`) does not
 narrow what the variable's own `&mut` writes, so a closure that writes through a
-captured `&mut` parameter takes `self &mut` and not `self &`. `ref_typecheck_viewpoint_borrowed`
+captured `&mut` parameter takes `self: &mut` and not `self: &`. `ref_typecheck_viewpoint_borrowed`
 and `ref_typecheck_autoderef` pin the refusals; `ref_viewpoint_borrowed` what
 runs.
 
@@ -710,7 +710,7 @@ is refused, whatever is done with the reference (a read, a lend, a write, a copy
 into a local), since every use is a sight of it. A local, a field or element of a
 value held by value, a `&uni` holder and an owner that is `uni` (`Uni[T]`, `Rc[T]`)
 are not refused. A generic type or function instantiated with a `&uni`
-(`List[&uni App]`, whose own methods index their elements through `self &mut`)
+(`List[&uni App]`, whose own methods index their elements through `self: &mut`)
 is refused where its code reaches the `&uni` that way, since the check is on the
 instantiated place's type, as a field of type `T` is. A place in instantiated
 code (its node carries `instnode`; the bare-field lowering in `nameuse.c` copies
@@ -954,7 +954,7 @@ apart, so the second can be loosened without touching the first:
   something already held stays possible. An `imm` owner may be aliased, so
   `refAdoptInfections` leaves it a copy type: `Rc[str]` copies where `Rc[T]`
   moves. The autoborrow of a receiver (`fnCallBorrowReceiver`) tries `imm`
-  between `ro` and `mut` for such a type, since its `self &` is `&imm` and `ro`
+  between `ro` and `mut` for such a type, since its `self: &` is `&imm` and `ro`
   does not coerce to it.
 - **`refImmutableBan(node, perm, target)`, the ban on mutation.** `mut`, `mut1`
   and a lock permission written on a reference to the target are

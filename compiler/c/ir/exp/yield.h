@@ -1,8 +1,8 @@
 /** Handling for 'yield' nodes: a generator's seam
  *
- * A function declared 'fn walk(t &Tree) yields &Node' is a generator
+ * A function declared 'fn walk(t: &Tree) yields &Node' is a generator
  * (parser/parsegen.c). The parser makes it a hidden struct, 'walk.Gen', holding
- * its parameters as fields, with a method 'next(self &mut) Option[&Node]' whose
+ * its parameters as fields, with a method 'next(self: &mut) Option[&Node]' whose
  * body is the author's, and a constructor, 'walk', that builds the struct. A
  * 'yield e' in that body hands the caller 'Some(e)' as 'next''s result and
  * leaves the body there, a seam: the next call of 'next' resumes just after it.

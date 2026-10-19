@@ -258,7 +258,7 @@ static StructNode *castPatternTrait(INode *typ) {
 // A variant complies with a trait when it can be viewed through it: it declares the trait with
 // 'is' or has what it requires, as a generic's 'where T is Trait' asks, and its methods fit a
 // vtable's slots. Asking registers the variant's vtable for the trait. A method over the whole enum
-// ('self &Lamp') is one function, with no slot in any variant's vtable, so it makes no variant comply.
+// ('self: &Lamp') is one function, with no slot in any variant's vtable, so it makes no variant comply.
 static int castVariantComplies(StructNode *variant, StructNode *trait) {
     if (variant->tag != StructTag)
         return 0;

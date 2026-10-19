@@ -106,6 +106,7 @@ typedef struct ParseState {
     char *typep;            // A variable: where its type is written, and just past it; NULL where none is
     char *typeendp;
     int usingdcl;           // A variable: parseVarDcl read it as bound by a 'using' pattern (its type is the Some it takes the payload of, its value the call)
+    int letelsetype;        // A local: parseVarDcl read a variant after its name with no ':' (only a let-else is written so)
     // Where a struct's header ends and where its 'is' list does, for the span
     // of the struct just parsed (dclspan.h); written as parseStruct returns
     char *hdrendp;
@@ -144,7 +145,7 @@ void parseActor(ParseState *parse, uint16_t pubflag);
 // (parseactor.c)
 int parseBehaviourWords(char *where);
 
-// parsegen.c: generators, 'fn walk(t &Tree) yields &Node { ... yield n; ... }'
+// parsegen.c: generators, 'fn walk(t: &Tree) yields &Node { ... yield n; ... }'
 //
 // Called by parseFn, a generator's signature read: its body is read with the
 // generator's context set (parseGenBegin), and then parseGenFinish makes the
@@ -315,7 +316,7 @@ INode *parseFnSig(ParseState *parse, int reftype);
 // ('istype': no body follows) or an anonymous function's
 void parseFnSigSettle(ParseState *parse, FnSigNode *sig, int istype);
 // Parse a signature written bare, with the lexer on its 'fn', as a generic
-// bound or a 'where' clause's: 'F fn(a &T, b &T) i32'
+// bound or a 'where' clause's: 'F: fn(a: &T, b: &T) i32'
 INode *parseFnBound(ParseState *parse);
 INode *parseStruct(ParseState *parse, uint16_t flags);
 INode *parseType(ParseState *parse);

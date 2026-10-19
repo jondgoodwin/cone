@@ -705,7 +705,7 @@ static void typeLitNewAllocate(TypeCheckState *pstate, FnCallNode **nodep, RefNo
 // 'new Point(1, 2)': construct a struct's value by one of its inits, which the
 // arguments select. Every struct has an implicit init taking its fields in
 // declaration order (by name too, 'new Point(y: 2, x: 1)', and a field left out
-// taking its default), and it may declare others, 'fn init(self &new, ...)',
+// taking its default), and it may declare others, 'fn init(self: &new, ...)',
 // overloaded under the name 'init'. A declared init that takes the arguments
 // is preferred to the implicit one, and exactly one declared init may take
 // them; named ones are the implicit init's alone, since no call takes them,
@@ -951,7 +951,7 @@ static void typeLitNewChecked(TypeCheckState *pstate, FnCallNode **nodep, int ar
     // them inferred from the values its fields are given, as its literal did:
     // the arguments are checked first, with no expectation, and the instance
     // they infer replaces the name. What they leave unsaid is read off the type
-    // the construction is wanted as ('let b Box[i64] = new Box(5)')
+    // the construction is wanted as ('let b: Box[i64] = new Box(5)')
     if (!argschecked && isNameUseNode(node->objfn) && nameUseNames(node->objfn, StructTag)
         && genericGetInfo(nameUseGetDcl((NameUseNode*)node->objfn)) != NULL) {
         for (nodesFor(node->args, cnt, argsp))
@@ -1115,7 +1115,7 @@ static void typeLitNewChecked(TypeCheckState *pstate, FnCallNode **nodep, int ar
         // Neither a declared init nor the implicit one takes the arguments,
         // and one is a string literal: ask the declared inits again with a
         // literal also lent as a temporary to a '&T' ('new File("x")' for
-        // 'init(self &new, p &Path)'), as a call's selection falls back to it
+        // 'init(self: &new, p &Path)'), as a call's selection falls back to it
         if (viable == 0 && !typeLitImplicitViable(strnode, node->args) && slitAnyText(NULL, node->args)) {
             slitBorrowFallback(1);
             candp = firstp;

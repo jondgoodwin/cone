@@ -2,7 +2,7 @@
  *
  * See closure.h. In the order a literal passes through the compiler:
  *
- * - The parser reads 'fn (u f32) [ribs, var n = 0] f32 { ... }' and
+ * - The parser reads 'fn (u: f32) [ribs, var n = 0] f32 { ... }' and
  *   'x => x * 2' into a ClosureNode.
  * - Name resolution resolves the body in the code around it, with its own
  *   parameters and state names hooked over that, and notes each variable of the
@@ -13,7 +13,7 @@
  *   rewritten to the field's access when the body is checked (closureUse). The
  *   literal itself becomes 'new Hidden(state values, &variables)'.
  *
- * Whether a borrow is '&' or '&mut', and whether '()' takes 'self &' or 'self
+ * Whether a borrow is '&' or '&mut', and whether '()' takes 'self: &' or 'self
  * &mut', is what the body does with it. It is found by trying: the body is
  * checked, its diagnostics unprinted, as a clone, with the weakest permissions;
  * if that fails it is checked with every borrow the variable allows '&mut', and
@@ -72,7 +72,7 @@ FnSigNode *closureTraitSig(StructNode *trait, Name **method, uint32_t *count) {
     return sig;
 }
 
-// Whether the method the closure struct holds takes 'self &mut'
+// Whether the method the closure struct holds takes 'self: &mut'
 int closureMethodMutates(ClosureInfo *info) {
     INode *meth = info->method ? namespaceFind(&info->strct->namespace, info->method) : NULL;
     if (meth == NULL || meth->tag != FnDclTag)
@@ -253,7 +253,7 @@ void closureNoteUse(NameResState *pstate, NameUseNode *name) {
 // ---------------------------------------------------------------------------
 // The hidden struct
 
-// What a guess at the permissions is: whether '()' takes 'self &mut', and
+// What a guess at the permissions is: whether '()' takes 'self: &mut', and
 // whether each variable the body names is borrowed '&mut'
 typedef struct ClosurePlan {
     uint8_t selfmut;
@@ -420,7 +420,7 @@ int closureGpuVirtRefused(INode *from, INode *totypedcl) {
     if (fromtype->tag != RefTag || closureOfStruct(itypeGetTypeDcl(((RefNode*)fromtype)->vtexp)) == NULL)
         return 0;
     errorMsgNode(from, ErrorGpuClosureRef,
-        "A closure in GPU code cannot be made a virtual reference: it would be called through a table of code pointers, which a GPU has none of. Give it to a function generic over its signature, '[F fn(...)]', which is inlined.");
+        "A closure in GPU code cannot be made a virtual reference: it would be called through a table of code pointers, which a GPU has none of. Give it to a function generic over its signature, '[F: fn(...)]', which is inlined.");
     return 1;
 }
 
@@ -524,9 +524,9 @@ static StructNode *closureBuild(TypeCheckState *pstate, ClosureNode *clo, Closur
     fn->closure = info;
     iNsTypeAddFn((INsTypeNode*)st, fn);
     // The default methods of the trait it fills, which any implementer inherits.
-    // Not when the body needs a 'self &mut' the trait's method does not give: the
+    // Not when the body needs a 'self: &mut' the trait's method does not give: the
     // literal is refused for that (ErrorVtableSelf), and defaults that read through
-    // the trait's 'self &' would only add their own failures to it
+    // the trait's 'self: &' would only add their own failures to it
     if (plan->trait) {
         INode *traitmeth = namespaceFind(&plan->trait->namespace, plan->method);
         INode *tperm = traitmeth && traitmeth->tag == FnDclTag ? fnSigSelfBorrowPerm((FnDclNode*)traitmeth) : NULL;
@@ -545,7 +545,7 @@ static StructNode *closureBuild(TypeCheckState *pstate, ClosureNode *clo, Closur
 // A plain function given where a callable owner is made: the reference to it is held
 // by a struct of the compiler's, whose '()' calls it, so that an owner of the struct
 // is the owner of a callable as any closure's is. The struct holds the one field,
-// the reference, and its '()' takes the signature's parameters after a 'self &'.
+// the reference, and its '()' takes the signature's parameters after a 'self: &'.
 // Answers the struct, laid out; the caller makes a value of it from the reference.
 StructNode *closureFnHolder(TypeCheckState *pstate, FnSigNode *sig, INode *reftype, INode *lexnode) {
     ModuleNode *mod = dclInfoGetModule((INode*)pstate->fn);
@@ -767,7 +767,7 @@ void closureTypeCheck(TypeCheckState *pstate, ClosureNode **nodep, INode *expect
                 parm->vtype = ((VarDclNode*)nodesGet(exsig->parms, pi))->vtype;
             else {
                 errorMsgNode((INode*)parm, ErrorClosureParm,
-                    "The type of %s is not written, and nothing here says what it is. Write it, as in 'fn (%s i32) { ... }', or give the closure to a parameter whose signature does.",
+                    "The type of %s is not written, and nothing here says what it is. Write it, as in 'fn (%s: i32) { ... }', or give the closure to a parameter whose signature does.",
                     &parm->namesym->namestr, &parm->namesym->namestr);
                 *nodep = (ClosureNode*)newErrorNode((INode*)clo);
                 return;
@@ -786,7 +786,7 @@ void closureTypeCheck(TypeCheckState *pstate, ClosureNode **nodep, INode *expect
     // the closure is taken by a generic bound by its signature instead
     if (isref && flowGpu) {
         errorMsgNode((INode*)clo, ErrorGpuClosureRef,
-            "A closure in GPU code cannot be made a function reference, '&fn(...)': a GPU has no pointers to code. Give it to a function generic over its signature, '[F fn(...)]', which is inlined.");
+            "A closure in GPU code cannot be made a function reference, '&fn(...)': a GPU has no pointers to code. Give it to a function generic over its signature, '[F: fn(...)]', which is inlined.");
         *nodep = (ClosureNode*)newErrorNode((INode*)clo);
         return;
     }
@@ -1001,7 +1001,7 @@ void closureReturnTypeCheck(TypeCheckState *tstate, BreakRetNode *retnode) {
         closureInferring = 0;
         if (!fnCallIsNever(retnode->exp) && !iexpCheckedCoerce(sig->rettype, &retnode->exp))
             errorMsgNode((INode*)info->lit, ErrorClosureRet,
-                "The paths of this closure give different types, so its return type cannot be read off them: write the closure's return type, as in 'fn (x i32) i32 { ... }'.");
+                "The paths of this closure give different types, so its return type cannot be read off them: write the closure's return type, as in 'fn (x: i32) i32 { ... }'.");
     }
     returnJoinFn(tstate, retnode);
 }

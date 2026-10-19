@@ -27,7 +27,7 @@
  * Two names are unordered unless the signature's 'where' clause orders them
  * ('where 'a >= 'b': ''a' lasts at least as long as ''b'), or the 'where' clause
  * of a struct a parameter or the result uses does, or a type in it implies it:
- * a borrow of a value holding lifetimes ('&'a Pair['b]', '&'a &'b T', 'self &'
+ * a borrow of a value holding lifetimes ('&'a Pair['b]', '&'a &'b T', 'self: &'
  * of a struct declaring ''b') cannot outlast them, so each lasts at least as
  * long as the borrow's own (Rust's implied bounds), the unnamed lifetime a
  * name like any other there. '>=' is transitive, and nothing else is

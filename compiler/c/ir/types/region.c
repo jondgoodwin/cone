@@ -130,7 +130,7 @@ int regionIsPtrU8(RefNode *ptrnode) {
     return 1;
 }
 
-// Does this method take 'nparms' parameters, the first 'self &uni R', the
+// Does this method take 'nparms' parameters, the first 'self: &uni R', the
 // receiver every region method but 'alloc' and 'init' takes: a unique borrow
 // of the region's header?
 static int regionIsSelfRef(FnDclNode *meth, StructNode *region, uint32_t nparms) {
@@ -151,7 +151,7 @@ static int regionMethReturnsNothing(FnDclNode *meth) {
 }
 
 // Check the shape of 'aliasRef', 'dealiasRef' or 'free' where the region
-// declares it: '(self &uni R)', returning bool for 'dealiasRef' and nothing for
+// declares it: '(self: &uni R)', returning bool for 'dealiasRef' and nothing for
 // the others
 static void regionCheckSelfMeth(StructNode *region, Name *name, int retbool) {
     INode *member = iNsTypeFindFnField((INsTypeNode*)region, name);
@@ -166,11 +166,11 @@ static void regionCheckSelfMeth(StructNode *region, Name *name, int retbool) {
         return;
     if (retbool)
         errorMsgNode(member, ErrorRegionMeth,
-            "A region's dealiasRef must be declared 'fn dealiasRef(self &uni %s) bool': it is handed the header, and answers whether the owner that went was the last.",
+            "A region's dealiasRef must be declared 'fn dealiasRef(self: &uni %s) bool': it is handed the header, and answers whether the owner that went was the last.",
             &region->namesym->namestr);
     else
         errorMsgNode(member, ErrorRegionMeth,
-            "A region's %s must be declared 'fn %s(self &uni %s)': it is handed the header, and returns nothing.",
+            "A region's %s must be declared 'fn %s(self: &uni %s)': it is handed the header, and returns nothing.",
             &name->namestr, &name->namestr, &region->namesym->namestr);
 }
 
@@ -180,8 +180,8 @@ static int regionIsSlotParm(INode *parm) {
     return type->tag == PtrTag && itypeGetTypeDcl(((StarNode*)type)->vtexp) == (INode*)usizeType;
 }
 
-// Is 'mark' of one of the two shapes a trace calls: '(self &uni R, slot
-// *usize)', or '(self &uni R, slot *usize, perm u32, mode u32)', returning
+// Is 'mark' of one of the two shapes a trace calls: '(self: &uni R, slot
+// *usize)', or '(self: &uni R, slot *usize, perm u32, mode u32)', returning
 // nothing? The slot is where the reference being traced is stored, so a
 // collector that moves what it points at can rewrite it. The longer shape is
 // how a region asks to be told, with each reference, its permission and the
@@ -200,7 +200,7 @@ static int regionMarkShapeOk(FnDclNode *meth, StructNode *region) {
             && itypeGetTypeDcl(iexpGetTypeDcl(nodesGet(sig->parms, 3))) == (INode*)u32Type);
 }
 
-// Check the shape of 'visit' where a region declares it: '(self &uni R, mode
+// Check the shape of 'visit' where a region declares it: '(self: &uni R, mode
 // u32) bool', answering whether this is the first visit in the collection whose
 // epoch is 'mode'
 static void regionCheckVisit(StructNode *region) {
@@ -215,7 +215,7 @@ static void regionCheckVisit(StructNode *region) {
     }
     if (!ok)
         errorMsgNode(member, ErrorRegionMeth,
-            "A region's visit must be declared 'fn visit(self &uni %s, mode u32) bool': it is handed the header of a value a trace reached and the collection's epoch, and answers whether this is the first time in it.",
+            "A region's visit must be declared 'fn visit(self: &uni %s, mode: u32) bool': it is handed the header of a value a trace reached and the collection's epoch, and answers whether this is the first time in it.",
             &region->namesym->namestr);
 }
 
@@ -243,13 +243,13 @@ static void regionCheckTraced(StructNode *region) {
     INode *member = iNsTypeFindFnField((INsTypeNode*)region, markMethodName);
     if (member == NULL) {
         errorMsgNode((INode*)region, ErrorTracedMark,
-            "Region %s declares Traced, so its trace hands it each reference it finds, through a method it has not declared: 'fn mark(self &uni %s, slot *usize)', or 'fn mark(self &uni %s, slot *usize, perm u32, mode u32)'.",
+            "Region %s declares Traced, so its trace hands it each reference it finds, through a method it has not declared: 'fn mark(self: &uni %s, slot: *usize)', or 'fn mark(self: &uni %s, slot: *usize, perm: u32, mode: u32)'.",
             name, name, name);
         return;
     }
     if (member->tag != FnDclTag || !regionMarkShapeOk((FnDclNode*)member, region))
         errorMsgNode(member, ErrorRegionMeth,
-            "A traced region's mark must be declared 'fn mark(self &uni %s, slot *usize)', or 'fn mark(self &uni %s, slot *usize, perm u32, mode u32)' to be told each reference's permission and the trace's mode: it is handed the header of what the reference points at and the slot the reference is stored in (to rewrite, if what it points at moves), and returns nothing.",
+            "A traced region's mark must be declared 'fn mark(self: &uni %s, slot: *usize)', or 'fn mark(self: &uni %s, slot: *usize, perm: u32, mode: u32)' to be told each reference's permission and the trace's mode: it is handed the header of what the reference points at and the slot the reference is stored in (to rewrite, if what it points at moves), and returns nothing.",
             name, name);
     // Optional: a collector that marks while the program runs hears of every
     // store of one of its references that no root will show it
@@ -257,7 +257,7 @@ static void regionCheckTraced(StructNode *region) {
     if (barrier && (barrier->tag != FnDclTag || !regionIsSelfRef((FnDclNode*)barrier, region, 1)
         || !regionMethReturnsNothing((FnDclNode*)barrier)))
         errorMsgNode(barrier, ErrorRegionMeth,
-            "A traced region's writeBarrier must be declared 'fn writeBarrier(self &uni %s)': it is handed the header of what was stored, and returns nothing.",
+            "A traced region's writeBarrier must be declared 'fn writeBarrier(self: &uni %s)': it is handed the header of what was stored, and returns nothing.",
             name);
 }
 
@@ -280,7 +280,7 @@ static void regionCheckAlloc(FnDclNode *allocmeth) {
     if (nparms < 1 || nparms > 2 || sizetype != usizeType
         || (nparms == 2 && !typeRecordIsPtr(((VarDclNode *)nodesGet(allocsig->parms, 1))->vtype))) {
         errorMsgNode((INode*)allocmeth, ErrorBadAlloc,
-            "Region alloc method takes 'size usize', and may take the value's type record after it: 'fn alloc(size usize, ty *TypeRecord) *u8'.");
+            "Region alloc method takes 'size: usize', and may take the value's type record after it: 'fn alloc(size: usize, ty: *TypeRecord) *u8'.");
         return;
     }
     RefNode *rettype = (RefNode*)itypeGetTypeDcl(allocsig->rettype);
@@ -288,9 +288,9 @@ static void regionCheckAlloc(FnDclNode *allocmeth) {
         errorMsgNode((INode*)allocmeth, ErrorBadAlloc, "Region alloc method must return *u8.");
 }
 
-// Check an 'init' of the shape the compiler calls: 'fn init(self &new)', which
+// Check an 'init' of the shape the compiler calls: 'fn init(self: &new)', which
 // allocation runs on the header in place, right after 'alloc'. That it takes
-// 'self &new' and returns nothing is every struct's init's rule, reported
+// 'self: &new' and returns nothing is every struct's init's rule, reported
 // where the method is checked (fnDclTypeCheck); what is the region's own is
 // that it takes nothing else.
 static void regionCheckInit(FnDclNode *initmeth, StructNode *region) {
@@ -331,13 +331,13 @@ void regionRefCheck(StructNode *node) {
 
     INode *allocmember = iNsTypeFindFnField((INsTypeNode*)node, allocMethodName);
     if (allocmember && allocmember->tag != FnDclTag)
-        errorMsgNode(allocmember, ErrorBadAlloc, "Region alloc must be a static method: 'fn alloc(size usize) *u8', or 'fn alloc(size usize, ty *TypeRecord) *u8'.");
+        errorMsgNode(allocmember, ErrorBadAlloc, "Region alloc must be a static method: 'fn alloc(size: usize) *u8', or 'fn alloc(size: usize, ty: *TypeRecord) *u8'.");
     else if (allocmember)
         regionCheckAlloc((FnDclNode*)allocmember);
 
     INode *initmember = iNsTypeFindFnField((INsTypeNode*)node, initMethodName);
     if (initmember && initmember->tag != FnDclTag)
-        errorMsgNode(initmember, ErrorBadAlloc, "Region init must be one method filling the header in place: 'fn init(self &new)'.");
+        errorMsgNode(initmember, ErrorBadAlloc, "Region init must be one method filling the header in place: 'fn init(self: &new)'.");
     else if (initmember)
         regionCheckInit((FnDclNode*)initmember, node);
 
@@ -570,7 +570,7 @@ static void regionTracedJudgeRef(RefNode *node, INode *where) {
             return;
         if (!regionCanPassTrace(node->region))
             errorMsgNode(where, ErrorTracedHeld,
-                "A reference into %s may not point at %s, which holds a traced reference: %s has several owners and declares no 'visit', so a trace could not tell whether it had reached a value already, and would follow a cycle round forever. Declare 'fn visit(self &uni %s, mode u32) bool' to be traced through.",
+                "A reference into %s may not point at %s, which holds a traced reference: %s has several owners and declares no 'visit', so a trace could not tell whether it had reached a value already, and would follow a cycle round forever. Declare 'fn visit(self: &uni %s, mode: u32) bool' to be traced through.",
                 regname, regionTracedTypeName(node->vtexp), regname, regname);
         else if (itypeHoldsBarriered(node->vtexp))
             errorMsgNode(where, ErrorTracedHeld,

@@ -200,7 +200,7 @@ void permInitTypeCheck(INode *perm) {
         return;
     }
     // Run by allocation on the permission's part of the block, in place, after
-    // the region's init (genlallocref). That it takes 'self &new' and returns
+    // the region's init (genlallocref). That it takes 'self: &new' and returns
     // nothing is every struct's init's rule, reported where the method is
     // checked (fnDclTypeCheck); what is the permission's own is that it takes
     // nothing else.
@@ -211,8 +211,8 @@ void permInitTypeCheck(INode *perm) {
         errorMsgNode((INode*)initmeth, ErrorInvType, "Permission init method may not have parameters but self.");
 }
 
-// Is this lock method '(self &L)', of any permission, returning nothing? An
-// acquiring one ('site') may also take where the borrow is, '(self &L, file
+// Is this lock method '(self: &L)', of any permission, returning nothing? An
+// acquiring one ('site') may also take where the borrow is, '(self: &L, file
 // &Array[u8], line u32)', as core's 'panic' does, to name it in a panic.
 static int lockPermMethShapeOk(INode *member, StructNode *lock, int site) {
     if (member->tag != FnDclTag || !(member->flags & FlagMethFld))
@@ -241,11 +241,11 @@ static void lockPermCheckMeth(StructNode *lock, Name *name, int site) {
         char *l = &lock->namesym->namestr;
         if (site)
             errorMsgNode(member, ErrorLockPermShape,
-                "A lock permission's %s must be declared 'fn %s(self &%s)', of any permission, or 'fn %s(self &%s, file &Array[u8], line u32)', handed where the borrow is: it is handed the lock in the allocation's header, and returns nothing.",
+                "A lock permission's %s must be declared 'fn %s(self: &%s)', of any permission, or 'fn %s(self: &%s, file: &Array[u8], line: u32)', handed where the borrow is: it is handed the lock in the allocation's header, and returns nothing.",
                 &name->namestr, &name->namestr, l, &name->namestr, l);
         else
             errorMsgNode(member, ErrorLockPermShape,
-                "A lock permission's %s must be declared 'fn %s(self &%s)', of any permission: it is handed the lock in the allocation's header, and returns nothing.",
+                "A lock permission's %s must be declared 'fn %s(self: &%s)', of any permission: it is handed the lock in the allocation's header, and returns nothing.",
                 &name->namestr, &name->namestr, l);
     }
 }
@@ -267,7 +267,7 @@ void lockPermCheck(StructNode *node) {
     int hasrelease = iNsTypeFindFnField((INsTypeNode*)node, releaseMutMethodName) != NULL;
     if (!hasacquire || !hasrelease)
         errorMsgNode((INode*)node, ErrorLockPermShape,
-            "Lock permission %s must declare 'fn acquireMut(self &%s)' and 'fn releaseMut(self &%s)': a borrow through its reference takes the lock and its end gives it back.",
+            "Lock permission %s must declare 'fn acquireMut(self: &%s)' and 'fn releaseMut(self: &%s)': a borrow through its reference takes the lock and its end gives it back.",
             name, name, name);
     int hasreadacq = iNsTypeFindFnField((INsTypeNode*)node, acquireReadMethodName) != NULL;
     int hasreadrel = iNsTypeFindFnField((INsTypeNode*)node, releaseReadMethodName) != NULL;

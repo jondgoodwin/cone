@@ -964,7 +964,7 @@ void genlGlobalSyms(GenState *gen, INode *node) {
                 // owns and names the copy. Its static functions are its own --
                 // nothing inherits or dispatches them -- so they are generated
                 // here or nowhere, and 'Trait.name()' loaded a null without this.
-                // (an enum's method over the whole enum, 'self &Lamp', is its own)
+                // (an enum's method over the whole enum, 'self: &Lamp', is its own)
                 if (istrait && ((*nodesp)->flags & FlagMethFld) && !structIsWholeEnumMethod(*nodesp))
                     continue;
                 genlGlobalSyms(gen, *nodesp);

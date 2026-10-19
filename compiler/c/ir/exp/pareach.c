@@ -1763,7 +1763,7 @@ static int parCheckOuterAlias(INode *node, void *ctxp) {
         uint32_t nseen2 = 0;
         if (!parReachesWritten(cap->dcl->vtype, 0, 0, ctx, seen2, &nseen2))
             errorMsgNode(node, ErrorParAlias,
-                "This 'parallel each' writes the items of %s (%s), and the closure passed as '%s' borrows '%s' (%s), which could point at one of them: reading it while a pass writes would race. Copy it into the closure, where it is a value of its own: write it in the state list, '[%s]', as in 'fn(x i32, y i32) [%s] T { ... }'.",
+                "This 'parallel each' writes the items of %s (%s), and the closure passed as '%s' borrows '%s' (%s), which could point at one of them: reading it while a pass writes would race. Copy it into the closure, where it is a value of its own: write it in the state list, '[%s]', as in 'fn(x: i32, y: i32) [%s] T { ... }'.",
                 ctx->source, elemname, name, capname, captype, capname, capname);
         else
             errorMsgNode(node, ErrorParAlias,
@@ -2009,7 +2009,7 @@ void parallelEachCheckBody(TypeCheckState *pstate, BlockNode *outer) {
                     break;
                 }
                 errorMsgNode(((VarDclNode*)stmt)->value, ErrorParRoot,
-                    "A 'parallel each' that changes the items of a source may lend them only from something exclusive, and this source is reached through %s (%s): the list could have another name while the passes run (a caller may pass it under two names, or a zip may read it beside the writer), and then a pass could read or write an item another pass is writing. Take the list as a '&uni' parameter ('%s &uni List[...]', or 'self &uni'), which no other name can reach, or lend from a local, or a field of one held by value.",
+                    "A 'parallel each' that changes the items of a source may lend them only from something exclusive, and this source is reached through %s (%s): the list could have another name while the passes run (a caller may pass it under two names, or a zip may read it beside the writer), and then a pass could read or write an item another pass is writing. Take the list as a '&uni' parameter ('%s: &uni List[...]', or 'self: &uni'), which no other name can reach, or lend from a local, or a field of one held by value.",
                     why, rootname, rootname);
             }
 

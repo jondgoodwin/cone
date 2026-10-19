@@ -289,7 +289,7 @@ reject an overload name everywhere else. Bail if `objfn` is already marked
 - **`FlagLvalOp`** → borrow the receiver as `&mut`, or hand an operator-assign
   on a method type to `fnCallOpAssgn`. `<-` on a value is not borrowed there:
   the method it selects declares the permission, and the borrow retry
-  (`fnCallBorrowReceiver`, below) makes it, so a `self &` `<-` appends through
+  (`fnCallBorrowReceiver`, below) makes it, so a `self: &` `<-` appends through
   a `let` receiver. A receiver that is already a reference
   (`fnCallIsRefReceiver`) is passed as it is, exactly as the reference arm of
   stage 3 takes a named method's receiver: its own permission is what candidate
@@ -374,7 +374,7 @@ refused through a `&mut &Pt` because the inner level is read-only. Only an owner
 is held to the steps above it (a `&` lends only `&` of an owner,
 `borrowOwnerLendRefused`): from the first step whose permission cannot write,
 the dereference that reaches an owner is typed as a copy of the owner's type
-with that permission (`clamp`), so a field stored or a `self &mut` candidate
+with that permission (`clamp`), so a field stored or a `self: &mut` candidate
 through it is refused by the checks that already read the type. That copy is a
 reference type of its own, so it is normalized as any is (`typetblFind`, as
 `refTypeCheck` does): generation lays out an owning reference's block and traces a
@@ -390,7 +390,7 @@ instance of core's `Array[T]` for the element type (`fnCallSliceBodyOf`: a
 `FnCallNode` for `Array[elem]`, type checked), and the call is lowered against
 that struct (`fnCallLowerMethodOn`) with the array or slice as the receiver, as
 the methods a list folds in from its `view()` are called. An array's `len` is
-its type's, not a member of the value, and stays refused. A `self &mut` method
+its type's, not a member of the value, and stays refused. A `self: &mut` method
 on an array borrows it mutably (`fnCallBorrowReceiver` takes an array).
 
 **Text has three lowerings of its own, ahead of that dispatch.** `fnCallTextOf` asks
@@ -442,7 +442,7 @@ candidate. `fnCallLowerRefCompare`:
   `&str == &Uni[str]` already does by the `str` operator's taking the owner as
   its other side, so text compares alike in either order.
 - **A referent whose type declares the operator** is asked first with the
-  operands as written, so a method declared for references (`self &`,
+  operands as written, so a method declared for references (`self: &`,
   `other &T`) takes them unchanged. Only when no candidate matches are both
   operands dereferenced (`derefInject`, positioned on the comparison) and the
   value's operator selected by `fnCallLowerMethod`, as for `*a == *b`. An
@@ -579,7 +579,7 @@ would have to be read from the tag at run time, which is built for a reference a
 not for a value. Before, the call named the enum's own declaration, which is never
 generated, and only LLVM's verifier or the linker caught it. On a variant's value
 the call reaches that variant's clone and is fine. **A method whose receiver names
-the enum** (`self &Lamp`, `structIsWholeEnumMethod`) is not a template and is
+the enum** (`self: &Lamp`, `structIsWholeEnumMethod`) is not a template and is
 exempt: it is the one function over the whole enum, called as it is on an enum's
 value, a reference to it, or a variant's value (found in the enum when the variant
 has none of its own, `fnCallLowerMethodOn`), and `fnCallLowerTraitMethod` leaves it
@@ -702,7 +702,7 @@ Three adjustments, two of them asymmetric on purpose:
   borrow is read one level at a time by the `RefTag` dispatch
   (`fnCallTypeCheck`) and dispatched again.
 - **The read-through argument of a receiver that must be borrowed.** A `<-`
-  such as `print <- n` (`IOStream`'s methods declare `self &`) finds no
+  such as `print <- n` (`IOStream`'s methods declare `self: &`) finds no
   candidate in the deref retry, which tries the receiver as it is. After
   `fnCallBorrowReceiver` has found none either, an operator's one argument that
   reads through is read through and `fnCallBorrowReceiver` is asked again. It
@@ -711,8 +711,8 @@ Three adjustments, two of them asymmetric on purpose:
   still meets `*u8` first: the borrow converts to a raw pointer, so
   `print <- n` for a borrowed byte selects the C-string overload, as it did.)
 - **The borrow retry** (`fnCallBorrowReceiver`). A receiver held as a value
-  reaches a method declaring `self &`, `self &mut` or `self &uni`: it is probed as a `ro`
-  borrow, then (for a receiver whose type declares `Immutable`, whose `self &`
+  reaches a method declaring `self: &`, `self: &mut` or `self: &uni`: it is probed as a `ro`
+  borrow, then (for a receiver whose type declares `Immutable`, whose `self: &`
   is `&imm`) an `imm` one, then a `mut` one, then a `uni` one, and the first that selects a
   candidate is made by `borrowMutRef`, so the permission check and the lifetime are a written
   `&mut v`'s — `ErrorBadPerm` for `&mut` of an immutable variable — or, for `uni`, a
@@ -727,7 +727,7 @@ Three adjustments, two of them asymmetric on purpose:
   An ambiguity among the probed candidates is reported as one. **An owner
   receiver is borrowed too** (a `Uni[T]`, `Rc[T]`, `Arc[T]`, any reference that
   is not a borrow): it is a reference and so passed as it is, but any type's
-  method may declare `self &Uni[Self]` (or `&Rc[Self]`, `&Arc[Self]`, ...), a
+  method may declare `self: &Uni[Self]` (or `&Rc[Self]`, `&Arc[Self]`, ...), a
   borrow of an owner of its type — core's `str.cstr`, which a plain `&str`
   therefore has no candidate for, is one — and that is what the probe's borrow of
   the owner finds. The form is general: no owner kind is named in the compiler.
@@ -739,7 +739,7 @@ Three adjustments, two of them asymmetric on purpose:
   (`ownerread`) for an operator.
   Pinned by `typemgmt_owner_self` and `typemgmt_typecheck_owner_self`.
 - **The permission retry.** A reference receiver is never borrowed from, so a
-  `&List` calling `push` finds no candidate: `self &mut` is not `&`. When that
+  `&List` calling `push` finds no candidate: `self: &mut` is not `&`. When that
   is all that is wrong, the call is reported as `(*r).push(x)` is, `ErrorInvType`
   (the method is there; the permission is what it refuses), not as the
   `ErrorNoCandidate` of a method that is not. After the borrow retry (and the
@@ -774,7 +774,7 @@ returns (`derefInject`); every other link takes the reference as any field
 access or index does. A method called on a place the call's receiver must
 write, `x[i].m()` or `a[g].b.push(v)`, is known to write only once the method
 is selected, with the place already checked as a read. It is then lowered
-again where it was a read-only element: a candidate taking `self &mut` makes
+again where it was a read-only element: a candidate taking `self: &mut` makes
 `fnCallBorrowReceiver`, and a receiver that is itself an index
 `fnCallIndexAsMut`, lower every index of the receiver's chain again from its
 checked receiver and arguments, the innermost first, as `&mut x[i]` would
@@ -787,7 +787,7 @@ refused as before. Rust chooses `IndexMut` the same way; a dynamic arena's
 When nothing is selected, `fnCallNoCandidate` reports it. Two cases have a
 message of their own. An indexed borrow `&x[i]` reaches `` `&[]` `` with the
 read-only receiver `&x`, and where a `&mut` receiver would have been accepted
-the message says the method takes `self &mut` and names `x[i]` and
+the message says the method takes `self: &mut` and names `x[i]` and
 `&mut x[i]` (`fnCallRefIndexWantsMut`, still `ErrorNoCandidate`). An operator
 or an index given a `bool` where a candidate declares a number, `n + b` or
 `list[b]`, is `ErrorBoolNotNbr` naming that number's `from`
@@ -826,7 +826,7 @@ value. Its `first` is an expression resolved like any other, which a
 - **On a value**, the receiver is checked, borrowed once (held as it is when it
   is already a reference) into a temporary, with the permission the type's `<-`
   methods need (`fnCallAppendBorrowPerm`: `mut` when every `<-` takes
-  `self &mut`, `ro` (`imm` for an `Immutable` type) when none does, and when
+  `self: &mut`, `ro` (`imm` for an `Immutable` type) when none does, and when
   they differ `mut` if the receiver may be written, else `ro`), and each entry becomes
   statements of one block against that borrow: a value, one application
   `*recv <- value`; `n of x`, a block counting `n` (checked here as a `usize`,
@@ -941,7 +941,7 @@ Three entry points, by what the node became:
   called through), `nameuseFlow` on it, so one never given a value is refused;
   then for each argument: `flowLoadValue`, then
   `flowHandleMoveOrCopy`. Arguments are moved or copied into the callee. A
-  method's receiver that is an init's `self &new` is walked as a use through
+  method's receiver that is an init's `self: &new` is walked as a use through
   it (`flowNewSelfThrough`; [Flow](../phases/flow.md), "An init's self"). A
   construction by a declared init is walked as any call: its arguments; the
   value it yields is the call's.

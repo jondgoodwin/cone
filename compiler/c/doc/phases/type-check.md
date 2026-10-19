@@ -268,7 +268,7 @@ out on demand, and its members are checked before the walk moves on.
 **What it fixed.** Before, `structTypeCheck` laid a type out and then checked its
 members in the same call, so a type demanded from inside another's layout had its
 members checked while the demander was in flight. Measured on `2f3225cb`:
-`struct S { t T; }` above `struct T { fn g(self &, s S) }` was `ErrorNoSize` on
+`struct S { t: T; }` above `struct T { fn g(self: &, s: S) }` was `ErrorNoSize` on
 `s`, while the other order compiled; and an enum, which the module walk reaches
 first through its first variant, had its own members checked inside that
 variant's layout, so a by-value `self`, a static function taking the enum, a
@@ -312,7 +312,7 @@ holds `Node`, so an argument that is itself an instance of a generic
 in flight: the `Option[Node]` is made and its layout waits
 (`genericEnumInstanceLayout`). So is an argument written as the name of a
 struct or an enum (`namesnamed`), when the generic's instances hold values by
-value: `struct VL { items List[V]; }` above `enum V { N(i64); L(VL); }` names V,
+value: `struct VL { items: List[V]; }` above `enum V { N(i64); L(VL); }` names V,
 which a plain check would lay out inside VL's layout, finding VL in flight
 through V's variant, though a List holds its elements behind a pointer; written
 below the enum it always compiled. A trait's argument is still checked as it was,
@@ -354,7 +354,7 @@ the layout and is decided at once. A `Sendable` clause standing
 alone is the exception: whether a type may cross threads is answered
 provisionally of one not yet laid out, noted, and judged again once every type
 is (`genericSendableNote`), so it lays nothing out. That is what lets an
-actor's handle, `Arc[opaq, actors.Mailbox[M]]` with `Mailbox[M Sendable]`, come
+actor's handle, `Arc[opaq, actors.Mailbox[M]]` with `Mailbox[M: Sendable]`, come
 before the message enum holding the handle by value
 (`concurrency_actors_declared_last`). **The reference's own
 region and permission** — a region ref, a permission, which lock fits which
@@ -407,8 +407,8 @@ type before analyzing anything that could refer back to it, so the type is
 already on the node. This is what makes mutual recursion work:
 
 ```cone
-fn even(n i64) i64 { if n == 0 { 1 } else { odd(n - 1) } }
-fn odd(n i64) i64 { if n == 0 { 0 } else { even(n - 1) } }
+fn even(n: i64) i64 { if n == 0 { 1 } else { odd(n - 1) } }
+fn odd(n: i64) i64 { if n == 0 { 0 } else { even(n - 1) } }
 ```
 
 `even` reaches `odd`, which reaches `even` — whose signature is filled in, and a
@@ -450,10 +450,10 @@ a pointer whatever it points at. That single rule settles every recursion case
 without the field having to know which case it is in:
 
 ```cone
-struct S { v i64; next &S }      // legal — S never asks itself
-struct A { b B }  struct B { a &A }   // legal — B completes, so A gets its size
-struct A { b &B } struct B { a &A }   // legal — neither asks the other
-struct A { b B }  struct B { a A }    // error — A asks B, which asks A mid-layout
+struct S { v: i64; next: &S }      // legal — S never asks itself
+struct A { b: B }  struct B { a: &A }   // legal — B completes, so A gets its size
+struct A { b: &B } struct B { a: &A }   // legal — neither asks the other
+struct A { b: B }  struct B { a: A }    // error — A asks B, which asks A mid-layout
 ```
 
 There is deliberately no recursion check. An unfinished struct has no size, a
@@ -474,7 +474,7 @@ Error 1069: Field p cannot be held by value: P contains Q contains R contains P 
 An array or a tuple on the stack is part of the type holding it and is not
 named. A tuple holds each element by value as a struct holds a field, so the
 walk crosses a tuple to its first element with no size (`itypeNoSizeElem`) as it
-crosses a field, with no hop recorded for the tuple: `struct N { k (i32, N) }`,
+crosses a field, with no hop recorded for the tuple: `struct N { k: (i32, N) }`,
 the same with the tuple nested or inside an array, and a tuple of an enum whose
 variant holds the struct are refused as the type held directly is. Were the type not on the stack, which no measured case reaches, the
 message would be the old one, "is still being laid out, so it would have to
@@ -485,7 +485,7 @@ cycle through the layouts outside it; no such case is in the corpus.
 "Unfinished" is read only of a type whose size depends on what it holds. A
 reference, pointer or array reference can itself be in flight — `alias QRef =
 &Quad` written above `Quad` checks the reference first, which demands `Quad`
-from inside it, and `fn get(self QRef)` in `Quad` then reaches the same
+from inside it, and `fn get(self: QRef)` in `Quad` then reaches the same
 reference mid-check. `itypeNoSizeOwnCause` answers a reference before the
 in-flight test, as the rule above says it must; reading the mark first made an
 alias above its type refused as a cycle and the same alias below it accepted,
@@ -539,7 +539,7 @@ is not a variant of `ErrorNoSize`: "this type cannot tell you its size, hold it 
 reference" and "this definition depends on itself" are not the same advice.
 
 **A constant with a declared type has its type, but not yet its value.**
-`const A u32 = B` then `const B u32 = A | 1u32` passes the type question, and
+`const A: u32 = B` then `const B: u32 = A | 1u32` passes the type question, and
 it is the value that recurses. A constant's value is folded into its literal
 before its check ends (`litFoldConst`, [literals](../nodes/literals.md),
 "Folding a constant expression"), so a chain of constant uses reaching a
@@ -567,7 +567,7 @@ node, and a generic instantiating itself at ever-larger arguments never does —
 every instance is a new node with new arguments:
 
 ```cone
-fn recur[T](x T) T { recur[Box[T]](new Box[T](x)).v }
+fn recur[T](x: T) T { recur[Box[T]](new Box[T](x)).v }
 ```
 
 Depth is the only thing that distinguishes an expansion that terminates from one

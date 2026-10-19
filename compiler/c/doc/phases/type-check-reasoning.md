@@ -234,7 +234,7 @@ does not match — so `fnCallFinalizeArgs` first recasts an owning receiver to
 the borrowed virtual reference `&<perm Trait`, `perm` the method's own for
 `self` (`fnCallLendVirtOwner`); left alone, the owner was passed as itself and
 moved. Nothing builds `&uni *o` for a virtual reference, which may not be
-dereferenced: an owner wanted as a `&<uni` (a parameter, or a `self &uni`
+dereferenced: an owner wanted as a `&<uni` (a parameter, or a `self: &uni`
 receiver, which is not recast) still moves.
 
 **One rule, spelled once, for a callable meeting a signature** (`fnSigMeetKind`):
@@ -271,8 +271,8 @@ result, and what it may store through a writable parameter, holds no part
 the requirement's may not; a parameter is `'static` only where the
 requirement's is; a struct's slots are named apart wherever the requirement's
 are. A parameter is stored through only where another parameter could lend
-something to store, so a lone `self &mut` is not (`lifeSigPromises`): a
-cursor's `next(self &mut) Option[&'a T]` meets `Iterator[&T]`'s `next`, which
+something to store, so a lone `self: &mut` is not (`lifeSigPromises`): a
+cursor's `next(self: &mut) Option[&'a T]` meets `Iterator[&T]`'s `next`, which
 names no lifetime and whose `Self` holds no borrow. So a method may return `'static`, or a longer lifetime, where the trait's
 result may hold its receiver, and take any borrow where the trait asks for a
 `'static` one, as Rust's more general impl may. What a signature promises is read part by part of each
@@ -404,7 +404,7 @@ Three adjustments are worth knowing, two because they are asymmetric on purpose:
   `derefInject` and selects again. It runs *only* when no candidate matched at
   all, so a genuine ambiguity is still reported as one.
 - **The borrow retry.** A receiver held as a value — never a pointer — reaches a
-  method wanting `self &` or `self &mut` by being borrowed, the weakest
+  method wanting `self: &` or `self: &mut` by being borrowed, the weakest
   permission a candidate accepts first (`fnCallBorrowReceiver`,
   [fncall](../nodes/fncall.md)). It runs after the deref retry, so a by-value
   candidate is always preferred, and it borrows through `borrowMutRef`, so the
@@ -591,7 +591,7 @@ on the instance's use (`lifeUseInstance`), a function's as well as a type's.
 
 **Set position.** `x[i] = v`, `x[i].f = v`, an operator changing it in place,
 a `&mut` borrow of a place through an index, either side of a swap, and a
-`self &mut` method whose receiver is `x[i]` or a field of it ask the type's `&[]` for the element's
+`self: &mut` method whose receiver is `x[i]` or a field of it ask the type's `&[]` for the element's
 mutable borrow, as Rust's `IndexMut` is chosen for a place written to, for
 every index in the chain of field and index steps the place is, whatever its
 depth: `assignTypeCheck`, `swapTypeCheck` (each side), an `FlagLvalOp` call and `borrowTypeCheck` mark the

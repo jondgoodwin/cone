@@ -1,6 +1,6 @@
 /** Handling for closure literals
  *
- * A closure is written 'fn (u f32) [ribs, var n = 0] f32 { ... }', or in the
+ * A closure is written 'fn (u: f32) [ribs, var n = 0] f32 { ... }', or in the
  * short form 'x => x * 2'. Type check makes it a value of a struct the compiler
  * writes (the "hidden struct"): the state list's entries and the variables the
  * body borrows are its fields, and its one method, '()', is the body.
@@ -107,7 +107,7 @@ extern StructNode *closureTrait;
 // exactly one required method and no field ('*count' says how many it has)
 FnSigNode *closureTraitSig(StructNode *trait, Name **method, uint32_t *count);
 
-// Whether a closure's one method takes 'self &mut'
+// Whether a closure's one method takes 'self: &mut'
 int closureMethodMutates(ClosureInfo *info);
 
 // Set while the return type of a closure is being read off its paths, so that

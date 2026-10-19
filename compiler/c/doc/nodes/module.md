@@ -604,10 +604,10 @@ reached by path. What reaching a member by path cannot do is below.
 
 ```
 pub mod trait Runner {
-    pub fn step(n i64) i64;         // a requirement
-    pub var scale i64;              // a requirement
+    pub fn step(n: i64) i64;         // a requirement
+    pub var scale: i64;              // a requirement
     pub var offset = 100i64;        // a default
-    pub fn run(n i64) i64 {         // a default
+    pub fn run(n: i64) i64 {         // a default
         step(n) * scale + offset
     }
 }
@@ -728,10 +728,10 @@ stack[T];`, and instantiated where it is used, `stack[i64].push(3i64)`, as
 ```
 pub mod stack[T];
 
-pub var count i64 = 0i64;
-pub var top T = 0;
+pub var count: i64 = 0i64;
+pub var top: T = 0;
 
-pub fn push(x T) {
+pub fn push(x: T) {
     top = x;
     count = count + 1i64;
 }
@@ -1190,7 +1190,7 @@ is the module's. What an importer must have the body of — an `inline` or
 generic function, a macro, a trait's methods, a generic type's — is written
 whole, and `extern` on it is `ErrorBadExtern`. **A global the package folds
 through is declared `extern` with the source's fold clause** [Jon 25 Sep],
-`pub extern var config Config pub use *;`: the fold reads only the declared
+`pub extern var config: Config pub use *;`: the fold reads only the declared
 type, so an importer reaches the folded names as the package does, each the
 package's one global (`module_build_fold_extern`; the refusals where the type
 is out of view, `module_build_fold_extern_nameres`).
@@ -1917,7 +1917,7 @@ dependencies first and the root last, before its own work, and every module's
 finalizer in exactly the reverse, the root first, after it.
 
 ```
-let handler Handler;
+let handler: Handler;
 
 fn @initpure init() {
     handler = new Handler(1);
@@ -2662,14 +2662,14 @@ region promises), and calls them at the reference events only it can see
 
 | Method | Called when | If absent |
 |---|---|---|
-| `fn alloc(size usize) *u8`, or `fn alloc(size usize, ty *TypeRecord) *u8`, static | `new R[perm, T](...)` allocates, before anything else of the allocation's but the init's arguments; `size` is the whole allocation, header included; `ty`, where it is declared, is the value type's record; null fails | the allocation is refused (`ErrorBadAlloc`) |
-| `fn init(self &new)`, an init ([struct](struct.md), "Initializers") | right after `alloc`, on the header, which it fills in place | the header is left as allocated |
-| `fn aliasRef(self &uni R)` | a copy of an owning reference becomes another owner | a copy calls nothing: it is a **move** where the region is `Move`, and free where it is not |
-| `fn dealiasRef(self &uni R) bool` | an owner goes away; answers whether it was the last | an owner's going asks nothing: where the region is `Move` it is the value's death; where it is not, it does nothing — the value never dies by an owner and the compiler never frees it, left to the region's own loop (a collector's, an arena's) |
-| `fn free(self &uni R)` | the value is dead, after it is finalized and its fields' owners are released | the memory is not given back a value at a time |
-| `fn mark(self &uni R, slot *usize)`, or `fn mark(self &uni R, slot *usize, perm u32, mode u32)`, on a region declaring `Traced` | a trace finds a reference into the region: a record's trace, or `mem.trace`; `self` is the header of what it points at, `slot` the address where the reference is stored (its first word is the address of the value), which a collector that moves the value rewrites; `perm` is the reference's permission, a constant, and `mode` what the trace was called with | refused where the region declares `Traced` (`ErrorTracedMark`); never called where it does not |
-| `fn visit(self &uni R, mode u32) bool`, on a region with several owners | a trace passes through an owning reference of the region (it is not traced) to the value, which holds a traced reference; answers whether this is the first time in the collection whose epoch is `mode` | a trace cannot pass through the region's owners, unless the region is `Move` (`regionCanPassTrace`) |
-| `fn writeBarrier(self &uni R)`, on a region declaring `Traced` | a reference into the region was just stored into memory that is not a local: a field, element or dereference reached through any reference or pointer, a borrow's included, a swap's either half, `:=`, and each such reference inside a whole value so stored; the header is what was stored | no store calls anything; never called where the region does not declare `Traced` |
+| `fn alloc(size: usize) *u8`, or `fn alloc(size: usize, ty: *TypeRecord) *u8`, static | `new R[perm, T](...)` allocates, before anything else of the allocation's but the init's arguments; `size` is the whole allocation, header included; `ty`, where it is declared, is the value type's record; null fails | the allocation is refused (`ErrorBadAlloc`) |
+| `fn init(self: &new)`, an init ([struct](struct.md), "Initializers") | right after `alloc`, on the header, which it fills in place | the header is left as allocated |
+| `fn aliasRef(self: &uni R)` | a copy of an owning reference becomes another owner | a copy calls nothing: it is a **move** where the region is `Move`, and free where it is not |
+| `fn dealiasRef(self: &uni R) bool` | an owner goes away; answers whether it was the last | an owner's going asks nothing: where the region is `Move` it is the value's death; where it is not, it does nothing — the value never dies by an owner and the compiler never frees it, left to the region's own loop (a collector's, an arena's) |
+| `fn free(self: &uni R)` | the value is dead, after it is finalized and its fields' owners are released | the memory is not given back a value at a time |
+| `fn mark(self: &uni R, slot: *usize)`, or `fn mark(self: &uni R, slot: *usize, perm: u32, mode: u32)`, on a region declaring `Traced` | a trace finds a reference into the region: a record's trace, or `mem.trace`; `self` is the header of what it points at, `slot` the address where the reference is stored (its first word is the address of the value), which a collector that moves the value rewrites; `perm` is the reference's permission, a constant, and `mode` what the trace was called with | refused where the region declares `Traced` (`ErrorTracedMark`); never called where it does not |
+| `fn visit(self: &uni R, mode: u32) bool`, on a region with several owners | a trace passes through an owning reference of the region (it is not traced) to the value, which holds a traced reference; answers whether this is the first time in the collection whose epoch is `mode` | a trace cannot pass through the region's owners, unless the region is `Move` (`regionCanPassTrace`) |
+| `fn writeBarrier(self: &uni R)`, on a region declaring `Traced` | a reference into the region was just stored into memory that is not a local: a field, element or dereference reached through any reference or pointer, a borrow's included, a swap's either half, `:=`, and each such reference inside a whole value so stored; the header is what was stored | no store calls anything; never called where the region does not declare `Traced` |
 
 Every method but `alloc` is handed the allocation's **header**, the region
 struct at the front of the `{region, permission, value}` layout: `init` the
@@ -3003,8 +3003,8 @@ a reference names is a type, and that is what is built.
   re-export not yet arrived — a field's type, say — is reported missing beside
   the loop, and the fold passes do not retry it: a struct is resolved once.
   Measured: `alpha` imports `beta`, then re-exports `delta`'s `Inner`, and
-  declares `struct Box { pub v Inner use get; }`; `beta` imports `alpha` and
-  writes `var g alpha.Box = new alpha.Box(new delta.Inner(3i64)) use get;`. The loop is
+  declares `struct Box { pub v: Inner use get; }`; `beta` imports `alpha` and
+  writes `var g: alpha.Box = new alpha.Box(new delta.Inner(3i64)) use get;`. The loop is
   reported, then `Inner` unknown in `Box`, and `get` failing to fold: three
   diagnostics where one is the cause. The global's type itself waits
   for a late name (`modFoldAwaits`); what that type's declaration names does not.

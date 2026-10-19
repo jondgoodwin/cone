@@ -188,7 +188,7 @@ again from `actorCheckAll`).
 
 `ErrorGcTraceElementsShape`, `ErrorTraceRoot` and `ErrorTraceKey` are about what a collector
 can reach. A type declaring `GcTraceElements` whose `gcTraceElements` is not `fn
-gcTraceElements(self &mut) I`, `I` a cursor declaring `is Iterator[&mut E]` with `E` a sized
+gcTraceElements(self: &mut) I`, `I` a cursor declaring `is Iterator[&mut E]` with `E` a sized
 type, is `ErrorGcTraceElementsShape` (type check). A local, a parameter, or a value of a traced
 region, whose type needs tracing and cannot be traced (it holds a raw pointer to a value that
 needs tracing, with no `GcTraceElements`, or an owner a trace cannot pass through) is
@@ -372,12 +372,12 @@ in scope; `ErrorWhereTrait`, an `is` naming no trait; and `ErrorWhereNoParms`, a
 clause on a declaration with no type parameters to constrain. An annotation after
 a type parameter's name that names no trait or integer type stays `ErrorGenParmConstr`, the code
 for a parameter annotated in a way that is not built, as a macro's parameter
-given one is. A value parameter, `[N usize]`, has four codes of its own:
+given one is. A value parameter, `[N: usize]`, has four codes of its own:
 `ErrorGenValueParm`, one declared in a way not built (not an integer type, a
 constraint beside it, a `where` clause about it, on a generic type);
 `ErrorGenValueArg`, an argument that is no non-negative integer literal the
 parameter's type holds; `ErrorGenValueClash`, a number inferred two ways; and
-`ErrorGenValueArith`, arithmetic over one in an array's size; `||` there, `[T A || B]`, is `ErrorGenParmOr`, whose remedy is to
+`ErrorGenValueArith`, arithmetic over one in an array's size; `||` there, `[T: A || B]`, is `ErrorGenParmOr`, whose remedy is to
 move the choice into a `where` clause.
 
 A condition on one entry of a type's `is` list, `is Move if T is Move`, is written
@@ -511,7 +511,7 @@ virtual reference, an owner of permission `mut`), is `ErrorUniShared` (type chec
 name for what holds the field or element could reach the one reference that promised to be unique
 ([references](../nodes/references.md), "A `&uni` field or element is seen only through `uni` references").
 Where the place is in code a generic use instantiated (a `List[&uni App]`, whose methods reach
-their elements through `self &mut`), the error is reported once, at the outermost use, with a
+their elements through `self: &mut`), the error is reported once, at the outermost use, with a
 message naming the type argument ("A `&uni` cannot be the type argument of this use: the generic
 code it instantiates reaches it, as an element, through a `&mut` reference..."), and not inside the
 generic; `fnCallUniUses` remembers the uses already reported.
@@ -588,7 +588,7 @@ written, an actor, a `parallel each`, an `await`, and a call of a function
 defined elsewhere that is not the C library's math.
 
 A callable behind a reference or an owner has three more: a callable refused for the
-permission its `()` takes or the borrow lent (a `()` taking `self &mut` given to a
+permission its `()` takes or the borrow lent (a `()` taking `self: &mut` given to a
 `&<fn`, a read-only borrow given to a `&<mut fn`, a `&<mut fn` lent as a `&<fn`, a
 generic's `&F` given one that changes) is `ErrorCallablePerm`;
 an owner `Uni[fn(sig)]` made of a value that is no callable of its signature (no `()`
@@ -637,17 +637,17 @@ asked of a parallel view held in a variable are `ErrorParReduce` ([fncall](../no
 parallel reductions").
 
 A borrow of part of what a reference parameter points at, stored into what that
-same reference points at (`held = buf.view()` in a method taking `self &mut`, or
+same reference points at (`held = buf.view()` in a method taking `self: &mut`, or
 into a list there through a call), is `ErrorSelfStore`: the value would hold a
 borrow of its own storage, which its owner may change or move after the call
 ([flow](../phases/flow.md), "Stores through a reference"). A store into a place
 of the function's own, or of another parameter, is the other stores' business.
 
 A struct viewed as a trait behind a virtual reference (`&<Trait`, `Uni[Trait]`) whose
-method takes a stronger `self` than the trait's method declares (`self &mut` for
-`self &`, `self &uni` for `self &mut`) is `ErrorVtableSelf`; so is a closure literal
-that changes state, which needs `self &mut`, given where a trait is wanted whose
-method says `self &` (under any holder, a generic's `[S Trait]` included). A struct viewed
+method takes a stronger `self` than the trait's method declares (`self: &mut` for
+`self: &`, `self: &uni` for `self: &mut`) is `ErrorVtableSelf`; so is a closure literal
+that changes state, which needs `self: &mut`, given where a trait is wanted whose
+method says `self: &` (under any holder, a generic's `[S: Trait]` included). A struct viewed
 as a trait behind a virtual reference that may write (`&<mut`, `&<uni`, `Uni[Trait]`)
 whose field has a narrower type than the trait gives it (`Shape.Circle` for `Shape`;
 for an enum, any variant's) is `ErrorVtableField`: a store through the trait would leave

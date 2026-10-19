@@ -258,7 +258,7 @@ int flowNoDeath(INode *type) {
 // Asked once per variable, and remembered: at every store in a loop or a
 // branch the question would otherwise walk the type again
 //
-// An init's 'self &new' is never tracked: it is a reference that is reached only
+// An init's 'self: &new' is never tracked: it is a reference that is reached only
 // through itself (flowNewSelf) and never moved, passed, or dropped, whatever the
 // use that hands it to a method or to 'selfactor' looks like to the move rules.
 // Tracked, a use inside a branch or a loop would turn the drop walk on for it
@@ -1357,7 +1357,7 @@ void flowLoadThroughRef(FlowState *fstate, INode **refp) {
     }
 }
 
-// An initializer's 'self &new' is the one path to memory that holds no value
+// An initializer's 'self: &new' is the one path to memory that holds no value
 // until the init writes one, and that the construction running the init holds
 // once it returns. So it is reached only through itself, and only once filled:
 // '*self' read or written, a field of it, a method called on it, each refused

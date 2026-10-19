@@ -158,7 +158,7 @@ enum NodeTags {
     AwaitReplyTag,  // (injected) the envelope of a request an 'await' sends, made where the seam's id is (AwaitReplyNode)
     YieldTag,       // 'yield x': a generator's seam, where its body hands the caller a value and waits to be resumed (YieldNode)
     SelfActorTag,   // 'selfactor': the actor's own handle, lowered at type check (SelfActorNode)
-    ClosureTag,     // 'fn (x i32) [n = 0] { ... }' or 'x => x * 2': a closure literal, lowered at type check to a value of a hidden struct (ClosureNode)
+    ClosureTag,     // 'fn (x: i32) [n = 0] { ... }' or 'x => x * 2': a closure literal, lowered at type check to a value of a hidden struct (ClosureNode)
     AbsenceTag,   // unique, unclonable node for absence of info
 
     // Unnamed type node

@@ -1127,7 +1127,7 @@ static void incCut(IncGen *g, IncMod *m, DclSpan *span) {
     if (node->tag == VarDclTag && !span->typed) {
         IncBuf type;
         memset(&type, 0, sizeof(type));
-        incBufPuts(&type, " ");
+        incBufPuts(&type, ": ");
         if (incTypeText(g, &type, ((VarDclNode*)node)->vtype, m->mod))
             incEdit(g, lexer, span->nameend, span->nameend, type.text);
         else {

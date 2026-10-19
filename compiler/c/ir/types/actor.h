@@ -58,18 +58,18 @@ void actorRegister(ActorInfo *info);
 // The actors package's functions a split method's generated code calls,
 // found where the parser bound the package (parseactor.c)
 enum ActorRuntimeFn {
-    ActorRtParkReserve,     // parkReserve(p &mut Pending, size usize) u64
-    ActorRtParked,          // parked(p &mut Pending, id u64) *u8
-    ActorRtUnpark,          // unpark(p &mut Pending, id u64) *u8
-    ActorRtRecordFree,      // recordFree(block *u8)
-    ActorRtAnswerTo,        // answerTo(slot &mut Answer) *u8
-    ActorRtAnswered,        // answered(slot &mut Answer)
-    ActorRtStartAwait,      // startAwait(a *u8, rp Reply): an Awaitable started at its seam
-    ActorRtFutureReady,     // futureReady(fut *u8) bool: a Future has its ending
-    ActorRtFutureRegister,  // futureRegister(fut *u8, rp Reply) bool: park on it, unless it has
-    ActorRtFutureOpen,      // futureOpen(fut *u8, file &Array[u8], line u32) *u8: where its value is
-    ActorRtFutureTaken,     // futureTaken(fut *u8): a move value read out of it
-    ActorRtParBlock,        // parBlock(size usize) *u8: room for the copies a parallel each's pieces read
+    ActorRtParkReserve,     // parkReserve(p: &mut Pending, size: usize) u64
+    ActorRtParked,          // parked(p: &mut Pending, id: u64) *u8
+    ActorRtUnpark,          // unpark(p: &mut Pending, id: u64) *u8
+    ActorRtRecordFree,      // recordFree(block: *u8)
+    ActorRtAnswerTo,        // answerTo(slot: &mut Answer) *u8
+    ActorRtAnswered,        // answered(slot: &mut Answer)
+    ActorRtStartAwait,      // startAwait(a: *u8, rp: Reply): an Awaitable started at its seam
+    ActorRtFutureReady,     // futureReady(fut: *u8) bool: a Future has its ending
+    ActorRtFutureRegister,  // futureRegister(fut: *u8, rp: Reply) bool: park on it, unless it has
+    ActorRtFutureOpen,      // futureOpen(fut: *u8, file: &Array[u8], line: u32) *u8: where its value is
+    ActorRtFutureTaken,     // futureTaken(fut: *u8): a move value read out of it
+    ActorRtParBlock,        // parBlock(size: usize) *u8: room for the copies a parallel each's pieces read
     ActorRtParSeam,         // parSeam(lo, hi, body, caps, resume, id, hasId): a behaviour's parallel each, cut at its end
     ActorRtCount
 };

@@ -1171,8 +1171,8 @@ static PathSet *pwLend(INode *site, Place *pl, INode *perm, int access, uint32_t
     return pathSetAdd(pwPlaceSlots(pl, held), id);
 }
 
-// An owning reference coerced to a borrowed one ('let b &i32 = u', 'u' a
-// 'Uni[i32]'; or 'let b &<mut App = v', 'v' a 'Uni[App]'): a borrow of what it
+// An owning reference coerced to a borrowed one ('let b: &i32 = u', 'u' a
+// 'Uni[i32]'; or 'let b: &<mut App = v', 'v' a 'Uni[App]'): a borrow of what it
 // owns, so 'u' may not be moved, replaced or ended while the borrow is used
 static int pwIsOwnedLent(CastNode *cast) {
     INode *to = iexpGetTypeDcl((INode *)cast);
@@ -2250,7 +2250,7 @@ static void pwShapeStore(INode *lval, Place *pl) {
 // carries of each argument what the result may hold (pwArgCarries): all of
 // it, where its parameter's own lifetime flows to one the result holds; only
 // what its reference points at holds, by slot, where only that does
-// ('c.next()' for 'next(self &mut) Option[&'a R]' in 'Cursor['a]' carries
+// ('c.next()' for 'next(self: &mut) Option[&'a R]' in 'Cursor['a]' carries
 // what 'c' holds, not 'c'); or nothing. An argument for a ''static' parameter
 // may carry no loan but of a global. A container declaring a no-loan kind
 // ('NoLoanMut', an arena; 'NoLoanRead', for a read-only borrow) lends with no

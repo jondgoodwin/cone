@@ -174,7 +174,7 @@ static INode *parseClosureArrow(ParseState *parse, Nodes *names, INode *at) {
         for (nodesFor(names, cnt, namep)) {
             if (!isNameUseNode(*namep)) {
                 errorMsgNode(*namep, ErrorClosureForm,
-                    "The short form of a closure takes parameter names only, 'x => x * 2'. A parameter with a type is written in the full form, 'fn (x i32) i32 { x * 2; }'.");
+                    "The short form of a closure takes parameter names only, 'x => x * 2'. A parameter with a type is written in the full form, 'fn (x: i32) i32 { x * 2; }'.");
                 continue;
             }
             VarDclNode *parm = newVarDclNode(((NameUseNode*)*namep)->namesym, VarDclTag, (INode*)immPerm);
@@ -363,7 +363,7 @@ INode *parseTerm(ParseState *parse) {
         }
         return name;
     }
-    // A closure in the full form, a value: 'fn (u f32) [ribs] f32 { ... }'
+    // A closure in the full form, a value: 'fn (u: f32) [ribs] f32 { ... }'
     case FnToken:
         // Where a type is written, 'fn(i32) i32' is a signature: the callable
         // type of 'Uni[fn(i32) i32]' and of a type argument

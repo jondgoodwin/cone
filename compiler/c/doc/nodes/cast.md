@@ -313,7 +313,7 @@ enum's `derived` complies when a generic's `where T is Trait` would say yes of i
 (`genericTypeIs`: it declares the trait with `is`, or, for a trait that requires something,
 has it) and the variant can fill the trait's vtable (`structVirtRefMatches`, which registers
 its implementation). So a marker trait is complied with only by declaring it, and a method over
-the whole enum (`self &Shape`, which has no copy in any variant, `structIsWholeEnumMethod`)
+the whole enum (`self: &Shape`, which has no copy in any variant, `structIsWholeEnumMethod`)
 makes no variant comply. None at all is `ErrorPatTraitNone`.
 
 **The test.** `castTraitIsCheck` stores the complying variants on the `is` node (`variants`).

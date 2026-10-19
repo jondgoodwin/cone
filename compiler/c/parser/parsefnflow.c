@@ -208,7 +208,7 @@ INode *parseReturn(ParseState *parse) {
 // 'case let rest using prefix("GET ")' binds what the function gives back, 'case using isOdd()'
 // tests with it. The function is an ordinary one whose first argument is the matched value, so
 // the call is written without it and the parser puts it in. A binding is de-sugared as
-// 'let rest Some = prefix(matchee, "GET ")' is (parseBoundMatch), the call held once in a
+// 'let rest: Some = prefix(matchee, "GET ")' is (parseBoundMatch), the call held once in a
 // variable; a test is the call itself, a condition like any other.
 
 // After 'using': the call of the pattern, 'prefix("GET ")', 're.find()'. NULL when it is no call.
@@ -359,7 +359,7 @@ static void parseUsingHold(MatchSubject *subject, VarDclNode *holder) {
 // is declares the hidden variable that holds it when it is not a place.
 //
 // A pattern a function runs, 'let rest using prefix("GET ")' (parseUsingCall), is bound
-// as 'let rest Some = prefix(matchee, "GET ")' is, the call being the value matched. In
+// as 'let rest: Some = prefix(matchee, "GET ")' is, the call being the value matched. In
 // a bound 'if' that is all it takes. In a match the call must run once, when its case is
 // reached and not before, so the case is nested the way an 'elif' that binds is: the
 // match's chain goes on in an 'else' block that holds the call's result in a variable
@@ -719,7 +719,7 @@ static INode *parseMatchColumn(ParseState *parse, MatchSubject *subject) {
         FnCallNode *usingcall = NULL;
         VarDclNode *var = parseBindVarDcl(parse, &usingcall);
         errorMsgNode((INode*)var, ErrorMatchColumn,
-            "A pattern in a column of 'match a, b' does not bind a variable: write the variant alone, and bind inside the case with 'let x Some = a'");
+            "A pattern in a column of 'match a, b' does not bind a variable: write the variant alone, and bind inside the case with 'let x: Some = a'");
         CastNode *isnode = newIsNode(parseMatchUse(subject), var->vtype);
         castPatternMark(var->vtype);
         cond = (INode *)isnode;
@@ -1741,6 +1741,8 @@ INode *parseExprBlock(ParseState *parse, int isloop) {
             if (lexIsToken(ElseToken))
                 parseLetElse(parse, blk, var);
             else {
+                if (parse->letelsetype)
+                    errorMsgNode((INode*)var, ErrorNoSemi, "Expected ';' to end the statement");
                 if (parse->usingdcl)
                     errorMsgNode((INode*)var, ErrorUsingForm,
                         "A pattern a function runs may not match, so a binding by 'using' ends in an 'else' that leaves: 'let rest using prefix(\"GET \") = line else { return; };'. To test and bind in a block, write 'if let rest using prefix(\"GET \") = line {...}'.");
@@ -1986,7 +1988,7 @@ static INode *parseWhereTerm(ParseState *parse, LifeOrder **orderp) {
             errorMsgLex(ErrorWhereForm, lexIsToken(LifetimeToken)
                 ? "A lifetime bound alone is written 'T + 'a': what a type parameter 'is' is a trait, named."
                 : parseInIsCond ? "What a type parameter 'is' in a condition on an 'is' entry is a trait, named."
-                : "What a type parameter 'is' in a 'where' clause is a trait, named, or a function signature, 'where F is fn(a &T) i32'.");
+                : "What a type parameter 'is' in a 'where' clause is a trait, named, or a function signature, 'where F is fn(a: &T) i32'.");
             return NULL;
         }
         // A function signature, written bare, is what the type has a '()' method of
@@ -2097,8 +2099,8 @@ INode *parseIsCondition(ParseState *parse) {
     return cond;
 }
 
-// Is this type parameter bound to a function signature, '[F fn(u f32) f32]' or
-// 'where F is fn(u f32) f32'?
+// Is this type parameter bound to a function signature, '[F: fn(u: f32) f32]' or
+// 'where F is fn(u: f32) f32'?
 static int parseGenericParmSigBound(GenVarDclNode *parm, INode *cond) {
     if (cond == NULL)
         return 0;
@@ -2140,7 +2142,7 @@ static void parseGenericOverloadVet(FnDclNode *fnnode) {
         }
         if (!bound) {
             errorMsgNode((INode*)fnnode, ErrorGenericOverload,
-                "A generic function may join the overload set %s only when every type parameter is bound to a function signature, as in `[F fn(u f32) f32]`, and %s is not. An overload is chosen by what its arguments are, and a generic with another kind of parameter has no rule to rank it against the rest.",
+                "A generic function may join the overload set %s only when every type parameter is bound to a function signature, as in `[F: fn(u: f32) f32]`, and %s is not. An overload is chosen by what its arguments are, and a generic with another kind of parameter has no rule to rank it against the rest.",
                 &fnnode->overloadsym->namestr, &parm->namesym->namestr);
             fnnode->overloadsym = NULL;
             return;
@@ -2150,12 +2152,12 @@ static void parseGenericOverloadVet(FnDclNode *fnnode) {
 
 // Parse a list of generic variables and add to the genericnode.
 //
-// What follows a parameter's name, before its ',' or ']', is its annotation:
-// '[T Comparable]', '[T Comparable + Float]'. The slot is one, for whatever a
+// What follows a parameter's name and its ':', before its ',' or ']', is its annotation:
+// '[T: Comparable]', '[T: Comparable + Float]'. The slot is one, for whatever a
 // parameter will be annotated with, and it is read as '+'-joined types whose
 // meaning is what each resolves to (genericConstraintsNameRes): a trait
 // constrains a type parameter, which is built; a type would make a value
-// parameter, '[N usize]', and a kind another kind of parameter, '[e Expr]',
+// parameter, '[N: usize]', and a kind another kind of parameter, '[e: Expr]',
 // and neither is. 'annotate' is set for a generic function or type; a macro's
 // parameter and a generic module's take no annotation yet, and it is refused
 // here as it always was.
@@ -2164,7 +2166,7 @@ static void parseGenericOverloadVet(FnDclNode *fnnode) {
 // type parameters: they go to '*lifes' (lifetime.h), NULL for a declaration
 // that declares none, which refuses them.
 //
-// A type parameter's lifetime bounds, '[T + 'a]', '[T Trait + 'a]', go to
+// A type parameter's lifetime bounds, '[T + 'a]', '[T: Trait + 'a]', go to
 // '*bounds' as ''+T' >= ''a' (lifetime.h, "Lifetime bounds"), for a function
 // to add to its signature's order; NULL refuses them (a generic type's).
 Nodes *parseGenericParms(ParseState *parse, int annotate, LifeParms **lifes, LifeOrder **bounds) {
@@ -2192,10 +2194,15 @@ Nodes *parseGenericParms(ParseState *parse, int annotate, LifeParms **lifes, Lif
         lexNextToken();
         if (lexIsToken(CommaToken))
             lexNextToken();
-        // An annotation begins with a name: a trait's, a type's, a kind's;
-        // or, for a bound alone, '[T + 'a]', with the '+'
-        else if (annotate && (lexIsToken(IdentToken) || lexIsToken(FnToken) || (lexIsToken(PlusToken) && lexPeekIsLifetime()))) {
-            // A bound may be a function signature, written bare: 'F fn(a &T, b &T) i32'
+        // An annotation follows a ':' and begins with a name: a trait's, a type's, a kind's;
+        // or, for a bound alone, '[T + 'a]', with the '+' and no ':'
+        else if (annotate && (lexIsToken(ColonToken) || (lexIsToken(PlusToken) && lexPeekIsLifetime()))) {
+            if (lexIsToken(ColonToken)) {
+                lexNextToken();
+                if (!lexIsToken(IdentToken) && !lexIsToken(FnToken))
+                    errorMsgLexAfter(ErrorNoType, "Expected a trait or a function signature after ':'");
+            }
+            // A bound may be a function signature, written bare: 'F: fn(a: &T, b: &T) i32'
             if (lexIsToken(FnToken)) {
                 parm->annot = newNodes(2);
                 nodesAdd(&parm->annot, parseFnBound(parse));
@@ -2231,13 +2238,18 @@ Nodes *parseGenericParms(ParseState *parse, int annotate, LifeParms **lifes, Lif
                 break;
             lexNextToken();
         }
-        // A second name straight after the first is what a constraint or a
-        // parameter type is spelled as -- '[a i32]' on a macro. Neither is
-        // implemented there, and reading the two names as two parameters
+        // A constraint or a parameter type is spelled after a ':' -- '[a: i32]' on a macro. Neither
+        // is implemented there, and reading what follows as two parameters
         // instead turned that into an arity complaint about a declaration
         // written in that form. Refuse it here and resync to the next ',' or ']'.
-        else if (lexIsToken(IdentToken) || lexIsToken(FnToken)) {
-            errorMsgLex(ErrorGenParmConstr, "A macro's or a generic module's parameter may not carry a constraint or a type: neither is implemented. Separate two parameters with a comma.");
+        // A second name straight after the first is refused the same way
+        else if (lexIsToken(IdentToken) || lexIsToken(FnToken) || lexIsToken(ColonToken)) {
+            if (lexIsToken(ColonToken) && !annotate)
+                lexNextToken();     // the refusal points at what the colon introduces
+            if (annotate)
+                errorMsgLex(ErrorBadTok, "Expected ',' or ']' after a type parameter");
+            else
+                errorMsgLex(ErrorGenParmConstr, "A macro's or a generic module's parameter may not carry a constraint or a type: neither is implemented. Separate two parameters with a comma.");
             // (a signature's own commas are inside its parentheses)
             int depth = 0;
             while (depth > 0 || (!lexIsToken(CommaToken) && !lexIsToken(RBracketToken))) {

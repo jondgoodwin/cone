@@ -110,7 +110,7 @@ TypeCompare fnSigMatches(FnSigNode *to, FnSigNode *from);
 int fnSigCoerce(FnSigNode *totype, INode **fromexp);
 
 // The trait that stands for 'fn(sig)' behind a virtual reference or an owner:
-// one method '()' of that signature, 'self &mut' if 'mutself', else 'self &'.
+// one method '()' of that signature, 'self: &mut' if 'mutself', else 'self: &'.
 // One per signature and kind.
 StructNode *fnSigCallTrait(TypeCheckState *pstate, FnSigNode *sig, int mutself, INode *lexnode);
 

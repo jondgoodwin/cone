@@ -182,14 +182,14 @@ void flowLoadValue(FlowState *fstate, INode **nodep);
 // read when the reference's permission grants none
 void flowLoadThroughRef(FlowState *fstate, INode **refp);
 
-// An initializer's 'self &new' (doc/manual/rec-methods.html#initfinal). It is reached
+// An initializer's 'self: &new' (doc/manual/rec-methods.html#initfinal). It is reached
 // only through itself -- '*self', a field, a method called on it -- and only
 // once '*self = value' has filled it on every path; the init returns only once
 // it is filled. 'flowThroughSelf' is set while a use through it is walked, so
 // that nameuseFlow refuses every other use, which would let it escape.
 // The variable an expression names when it is an init's 'self', or NULL
 VarDclNode *flowNewSelf(INode *node);
-// Is a variable an init's 'self &new'?
+// Is a variable an init's 'self: &new'?
 int flowNewSelfVar(VarDclNode *var);
 extern int flowThroughSelf;
 // Walk a use through 'self' (its node at 'selfp'), refused before it is filled
