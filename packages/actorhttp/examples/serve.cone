@@ -46,8 +46,8 @@ actor Answerer {
         let ev = sse.Event.named("tick", text.view());
         let w = await ex.sendEvent(&ev);
         match w {
-          case let ok Ok {n = n + 1u64;}
-          case let gone Error {break;}        // the client left: stop
+          case Ok(ok) {n = n + 1u64;}
+          case Error(gone) {break;}        // the client left: stop
         }
         thread.sleep(Duration.fromSeconds(1i64));
       }
@@ -65,8 +65,8 @@ actor Front {
     let r = await actorhttp.listen(SocketAddr.localhost(port), ServerConfig.make());
     var res = r;
     match &mut res {
-      case var ok &mut Ok {server <=> *ok;}
-      case let e &mut Error {
+      case &mut Ok(var ok) {server <=> *ok;}
+      case &mut Error(e) {
         printStr(e.message().view());
         printStr("\n");
         return;
@@ -78,11 +78,11 @@ actor Front {
     while true {
       let n = await server.next();
       match n {
-        case var ok Ok {
+        case Ok(var ok) {
           let a = Answerer(ok);
           a.run();
         }
-        case let e Error {break;}
+        case Error(e) {break;}
       }
     }
   }
@@ -94,7 +94,7 @@ fn main() i32 {
   var port = 8080u16;
   if args.len() >= 2usize {
     match collections.parseUInt(args[1usize].view()) {
-      case let p Some {port = u16.from(p);}
+      case Some(p) {port = u16.from(p);}
       case is None[u64] {
         printStr("usage: serve [port]\n");
         return 2i32;

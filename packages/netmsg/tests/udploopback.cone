@@ -26,14 +26,14 @@ fn reasonText(r: CloseReason) &str {
 fn describe(e: &NetEvent) String {
   var s = String.empty();
   match e {
-    case let j &Joined { s.append("J"); s.appendUInt(u64.from(j.id)); }
-    case let l &Left { s.append("L"); s.appendUInt(u64.from(l.id)); s.append(":"); s.append(reasonText(l.reason)); }
-    case let r &Refused { s.append("R"); s.appendUInt(u64.from(r.id)); }
-    case let m &Message {
+    case &Joined(j) { s.append("J"); s.appendUInt(u64.from(j.id)); }
+    case &Left(l) { s.append("L"); s.appendUInt(u64.from(l.id)); s.append(":"); s.append(reasonText(l.reason)); }
+    case &Refused(r) { s.append("R"); s.appendUInt(u64.from(r.id)); }
+    case &Message(m) {
       s.append("M"); s.appendUInt(u64.from(m.id)); s.append(":");
       s.append(String.fromBytes(m.data.view()).view());
     }
-    case let u &Update {
+    case &Update(u) {
       s.append("U"); s.appendUInt(u64.from(u.id)); s.append(":"); s.appendUInt(u64.from(u.stream));
       s.append(":"); s.append(String.fromBytes(u.data.view()).view());
     }
@@ -76,10 +76,10 @@ fn take(rx: &mut Receiver[NetEvent], n: usize, texts: &mut List[String], conn: &
   let until = Instant.now() + Duration.fromSeconds(5i64);
   while texts.len() < n && Instant.now() < until {
     match rx.recvTimeout(Duration.fromMillis(200i64)) {
-      case let e Some {
+      case Some(e) {
         texts.push(describe(&e));
         match e {
-          case let j Joined { conn.push(j.conn); }
+          case Joined(j) { conn.push(j.conn); }
           else {}
         }
       }
@@ -149,7 +149,7 @@ fn main() i32 {
     let prober = Prober();
     prober.ask(*cc[0usize], txP);
     match rxP.recvTimeout(Duration.fromSeconds(5i64)) {
-      case let st Some {
+      case Some(st) {
         expect(st.packetsReceived > 0u64, "the stats say packets arrived");
         expect(st.packetsSent > 0u64, "and were sent");
         expect(st.rttMs >= 0i64 && st.rttMs < 500i64, "the round trip is measured, and short on loopback");

@@ -283,14 +283,14 @@ normalized they meet
 fn textOf(p: &amp;Path) String {
   var text = String.empty();
   match fs.readFile(p) {
-    case var got Ok { text &lt;=&gt; got; }
+    case Ok(var got) { text &lt;=&gt; got; }
     case is Error { text.append("&lt;unreadable&gt;"); }
   }
   text
 }
 
 match fs.readFile(&amp;dir.join("missing.txt")) {
-  case let e Error {
+  case Error(e) {
     printStr("op: ");
     printStr(e.op.view());
     printStr("\npath: ");
@@ -358,7 +358,7 @@ let file: Path = "scratch-mapped.bin";
 fs.writeFile(&amp;file, "alpha\nbeta\ngamma\nend\n");
 
 match fs.mapFile(&amp;file) {
-  case let m Ok {
+  case Ok(m) {
     printStr("size ");
     printInt(i64.from(m.size()));
     printStr("\n");
@@ -374,7 +374,7 @@ match fs.mapFile(&amp;file) {
     printInt(lines);
     printStr("\n");
   }
-  case let e Error {
+  case Error(e) {
     let msg = e.message();
     printStr(msg.view());
     printStr("\n");
@@ -385,7 +385,7 @@ match fs.mapFile(&amp;file) {
 fs.removeFile(&amp;file);
 
 match fs.mapFile("scratch-missing.bin") {
-  case let e Error {
+  case Error(e) {
     let msg = e.message();
     printStr(msg.view());
     printStr("\n");
@@ -423,7 +423,7 @@ mapFile scratch-missing.bin: No such file or directory
 let name = Path.from("scratch-modtime.txt");
 fs.writeFile(&amp;name, "x");
 match fs.stat(&amp;name) {
-  case let info Ok {
+  case Ok(info) {
     // modified is a Timestamp, whole seconds
     let age = Timestamp.now() - info.modified;
     printStr("written less than 10 s ago: ");
@@ -461,7 +461,7 @@ report("writeFile", fs.writeFile(&amp;file, "first line\n"));
 report("appendFile", fs.appendFile(&amp;file, "second line\n"));
 
 match fs.readFile(&amp;file) {
-  case let ok Ok {
+  case Ok(ok) {
     printStr("read back:\n");
     printStr(ok.view());
   }
@@ -469,7 +469,7 @@ match fs.readFile(&amp;file) {
 }
 
 match fs.stat(&amp;file) {
-  case let ok Ok {
+  case Ok(ok) {
     printStr("size ");
     printInt(ok.size);
     printStr(", file ");
@@ -564,13 +564,13 @@ fs.writeFile(&amp;root.join("src/util/arrays.cone"), "mod arrays;");
 
 printStr("readDir of the root:\n");
 match fs.readDir(&amp;root) {
-  case let listed Ok { list(&amp;listed); }
+  case Ok(listed) { list(&amp;listed); }
   case is Error { return 1i32; }
 }
 
 printStr("walk of the root:\n");
 match fs.walk(&amp;root) {
-  case let all Ok { list(&amp;all); }
+  case Ok(all) { list(&amp;all); }
   case is Error { return 1i32; }
 }
 </pre>
@@ -627,14 +627,14 @@ removed again, nothing there
 // The last name of the current folder
 fn here() String {
   match fs.currentDir() {
-    case let p Ok { String.from(p.name()) }
+    case Ok(p) { String.from(p.name()) }
     case is Error { String.from("&lt;error&gt;") }
   }
 }
 
 // absolute reads only the text: nothing need be there, '..' drops a name
 match fs.absolute("scratch-cwd/sub/../y.txt") {
-  case let p Ok {
+  case Ok(p) {
     printStr("absolute is absolute: ");
     printStr(if p.isAbsolute() {"yes";} else {"no";});
     printStr(", ends in ");
@@ -671,7 +671,7 @@ printStr(if fs.exists("scratch-cwd/inner.txt") {"yes";} else {"no";});
 printStr("\n");
 
 match fs.setCurrentDir("no such folder") {
-  case let e Error {
+  case Error(e) {
     let m = e.message();
     printStr(m.view());
     printStr("\n");
@@ -831,13 +831,13 @@ fn main() i32 {
   // The program to run is this one: its own path, from currentExe
   var args = List[String].empty();
   match process.currentExe() {
-    case let exe Ok { args.push(String.from(exe.view())); }
+    case Ok(exe) { args.push(String.from(exe.view())); }
     case is Error { return 1i32; }
   }
   args.push(String.from("child"));
 
   match process.run(args.view()) {
-    case let o Ok {
+    case Ok(o) {
       printStr("exit code ");
       printUInt(u64.from(o.exitCode));
       printStr(", success ");
@@ -852,7 +852,7 @@ fn main() i32 {
       printStr(err.view());
       printStr("\n");
     }
-    case let e Error {
+    case Error(e) {
       let m = e.message();
       printStr(m.view());
       printStr("\n");
@@ -864,7 +864,7 @@ fn main() i32 {
   var missing = List[String].empty();
   missing.push(String.from("no-such-program-anywhere"));
   match process.run(missing.view()) {
-    case let e Error {
+    case Error(e) {
       let m = e.message();
       printStr(m.view());
       printStr("\nnotFound: ");
@@ -939,12 +939,12 @@ notFound: yes, code 2
 fn child(mode: &amp;String) i32 {
   if mode.equals("where") {
     match fs.currentDir() {
-      case let d Ok { printStr(d.name()); }
+      case Ok(d) { printStr(d.name()); }
       case is Error { printStr("&lt;error&gt;"); }
     }
     printStr(" ");
     match env.get("GREETING") {
-      case let g Some { printStr(g.view()); }
+      case Some(g) { printStr(g.view()); }
       case is None { printStr("&lt;none&gt;"); }
     }
     printStr("\n");
@@ -970,7 +970,7 @@ fs.makeDir("scratch-options");
 env.set("GREETING", "hello from the parent");
 let inFolder = command("where");
 match process.run(inFolder.view(), process.Options(), "scratch-options") {
-  case let o Ok {
+  case Ok(o) {
     let text = o.stdout.trim();
     printStr("child says: ");
     printStr(text.view());
@@ -985,7 +985,7 @@ match process.run(inFolder.view()) { ... prints the same way ... }
 
 // A folder that is not there is a failure to start
 match process.run(inFolder.view(), process.Options(), "scratch-options/missing") {
-  case let e Error {
+  case Error(e) {
     let m = e.message();
     printStr(m.view());
     printStr("\n");
@@ -996,7 +996,7 @@ match process.run(inFolder.view(), process.Options(), "scratch-options/missing")
 // A time limit: stopped after a third of a second, not ten seconds
 let sleeper = command("sleep");
 match process.run(sleeper.view(), process.Options(timeout: Duration.fromMillis(300))) {
-  case let o Ok {
+  case Ok(o) {
     printStr("timed out ");
     printStr(if o.timedOut {"yes";} else {"no";});
     printStr(", exit code ");
@@ -1016,7 +1016,7 @@ printStr("child, sharing this output:\n");
 printFlush();
 let shared = command("where");
 match process.run(shared.view(), process.Options(inherit: true)) {
-  case let o Ok {
+  case Ok(o) {
     printStr("captured nothing: ");
     printStr(if o.stdout.len() == 0usize {"yes";} else {"no";});
     printStr("\n");
@@ -1095,7 +1095,7 @@ printStr("\n");
 
 // A line written by hand, for a program with rules of its own
 match process.runLine("cmd /c echo hello from cmd") {
-  case let o Ok {
+  case Ok(o) {
     printStr("runLine: ");
     let text = o.stdout.trim();
     printStr(text.view());
@@ -1164,14 +1164,14 @@ while i &lt; all.len() {
 }
 
 match process.currentExe() {
-  case let exe Ok {
+  case Ok(exe) {
     printStr("running ");
     printStr(exe.name());
     printStr(" (absolute: ");
     printStr(if exe.isAbsolute() {"yes";} else {"no";});
     printStr(")\n");
   }
-  case let e Error {
+  case Error(e) {
     let m = e.message();
     printStr(m.view());
     printStr("\n");

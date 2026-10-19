@@ -47,19 +47,19 @@ fn numberBytes(n: u64) List[u8] {
 // Count one event into a tally; a Joined's connection is handed back
 fn note(e: &NetEvent, t: &mut Tally, joined: &mut List[Connection]) {
   match e {
-    case let j &Joined { joined.push(j.conn); }
-    case let m &Message {
+    case &Joined(j) { joined.push(j.conn); }
+    case &Message(m) {
       if numberOf(m.data.view()) != t.next {t.wrong = t.wrong + 1u64;}
       t.next = t.next + 1u64;
     }
-    case let u &Update {
+    case &Update(u) {
       let v = numberOf(u.data.view());
       if t.values > 0u64 && v <= t.lastValue {t.backwards = t.backwards + 1u64;}
       t.lastValue = v;
       t.values = t.values + 1u64;
     }
-    case let l &Left { t.left = t.left + 1u64; }
-    case let r &Refused { if r.size > r.limit {t.refused = t.refused + 1u64;} }
+    case &Left(l) { t.left = t.left + 1u64; }
+    case &Refused(r) { if r.size > r.limit {t.refused = t.refused + 1u64;} }
   }
 }
 
@@ -113,12 +113,12 @@ fn main() i32 {
     while Instant.now() < settle {
       // Everyone listens a little
       match rxS.recvTimeout(Duration.fromMillis(3i64)) {
-        case let e Some {
+        case Some(e) {
           match &e {
-            case let m &Message {
+            case &Message(m) {
               if m.id == 1u32 {note(&e, &mut tS1, &mut connsS);} else {note(&e, &mut tS2, &mut connsS);}
             }
-            case let u &Update {
+            case &Update(u) {
               if u.id == 1u32 {note(&e, &mut tS1, &mut connsS);} else {note(&e, &mut tS2, &mut connsS);}
             }
             else { note(&e, &mut tS1, &mut connsS); }
@@ -127,11 +127,11 @@ fn main() i32 {
         case is None[NetEvent] {}
       }
       match rxA.tryRecv() {
-        case let e Some { note(&e, &mut tA, &mut connA); }
+        case Some(e) { note(&e, &mut tA, &mut connA); }
         case is None[NetEvent] {}
       }
       match rxB.tryRecv() {
-        case let e Some { note(&e, &mut tB, &mut connB); }
+        case Some(e) { note(&e, &mut tB, &mut connB); }
         case is None[NetEvent] {}
       }
       // Once they are all joined, everyone sends everything, and values as time goes

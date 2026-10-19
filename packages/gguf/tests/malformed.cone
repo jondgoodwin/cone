@@ -82,7 +82,7 @@ fn kindName(k: &ErrorKind) &str {
 fn refused(bytes: &List[u8], kind: &str, offset: u64, label: &str) {
   match parse(bytes.view()) {
     case is Ok { expectStr("<parsed>", kind, label); }
-    case let e Error {
+    case Error(e) {
       expectStr(kindName(&e.kind), kind, label);
       if offset != any() { expectUInt(e.offset, offset, label); }
       let m = e.message();
@@ -95,7 +95,7 @@ fn refused(bytes: &List[u8], kind: &str, offset: u64, label: &str) {
 fn accepted(bytes: &List[u8], label: &str) {
   match parse(bytes.view()) {
     case is Ok {}
-    case let e Error {
+    case Error(e) {
       let m = e.message();
       expectStr(m.view(), "<parsed>", label);
     }
@@ -352,7 +352,7 @@ fn main() i32 {
     cuts = cuts + 1u32;
     match parse(p.view()) {
       case is Ok {}
-      case let er Error {
+      case Error(er) {
         if er.kind == ErrorKind.Truncated || er.kind == ErrorKind.BadOffset || er.kind == ErrorKind.BadMagic { cutsRefused = cutsRefused + 1u32; }
       }
     }
@@ -387,15 +387,15 @@ fn main() i32 {
   var w = Writer.make();
   match w.addTensor("a", TensorType.F32, &[4u64], List[u8].empty()) {
     case is Ok { expect(false, "no bytes for 4 floats"); }
-    case let er Error { expectStr(kindName(&er.kind), "BadInput", "wrong byte count"); }
+    case Error(er) { expectStr(kindName(&er.kind), "BadInput", "wrong byte count"); }
   }
   match w.addValues("a", TensorType.Q8_0, &[33u64], &[1.0f, 2.0]) {
     case is Ok { expect(false, "33 elements of Q8_0"); }
-    case let er Error { expectStr(kindName(&er.kind), "BadDimensions", "first dimension not whole blocks"); }
+    case Error(er) { expectStr(kindName(&er.kind), "BadDimensions", "first dimension not whole blocks"); }
   }
   match w.addValues("a", TensorType.F32, &[2u64, 0u64], &[1.0f, 2.0]) {
     case is Ok { expect(false, "a dimension of zero"); }
-    case let er Error { expectStr(kindName(&er.kind), "BadDimensions", "zero dimension"); }
+    case Error(er) { expectStr(kindName(&er.kind), "BadDimensions", "zero dimension"); }
   }
   match w.addValues("a", TensorType.F32, &[2u64], &[1.0f, 2.0]) {
     case is Ok {}
@@ -403,21 +403,21 @@ fn main() i32 {
   }
   match w.addValues("a", TensorType.F32, &[2u64], &[1.0f, 2.0]) {
     case is Ok { expect(false, "a tensor name twice"); }
-    case let er Error { expectStr(kindName(&er.kind), "DuplicateTensor", "name twice"); }
+    case Error(er) { expectStr(kindName(&er.kind), "DuplicateTensor", "name twice"); }
   }
   match w.addValues("b", TensorType.Q8_0, &[32u64], &[1.0f, 2.0]) {
     case is Ok { expect(false, "2 values for 32"); }
-    case let er Error { expectStr(kindName(&er.kind), "BadInput", "a value count that is not whole blocks"); }
+    case Error(er) { expectStr(kindName(&er.kind), "BadInput", "a value count that is not whole blocks"); }
   }
   w.setAlignment(3u32);
   match w.finish() {
     case is Ok { expect(false, "alignment 3"); }
-    case let er Error { expectStr(kindName(&er.kind), "BadAlignment", "alignment 3"); }
+    case Error(er) { expectStr(kindName(&er.kind), "BadAlignment", "alignment 3"); }
   }
   w.put("general.alignment", Value.Str(String.from("32")));
   match w.finish() {
     case is Ok { expect(false, "alignment as a string"); }
-    case let er Error { expectStr(kindName(&er.kind), "BadAlignment", "alignment as a string"); }
+    case Error(er) { expectStr(kindName(&er.kind), "BadAlignment", "alignment as a string"); }
   }
   var w2 = Writer.make();
   var wrong = List[Value].empty();
@@ -426,7 +426,7 @@ fn main() i32 {
   w2.put("mixed", Value.Items(ValueType.U8, wrong));
   match w2.finish() {
     case is Ok { expect(false, "an array of mixed types"); }
-    case let er Error { expectStr(kindName(&er.kind), "BadInput", "an array of mixed types"); }
+    case Error(er) { expectStr(kindName(&er.kind), "BadInput", "an array of mixed types"); }
   }
   var w3 = Writer.make();
   var inner = Value.Items(ValueType.U8, List[Value].empty());
@@ -440,20 +440,20 @@ fn main() i32 {
   w3.put("deep", inner);
   match w3.finish() {
     case is Ok { expect(false, "arrays nested 10 deep"); }
-    case let er Error { expectStr(kindName(&er.kind), "TooDeep", "arrays nested too deep"); }
+    case Error(er) { expectStr(kindName(&er.kind), "TooDeep", "arrays nested too deep"); }
   }
 
   // -------- the message --------
   match parse(badMagic.view()) {
     case is Ok { expect(false, "bad magic"); }
-    case let er Error {
+    case Error(er) {
       let msg = er.message();
       expectStr(msg.view(), "gguf: the file does not start with GGUF", "a fault at offset 0 names no offset");
     }
   }
   match parse(be3.view()) {
     case is Ok { expect(false, "big-endian"); }
-    case let er Error {
+    case Error(er) {
       let msg = er.message();
       expectStr(msg.view(), "gguf: at offset 4: this is a big-endian GGUF file, which is not read", "a fault with an offset");
     }

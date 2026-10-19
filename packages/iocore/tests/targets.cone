@@ -48,7 +48,7 @@ fn consume(rx: Receiver[Completion]) Got {
   var more = true;
   while more {
     match r.recv() {
-      case let s Some {
+      case Some(s) {
         g.n = g.n + 1u64;
         if s.buf.capacity() == 4096usize {g.withBuf = g.withBuf + 1u64;}
         g.tokens = g.tokens + s.token;
@@ -79,7 +79,7 @@ fn caller(c: Caller) String {
   c.wake.wake();
   var text = String.empty();
   match orx.recv() {
-    case let s Some {
+    case Some(s) {
       if s.isDone() {text.appendBytes(s.buf.view());}
     }
     case is None[Completion] {}
@@ -98,8 +98,8 @@ fn reader(r: Reader) u64 {
   var out = List[Completion].empty();
   var fh = Handle.none();
   match lp.openFile("targets.tmp", Access.Read) {
-    case let o Ok {fh = o;}
-    case let e Error {return 0u64;}
+    case Ok(o) {fh = o;}
+    case Error(e) {return 0u64;}
   }
   var i = 0u32;
   while i < 8u32 {
@@ -119,7 +119,7 @@ fn main() i32 {
     var out = List[Completion].empty();
     // The file the reads read
     match lp.openFile("targets.tmp", Access.Create) {
-      case let r Ok {
+      case Ok(r) {
         var b = pool.mustTake(64usize);
         b.append("abcdefghij");
         lp.submit(Op.WriteAt(r, 0u64, b), Target.Here(0u64));
@@ -127,7 +127,7 @@ fn main() i32 {
         out.clear();
         lp.close(r);
       }
-      case let e Error {}
+      case Error(e) {}
     }
 
     // 1. A channel to a consumer thread
@@ -173,7 +173,7 @@ fn main() i32 {
       let limit = Instant.now() + Duration.fromSeconds(5i64);
       while n < 3u64 && Instant.now() < limit {
         match rx.tryRecv() {
-          case let s Some {
+          case Some(s) {
             n = n + 1u64;
             sum = sum + s.token;
           }
@@ -211,7 +211,7 @@ fn main() i32 {
       while !served && Instant.now() < limit {
         lp.poll(limit, &mut out);
         match crx.tryRecv() {
-          case var s Some {
+          case Some(var s) {
             var reply: OneshotSender[Completion];
             var orx: OneshotReceiver[Completion];
             reply, orx = Oneshot[Completion].make();

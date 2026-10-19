@@ -81,7 +81,7 @@ fn reply(sv: &mut Srv, req: httpconn.ReqId, head: bool, status: u16, body: &Arra
 
 fn number(s: &str) u64 {
   match collections.parseUInt(s) {
-    case let v Some {v}
+    case Some(v) {v}
     case is None[u64] {0u64}
   }
 }
@@ -234,13 +234,13 @@ fn serve(portTx: Sender[u16]) Report {
     sent: List[u64].empty(), totals: List[u64].empty());
   var port = 0u16;
   match sv.drv.listen(&mut lp, SocketAddr.localhost(0u16), httpconn.Sink.Here(1u64)) {
-    case let r Ok {
+    case Ok(r) {
       match sv.drv.localAddr(&lp, r) {
-        case let a Ok {port = a.port();}
-        case let e Error {}
+        case Ok(a) {port = a.port();}
+        case Error(e) {}
       }
     }
-    case let e Error {}
+    case Error(e) {}
   }
   portTx.send(port);
   var events = List[httpconn.Event].empty();
@@ -279,7 +279,7 @@ fn say(what: &str, r: Result[Response, FetchError]) Result[Response, FetchError]
   printStr(what);
   printStr(": ");
   match &r {
-    case let ok &Ok {
+    case &Ok(ok) {
       printUInt(u64.from(ok.status));
       if ok.body.len() > 40usize {
         printStr(" ");
@@ -291,7 +291,7 @@ fn say(what: &str, r: Result[Response, FetchError]) Result[Response, FetchError]
       }
       printStr("\n");
     }
-    case let e &Error {
+    case &Error(e) {
       printStr(kindWord(e));
       if !e.isCancelled() && !e.isTimedOut() {
         printStr(" at ");
@@ -315,7 +315,7 @@ fn waitedAtLeast(t0: Instant, ms: i64) bool {
 // Whether a body of 300,000 bytes is right: byte i is i % 251
 fn bigRight(r: Result[Response, FetchError]) bool {
   match r {
-    case let ok Ok {
+    case Ok(ok) {
       let v = ok.body.view();
       if v.len != 300000usize {return false;}
       var i = 0usize;
@@ -332,7 +332,7 @@ fn bigRight(r: Result[Response, FetchError]) bool {
 // Whether a response answered from /redirect/0
 fn landedAt(r: Result[Response, FetchError], expected: &str) bool {
   match r {
-    case let ok Ok {ok.url.view() == expected}
+    case Ok(ok) {ok.url.view() == expected}
     else {false}
   }
 }
@@ -470,7 +470,7 @@ actor Worker {
       req.body = body;
       let r = await client.send(req);
       match &r {
-        case let ok &Ok {if ok.body.view() != want.view() {wrong = wrong + 1u64;}}
+        case &Ok(ok) {if ok.body.view() != want.view() {wrong = wrong + 1u64;}}
         else {wrong = wrong + 1u64;}
       }
       k = k + 1u64;
@@ -502,7 +502,7 @@ fn main() i32 {
   let server = thread.start(portTx, &serve);
   var port = 0u16;
   match portRx.recv() {
-    case let p Some {port = p;}
+    case Some(p) {port = p;}
     case is None[u16] {}
   }
   var tx: OneshotSender[u64];
@@ -531,7 +531,7 @@ fn main() i32 {
   var heard = 0u64;
   while heard < 8u64 {
     match tallyRx.recv() {
-      case let n Some {wrong = wrong + n;}
+      case Some(n) {wrong = wrong + n;}
       case is None[u64] {}
     }
     heard = heard + 1u64;

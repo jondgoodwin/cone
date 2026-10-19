@@ -88,7 +88,7 @@ fn finished(s: &Side) bool {s.sockClosed && !s.recvOut && s.sendsOut == 0u32}
 fn settle(lp: &mut Loop, s: &mut Side, out: &mut List[Completion]) {
   var until = forever();
   match s.conn.pollTimeout() {
-    case let d Some {until = d;}
+    case Some(d) {until = d;}
     case is None[Instant] {}
   }
   lp.poll(until, out);
@@ -145,8 +145,8 @@ fn serve(a: ServerArgs) ServerReport {
   let listener = lp.mustListen(SocketAddr.localhost(0u16));
   var port = 0u16;
   match lp.localAddr(listener) {
-    case let r Ok {port = r.port();}
-    case let e Error {}
+    case Ok(r) {port = r.port();}
+    case Error(e) {}
   }
   a.portTx.send(port);
   lp.submit(Op.Accept(listener), Target.Here(tokConnect));
@@ -191,7 +191,7 @@ fn respond(c: &mut Connection, pool: &Pool, ans: &mut Answer, rep: &mut ServerRe
     b <=> ans.held;
     let n = b.len();
     match c.sendData(b) {
-      case var back Some {
+      case Some(var back) {
         ans.held <=> back;
         return;
       }
@@ -200,7 +200,7 @@ fn respond(c: &mut Connection, pool: &Pool, ans: &mut Answer, rep: &mut ServerRe
   }
   while true {
     match c.pollEvent() {
-      case var e Request {
+      case Request(var e) {
         rep.requests = rep.requests + 1u64;
         let t = e.head.target.view();
         var h = ResponseHead.make(200u16);
@@ -226,13 +226,13 @@ fn respond(c: &mut Connection, pool: &Pool, ans: &mut Answer, rep: &mut ServerRe
           ans.index = i;
         }
       }
-      case var d Data {
+      case Data(var d) {
         // An echo: the buffer that came is the one sent back
         let n = d.buf.len();
         var b = IoBuf.empty();
         b <=> d.buf;
         match c.sendData(b) {
-          case var back Some {
+          case Some(var back) {
             ans.held <=> back;
             return;
           }
@@ -314,22 +314,22 @@ fn client(a: ClientArgs) ClientReport {
     // The events: check every byte, release it, time each exchange
     while inFlight {
       match s.conn.pollEvent() {
-        case var e Response {
+        case Response(var e) {
           status = e.head.status;
           offset = 0u64;
           if phase == 0u32 {
             match e.head.headers.get("Date") {
-              case let d Some {
+              case Some(d) {
                 match calendar.parseHttpDate(d as &str) {
-                  case let ok Ok {}
-                  case let bad Error {rep.badDates = rep.badDates + 1u64;}
+                  case Ok(ok) {}
+                  case Error(bad) {rep.badDates = rep.badDates + 1u64;}
                 }
               }
               case is None[&Array[u8]] {rep.badDates = rep.badDates + 1u64;}
             }
           }
         }
-        case var d Data {
+        case Data(var d) {
           let v = d.buf.view();
           let checkAt = Instant.now();
           var k = 0usize;
@@ -382,7 +382,7 @@ fn client(a: ClientArgs) ClientReport {
             phase = 3u32;
           }
         }
-        case var f Failed {
+        case Failed(var f) {
           rep.failures = rep.failures + 1u64;
           printStr("client: ");
           printStr(f.error.message().view());
@@ -447,7 +447,7 @@ fn main() i32 {
   let server = thread.start(ServerArgs(portTx), &serve);
   var port = 0u16;
   match portRx.recv() {
-    case let p Some {port = p;}
+    case Some(p) {port = p;}
     case is None[u16] {}
   }
   require(port != 0u16, "the server is listening");

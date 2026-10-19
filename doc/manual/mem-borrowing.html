@@ -297,7 +297,7 @@ let y = Node(10).viaUni();     // Error 1056: No method declared by `viaUni` acc
 		can only be reached by first binding the reference it holds, which a missing one never gives:</p>
 <pre>
 let maybePoint: ?&amp;imm i32 = Some(&amp;imm x);
-if let point Some = maybePoint {   // bound only if maybePoint holds a reference
+if let Some(point) = maybePoint {   // bound only if maybePoint holds a reference
   let p = *point;
 }
 let point2 = *maybePoint;          // Error 1031: May only de-reference a simple reference or pointer.
@@ -638,7 +638,7 @@ fn byField(p: &amp;uni Pair) {
 
 	<h3 id="form">What a match takes</h3>
 	<p>The form of the expression after <span class="pre">match</span> decides what the match does with it, and a bound
-		<span class="pre">if</span>, <span class="pre">if let c Circle = s</span>, reads its value the same way:</p>
+		<span class="pre">if</span>, <span class="pre">if let Circle(c) = s</span>, reads its value the same way:</p>
 	<ul>
 	<li><b>A place</b>, a variable, a field of one, a dereference, an element at a name or a literal
 		(<span class="pre">match r</span>), is matched as the value it holds. Every test reads it where it stands and
@@ -657,24 +657,24 @@ fn byField(p: &amp;uni Pair) {
 	</ul>
 	<p>A binding takes only what it binds. Where the payload is plain data (a number, a borrowed reference, a struct of
 		them), the arm copies it, and the place is whole after the arm, even where the enum holds an owner in another
-		variant. A guard (<span class="pre">case let x Some if x &gt; 0</span>) reads its binding before the arm is
+		variant. A guard (<span class="pre">case Some(x) if x &gt; 0</span>) reads its binding before the arm is
 		chosen, so it takes nothing from the matched value at all, a place or a call's temporary alike: it sees a copy of
 		plain data, and a payload that owns something through a read-only borrow of it. A guard that fails leaves the
 		value whole for the cases after it, and the arm that runs is the one that takes.</p>
 	<p>An Option shows the difference plainly. Bound from a variable, an <span class="pre">Option[String]</span> is
 		moved from on the path that binds, while an <span class="pre">else</span> block still has it; bound from a borrow,
-		<span class="pre">if let text Some = &amp;maybe</span>, it gives an <span class="pre">&amp;String</span> into the
+		<span class="pre">if let Some(text) = &amp;maybe</span>, it gives an <span class="pre">&amp;String</span> into the
 		Option and takes nothing:</p>
 <pre>
 let maybe: Option[String] = Some(String.from("kept"));
-if let text Some = &amp;maybe {      // a borrow: binds a &amp;String, takes nothing
+if let Some(text) = &amp;maybe {      // a borrow: binds a &amp;String, takes nothing
   print &lt;- text.view(), "\n";
 }
-if let text Some = maybe {       // a place: the binding moves the String out
+if let Some(text) = maybe {       // a place: the binding moves the String out
   print &lt;- text.view(), "\n";
 }
 </pre>
-	<p>A let-else binding binds the same way, <span class="pre">let n Ok = &amp;mut r else { return 0; };</span> giving
+	<p>A let-else binding binds the same way, <span class="pre">let Ok(n) = &amp;mut r else { return 0; };</span> giving
 		an <span class="pre">&amp;mut i32</span> into <span class="pre">r</span>; it may be <span class="pre">var</span>, and
 		its <span class="pre">else</span> must leave (<i>Error 1462: The 'else' of a binding like this must leave</i>), so
 		<span class="pre">r</span> is known to be the variant after the declaration, as after any branch that leaves
@@ -686,22 +686,22 @@ if let text Some = maybe {       // a place: the binding moves the String out
 		<span class="pre">Some</span>, <span class="pre">Ok</span> and <span class="pre">Error</span> are declared this
 		way. Bound by value, the binding is a copy of the <span class="pre">i32</span>, or, when what it holds moves, a move
 		of it out of the matched value, which is then finalized without it; a <span class="pre">var</span> binding changes
-		the copy, not the matched value. Bound through a reference (<span class="pre">case let n SomeInt</span> on a
+		the copy, not the matched value. Bound through a reference (<span class="pre">case SomeInt(n)</span> on a
 		reference to the enum), it is a reference of the same permission to what the variant holds, an
 		<span class="pre">&amp;i32</span> here. A variant declared as a struct binds the struct, whose tag is never a
 		visible field.</p>
 	<p><b>A pattern names only the variant</b>, bare, with no <span class="pre">use</span>: the match already knows which
 		enum the value belongs to. That holds for every pattern on a value, a <span class="pre">case</span>, a bound
 		<span class="pre">if</span> or <span class="pre">elif</span>, and an <span class="pre">is</span> test, and it looks
-		through a reference, so <span class="pre">case let c Circle</span> on a <span class="pre">&amp;Shape</span> names
+		through a reference, so <span class="pre">case Circle(c)</span> on a <span class="pre">&amp;Shape</span> names
 		<span class="pre">Shape.Circle</span>. The matched value supplies the rest: the type arguments, and, where it is a
 		reference, the kind of reference, its region and its permission. On a <span class="pre">&amp;imm Shape</span>,
-		<span class="pre">case let c Circle</span> binds an <span class="pre">&amp;imm Circle</span>; on a
+		<span class="pre">case Circle(c)</span> binds an <span class="pre">&amp;imm Circle</span>; on a
 		<span class="pre">&amp;mut Shape</span> (a borrow made at the match), an <span class="pre">&amp;mut Circle</span>; on an
 		<span class="pre">Rc[imm, Shape]</span>, an <span class="pre">Rc[imm, Circle]</span>; on a
 		<span class="pre">Shape</span>, a <span class="pre">Circle</span>. A test with no binding,
 		<span class="pre">case Circle</span> or <span class="pre">s is Circle</span>, asks only whether the value is that
-		variant. A pattern may still be written as the reference, <span class="pre">case let c &amp;Circle</span>, which then
+		variant. A pattern may still be written as the reference, <span class="pre">case &amp;Circle(c)</span>, which then
 		checks that the matched value is one: it is an error where the value is no reference, or is in another region, or
 		has a weaker permission than the pattern asks for. A managed reference is never spelled in a pattern, and the older
 		<span class="pre">+Rc-mut Circle</span> is refused.</p>
@@ -726,7 +726,7 @@ struct Machine { pub state: Shape; }
 
 fn step(m: &amp;mut Machine) {
   match &amp;mut m.state {
-    case var c Circle {
+    case Circle(var c) {
       c.radius = c.radius + 1;
       m.state = Shape.Rect(1, 1, 2, 3);   // Ok: c is not used again
     }

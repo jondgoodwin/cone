@@ -116,18 +116,18 @@ fn addKey(out: &mut List[u64], k: u64) {
 // Every field a tree can write
 pub fn gatherKeys(a: &Anim, out: &mut List[u64]) {
   match a {
-    case let g Group {
+    case Group(g) {
       var i = 0usize;
       while i < g.kids.len() { gatherKeys(g.kids[i], out); i = i + 1usize; }
     }
-    case let k Keys {
+    case Keys(k) {
       var i = 0usize;
       while i < k.clip.bindings.len() {
         addKey(out, keyOf((*k.clip.bindings[i]).target, (*k.clip.bindings[i]).prop));
         i = i + 1usize;
       }
     }
-    case let al Along {
+    case Along(al) {
       addKey(out, keyOf(al.target, al.prop));
       if al.faceProp != 0u32 { addKey(out, keyOf(al.target, al.faceProp)); }
     }
@@ -138,8 +138,8 @@ pub fn gatherKeys(a: &Anim, out: &mut List[u64]) {
 // The goal slot of a stepped kind
 fn slotOf(a: &Anim) u32 {
   match a {
-    case let c Chase { c.slot }
-    case let s Spring { s.slot }
+    case Chase(c) { c.slot }
+    case Spring(s) { s.slot }
     else { 0u32 }
   }
 }
@@ -147,9 +147,9 @@ fn slotOf(a: &Anim) u32 {
 // The value a transition, chase or spring goes to
 fn toOf(a: &Anim) Value {
   match a {
-    case let t Transition { t.to }
-    case let c Chase { c.to }
-    case let s Spring { s.to }
+    case Transition(t) { t.to }
+    case Chase(c) { c.to }
+    case Spring(s) { s.to }
     else { Value.rest(TK_F32) }
   }
 }
@@ -230,7 +230,7 @@ pub fn phaseOf(a: &Anim, t: f64) Phase {
 fn kidIndex(a: &Anim, ix: usize, i: usize) usize {
   var k = ix + 1usize;
   match a {
-    case let g Group {
+    case Group(g) {
       var j = 0usize;
       while j < i { k = k + g.kids[j].size; j = j + 1usize; }
     }
@@ -255,7 +255,7 @@ pub fn nodeFinished(r: &Running, a: &Anim, ix: usize, t: f64) bool {
   if !isForever(f64.from(a.life)) { return ph.state == PH_AFTER; }
   // a group with an endless member: finished when every member is
   match a {
-    case let g Group {
+    case Group(g) {
       var i = 0usize;
       while i < g.kids.len() {
         if !nodeFinished(r, g.kids[i], kidIndex(a, ix, i), ph.loc - f64.from(*g.offs[i])) { return false; }
@@ -321,14 +321,14 @@ pub fn collectNode(r: &Running, a: &Anim, ix: usize, t: f64, force: bool, filt: 
   let loc = ph.loc;
   let o = ix * SLOT;
   match a {
-    case let g Group {
+    case Group(g) {
       var i = 0usize;
       while i < g.kids.len() {
         collectNode(r, g.kids[i], kidIndex(a, ix, i), ph.loc - f64.from(*g.offs[i]), false, filt, out);
         i = i + 1usize;
       }
     }
-    case let tr Transition {
+    case Transition(tr) {
       var from = tr.from;
       var ready = true;
       if !tr.hasFrom {
@@ -339,7 +339,7 @@ pub fn collectNode(r: &Running, a: &Anim, ix: usize, t: f64, force: bool, filt: 
         emit(filt, tr.target, tr.prop, mixValue(from, tr.to, tr.easing.applyOver(s, tr.dur), tr.space), out);
       }
     }
-    case let k Keys {
+    case Keys(k) {
       var lt = f32.from(loc);
       if k.dur > 0. && !k.easing.isLinear() { lt = k.easing.applyOver(lt / k.dur, k.dur) * k.dur; }
       if lt > k.clip.length { lt = k.clip.length; }
@@ -359,7 +359,7 @@ pub fn collectNode(r: &Running, a: &Anim, ix: usize, t: f64, force: bool, filt: 
         i = i + 1usize;
       }
     }
-    case let al Along {
+    case Along(al) {
       let s = al.easing.applyOver(if al.dur > 0. { clampf(f32.from(loc) / al.dur, 0., 1.) } else { 1. }, al.dur);
       let uu = if al.arc { al.curve.uAtFraction(s) } else { s };
       emit(filt, al.target, al.prop, Value.ofVec3(al.curve.point(uu)), out);
@@ -372,10 +372,10 @@ pub fn collectNode(r: &Running, a: &Anim, ix: usize, t: f64, force: bool, filt: 
         }
       }
     }
-    case let c Chase {
+    case Chase(c) {
       if stGet(r, o) > 0.5 { emit(filt, c.target, c.prop, stValue(r, o + 13usize, c.vkind), out); }
     }
-    case let sp Spring {
+    case Spring(sp) {
       if stGet(r, o) > 0.5 {
         let tl = f32.from(loc) - stGet(r, o + 17usize);
         emit(filt, sp.target, sp.prop, springAt(r, sp.vkind, sp.zeta, sp.omega, o, tl), out);
@@ -415,24 +415,24 @@ pub fn findPending(r: &Running, a: &Anim, ix: usize, t: f64, out: &mut List[Pend
   let ph = phaseOf(a, t);
   if ph.state == PH_BEFORE { return; }
   match a {
-    case let g Group {
+    case Group(g) {
       var i = 0usize;
       while i < g.kids.len() {
         findPending(r, g.kids[i], kidIndex(a, ix, i), ph.loc - f64.from(*g.offs[i]), out);
         i = i + 1usize;
       }
     }
-    case let tr Transition {
+    case Transition(tr) {
       if !tr.hasFrom && stGet(r, ix * SLOT) < 0.5 {
         out.push(Pend(ix, PK_TRANSITION, tr.target, tr.prop, tr.vkind, false, tr.from, tr.to, false, 0u32));
       }
     }
-    case let c Chase {
+    case Chase(c) {
       if stGet(r, ix * SLOT) < 0.5 {
         out.push(Pend(ix, PK_CHASE, c.target, c.prop, c.vkind, c.hasFrom, c.from, goalOf(r, a), false, c.slot));
       }
     }
-    case let s Spring {
+    case Spring(s) {
       if stGet(r, ix * SLOT) < 0.5 {
         out.push(Pend(ix, PK_SPRING, s.target, s.prop, s.vkind, s.hasFrom, s.from, goalOf(r, a), s.inheritVel, s.slot));
       }
@@ -473,7 +473,7 @@ pub fn nodePure(r: &Running, a: &Anim, ix: usize) bool {
   match a {
     case is Chase { false }
     case is Spring { stGet(r, ix * SLOT + 19usize) < 0.5 }
-    case let g Group {
+    case Group(g) {
       var pure = true;
       var i = 0usize;
       while i < g.kids.len() {
@@ -510,7 +510,7 @@ fn stepLeaf(r: &mut Running, a: &Anim, ix: usize, c0: f64, c1: f64) {
   if stGet(r, o) < 0.5 { return; }
   let seq = goalSeqOf(r, a);
   match a {
-    case let ch Chase {
+    case Chase(ch) {
       let kind = ch.vkind;
       if seq != stGet(r, o + 23usize) {
         stPut(r, o + 5usize, goalOf(r, a));
@@ -536,7 +536,7 @@ fn stepLeaf(r: &mut Running, a: &Anim, ix: usize, c0: f64, c1: f64) {
       let f = if ch.tau <= 0. { 1. } else { 1. - libc.expf(-dt / ch.tau) };
       stPut(r, o + 13usize, mixValue(stValue(r, o + 13usize, kind), goal, f, ch.space));
     }
-    case let sp Spring {
+    case Spring(sp) {
       if seq != stGet(r, o + 23usize) {
         retargetSpring(r, sp.vkind, sp.zeta, sp.omega, o, f32.from(c0), goalOf(r, a));
         stSet(r, o + 23usize, seq);
@@ -635,7 +635,7 @@ pub fn advanceNode(r: &mut Running, a: &Anim, ix: usize, t0: f64, t1: f64, step:
     let l0 = dirMap(dir, k, fromP, d);
     let l1 = dirMap(dir, k, toP, d);
     match a {
-      case let g Group {
+      case Group(g) {
         var i = 0usize;
         while i < g.kids.len() {
           advanceNode(r, g.kids[i], kidIndex(a, ix, i), l0 - f64.from(*g.offs[i]), l1 - f64.from(*g.offs[i]), step,
@@ -643,7 +643,7 @@ pub fn advanceNode(r: &mut Running, a: &Anim, ix: usize, t0: f64, t1: f64, step:
           i = i + 1usize;
         }
       }
-      case let kk Keys {
+      case Keys(kk) {
         if markers {
           var found = List[Fired].empty();
           var e0 = l0;

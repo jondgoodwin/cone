@@ -74,23 +74,23 @@ actor GameServer {
   // Everything the connections tell it arrives here, whichever way they are made
   pub async do onNet(self, ev: NetEvent) {
     match ev {
-      case let j Joined {
+      case Joined(j) {
         seats.push(Seat(j.id, j.conn, String.from("?")));
         var s = String.from("server: client ");
         s.appendUInt(u64.from(j.id));
         s.append(" joined\n");
         printStr(s.view());
       }
-      case let l Left {
+      case Left(l) {
         self.remove(l.id);
         var s = String.from("server: client ");
         s.appendUInt(u64.from(l.id));
         s.append(" left\n");
         printStr(s.view());
       }
-      case let m Message { self.heard(m.id, textOf(&m.data)); }
-      case let u Update {}
-      case let r Refused {}
+      case Message(m) { self.heard(m.id, textOf(&m.data)); }
+      case Update(u) {}
+      case Refused(r) {}
     }
   }
 
@@ -169,11 +169,11 @@ actor GameServer {
       // Client n steers body n - 1 (mod 3)
       let b = &mut bodies[usize.from(id - 1u32) % bodyCount];
       match parseInt(words[1usize].view()) {
-        case let dx Some { b.vx = i32.from(dx); }
+        case Some(dx) { b.vx = i32.from(dx); }
         case is None[i64] {}
       }
       match parseInt(words[2usize].view()) {
-        case let dy Some { b.vy = i32.from(dy); }
+        case Some(dy) { b.vy = i32.from(dy); }
         case is None[i64] {}
       }
     } elif verb == "chat" && text.len() > 5usize {
@@ -215,16 +215,16 @@ actor Player {
 
   pub async do onNet(self, ev: NetEvent) {
     match ev {
-      case let j Joined {
+      case Joined(j) {
         conn = Some[Connection](j.conn);
         j.conn.sendReliable(bytesOf(self.hello().view()));
       }
-      case let l Left {
+      case Left(l) {
         var s = String.from(name.view());
         s.append(": the connection ended\n");
         printStr(s.view());
       }
-      case let m Message {
+      case Message(m) {
         let text = textOf(&m.data);
         if text.view().startsWith("chat ") || text.view().startsWith("news ") {
           heardChat = heardChat + 1u32;
@@ -235,7 +235,7 @@ actor Player {
           printStr(s.view());
         }
       }
-      case let u Update {
+      case Update(u) {
         // The snapshot's tick and the first body's position
         var c = PacketReader.start();
         lastTick = c.rdU32(u.data.view());
@@ -244,7 +244,7 @@ actor Player {
         lastY = i32.from(c.rdU32(u.data.view()));
         snapshots = snapshots + 1u32;
       }
-      case let r Refused {}
+      case Refused(r) {}
     }
   }
 
@@ -257,7 +257,7 @@ actor Player {
   // Steer: send the input as a reliable message
   pub async do steer(self, dx: i32, dy: i32) {
     match &conn {
-      case let c &Some[Connection] {
+      case &Some[Connection](c) {
         var t = String.from("input ");
         t.appendInt(i64.from(dx));
         t.append(" ");
@@ -270,7 +270,7 @@ actor Player {
 
   pub async do chat(self, text: String) {
     match &conn {
-      case let c &Some[Connection] {
+      case &Some[Connection](c) {
         var t = String.from("chat ");
         t.append(text.view());
         c.sendReliable(bytesOf(t.view()));
@@ -329,7 +329,7 @@ fn printReports(rx: &mut Receiver[String], n: usize) {
   var k = 0usize;
   while k < n {
     match rx.recvTimeout(Duration.fromSeconds(5i64)) {
-      case let s Some { print <- s.view(), "\n"; }
+      case Some(s) { print <- s.view(), "\n"; }
       case is None[String] {}
     }
     k = k + 1usize;
@@ -391,7 +391,7 @@ fn parseAddress(host: &str, port: u16) SocketAddr {
   var i = 0usize;
   while i < parts.len() {
     match parseUInt(parts[i].view()) {
-      case let v Some { n.push(u8.from(v)); }
+      case Some(v) { n.push(u8.from(v)); }
       case is None[u64] {}
     }
     i = i + 1usize;
@@ -443,12 +443,12 @@ fn main() {
   let args = process.args();
   if args.len() >= 3usize && args[1usize].view() == "serve" {
     match parseUInt(args[2usize].view()) {
-      case let p Some { serve(u16.from(p)); }
+      case Some(p) { serve(u16.from(p)); }
       case is None[u64] { print <- "demo: serve PORT\n"; }
     }
   } elif args.len() >= 5usize && args[1usize].view() == "connect" {
     match parseUInt(args[3usize].view()) {
-      case let p Some { connectTo(args[2usize].view(), u16.from(p), args[4usize].view()); }
+      case Some(p) { connectTo(args[2usize].view(), u16.from(p), args[4usize].view()); }
       case is None[u64] { print <- "demo: connect HOST PORT NAME\n"; }
     }
   } elif args.len() >= 2usize && args[1usize].view() == "inprocess" {

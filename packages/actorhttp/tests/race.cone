@@ -84,7 +84,7 @@ fn reply(sv: &mut Srv, req: httpconn.ReqId, head: bool, status: u16, body: &Arra
 
 fn number(s: &str) u64 {
   match collections.parseUInt(s) {
-    case let v Some {v}
+    case Some(v) {v}
     case is None[u64] {0u64}
   }
 }
@@ -244,13 +244,13 @@ fn serve(portTx: Sender[u16]) Report {
     sent: List[u64].empty(), totals: List[u64].empty());
   var port = 0u16;
   match sv.drv.listen(&mut lp, SocketAddr.localhost(0u16), httpconn.Sink.Here(1u64)) {
-    case let r Ok {
+    case Ok(r) {
       match sv.drv.localAddr(&lp, r) {
-        case let a Ok {port = a.port();}
-        case let e Error {}
+        case Ok(a) {port = a.port();}
+        case Error(e) {}
       }
     }
-    case let e Error {}
+    case Error(e) {}
   }
   portTx.send(port);
   var events = List[httpconn.Event].empty();
@@ -304,10 +304,10 @@ actor Racer {
       let a = await r;
       answered = answered + 1u64;
       match &a {
-        case let good &Ok {
+        case &Ok(good) {
           if good.status == 200u16 && good.body.view() == "hello" {ok = ok + 1u64;} else {wrongBody = wrongBody + 1u64;}
         }
-        case let e &Error {
+        case &Error(e) {
           if e.isCancelled() {cancelled = cancelled + 1u64;} else {other = other + 1u64;}
         }
       }
@@ -317,7 +317,7 @@ actor Racer {
     let last = await client.get(url(port, "/hello").view());
     var lastGood = false;
     match &last {
-      case let good &Ok {lastGood = good.body.view() == "hello";}
+      case &Ok(good) {lastGood = good.body.view() == "hello";}
       else {}
     }
     printStr("every round answered once: ");
@@ -342,7 +342,7 @@ fn main() i32 {
   let server = thread.start(portTx, &serve);
   var port = 0u16;
   match portRx.recv() {
-    case let p Some {port = p;}
+    case Some(p) {port = p;}
     case is None[u16] {}
   }
   var tx: OneshotSender[u64];

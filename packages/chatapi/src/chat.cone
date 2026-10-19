@@ -10,7 +10,7 @@ pub fn absorb(r: &mut ChatReply, d: &Delta) {
   r.content.append(d.content.view());
   if d.finishReason.len() > 0usize {r.finishReason = d.finishReason.copy();}
   match &d.usage {
-    case let u Some {r.usage = Some[Usage](Usage(u.promptTokens, u.completionTokens, u.totalTokens));}
+    case Some(u) {r.usage = Some[Usage](Usage(u.promptTokens, u.completionTokens, u.totalTokens));}
     case is None {}
   }
 }
@@ -32,8 +32,8 @@ pub actor Chat {
   pub async do complete(self, req: ChatRequest) Result[ChatReply, ChatError] {
     var hreq = httpclient.Request.get("");
     match httpRequest(&endpoint, &req, false) {
-      case var ok Ok {hreq <=> ok;}
-      case let e Error {return Error[ChatReply, ChatError](e.copy());}
+      case Ok(var ok) {hreq <=> ok;}
+      case Error(e) {return Error[ChatReply, ChatError](e.copy());}
     }
     let r = await client.send(hreq);
     replyOfExchange(&r)
@@ -43,8 +43,8 @@ pub actor Chat {
   pub async do completeIn(self, req: ChatRequest, lim: IoLimits) Result[ChatReply, ChatError] {
     var hreq = httpclient.Request.get("");
     match httpRequest(&endpoint, &req, false) {
-      case var ok Ok {hreq <=> ok;}
-      case let e Error {return Error[ChatReply, ChatError](e.copy());}
+      case Ok(var ok) {hreq <=> ok;}
+      case Error(e) {return Error[ChatReply, ChatError](e.copy());}
     }
     let r = await client.sendIn(hreq, lim);
     replyOfExchange(&r)
@@ -62,12 +62,12 @@ pub actor Chat {
   pub async do streamIn(self, req: ChatRequest, lim: IoLimits) Result[ChatStream, ChatError] {
     var hreq = httpclient.Request.get("");
     match httpRequest(&endpoint, &req, true) {
-      case var ok Ok {hreq <=> ok;}
-      case let e Error {return Error[ChatStream, ChatError](e.copy());}
+      case Ok(var ok) {hreq <=> ok;}
+      case Error(e) {return Error[ChatStream, ChatError](e.copy());}
     }
     let r = await client.streamIn(hreq, lim);
     match r {
-      case let bs Ok {
+      case Ok(bs) {
         if !bs.isOk() {
           // An error status: the body is the API's error object. Read it (the first 64 KiB of it)
           var body = String.empty();
@@ -75,15 +75,15 @@ pub actor Chat {
           while going {
             let n = await bs.read();
             match n {
-              case let ok Ok {
+              case Ok(ok) {
                 match ok {
-                  case let piece Some {
+                  case Some(piece) {
                     if body.len() < 65536usize {body.append(piece.view());}
                   }
                   case is None[String] {going = false;}
                 }
               }
-              case let er Error {going = false;}
+              case Error(er) {going = false;}
             }
           }
           return Error[ChatStream, ChatError](apiError(bs.status, body.view()));
@@ -95,7 +95,7 @@ pub actor Chat {
         let cs = ChatStream(bs, sse.Reader.make(), List[sse.Event].empty(), 0usize, 0u64, false, false, false);
         Ok[ChatStream, ChatError](cs)
       }
-      case let e Error {Error[ChatStream, ChatError](transportError(&e))}
+      case Error(e) {Error[ChatStream, ChatError](transportError(&e))}
     }
   }
 }
@@ -106,7 +106,7 @@ pub actor Chat {
 // application/json, is not)
 fn isEventStream(h: &http.Headers) bool {
   match h.get("Content-Type") {
-    case let v Some {
+    case Some(v) {
       let t = String.fromBytes(v);
       t.view().startsWith("text/event-stream")
     }
@@ -117,8 +117,8 @@ fn isEventStream(h: &http.Headers) bool {
 // What an exchange that gave a response, or none, is as a reply
 fn replyOfExchange(r: &Result[httpclient.Response, actorhttp.FetchError]) Result[ChatReply, ChatError] {
   match r {
-    case let ok &Ok {replyOfResponse(ok)}
-    case let e &Error {Error[ChatReply, ChatError](transportError(e))}
+    case &Ok(ok) {replyOfResponse(ok)}
+    case &Error(e) {Error[ChatReply, ChatError](transportError(e))}
   }
 }
 
@@ -157,14 +157,14 @@ pub actor ChatStream {
     var going = true;
     while going {
       match self.step() {
-        case var d Item {
+        case Item(var d) {
           var x = Delta.empty();
           x <=> d;
           out = Ok[Option[Delta], ChatError](Some[Delta](x));
           going = false;
         }
         case is End {going = false;}
-        case var e Fail {
+        case Fail(var e) {
           var x = ChatError.make(ChatErrorKind.Stream, "");
           x <=> e;
           out = Error[Option[Delta], ChatError](x);
@@ -173,13 +173,13 @@ pub actor ChatStream {
         case is Need {
           let n = await body.read();
           match n {
-            case let ok Ok {
+            case Ok(ok) {
               match ok {
-                case let piece Some {self.feed(piece.view());}
+                case Some(piece) {self.feed(piece.view());}
                 case is None[String] {bodyEnd = true;}
               }
             }
-            case let er Error {
+            case Error(er) {
               over = true;
               out = Error[Option[Delta], ChatError](transportError(&er));
               going = false;
@@ -200,13 +200,13 @@ pub actor ChatStream {
     while going {
       let n = await selfactor.next();
       match n {
-        case let ok Ok {
+        case Ok(ok) {
           match ok {
-            case let d Some {absorb(&mut reply, &d);}
+            case Some(d) {absorb(&mut reply, &d);}
             case is None[Delta] {going = false;}
           }
         }
-        case let e Error {
+        case Error(e) {
           why = e.copy();
           failed = true;
           going = false;
@@ -235,13 +235,13 @@ pub actor ChatStream {
       }
       chunks = chunks + 1u64;
       match parseChunk(data) {
-        case var d Ok {
+        case Ok(var d) {
           if d.finishReason.len() > 0usize {sawFinish = true;}
           var x = Delta.empty();
           x <=> d;
           return Step.Item(x);
         }
-        case let e Error {
+        case Error(e) {
           over = true;
           var m = e.detail.copy();
           m.append(" (chunk ");

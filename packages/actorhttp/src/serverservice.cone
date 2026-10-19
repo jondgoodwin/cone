@@ -107,7 +107,7 @@ fn exOf(srv: &SrvRec, slot: u32, id: u64) *ExRec {
 fn slotOfReq(srv: &SrvRec, req: httpconn.ReqId) usize {
   let key = req.number();
   match srv.byReq.getCopy(&key) {
-    case let s Some {s}
+    case Some(s) {s}
     case is None[usize] {srv.exs.len()}
   }
 }
@@ -240,7 +240,7 @@ fn answerText(srv: &mut SrvRec, pool: Pool, x: &mut ExRec, status: u16, text: &s
   var b = IoBuf.empty();
   if !x.isHead && n > 0usize {
     match pool.take(n) {
-      case var s Some {b <=> s;}
+      case Some(var s) {b <=> s;}
       case is None[IoBuf] {}
     }
   }
@@ -303,7 +303,7 @@ fn pumpWrites(srv: &mut SrvRec, lp: &mut Loop, pool: Pool, x: &mut ExRec) {
       let n = if left < sendChunk {left} else {sendChunk};
       var b = IoBuf.empty();
       match pool.take(n) {
-        case var s Some {b <=> s;}
+        case Some(var s) {b <=> s;}
         case is None[IoBuf] {}
       }
       if b.capacity() == 0usize {
@@ -396,13 +396,13 @@ struct ListenJob {
     var res: Result[httpconn.ListenerId, IoError] = Error[httpconn.ListenerId, IoError](IoError.cancelled());
     var secure = false;
     match tcfg {
-      case var t Some {
+      case Some(var t) {
         match tls.Server.make(t) {
-          case let s Ok {
+          case Ok(s) {
             secure = true;
             res = drv.listenWith(lp, addr, Uni[TlsMaker](TlsMaker(s, sv.pool)), httpconn.Sink.Here(0u64));
           }
-          case let x Error {
+          case Error(x) {
             answerTo[Result[Server, ServerError]](&mut rp, Error[Server, ServerError](
               ServerError.failed(x.osError, x.message().view())));
             return;
@@ -412,11 +412,11 @@ struct ListenJob {
       else {res = drv.listen(lp, addr, httpconn.Sink.Here(0u64));}
     }
     match res {
-      case let l Ok {
+      case Ok(l) {
         var bound = addr;
         match drv.localAddr(lp, l) {
-          case let a Ok {bound = a;}
-          case let e Error {}
+          case Ok(a) {bound = a;}
+          case Error(e) {}
         }
         let id = newId();
         let p = libc.malloc(mem.sizeof[SrvRec]()) as *SrvRec;
@@ -427,7 +427,7 @@ struct ListenJob {
         sv.srvs.push(p);
         answerTo[Result[Server, ServerError]](&mut rp, Ok[Server, ServerError](Server(id, bound, secure)));
       }
-      case let e Error {
+      case Error(e) {
         answerTo[Result[Server, ServerError]](&mut rp, Error[Server, ServerError](
           ServerError.failed(e.code, "could not listen")));
       }

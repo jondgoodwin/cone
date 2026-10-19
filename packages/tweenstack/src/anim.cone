@@ -142,29 +142,29 @@ pub enum Anim {
   // A deep copy
   pub fn copy(self: &Anim) Anim {
     match self {
-      case let t Transition {
+      case Transition(t) {
         Transition(t.target, t.prop, t.vkind, t.dur, t.life, t.easing, t.easingSet, t.space, t.delay, t.repeat,
           t.direction, t.hold, t.rate, t.xgroup, t.size, t.flags, t.hasFrom, t.from, t.to)
       }
-      case let k Keys {
+      case Keys(k) {
         Keys(k.target, k.prop, k.vkind, k.dur, k.life, k.easing, k.easingSet, k.space, k.delay, k.repeat,
           k.direction, k.hold, k.rate, k.xgroup, k.size, k.flags, k.clip.copy())
       }
-      case let a Along {
+      case Along(a) {
         Along(a.target, a.prop, a.vkind, a.dur, a.life, a.easing, a.easingSet, a.space, a.delay, a.repeat,
           a.direction, a.hold, a.rate, a.xgroup, a.size, a.flags, a.curve.copy(), a.faceProp, a.arc, copyFloats(&a.headings))
       }
-      case let c Chase {
+      case Chase(c) {
         Chase(c.target, c.prop, c.vkind, c.dur, c.life, c.easing, c.easingSet, c.space, c.delay, c.repeat,
           c.direction, c.hold, c.rate, c.xgroup, c.size, c.flags, c.hasFrom, c.from, c.to, c.tau, c.slot, c.mode, c.speed,
           c.endOnArrival)
       }
-      case let s Spring {
+      case Spring(s) {
         Spring(s.target, s.prop, s.vkind, s.dur, s.life, s.easing, s.easingSet, s.space, s.delay, s.repeat,
           s.direction, s.hold, s.rate, s.xgroup, s.size, s.flags, s.hasFrom, s.from, s.to, s.zeta, s.omega, s.slot,
           s.inheritVel)
       }
-      case let g Group {
+      case Group(g) {
         var out = Group(g.target, g.prop, g.vkind, g.dur, g.life, g.easing, g.easingSet, g.space, g.delay, g.repeat,
           g.direction, g.hold, g.rate, g.xgroup, g.size, g.flags, List[Anim].empty(), List[f32].empty());
         var i = 0usize;
@@ -262,9 +262,9 @@ pub enum Anim {
   // Start from this value, not the field's (a transition, chase or spring)
   pub fn withFrom(var self: Anim, v: Value) Anim {
     match &mut self {
-      case var t Transition { t.hasFrom = true; t.from = v; t.flags = t.flags & (F_STEPPED | F_MARKERS); }
-      case var c Chase { c.hasFrom = true; c.from = v; }
-      case var s Spring { s.hasFrom = true; s.from = v; }
+      case Transition(var t) { t.hasFrom = true; t.from = v; t.flags = t.flags & (F_STEPPED | F_MARKERS); }
+      case Chase(var c) { c.hasFrom = true; c.from = v; }
+      case Spring(var s) { s.hasFrom = true; s.from = v; }
       else {}
     }
     self
@@ -294,8 +294,8 @@ pub enum Anim {
   // The goal slot a stepped animator reads setGoal from
   pub fn withSlot(var self: Anim, s: u32) Anim {
     match &mut self {
-      case var c Chase { c.slot = s; }
-      case var sp Spring { sp.slot = s; }
+      case Chase(var c) { c.slot = s; }
+      case Spring(var sp) { sp.slot = s; }
       else {}
     }
     self
@@ -303,7 +303,7 @@ pub enum Anim {
 
   pub fn withInheritVelocity(var self: Anim, on: bool) Anim {
     match &mut self {
-      case var sp Spring { sp.inheritVel = on; }
+      case Spring(var sp) { sp.inheritVel = on; }
       else {}
     }
     self
@@ -313,7 +313,7 @@ pub enum Anim {
   // (+Z forward, +Y up) to the property 'faceProp'
   pub fn facing(var self: Anim, prop: u32) Anim {
     match &mut self {
-      case var a Along { a.faceProp = prop; a.headings.clear(); }
+      case Along(var a) { a.faceProp = prop; a.headings.clear(); }
       else {}
     }
     self
@@ -330,7 +330,7 @@ pub enum Anim {
   // not a second animator.
   pub fn facingHeadings(var self: Anim, prop: u32, headings: &List[f32]) Anim {
     match &mut self {
-      case var a Along { a.faceProp = prop; a.headings = unwindHeadings(headings); }
+      case Along(var a) { a.faceProp = prop; a.headings = unwindHeadings(headings); }
       else {}
     }
     self
@@ -341,7 +341,7 @@ pub enum Anim {
   // time-constant chase only approaches its goal, so it has nothing to end on.)
   pub fn endsOnArrival(var self: Anim, on: bool) Anim {
     match &mut self {
-      case var c Chase { c.endOnArrival = on; }
+      case Chase(var c) { c.endOnArrival = on; }
       else {}
     }
     self
@@ -354,7 +354,7 @@ pub enum Anim {
   // An along animator moves at one speed along the curve
   pub fn byArcLength(var self: Anim, on: bool) Anim {
     match &mut self {
-      case var a Along { a.arc = on; }
+      case Along(var a) { a.arc = on; }
       else {}
     }
     self
@@ -422,7 +422,7 @@ pub enum Anim {
   // an animator that is not a group, or an index past the end)
   pub fn kidOffset(self: &Anim, i: usize) f32 {
     match self {
-      case let g Group { if i < g.offs.len() { *g.offs[i] } else { 0. } }
+      case Group(g) { if i < g.offs.len() { *g.offs[i] } else { 0. } }
       else { 0. }
     }
   }
@@ -439,7 +439,7 @@ pub fn resolveDefaults(a: &mut Anim) {
     a.easingSet = true;
   }
   match a {
-    case var g Group {
+    case Group(var g) {
       var i = 0usize;
       while i < g.kids.len() { resolveDefaults(&mut g.kids[i]); i = i + 1usize; }
     }

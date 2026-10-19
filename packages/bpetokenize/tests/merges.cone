@@ -97,8 +97,8 @@ fn ids(tok: &bpetokenize.Tokenizer, text: &str, want: &str) {
   expectStr(shown.view(), want, text);
   // and the ids decode to the text
   match tok.decode(got.view()) {
-    case let bytes Ok { expectStr(bytes.view(), text, "decode back"); }
-    case let e Error { let m = e.message(); expectStr(m.view(), "<decoded>", text); }
+    case Ok(bytes) { expectStr(bytes.view(), text, "decode back"); }
+    case Error(e) { let m = e.message(); expectStr(m.view(), "<decoded>", text); }
   }
 }
 
@@ -131,7 +131,7 @@ fn helloChecks(tok: &bpetokenize.Tokenizer) {
   expectUInt(u64.from(tok.mergeCount()), 10u64, "merge rules");
   expectUInt(u64.from(tok.byteToken(97u8)), 97u64, "the token of a byte");
   match tok.tokenId(spell(" world").view()) {
-    case let id Some { expectUInt(u64.from(id), 264u64, "tokenId of ' world'"); }
+    case Some(id) { expectUInt(u64.from(id), 264u64, "tokenId of ' world'"); }
     case is None { expect(false, "tokenId of ' world'"); }
   }
   match tok.tokenId("nothing here") {
@@ -139,7 +139,7 @@ fn helloChecks(tok: &bpetokenize.Tokenizer) {
     case is None { expect(true, "tokenId of a text not in the vocabulary"); }
   }
   match tok.tokenBytes(264u32) {
-    case let bytes Some { expectStr(bytes, " world", "tokenBytes of 264"); }
+    case Some(bytes) { expectStr(bytes, " world", "tokenBytes of 264"); }
     case is None { expect(false, "tokenBytes of 264"); }
   }
   match tok.tokenBytes(266u32) {
@@ -173,13 +173,13 @@ fn laterRuleChecks() {
   merges.push(rule("b", "c"));
   match bpetokenize.Tokenizer.build(tokens.view(), merges.view(), List[String].empty().view(),
                                     bpetokenize.PreTokenizer.Whole) {
-    case let tok Ok {
+    case Ok(tok) {
       ids(&tok, "bcbc", "257 99");
       ids(&tok, "bc", "256");
       ids(&tok, "bcb", "257");
       ids(&tok, "cbc", "99 256");
     }
-    case let e Error { let m = e.message(); expectStr(m.view(), "<built>", "later rule vocabulary"); }
+    case Error(e) { let m = e.message(); expectStr(m.view(), "<built>", "later rule vocabulary"); }
   }
 }
 
@@ -204,7 +204,7 @@ fn doublingChecks() {
   }
   match bpetokenize.Tokenizer.build(tokens.view(), merges.view(), List[String].empty().view(),
                                     bpetokenize.PreTokenizer.Whole) {
-    case let tok Ok {
+    case Ok(tok) {
       // ids 256 + k is 2^(k+1) a's
       ids(&tok, "aaaa", "257");
       var text = String.empty();
@@ -229,11 +229,11 @@ fn doublingChecks() {
       // 195 tokens of 1024 (199680 a's) and the 320 left: 256 + 64
       expectUInt(u64.from(many.len()), 197u64, "200000 a's: 195 + 2 tokens");
       match tok.decode(many.view()) {
-        case let bytes Ok { expect(bytes.len() == 200000usize, "200000 a's decode to 200000 bytes"); }
-        case let e Error { let m = e.message(); expectStr(m.view(), "<decoded>", "big decode"); }
+        case Ok(bytes) { expect(bytes.len() == 200000usize, "200000 a's decode to 200000 bytes"); }
+        case Error(e) { let m = e.message(); expectStr(m.view(), "<decoded>", "big decode"); }
       }
     }
-    case let e Error { let m = e.message(); expectStr(m.view(), "<built>", "doubling vocabulary"); }
+    case Error(e) { let m = e.message(); expectStr(m.view(), "<built>", "doubling vocabulary"); }
   }
 }
 
@@ -265,7 +265,7 @@ fn plainMerge(word: &Array[u8], ranks: &Dict[u64, u64]) List[u32] {
     while k + 1usize < sym.len() {
       let key = (u64.from(sym.view()[k]) << 32u64) | u64.from(sym.view()[k + 1usize]);
       match ranks.getCopy(&key) {
-        case let v Some {
+        case Some(v) {
           let rank = v >> 32u64;
           if rank < best { best = rank; at = k; found = true; }
         }
@@ -333,7 +333,7 @@ fn randomChecks(seed: u64, wordLetters: u32, merges: usize) {
   expect(lines.len() >= merges / 2usize, "enough random merges were made");
   match bpetokenize.Tokenizer.build(tokens.view(), lines.view(), List[String].empty().view(),
                                     bpetokenize.PreTokenizer.Whole) {
-    case let tok Ok {
+    case Ok(tok) {
       var agree = 0usize;
       var n = 0usize;
       while n < 400usize {
@@ -351,7 +351,7 @@ fn randomChecks(seed: u64, wordLetters: u32, merges: usize) {
       }
       expectUInt(u64.from(agree), 400u64, "400 random words merge as the plain merger does");
     }
-    case let e Error { let m = e.message(); expectStr(m.view(), "<built>", "random vocabulary"); }
+    case Error(e) { let m = e.message(); expectStr(m.view(), "<built>", "random vocabulary"); }
   }
 }
 
@@ -359,13 +359,13 @@ fn main() i32 {
   let spec = helloSpec();
   match bpetokenize.Tokenizer.build(spec.tokens.view(), spec.merges.view(), spec.special.view(),
                                     bpetokenize.PreTokenizer.Gpt2) {
-    case let tok Ok { helloChecks(&tok); }
-    case let e Error { let m = e.message(); expectStr(m.view(), "<built>", "hello vocabulary"); }
+    case Ok(tok) { helloChecks(&tok); }
+    case Error(e) { let m = e.message(); expectStr(m.view(), "<built>", "hello vocabulary"); }
   }
   match bpetokenize.Tokenizer.build(spec.tokens.view(), spec.merges.view(), spec.special.view(),
                                     bpetokenize.PreTokenizer.Whole) {
-    case let tok Ok { wholeChecks(&tok); }
-    case let e Error { let m = e.message(); expectStr(m.view(), "<built>", "hello vocabulary, whole"); }
+    case Ok(tok) { wholeChecks(&tok); }
+    case Error(e) { let m = e.message(); expectStr(m.view(), "<built>", "hello vocabulary, whole"); }
   }
   // the pairs form builds the same tokenizer
   var pairs = List[bpetokenize.MergePair].empty();
@@ -375,11 +375,11 @@ fn main() i32 {
   pairs.push(bpetokenize.MergePair(spell("hell"), spell("o")));
   match bpetokenize.Tokenizer.buildPairs(spec.tokens.view(), pairs.view(), spec.special.view(),
                                          bpetokenize.PreTokenizer.Gpt2) {
-    case let tok Ok {
+    case Ok(tok) {
       ids(&tok, "hello", "259");
       expectUInt(u64.from(tok.mergeCount()), 4u64, "merge rules from pairs");
     }
-    case let e Error { let m = e.message(); expectStr(m.view(), "<built>", "pairs"); }
+    case Error(e) { let m = e.message(); expectStr(m.view(), "<built>", "pairs"); }
   }
   laterRuleChecks();
   doublingChecks();

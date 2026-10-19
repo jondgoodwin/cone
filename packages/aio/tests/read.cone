@@ -49,7 +49,7 @@ fn socketOf(r: Result[Socket, IoError]) Socket {
   var res = r;
   var s = Socket.none();
   match &mut res {
-    case var ok &mut Ok {s <=> *ok;}
+    case &mut Ok(var ok) {s <=> *ok;}
     else {}
   }
   s
@@ -67,7 +67,7 @@ fn same(a: &Array[u8], b: &Array[u8]) bool {
 
 fn codeOf[T](r: Result[T, IoError]) u64 {
   match r {
-    case let e Error {u64.from(e.code)}
+    case Error(e) {u64.from(e.code)}
     else {0u64}
   }
 }
@@ -82,8 +82,8 @@ actor Client {
     b.append("hello, actor");
     let w = await s.write(b);
     match w {
-      case let n Ok {got.written.store(u64.from(n));}
-      case let e Error {got.written.store(1000000u64 + u64.from(e.code));}
+      case Ok(n) {got.written.store(u64.from(n));}
+      case Error(e) {got.written.store(1000000u64 + u64.from(e.code));}
     }
   }
 }
@@ -97,7 +97,7 @@ actor Server {
     let a = await ls.localAddr();
     var port = 0u16;
     match a {
-      case let addr Ok {port = addr.port();}
+      case Ok(addr) {port = addr.port();}
       else {}
     }
     got.port.store(u64.from(port));
@@ -110,7 +110,7 @@ actor Server {
     got.noRoom.store(codeOf[IoBuf](none));
     var r = await conn.read(pool.mustTake(4096usize));
     match &mut r {
-      case var ok &mut Ok {
+      case &mut Ok(var ok) {
         var b = IoBuf.empty();
         b <=> *ok;
         got.read.store(u64.from(b.len()));
@@ -118,7 +118,7 @@ actor Server {
         b.clear();
         let rest = await conn.read(b);
         match rest {
-          case let end Ok {
+          case Ok(end) {
             if end.len() == 0usize {got.ended.store(1u64);}
             got.capacity.store(u64.from(end.capacity()));
           }

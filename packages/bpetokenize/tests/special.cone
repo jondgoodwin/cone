@@ -49,8 +49,8 @@ fn ids(tok: &bpetokenize.Tokenizer, text: &str, want: &str) {
   let shown = show(&got);
   expectStr(shown.view(), want, text);
   match tok.decode(got.view()) {
-    case let bytes Ok { expectStr(bytes.view(), text, "decode back"); }
-    case let e Error { let m = e.message(); expectStr(m.view(), "<decoded>", text); }
+    case Ok(bytes) { expectStr(bytes.view(), text, "decode back"); }
+    case Error(e) { let m = e.message(); expectStr(m.view(), "<decoded>", text); }
   }
 }
 
@@ -85,8 +85,8 @@ fn checks(tok: &bpetokenize.Tokenizer) {
   expect(shownText.view() != "266", "encodePlain does not make a special token");
   expect(text.len() > 1usize, "encodePlain encodes the text");
   match tok.decode(text.view()) {
-    case let bytes Ok { expectStr(bytes.view(), "<|end|>", "encodePlain decodes back to the text"); }
-    case let e Error { let m = e.message(); expectStr(m.view(), "<decoded>", "encodePlain"); }
+    case Ok(bytes) { expectStr(bytes.view(), "<|end|>", "encodePlain decodes back to the text"); }
+    case Error(e) { let m = e.message(); expectStr(m.view(), "<decoded>", "encodePlain"); }
   }
   // encodeWith appends, and can choose
   var out = List[u32].empty();
@@ -103,11 +103,11 @@ fn checks(tok: &bpetokenize.Tokenizer) {
   expect(!tok.isSpecialToken(259u32), "259 is not special");
   expect(!tok.isSpecialToken(5000u32), "an id outside is not special");
   match tok.tokenBytes(269u32) {
-    case let bytes Some { expectStr(bytes, "<|ü|>", "a special token decodes to its own text"); }
+    case Some(bytes) { expectStr(bytes, "<|ü|>", "a special token decodes to its own text"); }
     case is None { expect(false, "tokenBytes 269"); }
   }
   match tok.tokenId("<|end|>") {
-    case let id Some { expectUInt(u64.from(id), 266u64, "tokenId of a special token"); }
+    case Some(id) { expectUInt(u64.from(id), 266u64, "tokenId of a special token"); }
     case is None { expect(false, "tokenId of a special token"); }
   }
 
@@ -115,17 +115,17 @@ fn checks(tok: &bpetokenize.Tokenizer) {
   var seq = List[u32].empty();
   seq.push(259u32); seq.push(266u32); seq.push(264u32); seq.push(267u32);
   match tok.decode(seq.view()) {
-    case let bytes Ok { expectStr(bytes.view(), "hello<|end|> world<|begin|>", "decode keeps special tokens"); }
-    case let e Error { let m = e.message(); expectStr(m.view(), "<decoded>", "decode specials"); }
+    case Ok(bytes) { expectStr(bytes.view(), "hello<|end|> world<|begin|>", "decode keeps special tokens"); }
+    case Error(e) { let m = e.message(); expectStr(m.view(), "<decoded>", "decode specials"); }
   }
   var skipped = List[u8].empty();
   skipped.push('>');
   match tok.decodeInto(seq.view(), true, &mut skipped) {
-    case let count Ok {
+    case Ok(count) {
       expectUInt(u64.from(count), 11u64, "decodeInto without specials: 'hello world' is 11 bytes");
       expectStr(skipped.view(), ">hello world", "decodeInto appends and leaves the specials out");
     }
-    case let e Error { let m = e.message(); expectStr(m.view(), "<decoded>", "decodeInto"); }
+    case Error(e) { let m = e.message(); expectStr(m.view(), "<decoded>", "decodeInto"); }
   }
 }
 
@@ -164,20 +164,20 @@ fn main() i32 {
   special.push(String.from("<|ü|>"));
   special.push(String.from("<|begin|>"));
   match bpetokenize.Tokenizer.build(tokens.view(), merges.view(), special.view(), bpetokenize.PreTokenizer.Gpt2) {
-    case let tok Ok { checks(&tok); }
-    case let e Error { let m = e.message(); expectStr(m.view(), "<built>", "special vocabulary"); }
+    case Ok(tok) { checks(&tok); }
+    case Error(e) { let m = e.message(); expectStr(m.view(), "<built>", "special vocabulary"); }
   }
   // a vocabulary with no special tokens at all: "<|end|>" is just text
   var none = List[String].empty();
   match bpetokenize.Tokenizer.build(tokens.view(), merges.view(), none.view(), bpetokenize.PreTokenizer.Gpt2) {
-    case let tok Ok {
+    case Ok(tok) {
       let got = tok.encode("<|end|>");
       expect(got.len() > 1usize, "without special tokens the text is encoded");
       expect(!tok.isSpecialToken(266u32), "none is special");
       // a non-special token's text is the bytes its spelling stands for: 'ü' as a
       // character is the byte 0xFC
       match tok.tokenBytes(269u32) {
-        case let bytes Some {
+        case Some(bytes) {
           var want = List[u8].empty();
           want.push('<'); want.push('|'); want.push(0xFCu8); want.push('|'); want.push('>');
           expectStr(bytes, want.view(), "a token that is not special decodes through the table");
@@ -185,7 +185,7 @@ fn main() i32 {
         case is None { expect(false, "tokenBytes 269, not special"); }
       }
     }
-    case let e Error { let m = e.message(); expectStr(m.view(), "<built>", "no special tokens"); }
+    case Error(e) { let m = e.message(); expectStr(m.view(), "<built>", "no special tokens"); }
   }
   done()
 }

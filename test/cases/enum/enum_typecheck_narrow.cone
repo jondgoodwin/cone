@@ -38,7 +38,7 @@ use Other;
 // this one
 fn foreignVariant(s: &imm Shape) i32 {
   match s {
-    case let a &Alpha {a.a}   //~ ErrorInvType:10 "Types are not compatible for this downcast specialization"
+    case &Alpha(a) {a.a}   //~ ErrorInvType:10 "Types are not compatible for this downcast specialization"
     else {0}
   }
 }
@@ -47,8 +47,8 @@ fn foreignVariant(s: &imm Shape) i32 {
 // narrowing leaves a cast the compiler then cannot build.
 fn matchNonEnum(n: i32) i32 {
   match n {
-    case let c &Circle {c.radius}   //~ ErrorInvType:10 "Types are not compatible for this downcast specialization"
-                                    //~^ ErrorInvType:16 "Unsupported built-in type conversion" follow-on
+    case &Circle(c) {c.radius}   //~ ErrorInvType:10 "Types are not compatible for this downcast specialization"
+                                    //~^ ErrorInvType:10 "Unsupported built-in type conversion" follow-on
     else {0}
   }
 }
@@ -62,7 +62,7 @@ fn matchNonEnum(n: i32) i32 {
 // the reference the matched value is.)
 fn foreignRegion(s: Rc[imm, Shape]) i32 {
   match s {
-    case let c &Circle {c.radius}   //~ ErrorInvType "won't downcast safely"
+    case &Circle(c) {c.radius}   //~ ErrorInvType "won't downcast safely"
     else {0}
   }
 }
@@ -70,7 +70,7 @@ fn foreignRegion(s: Rc[imm, Shape]) i32 {
 // The same check against a stronger permission than the matched value has
 fn foreignPermission(s: &imm Shape) i32 {
   match s {
-    case let c &mut Circle {c.radius}   //~ ErrorInvType "won't downcast safely"
+    case &mut Circle(c) {c.radius}   //~ ErrorInvType "won't downcast safely"
     else {0}
   }
 }
@@ -78,8 +78,8 @@ fn foreignPermission(s: &imm Shape) i32 {
 // ...and against a matched value that is no reference at all
 fn notAReference(s: Shape) i32 {
   match s {
-    case let c &Circle {c.radius}   //~ ErrorInvType:10 "Types are not compatible for this downcast specialization"
-                                    //~^ ErrorInvType:16 "Unsupported built-in type conversion" follow-on
+    case &Circle(c) {c.radius}   //~ ErrorInvType:10 "Types are not compatible for this downcast specialization"
+                                    //~^ ErrorInvType:10 "Unsupported built-in type conversion" follow-on
     else {0}
   }
 }
@@ -92,7 +92,7 @@ fn notAReference(s: Shape) i32 {
 // ways, and each says which.
 fn matchAVariant(c: &Circle) i32 {
   match c {
-    case let r &Rect {r.w}   //~ ErrorInvType:10 "Circle is one variant of Shape, so it is already narrowed"
+    case &Rect(r) {r.w}   //~ ErrorInvType:10 "Circle is one variant of Shape, so it is already narrowed"
     else {0}
   }
 }
@@ -108,7 +108,7 @@ enum Gauge {
     match self {
       // Reported twice, once per copy: the default is cloned into Low and into
       // High, and each copy narrows a 'self' that is already its own variant
-      case let l &Low {l.lo}   //~ ErrorInvType:12 "Low is one variant of Gauge"
+      case &Low(l) {l.lo}   //~ ErrorInvType:12 "Low is one variant of Gauge"
                                //~^ ErrorInvType:12 "High is one variant of Gauge"
       else {0}
     }
@@ -126,7 +126,7 @@ enum Level {
 
   fn pick(self) i32 {
     match self {
-      case let l Flat {l.f}   //~ ErrorInvType:12 "Flat is one variant of Level"
+      case Flat(l) {l.f}   //~ ErrorInvType:12 "Flat is one variant of Level"
                                //~^ ErrorInvType:12 "Steep is one variant of Level"
       else {0}
     }
@@ -142,19 +142,19 @@ enum Level {
 // stands for it: it stays refused, whichever way it is written
 fn throughOwner(s: Rc[mut, Shape]) i32 {
   match s {
-    case let c Circle {c.radius}   //~ ErrorBadPerm:10 "held by an owner (an 'Rc')"
+    case Circle(c) {c.radius}   //~ ErrorBadPerm:10 "held by an owner (an 'Rc')"
     else {0}
   }
 }
 
 fn throughOwnerBound(s: Rc[mut, Shape]) i32 {
-  if let c Circle = s {c.radius} else {0}   //~ ErrorBadPerm:6 "held by an owner (an 'Rc')"
+  if let Circle(c) = s {c.radius} else {0}   //~ ErrorBadPerm:6 "held by an owner (an 'Rc')"
 }
 
 // ... and a read-only owner is not safe either: 'ro' is a view others may change
 fn throughReadOnlyOwner(s: Rc[ro, Shape]) i32 {
   match s {
-    case let c Circle {c.radius}   //~ ErrorBadPerm:10 "another owner could change which variant it holds"
+    case Circle(c) {c.radius}   //~ ErrorBadPerm:10 "another owner could change which variant it holds"
     else {0}
   }
 }
