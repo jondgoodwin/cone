@@ -1,0 +1,414 @@
+// ---- Structs ----
+//
+// Every struct is laid out as C lays it out (the 'layout' test checks each
+// size and offset against the C compiler). One that begins with a 'type' and a
+// 'next' gives its 'type' its own value by default and 'next' null, so a
+// create-info names only what it sets. An output struct (one the runtime
+// fills) is made the same way, and the runtime fills the rest. A string field
+// is a byte array, zero-terminated.
+
+// ---- Geometry ----
+
+pub struct Vector2f { pub x: f32; pub y: f32; }
+pub struct Vector3f { pub x: f32; pub y: f32; pub z: f32; }
+pub struct Quaternionf { pub x: f32; pub y: f32; pub z: f32; pub w: f32; }
+// A rigid placement: a unit quaternion, then a position in metres. OpenXR's
+// spaces are right-handed, y up, looking down -z, as render's are.
+pub struct Posef { pub orientation: Quaternionf; pub position: Vector3f; }
+// A field of view as four angles in radians from the view's axis: left and
+// down are negative for a symmetric view, right and up positive
+pub struct Fovf { pub angleLeft: f32; pub angleRight: f32; pub angleUp: f32; pub angleDown: f32; }
+pub struct Extent2Df { pub width: f32; pub height: f32; }
+pub struct Extent2Di { pub width: i32; pub height: i32; }
+pub struct Offset2Di { pub x: i32; pub y: i32; }
+pub struct Rect2Di { pub offset: Offset2Di; pub extent: Extent2Di; }
+
+// A value of T with every byte zero, for a struct the runtime fills in (an
+// ExtensionProperties, a SystemProperties) or one with no sensible default
+pub fn zeroed[T]() T {
+  let p = libc.calloc(1usize, mem.sizeof[T]()) as *T;
+  let v = mem.readRaw[T](p);
+  libc.free(p as *u8);
+  v
+}
+
+// The pose that places nothing: no turn, no move
+pub fn identityPose() Posef {
+  Posef(Quaternionf(0., 0., 0., 1.), Vector3f(0., 0., 0.))
+}
+
+// ---- Instance ----
+
+pub struct ApiLayerProperties {
+  pub type: i32 = TYPE_API_LAYER_PROPERTIES;
+  pub next: *u8 = null;
+  pub layerName: Array[u8, 256];
+  pub specVersion: u64;
+  pub layerVersion: u32;
+  pub description: Array[u8, 256];
+}
+
+pub struct ExtensionProperties {
+  pub type: i32 = TYPE_EXTENSION_PROPERTIES;
+  pub next: *u8 = null;
+  pub extensionName: Array[u8, 128];
+  pub extensionVersion: u32;
+}
+
+pub struct ApplicationInfo {
+  pub applicationName: Array[u8, 128];
+  pub applicationVersion: u32;
+  pub engineName: Array[u8, 128];
+  pub engineVersion: u32;
+  pub apiVersion: u64;
+}
+
+// An ApplicationInfo naming the application and the engine (each cut to its
+// array's 127 bytes and zero-terminated), asking for OpenXR version
+// 'apiVersion' (API_VERSION_1_0 or API_VERSION_1_1)
+pub fn applicationInfo(applicationName: &str, engineName: &str, apiVersion: u64) ApplicationInfo {
+  var info = ApplicationInfo(Array[u8, 128]() <- fill 0u8, 1u32, Array[u8, 128]() <- fill 0u8, 1u32, apiVersion);
+  var i = 0usize;
+  while i < applicationName.len && i < 127usize {
+    info.applicationName[i] = applicationName[i];
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while i < engineName.len && i < 127usize {
+    info.engineName[i] = engineName[i];
+    i = i + 1usize;
+  }
+  info
+}
+
+pub struct InstanceCreateInfo {
+  pub type: i32 = TYPE_INSTANCE_CREATE_INFO;
+  pub next: *u8 = null;
+  pub createFlags: u64 = 0u64;
+  pub applicationInfo: ApplicationInfo;
+  pub enabledApiLayerCount: u32 = 0u32;
+  pub enabledApiLayerNames: **u8;
+  pub enabledExtensionCount: u32 = 0u32;
+  pub enabledExtensionNames: **u8;
+}
+
+pub struct InstanceProperties {
+  pub type: i32 = TYPE_INSTANCE_PROPERTIES;
+  pub next: *u8 = null;
+  pub runtimeVersion: u64;
+  pub runtimeName: Array[u8, 128];
+}
+
+// ---- Events ----
+
+// What 'pollEvent' fills: the type says which struct it holds, and the
+// struct is read through a pointer cast ('&buffer as *EventDataSessionStateChanged').
+// 4000 bytes after the header is the specification's size.
+pub struct EventDataBuffer {
+  pub type: i32 = TYPE_EVENT_DATA_BUFFER;
+  pub next: *u8 = null;
+  pub varying: Array[u8, 4000];
+}
+
+pub struct EventDataEventsLost {
+  pub type: i32;
+  pub next: *u8;
+  pub lostEventCount: u32;
+}
+
+pub struct EventDataInstanceLossPending {
+  pub type: i32;
+  pub next: *u8;
+  pub lossTime: i64;
+}
+
+pub struct EventDataSessionStateChanged {
+  pub type: i32;
+  pub next: *u8;
+  pub session: Session;
+  pub state: i32;
+  pub time: i64;
+}
+
+pub struct EventDataReferenceSpaceChangePending {
+  pub type: i32;
+  pub next: *u8;
+  pub session: Session;
+  pub referenceSpaceType: i32;
+  pub changeTime: i64;
+  pub poseValid: u32;
+  pub poseInPreviousSpace: Posef;
+}
+
+// ---- System ----
+
+pub struct SystemGetInfo {
+  pub type: i32 = TYPE_SYSTEM_GET_INFO;
+  pub next: *u8 = null;
+  pub formFactor: i32 = FORM_FACTOR_HEAD_MOUNTED_DISPLAY;
+}
+
+pub struct SystemGraphicsProperties {
+  pub maxSwapchainImageHeight: u32;
+  pub maxSwapchainImageWidth: u32;
+  pub maxLayerCount: u32;
+}
+
+pub struct SystemTrackingProperties {
+  pub orientationTracking: u32;
+  pub positionTracking: u32;
+}
+
+pub struct SystemProperties {
+  pub type: i32 = TYPE_SYSTEM_PROPERTIES;
+  pub next: *u8 = null;
+  pub systemId: u64;
+  pub vendorId: u32;
+  pub systemName: Array[u8, 256];
+  pub graphicsProperties: SystemGraphicsProperties;
+  pub trackingProperties: SystemTrackingProperties;
+}
+
+// ---- Session and spaces ----
+
+pub struct SessionCreateInfo {
+  pub type: i32 = TYPE_SESSION_CREATE_INFO;
+  pub next: *u8 = null;
+  pub createFlags: u64 = 0u64;
+  pub systemId: u64;
+}
+
+pub struct SessionBeginInfo {
+  pub type: i32 = TYPE_SESSION_BEGIN_INFO;
+  pub next: *u8 = null;
+  pub primaryViewConfigurationType: i32 = VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
+}
+
+pub struct ReferenceSpaceCreateInfo {
+  pub type: i32 = TYPE_REFERENCE_SPACE_CREATE_INFO;
+  pub next: *u8 = null;
+  pub referenceSpaceType: i32;
+  pub poseInReferenceSpace: Posef;
+}
+
+pub struct SpaceLocation {
+  pub type: i32 = TYPE_SPACE_LOCATION;
+  pub next: *u8 = null;
+  pub locationFlags: u64 = 0u64;
+  pub pose: Posef;
+}
+
+// ---- Views ----
+
+pub struct ViewConfigurationProperties {
+  pub type: i32 = TYPE_VIEW_CONFIGURATION_PROPERTIES;
+  pub next: *u8 = null;
+  pub viewConfigurationType: i32 = 0i32;
+  pub fovMutable: u32 = 0u32;
+}
+
+pub struct ViewConfigurationView {
+  pub type: i32 = TYPE_VIEW_CONFIGURATION_VIEW;
+  pub next: *u8 = null;
+  pub recommendedImageRectWidth: u32 = 0u32;
+  pub maxImageRectWidth: u32 = 0u32;
+  pub recommendedImageRectHeight: u32 = 0u32;
+  pub maxImageRectHeight: u32 = 0u32;
+  pub recommendedSwapchainSampleCount: u32 = 0u32;
+  pub maxSwapchainSampleCount: u32 = 0u32;
+}
+
+pub struct ViewLocateInfo {
+  pub type: i32 = TYPE_VIEW_LOCATE_INFO;
+  pub next: *u8 = null;
+  pub viewConfigurationType: i32 = VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
+  pub displayTime: i64;
+  pub space: Space;
+}
+
+pub struct ViewState {
+  pub type: i32 = TYPE_VIEW_STATE;
+  pub next: *u8 = null;
+  pub viewStateFlags: u64 = 0u64;
+}
+
+// One eye's pose (in the space 'locateViews' was asked for) and field of view
+pub struct View {
+  pub type: i32 = TYPE_VIEW;
+  pub next: *u8 = null;
+  pub pose: Posef;
+  pub fov: Fovf;
+}
+
+// A view for 'locateViews' to fill: the runtime writes its pose and fov
+pub fn emptyView() View {
+  View(pose: identityPose(), fov: Fovf(0., 0., 0., 0.))
+}
+
+// ---- Swapchains ----
+
+pub struct SwapchainCreateInfo {
+  pub type: i32 = TYPE_SWAPCHAIN_CREATE_INFO;
+  pub next: *u8 = null;
+  pub createFlags: u64 = 0u64;
+  pub usageFlags: u64;
+  pub format: i64;
+  pub sampleCount: u32 = 1u32;
+  pub width: u32;
+  pub height: u32;
+  pub faceCount: u32 = 1u32;
+  pub arraySize: u32 = 1u32;
+  pub mipCount: u32 = 1u32;
+}
+
+// The header every graphics API's swapchain image struct begins with:
+// 'enumerateSwapchainImages' is given an array of SwapchainImageVulkan2KHR
+// cast to a pointer to this
+pub struct SwapchainImageBaseHeader {
+  pub type: i32;
+  pub next: *u8;
+}
+
+pub struct SwapchainImageAcquireInfo {
+  pub type: i32 = TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO;
+  pub next: *u8 = null;
+}
+
+pub struct SwapchainImageWaitInfo {
+  pub type: i32 = TYPE_SWAPCHAIN_IMAGE_WAIT_INFO;
+  pub next: *u8 = null;
+  pub timeout: i64 = NO_TIMEOUT;
+}
+
+pub struct SwapchainImageReleaseInfo {
+  pub type: i32 = TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO;
+  pub next: *u8 = null;
+}
+
+pub struct SwapchainSubImage {
+  pub swapchain: Swapchain;
+  pub imageRect: Rect2Di;
+  pub imageArrayIndex: u32 = 0u32;
+}
+
+// ---- The frame loop ----
+
+pub struct FrameWaitInfo {
+  pub type: i32 = TYPE_FRAME_WAIT_INFO;
+  pub next: *u8 = null;
+}
+
+pub struct FrameState {
+  pub type: i32 = TYPE_FRAME_STATE;
+  pub next: *u8 = null;
+  pub predictedDisplayTime: i64 = 0i64;
+  pub predictedDisplayPeriod: i64 = 0i64;
+  pub shouldRender: u32 = 0u32;
+}
+
+pub struct FrameBeginInfo {
+  pub type: i32 = TYPE_FRAME_BEGIN_INFO;
+  pub next: *u8 = null;
+}
+
+// 'layers' is an array of pointers to layers, each a struct beginning with a
+// CompositionLayerBaseHeader (here: CompositionLayerProjection)
+pub struct FrameEndInfo {
+  pub type: i32 = TYPE_FRAME_END_INFO;
+  pub next: *u8 = null;
+  pub displayTime: i64;
+  pub environmentBlendMode: i32 = ENVIRONMENT_BLEND_MODE_OPAQUE;
+  pub layerCount: u32 = 0u32;
+  pub layers: **u8;
+}
+
+pub struct CompositionLayerBaseHeader {
+  pub type: i32;
+  pub next: *u8;
+  pub layerFlags: u64;
+  pub space: Space;
+}
+
+pub struct CompositionLayerProjectionView {
+  pub type: i32 = TYPE_COMPOSITION_LAYER_PROJECTION_VIEW;
+  pub next: *u8 = null;
+  pub pose: Posef;
+  pub fov: Fovf;
+  pub subImage: SwapchainSubImage;
+}
+
+pub struct CompositionLayerProjection {
+  pub type: i32 = TYPE_COMPOSITION_LAYER_PROJECTION;
+  pub next: *u8 = null;
+  pub layerFlags: u64 = 0u64;
+  pub space: Space;
+  pub viewCount: u32 = 0u32;
+  pub views: *CompositionLayerProjectionView;
+}
+
+// ---- XR_KHR_vulkan_enable2 ----
+
+// The binding that makes a session draw with a Vulkan device: chained from
+// SessionCreateInfo's 'next'. (XR_KHR_vulkan_enable's struct of the same shape.)
+pub struct GraphicsBindingVulkanKHR {
+  pub type: i32 = TYPE_GRAPHICS_BINDING_VULKAN_KHR;
+  pub next: *u8 = null;
+  pub instance: vulkan.Instance;
+  pub physicalDevice: vulkan.PhysicalDevice;
+  pub device: vulkan.Device;
+  pub queueFamilyIndex: u32;
+  pub queueIndex: u32 = 0u32;
+}
+pub alias GraphicsBindingVulkan2KHR = GraphicsBindingVulkanKHR;
+
+// One swapchain image, as 'enumerateSwapchainImages' fills an array of them
+pub struct SwapchainImageVulkanKHR {
+  pub type: i32 = TYPE_SWAPCHAIN_IMAGE_VULKAN_KHR;
+  pub next: *u8 = null;
+  pub image: vulkan.Image;
+}
+pub alias SwapchainImageVulkan2KHR = SwapchainImageVulkanKHR;
+
+// The Vulkan versions the runtime supports ('getVulkanGraphicsRequirements2KHR'),
+// as OpenXR versions: 'makeVersion(1, 3, 0)' is Vulkan 1.3
+pub struct GraphicsRequirementsVulkanKHR {
+  pub type: i32 = TYPE_GRAPHICS_REQUIREMENTS_VULKAN_KHR;
+  pub next: *u8 = null;
+  pub minApiVersionSupported: u64 = 0u64;
+  pub maxApiVersionSupported: u64 = 0u64;
+}
+pub alias GraphicsRequirementsVulkan2KHR = GraphicsRequirementsVulkanKHR;
+
+// Makes the Vulkan instance for a session: the runtime adds the extensions it
+// needs to the application's create-info. 'pfnGetInstanceProcAddr' is the
+// Vulkan loader's, 'vulkanCreateInfo' the application's own, 'vulkanAllocator'
+// null.
+pub struct VulkanInstanceCreateInfoKHR {
+  pub type: i32 = TYPE_VULKAN_INSTANCE_CREATE_INFO_KHR;
+  pub next: *u8 = null;
+  pub systemId: u64;
+  pub createFlags: u64 = 0u64;
+  pub pfnGetInstanceProcAddr: vulkan.PFN_GetInstanceProcAddr;
+  pub vulkanCreateInfo: *vulkan.InstanceCreateInfo;
+  pub vulkanAllocator: *u8;
+}
+
+// The same for the Vulkan device, on the physical device the runtime chose
+pub struct VulkanDeviceCreateInfoKHR {
+  pub type: i32 = TYPE_VULKAN_DEVICE_CREATE_INFO_KHR;
+  pub next: *u8 = null;
+  pub systemId: u64;
+  pub createFlags: u64 = 0u64;
+  pub pfnGetInstanceProcAddr: vulkan.PFN_GetInstanceProcAddr;
+  pub vulkanPhysicalDevice: vulkan.PhysicalDevice;
+  pub vulkanCreateInfo: *vulkan.DeviceCreateInfo;
+  pub vulkanAllocator: *u8;
+}
+
+// Asks which physical device the runtime wants the application to use
+pub struct VulkanGraphicsDeviceGetInfoKHR {
+  pub type: i32 = TYPE_VULKAN_GRAPHICS_DEVICE_GET_INFO_KHR;
+  pub next: *u8 = null;
+  pub systemId: u64;
+  pub vulkanInstance: vulkan.Instance;
+}

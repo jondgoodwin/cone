@@ -1,0 +1,39 @@
+// The openxr package on a machine that may have no OpenXR loader and no
+// runtime at all: the module's 'init' tried to open the loader, and 'available'
+// says whether it did, cleanly, without a crash or a message. Only a failure
+// prints, and nothing printed depends on whether the machine has an OpenXR
+// loader or a runtime, so this test passes on all of them.
+//
+// - 'available' agrees with whether xrGetInstanceProcAddr was found.
+// - With a loader, asking for the instance extensions' count returns a result
+//   (SUCCESS with a runtime, ERROR_RUNTIME_UNAVAILABLE or another failure
+//   without one), and never crashes. Nothing here makes an instance: that
+//   would start a runtime.
+// - Without a loader, the instance functions' table built from a null
+//   xrGetInstanceProcAddr finds nothing and every required function is
+//   missing.
+
+mod noruntime;
+
+import testing use *;
+import openxr;
+
+fn main() i32 {
+  let found = openxr.available();
+  expectBool(found, openxr.getInstanceProcAddrAddress() != 0usize, "available says whether the loader's xrGetInstanceProcAddr was found");
+
+  var count = 0u32;
+  var r = openxr.ERROR_RUNTIME_UNAVAILABLE;
+  if found { r = openxr.enumerateInstanceExtensionProperties(null, 0u32, &mut count, null); }
+  expect(r == openxr.SUCCESS || openxr.failed(r), "the extension query answers a success or a failure");
+  expect(openxr.succeeded(r) || count == 0u32, "a failed query counts nothing");
+
+  let table = openxr.InstanceFns.load(0usize as openxr.Instance);
+  if !found {
+    expectInt(i64.from(table.missing), 34, "no loader: every required function missing");
+  } else {
+    expectInt(i64.from(table.missing), 34, "a null instance finds none of the instance functions");
+  }
+  expectBool(table.hasVulkanEnable2(), false, "and no extension functions");
+  done()
+}

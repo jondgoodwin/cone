@@ -1,0 +1,104 @@
+// The openxr package: raw bindings to OpenXR 1.0 and 1.1, written by hand from
+// the specification (registry.khronos.org/OpenXR) and checked against Khronos's
+// open headers (openxr.h, openxr_platform.h, OpenXR loader 1.1.65, Apache 2.0),
+// the part of it that a program drawing into a headset's swapchain images with
+// Vulkan needs: the instance and its extensions, the system (the headset), the
+// session, reference spaces, views, swapchains, the frame loop (wait, begin,
+// locate views, end), the event queue, paths, and XR_KHR_vulkan_enable2
+// (the runtime makes the Vulkan instance and device, and hands over the
+// swapchain images as VkImages). It follows the vulkan package's way, and its
+// naming:
+//
+// - A function drops 'xr' and starts lower case: xrCreateInstance is
+//   'openxr.createInstance', xrWaitFrame is 'fns.waitFrame'. Its parameters are
+//   the specification's, names and order.
+// - A type drops 'Xr': XrInstanceCreateInfo is 'openxr.InstanceCreateInfo',
+//   its fields named and ordered as the specification has them.
+// - A constant drops 'XR_': XR_TYPE_INSTANCE_CREATE_INFO is
+//   'openxr.TYPE_INSTANCE_CREATE_INFO', XR_ERROR_RUNTIME_UNAVAILABLE is
+//   'openxr.ERROR_RUNTIME_UNAVAILABLE'. Enumerations are i32 (C's int; a
+//   runtime may return a value an enumeration would not list), flag sets u64
+//   (XrFlags64), an XrResult an i32, an XrTime and an XrDuration an i64, an
+//   XrVersion a u64.
+// - A function-pointer type drops 'PFN_xr': 'openxr.PFN_CreateInstance'.
+//
+// Handles are pointers to opaque structs (XR_DEFINE_HANDLE on 64-bit), so
+// '0usize as openxr.Session' is XR_NULL_HANDLE; an atom (XrSystemId, XrPath)
+// is a u64, 0 being its null.
+//
+// Every struct is laid out as C lays it out: fields in the specification's
+// order, not reordered, not packed. The package's 'layout' test checks each
+// size and offset against the C compiler. A struct with a 'type' gives it its
+// own value by default and its 'next' defaults to null, so a create-info names
+// only what it sets:
+//
+//   imm ci = openxr.SessionCreateInfo(systemId: systemId, next: &binding as *u8);
+//
+// Every other pointer field has no default, so each is written, a null one as
+// 'null'.
+//
+// Nothing is linked. The OpenXR loader is opened at run time and every
+// function is found through its xrGetInstanceProcAddr, in two steps:
+//
+//   the module's 'init'            opens the OS's loader (openxr_loader.dll,
+//                                  libopenxr_loader.so.1) and finds
+//                                  xrGetInstanceProcAddr and the functions
+//                                  needing no instance, once, before main:
+//                                  'openxr.enumerateInstanceExtensionProperties',
+//                                  'openxr.createInstance' and the like. With
+//                                  no loader it does not fail:
+//                                  'openxr.available()' is false. With a
+//                                  loader and no runtime, 'available()' is
+//                                  true and the loader answers
+//                                  ERROR_RUNTIME_UNAVAILABLE when the
+//                                  instance is made
+//   InstanceFns.load(instance)     the instance's functions, a table for that
+//                                  instance: 'fns.waitFrame(session, ...)'.
+//                                  'missing' names how many of the required
+//                                  ones were not found; the two extensions'
+//                                  functions are optional ('hasVulkanEnable2',
+//                                  'hasWin32Time')
+//
+// Which OpenXR runtime answers is the loader's affair: the XR_RUNTIME_JSON
+// environment variable, else the active runtime in the system's configuration.
+// The loader itself is found by the OS's search for a library (the program's
+// folder, then PATH); no copy of it or of a header is in this repository.
+//
+// The addresses are called as Cone function references, which use C's calling
+// convention. XRAPI_CALL is __stdcall in the header, which on 64-bit Windows
+// is the one convention there is; a 32-bit build would need the system
+// convention, which Cone does not have yet.
+//
+// Everything is as C has it: C types, C strings ('*u8', zero-terminated, as a
+// string literal is), and structs through pointers. OpenXR passes no struct by
+// value, which matters because a call through a function reference passes a
+// struct by value as Cone does, not as C does.
+//
+// A call that fills an array asks twice, as OpenXR's two-call idiom has it:
+// once with capacity 0 for the count, once with room for them.
+//
+// Left out: the action system (action sets, actions, bindings, input state,
+// haptics), which is controllers' and the next step; hand and eye tracking,
+// passthrough and every vendor extension; the composition layers other than
+// the projection layer (quad, cylinder, cube, equirect, depth); the Android
+// and D3D bindings; xrInitializeLoaderKHR; XR_KHR_vulkan_enable (the older
+// extension; XR_KHR_vulkan_enable2 is the one this package binds); debug
+// utils; and the loader's negotiation interface.
+//
+// Its files are one module:
+//
+//   handles.cone       versions, handles, XrResult's values and names, session states
+//   constants.cone     the constants: structure types, enumerations, flag bits
+//   structs.cone       structs: geometry, instance, events, system, session,
+//                      views, swapchains, the frame loop, XR_KHR_vulkan_enable2
+//   fntypes.cone       the functions, as function-reference types
+//   load.cone          the OS's loader, the module's 'init', and the
+//                      global-level functions (GlobalFns)
+//   instancefns.cone   the instance-level functions (InstanceFns)
+//
+// The layout test's tests/layout.py reads them all, and lists them.
+
+mod openxr;
+
+import libc;
+import vulkan;

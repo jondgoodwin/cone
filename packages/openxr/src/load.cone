@@ -1,0 +1,134 @@
+// ---- The OpenXR loader, found when the program starts ----
+//
+// The module's 'init' opens the OpenXR loader (openxr_loader.dll; libopenxr_loader.so.1;
+// libopenxr_loader.dylib), takes xrGetInstanceProcAddr from it, and finds the
+// three functions needing no instance (the API layers and the instance's
+// extensions, and xrCreateInstance), once, before anything runs. A machine
+// with no loader is not an error here: 'available' is false, and whoever makes
+// the instance reports it. A loader with no runtime behind it is found here
+// too, and answers later: the extension query returns 'ERROR_RUNTIME_UNAVAILABLE'
+// and 'createInstance' fails the same way. The instance's functions are not
+// global: each belongs to the instance it was found for ('InstanceFns').
+
+extern {
+  fn @initpure @c(system) LoadLibraryA(name: *u8) usize;
+  fn @initpure @c(system) GetProcAddress(module: usize, name: *u8) usize;
+  fn @initpure @c dlopen(name: *u8, flags: i32) usize;
+  fn @initpure @c dlsym(handle: usize, name: *u8) usize;
+}
+
+// dlopen's RTLD_NOW: Linux's and macOS's value alike
+const rtldNow = 2i32;
+
+// The OpenXR loader library of this OS, opened: 0 if there is none
+fn @initpure openLoader() usize {
+  if isWindows() {
+    return LoadLibraryA(&"openxr_loader.dll" as *u8);
+  }
+  if isMacOS() {
+    var h = dlopen(&"libopenxr_loader.1.dylib" as *u8, rtldNow);
+    if h == 0usize { h = dlopen(&"libopenxr_loader.dylib" as *u8, rtldNow); }
+    return h;
+  }
+  dlopen(&"libopenxr_loader.so.1" as *u8, rtldNow)
+}
+
+// A function of the opened loader library
+fn @initpure loaderSymbol(library: usize, name: *u8) usize {
+  if isWindows() { GetProcAddress(library, name) } else { dlsym(library, name) }
+}
+
+// The global-level functions, found by the module's 'init': nothing found
+// when there is no OpenXR loader
+let globals: GlobalFns;
+
+fn @initpure init() {
+  let library = openLoader();
+  var gipa = 0usize;
+  if library != 0usize { gipa = loaderSymbol(library, &"xrGetInstanceProcAddr" as *u8); }
+  globals = GlobalFns.find(gipa as *u8 as PFN_GetInstanceProcAddr);
+}
+
+// Whether the OpenXR loader was found and gave every global-level function.
+// This says nothing about a runtime: the loader reports that later, when the
+// instance is made. When it is false, calling 'createInstance' and the other
+// global-level functions calls address 0 and crashes: check this first.
+pub fn available() bool {
+  globals.pfnGetInstanceProcAddr != 0usize && globals.missing == 0u32
+}
+
+// Look a function up through an xrGetInstanceProcAddr: its address, or 0
+// where the loader or the runtime does not have it
+fn lookup(getInstanceProcAddr: PFN_GetInstanceProcAddr, instance: Instance, name: *u8) usize {
+  var address = 0usize;
+  let r = getInstanceProcAddr(instance, name, &mut address);
+  if r < 0i32 { return 0usize; }
+  address
+}
+
+// The functions needing no instance. 'init' finds them through the OS loader;
+// 'find' takes any xrGetInstanceProcAddr, which is how a test stands one in.
+pub struct GlobalFns {
+  pfnGetInstanceProcAddr: usize = 0usize;
+  pfnEnumerateApiLayerProperties: usize = 0usize;
+  pfnEnumerateInstanceExtensionProperties: usize = 0usize;
+  pfnCreateInstance: usize = 0usize;
+  // How many of its functions were not found
+  pub missing: u32 = 0u32;
+
+  // Keep 'getInstanceProcAddr' and look the other three up through it. A null
+  // one gives a table with nothing found and nothing counted missing
+  pub fn find(getInstanceProcAddr: PFN_GetInstanceProcAddr) GlobalFns {
+    var t = GlobalFns();
+    if getInstanceProcAddr as usize == 0usize { return t; }
+    var missing = 0u32;
+    t.pfnGetInstanceProcAddr = getInstanceProcAddr as usize;
+    let none = 0usize as Instance;
+    t.pfnEnumerateApiLayerProperties = lookup(getInstanceProcAddr, none, &"xrEnumerateApiLayerProperties" as *u8);
+    if t.pfnEnumerateApiLayerProperties == 0usize { missing = missing + 1u32; }
+    t.pfnEnumerateInstanceExtensionProperties = lookup(getInstanceProcAddr, none, &"xrEnumerateInstanceExtensionProperties" as *u8);
+    if t.pfnEnumerateInstanceExtensionProperties == 0usize { missing = missing + 1u32; }
+    t.pfnCreateInstance = lookup(getInstanceProcAddr, none, &"xrCreateInstance" as *u8);
+    if t.pfnCreateInstance == 0usize { missing = missing + 1u32; }
+    t.missing = missing;
+    t
+  }
+
+  pub fn getInstanceProcAddr(self: &, instance: Instance, name: *u8, function: &mut usize) i32 {
+    (pfnGetInstanceProcAddr as *u8 as PFN_GetInstanceProcAddr)(instance, name, function)
+  }
+  pub fn enumerateApiLayerProperties(self: &, propertyCapacityInput: u32, propertyCountOutput: &mut u32,
+    properties: *ApiLayerProperties) i32 {
+    (pfnEnumerateApiLayerProperties as *u8 as PFN_EnumerateApiLayerProperties)(propertyCapacityInput,
+      propertyCountOutput, properties)
+  }
+  pub fn enumerateInstanceExtensionProperties(self: &, layerName: *u8, propertyCapacityInput: u32,
+    propertyCountOutput: &mut u32, properties: *ExtensionProperties) i32 {
+    (pfnEnumerateInstanceExtensionProperties as *u8 as PFN_EnumerateInstanceExtensionProperties)(layerName,
+      propertyCapacityInput, propertyCountOutput, properties)
+  }
+  pub fn createInstance(self: &, createInfo: &InstanceCreateInfo, instance: &mut Instance) i32 {
+    (pfnCreateInstance as *u8 as PFN_CreateInstance)(createInfo, instance)
+  }
+}
+
+// ---- The global-level functions, called on what 'init' found ----
+
+pub fn getInstanceProcAddr(instance: Instance, name: *u8, function: &mut usize) i32 {
+  globals.getInstanceProcAddr(instance, name, function)
+}
+pub fn enumerateApiLayerProperties(propertyCapacityInput: u32, propertyCountOutput: &mut u32,
+  properties: *ApiLayerProperties) i32 {
+  globals.enumerateApiLayerProperties(propertyCapacityInput, propertyCountOutput, properties)
+}
+pub fn enumerateInstanceExtensionProperties(layerName: *u8, propertyCapacityInput: u32, propertyCountOutput: &mut u32,
+  properties: *ExtensionProperties) i32 {
+  globals.enumerateInstanceExtensionProperties(layerName, propertyCapacityInput, propertyCountOutput, properties)
+}
+pub fn createInstance(createInfo: &InstanceCreateInfo, instance: &mut Instance) i32 {
+  globals.createInstance(createInfo, instance)
+}
+
+// The loader's xrGetInstanceProcAddr as an address (0 when there is no loader):
+// what a runtime-neutral helper hands to a function that wants one
+pub fn getInstanceProcAddrAddress() usize { globals.pfnGetInstanceProcAddr }
