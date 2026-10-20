@@ -10,6 +10,7 @@
 //   --think               show Qwen3's thinking (<think> ... </think>) before each answer. Without it the
 //                         model is given its own empty thinking block and answers directly
 //   --top-k <k>           default 20     --top-p <p>   default 0.8 (0.95 with --think)    --seed <n>
+//   --validate            run with the Vulkan validation layer on, where installed (slower; for checking the GPU code)
 //
 // It is a multi-turn chat in ChatML: each line you type is a turn, the reply streams as it is made, and the
 // conversation stays in the GPU's KV cache, so a turn costs only its own tokens. After each reply it prints the
@@ -41,7 +42,7 @@ fn say(msg: &str) {
 }
 
 fn usage() {
-  say("usage: llmchat --model <path.gguf> [--temp 0.7] [--ctx 4096] [--think] [--top-k 20] [--top-p 0.8] [--seed n]\n");
+  say("usage: llmchat --model <path.gguf> [--temp 0.7] [--ctx 4096] [--think] [--top-k 20] [--top-p 0.8] [--seed n] [--validate]\n");
 }
 
 fn bytesOf(s: &str) List[u8] {
@@ -152,7 +153,9 @@ fn main() i32 {
   }
 
   utf8Console();
-  var instance = Instance.create("llmchat");
+  // No window and no Vulkan validation layer unless --validate: with the layer every Vulkan call costs several
+  // times as much (recording a token's 722 dispatches took 11 ms with it and 1 to 3 ms without, on the 1.7B)
+  var instance = if hasFlag(&args, "--validate") { Instance.create("llmchat") } else { Instance.createHeadless("llmchat", false) };
   var none = Surface.none();
   var adapter = instance.requestAdapter(&none, POWER_PREFERENCE_HIGH_PERFORMANCE);
   if !adapter.isValid() { say("llmchat: no GPU with Vulkan 1.3\n"); return 1i32; }

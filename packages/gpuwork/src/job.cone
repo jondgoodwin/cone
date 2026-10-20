@@ -46,13 +46,80 @@ pub fn wordsOf(buffer: &Buffer) List[u32] {
   out
 }
 
+// ---- Bindings: a buffer, or a range of one, bound by a dispatch ----
+
+// A binding's offset is a multiple of this: WebGPU's 256, which gpu holds
+// every device to (the GPU's own limit, 'device.compute.minStorageBufferOffsetAlignment',
+// is 16 on an RTX 4060 and 64 on an Intel UHD 770)
+pub const BINDING_ALIGNMENT = MIN_STORAGE_BUFFER_OFFSET_ALIGNMENT;
+
+// What a dispatch binds at one of a kernel's bindings: the buffer in job slot
+// 'slot', all of it ('whole'), or 'size' bytes of it from byte 'offset', a
+// multiple of BINDING_ALIGNMENT ('range'; a size of 0 is the rest of the buffer)
+pub struct Binding {
+  pub slot: u32;
+  pub offset: u64;
+  pub size: u64;
+
+  // All of the buffer in 'slot'
+  pub fn whole(slot: u32) Binding { Binding(slot, 0u64, 0u64) }
+
+  // 'size' bytes of the buffer in 'slot' from 'offset' (0: the rest of it)
+  pub fn range(slot: u32, offset: u64, size: u64) Binding { Binding(slot, offset, size) }
+}
+
+// A dispatch's bindings as the bind group it made was told them: the slots, offsets and sizes (the
+// size a whole binding has, filled in), what a kept bind group is compared with
+struct BindKey {
+  count: u32;
+  slots: Array[u32, 8];
+  offsets: Array[u64, 8];
+  sizes: Array[u64, 8];
+}
+
+fn sameKey(a: &BindKey, b: &BindKey) bool {
+  if a.count != b.count { return false; }
+  var i = 0usize;
+  while i < usize.from(a.count) {
+    if a.slots[i] != b.slots[i] || a.offsets[i] != b.offsets[i] || a.sizes[i] != b.sizes[i] { return false; }
+    i = i + 1usize;
+  }
+  true
+}
+
+// One dispatch of a job that keeps its bind groups: the kernel it ran (its serial; 0 for one whose group
+// is never reused), the bindings, and the bind group
+struct TapeEntry {
+  kernel: u64;
+  key: BindKey;
+  group: BindGroup;
+}
+
+// What a job passes on to the one after it ('completion.again'): the bind groups of its dispatches, in
+// order, and the parameter slab's place and room
+struct Lineage {
+  keep: bool;                   // this job keeps its bind groups in 'tape', for the next to reuse
+  tape: List[TapeEntry];
+  reused: u32;                  // dispatches of this job that reused a bind group of the job before
+  hasSlab: bool;
+  slabSlot: u32;                // the slab's buffer, in the job's slots
+  slabCap: u64;                 // its bytes
+  slabUsed: u64;                // bytes packed so far (the next starts at the next BINDING_ALIGNMENT)
+  slabWords: List[u32];         // the CPU's copy, written to the buffer when the job is submitted
+
+  fn none() Lineage {
+    Lineage(false, List[TapeEntry].empty(), 0u32, false, 0u32, 0u64, 0u64, List[u32].empty())
+  }
+}
+
 // A job: work for the GPU over buffers moved into it. Its buffers are given
 // to it ('give', each a slot number), its dispatches recorded over them
-// ('dispatch'), copies to read some back recorded ('readback'), and then it
-// is submitted ('works.submit'), the buffers going with it. They come back
-// in its Completion once the GPU has finished, the same slots. A job is
-// recorded and submitted within one frame of the device's (it records into
-// the frame's commands); one submitted in a later frame is refused.
+// ('dispatch', 'dispatchBound'), copies to read some back recorded
+// ('readback'), and then it is submitted ('works.submit'), the buffers going
+// with it. They come back in its Completion once the GPU has finished, the
+// same slots. A job is recorded and submitted within one frame of the
+// device's (it records into the frame's commands); one submitted in a later
+// frame is refused.
 pub struct Job {
   buffers: List[Buffer];
   groups: List[BindGroup];      // one a dispatch, kept until the GPU is done
@@ -61,12 +128,61 @@ pub struct Job {
   pub failed: bool;             // a request was refused: it completes, not ok, without running
   dispatches: u32;              // recorded so far
   checks: List[ErrorCheck];     // a Cone kernel's dispatch: its error buffer, read after
+  line: Lineage;                // what it keeps for the job after it, and what it had from the one before
+  pass: Option[ComputePassEncoder];   // the compute pass the last dispatches were recorded into, if it is open
+  passOpen: bool;
 
   // An empty job, recording into the device's current frame
   pub fn make(device: &mut Device) Job {
     let encoder = device.createCommandEncoder();
     Job(List[Buffer].empty(), List[BindGroup].empty(), encoder, device.frameNumber, false, 0u32,
-      List[ErrorCheck].empty())
+      List[ErrorCheck].empty(), Lineage.none(), None, false)
+  }
+
+  // End the open compute pass, if there is one: what its dispatches wrote is then seen by every command
+  // recorded after. (Dispatches of kernels without an error buffer share one pass, each seeing what the
+  // dispatches before it wrote; anything else recorded in the job ends it first.)
+  fn endPass(self: &mut) {
+    if !passOpen { return; }
+    match &mut pass {
+      case var &mut Some(p) { (*p).end(); }
+      else {}
+    }
+    pass = None;
+    passOpen = false;
+  }
+
+  // Record the dispatch of 'kernel' over the bind group at 'at' of the job's 'tape' (kept) or 'groups'.
+  // A kernel without an error buffer goes into the open compute pass, which is begun if none is open: a
+  // pass costs the CPU two global barriers to begin and end, and a dispatch after another in a pass one
+  // barrier. A Cone kernel's dispatch is in a pass of its own, which is ended, since the copy of its error
+  // buffer follows it.
+  fn recordDispatch(self: &mut, kernel: &Kernel, kept: bool, at: usize, x: u32, y: u32, z: u32) {
+    if kernel.isCone { self.endPass(); }
+    if !passOpen {
+      pass = Some[ComputePassEncoder](encoder.beginComputePass());
+      passOpen = true;
+    }
+    match &mut pass {
+      case var &mut Some(p) {
+        (*p).setPipeline(&kernel.pipeline);
+        if kept { (*p).setBindGroup(0u32, &line.tape[at].group); } else { (*p).setBindGroup(0u32, groups[at]); }
+        (*p).dispatchWorkgroups(x, y, z);
+      }
+      else {}
+    }
+    if kernel.isCone { self.endPass(); }
+  }
+
+  // An empty job that keeps its dispatches' bind groups for the next job: its Completion's
+  // 'again' makes that job over the same buffers, and a dispatch of it that binds what the same
+  // dispatch of this one did (the same kernel, the same slots, offsets and sizes) uses the bind
+  // group already made, where a job made with 'make' makes one for each dispatch and frees it
+  // when its job is done (a bind group's making and ending cost the CPU about 10 us and 17 us)
+  pub fn makeReusable(device: &mut Device) Job {
+    var job = Job.make(device);
+    job.line.keep = true;
+    job
   }
 
   // Move 'buffer' into the job: its slot, by which dispatches bind it and
@@ -79,6 +195,67 @@ pub struct Job {
   // How many buffers it holds
   pub fn count(self: &) u32 { u32.from(buffers.len()) }
 
+  // How many dispatches recorded so far used a bind group made for the job before it
+  pub fn reusedGroups(self: &) u32 { line.reused }
+
+  // Give the job a parameter slab of 'bytes' (rounded up to BINDING_ALIGNMENT): a buffer that its
+  // small by-value parameters ('pack') are packed into, each at an aligned offset, and written
+  // with one upload when the job is submitted, in place of a buffer made and uploaded for each.
+  // The slot of the buffer; a job has one slab, given before the first pack (refused otherwise)
+  pub fn slab(self: &mut, device: &mut Device, bytes: u64) u32 {
+    if line.hasSlab || bytes == 0u64 {
+      self.refuse("slab: the job has a slab already, or the size is 0");
+      return u32.from(buffers.len());
+    }
+    let cap = (bytes + BINDING_ALIGNMENT - 1u64) / BINDING_ALIGNMENT * BINDING_ALIGNMENT;
+    let buffer = device.createBuffer(cap, WORK_USAGE);
+    if !buffer.isValid() {
+      self.refuse("slab: the buffer was not made");
+      return u32.from(buffers.len());
+    }
+    let slot = self.give(buffer);
+    line.hasSlab = true;
+    line.slabSlot = slot;
+    line.slabCap = cap;
+    line.slabUsed = 0u64;
+    line.slabWords = List[u32](usize.from(cap / 4u64)) <- fill 0u32;
+    slot
+  }
+
+  // Whether the job has a parameter slab
+  pub fn hasSlab(self: &) bool { line.hasSlab }
+
+  // Copy 'value', a struct of 32-bit numbers (or fixed arrays of them), into the next aligned place
+  // in the slab and answer the Binding of just its bytes, which a dispatch binds as a kernel's
+  // by-value struct parameter. Refused (and the job failed) with no slab or when it is full; the
+  // Binding is then of an empty slot, which a dispatch refuses.
+  pub fn pack[T](self: &mut, value: &T) Binding {
+    let bytes = u64.from(mem.sizeof[T]());
+    let at = (line.slabUsed + BINDING_ALIGNMENT - 1u64) / BINDING_ALIGNMENT * BINDING_ALIGNMENT;
+    if !line.hasSlab || bytes == 0u64 || at + bytes > line.slabCap {
+      self.refuse("pack: the job has no slab, the value is empty, or the slab is full");
+      return Binding.whole(u32.from(buffers.len()));
+    }
+    libc.memcpy(&mut line.slabWords[usize.from(at / 4u64)] as *u8, value as *u8, usize.from(bytes));
+    line.slabUsed = at + bytes;
+    Binding.range(line.slabSlot, at, bytes)
+  }
+
+  // Write the packed bytes into the slab's buffer, ahead of the job (Works.submit)
+  fn flushSlab(self: &mut, device: &mut Device) {
+    if !line.hasSlab || line.slabUsed == 0u64 { return; }
+    let s = usize.from(line.slabSlot);
+    if s >= buffers.len() || !buffers[s].isValid() { return; }
+    let n = (line.slabUsed + 3u64) / 4u64 * 4u64;
+    let wv = line.slabWords.view();
+    device.queue.writeBuffer(buffers[s], 0u64, &wv[0usize] as *u8, n);
+  }
+
+  // The job is recorded: bind groups kept from the job before that this one has no dispatch for are freed
+  fn endTape(self: &mut) {
+    while line.tape.len() > usize.from(dispatches) { line.tape.pop(); }
+  }
+
   // Run 'kernel' in 'x' by 'y' by 'z' workgroups, binding i the buffer in
   // slot 'slots[i]'. It sees what the job's earlier dispatches wrote. Refused
   // (and the job failed) if the slots do not match the kernel's bindings, a
@@ -88,37 +265,72 @@ pub struct Job {
   // bound after the slots, and copied after the dispatch into one the CPU
   // reads when the job is complete (see the Completion's 'failures').
   pub fn dispatch(self: &mut, device: &mut Device, kernel: &Kernel, slots: &Array[u32], x: u32, y: u32 = 1u32, z: u32 = 1u32) bool {
+    var bs = List[Binding].withCapacity(slots.len);
+    var i = 0usize;
+    while i < slots.len {
+      bs.push(Binding.whole(slots[i]));
+      i = i + 1usize;
+    }
+    self.dispatchBound(device, kernel, bs.view(), x, y, z)
+  }
+
+  // The same, binding i the 'bindings[i]': the buffer in its slot, or a range of it (a parameter
+  // slab's struct, a tensor in a buffer of many). A range starts at a multiple of BINDING_ALIGNMENT,
+  // is not empty, lies within its buffer, and is at most what the device binds; otherwise refused
+  // (and the job failed) as for 'dispatch'. A buffer is named once, whatever its ranges.
+  pub fn dispatchBound(self: &mut, device: &mut Device, kernel: &Kernel, bindings: &Array[Binding], x: u32, y: u32 = 1u32, z: u32 = 1u32) bool {
     if !kernel.isValid() {
       return self.refuse("dispatch: the kernel is not valid");
     }
-    if slots.len != usize.from(kernel.bindings) {
+    if bindings.len != usize.from(kernel.bindings) {
       return self.refuse("dispatch: the slots given are not one for each of the kernel's bindings");
     }
     var entries = List[BindGroupEntry].empty();
+    var key = BindKey(u32.from(bindings.len), Array[u32, 8]() <- fill 0u32, Array[u64, 8]() <- fill 0u64,
+      Array[u64, 8]() <- fill 0u64);
     var i = 0usize;
-    while i < slots.len {
-      let s = usize.from(slots[i]);
+    while i < bindings.len {
+      let s = usize.from(bindings[i].slot);
       if s >= buffers.len() || !buffers[s].isValid() {
         return self.refuse("dispatch: a slot holds no buffer");
       }
       if (buffers[s].usage & BUFFER_USAGE_STORAGE) == 0u32 {
         return self.refuse("dispatch: a buffer was not made with BUFFER_USAGE_STORAGE");
       }
-      // A buffer is bound whole, so it is at most what the device binds: WebGPU's 128 MiB, or with
+      let offset = bindings[i].offset;
+      if offset % BINDING_ALIGNMENT != 0u64 {
+        return self.refuse("dispatch: a binding's offset is not a multiple of BINDING_ALIGNMENT (256)");
+      }
+      if offset > buffers[s].size {
+        return self.refuse("dispatch: a binding's offset is past the end of its buffer");
+      }
+      var size = bindings[i].size;
+      if size == 0u64 { size = buffers[s].size - offset; }
+      if size == 0u64 || offset + size > buffers[s].size {
+        return self.refuse("dispatch: a binding is empty or runs past the end of its buffer");
+      }
+      // What is bound is at most what the device binds: WebGPU's 128 MiB, or with
       // ComputeRequest.largeBuffers the GPU's own (gpu's createBindGroup holds to the same limit)
-      if buffers[s].size > device.maxStorageBufferBindingSize {
+      if size > device.maxStorageBufferBindingSize {
         return self.refuse("dispatch: a buffer is larger than the device's storage binding (device.maxStorageBufferBindingSize: 128 MiB, or with ComputeRequest.largeBuffers the GPU's own)");
       }
       // WebGPU refuses a buffer bound twice in one dispatch when either
       // binding writes it
       var j = 0usize;
       while j < i {
-        if slots[j] == slots[i] {
+        if bindings[j].slot == bindings[i].slot {
           return self.refuse("dispatch: a slot is bound twice");
         }
         j = j + 1usize;
       }
-      entries.push(BindGroupEntry.buffer(u32.from(i), buffers[s]));
+      if offset == 0u64 && size == buffers[s].size {
+        entries.push(BindGroupEntry.buffer(u32.from(i), buffers[s]));
+      } else {
+        entries.push(BindGroupEntry.bufferRange(u32.from(i), buffers[s], offset, size));
+      }
+      key.slots[i] = bindings[i].slot;
+      key.offsets[i] = offset;
+      key.sizes[i] = size;
       i = i + 1usize;
     }
     // A Cone kernel's error buffer, zero before the dispatch (the zeros are
@@ -138,18 +350,35 @@ pub struct Job {
       }
       entries.push(BindGroupEntry.buffer(kernel.bindings, &checks[checks.len() - 1usize].errors));
     }
-    let group = device.createBindGroup(&kernel.groupLayout, entries.view());
-    if !group.isValid() {
-      return self.refuse("dispatch: the bind group was not made");
+    if line.keep {
+      // The bind group the job before this one made for the same dispatch (same place in the job, same
+      // kernel, same bindings) is the one to use: it binds the same buffers, which this job holds in
+      // the same slots (a Completion's 'again' moved them). A Cone kernel's is never reused: its error
+      // buffer is new for every dispatch.
+      let pos = usize.from(dispatches);
+      var reuse = false;
+      if !kernel.isCone && pos < line.tape.len() {
+        reuse = line.tape[pos].kernel == kernel.serial && sameKey(&line.tape[pos].key, &key);
+      }
+      if reuse {
+        line.reused = line.reused + 1u32;
+      } else {
+        let group = device.createBindGroup(&kernel.groupLayout, entries.view());
+        if !group.isValid() {
+          return self.refuse("dispatch: the bind group was not made");
+        }
+        let entry = TapeEntry(if kernel.isCone { 0u64 } else { kernel.serial }, key, group);
+        if pos < line.tape.len() { line.tape[pos] = entry; } else { line.tape.push(entry); }
+      }
+      self.recordDispatch(kernel, true, pos, x, y, z);
+    } else {
+      let group = device.createBindGroup(&kernel.groupLayout, entries.view());
+      if !group.isValid() {
+        return self.refuse("dispatch: the bind group was not made");
+      }
+      groups.push(group);
+      self.recordDispatch(kernel, false, groups.len() - 1usize, x, y, z);
     }
-    {
-      var pass = encoder.beginComputePass();
-      pass.setPipeline(&kernel.pipeline);
-      pass.setBindGroup(0u32, &group);
-      pass.dispatchWorkgroups(x, y, z);
-      pass.end();
-    }
-    groups.push(group);
     if kernel.isCone {
       let c = &mut checks[checks.len() - 1usize];
       encoder.copyBufferToBuffer(&c.errors, 0u64, &c.read, 0u64, u64.from(ERROR_BUFFER_WORDS) * 4u64);
@@ -171,6 +400,7 @@ pub struct Job {
       return u32.from(buffers.len());
     }
     let size = buffers[s].size;
+    self.endPass();
     let target = device.createBuffer(size, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
     encoder.copyBufferToBuffer(buffers[s], 0u64, &target, 0u64, size);
     self.give(target)

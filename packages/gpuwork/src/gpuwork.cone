@@ -33,6 +33,11 @@
 //   wordsOf(buffer)
 //   Job.make(device)  job.give(buffer)  job.dispatch(device, kernel, slots, x, y, z)  (JOBS)
 //   job.readback(device, slot)  job.count()  job.failed
+//   Binding.whole(slot)  Binding.range(slot, offset, size)  BINDING_ALIGNMENT    (RANGES)
+//   job.dispatchBound(device, kernel, bindings, x, y, z)
+//   job.slab(device, bytes)  job.pack(&value)  job.hasSlab()                     (THE PARAMETER SLAB)
+//   Job.makeReusable(device)  completion.again(device, keep)                     (KEPT BIND GROUPS)
+//   job.reusedGroups()  completion.reusedGroups()
 //   Works.make()  works.submit(device, job, to)  works.poll(device, out)    (WORKS)
 //   works.flush(device)  works.waitFor(device, ticket, out)  works.waitAll(device, out)
 //   works.inFlight()
@@ -92,14 +97,67 @@
 // in 6 ms). 'zeroed' has the GPU fill its buffer, so no zeros cross from
 // the CPU (40 MB in 0.25 ms of the CPU's time, 2 ms to the job done).
 //
-// A dispatch binds each of its buffers whole, so a buffer is at most what the
-// device binds: 'device.maxStorageBufferBindingSize', WebGPU's 128 MiB on a
-// device made without gpu's 'ComputeRequest.largeBuffers' (the drawing
-// device 'requestDevice' makes, and what every program here has used) and
-// the GPU's own with it (4 GiB less 1 byte on an RTX 4060). A larger buffer
-// is refused. A kernel reaches into a big buffer by an offset in its
+// A dispatch ('dispatch') binds each of its buffers whole, so a buffer is at
+// most what the device binds: 'device.maxStorageBufferBindingSize', WebGPU's
+// 128 MiB on a device made without gpu's 'ComputeRequest.largeBuffers' (the
+// drawing device 'requestDevice' makes, and what every program here has used)
+// and the GPU's own with it (4 GiB less 1 byte on an RTX 4060). A larger
+// buffer is refused. A kernel reaches into a big buffer by an offset in its
 // parameters (llmkernels' 'wByteOffset'), and a model's weights, a buffer
 // for each tensor or layer, are bound one at a time.
+//
+// RANGES. 'dispatchBound' binds each of a kernel's bindings as a Binding: the
+// buffer in a slot, all of it ('Binding.whole') or 'size' bytes of it from
+// 'offset' ('Binding.range'; a size of 0 is the rest of the buffer). The kernel
+// sees exactly that range as its binding (a slice of as many elements as the
+// range holds). An offset is a multiple of BINDING_ALIGNMENT, 256: WebGPU's
+// minStorageBufferOffsetAlignment, which gpu holds every device to (the GPU's
+// own, 'device.compute.minStorageBufferOffsetAlignment', is 16 on an RTX 4060 and
+// 64 on an Intel UHD 770). A range is not empty, is within its buffer and at most
+// what the device binds (the limit above applies to the range, so a buffer
+// larger than a device binds is used in ranges); a buffer is named once in a
+// dispatch, whatever its ranges (WebGPU refuses a buffer bound twice when either
+// binding writes it, and judges the whole buffer). 'dispatch' is 'dispatchBound'
+// with a whole binding for each slot.
+//
+// THE PARAMETER SLAB. A kernel's by-value struct is a read-only storage buffer
+// ('uploadValue' makes one, a buffer, its memory and an upload for each). A job
+// that runs hundreds of small dispatches (a language model's layers: 20 a layer)
+// gives itself one buffer for all of them instead: 'job.slab(device, bytes)' makes
+// it and gives it a slot, and 'job.pack(&value)' copies a struct of 32-bit numbers
+// into the next place in it that is a multiple of BINDING_ALIGNMENT and answers
+// the Binding of just its bytes, to bind in 'dispatchBound'. The copies are kept on
+// the CPU, and written to the buffer with one upload when the job is submitted,
+// ahead of the job. Refused (the job failed) with no slab or when the slab is full.
+// A job has one slab, and its Completion carries its place on to the next job
+// ('again'), where it starts empty.
+//
+// KEPT BIND GROUPS. A bind group is made for each dispatch (a descriptor pool of its
+// own: about 10 us to make and, ended after the job, 17 us to free, on the 4060), and
+// a job run again and again over the same buffers makes the same ones every time.
+// A job made with 'Job.makeReusable' keeps its dispatches' bind groups, in
+// order, and passes them on in its Completion; 'completion.again(device, keep)'
+// makes the next job, over the first 'keep' buffers of that Completion (moved
+// into the same slots; the rest, a readback's, are left in it), and a dispatch of
+// it that has the same place in the job, the same kernel (a serial number each
+// Kernel.make gives) and the same bindings (slots, offsets, sizes) as that
+// place of the job before uses its bind group, made already, where a dispatch
+// that differs makes a new one and keeps it in the old one's place. The groups
+// bind the buffers that are in those slots, and 'again' moves the same buffers
+// into the same slots, so a kept group is the right one by construction; a
+// Cone kernel's dispatch (its error buffer is new each time) is never reused. A
+// job's groups beyond its last dispatch are freed when it is submitted.
+// 'job.reusedGroups()' and 'completion.reusedGroups()' say how many dispatches did.
+// A job made with 'make' keeps nothing, as before.
+//
+// ONE COMPUTE PASS. The dispatches of a job whose kernels have no error buffer
+// share one compute pass, ended when anything else is recorded (a readback) and
+// when the job is submitted; each still sees what the dispatches before it wrote
+// (gpu puts a barrier between dispatches of a pass). A pass of its own for each
+// dispatch costs two global barriers a dispatch, to record and to run; on the
+// 4060 sharing one cut the recording of a 722-dispatch step from 12 ms to 9 ms (with
+// the validation layer on) and its GPU time by 1 ms (llmrun, 1.7B). A Cone kernel's dispatch
+// has its pass to itself, as its error buffer's copy follows it.
 //
 // A job is recorded into the device's current frame (the gpu package's
 // frames in flight), and is complete when the GPU has finished that frame.
@@ -262,9 +320,9 @@
 // dispatches (today each 'runTwin' of a kernel with barriers starts its
 // own); delivery to
 // an actor; a Here job that completes without its frame ending (a Loop job
-// does); reusing bind groups across
-// jobs; binding a range of a buffer, not the whole of it (gpu's
-// 'BindGroupEntry.bufferRange' does; a dispatch here does not); GPU memory as a region; textures; and whether a read-only input is
+// does); a job recorded once and replayed as its command buffer (gpu's command
+// buffers are one-time, reset with their frame; the CPU cost left in
+// the recording is the Vulkan calls of the dispatches themselves); GPU memory as a region; textures; and whether a read-only input is
 // moved into a job or shared immutably (today every buffer is moved); a
 // direct twin whose Invocation is not its first parameter. (Congo builds the
 // kernels of a library marked for the GPU; the tests' kernels.cone, a
@@ -303,10 +361,18 @@ import process;
 // The two counters are atomics (any thread may fail a request), made in the module's init
 let refusalCount: Atomic[u32];
 let kernelFailureCount: Atomic[u32];
+// ...and the count of kernels made, for each one's serial (a number no other kernel has)
+let kernelsMade: Atomic[u64];
 
 fn @initpure init() {
   refusalCount = Atomic[u32].of(0u32);
   kernelFailureCount = Atomic[u32].of(0u32);
+  kernelsMade = Atomic[u64].of(0u64);
+}
+
+// A number no kernel made so far has, and never 0
+fn nextKernelSerial() u64 {
+  kernelsMade.add(1u64) + 1u64
 }
 
 // How many requests gpuwork has refused (each also printed to stderr);

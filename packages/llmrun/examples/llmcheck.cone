@@ -4,7 +4,7 @@
 // were tied.
 //
 //   congo run --release examples/llmcheck.cone -- --model C:\src\llm-models\Qwen3-1.7B-Q8_0.gguf
-//       --prompt "The capital of France is" --n 64 [--top 5] [--ctx 1024]
+//       --prompt "The capital of France is" --n 64 [--top 5] [--ctx 1024] [--validate]
 //
 // Output, one line to a step: `step <i> id <token> top <id>:<logit> ...` (the chosen token is the first of the
 // top), then the generated ids, the text, and the timings: the prompt's tokens a second (prefill), the decoding
@@ -43,7 +43,8 @@ fn main() i32 {
   match argValue(&args, "--ctx") { case let Some(t) { match parseUInt(t.view()) { case let Some(x) { ctx = usize.from(x); } case is None {} } } case is None {} }
 
   utf8Console();
-  var instance = Instance.create("llmcheck");
+  // No window and no validation layer unless --validate (see llmchat)
+  var instance = if hasFlag(&args, "--validate") { Instance.create("llmcheck") } else { Instance.createHeadless("llmcheck", false) };
   var none = Surface.none();
   var adapter = instance.requestAdapter(&none, POWER_PREFERENCE_HIGH_PERFORMANCE);
   if !adapter.isValid() { say("llmcheck: no GPU with Vulkan 1.3\n"); return 1i32; }
@@ -154,6 +155,13 @@ fn main() i32 {
     printStr(oneDecimal(f64.from(cleanDecode) / 1.0e6 / f64.from(decodeSteps)).view());
     printStr(" ms\n");
   }
+  printStr("bind groups reused from the job before: ");
+  printUInt(engine.reusedGroups);
+  printStr(" in all, ");
+  printUInt(u64.from(engine.lastReused));
+  printStr(" in the last of ");
+  printUInt(engine.jobsRun);
+  printStr(" jobs\n");
   device.endFrame();
   device.waitIdle();
   0i32
