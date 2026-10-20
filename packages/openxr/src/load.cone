@@ -1,14 +1,19 @@
-// ---- The OpenXR loader, found when the program starts ----
+// ---- The OpenXR loader, found when it is first wanted ----
 //
-// The module's 'init' opens the OpenXR loader (openxr_loader.dll; libopenxr_loader.so.1;
+// 'load' opens the OpenXR loader (openxr_loader.dll; libopenxr_loader.so.1;
 // libopenxr_loader.dylib), takes xrGetInstanceProcAddr from it, and finds the
 // three functions needing no instance (the API layers and the instance's
-// extensions, and xrCreateInstance), once, before anything runs. A machine
-// with no loader is not an error here: 'available' is false, and whoever makes
-// the instance reports it. A loader with no runtime behind it is found here
-// too, and answers later: the extension query returns 'ERROR_RUNTIME_UNAVAILABLE'
-// and 'createInstance' fails the same way. The instance's functions are not
-// global: each belongs to the instance it was found for ('InstanceFns').
+// extensions, and xrCreateInstance), once. It is the first use of the package
+// that does it: 'available' calls it, and so does each global-level function
+// and 'InstanceFns.load'. The module's 'init' does not, so a program that
+// imports the package (every program that links render does) and never opens a
+// headset never asks the OS for openxr_loader.dll and pays nothing at start-up
+// ('loadAttempted' says whether it has). A machine with no loader is not an
+// error here: 'available' is false, and whoever makes the instance reports it.
+// A loader with no runtime behind it is found here too, and answers later: the
+// extension query returns 'ERROR_RUNTIME_UNAVAILABLE' and 'createInstance' fails
+// the same way. The instance's functions are not global: each belongs to the
+// instance it was found for ('InstanceFns').
 
 extern {
   fn @initpure @c(system) LoadLibraryA(name: *u8) usize;
@@ -21,7 +26,7 @@ extern {
 const rtldNow = 2i32;
 
 // The OpenXR loader library of this OS, opened: 0 if there is none
-fn @initpure openLoader() usize {
+fn openLoader() usize {
   if isWindows() {
     return LoadLibraryA(&"openxr_loader.dll" as *u8);
   }
@@ -34,28 +39,85 @@ fn @initpure openLoader() usize {
 }
 
 // A function of the opened loader library
-fn @initpure loaderSymbol(library: usize, name: *u8) usize {
+fn loaderSymbol(library: usize, name: *u8) usize {
   if isWindows() { GetProcAddress(library, name) } else { dlsym(library, name) }
 }
 
-// The global-level functions, found by the module's 'init': nothing found
-// when there is no OpenXR loader
-let globals: GlobalFns;
+// What 'load' found, kept where every thread may read it: the state (0 not
+// tried, 1 being tried by a thread, 2 done) and the global-level functions'
+// addresses, atomics because 'init' cannot know the loader (it is not opened
+// until wanted) and a global may be changed after start-up only so
+let loadState: Atomic[u32];
+let foundGipa: Atomic[usize];
+let foundEnumLayers: Atomic[usize];
+let foundEnumExtensions: Atomic[usize];
+let foundCreateInstance: Atomic[usize];
+let foundMissing: Atomic[u32];
 
 fn @initpure init() {
+  loadState = Atomic[u32].of(0u32);
+  foundGipa = Atomic[usize].of(0usize);
+  foundEnumLayers = Atomic[usize].of(0usize);
+  foundEnumExtensions = Atomic[usize].of(0usize);
+  foundCreateInstance = Atomic[usize].of(0usize);
+  foundMissing = Atomic[u32].of(0u32);
+}
+
+// Open the loader and find the global-level functions, the first time any
+// thread asks; a thread asking while another is doing it waits until it is
+// done (it takes a few milliseconds)
+fn ensureLoaded() {
+  if loadState.load() == 2u32 { return; }
+  let _, mine = loadState.compareSwap(0u32, 1u32);
+  if !mine {
+    while loadState.load() != 2u32 {}
+    return;
+  }
   let library = openLoader();
   var gipa = 0usize;
   if library != 0usize { gipa = loaderSymbol(library, &"xrGetInstanceProcAddr" as *u8); }
-  globals = GlobalFns.find(gipa as *u8 as PFN_GetInstanceProcAddr);
+  let found = GlobalFns.find(gipa as *u8 as PFN_GetInstanceProcAddr);
+  foundGipa.store(found.pfnGetInstanceProcAddr);
+  foundEnumLayers.store(found.pfnEnumerateApiLayerProperties);
+  foundEnumExtensions.store(found.pfnEnumerateInstanceExtensionProperties);
+  foundCreateInstance.store(found.pfnCreateInstance);
+  foundMissing.store(found.missing);
+  loadState.store(2u32);
 }
 
-// Whether the OpenXR loader was found and gave every global-level function.
-// This says nothing about a runtime: the loader reports that later, when the
-// instance is made. When it is false, calling 'createInstance' and the other
-// global-level functions calls address 0 and crashes: check this first.
-pub fn available() bool {
-  globals.pfnGetInstanceProcAddr != 0usize && globals.missing == 0u32
+// The global-level functions as 'load' found them (it is run first, if it has
+// not been): nothing found when there is no OpenXR loader
+fn globalFns() GlobalFns {
+  ensureLoaded();
+  var t = GlobalFns();
+  t.pfnGetInstanceProcAddr = foundGipa.load();
+  t.pfnEnumerateApiLayerProperties = foundEnumLayers.load();
+  t.pfnEnumerateInstanceExtensionProperties = foundEnumExtensions.load();
+  t.pfnCreateInstance = foundCreateInstance.load();
+  t.missing = foundMissing.load();
+  t
 }
+
+// Whether 'load' has been run in this program, by a call to it, to 'available'
+// or to anything that needs the loader. A program that never opens a headset
+// leaves it false: nothing asked the OS for the loader's library.
+pub fn loadAttempted() bool { loadState.load() != 0u32 }
+
+// Open the OpenXR loader if that has not been done, and answer whether it was
+// found and gave every global-level function: the same as 'available', named
+// for what it does the first time. Nothing but the first call (or the first
+// call of 'available') opens anything.
+pub fn load() bool {
+  let g = globalFns();
+  g.pfnGetInstanceProcAddr != 0usize && g.missing == 0u32
+}
+
+// Whether the OpenXR loader was found and gave every global-level function
+// (opening it first, if 'load' has not). This says nothing about a runtime:
+// the loader reports that later, when the instance is made. When it is false,
+// calling 'createInstance' and the other global-level functions calls address
+// 0 and crashes: check this first.
+pub fn available() bool { load() }
 
 // Look a function up through an xrGetInstanceProcAddr: its address, or 0
 // where the loader or the runtime does not have it
@@ -115,20 +177,20 @@ pub struct GlobalFns {
 // ---- The global-level functions, called on what 'init' found ----
 
 pub fn getInstanceProcAddr(instance: Instance, name: *u8, function: &mut usize) i32 {
-  globals.getInstanceProcAddr(instance, name, function)
+  globalFns().getInstanceProcAddr(instance, name, function)
 }
 pub fn enumerateApiLayerProperties(propertyCapacityInput: u32, propertyCountOutput: &mut u32,
   properties: *ApiLayerProperties) i32 {
-  globals.enumerateApiLayerProperties(propertyCapacityInput, propertyCountOutput, properties)
+  globalFns().enumerateApiLayerProperties(propertyCapacityInput, propertyCountOutput, properties)
 }
 pub fn enumerateInstanceExtensionProperties(layerName: *u8, propertyCapacityInput: u32, propertyCountOutput: &mut u32,
   properties: *ExtensionProperties) i32 {
-  globals.enumerateInstanceExtensionProperties(layerName, propertyCapacityInput, propertyCountOutput, properties)
+  globalFns().enumerateInstanceExtensionProperties(layerName, propertyCapacityInput, propertyCountOutput, properties)
 }
 pub fn createInstance(createInfo: &InstanceCreateInfo, instance: &mut Instance) i32 {
-  globals.createInstance(createInfo, instance)
+  globalFns().createInstance(createInfo, instance)
 }
 
 // The loader's xrGetInstanceProcAddr as an address (0 when there is no loader):
 // what a runtime-neutral helper hands to a function that wants one
-pub fn getInstanceProcAddrAddress() usize { globals.pfnGetInstanceProcAddr }
+pub fn getInstanceProcAddrAddress() usize { globalFns().pfnGetInstanceProcAddr }
