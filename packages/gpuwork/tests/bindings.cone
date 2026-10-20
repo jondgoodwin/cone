@@ -1,0 +1,369 @@
+// gpuwork's range bindings, parameter slab, bind groups kept from job to job, and the compute pass its
+// dispatches share, on a real GPU.
+//
+// The kernel is a fixture (ranges.slang's rangeMain): dst[i] = src[i] * params[1] + params[0] for i < params[2],
+// and after those the number of 32-bit words it sees each of its three bindings as (src, dst, params), which is
+// what each binding ranges over.
+//
+// 1. Ranges: the parameters a 12-byte struct packed in a slab, src a 64-word range from byte 1024 of a
+//    4,096-word buffer, dst a 67-word range from byte 2048 of another. The kernel sees exactly those sizes, writes
+//    exactly the range, and the rest of dst stays zero. A second struct packed in the slab is at the next 256.
+// 2. Refusals, each counted and each failing its job: an offset that is not a multiple of 256, a range past the
+//    end of its buffer, an empty range, a slot named twice (a range and the whole of it), a pack with no slab, a
+//    second slab, a slab that is full. The job completes not ok with its buffers back.
+// 3. Bind groups kept: a job made with 'makeReusable', and from its Completion 'again' a job over the same
+//    buffers, each of three dispatches with new parameters in the slab. The first job reuses none, the next all
+//    three, with the answers right each time (the parameters, not the bind groups, changed). A dispatch that
+//    binds another range reuses the others and makes its own; a shorter job frees the extra; a job made with
+//    'make' reuses none.
+// 4. One compute pass for a chain of dependent dispatches: five stages each reading the one before, every
+//    answer the CPU's; and a readback in the middle of the chain sees the chain's state at that point.
+//
+// Only a failure prints. With the Vulkan SDK, validation and synchronization validation are on, and must say
+// nothing: they check the barriers between dispatches that share a pass.
+
+mod bindings;
+
+import testing use *;
+import stdio use *;
+import libc;
+import collections use List;
+import gpu use *;
+import gpuwork use *;
+
+const WORDS = 4096usize;
+
+fn preference() u32 {
+  let env = libc.getenv("GPU_POWER_PREFERENCE");
+  if (env as usize) != 0usize && libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 { return POWER_PREFERENCE_LOW_POWER; }
+  POWER_PREFERENCE_HIGH_PERFORMANCE
+}
+
+// What rangeMain is given: base, scale, count
+struct Params {
+  base: u32;
+  scale: u32;
+  count: u32;
+}
+
+// src[i], and what the kernel makes of it
+fn srcWord(i: usize) u32 { u32.from(i) * 7u32 + 3u32 }
+fn made(i: usize, base: u32, scale: u32) u32 { srcWord(i) * scale + base }
+
+fn srcWords() List[u32] {
+  var l = List[u32].withCapacity(WORDS);
+  var i = 0usize;
+  while i < WORDS {
+    l.push(srcWord(i));
+    i = i + 1usize;
+  }
+  l
+}
+
+// How many of the 'count' words of 'got' from 'at' are not the kernel's of src words 'first' ...
+fn wrongRun(got: &List[u32], at: usize, first: usize, count: usize, base: u32, scale: u32) u64 {
+  var n = 0u64;
+  var i = 0usize;
+  while i < count {
+    if at + i >= got.len() || *got[at + i] != made(first + i, base, scale) { n = n + 1u64; }
+    i = i + 1usize;
+  }
+  n
+}
+
+// How many words of 'got' in [from, to) are not zero
+fn nonZero(got: &List[u32], from: usize, to: usize) u64 {
+  var n = 0u64;
+  var i = from;
+  while i < to && i < got.len() {
+    if *got[i] != 0u32 { n = n + 1u64; }
+    i = i + 1usize;
+  }
+  n
+}
+
+// One dispatch of the kernel: the parameters packed into the slab, src and dst as the ranges given
+fn run(device: &mut Device, job: &mut Job, kernel: &Kernel, p: Params, src: Binding, dst: Binding) bool {
+  let pb = job.pack(&p);
+  job.dispatchBound(device, kernel, &[pb, src, dst], 1u32)
+}
+
+fn main() i32 {
+  var instance = Instance.create("gpuwork bindings");
+  require(instance.isValid(), "a Vulkan 1.3 instance");
+  var none = Surface.none();
+  var adapter = instance.requestAdapter(&none, preference());
+  require(adapter.isValid(), "an adapter");
+  var device = adapter.requestDevice();
+  require(device.isValid(), "a device");
+  var kernel = Kernel.make(&device, &RANGES_SPIRV, "rangeMain", &[READ, READ, READ_WRITE]);
+  require(kernel.isValid(), "the kernel");
+  var works = Works.make();
+  var got = List[Completion].empty();
+  expectUInt(BINDING_ALIGNMENT, 256u64, "bindings align to WebGPU's 256");
+
+  // ---- 1. Ranges ----
+  {
+    var job = Job.make(&mut device);
+    let src = job.give(upload(&mut device, srcWords().view()));
+    let dst = job.give(zeroed(&mut device, WORDS));
+    let slab = job.slab(&mut device, 1024u64);
+    expectUInt(u64.from(slab), 2u64, "the slab is the next slot");
+    expectBool(job.hasSlab(), true, "the job has a slab");
+    let first = job.pack(&Params(5u32, 3u32, 64u32));
+    expect(first.slot == slab && first.offset == 0u64 && first.size == 12u64, "the first struct: the slab's start, 12 bytes");
+    let second = job.pack(&Params(0u32, 0u32, 0u32));
+    expect(second.slot == slab && second.offset == 256u64 && second.size == 12u64, "the second at the next 256");
+    // the first struct: src from word 256 (64 words), dst from word 512 (66 words: 64, and three after them need 67)
+    let s = Binding.range(src, 1024u64, 256u64);
+    let d = Binding.range(dst, 2048u64, 268u64);
+    expectBool(job.dispatchBound(&mut device, &kernel, &[first, s, d], 1u32), true, "the dispatch over three ranges");
+    let back = job.readback(&mut device, dst);
+    let ticket = works.submit(&mut device, job, Target.Here(1u64));
+    expectUInt(u64.from(works.waitFor(&mut device, ticket, &mut got)), 1u64, "the job's completion");
+    let c = &mut got[0usize];
+    expectBool(c.ok, true, "it ran");
+    let words = c.words(back);
+    expectUInt(wrongRun(&words, 512usize, 256usize, 64usize, 5u32, 3u32), 0u64, "dst's 64 words the kernel's, of src's range");
+    expectUInt(u64.from(*words[576usize]), 64u64, "the kernel saw src as 64 words, what the range covers");
+    expectUInt(u64.from(*words[577usize]), 67u64, "...dst as the 67 words of its range");
+    expectUInt(u64.from(*words[578usize]), 3u64, "...the parameters as 3 words, the 12 bytes of the struct");
+    expectUInt(nonZero(&words, 0usize, 512usize) + nonZero(&words, 579usize, WORDS), 0u64, "no word of dst outside the range written");
+  }
+  got.clear();
+
+  // ---- 2. Refusals ----
+  {
+    let before = refusals();
+    var job = Job.make(&mut device);
+    let src = job.give(upload(&mut device, srcWords().view()));
+    let dst = job.give(zeroed(&mut device, WORDS));
+    let p = job.give(upload(&mut device, &[1u32, 1u32, 4u32]));
+    let whole = Binding.whole(p);
+    expectBool(job.dispatchBound(&mut device, &kernel, &[whole, Binding.range(src, 100u64, 64u64), Binding.whole(dst)], 1u32), false,
+      "an offset that is not a multiple of 256");
+    expectBool(job.dispatchBound(&mut device, &kernel, &[whole, Binding.range(src, 16384u64, 0u64), Binding.whole(dst)], 1u32), false,
+      "an empty range (from the end of the buffer)");
+    expectBool(job.dispatchBound(&mut device, &kernel, &[whole, Binding.range(src, 256u64, 16384u64), Binding.whole(dst)], 1u32), false,
+      "a range past the end of its buffer");
+    expectBool(job.dispatchBound(&mut device, &kernel, &[whole, Binding.range(src, 256u64, 256u64), Binding.range(src, 1024u64, 256u64)], 1u32), false,
+      "one buffer named twice, by two ranges");
+    expectBool(job.hasSlab(), false, "no slab yet");
+    let nothing = job.pack(&Params(1u32, 1u32, 1u32));
+    expectBool(job.dispatchBound(&mut device, &kernel, &[nothing, Binding.whole(src), Binding.whole(dst)], 1u32), false,
+      "a pack with no slab hands back a binding of no slot");
+    job.slab(&mut device, 256u64);
+    job.slab(&mut device, 256u64);
+    job.pack(&Params(1u32, 1u32, 1u32));
+    job.pack(&Params(1u32, 1u32, 1u32));
+    expectUInt(u64.from(refusals() - before), 8u64, "eight refusals: four ranges, the pack, the dispatch of its binding, the second slab, the full slab");
+    expectBool(job.failed, true, "the job is failed");
+    let ticket = works.submit(&mut device, job, Target.Here(2u64));
+    works.waitFor(&mut device, ticket, &mut got);
+    expectBool(got[0usize].ok, false, "it completes not ok");
+    expectUInt(u64.from(got[0usize].count()), 4u64, "with its three buffers and the slab back");
+  }
+  got.clear();
+
+  // ---- 3. Bind groups kept from job to job ----
+  {
+    var round = 0u32;
+    var wrongRounds = 0u64;
+    var reuse = List[u32].empty();
+    let src = 0u32;
+    let dst = 1u32;
+    // 0..2: the same three dispatches with new parameters; 3: the third elsewhere; 4: back; 5: only two; 6: three again
+    while round < 7u32 {
+      var job = if round == 0u32 {
+        Job.makeReusable(&mut device)
+      } else {
+        let prev = &mut got[0usize];
+        prev.again(&mut device, 3u32)
+      };
+      if round == 0u32 {
+        job.give(upload(&mut device, srcWords().view()));
+        job.give(zeroed(&mut device, WORDS));
+        job.slab(&mut device, 2048u64);
+      }
+      let n = if round == 5u32 { 2usize } else { 3usize };
+      var k = 0usize;
+      var ok = true;
+      while k < n {
+        var at = 512u64 * u64.from(k);
+        if round == 3u32 && k == 2usize { at = 3584u64; }
+        ok = run(&mut device, &mut job, &kernel, Params(round * 10u32 + u32.from(k), round + 1u32, 64u32),
+          Binding.range(src, 256u64 * u64.from(k), 256u64), Binding.range(dst, at, 268u64)) && ok;
+        k = k + 1usize;
+      }
+      expectBool(ok, true, "the round's dispatches");
+      let back = job.readback(&mut device, dst);
+      let ticket = works.submit(&mut device, job, Target.Here(3u64));
+      got.clear();
+      works.waitFor(&mut device, ticket, &mut got);
+      require(got.len() == 1usize, "the round's completion");
+      reuse.push(got[0usize].reusedGroups());
+      let words = got[0usize].words(back);
+      k = 0usize;
+      while k < n {
+        var at = 128usize * k;
+        if round == 3u32 && k == 2usize { at = 896usize; }
+        wrongRounds = wrongRounds + wrongRun(&words, at, 64usize * k, 64usize, round * 10u32 + u32.from(k), round + 1u32);
+        k = k + 1usize;
+      }
+      round = round + 1u32;
+    }
+    expectUInt(wrongRounds, 0u64, "every round's answers the kernel's, with the round's own parameters");
+    // reused groups: the first job none; the next two all three; 3 changes one; 4 changes it back; 5 has two; 6 recreates the third
+    expectUInt(u64.from(reuse.len()), 7u64, "seven rounds");
+    expectUInt(u64.from(*reuse[0usize]), 0u64, "the first job reused no bind group");
+    expectUInt(u64.from(*reuse[1usize]) * 10u64 + u64.from(*reuse[2usize]), 33u64, "the next two reused all three");
+    expectUInt(u64.from(*reuse[3usize]), 2u64, "a dispatch that bound another range made its own");
+    expectUInt(u64.from(*reuse[4usize]), 2u64, "...and back again, made again");
+    expectUInt(u64.from(*reuse[5usize]), 2u64, "a shorter job reused its two");
+    expectUInt(u64.from(*reuse[6usize]), 2u64, "...and the third made again after it");
+  }
+  got.clear();
+  {
+    // a job made with 'make' keeps nothing and reuses nothing, but its Completion can start the chain
+    var job = Job.make(&mut device);
+    let src = job.give(upload(&mut device, srcWords().view()));
+    let dst = job.give(zeroed(&mut device, WORDS));
+    job.slab(&mut device, 512u64);
+    run(&mut device, &mut job, &kernel, Params(1u32, 2u32, 64u32), Binding.range(src, 0u64, 256u64), Binding.range(dst, 0u64, 268u64));
+    let ticket = works.submit(&mut device, job, Target.Here(4u64));
+    works.waitFor(&mut device, ticket, &mut got);
+    expectUInt(u64.from(got[0usize].reusedGroups()), 0u64, "a plain job reused none");
+  }
+  got.clear();
+
+  // ---- 4. A chain of dependent dispatches in one compute pass ----
+  {
+    var job = Job.make(&mut device);
+    let a = job.give(upload(&mut device, srcWords().view()));
+    let stages = 5usize;
+    var slots = List[u32].empty();
+    slots.push(a);
+    var i = 0usize;
+    while i < stages {
+      slots.push(job.give(zeroed(&mut device, 128usize)));
+      i = i + 1usize;
+    }
+    job.slab(&mut device, 4096u64);
+    var mid = 0u32;
+    i = 0usize;
+    while i < stages {
+      run(&mut device, &mut job, &kernel, Params(1u32, 3u32, 64u32), Binding.range(*slots[i], 0u64, 256u64), Binding.range(*slots[i + 1usize], 0u64, 268u64));
+      if i == 1usize { mid = job.readback(&mut device, *slots[2usize]); }
+      i = i + 1usize;
+    }
+    let last = job.readback(&mut device, *slots[stages]);
+    let ticket = works.submit(&mut device, job, Target.Here(5u64));
+    works.waitFor(&mut device, ticket, &mut got);
+    let c = &mut got[0usize];
+    expectBool(c.ok, true, "the chain ran");
+    // stage k holds x * 3^k + (3^k - 1) / 2 of the first 64 words of src, wrapping as u32 does
+    var wrong = 0u64;
+    var wrongMid = 0u64;
+    let lastWords = c.words(last);
+    let midWords = c.words(mid);
+    var w = 0usize;
+    while w < 64usize {
+      var v = srcWord(w);
+      var s = 0usize;
+      while s < stages {
+        v = v * 3u32 + 1u32;
+        if s == 1usize && *midWords[w] != v { wrongMid = wrongMid + 1u64; }
+        s = s + 1usize;
+      }
+      if *lastWords[w] != v { wrong = wrong + 1u64; }
+      w = w + 1usize;
+    }
+    expectUInt(wrong, 0u64, "five stages each reading the one before, every word the CPU's");
+    expectUInt(wrongMid, 0u64, "a readback between two dispatches sees the chain as it was then");
+  }
+  got.clear();
+
+  device.endFrame();
+  device.waitIdle();
+  expectUInt(u64.from(failures()), 0u64, "no Vulkan call failed");
+  expectUInt(u64.from(validationMessages()), 0u64, "no validation message");
+  done()
+}
+
+// spirv-begin ranges.spv RANGES_SPIRV
+// Written by tools/shaders/shaders.py from ranges.slang (sha256 a0df8520316de3a1c58181b9c987088fbd034ddcfe4296010340c1cceee4f820): do not edit.
+let RANGES_SPIRV: Array[u32, 427] = [
+  0x07230203u32, 0x00010500u32, 0x00280000u32, 0x0000004eu32, 0x00000000u32, 0x00020011u32,
+  0x00000001u32, 0x000b000au32, 0x5f565053u32, 0x5f52484bu32, 0x726f7473u32, 0x5f656761u32,
+  0x66667562u32, 0x735f7265u32, 0x61726f74u32, 0x635f6567u32, 0x7373616cu32, 0x00000000u32,
+  0x0003000eu32, 0x00000000u32, 0x00000001u32, 0x000a000fu32, 0x00000005u32, 0x00000002u32,
+  0x676e6172u32, 0x69614d65u32, 0x0000006eu32, 0x00000012u32, 0x0000001eu32, 0x00000026u32,
+  0x00000017u32, 0x00060010u32, 0x00000002u32, 0x00000011u32, 0x00000040u32, 0x00000001u32,
+  0x00000001u32, 0x00030003u32, 0x0000000bu32, 0x00000001u32, 0x00070005u32, 0x0000000fu32,
+  0x75727453u32, 0x72757463u32, 0x75426465u32, 0x72656666u32, 0x00000000u32, 0x00060006u32,
+  0x0000000fu32, 0x00000000u32, 0x656d5f5fu32, 0x7265626du32, 0x00000030u32, 0x00040005u32,
+  0x00000012u32, 0x61726170u32, 0x0000736du32, 0x00030005u32, 0x0000001eu32, 0x00637273u32,
+  0x00070005u32, 0x00000024u32, 0x74535752u32, 0x74637572u32, 0x64657275u32, 0x66667542u32,
+  0x00007265u32, 0x00060006u32, 0x00000024u32, 0x00000000u32, 0x656d5f5fu32, 0x7265626du32,
+  0x00000030u32, 0x00030005u32, 0x00000026u32, 0x00747364u32, 0x00050005u32, 0x00000002u32,
+  0x676e6172u32, 0x69614d65u32, 0x0000006eu32, 0x00040047u32, 0x0000000du32, 0x00000006u32,
+  0x00000004u32, 0x00040047u32, 0x00000010u32, 0x00000006u32, 0x00000004u32, 0x00030047u32,
+  0x0000000fu32, 0x00000002u32, 0x00050048u32, 0x0000000fu32, 0x00000000u32, 0x00000023u32,
+  0x00000000u32, 0x00040047u32, 0x00000012u32, 0x00000021u32, 0x00000000u32, 0x00040047u32,
+  0x00000012u32, 0x00000022u32, 0x00000000u32, 0x00030047u32, 0x00000012u32, 0x00000018u32,
+  0x00040047u32, 0x00000017u32, 0x0000000bu32, 0x0000001cu32, 0x00040047u32, 0x0000001eu32,
+  0x00000021u32, 0x00000001u32, 0x00040047u32, 0x0000001eu32, 0x00000022u32, 0x00000000u32,
+  0x00030047u32, 0x0000001eu32, 0x00000018u32, 0x00030047u32, 0x00000024u32, 0x00000002u32,
+  0x00050048u32, 0x00000024u32, 0x00000000u32, 0x00000023u32, 0x00000000u32, 0x00040047u32,
+  0x00000026u32, 0x00000021u32, 0x00000002u32, 0x00040047u32, 0x00000026u32, 0x00000022u32,
+  0x00000000u32, 0x00020013u32, 0x00000001u32, 0x00030021u32, 0x00000003u32, 0x00000001u32,
+  0x00040015u32, 0x00000009u32, 0x00000020u32, 0x00000001u32, 0x0004002bu32, 0x00000009u32,
+  0x0000000au32, 0x00000002u32, 0x0004002bu32, 0x00000009u32, 0x0000000bu32, 0x00000000u32,
+  0x00040015u32, 0x0000000cu32, 0x00000020u32, 0x00000000u32, 0x00040020u32, 0x0000000du32,
+  0x0000000cu32, 0x0000000cu32, 0x0003001du32, 0x00000010u32, 0x0000000cu32, 0x0003001eu32,
+  0x0000000fu32, 0x00000010u32, 0x00040020u32, 0x00000011u32, 0x0000000cu32, 0x0000000fu32,
+  0x00040017u32, 0x00000014u32, 0x0000000cu32, 0x00000003u32, 0x00040020u32, 0x00000016u32,
+  0x00000001u32, 0x00000014u32, 0x00020014u32, 0x00000019u32, 0x0004002bu32, 0x0000000cu32,
+  0x0000001bu32, 0x00000000u32, 0x0003001eu32, 0x00000024u32, 0x00000010u32, 0x00040020u32,
+  0x00000025u32, 0x0000000cu32, 0x00000024u32, 0x0004002bu32, 0x0000000cu32, 0x0000002cu32,
+  0x00000001u32, 0x0004002bu32, 0x0000000cu32, 0x00000033u32, 0x00000002u32, 0x0004002bu32,
+  0x00000009u32, 0x00000043u32, 0x00000001u32, 0x0004003bu32, 0x00000011u32, 0x00000012u32,
+  0x0000000cu32, 0x0004003bu32, 0x00000016u32, 0x00000017u32, 0x00000001u32, 0x0004003bu32,
+  0x00000011u32, 0x0000001eu32, 0x0000000cu32, 0x0004003bu32, 0x00000025u32, 0x00000026u32,
+  0x0000000cu32, 0x00050036u32, 0x00000001u32, 0x00000002u32, 0x00000000u32, 0x00000003u32,
+  0x000200f8u32, 0x00000004u32, 0x000300f7u32, 0x0000004cu32, 0x00000000u32, 0x000300fbu32,
+  0x0000001bu32, 0x0000004du32, 0x000200f8u32, 0x0000004du32, 0x00060041u32, 0x0000000du32,
+  0x0000000eu32, 0x00000012u32, 0x0000000bu32, 0x0000000au32, 0x0004003du32, 0x0000000cu32,
+  0x00000013u32, 0x0000000eu32, 0x0004003du32, 0x00000014u32, 0x00000015u32, 0x00000017u32,
+  0x00050051u32, 0x0000000cu32, 0x00000018u32, 0x00000015u32, 0x00000000u32, 0x000500aau32,
+  0x00000019u32, 0x0000001au32, 0x00000018u32, 0x0000001bu32, 0x000300f7u32, 0x00000006u32,
+  0x00000000u32, 0x000400fau32, 0x0000001au32, 0x00000005u32, 0x00000006u32, 0x000200f8u32,
+  0x00000005u32, 0x00050044u32, 0x0000000cu32, 0x0000001du32, 0x0000001eu32, 0x00000000u32,
+  0x00060041u32, 0x0000000du32, 0x00000023u32, 0x00000026u32, 0x0000000bu32, 0x00000013u32,
+  0x0003003eu32, 0x00000023u32, 0x0000001du32, 0x00050044u32, 0x0000000cu32, 0x00000028u32,
+  0x00000026u32, 0x00000000u32, 0x00050080u32, 0x0000000cu32, 0x0000002bu32, 0x00000013u32,
+  0x0000002cu32, 0x00060041u32, 0x0000000du32, 0x0000002du32, 0x00000026u32, 0x0000000bu32,
+  0x0000002bu32, 0x0003003eu32, 0x0000002du32, 0x00000028u32, 0x00050044u32, 0x0000000cu32,
+  0x0000002fu32, 0x00000012u32, 0x00000000u32, 0x00050080u32, 0x0000000cu32, 0x00000032u32,
+  0x00000013u32, 0x00000033u32, 0x00060041u32, 0x0000000du32, 0x00000034u32, 0x00000026u32,
+  0x0000000bu32, 0x00000032u32, 0x0003003eu32, 0x00000034u32, 0x0000002fu32, 0x000200f9u32,
+  0x00000006u32, 0x000200f8u32, 0x00000006u32, 0x0004003du32, 0x00000014u32, 0x00000037u32,
+  0x00000017u32, 0x00050051u32, 0x0000000cu32, 0x00000038u32, 0x00000037u32, 0x00000000u32,
+  0x000500aeu32, 0x00000019u32, 0x00000039u32, 0x00000038u32, 0x00000013u32, 0x000300f7u32,
+  0x00000008u32, 0x00000000u32, 0x000400fau32, 0x00000039u32, 0x00000007u32, 0x00000008u32,
+  0x000200f8u32, 0x00000007u32, 0x000200f9u32, 0x0000004cu32, 0x000200f8u32, 0x00000008u32,
+  0x0004003du32, 0x00000014u32, 0x0000003cu32, 0x00000017u32, 0x00050051u32, 0x0000000cu32,
+  0x0000003du32, 0x0000003cu32, 0x00000000u32, 0x00060041u32, 0x0000000du32, 0x0000003eu32,
+  0x00000026u32, 0x0000000bu32, 0x0000003du32, 0x0004003du32, 0x00000014u32, 0x0000003fu32,
+  0x00000017u32, 0x00050051u32, 0x0000000cu32, 0x00000040u32, 0x0000003fu32, 0x00000000u32,
+  0x00060041u32, 0x0000000du32, 0x00000041u32, 0x0000001eu32, 0x0000000bu32, 0x00000040u32,
+  0x0004003du32, 0x0000000cu32, 0x00000042u32, 0x00000041u32, 0x00060041u32, 0x0000000du32,
+  0x00000044u32, 0x00000012u32, 0x0000000bu32, 0x00000043u32, 0x0004003du32, 0x0000000cu32,
+  0x00000045u32, 0x00000044u32, 0x00050084u32, 0x0000000cu32, 0x00000046u32, 0x00000042u32,
+  0x00000045u32, 0x00060041u32, 0x0000000du32, 0x00000047u32, 0x00000012u32, 0x0000000bu32,
+  0x0000000bu32, 0x0004003du32, 0x0000000cu32, 0x00000048u32, 0x00000047u32, 0x00050080u32,
+  0x0000000cu32, 0x00000049u32, 0x00000046u32, 0x00000048u32, 0x0003003eu32, 0x0000003eu32,
+  0x00000049u32, 0x000200f9u32, 0x0000004cu32, 0x000200f8u32, 0x0000004cu32, 0x000100fdu32,
+  0x00010038u32
+];
+// spirv-end

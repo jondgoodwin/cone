@@ -6,7 +6,7 @@
 // every step's largest logits and the speed, and is what the model is compared with llama.cpp by.
 //
 //   imm modelFile = Path.from("C:/src/llm-models/Qwen3-8B-Q4_K_M.gguf");
-//   var instance = Instance.create("chat");
+//   var instance = Instance.createHeadless("chat", false);        // no window, no validation layer (Instance.create has both)
 //   var none = Surface.none();
 //   var adapter = instance.requestAdapter(&none, POWER_PREFERENCE_HIGH_PERFORMANCE);
 //   var device = adapter.requestComputeDevice(&ComputeRequest(largeBuffers: true));    // the weights bind over 128 MiB
@@ -52,17 +52,26 @@
 // 2.6 GiB at 4096.
 //
 // THE BUFFERS ARE RESIDENT; A STEP IS ONE JOB. A gpuwork Job owns the buffers given to it and hands them back with its
-// Completion, so each call of 'feed' (for a chunk of up to `chunk` tokens) gives all the engine's buffers to a new
-// job, in a fixed order that is their slot, records the layers' dispatches, reads back the logits and takes them all
-// back. A Qwen3 layer is 20 dispatches (attention norm; q, k, v; q norm, k norm; two rotations; two appends to the
-// cache; attention; output projection; residual add; FFN norm; gate, up; SiLU; multiply; down; residual add) and a
-// 36-layer decode step is 722, each with a parameter buffer of its own.
+// Completion, so each call of 'feed' (for a chunk of up to `chunk` tokens) runs one job over all the engine's buffers
+// (in a fixed order that is their slot), records the layers' dispatches, reads back the logits and gets the buffers
+// back in the Completion. A Qwen3 layer is 20 dispatches (attention norm; q, k, v; q norm, k norm; two rotations; two
+// appends to the cache; attention; output projection; residual add; FFN norm; gate, up; SiLU; multiply; down;
+// residual add) and a 36-layer decode step is 722. The first job is given the buffers; each later one is made from the
+// last job's Completion ('completion.again'), which moves the same buffers back into the same slots and passes on the
+// job's bind groups, so a step makes none of its own: a dispatch whose kernel and bindings are those of the same place
+// in the job before uses that job's bind group. A dispatch's parameters (the kernel's small by-value struct) are not
+// a buffer each but a 256-byte-aligned range of one parameter slab the job holds ('job.slab', 'job.pack'), written
+// with one upload when the job is submitted, so a step's only per-step CPU-to-GPU writes are the token's embedding,
+// the slab (the position among its fields) and the logits' readback. A prompt chunk of two or more tokens uses the
+// matrix-matrix kernel where a single token uses the matrix-vector one, so the first decode step after a prompt
+// makes the bind groups of those dispatches again; every later step reuses all.
 //
 // METHOD CHOICES. These are defaults a later design may revisit. Each says what was chosen and what was left out.
 //
-// - CORRECTNESS FIRST, SPEED SECOND. What a decode step costs and where the time goes is in the measurements below;
-//   the dispatch-recording cost (a buffer and a bind group for every dispatch, made and freed again for every token)
-//   is the next piece of work, not this one.
+// - CORRECTNESS FIRST, THEN THE DISPATCH COST, THEN THE KERNELS. What a decode step costs and where the time goes is in
+//   the measurements below. The first version made a buffer and a bind group for each of a step's 722 dispatches and
+//   freed them again; the parameter slab, the bind groups kept from step to step and one compute pass for a job
+//   took that away (gpuwork's header says how). What is left of a decode step is the kernels' own time.
 // - THE CPU REFERENCE FIRST. llmreference's forwardCpu is the model on the CPU over the existing twins. tests/forward.cone
 //   writes four small random models as GGUF files (Qwen3 with the Q4_K_M mix and untied output, Qwen3 in Q8_0 with the
 //   output tied to the table, a Llama with F16 and F32 weights and the other rotation order and no q/k norm, a query
@@ -91,22 +100,26 @@
 // apart on this side, 0.005 and 0.04 on llama.cpp's). The top-5 logit gaps agree to 0.03 to 0.4: llama.cpp's
 // kernels quantise the activations to 8 bits, these keep them in f32.
 //
-// MEASURED (RTX 4060 Laptop, release build, examples/llmcheck.cone). Decoding: Qwen3-1.7B Q8_0 about 4.5 tokens a
-// second, Qwen3-8B Q4_K_M about 2.4. A decode step of the 1.7B takes 65 ms recording the job, 70 ms waiting for the
-// GPU and 88 ms of cleanup (freeing the job's own buffers); of the 8B, 115 ms, 187 ms and 120 ms. The record and
-// cleanup shares are the cost of a parameter buffer and a bind group for each of the 722 (8B: 36 layers x 20 + 2)
-// dispatches, made and freed again for every token: a 36-layer model with tiny matrices, where the GPU has almost
-// nothing to do, takes 81 + 29 + 125 ms. Prefill (a prompt of 228 tokens, in chunks of 64): 130 tokens a second on
-// the 1.7B, 34 on the 8B, which is the matrix-matrix kernel's time (llmkernels' measured ~700 GFLOP/s), not the
-// recording. The next piece of work is a parameter slab bound by sub-range, or a job recorded once and replayed
-// with a small per-token buffer for the position; this package's `recordForward` is a function of (n, pos0) only,
-// and every parameter upload goes through llmkernels' `giveParams`, so either is a change to llmkernels and
-// gpuwork that leaves this package's forward pass as it is.
+// MEASURED (RTX 4060 Laptop, release build, examples/llmcheck.cone; a decode step is recording the job on the CPU,
+// waiting for the GPU, cleanup after). Before the change (the first version: a buffer and a bind group for each of
+// the 722 dispatches of a 36-layer step, made and freed again, in a program with the Vulkan validation layer on, as
+// `Instance.create` makes it where the SDK is installed): Qwen3-1.7B Q8_0 decoded 3.7 to 3.9 tokens a second
+// (84 to 93 ms recording, 83 ms waiting for the GPU, 90 ms cleanup), Qwen3-8B Q4_K_M 2.4 (111, 186, 120 ms). Now,
+// with the slab, kept bind groups and one pass, in a program with no validation layer (examples/llmchat.cone
+// and llmcheck.cone make `Instance.createHeadless(name, false)` unless given --validate): the 1.7B decodes 22.1 to
+// 22.5 tokens a second, a step 2 ms recording, 42 ms on the GPU, 0.4 ms cleanup; with --validate 18.3 to 19.4 (8 to 10 ms recording, the layer's cost). The 8B, taken with the GPU
+// to itself and the layer on: 5.7 tokens a second, 14 ms recording, 160 ms on the GPU, 0.4 ms cleanup. What is left
+// is the kernels: the 8B's 160 ms is 4.35 GiB of weights read at about 29 GB/s on a card rated 256 (llmkernels).
+// Prefill, a 231-token prompt in chunks of 64: 125 tokens a second before, 208 to 214 now on the 1.7B, which is the
+// matrix-matrix kernel's time (llmkernels' measured ~700 GFLOP/s); a prompt of 5 tokens 17 before, 45 now; of 11,
+// 38 before, 98 now (the fixed cost of a job fell from about 290 ms to 110). The
+// first decode step after a prompt makes the bind groups of its matrix-vector dispatches again (the prompt used the
+// matrix-matrix kernel), the later ones none: llmcheck prints how many were reused.
 //
 // The tests: tests/forward.cone (GPU against the CPU reference; a GPU), tests/generate.cone (a small random model with
 // the real vocabulary, end to end; a GPU), tests/plan.cone (the header-only plan, the refusals), tests/tokenizer.cone
-// (against llama.cpp's ids), tests/sampler.cone. The tests that need a model file skip, counting every check as passed,
-// when `C:\src\llm-models\Qwen3-*.gguf` is absent. LLMRUN_REPORT=1 prints the numbers the tests derive their bounds from.
+// (against llama.cpp's ids), tests/sampler.cone. The tests that need a model file print a SKIPPED line and run
+// none of their checks (their output then differs from the expected) when `C:\src\llm-models\Qwen3-*.gguf` is absent. LLMRUN_REPORT=1 prints the numbers the tests derive their bounds from.
 
 mod llmrun;
 

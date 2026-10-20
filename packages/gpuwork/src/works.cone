@@ -67,9 +67,41 @@ pub struct Completion {
   pub submitted: Instant;
   pub completed: Instant;
   pub failures: List[KernelFailure];
+  line: Lineage;                // what the job kept for the one after it (a job made with 'Job.makeReusable')
 
   // How many buffers it holds
   pub fn count(self: &) u32 { u32.from(buffers.len()) }
+
+  // How many dispatches of the job used a bind group made for the job before it
+  pub fn reusedGroups(self: &) u32 { line.reused }
+
+  // A new job over the first 'keep' buffers of this Completion (moved out of it, into the same slots;
+  // the others stay in it, to be dropped), that keeps its bind groups for the next as the job this
+  // came from did. A dispatch of it with the same kernel and bindings as the one in its place in
+  // the job before uses that one's bind group, made already. So a job run again and again over the
+  // same resident buffers, a model's layers one token after another, makes its bind groups once. If a
+  // dispatch differs (a different kernel, other slots, offsets or sizes), a new bind group is made
+  // for it and kept in place of the old. The parameter slab ('job.slab') carries over, empty.
+  // The jobs run one after another, each this Completion's job's successor: the groups of the job
+  // before are not touched while it is in flight (they are in this Completion only once it is done).
+  pub fn again(self: &mut, device: &mut Device, keep: u32) Job {
+    var job = Job.make(device);
+    var i = 0u32;
+    while i < keep && usize.from(i) < buffers.len() {
+      job.give(self.take(i));
+      i = i + 1u32;
+    }
+    job.line.keep = true;
+    job.line.tape <-> line.tape;
+    if line.hasSlab && line.slabSlot < i {
+      job.line.hasSlab = true;
+      job.line.slabSlot = line.slabSlot;
+      job.line.slabCap = line.slabCap;
+      job.line.slabUsed = 0u64;
+      job.line.slabWords <-> line.slabWords;
+    }
+    job
+  }
 
   // Take the buffer in slot 'slot' out of it (Buffer.none() is left there,
   // and given for a slot it does not have)
@@ -105,6 +137,7 @@ struct InFlight {
   watched: bool;      // a Loop job: done once the watcher has seen its fence
   seq: u64;           // ...the watcher's count of jobs then
   checks: List[ErrorCheck];   // its Cone kernels' error buffers
+  line: Lineage;              // what it kept for the job after it
 }
 
 // ---- The watcher: the thread that waits on Loop jobs' fences ----
@@ -258,6 +291,11 @@ pub struct Works {
       fail("submit: the job was recorded in an earlier frame");
       ok = false;
     }
+    // The parameter slab's bytes go to the GPU ahead of the job; the bind groups kept from the job
+    // before that this one had no dispatch for are freed
+    j.endPass();
+    if ok { j.flushSlab(device); }
+    j.endTape();
     let token = to.token;
     var isLoop = false;
     var answered = false;
@@ -288,8 +326,8 @@ pub struct Works {
     } else if ok {
       ok = device.queue.submit(j.encoder.finish());
     }
-    let buffers, groups, checks, frame = j.(buffers, groups, checks, frame);
-    jobs.push(InFlight(ticket, token, frame, ok, Instant.now(), buffers, groups, true, isLoop, seq, checks));
+    let buffers, groups, checks, frame, line = j.(buffers, groups, checks, frame, line);
+    jobs.push(InFlight(ticket, token, frame, ok, Instant.now(), buffers, groups, true, isLoop, seq, checks, line));
     ticket
   }
 
@@ -361,8 +399,10 @@ pub struct Works {
           }
         }
         e.checks.clear();
+        var line = Lineage.none();
+        line <-> e.line;
         out.push(Completion(e.ticket, e.token, e.ok && failures.len() == 0usize, buffers, e.frame,
-          e.submitted, now, failures));
+          e.submitted, now, failures, line));
         e.live = false;
         n = n + 1usize;
       }

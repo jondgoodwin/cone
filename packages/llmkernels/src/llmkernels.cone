@@ -28,8 +28,9 @@
 // examples/tour.cone is that, whole, checked against the CPU twin; examples/bench.cone times every kernel.
 //
 // Every method of Kernels records ONE dispatch into a gpuwork Job over buffers the caller has given it (slot
-// numbers from 'job.give'), uploading the kernel's small parameter struct itself, and answers whether it
-// recorded. A request the kernel cannot run (an unknown type, columns that are not whole blocks, a zero size,
+// numbers from 'job.give'), making the kernel's small parameter struct itself (a buffer of its own given to
+// the job; or, if the job has a parameter slab, 'job.slab', packed into the slab and bound by its range: one
+// upload for all of a job's dispatches), and answers whether it recorded. A request the kernel cannot run (an unknown type, columns that are not whole blocks, a zero size,
 // sizes or byte offsets that do not fit 32 bits, a dispatch wider than 65535 workgroups where the kernel has one
 // workgroup for each row) records nothing and answers false. A dispatch binds each buffer once: a kernel
 // writes a buffer of its own (RoPE rotates its buffer in place, and the append writes into the cache).
@@ -146,7 +147,9 @@
 // reads its weights a word at a time, and each dispatch costs a floor of about 20 us whatever its size
 // (see the 11008-element elementwise kernels, whose work is a microsecond or two), which looks like the
 // compute pass gpuwork's 'Job.dispatch' begins and ends for every dispatch; at about 12 dispatches a layer
-// that floor alone is 8 ms of a 32-layer decode step.
+// that floor alone is 8 ms of a 32-layer decode step. (These figures were made before gpuwork's dispatches
+// shared a compute pass, which took about 1 ms off a 722-dispatch step's GPU time in llmrun; bench.cone has
+// not been rerun.)
 //
 //   matvec 4096 x 4096        F32 683 (99 GB/s)   F16 470 (71)   Q8_0 364 (49)   Q4_K 365 (26)   Q6_K 391 (35)
 //   matvec 11008 x 4096 Q4_K  936 (27 GB/s);  32000 x 4096 Q6_K (the output layer)  2853 (38 GB/s)
@@ -165,5 +168,5 @@ mod llmkernels;
 
 import collections use List;
 import gpu use *;
-import gpuwork use Kernel, Job, READ, READ_WRITE, uploadValue;
+import gpuwork use Kernel, Job, Binding, READ, READ_WRITE, uploadValue;
 import llmreference use rowBytes;

@@ -395,19 +395,23 @@ pub struct Engine {
   embd: usize;
   kernels: Kernels;
   works: Works;
-  resident: List[Buffer];
+  resident: List[Buffer];       // the resident buffers until the first job takes them (then empty)
+  nres: usize;                  // how many there are
+  last: List[Completion];       // after the first job: the last job's Completion, holding them (none, or one)
   layers: List[LayerRefs];
   out: WRef;
   outNorm: u32;
   sc: Scratch;
-  // Wall-clock time over all the jobs run: the embeddings, taking the buffers into a job and recording its
-  // dispatches (record); submitting it and waiting for the GPU to finish (gpu); taking the buffers back, reading
-  // the logits and freeing the job's own buffers (cleanup). And the tokens and jobs run.
+  // Wall-clock time over all the jobs run: the embeddings, starting a job and recording its dispatches
+  // (record); submitting it and waiting for the GPU to finish (gpu); reading the logits and freeing the job's
+  // own buffers (cleanup). And the tokens and jobs run, and the bind groups a job reused from the one before.
   pub recordNanos: i64;
   pub gpuNanos: i64;
   pub cleanupNanos: i64;
   pub tokensRun: u64;
   pub jobsRun: u64;
+  pub reusedGroups: u64;
+  pub lastReused: u32;          // ...in the last job (of the dispatches it made, 722 for the 36-layer 8B)
 
   // Open a GGUF file and put the model on the device. The device must be made with 'ComputeRequest.largeBuffers'
   // (weights are bound in buffers over WebGPU's 128 MiB). Answers why not when the file is not a model this build
@@ -560,8 +564,9 @@ pub struct Engine {
       case let Some(i) { embdIndex = i; }
       case is None {}
     }
+    let nres = resident.len();
     Ok[Engine, String](Engine(info, options.ctx, options.chunk, 0usize, mapped, model, embdIndex, kernels, Works.make(),
-      resident, layers, outRef, outNorm, sc, 0i64, 0i64, 0i64, 0u64, 0u64))
+      resident, nres, List[Completion].empty(), layers, outRef, outNorm, sc, 0i64, 0i64, 0i64, 0u64, 0u64, 0u64, 0u32))
   }
 
   pub fn shape(self: &) &ModelShape { &info.shape }
@@ -631,21 +636,14 @@ pub struct Engine {
     }
     let words = floatWords(emb.view());
     let wv = words.view();
-    device.queue.writeBuffer(resident[usize.from(sc.r0)], 0u64, &wv[0usize] as *u8, u64.from(wv.len) * 4u64);
-
-    // every resident buffer into a new job, slot = index
-    var job = Job.make(device);
-    let nres = resident.len();
-    {
-      var drain = resident.drain();
-      var more = true;
-      while more {
-        match drain.next() {
-          case var Some(b) { job.give(b); }
-          case is None { more = false; }
-        }
-      }
+    let r0 = usize.from(sc.r0);
+    if last.len() == 1usize {
+      device.queue.writeBuffer(last[0usize].buffers[r0], 0u64, &wv[0usize] as *u8, u64.from(wv.len) * 4u64);
+    } else {
+      device.queue.writeBuffer(resident[r0], 0u64, &wv[0usize] as *u8, u64.from(wv.len) * 4u64);
     }
+
+    var job = self.startJob(device);
     var ok = recordForward(self, &mut job, device, n, pos0, wantLogits);
     var back = 0u32;
     if wantLogits { back = job.readback(device, sc.logits); }
@@ -658,27 +656,54 @@ pub struct Engine {
     gpuNanos = gpuNanos + t2.since(t1).nanos();
     jobsRun = jobsRun + 1u64;
     tokensRun = tokensRun + u64.from(n);
-    let result = self.finish(done, nres, back, wantLogits && ok, ok);
+    let result = self.finish(done, back, wantLogits && ok, ok);
     cleanupNanos = cleanupNanos + Instant.now().since(t2).nanos();
     result
   }
 
-  // The job is done: the resident buffers back in their places, the logits read out; the job's own buffers (a
-  // dispatch's parameters, the readback) are freed when 'done' ends here
-  fn finish(self: &mut, done: List[Completion], nres: usize, back: u32, wantLogits: bool, recorded: bool) Result[List[f32], String] {
+  // A job over the resident buffers (slot = index; the parameter slab the one after them) that keeps its bind
+  // groups for the next: the first from the buffers in 'resident', every later one from the last job's
+  // Completion, whose buffers (and bind groups) it takes over, the job's own (the logits' readback) left to be freed
+  fn startJob(self: &mut, device: &mut Device) Job {
+    if last.len() == 1usize {
+      var prev = List[Completion].empty();
+      prev <-> last;
+      return prev[0usize].again(device, u32.from(nres + 1usize));
+    }
+    var job = Job.makeReusable(device);
+    {
+      var drain = resident.drain();
+      var more = true;
+      while more {
+        match drain.next() {
+          case var Some(b) { job.give(b); }
+          case is None { more = false; }
+        }
+      }
+    }
+    // a parameter for every dispatch of a pass over the layers (about 20 a layer), each at its own aligned place
+    job.slab(device, BINDING_ALIGNMENT * (20u64 * u64.from(info.shape.layers) + 8u64));
+    job
+  }
+
+  // The job is done: the logits read out, and its Completion (the resident buffers, the bind groups) kept for the
+  // next job
+  fn finish(self: &mut, done: List[Completion], back: u32, wantLogits: bool, recorded: bool) Result[List[f32], String] {
     var all = done;
     if all.len() != 1usize { return Error[List[f32], String](String.from("llmrun: the job gave no completion")); }
-    let c = &mut all[0usize];
-    var r = 0usize;
-    while r < nres {
-      resident.push(c.take(u32.from(r)));
-      r = r + 1usize;
+    reusedGroups = reusedGroups + u64.from(all[0usize].reusedGroups());
+    lastReused = all[0usize].reusedGroups();
+    let good = recorded && all[0usize].ok;
+    var logits = List[f32].empty();
+    if good && wantLogits {
+      logits = wordFloats(all[0usize].words(back).view());
     }
-    if !recorded || !c.ok { return Error[List[f32], String](String.from("llmrun: a kernel refused its arguments or failed on the GPU")); }
-    if wantLogits {
-      return Ok[List[f32], String](wordFloats(c.words(back).view()));
+    match all.pop() {
+      case var Some(c) { last.push(c); }
+      case is None {}
     }
-    Ok[List[f32], String](List[f32].empty())
+    if !good { return Error[List[f32], String](String.from("llmrun: a kernel refused its arguments or failed on the GPU")); }
+    Ok[List[f32], String](logits)
   }
 }
 

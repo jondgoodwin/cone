@@ -1,8 +1,9 @@
 // ======== The kernels on the GPU: made once, recorded into a gpuwork Job ========
 //
 // 'Kernels.make(&device)' makes the eleven pipelines once. Each method below RECORDS one dispatch into a Job
-// over buffers already given to it (the caller's slot numbers, from 'job.give'), uploading the kernel's small
-// by-value parameter struct itself; it answers whether it recorded (false for arguments that cannot be run:
+// over buffers already given to it (the caller's slot numbers, from 'job.give'), making the kernel's small
+// by-value parameter struct itself (a buffer of its own, or a range of the job's parameter slab if it has one,
+// 'giveParams'); it answers whether it recorded (false for arguments that cannot be run:
 // an unknown type, a column count that is not a whole number of blocks, a zero size, a size or byte offset
 // that does not fit in 32 bits, a dispatch wider than the GPU's limit). Nothing is recorded then.
 // Buffers are f32 words (activations) or the weights' words (packWords); no buffer may be named twice in one
@@ -124,9 +125,24 @@ fn foldY(groups: usize) u32 {
 // Whether a count fits in a 32-bit parameter
 fn fits(n: usize) bool { n <= 4294967295usize }
 
-// Upload a parameter struct and give it to the job: its slot
-fn giveParams[T](job: &mut Job, device: &mut Device, p: &T) u32 {
-  job.give(uploadValue(device, p))
+// A parameter struct for a dispatch to bind as the kernel's first binding: packed into the job's parameter slab
+// if it has one ('job.slab'; one upload for all of a job's structs, each bound by its own range), else
+// uploaded into a buffer of its own that is given to the job
+fn giveParams[T](job: &mut Job, device: &mut Device, p: &T) Binding {
+  if job.hasSlab() { return job.pack(p); }
+  Binding.whole(job.give(uploadValue(device, p)))
+}
+
+// Dispatch 'kernel' binding the parameters 'p' first and then the buffers in 'slots', whole
+fn dispatchWith(job: &mut Job, device: &mut Device, kernel: &Kernel, p: Binding, slots: &Array[u32], x: u32, y: u32) bool {
+  var bs = List[Binding].withCapacity(slots.len + 1usize);
+  bs.push(p);
+  var i = 0usize;
+  while i < slots.len {
+    bs.push(Binding.whole(slots[i]));
+    i = i + 1usize;
+  }
+  job.dispatchBound(device, kernel, bs.view(), x, y)
 }
 
 pub struct Kernels {
@@ -184,7 +200,7 @@ pub struct Kernels {
     let gy = foldY(rows);
     let p = giveParams(job, device,&MatvecParams(u32.from(rows), u32.from(cols), u32.from(rb), gx, u32.from(wByteOffset),
       u32.from(xOffset), u32.from(yOffset), qtype));
-    job.dispatch(device, &matvecK, &[p, w, x, y], gx, gy)
+    dispatchWith(job, device, &matvecK, p, &[w, x, y], gx, gy)
   }
 
   // Y = X W^T for 'batch' input vectors (rows of X, cols f32s each) giving 'batch' rows of Y (rows f32s each).
@@ -205,7 +221,7 @@ pub struct Kernels {
     if gx > MAX_GROUPS || gy > MAX_GROUPS { return false; }
     let p = giveParams(job, device,&MatmulParams(u32.from(rows), u32.from(cols), u32.from(batch), u32.from(rb),
       u32.from(wByteOffset), u32.from(xOffset), u32.from(yOffset), qtype));
-    job.dispatch(device, &matmulK, &[p, w, x, y], u32.from(gx), u32.from(gy))
+    dispatchWith(job, device, &matmulK, p, &[w, x, y], u32.from(gx), u32.from(gy))
   }
 
   // y = x / sqrt(mean(x^2) + eps) * w for each of 'rows' rows of 'n' (x and y rows * n f32s, w n f32s). One
@@ -213,7 +229,7 @@ pub struct Kernels {
   pub fn rmsnorm(self: &, job: &mut Job, device: &mut Device, x: u32, w: u32, y: u32, n: usize, rows: usize, eps: f32) bool {
     if n == 0usize || rows == 0usize || rows > MAX_GROUPS || !fits(n) || !fits(n * rows) { return false; }
     let p = giveParams(job, device,&RmsnormParams(u32.from(n), u32.from(rows), eps, 0u32));
-    job.dispatch(device, &rmsnormK, &[p, x, w, y], u32.from(rows))
+    dispatchWith(job, device, &rmsnormK, p, &[x, w, y], u32.from(rows), 1u32)
   }
 
   // Rotate x ([token][head][d], tokens * nHeads * headDim f32s) in place by (pos0 + token) * freqs[pair]
@@ -229,14 +245,14 @@ pub struct Kernels {
     if usize.from(gy) > MAX_GROUPS { return false; }
     let p = giveParams(job, device,&RopeParams(u32.from(tokens), u32.from(nHeads), u32.from(headDim), u32.from(ropeDim),
       u32.from(pos0), mode, gx, 0u32));
-    job.dispatch(device, &ropeK, &[p, freqs, x], gx, gy)
+    dispatchWith(job, device, &ropeK, p, &[freqs, x], gx, gy)
   }
 
   // Softmax of each of 'rows' rows of 'n' (x and y rows * n f32s). One workgroup for each row.
   pub fn softmax(self: &, job: &mut Job, device: &mut Device, x: u32, y: u32, n: usize, rows: usize) bool {
     if n == 0usize || rows == 0usize || rows > MAX_GROUPS || !fits(n * rows) { return false; }
     let p = giveParams(job, device,&SoftmaxParams(u32.from(n), u32.from(rows), 0u32, 0u32));
-    job.dispatch(device, &softmaxK, &[p, x, y], u32.from(rows))
+    dispatchWith(job, device, &softmaxK, p, &[x, y], u32.from(rows), 1u32)
   }
 
   // Causal attention for 'nTokens' new tokens at positions pos0 .. over caches that already hold keys and values
@@ -249,7 +265,7 @@ pub struct Kernels {
     if !fits(maxSeq * nKvHeads * headDim) || !fits(nTokens * nHeads * maxSeq) || !fits(nTokens * nHeads * headDim) { return false; }
     let p = giveParams(job, device,&AttentionParams(u32.from(nTokens), u32.from(nHeads), u32.from(nKvHeads),
       u32.from(headDim), u32.from(pos0), u32.from(maxSeq), scale, 0u32));
-    job.dispatch(device, &attentionK, &[p, q, kCache, vCache, scores, out], u32.from(nHeads), u32.from(nTokens))
+    dispatchWith(job, device, &attentionK, p, &[q, kCache, vCache, scores, out], u32.from(nHeads), u32.from(nTokens))
   }
 
   // cache[(pos0 + t) * kvDim + i] = src[t * kvDim + i]: the new keys (or values) into the KV cache
@@ -261,7 +277,7 @@ pub struct Kernels {
     let gy = foldY(groups);
     if usize.from(gy) > MAX_GROUPS { return false; }
     let p = giveParams(job, device,&KvAppendParams(u32.from(nTokens), u32.from(kvDim), u32.from(pos0), gx));
-    job.dispatch(device, &kvAppendK, &[p, src, cache], gx, gy)
+    dispatchWith(job, device, &kvAppendK, p, &[src, cache], gx, gy)
   }
 
   // The 1-D kernels: n elements, 256 to a workgroup
@@ -272,9 +288,8 @@ pub struct Kernels {
     let gy = foldY(groups);
     if usize.from(gy) > MAX_GROUPS { return false; }
     let p = giveParams(job, device,&ElementParams(u32.from(n), gx, 0u32, 0u32));
-    // the params buffer goes first: the slots passed are the others, after it
-    if slots.len == 2usize { return job.dispatch(device, kernel, &[p, slots[0usize], slots[1usize]], gx, gy); }
-    job.dispatch(device, kernel, &[p, slots[0usize], slots[1usize], slots[2usize]], gx, gy)
+    // the params go first: the slots passed are the others, after it
+    dispatchWith(job, device, kernel, p, slots, gx, gy)
   }
 
   // y[i] = x[i] / (1 + e^-x[i]) for i < n
