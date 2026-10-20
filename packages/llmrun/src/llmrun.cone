@@ -85,8 +85,23 @@
 // - Left out: rope scaling, sliding windows, a Q4_0/Q5/IQ kernel, F16 or quantised KV caches, several sequences at
 //   once, prefix reuse across sequences, sampling penalties, a stop-string, a server.
 //
-// MEASURED (RTX 4060 Laptop, release build, examples/llmcheck.cone): see the PR; the figures are not kept here
-// because they depend on the machine and on the dispatch-recording work to come.
+// CHECKED AGAINST LLAMA.CPP (b11748, its Vulkan build on the same GPU; examples/llmcheck.cone against llama-server
+// with the prompt given as token ids, temperature 0, 64 tokens): Qwen3-1.7B Q8_0, 3 of 3 prompts identical;
+// Qwen3-8B Q4_K_M, 4 of 6 identical and the other 2 diverge at a near-tie (the two candidates 0.0004 and 0.03 logits
+// apart on this side, 0.005 and 0.04 on llama.cpp's). The top-5 logit gaps agree to 0.03 to 0.4: llama.cpp's
+// kernels quantise the activations to 8 bits, these keep them in f32.
+//
+// MEASURED (RTX 4060 Laptop, release build, examples/llmcheck.cone). Decoding: Qwen3-1.7B Q8_0 about 4.5 tokens a
+// second, Qwen3-8B Q4_K_M about 2.4. A decode step of the 1.7B takes 65 ms recording the job, 70 ms waiting for the
+// GPU and 88 ms of cleanup (freeing the job's own buffers); of the 8B, 115 ms, 187 ms and 120 ms. The record and
+// cleanup shares are the cost of a parameter buffer and a bind group for each of the 722 (8B: 36 layers x 20 + 2)
+// dispatches, made and freed again for every token: a 36-layer model with tiny matrices, where the GPU has almost
+// nothing to do, takes 81 + 29 + 125 ms. Prefill (a prompt of 228 tokens, in chunks of 64): 130 tokens a second on
+// the 1.7B, 34 on the 8B, which is the matrix-matrix kernel's time (llmkernels' measured ~700 GFLOP/s), not the
+// recording. The next piece of work is a parameter slab bound by sub-range, or a job recorded once and replayed
+// with a small per-token buffer for the position; this package's `recordForward` is a function of (n, pos0) only,
+// and every parameter upload goes through llmkernels' `giveParams`, so either is a change to llmkernels and
+// gpuwork that leaves this package's forward pass as it is.
 //
 // The tests: tests/forward.cone (GPU against the CPU reference; a GPU), tests/generate.cone (a small random model with
 // the real vocabulary, end to end; a GPU), tests/plan.cone (the header-only plan, the refusals), tests/tokenizer.cone
