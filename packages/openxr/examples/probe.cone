@@ -1,0 +1,134 @@
+// probe: what the OpenXR runtime on this machine offers, asked through the
+// openxr package, with no window and no GPU work. It prints whether the loader
+// was found, the runtime's name and version, the instance extensions it offers
+// (and whether XR_KHR_vulkan_enable2 is among them), then makes an instance
+// with XR_KHR_vulkan_enable2 (and XR_EXT_local_floor where offered) and asks
+// the headset's system for its name, its recommended image size per eye, the
+// Vulkan versions it supports, and the Vulkan physical device it wants.
+//
+//   congo run packages/openxr/examples/probe.cone
+//
+// To run it on Meta's PC simulator without installing it, from a console that
+// is only for this run (the variables are the process's, nothing is set in the
+// registry):
+//
+//   set XR_RUNTIME_JSON=<simulator folder>\meta_openxr_simulator.json
+//   set PATH=<loader package>\x64\bin;%PATH%
+//
+// The loader is found by the OS's search for openxr_loader.dll. With no
+// loader, or a loader and no runtime, it says so and exits 1.
+
+mod probe;
+
+import stdio use *;
+import libc;
+import collections use *;
+import vulkan;
+import openxr;
+
+fn main() i32 {
+  if !openxr.available() {
+    print <- "No OpenXR loader (openxr_loader.dll) was found\n";
+    return 1i32;
+  }
+  print <- "OpenXR loader: found\n";
+
+  // The instance extensions the runtime offers: how many, then all of them
+  var count = 0u32;
+  var r = openxr.enumerateInstanceExtensionProperties(null, 0u32, &mut count, null);
+  if openxr.failed(r) {
+    print <- "No OpenXR runtime answered: "; print <- openxr.resultName(r); print <- "\n";
+    return 1i32;
+  }
+  var props = List[openxr.ExtensionProperties].empty();
+  props.resize(usize.from(count), openxr.ExtensionProperties(extensionName: Array[u8, 128]() <- fill 0u8,
+    extensionVersion: 0u32));
+  let all = props.viewMut() as *openxr.ExtensionProperties;
+  r = openxr.enumerateInstanceExtensionProperties(null, count, &mut count, all);
+  if openxr.failed(r) {
+    print <- "Listing the extensions failed: "; print <- openxr.resultName(r); print <- "\n";
+    return 1i32;
+  }
+  print <- "Instance extensions offered: "; print <- u64.from(count); print <- "\n";
+  var hasVulkan2 = false;
+  var hasLocalFloor = false;
+  var i = 0usize;
+  while i < usize.from(count) {
+    let p = all + i;
+    let name = &p.extensionName as *u8;
+    if libc.strcmp(cstr.fromPtr(name), "XR_KHR_vulkan_enable2") == 0i32 { hasVulkan2 = true; }
+    if libc.strcmp(cstr.fromPtr(name), "XR_EXT_local_floor") == 0i32 { hasLocalFloor = true; }
+    print <- "  "; printCStr(name); print <- " v"; print <- u64.from(p.extensionVersion); print <- "\n";
+    i = i + 1usize;
+  }
+  print <- "XR_KHR_vulkan_enable2 offered: "; print <- hasVulkan2; print <- "\n";
+  print <- "XR_EXT_local_floor offered: "; print <- hasLocalFloor; print <- "\n";
+  if !hasVulkan2 {
+    print <- "XR_KHR_vulkan_enable2 is not offered; stopping\n";
+    return 1i32;
+  }
+
+  // An instance, asking for OpenXR 1.0
+  let names: Array[*u8, 2] = [&"XR_KHR_vulkan_enable2" as *u8, &"XR_EXT_local_floor" as *u8];
+  let ci = openxr.InstanceCreateInfo(applicationInfo: openxr.applicationInfo("openxr probe", "Cone", openxr.API_VERSION_1_0),
+    enabledApiLayerNames: null, enabledExtensionCount: if hasLocalFloor { 2u32 } else { 1u32 },
+    enabledExtensionNames: &names as **u8);
+  var instance = 0usize as openxr.Instance;
+  r = openxr.createInstance(&ci, &mut instance);
+  if openxr.failed(r) {
+    print <- "xrCreateInstance failed: "; print <- openxr.resultName(r); print <- "\n";
+    return 1i32;
+  }
+  let fns = openxr.InstanceFns.load(instance);
+  print <- "Instance functions missing: "; print <- u64.from(fns.missing);
+  print <- ", XR_KHR_vulkan_enable2's found: "; print <- fns.hasVulkanEnable2(); print <- "\n";
+
+  var ip = openxr.InstanceProperties(runtimeVersion: 0u64, runtimeName: Array[u8, 128]() <- fill 0u8);
+  fns.getInstanceProperties(instance, &mut ip);
+  print <- "Runtime: "; printCStr(&ip.runtimeName as *u8); print <- " "; print <- openxr.versionMajor(ip.runtimeVersion);
+  print <- "."; print <- openxr.versionMinor(ip.runtimeVersion); print <- "."; print <- openxr.versionPatch(ip.runtimeVersion);
+  print <- "\n";
+
+  // The headset
+  var systemId = 0u64;
+  let getInfo = openxr.SystemGetInfo();
+  r = fns.getSystem(instance, &getInfo, &mut systemId);
+  if openxr.failed(r) {
+    print <- "xrGetSystem found no headset: "; print <- openxr.resultName(r); print <- "\n";
+    fns.destroyInstance(instance);
+    return 1i32;
+  }
+  var sys = openxr.zeroed[openxr.SystemProperties]();
+  sys.type = openxr.TYPE_SYSTEM_PROPERTIES;
+  fns.getSystemProperties(instance, systemId, &mut sys);
+  print <- "System: "; printCStr(&sys.systemName as *u8); print <- ", max image "; print <- u64.from(sys.graphicsProperties.maxSwapchainImageWidth);
+  print <- " x "; print <- u64.from(sys.graphicsProperties.maxSwapchainImageHeight);
+  print <- ", orientation tracking "; print <- sys.trackingProperties.orientationTracking == openxr.TRUE;
+  print <- ", position tracking "; print <- sys.trackingProperties.positionTracking == openxr.TRUE; print <- "\n";
+
+  var views = [openxr.ViewConfigurationView(), openxr.ViewConfigurationView()];
+  var viewCount = 0u32;
+  r = fns.enumerateViewConfigurationViews(instance, systemId, openxr.VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, 2u32,
+    &mut viewCount, &mut views as *openxr.ViewConfigurationView);
+  if openxr.succeeded(r) {
+    print <- "Stereo views: "; print <- u64.from(viewCount);
+    print <- ", recommended "; print <- u64.from(views[0].recommendedImageRectWidth); print <- " x ";
+    print <- u64.from(views[0].recommendedImageRectHeight); print <- " per eye, up to ";
+    print <- u64.from(views[0].maxImageRectWidth); print <- " x "; print <- u64.from(views[0].maxImageRectHeight); print <- "\n";
+  } else {
+    print <- "No stereo views: "; print <- openxr.resultName(r); print <- "\n";
+  }
+
+  var req = openxr.GraphicsRequirementsVulkanKHR();
+  r = fns.getVulkanGraphicsRequirements2KHR(instance, systemId, &mut req);
+  if openxr.succeeded(r) {
+    print <- "Vulkan supported: "; print <- openxr.versionMajor(req.minApiVersionSupported); print <- ".";
+    print <- openxr.versionMinor(req.minApiVersionSupported); print <- " to ";
+    print <- openxr.versionMajor(req.maxApiVersionSupported); print <- "."; print <- openxr.versionMinor(req.maxApiVersionSupported);
+    print <- "\n";
+  } else {
+    print <- "Vulkan requirements: "; print <- openxr.resultName(r); print <- "\n";
+  }
+  fns.destroyInstance(instance);
+  0i32
+}

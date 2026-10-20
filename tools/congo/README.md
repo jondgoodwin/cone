@@ -180,7 +180,7 @@ An import names a module. Congo answers each one this way:
 searches, in order:
 
 1. the Cone repository's own `packages/` (`core`, `stdio`, `libc`, `posix`,
-   `sdl`, `vulkan`, `gpu`, `geomath`, `mesh`, `sculpt`, `noise`, `testing`, `collections`, `arena`, `pool`, `collector`, `thread`, `render`, `window` and `frame` are
+   `sdl`, `vulkan`, `openxr`, `gpu`, `geomath`, `mesh`, `sculpt`, `noise`, `testing`, `collections`, `arena`, `pool`, `collector`, `thread`, `render`, `window` and `frame` are
    there), then
 2. each folder the **machine config** lists.
 
@@ -424,6 +424,17 @@ either; where the SDK's validation layer is installed, the tests run under
 it, synchronization validation included, and fail on any message.
 `render`'s example `pipevk.cone`, the pipe demo, imports `sculpt` and
 `window` besides.
+
+`openxr` binds OpenXR the way `vulkan` binds Vulkan and links nothing: its
+`init` opens `openxr_loader.dll` at run time, every function is found through
+`xrGetInstanceProcAddr`, and `openxr.available()` is false on a machine
+without the loader. No loader, header or runtime is in the repository. Its
+tests (`layout`, checked against the C compiler's layout of Khronos's own
+headers, `constants`, `loader`, `noruntime`) need neither a loader nor a
+runtime. `render` imports it for `Headset`, which draws into a headset's
+swapchain images; that and `openxr`'s `probe` example need a runtime to run,
+so `congo test` only builds them: run them by hand, for Meta's PC simulator
+with `XR_RUNTIME_JSON` and `PATH` set for that one process.
 
 `sync` (the futex and the locks built on it, which `thread` imports) is Cone
 code over `extern` declarations of the C runtime and Windows, not a C package.

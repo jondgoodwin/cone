@@ -1,0 +1,109 @@
+// The render package's off-axis camera (Camera.setFovAngles), the projection of
+// a headset's eye, checked with the testing package against values worked out by
+// hand. Only a failure prints, so offaxis.out holds the summary alone. Nothing
+// here needs a GPU or an OpenXR runtime.
+//
+// - A camera is on-axis until 'setFovAngles' makes it otherwise ('offAxis').
+// - The four angles of OpenXR's Fovf (radians from the axis, left and down
+//   negative) become four tangents, and 'fov' becomes the vertical field that
+//   contains the view: twice the larger of the up and the down angle.
+// - A symmetric pair of angles gives exactly Mat4.perspective's matrix, the
+//   target's aspect not entering (the four tangents say the shape).
+// - An asymmetric view, left -0.9, right 0.6, up 0.5, down -0.7 radians: a point
+//   5 ahead along a view edge lands on that edge of clip space (x -1 at the left
+//   edge, +1 at the right, y +1 at the top, -1 at the bottom), a point straight
+//   ahead lands where the edges put the axis (x = -(r + l) / (r - l), y likewise),
+//   and depth runs from 0 at the near plane to 1 at the far, as the symmetric
+//   projection's does.
+// - A camera at the eye's pose, turned a quarter about y, sees what is ahead of
+//   it with the same projection: a point 4 ahead of it, along its -z, is at the
+//   centre's x of the projection.
+
+mod offaxis;
+
+import testing use *;
+import geomath use *;
+import render use *;
+
+let near = 0.00001;
+let close = 0.0001;
+
+// Where the projection puts a point 'ahead' in front of the camera at
+// 'across' to its right and 'up' above its axis (camera coordinates):
+// clip x, y and depth divided by w
+fn ndc(proj: Mat4, across: f32, up: f32, ahead: f32) Vec3 {
+  let c = proj * Vec4(across, up, 0. - ahead, 1.);
+  Vec3(c.x / c.w, c.y / c.w, c.z / c.w)
+}
+
+fn main() i32 {
+  var cam = Camera.make();
+  expectBool(cam.offAxis, false, "a new camera is on-axis");
+
+  // Symmetric angles are Mat4.perspective's matrix
+  let a = 0.6f;
+  cam.setFovAngles(0. - a, a, a, 0. - a);
+  expectBool(cam.offAxis, true, "setFovAngles makes it off-axis");
+  expectFloat(cam.fov, 2. * a, 0.00001, "a symmetric view's field is twice the angle");
+  let sym = cam.perspective(1.7);
+  let want = Mat4.perspective(2. * a, 1., cam.near, cam.far);
+  var k = 0usize;
+  var wrong = 0;
+  while k < 16usize {
+    let diff = sym.m[k] - want.m[k];
+    if diff > 0.00001 || diff < -0.00001 { wrong = wrong + 1; }
+    k = k + 1usize;
+  }
+  expectInt(i64.from(wrong), 0, "symmetric angles give Mat4.perspective, whatever the aspect");
+
+  // An asymmetric view
+  let l = 0.9f;
+  let r = 0.6f;
+  let u = 0.5f;
+  let d = 0.7f;
+  cam.near = 0.2;
+  cam.far = 50.;
+  cam.setFovAngles(0. - l, r, u, 0. - d);
+  expectFloat(cam.fov, 2. * d, 0.00001, "the field is twice the larger of the up and down angles");
+  expectFloat(cam.tanLeft, tan(0. - l), 0.00001, "the left tangent");
+  expectFloat(cam.tanRight, tan(r), 0.00001, "the right tangent");
+  expectFloat(cam.tanUp, tan(u), 0.00001, "the up tangent");
+  expectFloat(cam.tanDown, tan(0. - d), 0.00001, "the down tangent");
+  let proj = cam.projectionMatrix(1.2);
+  let left = ndc(proj, tan(0. - l) * 5., 0., 5.);
+  expectFloat(left.x, -1., close, "the left edge is clip x -1");
+  let right = ndc(proj, tan(r) * 5., 0., 5.);
+  expectFloat(right.x, 1., close, "the right edge is clip x +1");
+  let top = ndc(proj, 0., tan(u) * 5., 5.);
+  expectFloat(top.y, 1., close, "the top edge is clip y +1");
+  let bottom = ndc(proj, 0., tan(0. - d) * 5., 5.);
+  expectFloat(bottom.y, -1., close, "the bottom edge is clip y -1");
+  // Straight ahead: x = -(tr + tl) / (tr - tl), y = -(tu + td) / (tu - td)
+  let tl = tan(0. - l);
+  let tr = tan(r);
+  let tu = tan(u);
+  let td = tan(0. - d);
+  let ahead = ndc(proj, 0., 0., 5.);
+  expectFloat(ahead.x, 0. - (tr + tl) / (tr - tl), close, "the axis lands off the middle of x");
+  expectFloat(ahead.y, 0. - (tu + td) / (tu - td), close, "and off the middle of y");
+  expectBool(ahead.x > 0., true, "a left-leaning eye (more field left than right) puts the axis right of middle");
+  let atNear = ndc(proj, 0., 0., 0.2);
+  expectFloat(atNear.z, 0., close, "depth 0 at the near plane");
+  let atFar = ndc(proj, 0., 0., 50.);
+  expectFloat(atFar.z, 1., close, "depth 1 at the far plane");
+
+  // At an eye's pose: turned a quarter about y it faces -x, so (-4, 0, 0) is 4 ahead of it
+  cam.origin = Vec3(0., 0., 0.);
+  cam.orientation = Quat.angleAxis(radians(90.), Vec3(0., 1., 0.));
+  let inView = cam.viewMatrix() * Vec3(-4., 0., 0.);
+  expectFloat(inView.x, 0., close, "a point ahead of the turned camera is on its axis");
+  expectFloat(inView.z, -4., close, "4 ahead of it");
+  let clip = ndc(cam.projectionMatrix(1.2), inView.x, inView.y, 0. - inView.z);
+  expectFloat(clip.x, 0. - (tr + tl) / (tr - tl), close, "and lands where the axis does");
+
+  // Jitter and an oblique near plane still apply to an off-axis camera: a jitter moves the picture
+  cam.jitterX = 0.1;
+  let shifted = ndc(cam.projectionMatrix(1.2), 0., 0., 5.);
+  expectFloat(shifted.x, ahead.x + 0.1, close, "a jitter shifts an off-axis picture as it does any");
+  done()
+}

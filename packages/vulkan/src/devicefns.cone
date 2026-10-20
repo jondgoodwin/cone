@@ -2,8 +2,9 @@
 
 // The functions of one device, found for it by 'DeviceFns.load' through
 // vkGetDeviceProcAddr, so they call the driver directly, not through the
-// loader's dispatch: its own, swapchains' (VK_KHR_swapchain, which the device
-// must have enabled), and Vulkan 1.3's synchronization2 and dynamic
+// loader's dispatch: its own, swapchains' (VK_KHR_swapchain, found only if the
+// device enabled it, so optional: not counted in 'missing', and said by
+// 'hasSwapchain'), and Vulkan 1.3's synchronization2 and dynamic
 // rendering. They take a Device, a Queue or a CommandBuffer. It belongs to
 // the device it was found for: several devices are legal, each with its own.
 pub struct DeviceFns {
@@ -85,11 +86,11 @@ pub struct DeviceFns {
   pfnCmdResetQueryPool: usize = 0usize;
   pfnCmdWriteTimestamp2: usize = 0usize;
   pfnCmdCopyQueryPoolResults: usize = 0usize;
-  // How many functions were not found
+  // How many required functions were not found
   pub missing: u32 = 0u32;
 
   // Find the functions of 'device', through its instance's
-  // vkGetDeviceProcAddr. 'missing' is how many were not found
+  // vkGetDeviceProcAddr. 'missing' is how many required ones were not found
   pub fn load(instance: &InstanceFns, device: Device) DeviceFns {
     var t = DeviceFns();
     var missing = 0u32;
@@ -102,15 +103,10 @@ pub struct DeviceFns {
     t.pfnQueueWaitIdle = instance.getDeviceProcAddr(device, &"vkQueueWaitIdle" as *u8) as usize;
     if t.pfnQueueWaitIdle == 0usize { missing = missing + 1u32; }
     t.pfnCreateSwapchainKHR = instance.getDeviceProcAddr(device, &"vkCreateSwapchainKHR" as *u8) as usize;
-    if t.pfnCreateSwapchainKHR == 0usize { missing = missing + 1u32; }
     t.pfnDestroySwapchainKHR = instance.getDeviceProcAddr(device, &"vkDestroySwapchainKHR" as *u8) as usize;
-    if t.pfnDestroySwapchainKHR == 0usize { missing = missing + 1u32; }
     t.pfnGetSwapchainImagesKHR = instance.getDeviceProcAddr(device, &"vkGetSwapchainImagesKHR" as *u8) as usize;
-    if t.pfnGetSwapchainImagesKHR == 0usize { missing = missing + 1u32; }
     t.pfnAcquireNextImageKHR = instance.getDeviceProcAddr(device, &"vkAcquireNextImageKHR" as *u8) as usize;
-    if t.pfnAcquireNextImageKHR == 0usize { missing = missing + 1u32; }
     t.pfnQueuePresentKHR = instance.getDeviceProcAddr(device, &"vkQueuePresentKHR" as *u8) as usize;
-    if t.pfnQueuePresentKHR == 0usize { missing = missing + 1u32; }
     t.pfnCreateImage = instance.getDeviceProcAddr(device, &"vkCreateImage" as *u8) as usize;
     if t.pfnCreateImage == 0usize { missing = missing + 1u32; }
     t.pfnDestroyImage = instance.getDeviceProcAddr(device, &"vkDestroyImage" as *u8) as usize;
@@ -251,6 +247,14 @@ pub struct DeviceFns {
     if t.pfnCmdCopyQueryPoolResults == 0usize { missing = missing + 1u32; }
     t.missing = missing;
     t
+  }
+
+  // Whether the swapchain functions were found (the device enabled
+  // VK_KHR_swapchain: a device for a window does, one a headset's runtime
+  // makes need not)
+  pub fn hasSwapchain(self: &) bool {
+    pfnCreateSwapchainKHR != 0usize && pfnDestroySwapchainKHR != 0usize && pfnGetSwapchainImagesKHR != 0usize
+      && pfnAcquireNextImageKHR != 0usize && pfnQueuePresentKHR != 0usize
   }
 
   pub fn destroyDevice(self: &, device: Device, pAllocator: *u8) {

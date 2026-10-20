@@ -45,6 +45,15 @@ pub struct Camera {
   // picture moves by (jitterX, jitterY) in NDC (x right, y up). 0 is no shift.
   pub jitterX: f32 = 0.;
   pub jitterY: f32 = 0.;
+  // An off-axis perspective ('setFovAngles'), a headset eye's: the view's
+  // edges are four tangents from its axis, not one field of view about it, so
+  // the picture's middle need not be the axis's. Perspective only; the target's
+  // aspect is not used, the four tangents say the shape.
+  pub offAxis: bool = false;
+  pub tanLeft: f32 = 0.;     // the tangent of the angle to the left edge (negative for a left edge left of the axis)
+  pub tanRight: f32 = 0.;
+  pub tanUp: f32 = 0.;
+  pub tanDown: f32 = 0.;     // (negative for a bottom edge below the axis)
 
   // Pegasus's new camera: perspective, a field of view of 50 degrees (an
   // orthogonal view 10 high), drawing from 0.1 to 1000 away, at (0, 0, 5)
@@ -61,9 +70,33 @@ pub struct Camera {
     orientation = rotationOf(Mat4.targetTo(eye, target, up));
   }
 
+  // Make it an off-axis perspective with the four angles OpenXR's xrLocateViews
+  // gives an eye ('Fovf': radians from the view axis, left and down negative,
+  // right and up positive; a symmetric view's are plus and minus half its
+  // field of view). 'fov' becomes the vertical field that contains the view,
+  // twice the larger of the up and down angles: what level of detail and the
+  // sun's cascades take the view's size from (the cascades fit a symmetric
+  // frustum, so they are slightly generous for an eye that looks inward).
+  pub fn setFovAngles(self: &mut, angleLeft: f32, angleRight: f32, angleUp: f32, angleDown: f32) {
+    projection = Perspective;
+    offAxis = true;
+    tanLeft = tan(angleLeft);
+    tanRight = tan(angleRight);
+    tanUp = tan(angleUp);
+    tanDown = tan(angleDown);
+    let reach = if tanUp > 0. - tanDown { tanUp } else { 0. - tanDown };
+    fov = 2. * libc.atanf(reach);
+  }
+
   // Its perspective projection into a target 'aspect' wide for each unit
-  // high, depth from 0 to 1
-  pub fn perspective(self: &, aspect: f32) Mat4 { Mat4.perspective(fov, aspect, near, far) }
+  // high, depth from 0 to 1. An off-axis camera's is the projection of its
+  // four tangents (the aspect does not enter): clip x is
+  // (2 x / -z - (r + l)) / (r - l) and clip y likewise from the up and down
+  // tangents, the same depth as the symmetric one.
+  pub fn perspective(self: &, aspect: f32) Mat4 {
+    if offAxis { return offAxisPerspective(tanLeft, tanRight, tanDown, tanUp, near, far); }
+    Mat4.perspective(fov, aspect, near, far)
+  }
 
   // Its orthogonal projection, depth from 0 to 1. It looks down -z and sees
   // 'viewHeight' above and below its middle, and that times the aspect to
@@ -191,6 +224,26 @@ fn obliqueNearPlane(proj: Mat4, view: Mat4, world: Vec4) Mat4 {
   r.m[10] = c.z * s;
   r.m[14] = c.w * s;
   r
+}
+
+// The perspective projection of the view whose edges, at one unit ahead, are
+// 'l' and 'r' to the left and right and 'b' and 't' below and above the axis
+// (the tangents of the four angles), depth from 0 at 'near' to 1 at 'far'.
+// A point (x, y, z) in front of the camera (z < 0) goes to
+//   clip x = (2 x / -z - (r + l)) / (r - l) * -z,  clip y likewise,
+//   clip w = -z,
+// and the same depth as Mat4.perspective's, of which this is the general case
+// (l = -r, b = -t gives it).
+fn offAxisPerspective(l: f32, r: f32, b: f32, t: f32, near: f32, far: f32) Mat4 {
+  var p = Mat4(Array[f32, 16]() <- fill 0f);
+  p.m[0] = 2. / (r - l);
+  p.m[5] = 2. / (t - b);
+  p.m[8] = (r + l) / (r - l);
+  p.m[9] = (t + b) / (t - b);
+  p.m[10] = far / (near - far);
+  p.m[11] = -1.;
+  p.m[14] = near * far / (near - far);
+  p
 }
 
 // The rotation of a placement matrix of no scale, as a quaternion (the

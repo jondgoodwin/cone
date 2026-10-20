@@ -1,0 +1,163 @@
+// The gpu package's objects made the way a headset's runtime makes them
+// (OpenXR's XR_KHR_vulkan_enable2), with no OpenXR and no window: the instance
+// and the device are made by makers the test supplies (which call
+// vkCreateInstance and vkCreateDevice themselves, as a runtime's calls end up
+// doing), the adapter is the one for a physical device named to it, and a
+// texture is made of an image the test made itself with Vulkan, as a runtime
+// owns its swapchain's. A render pass clears it, the GPU copies it out, and the
+// bytes are read back. Only a failure prints, and nothing printed depends on
+// which GPU is present.
+//
+// - 'createWith' calls its maker once, with the create-info the layer assembled
+//   (the debug utils extension, no surface extensions), makes a valid instance
+//   with no window, and says which handle it made.
+// - 'requestAdapterFor' on the GPU 'requestAdapter' chose gives the same adapter
+//   (the same physical device and queue family).
+// - 'requestDeviceVia' calls its maker once, with the create-info the layer
+//   assembled (dynamic rendering and synchronization2 chained), and makes a
+//   valid device that says its handle and queue family.
+// - 'wrapImage' of an image made elsewhere is a valid texture of that size and
+//   format, drawn into by a render pass (cleared to red) and copied from; the
+//   first texel read back is red in the image's own byte order. The texture's
+//   end destroys its view and not the image, which the test destroys itself.
+// - No Vulkan call failed and the validation layer, where installed, said
+//   nothing.
+//
+// It needs a GPU driver with Vulkan 1.3 and SDL3.dll (which the gpu package
+// links); no window, no display of its own, and no Vulkan SDK.
+
+mod external;
+
+import testing use *;
+import libc;
+import gpu use *;
+import geomath use Color;
+import vulkan;
+
+// What the makers are given as their 'user' data, and fill in
+struct Maker {
+  instanceCalls: u32;
+  deviceCalls: u32;
+  extensionCount: u32;            // the instance create-info's extensions
+  instance: vulkan.Instance;
+  fns: vulkan.InstanceFns;        // the instance's functions, for the device maker
+}
+
+fn makeInstance(user: *u8, createInfo: &vulkan.InstanceCreateInfo, instance: &mut vulkan.Instance) i32 {
+  let m = user as *Maker;
+  m.instanceCalls = m.instanceCalls + 1u32;
+  m.extensionCount = createInfo.enabledExtensionCount;
+  vulkan.createInstance(createInfo, null, instance)
+}
+
+fn makeDevice(user: *u8, physical: vulkan.PhysicalDevice, createInfo: &vulkan.DeviceCreateInfo, device: &mut vulkan.Device) i32 {
+  let m = user as *Maker;
+  m.deviceCalls = m.deviceCalls + 1u32;
+  m.fns.createDevice(physical, createInfo, null, device)
+}
+
+fn memoryTypeOf(props: &vulkan.PhysicalDeviceMemoryProperties, bits: u32) u32 {
+  var i = 0u32;
+  while i < props.memoryTypeCount {
+    if (bits & (1u32 << i)) != 0u32 && (props.memoryTypes[usize.from(i)].propertyFlags & vulkan.MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0u32 {
+      return i;
+    }
+    i = i + 1u32;
+  }
+  0xFFFFFFFFu32
+}
+
+fn main() i32 {
+  var maker = Maker(0u32, 0u32, 0u32, 0usize as vulkan.Instance, vulkan.InstanceFns());
+
+  // The instance, made by a maker, for no window
+  var instance = Instance.createWith("external", &makeInstance, &maker as *u8, true);
+  require(instance.isValid(), "an instance made by a maker");
+  expectUInt(u64.from(maker.instanceCalls), 1u64, "the instance maker was called once");
+  expect(instance.vulkanHandle() as *u8 as usize != 0usize, "the instance says its handle");
+  maker.instance = instance.vulkanHandle();
+  maker.fns = vulkan.InstanceFns.load(instance.vulkanHandle());
+  expectUInt(u64.from(maker.fns.missing), 0u64, "the instance's functions found");
+
+  // The adapter for the GPU the layer would have chosen, asked for by its handle
+  var none = Surface.none();
+  var chosen = instance.requestAdapter(&none, POWER_PREFERENCE_HIGH_PERFORMANCE);
+  require(chosen.isValid(), "an adapter");
+  var adapter = instance.requestAdapterFor(chosen.vulkanPhysicalDevice());
+  require(adapter.isValid(), "the adapter for a physical device named to it");
+  expect(adapter.vulkanPhysicalDevice() as *u8 as usize == chosen.vulkanPhysicalDevice() as *u8 as usize, "the same physical device");
+  expectUInt(u64.from(adapter.vulkanQueueFamily()), u64.from(chosen.vulkanQueueFamily()), "the same queue family");
+  expectStr(adapter.name.view(), chosen.name.view(), "the same name");
+
+  // The device, made by a maker
+  var device = adapter.requestDeviceVia(&makeDevice, &maker as *u8);
+  require(device.isValid(), "a device made by a maker");
+  expectUInt(u64.from(maker.deviceCalls), 1u64, "the device maker was called once");
+  expect(device.vulkanHandle() as *u8 as usize != 0usize, "the device says its handle");
+  expectUInt(u64.from(device.vulkanQueueFamily()), u64.from(adapter.vulkanQueueFamily()), "and its queue family");
+
+  // An image made elsewhere, as a runtime makes its swapchain's: 64 x 48, BGRA, to be drawn into and copied from
+  let dfns = vulkan.DeviceFns.load(&maker.fns, device.vulkanHandle());
+  expectUInt(u64.from(dfns.missing), 0u64, "the device's functions found");
+  var memoryProps = zeroed[vulkan.PhysicalDeviceMemoryProperties]();
+  maker.fns.getPhysicalDeviceMemoryProperties(adapter.vulkanPhysicalDevice(), &mut memoryProps);
+  let width = 64u32;
+  let height = 48u32;
+  let format = TEXTURE_FORMAT_BGRA8_UNORM_SRGB;
+  let ici = vulkan.ImageCreateInfo(imageType: vulkan.IMAGE_TYPE_2D, format: vulkanFormatOf(format),
+    extent: vulkan.Extent3D(width, height, 1u32), mipLevels: 1u32, arrayLayers: 1u32,
+    usage: vulkan.IMAGE_USAGE_COLOR_ATTACHMENT_BIT | vulkan.IMAGE_USAGE_TRANSFER_SRC_BIT, pQueueFamilyIndices: null);
+  var image = vulkan.Image(0u64);
+  expectInt(i64.from(dfns.createImage(device.vulkanHandle(), &ici, null, &mut image)), i64.from(vulkan.SUCCESS), "an image made elsewhere");
+  var req = zeroed[vulkan.MemoryRequirements]();
+  dfns.getImageMemoryRequirements(device.vulkanHandle(), image, &mut req);
+  let typeIndex = memoryTypeOf(&memoryProps, req.memoryTypeBits);
+  require(typeIndex != 0xFFFFFFFFu32, "device-local memory for it");
+  let mai = vulkan.MemoryAllocateInfo(allocationSize: req.size, memoryTypeIndex: typeIndex);
+  var memory = vulkan.DeviceMemory(0u64);
+  expectInt(i64.from(dfns.allocateMemory(device.vulkanHandle(), &mai, null, &mut memory)), i64.from(vulkan.SUCCESS), "memory for it");
+  expectInt(i64.from(dfns.bindImageMemory(device.vulkanHandle(), image, memory, 0u64)), i64.from(vulkan.SUCCESS), "bound");
+
+  // Wrapped as a texture, cleared to red by a render pass, copied out
+  var readback = device.createBuffer(u64.from(width) * u64.from(height) * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  require(readback.isValid(), "a buffer to read back into");
+  {
+    var texture = device.wrapImage(image, width, height, format, true);
+    require(texture.isValid(), "a texture of the image made elsewhere");
+    expectUInt(u64.from(texture.width), u64.from(width), "its width");
+    expectUInt(u64.from(texture.height), u64.from(height), "its height");
+    expectUInt(u64.from(texture.format), u64.from(format), "its format");
+    var encoder = device.createCommandEncoder();
+    let attachment = RenderPassColorAttachment(view: texture.createView(), clearValue: Color(1., 0., 0., 1.));
+    var pass = encoder.beginRenderPass(&attachment);
+    pass.end();
+    encoder.copyTextureToBuffer(&texture, &readback);
+    expectBool(device.queue.submit(encoder.finish()), true, "the pass and the copy submitted");
+    device.endFrame();
+    device.waitIdle();
+    let texels = readback.mappedRange();
+    require((texels as usize) != 0usize, "the readback is mapped");
+    // BGRA: blue, green, red, alpha; an sRGB target holds red 1 as 255
+    expectUInt(u64.from(*texels), 0u64, "the first texel's blue");
+    expectUInt(u64.from(*(texels + 1usize)), 0u64, "its green");
+    expectUInt(u64.from(*(texels + 2usize)), 255u64, "its red");
+    expectUInt(u64.from(*(texels + 3usize)), 255u64, "its alpha");
+    let last = u64.from(width) * u64.from(height) * 4u64 - 4u64;
+    expectUInt(u64.from(*(texels + usize.from(last) + 2usize)), 255u64, "the last texel's red");
+  }
+  // The texture has ended (its view destroyed); the image is the test's own to destroy
+  dfns.destroyImage(device.vulkanHandle(), image, null);
+  dfns.freeMemory(device.vulkanHandle(), memory, null);
+
+  expectUInt(u64.from(failures()), 0u64, "no Vulkan call failed");
+  expectUInt(u64.from(validationMessages()), 0u64, "no validation message");
+  done()
+}
+
+// A value of T with every byte zero, for a C struct Vulkan fills in
+fn zeroed[T]() T {
+  let p = libc.calloc(1usize, mem.sizeof[T]()) as *T;
+  let v = mem.readRaw[T](p);
+  libc.free(p as *u8);
+  v
+}

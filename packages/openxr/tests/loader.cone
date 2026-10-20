@@ -1,0 +1,98 @@
+// The openxr package's loader, without OpenXR: the tables are built from a
+// stand-in for xrGetInstanceProcAddr, which counts the names it is asked for.
+// No function found is called. Only a failure prints. The OS's own loader is
+// the module's 'init', which 'noruntime' checks on a machine that may have
+// no OpenXR loader and no runtime at all.
+//
+// - A lookup finding nothing: the global table has all 3 functions missing.
+// - A null lookup (no loader): nothing found, nothing counted missing.
+// - A lookup finding everything: the global table asks for its 3 functions,
+//   an instance's table for its 40, each once (6 of them the extensions',
+//   optional), and none is missing.
+// - A lookup that fails with ERROR_FUNCTION_UNSUPPORTED, as a loader answers
+//   for a function of an extension that was not enabled: the 34 required
+//   functions are missing, the extensions' are not counted, and neither
+//   extension is present.
+// - Every name asked for is a C name, beginning "xr".
+
+mod loader;
+
+import testing use *;
+import libc;
+import openxr;
+
+var @threadlocal asked = 0;
+var @threadlocal badNames = 0;
+var @threadlocal noExtensions = false;
+
+fn count(name: *u8) {
+  asked = asked + 1;
+  if *name != 'x' || *(name + 1usize) != 'r' { badNames = badNames + 1; }
+}
+
+fn @c findNothing(instance: openxr.Instance, name: *u8, function: &mut usize) i32 {
+  count(name);
+  *function = 0usize;
+  openxr.ERROR_FUNCTION_UNSUPPORTED
+}
+
+fn @c findEverything(instance: openxr.Instance, name: *u8, function: &mut usize) i32 {
+  count(name);
+  if noExtensions {
+    let isExtension = libc.strcmp(cstr.fromPtr(name), "xrCreateVulkanInstanceKHR") == 0i32
+      || libc.strcmp(cstr.fromPtr(name), "xrConvertTimeToWin32PerformanceCounterKHR") == 0i32;
+    if isExtension {
+      *function = 0usize;
+      return openxr.ERROR_FUNCTION_UNSUPPORTED;
+    }
+  }
+  *function = name as usize;
+  openxr.SUCCESS
+}
+
+fn main() i32 {
+  let nothing = openxr.GlobalFns.find(&findNothing);
+  expectInt(i64.from(nothing.missing), 3, "all three global functions missing");
+  expectInt(i64.from(asked), 3, "each global function asked for once");
+
+  asked = 0;
+  let everything = openxr.GlobalFns.find(&findEverything);
+  expectInt(i64.from(everything.missing), 0, "no global function missing");
+  expectInt(i64.from(asked), 3, "the global functions asked for once again");
+
+  // No loader at all: a null xrGetInstanceProcAddr finds nothing and fails nothing
+  asked = 0;
+  let absent = openxr.GlobalFns.find(0usize as *u8 as openxr.PFN_GetInstanceProcAddr);
+  expectInt(i64.from(absent.missing), 0, "no loader: nothing counted missing");
+  expectInt(i64.from(asked), 0, "and nothing asked");
+
+  let instance = 0x1000usize as openxr.Instance;
+  asked = 0;
+  let fns = openxr.InstanceFns.loadWith(&findEverything, instance);
+  expectInt(i64.from(fns.missing), 0, "every instance function found");
+  expectInt(i64.from(asked), 40, "each instance function asked for once");
+  expectBool(fns.hasVulkanEnable2(), true, "XR_KHR_vulkan_enable2's functions found");
+  expectBool(fns.hasWin32Time(), true, "the performance counter conversions found");
+
+  // A lookup finding nothing: the required functions are missing, not the
+  // optional ones, and the extensions are absent
+  let lost = openxr.InstanceFns.loadWith(&findNothing, instance);
+  expectInt(i64.from(lost.missing), 34, "an instance finding nothing: its 34 required functions missing");
+  expectBool(lost.hasVulkanEnable2(), false, "and no XR_KHR_vulkan_enable2");
+  expectBool(lost.hasWin32Time(), false, "and no performance counter conversions");
+  expectBool(fns.hasVulkanEnable2(), true, "the first instance's table is its own");
+
+  // No loader: a table with every required function missing
+  let none = openxr.InstanceFns.loadWith(0usize as *u8 as openxr.PFN_GetInstanceProcAddr, instance);
+  expectInt(i64.from(none.missing), 34, "no loader: all 34 required functions missing");
+
+  // An instance made without the extensions: they are optional, not counted missing
+  noExtensions = true;
+  let plain = openxr.InstanceFns.loadWith(&findEverything, instance);
+  expectInt(i64.from(plain.missing), 0, "the extensions' functions are optional, and not counted as missing");
+  expectBool(plain.hasVulkanEnable2(), false, "without XR_KHR_vulkan_enable2");
+  expectBool(plain.hasWin32Time(), false, "without the performance counter conversions");
+
+  expectInt(i64.from(badNames), 0, "every name begins xr");
+  done()
+}
