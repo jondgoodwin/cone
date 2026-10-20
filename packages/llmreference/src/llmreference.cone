@@ -1,9 +1,9 @@
 // llmreference: the CPU side of running a Llama-family model: the weight block layouts (GGUF's F32, F16, Q8_0,
 // Q4_K and Q6_K), their decoders and the encoders a test needs, seeded synthetic weights, and a CPU twin of each
 // GPU kernel in llmkernels (matvec, matmul, RMSNorm, RoPE, softmax, attention over a KV cache, the cache append,
-// SiLU, GELU, add, multiply). Written in Cone with no GPU and no call of the OS, so it builds and its tests run on
-// Linux, where llmkernels (which needs the GPU packages) does not. A later package that reads a GGUF file shares
-// these layouts rather than copying them.
+// SiLU, GELU, add, multiply), and a whole model run on the CPU over the twins (the reference llmrun's GPU forward
+// pass is checked against). Written in Cone with no GPU and no call of the OS, so it builds and its tests run on
+// Linux, where llmkernels (which needs the GPU packages) does not. The gguf package's layouts are the same ones.
 //
 //   mut rng = random.Rng.fromSeed(7u64);
 //   match syntheticMatrix(&mut rng, QTYPE_Q6_K, 4usize, 512usize) {      // 4 rows of 2 Q6_K super-blocks
@@ -26,6 +26,10 @@
 //   matvecCpu matmulCpu rmsnormCpu ropeFrequencies ropeCpu softmaxCpu attentionCpu kvAppendCpu
 //   siluCpu geluCpu addCpu mulCpu siluValue geluValue            the twins (each documents its layout)
 //   matvecMagnitudeCpu matmulMagnitudeCpu sumTolerance           the bound a sum of products is tested to
+//   ModelShape LayerWeights ModelWeights RefCache                 a whole model (model.cone)
+//   forwardCpu(&weights, &mut cache, tokens, pos0)                tokens run through every layer: the last one's logits
+//   syntheticModel(&mut rng, &shape, &types) isValidWeights(&m)   a seeded random model of chosen weight types
+//   embedCpu attentionScale ModelWeights.withShape                the pieces a test uses
 //
 // METHOD CHOICES. These are defaults a later design may revisit.
 //
@@ -33,11 +37,13 @@
 //   in llmkernels.cone's header with their sizes and the formula for an element. Their decoders here are
 //   written the way ggml's dequantize_row_q8_0, _q4_K and _q6_K are (a loop over blocks and their groups); the
 //   shader's (llmcommon.slang) decodes one element, or one unit of 32, at a time, so the tests comparing the
-//   two cross-check the layout. UNCERTAIN: no copy of ggml and no model file was to hand, so the Q4_K and Q6_K
-//   layouts are written from knowledge of ggml and checked against numbers worked out by hand from it
-//   (tests/decode.cone: one block of each type, with Q6_K's values computed by a literal transcription of
-//   ggml's loop in Python) and against the gguf package's independent transcription; reading a real model's
-//   tensor and comparing it with llama.cpp's is the one check that remains.
+//   two cross-check the layout. The Q4_K and Q6_K layouts were written from knowledge of ggml and checked
+//   against numbers worked out by hand from it (tests/decode.cone: one block of each type, with Q6_K's values
+//   computed by a literal transcription of ggml's loop in Python) and against the gguf package's independent
+//   transcription; they have since been checked on blocks ggml wrote (llama-quantize turned a Q8_0 file into
+//   Q4_K_M: these decoders give the same numbers as the gguf package, within 7 per cent of the Q8_0 values for
+//   Q4_K and 2 per cent for Q6_K, as 4- and 6-bit quantisation should), and llmrun's greedy output on
+//   Qwen3-1.7B (Q8_0) and Qwen3-8B (Q4_K_M, with Q6_K) matches llama.cpp's token for token.
 // - TWINS ARE REFERENCES. A twin works in f64 where it sums or takes a transcendental, in the order the layout
 //   gives, and rounds once to f32; the numbers that DEFINE a result (a dequantised weight, the f32 product
 //   that is a RoPE angle, an f32 add) are computed in f32 as the shader does. So a GPU result's difference
@@ -60,6 +66,17 @@
 // - THE ATTENTION TWIN is one sequence with grouped-query heads and a causal mask, over f32 caches laid out
 //   [position][kvHead][d]. Left out, as in the kernel: batching, several sequences, flash attention, sliding
 //   windows and biases other than causal, f16 activations or cache.
+// - THE FORWARD PASS (model.cone) is the twins in the order of a Llama-family layer, with Qwen3's per-head RMSNorm of
+//   the queries and keys when the shape says so, a KV cache, grouped-query heads, tied or separate output matrix,
+//   and either rotation order. It is a reference and not fast: every matrix row is decoded to f32 each time it is
+//   used. llmrun's GPU pass is checked against it on seeded synthetic models (llmrun's tests/forward.cone names the
+//   tolerance and where it comes from). Left out: rope scaling (Llama 3.1, YaRN), sliding windows, a mixture of
+//   experts, biases, and any layer type but the one.
+// - THE SYNTHETIC MODEL gives each matrix random blocks of its type, with the norm weights set so that activations
+//   keep a size where attention is not uniform and a rotation or norm bug moves the logits. A Q4_K block's minimum
+//   scale is set to 7.5 of its scale so the weights are zero-mean (random Q4_K blocks are not: with independent
+//   random scales and minimums every output of a matrix is nearly the same sum of its input, and attention
+//   cannot be told from a mistake in it).
 // - No global and no thread-local: every function is of its arguments.
 
 mod llmreference;

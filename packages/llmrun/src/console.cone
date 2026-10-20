@@ -1,0 +1,107 @@
+// ======== Small helpers for a terminal program: arguments, a line from standard input, bytes to standard output ========
+
+extern {
+  fn @c(system) SetConsoleOutputCP(codePage: u32) i32;
+}
+
+// Make a Windows console show UTF-8 (a model's replies are UTF-8); nothing elsewhere
+pub fn utf8Console() {
+  if isWindows() { SetConsoleOutputCP(65001u32); }
+}
+
+// The value after `--name`, if the arguments have it
+pub fn argValue(args: &List[String], name: &str) Option[String] {
+  var i = 0usize;
+  while i + 1usize < args.len() {
+    if args[i].view() == name { return Some[String](args[i + 1usize].copy()); }
+    i = i + 1usize;
+  }
+  None
+}
+
+// Whether the arguments have the flag `--name`
+pub fn hasFlag(args: &List[String], name: &str) bool {
+  var i = 0usize;
+  while i < args.len() {
+    if args[i].view() == name { return true; }
+    i = i + 1usize;
+  }
+  false
+}
+
+// The number a decimal text spells, or None
+pub fn parseUInt(s: &str) Option[u64] {
+  let b: &Array[u8] = s;
+  if b.len == 0usize || b.len > 18usize { return None; }
+  var v = 0u64;
+  var i = 0usize;
+  while i < b.len {
+    if b[i] < '0' || b[i] > '9' { return None; }
+    v = v * 10u64 + u64.from(b[i] - '0');
+    i = i + 1usize;
+  }
+  Some[u64](v)
+}
+
+// A non-negative decimal number with an optional fraction ("0.7", "1", ".5"), or None
+pub fn parseFloat(s: &str) Option[f64] {
+  let b: &Array[u8] = s;
+  if b.len == 0usize || b.len > 24usize { return None; }
+  var whole = 0.0;
+  var scale = 0.0;
+  var seen = false;
+  var i = 0usize;
+  while i < b.len {
+    if b[i] == '.' {
+      if scale != 0.0 { return None; }
+      scale = 0.1;
+    } else if b[i] >= '0' && b[i] <= '9' {
+      seen = true;
+      let d = f64.from(b[i] - '0');
+      if scale == 0.0 { whole = whole * 10.0 + d; }
+      else { whole = whole + d * scale; scale = scale / 10.0; }
+    } else {
+      return None;
+    }
+    i = i + 1usize;
+  }
+  if !seen { return None; }
+  Some[f64](whole)
+}
+
+// A line from standard input without its line end, or None at the end of the input
+pub fn readLine() Option[List[u8]] {
+  var line = List[u8].empty();
+  var got = false;
+  var byte = List[u8].withCapacity(1usize);
+  byte.push(0u8);
+  while true {
+    let n = libc.fread(&mut byte[0usize] as *u8, 1usize, 1usize, libc.stdin());
+    if n == 0usize { break; }
+    got = true;
+    if *byte[0usize] == '\n' { break; }
+    line.push(*byte[0usize]);
+  }
+  if !got { return None; }
+  if line.len() > 0usize && *line[line.len() - 1usize] == '\r' { line.pop(); }
+  Some[List[u8]](line)
+}
+
+// Write the bytes to standard output now
+pub fn writeBytes(b: &Array[u8]) {
+  if b.len == 0usize { return; }
+  libc.fwrite(&b[0usize] as *u8, 1usize, b.len, libc.stdout());
+  libc.fflush(libc.stdout());
+}
+
+// A number with one decimal place: 12.34 is "12.3"
+pub fn oneDecimal(x: f64) String {
+  var s = String.empty();
+  var v = x;
+  if v < 0.0 { s <- "-"; v = 0.0 - v; }
+  let tenths = u64.from(v * 10.0 + 0.5);
+  s <- tenths / 10u64;
+  s <- ".";
+  s <- tenths % 10u64;
+  s
+}

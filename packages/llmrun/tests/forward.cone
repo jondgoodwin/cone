@@ -1,0 +1,218 @@
+// The GPU forward pass against the CPU reference, on synthetic models written as GGUF files and loaded the way a
+// downloaded one is. See the numbers at the top of each case's check.
+
+mod forward;
+
+import testing use *;
+import libc;
+import collections use List, String;
+import path use Path;
+import random use Rng;
+import fs;
+import stdio use *;
+import gpu use *;
+import gpuwork use *;
+import llmreference use *;
+import llmrun use *;
+
+// How far a GPU logit may be from the CPU reference's, relative to the largest logit of that step.
+//
+// Where it comes from: every operation of the forward pass rounds to f32 (a unit of 2^-24 = 6e-8 relative), the CPU
+// reference rounds the same way between operations but sums in f64, so the difference is the GPU's own rounding,
+// carried through about 14 operations a layer and amplified by how sharply the model depends on its inputs. The
+// kernels' own bounds are llmkernels' (sumTolerance: (n + 4) * 2^-24 times the sum of the absolute terms, for a
+// sum of n products), which at these sizes are 1e-5 of a sum's terms: a worst case that no random sum reaches.
+// MEASURED over these four synthetic models and 16 sets of logits: the worst is 4.7e-6 (the Q8_0 model, where the
+// logits have a large scale and attention is peaked), the Llama and the others 2e-7 to 3.5e-6. The tolerance is
+// 3e-5, six times the worst.
+// What it must catch: a wrong rotation order or a missing q/k norm moves the logits by 0.4 or more of their size
+// in these models (negative controls below), 10^4 tolerances; a wrong attention group or a missed residual by
+// far more.
+const TOLERANCE = 3.0e-5;
+
+// The least a deliberately wrong CPU run must be from the GPU's answer: 300 tolerances
+const CONTROL = 1.0e-2;
+
+fn preference() u32 {
+  let env = libc.getenv("GPU_POWER_PREFERENCE");
+  if (env as usize) != 0usize && libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 { return POWER_PREFERENCE_LOW_POWER; }
+  POWER_PREFERENCE_HIGH_PERFORMANCE
+}
+
+fn reporting() bool { (libc.getenv("LLMRUN_REPORT") as usize) != 0usize }
+
+fn ids(n: usize, vocab: u32, seed: u32) List[u32] {
+  var l = List[u32].empty();
+  var i = 0usize;
+  var x = seed;
+  while i < n {
+    x = x * 1664525u32 + 1013904223u32;
+    l.push((x >> 8u32) % vocab);
+    i = i + 1usize;
+  }
+  l
+}
+
+fn maxAbs(l: &List[f32]) f64 {
+  var m = 0.0;
+  var i = 0usize;
+  while i < l.len() {
+    let v = libc.fabs(f64.from(*l[i]));
+    if v > m { m = v; }
+    i = i + 1usize;
+  }
+  m
+}
+
+fn maxDiff(a: &List[f32], b: &List[f32]) f64 {
+  if a.len() != b.len() { return 1.0e30; }
+  var worst = 0.0;
+  var i = 0usize;
+  while i < a.len() {
+    let d = libc.fabs(f64.from(*a[i]) - f64.from(*b[i]));
+    if d > worst { worst = d; }
+    i = i + 1usize;
+  }
+  worst
+}
+
+fn argmaxOf(l: &List[f32]) usize { usize.from(argmax(l.view())) }
+
+// The logits of the 'tokens' after the ones the cache holds, on the CPU
+fn cpuStep(m: &ModelWeights, cache: &mut RefCache, tokens: &Array[u32], pos0: usize) List[f32] {
+  forwardCpu(m, cache, tokens, pos0)
+}
+
+// One synthetic model through the GPU and the CPU: a prompt in one go (in chunks of 'chunk' tokens), then three
+// more tokens one at a time (the matvec path). Answers the largest difference of any logit, relative to the
+// largest logit, over those four sets of logits.
+fn runCase(device: &mut Device, label: &str, shape: &ModelShape, types: &ModelTypes, arch: &str, chunk: usize,
+    promptLen: usize, seed: u64) f64 {
+  var rng = Rng.fromSeed(seed);
+  let weights = syntheticModel(&mut rng, shape, types);
+  require(isValidWeights(&weights), "the synthetic weights are whole");
+  var file = Path.from("llmrun-forward-test.gguf");
+  match syntheticGguf(&weights, arch) {
+    case let Ok(bytes) {
+      match fs.writeFile(&file, bytes.view()) {
+        case is Ok {}
+        case let Error(e) { require(false, "the synthetic file is written"); }
+      }
+    }
+    case let Error(e) { require(false, "the synthetic GGUF is made"); }
+  }
+  let promptIds = ids(promptLen, u32.from(shape.vocab), 99u32);
+  var cache = RefCache.make(shape, 32usize);
+  var worst = 0.0;
+  match Engine.open(device, &file, &LoadOptions(32usize, chunk)) {
+    case var Ok(engine) {
+      expectUInt(u64.from(engine.shape().layers), u64.from(shape.layers), "the loader read the layer count");
+      expectUInt(u64.from(engine.shape().nKvHeads), u64.from(shape.nKvHeads), "...and the KV head count");
+      expectBool(engine.shape().tied, shape.tied, "...and whether the output is tied");
+      expectBool(engine.shape().qkNorm, shape.qkNorm, "...and whether there is a q/k norm");
+      expectUInt(u64.from(engine.shape().ropeMode), u64.from(shape.ropeMode), "...and the rotation order of the architecture");
+      let want = cpuStep(&weights, &mut cache, promptIds.view(), 0usize);
+      match engine.feed(device, promptIds.view(), true) {
+        case let Ok(got) {
+          let scale = maxAbs(&want);
+          let d = maxDiff(&got, &want) / scale;
+          if reporting() { printStr(label); printStr(" prompt: logits up to "); printFloat(scale); printStr(", worst difference/scale "); printFloat(d); printStr("\n"); }
+          if d > worst { worst = d; }
+          expectBool(d <= TOLERANCE, true, "the prompt's logits are within the tolerance of the CPU reference");
+          expectUInt(u64.from(argmaxOf(&got)), u64.from(argmaxOf(&want)), label);
+          // negative controls: the same weights read with the wrong rotation order, or with the q/k norm left out,
+          // are far from the GPU's answer, so a bug of that kind could not hide inside the tolerance
+          var wrongRope = shape.copy();
+          if shape.ropeMode == 0u32 { wrongRope.ropeMode = 1u32; } else { wrongRope.ropeMode = 0u32; }
+          let mRope = weights.withShape(wrongRope.copy());
+          var cRope = RefCache.make(&wrongRope, 32usize);
+          let lRope = cpuStep(&mRope, &mut cRope, promptIds.view(), 0usize);
+          if reporting() { printStr(label); printStr(" wrong rotation order: "); printFloat(maxDiff(&got, &lRope) / scale); printStr("\n"); }
+          expectBool(maxDiff(&got, &lRope) / scale > CONTROL, true, "a wrong rotation order is over 300 tolerances away");
+          if shape.qkNorm {
+            var noNorm = shape.copy();
+            noNorm.qkNorm = false;
+            let mNo = weights.withShape(noNorm.copy());
+            var cNo = RefCache.make(&noNorm, 32usize);
+            let lNo = cpuStep(&mNo, &mut cNo, promptIds.view(), 0usize);
+            if reporting() { printStr(label); printStr(" no q/k norm: "); printFloat(maxDiff(&got, &lNo) / scale); printStr("\n"); }
+            expectBool(maxDiff(&got, &lNo) / scale > CONTROL, true, "no q/k norm is over 300 tolerances away");
+          }
+        }
+        case let Error(e) { printStr(e.view()); require(false, "the prompt ran"); }
+      }
+      var t = 0usize;
+      while t < 3usize {
+        var next = List[u32].empty();
+        next.push((promptIds[t] + 7u32) % u32.from(shape.vocab));
+        let w2 = cpuStep(&weights, &mut cache, next.view(), promptLen + t);
+        match engine.feed(device, next.view(), true) {
+          case let Ok(got) {
+            let scale = maxAbs(&w2);
+            let d = maxDiff(&got, &w2) / scale;
+            if reporting() { printStr(label); printStr(" token "); printInt(i64.from(t)); printStr(": worst difference/scale "); printFloat(d); printStr("\n"); }
+            if d > worst { worst = d; }
+            expectBool(d <= TOLERANCE, true, "the decode step's logits are within the tolerance of the CPU reference");
+            expectUInt(u64.from(argmaxOf(&got)), u64.from(argmaxOf(&w2)), "the decode step picks the CPU's token");
+          }
+          case let Error(e) { printStr(e.view()); require(false, "the decode step ran"); }
+        }
+        t = t + 1usize;
+      }
+      expectUInt(u64.from(engine.pos), u64.from(promptLen + 3usize), "the engine's position advanced");
+      // what it refuses leaves the position where it was
+      let flood = ids(100usize, u32.from(shape.vocab), 5u32);
+      match engine.feed(device, flood.view(), true) {
+        case is Ok { expect(false, "tokens past the context are refused"); }
+        case let Error(e) { expectStr(e.view(), "llmrun: the context is full (32 positions)", "tokens past the context are refused"); }
+      }
+      var outside = List[u32].empty();
+      outside.push(u32.from(shape.vocab));
+      match engine.feed(device, outside.view(), true) {
+        case is Ok { expect(false, "a token outside the vocabulary is refused"); }
+        case let Error(e) { expectStr(e.view(), "llmrun: token 300 is outside the vocabulary", "a token outside the vocabulary is refused"); }
+      }
+      expectUInt(u64.from(engine.pos), u64.from(promptLen + 3usize), "...and the position is where it was");
+      engine.reset();
+      expectUInt(u64.from(engine.pos), 0u64, "reset starts at position 0");
+    }
+    case let Error(e) { printStr(e.view()); printStr("\n"); require(false, "the engine opened"); }
+  }
+  fs.removeFile(&file);
+  worst
+}
+
+fn shapeOf(layers: usize, qkNorm: bool, tied: bool, ropeMode: u32, nHeads: usize) ModelShape {
+  ModelShape(layers, 256usize, 256usize, nHeads, 2usize, 32usize, 300usize, 0.000001, 10000.0, 32usize, ropeMode, qkNorm, tied)
+}
+
+fn main() i32 {
+  var instance = Instance.create("llmrun forward");
+  require(instance.isValid(), "a Vulkan 1.3 instance");
+  var none = Surface.none();
+  var adapter = instance.requestAdapter(&none, preference());
+  require(adapter.isValid(), "an adapter");
+  var device = adapter.requestComputeDevice(&ComputeRequest(largeBuffers: true));
+  require(device.isValid(), "a compute device with largeBuffers");
+
+  // Qwen3 shape: grouped-query heads, q/k norm, neox order, untied output; the Q4_K_M mix (Q4_K, Q6_K, Q6_K output)
+  let a = runCase(&mut device, "qwen3 Q4_K/Q6_K", &shapeOf(3usize, true, false, 1u32, 8usize),
+    &ModelTypes(QTYPE_Q4_K, QTYPE_Q6_K, QTYPE_Q6_K, QTYPE_Q4_K), "qwen3", 64usize, 14usize, 11u64);
+  // the 1.7B mix: Q8_0 everywhere, the output tied to the token table; a prompt in chunks of 4 (9 = 4 + 4 + 1)
+  let b = runCase(&mut device, "qwen3 Q8_0 tied", &shapeOf(2usize, true, true, 1u32, 8usize),
+    &ModelTypes(QTYPE_Q8_0, QTYPE_Q8_0, QTYPE_Q8_0, QTYPE_Q8_0), "qwen3", 4usize, 9usize, 12u64);
+  // a Llama: no q/k norm, the normal rotation order, F16 and F32 weights
+  let c = runCase(&mut device, "llama F16/F32", &shapeOf(2usize, false, false, 0u32, 8usize),
+    &ModelTypes(QTYPE_F16, QTYPE_F32, QTYPE_F16, QTYPE_F16), "llama", 64usize, 6usize, 13u64);
+  // a query wider than the model (16 heads of 32 over a width of 256), one layer
+  let d = runCase(&mut device, "wide query", &shapeOf(1usize, true, false, 1u32, 16usize),
+    &ModelTypes(QTYPE_Q4_K, QTYPE_Q6_K, QTYPE_Q8_0, QTYPE_Q6_K), "qwen3", 64usize, 14usize, 14u64);
+  if reporting() { printStr("worst: "); printFloat(a); printStr(" "); printFloat(b); printStr(" "); printFloat(c); printStr(" "); printFloat(d); printStr("\n"); }
+
+  expectUInt(u64.from(refusals()), 0u64, "gpuwork refused nothing");
+  device.endFrame();
+  device.waitIdle();
+  expectUInt(u64.from(failures()), 0u64, "no Vulkan call failed");
+  expectUInt(u64.from(validationMessages()), 0u64, "no validation message");
+  done()
+}

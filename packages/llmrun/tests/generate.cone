@@ -1,0 +1,187 @@
+// Generation end to end on a small random model that has the real Qwen3 vocabulary: a text prompt is tokenized from the
+// file's metadata, run through the engine (the whole prompt in chunks of 5, then a token at a time), and 12 greedy
+// tokens are chosen from the GPU's logits; the CPU reference does the same from the same weights, and the two must
+// choose the same 12 tokens. Then the engine's chat flow: a user turn, a reply, the closing of the turn, and a
+// second turn on the same cache give what a fresh run of the whole conversation gives.
+//
+// It needs C:\src\llm-models\Qwen3-1.7B-Q8_0.gguf for the vocabulary (151,936 tokens); without it every check
+// counts as passed.
+
+mod generate;
+
+import testing use *;
+import libc;
+import collections use List, String;
+import path use Path;
+import random use Rng;
+import fs;
+import gpu use *;
+import gpuwork use *;
+import llmreference use *;
+import llmrun use *;
+
+const VOCAB_FILE = "C:/src/llm-models/Qwen3-1.7B-Q8_0.gguf";
+const CHECKS = 16u32;
+
+fn preference() u32 {
+  let env = libc.getenv("GPU_POWER_PREFERENCE");
+  if (env as usize) != 0usize && libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 { return POWER_PREFERENCE_LOW_POWER; }
+  POWER_PREFERENCE_HIGH_PERFORMANCE
+}
+
+fn listText(l: &List[u32]) String {
+  var s = String.empty();
+  var i = 0usize;
+  while i < l.len() {
+    if i > 0usize { s <- " "; }
+    s <- u64.from(*l[i]);
+    i = i + 1usize;
+  }
+  s
+}
+
+// Greedy tokens from the CPU reference: the prompt, then n more
+fn cpuGreedy(m: &ModelWeights, prompt: &List[u32], n: usize) List[u32] {
+  var cache = RefCache.make(&m.shape, 256usize);
+  var out = List[u32].empty();
+  var logits = forwardCpu(m, &mut cache, prompt.view(), 0usize);
+  var pos = prompt.len();
+  var i = 0usize;
+  while i < n {
+    let id = argmax(logits.view());
+    out.push(id);
+    var one = List[u32].empty();
+    one.push(id);
+    logits = forwardCpu(m, &mut cache, one.view(), pos);
+    pos = pos + 1usize;
+    i = i + 1usize;
+  }
+  out
+}
+
+fn engineGreedy(engine: &mut Engine, device: &mut Device, prompt: &Array[u32], n: usize) List[u32] {
+  var out = List[u32].empty();
+  var logits = List[f32].empty();
+  match engine.feed(device, prompt, true) {
+    case var Ok(l) { logits <-> l; }
+    case let Error(e) { require(false, "the prompt runs"); }
+  }
+  var i = 0usize;
+  while i < n {
+    let id = argmax(logits.view());
+    out.push(id);
+    var one = List[u32].empty();
+    one.push(id);
+    match engine.feed(device, one.view(), true) {
+      case var Ok(l) { logits <-> l; }
+      case let Error(e) { require(false, "a token runs"); }
+    }
+    i = i + 1usize;
+  }
+  out
+}
+
+fn main() i32 {
+  var vocabFile = Path.from(VOCAB_FILE);
+  if !fs.exists(&vocabFile) {
+    var n = 0u32;
+    while n < CHECKS { expect(true, "(the vocabulary file is absent: skipped)"); n = n + 1u32; }
+    return done();
+  }
+  var instance = Instance.create("llmrun generate");
+  require(instance.isValid(), "a Vulkan 1.3 instance");
+  var none = Surface.none();
+  var adapter = instance.requestAdapter(&none, preference());
+  require(adapter.isValid(), "an adapter");
+  var device = adapter.requestComputeDevice(&ComputeRequest(largeBuffers: true));
+  require(device.isValid(), "a compute device with largeBuffers");
+
+  var rng = Rng.fromSeed(2026u64);
+  let shape = ModelShape(3usize, 256usize, 256usize, 8usize, 2usize, 32usize, 151936usize, 0.000001, 1000000.0, 32usize, 1u32, true, false);
+  let weights = syntheticModel(&mut rng, &shape, &ModelTypes(QTYPE_Q4_K, QTYPE_Q6_K, QTYPE_Q6_K, QTYPE_Q4_K));
+  require(isValidWeights(&weights), "the synthetic weights are whole");
+  var flaws = Flaws.none();
+  flaws.tokenizerFrom = String.from(VOCAB_FILE);
+  flaws.contextLength = 40960u32;
+  var file = Path.from("llmrun-generate-test.gguf");
+  match syntheticGgufWith(&weights, "qwen3", &flaws) {
+    case let Ok(bytes) {
+      match fs.writeFile(&file, bytes.view()) {
+        case is Ok {}
+        case is Error { require(false, "the synthetic file is written"); }
+      }
+    }
+    case let Error(e) { require(false, "the synthetic GGUF is made"); }
+  }
+  match Engine.open(&mut device, &file, &LoadOptions(256usize, 5usize)) {
+    case var Ok(engine) {
+      match loadTokens(engine.ggufModel()) {
+        case let Ok(vocab) {
+          // ---- a raw completion: the same 12 tokens on the GPU and the CPU ----
+          let prompt = vocab.tok.encode("The capital of France is");
+          expectUInt(u64.from(prompt.len()), 5u64, "the prompt is 5 tokens");
+          let want = cpuGreedy(&weights, &prompt, 12usize);
+          let got = engineGreedy(&mut engine, &mut device, prompt.view(), 12usize);
+          expectStr(listText(&got).view(), listText(&want).view(), "12 greedy tokens: the GPU picks the CPU's");
+          expectUInt(u64.from(engine.pos), 5u64 + 12u64, "the position is the prompt and the 12 tokens run");
+
+          // ---- a longer prompt through the chunks (11 tokens in chunks of 5) ----
+          engine.reset();
+          let longer = vocab.tok.encode("Once upon a time, in a land far away, there lived");
+          let want2 = cpuGreedy(&weights, &longer, 4usize);
+          let got2 = engineGreedy(&mut engine, &mut device, longer.view(), 4usize);
+          expectStr(listText(&got2).view(), listText(&want2).view(), "a prompt in chunks: the same 4 tokens");
+
+          // ---- the chat flow: two turns on one cache give what the whole conversation run at once gives ----
+          engine.reset();
+          let first = vocab.userTurn("Hello", false);
+          var logits1 = List[f32].empty();
+          match engine.feed(&mut device, first.view(), true) { case var Ok(l) { logits1 <-> l; } case is Error { require(false, "turn 1 runs"); } }
+          let reply1 = argmax(logits1.view());
+          var reply = List[u32].empty();
+          reply.push(reply1);
+          match engine.feed(&mut device, reply.view(), false) { case is Ok {} case is Error { require(false, "the reply runs"); } }
+          var turn2 = vocab.closeTurn();
+          let second = vocab.userTurn("And you?", false);
+          var k = 0usize;
+          while k < second.len() { turn2.push(*second[k]); k = k + 1usize; }
+          var logits2 = List[f32].empty();
+          match engine.feed(&mut device, turn2.view(), true) { case var Ok(l) { logits2 <-> l; } case is Error { require(false, "turn 2 runs"); } }
+          // the whole conversation as one run on a fresh cache
+          var whole = List[u32].empty();
+          k = 0usize;
+          while k < first.len() { whole.push(*first[k]); k = k + 1usize; }
+          whole.push(reply1);
+          k = 0usize;
+          while k < turn2.len() { whole.push(*turn2[k]); k = k + 1usize; }
+          engine.reset();
+          var logitsWhole = List[f32].empty();
+          match engine.feed(&mut device, whole.view(), true) { case var Ok(l) { logitsWhole <-> l; } case is Error { require(false, "the whole conversation runs"); } }
+          expectUInt(u64.from(argmax(logits2.view())), u64.from(argmax(logitsWhole.view())), "turn 2 on the kept cache chooses what the whole conversation chooses");
+          var worst = 0.0;
+          var j = 0usize;
+          while j < logits2.len() {
+            let d = libc.fabs(f64.from(*logits2[j]) - f64.from(*logitsWhole[j]));
+            if d > worst { worst = d; }
+            j = j + 1usize;
+          }
+          expectBool(worst < 0.0001, true, "...and the same logits, to 1e-4");
+          // the sampler on these logits: greedy is the argmax, a seeded draw is a token of the vocabulary
+          let id = TokenSampler.make(0.7, 20usize, 0.8).sample(logits2.view(), &mut rng);
+          expectBool(usize.from(id) < 151936usize, true, "a sampled token is in the vocabulary");
+          expectBool(TokenSampler.greedy().sample(logits2.view(), &mut rng) == argmax(logits2.view()), true, "greedy sampling is the argmax");
+          expectBool(vocab.isStop(151645u32), true, "<|im_end|> stops");
+        }
+        case let Error(e) { expectStr(e.view(), "", "the tokenizer loads from the synthetic file"); }
+      }
+    }
+    case let Error(e) { expectStr(e.view(), "", "the engine opens"); }
+  }
+  fs.removeFile(&file);
+  expectUInt(u64.from(refusals()), 0u64, "gpuwork refused nothing");
+  device.endFrame();
+  device.waitIdle();
+  expectUInt(u64.from(failures()), 0u64, "no Vulkan call failed");
+  expectUInt(u64.from(validationMessages()), 0u64, "no validation message");
+  done()
+}

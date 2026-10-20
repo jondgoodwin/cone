@@ -1,0 +1,767 @@
+// ======== The model on the GPU: loading, the KV cache, the forward pass ========
+//
+// An Engine owns a GGUF file (memory-mapped), its parsed table, and the GPU buffers the model lives in: the weights
+// in a few big buffers, a small buffer for each norm vector, a K and a V cache for each layer, and the scratch the
+// activations pass through. 'feed' runs tokens through all the layers, one job on the GPU for each chunk of the
+// tokens, and answers the logits of the last.
+//
+// THE BUFFERS ARE RESIDENT. A gpuwork Job owns the buffers given to it and hands them back with its Completion, so
+// every step gives all the engine's buffers to a new Job, in a fixed order (a buffer's slot in the job is its index
+// in 'resident', which the layer records are written in), and takes them back when it is done. A job's own
+// buffers (a kernel's parameters, the logits read back) come after the resident ones.
+
+// A weight matrix in a resident buffer: where it is and what it is
+pub struct WRef {
+  pub buf: u32;
+  pub off: usize;
+  pub qtype: u32;
+  pub rows: usize;
+  pub cols: usize;
+
+  pub fn copy(self: &) WRef { WRef(buf, off, qtype, rows, cols) }
+}
+
+// The resident slots of one layer
+pub struct LayerRefs {
+  pub attnNorm: u32;
+  pub qNorm: u32;
+  pub kNorm: u32;
+  pub ffnNorm: u32;
+  pub kCache: u32;
+  pub vCache: u32;
+  pub wq: WRef;
+  pub wk: WRef;
+  pub wv: WRef;
+  pub wo: WRef;
+  pub wGate: WRef;
+  pub wUp: WRef;
+  pub wDown: WRef;
+
+  // A value of its own: recording a layer lends nothing out of the engine's list of layers while the kernels run
+  pub fn copy(self: &) LayerRefs {
+    LayerRefs(attnNorm, qNorm, kNorm, ffnNorm, kCache, vCache, wq.copy(), wk.copy(), wv.copy(), wo.copy(),
+      wGate.copy(), wUp.copy(), wDown.copy())
+  }
+}
+
+// The resident scratch buffers, each sized for one chunk of tokens
+pub struct Scratch {
+  pub r0: u32;
+  pub r1: u32;
+  pub r2: u32;
+  pub xn: u32;
+  pub q: u32;
+  pub qn: u32;
+  pub k: u32;
+  pub kn: u32;
+  pub v: u32;
+  pub att: u32;
+  pub o: u32;
+  pub gate: u32;
+  pub up: u32;
+  pub act: u32;
+  pub prod: u32;
+  pub down: u32;
+  pub logits: u32;
+  pub scores: u32;
+  pub freqs: u32;
+}
+
+// What 'Engine.open' is asked for
+pub struct LoadOptions {
+  // The KV cache's room, in positions (also the longest sequence): 4096 by default in llmchat
+  pub ctx: usize;
+  // The most tokens one job runs (a longer prompt is run in chunks of this many). The attention scratch is
+  // chunk * heads * ctx floats; 64 keeps it to 32 MiB at 4096 positions for 8B
+  pub chunk: usize;
+}
+
+// Bytes of GPU memory kept for the system (the display, other programs) when the budget is checked
+const RESERVE_BYTES = 536870912u64;
+
+// The most bytes one weights buffer holds, and so the most a kernel's 32-bit byte offsets must reach
+const WEIGHT_BUFFER_BYTES = 1073741824u64;
+
+const BUFFER_USAGE = BUFFER_USAGE_STORAGE | BUFFER_USAGE_COPY_DST | BUFFER_USAGE_COPY_SRC;
+
+fn alignUp(n: u64, a: u64) u64 { (n + a - 1u64) / a * a }
+
+// ---- the memory a model needs ----
+
+// What the GPU must hold for the model: bytes of weights, KV cache, activations and attention scratch
+pub struct Budget {
+  pub weights: u64;
+  pub kv: u64;
+  pub scratch: u64;
+  pub scores: u64;
+
+  pub fn total(self: &) u64 { weights + kv + scratch + scores }
+}
+
+pub fn budgetFor(shape: &ModelShape, weights: u64, ctx: usize, chunk: usize) Budget {
+  let kv = 2u64 * u64.from(shape.layers) * u64.from(shape.kvDim()) * 4u64 * u64.from(ctx);
+  let c = u64.from(chunk);
+  // the scratch buffers: three residuals, the normed input, the layer's output and the down projection (6 of a
+  // token's width), q, its norm and the attention output (3 of the query's), k, its norm and v (3 of the key's),
+  // gate, up, the activation and their product (4 of the FFN's), the logits and the rotation table
+  let floats = 6u64 * c * u64.from(shape.dim) + 3u64 * c * u64.from(shape.qDim()) + 3u64 * c * u64.from(shape.kvDim())
+    + 4u64 * c * u64.from(shape.ffDim) + u64.from(shape.vocab) + u64.from(shape.ropeDim / 2usize);
+  let scores = c * u64.from(shape.nHeads) * u64.from(ctx) * 4u64;
+  Budget(weights, kv, floats * 4u64, scores)
+}
+
+// ---- finding and placing the tensors ----
+
+// A matrix to upload: its tensor, shape and type, and where the plan put it
+struct Spec {
+  tensor: usize;
+  rows: usize;
+  cols: usize;
+  qtype: u32;
+  bytes: u64;
+  buf: u32;
+  off: usize;
+}
+
+fn isSupportedType(code: u32) bool { isQType(code) }
+
+fn describe(prefix: &str, name: &str, suffix: &str) String {
+  var m = String.from(prefix);
+  m <- name;
+  m <- suffix;
+  m
+}
+
+// The tensor 'name' as a matrix of 'rows' x 'cols' (the file lists its dims as [cols, rows]) of a type the
+// kernels have
+fn findMatrix(model: &gguf.Model, name: &str, rows: usize, cols: usize) Result[Spec, String] {
+  match model.indexOf(name) {
+    case let Some(i) {
+      let t = model.tensors[i];
+      if t.dims.len() != 2usize || usize.from(*t.dims[0usize]) != cols || usize.from(*t.dims[1usize]) != rows {
+        var m = String.from("llmrun: tensor ");
+        m <- name;
+        m <- " is not [";
+        m <- u64.from(cols);
+        m <- ", ";
+        m <- u64.from(rows);
+        m <- "] as the model's shape needs";
+        return Error[Spec, String](m);
+      }
+      let code = t.kind.code();
+      if !isSupportedType(code) {
+        var m = String.from("llmrun: tensor ");
+        m <- name;
+        m <- " is stored as ";
+        m <- t.kind.name();
+        m <- ", which has no GPU kernel in this build (F32, F16, Q8_0, Q4_K and Q6_K have)";
+        return Error[Spec, String](m);
+      }
+      if u64.from(rowBytes(code, cols) * rows) != t.bytes {
+        return Error[Spec, String](describe("llmrun: tensor ", name, " has a size its type and shape do not give"));
+      }
+      Ok[Spec, String](Spec(i, rows, cols, code, t.bytes, 0u32, 0usize))
+    }
+    case is None { Error[Spec, String](describe("llmrun: the file has no tensor ", name, "")) }
+  }
+}
+
+fn layerName(l: usize, suffix: &str) String {
+  var m = String.from("blk.");
+  m <- u64.from(l);
+  m <- ".";
+  m <- suffix;
+  m
+}
+
+fn pushSpec(specs: &mut List[Spec], r: Result[Spec, String]) Option[String] {
+  match r {
+    case let Ok(s) { specs.push(Spec(s.tensor, s.rows, s.cols, s.qtype, s.bytes, s.buf, s.off)); None }
+    case let Error(e) { Some[String](e.copy()) }
+  }
+}
+
+// Every matrix the model needs, in a fixed order: the output (the token table, when tied) first, then for each
+// layer q, k, v, o, gate, up, down
+fn collectSpecs(model: &gguf.Model, s: &ModelShape) Result[List[Spec], String] {
+  var specs = List[Spec].empty();
+  var name = String.from("output.weight");
+  if s.tied { name = String.from("token_embd.weight"); }
+  match pushSpec(&mut specs, findMatrix(model, name.view(), s.vocab, s.dim)) {
+    case var Some(e) { return Error[List[Spec], String](e); }
+    case is None {}
+  }
+  var l = 0usize;
+  while l < s.layers {
+    var which = 0usize;
+    while which < 7usize {
+      match layerMatrix(&mut specs, model, s, l, which) {
+        case var Some(e) { return Error[List[Spec], String](e); }
+        case is None {}
+      }
+      which = which + 1usize;
+    }
+    l = l + 1usize;
+  }
+  Ok[List[Spec], String](specs)
+}
+
+// Matrix number 'which' (q, k, v, o, gate, up, down) of layer l, added to the specs, or why not
+fn layerMatrix(specs: &mut List[Spec], model: &gguf.Model, s: &ModelShape, l: usize, which: usize) Option[String] {
+  if which == 0usize { return pushSpec(specs, findMatrix(model, layerName(l, "attn_q.weight").view(), s.qDim(), s.dim)); }
+  if which == 1usize { return pushSpec(specs, findMatrix(model, layerName(l, "attn_k.weight").view(), s.kvDim(), s.dim)); }
+  if which == 2usize { return pushSpec(specs, findMatrix(model, layerName(l, "attn_v.weight").view(), s.kvDim(), s.dim)); }
+  if which == 3usize { return pushSpec(specs, findMatrix(model, layerName(l, "attn_output.weight").view(), s.dim, s.qDim())); }
+  if which == 4usize { return pushSpec(specs, findMatrix(model, layerName(l, "ffn_gate.weight").view(), s.ffDim, s.dim)); }
+  if which == 5usize { return pushSpec(specs, findMatrix(model, layerName(l, "ffn_up.weight").view(), s.ffDim, s.dim)); }
+  pushSpec(specs, findMatrix(model, layerName(l, "ffn_down.weight").view(), s.dim, s.ffDim))
+}
+
+// Put the matrices in buffers of at most 'limit' bytes, in order, each matrix at an offset that is a multiple of
+// 256 and never across two buffers; answers the size of each buffer
+fn planBuffers(specs: &mut List[Spec], limit: u64) List[u64] {
+  var sizes = List[u64].empty();
+  var cur = 0u64;
+  var idx = 0u32;
+  var i = 0usize;
+  while i < specs.len() {
+    let sp = &mut specs[i];
+    var off = alignUp(cur, 256u64);
+    if off + sp.bytes > limit && cur > 0u64 {
+      sizes.push(cur);
+      idx = idx + 1u32;
+      off = 0u64;
+    }
+    sp.buf = idx;
+    sp.off = usize.from(off);
+    cur = off + sp.bytes;
+    i = i + 1usize;
+  }
+  sizes.push(cur);
+  sizes
+}
+
+// Where everything will go, decided before anything is allocated
+struct Plan {
+  specs: List[Spec];
+  // The bytes of each weights buffer
+  sizes: List[u64];
+  budget: Budget;
+}
+
+// What a model will take of the GPU, as numbers: for a program that asks before loading, and for tests
+pub struct PlanSummary {
+  pub buffers: usize;
+  pub matrices: usize;
+  pub budget: Budget;
+}
+
+// The plan for a model in a file of this shape on a device with these limits: refused if the trained length is
+// exceeded, a tensor is missing or of a type with no kernel, or the memory would not fit
+fn makePlan(model: &gguf.Model, info: &ModelInfo, options: &LoadOptions, bindingSize: u64, deviceLocal: u64) Result[Plan, String] {
+  let shape = &info.shape;
+  if options.ctx > info.contextLength {
+    var m = String.from("llmrun: the model was trained for ");
+    m <- u64.from(info.contextLength);
+    m <- " positions; a context of ";
+    m <- u64.from(options.ctx);
+    m <- " is more";
+    return Error[Plan, String](m);
+  }
+  var specs = List[Spec].empty();
+  match collectSpecs(model, shape) {
+    case var Ok(s) { specs <-> s; }
+    case let Error(e) { return Error[Plan, String](e.copy()); }
+  }
+  var limit = WEIGHT_BUFFER_BYTES;
+  if bindingSize < limit { limit = bindingSize; }
+  var s = 0usize;
+  while s < specs.len() {
+    if specs[s].bytes > limit {
+      return Error[Plan, String](String.from("llmrun: a weight matrix is larger than the device's storage binding; make the device with ComputeRequest(largeBuffers: true)"));
+    }
+    s = s + 1usize;
+  }
+  let sizes = planBuffers(&mut specs, limit);
+  var weightBytes = 0u64;
+  var b = 0usize;
+  while b < sizes.len() { weightBytes = weightBytes + alignUp(*sizes[b], 4u64); b = b + 1usize; }
+  // the norm vectors, each in a buffer of its own (the layers' two, their q and k norms, and the output's)
+  weightBytes = weightBytes + 4u64 * (u64.from(shape.layers) * (2u64 * u64.from(shape.dim) + 2u64 * u64.from(shape.headDim)) + u64.from(shape.dim));
+  let budget = budgetFor(shape, weightBytes, options.ctx, options.chunk);
+  if deviceLocal > 0u64 && budget.total() + RESERVE_BYTES > deviceLocal {
+    return Error[Plan, String](tooBig("this model", &budget, deviceLocal, options.ctx, shape, options.chunk));
+  }
+  Ok[Plan, String](Plan(specs, sizes, budget))
+}
+
+// Read a model file's header and say what loading it would take, allocating nothing on the GPU; refuses what
+// 'Engine.open' would refuse. 'bindingSize' is the device's maxStorageBufferBindingSize and 'deviceLocal' its
+// device-local memory (0: do not check the memory).
+pub fn planModel(path: &Path, options: &LoadOptions, bindingSize: u64, deviceLocal: u64) Result[PlanSummary, String] {
+  let mapping = fs.mapFile(path);
+  match mapping {
+    case var Ok(file) {
+      let parsed = gguf.parse(file.view());
+      match parsed {
+        case var Ok(model) {
+          let described = readInfo(&model);
+          match described {
+            case var Ok(info) {
+              let planned = makePlan(&model, &info, options, bindingSize, deviceLocal);
+              match planned {
+                case var Ok(p) { Ok[PlanSummary, String](PlanSummary(p.sizes.len(), p.specs.len(), p.budget)) }
+                case let Error(e) { Error[PlanSummary, String](e.copy()) }
+              }
+            }
+            case let Error(e) { Error[PlanSummary, String](e.copy()) }
+          }
+        }
+        case let Error(e) {
+          var m = String.from("llmrun: ");
+          m <- e.message().view();
+          Error[PlanSummary, String](m)
+        }
+      }
+    }
+    case let Error(e) {
+      var m = String.from("llmrun: ");
+      m <- e.message().view();
+      Error[PlanSummary, String](m)
+    }
+  }
+}
+
+fn norm(model: &gguf.Model, file: &Array[u8], device: &mut Device, name: &str, n: usize) Result[Buffer, String] {
+  match model.find(name) {
+    case let Some(t) {
+      if t.dims.len() != 1usize || usize.from(*t.dims[0usize]) != n || t.kind.code() != QTYPE_F32 {
+        var m = String.from("llmrun: tensor ");
+        m <- name;
+        m <- " is not an F32 vector of ";
+        m <- u64.from(n);
+        return Error[Buffer, String](m);
+      }
+      let words = packWords(model.tensorBytes(file, t));
+      let b = upload(device, words.view());
+      if !b.isValid() { return Error[Buffer, String](String.from("llmrun: the GPU could not make a buffer")); }
+      Ok[Buffer, String](b)
+    }
+    case is None { Error[Buffer, String](describe("llmrun: the file has no tensor ", name, "")) }
+  }
+}
+
+fn tooBig(what: &str, b: &Budget, avail: u64, ctx: usize, shape: &ModelShape, chunk: usize) String {
+  var m = String.from("llmrun: ");
+  m <- what;
+  m <- " needs ";
+  m <- u64.from(b.total() / 1048576u64);
+  m <- " MiB of GPU memory at a context of ";
+  m <- u64.from(ctx);
+  m <- " (weights ";
+  m <- u64.from(b.weights / 1048576u64);
+  m <- " MiB, KV cache ";
+  m <- u64.from(b.kv / 1048576u64);
+  m <- " MiB, scratch ";
+  m <- u64.from((b.scratch + b.scores) / 1048576u64);
+  m <- " MiB) but the GPU has ";
+  m <- u64.from(avail / 1048576u64);
+  m <- " MiB, and ";
+  m <- u64.from(RESERVE_BYTES / 1048576u64);
+  m <- " MiB are kept for the system. ";
+  // the longest context that would fit
+  let fixed = b.weights + b.scratch;
+  let perPos = b.kv / u64.from(ctx) + b.scores / u64.from(ctx);
+  if avail > RESERVE_BYTES + fixed && perPos > 0u64 {
+    m <- "A context of ";
+    m <- (avail - RESERVE_BYTES - fixed) / perPos;
+    m <- " would fit: try --ctx with a smaller number.";
+  } else {
+    m <- "The weights alone do not fit.";
+  }
+  m
+}
+
+// ---- the engine ----
+
+pub struct Engine {
+  pub info: ModelInfo;
+  pub ctx: usize;
+  pub chunk: usize;
+  // Positions of the cache in use: the next token goes to this position
+  pub pos: usize;
+  file: fs.MappedFile;
+  model: gguf.Model;
+  embd: usize;
+  kernels: Kernels;
+  works: Works;
+  resident: List[Buffer];
+  layers: List[LayerRefs];
+  out: WRef;
+  outNorm: u32;
+  sc: Scratch;
+  // Wall-clock time over all the jobs run: the embeddings, taking the buffers into a job and recording its
+  // dispatches (record); submitting it and waiting for the GPU to finish (gpu); taking the buffers back, reading
+  // the logits and freeing the job's own buffers (cleanup). And the tokens and jobs run.
+  pub recordNanos: i64;
+  pub gpuNanos: i64;
+  pub cleanupNanos: i64;
+  pub tokensRun: u64;
+  pub jobsRun: u64;
+
+  // Open a GGUF file and put the model on the device. The device must be made with 'ComputeRequest.largeBuffers'
+  // (weights are bound in buffers over WebGPU's 128 MiB). Answers why not when the file is not a model this build
+  // runs, a tensor is of a type with no kernel, or the model and its cache would not fit the GPU's memory.
+  pub fn open(device: &mut Device, path: &Path, options: &LoadOptions) Result[Engine, String] {
+    if options.ctx == 0usize || options.chunk == 0usize {
+      return Error[Engine, String](String.from("llmrun: the context and the chunk must be positive"));
+    }
+    match fs.mapFile(path) {
+      case var Ok(f) { Engine.parsed(device, f, options) }
+      case let Error(e) {
+        var m = String.from("llmrun: ");
+        m <- e.message().view();
+        Error[Engine, String](m)
+      }
+    }
+  }
+
+  fn parsed(device: &mut Device, mapped: fs.MappedFile, options: &LoadOptions) Result[Engine, String] {
+    let parse = gguf.parse(mapped.view());
+    match parse {
+      case var Ok(m) { Engine.described(device, mapped, m, options) }
+      case let Error(e) {
+        var m = String.from("llmrun: ");
+        m <- e.message().view();
+        Error[Engine, String](m)
+      }
+    }
+  }
+
+  fn described(device: &mut Device, mapped: fs.MappedFile, model: gguf.Model, options: &LoadOptions) Result[Engine, String] {
+    let described = readInfo(&model);
+    match described {
+      case var Ok(i) { Engine.placed(device, mapped, model, i, options) }
+      case let Error(e) { Error[Engine, String](e.copy()) }
+    }
+  }
+
+  fn placed(device: &mut Device, mapped: fs.MappedFile, model: gguf.Model, info: ModelInfo, options: &LoadOptions) Result[Engine, String] {
+    let shape = info.shape.copy();
+    let planned = makePlan(&model, &info, options, device.maxStorageBufferBindingSize, device.compute.deviceLocalBytes);
+    var specs = List[Spec].empty();
+    var sizes = List[u64].empty();
+    match planned {
+      case var Ok(p) { specs <-> p.specs; sizes <-> p.sizes; }
+      case let Error(e) { return Error[Engine, String](e.copy()); }
+    }
+
+    // the weights
+    var resident = List[Buffer].empty();
+    var s = 0usize;
+    var b = 0usize;
+    while b < sizes.len() {
+      let buf = device.createBuffer(alignUp(*sizes[b], 4u64), BUFFER_USAGE);
+      if !buf.isValid() {
+        return Error[Engine, String](String.from("llmrun: the GPU could not make a weights buffer (out of memory?)"));
+      }
+      resident.push(buf);
+      b = b + 1usize;
+    }
+    s = 0usize;
+    while s < specs.len() {
+      let sp = specs[s];
+      let t = model.tensors[sp.tensor];
+      let src = mapped.base() + usize.from(model.dataStart + t.offset);
+      device.queue.writeBuffer(resident[usize.from(sp.buf)], u64.from(sp.off), src, sp.bytes);
+      s = s + 1usize;
+    }
+    let outRef = WRef(specs[0usize].buf, specs[0usize].off, specs[0usize].qtype, shape.vocab, shape.dim);
+
+    // the norms
+    let fileBytes = mapped.view();
+    var layers = List[LayerRefs].withCapacity(shape.layers);
+    var outNorm = 0u32;
+    match norm(&model, fileBytes, device, "output_norm.weight", shape.dim) {
+      case var Ok(nb) { outNorm = u32.from(resident.len()); resident.push(nb); }
+      case let Error(e) { return Error[Engine, String](e.copy()); }
+    }
+    var l = 0usize;
+    while l < shape.layers {
+      var attnNorm = 0u32;
+      var qNorm = 0u32;
+      var kNorm = 0u32;
+      var ffnNorm = 0u32;
+      match norm(&model, fileBytes, device, layerName(l, "attn_norm.weight").view(), shape.dim) {
+        case var Ok(nb) { attnNorm = u32.from(resident.len()); resident.push(nb); }
+        case let Error(e) { return Error[Engine, String](e.copy()); }
+      }
+      match norm(&model, fileBytes, device, layerName(l, "ffn_norm.weight").view(), shape.dim) {
+        case var Ok(nb) { ffnNorm = u32.from(resident.len()); resident.push(nb); }
+        case let Error(e) { return Error[Engine, String](e.copy()); }
+      }
+      if shape.qkNorm {
+        match norm(&model, fileBytes, device, layerName(l, "attn_q_norm.weight").view(), shape.headDim) {
+          case var Ok(nb) { qNorm = u32.from(resident.len()); resident.push(nb); }
+          case let Error(e) { return Error[Engine, String](e.copy()); }
+        }
+        match norm(&model, fileBytes, device, layerName(l, "attn_k_norm.weight").view(), shape.headDim) {
+          case var Ok(nb) { kNorm = u32.from(resident.len()); resident.push(nb); }
+          case let Error(e) { return Error[Engine, String](e.copy()); }
+        }
+      }
+      let base = 1usize + 7usize * l;
+      let kCache = u32.from(resident.len());
+      resident.push(zeroed(device, options.ctx * shape.kvDim()));
+      let vCache = u32.from(resident.len());
+      resident.push(zeroed(device, options.ctx * shape.kvDim()));
+      layers.push(LayerRefs(attnNorm, qNorm, kNorm, ffnNorm, kCache, vCache,
+        wref(&specs, base), wref(&specs, base + 1usize), wref(&specs, base + 2usize), wref(&specs, base + 3usize),
+        wref(&specs, base + 4usize), wref(&specs, base + 5usize), wref(&specs, base + 6usize)));
+      l = l + 1usize;
+    }
+
+    // the scratch
+    let c = options.chunk;
+    let r0 = addZeroed(device, &mut resident, c * shape.dim);
+    let r1 = addZeroed(device, &mut resident, c * shape.dim);
+    let r2 = addZeroed(device, &mut resident, c * shape.dim);
+    let xn = addZeroed(device, &mut resident, c * shape.dim);
+    let q = addZeroed(device, &mut resident, c * shape.qDim());
+    let qn = addZeroed(device, &mut resident, c * shape.qDim());
+    let kk = addZeroed(device, &mut resident, c * shape.kvDim());
+    let kn = addZeroed(device, &mut resident, c * shape.kvDim());
+    let vv = addZeroed(device, &mut resident, c * shape.kvDim());
+    let att = addZeroed(device, &mut resident, c * shape.qDim());
+    let oo = addZeroed(device, &mut resident, c * shape.dim);
+    let gate = addZeroed(device, &mut resident, c * shape.ffDim);
+    let up = addZeroed(device, &mut resident, c * shape.ffDim);
+    let act = addZeroed(device, &mut resident, c * shape.ffDim);
+    let prod = addZeroed(device, &mut resident, c * shape.ffDim);
+    let down = addZeroed(device, &mut resident, c * shape.dim);
+    let logits = addZeroed(device, &mut resident, shape.vocab);
+    let scores = addZeroed(device, &mut resident, c * shape.nHeads * options.ctx);
+    let freqs = addUploaded(device, &mut resident, floatWords(ropeFrequencies(shape.ropeDim, shape.ropeBase).view()));
+    let sc = Scratch(r0, r1, r2, xn, q, qn, kk, kn, vv, att, oo, gate, up, act, prod, down, logits, scores, freqs);
+    var k = 0usize;
+    while k < resident.len() {
+      if !resident[k].isValid() {
+        return Error[Engine, String](String.from("llmrun: the GPU could not make a buffer (out of memory?)"));
+      }
+      k = k + 1usize;
+    }
+    let kernels = Kernels.make(device);
+    if !kernels.isValid() {
+      return Error[Engine, String](String.from("llmrun: the kernels could not be made on this device"));
+    }
+    let embd = model.indexOf("token_embd.weight");
+    var embdIndex = 0usize;
+    match embd {
+      case let Some(i) { embdIndex = i; }
+      case is None {}
+    }
+    Ok[Engine, String](Engine(info, options.ctx, options.chunk, 0usize, mapped, model, embdIndex, kernels, Works.make(),
+      resident, layers, outRef, outNorm, sc, 0i64, 0i64, 0i64, 0u64, 0u64))
+  }
+
+  pub fn shape(self: &) &ModelShape { &info.shape }
+
+  // Start a new sequence: the cache is reused from position 0
+  pub fn reset(self: &mut) { pos = 0usize; }
+
+  // Go back to an earlier position (the keys and values after it are overwritten by later tokens)
+  pub fn rewind(self: &mut, to: usize) { if to < pos { pos = to; } }
+
+  // The parsed file (for the tokenizer)
+  pub fn ggufModel(self: &) &gguf.Model { &model }
+
+  // Run 'tokens' after the ones already run, in chunks, and answer the logits of the last (vocab f32s; none when
+  // 'wantLogits' is false, which skips the output layer). Fails, with the position unchanged, if they would run
+  // past the cache or a token is outside the vocabulary.
+  pub fn feed(self: &mut, device: &mut Device, tokens: &Array[u32], wantLogits: bool) Result[List[f32], String] {
+    if tokens.len == 0usize { return Error[List[f32], String](String.from("llmrun: no tokens to run")); }
+    if pos + tokens.len > ctx {
+      var m = String.from("llmrun: the context is full (");
+      m <- u64.from(ctx);
+      m <- " positions)";
+      return Error[List[f32], String](m);
+    }
+    var i = 0usize;
+    var logits = List[f32].empty();
+    while i < tokens.len {
+      var m = tokens.len - i;
+      if m > chunk { m = chunk; }
+      let last = i + m == tokens.len;
+      match self.forward(device, &tokens[i..<i + m], pos, wantLogits && last) {
+        case var Ok(l) { logits <-> l; }
+        case let Error(e) { return Error[List[f32], String](e.copy()); }
+      }
+      pos = pos + m;
+      i = i + m;
+    }
+    Ok[List[f32], String](logits)
+  }
+
+  // One job: 'tokens' (at most 'chunk') at positions pos0 .. through every layer
+  fn forward(self: &mut, device: &mut Device, tokens: &Array[u32], pos0: usize, wantLogits: bool) Result[List[f32], String] {
+    let s = &info.shape;
+    let n = tokens.len;
+    let dim = s.dim;
+    let t0 = Instant.now();
+    // the embeddings, on the CPU: a row of the token table each
+    var emb = List[f32].withCapacity(n * dim);
+    let table = model.tensors[embd];
+    var t = 0usize;
+    while t < n {
+      if usize.from(tokens[t]) >= s.vocab {
+        var m = String.from("llmrun: token ");
+        m <- u64.from(tokens[t]);
+        m <- " is outside the vocabulary";
+        return Error[List[f32], String](m);
+      }
+      match gguf.rowToF32(&model, file.view(), table, u64.from(tokens[t]), &mut emb) {
+        case is Ok {}
+        case let Error(e) {
+          var m = String.from("llmrun: ");
+          m <- e.message().view();
+          return Error[List[f32], String](m);
+        }
+      }
+      t = t + 1usize;
+    }
+    let words = floatWords(emb.view());
+    let wv = words.view();
+    device.queue.writeBuffer(resident[usize.from(sc.r0)], 0u64, &wv[0usize] as *u8, u64.from(wv.len) * 4u64);
+
+    // every resident buffer into a new job, slot = index
+    var job = Job.make(device);
+    let nres = resident.len();
+    {
+      var drain = resident.drain();
+      var more = true;
+      while more {
+        match drain.next() {
+          case var Some(b) { job.give(b); }
+          case is None { more = false; }
+        }
+      }
+    }
+    var ok = recordForward(self, &mut job, device, n, pos0, wantLogits);
+    var back = 0u32;
+    if wantLogits { back = job.readback(device, sc.logits); }
+    let t1 = Instant.now();
+    let ticket = works.submit(device, job, Target.Here(1u64));
+    var done = List[Completion].empty();
+    works.waitFor(device, ticket, &mut done);
+    let t2 = Instant.now();
+    recordNanos = recordNanos + t1.since(t0).nanos();
+    gpuNanos = gpuNanos + t2.since(t1).nanos();
+    jobsRun = jobsRun + 1u64;
+    tokensRun = tokensRun + u64.from(n);
+    let result = self.finish(done, nres, back, wantLogits && ok, ok);
+    cleanupNanos = cleanupNanos + Instant.now().since(t2).nanos();
+    result
+  }
+
+  // The job is done: the resident buffers back in their places, the logits read out; the job's own buffers (a
+  // dispatch's parameters, the readback) are freed when 'done' ends here
+  fn finish(self: &mut, done: List[Completion], nres: usize, back: u32, wantLogits: bool, recorded: bool) Result[List[f32], String] {
+    var all = done;
+    if all.len() != 1usize { return Error[List[f32], String](String.from("llmrun: the job gave no completion")); }
+    let c = &mut all[0usize];
+    var r = 0usize;
+    while r < nres {
+      resident.push(c.take(u32.from(r)));
+      r = r + 1usize;
+    }
+    if !recorded || !c.ok { return Error[List[f32], String](String.from("llmrun: a kernel refused its arguments or failed on the GPU")); }
+    if wantLogits {
+      return Ok[List[f32], String](wordFloats(c.words(back).view()));
+    }
+    Ok[List[f32], String](List[f32].empty())
+  }
+}
+
+fn wref(specs: &List[Spec], i: usize) WRef {
+  let s = specs[i];
+  WRef(s.buf, s.off, s.qtype, s.rows, s.cols)
+}
+
+fn addZeroed(device: &mut Device, resident: &mut List[Buffer], count: usize) u32 {
+  let i = u32.from(resident.len());
+  resident.push(zeroed(device, count));
+  i
+}
+
+fn addUploaded(device: &mut Device, resident: &mut List[Buffer], words: List[u32]) u32 {
+  let i = u32.from(resident.len());
+  resident.push(upload(device, words.view()));
+  i
+}
+
+// y = W x for one vector (a matvec) or n of them (a matmul)
+fn mm(k: &Kernels, job: &mut Job, device: &mut Device, w: &WRef, x: u32, y: u32, n: usize) bool {
+  if n == 1usize {
+    return k.matvecAt(job, device, w.buf, x, y, w.qtype, w.rows, w.cols, w.off, 0usize, 0usize);
+  }
+  k.matmulAt(job, device, w.buf, x, y, w.qtype, w.rows, w.cols, n, w.off, 0usize, 0usize)
+}
+
+// Record the whole forward pass of n tokens at pos0 .. into the job, whose slots 0 .. are the resident buffers.
+// Answers false if any kernel refused (nothing wrong with the engine: a size beyond a kernel's limit).
+fn recordForward(e: &Engine, job: &mut Job, device: &mut Device, n: usize, pos0: usize, wantLogits: bool) bool {
+  let s = &e.info.shape;
+  let k = &e.kernels;
+  let sc = &e.sc;
+  let dim = s.dim;
+  let qDim = s.qDim();
+  let kvDim = s.kvDim();
+  let ff = s.ffDim;
+  let scale = attentionScale(s.headDim);
+  var ok = true;
+  var cur = sc.r0;
+  var a = sc.r1;
+  var b = sc.r2;
+  var l = 0usize;
+  while l < s.layers {
+    let w = e.layers[l].copy();
+    ok = k.rmsnorm(job, device, cur, w.attnNorm, sc.xn, dim, n, s.eps) && ok;
+    ok = mm(k, job, device, &w.wq, sc.xn, sc.q, n) && ok;
+    ok = mm(k, job, device, &w.wk, sc.xn, sc.k, n) && ok;
+    ok = mm(k, job, device, &w.wv, sc.xn, sc.v, n) && ok;
+    var qUse = sc.q;
+    var kUse = sc.k;
+    if s.qkNorm {
+      ok = k.rmsnorm(job, device, sc.q, w.qNorm, sc.qn, s.headDim, n * s.nHeads, s.eps) && ok;
+      ok = k.rmsnorm(job, device, sc.k, w.kNorm, sc.kn, s.headDim, n * s.nKvHeads, s.eps) && ok;
+      qUse = sc.qn;
+      kUse = sc.kn;
+    }
+    ok = k.rope(job, device, sc.freqs, qUse, n, s.nHeads, s.headDim, s.ropeDim, pos0, s.ropeMode) && ok;
+    ok = k.rope(job, device, sc.freqs, kUse, n, s.nKvHeads, s.headDim, s.ropeDim, pos0, s.ropeMode) && ok;
+    ok = k.kvAppend(job, device, kUse, w.kCache, n, kvDim, pos0) && ok;
+    ok = k.kvAppend(job, device, sc.v, w.vCache, n, kvDim, pos0) && ok;
+    ok = k.attention(job, device, qUse, w.kCache, w.vCache, sc.scores, sc.att, n, s.nHeads, s.nKvHeads, s.headDim, pos0,
+      e.ctx, scale) && ok;
+    ok = mm(k, job, device, &w.wo, sc.att, sc.o, n) && ok;
+    ok = k.add(job, device, cur, sc.o, a, n * dim) && ok;
+    ok = k.rmsnorm(job, device, a, w.ffnNorm, sc.xn, dim, n, s.eps) && ok;
+    ok = mm(k, job, device, &w.wGate, sc.xn, sc.gate, n) && ok;
+    ok = mm(k, job, device, &w.wUp, sc.xn, sc.up, n) && ok;
+    ok = k.silu(job, device, sc.gate, sc.act, n * ff) && ok;
+    ok = k.mul(job, device, sc.act, sc.up, sc.prod, n * ff) && ok;
+    ok = mm(k, job, device, &w.wDown, sc.prod, sc.down, n) && ok;
+    ok = k.add(job, device, a, sc.down, b, n * dim) && ok;
+    // b holds the new residual; the other two are free for the next layer
+    let freed = cur;
+    cur = b;
+    b = freed;
+    l = l + 1usize;
+  }
+  if wantLogits {
+    ok = k.rmsnorm(job, device, cur, e.outNorm, sc.xn, dim, n, s.eps) && ok;
+    ok = k.matvecAt(job, device, e.out.buf, sc.xn, sc.logits, e.out.qtype, e.out.rows, e.out.cols, e.out.off,
+      (n - 1usize) * dim, 0usize) && ok;
+  }
+  ok
+}

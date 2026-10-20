@@ -1,0 +1,150 @@
+// ======== A synthetic model as a GGUF file (for tests, and for trying the loader without a download) ========
+
+// What a test may get wrong on purpose in a synthetic file, to see the loader refuse it
+pub struct Flaws {
+  // A tensor left out of the file, by name ("" for none)
+  pub omit: String;
+  // A matrix written as Q4_0 (a type with no kernel here), by name ("" for none)
+  pub lowBit: String;
+  // The model says it scales its rotary embedding
+  pub ropeScaling: bool;
+  // `<arch>.context_length`
+  pub contextLength: u32;
+  // A GGUF file whose tokenizer keys (`tokenizer.ggml.*`) are copied into the synthetic one, so that a small random
+  // model can be talked to with a real vocabulary ("" for none; the model's vocabulary size must equal that file's)
+  pub tokenizerFrom: String;
+
+  pub fn none() Flaws { Flaws(String.empty(), String.empty(), false, 4096u32, String.empty()) }
+}
+
+// Copy the tokenizer's keys from another GGUF file into the writer
+fn copyTokenizer(w: &mut gguf.Writer, from: &str) Option[String] {
+  var p = Path.from(from);
+  let mapping = fs.mapFile(&p);
+  match mapping {
+    case var Ok(file) {
+      let parsed = gguf.parse(file.view());
+      match parsed {
+        case var Ok(model) {
+          var i = 0usize;
+          while i < model.meta.len() {
+            let e = model.meta[i];
+            if e.key.view().startsWith("tokenizer.ggml.") {
+              w.put(e.key.view(), e.value.copy());
+            }
+            i = i + 1usize;
+          }
+          None
+        }
+        case let Error(e) { Some[String](e.message()) }
+      }
+    }
+    case let Error(e) { Some[String](e.message()) }
+  }
+}
+
+fn tensorKind(qtype: u32) Option[gguf.TensorType] { gguf.TensorType.fromCode(qtype) }
+
+fn copyBytes(src: &Array[u8]) List[u8] {
+  var out = List[u8].withCapacity(src.len);
+  var i = 0usize;
+  while i < src.len { out.push(src[i]); i = i + 1usize; }
+  out
+}
+
+fn putMatrix(w: &mut gguf.Writer, name: &str, m: &QMatrix, flaws: &Flaws) Option[String] {
+  if flaws.omit.view() == name { return None; }
+  let dims = [u64.from(m.cols), u64.from(m.rows)];
+  if flaws.lowBit.view() == name {
+    var zeros = List[f32].withCapacity(m.rows * m.cols);
+    var i = 0usize;
+    while i < m.rows * m.cols { zeros.push(0.0); i = i + 1usize; }
+    return match w.addValues(name, gguf.TensorType.Q4_0, &dims, zeros.view()) {
+      case is Ok { None }
+      case let Error(e) { Some[String](e.message()) }
+    };
+  }
+  match tensorKind(m.qtype) {
+    case let Some(kind) {
+      match w.addTensor(name, kind.copy(), &dims, copyBytes(m.bytes.view())) {
+        case is Ok { None }
+        case let Error(e) { Some[String](e.message()) }
+      }
+    }
+    case is None { Some[String](String.from("llmrun: a synthetic matrix has a type GGUF has no number for")) }
+  }
+}
+
+fn putVector(w: &mut gguf.Writer, name: &str, v: &List[f32], flaws: &Flaws) Option[String] {
+  if flaws.omit.view() == name { return None; }
+  let dims = [u64.from(v.len())];
+  match w.addTensor(name, gguf.TensorType.F32, &dims, encodeF32(v.view())) {
+    case is Ok { None }
+    case let Error(e) { Some[String](e.message()) }
+  }
+}
+
+fn key(arch: &str, suffix: &str) String {
+  var k = String.from(arch);
+  k <- ".";
+  k <- suffix;
+  k
+}
+
+// The bytes of a GGUF file holding these weights, named and laid out as a Qwen3 ('qwen3') or Llama ('llama') file
+// is: the metadata keys llmrun reads, and the tensors by their ggml names. Only the keys of the shape are written:
+// no tokenizer. The same bytes load through 'Engine.open' as a downloaded file's do.
+pub fn syntheticGguf(m: &ModelWeights, arch: &str) Result[List[u8], String] {
+  syntheticGgufWith(m, arch, &Flaws.none())
+}
+
+// ...with something wrong in it on purpose
+pub fn syntheticGgufWith(m: &ModelWeights, arch: &str, flaws: &Flaws) Result[List[u8], String] {
+  let s = &m.shape;
+  var w = gguf.Writer.make();
+  w.putText("general.architecture", arch);
+  w.putU32(key(arch, "block_count").view(), u32.from(s.layers));
+  w.putU32(key(arch, "embedding_length").view(), u32.from(s.dim));
+  w.putU32(key(arch, "feed_forward_length").view(), u32.from(s.ffDim));
+  w.putU32(key(arch, "attention.head_count").view(), u32.from(s.nHeads));
+  w.putU32(key(arch, "attention.head_count_kv").view(), u32.from(s.nKvHeads));
+  w.putU32(key(arch, "attention.key_length").view(), u32.from(s.headDim));
+  w.putU32(key(arch, "attention.value_length").view(), u32.from(s.headDim));
+  w.putF32(key(arch, "attention.layer_norm_rms_epsilon").view(), s.eps);
+  w.putF32(key(arch, "rope.freq_base").view(), s.ropeBase);
+  w.putU32(key(arch, "context_length").view(), flaws.contextLength);
+  if s.ropeDim != s.headDim || arch != "qwen3" {
+    w.putU32(key(arch, "rope.dimension_count").view(), u32.from(s.ropeDim));
+  }
+  if flaws.ropeScaling { w.putText(key(arch, "rope.scaling.type").view(), "yarn"); }
+  if flaws.tokenizerFrom.len() > 0usize {
+    match copyTokenizer(&mut w, flaws.tokenizerFrom.view()) { case var Some(e) { return Error[List[u8], String](e); } case is None {} }
+  }
+  match putMatrix(&mut w, "token_embd.weight", &m.tokenEmbd, flaws) { case var Some(e) { return Error[List[u8], String](e); } case is None {} }
+  match putVector(&mut w, "output_norm.weight", &m.outputNorm, flaws) { case var Some(e) { return Error[List[u8], String](e); } case is None {} }
+  if !s.tied {
+    match putMatrix(&mut w, "output.weight", &m.output, flaws) { case var Some(e) { return Error[List[u8], String](e); } case is None {} }
+  }
+  var l = 0usize;
+  while l < s.layers {
+    let lw = m.layers[l];
+    match putVector(&mut w, layerName(l, "attn_norm.weight").view(), &lw.attnNorm, flaws) { case var Some(e) { return Error[List[u8], String](e); } case is None {} }
+    match putMatrix(&mut w, layerName(l, "attn_q.weight").view(), &lw.wq, flaws) { case var Some(e) { return Error[List[u8], String](e); } case is None {} }
+    match putMatrix(&mut w, layerName(l, "attn_k.weight").view(), &lw.wk, flaws) { case var Some(e) { return Error[List[u8], String](e); } case is None {} }
+    match putMatrix(&mut w, layerName(l, "attn_v.weight").view(), &lw.wv, flaws) { case var Some(e) { return Error[List[u8], String](e); } case is None {} }
+    match putMatrix(&mut w, layerName(l, "attn_output.weight").view(), &lw.wo, flaws) { case var Some(e) { return Error[List[u8], String](e); } case is None {} }
+    if s.qkNorm {
+      match putVector(&mut w, layerName(l, "attn_q_norm.weight").view(), &lw.qNorm, flaws) { case var Some(e) { return Error[List[u8], String](e); } case is None {} }
+      match putVector(&mut w, layerName(l, "attn_k_norm.weight").view(), &lw.kNorm, flaws) { case var Some(e) { return Error[List[u8], String](e); } case is None {} }
+    }
+    match putVector(&mut w, layerName(l, "ffn_norm.weight").view(), &lw.ffnNorm, flaws) { case var Some(e) { return Error[List[u8], String](e); } case is None {} }
+    match putMatrix(&mut w, layerName(l, "ffn_gate.weight").view(), &lw.wGate, flaws) { case var Some(e) { return Error[List[u8], String](e); } case is None {} }
+    match putMatrix(&mut w, layerName(l, "ffn_up.weight").view(), &lw.wUp, flaws) { case var Some(e) { return Error[List[u8], String](e); } case is None {} }
+    match putMatrix(&mut w, layerName(l, "ffn_down.weight").view(), &lw.wDown, flaws) { case var Some(e) { return Error[List[u8], String](e); } case is None {} }
+    l = l + 1usize;
+  }
+  match w.finish() {
+    case var Ok(bytes) { Ok[List[u8], String](bytes) }
+    case let Error(e) { Error[List[u8], String](e.message()) }
+  }
+}

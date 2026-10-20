@@ -1,0 +1,231 @@
+// ======== The tokenizer from the file, the stop tokens, the ChatML template, text streaming ========
+
+// A model's vocabulary: the tokenizer built from the file's metadata, and the ids that matter to a chat
+pub struct ModelTokens {
+  pub tok: bpetokenize.Tokenizer;
+  // Generation stops at any of these: tokenizer.ggml.eos_token_id, and the ChatML end of turn and end of text
+  pub stops: List[u32];
+  pub hasChatMl: bool;
+  pub imStart: u32;
+  pub imEnd: u32;
+  pub think: u32;
+  pub thinkEnd: u32;
+
+  pub fn isStop(self: &, id: u32) bool {
+    var i = 0usize;
+    while i < stops.len() {
+      if *stops[i] == id { return true; }
+      i = i + 1usize;
+    }
+    false
+  }
+
+  // Append the ids of plain text (a special token's text in it is just text)
+  pub fn text(self: &, s: &Array[u8], out: &mut List[u32]) {
+    tok.encodeWith(s, false, out);
+  }
+
+  // The ids of a chat turn the user speaks, ready for the model to answer: for Qwen3 (and any ChatML model)
+  //   <|im_start|>user\n{text}<|im_end|>\n<|im_start|>assistant\n
+  // and, when thinking is off, Qwen3's own empty form of the model's turn: <think>\n\n</think>\n\n. With thinking on
+  // the model writes its own <think> ... </think> first. The user's text is encoded as text: a special token's
+  // spelling typed into it does not become the token.
+  pub fn userTurn(self: &, userText: &Array[u8], thinking: bool) List[u32] {
+    var out = List[u32].empty();
+    out.push(imStart);
+    var head = List[u8].empty();
+    appendText(&mut head, "user\n");
+    appendBytes(&mut head, userText);
+    tok.encodeWith(head.view(), false, &mut out);
+    out.push(imEnd);
+    tok.encodeWith("\n", false, &mut out);
+    out.push(imStart);
+    tok.encodeWith("assistant\n", false, &mut out);
+    if !thinking {
+      out.push(think);
+      tok.encodeWith("\n\n", false, &mut out);
+      out.push(thinkEnd);
+      tok.encodeWith("\n\n", false, &mut out);
+    }
+    out
+  }
+
+  // A system turn, to go before the first user turn: <|im_start|>system\n{text}<|im_end|>\n
+  pub fn systemTurn(self: &, systemText: &Array[u8]) List[u32] {
+    var out = List[u32].empty();
+    out.push(imStart);
+    var head = List[u8].empty();
+    appendText(&mut head, "system\n");
+    appendBytes(&mut head, systemText);
+    tok.encodeWith(head.view(), false, &mut out);
+    out.push(imEnd);
+    tok.encodeWith("\n", false, &mut out);
+    out
+  }
+
+  // What closes the model's turn when the model itself stopped at <|im_end|> (which the engine has not run): the
+  // end token and the newline after it. Run it before the next user turn so the cache holds the same text as the
+  // template's.
+  pub fn closeTurn(self: &) List[u32] {
+    var out = List[u32].empty();
+    out.push(imEnd);
+    tok.encodeWith("\n", false, &mut out);
+    out
+  }
+}
+
+fn appendText(out: &mut List[u8], s: &str) {
+  let v: &Array[u8] = s;
+  appendBytes(out, v);
+}
+
+fn appendBytes(out: &mut List[u8], b: &Array[u8]) {
+  var i = 0usize;
+  while i < b.len { out.push(b[i]); i = i + 1usize; }
+}
+
+// Build the tokenizer from `tokenizer.ggml.*`: the tokens and merges, the pre-tokenizer named by
+// `tokenizer.ggml.pre`, and as special tokens those whose `token_type` is 3 (control) or 4 (user defined), which is
+// what llama.cpp matches in a text. Only the byte-level BPE of the GPT-2 family is built (`tokenizer.ggml.model` =
+// "gpt2"); a SentencePiece vocabulary is refused.
+pub fn loadTokens(model: &gguf.Model) Result[ModelTokens, String] {
+  match model.text("tokenizer.ggml.model") {
+    case let Some(kind) {
+      if kind != "gpt2" {
+        var m = String.from("llmrun: the tokenizer is '");
+        m <- kind;
+        m <- "'; only the byte-level BPE ('gpt2') is built here";
+        return Error[ModelTokens, String](m);
+      }
+    }
+    case is None { return Error[ModelTokens, String](String.from("llmrun: the file has no tokenizer.ggml.model")); }
+  }
+  var pre = bpetokenize.PreTokenizer.Gpt2;
+  match model.text("tokenizer.ggml.pre") {
+    case let Some(name) {
+      match bpetokenize.PreTokenizer.fromName(name) {
+        case var Some(p) { pre = p; }
+        case is None {
+          var m = String.from("llmrun: the tokenizer's pre-tokenizer is '");
+          m <- name;
+          m <- "', which this build does not reproduce";
+          return Error[ModelTokens, String](m);
+        }
+      }
+    }
+    case is None {}
+  }
+  var tokens = List[String].empty();
+  var special = List[String].empty();
+  match model.list("tokenizer.ggml.tokens") {
+    case let Some(items) {
+      var i = 0usize;
+      while i < items.len() {
+        match items.text(i) {
+          case let Some(t) { tokens.push(String.from(t)); }
+          case is None { return Error[ModelTokens, String](String.from("llmrun: a token in the vocabulary is not text")); }
+        }
+        i = i + 1usize;
+      }
+      match model.list("tokenizer.ggml.token_type") {
+        case let Some(types) {
+          if types.len() != items.len() {
+            return Error[ModelTokens, String](String.from("llmrun: token_type and tokens differ in length"));
+          }
+          i = 0usize;
+          while i < items.len() {
+            match types.int(i) {
+              case let Some(ty) { if ty == 3i64 || ty == 4i64 { special.push(tokens[i].copy()); } }
+              case is None {}
+            }
+            i = i + 1usize;
+          }
+        }
+        case is None {}
+      }
+    }
+    case is None { return Error[ModelTokens, String](String.from("llmrun: the file has no tokenizer.ggml.tokens")); }
+  }
+  var merges = List[String].empty();
+  match model.list("tokenizer.ggml.merges") {
+    case let Some(items) {
+      var i = 0usize;
+      while i < items.len() {
+        match items.text(i) {
+          case let Some(t) { merges.push(String.from(t)); }
+          case is None { return Error[ModelTokens, String](String.from("llmrun: a merge is not text")); }
+        }
+        i = i + 1usize;
+      }
+    }
+    case is None { return Error[ModelTokens, String](String.from("llmrun: the file has no tokenizer.ggml.merges")); }
+  }
+  let built = bpetokenize.Tokenizer.build(tokens.view(), merges.view(), special.view(), pre);
+  match built {
+    case var Ok(tok) {
+      var stops = List[u32].empty();
+      match model.uint("tokenizer.ggml.eos_token_id") {
+        case let Some(id) { stops.push(u32.from(id)); }
+        case is None {}
+      }
+      let imStart = tokenOr(&tok, "<|im_start|>");
+      let imEnd = tokenOr(&tok, "<|im_end|>");
+      let think = tokenOr(&tok, "<think>");
+      let thinkEnd = tokenOr(&tok, "</think>");
+      let endOfText = tokenOr(&tok, "<|endoftext|>");
+      let hasChatMl = imStart != NO_TOKEN && imEnd != NO_TOKEN && think != NO_TOKEN && thinkEnd != NO_TOKEN;
+      if imEnd != NO_TOKEN { addStop(&mut stops, imEnd); }
+      if endOfText != NO_TOKEN { addStop(&mut stops, endOfText); }
+      Ok[ModelTokens, String](ModelTokens(tok, stops, hasChatMl, imStart, imEnd, think, thinkEnd))
+    }
+    case let Error(e) { Error[ModelTokens, String](e.message()) }
+  }
+}
+
+const NO_TOKEN = 0xFFFFFFFFu32;
+
+fn tokenOr(tok: &bpetokenize.Tokenizer, text: &str) u32 {
+  match tok.tokenId(text) {
+    case let Some(id) { id }
+    case is None { NO_TOKEN }
+  }
+}
+
+fn addStop(stops: &mut List[u32], id: u32) {
+  var i = 0usize;
+  while i < stops.len() {
+    if *stops[i] == id { return; }
+    i = i + 1usize;
+  }
+  stops.push(id);
+}
+
+// Text arriving token by token: the bytes of the tokens so far that are whole characters, kept back when a token
+// ends inside one
+pub struct TextStream {
+  pending: List[u8];
+
+  pub fn make() TextStream { TextStream(List[u8].empty()) }
+
+  // The tokens' bytes now ready to print (special tokens are left out, or shown as their text, as asked)
+  pub fn push(self: &mut, tokens: &bpetokenize.Tokenizer, id: u32, showSpecial: bool) List[u8] {
+    var one = List[u32].empty();
+    one.push(id);
+    tokens.decodeInto(one.view(), !showSpecial, &mut pending);
+    let whole = bpetokenize.utf8Complete(pending.view());
+    var out = List[u8].withCapacity(whole);
+    var i = 0usize;
+    while i < whole { out.push(*pending[i]); i = i + 1usize; }
+    var rest = List[u8].empty();
+    while i < pending.len() { rest.push(*pending[i]); i = i + 1usize; }
+    pending = rest;
+    out
+  }
+
+  // Whatever is held back (a character the tokens never finished), at the end
+  pub fn finish(self: &mut) List[u8] {
+    var out = List[u8].empty();
+    out <-> pending;
+    out
+  }
+}
