@@ -1,0 +1,652 @@
+// ---- Drawing into a headset ----
+//
+// 'Headset' puts the renderer's pictures into a headset through OpenXR (the
+// openxr package), by XR_KHR_vulkan_enable2: the runtime makes the Vulkan
+// instance and device, and hands over its swapchains' images as VkImages,
+// which the gpu package wraps as textures ('Device.wrapImage') that the
+// renderer draws into as it draws into any texture. The runtime does the rest:
+// lens distortion, reprojection, and the compositing. A program that draws to
+// a window never reaches this file, and its pictures are as they were.
+//
+//   var headset = Headset.open("my app", &HeadsetOptions());
+//   if !headset.isValid() { ...no OpenXR runtime, or no headset: say so... }
+//   var renderer = Renderer.create(&mut headset.device, headset.colorFormat, headset.depthFormat);
+//   ... add meshes and materials to the renderer, through &mut headset.device ...
+//   while headset.pollEvents() {              // false once the session is over
+//     let frame = headset.beginFrame();       // waits for the runtime's frame, locates the eyes
+//     if frame.shouldRender {
+//       var eye = 0usize;
+//       while eye < 2usize {
+//         let camera = headset.eyeCamera(&frame, eye);     // placed at the eye, its own field of view
+//         headset.drawEye(&frame, eye, &mut renderer, &camera, &light, &list);
+//         eye = eye + 1usize;
+//       }
+//     }
+//     headset.endFrame(&frame);               // submits the eyes as a projection layer
+//   }
+//
+// THE FRAME LOOP is the runtime's (OpenXR's xrWaitFrame / xrBeginFrame /
+// xrEndFrame): 'beginFrame' waits until the runtime wants the frame, which is
+// what holds the program to the headset's rate, and answers the display time
+// the frame is predicted to be shown at and the eyes' poses at that time
+// ('xrLocateViews'); 'drawEye' draws one eye and 'endFrame' hands both to the
+// runtime. A frame the runtime does not want drawn ('shouldRender' false: the
+// headset is off the head, say) is begun and ended with no layer. 'pollEvents'
+// follows the session's life: when the runtime says READY it begins the
+// session, when it says STOPPING it ends it, and when the session is over
+// (EXITING, LOSS_PENDING, or the instance is lost) it answers false. A
+// program that wants to leave asks 'requestExit' and keeps calling
+// 'pollEvents' until it answers false.
+//
+// THE EYES are drawn one after the other, each into an image of its own
+// swapchain, with the renderer's ordinary path: acquire the image, wait for
+// it, 'render', submit, release. Each eye is its own submission, because the
+// renderer's frame uniforms are written ahead of the next submission, so two
+// eyes in one would share a camera. (Multiview, both eyes in one pass, is a
+// later optimisation, and not built.) The camera of an eye is off-axis: the
+// runtime's four field-of-view angles are the edges of its projection
+// ('Camera.setFovAngles'), the projection is the renderer's own convention
+// (depth from 0 at the near plane to 1 at the far, not reversed, 'near' 0.1
+// and 'far' 1000 unless the options say otherwise), and the pose is the
+// eye's, in the reference space ('referenceSpace': local floor where the
+// runtime has it, so y = 0 is the floor, else local). A program places its
+// player in the world by following: 'camera.following' with 'followMatrix' the
+// player's placement ('Camera.placement').
+//
+// THE COST of each eye is measured on both sides: the CPU's time to record and
+// submit it ('cpuMs') and the GPU's time for its pass, between two timestamps
+// ('gpuMs'), read back a few frames later when the GPU is done with them.
+//
+// What it does not do yet: controllers and every other input (the action
+// system), the depth layer, foveation, the headset's refresh-rate control, a
+// session that ends and begins again, and comfort (vignetting, a steady
+// horizon, snap turns), which are the program's.
+
+// What 'Headset.open' is asked for
+pub struct HeadsetOptions {
+  // The Khronos validation layer on the Vulkan instance, where it is
+  // installed. Off by default: Meta's PC simulator leaks memory under it.
+  pub validation: bool = false;
+  // The eye images can be copied from, so 'captureEye' can read one back
+  // (they are made with the transfer-source usage)
+  pub copySource: bool = false;
+  // The near and far planes of every eye's camera, in metres
+  pub near: f32 = 0.1;
+  pub far: f32 = 1000.;
+}
+
+// One frame, as 'beginFrame' answers it: what the runtime wants and where the
+// eyes are. Give it back to 'drawEye' and 'endFrame'.
+pub struct HeadsetFrame {
+  // A frame was begun, and 'endFrame' must end it (false when the session is
+  // not running)
+  pub active: bool;
+  // The runtime wants the eyes drawn; false, the frame is ended with nothing
+  pub shouldRender: bool;
+  // The eyes' poses and fields of view were located (valid and tracked)
+  pub located: bool;
+  pub displayTime: i64;              // when the frame is predicted to be shown (XrTime, nanoseconds)
+  pub displayPeriod: i64;            // the headset's frame period (nanoseconds)
+  pub views: Array[openxr.View, 2];  // left, right
+}
+
+// The OpenXR calls that make Vulkan's instance and device carry the program
+// through the gpu package's makers: what 'makeVkInstance' and 'makeVkDevice'
+// need
+struct XrMaker {
+  fns: openxr.InstanceFns;
+  instance: openxr.Instance;
+  systemId: u64;
+}
+
+fn xrFail(what: &str, r: i32) {
+  var m = String.from("render: ");
+  m <- what;
+  m <- " failed: ";
+  m <- openxr.resultName(r);
+  logLine(m.view());
+}
+
+fn xrCheck(r: i32, what: &str) bool {
+  if openxr.failed(r) {
+    xrFail(what, r);
+    return false;
+  }
+  true
+}
+
+// A zero-terminated string out of a fixed array, at most 255 bytes
+fn cStringOf(p: *u8) String {
+  var s = String.empty();
+  var i = 0usize;
+  while i < 255usize && *(p + i) != 0u8 {
+    s.appendByte(*(p + i));
+    i = i + 1usize;
+  }
+  s
+}
+
+// Vulkan's instance, made by the runtime: xrCreateVulkanInstanceKHR adds the
+// extensions the headset needs to the create-info the gpu package assembled
+fn makeVkInstance(user: *u8, createInfo: &vulkan.InstanceCreateInfo, instance: &mut vulkan.Instance) i32 {
+  let m = user as *XrMaker;
+  let info = openxr.VulkanInstanceCreateInfoKHR(systemId: m.systemId, pfnGetInstanceProcAddr: vulkan.instanceProcAddrFn(),
+    vulkanCreateInfo: createInfo as *vulkan.InstanceCreateInfo, vulkanAllocator: null);
+  var vkResult = vulkan.ERROR_INITIALIZATION_FAILED;
+  let r = m.fns.createVulkanInstanceKHR(m.instance, &info, instance, &mut vkResult);
+  if openxr.failed(r) {
+    xrFail("xrCreateVulkanInstanceKHR", r);
+    return vulkan.ERROR_INITIALIZATION_FAILED;
+  }
+  vkResult
+}
+
+// Vulkan's device on the physical device the runtime chose, made by the
+// runtime the same way
+fn makeVkDevice(user: *u8, physical: vulkan.PhysicalDevice, createInfo: &vulkan.DeviceCreateInfo,
+    device: &mut vulkan.Device) i32 {
+  let m = user as *XrMaker;
+  let info = openxr.VulkanDeviceCreateInfoKHR(systemId: m.systemId, pfnGetInstanceProcAddr: vulkan.instanceProcAddrFn(),
+    vulkanPhysicalDevice: physical, vulkanCreateInfo: createInfo as *vulkan.DeviceCreateInfo, vulkanAllocator: null);
+  var vkResult = vulkan.ERROR_INITIALIZATION_FAILED;
+  let r = m.fns.createVulkanDeviceKHR(m.instance, &info, device, &mut vkResult);
+  if openxr.failed(r) {
+    xrFail("xrCreateVulkanDeviceKHR", r);
+    return vulkan.ERROR_INITIALIZATION_FAILED;
+  }
+  vkResult
+}
+
+// How many frames of timestamps are kept to be read back, a few frames
+// after the GPU wrote them
+const TIMESTAMP_SLOTS = 4usize;
+
+// A headset: the OpenXR instance, session and swapchains, and the gpu
+// package's instance, adapter and device the runtime chose, in the order they
+// end (a struct's fields end in the order declared, after its own 'final'):
+// the eye images' textures, the timestamps' and the capture's objects, then
+// the GPU, which every object made from it must come before. A Renderer made
+// from the headset's device is declared after the headset, so that it ends
+// first.
+pub struct Headset {
+  colors: List[Texture];            // every eye image wrapped: eye 0's, then eye 1's
+  depths: List[Texture];            // one depth texture for each eye
+  queries: QuerySet;                // timestamps around each eye's pass
+  resolved: Buffer;
+  readback: Buffer;
+  capture: Buffer;                  // an eye image copied out ('captureEye'), when the options asked for it
+  pub device: Device;               // the GPU the runtime chose: hand it to Renderer.create
+  adapter: Adapter;
+  gpuInstance: Instance;
+  fns: openxr.InstanceFns;
+  xrInstance: openxr.Instance;
+  session: openxr.Session;
+  space: openxr.Space;
+  swapchains: Array[openxr.Swapchain, 2];
+  systemId: u64 = 0u64;
+  firstImage: Array[usize, 2] = [0usize, 0usize];
+  imageCount: Array[u32, 2] = [0u32, 0u32];
+  pub eyeWidth: u32 = 0u32;
+  pub eyeHeight: u32 = 0u32;
+  pub colorFormat: u32 = TEXTURE_FORMAT_UNDEFINED;     // TEXTURE_FORMAT_: the eye images'
+  pub depthFormat: u32 = TEXTURE_FORMAT_DEPTH32_FLOAT;
+  pub near: f32 = 0.1;
+  pub far: f32 = 1000.;
+  pub runtimeName: String;          // "Meta XR Simulator"
+  pub systemName: String;           // "Meta Quest 3"
+  pub referenceSpace: i32 = 0i32;   // the reference space the poses are in (openxr.REFERENCE_SPACE_TYPE_)
+  pub sessionState: i32 = 0i32;     // the last state the runtime reported (openxr.SESSION_STATE_)
+  opened: bool = false;
+  sessionRunning: bool = false;
+  quitting: bool = false;
+  frameOpen: bool = false;
+  drawn: u32 = 0u32;                // bits of the eyes drawn this frame
+  captureEyeIndex: i64 = -1i64;     // the eye the next draw copies out, or none
+  slotFrame: Array[u64, 4] = [0u64, 0u64, 0u64, 0u64];    // the device frame each timestamp slot was written in
+  slotPending: Array[bool, 4] = [false, false, false, false];
+  slot: usize = 0usize;             // the slot of the frame being drawn
+  cpuLast: Array[f64, 2] = [0., 0.];
+  gpuLast: Array[f64, 2] = [0., 0.];
+  cpuSum: Array[f64, 2] = [0., 0.];
+  gpuSum: Array[f64, 2] = [0., 0.];
+  cpuCount: Array[u32, 2] = [0u32, 0u32];
+  gpuCount: Array[u32, 2] = [0u32, 0u32];
+
+  // No headset: all the fields empty (what 'open' fills in)
+  fn empty() Headset {
+    Headset(List[Texture].empty(), List[Texture].empty(), QuerySet.none(), Buffer.none(), Buffer.none(), Buffer.none(),
+      Device.none(), Adapter.none(), Instance.none(), openxr.InstanceFns(), 0usize as openxr.Instance,
+      0usize as openxr.Session, 0usize as openxr.Space,
+      [0usize as openxr.Swapchain, 0usize as openxr.Swapchain], 0u64, [0usize, 0usize], [0u32, 0u32],
+      0u32, 0u32, TEXTURE_FORMAT_UNDEFINED, TEXTURE_FORMAT_DEPTH32_FLOAT, 0.1, 1000., String.empty(), String.empty())
+  }
+
+  // Open the headset: the OpenXR runtime's instance and system, the Vulkan
+  // instance and device it asks for, a session, a reference space, and a
+  // swapchain for each eye at the runtime's recommended size. Check
+  // 'isValid': with no OpenXR loader, no runtime, no headset, or a GPU the
+  // layer cannot use, it is not, and why has gone to stderr.
+  pub fn open(appName: &str, options: &HeadsetOptions) Headset {
+    var h = Headset.empty();
+    h.start(appName, options);
+    h
+  }
+
+  pub fn isValid(self: &) bool { opened }
+
+  // Whether the session is running: begun (the runtime said READY) and not yet ended
+  pub fn isRunning(self: &) bool { sessionRunning }
+
+  fn start(self: &mut, appName: &str, options: &HeadsetOptions) {
+    near = options.near;
+    far = options.far;
+    if !openxr.available() {
+      logLine("render: no OpenXR loader (openxr_loader.dll) was found");
+      return;
+    }
+    if !vulkan.available() {
+      logLine("render: no Vulkan loader (vulkan-1.dll) was found");
+      return;
+    }
+
+    // The instance extensions the runtime offers: XR_KHR_vulkan_enable2 is required
+    var count = 0u32;
+    var r = openxr.enumerateInstanceExtensionProperties(null, 0u32, &mut count, null);
+    if !xrCheck(r, "xrEnumerateInstanceExtensionProperties (is an OpenXR runtime installed?)") { return; }
+    var props = List[openxr.ExtensionProperties].empty();
+    props.resize(usize.from(count), openxr.ExtensionProperties(extensionName: Array[u8, 128]() <- fill 0u8,
+      extensionVersion: 0u32));
+    let offered = props.viewMut() as *openxr.ExtensionProperties;
+    r = openxr.enumerateInstanceExtensionProperties(null, count, &mut count, offered);
+    if !xrCheck(r, "xrEnumerateInstanceExtensionProperties") { return; }
+    var hasVulkan2 = false;
+    var hasLocalFloor = false;
+    var e = 0usize;
+    while e < usize.from(count) {
+      let entry = offered + e;
+      let name = &entry.extensionName as *u8;
+      if libc.strcmp(cstr.fromPtr(name), "XR_KHR_vulkan_enable2") == 0i32 { hasVulkan2 = true; }
+      if libc.strcmp(cstr.fromPtr(name), "XR_EXT_local_floor") == 0i32 { hasLocalFloor = true; }
+      e = e + 1usize;
+    }
+    if !hasVulkan2 {
+      logLine("render: the OpenXR runtime does not offer XR_KHR_vulkan_enable2");
+      return;
+    }
+
+    // The instance, asking for OpenXR 1.0 (every runtime has it; the local-floor space is the extension's there)
+    let names: Array[*u8, 2] = [&"XR_KHR_vulkan_enable2" as *u8, &"XR_EXT_local_floor" as *u8];
+    let ici = openxr.InstanceCreateInfo(applicationInfo: openxr.applicationInfo(appName, "Cone render", openxr.API_VERSION_1_0),
+      enabledApiLayerNames: null, enabledExtensionCount: if hasLocalFloor { 2u32 } else { 1u32 },
+      enabledExtensionNames: &names as **u8);
+    r = openxr.createInstance(&ici, &mut xrInstance);
+    if !xrCheck(r, "xrCreateInstance") { return; }
+    fns = openxr.InstanceFns.load(xrInstance);
+    if fns.missing != 0u32 || !fns.hasVulkanEnable2() {
+      logLine("render: the OpenXR instance lacks some of its functions");
+      return;
+    }
+    var ip = openxr.InstanceProperties(runtimeVersion: 0u64, runtimeName: Array[u8, 128]() <- fill 0u8);
+    fns.getInstanceProperties(xrInstance, &mut ip);
+    runtimeName = cStringOf(&ip.runtimeName as *u8);
+
+    // The headset
+    let getInfo = openxr.SystemGetInfo();
+    r = fns.getSystem(xrInstance, &getInfo, &mut systemId);
+    if !xrCheck(r, "xrGetSystem (is a headset connected?)") { return; }
+    var sp = openxr.zeroed[openxr.SystemProperties]();
+    sp.type = openxr.TYPE_SYSTEM_PROPERTIES;
+    fns.getSystemProperties(xrInstance, systemId, &mut sp);
+    systemName = cStringOf(&sp.systemName as *u8);
+    var configured = [openxr.ViewConfigurationView(), openxr.ViewConfigurationView()];
+    var viewCount = 0u32;
+    r = fns.enumerateViewConfigurationViews(xrInstance, systemId, openxr.VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, 2u32,
+      &mut viewCount, &mut configured as *openxr.ViewConfigurationView);
+    if !xrCheck(r, "xrEnumerateViewConfigurationViews") { return; }
+    if viewCount != 2u32 {
+      logLine("render: the headset does not have two views");
+      return;
+    }
+    eyeWidth = configured[0].recommendedImageRectWidth;
+    eyeHeight = configured[0].recommendedImageRectHeight;
+
+    // What the runtime needs of Vulkan (this must be asked before the instance is made)
+    var requirements = openxr.GraphicsRequirementsVulkanKHR();
+    r = fns.getVulkanGraphicsRequirements2KHR(xrInstance, systemId, &mut requirements);
+    if !xrCheck(r, "xrGetVulkanGraphicsRequirements2KHR") { return; }
+    if requirements.minApiVersionSupported > openxr.makeVersion(1u64, 3u64, 0u64) {
+      logLine("render: the OpenXR runtime needs a newer Vulkan than 1.3");
+      return;
+    }
+
+    // Vulkan's instance, the GPU the runtime wants, and the device on it, all
+    // made through the gpu package with the runtime making what it must
+    var maker = XrMaker(fns, xrInstance, systemId);
+    gpuInstance = Instance.createWith(appName, &makeVkInstance, &maker as *u8, options.validation);
+    if !gpuInstance.isValid() { return; }
+    let deviceInfo = openxr.VulkanGraphicsDeviceGetInfoKHR(systemId: systemId, vulkanInstance: gpuInstance.vulkanHandle());
+    var physical = 0usize as vulkan.PhysicalDevice;
+    r = fns.getVulkanGraphicsDevice2KHR(xrInstance, &deviceInfo, &mut physical);
+    if !xrCheck(r, "xrGetVulkanGraphicsDevice2KHR") { return; }
+    adapter = gpuInstance.requestAdapterFor(physical);
+    if !adapter.isValid() { return; }
+    device = adapter.requestDeviceVia(&makeVkDevice, &maker as *u8);
+    if !device.isValid() { return; }
+
+    // The session on that device
+    let binding = openxr.GraphicsBindingVulkanKHR(instance: gpuInstance.vulkanHandle(), physicalDevice: adapter.vulkanPhysicalDevice(),
+      device: device.vulkanHandle(), queueFamilyIndex: device.vulkanQueueFamily(), queueIndex: 0u32);
+    let sci = openxr.SessionCreateInfo(next: &binding as *u8, systemId: systemId);
+    r = fns.createSession(xrInstance, &sci, &mut session);
+    if !xrCheck(r, "xrCreateSession") { return; }
+
+    // The reference space the eyes are located in: the local floor (the floor
+    // at y = 0, the head wherever it is in the room) where the runtime has
+    // it, else the local space (the origin at the head when the session began)
+    var spaceCount = 0u32;
+    fns.enumerateReferenceSpaces(session, 0u32, &mut spaceCount, null);
+    var spaces = List[i32].empty();
+    spaces.resize(usize.from(spaceCount), 0i32);
+    fns.enumerateReferenceSpaces(session, spaceCount, &mut spaceCount, spaces.viewMut() as *i32);
+    referenceSpace = openxr.REFERENCE_SPACE_TYPE_LOCAL;
+    var s = 0usize;
+    while s < usize.from(spaceCount) {
+      if *spaces[s] == openxr.REFERENCE_SPACE_TYPE_LOCAL_FLOOR { referenceSpace = openxr.REFERENCE_SPACE_TYPE_LOCAL_FLOOR; }
+      s = s + 1usize;
+    }
+    let rci = openxr.ReferenceSpaceCreateInfo(referenceSpaceType: referenceSpace, poseInReferenceSpace: openxr.identityPose());
+    r = fns.createReferenceSpace(session, &rci, &mut space);
+    if !xrCheck(r, "xrCreateReferenceSpace") { return; }
+
+    // The eye images' format: the first the runtime lists (its preference
+    // first) that is 8-bit sRGB, so that the hardware encodes what the
+    // renderer writes in linear light, as a window's swapchain does
+    var formatCount = 0u32;
+    fns.enumerateSwapchainFormats(session, 0u32, &mut formatCount, null);
+    var formats = List[i64].empty();
+    formats.resize(usize.from(formatCount), 0i64);
+    fns.enumerateSwapchainFormats(session, formatCount, &mut formatCount, formats.viewMut() as *i64);
+    var chosen = 0i64;
+    var f = 0usize;
+    while f < usize.from(formatCount) && chosen == 0i64 {
+      let candidate = *formats[f];
+      if candidate == i64.from(vulkanFormatOf(TEXTURE_FORMAT_RGBA8_UNORM_SRGB)) {
+        chosen = candidate;
+        colorFormat = TEXTURE_FORMAT_RGBA8_UNORM_SRGB;
+      } else if candidate == i64.from(vulkanFormatOf(TEXTURE_FORMAT_BGRA8_UNORM_SRGB)) {
+        chosen = candidate;
+        colorFormat = TEXTURE_FORMAT_BGRA8_UNORM_SRGB;
+      }
+      f = f + 1usize;
+    }
+    if chosen == 0i64 {
+      logLine("render: the runtime offers no 8-bit sRGB swapchain format");
+      return;
+    }
+
+    // A swapchain for each eye, and its images wrapped as textures; a depth texture of the same size
+    var usage = openxr.SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT;
+    if options.copySource { usage = usage | openxr.SWAPCHAIN_USAGE_TRANSFER_SRC_BIT; }
+    var eye = 0usize;
+    while eye < 2usize {
+      let swci = openxr.SwapchainCreateInfo(usageFlags: usage, format: chosen, width: eyeWidth, height: eyeHeight);
+      r = fns.createSwapchain(session, &swci, &mut swapchains[eye]);
+      if !xrCheck(r, "xrCreateSwapchain") { return; }
+      var n = 0u32;
+      fns.enumerateSwapchainImages(swapchains[eye], 0u32, &mut n, null);
+      var images = List[openxr.SwapchainImageVulkanKHR].empty();
+      images.resize(usize.from(n), openxr.SwapchainImageVulkanKHR(image: vulkan.Image(0u64)));
+      r = fns.enumerateSwapchainImages(swapchains[eye], n, &mut n, (images.viewMut() as *openxr.SwapchainImageVulkanKHR) as *openxr.SwapchainImageBaseHeader);
+      if !xrCheck(r, "xrEnumerateSwapchainImages") { return; }
+      firstImage[eye] = colors.len();
+      imageCount[eye] = n;
+      var k = 0usize;
+      while k < usize.from(n) {
+        colors.push(device.wrapImage(images[k].image, eyeWidth, eyeHeight, colorFormat, options.copySource));
+        k = k + 1usize;
+      }
+      let depthDesc = TextureDescriptor(eyeWidth, eyeHeight, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
+      depths.push(device.createTexture(&depthDesc));
+      eye = eye + 1usize;
+    }
+
+    // Timestamps around each eye's pass, and room to read them back; a place to copy an eye out to
+    queries = device.createQuerySet(QUERY_TYPE_TIMESTAMP, u32.from(TIMESTAMP_SLOTS) * 4u32);
+    resolved = device.createBuffer(256u64, BUFFER_USAGE_QUERY_RESOLVE | BUFFER_USAGE_COPY_SRC);
+    readback = device.createBuffer(u64.from(TIMESTAMP_SLOTS) * 32u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+    if options.copySource {
+      capture = device.createBuffer(u64.from(eyeWidth) * u64.from(eyeHeight) * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+    }
+    opened = true;
+  }
+
+  // Follow the session: read the runtime's events. READY begins the session,
+  // STOPPING ends it, EXITING and LOSS_PENDING (or the instance being lost)
+  // end it for good. False once the session is over, when the program leaves
+  // its loop; call it once a frame, before 'beginFrame'.
+  pub fn pollEvents(self: &mut) bool {
+    if !opened { return false; }
+    var buffer = openxr.EventDataBuffer(varying: Array[u8, 4000]() <- fill 0u8);
+    var more = true;
+    while more {
+      buffer.type = openxr.TYPE_EVENT_DATA_BUFFER;
+      buffer.next = null;
+      let r = fns.pollEvent(xrInstance, &mut buffer);
+      if r != openxr.SUCCESS {
+        more = false;                      // EVENT_UNAVAILABLE: the queue is empty
+      } else if buffer.type == openxr.TYPE_EVENT_DATA_SESSION_STATE_CHANGED {
+        let ev = &buffer as *openxr.EventDataSessionStateChanged;
+        sessionState = ev.state;
+        if ev.state == openxr.SESSION_STATE_READY {
+          let begin = openxr.SessionBeginInfo();
+          if xrCheck(fns.beginSession(session, &begin), "xrBeginSession") { sessionRunning = true; }
+        } else if ev.state == openxr.SESSION_STATE_STOPPING {
+          if sessionRunning { xrCheck(fns.endSession(session), "xrEndSession"); }
+          sessionRunning = false;
+        } else if ev.state == openxr.SESSION_STATE_EXITING || ev.state == openxr.SESSION_STATE_LOSS_PENDING {
+          quitting = true;
+        }
+      } else if buffer.type == openxr.TYPE_EVENT_DATA_INSTANCE_LOSS_PENDING {
+        quitting = true;
+      }
+    }
+    !quitting
+  }
+
+  // Ask the runtime to end the session (the user's wish to leave): it answers
+  // with STOPPING and then EXITING, which 'pollEvents' follows to false
+  pub fn requestExit(self: &mut) {
+    if sessionRunning { xrCheck(fns.requestExitSession(session), "xrRequestExitSession"); } else { quitting = true; }
+  }
+
+  // Begin the runtime's next frame: wait until it wants one (this is what
+  // holds the program to the headset's rate), then locate the eyes at the
+  // time the frame is predicted to be shown. Answers an inactive frame while
+  // the session is not running. Every active frame is ended by 'endFrame'.
+  pub fn beginFrame(self: &mut) HeadsetFrame {
+    var frame = HeadsetFrame(false, false, false, 0i64, 0i64, [openxr.emptyView(), openxr.emptyView()]);
+    if !opened || !sessionRunning || frameOpen { return frame; }
+    self.collectTimes();
+    var state = openxr.FrameState();
+    let waitInfo = openxr.FrameWaitInfo();
+    if !xrCheck(fns.waitFrame(session, &waitInfo, &mut state), "xrWaitFrame") { return frame; }
+    let beginInfo = openxr.FrameBeginInfo();
+    if !xrCheck(fns.beginFrame(session, &beginInfo), "xrBeginFrame") { return frame; }
+    frameOpen = true;
+    drawn = 0u32;
+    slot = (slot + 1usize) % TIMESTAMP_SLOTS;
+    frame.active = true;
+    frame.displayTime = state.predictedDisplayTime;
+    frame.displayPeriod = state.predictedDisplayPeriod;
+    frame.shouldRender = state.shouldRender == openxr.TRUE;
+    if frame.shouldRender {
+      let locateInfo = openxr.ViewLocateInfo(displayTime: state.predictedDisplayTime, space: space);
+      var viewState = openxr.ViewState();
+      var located = 0u32;
+      let r = fns.locateViews(session, &locateInfo, &mut viewState, 2u32, &mut located, &mut frame.views as *openxr.View);
+      let needed = openxr.VIEW_STATE_ORIENTATION_VALID_BIT | openxr.VIEW_STATE_POSITION_VALID_BIT;
+      frame.located = openxr.succeeded(r) && located == 2u32 && (viewState.viewStateFlags & needed) == needed;
+    }
+    frame
+  }
+
+  // The camera of an eye (0 left, 1 right) for 'frame': placed at the eye's
+  // pose in the reference space, looking down its -z, with the off-axis
+  // projection of the runtime's four angles, drawing from 'near' to 'far'.
+  // Set its 'background' or its 'following' (to place the player in the
+  // world) before drawing with it.
+  pub fn eyeCamera(self: &, frame: &HeadsetFrame, eye: usize) Camera {
+    let v = frame.views[eye];
+    var c = Camera.make();
+    c.near = near;
+    c.far = far;
+    c.origin = Vec3(v.pose.position.x, v.pose.position.y, v.pose.position.z);
+    c.orientation = Quat(v.pose.orientation.x, v.pose.orientation.y, v.pose.orientation.z, v.pose.orientation.w);
+    c.setFovAngles(v.fov.angleLeft, v.fov.angleRight, v.fov.angleUp, v.fov.angleDown);
+    c
+  }
+
+  // Draw one eye: take its swapchain's next image, wait until the runtime
+  // lets the program draw into it, render 'list' seen by 'camera' and lit by
+  // 'light' with 'renderer' (which was made for 'colorFormat' and
+  // 'depthFormat'), submit, and give the image back. Answers whether the eye
+  // was drawn: not when the frame is not one to draw ('shouldRender' false,
+  // eyes not located) or the runtime refused the image.
+  pub fn drawEye(self: &mut, frame: &HeadsetFrame, eye: usize, renderer: &mut Renderer, camera: &Camera, light: &Light,
+      list: &DrawList) bool {
+    if !opened || !frameOpen || !frame.active || !frame.shouldRender || !frame.located || eye > 1usize { return false; }
+    var index = 0u32;
+    let acquireInfo = openxr.SwapchainImageAcquireInfo();
+    if !xrCheck(fns.acquireSwapchainImage(swapchains[eye], &acquireInfo, &mut index), "xrAcquireSwapchainImage") { return false; }
+    let waitInfo = openxr.SwapchainImageWaitInfo();
+    let waited = fns.waitSwapchainImage(swapchains[eye], &waitInfo);
+    if !xrCheck(waited, "xrWaitSwapchainImage") {
+      let releaseInfo = openxr.SwapchainImageReleaseInfo();
+      fns.releaseSwapchainImage(swapchains[eye], &releaseInfo);
+      return false;
+    }
+    let started = Instant.now().nanos();
+    let first = u32.from(slot) * 4u32 + u32.from(eye) * 2u32;
+    var encoder = device.createCommandEncoder();
+    encoder.writeTimestamp(&queries, first);
+    renderer.render(&mut device, &mut encoder, &mut colors[firstImage[eye] + usize.from(index)], &mut depths[eye], camera, light, list);
+    encoder.writeTimestamp(&queries, first + 1u32);
+    encoder.resolveQuerySet(&queries, first, 2u32, &resolved, 0u64);
+    encoder.copyBufferToBuffer(&resolved, 0u64, &readback, u64.from(slot * 2usize + eye) * 16u64, 16u64);
+    if captureEyeIndex == (i64.from(eye)) && capture.isValid() {
+      encoder.copyTextureToBuffer(&mut colors[firstImage[eye] + usize.from(index)], &capture);
+      captureEyeIndex = -1i64;
+    }
+    device.queue.submit(encoder.finish());
+    let cpu = f64.from(Instant.now().nanos() - started) * 1.0e-9;
+    cpuLast[eye] = cpu;
+    cpuSum[eye] = cpuSum[eye] + cpu;
+    cpuCount[eye] = cpuCount[eye] + 1u32;
+    slotFrame[slot] = device.frameNumber;
+    slotPending[slot] = true;
+    drawn = drawn | (1u32 << u32.from(eye));
+    let releaseInfo = openxr.SwapchainImageReleaseInfo();
+    xrCheck(fns.releaseSwapchainImage(swapchains[eye], &releaseInfo), "xrReleaseSwapchainImage")
+  }
+
+  // End the frame 'beginFrame' began: end the GPU's frame, and hand the runtime
+  // the two eyes' images as a projection layer at the poses they were drawn
+  // for (no layer if either eye was not drawn)
+  pub fn endFrame(self: &mut, frame: &HeadsetFrame) {
+    if !opened || !frame.active || !frameOpen { return; }
+    frameOpen = false;
+    device.endFrame();
+    let rect = openxr.Rect2Di(openxr.Offset2Di(0i32, 0i32), openxr.Extent2Di(i32.from(eyeWidth), i32.from(eyeHeight)));
+    let both = drawn == 3u32 && frame.located;
+    var projected = [
+      openxr.CompositionLayerProjectionView(pose: frame.views[0].pose, fov: frame.views[0].fov,
+        subImage: openxr.SwapchainSubImage(swapchains[0], rect)),
+      openxr.CompositionLayerProjectionView(pose: frame.views[1].pose, fov: frame.views[1].fov,
+        subImage: openxr.SwapchainSubImage(swapchains[1], rect))];
+    var layer = openxr.CompositionLayerProjection(space: space, viewCount: 2u32,
+      views: &projected as *openxr.CompositionLayerProjectionView);
+    let layers: Array[*u8, 1] = [&layer as *u8];
+    let endInfo = openxr.FrameEndInfo(displayTime: frame.displayTime, environmentBlendMode: openxr.ENVIRONMENT_BLEND_MODE_OPAQUE,
+      layerCount: if both { 1u32 } else { 0u32 }, layers: &layers as **u8);
+    xrCheck(fns.endFrame(session, &endInfo), "xrEndFrame");
+  }
+
+  // Read back the timestamps of the frames the GPU has finished
+  fn collectTimes(self: &mut) {
+    let period = f64.from(device.timestampPeriod) * 1.0e-9;
+    let ticks = readback.mappedRange() as *u64;
+    if (ticks as usize) == 0usize || period <= 0. { return; }
+    var s = 0usize;
+    while s < TIMESTAMP_SLOTS {
+      if slotPending[s] && device.frameDone(slotFrame[s]) {
+        var e = 0usize;
+        while e < 2usize {
+          let pair = ticks + (s * 2usize + e) * 2usize;
+          let seconds = f64.from(*(pair + 1usize) - *pair) * period;
+          if seconds > 0. && seconds < 1. {
+            gpuLast[e] = seconds;
+            gpuSum[e] = gpuSum[e] + seconds;
+            gpuCount[e] = gpuCount[e] + 1u32;
+          }
+          e = e + 1usize;
+        }
+        slotPending[s] = false;
+      }
+      s = s + 1usize;
+    }
+  }
+
+  // The CPU's time to record and submit an eye, in milliseconds: the last
+  // frame's, and the mean since 'resetTimes'
+  pub fn cpuMs(self: &, eye: usize) f64 { cpuLast[eye] * 1000.0 }
+  pub fn cpuMeanMs(self: &, eye: usize) f64 { if cpuCount[eye] == 0u32 { 0.0 } else { cpuSum[eye] / f64.from(cpuCount[eye]) * 1000.0 } }
+  // The GPU's time for an eye's pass in milliseconds: the last frame the GPU
+  // had finished when it was read, and the mean since 'resetTimes'
+  pub fn gpuMs(self: &, eye: usize) f64 { gpuLast[eye] * 1000.0 }
+  pub fn gpuMeanMs(self: &, eye: usize) f64 { if gpuCount[eye] == 0u32 { 0.0 } else { gpuSum[eye] / f64.from(gpuCount[eye]) * 1000.0 } }
+  // How many frames each mean is over
+  pub fn cpuSamples(self: &, eye: usize) u32 { cpuCount[eye] }
+  pub fn gpuSamples(self: &, eye: usize) u32 { gpuCount[eye] }
+
+  // Start the means again (after the first frames, which are not typical)
+  pub fn resetTimes(self: &mut) {
+    var e = 0usize;
+    while e < 2usize {
+      cpuSum[e] = 0.;
+      gpuSum[e] = 0.;
+      cpuCount[e] = 0u32;
+      gpuCount[e] = 0u32;
+      e = e + 1usize;
+    }
+  }
+
+  // Have the next draw of an eye copy its image out, for 'capturedBytes' (the
+  // options must have asked for 'copySource')
+  pub fn captureEye(self: &mut, eye: usize) { captureEyeIndex = i64.from(eye); }
+
+  // The bytes of the eye image 'captureEye' copied, 4 a pixel in the eye
+  // images' order (BGRA or RGBA, as 'colorFormat' says), rows with no gap,
+  // 'eyeWidth' by 'eyeHeight': valid once the GPU is done with the frame that
+  // drew it ('device.waitIdle'). Null if nothing can be captured.
+  pub fn capturedBytes(self: &) *u8 { capture.mappedRange() }
+
+  // The end of the headset: the GPU idle, the eye images' textures, then
+  // OpenXR's swapchains, space, session and instance. The fields follow, the GPU last.
+  fn final(self: &uni) {
+    device.waitIdle();
+    colors.clear();
+    depths.clear();
+    if (xrInstance as usize) != 0usize {
+      var e = 0usize;
+      while e < 2usize {
+        if (swapchains[e] as usize) != 0usize { fns.destroySwapchain(swapchains[e]); }
+        e = e + 1usize;
+      }
+      if (space as usize) != 0usize { fns.destroySpace(space); }
+      if (session as usize) != 0usize {
+        fns.destroySession(session);
+      }
+      if (xrInstance as usize) != 0usize { fns.destroyInstance(xrInstance); }
+    }
+  }
+}
