@@ -207,6 +207,61 @@ pub struct CommandEncoder {
     backend.fns.cmdPipelineBarrier2(backend.cmd, &dep);
   }
 
+  // Scale the box of 'source' ('sourceWidth' by 'sourceHeight' texels from
+  // ('sourceX', 'sourceY'); its first level and layer) into all of
+  // 'destination', filtering linearly, and converting between the two textures'
+  // formats (both 8-bit color of one kind, sRGB or not, as a window's
+  // swapchain and a headset's eye are). 'source' must have been made to be
+  // copied from (TEXTURE_USAGE_COPY_SRC, or a headset eye made with the
+  // transfer-source usage); 'destination' is a swapchain's texture made by
+  // 'createMirrorSwapChain' or a texture with TEXTURE_USAGE_COPY_DST. Both
+  // are left in the layout they rest in. What drew 'source' is finished first.
+  pub fn blitTexture(self: &mut, source: &Texture, sourceX: u32, sourceY: u32, sourceWidth: u32, sourceHeight: u32,
+      destination: &Texture) {
+    if isNull(backend.cmd) { return; }
+    if (source.usage & TEXTURE_USAGE_COPY_SRC) == 0u32 {
+      fail("blitTexture: the source texture was not made to be copied from");
+      return;
+    }
+    if sourceX + sourceWidth > source.width || sourceY + sourceHeight > source.height || sourceWidth == 0u32 || sourceHeight == 0u32 {
+      fail("blitTexture: the source box runs outside the texture");
+      return;
+    }
+    let from = source.backend.image;
+    let to = destination.backend.image;
+    let fromRest = restLayout(source.backend.kind);
+    let toRest = restLayout(destination.backend.kind);
+    // What wrote the source (a render pass) before the blit reads it
+    var srcStage = vulkan.PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+    var srcAccess = vulkan.ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+    if source.backend.kind == KIND_SURFACE {
+      srcStage = vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+      srcAccess = vulkan.ACCESS_2_NONE;
+    }
+    transition(&backend.fns, backend.cmd, from, vulkan.IMAGE_ASPECT_COLOR_BIT, fromRest, vulkan.IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+      srcStage, srcAccess, vulkan.PIPELINE_STAGE_2_ALL_TRANSFER_BIT, vulkan.ACCESS_2_TRANSFER_READ_BIT);
+    // The destination: a swapchain's image is handed over by the acquire semaphore; anything else is after what wrote it
+    var dstStage = vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    var dstAccess = vulkan.ACCESS_2_MEMORY_WRITE_BIT;
+    if destination.backend.kind == KIND_SURFACE { dstAccess = vulkan.ACCESS_2_NONE; }
+    transition(&backend.fns, backend.cmd, to, vulkan.IMAGE_ASPECT_COLOR_BIT, toRest, vulkan.IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+      dstStage, dstAccess, vulkan.PIPELINE_STAGE_2_ALL_TRANSFER_BIT, vulkan.ACCESS_2_TRANSFER_WRITE_BIT);
+    let region = vulkan.ImageBlit(srcSubresource: vulkan.ImageSubresourceLayers(),
+      srcOffsets: [vulkan.Offset3D(i32.from(sourceX), i32.from(sourceY), 0i32),
+        vulkan.Offset3D(i32.from(sourceX + sourceWidth), i32.from(sourceY + sourceHeight), 1i32)],
+      dstSubresource: vulkan.ImageSubresourceLayers(),
+      dstOffsets: [vulkan.Offset3D(0i32, 0i32, 0i32), vulkan.Offset3D(i32.from(destination.width), i32.from(destination.height), 1i32)]);
+    backend.fns.cmdBlitImage(backend.cmd, from, vulkan.IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, to,
+      vulkan.IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1u32, &region as *vulkan.ImageBlit, vulkan.FILTER_LINEAR);
+    // Both back to the layouts they rest in
+    transition(&backend.fns, backend.cmd, from, vulkan.IMAGE_ASPECT_COLOR_BIT, vulkan.IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, fromRest,
+      vulkan.PIPELINE_STAGE_2_ALL_TRANSFER_BIT, vulkan.ACCESS_2_NONE,
+      vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT, vulkan.ACCESS_2_NONE);
+    transition(&backend.fns, backend.cmd, to, vulkan.IMAGE_ASPECT_COLOR_BIT, vulkan.IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, toRest,
+      vulkan.PIPELINE_STAGE_2_ALL_TRANSFER_BIT, vulkan.ACCESS_2_TRANSFER_WRITE_BIT,
+      vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT, vulkan.ACCESS_2_NONE);
+  }
+
   // Copy 'size' bytes of 'source', from 'sourceOffset', into 'destination'
   // at 'destinationOffset'. What the CPU wrote to a mapped source before the
   // submission is what is copied; a mapped destination holds the bytes once

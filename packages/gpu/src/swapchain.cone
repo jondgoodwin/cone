@@ -28,6 +28,7 @@ struct SwapChainBackend {
   depthView: vulkan.ImageView;
   depthReady: bool;             // moved out of 'undefined'
   memory: vulkan.PhysicalDeviceMemoryProperties;
+  mirror: bool;                 // a mirror of something drawn elsewhere (Device.createMirrorSwapChain): never waits for an image, may be blitted into
 }
 
 // The images a surface shows, one drawn while another is shown, and a
@@ -41,6 +42,12 @@ pub struct SwapChain {
   pub presents: u64;                // images presented so far
 
   pub fn isValid(self: &) bool { backend.swapchain.h != 0u64 }
+
+  // No swapchain: what a field holds before one is made for it (not valid)
+  pub fn none() SwapChain {
+    var nobody = Device.none();
+    nobody.createSwapChain(&Surface.none(), 0u32, 0u32, TEXTURE_FORMAT_UNDEFINED)
+  }
 
   // Ask for textures of this size from the next frame on (the window was
   // resized). A swapchain found out of date is made again anyway; this makes
@@ -74,16 +81,27 @@ pub struct SwapChain {
     beginQueueFrame(&mut device.queue);
     let slot = usize.from(device.queue.backend.frameIndex);
     var index = 0u32;
-    var r = backend.fns.acquireNextImageKHR(backend.device, backend.swapchain, NO_TIMEOUT, backend.acquire[slot],
+    // A mirror takes an image only if one is free this instant (the headset it
+    // mirrors must never wait for a window): none, and the frame is skipped
+    let timeout = if backend.mirror { 0u64 } else { NO_TIMEOUT };
+    var r = backend.fns.acquireNextImageKHR(backend.device, backend.swapchain, timeout, backend.acquire[slot],
       vulkan.Fence(0u64), &mut index);
+    if r == vulkan.NOT_READY && backend.mirror {
+      result.status = SURFACE_TEXTURE_SKIPPED;
+      return result;
+    }
     if r == vulkan.ERROR_OUT_OF_DATE_KHR {
       backend.stale = true;
       if !self.configure() {
         result.status = SURFACE_TEXTURE_SKIPPED;
         return result;
       }
-      r = backend.fns.acquireNextImageKHR(backend.device, backend.swapchain, NO_TIMEOUT, backend.acquire[slot],
+      r = backend.fns.acquireNextImageKHR(backend.device, backend.swapchain, timeout, backend.acquire[slot],
         vulkan.Fence(0u64), &mut index);
+      if r == vulkan.NOT_READY && backend.mirror {
+        result.status = SURFACE_TEXTURE_SKIPPED;
+        return result;
+      }
       if r == vulkan.ERROR_OUT_OF_DATE_KHR {
         result.status = SURFACE_TEXTURE_OUTDATED;
         return result;
@@ -220,6 +238,9 @@ pub struct SwapChain {
         backend.usage = backend.usage | vulkan.IMAGE_USAGE_TRANSFER_SRC_BIT;
         backend.copyable = true;
       }
+      if backend.mirror && (caps.supportedUsageFlags & vulkan.IMAGE_USAGE_TRANSFER_DST_BIT) != 0u32 {
+        backend.usage = backend.usage | vulkan.IMAGE_USAGE_TRANSFER_DST_BIT;     // the mirrored picture is blitted into it
+      }
     }
 
     // One image more than the least, to draw into while others wait to be shown
@@ -229,10 +250,15 @@ pub struct SwapChain {
 
     fns.deviceWaitIdle(device);
     let old = backend.swapchain;
+    let mode = if backend.mirror {
+      mirrorPresentMode(&backend.ifns, backend.physical, backend.surface)
+    } else {
+      vulkan.PRESENT_MODE_FIFO_KHR
+    };
     let ci = vulkan.SwapchainCreateInfoKHR(surface: backend.surface, minImageCount: count,
       imageFormat: backend.format, imageColorSpace: backend.colorSpace, imageExtent: vulkan.Extent2D(w, h),
       imageUsage: backend.usage, pQueueFamilyIndices: null, preTransform: caps.currentTransform,
-      oldSwapchain: old);
+      presentMode: mode, oldSwapchain: old);
     var sc = vulkan.SwapchainKHR(0u64);
     let made = check(fns.createSwapchainKHR(device, &ci, nullp(), &mut sc), "vkCreateSwapchainKHR");
     self.release();
@@ -326,6 +352,32 @@ pub struct SwapChain {
       i = i + 1usize;
     }
   }
+}
+
+// The present mode of a mirror: one that does not hold the program to the
+// display's refresh, so that what the mirror mirrors keeps its own rate
+// (mailbox: the newest image replaces the one waiting; else immediate; else
+// fifo, which every surface has, and the mirror then skips a frame when no
+// image is free)
+fn mirrorPresentMode(ifns: &InstFns, physical: vulkan.PhysicalDevice, surface: vulkan.SurfaceKHR) u32 {
+  var n = 0u32;
+  check(ifns.getPhysicalDeviceSurfacePresentModesKHR(physical, surface, &mut n, null), "vkGetPhysicalDeviceSurfacePresentModesKHR");
+  var modes = List[u32].empty();
+  modes.resize(usize.from(n), 0u32);
+  let r = ifns.getPhysicalDeviceSurfacePresentModesKHR(physical, surface, &mut n, modes.viewMut() as *u32);
+  if r != vulkan.INCOMPLETE { check(r, "vkGetPhysicalDeviceSurfacePresentModesKHR"); }
+  modes.truncate(usize.from(n));
+  var mailbox = false;
+  var immediate = false;
+  var i = 0usize;
+  while i < modes.len() {
+    if *modes[i] == vulkan.PRESENT_MODE_MAILBOX_KHR { mailbox = true; }
+    if *modes[i] == vulkan.PRESENT_MODE_IMMEDIATE_KHR { immediate = true; }
+    i = i + 1usize;
+  }
+  if mailbox { return vulkan.PRESENT_MODE_MAILBOX_KHR; }
+  if immediate { return vulkan.PRESENT_MODE_IMMEDIATE_KHR; }
+  vulkan.PRESENT_MODE_FIFO_KHR
 }
 
 fn clamp(v: u32, lo: u32, hi: u32) u32 {

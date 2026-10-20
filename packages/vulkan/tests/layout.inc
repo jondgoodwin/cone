@@ -79,6 +79,7 @@
   S(MappedMemoryRange); O(MappedMemoryRange, sType); O(MappedMemoryRange, pNext); O(MappedMemoryRange, memory); O(MappedMemoryRange, offset); O(MappedMemoryRange, size);
   S(BufferCopy); O(BufferCopy, srcOffset); O(BufferCopy, dstOffset); O(BufferCopy, size);
   S(BufferImageCopy); O(BufferImageCopy, bufferOffset); O(BufferImageCopy, bufferRowLength); O(BufferImageCopy, bufferImageHeight); O(BufferImageCopy, imageSubresource); O(BufferImageCopy, imageOffset); O(BufferImageCopy, imageExtent);
+  S(ImageBlit); O(ImageBlit, srcSubresource); O(ImageBlit, srcOffsets); O(ImageBlit, dstSubresource); O(ImageBlit, dstOffsets);
   S(ShaderModuleCreateInfo); O(ShaderModuleCreateInfo, sType); O(ShaderModuleCreateInfo, pNext); O(ShaderModuleCreateInfo, flags); O(ShaderModuleCreateInfo, codeSize); O(ShaderModuleCreateInfo, pCode);
   S(PipelineShaderStageCreateInfo); O(PipelineShaderStageCreateInfo, sType); O(PipelineShaderStageCreateInfo, pNext); O(PipelineShaderStageCreateInfo, flags); O(PipelineShaderStageCreateInfo, stage); O(PipelineShaderStageCreateInfo, module); O(PipelineShaderStageCreateInfo, pName); O(PipelineShaderStageCreateInfo, pSpecializationInfo);
   S(VertexInputBindingDescription); O(VertexInputBindingDescription, binding); O(VertexInputBindingDescription, stride); O(VertexInputBindingDescription, inputRate);

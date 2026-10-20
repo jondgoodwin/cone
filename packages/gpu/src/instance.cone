@@ -49,6 +49,16 @@ pub struct Instance {
     Instance.build(appName, maker, user, false, validation)
   }
 
+  // The same, for a program that also shows a window (a headset program that
+  // mirrors an eye into one): SDL's video subsystem and Vulkan loader are
+  // started and the instance carries the extensions a window's surface needs,
+  // which a runtime that makes the instance (OpenXR's
+  // XR_KHR_vulkan_enable2) adds to its own, so 'createSurface' works on it.
+  // Check 'isValid'.
+  pub fn createWithWindow(appName: &str, maker: InstanceMaker, user: *u8, validation: bool) Instance {
+    Instance.build(appName, maker, user, true, validation)
+  }
+
   // The instance's Vulkan handle, for a runtime that is told it (OpenXR's
   // session binding); 0 for an instance that is not valid
   pub fn vulkanHandle(self: &) vulkan.Instance { backend.handle }
@@ -179,6 +189,13 @@ pub struct Instance {
     Surface(SurfaceBackend(backend.handle, surface, backend.fns))
   }
 
+  // The same for a window named by its SDL handle as a number (what an
+  // actor, which cannot carry a raw pointer, or a package that does not
+  // import sdl, has of it)
+  pub fn createSurfaceOf(self: &, window: usize) Surface {
+    self.createSurface(window as *u8 as *sdl.Window)
+  }
+
   // The GPU to draw to 'surface' with: one supporting Vulkan 1.3, dynamic
   // rendering, synchronization2 and swapchains, with a queue that both draws
   // and presents to the surface ('Surface.none()': that only draws). Where
@@ -233,6 +250,24 @@ pub struct Instance {
     };
     if score == 0 {
       fail("the GPU the runtime chose does not support Vulkan 1.3 with dynamic rendering and synchronization2");
+      return Adapter(AdapterBackend(0usize as vulkan.PhysicalDevice, 0u32, backend.fns), String.from(""), ADAPTER_TYPE_UNKNOWN,
+        String.from(""), 0u32, 0u32);
+    }
+    self.describeAdapter(physical, family)
+  }
+
+  // The same, for a program that also presents to a window (a headset's
+  // mirror): the GPU the runtime chose must also offer swapchains and have a
+  // queue that draws and presents to 'surface'. Check 'isValid'.
+  pub fn requestAdapterForSurface(self: &, physical: vulkan.PhysicalDevice, surface: &Surface) Adapter {
+    var family = 0u32;
+    let score = if self.isValid() {
+      adapterScore(&backend.fns, physical, surface.backend.surface, POWER_PREFERENCE_HIGH_PERFORMANCE, true, &mut family)
+    } else {
+      0
+    };
+    if score == 0 {
+      fail("the GPU the runtime chose cannot present to the window (no swapchains, or no queue that draws and presents)");
       return Adapter(AdapterBackend(0usize as vulkan.PhysicalDevice, 0u32, backend.fns), String.from(""), ADAPTER_TYPE_UNKNOWN,
         String.from(""), 0u32, 0u32);
     }
@@ -387,7 +422,16 @@ pub struct Adapter {
   // the features and extensions every drawing device has and no ray tracing.
   // Check 'isValid'.
   pub fn requestDeviceVia(self: &, maker: DeviceMaker, user: *u8) Device {
-    self.makeDevice(false, &ComputeRequest(), maker, user, true)
+    self.makeDevice(false, &ComputeRequest(), maker, user, true, false)
+  }
+
+  // The same with VK_KHR_swapchain enabled besides what the runtime adds, for
+  // a program that also presents to a window (a headset's mirror): the device
+  // can make a swapchain of a surface ('createSwapChain' and
+  // 'createMirrorSwapChain'). Needs an adapter from
+  // 'Instance.requestAdapterForSurface'.
+  pub fn requestDeviceViaWindow(self: &, maker: DeviceMaker, user: *u8) Device {
+    self.makeDevice(false, &ComputeRequest(), maker, user, true, true)
   }
 
   // The GPU's Vulkan handle and the queue family its device draws with, for a
@@ -417,7 +461,7 @@ pub struct Adapter {
   // that has none (to show the fallback on a GPU that has it). With 'true' on a GPU without it, no
   // ray tracing either; check 'device.rayTracing'.
   pub fn requestDeviceWith(self: &, rayTracing: bool) Device {
-    self.makeDevice(rayTracing, &ComputeRequest(), &makeDeviceDirect, nullp(), false)
+    self.makeDevice(rayTracing, &ComputeRequest(), &makeDeviceDirect, nullp(), false, true)
   }
 
   // What this GPU offers for compute (features.cone): 16-bit floats, 8-bit storage, the integer dot product,
@@ -445,10 +489,13 @@ pub struct Adapter {
   // (features.cone says what, and what 'device.compute' then answers). Ray tracing is not asked for.
   // Check 'isValid'.
   pub fn requestComputeDevice(self: &, request: &ComputeRequest) Device {
-    self.makeDevice(false, request, &makeDeviceDirect, nullp(), false)
+    self.makeDevice(false, request, &makeDeviceDirect, nullp(), false, true)
   }
 
-  fn makeDevice(self: &, rayTracing: bool, request: &ComputeRequest, maker: DeviceMaker, user: *u8, external: bool) Device {
+  // 'external': the device is made by 'maker'. 'swapchain': VK_KHR_swapchain is enabled (always, for a device the layer makes
+  // itself; asked for, for a runtime's, whose own extensions are the runtime's to add)
+  fn makeDevice(self: &, rayTracing: bool, request: &ComputeRequest, maker: DeviceMaker, user: *u8, external: bool,
+      swapchain: bool) Device {
     var result = Device(DeviceBackend(0usize as vulkan.Device, noDevFns(), backend.fns, backend.physical, backend.queueFamily,
       vulkan.RayFns()), CommandQueue(zeroed[QueueBackend](), noDevFns()), 0u64);
     if !self.isValid() { return result; }
@@ -506,7 +553,7 @@ pub struct Adapter {
     }
     let dci = vulkan.DeviceCreateInfo(pNext: &f13 as *u8, queueCreateInfoCount: 1u32,
       pQueueCreateInfos: &qci as *vulkan.DeviceQueueCreateInfo, ppEnabledLayerNames: null,
-      enabledExtensionCount: if useRay { 4u32 } else if external { 0u32 } else { 1u32 }, ppEnabledExtensionNames: &exts as **u8,
+      enabledExtensionCount: if useRay { 4u32 } else if swapchain { 1u32 } else { 0u32 }, ppEnabledExtensionNames: &exts as **u8,
       pEnabledFeatures: &enabled as *vulkan.PhysicalDeviceFeatures);
     var device = 0usize as vulkan.Device;
     let made = if external {
@@ -519,7 +566,7 @@ pub struct Adapter {
     result.backend.fns = Arc[imm, vulkan.DeviceFns](vulkan.DeviceFns.load(&*backend.fns, device));
     result.queue.fns = result.backend.fns;
     let fns = result.backend.fns;
-    if fns.missing != 0u32 || (!external && !fns.hasSwapchain()) {
+    if fns.missing != 0u32 || (swapchain && !fns.hasSwapchain()) {
       fail("the Vulkan device lacks some of its functions");
       return result;
     }
