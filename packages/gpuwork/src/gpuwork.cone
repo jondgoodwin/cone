@@ -92,6 +92,15 @@
 // in 6 ms). 'zeroed' has the GPU fill its buffer, so no zeros cross from
 // the CPU (40 MB in 0.25 ms of the CPU's time, 2 ms to the job done).
 //
+// A dispatch binds each of its buffers whole, so a buffer is at most what the
+// device binds: 'device.maxStorageBufferBindingSize', WebGPU's 128 MiB on a
+// device made without gpu's 'ComputeRequest.largeBuffers' (the drawing
+// device 'requestDevice' makes, and what every program here has used) and
+// the GPU's own with it (4 GiB less 1 byte on an RTX 4060). A larger buffer
+// is refused. A kernel reaches into a big buffer by an offset in its
+// parameters (llmkernels' 'wByteOffset'), and a model's weights, a buffer
+// for each tensor or layer, are bound one at a time.
+//
 // A job is recorded into the device's current frame (the gpu package's
 // frames in flight), and is complete when the GPU has finished that frame.
 // A program that presents ends its frames with the swapchain's 'present'; a
@@ -240,8 +249,8 @@
 // REFUSALS. A request gpuwork cannot honour (a kernel with more than 8
 // bindings, or a Cone kernel with more than 7, a direct twin that does not
 // fit its kernel, a dispatch whose slots do not match its kernel's bindings or
-// name a buffer twice, which WebGPU refuses, a readback of a buffer that
-// cannot be copied) is printed to stderr ("gpuwork: ...") and counted
+// name a buffer twice, which WebGPU refuses, a buffer larger than the
+// device binds, a readback of a buffer that cannot be copied) is printed to stderr ("gpuwork: ...") and counted
 // ('refusals()'); a job something was refused in is not run, and completes
 // not ok, with its buffers back, when its frame is done. The gpu package's
 // own failures are its 'failures()'.
@@ -254,7 +263,8 @@
 // own); delivery to
 // an actor; a Here job that completes without its frame ending (a Loop job
 // does); reusing bind groups across
-// jobs; GPU memory as a region; textures; and whether a read-only input is
+// jobs; binding a range of a buffer, not the whole of it (gpu's
+// 'BindGroupEntry.bufferRange' does; a dispatch here does not); GPU memory as a region; textures; and whether a read-only input is
 // moved into a job or shared immutably (today every buffer is moved); a
 // direct twin whose Invocation is not its first parameter. (Congo builds the
 // kernels of a library marked for the GPU; the tests' kernels.cone, a
