@@ -1,6 +1,6 @@
 // ======== The kernels on the GPU: made once, recorded into a gpuwork Job ========
 //
-// 'Kernels.make(&device)' makes the eleven pipelines once. Each method below RECORDS one dispatch into a Job
+// 'Kernels.make(&device)' makes the eleven pipelines once (and the four wide matvec ones, where the device's subgroups fit them). Each method below RECORDS one dispatch into a Job
 // over buffers already given to it (the caller's slot numbers, from 'job.give'), making the kernel's small
 // by-value parameter struct itself (a buffer of its own, or a range of the job's parameter slab if it has one,
 // 'giveParams'); it answers whether it recorded (false for arguments that cannot be run:
@@ -125,6 +125,14 @@ fn foldY(groups: usize) u32 {
 // Whether a count fits in a 32-bit parameter
 fn fits(n: usize) bool { n <= 4294967295usize }
 
+// Whether the device's subgroups are what the wide matvec kernels assume: always 32 invocations (the GPU offers no
+// other size: an Intel GPU reports 32 but runs a compute shader at 8 to 32, which this layer cannot pin, and a sum
+// over "a subgroup" then covers part of a row), doing arithmetic (sums), in compute shaders
+fn subgroupsFit(device: &Device) bool {
+  device.compute.subgroupSize == 32u32 && device.compute.subgroupMinSize == 32u32 && device.compute.subgroupMaxSize == 32u32
+    && device.compute.hasSubgroupOps(SUBGROUP_OP_ARITHMETIC)
+}
+
 // A parameter struct for a dispatch to bind as the kernel's first binding: packed into the job's parameter slab
 // if it has one ('job.slab'; one upload for all of a job's structs, each bound by its own range), else
 // uploaded into a buffer of its own that is given to the job
@@ -157,9 +165,18 @@ pub struct Kernels {
   geluK: Kernel;
   addK: Kernel;
   mulK: Kernel;
+  // The wide matvecs (matvecq4k.slang, matvecfast.slang). They rely on subgroups of 32 invocations that do
+  // arithmetic; on a device whose subgroups are otherwise, each is made as another copy of the plain matvec
+  // pipeline (so every field is a pipeline) and 'useWide' is false
+  wideQ4K: Kernel;
+  wideQ6K: Kernel;
+  wideQ80: Kernel;
+  wideF16: Kernel;
+  useWide: bool;
 
   // The pipelines, made once on this device; check 'isValid'
   pub fn make(device: &Device) Kernels {
+    let fit = subgroupsFit(device);
     Kernels(
       Kernel.make(device, &MATVEC_SPIRV, "matvecMain", &[READ, READ, READ, READ_WRITE]),
       Kernel.make(device, &MATMUL_SPIRV, "matmulMain", &[READ, READ, READ, READ_WRITE]),
@@ -171,18 +188,50 @@ pub struct Kernels {
       Kernel.make(device, &ACTIVATION_SPIRV, "siluMain", &[READ, READ, READ_WRITE]),
       Kernel.make(device, &ACTIVATION_SPIRV, "geluMain", &[READ, READ, READ_WRITE]),
       Kernel.make(device, &ELEMENTWISE_SPIRV, "addMain", &[READ, READ, READ, READ_WRITE]),
-      Kernel.make(device, &ELEMENTWISE_SPIRV, "mulMain", &[READ, READ, READ, READ_WRITE]))
+      Kernel.make(device, &ELEMENTWISE_SPIRV, "mulMain", &[READ, READ, READ, READ_WRITE]),
+      if fit { Kernel.make(device, &MATVECQ4K_SPIRV, "matvecQ4K", &[READ, READ, READ, READ_WRITE]) }
+        else { Kernel.make(device, &MATVEC_SPIRV, "matvecMain", &[READ, READ, READ, READ_WRITE]) },
+      if fit { Kernel.make(device, &MATVECFAST_SPIRV, "matvecQ6K", &[READ, READ, READ, READ_WRITE]) }
+        else { Kernel.make(device, &MATVEC_SPIRV, "matvecMain", &[READ, READ, READ, READ_WRITE]) },
+      if fit { Kernel.make(device, &MATVECFAST_SPIRV, "matvecQ80", &[READ, READ, READ, READ_WRITE]) }
+        else { Kernel.make(device, &MATVEC_SPIRV, "matvecMain", &[READ, READ, READ, READ_WRITE]) },
+      if fit { Kernel.make(device, &MATVECFAST_SPIRV, "matvecF16", &[READ, READ, READ, READ_WRITE]) }
+        else { Kernel.make(device, &MATVEC_SPIRV, "matvecMain", &[READ, READ, READ, READ_WRITE]) },
+      fit)
   }
 
   // Whether every pipeline was made
   pub fn isValid(self: &) bool {
     matvecK.isValid() && matmulK.isValid() && rmsnormK.isValid() && ropeK.isValid() && softmaxK.isValid()
       && attentionK.isValid() && kvAppendK.isValid() && siluK.isValid() && geluK.isValid() && addK.isValid()
-      && mulK.isValid()
+      && mulK.isValid() && wideQ4K.isValid() && wideQ6K.isValid() && wideQ80.isValid() && wideF16.isValid()
+  }
+
+  // Whether matvec dispatches may use the wide kernels: the device's subgroups fit them, and they have not been
+  // turned off with 'useWideMatvec'
+  pub fn wideMatvec(self: &) bool { useWide }
+
+  // Turn the wide matvec kernels on (the default where the device's subgroups fit them) or off, so that the plain
+  // matvec.slang serves every request: for a test or a timing that compares the two. Cannot turn them on where the
+  // device does not fit them: 'subgroupsFit' is checked again
+  pub fn useWideMatvec(self: &mut, on: bool, device: &Device) { useWide = on && subgroupsFit(device); }
+
+  // Which wide kernel serves this matvec (0 Q4_K, 1 Q6_K, 2 Q8_0, 3 F16), or 4 for none: the request's alignment must be
+  // one the kernel's loads assume (x on a multiple of 4 floats; the matrix on 16 bytes for Q4_K, on an even byte
+  // for the others; an F16 row a multiple of 8 elements)
+  fn wideFor(self: &, qtype: u32, cols: usize, wByteOffset: usize, xOffset: usize) usize {
+    if !self.wideMatvec() || xOffset % 4usize != 0usize { return 4usize; }
+    if qtype == QTYPE_Q4_K && wByteOffset % 16usize == 0usize { return 0usize; }
+    if qtype == QTYPE_Q6_K && wByteOffset % 2usize == 0usize { return 1usize; }
+    if qtype == QTYPE_Q8_0 && wByteOffset % 2usize == 0usize { return 2usize; }
+    if qtype == QTYPE_F16 && wByteOffset % 2usize == 0usize && cols % 8usize == 0usize { return 3usize; }
+    4usize
   }
 
   // y = W x. 'w' holds the weight matrix's words (rows of 'cols' elements of 'qtype'), 'x' cols f32s, 'y' rows
-  // f32s. One workgroup for each row.
+  // f32s. Q4_K, Q6_K, Q8_0 and F16 matrices go to the wide kernels where the device has them and the request is
+  // aligned for them (one subgroup for each row, four rows a workgroup); everything else to matvec.slang (one
+  // workgroup for each row).
   pub fn matvec(self: &, job: &mut Job, device: &mut Device, w: u32, x: u32, y: u32, qtype: u32, rows: usize, cols: usize) bool {
     self.matvecAt(job, device, w, x, y, qtype, rows, cols, 0usize, 0usize, 0usize)
   }
@@ -196,10 +245,16 @@ pub struct Kernels {
     if !fits(rows) || !fits(cols) || !fits(wByteOffset) || !fits(xOffset) || !fits(yOffset) { return false; }
     // the last byte of the matrix must be addressable in 32 bits
     if !fits(wByteOffset + rows * rb) { return false; }
-    let gx = foldX(rows);
-    let gy = foldY(rows);
+    let which = self.wideFor(qtype, cols, wByteOffset, xOffset);
+    let groups = if which < 4usize { (rows + 3usize) / 4usize } else { rows };
+    let gx = foldX(groups);
+    let gy = foldY(groups);
     let p = giveParams(job, device,&MatvecParams(u32.from(rows), u32.from(cols), u32.from(rb), gx, u32.from(wByteOffset),
       u32.from(xOffset), u32.from(yOffset), qtype));
+    if which == 0usize { return dispatchWith(job, device, &wideQ4K, p, &[w, x, y], gx, gy); }
+    if which == 1usize { return dispatchWith(job, device, &wideQ6K, p, &[w, x, y], gx, gy); }
+    if which == 2usize { return dispatchWith(job, device, &wideQ80, p, &[w, x, y], gx, gy); }
+    if which == 3usize { return dispatchWith(job, device, &wideF16, p, &[w, x, y], gx, gy); }
     dispatchWith(job, device, &matvecK, p, &[w, x, y], gx, gy)
   }
 

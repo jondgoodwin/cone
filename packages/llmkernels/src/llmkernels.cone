@@ -2,7 +2,9 @@
 // local GPU, each checked against a CPU twin. Eleven kernels, written in Slang, compiled ahead of time to SPIR-V,
 // embedded in this package's source, and run through gpuwork:
 //
-//   matvec     y = W x, a weight matrix of any of five types, dequantised as it is read (the decode step)
+//   matvec     y = W x, a weight matrix of any of five types, dequantised as it is read (the decode step). Q4_K,
+//              Q6_K, Q8_0 and F16 matrices run on four more pipelines (matvecq4k.slang, matvecfast.slang) that read
+//              at 70 to 95 per cent of the GPU's memory bandwidth, where the device's subgroups allow (see MATVEC)
 //   matmul     Y = X W^T for a batch of input rows, the same five types (the prefill)
 //   rmsnorm    y = x / sqrt(mean(x^2) + eps) * w, per row
 //   rope       rotary position embedding, in place, both pair orders, all of a head or part of it
@@ -64,8 +66,8 @@
 //         A 6-bit value is 4 bits of ql and 2 of qh; sixteen sub-blocks of 16, a signed scale each.
 //                                                                                          x = d sc (q - 32)
 //   The type numbers are GGUF's ggml_type: QTYPE_F32 0, QTYPE_F16 1, QTYPE_Q8_0 8, QTYPE_Q4_K 12, QTYPE_Q6_K 14.
-//   The decoders are llmreference's blocks.cone (the CPU) and llmcommon.slang (the GPU); they are two
-//   separate transcriptions, and the tests check them against each other and, on one block of each type, against
+//   The decoders are llmreference's blocks.cone (the CPU), llmcommon.slang (the GPU) and, regrouped for speed,
+//   matvecq4k.slang and matvecfast.slang; they are separate transcriptions, and the tests check them against each other and, on one block of each type, against
 //   numbers worked out by hand.
 //
 // THE LAYOUTS ARE CHECKED AGAINST REAL FILES (20 Oct 2026, the llmrun package). Q4_K and Q6_K blocks written
@@ -75,15 +77,29 @@
 //
 // METHOD CHOICES. These are defaults a later design may revisit. Each says what was chosen and what was left out.
 //
-// - MATVEC. One workgroup of 64 invocations for each output row (rows beyond 65535 fold into a second
-//   dispatch dimension). A row is cut into units of 32 elements (a Q8_0 block, an eighth of a K-quant
-//   super-block, 32 elements of an F32 or F16 row); invocation t takes units t, t + 64, ..., adding each unit's
-//   products in column order, and the 64 partial sums are added by a tree of 6 levels in workgroup memory.
-//   One kernel serves all five types: the type is a parameter and a uniform branch picks the decoder. Chosen
-//   for plainness: it reads each byte of weights through a 32-bit load (no subgroup operations, no 8- or
-//   16-bit loads, no dot-product instruction), which is why the K-quants read 26 to 38 GB/s of weights on a
-//   4060 whose memory is rated 256 GB/s (see MEASURED). The fast paths wait for the gpu package's feature
-//   queries.
+// - MATVEC. Two sets of kernels. THE WIDE ONES (matvecq4k.slang for Q4_K, matvecfast.slang for Q6_K, Q8_0 and
+//   F16; their headers say how each is laid out): one subgroup of 32 invocations for each output row, four rows
+//   a workgroup of 128; the invocations read the row's bytes in order, 16 bytes each (a uint4 load for Q4_K,
+//   whose 144-byte super-blocks stay 16-byte aligned; four 32-bit words, joined across a 2-byte offset where a
+//   34- or 210-byte block starts there, for the others), keep the dequantisation in registers (a Q4_K weight
+//   d sc q - dmin m is taken apart so a sub-block costs two sums and two multiplies), read x as float4s straight
+//   from memory, and add their partial sums with the subgroup's own sum (WaveActiveSum): no workgroup memory,
+//   no barrier. They run where the device's subgroups are always 32 wide and do arithmetic (the gpu package's
+//   'subgroupMinSize', 'subgroupMaxSize', 'hasSubgroupOps'; an Intel GPU reports 32 but runs a compute shader at
+//   8 to 32, which a sum over "a subgroup" cannot take, so it uses the plain kernel), for a request whose
+//   alignment they assume (x on 4 floats; the matrix on 16 bytes for Q4_K, on 2 for Q6_K, Q8_0 and F16; an F16
+//   row of a multiple of 8 elements): 'Kernels.wideMatvec' says whether they are on, 'useWideMatvec' turns them
+//   off. THE PLAIN ONE (matvec.slang), for F32, an Intel GPU and a request not aligned for the wide ones: one
+//   workgroup of 64 invocations for each output row (rows beyond 65535 fold into a second dispatch dimension),
+//   the row cut into units of 32 elements added in column order and the 64 partial sums added by a tree in
+//   workgroup memory, one kernel for all five types (the type a parameter), each byte read through a 32-bit load,
+//   which is why it reads the K-quants at 26 to 38 GB/s. WHAT PAID, measured on Q4_K 12288 x 4096 (microseconds a
+//   dispatch, the weights read cold; all variants checked against the twin): the plain kernel 1047; a subgroup a
+//   row with 32-bit loads and a subgroup sum 167; with uint4 loads 150; two rows a subgroup, x kept in registers
+//   across them, 140 (four rows 146: no better); x staged in workgroup memory instead of read from memory 320 to
+//   370 (it costs a barrier and the same loads again, so it was left out); the same reads with nothing done
+//   with them 143 (the ceiling of this access pattern). Two rows a subgroup was left out for being 5 per cent
+//   better on the largest matrices only and worse on small ones (1024 rows 65 against 38 us).
 // - MATMUL. A 16 x 16 tile of Y for each workgroup of 256 invocations; the workgroup walks the shared
 //   dimension 16 columns at a time, each invocation loading one weight (dequantised one element at a time) and
 //   one input into workgroup memory, then adding 16 products. Every output is added in column order, one at a
@@ -127,7 +143,7 @@
 // - matvec, matmul: each output within llmreference's 'sumTolerance', (cols + 4) * 2^-24 times the sum of the
 //   absolute values of its products: the standard bound on an f32 sum of products in any order (n - 1 adds
 //   and n products, each off by at most 2^-24 relative), with room for the dequantisation's own two
-//   roundings. Measured on the RTX 4060: the worst error is 3.6 (matvec) and 3.0 (matmul) units of 2^-24
+//   roundings. Measured on the RTX 4060: the worst error is 4.7 (matvec, plain and wide) and 3.0 (matmul) units of 2^-24
 //   times that sum, against a bound of up to 2300 units: the kernels' sums are nowhere near their worst case.
 // - rmsnorm: relative, (ceil(n / 256) + 9) / 2 + 12 units of 2^-24 (measured worst 3.8). softmax: relative,
 //   ceil(n / 256) + 8 + 2 (3 + 2 d) + 4 units (d the largest distance from the maximum, 8 for the tests' inputs;
@@ -141,26 +157,36 @@
 // - add, mul, kvAppend: none; bit for bit.
 //
 // MEASURED on the RTX 4060 Laptop GPU (8 GB, NVIDIA, Vulkan 1.3; release build, examples/bench.cone; one
-// dispatch, microseconds, at a Llama-7B layer's sizes; the time is (51 dispatches - 1) / 50 in one job, so the
-// job's fixed cost cancels; three runs agreed within 3 per cent on the large kernels and 25 per cent on
-// the small ones, other lanes sharing the GPU; the figures are the last run). NOT chased: every kernel
-// reads its weights a word at a time, and each dispatch costs a floor of about 20 us whatever its size
-// (see the 11008-element elementwise kernels, whose work is a microsecond or two), which looks like the
-// compute pass gpuwork's 'Job.dispatch' begins and ends for every dispatch; at about 12 dispatches a layer
-// that floor alone is 8 ms of a 32-layer decode step. (These figures were made before gpuwork's dispatches
-// shared a compute pass, which took about 1 ms off a 722-dispatch step's GPU time in llmrun; bench.cone has
-// not been rerun.)
+// dispatch, microseconds; the time is (many dispatches - 1 dispatch) / (many - 1), the median of 5 after a
+// warm-up, in jobs with a parameter slab as llmrun's have, so the job's fixed cost cancels. A matvec is timed
+// COLD: the weights are copies of a matrix in one 256 MB buffer, dispatch i reading copy i mod copies, so each
+// is read from memory, as a decode step reads it (a matrix that stays in the 24 MB cache would show bandwidth no
+// decode step sees). The memory is rated 256 GB/s (a 128-bit bus at 16 Gbit/s a pin; 8001 MHz memory clock in
+// nvidia-smi). Other lanes sharing the GPU move the figures by 5 to 10 per cent; each dispatch carries a floor of
+// about 10 us whatever its size (see the 11008-element elementwise kernels).
 //
-//   matvec 4096 x 4096        F32 683 (99 GB/s)   F16 470 (71)   Q8_0 364 (49)   Q4_K 365 (26)   Q6_K 391 (35)
-//   matvec 11008 x 4096 Q4_K  936 (27 GB/s);  32000 x 4096 Q6_K (the output layer)  2853 (38 GB/s)
-//   matmul 4096 x 4096, batch 32   F32 1579   F16 1573   Q8_0 1623   Q4_K 1858   Q6_K 1699   (578 to 683 GFLOP/s)
-//   matmul 4096 x 4096, batch 128  F32 6080 (706 GFLOP/s)    Q8_0 6173 (696)
-//   rmsnorm 4096: 28;  128 rows of 4096: 29     rope, 32 heads of 128: 1 token 22, 128 tokens 29
-//   softmax 32000: 53     kv append 1 token of 1024: 20     silu, gelu, add, mul of 11008: 22 to 24
-//   attention decode, 32 heads of 128 over 8 kv heads: 512 positions 100, 2048 positions 324
-//   attention prefill, 128 tokens, same heads: 746
+// The matvecs a decode step runs (8B = Qwen3-8B Q4_K_M, 1.7B = Qwen3-1.7B Q8_0; times a token in brackets);
+// microseconds and GB/s, the plain matvec.slang (LLMKERNELS_PLAIN set) then the wide kernels:
 //
-// The tests: tests/matvec, matmul, layers (rmsnorm, softmax, rope), elementwise (silu, gelu, add, mul,
+//   8B  gate, up   Q4_K 12288 x 4096 (72)   1051 (27 GB/s) -> 146 (194)     1.7B gate, up   Q8_0 6144 x 2048 (56)   310 (43) -> 71 (188)
+//   8B  q, o       Q4_K  4096 x 4096 (72)    370 (25) ->  58 (162)           1.7B q, o       Q8_0 2048 x 2048 (56)   117 (38) -> 29 (153)
+//   8B  down       Q4_K  4096 x 12288 (18)   980 (29) -> 141 (201)           1.7B down       Q8_0 2048 x 6144 (28)   273 (49) -> 64 (209)
+//   8B  down       Q6_K  4096 x 12288 (18)  1055 (39) -> 180 (230)           1.7B k, v       Q8_0 1024 x 2048 (56)    69 (32) -> 18 (122)
+//   8B  k, v       Q4_K  1024 x 4096 (54)    105 (22) ->  25 (95)            1.7B output     Q8_0 151936 x 2048 (1) 7154 (46) -> 1346 (246)
+//   8B  v          Q6_K  1024 x 4096 (18)    113 (31) ->  30 (116)
+//   8B  output     Q6_K  151936 x 4096 (1) 13501 (38) -> 2227 (229)
+//
+// The small matrices are held up by the dispatch's own floor, not by memory. The rest of this table is unchanged by
+// the matvec work:
+//
+//   matmul 4096 x 4096, batch 32   F32 1570   F16 1573   Q8_0 1609   Q4_K 1848   Q6_K 1685   (581 to 684 GFLOP/s)
+//   matmul 4096 x 4096, batch 128  F32 5949 (722 GFLOP/s)    Q8_0 6164 (697)
+//   rmsnorm 4096: 11;  128 rows of 4096: 13     rope, 32 heads of 128: 1 token 7, 128 tokens 14
+//   softmax 32000: 35     kv append 1 token of 1024: 7     silu, gelu, add, mul of 11008: 6 to 8
+//   attention decode, 32 heads of 128 over 8 kv heads: 512 positions 88, 2048 positions 311
+//   attention prefill, 128 tokens, same heads: 743
+//
+// The tests (tests/matvec runs its cases twice, with the wide kernels and with matvec.slang): tests/matvec, matmul, layers (rmsnorm, softmax, rope), elementwise (silu, gelu, add, mul,
 // kvAppend) and attention each run on a real GPU with validation on; run them with 'congo test' with SDL3 on
 // LIB. With LLMKERNELS_REPORT set they print the worst errors seen. They compile and run on Windows only.
 
@@ -169,4 +195,4 @@ mod llmkernels;
 import collections use List;
 import gpu use *;
 import gpuwork use Kernel, Job, Binding, READ, READ_WRITE, uploadValue;
-import llmreference use rowBytes;
+import llmreference use rowBytes, QTYPE_Q4_K, QTYPE_Q6_K, QTYPE_Q8_0, QTYPE_F16;
