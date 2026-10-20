@@ -6,13 +6,16 @@
 // distances ahead, from its own place: the colours say which eye is which, and
 // the shift of the near things against the far ones is the stereo.
 //
-//   congo run packages/render/examples/xrstereo.cone -- [--frames N] [--shot PREFIX] [--validation]
+//   congo run packages/render/examples/xrstereo.cone -- [--frames N] [--shot PREFIX] [--validation] [--mirror]
 //
 // - --frames N: draw N frames and leave (default 300).
 // - --shot PREFIX: near the end, copy each eye's image out and write
-//   PREFIX-left.bmp and PREFIX-right.bmp.
+//   PREFIX-left.bmp and PREFIX-right.bmp (and PREFIX-mirror.bmp with --mirror).
 // - --validation: the Khronos validation layer on the Vulkan instance. Leave
 //   it off under Meta's PC simulator, which leaks memory under it.
+// - --mirror: also open a small window (640 by 360) and show the left eye in
+//   it, cropped to its shape. The window shows only the picture; it takes no
+//   input from this program and opens no audio device.
 //
 // It needs an OpenXR runtime and a headset (or the simulator): with none it
 // says so and exits 1. To use Meta's PC simulator without installing it,
@@ -36,6 +39,8 @@ import gpu use *;
 import render use *;
 import path as filepath;
 import openxr;
+import window use Window;
+import sdl;
 
 fn cstrEquals(a: *u8, b: &str) bool {
   var i = 0usize;
@@ -70,6 +75,7 @@ fn main(argc: i32, argv: **u8) i32 {
   var frames = 300u32;
   var prefix = String.empty();
   var validation = false;
+  var mirrorWanted = false;
   var a = 1;
   while a < argc {
     let arg = *(argv + usize.from(a));
@@ -92,29 +98,54 @@ fn main(argc: i32, argv: **u8) i32 {
       a = a + 1;
     } else if cstrEquals(arg, "--validation") {
       validation = true;
+    } else if cstrEquals(arg, "--mirror") {
+      mirrorWanted = true;
     } else {
-      print <- "Unknown argument; use --frames N, --shot PREFIX, --validation\n";
+      print <- "Unknown argument; use --frames N, --shot PREFIX, --validation, --mirror\n";
       return 2;
     }
     a = a + 1;
   }
   let shots = prefix.len() > 0usize;
 
+  // (declared first so that it ends last: the headset's surface is of this window)
+  // (made here, not assigned later: an unopened Window that is dropped quits SDL)
+  var win = if mirrorWanted { Window.openVulkan("xrstereo: the left eye") } else { Window.unopened() };
   var options = HeadsetOptions();
   options.validation = validation;
   options.copySource = shots;
-  var headset = Headset.open("render xrstereo", &options);
+  if mirrorWanted {
+    if !win.isOpen() {
+      print <- "The mirror's window could not be opened\n";
+      return 1i32;
+    }
+    win.setSize(640, 360);
+    var settle = 0;
+    while settle < 10 {                  // (the size takes effect as the window's events are handled)
+      win.pollEvents();
+      sdl.Delay(10u32);
+      settle = settle + 1;
+    }
+    let px = win.size();
+    options.mirrorWindow = win.sdlHandle() as *u8 as usize;
+    options.mirrorWidth = u32.from(px.w);
+    options.mirrorHeight = u32.from(px.h);
+  }
+  var gpu = HeadsetGpu.none();
+  var headset = Headset.open("render xrstereo", &options, &mut gpu);
   if !headset.isValid() {
     print <- "No headset could be opened (see above)\n";
     return 1i32;
   }
+  print <- "GPU: "; printStr(gpu.adapterName());
+  if headset.hasMirror() { print <- "; mirroring the left eye into a window\n"; } else { print <- "\n"; }
   print <- "Runtime: "; printStr(headset.runtimeName.view()); print <- "\n";
   print <- "System: "; printStr(headset.systemName.view()); print <- ", each eye ";
   print <- u64.from(headset.eyeWidth); print <- " x "; print <- u64.from(headset.eyeHeight);
   print <- ", reference space "; print <- i64.from(headset.referenceSpace);
   print <- ", format "; print <- u64.from(headset.colorFormat); print <- "\n";
 
-  var renderer = Renderer.create(&mut headset.device, headset.colorFormat, headset.depthFormat);
+  var renderer = Renderer.create(&mut gpu.device, headset.colorFormat, headset.depthFormat);
   if !renderer.isValid() {
     print <- "The renderer could not be made\n";
     return 1i32;
@@ -122,14 +153,14 @@ fn main(argc: i32, argv: **u8) i32 {
   let cube = Mesh.cube(0.5);
   let sphere = Mesh.sphere(0.5, 24);
   let floor = Mesh.plane(8, 4.);
-  let cubeMesh = renderer.addMesh(&mut headset.device, &cube);
-  let sphereMesh = renderer.addMesh(&mut headset.device, &sphere);
-  let floorMesh = renderer.addMesh(&mut headset.device, &floor);
-  let red = renderer.addMaterial(&mut headset.device, &Material.shiny(Color(0.85, 0.15, 0.1, 1.), 0.3, 24.));
-  let green = renderer.addMaterial(&mut headset.device, &Material.shiny(Color(0.15, 0.7, 0.2, 1.), 0.3, 24.));
-  let yellow = renderer.addMaterial(&mut headset.device, &Material.shiny(Color(0.9, 0.8, 0.1, 1.), 0.5, 48.));
-  let white = renderer.addMaterial(&mut headset.device, &Material.shiny(Color(0.85, 0.85, 0.85, 1.), 0.2, 16.));
-  let gray = renderer.addMaterial(&mut headset.device, &Material.plain(Color(0.35, 0.35, 0.38, 1.)));
+  let cubeMesh = renderer.addMesh(&mut gpu.device, &cube);
+  let sphereMesh = renderer.addMesh(&mut gpu.device, &sphere);
+  let floorMesh = renderer.addMesh(&mut gpu.device, &floor);
+  let red = renderer.addMaterial(&mut gpu.device, &Material.shiny(Color(0.85, 0.15, 0.1, 1.), 0.3, 24.));
+  let green = renderer.addMaterial(&mut gpu.device, &Material.shiny(Color(0.15, 0.7, 0.2, 1.), 0.3, 24.));
+  let yellow = renderer.addMaterial(&mut gpu.device, &Material.shiny(Color(0.9, 0.8, 0.1, 1.), 0.5, 48.));
+  let white = renderer.addMaterial(&mut gpu.device, &Material.shiny(Color(0.85, 0.85, 0.85, 1.), 0.2, 16.));
+  let gray = renderer.addMaterial(&mut gpu.device, &Material.plain(Color(0.35, 0.35, 0.38, 1.)));
   let light = Light.directional(Vec3(-0.3, -1., -0.4), Color.gray(2.5), Color.gray(0.3));
 
   var frame = 0u32;
@@ -137,8 +168,10 @@ fn main(argc: i32, argv: **u8) i32 {
   var shotsDone = 0u32;
   var cpuFrames = 0u32;
   var eyesPrinted = false;
+  var mirrorShot = false;         // the mirror's picture was asked for and not yet written
   while headset.pollEvents() {
-    let state = headset.beginFrame();
+    if win.isOpen() { win.pollEvents(); }
+    let state = headset.beginFrame(&mut gpu.device);
     if state.active {
       let t = f32.from(frame) * 0.011;
       var list = DrawList.empty();
@@ -150,6 +183,10 @@ fn main(argc: i32, argv: **u8) i32 {
       // Near the end, copy out the left eye on one frame and the right on the next
       let wantShot = shots && state.shouldRender && after == 0u32 && frame + 4u32 >= frames && shotsDone < 2u32;
       if wantShot { headset.captureEye(usize.from(shotsDone)); }
+      if wantShot && shotsDone == 0u32 && headset.hasMirror() {
+        headset.captureMirror();
+        mirrorShot = true;
+      }
       if state.shouldRender {
         var eye = 0usize;
         while eye < 2usize {
@@ -168,16 +205,27 @@ fn main(argc: i32, argv: **u8) i32 {
           }
           var camera = headset.eyeCamera(&state, eye);
           camera.background = if eye == 0usize { Color(0.45, 0.1, 0.1, 1.) } else { Color(0.1, 0.1, 0.45, 1.) };
-          headset.drawEye(&state, eye, &mut renderer, &camera, &light, &list);
+          headset.drawEye(&mut gpu.device, &state, eye, &mut renderer, &camera, &light, &list);
           eye = eye + 1usize;
         }
       }
-      headset.endFrame(&state);
+      headset.endFrame(&mut gpu.device, &state);
       if wantShot {
-        headset.device.waitIdle();
+        gpu.device.waitIdle();
         if shotsDone == 0u32 { writeShot(&headset, &named(&prefix, "-left.bmp"), "left"); }
         else { writeShot(&headset, &named(&prefix, "-right.bmp"), "right"); }
         shotsDone = shotsDone + 1u32;
+      }
+      if mirrorShot && !headset.mirrorCapturePending() {
+        gpu.device.waitIdle();
+        let bgra = headset.mirrorFormat() == TEXTURE_FORMAT_BGRA8_UNORM_SRGB;
+        let image = Image.fromTexels(headset.capturedMirror(), i32.from(headset.mirrorCaptureWidth()),
+          i32.from(headset.mirrorCaptureHeight()), bgra);
+        let name = named(&prefix, "-mirror.bmp");
+        let written = image.save(&filepath.Path.from(name.view()));
+        print <- "Screenshot of the window: "; printStr(name.view());
+        if written { print <- "\n"; } else { print <- " could NOT be written\n"; }
+        mirrorShot = false;
       }
       if state.shouldRender {
         cpuFrames = cpuFrames + 1u32;
@@ -196,8 +244,12 @@ fn main(argc: i32, argv: **u8) i32 {
       }
     }
   }
-  headset.device.waitIdle();
+  gpu.device.waitIdle();
   print <- "Frames: "; print <- u64.from(frame); print <- ", session state "; printStr(openxr.sessionStateName(headset.sessionState)); print <- "\n";
+  if headset.hasMirror() {
+    print <- "Mirror: "; print <- headset.mirroredFrames(); print <- " frames shown in the window, ";
+    print <- headset.skippedMirrorFrames(); print <- " skipped\n";
+  }
   var eye = 0usize;
   while eye < 2usize {
     printStr(if eye == 0usize { "Left eye" } else { "Right eye" });
