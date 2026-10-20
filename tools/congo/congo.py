@@ -2305,6 +2305,7 @@ def cmd_publish(args: argparse.Namespace) -> int:
 TESTS = "tests"
 EXAMPLES = "examples"
 TEST_TIMEOUT = 180    # seconds a test program may run before it fails
+SKIP_STATUS = 77      # the status a test exits with when it ran no checks (testing.skip), automake's
 
 
 @dataclass
@@ -2312,6 +2313,7 @@ class Tally:
     passed: int = 0
     failed: int = 0
     skipped: int = 0      # debug-only tests, not built or run in a release test
+    unrun: list[str] = field(default_factory=list)  # why each test that skipped itself ran no checks
     built: int = 0
     unbuilt: int = 0
     broken: int = 0       # packages that did not build, so nothing of theirs ran
@@ -2321,6 +2323,7 @@ class Tally:
         self.passed += other.passed
         self.failed += other.failed
         self.skipped += other.skipped
+        self.unrun += other.unrun
         self.built += other.built
         self.unbuilt += other.unbuilt
         self.broken += other.broken
@@ -2332,12 +2335,15 @@ class Tally:
     def summary(self) -> str:
         def count(n: int, word: str) -> str:
             return f"{n} {word}{'' if n == 1 else 's'}"
-        text = (f"{count(self.passed + self.failed + self.skipped, 'test')}:"
+        text = (f"{count(self.passed + self.failed + self.skipped + len(self.unrun), 'test')}:"
                 f" {self.passed} passed, {self.failed} failed")
         # Said only where a test was skipped, so a report without one reads
         # as it always has
         if self.skipped:
             text += f", {self.skipped} skipped (debug only)"
+        if self.unrun:
+            # Each reason once, in the order first met
+            text += f", {len(self.unrun)} skipped ({'; '.join(dict.fromkeys(self.unrun))})"
         text += (f"; {count(self.built + self.unbuilt, 'example')}:"
                  f" {self.built} built, {self.unbuilt} failed to build")
         if self.broken:
@@ -2549,7 +2555,7 @@ def run_program(exe: Path, cwd: Path, timeout: float) -> subprocess.CompletedPro
     return subprocess.CompletedProcess([str(exe)], code, stdout, stderr)
 
 
-def run_test(session: Session, file: Path, bless: bool) -> tuple[bool, str]:
+def run_test(session: Session, file: Path, bless: bool) -> tuple[bool | None, str]:
     """Build, run and compare one test program: (passed, what to show)."""
     into = session.out / TESTS / file.stem
     exe = build_program(session, file, into)
@@ -2569,6 +2575,15 @@ def run_test(session: Session, file: Path, bless: bool) -> tuple[bool, str]:
         return False, not_started.lstrip("\n")
     stdout = ran.stdout.decode("utf-8", errors="replace")
     stderr = ran.stderr.decode("utf-8", errors="replace")
+    # A test that exits with SKIP_STATUS (testing.skip) ran no checks, so it is
+    # neither passed nor failed, and nothing is compared or blessed: None, and
+    # why, the last line it printed. A test whose .exit holds the status, a
+    # test of skip itself, is compared as any other
+    if ran.returncode == SKIP_STATUS and expected_exit(file) != SKIP_STATUS:
+        said = normalized_lines(stdout)
+        reason = said[-1].strip() if said else ""
+        reason = reason.removeprefix("skipped:").strip()
+        return None, reason or "no reason given"
     expected_path = expectation_file(file, ".out")
     if not expected_path.is_file():
         if not bless:
@@ -2677,6 +2692,10 @@ def test_package(pkg: Package, mode: str, name_filter: str | None, bless: bool) 
             passed, detail = run_test(session, file, bless)
         except CongoError as exc:
             passed, detail = False, str(exc)
+        if passed is None:
+            print(f"        test {file.stem} ... skipped ({detail})", flush=True)
+            tally.unrun.append(detail)
+            continue
         print(f"        test {file.stem} ... {'ok' if passed else 'FAILED'}", flush=True)
         if detail:
             print(indent(detail), flush=True)
@@ -2721,7 +2740,7 @@ def cmd_test(args: argparse.Namespace) -> int:
     total = Tally()
     for manifest in manifests:
         total.add(test_package(read_manifest(manifest), mode, args.name, args.bless))
-    if args.name is not None and not (total.passed + total.failed + total.skipped
+    if args.name is not None and not (total.passed + total.failed + total.skipped + len(total.unrun)
                                       + total.built + total.unbuilt + total.broken):
         raise CongoError(f"no test or example has '{args.name}' in its name")
     if len(manifests) > 1:

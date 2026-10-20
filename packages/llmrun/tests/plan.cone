@@ -1,8 +1,9 @@
 // What loading a model asks of the GPU, decided from the file's header before anything is allocated: the shape the
 // metadata gives, the weight buffers and the memory budget at a context, and what is refused (a tensor of a type with
 // no kernel, a missing tensor, an architecture or rotary scaling that is not run, a context that will not fit or is
-// longer than the model's). The real files are read for their headers only (when they are absent the test prints a SKIPPED line, and its output differs from the expected); the
-// refusals use small synthetic files. No GPU.
+// longer than the model's). The real files are read for their headers only; the refusals use small synthetic files.
+// No GPU. When the real files are absent the synthetic checks still run, and the test then skips (testing.skip), so
+// congo reports it as skipped rather than passed.
 
 mod plan;
 
@@ -19,7 +20,6 @@ import llmrun use *;
 
 const DEVICE_LOCAL = 8342470656u64;       // the RTX 4060 Laptop's device-local memory as gpu reports it
 const BINDING = 4294967295u64;             // its storage binding with largeBuffers
-const CHECKS = 36u32;
 
 fn reporting() bool { (libc.getenv("LLMRUN_REPORT") as usize) != 0usize }
 
@@ -101,7 +101,8 @@ fn main() i32 {
   let small = "C:/src/llm-models/Qwen3-1.7B-Q8_0.gguf";
   var haveBig = Path.from(big);
   var haveSmall = Path.from(small);
-  if fs.exists(&haveBig) && fs.exists(&haveSmall) {
+  let haveReal = fs.exists(&haveBig) && fs.exists(&haveSmall);
+  if haveReal {
     realFile(big, 36u64, 32u64, false, 1207959552u64, 5u64);
     realFile(small, 28u64, 16u64, true, 939524096u64, 2u64);
     // a context that does not fit says how much would, and one past the trained length is refused
@@ -113,14 +114,6 @@ fn main() i32 {
     refusedWith(&tiny, "The weights alone do not fit", "the 8B does not fit a 3 GiB GPU at any context");
     let narrow = planModel(&haveBig, &LoadOptions(512usize, 64usize), 134217728u64, DEVICE_LOCAL);
     refusedWith(&narrow, "ComputeRequest(largeBuffers: true)", "a device that binds 128 MiB cannot hold the 8B's matrices");
-  } else {
-    printStr("SKIPPED: plan: ");
-    printStr(big);
-    printStr(" or ");
-    printStr(small);
-    printStr(" is absent; the ");
-    printUInt(u64.from(CHECKS));
-    printStr(" checks on the real files were not run\n");
   }
 
   // ---- refusals from small synthetic files ----
@@ -155,7 +148,9 @@ fn main() i32 {
   var missing = Path.from("llmrun-no-such-file.gguf");
   refusedWith(&planModel(&missing, &options, BINDING, DEVICE_LOCAL), "llmrun:", "a file that is not there is refused");
   fs.removeFile(&file);
-  done()
+  // A failed synthetic check fails the test either way; otherwise, without the real files, it skips
+  let status = done();
+  if status != 0i32 || haveReal { status } else { skip("the model files in C:/src/llm-models are absent") }
 }
 
 fn writeFile(p: &Path, weights: &ModelWeights, arch: &str, flaws: &Flaws) {

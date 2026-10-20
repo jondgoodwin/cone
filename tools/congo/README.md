@@ -799,6 +799,19 @@ so, and still builds its examples.
 
   A skipped test is not a failure. Where nothing is skipped, the summary
   reads as before.
+- **A test that skips itself** cannot run its checks on this machine (a file
+  it needs is absent) and returns `testing.skip(reason)`, which prints
+  `skipped: <reason>` and exits with status 77. `congo test` compares nothing
+  for it and blesses nothing, and reports it as skipped with the last line it
+  printed, so a passing run never counts checks that did not run:
+
+  ```
+          test tokenizer ... skipped (the model files in C:/src/llm-models are absent)
+        Result llmrun: 5 tests: 2 passed, 0 failed, 3 skipped (the model files in C:/src/llm-models are absent); ...
+  ```
+
+  A test whose `.exit` holds 77 is compared as any other (a test of `skip`
+  itself).
 
 ### Writing checks with `testing`
 

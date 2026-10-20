@@ -2049,6 +2049,51 @@ class Testing(unittest.TestCase):
         self.assertIn("2 packages: 1 test: 0 passed, 0 failed, 1 skipped (debug only);"
                       " 0 examples: 0 built, 0 failed to build", run.stdout)
 
+    def test_a_test_that_skips_itself(self):
+        # A test that exits with 77 (testing.skip) ran no checks: it is reported
+        # as skipped with the last line it printed, nothing is compared or
+        # blessed, and the run succeeds. One whose .exit holds 77 is compared
+        # as any other, so a test of skip itself still checks its output
+        pkg = self.root / "needy"
+        write(pkg / "congo.toml",
+              '[package]\nname = "needy"\nversion = "0.1.0"\noutput = "library"\n')
+        write(pkg / "src" / "needy.cone", "mod needy;\n\npub fn one() i32 { 1i32 }\n")
+        test = """
+            mod {name};
+
+            import stdio use *;
+            import needy;
+
+            fn main() i32 {{
+              printStr("{said}\\n");
+              {status}i32
+            }}
+            """
+        write(pkg / "tests" / "plain.cone", test.format(name="plain", said="1", status=0))
+        write(pkg / "tests" / "plain.out", "1\n")
+        write(pkg / "tests" / "needs.cone",
+              test.format(name="needs", said="skipped: the data file is absent", status=77))
+        run = self.congo("test", "--bless", cwd=pkg)
+        self.assertIn("test plain ... ok", run.stdout)
+        self.assertIn("test needs ... skipped (the data file is absent)", run.stdout)
+        self.assertIn("needy: 2 tests: 1 passed, 0 failed, 1 skipped (the data file is absent);"
+                      " 0 examples: 0 built, 0 failed to build", run.stdout)
+        for suffix in (".out", ".exit"):
+            self.assertFalse((pkg / "tests" / f"needs{suffix}").exists(), suffix)
+        # The name filter finds it, and skipping is not a failure
+        run = self.congo("test", "needs", cwd=pkg)
+        self.assertIn("needy: 1 test: 0 passed, 0 failed, 1 skipped (the data file is absent);",
+                      run.stdout)
+        # Expected to exit 77, it is compared: a wrong output fails
+        write(pkg / "tests" / "needs.exit", "77\n")
+        write(pkg / "tests" / "needs.out", "skipped: the data file is absent\n")
+        run = self.congo("test", "needs", cwd=pkg)
+        self.assertIn("test needs ... ok", run.stdout)
+        write(pkg / "tests" / "needs.out", "skipped: something else\n")
+        run = self.congo("test", "needs", cwd=pkg, ok=False)
+        self.assertIn("test needs ... FAILED", run.stdout)
+        self.assertIn("output differs:", run.stdout)
+
     def test_no_tests_and_a_folder_of_packages(self):
         shelf = self.root / "shelf"
         self.congo("new", "plain", str(shelf / "plain"), "--lib", cwd=self.root)
