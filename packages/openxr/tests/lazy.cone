@@ -1,0 +1,42 @@
+// The OpenXR loader is opened when it is first wanted, not when the program
+// starts: a program that imports the package and never opens a headset never
+// asks the OS for openxr_loader.dll.
+//
+// - At the start of main nothing has been tried ('loadAttempted' is false) and,
+//   on Windows, the OS reports no openxr_loader.dll in the process, whether or
+//   not the machine has one on its PATH.
+// - 'available' tries once; afterwards 'loadAttempted' is true, and the dll is
+//   in the process exactly when 'available' says the loader was found.
+// - 'load' says the same and does not open anything again.
+//
+// Nothing printed depends on whether the machine has an OpenXR loader or a
+// runtime, so this test passes on all of them.
+
+mod lazy;
+
+import testing use *;
+import openxr;
+
+extern {
+  fn @c(system) GetModuleHandleA(name: *u8) usize;
+}
+
+// The loader's library, if this process has it open (Windows; nowhere else says)
+fn loaderInProcess() bool {
+  if isWindows() { return GetModuleHandleA(&"openxr_loader.dll" as *u8) != 0usize; }
+  false
+}
+
+fn main() i32 {
+  expectBool(openxr.loadAttempted(), false, "at the start of main nothing has tried the loader");
+  expectBool(loaderInProcess(), false, "and the OS has no openxr_loader.dll in the process");
+
+  let found = openxr.available();
+  expectBool(openxr.loadAttempted(), true, "available tried it");
+  expectBool(loaderInProcess(), found, "the dll is in the process exactly when available says it was found");
+
+  expectBool(openxr.load(), found, "load answers the same");
+  expectBool(openxr.available(), found, "and so does available, the second time");
+  expectBool(loaderInProcess(), found, "with nothing opened or closed by asking again");
+  done()
+}

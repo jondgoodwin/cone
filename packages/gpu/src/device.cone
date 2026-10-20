@@ -132,6 +132,21 @@ pub struct Device {
   // also keeps a depth texture of its size, made again with it
   // (TEXTURE_FORMAT_UNDEFINED: none). Check 'isValid'.
   pub fn createSwapChain(self: &mut, surface: &Surface, width: u32, height: u32, depthFormat: u32) SwapChain {
+    self.makeSwapChain(surface, width, height, depthFormat, false)
+  }
+
+  // A swapchain that mirrors a picture drawn elsewhere into a window (a
+  // headset's left eye, 'CommandEncoder.blitTexture'): its images can be
+  // blitted into, it is presented in a mode that does not hold the program to
+  // the display's refresh (mailbox, else immediate), it never waits for an
+  // image, and it has no depth texture. 'getCurrentTexture' answers SKIPPED
+  // when no image is free this instant, and the mirror shows one frame less.
+  // Check 'isValid'.
+  pub fn createMirrorSwapChain(self: &mut, surface: &Surface, width: u32, height: u32) SwapChain {
+    self.makeSwapChain(surface, width, height, TEXTURE_FORMAT_UNDEFINED, true)
+  }
+
+  fn makeSwapChain(self: &mut, surface: &Surface, width: u32, height: u32, depthFormat: u32, mirror: bool) SwapChain {
     var sc = SwapChain(SwapChainBackend(backend.device, backend.fns, backend.physical, backend.ifns, surface.backend.surface,
       vulkan.SwapchainKHR(0u64), vulkan.FORMAT_UNDEFINED, 0u32, 0u32, false,
       Array[vulkan.Image, 8]() <- fill vulkan.Image(0u64),
@@ -139,7 +154,7 @@ pub struct Device {
       Array[vulkan.Semaphore, 8]() <- fill vulkan.Semaphore(0u64), Array[bool, 8]() <- fill false,
       Array[vulkan.Semaphore, 2]() <- fill vulkan.Semaphore(0u64), 0u32, 0u32, false, true, width, height,
       vkFormat(depthFormat), vulkan.Image(0u64), vulkan.DeviceMemory(0u64), vulkan.ImageView(0u64), false,
-      queue.backend.memory),
+      queue.backend.memory, mirror),
       0u32, 0u32, TEXTURE_FORMAT_UNDEFINED, depthFormat, 0u64);
     if !self.isValid() || !surface.isValid() { return sc; }
     let sci = vulkan.SemaphoreCreateInfo();

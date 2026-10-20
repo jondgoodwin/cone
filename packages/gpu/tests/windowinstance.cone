@@ -1,0 +1,52 @@
+// 'Instance.createWithWindow': an instance made by a maker (a headset
+// runtime's) that also carries the extensions a window's surface needs, for a
+// program that mirrors a headset eye into a window. No window is opened, only
+// SDL's video subsystem started. Only a failure prints.
+//
+// - 'createWith' (no window) and 'createWithWindow' each call their maker once
+//   and make a valid instance.
+// - The windowed instance's create-info has more extensions than the plain
+//   one's: SDL's names for the platform's surface (two on Windows:
+//   VK_KHR_surface and VK_KHR_win32_surface).
+// - Each instance made so ends cleanly: no Vulkan call failed and the
+//   validation layer, where installed, said nothing.
+//
+// It needs a GPU driver with Vulkan 1.3 and SDL3.dll; no window, no display of
+// its own, and no Vulkan SDK.
+
+mod windowinstance;
+
+import testing use *;
+import gpu use *;
+import vulkan;
+
+struct Counted {
+  calls: u32;
+  extensions: u32;              // the last create-info's extensions
+}
+
+fn makeInstance(user: *u8, createInfo: &vulkan.InstanceCreateInfo, instance: &mut vulkan.Instance) i32 {
+  let c = user as *Counted;
+  c.calls = c.calls + 1u32;
+  c.extensions = createInfo.enabledExtensionCount;
+  vulkan.createInstance(createInfo, null, instance)
+}
+
+fn main() i32 {
+  var plain = Counted(0u32, 0u32);
+  var windowed = Counted(0u32, 0u32);
+  {
+    var instance = Instance.createWith("windowinstance", &makeInstance, &plain as *u8, true);
+    require(instance.isValid(), "an instance made by a maker, for no window");
+  }
+  {
+    var instance = Instance.createWithWindow("windowinstance", &makeInstance, &windowed as *u8, true);
+    require(instance.isValid(), "an instance made by a maker, for a window");
+  }
+  expectUInt(u64.from(plain.calls), 1u64, "the plain instance's maker was called once");
+  expectUInt(u64.from(windowed.calls), 1u64, "the windowed instance's maker was called once");
+  expect(windowed.extensions >= plain.extensions + 2u32, "the windowed instance asks for the surface's extensions besides the plain one's");
+  expectUInt(u64.from(failures()), 0u64, "no Vulkan call failed");
+  expectUInt(u64.from(validationMessages()), 0u64, "no validation message");
+  done()
+}

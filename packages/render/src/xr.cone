@@ -6,24 +6,38 @@
 // which the gpu package wraps as textures ('Device.wrapImage') that the
 // renderer draws into as it draws into any texture. The runtime does the rest:
 // lens distortion, reprojection, and the compositing. A program that draws to
-// a window never reaches this file, and its pictures are as they were.
+// a window never reaches this file, and its pictures are as they were: nor
+// does it ask the OS for the OpenXR loader (the openxr package opens it when a
+// headset is first opened, not when the program starts).
 //
-//   var headset = Headset.open("my app", &HeadsetOptions());
+// THE GPU is the program's, not the headset's. 'Headset.open' makes the
+// runtime's Vulkan instance, the adapter it chose and the device on it, and
+// puts them in a 'HeadsetGpu' the caller made first, so that the program owns
+// the device its renderer is made on and can end everything in the order
+// Vulkan needs: the renderer and what was made from the device, then the
+// headset (OpenXR's session, swapchains and spaces; the eye images' textures),
+// then the device, the adapter and the instance. Declare the 'HeadsetGpu'
+// before the headset and the renderer after it, and a function's locals end in
+// that order. Every call that records or submits is handed the device.
+//
+//   var gpu = HeadsetGpu.none();
+//   var headset = Headset.open("my app", &HeadsetOptions(), &mut gpu);
 //   if !headset.isValid() { ...no OpenXR runtime, or no headset: say so... }
-//   var renderer = Renderer.create(&mut headset.device, headset.colorFormat, headset.depthFormat);
-//   ... add meshes and materials to the renderer, through &mut headset.device ...
-//   while headset.pollEvents() {              // false once the session is over
-//     let frame = headset.beginFrame();       // waits for the runtime's frame, locates the eyes
+//   var renderer = Renderer.create(&mut gpu.device, headset.colorFormat, headset.depthFormat);
+//   ... add meshes and materials to the renderer, through &mut gpu.device ...
+//   while headset.pollEvents() {                      // false once the session is over
+//     let frame = headset.beginFrame(&mut gpu.device);  // waits for the runtime's frame, locates the eyes
 //     if frame.shouldRender {
 //       var eye = 0usize;
 //       while eye < 2usize {
 //         let camera = headset.eyeCamera(&frame, eye);     // placed at the eye, its own field of view
-//         headset.drawEye(&frame, eye, &mut renderer, &camera, &light, &list);
+//         headset.drawEye(&mut gpu.device, &frame, eye, &mut renderer, &camera, &light, &list);
 //         eye = eye + 1usize;
 //       }
 //     }
-//     headset.endFrame(&frame);               // submits the eyes as a projection layer
+//     headset.endFrame(&mut gpu.device, &frame);      // submits the eyes as a projection layer
 //   }
+//   gpu.device.waitIdle();
 //
 // THE FRAME LOOP is the runtime's (OpenXR's xrWaitFrame / xrBeginFrame /
 // xrEndFrame): 'beginFrame' waits until the runtime wants the frame, which is
@@ -53,6 +67,25 @@
 // player in the world by following: 'camera.following' with 'followMatrix' the
 // player's placement ('Camera.placement').
 //
+// A program with a pipeline of its own (a render system with passes before and
+// after 'render') draws an eye with the pieces 'drawEye' is made of:
+// 'acquireEye', then 'swapEye' to put the eye's color and depth textures into
+// a 'SurfaceTexture' the program draws into as it draws into a window's, with
+// 'eyeStart' and 'eyeEnd' round the pass in its command encoder (the eye's
+// timestamps, and the capture), 'eyeSubmitted' after the submit, 'swapEye'
+// again to give the textures back, and 'releaseEye' once everything that
+// uses the image has been submitted.
+//
+// THE MIRROR. A program that shows a window while the headset runs asks for it
+// in the options ('mirrorWindow', the window's SDL handle as a number, and its
+// size). The instance and device then carry what a window's surface and
+// swapchain need (the runtime lets the program add its own extensions to the
+// ones it asks for), and 'mirrorEye' blits the middle of an eye's image,
+// cropped to the window's shape, into the window's swapchain and presents it.
+// The mirror is presented without waiting for the display and skips a frame
+// when the window has no free image, so the headset never runs at the window's
+// rate. Call 'mirrorEye' after the eye is drawn and before it is released.
+//
 // THE COST of each eye is measured on both sides: the CPU's time to record and
 // submit it ('cpuMs') and the GPU's time for its pass, between two timestamps
 // ('gpuMs'), read back a few frames later when the GPU is done with them.
@@ -73,6 +106,26 @@ pub struct HeadsetOptions {
   // The near and far planes of every eye's camera, in metres
   pub near: f32 = 0.1;
   pub far: f32 = 1000.;
+  // A window to mirror the left eye into: its SDL handle as a number (window's
+  // 'sdlHandle'), and the size of its drawable area in pixels. 0: none.
+  pub mirrorWindow: usize = 0usize;
+  pub mirrorWidth: u32 = 0u32;
+  pub mirrorHeight: u32 = 0u32;
+}
+
+// The GPU a headset's runtime chose and the program draws with: made by
+// 'Headset.open' into one the caller made first (see above)
+pub struct HeadsetGpu {
+  pub device: Device;
+  pub adapter: Adapter;
+  pub instance: Instance;
+
+  // Nothing yet: what 'Headset.open' fills in
+  pub fn none() HeadsetGpu { HeadsetGpu(Device.none(), Adapter.none(), Instance.none()) }
+
+  // The GPU's name ("NVIDIA GeForce RTX 4060 Laptop GPU") and its type (ADAPTER_TYPE_...)
+  pub fn adapterName(self: &) &str { adapter.name.view() }
+  pub fn adapterType(self: &) u32 { adapter.adapterType }
 }
 
 // One frame, as 'beginFrame' answers it: what the runtime wants and where the
@@ -161,13 +214,13 @@ fn makeVkDevice(user: *u8, physical: vulkan.PhysicalDevice, createInfo: &vulkan.
 // after the GPU wrote them
 const TIMESTAMP_SLOTS = 4usize;
 
-// A headset: the OpenXR instance, session and swapchains, and the gpu
-// package's instance, adapter and device the runtime chose, in the order they
-// end (a struct's fields end in the order declared, after its own 'final'):
-// the eye images' textures, the timestamps' and the capture's objects, then
-// the GPU, which every object made from it must come before. A Renderer made
-// from the headset's device is declared after the headset, so that it ends
-// first.
+// A headset: the OpenXR instance, session and swapchains, the eye images'
+// textures, and the window mirror's surface and swapchain. The GPU is not here
+// but in the caller's 'HeadsetGpu'. The fields end in the order declared (after
+// 'final'): the eye images' textures, the timestamps' and the capture's
+// objects, the mirror's swapchain and surface (made from the device and the
+// instance, which end after the headset); a Renderer made from the device is
+// declared after the headset, so that it ends first.
 pub struct Headset {
   colors: List[Texture];            // every eye image wrapped: eye 0's, then eye 1's
   depths: List[Texture];            // one depth texture for each eye
@@ -175,9 +228,9 @@ pub struct Headset {
   resolved: Buffer;
   readback: Buffer;
   capture: Buffer;                  // an eye image copied out ('captureEye'), when the options asked for it
-  pub device: Device;               // the GPU the runtime chose: hand it to Renderer.create
-  adapter: Adapter;
-  gpuInstance: Instance;
+  mirrorCapture: Buffer;            // the window's picture copied out ('captureMirror'), when the options asked for it
+  mirror: SwapChain;                // the window's, when the options named one
+  surface: Surface;
   fns: openxr.InstanceFns;
   xrInstance: openxr.Instance;
   session: openxr.Session;
@@ -186,6 +239,8 @@ pub struct Headset {
   systemId: u64 = 0u64;
   firstImage: Array[usize, 2] = [0usize, 0usize];
   imageCount: Array[u32, 2] = [0u32, 0u32];
+  heldAt: Array[usize, 2] = [0usize, 0usize];       // the eye's acquired image, as an index into 'colors'
+  held: Array[bool, 2] = [false, false];            // the eye's image is acquired and not yet released
   pub eyeWidth: u32 = 0u32;
   pub eyeHeight: u32 = 0u32;
   pub colorFormat: u32 = TEXTURE_FORMAT_UNDEFINED;     // TEXTURE_FORMAT_: the eye images'
@@ -202,6 +257,11 @@ pub struct Headset {
   frameOpen: bool = false;
   drawn: u32 = 0u32;                // bits of the eyes drawn this frame
   captureEyeIndex: i64 = -1i64;     // the eye the next draw copies out, or none
+  captureMirrorNext: bool = false;  // the next mirrored frame is copied out as well
+  mirrorShotWidth: u32 = 0u32;      // its size
+  mirrorShotHeight: u32 = 0u32;
+  mirrored: u64 = 0u64;             // frames put into the window so far
+  mirrorSkipped: u64 = 0u64;        // frames the window had no free image for
   slotFrame: Array[u64, 4] = [0u64, 0u64, 0u64, 0u64];    // the device frame each timestamp slot was written in
   slotPending: Array[bool, 4] = [false, false, false, false];
   slot: usize = 0usize;             // the slot of the frame being drawn
@@ -212,23 +272,26 @@ pub struct Headset {
   cpuCount: Array[u32, 2] = [0u32, 0u32];
   gpuCount: Array[u32, 2] = [0u32, 0u32];
 
+  // No headset: what a field holds before one is opened for it (not valid)
+  pub fn none() Headset { Headset.empty() }
+
   // No headset: all the fields empty (what 'open' fills in)
   fn empty() Headset {
     Headset(List[Texture].empty(), List[Texture].empty(), QuerySet.none(), Buffer.none(), Buffer.none(), Buffer.none(),
-      Device.none(), Adapter.none(), Instance.none(), openxr.InstanceFns(), 0usize as openxr.Instance,
+      Buffer.none(), SwapChain.none(), Surface.none(), openxr.InstanceFns(), 0usize as openxr.Instance,
       0usize as openxr.Session, 0usize as openxr.Space,
-      [0usize as openxr.Swapchain, 0usize as openxr.Swapchain], 0u64, [0usize, 0usize], [0u32, 0u32],
-      0u32, 0u32, TEXTURE_FORMAT_UNDEFINED, TEXTURE_FORMAT_DEPTH32_FLOAT, 0.1, 1000., String.empty(), String.empty())
+      [0usize as openxr.Swapchain, 0usize as openxr.Swapchain], 0u64, [0usize, 0usize], [0u32, 0u32], [0usize, 0usize],
+      [false, false], 0u32, 0u32, TEXTURE_FORMAT_UNDEFINED, TEXTURE_FORMAT_DEPTH32_FLOAT, 0.1, 1000., String.empty(), String.empty())
   }
 
   // Open the headset: the OpenXR runtime's instance and system, the Vulkan
-  // instance and device it asks for, a session, a reference space, and a
-  // swapchain for each eye at the runtime's recommended size. Check
-  // 'isValid': with no OpenXR loader, no runtime, no headset, or a GPU the
-  // layer cannot use, it is not, and why has gone to stderr.
-  pub fn open(appName: &str, options: &HeadsetOptions) Headset {
+  // instance and device it asks for (handed to 'gpu'), a session, a reference
+  // space, and a swapchain for each eye at the runtime's recommended size.
+  // Check 'isValid': with no OpenXR loader, no runtime, no headset, or a GPU
+  // the layer cannot use, it is not, and why has gone to stderr.
+  pub fn open(appName: &str, options: &HeadsetOptions, gpu: &mut HeadsetGpu) Headset {
     var h = Headset.empty();
-    h.start(appName, options);
+    h.start(appName, options, gpu);
     h
   }
 
@@ -237,7 +300,10 @@ pub struct Headset {
   // Whether the session is running: begun (the runtime said READY) and not yet ended
   pub fn isRunning(self: &) bool { sessionRunning }
 
-  fn start(self: &mut, appName: &str, options: &HeadsetOptions) {
+  // Whether a window mirrors the left eye
+  pub fn hasMirror(self: &) bool { mirror.isValid() }
+
+  fn start(self: &mut, appName: &str, options: &HeadsetOptions, gpu: &mut HeadsetGpu) {
     near = options.near;
     far = options.far;
     if !openxr.available() {
@@ -320,22 +386,39 @@ pub struct Headset {
     }
 
     // Vulkan's instance, the GPU the runtime wants, and the device on it, all
-    // made through the gpu package with the runtime making what it must
+    // made through the gpu package with the runtime making what it must. A
+    // window to mirror into adds the extensions its surface needs to the
+    // instance and swapchains to the device.
+    // (Each object goes into the caller's 'gpu' as soon as it is made, so that
+    // however 'start' is left, the instance and the device end after the
+    // headset's surface and session, which are in the headset.)
     var maker = XrMaker(fns, xrInstance, systemId);
-    gpuInstance = Instance.createWith(appName, &makeVkInstance, &maker as *u8, options.validation);
-    if !gpuInstance.isValid() { return; }
-    let deviceInfo = openxr.VulkanGraphicsDeviceGetInfoKHR(systemId: systemId, vulkanInstance: gpuInstance.vulkanHandle());
+    let wantMirror = options.mirrorWindow != 0usize && options.mirrorWidth > 0u32 && options.mirrorHeight > 0u32;
+    var madeInstance = if wantMirror {
+      Instance.createWithWindow(appName, &makeVkInstance, &maker as *u8, options.validation)
+    } else {
+      Instance.createWith(appName, &makeVkInstance, &maker as *u8, options.validation)
+    };
+    gpu.instance <-> madeInstance;
+    if !gpu.instance.isValid() { return; }
+    let deviceInfo = openxr.VulkanGraphicsDeviceGetInfoKHR(systemId: systemId, vulkanInstance: gpu.instance.vulkanHandle());
     var physical = 0usize as vulkan.PhysicalDevice;
     r = fns.getVulkanGraphicsDevice2KHR(xrInstance, &deviceInfo, &mut physical);
     if !xrCheck(r, "xrGetVulkanGraphicsDevice2KHR") { return; }
-    adapter = gpuInstance.requestAdapterFor(physical);
-    if !adapter.isValid() { return; }
-    device = adapter.requestDeviceVia(&makeVkDevice, &maker as *u8);
-    if !device.isValid() { return; }
+    if wantMirror { surface = gpu.instance.createSurfaceOf(options.mirrorWindow); }
+    let mirroring = wantMirror && surface.isValid();
+    gpu.adapter = if mirroring { gpu.instance.requestAdapterForSurface(physical, &surface) } else {
+      gpu.instance.requestAdapterFor(physical)
+    };
+    if !gpu.adapter.isValid() { return; }
+    gpu.device = if mirroring { gpu.adapter.requestDeviceViaWindow(&makeVkDevice, &maker as *u8) } else {
+      gpu.adapter.requestDeviceVia(&makeVkDevice, &maker as *u8)
+    };
+    if !gpu.device.isValid() { return; }
 
     // The session on that device
-    let binding = openxr.GraphicsBindingVulkanKHR(instance: gpuInstance.vulkanHandle(), physicalDevice: adapter.vulkanPhysicalDevice(),
-      device: device.vulkanHandle(), queueFamilyIndex: device.vulkanQueueFamily(), queueIndex: 0u32);
+    let binding = openxr.GraphicsBindingVulkanKHR(instance: gpu.instance.vulkanHandle(), physicalDevice: gpu.adapter.vulkanPhysicalDevice(),
+      device: gpu.device.vulkanHandle(), queueFamilyIndex: gpu.device.vulkanQueueFamily(), queueIndex: 0u32);
     let sci = openxr.SessionCreateInfo(next: &binding as *u8, systemId: systemId);
     r = fns.createSession(xrInstance, &sci, &mut session);
     if !xrCheck(r, "xrCreateSession") { return; }
@@ -384,9 +467,11 @@ pub struct Headset {
       return;
     }
 
-    // A swapchain for each eye, and its images wrapped as textures; a depth texture of the same size
+    // A swapchain for each eye, and its images wrapped as textures; a depth texture of the same size. The mirror
+    // blits from the left eye's images, so they are made to be copied from.
+    let copyable = options.copySource || mirroring;
     var usage = openxr.SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT;
-    if options.copySource { usage = usage | openxr.SWAPCHAIN_USAGE_TRANSFER_SRC_BIT; }
+    if copyable { usage = usage | openxr.SWAPCHAIN_USAGE_TRANSFER_SRC_BIT; }
     var eye = 0usize;
     while eye < 2usize {
       let swci = openxr.SwapchainCreateInfo(usageFlags: usage, format: chosen, width: eyeWidth, height: eyeHeight);
@@ -402,20 +487,30 @@ pub struct Headset {
       imageCount[eye] = n;
       var k = 0usize;
       while k < usize.from(n) {
-        colors.push(device.wrapImage(images[k].image, eyeWidth, eyeHeight, colorFormat, options.copySource));
+        colors.push(gpu.device.wrapImage(images[k].image, eyeWidth, eyeHeight, colorFormat, copyable));
         k = k + 1usize;
       }
       let depthDesc = TextureDescriptor(eyeWidth, eyeHeight, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
-      depths.push(device.createTexture(&depthDesc));
+      depths.push(gpu.device.createTexture(&depthDesc));
       eye = eye + 1usize;
     }
 
     // Timestamps around each eye's pass, and room to read them back; a place to copy an eye out to
-    queries = device.createQuerySet(QUERY_TYPE_TIMESTAMP, u32.from(TIMESTAMP_SLOTS) * 4u32);
-    resolved = device.createBuffer(256u64, BUFFER_USAGE_QUERY_RESOLVE | BUFFER_USAGE_COPY_SRC);
-    readback = device.createBuffer(u64.from(TIMESTAMP_SLOTS) * 32u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+    queries = gpu.device.createQuerySet(QUERY_TYPE_TIMESTAMP, u32.from(TIMESTAMP_SLOTS) * 4u32);
+    resolved = gpu.device.createBuffer(256u64, BUFFER_USAGE_QUERY_RESOLVE | BUFFER_USAGE_COPY_SRC);
+    readback = gpu.device.createBuffer(u64.from(TIMESTAMP_SLOTS) * 32u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
     if options.copySource {
-      capture = device.createBuffer(u64.from(eyeWidth) * u64.from(eyeHeight) * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+      capture = gpu.device.createBuffer(u64.from(eyeWidth) * u64.from(eyeHeight) * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+    }
+    // The window's swapchain, if one is mirrored into
+    if mirroring {
+      mirror = gpu.device.createMirrorSwapChain(&surface, options.mirrorWidth, options.mirrorHeight);
+      if options.copySource {
+        mirrorCapture = gpu.device.createBuffer(u64.from(options.mirrorWidth) * u64.from(options.mirrorHeight) * 4u64,
+          BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+        mirrorShotWidth = options.mirrorWidth;
+        mirrorShotHeight = options.mirrorHeight;
+      }
     }
     opened = true;
   }
@@ -463,10 +558,10 @@ pub struct Headset {
   // holds the program to the headset's rate), then locate the eyes at the
   // time the frame is predicted to be shown. Answers an inactive frame while
   // the session is not running. Every active frame is ended by 'endFrame'.
-  pub fn beginFrame(self: &mut) HeadsetFrame {
+  pub fn beginFrame(self: &mut, device: &mut Device) HeadsetFrame {
     var frame = HeadsetFrame(false, false, false, 0i64, 0i64, [openxr.emptyView(), openxr.emptyView()]);
     if !opened || !sessionRunning || frameOpen { return frame; }
-    self.collectTimes();
+    self.collectTimes(device);
     var state = openxr.FrameState();
     let waitInfo = openxr.FrameWaitInfo();
     if !xrCheck(fns.waitFrame(session, &waitInfo, &mut state), "xrWaitFrame") { return frame; }
@@ -506,15 +601,14 @@ pub struct Headset {
     c
   }
 
-  // Draw one eye: take its swapchain's next image, wait until the runtime
-  // lets the program draw into it, render 'list' seen by 'camera' and lit by
-  // 'light' with 'renderer' (which was made for 'colorFormat' and
-  // 'depthFormat'), submit, and give the image back. Answers whether the eye
-  // was drawn: not when the frame is not one to draw ('shouldRender' false,
-  // eyes not located) or the runtime refused the image.
-  pub fn drawEye(self: &mut, frame: &HeadsetFrame, eye: usize, renderer: &mut Renderer, camera: &Camera, light: &Light,
-      list: &DrawList) bool {
-    if !opened || !frameOpen || !frame.active || !frame.shouldRender || !frame.located || eye > 1usize { return false; }
+  // ---- An eye, in pieces (a program with a pipeline of its own) ----
+
+  // Take an eye's swapchain's next image and wait until the runtime lets the
+  // program draw into it. False (and nothing held) when the frame is not one to
+  // draw ('shouldRender' false, eyes not located), or the runtime refused the
+  // image. The image is held until 'releaseEye'.
+  pub fn acquireEye(self: &mut, frame: &HeadsetFrame, eye: usize) bool {
+    if !opened || !frameOpen || !frame.active || !frame.shouldRender || !frame.located || eye > 1usize || held[eye] { return false; }
     var index = 0u32;
     let acquireInfo = openxr.SwapchainImageAcquireInfo();
     if !xrCheck(fns.acquireSwapchainImage(swapchains[eye], &acquireInfo, &mut index), "xrAcquireSwapchainImage") { return false; }
@@ -525,34 +619,151 @@ pub struct Headset {
       fns.releaseSwapchainImage(swapchains[eye], &releaseInfo);
       return false;
     }
-    let started = Instant.now().nanos();
+    heldAt[eye] = firstImage[eye] + usize.from(index);
+    held[eye] = true;
+    true
+  }
+
+  // Exchange the held image's color texture and the eye's depth texture with the
+  // textures of 'target': a program that draws into a window's
+  // 'SurfaceTexture' draws into the eye's by exchanging, drawing, and
+  // exchanging back (the textures are the eye's, and must be given back before
+  // 'releaseEye'; the exchange moves them, copies nothing).
+  pub fn swapEye(self: &mut, eye: usize, target: &mut SurfaceTexture) {
+    if eye > 1usize || !held[eye] { return; }
+    colors[heldAt[eye]] <-> target.texture;
+    depths[eye] <-> target.depth;
+  }
+
+  // Write the eye's first timestamp (before its pass) into 'encoder'
+  pub fn eyeStart(self: &mut, encoder: &mut CommandEncoder, eye: usize) {
+    if eye > 1usize { return; }
+    encoder.writeTimestamp(&queries, u32.from(slot) * 4u32 + u32.from(eye) * 2u32);
+  }
+
+  // Write the eye's second timestamp (after its pass), resolve the pair for
+  // reading back, and, when 'captureEye' asked for this eye, copy 'color' (the
+  // eye's image: the texture 'swapEye' put in the program's hands) out
+  pub fn eyeEnd(self: &mut, encoder: &mut CommandEncoder, eye: usize, color: &Texture) {
+    if eye > 1usize { return; }
     let first = u32.from(slot) * 4u32 + u32.from(eye) * 2u32;
-    var encoder = device.createCommandEncoder();
-    encoder.writeTimestamp(&queries, first);
-    renderer.render(&mut device, &mut encoder, &mut colors[firstImage[eye] + usize.from(index)], &mut depths[eye], camera, light, list);
     encoder.writeTimestamp(&queries, first + 1u32);
     encoder.resolveQuerySet(&queries, first, 2u32, &resolved, 0u64);
     encoder.copyBufferToBuffer(&resolved, 0u64, &readback, u64.from(slot * 2usize + eye) * 16u64, 16u64);
     if captureEyeIndex == (i64.from(eye)) && capture.isValid() {
-      encoder.copyTextureToBuffer(&mut colors[firstImage[eye] + usize.from(index)], &capture);
+      encoder.copyTextureToBuffer(color, &capture);
       captureEyeIndex = -1i64;
     }
-    device.queue.submit(encoder.finish());
-    let cpu = f64.from(Instant.now().nanos() - started) * 1.0e-9;
-    cpuLast[eye] = cpu;
-    cpuSum[eye] = cpuSum[eye] + cpu;
+  }
+
+  // Note that the eye's commands were submitted, 'cpuSeconds' after recording
+  // them began: the CPU's time for the eye, and the frame its GPU time is read
+  // back from
+  pub fn eyeSubmitted(self: &mut, device: &Device, eye: usize, cpuSeconds: f64) {
+    if eye > 1usize { return; }
+    cpuLast[eye] = cpuSeconds;
+    cpuSum[eye] = cpuSum[eye] + cpuSeconds;
     cpuCount[eye] = cpuCount[eye] + 1u32;
     slotFrame[slot] = device.frameNumber;
     slotPending[slot] = true;
     drawn = drawn | (1u32 << u32.from(eye));
+  }
+
+  // Put the middle of the eye's held image, cropped to the window's shape and
+  // scaled to its size, into the window's swapchain and present it. Call it
+  // after the eye is drawn and submitted, and before 'releaseEye'. False when
+  // there is no mirror, or the window has no image free this instant (the
+  // mirror then shows one frame less: the headset never waits for it). The
+  // window must be resized with 'resizeMirror'.
+  pub fn mirrorEye(self: &mut, device: &mut Device, eye: usize) bool {
+    if eye > 1usize || !held[eye] || !mirror.isValid() { return false; }
+    let st = mirror.getCurrentTexture(device);
+    if !st.ok() {
+      mirrorSkipped = mirrorSkipped + 1u64;
+      return false;
+    }
+    // The part of the eye image that has the window's shape, centered
+    let wide = f32.from(st.texture.width) / f32.from(st.texture.height);
+    var w = eyeWidth;
+    var h = eyeHeight;
+    if f32.from(w) / f32.from(h) > wide {
+      w = u32.from(f32.from(h) * wide);
+    } else {
+      h = u32.from(f32.from(w) / wide);
+    }
+    if w == 0u32 { w = 1u32; }
+    if h == 0u32 { h = 1u32; }
+    var encoder = device.createCommandEncoder();
+    encoder.blitTexture(&mut colors[heldAt[eye]],(eyeWidth - w) / 2u32, (eyeHeight - h) / 2u32, w, h, &st.texture);
+    if captureMirrorNext && mirrorCapture.isValid() && st.texture.width == mirrorShotWidth && st.texture.height == mirrorShotHeight {
+      encoder.copyTextureToBuffer(&st.texture, &mirrorCapture);
+      captureMirrorNext = false;
+    }
+    device.queue.submit(encoder.finish());
+    mirror.present(device);
+    mirrored = mirrored + 1u64;
+    true
+  }
+
+  // Have the next mirrored frame copied out as well, for 'capturedMirror' (the
+  // options must have asked for 'copySource' and a mirror; the window must not
+  // have been resized since: the copy is of the size the options named)
+  pub fn captureMirror(self: &mut) { captureMirrorNext = true; }
+
+  // Whether the copy 'captureMirror' asked for has not been made yet
+  pub fn mirrorCapturePending(self: &) bool { captureMirrorNext }
+
+  // The bytes of the window's picture 'captureMirror' copied: 4 a pixel in the
+  // window's order ('mirrorFormat'), rows with no gap, 'mirrorCaptureWidth' by
+  // 'mirrorCaptureHeight'; valid once the GPU is done with the frame
+  // ('device.waitIdle'). Null if nothing can be captured.
+  pub fn capturedMirror(self: &) *u8 { mirrorCapture.mappedRange() }
+  pub fn mirrorFormat(self: &) u32 { mirror.format }
+  pub fn mirrorCaptureWidth(self: &) u32 { mirrorShotWidth }
+  pub fn mirrorCaptureHeight(self: &) u32 { mirrorShotHeight }
+
+  // The window changed size: the mirror's images are made this size from the next frame
+  pub fn resizeMirror(self: &mut, width: u32, height: u32) {
+    if mirror.isValid() { mirror.resize(width, height); }
+  }
+
+  // Frames put into the window, and frames the window had no image free for
+  pub fn mirroredFrames(self: &) u64 { mirrored }
+  pub fn skippedMirrorFrames(self: &) u64 { mirrorSkipped }
+
+  // Hand the eye's image back to the runtime. False if the runtime refused it
+  // (or none was held).
+  pub fn releaseEye(self: &mut, eye: usize) bool {
+    if eye > 1usize || !held[eye] { return false; }
+    held[eye] = false;
     let releaseInfo = openxr.SwapchainImageReleaseInfo();
     xrCheck(fns.releaseSwapchainImage(swapchains[eye], &releaseInfo), "xrReleaseSwapchainImage")
+  }
+
+  // Draw one eye: take its swapchain's next image, wait until the runtime
+  // lets the program draw into it, render 'list' seen by 'camera' and lit by
+  // 'light' with 'renderer' (which was made for 'colorFormat' and
+  // 'depthFormat'), submit, and give the image back. Answers whether the eye
+  // was drawn: not when the frame is not one to draw ('shouldRender' false,
+  // eyes not located) or the runtime refused the image.
+  pub fn drawEye(self: &mut, device: &mut Device, frame: &HeadsetFrame, eye: usize, renderer: &mut Renderer, camera: &Camera,
+      light: &Light, list: &DrawList) bool {
+    if !self.acquireEye(frame, eye) { return false; }
+    let started = Instant.now().nanos();
+    var encoder = device.createCommandEncoder();
+    self.eyeStart(&mut encoder, eye);
+    renderer.render(device, &mut encoder, &mut colors[heldAt[eye]], &mut depths[eye], camera, light, list);
+    self.eyeEnd(&mut encoder, eye, &mut colors[heldAt[eye]]);
+    device.queue.submit(encoder.finish());
+    self.eyeSubmitted(device, eye, f64.from(Instant.now().nanos() - started) * 1.0e-9);
+    if eye == 0usize { self.mirrorEye(device, 0usize); }
+    self.releaseEye(eye)
   }
 
   // End the frame 'beginFrame' began: end the GPU's frame, and hand the runtime
   // the two eyes' images as a projection layer at the poses they were drawn
   // for (no layer if either eye was not drawn)
-  pub fn endFrame(self: &mut, frame: &HeadsetFrame) {
+  pub fn endFrame(self: &mut, device: &mut Device, frame: &HeadsetFrame) {
     if !opened || !frame.active || !frameOpen { return; }
     frameOpen = false;
     device.endFrame();
@@ -572,7 +783,7 @@ pub struct Headset {
   }
 
   // Read back the timestamps of the frames the GPU has finished
-  fn collectTimes(self: &mut) {
+  fn collectTimes(self: &mut, device: &Device) {
     let period = f64.from(device.timestampPeriod) * 1.0e-9;
     let ticks = readback.mappedRange() as *u64;
     if (ticks as usize) == 0usize || period <= 0. { return; }
@@ -630,10 +841,11 @@ pub struct Headset {
   // drew it ('device.waitIdle'). Null if nothing can be captured.
   pub fn capturedBytes(self: &) *u8 { capture.mappedRange() }
 
-  // The end of the headset: the GPU idle, the eye images' textures, then
-  // OpenXR's swapchains, space, session and instance. The fields follow, the GPU last.
+  // The end of the headset: OpenXR's swapchains, space and session and
+  // instance. The fields (the eye images' textures, the mirror's swapchain and
+  // surface) follow. The GPU must be idle ('device.waitIdle') and must end
+  // after this (see the top of this file).
   fn final(self: &uni) {
-    device.waitIdle();
     colors.clear();
     depths.clear();
     if (xrInstance as usize) != 0usize {
