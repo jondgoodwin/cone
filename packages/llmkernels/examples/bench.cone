@@ -1,13 +1,16 @@
-// Times each kernel on the GPU at the sizes of a Llama-7B layer (4096-wide, 11008-wide feed-forward, 32 heads of
-// 128 over 8 key-value heads, a 32000-word vocabulary), on synthetic weights. It does not check the answers
-// (the tests do that); it prints the time of one dispatch, microseconds, and what that time means as memory
-// bandwidth (matvec: the weights read) or arithmetic (matmul: multiply-adds).
+// Times each kernel on the GPU, on synthetic weights: the matvecs at the sizes a decode step of Qwen3-8B Q4_K_M and
+// of Qwen3-1.7B Q8_0 reads them, the rest at the sizes of a Llama-7B layer (4096-wide, 11008-wide feed-forward, 32
+// heads of 128 over 8 key-value heads, a 32000-word vocabulary). It does not check the answers (the tests do
+// that); it prints the time of one dispatch, microseconds, and what that time means as memory bandwidth (matvec: the
+// weights read) or arithmetic (matmul: multiply-adds).
 //
-// A dispatch's time is measured in a job of 51 dispatches of the kernel over the same buffers and in a job of
-// 1, each timed from submit until the waiting thread holds the answer, and (t51 - t1) / 50 taken, the median of
-// 5 repeats: the fixed cost of a job (the frame's end, the fence, the wake) cancels. The buffers are uploaded
-// by a first, untimed job and move from each job to the next. Not optimised: the kernels are written for
-// correctness (one invocation reads its bytes a word at a time, no subgroup operations, no 16-bit loads).
+// A dispatch's time is measured in a job of many dispatches of the kernel (51; a matvec, enough to cycle through its
+// copies of the weights) and in a job of 1, each timed from submit until the waiting thread holds the answer, and
+// (t_many - t1) / (many - 1) taken, the median of 5 repeats after a warm-up: the fixed cost of a job (the frame's
+// end, the fence, the wake) cancels. The buffers are uploaded by a first, untimed job and move from each job to the
+// next. The jobs have a parameter slab, as llmrun's do. A matvec is timed cold (matvecCase): decoding reads every
+// weight once from memory, so a matrix that stays in the GPU's cache from one dispatch to the next would show
+// bandwidth no decode step sees. LLMKERNELS_PLAIN set times matvec.slang in place of the wide matvec kernels.
 //
 //   congo run bench --release        (GPU_POWER_PREFERENCE=low-power for the integrated GPU)
 
@@ -55,7 +58,7 @@ fn floatSpec(rng: &mut Rng, n: usize, amp: f32) BufSpec { spec(floatWords(synthe
 // Run the recorder 'times' times in a job over the held buffers (or, the first time, the specs'), and wait: the
 // microseconds from submit to the answer
 fn runOnce(device: &mut Device, kernels: &Kernels, works: &mut Works, held: &mut List[Buffer], specs: &List[BufSpec],
-    shape: &Shape, record: &fn(&Kernels, &mut Job, &mut Device, &Array[u32], &Shape) bool, times: usize, first: bool) f64 {
+    shape: &Shape, record: &fn(&Kernels, &mut Job, &mut Device, &Array[u32], &Shape, usize) bool, times: usize, first: bool) f64 {
   var job = Job.make(device);
   var slots = List[u32].empty();
   var i = 0usize;
@@ -71,9 +74,13 @@ fn runOnce(device: &mut Device, kernels: &Kernels, works: &mut Works, held: &mut
     }
     i = i + 1usize;
   }
+  // a parameter slab, as llmrun's jobs have: one upload for all the dispatches' parameters, not a buffer each. It is
+  // a buffer of the job's, given after the others so that their slots are 0 to specs.len() - 1 (the slots 'take'
+  // gives back below)
+  job.slab(device, 256u64 * u64.from(times + 2usize));
   i = 0usize;
   while i < times {
-    if !record(kernels, &mut job, device, slots.view(), shape) { printStr("(the case was refused)\n"); }
+    if !record(kernels, &mut job, device, slots.view(), shape, i) { printStr("(the case was refused)\n"); }
     i = i + 1usize;
   }
   let start = Instant.now();
@@ -92,16 +99,22 @@ fn runOnce(device: &mut Device, kernels: &Kernels, works: &mut Works, held: &mut
 
 // Microseconds for one dispatch: (t51 - t1) / 50, the median of 5
 fn timeCase(device: &mut Device, kernels: &Kernels, works: &mut Works, specs: &List[BufSpec], shape: &Shape,
-    record: &fn(&Kernels, &mut Job, &mut Device, &Array[u32], &Shape) bool) f64 {
+    record: &fn(&Kernels, &mut Job, &mut Device, &Array[u32], &Shape, usize) bool) f64 {
+  timeCaseOf(device, kernels, works, specs, shape, record, 51usize)
+}
+
+// ...with 'many' dispatches in the long job, after a warm-up of three of them (the GPU's clocks rise under load)
+fn timeCaseOf(device: &mut Device, kernels: &Kernels, works: &mut Works, specs: &List[BufSpec], shape: &Shape,
+    record: &fn(&Kernels, &mut Job, &mut Device, &Array[u32], &Shape, usize) bool, many: usize) f64 {
   var held = List[Buffer].empty();
   runOnce(device, kernels, works, &mut held, specs, shape, record, 1usize, true);   // uploads, untimed
+  runOnce(device, kernels, works, &mut held, specs, shape, record, many * 3usize, false);
   var diffs = List[f64].empty();
   var rep = 0usize;
   while rep < 5usize {
     let t1 = runOnce(device, kernels, works, &mut held, specs, shape, record, 1usize, false);
-    let t51 = runOnce(device, kernels, works, &mut held, specs, shape, record, 51usize, false);
-    diffs.push((t51 - t1) / 50.0);
-    rep = rep + 1usize;
+    let t51 = runOnce(device, kernels, works, &mut held, specs, shape, record, many, false);
+    diffs.push((t51 - t1) / f64.from(many - 1usize));    rep = rep + 1usize;
   }
   // the median of five: the third smallest
   var a = 0usize;
@@ -116,49 +129,50 @@ fn timeCase(device: &mut Device, kernels: &Kernels, works: &mut Works, specs: &L
   *diffs[2usize]
 }
 
-fn recMatvec(k: &Kernels, job: &mut Job, device: &mut Device, slots: &Array[u32], s: &Shape) bool {
-  k.matvec(job, device, slots[0usize], slots[1usize], slots[2usize], s.qt, s.a, s.b)
+fn recMatvec(k: &Kernels, job: &mut Job, device: &mut Device, slots: &Array[u32], s: &Shape, i: usize) bool {
+  // dispatch i reads the copy i mod c of the matrix (c copies, d bytes apart; c = 1: the one matrix)
+  k.matvecAt(job, device, slots[0usize], slots[1usize], slots[2usize], s.qt, s.a, s.b, (i % s.c) * s.d, 0usize, 0usize)
 }
 
-fn recMatmul(k: &Kernels, job: &mut Job, device: &mut Device, slots: &Array[u32], s: &Shape) bool {
+fn recMatmul(k: &Kernels, job: &mut Job, device: &mut Device, slots: &Array[u32], s: &Shape, i: usize) bool {
   k.matmul(job, device, slots[0usize], slots[1usize], slots[2usize], s.qt, s.a, s.b, s.c)
 }
 
-fn recRms(k: &Kernels, job: &mut Job, device: &mut Device, slots: &Array[u32], s: &Shape) bool {
+fn recRms(k: &Kernels, job: &mut Job, device: &mut Device, slots: &Array[u32], s: &Shape, i: usize) bool {
   k.rmsnorm(job, device, slots[0usize], slots[1usize], slots[2usize], s.a, s.b, 0.00001)
 }
 
-fn recRope(k: &Kernels, job: &mut Job, device: &mut Device, slots: &Array[u32], s: &Shape) bool {
+fn recRope(k: &Kernels, job: &mut Job, device: &mut Device, slots: &Array[u32], s: &Shape, i: usize) bool {
   k.rope(job, device, slots[0usize], slots[1usize], s.a, s.b, s.c, s.c, s.d, 0u32)
 }
 
-fn recSoftmax(k: &Kernels, job: &mut Job, device: &mut Device, slots: &Array[u32], s: &Shape) bool {
+fn recSoftmax(k: &Kernels, job: &mut Job, device: &mut Device, slots: &Array[u32], s: &Shape, i: usize) bool {
   k.softmax(job, device, slots[0usize], slots[1usize], s.a, s.b)
 }
 
-fn recAttention(k: &Kernels, job: &mut Job, device: &mut Device, slots: &Array[u32], s: &Shape) bool {
+fn recAttention(k: &Kernels, job: &mut Job, device: &mut Device, slots: &Array[u32], s: &Shape, i: usize) bool {
   // a = tokens, b = heads, c = kv heads, d = head dim, e = pos0, f = maxSeq
   k.attention(job, device, slots[0usize], slots[1usize], slots[2usize], slots[3usize], slots[4usize], s.a, s.b, s.c, s.d, s.e, s.f,
     1.0 / f32.from(libc.sqrt(f64.from(s.d))))
 }
 
-fn recAppend(k: &Kernels, job: &mut Job, device: &mut Device, slots: &Array[u32], s: &Shape) bool {
+fn recAppend(k: &Kernels, job: &mut Job, device: &mut Device, slots: &Array[u32], s: &Shape, i: usize) bool {
   k.kvAppend(job, device, slots[0usize], slots[1usize], s.a, s.b, s.c)
 }
 
-fn recSilu(k: &Kernels, job: &mut Job, device: &mut Device, slots: &Array[u32], s: &Shape) bool {
+fn recSilu(k: &Kernels, job: &mut Job, device: &mut Device, slots: &Array[u32], s: &Shape, i: usize) bool {
   k.silu(job, device, slots[0usize], slots[1usize], s.a)
 }
 
-fn recGelu(k: &Kernels, job: &mut Job, device: &mut Device, slots: &Array[u32], s: &Shape) bool {
+fn recGelu(k: &Kernels, job: &mut Job, device: &mut Device, slots: &Array[u32], s: &Shape, i: usize) bool {
   k.gelu(job, device, slots[0usize], slots[1usize], s.a)
 }
 
-fn recAdd(k: &Kernels, job: &mut Job, device: &mut Device, slots: &Array[u32], s: &Shape) bool {
+fn recAdd(k: &Kernels, job: &mut Job, device: &mut Device, slots: &Array[u32], s: &Shape, i: usize) bool {
   k.add(job, device, slots[0usize], slots[1usize], slots[2usize], s.a)
 }
 
-fn recMul(k: &Kernels, job: &mut Job, device: &mut Device, slots: &Array[u32], s: &Shape) bool {
+fn recMul(k: &Kernels, job: &mut Job, device: &mut Device, slots: &Array[u32], s: &Shape, i: usize) bool {
   k.mul(job, device, slots[0usize], slots[1usize], slots[2usize], s.a)
 }
 
@@ -176,16 +190,46 @@ fn pad(s: &str, width: usize) {
   while n < width { printStr(" "); n = n + 1usize; }
 }
 
-fn matvecCase(device: &mut Device, kernels: &Kernels, works: &mut Works, rng: &mut Rng, qt: u32, rows: usize, cols: usize) {
-  match syntheticMatrix(rng, qt, rows, cols) {
+// A matvec as a decode step runs it: every weight is read once from the GPU's memory, not from its caches. The
+// matrix is made in 'copies' places of one buffer (about 256 MB in all, ten times the RTX 4060's 24 MB L2 cache),
+// dispatch i reading copy i mod copies, so no dispatch finds its weights where the one before left them. A matrix
+// of more than 4096 rows is 4096 random rows repeated. Prints the time, the weights' bytes a second, and that as a
+// share of the 256 GB/s the RTX 4060 Laptop's memory is rated at (a 128-bit bus at 16 Gbit/s a pin).
+fn matvecCase(device: &mut Device, kernels: &Kernels, works: &mut Works, rng: &mut Rng, label: &str, qt: u32, rows: usize, cols: usize) {
+  var base = rows;
+  if base > 4096usize { base = 4096usize; }
+  match syntheticMatrix(rng, qt, base, cols) {
     case let Some(m) {
+      let baseWords = m.words();
+      let bytes = rows * rowBytes(qt, cols);
+      let stride = (bytes + 255usize) / 256usize * 256usize;
+      var copies = 268435456usize / stride;      if copies < 1usize { copies = 1usize; }
+      if copies > 64usize { copies = 64usize; }
+      var pool = List[u32].withCapacity(copies * stride / 4usize);
+      var c = 0usize;
+      while c < copies {
+        var written = 0usize;
+        while written < bytes {
+          var k = 0usize;
+          while k < baseWords.len() && written < bytes {
+            pool.push(*baseWords[k]);
+            k = k + 1usize;
+            written = written + 4usize;
+          }
+        }
+        while written < stride { pool.push(0u32); written = written + 4usize; }
+        c = c + 1usize;
+      }
       var specs = List[BufSpec].empty();
-      specs.push(spec(m.words()));
+      specs.push(spec(pool));
       specs.push(floatSpec(rng, cols, 1.0));
       specs.push(zeroSpec(rows));
-      let us = timeCase(device, kernels, works, &specs, &Shape(rows, cols, 0usize, 0usize, 0usize, 0usize, qt), &recMatvec);
-      printStr("matvec "); printStr(typeName(qt)); printStr(" "); printUInt(u64.from(rows)); printStr(" x "); printUInt(u64.from(cols));
-      printStr(": "); printFloat(us); printStr(" us, weights read at "); printFloat(f64.from(m.bytes.len()) / us / 1000.0); printStr(" GB/s\n");
+      var many = copies * 8usize + 1usize;      if many < 41usize { many = 41usize; }
+      let us = timeCaseOf(device, kernels, works, &specs, &Shape(rows, cols, copies, stride, 0usize, 0usize, qt), &recMatvec, many);
+      let gbs = f64.from(bytes) / us / 1000.0;      pad(label, 26usize);
+      printStr(typeName(qt)); printStr(" "); printUInt(u64.from(rows)); printStr(" x "); printUInt(u64.from(cols));
+      printStr(": "); printFloat(us); printStr(" us, weights read at "); printFloat(gbs); printStr(" GB/s ("); printFloat(gbs / 2.56);
+      printStr(" % of 256)\n");
     }
     case is None { printStr("matvec: bad shape\n"); }
   }
@@ -214,31 +258,45 @@ fn line(name: &str, us: f64) {
 }
 
 fn main() i32 {
-  var instance = Instance.create("llmkernels bench");
+  // No validation layer (it prices every Vulkan call) and no window: a timing of the kernels
+  var instance = Instance.createHeadless("llmkernels bench", false);
   var none = Surface.none();
   var adapter = instance.requestAdapter(&none, preference());
-  var device = adapter.requestDevice();
+  // large buffers: a pool of copies of a matrix, and the output matrix, are over the 128 MiB a default device binds
+  var device = adapter.requestComputeDevice(&ComputeRequest(largeBuffers: true));
   if !device.isValid() {
     printStr("no device\n");
     return 1i32;
   }
-  let kernels = Kernels.make(&device);
+  var kernels = Kernels.make(&device);
   if !kernels.isValid() {
     printStr("the kernels were not made\n");
     return 1i32;
   }
+  // LLMKERNELS_PLAIN set: the matvec.slang kernel for every matvec, to time it against the wide kernels
+  if (libc.getenv("LLMKERNELS_PLAIN") as usize) != 0usize { kernels.useWideMatvec(false, &device); }
   var works = Works.make();
   var rng = Rng.fromSeed(2026u64);
   if (libc.getenv("GPUWORK_REPORT") as usize) != 0usize { printStr("adapter: "); printStr(adapter.name.view()); printStr("\n"); }
+  printStr(if kernels.wideMatvec() { "matvec: the wide kernels (subgroup a row)\n" } else { "matvec: matvec.slang (workgroup a row)\n" });
 
-  // ---- matvec: a decode step's weights ----
-  matvecCase(&mut device, &kernels, &mut works, &mut rng, QTYPE_F32, 4096usize, 4096usize);
-  matvecCase(&mut device, &kernels, &mut works, &mut rng, QTYPE_F16, 4096usize, 4096usize);
-  matvecCase(&mut device, &kernels, &mut works, &mut rng, QTYPE_Q8_0, 4096usize, 4096usize);
-  matvecCase(&mut device, &kernels, &mut works, &mut rng, QTYPE_Q4_K, 4096usize, 4096usize);
-  matvecCase(&mut device, &kernels, &mut works, &mut rng, QTYPE_Q6_K, 4096usize, 4096usize);
-  matvecCase(&mut device, &kernels, &mut works, &mut rng, QTYPE_Q4_K, 11008usize, 4096usize);
-  matvecCase(&mut device, &kernels, &mut works, &mut rng, QTYPE_Q6_K, 32000usize, 4096usize);
+  // ---- matvec: the weights a decode step reads, each read cold (see matvecCase) ----
+  matvecCase(&mut device, &kernels, &mut works, &mut rng, "8B gate, up (72 a token)", QTYPE_Q4_K, 12288usize, 4096usize);
+  matvecCase(&mut device, &kernels, &mut works, &mut rng, "8B q, o (72)", QTYPE_Q4_K, 4096usize, 4096usize);
+  matvecCase(&mut device, &kernels, &mut works, &mut rng, "8B down (18)", QTYPE_Q4_K, 4096usize, 12288usize);
+  matvecCase(&mut device, &kernels, &mut works, &mut rng, "8B down (18)", QTYPE_Q6_K, 4096usize, 12288usize);
+  matvecCase(&mut device, &kernels, &mut works, &mut rng, "8B k, v (54)", QTYPE_Q4_K, 1024usize, 4096usize);
+  matvecCase(&mut device, &kernels, &mut works, &mut rng, "8B v (18)", QTYPE_Q6_K, 1024usize, 4096usize);
+  matvecCase(&mut device, &kernels, &mut works, &mut rng, "8B output (1)", QTYPE_Q6_K, 151936usize, 4096usize);
+  matvecCase(&mut device, &kernels, &mut works, &mut rng, "1.7B gate, up (56)", QTYPE_Q8_0, 6144usize, 2048usize);
+  matvecCase(&mut device, &kernels, &mut works, &mut rng, "1.7B q, o (56)", QTYPE_Q8_0, 2048usize, 2048usize);
+  matvecCase(&mut device, &kernels, &mut works, &mut rng, "1.7B down (28)", QTYPE_Q8_0, 2048usize, 6144usize);
+  matvecCase(&mut device, &kernels, &mut works, &mut rng, "1.7B k, v (56)", QTYPE_Q8_0, 1024usize, 2048usize);
+  matvecCase(&mut device, &kernels, &mut works, &mut rng, "1.7B output (1)", QTYPE_Q8_0, 151936usize, 2048usize);
+  matvecCase(&mut device, &kernels, &mut works, &mut rng, "Llama-7B layer", QTYPE_F32, 4096usize, 4096usize);
+  matvecCase(&mut device, &kernels, &mut works, &mut rng, "Llama-7B layer", QTYPE_F16, 4096usize, 4096usize);
+  matvecCase(&mut device, &kernels, &mut works, &mut rng, "Llama-7B layer", QTYPE_Q8_0, 4096usize, 4096usize);
+  matvecCase(&mut device, &kernels, &mut works, &mut rng, "Llama-7B layer", QTYPE_Q4_K, 11008usize, 4096usize);
 
   // ---- matmul: a prefill's batch ----
   matmulCase(&mut device, &kernels, &mut works, &mut rng, QTYPE_F32, 4096usize, 4096usize, 32usize);

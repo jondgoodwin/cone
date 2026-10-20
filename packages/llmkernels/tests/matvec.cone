@@ -1,7 +1,16 @@
 // The dequantising matrix-vector product on the GPU against its CPU twin, for all five weight types, over
-// row and column counts that are not multiples of the workgroup (64 invocations a row, 32 elements a unit):
-// rows from 1 to 70000 (the last past one dispatch dimension's 65535 groups, so the rows fold), columns from 1
-// element to 9 super-blocks (more units than invocations). Weights and inputs are synthetic and seeded.
+// row and column counts that are not multiples of the workgroup (matvec.slang: 64 invocations a row, 32 elements a
+// unit; the wide kernels: a subgroup of 32 a row, four rows a workgroup, 16 to 576 bytes a step): rows from 1 to
+// 262200 (past one dispatch dimension's 65535 groups, so the rows fold, for each kernel), columns from 1 element to
+// 9 super-blocks (more units than invocations, and a super-block count that is not a multiple of the 4 a subgroup
+// takes at a time). Weights and inputs are synthetic and seeded.
+//
+// The whole list runs twice: with the wide kernels (matvecq4k.slang, matvecfast.slang) where the device's subgroups
+// fit them (32 invocations that do arithmetic: 'kernels.wideMatvec()'), which serve the Q4_K, Q6_K, Q8_0 and F16
+// matrices that are aligned for them, and with 'useWideMatvec(false)', when matvec.slang serves every one. A
+// matrix that is not aligned for the wide kernels (a byte offset that is not a multiple of 16 for Q4_K, an odd one for
+// the others, x from an element that is not a multiple of 4, an F16 row that is not a multiple of 8 elements) is
+// served by matvec.slang in the first run too, which the unaligned cases below pin.
 //
 // Tolerance, named: each output within llmreference's sumTolerance of the twin's value, (cols + 4) * 2^-24
 // times the sum of the absolute values of its products. The twin adds in f64, so the difference is the GPU's
@@ -108,6 +117,74 @@ fn run(device: &mut Device, kernels: &Kernels, works: &mut Works, stats: &mut St
   999999u64
 }
 
+// One case: the matvec of this shape, the outputs outside the bound expected to be none
+fn check(device: &mut Device, kernels: &Kernels, works: &mut Works, stats: &mut Stats, rng: &mut Rng, qt: u32, rows: usize,
+    cols: usize, wPad: usize, xPad: usize, yPad: usize, name: &str) {
+  expectUInt(run(device, kernels, works, stats, rng, qt, rows, cols, wPad, xPad, yPad), 0u64, name);
+}
+
+// Every case, on the kernels as they are set
+fn cases(device: &mut Device, kernels: &Kernels, works: &mut Works, stats: &mut Stats, rng: &mut Rng) {
+  // ---- F32 and F16: any column count (F16 rows of a multiple of 8 columns go to the wide kernel) ----
+  check(device, kernels, works, stats, rng, QTYPE_F32, 1usize, 1usize, 0usize, 0usize, 0usize, "F32 1 x 1");
+  check(device, kernels, works, stats, rng, QTYPE_F32, 3usize, 31usize, 0usize, 0usize, 0usize, "F32 3 x 31");
+  check(device, kernels, works, stats, rng, QTYPE_F32, 7usize, 33usize, 0usize, 0usize, 0usize, "F32 7 x 33");
+  check(device, kernels, works, stats, rng, QTYPE_F32, 65usize, 100usize, 0usize, 0usize, 0usize, "F32 65 x 100");
+  check(device, kernels, works, stats, rng, QTYPE_F32, 33usize, 2113usize, 0usize, 0usize, 0usize, "F32 33 x 2113 (more units than invocations)");
+  check(device, kernels, works, stats, rng, QTYPE_F32, 70000usize, 40usize, 0usize, 0usize, 0usize, "F32 70000 x 40 (rows fold)");
+  check(device, kernels, works, stats, rng, QTYPE_F16, 1usize, 1usize, 0usize, 0usize, 0usize, "F16 1 x 1");
+  check(device, kernels, works, stats, rng, QTYPE_F16, 5usize, 31usize, 0usize, 0usize, 0usize, "F16 5 x 31");
+  check(device, kernels, works, stats, rng, QTYPE_F16, 9usize, 33usize, 0usize, 0usize, 0usize, "F16 9 x 33 (an odd row length: rows start on 2-byte boundaries)");
+  check(device, kernels, works, stats, rng, QTYPE_F16, 64usize, 777usize, 0usize, 0usize, 0usize, "F16 64 x 777");
+  check(device, kernels, works, stats, rng, QTYPE_F16, 17usize, 2113usize, 0usize, 0usize, 0usize, "F16 17 x 2113");
+  check(device, kernels, works, stats, rng, QTYPE_F16, 1usize, 8usize, 0usize, 0usize, 0usize, "F16 1 x 8 (wide: one lane's 16 bytes)");
+  check(device, kernels, works, stats, rng, QTYPE_F16, 6usize, 264usize, 0usize, 0usize, 0usize, "F16 6 x 264 (wide: a row that is not a whole subgroup step)");
+  check(device, kernels, works, stats, rng, QTYPE_F16, 13usize, 1000usize, 0usize, 0usize, 0usize, "F16 13 x 1000 (wide: rows start on 2-byte boundaries)");
+  check(device, kernels, works, stats, rng, QTYPE_F16, 70usize, 2056usize, 0usize, 0usize, 0usize, "F16 70 x 2056 (wide)");
+
+  // ---- Q8_0: blocks of 34 bytes, so rows start on 2-byte boundaries ----
+  check(device, kernels, works, stats, rng, QTYPE_Q8_0, 1usize, 32usize, 0usize, 0usize, 0usize, "Q8_0 1 x 32");
+  check(device, kernels, works, stats, rng, QTYPE_Q8_0, 5usize, 96usize, 0usize, 0usize, 0usize, "Q8_0 5 x 96");
+  check(device, kernels, works, stats, rng, QTYPE_Q8_0, 65usize, 320usize, 0usize, 0usize, 0usize, "Q8_0 65 x 320");
+  check(device, kernels, works, stats, rng, QTYPE_Q8_0, 13usize, 2080usize, 0usize, 0usize, 0usize, "Q8_0 13 x 2080 (65 blocks)");
+  check(device, kernels, works, stats, rng, QTYPE_Q8_0, 70000usize, 32usize, 0usize, 0usize, 0usize, "Q8_0 70000 x 32 (rows fold)");
+  check(device, kernels, works, stats, rng, QTYPE_Q8_0, 262200usize, 32usize, 0usize, 0usize, 0usize, "Q8_0 262200 x 32 (the wide kernel's rows fold)");
+  check(device, kernels, works, stats, rng, QTYPE_Q8_0, 9usize, 544usize, 0usize, 0usize, 0usize, "Q8_0 9 x 544 (17 blocks: one past a subgroup step)");
+
+  // ---- Q4_K and Q6_K: super-blocks of 256 ----
+  check(device, kernels, works, stats, rng, QTYPE_Q4_K, 1usize, 256usize, 0usize, 0usize, 0usize, "Q4_K 1 x 256");
+  check(device, kernels, works, stats, rng, QTYPE_Q4_K, 3usize, 768usize, 0usize, 0usize, 0usize, "Q4_K 3 x 768");
+  check(device, kernels, works, stats, rng, QTYPE_Q4_K, 67usize, 512usize, 0usize, 0usize, 0usize, "Q4_K 67 x 512");
+  check(device, kernels, works, stats, rng, QTYPE_Q4_K, 9usize, 2304usize, 0usize, 0usize, 0usize, "Q4_K 9 x 2304 (72 units)");
+  check(device, kernels, works, stats, rng, QTYPE_Q4_K, 21usize, 1280usize, 0usize, 0usize, 0usize, "Q4_K 21 x 1280 (5 super-blocks: one past a subgroup step)");
+  check(device, kernels, works, stats, rng, QTYPE_Q4_K, 262200usize, 256usize, 0usize, 0usize, 0usize, "Q4_K 262200 x 256 (the wide kernel's rows fold)");
+  check(device, kernels, works, stats, rng, QTYPE_Q6_K, 1usize, 256usize, 0usize, 0usize, 0usize, "Q6_K 1 x 256");
+  check(device, kernels, works, stats, rng, QTYPE_Q6_K, 3usize, 768usize, 0usize, 0usize, 0usize, "Q6_K 3 x 768");
+  check(device, kernels, works, stats, rng, QTYPE_Q6_K, 66usize, 512usize, 0usize, 0usize, 0usize, "Q6_K 66 x 512 (rows start on 2-byte boundaries)");
+  check(device, kernels, works, stats, rng, QTYPE_Q6_K, 9usize, 2304usize, 0usize, 0usize, 0usize, "Q6_K 9 x 2304 (72 units)");
+  check(device, kernels, works, stats, rng, QTYPE_Q6_K, 21usize, 1280usize, 0usize, 0usize, 0usize, "Q6_K 21 x 1280 (5 super-blocks)");
+  check(device, kernels, works, stats, rng, QTYPE_Q6_K, 262200usize, 256usize, 0usize, 0usize, 0usize, "Q6_K 262200 x 256 (the wide kernel's rows fold)");
+
+  // ---- offsets: the matrix 12 bytes into the weights, x from element 5, y from element 3 (not aligned for the wide
+  // kernels: matvec.slang serves them in both runs) ----
+  check(device, kernels, works, stats, rng, QTYPE_F32, 19usize, 77usize, 12usize, 5usize, 3usize, "F32 at offsets");
+  check(device, kernels, works, stats, rng, QTYPE_F16, 19usize, 77usize, 12usize, 5usize, 3usize, "F16 at offsets");
+  check(device, kernels, works, stats, rng, QTYPE_Q8_0, 19usize, 96usize, 12usize, 5usize, 3usize, "Q8_0 at offsets");
+  check(device, kernels, works, stats, rng, QTYPE_Q4_K, 19usize, 512usize, 12usize, 5usize, 3usize, "Q4_K at offsets");
+  check(device, kernels, works, stats, rng, QTYPE_Q6_K, 19usize, 512usize, 12usize, 5usize, 3usize, "Q6_K at offsets");
+
+  // ---- offsets the wide kernels take: the matrix on 16 bytes (Q4_K) or 4 and 2 (the others), x from a multiple of 4 ----
+  check(device, kernels, works, stats, rng, QTYPE_Q4_K, 19usize, 512usize, 16usize, 4usize, 3usize, "Q4_K at aligned offsets (16, 4, 3)");
+  check(device, kernels, works, stats, rng, QTYPE_Q4_K, 19usize, 512usize, 256usize, 8usize, 1usize, "Q4_K at aligned offsets (256, 8, 1)");
+  check(device, kernels, works, stats, rng, QTYPE_Q4_K, 19usize, 512usize, 8usize, 4usize, 3usize, "Q4_K at 8 bytes (not 16: matvec.slang)");
+  check(device, kernels, works, stats, rng, QTYPE_Q6_K, 19usize, 512usize, 4usize, 4usize, 3usize, "Q6_K at aligned offsets (4, 4, 3)");
+  check(device, kernels, works, stats, rng, QTYPE_Q6_K, 19usize, 512usize, 2usize, 12usize, 3usize, "Q6_K at 2 bytes (a block 4 bytes plus 2 into its words)");
+  check(device, kernels, works, stats, rng, QTYPE_Q8_0, 19usize, 96usize, 4usize, 4usize, 3usize, "Q8_0 at aligned offsets (4, 4, 3)");
+  check(device, kernels, works, stats, rng, QTYPE_Q8_0, 19usize, 96usize, 2usize, 8usize, 3usize, "Q8_0 at 2 bytes");
+  check(device, kernels, works, stats, rng, QTYPE_F16, 19usize, 80usize, 4usize, 4usize, 3usize, "F16 at aligned offsets (4, 4, 3)");
+  check(device, kernels, works, stats, rng, QTYPE_F16, 19usize, 80usize, 6usize, 4usize, 3usize, "F16 at 6 bytes");
+}
+
 fn main() i32 {
   var instance = Instance.create("llmkernels matvec");
   require(instance.isValid(), "a Vulkan 1.3 instance");
@@ -116,48 +193,21 @@ fn main() i32 {
   require(adapter.isValid(), "an adapter");
   var device = adapter.requestDevice();
   require(device.isValid(), "a device");
-  let kernels = Kernels.make(&device);
+  var kernels = Kernels.make(&device);
   require(kernels.isValid(), "the kernels");
   var works = Works.make();
   var stats = Stats(0.0);
   var rng = Rng.fromSeed(1234u64);
 
-  // ---- F32 and F16: any column count ----
-  expectUInt(run(&mut device, &kernels, &mut works, &mut stats, &mut rng, QTYPE_F32, 1usize, 1usize, 0usize, 0usize, 0usize), 0u64, "F32 1 x 1");
-  expectUInt(run(&mut device, &kernels, &mut works, &mut stats, &mut rng, QTYPE_F32, 3usize, 31usize, 0usize, 0usize, 0usize), 0u64, "F32 3 x 31");
-  expectUInt(run(&mut device, &kernels, &mut works, &mut stats, &mut rng, QTYPE_F32, 7usize, 33usize, 0usize, 0usize, 0usize), 0u64, "F32 7 x 33");
-  expectUInt(run(&mut device, &kernels, &mut works, &mut stats, &mut rng, QTYPE_F32, 65usize, 100usize, 0usize, 0usize, 0usize), 0u64, "F32 65 x 100");
-  expectUInt(run(&mut device, &kernels, &mut works, &mut stats, &mut rng, QTYPE_F32, 33usize, 2113usize, 0usize, 0usize, 0usize), 0u64, "F32 33 x 2113 (more units than invocations)");
-  expectUInt(run(&mut device, &kernels, &mut works, &mut stats, &mut rng, QTYPE_F32, 70000usize, 40usize, 0usize, 0usize, 0usize), 0u64, "F32 70000 x 40 (rows fold)");
-  expectUInt(run(&mut device, &kernels, &mut works, &mut stats, &mut rng, QTYPE_F16, 1usize, 1usize, 0usize, 0usize, 0usize), 0u64, "F16 1 x 1");
-  expectUInt(run(&mut device, &kernels, &mut works, &mut stats, &mut rng, QTYPE_F16, 5usize, 31usize, 0usize, 0usize, 0usize), 0u64, "F16 5 x 31");
-  expectUInt(run(&mut device, &kernels, &mut works, &mut stats, &mut rng, QTYPE_F16, 9usize, 33usize, 0usize, 0usize, 0usize), 0u64, "F16 9 x 33 (an odd row length: rows start on 2-byte boundaries)");
-  expectUInt(run(&mut device, &kernels, &mut works, &mut stats, &mut rng, QTYPE_F16, 64usize, 777usize, 0usize, 0usize, 0usize), 0u64, "F16 64 x 777");
-  expectUInt(run(&mut device, &kernels, &mut works, &mut stats, &mut rng, QTYPE_F16, 17usize, 2113usize, 0usize, 0usize, 0usize), 0u64, "F16 17 x 2113");
-
-  // ---- Q8_0: blocks of 34 bytes, so rows start on 2-byte boundaries ----
-  expectUInt(run(&mut device, &kernels, &mut works, &mut stats, &mut rng, QTYPE_Q8_0, 1usize, 32usize, 0usize, 0usize, 0usize), 0u64, "Q8_0 1 x 32");
-  expectUInt(run(&mut device, &kernels, &mut works, &mut stats, &mut rng, QTYPE_Q8_0, 5usize, 96usize, 0usize, 0usize, 0usize), 0u64, "Q8_0 5 x 96");
-  expectUInt(run(&mut device, &kernels, &mut works, &mut stats, &mut rng, QTYPE_Q8_0, 65usize, 320usize, 0usize, 0usize, 0usize), 0u64, "Q8_0 65 x 320");
-  expectUInt(run(&mut device, &kernels, &mut works, &mut stats, &mut rng, QTYPE_Q8_0, 13usize, 2080usize, 0usize, 0usize, 0usize), 0u64, "Q8_0 13 x 2080 (65 blocks)");
-  expectUInt(run(&mut device, &kernels, &mut works, &mut stats, &mut rng, QTYPE_Q8_0, 70000usize, 32usize, 0usize, 0usize, 0usize), 0u64, "Q8_0 70000 x 32 (rows fold)");
-
-  // ---- Q4_K and Q6_K: super-blocks of 256 ----
-  expectUInt(run(&mut device, &kernels, &mut works, &mut stats, &mut rng, QTYPE_Q4_K, 1usize, 256usize, 0usize, 0usize, 0usize), 0u64, "Q4_K 1 x 256");
-  expectUInt(run(&mut device, &kernels, &mut works, &mut stats, &mut rng, QTYPE_Q4_K, 3usize, 768usize, 0usize, 0usize, 0usize), 0u64, "Q4_K 3 x 768");
-  expectUInt(run(&mut device, &kernels, &mut works, &mut stats, &mut rng, QTYPE_Q4_K, 67usize, 512usize, 0usize, 0usize, 0usize), 0u64, "Q4_K 67 x 512");
-  expectUInt(run(&mut device, &kernels, &mut works, &mut stats, &mut rng, QTYPE_Q4_K, 9usize, 2304usize, 0usize, 0usize, 0usize), 0u64, "Q4_K 9 x 2304 (72 units)");
-  expectUInt(run(&mut device, &kernels, &mut works, &mut stats, &mut rng, QTYPE_Q6_K, 1usize, 256usize, 0usize, 0usize, 0usize), 0u64, "Q6_K 1 x 256");
-  expectUInt(run(&mut device, &kernels, &mut works, &mut stats, &mut rng, QTYPE_Q6_K, 3usize, 768usize, 0usize, 0usize, 0usize), 0u64, "Q6_K 3 x 768");
-  expectUInt(run(&mut device, &kernels, &mut works, &mut stats, &mut rng, QTYPE_Q6_K, 66usize, 512usize, 0usize, 0usize, 0usize), 0u64, "Q6_K 66 x 512 (rows start on 2-byte boundaries)");
-  expectUInt(run(&mut device, &kernels, &mut works, &mut stats, &mut rng, QTYPE_Q6_K, 9usize, 2304usize, 0usize, 0usize, 0usize), 0u64, "Q6_K 9 x 2304 (72 units)");
-
-  // ---- offsets: the matrix 12 bytes into the weights, x from element 5, y from element 3 ----
-  expectUInt(run(&mut device, &kernels, &mut works, &mut stats, &mut rng, QTYPE_F32, 19usize, 77usize, 12usize, 5usize, 3usize), 0u64, "F32 at offsets");
-  expectUInt(run(&mut device, &kernels, &mut works, &mut stats, &mut rng, QTYPE_F16, 19usize, 77usize, 12usize, 5usize, 3usize), 0u64, "F16 at offsets");
-  expectUInt(run(&mut device, &kernels, &mut works, &mut stats, &mut rng, QTYPE_Q8_0, 19usize, 96usize, 12usize, 5usize, 3usize), 0u64, "Q8_0 at offsets");
-  expectUInt(run(&mut device, &kernels, &mut works, &mut stats, &mut rng, QTYPE_Q4_K, 19usize, 512usize, 12usize, 5usize, 3usize), 0u64, "Q4_K at offsets");
-  expectUInt(run(&mut device, &kernels, &mut works, &mut stats, &mut rng, QTYPE_Q6_K, 19usize, 512usize, 12usize, 5usize, 3usize), 0u64, "Q6_K at offsets");
+  // the wide kernels where the device has them (this device's subgroups)
+  let wideRuns = kernels.wideMatvec();
+  expectBool(wideRuns, device.compute.subgroupMinSize == 32u32 && device.compute.subgroupMaxSize == 32u32
+    && device.compute.hasSubgroupOps(SUBGROUP_OP_ARITHMETIC), "wide kernels exactly where the subgroups are always 32");
+  cases(&mut device, &kernels, &mut works, &mut stats, &mut rng);
+  // and matvec.slang for everything
+  kernels.useWideMatvec(false, &device);
+  expectBool(kernels.wideMatvec(), false, "the wide kernels turned off");
+  cases(&mut device, &kernels, &mut works, &mut stats, &mut rng);
 
   // ---- refusals: nothing is recorded ----
   {
@@ -182,6 +232,9 @@ fn main() i32 {
     printStr("matvec worst error: ");
     printFloat(stats.worst);
     printStr(" x 2^-24 x sum of |terms|\n");
+    printStr("wide kernels used in the first run: ");
+    printStr(if wideRuns { "yes" } else { "no" });
+    printStr("\n");
   }
   expectUInt(u64.from(refusals()), 0u64, "gpuwork refused nothing");
   expectUInt(u64.from(failures()), 0u64, "no Vulkan call failed");
