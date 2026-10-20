@@ -390,7 +390,7 @@ pub struct Connection is Move {
     var b = IoBuf.empty();
     if out.len() > 0usize {
       match out.popFront() {
-        case var Some(s) {b <-> s;}
+        case let Some(s) {b = s;}
         case is None[IoBuf] {}
       }
     } else if tail.len() > 0usize && !holding {
@@ -793,8 +793,7 @@ pub struct Connection is Move {
     idleArmed = false;
     expectArmed = false;
     holding = false;
-    var h = Chain.make(noBound);
-    h <-> held;
+    held = Chain.make(noBound);
     if !clientRole && cfg.autoErrorResponse && failure.status != 0u16 && ws == WriteState.Idle &&
         failure.kind != ErrorKind.Closed {
       self.putStatusLine(failure.status);
@@ -813,7 +812,7 @@ pub struct Connection is Move {
   fn gatherHead(self: &mut) usize {
     if headBuf.capacity() == 0usize {
       match pool.take(cfg.maxHeadBytes) {
-        case var Some(s) {headBuf <-> s;}
+        case let Some(s) {headBuf = s;}
         case is None[IoBuf] {}
       }
       if headBuf.capacity() == 0usize {
@@ -868,8 +867,7 @@ pub struct Connection is Move {
   // goes home
   fn consumeHead(self: &mut, len: usize) {
     input.advance(len);
-    var b = IoBuf.empty();
-    b <-> headBuf;
+    headBuf = IoBuf.empty();
     headScan = 0usize;
   }
 
@@ -920,7 +918,7 @@ pub struct Connection is Move {
       self.failWith(err);
       return self.failedEvent();
     }
-    head.authority <-> host;
+    head.authority = host;
     peer10 = head.version == Version.Http10;
     keepAlive = !peer10 && !head.headers.hasToken("Connection", "close");
     answeringHead = head.method == Method.Head;
@@ -978,8 +976,7 @@ pub struct Connection is Move {
       // A final answer before the body was sent: it never will be
       holding = false;
       expectArmed = false;
-      var h = Chain.make(noBound);
-      h <-> held;
+      held = Chain.make(noBound);
       self.dropTail();
       abandoned = true;
       keepAlive = false;
@@ -1033,13 +1030,13 @@ pub struct Connection is Move {
     var buf = IoBuf.empty();
     if u64.from(input.firstLen()) <= n {
       match input.popFront() {
-        case var Some(s) {buf <-> s;}
+        case let Some(s) {buf = s;}
         case is None[IoBuf] {}
       }
     } else {
       let want = if n > u64.from(maxCopy) {maxCopy} else {usize.from(n)};
       match pool.take(want) {
-        case var Some(s) {buf <-> s;}
+        case let Some(s) {buf = s;}
         case is None[IoBuf] {}
       }
       if buf.capacity() == 0usize {
@@ -1130,7 +1127,7 @@ pub struct Connection is Move {
       // The line lies across segments: copy it out to read it
       var tmp = IoBuf.empty();
       match pool.take(at + 1usize) {
-        case var Some(s) {tmp <-> s;}
+        case let Some(s) {tmp = s;}
         case is None[IoBuf] {}
       }
       if tmp.capacity() == 0usize {
@@ -1203,8 +1200,7 @@ pub struct Connection is Move {
       keepAlive = false;
       ws = WriteState.Done;
       holding = false;
-      var h = Chain.make(noBound);
-      h <-> held;
+      held = Chain.make(noBound);
     }
     self.endExchange();
     Event.End(trailers)
@@ -1254,7 +1250,7 @@ pub struct Connection is Move {
       if tail.room() == 0usize {
         self.flushTail();
         match pool.take(tailSize) {
-          case var Some(s) {tail <-> s;}
+          case let Some(s) {tail = s;}
           case is None[IoBuf] {}
         }
         if tail.capacity() == 0usize {
@@ -1326,15 +1322,12 @@ pub struct Connection is Move {
   }
 
   fn dropTail(self: &mut) {
-    var t = IoBuf.empty();
-    t <-> tail;
+    tail = IoBuf.empty();
   }
 
   fn dropOutput(self: &mut) {
-    var o = Chain.make(noBound);
-    o <-> out;
-    var h = Chain.make(noBound);
-    h <-> held;
+    out = Chain.make(noBound);
+    held = Chain.make(noBound);
     self.dropTail();
   }
 
@@ -1344,12 +1337,10 @@ pub struct Connection is Move {
     if !holding {return;}
     holding = false;
     while held.len() > 0usize {
-      var b = IoBuf.empty();
       match held.popFront() {
-        case var Some(s) {b <-> s;}
+        case let Some(b) {out.push(b);}
         case is None[IoBuf] {}
       }
-      out.push(b);
     }
   }
 }

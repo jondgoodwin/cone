@@ -217,9 +217,8 @@ struct StreamOpenJob {
   pub asEvents: bool;
   pub reply: actors.Reply;
 
-  fn run(self: &mut, lp: &mut Loop, sv: &mut Service) {
-    var rp = actors.Reply();
-    rp <-> reply;
+  fn run(self, lp: &mut Loop, sv: &mut Service) {
+    let id, req, asEvents, var rp = self.(id, req, asEvents, reply);
     let k = sv.findClient(id);
     if k >= sv.clients.len() {
       if asEvents {
@@ -236,14 +235,12 @@ struct StreamOpenJob {
     s.id = newId();
     s.asEvents = asEvents;
     s.opening = true;
-    s.openReply <-> rp;
+    s.openReply = rp;
     let wslot = rec.waits.take(blankWait());
     let w = rec.waits.at(wslot) as &mut Wait;
     w.stream = sslot;
     rec.refs = rec.refs + 1u32;
-    var r = httpclient.Request.get("");
-    r <-> req;
-    s.fetch = rec.client.send(lp, r, httpclient.Sink.Here(u64.from(wslot)));
+    s.fetch = rec.client.send(lp, req, httpclient.Sink.Here(u64.from(wslot)));
     w.fetch = s.fetch;
   }
 }
@@ -256,9 +253,8 @@ struct StreamReadJob {
   pub asEvents: bool;
   pub reply: actors.Reply;
 
-  fn run(self: &mut, lp: &mut Loop, sv: &mut Service) {
-    var rp = actors.Reply();
-    rp <-> reply;
+  fn run(self, lp: &mut Loop, sv: &mut Service) {
+    let client, slot, id, asEvents, var rp = self.(client, slot, id, asEvents, reply);
     let k = sv.findClient(client);
     var s = null as *StreamRec;
     if k < sv.clients.len() {
@@ -287,7 +283,7 @@ struct StreamReadJob {
       }
       return;
     }
-    st.readReply <-> rp;
+    st.readReply = rp;
     st.reading = true;
     serveRead(rec, st);
   }
