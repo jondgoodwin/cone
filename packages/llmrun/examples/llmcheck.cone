@@ -1,0 +1,160 @@
+// llmcheck: greedy completion of a raw prompt (no chat template), printing every step's token and its largest
+// logits, then the speed. It is what the model is checked against llama.cpp with: the same prompt, temperature 0,
+// the first --n tokens must be the same ids, and at a step where they differ the top logits say whether the two
+// were tied.
+//
+//   congo run --release examples/llmcheck.cone -- --model C:\src\llm-models\Qwen3-1.7B-Q8_0.gguf
+//       --prompt "The capital of France is" --n 64 [--top 5] [--ctx 1024]
+//
+// Output, one line to a step: `step <i> id <token> top <id>:<logit> ...` (the chosen token is the first of the
+// top), then the generated ids, the text, and the timings: the prompt's tokens a second (prefill), the decoding
+// tokens a second, and where a decoding step's time goes: recording the job on the CPU, waiting for the GPU, and the
+// cleanup afterwards (taking the buffers back, freeing the job's own).
+
+mod llmcheck;
+
+import stdio use *;
+import collections use List, String;
+import path use Path;
+import process;
+import time use Instant;
+import gpu use *;
+import llmrun use *;
+
+fn say(msg: &str) { eprintStr(msg); }
+
+fn main() i32 {
+  let args = process.args();
+  var modelPath = String.empty();
+  var prompt = String.empty();
+  match argValue(&args, "--model") {
+    case var Some(p) { modelPath = p; }
+    case is None { say("usage: llmcheck --model <path.gguf> --prompt <text> [--n 64] [--top 5] [--ctx 1024]\n"); return 2i32; }
+  }
+  match argValue(&args, "--prompt") {
+    case var Some(p) { prompt = p; }
+    case is None { say("llmcheck: --prompt is missing\n"); return 2i32; }
+  }
+  var n = 64usize;
+  match argValue(&args, "--n") { case let Some(t) { match parseUInt(t.view()) { case let Some(x) { n = usize.from(x); } case is None {} } } case is None {} }
+  var top = 5usize;
+  match argValue(&args, "--top") { case let Some(t) { match parseUInt(t.view()) { case let Some(x) { top = usize.from(x); } case is None {} } } case is None {} }
+  var ctx = 1024usize;
+  match argValue(&args, "--ctx") { case let Some(t) { match parseUInt(t.view()) { case let Some(x) { ctx = usize.from(x); } case is None {} } } case is None {} }
+
+  utf8Console();
+  var instance = Instance.create("llmcheck");
+  var none = Surface.none();
+  var adapter = instance.requestAdapter(&none, POWER_PREFERENCE_HIGH_PERFORMANCE);
+  if !adapter.isValid() { say("llmcheck: no GPU with Vulkan 1.3\n"); return 1i32; }
+  var device = adapter.requestComputeDevice(&ComputeRequest(largeBuffers: true));
+  if !device.isValid() { say("llmcheck: the GPU could not be opened for compute\n"); return 1i32; }
+  let modelFile = Path.from(modelPath.view());
+  var engine: Engine = match Engine.open(&mut device, &modelFile, &LoadOptions(ctx, 64usize)) {
+    case var Ok(e) { e }
+    case let Error(m) { say(m.view()); say("\n"); return 1i32; }
+  };
+  var vocab: ModelTokens = match loadTokens(engine.ggufModel()) {
+    case var Ok(v) { v }
+    case let Error(m) { say(m.view()); say("\n"); return 1i32; }
+  };
+
+  let ids = vocab.tok.encode(prompt.view());
+  printStr("prompt tokens: ");
+  printUInt(u64.from(ids.len()));
+  printStr("\n");
+  let t0 = Instant.now();
+  let rec0 = engine.recordNanos;
+  let gpu0 = engine.gpuNanos;
+  let cln0 = engine.cleanupNanos;
+  var logits = List[f32].empty();
+  match engine.feed(&mut device, ids.view(), true) {
+    case var Ok(l) { logits <-> l; }
+    case let Error(m) { say(m.view()); say("\n"); return 1i32; }
+  }
+  let t1 = Instant.now();
+  let recPrefill = engine.recordNanos - rec0;
+  let gpuPrefill = engine.gpuNanos - gpu0;
+  let cleanPrefill = engine.cleanupNanos - cln0;
+  var made = List[u32].empty();
+  var step = 0usize;
+  while step < n {
+    let cands = topCandidates(logits.view(), top);
+    let id = argmax(logits.view());
+    printStr("step ");
+    printUInt(u64.from(step));
+    printStr(" id ");
+    printUInt(u64.from(id));
+    printStr(" top");
+    var i = 0usize;
+    while i < cands.len() {
+      printStr(" ");
+      printUInt(u64.from(cands[i].id));
+      printStr(":");
+      printFloat(f64.from(cands[i].logit));
+      i = i + 1usize;
+    }
+    printStr("\n");
+    made.push(id);
+    step = step + 1usize;
+    if step < n {
+      var one = List[u32].empty();
+      one.push(id);
+      match engine.feed(&mut device, one.view(), true) {
+        case var Ok(l) { logits <-> l; }
+        case let Error(m) { say(m.view()); say("\n"); return 1i32; }
+      }
+    }
+  }
+  let t2 = Instant.now();
+  printStr("generated:");
+  var k = 0usize;
+  while k < made.len() {
+    printStr(" ");
+    printUInt(u64.from(*made[k]));
+    k = k + 1usize;
+  }
+  printStr("\ntext: ");
+  match vocab.tok.decode(made.view()) {
+    case let Ok(b) { writeBytes(b.view()); }
+    case is Error {}
+  }
+  printStr("\n");
+  let prefillSeconds = t1.since(t0).secondsF64();
+  let decodeSeconds = t2.since(t1).secondsF64();
+  let decodeSteps = made.len() - 1usize;
+  printStr("prefill: ");
+  printUInt(u64.from(ids.len()));
+  printStr(" tokens in ");
+  printStr(oneDecimal(prefillSeconds * 1000.0).view());
+  printStr(" ms = ");
+  printStr(oneDecimal(f64.from(ids.len()) / prefillSeconds).view());
+  printStr(" tokens/s (recording ");
+  printStr(oneDecimal(f64.from(recPrefill) / 1.0e6).view());
+  printStr(" ms, waiting for the GPU ");
+  printStr(oneDecimal(f64.from(gpuPrefill) / 1.0e6).view());
+  printStr(" ms, cleanup ");
+  printStr(oneDecimal(f64.from(cleanPrefill) / 1.0e6).view());
+  printStr(" ms)\n");
+  if decodeSteps > 0usize {
+    let recDecode = engine.recordNanos - rec0 - recPrefill;
+    let gpuDecode = engine.gpuNanos - gpu0 - gpuPrefill;
+    let cleanDecode = engine.cleanupNanos - cln0 - cleanPrefill;
+    printStr("decode: ");
+    printUInt(u64.from(decodeSteps));
+    printStr(" tokens in ");
+    printStr(oneDecimal(decodeSeconds * 1000.0).view());
+    printStr(" ms = ");
+    printStr(oneDecimal(f64.from(decodeSteps) / decodeSeconds).view());
+    printStr(" tokens/s; a token: recording ");
+    printStr(oneDecimal(f64.from(recDecode) / 1.0e6 / f64.from(decodeSteps)).view());
+    printStr(" ms, waiting for the GPU ");
+    printStr(oneDecimal(f64.from(gpuDecode) / 1.0e6 / f64.from(decodeSteps)).view());
+    printStr(" ms, cleanup ");
+    printStr(oneDecimal(f64.from(cleanDecode) / 1.0e6 / f64.from(decodeSteps)).view());
+    printStr(" ms\n");
+  }
+  device.endFrame();
+  device.waitIdle();
+  0i32
+}

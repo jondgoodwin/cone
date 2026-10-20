@@ -1,0 +1,166 @@
+// What loading a model asks of the GPU, decided from the file's header before anything is allocated: the shape the
+// metadata gives, the weight buffers and the memory budget at a context, and what is refused (a tensor of a type with
+// no kernel, a missing tensor, an architecture or rotary scaling that is not run, a context that will not fit or is
+// longer than the model's). The real files are read for their headers only (a test skips them when absent); the
+// refusals use small synthetic files. No GPU.
+
+mod plan;
+
+import testing use *;
+import libc;
+import collections use List, String;
+import path use Path;
+import random use Rng;
+import fs;
+import gguf;
+import stdio use *;
+import llmreference use *;
+import llmrun use *;
+
+const DEVICE_LOCAL = 8342470656u64;       // the RTX 4060 Laptop's device-local memory as gpu reports it
+const BINDING = 4294967295u64;             // its storage binding with largeBuffers
+const CHECKS = 36u32;
+
+fn reporting() bool { (libc.getenv("LLMRUN_REPORT") as usize) != 0usize }
+
+fn contains(hay: &String, needle: &str) bool {
+  let h: &Array[u8] = hay.view();
+  let n: &Array[u8] = needle;
+  if n.len > h.len { return false; }
+  var i = 0usize;
+  while i + n.len <= h.len {
+    var same = true;
+    var k = 0usize;
+    while k < n.len && same { if h[i + k] != n[k] { same = false; } k = k + 1usize; }
+    if same { return true; }
+    i = i + 1usize;
+  }
+  false
+}
+
+// Refused, saying this
+fn refusedWith(r: &Result[PlanSummary, String], needle: &str, label: &str) {
+  match r {
+    case is Ok { expect(false, label); }
+    case let Error(e) { expectBool(contains(e, needle), true, label); if !contains(e, needle) { printStr(e.view()); printStr("\n"); } }
+  }
+}
+
+fn realFile(name: &str, layers: u64, heads: u64, tied: bool, kv4096: u64, expectBuffers: u64) {
+  var p = Path.from(name);
+  match fs.mapFile(&p) {
+    case let Ok(file) {
+      match gguf.parse(file.view()) {
+        case let Ok(model) {
+          match readInfo(&model) {
+            case let Ok(info) {
+              expectStr(info.arch.view(), "qwen3", "the architecture is qwen3");
+              expectUInt(u64.from(info.shape.layers), layers, "the layer count");
+              expectUInt(u64.from(info.shape.nHeads), heads, "the head count");
+              expectUInt(u64.from(info.shape.nKvHeads), 8u64, "8 key/value heads");
+              expectUInt(u64.from(info.shape.headDim), 128u64, "a head of 128");
+              expectUInt(u64.from(info.shape.ropeDim), 128u64, "the whole head rotates (no rope.dimension_count in the file)");
+              expectUInt(u64.from(info.shape.vocab), 151936u64, "a vocabulary of 151936");
+              expectBool(info.shape.tied, tied, "whether the output is tied");
+              expectBool(info.shape.qkNorm, true, "q/k norm");
+              expectUInt(u64.from(info.shape.ropeMode), 1u64, "the neox rotation order");
+              expectUInt(u64.from(info.contextLength), 40960u64, "trained for 40960 positions");
+            }
+            case let Error(e) { expectStr(e.view(), "", "the shape is read"); }
+          }
+        }
+        case let Error(e) { expectStr(e.message().view(), "", "the file parses"); }
+      }
+    }
+    case let Error(e) { expectStr(e.message().view(), "", "the file maps"); }
+  }
+  match planModel(&p, &LoadOptions(4096usize, 64usize), BINDING, DEVICE_LOCAL) {
+    case let Ok(s) {
+      if reporting() {
+        printStr(name); printStr(": buffers "); printUInt(u64.from(s.buffers)); printStr(" weights "); printUInt(s.budget.weights);
+        printStr(" kv "); printUInt(s.budget.kv); printStr(" scratch "); printUInt(s.budget.scratch); printStr(" scores "); printUInt(s.budget.scores);
+        printStr(" total "); printUInt(s.budget.total()); printStr("\n");
+      }
+      expectUInt(u64.from(s.buffers), expectBuffers, "the weights go in this many buffers");
+      expectUInt(s.budget.kv, kv4096, "the KV cache at 4096 positions");
+      expectBool(s.budget.total() < DEVICE_LOCAL, true, "it fits at 4096");
+    }
+    case let Error(e) { expectStr(e.view(), "", "the plan at 4096"); }
+  }
+  match planModel(&p, &LoadOptions(8192usize, 64usize), BINDING, DEVICE_LOCAL) {
+    case let Ok(s) {
+      expectUInt(s.budget.kv, kv4096 * 2u64, "the KV cache at 8192 positions is twice");
+      expectBool(s.budget.total() + 536870912u64 < DEVICE_LOCAL, true, "it fits at 8192, with the system's share kept");
+    }
+    case let Error(e) { expectStr(e.view(), "", "the plan at 8192"); }
+  }
+}
+
+fn main() i32 {
+  let big = "C:/src/llm-models/Qwen3-8B-Q4_K_M.gguf";
+  let small = "C:/src/llm-models/Qwen3-1.7B-Q8_0.gguf";
+  var haveBig = Path.from(big);
+  var haveSmall = Path.from(small);
+  if fs.exists(&haveBig) && fs.exists(&haveSmall) {
+    realFile(big, 36u64, 32u64, false, 1207959552u64, 5u64);
+    realFile(small, 28u64, 16u64, true, 939524096u64, 2u64);
+    // a context that does not fit says how much would, and one past the trained length is refused
+    let tooLong = planModel(&haveBig, &LoadOptions(24000usize, 64usize), BINDING, DEVICE_LOCAL);
+    refusedWith(&tooLong, "try --ctx with a smaller number", "24000 positions of the 8B do not fit, and the message offers a smaller --ctx");
+    let past = planModel(&haveBig, &LoadOptions(50000usize, 64usize), BINDING, DEVICE_LOCAL);
+    refusedWith(&past, "was trained for 40960 positions", "50000 positions is more than the model was trained for");
+    let tiny = planModel(&haveBig, &LoadOptions(512usize, 64usize), BINDING, 3221225472u64);
+    refusedWith(&tiny, "The weights alone do not fit", "the 8B does not fit a 3 GiB GPU at any context");
+    let narrow = planModel(&haveBig, &LoadOptions(512usize, 64usize), 134217728u64, DEVICE_LOCAL);
+    refusedWith(&narrow, "ComputeRequest(largeBuffers: true)", "a device that binds 128 MiB cannot hold the 8B's matrices");
+  } else {
+    var n = 0u32;
+    while n < CHECKS { expect(true, "(the model files are absent: skipped)"); n = n + 1u32; }
+  }
+
+  // ---- refusals from small synthetic files ----
+  var rng = Rng.fromSeed(31u64);
+  let shape = ModelShape(2usize, 256usize, 256usize, 8usize, 2usize, 32usize, 300usize, 0.000001, 10000.0, 32usize, 1u32, true, false);
+  let weights = syntheticModel(&mut rng, &shape, &ModelTypes(QTYPE_Q4_K, QTYPE_Q6_K, QTYPE_Q6_K, QTYPE_Q4_K));
+  var file = Path.from("llmrun-plan-test.gguf");
+  let options = LoadOptions(64usize, 16usize);
+  // a good one first
+  writeFile(&file, &weights, "qwen3", &Flaws.none());
+  match planModel(&file, &options, BINDING, DEVICE_LOCAL) {
+    case let Ok(s) { expectUInt(u64.from(s.matrices), 15u64, "the good file has 15 matrices (the output and 7 a layer)"); expectUInt(u64.from(s.buffers), 1u64, "...in one buffer"); }
+    case let Error(e) { expectStr(e.view(), "", "the good synthetic file plans"); }
+  }
+  writeFile(&file, &weights, "gemma", &Flaws.none());
+  refusedWith(&planModel(&file, &options, BINDING, DEVICE_LOCAL), "only 'qwen3' and 'llama' are run", "another architecture is refused");
+  var noK = Flaws.none();
+  noK.omit = String.from("blk.1.attn_k.weight");
+  writeFile(&file, &weights, "qwen3", &noK);
+  refusedWith(&planModel(&file, &options, BINDING, DEVICE_LOCAL), "the file has no tensor blk.1.attn_k.weight", "a missing tensor is named");
+  var low = Flaws.none();
+  low.lowBit = String.from("blk.0.ffn_up.weight");
+  writeFile(&file, &weights, "qwen3", &low);
+  refusedWith(&planModel(&file, &options, BINDING, DEVICE_LOCAL), "blk.0.ffn_up.weight is stored as Q4_0", "a tensor of a type with no kernel is named");
+  var scaled = Flaws.none();
+  scaled.ropeScaling = true;
+  writeFile(&file, &weights, "qwen3", &scaled);
+  refusedWith(&planModel(&file, &options, BINDING, DEVICE_LOCAL), "scales its rotary embedding ('yarn')", "rope scaling is refused");
+  writeFile(&file, &weights, "qwen3", &Flaws.none());
+  refusedWith(&planModel(&file, &LoadOptions(5000usize, 16usize), BINDING, DEVICE_LOCAL), "was trained for 4096 positions", "a context past the trained length is refused");
+  refusedWith(&planModel(&file, &LoadOptions(64usize, 16usize), BINDING, 100000000u64), "The weights alone do not fit", "a GPU too small for the weights refuses");
+  var missing = Path.from("llmrun-no-such-file.gguf");
+  refusedWith(&planModel(&missing, &options, BINDING, DEVICE_LOCAL), "llmrun:", "a file that is not there is refused");
+  fs.removeFile(&file);
+  done()
+}
+
+fn writeFile(p: &Path, weights: &ModelWeights, arch: &str, flaws: &Flaws) {
+  match syntheticGgufWith(weights, arch, flaws) {
+    case let Ok(bytes) {
+      match fs.writeFile(p, bytes.view()) {
+        case is Ok {}
+        case is Error { require(false, "the synthetic file is written"); }
+      }
+    }
+    case is Error { require(false, "the synthetic GGUF is made"); }
+  }
+}

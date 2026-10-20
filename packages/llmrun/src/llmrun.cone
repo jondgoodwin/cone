@@ -1,0 +1,109 @@
+// llmrun: a language model, from a GGUF file, running on the GPU. It loads a Qwen3 (or a Llama-layout model: the
+// two layouts are the same but for Qwen3's per-head RMSNorm of the queries and keys and its rotation order),
+// builds the tokenizer from the file's metadata, runs tokens through the layers on the GPU with a KV cache, and
+// chooses the next token (greedy, or temperature with top-k and top-p). It is a library: a Cone program calls it in
+// its own process. No HTTP, no server. examples/llmchat.cone is a chat program over it; examples/llmcheck.cone prints
+// every step's largest logits and the speed, and is what the model is compared with llama.cpp by.
+//
+//   imm modelFile = Path.from("C:/src/llm-models/Qwen3-8B-Q4_K_M.gguf");
+//   var instance = Instance.create("chat");
+//   var none = Surface.none();
+//   var adapter = instance.requestAdapter(&none, POWER_PREFERENCE_HIGH_PERFORMANCE);
+//   var device = adapter.requestComputeDevice(&ComputeRequest(largeBuffers: true));    // the weights bind over 128 MiB
+//   match Engine.open(&mut device, &modelFile, &LoadOptions(4096usize, 64usize)) {    // 4096 positions, 64-token chunks
+//     case var Ok(engine) {
+//       match loadTokens(engine.ggufModel()) {
+//         case let Ok(vocab) {
+//           imm turn = vocab.userTurn("Why is the sky blue?", false);                  // ChatML; false: no thinking
+//           mut logits = engine.feed(&mut device, turn.view(), true) ...               // the last token's logits
+//           imm sampler = TokenSampler.make(0.7, 20usize, 0.8);
+//           mut rng = Rng.fromSeed(1u64);
+//           imm id = sampler.sample(logits.view(), &mut rng);                          // the first token of the reply
+//           if vocab.isStop(id) ...  else  engine.feed(&mut device, [id], true) ...    // and so on
+//
+// examples/llmchat.cone is that loop, whole, with streaming, the end of a turn and tokens a second.
+//
+//   Engine.open(&mut device, &path, &LoadOptions(ctx, chunk))  Result[Engine, String]: why not, in words
+//   engine.feed(&mut device, tokens, wantLogits)               run tokens after the ones already run; the last one's logits
+//   engine.pos  engine.ctx  engine.reset()  engine.rewind(p)   the cache's place and room
+//   engine.shape()  engine.info  engine.ggufModel()            what the file said
+//   planModel(&path, &options, bindingSize, deviceLocal)       what loading would take, allocating nothing
+//   loadTokens(model)  ModelTokens: tok, stops, isStop, text, userTurn, systemTurn, closeTurn
+//   TextStream.make()  stream.push(&tok, id, showSpecial)      the bytes of the tokens so far that are whole characters
+//   TokenSampler.greedy()  TokenSampler.make(temp, topK, topP)  sampler.sample(logits, &mut rng)   argmax  topCandidates
+//   syntheticGguf(&weights, "qwen3")  syntheticGgufWith(..., &Flaws)   a random model as a GGUF file (tests; llmreference)
+//   utf8Console  argValue  hasFlag  parseUInt  parseFloat  readLine  writeBytes  oneDecimal    for a terminal program
+//
+// WHAT IS RUN. Architectures `qwen3` and `llama`, read from `general.architecture`, with every size from the file's
+// metadata (`<arch>.block_count`, `.embedding_length`, `.feed_forward_length`, `.attention.head_count`,
+// `.head_count_kv`, `.key_length`, `.layer_norm_rms_epsilon`, `.rope.freq_base`, `.rope.dimension_count` when
+// present, `.context_length`), tied or separate output, any of GGUF's F32, F16, Q8_0, Q4_K and Q6_K weights. A file
+// that has anything else is refused, in words, before anything is allocated: another architecture, a model that
+// scales its rotary embedding, a tensor of another type (Q4_0, Q5_K, ...) or one that is missing, a context longer
+// than the model was trained for, or one the GPU's memory cannot hold (with the largest that would fit).
+//
+// THE GPU'S MEMORY. Weights go in a few buffers of at most 1 GiB (a matrix never straddles two: a kernel's byte
+// offset is 32 bits), in file order; each norm vector is a buffer of its own; each layer's K and V cache is a buffer of
+// ctx * kvDim f32s; the scratch is sized for one chunk of tokens. The token table stays in the mapped file when the
+// output is untied (a token's row is decoded on the CPU and uploaded, 8 KB for the 8B), and is uploaded only when the
+// output head is the table itself. The budget at a context is weights + KV cache (288 KiB a position for the 8B, 224
+// KiB for the 1.7B) + scratch, and 512 MiB are kept for the system. Qwen3-8B Q4_K_M: 4.35 GiB of weights in 5
+// buffers, 5.5 GiB at 4096 positions, 6.7 GiB at 8192 (of the 4060's 7.77 GiB). Qwen3-1.7B Q8_0: 1.7 GiB in 2,
+// 2.6 GiB at 4096.
+//
+// THE BUFFERS ARE RESIDENT; A STEP IS ONE JOB. A gpuwork Job owns the buffers given to it and hands them back with its
+// Completion, so each call of 'feed' (for a chunk of up to `chunk` tokens) gives all the engine's buffers to a new
+// job, in a fixed order that is their slot, records the layers' dispatches, reads back the logits and takes them all
+// back. A Qwen3 layer is 20 dispatches (attention norm; q, k, v; q norm, k norm; two rotations; two appends to the
+// cache; attention; output projection; residual add; FFN norm; gate, up; SiLU; multiply; down; residual add) and a
+// 36-layer decode step is 722, each with a parameter buffer of its own.
+//
+// METHOD CHOICES. These are defaults a later design may revisit. Each says what was chosen and what was left out.
+//
+// - CORRECTNESS FIRST, SPEED SECOND. What a decode step costs and where the time goes is in the measurements below;
+//   the dispatch-recording cost (a buffer and a bind group for every dispatch, made and freed again for every token)
+//   is the next piece of work, not this one.
+// - THE CPU REFERENCE FIRST. llmreference's forwardCpu is the model on the CPU over the existing twins. tests/forward.cone
+//   writes four small random models as GGUF files (Qwen3 with the Q4_K_M mix and untied output, Qwen3 in Q8_0 with the
+//   output tied to the table, a Llama with F16 and F32 weights and the other rotation order and no q/k norm, a query
+//   wider than the model), loads them as a downloaded file is loaded, and checks every logit of a prompt and of three
+//   more tokens, one at a time, against the CPU's. Its tolerance and what it is derived from are in its header.
+// - GREEDY IS THE ARGMAX WITH THE LOWEST ID AMONG EQUALS (what llama.cpp's greedy sampler does). With a temperature,
+//   llama.cpp's order: the top-k logits (k = 0 means the 1000 largest), the smallest set of those whose
+//   probabilities at temperature 1 reach top-p, then the temperature over that set and one draw from the
+//   generator. (Hugging Face applies the temperature first; the two differ only for 0 < p < 1 with a temperature
+//   other than 1.)
+// - THE TOKENIZER is bpetokenize's, built from `tokenizer.ggml.tokens`, `.merges`, `.pre` and `.token_type` (types 3
+//   and 4, control and user defined, are the special tokens, what llama.cpp matches in a text). The chat template is
+//   ChatML, written in Cone, not the file's Jinja: a user's text is encoded as text (a typed `<|im_end|>` stays
+//   text); thinking off adds Qwen3's own empty `<think>\n\n</think>\n\n`; a reply that ended at `<|im_end|>` is closed
+//   (the token and a newline are run) before the next turn, so the cache holds what the template's text holds.
+//   tests/tokenizer.cone checks 28 varied texts against llama-tokenize.
+// - STOP TOKENS are the file's eos_token_id and the ChatML end of turn and end of text, found by their text.
+// - THE EMBEDDING IS LOOKED UP ON THE CPU (gguf's rowToF32 on the mapped file) and written into a buffer before the
+//   job: no kernel for it.
+// - Left out: rope scaling, sliding windows, a Q4_0/Q5/IQ kernel, F16 or quantised KV caches, several sequences at
+//   once, prefix reuse across sequences, sampling penalties, a stop-string, a server.
+//
+// MEASURED (RTX 4060 Laptop, release build, examples/llmcheck.cone): see the PR; the figures are not kept here
+// because they depend on the machine and on the dispatch-recording work to come.
+//
+// The tests: tests/forward.cone (GPU against the CPU reference; a GPU), tests/generate.cone (a small random model with
+// the real vocabulary, end to end; a GPU), tests/plan.cone (the header-only plan, the refusals), tests/tokenizer.cone
+// (against llama.cpp's ids), tests/sampler.cone. The tests that need a model file skip, counting every check as passed,
+// when `C:\src\llm-models\Qwen3-*.gguf` is absent. LLMRUN_REPORT=1 prints the numbers the tests derive their bounds from.
+
+mod llmrun;
+
+import libc;
+import collections use List, String;
+import time use Instant;
+import path use Path;
+import random use Rng;
+import fs;
+import gguf;
+import bpetokenize;
+import gpu use *;
+import gpuwork use *;
+import llmreference use *;
+import llmkernels use *;

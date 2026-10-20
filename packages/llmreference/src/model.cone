@@ -1,0 +1,324 @@
+// ======== A whole model on the CPU: the reference forward pass ========
+//
+// A Llama-family transformer (the Llama layout, and Qwen3's per-head RMSNorm of the queries and keys) run on the
+// CPU over the twins, token by token or in a batch, with a KV cache: the reference llmrun's GPU forward pass is
+// checked against. Every operation is a twin from twins.cone, so the numbers that cross from one operation to
+// the next are f32, exactly as the GPU's buffers are; inside each twin the sums are f64 (twins.cone says why).
+//
+// The data flow of one layer (x is the residual stream, one row of 'dim' for each token):
+//
+//   xn = rmsnorm(x, attnNorm)                     q = Wq xn   k = Wk xn   v = Wv xn
+//   qn = rmsnorm per head (qNorm)  kn = the same (kNorm)      [only a model with q/k norm: Qwen3]
+//   rope(qn)  rope(kn)                            the keys and values go to the cache at positions pos0 ..
+//   a = attention(qn, cache)                      x2 = x + Wo a
+//   xn = rmsnorm(x2, ffnNorm)                     x' = x2 + Wdown (silu(Wgate xn) * Wup xn)
+//
+// and at the end logits = Wout rmsnorm(x_last, outputNorm), where Wout is the token embedding itself when the
+// model's output is tied to it. The embedding of a token is its row of the token table, decoded to f32.
+
+// What a model is made of, read from the metadata of a GGUF file by llmrun and chosen by a test for a synthetic
+// one. A query has nHeads * headDim values and a key or value nKvHeads * headDim, which need not equal 'dim'.
+pub struct ModelShape {
+  pub layers: usize;
+  pub dim: usize;
+  pub ffDim: usize;
+  pub nHeads: usize;
+  pub nKvHeads: usize;
+  pub headDim: usize;
+  pub vocab: usize;
+  pub eps: f32;
+  pub ropeBase: f32;
+  // How many of a head's dimensions rotate (all of them, in Qwen3 and Llama)
+  pub ropeDim: usize;
+  // 0: ggml's "normal" pair order (2 i, 2 i + 1), 1: the "neox" order (i, i + ropeDim / 2): Qwen3's
+  pub ropeMode: u32;
+  // Whether each layer has the per-head RMSNorm of queries and keys (Qwen3 does, Llama does not)
+  pub qkNorm: bool;
+  // Whether the output matrix is the token table
+  pub tied: bool;
+
+  pub fn qDim(self: &) usize { nHeads * headDim }
+  pub fn kvDim(self: &) usize { nKvHeads * headDim }
+
+  // Whether the numbers are a model this code can run: positive sizes, the heads in whole groups, a rotation that
+  // fits in a head
+  pub fn isValid(self: &) bool {
+    layers > 0usize && dim > 0usize && ffDim > 0usize && nHeads > 0usize && nKvHeads > 0usize && headDim > 0usize
+      && vocab > 0usize && nHeads % nKvHeads == 0usize && ropeDim > 0usize && ropeDim % 2usize == 0usize
+      && ropeDim <= headDim && ropeMode <= 1u32
+  }
+
+  pub fn copy(self: &) ModelShape {
+    ModelShape(layers, dim, ffDim, nHeads, nKvHeads, headDim, vocab, eps, ropeBase, ropeDim, ropeMode, qkNorm, tied)
+  }
+}
+
+// One layer's weights. The norms are f32 vectors; qNorm and kNorm are empty when the model has no q/k norm.
+pub struct LayerWeights {
+  pub attnNorm: List[f32];
+  pub wq: QMatrix;
+  pub wk: QMatrix;
+  pub wv: QMatrix;
+  pub wo: QMatrix;
+  pub qNorm: List[f32];
+  pub kNorm: List[f32];
+  pub ffnNorm: List[f32];
+  pub wGate: QMatrix;
+  pub wUp: QMatrix;
+  pub wDown: QMatrix;
+}
+
+// All of a model's weights. 'output' has no rows when the output is tied to 'tokenEmbd'.
+pub struct ModelWeights {
+  pub shape: ModelShape;
+  pub tokenEmbd: QMatrix;
+  pub outputNorm: List[f32];
+  pub output: QMatrix;
+  pub layers: List[LayerWeights];
+
+  // The matrix the logits come from
+  pub fn outputMatrix(self: &) &QMatrix {
+    if shape.tied { return &tokenEmbd; }
+    &output
+  }
+
+  // The same weights read as another shape (a test changes one field, the rotation order or whether there is a
+  // q/k norm, to see what the logits do)
+  pub fn withShape(self: &, other: ModelShape) ModelWeights {
+    var copies = List[LayerWeights].withCapacity(layers.len());
+    var i = 0usize;
+    while i < layers.len() {
+      let w = layers[i];
+      copies.push(LayerWeights(copyList(&w.attnNorm), copyMatrix(&w.wq), copyMatrix(&w.wk), copyMatrix(&w.wv),
+        copyMatrix(&w.wo), copyList(&w.qNorm), copyList(&w.kNorm), copyList(&w.ffnNorm), copyMatrix(&w.wGate),
+        copyMatrix(&w.wUp), copyMatrix(&w.wDown)));
+      i = i + 1usize;
+    }
+    ModelWeights(other, copyMatrix(&tokenEmbd), copyList(&outputNorm), copyMatrix(&output), copies)
+  }
+}
+
+fn copyList[T](l: &List[T]) List[T] where T is Copy {
+  var out = List[T].withCapacity(l.len());
+  var i = 0usize;
+  while i < l.len() { out.push(*l[i]); i = i + 1usize; }
+  out
+}
+
+fn copyMatrix(m: &QMatrix) QMatrix {
+  QMatrix(m.qtype, m.rows, m.cols, copyList(&m.bytes))
+}
+
+// The keys and values of the positions so far, for every layer: [position][kvHead][d] f32s, room for maxSeq
+pub struct RefCache {
+  pub k: List[List[f32]];
+  pub v: List[List[f32]];
+  pub maxSeq: usize;
+
+  pub fn make(shape: &ModelShape, maxSeq: usize) RefCache {
+    var k = List[List[f32]].withCapacity(shape.layers);
+    var v = List[List[f32]].withCapacity(shape.layers);
+    var l = 0usize;
+    while l < shape.layers {
+      k.push(zeroFloats(maxSeq * shape.kvDim()));
+      v.push(zeroFloats(maxSeq * shape.kvDim()));
+      l = l + 1usize;
+    }
+    RefCache(k, v, maxSeq)
+  }
+}
+
+// The scale attention multiplies q . k by: 1 / sqrt(headDim), as an f32
+pub fn attentionScale(headDim: usize) f32 {
+  f32.from(1.0 / libc.sqrt(f64.from(headDim)))
+}
+
+// The embedding of one token: its row of the table
+pub fn embedCpu(m: &ModelWeights, token: u32, out: &mut Array[f32], at: usize) bool {
+  if usize.from(token) >= m.tokenEmbd.rows || out.len < at + m.tokenEmbd.cols { return false; }
+  let row = m.tokenEmbd.row(usize.from(token));
+  var i = 0usize;
+  while i < m.tokenEmbd.cols { out[at + i] = *row[i]; i = i + 1usize; }
+  true
+}
+
+// Run 'tokens' (at positions pos0 ..) through the model, appending their keys and values to the cache, and answer
+// the logits of the LAST token (vocab f32s). Empty if the tokens do not fit (an id outside the vocabulary,
+// positions past the cache's room, a model that is not valid).
+pub fn forwardCpu(m: &ModelWeights, cache: &mut RefCache, tokens: &Array[u32], pos0: usize) List[f32] {
+  let s = &m.shape;
+  let n = tokens.len;
+  if !s.isValid() || n == 0usize || pos0 + n > cache.maxSeq || m.layers.len() != s.layers {
+    return List[f32].empty();
+  }
+  let dim = s.dim;
+  let qDim = s.qDim();
+  let kvDim = s.kvDim();
+  let freqs = ropeFrequencies(s.ropeDim, s.ropeBase);
+  let scale = attentionScale(s.headDim);
+
+  var x = zeroFloats(n * dim);
+  var t = 0usize;
+  while t < n {
+    if !embedCpu(m, tokens[t], x.viewMut(), t * dim) { return List[f32].empty(); }
+    t = t + 1usize;
+  }
+
+  var xn = zeroFloats(n * dim);
+  var q = zeroFloats(n * qDim);
+  var qn = zeroFloats(n * qDim);
+  var k = zeroFloats(n * kvDim);
+  var kn = zeroFloats(n * kvDim);
+  var v = zeroFloats(n * kvDim);
+  var att = zeroFloats(n * qDim);
+  var o = zeroFloats(n * dim);
+  var x2 = zeroFloats(n * dim);
+  var gate = zeroFloats(n * s.ffDim);
+  var up = zeroFloats(n * s.ffDim);
+  var act = zeroFloats(n * s.ffDim);
+  var prod = zeroFloats(n * s.ffDim);
+  var down = zeroFloats(n * dim);
+
+  var l = 0usize;
+  while l < s.layers {
+    let w = m.layers[l];
+    rmsnormCpu(x.view(), w.attnNorm.view(), dim, n, s.eps, xn.viewMut());
+    matmulCpu(&w.wq, xn.view(), n, q.viewMut());
+    matmulCpu(&w.wk, xn.view(), n, k.viewMut());
+    matmulCpu(&w.wv, xn.view(), n, v.viewMut());
+    if s.qkNorm {
+      rmsnormCpu(q.view(), w.qNorm.view(), s.headDim, n * s.nHeads, s.eps, qn.viewMut());
+      rmsnormCpu(k.view(), w.kNorm.view(), s.headDim, n * s.nKvHeads, s.eps, kn.viewMut());
+    } else {
+      copyFloats(q.view(), qn.viewMut(), n * qDim);
+      copyFloats(k.view(), kn.viewMut(), n * kvDim);
+    }
+    ropeCpu(qn.viewMut(), freqs.view(), n, s.nHeads, s.headDim, s.ropeDim, pos0, s.ropeMode);
+    ropeCpu(kn.viewMut(), freqs.view(), n, s.nKvHeads, s.headDim, s.ropeDim, pos0, s.ropeMode);
+    kvAppendCpu(kn.view(), cache.k[l].viewMut(), n, kvDim, pos0);
+    kvAppendCpu(v.view(), cache.v[l].viewMut(), n, kvDim, pos0);
+    attentionCpu(qn.view(), cache.k[l].view(), cache.v[l].view(), n, s.nHeads, s.nKvHeads, s.headDim, pos0,
+      cache.maxSeq, scale, att.viewMut());
+    matmulCpu(&w.wo, att.view(), n, o.viewMut());
+    addCpu(x.view(), o.view(), n * dim, x2.viewMut());
+    rmsnormCpu(x2.view(), w.ffnNorm.view(), dim, n, s.eps, xn.viewMut());
+    matmulCpu(&w.wGate, xn.view(), n, gate.viewMut());
+    matmulCpu(&w.wUp, xn.view(), n, up.viewMut());
+    siluCpu(gate.view(), n * s.ffDim, act.viewMut());
+    mulCpu(act.view(), up.view(), n * s.ffDim, prod.viewMut());
+    matmulCpu(&w.wDown, prod.view(), n, down.viewMut());
+    addCpu(x2.view(), down.view(), n * dim, x.viewMut());
+    l = l + 1usize;
+  }
+
+  // the last token only
+  var last = zeroFloats(dim);
+  let xs = x.view();
+  copyFloats(&xs[(n - 1usize) * dim..<n * dim], last.viewMut(), dim);
+  var normed = zeroFloats(dim);
+  rmsnormCpu(last.view(), m.outputNorm.view(), dim, 1usize, s.eps, normed.viewMut());
+  var logits = zeroFloats(s.vocab);
+  matvecCpu(m.outputMatrix(), normed.view(), logits.viewMut());
+  logits
+}
+
+fn copyFloats(src: &Array[f32], dst: &mut Array[f32], n: usize) {
+  var i = 0usize;
+  while i < n { dst[i] = src[i]; i = i + 1usize; }
+}
+
+// ---- A synthetic model: seeded random weights of chosen types ----
+
+// The weight types of a synthetic model. Layers alternate the way Q4_K_M files do: even layers use 'main' for
+// every matrix; odd layers use 'alt' for the value and the down projections.
+pub struct ModelTypes {
+  pub main: u32;
+  pub alt: u32;
+  pub output: u32;
+  pub embd: u32;
+}
+
+// A norm vector, values within 'spread' of 'center'
+fn syntheticNorm(rng: &mut Rng, n: usize, center: f32, spread: f32) List[f32] {
+  var out = syntheticFloats(rng, n, spread);
+  var i = 0usize;
+  while i < n { out.set(i, *out[i] + center); i = i + 1usize; }
+  out
+}
+
+// A random Q4_K block decodes to d * sc * q - dmin * m with q, sc and m uniform: the mean of d * sc * q is
+// d * 31.5 * 7.5 and of dmin * m is dmin * 31.5, so with independent random scales the weights have a large mean and
+// every output of a matrix is nearly the same sum of its input. Setting dmin to 7.5 d makes the means cancel, so
+// that a synthetic model's outputs differ from token to token as a real one's do.
+fn centerQ4K(m: &mut QMatrix) {
+  var at = 0usize;
+  while at + 144usize <= m.bytes.len() {
+    let d = u16.from(u32.from(*m.bytes[at]) | (u32.from(*m.bytes[at + 1usize]) << 8u32));
+    let dmin = f32ToF16(7.5 * f16ToF32(d));
+    m.bytes.set(at + 2usize, u8.from(u32.from(dmin) & 255u32));
+    m.bytes.set(at + 3usize, u8.from(u32.from(dmin) >> 8u32));
+    at = at + 144usize;
+  }
+}
+
+fn matrixOrEmpty(rng: &mut Rng, qtype: u32, rows: usize, cols: usize) QMatrix {
+  match syntheticMatrix(rng, qtype, rows, cols) {
+    case var Some(m) {
+      if qtype == QTYPE_Q4_K { centerQ4K(&mut m); }
+      m
+    }
+    case is None { QMatrix(qtype, 0usize, cols, List[u8].empty()) }
+  }
+}
+
+// Random weights of the shape and types; a matrix whose type does not divide its columns comes out with no rows,
+// which 'isValidWeights' reports.
+pub fn syntheticModel(rng: &mut Rng, shape: &ModelShape, types: &ModelTypes) ModelWeights {
+  var layers = List[LayerWeights].withCapacity(shape.layers);
+  var l = 0usize;
+  while l < shape.layers {
+    var vType = types.main;
+    var dType = types.main;
+    if l % 2usize == 1usize { vType = types.alt; dType = types.alt; }
+    let attnNorm = syntheticNorm(rng, shape.dim, 0.4, 0.15);
+    let wq = matrixOrEmpty(rng, types.main, shape.qDim(), shape.dim);
+    let wk = matrixOrEmpty(rng, types.main, shape.kvDim(), shape.dim);
+    let wv = matrixOrEmpty(rng, vType, shape.kvDim(), shape.dim);
+    let wo = matrixOrEmpty(rng, types.main, shape.dim, shape.qDim());
+    var qNorm = List[f32].empty();
+    var kNorm = List[f32].empty();
+    if shape.qkNorm {
+      // large enough that attention scores differ from one position to the next (a rotation bug must show)
+      qNorm = syntheticNorm(rng, shape.headDim, 3.0, 0.75);
+      kNorm = syntheticNorm(rng, shape.headDim, 3.0, 0.75);
+    }
+    let ffnNorm = syntheticNorm(rng, shape.dim, 0.4, 0.15);
+    let wGate = matrixOrEmpty(rng, types.main, shape.ffDim, shape.dim);
+    let wUp = matrixOrEmpty(rng, types.main, shape.ffDim, shape.dim);
+    let wDown = matrixOrEmpty(rng, dType, shape.dim, shape.ffDim);
+    layers.push(LayerWeights(attnNorm, wq, wk, wv, wo, qNorm, kNorm, ffnNorm, wGate, wUp, wDown));
+    l = l + 1usize;
+  }
+  let tokenEmbd = matrixOrEmpty(rng, types.embd, shape.vocab, shape.dim);
+  let outputNorm = syntheticNorm(rng, shape.dim, 0.4, 0.15);
+  var output = QMatrix(types.output, 0usize, shape.dim, List[u8].empty());
+  if !shape.tied { output = matrixOrEmpty(rng, types.output, shape.vocab, shape.dim); }
+  ModelWeights(shape.copy(), tokenEmbd, outputNorm, output, layers)
+}
+
+// Whether every matrix of the model has the rows its shape says (a synthetic model whose types did not divide
+// its columns does not)
+pub fn isValidWeights(m: &ModelWeights) bool {
+  let s = &m.shape;
+  if !s.isValid() || m.layers.len() != s.layers { return false; }
+  if m.tokenEmbd.rows != s.vocab || m.tokenEmbd.cols != s.dim { return false; }
+  if !s.tied && (m.output.rows != s.vocab || m.output.cols != s.dim) { return false; }
+  var l = 0usize;
+  while l < s.layers {
+    let w = m.layers[l];
+    if w.wq.rows != s.qDim() || w.wk.rows != s.kvDim() || w.wv.rows != s.kvDim() || w.wo.rows != s.dim { return false; }
+    if w.wGate.rows != s.ffDim || w.wUp.rows != s.ffDim || w.wDown.rows != s.dim { return false; }
+    l = l + 1usize;
+  }
+  true
+}

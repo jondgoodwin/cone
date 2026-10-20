@@ -1,0 +1,102 @@
+// ======== Choosing the next token from the logits: greedy, or temperature with top-k and top-p ========
+
+// A token and its logit
+pub struct Candidate {
+  pub id: u32;
+  pub logit: f32;
+}
+
+// The most candidates kept when top-k is 0 ("off"): the probability beyond the thousandth token is negligible, and
+// keeping all 151,936 would make each draw cost a sort
+const TOP_K_CAP = 1000usize;
+
+// The token with the largest logit; the lowest id among equals (what llama.cpp's greedy sampler picks)
+pub fn argmax(logits: &Array[f32]) u32 {
+  var best = 0usize;
+  var i = 1usize;
+  while i < logits.len {
+    if logits[i] > logits[best] { best = i; }
+    i = i + 1usize;
+  }
+  u32.from(best)
+}
+
+// The k largest logits, largest first, the lower id first among equals
+pub fn topCandidates(logits: &Array[f32], k: usize) List[Candidate] {
+  var kept = List[Candidate].withCapacity(k + 1usize);
+  var i = 0usize;
+  while i < logits.len {
+    let v = logits[i];
+    if kept.len() < k || v > kept[kept.len() - 1usize].logit {
+      if kept.len() == k { kept.pop(); }
+      kept.push(Candidate(u32.from(i), v));
+      var j = kept.len() - 1usize;
+      while j > 0usize && kept[j].logit > kept[j - 1usize].logit {
+        kept.swap(j, j - 1usize);
+        j = j - 1usize;
+      }
+    }
+    i = i + 1usize;
+  }
+  kept
+}
+
+pub struct TokenSampler {
+  // 0 or less: greedy (the largest logit)
+  pub temperature: f32;
+  // Keep only this many of the largest logits; 0: the 1000 largest
+  pub topK: usize;
+  // Then keep the fewest of those whose probabilities add to this much (1.0: all of them)
+  pub topP: f32;
+
+  pub fn greedy() TokenSampler { TokenSampler(0.0, 0usize, 1.0) }
+
+  pub fn make(temperature: f32, topK: usize, topP: f32) TokenSampler { TokenSampler(temperature, topK, topP) }
+
+  // The next token, in llama.cpp's order: the top-k largest logits; of those the top-p nucleus, chosen by their
+  // probabilities at temperature 1 (the fewest, largest first, whose probabilities reach topP); then the
+  // temperature applied to the nucleus's logits, their softmax, and one draw from 'rng'.
+  pub fn sample(self: &, logits: &Array[f32], rng: &mut Rng) u32 {
+    if temperature <= 0.0 || logits.len == 0usize { return argmax(logits); }
+    var k = topK;
+    if k == 0usize || k > TOP_K_CAP { k = TOP_K_CAP; }
+    if k > logits.len { k = logits.len; }
+    let c = topCandidates(logits, k);
+    if c.len() == 1usize { return c[0usize].id; }
+    // the nucleus, from the probabilities at temperature 1
+    var keep = c.len();
+    if topP < 1.0 {
+      var all = 0.0;
+      var i = 0usize;
+      while i < c.len() { all = all + libc.exp(f64.from(c[i].logit - c[0usize].logit)); i = i + 1usize; }
+      var run = 0.0;
+      i = 0usize;
+      keep = 0usize;
+      while i < c.len() && keep == 0usize {
+        run = run + libc.exp(f64.from(c[i].logit - c[0usize].logit)) / all;
+        if run >= f64.from(topP) { keep = i + 1usize; }
+        i = i + 1usize;
+      }
+      if keep == 0usize { keep = c.len(); }
+    }
+    // the temperature over the nucleus, relative to its largest (c[0])
+    var p = List[f64].withCapacity(keep);
+    var total = 0.0;
+    var i = 0usize;
+    while i < keep {
+      let e = libc.exp(f64.from(c[i].logit - c[0usize].logit) / f64.from(temperature));
+      p.push(e);
+      total = total + e;
+      i = i + 1usize;
+    }
+    let u = rng.unit() * total;
+    var acc = 0.0;
+    i = 0usize;
+    while i < keep {
+      acc = acc + *p[i];
+      if u < acc { return c[i].id; }
+      i = i + 1usize;
+    }
+    c[keep - 1usize].id
+  }
+}

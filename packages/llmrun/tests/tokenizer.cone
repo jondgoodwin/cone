@@ -1,0 +1,160 @@
+// The tokenizer built from a real GGUF file's metadata (Qwen3's 151,936-token vocabulary and 151,387 merges),
+// checked against llama.cpp's own: the ids below are what `llama-tokenize` (build b11748) printed for the same
+// text with the same file (`--ids --no-bos --no-escape`, special tokens parsed as it does by default), on English,
+// code, numbers, emoji, six scripts, the ChatML tokens and runs of white space. Each case is also decoded back to
+// its text and streamed a token at a time through TextStream (every piece ends on a whole character). Then the
+// chat template: userTurn is the ids of the template's text, and a special token's spelling typed into a user
+// message stays text.
+//
+// It needs C:\src\llm-models\Qwen3-1.7B-Q8_0.gguf (the vocabulary is the same in the 8B): without it every check
+// counts as passed, so the package's tests pass on a machine that does not have the model.
+
+mod tokenizer;
+
+import testing use *;
+import collections use List, String;
+import path use Path;
+import fs;
+import gguf;
+import bpetokenize;
+import llmrun use *;
+
+const MODEL = "C:/src/llm-models/Qwen3-1.7B-Q8_0.gguf";
+const CHECKS = 97u32;
+
+fn idsText(ids: &List[u32]) String {
+  var s = String.empty();
+  var i = 0usize;
+  while i < ids.len() {
+    if i > 0usize { s <- " "; }
+    s <- u64.from(*ids[i]);
+    i = i + 1usize;
+  }
+  s
+}
+
+fn sameBytes(a: &Array[u8], b: &Array[u8]) bool {
+  if a.len != b.len { return false; }
+  var i = 0usize;
+  while i < a.len {
+    if a[i] != b[i] { return false; }
+    i = i + 1usize;
+  }
+  true
+}
+
+// Three checks: the ids are llama.cpp's, they decode back to the text, and streaming them prints the text whole
+fn check(vocab: &ModelTokens, label: &str, text: &str, want: &str) {
+  let bytes: &Array[u8] = text;
+  let ids = vocab.tok.encode(bytes);
+  let got = idsText(&ids);
+  expectStr(got.view(), want, label);
+  match vocab.tok.decode(ids.view()) {
+    case let Ok(back) { expectBool(sameBytes(back.view(), bytes), true, "...and decode back to the text"); }
+    case is Error { expect(false, "...and decode back to the text"); }
+  }
+  var stream = TextStream.make();
+  var all = List[u8].empty();
+  var whole = true;
+  var i = 0usize;
+  while i < ids.len() {
+    let piece = stream.push(&vocab.tok, *ids[i], false);
+    if bpetokenize.utf8Complete(piece.view()) != piece.len() { whole = false; }
+    var k = 0usize;
+    while k < piece.len() { all.push(*piece[k]); k = k + 1usize; }
+    i = i + 1usize;
+  }
+  let rest = stream.finish();
+  var k = 0usize;
+  while k < rest.len() { all.push(*rest[k]); k = k + 1usize; }
+  // what is printed leaves the special tokens out
+  var shown = List[u8].empty();
+  vocab.tok.decodeInto(ids.view(), true, &mut shown);
+  expectBool(whole && sameBytes(all.view(), shown.view()), true, "...and stream out as whole characters (special tokens left out)");
+}
+
+fn countOf(ids: &List[u32], id: u32) usize {
+  var n = 0usize;
+  var i = 0usize;
+  while i < ids.len() {
+    if *ids[i] == id { n = n + 1usize; }
+    i = i + 1usize;
+  }
+  n
+}
+
+fn main() i32 {
+  var path = Path.from(MODEL);
+  if !fs.exists(&path) {
+    var n = 0u32;
+    while n < CHECKS { expect(true, "(the model file is absent: skipped)"); n = n + 1u32; }
+    return done();
+  }
+  match fs.mapFile(&path) {
+    case let Ok(file) {
+      match gguf.parse(file.view()) {
+        case let Ok(model) {
+          match loadTokens(&model) {
+            case let Ok(vocab) {
+              expectUInt(u64.from(vocab.tok.vocabSize()), 151936u64, "the vocabulary has 151936 tokens");
+              expectUInt(u64.from(vocab.tok.mergeCount()), 151387u64, "...and 151387 merges");
+              expect(vocab.hasChatMl, "the ChatML tokens are there");
+              expectUInt(u64.from(vocab.imStart), 151644u64, "<|im_start|> is 151644");
+              expectUInt(u64.from(vocab.imEnd), 151645u64, "<|im_end|> is 151645");
+              expectUInt(u64.from(vocab.think), 151667u64, "<think> is 151667");
+              expectUInt(u64.from(vocab.thinkEnd), 151668u64, "</think> is 151668");
+              expectBool(vocab.isStop(151645u32) && vocab.isStop(151643u32) && !vocab.isStop(151644u32) && !vocab.isStop(5u32), true, "the stop tokens are <|im_end|> and <|endoftext|>");
+              check(&vocab, "plain English", "Hello, world!", "9707 11 1879 0");
+              check(&vocab, "a sentence", "The quick brown fox jumps over the lazy dog.", "785 3974 13876 38835 34208 916 279 15678 5562 13");
+              check(&vocab, "white space", "  leading and  double  spaces\n\nnewlines\n   and tabs\t\there  ", "220 6388 323 220 1990 220 12621 271 931 7969 198 256 323 22398 197 197 6739 256");
+              check(&vocab, "contractions", "I'm sure they'll say we've got it, isn't it?", "40 2776 2704 807 3278 1977 582 3003 2684 432 11 4436 944 432 30");
+              check(&vocab, "Python", "def fib(n):\n    return n if n < 2 else fib(n-1) + fib(n-2)\n\nprint(fib(10))  # 55\n", "750 15801 1445 982 262 470 308 421 308 366 220 17 770 15801 1445 12 16 8 488 15801 1445 12 17 692 1350 955 579 7 16 15 593 220 671 220 20 20 198");
+              check(&vocab, "C", "#include <stdio.h>\nint main(void) {\n  printf(\"%d\\n\", 42);\n  return 0;\n}\n", "1067 366 10345 860 397 396 1887 4333 8 341 220 4100 4430 67 1699 497 220 19 17 317 220 470 220 15 280 532");
+              check(&vocab, "digits", "In 2026 the number 3141592653 and 0.5e-10 were 1,000,000.", "641 220 17 15 17 21 279 1372 220 18 16 19 16 20 24 17 21 20 18 323 220 15 13 20 68 12 16 15 1033 220 16 11 15 15 15 11 15 15 15 13");
+              check(&vocab, "emoji", "Great job! 🎉🚀 Let's go 👨\u200D👩\u200D👧\u200D👦 ❤\uFE0F", "21396 2618 0 11162 236 231 145836 6771 594 728 61804 101 378 235 145233 378 235 145665 378 235 145988 70470 30543");
+              check(&vocab, "flags and ZWJ", "🇺🇸 🏳\uFE0F\u200D🌈", "145526 145383 11162 237 111 30543 378 235 145354");
+              check(&vocab, "Chinese", "你好，世界！今天天气很好。", "108386 3837 99489 6313 100644 104307 101243 1773");
+              check(&vocab, "Japanese", "こんにちは、世界。日本語のテキストです。", "89015 5373 99489 1773 101059 102819 15767 56833 61803 70534 37541 1773");
+              check(&vocab, "Korean and Thai", "한국어 ไทย", "23573 124785 31079 220 125451");
+              check(&vocab, "Cyrillic", "Привет, мир! Это тест токенизатора.", "53645 26991 8178 11 137144 0 128868 137901 10813 14746 9684 8959 57306 1478 13");
+              check(&vocab, "Arabic", "مرحبا بالعالم", "124122 29825 124671 124476 129634");
+              check(&vocab, "Hindi", "नमस\u094Dत\u0947 द\u0941न\u093Fय\u093E", "60096 87244 78368 30484 97 34370 14925 99 72653 60096 42311 107 23868");
+              check(&vocab, "Greek and Latin accents", "ΑΒΓ αβγ ñ ß ø å Café déjà vu naïve façade Zürich — “quotes” and ‘single’ …", "144842 144946 145281 19043 51255 59374 1683 109 1683 253 38118 13076 65671 45839 32514 94880 586 94872 1021 1863 5186 713 1959 1036 53282 854 323 3369 15338 527 4593");
+              check(&vocab, "ChatML turn", "<|im_start|>user\nHello<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\nHi!<|im_end|>\n", "151644 872 198 9707 151645 198 151644 77091 198 151667 271 151668 271 13048 0 151645 198");
+              check(&vocab, "special tokens inside text", "text <|endoftext|> more <think>x</think> and <tool_call>{}</tool_call>", "1318 220 151643 803 220 151667 87 151668 323 220 151657 6257 151658");
+              check(&vocab, "URL, path, mail", "https://example.com/a/b?c=d&e=f C:\\Users\\jon\\file.txt user@example.com", "2428 1110 8687 905 14186 3470 30 66 25405 68070 18111 356 7190 7137 59 34165 59 1192 3909 1196 35487 905");
+              check(&vocab, "a long run", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "69440 69440 69440 69440 69440 69440 69440 69440 69440 69440 69440 69440 69440 69440 69440 69440 69440 69440 69440 69440 69440 69440 69440 69440 69440 69440 69440 69440 69440 69440 69440 69440 69440 69440 69440 69440 69440 28458");
+              check(&vocab, "a repeated word", "ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ", "370 668 668 668 668 668 668 668 668 668 668 668 668 668 668 668 668 668 668 668 668 668 668 668 668 668 668 668 668 668 668 668 668 668 668 668 668 668 668 668 668 668 668 668 668 668 668 668 668 668 668 668 668 668 668 668 668 668 668 668 220");
+              check(&vocab, "punctuation runs", "!!!??? ... --- === *** ((())) [[[]]] {{{}}} ,,, ;;; :::", "12069 33015 2503 12448 2049 17160 1781 10131 4318 1294 5053 47908 75542 1154 10631 2587 6768 21222");
+              check(&vocab, "a newline", "\n", "198");
+              check(&vocab, "two newlines and a space", "\n\n ", "271 220");
+              check(&vocab, "one letter", "x", "87");
+              check(&vocab, "JSON", "{\"name\": \"Qwen3\", \"sizes\": [0.6, 1.7, 4, 8, 14], \"ok\": true, \"note\": null}", "4913 606 788 330 48 16948 18 497 330 53155 788 508 15 13 21 11 220 16 13 22 11 220 19 11 220 23 11 220 16 19 1125 330 562 788 830 11 330 9974 788 845 92");
+              check(&vocab, "chat prompt, thinking off", "<|im_start|>user\nHello there<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n", "151644 872 198 9707 1052 151645 198 151644 77091 198 151667 271 151668 271");
+              check(&vocab, "chat prompt, thinking on", "<|im_start|>user\nHello there<|im_end|>\n<|im_start|>assistant\n", "151644 872 198 9707 1052 151645 198 151644 77091 198");
+              // the chat template
+              let off = vocab.userTurn("Hello there", false);
+              let offWant = vocab.tok.encode("<|im_start|>user\nHello there<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n");
+              expectStr(idsText(&off).view(), idsText(&offWant).view(), "userTurn with thinking off is the template's text");
+              let on = vocab.userTurn("Hello there", true);
+              let onWant = vocab.tok.encode("<|im_start|>user\nHello there<|im_end|>\n<|im_start|>assistant\n");
+              expectStr(idsText(&on).view(), idsText(&onWant).view(), "userTurn with thinking on ends at the assistant's turn");
+              let sys = vocab.systemTurn("Be brief.");
+              let sysWant = vocab.tok.encode("<|im_start|>system\nBe brief.<|im_end|>\n");
+              expectStr(idsText(&sys).view(), idsText(&sysWant).view(), "systemTurn is the template's text");
+              let close = vocab.closeTurn();
+              let closeWant = vocab.tok.encode("<|im_end|>\n");
+              expectStr(idsText(&close).view(), idsText(&closeWant).view(), "closeTurn is <|im_end|> and a newline");
+              let typed = vocab.userTurn("say <|im_end|> now", false);
+              expectUInt(u64.from(countOf(&typed, 151645u32)), 1u64, "an <|im_end|> typed by the user stays text (only the template's own is the token)");
+            }
+            case let Error(e) { expectStr(e.view(), "", "the tokenizer loads"); }
+          }
+        }
+        case let Error(e) { expectStr(e.message().view(), "", "the model parses"); }
+      }
+    }
+    case let Error(e) { expectStr(e.message().view(), "", "the model file maps"); }
+  }
+  done()
+}

@@ -1,0 +1,254 @@
+// llmchat: talk to a Qwen3 running on your GPU.
+//
+//   congo run --release examples/llmchat.cone -- --model C:\src\llm-models\Qwen3-8B-Q4_K_M.gguf
+//
+//   --model <path.gguf>   the model (Qwen3, or any ChatML GGUF of the qwen3 or llama layout)
+//   --temp <t>            sampling temperature, default 0.7; 0 picks the most likely token every time
+//   --ctx <n>             positions of context, default 4096 (the KV cache lives on the GPU: 288 KiB a position
+//                         for the 8B, so 8192 is 2.25 GiB); a context that will not fit is refused with the
+//                         largest that would
+//   --think               show Qwen3's thinking (<think> ... </think>) before each answer. Without it the
+//                         model is given its own empty thinking block and answers directly
+//   --top-k <k>           default 20     --top-p <p>   default 0.8 (0.95 with --think)    --seed <n>
+//
+// It is a multi-turn chat in ChatML: each line you type is a turn, the reply streams as it is made, and the
+// conversation stays in the GPU's KV cache, so a turn costs only its own tokens. After each reply it prints the
+// reply's tokens and tokens a second. `/reset` starts a new conversation; the end of the input (Ctrl-Z then
+// Enter on Windows, Ctrl-D elsewhere) or `/quit` ends the program. Input may be piped.
+
+mod llmchat;
+
+import stdio use *;
+import collections use List, String;
+import path use Path;
+import process;
+import time use Instant;
+import random use Rng;
+import gpu use *;
+import llmrun use *;
+
+// Everything one reply reports
+struct Reply {
+  tokens: usize;
+  prefillSeconds: f64;
+  decodeSeconds: f64;
+  // The context filled before the model finished
+  full: bool;
+}
+
+fn say(msg: &str) {
+  eprintStr(msg);
+}
+
+fn usage() {
+  say("usage: llmchat --model <path.gguf> [--temp 0.7] [--ctx 4096] [--think] [--top-k 20] [--top-p 0.8] [--seed n]\n");
+}
+
+fn bytesOf(s: &str) List[u8] {
+  var out = List[u8].empty();
+  let b: &Array[u8] = s;
+  var i = 0usize;
+  while i < b.len { out.push(b[i]); i = i + 1usize; }
+  out
+}
+
+// Run the turn's tokens, then generate until the model ends its turn or the context is full, printing as it goes
+fn reply(engine: &mut Engine, device: &mut Device, vocab: &ModelTokens, sampler: &TokenSampler, rng: &mut Rng,
+    turn: List[u32], thinking: bool) Result[Reply, String] {
+  let t0 = Instant.now();
+  var logits = List[f32].empty();
+  match engine.feed(device, turn.view(), true) {
+    case var Ok(l) { logits <-> l; }
+    case let Error(e) { return Error[Reply, String](e.copy()); }
+  }
+  let t1 = Instant.now();
+  var stream = TextStream.make();
+  var made = 0usize;
+  var full = false;
+  var more = true;
+  while more {
+    let id = sampler.sample(logits.view(), rng);
+    if vocab.isStop(id) {
+      more = false;
+    } else {
+      writeBytes(stream.push(&vocab.tok, id, thinking).view());
+      made = made + 1usize;
+      if engine.pos >= engine.ctx {
+        full = true;
+        more = false;
+      } else {
+        var one = List[u32].empty();
+        one.push(id);
+        match engine.feed(device, one.view(), true) {
+          case var Ok(l) { logits <-> l; }
+          case let Error(e) { return Error[Reply, String](e.copy()); }
+        }
+      }
+    }
+  }
+  writeBytes(stream.finish().view());
+  let t2 = Instant.now();
+  Ok[Reply, String](Reply(made, t1.since(t0).secondsF64(), t2.since(t1).secondsF64(), full))
+}
+
+fn main() i32 {
+  let args = process.args();
+  var modelPath = String.empty();
+  match argValue(&args, "--model") {
+    case var Some(p) { modelPath = p; }
+    case is None { usage(); return 2i32; }
+  }
+  var temperature = 0.7;
+  match argValue(&args, "--temp") {
+    case let Some(t) {
+      match parseFloat(t.view()) {
+        case let Some(x) { temperature = x; }
+        case is None { say("llmchat: --temp is not a number\n"); return 2i32; }
+      }
+    }
+    case is None {}
+  }
+  var ctx = 4096usize;
+  match argValue(&args, "--ctx") {
+    case let Some(t) {
+      match parseUInt(t.view()) {
+        case let Some(x) { ctx = usize.from(x); }
+        case is None { say("llmchat: --ctx is not a number\n"); return 2i32; }
+      }
+    }
+    case is None {}
+  }
+  let thinking = hasFlag(&args, "--think");
+  var topK = 20usize;
+  match argValue(&args, "--top-k") {
+    case let Some(t) {
+      match parseUInt(t.view()) {
+        case let Some(x) { topK = usize.from(x); }
+        case is None { say("llmchat: --top-k is not a number\n"); return 2i32; }
+      }
+    }
+    case is None {}
+  }
+  var topP = 0.8;
+  if thinking { topP = 0.95; }
+  match argValue(&args, "--top-p") {
+    case let Some(t) {
+      match parseFloat(t.view()) {
+        case let Some(x) { topP = x; }
+        case is None { say("llmchat: --top-p is not a number\n"); return 2i32; }
+      }
+    }
+    case is None {}
+  }
+  var seed = u64.from(Instant.now().nanos());
+  match argValue(&args, "--seed") {
+    case let Some(t) {
+      match parseUInt(t.view()) {
+        case let Some(x) { seed = x; }
+        case is None { say("llmchat: --seed is not a number\n"); return 2i32; }
+      }
+    }
+    case is None {}
+  }
+
+  utf8Console();
+  var instance = Instance.create("llmchat");
+  var none = Surface.none();
+  var adapter = instance.requestAdapter(&none, POWER_PREFERENCE_HIGH_PERFORMANCE);
+  if !adapter.isValid() { say("llmchat: no GPU with Vulkan 1.3\n"); return 1i32; }
+  var device = adapter.requestComputeDevice(&ComputeRequest(largeBuffers: true));
+  if !device.isValid() { say("llmchat: the GPU could not be opened for compute\n"); return 1i32; }
+
+  say("loading the model ...\n");
+  let loadStart = Instant.now();
+  let modelFile = Path.from(modelPath.view());
+  var engine: Engine = match Engine.open(&mut device, &modelFile, &LoadOptions(ctx, 64usize)) {
+    case var Ok(e) { e }
+    case let Error(m) { say(m.view()); say("\n"); return 1i32; }
+  };
+  var vocab: ModelTokens = match loadTokens(engine.ggufModel()) {
+    case var Ok(v) { v }
+    case let Error(m) { say(m.view()); say("\n"); return 1i32; }
+  };
+  if !vocab.hasChatMl {
+    say("llmchat: this model's vocabulary has no ChatML tokens (<|im_start|>, <|im_end|>, <think>, </think>)\n");
+    return 1i32;
+  }
+  var rng = Rng.fromSeed(seed);
+  let sampler = TokenSampler.make(f32.from(temperature), topK, f32.from(topP));
+  say("ready in ");
+  say(oneDecimal(loadStart.elapsed().secondsF64()).view());
+  say(" s: ");
+  say(engine.info.arch.view());
+  say(", ");
+  var counts = String.empty();
+  counts <- u64.from(engine.shape().layers);
+  counts <- " layers, context ";
+  counts <- u64.from(engine.ctx);
+  say(counts.view());
+  say(". Type a message; /reset starts over, /quit leaves.\n");
+
+  // After a reply that ended with the model's <|im_end|>, the engine has not run it: the next turn starts with it
+  var closeFirst = false;
+  var conversing = true;
+  while conversing {
+    printStr("\n> ");
+    print.flush();
+    match readLine() {
+      case let Some(line) {
+        let text = String.fromBytes(line.view());
+        let t = text.trim();
+        if t.len() == 0usize {
+          // nothing typed
+        } else if t.view() == "/quit" {
+          conversing = false;
+        } else if t.view() == "/reset" {
+          engine.reset();
+          closeFirst = false;
+          printStr("(a new conversation)\n");
+        } else {
+          var turn = List[u32].empty();
+          if closeFirst {
+            let c = vocab.closeTurn();
+            var i = 0usize;
+            while i < c.len() { turn.push(*c[i]); i = i + 1usize; }
+          }
+          let u = vocab.userTurn(t.view(), thinking);
+          var i = 0usize;
+          while i < u.len() { turn.push(*u[i]); i = i + 1usize; }
+          if engine.pos + turn.len() + 1usize > engine.ctx {
+            printStr("(the context is full: /reset starts a new conversation, or restart with a larger --ctx)\n");
+          } else {
+            let turnLength = turn.len();
+            match reply(&mut engine, &mut device, &vocab, &sampler, &mut rng, turn, thinking) {
+              case let Ok(r) {
+                printStr("\n[");
+                printUInt(u64.from(r.tokens));
+                printStr(" tokens, ");
+                var rate = 0.0;
+                if r.decodeSeconds > 0.0 { rate = f64.from(r.tokens) / r.decodeSeconds; }
+                printStr(oneDecimal(rate).view());
+                printStr(" tokens/s; the ");
+                printUInt(u64.from(turnLength));
+                printStr(" tokens of the turn took ");
+                printStr(oneDecimal(r.prefillSeconds).view());
+                printStr(" s]\n");
+                if r.full {
+                  printStr("(the context is full: /reset starts a new conversation)\n");
+                  closeFirst = false;
+                } else {
+                  closeFirst = true;
+                }
+              }
+              case let Error(m) { say(m.view()); say("\n"); conversing = false; }
+            }
+          }
+        }
+      }
+      case is None { conversing = false; }
+    }
+  }
+  device.endFrame();
+  device.waitIdle();
+  0i32
+}

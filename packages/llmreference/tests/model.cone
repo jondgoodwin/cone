@@ -1,0 +1,150 @@
+// The reference forward pass over synthetic models: a batch of tokens and the same tokens one at a time (with
+// the KV cache between them) give the same logits bit for bit; the logits are finite and depend on the prompt;
+// the variants a model can have (tied output, no q/k norm, the other rotation order, a query wider than the model)
+// each run and each change the answer. No GPU: this runs on Linux.
+
+mod model;
+
+import testing use *;
+import libc;
+import collections use List;
+import random use Rng;
+import llmreference use *;
+
+fn shapeOf(layers: usize, qkNorm: bool, tied: bool, ropeMode: u32, nHeads: usize) ModelShape {
+  ModelShape(layers, 256usize, 256usize, nHeads, 2usize, 32usize, 40usize, 0.000001, 10000.0, 32usize, ropeMode, qkNorm, tied)
+}
+
+fn typesOf() ModelTypes {
+  ModelTypes(QTYPE_Q4_K, QTYPE_Q6_K, QTYPE_Q6_K, QTYPE_Q8_0)
+}
+
+fn finite(l: &List[f32]) bool {
+  var i = 0usize;
+  while i < l.len() {
+    let v = f64.from(*l[i]);
+    if !(libc.fabs(v) < 1.0e30) { return false; }
+    i = i + 1usize;
+  }
+  true
+}
+
+fn maxAbs(l: &List[f32]) f64 {
+  var m = 0.0;
+  var i = 0usize;
+  while i < l.len() {
+    let v = libc.fabs(f64.from(*l[i]));
+    if v > m { m = v; }
+    i = i + 1usize;
+  }
+  m
+}
+
+fn maxDiff(a: &List[f32], b: &List[f32]) f64 {
+  var worst = 0.0;
+  var i = 0usize;
+  while i < a.len() {
+    let d = libc.fabs(f64.from(*a[i]) - f64.from(*b[i]));
+    if d > worst { worst = d; }
+    i = i + 1usize;
+  }
+  worst
+}
+
+fn ids(a: u32, b: u32, c: u32, d: u32, e: u32) List[u32] {
+  var l = List[u32].empty();
+  l.push(a); l.push(b); l.push(c); l.push(d); l.push(e);
+  l
+}
+
+// The logits of the prompt run as one batch, and as one token at a time; their largest difference
+fn batchVersusSteps(m: &ModelWeights, prompt: &List[u32]) f64 {
+  var c1 = RefCache.make(&m.shape, 16usize);
+  let whole = forwardCpu(m, &mut c1, prompt.view(), 0usize);
+  var c2 = RefCache.make(&m.shape, 16usize);
+  var last = List[f32].empty();
+  var t = 0usize;
+  while t < prompt.len() {
+    last = forwardCpu(m, &mut c2, &prompt.view()[t..<t + 1usize], t);
+    t = t + 1usize;
+  }
+  if whole.len() != last.len() || whole.len() == 0usize { return 1.0e30; }
+  maxDiff(&whole, &last)
+}
+
+fn main() i32 {
+  var rng = Rng.fromSeed(2024u64);
+  let prompt = ids(3u32, 17u32, 5u32, 39u32, 0u32);
+  let other = ids(3u32, 17u32, 5u32, 39u32, 1u32);
+
+  // ---- the Qwen3 shape: grouped-query heads (8 query heads over 2 key/value heads), q/k norm, neox rotation, untied ----
+  let shape = shapeOf(3usize, true, false, 1u32, 8usize);
+  let m = syntheticModel(&mut rng, &shape, &typesOf());
+  expectBool(isValidWeights(&m), true, "the synthetic model has every matrix its shape needs");
+  var cache = RefCache.make(&shape, 16usize);
+  let logits = forwardCpu(&m, &mut cache, prompt.view(), 0usize);
+  expectUInt(u64.from(logits.len()), 40u64, "one logit for each token of the vocabulary");
+  expectBool(finite(&logits), true, "the logits are finite");
+  expectFloat(batchVersusSteps(&m, &prompt), 0.0, 0.0, "a batch and one token at a time give the same logits");
+  var c2 = RefCache.make(&shape, 16usize);
+  let logits2 = forwardCpu(&m, &mut c2, other.view(), 0usize);
+  expectBool(maxDiff(&logits, &logits2) > 0.01, true, "a different last token gives different logits");
+
+  // two calls continue one sequence: positions 0..2 then 3..4
+  var c3 = RefCache.make(&shape, 16usize);
+  let first = ids(3u32, 17u32, 5u32, 0u32, 0u32);
+  forwardCpu(&m, &mut c3, &first.view()[0usize..<3usize], 0usize);
+  let tail = forwardCpu(&m, &mut c3, &prompt.view()[3usize..<5usize], 3usize);
+  expectFloat(maxDiff(&logits, &tail), 0.0, 0.0, "a prompt in two pieces gives the logits of the whole");
+
+  // refusals: a token outside the vocabulary, positions past the cache
+  var c4 = RefCache.make(&shape, 4usize);
+  expectUInt(u64.from(forwardCpu(&m, &mut c4, prompt.view(), 0usize).len()), 0u64, "five tokens do not fit a cache of four");
+  var c5 = RefCache.make(&shape, 16usize);
+  expectUInt(u64.from(forwardCpu(&m, &mut c5, ids(40u32, 0u32, 0u32, 0u32, 0u32).view(), 0usize).len()), 0u64, "token 40 is outside a vocabulary of 40");
+
+  // ---- the variants ----
+  {
+    let sTied = shapeOf(3usize, true, true, 1u32, 8usize);
+    let mTied = syntheticModel(&mut rng, &sTied, &typesOf());
+    expectBool(isValidWeights(&mTied), true, "a tied model needs no output matrix");
+    var c = RefCache.make(&sTied, 16usize);
+    let l = forwardCpu(&mTied, &mut c, prompt.view(), 0usize);
+    expectUInt(u64.from(l.len()), 40u64, "a tied model gives logits");
+    expectBool(finite(&l), true, "...finite");
+    expectFloat(batchVersusSteps(&mTied, &prompt), 0.0, 0.0, "...the same in a batch and a step at a time");
+  }
+  {
+    let sPlain = shapeOf(3usize, false, false, 0u32, 8usize);
+    let mPlain = syntheticModel(&mut rng, &sPlain, &typesOf());
+    var c = RefCache.make(&sPlain, 16usize);
+    let l = forwardCpu(&mPlain, &mut c, prompt.view(), 0usize);
+    expectBool(finite(&l), true, "a Llama-style model (no q/k norm, the normal rotation order) is finite");
+    expectFloat(batchVersusSteps(&mPlain, &prompt), 0.0, 0.0, "...the same in a batch and a step at a time");
+  }
+  {
+    // 16 query heads of 32 over a model width of 256: the query is wider than the model
+    let sWide = shapeOf(2usize, true, false, 1u32, 16usize);
+    let mWide = syntheticModel(&mut rng, &sWide, &typesOf());
+    expectBool(isValidWeights(&mWide), true, "a query wider than the model is a valid shape");
+    expectUInt(u64.from(sWide.qDim()), 512u64, "...512 wide");
+    expectFloat(batchVersusSteps(&mWide, &prompt), 0.0, 0.0, "...the same in a batch and a step at a time");
+  }
+  {
+    // the rotation order and the q/k norm each change the answer (the same weights, one field of the shape changed)
+    var other1 = shape.copy();
+    other1.ropeMode = 0u32;
+    let mA = m.withShape(other1.copy());
+    var cA = RefCache.make(&other1, 16usize);
+    let lA = forwardCpu(&mA, &mut cA, prompt.view(), 0usize);
+    expectBool(maxDiff(&logits, &lA) > 0.001 * maxAbs(&logits), true, "the other rotation order moves the logits by over 1e-3 of their size");
+    var other2 = shape.copy();
+    other2.qkNorm = false;
+    let mB = m.withShape(other2.copy());
+    var cB = RefCache.make(&other2, 16usize);
+    let lB = forwardCpu(&mB, &mut cB, prompt.view(), 0usize);
+    expectBool(maxDiff(&logits, &lB) > 0.001 * maxAbs(&logits), true, "leaving out the q/k norm moves the logits by over 1e-3 of their size");
+  }
+  done()
+}
+
