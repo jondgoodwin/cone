@@ -8,9 +8,10 @@
 // - A lookup finding nothing: the global table has all 4 functions missing.
 // - A null lookup (no loader): nothing found, nothing counted missing.
 // - A lookup finding everything: the global table asks for its 4 functions,
-//   an instance's table for its 16 (2 of them the debug messenger's,
-//   optional), a device's for its 78, each once, and none is missing.
-// - An instance finding nothing misses its 14 required functions; tables are
+//   an instance's table for its 17 (the surface's 5 and the debug messenger's 2
+//   optional), a device's for its 78 (the swapchain's 5 optional too), each
+//   once, and none is missing.
+// - An instance finding nothing misses its 10 required functions; tables are
 //   per instance and per device.
 // - An instance without debug utils: its table still has no function missing,
 //   and 'hasDebugUtils' is false.
@@ -74,17 +75,20 @@ fn main() i32 {
   expectInt(i64.from(instanceFns.missing), 0, "every instance function found");
   expectInt(i64.from(asked), 17, "each instance function asked for once");
   expectBool(instanceFns.hasDebugUtils(), true, "the debug messenger's functions found");
+  expectBool(instanceFns.hasSurface(), true, "the surface's functions found");
 
   let device = 0x2000usize as vulkan.Device;
   asked = 0;
   let deviceFns = vulkan.DeviceFns.load(&instanceFns, device);
   expectInt(i64.from(deviceFns.missing), 0, "every device function found");
+  expectBool(deviceFns.hasSwapchain(), true, "the swapchain's functions found");
   expectInt(i64.from(asked), 78, "each device function asked for once");
 
   // Another instance has a table of its own
   let lost = vulkan.InstanceFns.loadWith(&findNothing, instance);
-  expectInt(i64.from(lost.missing), 15, "an instance finding nothing: its 15 required functions missing");
+  expectInt(i64.from(lost.missing), 10, "an instance finding nothing: its 10 required functions missing");
   expectBool(lost.hasDebugUtils(), false, "and no debug messenger");
+  expectBool(lost.hasSurface(), false, "and no surface");
   expectBool(instanceFns.hasDebugUtils(), true, "the first instance's table is its own");
 
   noDebugUtils = true;

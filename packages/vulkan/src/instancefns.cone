@@ -3,9 +3,10 @@
 // The functions of one instance, found for it by 'InstanceFns.load': those
 // taking an Instance or a PhysicalDevice, vkGetDeviceProcAddr (through which a
 // device's are found), surfaces' (VK_KHR_surface), and the debug messenger's
-// (VK_EXT_debug_utils) if that was enabled on the instance, those two alone
-// optional. It belongs to the instance it was found for: another instance
-// has a table of its own.
+// (VK_EXT_debug_utils), the last two found only if that extension was enabled
+// on the instance, and so optional: not counted in 'missing', and said by
+// 'hasSurface' and 'hasDebugUtils'. It belongs to the instance it was found
+// for: another instance has a table of its own.
 pub struct InstanceFns {
   pfnGetDeviceProcAddr: usize = 0usize;
   pfnDestroyInstance: usize = 0usize;
@@ -37,7 +38,7 @@ pub struct InstanceFns {
   // The same through any vkGetInstanceProcAddr (a test's stand-in)
   pub fn loadWith(getInstanceProcAddr: PFN_GetInstanceProcAddr, instance: Instance) InstanceFns {
     var t = InstanceFns();
-    if getInstanceProcAddr as usize == 0usize { t.missing = 15u32; return t; }
+    if getInstanceProcAddr as usize == 0usize { t.missing = 10u32; return t; }
     var missing = 0u32;
     t.pfnGetDeviceProcAddr = lookup(getInstanceProcAddr, instance, &"vkGetDeviceProcAddr" as *u8);
     if t.pfnGetDeviceProcAddr == 0usize { missing = missing + 1u32; }
@@ -60,19 +61,23 @@ pub struct InstanceFns {
     t.pfnCreateDevice = lookup(getInstanceProcAddr, instance, &"vkCreateDevice" as *u8);
     if t.pfnCreateDevice == 0usize { missing = missing + 1u32; }
     t.pfnDestroySurfaceKHR = lookup(getInstanceProcAddr, instance, &"vkDestroySurfaceKHR" as *u8);
-    if t.pfnDestroySurfaceKHR == 0usize { missing = missing + 1u32; }
     t.pfnGetPhysicalDeviceSurfaceSupportKHR = lookup(getInstanceProcAddr, instance, &"vkGetPhysicalDeviceSurfaceSupportKHR" as *u8);
-    if t.pfnGetPhysicalDeviceSurfaceSupportKHR == 0usize { missing = missing + 1u32; }
     t.pfnGetPhysicalDeviceSurfaceCapabilitiesKHR = lookup(getInstanceProcAddr, instance, &"vkGetPhysicalDeviceSurfaceCapabilitiesKHR" as *u8);
-    if t.pfnGetPhysicalDeviceSurfaceCapabilitiesKHR == 0usize { missing = missing + 1u32; }
     t.pfnGetPhysicalDeviceSurfaceFormatsKHR = lookup(getInstanceProcAddr, instance, &"vkGetPhysicalDeviceSurfaceFormatsKHR" as *u8);
-    if t.pfnGetPhysicalDeviceSurfaceFormatsKHR == 0usize { missing = missing + 1u32; }
     t.pfnGetPhysicalDeviceSurfacePresentModesKHR = lookup(getInstanceProcAddr, instance, &"vkGetPhysicalDeviceSurfacePresentModesKHR" as *u8);
-    if t.pfnGetPhysicalDeviceSurfacePresentModesKHR == 0usize { missing = missing + 1u32; }
     t.pfnCreateDebugUtilsMessengerEXT = lookup(getInstanceProcAddr, instance, &"vkCreateDebugUtilsMessengerEXT" as *u8);
     t.pfnDestroyDebugUtilsMessengerEXT = lookup(getInstanceProcAddr, instance, &"vkDestroyDebugUtilsMessengerEXT" as *u8);
     t.missing = missing;
     t
+  }
+
+  // Whether the surface functions were found (VK_KHR_surface was enabled on
+  // the instance 'load' was given: an instance for a window has it, one a
+  // headset's runtime makes may not)
+  pub fn hasSurface(self: &) bool {
+    pfnDestroySurfaceKHR != 0usize && pfnGetPhysicalDeviceSurfaceSupportKHR != 0usize
+      && pfnGetPhysicalDeviceSurfaceCapabilitiesKHR != 0usize && pfnGetPhysicalDeviceSurfaceFormatsKHR != 0usize
+      && pfnGetPhysicalDeviceSurfacePresentModesKHR != 0usize
   }
 
   // Whether the debug messenger's functions were found (VK_EXT_debug_utils was

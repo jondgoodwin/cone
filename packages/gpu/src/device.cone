@@ -19,6 +19,45 @@ pub struct Device {
 
   pub fn isValid(self: &) bool { (backend.device as *u8 as usize) != 0usize }
 
+  // No device: what a field holds before one is made for it (not valid)
+  pub fn none() Device {
+    Device(DeviceBackend(0usize as vulkan.Device, noDevFns(), noInstFns(), 0usize as vulkan.PhysicalDevice, 0u32,
+      vulkan.RayFns()), CommandQueue(zeroed[QueueBackend](), noDevFns()), 0u64)
+  }
+
+  // The device's Vulkan handle, and the family of its one queue (queue index
+  // 0), for a runtime that is told them: OpenXR's session binding
+  pub fn vulkanHandle(self: &) vulkan.Device { backend.device }
+  pub fn vulkanQueueFamily(self: &) u32 { backend.queueFamily }
+
+  // A color texture over an image that something else made and owns (a
+  // headset's swapchain image: OpenXR hands over the VkImage), 'width' by
+  // 'height', of 'format' (TEXTURE_FORMAT_...: the layer's name for the
+  // image's Vulkan format, whose value 'vulkanFormatOf' gives), for a render pass to draw into
+  // (TEXTURE_USAGE_RENDER_ATTACHMENT, and TEXTURE_USAGE_COPY_SRC if
+  // 'copySource': the image was made with the transfer-source usage). It
+  // rests, as a texture the device made to draw into does, in the color
+  // attachment layout, which is the layout a headset's runtime hands an
+  // image over in and takes it back in. Its end destroys the view made here
+  // and nothing else: the image is its owner's, and must outlive the
+  // texture. Make it once per image, not per frame. Check 'isValid'.
+  pub fn wrapImage(self: &, image: vulkan.Image, width: u32, height: u32, format: u32, copySource: bool) Texture {
+    var usage = TEXTURE_USAGE_RENDER_ATTACHMENT;
+    if copySource { usage = usage | TEXTURE_USAGE_COPY_SRC; }
+    var result = Texture(TextureBackend(image, vulkan.ImageView(0u64), KIND_COLOR, false, backend.device, backend.fns,
+      vulkan.DeviceMemory(0u64)), width, height, format, usage);
+    let vk = vkFormat(format);
+    if !self.isValid() || image.h == 0u64 || vk == vulkan.FORMAT_UNDEFINED { return result; }
+    let vci = vulkan.ImageViewCreateInfo(image: image, viewType: vulkan.IMAGE_VIEW_TYPE_2D, format: vk,
+      components: vulkan.ComponentMapping(), subresourceRange: vulkan.ImageSubresourceRange(aspectMask: aspectOf(vk)));
+    var view = vulkan.ImageView(0u64);
+    if check(backend.fns.createImageView(backend.device, &vci, nullp(), &mut view), "vkCreateImageView") {
+      result.backend.view = view;
+      result.backend.ownsView = true;
+    }
+    result
+  }
+
   // Begin a frame, if one is not begun: wait until the GPU has finished the
   // frame that last used this frame's state, and reset its command pools.
   // 'getCurrentTexture', 'createCommandEncoder', 'writeBuffer' and

@@ -38,6 +38,11 @@ fn textureFormat(vkFormat: u32) u32 {
   TEXTURE_FORMAT_UNDEFINED
 }
 
+// A texture format's VkFormat value (0, VK_FORMAT_UNDEFINED, when the layer
+// has no such format), for a runtime that speaks in Vulkan's formats: OpenXR
+// lists the swapchain formats it offers as VkFormat values
+pub fn vulkanFormatOf(format: u32) u32 { vkFormat(format) }
+
 // The aspect of a view of 'vkFormat': depth, or color
 fn aspectOf(vkFormat: u32) u32 {
   if vkFormat == vulkan.FORMAT_D32_SFLOAT { return vulkan.IMAGE_ASPECT_DEPTH_BIT; }
@@ -220,6 +225,7 @@ struct TextureBackend {
   baseLayer: u32 = 0u32;
   layerCount: u32 = 1u32;
   views: *ViewCache = null;  // a device-made texture's; null otherwise
+  ownsView: bool = false;       // an image made elsewhere ('wrapImage'): the view alone is the texture's to destroy
 }
 
 // The views 'createViewWith' has made of a texture, each kept until the
@@ -341,6 +347,10 @@ pub struct Texture {
       backend.fns.destroyImage(backend.device, backend.image, nullp());
     }
     if backend.owned && backend.memory.h != 0u64 { backend.fns.freeMemory(backend.device, backend.memory, nullp()); }
+    if !backend.owned && backend.ownsView && backend.view.h != 0u64 {
+      backend.fns.deviceWaitIdle(backend.device);
+      backend.fns.destroyImageView(backend.device, backend.view, nullp());
+    }
   }
 }
 
