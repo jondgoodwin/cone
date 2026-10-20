@@ -1,0 +1,240 @@
+// gpuwork binds a storage buffer larger than WebGPU's default 128 MiB when the device allows it: 'Job.dispatch'
+// follows the device's own 'maxStorageBufferBindingSize', which is 128 MiB on a device made without
+// ComputeRequest.largeBuffers and the GPU's (4 GiB less 1 byte on an RTX 4060) on one made with it. A local model's
+// output matrix is 487 MiB (Qwen3-8B Q4_K_M), its embedding table 334 MiB.
+//
+// The kernel is a fixture, bigbuffer.slang's farMain: out[i] = src[first + i] for i < 64, and after them the number of
+// words the shader sees src as. The buffers are synthetic: a 160 MiB buffer the GPU fills with zeros ('zeroed'), then
+// 64-word runs of a pattern written into it at its start, across byte 128 MiB, and at its very end.
+//
+// 1. A device made with largeBuffers: the 160 MiB buffer is bound whole, one job, four dispatches over it (the three
+//    runs, and 64 words nobody wrote, which are zero): every word the pattern's or zero, and the shader sees the
+//    whole 41,943,040 words. The job is ok, and nothing was refused.
+// 2. A device made without it (the drawing device 'requestDevice' makes, and a compute device asked for nothing):
+//    each holds bindings to 128 MiB (device.maxStorageBufferBindingSize), as before. A buffer of exactly 128 MiB is
+//    bound, the same runs read across its end; 4 bytes over is refused, one refusal each, the job completes not ok
+//    with its buffers back.
+//
+// A GPU whose storage binding is under 160 MiB with largeBuffers (it cannot bind it) runs none of 1, and its checks
+// count as passed, so the output is the same on every GPU. Only a failure prints. GPU_POWER_PREFERENCE=low-power
+// tests the integrated GPU where there are two. It needs a GPU driver with Vulkan 1.3 and SDL3.dll; with the Vulkan
+// SDK, validation is on and must say nothing. It holds 160 MiB of the GPU's memory.
+
+mod bigbuffer;
+
+import testing use *;
+import libc;
+import collections use List;
+import gpu use *;
+import gpuwork use *;
+
+const WORDS = 41943040usize;           // 160 MiB
+const LIMIT_WORDS = 33554432usize;     // WebGPU's default binding: 128 MiB
+const RUN = 64usize;
+
+fn preference() u32 {
+  let env = libc.getenv("GPU_POWER_PREFERENCE");
+  if (env as usize) != 0usize && libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 { return POWER_PREFERENCE_LOW_POWER; }
+  POWER_PREFERENCE_HIGH_PERFORMANCE
+}
+
+// The word the pattern holds at word index 'k'
+fn pattern(k: usize) u32 { (u32.from(k) + 1u32) * 2654435761u32 }
+
+// Write 64 words of the pattern into 'buffer' from word 'first'
+fn plant(device: &mut Device, buffer: &Buffer, first: usize) {
+  var run = Array[u32, 64]() <- fill 0u32;
+  var i = 0usize;
+  while i < RUN {
+    run[i] = pattern(first + i);
+    i = i + 1usize;
+  }
+  device.queue.writeBuffer(buffer, u64.from(first) * 4u64, &run as *u8, 256u64);
+}
+
+// How many of the 64 words read (from word 'first' of a buffer of 'total' words) are not the pattern's if 'planted',
+// else not zero; and one more if the shader did not see all 'total' words
+fn wrong(words: &List[u32], first: usize, planted: bool, total: usize) u64 {
+  let v = words.view();
+  var n = 0u64;
+  var i = 0usize;
+  while i < RUN {
+    let want = if planted { pattern(first + i) } else { 0u32 };
+    if i >= v.len || v[i] != want { n = n + 1u64; }
+    i = i + 1usize;
+  }
+  if RUN >= v.len || v[RUN] != u32.from(total) { n = n + 1u64; }
+  n
+}
+
+// One dispatch of farMain over the buffer in slot 'src', 64 words from 'first': the slot of its readback
+fn read(device: &mut Device, job: &mut Job, kernel: &Kernel, src: u32, first: usize) u32 {
+  let params = job.give(upload(device, &[u32.from(first), u32.from(RUN)]));
+  let out = job.give(zeroed(device, RUN + 1usize));
+  job.dispatch(device, kernel, &[params, src, out], 1u32);
+  job.readback(device, out)
+}
+
+fn main() i32 {
+  var instance = Instance.create("gpuwork bigbuffer");
+  require(instance.isValid(), "a Vulkan 1.3 instance");
+  var none = Surface.none();
+  var adapter = instance.requestAdapter(&none, preference());
+  require(adapter.isValid(), "an adapter");
+
+  // ---- 1. largeBuffers: a 160 MiB buffer bound whole ----
+  {
+    var device = adapter.requestComputeDevice(&ComputeRequest(largeBuffers: true));
+    require(device.isValid(), "a compute device with largeBuffers");
+    let ran = device.maxStorageBufferBindingSize >= u64.from(WORDS) * 4u64;
+    if ran {
+      var kernel = Kernel.make(&device, &BIGBUFFER_SPIRV, "farMain", &[READ, READ, READ_WRITE]);
+      require(kernel.isValid(), "the kernel");
+      let big = zeroed(&mut device, WORDS);
+      require(big.isValid(), "a 160 MiB buffer");
+      plant(&mut device, &big, 0usize);
+      plant(&mut device, &big, LIMIT_WORDS - 32usize);
+      plant(&mut device, &big, WORDS - RUN);
+      var works = Works.make();
+      var job = Job.make(&mut device);
+      let src = job.give(big);
+      let atStart = read(&mut device, &mut job, &kernel, src, 0usize);
+      let across = read(&mut device, &mut job, &kernel, src, LIMIT_WORDS - 32usize);
+      let atEnd = read(&mut device, &mut job, &kernel, src, WORDS - RUN);
+      let between = read(&mut device, &mut job, &kernel, src, 20000000usize);
+      expectBool(job.failed, false, "no dispatch of the 160 MiB buffer was refused");
+      var got = List[Completion].empty();
+      let ticket = works.submit(&mut device, job, Target.Here(1u64));
+      require(works.waitFor(&mut device, ticket, &mut got) == 1u32, "the job's completion");
+      let c = &mut got[0usize];
+      expectBool(c.ok, true, "it ran");
+      expectUInt(wrong(&c.words(atStart), 0usize, true, WORDS), 0u64, "the start of the buffer read");
+      expectUInt(wrong(&c.words(across), LIMIT_WORDS - 32usize, true, WORDS), 0u64, "the run across byte 128 MiB read");
+      expectUInt(wrong(&c.words(atEnd), WORDS - RUN, true, WORDS), 0u64, "the far end read");
+      expectUInt(wrong(&c.words(between), 20000000usize, false, WORDS), 0u64, "a run nobody wrote is zero");
+      expectUInt(u64.from(refusals()), 0u64, "nothing refused");
+      device.endFrame();
+      device.waitIdle();
+      expectUInt(u64.from(failures()), 0u64, "no Vulkan call failed");
+      expectUInt(u64.from(validationMessages()), 0u64, "no validation message");
+    } else {
+      // the same number of checks as the case that ran makes
+      var n = 0u32;
+      while n < 12u32 {
+        expect(true, "(this GPU cannot bind 160 MiB: skipped)");
+        n = n + 1u32;
+      }
+    }
+  }
+
+  // ---- 2. Without largeBuffers: 128 MiB, as before ----
+  var which = 0u32;
+  while which < 2u32 {
+    var device = if which == 0u32 { adapter.requestDevice() } else { adapter.requestComputeDevice(&ComputeRequest()) };
+    require(device.isValid(), "a device without largeBuffers");
+    expectUInt(device.maxStorageBufferBindingSize, 134217728u64, "its storage binding is WebGPU's 128 MiB");
+    var kernel = Kernel.make(&device, &BIGBUFFER_SPIRV, "farMain", &[READ, READ, READ_WRITE]);
+    require(kernel.isValid(), "the kernel");
+    var works = Works.make();
+    var got = List[Completion].empty();
+    let before = refusals();
+
+    // A buffer of exactly 128 MiB is bound
+    var job = Job.make(&mut device);
+    let exact = zeroed(&mut device, LIMIT_WORDS);
+    plant(&mut device, &exact, LIMIT_WORDS - RUN);
+    let src = job.give(exact);
+    let atEnd = read(&mut device, &mut job, &kernel, src, LIMIT_WORDS - RUN);
+    expectBool(job.failed, false, "a buffer of exactly 128 MiB is bound");
+    let ticket = works.submit(&mut device, job, Target.Here(2u64));
+    require(works.waitFor(&mut device, ticket, &mut got) == 1u32, "its completion");
+    expectBool(got[0usize].ok, true, "it ran");
+    expectUInt(wrong(&got[0usize].words(atEnd), LIMIT_WORDS - RUN, true, LIMIT_WORDS), 0u64, "its far end read");
+    got.clear();
+
+    // 4 bytes over is refused
+    var over = Job.make(&mut device);
+    let tooBig = over.give(zeroed(&mut device, LIMIT_WORDS + 1usize));
+    let params = over.give(upload(&mut device, &[0u32, u32.from(RUN)]));
+    let out = over.give(zeroed(&mut device, RUN + 1usize));
+    expectBool(over.dispatch(&mut device, &kernel, &[params, tooBig, out], 1u32), false, "a buffer 4 bytes over 128 MiB is refused");
+    expectUInt(u64.from(refusals() - before), 1u64, "with one refusal");
+    let ticket2 = works.submit(&mut device, over, Target.Here(3u64));
+    require(works.waitFor(&mut device, ticket2, &mut got) == 1u32, "its completion");
+    expectBool(got[0usize].ok, false, "it did not run");
+    expectUInt(u64.from(got[0usize].count()), 3u64, "its three buffers back");
+    device.endFrame();
+    device.waitIdle();
+    expectUInt(u64.from(failures()), 0u64, "no Vulkan call failed");
+    expectUInt(u64.from(validationMessages()), 0u64, "no validation message");
+    which = which + 1u32;
+  }
+
+  done()
+}
+
+// spirv-begin bigbuffer.spv BIGBUFFER_SPIRV
+// Written by tools/shaders/shaders.py from bigbuffer.slang (sha256 d1bf102caab04184d0b6eb2c1a7b47d2f9610764f2053494df945adb2324f75d): do not edit.
+let BIGBUFFER_SPIRV: Array[u32, 360] = [
+  0x07230203u32, 0x00010500u32, 0x00280000u32, 0x0000003cu32, 0x00000000u32, 0x00020011u32,
+  0x00000001u32, 0x000b000au32, 0x5f565053u32, 0x5f52484bu32, 0x726f7473u32, 0x5f656761u32,
+  0x66667562u32, 0x735f7265u32, 0x61726f74u32, 0x635f6567u32, 0x7373616cu32, 0x00000000u32,
+  0x0003000eu32, 0x00000000u32, 0x00000001u32, 0x0009000fu32, 0x00000005u32, 0x00000002u32,
+  0x4d726166u32, 0x006e6961u32, 0x00000011u32, 0x00000020u32, 0x00000028u32, 0x00000019u32,
+  0x00060010u32, 0x00000002u32, 0x00000011u32, 0x00000040u32, 0x00000001u32, 0x00000001u32,
+  0x00030003u32, 0x0000000bu32, 0x00000001u32, 0x00070005u32, 0x0000000eu32, 0x75727453u32,
+  0x72757463u32, 0x75426465u32, 0x72656666u32, 0x00000000u32, 0x00060006u32, 0x0000000eu32,
+  0x00000000u32, 0x656d5f5fu32, 0x7265626du32, 0x00000030u32, 0x00040005u32, 0x00000011u32,
+  0x61726170u32, 0x0000736du32, 0x00030005u32, 0x00000020u32, 0x00637273u32, 0x00070005u32,
+  0x00000026u32, 0x74535752u32, 0x74637572u32, 0x64657275u32, 0x66667542u32, 0x00007265u32,
+  0x00060006u32, 0x00000026u32, 0x00000000u32, 0x656d5f5fu32, 0x7265626du32, 0x00000030u32,
+  0x00030005u32, 0x00000028u32, 0x00747364u32, 0x00040005u32, 0x00000002u32, 0x4d726166u32,
+  0x006e6961u32, 0x00040047u32, 0x0000000cu32, 0x00000006u32, 0x00000004u32, 0x00040047u32,
+  0x0000000fu32, 0x00000006u32, 0x00000004u32, 0x00030047u32, 0x0000000eu32, 0x00000002u32,
+  0x00050048u32, 0x0000000eu32, 0x00000000u32, 0x00000023u32, 0x00000000u32, 0x00040047u32,
+  0x00000011u32, 0x00000021u32, 0x00000000u32, 0x00040047u32, 0x00000011u32, 0x00000022u32,
+  0x00000000u32, 0x00030047u32, 0x00000011u32, 0x00000018u32, 0x00040047u32, 0x00000019u32,
+  0x0000000bu32, 0x0000001cu32, 0x00040047u32, 0x00000020u32, 0x00000021u32, 0x00000001u32,
+  0x00040047u32, 0x00000020u32, 0x00000022u32, 0x00000000u32, 0x00030047u32, 0x00000020u32,
+  0x00000018u32, 0x00030047u32, 0x00000026u32, 0x00000002u32, 0x00050048u32, 0x00000026u32,
+  0x00000000u32, 0x00000023u32, 0x00000000u32, 0x00040047u32, 0x00000028u32, 0x00000021u32,
+  0x00000002u32, 0x00040047u32, 0x00000028u32, 0x00000022u32, 0x00000000u32, 0x00020013u32,
+  0x00000001u32, 0x00030021u32, 0x00000003u32, 0x00000001u32, 0x00040015u32, 0x00000009u32,
+  0x00000020u32, 0x00000001u32, 0x0004002bu32, 0x00000009u32, 0x0000000au32, 0x00000000u32,
+  0x00040015u32, 0x0000000bu32, 0x00000020u32, 0x00000000u32, 0x00040020u32, 0x0000000cu32,
+  0x0000000cu32, 0x0000000bu32, 0x0003001du32, 0x0000000fu32, 0x0000000bu32, 0x0003001eu32,
+  0x0000000eu32, 0x0000000fu32, 0x00040020u32, 0x00000010u32, 0x0000000cu32, 0x0000000eu32,
+  0x0004002bu32, 0x00000009u32, 0x00000013u32, 0x00000001u32, 0x00040017u32, 0x00000016u32,
+  0x0000000bu32, 0x00000003u32, 0x00040020u32, 0x00000018u32, 0x00000001u32, 0x00000016u32,
+  0x00020014u32, 0x0000001bu32, 0x0004002bu32, 0x0000000bu32, 0x0000001du32, 0x00000000u32,
+  0x0003001eu32, 0x00000026u32, 0x0000000fu32, 0x00040020u32, 0x00000027u32, 0x0000000cu32,
+  0x00000026u32, 0x0004003bu32, 0x00000010u32, 0x00000011u32, 0x0000000cu32, 0x0004003bu32,
+  0x00000018u32, 0x00000019u32, 0x00000001u32, 0x0004003bu32, 0x00000010u32, 0x00000020u32,
+  0x0000000cu32, 0x0004003bu32, 0x00000027u32, 0x00000028u32, 0x0000000cu32, 0x00050036u32,
+  0x00000001u32, 0x00000002u32, 0x00000000u32, 0x00000003u32, 0x000200f8u32, 0x00000004u32,
+  0x000300f7u32, 0x0000003au32, 0x00000000u32, 0x000300fbu32, 0x0000001du32, 0x0000003bu32,
+  0x000200f8u32, 0x0000003bu32, 0x00060041u32, 0x0000000cu32, 0x0000000du32, 0x00000011u32,
+  0x0000000au32, 0x0000000au32, 0x0004003du32, 0x0000000bu32, 0x00000012u32, 0x0000000du32,
+  0x00060041u32, 0x0000000cu32, 0x00000014u32, 0x00000011u32, 0x0000000au32, 0x00000013u32,
+  0x0004003du32, 0x0000000bu32, 0x00000015u32, 0x00000014u32, 0x0004003du32, 0x00000016u32,
+  0x00000017u32, 0x00000019u32, 0x00050051u32, 0x0000000bu32, 0x0000001au32, 0x00000017u32,
+  0x00000000u32, 0x000500aau32, 0x0000001bu32, 0x0000001cu32, 0x0000001au32, 0x0000001du32,
+  0x000300f7u32, 0x00000006u32, 0x00000000u32, 0x000400fau32, 0x0000001cu32, 0x00000005u32,
+  0x00000006u32, 0x000200f8u32, 0x00000005u32, 0x00050044u32, 0x0000000bu32, 0x0000001fu32,
+  0x00000020u32, 0x00000000u32, 0x00060041u32, 0x0000000cu32, 0x00000025u32, 0x00000028u32,
+  0x0000000au32, 0x00000015u32, 0x0003003eu32, 0x00000025u32, 0x0000001fu32, 0x000200f9u32,
+  0x00000006u32, 0x000200f8u32, 0x00000006u32, 0x0004003du32, 0x00000016u32, 0x0000002bu32,
+  0x00000019u32, 0x00050051u32, 0x0000000bu32, 0x0000002cu32, 0x0000002bu32, 0x00000000u32,
+  0x000500aeu32, 0x0000001bu32, 0x0000002du32, 0x0000002cu32, 0x00000015u32, 0x000300f7u32,
+  0x00000008u32, 0x00000000u32, 0x000400fau32, 0x0000002du32, 0x00000007u32, 0x00000008u32,
+  0x000200f8u32, 0x00000007u32, 0x000200f9u32, 0x0000003au32, 0x000200f8u32, 0x00000008u32,
+  0x0004003du32, 0x00000016u32, 0x00000030u32, 0x00000019u32, 0x00050051u32, 0x0000000bu32,
+  0x00000031u32, 0x00000030u32, 0x00000000u32, 0x00060041u32, 0x0000000cu32, 0x00000032u32,
+  0x00000028u32, 0x0000000au32, 0x00000031u32, 0x0004003du32, 0x00000016u32, 0x00000033u32,
+  0x00000019u32, 0x00050051u32, 0x0000000bu32, 0x00000034u32, 0x00000033u32, 0x00000000u32,
+  0x00050080u32, 0x0000000bu32, 0x00000035u32, 0x00000012u32, 0x00000034u32, 0x00060041u32,
+  0x0000000cu32, 0x00000036u32, 0x00000020u32, 0x0000000au32, 0x00000035u32, 0x0004003du32,
+  0x0000000bu32, 0x00000037u32, 0x00000036u32, 0x0003003eu32, 0x00000032u32, 0x00000037u32,
+  0x000200f9u32, 0x0000003au32, 0x000200f8u32, 0x0000003au32, 0x000100fdu32, 0x00010038u32
+];
+// spirv-end

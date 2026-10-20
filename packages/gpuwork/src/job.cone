@@ -82,7 +82,8 @@ pub struct Job {
   // Run 'kernel' in 'x' by 'y' by 'z' workgroups, binding i the buffer in
   // slot 'slots[i]'. It sees what the job's earlier dispatches wrote. Refused
   // (and the job failed) if the slots do not match the kernel's bindings, a
-  // slot is empty or is named twice, or a buffer is not a storage buffer.
+  // slot is empty or is named twice, a buffer is not a storage buffer, or a
+  // buffer is larger than the device binds (each is bound whole).
   // A Cone kernel's dispatch is given an error buffer of its own, zeroed,
   // bound after the slots, and copied after the dispatch into one the CPU
   // reads when the job is complete (see the Completion's 'failures').
@@ -103,8 +104,10 @@ pub struct Job {
       if (buffers[s].usage & BUFFER_USAGE_STORAGE) == 0u32 {
         return self.refuse("dispatch: a buffer was not made with BUFFER_USAGE_STORAGE");
       }
-      if buffers[s].size > MAX_STORAGE_BUFFER_BINDING_SIZE {
-        return self.refuse("dispatch: a buffer is larger than WebGPU's storage binding (128 MiB)");
+      // A buffer is bound whole, so it is at most what the device binds: WebGPU's 128 MiB, or with
+      // ComputeRequest.largeBuffers the GPU's own (gpu's createBindGroup holds to the same limit)
+      if buffers[s].size > device.maxStorageBufferBindingSize {
+        return self.refuse("dispatch: a buffer is larger than the device's storage binding (device.maxStorageBufferBindingSize: 128 MiB, or with ComputeRequest.largeBuffers the GPU's own)");
       }
       // WebGPU refuses a buffer bound twice in one dispatch when either
       // binding writes it

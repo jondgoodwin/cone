@@ -1,0 +1,166 @@
+// The matrix-vector product over a weights buffer larger than WebGPU's 128 MiB storage binding, the size of a real
+// model's output matrix: 151936 rows of 4096 columns, Q6_K (510,504,960 bytes, Qwen3-8B Q4_K_M's output.weight) and
+// Q4_K (350,060,544 bytes, its token embedding). The test is synthetic: the buffer is filled with zeros by the GPU
+// ('zeroed', so every row decodes to 0), and 8 synthetic seeded rows are written into it at its start and 8 at its
+// very end, where a 32-bit byte offset has run past 487 MiB and 334 MiB; then the whole matvec runs, 151,936 outputs.
+//
+// Each of the 16 rows with data is within llmreference's sumTolerance of its CPU twin's value; every other output is
+// zero. On a device made without largeBuffers the same matvec is refused (the weights buffer is over its 128 MiB),
+// one refusal.
+//
+// Only a failure prints. GPU_POWER_PREFERENCE=low-power tests the integrated GPU where there are two. It needs a
+// GPU driver with Vulkan 1.3 and SDL3.dll; with the Vulkan SDK, validation is on and must say nothing. It holds
+// about 520 MiB of the GPU's memory. A GPU that cannot bind that (its storage binding under the buffer's size
+// with largeBuffers) runs none of the large cases, and the checks count as passed.
+
+mod bigweights;
+
+import testing use *;
+import libc;
+import collections use List;
+import random use Rng;
+import gpu use *;
+import gpuwork use *;
+import llmreference use *;
+import llmkernels use *;
+
+const ROWS = 151936usize;
+const COLS = 4096usize;
+const DATA_ROWS = 8usize;
+
+fn preference() u32 {
+  let env = libc.getenv("GPU_POWER_PREFERENCE");
+  if (env as usize) != 0usize && libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 { return POWER_PREFERENCE_LOW_POWER; }
+  POWER_PREFERENCE_HIGH_PERFORMANCE
+}
+
+fn zerosF(n: usize) List[f32] {
+  var l = List[f32].withCapacity(n);
+  var i = 0usize;
+  while i < n { l.push(0.0); i = i + 1usize; }
+  l
+}
+
+fn zerosD(n: usize) List[f64] {
+  var l = List[f64].withCapacity(n);
+  var i = 0usize;
+  while i < n { l.push(0.0); i = i + 1usize; }
+  l
+}
+
+// Write a matrix's bytes into 'weights' from byte 'at'
+fn put(device: &mut Device, weights: &Buffer, at: usize, m: &QMatrix) {
+  let v = m.bytes.view();
+  device.queue.writeBuffer(weights, u64.from(at), &v[0usize] as *u8, u64.from(v.len));
+}
+
+// One matvec of ROWS x COLS of type 'qt' over a buffer of that many rows, 8 rows with data at each end: how many of its
+// outputs are outside the bound (a row with no data: not zero)
+fn run(device: &mut Device, kernels: &Kernels, works: &mut Works, rng: &mut Rng, qt: u32) u64 {
+  let rb = rowBytes(qt, COLS);
+  let first = syntheticMatrix(rng, qt, DATA_ROWS, COLS);
+  let last = syntheticMatrix(rng, qt, DATA_ROWS, COLS);
+  match first {
+    case let Some(a) {
+      match last {
+        case let Some(b) {
+          let x = syntheticFloats(rng, COLS, 1.0);
+          var wantA = zerosF(DATA_ROWS);
+          var magA = zerosD(DATA_ROWS);
+          var wantB = zerosF(DATA_ROWS);
+          var magB = zerosD(DATA_ROWS);
+          matvecCpu(&a, x.view(), wantA.viewMut());
+          matvecMagnitudeCpu(&a, x.view(), magA.viewMut());
+          matvecCpu(&b, x.view(), wantB.viewMut());
+          matvecMagnitudeCpu(&b, x.view(), magB.viewMut());
+          let weights = zeroed(device, ROWS * rb / 4usize);
+          require(weights.isValid(), "the weights buffer");
+          put(device, &weights, 0usize, &a);
+          put(device, &weights, (ROWS - DATA_ROWS) * rb, &b);
+          var job = Job.make(device);
+          let w = job.give(weights);
+          let xb = job.give(upload(device, floatWords(x.view()).view()));
+          let yb = job.give(zeroed(device, ROWS));
+          require(kernels.matvec(&mut job, device, w, xb, yb, qt, ROWS, COLS), "the matvec recorded");
+          let back = job.readback(device, yb);
+          let ticket = works.submit(device, job, Target.Here(1u64));
+          var got = List[Completion].empty();
+          works.waitFor(device, ticket, &mut got);
+          require(got.len() == 1usize, "the job's completion");
+          expectBool(got[0usize].ok, true, "the job ran");
+          let y = wordFloats(got[0usize].words(back).view());
+          var bad = 0u64;
+          var r = 0usize;
+          while r < ROWS {
+            let v = f64.from(*y[r]);
+            if r < DATA_ROWS {
+              if !(libc.fabs(v - f64.from(*wantA[r])) <= sumTolerance(COLS, *magA[r])) { bad = bad + 1u64; }
+            } else if r >= ROWS - DATA_ROWS {
+              let k = r - (ROWS - DATA_ROWS);
+              if !(libc.fabs(v - f64.from(*wantB[k])) <= sumTolerance(COLS, *magB[k])) { bad = bad + 1u64; }
+            } else if v != 0.0 {
+              bad = bad + 1u64;
+            }
+            r = r + 1usize;
+          }
+          return bad;
+        }
+        case is None { return 999999u64; }
+      }
+    }
+    case is None { return 999999u64; }
+  }
+  999999u64
+}
+
+fn main() i32 {
+  var instance = Instance.create("llmkernels bigweights");
+  require(instance.isValid(), "a Vulkan 1.3 instance");
+  var none = Surface.none();
+  var adapter = instance.requestAdapter(&none, preference());
+  require(adapter.isValid(), "an adapter");
+  var rng = Rng.fromSeed(4321u64);
+
+  // ---- largeBuffers: the output matrix and the embedding table, bound whole ----
+  {
+    var device = adapter.requestComputeDevice(&ComputeRequest(largeBuffers: true));
+    require(device.isValid(), "a compute device with largeBuffers");
+    let kernels = Kernels.make(&device);
+    require(kernels.isValid(), "the kernels");
+    var works = Works.make();
+    let big = u64.from(rowBytes(QTYPE_Q6_K, COLS) * ROWS);
+    if device.maxStorageBufferBindingSize >= big {
+      expectUInt(run(&mut device, &kernels, &mut works, &mut rng, QTYPE_Q6_K), 0u64, "Q6_K 151936 x 4096 (510,504,960 bytes)");
+      expectUInt(run(&mut device, &kernels, &mut works, &mut rng, QTYPE_Q4_K), 0u64, "Q4_K 151936 x 4096 (350,060,544 bytes)");
+    } else {
+      // the same number of checks as the cases that ran make
+      var n = 0u32;
+      while n < 10u32 {
+        expect(true, "(this GPU cannot bind 487 MiB: skipped)");
+        n = n + 1u32;
+      }
+    }
+    expectUInt(u64.from(refusals()), 0u64, "gpuwork refused nothing");
+    device.endFrame();
+    device.waitIdle();
+    expectUInt(u64.from(failures()), 0u64, "no Vulkan call failed");
+    expectUInt(u64.from(validationMessages()), 0u64, "no validation message");
+  }
+
+  // ---- without it: the same matvec is refused ----
+  {
+    var device = adapter.requestDevice();
+    require(device.isValid(), "a drawing device");
+    let kernels = Kernels.make(&device);
+    var job = Job.make(&mut device);
+    let w = job.give(zeroed(&mut device, ROWS * rowBytes(QTYPE_Q6_K, COLS) / 4usize));
+    let xb = job.give(zeroed(&mut device, COLS));
+    let yb = job.give(zeroed(&mut device, ROWS));
+    expectBool(kernels.matvec(&mut job, &mut device, w, xb, yb, QTYPE_Q6_K, ROWS, COLS), false, "a 487 MiB weights buffer is refused without largeBuffers");
+    expectUInt(u64.from(refusals()), 1u64, "with one refusal");
+    device.endFrame();
+    device.waitIdle();
+  }
+
+  done()
+}
