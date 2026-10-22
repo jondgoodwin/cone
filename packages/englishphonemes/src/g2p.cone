@@ -1,0 +1,603 @@
+// ======== Text to phonemes (misaki's G2P: retokenizing, grouping, context, stress between the parts of a word) ========
+//
+// A port of misaki 0.9.4's English 'G2P' class after the spaCy step. misaki asks spaCy for tokens and part-of-speech
+// tags; here 'tokenize.cone' makes tokens and a heuristic tagger gives the tags (spaCy's model is a Python library).
+// From the tokens on this is misaki's code: 'retokenize' (the sub-token regex, currency, "2" read as "to"),
+// the right-to-left pass that finds the longest part of a word the lexicon knows, 'resolve_tokens' (stress between
+// the parts of a compound), and the result with each token's whitespace.
+
+// Characters that make a sub-token junk (spoken as nothing)
+let SUBTOKEN_JUNKS: &str = "',-._‘’/";
+let PUNCTS: &str = ";:,.!?—…\"“”";
+
+pub struct Tok {
+  pub text: String;
+  pub tag: String;
+  pub ws: bool;
+  pub ps: String;
+  pub hasPs: bool;
+  pub isHead: bool;
+  pub spoken: String;
+  pub hasAlias: bool;
+  pub currency: String;
+  pub prespace: bool;
+
+  pub fn make(text: String, tag: String, ws: bool) Tok {
+    Tok(text, tag, ws, String.empty(), false, true, String.empty(), false, String.empty(), false)
+  }
+
+  pub fn copy(self: &) Tok {
+    Tok(text.copy(), tag.copy(), ws, ps.copy(), hasPs, isHead, spoken.copy(), hasAlias, currency.copy(), prespace)
+  }
+
+  pub fn setPs(self: &mut, p: String) { ps = p; hasPs = true; }
+}
+
+fn isApos(c: u32) bool { c == 39u32 || c == 8216u32 || c == 8217u32 }
+
+// The end of the numeric part starting at i (after an optional leading '-' at the start of the text), or 0
+fn numericEnd(cs: &Array[u32], i: usize) usize {
+  let n = cs.len;
+  var j = i;
+  if i == 0usize && n > 0usize && cs[0usize] == 45u32 { j = 1usize; }
+  let start = j;
+  while j < n {
+    if isDigitCp(cs[j]) {
+      j = j + 1usize;
+    } else if (cs[j] == 44u32 || cs[j] == 46u32) && j + 1usize < n && isDigitCp(cs[j + 1usize]) {
+      j = j + 2usize;
+    } else {
+      break;
+    }
+  }
+  if j == start { return 0usize; }
+  j
+}
+
+// \p{L}*?(?:['‘’]\p{L})*?\p{Ll}(?=\p{Lu}): the end of the match at i, or 0
+fn camelEnd(cs: &Array[u32], i: usize) usize {
+  let n = cs.len;
+  var letters = 0usize;
+  while i + letters < n && isLetterCp(cs[i + letters]) { letters = letters + 1usize; }
+  var a = 0usize;
+  while a <= letters {
+    var p = i + a;
+    var more = true;
+    while more {
+      if p + 1usize < n && isLowerCp(cs[p]) && isUpperCp(cs[p + 1usize]) { return p + 1usize; }
+      if p + 1usize < n && isApos(cs[p]) && isLetterCp(cs[p + 1usize]) { p = p + 2usize; } else { more = false; }
+    }
+    a = a + 1usize;
+  }
+  0usize
+}
+
+// misaki's SUBTOKEN_REGEX: the end of the match starting at i, or 0 for no match there
+fn subtokenEnd(cs: &Array[u32], i: usize) usize {
+  let n = cs.len;
+  let c = cs[i];
+  // ^['‘’]+
+  if i == 0usize && isApos(c) {
+    var j = 1usize;
+    while j < n && isApos(cs[j]) { j = j + 1usize; }
+    return j;
+  }
+  // \p{Lu}(?=\p{Lu}\p{Ll})
+  if isUpperCp(c) && i + 2usize < n && isUpperCp(cs[i + 1usize]) && isLowerCp(cs[i + 2usize]) { return i + 1usize; }
+  // (?:^-)?(?:\d?[,.]?\d)+
+  let ne = numericEnd(cs, i);
+  if ne > 0usize { return ne; }
+  // [-_]+
+  if c == 45u32 || c == 95u32 {
+    var j = i + 1usize;
+    while j < n && (cs[j] == 45u32 || cs[j] == 95u32) { j = j + 1usize; }
+    return j;
+  }
+  // ['‘’]{2,}
+  if isApos(c) && i + 1usize < n && isApos(cs[i + 1usize]) {
+    var j = i + 2usize;
+    while j < n && isApos(cs[j]) { j = j + 1usize; }
+    return j;
+  }
+  let ce = camelEnd(cs, i);
+  if ce > 0usize { return ce; }
+  // \p{L}+(?:['‘’]\p{L})*
+  if isLetterCp(c) {
+    var j = i + 1usize;
+    while j < n && isLetterCp(cs[j]) { j = j + 1usize; }
+    while j + 1usize < n && isApos(cs[j]) && isLetterCp(cs[j + 1usize]) { j = j + 2usize; }
+    return j;
+  }
+  // [^-_\p{L}'‘’\d]
+  if c != 45u32 && c != 95u32 && !isLetterCp(c) && !isApos(c) && !isDigitCp(c) { return i + 1usize; }
+  // ['‘’]+$
+  if isApos(c) {
+    var j = i + 1usize;
+    while j < n && isApos(cs[j]) { j = j + 1usize; }
+    if j == n { return j; }
+  }
+  0usize
+}
+
+// misaki's subtokenize: the pieces of a token's text
+pub fn subtokenize(word: &str) List[String] {
+  let cs = codepoints(word);
+  var out = List[String].empty();
+  var i = 0usize;
+  while i < cs.len() {
+    let e = subtokenEnd(cs.view(), i);
+    if e > i {
+      out.push(textOfRange(cs.view(), i, e));
+      i = e;
+    } else {
+      i = i + 1usize;
+    }
+  }
+  out
+}
+
+fn isPunctTag(tag: &str) bool {
+  tag == "." || tag == "," || tag == "-LRB-" || tag == "-RRB-" || tag == "``" || tag == "\"\"" || tag == "''"
+    || tag == ":" || tag == "$" || tag == "#" || tag == "NFP"
+}
+
+fn punctTagPhonemes(tag: &str) Option[&str] {
+  if tag == "-LRB-" { return Some[&str]("("); }
+  if tag == "-RRB-" { return Some[&str](")"); }
+  if tag == "``" { return Some[&str]("“"); }
+  if tag == "\"\"" || tag == "''" { return Some[&str]("”"); }
+  None
+}
+
+fn isCurrencySymbol(t: &str) bool { t == "$" || t == "£" || t == "€" }
+
+// A group of tokens that were one word of the text (no whitespace between them), or a single token
+pub struct Word {
+  pub toks: List[Tok];
+  pub isGroup: bool;
+}
+
+// misaki's merge_tokens for a run of tokens: the text, the tag of the heaviest, the lexicon-visible state
+pub fn mergedText(toks: &List[Tok], a: usize, b: usize) String {
+  var s = String.empty();
+  var i = a;
+  while i < b {
+    s <- toks[i].text.view();
+    if i + 1usize < b && toks[i].ws { s <- " "; }
+    i = i + 1usize;
+  }
+  s
+}
+
+fn mergedTag(toks: &List[Tok], a: usize, b: usize) String {
+  var best = a;
+  var bestW = -1i32;
+  var i = a;
+  while i < b {
+    var w = 0i32;
+    each c in toks[i].text.chars() {
+      let u = u32.from(c);
+      if u == lowerCp(u) { w += 1i32; } else { w += 2i32; }
+    }
+    if w > bestW { bestW = w; best = i; }
+    i = i + 1usize;
+  }
+  toks[best].tag.copy()
+}
+
+fn mergedCurrency(toks: &List[Tok], a: usize, b: usize) String {
+  var best = String.empty();
+  var i = a;
+  while i < b {
+    if toks[i].currency.len() > 0usize && toks[i].currency.view() > best.view() { best = toks[i].currency.copy(); }
+    i = i + 1usize;
+  }
+  best
+}
+
+// misaki's merge_tokens with a given 'unk', for a finished group: all the phonemes joined
+fn mergedPhonemes(toks: &List[Tok], unk: &str) String {
+  var ps = String.empty();
+  var i = 0usize;
+  while i < toks.len() {
+    let tk = toks[i];
+    if tk.prespace && ps.len() > 0usize && tk.hasPs && tk.ps.len() > 0usize {
+      let last = lastChar(ps.view());
+      if !isSpaceCp(cp(last.view())) { ps <- " "; }
+    }
+    if tk.hasPs { ps <- tk.ps.view(); } else { ps <- unk; }
+    i = i + 1usize;
+  }
+  ps
+}
+
+// ---- retokenize ----
+
+pub struct Retokenized {
+  pub words: List[Word];
+}
+
+// misaki's G2P.retokenize
+pub fn retokenize(tokens: &List[Tok]) List[Word] {
+  var words = List[Word].empty();
+  var currency = String.empty();
+  var i = 0usize;
+  while i < tokens.len() {
+    let token = tokens[i];
+    var tks = List[Tok].empty();
+    if !token.hasAlias && !token.hasPs {
+      let pieces = subtokenize(token.text.view());
+      var k = 0usize;
+      while k < pieces.len() {
+        var t = token.copy();
+        t.text = pieces[k].copy();
+        t.ws = false;
+        t.isHead = true;
+        t.prespace = false;
+        tks.push(t);
+        k = k + 1usize;
+      }
+    } else {
+      tks.push(token.copy());
+    }
+    if tks.len() == 0usize {
+      i = i + 1usize;
+      continue;
+    }
+    let lastIdx = tks.len() - 1usize;
+    tks[lastIdx].ws = token.ws;
+    var j = 0usize;
+    while j < tks.len() {
+      let tk = &mut tks[j];
+      if tk.hasAlias || tk.hasPs {
+        // nothing
+      } else if tk.tag.view() == "$" && isCurrencySymbol(tk.text.view()) {
+        currency = tk.text.copy();
+        tk.setPs(String.empty());
+      } else if tk.tag.view() == ":" && (tk.text.view() == "-" || tk.text.view() == "–") {
+        tk.setPs(String.from("—"));
+      } else if isPunctTag(tk.tag.view()) && !allAsciiLetters(tk.text.view()) {
+        match punctTagPhonemes(tk.tag.view()) {
+          case let Some(p) { tk.setPs(String.from(p)); }
+          case is None {
+            var keep = List[u32].empty();
+            each c in tk.text.chars() { if inSet(u32.from(c), PUNCTS) { keep.push(u32.from(c)); } }
+            tk.setPs(textOf(keep.view()));
+          }
+        }
+      } else if currency.len() > 0usize {
+        if tk.tag.view() != "CD" {
+          currency = String.empty();
+        } else if j + 1usize == tks.len() && (i + 1usize == tokens.len() || tokens[i + 1usize].tag.view() != "CD") {
+          tk.currency = currency.copy();
+        }
+      } else if j > 0usize && j + 1usize < tks.len() && tk.text.view() == "2" {
+        let before = lastChar(tks[j - 1usize].text.view());
+        let after = firstChar(tks[j + 1usize].text.view());
+        if isLetterCp(cp(before.view())) && isLetterCp(cp(after.view())) {
+          tk.spoken = String.from("to");
+          tk.hasAlias = true;
+        }
+      }
+      j = j + 1usize;
+    }
+    // into words
+    var jj = 0usize;
+    var cur = tks.drain();
+    var more = true;
+    while more {
+      match cur.next() {
+        case var Some(tk) {
+          if tk.hasAlias || tk.hasPs {
+            var one = List[Tok].empty();
+            one.push(tk);
+            words.push(Word(one, false));
+          } else if words.len() > 0usize && words[words.len() - 1usize].isGroup
+              && !words[words.len() - 1usize].toks[words[words.len() - 1usize].toks.len() - 1usize].ws {
+            tk.isHead = false;
+            let w = words.len() - 1usize;
+            words[w].toks.push(tk);
+          } else {
+            let ws = tk.ws;
+            var one = List[Tok].empty();
+            one.push(tk);
+            words.push(Word(one, !ws));
+          }
+        }
+        case is None { more = false; }
+      }
+      jj = jj + 1usize;
+    }
+    i = i + 1usize;
+  }
+  // a list of one token is that token (misaki's last step)
+  var w = 0usize;
+  while w < words.len() {
+    if words[w].toks.len() == 1usize { words[w].isGroup = false; }
+    w = w + 1usize;
+  }
+  words
+}
+
+fn allAsciiLetters(t: &str) bool {
+  if t.len() == 0usize { return true; }
+  each c in t.chars() {
+    let u = lowerCp(u32.from(c));
+    if u < 97u32 || u > 122u32 { return false; }
+  }
+  true
+}
+
+// ---- the context of the following word ----
+
+pub fn tokenContext(ps: &str, text: &str, tag: &str, prev: &Ctx) Ctx {
+  var vowel = prev.futureVowel;
+  if ps.len() > 0usize {
+    var done = false;
+    each c in ps.chars() {
+      if !done {
+        let u = u32.from(c);
+        if inSet(u, NON_QUOTE_PUNCTS) { vowel = 2i32; done = true; }
+        else if inSet(u, VOWELS) { vowel = 1i32; done = true; }
+        else if inSet(u, CONSONANTS) { vowel = 0i32; done = true; }
+      }
+    }
+  }
+  let futureTo = text == "to" || text == "To" || (text == "TO" && (tag == "TO" || tag == "IN"));
+  Ctx(vowel, futureTo, false)
+}
+
+// ---- resolve_tokens: stress between the parts of a word ----
+
+fn resolveTokens(toks: &mut List[Tok]) {
+  // the text of the whole group and whether it mixes classes
+  var text = String.empty();
+  var i = 0usize;
+  while i < toks.len() {
+    text <- toks[i].text.view();
+    if i + 1usize < toks.len() && toks[i].ws { text <- " "; }
+    i = i + 1usize;
+  }
+  var prespace = text.contains(" ") || text.contains("/");
+  if !prespace {
+    var classes = 0u32;
+    each c in text.chars() {
+      let u = u32.from(c);
+      if !inSet(u, SUBTOKEN_JUNKS) {
+        if isLetterCp(u) { classes = classes | 1u32; }
+        else if isDigitCp(u) { classes = classes | 2u32; }
+        else { classes = classes | 4u32; }
+      }
+    }
+    // more than one class present
+    if classes != 0u32 && classes != 1u32 && classes != 2u32 && classes != 4u32 { prespace = true; }
+  }
+  i = 0usize;
+  let count = toks.len();
+  while i < count {
+    let tk = &mut toks[i];
+    if !tk.hasPs {
+      if i == count - 1usize && tk.text.charCount() == 1usize && inSet(cp(tk.text.view()), NON_QUOTE_PUNCTS) {
+        let t = tk.text.copy();
+        tk.setPs(t);
+      } else if allInSet(tk.text.view(), SUBTOKEN_JUNKS) {
+        tk.setPs(String.empty());
+      }
+    } else if i > 0usize {
+      tk.prespace = prespace;
+    }
+    i = i + 1usize;
+  }
+  if prespace { return; }
+  // (has primary stress, weight, index) of the tokens with phonemes
+  var hasP = List[bool].empty();
+  var weight = List[i32].empty();
+  var idx = List[usize].empty();
+  i = 0usize;
+  while i < toks.len() {
+    if toks[i].hasPs && toks[i].ps.len() > 0usize {
+      hasP.push(toks[i].ps.contains("ˈ"));
+      weight.push(stressWeight(toks[i].ps.view()));
+      idx.push(i);
+    }
+    i = i + 1usize;
+  }
+  if idx.len() == 2usize && toks[*idx[0usize]].text.charCount() == 1usize {
+    let t = *idx[1usize];
+    let np = applyStress(toks[t].ps.view(), -0.5);
+    toks[t].ps = np;
+    return;
+  }
+  var sumP = 0usize;
+  i = 0usize;
+  while i < hasP.len() { if *hasP[i] { sumP = sumP + 1usize; } i = i + 1usize; }
+  if idx.len() < 2usize || sumP <= (idx.len() + 1usize) / 2usize { return; }
+  // sorted(indices)[:len // 2]: by (has primary, weight, index), ascending
+  var order = List[usize].empty();
+  i = 0usize;
+  while i < idx.len() {
+    var k = order.len();
+    order.push(i);
+    while k > 0usize && lessKey(&hasP, &weight, &idx, *order[k], *order[k - 1usize]) {
+      order.swap(k, k - 1usize);
+      k = k - 1usize;
+    }
+    i = i + 1usize;
+  }
+  var take = idx.len() / 2usize;
+  i = 0usize;
+  while i < take {
+    let t = *idx[*order[i]];
+    let np = applyStress(toks[t].ps.view(), -0.5);
+    toks[t].ps = np;
+    i = i + 1usize;
+  }
+}
+
+fn lessKey(hasP: &List[bool], weight: &List[i32], idx: &List[usize], a: usize, b: usize) bool {
+  let pa = if *hasP[a] { 1i32 } else { 0i32 };
+  let pb = if *hasP[b] { 1i32 } else { 0i32 };
+  if pa != pb { return pa < pb; }
+  if *weight[a] != *weight[b] { return *weight[a] < *weight[b]; }
+  *idx[a] < *idx[b]
+}
+
+fn allInSet(t: &str, set: &str) bool {
+  each c in t.chars() { if !inSet(u32.from(c), set) { return false; } }
+  true
+}
+
+// ---- the whole thing ----
+
+// What a run of text became: the phoneme string and, how many words the lexicon did not know (fell to the
+// fallback, or became the unknown mark)
+pub struct G2pResult {
+  pub phonemes: String;
+  pub tokens: List[Tok];
+  pub fallbackWords: usize;
+  pub words: usize;
+}
+
+pub struct G2p {
+  pub lexicon: Lexicon;
+  // false: an unknown word becomes the unknown mark (misaki with no fallback); true: the rule-based fallback
+  pub useFallback: bool;
+  pub unk: String;
+
+  pub fn make(lexicon: Lexicon, useFallback: bool, unk: &str) G2p {
+    G2p(lexicon, useFallback, String.from(unk))
+  }
+
+  fn lex(self: &, tk: &Tok, text: &str, ctx: &Ctx) Ps {
+    lexicon.call(text, tk.tag.view(), tk.spoken.view(), tk.hasAlias, tk.currency.view(), tk.isHead, "", ctx)
+  }
+
+  // misaki's G2P.__call__ from the tokens
+  pub fn fromTokens(self: &, tokens: List[Tok]) G2pResult {
+    var words = retokenize(&tokens);
+    var ctx = Ctx.empty();
+    var fallbackWords = 0usize;
+    var count = 0usize;
+    var wi = words.len();
+    while wi > 0usize {
+      wi = wi - 1usize;
+      let w = &mut words[wi];
+      if !w.isGroup {
+        let tk = &mut w.toks[0usize];
+        if !tk.hasPs {
+          let t = tk.text.copy();
+          let r = self.lex(tk, t.view(), &ctx);
+          if r.some { tk.setPs(r.text.copy()); }
+        }
+        count = count + 1usize;
+        if !tk.hasPs && useFallback {
+          let fb = fallbackPhonemes(tk.text.view(), lexicon.british);
+          tk.setPs(fb);
+          fallbackWords = fallbackWords + 1usize;
+        }
+        ctx = tokenContext(tk.ps.view(), tk.text.view(), tk.tag.view(), &ctx);
+        continue;
+      }
+      count = count + 1usize;
+      var left = 0usize;
+      var right = w.toks.len();
+      var shouldFallback = false;
+      while left < right {
+        var anyDone = false;
+        var k = left;
+        while k < right {
+          if w.toks[k].hasAlias || w.toks[k].hasPs { anyDone = true; }
+          k = k + 1usize;
+        }
+        var ps = Ps.none();
+        var mtext = String.empty();
+        var mtag = String.empty();
+        if !anyDone {
+          mtext = mergedText(&w.toks, left, right);
+          mtag = mergedTag(&w.toks, left, right);
+          let cur = mergedCurrency(&w.toks, left, right);
+          let head = w.toks[left].isHead;
+          ps = lexicon.call(mtext.view(), mtag.view(), "", false, cur.view(), head, "", &ctx);
+        }
+        if ps.some {
+          w.toks[left].setPs(ps.text.copy());
+          var x = left + 1usize;
+          while x < right { w.toks[x].setPs(String.empty()); x = x + 1usize; }
+          ctx = tokenContext(ps.text.view(), mtext.view(), mtag.view(), &ctx);
+          right = left;
+          left = 0usize;
+        } else if left + 1usize < right {
+          left = left + 1usize;
+        } else {
+          right = right - 1usize;
+          let tk = &mut w.toks[right];
+          if !tk.hasPs {
+            if allInSet(tk.text.view(), SUBTOKEN_JUNKS) {
+              tk.setPs(String.empty());
+            } else if useFallback {
+              shouldFallback = true;
+              break;
+            }
+          }
+          left = 0usize;
+        }
+      }
+      if shouldFallback {
+        let whole = mergedText(&w.toks, 0usize, w.toks.len());
+        let fb = fallbackPhonemes(whole.view(), lexicon.british);
+        w.toks[0usize].setPs(fb);
+        var x = 1usize;
+        while x < w.toks.len() { w.toks[x].setPs(String.empty()); x = x + 1usize; }
+        fallbackWords = fallbackWords + 1usize;
+      } else {
+        resolveTokens(&mut w.toks);
+      }
+    }
+    // the words in order, a group merged
+    var all = List[Tok].empty();
+    var drain = words.drain();
+    var more = true;
+    while more {
+      match drain.next() {
+        case var Some(w) {
+          if w.isGroup && w.toks.len() > 1usize {
+            let text = mergedText(&w.toks, 0usize, w.toks.len());
+            let tag = mergedTag(&w.toks, 0usize, w.toks.len());
+            let ps = mergedPhonemes(&w.toks, self.unk.view());
+            let ws = w.toks[w.toks.len() - 1usize].ws;
+            var m = Tok.make(text, tag, ws);
+            m.setPs(ps);
+            all.push(m);
+          } else {
+            var d = w.toks.drain();
+            match d.next() {
+              case var Some(t) {
+                if !t.hasPs { t.setPs(self.unk.copy()); }
+                all.push(t);
+              }
+              case is None {}
+            }
+          }
+        }
+        case is None { more = false; }
+      }
+    }
+    var out = String.empty();
+    var i = 0usize;
+    while i < all.len() {
+      // Kokoro's own spellings of the flap and glottal stop (misaki's version != '2.0' step)
+      var p = replaceAll(all[i].ps.view(), "ɾ", "T");
+      p = replaceAll(p.view(), "ʔ", "t");
+      all[i].ps = p;
+      out <- all[i].ps.view();
+      if all[i].ws { out <- " "; }
+      i = i + 1usize;
+    }
+    G2pResult(out, all, fallbackWords, count)
+  }
+
+  // Text to phonemes
+  pub fn phonemize(self: &, text: &str) G2pResult {
+    self.fromTokens(tokenize(text, &lexicon))
+  }
+}

@@ -1,0 +1,128 @@
+// ======== Cutting long text at the model's limit (misaki's KPipeline.en_tokenize) ========
+//
+// Kokoro takes at most 510 phonemes at a time. A line of text is turned into tokens, and the tokens are cut into
+// pieces of at most 510 phonemes: after the last sentence end (! . ? …) that leaves a piece in the limit, else after
+// the last : or ;, else after the last comma or dash, else where the limit falls. A closing bracket or quote after
+// the cut stays with the piece before it.
+
+pub const MAX_PHONEMES: usize = 510usize;
+
+// A piece of text and its phonemes
+pub struct Piece {
+  pub text: String;
+  pub phonemes: String;
+}
+
+fn psOf(tks: &List[Tok], a: usize, b: usize) String {
+  var s = String.empty();
+  var i = a;
+  while i < b {
+    s <- tks[i].ps.view();
+    if tks[i].ws { s <- " "; }
+    i = i + 1usize;
+  }
+  trimText(s.view())
+}
+
+fn textOfTokens(tks: &List[Tok], a: usize, b: usize) String {
+  var s = String.empty();
+  var i = a;
+  while i < b {
+    s <- tks[i].text.view();
+    if tks[i].ws { s <- " "; }
+    i = i + 1usize;
+  }
+  trimText(s.view())
+}
+
+fn trimText(s: &str) String { String.from(s.trim()) }
+
+fn isOneOf(ps: &str, set: &str) bool {
+  if ps.charCount() != 1usize { return false; }
+  inSet(cp(ps), set)
+}
+
+// misaki's waterfall_last: how many of the tokens go in the piece
+fn waterfallLast(tks: &List[Tok], nextCount: usize) usize {
+  let marks = ["!.?…", ":;", ",—"];
+  var w = 0usize;
+  while w < 3usize {
+    var found = false;
+    var z = 0usize;
+    var i = tks.len();
+    while i > 0usize && !found {
+      i = i - 1usize;
+      if isOneOf(tks[i].ps.view(), marks[w]) { found = true; z = i; }
+    }
+    if found {
+      z = z + 1usize;
+      if z < tks.len() && isOneOf(tks[z].ps.view(), ")”") { z = z + 1usize; }
+      if nextCount - psOf(tks, 0usize, z).charCount() <= MAX_PHONEMES { return z; }
+    }
+    w = w + 1usize;
+  }
+  tks.len()
+}
+
+// The pieces of a text: its lines (a newline cuts), each cut at the limit
+pub fn speechPieces(g2p: &G2p, text: &str) List[Piece] {
+  var out = List[Piece].empty();
+  var lines = List[String].empty();
+  var cur = String.empty();
+  each c in text.chars() {
+    if u32.from(c) == 10u32 || u32.from(c) == 13u32 {
+      if cur.len() > 0usize { lines.push(cur.copy()); cur.clear(); }
+    } else {
+      var one = List[u32].empty();
+      one.push(u32.from(c));
+      cur <- textOf(one.view()).view();
+    }
+  }
+  if cur.len() > 0usize { lines.push(cur); }
+  var li = 0usize;
+  while li < lines.len() {
+    let trimmed = lines[li].view().trim();
+    if trimmed.len() > 0usize {
+      var r = g2p.phonemize(trimmed);
+      var tks = List[Tok].empty();
+      var pcount = 0usize;
+      var drain = r.tokens.drain();
+      var more = true;
+      while more {
+        match drain.next() {
+          case var Some(t) {
+            if !t.hasPs { t.setPs(String.empty()); }
+            var nextPs = t.ps.copy();
+            if t.ws { nextPs <- " "; }
+            let nextPcount = pcount + trimEndText(nextPs.view()).charCount();
+            if nextPcount > MAX_PHONEMES {
+              let z = waterfallLast(&tks, nextPcount);
+              let ps = psOf(&tks, 0usize, z);
+              if ps.len() > 0usize { out.push(Piece(textOfTokens(&tks, 0usize, z), ps)); }
+              var rest = List[Tok].empty();
+              var k = z;
+              while k < tks.len() { rest.push(tks[k].copy()); k = k + 1usize; }
+              tks = rest;
+              pcount = psOf(&tks, 0usize, tks.len()).charCount();
+              if tks.len() == 0usize { nextPs = String.from(nextPs.view().trimStart()); }
+            }
+            tks.push(t);
+            pcount = pcount + nextPs.charCount();
+          }
+          case is None { more = false; }
+        }
+      }
+      if tks.len() > 0usize {
+        let ps = psOf(&tks, 0usize, tks.len());
+        if ps.len() > 0usize {
+          var pieceText = textOfTokens(&tks, 0usize, tks.len());
+          out.push(Piece(pieceText, ps));
+        }
+      }
+    }
+    li = li + 1usize;
+  }
+  out
+}
+
+fn trimEndText(s: &str) String { String.from(s.trimEnd()) }

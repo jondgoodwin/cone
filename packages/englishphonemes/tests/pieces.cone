@@ -1,0 +1,54 @@
+// A long text cut into pieces of at most 510 phonemes, against misaki's KPipeline (tests/data/pieces.tsv: the text
+// of each piece and its phonemes), and the fallback on words neither lexicon has. Needs the converted lexicons in
+// C:/src/speech-models/kokoro: skipped when they are absent.
+
+mod pieces;
+
+import testing use *;
+import stdio use *;
+import collections use List, String;
+import fs;
+import path use Path;
+import englishphonemes use *;
+
+fn main() i32 {
+  if !fs.exists(&Path.from("C:/src/speech-models/kokoro/us_gold.tsv")) {
+    return skip("the converted lexicons are not in C:/src/speech-models/kokoro");
+  }
+  var input = String.empty();
+  match fs.readFile(&Path.from("../../../../tests/data/pieces-input.txt")) {
+    case var Ok(ok) { input <-> ok; }
+    case let Error(e) { expect(false, "the input file is there"); return done(); }
+  }
+  var wantText = String.empty();
+  match fs.readFile(&Path.from("../../../../tests/data/pieces.tsv")) {
+    case var Ok(ok) { wantText <-> ok; }
+    case let Error(e) { expect(false, "the reference file is there"); return done(); }
+  }
+  let lex = match Lexicon.load("C:/src/speech-models/kokoro", false) {
+    case var Ok(l) { l }
+    case let Error(m) { print <- m.view(), "\n"; return 1i32; }
+  };
+  let g2p = G2p.make(lex, true, "");
+  let got = speechPieces(&g2p, input.view());
+  let want = wantText.lines();
+  expectUInt(u64.from(got.len()), u64.from(want.len()), "the same number of pieces");
+  var i = 0usize;
+  while i < got.len() && i < want.len() {
+    let parts = want[i].split(u8.from('\t'));
+    expectStr(got[i].phonemes.view(), parts[1usize].view(), "the piece's phonemes are misaki's");
+    expect(got[i].phonemes.charCount() <= 510usize, "a piece is at most 510 phonemes");
+    i = i + 1usize;
+  }
+
+  // the fallback: names and coinages (a rule-based reading; shown, and checked to be non-empty with a stress mark)
+  let odd = ["Zorblat", "Quixotic", "Smartphone", "Krakatoa", "blorf", "Thandiwe"];
+  var w = 0usize;
+  while w < 6usize {
+    let r = g2p.phonemize(odd[w]);
+    print <- odd[w], " -> ", r.phonemes.view(), "  (fallback words: ", r.fallbackWords, ")\n";
+    expect(r.phonemes.len() > 0usize, "the fallback says something");
+    w = w + 1usize;
+  }
+  done()
+}

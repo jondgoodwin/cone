@@ -1,0 +1,59 @@
+// Numbers as words against num2words (0.5.6, what misaki calls): cardinal, ordinal and year for 160 numbers
+// (tests/data/numbers.tsv, "and" dropped and the words split at hyphens and commas as misaki does).
+
+mod numbers;
+
+import testing use *;
+import stdio use *;
+import collections use List, String;
+import fs;
+import path use Path;
+import englishphonemes use *;
+
+fn words(l: &List[String]) String {
+  var s = String.empty();
+  var i = 0usize;
+  while i < l.len() {
+    if i > 0usize { s <- " "; }
+    s <- l[i].view();
+    i = i + 1usize;
+  }
+  s
+}
+
+fn parse(s: &str) u64 {
+  var v = 0u64;
+  each c in s.chars() { v = v * 10u64 + u64.from(u32.from(c) - 48u32); }
+  v
+}
+
+fn main() i32 {
+  var text = String.empty();
+  match fs.readFile(&Path.from("../../../../tests/data/numbers.tsv")) {
+    case var Ok(ok) { text <-> ok; }
+    case let Error(e) { expect(false, "the data file is there"); return done(); }
+  }
+  let rows = text.lines();
+  var same = 0usize;
+  var total = 0usize;
+  var i = 0usize;
+  while i < rows.len() {
+    let p = rows[i].split(u8.from('\t'));
+    if p.len() == 4usize {
+      let n = parse(p[0usize].view());
+      total = total + 3usize;
+      if words(&cardinal(n)).view() == p[1usize].view() { same = same + 1usize; }
+      else { print <- "cardinal ", n, ": ", words(&cardinal(n)).view(), " (want ", p[1usize].view(), ")\n"; }
+      if words(&ordinal(n)).view() == p[2usize].view() { same = same + 1usize; }
+      else { print <- "ordinal ", n, ": ", words(&ordinal(n)).view(), " (want ", p[2usize].view(), ")\n"; }
+      if words(&year(n)).view() == p[3usize].view() { same = same + 1usize; }
+      else { print <- "year ", n, ": ", words(&year(n)).view(), " (want ", p[3usize].view(), ")\n"; }
+    }
+    i = i + 1usize;
+  }
+  expectUInt(u64.from(same), u64.from(total), "every cardinal, ordinal and year is num2words'");
+  expectStr(words(&decimal(3u64, "10")).view(), "three point one", "3.10 loses its trailing zero");
+  expectStr(words(&decimal(3u64, "0")).view(), "three point zero", "3.0");
+  expectStr(words(&decimal(0u64, "75")).view(), "zero point seven five", "0.75");
+  done()
+}
