@@ -52,7 +52,8 @@ thread; the stream's lock makes `queue` on one thread and `cutOff` on another sa
   samples until told); `cutOff()` throws everything waiting away at once (what the device already took, its
   buffer, still plays: `Driver.system(480)` asks for 480 frames, 20 ms at 24 kHz, and SDL may choose otherwise);
   `waiting()`, `waitingMs()` and `drain(timeoutMs)` say what is queued.
-* `Vad.push(samples, out)` takes any block size and appends the utterances that ended; `flush(out)` ends one
+* `Vad.push(samples, out)` takes any block size (one sample, or a whole file in one call: `tests/vadpush.cone` pins
+  that the utterances are the same to the sample) and appends the utterances that ended; `flush(out)` ends one
   that is in progress; `speaking()` and `speechStartSample()` let a caller react to speech starting (barge-in)
   without waiting for it to end; `setThresholdScale(k)` multiplies both thresholds while the speaker plays and
   bleeds into the microphone.
