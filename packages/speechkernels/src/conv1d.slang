@@ -2,10 +2,11 @@
 // w[co, ci, k] * x[ci, o * stride - pad + k * dilation], a position outside 0 .. lin zero. x is [cin, lin], y is
 // [cout, lout], w is [cout, cin, k], all row-major f32.
 //
-// One workgroup of 256 invocations makes a tile of 32 outputs channels by 64 positions: each invocation two channels
-// by four positions, the input channels taken 8 at a time through workgroup memory (the weights of the tile's
-// channels and the span of input the tile's positions read). Bindings: args, x, w, y. The bias is read from the same
-// buffer as the weights, at its own offset (a dispatch binds a buffer once, and a model's weights are one buffer).
+// One workgroup of 256 invocations makes a tile of 64 output channels by 64 positions: each invocation four channels
+// by four positions (sixteen sums in registers), the input channels taken 8 at a time through workgroup memory (the
+// weights of the tile's channels, laid out with the channel fastest so that the invocations' reads do not collide,
+// and the span of input the tile's positions read). Bindings: args, x, w, y. The bias is read from the same buffer
+// as the weights, at its own offset (a dispatch binds a buffer once, and a model's weights are one buffer).
 //
 // Args words: 0 cin, 1 cout, 2 lin, 3 lout, 4 k, 5 stride, 6 pad, 7 dilation, 8 x offset (elements), 9 y offset,
 // 10 w offset, 11 bias offset, 12 hasBias, 13 groupsX (the position tiles across, as the dispatch folds them),
@@ -20,14 +21,14 @@ import speechcommon;
 [[vk::binding(2, 0)]] StructuredBuffer<float> w;
 [[vk::binding(3, 0)]] RWStructuredBuffer<float> y;
 
-static const uint TCO = 32u;
+static const uint TCO = 64u;
 static const uint TL = 64u;
 static const uint CI = 8u;
 static const uint MAXK = 12u;
 static const uint MAXSPAN = 392u;     // (TL - 1) * stride + (k - 1) * dilation + 1, at most this
 
 groupshared float xTile[CI * MAXSPAN];
-groupshared float wTile[TCO * CI * MAXK];
+groupshared float wTile[CI * MAXK * TCO];
 
 [shader("compute")]
 [numthreads(256, 1, 1)]
@@ -54,11 +55,11 @@ void conv1dMain(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
     uint co0 = gid.z * TCO;
     uint span = (TL - 1u) * stride + (k - 1u) * dil + 1u;
 
-    uint cg = tid / 16u;     // 0 .. 15: channels 2 cg, 2 cg + 1 of the tile
+    uint cg = tid / 16u;     // 0 .. 15: channels 4 cg .. 4 cg + 3 of the tile
     uint pg = tid % 16u;     // 0 .. 15: positions pg, pg + 16, pg + 32, pg + 48
 
-    float acc[2][4];
-    for (uint a = 0u; a < 2u; a++) {
+    float acc[4][4];
+    for (uint a = 0u; a < 4u; a++) {
         for (uint b = 0u; b < 4u; b++) { acc[a][b] = 0.0; }
     }
 
@@ -82,25 +83,30 @@ void conv1dMain(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
             uint kk = r % k;
             float v = 0.0;
             if (co0 + oc < cout) { v = w[wOff + ((co0 + oc) * cin + c0 + cc) * k + kk]; }
-            wTile[(oc * CI + cc) * MAXK + kk] = v;
+            wTile[(cc * MAXK + kk) * TCO + oc] = v;
         }
         GroupMemoryBarrierWithGroupSync();
         for (uint cc = 0u; cc < nc; cc++) {
             for (uint kk = 0u; kk < k; kk++) {
-                float w0 = wTile[((cg * 2u) * CI + cc) * MAXK + kk];
-                float w1 = wTile[((cg * 2u + 1u) * CI + cc) * MAXK + kk];
+                uint wb = (cc * MAXK + kk) * TCO + cg * 4u;
+                float w0 = wTile[wb];
+                float w1 = wTile[wb + 1u];
+                float w2 = wTile[wb + 2u];
+                float w3 = wTile[wb + 3u];
                 for (uint j = 0u; j < 4u; j++) {
                     float xv = xTile[cc * MAXSPAN + (pg + 16u * j) * stride + kk * dil];
                     acc[0][j] += w0 * xv;
                     acc[1][j] += w1 * xv;
+                    acc[2][j] += w2 * xv;
+                    acc[3][j] += w3 * xv;
                 }
             }
         }
         GroupMemoryBarrierWithGroupSync();
     }
 
-    for (uint a = 0u; a < 2u; a++) {
-        uint co = co0 + cg * 2u + a;
+    for (uint a = 0u; a < 4u; a++) {
+        uint co = co0 + cg * 4u + a;
         if (co >= cout) { continue; }
         float bv = 0.0;
         if (hasBias) { bv = w[bOff + co]; }
