@@ -1,0 +1,371 @@
+// ======== The encoder job and the decoder's jobs ========
+
+// y = W x for one vector (a matvec reading x from element xOff) or n of them (a matmul)
+fn mm(k: &Kernels, job: &mut Job, device: &mut Device, w: &WRef, x: u32, y: u32, n: usize) bool {
+  k.matmulAt(job, device, w.buf, x, y, w.qtype, w.rows, w.cols, n, w.off, 0usize, 0usize)
+}
+
+fn mv(k: &Kernels, job: &mut Job, device: &mut Device, w: &WRef, x: u32, y: u32, xOff: usize) bool {
+  k.matvecAt(job, device, w.buf, x, y, w.qtype, w.rows, w.cols, w.off, xOff, 0usize)
+}
+
+// The relative position embeddings for t positions: 2 t - 1 rows of 1024, row m the sinusoid of the offset t - 1 - m
+// (NeMo's RelPositionalEncoding: sin at the even places, cos at the odd, frequencies exp(-ln(10000) 2 i / 1024))
+pub fn posEmbedding(t: usize) List[f32] {
+  let rows = 2usize * t - 1usize;
+  var out = List[f32].withCapacity(rows * D_MODEL);
+  var div = List[f64].withCapacity(D_MODEL / 2usize);
+  var i = 0usize;
+  while i < D_MODEL / 2usize {
+    div.push(libc.exp(0.0 - libc.log(10000.0) * f64.from(2usize * i) / f64.from(D_MODEL)));
+    i = i + 1usize;
+  }
+  var m = 0usize;
+  while m < rows {
+    let pos = f64.from(t - 1usize) - f64.from(m);
+    i = 0usize;
+    while i < D_MODEL / 2usize {
+      let a = pos * *div[i];
+      out.push(f32.from(libc.sin(a)));
+      out.push(f32.from(libc.cos(a)));
+      i = i + 1usize;
+    }
+    m = m + 1usize;
+  }
+  out
+}
+
+// A job over the resident buffers (slot = index in 'resident'), the parameter slab after them
+fn startJob(p: &mut Parakeet, device: &mut Device, dispatches: usize) Job {
+  var job = Job.make(device);
+  {
+    var drain = p.resident.drain();
+    var more = true;
+    while more {
+      match drain.next() {
+        case var Some(b) { job.give(b); }
+        case is None { more = false; }
+      }
+    }
+  }
+  job.slab(device, BINDING_ALIGNMENT * u64.from(dispatches + 8usize));
+  job
+}
+
+// Take the resident buffers back from a finished job's Completion, in their slots
+fn endJob(p: &mut Parakeet, done: &mut List[Completion]) {
+  var i = 0usize;
+  while i < p.nres {
+    p.resident.push(done[0usize].take(u32.from(i)));
+    i = i + 1usize;
+  }
+}
+
+fn finishJob(p: &mut Parakeet, device: &mut Device, job: Job) List[Completion] {
+  let ticket = p.works.submit(device, job, Target.Here(1u64));
+  var done = List[Completion].empty();
+  p.works.waitFor(device, ticket, &mut done);
+  done
+}
+
+// The number of encoder frames for L feature frames: three convolutions of stride 2, kernel 3, padding 1
+pub fn encoderFrames(l: usize) usize {
+  convOutLen(convOutLen(convOutLen(l, 3usize, 2usize, 1usize), 3usize, 2usize, 1usize), 3usize, 2usize, 1usize)
+}
+
+// The FF module of a layer: x2 = x + 0.5 * linear2(silu(linear1(LN(x))))
+fn ffBlock(p: &Parakeet, job: &mut Job, device: &mut Device, small: u32, x: u32, x2: u32, xn: u32, h4a: u32, h4b: u32, a: u32,
+    w1: &WRef, w2: &WRef, nW: usize, nB: usize, t: usize) bool {
+  var ok = p.sk.layernorm(job, device, small, x, xn, D_MODEL, t, 0.00001, nW, nB);
+  ok = mm(&p.kernels, job, device, w1, xn, h4a, t) && ok;
+  ok = p.kernels.silu(job, device, h4a, h4b, t * D_FF) && ok;
+  ok = mm(&p.kernels, job, device, w2, h4b, a, t) && ok;
+  p.sk.scaleAdd(job, device, x, a, x2, t * D_MODEL, 0.5) && ok
+}
+
+// What the encoder job gave
+struct Encoded {
+  frames: usize;
+  trace: EncoderTrace;
+}
+
+fn emptyTrace() EncoderTrace {
+  EncoderTrace(List[f32].empty(), List[f32].empty(), List[f32].empty(), List[f32].empty(), List[f32].empty(), 0usize)
+}
+
+// Run the encoder over L feature frames ([L][128], frame-major) and keep the projected output on the GPU in 'p.ep'.
+// With 'trace', also read back the subsampling's output, layers 0, 11 and 23 and the final output.
+fn encode(p: &mut Parakeet, device: &mut Device, feats: &List[f32], l: usize, trace: bool) Result[Encoded, String] {
+  let t = encoderFrames(l);
+  if t == 0usize { return Error[Encoded, String](String.from("speechtotext: the audio is too short")); }
+  if t > p.maxFrames {
+    var m = String.from("speechtotext: the audio is longer than the ");
+    m <- u64.from(p.maxFrames);
+    m <- " encoder frames allowed (80 ms each)";
+    return Error[Encoded, String](m);
+  }
+  let small = p.slotSmall;
+  var job = startJob(p, device, 24usize * 48usize + 64usize);
+  var ok = true;
+  // ---- subsampling ----
+  let l1 = convOutLen(l, 3usize, 2usize, 1usize);
+  let l2 = convOutLen(l1, 3usize, 2usize, 1usize);
+  let l3 = convOutLen(l2, 3usize, 2usize, 1usize);
+  let fIn = job.give(upload(device, floatWords(feats.view()).view()));
+  let c0 = job.give(zeroed(device, SUB_CH * l1 * 64usize));
+  let c2 = job.give(zeroed(device, SUB_CH * l2 * 32usize));
+  let c3 = job.give(zeroed(device, SUB_CH * l2 * 32usize));
+  let c5 = job.give(zeroed(device, SUB_CH * l3 * 16usize));
+  let c6 = job.give(zeroed(device, l3 * SUB_CH * SUB_F));
+  ok = p.sk.conv2d(&mut job, device, small, fIn, c0, 1usize, SUB_CH, 1usize, l, 128usize, 3usize, 2usize, 1usize, p.smallConv0W, p.smallConv0B, true, 0u32) && ok;
+  ok = p.sk.conv2d(&mut job, device, small, c0, c2, SUB_CH, SUB_CH, SUB_CH, l1, 64usize, 3usize, 2usize, 1usize, p.smallConv2W, p.smallConv2B, false, 0u32) && ok;
+  ok = p.sk.conv2d(&mut job, device, small, c2, c3, SUB_CH, SUB_CH, 1usize, l2, 32usize, 1usize, 1usize, 0usize, p.smallConv3W, p.smallConv3B, true, 0u32) && ok;
+  ok = p.sk.conv2d(&mut job, device, small, c3, c5, SUB_CH, SUB_CH, SUB_CH, l2, 32usize, 3usize, 2usize, 1usize, p.smallConv5W, p.smallConv5B, false, 0u32) && ok;
+  ok = p.sk.conv2d(&mut job, device, small, c5, c6, SUB_CH, SUB_CH, 1usize, l3, 16usize, 1usize, 1usize, 0usize, p.smallConv6W, p.smallConv6B, true, 1u32) && ok;
+  var x = job.give(zeroed(device, t * D_MODEL));
+  var x2 = job.give(zeroed(device, t * D_MODEL));
+  var xn = job.give(zeroed(device, t * D_MODEL));
+  ok = mm(&p.kernels, &mut job, device, &p.subOut, c6, x, t) && ok;
+  ok = p.sk.biasAdd(&mut job, device, small, x, D_MODEL, t, p.subOutBias) && ok;
+  var tr = emptyTrace();
+  tr.frames = t;
+  var rbPre = 0u32;
+  var rb0 = 0u32;
+  var rb11 = 0u32;
+  var rb23 = 0u32;
+  if trace { rbPre = job.readback(device, x); }
+  // ---- the layers ----
+  let pe = job.give(upload(device, floatWords(posEmbedding(t).view()).view()));
+  let pp = job.give(zeroed(device, (2usize * t - 1usize) * D_MODEL));
+  let h4a = job.give(zeroed(device, t * D_FF));
+  let h4b = job.give(zeroed(device, t * D_FF));
+  let a = job.give(zeroed(device, t * D_MODEL));
+  let q = job.give(zeroed(device, t * D_MODEL));
+  let kk = job.give(zeroed(device, t * D_MODEL));
+  let v = job.give(zeroed(device, t * D_MODEL));
+  let sc = job.give(zeroed(device, N_HEADS * t * t));
+  let sc2 = job.give(zeroed(device, N_HEADS * t * t));
+  let ctx = job.give(zeroed(device, t * D_MODEL));
+  let g2 = job.give(zeroed(device, t * 2usize * D_MODEL));
+  let g1 = job.give(zeroed(device, t * D_MODEL));
+  let dw = job.give(zeroed(device, t * D_MODEL));
+  let scale = f32.from(1.0 / libc.sqrt(f64.from(D_HEAD)));
+  var li = 0usize;
+  while li < p.layers.len() {
+    let w = p.layers[li].copy();
+    // FF 1
+    ok = ffBlock(p, &mut job, device, small, x, x2, xn, h4a, h4b, a, &w.ff1a, &w.ff1b, w.nFf1W, w.nFf1B, t) && ok;
+    let s1 = x; x = x2; x2 = s1;
+    // attention
+    ok = p.sk.layernorm(&mut job, device, small, x, xn, D_MODEL, t, 0.00001, w.nAttW, w.nAttB) && ok;
+    ok = mm(&p.kernels, &mut job, device, &w.q, xn, q, t) && ok;
+    ok = mm(&p.kernels, &mut job, device, &w.k, xn, kk, t) && ok;
+    ok = mm(&p.kernels, &mut job, device, &w.v, xn, v, t) && ok;
+    ok = mm(&p.kernels, &mut job, device, &w.pos, pe, pp, 2usize * t - 1usize) && ok;
+    ok = p.sk.relScores(&mut job, device, small, q, kk, pp, sc, t, N_HEADS, D_HEAD, w.posU, w.posV, scale) && ok;
+    ok = p.kernels.softmax(&mut job, device, sc, sc2, t, N_HEADS * t) && ok;
+    ok = p.sk.attnValue(&mut job, device, sc2, v, ctx, t, N_HEADS, D_HEAD) && ok;
+    ok = mm(&p.kernels, &mut job, device, &w.o, ctx, a, t) && ok;
+    ok = p.sk.scaleAdd(&mut job, device, x, a, x2, t * D_MODEL, 1.0) && ok;
+    let s2 = x; x = x2; x2 = s2;
+    // convolution module
+    ok = p.sk.layernorm(&mut job, device, small, x, xn, D_MODEL, t, 0.00001, w.nConvW, w.nConvB) && ok;
+    ok = mm(&p.kernels, &mut job, device, &w.pw1, xn, g2, t) && ok;
+    ok = p.sk.glu(&mut job, device, g2, g1, D_MODEL, t) && ok;
+    ok = p.sk.dwconv(&mut job, device, small, g1, dw, t, D_MODEL, 9usize, 4usize, w.dwW, w.dwB) && ok;
+    ok = mm(&p.kernels, &mut job, device, &w.pw2, dw, a, t) && ok;
+    ok = p.sk.scaleAdd(&mut job, device, x, a, x2, t * D_MODEL, 1.0) && ok;
+    let s3 = x; x = x2; x2 = s3;
+    // FF 2
+    ok = ffBlock(p, &mut job, device, small, x, x2, xn, h4a, h4b, a, &w.ff2a, &w.ff2b, w.nFf2W, w.nFf2B, t) && ok;
+    let s4 = x; x = x2; x2 = s4;
+    // the layer's output norm: into xn, which then is the stream
+    ok = p.sk.layernorm(&mut job, device, small, x, xn, D_MODEL, t, 0.00001, w.nOutW, w.nOutB) && ok;
+    let s5 = x; x = xn; xn = s5;
+    if trace && li == 0usize { rb0 = job.readback(device, x); }
+    if trace && li == 11usize { rb11 = job.readback(device, x); }
+    if trace && li == 23usize { rb23 = job.readback(device, x); }
+    li = li + 1usize;
+  }
+  var rbOut = 0u32;
+  if trace { rbOut = job.readback(device, x); }
+  // ---- the joint's projection of the encoder output, kept ----
+  let ep = job.give(zeroed(device, t * PRED));
+  ok = mm(&p.kernels, &mut job, device, &p.jointEnc, x, ep, t) && ok;
+  ok = p.sk.biasAdd(&mut job, device, small, ep, PRED, t, p.jointEncBias) && ok;
+  // a job with a refused dispatch is submitted all the same: it completes not ok with its buffers back
+  var done = finishJob(p, device, job);
+  if done.len() != 1usize {
+    return Error[Encoded, String](String.from("speechtotext: the encoder job gave no completion"));
+  }
+  endJob(p, &mut done);
+  if !ok || !done[0usize].ok {
+    return Error[Encoded, String](String.from("speechtotext: a kernel refused its arguments in the encoder or failed on the GPU"));
+  }
+  p.ep.clear();
+  p.ep.push(done[0usize].take(ep));
+  if trace {
+    tr.preEncode = wordFloats(done[0usize].words(rbPre).view());
+    tr.layer0 = wordFloats(done[0usize].words(rb0).view());
+    tr.layer11 = wordFloats(done[0usize].words(rb11).view());
+    tr.layer23 = wordFloats(done[0usize].words(rb23).view());
+    tr.out = wordFloats(done[0usize].words(rbOut).view());
+  }
+  Ok[Encoded, String](Encoded(t, tr))
+}
+
+// ---- the decoder ----
+
+// The slot of buffer 'which' (0 h0, 1 c0, 2 h1, 3 c1) of state set 'set'
+fn stateSlot(p: &Parakeet, set: u32, which: u32) u32 { p.slotState + set * 4u32 + which }
+
+// Zero the decoder's state (both sets)
+fn resetState(p: &mut Parakeet, device: &mut Device) {
+  var zeros = List[f32].withCapacity(PRED);
+  zeros.resize(PRED, 0.0f32);
+  var i = 0u32;
+  while i < 8u32 {
+    device.queue.writeBuffer(p.resident[usize.from(p.slotState + i)], 0u64, &zeros.view()[0usize] as *u8, u64.from(PRED) * 4u64);
+    i = i + 1u32;
+  }
+}
+
+// Record the decoder update for token 'label' on state set 'cur', writing set 1 - cur, and the projection of its output
+fn recordUpdate(p: &Parakeet, job: &mut Job, device: &mut Device, cur: u32) bool {
+  let small = p.slotSmall;
+  let nxt = 1u32 - cur;
+  var ok = mv(&p.kernels, job, device, &p.lstmIh0, p.slotX0, p.slotGi, 0usize);
+  ok = mv(&p.kernels, job, device, &p.lstmHh0, stateSlot(p, cur, 0u32), p.slotGh, 0usize) && ok;
+  ok = p.sk.lstmCell(job, device, small, p.slotGi, p.slotGh, stateSlot(p, cur, 1u32), stateSlot(p, nxt, 0u32), stateSlot(p, nxt, 1u32), PRED, p.lstmBias0) && ok;
+  ok = mv(&p.kernels, job, device, &p.lstmIh1, stateSlot(p, nxt, 0u32), p.slotGi, 0usize) && ok;
+  ok = mv(&p.kernels, job, device, &p.lstmHh1, stateSlot(p, cur, 2u32), p.slotGh, 0usize) && ok;
+  ok = p.sk.lstmCell(job, device, small, p.slotGi, p.slotGh, stateSlot(p, cur, 3u32), stateSlot(p, nxt, 2u32), stateSlot(p, nxt, 3u32), PRED, p.lstmBias1) && ok;
+  ok = mv(&p.kernels, job, device, &p.jointPred, stateSlot(p, nxt, 2u32), p.slotPp, 0usize) && ok;
+  p.sk.biasAdd(job, device, small, p.slotPp, PRED, 1usize, p.jointPredBias) && ok
+}
+
+// One decoder step as a job: optionally the decoder update for 'label' (state set cur -> 1 - cur), then the joint at
+// encoder frame t; answers the 1030 logits. The embedding of 'label' is written to the input buffer first (the blank's
+// row is zeros).
+fn stepJob(p: &mut Parakeet, device: &mut Device, update: bool, label: u32, cur: u32, t: usize) Result[List[f32], String] {
+  if update {
+    let src = p.file.base() + p.embedBegin + usize.from(label) * PRED * 4usize;
+    device.queue.writeBuffer(p.resident[usize.from(p.slotX0)], 0u64, src, u64.from(PRED) * 4u64);
+  }
+  var job = startJob(p, device, 24usize);
+  var epBuf = Buffer.none();
+  match p.ep.pop() {
+    case var Some(b) { epBuf = b; }
+    case is None {}
+  }
+  let epSlot = job.give(epBuf);
+  var ok = true;
+  if update { ok = recordUpdate(p, &mut job, device, cur) && ok; }
+  ok = p.sk.addRelu(&mut job, device, epSlot, t * PRED, p.slotPp, p.slotZ, PRED) && ok;
+  ok = mv(&p.kernels, &mut job, device, &p.jointOut, p.slotZ, p.slotLogits, 0usize) && ok;
+  ok = p.sk.biasAdd(&mut job, device, p.slotSmall, p.slotLogits, N_TOKENS + N_DUR, 1usize, p.jointOutBias) && ok;
+  let back = job.readback(device, p.slotLogits);
+  var done = finishJob(p, device, job);
+  if done.len() != 1usize { return Error[List[f32], String](String.from("speechtotext: a decoder job gave no completion")); }
+  endJob(p, &mut done);
+  p.ep.push(done[0usize].take(epSlot));
+  if !ok || !done[0usize].ok {
+    return Error[List[f32], String](String.from("speechtotext: a kernel refused its arguments in the decoder or failed on the GPU"));
+  }
+  Ok[List[f32], String](wordFloats(done[0usize].words(back).view()))
+}
+
+fn argmaxRange(v: &Array[f32], from: usize, to: usize) usize {
+  var best = from;
+  var i = from + 1usize;
+  while i < to {
+    if v[i] > v[best] { best = i; }
+    i = i + 1usize;
+  }
+  best
+}
+
+// The greedy TDT decode of the encoder output kept in p.ep (T frames); NeMo's label-looping algorithm for one utterance.
+fn decodeGreedy(p: &mut Parakeet, device: &mut Device, frames: usize, steps: &mut List[Step], keepSteps: bool,
+    tokens: &mut List[u32], times: &mut List[u32]) Option[String] {
+  resetState(p, device);
+  var cur = 0u32;
+  var t = 0usize;
+  var nsame = 0usize;
+  var lastTs = 0usize;
+  var haveLast = false;
+  var logits = List[f32].empty();
+  match stepJob(p, device, true, BLANK, cur, t) {
+    case var Ok(l) { logits <-> l; }
+    case let Error(e) { return Some[String](e.copy()); }
+  }
+  p.timings.updates = p.timings.updates + 1u64;
+  cur = 1u32 - cur;
+  while true {
+    p.timings.joints = p.timings.joints + 1u64;
+    let label = argmaxRange(logits.view(), 0usize, N_TOKENS);
+    let durIdx = argmaxRange(logits.view(), N_TOKENS, N_TOKENS + N_DUR) - N_TOKENS;
+    if keepSteps {
+      var copy = List[f32].withCapacity(logits.len());
+      var i = 0usize;
+      while i < logits.len() { copy.push(*logits[i]); i = i + 1usize; }
+      steps.push(Step(u32.from(t), u32.from(label), u32.from(durIdx), copy));
+    }
+    var dur = durIdx;
+    let at = t;
+    if label == usize.from(BLANK) {
+      if dur == 0usize { dur = 1usize; }
+      t = t + dur;
+      if t >= frames { break; }
+      match stepJob(p, device, false, 0u32, cur, t) {
+        case var Ok(l) { logits <-> l; }
+        case let Error(e) { return Some[String](e.copy()); }
+      }
+    } else {
+      tokens.push(u32.from(label));
+      times.push(u32.from(at));
+      if haveLast && lastTs == at { nsame = nsame + 1usize; } else { lastTs = at; nsame = 1usize; haveLast = true; }
+      t = t + dur;
+      if nsame >= MAX_SYMBOLS && lastTs == t { t = t + 1usize; }
+      if t >= frames { break; }
+      match stepJob(p, device, true, u32.from(label), cur, t) {
+        case var Ok(l) { logits <-> l; }
+        case let Error(e) { return Some[String](e.copy()); }
+      }
+      p.timings.updates = p.timings.updates + 1u64;
+      cur = 1u32 - cur;
+    }
+  }
+  None
+}
+
+// The text of token ids: the pieces joined, the word-start mark U+2581 a space, the leading space dropped
+pub fn detokenize(vocab: &List[String], tokens: &Array[u32]) String {
+  var out = String.empty();
+  var i = 0usize;
+  while i < tokens.len {
+    let id = usize.from(tokens[i]);
+    i = i + 1usize;
+    if id >= vocab.len() || id == 0usize { continue; }
+    let piece: &Array[u8] = vocab[id].view();
+    var j = 0usize;
+    while j < piece.len {
+      if j + 2usize < piece.len && piece[j] == 226u8 && piece[j + 1usize] == 150u8 && piece[j + 2usize] == 129u8 {
+        out.appendByte(' ');
+        j = j + 3usize;
+      } else {
+        out.appendByte(piece[j]);
+        j = j + 1usize;
+      }
+    }
+  }
+  // drop one leading space
+  let v: &Array[u8] = out.view();
+  if v.len > 0usize && v[0usize] == ' ' {
+    var trimmed = String.empty();
+    var k = 1usize;
+    while k < v.len { trimmed.appendByte(v[k]); k = k + 1usize; }
+    return trimmed;
+  }
+  out
+}

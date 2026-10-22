@@ -1,0 +1,542 @@
+// ======== Parakeet TDT 0.6B v2 on the GPU: loading, the encoder, the greedy TDT decoder ========
+//
+// THE MODEL (the converter's names, see speechtotext.cone): a FastConformer encoder and a TDT transducer.
+//   subsampling   conv 3x3 stride 2 (1 -> 256 channels) + ReLU; twice [depthwise 3x3 stride 2, 1x1, ReLU]; the 256 x 16
+//                 result flattened per time step (4096) and a linear layer to 1024: 8x fewer time steps
+//   24 layers     x += 0.5 FF(LN(x));  x += Attn(LN(x));  x += Conv(LN(x));  x += 0.5 FF(LN(x));  x = LN(x)
+//                 FF: linear 1024 -> 4096, SiLU, linear 4096 -> 1024 (no biases anywhere in the layer's linears)
+//                 Attn: 8 heads of 128, relative-position scores with two per-head biases u, v
+//                 Conv: 1x1 to 2048, GLU, depthwise k = 9 (batch norm folded in), SiLU, 1x1
+//   decoder       a 2-layer LSTM of 640 over the previous token's embedding (blank/start = zeros)
+//   joint         relu(enc_proj(f) + pred_proj(g)) -> linear 640 -> 1030: 1025 token logits (1024 pieces and blank) then
+//                 5 duration logits (0 .. 4 frames)
+//   decoding      greedy, NeMo's label-looping TDT, one utterance (tdt_label_looping.py torch_impl): at frame t take the
+//                 best token and the best duration; a blank advances by its duration (at least 1); a token is emitted
+//                 at t, the decoder is updated, and t advances by the duration (0 allowed); more than 10 tokens at one
+//                 frame forces an advance of 1.
+//
+// WHERE THINGS LIVE. Every matrix (all the linear layers and 1x1 convolutions, the LSTM's and the joint's) is in a weights
+// buffer as the file has it (F32 or F16) and goes through llmkernels' matmul and matvec; everything else the speech kernels
+// read (norm scales and shifts, the position biases, the depthwise and subsampling convolutions, biases) is one F32 'small'
+// buffer. The activations of an utterance are buffers its encoder job owns; the projected encoder output stays on the GPU
+// for the decoder's jobs. Each decoder step is a job: the joint (one frame) and its logits read back, or the
+// decoder update after an emitted token (kept on the GPU, no wait).
+
+// A weight matrix in a resident buffer
+pub struct WRef {
+  pub buf: u32;
+  pub off: usize;
+  pub qtype: u32;
+  pub rows: usize;
+  pub cols: usize;
+
+  pub fn copy(self: &) WRef { WRef(buf, off, qtype, rows, cols) }
+}
+
+struct LayerRefs {
+  ff1a: WRef;
+  ff1b: WRef;
+  q: WRef;
+  k: WRef;
+  v: WRef;
+  o: WRef;
+  pos: WRef;
+  pw1: WRef;
+  pw2: WRef;
+  ff2a: WRef;
+  ff2b: WRef;
+  // float offsets in 'small'
+  nFf1W: usize;
+  nFf1B: usize;
+  nAttW: usize;
+  nAttB: usize;
+  nConvW: usize;
+  nConvB: usize;
+  nFf2W: usize;
+  nFf2B: usize;
+  nOutW: usize;
+  nOutB: usize;
+  posU: usize;
+  posV: usize;
+  dwW: usize;
+  dwB: usize;
+
+  // A value of its own: recording a layer lends nothing out of the model's list of layers while the kernels run
+  fn copy(self: &) LayerRefs {
+    LayerRefs(ff1a.copy(), ff1b.copy(), q.copy(), k.copy(), v.copy(), o.copy(), pos.copy(), pw1.copy(), pw2.copy(), ff2a.copy(),
+      ff2b.copy(), nFf1W, nFf1B, nAttW, nAttB, nConvW, nConvB, nFf2W, nFf2B, nOutW, nOutB, posU, posV, dwW, dwB)
+  }
+}
+
+const D_MODEL = 1024usize;
+const D_FF = 4096usize;
+const N_HEADS = 8usize;
+const D_HEAD = 128usize;
+const PRED = 640usize;
+const N_TOKENS = 1025usize;          // 1024 pieces and blank
+const N_DUR = 5usize;
+const BLANK = 1024u32;
+const SUB_CH = 256usize;
+const SUB_F = 16usize;               // the mel bands after three stride-2 convolutions: 128 -> 64 -> 32 -> 16
+const MAX_SYMBOLS = 10usize;
+const MAX_ENC_FRAMES = 5000usize;    // NeMo's pos_emb_max_len
+
+const WEIGHT_BUFFER_BYTES = 1073741824u64;
+const BUFFER_USAGE = BUFFER_USAGE_STORAGE | BUFFER_USAGE_COPY_DST | BUFFER_USAGE_COPY_SRC;
+
+fn alignUp(n: u64, a: u64) u64 { (n + a - 1u64) / a * a }
+
+// A matrix to upload: its tensor, where the plan put it
+struct Spec {
+  begin: usize;          // the tensor's first byte in the file
+  rows: usize;
+  cols: usize;
+  qtype: u32;
+  bytes: u64;
+  buf: u32;
+  off: usize;
+}
+
+fn contains(s: &str, part: &str) bool {
+  let a: &Array[u8] = s;
+  let b: &Array[u8] = part;
+  if b.len > a.len { return false; }
+  var i = 0usize;
+  while i + b.len <= a.len {
+    var j = 0usize;
+    while j < b.len && a[i + j] == b[j] { j = j + 1usize; }
+    if j == b.len { return true; }
+    i = i + 1usize;
+  }
+  false
+}
+
+fn endsWith(s: &str, tail: &str) bool {
+  let a: &Array[u8] = s;
+  let b: &Array[u8] = tail;
+  if b.len > a.len { return false; }
+  var j = 0usize;
+  while j < b.len && a[a.len - b.len + j] == b[j] { j = j + 1usize; }
+  j == b.len
+}
+
+// Whether a tensor is a matrix for matmul/matvec (as opposed to a small F32 tensor for the speech kernels)
+fn isMatrix(name: &str) bool {
+  if contains(name, ".linear1.weight") || contains(name, ".linear2.weight") || contains(name, "self_attn.linear_")
+    || contains(name, "pointwise_conv") { return true; }
+  if name == "sub.out.weight" || contains(name, ".w_ih") || contains(name, ".w_hh") { return true; }
+  if contains(name, "joint.") && endsWith(name, ".weight") { return true; }
+  false
+}
+
+fn describe(a: &str, b: &str, c: &str) String {
+  var m = String.from(a);
+  m <- b;
+  m <- c;
+  m
+}
+
+pub struct Timings {
+  pub frontNanos: i64;
+  pub encodeNanos: i64;
+  pub decodeNanos: i64;
+  pub joints: u64;
+  pub updates: u64;
+}
+
+// What 'transcribe' answers
+pub struct Transcript {
+  pub text: String;
+  pub tokens: List[u32];
+  // For each token, the encoder frame (80 ms) it was emitted at
+  pub frames: List[u32];
+  pub encFrames: usize;
+  pub timings: Timings;
+}
+
+// One joint evaluation of the greedy decode (kept when asked, for the tests): the encoder frame, the best token and
+// duration, and all 1030 logits
+pub struct Step {
+  pub t: u32;
+  pub token: u32;
+  pub dur: u32;
+  pub logits: List[f32];
+}
+
+// What the encoder gave, kept when asked for the tests
+pub struct EncoderTrace {
+  pub preEncode: List[f32];
+  pub layer0: List[f32];
+  pub layer11: List[f32];
+  pub layer23: List[f32];
+  pub out: List[f32];
+  pub frames: usize;
+}
+
+pub struct Parakeet {
+  file: SafetensorsFile;
+  kernels: Kernels;
+  sk: SpeechKernels;
+  works: Works;
+  frontend: Frontend;
+  vocab: List[String];
+  layers: List[LayerRefs];
+  // refs of the matrices outside the layers
+  subOut: WRef;
+  jointEnc: WRef;
+  jointPred: WRef;
+  jointOut: WRef;
+  lstmIh0: WRef;
+  lstmHh0: WRef;
+  lstmIh1: WRef;
+  lstmHh1: WRef;
+  embedBegin: usize;       // the embedding table's first byte in the file
+  // float offsets in 'small'
+  smallConv0W: usize;
+  smallConv0B: usize;
+  smallConv2W: usize;
+  smallConv2B: usize;
+  smallConv3W: usize;
+  smallConv3B: usize;
+  smallConv5W: usize;
+  smallConv5B: usize;
+  smallConv6W: usize;
+  smallConv6B: usize;
+  subOutBias: usize;
+  jointEncBias: usize;
+  jointPredBias: usize;
+  jointOutBias: usize;
+  lstmBias0: usize;
+  lstmBias1: usize;
+  // The resident buffers (until a job takes them): weights, small, the decoder's
+  resident: List[Buffer];
+  nres: usize;
+  nWeights: usize;
+  // slots in 'resident'
+  slotSmall: u32;
+  slotX0: u32;
+  slotGi: u32;
+  slotGh: u32;
+  slotPp: u32;
+  slotZ: u32;
+  slotLogits: u32;
+  slotState: u32;          // 8 buffers: set 0 (h0, c0, h1, c1), set 1
+  // The utterance's projected encoder output, kept between decoder jobs
+  ep: List[Buffer];
+  weightBytes: u64;
+  // The most encoder frames (80 ms each) an utterance may have
+  maxFrames: usize;
+  pub timings: Timings;
+
+  // Open the converted model (a safetensors file) and its vocabulary (one piece a line) and put the model on the device.
+  // The device must be made with ComputeRequest(largeBuffers: true).
+  pub fn open(device: &mut Device, modelPath: &Path, vocabPath: &Path) Result[Parakeet, String] {
+    let opened = openSafetensors(modelPath);
+    var file = match opened {
+      case var Ok(f) { f }
+      case let Error(e) { return Error[Parakeet, String](describe("speechtotext: ", e.view(), "")); }
+    };
+    // the vocabulary
+    var vocab = List[String].empty();
+    match fs.readFile(vocabPath) {
+      case let Ok(text) {
+        let lines = text.lines();
+        var i = 0usize;
+        while i < lines.len() { vocab.push(lines[i].copy()); i = i + 1usize; }
+      }
+      case let Error(e) { return Error[Parakeet, String](describe("speechtotext: the vocabulary: ", e.message().view(), "")); }
+    }
+    if vocab.len() != 1024usize {
+      return Error[Parakeet, String](String.from("speechtotext: the vocabulary does not have 1024 pieces"));
+    }
+    Parakeet.placed(device, file, vocab)
+  }
+
+  fn placed(device: &mut Device, file: SafetensorsFile, vocab: List[String]) Result[Parakeet, String] {
+    let st = &file.header;
+    let bytes = file.bytes();
+    // the front end's tables
+    var window = List[f32].empty();
+    var fb = List[f32].empty();
+    match st.floats(bytes, "mel.window") { case var Some(w) { window = w; } case is None {} }
+    match st.floats(bytes, "mel.fb") { case var Some(w) { fb = w; } case is None {} }
+    var frontend: Frontend = match Frontend.make(window.view(), fb.view()) {
+      case var Some(f) { f }
+      case is None { return Error[Parakeet, String](String.from("speechtotext: the model has no mel.window and mel.fb of 400 and 128 x 257")); }
+    };
+    // the matrices, placed in buffers; everything else into 'small'
+    var specs = List[Spec].empty();
+    var specNames = List[String].empty();
+    var smallNames = List[String].empty();
+    var smallOffs = List[usize].empty();
+    var smallWords = List[u32].empty();
+    var embedBegin = 0usize;
+    var haveEmbed = false;
+    var t = 0usize;
+    while t < st.tensors.len() {
+      match st.tensors.get(t) {
+        case let Some(ti) {
+          let name = ti.name.view();
+          if name == "dec.embed" {
+            if ti.dtype != ST_F32 || ti.shape.len() != 2usize || ti.rows() != N_TOKENS || ti.cols() != PRED {
+              return Error[Parakeet, String](String.from("speechtotext: dec.embed is not an F32 matrix of 1025 x 640"));
+            }
+            embedBegin = ti.begin;
+            haveEmbed = true;
+          } else if name == "mel.window" || name == "mel.fb" {
+          } else if isMatrix(name) {
+            if ti.shape.len() != 2usize || (ti.dtype != ST_F32 && ti.dtype != ST_F16) {
+              return Error[Parakeet, String](describe("speechtotext: tensor ", name, " is not an F32 or F16 matrix"));
+            }
+            var q = QTYPE_F32;
+            if ti.dtype == ST_F16 { q = QTYPE_F16; }
+            specs.push(Spec(ti.begin, ti.rows(), ti.cols(), q, u64.from(ti.bytes()), 0u32, 0usize));
+            specNames.push(ti.name.copy());
+          } else {
+            if ti.dtype != ST_F32 {
+              return Error[Parakeet, String](describe("speechtotext: tensor ", name, " must be F32 (a small tensor)"));
+            }
+            smallNames.push(ti.name.copy());
+            smallOffs.push(smallWords.len());
+            let w = packWords(st.bytesOf(bytes, ti));
+            var i = 0usize;
+            while i < w.len() { smallWords.push(*w[i]); i = i + 1usize; }
+          }
+        }
+        case is None {}
+      }
+      t = t + 1usize;
+    }
+    if !haveEmbed { return Error[Parakeet, String](String.from("speechtotext: the model has no dec.embed")); }
+    // plan the weight buffers
+    var sizes = List[u64].empty();
+    {
+      var cur = 0u64;
+      var idx = 0u32;
+      var i = 0usize;
+      while i < specs.len() {
+        let sp = &mut specs[i];
+        var off = alignUp(cur, 256u64);
+        if off + sp.bytes > WEIGHT_BUFFER_BYTES && cur > 0u64 {
+          sizes.push(cur);
+          idx = idx + 1u32;
+          off = 0u64;
+        }
+        sp.buf = idx;
+        sp.off = usize.from(off);
+        cur = off + sp.bytes;
+        i = i + 1usize;
+      }
+      sizes.push(cur);
+    }
+    var resident = List[Buffer].empty();
+    var weightBytes = 0u64;
+    var b = 0usize;
+    while b < sizes.len() {
+      let buf = device.createBuffer(alignUp(*sizes[b], 4u64), BUFFER_USAGE);
+      if !buf.isValid() { return Error[Parakeet, String](String.from("speechtotext: the GPU could not make a weights buffer (out of memory?)")); }
+      weightBytes = weightBytes + alignUp(*sizes[b], 4u64);
+      resident.push(buf);
+      b = b + 1usize;
+    }
+    var s = 0usize;
+    while s < specs.len() {
+      let sp = specs[s];
+      device.queue.writeBuffer(resident[usize.from(sp.buf)], u64.from(sp.off), file.base() + sp.begin, sp.bytes);
+      s = s + 1usize;
+    }
+    let nWeights = resident.len();
+    let slotSmall = u32.from(resident.len());
+    weightBytes = weightBytes + u64.from(smallWords.len()) * 4u64;
+    resident.push(upload(device, smallWords.view()));
+    let slotX0 = addZeroed(device, &mut resident, PRED);
+    let slotGi = addZeroed(device, &mut resident, 4usize * PRED);
+    let slotGh = addZeroed(device, &mut resident, 4usize * PRED);
+    let slotPp = addZeroed(device, &mut resident, PRED);
+    let slotZ = addZeroed(device, &mut resident, PRED);
+    let slotLogits = addZeroed(device, &mut resident, N_TOKENS + N_DUR);
+    let slotState = u32.from(resident.len());
+    var k = 0usize;
+    while k < 8usize { addZeroed(device, &mut resident, PRED); k = k + 1usize; }
+    var r = 0usize;
+    while r < resident.len() {
+      if !resident[r].isValid() { return Error[Parakeet, String](String.from("speechtotext: the GPU could not make a buffer (out of memory?)")); }
+      r = r + 1usize;
+    }
+    let kernels = Kernels.make(device);
+    let sk = SpeechKernels.make(device);
+    if !kernels.isValid() || !sk.isValid() { return Error[Parakeet, String](String.from("speechtotext: the kernels could not be made on this device")); }
+
+    // the references
+    var err = String.empty();
+    var layers = List[LayerRefs].withCapacity(24usize);
+    var l = 0usize;
+    while l < 24usize {
+      var p = String.from("enc.");
+      p <- u64.from(l);
+      p <- ".";
+      let ff1a = matrixRef(&specs, &specNames, p.view(), "feed_forward1.linear1.weight", &mut err);
+      let ff1b = matrixRef(&specs, &specNames, p.view(), "feed_forward1.linear2.weight", &mut err);
+      let q = matrixRef(&specs, &specNames, p.view(), "self_attn.linear_q.weight", &mut err);
+      let kk = matrixRef(&specs, &specNames, p.view(), "self_attn.linear_k.weight", &mut err);
+      let v = matrixRef(&specs, &specNames, p.view(), "self_attn.linear_v.weight", &mut err);
+      let o = matrixRef(&specs, &specNames, p.view(), "self_attn.linear_out.weight", &mut err);
+      let pos = matrixRef(&specs, &specNames, p.view(), "self_attn.linear_pos.weight", &mut err);
+      let pw1 = matrixRef(&specs, &specNames, p.view(), "conv.pointwise_conv1.weight", &mut err);
+      let pw2 = matrixRef(&specs, &specNames, p.view(), "conv.pointwise_conv2.weight", &mut err);
+      let ff2a = matrixRef(&specs, &specNames, p.view(), "feed_forward2.linear1.weight", &mut err);
+      let ff2b = matrixRef(&specs, &specNames, p.view(), "feed_forward2.linear2.weight", &mut err);
+      layers.push(LayerRefs(ff1a, ff1b, q, kk, v, o, pos, pw1, pw2, ff2a, ff2b,
+        smallRef(&smallNames, &smallOffs, p.view(), "norm_feed_forward1.weight", &mut err),
+        smallRef(&smallNames, &smallOffs, p.view(), "norm_feed_forward1.bias", &mut err),
+        smallRef(&smallNames, &smallOffs, p.view(), "norm_self_att.weight", &mut err),
+        smallRef(&smallNames, &smallOffs, p.view(), "norm_self_att.bias", &mut err),
+        smallRef(&smallNames, &smallOffs, p.view(), "norm_conv.weight", &mut err),
+        smallRef(&smallNames, &smallOffs, p.view(), "norm_conv.bias", &mut err),
+        smallRef(&smallNames, &smallOffs, p.view(), "norm_feed_forward2.weight", &mut err),
+        smallRef(&smallNames, &smallOffs, p.view(), "norm_feed_forward2.bias", &mut err),
+        smallRef(&smallNames, &smallOffs, p.view(), "norm_out.weight", &mut err),
+        smallRef(&smallNames, &smallOffs, p.view(), "norm_out.bias", &mut err),
+        smallRef(&smallNames, &smallOffs, p.view(), "self_attn.pos_bias_u", &mut err),
+        smallRef(&smallNames, &smallOffs, p.view(), "self_attn.pos_bias_v", &mut err),
+        smallRef(&smallNames, &smallOffs, p.view(), "conv.dw.weight", &mut err),
+        smallRef(&smallNames, &smallOffs, p.view(), "conv.dw.bias", &mut err)));
+      l = l + 1usize;
+    }
+    let subOut = matrixRef(&specs, &specNames, "", "sub.out.weight", &mut err);
+    let jointEnc = matrixRef(&specs, &specNames, "", "joint.enc.weight", &mut err);
+    let jointPred = matrixRef(&specs, &specNames, "", "joint.pred.weight", &mut err);
+    let jointOut = matrixRef(&specs, &specNames, "", "joint.out.weight", &mut err);
+    let lstmIh0 = matrixRef(&specs, &specNames, "", "dec.lstm0.w_ih", &mut err);
+    let lstmHh0 = matrixRef(&specs, &specNames, "", "dec.lstm0.w_hh", &mut err);
+    let lstmIh1 = matrixRef(&specs, &specNames, "", "dec.lstm1.w_ih", &mut err);
+    let lstmHh1 = matrixRef(&specs, &specNames, "", "dec.lstm1.w_hh", &mut err);
+    let c0w = smallRef(&smallNames, &smallOffs, "", "sub.conv.0.weight", &mut err);
+    let c0b = smallRef(&smallNames, &smallOffs, "", "sub.conv.0.bias", &mut err);
+    let c2w = smallRef(&smallNames, &smallOffs, "", "sub.conv.2.weight", &mut err);
+    let c2b = smallRef(&smallNames, &smallOffs, "", "sub.conv.2.bias", &mut err);
+    let c3w = smallRef(&smallNames, &smallOffs, "", "sub.conv.3.weight", &mut err);
+    let c3b = smallRef(&smallNames, &smallOffs, "", "sub.conv.3.bias", &mut err);
+    let c5w = smallRef(&smallNames, &smallOffs, "", "sub.conv.5.weight", &mut err);
+    let c5b = smallRef(&smallNames, &smallOffs, "", "sub.conv.5.bias", &mut err);
+    let c6w = smallRef(&smallNames, &smallOffs, "", "sub.conv.6.weight", &mut err);
+    let c6b = smallRef(&smallNames, &smallOffs, "", "sub.conv.6.bias", &mut err);
+    let subOutBias = smallRef(&smallNames, &smallOffs, "", "sub.out.bias", &mut err);
+    let jointEncBias = smallRef(&smallNames, &smallOffs, "", "joint.enc.bias", &mut err);
+    let jointPredBias = smallRef(&smallNames, &smallOffs, "", "joint.pred.bias", &mut err);
+    let jointOutBias = smallRef(&smallNames, &smallOffs, "", "joint.out.bias", &mut err);
+    let lstmBias0 = smallRef(&smallNames, &smallOffs, "", "dec.lstm0.bias", &mut err);
+    let lstmBias1 = smallRef(&smallNames, &smallOffs, "", "dec.lstm1.bias", &mut err);
+    if err.len() > 0usize { return Error[Parakeet, String](err); }
+    // shapes the kernels assume
+    if layers[0usize].ff1a.rows != D_FF || layers[0usize].ff1a.cols != D_MODEL || subOut.rows != D_MODEL || subOut.cols != SUB_CH * SUB_F
+      || jointOut.rows != N_TOKENS + N_DUR || jointOut.cols != PRED || lstmIh0.rows != 4usize * PRED
+      || jointEnc.rows != PRED || jointEnc.cols != D_MODEL {
+      return Error[Parakeet, String](String.from("speechtotext: the model's tensors do not have the shapes of parakeet-tdt-0.6b-v2"));
+    }
+    let nres = resident.len();
+    let timings = Timings(0i64, 0i64, 0i64, 0u64, 0u64);
+    Ok[Parakeet, String](Parakeet(file, kernels, sk, Works.make(), frontend, vocab, layers, subOut, jointEnc, jointPred, jointOut,
+      lstmIh0, lstmHh0, lstmIh1, lstmHh1, embedBegin, c0w, c0b, c2w, c2b, c3w, c3b, c5w, c5b, c6w, c6b, subOutBias,
+      jointEncBias, jointPredBias, jointOutBias, lstmBias0, lstmBias1, resident, nres, nWeights, slotSmall, slotX0, slotGi,
+      slotGh, slotPp, slotZ, slotLogits, slotState, List[Buffer].empty(), weightBytes, MAX_ENC_FRAMES, timings))
+  }
+
+  // Bytes of GPU memory the weights and small tensors take
+  pub fn weightBytesOnGpu(self: &) u64 { weightBytes }
+
+  // Refuse utterances of more than 'frames' encoder frames (80 ms each; the model's own limit, 5000 frames or about 6.7
+  // minutes, is the most that can be set)
+  pub fn limitFrames(self: &mut, frames: usize) {
+    maxFrames = if frames < MAX_ENC_FRAMES { frames } else { MAX_ENC_FRAMES };
+  }
+
+  // Transcribe 16 kHz mono samples
+  pub fn transcribe(self: &mut, device: &mut Device, samples: &Array[f32]) Result[Transcript, String] {
+    match self.run(device, samples, false) {
+      case var Ok(r) {
+        var out = Transcript(String.empty(), List[u32].empty(), List[u32].empty(), 0usize, Timings(0i64, 0i64, 0i64, 0u64, 0u64));
+        out <-> r.transcript;
+        Ok[Transcript, String](out)
+      }
+      case let Error(e) { Error[Transcript, String](e.copy()) }
+    }
+  }
+
+  // ...and, with 'trace', keep what the tests compare with NeMo's: the features, the encoder's intermediate outputs and
+  // every joint evaluation of the decode
+  pub fn run(self: &mut, device: &mut Device, samples: &Array[f32], trace: bool) Result[Run, String] {
+    let t0 = Instant.now();
+    let feats = frontend.features(samples);
+    let t1 = Instant.now();
+    var tokens = List[u32].empty();
+    var times = List[u32].empty();
+    var steps = List[Step].empty();
+    var enc = EncoderTrace(List[f32].empty(), List[f32].empty(), List[f32].empty(), List[f32].empty(), List[f32].empty(), 0usize);
+    var frames = 0usize;
+    var t2 = t1;
+    if feats.frames >= 2usize {
+      match encode(self, device, &feats.data, feats.frames, trace) {
+        case var Ok(e) { frames = e.frames; enc <-> e.trace; }
+        case let Error(m) { return Error[Run, String](m.copy()); }
+      }
+      t2 = Instant.now();
+      match decodeGreedy(self, device, frames, &mut steps, trace, &mut tokens, &mut times) {
+        case let Some(m) { return Error[Run, String](m.copy()); }
+        case is None {}
+      }
+    }
+    let t3 = Instant.now();
+    timings.frontNanos = t1.since(t0).nanos();
+    timings.encodeNanos = t2.since(t1).nanos();
+    timings.decodeNanos = t3.since(t2).nanos();
+    let text = detokenize(&vocab, tokens.view());
+    let tr = Transcript(text, tokens, times, frames, Timings(timings.frontNanos, timings.encodeNanos, timings.decodeNanos, timings.joints, timings.updates));
+    Ok[Run, String](Run(tr, enc, steps, feats))
+  }
+}
+
+// Everything 'run' answers
+pub struct Run {
+  pub transcript: Transcript;
+  pub encoder: EncoderTrace;
+  pub steps: List[Step];
+  pub features: Features;
+}
+
+fn addZeroed(device: &mut Device, resident: &mut List[Buffer], count: usize) u32 {
+  let i = u32.from(resident.len());
+  resident.push(zeroed(device, count));
+  i
+}
+
+fn matrixRef(specs: &List[Spec], names: &List[String], prefix: &str, name: &str, err: &mut String) WRef {
+  var full = String.from(prefix);
+  full <- name;
+  var i = 0usize;
+  while i < names.len() {
+    if names[i].view() == full.view() {
+      let s = specs[i];
+      return WRef(s.buf, s.off, s.qtype, s.rows, s.cols);
+    }
+    i = i + 1usize;
+  }
+  if err.len() == 0usize {
+    *err = describe("speechtotext: the model has no matrix ", full.view(), "");
+  }
+  WRef(0u32, 0usize, 0u32, 0usize, 0usize)
+}
+
+fn smallRef(names: &List[String], offs: &List[usize], prefix: &str, name: &str, err: &mut String) usize {
+  var full = String.from(prefix);
+  full <- name;
+  var i = 0usize;
+  while i < names.len() {
+    if names[i].view() == full.view() { return *offs[i]; }
+    i = i + 1usize;
+  }
+  if err.len() == 0usize {
+    *err = describe("speechtotext: the model has no tensor ", full.view(), "");
+  }
+  0usize
+}

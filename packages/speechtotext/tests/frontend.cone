@@ -1,0 +1,140 @@
+// The log-mel front end against NeMo's, on the reference clips (C:\src\speech-models, made by
+// nemo_reference.py; the test is skipped where the files are absent), and against properties that need no files.
+//
+// TOLERANCES. NeMo computes in f32; this front end in f64 with f32 stored. Measured on the 16 clips (the numbers the
+// STT_REPORT variable prints): the log-mel before normalisation differs from NeMo's by at most 3.7e-4 (the log of a
+// small power, near the 2^-24 guard, amplifies f32 noise in the power) and the normalised features by at most 5.2e-4
+// (values run to about 4). That is NeMo's own f32 noise and not this code's: the same computation done in torch in f64
+// (nemo-venv, one line: stft, filterbank, log) differs from NeMo's f32 by the same 3.7e-4 on the same clip, and from
+// this front end's by under 1e-6. The tolerances are 5e-4 and 7e-4, about 1.35 times the worst; what they must catch
+// (a wrong window, hop, pre-emphasis, filterbank or normalisation) moves values by 1e-2 to 1.
+
+mod frontendtest;
+
+import testing use *;
+import libc;
+import collections use List, String;
+import path use Path;
+import fs;
+import stdio use *;
+import audiomixer use *;
+import safetensors use *;
+import speechtotext use *;
+
+const TOL_LOG = 5.0e-4;
+const TOL_MEL = 7.0e-4;
+
+fn reporting() bool { (libc.getenv("STT_REPORT") as usize) != 0usize }
+
+fn clips() List[String] {
+  var l = List[String].empty();
+  l.push(String.from("1284-1180-0021")); l.push(String.from("1580-141084-0037")); l.push(String.from("2094-142345-0032"));
+  l.push(String.from("237-134500-0035")); l.push(String.from("2961-960-0013")); l.push(String.from("3729-6852-0040"));
+  l.push(String.from("4446-2273-0032")); l.push(String.from("5639-40744-0033")); l.push(String.from("5683-32866-0023"));
+  l.push(String.from("61-70968-0031")); l.push(String.from("672-122797-0001")); l.push(String.from("6829-68769-0012"));
+  l.push(String.from("6930-75918-0000")); l.push(String.from("7176-92135-0019")); l.push(String.from("8455-210777-0048"));
+  l.push(String.from("908-31957-0008"));
+  l
+}
+
+fn maxDiff(a: &List[f32], b: &List[f32]) f64 {
+  if a.len() != b.len() { return 1.0e30; }
+  var worst = 0.0;
+  var i = 0usize;
+  while i < a.len() {
+    let d = libc.fabs(f64.from(*a[i]) - f64.from(*b[i]));
+    if d > worst { worst = d; }
+    i = i + 1usize;
+  }
+  worst
+}
+
+fn pathOf(parts: &str, id: &str, tail: &str) Path {
+  var s = String.from(parts);
+  s <- id;
+  s <- tail;
+  Path.from(s.view())
+}
+
+fn main() i32 {
+  // the model's tables
+  var modelPath = Path.from("C:\\src\\speech-models\\parakeet-tdt-0.6b-v2.f32.safetensors");
+  var haveModel = fs.exists(&modelPath);
+  if !haveModel { return skip("the converted model is not at C:\\src\\speech-models"); }
+  var mapped = match fs.mapFile(&modelPath) {
+    case var Ok(f) { f }
+    case is Error { return skip("the model file cannot be mapped"); }
+  };
+  var st = match parseSafetensors(mapped.view()) {
+    case var Ok(s) { s }
+    case is Error { expect(false, "the model file parses"); return done(); }
+  };
+  var window = List[f32].empty();
+  var fb = List[f32].empty();
+  match st.floats(mapped.view(), "mel.window") { case var Some(w) { window = w; } case is None { expect(false, "mel.window is there"); } }
+  match st.floats(mapped.view(), "mel.fb") { case var Some(w) { fb = w; } case is None { expect(false, "mel.fb is there"); } }
+  var fe = match Frontend.make(window.view(), fb.view()) {
+    case var Some(f) { f }
+    case is None { expect(false, "the tables have the sizes of 128 bands and 400 samples"); return done(); }
+  };
+
+  // properties that need no reference: too short, silence, and the length rule (1 + N / 160 STFT frames, N / 160 valid)
+  var few = List[f32].empty();
+  few.resize(100usize, 0.0f32);
+  expectUInt(u64.from(fe.features(few.view()).frames), 0u64, "100 samples give no frames");
+  var quiet = List[f32].empty();
+  quiet.resize(16000usize, 0.0f32);
+  let silent = fe.logMel(quiet.view());
+  expectUInt(u64.from(silent.frames), 101u64, "a second of samples gives 1 + 16000 / 160 STFT frames");
+  expectFloat(f64.from(*silent.data[5usize]), -16.635532, 0.0001, "silence is the log of the guard, ln(2^-24)");
+  expectUInt(u64.from(fe.features(quiet.view()).frames), 100u64, "a second gives 100 valid frames");
+
+  var any = false;
+  var worstLog = 0.0;
+  var worstMel = 0.0;
+  let ids = clips();
+  var c = 0usize;
+  while c < ids.len() {
+    let id = ids[c].view();
+    c = c + 1usize;
+    let wavPath = pathOf("C:\\src\\speech-models\\librispeech-clips\\", id, ".wav");
+    let refPath = pathOf("C:\\src\\speech-models\\reference\\", id, ".ref.safetensors");
+    if !fs.exists(&wavPath) || !fs.exists(&refPath) { continue; }
+    var wav = match fs.mapFile(&wavPath) { case var Ok(f) { f } case is Error { continue; } };
+    var rf = match fs.mapFile(&refPath) { case var Ok(f) { f } case is Error { continue; } };
+    let sound = match decodeWav(wav.view()) { case var Ok(s) { s } case is Error { expect(false, "the clip decodes"); continue; } };
+    let rst = match parseSafetensors(rf.view()) { case var Ok(s) { s } case is Error { expect(false, "the reference parses"); continue; } };
+    any = true;
+    expectUInt(u64.from(sound.rate), 16000u64, "the clip is 16 kHz");
+    let refLog = rst.floats(rf.view(), "logmel");
+    let refMel = rst.floats(rf.view(), "mel");
+    let lm = fe.logMel(sound.samples.view());
+    let ft = fe.features(sound.samples.view());
+    match refLog {
+      case let Some(r) {
+        let d = maxDiff(&lm.data, &r);
+        if d > worstLog { worstLog = d; }
+        expectFloat(d, 0.0, TOL_LOG, id);
+      }
+      case is None { expect(false, "the reference has logmel"); }
+    }
+    match refMel {
+      case let Some(r) {
+        let d = maxDiff(&ft.data, &r);
+        if d > worstMel { worstMel = d; }
+        expectFloat(d, 0.0, TOL_MEL, id);
+        expectUInt(u64.from(ft.frames * 128usize), u64.from(r.len()), "the number of valid frames");
+      }
+      case is None { expect(false, "the reference has mel"); }
+    }
+  }
+  if reporting() {
+    printStr("worst log-mel difference ");
+    printFloat(worstLog);
+    printStr(", worst normalised difference ");
+    printFloat(worstMel);
+    printStr("\n");
+  }
+  if !any { return skip("no reference clips at C:\\src\\speech-models"); }
+  done()
+}

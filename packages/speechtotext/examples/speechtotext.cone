@@ -1,0 +1,129 @@
+// speechtotext: transcribe WAV files with Parakeet TDT 0.6B v2 on the GPU.
+//
+//   congo run --release examples/speechtotext.cone -- clip.wav [more.wav ...]
+//       [--model C:\src\speech-models\parakeet-tdt-0.6b-v2.f16.safetensors]
+//       [--vocab C:\src\speech-models\parakeet-tdt-0.6b-v2.vocab.txt] [--timings] [--validate]
+//
+// A WAV of any rate, channel count and sample format audiomixer reads is converted to 16 kHz mono first. One file: its
+// text on a line. Several: each file's path, a tab, its text. With --timings, a line of timings for each file on stderr
+// (the real-time factor is the processing time over the audio's). No sound is played or recorded; this reads files.
+
+mod speechtotextcli;
+
+import stdio use *;
+import collections use List, String;
+import path use Path;
+import process;
+import time use Instant;
+import fs;
+import gpu use *;
+import audiomixer use decodeWav;
+import speechtotext use *;
+
+fn say(msg: &str) { eprintStr(msg); }
+
+fn argValue(args: &List[String], name: &str) Option[String] {
+  var i = 0usize;
+  while i + 1usize < args.len() {
+    if args[i].view() == name { return Some[String](args[i + 1usize].copy()); }
+    i = i + 1usize;
+  }
+  None
+}
+
+fn hasFlag(args: &List[String], name: &str) bool {
+  var i = 0usize;
+  while i < args.len() {
+    if args[i].view() == name { return true; }
+    i = i + 1usize;
+  }
+  false
+}
+
+fn oneDecimal(x: f64) String {
+  let scaled = i64.from(x * 10.0 + 0.5);
+  var s = String.empty();
+  s <- u64.from(scaled / 10i64);
+  s <- ".";
+  s <- u64.from(scaled % 10i64);
+  s
+}
+
+fn main() i32 {
+  let args = process.args();
+  var model = String.from("C:\\src\\speech-models\\parakeet-tdt-0.6b-v2.f16.safetensors");
+  var vocab = String.from("C:\\src\\speech-models\\parakeet-tdt-0.6b-v2.vocab.txt");
+  match argValue(&args, "--model") { case var Some(p) { model = p; } case is None {} }
+  match argValue(&args, "--vocab") { case var Some(p) { vocab = p; } case is None {} }
+  // the files: arguments that are not flags or flags' values
+  var files = List[String].empty();
+  var i = 1usize;
+  while i < args.len() {
+    let a = args[i].view();
+    if a == "--model" || a == "--vocab" { i = i + 2usize; continue; }
+    if a == "--timings" || a == "--validate" { i = i + 1usize; continue; }
+    files.push(args[i].copy());
+    i = i + 1usize;
+  }
+  if files.len() == 0usize {
+    say("usage: speechtotext <audio.wav> [more.wav ...] [--model <file.safetensors>] [--vocab <file.txt>] [--timings]\n");
+    return 2i32;
+  }
+  // No window; the validation layer only with --validate
+  var instance = if hasFlag(&args, "--validate") { Instance.create("speechtotext") } else { Instance.createHeadless("speechtotext", false) };
+  var none = Surface.none();
+  var adapter = instance.requestAdapter(&none, POWER_PREFERENCE_HIGH_PERFORMANCE);
+  if !adapter.isValid() { say("speechtotext: no GPU with Vulkan 1.3\n"); return 1i32; }
+  var device = adapter.requestComputeDevice(&ComputeRequest(largeBuffers: true));
+  if !device.isValid() { say("speechtotext: the GPU could not be opened for compute\n"); return 1i32; }
+  let modelPath = Path.from(model.view());
+  let vocabPath = Path.from(vocab.view());
+  var p: Parakeet = match Parakeet.open(&mut device, &modelPath, &vocabPath) {
+    case var Ok(m) { m }
+    case let Error(m) { say(m.view()); say("\n"); return 1i32; }
+  };
+  var status = 0i32;
+  var f = 0usize;
+  while f < files.len() {
+    let wavPath = Path.from(files[f].view());
+    f = f + 1usize;
+    var mapped = match fs.mapFile(&wavPath) {
+      case var Ok(m) { m }
+      case let Error(e) { say(e.message().view()); say("\n"); status = 1i32; continue; }
+    };
+    let sound = match decodeWav(mapped.view()) {
+      case var Ok(s) { s }
+      case let Error(e) { say(files[f - 1usize].view()); say(": "); say(e.reason.view()); say("\n"); status = 1i32; continue; }
+    };
+    let samples = soundTo16k(&sound);
+    let t0 = Instant.now();
+    match p.transcribe(&mut device, samples.view()) {
+      case let Ok(r) {
+        if files.len() > 1usize { printStr(files[f - 1usize].view()); printStr("\t"); }
+        printStr(r.text.view());
+        printStr("\n");
+        if hasFlag(&args, "--timings") {
+          let total = Instant.now().since(t0).secondsF64();
+          let audio = f64.from(samples.len()) / 16000.0;
+          say("timings: audio ");
+          say(oneDecimal(audio).view());
+          say(" s, front end ");
+          say(oneDecimal(f64.from(r.timings.frontNanos) / 1.0e6).view());
+          say(" ms, encoder ");
+          say(oneDecimal(f64.from(r.timings.encodeNanos) / 1.0e6).view());
+          say(" ms, decoder ");
+          say(oneDecimal(f64.from(r.timings.decodeNanos) / 1.0e6).view());
+          say(" ms, total ");
+          say(oneDecimal(total * 1000.0).view());
+          say(" ms, real-time factor ");
+          say(oneDecimal(total / audio * 1000.0).view());
+          say(" thousandths\n");
+        }
+      }
+      case let Error(m) { say(m.view()); say("\n"); status = 1i32; }
+    }
+  }
+  device.endFrame();
+  device.waitIdle();
+  status
+}

@@ -1,0 +1,234 @@
+// ======== The front end: 16 kHz samples to Parakeet's normalised log-mel features, on the CPU ========
+//
+// What NeMo's AudioToMelSpectrogramPreprocessor does for this model (parakeet-tdt-0.6b-v2's config: window 25 ms,
+// hop 10 ms, a 512-point FFT, 128 mel bands, per-feature normalisation, log, dither 0, pad_to 0), in the order
+// NeMo's FilterbankFeatures.forward does it:
+//
+//   1. pre-emphasis y[0] = x[0], y[n] = x[n] - 0.97 x[n-1];
+//   2. a short-time Fourier transform with the centre of frame t at sample 160 t (the signal padded with 256 zeros
+//      each end, so there are 1 + N / 160 frames), a symmetric Hann window of 400 samples (the model's own 'mel.window')
+//      placed in the middle of the 512 of the FFT (56 zeros before it, 56 after);
+//   3. the power |X|^2 of bins 0 .. 256; the mel filterbank (the model's own 'mel.fb', 128 x 257, Slaney scale and
+//      norm) applied to it; the natural log of (that + 2^-24);
+//   4. only the first L = N / 160 frames are valid (NeMo's seq_len; the last frame of the STFT is masked to zero
+//      and does not take part in the statistics). Per mel band: subtract the mean over those L frames and divide by
+//      (the standard deviation, with n - 1 in its denominator, + 1e-5).
+//
+// The tables come from the model file, not from formulas, so what NeMo built (librosa's filterbank) is what runs.
+// The arithmetic is f64 with f32 stored, where NeMo's is f32: the two agree to the f32 noise of NeMo's own
+// computation (tests/frontend.cone says how closely, on the reference clips).
+
+const FFT_SIZE = 512usize;
+const HOP = 160usize;
+const WIN = 400usize;
+const MELS = 128usize;
+const BINS = 257usize;
+const PREEMPH = 0.97;
+const LOG_GUARD = 5.9604644775390625e-8;     // 2^-24
+const NORM_EPS = 1.0e-5;
+
+// What a front end produces: 'frames' frames of 128 values, frame-major
+pub struct Features {
+  pub frames: usize;
+  pub data: List[f32];
+}
+
+pub struct Frontend {
+  window: List[f64];           // the window placed in the 512 of the FFT
+  cosT: List[f64];             // twiddles of the 512-point FFT: cos(2 pi k / 512), k < 256
+  sinT: List[f64];
+  rev: List[usize];            // bit reversal of 0 .. 511
+  fb: List[f32];               // 128 x 257
+  lo: List[usize];             // for each mel band, the first and one past the last bin where its filter is not 0
+  hi: List[usize];
+
+  // From the model's two tables: the window (400) and the filterbank (128 x 257). None if they have other sizes.
+  pub fn make(window: &Array[f32], fb: &Array[f32]) Option[Frontend] {
+    if window.len != WIN || fb.len != MELS * BINS { return None; }
+    var w = List[f64].withCapacity(FFT_SIZE);
+    var i = 0usize;
+    let left = (FFT_SIZE - WIN) / 2usize;
+    while i < FFT_SIZE {
+      if i >= left && i < left + WIN { w.push(f64.from(window[i - left])); } else { w.push(0.0); }
+      i = i + 1usize;
+    }
+    var c = List[f64].withCapacity(FFT_SIZE / 2usize);
+    var s = List[f64].withCapacity(FFT_SIZE / 2usize);
+    let twoPi = 6.283185307179586;
+    i = 0usize;
+    while i < FFT_SIZE / 2usize {
+      let a = twoPi * f64.from(i) / f64.from(FFT_SIZE);
+      c.push(libc.cos(a));
+      s.push(0.0 - libc.sin(a));
+      i = i + 1usize;
+    }
+    var rev = List[usize].withCapacity(FFT_SIZE);
+    i = 0usize;
+    while i < FFT_SIZE {
+      var r = 0usize;
+      var b = 0usize;
+      while b < 9usize {
+        if (i >> b) & 1usize == 1usize { r = r | (1usize << (8usize - b)); }
+        b = b + 1usize;
+      }
+      rev.push(r);
+      i = i + 1usize;
+    }
+    var f = List[f32].withCapacity(MELS * BINS);
+    i = 0usize;
+    while i < fb.len { f.push(fb[i]); i = i + 1usize; }
+    var lo = List[usize].withCapacity(MELS);
+    var hi = List[usize].withCapacity(MELS);
+    var m = 0usize;
+    while m < MELS {
+      var a = BINS;
+      var z = 0usize;
+      var k = 0usize;
+      while k < BINS {
+        if fb[m * BINS + k] != 0.0 {
+          if a == BINS { a = k; }
+          z = k + 1usize;
+        }
+        k = k + 1usize;
+      }
+      if a == BINS { a = 0usize; }
+      lo.push(a);
+      hi.push(z);
+      m = m + 1usize;
+    }
+    Some[Frontend](Frontend(w, c, s, rev, f, lo, hi))
+  }
+
+  // In-place 512-point complex FFT of (re, im)
+  fn fft(self: &, re: &mut Array[f64], im: &mut Array[f64]) {
+    var i = 0usize;
+    while i < FFT_SIZE {
+      let j = *rev[i];
+      if j > i {
+        let tr = re[i]; re[i] = re[j]; re[j] = tr;
+        let ti = im[i]; im[i] = im[j]; im[j] = ti;
+      }
+      i = i + 1usize;
+    }
+    var len = 2usize;
+    while len <= FFT_SIZE {
+      let half = len / 2usize;
+      let step = FFT_SIZE / len;
+      var start = 0usize;
+      while start < FFT_SIZE {
+        var k = 0usize;
+        while k < half {
+          let wr = *cosT[k * step];
+          let wi = *sinT[k * step];
+          let a = start + k;
+          let b = a + half;
+          let xr = re[b] * wr - im[b] * wi;
+          let xi = re[b] * wi + im[b] * wr;
+          re[b] = re[a] - xr;
+          im[b] = im[a] - xi;
+          re[a] = re[a] + xr;
+          im[a] = im[a] + xi;
+          k = k + 1usize;
+        }
+        start = start + len;
+      }
+      len = len * 2usize;
+    }
+  }
+
+  // The log-mel of all 1 + N / 160 STFT frames before normalisation (frame-major, 128 each)
+  pub fn logMel(self: &, x: &Array[f32]) Features {
+    let n = x.len;
+    let total = 1usize + n / HOP;
+    // the signal, pre-emphasised, with 256 zeros each end
+    let pad = FFT_SIZE / 2usize;
+    var xp = List[f64].withCapacity(n + FFT_SIZE);
+    var i = 0usize;
+    while i < pad { xp.push(0.0); i = i + 1usize; }
+    i = 0usize;
+    while i < n {
+      if i == 0usize { xp.push(f64.from(x[0usize])); }
+      else { xp.push(f64.from(x[i]) - PREEMPH * f64.from(x[i - 1usize])); }
+      i = i + 1usize;
+    }
+    i = 0usize;
+    while i < pad { xp.push(0.0); i = i + 1usize; }
+    var out = List[f32].withCapacity(total * MELS);
+    var re = List[f64].withCapacity(FFT_SIZE);
+    var im = List[f64].withCapacity(FFT_SIZE);
+    i = 0usize;
+    while i < FFT_SIZE { re.push(0.0); im.push(0.0); i = i + 1usize; }
+    var power = List[f64].withCapacity(BINS);
+    i = 0usize;
+    while i < BINS { power.push(0.0); i = i + 1usize; }
+    var t = 0usize;
+    while t < total {
+      let base = t * HOP;
+      var k = 0usize;
+      while k < FFT_SIZE {
+        re[k] = *xp[base + k] * *window[k];
+        im[k] = 0.0;
+        k = k + 1usize;
+      }
+      self.fft(re.viewMut(), im.viewMut());
+      k = 0usize;
+      while k < BINS {
+        power[k] = *re[k] * *re[k] + *im[k] * *im[k];
+        k = k + 1usize;
+      }
+      var m = 0usize;
+      while m < MELS {
+        var acc = 0.0;
+        var b = *lo[m];
+        let e = *hi[m];
+        while b < e {
+          acc = acc + f64.from(*fb[m * BINS + b]) * *power[b];
+          b = b + 1usize;
+        }
+        out.push(f32.from(libc.log(acc + LOG_GUARD)));
+        m = m + 1usize;
+      }
+      t = t + 1usize;
+    }
+    Features(total, out)
+  }
+
+  // The features the encoder takes: the valid L = N / 160 frames of the log-mel, normalised per band. Fewer than 2
+  // frames answers none (nothing to normalise).
+  pub fn features(self: &, x: &Array[f32]) Features {
+    let l = x.len / HOP;
+    if l < 2usize { return Features(0usize, List[f32].empty()); }
+    let lm = self.logMel(x);
+    var out = List[f32].withCapacity(l * MELS);
+    var m = 0usize;
+    var mean = List[f64].empty();
+    var inv = List[f64].empty();
+    while m < MELS {
+      var s = 0.0;
+      var t = 0usize;
+      while t < l { s = s + f64.from(*lm.data[t * MELS + m]); t = t + 1usize; }
+      let mu = s / f64.from(l);
+      var ss = 0.0;
+      t = 0usize;
+      while t < l {
+        let d = f64.from(*lm.data[t * MELS + m]) - mu;
+        ss = ss + d * d;
+        t = t + 1usize;
+      }
+      let sd = libc.sqrt(ss / f64.from(l - 1usize)) + NORM_EPS;
+      mean.push(mu);
+      inv.push(1.0 / sd);
+      m = m + 1usize;
+    }
+    var t = 0usize;
+    while t < l {
+      m = 0usize;
+      while m < MELS {
+        out.push(f32.from((f64.from(*lm.data[t * MELS + m]) - *mean[m]) * *inv[m]));
+        m = m + 1usize;
+      }
+      t = t + 1usize;
+    }
+    Features(l, out)
+  }
+}

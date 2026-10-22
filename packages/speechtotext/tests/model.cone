@@ -1,0 +1,286 @@
+// Parakeet on the GPU against NeMo, on the 16 LibriSpeech test-clean clips in C:\src\speech-models\librispeech-clips and
+// NeMo's own outputs for them (C:\src\speech-models\reference, made by nemo_reference.py: the preprocessor's features,
+// the encoder's output after the subsampling, layers 0, 11 and 23 and the end, every joint evaluation of a greedy
+// decode with its 1030 logits, the tokens and the text). Skipped where those files, or the converted model, are absent.
+//
+// WHAT IS CHECKED, for the F32 weights (the exact check) and the F16 weights (the model that is used):
+//   - the transcript equals NeMo's, character for character, on every clip, and so do the token ids and the frame each
+//     was emitted at;
+//   - every joint evaluation of the decode: the frame, the best token and the best duration equal NeMo's (the sequence of
+//     evaluations is the same), and the 1030 logits are within the stated tolerance of NeMo's;
+//   - the encoder's outputs after the subsampling, layers 0, 11, 23 and the final output are within the stated tolerance of
+//     NeMo's.
+//
+// TOLERANCES are the error relative to the largest absolute value of that output, over the 16 clips. MEASURED on the
+// RTX 4060 (STT_REPORT=1 prints them): with F32 weights, subsampling 2.1e-6, layer 0 3.6e-6, layer 11 4.0e-6, layer 23 and
+// the encoder output 2.6e-5, the joint's logits 1.2e-5; the bounds are 1e-4 for the encoder and 5e-5 for the logits, about
+// four times the worst. With F16 weights (every matrix rounded to a half: 5e-4 relative a weight) subsampling 5.6e-5,
+// layer 0 3.3e-4, layer 11 5.1e-4, layer 23 and the output 2.5e-3, logits 1.1e-3; the bounds 1e-2 and 5e-3. The F32 bound is
+// the one that tests the code (a wrong layer, bias, scale or mask moves outputs by 10^-1 or more, 10^3 bounds); the F16
+// bound tests that the half-precision model is the same model. The reference is NeMo run in fp32 on the CPU.
+//
+// Only a failure prints. It needs a GPU with Vulkan 1.3 and SDL3.dll and about 3 GB of GPU memory for the F32 model.
+
+mod modeltest;
+
+import testing use *;
+import libc;
+import collections use List, String;
+import path use Path;
+import fs;
+import stdio use *;
+import gpu use *;
+import audiomixer use *;
+import safetensors use *;
+import speechtotext use *;
+
+const MODELS = "C:\\src\\speech-models\\";
+
+// The F32 weights' bounds (relative to the output's largest value) and the F16 weights'
+const F32_ENCODER = 1.0e-4;
+const F32_LOGITS = 5.0e-5;
+const F16_ENCODER = 1.0e-2;
+const F16_LOGITS = 5.0e-3;
+
+fn reporting() bool { (libc.getenv("STT_REPORT") as usize) != 0usize }
+
+fn clips() List[String] {
+  var l = List[String].empty();
+  l.push(String.from("1284-1180-0021")); l.push(String.from("1580-141084-0037")); l.push(String.from("2094-142345-0032"));
+  l.push(String.from("237-134500-0035")); l.push(String.from("2961-960-0013")); l.push(String.from("3729-6852-0040"));
+  l.push(String.from("4446-2273-0032")); l.push(String.from("5639-40744-0033")); l.push(String.from("5683-32866-0023"));
+  l.push(String.from("61-70968-0031")); l.push(String.from("672-122797-0001")); l.push(String.from("6829-68769-0012"));
+  l.push(String.from("6930-75918-0000")); l.push(String.from("7176-92135-0019")); l.push(String.from("8455-210777-0048"));
+  l.push(String.from("908-31957-0008"));
+  l
+}
+
+fn pathOf(dir: &str, id: &str, tail: &str) Path {
+  var s = String.from(dir);
+  s <- id;
+  s <- tail;
+  Path.from(s.view())
+}
+
+fn path4(a: &str, b: &str, c: &str, d: &str) Path {
+  var s = String.from(a);
+  s <- b;
+  s <- c;
+  s <- d;
+  Path.from(s.view())
+}
+
+// max |a - b| / max |b| over a's elements (b may be longer: NeMo's hidden states of a batch of one have a frame more than
+// the valid ones when the features' length is even, which is masked out), or a huge number if b is shorter
+fn relDiff(a: &List[f32], b: &List[f32]) f64 {
+  if a.len() > b.len() || a.len() == 0usize { return 1.0e30; }
+  var scale = 1.0e-30;
+  var i = 0usize;
+  while i < a.len() {
+    let m = libc.fabs(f64.from(*b[i]));
+    if m > scale { scale = m; }
+    i = i + 1usize;
+  }
+  var worst = 0.0;
+  i = 0usize;
+  while i < a.len() {
+    let d = libc.fabs(f64.from(*a[i]) - f64.from(*b[i]));
+    if d > worst { worst = d; }
+    i = i + 1usize;
+  }
+  worst / scale
+}
+
+fn trimmed(s: &str) String {
+  let b: &Array[u8] = s;
+  var end = b.len;
+  while end > 0usize && (b[end - 1usize] == '\n' || b[end - 1usize] == '\r' || b[end - 1usize] == ' ') { end = end - 1usize; }
+  var out = String.empty();
+  var i = 0usize;
+  while i < end { out.appendByte(b[i]); i = i + 1usize; }
+  out
+}
+
+struct Worst {
+  pre: f64;
+  l0: f64;
+  l11: f64;
+  l23: f64;
+  enc: f64;
+  logits: f64;
+}
+
+// One model over all the clips: the number of clips whose text equals NeMo's
+fn check(device: &mut Device, modelName: &str, encoderBound: f64, logitBound: f64, label: &str, worst: &mut Worst) usize {
+  var modelPath = pathOf(MODELS, modelName, "");
+  var vocabPath = pathOf(MODELS, "parakeet-tdt-0.6b-v2.vocab.txt", "");
+  var p: Parakeet = match Parakeet.open(device, &modelPath, &vocabPath) {
+    case var Ok(m) { m }
+    case let Error(m) { expect(false, label); expectStr(m.view(), "", "why the model did not open"); return 0usize; }
+  };
+  let ids = clips();
+  var same = 0usize;
+  var c = 0usize;
+  while c < ids.len() {
+    let id = ids[c].view();
+    c = c + 1usize;
+    let wavPath = path4(MODELS, "librispeech-clips\\", id, ".wav");
+    let refPath = path4(MODELS, "reference\\", id, ".ref.safetensors");
+    let txtPath = path4(MODELS, "reference\\", id, ".nemo.txt");
+    var wav = match fs.mapFile(&wavPath) { case var Ok(f) { f } case is Error { continue; } };
+    var rf = match openSafetensors(&refPath) { case var Ok(f) { f } case is Error { continue; } };
+    let nemoText = match fs.readFile(&txtPath) { case let Ok(t) { trimmed(t.view()) } case is Error { continue; } };
+    let sound = match decodeWav(wav.view()) { case var Ok(s) { s } case is Error { expect(false, "the clip decodes"); continue; } };
+    let r = match p.run(device, sound.samples.view(), true) {
+      case var Ok(r) { r }
+      case let Error(m) { expect(false, id); expectStr(m.view(), "", "why the run failed"); continue; }
+    };
+    if r.transcript.text.view() == nemoText.view() { same = same + 1usize; }
+    expectStr(r.transcript.text.view(), nemoText.view(), id);
+    let refBytes = rf.bytes();
+    // tokens and the frames they were emitted at
+    match rf.header.ints(refBytes, "token_ids") {
+      case let Some(t) {
+        var ok = t.len() == r.transcript.tokens.len();
+        var i = 0usize;
+        while ok && i < t.len() { if i64.from(*t[i]) != i64.from(*r.transcript.tokens[i]) { ok = false; } i = i + 1usize; }
+        expect(ok, "the token ids equal NeMo's");
+      }
+      case is None { expect(false, "the reference has token_ids"); }
+    }
+    match rf.header.ints(refBytes, "token_times") {
+      case let Some(t) {
+        var ok = t.len() == r.transcript.frames.len();
+        var i = 0usize;
+        while ok && i < t.len() { if i64.from(*t[i]) != i64.from(*r.transcript.frames[i]) { ok = false; } i = i + 1usize; }
+        expect(ok, "the frames the tokens were emitted at equal NeMo's");
+      }
+      case is None { expect(false, "the reference has token_times"); }
+    }
+    // the decode, step by step
+    match rf.header.ints(refBytes, "step_t") {
+      case let Some(st) {
+        expectUInt(u64.from(r.steps.len()), u64.from(st.len()), "the number of joint evaluations");
+        let sl = rf.header.ints(refBytes, "step_label");
+        let sd = rf.header.ints(refBytes, "step_dur");
+        let lg = rf.header.floats(refBytes, "step_logits");
+        match sl {
+          case let Some(slv) {
+            match sd {
+              case let Some(sdv) {
+                match lg {
+                  case let Some(lgv) {
+                    var s = 0usize;
+                    var seq = true;
+                    var w = 0.0;
+                    while s < st.len() && s < r.steps.len() {
+                      if i64.from(*st[s]) != i64.from(r.steps[s].t) || i64.from(*slv[s]) != i64.from(r.steps[s].token)
+                        || i64.from(*sdv[s]) != i64.from(r.steps[s].dur) { seq = false; }
+                      var ref1 = List[f32].withCapacity(1030usize);
+                      var k = 0usize;
+                      while k < 1030usize { ref1.push(*lgv[s * 1030usize + k]); k = k + 1usize; }
+                      let d = relDiff(&r.steps[s].logits, &ref1);
+                      if d > w { w = d; }
+                      s = s + 1usize;
+                    }
+                    expect(seq, "every joint evaluation has NeMo's frame, token and duration");
+                    expectFloat(w, 0.0, logitBound, id);
+                    if w > worst.logits { worst.logits = w; }
+                  }
+                  case is None { expect(false, "the reference has step_logits"); }
+                }
+              }
+              case is None { expect(false, "the reference has step_dur"); }
+            }
+          }
+          case is None { expect(false, "the reference has step_label"); }
+        }
+      }
+      case is None { expect(false, "the reference has step_t"); }
+    }
+    // the encoder
+    match rf.header.floats(refBytes, "pre_encode") { case let Some(v) { let d = relDiff(&r.encoder.preEncode, &v); if d > worst.pre { worst.pre = d; } expectFloat(d, 0.0, encoderBound, id); } case is None { expect(false, "pre_encode"); } }
+    match rf.header.floats(refBytes, "layer0") { case let Some(v) { let d = relDiff(&r.encoder.layer0, &v); if d > worst.l0 { worst.l0 = d; } expectFloat(d, 0.0, encoderBound, id); } case is None { expect(false, "layer0"); } }
+    match rf.header.floats(refBytes, "layer11") { case let Some(v) { let d = relDiff(&r.encoder.layer11, &v); if d > worst.l11 { worst.l11 = d; } expectFloat(d, 0.0, encoderBound, id); } case is None { expect(false, "layer11"); } }
+    match rf.header.floats(refBytes, "layer23") { case let Some(v) { let d = relDiff(&r.encoder.layer23, &v); if d > worst.l23 { worst.l23 = d; } expectFloat(d, 0.0, encoderBound, id); } case is None { expect(false, "layer23"); } }
+    match rf.header.floats(refBytes, "enc") { case let Some(v) { expectUInt(u64.from(r.encoder.out.len()), u64.from(v.len()), "the encoder output has NeMo's length"); let d = relDiff(&r.encoder.out, &v); if d > worst.enc { worst.enc = d; } expectFloat(d, 0.0, encoderBound, id); } case is None { expect(false, "enc"); } }
+  }
+  // edges: audio too short to have two feature frames (under 320 samples), none, silence, a limit on the length, and a
+  // second run of the same audio on the same model
+  var few = List[f32].empty();
+  few.resize(100usize, 0.0f32);
+  match p.transcribe(device, few.view()) {
+    case let Ok(r) { expectStr(r.text.view(), "", "100 samples transcribe to nothing"); expectUInt(u64.from(r.encFrames), 0u64, "...in no frames"); }
+    case let Error(m) { expect(false, "100 samples are not an error"); expectStr(m.view(), "", "why"); }
+  }
+  var nothing = List[f32].empty();
+  match p.transcribe(device, nothing.view()) {
+    case let Ok(r) { expectStr(r.text.view(), "", "no samples transcribe to nothing"); }
+    case is Error { expect(false, "no samples are not an error"); }
+  }
+  var quiet = List[f32].empty();
+  quiet.resize(48000usize, 0.0f32);
+  match p.transcribe(device, quiet.view()) {
+    case let Ok(r) { expectUInt(u64.from(r.encFrames), 38u64, "3 s of silence are 38 encoder frames"); }
+    case is Error { expect(false, "silence is not an error"); }
+  }
+  p.limitFrames(10usize);
+  match p.transcribe(device, quiet.view()) {
+    case is Ok { expect(false, "audio past the limit is refused"); }
+    case is Error { expect(true, "audio past the limit is refused"); }
+  }
+  p.limitFrames(5000usize);
+  var again = match fs.mapFile(&path4(MODELS, "librispeech-clips\\", "7176-92135-0019", ".wav")) { case var Ok(f) { f } case is Error { return same; } };
+  let snd = match decodeWav(again.view()) { case var Ok(s) { s } case is Error { return same; } };
+  var texts = List[String].empty();
+  var rep = 0usize;
+  while rep < 3usize {
+    match p.transcribe(device, snd.samples.view()) {
+      case let Ok(r) { texts.push(r.text.copy()); }
+      case is Error { expect(false, "a repeated run works"); }
+    }
+    rep = rep + 1usize;
+  }
+  expectStr(texts[0usize].view(), texts[2usize].view(), "the same audio gives the same text on the same model");
+  same
+}
+
+fn report(name: &str, w: &Worst) {
+  printStr(name);
+  printStr(": worst relative error: subsampling "); printFloat(w.pre);
+  printStr(", layer 0 "); printFloat(w.l0);
+  printStr(", layer 11 "); printFloat(w.l11);
+  printStr(", layer 23 "); printFloat(w.l23);
+  printStr(", encoder output "); printFloat(w.enc);
+  printStr(", joint logits "); printFloat(w.logits);
+  printStr("\n");
+}
+
+fn main() i32 {
+  var f32Path = pathOf(MODELS, "parakeet-tdt-0.6b-v2.f32.safetensors", "");
+  var f16Path = pathOf(MODELS, "parakeet-tdt-0.6b-v2.f16.safetensors", "");
+  var refDir = pathOf(MODELS, "reference\\1284-1180-0021.ref.safetensors", "");
+  if !fs.exists(&f32Path) || !fs.exists(&f16Path) || !fs.exists(&refDir) {
+    return skip("the converted models or NeMo's reference outputs are not at C:\\src\\speech-models");
+  }
+  var instance = Instance.createHeadless("speechtotext model test", false);
+  var none = Surface.none();
+  var adapter = instance.requestAdapter(&none, POWER_PREFERENCE_HIGH_PERFORMANCE);
+  require(adapter.isValid(), "an adapter");
+  var device = adapter.requestComputeDevice(&ComputeRequest(largeBuffers: true));
+  require(device.isValid(), "a compute device");
+  var w32 = Worst(0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+  var w16 = Worst(0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+  let same32 = check(&mut device, "parakeet-tdt-0.6b-v2.f32.safetensors", F32_ENCODER, F32_LOGITS, "the F32 model opens", &mut w32);
+  expectUInt(u64.from(same32), 16u64, "F32: clips whose transcript is NeMo's");
+  device.waitIdle();
+  let same16 = check(&mut device, "parakeet-tdt-0.6b-v2.f16.safetensors", F16_ENCODER, F16_LOGITS, "the F16 model opens", &mut w16);
+  expectUInt(u64.from(same16), 16u64, "F16: clips whose transcript is NeMo's");
+  if reporting() {
+    report("F32", &w32);
+    report("F16", &w16);
+  }
+  device.endFrame();
+  device.waitIdle();
+  done()
+}
