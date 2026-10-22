@@ -1,0 +1,159 @@
+// The microphone through SDL's disk audio driver: a raw f32 file is the "microphone" (the driver is named
+// explicitly, so no real device can be opened), read through a Microphone into the voice activity detector, and
+// the cut points are compared with the known edges the file was built with. Twice: a stream at the disk device's
+// own rate (44.1 kHz), where every sample must arrive unchanged, and a stream at 16 kHz, where SDL's converter
+// sits between the file and the program (the cut points must survive the conversion). Then the dummy driver,
+// whose microphone is silence and finds nothing; and the check that a driver other than the one asked for is
+// refused before a device opens.
+mod diskmic;
+
+import testing use *;
+import collections use *;
+import path use Path;
+import fs;
+import thread;
+import time use Duration;
+import voiceaudio use *;
+
+fn ms(n: u32, rate: u32) usize { usize.from(n) * usize.from(rate) / 1000usize }
+
+fn near(got: usize, want: usize, early: usize, late: usize, label: &Array[u8]) bool {
+  let lo = if want > early {want - early} else {0usize};
+  expect(got >= lo && got <= want + late, label)
+}
+
+fn saved(path: &Path, x: &List[f32]) bool {
+  var ok = false;
+  match writeRawF32(path, x.view()) {
+    case let Ok(u) { ok = true; }
+    case let Error(e) {}
+  }
+  ok
+}
+
+// Read the microphone until 'total' samples have arrived (or about 15 s pass), feeding the detector
+fn listen(mic: &mut Microphone, vad: &mut Vad, total: usize, all: &mut List[f32]) List[Utterance] {
+  var out = List[Utterance].empty();
+  var rounds = 0;
+  while mic.samplesTaken() < total && rounds < 3000 {
+    var buf = List[f32].empty();
+    let n = mic.read(&mut buf, total - mic.samplesTaken());
+    if n > 0usize {
+      vad.push(buf.view(), &mut out);
+      var i = 0usize;
+      while i < buf.len() { all.push(*buf[i]); i = i + 1usize; }
+    } else {
+      thread.sleep(Duration.fromMillis(5));
+    }
+    rounds = rounds + 1;
+  }
+  out
+}
+
+fn main() i32 {
+  let R = DISK_RATE;
+  // At 44.1 kHz: 1 s lead, speech 1.5 s, silence 1 s, speech 1 s, 1.2 s tail
+  var x = noiseBed(5700u32, R, 0.002, 21u32);
+  addInto(&mut x, ms(1000u32, R), speechLike(1500u32, R, 0.05, 21u32).view());
+  addInto(&mut x, ms(3500u32, R), speechLike(1000u32, R, 0.05, 22u32).view());
+  let inPath = Path.from("voiceaudio-test-mic.raw");
+  let outPath = Path.from("voiceaudio-test-mic-out.raw");
+  require(saved(&inPath, &x), "the microphone file is written");
+
+  // ---- a stream at the device's own rate
+  {
+    let drv = Driver.disk("voiceaudio-test-mic.raw", "voiceaudio-test-mic-out.raw", "0.05");
+    match Microphone.open(&drv, R) {
+      case var Ok(mic) {
+        var vad = Vad.make(VadConfig.standard(R));
+        var all = List[f32].empty();
+        let u = listen(&mut mic, &mut vad, x.len(), &mut all);
+        mic.close();
+        expectUInt(u64.from(all.len()), u64.from(x.len()), "every sample of the file arrived");
+        var worst = 0.f;
+        var i = 0usize;
+        while i < all.len() && i < x.len() {
+          var d = *all[i] - *x[i];
+          if d < 0. { d = -d; }
+          if d > worst { worst = d; }
+          i = i + 1usize;
+        }
+        expectFloat(f64.from(worst), 0., 0.0000001, "at the device's rate the samples arrive unchanged");
+        expectUInt(u64.from(u.len()), 2u64, "two utterances through the disk microphone");
+        if u.len() == 2usize {
+          near(u[0].start, ms(1000u32, R), ms(20u32, R), ms(60u32, R), "first starts at 1.0 s");
+          near(u[0].end, ms(2500u32, R), ms(40u32, R), ms(40u32, R), "first ends at 2.5 s");
+          near(u[1].start, ms(3500u32, R), ms(20u32, R), ms(60u32, R), "second starts at 3.5 s");
+          near(u[1].end, ms(4500u32, R), ms(40u32, R), ms(40u32, R), "second ends at 4.5 s");
+        }
+      }
+      case let Error(e) { require(false, "the disk microphone opens"); }
+    }
+  }
+
+  // ---- a stream at 16 kHz: SDL converts the file's 44.1 kHz on the way
+  {
+    let S = 16000u32;
+    let drv = Driver.disk("voiceaudio-test-mic.raw", "voiceaudio-test-mic-out.raw", "0.05");
+    match Microphone.open(&drv, S) {
+      case var Ok(mic) {
+        var vad = Vad.make(VadConfig.standard(S));
+        var all = List[f32].empty();
+        // the converter holds back a little of the end: ask for 5.4 s of the 5.7
+        let u = listen(&mut mic, &mut vad, ms(5400u32, S), &mut all);
+        mic.close();
+        expectUInt(u64.from(u.len()), 2u64, "two utterances through the converting microphone");
+        if u.len() == 2usize {
+          near(u[0].start, ms(1000u32, S), ms(40u32, S), ms(80u32, S), "converted: first starts at 1.0 s");
+          near(u[0].end, ms(2500u32, S), ms(60u32, S), ms(60u32, S), "converted: first ends at 2.5 s");
+          near(u[1].start, ms(3500u32, S), ms(40u32, S), ms(80u32, S), "converted: second starts at 3.5 s");
+          near(u[1].end, ms(4500u32, S), ms(60u32, S), ms(60u32, S), "converted: second ends at 4.5 s");
+        }
+      }
+      case let Error(e) { require(false, "the converting disk microphone opens"); }
+    }
+  }
+  fs.removeFile(&inPath);
+  fs.removeFile(&outPath);
+
+  // ---- the dummy driver's microphone is silence
+  {
+    let drv = Driver.dummy();
+    match Microphone.open(&drv, 16000u32) {
+      case var Ok(mic) {
+        var vad = Vad.make(VadConfig.standard(16000u32));
+        var all = List[f32].empty();
+        let u = listen(&mut mic, &mut vad, 8000usize, &mut all);
+        mic.close();
+        expect(all.len() >= 8000usize, "the dummy microphone delivers samples");
+        var peak = 0.f;
+        var i = 0usize;
+        while i < all.len() { var a = *all[i]; if a < 0. { a = -a; } if a > peak { peak = a; } i = i + 1usize; }
+        expectFloat(f64.from(peak), 0., 0., "and they are silence");
+        expectUInt(u64.from(u.len()), 0u64, "which holds no utterance");
+      }
+      case let Error(e) { require(false, "the dummy microphone opens"); }
+    }
+  }
+
+  // ---- a driver other than the one asked for is refused before any device opens: with SDL's audio already
+  // running on the dummy driver, asking for disk fails the check
+  {
+    let dummy = Driver.dummy();
+    let disk = Driver.disk("voiceaudio-test-none.raw", "voiceaudio-test-none-out.raw", "0.05");
+    match Speaker.open(&dummy, 24000u32) {
+      case var Ok(sp) {
+        match Microphone.open(&disk, 16000u32) {
+          case var Ok(m) { m.close(); expect(false, "a microphone on the wrong driver must be refused"); }
+          case let Error(e) { expectInt(i64.from(e.reason), 2i64, "the wrong driver is refused with reason 2"); }
+        }
+        sp.close();
+      }
+      case let Error(e) { require(false, "the dummy speaker opens"); }
+    }
+  }
+  expect(!fs.exists(&Path.from("voiceaudio-test-none.raw")), "no file was touched");
+  expect(!fs.exists(&Path.from("voiceaudio-test-none-out.raw")), "nor any output made");
+
+  done()
+}

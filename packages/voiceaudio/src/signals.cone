@@ -1,0 +1,74 @@
+// ======== Test signals with known edges ========
+//
+// For tests and examples that need a "microphone" whose speech starts and ends at known sample indices: a bed of
+// noise, a speech-like voice (eight harmonics of a gliding pitch, in a syllable rhythm of four a second whose
+// dips reach a seventh of the peak, with 10 ms ramps at both edges), a pure tone, and `addInto` to lay one over
+// another at a given sample. The edges of what `addInto` lays are the ground truth by construction.
+
+// Silence of 'ms' milliseconds
+pub fn silenceMs(ms: u32, rate: u32) List[f32] {
+  var x = List[f32].empty();
+  x.resize(usize.from(ms) * usize.from(rate) / 1000usize, 0.);
+  x
+}
+
+// Uniform noise of the given rms
+pub fn noiseBed(ms: u32, rate: u32, rms: f32, seed: u32) List[f32] {
+  var x = silenceMs(ms, rate);
+  var r = Rng.seeded(seed);
+  var i = 0usize;
+  let k = rms * 1.7320508;
+  let m = x.viewMut();
+  while i < m.len { m[i] = r.signed() * k; i = i + 1usize; }
+  x
+}
+
+// A speech-like voice of the given rms over its whole length
+pub fn speechLike(ms: u32, rate: u32, rms: f32, seed: u32) List[f32] {
+  var x = silenceMs(ms, rate);
+  let n = x.len();
+  var phase = f32.from(seed % 7u32) * 0.9;
+  var sq = 0.f;
+  {
+    let m = x.viewMut();
+    var i = 0usize;
+    while i < n {
+      let t = f32.from(i) / f32.from(rate);
+      let f0 = 125. + 35. * (TAU * 0.7 * t + f32.from(seed % 5u32)).sin();
+      phase = phase + TAU * f0 / f32.from(rate);
+      if phase > TAU { phase = phase - TAU; }
+      var s = 0.f;
+      var h = 1;
+      while h <= 8 { s = s + (phase * f32.from(h)).sin() / f32.from(h); h = h + 1; }
+      let env = 0.14 + 0.86 * (0.5 + 0.5 * (TAU * 4. * t).cos());
+      var edge = 1.f;
+      let ramp = f32.from(rate) * 0.01;
+      if f32.from(i) < ramp { edge = f32.from(i) / ramp; }
+      if f32.from(n - 1usize - i) < ramp { edge = f32.from(n - 1usize - i) / ramp; }
+      let v = s * env * edge;
+      m[i] = v;
+      sq = sq + v * v;
+      i = i + 1usize;
+    }
+    let g = rms / (sq / f32.from(n)).sqrt();
+    i = 0usize;
+    while i < n { m[i] = m[i] * g; i = i + 1usize; }
+  }
+  x
+}
+
+// A sine of the given amplitude
+pub fn toneMs(ms: u32, rate: u32, hz: f32, amp: f32) List[f32] {
+  var x = silenceMs(ms, rate);
+  let m = x.viewMut();
+  var i = 0usize;
+  while i < m.len { m[i] = amp * (TAU * hz * f32.from(i) / f32.from(rate)).sin(); i = i + 1usize; }
+  x
+}
+
+// Add 'src' into 'dst' starting at sample 'at' (what falls past the end is dropped)
+pub fn addInto(dst: &mut List[f32], at: usize, src: &Array[f32]) {
+  let m = dst.viewMut();
+  var i = 0usize;
+  while i < src.len && at + i < m.len { m[at + i] = m[at + i] + src[i]; i = i + 1usize; }
+}
