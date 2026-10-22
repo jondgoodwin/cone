@@ -78,10 +78,18 @@ fn main() i32 {
   if !device.isValid() { say("speechtotext: the GPU could not be opened for compute\n"); return 1i32; }
   let modelPath = Path.from(model.view());
   let vocabPath = Path.from(vocab.view());
+  let openStart = Instant.now();
   var p: Parakeet = match Parakeet.open(&mut device, &modelPath, &vocabPath) {
     case var Ok(m) { m }
     case let Error(m) { say(m.view()); say("\n"); return 1i32; }
   };
+  if hasFlag(&args, "--timings") {
+    say("timings: model opened in ");
+    say(oneDecimal(Instant.now().since(openStart).secondsF64() * 1000.0).view());
+    say(" ms, ");
+    say(oneDecimal(f64.from(p.weightBytesOnGpu()) / 1048576.0).view());
+    say(" MiB of weights on the GPU\n");
+  }
   var status = 0i32;
   var f = 0usize;
   while f < files.len() {
@@ -111,6 +119,9 @@ fn main() i32 {
           say(oneDecimal(f64.from(r.timings.frontNanos) / 1.0e6).view());
           say(" ms, encoder ");
           say(oneDecimal(f64.from(r.timings.encodeNanos) / 1.0e6).view());
+          say(" ms (recording its job ");
+          say(oneDecimal(f64.from(r.timings.encRecordNanos) / 1.0e6).view());
+          say(")");
           say(" ms, decoder ");
           say(oneDecimal(f64.from(r.timings.decodeNanos) / 1.0e6).view());
           say(" ms, total ");

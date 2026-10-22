@@ -142,6 +142,8 @@ pub struct Timings {
   pub decodeNanos: i64;
   pub joints: u64;
   pub updates: u64;
+  // Of encodeNanos, the time to record the encoder's job (the CPU; the rest is the GPU's and the readbacks')
+  pub encRecordNanos: i64;
 }
 
 // What 'transcribe' answers
@@ -435,7 +437,7 @@ pub struct Parakeet {
       return Error[Parakeet, String](String.from("speechtotext: the model's tensors do not have the shapes of parakeet-tdt-0.6b-v2"));
     }
     let nres = resident.len();
-    let timings = Timings(0i64, 0i64, 0i64, 0u64, 0u64);
+    let timings = Timings(0i64, 0i64, 0i64, 0u64, 0u64, 0i64);
     Ok[Parakeet, String](Parakeet(file, kernels, sk, Works.make(), frontend, vocab, layers, subOut, jointEnc, jointPred, jointOut,
       lstmIh0, lstmHh0, lstmIh1, lstmHh1, embedBegin, c0w, c0b, c2w, c2b, c3w, c3b, c5w, c5b, c6w, c6b, subOutBias,
       jointEncBias, jointPredBias, jointOutBias, lstmBias0, lstmBias1, resident, nres, nWeights, slotSmall, slotX0, slotGi,
@@ -455,7 +457,7 @@ pub struct Parakeet {
   pub fn transcribe(self: &mut, device: &mut Device, samples: &Array[f32]) Result[Transcript, String] {
     match self.run(device, samples, false) {
       case var Ok(r) {
-        var out = Transcript(String.empty(), List[u32].empty(), List[u32].empty(), 0usize, Timings(0i64, 0i64, 0i64, 0u64, 0u64));
+        var out = Transcript(String.empty(), List[u32].empty(), List[u32].empty(), 0usize, Timings(0i64, 0i64, 0i64, 0u64, 0u64, 0i64));
         out <-> r.transcript;
         Ok[Transcript, String](out)
       }
@@ -491,7 +493,7 @@ pub struct Parakeet {
     timings.encodeNanos = t2.since(t1).nanos();
     timings.decodeNanos = t3.since(t2).nanos();
     let text = detokenize(&vocab, tokens.view());
-    let tr = Transcript(text, tokens, times, frames, Timings(timings.frontNanos, timings.encodeNanos, timings.decodeNanos, timings.joints, timings.updates));
+    let tr = Transcript(text, tokens, times, frames, Timings(timings.frontNanos, timings.encodeNanos, timings.decodeNanos, timings.joints, timings.updates, timings.encRecordNanos));
     Ok[Run, String](Run(tr, enc, steps, feats))
   }
 }

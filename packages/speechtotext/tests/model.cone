@@ -269,6 +269,46 @@ fn main() i32 {
   require(adapter.isValid(), "an adapter");
   var device = adapter.requestComputeDevice(&ComputeRequest(largeBuffers: true));
   require(device.isValid(), "a compute device");
+  // models that cannot be opened: a missing file, a vocabulary of the wrong size, a safetensors file that is not Parakeet
+  {
+    var vocabPath = pathOf(MODELS, "parakeet-tdt-0.6b-v2.vocab.txt", "");
+    var missing = pathOf(MODELS, "no-such-model.safetensors", "");
+    match Parakeet.open(&mut device, &missing, &vocabPath) {
+      case is Ok { expect(false, "a missing model file is refused"); }
+      case is Error { expect(true, "a missing model file is refused"); }
+    }
+    let shortVocab = Path.from("short-vocab.txt");
+    match fs.writeFile(&shortVocab, "<unk>\n▁the\n") {
+      case is Ok {
+        match Parakeet.open(&mut device, &f16Path, &shortVocab) {
+          case is Ok { expect(false, "a vocabulary that is not 1024 pieces is refused"); }
+          case is Error { expect(true, "a vocabulary that is not 1024 pieces is refused"); }
+        }
+        fs.removeFile(&shortVocab);
+      }
+      case is Error { expect(false, "the short vocabulary is written"); }
+    }
+    // a well-formed safetensors file that has none of the model's tensors
+    var tiny = List[u8].empty();
+    let head = "{\"a\":{\"dtype\":\"F32\",\"shape\":[1],\"data_offsets\":[0,4]}}";
+    let hb: &Array[u8] = head;
+    var n = 0usize;
+    while n < 8usize { tiny.push(if n == 0usize { u8.from(hb.len) } else { 0u8 }); n = n + 1usize; }
+    n = 0usize;
+    while n < hb.len { tiny.push(hb[n]); n = n + 1usize; }
+    tiny.push(0u8); tiny.push(0u8); tiny.push(0u8); tiny.push(0u8);
+    let tinyPath = Path.from("not-parakeet.safetensors");
+    match fs.writeFile(&tinyPath, tiny.view()) {
+      case is Ok {
+        match Parakeet.open(&mut device, &tinyPath, &vocabPath) {
+          case is Ok { expect(false, "a file without the model's tensors is refused"); }
+          case is Error { expect(true, "a file without the model's tensors is refused"); }
+        }
+        fs.removeFile(&tinyPath);
+      }
+      case is Error { expect(false, "the tiny model is written"); }
+    }
+  }
   var w32 = Worst(0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
   var w16 = Worst(0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
   let same32 = check(&mut device, "parakeet-tdt-0.6b-v2.f32.safetensors", F32_ENCODER, F32_LOGITS, "the F32 model opens", &mut w32);

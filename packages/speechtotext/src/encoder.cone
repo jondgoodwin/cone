@@ -1,8 +1,9 @@
 // ======== The encoder job and the decoder's jobs ========
 
-// y = W x for one vector (a matvec reading x from element xOff) or n of them (a matmul)
-fn mm(k: &Kernels, job: &mut Job, device: &mut Device, w: &WRef, x: u32, y: u32, n: usize) bool {
-  k.matmulAt(job, device, w.buf, x, y, w.qtype, w.rows, w.cols, n, w.off, 0usize, 0usize)
+// Y = X W^T for n input vectors: a matvec for one, this package's tiled matmul for more
+fn mmul(p: &Parakeet, job: &mut Job, device: &mut Device, w: &WRef, x: u32, y: u32, n: usize) bool {
+  if n == 1usize { return p.kernels.matvecAt(job, device, w.buf, x, y, w.qtype, w.rows, w.cols, w.off, 0usize, 0usize); }
+  p.sk.matmul(job, device, w.buf, x, y, w.qtype, w.rows, w.cols, n, w.off, 0usize, 0usize)
 }
 
 fn mv(k: &Kernels, job: &mut Job, device: &mut Device, w: &WRef, x: u32, y: u32, xOff: usize) bool {
@@ -77,9 +78,9 @@ pub fn encoderFrames(l: usize) usize {
 fn ffBlock(p: &Parakeet, job: &mut Job, device: &mut Device, small: u32, x: u32, x2: u32, xn: u32, h4a: u32, h4b: u32, a: u32,
     w1: &WRef, w2: &WRef, nW: usize, nB: usize, t: usize) bool {
   var ok = p.sk.layernorm(job, device, small, x, xn, D_MODEL, t, 0.00001, nW, nB);
-  ok = mm(&p.kernels, job, device, w1, xn, h4a, t) && ok;
+  ok = mmul(p, job, device, w1, xn, h4a, t) && ok;
   ok = p.kernels.silu(job, device, h4a, h4b, t * D_FF) && ok;
-  ok = mm(&p.kernels, job, device, w2, h4b, a, t) && ok;
+  ok = mmul(p, job, device, w2, h4b, a, t) && ok;
   p.sk.scaleAdd(job, device, x, a, x2, t * D_MODEL, 0.5) && ok
 }
 
@@ -105,6 +106,7 @@ fn encode(p: &mut Parakeet, device: &mut Device, feats: &List[f32], l: usize, tr
     return Error[Encoded, String](m);
   }
   let small = p.slotSmall;
+  let recordStart = Instant.now();
   var job = startJob(p, device, 24usize * 48usize + 64usize);
   var ok = true;
   // ---- subsampling ----
@@ -125,7 +127,7 @@ fn encode(p: &mut Parakeet, device: &mut Device, feats: &List[f32], l: usize, tr
   var x = job.give(zeroed(device, t * D_MODEL));
   var x2 = job.give(zeroed(device, t * D_MODEL));
   var xn = job.give(zeroed(device, t * D_MODEL));
-  ok = mm(&p.kernels, &mut job, device, &p.subOut, c6, x, t) && ok;
+  ok = mmul(p, &mut job, device, &p.subOut, c6, x, t) && ok;
   ok = p.sk.biasAdd(&mut job, device, small, x, D_MODEL, t, p.subOutBias) && ok;
   var tr = emptyTrace();
   tr.frames = t;
@@ -158,22 +160,22 @@ fn encode(p: &mut Parakeet, device: &mut Device, feats: &List[f32], l: usize, tr
     let s1 = x; x = x2; x2 = s1;
     // attention
     ok = p.sk.layernorm(&mut job, device, small, x, xn, D_MODEL, t, 0.00001, w.nAttW, w.nAttB) && ok;
-    ok = mm(&p.kernels, &mut job, device, &w.q, xn, q, t) && ok;
-    ok = mm(&p.kernels, &mut job, device, &w.k, xn, kk, t) && ok;
-    ok = mm(&p.kernels, &mut job, device, &w.v, xn, v, t) && ok;
-    ok = mm(&p.kernels, &mut job, device, &w.pos, pe, pp, 2usize * t - 1usize) && ok;
+    ok = mmul(p, &mut job, device, &w.q, xn, q, t) && ok;
+    ok = mmul(p, &mut job, device, &w.k, xn, kk, t) && ok;
+    ok = mmul(p, &mut job, device, &w.v, xn, v, t) && ok;
+    ok = mmul(p, &mut job, device, &w.pos, pe, pp, 2usize * t - 1usize) && ok;
     ok = p.sk.relScores(&mut job, device, small, q, kk, pp, sc, t, N_HEADS, D_HEAD, w.posU, w.posV, scale) && ok;
     ok = p.kernels.softmax(&mut job, device, sc, sc2, t, N_HEADS * t) && ok;
     ok = p.sk.attnValue(&mut job, device, sc2, v, ctx, t, N_HEADS, D_HEAD) && ok;
-    ok = mm(&p.kernels, &mut job, device, &w.o, ctx, a, t) && ok;
+    ok = mmul(p, &mut job, device, &w.o, ctx, a, t) && ok;
     ok = p.sk.scaleAdd(&mut job, device, x, a, x2, t * D_MODEL, 1.0) && ok;
     let s2 = x; x = x2; x2 = s2;
     // convolution module
     ok = p.sk.layernorm(&mut job, device, small, x, xn, D_MODEL, t, 0.00001, w.nConvW, w.nConvB) && ok;
-    ok = mm(&p.kernels, &mut job, device, &w.pw1, xn, g2, t) && ok;
+    ok = mmul(p, &mut job, device, &w.pw1, xn, g2, t) && ok;
     ok = p.sk.glu(&mut job, device, g2, g1, D_MODEL, t) && ok;
     ok = p.sk.dwconv(&mut job, device, small, g1, dw, t, D_MODEL, 9usize, 4usize, w.dwW, w.dwB) && ok;
-    ok = mm(&p.kernels, &mut job, device, &w.pw2, dw, a, t) && ok;
+    ok = mmul(p, &mut job, device, &w.pw2, dw, a, t) && ok;
     ok = p.sk.scaleAdd(&mut job, device, x, a, x2, t * D_MODEL, 1.0) && ok;
     let s3 = x; x = x2; x2 = s3;
     // FF 2
@@ -191,9 +193,10 @@ fn encode(p: &mut Parakeet, device: &mut Device, feats: &List[f32], l: usize, tr
   if trace { rbOut = job.readback(device, x); }
   // ---- the joint's projection of the encoder output, kept ----
   let ep = job.give(zeroed(device, t * PRED));
-  ok = mm(&p.kernels, &mut job, device, &p.jointEnc, x, ep, t) && ok;
+  ok = mmul(p, &mut job, device, &p.jointEnc, x, ep, t) && ok;
   ok = p.sk.biasAdd(&mut job, device, small, ep, PRED, t, p.jointEncBias) && ok;
   // a job with a refused dispatch is submitted all the same: it completes not ok with its buffers back
+  p.timings.encRecordNanos = Instant.now().since(recordStart).nanos();
   var done = finishJob(p, device, job);
   if done.len() != 1usize {
     return Error[Encoded, String](String.from("speechtotext: the encoder job gave no completion"));

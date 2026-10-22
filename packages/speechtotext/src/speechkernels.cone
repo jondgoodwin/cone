@@ -14,9 +14,12 @@
 //   relScores   relative-position attention scores (Transformer-XL's, with the two position biases)
 //   attnValue   the weighted sum of the values
 //   lstmCell    an LSTM cell's gates and state update
+//   matmul      Y = X W^T for F32 or F16 weights: a 64 x 64 tile of Y to a workgroup, and a form that loads weights and
+//               inputs 16 bytes at a time where F16 weights, 32-column steps and the offsets allow; the sums are
+//               llmkernels' matmul's bit for bit, and it is 3 to 4 times faster at a batch of 190 (examples/bench.cone)
 //
-// The matrices (every linear layer, every 1x1 convolution, the LSTM's and the joint's) go through llmkernels' matmul
-// and matvec, in F32 or F16 as the model file has them. Softmax is llmkernels'. Every method records ONE dispatch into
+// The matrices (every linear layer, every 1x1 convolution, the LSTM's and the joint's) go through 'matmul' here for a batch
+// and llmkernels' matvec for one vector, in F32 or F16 as the model file has them. Softmax is llmkernels'. Every method records ONE dispatch into
 // a Job over buffers already given to it (slot numbers from 'job.give'), as llmkernels' do, and answers whether it
 // recorded (false for sizes a kernel cannot run). The tensors these kernels read (norm scales and shifts, the
 // small convolutions, biases, the attention's position biases) are all in one F32 buffer, 'small', each at a float
@@ -121,6 +124,17 @@ struct ValueParams {
   pad2: u32;
 }
 
+struct MatmulParams {
+  rows: u32;
+  cols: u32;
+  batch: u32;
+  rowBytes: u32;
+  wByteOffset: u32;
+  xOffset: u32;
+  yOffset: u32;
+  qtype: u32;
+}
+
 struct LstmParams {
   n: u32;
   bOff: u32;
@@ -161,6 +175,8 @@ pub struct SpeechKernels {
   scoresK: Kernel;
   valueK: Kernel;
   lstmK: Kernel;
+  matmulK: Kernel;
+  matmulVecK: Kernel;
 
   // The pipelines, made once on this device; check 'isValid'
   pub fn make(device: &Device) SpeechKernels {
@@ -174,12 +190,37 @@ pub struct SpeechKernels {
       Kernel.make(device, &CONV_SPIRV, "conv2dMain", &[READ, READ, READ, READ_WRITE]),
       Kernel.make(device, &SCORES_SPIRV, "relScoresMain", &[READ, READ, READ, READ, READ, READ_WRITE]),
       Kernel.make(device, &VALUE_SPIRV, "attnValueMain", &[READ, READ, READ, READ_WRITE]),
-      Kernel.make(device, &LSTM_SPIRV, "lstmCellMain", &[READ, READ, READ, READ, READ, READ_WRITE, READ_WRITE]))
+      Kernel.make(device, &LSTM_SPIRV, "lstmCellMain", &[READ, READ, READ, READ, READ, READ_WRITE, READ_WRITE]),
+      Kernel.make(device, &MATMUL_SPIRV, "matmulTiledMain", &[READ, READ, READ, READ_WRITE]),
+      Kernel.make(device, &MATMULVEC_SPIRV, "matmulVecMain", &[READ, READ, READ, READ_WRITE]))
   }
 
   pub fn isValid(self: &) bool {
     normK.isValid() && biasK.isValid() && scaleAddK.isValid() && addReluK.isValid() && gluK.isValid() && dwK.isValid()
-      && convK.isValid() && scoresK.isValid() && valueK.isValid() && lstmK.isValid()
+      && convK.isValid() && scoresK.isValid() && valueK.isValid() && lstmK.isValid() && matmulK.isValid() && matmulVecK.isValid()
+  }
+
+  // Y = X W^T for 'batch' input vectors (rows of X, cols f32s each), W a matrix of F32 or F16 weights (rows of cols) at byte
+  // 'wByteOffset' of the weights buffer 'w'; X read from element xOffset, Y written from element yOffset. A 64 x 64 tile of
+  // Y to a workgroup; the sums are llmkernels' matmul's, bit for bit, several times faster (see speechmatmul.slang).
+  pub fn matmul(self: &, job: &mut Job, device: &mut Device, w: u32, x: u32, y: u32, qtype: u32, rows: usize, cols: usize,
+      batch: usize, wByteOffset: usize, xOffset: usize, yOffset: usize) bool {
+    if (qtype != QTYPE_F32 && qtype != QTYPE_F16) || rows == 0usize || cols == 0usize || batch == 0usize { return false; }
+    let rb = rowBytes(qtype, cols);
+    if rb == 0usize || !skFits(rows) || !skFits(cols) || !skFits(batch) || !skFits(wByteOffset) || !skFits(xOffset) || !skFits(yOffset) {
+      return false;
+    }
+    if !skFits(wByteOffset + rows * rb) || !skFits(xOffset + batch * cols) || !skFits(yOffset + batch * rows) { return false; }
+    let gx = (rows + 63usize) / 64usize;
+    let gy = (batch + 63usize) / 64usize;
+    if gx > SK_MAX_GROUPS || gy > SK_MAX_GROUPS { return false; }
+    let p = skParams(job, device, &MatmulParams(u32.from(rows), u32.from(cols), u32.from(batch), u32.from(rb),
+      u32.from(wByteOffset), u32.from(xOffset), u32.from(yOffset), qtype));
+    // the wide-load form where its loads are aligned: F16 weights, columns a multiple of 32, the matrix on 16 bytes, the input on 4 floats
+    if qtype == QTYPE_F16 && cols % 32usize == 0usize && wByteOffset % 16usize == 0usize && xOffset % 4usize == 0usize {
+      return skDispatch(job, device, &matmulVecK, p, &[w, x, y], u32.from(gx), u32.from(gy));
+    }
+    skDispatch(job, device, &matmulK, p, &[w, x, y], u32.from(gx), u32.from(gy))
   }
 
   // y = (x - mean) / sqrt(var + eps) * small[wOff ..] + small[bOff ..], for each of 'rows' rows of n (at most 65535 rows)
