@@ -1,0 +1,165 @@
+// The safetensors reader against files assembled byte by byte, and refusals of malformed ones.
+
+mod readertest;
+
+import testing use *;
+import collections use List, String;
+import path use Path;
+import fs;
+import safetensors use *;
+
+fn le64(b: &mut List[u8], v: u64) {
+  var i = 0usize;
+  while i < 8usize { b.push(u8.from((v >> u64.from(8usize * i)) & 255u64)); i = i + 1usize; }
+}
+
+fn text(b: &mut List[u8], s: &str) {
+  let v: &Array[u8] = s;
+  var i = 0usize;
+  while i < v.len { b.push(v[i]); i = i + 1usize; }
+}
+
+// A file: the header text, then the data bytes
+fn file(header: &str, data: &Array[u8]) List[u8] {
+  var b = List[u8].empty();
+  let h: &Array[u8] = header;
+  le64(&mut b, u64.from(h.len));
+  text(&mut b, header);
+  var i = 0usize;
+  while i < data.len { b.push(data[i]); i = i + 1usize; }
+  b
+}
+
+fn refused(bytes: &List[u8], label: &str) {
+  match parseSafetensors(bytes.view()) {
+    case is Ok { expect(false, label); }
+    case is Error { expect(true, label); }
+  }
+}
+
+fn main() i32 {
+  var data = List[u8].empty();
+  // a: F32 [2, 2] = 1, 2, 3, 4 ; b: F16 [3] = three halves ; c: I32 [1]
+  var k = 0usize;
+  while k < 16usize { data.push(0u8); k = k + 1usize; }
+  data[0usize] = 0u8; data[1usize] = 0u8; data[2usize] = 128u8; data[3usize] = 63u8;     // 1.0f
+  data[4usize] = 0u8; data[5usize] = 0u8; data[6usize] = 0u8; data[7usize] = 64u8;       // 2.0f
+  data[10usize] = 64u8; data[11usize] = 64u8;                                            // 3.0f
+  data[14usize] = 128u8; data[15usize] = 64u8;                                           // 4.0f
+  var more = List[u8].empty();
+  var i = 0usize;
+  while i < data.len() { more.push(*data[i]); i = i + 1usize; }
+  more.push(0u8); more.push(60u8);   // 1.0 as a half (0x3C00)
+  more.push(0u8); more.push(64u8);   // 2.0 as a half (0x4000)
+  more.push(0u8); more.push(66u8);   // 3.0 as a half (0x4200)
+  more.push(7u8); more.push(0u8); more.push(0u8); more.push(0u8);   // I32 7
+  more.push(128u8); more.push(63u8);   // 1.0 as a bfloat16 (0x3F80)
+  more.push(0u8); more.push(192u8);    // -2.0 as a bfloat16 (0xC000)
+  let header = "{\"__metadata__\":{\"model\":\"tiny\"},\"a\":{\"dtype\":\"F32\",\"shape\":[2,2],\"data_offsets\":[0,16]},\"b\":{\"dtype\":\"F16\",\"shape\":[3],\"data_offsets\":[16,22]},\"c\":{\"dtype\":\"I32\",\"shape\":[1],\"data_offsets\":[22,26]},\"d\":{\"dtype\":\"BF16\",\"shape\":[2],\"data_offsets\":[26,30]}}";
+  let f = file(header, more.view());
+  match parseSafetensors(f.view()) {
+    case let Ok(st) {
+      expectUInt(u64.from(st.tensors.len()), 4u64, "four tensors");
+      match st.floats(f.view(), "a") {
+        case let Some(v) {
+          expectUInt(u64.from(v.len()), 4u64, "a has four values");
+          expectFloat(f64.from(*v[0usize]), 1.0, 0.0, "a[0]");
+          expectFloat(f64.from(*v[1usize]), 2.0, 0.0, "a[1]");
+          expectFloat(f64.from(*v[3usize]), 4.0, 0.0, "a[3]");
+        }
+        case is None { expect(false, "a reads as floats"); }
+      }
+      match st.floats(f.view(), "b") {
+        case let Some(v) {
+          expectFloat(f64.from(*v[0usize]), 1.0, 0.0, "b[0] (a half)");
+          expectFloat(f64.from(*v[2usize]), 3.0, 0.0, "b[2] (a half)");
+        }
+        case is None { expect(false, "b reads as floats"); }
+      }
+      match st.floats(f.view(), "d") {
+        case let Some(v) {
+          expectFloat(f64.from(*v[0usize]), 1.0, 0.0, "d[0] (a bfloat16)");
+          expectFloat(f64.from(*v[1usize]), -2.0, 0.0, "d[1] (a bfloat16)");
+        }
+        case is None { expect(false, "d reads as floats"); }
+      }
+      expect(st.floats(f.view(), "c") is None, "an I32 tensor is not floats");
+      match st.ints(f.view(), "c") {
+        case let Some(v) { expectInt(i64.from(*v[0usize]), 7i64, "c[0]"); }
+        case is None { expect(false, "c reads as ints"); }
+      }
+      expect(st.ints(f.view(), "a") is None, "an F32 tensor is not ints");
+      match st.find("a") {
+        case let Some(t) {
+          expectUInt(u64.from(t.dtype), u64.from(ST_F32), "a is F32");
+          expectUInt(u64.from(t.rows()), 2u64, "a has 2 rows");
+          expectUInt(u64.from(t.cols()), 2u64, "a has 2 columns");
+          expectUInt(u64.from(t.bytes()), 16u64, "a is 16 bytes");
+          let bytes = st.bytesOf(f.view(), t);
+          expectUInt(u64.from(bytes[2usize]), 128u64, "a's bytes are the file's");
+        }
+        case is None { expect(false, "a is found"); }
+      }
+      match st.find("b") {
+        case let Some(t) {
+          expectUInt(u64.from(t.dtype), u64.from(ST_F16), "b is F16");
+          expectUInt(u64.from(t.elements()), 3u64, "b has 3 elements");
+          expectUInt(u64.from(t.rows()), 1u64, "a vector is one row");
+          let bytes = st.bytesOf(f.view(), t);
+          expectUInt(u64.from(bytes[5usize]), 66u64, "b's last byte");
+        }
+        case is None { expect(false, "b is found"); }
+      }
+      match st.find("c") {
+        case let Some(t) { expectUInt(u64.from(t.dtype), u64.from(ST_I32), "c is I32"); }
+        case is None { expect(false, "c is found"); }
+      }
+      expect(st.find("zz") is None, "an absent tensor is None");
+      match st.meta("model") {
+        case let Some(v) { expectStr(v, "tiny", "metadata"); }
+        case is None { expect(false, "metadata is found"); }
+      }
+    }
+    case let Error(e) { expect(false, "a well-formed file parses"); expectStr(e.view(), "", "the reason"); }
+  }
+
+  // a file on disk, mapped
+  let diskPath = Path.from("tiny.safetensors");
+  match fs.writeFile(&diskPath, f.view()) {
+    case is Ok {
+      match openSafetensors(&diskPath) {
+        case let Ok(sf) {
+          expectUInt(u64.from(sf.header.tensors.len()), 4u64, "the mapped file has four tensors");
+          match sf.header.floats(sf.bytes(), "b") {
+            case let Some(v) { expectFloat(f64.from(*v[1usize]), 2.0, 0.0, "b[1] from the mapped file"); }
+            case is None { expect(false, "b reads from the mapped file"); }
+          }
+        }
+        case is Error { expect(false, "the file on disk opens"); }
+      }
+      fs.removeFile(&diskPath);
+    }
+    case is Error { expect(false, "the test file is written"); }
+  }
+  let missing = Path.from("no-such-file.safetensors");
+  match openSafetensors(&missing) {
+    case is Ok { expect(false, "a missing file is refused"); }
+    case is Error { expect(true, "a missing file is refused"); }
+  }
+
+  // refusals
+  var empty = List[u8].empty();
+  refused(&empty, "an empty file");
+  var shortFile = List[u8].empty();
+  le64(&mut shortFile, 1000u64);
+  refused(&shortFile, "a header longer than the file");
+  refused(&file("{not json", more.view()), "a header that is not JSON");
+  refused(&file("[1]", more.view()), "a header that is not an object");
+  refused(&file("{\"a\":{\"dtype\":\"F64\",\"shape\":[1],\"data_offsets\":[0,8]}}", more.view()), "an unsupported dtype");
+  refused(&file("{\"a\":{\"dtype\":\"F32\",\"shape\":[2,2],\"data_offsets\":[0,12]}}", more.view()), "a range that does not fit its shape");
+  refused(&file("{\"a\":{\"dtype\":\"F32\",\"shape\":[100],\"data_offsets\":[0,400]}}", more.view()), "a range past the end of the file");
+  refused(&file("{\"a\":{\"dtype\":\"F32\",\"shape\":[1],\"data_offsets\":[4,0]}}", more.view()), "a range that runs backwards");
+  refused(&file("{\"a\":{\"dtype\":\"F32\",\"data_offsets\":[0,4]}}", more.view()), "a tensor without a shape");
+  refused(&file("{\"a\":{\"shape\":[1],\"data_offsets\":[0,4]}}", more.view()), "a tensor without a dtype");
+  done()
+}
