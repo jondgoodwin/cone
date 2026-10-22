@@ -1,0 +1,312 @@
+// The model against PyTorch Kokoro, stage by stage and end to end, on phonemes the reference runs were made of
+// (C:/src/speech-models/reference/kokoro/<case>.safetensors: made by dump_reference.py, which runs hexgrad's kokoro
+// 0.9.4 on the CPU and keeps every stage's output, the voice's style vector and the random numbers the source
+// generator drew). The same random numbers are given to this model, so the audio is the same signal. Needs the
+// converted weights in C:/src/speech-models/kokoro and a GPU with Vulkan 1.3 and SDL3.dll; skipped without the files.
+// With TEXTTOSPEECH_REPORT set the worst error of every stage is printed.
+
+mod model;
+
+import testing use *;
+import stdio use *;
+import libc;
+import collections use List, String;
+import random use Rng;
+import fs;
+import path use Path;
+import gpu use *;
+import safetensors use *;
+import texttospeech use *;
+
+fn reporting() bool { (libc.getenv("TEXTTOSPEECH_REPORT") as usize) != 0usize }
+
+fn maxAbs(a: &Array[f32]) f64 {
+  var m = 0.0;
+  var i = 0usize;
+  while i < a.len { let v = libc.fabs(f64.from(a[i])); if v > m { m = v; } i = i + 1usize; }
+  m
+}
+
+fn worst(a: &Array[f32], b: &Array[f32]) f64 {
+  var m = 0.0;
+  var i = 0usize;
+  while i < a.len && i < b.len {
+    let d = libc.fabs(f64.from(a[i]) - f64.from(b[i]));
+    if d > m || d != d { m = d; }
+    i = i + 1usize;
+  }
+  m
+}
+
+fn floats(file: &SafetensorsFile, name: &str) List[f32] {
+  match file.header.floats(file.bytes(), name) {
+    case var Some(v) { v }
+    case is None { List[f32].empty() }
+  }
+}
+
+// One stage: the probe 'name' against the reference tensor 'ref', within 'fraction' of the reference's largest value
+fn compare(probes: &List[Probe], file: &SafetensorsFile, name: &str, ref: &str, fraction: f64) {
+  compareSkip(probes, file, name, ref, fraction, 1usize, 0usize);
+}
+
+// ...ignoring the first 'skip' positions of each of the tensor's 'channels' channels. Used for the generator, whose
+// input is the source's STFT: its first frame is symmetric, so the sign of the rounding noise that is the imaginary
+// part of some bins decides between a phase of +pi and -pi in PyTorch and here alike (tests/source.cone), and the
+// positions that frame reaches (a few dozen, through the dilated convolutions) differ.
+fn compareSkip(probes: &List[Probe], file: &SafetensorsFile, name: &str, ref: &str, fraction: f64, channels: usize, skip: usize) {
+  var found = false;
+  var i = 0usize;
+  while i < probes.len() {
+    if probes[i].name.view() == name {
+      found = true;
+      let want = floats(file, ref);
+      let got = probes[i].data.view();
+      expectUInt(u64.from(got.len), u64.from(want.len()), name);
+      var err = 0.0;
+      let per = want.len() / channels;
+      var c = 0usize;
+      while c < channels {
+        var p = skip;
+        while p < per {
+          let d = libc.fabs(f64.from(got[c * per + p]) - f64.from(*want[c * per + p]));
+          if d > err || d != d { err = d; }
+          p = p + 1usize;
+        }
+        c = c + 1usize;
+      }
+      let bound = fraction * (maxAbs(want.view()) + 0.001);
+      if reporting() { print <- name, ": worst error ", err, " of a largest value ", maxAbs(want.view()), "\n"; }
+      expect(err <= bound, name);
+      if !(err <= bound) { print <- name, ": worst error ", err, " beyond ", bound, "\n"; }
+    }
+    i = i + 1usize;
+  }
+  expect(found, name);
+}
+
+fn runCase(device: &mut Device, engine: &mut Engine, caseName: &str, phonemes: &str, speed: f32) {
+  var path = String.from("C:/src/speech-models/reference/kokoro/");
+  path <- caseName;
+  path <- ".safetensors";
+  let file = match openSafetensors(&Path.from(path.view())) {
+    case var Ok(f) { f }
+    case let Error(m) { print <- m.view(), "\n"; expect(false, "the reference file opens"); return; }
+  };
+  let style = floats(&file, "voice_ref_s");
+  let rng = Rng.fromSeed(1u64);
+  let noise = SourceNoise(floats(&file, "rand_ini"), floats(&file, "sine_noise"));
+  var rngMut = rng;
+  engine.debug = true;
+  engine.f0ForSource = floats(&file, "F0");
+  let spoken = match engine.synthesize(device, phonemes, style.view(), speed, &mut rngMut, Some[SourceNoise](noise)) {
+    case var Ok(s) { s }
+    case let Error(m) { print <- m.view(), "\n"; expect(false, "the synthesis runs"); return; }
+  };
+  let want = floats(&file, "pred_dur");
+  expectUInt(u64.from(spoken.durations.len()), u64.from(want.len()), "as many durations as phonemes");
+  var same = true;
+  var i = 0usize;
+  while i < want.len() && i < spoken.durations.len() {
+    if f32.from(*spoken.durations[i]) != *want[i] { same = false; }
+    i = i + 1usize;
+  }
+  expectBool(same, true, "the durations are PyTorch's");
+  let probes = &spoken.probes;
+  compare(probes, &file, "bert", "bert", 0.0001);
+  compare(probes, &file, "d", "d", 0.0001);
+  compare(probes, &file, "dur_lstm", "dur_lstm", 0.0001);
+  compare(probes, &file, "t_en", "t_en", 0.0001);
+  compare(probes, &file, "shared", "shared", 0.0002);
+  compare(probes, &file, "f0_blk0", "f0_blk0", 0.0002);
+  compare(probes, &file, "f0_blk1", "f0_blk1", 0.0002);
+  compare(probes, &file, "f0_blk2", "f0_blk2", 0.0002);
+  compare(probes, &file, "F0", "F0", 0.0002);
+  compare(probes, &file, "N", "N", 0.0002);
+  compare(probes, &file, "asr", "asr", 0.0002);
+  compare(probes, &file, "F0_conv", "F0_conv", 0.0002);
+  compare(probes, &file, "dec_encode", "dec_encode", 0.0005);
+  compare(probes, &file, "dec_blk3", "dec_blk3", 0.001);
+  compare(probes, &file, "har_source", "har_source", 0.001);
+  compareSkip(probes, &file, "har", "har", 0.0005, 22usize, 1usize);
+  compareSkip(probes, &file, "gen_src0", "gen_src0", 0.0005, 256usize, 64usize);
+  compareSkip(probes, &file, "gen_stage0", "gen_stage0", 0.0002, 256usize, 64usize);
+  compareSkip(probes, &file, "gen_src1", "gen_src1", 0.0002, 128usize, 512usize);
+  compareSkip(probes, &file, "gen_stage1", "gen_stage1", 0.0002, 128usize, 512usize);
+  compareSkip(probes, &file, "conv_post", "conv_post", 0.0002, 22usize, 512usize);
+  let audio = floats(&file, "audio");
+  expectUInt(u64.from(spoken.audio.len()), u64.from(audio.len()), "as many samples as PyTorch's");
+  let err = worst(spoken.audio.view(), audio.view());
+  // the signal-to-noise ratio of the audio against PyTorch's, in dB
+  var sig = 0.0;
+  var noiseE = 0.0;
+  i = 0usize;
+  while i < audio.len() && i < spoken.audio.len() {
+    let a = f64.from(*audio[i]);
+    let d = f64.from(*spoken.audio[i]) - a;
+    sig = sig + a * a;
+    noiseE = noiseE + d * d;
+    i = i + 1usize;
+  }
+  let snr = 10.0 * libc.log(sig / (noiseE + 1.0e-30)) / 2.302585092994046;
+  if reporting() { print <- caseName, ": audio worst error ", err, " of a largest value ", maxAbs(audio.view()), ", SNR ", snr, " dB\n"; }
+  expect(snr >= 60.0, "the audio is PyTorch's to a signal-to-noise ratio of 60 dB or better");
+  expect(err <= 0.002 * maxAbs(audio.view()), "no sample is more than 0.2 per cent of the peak from PyTorch's");
+}
+
+// The log-mel spectrogram of audio at 24 kHz: frames of 512 (Hann) every 256 samples, 80 triangular mel bands from 0 to
+// 12 kHz, the natural log of each band's power plus 1e-5. [frames, 80]
+fn logMel(x: &Array[f32]) List[f32] {
+  let n = 512usize;
+  let hop = 256usize;
+  let bins = n / 2usize + 1usize;
+  let bands = 80usize;
+  let frames = if x.len >= n { (x.len - n) / hop + 1usize } else { 0usize };
+  // the mel filters: HTK mel scale
+  var edges = List[f64].empty();
+  let melMax = 2595.0 * libc.log(1.0 + 12000.0 / 700.0) / 2.302585092994046;
+  var b = 0usize;
+  while b < bands + 2usize {
+    let mel = melMax * f64.from(b) / f64.from(bands + 1usize);
+    edges.push(700.0 * (libc.pow(10.0, mel / 2595.0) - 1.0));
+    b = b + 1usize;
+  }
+  var cosT = List[f64].withCapacity(n * bins);
+  var sinT = List[f64].withCapacity(n * bins);
+  var k = 0usize;
+  while k < bins {
+    var i = 0usize;
+    while i < n {
+      let ang = 6.283185307179586 * f64.from((k * i) % n) / f64.from(n);
+      cosT.push(libc.cos(ang));
+      sinT.push(libc.sin(ang));
+      i = i + 1usize;
+    }
+    k = k + 1usize;
+  }
+  var out = List[f32].withCapacity(frames * bands);
+  var f = 0usize;
+  while f < frames {
+    var power = List[f64].withCapacity(bins);
+    k = 0usize;
+    while k < bins {
+      var re = 0.0;
+      var im = 0.0;
+      var i = 0usize;
+      while i < n {
+        let w = 0.5 - 0.5 * libc.cos(6.283185307179586 * f64.from(i) / f64.from(n));
+        let v = f64.from(x[f * hop + i]) * w;
+        re = re + v * *cosT[k * n + i];
+        im = im - v * *sinT[k * n + i];
+        i = i + 1usize;
+      }
+      power.push(re * re + im * im);
+      k = k + 1usize;
+    }
+    b = 0usize;
+    while b < bands {
+      var e = 0.0;
+      k = 0usize;
+      while k < bins {
+        let hz = 24000.0 * f64.from(k) / f64.from(n);
+        let lo = *edges[b];
+        let mid = *edges[b + 1usize];
+        let hi = *edges[b + 2usize];
+        var wgt = 0.0;
+        if hz > lo && hz <= mid { wgt = (hz - lo) / (mid - lo); }
+        else if hz > mid && hz < hi { wgt = (hi - hz) / (hi - mid); }
+        e = e + wgt * *power[k];
+        k = k + 1usize;
+      }
+      out.push(f32.from(libc.log(e + 0.00001)));
+      b = b + 1usize;
+    }
+    f = f + 1usize;
+  }
+  out
+}
+
+// The model free-running (its own durations, pitch and energy drive its own source; only the source's random numbers are
+// PyTorch's): how far its predictor outputs and audio are from PyTorch's. The audio cannot be compared sample by sample
+// to a useful precision: the source's phase is a running sum of the pitch times 2 pi times 300 (up to 8e4 radians), so
+// the 1e-6 relative error of an f32 pitch is a fraction of a radian in it, and the voiced sounds' phase is then different
+// (as it would be between PyTorch on a CPU and on a GPU). So the audio is compared by its log-mel spectrogram too.
+fn runFree(device: &mut Device, engine: &mut Engine, caseName: &str, phonemes: &str, speed: f32) {
+  var path = String.from("C:/src/speech-models/reference/kokoro/");
+  path <- caseName;
+  path <- ".safetensors";
+  let file = match openSafetensors(&Path.from(path.view())) {
+    case var Ok(f) { f }
+    case let Error(m) { print <- m.view(), "\n"; expect(false, "the reference file opens"); return; }
+  };
+  let style = floats(&file, "voice_ref_s");
+  var rng = Rng.fromSeed(1u64);
+  let noise = SourceNoise(floats(&file, "rand_ini"), floats(&file, "sine_noise"));
+  engine.debug = true;
+  engine.f0ForSource = List[f32].empty();
+  let spoken = match engine.synthesize(device, phonemes, style.view(), speed, &mut rng, Some[SourceNoise](noise)) {
+    case var Ok(s) { s }
+    case let Error(m) { print <- m.view(), "\n"; expect(false, "the synthesis runs"); return; }
+  };
+  let probes = &spoken.probes;
+  compare(probes, &file, "F0", "F0", 0.0002);
+  compare(probes, &file, "N", "N", 0.0002);
+  compare(probes, &file, "dec_blk3", "dec_blk3", 0.001);
+  let audio = floats(&file, "audio");
+  expectUInt(u64.from(spoken.audio.len()), u64.from(audio.len()), "as many samples as PyTorch's");
+  var sig = 0.0;
+  var noiseE = 0.0;
+  var i = 0usize;
+  while i < audio.len() && i < spoken.audio.len() {
+    let a = f64.from(*audio[i]);
+    let d = f64.from(*spoken.audio[i]) - a;
+    sig = sig + a * a;
+    noiseE = noiseE + d * d;
+    i = i + 1usize;
+  }
+  let snr = 10.0 * libc.log(sig / (noiseE + 1.0e-30)) / 2.302585092994046;
+  let a = logMel(audio.view());
+  let b = logMel(spoken.audio.view());
+  var dist = 0.0;
+  i = 0usize;
+  while i < a.len() && i < b.len() { dist = dist + libc.fabs(f64.from(*a[i]) - f64.from(*b[i])); i = i + 1usize; }
+  dist = dist / f64.from(a.len());
+  if reporting() { print <- caseName, " free-running: sample-level SNR ", snr, " dB, mean absolute log-mel difference ", dist, " nats\n"; }
+  expect(dist < 0.5, "the log-mel spectrogram is within 0.5 nats (mean absolute difference) of PyTorch's");
+  // the same synthesis without the probes (scratch buffers reused from layer to layer): the same samples exactly
+  engine.debug = false;
+  var rng2 = Rng.fromSeed(1u64);
+  let again = match engine.synthesize(device, phonemes, style.view(), speed, &mut rng2, Some[SourceNoise](SourceNoise(floats(&file, "rand_ini"), floats(&file, "sine_noise")))) {
+    case var Ok(s) { s }
+    case let Error(m) { print <- m.view(), "\n"; expect(false, "the synthesis without probes runs"); return; }
+  };
+  expectUInt(u64.from(again.audio.len()), u64.from(spoken.audio.len()), "the same number of samples without probes");
+  var identical = true;
+  i = 0usize;
+  while i < again.audio.len() && i < spoken.audio.len() { if *again.audio[i] != *spoken.audio[i] { identical = false; } i = i + 1usize; }
+  expectBool(identical, true, "reusing scratch buffers changes no sample");
+}
+
+fn main() i32 {
+  if !fs.exists(&Path.from("C:/src/speech-models/kokoro/kokoro-v1_0.safetensors")) || !fs.exists(&Path.from("C:/src/speech-models/reference/kokoro/hello.safetensors")) {
+    return skip("the converted Kokoro weights and reference outputs are not in C:/src/speech-models");
+  }
+  var instance = Instance.createHeadless("texttospeech model", false);
+  require(instance.isValid(), "a Vulkan 1.3 instance");
+  var none = Surface.none();
+  var adapter = instance.requestAdapter(&none, POWER_PREFERENCE_HIGH_PERFORMANCE);
+  require(adapter.isValid(), "an adapter");
+  var device = adapter.requestComputeDevice(&ComputeRequest(largeBuffers: true));
+  require(device.isValid(), "a compute device");
+  var engine = match Engine.open(&mut device, "C:/src/speech-models/kokoro") {
+    case var Ok(e) { e }
+    case let Error(m) { print <- m.view(), "\n"; require(false, "the model opens"); return done(); }
+  };
+  runCase(&mut device, &mut engine, "hello", "həlˈO wˈɜɹld.", 1.0);
+  runCase(&mut device, &mut engine, "sentence", "ðə kwˈɪk bɹˈWn fˈɑks dʒˈʌmps ˌOvɚ ðə lˈAzi dˈɔɡ, ænd ðɛn ɹˈʌnz əwˈA tə ðə fˈɔɹist.", 1.0);
+  runCase(&mut device, &mut engine, "blend", "wˌʌt dʌz ðɪs ˈʌðɚ vˈɔɪs sˈWnd lˈIk?", 1.2);
+  runFree(&mut device, &mut engine, "hello", "həlˈO wˈɜɹld.", 1.0);
+  runFree(&mut device, &mut engine, "sentence", "ðə kwˈɪk bɹˈWn fˈɑks dʒˈʌmps ˌOvɚ ðə lˈAzi dˈɔɡ, ænd ðɛn ɹˈʌnz əwˈA tə ðə fˈɔɹist.", 1.0);
+  runFree(&mut device, &mut engine, "blend", "wˌʌt dʌz ðɪs ˈʌðɚ vˈɔɪs sˈWnd lˈIk?", 1.2);
+  done()
+}

@@ -1,0 +1,235 @@
+// ======== The CPU twins: each kernel computed plainly, in f64, for the tests to compare the GPU with ========
+//
+// Every function takes the arguments its kernel's .slang header lists, as slices, and writes the output the kernel
+// writes. They work in f64, so a difference from the GPU is the GPU's own f32 rounding. They are straight from the
+// definitions (PyTorch's Conv1d, ConvTranspose1d, LSTM, layer_norm, instance_norm and attention).
+
+// Conv1d with one group: x [cin, lin], w [cout, cin, k], y [cout, lout]
+pub fn conv1dCpu(x: &Array[f32], w: &Array[f32], bias: &Array[f32], hasBias: bool, cin: usize, cout: usize, lin: usize, k: usize,
+    stride: usize, pad: usize, dil: usize, slope: f32, y: &mut Array[f32]) {
+  let lout = (lin + 2usize * pad - ((k - 1usize) * dil + 1usize)) / stride + 1usize;
+  var co = 0usize;
+  while co < cout {
+    var o = 0usize;
+    while o < lout {
+      var acc = 0.0;
+      if hasBias { acc = f64.from(bias[co]); }
+      var ci = 0usize;
+      while ci < cin {
+        var kk = 0usize;
+        while kk < k {
+          let pos = i64.from(o * stride + kk * dil) - i64.from(pad);
+          if pos >= 0i64 && pos < i64.from(lin) {
+            acc = acc + f64.from(w[(co * cin + ci) * k + kk]) * f64.from(x[ci * lin + usize.from(pos)]);
+          }
+          kk = kk + 1usize;
+        }
+        ci = ci + 1usize;
+      }
+      var v = f32.from(acc);
+      if v < 0.0 { v = v * slope; }
+      y[co * lout + o] = v;
+      o = o + 1usize;
+    }
+    co = co + 1usize;
+  }
+}
+
+// ConvTranspose1d with groups: x [cin, lin], w [cin, cout / groups, k], y [cout, lout]
+pub fn convTranspose1dCpu(x: &Array[f32], w: &Array[f32], bias: &Array[f32], hasBias: bool, cin: usize, cout: usize, lin: usize,
+    k: usize, stride: usize, pad: usize, outPad: usize, groups: usize, y: &mut Array[f32]) {
+  let lout = (lin - 1usize) * stride + k + outPad - 2usize * pad;
+  let cinPerG = cin / groups;
+  let coutPerG = cout / groups;
+  var o = 0usize;
+  while o < cout * lout {
+    y[o] = 0.0;
+    o = o + 1usize;
+  }
+  var ci = 0usize;
+  while ci < cin {
+    let g = ci / cinPerG;
+    var i = 0usize;
+    while i < lin {
+      var kk = 0usize;
+      while kk < k {
+        let pos = i64.from(i * stride + kk) - i64.from(pad);
+        if pos >= 0i64 && pos < i64.from(lout) {
+          var cl = 0usize;
+          while cl < coutPerG {
+            let co = g * coutPerG + cl;
+            let at = co * lout + usize.from(pos);
+            y[at] = y[at] + f32.from(f64.from(x[ci * lin + i]) * f64.from(w[(ci * coutPerG + cl) * k + kk]));
+            cl = cl + 1usize;
+          }
+        }
+        kk = kk + 1usize;
+      }
+      i = i + 1usize;
+    }
+    ci = ci + 1usize;
+  }
+  if hasBias {
+    var co = 0usize;
+    while co < cout {
+      var q = 0usize;
+      while q < lout {
+        y[co * lout + q] = y[co * lout + q] + bias[co];
+        q = q + 1usize;
+      }
+      co = co + 1usize;
+    }
+  }
+}
+
+fn sigmoidF(v: f64) f64 { 1.0 / (1.0 + libc.exp(0.0 - v)) }
+
+// tanh from exp (libc has none), in f64
+pub fn tanhCpu(v: f64) f64 {
+  if v > 20.0 { return 1.0; }
+  if v < -20.0 { return -1.0; }
+  let e = libc.exp(2.0 * v);
+  (e - 1.0) / (e + 1.0)
+}
+
+// The bidirectional 256-unit LSTM: input x [steps, inDim], wih [2, 1024, inDim], whh [2, 1024, 256] (PyTorch's
+// layouts, direction 0 forward then 1 backward), bias [2, 1024] (both biases summed); out [steps, 512]
+pub fn lstmCpu(x: &Array[f32], wih: &Array[f32], whh: &Array[f32], bias: &Array[f32], steps: usize, inDim: usize, out: &mut Array[f32]) {
+  var dir = 0usize;
+  while dir < 2usize {
+    var h = List[f64].empty();
+    var c = List[f64].empty();
+    var u = 0usize;
+    while u < 256usize { h.push(0.0); c.push(0.0); u = u + 1usize; }
+    var s = 0usize;
+    while s < steps {
+      var t = s;
+      if dir == 1usize { t = steps - 1usize - s; }
+      var gate = List[f64].empty();
+      var r = 0usize;
+      while r < 1024usize {
+        var acc = f64.from(bias[dir * 1024usize + r]);
+        var j = 0usize;
+        while j < inDim { acc = acc + f64.from(wih[(dir * 1024usize + r) * inDim + j]) * f64.from(x[t * inDim + j]); j = j + 1usize; }
+        j = 0usize;
+        while j < 256usize { acc = acc + f64.from(whh[(dir * 1024usize + r) * 256usize + j]) * *h[j]; j = j + 1usize; }
+        gate.push(acc);
+        r = r + 1usize;
+      }
+      u = 0usize;
+      while u < 256usize {
+        let ig = sigmoidF(*gate[u]);
+        let fg = sigmoidF(*gate[256usize + u]);
+        let gg = tanhCpu(*gate[512usize + u]);
+        let og = sigmoidF(*gate[768usize + u]);
+        let cn = fg * *c[u] + ig * gg;
+        c.set(u, cn);
+        out[t * 512usize + dir * 256usize + u] = f32.from(og * tanhCpu(cn));
+        u = u + 1usize;
+      }
+      u = 0usize;
+      while u < 256usize { h.set(u, f64.from(out[t * 512usize + dir * 256usize + u])); u = u + 1usize; }
+      s = s + 1usize;
+    }
+    dir = dir + 1usize;
+  }
+}
+
+// Layer norm over n elements of each of 'rows' rows (element j of row r at r * rowStride + j * elemStride); mode 0 plain,
+// 1 gamma/beta, 2 adaptive (gamma holds scale then shift); then the leaky ReLU of 'slope'
+pub fn layernormCpu(x: &Array[f32], gamma: &Array[f32], beta: &Array[f32], n: usize, rows: usize, elemStride: usize, rowStride: usize,
+    eps: f32, mode: u32, slope: f32, y: &mut Array[f32]) {
+  var r = 0usize;
+  while r < rows {
+    var mean = 0.0;
+    var j = 0usize;
+    while j < n { mean = mean + f64.from(x[r * rowStride + j * elemStride]); j = j + 1usize; }
+    mean = mean / f64.from(n);
+    var v = 0.0;
+    j = 0usize;
+    while j < n {
+      let d = f64.from(x[r * rowStride + j * elemStride]) - mean;
+      v = v + d * d;
+      j = j + 1usize;
+    }
+    let inv = 1.0 / libc.sqrt(v / f64.from(n) + f64.from(eps));
+    j = 0usize;
+    while j < n {
+      var o = (f64.from(x[r * rowStride + j * elemStride]) - mean) * inv;
+      if mode == 1u32 { o = o * f64.from(gamma[j]) + f64.from(beta[j]); }
+      if mode == 2u32 { o = o * (1.0 + f64.from(gamma[j])) + f64.from(gamma[n + j]); }
+      if o < 0.0 { o = o * f64.from(slope); }
+      y[r * rowStride + j * elemStride] = f32.from(o);
+      j = j + 1usize;
+    }
+    r = r + 1usize;
+  }
+}
+
+// AdaIN over each channel of x [channels, len] with the style's gb [2 channels] and the activation act
+pub fn adainCpu(x: &Array[f32], gb: &Array[f32], alpha: &Array[f32], channels: usize, len: usize, act: u32, slope: f32, y: &mut Array[f32]) {
+  var c = 0usize;
+  while c < channels {
+    var mean = 0.0;
+    var i = 0usize;
+    while i < len { mean = mean + f64.from(x[c * len + i]); i = i + 1usize; }
+    mean = mean / f64.from(len);
+    var v = 0.0;
+    i = 0usize;
+    while i < len { let d = f64.from(x[c * len + i]) - mean; v = v + d * d; i = i + 1usize; }
+    let inv = 1.0 / libc.sqrt(v / f64.from(len) + 0.00001);
+    let g = 1.0 + f64.from(gb[c]);
+    let b = f64.from(gb[channels + c]);
+    i = 0usize;
+    while i < len {
+      var r = (f64.from(x[c * len + i]) - mean) * inv * g + b;
+      if act == 1u32 {
+        if r < 0.0 { r = r * f64.from(slope); }
+      } else if act == 2u32 {
+        let a = f64.from(alpha[c]);
+        let sn = libc.sin(a * r);
+        r = r + (1.0 / a) * sn * sn;
+      }
+      y[c * len + i] = f32.from(r);
+      i = i + 1usize;
+    }
+    c = c + 1usize;
+  }
+}
+
+// Bidirectional attention: q, k, v, out [steps, heads * headDim]
+pub fn bertAttentionCpu(q: &Array[f32], k: &Array[f32], v: &Array[f32], steps: usize, heads: usize, headDim: usize, scale: f32,
+    out: &mut Array[f32]) {
+  let width = heads * headDim;
+  var h = 0usize;
+  while h < heads {
+    var t = 0usize;
+    while t < steps {
+      var scores = List[f64].empty();
+      var mx = -1.0e300;
+      var j = 0usize;
+      while j < steps {
+        var d = 0.0;
+        var e = 0usize;
+        while e < headDim { d = d + f64.from(q[t * width + h * headDim + e]) * f64.from(k[j * width + h * headDim + e]); e = e + 1usize; }
+        d = d * f64.from(scale);
+        scores.push(d);
+        if d > mx { mx = d; }
+        j = j + 1usize;
+      }
+      var sum = 0.0;
+      j = 0usize;
+      while j < steps { let e = libc.exp(*scores[j] - mx); scores.set(j, e); sum = sum + e; j = j + 1usize; }
+      var e = 0usize;
+      while e < headDim {
+        var acc = 0.0;
+        j = 0usize;
+        while j < steps { acc = acc + *scores[j] * f64.from(v[j * width + h * headDim + e]); j = j + 1usize; }
+        out[t * width + h * headDim + e] = f32.from(acc / sum);
+        e = e + 1usize;
+      }
+      t = t + 1usize;
+    }
+    h = h + 1usize;
+  }
+}

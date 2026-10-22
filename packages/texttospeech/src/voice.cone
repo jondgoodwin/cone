@@ -1,0 +1,129 @@
+// ======== Voices: a style pack for each length of phoneme string, and weighted blends of them ========
+//
+// A Kokoro voice is a table of 510 style vectors of 256 floats, one for each possible number of phonemes (the vector
+// for a string of n phonemes is row n - 1): the first 128 floats style the decoder, the last 128 the prosody
+// predictor. A blend of voices is the same table with every row a weighted mean of the voices' rows ("af_heart:0.7,
+// bf_emma:0.3", weights divided by their sum; no weights is the plain mean, as Kokoro's own "af_bella,af_jessica").
+
+pub const STYLE_ROWS: usize = 510usize;
+pub const STYLE_WIDTH: usize = 256usize;
+
+pub struct Voice {
+  // The name or the blend text it was made from
+  pub name: String;
+  // STYLE_ROWS rows of STYLE_WIDTH floats
+  pub pack: List[f32];
+
+  // The 256 floats for a phoneme string of 'phonemes' characters
+  pub fn style(self: &, phonemes: usize) &Array[f32] {
+    var row = phonemes;
+    if row == 0usize { row = 1usize; }
+    if row > STYLE_ROWS { row = STYLE_ROWS; }
+    &pack.view()[(row - 1usize) * STYLE_WIDTH ..< row * STYLE_WIDTH]
+  }
+
+  // Load a voice (or blend) from the folder that holds 'voices/<name>.safetensors'
+  pub fn load(dir: &str, spec: &str) Result[Voice, String] {
+    var names = List[String].empty();
+    var weights = List[f64].empty();
+    var total = 0.0;
+    var anyWeight = false;
+    let parts = String.from(spec).split(u8.from(','));
+    var i = 0usize;
+    while i < parts.len() {
+      let part = parts[i].view().trim();
+      if part.len() > 0usize {
+        var name = String.from(part);
+        var w = 1.0;
+        match part.find(":") {
+          case let Some(c) {
+            name = String.from(&part[0usize ..< c]);
+            match parseWeight(&part[c + 1usize ..]) {
+              case let Some(v) { w = v; anyWeight = true; }
+              case is None {
+                var m = String.from("texttospeech: the weight in \"");
+                m <- part;
+                m <- "\" is not a number";
+                return Error[Voice, String](m);
+              }
+            }
+          }
+          case is None {}
+        }
+        names.push(name);
+        weights.push(w);
+        total = total + w;
+      }
+      i = i + 1usize;
+    }
+    if names.len() == 0usize { return Error[Voice, String](String.from("texttospeech: no voice named")); }
+    if !(total > 0.0) { return Error[Voice, String](String.from("texttospeech: the weights of the voices do not add to more than 0")); }
+    var mix = List[f32].withCapacity(STYLE_ROWS * STYLE_WIDTH);
+    var k = 0usize;
+    while k < STYLE_ROWS * STYLE_WIDTH { mix.push(0.0); k = k + 1usize; }
+    var n = 0usize;
+    while n < names.len() {
+      var path = String.from(dir);
+      path <- "/voices/";
+      path <- names[n].view();
+      path <- ".safetensors";
+      match openSafetensors(&Path.from(path.view())) {
+        case var Ok(file) {
+          match file.header.floats(file.bytes(), "voice") {
+            case let Some(v) {
+              if v.len() != STYLE_ROWS * STYLE_WIDTH {
+                var m = String.from("texttospeech: the voice file ");
+                m <- path.view();
+                m <- " is not 510 rows of 256";
+                return Error[Voice, String](m);
+              }
+              let w = f32.from(*weights[n] / total);
+              k = 0usize;
+              while k < v.len() { mix.set(k, *mix[k] + w * *v[k]); k = k + 1usize; }
+            }
+            case is None {
+              var m = String.from("texttospeech: no tensor \"voice\" in ");
+              m <- path.view();
+              return Error[Voice, String](m);
+            }
+          }
+        }
+        case let Error(e) {
+          var m = String.from("texttospeech: no voice \"");
+          m <- names[n].view();
+          m <- "\" (";
+          m <- e.view();
+          m <- ")";
+          return Error[Voice, String](m);
+        }
+      }
+      n = n + 1usize;
+    }
+    Ok[Voice, String](Voice(String.from(spec), mix))
+  }
+}
+
+// A non-negative decimal number ("0.7", "1", ".5"), or None
+fn parseWeight(s: &str) Option[f64] {
+  if s.len() == 0usize { return None; }
+  var whole = 0.0;
+  var scale = 0.0;
+  var seen = false;
+  var i = 0usize;
+  while i < s.len() {
+    let c = s[i];
+    if c == '.' {
+      if scale != 0.0 { return None; }
+      scale = 0.1;
+    } else if c >= '0' && c <= '9' {
+      seen = true;
+      let d = f64.from(c - '0');
+      if scale == 0.0 { whole = whole * 10.0 + d; } else { whole = whole + d * scale; scale = scale / 10.0; }
+    } else {
+      return None;
+    }
+    i = i + 1usize;
+  }
+  if !seen { return None; }
+  Some[f64](whole)
+}

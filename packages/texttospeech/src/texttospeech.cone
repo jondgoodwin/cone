@@ -1,0 +1,34 @@
+// ======== texttospeech: Kokoro text to speech on the GPU ========
+//
+// Kokoro 82M (hexgrad, Apache 2.0): ALBERT for the phonemes' context, a prosody predictor (durations, pitch, energy,
+// conditioned on a voice's style vector), a text encoder, and a decoder with an iSTFTNet generator that ends in an
+// inverse STFT. Here it runs on the GPU through gpuwork: the layers are the kernels of speechkernels (convolutions,
+// LSTMs, layer and adaptive instance norms, attention) and llmkernels' matrix product, with the harmonic source and
+// the STFTs on the CPU. English text becomes phonemes through englishphonemes (misaki's rules, no espeak).
+//
+//   Speaker.open(&mut device, dir, british)    the model, the tables and the lexicons (dir: the converted files)
+//   Voice.load(dir, "af_heart")                a voice; "a:0.7,b:0.3" a blend of voices
+//   speaker.speak(&mut device, text, &voice, speed)   24 kHz mono samples (List[f32])
+//   Engine.synthesize(...)                     one string of up to 510 phonemes, with every stage's tensors for a test
+//
+// The weights are the safetensors the converter (outside the repository) makes from hexgrad's .pth: weight-norm
+// pairs fused and each LSTM's two biases added. See weights.cone. examples/texttospeech.cone writes a WAV file.
+//
+// CHECKED against PyTorch Kokoro (tests/model.cone, tests/source.cone): every stage of three cases, and the audio to a
+// signal-to-noise ratio of 71 to 79 dB when the source is given PyTorch's pitch (see engine.cone, 'f0ForSource').
+
+mod texttospeech;
+
+import libc;
+import stdio use *;
+import collections use List, String, Dict;
+import fs;
+import path use Path;
+import time use Instant;
+import random use Rng;
+import gpu use *;
+import gpuwork use *;
+import safetensors use *;
+import speechkernels use *;
+import llmkernels;
+import englishphonemes use *;

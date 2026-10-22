@@ -1,0 +1,154 @@
+// texttospeech: say a text and write a WAV file. It never plays anything.
+//
+//   congo run --release examples/texttospeech.cone -- --text "Hello world." --out hello.wav
+//       [--voice af_heart] [--speed 1.0] [--file text.txt] [--model-dir C:/src/speech-models/kokoro]
+//       [--phonemes] [--seed 7] [--validate]
+//
+// --voice is a voice name (af_heart, am_michael, bf_emma, bm_george ...: the American and British ones the converter
+// writes) or a blend: "af_heart:0.7,bf_emma:0.3" (weights divided by their sum; without weights, the mean). A voice
+// starting with b speaks British English; the lexicon follows. --phonemes prints the phonemes of each piece before
+// saying it. The WAV is 16-bit mono at 24 kHz.
+
+mod texttospeech_cli;
+
+import stdio use *;
+import collections use List, String;
+import path use Path;
+import process;
+import fs;
+import time use Instant;
+import gpu use *;
+import audiomixer use Sound, encodeWav;
+import texttospeech use *;
+
+fn say(msg: &str) { eprintStr(msg); }
+
+fn argValue(args: &List[String], name: &str) Option[String] {
+  var i = 0usize;
+  while i + 1usize < args.len() {
+    if args[i].view() == name { return Some[String](args[i + 1usize].copy()); }
+    i = i + 1usize;
+  }
+  None
+}
+
+fn hasFlag(args: &List[String], name: &str) bool {
+  var i = 0usize;
+  while i < args.len() {
+    if args[i].view() == name { return true; }
+    i = i + 1usize;
+  }
+  false
+}
+
+fn parseNumber(s: &str) f64 {
+  var whole = 0.0;
+  var scale = 0.0;
+  var i = 0usize;
+  while i < s.len() {
+    let c = s[i];
+    if c == '.' { scale = 0.1; }
+    else if c >= '0' && c <= '9' {
+      let d = f64.from(c - '0');
+      if scale == 0.0 { whole = whole * 10.0 + d; } else { whole = whole + d * scale; scale = scale / 10.0; }
+    }
+    i = i + 1usize;
+  }
+  whole
+}
+
+fn main() i32 {
+  let args = process.args();
+  var dir = String.from("C:/src/speech-models/kokoro");
+  match argValue(&args, "--model-dir") { case var Some(d) { dir = d; } case is None {} }
+  var voiceName = String.from("af_heart");
+  match argValue(&args, "--voice") { case var Some(v) { voiceName = v; } case is None {} }
+  var outPath = String.from("out.wav");
+  match argValue(&args, "--out") { case var Some(o) { outPath = o; } case is None {} }
+  var speed = 1.0f;
+  match argValue(&args, "--speed") { case let Some(s) { speed = f32.from(parseNumber(s.view())); } case is None {} }
+  var seed = 2024u64;
+  match argValue(&args, "--seed") { case let Some(s) { seed = u64.from(parseNumber(s.view())); } case is None {} }
+  var text = String.empty();
+  match argValue(&args, "--text") { case var Some(t) { text = t; } case is None {} }
+  match argValue(&args, "--file") {
+    case let Some(f) {
+      match fs.readFile(&Path.from(f.view())) {
+        case var Ok(t) { text = t; }
+        case let Error(e) { say("texttospeech: cannot read "); say(f.view()); say("\n"); return 1i32; }
+      }
+    }
+    case is None {}
+  }
+  if text.len() == 0usize {
+    say("usage: texttospeech --text <text> | --file <path> [--voice af_heart] [--speed 1.0] [--out out.wav] [--model-dir <dir>] [--phonemes]\n");
+    return 2i32;
+  }
+  var instance = if hasFlag(&args, "--validate") { Instance.create("texttospeech") } else { Instance.createHeadless("texttospeech", false) };
+  var none = Surface.none();
+  var adapter = instance.requestAdapter(&none, POWER_PREFERENCE_HIGH_PERFORMANCE);
+  if !adapter.isValid() { say("texttospeech: no GPU with Vulkan 1.3\n"); return 1i32; }
+  var device = adapter.requestComputeDevice(&ComputeRequest(largeBuffers: true));
+  if !device.isValid() { say("texttospeech: the GPU could not be opened for compute\n"); return 1i32; }
+  let t0 = Instant.now();
+  let british = voiceName.view().startsWith("b");
+  var speaker = match Speaker.open(&mut device, dir.view(), british) {
+    case var Ok(s) { s }
+    case let Error(m) { say(m.view()); say("\n"); return 1i32; }
+  };
+  let voice = match Voice.load(dir.view(), voiceName.view()) {
+    case var Ok(v) { v }
+    case let Error(m) { say(m.view()); say("\n"); return 1i32; }
+  };
+  speaker.seed(seed);
+  let t1 = Instant.now();
+  if hasFlag(&args, "--phonemes") {
+    let pieces = speaker.phonemes(text.view());
+    var i = 0usize;
+    while i < pieces.len() { print <- pieces[i].phonemes.view(), "\n"; i = i + 1usize; }
+  }
+  if hasFlag(&args, "--lines") {
+    // every line of the text a WAV of its own: <out>-1.wav, <out>-2.wav ...
+    let lines = text.lines();
+    var n = 0usize;
+    var li = 0usize;
+    while li < lines.len() {
+      let line = lines[li].view().trim();
+      if line.len() > 0usize {
+        n = n + 1usize;
+        var p = String.from(outPath.view());
+        if p.endsWith(".wav") { p.truncate(p.len() - 4usize); }
+        p <- "-";
+        p <- u64.from(n);
+        p <- ".wav";
+        if !render(&mut speaker, &mut device, &voice, line, speed, p.view(), t0, t1) { return 1i32; }
+      }
+      li = li + 1usize;
+    }
+    return 0i32;
+  }
+  if !render(&mut speaker, &mut device, &voice, text.view(), speed, outPath.view(), t0, t1) { return 1i32; }
+  0i32
+}
+
+// Say a text and write the WAV; false if anything went wrong
+fn render(speaker: &mut Speaker, device: &mut Device, voice: &Voice, text: &str, speed: f32, outPath: &str, t0: Instant, t1: Instant) bool {
+  let ts = Instant.now();
+  let samples = match speaker.speak(device, text, voice, speed) {
+    case var Ok(s) { s }
+    case let Error(m) { say(m.view()); say("\n"); return false; }
+  };
+  let t2 = Instant.now();
+  let sound = Sound(OUTPUT_RATE, 1u32, samples);
+  let wav = encodeWav(&sound, false);
+  match fs.writeFile(&Path.from(outPath), wav.view()) {
+    case is Ok {}
+    case let Error(e) { say("texttospeech: cannot write "); say(outPath); say("\n"); return false; }
+  }
+  let seconds = f64.from(sound.frames()) / f64.from(OUTPUT_RATE);
+  let spoke = f64.from(t2.since(ts).nanos()) / 1.0e9;
+  print <- "wrote ", outPath, ": ", seconds, " s of audio in ", spoke, " s (real-time factor ", spoke / seconds, "), model loaded in ", f64.from(t1.since(t0).nanos()) / 1.0e9, " s; unknown words ", speaker.lastFallbackWords, " of ", speaker.lastWords, "\n";
+  let e = speaker.engineRef();
+  print <- "  so far, over all the pieces said: recording on the CPU ", f64.from(e.recordNanos) / 1.0e6, " ms, waiting for the GPU ", f64.from(e.gpuNanos) / 1.0e6, " ms, CPU steps (source, STFTs) ", f64.from(e.cpuNanos) / 1.0e6, " ms\n";
+  true
+}

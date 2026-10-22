@@ -1,0 +1,183 @@
+// ======== Code points and letter classes ========
+//
+// Phoneme strings and words are walked a character at a time (misaki indexes Python strings), so text is turned
+// into lists of code points and back. The letter classes are ASCII exactly and Latin-1 and beyond roughly: the
+// lexicons hold only ASCII letters, so a word with anything else is unknown to them whichever way it is classed.
+
+pub fn codepoints(s: &str) List[u32] {
+  var out = List[u32].withCapacity(s.len());
+  each c in s.chars() { out.push(u32.from(c)); }
+  out
+}
+
+fn appendCp(s: &mut String, c: u32) {
+  if c < 128u32 {
+    s.appendByte(u8.from(c));
+  } else if c < 2048u32 {
+    s.appendByte(u8.from(192u32 | (c >> 6u32)));
+    s.appendByte(u8.from(128u32 | (c & 63u32)));
+  } else if c < 65536u32 {
+    s.appendByte(u8.from(224u32 | (c >> 12u32)));
+    s.appendByte(u8.from(128u32 | ((c >> 6u32) & 63u32)));
+    s.appendByte(u8.from(128u32 | (c & 63u32)));
+  } else {
+    s.appendByte(u8.from(240u32 | (c >> 18u32)));
+    s.appendByte(u8.from(128u32 | ((c >> 12u32) & 63u32)));
+    s.appendByte(u8.from(128u32 | ((c >> 6u32) & 63u32)));
+    s.appendByte(u8.from(128u32 | (c & 63u32)));
+  }
+}
+
+// UTF-8 text from code points
+pub fn textOf(cs: &Array[u32]) String {
+  var s = String.withCapacity(cs.len + 8usize);
+  var i = 0usize;
+  while i < cs.len { appendCp(&mut s, cs[i]); i = i + 1usize; }
+  s
+}
+
+// UTF-8 text from the code points cs[a..b]
+pub fn textOfRange(cs: &Array[u32], a: usize, b: usize) String {
+  var s = String.withCapacity(b - a + 8usize);
+  var i = a;
+  while i < b { appendCp(&mut s, cs[i]); i = i + 1usize; }
+  s
+}
+
+// The code point in a one-character text
+pub fn cp(s: &str) u32 {
+  var out = 0u32;
+  var first = true;
+  each c in s.chars() {
+    if first { out = u32.from(c); first = false; }
+  }
+  out
+}
+
+// Whether the code point is one of the characters of 'set'
+pub fn inSet(c: u32, set: &str) bool {
+  each x in set.chars() { if u32.from(x) == c { return true; } }
+  false
+}
+
+pub fn isUpperCp(c: u32) bool {
+  (c >= 65u32 && c <= 90u32) || (c >= 192u32 && c <= 222u32 && c != 215u32)
+}
+
+pub fn isLowerCp(c: u32) bool {
+  (c >= 97u32 && c <= 122u32) || (c >= 223u32 && c <= 255u32 && c != 247u32)
+}
+
+// A letter: ASCII letters, Latin-1 and Latin Extended letters, Greek and Cyrillic, and CJK (the rest left to be
+// "other")
+pub fn isLetterCp(c: u32) bool {
+  if c < 128u32 { return (c >= 65u32 && c <= 90u32) || (c >= 97u32 && c <= 122u32); }
+  if c == 170u32 || c == 181u32 || c == 186u32 { return true; }
+  if c >= 192u32 && c <= 591u32 { return c != 215u32 && c != 247u32; }
+  if c >= 880u32 && c <= 1327u32 { return true; }
+  if c >= 12352u32 && c <= 40959u32 { return true; }
+  false
+}
+
+pub fn isDigitCp(c: u32) bool { c >= 48u32 && c <= 57u32 }
+
+pub fn lowerCp(c: u32) u32 {
+  if c >= 65u32 && c <= 90u32 { return c + 32u32; }
+  if c >= 192u32 && c <= 222u32 && c != 215u32 { return c + 32u32; }
+  c
+}
+
+pub fn upperCp(c: u32) u32 {
+  if c >= 97u32 && c <= 122u32 { return c - 32u32; }
+  if c >= 224u32 && c <= 254u32 && c != 247u32 { return c - 32u32; }
+  c
+}
+
+// The text with its letters lowercased (ASCII and Latin-1)
+pub fn lowerText(s: &str) String {
+  let cs = codepoints(s);
+  var out = List[u32].withCapacity(cs.len());
+  var i = 0usize;
+  while i < cs.len() { out.push(lowerCp(*cs[i])); i = i + 1usize; }
+  textOf(out.view())
+}
+
+pub fn upperText(s: &str) String {
+  let cs = codepoints(s);
+  var out = List[u32].withCapacity(cs.len());
+  var i = 0usize;
+  while i < cs.len() { out.push(upperCp(*cs[i])); i = i + 1usize; }
+  textOf(out.view())
+}
+
+// First letter uppercased, the rest lowercased (Python's str.capitalize)
+pub fn capitalizeText(s: &str) String {
+  let cs = codepoints(s);
+  var out = List[u32].withCapacity(cs.len());
+  var i = 0usize;
+  while i < cs.len() {
+    if i == 0usize { out.push(upperCp(*cs[i])); } else { out.push(lowerCp(*cs[i])); }
+    i = i + 1usize;
+  }
+  textOf(out.view())
+}
+
+// Python's str.isalpha for a text: non-empty, every character a letter
+pub fn isAlphaText(s: &str) bool {
+  var any = false;
+  each c in s.chars() {
+    if !isLetterCp(u32.from(c)) { return false; }
+    any = true;
+  }
+  any
+}
+
+// Whether the text is one or more ASCII digits and nothing else
+pub fn isDigitsText(s: &str) bool {
+  if s.len() == 0usize { return false; }
+  var i = 0usize;
+  while i < s.len() {
+    if s[i] < '0' || s[i] > '9' { return false; }
+    i = i + 1usize;
+  }
+  true
+}
+
+// Python's str.isspace for one code point
+pub fn isSpaceCp(c: u32) bool { c == 32u32 || (c >= 9u32 && c <= 13u32) || c == 160u32 || c == 8203u32 }
+
+// A copy of a text without the code points of 'set' at its ends
+pub fn stripSet(s: &str, set: &str) String {
+  let cs = codepoints(s);
+  var a = 0usize;
+  var b = cs.len();
+  while a < b && inSet(*cs[a], set) { a = a + 1usize; }
+  while b > a && inSet(*cs[b - 1usize], set) { b = b - 1usize; }
+  textOfRange(cs.view(), a, b)
+}
+
+// The number of code points
+pub fn cpCount(s: &str) usize { s.charCount() }
+
+// The last character of a text, as a text
+pub fn lastChar(s: &str) String {
+  let cs = codepoints(s);
+  if cs.len() == 0usize { return String.empty(); }
+  textOfRange(cs.view(), cs.len() - 1usize, cs.len())
+}
+
+pub fn firstChar(s: &str) String {
+  let cs = codepoints(s);
+  if cs.len() == 0usize { return String.empty(); }
+  textOfRange(cs.view(), 0usize, 1usize)
+}
+
+// A copy of the text with every 'from' replaced by 'to'
+pub fn replaceAll(s: &str, from: &str, to: &str) String {
+  var t = String.from(s);
+  t.replace(from, to);
+  t
+}
+
+// Whether the text has the other text in it
+pub fn hasText(s: &str, needle: &str) bool { s.contains(needle) }
