@@ -16,6 +16,23 @@
 // conversation stays in the GPU's KV cache, so a turn costs only its own tokens. After each reply it prints the
 // reply's tokens and tokens a second. `/reset` starts a new conversation; the end of the input (Ctrl-Z then
 // Enter on Windows, Ctrl-D elsewhere) or `/quit` ends the program. Input may be piped.
+//
+// --voice talks instead of typing (package voicechat: Parakeet hears you, Qwen3 answers with thinking off, Kokoro says
+// each sentence as it is finished, and speaking over the reply cuts it off):
+//
+//   congo run --release examples/llmchat.cone -- --model <path.gguf> --voice [--audio system|dummy|disk in.raw out.raw]
+//
+//   --audio system        the real microphone and speakers (the default; this makes sound), or
+//   --audio disk in.raw out.raw   SDL's disk driver: the microphone is a raw f32 file (44.1 kHz mono), the speaker is
+//                         written to one (44.1 kHz stereo); no device, no sound. --audio dummy: silence in, nothing out
+//   --voice-name <v>      a Kokoro voice (af_heart, am_michael, bf_emma, bm_george ...) or a blend: af_heart:0.7,bf_emma:0.3
+//   --speed <x>           speech speed, default 1.0
+//   --threshold-scale <k> how much louder than the room speech must be to cut the reply while it plays (default 3;
+//                         1 with a headset)       --hangover <ms>   silence that ends your turn (default 600)
+//   --seconds <n>         stop after n seconds (default: until Ctrl-C)      --max-tokens <n>   longest reply (400)
+//   --no-timings          do not print the per-turn timing lines
+//   --stt-model <f> --stt-vocab <f> --tts-dir <d>   where Parakeet's and Kokoro's converted files are
+//                         (default C:\src\speech-models)      --temp, --ctx, --top-k, --top-p, --seed as above
 
 mod llmchat;
 
@@ -27,6 +44,7 @@ import time use Instant;
 import random use Rng;
 import gpu use *;
 import llmrun use *;
+import voicechat;
 
 // Everything one reply reports
 struct Reply {
@@ -42,7 +60,7 @@ fn say(msg: &str) {
 }
 
 fn usage() {
-  say("usage: llmchat --model <path.gguf> [--temp 0.7] [--ctx 4096] [--think] [--top-k 20] [--top-p 0.8] [--seed n] [--validate]\n");
+  say("usage: llmchat --model <path.gguf> [--temp 0.7] [--ctx 4096] [--think] [--top-k 20] [--top-p 0.8] [--seed n] [--validate] [--voice [--audio system|dummy|disk in.raw out.raw] [--voice-name af_heart] [--speed 1.0]]\n");
 }
 
 fn bytesOf(s: &str) List[u8] {
@@ -90,6 +108,82 @@ fn reply(engine: &mut Engine, device: &mut Device, vocab: &ModelTokens, sampler:
   writeBytes(stream.finish().view());
   let t2 = Instant.now();
   Ok[Reply, String](Reply(made, t1.since(t0).secondsF64(), t2.since(t1).secondsF64(), full))
+}
+
+// --voice: a spoken conversation (package voicechat). The options not already read by main.
+fn talk(args: &List[String], device: &mut Device, model: &str, temperature: f64, ctx: usize, topK: usize, topP: f64,
+    seed: u64) i32 {
+  var o = voicechat.VoiceOptions.defaults(model);
+  o.temperature = temperature;
+  o.ctx = ctx;
+  o.topK = topK;
+  o.topP = topP;
+  o.seed = seed;
+  match argValue(args, "--voice-name") { case var Some(v) { o.voice = v; } case is None {} }
+  match argValue(args, "--speed") {
+    case let Some(t) {
+      match parseFloat(t.view()) {
+        case let Some(x) { o.speed = f32.from(x); }
+        case is None { say("llmchat: --speed is not a number\n"); return 2i32; }
+      }
+    }
+    case is None {}
+  }
+  match argValue(args, "--threshold-scale") {
+    case let Some(t) {
+      match parseFloat(t.view()) {
+        case let Some(x) { o.thresholdScale = f32.from(x); }
+        case is None { say("llmchat: --threshold-scale is not a number\n"); return 2i32; }
+      }
+    }
+    case is None {}
+  }
+  match argValue(args, "--hangover") {
+    case let Some(t) {
+      match parseUInt(t.view()) {
+        case let Some(x) { o.hangoverMs = u32.from(x); }
+        case is None { say("llmchat: --hangover is not a number of milliseconds\n"); return 2i32; }
+      }
+    }
+    case is None {}
+  }
+  match argValue(args, "--seconds") {
+    case let Some(t) {
+      match parseUInt(t.view()) {
+        case let Some(x) { o.runSeconds = u32.from(x); }
+        case is None { say("llmchat: --seconds is not a number\n"); return 2i32; }
+      }
+    }
+    case is None {}
+  }
+  match argValue(args, "--max-tokens") {
+    case let Some(t) {
+      match parseUInt(t.view()) {
+        case let Some(x) { o.maxTokens = usize.from(x); }
+        case is None { say("llmchat: --max-tokens is not a number\n"); return 2i32; }
+      }
+    }
+    case is None {}
+  }
+  match argValue(args, "--stt-model") { case var Some(v) { o.sttModel = v; } case is None {} }
+  match argValue(args, "--stt-vocab") { case var Some(v) { o.sttVocab = v; } case is None {} }
+  match argValue(args, "--tts-dir") { case var Some(v) { o.ttsDir = v; } case is None {} }
+  if hasFlag(args, "--no-timings") { o.echoTimings = false; }
+  // --audio system | dummy | disk <in.raw> <out.raw>; without it, the real devices
+  var i = 0usize;
+  while i < args.len() {
+    if args[i].view() == "--audio" {
+      if i + 1usize >= args.len() { say("llmchat: --audio needs system, dummy or disk <in.raw> <out.raw>\n"); return 2i32; }
+      o.audio = args[i + 1usize].copy();
+      if o.audio.view() == "disk" {
+        if i + 3usize >= args.len() { say("llmchat: --audio disk needs <in.raw> <out.raw>\n"); return 2i32; }
+        o.inFile = args[i + 2usize].copy();
+        o.outFile = args[i + 3usize].copy();
+      }
+    }
+    i = i + 1usize;
+  }
+  voicechat.run(device, &o)
 }
 
 fn main() i32 {
@@ -161,6 +255,10 @@ fn main() i32 {
   if !adapter.isValid() { say("llmchat: no GPU with Vulkan 1.3\n"); return 1i32; }
   var device = adapter.requestComputeDevice(&ComputeRequest(largeBuffers: true));
   if !device.isValid() { say("llmchat: the GPU could not be opened for compute\n"); return 1i32; }
+
+  if hasFlag(&args, "--voice") {
+    return talk(&args, &mut device, modelPath.view(), temperature, ctx, topK, topP, seed);
+  }
 
   say("loading the model ...\n");
   let loadStart = Instant.now();

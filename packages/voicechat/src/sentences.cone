@@ -1,0 +1,236 @@
+// ======== A reply cut into sentences for the speaker, and a sentence cleaned for speech ========
+//
+// Qwen writes a reply a token at a time; Kokoro says a sentence at a time. `Sentences` takes the reply's text as it
+// arrives and gives back each sentence the moment it is certain to be finished: a '.', '!' or '?' (with any run of
+// them and any closing quotes or brackets after it) followed by white space, or a new line after some words. What is
+// not a sentence end: a period inside a number or a word ("3.5", "U.S.A"), after a title or an abbreviation ("Mr.",
+// "Dr.", "e.g.", "vs."), after a single capital letter that is an initial ("J. K."), or after the digits that begin
+// a line (a numbered list's "1."). The character after the mark decides, so a sentence is held until one more
+// character has come. A reply with no mark for 140 bytes is cut at its last comma, semicolon or colon (so a long
+// opening clause need not wait for its end before it is spoken); `finish` hands back what is left when the reply ends.
+//
+// `speechText` makes one sentence fit for the synthesizer: the model is told to write plain sentences, but a
+// `*`, `#` or a backtick, a list dash, an emoji or a curly quote still comes through now and then. Markdown marks and
+// symbols are dropped, curly quotes and dashes become plain ones, white space is one space, and a sentence with
+// nothing a voice could say (no letter or digit) becomes empty.
+
+pub struct Sentence {
+  pub text: String;
+  // The sentence's last mark was in the piece pushed most recently (the caller uses this to know which token the
+  // sentence ended in)
+  pub inLatest: bool;
+}
+
+pub struct Sentences {
+  pending: List[u8];
+  latestFrom: usize;
+
+  pub fn make() Sentences { Sentences(List[u8].empty(), 0usize) }
+
+  // Add the next piece of the reply
+  pub fn push(self: &mut, b: &Array[u8]) {
+    latestFrom = pending.len();
+    var i = 0usize;
+    while i < b.len { pending.push(b[i]); i = i + 1usize; }
+  }
+
+  // The first finished sentence, if there is one
+  pub fn next(self: &mut) Option[Sentence] {
+    let e = sentenceEnd(pending.view());
+    if e == 0usize { return None; }
+    self.take(e)
+  }
+
+  // Whatever is left when the reply is over, if it has anything but white space
+  pub fn finish(self: &mut) Option[Sentence] {
+    if pending.len() == 0usize { return None; }
+    self.take(pending.len())
+  }
+
+  // Drop everything held (a reply cut off)
+  pub fn clear(self: &mut) {
+    pending.clear();
+    latestFrom = 0usize;
+  }
+
+  fn take(self: &mut, e: usize) Option[Sentence] {
+    var head = List[u8].withCapacity(e);
+    var h = 0usize;
+    while h < e { head.push(*pending[h]); h = h + 1usize; }
+    let text = String.fromBytes(head.view()).trim();
+    // the sentence is gone, and the white space after it
+    var cut = e;
+    while cut < pending.len() && isSpace(*pending[cut]) { cut = cut + 1usize; }
+    let inLatest = e - 1usize >= latestFrom;
+    var rest = List[u8].empty();
+    var i = cut;
+    while i < pending.len() { rest.push(*pending[i]); i = i + 1usize; }
+    pending = rest;
+    if latestFrom >= cut { latestFrom = latestFrom - cut; } else { latestFrom = 0usize; }
+    if text.len() == 0usize { return self.next(); }
+    Some[Sentence](Sentence(text, inLatest))
+  }
+}
+
+fn isSpace(c: u8) bool { c == ' ' || c == '\n' || c == '\t' || c == '\r' }
+
+fn isLetter(c: u8) bool { (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') }
+
+fn isDigit(c: u8) bool { c >= '0' && c <= '9' }
+
+// A mark that ends a sentence
+fn isMark(c: u8) bool { c == '.' || c == '!' || c == '?' }
+
+// What may follow a sentence's mark and still belong to it
+fn isCloser(c: u8) bool { c == '"' || c == '\'' || c == ')' || c == ']' || c == '*' || c == '_' }
+
+fn lower(c: u8) u8 { if c >= 'A' && c <= 'Z' { c + 32u8 } else { c } }
+
+// Does p[from..to] spell 'word', ignoring case?
+fn spells(p: &Array[u8], from: usize, to: usize, word: &str) bool {
+  if to - from != word.len() { return false; }
+  var i = 0usize;
+  while i < word.len() {
+    if lower(p[from + i]) != word[i] { return false; }
+    i = i + 1usize;
+  }
+  true
+}
+
+// Is the period at p[i] the end of an abbreviation, an initial or a list number rather than of a sentence?
+fn abbreviation(p: &Array[u8], i: usize, first: usize) bool {
+  var w = i;
+  while w > first && !isSpace(p[w - 1usize]) && p[w - 1usize] != '(' && p[w - 1usize] != '"' { w = w - 1usize; }
+  let n = i - w;
+  if n == 0usize { return false; }
+  // a single capital letter other than the pronoun I: an initial
+  if n == 1usize && p[w] >= 'A' && p[w] <= 'Z' && p[w] != 'I' { return true; }
+  // the digits that begin the sentence: a numbered list
+  var digits = true;
+  var k = w;
+  while k < i { if !isDigit(p[k]) { digits = false; } k = k + 1usize; }
+  if digits && w == first { return true; }
+  if spells(p, w, i, "mr") || spells(p, w, i, "mrs") || spells(p, w, i, "ms") || spells(p, w, i, "dr") { return true; }
+  if spells(p, w, i, "st") || spells(p, w, i, "vs") || spells(p, w, i, "jr") || spells(p, w, i, "sr") { return true; }
+  if spells(p, w, i, "prof") || spells(p, w, i, "inc") || spells(p, w, i, "ltd") || spells(p, w, i, "mt") { return true; }
+  if spells(p, w, i, "e.g") || spells(p, w, i, "i.e") || spells(p, w, i, "a.m") || spells(p, w, i, "p.m") { return true; }
+  false
+}
+
+// Where the first finished sentence of p ends (the index after its mark and closers), or 0 if none has
+fn sentenceEnd(p: &Array[u8]) usize {
+  var first = 0usize;
+  while first < p.len && isSpace(p[first]) { first = first + 1usize; }
+  var sawWord = false;
+  var i = first;
+  while i < p.len {
+    let c = p[i];
+    if isLetter(c) || isDigit(c) || c >= 128u8 { sawWord = true; }
+    if c == '\n' && sawWord { return i; }
+    if isMark(c) && sawWord {
+      var j = i + 1usize;
+      while j < p.len && isMark(p[j]) { j = j + 1usize; }
+      while j < p.len && isCloser(p[j]) { j = j + 1usize; }
+      // the next character has not come: it decides
+      if j >= p.len { return 0usize; }
+      if isSpace(p[j]) {
+        if !(c == '.' && j == i + 1usize && abbreviation(p, i, first)) { return j; }
+      }
+      i = j;
+      continue;
+    }
+    i = i + 1usize;
+  }
+  // No mark yet. A long run is cut at its last comma, semicolon or colon that a space follows.
+  if p.len - first >= 140usize {
+    var k = p.len - 1usize;
+    while k > first + 30usize {
+      if (p[k - 1usize] == ',' || p[k - 1usize] == ';' || p[k - 1usize] == ':') && isSpace(p[k]) { return k; }
+      k = k - 1usize;
+    }
+  }
+  0usize
+}
+
+fn appendAscii(out: &mut List[u8], s: &str) {
+  var i = 0usize;
+  while i < s.len() { out.push(s[i]); i = i + 1usize; }
+}
+
+// A sentence as the synthesizer should get it (see the header). Empty when there is nothing to say.
+pub fn speechText(text: &Array[u8]) String {
+  var out = List[u8].empty();
+  var i = 0usize;
+  while i < text.len {
+    let c = text[i];
+    if c < 128u8 {
+      if c == '*' || c == '#' || c == '`' || c == '~' || c == '|' || c == '^' || c == '\\' || c == '<' || c == '>' || c == '[' || c == ']' || c == '{' || c == '}' {
+        // markdown and brackets: dropped
+      } else if c == '_' || c == '\n' || c == '\t' || c == '\r' {
+        out.push(' ');
+      } else {
+        out.push(c);
+      }
+      i = i + 1usize;
+    } else if c >= 0xF0u8 {
+      // four bytes: an emoji or a rare symbol
+      i = i + 4usize;
+    } else if c >= 0xE0u8 {
+      // three bytes: punctuation worth keeping as plain, anything else (symbols, arrows, dingbats) dropped
+      if c == 0xE2u8 && i + 2usize < text.len && text[i + 1usize] == 0x80u8 {
+        let d = text[i + 2usize];
+        if d == 0x98u8 || d == 0x99u8 { out.push('\''); }
+        else if d == 0x9Cu8 || d == 0x9Du8 { out.push('"'); }
+        else if d == 0x93u8 { out.push('-'); }
+        else if d == 0x94u8 { appendAscii(&mut out, ", "); }
+        else if d == 0xA6u8 { appendAscii(&mut out, "..."); }
+      }
+      i = i + 3usize;
+    } else if c >= 0xC0u8 {
+      // two bytes: Latin letters and the like are kept, a no-break space is a space
+      if c == 0xC2u8 && i + 1usize < text.len && text[i + 1usize] == 0xA0u8 {
+        out.push(' ');
+      } else if i + 1usize < text.len {
+        out.push(c);
+        out.push(text[i + 1usize]);
+      }
+      i = i + 2usize;
+    } else {
+      i = i + 1usize;
+    }
+  }
+  // one space between words
+  var spaced = List[u8].empty();
+  var gap = true;
+  var k = 0usize;
+  while k < out.len() {
+    let b = *out[k];
+    if b == ' ' {
+      if !gap { spaced.push(' '); gap = true; }
+    } else {
+      spaced.push(b);
+      gap = false;
+    }
+    k = k + 1usize;
+  }
+  while spaced.len() > 0usize && *spaced[spaced.len() - 1usize] == ' ' { spaced.truncate(spaced.len() - 1usize); }
+  // a list's dash or number at the start is not said
+  var start = 0usize;
+  if spaced.len() > 1usize && *spaced[0usize] == '-' && *spaced[1usize] == ' ' { start = 2usize; }
+  else {
+    var d = 0usize;
+    while d < spaced.len() && isDigit(*spaced[d]) { d = d + 1usize; }
+    if d > 0usize && d + 1usize < spaced.len() && (*spaced[d] == '.' || *spaced[d] == ')') && *spaced[d + 1usize] == ' ' { start = d + 2usize; }
+  }
+  var result = List[u8].empty();
+  var hasWord = false;
+  var m = start;
+  while m < spaced.len() {
+    let b = *spaced[m];
+    if isLetter(b) || isDigit(b) || b >= 128u8 { hasWord = true; }
+    result.push(b);
+    m = m + 1usize;
+  }
+  if !hasWord { return String.empty(); }
+  String.fromBytes(result.view())
+}

@@ -1,0 +1,44 @@
+// voicechat: a spoken conversation with a local Qwen3, all on this machine's GPU. `run` is the whole program: it loads
+// the three models, opens the microphone and the speaker, and loops.
+//
+//   listen            the microphone's samples go to voiceaudio's detector until it ends an utterance
+//   -> Parakeet       speechtotext turns the utterance into text, which is printed ("you> ...")
+//   -> Qwen3          llmrun answers in ChatML with thinking off, after a system line that it is speaking aloud
+//   -> Kokoro         each sentence of the reply, the moment it is finished, goes to texttospeech while Qwen goes on
+//                     writing the next
+//   -> the speaker    voiceaudio's playback queue
+//
+// BARGE-IN. Speech heard while the reply is being written or played cuts the speaker's queue at once and stops the
+// writing, and the loop listens. The model is then told only what you heard: the engine's cache is wound back to the end
+// of the last sentence whose sound had begun to play, so what Qwen remembers of its answer is the sentences you began to
+// hear (a sentence is the grain; no timing of words inside it).
+// While sound plays the room can hear it, so the detector's thresholds are scaled up (`VoiceOptions.thresholdScale`,
+// 3 by default; the reasoning is on the option). A headset avoids the problem.
+//
+//   voicechat.cone   this overview
+//   session.cone     VoiceOptions, run: the models, the loop, the timings it prints
+//   sentences.cone   Sentences (a reply cut into sentences as it arrives), speechText (a sentence cleaned for speech)
+//
+// NO SOUND UNLESS ASKED. The audio is named by `VoiceOptions.audio`: "disk" (microphone from a raw f32 file, speaker to
+// one), "dummy" (silence in, nothing out) or "system" (the real microphone and speakers, the only one that makes sound).
+//
+// ONE THREAD. Qwen, Parakeet and Kokoro share the one gpu Device, which one thread uses at a time. The loop writes a
+// token, and between tokens listens for speech and speaks a finished sentence (Kokoro runs on the same thread, 0.2 to
+// 0.5 s for a sentence, during which no token is written and the microphone is not read, though SDL keeps what it
+// hears). Since the reply is written several times faster than it is spoken, the only moment this costs is before the
+// first sound; session.cone's header has the measured numbers.
+
+mod voicechat;
+
+import libc;
+import stdio use *;
+import collections use List, String;
+import path use Path;
+import time use Instant, Duration;
+import thread;
+import random use Rng;
+import gpu use Device;
+import llmrun;
+import speechtotext;
+import texttospeech;
+import voiceaudio;
