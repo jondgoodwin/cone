@@ -1,0 +1,370 @@
+// Every speechkernels kernel on the GPU against its CPU twin (reference.cone, in f64) over seeded synthetic data and
+// sizes that are not multiples of a tile or a workgroup. The tolerance of each comparison is absolute, a fixed
+// fraction of the largest value the twin gives plus one (named at each call): the kernels add the same products in a
+// different order in f32, so the difference is a few units of 2^-24 times the size of the sums. With
+// SPEECHKERNELS_REPORT set the worst error of each case is printed. Needs a GPU with Vulkan 1.3 and SDL3.dll.
+
+mod kernels;
+
+import testing use *;
+import stdio use *;
+import libc;
+import collections use List;
+import random use Rng;
+import gpu use *;
+import gpuwork use *;
+import llmkernels use floatWords, wordFloats;
+import speechkernels use *;
+
+fn preference() u32 {
+  let env = libc.getenv("GPU_POWER_PREFERENCE");
+  if (env as usize) != 0usize && libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 { return POWER_PREFERENCE_LOW_POWER; }
+  POWER_PREFERENCE_HIGH_PERFORMANCE
+}
+
+fn reporting() bool { (libc.getenv("SPEECHKERNELS_REPORT") as usize) != 0usize }
+
+fn rand(rng: &mut Rng, n: usize, amp: f32) List[f32] {
+  var out = List[f32].withCapacity(n);
+  var i = 0usize;
+  while i < n { out.push((rng.unitF32() * 2.0 - 1.0) * amp); i = i + 1usize; }
+  out
+}
+
+fn zeros(n: usize) List[f32] {
+  var l = List[f32].withCapacity(n);
+  var i = 0usize;
+  while i < n { l.push(0.0); i = i + 1usize; }
+  l
+}
+
+fn maxAbs(a: &Array[f32]) f64 {
+  var m = 0.0;
+  var i = 0usize;
+  while i < a.len { let v = libc.fabs(f64.from(a[i])); if v > m { m = v; } i = i + 1usize; }
+  m
+}
+
+// The worst absolute difference
+fn worst(a: &Array[f32], b: &Array[f32]) f64 {
+  var m = 0.0;
+  var i = 0usize;
+  while i < a.len {
+    let d = libc.fabs(f64.from(a[i]) - f64.from(b[i]));
+    if d > m || d != d { m = d; }
+    i = i + 1usize;
+  }
+  m
+}
+
+fn finish(device: &mut Device, works: &mut Works, job: Job, back: u32) List[f32] {
+  let ticket = works.submit(device, job, Target.Here(1u64));
+  var got = List[Completion].empty();
+  works.waitFor(device, ticket, &mut got);
+  require(got.len() == 1usize, "the job's completion");
+  expectBool(got[0usize].ok, true, "the job ran");
+  wordFloats(got[0usize].words(back).view())
+}
+
+fn check(name: &str, got: &Array[f32], want: &Array[f32], fraction: f64) {
+  let err = worst(got, want);
+  let bound = fraction * (maxAbs(want) + 1.0);
+  if reporting() { print <- name, ": worst error ", err, " (bound ", bound, ")\n"; }
+  if !(err <= bound) { print <- name, ": worst error ", err, " beyond ", bound, "\n"; }
+  expect(err <= bound, name);
+}
+
+// a, then b, in one list (the weights and then their bias, in one buffer)
+fn cat(a: &List[f32], b: &List[f32]) List[f32] {
+  var out = List[f32].withCapacity(a.len() + b.len());
+  var i = 0usize;
+  while i < a.len() { out.push(*a[i]); i = i + 1usize; }
+  i = 0usize;
+  while i < b.len() { out.push(*b[i]); i = i + 1usize; }
+  out
+}
+
+fn upload1(device: &mut Device, job: &mut Job, v: &List[f32]) u32 {
+  job.give(upload(device, floatWords(v.view()).view()))
+}
+
+fn convCase(device: &mut Device, kernels: &Kernels, works: &mut Works, rng: &mut Rng, name: &str, cin: usize, cout: usize,
+    lin: usize, k: usize, stride: usize, pad: usize, dil: usize, hasBias: bool, slope: f32) {
+  let x = rand(rng, cin * lin, 1.0);
+  let w = rand(rng, cout * cin * k, 0.5);
+  let b = rand(rng, cout, 1.0);
+  let lout = Kernels.convLength(lin, k, stride, pad, dil);
+  var want = zeros(cout * lout);
+  conv1dCpu(x.view(), w.view(), b.view(), hasBias, cin, cout, lin, k, stride, pad, dil, slope, want.viewMut());
+  var job = Job.make(device);
+  let xb = upload1(device, &mut job, &x);
+  let wb = upload1(device, &mut job, &cat(&w, &b));
+  let yb = job.give(zeroed(device, cout * lout));
+  require(kernels.conv1d(&mut job, device, xb, wb, yb, cin, cout, lin, k, stride, pad, dil, 0usize, 0usize, 0usize, w.len(), hasBias, slope), "the conv recorded");
+  let back = job.readback(device, yb);
+  let y = finish(device, works, job, back);
+  check(name, y.view(), want.view(), 0.00002);
+}
+
+fn convTransposeCase(device: &mut Device, kernels: &Kernels, works: &mut Works, rng: &mut Rng, name: &str, cin: usize, cout: usize,
+    lin: usize, k: usize, stride: usize, pad: usize, outPad: usize, groups: usize) {
+  let x = rand(rng, cin * lin, 1.0);
+  let w = rand(rng, cin * (cout / groups) * k, 0.5);
+  let b = rand(rng, cout, 1.0);
+  let lout = Kernels.convTransposeLength(lin, k, stride, pad, outPad);
+  var want = zeros(cout * lout);
+  convTranspose1dCpu(x.view(), w.view(), b.view(), true, cin, cout, lin, k, stride, pad, outPad, groups, want.viewMut());
+  var job = Job.make(device);
+  let xb = upload1(device, &mut job, &x);
+  let wb = upload1(device, &mut job, &cat(&w, &b));
+  let yb = job.give(zeroed(device, cout * lout));
+  require(kernels.convTranspose1d(&mut job, device, xb, wb, yb, cin, cout, lin, k, stride, pad, outPad, groups, 0usize, 0usize, 0usize, w.len(), true), "the transposed conv recorded");
+  let back = job.readback(device, yb);
+  let y = finish(device, works, job, back);
+  check(name, y.view(), want.view(), 0.00002);
+}
+
+fn lstmCase(device: &mut Device, kernels: &Kernels, works: &mut Works, rng: &mut Rng, name: &str, steps: usize, inDim: usize) {
+  let x = rand(rng, steps * inDim, 1.0);
+  let wih = rand(rng, 2usize * 1024usize * inDim, 0.2);
+  let whh = rand(rng, 2usize * 1024usize * 256usize, 0.2);
+  let bias = rand(rng, 2usize * 1024usize, 0.5);
+  var want = zeros(steps * 512usize);
+  lstmCpu(x.view(), wih.view(), whh.view(), bias.view(), steps, inDim, want.viewMut());
+  // the input projection without bias, [steps, 2, 1024], as the model's matmul gives it; whh transposed
+  var gates = List[f32].withCapacity(steps * 2048usize);
+  var t = 0usize;
+  while t < steps {
+    var r = 0usize;
+    while r < 2048usize {
+      var acc = 0.0;
+      var j = 0usize;
+      while j < inDim { acc = acc + f64.from(*wih[r * inDim + j]) * f64.from(*x[t * inDim + j]); j = j + 1usize; }
+      gates.push(f32.from(acc));
+      r = r + 1usize;
+    }
+    t = t + 1usize;
+  }
+  var whhT = zeros(2usize * 256usize * 1024usize);
+  var dir = 0usize;
+  while dir < 2usize {
+    var r = 0usize;
+    while r < 1024usize {
+      var k = 0usize;
+      while k < 256usize {
+        let v = *whh[(dir * 1024usize + r) * 256usize + k];
+        whhT.set(dir * 256usize * 1024usize + k * 1024usize + r, v);
+        k = k + 1usize;
+      }
+      r = r + 1usize;
+    }
+    dir = dir + 1usize;
+  }
+  var job = Job.make(device);
+  let gb = upload1(device, &mut job, &gates);
+  let wb = upload1(device, &mut job, &cat(&whhT, &bias));
+  let yb = job.give(zeroed(device, steps * 512usize));
+  require(kernels.lstm(&mut job, device, gb, wb, yb, steps, 0usize, 0usize, 0usize, whhT.len()), "the lstm recorded");
+  let back = job.readback(device, yb);
+  let y = finish(device, works, job, back);
+  check(name, y.view(), want.view(), 0.00005);
+}
+
+fn layernormCase(device: &mut Device, kernels: &Kernels, works: &mut Works, rng: &mut Rng, name: &str, n: usize, rows: usize,
+    columns: bool, mode: u32, slope: f32) {
+  let x = rand(rng, n * rows, 3.0);
+  let gamma = rand(rng, 2usize * n, 1.0);
+  let beta = rand(rng, n, 1.0);
+  var es = 1usize;
+  var rs = n;
+  if columns { es = rows; rs = 1usize; }
+  var want = zeros(n * rows);
+  layernormCpu(x.view(), gamma.view(), beta.view(), n, rows, es, rs, 0.00001, mode, slope, want.viewMut());
+  var job = Job.make(device);
+  let xb = upload1(device, &mut job, &x);
+  let gb = upload1(device, &mut job, &cat(&gamma, &beta));
+  let yb = job.give(zeroed(device, n * rows));
+  require(kernels.layernorm(&mut job, device, xb, gb, yb, n, rows, es, rs, 0usize, 0usize, 0.00001, mode, 0usize, gamma.len(), slope), "the layernorm recorded");
+  let back = job.readback(device, yb);
+  let y = finish(device, works, job, back);
+  check(name, y.view(), want.view(), 0.00002);
+}
+
+fn adainCase(device: &mut Device, kernels: &Kernels, works: &mut Works, rng: &mut Rng, name: &str, channels: usize, len: usize, act: u32) {
+  let x = rand(rng, channels * len, 3.0);
+  let gb = rand(rng, 2usize * channels, 1.0);
+  var alpha = rand(rng, channels, 0.4);
+  var i = 0usize;
+  while i < channels { let a = *alpha[i] + 1.0; alpha.set(i, a); i = i + 1usize; }
+  var want = zeros(channels * len);
+  adainCpu(x.view(), gb.view(), alpha.view(), channels, len, act, 0.2, want.viewMut());
+  var job = Job.make(device);
+  let xb = upload1(device, &mut job, &x);
+  let gbb = upload1(device, &mut job, &gb);
+  let ab = upload1(device, &mut job, &alpha);
+  let yb = job.give(zeroed(device, channels * len));
+  require(kernels.adain(&mut job, device, xb, gbb, ab, yb, channels, len, 0usize, 0usize, 0usize, 0usize, act, 0.2), "the adain recorded");
+  let back = job.readback(device, yb);
+  let y = finish(device, works, job, back);
+  check(name, y.view(), want.view(), 0.00003);
+}
+
+fn attentionCase(device: &mut Device, kernels: &Kernels, works: &mut Works, rng: &mut Rng, name: &str, steps: usize) {
+  let heads = 12usize;
+  let hd = 64usize;
+  let q = rand(rng, steps * heads * hd, 1.0);
+  let k = rand(rng, steps * heads * hd, 1.0);
+  let v = rand(rng, steps * heads * hd, 1.0);
+  var want = zeros(steps * heads * hd);
+  bertAttentionCpu(q.view(), k.view(), v.view(), steps, heads, hd, 0.125, want.viewMut());
+  var job = Job.make(device);
+  let qb = upload1(device, &mut job, &q);
+  let kb = upload1(device, &mut job, &k);
+  let vb = upload1(device, &mut job, &v);
+  let yb = job.give(zeroed(device, steps * heads * hd));
+  require(kernels.bertAttention(&mut job, device, qb, kb, vb, yb, steps, heads, hd, 0.125), "the attention recorded");
+  let back = job.readback(device, yb);
+  let y = finish(device, works, job, back);
+  check(name, y.view(), want.view(), 0.00002);
+}
+
+// The small kernels, exactly (bit for bit where only copies and one rounding are done)
+fn smallKernels(device: &mut Device, kernels: &Kernels, works: &mut Works, rng: &mut Rng) {
+  let x = rand(rng, 21usize, 1.0);
+  // copy2d as a transpose: y[c, r] = x[r, c]
+  var job = Job.make(device);
+  let xb = upload1(device, &mut job, &x);
+  let yb = job.give(zeroed(device, 21usize));
+  require(kernels.copy2d(&mut job, device, xb, yb, 3usize, 7usize, 0usize, 7usize, 1usize, 0usize, 1usize, 3usize), "copy2d recorded");
+  var back = job.readback(device, yb);
+  var y = finish(device, works, job, back);
+  var ok = true;
+  var r = 0usize;
+  while r < 3usize {
+    var c = 0usize;
+    while c < 7usize { if *y[c * 3usize + r] != *x[r * 7usize + c] { ok = false; } c = c + 1usize; }
+    r = r + 1usize;
+  }
+  expectBool(ok, true, "copy2d transposes");
+  // repeat2
+  job = Job.make(device);
+  let xb2 = upload1(device, &mut job, &x);
+  let yb2 = job.give(zeroed(device, 42usize));
+  require(kernels.repeat2(&mut job, device, xb2, yb2, 3usize, 7usize, 0usize, 0usize), "repeat2 recorded");
+  back = job.readback(device, yb2);
+  y = finish(device, works, job, back);
+  ok = true;
+  var i = 0usize;
+  while i < 42usize { if *y[i] != *x[(i / 14usize) * 7usize + (i % 14usize) / 2usize] { ok = false; } i = i + 1usize; }
+  expectBool(ok, true, "repeat2 doubles each element");
+  // addScale, leaky, biasAct
+  let a = rand(rng, 100usize, 2.0);
+  let b = rand(rng, 100usize, 2.0);
+  job = Job.make(device);
+  let ab = upload1(device, &mut job, &a);
+  let bb = upload1(device, &mut job, &b);
+  let yb3 = job.give(zeroed(device, 100usize));
+  require(kernels.addScale(&mut job, device, ab, bb, yb3, 100usize, 0usize, 0usize, 0usize, 0.5), "addScale recorded");
+  back = job.readback(device, yb3);
+  y = finish(device, works, job, back);
+  ok = true;
+  i = 0usize;
+  while i < 100usize { if *y[i] != (*a[i] + *b[i]) * 0.5 { ok = false; } i = i + 1usize; }
+  expectBool(ok, true, "addScale is (a + b) * s exactly");
+  job = Job.make(device);
+  let ab2 = upload1(device, &mut job, &a);
+  let yb4 = job.give(zeroed(device, 100usize));
+  require(kernels.leaky(&mut job, device, ab2, yb4, 100usize, 0usize, 0usize, 0.2), "leaky recorded");
+  back = job.readback(device, yb4);
+  y = finish(device, works, job, back);
+  ok = true;
+  i = 0usize;
+  while i < 100usize {
+    var w = *a[i];
+    if w < 0.0 { w = w * 0.2; }
+    if *y[i] != w { ok = false; }
+    i = i + 1usize;
+  }
+  expectBool(ok, true, "leaky ReLU exactly");
+  let bias = rand(rng, 10usize, 1.0);
+  job = Job.make(device);
+  let ab3 = upload1(device, &mut job, &a);
+  let bb3 = upload1(device, &mut job, &bias);
+  let yb5 = job.give(zeroed(device, 100usize));
+  require(kernels.biasAct(&mut job, device, ab3, bb3, yb5, 10usize, 10usize, 0usize, 0usize, 0usize, 2u32, 0.0), "biasAct recorded");
+  back = job.readback(device, yb5);
+  y = finish(device, works, job, back);
+  var want = zeros(100usize);
+  i = 0usize;
+  while i < 100usize {
+    let v = f64.from(*a[i]) + f64.from(*bias[i % 10usize]);
+    want.set(i, f32.from(0.5 * v * (1.0 + tanhCpu(0.7978845608028654 * (v + 0.044715 * v * v * v)))));
+    i = i + 1usize;
+  }
+  check("biasAct with the tanh GELU", y.view(), want.view(), 0.00001);
+  // gather: y[r, c] = x[r * 7 + idx[c]] for 3 rows and 5 indices
+  var idxWords = List[u32].empty();
+  idxWords.push(6u32); idxWords.push(0u32); idxWords.push(0u32); idxWords.push(3u32); idxWords.push(3u32);
+  job = Job.make(device);
+  let xb4 = upload1(device, &mut job, &x);
+  let ib = job.give(upload(device, idxWords.view()));
+  let yb6 = job.give(zeroed(device, 15usize));
+  require(kernels.gather(&mut job, device, xb4, ib, yb6, 3usize, 5usize, 0usize, 7usize, 1usize, 0usize, 5usize, 0usize), "gather recorded");
+  back = job.readback(device, yb6);
+  y = finish(device, works, job, back);
+  ok = true;
+  r = 0usize;
+  while r < 3usize {
+    var c = 0usize;
+    while c < 5usize { if *y[r * 5usize + c] != *x[r * 7usize + usize.from(*idxWords[c])] { ok = false; } c = c + 1usize; }
+    r = r + 1usize;
+  }
+  expectBool(ok, true, "gather picks the columns named");
+}
+
+fn main() i32 {
+  var instance = Instance.create("speechkernels kernels");
+  require(instance.isValid(), "a Vulkan 1.3 instance");
+  var none = Surface.none();
+  var adapter = instance.requestAdapter(&none, preference());
+  require(adapter.isValid(), "an adapter");
+  var device = adapter.requestDevice();
+  require(device.isValid(), "a device");
+  let kernels = Kernels.make(&device);
+  require(kernels.isValid(), "the kernels");
+  var works = Works.make();
+  var rng = Rng.fromSeed(4242u64);
+
+  convCase(&mut device, &kernels, &mut works, &mut rng, "conv1d 3 -> 5 channels, k 3, 70 long", 3usize, 5usize, 70usize, 3usize, 1usize, 1usize, 1usize, true, 1.0);
+  convCase(&mut device, &kernels, &mut works, &mut rng, "conv1d 16 -> 40, k 7, dilation 3", 16usize, 40usize, 200usize, 7usize, 1usize, 9usize, 3usize, true, 1.0);
+  convCase(&mut device, &kernels, &mut works, &mut rng, "conv1d 22 -> 33, k 12, stride 6 (the noise convolution)", 22usize, 33usize, 1000usize, 12usize, 6usize, 3usize, 1usize, true, 1.0);
+  convCase(&mut device, &kernels, &mut works, &mut rng, "conv1d k 1, no bias", 17usize, 9usize, 130usize, 1usize, 1usize, 0usize, 1usize, false, 1.0);
+  convCase(&mut device, &kernels, &mut works, &mut rng, "conv1d with the leaky ReLU on its output", 9usize, 12usize, 100usize, 5usize, 1usize, 2usize, 1usize, true, 0.1);
+  convCase(&mut device, &kernels, &mut works, &mut rng, "conv1d k 11, dilation 5, 64 -> 64, 3000 long", 64usize, 64usize, 3000usize, 11usize, 1usize, 25usize, 5usize, true, 1.0);
+  convCase(&mut device, &kernels, &mut works, &mut rng, "conv1d 1 -> 1, k 3, stride 2", 1usize, 1usize, 81usize, 3usize, 2usize, 1usize, 1usize, true, 1.0);
+
+  convTransposeCase(&mut device, &kernels, &mut works, &mut rng, "convTranspose1d 8 -> 6, k 20, stride 10", 8usize, 6usize, 20usize, 20usize, 10usize, 5usize, 0usize, 1usize);
+  convTransposeCase(&mut device, &kernels, &mut works, &mut rng, "convTranspose1d 6 -> 4, k 12, stride 6", 6usize, 4usize, 33usize, 12usize, 6usize, 3usize, 0usize, 1usize);
+  convTransposeCase(&mut device, &kernels, &mut works, &mut rng, "convTranspose1d depthwise k 3, stride 2, output padding 1", 12usize, 12usize, 40usize, 3usize, 2usize, 1usize, 1usize, 12usize);
+
+  lstmCase(&mut device, &kernels, &mut works, &mut rng, "lstm, 1 step", 1usize, 640usize);
+  lstmCase(&mut device, &kernels, &mut works, &mut rng, "lstm, 9 steps", 9usize, 640usize);
+  lstmCase(&mut device, &kernels, &mut works, &mut rng, "lstm, 40 steps, 512 inputs", 40usize, 512usize);
+
+  layernormCase(&mut device, &kernels, &mut works, &mut rng, "layernorm rows of 768, plain gamma/beta", 768usize, 5usize, false, 1u32, 1.0);
+  layernormCase(&mut device, &kernels, &mut works, &mut rng, "layernorm of the channels of a [512, 13] matrix, leaky", 512usize, 13usize, true, 1u32, 0.2);
+  layernormCase(&mut device, &kernels, &mut works, &mut rng, "layernorm with the style's scale and shift", 512usize, 7usize, false, 2u32, 1.0);
+  layernormCase(&mut device, &kernels, &mut works, &mut rng, "layernorm, no affine, n 1", 1usize, 4usize, false, 0u32, 1.0);
+
+  adainCase(&mut device, &kernels, &mut works, &mut rng, "adain with no activation", 7usize, 301usize, 0u32);
+  adainCase(&mut device, &kernels, &mut works, &mut rng, "adain with the leaky ReLU", 64usize, 1000usize, 1u32);
+  adainCase(&mut device, &kernels, &mut works, &mut rng, "adain with snake", 33usize, 4097usize, 2u32);
+
+  attentionCase(&mut device, &kernels, &mut works, &mut rng, "attention over 1 position", 1usize);
+  attentionCase(&mut device, &kernels, &mut works, &mut rng, "attention over 37 positions", 37usize);
+  attentionCase(&mut device, &kernels, &mut works, &mut rng, "attention over 300 positions", 300usize);
+
+  smallKernels(&mut device, &kernels, &mut works, &mut rng);
+  expectUInt(u64.from(refusals()), 0u64, "gpuwork refused nothing");
+  done()
+}

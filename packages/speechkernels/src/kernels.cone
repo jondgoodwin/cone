@@ -1,0 +1,280 @@
+// ======== The kernels on the GPU: made once, recorded into a gpuwork Job ========
+//
+// 'Kernels.make(&device)' makes the pipelines once. Each method RECORDS one dispatch into a Job over buffers already
+// given to it (the caller's slot numbers, from 'job.give'), packing its argument block into the job's parameter slab
+// (or a buffer of its own if the job has none), and answers whether it recorded; a request the kernel cannot run (a
+// size of 0, a size beyond what a dispatch holds) records nothing and answers false. A dispatch binds each buffer
+// once, so the slots named in one call differ (a weight buffer is named once, with element offsets into it).
+// Floats given in the argument block travel as their bits.
+
+// The argument block of every kernel (speechcommon.slang's Args): sixteen 32-bit words
+pub struct Args {
+  pub v: Array[u32, 16];
+}
+
+pub fn zeroArgs() Args {
+  Args([0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32])
+}
+
+// The most workgroups a dispatch has across one dimension
+const MAX_GROUPS = 65535usize;
+
+fn foldX(groups: usize) u32 {
+  if groups > MAX_GROUPS { return u32.from(MAX_GROUPS); }
+  u32.from(groups)
+}
+
+fn foldY(groups: usize) u32 {
+  let gx = usize.from(foldX(groups));
+  if gx == 0usize { return 0u32; }
+  u32.from((groups + gx - 1usize) / gx)
+}
+
+fn fits(n: usize) bool { n <= 4294967295usize }
+
+fn bits(x: f32) u32 { x as u32 }
+
+// An argument block for a dispatch to bind first: packed into the job's slab if it has one, else uploaded
+fn giveArgs(job: &mut Job, device: &mut Device, a: &Args) Binding {
+  if job.hasSlab() { return job.pack(a); }
+  Binding.whole(job.give(uploadValue(device, a)))
+}
+
+fn run(job: &mut Job, device: &mut Device, kernel: &Kernel, a: &Args, slots: &Array[u32], x: u32, y: u32, z: u32) bool {
+  let p = giveArgs(job, device, a);
+  var bs = List[Binding].withCapacity(slots.len + 1usize);
+  bs.push(p);
+  var i = 0usize;
+  while i < slots.len {
+    bs.push(Binding.whole(slots[i]));
+    i = i + 1usize;
+  }
+  job.dispatchBound(device, kernel, bs.view(), x, y, z)
+}
+
+pub struct Kernels {
+  conv1dK: Kernel;
+  convt1dK: Kernel;
+  lstmK: Kernel;
+  layernormK: Kernel;
+  adainK: Kernel;
+  attentionK: Kernel;
+  leakyK: Kernel;
+  copy2dK: Kernel;
+  repeat2K: Kernel;
+  addScaleK: Kernel;
+  biasActK: Kernel;
+  gatherK: Kernel;
+
+  pub fn make(device: &Device) Kernels {
+    Kernels(
+      Kernel.make(device, &CONV1D_SPIRV, "conv1dMain", &[READ, READ, READ, READ_WRITE]),
+      Kernel.make(device, &CONVT1D_SPIRV, "convt1dMain", &[READ, READ, READ, READ_WRITE]),
+      Kernel.make(device, &LSTM_SPIRV, "lstmMain", &[READ, READ, READ, READ_WRITE]),
+      Kernel.make(device, &LAYERNORM_SPIRV, "layernormMain", &[READ, READ, READ, READ_WRITE]),
+      Kernel.make(device, &ADAIN_SPIRV, "adainMain", &[READ, READ, READ, READ, READ_WRITE]),
+      Kernel.make(device, &BERTATTENTION_SPIRV, "bertAttentionMain", &[READ, READ, READ, READ, READ_WRITE]),
+      Kernel.make(device, &UNARY_SPIRV, "leakyMain", &[READ, READ, READ_WRITE]),
+      Kernel.make(device, &UNARY_SPIRV, "copy2dMain", &[READ, READ, READ_WRITE]),
+      Kernel.make(device, &UNARY_SPIRV, "repeat2Main", &[READ, READ, READ_WRITE]),
+      Kernel.make(device, &BINARY_SPIRV, "addScaleMain", &[READ, READ, READ, READ_WRITE]),
+      Kernel.make(device, &BINARY_SPIRV, "biasActMain", &[READ, READ, READ, READ_WRITE]),
+      Kernel.make(device, &GATHER_SPIRV, "gatherMain", &[READ, READ, READ, READ_WRITE]))
+  }
+
+  pub fn isValid(self: &) bool {
+    conv1dK.isValid() && convt1dK.isValid() && lstmK.isValid() && layernormK.isValid() && adainK.isValid()
+      && attentionK.isValid() && leakyK.isValid() && copy2dK.isValid() && repeat2K.isValid() && addScaleK.isValid()
+      && biasActK.isValid() && gatherK.isValid()
+  }
+
+  // y[co, o] = bias[co] + sum w[co, ci, k] x[ci, o * stride - pad + k * dil] (Conv1d, one group), then the leaky
+  // ReLU of 'slope' (1.0: none). x [cin, lin] at element xOff of its buffer, y [cout, lout] at yOff, w [cout, cin, k]
+  // at wOff of its buffer, bias at bOff (hasBias false: no bias, 'bias' still names a buffer).
+  pub fn conv1d(self: &, job: &mut Job, device: &mut Device, x: u32, w: u32, y: u32, cin: usize, cout: usize,
+      lin: usize, k: usize, stride: usize, pad: usize, dil: usize, xOff: usize, yOff: usize, wOff: usize, bOff: usize,
+      hasBias: bool, slope: f32) bool {
+    if cin == 0usize || cout == 0usize || lin == 0usize || k == 0usize || k > 12usize || stride == 0usize || dil == 0usize { return false; }
+    let span = (lin + 2usize * pad);
+    let eff = (k - 1usize) * dil + 1usize;
+    if span < eff { return false; }
+    let lout = (span - eff) / stride + 1usize;
+    if (63usize * stride + eff) > 392usize { return false; }
+    if !fits(cin * lin + xOff) || !fits(cout * lout + yOff) || !fits(cout * cin * k + wOff) { return false; }
+    let tiles = (lout + 63usize) / 64usize;
+    let gx = foldX(tiles);
+    let gy = foldY(tiles);
+    let gz = (cout + 31usize) / 32usize;
+    if usize.from(gy) > MAX_GROUPS || gz > MAX_GROUPS { return false; }
+    var a = zeroArgs();
+    a.v[0usize] = u32.from(cin); a.v[1usize] = u32.from(cout); a.v[2usize] = u32.from(lin); a.v[3usize] = u32.from(lout);
+    a.v[4usize] = u32.from(k); a.v[5usize] = u32.from(stride); a.v[6usize] = u32.from(pad); a.v[7usize] = u32.from(dil);
+    a.v[8usize] = u32.from(xOff); a.v[9usize] = u32.from(yOff); a.v[10usize] = u32.from(wOff); a.v[11usize] = u32.from(bOff);
+    a.v[12usize] = if hasBias { 1u32 } else { 0u32 };
+    a.v[13usize] = gx;
+    a.v[14usize] = bits(slope);
+    run(job, device, &conv1dK, &a, &[x, w, y], gx, gy, u32.from(gz))
+  }
+
+  // The length conv1d gives
+  pub fn convLength(lin: usize, k: usize, stride: usize, pad: usize, dil: usize) usize {
+    (lin + 2usize * pad - ((k - 1usize) * dil + 1usize)) / stride + 1usize
+  }
+
+  // ConvTranspose1d with 'groups': y [cout, lout] from x [cin, lin], w [cin, cout / groups, k]
+  pub fn convTranspose1d(self: &, job: &mut Job, device: &mut Device, x: u32, w: u32, y: u32, cin: usize,
+      cout: usize, lin: usize, k: usize, stride: usize, pad: usize, outPad: usize, groups: usize, xOff: usize, yOff: usize,
+      wOff: usize, bOff: usize, hasBias: bool) bool {
+    if cin == 0usize || cout == 0usize || lin == 0usize || k == 0usize || stride == 0usize || groups == 0usize { return false; }
+    if cin % groups != 0usize || cout % groups != 0usize { return false; }
+    let lout = (lin - 1usize) * stride + k + outPad - 2usize * pad;
+    if !fits(cout * lout + yOff) || !fits(cin * lin + xOff) { return false; }
+    let groupsTotal = (cout * lout + 255usize) / 256usize;
+    let gx = foldX(groupsTotal);
+    let gy = foldY(groupsTotal);
+    if usize.from(gy) > MAX_GROUPS { return false; }
+    var a = zeroArgs();
+    a.v[0usize] = u32.from(cin); a.v[1usize] = u32.from(cout); a.v[2usize] = u32.from(lin); a.v[3usize] = u32.from(lout);
+    a.v[4usize] = u32.from(k); a.v[5usize] = u32.from(stride); a.v[6usize] = u32.from(pad); a.v[7usize] = u32.from(groups);
+    a.v[8usize] = u32.from(xOff); a.v[9usize] = u32.from(yOff); a.v[10usize] = u32.from(wOff); a.v[11usize] = u32.from(bOff);
+    a.v[12usize] = if hasBias { 1u32 } else { 0u32 };
+    a.v[13usize] = gx;
+    run(job, device, &convt1dK, &a, &[x, w, y], gx, gy, 1u32)
+  }
+
+  pub fn convTransposeLength(lin: usize, k: usize, stride: usize, pad: usize, outPad: usize) usize {
+    (lin - 1usize) * stride + k + outPad - 2usize * pad
+  }
+
+  // A bidirectional 256-unit LSTM layer's recurrence over 'steps' steps: gates [steps, 2, 1024] (the input
+  // projection without bias), whhT [2, 256, 1024], bias [2, 1024]; out [steps, 512]
+  pub fn lstm(self: &, job: &mut Job, device: &mut Device, gates: u32, whhT: u32, out: u32, steps: usize,
+      gOff: usize, oOff: usize, wOff: usize, bOff: usize) bool {
+    if steps == 0usize || !fits(steps * 2048usize + gOff) { return false; }
+    var a = zeroArgs();
+    a.v[0usize] = u32.from(steps); a.v[1usize] = u32.from(gOff); a.v[2usize] = u32.from(oOff);
+    a.v[3usize] = u32.from(wOff); a.v[4usize] = u32.from(bOff);
+    run(job, device, &lstmK, &a, &[gates, whhT, out], 2u32, 1u32, 1u32)
+  }
+
+  // Layer norm over n elements of each of 'rows' rows (element j of row r at r * rowStride + j * elemStride); mode 0
+  // plain, 1 with gamma/beta, 2 adaptive with gb in 'gamma' (2 n: scale then shift); then the leaky ReLU of 'slope'
+  pub fn layernorm(self: &, job: &mut Job, device: &mut Device, x: u32, gamma: u32, y: u32, n: usize,
+      rows: usize, elemStride: usize, rowStride: usize, xOff: usize, yOff: usize, eps: f32, mode: u32, gOff: usize,
+      bOff: usize, slope: f32) bool {
+    if n == 0usize || rows == 0usize { return false; }
+    let gx = foldX(rows);
+    let gy = foldY(rows);
+    if usize.from(gy) > MAX_GROUPS { return false; }
+    var a = zeroArgs();
+    a.v[0usize] = u32.from(n); a.v[1usize] = u32.from(rows); a.v[2usize] = u32.from(elemStride); a.v[3usize] = u32.from(rowStride);
+    a.v[4usize] = u32.from(xOff); a.v[5usize] = u32.from(yOff); a.v[6usize] = bits(eps); a.v[7usize] = mode;
+    a.v[8usize] = u32.from(gOff); a.v[9usize] = u32.from(bOff); a.v[10usize] = bits(slope); a.v[11usize] = gx;
+    run(job, device, &layernormK, &a, &[x, gamma, y], gx, gy, 1u32)
+  }
+
+  // AdaIN over each of 'channels' channels of x [channels, len], the style's scale and shift in gb (2 channels floats
+  // at gbOff), then activation act (0 none, 1 leaky with slope, 2 snake with alpha at aOff)
+  pub fn adain(self: &, job: &mut Job, device: &mut Device, x: u32, gb: u32, alpha: u32, y: u32, channels: usize, len: usize,
+      xOff: usize, yOff: usize, gbOff: usize, aOff: usize, act: u32, slope: f32) bool {
+    if channels == 0usize || len == 0usize || !fits(channels * len + xOff) { return false; }
+    let gx = foldX(channels);
+    let gy = foldY(channels);
+    if usize.from(gy) > MAX_GROUPS { return false; }
+    var a = zeroArgs();
+    a.v[0usize] = u32.from(channels); a.v[1usize] = u32.from(len); a.v[2usize] = u32.from(xOff); a.v[3usize] = u32.from(yOff);
+    a.v[4usize] = u32.from(gbOff); a.v[5usize] = u32.from(aOff); a.v[6usize] = act; a.v[7usize] = bits(slope);
+    a.v[8usize] = bits(0.00001f); a.v[9usize] = gx;
+    run(job, device, &adainK, &a, &[x, gb, alpha, y], gx, gy, 1u32)
+  }
+
+  // Bidirectional attention over 'steps' positions of 'heads' heads of headDim (at most 64): q, k, v, out [steps,
+  // heads * headDim]; steps at most 512
+  pub fn bertAttention(self: &, job: &mut Job, device: &mut Device, q: u32, k: u32, v: u32, out: u32, steps: usize,
+      heads: usize, headDim: usize, scale: f32) bool {
+    if steps == 0usize || steps > 512usize || heads == 0usize || headDim == 0usize || headDim > 64usize || steps > MAX_GROUPS { return false; }
+    var a = zeroArgs();
+    a.v[0usize] = u32.from(steps); a.v[1usize] = u32.from(heads); a.v[2usize] = u32.from(headDim); a.v[3usize] = bits(scale);
+    run(job, device, &attentionK, &a, &[q, k, v, out], u32.from(heads), u32.from(steps), 1u32)
+  }
+
+  fn elementCount(n: usize) usize { (n + 255usize) / 256usize }
+
+  // y[yOff + i] = leaky(x[xOff + i]) for i < n
+  pub fn leaky(self: &, job: &mut Job, device: &mut Device, x: u32, y: u32, n: usize, xOff: usize, yOff: usize, slope: f32) bool {
+    if n == 0usize || !fits(n + xOff) || !fits(n + yOff) { return false; }
+    let groups = Kernels.elementCount(n);
+    let gx = foldX(groups);
+    let gy = foldY(groups);
+    var a = zeroArgs();
+    a.v[0usize] = u32.from(n); a.v[1usize] = u32.from(xOff); a.v[2usize] = u32.from(yOff); a.v[3usize] = bits(slope); a.v[4usize] = gx;
+    run(job, device, &leakyK, &a, &[x, y], gx, gy, 1u32)
+  }
+
+  // y[dOff + r * dRs + c * dCs] = x[sOff + r * sRs + c * sCs]
+  pub fn copy2d(self: &, job: &mut Job, device: &mut Device, x: u32, y: u32, rows: usize, cols: usize, sOff: usize, sRs: usize,
+      sCs: usize, dOff: usize, dRs: usize, dCs: usize) bool {
+    if rows == 0usize || cols == 0usize || !fits(rows * cols) { return false; }
+    let groups = Kernels.elementCount(rows * cols);
+    let gx = foldX(groups);
+    let gy = foldY(groups);
+    var a = zeroArgs();
+    a.v[0usize] = u32.from(rows); a.v[1usize] = u32.from(cols); a.v[2usize] = u32.from(sOff); a.v[3usize] = u32.from(sRs);
+    a.v[4usize] = u32.from(sCs); a.v[5usize] = u32.from(dOff); a.v[6usize] = u32.from(dRs); a.v[7usize] = u32.from(dCs);
+    a.v[8usize] = gx;
+    run(job, device, &copy2dK, &a, &[x, y], gx, gy, 1u32)
+  }
+
+  // y [channels, 2 len] from x [channels, len]: every element twice
+  pub fn repeat2(self: &, job: &mut Job, device: &mut Device, x: u32, y: u32, channels: usize, len: usize, xOff: usize,
+      yOff: usize) bool {
+    if channels == 0usize || len == 0usize || !fits(channels * len * 2usize) { return false; }
+    let groups = Kernels.elementCount(channels * len * 2usize);
+    let gx = foldX(groups);
+    let gy = foldY(groups);
+    var a = zeroArgs();
+    a.v[0usize] = u32.from(channels); a.v[1usize] = u32.from(len); a.v[2usize] = u32.from(xOff); a.v[3usize] = u32.from(yOff);
+    a.v[4usize] = gx;
+    run(job, device, &repeat2K, &a, &[x, y], gx, gy, 1u32)
+  }
+
+  // y[i] = (a[i] + b[i]) * scale for i < n
+  pub fn addScale(self: &, job: &mut Job, device: &mut Device, a: u32, b: u32, y: u32, n: usize, aOff: usize, bOff: usize,
+      yOff: usize, scale: f32) bool {
+    if n == 0usize || !fits(n + aOff) || !fits(n + bOff) || !fits(n + yOff) { return false; }
+    let groups = Kernels.elementCount(n);
+    let gx = foldX(groups);
+    let gy = foldY(groups);
+    var q = zeroArgs();
+    q.v[0usize] = u32.from(n); q.v[1usize] = u32.from(aOff); q.v[2usize] = u32.from(bOff); q.v[3usize] = u32.from(yOff);
+    q.v[4usize] = bits(scale); q.v[5usize] = gx;
+    run(job, device, &addScaleK, &q, &[a, b, y], gx, gy, 1u32)
+  }
+
+  // y[r, c] = act(x[r, c] + bias[c]); act 0 none, 1 leaky (slope), 2 the tanh GELU
+  pub fn biasAct(self: &, job: &mut Job, device: &mut Device, x: u32, bias: u32, y: u32, rows: usize, cols: usize, xOff: usize,
+      bOff: usize, yOff: usize, act: u32, slope: f32) bool {
+    if rows == 0usize || cols == 0usize || !fits(rows * cols + xOff) || !fits(rows * cols + yOff) { return false; }
+    let groups = Kernels.elementCount(rows * cols);
+    let gx = foldX(groups);
+    let gy = foldY(groups);
+    var a = zeroArgs();
+    a.v[0usize] = u32.from(rows); a.v[1usize] = u32.from(cols); a.v[2usize] = u32.from(xOff); a.v[3usize] = u32.from(bOff);
+    a.v[4usize] = u32.from(yOff); a.v[5usize] = act; a.v[6usize] = bits(slope); a.v[7usize] = gx;
+    run(job, device, &biasActK, &a, &[x, bias, y], gx, gy, 1u32)
+  }
+
+  // y[r * yRs + c] = x[xOff + r * xRs + idx[idxOff + c] * xIs] for r < rows and c < cols
+  pub fn gather(self: &, job: &mut Job, device: &mut Device, x: u32, idx: u32, y: u32, rows: usize, cols: usize, xOff: usize,
+      xRs: usize, xIs: usize, yOff: usize, yRs: usize, idxOff: usize) bool {
+    if rows == 0usize || cols == 0usize || !fits(rows * cols + yOff) { return false; }
+    let groups = Kernels.elementCount(rows * cols);
+    let gx = foldX(groups);
+    let gy = foldY(groups);
+    var a = zeroArgs();
+    a.v[0usize] = u32.from(rows); a.v[1usize] = u32.from(cols); a.v[2usize] = u32.from(xOff); a.v[3usize] = u32.from(xRs);
+    a.v[4usize] = u32.from(xIs); a.v[5usize] = u32.from(yOff); a.v[6usize] = u32.from(yRs); a.v[7usize] = u32.from(idxOff);
+    a.v[8usize] = gx;
+    run(job, device, &gatherK, &a, &[x, idx, y], gx, gy, 1u32)
+  }
+}
