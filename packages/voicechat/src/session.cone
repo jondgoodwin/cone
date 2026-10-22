@@ -340,7 +340,11 @@ pub fn run(device: &mut Device, o: &VoiceOptions) i32 {
   let started = Instant.now();
   var lastWarm = started;
   var warmth = List[f32].empty();
-  warmth.resize(8000usize, 0.0f);
+  warmth.resize(4000usize, 0.0f);
+  var warmCalls = 0usize;
+  var warmSeconds = 0.0;
+  var warmAllCalls = 0usize;
+  var warmAllSeconds = 0.0;
   var turnNumber = 0usize;
   while running {
     if o.runSeconds > 0u32 && seconds(Instant.now(), started) > f64.from(o.runSeconds) { break; }
@@ -349,14 +353,23 @@ pub fn run(device: &mut Device, o: &VoiceOptions) i32 {
     vad.setThresholdScale(1.0f);
     listen(&mut mic, &mut vad, &mut heard);
     if heard.len() == 0usize {
-      if o.keepWarm && vad.speaking() && seconds(Instant.now(), lastWarm) >= 0.15 {
-        // The person is talking: a little work keeps the GPU's clock up for the recognition that is about to come
-        // (after a second or two of idle the laptop GPU drops its clock, and Parakeet's 0.1 s becomes 0.3 s)
+      // KEEP THE GPU WARM, ONLY WHILE SOMEBODY IS SPEAKING. After a second or two of idle the laptop GPU drops its clock, and
+      // Parakeet's 0.1 s on an utterance becomes 0.3 s. So while the detector is inside an utterance AND the latest 20 ms
+      // frame is 6 dB or more over the noise floor (the detector's own test for a frame of speech; in the silence of the
+      // hangover, or with nobody there, this is false), Parakeet runs on 0.25 s of silence at most every 400 ms (the first run after idle takes 0.1 to 0.4 s, being at the low
+      // clock itself; the rest about 0.1 s). Nothing runs
+      // while the program is idle or the person is quiet; `--no-gpu-warm` turns it off.
+      if o.keepWarm && vad.speaking() && vad.level() > 2.0f * vad.noiseFloor() && seconds(Instant.now(), lastWarm) >= 0.4 {
+        let w0 = Instant.now();
         match stt.transcribe(device, warmth.view()) {
           case is Ok {}
           case let Error(m) { say(m.view()); say("\n"); break; }
         }
         lastWarm = Instant.now();
+        warmCalls = warmCalls + 1usize;
+        warmSeconds = warmSeconds + seconds(lastWarm, w0);
+        warmAllCalls = warmAllCalls + 1usize;
+        warmAllSeconds = warmAllSeconds + seconds(lastWarm, w0);
       } else {
         thread.sleep(Duration.fromMillis(10));
       }
@@ -364,6 +377,7 @@ pub fn run(device: &mut Device, o: &VoiceOptions) i32 {
     }
     let detected = Instant.now();
     let speechEnded = micOpened + Duration.fromMillis(i64.from(heard[0usize].end / 16usize));
+    let talked = f64.from(heard[0usize].end - heard[0usize].start) / 16000.0;
 
     // HEAR
     var text = String.empty();
@@ -586,8 +600,21 @@ pub fn run(device: &mut Device, o: &VoiceOptions) i32 {
       line <- " s, Kokoro ";
       line <- fmt2(stats.kokoro).view();
       line <- " s of it\n";
+      if o.keepWarm {
+        line <- "timing: GPU kept warm while you spoke (";
+        line <- fmt2(talked).view();
+        line <- " s): ";
+        line <- u64.from(warmCalls);
+        line <- " runs of Parakeet on silence, ";
+        line <- fmt2(warmSeconds).view();
+        line <- " s of GPU work, ";
+        line <- u64.from(u64.from(100.0 * warmSeconds / (if talked > 0.01 { talked } else { 0.01 })));
+        line <- " % of the speech\n";
+      }
       printStr(line.view());
     }
+    warmCalls = 0usize;
+    warmSeconds = 0.0;
     print.flush();
   }
 
@@ -595,5 +622,16 @@ pub fn run(device: &mut Device, o: &VoiceOptions) i32 {
   out.close();
   mic.close();
   device.waitIdle();
+  if o.echoTimings && o.keepWarm {
+    var tail = String.empty();
+    tail <- "timing: over the whole session the GPU was kept warm ";
+    tail <- u64.from(warmAllCalls);
+    tail <- " times, ";
+    tail <- fmt2(warmAllSeconds).view();
+    tail <- " s of GPU work, only while somebody was speaking (";
+    tail <- fmt2(seconds(Instant.now(), started)).view();
+    tail <- " s in all)\n";
+    printStr(tail.view());
+  }
   0i32
 }

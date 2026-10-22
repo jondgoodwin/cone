@@ -29,12 +29,17 @@
 //                         (written af_heart:0.7+bf_emma:0.3 in the llmchat.cmd launcher, which splits at commas)
 //   --speed <x>           speech speed, default 1.0
 //   --threshold-scale <k> how much louder than the room speech must be to cut the reply while it plays (default 3;
-//                         1 with a headset)       --hangover <ms>   silence that ends your turn (default 600)
+//                         1 with a headset)       --end-silence-ms <ms>   silence that ends your turn (default 600; lower
+//                         answers sooner but a pause inside a sentence then ends it: README.md of voicechat has the numbers)
 //   --seconds <n>         stop after n seconds (default: until Ctrl-C)      --max-tokens <n>   longest reply (400)
 //   --no-timings          do not print the per-turn timing lines
-//   --no-warm             do not run light work on the GPU while you speak (it keeps the GPU's clock up for Parakeet)
+//   --no-gpu-warm         do not run light work on the GPU while you speak (that work, only while you are speaking,
+//                         keeps the GPU's clock up so Parakeet takes 0.1 s, not 0.3 s)
 //   --stt-model <f> --stt-vocab <f> --tts-dir <d>   where Parakeet's and Kokoro's converted files are
-//                         (default C:\src\speech-models)      --temp, --ctx, --top-k, --top-p, --seed as above
+//                         (default C:\src\speech-models)      --temp, --top-k, --top-p, --seed as above
+//                         --ctx as above, but 2048 by default with --voice (a spoken exchange is about 75 tokens; the 8B
+//                         with all three models then leaves 1.4 GiB of the GPU's 8 free; when the context fills, a new
+//                         conversation begins and the model has forgotten the old one)
 
 mod llmchat;
 
@@ -117,7 +122,10 @@ fn talk(args: &List[String], device: &mut Device, model: &str, temperature: f64,
     seed: u64) i32 {
   var o = voicechat.VoiceOptions.defaults(model);
   o.temperature = temperature;
-  o.ctx = ctx;
+  // a spoken exchange is short (about 75 tokens), so voice mode asks for 2048 positions unless --ctx says otherwise: with the
+  // 8B that is 576 MiB of the GPU's memory back for the three models to share (7.15 GiB of 8 are in use at 4096)
+  o.ctx = 2048usize;
+  match argValue(args, "--ctx") { case is Some { o.ctx = ctx; } case is None {} }
   o.topK = topK;
   o.topP = topP;
   o.seed = seed;
@@ -141,11 +149,11 @@ fn talk(args: &List[String], device: &mut Device, model: &str, temperature: f64,
     }
     case is None {}
   }
-  match argValue(args, "--hangover") {
+  match argValue(args, "--end-silence-ms") {
     case let Some(t) {
       match parseUInt(t.view()) {
         case let Some(x) { o.hangoverMs = u32.from(x); }
-        case is None { say("llmchat: --hangover is not a number of milliseconds\n"); return 2i32; }
+        case is None { say("llmchat: --end-silence-ms is not a number of milliseconds\n"); return 2i32; }
       }
     }
     case is None {}
@@ -172,7 +180,7 @@ fn talk(args: &List[String], device: &mut Device, model: &str, temperature: f64,
   match argValue(args, "--stt-vocab") { case var Some(v) { o.sttVocab = v; } case is None {} }
   match argValue(args, "--tts-dir") { case var Some(v) { o.ttsDir = v; } case is None {} }
   if hasFlag(args, "--no-timings") { o.echoTimings = false; }
-  if hasFlag(args, "--no-warm") { o.keepWarm = false; }
+  if hasFlag(args, "--no-gpu-warm") { o.keepWarm = false; }
   // --audio system | dummy | disk <in.raw> <out.raw>; without it, the real devices
   var i = 0usize;
   while i < args.len() {
