@@ -1,0 +1,34 @@
+// The voiceaudio package (a working name): the microphone and speaker of a spoken conversation, over SDL3's audio
+// streams, with voice activity detection. A program reaches it with 'import voiceaudio' and gets:
+//
+// - Microphone: capture of mono f32 at the rate asked (16 kHz for speech recognition). `read` takes what has
+//   arrived, `pump` feeds it to a Vad.
+// - Vad and VadConfig: an energy detector with an adaptive noise floor and a hangover of silence that ends an
+//   utterance; its result is the Utterance, the samples with a pre-roll and where the speech began and ended.
+// - Speaker: playback of mono f32 at the rate asked (24 kHz for Kokoro) through a queue that `cutOff` empties at
+//   once (barge-in).
+// - Driver: which SDL audio driver, named by the caller on every open (`disk`, `dummy`, or `system`, the real
+//   devices and the only one that makes a sound); see device.cone.
+// - writeRawF32, readRawF32, resampleLinear, loadWavMono: the files the disk driver reads and writes, and WAV
+//   input through audiomixer's decoder.
+//
+//   voiceaudio.cone  this overview and the imports
+//   device.cone      Driver, Microphone, Speaker
+//   vad.cone         VadConfig, Vad, Utterance
+//   files.cone       raw and WAV files, resampling
+//   signals.cone     noise, speech-like voice and tone with known edges, for tests
+//
+// Nothing here runs a thread: SDL's streams are filled and drained by SDL's own audio thread, so a program calls
+// `read` or `pump` from its loop and `queue` from wherever it generates speech, and the stream's lock makes the
+// two safe together. The README holds the model and what was measured.
+
+mod voiceaudio;
+
+import libc;
+import collections use *;
+import thread;
+import time use Duration;
+import path use Path;
+import fs use FsError;
+import sdl;
+import audiomixer use decodeWav, Rng, TAU;

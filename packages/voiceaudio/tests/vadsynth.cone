@@ -1,0 +1,153 @@
+// The voice activity detector against signals whose speech edges are known by construction: a speech-like voice
+// laid at chosen sample indices over a noise bed. The cut points must land within the stated tolerances (the
+// detector speaks in 20 ms frames and keeps a 60 ms run before it calls speech, so the start may be up to 60 ms
+// late and the end up to 40 ms early or late), a pause shorter than the hangover must not split an utterance,
+// a longer one must, a click must be dropped, and a room that turns loud must not stay "speech".
+mod vadsynth;
+
+import testing use *;
+import collections use *;
+import voiceaudio use *;
+
+const RATE = 16000u32;
+
+fn ms(n: u32) usize { usize.from(n) * 16usize }
+
+fn near(got: usize, want: usize, early: usize, late: usize, label: &Array[u8]) bool {
+  let lo = if want > early {want - early} else {0usize};
+  expect(got >= lo && got <= want + late, label)
+}
+
+// Run the whole signal through the detector in blocks of 'block' samples
+fn detect(x: &List[f32], block: usize, vad: &mut Vad) List[Utterance] {
+  var out = List[Utterance].empty();
+  var at = 0usize;
+  while at < x.len() {
+    var n = block;
+    if at + n > x.len() { n = x.len() - at; }
+    vad.push(mem.sliceFromParts[f32]((&x.view()[at] as *f32), n), &mut out);
+    at = at + n;
+  }
+  out
+}
+
+fn main() i32 {
+  // 1.5 s lead, speech 2 s, pause 0.4 s, speech 1 s, pause 1.2 s, speech 1.5 s, tail 1.5 s: two utterances
+  var x = noiseBed(9100u32, RATE, 0.002, 1u32);
+  addInto(&mut x, ms(1500u32), speechLike(2000u32, RATE, 0.05, 1u32).view());
+  addInto(&mut x, ms(3900u32), speechLike(1000u32, RATE, 0.05, 2u32).view());
+  addInto(&mut x, ms(6100u32), speechLike(1500u32, RATE, 0.05, 3u32).view());
+  var vad = Vad.make(VadConfig.standard(RATE));
+  let u = detect(&x, 320usize, &mut vad);
+  expectUInt(u64.from(u.len()), 2u64, "two utterances: the 0.4 s pause does not split, the 1.2 s pause does");
+  if u.len() == 2usize {
+    near(u[0].start, ms(1500u32), 20usize * 16usize, ms(60u32), "first utterance starts at 1.5 s");
+    near(u[0].end, ms(4900u32), ms(40u32), ms(40u32), "first utterance ends at 4.9 s");
+    near(u[1].start, ms(6100u32), 20usize * 16usize, ms(60u32), "second utterance starts at 6.1 s");
+    near(u[1].end, ms(7600u32), ms(40u32), ms(40u32), "second utterance ends at 7.6 s");
+    expect(!u[0].forced && !u[1].forced, "both ended by silence");
+    // the pre-roll: 300 ms of audio before the start, the trail 200 ms after the end
+    expectUInt(u64.from(u[0].start - u[0].offset), u64.from(ms(300u32)), "300 ms of pre-roll");
+    expectUInt(u64.from(u[0].samples.len()), u64.from(u[0].end - u[0].offset + ms(200u32)), "200 ms of trail");
+  }
+
+  // A microphone's DC offset (0.05, as loud as the speech) does not move the cut points
+  var xd = noiseBed(9100u32, RATE, 0.002, 1u32);
+  addInto(&mut xd, ms(1500u32), speechLike(2000u32, RATE, 0.05, 1u32).view());
+  addInto(&mut xd, ms(3900u32), speechLike(1000u32, RATE, 0.05, 2u32).view());
+  addInto(&mut xd, ms(6100u32), speechLike(1500u32, RATE, 0.05, 3u32).view());
+  var i0 = 0usize;
+  { let m = xd.viewMut(); while i0 < m.len { m[i0] = m[i0] + 0.05; i0 = i0 + 1usize; } }
+  var vdc = Vad.make(VadConfig.standard(RATE));
+  let udc = detect(&xd, 320usize, &mut vdc);
+  expectUInt(u64.from(udc.len()), 2u64, "a DC offset leaves two utterances");
+  if udc.len() == 2usize && u.len() == 2usize {
+    expectUInt(u64.from(udc[0].start), u64.from(u[0].start), "with the same start");
+    expectUInt(u64.from(udc[1].end), u64.from(u[1].end), "and the same end");
+  }
+
+  // The same through other block sizes: the answer must not depend on how the samples arrive
+  var vad2 = Vad.make(VadConfig.standard(RATE));
+  let u2 = detect(&x, 1usize, &mut vad2);
+  expectUInt(u64.from(u2.len()), 2u64, "sample at a time: two utterances");
+  if u2.len() == 2usize && u.len() == 2usize {
+    expectUInt(u64.from(u2[0].start), u64.from(u[0].start), "same start whatever the block size");
+    expectUInt(u64.from(u2[1].end), u64.from(u[1].end), "same end whatever the block size");
+  }
+  var vad3 = Vad.make(VadConfig.standard(RATE));
+  let u3 = detect(&x, 4097usize, &mut vad3);
+  expectUInt(u64.from(u3.len()), 2u64, "odd blocks: two utterances");
+  if u3.len() == 2usize && u.len() == 2usize {
+    expectUInt(u64.from(u3[0].start), u64.from(u[0].start), "odd blocks: same start");
+  }
+
+  // A click (30 ms) is dropped; so is a room with nothing in it
+  var c = noiseBed(4000u32, RATE, 0.002, 4u32);
+  addInto(&mut c, ms(1000u32), toneMs(30u32, RATE, 1000., 0.3).view());
+  var vc = Vad.make(VadConfig.standard(RATE));
+  let uc = detect(&c, 320usize, &mut vc);
+  expectUInt(u64.from(uc.len()), 0u64, "a 30 ms click is not an utterance");
+  var quiet = noiseBed(5000u32, RATE, 0.002, 5u32);
+  var vq = Vad.make(VadConfig.standard(RATE));
+  let uq = detect(&quiet, 320usize, &mut vq);
+  expectUInt(u64.from(uq.len()), 0u64, "noise alone is not an utterance");
+  expectUInt(u64.from(vq.starts()), 0u64, "and never starts one");
+
+  // Digital silence, then speech: the floor sits at its lowest and the speech is still found
+  var d = silenceMs(5000u32, RATE);
+  addInto(&mut d, ms(2000u32), speechLike(1000u32, RATE, 0.02, 6u32).view());
+  var vd = Vad.make(VadConfig.standard(RATE));
+  let ud = detect(&d, 320usize, &mut vd);
+  expectUInt(u64.from(ud.len()), 1u64, "speech after digital silence");
+
+  // A quiet talker (rms 0.012, -38 dBFS) over the same bed is still heard
+  var q = noiseBed(5000u32, RATE, 0.002, 7u32);
+  addInto(&mut q, ms(1500u32), speechLike(1500u32, RATE, 0.012, 7u32).view());
+  var vqq = Vad.make(VadConfig.standard(RATE));
+  let uqq = detect(&q, 320usize, &mut vqq);
+  expectUInt(u64.from(uqq.len()), 1u64, "a quiet talker is heard");
+
+  // The room turns loud (rms 0.002 to 0.012, +15.6 dB) at 3 s and stays so; speech at 12 s over the loud room
+  var r = noiseBed(16000u32, RATE, 0.002, 8u32);
+  let loud = noiseBed(13000u32, RATE, 0.012, 9u32);
+  addInto(&mut r, ms(3000u32), loud.view());
+  addInto(&mut r, ms(1000u32), speechLike(1200u32, RATE, 0.06, 8u32).view());
+  addInto(&mut r, ms(12000u32), speechLike(1500u32, RATE, 0.12, 10u32).view());
+  var vr = Vad.make(VadConfig.standard(RATE));
+  let ur = detect(&r, 320usize, &mut vr);
+  expectUInt(u64.from(ur.len()), 3u64, "speech, a noise step that is not speech (it ends once the floor has risen), speech again");
+  if ur.len() == 3usize {
+    near(ur[0].start, ms(1000u32), 20usize * 16usize, ms(60u32), "speech before the step starts at 1 s");
+    expect(ur[1].start >= ms(2980u32) && ur[1].end < ms(5500u32), "the loud room is speech for under 2.5 s after the step, then the floor has risen");
+    near(ur[2].start, ms(12000u32), 20usize * 16usize, ms(60u32), "speech over the loud room starts at 12 s");
+    near(ur[2].end, ms(13500u32), ms(40u32), ms(40u32), "and ends at 13.5 s");
+  }
+
+  // Raising the threshold (while the speaker plays and bleeds into the microphone): sound of rms 0.01 is speech
+  // at scale 1, and is ignored at scale 4 (start threshold 0.025, above its loudest frames), while a talker at rms 0.12 is still heard
+  var b = noiseBed(6000u32, RATE, 0.002, 12u32);
+  addInto(&mut b, ms(1500u32), speechLike(1500u32, RATE, 0.01, 12u32).view());
+  var vb1 = Vad.make(VadConfig.standard(RATE));
+  expectUInt(u64.from(detect(&b, 320usize, &mut vb1).len()), 1u64, "the bleed is speech at scale 1");
+  var vb4 = Vad.make(VadConfig.standard(RATE));
+  vb4.setThresholdScale(4.);
+  expectUInt(u64.from(detect(&b, 320usize, &mut vb4).len()), 0u64, "and is ignored at scale 4");
+  var b2 = noiseBed(6000u32, RATE, 0.002, 13u32);
+  addInto(&mut b2, ms(1500u32), speechLike(1500u32, RATE, 0.12, 13u32).view());
+  var vb5 = Vad.make(VadConfig.standard(RATE));
+  vb5.setThresholdScale(4.);
+  expectUInt(u64.from(detect(&b2, 320usize, &mut vb5).len()), 1u64, "a talker at rms 0.12 is still heard at scale 4");
+
+  // flush cuts an utterance the input ended in
+  var f = noiseBed(3000u32, RATE, 0.002, 11u32);
+  addInto(&mut f, ms(1000u32), speechLike(2000u32, RATE, 0.05, 11u32).view());
+  var vf = Vad.make(VadConfig.standard(RATE));
+  var uf = detect(&f, 320usize, &mut vf);
+  expectUInt(u64.from(uf.len()), 0u64, "speech to the end of the input has not ended yet");
+  expect(vf.speaking(), "the detector is in speech");
+  vf.flush(&mut uf);
+  expectUInt(u64.from(uf.len()), 1u64, "flush ends it");
+  if uf.len() == 1usize { expect(uf[0].forced, "and says it was cut"); }
+
+  done()
+}

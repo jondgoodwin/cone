@@ -1,0 +1,98 @@
+// ======== Sample files: raw f32, WAV, and a linear resampler ========
+//
+// The disk audio driver reads and writes raw f32 little endian samples; WAV files (through audiomixer's decoder)
+// are how speech reaches the program from a file. These are the few conversions between the two worlds.
+
+// Write samples as raw f32 little endian (the disk driver's format)
+pub fn writeRawF32(path: &Path, x: &Array[f32]) Result[void, FsError] {
+  if x.len == 0usize { return fs.writeFile(path, mem.sliceFromParts[u8](null, 0usize)); }
+  fs.writeFile(path, mem.sliceFromParts[u8]((&x[0usize] as *u8), x.len * 4usize))
+}
+
+// Read a raw f32 little endian file
+pub fn readRawF32(path: &Path) Result[List[f32], FsError] {
+  match fs.readFile(path) {
+    case var Ok(s) {
+      let n = s.len() / 4usize;
+      var out = List[f32].empty();
+      out.resize(n, 0.);
+      if n > 0usize {
+        let m = out.viewMut();
+        let bytes = s.viewMut();
+        libc.memcpy((&mut m[0usize] as *u8), (bytes as *u8), n * 4usize);
+      }
+      Ok[List[f32], FsError](out)
+    }
+    case let Error(e) { Error[List[f32], FsError](e) }
+  }
+}
+
+// Samples at rate 'from' as samples at rate 'to', by linear interpolation (the same cheap choice audiomixer makes
+// for pitch; it is plenty for speech going to a recogniser, and the streams SDL converts with are better)
+pub fn resampleLinear(x: &Array[f32], from: u32, to: u32) List[f32] {
+  var out = List[f32].empty();
+  if from == to || x.len == 0usize || from == 0u32 || to == 0u32 {
+    var i = 0usize;
+    while i < x.len { out.push(x[i]); i = i + 1usize; }
+    return out;
+  }
+  let n = x.len * usize.from(to) / usize.from(from);
+  out = List[f32].withCapacity(n);
+  let step = f64.from(from) / f64.from(to);
+  var i = 0usize;
+  while i < n {
+    let pos = f64.from(i) * step;
+    var i0 = usize.from(pos);
+    let frac = f32.from(pos - f64.from(i0));
+    if i0 >= x.len { i0 = x.len - 1usize; }
+    var i1 = i0 + 1usize;
+    if i1 >= x.len { i1 = x.len - 1usize; }
+    out.push(x[i0] * (1. - frac) + x[i1] * frac);
+    i = i + 1usize;
+  }
+  out
+}
+
+// One channel of interleaved samples (the disk driver writes the speaker as stereo: every sample twice)
+pub fn channel(x: &Array[f32], channels: usize, which: usize) List[f32] {
+  var out = List[f32].withCapacity(x.len / channels + 1usize);
+  var i = which;
+  while i < x.len { out.push(x[i]); i = i + channels; }
+  out
+}
+
+// The index of the first sample whose size is above 'thr' (the length when none is)
+pub fn firstAbove(x: &Array[f32], thr: f32) usize {
+  var i = 0usize;
+  while i < x.len {
+    if x[i] > thr || x[i] < -thr { return i; }
+    i = i + 1usize;
+  }
+  x.len
+}
+
+// One past the index of the last sample whose size is above 'thr' (0 when none is)
+pub fn endAbove(x: &Array[f32], thr: f32) usize {
+  var i = x.len;
+  while i > 0usize {
+    if x[i - 1usize] > thr || x[i - 1usize] < -thr { return i; }
+    i = i - 1usize;
+  }
+  0usize
+}
+
+// A WAV file as mono samples at 'rate': channels averaged, resampled when its rate differs
+pub fn loadWavMono(path: &Path, rate: u32) Result[List[f32], String] {
+  match fs.readFile(path) {
+    case let Ok(s) {
+      match decodeWav(s.view()) {
+        case let Ok(snd) {
+          let mono = snd.toMono();
+          Ok[List[f32], String](resampleLinear(mono.samples.view(), mono.rate, rate))
+        }
+        case let Error(e) { Error[List[f32], String](String.from(e.reason.view())) }
+      }
+    }
+    case let Error(e) { Error[List[f32], String](e.message()) }
+  }
+}
