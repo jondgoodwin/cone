@@ -234,3 +234,35 @@ pub fn speechText(text: &Array[u8]) String {
   if !hasWord { return String.empty(); }
   String.fromBytes(result.view())
 }
+
+// Kokoro puts about 0.4 s of silence before a sentence's first sound and 0.5 to 0.7 s after its last (measured on 20
+// sentences), which is 0.4 s of waiting before the first word of a reply and a pause of a second between sentences.
+// This keeps `leadKeep` samples of the quiet before the first sample above `threshold` and `trailKeep` after the last,
+// and drops the rest. A sentence with nothing above the threshold comes back unchanged.
+pub fn trimPads(x: &Array[f32], leadKeep: usize, trailKeep: usize, threshold: f32) List[f32] {
+  var first = x.len;
+  var last = 0usize;
+  var i = 0usize;
+  while i < x.len {
+    var a = x[i];
+    if a < 0.0f { a = 0.0f - a; }
+    if a > threshold {
+      if first == x.len { first = i; }
+      last = i;
+    }
+    i = i + 1usize;
+  }
+  var out = List[f32].empty();
+  if first == x.len {
+    i = 0usize;
+    while i < x.len { out.push(x[i]); i = i + 1usize; }
+    return out;
+  }
+  var from = 0usize;
+  if first > leadKeep { from = first - leadKeep; }
+  var to = last + 1usize + trailKeep;
+  if to > x.len { to = x.len; }
+  i = from;
+  while i < to { out.push(x[i]); i = i + 1usize; }
+  out
+}

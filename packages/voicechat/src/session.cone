@@ -41,13 +41,14 @@ pub struct VoiceOptions {
   pub hangoverMs: u32;        // the silence that ends an utterance
   pub runSeconds: u32;        // 0: until the program is stopped
   pub echoTimings: bool;
+  pub keepWarm: bool;         // work for the GPU while the person speaks, to keep its clock up for the recognition
 
   pub fn defaults(model: &str) VoiceOptions {
     VoiceOptions(String.from(model), 4096usize, 0.7, 20usize, 0.8, 1u64, 400usize, String.from(SYSTEM_LINE),
         String.from("C:\\src\\speech-models\\parakeet-tdt-0.6b-v2.f16.safetensors"),
         String.from("C:\\src\\speech-models\\parakeet-tdt-0.6b-v2.vocab.txt"),
         String.from("C:/src/speech-models/kokoro"), String.from("af_heart"), 1.0f, String.from("system"),
-        String.empty(), String.empty(), String.from("1"), 480u32, 3.0f, 600u32, 0u32, true)
+        String.empty(), String.empty(), String.from("1"), 480u32, 3.0f, 600u32, 0u32, true, true)
   }
 }
 
@@ -159,8 +160,10 @@ fn speakSentence(tts: &mut texttospeech.Speaker, device: &mut Device, voice: &te
   if clean.len() == 0usize { return Ok[bool, String](false); }
   let t0 = Instant.now();
   match tts.speak(device, clean.view(), voice, speed) {
-    case let Ok(samples) {
+    case let Ok(raw) {
       let spent = seconds(Instant.now(), t0);
+      // the silence Kokoro puts at both ends is cut to 80 ms before and 150 ms after (see trimPads)
+      let samples = trimPads(raw.view(), 1920usize, 3600usize, 0.004f);
       out.queue(samples.view());
       out.flush();
       if !stats.spoken {
@@ -179,22 +182,11 @@ fn speakSentence(tts: &mut texttospeech.Speaker, device: &mut Device, voice: &te
   }
 }
 
-// Read what the microphone has into the detector, 3200 samples (200 ms) at a time. `Microphone.pump` hands the detector
-// everything waiting in one block, and a block longer than about 1.6 s (25600 samples, four times the detector's `keep`)
-// makes `Vad.trim` drop samples the detector has not analysed yet, whereupon `Vad.frame` indexes before the start of its
-// history and panics. This loop is blocked for that long while Qwen reads a prompt and Kokoro speaks a sentence, so the
-// blocks are cut here. (Reported to the coordinator; voiceaudio is not changed on this branch.)
+// Read what the microphone has into the detector. This loop is blocked for a second or more at a time while Qwen reads
+// a prompt and Kokoro speaks a sentence, so one call hands the detector that much audio at once (an earlier voiceaudio
+// panicked on a push of more than 1.6 s; it takes any length now and a test pins it).
 fn listen(mic: &mut voiceaudio.Microphone, vad: &mut voiceaudio.Vad, heard: &mut List[voiceaudio.Utterance]) {
-  var more = true;
-  while more {
-    var block = List[f32].empty();
-    let n = mic.read(&mut block, 3200usize);
-    if n == 0usize {
-      more = false;
-    } else {
-      vad.push(block.view(), heard);
-    }
-  }
+  mic.pump(vad, heard);
 }
 
 // Remove the first utterance
@@ -327,7 +319,11 @@ pub fn run(device: &mut Device, o: &VoiceOptions) i32 {
 
   printStr("ready (audio: ");
   printStr(o.audio.view());
-  printStr("). Speak; speech over the reply cuts it off.\n");
+  printStr(", voice ");
+  printStr(o.voice.view());
+  printStr(", speed ");
+  printStr(fmt2(f64.from(o.speed)).view());
+  printStr("). Speak; speech over the reply cuts it off. Ctrl-C ends the program.\n");
   if o.echoTimings {
     printStr("timing: speaker opened ");
     printStr(fmt2(seconds(speakerOpened, micOpened)).view());
@@ -342,6 +338,9 @@ pub fn run(device: &mut Device, o: &VoiceOptions) i32 {
   }
   var running = true;
   let started = Instant.now();
+  var lastWarm = started;
+  var warmth = List[f32].empty();
+  warmth.resize(8000usize, 0.0f);
   var turnNumber = 0usize;
   while running {
     if o.runSeconds > 0u32 && seconds(Instant.now(), started) > f64.from(o.runSeconds) { break; }
@@ -350,7 +349,17 @@ pub fn run(device: &mut Device, o: &VoiceOptions) i32 {
     vad.setThresholdScale(1.0f);
     listen(&mut mic, &mut vad, &mut heard);
     if heard.len() == 0usize {
-      thread.sleep(Duration.fromMillis(10));
+      if o.keepWarm && vad.speaking() && seconds(Instant.now(), lastWarm) >= 0.15 {
+        // The person is talking: a little work keeps the GPU's clock up for the recognition that is about to come
+        // (after a second or two of idle the laptop GPU drops its clock, and Parakeet's 0.1 s becomes 0.3 s)
+        match stt.transcribe(device, warmth.view()) {
+          case is Ok {}
+          case let Error(m) { say(m.view()); say("\n"); break; }
+        }
+        lastWarm = Instant.now();
+      } else {
+        thread.sleep(Duration.fromMillis(10));
+      }
       continue;
     }
     let detected = Instant.now();

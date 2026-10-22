@@ -26,11 +26,13 @@
 //   --audio disk in.raw out.raw   SDL's disk driver: the microphone is a raw f32 file (44.1 kHz mono), the speaker is
 //                         written to one (44.1 kHz stereo); no device, no sound. --audio dummy: silence in, nothing out
 //   --voice-name <v>      a Kokoro voice (af_heart, am_michael, bf_emma, bm_george ...) or a blend: af_heart:0.7,bf_emma:0.3
+//                         (written af_heart:0.7+bf_emma:0.3 in the llmchat.cmd launcher, which splits at commas)
 //   --speed <x>           speech speed, default 1.0
 //   --threshold-scale <k> how much louder than the room speech must be to cut the reply while it plays (default 3;
 //                         1 with a headset)       --hangover <ms>   silence that ends your turn (default 600)
 //   --seconds <n>         stop after n seconds (default: until Ctrl-C)      --max-tokens <n>   longest reply (400)
 //   --no-timings          do not print the per-turn timing lines
+//   --no-warm             do not run light work on the GPU while you speak (it keeps the GPU's clock up for Parakeet)
 //   --stt-model <f> --stt-vocab <f> --tts-dir <d>   where Parakeet's and Kokoro's converted files are
 //                         (default C:\src\speech-models)      --temp, --ctx, --top-k, --top-p, --seed as above
 
@@ -119,7 +121,8 @@ fn talk(args: &List[String], device: &mut Device, model: &str, temperature: f64,
   o.topK = topK;
   o.topP = topP;
   o.seed = seed;
-  match argValue(args, "--voice-name") { case var Some(v) { o.voice = v; } case is None {} }
+  // a blend is written af_heart:0.7,bf_emma:0.3, or with + for the comma (a .cmd file splits its arguments at commas)
+  match argValue(args, "--voice-name") { case var Some(v) { o.voice = v; o.voice.replaceByte('+', ','); } case is None {} }
   match argValue(args, "--speed") {
     case let Some(t) {
       match parseFloat(t.view()) {
@@ -169,6 +172,7 @@ fn talk(args: &List[String], device: &mut Device, model: &str, temperature: f64,
   match argValue(args, "--stt-vocab") { case var Some(v) { o.sttVocab = v; } case is None {} }
   match argValue(args, "--tts-dir") { case var Some(v) { o.ttsDir = v; } case is None {} }
   if hasFlag(args, "--no-timings") { o.echoTimings = false; }
+  if hasFlag(args, "--no-warm") { o.keepWarm = false; }
   // --audio system | dummy | disk <in.raw> <out.raw>; without it, the real devices
   var i = 0usize;
   while i < args.len() {
