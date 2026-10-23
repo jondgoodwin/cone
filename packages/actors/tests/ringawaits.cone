@@ -1,0 +1,157 @@
+// An await storm over the mailbox ring. The awaiting actor's reply is not a
+// node allocated when it awaits: whoever answers claims a slot in the
+// awaiting actor's own ring and writes the resume record and the value into
+// it (REPLIES in the package's header). Eight askers each make 3,000 rounds of
+// awaits on one squarer, from the workers at once, of four kinds:
+//
+// - a number (8 bytes, which fits a slot's payload),
+// - a pair of numbers (16 bytes, which fits the ring of an actor whose
+//   messages are large, and for the small 'Mini' does too),
+// - a wide record (80 bytes, larger than any slot here, so the answer is
+//   boxed, a box freed by the awaiting actor's worker after its second half
+//   has taken the value),
+// - and futures: two requests made at once and kept ('let a = ...'), awaited
+//   later, one of which has often arrived by then and one often not.
+//
+// Every value must come back to the await that asked, once, and every sum
+// must agree. Then nothing is left: no future (liveFutures), no segment
+// (liveSegments), and the allocations the runtime made for messages are
+// counted by what was boxed and parked, not by what was sent.
+
+mod ringawaits;
+
+import testing use *;
+import actors;
+
+const askers = 8u64;
+const rounds = 3000u64;
+
+struct Wide {
+  pub v: Array[u64, 10];
+}
+
+struct Pair {
+  pub a: u64;
+  pub b: u64;
+}
+
+struct Sums {
+  pub plain: Atomic[u64];
+  pub pairs: Atomic[u64];
+  pub wide: Atomic[u64];
+  pub futures: Atomic[u64];
+  pub mini: Atomic[u64];
+}
+
+let sums: Sums;
+
+fn @initpure init() {
+  sums = Sums(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
+
+actor Squarer {
+  pub async fn sq(self, n: u64) u64 {n * n}
+  pub async fn pair(self, n: u64) Pair {Pair(n, n + 1u64)}
+  pub async fn wide(self, n: u64) Wide {
+    Wide([n, n + 1u64, n + 2u64, n + 3u64, n + 4u64, n + 5u64, n + 6u64, n + 7u64, n + 8u64, n + 9u64])
+  }
+}
+
+actor Asker {
+  sq: Squarer;
+  fn init(self: &new, sq: Squarer) {
+    *self = Self(sq: sq);
+  }
+
+  pub async fn storm(self, rounds: u64, base: u64) {
+    var i = 0u64;
+    while i < rounds {
+      let n = base + i;
+      let s = await sq.sq(n);
+      sums.plain.add(s);
+      let p = await sq.pair(n);
+      sums.pairs.add(p.a + p.b);
+      let w = await sq.wide(n);
+      var t = 0u64;
+      var k = 0usize;
+      while k < 10usize {
+        t = t + w.v[k];
+        k = k + 1usize;
+      }
+      sums.wide.add(t);
+      let fa = sq.sq(n);
+      let fb = sq.sq(n + 1u64);
+      let a = await fa;
+      let b = await fb;
+      sums.futures.add(a + b);
+      i = i + 1u64;
+    }
+  }
+}
+
+// An actor with the smallest messages there are: its slots are the smallest
+// too, so a pair fits and a wide record does not
+actor Mini {
+  sq: Squarer;
+  fn init(self: &new, sq: Squarer) {
+    *self = Self(sq: sq);
+  }
+
+  pub async fn go(self, n: u64) {
+    let p = await sq.pair(n);
+    sums.mini.add(p.a + p.b);
+    let w = await sq.wide(n);
+    sums.mini.add(w.v[9usize]);
+  }
+}
+
+fn main() i32 {
+  initAll();
+  var plain = 0u64;
+  var pairs = 0u64;
+  var wide = 0u64;
+  var futs = 0u64;
+  var mini = 0u64;
+  {
+    let sq = Squarer();
+    var crew: Array[Asker, 8] = [Asker(sq), Asker(sq), Asker(sq), Asker(sq), Asker(sq), Asker(sq), Asker(sq), Asker(sq)];
+    var k = 0usize;
+    while k < 8usize {
+      crew[k].storm(rounds, u64.from(k) * 100000u64);
+      k = k + 1usize;
+    }
+    let m = Mini(sq);
+    var j = 0u64;
+    while j < 500u64 {
+      m.go(j);
+      mini = mini + (j + j + 1u64) + (j + 9u64);
+      j = j + 1u64;
+    }
+    actors.waitUntilIdle();
+    k = 0usize;
+    while k < 8usize {
+      var i = 0u64;
+      while i < rounds {
+        let n = u64.from(k) * 100000u64 + i;
+        plain = plain + n * n;
+        pairs = pairs + (n + n + 1u64);
+        wide = wide + (n * 10u64 + 45u64);
+        futs = futs + n * n + (n + 1u64) * (n + 1u64);
+        i = i + 1u64;
+      }
+      k = k + 1usize;
+    }
+  }
+  finalAll();
+  expectUInt(sums.plain.load(), plain, "every number came back to its await once");
+  expectUInt(sums.pairs.load(), pairs, "every pair came back to its await once");
+  expectUInt(sums.wide.load(), wide, "every wide record, boxed, came back to its await once");
+  expectUInt(sums.futures.load(), futs, "every future, arrived or parked, was opened once");
+  expectUInt(sums.mini.load(), mini, "the smallest actor's replies, pairs and wide ones, agree");
+  expectUInt(u64.from(actors.liveFutures()), 0u64, "no future left");
+  expectUInt(u64.from(actors.liveSegments()), 0u64, "no segment left");
+  expect(actors.messageAllocs() >= askers * rounds, "the wide records were boxed: an allocation each at least");
+  expect(actors.messageAllocs() < askers * rounds * 6u64, "and the numbers, pairs and sends were not: well under one allocation a message");
+  done()
+}

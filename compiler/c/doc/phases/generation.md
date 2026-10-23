@@ -1551,7 +1551,8 @@ the call the handle's second method for it, whose last argument is the
 request's envelope (`AwaitReplyNode`). The envelope is in the message, never
 in the method's parameters; what the author wrote is unchanged. The seam's
 record waits in the awaiting actor's **pending table**, `Pending`, a hidden
-field of its state, and the reply's dispatch calls the second half.
+field of its state, and the reply, a slot in the awaiting actor's mailbox ring,
+is resumed by the actors package, which calls the second half.
 
 - **The envelope** (`genlAwaitReply`) is generated where it is passed, before
   the seam, since the request carries the record's id. So the seam is laid out
@@ -1563,24 +1564,27 @@ field of its state, and the reply's dispatch calls the second half.
   the slot's index is the record's **id**, a plain index with no generation.
   The actor's generated
   `<Actor>.replyid'` (or `<Actor>.reply'`, where the record is empty) makes the
-  envelope, an `actors.Reply`: it takes one count of the awaiting actor, so
-  that it cannot die while the reply is owed, and allocates the reply's mailbox
-  node, with room after the message for the value returned, aligned to it; the
-  node's message is already the actor's own resume variant, naming the seam's
-  **resume function** (the tag) and the id, with where the value will be.
+  envelope, an `actors.Reply` (one call of `actors.replyFor`): it takes one
+  count of the awaiting actor, so that it cannot die while the reply is owed,
+  and holds the seam's **resume function** (the tag), the id, and the size of
+  the value awaited. It allocates nothing.
 - **The seam** moves its record into the slot's block (`parked`) and returns.
-  The reply cannot be dispatched before then: it comes to this actor's
+  The reply cannot be resumed before then: it comes to this actor's
   mailbox, which runs one message at a time.
-- **The answer.** The actor answering writes its value where the envelope says
-  and pushes the node (`actors.answerNow`, `answerAt`, `answered`), knowing
-  nothing of the awaiting actor's type. The count the envelope held becomes
-  the scheduler's owner when the push finds the actor idle, as a send's would.
+- **The answer.** The actor answering claims a slot in the awaiting actor's
+  mailbox ring and writes the resume function, the id and the value into it
+  (the value in a box of its own where it is too large for the slot's payload),
+  then publishes it (`actors.answerNow`, `answerAt`, `answered`), knowing
+  nothing of the awaiting actor's type. `answerTo` claims the slot before the
+  value is written, so the compiled code writes into it. The count the
+  envelope held becomes the scheduler's owner when the publication finds the
+  actor idle, as a send's would.
 - **The resume function**, `<method>'<n>.resume(state, [id,] data)`
-  (`genlSeamResume`), is what the reply's dispatch arm calls
-  (`actors.resume`, `resumeId`): it takes the record out of the table at id,
+  (`genlSeamResume`), is what the actors package calls when its worker reaches
+  the reply's slot (`actors.resume`, `resumeId`): it takes the record out of the table at id,
   frees its block, and calls the second half with the record and the value,
-  both moved. **An empty record has no slot, no id and no lookup**: its resume
-  variant and resume function take none.
+  both moved. **An empty record has no slot, no id and no lookup**: its
+  envelope and resume function take none.
 
 A behaviour that returns a value and holds an `await` answers its own request
 whichever half returns its value. The request's envelope waits, while the
@@ -1620,14 +1624,15 @@ whichever way the behaviour goes on; the future is moved into a slot of its
 own, and `actors.futureReady` asks whether it has its ending already. If it
 has, the behaviour goes on **where it stands**: no record, no envelope, no
 return to the dispatcher, the code after the seam reached from here. If not,
-the envelope is made as for a message, its data room for a waiter (the
-future's reference, a link, the actor awaiting and the node), and handed to
-`actors.futureRegister` with the future, which parks the envelope's node on
-the future's waiter list with one compare-and-swap, or finds the list closed
-because the future has its ending by now. Parked, the record moves into its
-slot and the method returns, as at any seam; the future pushes the node when
-its value arrives, and the resume function opens it. Abandoned instead, the
-future drops the node, as an envelope dropped unanswered is, so the record
+the envelope is made as for a message, and handed to
+`actors.futureRegister` with the future, which allocates a waiter (the
+future's reference, a link, the actor awaiting and its resume function and
+id) and puts it on the future's waiter list with one compare-and-swap, or
+finds the list closed because the future has its ending by now. Parked, the
+record moves into its slot and the method returns, as at any seam; the future
+publishes a reply slot in the awaiting actor's mailbox when its value arrives,
+carrying the reference, and the resume function opens it. Abandoned instead,
+the future drops the waiter, as an envelope dropped unanswered is, so the record
 stays parked until its actor's death drops it ("An abandoned record"). Not parked, the slot
 reserved for the record is given back, its block freed with nothing in it,
 and the behaviour goes on where it stands, as above. **Opening the future**

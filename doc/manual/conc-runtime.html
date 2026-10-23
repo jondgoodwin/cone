@@ -94,9 +94,16 @@ at least 1002 messages handled so far
 		silently dropped, and no actor still alive is finalized.</p>
 
 	<h3 id="how-it-works">How the scheduler works</h3>
-	<p>A mailbox is Vyukov's intrusive queue of many senders and one receiver: a send is one atomic exchange and one store;
-		the worker running the actor takes messages with no read-modify-write; and a mark on the mailbox says the actor is
-		idle, so the send that finds it so queues the actor. Each worker has a run queue of its own, and there is one shared
+	<p>A mailbox is a ring of fixed-size slots for many senders and one receiver, grown in linked segments: a send claims
+		the next position with one atomic add, writes the message into its slot in place, and publishes it with one
+		exchange, and it allocates nothing (an await's reply is written into a slot of the awaiting actor's own ring when it
+		is answered, so that allocates nothing either). The worker running the actor takes the slots in order and never waits
+		for a sender that has claimed a slot and not yet published it: it stops, and the sender's publication schedules the
+		actor again. A drained segment is reused as soon as no sender can reach it, so a mailbox with a steady stream into it
+		stops allocating once it has filled. A mark on the mailbox says the actor is idle, so the send that finds it so queues
+		the actor. The mailbox counts what it holds (<span class="pre">actors.mailboxDepth</span>,
+		<span class="pre">mailboxHighWater</span>, <span class="pre">mailboxSegments</span>), and
+		<span class="pre">mailboxTooFull</span> answers against a limit; nothing mutes a sender yet. Each worker has a run queue of its own, and there is one shared
 		inject queue: an actor made runnable by a send from a worker is queued on that worker, one made runnable by any other
 		thread on the inject queue. A worker with nothing of its own takes a share of the inject queue, then steals half of
 		another worker's queue. An idle worker parks on the <a href="conc-primitives.html#futex">futex</a>, and is woken, one
