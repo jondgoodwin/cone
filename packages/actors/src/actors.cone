@@ -731,6 +731,9 @@ struct Extra {
   pub pool: *Seg;
   pub poolBytes: u32;      // the bytes of the segments in the pool
   pub spareBytes: u32;     // the bytes of the segments in the spare places (atomic: the consumer adds what it puts, a sender takes its away)
+  pub small: u32;          // the slots of a small segment, and the floor in bytes, for this mailbox's slot size: worked out once, for atRest
+  pub floor: u32;
+  pub prevHigh: u32;       // the high-water mark the previous rest left (atRest)
   pub scanSeg: *Seg;
   pub scanPos: u64;
   pub spares: Array[*Seg, 16];
@@ -1229,6 +1232,8 @@ fn retire(h: *Header, x: *Seg, nx: *Seg) {
     if e as usize == 0usize {
       die("actors: out of memory for a mailbox");
     }
+    (*e).small = u32.from(smallSlots(h));
+    (*e).floor = u32.from(keepFloor(h));
     mem.atomicStore[*Extra](&(*h).extra as **Extra, e, MemOrder.Release);
   }
   if (*e).retHead as usize == 0usize {
@@ -1402,42 +1407,67 @@ fn reclaim(h: *Header) {
 // ---- coming to rest ----
 
 // The worker running h's actor has taken everything and nothing is claimed
-// beyond it: before the mailbox is marked idle, what it holds is given back.
-// An idle mailbox with a big ring is memory an actor that is not working holds
-// for nothing, and with a great many actors it is most of the memory. So
-// (1) the high-water mark halves, so that the keep budget (keepBudget)
-// follows recent use and not the all-time peak; (2) the drained segments that
-// can be reused are (reclaim), and then what is kept is trimmed to the floor
-// (trimKept), two small segments, the spare a send past the segment's end will
-// want and the one after it; and (3) if the segment the consumer is in is larger than a small one
-// its remaining slots are given up and the ring goes on in a small segment
-// (shrinkChain). All of it is the consumer's, and nothing in it makes a sender
-// wait: a send that claims a position meanwhile is dealt with where the mailbox
-// is marked idle (mailMarkIdle), and a trim only frees segments no sender can
-// reach. A mailbox that is never quiet never gets here, and keeps what its
-// stream needs; one that rests between every message has only small segments
-// and the check costs a few loads.
+// beyond it: before the mailbox is marked idle, what it holds is given back,
+// by stages, so that a mailbox that falls quiet for a moment in a stream does
+// not lose what the stream needs, and one that falls quiet for good loses it
+// in two rests.
+//
+// - The high-water mark halves at every rest, so that the keep budget
+//   (keepBudget) follows recent use and not the all-time peak.
+// - An actor that never drained a segment, or whose ring is in a small segment
+//   with nothing kept above the floor (two small segments), has nothing to
+//   give back: the usual case of an actor passing messages back and forth. It
+//   returns at once, with no reclaim and no trim.
+// - A rest with GROWTH since the last one (the high-water mark before halving
+//   is higher than the previous rest left it: a turn of this mailbox saw a
+//   deeper queue) trims what is kept down to the budget (keepBudget) only, and
+//   goes no further: a stream that drains for a moment keeps most of what it
+//   will want again.
+// - A CALM rest (the mark before halving no higher than the previous rest left
+//   it: nothing deeper happened since) trims what is kept to the floor, and, if
+//   the segment the consumer is in is larger than a small one, gives up its
+//   remaining slots and goes on in a small segment (shrinkChain). So a burst
+//   leaves its ring for the first rest and loses it at the second, which is
+//   one more rest than the actor's next message.
+//
+// All of it is the consumer's, and nothing in it makes a sender wait: a send
+// that claims a position meanwhile is dealt with where the mailbox is marked
+// idle (mailMarkIdle), and a trim only frees segments no sender can reach. A
+// mailbox that is never quiet never gets here.
 fn atRest(h: *Header) {
-  if (*h).high != 0u32 {
-    (*h).high = (*h).high / 2u32;
+  let pre = (*h).high;
+  if pre != 0u32 {
+    (*h).high = pre / 2u32;
+  }
+  let e = ldExtra(h);
+  if e as usize == 0usize {
+    return;
   }
   let x = ldSeg(&(*h).cur as **Seg);
-  if x as usize == 0usize {
+  let low = (*x).count <= (*e).small;
+  let kept = keptBytes(e);
+  let floor = usize.from((*e).floor);
+  let calm = pre <= (*e).prevHigh;
+  (*e).prevHigh = (*h).high;
+  if low && kept <= floor {
     return;
   }
   // (the turn that ended has reclaimed what can be reused: runBatch)
-  var e = ldExtra(h);
-  if e as usize != 0usize && keptBytes(e) > keepFloor(h) {
-    trimKept(h, e);
+  if !calm {
+    let budget = keepBudget(h);
+    if kept > budget {
+      trimKept(h, e, budget, false);
+    }
+    return;
   }
-  if usize.from((*x).count) > smallSlots(h) {
+  if kept > floor {
+    trimKept(h, e, floor, true);
+  }
+  if !low {
     shrinkChain(h);
-    e = ldExtra(h);
-    if e as usize != 0usize {
-      reclaim(h);
-      if keptBytes(e) > keepFloor(h) {
-        trimKept(h, e);
-      }
+    reclaim(h);
+    if keptBytes(e) > floor {
+      trimKept(h, e, floor, true);
     }
   }
 }
@@ -1447,13 +1477,12 @@ fn keptBytes(e: *Extra) usize {
   usize.from((*e).poolBytes) + usize.from(mem.atomicLoad[u32](&(*e).spareBytes as *u32, MemOrder.Relaxed))
 }
 
-// Free what is kept (the spare places and the pool) beyond the floor, the
-// small segments first kept: those with more slots than a small one go at
-// once. A spare is taken out of its place with an exchange, as a sender takes
-// one, so a sender and this never take the same.
-fn trimKept(h: *Header, e: *Extra) {
-  let small = u32.from(smallSlots(h));
-  let floor = keepFloor(h);
+// Free what is kept (the spare places and the pool) beyond 'limit' bytes; with
+// 'smallOnly' keep only small segments, those with more slots than a small one
+// going at once. A spare is taken out of its place with an exchange, as a
+// sender takes one, so a sender and this never take the same.
+fn trimKept(h: *Header, e: *Extra, limit: usize, smallOnly: bool) {
+  let small = (*e).small;
   var kept = 0usize;
   var i = 0usize;
   while i < spareCount {
@@ -1462,7 +1491,7 @@ fn trimKept(h: *Header, e: *Extra) {
       if y as usize != 0usize {
         let bytes = segBytesOf(h, (*y).count);
         mem.atomicSub[u32](&(*e).spareBytes as *u32, u32.from(bytes), MemOrder.Relaxed);
-        if (*y).count <= small && kept + bytes <= floor {
+        if (!smallOnly || (*y).count <= small) && kept + bytes <= limit {
           kept = kept + bytes;
           keepSpare(h, y);
         } else {
@@ -1478,7 +1507,7 @@ fn trimKept(h: *Header, e: *Extra) {
   while x as usize != 0usize {
     let nx = *retNext(x);
     let bytes = segBytesOf(h, (*x).count);
-    if (*x).count <= small && kept + bytes <= floor {
+    if (!smallOnly || (*x).count <= small) && kept + bytes <= limit {
       kept = kept + bytes;
       *retNext(x) = (*e).pool;
       (*e).pool = x;

@@ -102,8 +102,17 @@ fn main() i32 {
     }
     actors.waitUntilIdle();
     expectUInt(handled.load(), 500u64 * burst, "every message of every burst taken");
+    let held1 = actors.liveSegmentBytes() / 500usize;
+    expect(held1 <= 65536usize, "after one rest, 500 actors that took a burst hold at most 64 KB an actor (the budget, and the ring they are in)");
+    // a second rest, with nothing deeper between: one more message each
+    i = 0usize;
+    while i < 500usize {
+      crowd[i].take(0u64);
+      i = i + 1usize;
+    }
+    actors.waitUntilIdle();
     let held = actors.liveSegmentBytes() / 500usize;
-    expect(held <= 8192usize, "500 quiet actors that took a burst of 300 hold at most 8 KB an actor");
+    expect(held <= 8192usize, "after the second rest, 500 quiet actors that took a burst of 300 hold at most 8 KB an actor");
     expect(held >= 100usize, "...and still the segment the ring is in");
     base = handled.load();
   }
@@ -128,8 +137,14 @@ fn main() i32 {
     }
     actors.waitUntilIdle();
     expectUInt(handled.load() - base, 100u64 * burst, "every big message taken");
+    i = 0usize;
+    while i < 100usize {
+      crowd[i].take(big(0u64));
+      i = i + 1usize;
+    }
+    actors.waitUntilIdle();
     let held = actors.liveSegmentBytes() / 100usize;
-    expect(held <= 12288usize, "100 quiet actors with messages of 900 bytes that took a burst hold at most 12 KB an actor");
+    expect(held <= 12288usize, "after the second rest, 100 quiet actors with messages of 900 bytes that took a burst hold at most 12 KB an actor");
     expect(held >= 1000usize, "...and still the segment the ring is in");
     base = handled.load();
   }
@@ -140,6 +155,7 @@ fn main() i32 {
     let s = Small();
     var worst = 0usize;
     var worstSegs = 0usize;
+    var worstOne = 0usize;
     var over = 0u64;
     var round = 0u64;
     while round < 400u64 {
@@ -149,6 +165,10 @@ fn main() i32 {
         j = j + 1u64;
       }
       actors.waitUntilIdle();
+      let afterOne = actors.liveSegmentBytes();
+      if afterOne > worstOne {worstOne = afterOne;}
+      s.take(0u64);
+      actors.waitUntilIdle();
       let bytes = actors.liveSegmentBytes();
       let segs = actors.liveSegments();
       if bytes > 8192usize {over = over + 1u64;}
@@ -156,7 +176,8 @@ fn main() i32 {
       if segs > worstSegs {worstSegs = segs;}
       round = round + 1u64;
     }
-    expectUInt(handled.load() - base, 400u64 * burst, "the 400 bursts, every message taken");
+    expectUInt(handled.load() - base, 400u64 * (burst + 1u64), "the 400 bursts and their pings, every message taken");
+    expect(worstOne <= 131072usize, "after the first rest of a burst, at most 128 KB (a runaway has no bound)");
     expect(over <= 8u64, "after 392 or more of the 400 rests the actor holds at most 8 KB");
     expect(worst <= 20480usize, "after every rest, at most 20 KB (a rest the burst's last sends came into holds a few small segments more)");
     expect(worstSegs <= 6usize, "...in at most 6 segments");
