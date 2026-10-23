@@ -1,0 +1,32 @@
+// Interrupt: Ctrl-C for a loop that never asks SDL for events. SDL's own handler turns SIGINT into an SDL_EVENT_QUIT, so the
+// test pushes that event (the same one) after starting the dummy driver's audio, which starts SDL's events, and checks that
+// `requested` is false before and true after, and stays true. No signal is sent and no device other than the dummy opens.
+// Standard input in a test run is not a console, so the console half (the flag that makes Ctrl-C a key) is left alone, which
+// `stop` must tolerate; a Ctrl-C by console control event and by key are tested by the lane's harness, with a child process in a
+// console of its own.
+mod interrupttest;
+
+import testing use *;
+import collections use *;
+import voiceaudio use *;
+import sdl;
+
+fn main() i32 {
+  let driver = Driver.dummy();
+  var mic = match Microphone.open(&driver, 16000u32) {
+    case var Ok(m) { m }
+    case let Error(e) { require(false, e.message.view()); return 1i32; }
+  };
+  var it = Interrupt.start();
+  expect(!it.requested(), "nothing asked: no request");
+  expect(!it.requested(), "and still none");
+  var e = sdl.Event.empty();
+  e.type = sdl.EVENT_QUIT;
+  expect(sdl.PushEvent(&mut e), "a quit event is pushed");
+  expect(it.requested(), "the quit event is a request");
+  expect(it.requested(), "and the request stays");
+  it.stop();
+  it.stop();
+  mic.close();
+  done()
+}
