@@ -1,0 +1,137 @@
+// A push of any length: the detector must give the same utterances whether the samples arrive 320 at a time or in
+// one call of 2 s, 5 s, 30 s or 40 s (the last holding an utterance past the 30 s cap), and the microphone's
+// `pump` after a stall (the program did not read for a while, so a lot waited in the stream) must too. A push
+// longer than the detector's history window once panicked in `trim`.
+mod vadpush;
+
+import testing use *;
+import collections use *;
+import path use Path;
+import fs;
+import thread;
+import time use Duration;
+import voiceaudio use *;
+
+const RATE = 16000u32;
+
+fn ms(n: u32) usize { usize.from(n) * 16usize }
+
+fn detect(x: &List[f32], block: usize, vad: &mut Vad) List[Utterance] {
+  var out = List[Utterance].empty();
+  var at = 0usize;
+  while at < x.len() {
+    var n = block;
+    if at + n > x.len() { n = x.len() - at; }
+    vad.push(mem.sliceFromParts[f32]((&x.view()[at] as *f32), n), &mut out);
+    at = at + n;
+  }
+  out
+}
+
+// The same signal in blocks of 320 and in 'block' samples: the same utterances to the sample
+fn same(x: &List[f32], block: usize, label: &Array[u8]) {
+  var va = Vad.make(VadConfig.standard(RATE));
+  let a = detect(x, 320usize, &mut va);
+  var vb = Vad.make(VadConfig.standard(RATE));
+  let b = detect(x, block, &mut vb);
+  var ok = a.len() == b.len();
+  var i = 0usize;
+  while ok && i < a.len() {
+    if a[i].start != b[i].start || a[i].end != b[i].end || a[i].offset != b[i].offset || a[i].forced != b[i].forced || a[i].samples.len() != b[i].samples.len() { ok = false; }
+    i = i + 1usize;
+  }
+  expect(ok, label);
+  expect(a.len() >= 1usize, "and there was something to find");
+  expectFloat(f64.from(va.noiseFloor()), f64.from(vb.noiseFloor()), 0.0000001, "with the same floor at the end");
+}
+
+fn signal(totalMs: u32) List[f32] {
+  var x = noiseBed(totalMs, RATE, 0.002, 31u32);
+  addInto(&mut x, ms(1500u32), speechLike(1500u32, RATE, 0.05, 31u32).view());
+  if totalMs > 12000u32 { addInto(&mut x, ms(9000u32), speechLike(2500u32, RATE, 0.05, 32u32).view()); }
+  if totalMs > 26000u32 { addInto(&mut x, ms(20000u32), speechLike(4000u32, RATE, 0.05, 33u32).view()); }
+  x
+}
+
+fn saved(path: &Path, x: &List[f32]) bool {
+  var ok = false;
+  match writeRawF32(path, x.view()) {
+    case let Ok(u) { ok = true; }
+    case let Error(e) {}
+  }
+  ok
+}
+
+fn main() i32 {
+  // one push of 2 s, 5 s, 30 s: the whole signal in a single call
+  var x2 = signal(4000u32);
+  same(&x2, ms(2000u32), "a push of 2 s");
+  var x5 = signal(8000u32);
+  same(&x5, ms(5000u32), "a push of 5 s");
+  var x30 = signal(33000u32);
+  same(&x30, x30.len(), "a push of the whole 33 s");
+  var xb = signal(8000u32);
+  same(&xb, xb.len(), "a push of the whole 8 s");
+
+  // an utterance past the 30 s cap, in one push of 40 s and in blocks
+  var xc = noiseBed(40000u32, RATE, 0.002, 34u32);
+  addInto(&mut xc, ms(2000u32), speechLike(34000u32, RATE, 0.05, 34u32).view());
+  same(&xc, xc.len(), "a push of 40 s with 34 s of speech: cut at the cap, then the rest");
+  var vc = Vad.make(VadConfig.standard(RATE));
+  let uc = detect(&xc, xc.len(), &mut vc);
+  expect(uc.len() >= 2usize && uc[0].forced, "the first piece was cut at the cap");
+
+  // pump after a stall: 8 s of "microphone" file, not read for 1.5 s, then one pump takes it all
+  var f = signal(8000u32);
+  let f44 = resampleLinear(f.view(), RATE, DISK_RATE);
+  let inPath = Path.from("voiceaudio-test-stall.raw");
+  let outPath = Path.from("voiceaudio-test-stall-out.raw");
+  require(saved(&inPath, &f44), "the stall file is written");
+  var viaBlocks = List[Utterance].empty();
+  {
+    // the reference: this file as read in small steps
+    let drv = Driver.disk("voiceaudio-test-stall.raw", "voiceaudio-test-stall-out.raw", "0.05");
+    match Microphone.open(&drv, RATE) {
+      case var Ok(mic) {
+        var vad = Vad.make(VadConfig.standard(RATE));
+        var rounds = 0;
+        while mic.samplesTaken() < ms(7500u32) && rounds < 3000 {
+          var buf = List[f32].empty();
+          let n = mic.read(&mut buf, 320usize);
+          if n > 0usize { vad.push(buf.view(), &mut viaBlocks); } else { thread.sleep(Duration.fromMillis(2)); }
+          rounds = rounds + 1;
+        }
+        mic.close();
+      }
+      case let Error(e) { require(false, "the disk microphone opens"); }
+    }
+  }
+  {
+    let drv = Driver.disk("voiceaudio-test-stall.raw", "voiceaudio-test-stall-out.raw", "0.05");
+    match Microphone.open(&drv, RATE) {
+      case var Ok(mic) {
+        var vad = Vad.make(VadConfig.standard(RATE));
+        thread.sleep(Duration.fromMillis(1500));
+        expect(mic.available() > ms(5000u32), "more than 5 s waited in the stream");
+        var out = List[Utterance].empty();
+        let n = mic.pump(&mut vad, &mut out);
+        expect(n > ms(5000u32), "one pump took it all");
+        mic.close();
+        expect(out.len() >= 1usize, "and found speech");
+        // what was pumped is a prefix of what the small steps gave: the same utterances while both saw the
+        // same samples
+        var ok = out.len() >= 1usize && viaBlocks.len() >= 1usize;
+        var i = 0usize;
+        while ok && i < out.len() && i < viaBlocks.len() {
+          if out[i].start != viaBlocks[i].start || out[i].end != viaBlocks[i].end { ok = false; }
+          i = i + 1usize;
+        }
+        expect(ok, "the stalled pump finds the same cut points as small steps");
+      }
+      case let Error(e) { require(false, "the stalled disk microphone opens"); }
+    }
+  }
+  fs.removeFile(&inPath);
+  fs.removeFile(&outPath);
+  done()
+}

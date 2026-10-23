@@ -878,6 +878,38 @@ fn main() i32 {
 	<p>prints <span class="pre">258 111 259 hello&lt;|end|&gt;</span>: <span class="pre">hell</span> is one token, the
 		<span class="pre">o</span> is the byte 111, and the special token is matched whole.</p>
 
+	<h3 id="speechpkg">Speech</h3>
+	<table border="1" cellpadding="4" cellspacing="0">
+	<tr><th>Package</th><th>What it is for</th></tr>
+	<tr><td><span class="pre">safetensors</span><br><span class="pre">import safetensors use *;</span></td>
+		<td>Hugging Face's safetensors files, the container that most open models' weights come in: the JSON
+		header's tensor names, dtypes (F32, F16, BF16, I32), shapes and byte ranges, each checked against the file; a
+		file mapped with <span class="pre">fs.mapFile</span>; a tensor's values widened to f32. Written in Cone, with
+		no GPU.</td></tr>
+	<tr><td><span class="pre">speechtotext</span><br><span class="pre">import speechtotext use *;</span></td>
+		<td>Speech recognition with NVIDIA's Parakeet TDT 0.6B v2 (English, with capitals and punctuation), on the
+		GPU: 16 kHz mono samples in, text out. The log-mel front end on the CPU, a 24-layer FastConformer encoder as
+		one GPU job over <span class="pre">llmkernels</span> and kernels of its own, and a greedy token-and-duration
+		transducer decoder. Reads the weights from a safetensors file made from NVIDIA's checkpoint by a converter
+		kept outside the repository. Needs a Vulkan 1.3 device made with
+		<span class="pre">ComputeRequest(largeBuffers: true)</span>.</td></tr>
+	</table>
+
+	<h3 id="speechtotext">speechtotext</h3>
+	<p><span class="pre">Parakeet.open(&amp;mut device, &amp;modelPath, &amp;vocabPath)</span> puts the model on the device (1.2 GB
+		with the half-precision weights, 2.5 GB with the single-precision ones) and answers a
+		<span class="pre">Result[Parakeet, String]</span>; <span class="pre">transcribe(&amp;mut device, samples)</span> takes the
+		samples of one utterance at 16 kHz and answers a <span class="pre">Transcript</span>: the
+		<span class="pre">text</span>, the token ids, the encoder frame (80 ms) each token was emitted at, and the time each
+		stage took. <span class="pre">resampleTo16k</span> and <span class="pre">soundTo16k</span> bring a decoded WAV of
+		any rate and channel count to 16 kHz mono. On the 16 LibriSpeech test-clean clips it was checked on, the text equals
+		NeMo's, the reference implementation's, character for character, with either weight precision; so do the token ids and
+		every step of the decode; the encoder's output and the decoder's logits are within 3e-5 (single precision) and 3e-3
+		(half) of NeMo's, relative to their largest values. A 2.4 second clip takes about 110 ms and a 15 second clip about
+		250 ms on an RTX 4060 Laptop. The source header says where that time goes (a short utterance is held up by memory
+		latency in the matrix products) and each method chosen and what was left out: whole utterances only, greedy decoding
+		only, no streaming or word timestamps. The package reads samples and files; it plays and records no sound.</p>
+
 	<h3 id="testpkg">Testing</h3>
 	<table border="1" cellpadding="4" cellspacing="0">
 	<tr><th>Package</th><th>What it is for</th></tr>
@@ -930,6 +962,9 @@ fn main() i32 {
 		(Ubuntu 24.04), and write and read the same bytes.</p>
 	<p><span class="pre">bpetokenize</span> calls nothing of the system's; its tests pass on Windows and on Linux
 		(Ubuntu 24.04), with the same token ids.</p>
+	<p><span class="pre">safetensors</span> calls nothing of the system's beyond <span class="pre">fs</span>; its tests have
+		been run on Windows only. <span class="pre">speechtotext</span> needs a GPU and the GPU packages, which run on
+		Windows only for now.</p>
 	<p>The others use nothing that belongs to Windows alone. Of these,
 		<span class="pre">sync</span>, <span class="pre">thread</span>, <span class="pre">actors</span> and
 		<span class="pre">time</span> are the ones that have been run on Linux so far, with <span class="pre">core</span>
