@@ -1,0 +1,959 @@
+// ======== The lexicons and the word-level rules (misaki's Lexicon) ========
+//
+// A port of misaki 0.9.4's 'Lexicon' for English: gold and silver dictionaries (words to phonemes, a few to a
+// phoneme string for each part of speech), the stem rules for -s, -ed and -ing, names spelled out by letter,
+// numbers, and Kokoro's stress marks. The tables are misaki's (MIT) read from tab-separated text made by the
+// converter; the rules are the same in the same order, so for the same word and part of speech the result is the
+// same string.
+
+pub let VOWELS: &str = "AIOQWYaiuæɑɒɔəɛɜɪʊʌᵻ";
+pub let CONSONANTS: &str = "bdfhjklmnpstvwzðŋɡɹɾʃʒʤʧθ";
+pub let NON_QUOTE_PUNCTS: &str = ";:,.!?—…";
+pub let DIPHTHONGS: &str = "AIOQWYʤʧ";
+pub let US_TAUS: &str = "AIOWYiuæɑəɛɪɹʊʌ";
+let STRESSES: &str = "ˌˈ";
+
+pub const PRIMARY: u32 = 712u32;     // ˈ
+pub const SECONDARY: u32 = 716u32;   // ˌ
+
+// stress "values": misaki's None, -2, -1, -0.5, 0, 0.5, 1 and 2
+pub const NO_STRESS: f32 = 99.;
+
+// A phoneme string that may be absent (misaki's None)
+pub struct Ps {
+  pub text: String;
+  pub some: bool;
+
+  pub fn none() Ps { Ps(String.empty(), false) }
+  pub fn of(s: String) Ps { Ps(s, true) }
+  pub fn ofStr(s: &str) Ps { Ps(String.from(s), true) }
+  pub fn copy(self: &) Ps { Ps(text.copy(), some) }
+}
+
+// A part-of-speech entry: tag, its phonemes (or None)
+pub struct TagPs {
+  pub tag: String;
+  pub ps: String;
+  pub none: bool;
+
+  pub fn copy(self: &) TagPs { TagPs(tag.copy(), ps.copy(), none) }
+}
+
+// A lexicon entry: a phoneme string, or a list of them by part of speech (with DEFAULT among them)
+pub struct Entry {
+  pub plain: String;
+  pub multi: List[TagPs];
+  pub isMulti: bool;
+
+  pub fn copy(self: &) Entry {
+    var m = List[TagPs].withCapacity(multi.len());
+    var i = 0usize;
+    while i < multi.len() { m.push(multi[i].copy()); i = i + 1usize; }
+    Entry(plain.copy(), m, isMulti)
+  }
+
+  // The string for 'tag', if the entry has one for it
+  pub fn find(self: &, tag: &str) Option[usize] {
+    var i = 0usize;
+    while i < multi.len() {
+      if multi[i].tag.view() == tag { return Some[usize](i); }
+      i = i + 1usize;
+    }
+    None
+  }
+
+  pub fn has(self: &, tag: &str) bool {
+    match self.find(tag) {
+      case is Some { true }
+      case is None { false }
+    }
+  }
+
+  // The entry's DEFAULT as a Ps
+  pub fn defaultPs(self: &) Ps {
+    if !isMulti { return Ps.of(plain.copy()); }
+    match self.find("DEFAULT") {
+      case let Some(i) {
+        if multi[i].none { return Ps.none(); }
+        Ps.of(multi[i].ps.copy())
+      }
+      case is None { Ps.none() }
+    }
+  }
+}
+
+fn parseLine(line: &str) Option[(String, Entry)] {
+  match line.find("\t") {
+    case let Some(t) {
+      let key = String.from(&line[0usize ..< t]);
+      let rest = &line[t + 1usize ..];
+      if rest.startsWith("@") {
+        var multi = List[TagPs].empty();
+        let body = &rest[1usize ..];
+        var start = 0usize;
+        while start <= body.len() {
+          var end = body.len();
+          match body.findFrom("|", start) {
+            case let Some(p) { end = p; }
+            case is None {}
+          }
+          let part = &body[start ..< end];
+          match part.find("=") {
+            case let Some(e) {
+              let tag = String.from(&part[0usize ..< e]);
+              let val = &part[e + 1usize ..];
+              if val == "!" {
+                multi.push(TagPs(tag, String.empty(), true));
+              } else {
+                multi.push(TagPs(tag, String.from(val), false));
+              }
+            }
+            case is None {}
+          }
+          start = end + 1usize;
+        }
+        return Some[(String, Entry)]((key, Entry(String.empty(), multi, true)));
+      }
+      Some[(String, Entry)]((key, Entry(String.from(rest), List[TagPs].empty(), false)))
+    }
+    case is None { None }
+  }
+}
+
+fn loadDict(path: &Path) Result[Dict[String, Entry], String] {
+  let text = match fs.readFile(path) {
+    case var Ok(t) { t }
+    case let Error(e) {
+      var m = String.from("englishphonemes: cannot read ");
+      m <- path.view();
+      m <- ": ";
+      m <- e.message().view();
+      return Error[Dict[String, Entry], String](m);
+    }
+  };
+  let lines = text.lines();
+  var d = Dict[String, Entry].withCapacity(lines.len() * 2usize);
+  var i = 0usize;
+  while i < lines.len() {
+    match parseLine(lines[i].view()) {
+      case var Some(kv) {
+        let k, v = kv;
+        d.insert(k, v);
+      }
+      case is None {}
+    }
+    i = i + 1usize;
+  }
+  // misaki's grow_dictionary: the capitalised form of each lower-case word and the lower-case form of each
+  // capitalised one, unless the dictionary has it
+  i = 0usize;
+  while i < lines.len() {
+    match parseLine(lines[i].view()) {
+      case var Some(kv) {
+        let k, v = kv;
+        if k.charCount() >= 2usize {
+          let lower = lowerText(k.view());
+          if k.view() == lower.view() {
+            let cap = capitalizeText(k.view());
+            if cap.view() != k.view() && !d.contains(cap.view()) { d.insert(cap, v); }
+          } else if k.view() == capitalizeText(lower.view()).view() {
+            if !d.contains(lower.view()) { d.insert(lower, v); }
+          }
+        }
+      }
+      case is None {}
+    }
+    i = i + 1usize;
+  }
+  Ok[Dict[String, Entry], String](d)
+}
+
+// ---- stress marks ----
+
+fn hasAnyVowel(cs: &Array[u32]) bool {
+  var i = 0usize;
+  while i < cs.len { if inSet(cs[i], VOWELS) { return true; } i = i + 1usize; }
+  false
+}
+
+fn hasAnyStress(cs: &Array[u32]) bool {
+  var i = 0usize;
+  while i < cs.len { if inSet(cs[i], STRESSES) { return true; } i = i + 1usize; }
+  false
+}
+
+fn hasCp(cs: &Array[u32], c: u32) bool {
+  var i = 0usize;
+  while i < cs.len { if cs[i] == c { return true; } i = i + 1usize; }
+  false
+}
+
+fn removeCp(cs: &Array[u32], c: u32) List[u32] {
+  var out = List[u32].withCapacity(cs.len);
+  var i = 0usize;
+  while i < cs.len { if cs[i] != c { out.push(cs[i]); } i = i + 1usize; }
+  out
+}
+
+fn replaceCp(cs: &Array[u32], from: u32, to: u32) List[u32] {
+  var out = List[u32].withCapacity(cs.len);
+  var i = 0usize;
+  while i < cs.len { if cs[i] == from { out.push(to); } else { out.push(cs[i]); } i = i + 1usize; }
+  out
+}
+
+// Move each stress mark to just before the next vowel
+fn restress(ps: &Array[u32]) List[u32] {
+  let n = ps.len;
+  var keys = List[i64].withCapacity(n);
+  var i = 0usize;
+  while i < n {
+    if inSet(ps[i], STRESSES) {
+      var j = i;
+      while j < n && !inSet(ps[j], VOWELS) { j = j + 1usize; }
+      keys.push(2i64 * i64.from(j) - 1i64);
+    } else {
+      keys.push(2i64 * i64.from(i));
+    }
+    i = i + 1usize;
+  }
+  // a stable sort of the characters by key
+  var order = List[usize].withCapacity(n);
+  i = 0usize;
+  while i < n {
+    var k = order.len();
+    order.push(i);
+    while k > 0usize && *keys[*order[k - 1usize]] > *keys[*order[k]] {
+      order.swap(k, k - 1usize);
+      k = k - 1usize;
+    }
+    i = i + 1usize;
+  }
+  var out = List[u32].withCapacity(n);
+  i = 0usize;
+  while i < n { out.push(ps[*order[i]]); i = i + 1usize; }
+  out
+}
+
+// misaki's apply_stress
+pub fn applyStress(ps: &str, stress: f32) String {
+  if stress == NO_STRESS { return String.from(ps); }
+  let cs = codepoints(ps);
+  if stress < -1. {
+    return textOf(removeCp(removeCp(cs.view(), PRIMARY).view(), SECONDARY).view());
+  }
+  if stress == -1. || ((stress == 0. || stress == -0.5) && hasCp(cs.view(), PRIMARY)) {
+    return textOf(replaceCp(removeCp(cs.view(), SECONDARY).view(), PRIMARY, SECONDARY).view());
+  }
+  if (stress == 0. || stress == 0.5 || stress == 1.) && !hasAnyStress(cs.view()) {
+    if !hasAnyVowel(cs.view()) { return String.from(ps); }
+    var withMark = List[u32].withCapacity(cs.len() + 1usize);
+    withMark.push(SECONDARY);
+    var i = 0usize;
+    while i < cs.len() { withMark.push(*cs[i]); i = i + 1usize; }
+    return textOf(restress(withMark.view()).view());
+  }
+  if stress >= 1. && !hasCp(cs.view(), PRIMARY) && hasCp(cs.view(), SECONDARY) {
+    return textOf(replaceCp(cs.view(), SECONDARY, PRIMARY).view());
+  }
+  if stress > 1. && !hasAnyStress(cs.view()) {
+    if !hasAnyVowel(cs.view()) { return String.from(ps); }
+    var withMark = List[u32].withCapacity(cs.len() + 1usize);
+    withMark.push(PRIMARY);
+    var i = 0usize;
+    while i < cs.len() { withMark.push(*cs[i]); i = i + 1usize; }
+    return textOf(restress(withMark.view()).view());
+  }
+  String.from(ps)
+}
+
+pub fn stressWeight(ps: &str) i32 {
+  var w = 0i32;
+  each c in ps.chars() { if inSet(u32.from(c), DIPHTHONGS) { w += 2i32; } else { w += 1i32; } }
+  w
+}
+
+// ---- the context a word is looked up in ----
+
+pub struct Ctx {
+  // 2: None (no following word with a phoneme), 1: the next sound is a vowel, 0: a consonant
+  pub futureVowel: i32;
+  pub futureTo: bool;
+  // misaki passes no context at all when it looks up the words of a number
+  pub absent: bool;
+
+  pub fn empty() Ctx { Ctx(2i32, false, false) }
+  pub fn noContext() Ctx { Ctx(2i32, false, true) }
+}
+
+pub fn parentTag(tag: &str) String {
+  if tag.startsWith("VB") { return String.from("VERB"); }
+  if tag.startsWith("NN") { return String.from("NOUN"); }
+  if tag.startsWith("ADV") || tag.startsWith("RB") { return String.from("ADV"); }
+  if tag.startsWith("ADJ") || tag.startsWith("JJ") { return String.from("ADJ"); }
+  String.from(tag)
+}
+
+fn isLexiconChar(c: u32) bool {
+  c == 39u32 || c == 45u32 || (c >= 65u32 && c <= 90u32) || (c >= 97u32 && c <= 122u32)
+}
+
+fn allLexiconChars(w: &str) bool {
+  each c in w.chars() { if !isLexiconChar(u32.from(c)) { return false; } }
+  true
+}
+
+fn symbolWord(w: &str) Option[&str] {
+  if w == "%" { return Some[&str]("percent"); }
+  if w == "&" { return Some[&str]("and"); }
+  if w == "+" { return Some[&str]("plus"); }
+  if w == "@" { return Some[&str]("at"); }
+  None
+}
+
+fn isSymbolWord(w: &str) bool { w == "%" || w == "&" || w == "+" || w == "@" }
+
+fn isOrdinalSuffix(s: &str) bool { s == "st" || s == "nd" || s == "rd" || s == "th" }
+
+// Currency: symbol, unit and sub-unit
+fn currencyUnits(sym: &str) Option[(&str, &str)] {
+  if sym == "$" { return Some[(&str, &str)](("dollar", "cent")); }
+  if sym == "£" { return Some[(&str, &str)](("pound", "pence")); }
+  if sym == "€" { return Some[(&str, &str)](("euro", "cent")); }
+  None
+}
+
+// Python's str.upper() == str, for the ASCII/Latin-1 this handles
+fn isUpperWord(w: &str) bool { upperText(w).view() == w }
+fn isLowerWord(w: &str) bool { lowerText(w).view() == w }
+
+pub struct Lexicon {
+  pub british: bool;
+  golds: Dict[String, Entry];
+  silvers: Dict[String, Entry];
+
+  // Read misaki's lexicons from 'dir' (us_gold.tsv, us_silver.tsv, or the gb_ pair)
+  pub fn load(dir: &str, british: bool) Result[Lexicon, String] {
+    let prefix = if british { "gb" } else { "us" };
+    var gp = String.from(dir);
+    gp <- "/";
+    gp <- prefix;
+    gp <- "_gold.tsv";
+    var sp = String.from(dir);
+    sp <- "/";
+    sp <- prefix;
+    sp <- "_silver.tsv";
+    let golds = match loadDict(&Path.from(gp.view())) {
+      case var Ok(d) { d }
+      case let Error(m) { return Error[Lexicon, String](m.copy()); }
+    };
+    let silvers = match loadDict(&Path.from(sp.view())) {
+      case var Ok(d) { d }
+      case let Error(m) { return Error[Lexicon, String](m.copy()); }
+    };
+    Ok[Lexicon, String](Lexicon(british, golds, silvers))
+  }
+
+  // misaki's get_NNP: a name spelled out letter by letter
+  pub fn getNNP(self: &, word: &str) Ps {
+    var ps = String.empty();
+    each c in word.chars() {
+      let u = u32.from(c);
+      if isLetterCp(u) {
+        var key = String.empty();
+        appendCp(&mut key, upperCp(u));
+        match golds.get(key.view()) {
+          case let Some(e) {
+            if e.isMulti { return Ps.none(); }
+            ps <- e.plain.view();
+          }
+          case is None { return Ps.none(); }
+        }
+      }
+    }
+    let stressed = applyStress(ps.view(), 0.);
+    // rsplit on the secondary stress mark, once, then join with the primary: the last secondary becomes primary
+    let cs = codepoints(stressed.view());
+    var at = cs.len();
+    var k = cs.len();
+    while k > 0usize {
+      k = k - 1usize;
+      if *cs[k] == SECONDARY { at = k; break; }
+    }
+    if at == cs.len() { return Ps.of(stressed); }
+    var out = List[u32].withCapacity(cs.len());
+    var i = 0usize;
+    while i < cs.len() {
+      if i == at { out.push(PRIMARY); } else { out.push(*cs[i]); }
+      i = i + 1usize;
+    }
+    Ps.of(textOf(out.view()))
+  }
+
+  // Whether the word has an entry that depends on the part of speech
+  pub fn hasTaggedEntry(self: &, word: &str) bool {
+    match golds.get(word) {
+      case let Some(e) { e.isMulti }
+      case is None { false }
+    }
+  }
+
+  // Whether either dictionary has the word
+  pub fn knowsWord(self: &, word: &str) bool { golds.contains(word) || silvers.contains(word) }
+
+  fn goldPlain(self: &, word: &str) Ps {
+    match golds.get(word) {
+      case let Some(e) { e.defaultPs() }
+      case is None { Ps.none() }
+    }
+  }
+
+  // misaki's get_special_case
+  fn specialCase(self: &, word: &str, tag: &str, stress: f32, ctx: &Ctx) Ps {
+    if tag == "ADD" && (word == "." || word == "/") {
+      return self.lookup(if word == "." { "dot" } else { "slash" }, "", -0.5, ctx, true);
+    }
+    match symbolWord(word) {
+      case let Some(w) { return self.lookup(w, "", NO_STRESS, ctx, true); }
+      case is None {}
+    }
+    // an abbreviation with periods ("U.S.", "a.m."): spelled out
+    let stripped = stripSet(word, ".");
+    if stripped.contains(".") && isAlphaText(replaceAll(word, ".", "").view()) {
+      var longest = 0usize;
+      var cur = 0usize;
+      each c in word.chars() {
+        if u32.from(c) == 46u32 { cur = 0usize; } else { cur += 1usize; if cur > longest { longest = cur; } }
+      }
+      if longest < 3usize { return self.getNNP(word); }
+    }
+    if word == "a" || word == "A" {
+      return Ps.ofStr(if tag == "DT" { "ɐ" } else { "ˈA" });
+    }
+    if word == "am" || word == "Am" || word == "AM" {
+      if tag.startsWith("NN") { return self.getNNP(word); }
+      if ctx.futureVowel == 2i32 || word != "am" || (stress != NO_STRESS && stress > 0.) {
+        return self.goldPlain("am");
+      }
+      return Ps.ofStr("ɐm");
+    }
+    if word == "an" || word == "An" || word == "AN" {
+      if word == "AN" && tag.startsWith("NN") { return self.getNNP(word); }
+      return Ps.ofStr("ɐn");
+    }
+    if word == "I" && tag == "PRP" {
+      return Ps.ofStr("ˌI");
+    }
+    if (word == "by" || word == "By" || word == "BY") && parentTag(tag).view() == "ADV" {
+      return Ps.ofStr("bˈI");
+    }
+    if word == "to" || word == "To" || (word == "TO" && (tag == "TO" || tag == "IN")) {
+      if ctx.futureVowel == 2i32 { return self.goldPlain("to"); }
+      return Ps.ofStr(if ctx.futureVowel == 0i32 { "tə" } else { "tʊ" });
+    }
+    if word == "in" || word == "In" || (word == "IN" && tag != "NNP") {
+      var s = String.empty();
+      if ctx.futureVowel == 2i32 || tag != "IN" { s <- "ˈ"; }
+      s <- "ɪn";
+      return Ps.of(s);
+    }
+    if word == "the" || word == "The" || (word == "THE" && tag == "DT") {
+      return Ps.ofStr(if ctx.futureVowel == 1i32 { "ði" } else { "ðə" });
+    }
+    if tag == "IN" {
+      let low = lowerText(word);
+      if low.view() == "vs" || low.view() == "vs." { return self.lookup("versus", "", NO_STRESS, ctx, true); }
+    }
+    if word == "used" || word == "Used" || word == "USED" {
+      var which = "DEFAULT";
+      if (tag == "VBD" || tag == "JJ") && ctx.futureTo { which = "VBD"; }
+      match golds.get("used") {
+        case let Some(e) {
+          if e.isMulti {
+            match e.find(which) {
+              case let Some(i) { return Ps.of(e.multi[i].ps.copy()); }
+              case is None { return e.defaultPs(); }
+            }
+          }
+          return Ps.of(e.plain.copy());
+        }
+        case is None {}
+      }
+    }
+    Ps.none()
+  }
+
+  // misaki's is_known
+  fn isKnown(self: &, word: &str) bool {
+    if golds.contains(word) || isSymbolWord(word) || silvers.contains(word) { return true; }
+    if !isAlphaText(word) || !allLexiconChars(word) { return false; }
+    if word.charCount() == 1usize { return true; }
+    if isUpperWord(word) && golds.contains(lowerText(word).view()) { return true; }
+    let rest = &word[1usize ..];
+    isUpperWord(rest)
+  }
+
+  // misaki's lookup. 'useCtx' is false for the number words (no context)
+  pub fn lookup(self: &, wordIn: &str, tagIn: &str, stress: f32, ctx: &Ctx, useCtx: bool) Ps {
+    var word = String.from(wordIn);
+    var tag = String.from(tagIn);
+    var isNNP = false;
+    var nnpSet = false;
+    if isUpperWord(word.view()) && !golds.contains(word.view()) {
+      word = lowerText(word.view());
+      isNNP = tag.view() == "NNP";
+      nnpSet = true;
+    }
+    var entry: Option[&Entry] = golds.get(word.view());
+    var inGolds = false;
+    match entry {
+      case is Some { inGolds = true; }
+      case is None {}
+    }
+    if !inGolds && !isNNP {
+      entry = silvers.get(word.view());
+    }
+    var ps = Ps.none();
+    match entry {
+      case let Some(e) {
+        if e.isMulti {
+          var key = String.from("DEFAULT");
+          if useCtx && !ctx.absent && ctx.futureVowel == 2i32 && e.has("None") {
+            key = String.from("None");
+          } else if !e.has(tag.view()) {
+            key = parentTag(tag.view());
+          } else {
+            key = tag.copy();
+          }
+          match e.find(key.view()) {
+            case let Some(i) {
+              if !e.multi[i].none { ps = Ps.of(e.multi[i].ps.copy()); }
+            }
+            case is None { ps = e.defaultPs(); }
+          }
+        } else {
+          ps = Ps.of(e.plain.copy());
+        }
+      }
+      case is None {}
+    }
+    if !ps.some || (isNNP && !hasCp(codepoints(ps.text.view()).view(), PRIMARY)) {
+      let nnp = self.getNNP(word.view());
+      if nnp.some { return nnp; }
+    }
+    if !ps.some { return ps; }
+    Ps.of(applyStress(ps.text.view(), stress))
+  }
+
+  fn suffixS(self: &, stem: &str) Ps {
+    if stem.len() == 0usize { return Ps.none(); }
+    let last = lastChar(stem);
+    var s = String.from(stem);
+    if inSet(cp(last.view()), "ptkfθ") { s <- "s"; }
+    else if inSet(cp(last.view()), "szʃʒʧʤ") { s <- if british { "ɪ" } else { "ᵻ" }; s <- "z"; }
+    else { s <- "z"; }
+    Ps.of(s)
+  }
+
+  fn stemS(self: &, word: &str, tag: &str, stress: f32, ctx: &Ctx) Ps {
+    if word.len() < 3usize || !word.endsWith("s") { return Ps.none(); }
+    var stem = String.empty();
+    if !word.endsWith("ss") && self.isKnown(&word[0usize ..< word.len() - 1usize]) {
+      stem = String.from(&word[0usize ..< word.len() - 1usize]);
+    } else if (word.endsWith("'s") || (word.len() > 4usize && word.endsWith("es") && !word.endsWith("ies")))
+        && self.isKnown(&word[0usize ..< word.len() - 2usize]) {
+      stem = String.from(&word[0usize ..< word.len() - 2usize]);
+    } else if word.len() > 4usize && word.endsWith("ies") {
+      var y = String.from(&word[0usize ..< word.len() - 3usize]);
+      y <- "y";
+      if !self.isKnown(y.view()) { return Ps.none(); }
+      stem = y;
+    } else {
+      return Ps.none();
+    }
+    let st = self.lookup(stem.view(), tag, stress, ctx, true);
+    if !st.some { return Ps.none(); }
+    self.suffixS(st.text.view())
+  }
+
+  fn suffixEd(self: &, stem: &str) Ps {
+    if stem.len() == 0usize { return Ps.none(); }
+    let cs = codepoints(stem);
+    let last = *cs[cs.len() - 1usize];
+    var s = String.from(stem);
+    if inSet(last, "pkfθʃsʧ") { s <- "t"; return Ps.of(s); }
+    if last == cp("d") { s <- if british { "ɪ" } else { "ᵻ" }; s <- "d"; return Ps.of(s); }
+    if last != cp("t") { s <- "d"; return Ps.of(s); }
+    if british || cs.len() < 2usize { s <- "ɪd"; return Ps.of(s); }
+    if inSet(*cs[cs.len() - 2usize], US_TAUS) {
+      return Ps.of({
+        var t = textOfRange(cs.view(), 0usize, cs.len() - 1usize);
+        t <- "ɾᵻd";
+        t
+      });
+    }
+    s <- "ᵻd";
+    Ps.of(s)
+  }
+
+  fn stemEd(self: &, word: &str, tag: &str, stress: f32, ctx: &Ctx) Ps {
+    if word.len() < 4usize || !word.endsWith("d") { return Ps.none(); }
+    var stem = String.empty();
+    if !word.endsWith("dd") && self.isKnown(&word[0usize ..< word.len() - 1usize]) {
+      stem = String.from(&word[0usize ..< word.len() - 1usize]);
+    } else if word.len() > 4usize && word.endsWith("ed") && !word.endsWith("eed")
+        && self.isKnown(&word[0usize ..< word.len() - 2usize]) {
+      stem = String.from(&word[0usize ..< word.len() - 2usize]);
+    } else {
+      return Ps.none();
+    }
+    let st = self.lookup(stem.view(), tag, stress, ctx, true);
+    if !st.some { return Ps.none(); }
+    self.suffixEd(st.text.view())
+  }
+
+  fn suffixIng(self: &, stem: &str) Ps {
+    if stem.len() == 0usize { return Ps.none(); }
+    let cs = codepoints(stem);
+    let last = *cs[cs.len() - 1usize];
+    if british {
+      if last == cp("ə") || last == cp("ː") { return Ps.none(); }
+    } else if cs.len() > 1usize && last == cp("t") && inSet(*cs[cs.len() - 2usize], US_TAUS) {
+      var t = textOfRange(cs.view(), 0usize, cs.len() - 1usize);
+      t <- "ɾɪŋ";
+      return Ps.of(t);
+    }
+    var s = String.from(stem);
+    s <- "ɪŋ";
+    Ps.of(s)
+  }
+
+  // the stem of -ing words: a doubled consonant, or "cking"
+  fn doubledIng(word: &str) bool {
+    // ([bcdgklmnprstvxz])\1ing$|cking$
+    if word.endsWith("cking") { return true; }
+    if word.len() < 5usize { return false; }
+    let n = word.len();
+    let a = word[n - 5usize];
+    let b = word[n - 4usize];
+    a == b && inSet(u32.from(a), "bcdgklmnprstvxz")
+  }
+
+  fn stemIng(self: &, word: &str, tag: &str, stress: f32, ctx: &Ctx) Ps {
+    if word.len() < 5usize || !word.endsWith("ing") { return Ps.none(); }
+    var stem = String.empty();
+    let base = &word[0usize ..< word.len() - 3usize];
+    var withE = String.from(base);
+    withE <- "e";
+    if word.len() > 5usize && self.isKnown(base) {
+      stem = String.from(base);
+    } else if self.isKnown(withE.view()) {
+      stem = withE;
+    } else if word.len() > 5usize && Lexicon.doubledIng(word) && self.isKnown(&word[0usize ..< word.len() - 4usize]) {
+      stem = String.from(&word[0usize ..< word.len() - 4usize]);
+    } else {
+      return Ps.none();
+    }
+    let st = self.lookup(stem.view(), tag, stress, ctx, true);
+    if !st.some { return Ps.none(); }
+    self.suffixIng(st.text.view())
+  }
+
+  // misaki's get_word
+  pub fn getWord(self: &, wordIn: &str, tag: &str, stress: f32, ctx: &Ctx) Ps {
+    let special = self.specialCase(wordIn, tag, stress, ctx);
+    if special.some { return special; }
+    var word = String.from(wordIn);
+    let wl = lowerText(wordIn);
+    if word.charCount() > 1usize && isAlphaText(replaceAll(wordIn, "'", "").view()) && word.view() != wl.view()
+        && (tag != "NNP" || word.charCount() > 7usize) && !golds.contains(wordIn) && !silvers.contains(wordIn)
+        && (isUpperWord(wordIn) || {
+          let rest = &wordIn[firstChar(wordIn).len() ..];
+          lowerText(rest).view() == rest
+        })
+        && (golds.contains(wl.view()) || silvers.contains(wl.view())
+            || self.stemS(wl.view(), tag, stress, ctx).some
+            || self.stemEd(wl.view(), tag, stress, ctx).some
+            || self.stemIng(wl.view(), tag, stress, ctx).some) {
+      word = wl;
+    }
+    if self.isKnown(word.view()) { return self.lookup(word.view(), tag, stress, ctx, true); }
+    if word.endsWith("s'") {
+      var w2 = String.from(&word.view()[0usize ..< word.len() - 2usize]);
+      w2 <- "'s";
+      if self.isKnown(w2.view()) { return self.lookup(w2.view(), tag, stress, ctx, true); }
+    }
+    if word.endsWith("'") && self.isKnown(&word.view()[0usize ..< word.len() - 1usize]) {
+      return self.lookup(&word.view()[0usize ..< word.len() - 1usize], tag, stress, ctx, true);
+    }
+    let s = self.stemS(word.view(), tag, stress, ctx);
+    if s.some { return s; }
+    let e = self.stemEd(word.view(), tag, stress, ctx);
+    if e.some { return e; }
+    var ingStress = stress;
+    if stress == NO_STRESS { ingStress = 0.5; }
+    let g = self.stemIng(word.view(), tag, ingStress, ctx);
+    if g.some { return g; }
+    Ps.none()
+  }
+
+  // misaki's Lexicon.is_currency: no decimal point, or one with up to two digits after it
+  fn isCurrency(word: &str) bool {
+    match word.find(".") {
+      case is None { return true; }
+      case let Some(p) {
+        match word.findFrom(".", p + 1usize) {
+          case is Some { return false; }
+          case is None {}
+        }
+        let cents = &word[p + 1usize ..];
+        if cents.len() < 3usize { return true; }
+        // set(cents) == {0}: never true for a string of digit characters
+        false
+      }
+    }
+  }
+
+  fn numWord(self: &, w: &str, stress: f32) Ps {
+    self.lookup(w, "", stress, &Ctx.noContext(), false)
+  }
+
+  // Add the words of a number to 'result' (the equivalent of misaki's extend_num)
+  fn extendWords(self: &, result: &mut List[Ps], words: &List[String], first: bool, flags: &str) {
+    var i = 0usize;
+    while i < words.len() {
+      let w = words[i].view();
+      if w != "and" || flags.contains("&") {
+        if first && i == 0usize && words.len() > 1usize && w == "one" && flags.contains("a") {
+          result.push(Ps.ofStr("ə"));
+        } else {
+          result.push(self.numWord(w, if w == "point" { -2. } else { NO_STRESS }));
+        }
+      } else if w == "and" && flags.contains("n") && result.len() > 0usize {
+        let last = result.len() - 1usize;
+        var t = result[last].text.copy();
+        t <- "ən";
+        result.set(last, Ps.of(t));
+      }
+      i = i + 1usize;
+    }
+  }
+
+  fn extendInt(self: &, result: &mut List[Ps], num: u64, first: bool, flags: &str) {
+    self.extendWords(result, &cardinal(num), first, flags);
+  }
+
+  // The digits of a text as a number (all of them are digits)
+  fn digitsValue(s: &str) u64 {
+    var v = 0u64;
+    each c in s.chars() { v = v * 10u64 + u64.from(u32.from(c) - 48u32); }
+    v
+  }
+
+  // misaki's get_number
+  fn getNumber(self: &, wordIn: &str, currency: &str, isHead: bool, flags: &str) Ps {
+    // suffix = re.search(r"[a-z']+$", word)
+    var sufStart = wordIn.len();
+    while sufStart > 0usize {
+      let c = wordIn[sufStart - 1usize];
+      if (c >= 'a' && c <= 'z') || c == '\'' { sufStart = sufStart - 1usize; } else { break; }
+    }
+    let suffix = String.from(&wordIn[sufStart ..]);
+    var word = String.from(&wordIn[0usize ..< sufStart]);
+    var result = List[Ps].empty();
+    if word.startsWith("-") {
+      result.push(self.lookup("minus", "", NO_STRESS, &Ctx.noContext(), false));
+      word = String.from(&word.view()[1usize ..]);
+    }
+    let ordinalSuffix = isOrdinalSuffix(suffix.view());
+    var unitName = "";
+    var subName = "";
+    var hasUnits = false;
+    match currencyUnits(currency) {
+      case let Some(u) { unitName = u.0; subName = u.1; hasUnits = true; }
+      case is None {}
+    }
+    if isDigitsText(word.view()) && ordinalSuffix {
+      self.extendWords(&mut result, &ordinal(Lexicon.digitsValue(word.view())), true, flags);
+    } else if result.len() == 0usize && word.len() == 4usize && !hasUnits && isDigitsText(word.view()) {
+      self.extendWords(&mut result, &year(Lexicon.digitsValue(word.view())), true, flags);
+    } else if !isHead && !word.contains(".") {
+      let num = replaceAll(word.view(), ",", "");
+      let n = num.view();
+      if n.startsWith("0") || n.len() > 3usize {
+        each c in n.chars() { self.extendInt(&mut result, u64.from(u32.from(c) - 48u32), false, flags); }
+      } else if n.len() == 3usize && !n.endsWith("00") {
+        self.extendInt(&mut result, u64.from(n[0usize] - '0'), true, flags);
+        if n[1usize] == '0' {
+          result.push(self.lookup("O", "", -2., &Ctx.noContext(), false));
+          self.extendInt(&mut result, u64.from(n[2usize] - '0'), false, flags);
+        } else {
+          self.extendInt(&mut result, Lexicon.digitsValue(&n[1usize ..]), false, flags);
+        }
+      } else {
+        self.extendInt(&mut result, Lexicon.digitsValue(n), true, flags);
+      }
+    } else if replaceAll(word.view(), ".", "").len() + 1usize < word.len() || !isHead {
+      // word.count('.') > 1 or not is_head
+      var first = true;
+      let parts = replaceAll(word.view(), ",", "").split(u8.from('.'));
+      var pi = 0usize;
+      while pi < parts.len() {
+        let num = parts[pi].view();
+        if num.len() > 0usize {
+          var anyNonZero = false;
+          var k = 1usize;
+          while k < num.len() { if num[k] != '0' { anyNonZero = true; } k = k + 1usize; }
+          if num[0usize] == '0' || (num.len() != 2usize && anyNonZero) {
+            each c in num.chars() { self.extendInt(&mut result, u64.from(u32.from(c) - 48u32), false, flags); }
+          } else {
+            self.extendInt(&mut result, Lexicon.digitsValue(num), first, flags);
+          }
+        }
+        first = false;
+        pi = pi + 1usize;
+      }
+    } else if hasUnits && Lexicon.isCurrency(word.view()) {
+      let parts = replaceAll(word.view(), ",", "").split(u8.from('.'));
+      var amounts = List[u64].empty();
+      // which unit (0: the main one, 1: the sub-unit) each amount is of
+      var unitsList = List[usize].empty();
+      var pi = 0usize;
+      while pi < parts.len() && pi < 2usize {
+        let t = parts[pi].view();
+        amounts.push(if t.len() == 0usize { 0u64 } else { Lexicon.digitsValue(t) });
+        unitsList.push(pi);
+        pi = pi + 1usize;
+      }
+      if amounts.len() > 1usize {
+        if *amounts[1usize] == 0u64 {
+          amounts.truncate(1usize);
+          unitsList.truncate(1usize);
+        } else if *amounts[0usize] == 0u64 {
+          let a1 = *amounts[1usize];
+          amounts.set(0usize, a1);
+          unitsList.set(0usize, 1usize);
+          amounts.truncate(1usize);
+          unitsList.truncate(1usize);
+        }
+      }
+      var idx = 0usize;
+      while idx < amounts.len() {
+        if idx > 0usize { result.push(self.lookup("and", "", NO_STRESS, &Ctx.noContext(), false)); }
+        let num = *amounts[idx];
+        self.extendInt(&mut result, num, idx == 0usize, flags);
+        let unit = if *unitsList[idx] == 0usize { unitName } else { subName };
+        if num != 1u64 && unit != "pence" {
+          var plural = String.from(unit);
+          plural <- "s";
+          result.push(self.stemS(plural.view(), "", NO_STRESS, &Ctx.noContext()));
+        } else {
+          result.push(self.lookup(unit, "", NO_STRESS, &Ctx.noContext(), false));
+        }
+        idx = idx + 1usize;
+      }
+    } else {
+      var words = List[String].empty();
+      if isDigitsText(word.view()) {
+        words = cardinal(Lexicon.digitsValue(word.view()));
+      } else if !word.contains(".") {
+        let n = Lexicon.digitsValue(replaceAll(word.view(), ",", "").view());
+        words = if ordinalSuffix { ordinal(n) } else { cardinal(n) };
+      } else {
+        let w = replaceAll(word.view(), ",", "");
+        if w.view().startsWith(".") {
+          words.push(String.from("point"));
+          each c in (&w.view()[1usize ..]).chars() {
+            words.push(String.from(cardinal(u64.from(u32.from(c) - 48u32))[0usize].view()));
+          }
+        } else {
+          var dot = 0usize;
+          match w.view().find(".") {
+            case let Some(p) { dot = p; }
+            case is None {}
+          }
+          words = decimal(Lexicon.digitsValue(&w.view()[0usize ..< dot]), &w.view()[dot + 1usize ..]);
+        }
+      }
+      self.extendWords(&mut result, &words, true, flags);
+    }
+    if result.len() == 0usize { return Ps.none(); }
+    var joined = String.empty();
+    var i = 0usize;
+    while i < result.len() {
+      if !result[i].some { return Ps.none(); }
+      if i > 0usize { joined <- " "; }
+      joined <- result[i].text.view();
+      i = i + 1usize;
+    }
+    if suffix.view() == "s" || suffix.view() == "'s" { return self.suffixS(joined.view()); }
+    if suffix.view() == "ed" || suffix.view() == "'d" { return self.suffixEd(joined.view()); }
+    if suffix.view() == "ing" { return self.suffixIng(joined.view()); }
+    Ps.of(joined)
+  }
+
+  // misaki's append_currency
+  pub fn appendCurrency(self: &, ps: &str, currency: &str) String {
+    if currency.len() == 0usize { return String.from(ps); }
+    match currencyUnits(currency) {
+      case let Some(u) {
+        var plural = String.from(u.0);
+        plural <- "s";
+        let c = self.stemS(plural.view(), "", NO_STRESS, &Ctx.noContext());
+        if c.some {
+          var s = String.from(ps);
+          s <- " ";
+          s <- c.text.view();
+          return s;
+        }
+        String.from(ps)
+      }
+      case is None { String.from(ps) }
+    }
+  }
+
+  // misaki's is_number
+  pub fn isNumber(word: &str, isHead: bool) bool {
+    var anyDigit = false;
+    each c in word.chars() { if u32.from(c) >= 48u32 && u32.from(c) <= 57u32 { anyDigit = true; } }
+    if !anyDigit { return false; }
+    var w = String.from(word);
+    let sufs = ["ing", "'d", "ed", "'s", "st", "nd", "rd", "th", "s"];
+    var si = 0usize;
+    while si < 9usize {
+      if w.endsWith(sufs[si]) {
+        w = String.from(&word[0usize ..< word.len() - sufs[si].len()]);
+        break;
+      }
+      si = si + 1usize;
+    }
+    var i = 0usize;
+    while i < w.len() {
+      let c = w[i];
+      let ok = (c >= '0' && c <= '9') || c == ',' || c == '.' || (isHead && i == 0usize && c == '-');
+      if !ok { return false; }
+      i = i + 1usize;
+    }
+    true
+  }
+
+  // misaki's Lexicon.__call__: the phonemes of one (merged) token
+  pub fn call(self: &, wordText: &str, tag: &str, aliasText: &str, hasAlias: bool, currency: &str, isHead: bool, flags: &str, ctx: &Ctx) Ps {
+    var raw = String.from(if hasAlias { aliasText } else { wordText });
+    raw.replace("‘", "'");
+    raw.replace("’", "'");
+    let word = raw.view();
+    var stress = NO_STRESS;
+    if word != lowerText(word).view() {
+      stress = if word == upperText(word).view() { 2. } else { 0.5 };
+    }
+    let ps = self.getWord(word, tag, stress, ctx);
+    if ps.some {
+      return Ps.of(self.appendCurrency(ps.text.view(), currency));
+    }
+    if Lexicon.isNumber(word, isHead) {
+      return self.getNumber(word, currency, isHead, flags);
+    }
+    Ps.none()
+  }
+}

@@ -1,0 +1,841 @@
+// ======== Kokoro on the GPU: the three stages of a synthesis ========
+//
+// A synthesis is three jobs on the GPU with the CPU's small steps between them:
+//
+//   A  the text: ALBERT (12 passes of one shared layer) and the prosody predictor's text encoder with the voice's
+//      style, the duration LSTM and its projection; the text encoder's convolutions and LSTM. Out: the durations'
+//      logits (read back); the predictor's features d and the text features t_en stay on the GPU.
+//   (CPU) a duration for each phoneme, round(sum of sigmoids / speed) and at least 1; the frames then are the
+//      phonemes repeated by their durations (Kokoro's alignment matrix, as an index).
+//   B  the frames: the alignment applied to d and t_en, the shared LSTM, the pitch (F0) and energy (N) predictors,
+//      each a stack of style-normalised residual blocks. Out: F0 (read back); N and the aligned text features stay.
+//   (CPU) the harmonic source from F0, and its STFT (source.cone).
+//   C  the decoder and the iSTFTNet generator: style-normalised residual blocks at the frame rate, then two
+//      upsampling stages of transposed convolutions and residual blocks with the source mixed in, ending in the
+//      magnitude and phase of an STFT. Out: that (read back).
+//   (CPU) the inverse STFT: 24 kHz samples.
+//
+// The weights are one buffer on the device, lent to each job and taken back. Every tensor is read by its name in the
+// model file (weights.cone); the layers are the code of kokoro/modules.py and kokoro/istftnet.py in the same order.
+
+const QTYPE_F32 = 0u32;
+
+// What the CPU keeps of a job's recording: whether every kernel accepted its arguments, the slot of the weights
+// buffer, and (for the tests) the buffers to read back after the job
+struct St {
+  ok: bool;
+  ws: u32;
+  probeNames: List[String];
+  probeSlots: List[u32];
+  // the scratch buffers of the job: slot, size in floats, whether free to hand out again (a job's buffers stay its
+  // own until it ends, so a buffer a layer has finished with is reused by the next layer rather than a new one made)
+  poolSlots: List[u32];
+  poolSizes: List[usize];
+  poolFree: List[bool];
+}
+
+fn newSt(ws: u32) St {
+  St(true, ws, List[String].empty(), List[u32].empty(), List[u32].empty(), List[usize].empty(), List[bool].empty())
+}
+
+// One of the intermediate tensors of a synthesis, read back for a test
+pub struct Probe {
+  pub name: String;
+  pub data: List[f32];
+}
+
+// What a synthesis gives
+pub struct Spoken {
+  pub audio: List[f32];
+  // the duration of each phoneme (with the two padding tokens), in frames of 600 samples
+  pub durations: List[u32];
+  pub f0: List[f32];
+  pub probes: List[Probe];
+}
+
+fn roundHalfEven(x: f64) f64 {
+  let fl = libc.floor(x);
+  let d = x - fl;
+  if d < 0.5 { return fl; }
+  if d > 0.5 { return fl + 1.0; }
+  if libc.fmod(fl, 2.0) == 0.0 { return fl; }
+  fl + 1.0
+}
+
+fn name1(a: &str, b: &str) String {
+  var s = String.from(a);
+  s <- b;
+  s
+}
+
+fn name3(a: &str, n: usize, b: &str) String {
+  var s = String.from(a);
+  s <- u64.from(n);
+  s <- b;
+  s
+}
+
+pub struct Engine {
+  kernels: Kernels;
+  llm: llmkernels.Kernels;
+  works: Works;
+  weights: Weights;
+  // the weights' buffer between jobs (none while a job holds it)
+  held: List[Buffer];
+  vocab: Dict[String, u32];
+  // wall time over syntheses (nanoseconds): each stage's recording on the CPU, its wait for the GPU, the CPU steps
+  pub recordNanos: i64;
+  pub gpuNanos: i64;
+  pub cpuNanos: i64;
+  // keep the intermediate tensors in 'Spoken.probes' (for the tests)
+  pub debug: bool;
+  // for the tests: a pitch curve for the source to use in place of the one the predictor made (the source's phase is
+  // a running sum of F0 times 2 pi times 300, so rounding in F0 is amplified a hundred thousand times; a test that
+  // checks the layers after the source gives it PyTorch's F0). Empty: the predictor's.
+  pub f0ForSource: List[f32];
+
+  // Load the model and its tables from 'dir' (the folder that holds kokoro-v1_0.safetensors and vocab.tsv)
+  pub fn open(device: &mut Device, dir: &str) Result[Engine, String] {
+    let loaded = match Weights.load(device, dir) {
+      case var Ok(w) { w }
+      case let Error(m) { return Error[Engine, String](m.copy()); }
+    };
+    let weights, buf = loaded;
+    var vocab = Dict[String, u32].empty();
+    var path = String.from(dir);
+    path <- "/vocab.tsv";
+    match fs.readFile(&Path.from(path.view())) {
+      case var Ok(text) {
+        let lines = text.lines();
+        var i = 0usize;
+        while i < lines.len() {
+          let line = lines[i].view();
+          match line.find("\t") {
+            case let Some(t) {
+              var id = 0u32;
+              each c in (&line[0usize ..< t]).chars() { id = id * 10u32 + (u32.from(c) - 48u32); }
+              vocab.insert(String.from(&line[t + 1usize ..]), id);
+            }
+            case is None {}
+          }
+          i = i + 1usize;
+        }
+      }
+      case let Error(e) {
+        var m = String.from("texttospeech: cannot read ");
+        m <- path.view();
+        return Error[Engine, String](m);
+      }
+    }
+    let kernels = Kernels.make(device);
+    let llm = llmkernels.Kernels.make(device);
+    if !kernels.isValid() || !llm.isValid() { return Error[Engine, String](String.from("texttospeech: the kernels could not be made on this device")); }
+    var held = List[Buffer].empty();
+    held.push(buf);
+    Ok[Engine, String](Engine(kernels, llm, Works.make(), weights, held, vocab, 0i64, 0i64, 0i64, false, List[f32].empty()))
+  }
+
+  // The ids of the model's tokens for a phoneme string (characters it has no id for are left out), with the two
+  // padding tokens at the ends
+  pub fn tokens(self: &, phonemes: &str) List[u32] {
+    var ids = List[u32].empty();
+    ids.push(0u32);
+    each c in phonemes.chars() {
+      var one = List[u32].empty();
+      one.push(u32.from(c));
+      let key = textOf(one.view());
+      match vocab.get(key.view()) {
+        case let Some(id) { ids.push(*id); }
+        case is None {}
+      }
+    }
+    ids.push(0u32);
+    ids
+  }
+
+  // ---- recording helpers ----
+
+  fn zbuf(self: &, job: &mut Job, device: &mut Device, n: usize) u32 { job.give(zeroed(device, n)) }
+
+  // A scratch buffer of at least n floats (what is in it is not zero): a free one of the job's, else a new one. In
+  // debug mode every buffer is new and exact, so that a probe reads exactly the tensor.
+  fn grab(self: &, job: &mut Job, device: &mut Device, st: &mut St, n: usize) u32 {
+    if !debug {
+      var best = st.poolSlots.len();
+      var i = 0usize;
+      while i < st.poolSlots.len() {
+        if *st.poolFree[i] && *st.poolSizes[i] >= n && *st.poolSizes[i] <= 2usize * n + 1024usize {
+          if best == st.poolSlots.len() || *st.poolSizes[i] < *st.poolSizes[best] { best = i; }
+        }
+        i = i + 1usize;
+      }
+      if best < st.poolSlots.len() {
+        st.poolFree.set(best, false);
+        return *st.poolSlots[best];
+      }
+    }
+    let s = self.zbuf(job, device, n);
+    if !debug {
+      st.poolSlots.push(s);
+      st.poolSizes.push(n);
+      st.poolFree.push(false);
+    }
+    s
+  }
+
+  // The buffer is finished with: the next 'grab' may have it
+  fn release(self: &, st: &mut St, slot: u32) {
+    if debug { return; }
+    var i = 0usize;
+    while i < st.poolSlots.len() {
+      if *st.poolSlots[i] == slot { st.poolFree.set(i, true); }
+      i = i + 1usize;
+    }
+  }
+
+  fn ubuf(self: &, job: &mut Job, device: &mut Device, v: &Array[f32]) u32 {
+    job.give(upload(device, llmkernels.floatWords(v).view()))
+  }
+
+  fn probe(self: &, job: &mut Job, device: &mut Device, st: &mut St, name: &str, slot: u32) {
+    if debug {
+      st.probeNames.push(String.from(name));
+      st.probeSlots.push(job.readback(device, slot));
+    }
+  }
+
+  // y = act(x W^T + b): x [rows, inN] (from element xOff), y [rows, outN]
+  fn linear(self: &, job: &mut Job, device: &mut Device, st: &mut St, x: u32, xOff: usize, y: u32, rows: usize, outN: usize,
+      inN: usize, wName: &str, bName: &str, act: u32) {
+    let tmp = self.grab(job, device, st, rows * outN);
+    let wOff = weights.at(wName);
+    st.ok = self.llm.matmulAt(job, device, st.ws, x, tmp, QTYPE_F32, outN, inN, rows, wOff * 4usize, xOff, 0usize) && st.ok;
+    st.ok = self.kernels.biasAct(job, device, tmp, st.ws, y, rows, outN, 0usize, weights.at(bName), 0usize, act, 0.0) && st.ok;
+    self.release(st, tmp);
+  }
+
+  // The style's scale and shift for a layer: fc(style) -> 2 * channels floats
+  fn styleGb(self: &, job: &mut Job, device: &mut Device, st: &mut St, style: u32, prefix: &str, channels: usize) u32 {
+    let gb = self.grab(job, device, st, 2usize * channels);
+    self.linear(job, device, st, style, 0usize, gb, 1usize, 2usize * channels, 128usize, name1(prefix, ".weight").view(), name1(prefix, ".bias").view(), 0u32);
+    gb
+  }
+
+  // Conv1d by tensor name ('prefix.weight', 'prefix.bias'): answers the output length
+  fn conv(self: &, job: &mut Job, device: &mut Device, st: &mut St, x: u32, y: u32, cin: usize, cout: usize, lin: usize, k: usize,
+      stride: usize, pad: usize, dil: usize, prefix: &str, hasBias: bool, slope: f32) usize {
+    let wOff = weights.at(name1(prefix, ".weight").view());
+    var bOff = 0usize;
+    if hasBias { bOff = weights.at(name1(prefix, ".bias").view()); }
+    st.ok = self.kernels.conv1d(job, device, x, st.ws, y, cin, cout, lin, k, stride, pad, dil, 0usize, 0usize, wOff, bOff, hasBias, slope) && st.ok;
+    Kernels.convLength(lin, k, stride, pad, dil)
+  }
+
+  fn adainOf(self: &, job: &mut Job, device: &mut Device, st: &mut St, x: u32, gb: u32, y: u32, channels: usize, len: usize,
+      alphaName: &str, act: u32, slope: f32) {
+    var aOff = 0usize;
+    if act == 2u32 { aOff = weights.at(alphaName); }
+    st.ok = self.kernels.adain(job, device, x, gb, st.ws, y, channels, len, 0usize, 0usize, 0usize, aOff, act, slope) && st.ok;
+  }
+
+  // StyleTTS2's AdainResBlk1d: x [cin, len] -> [cout, len or 2 len]; answers the output buffer and its length
+  fn adainBlock(self: &, job: &mut Job, device: &mut Device, st: &mut St, x: u32, style: u32, cin: usize, cout: usize,
+      len: usize, upsample: bool, prefix: &str) (u32, usize) {
+    // the residual: norm1, leaky, (pool), conv1, norm2, leaky, conv2
+    let gb1 = self.styleGb(job, device, st, style, name1(prefix, ".norm1.fc").view(), cin);
+    let a1 = self.grab(job, device, st, cin * len);
+    self.adainOf(job, device, st, x, gb1, a1, cin, len, "", 1u32, 0.2);
+    self.release(st, gb1);
+    var p = a1;
+    var l2 = len;
+    if upsample {
+      l2 = Kernels.convTransposeLength(len, 3usize, 2usize, 1usize, 1usize);
+      p = self.grab(job, device, st, cin * l2);
+      st.ok = self.kernels.convTranspose1d(job, device, a1, st.ws, p, cin, cin, len, 3usize, 2usize, 1usize, 1usize, cin, 0usize, 0usize,
+        weights.at(name1(prefix, ".pool.weight").view()), weights.at(name1(prefix, ".pool.bias").view()), true) && st.ok;
+      self.release(st, a1);
+    }
+    let c1 = self.grab(job, device, st, cout * l2);
+    self.conv(job, device, st, p, c1, cin, cout, l2, 3usize, 1usize, 1usize, 1usize, name1(prefix, ".conv1").view(), true, 1.0);
+    self.release(st, p);
+    let gb2 = self.styleGb(job, device, st, style, name1(prefix, ".norm2.fc").view(), cout);
+    let a2 = self.grab(job, device, st, cout * l2);
+    self.adainOf(job, device, st, c1, gb2, a2, cout, l2, "", 1u32, 0.2);
+    self.release(st, gb2);
+    self.release(st, c1);
+    let c2 = self.grab(job, device, st, cout * l2);
+    self.conv(job, device, st, a2, c2, cout, cout, l2, 3usize, 1usize, 1usize, 1usize, name1(prefix, ".conv2").view(), true, 1.0);
+    self.release(st, a2);
+    // the shortcut: (upsample) and a 1 x 1 convolution where the width changes
+    var sc = x;
+    var scOwned = false;
+    if cin != cout {
+      let s1 = self.grab(job, device, st, cout * len);
+      self.conv(job, device, st, x, s1, cin, cout, len, 1usize, 1usize, 0usize, 1usize, name1(prefix, ".conv1x1").view(), false, 1.0);
+      sc = s1;
+      scOwned = true;
+    }
+    if upsample {
+      let s2 = self.grab(job, device, st, cout * l2);
+      st.ok = self.kernels.repeat2(job, device, sc, s2, cout, len, 0usize, 0usize) && st.ok;
+      if scOwned { self.release(st, sc); }
+      sc = s2;
+      scOwned = true;
+    }
+    let out = self.grab(job, device, st, cout * l2);
+    // (residual + shortcut) / sqrt(2)
+    st.ok = self.kernels.addScale(job, device, c2, sc, out, cout * l2, 0usize, 0usize, 0usize, 0.70710678118654752440f) && st.ok;
+    self.release(st, c2);
+    if scOwned { self.release(st, sc); }
+    (out, l2)
+  }
+
+  // AdaINResBlock1 of the generator: three rounds of adain, snake, dilated convolution, adain, snake, convolution,
+  // added to the input
+  fn resBlock1(self: &, job: &mut Job, device: &mut Device, st: &mut St, x: u32, style: u32, ch: usize, len: usize, k: usize,
+      prefix: &str) u32 {
+    var cur = x;
+    var j = 0usize;
+    while j < 3usize {
+      var dil = 1usize;
+      if j == 1usize { dil = 3usize; }
+      if j == 2usize { dil = 5usize; }
+      let gb1 = self.styleGb(job, device, st, style, tname(prefix, ".adain1.", j, ".fc").view(), ch);
+      let a1 = self.grab(job, device, st, ch * len);
+      self.adainOf(job, device, st, cur, gb1, a1, ch, len, tname(prefix, ".alpha1.", j, "").view(), 2u32, 1.0);
+      self.release(st, gb1);
+      let c1 = self.grab(job, device, st, ch * len);
+      self.conv(job, device, st, a1, c1, ch, ch, len, k, 1usize, (k * dil - dil) / 2usize, dil, tname(prefix, ".convs1.", j, "").view(), true, 1.0);
+      self.release(st, a1);
+      let gb2 = self.styleGb(job, device, st, style, tname(prefix, ".adain2.", j, ".fc").view(), ch);
+      let a2 = self.grab(job, device, st, ch * len);
+      self.adainOf(job, device, st, c1, gb2, a2, ch, len, tname(prefix, ".alpha2.", j, "").view(), 2u32, 1.0);
+      self.release(st, gb2);
+      self.release(st, c1);
+      let c2 = self.grab(job, device, st, ch * len);
+      self.conv(job, device, st, a2, c2, ch, ch, len, k, 1usize, (k - 1usize) / 2usize, 1usize, tname(prefix, ".convs2.", j, "").view(), true, 1.0);
+      self.release(st, a2);
+      let nx = self.grab(job, device, st, ch * len);
+      st.ok = self.kernels.addScale(job, device, c2, cur, nx, ch * len, 0usize, 0usize, 0usize, 1.0) && st.ok;
+      self.release(st, c2);
+      if j > 0usize { self.release(st, cur); }
+      cur = nx;
+      j = j + 1usize;
+    }
+    cur
+  }
+
+  // ---- stage A: the text ----
+
+  // The inputs of ALBERT on the CPU: the word, position and token-type embeddings added, then layer-normalised
+  fn albertInput(self: &, ids: &Array[u32]) List[f32] {
+    let t = ids.len;
+    var out = List[f32].withCapacity(t * 128usize);
+    var r = 0usize;
+    while r < t {
+      var row = List[f64].withCapacity(128usize);
+      var mean = 0.0;
+      var c = 0usize;
+      while c < 128usize {
+        let v = f64.from(*weights.wordEmbedding[usize.from(ids[r]) * 128usize + c]) + f64.from(*weights.positionEmbedding[r * 128usize + c])
+          + f64.from(*weights.typeEmbedding[c]);
+        row.push(v);
+        mean = mean + v;
+        c = c + 1usize;
+      }
+      mean = mean / 128.0;
+      var variance = 0.0;
+      c = 0usize;
+      while c < 128usize { let d = *row[c] - mean; variance = variance + d * d; c = c + 1usize; }
+      let inv = 1.0 / libc.sqrt(variance / 128.0 + 0.000000000001);
+      c = 0usize;
+      while c < 128usize {
+        out.push(f32.from((*row[c] - mean) * inv * f64.from(*weights.embeddingNormGamma[c]) + f64.from(*weights.embeddingNormBeta[c])));
+        c = c + 1usize;
+      }
+      r = r + 1usize;
+    }
+    out
+  }
+
+  // ALBERT, bert_encoder: the phonemes' features [t, 512]
+  fn albert(self: &, job: &mut Job, device: &mut Device, st: &mut St, ids: &Array[u32]) u32 {
+    let t = ids.len;
+    let xin = self.ubuf(job, device, self.albertInput(ids).view());
+    var h = self.zbuf(job, device, t * 768usize);
+    self.linear(job, device, st, xin, 0usize, h, t, 768usize, 128usize, "bert.encoder.embedding_hidden_mapping_in.weight",
+      "bert.encoder.embedding_hidden_mapping_in.bias", 0u32);
+    let p = "bert.encoder.albert_layer_groups.0.albert_layers.0.";
+    var layer = 0usize;
+    while layer < 12usize {
+      let q = self.zbuf(job, device, t * 768usize);
+      let k = self.zbuf(job, device, t * 768usize);
+      let v = self.zbuf(job, device, t * 768usize);
+      self.linear(job, device, st, h, 0usize, q, t, 768usize, 768usize, name1(p, "attention.query.weight").view(), name1(p, "attention.query.bias").view(), 0u32);
+      self.linear(job, device, st, h, 0usize, k, t, 768usize, 768usize, name1(p, "attention.key.weight").view(), name1(p, "attention.key.bias").view(), 0u32);
+      self.linear(job, device, st, h, 0usize, v, t, 768usize, 768usize, name1(p, "attention.value.weight").view(), name1(p, "attention.value.bias").view(), 0u32);
+      let ctx = self.zbuf(job, device, t * 768usize);
+      st.ok = self.kernels.bertAttention(job, device, q, k, v, ctx, t, 12usize, 64usize, 0.125) && st.ok;
+      let proj = self.zbuf(job, device, t * 768usize);
+      self.linear(job, device, st, ctx, 0usize, proj, t, 768usize, 768usize, name1(p, "attention.dense.weight").view(), name1(p, "attention.dense.bias").view(), 0u32);
+      let r1 = self.zbuf(job, device, t * 768usize);
+      st.ok = self.kernels.addScale(job, device, h, proj, r1, t * 768usize, 0usize, 0usize, 0usize, 1.0) && st.ok;
+      let a = self.zbuf(job, device, t * 768usize);
+      st.ok = self.kernels.layernorm(job, device, r1, st.ws, a, 768usize, t, 1usize, 768usize, 0usize, 0usize, 0.000000000001, 1u32,
+        weights.at(name1(p, "attention.LayerNorm.weight").view()), weights.at(name1(p, "attention.LayerNorm.bias").view()), 1.0) && st.ok;
+      let f1 = self.zbuf(job, device, t * 2048usize);
+      self.linear(job, device, st, a, 0usize, f1, t, 2048usize, 768usize, name1(p, "ffn.weight").view(), name1(p, "ffn.bias").view(), 2u32);
+      let f2 = self.zbuf(job, device, t * 768usize);
+      self.linear(job, device, st, f1, 0usize, f2, t, 768usize, 2048usize, name1(p, "ffn_output.weight").view(), name1(p, "ffn_output.bias").view(), 0u32);
+      let r2 = self.zbuf(job, device, t * 768usize);
+      st.ok = self.kernels.addScale(job, device, f2, a, r2, t * 768usize, 0usize, 0usize, 0usize, 1.0) && st.ok;
+      let hn = self.zbuf(job, device, t * 768usize);
+      st.ok = self.kernels.layernorm(job, device, r2, st.ws, hn, 768usize, t, 1usize, 768usize, 0usize, 0usize, 0.000000000001, 1u32,
+        weights.at(name1(p, "full_layer_layer_norm.weight").view()), weights.at(name1(p, "full_layer_layer_norm.bias").view()), 1.0) && st.ok;
+      h = hn;
+      layer = layer + 1usize;
+    }
+    self.probe(job, device, st, "bert", h);
+    let dEn = self.zbuf(job, device, t * 512usize);
+    self.linear(job, device, st, h, 0usize, dEn, t, 512usize, 768usize, "bert_encoder.weight", "bert_encoder.bias", 0u32);
+    dEn
+  }
+
+  // A bidirectional LSTM layer by the name its tensors share: x [steps, inDim] -> [steps, 512]
+  fn lstmLayer(self: &, job: &mut Job, device: &mut Device, st: &mut St, x: u32, steps: usize, inDim: usize, base: &str) u32 {
+    let gates = self.zbuf(job, device, steps * 2048usize);
+    st.ok = self.llm.matmulAt(job, device, st.ws, x, gates, QTYPE_F32, 2048usize, inDim, steps,
+      weights.at(name1(base, ".wih_cat").view()) * 4usize, 0usize, 0usize) && st.ok;
+    let out = self.zbuf(job, device, steps * 512usize);
+    st.ok = self.kernels.lstm(job, device, gates, st.ws, out, steps, 0usize, 0usize, weights.at(name1(base, ".whhT").view()),
+      weights.at(name1(base, ".bias_cat").view())) && st.ok;
+    out
+  }
+
+  // The prosody predictor's text encoder: [t, 640] (the features of the three adaptive-norm layers, then the style)
+  fn durationEncoder(self: &, job: &mut Job, device: &mut Device, st: &mut St, dEn: u32, style: u32, t: usize) u32 {
+    let cat = self.zbuf(job, device, t * 640usize);
+    st.ok = self.kernels.copy2d(job, device, dEn, cat, t, 512usize, 0usize, 512usize, 1usize, 0usize, 640usize, 1usize) && st.ok;
+    st.ok = self.kernels.copy2d(job, device, style, cat, t, 128usize, 0usize, 0usize, 1usize, 512usize, 640usize, 1usize) && st.ok;
+    var j = 0usize;
+    while j < 3usize {
+      let lo = self.lstmLayer(job, device, st, cat, t, 640usize, name3("predictor.text_encoder.lstms.", 2usize * j, "").view());
+      let gb = self.styleGb(job, device, st, style, name3("predictor.text_encoder.lstms.", 2usize * j + 1usize, ".fc").view(), 512usize);
+      let ln = self.zbuf(job, device, t * 512usize);
+      st.ok = self.kernels.layernorm(job, device, lo, gb, ln, 512usize, t, 1usize, 512usize, 0usize, 0usize, 0.00001, 2u32, 0usize, 0usize, 1.0) && st.ok;
+      st.ok = self.kernels.copy2d(job, device, ln, cat, t, 512usize, 0usize, 512usize, 1usize, 0usize, 640usize, 1usize) && st.ok;
+      j = j + 1usize;
+    }
+    cat
+  }
+
+  // The text encoder: embeddings, three (convolution, layer norm over the channels, leaky ReLU), an LSTM -> [512, t]
+  fn textEncoder(self: &, job: &mut Job, device: &mut Device, st: &mut St, ids: &Array[u32]) u32 {
+    let t = ids.len;
+    var emb = List[f32].withCapacity(512usize * t);
+    var c = 0usize;
+    while c < 512usize {
+      var r = 0usize;
+      while r < t { emb.push(*weights.textEmbedding[usize.from(ids[r]) * 512usize + c]); r = r + 1usize; }
+      c = c + 1usize;
+    }
+    var x = self.ubuf(job, device, emb.view());
+    var i = 0usize;
+    while i < 3usize {
+      let cv = self.zbuf(job, device, 512usize * t);
+      self.conv(job, device, st, x, cv, 512usize, 512usize, t, 5usize, 1usize, 2usize, 1usize, tname("text_encoder.cnn.", "", i, ".0").view(), true, 1.0);
+      let ln = self.zbuf(job, device, 512usize * t);
+      st.ok = self.kernels.layernorm(job, device, cv, st.ws, ln, 512usize, t, t, 1usize, 0usize, 0usize, 0.00001, 1u32,
+        weights.at(tname("text_encoder.cnn.", "", i, ".1.gamma").view()), weights.at(tname("text_encoder.cnn.", "", i, ".1.beta").view()), 0.2) && st.ok;
+      x = ln;
+      i = i + 1usize;
+    }
+    // [512, t] -> [t, 512] -> LSTM -> [512, t]
+    let xt = self.zbuf(job, device, t * 512usize);
+    st.ok = self.kernels.copy2d(job, device, x, xt, 512usize, t, 0usize, t, 1usize, 0usize, 1usize, 512usize) && st.ok;
+    let lo = self.lstmLayer(job, device, st, xt, t, 512usize, "text_encoder.lstm");
+    let out = self.zbuf(job, device, 512usize * t);
+    st.ok = self.kernels.copy2d(job, device, lo, out, t, 512usize, 0usize, 512usize, 1usize, 0usize, 1usize, t) && st.ok;
+    out
+  }
+
+  // ---- the three stages ----
+
+  // Stage A on the GPU. Answers the slots of d [t, 640] and t_en [512, t] and of the duration logits' readback.
+  fn stageA(self: &, job: &mut Job, device: &mut Device, st: &mut St, ids: &Array[u32], style: &Array[f32]) (u32, u32, u32) {
+    let t = ids.len;
+    let sPred = self.ubuf(job, device, &style[128usize ..< 256usize]);
+    let dEn = self.albert(job, device, st, ids);
+    let d = self.durationEncoder(job, device, st, dEn, sPred, t);
+    self.probe(job, device, st, "d", d);
+    let lo = self.lstmLayer(job, device, st, d, t, 640usize, "predictor.lstm");
+    self.probe(job, device, st, "dur_lstm", lo);
+    let logits = self.zbuf(job, device, t * 50usize);
+    self.linear(job, device, st, lo, 0usize, logits, t, 50usize, 512usize, "predictor.duration_proj.linear_layer.weight",
+      "predictor.duration_proj.linear_layer.bias", 0u32);
+    let back = job.readback(device, logits);
+    let tEn = self.textEncoder(job, device, st, ids);
+    self.probe(job, device, st, "t_en", tEn);
+    (d, tEn, back)
+  }
+
+  // Stage B on the GPU: the frames' features, the pitch and energy. Answers the slots of asr [512, f], F0 [2 f],
+  // N [2 f] and the readback of F0.
+  fn stageB(self: &, job: &mut Job, device: &mut Device, st: &mut St, d: u32, tEn: u32, idx: u32, t: usize, f: usize,
+      style: &Array[f32]) (u32, u32, u32, u32) {
+    let sPred = self.ubuf(job, device, &style[128usize ..< 256usize]);
+    // en [640, f] = d^T repeated by the durations, then [f, 640]
+    let en = self.zbuf(job, device, 640usize * f);
+    st.ok = self.kernels.gather(job, device, d, idx, en, 640usize, f, 0usize, 1usize, 640usize, 0usize, f, 0usize) && st.ok;
+    let enT = self.zbuf(job, device, f * 640usize);
+    st.ok = self.kernels.copy2d(job, device, en, enT, 640usize, f, 0usize, f, 1usize, 0usize, 1usize, 640usize) && st.ok;
+    let sh = self.lstmLayer(job, device, st, enT, f, 640usize, "predictor.shared");
+    self.probe(job, device, st, "shared", sh);
+    // [f, 512] -> [512, f]
+    let x0 = self.zbuf(job, device, 512usize * f);
+    st.ok = self.kernels.copy2d(job, device, sh, x0, f, 512usize, 0usize, 512usize, 1usize, 0usize, 1usize, f) && st.ok;
+    var curve = List[u32].empty();
+    var branch = 0usize;
+    while branch < 2usize {
+      var prefix = "predictor.F0";
+      if branch == 1usize { prefix = "predictor.N"; }
+      let b0, l0 = self.adainBlock(job, device, st, x0, sPred, 512usize, 512usize, f, false, tname(prefix, ".", 0usize, "").view());
+      let b1, l1 = self.adainBlock(job, device, st, b0, sPred, 512usize, 256usize, l0, true, tname(prefix, ".", 1usize, "").view());
+      let b2, l2 = self.adainBlock(job, device, st, b1, sPred, 256usize, 256usize, l1, false, tname(prefix, ".", 2usize, "").view());
+      if branch == 0usize {
+        self.probe(job, device, st, "f0_blk0", b0);
+        self.probe(job, device, st, "f0_blk1", b1);
+        self.probe(job, device, st, "f0_blk2", b2);
+      }
+      let proj = self.zbuf(job, device, l2);
+      var projName = "predictor.F0_proj";
+      if branch == 1usize { projName = "predictor.N_proj"; }
+      self.conv(job, device, st, b2, proj, 256usize, 1usize, l2, 1usize, 1usize, 0usize, 1usize, projName, true, 1.0);
+      curve.push(proj);
+      branch = branch + 1usize;
+    }
+    let f0 = *curve[0usize];
+    let nn = *curve[1usize];
+    self.probe(job, device, st, "F0", f0);
+    self.probe(job, device, st, "N", nn);
+    let back = job.readback(device, f0);
+    // asr [512, f] = t_en repeated by the durations
+    let asr = self.zbuf(job, device, 512usize * f);
+    st.ok = self.kernels.gather(job, device, tEn, idx, asr, 512usize, f, 0usize, t, 1usize, 0usize, f, 0usize) && st.ok;
+    self.probe(job, device, st, "asr", asr);
+    (asr, f0, nn, back)
+  }
+
+  // Stage C on the GPU: the decoder and the generator. Answers the slot of the generator's last convolution
+  // [22, 120 f + 1] and its readback.
+  fn stageC(self: &, job: &mut Job, device: &mut Device, st: &mut St, asr: u32, f0: u32, nn: u32, har: u32, f: usize,
+      style: &Array[f32]) (u32, u32) {
+    let sDec = self.ubuf(job, device, &style[0usize ..< 128usize]);
+    let lh = 120usize * f + 1usize;
+    // the pitch and energy at the frame rate
+    let f0c = self.zbuf(job, device, f);
+    self.conv(job, device, st, f0, f0c, 1usize, 1usize, 2usize * f, 3usize, 2usize, 1usize, 1usize, "decoder.F0_conv", true, 1.0);
+    let nc = self.zbuf(job, device, f);
+    self.conv(job, device, st, nn, nc, 1usize, 1usize, 2usize * f, 3usize, 2usize, 1usize, 1usize, "decoder.N_conv", true, 1.0);
+    self.probe(job, device, st, "F0_conv", f0c);
+    let x0 = self.zbuf(job, device, 514usize * f);
+    st.ok = self.kernels.copy2d(job, device, asr, x0, 512usize, f, 0usize, f, 1usize, 0usize, f, 1usize) && st.ok;
+    st.ok = self.kernels.copy2d(job, device, f0c, x0, 1usize, f, 0usize, f, 1usize, 512usize * f, f, 1usize) && st.ok;
+    st.ok = self.kernels.copy2d(job, device, nc, x0, 1usize, f, 0usize, f, 1usize, 513usize * f, f, 1usize) && st.ok;
+    let enc, encLen = self.adainBlock(job, device, st, x0, sDec, 514usize, 1024usize, f, false, "decoder.encode");
+    self.probe(job, device, st, "dec_encode", enc);
+    let asrRes = self.zbuf(job, device, 64usize * f);
+    self.conv(job, device, st, asr, asrRes, 512usize, 64usize, f, 1usize, 1usize, 0usize, 1usize, "decoder.asr_res.0", true, 1.0);
+    var x = enc;
+    var xLen = encLen;
+    var i = 0usize;
+    while i < 4usize {
+      let cat = self.grab(job, device, st, 1090usize * f);
+      st.ok = self.kernels.copy2d(job, device, x, cat, 1024usize, f, 0usize, f, 1usize, 0usize, f, 1usize) && st.ok;
+      st.ok = self.kernels.copy2d(job, device, asrRes, cat, 64usize, f, 0usize, f, 1usize, 1024usize * f, f, 1usize) && st.ok;
+      st.ok = self.kernels.copy2d(job, device, f0c, cat, 1usize, f, 0usize, f, 1usize, 1088usize * f, f, 1usize) && st.ok;
+      st.ok = self.kernels.copy2d(job, device, nc, cat, 1usize, f, 0usize, f, 1usize, 1089usize * f, f, 1usize) && st.ok;
+      var cout = 1024usize;
+      if i == 3usize { cout = 512usize; }
+      let nx, nl = self.adainBlock(job, device, st, cat, sDec, 1090usize, cout, f, i == 3usize, name3("decoder.decode.", i, "").view());
+      self.release(st, x);
+      self.release(st, cat);
+      x = nx;
+      xLen = nl;
+      i = i + 1usize;
+    }
+    self.probe(job, device, st, "dec_blk3", x);
+    // the generator
+    let g = "decoder.generator";
+    var len = xLen;
+    var ch = 512usize;
+    var stage = 0usize;
+    while stage < 2usize {
+      let nextCh = ch / 2usize;
+      let xl = self.grab(job, device, st, ch * len);
+      st.ok = self.kernels.leaky(job, device, x, xl, ch * len, 0usize, 0usize, 0.1) && st.ok;
+      self.release(st, x);
+      // the source at this scale
+      let noiseK = if stage == 0usize { 12usize } else { 1usize };
+      let noiseStride = if stage == 0usize { 6usize } else { 1usize };
+      let noisePad = if stage == 0usize { 3usize } else { 0usize };
+      let nl = Kernels.convLength(lh, noiseK, noiseStride, noisePad, 1usize);
+      let xs = self.grab(job, device, st, nextCh * nl);
+      self.conv(job, device, st, har, xs, 22usize, nextCh, lh, noiseK, noiseStride, noisePad, 1usize, tname(g, ".noise_convs.", stage, "").view(), true, 1.0);
+      let xsr = self.resBlock1(job, device, st, xs, sDec, nextCh, nl, if stage == 0usize { 7usize } else { 11usize },
+        tname(g, ".noise_res.", stage, "").view());
+      self.release(st, xs);
+      self.probe(job, device, st, if stage == 0usize { "gen_src0" } else { "gen_src1" }, xsr);
+      // the upsampling
+      var upK = 20usize;
+      var upS = 10usize;
+      var upP = 5usize;
+      if stage == 1usize { upK = 12usize; upS = 6usize; upP = 3usize; }
+      let ul = Kernels.convTransposeLength(len, upK, upS, upP, 0usize);
+      let up = self.grab(job, device, st, nextCh * ul);
+      st.ok = self.kernels.convTranspose1d(job, device, xl, st.ws, up, ch, nextCh, len, upK, upS, upP, 0usize, 1usize, 0usize, 0usize,
+        weights.at(tname(g, ".ups.", stage, ".weight").view()), weights.at(tname(g, ".ups.", stage, ".bias").view()), true) && st.ok;
+      self.release(st, xl);
+      var upUse = up;
+      var useLen = ul;
+      if stage == 1usize {
+        // reflection padding of (1, 0): a copy shifted by one with the second sample in front
+        useLen = ul + 1usize;
+        let padded = self.grab(job, device, st, nextCh * useLen);
+        st.ok = self.kernels.copy2d(job, device, up, padded, nextCh, ul, 0usize, ul, 1usize, 1usize, useLen, 1usize) && st.ok;
+        st.ok = self.kernels.copy2d(job, device, up, padded, nextCh, 1usize, 1usize, ul, 1usize, 0usize, useLen, 1usize) && st.ok;
+        self.release(st, up);
+        upUse = padded;
+      }
+      let mixed = self.grab(job, device, st, nextCh * useLen);
+      st.ok = self.kernels.addScale(job, device, upUse, xsr, mixed, nextCh * useLen, 0usize, 0usize, 0usize, 1.0) && st.ok;
+      self.release(st, upUse);
+      self.release(st, xsr);
+      // the three residual blocks, averaged
+      var sum = 0u32;
+      var j = 0usize;
+      while j < 3usize {
+        var k = 3usize;
+        if j == 1usize { k = 7usize; }
+        if j == 2usize { k = 11usize; }
+        let r = self.resBlock1(job, device, st, mixed, sDec, nextCh, useLen, k, tname(g, ".resblocks.", stage * 3usize + j, "").view());
+        if j == 0usize {
+          sum = r;
+        } else {
+          let acc = self.grab(job, device, st, nextCh * useLen);
+          let scale = if j == 2usize { 0.33333333333333333f } else { 1.0f };
+          st.ok = self.kernels.addScale(job, device, sum, r, acc, nextCh * useLen, 0usize, 0usize, 0usize, scale) && st.ok;
+          self.release(st, sum);
+          self.release(st, r);
+          sum = acc;
+        }
+        j = j + 1usize;
+      }
+      self.release(st, mixed);
+      self.probe(job, device, st, if stage == 0usize { "gen_stage0" } else { "gen_stage1" }, sum);
+      x = sum;
+      len = useLen;
+      ch = nextCh;
+      stage = stage + 1usize;
+    }
+    let xl = self.grab(job, device, st, ch * len);
+    st.ok = self.kernels.leaky(job, device, x, xl, ch * len, 0usize, 0usize, 0.01) && st.ok;
+    self.release(st, x);
+    let post = self.zbuf(job, device, 22usize * len);
+    self.conv(job, device, st, xl, post, ch, 22usize, len, 7usize, 1usize, 3usize, 1usize, "decoder.generator.conv_post", true, 1.0);
+    self.release(st, xl);
+    self.probe(job, device, st, "conv_post", post);
+    let back = job.readback(device, post);
+    (post, back)
+  }
+
+  // Submit the job and wait for it; the weights' buffer is taken back, and the probes read
+  fn finishJob(self: &mut, device: &mut Device, job: Job, st: &St, keep: &Array[u32], wantBack: &Array[u32]) (List[Buffer], List[List[f32]], List[Probe], bool) {
+    let ticket = works.submit(device, job, Target.Here(1u64));
+    var done = List[Completion].empty();
+    works.waitFor(device, ticket, &mut done);
+    var buffers = List[Buffer].empty();
+    var backs = List[List[f32]].empty();
+    var probes = List[Probe].empty();
+    if done.len() != 1usize { return (buffers, backs, probes, false); }
+    held.push(done[0usize].take(st.ws));
+    var k = 0usize;
+    while k < keep.len {
+      buffers.push(done[0usize].take(keep[k]));
+      k = k + 1usize;
+    }
+    k = 0usize;
+    while k < wantBack.len {
+      backs.push(llmkernels.wordFloats(done[0usize].words(wantBack[k]).view()));
+      k = k + 1usize;
+    }
+    k = 0usize;
+    while k < st.probeNames.len() {
+      probes.push(Probe(st.probeNames[k].copy(), llmkernels.wordFloats(done[0usize].words(*st.probeSlots[k]).view())));
+      k = k + 1usize;
+    }
+    (buffers, backs, probes, done[0usize].ok && st.ok)
+  }
+
+  // The weights' buffer, for a job to hold
+  fn takeHeld(self: &mut, device: &mut Device) Buffer {
+    match held.pop() {
+      case var Some(b) { b }
+      case is None { zeroed(device, 1usize) }
+    }
+  }
+
+  // Say a string of phonemes in a voice's style (256 floats) at a speed (1.0 normal, more is faster). 'noise' is the
+  // source generator's randomness; none: drawn from 'rng'.
+  pub fn synthesize(self: &mut, device: &mut Device, phonemes: &str, style: &Array[f32], speed: f32, rng: &mut Rng,
+      noise: Option[SourceNoise]) Result[Spoken, String] {
+    let t0 = Instant.now();
+    let ids = self.tokens(phonemes);
+    let t = ids.len();
+    if t < 3usize || t > 512usize {
+      return Error[Spoken, String](String.from("texttospeech: a piece of 1 to 510 phonemes is what the model takes"));
+    }
+    if style.len < 256usize { return Error[Spoken, String](String.from("texttospeech: a style is 256 floats")); }
+    var probes = List[Probe].empty();
+
+    // ---- A: the text ----
+    var jobA = Job.make(device);
+    let wsA = jobA.give(self.takeHeld(device));
+    var stA = newSt(wsA);
+    let dSlot, tEnSlot, backA = self.stageA(&mut jobA, device, &mut stA, ids.view(), style);
+    let t1 = Instant.now();
+    let keepA = [dSlot, tEnSlot];
+    let backA1 = [backA];
+    var bufsA, backsA, probesA, okA = self.finishJob(device, jobA, &stA, &keepA, &backA1);
+    let t2 = Instant.now();
+    self.recordNanos = self.recordNanos + t1.since(t0).nanos();
+    self.gpuNanos = self.gpuNanos + t2.since(t1).nanos();
+    if !okA { return Error[Spoken, String](String.from("texttospeech: a kernel refused its arguments or failed on the GPU (stage A)")); }
+    appendProbes(&mut probes, probesA);
+
+    // ---- the durations ----
+    let logits = backsA[0usize];
+    var durations = List[u32].withCapacity(t);
+    var f = 0usize;
+    var i = 0usize;
+    while i < t {
+      var s = 0.0;
+      var k = 0usize;
+      while k < 50usize {
+        let z = f64.from(*logits[i * 50usize + k]);
+        s = s + 1.0 / (1.0 + libc.exp(0.0 - z));
+        k = k + 1usize;
+      }
+      var dur = roundHalfEven(s / f64.from(speed));
+      if dur < 1.0 { dur = 1.0; }
+      durations.push(u32.from(dur));
+      f = f + usize.from(dur);
+      i = i + 1usize;
+    }
+    var idxWords = List[u32].withCapacity(f);
+    i = 0usize;
+    while i < t {
+      var r = 0u32;
+      while r < *durations[i] { idxWords.push(u32.from(i)); r = r + 1u32; }
+      i = i + 1usize;
+    }
+    let t3 = Instant.now();
+
+    // ---- B: the frames, the pitch and the energy ----
+    var jobB = Job.make(device);
+    let wsB = jobB.give(self.takeHeld(device));
+    var stB = newSt(wsB);
+    let tEnBuf = popBuffer(&mut bufsA, device);
+    let dBuf = popBuffer(&mut bufsA, device);
+    let dB = jobB.give(dBuf);
+    let tEnB = jobB.give(tEnBuf);
+    let idxSlot = jobB.give(upload(device, idxWords.view()));
+    let asrSlot, f0Slot, nSlot, backB = self.stageB(&mut jobB, device, &mut stB, dB, tEnB, idxSlot, t, f, style);
+    let t4 = Instant.now();
+    let keepB = [asrSlot, f0Slot, nSlot];
+    let backB1 = [backB];
+    var bufsB, backsB, probesB, okB = self.finishJob(device, jobB, &stB, &keepB, &backB1);
+    let t5 = Instant.now();
+    self.recordNanos = self.recordNanos + t4.since(t3).nanos();
+    self.gpuNanos = self.gpuNanos + t5.since(t4).nanos();
+    if !okB { return Error[Spoken, String](String.from("texttospeech: a kernel refused its arguments or failed on the GPU (stage B)")); }
+    appendProbes(&mut probes, probesB);
+    var f0 = List[f32].empty();
+    f0 <-> backsB[0usize];
+
+    // ---- the source, on the CPU ----
+    let samples = 600usize * f;
+    var source = match noise {
+      case var Some(n) { n }
+      case is None { drawNoise(rng, samples) }
+    };
+    var pitch = f0.view();
+    if f0ForSource.len() == f0.len() { pitch = f0ForSource.view(); }
+    let harSource = harmonicSource(pitch, &source, weights.harmonicWeights.view(), weights.harmonicBias);
+    let har = stft(harSource.view());
+    let lh = 120usize * f + 1usize;
+    let t6 = Instant.now();
+    self.cpuNanos = self.cpuNanos + t6.since(t5).nanos();
+
+    // ---- C: the decoder and the generator ----
+    var jobC = Job.make(device);
+    let wsC = jobC.give(self.takeHeld(device));
+    var stC = newSt(wsC);
+    let nBuf = popBuffer(&mut bufsB, device);
+    let f0Buf = popBuffer(&mut bufsB, device);
+    let asrBuf = popBuffer(&mut bufsB, device);
+    let asrC = jobC.give(asrBuf);
+    let f0C = jobC.give(f0Buf);
+    let nC = jobC.give(nBuf);
+    let harSlot = self.ubuf(&mut jobC, device, har.view());
+    let postSlot, backC = self.stageC(&mut jobC, device, &mut stC, asrC, f0C, nC, harSlot, f, style);
+    let t7 = Instant.now();
+    let keepC = List[u32].empty();
+    let backC1 = [backC];
+    var bufsC, backsC, probesC, okC = self.finishJob(device, jobC, &stC, keepC.view(), &backC1);
+    let t8 = Instant.now();
+    self.recordNanos = self.recordNanos + t7.since(t6).nanos();
+    self.gpuNanos = self.gpuNanos + t8.since(t7).nanos();
+    if !okC { return Error[Spoken, String](String.from("texttospeech: a kernel refused its arguments or failed on the GPU (stage C)")); }
+    appendProbes(&mut probes, probesC);
+
+    // ---- the inverse STFT, on the CPU ----
+    let audio = istft(backsC[0usize].view(), lh);
+    self.cpuNanos = self.cpuNanos + Instant.now().since(t8).nanos();
+    // the harmonic source and its STFT are test material too
+    if debug {
+      probes.push(Probe(String.from("har_source"), harSource));
+      probes.push(Probe(String.from("har"), har));
+    }
+    Ok[Spoken, String](Spoken(audio, durations, f0, probes))
+  }
+}
+
+// The last buffer of a list (an empty one if it has none, which a stage's own count rules out)
+fn popBuffer(l: &mut List[Buffer], device: &mut Device) Buffer {
+  match l.pop() {
+    case var Some(b) { b }
+    case is None { zeroed(device, 1usize) }
+  }
+}
+
+fn appendProbes(target: &mut List[Probe], extra: List[Probe]) {
+  var all = extra;
+  var d = all.drain();
+  var more = true;
+  while more {
+    match d.next() {
+      case var Some(p) { target.push(p); }
+      case is None { more = false; }
+    }
+  }
+}
+
+// "<prefix><group><j><suffix>"
+fn tname(prefix: &str, group: &str, j: usize, suffix: &str) String {
+  var s = String.from(prefix);
+  s <- group;
+  s <- u64.from(j);
+  s <- suffix;
+  s
+}

@@ -1,0 +1,337 @@
+// ======== Tokens and parts of speech, standing in for spaCy ========
+//
+// misaki gets its tokens and tags from spaCy's en_core_web_sm, a Python neural tagger. This file makes the same
+// kind of tokens (a word, a number, each piece of punctuation) with a tag for each from a word list, the shape of
+// the word and the words around it. The tag matters to the lexicon in a few places only: the ~800 words whose
+// pronunciation depends on it (read, live, lead, record...), "a", "the", "to", "in", "I", currency amounts and
+// proper nouns. Where this tagger and spaCy disagree on one of those words the phonemes differ; the check against
+// misaki lists every such sentence.
+
+let OPEN_BRACKETS: &str = "([{";
+let CLOSE_BRACKETS: &str = ")]}";
+let OPEN_QUOTES: &str = "\"“‘'`«";
+let CLOSE_QUOTES: &str = "\"”’'»";
+let SUFFIX_PUNCT: &str = ".,!?;:…)]}\"”’'»%";
+let PREFIX_PUNCT: &str = "([{\"“‘'`«$£€¥#…~";
+
+let ABBREVIATIONS: &str = " mr. mrs. ms. dr. st. jr. sr. prof. vs. etc. inc. ltd. co. corp. gen. col. lt. sgt. capt. mt. ft. e.g. i.e. a.m. p.m. u.s. u.k. no. approx. dept. est. fig. govt. messrs. mme. rev. hon. gov. sen. rep. cf. ca. al. ph.d. u.s.a. d.c. ";
+
+let DETERMINERS: &str = " a an the this these those each every some any no another both either neither ";
+let PREPOSITIONS: &str = " of in on at by for with from about as into through over under after before between among during without within against along across behind beyond near than if because while although though since until unless whether upon toward towards per via despite around above below off out up down onto beside besides except ";
+let CONJUNCTIONS: &str = " and or but nor plus ";
+let PRONOUNS: &str = " i you he she it we they me him us them myself yourself himself herself itself ourselves themselves ";
+let POSSESSIVES: &str = " my your his her its our their ";
+let MODALS: &str = " can could will would shall should may might must can't couldn't won't wouldn't shouldn't mustn't shan't mightn't ";
+let WH_ADVERBS: &str = " when where why how whenever wherever ";
+let WH_PRONOUNS: &str = " who whom what whoever ";
+let ADVERBS: &str = " not never always often also just only very quite too still already even ever here now then soon almost really maybe perhaps again once twice yet however therefore meanwhile finally first next suddenly quietly quickly slowly well far less most more so ";
+let BE_FORMS: &str = " is are am was were be been being ";
+let HAVE_FORMS: &str = " have has had having ";
+let PAST_MARKERS: &str = " yesterday ago last earlier ";
+let INTERJECTIONS: &str = " hello hi yes no oh please thanks hey ah wow okay ok ";
+let NUMBER_WORDS: &str = " hundred thousand million billion trillion zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty thirty forty fifty sixty seventy eighty ninety ";
+let LEADING_NOUN_MODIFIERS: &str = "";
+
+fn listHas(list: &str, w: &str) bool {
+  let mut_probe = String.from(" ");
+  var s = mut_probe;
+  s <- w;
+  s <- " ";
+  list.contains(s.view())
+}
+
+fn isOpenBracket(c: u32) bool { inSet(c, OPEN_BRACKETS) }
+fn isCloseBracket(c: u32) bool { inSet(c, CLOSE_BRACKETS) }
+
+fn isNumberLike(w: &str) bool {
+  if w.len() == 0usize { return false; }
+  var digits = 0usize;
+  each c in w.chars() {
+    let u = u32.from(c);
+    if isDigitCp(u) { digits += 1usize; }
+  }
+  if digits == 0usize { return false; }
+  // digits with , . / - and an ordinal or plural suffix
+  each c in w.chars() {
+    let u = u32.from(c);
+    if !(isDigitCp(u) || inSet(u, ",./-%:") || isLetterCp(u)) { return false; }
+  }
+  true
+}
+
+// A punctuation token's tag
+fn punctTag(text: &str, atWordStart: bool) String {
+  let c = cp(text);
+  if text == "," { return String.from(","); }
+  if text == "." || text == "!" || text == "?" { return String.from("."); }
+  if text == ":" || text == ";" || text == "…" || text == "..." || text == "—" || text == "–" || text == "-" || text == "--" {
+    return String.from(":");
+  }
+  if isOpenBracket(c) { return String.from("-LRB-"); }
+  if isCloseBracket(c) { return String.from("-RRB-"); }
+  if inSet(c, "“‘`«") { return String.from("``"); }
+  if inSet(c, "”’»") { return String.from("''"); }
+  if inSet(c, "\"'") { return String.from(if atWordStart { "``" } else { "''" }); }
+  if text == "$" || text == "£" || text == "€" || text == "¥" { return String.from("$"); }
+  if text == "#" { return String.from("#"); }
+  String.from("NFP")
+}
+
+fn isAbbreviation(core: &str) bool {
+  let low = lowerText(core);
+  // the single letters with a period (initials) and the list
+  if low.charCount() == 2usize && low.endsWith(".") { return true; }
+  if listHas(ABBREVIATIONS, low.view()) { return true; }
+  // single letters each followed by a period: "u.s.a."
+  let cs = codepoints(low.view());
+  if cs.len() < 4usize || cs.len() % 2usize != 0usize { return false; }
+  var k = 0usize;
+  while k < cs.len() {
+    if !isLetterCp(*cs[k]) || *cs[k + 1usize] != 46u32 { return false; }
+    k = k + 2usize;
+  }
+  true
+}
+
+// Split text into tokens: a chunk at a time, its leading and trailing punctuation off, its core a word
+fn splitChunks(text: &str) List[Tok] {
+  var toks = List[Tok].empty();
+  let cs = codepoints(text);
+  var i = 0usize;
+  let n = cs.len();
+  while i < n {
+    while i < n && isSpaceCp(*cs[i]) { i = i + 1usize; }
+    if i >= n { break; }
+    var j = i;
+    while j < n && !isSpaceCp(*cs[j]) { j = j + 1usize; }
+    let followedBySpace = j < n;
+    // the chunk is cs[i..j)
+    var a = i;
+    var b = j;
+    var prefixes = List[Tok].empty();
+    while a < b && inSet(*cs[a], PREFIX_PUNCT) {
+      // a quote or bracket opens; an apostrophe followed by a letter and ending a word ("'em") stays a prefix too
+      let t = textOfRange(cs.view(), a, a + 1usize);
+      let tg = punctTag(t.view(), true);
+      prefixes.push(Tok.make(t, tg, false));
+      a = a + 1usize;
+    }
+    var suffixes = List[Tok].empty();
+    var stop = false;
+    while !stop && b > a {
+      let c = *cs[b - 1usize];
+      if !inSet(c, SUFFIX_PUNCT) { stop = true; }
+      else if c == 46u32 && b - 1usize > a && *cs[b - 2usize] == 46u32 {
+        // a run of periods is one token
+        var s = b - 1usize;
+        while s > a && *cs[s - 1usize] == 46u32 { s = s - 1usize; }
+        let t = textOfRange(cs.view(), s, b);
+        suffixes.push(Tok.make(t, String.from(":"), false));
+        b = s;
+      } else if c == 46u32 {
+        // a period ends the word unless the word is an abbreviation, or the period is inside a number
+        let core = textOfRange(cs.view(), a, b);
+        if isAbbreviation(core.view()) { stop = true; }
+        else {
+          let t = textOfRange(cs.view(), b - 1usize, b);
+          suffixes.push(Tok.make(t, String.from("."), false));
+          b = b - 1usize;
+        }
+      } else if c == 37u32 && b - 1usize > a && isDigitCp(*cs[b - 2usize]) {
+        // a percent sign after a number is a token of its own
+        let t = textOfRange(cs.view(), b - 1usize, b);
+        suffixes.push(Tok.make(t, String.from("NN"), false));
+        b = b - 1usize;
+      } else if c == 37u32 {
+        stop = true;
+      } else if (c == 39u32 || c == 8217u32) && b - 1usize > a && (*cs[b - 2usize] == 115u32 || *cs[b - 2usize] == 83u32) {
+        // dogs': the word keeps it (a possessive; the lexicon rules read "s'")
+        stop = true;
+      } else {
+        let t = textOfRange(cs.view(), b - 1usize, b);
+        let tg = punctTag(t.view(), false);
+        suffixes.push(Tok.make(t, tg, false));
+        b = b - 1usize;
+      }
+    }
+    // push in order
+    var pi = 0usize;
+    while pi < prefixes.len() { toks.push(prefixes[pi].copy()); pi = pi + 1usize; }
+    if b > a {
+      // the core, cut at hyphens between letters (spaCy's infix rule); each piece is tagged later
+      var segStart = a;
+      var k = a;
+      while k < b {
+        if *cs[k] == 45u32 && k > a && k + 1usize < b && isLetterCp(*cs[k - 1usize]) && isLetterCp(*cs[k + 1usize]) {
+          toks.push(Tok.make(textOfRange(cs.view(), segStart, k), String.empty(), false));
+          toks.push(Tok.make(String.from("-"), String.from("HYPH"), false));
+          segStart = k + 1usize;
+        }
+        k = k + 1usize;
+      }
+      toks.push(Tok.make(textOfRange(cs.view(), segStart, b), String.empty(), false));
+    }
+    var si = suffixes.len();
+    while si > 0usize { si = si - 1usize; toks.push(suffixes[si].copy()); }
+    // whitespace after the chunk goes on its last token
+    if toks.len() > 0usize {
+      let last = toks.len() - 1usize;
+      toks[last].ws = followedBySpace;
+    }
+    i = j;
+  }
+  toks
+}
+
+// Whether the token is a punctuation or symbol token (tagged already)
+fn hasTag(t: &Tok) bool { t.tag.len() > 0usize }
+
+fn isLikelyPast(w: &str) bool { w.endsWith("ed") && w.len() > 3usize }
+
+// Tag the tokens whose tag is still empty
+fn tagWords(toks: &mut List[Tok], lex: &Lexicon) {
+  let n = toks.len();
+  var i = 0usize;
+  var sentenceStart = true;
+  var prevTag = String.empty();
+  var prevWord = String.empty();
+  var sawPastMarker = false;
+  while i < n {
+    if hasTag(toks[i]) {
+      let tg = toks[i].tag.view();
+      if tg == "." { sentenceStart = true; }
+      prevTag = toks[i].tag.copy();
+      prevWord = lowerText(toks[i].text.view());
+      i = i + 1usize;
+      continue;
+    }
+    let text = toks[i].text.copy();
+    let lw = lowerText(text.view());
+    let first = cp(text.view());
+    let capital = isUpperCp(first);
+    var nextWord = String.empty();
+    var nextIsWord = false;
+    if i + 1usize < n {
+      nextWord = lowerText(toks[i + 1usize].text.view());
+      nextIsWord = !hasTag(toks[i + 1usize]);
+    }
+    var tag = "NN";
+    let isDict = lex.hasTaggedEntry(lw.view());
+    if isNumberLike(text.view()) {
+      tag = "CD";
+      let low = lw.view();
+      if low.endsWith("st") || low.endsWith("nd") || low.endsWith("rd") || low.endsWith("th") { tag = "JJ"; }
+    } else if text.charCount() >= 2usize && text.view() == upperText(text.view()).view() && isAlphaText(text.view())
+        && !listHas(" THE TO IN AN AND OR BUT OF ON AT BY FOR WITH AS IS IF SO NO OK ", text.view()) {
+      // an acronym (a shouted function word is left to the word lists below)
+      tag = "NNP";
+    } else if listHas(DETERMINERS, lw.view()) {
+      tag = "DT";
+      if lw.view() == "no" && (sentenceStart || prevTag.view() == ",") && !nextIsWord { tag = "UH"; }
+    } else if lw.view() == "that" {
+      // a demonstrative before a verb of being, or at the start of a clause; "that" after a noun or verb joins clauses
+      var nextHead = String.from(nextWord.view());
+      match nextWord.view().find("'") {
+        case let Some(p) { nextHead = String.from(&nextWord.view()[0usize ..< p]); }
+        case is None {}
+      }
+      let nextIsClause = listHas(PRONOUNS, nextHead.view()) || listHas(DETERMINERS, nextHead.view()) || listHas(PREPOSITIONS, nextHead.view())
+        || listHas(MODALS, nextHead.view()) || listHas(BE_FORMS, nextHead.view()) || listHas(HAVE_FORMS, nextHead.view()) || listHas(CONJUNCTIONS, nextHead.view())
+        || listHas(ADVERBS, nextHead.view()) || listHas(POSSESSIVES, nextHead.view()) || nextHead.len() == 0usize;
+      let afterCognition = listHas(" said say says know knew think thought believe hope sure so such now given saw see felt feel found find learned noticed realized mean meant means ensure insist claim claimed show shows showed ", prevWord.view());
+      let timeWord = listHas(" morning evening night day week year time moment afternoon weekend summer winter ", nextWord.view());
+      if timeWord { tag = "DT"; }
+      else if prevTag.view() == "VBD" || prevTag.view() == "VBN" { tag = "IN"; }
+      else if sentenceStart || prevTag.view() == "," || nextWord.view() == "is" || nextWord.view() == "was" || nextWord.view() == "'s" || nextWord.view() == "are" {
+        tag = "DT";
+      } else if prevTag.startsWith("NN") || listHas(" everything something anything nothing all one someone anyone everyone ", prevWord.view()) { tag = "WDT"; }
+      else if !nextIsClause && !afterCognition { tag = "DT"; }
+      else { tag = "IN"; }
+    } else if lw.view() == "to" {
+      tag = "TO";
+    } else if listHas(PREPOSITIONS, lw.view()) {
+      tag = "IN";
+      if (lw.view() == "up" || lw.view() == "down" || lw.view() == "out" || lw.view() == "off") && !(nextIsWord && listHas(DETERMINERS, nextWord.view())) { tag = "RP"; }
+      if (lw.view() == "in" || lw.view() == "on" || lw.view() == "out" || lw.view() == "over" || lw.view() == "around") && (nextWord.view() == "here" || nextWord.view() == "there") { tag = "RB"; }
+    } else if listHas(CONJUNCTIONS, lw.view()) {
+      tag = "CC";
+    } else if listHas(PRONOUNS, lw.view()) {
+      tag = "PRP";
+    } else if listHas(POSSESSIVES, lw.view()) {
+      tag = "PRP$";
+      if lw.view() == "her" && (!nextIsWord || nextWord.len() == 0usize) { tag = "PRP"; }
+    } else if listHas(MODALS, lw.view()) {
+      tag = "MD";
+    } else if listHas(WH_ADVERBS, lw.view()) {
+      tag = "WRB";
+    } else if listHas(WH_PRONOUNS, lw.view()) {
+      tag = "WP";
+    } else if lw.view() == "which" {
+      tag = "WDT";
+    } else if lw.view() == "there" && listHas(BE_FORMS, nextWord.view()) {
+      tag = "EX";
+    } else if lw.view() == "is" || lw.view() == "has" || lw.view() == "does" {
+      tag = "VBZ";
+    } else if lw.view() == "are" || lw.view() == "am" || lw.view() == "have" || lw.view() == "do" {
+      tag = "VBP";
+    } else if lw.view() == "was" || lw.view() == "were" || lw.view() == "had" || lw.view() == "did" {
+      tag = "VBD";
+    } else if lw.view() == "be" {
+      tag = "VB";
+    } else if lw.view() == "been" {
+      tag = "VBN";
+    } else if listHas(INTERJECTIONS, lw.view()) && (sentenceStart || prevTag.view() == ",") {
+      tag = "UH";
+    } else if listHas(ADVERBS, lw.view()) || (lw.endsWith("ly") && lw.len() > 3usize) {
+      tag = "RB";
+    } else if capital && !sentenceStart && !isDict {
+      tag = "NNP";
+    } else if capital && sentenceStart && !lex.knowsWord(lw.view()) {
+      tag = "NNP";
+    } else if isDict {
+      // a word that is a noun or a verb depending on its place
+      let afterTo = prevTag.view() == "TO" || prevTag.view() == "MD" || prevWord.view() == "please";
+      let afterSubject = prevTag.view() == "PRP" || (prevTag.startsWith("NNS") || prevTag.view() == "NNP")
+        || listHas(" people children men women police ", prevWord.view());
+      let afterDeterminer = prevTag.view() == "DT" || prevTag.view() == "PRP$" || prevTag.view() == "JJ" || prevTag.view() == "CD" || prevTag.view() == "IN" && false;
+      let afterNot = prevWord.view() == "not" || prevWord.view() == "never" || prevWord.view() == "n't";
+      let afterHave = listHas(HAVE_FORMS, prevWord.view()) || prevWord.view() == "been" || prevWord.view() == "was" || prevWord.view() == "were" || prevWord.view() == "is" || prevWord.view() == "are" || prevWord.view() == "be";
+      if isLikelyPast(lw.view()) && !afterDeterminer { tag = if afterHave { "VBN" } else { "VBD" }; }
+      else if afterHave && isLikelyPast(lw.view()) { tag = "VBN"; }
+      else if afterHave && (lw.view() == "read" || lw.view() == "wound") { tag = "VBN"; }
+      else if afterTo || afterNot { tag = "VB"; }
+      else if afterDeterminer { tag = "NN"; }
+      else if afterSubject {
+        tag = if lw.endsWith("s") && !(lw.view() == "use" || lw.view() == "close") { "VBZ" } else { "VBP" };
+        if prevWord.view() == "he" || prevWord.view() == "she" || prevWord.view() == "it" { tag = "VBZ"; }
+        if sawPastMarker && (lw.view() == "read" || lw.view() == "wound") { tag = "VBD"; }
+      }
+      else if lw.endsWith("s") { tag = "NNS"; }
+      else { tag = "NN"; }
+    } else if (listHas(" i you we they he she ", prevWord.view()) || prevTag.view() == "TO" || prevTag.view() == "MD") && !capital {
+      // a word straight after a subject pronoun, or after "to" or a modal, is a verb
+      tag = if prevWord.view() == "he" || prevWord.view() == "she" { "VBZ" } else if prevTag.view() == "PRP" { "VBP" } else { "VB" };
+      if isLikelyPast(lw.view()) { tag = "VBD"; }
+    } else if lw.endsWith("ing") && lw.len() > 4usize {
+      tag = if prevTag.view() == "DT" || prevTag.view() == "PRP$" { "NN" } else { "VBG" };
+    } else if isLikelyPast(lw.view()) {
+      tag = if listHas(HAVE_FORMS, prevWord.view()) || listHas(BE_FORMS, prevWord.view()) { "VBN" } else { "VBD" };
+    } else if lw.endsWith("s") && lw.len() > 3usize && !lw.endsWith("ss") {
+      tag = if prevTag.view() == "PRP" || prevTag.view() == "NN" || prevTag.view() == "NNP" { "VBZ" } else { "NNS" };
+      if prevTag.view() == "DT" || prevTag.view() == "JJ" || prevTag.view() == "PRP$" || prevTag.view() == "IN" { tag = "NNS"; }
+    }
+    if listHas(PAST_MARKERS, lw.view()) { sawPastMarker = true; }
+    toks[i].tag = String.from(tag);
+    sentenceStart = false;
+    prevTag = String.from(tag);
+    prevWord = lw;
+    i = i + 1usize;
+  }
+}
+
+// Text to tokens with tags
+pub fn tokenize(text: &str, lex: &Lexicon) List[Tok] {
+  var toks = splitChunks(text);
+  tagWords(&mut toks, lex);
+  toks
+}
