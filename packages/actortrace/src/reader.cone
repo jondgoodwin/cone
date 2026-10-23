@@ -243,15 +243,18 @@ pub fn summarize(p: *u8, n: usize, show: bool, check: bool) Summary {
       printStr(", mean "); printFloat(ticksToNs(e.value.busy / (if e.value.runs == 0u64 {1u64} else {e.value.runs}), s.freq));
       printStr(" ns\n");
     }
-    printStr("busiest actors (number, runs, share of the run time):\n");
+    printStr("busiest actors (number, runs, ticks running):\n");
     var shown = 0u32;
     var floor = 0xFFFFFFFFFFFFFFFFu64;
+    var lastKey = 0u64;
     while shown < 8u32 {
       var best = 0u64;
       var bestRuns = 0u64;
       var bestBusy = 0u64;
       each e in perActor.entries() {
-        if e.value.runs < floor && e.value.runs > bestRuns {
+        // next in order of runs, most first, ties by actor number
+        let after = e.value.runs < floor || (e.value.runs == floor && e.key > lastKey);
+        if after && (e.value.runs > bestRuns || (e.value.runs == bestRuns && e.key < best)) {
           best = e.key;
           bestRuns = e.value.runs;
           bestBusy = e.value.busy;
@@ -263,6 +266,7 @@ pub fn summarize(p: *u8, n: usize, show: bool, check: bool) Summary {
       printStr("  actor "); printUInt(best); printStr(": runs "); printUInt(bestRuns);
       printStr(", ticks "); printUInt(bestBusy); printStr("\n");
       floor = bestRuns;
+      lastKey = best;
       shown = shown + 1u32;
     }
   }
@@ -271,7 +275,7 @@ pub fn summarize(p: *u8, n: usize, show: bool, check: bool) Summary {
 
 fn printNs(label: &str, t: u64, freq: u64) {
   printStr(label);
-  printFloat(ticksToNs(t, freq));
+  printUInt(u64.from(ticksToNs(t, freq)));
   printStr(" ns\n");
 }
 
