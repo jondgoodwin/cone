@@ -9,6 +9,7 @@ the speaker has finished a sentence.
 src/voiceaudio.cone  overview and imports
 src/device.cone      Driver, Microphone, Speaker
 src/vad.cone         VadConfig, Vad, Utterance
+src/interrupt.cone   Interrupt: Ctrl-C for a loop of the program's own (SDL's audio swallows it; the header says why)
 src/files.cone       raw f32 and WAV files, linear resampling, channel and span helpers
 src/signals.cone     noise, a speech-like voice and a tone with known edges (for tests)
 examples/echo.cone   listen, print each utterance, play it back, barge in (needs a named driver)

@@ -1,0 +1,290 @@
+// ======== Where a spoken turn ends ========
+//
+// THE PROBLEM. A person thinking aloud stops mid-sentence ("I was asking you to ... pick it up from the ..."). A detector that
+// ends the turn after a fixed silence (600 ms) answers each fragment, and the next fragment then interrupts the answer.
+//
+// THE RULE. The detector (voiceaudio's Vad) ends an utterance after a short silence, `endSilenceMs` (400 by default). The
+// utterance is not yet a turn: Parakeet transcribes what the turn holds so far, and its punctuation decides.
+//   - the text ends with a full stop, a question mark or an exclamation mark: the person finished a sentence, and the turn ends
+//     now (after the short silence already waited);
+//   - it ends any other way (a comma, a word with no mark, "...", a hesitation): the turn stays open. If speech begins again
+//     before `unfinishedSilenceMs` (1500 by default) of silence has passed since the speech ended, the new utterance is joined to
+//     the turn, the whole turn is transcribed again (so the second half has the first half's words to go on, and the marks in
+//     the first half are what Parakeet makes of the whole) and the rule is applied again. If it does not, the turn ends at
+//     that longer silence, as it is.
+// Setting `unfinishedSilenceMs` equal to `endSilenceMs` gives the old behaviour: every utterance is a turn.
+//
+// Also decided here: the text of a turn that is only a filler ("Um.", "uh-huh") is not a turn and is ignored (judgement call:
+// Parakeet hears the filler and writes it, and the model would answer it); and the whole text of a turn that is a goodbye
+// (`isGoodbye`) ends the session, and ends the turn at once whatever its punctuation.
+//
+// JOINING. The detector throws away the silence between two utterances, so the turn's audio is the first utterance's samples,
+// then a stretch of the room's own noise (the quiet just before the second utterance's speech, repeated) as long as the silence
+// was (at most `MAX_GAP_MS`), then the second utterance's samples. Digital zeros would stand in for the pause badly (Parakeet
+// normalises each feature over the whole utterance), and the real pause length is what its punctuation responds to.
+//
+// `HeardTurn` is the state of one turn in progress; `turnsIn` runs the whole rule over a recording (for the tests and the
+// measurement example), with the same calls the live loop makes.
+
+// The longest silence put between two utterances of one turn
+pub const MAX_GAP_MS = 3000u32;
+
+// ---- text rules
+
+// Does the text end a sentence: its last mark (past white space, quotes and closing brackets) is a '.', '?' or '!'? Two or
+// more dots ("...") are a voice trailing off, not an end; so is the single character for an ellipsis.
+pub fn endsSentence(text: &str) bool {
+  let b = text.bytes();
+  var n = b.len;
+  while n > 0usize && (isSpace(b[n - 1usize]) || b[n - 1usize] == 0x22u8 || b[n - 1usize] == 0x27u8 || b[n - 1usize] == ')' || b[n - 1usize] == ']') {
+    n = n - 1usize;
+  }
+  if n == 0usize { return false; }
+  let c = b[n - 1usize];
+  if c == '?' || c == '!' { return true; }
+  if c == '.' {
+    if n >= 2usize && b[n - 2usize] == '.' { return false; }
+    return true;
+  }
+  false
+}
+
+// The words of a text: letters and digits in lower case, apostrophes dropped, anything else between words
+fn wordsOf(text: &str) List[String] {
+  var out = List[String].empty();
+  var cur = List[u8].empty();
+  let b = text.bytes();
+  var i = 0usize;
+  while i < b.len {
+    let c = b[i];
+    if isLetter(c) || isDigit(c) {
+      var d = c;
+      if c >= 'A' && c <= 'Z' { d = c + 32u8; }
+      cur.push(d);
+    } else if c != 0x27u8 {
+      if cur.len() > 0usize {
+        out.push(String.fromBytes(cur.view()));
+        cur.clear();
+      }
+    }
+    i = i + 1usize;
+  }
+  if cur.len() > 0usize { out.push(String.fromBytes(cur.view())); }
+  out
+}
+
+fn isFillerWord(w: &str) bool {
+  w == "um" || w == "umm" || w == "uh" || w == "uhm" || w == "er" || w == "erm" || w == "ah" || w == "hm" || w == "hmm" ||
+      w == "mm" || w == "mmm" || w == "mhm" || w == "huh"
+}
+
+// A text of nothing but hesitation sounds ("Um.", "Uh, uh.", "Hmm.")
+pub fn isFiller(text: &str) bool {
+  let w = wordsOf(text);
+  if w.len() == 0usize { return false; }
+  var i = 0usize;
+  while i < w.len() {
+    if !isFillerWord(w[i].view()) { return false; }
+    i = i + 1usize;
+  }
+  true
+}
+
+fn isOpeningWord(w: &str) bool { w == "ok" || w == "okay" || w == "alright" || w == "well" || w == "so" || w == "right" || w == "um" || w == "uh" }
+
+fn isClosingWord(w: &str) bool { w == "now" || w == "please" }
+
+// Is the whole turn a goodbye? After lower-casing and dropping punctuation, the words are "goodbye", "good bye", "bye", "bye bye"
+// or "stop", with at most an opening word (ok, okay, alright, well, so, right, um, uh) before and "now" or "please" after:
+// "Goodbye!", "OK, stop.", "Bye bye.", "Stop now." end the session. A sentence that merely holds the word ("don't stop
+// there", "I'll stop by later", "stop, I wasn't finished", "goodbye is a sad word") does not.
+pub fn isGoodbye(text: &str) bool {
+  let w = wordsOf(text);
+  var from = 0usize;
+  var to = w.len();
+  while from < to && isOpeningWord(w[from].view()) { from = from + 1usize; }
+  while to > from && isClosingWord(w[to - 1usize].view()) { to = to - 1usize; }
+  let n = to - from;
+  if n == 1usize {
+    let a = w[from].view();
+    return a == "goodbye" || a == "bye" || a == "stop";
+  }
+  if n == 2usize {
+    let a = w[from].view();
+    let b = w[from + 1usize].view();
+    return (a == "good" && b == "bye") || (a == "bye" && b == "bye");
+  }
+  false
+}
+
+// ---- the turn in progress
+
+pub struct HeardTurn {
+  audio: List[f32];
+  offset: usize;           // the input sample index of audio[0]
+  startAt: usize;          // where the first speech began
+  endAt: usize;            // where the latest speech ended
+  count: usize;            // utterances joined
+  forced: bool;            // the latest was cut by the detector's longest-utterance limit
+  pub text: String;        // the transcript of everything joined so far (`hear` sets it)
+  pub ends: bool;          // and whether that text ends the turn (`hear` sets it)
+
+  pub fn empty() HeardTurn {
+    HeardTurn(List[f32].empty(), 0usize, 0usize, 0usize, 0usize, false, String.empty(), false)
+  }
+
+  pub fn isEmpty(self: &) bool { count == 0usize }
+
+  // How many utterances the turn holds
+  pub fn pieces(self: &) usize { count }
+
+  // Samples of audio held
+  pub fn length(self: &) usize { audio.len() }
+
+  // The input sample index where the first speech began and the latest ended
+  pub fn firstSpeech(self: &) usize { startAt }
+  pub fn lastSpeech(self: &) usize { endAt }
+
+  pub fn clear(self: &mut) {
+    audio.clear();
+    offset = 0usize;
+    startAt = 0usize;
+    endAt = 0usize;
+    count = 0usize;
+    forced = false;
+    text = String.empty();
+    ends = false;
+  }
+
+  // Join an utterance (at 'rate' samples a second) to the turn
+  pub fn add(self: &mut, u: &voiceaudio.Utterance, rate: u32) {
+    if count == 0usize {
+      audio.clear();
+      var i = 0usize;
+      while i < u.samples.len() { audio.push(*u.samples[i]); i = i + 1usize; }
+      offset = u.offset;
+      startAt = u.start;
+    } else {
+      let have = offset + audio.len();
+      var from = 0usize;
+      if u.offset >= have {
+        var gap = u.offset - have;
+        let most = usize.from(MAX_GAP_MS) * usize.from(rate) / 1000usize;
+        if gap > most { gap = most; }
+        // the quiet just before the speech of 'u' (its pre-roll), repeated to fill the gap
+        var quiet = 0usize;
+        if u.start > u.offset { quiet = u.start - u.offset; }
+        if quiet > u.samples.len() { quiet = u.samples.len(); }
+        var k = 0usize;
+        while k < gap {
+          if quiet > 0usize { audio.push(*u.samples[k % quiet]); } else { audio.push(0.0f); }
+          k = k + 1usize;
+        }
+      } else {
+        from = have - u.offset;
+      }
+      var i = from;
+      while i < u.samples.len() { audio.push(*u.samples[i]); i = i + 1usize; }
+    }
+    endAt = u.end;
+    forced = u.forced;
+    count = count + 1usize;
+  }
+
+  // Transcribe the whole turn and decide whether its text ends it
+  pub fn hear(self: &mut, device: &mut Device, stt: &mut speechtotext.Parakeet) Result[void, String] {
+    // the audio is moved out for the call, so that no borrow of this turn is held while Parakeet runs
+    var mine = List[f32].empty();
+    mine <-> audio;
+    var failed = String.empty();
+    var ok = true;
+    match stt.transcribe(device, mine.view()) {
+      case let Ok(r) { text = r.text.trim(); }
+      case let Error(m) { failed = m.copy(); ok = false; }
+    }
+    mine <-> audio;
+    if !ok { return Error[void, String](failed); }
+    ends = forced || isGoodbye(text.view()) || endsSentence(text.view());
+    Ok[void, String](nil)
+  }
+
+  // Is the turn over? 'analysed' is how much input the detector has gone through (it counts the silence, whatever the loop
+  // was busy with), 'speaking' whether the detector is inside an utterance now. A turn whose text ends a sentence is over after
+  // 'endMs' of silence, any other after 'unfinishedMs'.
+  pub fn due(self: &, analysed: usize, speaking: bool, rate: u32, endMs: u32, unfinishedMs: u32) bool {
+    if count == 0usize || speaking { return false; }
+    if forced { return true; }
+    var ms = unfinishedMs;
+    if ends || ms < endMs { ms = endMs; }
+    var silent = 0usize;
+    if analysed > endAt { silent = analysed - endAt; }
+    // one detector frame (20 ms) of slack: the detector ends an utterance on a whole number of frames
+    silent + usize.from(rate) / 50usize >= usize.from(ms) * usize.from(rate) / 1000usize
+  }
+}
+
+// ---- a recording through the rule
+
+// What a recording makes of the rule: each turn's text, and the seconds (of the recording) at which each ended
+pub struct Turns {
+  pub texts: List[String];
+  pub endedAt: List[f64];
+}
+
+// Run the turn rule over 16 kHz 'samples' as the live loop does (the samples arrive 20 ms at a time; the detector's silence is
+// the stream's, not the clock's). 'endMs' and 'unfinishedMs' as in `due`. The recording should end with enough silence to
+// end the last turn (`unfinishedMs` and a little more). A text that is only a filler, or has no letter, is dropped as the
+// loop drops it; a goodbye is a turn like another (the caller can ask `isGoodbye`).
+pub fn turnsIn(device: &mut Device, stt: &mut speechtotext.Parakeet, samples: &Array[f32], endMs: u32, unfinishedMs: u32, trailMs: u32) Result[Turns, String] {
+  let rate = 16000u32;
+  var cfg = voiceaudio.VadConfig.standard(rate);
+  cfg.hangoverMs = endMs;
+  cfg.trailMs = trailMs;
+  var vad = voiceaudio.Vad.make(cfg);
+  var heard = List[voiceaudio.Utterance].empty();
+  var turn = HeardTurn.empty();
+  var out = Turns(List[String].empty(), List[f64].empty());
+  let step = 320usize;
+  var at = 0usize;
+  while at < samples.len {
+    var n = step;
+    if at + n > samples.len { n = samples.len - at; }
+    vad.push(mem.sliceFromParts[f32]((&samples[at] as *f32), n), &mut heard);
+    at = at + n;
+    if heard.len() > 0usize {
+      {
+        let hv = heard.view();
+        var i = 0usize;
+        while i < hv.len { turn.add(&hv[i], rate); i = i + 1usize; }
+      }
+      heard.clear();
+      match turn.hear(device, stt) {
+        case is Ok {}
+        case let Error(m) { return Error[Turns, String](m.copy()); }
+      }
+      if !containsLetter(turn.text.view()) || isFiller(turn.text.view()) { turn.clear(); }
+    }
+    if !turn.isEmpty() && turn.due(vad.analysed(), vad.speaking(), rate, endMs, unfinishedMs) {
+      out.texts.push(turn.text.copy());
+      out.endedAt.push(f64.from(vad.analysed()) / 16000.0);
+      turn.clear();
+    }
+  }
+  vad.flush(&mut heard);
+  if heard.len() > 0usize {
+    {
+      let hv = heard.view();
+      var i = 0usize;
+      while i < hv.len { turn.add(&hv[i], rate); i = i + 1usize; }
+    }
+    match turn.hear(device, stt) {
+      case is Ok {}
+      case let Error(m) { return Error[Turns, String](m.copy()); }
+    }
+  }
+  if !turn.isEmpty() && containsLetter(turn.text.view()) && !isFiller(turn.text.view()) {
+    out.texts.push(turn.text.copy());
+    out.endedAt.push(f64.from(samples.len) / 16000.0);
+  }
+  Ok[Turns, String](out)
+}

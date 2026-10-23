@@ -1,0 +1,192 @@
+// turnsplit: how many turns a recording is cut into by the turn rule (turns.cone), with no language model, no speech synthesis
+// and no sound. For each WAV file (any rate; it is made mono 16 kHz) and each --config, the file goes through voicechat's
+// detector and turn rule exactly as the live loop runs them, with Parakeet on the GPU, and one line is printed:
+//
+//   file <TAB> end <TAB> unfinished <TAB> number of turns <TAB> the turns' texts joined by " | " <TAB> seconds each ended <TAB> trail
+//
+// and, once per file, the line `file <TAB> whole <TAB> <TAB> <TAB> Parakeet's text for the whole file at once`.
+//
+//   congo run --release examples/turnsplit.cone -- a.wav b.wav --config 600:600 --config 400:400 --config 400:1500
+//
+// --list <file> reads more WAV paths from a text file, one a line. --config <end ms>:<unfinished ms>[:<trail ms>] (the trail is the quiet kept on an utterance's end, the end silence unless given; repeatable; default 400:1500). 600:600 is the detector alone with the old 600 ms
+// silence: every utterance a turn. Needs Parakeet's files (--stt-model, --stt-vocab, default C:\src\speech-models).
+
+mod turnsplit;
+
+import stdio use *;
+import collections use List, String;
+import path use Path;
+import process;
+import fs;
+import gpu use *;
+import speechtotext;
+import voiceaudio;
+import voicechat use *;
+
+fn say(msg: &str) { eprintStr(msg); }
+
+fn argValue(args: &List[String], name: &str) Option[String] {
+  var i = 0usize;
+  while i + 1usize < args.len() {
+    if args[i].view() == name { return Some[String](args[i + 1usize].copy()); }
+    i = i + 1usize;
+  }
+  None
+}
+
+fn seconds2(x: f64) String {
+  let h = u64.from(x * 100.0 + 0.5);
+  var s = String.empty();
+  s <- h / 100u64;
+  s <- ".";
+  let f = h % 100u64;
+  if f < 10u64 { s <- "0"; }
+  s <- f;
+  s
+}
+
+fn main() i32 {
+  let args = process.args();
+  var model = String.from("C:\\src\\speech-models\\parakeet-tdt-0.6b-v2.f16.safetensors");
+  var vocab = String.from("C:\\src\\speech-models\\parakeet-tdt-0.6b-v2.vocab.txt");
+  match argValue(&args, "--stt-model") { case var Some(p) { model = p; } case is None {} }
+  match argValue(&args, "--stt-vocab") { case var Some(p) { vocab = p; } case is None {} }
+  var files = List[String].empty();
+  var ends = List[u32].empty();
+  var unfinished = List[u32].empty();
+  var trails = List[u32].empty();
+  var i = 1usize;
+  while i < args.len() {
+    let a = args[i].view();
+    if a == "--stt-model" || a == "--stt-vocab" { i = i + 2usize; continue; }
+    if a == "--list" {
+      // a text file with one WAV path a line
+      if i + 1usize >= args.len() { say("turnsplit: --list needs a file\n"); return 2i32; }
+      match fs.readFile(&Path.from(args[i + 1usize].view())) {
+        case let Ok(s) {
+          let bytes = s.view();
+          var line = List[u8].empty();
+          var j = 0usize;
+          while j <= bytes.len {
+            if j == bytes.len || bytes[j] == '\n' {
+              var n = line.len();
+              while n > 0usize && (*line[n - 1usize] == '\r' || *line[n - 1usize] == ' ') { n = n - 1usize; }
+              if n > 0usize { files.push(String.fromBytes(mem.sliceFromParts[u8]((&line.view()[0usize] as *u8), n))); }
+              line.clear();
+            } else {
+              line.push(bytes[j]);
+            }
+            j = j + 1usize;
+          }
+        }
+        case let Error(e) { say(e.message().view()); say("\n"); return 1i32; }
+      }
+      i = i + 2usize;
+      continue;
+    }
+    if a == "--config" {
+      if i + 1usize >= args.len() { say("turnsplit: --config needs end:unfinished\n"); return 2i32; }
+      let t = args[i + 1usize].view();
+      let b = t.bytes();
+      var x = 0u32;
+      var y = 0u32;
+      var z = 0u32;
+      var colons = 0usize;
+      var k = 0usize;
+      while k < b.len {
+        if b[k] == ':' { colons = colons + 1usize; }
+        else if colons == 2usize { z = z * 10u32 + u32.from(b[k] - '0'); }
+        else if colons == 1usize { y = y * 10u32 + u32.from(b[k] - '0'); }
+        else { x = x * 10u32 + u32.from(b[k] - '0'); }
+        k = k + 1usize;
+      }
+      if colons == 0usize { say("turnsplit: --config needs end:unfinished[:trail]\n"); return 2i32; }
+      if colons == 1usize { z = x; }
+      ends.push(x);
+      unfinished.push(y);
+      trails.push(z);
+      i = i + 2usize;
+      continue;
+    }
+    files.push(args[i].copy());
+    i = i + 1usize;
+  }
+  if files.len() == 0usize { say("usage: turnsplit a.wav [b.wav ...] [--config end:unfinished ...]\n"); return 2i32; }
+  if ends.len() == 0usize { ends.push(400u32); unfinished.push(1500u32); trails.push(400u32); }
+
+  var instance = Instance.createHeadless("turnsplit", false);
+  var none = Surface.none();
+  var adapter = instance.requestAdapter(&none, POWER_PREFERENCE_HIGH_PERFORMANCE);
+  if !adapter.isValid() { say("turnsplit: no GPU with Vulkan 1.3\n"); return 1i32; }
+  var device = adapter.requestComputeDevice(&ComputeRequest(largeBuffers: true));
+  if !device.isValid() { say("turnsplit: the GPU could not be opened for compute\n"); return 1i32; }
+  let modelPath = Path.from(model.view());
+  let vocabPath = Path.from(vocab.view());
+  var stt: speechtotext.Parakeet = match speechtotext.Parakeet.open(&mut device, &modelPath, &vocabPath) {
+    case var Ok(m) { m }
+    case let Error(m) { say(m.view()); say("\n"); return 1i32; }
+  };
+  var status = 0i32;
+  var f = 0usize;
+  while f < files.len() {
+    let name = files[f].view();
+    f = f + 1usize;
+    let samples = match voiceaudio.loadWavMono(&Path.from(name), 16000u32) {
+      case var Ok(s) { s }
+      case let Error(m) { say(name); say(": "); say(m.view()); say("\n"); status = 1i32; continue; }
+    };
+    match stt.transcribe(&mut device, samples.view()) {
+      case let Ok(r) {
+        // and, for the tools that cut recordings at word edges: each token's id and the 80 ms frame it was emitted at
+        var marks = String.empty();
+        var m = 0usize;
+        while m < r.tokens.len() {
+          if m > 0usize { marks <- " "; }
+          marks <- u64.from(*r.tokens[m]);
+          marks <- ":";
+          marks <- u64.from(*r.frames[m]);
+          m = m + 1usize;
+        }
+        printStr(name); printStr("\twhole\t\t\t"); printStr(r.text.view()); printStr("\t"); printStr(marks.view()); printStr("\n");
+      }
+      case let Error(m) { say(m.view()); say("\n"); status = 1i32; continue; }
+    }
+    var c = 0usize;
+    while c < ends.len() {
+      match turnsIn(&mut device, &mut stt, samples.view(), *ends[c], *unfinished[c], *trails[c]) {
+        case let Ok(t) {
+          var line = String.from(name);
+          line <- "\t";
+          line <- u64.from(*ends[c]);
+          line <- "\t";
+          line <- u64.from(*unfinished[c]);
+          line <- "\t";
+          line <- u64.from(t.texts.len());
+          line <- "\t";
+          var k = 0usize;
+          while k < t.texts.len() {
+            if k > 0usize { line <- " | "; }
+            line <- t.texts[k].view();
+            k = k + 1usize;
+          }
+          line <- "\t";
+          k = 0usize;
+          while k < t.endedAt.len() {
+            if k > 0usize { line <- " "; }
+            line <- seconds2(*t.endedAt[k]).view();
+            k = k + 1usize;
+          }
+          line <- "\t";
+          line <- u64.from(*trails[c]);
+          line <- "\n";
+          printStr(line.view());
+        }
+        case let Error(m) { say(m.view()); say("\n"); status = 1i32; }
+      }
+      c = c + 1usize;
+    }
+  }
+  device.endFrame();
+  device.waitIdle();
+  status
+}

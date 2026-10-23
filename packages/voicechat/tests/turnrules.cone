@@ -1,0 +1,124 @@
+// The rules that decide where a spoken turn ends (CPU only, no models): which texts end a sentence, which are only a
+// hesitation, which are a goodbye (and which sentences that hold the word are not), how utterances are joined into one turn's
+// audio, and when a turn is due.
+mod turnrulestest;
+
+import testing use *;
+import collections use List, String;
+import voiceaudio;
+import voicechat use *;
+
+fn ends(text: &str, want: bool) {
+  var label = String.from("ends a sentence: ");
+  label <- text;
+  expect(endsSentence(text) == want, label.view());
+}
+
+fn goodbye(text: &str, want: bool) {
+  var label = String.from("goodbye: ");
+  label <- text;
+  expect(isGoodbye(text) == want, label.view());
+}
+
+fn filler(text: &str, want: bool) {
+  var label = String.from("filler: ");
+  label <- text;
+  expect(isFiller(text) == want, label.view());
+}
+
+// An utterance of 'n' samples of value 'v' starting at input sample 'offset', with its speech from 'start' to 'end'
+fn utterance(offset: usize, n: usize, v: f32, start: usize, end: usize) voiceaudio.Utterance {
+  var s = List[f32].empty();
+  s.resize(n, v);
+  voiceaudio.Utterance(s, start, end, offset, false)
+}
+
+fn main() i32 {
+  ends("What is the capital of France?", true);
+  ends("Tell me a story.", true);
+  ends("Stop!", true);
+  ends("He said \"come here.\"", true);
+  ends("I was asking you to", false);
+  ends("I was asking you to,", false);
+  ends("Well...", false);
+  ends("and then I", false);
+  ends("Um", false);
+  ends("", false);
+  ends("   ", false);
+
+  filler("Um.", true);
+  filler("Uh, uh.", true);
+  filler("Hmm.", true);
+  filler("Mm-hmm.", true);
+  filler("Um, I think so.", false);
+  filler("Okay.", false);
+  filler("", false);
+
+  goodbye("Goodbye.", true);
+  goodbye("goodbye", true);
+  goodbye("Goodbye!", true);
+  goodbye("Good bye.", true);
+  goodbye("Bye.", true);
+  goodbye("Bye bye.", true);
+  goodbye("Stop.", true);
+  goodbye("OK, stop.", true);
+  goodbye("Okay, goodbye.", true);
+  goodbye("Stop now.", true);
+  goodbye("Well, goodbye now.", true);
+  goodbye("Don't stop there.", false);
+  goodbye("I'll stop by later.", false);
+  goodbye("Stop, I wasn't finished.", false);
+  goodbye("Please stop talking.", false);
+  goodbye("Goodbye is a sad word.", false);
+  goodbye("Say goodbye to the dragon.", false);
+  goodbye("What does bye mean?", false);
+  goodbye("", false);
+
+  // Joining, at 16000 samples a second: the first utterance holds input samples 1000..5000 (speech 1500..4500), the second
+  // 9000..12000 (speech 9500..11500): 4000 samples of silence lie between what the detector kept.
+  var t = HeardTurn.empty();
+  expect(t.isEmpty(), "a new turn is empty");
+  let a = utterance(1000usize, 4000usize, 0.5f, 1500usize, 4500usize);
+  t.add(&a, 16000u32);
+  expect(!t.isEmpty() && t.pieces() == 1usize, "one piece");
+  expect(t.length() == 4000usize, "its audio is the utterance's");
+  expect(t.firstSpeech() == 1500usize && t.lastSpeech() == 4500usize, "its speech edges");
+  let b = utterance(9000usize, 3000usize, 0.25f, 9500usize, 11500usize);
+  t.add(&b, 16000u32);
+  expect(t.pieces() == 2usize, "two pieces");
+  expect(t.length() == 4000usize + 4000usize + 3000usize, "the gap of the room's noise is put between them");
+  expect(t.firstSpeech() == 1500usize && t.lastSpeech() == 11500usize, "the edges span both");
+
+  // an overlap (the second utterance's pre-roll lies inside the first's trail) is not heard twice
+  var u = HeardTurn.empty();
+  let c = utterance(0usize, 4000usize, 0.5f, 500usize, 3500usize);
+  let d = utterance(3500usize, 3000usize, 0.25f, 4000usize, 6000usize);
+  u.add(&c, 16000u32);
+  u.add(&d, 16000u32);
+  expect(u.length() == 6500usize, "overlapping samples are kept once");
+
+  // a gap longer than MAX_GAP_MS is cut to it
+  var w = HeardTurn.empty();
+  let e = utterance(0usize, 1000usize, 0.5f, 100usize, 900usize);
+  let f = utterance(101000usize, 1000usize, 0.25f, 102100usize, 102900usize);
+  w.add(&e, 16000u32);
+  w.add(&f, 16000u32);
+  expect(w.length() == 1000usize + 48000usize + 1000usize, "a long gap is cut to 3 s");
+  w.clear();
+  expect(w.isEmpty() && w.length() == 0usize, "clear empties the turn");
+
+  // Due. One utterance whose speech ended at input sample 4500.
+  var q = HeardTurn.empty();
+  expect(!q.due(100000usize, false, 16000u32, 400u32, 1500u32), "an empty turn is never due");
+  q.add(&a, 16000u32);
+  // before Parakeet has heard it the text does not end a sentence: due only after the longer silence (1.5 s = 24000 samples)
+  expect(!q.due(4500usize + 6400usize, false, 16000u32, 400u32, 1500u32), "unfinished: not due after 0.4 s");
+  expect(!q.due(4500usize + 20000usize, false, 16000u32, 400u32, 1500u32), "unfinished: not due after 1.25 s");
+  expect(q.due(4500usize + 24000usize, false, 16000u32, 400u32, 1500u32), "unfinished: due after 1.5 s");
+  expect(!q.due(4500usize + 24000usize, true, 16000u32, 400u32, 1500u32), "not due while somebody is speaking");
+  expect(q.due(4500usize + 6400usize, false, 16000u32, 400u32, 300u32), "an unfinished silence below the end silence counts as the end silence");
+  q.ends = true;
+  expect(!q.due(4500usize + 3000usize, false, 16000u32, 400u32, 1500u32), "ending a sentence: not due after 0.19 s");
+  expect(q.due(4500usize + 6400usize, false, 16000u32, 400u32, 1500u32), "ending a sentence: due after 0.4 s");
+  done()
+}
