@@ -1,0 +1,346 @@
+// ======== Reading a safetensors file's header and tensors ========
+//
+// A safetensors file is eight bytes (a little-endian u64 N), N bytes of JSON, then the tensors' bytes. The JSON is
+// an object from each tensor's name to {"dtype", "shape", "data_offsets": [begin, end]} (offsets from the start of
+// the bytes after the JSON), and may hold "__metadata__", an object of text. This reader checks what it
+// uses: every tensor's range is within the file and as long as its dtype and shape say.
+//
+//   match openSafetensors(&path) {                   // maps the file (fs.mapFile) and parses its header
+//     case let Ok(file) {
+//       file.header.find("model.layer.weight")       // Option[&TensorInfo]: dtype, shape, byte range
+//       file.header.floats(file.bytes(), "model.layer.weight")     // Option[List[f32]], F16 and BF16 widened
+//     }
+//     case let Error(why) { ... }
+//   }
+//
+// or, for bytes already in memory, 'parseSafetensors(bytes)'. A tensor's raw bytes are 'header.bytesOf(bytes, t)'
+// (little-endian, row-major, as the file has them; a GPU upload can take them as they are).
+//
+// Dtypes: F32, F16, BF16 and I32 (the codes ST_F32, ST_F16, ST_BF16, ST_I32). A file with another dtype (F64, I64,
+// the 8-bit ones) is refused with a message naming it. Shapes are read as given; tensors are not required to be in
+// any order or contiguous, only each within the file and as long as its dtype and shape say. The values of a
+// tensor are read assuming a little-endian machine, which every machine Cone targets is.
+
+mod safetensors;
+
+import collections use List, String;
+import path use Path;
+import fs;
+import json use Json;
+
+// The element types of the tensors this package reads
+pub const ST_F32 = 0u32;
+pub const ST_F16 = 1u32;
+pub const ST_I32 = 2u32;
+pub const ST_BF16 = 3u32;
+
+// The f32 an IEEE half's 16 bits stand for (exact)
+pub fn halfBitsToF32(h: u16) f32 {
+  let sign = u32.from(h >> 15u16) << 31u32;
+  let e = u32.from((h >> 10u16) & 0x1Fu16);
+  let m = u32.from(h & 0x3FFu16);
+  if e == 0u32 {
+    if m == 0u32 { return sign as f32; }
+    let p = 31u32 - m.leadingZeros();
+    let frac = (m << (23u32 - p)) & 0x7FFFFFu32;
+    return (sign | ((p + 103u32) << 23u32) | frac) as f32;
+  }
+  if e == 31u32 { return (sign | 0x7F800000u32 | (m << 13u32)) as f32; }
+  (sign | ((e + 112u32) << 23u32) | (m << 13u32)) as f32
+}
+
+// The f32 a bfloat16's 16 bits stand for (exact: the top half of an f32)
+pub fn bfloat16BitsToF32(h: u16) f32 { (u32.from(h) << 16u32) as f32 }
+
+pub struct TensorInfo {
+  pub name: String;
+  pub dtype: u32;
+  pub shape: List[usize];
+  // Byte range within the file
+  pub begin: usize;
+  pub end: usize;
+
+  pub fn elements(self: &) usize {
+    var n = 1usize;
+    var i = 0usize;
+    while i < shape.len() { n = n * *shape[i]; i = i + 1usize; }
+    n
+  }
+
+  pub fn bytes(self: &) usize { end - begin }
+
+  // Rows of a matrix and its columns (the last dimension); a vector is one row
+  pub fn cols(self: &) usize { if shape.len() == 0usize { 1usize } else { *shape[shape.len() - 1usize] } }
+
+  pub fn rows(self: &) usize { if self.cols() == 0usize { 0usize } else { self.elements() / self.cols() } }
+}
+
+pub struct Safetensors {
+  pub tensors: List[TensorInfo];
+  // The header's metadata, name and value
+  pub metadata: List[String];
+
+  // The index of the tensor 'name'
+  pub fn indexOf(self: &, name: &str) Option[usize] {
+    var i = 0usize;
+    while i < tensors.len() {
+      if tensors[i].name.view() == name { return Some[usize](i); }
+      i = i + 1usize;
+    }
+    None
+  }
+
+  pub fn find(self: &, name: &str) Option[&TensorInfo] {
+    match self.indexOf(name) {
+      case let Some(i) { tensors.get(i) }
+      case is None { None }
+    }
+  }
+
+  // The bytes of tensor t in the file's bytes
+  pub fn bytesOf(self: &, file: &Array[u8], t: &TensorInfo) &Array[u8] { &file[t.begin..<t.end] }
+
+  // Tensor 'name' as f32 values (an F16 tensor widened), in the file's row-major order
+  pub fn floats(self: &, file: &Array[u8], name: &str) Option[List[f32]] {
+    match self.find(name) {
+      case let Some(t) {
+        if t.dtype == ST_I32 { return None; }
+        let b = self.bytesOf(file, t);
+        var out = List[f32].withCapacity(t.elements());
+        var i = 0usize;
+        if t.dtype == ST_F32 {
+          while i < t.elements() {
+            let w = u32.from(b[4usize * i]) | (u32.from(b[4usize * i + 1usize]) << 8u32)
+              | (u32.from(b[4usize * i + 2usize]) << 16u32) | (u32.from(b[4usize * i + 3usize]) << 24u32);
+            out.push(w as f32);
+            i = i + 1usize;
+          }
+        } else {
+          while i < t.elements() {
+            let h = u16.from(b[2usize * i]) | (u16.from(b[2usize * i + 1usize]) << 8u16);
+            if t.dtype == ST_BF16 { out.push(bfloat16BitsToF32(h)); } else { out.push(halfBitsToF32(h)); }
+            i = i + 1usize;
+          }
+        }
+        Some[List[f32]](out)
+      }
+      case is None { None }
+    }
+  }
+
+  // Tensor 'name' as i32 values (an I32 tensor only)
+  pub fn ints(self: &, file: &Array[u8], name: &str) Option[List[i32]] {
+    match self.find(name) {
+      case let Some(t) {
+        if t.dtype != ST_I32 { return None; }
+        let b = self.bytesOf(file, t);
+        var out = List[i32].withCapacity(t.elements());
+        var i = 0usize;
+        while i < t.elements() {
+          let w = u32.from(b[4usize * i]) | (u32.from(b[4usize * i + 1usize]) << 8u32)
+            | (u32.from(b[4usize * i + 2usize]) << 16u32) | (u32.from(b[4usize * i + 3usize]) << 24u32);
+          out.push(w as i32);
+          i = i + 1usize;
+        }
+        Some[List[i32]](out)
+      }
+      case is None { None }
+    }
+  }
+
+  // A metadata value by key
+  pub fn meta(self: &, key: &str) Option[&str] {
+    var i = 0usize;
+    while i + 1usize < metadata.len() {
+      if metadata[i].view() == key { return Some[&str](metadata[i + 1usize].view()); }
+      i = i + 2usize;
+    }
+    None
+  }
+}
+
+fn stErr(reason: &str) Result[Safetensors, String] {
+  var m = String.from("safetensors: ");
+  m <- reason;
+  Error[Safetensors, String](m)
+}
+
+fn dtypeCode(s: &str) Option[u32] {
+  if s == "F32" { return Some[u32](ST_F32); }
+  if s == "F16" { return Some[u32](ST_F16); }
+  if s == "I32" { return Some[u32](ST_I32); }
+  if s == "BF16" { return Some[u32](ST_BF16); }
+  None
+}
+
+pub fn elementBytes(dtype: u32) usize {
+  if dtype == ST_F16 || dtype == ST_BF16 { 2usize } else { 4usize }
+}
+
+pub fn dtypeName(dtype: u32) &str {
+  if dtype == ST_F32 { return "F32"; }
+  if dtype == ST_F16 { return "F16"; }
+  if dtype == ST_BF16 { return "BF16"; }
+  "I32"
+}
+
+// A safetensors file mapped into memory, with its header parsed
+pub struct SafetensorsFile {
+  pub header: Safetensors;
+  file: fs.MappedFile;
+
+  // The whole file's bytes
+  pub fn bytes(self: &) &Array[u8] { file.view() }
+
+  // The address of the file's first byte, for a GPU upload of a tensor's bytes in place
+  pub fn base(self: &) *u8 { file.base() }
+}
+
+// Map a file and parse its header; why not as a message
+pub fn openSafetensors(path: &Path) Result[SafetensorsFile, String] {
+  match fs.mapFile(path) {
+    case var Ok(f) {
+      match parseSafetensors(f.view()) {
+        case var Ok(h) { Ok[SafetensorsFile, String](SafetensorsFile(h, f)) }
+        case let Error(e) { Error[SafetensorsFile, String](e.copy()) }
+      }
+    }
+    case let Error(e) {
+      var m = String.from("safetensors: ");
+      m <- e.message().view();
+      Error[SafetensorsFile, String](m)
+    }
+  }
+}
+
+// Parse a file's bytes (the whole file, mapped or read)
+pub fn parseSafetensors(file: &Array[u8]) Result[Safetensors, String] {
+  if file.len < 8usize { return stErr("too short for a header length"); }
+  var n = 0u64;
+  var i = 7usize;
+  while true {
+    n = (n << 8u64) | u64.from(file[i]);
+    if i == 0usize { break; }
+    i = i - 1usize;
+  }
+  if n > u64.from(file.len - 8usize) { return stErr("the header is longer than the file"); }
+  let hlen = usize.from(n);
+  let dataStart = 8usize + hlen;
+  let parsed = json.parse(&file[8usize..<dataStart]);
+  var root = Json.Null;
+  match parsed {
+    case var Ok(j) { root = j; }
+    case let Error(e) {
+      var m = String.from("safetensors: the header is not JSON: ");
+      m <- e.message().view();
+      return Error[Safetensors, String](m);
+    }
+  }
+  if !root.isObject() { return stErr("the header is not an object"); }
+  var out = Safetensors(List[TensorInfo].empty(), List[String].empty());
+  var k = 0usize;
+  let dataLen = file.len - dataStart;
+  while k < root.len() {
+    var key = "";
+    match root.keyAt(k) {
+      case let Some(s) { key = s; }
+      case is None { return stErr("a member without a name"); }
+    }
+    k = k + 1usize;
+    if key == "__metadata__" {
+      match root.get(key) {
+        case let Some(md) {
+          var j = 0usize;
+          while j < md.len() {
+            match md.keyAt(j) {
+              case let Some(mk) {
+                out.metadata.push(String.from(mk));
+                match md.valueAt(j) {
+                  case let Some(v) {
+                    match v.asText() {
+                      case let Some(t) { out.metadata.push(String.from(t)); }
+                      case is None { out.metadata.push(String.from("")); }
+                    }
+                  }
+                  case is None { out.metadata.push(String.from("")); }
+                }
+              }
+              case is None {}
+            }
+            j = j + 1usize;
+          }
+        }
+        case is None {}
+      }
+      continue;
+    }
+    let tv = root.get(key);
+    var info = TensorInfo(String.from(key), 0u32, List[usize].empty(), 0usize, 0usize);
+    match tv {
+      case let Some(t) {
+        match t.getText("dtype") {
+          case let Some(d) {
+            match dtypeCode(d) {
+              case let Some(c) { info.dtype = c; }
+              case is None {
+                var m = String.from("tensor ");
+                m <- key;
+                m <- " has dtype ";
+                m <- d;
+                m <- ", which this reader does not take (F32, F16, BF16, I32)";
+                return stErr(m.view());
+              }
+            }
+          }
+          case is None { return stErr("a tensor without a dtype"); }
+        }
+        match t.get("shape") {
+          case let Some(sh) {
+            var d = 0usize;
+            while d < sh.len() {
+              match sh.at(d) {
+                case let Some(x) {
+                  match x.asU64() {
+                    case let Ok(v) { info.shape.push(usize.from(v)); }
+                    case is Error { return stErr("a shape that is not whole numbers"); }
+                  }
+                }
+                case is None {}
+              }
+              d = d + 1usize;
+            }
+          }
+          case is None { return stErr("a tensor without a shape"); }
+        }
+        match t.get("data_offsets") {
+          case let Some(o) {
+            if o.len() != 2usize { return stErr("data_offsets is not a pair"); }
+            var b = 0u64;
+            var e = 0u64;
+            match o.at(0usize) {
+              case let Some(x) { match x.asU64() { case let Ok(v) { b = v; } case is Error { return stErr("a bad offset"); } } }
+              case is None {}
+            }
+            match o.at(1usize) {
+              case let Some(x) { match x.asU64() { case let Ok(v) { e = v; } case is Error { return stErr("a bad offset"); } } }
+              case is None {}
+            }
+            if e < b || e > u64.from(dataLen) { return stErr("a tensor's range is outside the file"); }
+            info.begin = dataStart + usize.from(b);
+            info.end = dataStart + usize.from(e);
+          }
+          case is None { return stErr("a tensor without data_offsets"); }
+        }
+      }
+      case is None {}
+    }
+    if info.elements() * elementBytes(info.dtype) != info.bytes() {
+      var m = String.from("tensor ");
+      m <- key;
+      m <- " has a range its dtype and shape do not give";
+      return stErr(m.view());
+    }
+    out.tensors.push(info);
+  }
+  Ok[Safetensors, String](out)
+}
