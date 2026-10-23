@@ -1,0 +1,123 @@
+// The reply cut into sentences, as it arrives in pieces of any size, and a sentence cleaned for speech. The texts are
+// typical of a spoken reply (and of what a model writes despite being told not to: markdown, a list, emoji).
+mod sentencestest;
+
+import testing use *;
+import collections use List, String;
+import voicechat use *;
+
+// Push 'text' in pieces of 'chunk' bytes; the sentences found as they are found, and the rest at the end, joined by '|'
+fn cut(text: &str, chunk: usize) String {
+  var s = Sentences.make();
+  var out = String.empty();
+  let b: &Array[u8] = text;
+  var i = 0usize;
+  while i < b.len {
+    var piece = List[u8].empty();
+    var k = 0usize;
+    while k < chunk && i + k < b.len { piece.push(b[i + k]); k = k + 1usize; }
+    i = i + k;
+    s.push(piece.view());
+    var more = true;
+    while more {
+      match s.next() {
+        case let Some(x) { if out.len() > 0usize { out <- "|"; } out <- x.text.view(); }
+        case is None { more = false; }
+      }
+    }
+  }
+  match s.finish() {
+    case let Some(x) { if out.len() > 0usize { out <- "|"; } out <- x.text.view(); }
+    case is None {}
+  }
+  out
+}
+
+// The same cut at every piece size from one byte to the whole text must agree
+fn same(text: &str, want: &str, label: &str) {
+  expectStr(cut(text, 1usize).view(), want, label);
+  expectStr(cut(text, 2usize).view(), want, label);
+  expectStr(cut(text, 3usize).view(), want, label);
+  expectStr(cut(text, 7usize).view(), want, label);
+  expectStr(cut(text, 1000usize).view(), want, label);
+}
+
+fn clean(text: &str) String { speechText(text.bytes()) }
+
+fn has(o: Option[Sentence]) bool {
+  match o {
+    case is Some { true }
+    case is None { false }
+  }
+}
+
+fn main() i32 {
+  same("Hello there. How are you? I am fine!", "Hello there.|How are you?|I am fine!", "three sentences");
+  same("Mr. Smith went to Washington. He met Dr. Jones there.", "Mr. Smith went to Washington.|He met Dr. Jones there.", "titles do not end a sentence");
+  same("The rate is 3.5 percent. Next year it is 4.", "The rate is 3.5 percent.|Next year it is 4.", "a decimal point does not end a sentence");
+  same("Use fruit, e.g. apples or pears. Not nuts.", "Use fruit, e.g. apples or pears.|Not nuts.", "e.g. does not end a sentence");
+  same("J. K. Rowling wrote it. I think so.", "J. K. Rowling wrote it.|I think so.", "initials do not end a sentence");
+  same("So do I. Really.", "So do I.|Really.", "the pronoun I at the end does");
+  same("The U.S.A is big. Yes.", "The U.S.A is big.|Yes.", "dots inside a word do not");
+  same("Well... maybe so. Who knows?!", "Well...|maybe so.|Who knows?!", "runs of marks");
+  same("He said \"Go.\" Then he left.", "He said \"Go.\"|Then he left.", "a closing quote stays with its sentence");
+  same("First line\nSecond line\n", "First line|Second line", "a new line ends a sentence");
+  same("1. Apples\n2. Pears", "1. Apples|2. Pears", "a list number is not a sentence end");
+  same("Ok.", "Ok.", "a lone sentence comes at the end");
+  same("", "", "nothing");
+  same("   \n  ", "", "only white space");
+  same("It is 10 a.m. now. Go.", "It is 10 a.m. now.|Go.", "a.m. does not end a sentence");
+
+  // the sentence is held until the next character shows it is over
+  {
+    var s = Sentences.make();
+    s.push("Hello.".bytes());
+    expectBool(has(s.next()), false, "a mark at the end of what has come is not yet a sentence end");
+    s.push(" ".bytes());
+    expectBool(has(s.next()), true, "the space after it ends it");
+  }
+
+  // which piece the sentence ended in
+  {
+    var s = Sentences.make();
+    s.push("First one".bytes());
+    s.push(".".bytes());
+    s.push(" Second".bytes());
+    match s.next() {
+      case let Some(x) {
+        expectStr(x.text.view(), "First one.", "the sentence");
+        expectBool(x.inLatest, false, "its mark came in an earlier piece");
+      }
+      case is None { expect(false, "a sentence"); }
+    }
+    s.push(" one.\n".bytes());
+    match s.next() {
+      case let Some(x) {
+        expectStr(x.text.view(), "Second one.", "the next");
+        expectBool(x.inLatest, true, "its mark came in the latest piece");
+      }
+      case is None { expect(false, "a second sentence"); }
+    }
+  }
+
+  // a long run without a mark is cut at its last comma
+  {
+    let long = "When the weather turns cold in the evening, and the wind comes down from the hills, and the lamps are lit in every window of the village, people gather by the fire and tell stories until late";
+    let got = cut(long, 5usize);
+    expectStr(got.view(), "When the weather turns cold in the evening, and the wind comes down from the hills, and the lamps are lit in every window of the village,|people gather by the fire and tell stories until late", "cut at the last comma of a long run");
+  }
+
+  // cleaning for speech
+  expectStr(clean("**Bold** and `code`.").view(), "Bold and code.", "markdown marks are dropped");
+  expectStr(clean("# Heading").view(), "Heading", "a heading mark");
+  expectStr(clean("- an item").view(), "an item", "a list dash");
+  expectStr(clean("2. second item").view(), "second item", "a list number");
+  expectStr(clean("It’s “fine” — really…").view(), "It's \"fine\" , really...", "curly quotes and dashes");
+  expectStr(clean("Great! \U0001F600 Thanks ✅").view(), "Great! Thanks", "emoji are dropped");
+  expectStr(clean("café au lait").view(), "café au lait", "an accented letter stays");
+  expectStr(clean("  many   spaces\nand\tlines  ").view(), "many spaces and lines", "white space is one space");
+  expectStr(clean("*** ---").view(), "", "nothing a voice could say");
+  expectStr(clean("").view(), "", "nothing at all");
+  expectStr(clean("snake_case name").view(), "snake case name", "an underscore is a space");
+  done()
+}
