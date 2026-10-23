@@ -1,0 +1,48 @@
+// Way C, ETW (Event Tracing for Windows) as TraceLogging does it, with no
+// session listening: the provider registers, every event of 40 messages is
+// counted by the sink (120), and EventEnabled saying no, none is built or
+// written. With a session enabled for the provider's id the same program
+// writes them; that is measured by hand (the package's results page), not here.
+// On a system that is not Windows the test is skipped.
+
+mod etw;
+
+import testing use *;
+import actors;
+import actortrace;
+
+actor Echo {
+  heard: u64 = 0u64;
+
+  pub async fn hear(self, n: u64) {
+    heard = heard + n;
+  }
+}
+
+fn main() i32 {
+  if !isWindows() {
+    return skip("ETW is Windows's");
+  }
+  initAll();
+  actors.configure(actors.Options(workers: 2u32));
+  expect(actortrace.start(actortrace.methodEtw, cstr.fromLiteral("unused"), actortrace.Options()), "the provider registers");
+  actortrace.setLevel(actortrace.layerActors, actortrace.levelHigh);
+  {
+    let e = Echo();
+    var i = 0u64;
+    while i < 40u64 {
+      e.hear(i);
+      i = i + 1u64;
+    }
+  }
+  actors.waitUntilIdle();
+  actortrace.setLevel(actortrace.layerActors, actortrace.levelOff);
+  let t = actortrace.finish();
+  expectUInt(t.events, 120u64, "three events for each of the 40 messages are counted");
+  expectUInt(t.dropped, 0u64, "none dropped");
+  expectUInt(actortrace.counts(1u32), 40u64, "40 sends");
+  expectUInt(actortrace.counts(3u32), 40u64, "40 run starts");
+  expectUInt(actortrace.counts(4u32), 40u64, "40 run ends");
+  finalAll();
+  done()
+}

@@ -1,0 +1,109 @@
+// What one record costs, by itself: the program's own kind recorded in a tight
+// loop on a worker (inside an actor, so the record takes the worker path), the
+// loop's time divided by its count. Three states:
+//
+//   disabled   the kind's layer is off: one relaxed load and a bit test
+//   enabled    the layer is on at high: counted and recorded by the method
+//   dropped    on at high, the way of recording out of room (logger with a cap
+//              reached, buffers full with no spare): counted, then dropped
+//
+//   congo run --release packages/actortrace/examples/microbench.cone -- \
+//       <method> <state> <count> <file>
+//
+// method: count | null | logger | buffers | etw | text (etw: no session listens;
+// enabled and dropped are then what a shipped program pays). 'etwnocheck' is etw
+// without the EventEnabled question first. Prints 'ns_per_record <n>' in
+// hundredths of a nanosecond (the clock ticks 100 ns here, so a loop is timed
+// whole), and what the way wrote.
+
+mod microbench;
+
+import stdio use *;
+import libc;
+import actors;
+import actortrace;
+import thread;
+
+let nsPer100: Atomic[u64];
+let finished: Atomic[u64];
+
+fn @initpure init() {
+  nsPer100 = Atomic[u64].of(0u64);
+  finished = Atomic[u64].of(0u64);
+}
+
+fn digits(p: *u8) u64 {
+  var n = 0u64;
+  var q = p;
+  while *q >= 48u8 && *q <= 57u8 {
+    n = n * 10u64 + u64.from(*q - 48u8);
+    q = q + 1usize;
+  }
+  n
+}
+
+fn argIs(argc: i32, argv: **u8, i: i32, want: cstr) bool {
+  argc > i && libc.strcmp(cstr.fromPtr(*(argv + usize.from(u32.from(i)))), want) == 0i32
+}
+
+actor Spinner {
+  pub async fn run(self, n: u64, id: u32, layer: u32) {
+    let k = actortrace.Kind(id, layer, actortrace.levelHigh);
+    var i = 0u64;
+    let t0 = actortrace.ticks();
+    while i < n {
+      actortrace.emit(&k, 0u32, i, i);
+      i = i + 1u64;
+    }
+    let t1 = actortrace.ticks();
+    nsPer100.store((t1 - t0) * 100000000000u64 / actortrace.clockFrequency() / n);
+    finished.store(1u64);
+  }
+}
+
+fn main(argc: i32, argv: **u8) i32 {
+  initAll();
+  var method = actortrace.methodCount;
+  var check = true;
+  if argIs(argc, argv, 1i32, "null") {method = actortrace.methodNull;}
+  else if argIs(argc, argv, 1i32, "logger") {method = actortrace.methodLogger;}
+  else if argIs(argc, argv, 1i32, "buffers") {method = actortrace.methodBuffers;}
+  else if argIs(argc, argv, 1i32, "etw") {method = actortrace.methodEtw;}
+  else if argIs(argc, argv, 1i32, "etwnocheck") {method = actortrace.methodEtw; check = false;}
+  else if argIs(argc, argv, 1i32, "text") {method = actortrace.methodText;}
+  let disabled = argIs(argc, argv, 2i32, "disabled");
+  let dropped = argIs(argc, argv, 2i32, "dropped");
+  var n = 1000000u64;
+  if argc > 3i32 {
+    n = digits(*(argv + 3usize));
+  }
+  var path = cstr.fromLiteral("micro.trc");
+  if argc > 4i32 {
+    path = cstr.fromPtr(*(argv + 4usize));
+  }
+  actors.configure(actors.Options(workers: 4u32));
+  let kind = actortrace.register("tick", actortrace.layerUser, actortrace.levelHigh);
+  var cap = 0u64;
+  if dropped && method == actortrace.methodLogger {
+    cap = 1u64;
+  }
+  actortrace.start(method, path, actortrace.Options(cap: cap, spare: 700u32, timeLogger: false, etwCheck: check));
+  if !disabled {
+    actortrace.setLevel(actortrace.layerUser, actortrace.levelHigh);
+  }
+  if dropped {
+    actortrace.forceFull();
+  }
+  let s = Spinner();
+  s.run(n, kind.id, kind.layer);
+  while finished.load() == 0u64 {
+    thread.yieldNow();
+  }
+  printStr("ns_per_record_x100 "); printUInt(nsPer100.load()); printStr("\n");
+  let t = actortrace.finish();
+  printStr("events "); printUInt(t.events); printStr("\n");
+  printStr("records "); printUInt(t.records); printStr("\n");
+  printStr("dropped "); printUInt(t.dropped); printStr("\n");
+  printStr("file_bytes "); printUInt(t.bytes); printStr("\n");
+  0i32
+}

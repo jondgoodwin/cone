@@ -396,11 +396,21 @@
 // to the number of workers less 1, or actors.noWorker on any other thread: for
 // tests, and for per-worker tallies.
 //
+// TRACING HOOKS. Three events -- a message sent (and a reply, which is a
+// message too), a message's run beginning, a message's run ending -- are
+// handed to a sink function if their layer is switched on in a mask: one
+// relaxed load and a bit test when it is not. The sink is the tracing
+// package's (actortrace), which this package knows nothing of: it calls
+// whatever 'traceSetSink' was given. Each message carries the id of the send
+// that made it in its slot's cause word, so a send's record and its run start
+// give the message's time in the mailbox, and the sends a behaviour makes name
+// it as their cause. The section TRACING HOOKS, below, is the account.
+//
 // THE MAILBOX is a ring of fixed-size slots, grown in linked segments (the
 // code is under "The mailbox", below). A slot is a 16-byte header, then a
 // payload. The header's first word, 'seq', is the slot's publication; its
-// second, 'cause', is reserved for the id of what caused the message, written
-// as 0 until the tracing work fills it. The payload is the message M itself,
+// second, 'cause', is the id of the send that made the message (TRACING HOOKS,
+// below), 0 when the hooks are off. The payload is the message M itself,
 // in the size of M rounded to 16 bytes and not under 32: the size of a slot
 // follows from M, so it is as big as the actor's largest message needs. A send
 // allocates nothing:
@@ -702,8 +712,8 @@ fn die(msg: &str, file: &str = srcFile(), line: u32 = srcLine()) Never {
 
 // A slot is a 16-byte header, then its payload. The header: 'seq', which
 // says the slot has been written (position * 8 + a kind) and so is the
-// publication, and 'cause', one word reserved for the id of what caused the
-// message (the tracing work fills it; zero until then). The payload is the
+// publication, and 'cause', one word for the id of the send that made the
+// message (the tracing hooks fill it; zero when they are off). The payload is the
 // message M itself for a message, and for a reply a record of its own
 // (REPLIES, above).
 const slotHead = 16usize;
@@ -1678,6 +1688,8 @@ struct Header {
   pub par: *ParPending = null;            // a behaviour's 'parallel each' to begin once it has returned (parallel.cone, A PARALLEL EACH IN A BEHAVIOUR)
   pub ready: *ParPending = null;          // ... finished: the rest of the behaviour, to run ahead of the mailbox
   pub gc: *ActorRegion = null;            // the actor's own region: null until the actor first asks for it (INSIDE AN ACTOR, above; gc.cone), a record of its own that never moves
+  pub tid: u32 = 0u32;                    // the actor's number for the TRACING HOOKS (below): 1 up, in the order the actors were made
+  pub untraced: u32 = 0u32;               // 1: the hooks record nothing for this actor (a trace's own logger; untrace, below)
 }
 
 // What an actor's handle owns, 'Arc[opaq, T]': the runtime's part of an actor
@@ -1796,12 +1808,14 @@ pub fn makeActor[S, M: Sendable](dispatch: &fn(s: &mut S, m: *M)) *S {
   }
   let payload = payloadBytes[M]();
   var f = dispatch;
-  let h = Header(tail: 0u64, head: 0u64, cur: nullSeg(), hint: nullSeg(),
+  var h = Header(tail: 0u64, head: 0u64, cur: nullSeg(), hint: nullSeg(),
     extra: nullExtra(), stride: u32.from(slotHead + payload), bytes: 0u32, high: 0u32, limit: noLimit,
     link: nullHeader(), run: &runBatch[S, M], release: &releaseHold[M],
     finalize: &finalizeState[S, M], dispatch: *(&mut f as **u8));
   // No segment: an actor that is never sent a message costs no more than its
   // block, and the first send makes the first (firstSeg)
+  // the actor's number for the tracing hooks
+  h.tid = mem.atomicAdd[u32](&traceActors as *u32, 1u32, MemOrder.Relaxed) + 1u32;
   let b = Arc[opaq, Block[S, M]](Mailbox[M].made(h), mem.readRaw[S](room as *S));
   libc.free(room);
   // The owner of the block, put away uncounted as its address, which is the
@@ -1855,7 +1869,12 @@ fn sendNow[M: Sendable](h: *Header, msg: M) {
   // One atomic add claims the slot's position; the message is written in
   // place, then one store publishes it (THE MAILBOX, above)
   let c = claim(h);
-  mem.atomicStore[u64](ccause(c.slot), 0u64, MemOrder.Relaxed);
+  // the send's id is the message's cause word (TRACING HOOKS, below), 0 when untraced
+  var cause = 0u64;
+  if traceLayerOn(traceLayerActors) {
+    cause = traceSend(h, traceKindSend);
+  }
+  mem.atomicStore[u64](ccause(c.slot), cause, MemOrder.Relaxed);
   mem.writeRaw[M](payloadOf(c.slot) as *M, msg);
   if stallState.loadOrdered(MemOrder.Relaxed) != 0u32 {
     stallHere();
@@ -1906,10 +1925,22 @@ fn runBatch[S, M: Sendable](h: *Header, limit: u32) u32 {
       return n;
     }
     let kind = mem.atomicLoad[u64](seqOf(slot), MemOrder.Relaxed) % 8u64;
+    // the tracing hooks: the message's cause id is in its slot's header
+    let tracing = traceLayerOn(traceLayerActors) && (*h).untraced == 0u32;
+    var cause = 0u64;
+    var bhv = 0u64;
+    if tracing {
+      cause = mem.atomicLoad[u64](ccause(slot), MemOrder.Relaxed);
+      bhv = behaviourOf(rec, kind, payloadOf(slot));
+      traceRunStart(h, cause, bhv);
+    }
     if kind == kindMsg {
       f(&mut *st, payloadOf(slot) as *M);
     } else {
       resumeSlot[S](st, payloadOf(slot), kind);
+    }
+    if tracing {
+      traceRunEnd(h, cause, bhv);
     }
     ringDone(h);
     n = n + 1u32;
@@ -1979,6 +2010,163 @@ fn holdArc[M: Sendable](h: *Header) {
 fn releaseHold[M: Sendable](h: *Header) {
   var slot = h;
   let o = mem.readRaw[Arc[opaq, Mailbox[M]]](&mut slot as *(Arc[opaq, Mailbox[M]]));
+}
+
+// ---------------------------------------------------------------------------
+// Tracing hooks: three events, behind one word. Nothing here knows of the
+// package that records them (actortrace): the hooks call a SINK, a function
+// the recording package hands to traceSetSink, so this package imports no
+// tracing and stays under it. THE HOOKS: a send (traceSend, in sendNow
+// between the slot's claim and its publication), a reply (the same hook, in
+// replyPrep and pushFuture: a reply is a message too), the start of a
+// message's run and its end (traceRunStart and traceRunEnd, in runBatch around
+// the dispatch). Each is behind a layer's bit in traceMask: a disabled hook
+// costs one relaxed load and a bit test. THE CAUSE: a send makes a fresh id,
+// writes it into its slot's 'cause' word (the header's second word, ccause)
+// and passes it to the sink as the record's id, with the id of the message the
+// sender is running (0 off the workers or between messages) as the record's
+// argument; the run records of that message carry the same id (read back from
+// the slot), so a send's record and its run start give the message's time in
+// the mailbox, and the sends a message's behaviour made name it as their
+// cause. The id of the message a worker is running is its Worker's 'cause',
+// set at the run's start and cleared at its end; a reply's slot carries the
+// reply's own send id, so a continuation resumed after an 'await' runs under
+// the reply's id, whose send record names the answering message as its cause
+// (a deviation from keeping the awaiting message's own id). A record is (kind,
+// worker, actor, id, argument); the sink adds the time. THE ACTOR'S NUMBER:
+// 'tid' in the Header, 1 up, in the order the actors were made. A run's
+// argument is the behaviour: the low 8 bits the message enum's tag (a variant
+// of the actor's Msg; a reply's slot has 240 plus its kind), the upper 32 an
+// address of the actor's state type record, shifted, which tells the actor
+// types apart (the compiler makes no type name available here). untrace marks
+// an actor whose hooks record nothing: the trace's own logger.
+//
+// The mask, the sink, the id counter and the actor counter are 'let' globals
+// of Atomic, set in 'init' like 'running': no thread-local, no other form.
+// ---------------------------------------------------------------------------
+
+pub const traceLayerActors = 0u32;      // the layer the three hooks belong to
+pub const traceKindSend = 1u32;         // a message sent
+pub const traceKindReply = 2u32;        // a reply sent (an awaited answer)
+pub const traceKindRun = 3u32;          // a message's run begins
+pub const traceKindEnd = 4u32;          // a message's run ends
+
+// Bit L set: layer L is recorded. Set only after the sink is set
+let traceMask: Atomic[u32];
+let traceSink: Atomic[usize];     // the sink, a function address, or 0
+let traceIds: Atomic[u64];        // send ids made off the workers
+let traceActors: Atomic[u32];     // actors made so far (their tid)
+
+// Whether layer L's records are wanted: one relaxed load and a bit test
+pub fn traceLayerOn(layer: u32) bool {
+  (mem.atomicLoad[u32](&traceMask as *u32, MemOrder.Relaxed) & (1u32 << layer)) != 0u32
+}
+
+// Which layers are recorded: bit L for layer L, up to 32. The sink first
+pub fn traceSetMask(mask: u32) {
+  mem.atomicStore[u32](&traceMask as *u32, mask, MemOrder.SeqCst);
+}
+
+pub fn traceMaskNow() u32 {
+  mem.atomicLoad[u32](&traceMask as *u32, MemOrder.SeqCst)
+}
+
+// The function every record goes to, called on the thread that made the event
+// with the record's kind, worker (noWorker off the workers), actor, id and
+// argument
+pub fn traceSetSink(sink: &fn(kind: u32, worker: u32, tid: u32, id: u64, arg: u64)) {
+  var f = sink;
+  traceSink.store(mem.readRaw[usize](&mut f as *usize));
+}
+
+// A record to the sink, if there is one: also the way a program's own record
+// kinds reach it
+pub fn traceEmit(kind: u32, tid: u32, id: u64, arg: u64) {
+  var p = traceSink.load();
+  if p == 0usize {
+    return;
+  }
+  let f = mem.readRaw[&fn(kind: u32, worker: u32, tid: u32, id: u64, arg: u64)](
+    &mut p as *(&fn(kind: u32, worker: u32, tid: u32, id: u64, arg: u64)));
+  f(kind, workerIndex(), tid, id, arg);
+}
+
+// A fresh id: a worker's own counter below its index + 1, else one shared
+// counter below 0xFFFF
+fn traceNewId() u64 {
+  let w = me as *Worker;
+  if w as usize != 0usize {
+    (*w).seq = (*w).seq + 1u64;
+    return (u64.from((*w).index + 1u32) << 48u64) | (*w).seq;
+  }
+  (0xFFFFu64 << 48u64) | (mem.atomicAdd[u64](&traceIds as *u64, 1u64, MemOrder.Relaxed) + 1u64)
+}
+
+// The id of the message the calling worker is running, or 0
+pub fn traceCause() u64 {
+  let w = me as *Worker;
+  if w as usize == 0usize {
+    return 0u64;
+  }
+  (*w).cause
+}
+
+// The number of the actor whose message the caller is running, or 0
+pub fn traceActorNow() u32 {
+  let h = curActor as *Header;
+  if h as usize == 0usize {
+    return 0u32;
+  }
+  (*h).tid
+}
+
+// The number the next actor made will have, less one: the actors made so far
+pub fn actorsMade() u32 {
+  mem.atomicLoad[u32](&traceActors as *u32, MemOrder.Relaxed)
+}
+
+// Mark the actor whose Mailbox mb is untraced: no hook records a send to it,
+// a reply to it or a message of its running. Called by the maker, before
+// the actor is sent anything
+pub fn untrace[M: Sendable](mb: &opaq Mailbox[M]) {
+  (*(mb as *Header)).untraced = 1u32;
+}
+
+// A send (or a reply) to actor h: its id made and the record passed on; the
+// id, which the caller puts in the slot's cause word. 0 for an untraced actor
+fn traceSend(h: *Header, kind: u32) u64 {
+  if (*h).untraced != 0u32 {
+    return 0u64;
+  }
+  let id = traceNewId();
+  traceEmit(kind, (*h).tid, id, traceCause());
+  id
+}
+
+// The behaviour a slot's message is: the tag of its enum (the payload's first
+// byte; 240 plus the kind for a reply's slot), with the actor's state type
+fn behaviourOf(rec: *TypeRecord, kind: u64, payload: *u8) u64 {
+  var tag = 240u64 + kind;
+  if kind == kindMsg {
+    tag = u64.from(*payload);
+  }
+  (u64.from((rec as usize) >> 4usize) << 32u64) | tag
+}
+
+fn traceRunStart(h: *Header, id: u64, behaviour: u64) {
+  let w = me as *Worker;
+  if w as usize != 0usize {
+    (*w).cause = id;
+  }
+  traceEmit(traceKindRun, (*h).tid, id, behaviour);
+}
+
+fn traceRunEnd(h: *Header, id: u64, behaviour: u64) {
+  traceEmit(traceKindEnd, (*h).tid, id, behaviour);
+  let w = me as *Worker;
+  if w as usize != 0usize {
+    (*w).cause = 0u64;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -2103,7 +2291,11 @@ struct Put {
 fn replyPrep(r: &Reply) Put {
   let h = r.to;
   let c = claim(h);
-  mem.atomicStore[u64](ccause(c.slot), 0u64, MemOrder.Relaxed);
+  var cause = 0u64;
+  if traceLayerOn(traceLayerActors) {
+    cause = traceSend(h, traceKindReply);
+  }
+  mem.atomicStore[u64](ccause(c.slot), cause, MemOrder.Relaxed);
   let p = payloadOf(c.slot);
   *(p as **u8) = r.at;
   *((p + 8usize) as *u64) = r.id;
@@ -2515,8 +2707,10 @@ struct Worker {
   pub index: u32;
   pub tick: u32;
   pub rng: u32;
+  pub cause: u64;               // the cause id of the message this worker is running, 0 between messages (tracing hooks)
+  pub seq: u64;                 // the send ids this worker has made (tracing hooks)
   pub stat: *StatSlot;          // this worker's counts for stats(), in the block that outlives the stop (STATS, below), not in this struct, which the stop frees
-  pub gap3: Array[u8, 80];
+  pub gap3: Array[u8, 64];
   pub ring: Array[*Header, 1024];
   pub gap4: Array[u8, 64];
   pub tasks: TaskDeque;         // the loop pieces this worker has split off (parallel.cone)
@@ -3046,6 +3240,10 @@ fn @initpure init() {
   statSlots = Atomic[usize].of(0usize);
   statWorkers = Atomic[u32].of(0u32);
   taskStealsTotal = Atomic[u64].of(0u64);
+  traceMask = Atomic[u32].of(0u32);
+  traceSink = Atomic[usize].of(0usize);
+  traceIds = Atomic[u64].of(0u64);
+  traceActors = Atomic[u32].of(0u32);
   futuresLive = Atomic[usize].of(0usize);
   futuresMade = Atomic[u64].of(0u64);
 }
