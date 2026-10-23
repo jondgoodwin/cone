@@ -54,9 +54,10 @@
  *   call whose value is kept (actorFutureCall);
  * - an actor whose body holds an 'await' (DclTexts.awaiting) has hidden
  *   fields in its state, its pending table and, where a behaviour returning a
- *   value awaits, its Answer slot; two resume variants and their arms; and
- *   'Counter.reply'' and 'Counter.replyid'', which make a request's
- *   envelope;
+ *   value awaits, its Answer slot; and 'Counter.reply'' and
+ *   'Counter.replyid'', which make a request's envelope (one call of
+ *   actors.replyFor: a reply is no variant of the message enum, but a slot of
+ *   its own kind in the actor's mailbox ring);
  * - an actor with a behaviour, or writing 'selfactor', has 'Counter.self'',
  *   its handle from its state.
  *
@@ -109,8 +110,6 @@ enum GenSlot {
     GenPending,     // The state's hidden pending table, where the actor awaits
     GenAnswer,      // The state's hidden Answer slot, where a message returning a value awaits
     GenEnvelope,    // A request variant's envelope, its reply
-    GenResume,      // The resume variant whose second half takes no record
-    GenResumeId,    // The resume variant whose second half takes a record, by its id
     GenMem,         // Core's 'mem', whatever the actor's own names hide it
     GenAt,          // The handle's initializer's local: where the state is made
     GenState,      // 'Counter.State'
@@ -635,8 +634,6 @@ static int parseActorRuntime(ParseState *parse, StructNode *at, Name *actorname,
         genShared[GenPending] = nametblPrivate("pending'", 8);
         genShared[GenAnswer] = nametblPrivate("answer'", 7);
         genShared[GenEnvelope] = nametblPrivate("reply'", 6);
-        genShared[GenResume] = nametblPrivate("resume'", 7);
-        genShared[GenResumeId] = nametblPrivate("resumeid'", 9);
         genShared[GenMem] = nametblPrivate("mem", 3);
         genShared[GenAt] = nametblPrivate("state'", 6);
     }
@@ -892,13 +889,6 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
             }
             genPuts(&ge, "}\n");
         }
-    }
-    if (awaits) {
-        genPuts(&ge, "  struct ");
-        genSlot(&ge, GenResume);
-        genPuts(&ge, " {run: *u8; data: *u8;}\n  struct ");
-        genSlot(&ge, GenResumeId);
-        genPuts(&ge, " {run: *u8; id: u64; data: *u8;}\n");
     }
     genPuts(&ge, "}\n");
 
@@ -1245,36 +1235,16 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
                 genPuts(&g, asked ? "));}\n" : ");}\n");
         }
     }
-    // A reply to one of the actor's own requests: its resume function, the
-    // seam's, takes it (the actors package's resume and resumeId)
-    for (uint32_t withid = 0; awaits && withid <= 1; ++withid) {
-        genPuts(&g, firstarm ? "  if &*msg is &" : "  else if &*msg is &");
-        firstarm = 0;
-        genSlot(&g, GenMsg);
-        genPuts(&g, ".");
-        genSlot(&g, withid ? GenResumeId : GenResume);
-        genPuts(&g, " {let p = msg as *");
-        genSlot(&g, GenMsg);
-        genPuts(&g, ".");
-        genSlot(&g, withid ? GenResumeId : GenResume);
-        genPuts(&g, "; ");
-        genSlot(&g, GenActors);
-        genPuts(&g, withid ? ".resumeId(self, " : ".resume(self, ");
-        genSlot(&g, GenTake);
-        genPuts(&g, "(&(*p).run), ");
-        if (withid) {
-            genSlot(&g, GenTake);
-            genPuts(&g, "(&(*p).id), ");
-        }
-        genSlot(&g, GenTake);
-        genPuts(&g, "(&(*p).data));}\n");
-    }
+    // (A reply to one of the actor's own requests is no message of the enum: it
+    // arrives as a slot of its own kind in the mailbox's ring, which the actors
+    // package's runBatch resumes through the seam's resume function.)
     genPuts(&g, "}\n");
 
-    // A request's envelope, made by this actor as it awaits, its resume
-    // message written: 'run' is the seam's resume function, 'id' its record's
-    // place in the pending table, and the returned value 'size' bytes aligned
-    // to 'align' (genlawait.c, genlAwaitReply)
+    // A request's envelope, made by this actor as it awaits: 'run' is the
+    // seam's resume function, 'id' its record's place in the pending table, and
+    // the returned value 'size' bytes aligned to 'align' (genlawait.c,
+    // genlAwaitReply). Nothing is allocated: the answer claims a slot in this
+    // actor's ring when it comes
     for (uint32_t withid = 0; awaits && withid <= 1; ++withid) {
         genPuts(&g, "fn ");
         genSlot(&g, withid ? GenReplyId : GenReply);
@@ -1282,23 +1252,13 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
         genSlot(&g, GenState);
         genPuts(&g, withid ? ", run: *u8, id: u64, size: usize, align: usize) " : ", run: *u8, size: usize, align: usize) ");
         genSlot(&g, GenActors);
-        genPuts(&g, ".Reply {\n  let r = ");
+        genPuts(&g, ".Reply {\n  ");
         genSlot(&g, GenActors);
-        genPuts(&g, ".replyNode[");
+        genPuts(&g, ".replyFor[");
         genSlot(&g, GenState);
         genPuts(&g, ", ");
         genSlot(&g, GenMsg);
-        genPuts(&g, "](st, size, align);\n  ");
-        genSlot(&g, GenActors);
-        genPuts(&g, ".replyPut[");
-        genSlot(&g, GenMsg);
-        genPuts(&g, "](&r, ");
-        genSlot(&g, GenMsg);
-        genPuts(&g, ".");
-        genSlot(&g, withid ? GenResumeId : GenResume);
-        genPuts(&g, withid ? "(run, id, " : "(run, ");
-        genSlot(&g, GenActors);
-        genPuts(&g, ".replyData(&r)));\n  r\n}\n");
+        genPuts(&g, withid ? "](st, run, id, true, size, align)\n}\n" : "](st, run, 0u64, false, size, align)\n}\n");
     }
 
     // 'selfactor': the actor's own handle, another owner of its mailbox, which

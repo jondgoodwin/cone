@@ -1,0 +1,71 @@
+// A trace through 'await': an Asker awaits a Squarer's answer 12 times (the
+// reply is a message too: its send is recorded, kind 2, and the continuation
+// runs under the reply's id). Traced by the logger at high: each of the
+// Asker's 'one' messages, each Squarer request, each reply and the first
+// message ('many') is a message with a send, a run and an end; the reader
+// finds every run's send and every cause (a request's cause is the 'one'
+// that sent it, a reply's the 'square' that answered it, the continuation's
+// sends' the reply), with none unmatched and no cause that did not run.
+
+mod awaits;
+
+import testing use *;
+import libc;
+import actors;
+import actortrace;
+
+actor Squarer {
+  pub async fn square(self, n: u64) u64 {n * n}
+}
+
+actor Asker {
+  sq: Squarer;
+  got: u64 = 0u64;
+
+  pub async fn many(self, n: u64) {
+    var i = 1u64;
+    while i <= n {
+      selfactor.one(i);
+      i = i + 1u64;
+    }
+  }
+
+  pub async fn one(self, i: u64) {
+    let s = await sq.square(i);
+    got = got + s;
+  }
+}
+
+fn main() i32 {
+  initAll();
+  actors.configure(actors.Options(workers: 3u32));
+  let path = cstr.fromLiteral("actortrace_awaits_test.trc");
+  expect(actortrace.start(actortrace.methodLogger, path, actortrace.Options()), "the file is created");
+  actortrace.setLevel(actortrace.layerActors, actortrace.levelHigh);
+  {
+    let sq = Squarer();
+    let a = Asker(sq);
+    a.many(12u64);
+    actors.waitUntilIdle();
+  }
+  actortrace.setLevel(actortrace.layerActors, actortrace.levelOff);
+  let t = actortrace.finish();
+  var size = 0usize;
+  let p = actortrace.loadFile(path, &mut size);
+  require(p as usize != 0usize, "the file reads back");
+  let s = actortrace.summarize(p, size, false, true);
+  expect(s.ok, "it is a trace file");
+  // 1 many + 12 one (sent by many to itself) + 12 square requests + 12 replies
+  expectUInt(s.sends, 25u64, "25 messages sent: many, 12 one, 12 requests");
+  expectUInt(s.replies, 12u64, "12 replies sent");
+  expectUInt(s.runs, 37u64, "37 run starts: the 25 and the 12 continuations");
+  expectUInt(s.ends, 37u64, "37 run ends");
+  expectUInt(s.unmatched, 0u64, "every run has its send or reply");
+  expectUInt(s.rootSends, 1u64, "only the send of 'many' from main has no cause");
+  expectUInt(s.badParents, 0u64, "every other send names a message that ran");
+  expectUInt(t.dropped, 0u64, "none dropped");
+  libc.free(p);
+  libc.remove(path);
+  finalAll();
+  done()
+}
