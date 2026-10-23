@@ -523,11 +523,15 @@
 // it grew for as long as its actor lives: with a great many actors that is
 // most of the memory. When the consumer finds nothing claimed beyond what it
 // has taken, just before it marks the mailbox idle (atRest): the high-water
-// mark halves (so the budget follows recent use, not the all-time peak); the
-// drained segments that can be reused are (reclaim) and what is kept is
-// trimmed to the floor, two small segments (trimKept); and, if the segment the
-// ring is in is larger than a small one, its remaining slots are given up and
-// the ring goes on in a small one (shrinkChain: one compare-and-swap of the
+// mark halves (so the budget follows recent use, not the all-time peak). An
+// actor with nothing above the floor to give back returns at once. A rest
+// that follows GROWTH since the previous one trims what is kept to the budget
+// (keepBudget: twice the high-water mark in slots, between the floor and
+// 256 KB) and no further; a CALM rest (no growth since the previous one)
+// reclaims the drained segments that can be reused, trims what is kept to the
+// floor, two small segments (trimKept), and, if the segment the ring is in is
+// larger than a small one, gives up its remaining slots and goes on in a
+// small one (shrinkChain: one compare-and-swap of the
 // tail claims the slots, the segment is retired as a drained one, and the next
 // is the one linked ahead or a small one linked now; never more than two rounds
 // and the position moves before anything is linked, or the segment linked would
@@ -535,10 +539,12 @@
 // waits for a sender: a send claiming a position meanwhile finds the swap fail
 // (and nothing is done) or lands past the segment's end, where it links as it
 // would anyway. The result is that an actor sent one burst and then nothing
-// holds a few small segments (about 5 KB with 64-byte slots), not the ring the
-// burst made. A mailbox that is never quiet never gets there. One that falls
-// quiet for a moment in a stream gives its kept segments back and allocates
-// them again when the stream goes on: the cost of the fix, paid in
+// holds a few small segments (about 5 KB with 64-byte slots) after two rests,
+// and after one at most what the burst's budget allows (about 32 KB at 64-byte
+// slots), not the ring the burst made. A mailbox that is never quiet never
+// gets there. One that falls quiet for a moment in a stream keeps most of what
+// it kept (the budget) after a growth rest, and gives the rest back at a calm
+// one, allocating again when the stream goes on: the cost of the fix, paid in
 // allocations, not in latency (packages/actors/tests/ringstream.cone keeps
 // ballast in its consumer's ring so that it is quiet for no moment; without,
 // a busy machine drained it some dozens of times in 1.5 million messages and
