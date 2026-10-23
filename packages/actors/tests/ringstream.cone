@@ -2,11 +2,19 @@
 // consumer 1,500,000 messages as a continuous stream: it holds 30 credits, each
 // worth 100 messages, spends one for each hundred it sends, and gets one back
 // from the consumer for each hundred the consumer has taken. So about 3,000
-// messages are queued in the consumer's ring at every moment, the ring is
-// never empty and the consumer is never idle until the stream ends, and the
-// ring runs through some 5,800 segments' worth of positions (at 256 slots a
+// messages are queued in the consumer's ring at every moment, and the ring
+// runs through some 5,800 segments' worth of positions (at 256 slots a
 // segment, the most a segment has) while the sender and the consumer work at
 // once.
+//
+// The consumer is never idle until the stream ends, and that is made so, not
+// left to the scheduler: it keeps 1,500 "ballast" messages in its own ring,
+// each of which sends the next when it is taken, so that the ring is never
+// empty even if the producer's worker is held up for longer than the consumer
+// needs to take what it has (without the ballast, a busy machine does that
+// some dozens of times in the stream, and a mailbox that falls quiet gives its
+// kept segments back (atRest), and has to allocate again: that is the memory
+// fix, not a leak).
 //
 // A drained segment is reused as soon as the consumer has passed it and every
 // position that was claimed when it was drained has been published, not when
@@ -26,6 +34,7 @@ mod ringstream;
 import testing use *;
 import actors;
 
+const ballast = 1500u64;
 const credits = 30u64;
 const perCredit = 100u64;
 const total = 1500000u64;
@@ -51,13 +60,26 @@ actor Consumer {
   n: u64;
   acc: u64;
   producer: Option[Producer];
+  over: bool;
 
   fn init(self: &new) {
-    *self = Self(n: 0u64, acc: 0u64, producer: None[Producer]);
+    *self = Self(n: 0u64, acc: 0u64, producer: None[Producer], over: false);
   }
 
   pub async fn start(self, p: Producer) {
     producer = Some[Producer](p);
+    var b = 0u64;
+    while b < ballast {
+      selfactor.pad();
+      b = b + 1u64;
+    }
+  }
+
+  // A ballast message: it sends the next, until the stream is over
+  pub async fn pad(self) {
+    if !over {
+      selfactor.pad();
+    }
   }
 
   // Each message does a little work, so that the consumer is slower than a
@@ -86,6 +108,7 @@ actor Consumer {
       marks.taken.store(n);
       marks.work.store(acc | 1u64);
       producer = None;
+      over = true;
     }
   }
 }
