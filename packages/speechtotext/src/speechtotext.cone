@@ -1,0 +1,98 @@
+// speechtotext: NVIDIA's Parakeet TDT 0.6B v2 speech recognition (English, with capitals and punctuation, CC-BY-4.0), run on
+// the GPU through gpuwork and llmkernels. 16 kHz mono samples in, the text out. No sound is played or recorded here: the
+// package reads samples it is given (the example reads WAV files).
+//
+//   var device = adapter.requestComputeDevice(&ComputeRequest(largeBuffers: true));    // the weights are bound in big buffers
+//   var p: Parakeet = match Parakeet.open(&mut device, &modelPath, &vocabPath) { case var Ok(m) { m } case let Error(why) { ... } };
+//   imm sound = decodeWav(bytes)  (audiomixer: a WAV of any rate, channels and sample format)
+//   match p.transcribe(&mut device, soundTo16k(&sound).view()) { case let Ok(r) { r.text } case let Error(why) { ... } }
+//
+// Opening the F16 model takes half a second with the file in the system's cache (a second for the F32 one). 'transcribe' takes
+// the samples of one utterance (any length up to 5000 encoder frames, about 6.7 minutes) and answers a
+// Transcript: the text, the token ids, the encoder frame (80 ms) each was emitted at, and the time spent in each stage.
+// 'run(device, samples, true)' also keeps the features, the encoder's intermediate outputs and every joint evaluation of the
+// decode, which tests/model.cone compares with NeMo's. 'resampleTo16k' and 'soundTo16k' convert a decoded sound of any rate
+// and channels. examples/speechtotext.cone is a command-line program over a WAV file; examples/bench.cone times the matmul.
+//
+// FILES (one module; only this file imports)
+//
+//   safetensors (a package of its own)  the model file's container
+//   frontend.cone      16 kHz samples to normalised log-mel features, on the CPU, as NeMo's preprocessor does it
+//   resample.cone      any rate and channel count to 16 kHz mono
+//   speechkernels.cone the GPU kernels llmkernels does not have, and their SPIR-V, compiled from the .slang files beside it
+//   twins.cone         the CPU twin of each, for the tests
+//   model.cone         Parakeet: loading, the weights' places, the public API
+//   encoder.cone       the encoder as one GPU job, the decoder's jobs, the greedy TDT loop, the text of token ids
+//
+// THE MODEL FILE. The weights are not read from NVIDIA's .nemo (a tar of a PyTorch checkpoint) but from a safetensors file
+// that a converter outside this repository writes (it is not published: whether to is a question for Jon). It changes nothing
+// but the layout: BatchNorm (inference form) folded into the depthwise convolution before it, the 1x1 convolutions stored as
+// matrices, each LSTM layer's two biases added into one, and (in the F16 file) every large matrix rounded to a half. The
+// vocabulary comes in a text file of the 1024 pieces, one a line. Tensor names are those the loader asks for in model.cone.
+//
+// WHAT IT IS CHECKED AGAINST. NeMo 3.0.0 on the CPU in fp32 (a Python 3.12 venv outside the repository), on 16 LibriSpeech
+// test-clean clips chosen across the set (every 170th utterance), 1.9 to 15.1 seconds each. tests/model.cone: the text equals
+// NeMo's character for character on 16 of 16 clips with F32 weights and with F16 weights; so do the token ids, the frame each
+// token was emitted at, and the sequence of joint evaluations (frame, best token, best duration). The encoder's outputs and
+// the 1030 logits of every joint evaluation are within the tolerances the test states: with F32 weights 2.6e-5 of the
+// output's largest value at the encoder's end and 1.2e-5 for the logits; with F16 weights 2.5e-3 and 1.1e-3. The front end is
+// within 3.7e-4 of NeMo's f32 log-mel, which is NeMo's own f32 noise (tests/frontend.cone says how that was found). Each
+// kernel is checked against its CPU twin (tests/kernels.cone, tests/matmul.cone). WER against the transcripts is not a
+// measure here: the check is agreement with NeMo, and the clips are too few for a WER.
+//
+// SPEED (release build, RTX 4060 Laptop, the GPU otherwise idle; the CLI's --timings). A 2.4 s clip takes 110 ms in all
+// (front end 1.5 ms, encoder about 95, decoder about 14), a 10 s clip 200 ms, a 15 s clip 245 ms: a real-time factor of 0.05
+// to 0.016 (the audio's duration over the time). The weights take 1.2 GB of GPU memory with F16 (2.5 GB with F32); the process
+// as a whole about 1.3 GB while it transcribes a 15 s clip. WHERE THE TIME GOES for a short clip: about 70 ms of the
+// encoder's 95 is its 288 matrix products, which at a batch of 30 to 60 frames run at only 25 to 40 GB/s of weights and
+// 0.4 to 1.1 TFLOP/s, held up by memory latency: a workgroup walks the shared dimension in steps of 32 columns and a
+// 1024-row matrix is only 16 workgroups of the 64 x 64 tile. At a batch of 190 the same kernel reaches 2.5 to 3 TFLOP/s
+// (examples/bench.cone). Left for later: split-K or a smaller tile for short utterances, cooperative matrices, fusing the
+// layer's small kernels. The recording of the encoder's job takes 4 to 6 ms (about 1100 dispatches).
+//
+// METHOD CHOICES. Defaults a later design may revisit; each says what was chosen and what else was considered.
+// - WHOLE UTTERANCES. The encoder runs once over all the frames (attention over all of them), then the decoder walks them.
+//   No streaming, no chunking; the position biases and the scores matrix (8 heads x T x T floats) are made for the
+//   utterance's length. 5000 encoder frames is NeMo's own limit (pos_emb_max_len). 'limitFrames' lowers it.
+// - THE FRONT END ON THE CPU, in f64 with f32 stored: 1.5 ms for a 2.4 s clip, 9 ms for 15 s. A GPU front end would save
+//   milliseconds and need an FFT kernel; considered and left out. The filterbank and window come from the model file.
+// - GREEDY TDT ONLY, NeMo's label-looping algorithm for one utterance (see model.cone's header). No beam search, no
+//   language model, no word timestamps beyond the frame of each token. The duration of a blank is forced to at least 1, and
+//   10 tokens at one frame force an advance, as NeMo does.
+// - THE DECODER AS SEPARATE GPU JOBS. Each joint evaluation is a job whose logits are read back (4 KB); after an emitted
+//   token the decoder update (an LSTM step, its projection) is recorded into the same job as the next joint evaluation, so
+//   one wait a step. The LSTM state and everything the steps share stay on the GPU. A fused loop on the GPU (no readback until
+//   the end) would need the argmax and the control flow in a kernel; considered and left out at 15 ms for a 2.4 s clip.
+// - THE ENCODER AS ONE JOB of about 1100 dispatches in one compute pass with the parameters packed into one slab, as llmrun
+//   does. Its scratch buffers are made for each utterance (about 30 allocations) and die with the job; the weights stay.
+// - THE MATRIX PRODUCTS. This package's matmul (speechmatmul.slang, speechmatmulvec.slang) for batches of more than one
+//   frame: a 64 x 64 tile, F32 or F16 weights, a wide-load form where F16 weights and the sizes allow. Its sums equal
+//   llmkernels' matmul's bit for bit (tests/matmul.cone), several times faster at a batch over 60. A single vector (a
+//   decoder step) goes through llmkernels' matvec. Written here, not in llmkernels, so that no existing package changes.
+// - ATTENTION. The scores of all heads are written to a buffer, softmaxed by llmkernels' kernel and then summed over the
+//   values: three dispatches, 8 T^2 floats of scratch (1.2 MB at 15 s). No flash form.
+// - F16 FOR THE MATRICES, F32 FOR EVERYTHING ELSE. It halves the memory (1.2 GB against 2.5 GB, which is what lets the
+//   language model share the GPU) and does not change a word on the 16 clips. The activations are f32 throughout.
+// - THE SAFETENSORS READER is the package 'safetensors'. The vocabulary is a text file rather than the SentencePiece model:
+//   decoding needs only the pieces (the word mark U+2581 becomes a space, the unknown piece is dropped), not the encoder.
+//
+// NOT DONE. Streaming, batches of utterances, other languages (Parakeet TDT 0.6B v3 has the same layers and a larger
+// vocabulary; the converter would need to take it and the vocabulary's size would no longer be fixed here), word-level
+// timestamps, confidence scores, punctuation or casing control, and a model other than Parakeet.
+//
+// HAZARDS. NeMo's own model.transcribe leaves the model in training mode on some paths, which turns dropout on for whatever
+// you then run with the same model object: call .eval() first (the reference script in the notes did).
+
+mod speechtotext;
+
+import libc;
+import collections use List, String;
+import path use Path;
+import time use Instant;
+import fs;
+import audiomixer;
+import gpu use *;
+import gpuwork use Kernel, Job, Binding, READ, READ_WRITE, BINDING_ALIGNMENT, uploadValue, upload, zeroed, Works, Target, Completion;
+import llmkernels use Kernels, floatWords, wordFloats;
+import llmreference use packWords, rowBytes, QTYPE_F32, QTYPE_F16;
+import safetensors use *;
