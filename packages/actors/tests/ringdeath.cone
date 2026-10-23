@@ -1,0 +1,64 @@
+// Actors that die with grown rings leak nothing. 300 actors are each sent 5,000
+// messages from main in one burst, so each ring grows through segments of 2,
+// 8, 32, 128 and 256 slots while the workers drain it, the drained segments
+// waiting to be reused or kept; and 300 more are sent a single message each
+// and none beyond, so each dies holding its small first segment. All the
+// handles go; each actor dies on whichever thread lets go last, and its
+// mailbox frees every segment: the chain, the drained ones waiting, the kept
+// and the spare (THE MAILBOX in the package's header). liveSegments counts
+// the segments allocated and not yet freed, and must be 0 at the end, whilst
+// it was well above 0 while they lived.
+
+mod ringdeath;
+
+import testing use *;
+import actors;
+import collections use List;
+
+let handled: Atomic[u64];
+
+fn @initpure init() {
+  handled = Atomic[u64].of(0u64);
+}
+
+actor Sink {
+  n: u64;
+  fn init(self: &new) {
+    *self = Self(0u64);
+  }
+
+  pub async fn take(self, k: u64) {
+    n = n + k;
+    handled.add(1u64);
+  }
+}
+
+fn main() i32 {
+  initAll();
+  var alive = 0usize;
+  {
+    var big = List[Sink].empty();
+    var small = List[Sink].empty();
+    var i = 0usize;
+    while i < 300usize {
+      let s = Sink();
+      var j = 0u64;
+      while j < 5000u64 {
+        s.take(j);
+        j = j + 1u64;
+      }
+      big.push(s);
+      let t = Sink();
+      t.take(1u64);
+      small.push(t);
+      i = i + 1usize;
+    }
+    actors.waitUntilIdle();
+    expectUInt(handled.load(), 300u64 * 5000u64 + 300u64, "every message handled");
+    alive = actors.liveSegments();
+    expect(alive >= 600usize, "the live actors hold at least their first segments");
+  }
+  finalAll();
+  expectUInt(u64.from(actors.liveSegments()), 0u64, "every segment of every dead actor freed");
+  done()
+}

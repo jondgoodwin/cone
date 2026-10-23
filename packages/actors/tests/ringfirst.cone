@@ -1,0 +1,117 @@
+// The first segment of a mailbox is made by the first send, not by the actor.
+//
+// - An actor that is never sent a message has no segment: 3,000 of them hold
+//   none (liveSegments and liveSegmentBytes are 0), and the first message to
+//   each makes exactly one.
+// - The first send to a brand-new actor can come from several senders at once,
+//   so the segment is set from null by a compare-and-swap, the loser freeing
+//   its own (firstSeg): no lock, no wait. 300 rounds, each of 16 new actors that
+//   8 threads, started together and held at a gate, send a message each in the
+//   same instant: every message arrives (128 a round), none twice, and once the
+//   actors have died no segment is left (a loser's, leaked, would show).
+
+mod ringfirst;
+
+import testing use *;
+import actors;
+import thread;
+import collections use List;
+
+let handled: Atomic[u64];
+let gate: Atomic[u32];
+
+fn @initpure init() {
+  handled = Atomic[u64].of(0u64);
+  gate = Atomic[u32].of(0u32);
+}
+
+actor Sink {
+  n: u64;
+  fn init(self: &new) {
+    *self = Self(0u64);
+  }
+
+  pub async fn take(self, k: u64) {
+    n = n + k;
+    handled.add(1u64);
+  }
+}
+
+struct Crew is Sendable {
+  pub xs: Array[Sink, 16];
+}
+
+fn newCrew() Crew {
+  Crew([Sink(), Sink(), Sink(), Sink(), Sink(), Sink(), Sink(), Sink(),
+    Sink(), Sink(), Sink(), Sink(), Sink(), Sink(), Sink(), Sink()])
+}
+
+// One of the senders: waits at the gate, then sends every actor one message
+fn blast(c: Crew) u32 {
+  while gate.load() == 0u32 {
+    thread.yieldNow();
+  }
+  var i = 0usize;
+  while i < 16usize {
+    c.xs[i].take(1u64);
+    i = i + 1usize;
+  }
+  0u32
+}
+
+const rounds = 300u64;
+
+fn main() i32 {
+  initAll();
+  {
+    var quiet = List[Sink].empty();
+    var i = 0usize;
+    while i < 3000usize {
+      quiet.push(Sink());
+      i = i + 1usize;
+    }
+    actors.waitUntilIdle();
+    expectUInt(u64.from(actors.liveSegments()), 0u64, "3,000 actors never sent a message hold no segment");
+    expectUInt(u64.from(actors.liveSegmentBytes()), 0u64, "...and no bytes of one");
+    expectUInt(actors.messageAllocs(), 0u64, "...and made no allocation for a message");
+    i = 0usize;
+    while i < 3000usize {
+      quiet[i].take(1u64);
+      i = i + 1usize;
+    }
+    actors.waitUntilIdle();
+    expectUInt(u64.from(actors.liveSegments()), 3000u64, "the first message to each makes its one segment");
+    expectUInt(handled.load(), 3000u64, "...and every one is taken");
+  }
+  // they have died; their segments are freed
+  actors.waitUntilIdle();
+  expectUInt(u64.from(actors.liveSegments()), 0u64, "the segments of the 3,000 freed when they died");
+
+  let before = handled.load();
+  var r = 0u64;
+  var wrong = 0u64;
+  while r < rounds {
+    gate.store(0u32);
+    let crew = newCrew();
+    let t0 = thread.start(Crew(crew.xs), &blast);
+    let t1 = thread.start(Crew(crew.xs), &blast);
+    let t2 = thread.start(Crew(crew.xs), &blast);
+    let t3 = thread.start(Crew(crew.xs), &blast);
+    let t4 = thread.start(Crew(crew.xs), &blast);
+    let t5 = thread.start(Crew(crew.xs), &blast);
+    let t6 = thread.start(Crew(crew.xs), &blast);
+    let t7 = thread.start(Crew(crew.xs), &blast);
+    gate.store(1u32);
+    t0.join(); t1.join(); t2.join(); t3.join(); t4.join(); t5.join(); t6.join(); t7.join();
+    actors.waitUntilIdle();
+    if handled.load() - before != (r + 1u64) * 128u64 {
+      wrong = wrong + 1u64;
+    }
+    r = r + 1u64;
+  }
+  expectUInt(wrong, 0u64, "each round's 8 x 16 first sends all arrived, once, whoever came first");
+  expectUInt(handled.load() - before, rounds * 128u64, "300 rounds of 128 first sends: all taken");
+  finalAll();
+  expectUInt(u64.from(actors.liveSegments()), 0u64, "no segment left: every loser of a first-segment race freed its own");
+  done()
+}

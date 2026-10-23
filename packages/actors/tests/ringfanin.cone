@@ -1,0 +1,92 @@
+// The mailbox ring under fan-in. Eight producer actors each send one consumer
+// 60,000 numbered messages, in a loop in one behaviour, so that all eight run
+// at once on the workers and their messages interleave in the consumer's ring,
+// which grows through its segments and reuses the drained ones (THE MAILBOX in
+// the package's header). The consumer checks that every message of every
+// producer arrives exactly once and in the order that producer sent it, and
+// that the sums are right.
+//
+// Then the ring is looked at from outside: it grew beyond its first segment
+// (messageAllocs), and, once every actor is dead, no segment is left
+// allocated (liveSegments).
+
+mod ringfanin;
+
+import testing use *;
+import actors;
+
+const producers = 8u64;
+const perProducer = 60000u64;
+
+struct Tally {
+  pub taken: Atomic[u64];
+  pub disorder: Atomic[u64];
+  pub dupes: Atomic[u64];
+  pub sum: Atomic[u64];
+}
+
+let tally: Tally;
+
+fn @initpure init() {
+  tally = Tally(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
+
+actor Consumer {
+  next: Array[u64, 8];       // the number expected next from each producer
+  fn init(self: &new) {
+    *self = Self([0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64]);
+  }
+
+  pub async fn take(self, from: u64, n: u64) {
+    let want = next[usize.from(from)];
+    if n < want {
+      tally.dupes.add(1u64);
+    } else if n > want {
+      tally.disorder.add(1u64);
+    }
+    next[usize.from(from)] = n + 1u64;
+    tally.taken.add(1u64);
+    tally.sum.add(n);
+  }
+}
+
+actor Producer {
+  id: u64;
+  to: Consumer;
+  fn init(self: &new, id: u64, to: Consumer) {
+    *self = Self(id: id, to: to);
+  }
+
+  pub async fn run(self, count: u64) {
+    var i = 0u64;
+    while i < count {
+      to.take(id, i);
+      i = i + 1u64;
+    }
+  }
+}
+
+fn main() i32 {
+  initAll();
+  {
+    let c = Consumer();
+    var ps: Array[Producer, 8] = [Producer(0u64, c), Producer(1u64, c), Producer(2u64, c), Producer(3u64, c),
+      Producer(4u64, c), Producer(5u64, c), Producer(6u64, c), Producer(7u64, c)];
+    var k = 0usize;
+    while k < 8usize {
+      ps[k].run(perProducer);
+      k = k + 1usize;
+    }
+    actors.waitUntilIdle();
+    expectUInt(tally.taken.load(), producers * perProducer, "every message of every producer taken once");
+    expectUInt(tally.disorder.load(), 0u64, "no message arrived ahead of one sent before it by the same producer");
+    expectUInt(tally.dupes.load(), 0u64, "none arrived twice");
+    // sum over producers of 0 + 1 + ... + 59999
+    expectUInt(tally.sum.load(), producers * (perProducer * (perProducer - 1u64) / 2u64), "the sums agree");
+    expect(actors.messageAllocs() > 0u64, "the ring grew past its first segment");
+    expect(actors.liveSegments() > 0usize, "the mailboxes still hold their segments while the actors live");
+  }
+  finalAll();
+  expectUInt(u64.from(actors.liveSegments()), 0u64, "every segment freed once the actors have died");
+  done()
+}

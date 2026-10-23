@@ -46,7 +46,15 @@
 //   actors.Future[T]                a behaviour's value kept, to 'await' later
 //                                   (FUTURES, below)
 //   actors.liveFutures()            how many futures are not yet freed
-//   actors.waitQuiet()              wait until no actor is queued or running
+//   actors.liveSegments()           how many mailbox segments are not yet freed
+//   actors.messageAllocs()          how many allocations the runtime has made
+//                                   for messages (THE MAILBOX, below)
+//   actors.liveSegmentBytes()       the bytes of those segments
+//   actors.mailboxDepth(mb), mailboxHighWater(mb), mailboxBytes(mb),
+//   setMailboxLimit(mb, n), mailboxTooFull(mb)
+//                                   what a mailbox holds and when it is too
+//                                   full (MAILBOX LIMIT, below)
+//   actors.waitQuiet()            wait until no actor is queued or running
 //   actors.waitUntilIdle()          INTERIM: wait until no actor is queued or
 //                                   running and no awaited operation is
 //                                   outstanding (WAITING FOR IDLE, below)
@@ -96,8 +104,8 @@
 //         enum Counter.Msg is Sendable {struct add {n u64;}}
 //
 //       A behaviour that returns a value has a second variant, sent awaited,
-//       carrying a Reply too; an actor that awaits has two resume variants
-//       (AWAITING, below).
+//       carrying a Reply too. (A reply to an await is no variant of the
+//       enum: it is a slot of its own kind in the mailbox, REPLIES, below.)
 //
 //   (c) The handle, 'Counter': one field, the 'Arc[opaq, T]' owner of the
 //       actor's Mailbox that startActor answers; an initializer for each of
@@ -118,9 +126,10 @@
 //         }
 //
 //   (d) The dispatch function, 'Counter.dispatch', handed each message where
-//       it lies in its node: it tests which variant the message is, moves
-//       each argument out of it, and calls the behaviour. The node is then freed
-//       with nothing in it finalized, so each argument is moved exactly once.
+//       it lies in its slot: it tests which variant the message is, moves
+//       each argument out of it, and calls the behaviour. The slot is then
+//       done with, nothing in it finalized, so each argument is moved exactly
+//       once.
 //
 //         fn Counter.dispatch(self: &mut Counter.State, msg *Counter.Msg) {
 //           if &*msg is &Counter.Msg.add {
@@ -160,7 +169,9 @@
 // the state, so that a send touches one block. 'Arc' sees only the Mailbox,
 // so the Mailbox finalizes the state: its Header carries a function,
 // 'finalize', made for the state's type when the actor started, which the
-// Mailbox's finalizer calls before the block is freed.
+// Mailbox's finalizer calls before the block is freed. The mailbox's slots
+// are not in the block: they are in segments of their own (THE MAILBOX,
+// below), the first allocated with the block.
 //
 // A NEW ACTOR is real before its state's 'init' runs, and that init runs on
 // the state where it will stay: the handle's initializer makes the block, the
@@ -222,9 +233,11 @@
 //   and where each is ordered: an actor queued again after its turn is
 //   pushed to a run queue with a Release store and taken with an Acquire
 //   compare-and-swap (or stolen with one); an actor marked idle is marked by
-//   an AcqRel compare-and-swap on its mailbox's head, which the next send's
-//   AcqRel exchange on the same word reads, and that sender queues it
-//   (Release) for a worker to take (Acquire); and its death follows 'Arc's
+//   an AcqRel compare-and-swap on its mailbox's tail, which the next send's
+//   claim, an add on the same word, reads, or (when it stopped to wait for a
+//   slot) by an AcqRel compare-and-swap on that slot's word, which the
+//   publication's exchange of it reads; and the sender that finds the mark
+//   queues the actor (Release) for a worker to take (Acquire); and its death follows 'Arc's
 //   Release decrement and Acquire load. Each chain is release to acquire, so
 //   what one method did happens before the next method runs, wherever.
 // - The collector package's 'Gc' is NOT supported inside an actor. That
@@ -262,18 +275,19 @@
 //
 // - The request carries an envelope, a Reply, in the message, beside the
 //   arguments; the method's signature is as written. The awaiting actor
-//   makes it (replyNode, replyPut): one count of the awaiting actor, so it
-//   cannot die while the reply is owed, and the reply's mailbox node,
-//   allocated now with room after its message for the value returned. The
-//   node's message is the awaiting actor's own resume variant, naming the
-//   seam's resume function (which second half) and, where the record is not
-//   empty, its id (parkReserve) -- an empty record has no slot and no id.
-// - The actor answering writes the value into the node and pushes it
-//   (answerNow, answerAt, answered: post), knowing nothing of the awaiting
-//   actor's type; the count becomes the scheduler's owner, or is let go.
-// - The awaiting actor's dispatch calls the resume function (resume,
-//   resumeId), which takes the record out of the table (unpark) and calls the
-//   second half with it and the value.
+//   makes it (replyFor): one count of the awaiting actor, so it cannot die
+//   while the reply is owed, the seam's resume function (which second half)
+//   and, where the record is not empty, its id (parkReserve) -- an empty
+//   record has no slot and no id -- and the size of the value awaited. Nothing
+//   is allocated: the actor answering claims the slot then (REPLIES, below).
+// - The actor answering claims a slot in the awaiting actor's ring, writes
+//   the resume function, the id and the value into it, and publishes it
+//   (answerNow, answerAt, answered), knowing nothing of the awaiting actor's
+//   type; the count becomes the scheduler's owner, or is let go.
+// - The awaiting actor's worker finds the slot in its mailbox, in its place
+//   among the messages, and calls the resume function (resume, resumeId), which
+//   takes the record out of the table (unpark) and calls the second half with
+//   it and the value.
 // - A behaviour that returns a value and itself awaits keeps the envelope it
 //   answers in its state's Answer slot while it runs (ask, askNone); each
 //   seam carries it in the record, so whichever half returns the value
@@ -295,8 +309,10 @@
 // answering writes the value into the future as answerNow writes it into a
 // reply, knowing nothing of who will await it. An 'await' on the future goes
 // on at once if it has its ending (futureReady), and otherwise parks as an
-// awaited request does, its envelope's node parked on the future
-// (futureRegister) until the future pushes it; either way the value is opened
+// awaited request does, its envelope parked on the future (futureRegister: a
+// Waiter is allocated, the one allocation an await makes, and only for a
+// future that has not arrived) until the future publishes its resume to the
+// awaiting actor's ring; either way the value is opened
 // out of the future (futureOpen, futureTaken). futures.cone is the future
 // itself: the futures region, Future[T], and the protocol.
 //
@@ -380,21 +396,184 @@
 // to the number of workers less 1, or actors.noWorker on any other thread: for
 // tests, and for per-worker tallies.
 //
-// HOW IT WORKS. The mailbox is Vyukov's intrusive MPSC queue, as Pony's
-// runtime has it (messageq.c): a singly linked list of nodes, each a
-// message behind its link, with the producers' end ('head') and the
-// consumer's ('tail', which points at a stub node whose message is gone).
-// A send allocates a node, writes the message into it and pushes it with ONE
-// atomic exchange on 'head' (AcqRel), then links the old head to it with a
-// Release store; the worker running the actor pops with an Acquire load of
-// the stub's link and no read-modify-write, and frees the stub it leaves.
-// Bit 0 of 'head' is the idle mark: set, the actor is not queued. A worker
-// that finds the mailbox empty marks it with one compare-and-swap of 'head'
-// from the stub to the stub with the bit set, which fails if a push is under
-// way (the actor is then queued again). A send whose exchange finds the bit
-// set knows the actor was idle and is now its to schedule: it takes the
-// scheduler's owner and queues the actor. So a send to a busy actor is one
-// exchange and one store; one to an idle actor also queues it.
+// THE MAILBOX is a ring of fixed-size slots, grown in linked segments (the
+// code is under "The mailbox", below). A slot is a 16-byte header, then a
+// payload. The header's first word, 'seq', is the slot's publication; its
+// second, 'cause', is reserved for the id of what caused the message, written
+// as 0 until the tracing work fills it. The payload is the message M itself,
+// in the size of M rounded to 16 bytes and not under 32: the size of a slot
+// follows from M, so it is as big as the actor's largest message needs. A send
+// allocates nothing:
+//
+// - It CLAIMS a position with one atomic add on the mailbox's 'tail' word
+//   (bits 0 to 62 count the positions claimed, one per send, from 0; bit 63
+//   is the idle mark, below). The consumer takes positions in order, so each
+//   sender's messages are handled in the order sent, and a send has taken its
+//   place before it returns.
+// - It finds the position's slot. A segment covers the positions from its
+//   'base' for its 'count' slots. The sender starts at the 'hint', the last
+//   segment a sender used, and follows 'next' links while the position lies
+//   beyond. Past the last segment it links one: a spare if there is one,
+//   else a new segment, put on with a compare-and-swap of the last one's
+//   'next'; if another sender's got there first, that one is used and this
+//   sender's is kept as a spare. A sender past the middle of a segment of 8
+//   slots or more links the next one ahead (the first to take the segment's
+//   'ahead' flag does it), so that later senders find it there. No sender
+//   ever waits for another's progress: each only does the work itself.
+// - It writes the message into the slot, in place: dispatch is handed a pointer
+//   to the payload and moves each argument out of it.
+// - It PUBLISHES with one exchange of 'seq', to the position times 8 plus a
+//   kind. A slot is the consumer's to take when its 'seq' is that, for the
+//   position the consumer is at; any other value (zero in fresh memory, or the
+//   publication of a position gone by) is not.
+//
+// The worker running the actor, the consumer, takes the slot at its 'head'
+// position when it is published, and goes on to the next. It reads the
+// published payload with an Acquire load of 'seq', the sender's exchange being
+// the Release. It never waits for a sender: a slot that is not published, or
+// a segment not yet linked, is simply not ready.
+//
+// An actor has no segment until it is sent a message: the first send makes
+// the first, of 2 slots (so an actor never messaged costs its block and
+// nothing else; firstSeg says how senders arriving together at a new actor
+// make it, with one compare-and-swap and no waiting). Later segments grow by
+// a factor of 4 up to 256 slots (or the most that fit in 16 KB), but not past
+// what the queue asks (twice its depth, rounded up to a power of two, and not
+// under a "small" segment of about 2 KB of slots). With the 16-byte header and
+// 32-byte minimum payload, an actor sent a message holds a segment of at least
+// 32 + 2 * 48 bytes. Nothing limits a mailbox yet: it grows as the senders
+// outrun the consumer (MAILBOX LIMIT, below).
+//
+// THE IDLE MARK. A mailbox whose actor is not queued or running is idle, and
+// the next send schedules the actor. Exactly one sender does, and the actor is
+// never left idle with a message in its mailbox. There are two ways the
+// consumer comes to rest, because a position may be claimed and not yet
+// published:
+//
+// - Nothing is claimed beyond what it has taken ('tail' counts exactly the
+//   positions taken): it marks the mailbox idle with one compare-and-swap of
+//   'tail', from the count to the count with bit 63. A send claims by adding to
+//   the same word, so either its claim comes first, the compare-and-swap fails,
+//   and the consumer goes on to the second way below (or, finding the message
+//   published, goes on running), or the compare-and-swap comes first and the
+//   claim finds the bit. A sender whose claim found the bit set, having
+//   published, clears it with an atomic and: the sender that clears it is the
+//   one to schedule the actor (the others find it clear). It takes the
+//   scheduler's owner of the actor and queues it.
+// - A position is claimed and its slot is not yet published (see the next
+//   section): it parks on that slot.
+//
+// A SLOT CLAIMED AND NOT YET PUBLISHED. A sender can stop between its claim and
+// its publication (preempted, or stalled by the test hook, stallNextPublish).
+// The consumer, reaching that position, finds a slot it cannot take, and it
+// must neither wait for the sender nor go idle in a way that loses the actor
+// when the publication lands after it has stopped. It parks on the slot: it
+// changes the slot's 'seq' with one compare-and-swap, from what it held to
+// position * 8 + 7, kindWaiting, and returns to the scheduler, which lets go
+// of the actor (it is idle, and the worker did not spin). The sender's
+// publication is the exchange of the same word, and it answers what the word
+// held. The two operations are on one word, so one comes after the other:
+//
+// - If the consumer's compare-and-swap comes second, it fails, because the
+//   word is the publication, and the consumer finds the message there and goes
+//   on to take it. Nothing is parked and nothing needs scheduling.
+// - If the sender's exchange comes second, it answers the waiting mark, and
+//   this sender schedules the actor: it takes the scheduler's owner and queues
+//   it, as for the idle mark. The message published, and every message behind
+//   it that was published meanwhile, are taken in order when the actor runs.
+//
+// So the sender whose publication lands after the consumer has stopped is the
+// one that schedules it, whichever way it stopped: the one that finds the
+// waiting mark in the slot, or the one that clears the idle mark. Messages
+// published behind the parked slot schedule nothing (they find neither mark:
+// the idle mark is set only when nothing is claimed beyond what is taken), so
+// a stalled sender costs the workers nothing while it is stalled. If the
+// segment holding the position has not been linked yet (the sender that
+// claimed it is still looking for one), the consumer links it, as a sender
+// would, to have a word to mark. A position claimed before the actor's init
+// returned, and unpublished, is handled the same way by startActor.
+// (packages/actors/tests/ringstall.cone holds a sender between claim and
+// publication, with 3,000 messages published behind it, with the consumer
+// idle and with it busy when the sender claims.)
+//
+// SEGMENTS ARE REUSED, a drained segment as soon as no sender can reach it,
+// not when the mailbox falls quiet, so that a mailbox with a continuous stream
+// into it (never idle) allocates nothing once its segments have filled to the
+// most the stream queues (packages/actors/tests/ringstream.cone: a stream of
+// 1,500,000 messages through some 24 segments). A sender reaches a segment
+// only between its claim and its publication: it claims first, then reads the
+// hint and walks, and touches no segment after it publishes. When the
+// consumer moves on from a segment it (1) moves its own segment, which senders
+// read, and the hint, off it, and (2) notes how many positions had been claimed
+// then, the segment's 'mark'. A sender that claimed after the note read the
+// hint and the consumer's segment after they had moved (the claim, the moves
+// and the note are all sequentially consistent), so it holds a segment ahead
+// of this one. A sender that claimed before it holds a position below the
+// mark; the segment is reusable once every position below the mark is
+// published (the consumer looks ahead through the slots, once each, to see:
+// publishedUpTo), since a sender that has published touches no segment. Then
+// it goes to the pool, up to a budget in BYTES of twice the mailbox's recent
+// high-water mark (not under a small segment, the floor, nor over 256 KB), and
+// the pool fills the spare places, 16 of them, from which senders take the
+// segment they link. A kept segment too small for the growth of the ring is
+// freed. Segment memory is returned to the allocator by this freeing, by the
+// giving back at rest (below) and at the actor's death.
+//
+// COMING TO REST. A mailbox that grew and then fell quiet must not keep what
+// it grew for as long as its actor lives: with a great many actors that is
+// most of the memory. When the consumer finds nothing claimed beyond what it
+// has taken, just before it marks the mailbox idle (atRest): the high-water
+// mark halves (so the budget follows recent use, not the all-time peak). An
+// actor with nothing above the floor to give back returns at once. A rest
+// that follows GROWTH since the previous one trims what is kept to the budget
+// (keepBudget: twice the high-water mark in slots, between the floor and
+// 256 KB) and no further; a CALM rest (no growth since the previous one)
+// reclaims the drained segments that can be reused, trims what is kept to the
+// floor, two small segments (trimKept), and, if the segment the ring is in is
+// larger than a small one, gives up its remaining slots and goes on in a
+// small one (shrinkChain: one compare-and-swap of the
+// tail claims the slots, the segment is retired as a drained one, and the next
+// is the one linked ahead or a small one linked now; never more than two rounds
+// and the position moves before anything is linked, or the segment linked would
+// be sized for the slots just claimed, as if they were queued). Nothing in it
+// waits for a sender: a send claiming a position meanwhile finds the swap fail
+// (and nothing is done) or lands past the segment's end, where it links as it
+// would anyway. The result is that an actor sent one burst and then nothing
+// holds a few small segments (about 5 KB with 64-byte slots) after two rests,
+// and after one at most what the burst's budget allows (about 32 KB at 64-byte
+// slots), not the ring the burst made. A mailbox that is never quiet never
+// gets there. One that falls quiet for a moment in a stream keeps most of what
+// it kept (the budget) after a growth rest, and gives the rest back at a calm
+// one, allocating again when the stream goes on: the cost of the fix, paid in
+// allocations, not in latency (packages/actors/tests/ringstream.cone keeps
+// ballast in its consumer's ring so that it is quiet for no moment; without,
+// a busy machine drained it some dozens of times in 1.5 million messages and
+// the allocations did not stop).
+//
+// REPLIES. An await is a seam: its continuation is the receipt of another
+// message in the same ring. The reply's slot is claimed at reply time, in the
+// awaiting actor's ring, by whoever answers (an actor, an I/O thread, a future
+// that has arrived), who writes the resume record into the payload and the
+// value after it, and publishes it with a kind of its own (2 to 5, a message
+// being 1). The record is the seam's resume function and the id of its record
+// in the pending table (replyHead, 16 bytes); the value follows if it fits
+// the rest of the payload, else it is in a box allocated at reply time (a value
+// larger than the payload less 16 bytes, or aligned over 16), freed by the
+// awaiting actor's worker after the second half has taken it. The
+// Reply envelope carries what that needs: the awaiter's Header, the resume
+// function, the id, and the size of the value, which tells whether it is boxed
+// (replyFor). When the consumer reaches the slot, runBatch calls the resume
+// function through resume or resumeId (resumeSlot). A kept future that has not
+// arrived when it is awaited allocates a Waiter (futures.cone), which
+// publishes the same kind of slot, carrying the consumer's reference to the
+// future as its value, when the future ends.
+//
+// MAILBOX LIMIT. The ring counts what it holds: bytes of segments (mailboxBytes),
+// the most queued at once, seen at the start of each of the worker's turns
+// (mailboxHighWater), the depth now (mailboxDepth), and a limit that the
+// holder of the Header can set (setMailboxLimit) and ask against (mailboxTooFull:
+// depth at or over the limit). Nothing mutes a sender yet; with no limit set,
+// a mailbox grows without one.
 //
 // The scheduler has one worker thread per 'workers', each with its own run
 // queue, a ring of 1024 actors, plus one shared inject queue, a list under a
@@ -473,16 +652,17 @@
 //   per worker, and a class in the Header that says which ring an actor is
 //   pushed to; the turn counter that already interleaves the inject queue
 //   chooses between the rings.
-// - A control lane: a second mailbox (head and tail) in the Header, drained
-//   first by runBatch; the idle mark stays on the first, and a push to
-//   either finds or sets it through the same exchange.
+// - A control lane: a second ring (tail, head, segments) in the Header,
+//   drained first by runBatch; the idle mark stays on the first ring's tail,
+//   and a send to either ring takes the actor out of idle through it.
 // - tokio's LIFO slot: one pointer per worker, holding the actor the running
 //   actor made runnable most recently, taken before the worker's own queue;
 //   'schedule' is the one place it would be filled, and the ring is where
 //   the slot's previous occupant would go.
 // - Muting a sender to an overloaded actor: a mark in the Header that runActor
 //   checks before queueing the sender again, with a list of muted actors
-//   per receiver to queue when it catches up.
+//   per receiver to queue when it catches up. The ring counts what it holds
+//   and answers mailboxTooFull for it (MAILBOX LIMIT); the mute is not built.
 //
 // The package's own call to the OS is a yield, chosen by the target's OS; the
 // rest is the thread package's and sync's, on Windows and on Linux.
@@ -517,65 +697,956 @@ fn die(msg: &str, file: &str = srcFile(), line: u32 = srcLine()) Never {
 }
 
 // ---------------------------------------------------------------------------
-// The mailbox: Vyukov's intrusive MPSC queue, as Pony's messageq.c has it
+// The mailbox: a ring of fixed-size slots, grown in linked segments (THE MAILBOX, above)
 // ---------------------------------------------------------------------------
 
-// A node's link, the first thing in every node. The first node of a mailbox
-// (the stub) is a Link alone; every later one is a Node[M].
-struct Link {
-  pub next: *Link;
+// A slot is a 16-byte header, then its payload. The header: 'seq', which
+// says the slot has been written (position * 8 + a kind) and so is the
+// publication, and 'cause', one word reserved for the id of what caused the
+// message (the tracing work fills it; zero until then). The payload is the
+// message M itself for a message, and for a reply a record of its own
+// (REPLIES, above).
+const slotHead = 16usize;
+
+// A segment: this header, then 'count' slots. 'base' is the position of its
+// first slot and 'count' its size, both fixed once it is linked; 'next' is
+// set once, from null, by whichever sender finds the position it needs past
+// the last segment and links one (or by a sender linking ahead). A segment
+// the consumer has drained keeps two words of its own in its first slot's
+// payload, which nothing reads any more: the next drained segment, and the
+// number of positions that had been claimed when it was drained (retNext,
+// retMark).
+struct Seg {
+  pub base: u64;
+  pub next: *Seg;
+  pub count: u32;
+  pub pad: u32;
+  pub pad2: u64;
 }
 
-// One message in a mailbox: its link, then the message
-struct Node[M] {
-  pub next: *Link;
-  pub msg: M;
+const segHead = 32usize;
+
+// The consumer's record of the drained segments, made when the first is
+// drained: they wait, oldest first, to be reused (reclaim); those kept wait
+// in the pool; and a few wait in the spare places, ready for the senders,
+// which take them from here (linkAfter). Senders reach it through the
+// header's 'extra', set once and never freed before the actor dies.
+struct Extra {
+  pub retHead: *Seg;
+  pub retTail: *Seg;
+  pub pool: *Seg;
+  pub poolBytes: u32;      // the bytes of the segments in the pool
+  pub spareBytes: u32;     // the bytes of the segments in the spare places (atomic: the consumer adds what it puts, a sender takes its away)
+  pub small: u32;          // the slots of a small segment, and the floor in bytes, for this mailbox's slot size: worked out once, for atRest
+  pub floor: u32;
+  pub prevHigh: u32;       // the high-water mark the previous rest left (atRest)
+  pub scanSeg: *Seg;
+  pub scanPos: u64;
+  pub spares: Array[*Seg, 16];
 }
 
-const idleBit = 1usize;
-const pointerBits = 0xFFFFFFFFFFFFFFFEusize;
+// How many spare places the senders have: a sender that reaches past the last
+// segment takes one of the segments waiting in them, and the consumer, at the
+// start and end of each of its turns, fills the empty ones from the kept
+const spareCount = 16usize;
 
-fn nullLink() *Link {null}
+fn retNext(x: *Seg) **Seg {((x as *u8) + segHead + slotHead) as **Seg}
+fn retMark(x: *Seg) *u64 {((x as *u8) + segHead + slotHead + 8usize) as *u64}
+
+fn strideOf(h: *Header) usize {usize.from((*h).stride)}
+
+// The mailbox's 'tail' word: bits 0 to 62 count the positions claimed, one
+// per send, and bit 63 is the idle mark. A slot's 'seq' is its position times
+// 8 plus its kind; any other value, which an unwritten or older slot holds, is
+// not the publication.
+const idleBit = 0x8000000000000000u64;
+const posMask = 0x7FFFFFFFFFFFFFFFu64;
+
+// The kinds a published slot has
+const kindMsg = 1u64;        // a message: M is in the payload
+const kindReply = 2u64;      // a reply (REPLIES): 2 + 1 if its record has an id, + 2 if its value is boxed
+
+// The sizes, named. The first segment, made by the first send, holds
+// firstSlots. Each later one is growBy times the one before, up to the most
+// slots that fit maxSegBytes (and at most maxSegSlots), and no larger than the
+// queue asks: not past twice the depth at the time, and at least a "small"
+// segment, which holds about smallBytes of slots (smallSlots), so that an
+// actor that is only ever sent a few at a time keeps small segments. A
+// drained segment that is not reused at once is kept, up to a budget of bytes
+// that follows the mailbox's recent peak (keepBudget): twice its high-water
+// mark in bytes, not less than the floor, two small segments, and not more than
+// keepMostBytes. When the mailbox comes to rest the kept segments are trimmed
+// to the floor and a large segment it is in is given up (atRest).
+const firstSlots = 2usize;
+const growBy = 4usize;
+const maxSegBytes = 16384usize;
+const maxSegSlots = 256usize;
+const smallBytes = 2048usize;
+const smallMostSlots = 64usize;
+const keepMostBytes = 262144usize;
+
+// What a reply's payload holds first: the awaiting actor's resume function and
+// the record's id, then the value, or a pointer to the box holding it
+const replyHead = 16usize;
+const minPayload = 32usize;
+
+fn nullSeg() *Seg {null}
 fn nullHeader() *Header {null}
 
-// Put node n at the end of h's mailbox: whether the mailbox was idle, which
-// makes this sender the one to schedule the actor
-fn mailPush(h: *Header, n: *Link) bool {
-  mem.atomicStore[*Link](&(*n).next as **Link, nullLink(), MemOrder.Relaxed);
-  let prev = mem.atomicSwap[*Link](&(*h).head as **Link, n, MemOrder.AcqRel);
-  let bits = prev as usize;
-  let p = (bits & pointerBits) as *Link;
-  mem.atomicStore[*Link](&(*p).next as **Link, n, MemOrder.Release);
-  (bits & idleBit) != 0usize
+// A mailbox with no limit has a limit no depth reaches
+const noLimit = 0xFFFFFFFFu32;
+
+fn nullExtra() *Extra {null}
+
+// The size of a slot's payload for messages M: M rounded to 16 bytes, and not
+// less than minPayload, so that a reply's resume record and a small value fit
+fn payloadBytes[M: Sendable]() usize {
+  let n = roundUp(mem.sizeof[M](), 16usize);
+  if n < minPayload {minPayload} else {n}
 }
 
-// The node holding h's next message, which becomes the mailbox's stub, or 0
-// when there is none yet. The stub before it, whose message was taken, is
-// freed. Only the worker running the actor calls this.
-fn mailPop(h: *Header) *Link {
-  let t = (*h).tail;
-  let next = mem.atomicLoad[*Link](&(*t).next as **Link, MemOrder.Acquire);
-  if next as usize != 0usize {
-    (*h).tail = next;
-    libc.free(t as *u8);
+// What the runtime allocated for messages, counted: segments, the boxes of
+// replies too large for a slot, and the waiters of awaits parked on a future
+// not yet arrived. Atomics held by 'let' globals, set in 'init' (below).
+let segAllocs: Atomic[u64];
+let boxAllocs: Atomic[u64];
+let waiterAllocs: Atomic[u64];
+let segsLive: Atomic[usize];
+let segBytesLive: Atomic[usize];
+
+// How many allocations the runtime has made for messages so far (segments,
+// reply boxes, future waiters): a send and a reply allocate none of their own
+pub fn messageAllocs() u64 {
+  segAllocs.loadOrdered(MemOrder.Relaxed) + boxAllocs.loadOrdered(MemOrder.Relaxed)
+    + waiterAllocs.loadOrdered(MemOrder.Relaxed)
+}
+
+// How many mailbox segments are allocated and not yet freed, for tests and
+// for finding leaks, as liveFutures is for futures
+pub fn liveSegments() usize {
+  segsLive.loadOrdered(MemOrder.Acquire)
+}
+
+// How many bytes those segments are (their headers and slots), over every
+// mailbox: what the mailboxes hold
+pub fn liveSegmentBytes() usize {
+  segBytesLive.loadOrdered(MemOrder.Acquire)
+}
+
+// ---- MAILBOX LIMIT (the hook for muting; nothing mutes yet) ----
+
+// How many messages the actor whose Mailbox mb is has queued now (claimed and
+// not yet taken; one claimed and not yet published counts), approximately: the
+// two counts are read at different moments
+pub fn mailboxDepth[M: Sendable](mb: &opaq Mailbox[M]) u64 {
+  let h = mb as *Header;
+  let t = mem.atomicLoad[u64](&(*h).tail as *u64, MemOrder.Relaxed) & posMask;
+  let hd = mem.atomicLoad[u64](&(*h).head as *u64, MemOrder.Relaxed);
+  if t > hd {t - hd} else {0u64}
+}
+
+// The most messages the mailbox has had queued at once, as the worker
+// running the actor saw it at the start of a turn
+pub fn mailboxHighWater[M: Sendable](mb: &opaq Mailbox[M]) u64 {
+  u64.from(mem.atomicLoad[u32](&(*(mb as *Header)).high as *u32, MemOrder.Relaxed))
+}
+
+// How many bytes of segments the mailbox holds now: the queue's and the ones
+// it keeps (0 before the first send)
+pub fn mailboxBytes[M: Sendable](mb: &opaq Mailbox[M]) u32 {
+  mem.atomicLoad[u32](&(*(mb as *Header)).bytes as *u32, MemOrder.Relaxed)
+}
+
+// Set how many queued messages are too many for this mailbox (noLimit: never,
+// as it starts)
+pub fn setMailboxLimit[M: Sendable](mb: &opaq Mailbox[M], limit: u32) {
+  mem.atomicStore[u32](&(*(mb as *Header)).limit as *u32, limit, MemOrder.Relaxed);
+}
+
+// Whether the mailbox is too full: a sender muting itself would ask this
+// before it sends. With no muting yet, nothing does, and a mailbox with no
+// limit grows without one
+pub fn mailboxTooFull[M: Sendable](mb: &opaq Mailbox[M]) bool {
+  mailboxDepth[M](mb) >= u64.from(mem.atomicLoad[u32](&(*(mb as *Header)).limit as *u32, MemOrder.Relaxed))
+}
+
+// ---- A TEST HOOK: a sender held between its claim and its publication ----
+
+// The state of the hook: 0 off; 1 armed, the next send to stop here; 2 a
+// sender stopped, its slot claimed and not published; 3 released. For tests of
+// the protocol for a slot claimed and not yet published (THE MAILBOX): it
+// costs a send one relaxed load.
+let stallState: Atomic[u32];
+
+pub fn stallNextPublish() {
+  stallState.storeOrdered(1u32, MemOrder.SeqCst);
+}
+
+// Whether a sender is stopped, between its claim and its publication
+pub fn publishStalled() bool {
+  stallState.loadOrdered(MemOrder.SeqCst) == 2u32
+}
+
+// Let the stopped sender publish
+pub fn releaseStalled() {
+  stallState.storeOrdered(3u32, MemOrder.SeqCst);
+}
+
+fn stallHere() {
+  var seen = 0u32;
+  var armed = false;
+  seen, armed = stallState.compareSwap(1u32, 2u32);
+  if !armed {
+    return;
   }
-  next
+  while stallState.loadOrdered(MemOrder.SeqCst) != 3u32 {
+    yieldProcessor();
+  }
+  stallState.storeOrdered(0u32, MemOrder.SeqCst);
 }
 
-// Mark h's mailbox idle, if it is empty and no push is under way: whether it
-// was marked. A later push then finds the mark and schedules the actor.
-fn mailMarkIdle(h: *Header) bool {
-  let t = (*h).tail;
-  let headp = &(*h).head as **Link;
-  let hd = mem.atomicLoad[*Link](headp, MemOrder.Relaxed);
-  if hd as usize != t as usize {
+// The slots of a "small" segment: about smallBytes of them, not fewer than
+// firstSlots nor more than smallMostSlots
+fn smallSlots(h: *Header) usize {
+  var n = smallBytes / strideOf(h);
+  if n > smallMostSlots {n = smallMostSlots;}
+  if n < firstSlots {n = firstSlots;}
+  n
+}
+
+// The bytes of a segment of 'count' slots
+fn segBytesOf(h: *Header, count: u32) usize {
+  segHead + usize.from(count) * strideOf(h)
+}
+
+// The floor of what a mailbox keeps: two small segments, the one a send past
+// the end of the segment it is in will link and the one after it
+fn keepFloor(h: *Header) usize {
+  2usize * segBytesOf(h, u32.from(smallSlots(h)))
+}
+
+// How many messages the mailbox holds now, claimed and not yet taken
+fn depthOf(h: *Header) u64 {
+  let t = mem.atomicLoad[u64](&(*h).tail as *u64, MemOrder.Relaxed) & posMask;
+  let hd = mem.atomicLoad[u64](&(*h).head as *u64, MemOrder.Relaxed);
+  if t > hd {t - hd} else {0u64}
+}
+
+// How many slots the segment after one of 'prev' slots has: growBy times as
+// many, up to the most that fit maxSegBytes (and maxSegSlots), but not more
+// than the queue asks, which is twice the depth now rounded up to a power of
+// two, and not fewer than a small segment. So a deep queue's ring grows to
+// the largest segments, and a mailbox that only ever holds a few messages at
+// a time keeps small ones.
+fn nextSlots(h: *Header, prev: u32) u32 {
+  var most = maxSegBytes / strideOf(h);
+  if most > maxSegSlots {most = maxSegSlots;}
+  if most < 2usize {most = 2usize;}
+  var n = usize.from(prev) * growBy;
+  if n > most {n = most;}
+  var ask = smallSlots(h);
+  let want = depthOf(h) * 2u64;
+  while u64.from(ask) < want && ask < most {
+    ask = ask * 2usize;
+  }
+  if n > ask {n = ask;}
+  if n < 2usize {n = 2usize;}
+  u32.from(n)
+}
+
+// A new segment of 'count' slots, not linked anywhere
+fn segAlloc(h: *Header, count: u32) *Seg {
+  // Zeroed, so that no slot's 'seq' says it is published before it is: a
+  // recycled segment holds the sequences of earlier positions, which no later
+  // position equals, but fresh memory may hold anything
+  let bytes = segBytesOf(h, count);
+  let s = libc.calloc(1usize, bytes) as *Seg;
+  if s as usize == 0usize {
+    die("actors: out of memory for a mailbox segment");
+  }
+  (*s).count = count;
+  segAllocs.addOrdered(1u64, MemOrder.Relaxed);
+  segsLive.addOrdered(1usize, MemOrder.Relaxed);
+  segBytesLive.addOrdered(bytes, MemOrder.Relaxed);
+  mem.atomicAdd[u32](&(*h).bytes as *u32, u32.from(bytes), MemOrder.Relaxed);
+  s
+}
+
+fn segFree(h: *Header, s: *Seg) {
+  let bytes = segBytesOf(h, (*s).count);
+  libc.free(s as *u8);
+  segsLive.subOrdered(1usize, MemOrder.Relaxed);
+  segBytesLive.subOrdered(bytes, MemOrder.Relaxed);
+  mem.atomicSub[u32](&(*h).bytes as *u32, u32.from(bytes), MemOrder.Relaxed);
+}
+
+// Where position pos lies in segment s
+fn slotAt(h: *Header, s: *Seg, pos: u64) *u8 {
+  (s as *u8) + segHead + usize.from(pos - (*s).base) * strideOf(h)
+}
+
+fn seqOf(slot: *u8) *u64 {slot as *u64}
+fn payloadOf(slot: *u8) *u8 {slot + slotHead}
+
+fn ldSeg(p: **Seg) *Seg {mem.atomicLoad[*Seg](p, MemOrder.SeqCst)}
+
+// The consumer's record, which senders reach too: null until the first
+// segment is drained
+fn ldExtra(h: *Header) *Extra {
+  mem.atomicLoad[*Extra](&(*h).extra as **Extra, MemOrder.Acquire)
+}
+
+fn spareAt(e: *Extra, i: usize) **Seg {(&(*e).spares as **Seg) + i}
+
+// A segment beyond s, linked after it: a spare if there is one, else a new
+// one, taking position base + count on. If another sender linked one first,
+// that one is the answer and ours is kept as a spare (or freed, if there is
+// no place). Used by a sender whose position lies past the last segment,
+// and by one linking ahead.
+fn linkAfter(h: *Header, s: *Seg) *Seg {
+  var fresh = nullSeg();
+  let e = ldExtra(h);
+  if e as usize != 0usize {
+    var i = 0usize;
+    while i < spareCount && fresh as usize == 0usize {
+      if mem.atomicLoad[*Seg](spareAt(e, i), MemOrder.Relaxed) as usize != 0usize {
+        fresh = mem.atomicSwap[*Seg](spareAt(e, i), nullSeg(), MemOrder.AcqRel);
+      }
+      i = i + 1usize;
+    }
+    if fresh as usize != 0usize {
+      mem.atomicSub[u32](&(*e).spareBytes as *u32, u32.from(segBytesOf(h, (*fresh).count)), MemOrder.Relaxed);
+    }
+  }
+  if fresh as usize == 0usize {
+    fresh = segAlloc(h, nextSlots(h, (*s).count));
+  }
+  (*fresh).base = (*s).base + u64.from((*s).count);
+  (*fresh).pad = 0u32;
+  mem.atomicStore[*Seg](&(*fresh).next as **Seg, nullSeg(), MemOrder.Relaxed);
+  var seen = nullSeg();
+  var linked = false;
+  seen, linked = mem.atomicCompareSwap[*Seg](&(*s).next as **Seg, nullSeg(), fresh,
+    MemOrder.SeqCst, MemOrder.SeqCst);
+  if linked {
+    return fresh;
+  }
+  keepSpare(h, fresh);
+  seen
+}
+
+// Put a segment nobody refers to into an empty spare place, or free it
+fn keepSpare(h: *Header, x: *Seg) {
+  let e = ldExtra(h);
+  if e as usize != 0usize {
+    // counted before it is put, so that a sender taking it at once takes the
+    // count away from a count that has it
+    let bytes = u32.from(segBytesOf(h, (*x).count));
+    mem.atomicAdd[u32](&(*e).spareBytes as *u32, bytes, MemOrder.Relaxed);
+    var i = 0usize;
+    while i < spareCount {
+      if mem.atomicLoad[*Seg](spareAt(e, i), MemOrder.Relaxed) as usize == 0usize {
+        var seen = nullSeg();
+        var put = false;
+        seen, put = mem.atomicCompareSwap[*Seg](spareAt(e, i), nullSeg(), x,
+          MemOrder.AcqRel, MemOrder.Relaxed);
+        if put {
+          return;
+        }
+      }
+      i = i + 1usize;
+    }
+    mem.atomicSub[u32](&(*e).spareBytes as *u32, bytes, MemOrder.Relaxed);
+  }
+  segFree(h, x);
+}
+
+// The mailbox's first segment, made by the first send (an actor that is never
+// sent a message has none). Any number of senders may be the first at once:
+// each makes a segment and tries to set the consumer's segment from null with
+// one compare-and-swap; the one that wins is the first segment, and the others
+// free theirs and use it. Nobody waits. The consumer, finding itself with a
+// claimed position and no segment (mailMarkIdle), makes it the same way.
+fn firstSeg(h: *Header) *Seg {
+  let c = ldSeg(&(*h).cur as **Seg);
+  if c as usize != 0usize {
+    return c;
+  }
+  let fresh = segAlloc(h, u32.from(firstSlots));
+  var seen = nullSeg();
+  var won = false;
+  seen, won = mem.atomicCompareSwap[*Seg](&(*h).cur as **Seg, nullSeg(), fresh,
+    MemOrder.SeqCst, MemOrder.SeqCst);
+  if won {
+    return fresh;
+  }
+  segFree(h, fresh);
+  seen
+}
+
+// The place of position pos, which the caller has claimed: found from the
+// hint (the last segment a sender used) or, if the hint is already past pos,
+// from the consumer's own segment, walking on while pos lies beyond; linking
+// a segment where there is none. A sender that reaches past the middle of
+// the segment it writes in links the next one ahead, so a later sender
+// finds it there. Nothing of a segment is touched after the slot is
+// published (SEGMENTS ARE REUSED, above).
+fn slotFor(h: *Header, pos: u64) *u8 {
+  let hv = ldSeg(&(*h).hint as **Seg);
+  var s = hv;
+  if hv as usize == 0usize {
+    s = firstSeg(h);
+  } else if pos < (*s).base {
+    s = ldSeg(&(*h).cur as **Seg);
+  }
+  while pos >= (*s).base + u64.from((*s).count) {
+    var nx = ldSeg(&(*s).next as **Seg);
+    if nx as usize == 0usize {
+      nx = linkAfter(h, s);
+    }
+    s = nx;
+  }
+  if s as usize != hv as usize && (hv as usize == 0usize || (*s).base > (*hv).base) {
+    var seen = nullSeg();
+    var moved = false;
+    seen, moved = mem.atomicCompareSwap[*Seg](&(*h).hint as **Seg, hv, s,
+      MemOrder.SeqCst, MemOrder.SeqCst);
+  }
+  // Linking ahead is for one sender to do, the first to take the segment's
+  // 'ahead' flag: the others, whose positions are in the same half, go on
+  // (they are not waiting for it, and one that reaches the end first links
+  // for itself)
+  if (*s).count >= 8u32 && pos - (*s).base >= u64.from((*s).count / 2u32)
+      && ldSeg(&(*s).next as **Seg) as usize == 0usize
+      && mem.atomicLoad[u32](&(*s).pad as *u32, MemOrder.Relaxed) == 0u32 {
+    var was = 0u32;
+    var mine = false;
+    was, mine = mem.atomicCompareSwap[u32](&(*s).pad as *u32, 0u32, 1u32, MemOrder.Relaxed, MemOrder.Relaxed);
+    if mine {
+      linkAfter(h, s);
+    }
+  }
+  slotAt(h, s, pos)
+}
+
+// Claim the next position of h's mailbox and find its slot. One atomic
+// add. The caller writes the slot's payload and publishes it. The word the
+// add found carries the idle mark: 'idle' says it was set, in which case this
+// sender, once it has published, is one of those that may schedule the actor
+// (wakeAfter)
+struct Claim {
+  pub slot: *u8;
+  pub pos: u64;
+  pub idle: bool;
+}
+
+fn claim(h: *Header) Claim {
+  // sequentially consistent: the claim comes before the sender reads the hint
+  // and the consumer's segment, and a segment's retiring (retire) moves them
+  // before it notes the claims
+  let prev = mem.atomicAdd[u64](&(*h).tail as *u64, 1u64, MemOrder.SeqCst);
+  let pos = prev & posMask;
+  Claim(slotFor(h, pos), pos, (prev & idleBit) != 0u64)
+}
+
+// The kind a slot's 'seq' holds while the consumer waits for the slot to be
+// published (mailMarkIdle): the position times 8 plus this
+const kindWaiting = 7u64;
+
+// Whether a 'seq' word, read from the slot of position pos, is a publication
+fn isPublished(q: u64, pos: u64) bool {
+  q / 8u64 == pos && q % 8u64 != 0u64 && q % 8u64 != kindWaiting
+}
+
+// Publish a claimed slot of the given kind: its payload is written. One
+// atomic exchange of the slot's 'seq', which answers what it held: if the
+// consumer was waiting for this slot (kindWaiting), it had stopped and this
+// sender is to schedule it. Answers whether that is so.
+fn publish(c: Claim, kind: u64) bool {
+  let old = mem.atomicSwap[u64](seqOf(c.slot), c.pos * 8u64 + kind, MemOrder.AcqRel);
+  old == c.pos * 8u64 + kindWaiting
+}
+
+// After a publication: whether this sender is the one to schedule the actor.
+// If the consumer was waiting for this very slot, it is. Otherwise, if the
+// mailbox was marked idle when the position was claimed, the senders that
+// found the mark race to clear it and the one that does is
+fn wakeAfter(h: *Header, c: Claim, waited: bool) bool {
+  if waited {
+    return true;
+  }
+  if !c.idle {
     return false;
   }
-  var seen = nullLink();
+  (mem.atomicAnd[u64](&(*h).tail as *u64, posMask, MemOrder.AcqRel) & idleBit) != 0u64
+}
+
+// ---- the consumer's side: only the worker running the actor ----
+
+// The slot holding h's next message, published, or 0 when there is none
+// ready. Never waits for a sender: a position claimed and not yet published
+// is not ready, and neither is the segment a sender has still to link. Moving
+// on from a drained segment retires it. Only the worker running the actor
+// calls this.
+fn ringPeek(h: *Header) *u8 {
+  var s = ldSeg(&(*h).cur as **Seg);
+  if s as usize == 0usize {
+    return null;
+  }
+  let pos = (*h).head;
+  if pos >= (*s).base + u64.from((*s).count) {
+    let nx = ldSeg(&(*s).next as **Seg);
+    if nx as usize == 0usize {
+      return null;
+    }
+    retire(h, s, nx);
+    s = nx;
+  }
+  let slot = slotAt(h, s, pos);
+  let q = mem.atomicLoad[u64](seqOf(slot), MemOrder.Acquire);
+  if isPublished(q, pos) {
+    return slot;
+  }
+  null
+}
+
+// The message at the consumer's position is done
+fn ringDone(h: *Header) {
+  mem.atomicStore[u64](&(*h).head as *u64, (*h).head + 1u64, MemOrder.Relaxed);
+}
+
+// Segment x is drained and the consumer moves to nx. Before anything else
+// can reuse x, no sender may still be able to reach it: the consumer's
+// segment and the hint are moved off it first, and then the number of
+// positions claimed so far is noted (its 'mark'). A sender that claimed
+// after that note began from the hint or the consumer's segment, which are
+// past x; one that claimed before it holds a position below the mark, and
+// x is not reused until every position below the mark is taken (reclaim).
+fn retire(h: *Header, x: *Seg, nx: *Seg) {
+  mem.atomicStore[*Seg](&(*h).cur as **Seg, nx, MemOrder.SeqCst);
+  while ldSeg(&(*h).hint as **Seg) as usize == x as usize {
+    var seen = nullSeg();
+    var moved = false;
+    seen, moved = mem.atomicCompareSwap[*Seg](&(*h).hint as **Seg, x, nx,
+      MemOrder.SeqCst, MemOrder.SeqCst);
+  }
+  *retMark(x) = mem.atomicLoad[u64](&(*h).tail as *u64, MemOrder.SeqCst) & posMask;
+  *retNext(x) = nullSeg();
+  var e = (*h).extra;
+  if e as usize == 0usize {
+    e = libc.calloc(1usize, mem.sizeof[Extra]()) as *Extra;
+    if e as usize == 0usize {
+      die("actors: out of memory for a mailbox");
+    }
+    (*e).small = u32.from(smallSlots(h));
+    (*e).floor = u32.from(keepFloor(h));
+    mem.atomicStore[*Extra](&(*h).extra as **Extra, e, MemOrder.Release);
+  }
+  if (*e).retHead as usize == 0usize {
+    (*e).retHead = x;
+  } else {
+    *retNext((*e).retTail) = x;
+  }
+  (*e).retTail = x;
+}
+
+// How many bytes of drained segments a mailbox keeps while it works: what its
+// own recent peak needed, twice the most it has had queued (as noteDepth saw,
+// and as atRest lets it fall) in slots' bytes, and not less than the floor nor
+// more than keepMostBytes
+fn keepBudget(h: *Header) usize {
+  var n = 2usize * usize.from((*h).high) * strideOf(h);
+  let floor = keepFloor(h);
+  if n < floor {n = floor;}
+  if n > keepMostBytes {n = keepMostBytes;}
+  n
+}
+
+// Free one of the kept segments that has fewer than 'count' slots: whether
+// there was one
+fn evictSmaller(h: *Header, e: *Extra, count: u32) bool {
+  var prev = nullSeg();
+  var x = (*e).pool;
+  while x as usize != 0usize && (*x).count >= count {
+    prev = x;
+    x = *retNext(x);
+  }
+  if x as usize == 0usize {
+    return false;
+  }
+  if prev as usize == 0usize {
+    (*e).pool = *retNext(x);
+  } else {
+    *retNext(prev) = *retNext(x);
+  }
+  (*e).poolBytes = (*e).poolBytes - u32.from(segBytesOf(h, (*x).count));
+  segFree(h, x);
+  true
+}
+
+// The kept segment to be the next spare when the next growth will want
+// 'want' slots: the smallest with at least that many, taken out of the pool;
+// 0 if there is none. The kept ones with fewer than 'want' are freed here: a
+// ring's segments grow with its queue, so one smaller than the next wants is
+// of no use to a queue that holds as much as it did (and a queue that holds
+// less is given small ones when it rests: atRest).
+fn takeKept(h: *Header, e: *Extra, want: u32) *Seg {
+  var prev = nullSeg();
+  var x = (*e).pool;
+  var best = nullSeg();
+  var bestPrev = nullSeg();
+  while x as usize != 0usize {
+    let nx = *retNext(x);
+    if (*x).count < want {
+      if prev as usize == 0usize {
+        (*e).pool = nx;
+      } else {
+        *retNext(prev) = nx;
+      }
+      (*e).poolBytes = (*e).poolBytes - u32.from(segBytesOf(h, (*x).count));
+      segFree(h, x);
+    } else {
+      if best as usize == 0usize || (*x).count < (*best).count {
+        best = x;
+        bestPrev = prev;
+      }
+      prev = x;
+    }
+    x = nx;
+  }
+  if best as usize != 0usize {
+    if bestPrev as usize == 0usize {
+      (*e).pool = *retNext(best);
+    } else {
+      *retNext(bestPrev) = *retNext(best);
+    }
+    (*e).poolBytes = (*e).poolBytes - u32.from(segBytesOf(h, (*best).count));
+  }
+  best
+}
+
+// The position below which every slot has been published: the consumer's,
+// and on from there while slots are published, remembered in the record so
+// that each slot is looked at once. A sender touches no segment after it has
+// published, so a position claimed when a segment was drained is no longer
+// a reason to keep it once it is published (it need not be taken).
+fn publishedUpTo(h: *Header, e: *Extra) u64 {
+  var pos = (*e).scanPos;
+  var s = (*e).scanSeg;
+  // (from the consumer's own segment unless the record's is surely ahead of
+  // it: a segment the consumer has left may be reused)
+  if pos <= (*h).head || s as usize == 0usize {
+    pos = (*h).head;
+    s = (*h).cur;
+  }
+  while true {
+    if pos >= (*s).base + u64.from((*s).count) {
+      let nx = ldSeg(&(*s).next as **Seg);
+      if nx as usize == 0usize {
+        break;
+      }
+      s = nx;
+    }
+    let q = mem.atomicLoad[u64](seqOf(slotAt(h, s, pos)), MemOrder.Acquire);
+    if !isPublished(q, pos) {
+      break;
+    }
+    pos = pos + 1u64;
+  }
+  (*e).scanPos = pos;
+  (*e).scanSeg = s;
+  pos
+}
+
+// Reuse the drained segments whose marks have been passed: every position
+// that was claimed when one was drained is now published (or taken), so no
+// sender can still reach it. Each is kept in the pool (up to keepBudget bytes),
+// the spare places filled from it, else freed. Only the
+// worker running the actor calls this, at the start and the end of its turn.
+fn reclaim(h: *Header) {
+  let e = ldExtra(h);
+  if e as usize == 0usize {
+    return;
+  }
+  var safe = (*h).head;
+  if (*e).retHead as usize != 0usize && safe < *retMark((*e).retHead) {
+    safe = publishedUpTo(h, e);
+  }
+  while (*e).retHead as usize != 0usize && safe >= *retMark((*e).retHead) {
+    let x = (*e).retHead;
+    (*e).retHead = *retNext(x);
+    (*x).next = nullSeg();
+    // Kept if it fits the budget, smaller ones kept already giving way: a
+    // ring that has grown to its largest segments has no use for the small
+    // ones it grew through
+    let budget = keepBudget(h);
+    let bytes = segBytesOf(h, (*x).count);
+    while usize.from((*e).poolBytes) + bytes > budget && evictSmaller(h, e, (*x).count) {
+    }
+    if usize.from((*e).poolBytes) + bytes <= budget {
+      *retNext(x) = (*e).pool;
+      (*e).pool = x;
+      (*e).poolBytes = (*e).poolBytes + u32.from(bytes);
+    } else {
+      segFree(h, x);
+    }
+  }
+  // The spare places are kept full with segments of the size the next
+  // growth will want: the one after the segment the senders are writing in
+  let hint = ldSeg(&(*h).hint as **Seg);
+  if (*e).pool as usize != 0usize && hint as usize != 0usize {
+    let want = nextSlots(h, (*hint).count);
+    var i = 0usize;
+    while i < spareCount && (*e).pool as usize != 0usize {
+      if mem.atomicLoad[*Seg](spareAt(e, i), MemOrder.Relaxed) as usize == 0usize {
+        let x = takeKept(h, e, want);
+        if x as usize == 0usize {
+          break;
+        }
+        keepSpare(h, x);
+      }
+      i = i + 1usize;
+    }
+  }
+}
+
+// ---- coming to rest ----
+
+// The worker running h's actor has taken everything and nothing is claimed
+// beyond it: before the mailbox is marked idle, what it holds is given back,
+// by stages, so that a mailbox that falls quiet for a moment in a stream does
+// not lose what the stream needs, and one that falls quiet for good loses it
+// in two rests.
+//
+// - The high-water mark halves at every rest, so that the keep budget
+//   (keepBudget) follows recent use and not the all-time peak.
+// - An actor that never drained a segment, or whose ring is in a small segment
+//   with nothing kept above the floor (two small segments), has nothing to
+//   give back: the usual case of an actor passing messages back and forth. It
+//   returns at once, with no reclaim and no trim.
+// - A rest with GROWTH since the last one (the high-water mark before halving
+//   is higher than the previous rest left it: a turn of this mailbox saw a
+//   deeper queue) trims what is kept down to the budget (keepBudget) only, and
+//   goes no further: a stream that drains for a moment keeps most of what it
+//   will want again.
+// - A CALM rest (the mark before halving no higher than the previous rest left
+//   it: nothing deeper happened since) trims what is kept to the floor, and, if
+//   the segment the consumer is in is larger than a small one, gives up its
+//   remaining slots and goes on in a small segment (shrinkChain). So a burst
+//   leaves its ring for the first rest and loses it at the second, which is
+//   one more rest than the actor's next message.
+//
+// All of it is the consumer's, and nothing in it makes a sender wait: a send
+// that claims a position meanwhile is dealt with where the mailbox is marked
+// idle (mailMarkIdle), and a trim only frees segments no sender can reach. A
+// mailbox that is never quiet never gets here.
+fn atRest(h: *Header) {
+  let pre = (*h).high;
+  if pre != 0u32 {
+    (*h).high = pre / 2u32;
+  }
+  let e = ldExtra(h);
+  if e as usize == 0usize {
+    return;
+  }
+  let x = ldSeg(&(*h).cur as **Seg);
+  let low = (*x).count <= (*e).small;
+  let kept = keptBytes(e);
+  let floor = usize.from((*e).floor);
+  let calm = pre <= (*e).prevHigh;
+  (*e).prevHigh = (*h).high;
+  if low && kept <= floor {
+    return;
+  }
+  // (the turn that ended has reclaimed what can be reused: runBatch)
+  if !calm {
+    let budget = keepBudget(h);
+    if kept > budget {
+      trimKept(h, e, budget, false);
+    }
+    return;
+  }
+  if kept > floor {
+    trimKept(h, e, floor, true);
+  }
+  if !low {
+    shrinkChain(h);
+    reclaim(h);
+    if keptBytes(e) > floor {
+      trimKept(h, e, floor, true);
+    }
+  }
+}
+
+// What a mailbox keeps: the pool's and the spare places' bytes
+fn keptBytes(e: *Extra) usize {
+  usize.from((*e).poolBytes) + usize.from(mem.atomicLoad[u32](&(*e).spareBytes as *u32, MemOrder.Relaxed))
+}
+
+// Free what is kept (the spare places and the pool) beyond 'limit' bytes; with
+// 'smallOnly' keep only small segments, those with more slots than a small one
+// going at once. A spare is taken out of its place with an exchange, as a
+// sender takes one, so a sender and this never take the same.
+fn trimKept(h: *Header, e: *Extra, limit: usize, smallOnly: bool) {
+  let small = (*e).small;
+  var kept = 0usize;
+  var i = 0usize;
+  while i < spareCount {
+    if mem.atomicLoad[*Seg](spareAt(e, i), MemOrder.Relaxed) as usize != 0usize {
+      let y = mem.atomicSwap[*Seg](spareAt(e, i), nullSeg(), MemOrder.AcqRel);
+      if y as usize != 0usize {
+        let bytes = segBytesOf(h, (*y).count);
+        mem.atomicSub[u32](&(*e).spareBytes as *u32, u32.from(bytes), MemOrder.Relaxed);
+        if (!smallOnly || (*y).count <= small) && kept + bytes <= limit {
+          kept = kept + bytes;
+          keepSpare(h, y);
+        } else {
+          segFree(h, y);
+        }
+      }
+    }
+    i = i + 1usize;
+  }
+  var x = (*e).pool;
+  (*e).pool = nullSeg();
+  (*e).poolBytes = 0u32;
+  while x as usize != 0usize {
+    let nx = *retNext(x);
+    let bytes = segBytesOf(h, (*x).count);
+    if (!smallOnly || (*x).count <= small) && kept + bytes <= limit {
+      kept = kept + bytes;
+      *retNext(x) = (*e).pool;
+      (*e).pool = x;
+      (*e).poolBytes = (*e).poolBytes + u32.from(bytes);
+    } else {
+      segFree(h, x);
+    }
+    x = nx;
+  }
+}
+
+// The segment the consumer is in is larger than a small one and the mailbox
+// is empty: its slots from the consumer's position on are claimed, all at
+// once, by this worker (one compare-and-swap of the tail, which fails if a
+// send claimed a position meanwhile, and then nothing is done), taken as
+// consumed, and the segment is retired as a drained one (retire), the ring
+// going on in the segment after it: the one linked already, or a small one
+// linked now (linkSmall). A send that claims a position after the swap is at
+// the end of the segment, and links the next as it would anyway. Done once
+// more for a large segment linked ahead, and never more than that: twice in
+// all.
+//
+// The consumer's position moves to the segment's end BEFORE anything is
+// linked. Linked the other way round (23 Oct 2026), the claimed slots still
+// counted as queued, so the segment linked was sized for a queue of up to a
+// whole segment, a large one; the next round shrank that one too, and linked
+// another, without end: a runaway that took the machine's memory.
+fn shrinkChain(h: *Header) {
+  let small = smallSlots(h);
+  var round = 0usize;
+  while round < 2usize {
+    round = round + 1usize;
+    let x = ldSeg(&(*h).cur as **Seg);
+    if x as usize == 0usize || usize.from((*x).count) <= small {
+      return;
+    }
+    let head = (*h).head;
+    let end = (*x).base + u64.from((*x).count);
+    var seen = 0u64;
+    var claimed = false;
+    seen, claimed = mem.atomicCompareSwap[u64](&(*h).tail as *u64, head, end,
+      MemOrder.SeqCst, MemOrder.Relaxed);
+    if !claimed {
+      return;
+    }
+    mem.atomicStore[u64](&(*h).head as *u64, end, MemOrder.Relaxed);
+    var nx = ldSeg(&(*x).next as **Seg);
+    if nx as usize == 0usize {
+      nx = linkSmall(h, x);
+    }
+    retire(h, x, nx);
+  }
+}
+
+// A small segment linked after s, for shrinkChain: made new (never a spare,
+// which may be large), taking position base + count on. If a sender linked
+// one first, that one is the answer and ours is kept as a spare or freed.
+fn linkSmall(h: *Header, s: *Seg) *Seg {
+  let fresh = segAlloc(h, u32.from(smallSlots(h)));
+  (*fresh).base = (*s).base + u64.from((*s).count);
+  (*fresh).pad = 0u32;
+  mem.atomicStore[*Seg](&(*fresh).next as **Seg, nullSeg(), MemOrder.Relaxed);
+  var seen = nullSeg();
+  var linked = false;
+  seen, linked = mem.atomicCompareSwap[*Seg](&(*s).next as **Seg, nullSeg(), fresh,
+    MemOrder.SeqCst, MemOrder.SeqCst);
+  if linked {
+    return fresh;
+  }
+  keepSpare(h, fresh);
+  seen
+}
+
+// Stop running h's actor, if no message is ready: whether it stopped, so that
+// the worker lets go of it. A later send schedules it again (THE MAILBOX, in
+// the package's header, has the protocol), in one of two ways:
+//
+// - nothing is claimed beyond what has been taken: the tail is marked idle
+//   with one compare-and-swap, which fails if a send claimed a position that
+//   moment. A send that claims a position afterwards finds the mark in the
+//   word its claim added to, and, once it has published, the senders that
+//   found it race to clear it, and the one that does schedules the actor.
+// - a position is claimed and its slot is not yet published (a sender is
+//   between its claim and its publication): the slot's 'seq' is changed, by
+//   one compare-and-swap, to say the consumer waits for it. The sender's
+//   publication is an exchange of that word, and finding the waiting mark
+//   it schedules the actor. Whichever of the two operations comes second
+//   sees the other, so either the slot is found published here, and the
+//   actor goes on, or the sender schedules it.
+//
+// The worker never waits for the sender. A slot in a segment not yet linked
+// has no word to mark, so the segment is linked here, as a sender would.
+fn mailMarkIdle(h: *Header) bool {
+  if mem.atomicLoad[u64](&(*h).tail as *u64, MemOrder.Relaxed) == (*h).head {
+    atRest(h);
+  }
+  let head = (*h).head;
+  var seen = 0u64;
   var marked = false;
-  seen, marked = mem.atomicCompareSwap[*Link](headp, t, ((t as usize) | idleBit) as *Link,
+  seen, marked = mem.atomicCompareSwap[u64](&(*h).tail as *u64, head, head | idleBit,
     MemOrder.AcqRel, MemOrder.Relaxed);
-  marked
+  if marked {
+    return true;
+  }
+  var s = ldSeg(&(*h).cur as **Seg);
+  if s as usize == 0usize {
+    s = firstSeg(h);
+  }
+  if head >= (*s).base + u64.from((*s).count) {
+    var nx = ldSeg(&(*s).next as **Seg);
+    if nx as usize == 0usize {
+      nx = linkAfter(h, s);
+    }
+    s = nx;
+  }
+  let seqp = seqOf(slotAt(h, s, head));
+  let waiting = head * 8u64 + kindWaiting;
+  while true {
+    let q = mem.atomicLoad[u64](seqp, MemOrder.Acquire);
+    if isPublished(q, head) {
+      return false;
+    }
+    if q == waiting {
+      return true;
+    }
+    var now = 0u64;
+    var parked = false;
+    now, parked = mem.atomicCompareSwap[u64](seqp, q, waiting, MemOrder.AcqRel, MemOrder.Acquire);
+    if parked {
+      return true;
+    }
+  }
+  false
 }
 
 // ---------------------------------------------------------------------------
@@ -590,8 +1661,15 @@ fn mailMarkIdle(h: *Header) bool {
 // it. It holds raw pointers, which the thread check refuses; Mailbox, which
 // holds it, declares Sendable, since the runtime orders every hand-off.
 struct Header {
-  pub head: *Link;                        // senders': the newest node; bit 0, idle
-  pub tail: *Link;                        // the running worker's: the stub
+  pub tail: u64;                          // senders': the positions claimed, one per send; bit 63, idle (the mailbox's ring, above)
+  pub head: u64;                          // the running worker's: the position of the next message to take
+  pub cur: *Seg;                          // ... the segment holding it (senders read it)
+  pub hint: *Seg;                         // senders': the last segment one used (atomic)
+  pub extra: *Extra;                      // the running worker's: the drained segments and the spares, once there are any (atomic)
+  pub stride: u32;                        // the size of a slot, in bytes
+  pub bytes: u32;                         // bytes of segments this mailbox holds now (atomic)
+  pub high: u32;                          // most messages queued at once, as the worker running the actor saw it at the start of a turn
+  pub limit: u32;                         // how many queued is too many (noLimit: never)
   pub link: *Header;                      // the next actor on the inject queue
   pub run: &fn(h: *Header, limit: u32) u32; // runBatch[S, M]
   pub release: &fn(h: *Header);            // releaseHold[M]
@@ -613,7 +1691,7 @@ pub struct Mailbox[M: Sendable] is Sendable {
 
   fn made(h: Header) Mailbox[M] {Mailbox[M](h)}
 
-  // The actor's death: its state finalized, then its mailbox's last node
+  // The actor's death: its state finalized, then its mailbox's segments
   // freed; Arc frees the block, state and all, after this
   fn final(self: &uni) {
     actorDied(self as *Header);
@@ -641,8 +1719,38 @@ fn actorDied(h: *Header) {
     ((*h).gc as &mut ActorRegion).die();
     libc.free((*h).gc as *u8);
   }
-  if (*h).tail as usize != 0usize {
-    libc.free((*h).tail as *u8);
+  // The mailbox is empty (an actor dies only when it is), so every segment
+  // is free to go: the chain from the consumer's, the drained ones waiting
+  // for reuse, those kept, and the spare
+  var s = (*h).cur;
+  while s as usize != 0usize {
+    let nx = (*s).next;
+    segFree(h, s);
+    s = nx;
+  }
+  let e = (*h).extra;
+  if e as usize != 0usize {
+    s = (*e).retHead;
+    while s as usize != 0usize {
+      let nx = *retNext(s);
+      segFree(h, s);
+      s = nx;
+    }
+    s = (*e).pool;
+    while s as usize != 0usize {
+      let nx = *retNext(s);
+      segFree(h, s);
+      s = nx;
+    }
+    var i = 0usize;
+    while i < spareCount {
+      s = *spareAt(e, i);
+      if s as usize != 0usize {
+        segFree(h, s);
+      }
+      i = i + 1usize;
+    }
+    libc.free(e as *u8);
   }
 }
 
@@ -668,25 +1776,32 @@ fn finalizeState[S, M: Sendable](h: *Header) {
 
 // A new actor's block, its state not yet made: where the state goes, for its
 // init to fill. The workers start first, if this is the first actor. An
-// 'Arc' allocation holds the Mailbox and then the state, its mailbox one stub
-// node, busy; its count is one, the owner startActor answers. The state's
+// 'Arc' allocation holds the Mailbox and then the state, its mailbox with no
+// segment of slots yet (the first send makes it: firstSeg), busy; its count is
+// one, the owner startActor answers. The state's
 // bytes are a placeholder until its init fills them, never read or finalized.
 // Nothing outside the init can reach the actor until startActor returns, so
 // the header is written plainly; whatever hands the handle on orders it. The
-// dispatch function is handed each message where it lies in its node, and
-// takes it: it moves every field out, and the node is then freed with nothing
+// dispatch function is handed each message where it lies in its slot, and
+// takes it: it moves every field out, and the slot is then done with, nothing
 // in it finalized.
 pub fn makeActor[S, M: Sendable](dispatch: &fn(s: &mut S, m: *M)) *S {
   ensureRunning();
-  let stub = libc.malloc(mem.sizeof[Link]()) as *Link;
   let room = libc.malloc(mem.sizeof[S]() + 1usize);
-  if stub as usize == 0usize || room as usize == 0usize {
+  if room as usize == 0usize {
     die("actors: out of memory for an actor");
   }
-  (*stub).next = nullLink();
+  if mem.alignof[M]() > 16usize {
+    die("actors: a message type aligned beyond 16 bytes");
+  }
+  let payload = payloadBytes[M]();
   var f = dispatch;
-  let h = Header(stub, stub, nullHeader(),
-    &runBatch[S, M], &releaseHold[M], &finalizeState[S, M], *(&mut f as **u8));
+  let h = Header(tail: 0u64, head: 0u64, cur: nullSeg(), hint: nullSeg(),
+    extra: nullExtra(), stride: u32.from(slotHead + payload), bytes: 0u32, high: 0u32, limit: noLimit,
+    link: nullHeader(), run: &runBatch[S, M], release: &releaseHold[M],
+    finalize: &finalizeState[S, M], dispatch: *(&mut f as **u8));
+  // No segment: an actor that is never sent a message costs no more than its
+  // block, and the first send makes the first (firstSeg)
   let b = Arc[opaq, Block[S, M]](Mailbox[M].made(h), mem.readRaw[S](room as *S));
   libc.free(room);
   // The owner of the block, put away uncounted as its address, which is the
@@ -737,26 +1852,33 @@ fn sendNow[M: Sendable](h: *Header, msg: M) {
   if running.load() == 0usize {
     die("actors: a message sent after the runtime stopped");
   }
-  let n = libc.malloc(mem.sizeof[Node[M]]()) as *Node[M];
-  if n as usize == 0usize {
-    die("actors: out of memory for a message");
+  // One atomic add claims the slot's position; the message is written in
+  // place, then one store publishes it (THE MAILBOX, above)
+  let c = claim(h);
+  mem.atomicStore[u64](ccause(c.slot), 0u64, MemOrder.Relaxed);
+  mem.writeRaw[M](payloadOf(c.slot) as *M, msg);
+  if stallState.loadOrdered(MemOrder.Relaxed) != 0u32 {
+    stallHere();
   }
-  mem.writeRaw[M](&(*n).msg as *M, msg);
-  if mailPush(h, n as *Link) {
+  let waited = publish(c, kindMsg);
+  if wakeAfter(h, c, waited) {
     holdArc[M](h);
     schedule(h);
   }
 }
+
+// The slot's cause word (the header's second word)
+fn ccause(slot: *u8) *u64 {(slot + 8usize) as *u64}
 
 // The thread check, asked of an argument of an actor's 'start': v,
 // unchanged, if its type may cross threads; refused where it is written if not
 pub fn sendable[T: Sendable](v: T) T {v}
 
 // Run up to limit of the actor's messages, each handed to the dispatch
-// function where it lies in its node, which takes it: how many ran. The node
-// is the mailbox's stub from then on, freed by the next pop or the actor's
-// death, its message never finalized. Only the worker that took the actor
-// from a queue calls this.
+// function where it lies in its slot, which takes it: how many ran. A reply's
+// slot is not a message of the enum, and goes to its resume function. The
+// slot is then done with (ringDone), its message never finalized. Only the
+// worker that took the actor from a queue calls this.
 fn runBatch[S, M: Sendable](h: *Header, limit: u32) u32 {
   var slot = (*h).dispatch;
   let f = mem.readRaw[&fn(s: &mut S, m: *M)](&mut slot as *(&fn(s: &mut S, m: *M)));
@@ -774,18 +1896,41 @@ fn runBatch[S, M: Sendable](h: *Header, limit: u32) u32 {
   }
   // A behaviour that begins a 'parallel each' returns, and the actor then runs
   // nothing more until the loop has finished: runActor begins it
+  noteDepth(h);
+  reclaim(h);
   while n < limit && (*h).par as usize == 0usize {
-    let node = mailPop(h);
-    if node as usize == 0usize {
+    let slot = ringPeek(h);
+    if slot as usize == 0usize {
       curActor = 0usize;
+      reclaim(h);
       return n;
     }
-    f(&mut *st, &(*(node as *Node[M])).msg as *M);
+    let kind = mem.atomicLoad[u64](seqOf(slot), MemOrder.Relaxed) % 8u64;
+    if kind == kindMsg {
+      f(&mut *st, payloadOf(slot) as *M);
+    } else {
+      resumeSlot[S](st, payloadOf(slot), kind);
+    }
+    ringDone(h);
     n = n + 1u32;
     afterMessage(h, st as *u8, rec);
   }
   curActor = 0usize;
+  reclaim(h);
   n
+}
+
+// The mailbox's depth, as the worker starting a turn sees it: the high-water
+// mark (MAILBOX LIMIT, above)
+fn noteDepth(h: *Header) {
+  let depth = (mem.atomicLoad[u64](&(*h).tail as *u64, MemOrder.Relaxed) & posMask) - (*h).head;
+  if depth > u64.from((*h).high) {
+    if depth > u64.from(noLimit) {
+      (*h).high = noLimit;
+    } else {
+      (*h).high = u32.from(depth);
+    }
+  }
 }
 
 // A message has finished, between it and the next: the actor's own collector,
@@ -846,40 +1991,56 @@ fn releaseHold[M: Sendable](h: *Header) {
 // The envelope of a request that is awaited: where its one reply goes. It is
 // in the message, never in the method's parameters. 'to' is the actor that
 // awaits, of which the envelope holds one count, so that it cannot die while
-// the reply is owed; 'node' is the reply's mailbox node, made by the actor
-// that awaits, its resume message written already (which second half, and
-// the record's id), with room after it for the returned value, at 'data'.
-// So the actor answering knows nothing of the other's type: it writes the
-// value at 'data' and pushes 'node'. Or the request's value is stored, not
-// awaited at once ('imm fut = f.g(x)'): then the Reply is the producer's
-// reference to a future (FUTURES, futures.cone), 'cell', and 'data' is
-// where in the future the value goes; it names no actor. A Reply with no
-// 'to' and no 'cell' wants no answer. Sendable on trust, as Mailbox is: the
-// runtime orders every hand-off of it.
+// the reply is owed; 'at' is the awaiting actor's resume function (the
+// seam's: which second half), 'id' the record's id where it has one, and
+// 'meta' says what the reply needs to be written (below). Nothing is
+// allocated to make one: the actor answering claims a slot in the awaiting
+// actor's own ring at the time it answers, and writes the resume record and
+// the value into it (REPLIES, above). So the actor answering knows nothing of
+// the other's type: it needs only the size of the value, which 'meta' has.
+// Or the request's value is stored, not awaited at once ('imm fut =
+// f.g(x)'): then the Reply is the producer's reference to a future (FUTURES,
+// futures.cone), 'cell', and 'at' is where in the future the value goes; it
+// names no actor. A Reply with no 'to' and no 'cell' wants no answer.
+// Sendable on trust, as Mailbox is: the runtime orders every hand-off of it.
+//
+// 'meta' is the value's size in bytes, times 8, plus three flags: replyHasId
+// (the record has an id), replyBoxed (the value is too large for a slot's
+// payload, or too finely aligned, so the answer allocates a box for it) and
+// replyOp (the reply of an awaited operation, counted in opsStarted until it
+// is spent).
 pub struct Reply is Sendable {
   to: *Header = null;
-  node: *Link = null;
-  data: *u8 = null;
+  at: *u8 = null;
+  id: u64 = 0u64;
   cell: *u8 = null;
-  op: u8 = 0u8;           // 1 for the reply of an awaited operation, counted in opsStarted until it is spent
+  meta: u64 = 0u64;
 
-  // A reply never sent: its node is freed (its resume message holds nothing
-  // to finalize) and its count let go. A future's is abandoned: nothing will
-  // ever arrive in it, and whoever awaits it is told so. An operation's, sent
-  // or never sent, is spent here: it is no longer outstanding (waitUntilIdle)
+  // A reply never sent: its count let go (it holds no memory of its own). A
+  // future's is abandoned: nothing will ever arrive in it, and whoever awaits
+  // it is told so. An operation's, sent or never sent, is spent here: it is no
+  // longer outstanding (waitUntilIdle)
   fn final(self: &uni) {
     if to as usize != 0usize {
-      libc.free(node as *u8);
       let release = (*to).release;
       release(to);
     }
     else if cell as usize != 0usize {
       futureEnd(cell, futAbandoned);
     }
-    if op != 0u8 {
+    if (meta & replyOp) != 0u64 {
       opSpent();
     }
   }
+}
+
+const replyHasId = 1u64;
+const replyBoxed = 2u64;
+const replyOp = 4u64;
+
+// A reply's meta, from the value's size and its flags
+fn metaOf(size: usize, flags: u64) u64 {
+  u64.from(size) * 8u64 + flags
 }
 
 // Whether the reply goes anywhere: to an actor that awaits it, or into a
@@ -913,62 +2074,80 @@ pub fn selfOf[S, M: Sendable](st: &S) Arc[opaq, Mailbox[M]] {
 }
 
 // A request's envelope, made by the actor whose state is at st as it awaits:
-// a count of it taken, and the reply's node allocated with room for 'size'
-// bytes aligned to 'align' after the message. The actor's own generated code
-// then writes its resume message into the node (replyPut)
-pub fn replyNode[S, M: Sendable](st: &S, size: usize, align: usize) Reply {
+// a count of its actor taken, and nothing allocated. 'run' is the seam's
+// resume function, 'id' the record's id where 'hasId', and 'size' and 'align'
+// those of the value awaited, which says whether the answer fits a slot's
+// payload (after the resume record) or is boxed. The actor's generated code
+// calls this (reply', replyid').
+pub fn replyFor[S, M: Sendable](st: &S, run: *u8, id: u64, hasId: bool, size: usize, align: usize) Reply {
   let h = headerOf[S, M](st);
-  var a = 8usize;
-  if align > 8usize {a = align;}
-  let off = roundUp(mem.sizeof[Node[M]](), a);
-  let n = libc.malloc(off + size) as *u8;
-  if n as usize == 0usize {
-    die("actors: out of memory for a reply");
-  }
   holdArc[M](h);
-  Reply(h, n as *Link, n + off)
+  var flags = 0u64;
+  if hasId {flags = replyHasId;}
+  if size > strideOf(h) - slotHead - replyHead || align > 16usize {
+    flags = flags | replyBoxed;
+  }
+  Reply(to: h, at: run, id: id, meta: metaOf(size, flags))
 }
 
-// Where the reply's value goes
-pub fn replyData(r: &Reply) *u8 {r.data}
-
-// Write the reply's resume message into its node
-pub fn replyPut[M: Sendable](r: &Reply, msg: M) {
-  mem.writeRaw[M](&(*(r.node as *Node[M])).msg as *M, msg);
+// A reply's slot, claimed in the awaiting actor's ring and its resume record
+// written: the resume function and the id, then where the value goes, in the
+// payload or in a box of its own (allocated here, freed by the awaiting
+// actor's worker once the second half has taken the value)
+struct Put {
+  pub c: Claim;
+  pub kind: u64;
+  pub at: *u8;       // where the value goes
 }
 
-// Send the reply, its value written: push its node to the actor that awaits.
-// The count the envelope held becomes the scheduler's owner when the push
-// finds the actor idle, as a send's own would; otherwise it is let go
-// A future's reply has had its value written into the future, which arrives
+fn replyPrep(r: &Reply) Put {
+  let h = r.to;
+  let c = claim(h);
+  mem.atomicStore[u64](ccause(c.slot), 0u64, MemOrder.Relaxed);
+  let p = payloadOf(c.slot);
+  *(p as **u8) = r.at;
+  *((p + 8usize) as *u64) = r.id;
+  var kind = kindReply;
+  if (r.meta & replyHasId) != 0u64 {kind = kind + 1u64;}
+  var at = p + replyHead;
+  if (r.meta & replyBoxed) != 0u64 {
+    var size = usize.from(r.meta / 8u64);
+    if size == 0usize {size = 1usize;}
+    let box = libc.malloc(size);
+    if box as usize == 0usize {
+      die("actors: out of memory for a reply");
+    }
+    boxAllocs.addOrdered(1u64, MemOrder.Relaxed);
+    *(at as **u8) = box;
+    at = box;
+    kind = kind + 2u64;
+  }
+  Put(c, kind, at)
+}
+
+// The value is written: publish the slot. The count the envelope held becomes
+// the scheduler's owner when the publication takes the idle mark, as a
+// send's own would; otherwise it is let go
+fn replyFinish(h: *Header, p: Put) {
+  if running.load() == 0usize {
+    die("actors: a reply sent after the runtime stopped");
+  }
+  let waited = publish(p.c, p.kind);
+  if wakeAfter(h, p.c, waited) {
+    schedule(h);
+  } else {
+    let release = (*h).release;
+    release(h);
+  }
+}
+
+// Send the reply, its value written elsewhere: a future's. The value has been
+// written into the future, which arrives.
 fn post(r: &mut Reply) {
   let c = r.cell;
   if c as usize != 0usize {
     r.cell = null;
     futureEnd(c, futArrived);
-    return;
-  }
-  let h = r.to;
-  if h as usize == 0usize {
-    return;
-  }
-  let n = r.node;
-  r.to = null;
-  r.node = null;
-  pushReply(h, n);
-}
-
-// Push a reply's node n, its value written, to the actor h that awaits it,
-// whose count the envelope held
-fn pushReply(h: *Header, n: *Link) {
-  if running.load() == 0usize {
-    die("actors: a reply sent after the runtime stopped");
-  }
-  if mailPush(h, n) {
-    schedule(h);
-  } else {
-    let release = (*h).release;
-    release(h);
   }
 }
 
@@ -979,8 +2158,16 @@ pub fn answerNow[R](rp: Reply, v: R) {
   if !wanted(&r) {
     return;
   }
-  mem.writeRaw[R](r.data as *R, v);
-  post(&mut r);
+  if r.cell as usize != 0usize {
+    mem.writeRaw[R](r.at as *R, v);
+    post(&mut r);
+    return;
+  }
+  let h = r.to;
+  let p = replyPrep(&r);
+  mem.writeRaw[R](p.at as *R, v);
+  r.to = null;
+  replyFinish(h, p);
 }
 
 // While a message that returns a value and holds an 'await' runs, the
@@ -992,6 +2179,8 @@ pub fn answerNow[R](rp: Reply, v: R) {
 pub struct Answer {
   reply: Reply = Reply();
   held: u8 = 0u8;
+  claimed: u8 = 0u8;        // 1 between answerTo and answered when answerTo claimed the awaiting actor's slot
+  put: Put = Put(Claim(null, 0u64, false), 0u64, null);
 }
 
 // The dispatcher's hand-off, before such a message runs: the request's
@@ -1022,12 +2211,26 @@ pub fn answerTo(slot: &mut Answer) *u8 {
   if !wanted(&slot.reply) {
     return 1usize as *u8;
   }
-  slot.reply.data
+  if slot.reply.cell as usize != 0usize {
+    return slot.reply.at;
+  }
+  // An actor awaits it: its slot is claimed now, and the caller writes the
+  // value in, a moment later (answered publishes it)
+  slot.put = replyPrep(&slot.reply);
+  slot.claimed = 1u8;
+  slot.put.at
 }
 
 // The value is where answerTo said: the reply is sent, and the slot emptied
 pub fn answered(slot: &mut Answer) {
   slot.held = 0u8;
+  if slot.claimed != 0u8 {
+    slot.claimed = 0u8;
+    let h = slot.reply.to;
+    slot.reply.to = null;
+    replyFinish(h, slot.put);
+    return;
+  }
   post(&mut slot.reply);
 }
 
@@ -1050,7 +2253,7 @@ pub fn answerAt[R](slot: &mut Answer, r: *R) {
 // A reply arrived: call its resume function -- the one the compiler made for
 // the seam, which calls its second half -- with the actor's state, the
 // record's id where the record is not empty, and where the returned value
-// is, in the node
+// is, in the reply's slot or its box
 pub fn resume[S](st: &mut S, run: *u8, data: *u8) {
   var f = run;
   let fp = mem.readRaw[&fn(s: &mut S, data: *u8)](&mut f as *(&fn(s: &mut S, data: *u8)));
@@ -1060,6 +2263,28 @@ pub fn resumeId[S](st: &mut S, run: *u8, id: u64, data: *u8) {
   var f = run;
   let fp = mem.readRaw[&fn(s: &mut S, id: u64, data: *u8)](&mut f as *(&fn(s: &mut S, id: u64, data: *u8)));
   fp(st, id, data);
+}
+
+// A reply's slot reached the front of the mailbox: its payload holds the
+// resume function and the id, then the value (or a pointer to the box that
+// holds it). The resume function takes the value out; a box is freed after
+// it has (REPLIES, above)
+fn resumeSlot[S](st: *S, p: *u8, kind: u64) {
+  let run = *(p as **u8);
+  let id = *((p + 8usize) as *u64);
+  var data = p + replyHead;
+  let boxed = kind >= kindReply + 2u64;
+  if boxed {
+    data = *(data as **u8);
+  }
+  if kind == kindReply + 1u64 || kind == kindReply + 3u64 {
+    resumeId[S](&mut *st, run, id, data);
+  } else {
+    resume[S](&mut *st, run, data);
+  }
+  if boxed {
+    libc.free(data);
+  }
 }
 
 // An actor's pending table: its parked continuations' records, each in a
@@ -1252,7 +2477,7 @@ pub struct Awaitable[R] is Move {
 pub fn startAwait(a: *u8, rp: Reply) {
   var aw = mem.readRaw[Awaitable[u8]](a as *Awaitable[u8]);
   var r = rp;
-  r.op = 1u8;
+  r.meta = r.meta | replyOp;
   opsStarted.addOrdered(1u64, MemOrder.SeqCst);
   aw.start(r);
 }
@@ -1803,6 +3028,12 @@ let statWorkers: Atomic[u32];   // how many slots; 0 before the workers have sta
 let taskStealsTotal: Atomic[u64];   // pieces stealTask took (Relaxed): the oldest of another worker's deque, or of the shared one when a worker idle of actors or a thread waiting on a loop looks there; not what a worker takes from the shared deque ahead of its actors
 
 fn @initpure init() {
+  segAllocs = Atomic[u64].of(0u64);
+  boxAllocs = Atomic[u64].of(0u64);
+  waiterAllocs = Atomic[u64].of(0u64);
+  segsLive = Atomic[usize].of(0usize);
+  segBytesLive = Atomic[usize].of(0usize);
+  stallState = Atomic[u32].of(0u32);
   opsStarted = Atomic[u64].of(0u64);
   opsEnded = Atomic[u64].of(0u64);
   startOnce = sync.Once.make();

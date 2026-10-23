@@ -848,11 +848,12 @@ whose body holds an `await` gets two hidden fields in its state, after those
 written and each with a default, so a construction as written leaves them to
 it -- its pending table, and, where a behaviour returning a value holds an
 `await`, the Answer slot that behaviour's envelope waits in while it runs (read
-as a struct's fields, `Counter.hidden'`, and moved into the state) -- two
-resume variants (`resume'`, `resumeid'`: the seam's resume function, the
-record's id where it has a record, and where the value returned is) with
-their dispatch arms, and the two functions that make a request's envelope
-(`Counter.reply'`, `Counter.replyid'`). Such a behaviour returning a value is
+as a struct's fields, `Counter.hidden'`, and moved into the state) -- and
+the two functions that make a request's envelope (`Counter.reply'`,
+`Counter.replyid'`, each one call of `actors.replyFor`, which allocates
+nothing). A reply to an `await` is no variant of the message enum: it is a
+slot of its own kind in the awaiting actor's mailbox, which the actors package
+resumes ([Generation](generation.md), "A message's reply"). Such a behaviour returning a value is
 dispatched through the Answer slot (`actors.ask`, `askNone`, `keep`,
 `answerAt`). An actor with a behaviour, or writing `selfactor`, gets
 `Counter.self'`, which makes the handle from the state
