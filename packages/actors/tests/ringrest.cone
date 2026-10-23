@@ -1,0 +1,188 @@
+// A mailbox that has grown gives its memory back when it comes to rest
+// (THE MAILBOX, COMING TO REST in the package's header).
+//
+// - 500 actors each take one burst of 300 messages from main, drain it, and sit
+//   quiet. Each grew its ring through segments of 2, 8, 16 slots and on while
+//   the burst arrived (a burst of 300 into 64-byte slots queues 19 KB, and
+//   without the fix the ring holds at least that for good). Once all are quiet
+//   the mailboxes hold, in all, at most 8 KB an actor (liveSegmentBytes / 500):
+//   the segment the ring is in, the next one it has linked ahead and the floor
+//   (two kept), all small ones of about 2 KB.
+// - The same for 100 actors with messages of about 900 bytes (slots of about
+//   900 bytes, a "small" segment of 2 of them, 1.9 KB): at most 12 KB an actor.
+// - THE RUNAWAY, as a test. One actor takes 400 bursts of 300 messages; after
+//   each it drains and comes to rest, at the moment inside a large segment
+//   (the rest gives up the rest of that segment and moves the ring into a
+//   small one). The mailbox once linked a segment sized for a queue that was
+//   not there, shrank that, linked another, and went on until it had the
+//   machine's memory. So after every rest the segments and bytes the mailboxes
+//   hold are checked, against bounds a few small segments wide: a runaway
+//   passes them at once.
+// - The counts are those of a machine at rest; a rest that a send of the
+//   burst's last messages came into leaves a segment or two more, so the
+//   400-rest check allows a few rests to be over the bound, and none to be
+//   over 20 KB.
+
+mod ringrest;
+
+import testing use *;
+import actors;
+import collections use List;
+
+let handled: Atomic[u64];
+
+fn @initpure init() {
+  handled = Atomic[u64].of(0u64);
+}
+
+actor Small {
+  n: u64;
+  fn init(self: &new) {
+    *self = Self(0u64);
+  }
+
+  pub async fn take(self, k: u64) {
+    n = n + k;
+    handled.add(1u64);
+  }
+}
+
+struct Big {
+  pub v: Array[u64, 110];
+}
+
+fn big(k: u64) Big {
+  var v: Array[u64, 110] = [0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64,
+    0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64,
+    0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64,
+    0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64,
+    0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64,
+    0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64,
+    0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64,
+    0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64,
+    0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64,
+    0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64,
+    0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64];
+  v[0usize] = k;
+  Big(v)
+}
+
+actor Wide {
+  n: u64;
+  fn init(self: &new) {
+    *self = Self(0u64);
+  }
+
+  pub async fn take(self, b: Big) {
+    n = n + b.v[0usize];
+    handled.add(1u64);
+  }
+}
+
+const burst = 300u64;
+
+fn main() i32 {
+  initAll();
+  var base = 0u64;
+  {
+    var crowd = List[Small].empty();
+    var i = 0usize;
+    while i < 500usize {
+      crowd.push(Small());
+      i = i + 1usize;
+    }
+    i = 0usize;
+    while i < 500usize {
+      var j = 0u64;
+      while j < burst {
+        crowd[i].take(j);
+        j = j + 1u64;
+      }
+      i = i + 1usize;
+    }
+    actors.waitUntilIdle();
+    expectUInt(handled.load(), 500u64 * burst, "every message of every burst taken");
+    let held1 = actors.liveSegmentBytes() / 500usize;
+    expect(held1 <= 65536usize, "after one rest, 500 actors that took a burst hold at most 64 KB an actor (the budget, and the ring they are in)");
+    // a second rest, with nothing deeper between: one more message each
+    i = 0usize;
+    while i < 500usize {
+      crowd[i].take(0u64);
+      i = i + 1usize;
+    }
+    actors.waitUntilIdle();
+    let held = actors.liveSegmentBytes() / 500usize;
+    expect(held <= 8192usize, "after the second rest, 500 quiet actors that took a burst of 300 hold at most 8 KB an actor");
+    expect(held >= 100usize, "...and still the segment the ring is in");
+    base = handled.load();
+  }
+  actors.waitUntilIdle();
+  expectUInt(u64.from(actors.liveSegments()), 0u64, "all freed when they died");
+
+  {
+    var crowd = List[Wide].empty();
+    var i = 0usize;
+    while i < 100usize {
+      crowd.push(Wide());
+      i = i + 1usize;
+    }
+    i = 0usize;
+    while i < 100usize {
+      var j = 0u64;
+      while j < burst {
+        crowd[i].take(big(j));
+        j = j + 1u64;
+      }
+      i = i + 1usize;
+    }
+    actors.waitUntilIdle();
+    expectUInt(handled.load() - base, 100u64 * burst, "every big message taken");
+    i = 0usize;
+    while i < 100usize {
+      crowd[i].take(big(0u64));
+      i = i + 1usize;
+    }
+    actors.waitUntilIdle();
+    let held = actors.liveSegmentBytes() / 100usize;
+    expect(held <= 12288usize, "after the second rest, 100 quiet actors with messages of 900 bytes that took a burst hold at most 12 KB an actor");
+    expect(held >= 1000usize, "...and still the segment the ring is in");
+    base = handled.load();
+  }
+  actors.waitUntilIdle();
+  expectUInt(u64.from(actors.liveSegments()), 0u64, "all freed when they died");
+
+  {
+    let s = Small();
+    var worst = 0usize;
+    var worstSegs = 0usize;
+    var worstOne = 0usize;
+    var over = 0u64;
+    var round = 0u64;
+    while round < 400u64 {
+      var j = 0u64;
+      while j < burst {
+        s.take(j);
+        j = j + 1u64;
+      }
+      actors.waitUntilIdle();
+      let afterOne = actors.liveSegmentBytes();
+      if afterOne > worstOne {worstOne = afterOne;}
+      s.take(0u64);
+      actors.waitUntilIdle();
+      let bytes = actors.liveSegmentBytes();
+      let segs = actors.liveSegments();
+      if bytes > 8192usize {over = over + 1u64;}
+      if bytes > worst {worst = bytes;}
+      if segs > worstSegs {worstSegs = segs;}
+      round = round + 1u64;
+    }
+    expectUInt(handled.load() - base, 400u64 * (burst + 1u64), "the 400 bursts and their pings, every message taken");
+    expect(worstOne <= 131072usize, "after the first rest of a burst, at most 128 KB (a runaway has no bound)");
+    expect(over <= 8u64, "after 392 or more of the 400 rests the actor holds at most 8 KB");
+    expect(worst <= 20480usize, "after every rest, at most 20 KB (a rest the burst's last sends came into holds a few small segments more)");
+    expect(worstSegs <= 6usize, "...in at most 6 segments");
+  }
+  finalAll();
+  expectUInt(u64.from(actors.liveSegments()), 0u64, "no segment left at the end");
+  done()
+}
