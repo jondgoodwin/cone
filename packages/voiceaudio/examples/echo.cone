@@ -1,0 +1,113 @@
+// Echo: listens on the microphone, prints each utterance the voice activity detector finds, and plays it back
+// through the speaker (resampled to 24 kHz, the rate speech will be played at). If speech starts while the
+// speaker is still playing, the playback is cut off (barge-in). While it plays, the detector's thresholds are
+// raised threefold, because a laptop's speakers feed its microphone.
+//
+//   congo run examples/echo.cone -- <driver> [seconds] [in.raw out.raw]
+//
+//   system   the machine's real microphone and speaker: THIS MAKES SOUND. Use headphones if you can.
+//   disk     SDL's disk driver: the microphone is the raw f32 file 'in.raw' (44.1 kHz mono), the speaker is
+//            written to 'out.raw' (44.1 kHz stereo); no sound, no device
+//   dummy    SDL's dummy driver: silence in, nothing out; no sound
+//
+// There is no default driver: with none named it prints this and stops. It runs for 'seconds' (30 by default).
+// congo test only builds it.
+
+mod echo;
+
+import stdio use *;
+import collections use *;
+import thread;
+import time use Instant, Duration;
+import voiceaudio use *;
+
+fn cstrEquals(a: *u8, b: &str) bool {
+  var i = 0usize;
+  while i < b.len() {
+    if *(a + i) != b[i] { return false; }
+    i = i + 1usize;
+  }
+  *(a + b.len()) == 0u8
+}
+
+fn cstrToString(s: *u8) String {
+  var r = String.empty();
+  var i = 0usize;
+  while *(s + i) != 0u8 { r.appendByte(*(s + i)); i = i + 1usize; }
+  r
+}
+
+fn digits(s: *u8) u32 {
+  var n = 0u32;
+  var i = 0usize;
+  while *(s + i) != 0u8 { n = n * 10u32 + u32.from(*(s + i) - 48u8); i = i + 1usize; }
+  n
+}
+
+fn usage() i32 {
+  print <- "usage: echo <system|disk|dummy> [seconds] [in.raw out.raw]\n";
+  print <- "  system uses the real microphone and speaker and makes sound; disk and dummy make none.\n";
+  2i32
+}
+
+fn main(argc: i32, argv: **u8) i32 {
+  if argc < 2i32 { return usage(); }
+  let which = *(argv + 1usize);
+  var seconds = 30u32;
+  if argc > 2i32 { seconds = digits(*(argv + 2usize)); }
+  var driver = Driver.dummy();
+  if cstrEquals(which, "system") {
+    driver = Driver.system(480u32);
+  } else if cstrEquals(which, "disk") {
+    if argc < 5i32 { return usage(); }
+    let inFile = cstrToString(*(argv + 3usize));
+    let outFile = cstrToString(*(argv + 4usize));
+    driver = Driver.disk(inFile.view(), outFile.view(), "1");
+  } else if !cstrEquals(which, "dummy") {
+    return usage();
+  }
+  match Microphone.open(&driver, 16000u32) {
+    case var Ok(mic) {
+      match Speaker.open(&driver, 24000u32) {
+        case var Ok(sp) {
+          var vad = Vad.make(VadConfig.standard(16000u32));
+          var heard = List[Utterance].empty();
+          let t0 = Instant.now();
+          var lastMeter = 0i64;
+          var wasSpeaking = false;
+          while t0.elapsed().millis() < i64.from(seconds) * 1000i64 {
+            vad.setThresholdScale(if sp.waitingMs() > 0u32 { 3. } else { 1. });
+            mic.pump(&mut vad, &mut heard);
+            if vad.speaking() && !wasSpeaking {
+              print <- "speech starts at "; print <- i64.from(vad.speechStartSample() / 16usize); print <- " ms\n";
+              if sp.waitingMs() > 0u32 { sp.cutOff(); print <- "  barge-in: playback cut off\n"; }
+            }
+            wasSpeaking = vad.speaking();
+            var h = 0usize;
+            while h < heard.len() {
+              print <- "utterance "; print <- i64.from(heard[h].start / 16usize); print <- " ms to "; print <- i64.from(heard[h].end / 16usize);
+              print <- " ms ("; print <- i64.from(heard[h].samples.len() / 16usize); print <- " ms kept)\n";
+              let out = resampleLinear(heard[h].samples.view(), 16000u32, 24000u32);
+              sp.queue(out.view());
+              sp.flush();
+              h = h + 1usize;
+            }
+            heard.clear();
+            let now = t0.elapsed().millis();
+            if now - lastMeter >= 1000i64 {
+              lastMeter = now;
+              print <- "level "; print <- f64.from(vad.level()); print <- " floor "; print <- f64.from(vad.noiseFloor()); print <- "\n";
+            }
+            thread.sleep(Duration.fromMillis(10));
+          }
+          sp.cutOff();
+          sp.close();
+        }
+        case let Error(e) { print <- "no speaker: "; print <- e.message.view(); print <- "\n"; }
+      }
+      mic.close();
+    }
+    case let Error(e) { print <- "no microphone: "; print <- e.message.view(); print <- "\n"; return 1i32; }
+  }
+  0i32
+}
