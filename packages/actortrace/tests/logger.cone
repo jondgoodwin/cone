@@ -1,0 +1,90 @@
+// Way A, the logger actor: a ring of three actors passes one token 200 hops,
+// traced at high into a file by the logger. Every message is a send, a run
+// start and a run end (3 * 204 events: the token's 201 messages and three
+// 'link' messages), all in the file; the reader finds each message's send for
+// each run (none unmatched), each end for each run, the three actors and two
+// behaviours (the logger is not traced), and every send's cause is either
+// nothing (the four sends main made) or a message that ran (a token forwarding
+// itself): the cause ids chain.
+
+mod logger;
+
+import testing use *;
+import libc;
+import actors;
+import actortrace;
+
+actor Node {
+  next: Option[Node];
+
+  fn init(self: &new) {
+    *self = Self(None[Node]);
+  }
+
+  pub async fn link(self, n: Node) {
+    next = Some[Node](n);
+  }
+
+  pub async fn token(self, hops: u64) {
+    if hops > 0u64 {
+      match next {
+        case let Some(p) {p.token(hops - 1u64);}
+        case is None[Node] {}
+      }
+    }
+  }
+
+  pub async fn unlink(self) {
+    next = None;
+  }
+}
+
+fn main() i32 {
+  initAll();
+  actors.configure(actors.Options(workers: 3u32));
+  let path = cstr.fromLiteral("actortrace_logger_test.trc");
+  expect(actortrace.start(actortrace.methodLogger, path, actortrace.Options()), "the file is created");
+  actortrace.setLevel(actortrace.layerActors, actortrace.levelHigh);
+  {
+    let a = Node();
+    let b = Node();
+    let c = Node();
+    a.link(b);
+    b.link(c);
+    c.link(a);
+    a.token(200u64);
+    actors.waitUntilIdle();
+    a.unlink();
+    b.unlink();
+    c.unlink();
+  }
+  actors.waitUntilIdle();
+  actortrace.setLevel(actortrace.layerActors, actortrace.levelOff);
+  let t = actortrace.finish();
+  expectUInt(t.events, 3u64 * 207u64, "three events for each of the 207 messages (the token, the links, the unlinks)");
+  expectUInt(t.records, 3u64 * 207u64, "every one written");
+  expectUInt(t.dropped, 0u64, "none dropped");
+  expectUInt(t.bytes, 32u64 * 3u64 * 207u64 + 288u64, "the file: a 288 byte header and 32 bytes a record");
+
+  var size = 0usize;
+  let p = actortrace.loadFile(path, &mut size);
+  require(p as usize != 0usize, "the file reads back");
+  let s = actortrace.summarize(p, size, false, true);
+  expect(s.ok, "it is a trace file");
+  expectUInt(s.records, 3u64 * 207u64, "the reader counts the records");
+  expectUInt(s.sends, 207u64, "207 sends");
+  expectUInt(s.runs, 207u64, "207 run starts");
+  expectUInt(s.ends, 207u64, "207 run ends");
+  expectUInt(s.unmatched, 0u64, "every run has its send");
+  expectUInt(s.actors, 3u64, "three actors ran (the logger is not traced)");
+  expectUInt(s.behaviours, 3u64, "three behaviours: link, token and unlink");
+  expectUInt(s.rootSends, 7u64, "the sends main made have no cause: 3 links, the token, 3 unlinks");
+  expectUInt(s.badParents, 0u64, "every other send names a message that ran as its cause");
+  expectUInt(s.kindCount[1], 207u64, "kind 1 (send) in the file 207 times");
+  expectUInt(s.kindCount[3], 207u64, "kind 3 (run)");
+  expectUInt(s.kindCount[4], 207u64, "kind 4 (end)");
+  libc.free(p);
+  libc.remove(path);
+  finalAll();
+  done()
+}

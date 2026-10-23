@@ -1,0 +1,1023 @@
+// The actortrace package: tracing the actors runtime, round 1. It records the
+// events the actors package's hooks produce (a message sent, a reply sent, a
+// message's run beginning, a message's run ending), four ways, so that the
+// ways can be compared on one workload; and reads the file back.
+//
+//   import actortrace;
+//
+//   let send = actortrace.register("my.event", actortrace.layerUser, actortrace.levelHigh);
+//   actortrace.start(actortrace.methodLogger, "trace.bin", actortrace.Options());
+//   actortrace.setLevel(actortrace.layerActors, actortrace.levelHigh);
+//   ... the program runs; actors send and run; actortrace.emit(&send, 0, id, arg) ...
+//   let totals = actortrace.finish();       // the records written, the records dropped, ...
+//
+// WHAT IT HAS
+//
+//   Kind, register(name, layer, level)   a record kind is a value: a name, a layer
+//                                        and a level; a program registers its kinds.
+//                                        Ids 1 to 4 are the actors package's hooks
+//                                        (send, reply, run, end), registered by the
+//                                        package, in layer 0
+//   setLevel(layer, level)               the runtime mask: levelOff records nothing
+//                                        from the layer; levelLow counts (per worker,
+//                                        per kind, never sent anywhere); levelHigh
+//                                        records every kind of the layer that is
+//                                        levelHigh. A record kind is recorded when its
+//                                        layer's level is at least the kind's. A
+//                                        disabled layer costs one relaxed load and a
+//                                        bit test (actors.traceLayerOn)
+//   emit(&kind, actor, id, arg)          a record of the program's own kind
+//   start(method, path, opts)            begin recording by one of the ways
+//   finish()                             flush, close, answer Totals
+//   Record                               what the file holds: 32 bytes
+//   summarize(view) / Summary            the reader (reader.cone)
+//
+// THE RECORD. 32 bytes: u64 time (the clock's ticks), u16 kind, u16 worker,
+// u32 actor, u64 id, u64 argument. The clock is QueryPerformanceCounter on
+// Windows (clock_gettime on Linux); its frequency is in the file's header. The
+// four kinds of the actors package use the fields so: the id is the message's
+// cause id (actors.cone, TRACING HOOKS); the argument of a send or reply is the
+// id of the message the sender was running (0 outside), and of a run or end,
+// the behaviour (the low 8 bits the message's tag, the upper 32 the actor's
+// state type); the actor is the actor's number, the receiver's for a send.
+//
+// THE FILE. A header, then the records. The header (little-endian, written
+// byte by byte) is: 8 bytes "CONETRC1"; u32 version (1); u32 header size in
+// bytes (a multiple of 32, where the first record begins); u64 clock
+// frequency; u64 clock count at start(); u32 number of kinds; u32 number of
+// layers; u32 record size (32); u32 0; the kinds, 40 bytes each (u32 id, u32
+// layer, u32 level, u32 name length, 24 bytes of name); the layers, 32 bytes
+// each (u32 id, u32 name length, 24 bytes of name). So a reader knows the clock
+// and the names with nothing else.
+//
+// THE FOUR WAYS (methods). Same events, same record:
+//
+//   methodLogger (A)   a logger ACTOR: one message per event, which the logger
+//                      appends to a staging buffer and writes. The logger's own
+//                      messages are not traced (actors.untrace). Options.cap, if
+//                      not 0, drops a record while that many are waiting.
+//   methodBuffers (B)  each worker fills a buffer of its own (64 KB); a full one
+//                      is moved to the logger as ONE message (no copy), which
+//                      writes it and hands it back to a pool of spare buffers. A
+//                      full buffer with no spare: the record is dropped, counted.
+//   methodEtw (C)      Event Tracing for Windows, as TraceLogging does it: a
+//                      self-describing event per record, written with advapi32's
+//                      EventWriteTransfer (etw.cone). No file; a session
+//                      (logman, tracelog, wpr) records it.
+//   methodText (D)     a line of text per event, formatted by the worker into its
+//                      own buffer, which the worker writes when full: the
+//                      formatting baseline.
+//   methodNull         the record is made and dropped: the cost of the hook, the
+//                      clock and the sink with nowhere to put the record.
+//   methodCount        the hook runs and counts and nothing more.
+//
+// Counters: every event of an enabled layer is counted per worker per kind,
+// whatever the level (counts() sums them).
+
+mod actortrace;
+
+import libc;
+import sync use Arc;
+import actors;
+import collections use *;
+import stdio use *;
+
+// ---------------------------------------------------------------------------
+// Layers, levels, methods
+// ---------------------------------------------------------------------------
+
+pub const layerActors = 0u32;     // the actors package's hooks
+pub const layerUser = 1u32;       // a program's own kinds
+
+pub const levelOff = 0u32;
+pub const levelLow = 1u32;        // counters only
+pub const levelHigh = 2u32;       // every event of the layer
+
+pub const methodCount = 0u32;
+pub const methodNull = 1u32;
+pub const methodLogger = 2u32;    // A
+pub const methodBuffers = 3u32;   // B
+pub const methodEtw = 4u32;       // C
+pub const methodText = 5u32;      // D
+
+const maxKinds = 64usize;
+const maxLayers = 32usize;
+const nameBytes = 24usize;
+const kindSend = 1u32;
+const firstUserKind = 16u32;
+pub const recordBytes = 32usize;
+pub const blockBytes = 65536usize;
+const slotStride = 192usize;      // a slot is three cache lines
+const textMargin = 160usize;      // a text line never needs more
+
+// ---------------------------------------------------------------------------
+// The record
+// ---------------------------------------------------------------------------
+
+pub struct Record {
+  pub time: u64;
+  pub kind: u16;
+  pub worker: u16;
+  pub actorId: u32;
+  pub id: u64;
+  pub arg: u64;
+}
+
+// A record kind: a value a program registers and records with
+pub struct Kind {
+  pub id: u32;
+  pub layer: u32;
+  pub level: u32;
+}
+
+// What start() is told
+pub struct Options {
+  pub cap: u64 = 0u64;            // A: drop a record while this many are waiting for the logger (0: never)
+  pub spare: u32 = 32u32;         // B: how many spare buffers there are (64 KB each)
+  pub timeLogger: bool = false;   // A, B: the logger times its own work (adds two clock reads to each of its messages)
+  pub etwCheck: bool = true;      // C: ask EventEnabled before building an event
+  pub grow: bool = false;         // B: with no spare buffer make another (nothing dropped, memory grows) instead of dropping
+}
+
+pub struct Totals {
+  pub events: u64;                // events counted (every enabled layer's)
+  pub records: u64;               // records written to the file (or events written to ETW)
+  pub dropped: u64;               // records dropped, A's cap or B's missing spare buffer
+  pub loggerMessages: u64;        // messages the logger actor handled
+  pub loggerBusy: u64;            // the logger's own ticks running them, if Options.timeLogger
+  pub bytes: u64;                 // bytes in the file
+}
+
+// ---------------------------------------------------------------------------
+// The state: one calloc'd block, reached through one atomic address
+// ---------------------------------------------------------------------------
+
+struct KindEntry {
+  used: u32;
+  layer: u32;
+  level: u32;
+  mode: u32;                      // 0: nothing, 1: count, 2: record
+  nameLen: u32;
+  name: Array[u8, 24];
+}
+
+struct State {
+  kinds: Array[KindEntry, 64];
+  layers: Array[KindEntry, 32];
+  layerLevel: Array[u32, 32];
+  method: u32;
+  nslots: u32;                    // workers + 1: the last slot is the threads that are no worker
+  nextKind: u32;
+  started: u32;
+  freq: u64;
+  startTicks: u64;
+  file: *libc.FILE;
+  slots: *u8;
+  counts: *u64;                   // a row of 64 counters per slot
+  bytes: u64;
+  dropped: u64;                   // atomic
+  written: u64;                   // atomic
+  cap: u64;
+  pending: u64;                   // atomic: A, with a cap
+  timeLogger: bool;
+  etwCheck: bool;
+  grow: bool;
+  spare: *u8;                     // B: the stack of spare buffers, linked through their first word
+  spareLock: u32;
+  spareCount: u32;
+  fileLock: u32;                  // D: writers take turns on the file
+  logger: Arc[opaq, actors.Mailbox[LogMsg]];
+  loggerState: *LogState;
+  forced: u32;                    // B: forceFull was called
+  etwReg: u64;
+  etwScratch: *u8;
+  etwEvents: *u8;                 // per kind: the event metadata, 64 bytes each
+}
+
+let theState: Atomic[usize];
+
+fn @initpure init() {
+  theState = Atomic[usize].of(0usize);
+}
+
+fn state() *State {
+  theState.load() as *State
+}
+
+fn putName(e: *KindEntry, name: &str) {
+  let b: &Array[u8] = name;
+  var n = b.len;
+  if n > nameBytes {
+    n = nameBytes;
+  }
+  (*e).nameLen = u32.from(n);
+  let dst = &(*e).name as *u8;
+  var i = 0usize;
+  while i < n {
+    *(dst + i) = b[i];
+    i = i + 1usize;
+  }
+}
+
+fn addKind(st: *State, id: u32, name: &str, layer: u32, level: u32) {
+  let e = &(*st).kinds as *KindEntry + usize.from(id);
+  (*e).used = 1u32;
+  (*e).layer = layer;
+  (*e).level = level;
+  putName(e, name);
+}
+
+// The state, made on first use, with the actors package's kinds in it
+fn ensure() *State {
+  let cur = theState.load();
+  if cur != 0usize {
+    return cur as *State;
+  }
+  let st = libc.calloc(1usize, mem.sizeof[State]()) as *State;
+  if st as usize == 0usize {
+    panic("actortrace: out of memory");
+  }
+  (*st).nextKind = firstUserKind;
+  addKind(st, 1u32, "send", layerActors, levelHigh);
+  addKind(st, 2u32, "reply", layerActors, levelHigh);
+  addKind(st, 3u32, "run", layerActors, levelHigh);
+  addKind(st, 4u32, "end", layerActors, levelHigh);
+  let l0 = &(*st).layers as *KindEntry;
+  (*l0).used = 1u32;
+  putName(l0, "actors");
+  let l1 = (&(*st).layers as *KindEntry) + 1usize;
+  (*l1).used = 1u32;
+  putName(l1, "user");
+  theState.store(st as usize);
+  st
+}
+
+// ---------------------------------------------------------------------------
+// Kinds and levels
+// ---------------------------------------------------------------------------
+
+// Register a record kind of the program's: its name (up to 24 bytes), layer (0 to
+// 31) and the level at which it is recorded (levelLow counts it, levelHigh
+// records it). Registered before start(), because the file's header lists them.
+pub fn register(name: &str, layer: u32, level: u32) Kind {
+  let st = ensure();
+  if (*st).started != 0u32 {
+    panic("actortrace: a kind registered after start()");
+  }
+  if usize.from((*st).nextKind) >= maxKinds || usize.from(layer) >= maxLayers {
+    panic("actortrace: too many kinds, or a layer past 31");
+  }
+  let id = (*st).nextKind;
+  (*st).nextKind = id + 1u32;
+  addKind(st, id, name, layer, level);
+  Kind(id, layer, level)
+}
+
+// Name a layer, for the file's header
+pub fn nameLayer(layer: u32, name: &str) {
+  let st = ensure();
+  let e = (&(*st).layers as *KindEntry) + usize.from(layer);
+  (*e).used = 1u32;
+  putName(e, name);
+}
+
+// The layer's level now
+pub fn level(layer: u32) u32 {
+  let st = ensure();
+  *((&(*st).layerLevel as *u32) + usize.from(layer))
+}
+
+// Set a layer's level: each kind's mode is worked out, then the mask bit set or
+// cleared. Needs no rebuild and may be called while the program runs
+pub fn setLevel(layer: u32, lv: u32) {
+  let st = ensure();
+  *((&(*st).layerLevel as *u32) + usize.from(layer)) = lv;
+  var i = 0usize;
+  while i < maxKinds {
+    let e = (&(*st).kinds as *KindEntry) + i;
+    if (*e).used != 0u32 && (*e).layer == layer {
+      if lv == levelOff {
+        (*e).mode = 0u32;
+      } else if lv >= (*e).level {
+        (*e).mode = 2u32;
+      } else {
+        (*e).mode = 1u32;
+      }
+    }
+    i = i + 1usize;
+  }
+  var mask = actors.traceMaskNow();
+  if lv == levelOff {
+    mask = mask & ~(1u32 << layer);
+  } else {
+    mask = mask | (1u32 << layer);
+  }
+  actors.traceSetMask(mask);
+}
+
+// A record of the program's own kind. Costs a load and a bit test when the
+// kind's layer is off. The actor is the number of the actor to blame (0 for
+// none; actors.traceActorNow() for the one running)
+pub fn emit(k: &Kind, who: u32, id: u64, arg: u64) {
+  if actors.traceLayerOn(k.layer) {
+    actors.traceEmit(k.id, who, id, arg);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The clock
+// ---------------------------------------------------------------------------
+
+extern {
+  fn @c(system) QueryPerformanceCounter(count: *i64) i32;
+  fn @c(system) QueryPerformanceFrequency(freq: *i64) i32;
+}
+
+struct PosixTimespec {
+  sec: i64;
+  nsec: i64;
+}
+extern fn @c clock_gettime(clock: i32, ts: *PosixTimespec) i32;
+
+// The clock's count: ticks of clockFrequency()
+pub fn ticks() u64 {
+  if isWindows() {ticksWindows()} else {ticksPosix()}
+}
+
+fn ticksWindows() u64 {
+  var count = 0i64;
+  QueryPerformanceCounter(&mut count as *i64);
+  u64.from(count)
+}
+
+fn ticksPosix() u64 {
+  var ts = PosixTimespec(0i64, 0i64);
+  clock_gettime(1i32, &mut ts as *PosixTimespec);
+  u64.from(ts.sec) * 1000000000u64 + u64.from(ts.nsec)
+}
+
+pub fn clockFrequency() u64 {
+  if isWindows() {
+    var f = 0i64;
+    QueryPerformanceFrequency(&mut f as *i64);
+    u64.from(f)
+  } else {
+    1000000000u64
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Little-endian bytes
+// ---------------------------------------------------------------------------
+
+fn put32(p: *u8, v: u32) {
+  var i = 0usize;
+  var x = v;
+  while i < 4usize {
+    *(p + i) = u8.from(x);
+    x = x >> 8u32;
+    i = i + 1usize;
+  }
+}
+
+fn put64(p: *u8, v: u64) {
+  var i = 0usize;
+  var x = v;
+  while i < 8usize {
+    *(p + i) = u8.from(x);
+    x = x >> 8u64;
+    i = i + 1usize;
+  }
+}
+
+pub fn get32(p: *u8) u32 {
+  var v = 0u32;
+  var i = 4usize;
+  while i > 0usize {
+    i = i - 1usize;
+    v = (v << 8u32) | u32.from(*(p + i));
+  }
+  v
+}
+
+pub fn get64(p: *u8) u64 {
+  var v = 0u64;
+  var i = 8usize;
+  while i > 0usize {
+    i = i - 1usize;
+    v = (v << 8u64) | u64.from(*(p + i));
+  }
+  v
+}
+
+// ---------------------------------------------------------------------------
+// The file's header
+// ---------------------------------------------------------------------------
+
+fn kindsInUse(st: *State) usize {
+  var n = 0usize;
+  var i = 0usize;
+  while i < maxKinds {
+    if (*((&(*st).kinds as *KindEntry) + i)).used != 0u32 {
+      n = n + 1usize;
+    }
+    i = i + 1usize;
+  }
+  n
+}
+
+fn layersInUse(st: *State) usize {
+  var n = 0usize;
+  var i = 0usize;
+  while i < maxLayers {
+    if (*((&(*st).layers as *KindEntry) + i)).used != 0u32 {
+      n = n + 1usize;
+    }
+    i = i + 1usize;
+  }
+  n
+}
+
+fn headerSize(st: *State) usize {
+  let raw = 48usize + kindsInUse(st) * 40usize + layersInUse(st) * 32usize;
+  (raw + 31usize) / 32usize * 32usize
+}
+
+// The header, written to a new buffer of headerSize bytes
+fn buildHeader(st: *State) *u8 {
+  let size = headerSize(st);
+  let h = libc.calloc(1usize, size);
+  let magic = "CONETRC1";
+  var i = 0usize;
+  while i < 8usize {
+    *(h + i) = magic[i];
+    i = i + 1usize;
+  }
+  put32(h + 8usize, 1u32);
+  put32(h + 12usize, u32.from(size));
+  put64(h + 16usize, (*st).freq);
+  put64(h + 24usize, (*st).startTicks);
+  put32(h + 32usize, u32.from(kindsInUse(st)));
+  put32(h + 36usize, u32.from(layersInUse(st)));
+  put32(h + 40usize, 32u32);
+  var at = 48usize;
+  i = 0usize;
+  while i < maxKinds {
+    let e = (&(*st).kinds as *KindEntry) + i;
+    if (*e).used != 0u32 {
+      put32(h + at, u32.from(i));
+      put32(h + at + 4usize, (*e).layer);
+      put32(h + at + 8usize, (*e).level);
+      put32(h + at + 12usize, (*e).nameLen);
+      var j = 0usize;
+      while j < nameBytes {
+        *(h + at + 16usize + j) = *((&(*e).name as *u8) + j);
+        j = j + 1usize;
+      }
+      at = at + 40usize;
+    }
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while i < maxLayers {
+    let e = (&(*st).layers as *KindEntry) + i;
+    if (*e).used != 0u32 {
+      put32(h + at, u32.from(i));
+      put32(h + at + 4usize, (*e).nameLen);
+      var j = 0usize;
+      while j < nameBytes {
+        *(h + at + 8usize + j) = *((&(*e).name as *u8) + j);
+        j = j + 1usize;
+      }
+      at = at + 32usize;
+    }
+    i = i + 1usize;
+  }
+  h
+}
+
+// ---------------------------------------------------------------------------
+// Slots, counters and the gate every sink passes
+// ---------------------------------------------------------------------------
+
+// A slot: one worker's buffer, or the shared one of the threads that are no
+// worker, at the end. Written by its worker alone (the shared one under its lock)
+struct Slot {
+  buf: *u8;
+  used: usize;
+  lock: u32;
+  count: u64;                     // B: records dropped here; C: events written; D: lines written
+  saved: usize;                   // B, forceFull: what 'used' was
+}
+
+fn slotAt(st: *State, i: usize) *Slot {
+  ((*st).slots as usize + i * slotStride) as *Slot
+}
+
+fn slotIndex(st: *State, worker: u32) usize {
+  let last = usize.from((*st).nslots) - 1usize;
+  let w = usize.from(worker);
+  if w < last {w} else {last}
+}
+
+// Count the event, and whether it is to be recorded
+fn gate(st: *State, kind: u32, worker: u32) bool {
+  let e = (&(*st).kinds as *KindEntry) + usize.from(kind);
+  let row = (*st).counts + slotIndex(st, worker) * maxKinds;
+  let c = row + usize.from(kind);
+  *c = *c + 1u64;
+  (*e).mode == 2u32
+}
+
+fn lockWord(p: *u32) {
+  while true {
+    var seen = 0u32;
+    var taken = false;
+    seen, taken = mem.atomicCompareSwap[u32](p, 0u32, 1u32, MemOrder.Acquire, MemOrder.Relaxed);
+    if taken {
+      return;
+    }
+  }
+}
+
+fn unlockWord(p: *u32) {
+  mem.atomicStore[u32](p, 0u32, MemOrder.Release);
+}
+
+fn addAtomic(p: *u64, n: u64) {
+  mem.atomicAdd[u64](p, n, MemOrder.Relaxed);
+}
+
+fn loadAtomic(p: *u64) u64 {
+  mem.atomicLoad[u64](p, MemOrder.Relaxed)
+}
+
+fn putRecord(p: *u8, t: u64, kind: u32, worker: u32, tid: u32, id: u64, arg: u64) {
+  mem.writeRaw[Record](p as *Record, Record(t, u16.from(kind), u16.from(worker), tid, id, arg));
+}
+
+// ---------------------------------------------------------------------------
+// The spare buffers (B)
+// ---------------------------------------------------------------------------
+
+fn popSpare(st: *State) *u8 {
+  lockWord(&(*st).spareLock as *u32);
+  let top = (*st).spare;
+  if top as usize != 0usize {
+    (*st).spare = (mem.readRaw[usize](top as *usize)) as *u8;
+    (*st).spareCount = (*st).spareCount - 1u32;
+  }
+  unlockWord(&(*st).spareLock as *u32);
+  top
+}
+
+fn pushSpare(st: *State, b: *u8) {
+  lockWord(&(*st).spareLock as *u32);
+  mem.writeRaw[usize](b as *usize, (*st).spare as usize);
+  (*st).spare = b;
+  (*st).spareCount = (*st).spareCount + 1u32;
+  unlockWord(&(*st).spareLock as *u32);
+}
+
+// ---------------------------------------------------------------------------
+// The logger actor (A and B), written by hand over the actors package's own
+// calls (makeActor, startActor, send), because the generated handle of an
+// 'actor' cannot be kept where a sink reaches it: a global is Shareable or an
+// atomic, and the handle's mailbox is private to it
+// ---------------------------------------------------------------------------
+
+// One message of the logger: op 0, one record (a: time, b: kind | worker << 16
+// | actor << 32, c: id, d: argument); op 1, a full buffer (a: its address, b:
+// its record count); op 2, write what is staged and flush the file
+struct LogMsg is Sendable {
+  pub op: u64;
+  pub a: u64;
+  pub b: u64;
+  pub c: u64;
+  pub d: u64;
+}
+
+struct LogState {
+  buf: *u8;
+  used: usize;
+  messages: u64;
+  busy: u64;
+  recs: u64;
+}
+
+fn logWrite(p: *u8, n: usize) {
+  let st = state();
+  if n != 0usize {
+    libc.fwrite(p, 1usize, n, (*st).file);
+    (*st).bytes = (*st).bytes + u64.from(n);
+  }
+}
+
+fn logDispatch(s: &mut LogState, m: *LogMsg) {
+  let st = state();
+  var t0 = 0u64;
+  if (*st).timeLogger {
+    t0 = ticks();
+  }
+  let op = (*m).op;
+  if op == 0u64 {
+    if s.used + recordBytes > blockBytes {
+      logWrite(s.buf, s.used);
+      s.used = 0usize;
+    }
+    let p = s.buf + s.used;
+    mem.writeRaw[u64](p as *u64, (*m).a);
+    mem.writeRaw[u64]((p + 8usize) as *u64, (*m).b);
+    mem.writeRaw[u64]((p + 16usize) as *u64, (*m).c);
+    mem.writeRaw[u64]((p + 24usize) as *u64, (*m).d);
+    s.used = s.used + recordBytes;
+    s.recs = s.recs + 1u64;
+    if (*st).cap != 0u64 {
+      mem.atomicSub[u64](&(*st).pending as *u64, 1u64, MemOrder.Relaxed);
+    }
+  } else if op == 1u64 {
+    let b = usize.from((*m).a) as *u8;
+    logWrite(b, usize.from((*m).b) * recordBytes);
+    addAtomic(&(*st).written as *u64, (*m).b);
+    pushSpare(st, b);
+  } else {
+    logWrite(s.buf, s.used);
+    s.used = 0usize;
+    libc.fflush((*st).file);
+  }
+  s.messages = s.messages + 1u64;
+  if (*st).timeLogger {
+    s.busy = s.busy + (ticks() - t0);
+  }
+}
+
+// Send m to the logger
+fn sendLog(st: *State, m: LogMsg) {
+  actors.send[LogMsg]((*st).logger, m);
+}
+
+fn startLogger(st: *State) {
+  let ls = actors.makeActor[LogState, LogMsg](&logDispatch);
+  mem.writeRaw[LogState](ls, LogState(libc.malloc(blockBytes), 0usize, 0u64, 0u64, 0u64));
+  (*st).loggerState = ls;
+  let mb = actors.startActor[LogState, LogMsg](ls);
+  actors.untrace[LogMsg](mb);
+  mem.writeRaw[Arc[opaq, actors.Mailbox[LogMsg]]](&(*st).logger as *(Arc[opaq, actors.Mailbox[LogMsg]]), mb);
+}
+
+// ---------------------------------------------------------------------------
+// The sinks: what the actors package's hooks call. Each counts the event and,
+// if its kind is at the level, records it its own way
+// ---------------------------------------------------------------------------
+
+fn sinkCount(kind: u32, worker: u32, tid: u32, id: u64, arg: u64) {
+  let st = state();
+  gate(st, kind, worker);
+}
+
+fn sinkNull(kind: u32, worker: u32, tid: u32, id: u64, arg: u64) {
+  let st = state();
+  if gate(st, kind, worker) {
+    var r = Record(ticks(), u16.from(kind), u16.from(worker), tid, id, arg);
+    mem.writeRaw[Record](&mut r as *Record, r);
+  }
+}
+
+// A: a message to the logger
+fn sinkLogger(kind: u32, worker: u32, tid: u32, id: u64, arg: u64) {
+  let st = state();
+  if !gate(st, kind, worker) {
+    return;
+  }
+  if (*st).cap != 0u64 {
+    if loadAtomic(&(*st).pending as *u64) >= (*st).cap {
+      addAtomic(&(*st).dropped as *u64, 1u64);
+      return;
+    }
+    addAtomic(&(*st).pending as *u64, 1u64);
+  }
+  let t = ticks();
+  sendLog(st, LogMsg(0u64, t, u64.from(kind) | (u64.from(worker) << 16u64) | (u64.from(tid) << 32u64), id, arg));
+}
+
+// The slot's full buffer goes to the logger, and a spare takes its place:
+// whether there was a spare
+fn rotate(st: *State, sl: *Slot) bool {
+  var sp = popSpare(st);
+  if sp as usize == 0usize {
+    if !(*st).grow {
+      return false;
+    }
+    // precise mode: nothing is dropped, the pool grows (as A's mailbox does)
+    sp = libc.malloc(blockBytes);
+  }
+  sendLog(st, LogMsg(1u64, u64.from((*sl).buf as usize), u64.from((*sl).used / recordBytes), 0u64, 0u64));
+  (*sl).buf = sp;
+  (*sl).used = 0usize;
+  true
+}
+
+// B: a record in the worker's own buffer
+fn sinkBuffers(kind: u32, worker: u32, tid: u32, id: u64, arg: u64) {
+  let st = state();
+  if !gate(st, kind, worker) {
+    return;
+  }
+  let sl = slotAt(st, slotIndex(st, worker));
+  let shared = usize.from(worker) >= usize.from((*st).nslots) - 1usize;
+  if shared {
+    lockWord(&(*sl).lock as *u32);
+  }
+  if (*sl).used + recordBytes > blockBytes {
+    if !rotate(st, sl) {
+      (*sl).count = (*sl).count + 1u64;
+      if shared {
+        unlockWord(&(*sl).lock as *u32);
+      }
+      return;
+    }
+  }
+  putRecord((*sl).buf + (*sl).used, ticks(), kind, worker, tid, id, arg);
+  (*sl).used = (*sl).used + recordBytes;
+  if shared {
+    unlockWord(&(*sl).lock as *u32);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// D: a line of text
+// ---------------------------------------------------------------------------
+
+// The decimal digits of v at p: how many bytes
+fn putDecimal(p: *u8, v: u64) usize {
+  if v == 0u64 {
+    *p = 48u8;
+    return 1usize;
+  }
+  var tmp = v;
+  var n = 0usize;
+  while tmp != 0u64 {
+    n = n + 1usize;
+    tmp = tmp / 10u64;
+  }
+  tmp = v;
+  var i = n;
+  while i > 0usize {
+    i = i - 1usize;
+    *(p + i) = 48u8 + u8.from(tmp % 10u64);
+    tmp = tmp / 10u64;
+  }
+  n
+}
+
+fn putText(p: *u8, s: &str) usize {
+  let b: &Array[u8] = s;
+  var i = 0usize;
+  while i < b.len {
+    *(p + i) = b[i];
+    i = i + 1usize;
+  }
+  b.len
+}
+
+fn putKindName(st: *State, p: *u8, kind: u32) usize {
+  let e = (&(*st).kinds as *KindEntry) + usize.from(kind);
+  var i = 0usize;
+  let n = usize.from((*e).nameLen);
+  while i < n {
+    *(p + i) = *((&(*e).name as *u8) + i);
+    i = i + 1usize;
+  }
+  n
+}
+
+// "time kind wN aN idN argN\n"
+fn formatLine(st: *State, p: *u8, t: u64, kind: u32, worker: u32, tid: u32, id: u64, arg: u64) usize {
+  var n = putDecimal(p, t);
+  *(p + n) = 32u8;
+  n = n + 1usize;
+  n = n + putKindName(st, p + n, kind);
+  n = n + putText(p + n, " w");
+  n = n + putDecimal(p + n, u64.from(worker));
+  n = n + putText(p + n, " a");
+  n = n + putDecimal(p + n, u64.from(tid));
+  n = n + putText(p + n, " id=");
+  n = n + putDecimal(p + n, id);
+  n = n + putText(p + n, " arg=");
+  n = n + putDecimal(p + n, arg);
+  *(p + n) = 10u8;
+  n + 1usize
+}
+
+// The slot's text goes to the file, under the file's lock
+fn flushText(st: *State, sl: *Slot) {
+  if (*sl).used == 0usize {
+    return;
+  }
+  lockWord(&(*st).fileLock as *u32);
+  libc.fwrite((*sl).buf, 1usize, (*sl).used, (*st).file);
+  (*st).bytes = (*st).bytes + u64.from((*sl).used);
+  unlockWord(&(*st).fileLock as *u32);
+  addAtomic(&(*st).written as *u64, 0u64);
+  (*sl).used = 0usize;
+}
+
+fn sinkText(kind: u32, worker: u32, tid: u32, id: u64, arg: u64) {
+  let st = state();
+  if !gate(st, kind, worker) {
+    return;
+  }
+  let t = ticks();
+  let sl = slotAt(st, slotIndex(st, worker));
+  let shared = usize.from(worker) >= usize.from((*st).nslots) - 1usize;
+  if shared {
+    lockWord(&(*sl).lock as *u32);
+  }
+  if (*sl).used + textMargin > blockBytes {
+    flushText(st, sl);
+  }
+  (*sl).used = (*sl).used + formatLine(st, (*sl).buf + (*sl).used, t, kind, worker, tid, id, arg);
+  (*sl).count = (*sl).count + 1u64;
+  if shared {
+    unlockWord(&(*sl).lock as *u32);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Starting and finishing
+// ---------------------------------------------------------------------------
+
+// Begin recording by a method. The file is created (A, B, D); the logger actor is
+// started (A, B), so the workers are running when this returns. Levels are set
+// afterwards, with setLevel. False if the file cannot be created.
+pub fn start(method: u32, path: cstr, opts: Options) bool {
+  let st = ensure();
+  (*st).started = 1u32;
+  (*st).method = method;
+  (*st).freq = clockFrequency();
+  (*st).startTicks = ticks();
+  (*st).cap = opts.cap;
+  (*st).timeLogger = opts.timeLogger;
+  (*st).etwCheck = opts.etwCheck;
+  (*st).grow = opts.grow;
+  if method == methodLogger || method == methodBuffers || method == methodText {
+    (*st).file = libc.fopen(path, "wb");
+    if (*st).file as usize == 0usize {
+      return false;
+    }
+    if method != methodText {
+      let h = buildHeader(st);
+      let hs = headerSize(st);
+      libc.fwrite(h, 1usize, hs, (*st).file);
+      (*st).bytes = u64.from(hs);
+      libc.free(h);
+    }
+  }
+  // The logger is started whatever the method (idle but for A and B): it is an
+  // actor, so it starts the workers, whose number the slots need
+  startLogger(st);
+  let workers = actors.stats().workers;
+  (*st).nslots = workers + 1u32;
+  (*st).slots = libc.calloc(usize.from((*st).nslots), slotStride);
+  (*st).counts = libc.calloc(usize.from((*st).nslots) * maxKinds, 8usize) as *u64;
+  if method == methodBuffers || method == methodText {
+    var i = 0usize;
+    while i < usize.from((*st).nslots) {
+      (*slotAt(st, i)).buf = libc.malloc(blockBytes);
+      i = i + 1usize;
+    }
+  }
+  if method == methodBuffers {
+    var i = 0u32;
+    while i < opts.spare {
+      pushSpare(st, libc.malloc(blockBytes));
+      i = i + 1u32;
+    }
+  }
+  if method == methodEtw {
+    etwStart(st);
+  }
+  if method == methodCount {
+    actors.traceSetSink(&sinkCount);
+  } else if method == methodNull {
+    actors.traceSetSink(&sinkNull);
+  } else if method == methodLogger {
+    actors.traceSetSink(&sinkLogger);
+  } else if method == methodBuffers {
+    actors.traceSetSink(&sinkBuffers);
+  } else if method == methodEtw {
+    actors.traceSetSink(&sinkEtw);
+  } else {
+    actors.traceSetSink(&sinkText);
+  }
+  true
+}
+
+// Every event of every enabled layer counted so far, summed over the workers
+pub fn counts(kind: u32) u64 {
+  let st = state();
+  var sum = 0u64;
+  var i = 0usize;
+  while i < usize.from((*st).nslots) {
+    sum = sum + *((*st).counts + i * maxKinds + usize.from(kind));
+    i = i + 1usize;
+  }
+  sum
+}
+
+// How many events were counted in all
+pub fn eventsCounted() u64 {
+  let st = state();
+  var sum = 0u64;
+  var k = 0u32;
+  while usize.from(k) < maxKinds {
+    sum = sum + counts(k);
+    k = k + 1u32;
+  }
+  sum
+}
+
+// Stop recording, wait until every actor is idle, write everything staged,
+// close the file, and answer the totals. Call from main, not from an actor.
+pub fn finish() Totals {
+  let st = state();
+  var i = 0usize;
+  actors.waitUntilIdle();
+  let method = (*st).method;
+  // B: each worker's partly full buffer goes to the logger
+  if method == methodBuffers {
+    i = 0usize;
+    while i < usize.from((*st).nslots) {
+      let sl = slotAt(st, i);
+      if (*st).forced != 0u32 {
+        (*sl).used = (*sl).saved;
+      }
+      if (*sl).used != 0usize {
+        sendLog(st, LogMsg(1u64, u64.from((*sl).buf as usize), u64.from((*sl).used / recordBytes), 0u64, 0u64));
+        (*sl).buf = libc.malloc(blockBytes);
+        (*sl).used = 0usize;
+      }
+      i = i + 1usize;
+    }
+  }
+  var slotSum = 0u64;
+  i = 0usize;
+  while i < usize.from((*st).nslots) {
+    let sl = slotAt(st, i);
+    if method == methodText {
+      flushText(st, sl);
+    }
+    slotSum = slotSum + (*sl).count;
+    i = i + 1usize;
+  }
+  if method == methodLogger || method == methodBuffers {
+    sendLog(st, LogMsg(2u64, 0u64, 0u64, 0u64, 0u64));
+    actors.waitUntilIdle();
+  }
+  if (*st).file as usize != 0usize {
+    libc.fclose((*st).file);
+    (*st).file = null;
+  }
+  var records = 0u64;
+  var dropped = loadAtomic(&(*st).dropped as *u64);
+  if method == methodLogger {
+    records = (*(*st).loggerState).recs;
+  } else if method == methodBuffers {
+    records = loadAtomic(&(*st).written as *u64);
+    dropped = dropped + slotSum;
+  } else if method == methodEtw || method == methodText {
+    records = slotSum;
+  }
+  var lm = 0u64;
+  var lb = 0u64;
+  if method == methodLogger || method == methodBuffers {
+    lm = (*(*st).loggerState).messages;
+    lb = (*(*st).loggerState).busy;
+  }
+  Totals(eventsCounted(), records, dropped, lm, lb, (*st).bytes)
+}
+
+// A MEASUREMENT AID, for timing a record that is dropped: make the drop path
+// the only path. A: the logger counts as full (needs Options.cap not 0); B: every
+// buffer is full and there is no spare. What is recorded afterwards is lost
+pub fn forceFull() {
+  let st = state();
+  if (*st).method == methodLogger {
+    mem.atomicStore[u64](&(*st).pending as *u64, (*st).cap, MemOrder.SeqCst);
+  } else if (*st).method == methodBuffers {
+    while popSpare(st) as usize != 0usize { }
+    var i = 0usize;
+    while i < usize.from((*st).nslots) {
+      let sl = slotAt(st, i);
+      (*sl).saved = (*sl).used;
+      (*sl).used = blockBytes;
+      (*st).forced = 1u32;
+      i = i + 1usize;
+    }
+  }
+}
+
+// Stop calling the sink and stop counting: the mask cleared, every layer off
+pub fn stop() {
+  actors.traceSetMask(0u32);
+}

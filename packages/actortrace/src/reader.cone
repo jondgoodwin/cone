@@ -1,0 +1,309 @@
+// The reader: a file the logger (A or B) wrote, read back and summarized.
+//
+//   actortrace.report(path)        print the summary
+//   actortrace.summarize(bytes, n) the summary as a Summary
+//
+// WHAT IT GIVES. Counts per kind, per actor (runs and the ticks spent running)
+// and per behaviour (the argument of a run record: actor type and message tag);
+// each message's WAIT in the mailbox (its run start less its send, matched by
+// the cause id both carry) and its RUN time (end less start, matched likewise),
+// as percentiles. The file is not in time order when several workers or the
+// logger wrote it, so every match is by id and the records are read twice: once
+// to learn when each message was sent, once for the rest.
+// Times are in clock ticks of the header's frequency; the report prints
+// nanoseconds.
+
+struct Tally {
+  runs: u64;
+  busy: u64;
+}
+
+pub struct Summary {
+  pub ok: bool = false;
+  pub freq: u64 = 0u64;
+  pub records: u64 = 0u64;
+  pub sends: u64 = 0u64;
+  pub replies: u64 = 0u64;
+  pub runs: u64 = 0u64;
+  pub ends: u64 = 0u64;
+  pub unmatched: u64 = 0u64;      // runs whose send record is not in the file
+  pub rootSends: u64 = 0u64;      // check: sends made outside any message (their cause is 0)
+  pub badParents: u64 = 0u64;     // check: sends whose cause is not the id of any message that ran
+  pub spanTicks: u64 = 0u64;      // first record to last
+  pub actors: u64 = 0u64;
+  pub behaviours: u64 = 0u64;
+  pub waitP50: u64 = 0u64;        // ticks
+  pub waitP90: u64 = 0u64;
+  pub waitP99: u64 = 0u64;
+  pub waitP999: u64 = 0u64;
+  pub waitMax: u64 = 0u64;
+  pub runP50: u64 = 0u64;
+  pub runP90: u64 = 0u64;
+  pub runP99: u64 = 0u64;
+  pub runP999: u64 = 0u64;
+  pub runMax: u64 = 0u64;
+  pub kindCount: Array[u64, 64] = Array[u64, 64]() <- fill 0u64;
+}
+
+fn byTicks(a: &u64, b: &u64) i32 {
+  if *a < *b {-1} else if *a > *b {1} else {0}
+}
+
+fn pct(xs: &List[u64], per1000: usize) u64 {
+  let n = xs.len();
+  if n == 0usize {
+    return 0u64;
+  }
+  var i = n * per1000 / 1000usize;
+  if i >= n {
+    i = n - 1usize;
+  }
+  *xs[i]
+}
+
+fn ticksToNs(t: u64, freq: u64) f64 {
+  f64.from(t) * 1000000000.0 / f64.from(freq)
+}
+
+// The whole file read into memory: its bytes and size, or a null pointer
+pub fn loadFile(path: cstr, size: &mut usize) *u8 {
+  let f = libc.fopen(path, "rb");
+  if f as usize == 0usize {
+    return null;
+  }
+  var cap = 1usize << 20usize;
+  var buf = libc.malloc(cap);
+  var n = 0usize;
+  while true {
+    if n == cap {
+      cap = cap * 2usize;
+      buf = libc.realloc(buf, cap);
+    }
+    let got = libc.fread(buf + n, 1usize, cap - n, f);
+    if got == 0usize {
+      break;
+    }
+    n = n + got;
+  }
+  libc.fclose(f);
+  *size = n;
+  buf
+}
+
+// Read the records of a file's bytes. Needs the bytes to outlive the call
+pub fn summarize(p: *u8, n: usize, show: bool, check: bool) Summary {
+  var s = Summary();
+  if n < 48usize {
+    return s;
+  }
+  var magic = true;
+  let want = "CONETRC1";
+  var i = 0usize;
+  while i < 8usize {
+    if *(p + i) != want[i] {
+      magic = false;
+    }
+    i = i + 1usize;
+  }
+  if !magic {
+    return s;
+  }
+  let hsize = usize.from(get32(p + 12usize));
+  s.freq = get64(p + 16usize);
+  let total = (n - hsize) / recordBytes;
+  s.records = u64.from(total);
+  let base = p + hsize;
+
+  // Pass 1: when each message was sent
+  var sendTime = Dict[u64, u64].withCapacity(total / 3usize + 16usize);
+  var first = 0xFFFFFFFFFFFFFFFFu64;
+  var last = 0u64;
+  var r = 0usize;
+  while r < total {
+    let q = base + r * recordBytes;
+    let t = get64(q);
+    let kind = u32.from(*(q + 8usize)) | (u32.from(*(q + 9usize)) << 8u32);
+    if t < first {
+      first = t;
+    }
+    if t > last {
+      last = t;
+    }
+    if kind == 1u32 || kind == 2u32 {
+      sendTime.insert(get64(q + 16usize), t);
+    }
+    r = r + 1usize;
+  }
+  s.spanTicks = last - first;
+
+  // Pass 2: runs and ends
+  var startTime = Dict[u64, u64].withCapacity(1024usize);
+  var perActor = Dict[u64, Tally].empty();
+  var perBehaviour = Dict[u64, Tally].empty();
+  var runIds = Dict[u64, u64].empty();
+  var parents = List[u64].empty();
+  var waits = List[u64].withCapacity(total / 3usize + 16usize);
+  var runTimes = List[u64].withCapacity(total / 3usize + 16usize);
+  r = 0usize;
+  while r < total {
+    let q = base + r * recordBytes;
+    let t = get64(q);
+    let kind = u32.from(*(q + 8usize)) | (u32.from(*(q + 9usize)) << 8u32);
+    let actorId = u64.from(get32(q + 12usize));
+    let id = get64(q + 16usize);
+    let arg = get64(q + 24usize);
+    if kind < 64u32 {
+      s.kindCount[usize.from(kind)] = s.kindCount[usize.from(kind)] + 1u64;
+    }
+    if kind == 1u32 {
+      s.sends = s.sends + 1u64;
+      if check {
+        if arg == 0u64 {
+          s.rootSends = s.rootSends + 1u64;
+        } else {
+          parents.push(arg);
+        }
+      }
+    } else if kind == 2u32 {
+      s.replies = s.replies + 1u64;
+    } else if kind == 3u32 {
+      s.runs = s.runs + 1u64;
+      if check {
+        runIds.insert(id, 0u64);
+      }
+      match sendTime.getCopy(&id) {
+        case let Some(st) {
+          waits.push(if t >= st {t - st} else {0u64});
+        }
+        else {
+          s.unmatched = s.unmatched + 1u64;
+        }
+      }
+      startTime.insert(id, t);
+    } else if kind == 4u32 {
+      s.ends = s.ends + 1u64;
+      match startTime.remove(&id) {
+        case let Some(st) {
+          let d = if t >= st {t - st} else {0u64};
+          runTimes.push(d);
+          let a = perActor.getOrInsert(actorId, Tally(0u64, 0u64));
+          a.runs = a.runs + 1u64;
+          a.busy = a.busy + d;
+          let b = perBehaviour.getOrInsert(arg, Tally(0u64, 0u64));
+          b.runs = b.runs + 1u64;
+          b.busy = b.busy + d;
+        }
+        else { }
+      }
+    }
+    r = r + 1usize;
+  }
+  if check {
+    each pr in parents.iter() {
+      if !runIds.contains(pr) {
+        s.badParents = s.badParents + 1u64;
+      }
+    }
+  }
+  s.actors = u64.from(perActor.len());
+  s.behaviours = u64.from(perBehaviour.len());
+  waits.sortBy(&byTicks);
+  runTimes.sortBy(&byTicks);
+  s.waitP50 = pct(&waits, 500usize);
+  s.waitP90 = pct(&waits, 900usize);
+  s.waitP99 = pct(&waits, 990usize);
+  s.waitP999 = pct(&waits, 999usize);
+  s.waitMax = pct(&waits, 1000usize);
+  s.runP50 = pct(&runTimes, 500usize);
+  s.runP90 = pct(&runTimes, 900usize);
+  s.runP99 = pct(&runTimes, 990usize);
+  s.runP999 = pct(&runTimes, 999usize);
+  s.runMax = pct(&runTimes, 1000usize);
+  s.ok = true;
+  if show {
+    printStr("records "); printUInt(s.records); printStr("\n");
+    printStr("clock frequency "); printUInt(s.freq); printStr(" Hz\n");
+    printNs("span ", s.spanTicks, s.freq);
+    printStr("sends "); printUInt(s.sends); printStr(", replies "); printUInt(s.replies);
+    printStr(", runs "); printUInt(s.runs); printStr(", ends "); printUInt(s.ends);
+    printStr(", runs with no send in the file "); printUInt(s.unmatched); printStr("\n");
+    printStr("actors "); printUInt(s.actors); printStr(", behaviours "); printUInt(s.behaviours); printStr("\n");
+    printStr("per kind:\n");
+    var k = 0usize;
+    while k < 64usize {
+      if s.kindCount[k] != 0u64 {
+        printStr("  kind "); printUInt(u64.from(k)); printStr(": "); printUInt(s.kindCount[k]); printStr("\n");
+      }
+      k = k + 1usize;
+    }
+    printStr("per behaviour (actor type key and message tag, runs, ticks running):\n");
+    each e in perBehaviour.entries() {
+      printStr("  type "); printUInt(e.key >> 32u64); printStr(" tag "); printUInt(e.key & 255u64);
+      printStr(": runs "); printUInt(e.value.runs);
+      printStr(", mean "); printFloat(ticksToNs(e.value.busy / (if e.value.runs == 0u64 {1u64} else {e.value.runs}), s.freq));
+      printStr(" ns\n");
+    }
+    printStr("busiest actors (number, runs, ticks running):\n");
+    var shown = 0u32;
+    var floor = 0xFFFFFFFFFFFFFFFFu64;
+    var lastKey = 0u64;
+    while shown < 8u32 {
+      var best = 0u64;
+      var bestRuns = 0u64;
+      var bestBusy = 0u64;
+      each e in perActor.entries() {
+        // next in order of runs, most first, ties by actor number
+        let after = e.value.runs < floor || (e.value.runs == floor && e.key > lastKey);
+        if after && (e.value.runs > bestRuns || (e.value.runs == bestRuns && e.key < best)) {
+          best = e.key;
+          bestRuns = e.value.runs;
+          bestBusy = e.value.busy;
+        }
+      }
+      if bestRuns == 0u64 {
+        break;
+      }
+      printStr("  actor "); printUInt(best); printStr(": runs "); printUInt(bestRuns);
+      printStr(", ticks "); printUInt(bestBusy); printStr("\n");
+      floor = bestRuns;
+      lastKey = best;
+      shown = shown + 1u32;
+    }
+  }
+  s
+}
+
+fn printNs(label: &str, t: u64, freq: u64) {
+  printStr(label);
+  printUInt(u64.from(ticksToNs(t, freq)));
+  printStr(" ns\n");
+}
+
+// Summarize the file at path and print it: the kinds' counts, the actors and
+// behaviours with their runs and ticks, the mailbox wait and run-time
+// percentiles. False if the file is not a trace
+pub fn report(path: cstr) bool {
+  var n = 0usize;
+  let p = loadFile(path, &mut n);
+  if p as usize == 0usize {
+    return false;
+  }
+  let s = summarize(p, n, true, false);
+  if !s.ok {
+    return false;
+  }
+  printStr("mailbox wait:\n");
+  printNs("  p50  ", s.waitP50, s.freq);
+  printNs("  p90  ", s.waitP90, s.freq);
+  printNs("  p99  ", s.waitP99, s.freq);
+  printNs("  p99.9 ", s.waitP999, s.freq);
+  printNs("  max  ", s.waitMax, s.freq);
+  printStr("run time:\n");
+  printNs("  p50  ", s.runP50, s.freq);
+  printNs("  p90  ", s.runP90, s.freq);
+  printNs("  p99  ", s.runP99, s.freq);
+  printNs("  p99.9 ", s.runP999, s.freq);
+  printNs("  max  ", s.runMax, s.freq);
+  libc.free(p);
+  true
+}
