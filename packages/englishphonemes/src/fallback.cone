@@ -1,0 +1,165 @@
+// ======== The fallback: spelling to sound by rules, for words neither lexicon has ========
+//
+// misaki sends a word it has no entry for to espeak-ng (GPL, a C library and its data). This package does not use
+// espeak: a word in neither lexicon is spoken by these rules. They are the plain English spelling rules in the
+// order a reader would apply them (consonant digraphs, "c" and "g" soft before e, i and y, "tion", a vowel and a
+// consonant and a final "e" long, vowel pairs, "r" colouring the vowel before it), with the first vowel stressed
+// and the vowels of later syllables reduced. They make a word someone can follow, not the dictionary's word;
+// the lexicons cover the words people use, so this fires for names, new coinages and typos.
+// Kokoro's alphabet: A I O W Y are the vowels of "say", "my", "go", "now", "boy"; ɜɹ is "her".
+
+fn isVowelLetter(c: u32) bool { c == 97u32 || c == 101u32 || c == 105u32 || c == 111u32 || c == 117u32 }
+
+struct Spell {
+  cs: List[u32];
+
+  fn at(self: &, i: usize) u32 { if i < cs.len() { *cs[i] } else { 0u32 } }
+
+  fn isV(self: &, i: usize) bool {
+    let c = self.at(i);
+    isVowelLetter(c) || (c == 121u32 && i > 0usize)
+  }
+
+  fn isC(self: &, i: usize) bool {
+    let c = self.at(i);
+    c >= 97u32 && c <= 122u32 && !self.isV(i)
+  }
+
+  // Whether the letters at i start with the text
+  fn sw(self: &, i: usize, t: &str) bool {
+    var k = 0usize;
+    each x in t.chars() {
+      if self.at(i + k) != u32.from(x) { return false; }
+      k += 1usize;
+    }
+    true
+  }
+}
+
+// The phonemes of a word, by rule
+pub fn fallbackPhonemes(word: &str, british: bool) String {
+  var letters = List[u32].empty();
+  each ch in word.chars() {
+    let u = lowerCp(u32.from(ch));
+    if u >= 97u32 && u <= 122u32 { letters.push(u); }
+  }
+  let s = Spell(letters);
+  let n = s.cs.len();
+  var out = String.empty();
+  if n == 0usize { return out; }
+  var vowelGroups = 0usize;
+  var i = 0usize;
+  while i < n {
+    let c = s.at(i);
+    // ---- consonant groups ----
+    if s.sw(i, "tch") { out <- "ʧ"; i = i + 3usize; continue; }
+    if s.sw(i, "dge") { out <- "ʤ"; i = i + 2usize; continue; }
+    if s.sw(i, "ch") { out <- "ʧ"; i = i + 2usize; continue; }
+    if s.sw(i, "sh") { out <- "ʃ"; i = i + 2usize; continue; }
+    if s.sw(i, "th") { out <- "θ"; i = i + 2usize; continue; }
+    if s.sw(i, "ph") { out <- "f"; i = i + 2usize; continue; }
+    if s.sw(i, "ck") { out <- "k"; i = i + 2usize; continue; }
+    if s.sw(i, "ng") && !s.isV(i + 2usize) { out <- "ŋ"; i = i + 2usize; continue; }
+    if s.sw(i, "ng") { out <- "ŋɡ"; i = i + 2usize; continue; }
+    if s.sw(i, "nk") { out <- "ŋk"; i = i + 2usize; continue; }
+    if s.sw(i, "gh") {
+      if i + 2usize >= n || s.isC(i + 2usize) { i = i + 2usize; continue; }
+      out <- "ɡ"; i = i + 2usize; continue;
+    }
+    if s.sw(i, "wh") { out <- "w"; i = i + 2usize; continue; }
+    if i == 0usize && (s.sw(i, "kn") || s.sw(i, "gn")) { out <- "n"; i = i + 2usize; continue; }
+    if i == 0usize && s.sw(i, "wr") { out <- "ɹ"; i = i + 2usize; continue; }
+    if s.sw(i, "qu") { out <- "kw"; i = i + 2usize; continue; }
+    if (s.sw(i, "tion") || s.sw(i, "sion") || s.sw(i, "cian")) && i > 0usize {
+      out <- if s.sw(i, "sion") && s.isV(i - 1usize) { "ʒᵊn" } else { "ʃᵊn" };
+      i = i + 4usize;
+      continue;
+    }
+    if s.sw(i, "ti") && s.isV(i + 2usize) && i > 0usize { out <- "ʃ"; i = i + 2usize; continue; }
+    if s.sw(i, "mb") && i + 2usize >= n { out <- "m"; i = i + 2usize; continue; }
+    if !s.isV(i) && c != 121u32 || (c == 121u32 && i == 0usize) {
+      // single consonants (a doubled letter once)
+      if i + 1usize < n && s.at(i + 1usize) == c && c != 99u32 { i = i + 1usize; continue; }
+      if c == 99u32 {
+        let nx = s.at(i + 1usize);
+        if nx == 101u32 || nx == 105u32 || nx == 121u32 { out <- "s"; } else { out <- "k"; }
+      } else if c == 103u32 {
+        let nx = s.at(i + 1usize);
+        if (nx == 101u32 || nx == 105u32 || nx == 121u32) && !(nx == 101u32 && i + 2usize < n && s.at(i + 2usize) == 116u32) { out <- "ʤ"; } else { out <- "ɡ"; }
+      } else if c == 115u32 {
+        // between vowels, or after a voiced sound at the end of a word: z
+        if i > 0usize && s.isV(i - 1usize) && s.isV(i + 1usize) { out <- "z"; }
+        else if i + 1usize == n && i > 0usize && (s.isV(i - 1usize) || s.at(i - 1usize) == 100u32 || s.at(i - 1usize) == 98u32 || s.at(i - 1usize) == 103u32 || s.at(i - 1usize) == 108u32 || s.at(i - 1usize) == 110u32 || s.at(i - 1usize) == 109u32 || s.at(i - 1usize) == 114u32) { out <- "z"; }
+        else { out <- "s"; }
+      } else if c == 120u32 { out <- "ks"; }
+      else if c == 106u32 { out <- "ʤ"; }
+      else if c == 113u32 { out <- "k"; }
+      else if c == 121u32 { out <- "j"; }
+      else if c == 114u32 { out <- "ɹ"; }
+      else if c == 104u32 && i > 0usize && !s.isV(i - 1usize) { }
+      else { out.appendByte(u8.from(c)); }
+      i = i + 1usize;
+      continue;
+    }
+    // ---- vowel groups ----
+    vowelGroups += 1usize;
+    let stressed = vowelGroups == 1usize;
+    var mark = "";
+    if stressed { mark = "ˈ"; }
+    // the end of the group of vowel letters and the letters after it
+    var ph = "";
+    var used = 1usize;
+    var keepFull = stressed;
+    if s.sw(i, "igh") { ph = "I"; used = 3usize; keepFull = true; }
+    else if s.sw(i, "eigh") { ph = "A"; used = 4usize; keepFull = true; }
+    else if s.sw(i, "augh") || s.sw(i, "ough") { ph = if s.sw(i, "ough") { "O" } else { "ɔ" }; used = 4usize; keepFull = true; }
+    else if s.sw(i, "ear") && s.isC(i + 3usize) { ph = "ɪɹ"; used = 3usize; keepFull = true; }
+    else if s.sw(i, "eer") || s.sw(i, "ier") { ph = "ɪɹ"; used = 3usize; keepFull = true; }
+    else if s.sw(i, "air") { ph = "ɛɹ"; used = 3usize; keepFull = true; }
+    else if s.sw(i, "oor") { ph = "ʊɹ"; used = 3usize; keepFull = true; }
+    else if s.sw(i, "our") { ph = "Wəɹ"; used = 3usize; keepFull = true; }
+    else if s.sw(i, "ee") || s.sw(i, "ea") || s.sw(i, "ie") { ph = "i"; used = 2usize; keepFull = true; }
+    else if s.sw(i, "ai") || s.sw(i, "ay") || s.sw(i, "ei") || s.sw(i, "ey") { ph = "A"; used = 2usize; keepFull = true; }
+    else if s.sw(i, "oa") { ph = "O"; used = 2usize; keepFull = true; }
+    else if s.sw(i, "oo") { ph = "u"; used = 2usize; keepFull = true; }
+    else if s.sw(i, "ou") { ph = "W"; used = 2usize; keepFull = true; }
+    else if s.sw(i, "ow") { ph = if i + 2usize >= n || s.isC(i + 2usize) && !s.sw(i + 2usize, "l") && !s.sw(i + 2usize, "n") { "O" } else { "W" }; used = 2usize; keepFull = true; }
+    else if s.sw(i, "oi") || s.sw(i, "oy") { ph = "Y"; used = 2usize; keepFull = true; }
+    else if s.sw(i, "au") || s.sw(i, "aw") { ph = "ɔ"; used = 2usize; keepFull = true; }
+    else if s.sw(i, "ew") || s.sw(i, "ue") { ph = if s.sw(i, "ew") { "ju" } else { "u" }; used = 2usize; keepFull = true; }
+    else if s.sw(i, "ui") { ph = "u"; used = 2usize; keepFull = true; }
+    else if s.sw(i, "ar") && !s.isV(i + 2usize) { ph = "ɑɹ"; used = 2usize; }
+    else if s.sw(i, "or") && !s.isV(i + 2usize) { ph = "ɔɹ"; used = 2usize; }
+    else if (s.sw(i, "er") || s.sw(i, "ir") || s.sw(i, "ur")) && !s.isV(i + 2usize) { ph = "ɜɹ"; used = 2usize; }
+    else if s.sw(i, "all") { ph = "ɔl"; used = 3usize; }
+    else {
+      // a single vowel letter: long before a consonant and a final e, else short
+      let magic = s.isC(i + 1usize) && s.at(i + 2usize) == 101u32 && i + 3usize == n;
+      let nx = s.at(i + 1usize);
+      if c == 97u32 { ph = if magic { "A" } else { "æ" }; }
+      else if c == 101u32 {
+        if i + 1usize == n && i > 0usize { ph = ""; keepFull = false; }
+        else { ph = if magic { "i" } else { "ɛ" }; }
+      }
+      else if c == 105u32 { ph = if magic { "I" } else { "ɪ" }; }
+      else if c == 111u32 { ph = if magic { "O" } else { "ɑ" }; }
+      else if c == 117u32 { ph = if magic { "u" } else { "ʌ" }; }
+      else if c == 121u32 { ph = if i + 1usize == n { if vowelGroups > 1usize { "i" } else { "I" } } else { "ɪ" }; }
+      if magic { keepFull = true; }
+      if nx == 0u32 && c == 101u32 && i > 0usize { ph = ""; }
+    }
+    if ph.len() == 0usize {
+      // a silent final e
+    } else if keepFull {
+      out <- mark;
+      out <- ph;
+    } else {
+      // reduced vowel of an unstressed syllable
+      if ph == "ɑɹ" || ph == "ɔɹ" || ph == "ɜɹ" { out <- "əɹ"; }
+      else if ph == "ɔl" { out <- "ɔl"; }
+      else { out <- "ə"; }
+    }
+    i = i + used;
+  }
+  out
+}

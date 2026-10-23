@@ -1,0 +1,99 @@
+// Conversion to 16 kHz mono (resample.cone) and the token ids' text (detokenize), neither needing a GPU or a model file.
+//
+// The resampler is checked on sine waves: converted from 44.1 kHz, 48 kHz and 8 kHz, a 440 Hz tone must come out as the
+// same tone at 16 kHz, within 2e-3 of the ideal samples away from the edges (the 24-zero-crossing Hann-windowed sinc
+// has a transition band, not a brick wall, so 440 Hz of an 8 kHz band is far inside it), and a tone above 8 kHz
+// (12 kHz at 48 kHz) must come out nearly gone (under 0.01): it is removed, not folded back into the band.
+
+mod resampletest;
+
+import testing use *;
+import libc;
+import collections use List, String;
+import audiomixer use Sound;
+import speechtotext use *;
+
+fn sine(rate: u32, freq: f64, seconds: f64) List[f32] {
+  let n = usize.from(f64.from(rate) * seconds);
+  var out = List[f32].withCapacity(n);
+  var i = 0usize;
+  while i < n {
+    out.push(f32.from(0.5 * libc.sin(6.283185307179586 * freq * f64.from(i) / f64.from(rate))));
+    i = i + 1usize;
+  }
+  out
+}
+
+// The worst difference from the ideal 16 kHz tone, over the samples away from the first and last 0.05 s
+fn toneError(y: &List[f32], freq: f64) f64 {
+  var worst = 0.0;
+  var i = 800usize;
+  while i + 800usize < y.len() {
+    let want = 0.5 * libc.sin(6.283185307179586 * freq * f64.from(i) / 16000.0);
+    let d = libc.fabs(f64.from(*y[i]) - want);
+    if d > worst { worst = d; }
+    i = i + 1usize;
+  }
+  worst
+}
+
+fn peak(y: &List[f32]) f64 {
+  var m = 0.0;
+  var i = 800usize;
+  while i + 800usize < y.len() {
+    let v = libc.fabs(f64.from(*y[i]));
+    if v > m { m = v; }
+    i = i + 1usize;
+  }
+  m
+}
+
+fn main() i32 {
+  let a = resampleTo16k(sine(44100u32, 440.0, 0.5).view(), 44100u32);
+  expectUInt(u64.from(a.len()), 8000u64, "0.5 s at 44.1 kHz is 8000 samples at 16 kHz");
+  expectFloat(toneError(&a, 440.0), 0.0, 2.0e-3, "440 Hz from 44.1 kHz");
+  let b = resampleTo16k(sine(48000u32, 440.0, 0.5).view(), 48000u32);
+  expectUInt(u64.from(b.len()), 8000u64, "0.5 s at 48 kHz is 8000 samples");
+  expectFloat(toneError(&b, 440.0), 0.0, 2.0e-3, "440 Hz from 48 kHz");
+  let c = resampleTo16k(sine(8000u32, 440.0, 0.5).view(), 8000u32);
+  expectUInt(u64.from(c.len()), 8000u64, "0.5 s at 8 kHz is 8000 samples");
+  expectFloat(toneError(&c, 440.0), 0.0, 2.0e-3, "440 Hz from 8 kHz");
+  let d = resampleTo16k(sine(48000u32, 12000.0, 0.5).view(), 48000u32);
+  expectFloat(peak(&d), 0.0, 0.01, "12 kHz from 48 kHz is removed");
+  let same = sine(16000u32, 100.0, 0.1);
+  let e = resampleTo16k(same.view(), 16000u32);
+  var identical = e.len() == same.len();
+  var i = 0usize;
+  while identical && i < e.len() { if *e[i] != *same[i] { identical = false; } i = i + 1usize; }
+  expect(identical, "16 kHz comes back as it is");
+  expectUInt(u64.from(resampleTo16k(same.view(), 0u32).len()), 0u64, "a rate of 0 gives nothing");
+  var none = List[f32].empty();
+  expectUInt(u64.from(resampleTo16k(none.view(), 44100u32).len()), 0u64, "no samples give none");
+
+  // a stereo sound: the channels averaged
+  var st = List[f32].empty();
+  var k = 0usize;
+  while k < 4800usize { st.push(0.5); st.push(-0.5); k = k + 1usize; }
+  let snd = Sound(48000u32, 2u32, st);
+  let m = soundTo16k(&snd);
+  expectUInt(u64.from(m.len()), 1600u64, "0.1 s of stereo at 48 kHz");
+  expectFloat(peak(&m), 0.0, 0.001, "opposite channels average to silence");
+
+  // token ids to text
+  var vocab = List[String].empty();
+  vocab.push(String.from("<unk>"));
+  vocab.push(String.from("▁I"));
+  vocab.push(String.from("▁want"));
+  vocab.push(String.from("▁dou"));
+  vocab.push(String.from("ble"));
+  vocab.push(String.from("."));
+  vocab.push(String.from("▁Hello"));
+  vocab.push(String.from("?"));
+  expectStr(detokenize(&vocab, &[1u32, 2u32, 3u32, 4u32, 5u32, 6u32, 7u32]).view(), "I want double. Hello?", "pieces joined, the word mark a space");
+  expectStr(detokenize(&vocab, &[4u32]).view(), "ble", "a piece without the mark has no leading space");
+  expectStr(detokenize(&vocab, &[0u32, 1u32, 0u32]).view(), "I", "the unknown piece is dropped");
+  expectStr(detokenize(&vocab, &[1u32, 99u32, 2u32]).view(), "I want", "an id outside the vocabulary is dropped");
+  var noIds = List[u32].empty();
+  expectStr(detokenize(&vocab, noIds.view()).view(), "", "no tokens, no text");
+  done()
+}

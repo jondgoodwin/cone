@@ -1,0 +1,50 @@
+// trimPads: the quiet Kokoro puts before and after a sentence cut to what is asked, the sound itself untouched.
+mod trimtest;
+
+import testing use *;
+import collections use List;
+import voicechat use *;
+
+// 'lead' quiet samples (a faint hiss under the threshold), 'body' samples of 0.5, 'trail' quiet ones
+fn signal(lead: usize, body: usize, trail: usize) List[f32] {
+  var x = List[f32].empty();
+  var i = 0usize;
+  while i < lead { x.push(0.001f); i = i + 1usize; }
+  i = 0usize;
+  while i < body { if i % 2usize == 0usize { x.push(0.5f); } else { x.push(-0.5f); } i = i + 1usize; }
+  i = 0usize;
+  while i < trail { x.push(-0.001f); i = i + 1usize; }
+  x
+}
+
+fn main() i32 {
+  {
+    let x = signal(9600usize, 1000usize, 12000usize);
+    let t = trimPads(x.view(), 1920usize, 3600usize, 0.004f);
+    expectUInt(u64.from(t.len()), 1920u64 + 1000u64 + 3600u64, "lead and trail cut to what is kept");
+    expectFloat(f64.from(*t[1920usize]), 0.5, 0.0, "the sound begins where the kept lead ends");
+    expectFloat(f64.from(*t[1920usize + 999usize]), -0.5, 0.0, "and ends where the kept trail begins");
+    expectFloat(f64.from(*t[0usize]), 0.001, 1.0e-9, "the quiet that is kept is untouched");
+  }
+  {
+    let x = signal(500usize, 1000usize, 700usize);
+    let t = trimPads(x.view(), 1920usize, 3600usize, 0.004f);
+    expectUInt(u64.from(t.len()), u64.from(x.len()), "less quiet than is kept: nothing is cut");
+  }
+  {
+    let x = signal(3000usize, 0usize, 0usize);
+    let t = trimPads(x.view(), 1920usize, 3600usize, 0.004f);
+    expectUInt(u64.from(t.len()), 3000u64, "no sound at all: unchanged");
+  }
+  {
+    let x = List[f32].empty();
+    let t = trimPads(x.view(), 1920usize, 3600usize, 0.004f);
+    expectUInt(u64.from(t.len()), 0u64, "nothing: nothing");
+  }
+  {
+    let x = signal(0usize, 1usize, 0usize);
+    let t = trimPads(x.view(), 10usize, 10usize, 0.004f);
+    expectUInt(u64.from(t.len()), 1u64, "one sample of sound");
+  }
+  done()
+}

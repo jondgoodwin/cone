@@ -1,0 +1,151 @@
+// The speaker through SDL's disk audio driver: playback lands in a raw f32 file and the file is checked. The
+// disk device is 44.1 kHz stereo and writes silence whenever nothing is queued, so each check finds the sound
+// inside the file (the stretch from its first to its last sample above a tiny threshold) and reads one channel.
+// Runs: a stream at the device's own rate, where the samples written must be the samples queued; a stream at
+// 24 kHz (Kokoro's rate), which SDL converts to 44.1 kHz, where the length must scale and the tone's pitch must
+// survive; a barge-in on a device running in real time: five seconds are queued, `cutOff` comes after about
+// 0.3 s, and the file must hold roughly that much sound, not five seconds, and the sound queued after the cut;
+// and the dummy driver. Every open names its driver.
+mod diskspeaker;
+
+import testing use *;
+import collections use *;
+import path use Path;
+import fs;
+import thread;
+import time use Duration;
+import audiomixer use zeroCrossingFreq;
+import voiceaudio use *;
+
+fn pause(n: u32) { thread.sleep(Duration.fromMillis(i64.from(n))); }
+
+// The left channel of the speaker's output file
+fn loadLeft(p: &Path) List[f32] {
+  var out = List[f32].empty();
+  match readRawF32(p) {
+    case let Ok(l) { out = channel(l.view(), 2usize, 0usize); }
+    case let Error(e) {}
+  }
+  out
+}
+
+fn main() i32 {
+  let outName = "voiceaudio-test-spk-out.raw";
+  let outPath = Path.from("voiceaudio-test-spk-out.raw");
+  let R = DISK_RATE;
+
+  // ---- at the device's rate: what was queued is what was written
+  {
+    let tone = toneMs(1000u32, R, 440., 0.5);
+    let drv = Driver.disk("voiceaudio-test-none.raw", outName, "0.05");
+    match Speaker.open(&drv, R) {
+      case var Ok(sp) {
+        expect(sp.queue(tone.view()), "the tone is queued");
+        expectUInt(u64.from(sp.samplesQueued()), 44100u64, "44100 samples queued");
+        sp.flush();
+        expect(sp.drain(10000u32), "the stream empties");
+        pause(300u32);
+        sp.close();
+      }
+      case let Error(e) { require(false, "the disk speaker opens"); }
+    }
+    let got = loadLeft(&outPath);
+    let first = firstAbove(got.view(), 0.);
+    let last = endAbove(got.view(), 0.);
+    // the tone's own first sample is 0, so its sound starts one sample in
+    expectUInt(u64.from(last - first), 44099u64, "the file holds the whole second of sound (44099 non-zero samples)");
+    var worst = 0.f;
+    var k = 0usize;
+    while k < 44099usize && first + k < got.len() {
+      var d = *got[first + k] - *tone[k + 1usize];
+      if d < 0. { d = -d; }
+      if d > worst { worst = d; }
+      k = k + 1usize;
+    }
+    expectFloat(f64.from(worst), 0., 0.0000001, "and every sample written is the sample queued");
+    fs.removeFile(&outPath);
+  }
+
+  // ---- at 24 kHz: converted to the file's rate
+  {
+    let tone = toneMs(1000u32, 24000u32, 440., 0.5);
+    let drv = Driver.disk("voiceaudio-test-none.raw", outName, "0.05");
+    match Speaker.open(&drv, 24000u32) {
+      case var Ok(sp) {
+        expect(sp.queue(tone.view()), "a 24 kHz tone is queued");
+        sp.flush();
+        expect(sp.drain(10000u32), "the stream empties once flushed");
+        pause(300u32);
+        sp.close();
+      }
+      case let Error(e) { require(false, "the 24 kHz disk speaker opens"); }
+    }
+    let got = loadLeft(&outPath);
+    let first = firstAbove(got.view(), 0.001);
+    let last = endAbove(got.view(), 0.001);
+    let len = last - first;
+    expect(len > 44100usize - 200usize && len < 44100usize + 200usize, "a second of 24 kHz sound is a second of 44.1 kHz file");
+    let mid = mem.sliceFromParts[f32]((&got.view()[first + 8000usize] as *f32), 20000usize);
+    let f = zeroCrossingFreq(mid, 44100.);
+    expectFloat(f64.from(f), 440., 3., "the tone is still 440 Hz");
+    var peak = 0.f;
+    var i = first + 8000usize;
+    while i < first + 28000usize { var a = *got[i]; if a < 0. { a = -a; } if a > peak { peak = a; } i = i + 1usize; }
+    expectFloat(f64.from(peak), 0.5, 0.02, "and still 0.5 loud");
+    fs.removeFile(&outPath);
+  }
+
+  // ---- barge-in, on a device that runs in real time: queue five seconds, cut off after 0.3 s
+  {
+    let tone = toneMs(500u32, R, 440., 0.5);
+    let drv = Driver.disk("voiceaudio-test-none.raw", outName, "1");
+    match Speaker.open(&drv, R) {
+      case var Ok(sp) {
+        var n = 0;
+        while n < 10 { sp.queue(tone.view()); n = n + 1; }
+        expect(sp.waitingMs() > 4000u32, "five seconds are waiting");
+        pause(300u32);
+        let before = sp.waitingMs();
+        expect(before < 4900u32 && before > 3000u32, "the device is taking them at about real time");
+        sp.cutOff();
+        expectUInt(u64.from(sp.waiting()), 0u64, "after the cut-off nothing waits");
+        pause(300u32);
+        expectUInt(u64.from(sp.waiting()), 0u64, "and nothing is left to play");
+        // speech after the cut plays again
+        sp.queue(tone.view());
+        expect(sp.waitingMs() > 400u32, "the queue takes new sound after a cut-off");
+        pause(900u32);
+        expectUInt(u64.from(sp.waiting()), 0u64, "which the device then plays");
+        sp.close();
+      }
+      case let Error(e) { require(false, "the real-time disk speaker opens"); }
+    }
+    let got = loadLeft(&outPath);
+    // the sound before the cut (0.3 s and what the device had taken: one buffer), a gap of silence, then 0.5 s
+    var sound = 0usize;
+    var i = 0usize;
+    while i < got.len() { if *got[i] > 0.001 || *got[i] < -0.001 { sound = sound + 1usize; } i = i + 1usize; }
+    expect(sound > 44100usize * 5usize / 10usize && sound < 44100usize * 12usize / 10usize, "the file holds under 1.2 s of sound (the sound before the cut and the sound after it), not five seconds");
+    fs.removeFile(&outPath);
+  }
+
+  // ---- the dummy driver accepts audio and plays nothing, at about real time
+  {
+    let tone = toneMs(2000u32, 24000u32, 440., 0.5);
+    let drv = Driver.dummy();
+    match Speaker.open(&drv, 24000u32) {
+      case var Ok(sp) {
+        sp.queue(tone.view());
+        pause(500u32);
+        let w = sp.waitingMs();
+        expect(w < 1800u32 && w > 800u32, "the dummy device takes sound at about real time");
+        sp.cutOff();
+        expectUInt(u64.from(sp.waiting()), 0u64, "and a cut-off empties it");
+        sp.close();
+      }
+      case let Error(e) { require(false, "the dummy speaker opens"); }
+    }
+  }
+  expect(!fs.exists(&Path.from("voiceaudio-test-none.raw")), "no input file was ever made");
+  done()
+}

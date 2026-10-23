@@ -1,0 +1,79 @@
+// phonemes: print the phonemes of a text, piece by piece, and how many words the lexicons did not know.
+//
+//   congo run --release examples/phonemes.cone -- --file text.txt [--british] [--model-dir C:/src/speech-models/kokoro]
+//       [--unknown]
+//
+// --unknown lists the words that fell to the rule-based fallback (a word in neither lexicon). The text is read as
+// lines (a newline cuts a piece, as in Kokoro's pipeline); each piece is at most 510 phonemes.
+
+mod phonemes_cli;
+
+import stdio use *;
+import collections use List, String;
+import path use Path;
+import process;
+import fs;
+import englishphonemes use *;
+
+fn argValue(args: &List[String], name: &str) Option[String] {
+  var i = 0usize;
+  while i + 1usize < args.len() {
+    if args[i].view() == name { return Some[String](args[i + 1usize].copy()); }
+    i = i + 1usize;
+  }
+  None
+}
+
+fn hasFlag(args: &List[String], name: &str) bool {
+  var i = 0usize;
+  while i < args.len() {
+    if args[i].view() == name { return true; }
+    i = i + 1usize;
+  }
+  false
+}
+
+fn main() i32 {
+  let args = process.args();
+  var dir = String.from("C:/src/speech-models/kokoro");
+  match argValue(&args, "--model-dir") { case var Some(d) { dir = d; } case is None {} }
+  var text = String.empty();
+  match argValue(&args, "--file") {
+    case let Some(f) {
+      match fs.readFile(&Path.from(f.view())) {
+        case var Ok(t) { text = t; }
+        case let Error(e) { eprintStr("phonemes: cannot read the file\n"); return 1i32; }
+      }
+    }
+    case is None { eprintStr("usage: phonemes --file <path> [--british] [--unknown] [--model-dir <dir>]\n"); return 2i32; }
+  }
+  let lex = match Lexicon.load(dir.view(), hasFlag(&args, "--british")) {
+    case var Ok(l) { l }
+    case let Error(m) { eprintStr(m.view()); eprintStr("\n"); return 1i32; }
+  };
+  let g2p = G2p.make(lex, true, "");
+  var counts = Counts(0usize, 0usize);
+  let pieces = speechPiecesCounted(&g2p, text.view(), &mut counts);
+  var i = 0usize;
+  while i < pieces.len() { print <- pieces[i].phonemes.view(), "\n"; i = i + 1usize; }
+  print <- counts.words, " words, ", counts.fallbackWords, " spoken by the fallback (", f64.from(counts.fallbackWords) * 100.0 / f64.from(counts.words + 1usize), " per cent)\n";
+  if hasFlag(&args, "--unknown") {
+    // the words, found again: a word is unknown if the fallback was used for it
+    let lines = text.lines();
+    var li = 0usize;
+    while li < lines.len() {
+      let toks = String.from(lines[li].view()).split(u8.from(' '));
+      var ti = 0usize;
+      while ti < toks.len() {
+        let w = toks[ti].view();
+        if w.len() > 0usize {
+          let r = g2p.phonemize(w);
+          if r.fallbackWords > 0usize { print <- "  ", w, " -> ", r.phonemes.view(), "\n"; }
+        }
+        ti = ti + 1usize;
+      }
+      li = li + 1usize;
+    }
+  }
+  0i32
+}

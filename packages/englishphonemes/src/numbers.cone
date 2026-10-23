@@ -1,0 +1,125 @@
+// ======== Numbers as English words ========
+//
+// What Python's num2words gives misaki for English (the words, hyphens and commas dropped: misaki splits the
+// text on every non-letter and drops "and"), so this returns lists of single words. 'cardinal' (1999: one thousand
+// nine hundred ninety nine), 'ordinal' (the last word made ordinal), 'year' (num2words' own rule: when the hundreds
+// digit of the number is 0 it is a cardinal, else the hundreds are said as a number then "hundred": 1984 is nineteen
+// hundred eighty four, 2024 two thousand twenty four) and 'decimal' (the fraction digit by digit after "point").
+
+let ONES: Array[&str, 20] = [
+  "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve",
+  "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen"
+];
+
+let TENS: Array[&str, 10] = ["", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"];
+
+let SCALES: Array[&str, 7] = ["", "thousand", "million", "billion", "trillion", "quadrillion", "quintillion"];
+
+fn pushBelowThousand(out: &mut List[String], n: u64) {
+  let h = n / 100u64;
+  let r = n % 100u64;
+  if h > 0u64 {
+    out.push(String.from(ONES[usize.from(h)]));
+    out.push(String.from("hundred"));
+  }
+  if r >= 20u64 {
+    out.push(String.from(TENS[usize.from(r / 10u64)]));
+    if r % 10u64 > 0u64 { out.push(String.from(ONES[usize.from(r % 10u64)])); }
+  } else if r > 0u64 {
+    out.push(String.from(ONES[usize.from(r)]));
+  }
+}
+
+// The words of a whole number: "zero" for 0
+pub fn cardinal(n: u64) List[String] {
+  var out = List[String].empty();
+  if n == 0u64 {
+    out.push(String.from("zero"));
+    return out;
+  }
+  // thousands groups, most significant first
+  var groups = List[u64].empty();
+  var m = n;
+  while m > 0u64 {
+    groups.push(m % 1000u64);
+    m = m / 1000u64;
+  }
+  var g = groups.len();
+  while g > 0usize {
+    g = g - 1usize;
+    let v = *groups[g];
+    if v > 0u64 {
+      pushBelowThousand(&mut out, v);
+      if g > 0usize { out.push(String.from(SCALES[g])); }
+    }
+  }
+  out
+}
+
+fn ordinalWord(w: &str) String {
+  if w == "one" { return String.from("first"); }
+  if w == "two" { return String.from("second"); }
+  if w == "three" { return String.from("third"); }
+  if w == "five" { return String.from("fifth"); }
+  if w == "eight" { return String.from("eighth"); }
+  if w == "nine" { return String.from("ninth"); }
+  if w == "twelve" { return String.from("twelfth"); }
+  var s = String.from(w);
+  if w.endsWith("y") {
+    s.truncate(s.len() - 1usize);
+    s <- "ieth";
+  } else {
+    s <- "th";
+  }
+  s
+}
+
+// The words of an ordinal number: the last word of the cardinal made ordinal
+pub fn ordinal(n: u64) List[String] {
+  var out = cardinal(n);
+  match out.pop() {
+    case let Some(last) { out.push(ordinalWord(last.view())); }
+    case is None {}
+  }
+  out
+}
+
+// A year, as num2words says it
+pub fn year(n: u64) List[String] {
+  if (n / 100u64) % 10u64 == 0u64 { return cardinal(n); }
+  var out = cardinal(n / 100u64);
+  out.push(String.from("hundred"));
+  let low = n % 100u64;
+  if low > 0u64 {
+    var lw = cardinal(low);
+    var d = lw.drain();
+    var more = true;
+    while more {
+      match d.next() {
+        case let Some(w) { out.push(w); }
+        case is None { more = false; }
+      }
+    }
+  }
+  out
+}
+
+// A number written with a decimal point: the whole part, "point", then each fraction digit. num2words reads it as
+// a float, so trailing zeros of the fraction are lost ("3.10" is three point one) and an all-zero fraction is one
+// "zero"
+pub fn decimal(whole: u64, fraction: &str) List[String] {
+  var out = cardinal(whole);
+  out.push(String.from("point"));
+  var end = fraction.len();
+  while end > 0usize && fraction[end - 1usize] == '0' { end = end - 1usize; }
+  if end == 0usize {
+    out.push(String.from("zero"));
+    return out;
+  }
+  var i = 0usize;
+  while i < end {
+    out.push(String.from(ONES[usize.from(fraction[i] - '0')]));
+    i = i + 1usize;
+  }
+  out
+}

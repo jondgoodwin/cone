@@ -1,0 +1,164 @@
+// The voice activity detector against real speech: LibriSpeech test-clean clips (C:\src\speech-models\
+// librispeech-clips\, read only), laid into noise beds at sample positions chosen here. The truth is by
+// construction: where a clip was laid. A clip carries its own quiet margins (LibriSpeech pads its segments), so
+// the speech inside it starts up to 0.7 s after the clip's first sample and ends up to 0.7 s before its last; the
+// detector's start must fall in [clip start - 40 ms, clip start + 700 ms] and its end in [clip end - 700 ms,
+// clip end + 40 ms]. Without the clips the test skips.
+//
+// Runs: every clip alone in 2 s of bed on each side (at most two utterances: two clips hold a pause longer than
+// the 600 ms hangover); four short clips joined with 1.5 s gaps (four utterances, each on its clip); the same with
+// 0.3 s gaps (the hangover swallows the gap: fewer utterances); the same in a noisier room (rms 0.01, about 15 dB
+// under the speech); and at a fifth of the volume.
+mod vadspeech;
+
+import testing use *;
+import collections use *;
+import path use Path;
+import fs;
+import voiceaudio use *;
+
+const DIR = "C:/src/speech-models/librispeech-clips";
+
+fn ms(n: usize) usize { n * 16usize }
+
+fn load(name: &str) List[f32] {
+  var p = String.from(DIR);
+  p <- "/";
+  p <- name;
+  p <- ".wav";
+  var out = List[f32].empty();
+  match loadWavMono(&Path.fromString(p), 16000u32) {
+    case var Ok(c) { out <-> c; }
+    case let Error(e) { expect(false, "a clip loads"); }
+  }
+  out
+}
+
+fn detect(x: &List[f32], vad: &mut Vad) List[Utterance] {
+  var out = List[Utterance].empty();
+  var at = 0usize;
+  while at < x.len() {
+    var n = 320usize;
+    if at + n > x.len() { n = x.len() - at; }
+    vad.push(mem.sliceFromParts[f32]((&x.view()[at] as *f32), n), &mut out);
+    at = at + n;
+  }
+  vad.flush(&mut out);
+  out
+}
+
+fn scaled(x: &List[f32], g: f32) List[f32] {
+  var o = List[f32].withCapacity(x.len());
+  var i = 0usize;
+  while i < x.len() { o.push(*x[i] * g); i = i + 1usize; }
+  o
+}
+
+// The four short clips joined with 'gap' ms between them in a bed of rms 'noise', at volume 'gain'
+fn joined(gain: f32, noise: f32, gap: usize, starts: &mut List[usize], ends: &mut List[usize]) List[f32] {
+  var names = List[String].empty();
+  names.push(String.from("1580-141084-0037")); names.push(String.from("237-134500-0035"));
+  names.push(String.from("61-70968-0031")); names.push(String.from("6829-68769-0012"));
+  var clips = List[List[f32]].empty();
+  var total = 4000usize;
+  var i = 0usize;
+  while i < names.len() {
+    let c = scaled(&load(names[i].view()), gain);
+    total = total + c.len() / 16usize + gap;
+    clips.push(c);
+    i = i + 1usize;
+  }
+  var x = noiseBed(u32.from(total), 16000u32, noise, 77u32);
+  var at = ms(2000usize);
+  i = 0usize;
+  while i < clips.len() {
+    addInto(&mut x, at, clips[i].view());
+    starts.push(at);
+    ends.push(at + clips[i].len());
+    at = at + clips[i].len() + ms(gap);
+    i = i + 1usize;
+  }
+  x
+}
+
+// 'u' has one utterance on each clip, to the stated slack (ms) after each start and before each end
+fn onClips(u: &List[Utterance], starts: &List[usize], ends: &List[usize], slack: usize, what: &Array[u8]) {
+  expectUInt(u64.from(u.len()), 4u64, what);
+  if u.len() == 4usize {
+    var i = 0usize;
+    var ok = true;
+    while i < 4usize {
+      let s = *starts[i];
+      let e = *ends[i];
+      if u[i].start + ms(40usize) < s || u[i].start > s + ms(slack) { ok = false; }
+      if u[i].end > e + ms(40usize) || u[i].end + ms(slack) < e { ok = false; }
+      i = i + 1usize;
+    }
+    expect(ok, "each utterance starts and ends within the slack of its clip");
+  }
+}
+
+fn main() i32 {
+  if !fs.exists(&Path.from(DIR)) { return skip("the LibriSpeech clips are not in C:/src/speech-models/librispeech-clips"); }
+
+  // ---- every clip alone
+  var clipCount = 0u64;
+  var alone = 0u64;
+  match fs.readDir(&Path.from(DIR)) {
+    case let Ok(entries) {
+      var k = 0usize;
+      while k < entries.len() {
+        if entries[k].isFile && entries[k].path.extension() == ".wav" {
+          let c = load(entries[k].path.stem());
+          var x = noiseBed(u32.from(c.len() / 16usize + 4000usize), 16000u32, 0.001, 3u32);
+          addInto(&mut x, ms(2000usize), c.view());
+          var vad = Vad.make(VadConfig.standard(16000u32));
+          let u = detect(&x, &mut vad);
+          clipCount = clipCount + 1u64;
+          if u.len() >= 1usize && u.len() <= 2usize {
+            let fs0 = u[0].start;
+            let le = u[u.len() - 1usize].end;
+            let s = ms(2000usize);
+            let e = ms(2000usize) + c.len();
+            if fs0 + ms(40usize) >= s && fs0 <= s + ms(700usize) && le <= e + ms(40usize) && le + ms(700usize) >= e {
+              alone = alone + 1u64;
+            }
+          }
+        }
+        k = k + 1usize;
+      }
+    }
+    case let Error(e) { require(false, "the clips folder is listed"); }
+  }
+  expect(clipCount >= 12u64, "at least 12 clips are there");
+  expectUInt(alone, clipCount, "every clip alone gives one or two utterances inside its margins");
+
+  // ---- four clips joined
+  var starts = List[usize].empty();
+  var ends = List[usize].empty();
+  var x = joined(1., 0.001, 1500usize, &mut starts, &mut ends);
+  var vad = Vad.make(VadConfig.standard(16000u32));
+  onClips(&detect(&x, &mut vad), &starts, &ends, 700usize, "1.5 s gaps: four utterances");
+
+  var s2 = List[usize].empty();
+  var e2 = List[usize].empty();
+  var x2 = joined(1., 0.001, 300usize, &mut s2, &mut e2);
+  var vad2 = Vad.make(VadConfig.standard(16000u32));
+  let u2 = detect(&x2, &mut vad2);
+  expectUInt(u64.from(u2.len()), 2u64, "0.3 s gaps: the hangover joins neighbouring clips, two utterances");
+
+  var s3 = List[usize].empty();
+  var e3 = List[usize].empty();
+  var x3 = joined(1., 0.01, 1500usize, &mut s3, &mut e3);
+  var vad3 = Vad.make(VadConfig.standard(16000u32));
+  onClips(&detect(&x3, &mut vad3), &s3, &e3, 1000usize, "a noisier room (rms 0.01): four utterances");
+  expectFloat(f64.from(vad3.noiseFloor()), 0.0092, 0.0015, "and the floor sits at the room's level");
+
+  var s4 = List[usize].empty();
+  var e4 = List[usize].empty();
+  var x4 = joined(0.2, 0.001, 1500usize, &mut s4, &mut e4);
+  var vad4 = Vad.make(VadConfig.standard(16000u32));
+  onClips(&detect(&x4, &mut vad4), &s4, &e4, 1000usize, "a fifth of the volume: four utterances");
+
+  done()
+}

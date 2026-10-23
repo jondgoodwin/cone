@@ -1,0 +1,70 @@
+// ======== Text in, 24 kHz samples out ========
+//
+//   imm device = adapter.requestComputeDevice(&ComputeRequest(largeBuffers: true));
+//   var speaker = Speaker.open(&mut device, "C:/src/speech-models/kokoro", false)?;    // american; true: british
+//   imm voice = Voice.load("C:/src/speech-models/kokoro", "af_heart:0.7,bf_emma:0.3")?;
+//   imm samples = speaker.speak(&mut device, "Hello world.", &voice, 1.0)?;             // List[f32], 24000 a second
+//
+// The text is cut into pieces of at most 510 phonemes (englishphonemes), each is said in the style the voice has for
+// a string of its length, and the pieces' samples are joined with nothing between them (each ends where the model
+// ended it). 'speed' above 1 is faster and below 1 slower (the phonemes' durations are divided by it).
+
+pub const OUTPUT_RATE: u32 = 24000u32;
+
+pub struct Speaker {
+  engine: Engine;
+  g2p: G2p;
+  rng: Rng;
+  // the phoneme strings of the last text said, one for each piece (for a program that shows them)
+  pub lastPhonemes: List[String];
+  // words the lexicons did not know in the last text, and words in all
+  pub lastFallbackWords: usize;
+  pub lastWords: usize;
+
+  // Load the model, and the lexicons for American or British English, from the converted-files folder
+  pub fn open(device: &mut Device, dir: &str, british: bool) Result[Speaker, String] {
+    let engine = match Engine.open(device, dir) {
+      case var Ok(e) { e }
+      case let Error(m) { return Error[Speaker, String](m.copy()); }
+    };
+    let lexicon = match Lexicon.load(dir, british) {
+      case var Ok(l) { l }
+      case let Error(m) { return Error[Speaker, String](m.copy()); }
+    };
+    Ok[Speaker, String](Speaker(engine, G2p.make(lexicon, true, ""), Rng.fromSeed(2024u64), List[String].empty(), 0usize, 0usize))
+  }
+
+  // Seed the source's random numbers (the same text, voice, speed and seed give the same samples)
+  pub fn seed(self: &mut, s: u64) { rng = Rng.fromSeed(s); }
+
+  pub fn engineRef(self: &mut) &mut Engine { &mut engine }
+
+  // The phonemes of a text, piece by piece, without saying it
+  pub fn phonemes(self: &mut, text: &str) List[Piece] {
+    speechPieces(&g2p, text)
+  }
+
+  // Say a text: 24 kHz mono samples
+  pub fn speak(self: &mut, device: &mut Device, text: &str, voice: &Voice, speed: f32) Result[List[f32], String] {
+    var counts = Counts(0usize, 0usize);
+    let pieces = speechPiecesCounted(&g2p, text, &mut counts);
+    lastFallbackWords = counts.fallbackWords;
+    lastWords = counts.words;
+    var out = List[f32].empty();
+    lastPhonemes = List[String].empty();
+    var i = 0usize;
+    while i < pieces.len() {
+      let ps = pieces[i].phonemes.view();
+      lastPhonemes.push(String.from(ps));
+      let style = voice.style(ps.charCount());
+      let spoken = match engine.synthesize(device, ps, style, speed, &mut rng, None) {
+        case var Ok(s) { s }
+        case let Error(m) { return Error[List[f32], String](m.copy()); }
+      };
+      var k = 0usize;
+      while k < spoken.audio.len() { out.push(*spoken.audio[k]); k = k + 1usize; }
+      i = i + 1usize;
+    }
+    Ok[List[f32], String](out)
+  }
+}
