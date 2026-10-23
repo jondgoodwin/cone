@@ -1,0 +1,87 @@
+// Way D, a line of text for each event, and way C, ETW with no session
+// listening, on the same small run: 40 messages to one actor, traced at high.
+// Text: one line per event, 3 * 41 lines (the 40 and a final unlink), each
+// line starting with the clock count and the kind's name, the send lines before
+// the run lines of the same id in their worker's order. ETW: every event is
+// counted; with no session, EventEnabled says no and nothing is written (on a
+// machine with a session listening for this provider's id the events would be
+// written, and this test would still pass: it checks only the counts).
+
+mod text;
+
+import testing use *;
+import libc;
+import actors;
+import actortrace;
+
+actor Echo {
+  heard: u64 = 0u64;
+
+  pub async fn hear(self, n: u64) {
+    heard = heard + n;
+  }
+}
+
+fn countLines(p: *u8, n: usize, word: &str) u64 {
+  // lines holding the kind's name right after the first space
+  var lines = 0u64;
+  var i = 0usize;
+  let w: &Array[u8] = word;
+  while i < n {
+    // to the first space of the line, after the clock count
+    while i < n && *(p + i) != 32u8 {
+      i = i + 1usize;
+    }
+    var same = true;
+    var j = 0usize;
+    while j < w.len {
+      if i + 1usize + j >= n || *(p + i + 1usize + j) != w[j] {
+        same = false;
+      }
+      j = j + 1usize;
+    }
+    if same && i + 1usize + w.len < n && *(p + i + 1usize + w.len) == 32u8 {
+      lines = lines + 1u64;
+    }
+    // to the line's end
+    while i < n && *(p + i) != 10u8 {
+      i = i + 1usize;
+    }
+    i = i + 1usize;
+  }
+  lines
+}
+
+fn main() i32 {
+  initAll();
+  actors.configure(actors.Options(workers: 2u32));
+  let path = cstr.fromLiteral("actortrace_text_test.txt");
+  expect(actortrace.start(actortrace.methodText, path, actortrace.Options()), "the file is created");
+  actortrace.setLevel(actortrace.layerActors, actortrace.levelHigh);
+  {
+    let e = Echo();
+    var i = 0u64;
+    while i < 40u64 {
+      e.hear(i);
+      i = i + 1u64;
+    }
+  }
+  actors.waitUntilIdle();
+  actortrace.setLevel(actortrace.layerActors, actortrace.levelOff);
+  let t = actortrace.finish();
+  expectUInt(t.events, 120u64, "three events for each of the 40 messages");
+  expectUInt(t.records, 120u64, "120 lines written");
+  expectUInt(t.dropped, 0u64, "none dropped");
+
+  var size = 0usize;
+  let p = actortrace.loadFile(path, &mut size);
+  require(p as usize != 0usize, "the file reads back");
+  expectUInt(u64.from(size), t.bytes, "the file's size is the bytes counted");
+  expectUInt(countLines(p, size, "send"), 40u64, "40 send lines");
+  expectUInt(countLines(p, size, "run"), 40u64, "40 run lines");
+  expectUInt(countLines(p, size, "end"), 40u64, "40 end lines");
+  libc.free(p);
+  libc.remove(path);
+  finalAll();
+  done()
+}

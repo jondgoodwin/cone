@@ -1,0 +1,171 @@
+// ETW, the way C records. Event Tracing for Windows takes self-describing
+// ("TraceLogging") events, which the Windows SDK's TraceLoggingProvider.h
+// builds with macros. This file builds the same bytes by hand and calls advapi32
+// directly, no C shim: the header's own account of them is "How to encode
+// metadata" and "How to send a TraceLogging event to ETW" (TraceLoggingProvider.h,
+// SDK 10.0.19041).
+//
+//   Provider  "Cone.ActorTrace", GUID below. EventRegister gives a handle;
+//             EventSetInformation(handle, EventProviderSetTraits = 2, metadata,
+//             size) gives ETW the provider's name; the metadata is u16 size, the
+//             name, NUL.
+//   Event     one per record kind (the kind's id is the event id), channel 11
+//             (TraceLogging's), level 4, keyword 1 << layer. Event metadata:
+//             u16 size, one 0 byte (no tags), the kind's name, NUL, then each
+//             field: name, NUL, InType: kind UINT16 (6), worker UINT16 (6), actor
+//             UINT32 (8), id UINT64 (10), arg UINT64 (10).
+//   Write     EventWriteTransfer with three data descriptors: the provider
+//             metadata (type 2), the event metadata (type 1), and the 24 bytes of
+//             the fields end to end. ETW stamps the event with its own time, so
+//             the Record's time is not sent.
+//
+// Listening: a session enabled for the provider's GUID. Until one is, ETW's
+// EventWriteTransfer returns at once; EventEnabled asks the same question
+// without building an event. Options.etwCheck chooses whether the sink asks.
+//
+// Windows only: on another system start(methodEtw) panics.
+
+const etwEventBytes = 128usize;    // per kind: the metadata at 0, its EVENT_DESCRIPTOR at 112
+const etwDescOffset = 112usize;
+const etwGuidAt = 64usize * 128usize;   // after the kinds' entries; the provider's metadata is entry 0
+const etwScratchBytes = 256usize;
+
+extern {
+  fn @c(system) EventRegister(provider: *u8, callback: *u8, ctx: *u8, handle: *u64) u32;
+  fn @c(system) EventSetInformation(handle: u64, infoClass: u32, info: *u8, size: u32) u32;
+  fn @c(system) EventEnabled(handle: u64, descriptor: *u8) u8;
+  fn @c(system) EventWriteTransfer(handle: u64, descriptor: *u8, activity: *u8, related: *u8, count: u32, data: *u8) u32;
+}
+
+fn put16(p: *u8, v: u32) {
+  *p = u8.from(v);
+  *(p + 1usize) = u8.from(v >> 8u32);
+}
+
+// Text then a NUL at p: the next byte's offset
+fn etwString(p: *u8, s: &str) usize {
+  let b: &Array[u8] = s;
+  var i = 0usize;
+  while i < b.len {
+    *(p + i) = b[i];
+    i = i + 1usize;
+  }
+  *(p + b.len) = 0u8;
+  b.len + 1usize
+}
+
+// A field: its name, NUL, its InType
+fn etwField(p: *u8, name: &str, inType: u8) usize {
+  let n = etwString(p, name);
+  *(p + n) = inType;
+  n + 1usize
+}
+
+fn etwStart(st: *State) {
+  if !isWindows() {
+    panic("actortrace: ETW is Windows's");
+  }
+  let ev = libc.calloc(66usize, etwEventBytes);
+  (*st).etwEvents = ev;
+  (*st).etwScratch = libc.calloc(usize.from((*st).nslots), etwScratchBytes);
+  // The provider's metadata, entry 0
+  let n0 = etwString(ev + 2usize, "Cone.ActorTrace");
+  put16(ev, u32.from(n0 + 2usize));
+  // The provider's id: {5b8e3b2c-7f1d-4a65-9c2e-0d6a41f3b7e9}
+  let g = ev + etwGuidAt;
+  put32(g, 0x5b8e3b2cu32);
+  put16(g + 4usize, 0x7f1du32);
+  put16(g + 6usize, 0x4a65u32);
+  let tail = [0x9cu8, 0x2eu8, 0x0du8, 0x6au8, 0x41u8, 0xf3u8, 0xb7u8, 0xe9u8];
+  var j = 0usize;
+  while j < 8usize {
+    *(g + 8usize + j) = tail[j];
+    j = j + 1usize;
+  }
+  var reg = 0u64;
+  let rc = EventRegister(g, null, null, &mut reg as *u64);
+  if rc != 0u32 {
+    panic("actortrace: EventRegister failed");
+  }
+  (*st).etwReg = reg;
+  EventSetInformation(reg, 2u32, ev, u32.from(n0 + 2usize));
+  // Each kind's event
+  var k = 1usize;
+  while k < maxKinds {
+    let e = (&(*st).kinds as *KindEntry) + k;
+    if (*e).used != 0u32 {
+      let m = ev + k * etwEventBytes;
+      var at = 2usize;
+      *(m + at) = 0u8;
+      at = at + 1usize;
+      var i = 0usize;
+      while i < usize.from((*e).nameLen) {
+        *(m + at + i) = *((&(*e).name as *u8) + i);
+        i = i + 1usize;
+      }
+      at = at + i;
+      *(m + at) = 0u8;
+      at = at + 1usize;
+      at = at + etwField(m + at, "kind", 6u8);
+      at = at + etwField(m + at, "worker", 6u8);
+      at = at + etwField(m + at, "actor", 8u8);
+      at = at + etwField(m + at, "id", 10u8);
+      at = at + etwField(m + at, "arg", 10u8);
+      put16(m, u32.from(at));
+      // The EVENT_DESCRIPTOR: Id, Version, Channel, Level, Opcode, Task, Keyword
+      let d = m + etwDescOffset;
+      put16(d, u32.from(k));
+      *(d + 2usize) = 0u8;
+      *(d + 3usize) = 11u8;
+      *(d + 4usize) = 4u8;
+      *(d + 5usize) = 0u8;
+      put16(d + 6usize, 0u32);
+      put64(d + 8usize, 1u64 << u64.from((*e).layer));
+    }
+    k = k + 1usize;
+  }
+}
+
+// C: an event, if a session listens. The 24 bytes of fields are copied into the
+// worker's scratch, with the three data descriptors
+fn sinkEtw(kind: u32, worker: u32, tid: u32, id: u64, arg: u64) {
+  let st = state();
+  if !gate(st, kind, worker) {
+    return;
+  }
+  let ev = (*st).etwEvents;
+  let m = ev + usize.from(kind) * etwEventBytes;
+  let desc = m + etwDescOffset;
+  if (*st).etwCheck && EventEnabled((*st).etwReg, desc) == 0u8 {
+    return;
+  }
+  let si = slotIndex(st, worker);
+  let shared = usize.from(worker) >= usize.from((*st).nslots) - 1usize;
+  let sl = slotAt(st, si);
+  if shared {
+    lockWord(&(*sl).lock as *u32);
+  }
+  let sc = (*st).etwScratch + si * etwScratchBytes;
+  // The fields, end to end: kind u16, worker u16, actor u32, id u64, arg u64
+  mem.writeRaw[u16](sc as *u16, u16.from(kind));
+  mem.writeRaw[u16]((sc + 2usize) as *u16, u16.from(worker));
+  mem.writeRaw[u32]((sc + 4usize) as *u32, tid);
+  mem.writeRaw[u64]((sc + 8usize) as *u64, id);
+  mem.writeRaw[u64]((sc + 16usize) as *u64, arg);
+  // The descriptors: provider metadata (type 2), event metadata (type 1), the fields
+  let dd = sc + 32usize;
+  mem.writeRaw[u64](dd as *u64, u64.from(ev as usize));
+  mem.writeRaw[u32]((dd + 8usize) as *u32, u32.from(*(ev) ) | (u32.from(*(ev + 1usize)) << 8u32));
+  mem.writeRaw[u32]((dd + 12usize) as *u32, 2u32);
+  mem.writeRaw[u64]((dd + 16usize) as *u64, u64.from(m as usize));
+  mem.writeRaw[u32]((dd + 24usize) as *u32, u32.from(*(m)) | (u32.from(*(m + 1usize)) << 8u32));
+  mem.writeRaw[u32]((dd + 28usize) as *u32, 1u32);
+  mem.writeRaw[u64]((dd + 32usize) as *u64, u64.from(sc as usize));
+  mem.writeRaw[u32]((dd + 40usize) as *u32, 24u32);
+  mem.writeRaw[u32]((dd + 44usize) as *u32, 0u32);
+  EventWriteTransfer((*st).etwReg, desc, null, null, 3u32, dd);
+  (*sl).count = (*sl).count + 1u64;
+  if shared {
+    unlockWord(&(*sl).lock as *u32);
+  }
+}

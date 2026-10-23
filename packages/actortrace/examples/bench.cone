@@ -1,0 +1,263 @@
+// The tracing benchmark: one workload of many messages across the workers, run
+// untraced or traced by one of the ways of recording, timed.
+//
+//   ring: R = 64 actors in a ring, K = 16 tokens each making <hops> hops
+//         (about 16 * hops messages)
+//   fan:  a hub sends one message to each of 64 leaves, and each sends one back,
+//         for <rounds> rounds (rounds * 128 messages)
+//
+//   congo run --release packages/actortrace/examples/bench.cone -- \
+//       <method> <level> <workers> <hops> <rounds> <file> [cap [timeLogger [etwCheck [spare [grow]]]]]
+//
+//   method   off | count | null | logger | buffers | etw | text
+//            (off: no start(): the hooks are in the runtime but the mask is 0)
+//   level    off | low | high
+//   workers  0 for one per logical processor
+//   file     the trace or text file written (logger, buffers, text)
+//
+// It prints 'key value' lines: the time each phase took to COMPLETE (the last
+// message handled; a logger still draining is not waited for), the time to
+// finish (everything written), and what the recording did.
+
+mod bench;
+
+import stdio use *;
+import libc;
+import actors;
+import actortrace;
+import collections use *;
+import thread;
+
+let ringDone: Atomic[u64];
+let fanDone: Atomic[u64];
+
+fn @initpure init() {
+  ringDone = Atomic[u64].of(0u64);
+  fanDone = Atomic[u64].of(0u64);
+}
+
+fn digits(p: *u8) u64 {
+  var n = 0u64;
+  var q = p;
+  while *q >= 48u8 && *q <= 57u8 {
+    n = n * 10u64 + u64.from(*q - 48u8);
+    q = q + 1usize;
+  }
+  n
+}
+
+fn argNum(argc: i32, argv: **u8, i: i32, dflt: u64) u64 {
+  if argc > i {digits(*(argv + usize.from(u32.from(i))))} else {dflt}
+}
+
+fn argIs(argc: i32, argv: **u8, i: i32, want: cstr) bool {
+  argc > i && libc.strcmp(cstr.fromPtr(*(argv + usize.from(u32.from(i)))), want) == 0i32
+}
+
+actor RingNode {
+  next: Option[RingNode];
+
+  fn init(self: &new) {
+    *self = Self(None[RingNode]);
+  }
+
+  pub async fn link(self, n: RingNode) {
+    next = Some[RingNode](n);
+  }
+
+  pub async fn token(self, hops: u64) {
+    if hops > 0u64 {
+      match next {
+        case let Some(p) {p.token(hops - 1u64);}
+        case is None[RingNode] {}
+      }
+    } else {
+      ringDone.add(1u64);
+    }
+  }
+
+  pub async fn unlink(self) {
+    next = None;
+  }
+}
+
+actor Leaf {
+  pub async fn work(self, hub: Hub) {
+    hub.done();
+  }
+}
+
+actor Hub {
+  leaves: List[Leaf];
+  waiting: u64;
+  roundsLeft: u64;
+
+  fn init(self: &new) {
+    *self = Self(List[Leaf].empty(), 0u64, 0u64);
+  }
+
+  pub async fn add(self, l: Leaf) {
+    leaves.push(l);
+  }
+
+  pub async fn go(self, rounds: u64) {
+    roundsLeft = rounds;
+    startRound();
+  }
+
+  fn startRound(self) {
+    roundsLeft = roundsLeft - 1u64;
+    waiting = u64.from(leaves.len());
+    each l in leaves.iter() {
+      l.work(selfactor);
+    }
+  }
+
+  pub async fn done(self) {
+    waiting = waiting - 1u64;
+    if waiting == 0u64 {
+      if roundsLeft == 0u64 {
+        fanDone.store(1u64);
+      } else {
+        startRound();
+      }
+    }
+  }
+
+  pub async fn clear(self) {
+    leaves = List[Leaf].empty();
+  }
+}
+
+fn nsSince(t0: u64) u64 {
+  (actortrace.ticks() - t0) * 1000000000u64 / actortrace.clockFrequency()
+}
+
+fn main(argc: i32, argv: **u8) i32 {
+  initAll();
+  var method = 99u32;
+  if argIs(argc, argv, 1i32, "off") {method = 99u32;}
+  else if argIs(argc, argv, 1i32, "count") {method = actortrace.methodCount;}
+  else if argIs(argc, argv, 1i32, "null") {method = actortrace.methodNull;}
+  else if argIs(argc, argv, 1i32, "logger") {method = actortrace.methodLogger;}
+  else if argIs(argc, argv, 1i32, "buffers") {method = actortrace.methodBuffers;}
+  else if argIs(argc, argv, 1i32, "etw") {method = actortrace.methodEtw;}
+  else if argIs(argc, argv, 1i32, "text") {method = actortrace.methodText;}
+  var level = actortrace.levelOff;
+  if argIs(argc, argv, 2i32, "low") {level = actortrace.levelLow;}
+  else if argIs(argc, argv, 2i32, "high") {level = actortrace.levelHigh;}
+  let workers = argNum(argc, argv, 3i32, 0u64);
+  let hops = argNum(argc, argv, 4i32, 100000u64);
+  let rounds = argNum(argc, argv, 5i32, 10000u64);
+  var path = cstr.fromLiteral("bench.trc");
+  if argc > 6i32 {
+    path = cstr.fromPtr(*(argv + 6usize));
+  }
+  let cap = argNum(argc, argv, 7i32, 0u64);
+  let timeLogger = argNum(argc, argv, 8i32, 0u64) != 0u64;
+  let etwCheck = argNum(argc, argv, 9i32, 1u64) != 0u64;
+  let spare = argNum(argc, argv, 10i32, 256u64);
+  let grow = argNum(argc, argv, 11i32, 0u64) != 0u64;
+  actors.configure(actors.Options(workers: u32.from(workers)));
+  let traced = method != 99u32;
+  if traced {
+    actortrace.start(method, path, actortrace.Options(cap: cap, spare: u32.from(spare), timeLogger: timeLogger, etwCheck: etwCheck, grow: grow));
+    actortrace.setLevel(actortrace.layerActors, level);
+  }
+  let ringSize = 64u64;
+  let tokens = 16u64;
+  let leavesN = 64u64;
+
+  // the ring
+  var ring = List[RingNode].empty();
+  var i = 0u64;
+  while i < ringSize {
+    ring.push(RingNode());
+    i = i + 1u64;
+  }
+  i = 0u64;
+  while i < ringSize {
+    let a = ring[usize.from(i)];
+    a.link(*ring[usize.from((i + 1u64) % ringSize)]);
+    i = i + 1u64;
+  }
+  actors.waitUntilIdle();
+  let s0 = actors.stats();
+  let e0 = if traced {actortrace.eventsCounted()} else {0u64};
+  let t0 = actortrace.ticks();
+  i = 0u64;
+  while i < tokens {
+    let a = ring[usize.from(i * (ringSize / tokens))];
+    a.token(hops);
+    i = i + 1u64;
+  }
+  while ringDone.load() < tokens {
+    thread.yieldNow();
+  }
+  let ringNs = nsSince(t0);
+  let s1 = actors.stats();
+  let e1 = if traced {actortrace.eventsCounted()} else {0u64};
+  actors.waitUntilIdle();
+  let ringDrainNs = nsSince(t0);
+  each a in ring.iter() { a.unlink(); }
+  actors.waitUntilIdle();
+  ring = List[RingNode].empty();
+
+  // the fan-out / fan-in
+  let hub = Hub();
+  var k = 0u64;
+  while k < leavesN {
+    hub.add(Leaf());
+    k = k + 1u64;
+  }
+  actors.waitUntilIdle();
+  let s2 = actors.stats();
+  let e2 = if traced {actortrace.eventsCounted()} else {0u64};
+  let t1 = actortrace.ticks();
+  hub.go(rounds);
+  while fanDone.load() == 0u64 {
+    thread.yieldNow();
+  }
+  let fanNs = nsSince(t1);
+  let s3 = actors.stats();
+  let e3 = if traced {actortrace.eventsCounted()} else {0u64};
+  actors.waitUntilIdle();
+  let fanDrainNs = nsSince(t1);
+  hub.clear();
+  actors.waitUntilIdle();
+
+  // finish: everything written
+  let tf = actortrace.ticks();
+  var totals = actortrace.Totals(0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
+  if traced {
+    actortrace.setLevel(actortrace.layerActors, actortrace.levelOff);
+    totals = actortrace.finish();
+  }
+  let finishNs = nsSince(tf);
+
+  printStr("method "); printUInt(u64.from(method)); printStr("\n");
+  printStr("level "); printUInt(u64.from(level)); printStr("\n");
+  printStr("workers "); printUInt(u64.from(s3.workers)); printStr("\n");
+  printStr("ring_ns "); printUInt(ringNs); printStr("\n");
+  printStr("ring_drain_ns "); printUInt(ringDrainNs); printStr("\n");
+  printStr("ring_workload_messages "); printUInt(tokens * (hops + 1u64)); printStr("\n");
+  printStr("ring_messages "); printUInt(s1.messages - s0.messages); printStr("\n");
+  printStr("ring_turns "); printUInt(s1.activations - s0.activations); printStr("\n");
+  printStr("ring_steals "); printUInt(s1.steals - s0.steals); printStr("\n");
+  printStr("ring_events "); printUInt(e1 - e0); printStr("\n");
+  printStr("fan_ns "); printUInt(fanNs); printStr("\n");
+  printStr("fan_drain_ns "); printUInt(fanDrainNs); printStr("\n");
+  printStr("fan_workload_messages "); printUInt(rounds * leavesN * 2u64); printStr("\n");
+  printStr("fan_messages "); printUInt(s3.messages - s2.messages); printStr("\n");
+  printStr("fan_turns "); printUInt(s3.activations - s2.activations); printStr("\n");
+  printStr("fan_steals "); printUInt(s3.steals - s2.steals); printStr("\n");
+  printStr("fan_events "); printUInt(e3 - e2); printStr("\n");
+  printStr("finish_ns "); printUInt(finishNs); printStr("\n");
+  printStr("events "); printUInt(totals.events); printStr("\n");
+  printStr("records "); printUInt(totals.records); printStr("\n");
+  printStr("dropped "); printUInt(totals.dropped); printStr("\n");
+  printStr("file_bytes "); printUInt(totals.bytes); printStr("\n");
+  printStr("logger_messages "); printUInt(totals.loggerMessages); printStr("\n");
+  printStr("logger_busy_ns "); printUInt(totals.loggerBusy * 1000000000u64 / actortrace.clockFrequency()); printStr("\n");
+  0i32
+}
