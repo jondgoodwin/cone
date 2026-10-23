@@ -1,0 +1,365 @@
+// The speech kernels on the GPU against their CPU twins (twins.cone, which work in f64), over sizes that are not
+// multiples of a workgroup, the model's own shapes, and a dispatch past one dimension's 65535 workgroups.
+//
+// THE MEASURE. Each output's error is |gpu - twin|, judged against the largest |twin| of that output (the "scale"),
+// so a cancelling sum does not make a relative error of nothing. The bound for each kernel is in units of 2^-24 times
+// the scale. MEASURED on the RTX 4060 (STT_REPORT=1 prints the worst of each, in those units) and each bound set at
+// about four times the worst seen, in 2^-24 of the scale: layernorm worst 2.5, bound 16; biasAdd, scaleAdd, addRelu
+// worst 0 (bit for bit), bound 2; glu worst 2.0, bound 12; dwconv worst 2.5, bound 12 (SiLU's exp); conv2d worst 9.0,
+// bound 36 (sums of up to 2304 products); relScores worst 6.9 and attnValue worst 7.0, bound 28 (sums of 256 or of up
+// to 190 products); lstmCell worst 3.2, bound 16 (sigmoid and tanh of sums). What these must catch (a wrong index,
+// offset, order of gates, padding or fold) moves an output by a whole unit of its own size, 10^6 times the bounds.
+//
+// Only a failure prints. It needs a GPU with Vulkan 1.3 and SDL3.dll; with the Vulkan SDK, validation is on and must
+// say nothing.
+
+mod kernelstest;
+
+import testing use *;
+import stdio use *;
+import libc;
+import collections use List;
+import random use Rng;
+import gpu use *;
+import gpuwork use *;
+import llmreference use syntheticFloats, zeroFloats;
+import llmkernels use floatWords, wordFloats;
+import speechtotext use *;
+
+const U = 5.9604644775390625e-8;           // 2^-24
+
+fn preference() u32 {
+  let env = libc.getenv("GPU_POWER_PREFERENCE");
+  if (env as usize) != 0usize && libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 { return POWER_PREFERENCE_LOW_POWER; }
+  POWER_PREFERENCE_HIGH_PERFORMANCE
+}
+
+fn reporting() bool { (libc.getenv("STT_REPORT") as usize) != 0usize }
+
+// Submit the job and wait; the words of the read-back slot as f32s
+fn finish(device: &mut Device, works: &mut Works, job: Job, back: u32) List[f32] {
+  let ticket = works.submit(device, job, Target.Here(1u64));
+  var got = List[Completion].empty();
+  works.waitFor(device, ticket, &mut got);
+  require(got.len() == 1usize, "the job's completion");
+  expectBool(got[0usize].ok, true, "the job ran");
+  wordFloats(got[0usize].words(back).view())
+}
+
+fn up(device: &mut Device, job: &mut Job, v: &List[f32]) u32 { job.give(upload(device, floatWords(v.view()).view())) }
+
+// Outputs outside the bound (units of 2^-24 times the output's scale); 'worst' is raised to the worst seen
+fn compare(label: &str, got: &List[f32], want: &List[f32], bound: f64, worst: &mut f64) u64 {
+  if got.len() != want.len() {
+    expect(false, label);
+    return 1u64;
+  }
+  var scale = 1.0e-30;
+  var i = 0usize;
+  while i < want.len() {
+    let m = libc.fabs(f64.from(*want[i]));
+    if m > scale { scale = m; }
+    i = i + 1usize;
+  }
+  var bad = 0u64;
+  i = 0usize;
+  while i < want.len() {
+    let units = libc.fabs(f64.from(*got[i]) - f64.from(*want[i])) / (U * scale);
+    if units > *worst { *worst = units; }
+    if !(units <= bound) { bad = bad + 1u64; }
+    i = i + 1usize;
+  }
+  bad
+}
+
+struct Worst {
+  norm: f64;
+  bias: f64;
+  elem: f64;
+  glu: f64;
+  dw: f64;
+  conv: f64;
+  scores: f64;
+  value: f64;
+  lstm: f64;
+}
+
+fn layernorm(device: &mut Device, k: &SpeechKernels, works: &mut Works, w: &mut Worst, rng: &mut Rng, n: usize, rows: usize) u64 {
+  let x = syntheticFloats(rng, n * rows, 3.0);
+  let small = syntheticFloats(rng, 2usize * n + 5usize, 1.5);
+  var want = zeroFloats(n * rows);
+  layernormCpu(x.view(), small.view(), n, rows, 0.00001, 3usize, 3usize + n, want.viewMut());
+  var job = Job.make(device);
+  let sb = up(device, &mut job, &small);
+  let xb = up(device, &mut job, &x);
+  let yb = job.give(zeroed(device, n * rows));
+  require(k.layernorm(&mut job, device, sb, xb, yb, n, rows, 0.00001, 3usize, 3usize + n), "the layernorm recorded");
+  let back = job.readback(device, yb);
+  let y = finish(device, works, job, back);
+  compare("layernorm", &y, &want, 16.0, &mut w.norm)
+}
+
+fn biasAdd(device: &mut Device, k: &SpeechKernels, works: &mut Works, w: &mut Worst, rng: &mut Rng, n: usize, rows: usize) u64 {
+  let x = syntheticFloats(rng, n * rows, 3.0);
+  let small = syntheticFloats(rng, n + 9usize, 2.0);
+  var want = zeroFloats(n * rows);
+  biasAddCpu(x.view(), small.view(), n, rows, 9usize, want.viewMut());
+  var job = Job.make(device);
+  let sb = up(device, &mut job, &small);
+  let xb = up(device, &mut job, &x);
+  require(k.biasAdd(&mut job, device, sb, xb, n, rows, 9usize), "the bias add recorded");
+  let back = job.readback(device, xb);
+  let y = finish(device, works, job, back);
+  compare("biasAdd", &y, &want, 2.0, &mut w.bias)
+}
+
+fn scaleAdd(device: &mut Device, k: &SpeechKernels, works: &mut Works, w: &mut Worst, rng: &mut Rng, n: usize, s: f32) u64 {
+  let a = syntheticFloats(rng, n, 3.0);
+  let b = syntheticFloats(rng, n, 3.0);
+  var want = zeroFloats(n);
+  scaleAddCpu(a.view(), b.view(), n, f64.from(s), want.viewMut());
+  var job = Job.make(device);
+  let ab = up(device, &mut job, &a);
+  let bb = up(device, &mut job, &b);
+  let yb = job.give(zeroed(device, n));
+  require(k.scaleAdd(&mut job, device, ab, bb, yb, n, s), "the scale add recorded");
+  let back = job.readback(device, yb);
+  let y = finish(device, works, job, back);
+  compare("scaleAdd", &y, &want, 2.0, &mut w.elem)
+}
+
+fn addRelu(device: &mut Device, k: &SpeechKernels, works: &mut Works, w: &mut Worst, rng: &mut Rng, n: usize, aOff: usize) u64 {
+  let a = syntheticFloats(rng, n + aOff, 3.0);
+  let b = syntheticFloats(rng, n, 3.0);
+  var want = zeroFloats(n);
+  addReluCpu(a.view(), aOff, b.view(), n, want.viewMut());
+  var job = Job.make(device);
+  let ab = up(device, &mut job, &a);
+  let bb = up(device, &mut job, &b);
+  let yb = job.give(zeroed(device, n));
+  require(k.addRelu(&mut job, device, ab, aOff, bb, yb, n), "the add relu recorded");
+  let back = job.readback(device, yb);
+  let y = finish(device, works, job, back);
+  compare("addRelu", &y, &want, 2.0, &mut w.elem)
+}
+
+fn glu(device: &mut Device, k: &SpeechKernels, works: &mut Works, w: &mut Worst, rng: &mut Rng, c: usize, rows: usize) u64 {
+  let x = syntheticFloats(rng, 2usize * c * rows, 4.0);
+  var want = zeroFloats(c * rows);
+  gluCpu(x.view(), c, rows, want.viewMut());
+  var job = Job.make(device);
+  let xb = up(device, &mut job, &x);
+  let yb = job.give(zeroed(device, c * rows));
+  require(k.glu(&mut job, device, xb, yb, c, rows), "the glu recorded");
+  let back = job.readback(device, yb);
+  let y = finish(device, works, job, back);
+  compare("glu", &y, &want, 12.0, &mut w.glu)
+}
+
+fn dwconv(device: &mut Device, k: &SpeechKernels, works: &mut Works, w: &mut Worst, rng: &mut Rng, t: usize, c: usize, taps: usize,
+    pad: usize) u64 {
+  let x = syntheticFloats(rng, t * c, 3.0);
+  let small = syntheticFloats(rng, c * taps + c + 4usize, 1.0);
+  var want = zeroFloats(t * c);
+  dwconvCpu(x.view(), small.view(), t, c, taps, pad, 4usize, 4usize + c * taps, want.viewMut());
+  var job = Job.make(device);
+  let sb = up(device, &mut job, &small);
+  let xb = up(device, &mut job, &x);
+  let yb = job.give(zeroed(device, t * c));
+  require(k.dwconv(&mut job, device, sb, xb, yb, t, c, taps, pad, 4usize, 4usize + c * taps), "the dwconv recorded");
+  let back = job.readback(device, yb);
+  let y = finish(device, works, job, back);
+  compare("dwconv", &y, &want, 12.0, &mut w.dw)
+}
+
+fn conv2d(device: &mut Device, k: &SpeechKernels, works: &mut Works, w: &mut Worst, rng: &mut Rng, cin: usize, cout: usize,
+    groups: usize, h: usize, wd: usize, kk: usize, stride: usize, pad: usize, relu: bool, outMode: u32) u64 {
+  let x = syntheticFloats(rng, cin * h * wd, 2.0);
+  let wn = cout * (cin / groups) * kk * kk;
+  let small = syntheticFloats(rng, wn + cout + 2usize, 0.5);
+  let oh = convOutLen(h, kk, stride, pad);
+  let ow = convOutLen(wd, kk, stride, pad);
+  var want = zeroFloats(cout * oh * ow);
+  conv2dCpu(x.view(), small.view(), cin, cout, groups, h, wd, kk, stride, pad, 2usize, 2usize + wn, relu, outMode, want.viewMut());
+  var job = Job.make(device);
+  let sb = up(device, &mut job, &small);
+  let xb = up(device, &mut job, &x);
+  let yb = job.give(zeroed(device, cout * oh * ow));
+  require(k.conv2d(&mut job, device, sb, xb, yb, cin, cout, groups, h, wd, kk, stride, pad, 2usize, 2usize + wn, relu, outMode), "the conv2d recorded");
+  let back = job.readback(device, yb);
+  let y = finish(device, works, job, back);
+  compare("conv2d", &y, &want, 36.0, &mut w.conv)
+}
+
+fn scores(device: &mut Device, k: &SpeechKernels, works: &mut Works, w: &mut Worst, rng: &mut Rng, t: usize, nHeads: usize, dk: usize) u64 {
+  let width = nHeads * dk;
+  let q = syntheticFloats(rng, t * width, 1.5);
+  let kv = syntheticFloats(rng, t * width, 1.5);
+  let pos = syntheticFloats(rng, (2usize * t - 1usize) * width, 1.5);
+  let small = syntheticFloats(rng, 2usize * width + 3usize, 1.0);
+  let scale = 1.0 / libc.sqrt(f64.from(dk));
+  var want = zeroFloats(nHeads * t * t);
+  relScoresCpu(small.view(), q.view(), kv.view(), pos.view(), t, nHeads, dk, 3usize, 3usize + width, scale, want.viewMut());
+  var job = Job.make(device);
+  let sb = up(device, &mut job, &small);
+  let qb = up(device, &mut job, &q);
+  let kb = up(device, &mut job, &kv);
+  let pb = up(device, &mut job, &pos);
+  let yb = job.give(zeroed(device, nHeads * t * t));
+  require(k.relScores(&mut job, device, sb, qb, kb, pb, yb, t, nHeads, dk, 3usize, 3usize + width, f32.from(scale)), "the scores recorded");
+  let back = job.readback(device, yb);
+  let y = finish(device, works, job, back);
+  compare("relScores", &y, &want, 28.0, &mut w.scores)
+}
+
+fn value(device: &mut Device, k: &SpeechKernels, works: &mut Works, w: &mut Worst, rng: &mut Rng, t: usize, nHeads: usize, dk: usize) u64 {
+  let width = nHeads * dk;
+  let wts = syntheticFloats(rng, nHeads * t * t, 1.0);
+  let v = syntheticFloats(rng, t * width, 2.0);
+  var want = zeroFloats(t * width);
+  attnValueCpu(wts.view(), v.view(), t, nHeads, dk, want.viewMut());
+  var job = Job.make(device);
+  let wb = up(device, &mut job, &wts);
+  let vb = up(device, &mut job, &v);
+  let yb = job.give(zeroed(device, t * width));
+  require(k.attnValue(&mut job, device, wb, vb, yb, t, nHeads, dk), "the value sum recorded");
+  let back = job.readback(device, yb);
+  let y = finish(device, works, job, back);
+  compare("attnValue", &y, &want, 28.0, &mut w.value)
+}
+
+fn lstm(device: &mut Device, k: &SpeechKernels, works: &mut Works, w: &mut Worst, rng: &mut Rng, n: usize) u64 {
+  let gi = syntheticFloats(rng, 4usize * n, 2.0);
+  let gh = syntheticFloats(rng, 4usize * n, 2.0);
+  let small = syntheticFloats(rng, 4usize * n + 6usize, 1.0);
+  let c0 = syntheticFloats(rng, n, 2.0);
+  var wantH = zeroFloats(n);
+  var wantC = zeroFloats(n);
+  lstmCellCpu(small.view(), gi.view(), gh.view(), c0.view(), n, 6usize, wantH.viewMut(), wantC.viewMut());
+  var job = Job.make(device);
+  let sb = up(device, &mut job, &small);
+  let gib = up(device, &mut job, &gi);
+  let ghb = up(device, &mut job, &gh);
+  let cb = up(device, &mut job, &c0);
+  let hb = job.give(zeroed(device, n));
+  let cn = job.give(zeroed(device, n));
+  require(k.lstmCell(&mut job, device, sb, gib, ghb, cb, hb, cn, n, 6usize), "the lstm cell recorded");
+  let backH = job.readback(device, hb);
+  let backC = job.readback(device, cn);
+  let ticket = works.submit(device, job, Target.Here(1u64));
+  var got = List[Completion].empty();
+  works.waitFor(device, ticket, &mut got);
+  require(got.len() == 1usize, "the job's completion");
+  expectBool(got[0usize].ok, true, "the job ran");
+  let h = wordFloats(got[0usize].words(backH).view());
+  let c = wordFloats(got[0usize].words(backC).view());
+  compare("lstm h", &h, &wantH, 16.0, &mut w.lstm) + compare("lstm c", &c, &wantC, 16.0, &mut w.lstm)
+}
+
+fn main() i32 {
+  var instance = Instance.create("speechtotext kernels");
+  require(instance.isValid(), "a Vulkan 1.3 instance");
+  var none = Surface.none();
+  var adapter = instance.requestAdapter(&none, preference());
+  require(adapter.isValid(), "an adapter");
+  var device = adapter.requestDevice();
+  require(device.isValid(), "a device");
+  let k = SpeechKernels.make(&device);
+  require(k.isValid(), "the kernels");
+  var works = Works.make();
+  var w = Worst(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+  var rng = Rng.fromSeed(4242u64);
+
+  expectUInt(layernorm(&mut device, &k, &mut works, &mut w, &mut rng, 1usize, 1usize), 0u64, "layernorm n 1");
+  expectUInt(layernorm(&mut device, &k, &mut works, &mut w, &mut rng, 7usize, 3usize), 0u64, "layernorm n 7, 3 rows");
+  expectUInt(layernorm(&mut device, &k, &mut works, &mut w, &mut rng, 255usize, 2usize), 0u64, "layernorm n 255");
+  expectUInt(layernorm(&mut device, &k, &mut works, &mut w, &mut rng, 256usize, 1usize), 0u64, "layernorm n 256");
+  expectUInt(layernorm(&mut device, &k, &mut works, &mut w, &mut rng, 257usize, 5usize), 0u64, "layernorm n 257, 5 rows");
+  expectUInt(layernorm(&mut device, &k, &mut works, &mut w, &mut rng, 1024usize, 190usize), 0u64, "layernorm 190 rows of 1024 (the model's)");
+  expectUInt(layernorm(&mut device, &k, &mut works, &mut w, &mut rng, 4097usize, 2usize), 0u64, "layernorm n 4097");
+
+  expectUInt(biasAdd(&mut device, &k, &mut works, &mut w, &mut rng, 1usize, 1usize), 0u64, "biasAdd 1");
+  expectUInt(biasAdd(&mut device, &k, &mut works, &mut w, &mut rng, 7usize, 3usize), 0u64, "biasAdd 3 rows of 7");
+  expectUInt(biasAdd(&mut device, &k, &mut works, &mut w, &mut rng, 1030usize, 1usize), 0u64, "biasAdd the joint's 1030 logits");
+  expectUInt(biasAdd(&mut device, &k, &mut works, &mut w, &mut rng, 1024usize, 190usize), 0u64, "biasAdd 190 rows of 1024");
+  expectUInt(biasAdd(&mut device, &k, &mut works, &mut w, &mut rng, 1024usize, 16400usize), 0u64, "biasAdd 16.8 million elements, past 65535 groups");
+
+  expectUInt(scaleAdd(&mut device, &k, &mut works, &mut w, &mut rng, 1usize, 0.5), 0u64, "scaleAdd 1");
+  expectUInt(scaleAdd(&mut device, &k, &mut works, &mut w, &mut rng, 255usize, 0.5), 0u64, "scaleAdd 255");
+  expectUInt(scaleAdd(&mut device, &k, &mut works, &mut w, &mut rng, 194560usize, 0.5), 0u64, "scaleAdd 190 x 1024");
+  expectUInt(scaleAdd(&mut device, &k, &mut works, &mut w, &mut rng, 1000usize, 1.0), 0u64, "scaleAdd s 1");
+  expectUInt(addRelu(&mut device, &k, &mut works, &mut w, &mut rng, 640usize, 0usize), 0u64, "addRelu 640");
+  expectUInt(addRelu(&mut device, &k, &mut works, &mut w, &mut rng, 640usize, 640usize * 37usize), 0u64, "addRelu 640 from frame 37");
+  expectUInt(addRelu(&mut device, &k, &mut works, &mut w, &mut rng, 3usize, 5usize), 0u64, "addRelu 3 from 5");
+
+  expectUInt(glu(&mut device, &k, &mut works, &mut w, &mut rng, 1usize, 1usize), 0u64, "glu 1");
+  expectUInt(glu(&mut device, &k, &mut works, &mut w, &mut rng, 7usize, 3usize), 0u64, "glu 3 rows of 7");
+  expectUInt(glu(&mut device, &k, &mut works, &mut w, &mut rng, 1024usize, 190usize), 0u64, "glu 190 rows of 1024");
+
+  expectUInt(dwconv(&mut device, &k, &mut works, &mut w, &mut rng, 1usize, 5usize, 9usize, 4usize), 0u64, "dwconv 1 step, 5 channels");
+  expectUInt(dwconv(&mut device, &k, &mut works, &mut w, &mut rng, 3usize, 5usize, 9usize, 4usize), 0u64, "dwconv 3 steps (shorter than the kernel)");
+  expectUInt(dwconv(&mut device, &k, &mut works, &mut w, &mut rng, 100usize, 33usize, 9usize, 4usize), 0u64, "dwconv 100 steps, 33 channels");
+  expectUInt(dwconv(&mut device, &k, &mut works, &mut w, &mut rng, 190usize, 1024usize, 9usize, 4usize), 0u64, "dwconv 190 x 1024 (the model's)");
+  expectUInt(dwconv(&mut device, &k, &mut works, &mut w, &mut rng, 20usize, 8usize, 5usize, 0usize), 0u64, "dwconv without padding");
+
+  // the subsampling's shapes: 1 -> 256 channels at stride 2 over L x 128; depthwise 256 at stride 2; pointwise
+  expectUInt(conv2d(&mut device, &k, &mut works, &mut w, &mut rng, 1usize, 256usize, 1usize, 37usize, 128usize, 3usize, 2usize, 1usize, true, 0u32), 0u64, "conv2d 1 -> 256, 37 x 128, stride 2, relu");
+  expectUInt(conv2d(&mut device, &k, &mut works, &mut w, &mut rng, 256usize, 256usize, 256usize, 19usize, 64usize, 3usize, 2usize, 1usize, false, 0u32), 0u64, "conv2d depthwise 256, 19 x 64, stride 2");
+  expectUInt(conv2d(&mut device, &k, &mut works, &mut w, &mut rng, 256usize, 256usize, 1usize, 10usize, 32usize, 1usize, 1usize, 0usize, true, 0u32), 0u64, "conv2d pointwise 256 -> 256, 10 x 32, relu");
+  expectUInt(conv2d(&mut device, &k, &mut works, &mut w, &mut rng, 256usize, 256usize, 256usize, 10usize, 32usize, 3usize, 2usize, 1usize, false, 1u32), 0u64, "conv2d depthwise, time-major output");
+  expectUInt(conv2d(&mut device, &k, &mut works, &mut w, &mut rng, 4usize, 6usize, 2usize, 5usize, 7usize, 3usize, 1usize, 1usize, true, 1u32), 0u64, "conv2d 2 groups, stride 1, time-major");
+  expectUInt(conv2d(&mut device, &k, &mut works, &mut w, &mut rng, 1usize, 3usize, 1usize, 2usize, 2usize, 3usize, 2usize, 1usize, false, 0u32), 0u64, "conv2d 2 x 2 input");
+  expectUInt(conv2d(&mut device, &k, &mut works, &mut w, &mut rng, 1usize, 256usize, 1usize, 600usize, 128usize, 3usize, 2usize, 1usize, true, 0u32), 0u64, "conv2d 1 -> 256, 600 x 128 (a six-second clip)");
+
+  expectUInt(scores(&mut device, &k, &mut works, &mut w, &mut rng, 1usize, 8usize, 128usize), 0u64, "scores t 1");
+  expectUInt(scores(&mut device, &k, &mut works, &mut w, &mut rng, 5usize, 2usize, 5usize), 0u64, "scores t 5, 2 heads of 5");
+  expectUInt(scores(&mut device, &k, &mut works, &mut w, &mut rng, 50usize, 8usize, 128usize), 0u64, "scores t 50, 8 heads of 128");
+  expectUInt(scores(&mut device, &k, &mut works, &mut w, &mut rng, 190usize, 8usize, 128usize), 0u64, "scores t 190 (the model's)");
+  expectUInt(value(&mut device, &k, &mut works, &mut w, &mut rng, 1usize, 8usize, 128usize), 0u64, "value t 1");
+  expectUInt(value(&mut device, &k, &mut works, &mut w, &mut rng, 5usize, 2usize, 5usize), 0u64, "value t 5, 2 heads of 5");
+  expectUInt(value(&mut device, &k, &mut works, &mut w, &mut rng, 190usize, 8usize, 128usize), 0u64, "value t 190");
+
+  expectUInt(lstm(&mut device, &k, &mut works, &mut w, &mut rng, 1usize), 0u64, "lstm n 1");
+  expectUInt(lstm(&mut device, &k, &mut works, &mut w, &mut rng, 7usize), 0u64, "lstm n 7");
+  expectUInt(lstm(&mut device, &k, &mut works, &mut w, &mut rng, 640usize), 0u64, "lstm n 640 (the model's)");
+  expectUInt(lstm(&mut device, &k, &mut works, &mut w, &mut rng, 1000usize), 0u64, "lstm n 1000");
+
+  // ---- refusals ----
+  {
+    var job = Job.make(&mut device);
+    let a = job.give(zeroed(&mut device, 64usize));
+    let b = job.give(zeroed(&mut device, 64usize));
+    let c = job.give(zeroed(&mut device, 64usize));
+    expectBool(k.layernorm(&mut job, &mut device, a, b, c, 0usize, 1usize, 0.00001, 0usize, 0usize), false, "layernorm of no elements is refused");
+    expectBool(k.layernorm(&mut job, &mut device, a, b, c, 8usize, 65536usize, 0.00001, 0usize, 0usize), false, "layernorm of 65536 rows is refused");
+    expectBool(k.conv2d(&mut job, &mut device, a, b, c, 4usize, 6usize, 4usize, 5usize, 5usize, 3usize, 1usize, 1usize, 0usize, 0usize, false, 0u32), false, "groups that do not divide the output channels are refused");
+    expectBool(k.conv2d(&mut job, &mut device, a, b, c, 1usize, 1usize, 1usize, 5usize, 5usize, 3usize, 1usize, 1usize, 0usize, 0usize, false, 2u32), false, "an unknown output mode is refused");
+    expectBool(k.conv2d(&mut job, &mut device, a, b, c, 1usize, 1usize, 1usize, 1usize, 1usize, 3usize, 1usize, 0usize, 0usize, 0usize, false, 0u32), false, "a kernel larger than its input with no padding is refused");
+    expectBool(k.glu(&mut job, &mut device, a, b, 0usize, 4usize), false, "glu of nothing is refused");
+    expectBool(k.attnValue(&mut job, &mut device, a, b, c, 0usize, 8usize, 128usize), false, "attention over no positions is refused");
+    expectBool(k.scaleAdd(&mut job, &mut device, a, b, c, 8usize, 0.5), true, "a good scale add is recorded");
+    let t = works.submit(&mut device, job, Target.Here(2u64));
+    var got = List[Completion].empty();
+    works.waitFor(&mut device, t, &mut got);
+    expectBool(got[0usize].ok, true, "the job with only the good dispatch ran");
+  }
+
+  if reporting() {
+    printStr("worst, in 2^-24 of the output's scale: layernorm "); printFloat(w.norm);
+    printStr(", biasAdd "); printFloat(w.bias);
+    printStr(", scaleAdd/addRelu "); printFloat(w.elem);
+    printStr(", glu "); printFloat(w.glu);
+    printStr(", dwconv "); printFloat(w.dw);
+    printStr(", conv2d "); printFloat(w.conv);
+    printStr(", relScores "); printFloat(w.scores);
+    printStr(", attnValue "); printFloat(w.value);
+    printStr(", lstm "); printFloat(w.lstm);
+    printStr("\n");
+  }
+  expectUInt(u64.from(refusals()), 0u64, "gpuwork refused nothing");
+  expectUInt(u64.from(failures()), 0u64, "no Vulkan call failed");
+  expectUInt(u64.from(validationMessages()), 0u64, "no validation message");
+  device.endFrame();
+  device.waitIdle();
+  done()
+}

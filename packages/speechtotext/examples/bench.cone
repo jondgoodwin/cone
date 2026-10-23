@@ -1,0 +1,160 @@
+// Times this package's matmul against llmkernels' on the encoder's matrix shapes, F16 weights, cold: microseconds for one
+// dispatch, and what that is as weights read (GB/s) and as arithmetic (GFLOP/s).
+//
+// A dispatch's time is (t_51 - t_1) / 50, each t the wall time of a job of that many dispatches from submit until the
+// waiting thread holds the answer (so the job's fixed cost cancels), the median of 5 after a warm-up. The 51 dispatches
+// read 8 copies of the matrix in turn (more than the GPU's cache holds) so that the weights come from memory, as in an
+// utterance, where each is read once.
+//
+//   congo run --release examples/bench.cone        (GPU_POWER_PREFERENCE=low-power for the integrated GPU)
+
+mod speechbench;
+
+import stdio use *;
+import libc;
+import collections use List;
+import random use Rng;
+import time use Instant;
+import gpu use *;
+import gpuwork use *;
+import llmreference use *;
+import llmkernels use Kernels, floatWords;
+import speechtotext use SpeechKernels;
+
+const COPIES = 8usize;
+
+fn preference() u32 {
+  let env = libc.getenv("GPU_POWER_PREFERENCE");
+  if (env as usize) != 0usize && libc.strcmp(cstr.fromPtr(env), "low-power") == 0i32 { return POWER_PREFERENCE_LOW_POWER; }
+  POWER_PREFERENCE_HIGH_PERFORMANCE
+}
+
+// Run 'times' dispatches of the kernel (0: this package's, 1: llmkernels') in a job over the held buffers; microseconds
+fn runOnce(device: &mut Device, sk: &SpeechKernels, lk: &Kernels, works: &mut Works, held: &mut List[Buffer], which: u32,
+    rows: usize, cols: usize, batch: usize, times: usize, wordsW: &Array[u32], wordsX: &Array[u32], first: bool) f64 {
+  var job = Job.make(device);
+  if first {
+    job.give(upload(device, wordsW));
+    job.give(upload(device, wordsX));
+    job.give(zeroed(device, rows * batch));
+  } else {
+    var k = 0usize;
+    while k < 3usize {
+      match held.pop() { case var Some(b) { job.give(b); } case is None {} }
+      k = k + 1usize;
+    }
+  }
+  job.slab(device, 256u64 * u64.from(times + 2usize));
+  let rb = cols * 2usize;
+  var i = 0usize;
+  while i < times {
+    let off = (i % COPIES) * rows * rb;
+    if which == 0u32 { sk.matmul(&mut job, device, 0u32, 1u32, 2u32, QTYPE_F16, rows, cols, batch, off, 0usize, 0usize); }
+    else { lk.matmulAt(&mut job, device, 0u32, 1u32, 2u32, QTYPE_F16, rows, cols, batch, off, 0usize, 0usize); }
+    i = i + 1usize;
+  }
+  let start = Instant.now();
+  let ticket = works.submit(device, job, Target.Here(1u64));
+  var got = List[Completion].empty();
+  works.waitFor(device, ticket, &mut got);
+  let took = start.elapsed();
+  var k = 3usize;
+  while k > 0usize {
+    k = k - 1usize;
+    held.push(got[0usize].take(u32.from(k)));
+  }
+  f64.from(took.nanos()) / 1000.0
+}
+
+fn timeCase(device: &mut Device, sk: &SpeechKernels, lk: &Kernels, works: &mut Works, which: u32, rows: usize, cols: usize,
+    batch: usize, rng: &mut Rng) f64 {
+  let m = syntheticMatrix(rng, QTYPE_F16, rows, cols);
+  var bytes = List[u8].empty();
+  match m {
+    case let Some(q) {
+      var c = 0usize;
+      while c < COPIES {
+        var i = 0usize;
+        while i < q.bytes.len() { bytes.push(*q.bytes[i]); i = i + 1usize; }
+        c = c + 1usize;
+      }
+    }
+    case is None {}
+  }
+  let wordsW = packWords(bytes.view());
+  let wordsX = floatWords(syntheticFloats(rng, cols * batch, 1.0).view());
+  var held = List[Buffer].empty();
+  runOnce(device, sk, lk, works, &mut held, which, rows, cols, batch, 1usize, wordsW.view(), wordsX.view(), true);
+  runOnce(device, sk, lk, works, &mut held, which, rows, cols, batch, 153usize, wordsW.view(), wordsX.view(), false);
+  var diffs = List[f64].empty();
+  var rep = 0usize;
+  while rep < 5usize {
+    let t1 = runOnce(device, sk, lk, works, &mut held, which, rows, cols, batch, 1usize, wordsW.view(), wordsX.view(), false);
+    let t51 = runOnce(device, sk, lk, works, &mut held, which, rows, cols, batch, 51usize, wordsW.view(), wordsX.view(), false);
+    diffs.push((t51 - t1) / 50.0);
+    rep = rep + 1usize;
+  }
+  var a = 0usize;
+  while a < diffs.len() {
+    var b = a + 1usize;
+    while b < diffs.len() {
+      if *diffs[b] < *diffs[a] { let t = *diffs[a]; diffs[a] = *diffs[b]; diffs[b] = t; }
+      b = b + 1usize;
+    }
+    a = a + 1usize;
+  }
+  *diffs[2usize]
+}
+
+fn line(name: &str, us: f64, rows: usize, cols: usize, batch: usize) {
+  printStr(name);
+  printStr(": ");
+  printFloat(us);
+  printStr(" us, ");
+  printFloat(f64.from(rows * cols * 2usize) / us / 1000.0);
+  printStr(" GB/s of weights, ");
+  printFloat(2.0 * f64.from(rows) * f64.from(cols) * f64.from(batch) / us / 1000.0);
+  printStr(" GFLOP/s\n");
+}
+
+fn main() i32 {
+  var instance = Instance.createHeadless("speechtotext bench", false);
+  var none = Surface.none();
+  var adapter = instance.requestAdapter(&none, preference());
+  if !adapter.isValid() { printStr("no GPU\n"); return 1i32; }
+  var device = adapter.requestDevice();
+  let sk = SpeechKernels.make(&device);
+  let lk = Kernels.make(&device);
+  var works = Works.make();
+  var rng = Rng.fromSeed(5u64);
+  var shapes = List[usize].empty();
+  // rows, cols, batch
+  shapes.push(4096usize); shapes.push(1024usize); shapes.push(30usize);
+  shapes.push(4096usize); shapes.push(1024usize); shapes.push(45usize);
+  shapes.push(4096usize); shapes.push(1024usize); shapes.push(64usize);
+  shapes.push(1024usize); shapes.push(4096usize); shapes.push(30usize);
+  shapes.push(1024usize); shapes.push(1024usize); shapes.push(30usize);
+  shapes.push(4096usize); shapes.push(1024usize); shapes.push(190usize);
+  shapes.push(1024usize); shapes.push(4096usize); shapes.push(190usize);
+  shapes.push(1024usize); shapes.push(1024usize); shapes.push(190usize);
+  var i = 0usize;
+  while i < shapes.len() {
+    let r = *shapes[i];
+    let c = *shapes[i + 1usize];
+    let b = *shapes[i + 2usize];
+    printStr("matrix ");
+    printUInt(u64.from(r));
+    printStr(" x ");
+    printUInt(u64.from(c));
+    printStr(", batch ");
+    printUInt(u64.from(b));
+    printStr("\n  ");
+    line("speechtotext", timeCase(&mut device, &sk, &lk, &mut works, 0u32, r, c, b, &mut rng), r, c, b);
+    printStr("  ");
+    line("llmkernels  ", timeCase(&mut device, &sk, &lk, &mut works, 1u32, r, c, b, &mut rng), r, c, b);
+    i = i + 3usize;
+  }
+  device.endFrame();
+  device.waitIdle();
+  0i32
+}

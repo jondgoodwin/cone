@@ -1,0 +1,312 @@
+// ======== Voice activity detection: samples in, utterances out ========
+//
+// An energy detector over 20 ms frames. It follows the room's noise floor, calls a run of frames well above the
+// floor speech, and ends the utterance after a hangover of silence (600 ms to start with). The result is the
+// utterance's samples with a little audio kept from before the speech began (so a soft first consonant is not cut
+// off) and a little after it ended, plus the sample indices where the speech itself began and ended, counted from
+// the first sample ever pushed.
+//
+// The noise floor is the quietest frame of the last `floorWindowMs` (2 s), smoothed: it drops at once when the
+// room gets quieter and rises slowly (2 % of the gap a frame) when it gets louder, and while somebody is speaking
+// it rises far more slowly, so a long sentence cannot raise it, unless the whole window is flat, which is a room
+// that turned loud and not speech (see updateFloor). An utterance that runs to `maxMs` is cut there. Speech starts
+// when `startFrames` frames in a row are `startDb` above the floor (and above the absolute `minLevel`), and a
+// frame counts as speech while it is `stopDb` above the floor, which is lower, so that a word's quiet tail does
+// not end the utterance (hysteresis).
+//
+// The first `warmupMs` (200 ms) of the stream are taken to be the room: no speech is found in them, and the floor
+// starts at their quietest frame. (A talker who speaks in the first 200 ms is not heard until the floor falls.)
+//
+// `setThresholdScale` multiplies both thresholds, for the time the speaker is playing and its sound feeds the
+// microphone.
+
+// How the detector listens. `VadConfig.standard(rate)` has the values everything else was tested with.
+pub struct VadConfig {
+  pub rate: u32;            // samples a second of the input
+  pub frameMs: u32;         // analysis frame: 20
+  pub startDb: f32;         // a frame this far above the floor may start speech: 10
+  pub stopDb: f32;          // a frame this far above the floor still counts as speech: 6
+  pub minLevel: f32;        // the least rms (of full scale 1) that is ever speech: 0.004, which is -48 dBFS
+  pub initialFloor: f32;    // the noise floor assumed until 200 ms have been heard: 0.002
+  pub maxFloor: f32;        // the floor never exceeds this: 0.03 (-30 dBFS)
+  pub startMs: u32;         // frames above the start threshold this long in a row begin speech: 60
+  pub minSpeechMs: u32;     // an utterance with less speech than this is dropped (a click): 120
+  pub hangoverMs: u32;      // silence this long ends the utterance: 600
+  pub prerollMs: u32;       // audio kept from before the speech began: 300
+  pub trailMs: u32;         // audio kept from after the speech ended (at most the hangover): 200
+  pub maxMs: u32;           // the longest utterance: 30000
+  pub floorWindowMs: u32;   // the noise floor is the quietest frame of this much audio: 2000
+  pub warmupMs: u32;        // the first this much of the stream is taken to be the room, and finds no speech: 200
+
+  pub fn standard(rate: u32) VadConfig {
+    VadConfig(rate, 20u32, 10., 6., 0.004, 0.002, 0.03, 60u32, 120u32, 600u32, 300u32, 200u32, 30000u32, 2000u32, 200u32)
+  }
+}
+
+// One utterance the detector found
+pub struct Utterance {
+  pub samples: List[f32];   // the input's samples from `start` minus the pre-roll to `end` plus the trail
+  pub start: usize;         // the input sample index (from the first pushed) where the speech began
+  pub end: usize;           // the input sample index where the speech ended (the end of its last loud frame)
+  pub offset: usize;        // the input sample index of samples[0]
+  pub forced: bool;         // cut at `maxMs` or by `flush`, not ended by silence
+}
+
+fn msToSamples(ms: u32, rate: u32) usize { usize.from(ms) * usize.from(rate) / 1000usize }
+
+pub struct Vad {
+  cfg: VadConfig;
+  frameLen: usize;
+  startFrames: usize;
+  hangFrames: usize;
+  minSpeechFrames: usize;
+  prerollLen: usize;
+  trailLen: usize;
+  maxLen: usize;
+  keep: usize;
+  warmLen: usize;
+  gStart: f32;
+  gStop: f32;
+  hist: List[f32];
+  histStart: usize;
+  done: usize;
+  ring: List[f32];
+  ringFill: usize;
+  ringPos: usize;
+  floorV: f32;
+  scale: f32;
+  inSpeech: bool;
+  run: usize;
+  runStart: usize;
+  speechStart: usize;
+  lastEnd: usize;
+  silenceRun: usize;
+  speechFrames: usize;
+  lastRms: f32;
+  startCount: u32;
+  droppedCount: u32;
+  emittedCount: u32;
+
+  pub fn make(cfg: VadConfig) Vad {
+    let frameLen = msToSamples(cfg.frameMs, cfg.rate);
+    var startFrames = usize.from(cfg.startMs / cfg.frameMs);
+    if startFrames < 1usize { startFrames = 1usize; }
+    var hangFrames = usize.from(cfg.hangoverMs / cfg.frameMs);
+    if hangFrames < 1usize { hangFrames = 1usize; }
+    var minSpeechFrames = usize.from(cfg.minSpeechMs / cfg.frameMs);
+    if minSpeechFrames < 1usize { minSpeechFrames = 1usize; }
+    let prerollLen = msToSamples(cfg.prerollMs, cfg.rate);
+    var trailMs = cfg.trailMs;
+    if trailMs > cfg.hangoverMs { trailMs = cfg.hangoverMs; }
+    let trailLen = msToSamples(trailMs, cfg.rate);
+    let maxLen = msToSamples(cfg.maxMs, cfg.rate);
+    let keep = prerollLen + (startFrames + 2usize) * frameLen;
+    var ringN = usize.from(cfg.floorWindowMs / cfg.frameMs);
+    if ringN < 10usize { ringN = 10usize; }
+    var ring = List[f32].withCapacity(ringN);
+    ring.resize(ringN, 0.);
+    let gStart = libc.powf(10., cfg.startDb / 20.);
+    let gStop = libc.powf(10., cfg.stopDb / 20.);
+    let floorV = cfg.initialFloor;
+    let warmLen = usize.from(cfg.warmupMs / cfg.frameMs) * frameLen;
+    Vad(cfg, frameLen, startFrames, hangFrames, minSpeechFrames, prerollLen, trailLen, maxLen, keep, warmLen, gStart, gStop,
+        List[f32].empty(), 0usize, 0usize, ring, 0usize, 0usize, floorV, 1., false, 0usize, 0usize, 0usize, 0usize,
+        0usize, 0usize, 0., 0u32, 0u32, 0u32)
+  }
+
+  // Multiply both thresholds by 'k' (1 is normal): above 1 while the speaker plays
+  pub fn setThresholdScale(self: &mut, k: f32) { scale = k; }
+
+  // Somebody is speaking now (the speech has begun and not yet ended)
+  pub fn speaking(self: &) bool { inSpeech }
+
+  // The input sample index where the speech now in progress began
+  pub fn speechStartSample(self: &) usize { speechStart }
+
+  // The current noise floor and the last frame's level, rms of full scale 1
+  pub fn noiseFloor(self: &) f32 { floorV }
+  pub fn level(self: &) f32 { lastRms }
+
+  // Samples analysed so far (whole frames), counted from the first pushed
+  pub fn analysed(self: &) usize { done }
+
+  // How many speech starts, utterances found and utterances dropped as too short
+  pub fn starts(self: &) u32 { startCount }
+  pub fn emitted(self: &) u32 { emittedCount }
+  pub fn dropped(self: &) u32 { droppedCount }
+
+  // Feed samples (mono, at `cfg.rate`); utterances that ended are appended to 'out'
+  pub fn push(self: &mut, x: &Array[f32], out: &mut List[Utterance]) {
+    var i = 0usize;
+    while i < x.len { hist.push(x[i]); i = i + 1usize; }
+    while histStart + hist.len() >= done + frameLen {
+      self.frame(out);
+    }
+  }
+
+  // The input has ended: an utterance in progress is cut here and appended to 'out'
+  pub fn flush(self: &mut, out: &mut List[Utterance]) {
+    if inSpeech { self.finish(out, true); }
+  }
+
+  fn frame(self: &mut, out: &mut List[Utterance]) {
+    let a = done;
+    // the level is the frame's rms about its own mean, so a microphone's DC offset does not count as sound
+    var sum = 0.0;
+    var sq = 0.0;
+    {
+      let hv = hist.view();
+      let base = a - histStart;
+      var k = 0usize;
+      while k < frameLen {
+        let v = f64.from(hv[base + k]);
+        sum = sum + v;
+        sq = sq + v * v;
+        k = k + 1usize;
+      }
+    }
+    let n = f64.from(frameLen);
+    var variance = sq / n - (sum / n) * (sum / n);
+    if variance < 0.0 { variance = 0.0; }
+    let r = f32.from(variance.sqrt());
+    lastRms = r;
+    done = a + frameLen;
+    {
+      let rv = ring.viewMut();
+      rv[ringPos] = r;
+      ringPos = (ringPos + 1usize) % rv.len;
+      if ringFill < rv.len { ringFill = ringFill + 1usize; }
+    }
+    if warmLen > 0usize && done <= warmLen {
+      // the warm-up: no speech yet; at its end the room's level is the quietest frame heard
+      if done == warmLen {
+        var m = 1000.f;
+        let rv = ring.view();
+        var i = 0usize;
+        while i < ringFill { if rv[i] < m { m = rv[i]; } i = i + 1usize; }
+        if m < 0.00005 { m = 0.00005; }
+        if m > cfg.maxFloor { m = cfg.maxFloor; }
+        floorV = m;
+      }
+      return;
+    }
+    self.updateFloor();
+    if !inSpeech {
+      let thr = self.startThreshold();
+      if r > thr {
+        if run == 0usize { runStart = a; }
+        run = run + 1usize;
+        if run >= startFrames {
+          inSpeech = true;
+          speechStart = runStart;
+          lastEnd = a + frameLen;
+          silenceRun = 0usize;
+          speechFrames = run;
+          startCount = startCount + 1u32;
+        }
+      } else {
+        run = 0usize;
+      }
+      if !inSpeech { self.trim(); }
+    } else {
+      if r >= self.stopThreshold() {
+        lastEnd = a + frameLen;
+        silenceRun = 0usize;
+        speechFrames = speechFrames + 1usize;
+      } else {
+        silenceRun = silenceRun + 1usize;
+      }
+      if silenceRun >= hangFrames {
+        self.finish(out, false);
+      } else if done - speechStart >= maxLen {
+        self.finish(out, true);
+      }
+    }
+  }
+
+  fn startThreshold(self: &) f32 {
+    var t = floorV * gStart;
+    if t < cfg.minLevel { t = cfg.minLevel; }
+    t * scale
+  }
+
+  fn stopThreshold(self: &) f32 {
+    var t = floorV * gStop;
+    let lo = cfg.minLevel * 0.6;
+    if t < lo { t = lo; }
+    t * scale
+  }
+
+  // The floor is the quietest frame of the window, smoothed, once 200 ms have been heard. While somebody is
+  // speaking it rises only slowly (0.3 % of the gap a frame), unless the whole window is flat (its loudest frame
+  // under 1.6 times its quietest), which speech never is for 2 s and a room's hum is: then it rises at 5 %, so a
+  // room that turned loud stops sounding like speech after a couple of seconds.
+  fn updateFloor(self: &mut) {
+    if ringFill < 10usize { return; }
+    var m = 1000.f;
+    var big = 0.f;
+    {
+      let rv = ring.view();
+      var i = 0usize;
+      while i < ringFill {
+        if rv[i] < m { m = rv[i]; }
+        if rv[i] > big { big = rv[i]; }
+        i = i + 1usize;
+      }
+    }
+    if m < 0.00005 { m = 0.00005; }
+    if m > cfg.maxFloor { m = cfg.maxFloor; }
+    if m < floorV {
+      floorV = floorV + (m - floorV) * 0.5;
+    } else {
+      var rise = 0.02f;
+      if inSpeech {
+        rise = 0.003;
+        if ringFill == ring.len() && big <= m * 1.6 { rise = 0.05; }
+      }
+      floorV = floorV + (m - floorV) * rise;
+    }
+  }
+
+  // End the utterance: copy out its samples (when it had enough speech) and go back to listening
+  fn finish(self: &mut, out: &mut List[Utterance], forced: bool) {
+    if speechFrames >= minSpeechFrames || forced {
+      var from = histStart;
+      if speechStart > prerollLen + histStart { from = speechStart - prerollLen; }
+      var to = lastEnd + trailLen;
+      if to > done { to = done; }
+      var s = List[f32].withCapacity(to - from);
+      {
+        let hv = hist.view();
+        var i = from - histStart;
+        while i < to - histStart { s.push(hv[i]); i = i + 1usize; }
+      }
+      out.push(Utterance(s, speechStart, lastEnd, from, forced));
+      emittedCount = emittedCount + 1u32;
+    } else {
+      droppedCount = droppedCount + 1u32;
+    }
+    inSpeech = false;
+    run = 0usize;
+    silenceRun = 0usize;
+    speechFrames = 0usize;
+    self.trim();
+  }
+
+  // While idle only the last `keep` samples before the analysed edge can matter; shed the rest once that much
+  // is four times `keep`. The history also holds samples that arrived and are not yet analysed (a push can carry
+  // any number), so what may go is counted from `done`, never from the end of the history.
+  fn trim(self: &mut) {
+    let processed = done - histStart;
+    if processed <= keep * 4usize { return; }
+    let cut = processed - keep;
+    var nl = List[f32].withCapacity(keep * 2usize);
+    {
+      let hv = hist.view();
+      var i = cut;
+      while i < hv.len { nl.push(hv[i]); i = i + 1usize; }
+    }
+    hist <-> nl;
+    histStart = histStart + cut;
+  }
+}

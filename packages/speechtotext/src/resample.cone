@@ -1,0 +1,58 @@
+// ======== Sample rate conversion to 16 kHz mono ========
+//
+// Parakeet takes 16 kHz mono. 'resampleTo16k' converts samples at any rate by windowed-sinc interpolation: each output
+// sample is the input convolved with a sinc low-pass (cutoff the smaller of the two Nyquist frequencies, so converting
+// down removes what 16 kHz cannot hold) under a Hann window of 24 zero crossings either side. Direct evaluation, f64
+// sums: about 100 multiplications for a sample converted from 48 kHz, which is nothing next to the model. The edges
+// treat the signal as zero beyond its ends. At 16 kHz the input is returned as it is.
+
+const ZERO_CROSSINGS = 24.0;
+
+// samples at 'rate' Hz to 16 kHz
+pub fn resampleTo16k(x: &Array[f32], rate: u32) List[f32] {
+  var out = List[f32].empty();
+  if rate == 16000u32 {
+    var i = 0usize;
+    out = List[f32].withCapacity(x.len);
+    while i < x.len { out.push(x[i]); i = i + 1usize; }
+    return out;
+  }
+  if rate == 0u32 || x.len == 0usize { return out; }
+  let ratio = f64.from(rate) / 16000.0;                    // input samples for each output sample
+  let cut = if ratio > 1.0 { 1.0 / ratio } else { 1.0 };   // low-pass cutoff, in input Nyquists
+  let half = ZERO_CROSSINGS / cut;                         // taps either side, in input samples
+  let count = usize.from(f64.from(x.len) / ratio);
+  out = List[f32].withCapacity(count);
+  let pi = 3.141592653589793;
+  var n = 0usize;
+  while n < count {
+    let pos = f64.from(n) * ratio;
+    var lo = i64.from(libc.floor(pos - half)) + 1i64;
+    var hi = i64.from(libc.floor(pos + half));
+    if lo < 0i64 { lo = 0i64; }
+    if hi > i64.from(x.len) - 1i64 { hi = i64.from(x.len) - 1i64; }
+    var acc = 0.0;
+    var k = lo;
+    while k <= hi {
+      let d = f64.from(k) - pos;
+      let u = d / half;
+      if u > -1.0 && u < 1.0 {
+        let a = pi * cut * d;
+        var s = 1.0;
+        if libc.fabs(a) > 1.0e-12 { s = libc.sin(a) / a; }
+        acc = acc + f64.from(x[usize.from(k)]) * cut * s * (0.5 + 0.5 * libc.cos(pi * u));
+      }
+      k = k + 1i64;
+    }
+    out.push(f32.from(acc));
+    n = n + 1usize;
+  }
+  out
+}
+
+// Mono samples at 16 kHz from a decoded sound of any rate and channel count (channels averaged first)
+pub fn soundTo16k(s: &audiomixer.Sound) List[f32] {
+  if s.channels == 1u32 { return resampleTo16k(s.samples.view(), s.rate); }
+  let mono = s.toMono();
+  resampleTo16k(mono.samples.view(), mono.rate)
+}

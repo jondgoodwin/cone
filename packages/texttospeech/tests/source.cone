@@ -1,0 +1,122 @@
+// The CPU parts of the vocoder against PyTorch's, each fed PyTorch's own input so that only its own arithmetic
+// is measured: the harmonic source from PyTorch's F0 and random numbers, the STFT of PyTorch's source, and the
+// inverse STFT of PyTorch's last convolution. (The source depends violently on F0: its phase is a running sum of
+// frequency times 2 pi times 300, up to 8e4 radians, so a relative error of 1e-6 in F0 is a tenth of a radian
+// there. This is why the model test gives the source a looser tolerance than the layers.) Needs the reference
+// outputs in C:/src/speech-models/reference/kokoro; skipped without them.
+
+mod source;
+
+import testing use *;
+import stdio use *;
+import libc;
+import collections use List, String;
+import fs;
+import path use Path;
+import safetensors use *;
+import texttospeech use *;
+
+fn floats(file: &SafetensorsFile, name: &str) List[f32] {
+  match file.header.floats(file.bytes(), name) {
+    case var Some(v) { v }
+    case is None { List[f32].empty() }
+  }
+}
+
+fn worst(a: &Array[f32], b: &Array[f32]) f64 {
+  var m = 0.0;
+  var i = 0usize;
+  while i < a.len && i < b.len {
+    let d = libc.fabs(f64.from(a[i]) - f64.from(b[i]));
+    if d > m || d != d { m = d; }
+    i = i + 1usize;
+  }
+  m
+}
+
+fn maxAbs(a: &Array[f32]) f64 {
+  var m = 0.0;
+  var i = 0usize;
+  while i < a.len { let v = libc.fabs(f64.from(a[i])); if v > m { m = v; } i = i + 1usize; }
+  m
+}
+
+fn reporting() bool { (libc.getenv("TEXTTOSPEECH_REPORT") as usize) != 0usize }
+
+fn runCase(name: &str) {
+  var path = String.from("C:/src/speech-models/reference/kokoro/");
+  path <- name;
+  path <- ".safetensors";
+  let file = match openSafetensors(&Path.from(path.view())) {
+    case var Ok(f) { f }
+    case let Error(m) { print <- m.view(), "\n"; expect(false, "the reference file opens"); return; }
+  };
+  let f0 = floats(&file, "F0");
+  let noise = SourceNoise(floats(&file, "rand_ini"), floats(&file, "sine_noise"));
+  let weights = floats(&file, "m_source_weight");
+  let bias = floats(&file, "m_source_bias");
+  expectUInt(u64.from(weights.len()), 9u64, "the mixing weights are in the reference file");
+  let source = harmonicSource(f0.view(), &noise, weights.view(), *bias[0usize]);
+  let wantSource = floats(&file, "har_source");
+  expectUInt(u64.from(source.len()), u64.from(wantSource.len()), "as many source samples");
+  let e1 = worst(source.view(), wantSource.view());
+  if reporting() { print <- name, ": source worst error ", e1, " of ", maxAbs(wantSource.view()), "\n"; }
+  expect(e1 <= 0.000002, "the source is PyTorch's from the same F0");
+  // the STFT of PyTorch's own source
+  let spec = stft(wantSource.view());
+  let wantHar = floats(&file, "har");
+  expectUInt(u64.from(spec.len()), u64.from(wantHar.len()), "as many STFT values");
+  // the magnitudes (rows 0 to 10) to 1e-5 of the largest; the phases (rows 11 to 21) except where a bin is so small
+  // that its phase is rounding noise
+  let frames = spec.len() / 22usize;
+  var worstMag = 0.0;
+  var worstPhase = 0.0;
+  var phaseFlips = 0usize;
+  var frame0Flips = 0usize;
+  var otherFlips = 0usize;
+  var r = 0usize;
+  while r < 11usize {
+    var t = 0usize;
+    while t < frames {
+      let dm = libc.fabs(f64.from(*spec[r * frames + t]) - f64.from(*wantHar[r * frames + t]));
+      if dm > worstMag { worstMag = dm; }
+      let mag = f64.from(*wantHar[r * frames + t]);
+      let dp = libc.fabs(f64.from(*spec[(11usize + r) * frames + t]) - f64.from(*wantHar[(11usize + r) * frames + t]));
+      if dp > 1.0 {
+        // a phase of +pi against -pi: the bin's imaginary part is rounding noise either side of zero (only in a
+        // frame that is symmetric, as the first is, or in a bin too small to have a phase)
+        if t == 0usize { frame0Flips = frame0Flips + 1usize; } else if mag > 0.001 { otherFlips = otherFlips + 1usize; } else { phaseFlips = phaseFlips + 1usize; }
+      } else if mag > 0.001 {
+        if dp > worstPhase { worstPhase = dp; }
+      }
+      t = t + 1usize;
+    }
+    r = r + 1usize;
+  }
+  if reporting() {
+    print <- name, ": STFT worst magnitude error ", worstMag, ", worst phase error where the magnitude is over 0.001: ", worstPhase,
+      ", +pi against -pi in the first frame: ", frame0Flips, ", elsewhere: ", otherFlips, " (bins under 0.001: ", phaseFlips, ")\n";
+  }
+  expect(worstMag <= 0.00001, "the STFT magnitudes are PyTorch's");
+  expect(worstPhase <= 0.001, "the STFT phases are PyTorch's");
+  expectUInt(u64.from(otherFlips), 0u64, "no phase differs by 2 pi except in the first frame (symmetric: rounding decides its sign)");
+  expect(frame0Flips <= 4usize, "at most a few bins of the first frame differ by 2 pi");
+  // the inverse STFT of PyTorch's last convolution
+  let post = floats(&file, "conv_post");
+  let audio = istft(post.view(), post.len() / 22usize);
+  let wantAudio = floats(&file, "audio");
+  expectUInt(u64.from(audio.len()), u64.from(wantAudio.len()), "as many samples");
+  let e3 = worst(audio.view(), wantAudio.view());
+  if reporting() { print <- name, ": inverse STFT worst error ", e3, " of ", maxAbs(wantAudio.view()), "\n"; }
+  expect(e3 <= 0.000002, "the inverse STFT is PyTorch's");
+}
+
+fn main() i32 {
+  if !fs.exists(&Path.from("C:/src/speech-models/reference/kokoro/hello.safetensors")) {
+    return skip("the reference outputs are not in C:/src/speech-models/reference/kokoro");
+  }
+  runCase("hello");
+  runCase("sentence");
+  runCase("blend");
+  done()
+}

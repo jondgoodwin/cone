@@ -1,0 +1,87 @@
+// The user turn put in the cache in two parts (the opening, before the user has spoken; then the words and the end of
+// the turn) is the ids `ModelTokens.userTurn` gives for the whole turn, for the kinds of text a speech recogniser
+// writes, with and without the reply's closing before it. Needs C:\src\llm-models\Qwen3-1.7B-Q8_0.gguf (the vocabulary
+// is the same in the 8B); without it the test skips.
+mod turntest;
+
+import testing use *;
+import collections use List, String;
+import path use Path;
+import fs;
+import gguf;
+import llmrun use *;
+import voicechat use *;
+
+const MODEL = "C:/src/llm-models/Qwen3-1.7B-Q8_0.gguf";
+
+fn bytes(s: &str) List[u8] {
+  var out = List[u8].empty();
+  let b: &Array[u8] = s;
+  var i = 0usize;
+  while i < b.len { out.push(b[i]); i = i + 1usize; }
+  out
+}
+
+fn same(a: &List[u32], b: &List[u32]) bool {
+  if a.len() != b.len() { return false; }
+  var i = 0usize;
+  while i < a.len() {
+    if *a[i] != *b[i] { return false; }
+    i = i + 1usize;
+  }
+  true
+}
+
+fn check(vocab: &ModelTokens, text: &str) {
+  let words = bytes(text);
+  let whole = vocab.userTurn(words.view(), false);
+  var split = headTokens(vocab, false);
+  vocab.text(words.view(), &mut split);
+  let tail = tailTokens(vocab);
+  var i = 0usize;
+  while i < tail.len() { split.push(*tail[i]); i = i + 1usize; }
+  expectBool(same(&whole, &split), true, text);
+  // with the reply's closing before it
+  var closed = vocab.closeTurn();
+  let whole2 = vocab.userTurn(words.view(), false);
+  i = 0usize;
+  while i < whole2.len() { closed.push(*whole2[i]); i = i + 1usize; }
+  var split2 = headTokens(vocab, true);
+  vocab.text(words.view(), &mut split2);
+  i = 0usize;
+  while i < tail.len() { split2.push(*tail[i]); i = i + 1usize; }
+  expectBool(same(&closed, &split2), true, text);
+}
+
+fn main() i32 {
+  var path = Path.from(MODEL);
+  if !fs.exists(&path) { return skip("the model files in C:/src/llm-models are absent"); }
+  match fs.mapFile(&path) {
+    case let Ok(file) {
+      match gguf.parse(file.view()) {
+        case let Ok(model) {
+          match loadTokens(&model) {
+            case let Ok(vocab) {
+              check(&vocab, "What is the capital of France?");
+              check(&vocab, "Tell me a story about a dragon who learns to bake bread.");
+              check(&vocab, "Stop, what is 2 plus 2?");
+              check(&vocab, "Yeah.");
+              check(&vocab, "Um, I don't know, maybe three or four?");
+              check(&vocab, "How tall is Mount Everest, in feet and in meters?");
+              check(&vocab, "100 percent.");
+              check(&vocab, "\"Quoted,\" he said.");
+              check(&vocab, "(Hmm) ... okay!");
+              check(&vocab, "it costs $4.50 at 10 a.m.");
+              check(&vocab, "Caf\u00E9 au lait, please.");
+              check(&vocab, " leading space");
+            }
+            case let Error(m) { require(false, "the vocabulary loads"); }
+          }
+        }
+        case let Error(e) { require(false, "the file parses"); }
+      }
+    }
+    case let Error(e) { require(false, "the file maps"); }
+  }
+  done()
+}

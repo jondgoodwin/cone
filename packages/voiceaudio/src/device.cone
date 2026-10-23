@@ -1,0 +1,241 @@
+// ======== The microphone and the speaker, over SDL3's audio streams ========
+//
+// Both are SDL "device streams": the stream takes (or gives) samples in the format the program asks for, and SDL
+// converts between that and what the device runs at (channels, rate, format), so no resampling is written here.
+// A stream is thread safe: one thread may `queue` into the Speaker while another calls `cutOff`.
+//
+// WHICH DRIVER IS NEVER LEFT TO CHANCE. Every open takes a `Driver`, a value the caller builds with one of
+// `Driver.disk`, `Driver.dummy` or `Driver.system`: `disk` reads the microphone from a raw file and writes the
+// speaker to one, `dummy` accepts audio and plays nothing (and records silence), and only `system` touches the
+// machine's real devices. The open sets SDL's driver hint to what the Driver names, starts SDL's audio, and checks
+// SDL's answer to "which driver is in use" BEFORE opening any device: a mismatch stops there, with no device open.
+// Tests build only `disk` and `dummy`.
+//
+// The `disk` driver (SDL's own, for testing) records from a raw file of f32 little endian samples, mono, at
+// DISK_RATE (44100 Hz: SDL 3.4.16 fixes the disk device's rate at that, whatever the stream asks for, and the
+// stream converts; measured, and the SDL_AUDIO_FREQUENCY hint does not change it), and after the file's end records
+// silence forever; it writes the speaker's output the same way. Its pace is real time times `timescale` (a text
+// such as "1" for real time, "0.05" for 20 times faster, "0" for as fast as the CPU allows, which fills memory
+// with silence at tens of MB a second once the file has ended, so keep such a device short lived).
+// A stream opened at DISK_RATE meets the file sample for sample; at any other rate SDL's converter sits between.
+
+// The disk driver's device rate
+pub const DISK_RATE = 44100u32;
+
+// Which driver SDL is to use
+pub const DRIVER_DISK = 1u32;
+pub const DRIVER_DUMMY = 2u32;
+pub const DRIVER_SYSTEM = 3u32;
+
+// Why an open failed
+pub struct AudioError {
+  pub reason: i32;          // 1: SDL's audio would not start, 2: SDL chose another driver than asked, 3: the stream would not open
+  pub message: String;
+}
+
+fn audioError(reason: i32, message: &str) AudioError { AudioError(reason, String.from(message)) }
+
+pub struct Driver {
+  pub kind: u32;
+  pub inFile: String;       // disk: the raw f32 file the microphone reads
+  pub outFile: String;      // disk: the raw file the speaker writes
+  pub timescale: String;    // disk: "1" real time, "0.05" twenty times faster
+  pub deviceFrames: u32;    // system: the device's buffer in frames (small makes a cut-off quick), 0 for SDL's choice
+
+  // The disk driver: microphone from 'inFile', speaker to 'outFile', both raw mono f32 at DISK_RATE
+  pub fn disk(inFile: &str, outFile: &str, timescale: &str) Driver {
+    Driver(DRIVER_DISK, String.from(inFile), String.from(outFile), String.from(timescale), 0u32)
+  }
+
+  // The dummy driver: accepts audio and plays nothing; the microphone is silence
+  pub fn dummy() Driver {
+    Driver(DRIVER_DUMMY, String.empty(), String.empty(), String.empty(), 0u32)
+  }
+
+  // The machine's real devices. Never in a test: this is the call that makes sound and listens.
+  pub fn system(deviceFrames: u32) Driver {
+    Driver(DRIVER_SYSTEM, String.empty(), String.empty(), String.empty(), deviceFrames)
+  }
+
+  fn wanted(self: &) &str {
+    if kind == DRIVER_DISK { return "disk"; }
+    if kind == DRIVER_DUMMY { return "dummy"; }
+    ""
+  }
+
+  // Name the driver to SDL, start its audio, and check which driver it chose. Every caller that gets Ok must
+  // answer with `release`. No device is opened here.
+  fn acquire(self: &) Result[void, AudioError] {
+    if kind != DRIVER_SYSTEM {
+      let want = String.from(self.wanted());
+      sdl.SetHint("SDL_AUDIO_DRIVER", want.cstr());
+    }
+    if kind == DRIVER_DISK {
+      sdl.SetHint("SDL_AUDIO_DISK_INPUT_FILE", inFile.cstr());
+      sdl.SetHint("SDL_AUDIO_DISK_OUTPUT_FILE", outFile.cstr());
+      sdl.SetHint("SDL_AUDIO_DISK_TIMESCALE", timescale.cstr());
+    }
+    if kind == DRIVER_SYSTEM && deviceFrames > 0u32 {
+      var f = String.empty();
+      f <- u64.from(deviceFrames);
+      sdl.SetHint("SDL_AUDIO_DEVICE_SAMPLE_FRAMES", f.cstr());
+    }
+    if !sdl.InitSubSystem(sdl.INIT_AUDIO) {
+      return Error[void, AudioError](audioError(1i32, "SDL audio would not start"));
+    }
+    if kind != DRIVER_SYSTEM {
+      let name = sdl.GetCurrentAudioDriver();
+      var ok = name as usize != 0usize;
+      if ok {
+        let want = self.wanted();
+        var i = 0usize;
+        while i < want.len() { if *(name + i) != want[i] { ok = false; } i = i + 1usize; }
+        if *(name + want.len()) != 0u8 { ok = false; }
+      }
+      if !ok {
+        sdl.QuitSubSystem(sdl.INIT_AUDIO);
+        return Error[void, AudioError](audioError(2i32, "SDL chose another audio driver than the one asked for; no device was opened"));
+      }
+    }
+    Ok[void, AudioError](nil)
+  }
+
+  fn release(self: &) { sdl.QuitSubSystem(sdl.INIT_AUDIO); }
+}
+
+// The microphone: mono f32 at 'rate'. Nothing runs on a thread of ours: SDL fills the stream, and `read` takes
+// what has arrived.
+pub struct Microphone {
+  stream: *sdl.AudioStream;
+  pub rate: u32;
+  taken: usize;
+
+  pub fn open(driver: &Driver, rate: u32) Result[Microphone, AudioError] {
+    match driver.acquire() {
+      case let Ok(u) {}
+      case let Error(e) { return Error[Microphone, AudioError](e); }
+    }
+    let spec = sdl.AudioSpec(sdl.AUDIO_F32, 1i32, i32.from(rate));
+    let stream = sdl.OpenAudioDeviceStream(sdl.AUDIO_DEVICE_DEFAULT_RECORDING, &spec, null, null);
+    if stream as usize == 0usize {
+      driver.release();
+      return Error[Microphone, AudioError](audioError(3i32, "the recording stream would not open"));
+    }
+    sdl.ResumeAudioStreamDevice(stream);
+    Ok[Microphone, AudioError](Microphone(stream, rate, 0usize))
+  }
+
+  // Samples ready to read
+  pub fn available(self: &) usize {
+    let b = sdl.GetAudioStreamAvailable(stream);
+    if b <= 0i32 { return 0usize; }
+    usize.from(b) / 4usize
+  }
+
+  // Append up to 'max' of the waiting samples to 'out'; answers how many were appended
+  pub fn read(self: &mut, out: &mut List[f32], max: usize) usize {
+    var n = self.available();
+    if n > max { n = max; }
+    if n == 0usize { return 0usize; }
+    let old = out.len();
+    out.resize(old + n, 0.);
+    var got = 0i32;
+    {
+      let m = out.viewMut();
+      got = sdl.GetAudioStreamData(stream, (&mut m[old] as *u8), i32.from(n * 4usize));
+    }
+    var g = 0usize;
+    if got > 0i32 { g = usize.from(got) / 4usize; }
+    out.truncate(old + g);
+    taken = taken + g;
+    g
+  }
+
+  // Samples read so far
+  pub fn samplesTaken(self: &) usize { taken }
+
+  // Read everything waiting into the detector; the utterances that ended go to 'out'. Answers samples read.
+  pub fn pump(self: &mut, vad: &mut Vad, out: &mut List[Utterance]) usize {
+    var buf = List[f32].empty();
+    let n = self.read(&mut buf, 1000000usize);
+    if n > 0usize { vad.push(buf.view(), out); }
+    n
+  }
+
+  pub fn close(self: &mut) {
+    sdl.DestroyAudioStream(stream);
+    sdl.QuitSubSystem(sdl.INIT_AUDIO);
+  }
+}
+
+// The speaker: mono f32 at 'rate' (24000 for Kokoro's speech). `queue` appends to what is waiting, `cutOff`
+// throws what is waiting away at once.
+pub struct Speaker {
+  stream: *sdl.AudioStream;
+  pub rate: u32;
+  queued: usize;
+
+  pub fn open(driver: &Driver, rate: u32) Result[Speaker, AudioError] {
+    match driver.acquire() {
+      case let Ok(u) {}
+      case let Error(e) { return Error[Speaker, AudioError](e); }
+    }
+    let spec = sdl.AudioSpec(sdl.AUDIO_F32, 1i32, i32.from(rate));
+    let stream = sdl.OpenAudioDeviceStream(sdl.AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, null, null);
+    if stream as usize == 0usize {
+      driver.release();
+      return Error[Speaker, AudioError](audioError(3i32, "the playback stream would not open"));
+    }
+    sdl.ResumeAudioStreamDevice(stream);
+    Ok[Speaker, AudioError](Speaker(stream, rate, 0usize))
+  }
+
+  // Append samples to the queue; false if SDL refused them
+  pub fn queue(self: &mut, x: &Array[f32]) bool {
+    if x.len == 0usize { return true; }
+    let ok = sdl.PutAudioStreamData(stream, (&x[0usize] as *u8), i32.from(x.len * 4usize));
+    if ok { queued = queued + x.len; }
+    ok
+  }
+
+  // What was queued is all there is for now (the end of a sentence): SDL's converter, when the stream and the
+  // device differ in rate, holds a few samples back until told, so call this after the last `queue` of a sentence
+  pub fn flush(self: &mut) { sdl.FlushAudioStream(stream); }
+
+  // Samples waiting in the stream (not yet taken by the device)
+  pub fn waiting(self: &) usize {
+    let b = sdl.GetAudioStreamQueued(stream);
+    if b <= 0i32 { return 0usize; }
+    usize.from(b) / 4usize
+  }
+
+  // Milliseconds of sound waiting in the stream
+  pub fn waitingMs(self: &) u32 { u32.from(self.waiting() * 1000usize / usize.from(rate)) }
+
+  // Everything waiting is thrown away; the device keeps what it already took, which is its buffer
+  // (`Driver.system(frames)` sets how big that is)
+  pub fn cutOff(self: &mut) { sdl.ClearAudioStream(stream); }
+
+  // Samples handed to `queue` so far
+  pub fn samplesQueued(self: &) usize { queued }
+
+  pub fn pause(self: &mut) { sdl.PauseAudioStreamDevice(stream); }
+  pub fn resume(self: &mut) { sdl.ResumeAudioStreamDevice(stream); }
+
+  // Wait (polling every 2 ms) until nothing is waiting in the stream or 'timeoutMs' passes; true if it emptied.
+  // What the device already took may still be playing.
+  pub fn drain(self: &mut, timeoutMs: u32) bool {
+    var waited = 0u32;
+    while self.waiting() > 0usize {
+      if waited >= timeoutMs { return false; }
+      thread.sleep(Duration.fromMillis(2));
+      waited = waited + 2u32;
+    }
+    true
+  }
+
+  pub fn close(self: &mut) {
+    sdl.DestroyAudioStream(stream);
+    sdl.QuitSubSystem(sdl.INIT_AUDIO);
+  }
+}

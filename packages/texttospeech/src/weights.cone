@@ -1,0 +1,202 @@
+// ======== Kokoro's weights on the GPU ========
+//
+// 'kokoro-v1_0.safetensors' (made by the converter from hexgrad's .pth: weight-norm pairs fused, each LSTM's two
+// biases added) is read into ONE GPU buffer of f32s, each tensor at an element offset of a multiple of 64 that the
+// kernels are given; the index maps a tensor's name to it. The bidirectional LSTMs also get three tensors made for
+// the kernels: '<name>.wih_cat' (the forward and backward input matrices one after another, [2048, in]),
+// '<name>.bias_cat' ([2, 1024]) and '<name>.whhT' (the hidden-to-hidden matrices transposed, [2, 256, 1024], so that
+// a workgroup's invocations read consecutive words). The tables the CPU reads (the embeddings, the generator's
+// harmonic mixing) are kept in memory too.
+
+const BUFFER_USAGE = BUFFER_USAGE_STORAGE | BUFFER_USAGE_COPY_DST | BUFFER_USAGE_COPY_SRC;
+
+fn alignElements(n: usize) usize { (n + 63usize) / 64usize * 64usize }
+
+// The LSTMs of the model by the name their tensors share
+fn lstmBases() List[String] {
+  var l = List[String].empty();
+  l.push(String.from("text_encoder.lstm"));
+  l.push(String.from("predictor.lstm"));
+  l.push(String.from("predictor.shared"));
+  l.push(String.from("predictor.text_encoder.lstms.0"));
+  l.push(String.from("predictor.text_encoder.lstms.2"));
+  l.push(String.from("predictor.text_encoder.lstms.4"));
+  l
+}
+
+// A tensor's values, or an empty list
+fn getF(h: &Safetensors, bytes: &Array[u8], name: &str) List[f32] {
+  match h.floats(bytes, name) {
+    case var Some(v) { v }
+    case is None { List[f32].empty() }
+  }
+}
+
+fn offsetOf(index: &Dict[String, usize], name: &str) usize {
+  match index.get(name) {
+    case let Some(o) { *o }
+    case is None { 0usize }
+  }
+}
+
+fn joined(a: &str, b: &str) String {
+  var s = String.from(a);
+  s <- b;
+  s
+}
+
+pub struct Weights {
+  pub elements: usize;
+  index: Dict[String, usize];
+  shapes: Dict[String, List[usize]];
+  // CPU tables
+  pub wordEmbedding: List[f32];          // [178, 128]
+  pub positionEmbedding: List[f32];      // [512, 128]
+  pub typeEmbedding: List[f32];          // row 0 of the token type table, [128]
+  pub embeddingNormGamma: List[f32];     // [128]
+  pub embeddingNormBeta: List[f32];
+  pub textEmbedding: List[f32];          // [178, 512]
+  pub harmonicWeights: List[f32];        // [9]
+  pub harmonicBias: f32;
+
+  // The element offset of a tensor in the buffer; a name the file does not have is reported on stderr and is 0
+  pub fn at(self: &, name: &str) usize {
+    match index.get(name) {
+      case let Some(o) { return *o; }
+      case is None {}
+    }
+    eprintStr("texttospeech: no tensor named ");
+    eprintStr(name);
+    eprintStr("\n");
+    0usize
+  }
+
+  pub fn has(self: &, name: &str) bool { index.contains(name) }
+
+  pub fn shapeOf(self: &, name: &str) usize {
+    match shapes.get(name) {
+      case let Some(s) { s.len() }
+      case is None { 0usize }
+    }
+  }
+
+  // Read the model file and put it on the device: the tables, and the one buffer of every tensor (lent to a job and
+  // taken back from its completion)
+  pub fn load(device: &mut Device, dir: &str) Result[(Weights, Buffer), String] {
+    var p = String.from(dir);
+    p <- "/kokoro-v1_0.safetensors";
+    let file = match openSafetensors(&Path.from(p.view())) {
+      case var Ok(f) { f }
+      case let Error(m) {
+        var e = String.from("texttospeech: ");
+        e <- m.view();
+        return Error[(Weights, Buffer), String](e);
+      }
+    };
+    let h = &file.header;
+    // the layout: every tensor, then the three made for each LSTM
+    var index = Dict[String, usize].empty();
+    var shapes = Dict[String, List[usize]].empty();
+    var total = 0usize;
+    var t = 0usize;
+    while t < h.tensors.len() {
+      let ti = h.tensors[t];
+      if ti.dtype != ST_F32 {
+        var m = String.from("texttospeech: tensor ");
+        m <- ti.name.view();
+        m <- " is not F32";
+        return Error[(Weights, Buffer), String](m);
+      }
+      index.insert(ti.name.copy(), total);
+      var sh = List[usize].empty();
+      var q = 0usize;
+      while q < ti.shape.len() { sh.push(*ti.shape[q]); q = q + 1usize; }
+      shapes.insert(ti.name.copy(), sh);
+      total = total + alignElements(ti.elements());
+      t = t + 1usize;
+    }
+    let bases = lstmBases();
+    var b = 0usize;
+    while b < bases.len() {
+      let base = bases[b].view();
+      let wihName = joined(base, ".weight_ih_l0");
+      let inDim = match h.find(wihName.view()) {
+        case let Some(wi) { wi.cols() }
+        case is None {
+          var m = String.from("texttospeech: no tensor ");
+          m <- wihName.view();
+          return Error[(Weights, Buffer), String](m);
+        }
+      };
+      index.insert(joined(base, ".wih_cat"), total);
+      total = total + alignElements(2usize * 1024usize * inDim);
+      index.insert(joined(base, ".bias_cat"), total);
+      total = total + alignElements(2usize * 1024usize);
+      index.insert(joined(base, ".whhT"), total);
+      total = total + alignElements(2usize * 256usize * 1024usize);
+      b = b + 1usize;
+    }
+    let buf = device.createBuffer(u64.from(total) * 4u64, BUFFER_USAGE);
+    if !buf.isValid() { return Error[(Weights, Buffer), String](String.from("texttospeech: the GPU could not make the weights buffer (out of memory?)")); }
+    // the tensors, as they are in the file
+    t = 0usize;
+    while t < h.tensors.len() {
+      let ti = h.tensors[t];
+      var off = 0usize;
+      match index.get(ti.name.view()) {
+        case let Some(o) { off = *o; }
+        case is None {}
+      }
+      device.queue.writeBuffer(&buf, u64.from(off) * 4u64, file.base() + ti.begin, u64.from(ti.end - ti.begin));
+      t = t + 1usize;
+    }
+    // the LSTMs' made tensors
+    b = 0usize;
+    while b < bases.len() {
+      let base = bases[b].view();
+      let fwd = joined(base, ".weight_ih_l0");
+      let rev = joined(base, ".weight_ih_l0_reverse");
+      var wih = getF(h, file.bytes(), fwd.view());
+      let wihR = getF(h, file.bytes(), rev.view());
+      var k = 0usize;
+      while k < wihR.len() { wih.push(*wihR[k]); k = k + 1usize; }
+      let o1 = offsetOf(&index, joined(base, ".wih_cat").view());
+      device.queue.writeBuffer(&buf, u64.from(o1) * 4u64,&wih.view()[0usize] as *u8, u64.from(wih.len()) * 4u64);
+      var bias = getF(h, file.bytes(), joined(base, ".bias_l0").view());
+      let biasR = getF(h, file.bytes(), joined(base, ".bias_l0_reverse").view());
+      k = 0usize;
+      while k < biasR.len() { bias.push(*biasR[k]); k = k + 1usize; }
+      let o2 = offsetOf(&index, joined(base, ".bias_cat").view());
+      device.queue.writeBuffer(&buf, u64.from(o2) * 4u64,&bias.view()[0usize] as *u8, u64.from(bias.len()) * 4u64);
+      let hh = getF(h, file.bytes(), joined(base, ".weight_hh_l0").view());
+      let hhR = getF(h, file.bytes(), joined(base, ".weight_hh_l0_reverse").view());
+      var tr = List[f32].withCapacity(2usize * 256usize * 1024usize);
+      k = 0usize;
+      while k < 2usize * 256usize * 1024usize { tr.push(0.0); k = k + 1usize; }
+      var r = 0usize;
+      while r < 1024usize {
+        var c = 0usize;
+        while c < 256usize {
+          tr.set(c * 1024usize + r, *hh[r * 256usize + c]);
+          tr.set(256usize * 1024usize + c * 1024usize + r, *hhR[r * 256usize + c]);
+          c = c + 1usize;
+        }
+        r = r + 1usize;
+      }
+      let o3 = offsetOf(&index, joined(base, ".whhT").view());
+      device.queue.writeBuffer(&buf, u64.from(o3) * 4u64,&tr.view()[0usize] as *u8, u64.from(tr.len()) * 4u64);
+      b = b + 1usize;
+    }
+    var typeAll = getF(h, file.bytes(), "bert.embeddings.token_type_embeddings.weight");
+    typeAll.truncate(128usize);
+    let hw = getF(h, file.bytes(), "decoder.generator.m_source.l_linear.weight");
+    let hb = getF(h, file.bytes(), "decoder.generator.m_source.l_linear.bias");
+    var bias0 = 0.0f;
+    if hb.len() > 0usize { bias0 = *hb[0usize]; }
+    let weights = Weights(total, index, shapes, getF(h, file.bytes(), "bert.embeddings.word_embeddings.weight"),
+      getF(h, file.bytes(), "bert.embeddings.position_embeddings.weight"), typeAll,
+      getF(h, file.bytes(), "bert.embeddings.LayerNorm.weight"), getF(h, file.bytes(), "bert.embeddings.LayerNorm.bias"),
+      getF(h, file.bytes(), "text_encoder.embedding.weight"), hw, bias0);
+    Ok[(Weights, Buffer), String]((weights, buf))
+  }
+}
