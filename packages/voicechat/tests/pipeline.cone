@@ -2,8 +2,10 @@
 // bed as the "microphone" file; voicechat.run listens (Parakeet hears it), Qwen3-1.7B answers greedily (thinking off) and
 // Kokoro says the answer into the "speaker" file; then a second Parakeet hears the answer in that file. The checks: the
 // run ends cleanly, the answer's sound begins after the question has ended and is a plausible length, and Parakeet
-// hears the answer's words (the round trip Kokoro, Parakeet, Qwen, Kokoro, Parakeet). What the run prints (what it
-// heard, what it answered) is this test's expected output. Needs the 1.7B in C:\src\llm-models, Parakeet's and
+// hears the answer's words (the round trip Kokoro, Parakeet, Qwen, Kokoro, Parakeet). At 9 s the microphone holds a
+// second voice saying "Goodbye.": the run must end by itself then (well before its 40 s limit), having said "Goodbye."
+// into the speaker file, which the second Parakeet hears too. What the run prints (what it heard, what it answered) is
+// this test's expected output. Needs the 1.7B in C:\src\llm-models, Parakeet's and
 // Kokoro's converted files in C:\src\speech-models and a GPU; without them it skips. About 20 seconds, in real time,
 // because the disk device runs at the speed of sound.
 //
@@ -16,6 +18,7 @@ import testing use *;
 import collections use List, String;
 import path use Path;
 import fs;
+import time use Instant;
 import gpu use *;
 import texttospeech;
 import speechtotext;
@@ -52,10 +55,16 @@ fn makeMicrophone(device: &mut Device) usize {
     case var Ok(s) { s }
     case let Error(m) { require(false, m.view()); return 0usize; }
   };
+  let bye = match speaker.speak(device, "Goodbye.", &voice, 1.0f) {
+    case var Ok(s) { s }
+    case let Error(m) { require(false, m.view()); return 0usize; }
+  };
   let rate = voiceaudio.DISK_RATE;
   let atRate = voiceaudio.resampleLinear(said.view(), 24000u32, rate);
-  var mic = voiceaudio.noiseBed(14000u32, rate, 0.002f, 3u32);
+  let byeAtRate = voiceaudio.resampleLinear(bye.view(), 24000u32, rate);
+  var mic = voiceaudio.noiseBed(18000u32, rate, 0.002f, 3u32);
   voiceaudio.addInto(&mut mic, usize.from(rate), atRate.view());
+  voiceaudio.addInto(&mut mic, usize.from(rate) * 9usize, byeAtRate.view());
   match voiceaudio.writeRawF32(&Path.from(IN_FILE), mic.view()) {
     case is Ok {}
     case let Error(e) { require(false, "the microphone file is written"); }
@@ -77,6 +86,21 @@ fn hear(device: &mut Device, samples: &Array[f32]) String {
   }
 }
 
+// Parakeet hears the sound in 'x' (at 'rate') between samples 'first' and 'last', with a third of a second either side
+// (Parakeet normalises over what it is given, and seconds of digital silence around the speech are not what it was made for)
+fn hearSound(device: &mut Device, x: &Array[f32], first: usize, last: usize, rate: u32) String {
+  let margin = usize.from(rate) / 3usize;
+  var from = 0usize;
+  if first > margin { from = first - margin; }
+  var to = last + margin;
+  if to > x.len { to = x.len; }
+  var piece = List[f32].empty();
+  var k = from;
+  while k < to { piece.push(x[k]); k = k + 1usize; }
+  let at16 = voiceaudio.resampleLinear(piece.view(), rate, 16000u32);
+  hear(device, at16.view())
+}
+
 // The conversation; answers run's exit status
 fn converse(device: &mut Device) i32 {
   var o = voicechat.VoiceOptions.defaults(QWEN);
@@ -85,7 +109,7 @@ fn converse(device: &mut Device) i32 {
   o.outFile = String.from(OUT_FILE);
   o.temperature = 0.0;
   o.ctx = 2048usize;
-  o.runSeconds = 13u32;
+  o.runSeconds = 40u32;
   o.echoTimings = false;
   voicechat.run(device, &o)
 }
@@ -106,37 +130,46 @@ fn main() i32 {
 
   let questionEnds = makeMicrophone(&mut device);
   require(questionEnds > 0usize, "the question is made");
+  let began = Instant.now();
   let status = converse(&mut device);
+  let lasted = Instant.now().since(began).secondsF64();
   expectInt(i64.from(status), 0i64, "the conversation ends cleanly");
+  // the run's limit is 40 s of listening; "Goodbye." at 9 s ends it a few seconds later (the end-silence, Parakeet, Kokoro,
+  // the speaker's queue), and loading the models took 5 to 10 s before
+  expect(lasted < 28.0, "the spoken goodbye ended the run before its time limit");
 
-  // the speaker file: the answer's sound begins after the question ended
+  // the speaker file: the answer's sound begins after the question ended; the goodbye's is after 9.3 s
   var heardAgain = String.empty();
+  var heardBye = String.empty();
   let rate = voiceaudio.DISK_RATE;
   match voiceaudio.readRawF32(&Path.from(OUT_FILE)) {
     case let Ok(raw) {
       let left = voiceaudio.channel(raw.view(), 2usize, 0usize);
-      let first = voiceaudio.firstAbove(left.view(), 0.01f);
-      let last = voiceaudio.endAbove(left.view(), 0.01f);
-      expect(first < left.len(), "the speaker file holds sound");
+      let split = usize.from(rate) * 93usize / 10usize;
+      require(left.len() > split, "the speaker file runs past 9.3 s");
+      var head = List[f32].empty();
+      var tail = List[f32].empty();
+      var k = 0usize;
+      while k < left.len() {
+        if k < split { head.push(*left[k]); } else { tail.push(*left[k]); }
+        k = k + 1usize;
+      }
+      let first = voiceaudio.firstAbove(head.view(), 0.01f);
+      let last = voiceaudio.endAbove(head.view(), 0.01f);
+      expect(first < head.len(), "the speaker file holds sound");
       expect(first > questionEnds, "the answer begins after the question ends");
       let seconds = f64.from(last - first) / f64.from(rate);
       expect(seconds > 1.0 && seconds < 5.0, "the answer is between one and five seconds long");
-      // the answer with a third of a second either side (Parakeet normalises over what it is given, and seconds of
-      // digital silence around the speech are not what it was made for)
-      let margin = usize.from(rate) / 3usize;
-      var from = 0usize;
-      if first > margin { from = first - margin; }
-      var to = last + margin;
-      if to > left.len() { to = left.len(); }
-      var piece = List[f32].empty();
-      var k = from;
-      while k < to { piece.push(*left[k]); k = k + 1usize; }
-      let at16 = voiceaudio.resampleLinear(piece.view(), rate, 16000u32);
-      heardAgain = hear(&mut device, at16.view());
+      heardAgain = hearSound(&mut device, head.view(), first, last, rate);
+      let byeFirst = voiceaudio.firstAbove(tail.view(), 0.01f);
+      let byeLast = voiceaudio.endAbove(tail.view(), 0.01f);
+      expect(byeFirst < tail.len(), "the speaker file holds a goodbye after 9.3 s");
+      heardBye = hearSound(&mut device, tail.view(), byeFirst, byeLast, rate);
     }
     case let Error(e) { require(false, "the speaker file is read"); }
   }
   expectStr(heardAgain.view(), "The capital of France is Paris.", "Parakeet hears the answer");
+  expectStr(heardBye.view(), "Goodbye.", "Parakeet hears the goodbye");
   fs.removeFile(&Path.from(IN_FILE));
   fs.removeFile(&Path.from(OUT_FILE));
   done()

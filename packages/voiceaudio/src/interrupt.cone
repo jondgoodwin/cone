@@ -1,0 +1,108 @@
+// ======== Ctrl-C, for a program that runs a loop of its own ========
+//
+// WHY CTRL-C DID NOTHING. Starting SDL's audio starts SDL's events, and SDL's events install a handler for SIGINT and SIGTERM
+// (SDL_quit.c) which does not end the program: it makes an SDL_EVENT_QUIT that is delivered the next time the program asks
+// SDL for its events. A loop that never asks (this package's audio streams need no event loop) therefore swallows Ctrl-C, and
+// every Ctrl-C after the first as well. Before the audio is opened there is no such handler and Ctrl-C ends the program as it
+// does any other.
+//
+// WHAT THIS DOES. `Interrupt.requested` asks SDL for its events and answers true once an SDL_EVENT_QUIT has come, which is how
+// a Ctrl-C (or a SIGTERM, or a console's close) reaches a loop that calls it every few milliseconds.
+//
+// THE CONSOLE'S OWN CTRL-C. `Interrupt.start` also takes Ctrl-C away from the console on Windows: it clears the console input's
+// ENABLE_PROCESSED_INPUT flag, so that the keys Ctrl-C arrive as an ordinary key event (character 3) that `requested` reads,
+// and no console control event is sent to anything. That matters to what runs around the program. A `.cmd` that started it
+// is sent the same control event as the program and, whatever the program does, then asks "Terminate batch job (Y/N)?";
+// Python (congo run) answers it with a KeyboardInterrupt traceback. With the flag cleared neither is told. `stop` puts the flag
+// back, and the program that started the run must call it on the way out (a console left without it would not take Ctrl-C
+// from the next program, until its shell resets the mode, which cmd.exe and PowerShell do at each prompt). Standard input that
+// is not a console (a pipe, NUL) is left alone, and Ctrl-C then reaches `requested` through SDL's event.
+//
+// While active, the keys typed are read and dropped (nothing else would read them, and they would otherwise be left for the
+// shell). Ctrl-Break is not affected and still ends the program at once.
+
+extern {
+  fn @c(system) GetStdHandle(which: u32) usize;
+  fn @c(system) GetConsoleMode(h: usize, mode: &mut u32) i32;
+  fn @c(system) SetConsoleMode(h: usize, mode: u32) i32;
+  fn @c(system) GetNumberOfConsoleInputEvents(h: usize, count: &mut u32) i32;
+  fn @c(system) ReadConsoleInputW(h: usize, buffer: *u8, length: u32, read: &mut u32) i32;
+}
+
+const STD_INPUT_HANDLE = 0xFFFFFFF6u32;
+const ENABLE_PROCESSED_INPUT = 1u32;
+const INPUT_RECORD_BYTES = 20usize;
+const READ_AT_A_TIME = 32usize;
+
+pub struct Interrupt {
+  handle: usize;
+  savedMode: u32;
+  raw: bool;                // the console's processed-input flag is cleared and must be put back
+  quit: bool;               // a Ctrl-C, a quit event or a close has been seen
+  buffer: List[u8];
+
+  // Begin. Never fails: where the console cannot be changed, SDL's event is the only way Ctrl-C arrives.
+  pub fn start() Interrupt {
+    var it = Interrupt(0usize, 0u32, false, false, List[u8].empty());
+    it.buffer.resize(INPUT_RECORD_BYTES * READ_AT_A_TIME, 0u8);
+    let h = GetStdHandle(STD_INPUT_HANDLE);
+    if h != 0usize && h != 0xFFFFFFFFFFFFFFFFusize {
+      var mode = 0u32;
+      if GetConsoleMode(h, &mut mode) != 0i32 {
+        it.handle = h;
+        it.savedMode = mode;
+        if (mode & ENABLE_PROCESSED_INPUT) != 0u32 {
+          if SetConsoleMode(h, mode & (ENABLE_PROCESSED_INPUT ^ 0xFFFFFFFFu32)) != 0i32 { it.raw = true; }
+        }
+      }
+    }
+    it
+  }
+
+  // Put the console back as it was found
+  pub fn stop(self: &mut) {
+    if raw {
+      SetConsoleMode(handle, savedMode);
+      raw = false;
+    }
+  }
+
+  // Has Ctrl-C (or a quit) arrived? Cheap enough to ask every few milliseconds; once true it stays true.
+  pub fn requested(self: &mut) bool {
+    if quit { return true; }
+    var e = sdl.Event.empty();
+    while sdl.PollEvent(&mut e) {
+      if e.type == sdl.EVENT_QUIT { quit = true; }
+    }
+    if raw && !quit { self.readKeys(); }
+    quit
+  }
+
+  // Read the console's waiting key events and drop them; Ctrl-C among them is a request to quit
+  fn readKeys(self: &mut) {
+    var waiting = 0u32;
+    if GetNumberOfConsoleInputEvents(handle, &mut waiting) == 0i32 || waiting == 0u32 { return; }
+    var n = usize.from(waiting);
+    if n > READ_AT_A_TIME { n = READ_AT_A_TIME; }
+    var got = 0u32;
+    {
+      let b = buffer.viewMut();
+      if ReadConsoleInputW(handle, (&mut b[0usize] as *u8), u32.from(n), &mut got) == 0i32 { return; }
+    }
+    let b = buffer.view();
+    var i = 0usize;
+    while i < usize.from(got) {
+      let at = i * INPUT_RECORD_BYTES;
+      let kind = u32.from(b[at]) | (u32.from(b[at + 1usize]) << 8u32);
+      if kind == 1u32 {
+        let down = b[at + 4usize] != 0u8 || b[at + 5usize] != 0u8;
+        let vk = u32.from(b[at + 10usize]) | (u32.from(b[at + 11usize]) << 8u32);
+        let ch = u32.from(b[at + 14usize]) | (u32.from(b[at + 15usize]) << 8u32);
+        let ctrl = u32.from(b[at + 16usize]);
+        // character 3 is Ctrl-C; the virtual key C with a Ctrl key down is the same press seen another way
+        if down && (ch == 3u32 || (vk == 0x43u32 && (ctrl & 0xCu32) != 0u32)) { quit = true; }
+      }
+      i = i + 1usize;
+    }
+  }
+}
