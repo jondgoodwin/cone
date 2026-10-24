@@ -1,18 +1,18 @@
 // Churn: a million buffers taken and dropped, and what each costs. It prints
 //
-// - a warm take and drop on one thread: the block comes from the pool's idle
-//   list and goes back to it, no call to the OS;
+// - a warm take and drop on one thread: the block comes from the thread's
+//   own cache and goes back to it, no lock and no call to the OS;
 // - a cold one: a block got from the OS and given back (VirtualAlloc and
 //   VirtualFree; mmap and munmap on Linux), beside the C runtime's
 //   _aligned_malloc and _aligned_free (aligned_alloc and free on Linux)
-//   for the same 4 KiB and 64 KiB, which is the other way the pool could get
-//   its blocks;
+//   for the same 4 KiB and 64 KiB, which is what a block cost before the
+//   pools carved them from 2 MiB slabs;
 // - buffers taken on one thread and dropped on another, as completions will
 //   come home from an I/O thread: two producers send them over a channel to
 //   a consumer that drops them;
-// - and the pool's counters afterwards, which must come out exact: every
-//   buffer lent came back, and once the pool is gone nothing is held from the
-//   OS (no leak).
+// - and the pools' counters afterwards, which must come out exact: every
+//   buffer lent came back, and once the caches are flushed and the pools
+//   trimmed nothing is held from the OS (no leak).
 //
 // Build it optimised to measure:
 //
@@ -156,7 +156,7 @@ fn main() i32 {
     }
     report("warm take and drop, 64 KiB:  ", nowNs() - t0, cycles);
 
-    // Cold: where a block comes from when the pool has none idle
+    // Cold: where a block came from before the pools carved them from slabs
     report("cold, VirtualAlloc 4 KiB:    ", coldOs(4096usize), coldCycles);
     report("cold, _aligned_malloc 4 KiB: ", coldCrt(4096usize), coldCycles);
     report("cold, VirtualAlloc 64 KiB:   ", coldOs(65536usize), coldCycles);
@@ -164,8 +164,8 @@ fn main() i32 {
 
     // Across threads: two producers take, one consumer drops. The channel is
     // bounded, so the producers wait for the consumer: unbounded, they run
-    // ahead of it until the pool's bound refuses them, which is the bound
-    // doing its job (a full bound is seen, never silent growth)
+    // ahead of it until the process's bound on bytes held from the OS is
+    // reached, and out of memory is a panic
     var tx: Sender[IoBuf];
     var rx: Receiver[IoBuf];
     tx, rx = Channel[IoBuf].bounded(1024usize);
@@ -187,7 +187,8 @@ fn main() i32 {
     ok = got == sent && s.takes == expected && s.lent == 0u64 && s.refused == 0u64
       && s.heldBytes == s.idleBytes;
   }
-  printStr("held from the OS once the pool is gone: ");
+  trimAll();      // the producers' and the consumer's caches were not flushed
+  printStr("held from the OS once every buffer is home and the pools are trimmed: ");
   printInt(i64.from(osBlocks()));
   printStr(" blocks\n");
   ok = ok && osBlocks() == 0u64;

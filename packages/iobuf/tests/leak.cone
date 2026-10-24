@@ -1,0 +1,110 @@
+// The leak check: a mixed load of every size class and oversize, taken and
+// dropped by eight threads at once, some of the buffers sent to another thread
+// to die there; half the threads flush their caches as they end and half do
+// not. At the end every block is home (nothing lent, takes and returns equal)
+// and, once the caches are flushed, every slab is back with the OS.
+
+mod leak;
+
+import testing use *;
+import thread;
+import sync use *;
+import iobuf use *;
+
+const threads = 8u64;
+const perThread = 20000u64;
+
+struct Job {
+  pub id: u64;
+  pub tx: Sender[IoBuf];
+  pub flush: bool;
+}
+
+fn next(x: u64) u64 {
+  var v = x;
+  v = v ^ (v << 13u64);
+  v = v ^ (v >> 7u64);
+  v = v ^ (v << 17u64);
+  v
+}
+
+// A request size: mostly small, every class, and a few oversize
+fn pick(r: u64) usize {
+  if r < 40u64 {100usize}
+  else if r < 70u64 {5000usize}
+  else if r < 85u64 {20000usize}
+  else if r < 93u64 {70000usize}
+  else if r < 97u64 {300000usize}
+  else if r < 99u64 {1048576usize}
+  else {1500000usize}
+}
+
+fn worker(j: Job) u64 {
+  var rng = (j.id + 1u64) * 0x9E3779B97F4A7C15u64;
+  var held = Chain.make(1073741824usize);
+  var k = 0u64;
+  while k < perThread {
+    rng = next(rng);
+    var b = Pool.make().mustTake(pick((rng >> 20u64) % 100u64));
+    b.append("x");
+    if k % 7u64 == 0u64 {
+      j.tx.send(b);
+    } else {
+      held.push(b);
+    }
+    if held.segments() > 4usize {
+      held.advance(1usize);
+    }
+    k = k + 1u64;
+  }
+  if j.flush {flushThread();}
+  k
+}
+
+fn sink(rx: Receiver[IoBuf]) u64 {
+  var r = rx;
+  var n = 0u64;
+  while r.recv() is Some[IoBuf] {
+    n = n + 1u64;
+  }
+  n
+}
+
+fn main() i32 {
+  initAll();
+  setLimits(268435456usize, 0usize);
+  let pool = Pool.make();
+  var tx: Sender[IoBuf];
+  var rx: Receiver[IoBuf];
+  tx, rx = Channel[IoBuf].bounded(64usize);
+  let s = thread.start(rx, &sink);
+  var finished = 0u64;
+  {
+    var ws = thread.start(Job(0u64, tx.clone(), true), &worker);
+    var w1 = thread.start(Job(1u64, tx.clone(), false), &worker);
+    var w2 = thread.start(Job(2u64, tx.clone(), true), &worker);
+    var w3 = thread.start(Job(3u64, tx.clone(), false), &worker);
+    var w4 = thread.start(Job(4u64, tx.clone(), true), &worker);
+    var w5 = thread.start(Job(5u64, tx.clone(), false), &worker);
+    var w6 = thread.start(Job(6u64, tx.clone(), true), &worker);
+    var w7 = thread.start(Job(7u64, tx, false), &worker);
+    finished = ws.join() + w1.join() + w2.join() + w3.join() + w4.join() + w5.join() + w6.join() + w7.join();
+  }
+  let dropped = s.join();
+  expectUInt(finished, threads * perThread, "every worker finished");
+  expectUInt(dropped, 8u64 * ((perThread + 6u64) / 7u64), "the sink dropped every buffer sent to it");
+  let st = pool.stats();
+  expectUInt(st.takes, threads * perThread, "every take counted");
+  expectUInt(st.lent, 0u64, "every buffer home");
+  expectUInt(st.refused, 0u64, "none refused");
+  expect(st.cachedBytes > 0usize, "the threads that did not flush left their blocks cached, counted");
+  trimAll();
+  let t = pool.stats();
+  expectUInt(u64.from(t.cachedBytes), 0u64, "every cache flushed");
+  expectUInt(u64.from(t.heldBytes), 0u64, "nothing held");
+  expectUInt(u64.from(t.slabs), 0u64, "no slab");
+  expectUInt(t.osAllocs, t.osFrees, "every allocation from the OS freed");
+  expectUInt(osBlocks(), 0u64, "every block back with the OS");
+  expectUInt(osBytes(), 0u64, "no bytes");
+  done()
+}
