@@ -52,7 +52,8 @@ pub const SoftSurface = 1u32;     // along the surface from the selection
 // hashing for collision detection of deformable objects", 2003). A cell is
 // 'size' wide; a query reaches every cell its radius touches, so choose a
 // size about the radius you will ask for. It keeps a copy of the points: a
-// grid built before a stroke moved the mesh answers for the mesh as it was.
+// grid built before a stroke moved the mesh answers for the mesh as it was,
+// unless each move is given to it ('update').
 pub struct PointGrid {
   pub size: f32;
   pub pts: List[Vec3];
@@ -91,6 +92,33 @@ pub struct PointGrid {
       i = i + 1usize;
     }
     g
+  }
+
+  // Point i is now at p: the grid answers for it there from now on. A point
+  // that stays in its cell only has its place written; one that leaves is
+  // taken out of its old cell's chain and put at the head of its new one's
+  // (the chain order does not show: 'within' sorts what it finds).
+  pub fn update(self: &mut, i: u32, p: Vec3) {
+    let iu = usize.from(i);
+    pts.set(iu, p);
+    let x = cellOf(p.x, size);
+    let y = cellOf(p.y, size);
+    let z = cellOf(p.z, size);
+    if x == *cx[iu] && y == *cy[iu] && z == *cz[iu] { return; }
+    let old = usize.from(cellHash(*cx[iu], *cy[iu], *cz[iu]) & mask);
+    if *head[old] == i {
+      head.set(old, *next[iu]);
+    } else {
+      var o = *head[old];
+      while *next[usize.from(o)] != i { o = *next[usize.from(o)]; }
+      next.set(usize.from(o), *next[iu]);
+    }
+    cx.set(iu, x);
+    cy.set(iu, y);
+    cz.set(iu, z);
+    let s = usize.from(cellHash(x, y, z) & mask);
+    next.set(iu, *head[s]);
+    head.set(s, i);
   }
 
   // The points within 'radius' of 'centre' (their distance at most it), in

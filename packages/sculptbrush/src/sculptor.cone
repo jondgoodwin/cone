@@ -20,12 +20,14 @@
 // - Symmetry: after each dab, the same dab in the mirror of each subset of the
 //   stroke's planes (centre, direction and movement reflected), so three
 //   planes make eight dabs. Radial symmetry is not built.
-// - Dabs find their vertices through a spatial hash built when the stroke
-//   begins. Vertices move, so a query asks for the radius plus the farthest
-//   anything has moved since the hash was built (the sum of the dabs' largest
-//   moves), and the hash is rebuilt when that grows past half a radius; the
-//   vertices it returns are then tested at their present places. The result
-//   does not depend on when the hash was rebuilt.
+// - Dabs find their vertices through a spatial hash that every move is given
+//   to, so it always answers for the vertices where they are. It is built at
+//   the first stroke and kept while the strokes' radii stay within half and
+//   twice its cell (rebuilt to the new radius otherwise). A query asks for a
+//   little more than it needs and tests what comes back at the present
+//   places, so the result does not depend on when the hash was built.
+//   Questions about the surface as the stroke began (snapping, Pose's seed)
+//   ask for the radius plus the farthest anything has moved since.
 // - Grab, Elastic Deform, Move Topological and Pose are one movement, not a
 //   run of dabs: the first point is where the surface is taken hold of, the
 //   last where it is dragged to; the weights are found once on the surface as
@@ -76,9 +78,9 @@ pub struct Sculptor {
   pub base: List[Vec3];       // the persistent base ('captureBase'), for Layer
   pub hasBase: bool;
   pub start: List[Vec3];      // positions as the current stroke began
-  pub grid: PointGrid;
-  pub gridBound: f32;
-  pub cell: f32;
+  pub grid: PointGrid;        // kept at the present positions
+  pub drift: f32;             // the sum of each move's largest this stroke
+  pub cell: f32;              // the grid's cell, 0 before the first stroke
   pub touchedFlag: List[bool];
   pub touchedList: List[u32];
   pub allowed: List[bool];    // per vertex: inside the stroke's face set
@@ -95,8 +97,8 @@ pub struct Sculptor {
     var flags = List[bool].withCapacity(nv);
     var i = 0usize;
     while i < nv { flags.push(false); i = i + 1usize; }
-    let g = PointGrid.build(&work.positions, 1.);
-    Sculptor(work, List[Vec3].empty(), false, List[Vec3].empty(), g, 0., 1., flags, List[u32].empty(),
+    let g = PointGrid.build(&List[Vec3].empty(), 1.);
+    Sculptor(work, List[Vec3].empty(), false, List[Vec3].empty(), g, 0., 0., flags, List[u32].empty(),
       List[bool].empty(), false, NoIndex, 0u32, 0., 0.)
   }
 
@@ -122,17 +124,38 @@ pub struct Sculptor {
   // -------- one stroke --------
 
   // A point put on the surface as the stroke began: onto the tangent plane at the nearest
-  // vertex (found through the stroke's hash, at the stroke's start positions), looking
-  // out to a quarter radius, then two, then four. The error is the surface's departure from
-  // its tangent plane over an edge, far under a radius. A point with no vertex that near stays.
+  // vertex (at the stroke's start positions), looking out to a quarter radius, then two,
+  // then four. The error is the surface's departure from its tangent plane over an edge,
+  // far under a radius. A point with no vertex that near stays.
   fn snap(self: &, p: Vec3, rad: f32) Vec3 {
-    var near = grid.nearestWithin(p, 0.25 * rad);
-    if near == NoIndex { near = grid.nearestWithin(p, 2. * rad); }
-    if near == NoIndex { near = grid.nearestWithin(p, 4. * rad); }
+    var near = self.nearestAtStart(p, 0.25 * rad);
+    if near == NoIndex { near = self.nearestAtStart(p, 2. * rad); }
+    if near == NoIndex { near = self.nearestAtStart(p, 4. * rad); }
     if near == NoIndex { return p; }
     let n = vertexNormalOf(&mesh, &start, near);
     let x = *start[usize.from(near)];
     p - n * (p - x).dot(n)
+  }
+
+  // The vertex nearest p where the vertices were as the stroke began, within 'radius'
+  // (the lowest-numbered of equals), or NoIndex. None has moved farther than maxMove
+  // since, so the grid is asked out to the radius plus that.
+  fn nearestAtStart(self: &, p: Vec3, radius: f32) u32 {
+    let cands = grid.within(p, padded(radius + maxMove));
+    let r2 = radius * radius;
+    var best = NoIndex;
+    var bestD = 3.0e38f;
+    var i = 0usize;
+    while i < cands.len() {
+      let d = *start[usize.from(*cands[i])] - p;
+      let dd = d.dot(d);
+      if dd <= r2 && dd < bestD {
+        bestD = dd;
+        best = *cands[i];
+      }
+      i = i + 1usize;
+    }
+    best
   }
 
   pub fn stroke(self: &mut, st: &Stroke) StrokeReport {
@@ -147,9 +170,12 @@ pub struct Sculptor {
     maxMove = 0.;
     dabCount = 0u32;
     start = copyVec3s(&mesh.positions);
-    cell = if st.radius > 0. {st.radius} else {1.};
-    grid = PointGrid.build(&mesh.positions, cell);
-    gridBound = 0.;
+    let want = if st.radius > 0. {st.radius} else {1.};
+    if grid.pts.len() != nv || want < 0.5 * cell || want > 2. * cell {
+      cell = want;
+      grid = PointGrid.build(&mesh.positions, cell);
+    }
+    drift = 0.;
     maskCh = mesh.findFloatChannel(VertexDomain, "mask");
     if st.brush.kind == BrushMask && maskCh == NoIndex {
       maskCh = mesh.addFloatChannel(VertexDomain, "mask", 0.);
@@ -367,14 +393,9 @@ pub struct Sculptor {
       let disp = kernelDisp(self, st, &cx, &got.data);
       self.applyDisp(&got.data, &disp);
     }
-    // The hash goes stale as things move
-    if gridBound > 0.5 * cell {
-      grid = PointGrid.build(&mesh.positions, cell);
-      gridBound = 0.;
-    }
   }
 
-  // Write the displacements, mark the vertices moved
+  // Write the displacements (and tell the grid), mark the vertices moved
   fn applyDisp(self: &mut, d: &DabData, disp: &List[Vec3]) {
     var biggest = 0.f;
     var i = 0usize;
@@ -383,7 +404,9 @@ pub struct Sculptor {
       let mv = *disp[i];
       let len2 = mv.lengthSquared();
       if len2 > 0. {
-        mesh.positions.set(v, *mesh.positions[v] + mv);
+        let moved = *mesh.positions[v] + mv;
+        mesh.positions.set(v, moved);
+        grid.update(*d.vs[i], moved);
         if len2 > biggest { biggest = len2; }
         if !*touchedFlag[v] {
           touchedFlag.set(v, true);
@@ -394,7 +417,7 @@ pub struct Sculptor {
       }
       i = i + 1usize;
     }
-    gridBound = gridBound + biggest.sqrt();
+    drift = drift + biggest.sqrt();
   }
 
   // The mask brush: paint towards 1 (or, inverted, towards 0)
@@ -416,7 +439,7 @@ pub struct Sculptor {
   // gates, and the area normal. 'masked' is false for the mask brush, which
   // paints where it likes.
   fn gather(self: &, st: &Stroke, c: Vec3, dir: Vec3, rad: f32, reach: f32, mode: u32, masked: bool) Gathered {
-    let cands = grid.within(c, reach + gridBound);
+    let cands = grid.within(c, padded(reach));
     var vs = List[u32].empty();
     var nrms = List[Vec3].empty();
     var dists = List[f32].empty();
@@ -595,7 +618,7 @@ pub struct Sculptor {
     // Seed the sweep at the vertex nearest the click and its ring
     var seeds = List[u32].empty();
     var offs = List[f32].empty();
-    let near = grid.nearestWithin(c, reach + gridBound);
+    let near = self.nearestAtStart(c, reach + drift);
     if near == NoIndex { return; }
     seeds.push(near);
     offs.push((*mesh.positions[usize.from(near)] - c).length());
@@ -682,6 +705,10 @@ const ElasticReach = 3.5f;
 
 fn absf(a: f32) f32 {if a < 0. {-a} else {a}}
 fn clampf(v: f32, lo: f32, hi: f32) f32 {if v < lo {lo} else if v > hi {hi} else {v}}
+
+// A query radius a hair wider than r, so a point at r that rounding puts a bit
+// past it is still among the candidates (each is tested again exactly)
+fn padded(r: f32) f32 {r * 1.0001}
 
 fn copyVec3s(src: &List[Vec3]) List[Vec3] {
   var out = List[Vec3].withCapacity(src.len());
