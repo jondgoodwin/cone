@@ -415,6 +415,33 @@ fn recipe() {
   k = 0;
   while k < 12 { sc.stroke(&*strokes[usize.from(u32.from(k))]); k = k + 1; }
   expect(sameBits(&a, &sc.finish()), "determinism: strokes one at a time are the recipe in one call");
+  // The grid kept across strokes (and moved with the vertices) gives what a fresh one would:
+  // radii from 0.1 to 0.5 (some reuse the grid, some rebuild it), grabs and snake hooks
+  // that carry vertices across cells, one Sculptor reusing, one made to rebuild every stroke
+  var mixed = List[Stroke].empty();
+  k = 0;
+  while k < 16 {
+    let ang = f32.from(k) * 0.7;
+    let kind = if k % 4 == 0 {BrushDraw} else if k % 4 == 1 {BrushGrab} else if k % 4 == 2 {BrushSnakeHook} else {BrushCrease};
+    var pts = List[Vec3].empty();
+    pts.push(Vec3(0.3 * ang.cos(), 0.8, 0.3 * ang.sin()));
+    pts.push(Vec3(0.3 * ang.cos() + 0.2, 0.9, 0.3 * ang.sin() + 0.1));
+    let rad = 0.1 + 0.4 * f32.from(k % 5) / 4.;
+    mixed.push(Stroke.make(Brush.of(kind), pts, rad, 0.9));
+    k = k + 1;
+  }
+  var kept = Sculptor.of(&s0);
+  var fresh = Sculptor.of(&s0);
+  k = 0;
+  while k < 16 {
+    kept.stroke(&*mixed[usize.from(u32.from(k))]);
+    fresh.cell = 0.;
+    fresh.stroke(&*mixed[usize.from(u32.from(k))]);
+    k = k + 1;
+  }
+  let ka = kept.finish();
+  expect(sameBits(&ka, &fresh.finish()), "determinism: a grid kept across strokes gives the bits a fresh one does");
+  expect(!sameBits(&ka, &s0), "determinism: and the mixed recipe did something");
 }
 
 fn main() i32 {
