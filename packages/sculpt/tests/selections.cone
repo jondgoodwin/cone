@@ -121,6 +121,38 @@ fn dabs() {
   expectInt(i64.from(grid44.nearestWithin(Vec3(40., 0., 4.1), 1.)), i64.from(NoIndex), "grid: none within reach");
   let big = PointGrid.build(&m.positions, 0.1);
   expectInt(i64.from(big.within(Vec3(4., 0., 4.), 100.).len()), 100, "grid: a radius much larger than its cells finds all");
+
+  // A grid told of each move answers as one built over the moved points
+  var moving = PointGrid.build(&m.positions, 1.);
+  var now = List[Vec3].empty();
+  var i = 0usize;
+  while i < m.positions.len() { now.push(*m.positions[i]); i = i + 1usize; }
+  var step = 0;
+  while step < 300 {
+    let v = usize.from(u32.from((step * 37) % 100));
+    let p = *now[v];
+    let q = Vec3(p.x + 0.9 * f32.from(step % 7 - 3), p.y + 0.3 * f32.from(step % 3 - 1), p.z + 0.7 * f32.from(step % 5 - 2));
+    now.set(v, q);
+    moving.update(u32.from(v), q);
+    step = step + 1;
+  }
+  let rebuilt = PointGrid.build(&now, 1.);
+  var same = true;
+  var found = 0usize;
+  var c = 0;
+  while c < 40 {
+    let at = Vec3(f32.from(c % 10), 0., f32.from(c / 4));
+    let a = moving.within(at, 1.7);
+    let b = rebuilt.within(at, 1.7);
+    found = found + a.len();
+    if a.len() != b.len() { same = false; }
+    else {
+      var j = 0usize;
+      while j < a.len() { if *a[j] != *b[j] { same = false; } j = j + 1usize; }
+    }
+    c = c + 1;
+  }
+  expect(same && found > 100usize, "grid: updated as points move, it finds what a rebuilt grid finds");
 }
 
 fn within3(got: f32, want: f32, label: &Array[u8]) {
