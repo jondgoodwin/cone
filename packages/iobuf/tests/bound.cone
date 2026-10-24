@@ -1,84 +1,86 @@
-// The pool's two bounds. 'maxBytes' bounds what it holds from the OS, lent
-// and idle together: a take past it is refused, a None the caller sees, and
-// counted, never silent growth. Before refusing, it gives idle blocks of
-// other classes back to the OS to make room. 'keepBytes' bounds the idle
-// blocks it keeps: a block coming back past it goes back to the OS. 'trim'
-// gives every idle block back at once.
+// The pools' two process-wide bounds. 'maxBytes' bounds what they hold from
+// the OS, slabs and oversize blocks together: a slab that would pass it first
+// has the idle slabs of every class given back to make room (a refusal is a
+// panic: musttake.cone). 'keepBytes' bounds the idle bytes the stock keeps: when
+// blocks come home past it, slabs wholly idle go back to the OS, a whole slab
+// at a time and never below the bound. 'trim' gives every idle slab back at
+// once. 'Pool.make' with a bound given sets it for the process; with none, or
+// 0, leaves it.
 
 mod bound;
 
 import testing use *;
 import iobuf use *;
 
-fn refused(o: Option[IoBuf]) bool {
-  o is None[IoBuf]
-}
+const slab = 2097152usize;
 
 fn main() i32 {
   initAll();
-  // At most 64 KiB held: sixteen 4 KiB blocks
-  let pool = Pool.make(65536usize, 65536usize);
+  let pool = Pool.make();
+  expectUInt(u64.from(pool.stats().maxBytes), 67108864u64, "64 MiB held at most by default");
+  expectUInt(u64.from(pool.stats().keepBytes), 8388608u64, "8 MiB idle kept by default");
+
+  // A bound given sets the process's; none given leaves it
+  let tight = Pool.make(8388608usize, 2097152usize);
+  expectUInt(u64.from(pool.stats().maxBytes), 8388608u64, "8 MiB held at most now, for every handle");
+  expectUInt(u64.from(tight.stats().keepBytes), 2097152u64, "2 MiB idle kept");
+  let again = Pool.make();
+  expectUInt(u64.from(again.stats().maxBytes), 8388608u64, "a handle with no bound leaves them");
+
+  // The bound reached exactly: four slabs of 4 KiB blocks, 2048 buffers
   {
-    var held = Chain.make(1000000usize);
+    var held = Chain.make(4194304usize);
     var i = 0u32;
-    while i < 16u32 {
+    while i < 2048u32 {
       var b = pool.mustTake(1usize);
       b.append("x");
       held.push(b);
       i = i + 1u32;
     }
-    expectUInt(u64.from(pool.stats().heldBytes), 65536u64, "16 blocks held: the bound");
-    expect(refused(pool.take(1usize)), "the 17th is refused");
-    expect(refused(pool.take(65536usize)), "so is a larger one");
     let s = pool.stats();
-    expectUInt(s.refused, 2u64, "two refusals counted");
-    expectUInt(s.lent, 16u64, "sixteen lent");
-    held.advance(1usize);   // one segment consumed: its block comes back
-    expectUInt(pool.stats().lent, 15u64, "fifteen lent");
-    expect(!refused(pool.take(1usize)), "a take succeeds once one is back");
+    expectUInt(u64.from(s.heldBytes), 4u64 * u64.from(slab), "four slabs held: the bound");
+    expectUInt(u64.from(s.slabs), 4u64, "four slabs");
+    expectUInt(s.lent, 2048u64, "2048 lent");
+    expectUInt(s.osAllocs, 4u64, "four slabs from the OS");
+    held.advance(held.len());     // every buffer comes home, oldest first
   }
-  expectUInt(u64.from(pool.stats().idleBytes), 65536u64, "all sixteen idle now");
-
-  // A 64 KiB take finds no idle 64 KiB block and no room: the idle 4 KiB
-  // blocks go back to the OS to make it
   {
-    let before = pool.stats();
+    let s = pool.stats();
+    expectUInt(s.lent, 0u64, "all home");
+    expect(s.osFrees >= 1u64, "slabs beyond the bound on idle bytes went back to the OS");
+    expect(s.stockBytes < s.keepBytes + slab, "the stock keeps less than the bound and a slab");
+    expect(s.stockBytes >= s.keepBytes - 262144usize, "but not much less: it never goes below the bound");
+    expectUInt(s.osAllocs - s.osFrees, u64.from(s.slabs), "the OS counts agree with the slabs");
+    expectUInt(osBlocks(), u64.from(s.slabs), "and with the blocks the OS holds");
+  }
+  pool.trim();
+  expectUInt(osBlocks(), 0u64, "trim gives every idle slab back");
+  expectUInt(u64.from(pool.stats().heldBytes), 0u64, "none held");
+
+  // Room is made: with 3 MiB the bound, one 4 KiB slab leaves no room for a
+  // 64 KiB one until the idle slab goes back
+  Pool.make(3145728usize, 3145728usize);
+  {
+    let a = pool.mustTake(1usize);
+  }   // its block is in this thread's cache; the slab is not wholly idle
+  expectUInt(osBlocks(), 1u64, "a 4 KiB slab held, idle but for a cached block");
+  let before = pool.stats();
+  {
     let big = pool.mustTake(65536usize);
     let s = pool.stats();
-    expectUInt(s.osFrees - before.osFrees, 16u64, "sixteen idle 4 KiB blocks freed to make room");
-    expectUInt(u64.from(s.heldBytes), 65536u64, "held: the one 64 KiB block");
-    expectUInt(u64.from(s.idleBytes), 0u64, "nothing idle");
+    expectUInt(s.osFrees - before.osFrees, 1u64, "the idle slab went back to make room");
+    expectUInt(u64.from(s.heldBytes), u64.from(slab), "held: the 64 KiB slab alone");
   }
 
-  // keepBytes: at most 8 KiB idle. Of three 4 KiB blocks coming back, two
-  // are kept and the third goes back to the OS
+  // An oversize block is counted against the bound, and never kept idle
+  Pool.make(8388608usize, 8388608usize);
+  pool.trim();
   {
-    let small = Pool.make(65536usize, 8192usize);
-    {
-      let a = small.mustTake(1usize);
-      let b = small.mustTake(1usize);
-      let c = small.mustTake(1usize);
-    }
-    let s = small.stats();
-    expectUInt(u64.from(s.idleBytes), 8192u64, "two kept idle");
-    expectUInt(s.osFrees, 1u64, "the third freed");
-    expectUInt(u64.from(s.heldBytes), 8192u64, "held: the two idle");
-    small.trim();
-    let t = small.stats();
-    expectUInt(u64.from(t.heldBytes), 0u64, "trim gives every idle block back");
-    expectUInt(t.osFrees, 3u64, "three freed in all");
-    expect(refused(small.take(70000usize)), "a take larger than the whole bound is refused");
+    let big = pool.mustTake(2000000usize);
+    expectUInt(u64.from(big.capacity()), 2002944u64, "oversize, rounded to pages");
+    expectUInt(u64.from(pool.stats().heldBytes), 2002944u64, "and counted against the bound");
   }
-
-  // An oversize block is never kept idle, however much room keepBytes has
-  {
-    let roomy = Pool.make(4194304usize, 4194304usize);
-    {
-      let big = roomy.mustTake(2000000usize);
-      expectUInt(u64.from(big.capacity()), 2002944u64, "oversize, rounded to pages");
-      expectUInt(u64.from(roomy.stats().heldBytes), 2002944u64, "and counted against the bound");
-    }
-    expectUInt(u64.from(roomy.stats().heldBytes), 0u64, "the oversize block went back to the OS");
-  }
+  expectUInt(u64.from(pool.stats().heldBytes), 0u64, "the oversize block went back to the OS");
+  expectUInt(osBlocks(), 0u64, "nothing held");
   done()
 }

@@ -1,5 +1,6 @@
-// 'mustTake' where the bound refuses: a panic reported at the caller's line,
-// for a program that treats a full pool as a bug rather than a pause.
+// Out of memory is a panic for now: with the process's bound at one slab
+// (2 MiB), the 512 blocks of a 4 KiB slab are taken, and the 513th has no
+// slab to be carved from. The panic is reported at the caller's line.
 
 mod musttake;
 
@@ -7,9 +8,16 @@ import stdio use *;
 import iobuf use *;
 
 fn main() {
-  let pool = Pool.make(4096usize, 4096usize);
-  let a = pool.mustTake(1usize);
-  printStr("one block taken\n");
+  let pool = Pool.make(2097152usize, 2097152usize);
+  var held = Chain.make(4194304usize);
+  var i = 0u32;
+  while i < 512u32 {
+    var b = pool.mustTake(1usize);
+    b.append("x");
+    held.push(b);
+    i = i + 1u32;
+  }
+  printStr("512 blocks taken\n");
   let b = pool.mustTake(1usize);
   printStr("not reached\n");
 }

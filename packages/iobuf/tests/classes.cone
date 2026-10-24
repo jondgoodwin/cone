@@ -1,9 +1,9 @@
 // Size classes: a request is served from the smallest class that holds it --
 // 4, 16, 64 and 256 KiB and 1 MiB -- and a larger one is oversize, a block of
 // its own rounded up to whole 4 KiB pages. Every block is 4 KiB-aligned. A
-// class's block comes back idle, to be reused; an oversize block goes back to
-// the OS as it dies. Once the pool and its buffers are gone, nothing is held
-// from the OS.
+// class's block comes back to be reused; an oversize block goes back to the
+// OS as it dies. Each class is carved from slabs of 2 MiB. Once every buffer
+// is home and the pools are trimmed, nothing is held from the OS.
 
 mod classes;
 
@@ -43,20 +43,26 @@ fn main() i32 {
     let s = pool.stats();
     expectUInt(s.takes, 13u64, "13 takes");
     expectUInt(s.lent, 0u64, "every buffer back");
-    // Each class's block kept idle once, and reused within its class
-    expectUInt(s.osAllocs, 7u64, "five class blocks and two oversize ones from the OS");
-    expectUInt(s.reuses, 6u64, "the rest reused");
+    expectUInt(s.refused, 0u64, "none refused");
+    // One slab for each class, and the two oversize blocks, which went back
+    expectUInt(s.osAllocs, 7u64, "five slabs and two oversize blocks from the OS");
     expectUInt(s.osFrees, 2u64, "the oversize blocks freed as they died");
-    expectUInt(u64.from(s.idleBytes), 4096u64 + 16384u64 + 65536u64 + 262144u64 + 1048576u64,
-      "one idle block per class");
-    expectUInt(u64.from(s.heldBytes), u64.from(s.idleBytes), "held is idle: nothing lent");
+    expectUInt(u64.from(s.slabs), 5u64, "five slabs");
+    // Each class's block returned and taken again from the thread's own
+    // cache, but the 1 MiB class has none, and an oversize block is no reuse
+    expectUInt(s.reuses, 5u64, "the rest reused from the cache");
+    expectUInt(u64.from(s.heldBytes), 5u64 * 2097152u64, "five slabs of 2 MiB held");
     expectUInt(osBlocks(), 5u64, "five blocks held from the OS");
+    expectUInt(osBytes(), 5u64 * 2097152u64, "ten MiB held from the OS");
 
     // classSize names the ladder
     expectUInt(u64.from(classSize(0u32)), 4096u64, "class 0");
     expectUInt(u64.from(classSize(4u32)), u64.from(largestClass), "class 4 is the largest");
+
+    pool.trim();
+    expectUInt(osBlocks(), 0u64, "trim gives every idle slab back");
+    expectUInt(osBytes(), 0u64, "no bytes held from the OS");
+    expectUInt(u64.from(pool.stats().heldBytes), 0u64, "none held");
   }
-  expectUInt(osBlocks(), 0u64, "the pool's death frees its idle blocks");
-  expectUInt(osBytes(), 0u64, "no bytes held from the OS");
   done()
 }

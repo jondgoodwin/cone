@@ -1,0 +1,121 @@
+// Slabs: a class's blocks are carved from slabs of 2 MiB the OS gave, one
+// allocation for 512 blocks of 4 KiB (not one each), 128 of 16 KiB, 32 of
+// 64 KiB, 8 of 256 KiB and 2 of 1 MiB. Blocks never overlap and never move:
+// every buffer of a class is filled with its own byte, and none is disturbed
+// by taking the rest. A slab goes back to the OS whole, only once every one of
+// its blocks is home.
+
+mod slabs;
+
+import testing use *;
+import iobuf use *;
+
+const slab = 2097152u64;
+
+fn patternOf(k: usize) u8 {u8.from(k % 251usize) + 1u8}
+
+// Take n buffers of the class holding size bytes, fill each wholly with its
+// own byte, and hold them on a chain
+fn takeAll(pool: &Pool, size: usize, n: usize, c: &mut Chain) {
+  var k = 0usize;
+  while k < n {
+    var b = pool.mustTake(size);
+    let w = b.whole();
+    let v = patternOf(k);
+    var i = 0usize;
+    while i < w.len {
+      w[i] = v;
+      i = i + 1usize;
+    }
+    b.setLen(b.capacity());
+    c.push(b);
+    k = k + 1usize;
+  }
+}
+
+// Every buffer on the chain still holds its own byte
+fn intact(c: &Chain, cap: usize, n: usize) bool {
+  var k = 0usize;
+  while k < n {
+    match c.contiguous(k * cap, cap) {
+      case let Some(s) {
+        let v = patternOf(k);
+        var i = 0usize;
+        while i < s.len {
+          if s[i] != v {return false;}
+          i = i + 1usize;
+        }
+      }
+      case is None[&Array[u8]] {return false;}
+    }
+    k = k + 1usize;
+  }
+  true
+}
+
+fn main() i32 {
+  initAll();
+  let pool = Pool.make();
+
+  // 4 KiB: 1100 buffers are 3 slabs (512 + 512 + 76), not 1100 allocations
+  {
+    var c = Chain.make(8388608usize);
+    takeAll(&pool, 4096usize, 1100usize, &mut c);
+    let s = pool.stats();
+    expectUInt(s.osAllocs, 3u64, "three slabs for 1100 blocks of 4 KiB");
+    expectUInt(osBlocks(), 3u64, "three allocations held from the OS");
+    expectUInt(osBytes(), 3u64 * slab, "6 MiB");
+    expect(intact(&c, 4096usize, 1100usize), "no block disturbs another");
+    expectUInt(s.lent, 1100u64, "1100 lent");
+  }
+  pool.trim();
+  expectUInt(osBlocks(), 0u64, "every slab back once its blocks are");
+
+  // 16 KiB: 128 to a slab
+  {
+    var c = Chain.make(8388608usize);
+    takeAll(&pool, 16384usize, 129usize, &mut c);
+    expectUInt(osBlocks(), 2u64, "129 blocks of 16 KiB are two slabs");
+    expect(intact(&c, 16384usize, 129usize), "16 KiB blocks intact");
+  }
+  pool.trim();
+  // 64 KiB: 32 to a slab
+  {
+    var c = Chain.make(8388608usize);
+    takeAll(&pool, 65536usize, 33usize, &mut c);
+    expectUInt(osBlocks(), 2u64, "33 blocks of 64 KiB are two slabs");
+    expect(intact(&c, 65536usize, 33usize), "64 KiB blocks intact");
+  }
+  pool.trim();
+  // 256 KiB: 8 to a slab
+  {
+    var c = Chain.make(16777216usize);
+    takeAll(&pool, 262144usize, 9usize, &mut c);
+    expectUInt(osBlocks(), 2u64, "9 blocks of 256 KiB are two slabs");
+    expect(intact(&c, 262144usize, 9usize), "256 KiB blocks intact");
+  }
+  pool.trim();
+  // 1 MiB: 2 to a slab
+  {
+    var c = Chain.make(16777216usize);
+    takeAll(&pool, 1048576usize, 5usize, &mut c);
+    expectUInt(osBlocks(), 3u64, "5 blocks of 1 MiB are three slabs");
+    expect(intact(&c, 1048576usize, 5usize), "1 MiB blocks intact");
+  }
+  pool.trim();
+  expectUInt(osBlocks(), 0u64, "all given back");
+
+  // A slab with one block still lent is not given back
+  {
+    var c = Chain.make(8388608usize);
+    takeAll(&pool, 4096usize, 512usize, &mut c);
+    let one = pool.mustTake(1usize);        // the 513th: a second slab
+    expectUInt(osBlocks(), 2u64, "two slabs");
+    c.advance(c.len());                      // the first slab's blocks come home
+    pool.trim();
+    expectUInt(osBlocks(), 1u64, "the first slab goes back; the second holds a lent block");
+  }
+  pool.trim();
+  expectUInt(osBlocks(), 0u64, "and then the second");
+  done()
+}

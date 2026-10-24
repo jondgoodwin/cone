@@ -1,0 +1,741 @@
+// Fixed-size blocks with per-thread caches: the mechanism the I/O buffer pools
+// are built on, written so that anything wanting a stock of equal-sized blocks
+// (the mailbox rings' segments, later) can register a class of its own. It is
+// part of the iobuf module, and knows nothing of IoBuf.
+//
+//   registerClass(blockSize, slabSize, cacheBlocks)   a class; during init   (CLASSES)
+//   blockTake(c)         a block of class c and its slab token; null when
+//                        the bound or the OS refuses
+//   blockPut(c, b, slab) a block comes home
+//   flushThread()        this thread's cache goes back to the stock             (THREADS)
+//   trimStock()          every idle slab goes back to the OS                    (THE OS)
+//   trimEverything()     the same after every thread's cache is flushed
+//   setLimits(maxBytes, keepBytes)  the process-wide bounds
+//   holdOversize(n) / releaseOversize(b, n)   a block of its own, counted in the bound
+//   blockStats()         the counters, a BlockStats
+//
+// CLASSES. A class is a block size and the slab it is carved from. A SLAB is
+// one allocation from the OS (VirtualAlloc, mmap) of slabSize bytes, carved
+// into slabSize / blockSize blocks; blocks never move, and the slab goes back
+// to the OS whole, when every one of its blocks is home in the stock. A block
+// is at least 8 bytes: while it sits idle in the stock its first word links it
+// to the next. Taking one answers the block and its slab's TOKEN (a pointer to
+// the slab's record), which the caller keeps beside the block while it is lent:
+// blockPut wants it back, so that no lookup from an address to its slab is
+// needed. Classes are registered while modules initialise, before any thread
+// takes a block: at most 8, each with a cache of at most 32 blocks.
+//
+// THREADS. Each thread has a CACHE: for each class a stack of idle blocks (an
+// array of block and token pairs in the thread's own record, so that taking
+// one touches nothing of the block), at most cacheBlocks of them, and so at
+// most cacheBlocks * blockSize bytes. A take pops the thread's own stack and a
+// return pushes it, touching no lock and no other thread's memory. An empty
+// stack refills from the central stock a batch at a time (half the bound, at
+// least one); a full one gives its OLDEST batch back, so a block cannot sit at
+// the bottom of a cache pinning a slab. A block thus goes home to the cache of
+// whichever thread it dies on. A class with cacheBlocks of 0 has no cache:
+// each take and return is one locked step.
+//
+// The cache is a malloc'd record found through one '@threadlocal' pointer,
+// not stored in the '@threadlocal' itself, because nothing finalizes a thread's
+// copy of a '@threadlocal' yet when its thread ends (the manual's mod-globals
+// says so). Every record is on a registry. A thread of Cone's own that is
+// about to end calls flushThread, which gives its blocks back to the stock and
+// retires the record for the next thread to reuse. A thread that ends without
+// doing so (one the program started through the OS, or a worker that ends
+// with the process) leaves its record, and the blocks in it, on the registry:
+// counted in the stats as cached bytes, not lost, and given back when the
+// module finalizes, or by trimEverything.
+//
+// THE STOCK. For each class, a lock and a list of slabs; each slab has its own
+// free list of returned blocks and a bump mark for the blocks never yet
+// handed out, so a fresh slab touches no memory until its blocks are used. The
+// stock takes the first slab with a block to give. One process-wide bound
+// (default 64 MiB) limits the bytes held from the OS, slabs and oversize
+// blocks together: a slab that would pass it first has the idle slabs of
+// every class given back, then the thread's own cache flushed, and if that is
+// not enough blockTake answers null (and the I/O pools panic: out of memory is
+// not yet a value; the refined handling is deferred). A second bound (default
+// 8 MiB) is the idle bytes the stock keeps: when blocks come home and the
+// idle bytes pass it, slabs wholly idle are given back to the OS, a whole slab
+// at a time, but never below the bound, so a steady load does not make the OS
+// calls it saved.
+//
+// COUNTS. Each thread counts its own takes and returns, per class, in its
+// record (plain numbers, no atomics: one add on the path); the stats add them
+// up. So they are exact once the threads that took and returned have stopped;
+// read while others run, they are a sum of moments. The OS counters and the
+// stock's are exact: kept under its locks or atomically.
+//
+// CAVEATS (what only the program can keep true):
+// - A thread's cache is touched only by that thread, except by trimEverything
+//   and the module's final, which the caller runs when no other thread is
+//   taking or returning blocks.
+// - A block is returned once, to the class it came from, with its own token.
+// - The module's final gives back every slab whose blocks are all home; a
+//   slab with a block still lent (a leak) is left, and osBlocks() shows it.
+
+const maxClasses = 8usize;
+const maxCache = 32u32;
+
+// A slab's record, malloc'd. Reached only under its class's lock
+struct SlabRec {
+  base: *u8;
+  size: usize;       // bytes from the OS
+  total: u32;        // blocks in the slab
+  carved: u32;       // blocks handed out at least once: the bump mark
+  used: u32;         // blocks outside the stock: cached or lent
+  listed: u32;       // 1 while on the class's list of slabs with a block to give
+  freeHead: *u8;     // returned blocks, linked
+  nextP: *SlabRec;   // the list of slabs with a block to give
+  prevP: *SlabRec;
+  nextA: *SlabRec;   // the list of every slab
+  prevA: *SlabRec;
+}
+
+// A class's stock. Every field is reached under 'lock', except the class's
+// constants, set once at registration, and the counters other threads read
+// to total (idleBlocks, slabs)
+struct ClassState {
+  lock: Mutex;
+  blockSize: usize;
+  slabSize: usize;
+  perSlab: u32;
+  cacheCap: u32;
+  batch: u32;
+  active: u32;
+  all: *SlabRec;
+  partial: *SlabRec;       // the head: the next slab to give from
+  partialTail: *SlabRec;
+  slabs: usize;
+  idleBlocks: usize;       // blocks in free lists: returned, idle in the stock
+}
+
+// A block and its slab's token: what a cache holds, and what moves between
+// cache and stock
+struct Held {
+  blk: *u8;
+  slab: *u8;
+}
+
+// One thread's stack of idle blocks of a class
+struct CacheLine {
+  count: u32;
+  cap: u32;
+  slots: Array[Held, 32];
+}
+
+// One thread's cache, malloc'd and on the registry for good
+struct ThreadCache {
+  lines: Array[CacheLine, 8];
+  takes: Array[u64, 8];
+  returns: Array[u64, 8];
+  misses: u64;               // takes that had to go to the stock
+  nextReg: *ThreadCache;     // every record ever made
+  nextFree: *ThreadCache;    // the retired ones, for reuse
+  live: u32;                 // 1 while a thread has it
+}
+
+// Everything the mechanism shares, one malloc'd record found by 'gAddr'
+struct Globals {
+  classes: Array[ClassState, 8];
+  regLock: Mutex;
+  regHead: *ThreadCache;
+  freeRecs: *ThreadCache;
+  nClasses: usize;
+  maxBytes: Atomic[u64];
+  keepBytes: Atomic[u64];
+  held: Atomic[u64];         // bytes held from the OS, or about to be
+  osAllocs: Atomic[u64];     // slabs and oversize blocks got from the OS
+  osFrees: Atomic[u64];      // and given back
+  bigLent: Atomic[u64];      // oversize blocks lent now
+  bigBytes: Atomic[u64];     // and their bytes
+  bigTakes: Atomic[u64];     // oversize blocks ever lent
+}
+
+pub const defaultMaxBytes = 67108864usize;     // 64 MiB held from the OS at most
+pub const defaultKeepBytes = 8388608usize;     // 8 MiB of idle blocks kept
+
+let gAddr: Atomic[usize];
+
+var @threadlocal myCache: *ThreadCache = null;
+
+// Called by the module's init, after it has made 'gAddr'
+fn @initpure blocksInit() {
+  let g = libc.calloc(1usize, mem.sizeof[Globals]()) as *Globals;
+  if g as usize == 0usize {
+    panic("iobuf: out of memory for the block stock");
+  }
+  (*g).regLock = Mutex.make();
+  var c = 0usize;
+  while c < maxClasses {
+    (*classAt(g, c)).lock = Mutex.make();
+    c = c + 1usize;
+  }
+  (*g).maxBytes = Atomic[u64].of(u64.from(defaultMaxBytes));
+  (*g).keepBytes = Atomic[u64].of(u64.from(defaultKeepBytes));
+  (*g).held = Atomic[u64].of(0u64);
+  (*g).osAllocs = Atomic[u64].of(0u64);
+  (*g).osFrees = Atomic[u64].of(0u64);
+  (*g).bigLent = Atomic[u64].of(0u64);
+  (*g).bigBytes = Atomic[u64].of(0u64);
+  (*g).bigTakes = Atomic[u64].of(0u64);
+  gAddr.store(g as usize);
+}
+
+fn glob() *Globals {gAddr.loadOrdered(MemOrder.Relaxed) as *Globals}
+
+fn classAt(g: *Globals, c: usize) *ClassState {
+  ((&(*g).classes) as *ClassState) + c
+}
+
+fn lineAt(tc: *ThreadCache, c: usize) *CacheLine {
+  ((&(*tc).lines) as *CacheLine) + c
+}
+
+fn slotsOf(ln: *CacheLine) *Held {
+  (&(*ln).slots) as *Held
+}
+
+fn takesAt(tc: *ThreadCache, c: usize) *u64 {
+  ((&(*tc).takes) as *u64) + c
+}
+
+fn returnsAt(tc: *ThreadCache, c: usize) *u64 {
+  ((&(*tc).returns) as *u64) + c
+}
+
+// An idle block in the stock: its first word links it to the next
+fn linkNext(b: *u8) *u8 {*(b as **u8)}
+fn setNext(b: *u8, next: *u8) {*(b as **u8) = next;}
+
+// Register a class of blocks of blockSize bytes (at least 8, a multiple of 8)
+// carved from slabs of slabSize bytes, each thread keeping up to cacheBlocks
+// (at most 32) of them. Answers its number. During module initialisation only
+pub fn registerClass(blockSize: usize, slabSize: usize, cacheBlocks: u32) usize {
+  let g = glob();
+  let c = (*g).nClasses;
+  if c >= maxClasses {
+    panic("iobuf: too many block classes");
+  }
+  if blockSize < 8usize || slabSize < blockSize || cacheBlocks > maxCache {
+    panic("iobuf: a block class needs blocks of 8 bytes or more in a slab of at least one, and a cache of 32 at most");
+  }
+  let cs = classAt(g, c);
+  (*cs).blockSize = blockSize;
+  (*cs).slabSize = slabSize;
+  (*cs).perSlab = u32.from(slabSize / blockSize);
+  (*cs).cacheCap = cacheBlocks;
+  let half = cacheBlocks / 2u32;
+  (*cs).batch = if half == 0u32 {1u32} else {half};
+  (*cs).active = 1u32;
+  (*g).nClasses = c + 1usize;
+  c
+}
+
+// The process-wide bounds, in bytes held from the OS and idle bytes kept. A
+// zero leaves the bound as it is
+pub fn setLimits(maxBytes: usize, keepBytes: usize) {
+  let g = glob();
+  if maxBytes != 0usize {(*g).maxBytes.store(u64.from(maxBytes));}
+  if keepBytes != 0usize {(*g).keepBytes.store(u64.from(keepBytes));}
+}
+
+// ---------------------------------------------------------------------------
+// The thread's cache
+// ---------------------------------------------------------------------------
+
+fn threadCache() *ThreadCache {
+  let tc = myCache;
+  if tc as usize != 0usize {
+    return tc;
+  }
+  makeCache()
+}
+
+// The calling thread's record: a retired one, or a new one on the registry
+fn makeCache() *ThreadCache {
+  let g = glob();
+  (*g).regLock.lock();
+  var tc = (*g).freeRecs;
+  if tc as usize != 0usize {
+    (*g).freeRecs = (*tc).nextFree;
+    (*tc).nextFree = null;
+  } else {
+    tc = libc.calloc(1usize, mem.sizeof[ThreadCache]()) as *ThreadCache;
+    if tc as usize == 0usize {
+      (*g).regLock.unlock();
+      panic("iobuf: out of memory for a thread's cache");
+    }
+    (*tc).nextReg = (*g).regHead;
+    (*g).regHead = tc;
+  }
+  (*tc).live = 1u32;
+  var c = 0usize;
+  while c < maxClasses {
+    (*lineAt(tc, c)).cap = (*classAt(g, c)).cacheCap;
+    c = c + 1usize;
+  }
+  (*g).regLock.unlock();
+  myCache = tc;
+  tc
+}
+
+// ---------------------------------------------------------------------------
+// Taking and returning
+// ---------------------------------------------------------------------------
+
+// A block of class c and its token, or null when the bound, or the OS, will
+// not give one
+pub fn blockTake(c: usize) *u8, *u8 {
+  let tc = threadCache();
+  let t = takesAt(tc, c);
+  *t = *t + 1u64;
+  let ln = lineAt(tc, c);
+  let n = (*ln).count;
+  if n != 0u32 {
+    let e = slotsOf(ln) + usize.from(n - 1u32);
+    (*ln).count = n - 1u32;
+    return (*e).blk, (*e).slab;
+  }
+  refill(tc, c, ln)
+}
+
+// The cache is empty: a batch from the stock, one block of it answered
+fn refill(tc: *ThreadCache, c: usize, ln: *CacheLine) *u8, *u8 {
+  (*tc).misses = (*tc).misses + 1u64;
+  let g = glob();
+  let cs = classAt(g, c);
+  let want = if (*ln).cap == 0u32 {1u32} else {(*cs).batch};
+  let got = stockTake(g, cs, want, slotsOf(ln));
+  if got == 0u32 {
+    let t = takesAt(tc, c);
+    *t = *t - 1u64;
+    return null, null;
+  }
+  let e = slotsOf(ln) + usize.from(got - 1u32);
+  (*ln).count = got - 1u32;
+  (*e).blk, (*e).slab
+}
+
+// Block b of class c, whose token is slab, comes home
+pub fn blockPut(c: usize, b: *u8, slab: *u8) {
+  let tc = threadCache();
+  let r = returnsAt(tc, c);
+  *r = *r + 1u64;
+  let ln = lineAt(tc, c);
+  if (*ln).count >= (*ln).cap {
+    spill(tc, c, ln);
+    if (*ln).cap == 0u32 {
+      // no cache: the block goes straight to the stock
+      let e = slotsOf(ln);
+      (*e).blk = b;
+      (*e).slab = slab;
+      stockPut(glob(), classAt(glob(), c), e, 1u32);
+      return;
+    }
+  }
+  let e = slotsOf(ln) + usize.from((*ln).count);
+  (*e).blk = b;
+  (*e).slab = slab;
+  (*ln).count = (*ln).count + 1u32;
+}
+
+// The cache is full: its oldest batch back to the stock, the rest moved down
+fn spill(tc: *ThreadCache, c: usize, ln: *CacheLine) {
+  let n = (*ln).count;
+  if n == 0u32 {
+    return;
+  }
+  let g = glob();
+  let cs = classAt(g, c);
+  let k = if (*cs).batch < n {(*cs).batch} else {n};
+  stockPut(g, cs, slotsOf(ln), k);
+  mem.moveRaw[Held](slotsOf(ln), slotsOf(ln) + usize.from(k), usize.from(n - k));
+  (*ln).count = n - k;
+}
+
+// All of this thread's cache back to the stock, and its record retired for
+// the next thread. A thread of Cone's own calls it before it ends
+pub fn flushThread() {
+  let tc = myCache;
+  if tc as usize == 0usize {
+    return;
+  }
+  flushCache(tc);
+  let g = glob();
+  (*g).regLock.lock();
+  (*tc).live = 0u32;
+  (*tc).nextFree = (*g).freeRecs;
+  (*g).freeRecs = tc;
+  (*g).regLock.unlock();
+  myCache = null;
+}
+
+// Every block of tc's lines back to the stock
+fn flushCache(tc: *ThreadCache) {
+  let g = glob();
+  var c = 0usize;
+  while c < maxClasses {
+    let ln = lineAt(tc, c);
+    let n = (*ln).count;
+    if n != 0u32 {
+      (*ln).count = 0u32;
+      stockPut(g, classAt(g, c), slotsOf(ln), n);
+    }
+    c = c + 1usize;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The central stock
+// ---------------------------------------------------------------------------
+
+// Up to want blocks of class c, written to dest; at least one, or 0 when the
+// bound or the OS refuses a slab
+fn stockTake(g: *Globals, cs: *ClassState, want: u32, dest: *Held) u32 {
+  while true {
+    (*cs).lock.lock();
+    let got = takeLocked(cs, want, dest);
+    (*cs).lock.unlock();
+    if got > 0u32 {
+      return got;
+    }
+    if !newSlab(g, cs) {
+      return 0u32;
+    }
+  }
+  0u32
+}
+
+// Under the lock: pop blocks from the slabs that have them
+fn takeLocked(cs: *ClassState, want: u32, dest: *Held) u32 {
+  var got = 0u32;
+  while got < want {
+    let s = (*cs).partial;
+    if s as usize == 0usize {
+      break;
+    }
+    var b = (*s).freeHead;
+    if b as usize != 0usize {
+      (*s).freeHead = linkNext(b);
+      (*cs).idleBlocks = (*cs).idleBlocks - 1usize;
+    } else {
+      b = (*s).base + usize.from((*s).carved) * (*cs).blockSize;
+      (*s).carved = (*s).carved + 1u32;
+    }
+    (*s).used = (*s).used + 1u32;
+    if (*s).used == (*s).total {
+      unlistPartial(cs, s);
+    }
+    let e = dest + usize.from(got);
+    (*e).blk = b;
+    (*e).slab = s as *u8;
+    got = got + 1u32;
+  }
+  got
+}
+
+fn unlistPartial(cs: *ClassState, s: *SlabRec) {
+  let p = (*s).prevP;
+  let n = (*s).nextP;
+  if p as usize != 0usize {(*p).nextP = n;} else {(*cs).partial = n;}
+  if n as usize != 0usize {(*n).prevP = p;} else {(*cs).partialTail = p;}
+  (*s).nextP = null;
+  (*s).prevP = null;
+  (*s).listed = 0u32;
+}
+
+fn listPartial(cs: *ClassState, s: *SlabRec) {
+  (*s).nextP = null;
+  (*s).prevP = (*cs).partialTail;
+  if (*cs).partialTail as usize != 0usize {
+    (*(*cs).partialTail).nextP = s;
+  } else {
+    (*cs).partial = s;
+  }
+  (*cs).partialTail = s;
+  (*s).listed = 1u32;
+}
+
+// The n blocks at src come home to the stock; then idle slabs beyond the bound
+// on idle bytes go back to the OS
+fn stockPut(g: *Globals, cs: *ClassState, src: *Held, n: u32) {
+  (*cs).lock.lock();
+  var i = 0usize;
+  let count = usize.from(n);
+  while i < count {
+    let e = src + i;
+    let b = (*e).blk;
+    let s = (*e).slab as *SlabRec;
+    setNext(b, (*s).freeHead);
+    (*s).freeHead = b;
+    (*s).used = (*s).used - 1u32;
+    if (*s).listed == 0u32 {
+      listPartial(cs, s);
+    }
+    i = i + 1usize;
+  }
+  (*cs).idleBlocks = (*cs).idleBlocks + count;
+  var doomed = null as *SlabRec;
+  let keep = (*g).keepBytes.load();
+  if idleBytes(g) > keep {
+    doomed = reclaim(g, cs, keep);
+  }
+  (*cs).lock.unlock();
+  freeSlabs(g, doomed);
+}
+
+// Total bytes idle in the stock, every class. The other classes' counts are
+// read without their locks: a hint
+fn idleBytes(g: *Globals) u64 {
+  var total = 0u64;
+  var c = 0usize;
+  let n = (*g).nClasses;
+  while c < n {
+    let cs = classAt(g, c);
+    total = total + u64.from((*cs).idleBlocks * (*cs).blockSize);
+    c = c + 1usize;
+  }
+  total
+}
+
+// Under the lock: unlink the wholly idle slabs of cs that can go while the
+// stock still keeps 'keep' idle bytes (keep 0: every one). A list linked by
+// nextA, for freeSlabs
+fn reclaim(g: *Globals, cs: *ClassState, keep: u64) *SlabRec {
+  var doomed = null as *SlabRec;
+  var idle = idleBytes(g);
+  var s = (*cs).all;
+  while s as usize != 0usize {
+    let next = (*s).nextA;
+    if (*s).used == 0u32 {
+      let own = u64.from(usize.from((*s).carved) * (*cs).blockSize);
+      if idle >= keep + own {
+        if (*s).listed != 0u32 {unlistPartial(cs, s);}
+        let p = (*s).prevA;
+        if p as usize != 0usize {(*p).nextA = next;} else {(*cs).all = next;}
+        if next as usize != 0usize {(*next).prevA = p;}
+        (*cs).slabs = (*cs).slabs - 1usize;
+        (*cs).idleBlocks = (*cs).idleBlocks - usize.from((*s).carved);
+        idle = idle - own;
+        (*s).nextA = doomed;
+        (*s).prevA = null;
+        doomed = s;
+      }
+    }
+    s = next;
+  }
+  doomed
+}
+
+// Outside any lock: give slabs, unlinked by reclaim, back to the OS
+fn freeSlabs(g: *Globals, head: *SlabRec) {
+  var s = head;
+  while s as usize != 0usize {
+    let next = (*s).nextA;
+    let size = (*s).size;
+    osFree((*s).base, size);
+    libc.free(s as *u8);
+    (*g).held.sub(u64.from(size));
+    (*g).osFrees.add(1u64);
+    s = next;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The OS, and the bound
+// ---------------------------------------------------------------------------
+
+// Count size bytes against the bound; whether it holds
+fn reserve(g: *Globals, size: usize) bool {
+  let n = u64.from(size);
+  let before = (*g).held.add(n);
+  if before + n > (*g).maxBytes.load() {
+    (*g).held.sub(n);
+    return false;
+  }
+  true
+}
+
+// Count size bytes against the bound, making room if need be: every wholly
+// idle slab of every class back to the OS, then this thread's cache
+fn reserveRoom(g: *Globals, size: usize) bool {
+  if reserve(g, size) {return true;}
+  trimStockOf(g);
+  if reserve(g, size) {return true;}
+  let tc = myCache;
+  if tc as usize != 0usize {flushCache(tc);}
+  trimStockOf(g);
+  reserve(g, size)
+}
+
+// A new slab for class cs, got from the OS and listed; false when the bound or
+// the OS refuses it
+fn newSlab(g: *Globals, cs: *ClassState) bool {
+  let size = (*cs).slabSize;
+  if !reserveRoom(g, size) {
+    return false;
+  }
+  let base = osAlloc(size);
+  if base as usize == 0usize {
+    (*g).held.sub(u64.from(size));
+    return false;
+  }
+  (*g).osAllocs.add(1u64);
+  let s = libc.calloc(1usize, mem.sizeof[SlabRec]()) as *SlabRec;
+  if s as usize == 0usize {
+    panic("iobuf: out of memory for a slab's record");
+  }
+  (*s).base = base;
+  (*s).size = size;
+  (*s).total = (*cs).perSlab;
+  (*cs).lock.lock();
+  (*s).nextA = (*cs).all;
+  if (*cs).all as usize != 0usize {(*(*cs).all).prevA = s;}
+  (*cs).all = s;
+  (*cs).slabs = (*cs).slabs + 1usize;
+  listPartial(cs, s);
+  (*cs).lock.unlock();
+  true
+}
+
+// Every wholly idle slab of every class back to the OS
+fn trimStockOf(g: *Globals) {
+  var c = 0usize;
+  let n = (*g).nClasses;
+  while c < n {
+    let cs = classAt(g, c);
+    (*cs).lock.lock();
+    let doomed = reclaim(g, cs, 0u64);
+    (*cs).lock.unlock();
+    freeSlabs(g, doomed);
+    c = c + 1usize;
+  }
+}
+
+// This thread's cache back to the stock, and every wholly idle slab to the OS
+pub fn trimStock() {
+  let tc = myCache;
+  if tc as usize != 0usize {flushCache(tc);}
+  trimStockOf(glob());
+}
+
+// Every thread's cache back to the stock, and every wholly idle slab to the
+// OS: for when no other thread is taking or returning blocks (a leak check, the
+// module's final)
+pub fn trimEverything() {
+  let g = glob();
+  (*g).regLock.lock();
+  var tc = (*g).regHead;
+  while tc as usize != 0usize {
+    flushCache(tc);
+    tc = (*tc).nextReg;
+  }
+  (*g).regLock.unlock();
+  trimStockOf(g);
+}
+
+// Oversize blocks, which are not pooled: a block of size bytes of its own,
+// counted against the bound, or null when the bound or the OS refuses it
+pub fn holdOversize(size: usize) *u8 {
+  let g = glob();
+  if !reserveRoom(g, size) {
+    return null;
+  }
+  let b = osAlloc(size);
+  if b as usize == 0usize {
+    (*g).held.sub(u64.from(size));
+    return null;
+  }
+  (*g).osAllocs.add(1u64);
+  (*g).bigLent.add(1u64);
+  (*g).bigBytes.add(u64.from(size));
+  (*g).bigTakes.add(1u64);
+  b
+}
+
+pub fn releaseOversize(b: *u8, size: usize) {
+  let g = glob();
+  osFree(b, size);
+  (*g).held.sub(u64.from(size));
+  (*g).osFrees.add(1u64);
+  (*g).bigLent.sub(1u64);
+  (*g).bigBytes.sub(u64.from(size));
+}
+
+// ---------------------------------------------------------------------------
+// Counters
+// ---------------------------------------------------------------------------
+
+pub struct BlockStats {
+  pub maxBytes: usize;
+  pub keepBytes: usize;
+  pub heldBytes: usize;     // slabs and oversize blocks, from the OS
+  pub lentBytes: usize;     // blocks out of the cache and stock, and oversize blocks
+  pub cachedBytes: usize;   // idle in threads' caches
+  pub idleBytes: usize;     // held and not lent: cached, idle in the stock, and not yet carved
+  pub stockBytes: usize;    // idle in the stock, carved and returned
+  pub lent: u64;            // blocks lent now (oversize too)
+  pub takes: u64;           // blocks ever lent
+  pub reuses: u64;          // takes served by the thread's own cache
+  pub osAllocs: u64;        // slabs and oversize blocks got from the OS
+  pub osFrees: u64;         // and given back
+  pub slabs: usize;         // slabs held
+  pub threads: usize;       // thread caches on the registry
+}
+
+pub fn blockStats() BlockStats {
+  let g = glob();
+  var takes = 0u64;
+  var misses = 0u64;
+  var lentBytes = 0usize;
+  var lent = 0u64;
+  var cachedBytes = 0usize;
+  var stockBytes = 0usize;
+  var slabs = 0usize;
+  var threads = 0usize;
+  (*g).regLock.lock();
+  var c = 0usize;
+  let n = (*g).nClasses;
+  while c < n {
+    let cs = classAt(g, c);
+    var t = 0u64;
+    var r = 0u64;
+    var cached = 0usize;
+    var tc = (*g).regHead;
+    while tc as usize != 0usize {
+      t = t + *takesAt(tc, c);
+      r = r + *returnsAt(tc, c);
+      cached = cached + usize.from((*lineAt(tc, c)).count);
+      tc = (*tc).nextReg;
+    }
+    takes = takes + t;
+    let out = if t > r {t - r} else {0u64};
+    lent = lent + out;
+    lentBytes = lentBytes + usize.from(out) * (*cs).blockSize;
+    cachedBytes = cachedBytes + cached * (*cs).blockSize;
+    stockBytes = stockBytes + (*cs).idleBlocks * (*cs).blockSize;
+    slabs = slabs + (*cs).slabs;
+    c = c + 1usize;
+  }
+  var tc = (*g).regHead;
+  while tc as usize != 0usize {
+    misses = misses + (*tc).misses;
+    threads = threads + 1usize;
+    tc = (*tc).nextReg;
+  }
+  (*g).regLock.unlock();
+  let held = usize.from((*g).held.load());
+  let bigBytes = usize.from((*g).bigBytes.load());
+  let bigLent = (*g).bigLent.load();
+  let bigTakes = (*g).bigTakes.load();
+  misses = misses + bigTakes;     // each took the OS
+  lent = lent + bigLent;
+  lentBytes = lentBytes + bigBytes;
+  takes = takes + bigTakes;
+  BlockStats(usize.from((*g).maxBytes.load()), usize.from((*g).keepBytes.load()), held, lentBytes,
+    cachedBytes, if held > lentBytes {held - lentBytes} else {0usize}, stockBytes, lent, takes,
+    if takes > misses {takes - misses} else {0u64}, (*g).osAllocs.load(), (*g).osFrees.load(),
+    slabs, threads)
+}
