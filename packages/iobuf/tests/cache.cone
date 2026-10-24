@@ -1,0 +1,129 @@
+// The per-thread caches. A buffer that dies goes to the cache of the thread it
+// dies on, whichever took it, and the next take on that thread reuses it
+// without a lock. A cache is bounded (32 blocks of 4 KiB); what comes home past
+// it moves to the central stock in batches. A thread of Cone's own gives its
+// cache back to the stock as it ends (flushThread); one that does not leaves
+// its blocks counted, as cached bytes, not lost, and 'trimAll' gives them back.
+
+mod cache;
+
+import testing use *;
+import thread;
+import sync use *;
+import iobuf use *;
+
+// Take n buffers of 4 KiB and drop them all at once on this thread: how many
+// bytes its cache holds afterwards is for the caller to see in the stats
+fn churn(n: usize) {
+  var c = Chain.make(8388608usize);
+  var k = 0usize;
+  while k < n {
+    var b = Pool.make().mustTake(1usize);
+    b.append("x");
+    c.push(b);
+    k = k + 1usize;
+  }
+}
+
+// A thread that takes and drops buffers and ends WITHOUT flushing, as a thread
+// the program started through the OS would
+fn leaveCached(n: usize) u64 {
+  churn(n);
+  u64.from(n)
+}
+
+fn flushing(n: usize) u64 {
+  churn(n);
+  flushThread();
+  u64.from(n)
+}
+
+// A buffer taken here and handed to another thread to die
+fn taker(tx: Sender[IoBuf]) u64 {
+  var k = 0u64;
+  while k < 10u64 {
+    var b = Pool.make().mustTake(1usize);
+    b.append("x");
+    tx.send(b);
+    k = k + 1u64;
+  }
+  flushThread();
+  k
+}
+
+fn dropper(rx: Receiver[IoBuf]) u64 {
+  var r = rx;
+  var n = 0u64;
+  while r.recv() is Some[IoBuf] {
+    n = n + 1u64;
+  }
+  // the ten blocks are in this thread's cache now, not the taker's
+  n
+}
+
+fn main() i32 {
+  initAll();
+  let pool = Pool.make();
+
+  // On one thread: the first take misses (a batch from the stock), a block
+  // that dies goes to the cache, and the next take hits it
+  churn(1usize);
+  var s = pool.stats();
+  expectUInt(s.takes, 1u64, "one take");
+  expectUInt(s.reuses, 0u64, "which went to the stock");
+  expectUInt(u64.from(s.cachedBytes), 16u64 * 4096u64, "a batch of 16 came to the cache, one taken, and it came home");
+  churn(1usize);
+  s = pool.stats();
+  expectUInt(s.reuses, 1u64, "the second take reused a block from the cache");
+  expectUInt(u64.from(s.cachedBytes), 16u64 * 4096u64, "sixteen cached again");
+
+  // 100 buffers dropped together: the cache holds 32 at most; the rest is in
+  // the stock
+  churn(100usize);
+  s = pool.stats();
+  expectUInt(u64.from(s.cachedBytes) % 4096u64, 0u64, "whole blocks");
+  expect(s.cachedBytes <= 32usize * 4096usize, "a cache is bounded: 32 blocks of 4 KiB");
+  expect(s.cachedBytes >= 16usize * 4096usize, "and holds at least a batch");
+  expectUInt(s.lent, 0u64, "all home");
+  expect(s.stockBytes > 0usize, "the rest went to the stock");
+  expect(s.stockBytes + s.cachedBytes >= 100usize * 4096usize, "cache and stock hold the 100 blocks");
+
+  // flushThread: this thread's blocks all go back to the stock
+  let total = s.stockBytes + s.cachedBytes;
+  flushThread();
+  s = pool.stats();
+  expectUInt(u64.from(s.cachedBytes), 0u64, "flushed");
+  expectUInt(u64.from(s.stockBytes), u64.from(total), "all in the stock");
+
+  // A thread of Cone's own that flushes leaves nothing cached; one that does
+  // not leaves its blocks cached, counted
+  let a = thread.start(40usize, &flushing);
+  expectUInt(a.join(), 40u64, "the flushing thread ran");
+  s = pool.stats();
+  expectUInt(u64.from(s.cachedBytes), 0u64, "a thread that flushed leaves nothing cached");
+  let b = thread.start(40usize, &leaveCached);
+  expectUInt(b.join(), 40u64, "the other thread ran");
+  s = pool.stats();
+  expect(s.cachedBytes > 0usize, "a thread that did not leaves its cache, counted");
+  expect(s.cachedBytes <= 32usize * 4096usize, "bounded");
+  expectUInt(s.lent, 0u64, "no buffer lost");
+  trimAll();
+  s = pool.stats();
+  expectUInt(u64.from(s.cachedBytes), 0u64, "trimAll flushes every cache");
+  expectUInt(osBlocks(), 0u64, "and gives every slab back");
+
+  // Taken on one thread, dying on another: the dying thread's cache gets it
+  var tx: Sender[IoBuf];
+  var rx: Receiver[IoBuf];
+  tx, rx = Channel[IoBuf].make();
+  let d = thread.start(rx, &dropper);
+  let t = thread.start(tx, &taker);
+  expectUInt(t.join(), 10u64, "ten taken");
+  expectUInt(d.join(), 10u64, "ten dropped on the other thread");
+  s = pool.stats();
+  expectUInt(s.lent, 0u64, "all home");
+  expectUInt(u64.from(s.cachedBytes), 10u64 * 4096u64, "in the dropping thread's cache, which did not flush");
+  trimAll();
+  expectUInt(osBlocks(), 0u64, "given back");
+  done()
+}
