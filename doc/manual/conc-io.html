@@ -212,6 +212,8 @@ end of stream 5
 		moved into the read, which is how the system may write into it while the behaviour waits, and the read's answer is
 		how it comes back. At the end of the stream, when the peer has closed, it comes back as it went, its length
 		unchanged. A buffer with no room fails with 122, as above. A failed read's buffer goes home to its pool.</li>
+	<li><span class="pre">conn.read()</span>: the same, with no buffer given: the I/O side takes one when bytes have come
+		(<a href="#await-io-readany">Reading with no buffer</a>).</li>
 	<li><span class="pre">conn.write(buf)</span>: the count written, which is all of the buffer; the buffer goes home.</li>
 	<li><span class="pre">s.localAddr()</span>: the address the socket is bound to.</li>
 	<li><span class="pre">aio.openFile(path, access)</span>: a <span class="pre">File</span>, out of the
@@ -298,6 +300,38 @@ actor Reader {
 		socket, after whatever operations were started on it before. A socket in a paused behaviour waits with the
 		behaviour, as any value does (<a href="conc-await.html#await-cross">What crosses an await</a>), so it stays open until
 		the behaviour ends.</p>
+
+	<h3 id="await-io-readany">Reading with no buffer</h3>
+	<p><span class="pre">conn.read(buf)</span> gives the read a buffer to wait with, and a connection that is idle for
+		minutes holds that buffer all the while: a thousand idle connections pin a thousand buffers (4 MiB of 4 KiB ones),
+		and the system locks their pages. <span class="pre">conn.read()</span> gives it none. The behaviour holds no buffer,
+		the connection holds none, and the I/O side takes one from the pools when bytes have come: 4 KiB, or
+		<span class="pre">conn.read(room)</span> with a <span class="pre">usize</span> asks for room for at least that many bytes
+		(a layer reading TLS records asks for 16 KiB; aio itself knows nothing of TLS). The answer is the same as
+		<span class="pre">read(buf)</span>'s, the buffer with what arrived in it, and empty at the end of the stream; its
+		limited form is <span class="pre">conn.readIn(lim)</span> (and <span class="pre">readIn(room, lim)</span>).</p>
+<pre>
+  pub async fn serve(self, conn: Socket) {
+    var more = true;
+    while more {
+      let r = await conn.read();          // no buffer is held while this waits
+      match r {
+        case let Ok(b) {if b.len() == 0usize {more = false;} else {handle(b);}}
+        case is Error {more = false;}
+      }
+    }
+  }
+</pre>
+	<p>Underneath, a read with no buffer waits in one of two ways. Waiting without a buffer is a zero-byte receive, which
+		ends when bytes are there, followed by a receive with a buffer that takes them; it costs a second trip through the
+		system, about 4 &micro;s a round trip on loopback. Waiting with a buffer is a receive started at once, which is
+		cheaper when bytes are already coming. The read chooses by its socket's last read: one answered within the
+		<em>quiet time</em> (2 ms; <span class="pre">aio.setReadQuiet(d)</span> sets it) marks the socket calm, and its next
+		read takes a buffer at once, while any other socket's read, and the first read of every socket, waits without one. A
+		read that began with a buffer and has waited the quiet time without a byte gives the buffer back and waits without
+		one, so a connection that was busy and goes quiet pins nothing from then on. A deadline or a group bounds the
+		whole read, both ways of waiting. A read that is cancelled, or timed out, or whose socket is closed, is answered
+		as every operation is, once.</p>
 
 	<h3 id="await-io-udp">UDP sockets</h3>
 	<p><span class="pre">aio.bindUdp(addr)</span> binds a UDP socket on the I/O thread (port 0 has the system choose one,

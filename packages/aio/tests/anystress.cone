@@ -1,0 +1,170 @@
+// Reads with no buffer under load, across the modes they move between. Sixty-
+// four connections, each a Pinger and an Echo, both reading with 'read()'.
+// Pinger sends 150 messages of 1 to 6,000 bytes, some straight after the
+// echo of the last (the socket is calm: a read takes a buffer at once), some
+// after a pause of 3 ms (past the quiet time: the read that began with a buffer
+// gives it up, and the next begins without), and counts the bytes of each echo
+// until the whole message is back, in pieces of at most the room (4 KiB). Echo
+// reads what comes and writes it back whole. At the end every message came
+// back whole, and the pool has no buffer lent.
+
+mod anystress;
+
+import testing use *;
+import sync use Channel, Sender, Receiver;
+import time use Duration;
+import iobuf use IoBuf;
+import iocore use SocketAddr, IoError;
+import actors;
+import aio use Socket;
+
+const pairs = 64u64;
+const messages = 150u64;
+
+let totalBack: Atomic[u64];
+
+fn @initpure init() {
+  totalBack = Atomic[u64].of(0u64);
+}
+
+fn socketOf(r: Result[Socket, IoError]) Socket {
+  var res = r;
+  var s = Socket.none();
+  match &mut res {
+    case var &mut Ok(ok) {s <-> *ok;}
+    else {}
+  }
+  s
+}
+
+fn take(rx: &mut Receiver[u64]) u64 {
+  match rx.recv() {
+    case let Some(v) {v}
+    else {0u64}
+  }
+}
+
+actor Echo {
+
+  pub async fn serve(self, conn: Socket) {
+    var more = true;
+    while more {
+      var r = await conn.read();
+      match &mut r {
+        case var &mut Ok(ok) {
+          var b = IoBuf.empty();
+          b <-> *ok;
+          if b.len() == 0usize {more = false;} else {
+            let w = await conn.write(b);
+            match w {
+              case is Error {more = false;}
+              else {}
+            }
+          }
+        }
+        case is Error {more = false;}
+      }
+    }
+  }
+}
+
+actor Acceptor {
+
+  // Listens, says the port, and hands each connection to an Echo
+  pub async fn run(self, n: u64, ports: Sender[u64]) {
+    let l = await aio.listen(SocketAddr.localhost(0u16));
+    let ls = socketOf(l);
+    let a = await ls.localAddr();
+    match a {
+      case let Ok(addr) {ports.send(u64.from(addr.port()));}
+      else {ports.send(0u64);}
+    }
+    var k = 0u64;
+    while k < n {
+      let ac = await ls.accept();
+      let echo = Echo();
+      echo.serve(socketOf(ac));
+      k = k + 1u64;
+    }
+  }
+}
+
+actor Pinger {
+
+  // Sends its messages; adds the bytes that came back to totalBack, and says 0,
+  // or what went wrong (the system's code, or a read of no bytes or too many)
+  pub async fn run(self, port: u16, seed: u64, result: Sender[u64]) {
+    let c = await aio.connect(SocketAddr.localhost(port));
+    let s = socketOf(c);
+    var x = seed * 2862933555777941757u64 + 3037000493u64;
+    var back = 0u64;
+    var k = 0u64;
+    var bad = 0u64;
+    while k < messages && bad == 0u64 {
+      x = x * 6364136223846793005u64 + 1442695040888963407u64;
+      let n = 1u64 + ((x >> 33u64) % 6000u64);
+      x = x * 6364136223846793005u64 + 1442695040888963407u64;
+      if ((x >> 40u64) & 3u64) == 0u64 {
+        let nap = await aio.sleep(Duration.fromMillis(3i64));
+      }
+      var out = IoBuf(usize.from(n));
+      out.setLen(usize.from(n));
+      let w = await s.write(out);
+      match w {
+        case let Error(e) {bad = 1000000u64 + u64.from(e.code);}
+        else {}
+      }
+      var got = 0u64;
+      while got < n && bad == 0u64 {
+        let r = await s.read();
+        match r {
+          case let Ok(b) {
+            if b.len() == 0usize || b.len() > 4096usize {bad = 2000000u64 + u64.from(b.len());} else {
+              got = got + u64.from(b.len());
+            }
+          }
+          case let Error(e) {bad = 3000000u64 + u64.from(e.code);}
+        }
+      }
+      if got != n {bad = 1u64 + k;}
+      back = back + got;
+      k = k + 1u64;
+    }
+    totalBack.add(back);
+    result.send(bad);
+  }
+}
+
+fn main() i32 {
+  initAll();
+  var ptx: Sender[u64];
+  var prx: Receiver[u64];
+  ptx, prx = Channel[u64].make();
+  var rtx: Sender[u64];
+  var rrx: Receiver[u64];
+  rtx, rrx = Channel[u64].make();
+  {
+    let acceptor = Acceptor();
+    acceptor.run(pairs, ptx);
+    let port = take(&mut prx);
+    require(port != 0u64, "the acceptor is listening");
+    var i = 0u64;
+    while i < pairs {
+      let p = Pinger();
+      p.run(u16.from(port), i + 1u64, rtx.clone());
+      i = i + 1u64;
+    }
+  }
+  var wrong = 0u64;
+  var i = 0u64;
+  while i < pairs {
+    if take(&mut rrx) != 0u64 {wrong = wrong + 1u64;}
+    i = i + 1u64;
+  }
+  finalAll();
+  expectUInt(wrong, 0u64, "every message came back whole, on every connection");
+  expect(totalBack.load() > pairs * messages, "and a good many bytes came");
+  let st = iobuf.stats();
+  expectUInt(st.lent, 0u64, "no buffer is left lent");
+  done()
+}
