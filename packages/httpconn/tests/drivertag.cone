@@ -31,19 +31,18 @@ const tokReq = 2u64;
 fn helloBody() &Array[u8] {"hello from the old driver"}
 
 fn main() i32 {
-  let pool = Pool.make();
   var lp = Loop.mustMake();
 
   // The old driver, alive from here to the end
-  var srv = Driver.make(Config.make(), pool);
+  var srv = Driver.make(Config.make());
   {
     var i = 0u32;
     while i < 127u32 {
-      let other = Driver.make(Config.make(), pool);
+      let other = Driver.make(Config.make());
       i = i + 1u32;
     }
   }
-  var cli = Driver.make(Config.make(), pool);
+  var cli = Driver.make(Config.make());
 
   var port = 0u16;
   match srv.listen(&mut lp, SocketAddr.localhost(0u16), Sink.Here(tokServer)) {
@@ -102,7 +101,7 @@ fn main() i32 {
           svReq = e.req;
         } else if e.kind == EventKind.End {
           srv.respond(svReq, ResponseHead.make(200u16), BodyLength.sized(u64.from(helloBody().len)));
-          var b = pool.mustTake(64usize);
+          var b = IoBuf(64usize);
           b.append(helloBody());
           srv.sendData(svReq, b);
           srv.finish(svReq);
@@ -132,22 +131,22 @@ fn main() i32 {
   cli.abortAll(&mut lp);
   srv.abortAll(&mut lp);
   events.clear();
-  expectUInt(pool.stats().lent, 0u64, "every buffer back in the pool");
+  expectUInt(stats().lent, 0u64, "every buffer back in the pool");
 
   // 1000 live drivers, twice (the second time they take the numbers the
   // first gave back): each owns its own tokens, and no other's
-  expectUInt(ownership(&mut lp, pool, 1000u32), 0u64, "round 1: 1000 live drivers, each owns its own tokens alone");
-  expectUInt(ownership(&mut lp, pool, 1000u32), 0u64, "round 2: the numbers given back are taken again");
+  expectUInt(ownership(&mut lp, 1000u32), 0u64, "round 1: 1000 live drivers, each owns its own tokens alone");
+  expectUInt(ownership(&mut lp, 1000u32), 0u64, "round 2: the numbers given back are taken again");
   done()
 }
 
 // n drivers alive at once: how many (driver, token) pairs went wrong, a
 // token not owned by the driver that made it, or owned by another
-fn ownership(lp: &mut Loop, pool: Pool, n: u32) u64 {
+fn ownership(lp: &mut Loop, n: u32) u64 {
   var ds = List[Driver].empty();
   var i = 0u32;
   while i < n {
-    ds.push(Driver.make(Config.make(), pool));
+    ds.push(Driver.make(Config.make()));
     i = i + 1u32;
   }
   var wrong = 0u64;

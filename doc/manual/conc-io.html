@@ -131,11 +131,9 @@ fn socketOf(r: Result[Socket, IoError]) Socket {
 }
 
 actor Client {
-  pool: Pool;
-
   pub async fn send(self, port: u16) {
     let conn = socketOf(await aio.connect(SocketAddr.localhost(port)));
-    var buf = pool.mustTake(64usize);
+    var buf = IoBuf(64usize);
     buf.append("hello");
     let sent = await conn.write(buf);          // pauses until all of it is sent
     match sent {
@@ -146,7 +144,6 @@ actor Client {
 }
 
 actor Server {
-  pool: Pool;
   client: Client;
 
   pub async fn serve(self) u64 {
@@ -165,7 +162,7 @@ actor Server {
     var total = 0u64;
     var more = true;
     while more {
-      let got = await conn.read(pool.mustTake(4096usize));
+      let got = await conn.read(IoBuf(4096usize));
       match got {
         case let Ok(b) {
           if b.len() == 0usize {
@@ -186,8 +183,8 @@ actor Server {
   }
 }
 </pre>
-	<p>(<span class="pre">say</span> prints a word and a number on a line; <span class="pre">Pool</span> and
-		<span class="pre">IoBuf</span> are <span class="pre">iobuf</span>'s, <span class="pre">SocketAddr</span> and
+	<p>(<span class="pre">say</span> prints a word and a number on a line;
+		<span class="pre">IoBuf</span> is <span class="pre">iobuf</span>'s, <span class="pre">SocketAddr</span> and
 		<span class="pre">IoError</span> <span class="pre">iocore</span>'s, and <span class="pre">Socket</span>
 		<span class="pre">aio</span>'s.) Sent <span class="pre">serve()</span>, the server prints:</p>
 <pre>
@@ -227,7 +224,7 @@ end of stream 5
 		is:</p>
 <pre>
   pub async fn careless(self, conn: Socket) {
-    await conn.write(pool.mustTake(64usize));   // warned: the answer is thrown away
+    await conn.write(IoBuf(64usize));   // warned: the answer is thrown away
   }
 </pre>
 <pre>
@@ -272,11 +269,9 @@ answers, so a failure here goes unread: bind it, 'let r = await ...', and match 
 		they are.</p>
 <pre>
 actor Reader {
-  pool: Pool;
-
   pub async fn fetch(self, conn: Socket, group: CancelGroup) u64 {
     let until = Instant.now() + Duration.fromSeconds(5i64);
-    let got = await conn.readIn(pool.mustTake(4096usize), IoLimits(Some[CancelGroup](group), until));
+    let got = await conn.readIn(IoBuf(4096usize), IoLimits(Some[CancelGroup](group), until));
     match got {
       case let Ok(b) {u64.from(b.len())}
       case let Error(e) {
@@ -334,13 +329,11 @@ actor Reader {
 		system bounds.</p>
 <pre>
 actor Echo {
-  pool: Pool;
-
   pub async fn once(self, u: UdpSocket) {                   // u: bound earlier, by bindUdp
-    let r = await u.recvFrom(pool.mustTake(1500usize));
+    let r = await u.recvFrom(IoBuf(1500usize));
     match r {
       case let Ok(d) {
-        var reply = pool.mustTake(64usize);
+        var reply = IoBuf(64usize);
         reply.append("got it");
         let sent = await u.sendTo(d.from, reply);          // back to the sender
       }
@@ -367,11 +360,9 @@ actor Echo {
 		system, which cannot be cancelled once begun.</p>
 <pre>
 actor Patcher {
-  pool: Pool;
-
   pub async fn patch(self, name: Path) u64 {
     let f = fileOf(await aio.openFile(&amp;name, Access.Update));   // fileOf: as socketOf
-    var b = pool.mustTake(5usize);
+    var b = IoBuf(5usize);
     b.append("hello");
     let w = await f.writeAt(100u64, b);                     // five bytes at offset 100
     match w {

@@ -86,9 +86,9 @@ fn dataBytes() u64 {
 }
 
 // Answer a server's request: 200 and 64 bytes
-fn answer(drv: &mut Driver, e: &mut Event, pool: &Pool) {
+fn answer(drv: &mut Driver, e: &mut Event) {
   drv.respond(e.req, ResponseHead.make(200u16), BodyLength.sized(64u64));
-  var b = pool.mustTake(64usize);
+  var b = IoBuf(64usize);
   b.setLen(64usize);
   drv.sendData(e.req, b);
   drv.finish(e.req);
@@ -123,7 +123,7 @@ struct Run {
   pub took: Duration;
 }
 
-fn clients(drv: &mut Driver, lp: &mut Loop, pool: &Pool, port: u16, conns: u64, perConn: u64, serveHere: bool) Run {
+fn clients(drv: &mut Driver, lp: &mut Loop, port: u16, conns: u64, perConn: u64, serveHere: bool) Run {
   var run = Run(conns, perConn, Histogram.make(), 0u64, 0u64, Duration.zero());
   var cs = List[ConnId].empty();
   var made = List[u64].empty();
@@ -166,7 +166,7 @@ fn clients(drv: &mut Driver, lp: &mut Loop, pool: &Pool, port: u16, conns: u64, 
       let e = &mut events[j];
       j = j + 1usize;
       if e.token == tokServer {
-        if serveHere && e.kind == EventKind.Request {answer(drv, e, pool);}
+        if serveHere && e.kind == EventKind.Request {answer(drv, e);}
       } else if e.token >= tokReq {
         let k = usize.from(e.token - tokReq);
         if e.kind == EventKind.Data {
@@ -238,9 +238,8 @@ struct ServerArgs {
 }
 
 fn serve(a: ServerArgs) u64 {
-  let pool = Pool.make();
   var lp = Loop.mustMake();
-  var drv = Driver.make(Config.make(), pool);
+  var drv = Driver.make(Config.make());
   a.portTx.send(listenOn(&mut drv, &mut lp));
   var events = List[Event].empty();
   var served = 0u64;
@@ -250,7 +249,7 @@ fn serve(a: ServerArgs) u64 {
     while j < events.len() {
       let e = &mut events[j];
       if e.kind == EventKind.Request {
-        answer(&mut drv, e, &pool);
+        answer(&mut drv, e);
         served = served + 1u64;
       }
       j = j + 1usize;
@@ -266,20 +265,20 @@ fn serve(a: ServerArgs) u64 {
 // ---------------------------------------------------------------------------
 
 fn idleMemory(n: u64, readyIdle: bool) {
-  let pool = Pool.make(268435456usize, 268435456usize);
+  setLimits(268435456usize, 268435456usize);
   var lp = Loop.mustMake();
   var cfg = Config.make();
   cfg.idleRecvReady = readyIdle;
   cfg.acceptDepth = 64u32;
-  var drv = Driver.make(cfg, pool);
+  var drv = Driver.make(cfg);
   let port = listenOn(&mut drv, &mut lp);
   // Warm: the tables and the pool's first blocks
   {
-    var w = clients(&mut drv, &mut lp, &pool, port, 64u64, 1u64, true);
+    var w = clients(&mut drv, &mut lp, port, 64u64, 1u64, true);
   }
-  pool.trim();
+  trim();
   let before = privateBytes();
-  let heldBefore = pool.stats().heldBytes - pool.stats().idleBytes;
+  let heldBefore = stats().heldBytes - stats().idleBytes;
   // n connections, one GET each, then left idle
   var cs = List[ConnId].empty();
   var connected = 0u64;
@@ -299,7 +298,7 @@ fn idleMemory(n: u64, readyIdle: bool) {
     while j < events.len() {
       let e = &mut events[j];
       j = j + 1usize;
-      if e.token == tokServer && e.kind == EventKind.Request {answer(&mut drv, e, &pool);}
+      if e.token == tokServer && e.kind == EventKind.Request {answer(&mut drv, e);}
       else if e.kind == EventKind.Data {drv.release(e.req, e.buf.len());}
       else if e.kind == EventKind.Connected {connected = connected + 1u64;}
       else if e.token >= tokReq && e.kind == EventKind.Done {dones = dones + 1u64;}
@@ -313,9 +312,9 @@ fn idleMemory(n: u64, readyIdle: bool) {
     drv.poll(&mut lp, settle, &mut events);
     events.clear();
   }
-  pool.trim();
+  trim();
   let after = privateBytes();
-  let heldAfter = pool.stats().heldBytes - pool.stats().idleBytes;
+  let heldAfter = stats().heldBytes - stats().idleBytes;
   printStr("idle connections, ");
   printStr(if readyIdle {"waiting by zero-byte receives (the default)"} else {"each holding a receive buffer"});
   printStr(": ");
@@ -340,17 +339,16 @@ fn idleMemory(n: u64, readyIdle: bool) {
 fn main() {
   // 1a. One thread: server and clients on one Loop and one Driver
   {
-    let pool = Pool.make();
     var lp = Loop.mustMake();
     var cfg = Config.make();
     cfg.acceptDepth = 64u32;
-    var drv = Driver.make(cfg, pool);
+    var drv = Driver.make(cfg);
     let port = listenOn(&mut drv, &mut lp);
-    let r1 = clients(&mut drv, &mut lp, &pool, port, 1u64, 10000u64, true);
+    let r1 = clients(&mut drv, &mut lp, port, 1u64, 10000u64, true);
     report("one thread", &r1);
-    let r2 = clients(&mut drv, &mut lp, &pool, port, 256u64, 200u64, true);
+    let r2 = clients(&mut drv, &mut lp, port, 256u64, 200u64, true);
     report("one thread", &r2);
-    let r3 = clients(&mut drv, &mut lp, &pool, port, 1000u64, 50u64, true);
+    let r3 = clients(&mut drv, &mut lp, port, 1000u64, 50u64, true);
     report("one thread", &r3);
   }
   // 1b. Two threads: the server's own
@@ -365,14 +363,13 @@ fn main() {
       case let Some(p) {port = p;}
       case is None[u16] {}
     }
-    let pool = Pool.make();
     var lp = Loop.mustMake();
-    var drv = Driver.make(Config.make(), pool);
-    let r1 = clients(&mut drv, &mut lp, &pool, port, 1u64, 10000u64, false);
+    var drv = Driver.make(Config.make());
+    let r1 = clients(&mut drv, &mut lp, port, 1u64, 10000u64, false);
     report("two threads", &r1);
-    let r2 = clients(&mut drv, &mut lp, &pool, port, 256u64, 200u64, false);
+    let r2 = clients(&mut drv, &mut lp, port, 256u64, 200u64, false);
     report("two threads", &r2);
-    let r3 = clients(&mut drv, &mut lp, &pool, port, 1000u64, 50u64, false);
+    let r3 = clients(&mut drv, &mut lp, port, 1000u64, 50u64, false);
     report("two threads", &r3);
     stop.store(true);
     server.join();

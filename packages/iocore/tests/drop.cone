@@ -27,7 +27,6 @@ fn waitFor(lp: &mut Loop, out: &mut List[Completion], n: usize) {
 
 fn main() i32 {
   {
-    let pool = Pool.make();
     var m = Loop.mustMake();
     var out = List[Completion].empty();
     {
@@ -51,19 +50,19 @@ fn main() i32 {
       }
       mine.clear();
 
-      lp.submit(Op.Recv(a, pool.mustTake(100usize)), Target.Here(1u64));
-      lp.submit(Op.Recv(b, pool.mustTake(100usize)), Target.Post(2u64, m.waker()));
+      lp.submit(Op.Recv(a, IoBuf(100usize)), Target.Here(1u64));
+      lp.submit(Op.Recv(b, IoBuf(100usize)), Target.Post(2u64, m.waker()));
       lp.submit(Op.Accept(listener), Target.Here(3u64));
       lp.after(Instant.now() + Duration.fromSeconds(10i64), Target.Post(4u64, m.waker()));
       lp.after(Instant.now() + Duration.fromSeconds(10i64), Target.Here(5u64));
       lp.poll(Instant.now() + Duration.fromMillis(10i64), &mut mine);
       expectUInt(u64.from(mine.len()), 0u64, "all five still in flight");
       expectUInt(lp.inFlight(), 5u64, "five in flight");
-      expectUInt(pool.stats().lent, 2u64, "two buffers lent to the kernel");
+      expectUInt(stats().lent, 2u64, "two buffers lent to the kernel");
     }
     // The loop has died: its own answers went with it; one buffer is in the
     // answer posted to main
-    expectUInt(pool.stats().lent, 1u64, "the buffer owed here went home; the posted one travels");
+    expectUInt(stats().lent, 1u64, "the buffer owed here went home; the posted one travels");
     waitFor(&mut m, &mut out, 2usize);
     requireUInt(u64.from(out.len()), 2u64, "main received the two answers owed to it");
     var k = 0usize;
@@ -80,7 +79,7 @@ fn main() i32 {
     out.clear();
     m.poll(Instant.now() + Duration.fromMillis(20i64), &mut out);
     expectUInt(u64.from(out.len()), 0u64, "and nothing more");
-    expectUInt(pool.stats().lent, 0u64, "every buffer back in the pool");
+    expectUInt(stats().lent, 0u64, "every buffer back in the pool");
   }
   trimAll();      // the pools are the process's: their idle slabs go back to the OS on request
   expectUInt(osBlocks(), 0u64, "and every block back to the OS");

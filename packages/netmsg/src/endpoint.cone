@@ -71,7 +71,6 @@ pub actor Endpoint {
   server: bool;
   cfg: NetConfig;
   handler: EventHandler;
-  pool: Pool;
   sock: UdpSocket;             // bound by 'open'; UdpSocket.none() before, and after shutdown
   group: CancelGroup;           // cancelled by shutdown: ends the receive and the timer
   timer: CancelGroup;           // the armed timer's group, a child of 'group'
@@ -94,7 +93,7 @@ pub actor Endpoint {
     let salt = rng.next();
     let gateSeed = rng.next();
     let g = CancelGroup.make();
-    *self = Self(server: server, cfg: cfg, handler: handler, pool: Pool.make(), sock: UdpSocket.none(),
+    *self = Self(server: server, cfg: cfg, handler: handler, sock: UdpSocket.none(),
       group: g, timer: g.child(), timerGen: 0u32, inflight: 0usize,
       gate: ChallengeGate.make(gateSeed), slots: List[ConnectionSlot].empty(), nextId: 1u32,
       armed: -1i64, stopped: false,
@@ -170,7 +169,7 @@ pub actor Endpoint {
   async fn receive(self) {
     var failures = 0u32;
     while !stopped && failures <= maxFailures {
-      let r = await sock.recvFromIn(pool.mustTake(recvRoom), IoLimits.within(group));
+      let r = await sock.recvFromIn(IoBuf(recvRoom), IoLimits.within(group));
       match &r {
         case let &Ok(ok) {
           failures = 0u32;
@@ -187,7 +186,7 @@ pub actor Endpoint {
   // A packet to send: one datagram to 'addr'
   async fn send(self, addr: SocketAddr, data: List[u8]) {
     if sock.isNone() {return;}
-    var b = pool.mustTake(max(data.len(), 1usize));
+    var b = IoBuf(max(data.len(), 1usize));
     b.append(data.view());
     inflight = inflight + 1usize;
     let r = await sock.sendTo(addr, b);

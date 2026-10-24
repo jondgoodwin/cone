@@ -60,11 +60,10 @@ fn canceller(rx: Receiver[CancelGroup]) u64 {
 }
 
 fn main() i32 {
-  let pool = Pool.make();
   var lp = Loop.mustMake();
   var cfg = Config.make();
   cfg.acceptDepth = 16u32;
-  var drv = Driver.make(cfg, pool);
+  var drv = Driver.make(cfg);
   var port = 0u16;
   match drv.listen(&mut lp, SocketAddr.localhost(0u16), Sink.Here(tokServer)) {
     case let Ok(r) {
@@ -141,7 +140,7 @@ fn main() i32 {
       if *pendAt[j] <= Instant.now() {
         let req = *pend[j];
         if drv.respond(req, ResponseHead.make(200u16), BodyLength.sized(8u64)) {
-          var b = pool.mustTake(8usize);
+          var b = IoBuf(8usize);
           b.setLen(8usize);
           drv.sendData(req, b);
           drv.finish(req);
@@ -166,7 +165,7 @@ fn main() i32 {
           let r = nextRand(&mut seed);
           if r % 2u64 == 0u64 {
             drv.respond(e.req, ResponseHead.make(200u16), BodyLength.sized(8u64));
-            var b = pool.mustTake(8usize);
+            var b = IoBuf(8usize);
             b.setLen(8usize);
             drv.sendData(e.req, b);
             drv.finish(e.req);
@@ -253,6 +252,6 @@ fn main() i32 {
   let s = drv.stats();
   expectUInt(s.done + s.failed + s.cancelled + s.timedOut, s.requests, "the driver's counts: every request, client's and server's, answered once");
   drv.abortAll(&mut lp);
-  expectUInt(pool.stats().lent, 0u64, "every buffer back in the pool");
+  expectUInt(stats().lent, 0u64, "every buffer back in the pool");
   done()
 }

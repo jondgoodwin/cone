@@ -26,7 +26,7 @@ import fs;
 import path use Path;
 import time use Instant, Duration;
 import sync use Oneshot, OneshotSender, OneshotReceiver;
-import iobuf use IoBuf, Pool;
+import iobuf use IoBuf;
 import iocore use IoError, CancelGroup, Access;
 import actors;
 import aio use File, IoLimits;
@@ -69,8 +69,8 @@ fn say(what: &str, how: u32) {
 }
 
 // A block of n bytes, byte i being i mod 251 xor seed
-fn block(pool: &Pool, n: usize, seed: u8) IoBuf {
-  var b = pool.mustTake(n);
+fn block(n: usize, seed: u8) IoBuf {
+  var b = IoBuf(n);
   let room = b.whole();
   var i = 0usize;
   while i < n {
@@ -117,7 +117,6 @@ fn @initpure init() {
 }
 
 actor Prober {
-  pool: Pool;
 
   // Runs while a behaviour is paused at an await: ends the group's operations
   pub async fn stop(self, g: CancelGroup) {
@@ -131,46 +130,46 @@ actor Prober {
   pub async fn run(self, done: OneshotSender[u64]) {
     let name = Path.from("aiolimits.tmp");
     let f = fileOf(await aio.openFile(&name, Access.Create));
-    let w = await f.writeAt(0u64, block(&pool, 4096usize, 7u8));
+    let w = await f.writeAt(0u64, block(4096usize, 7u8));
     say("setup write", endOf[usize](&w));
 
     // A group cancelled before the operation starts: answered at once
     let g1 = CancelGroup.make();
     g1.cancel();
-    let a1 = await f.readAtIn(0u64, pool.mustTake(4096usize), IoLimits.within(g1));
+    let a1 = await f.readAtIn(0u64, IoBuf(4096usize), IoLimits.within(g1));
     say("read, cancelled before it starts", endOf[IoBuf](&a1));
-    let a2 = await f.writeAtIn(0u64, block(&pool, 4096usize, 9u8), IoLimits.within(g1));
+    let a2 = await f.writeAtIn(0u64, block(4096usize, 9u8), IoLimits.within(g1));
     say("write, cancelled before it starts", endOf[usize](&a2));
-    let s1 = bufOf(await f.readAt(0u64, pool.mustTake(4096usize)));
+    let s1 = bufOf(await f.readAt(0u64, IoBuf(4096usize)));
     note("  and the write did not happen", isBlock(&s1, 4096usize, 7u8));
 
     // A deadline already past: answered at once
-    let a3 = await f.readAtIn(0u64, pool.mustTake(4096usize), IoLimits.until(Instant.now()));
+    let a3 = await f.readAtIn(0u64, IoBuf(4096usize), IoLimits.until(Instant.now()));
     say("read, deadline past", endOf[IoBuf](&a3));
-    let a4 = await f.writeAtIn(0u64, block(&pool, 4096usize, 9u8), IoLimits.until(Instant.now()));
+    let a4 = await f.writeAtIn(0u64, block(4096usize, 9u8), IoLimits.until(Instant.now()));
     say("write, deadline past", endOf[usize](&a4));
-    let s2 = bufOf(await f.readAt(0u64, pool.mustTake(4096usize)));
+    let s2 = bufOf(await f.readAt(0u64, IoBuf(4096usize)));
     note("  and the write did not happen", isBlock(&s2, 4096usize, 7u8));
 
     // A deadline ahead, and a group with a deadline ahead: the operation finishes first
-    let a5 = bufOf(await f.readAtIn(0u64, pool.mustTake(4096usize), IoLimits.until(Instant.now() + Duration.fromSeconds(30i64))));
+    let a5 = bufOf(await f.readAtIn(0u64, IoBuf(4096usize), IoLimits.until(Instant.now() + Duration.fromSeconds(30i64))));
     note("read, deadline ahead: done with the block", isBlock(&a5, 4096usize, 7u8));
     let g6 = CancelGroup.until(Instant.now() + Duration.fromSeconds(30i64));
-    let a6 = bufOf(await f.readAtIn(0u64, pool.mustTake(4096usize), IoLimits.within(g6)));
+    let a6 = bufOf(await f.readAtIn(0u64, IoBuf(4096usize), IoLimits.within(g6)));
     note("read, group with a deadline ahead: done with the block", isBlock(&a6, 4096usize, 7u8));
 
     // Finished before the cancel: done, and the cancel after it does nothing
     let g7 = CancelGroup.make();
-    let a7 = bufOf(await f.readAtIn(0u64, pool.mustTake(4096usize), IoLimits.within(g7)));
+    let a7 = bufOf(await f.readAtIn(0u64, IoBuf(4096usize), IoLimits.within(g7)));
     note("read finished before the cancel: done with the block", isBlock(&a7, 4096usize, 7u8));
     note("  cancel() found the group live", g7.cancel());
     note("  and its second cancel found it cancelled already", !g7.cancel());
-    let a8 = await f.writeAtIn(0u64, block(&pool, 4096usize, 7u8), IoLimits.within(g7));
+    let a8 = await f.writeAtIn(0u64, block(4096usize, 7u8), IoLimits.within(g7));
     say("write in the group now cancelled", endOf[usize](&a8));
 
     // A group cancelled by a message, while the read is paused: Done or Cancelled
     let g9 = CancelGroup.make();
-    let r9 = f.readAtIn(0u64, pool.mustTake(4096usize), IoLimits.within(g9));
+    let r9 = f.readAtIn(0u64, IoBuf(4096usize), IoLimits.within(g9));
     selfactor.stop(g9);
     let a9 = await r9;
     let e9 = endOf[IoBuf](&a9);
@@ -178,7 +177,7 @@ actor Prober {
 
     // The file dropped while a read is in flight: Done or Cancelled
     let other = fileOf(await aio.openFile(&name, Access.Read));
-    let r10 = other.readAt(0u64, pool.mustTake(4096usize));
+    let r10 = other.readAt(0u64, IoBuf(4096usize));
     selfactor.release(other);
     let a10 = await r10;
     let e10 = endOf[IoBuf](&a10);
@@ -188,7 +187,7 @@ actor Prober {
     var round = 0u64;
     while round < rounds {
       let g = CancelGroup.make();
-      let r = f.readAtIn(0u64, pool.mustTake(4096usize), IoLimits.within(g));
+      let r = f.readAtIn(0u64, IoBuf(4096usize), IoLimits.within(g));
       selfactor.stop(g);
       let ra = await r;
       let how = endOf[IoBuf](&ra);
@@ -202,7 +201,7 @@ actor Prober {
         tally.other.add(1u64);
       }
       let gw = CancelGroup.make();
-      let wr = f.writeAtIn(0u64, block(&pool, 4096usize, 7u8), IoLimits.within(gw));
+      let wr = f.writeAtIn(0u64, block(4096usize, 7u8), IoLimits.within(gw));
       selfactor.stop(gw);
       let wa = await wr;
       let wh = endOf[usize](&wa);
@@ -219,7 +218,7 @@ actor Prober {
       }
       round = round + 1u64;
     }
-    let last = bufOf(await f.readAt(0u64, pool.mustTake(4096usize)));
+    let last = bufOf(await f.readAt(0u64, IoBuf(4096usize)));
     note("after the races the file holds the block", isBlock(&last, 4096usize, 7u8));
 
     var d = done;
@@ -233,7 +232,7 @@ fn main() {
   var rx: OneshotReceiver[u64];
   tx, rx = Oneshot[u64].make();
   {
-    let p = Prober(Pool.make());
+    let p = Prober();
     p.run(tx);
   }
   rx.recv();

@@ -38,7 +38,6 @@ const chunk = 1048576u64;
 const depth = 4u64;
 
 struct ServerArgs {
-  pub pool: Pool;
   pub portTx: Sender[u16];
   pub zeroByte: bool;
 }
@@ -71,10 +70,10 @@ fn serve(a: ServerArgs) ServerReport {
       if c.token == 0u64 {
         conn = c.handle;
         if a.zeroByte {lp.submit(Op.RecvReady(conn), Target.Here(3u64));}
-        else {lp.submit(Op.Recv(conn, a.pool.mustTake(4096usize)), Target.Here(1u64));}
+        else {lp.submit(Op.Recv(conn, IoBuf(4096usize)), Target.Here(1u64));}
       } else if c.token == 3u64 {
         // Readable: now take a buffer and receive what came
-        lp.submit(Op.Recv(conn, a.pool.mustTake(4096usize)), Target.Here(1u64));
+        lp.submit(Op.Recv(conn, IoBuf(4096usize)), Target.Here(1u64));
       } else if c.token == 1u64 {
         rep.recvKernel.record((c.dequeued - c.submitted).nanos());
         rep.recvDelivery.record((c.delivered - c.dequeued).nanos());
@@ -104,7 +103,6 @@ fn serve(a: ServerArgs) ServerReport {
 }
 
 struct ClientArgs {
-  pub pool: Pool;
   pub port: u16;
   pub messages: u64;
   pub withFile: bool;
@@ -150,7 +148,7 @@ fn client(a: ClientArgs) ClientReport {
       case let Error(e) {}
     }
     while nextRead < depth {
-      lp.submit(Op.ReadAt(fh, nextRead * chunk, a.pool.mustTake(usize.from(chunk))), Target.Here(100u64 + nextRead));
+      lp.submit(Op.ReadAt(fh, nextRead * chunk, IoBuf(usize.from(chunk))), Target.Here(100u64 + nextRead));
       nextRead = nextRead + 1u64;
     }
     readsOut = depth;
@@ -182,7 +180,7 @@ fn client(a: ClientArgs) ClientReport {
         }
       } else if c.token == 0u64 {
         conn = c.handle;
-        var b = a.pool.mustTake(msgSize);
+        var b = IoBuf(msgSize);
         fillMsg(&mut b, 0u64);
         msgStart = Instant.now();
         lp.submit(Op.Send(conn, b), Target.Here(1u64));
@@ -225,7 +223,7 @@ fn client(a: ClientArgs) ClientReport {
   rep
 }
 
-fn writeFile(pool: &Pool) {
+fn writeFile() {
   var lp = Loop.mustMake();
   var fh = Handle.none();
   match lp.openFile("echo.tmp", Access.Create) {
@@ -237,7 +235,7 @@ fn writeFile(pool: &Pool) {
   var pending = 0u64;
   while at < fileSize || pending > 0u64 {
     while pending < 8u64 && at < fileSize {
-      var b = pool.mustTake(usize.from(chunk));
+      var b = IoBuf(usize.from(chunk));
       let room = b.whole();
       var j = 0usize;
       while j < room.len {
@@ -259,17 +257,17 @@ fn line(name: &str, h: &Histogram) {
   h.printLine(name);
 }
 
-fn exchange(pool: &Pool, messages: u64, withFile: bool, zeroByte: bool) ClientReport, ServerReport {
+fn exchange(messages: u64, withFile: bool, zeroByte: bool) ClientReport, ServerReport {
   var portTx: Sender[u16];
   var portRx: Receiver[u16];
   portTx, portRx = Channel[u16].make();
-  let server = thread.start(ServerArgs(*pool, portTx, zeroByte), &serve);
+  let server = thread.start(ServerArgs(portTx, zeroByte), &serve);
   var port = 0u16;
   match portRx.recv() {
     case let Some(p) {port = p;}
     case is None[u16] {}
   }
-  let cl = thread.start(ClientArgs(*pool, port, messages, withFile), &client);
+  let cl = thread.start(ClientArgs(port, messages, withFile), &client);
   let c = cl.join();
   let s = server.join();
   c, s
@@ -277,7 +275,6 @@ fn exchange(pool: &Pool, messages: u64, withFile: bool, zeroByte: bool) ClientRe
 
 // Part 3: the service thread reads and posts each answer to main's loop
 struct ServiceArgs {
-  pub pool: Pool;
   pub to: Waker;
 }
 
@@ -291,7 +288,7 @@ fn service(a: ServiceArgs) Counters {
   }
   var at = 0u64;
   while at < fileSize {
-    lp.submit(Op.ReadAt(fh, at, a.pool.mustTake(65536usize)), Target.Post(at, a.to));
+    lp.submit(Op.ReadAt(fh, at, IoBuf(65536usize)), Target.Post(at, a.to));
     while lp.inFlight() > 0u64 {lp.poll(forever(), &mut out);}
     at = at + 65536u64;
   }
@@ -313,13 +310,12 @@ fn printCounters(name: &str, c: &Counters) {
 }
 
 fn main() i32 {
-  let pool = Pool.make();
-  writeFile(&pool);
+  writeFile();
 
   // 1. Echo and the file through one poll
   var c: ClientReport;
   var s: ServerReport;
-  c, s = exchange(&pool, 100000u64, true, false);
+  c, s = exchange(100000u64, true, false);
   printStr("1. 100,000 echoes of 64 bytes, two threads, a 64 MiB file read through the client's poll\n");
   printStr("  ");
   printUInt(100000u64);
@@ -346,10 +342,10 @@ fn main() i32 {
   // 2. Zero-byte receives against direct ones
   var d: ClientReport;
   var ds: ServerReport;
-  d, ds = exchange(&pool, 20000u64, false, false);
+  d, ds = exchange(20000u64, false, false);
   var z: ClientReport;
   var zs: ServerReport;
-  z, zs = exchange(&pool, 20000u64, false, true);
+  z, zs = exchange(20000u64, false, true);
   printStr("2. 20,000 echoes: the server's receive direct, then by RecvReady + Recv (no buffer pinned while idle)\n");
   line("round trip, direct    ", &d.rtt);
   line("round trip, zero-byte ", &z.rtt);
@@ -361,7 +357,7 @@ fn main() i32 {
 
   // 3. Posted to an idle loop
   var m = Loop.mustMake();
-  let svc = thread.start(ServiceArgs(pool, m.waker()), &service);
+  let svc = thread.start(ServiceArgs(m.waker()), &service);
   var out = List[Completion].empty();
   var kernel = Histogram.make();
   var hop = Histogram.make();
@@ -384,7 +380,7 @@ fn main() i32 {
   line("delivery (thread hop)  ", &hop);
   printCounters("service loop", &sc);
   printStr("  pool: ");
-  printUInt(pool.stats().lent);
+  printUInt(stats().lent);
   printStr(" buffers lent at the end\n");
   libc.remove("echo.tmp");
   0i32

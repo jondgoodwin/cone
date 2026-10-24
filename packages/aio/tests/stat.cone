@@ -23,7 +23,7 @@ import path use Path;
 import collections use String;
 import time use Instant, Duration, Timestamp;
 import sync use Channel, Sender, Receiver;
-import iobuf use IoBuf, Pool;
+import iobuf use IoBuf;
 import iocore use IoError, CancelGroup, Access, FileStat;
 import actors;
 import aio use IoLimits, File;
@@ -76,8 +76,8 @@ fn codeOf(r: &Result[FileStat, IoError]) u64 {
 }
 
 // A block of n bytes
-fn block(pool: &Pool, n: usize) IoBuf {
-  var buf = pool.mustTake(n);
+fn block(n: usize) IoBuf {
+  var buf = IoBuf(n);
   let room = buf.whole();
   var i = 0usize;
   while i < n {
@@ -89,13 +89,12 @@ fn block(pool: &Pool, n: usize) IoBuf {
 }
 
 actor Statter {
-  pool: Pool;
   out: Sender[u64];
 
   pub async fn cases(self, cancelled: CancelGroup) {
     let name = Path.from("aiostat.tmp");
     let f = fileOf(await aio.openFile(&name, Access.Create));
-    let w = await f.writeAt(0u64, block(&pool, 13usize));
+    let w = await f.writeAt(0u64, block(13usize));
     {
       let began = Timestamp.now();
       let r = await aio.stat(&name);
@@ -113,7 +112,7 @@ actor Statter {
       out.send(b(statOf(&r).isDir()));
     }
     {
-      let more = await f.writeAt(13u64, block(&pool, 27usize));
+      let more = await f.writeAt(13u64, block(27usize));
       let r = await aio.stat(&name);
       out.send(endedBy(&r));
       out.send(statOf(&r).size);
@@ -151,7 +150,7 @@ fn main() i32 {
   tx, rx = Channel[u64].make();
   let cancelled = CancelGroup.make();
   expect(cancelled.cancel(), "the group was live");
-  let s = Statter(Pool.make(), tx.clone());
+  let s = Statter(tx.clone());
   s.cases(cancelled);
 
   expectUInt(take(&mut rx), 1u64, "the file just written: Done");

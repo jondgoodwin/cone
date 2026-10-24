@@ -9,8 +9,8 @@ mod chain;
 import testing use *;
 import iobuf use *;
 
-fn piece(pool: &Pool, text: &Array[u8]) IoBuf {
-  var b = pool.mustTake(text.len);
+fn piece(text: &Array[u8]) IoBuf {
+  var b = IoBuf(text.len);
   b.append(text);
   b
 }
@@ -20,22 +20,21 @@ fn pushed(o: Option[IoBuf]) bool {
 }
 
 fn main() i32 {
-  let pool = Pool.make();
   {
     var c = Chain.make(65536usize);
     expect(c.isEmpty(), "a new chain is empty");
     expect(c.find("\r\n") is None[usize], "nothing to find in an empty chain");
     // The request "GET /a HTTP/1.1\r\nHost: x\r\n\r\nhello", split so that
     // the head's end straddles three segments
-    expect(pushed(c.push(piece(&pool, "GET /a HT"))), "pushed 1");
-    expect(pushed(c.push(piece(&pool, "TP/1.1\r\nHost: x\r"))), "pushed 2");
-    expect(pushed(c.push(piece(&pool, "\n\r"))), "pushed 3");
-    expect(pushed(c.push(piece(&pool, "\nhel"))), "pushed 4");
-    expect(pushed(c.push(piece(&pool, "lo"))), "pushed 5");
+    expect(pushed(c.push(piece("GET /a HT"))), "pushed 1");
+    expect(pushed(c.push(piece("TP/1.1\r\nHost: x\r"))), "pushed 2");
+    expect(pushed(c.push(piece("\n\r"))), "pushed 3");
+    expect(pushed(c.push(piece("\nhel"))), "pushed 4");
+    expect(pushed(c.push(piece("lo"))), "pushed 5");
     expect(pushed(c.push(IoBuf.empty())), "an empty buffer is accepted and dropped");
     expectUInt(u64.from(c.segments()), 5u64, "five segments");
     expectUInt(u64.from(c.len()), 33u64, "33 bytes");
-    expectUInt(pool.stats().lent, 5u64, "five buffers lent, held by the chain");
+    expectUInt(stats().lent, 5u64, "five buffers lent, held by the chain");
 
     // Delimiters across boundaries
     match c.find("\r\n\r\n") {
@@ -84,7 +83,7 @@ fn main() i32 {
     c.advance(28usize);
     expectUInt(u64.from(c.len()), 5u64, "the body's 5 bytes carried over");
     expectUInt(u64.from(c.segments()), 2u64, "two segments left");
-    expectUInt(pool.stats().lent, 2u64, "the three consumed segments back in the pool");
+    expectUInt(stats().lent, 2u64, "the three consumed segments back in the pool");
     expect(c.matchesAt(0usize, "hello"), "the body starts at offset 0");
 
     // Take 2 bytes; then pop the rest a segment at a time
@@ -100,14 +99,14 @@ fn main() i32 {
     expectStr(first.view(), "l", "the popped segment holds only its unconsumed byte, at its start");
     expectUInt(u64.from(c.len()), 2u64, "two bytes left");
   }
-  expectUInt(pool.stats().lent, 0u64, "the chain's death gives its last segment back, and the popped one died too");
+  expectUInt(stats().lent, 0u64, "the chain's death gives its last segment back, and the popped one died too");
 
   // The bound: a push that would pass it is refused, its buffer handed back
   {
     var c = Chain.make(10usize);
-    expect(pushed(c.push(piece(&pool, "0123456"))), "7 bytes in");
+    expect(pushed(c.push(piece("0123456"))), "7 bytes in");
     var back = IoBuf.empty();
-    match c.push(piece(&pool, "789ab")) {
+    match c.push(piece("789ab")) {
       case var Some(s) {back <-> s;}
       case is None[IoBuf] {expect(false, "refused past the bound");}
     }
@@ -124,7 +123,7 @@ fn main() i32 {
     var i = 0u32;
     var sum = 0u64;
     while i < 100u32 {
-      c.push(piece(&pool, "ab"));
+      c.push(piece("ab"));
       if i % 3u32 == 0u32 {
         sum = sum + u64.from(c.byteAt(0usize));
         c.advance(1usize);
@@ -140,6 +139,6 @@ fn main() i32 {
       case is None[usize] {expect(false, "ba found");}
     }
   }
-  expectUInt(pool.stats().lent, 0u64, "every segment back");
+  expectUInt(stats().lent, 0u64, "every segment back");
   done()
 }

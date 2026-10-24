@@ -15,7 +15,7 @@ import testing use *;
 import collections use *;
 import sync use *;
 import time use Duration, Instant;
-import iobuf use IoBuf, Pool;
+import iobuf use IoBuf;
 import iocore use SocketAddr, IoError;
 import actors;
 import aio use UdpSocket;
@@ -33,14 +33,13 @@ fn udpOf(r: Result[UdpSocket, IoError]) UdpSocket {
 
 // Sends 'count' datagrams of 'size' bytes to 'port' from a socket of its own
 actor Blaster {
-  pool: Pool;
 
   pub async fn blast(self, port: u16, count: u32, size: usize, done: OneshotSender[u32]) {
     let s = udpOf(await aio.bindUdp(SocketAddr.localhost(0u16)));
     let to = SocketAddr.localhost(port);
     var sent = 0u32;
     while sent < count {
-      var b = pool.mustTake(size);
+      var b = IoBuf(size);
       let w = b.whole();
       var j = 0usize;
       while j < size {
@@ -96,7 +95,7 @@ fn flood() {
   var rxB: OneshotReceiver[u32];
   txB, rxB = Oneshot[u32].make();
   {
-    let blaster = Blaster(Pool.make());
+    let blaster = Blaster();
     blaster.blast(server.port, 1100u32, 9000usize, txB);
   }
   match rxB.recv() {

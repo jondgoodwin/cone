@@ -140,9 +140,8 @@ fn makeClient(resume: bool) tls.Client {
 
 struct TlsMaker {
   server: tls.Server;
-  pool: Pool;
 
-  pub fn make(self: &mut) Uni[Layer] {Uni[tls.Stream](server.stream(pool))}
+  pub fn make(self: &mut) Uni[Layer] {Uni[tls.Stream](server.stream())}
 }
 
 fn micros(ns: u64) {
@@ -258,7 +257,6 @@ fn concurrentInMemory(n: u32) {
 // ---------------------------------------------------------------------------
 
 struct Serving {
-  pub pool: Pool;
   pub big: ReqId;
   pub left: u64;
 }
@@ -266,7 +264,7 @@ struct Serving {
 fn sendBig(drv: &mut Driver, sv: &mut Serving) {
   while sv.left > 0u64 {
     let n = if sv.left < u64.from(bigPiece) {usize.from(sv.left)} else {bigPiece};
-    var b = sv.pool.mustTake(n);
+    var b = IoBuf(n);
     b.setLen(n);
     match drv.sendData(sv.big, b) {
       case is None[IoBuf] {sv.left = sv.left - u64.from(n);}
@@ -288,7 +286,7 @@ fn serve(drv: &mut Driver, sv: &mut Serving, kind: EventKind, req: ReqId, big: b
       sendBig(drv, sv);
     } else {
       drv.respond(req, ResponseHead.make(200u16), BodyLength.sized(64u64));
-      var b = sv.pool.mustTake(64usize);
+      var b = IoBuf(64usize);
       b.setLen(64usize);
       drv.sendData(req, b);
       drv.finish(req);
@@ -298,10 +296,10 @@ fn serve(drv: &mut Driver, sv: &mut Serving, kind: EventKind, req: ReqId, big: b
   }
 }
 
-fn listenOn(drv: &mut Driver, lp: &mut Loop, secure: bool, srv: &tls.Server, pool: Pool) u16 {
+fn listenOn(drv: &mut Driver, lp: &mut Loop, secure: bool, srv: &tls.Server) u16 {
   var port = 0u16;
   var res = if secure {
-    drv.listenWith(lp, SocketAddr.localhost(0u16), Uni[TlsMaker](TlsMaker(*srv, pool)), Sink.Here(tokServer))
+    drv.listenWith(lp, SocketAddr.localhost(0u16), Uni[TlsMaker](TlsMaker(*srv)), Sink.Here(tokServer))
   } else {
     drv.listen(lp, SocketAddr.localhost(0u16), Sink.Here(tokServer))
   };
@@ -317,9 +315,9 @@ fn listenOn(drv: &mut Driver, lp: &mut Loop, secure: bool, srv: &tls.Server, poo
   port
 }
 
-fn connect(drv: &mut Driver, lp: &mut Loop, secure: bool, cl: &tls.Client, pool: Pool, port: u16, k: u64) ConnId {
+fn connect(drv: &mut Driver, lp: &mut Loop, secure: bool, cl: &tls.Client, port: u16, k: u64) ConnId {
   if secure {
-    return drv.connectWith(lp, "127.0.0.1", port, Uni[tls.Stream](cl.stream("localhost", pool)),
+    return drv.connectWith(lp, "127.0.0.1", port, Uni[tls.Stream](cl.stream("localhost")),
       Sink.Here(tokConn + k));
   }
   drv.connect(lp, "127.0.0.1", port, Sink.Here(tokConn + k))
@@ -330,20 +328,19 @@ fn connect(drv: &mut Driver, lp: &mut Loop, secure: bool, cl: &tls.Client, pool:
 // ---------------------------------------------------------------------------
 
 fn cycles(label: &str, secure: bool, resume: bool, n: u32) {
-  let pool = Pool.make();
   var lp = Loop.mustMake();
-  var drv = Driver.make(Config.make(), pool);
+  var drv = Driver.make(Config.make());
   let srv = makeServer();
   let cl = makeClient(resume);
-  let port = listenOn(&mut drv, &mut lp, secure, &srv, pool);
-  var sv = Serving(pool, ReqId.none(), 0u64);
+  let port = listenOn(&mut drv, &mut lp, secure, &srv);
+  var sv = Serving(ReqId.none(), 0u64);
   var h = Histogram.make();
   var events = List[Event].empty();
   let r0 = tls.stats().resumed;
   var k = 0u32;
   while k < n + 1u32 {
     let t0 = Instant.now();
-    let c = connect(&mut drv, &mut lp, secure, &cl, pool, port, 0u64);
+    let c = connect(&mut drv, &mut lp, secure, &cl, port, 0u64);
     drv.request(&mut lp, c, RequestHead.get("/x", "localhost"), BodyLength.empty(), Sink.Here(tokReq));
     var going = true;
     while going {
@@ -395,22 +392,21 @@ fn getOn(drv: &mut Driver, lp: &mut Loop, sv: &mut Serving, events: &mut List[Ev
 // kept; then a second connection and its GET, timed from asking for it to
 // the GET's Done; both reset
 fn concurrentCycles(n: u32) {
-  let pool = Pool.make();
   var lp = Loop.mustMake();
-  var drv = Driver.make(Config.make(), pool);
+  var drv = Driver.make(Config.make());
   let srv = makeServer();
-  let port = listenOn(&mut drv, &mut lp, true, &srv, pool);
-  var sv = Serving(pool, ReqId.none(), 0u64);
+  let port = listenOn(&mut drv, &mut lp, true, &srv);
+  var sv = Serving(ReqId.none(), 0u64);
   var h = Histogram.make();
   var events = List[Event].empty();
   let r0 = tls.stats().resumed;
   var k = 0u32;
   while k < n + 1u32 {
     let cl = makeClient(true);
-    let first = connect(&mut drv, &mut lp, true, &cl, pool, port, 0u64);
+    let first = connect(&mut drv, &mut lp, true, &cl, port, 0u64);
     getOn(&mut drv, &mut lp, &mut sv, &mut events, first);
     let t0 = Instant.now();
-    let c = connect(&mut drv, &mut lp, true, &cl, pool, port, 1u64);
+    let c = connect(&mut drv, &mut lp, true, &cl, port, 1u64);
     getOn(&mut drv, &mut lp, &mut sv, &mut events, c);
     if k > 0u32 {h.record((Instant.now() - t0).nanos());}
     drv.abort(&mut lp, c);
@@ -429,15 +425,15 @@ fn concurrentCycles(n: u32) {
 // ---------------------------------------------------------------------------
 
 fn bulk(label: &str, secure: bool, size: u64) {
-  let pool = Pool.make(268435456usize, 67108864usize);
+  setLimits(268435456usize, 67108864usize);
   var lp = Loop.mustMake();
-  var drv = Driver.make(Config.make(), pool);
+  var drv = Driver.make(Config.make());
   let srv = makeServer();
   let cl = makeClient(false);
-  let port = listenOn(&mut drv, &mut lp, secure, &srv, pool);
-  var sv = Serving(pool, ReqId.none(), 0u64);
+  let port = listenOn(&mut drv, &mut lp, secure, &srv);
+  var sv = Serving(ReqId.none(), 0u64);
   var events = List[Event].empty();
-  let c = connect(&mut drv, &mut lp, secure, &cl, pool, port, 0u64);
+  let c = connect(&mut drv, &mut lp, secure, &cl, port, 0u64);
   // A first GET, so the handshake is not timed
   var round = 0u32;
   var got = 0u64;
@@ -483,15 +479,15 @@ fn bulk(label: &str, secure: bool, size: u64) {
 // ---------------------------------------------------------------------------
 
 fn idleMemory(n: u64) {
-  let pool = Pool.make(268435456usize, 268435456usize);
+  setLimits(268435456usize, 268435456usize);
   var lp = Loop.mustMake();
   var cfg = Config.make();
   cfg.acceptDepth = 64u32;
-  var drv = Driver.make(cfg, pool);
+  var drv = Driver.make(cfg);
   let srv = makeServer();
   let cl = makeClient(true);
-  let port = listenOn(&mut drv, &mut lp, true, &srv, pool);
-  var sv = Serving(pool, ReqId.none(), 0u64);
+  let port = listenOn(&mut drv, &mut lp, true, &srv);
+  var sv = Serving(ReqId.none(), 0u64);
   var events = List[Event].empty();
   var round = 0u32;
   var before = 0u64;
@@ -500,9 +496,9 @@ fn idleMemory(n: u64) {
     // Round 0 warms the tables and the pool with 64; round 1 is measured
     let want = if round == 0u32 {64u64} else {n};
     if round == 1u32 {
-      pool.trim();
+      trim();
       before = privateBytes();
-      heldBefore = pool.stats().heldBytes - pool.stats().idleBytes;
+      heldBefore = stats().heldBytes - stats().idleBytes;
     }
     var cs = List[ConnId].empty();
     var connected = 0u64;
@@ -510,7 +506,7 @@ fn idleMemory(n: u64) {
     while ended < want {
       if u64.from(cs.len()) < want && u64.from(cs.len()) < connected + 64u64 {
         let k = u64.from(cs.len());
-        let c = connect(&mut drv, &mut lp, true, &cl, pool, port, k);
+        let c = connect(&mut drv, &mut lp, true, &cl, port, k);
         drv.request(&mut lp, c, RequestHead.get("/x", "localhost"), BodyLength.empty(), Sink.Here(tokReq + k));
         cs.push(c);
         continue;
@@ -546,9 +542,9 @@ fn idleMemory(n: u64) {
     }
     round = round + 1u32;
   }
-  pool.trim();
+  trim();
   let after = privateBytes();
-  let heldAfter = pool.stats().heldBytes - pool.stats().idleBytes;
+  let heldAfter = stats().heldBytes - stats().idleBytes;
   printStr("idle TLS connections: ");
   printUInt(n);
   printStr(" open (");

@@ -46,7 +46,6 @@ fn parse(c: Chain) u64 {
 }   // the chain dies here, on this thread
 
 struct Work {
-  pub pool: Pool;
   pub tx: Sender[IoBuf];
   pub id: u64;
 }
@@ -55,7 +54,7 @@ struct Work {
 fn produce(w: Work) u64 {
   var k = 0u64;
   while k < perProducer {
-    var b = w.pool.mustTake(4096usize);
+    var b = IoBuf(4096usize);
     b.append("x");
     w.tx.send(b);
     k = k + 1u64;
@@ -83,35 +82,34 @@ fn consume(rx: Receiver[IoBuf]) u64 {
 
 fn main() i32 {
   initAll();
-  let pool = Pool.make();
   {
     // 1. Moved in, filled, handed back
-    let b = pool.mustTake(100usize);
+    let b = IoBuf(100usize);
     let t = thread.start(b, &fill);
     let back = t.join();
     expectStr(back.view(), "filled on another thread", "the buffer came back filled");
-    expectUInt(pool.stats().lent, 1u64, "one lent: the one handed back");
+    expectUInt(stats().lent, 1u64, "one lent: the one handed back");
 
     // 2. A chain parsed and dropped on another thread
     var c = Chain.make(4096usize);
-    var p = pool.mustTake(10usize);
+    var p = IoBuf(10usize);
     p.append("GET /\r");
     c.push(p);
-    var q = pool.mustTake(10usize);
+    var q = IoBuf(10usize);
     q.append("\nrest");
     c.push(q);
-    expectUInt(pool.stats().lent, 3u64, "three lent");
+    expectUInt(stats().lent, 3u64, "three lent");
     let pt = thread.start(c, &parse);
     expectUInt(pt.join(), 5u64, "the line end found across the boundary on the other thread");
-    expectUInt(pool.stats().lent, 1u64, "the chain's segments came back from that thread");
+    expectUInt(stats().lent, 1u64, "the chain's segments came back from that thread");
   }
-  expectUInt(pool.stats().lent, 0u64, "all home");
-  pool.trim();
+  expectUInt(stats().lent, 0u64, "all home");
+  trim();
   expectUInt(osBlocks(), 0u64, "the first buffers' slabs given back");
 
   // 3. The race
   {
-    let before = pool.stats();
+    let before = stats();
     var tx: Sender[IoBuf];
     var rx: Receiver[IoBuf];
     tx, rx = Channel[IoBuf].bounded(256usize);
@@ -121,16 +119,16 @@ fn main() i32 {
     var p2: thread.Thread[u64];
     var p3: thread.Thread[u64];
     {
-      p0 = thread.start(Work(pool, tx.clone(), 0u64), &produce);
-      p1 = thread.start(Work(pool, tx.clone(), 1u64), &produce);
-      p2 = thread.start(Work(pool, tx.clone(), 2u64), &produce);
-      p3 = thread.start(Work(pool, tx, 3u64), &produce);
+      p0 = thread.start(Work(tx.clone(), 0u64), &produce);
+      p1 = thread.start(Work(tx.clone(), 1u64), &produce);
+      p2 = thread.start(Work(tx.clone(), 2u64), &produce);
+      p3 = thread.start(Work(tx, 3u64), &produce);
     }
     let sent = p0.join() + p1.join() + p2.join() + p3.join();
     let seen = consumer.join();
     expectUInt(sent, 4u64 * perProducer, "the producers sent 100,000");
     expectUInt(seen, 4u64 * perProducer, "the consumer dropped every buffer");
-    let s = pool.stats();
+    let s = stats();
     expectUInt(s.takes - before.takes, 4u64 * perProducer, "100,000 lent");
     expectUInt(s.refused, 0u64, "none refused");
     expectUInt(s.lent, 0u64, "nothing lent at the end");
@@ -139,7 +137,7 @@ fn main() i32 {
     expectUInt(osBlocks(), u64.from(s.slabs), "and with the blocks the OS holds");
     expect(s.heldBytes <= 67108864usize, "held within the bound");
   }
-  pool.trim();
+  trim();
   expectUInt(osBlocks(), 0u64, "every slab back once the buffers are gone and the pools trimmed");
   expectUInt(osBytes(), 0u64, "no bytes held");
   done()

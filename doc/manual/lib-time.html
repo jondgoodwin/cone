@@ -752,7 +752,6 @@ at 3600000 ms: 1 fired: 200
 // sockets, a and b, on which nothing is ever sent, so a receive on one is silent)
 
 fn main() {
-  let pool = Pool.make();
   var lp = Loop.mustMake();
   var out = List[Completion].empty();
   var a = Handle.none();
@@ -769,27 +768,27 @@ fn main() {
 
   // 2. An operation with a deadline: a receive on a silent socket
   let t0 = Instant.now();
-  lp.submitBy(Op.Recv(a, pool.mustTake(100usize)), Target.Here(3u64), t0 + Duration.fromMillis(50));
+  lp.submitBy(Op.Recv(a, IoBuf(100usize)), Target.Here(3u64), t0 + Duration.fromMillis(50));
   waitFor(&amp;mut lp, &amp;mut out, 1usize);
   sayAll(&amp;mut out);
   printStr(if t0.elapsed() &gt;= Duration.fromMillis(50) {"not before the deadline\n"} else {"EARLY\n"});
 
   // 3. A deadline already past: answered at submit, never started
-  lp.submitBy(Op.Recv(a, pool.mustTake(100usize)), Target.Here(4u64), Instant.now() - Duration.fromMillis(1));
+  lp.submitBy(Op.Recv(a, IoBuf(100usize)), Target.Here(4u64), Instant.now() - Duration.fromMillis(1));
   waitFor(&amp;mut lp, &amp;mut out, 1usize);
   sayAll(&amp;mut out);
 
   // 4. A group with a deadline, and the same group cancelled
   let t1 = Instant.now();
   let g = CancelGroup.until(t1 + Duration.fromMillis(40));
-  lp.submitIn(Op.Recv(a, pool.mustTake(100usize)), Target.Here(5u64), g, forever());
+  lp.submitIn(Op.Recv(a, IoBuf(100usize)), Target.Here(5u64), g, forever());
   lp.afterIn(t1 + Duration.fromMillis(200), Target.Here(6u64), g);
   waitFor(&amp;mut lp, &amp;mut out, 2usize);
   sayAll(&amp;mut out);
   printStr(if t1.elapsed() &lt; Duration.fromMillis(200) {"the timer did not wait for its own 200 ms\n"} else {"the timer waited for its own 200 ms\n"});
 
   let h = CancelGroup.make();
-  lp.submitIn(Op.Recv(a, pool.mustTake(100usize)), Target.Here(7u64), h, forever());
+  lp.submitIn(Op.Recv(a, IoBuf(100usize)), Target.Here(7u64), h, forever());
   lp.afterIn(Instant.now() + Duration.fromSeconds(3600), Target.Here(8u64), h);
   h.cancel();
   waitFor(&amp;mut lp, &amp;mut out, 2usize);

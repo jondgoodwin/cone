@@ -149,7 +149,6 @@ struct Lst {
 // THE DRIVER)
 pub struct Driver {
   cfg: Config;
-  pool: Pool;
   tokBase: u64;
   connBlocks: List[*Conn];
   connCount: u32;
@@ -173,9 +172,9 @@ pub struct Driver {
   st: DriverStats;
 
   // A driver whose connections take cfg's bounds and buffers from pool
-  pub fn make(cfg: Config, pool: Pool, file: &Array[u8] = srcFile(), line: u32 = srcLine()) Driver {
+  pub fn make(cfg: Config, file: &Array[u8] = srcFile(), line: u32 = srcLine()) Driver {
     let number = u64.from(takeNumber(file, line));
-    Driver(cfg: cfg, pool: pool, tokBase: tokTop | (number << numberShift),
+    Driver(cfg: cfg, tokBase: tokTop | (number << numberShift),
       connBlocks: List[*Conn].empty(), connCount: 0u32, freeConn: noEntry, liveConns: 0u32,
       reqBlocks: List[*Req].empty(), reqCount: 0u32, freeReq: noEntry,
       listeners: List[Lst].empty(), acceptsOut: 0u32, rearm: false,
@@ -275,7 +274,7 @@ pub struct Driver {
 
   fn blankConn(self: &, next: u32) Conn {
     Conn(gen: 1u32, state: cFree, nextFree: next, server: false, listener: ListenerId.none(),
-      sock: Handle.none(), core: http1.Connection.client(cfg.protocol, pool, Instant()),
+      sock: Handle.none(), core: http1.Connection.client(cfg.protocol, Instant()),
       layer: plainLayer(), sink: Sink.Here(0u64), addrs: List[SocketAddr].empty(), nextAddr: 0usize,
       connOp: OpId.none(), callOp: OpId.none(), connectBy: Instant(), peer: SocketAddr.localhost(0u16),
       recvOut: false, readyOut: false, readyHit: false, sendsOut: 0u32, eof: false, eofFed: false,
@@ -315,8 +314,8 @@ pub struct Driver {
     c.server = server;
     c.listener = ListenerId.none();
     c.sock = Handle.none();
-    c.core = if server {http1.Connection.server(cfg.protocol, pool, now)}
-      else {http1.Connection.client(cfg.protocol, pool, now)};
+    c.core = if server {http1.Connection.server(cfg.protocol, now)}
+      else {http1.Connection.client(cfg.protocol, now)};
     c.layer = layer;
     c.sink = sink;
     c.addrs.clear();
@@ -349,7 +348,7 @@ pub struct Driver {
     let c = self.connAt(i) as &mut Conn;
     c.state = cFree;
     c.gen = nextGen(c.gen);
-    c.core = http1.Connection.client(cfg.protocol, pool, Instant());
+    c.core = http1.Connection.client(cfg.protocol, Instant());
     c.layer = plainLayer();
     c.sink = Sink.Here(0u64);
     c.addrs.clear();
@@ -860,17 +859,7 @@ pub struct Driver {
       return;
     }
     c.readyHit = false;
-    var b = IoBuf.empty();
-    match pool.take(cfg.recvSize) {
-      case let Some(s) {b = s;}
-      case is None[IoBuf] {}
-    }
-    if b.capacity() == 0usize {
-      c.failed = true;
-      c.failure = Failure.make(Stage.Limit, 0u32, ErrorKind.TooLarge, "the buffer pool refused a receive buffer");
-      self.closeNow(lp, i, true, false);
-      return;
-    }
+    let b = IoBuf(cfg.recvSize);
     lp.submit(Op.Recv(c.sock, b), Target.Here(self.tok(kRecv, i, c.gen)));
     c.recvOut = true;
   }
@@ -911,15 +900,7 @@ pub struct Driver {
   fn lingerRecv(self: &mut, lp: &mut Loop, i: u32) {
     let c = self.connAt(i) as &mut Conn;
     if c.eof || c.recvOut || c.readyOut {return;}
-    var b = IoBuf.empty();
-    match pool.take(lingerSize) {
-      case let Some(s) {b = s;}
-      case is None[IoBuf] {}
-    }
-    if b.capacity() == 0usize {
-      self.closeNow(lp, i, false, false);
-      return;
-    }
+    let b = IoBuf(lingerSize);
     lp.submit(Op.Recv(c.sock, b), Target.Here(self.tok(kRecv, i, c.gen)));
     c.recvOut = true;
   }
@@ -1216,15 +1197,7 @@ pub struct Driver {
         self.connectNext(lp, i);
       }
       case is None[SocketAddr] {
-        var b = IoBuf.empty();
-        match pool.take(resolveSize) {
-          case let Some(s) {b = s;}
-          case is None[IoBuf] {}
-        }
-        if b.capacity() == 0usize {
-          self.failConn(lp, i, Stage.Limit, 0u32, ErrorKind.TooLarge, "the buffer pool refused a lookup's buffer");
-          return id;
-        }
+        let b = IoBuf(resolveSize);
         c.state = cResolving;
         c.connOp = lp.submitBy(resolveOp(host, port, b), Target.Here(self.tok(kResolve, i, c.gen)), c.connectBy);
       }

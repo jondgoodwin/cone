@@ -48,14 +48,13 @@ fn fileName(i: u64) Path {
 
 fn main() i32 {
   {
-    let pool = Pool.make();
     var lp = Loop.mustMake();
     var out = List[Completion].empty();
 
     // 1. Names
     {
-      lp.submit(resolveOp("localhost", 8080u16, pool.mustTake(4096usize)), Target.Here(1u64));
-      lp.submit(resolveOp("127.0.0.1", 443u16, pool.mustTake(4096usize)), Target.Here(2u64));
+      lp.submit(resolveOp("localhost", 8080u16, IoBuf(4096usize)), Target.Here(1u64));
+      lp.submit(resolveOp("127.0.0.1", 443u16, IoBuf(4096usize)), Target.Here(2u64));
       waitFor(&mut lp, &mut out, 2usize);
       requireUInt(u64.from(out.len()), 2u64, "both looked up");
       var k = 0usize;
@@ -90,7 +89,7 @@ fn main() i32 {
       let named = fileName(f);
       match lp.openFile(&named, Access.Create) {
         case let Ok(r) {
-          var b = pool.mustTake(4096usize);
+          var b = IoBuf(4096usize);
           {
             let w = b.whole();
             var j = 0usize;
@@ -114,11 +113,11 @@ fn main() i32 {
     {
       // A Path variable is lent, and is as it was after the call
       let third = fileName(3u64);
-      lp.submit(statOp(&third, Lane.general(), pool.mustTake(4096usize)), Target.Here(1u64));
+      lp.submit(statOp(&third, Lane.general(), IoBuf(4096usize)), Target.Here(1u64));
       expectStr(third.view(), "pool3.tmp", "statOp lends its path");
       // A literal where a path is wanted is made one
-      lp.submit(statOp(".", Lane.general(), pool.mustTake(4096usize)), Target.Here(2u64));
-      lp.submit(statOp("no such file.tmp", Lane.general(), pool.mustTake(4096usize)), Target.Here(3u64));
+      lp.submit(statOp(".", Lane.general(), IoBuf(4096usize)), Target.Here(2u64));
+      lp.submit(statOp("no such file.tmp", Lane.general(), IoBuf(4096usize)), Target.Here(3u64));
       waitFor(&mut lp, &mut out, 3usize);
       requireUInt(u64.from(out.len()), 3u64, "three asked");
       var k = 0usize;
@@ -147,7 +146,7 @@ fn main() i32 {
       while i < 1000u64 {
         let named = fileName(i % 8u64);
         lp.submit(readFileOp(&named, (i % 4u64) * 1024u64, Lane.general(),
-          pool.mustTake(1024usize)), Target.Here(1000u64 + i));
+          IoBuf(1024usize)), Target.Here(1000u64 + i));
         i = i + 1u64;
       }
       waitFor(&mut lp, &mut out, 1000usize);
@@ -184,7 +183,7 @@ fn main() i32 {
       i = 0u64;
       while i < 200u64 {
         let named = fileName(i % 8u64);
-        lp.submit(readFileOp(&named, 0u64, Lane.general(), pool.mustTake(4096usize)),
+        lp.submit(readFileOp(&named, 0u64, Lane.general(), IoBuf(4096usize)),
           Target.Here(2u64));
         i = i + 1u64;
       }
@@ -210,7 +209,7 @@ fn main() i32 {
       lp.poll(Instant.now() + Duration.fromMillis(20i64), &mut out);
       lp.submit(Op.Call(tiny, &slowWork, 0u64, IoBuf.empty()), Target.Here(2u64));
       lp.submit(Op.Call(tiny, &slowWork, 0u64, IoBuf.empty()), Target.Here(3u64));
-      lp.submit(Op.Call(tiny, &slowWork, 0u64, pool.mustTake(10usize)), Target.Here(4u64));
+      lp.submit(Op.Call(tiny, &slowWork, 0u64, IoBuf(10usize)), Target.Here(4u64));
       lp.poll(Instant.now(), &mut out);
       requireUInt(u64.from(out.len()), 1u64, "the one past the bound answered at once");
       expectUInt(out[0usize].token, 4u64, "the fourth");
@@ -246,7 +245,7 @@ fn main() i32 {
     let cs = lp.counters();
     expectUInt(cs.delivered, cs.submitted, "every operation answered once");
     expectUInt(cs.inFlight, 0u64, "nothing in flight");
-    expectUInt(pool.stats().lent, 0u64, "every buffer back in the pool");
+    expectUInt(stats().lent, 0u64, "every buffer back in the pool");
   }
   trimAll();      // the pools are the process's: their idle slabs go back to the OS on request
   expectUInt(osBlocks(), 0u64, "and every block back to the OS");

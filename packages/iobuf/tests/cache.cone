@@ -18,7 +18,7 @@ fn churn(n: usize) {
   var c = Chain.make(8388608usize);
   var k = 0usize;
   while k < n {
-    var b = Pool.make().mustTake(1usize);
+    var b = IoBuf(1usize);
     b.append("x");
     c.push(b);
     k = k + 1usize;
@@ -42,7 +42,7 @@ fn flushing(n: usize) u64 {
 fn taker(tx: Sender[IoBuf]) u64 {
   var k = 0u64;
   while k < 10u64 {
-    var b = Pool.make().mustTake(1usize);
+    var b = IoBuf(1usize);
     b.append("x");
     tx.send(b);
     k = k + 1u64;
@@ -63,24 +63,23 @@ fn dropper(rx: Receiver[IoBuf]) u64 {
 
 fn main() i32 {
   initAll();
-  let pool = Pool.make();
 
   // On one thread: the first take misses (a batch from the stock), a block
   // that dies goes to the cache, and the next take hits it
   churn(1usize);
-  var s = pool.stats();
+  var s = stats();
   expectUInt(s.takes, 1u64, "one take");
   expectUInt(s.reuses, 0u64, "which went to the stock");
   expectUInt(u64.from(s.cachedBytes), 16u64 * 4096u64, "a batch of 16 came to the cache, one taken, and it came home");
   churn(1usize);
-  s = pool.stats();
+  s = stats();
   expectUInt(s.reuses, 1u64, "the second take reused a block from the cache");
   expectUInt(u64.from(s.cachedBytes), 16u64 * 4096u64, "sixteen cached again");
 
   // 100 buffers dropped together: the cache holds 32 at most; the rest is in
   // the stock
   churn(100usize);
-  s = pool.stats();
+  s = stats();
   expectUInt(u64.from(s.cachedBytes) % 4096u64, 0u64, "whole blocks");
   expect(s.cachedBytes <= 32usize * 4096usize, "a cache is bounded: 32 blocks of 4 KiB");
   expect(s.cachedBytes >= 16usize * 4096usize, "and holds at least a batch");
@@ -91,7 +90,7 @@ fn main() i32 {
   // flushThread: this thread's blocks all go back to the stock
   let total = s.stockBytes + s.cachedBytes;
   flushThread();
-  s = pool.stats();
+  s = stats();
   expectUInt(u64.from(s.cachedBytes), 0u64, "flushed");
   expectUInt(u64.from(s.stockBytes), u64.from(total), "all in the stock");
 
@@ -99,16 +98,16 @@ fn main() i32 {
   // not leaves its blocks cached, counted
   let a = thread.start(40usize, &flushing);
   expectUInt(a.join(), 40u64, "the flushing thread ran");
-  s = pool.stats();
+  s = stats();
   expectUInt(u64.from(s.cachedBytes), 0u64, "a thread that flushed leaves nothing cached");
   let b = thread.start(40usize, &leaveCached);
   expectUInt(b.join(), 40u64, "the other thread ran");
-  s = pool.stats();
+  s = stats();
   expect(s.cachedBytes > 0usize, "a thread that did not leaves its cache, counted");
   expect(s.cachedBytes <= 32usize * 4096usize, "bounded");
   expectUInt(s.lent, 0u64, "no buffer lost");
   trimAll();
-  s = pool.stats();
+  s = stats();
   expectUInt(u64.from(s.cachedBytes), 0u64, "trimAll flushes every cache");
   expectUInt(osBlocks(), 0u64, "and gives every slab back");
 
@@ -120,7 +119,7 @@ fn main() i32 {
   let t = thread.start(tx, &taker);
   expectUInt(t.join(), 10u64, "ten taken");
   expectUInt(d.join(), 10u64, "ten dropped on the other thread");
-  s = pool.stats();
+  s = stats();
   expectUInt(s.lent, 0u64, "all home");
   expectUInt(u64.from(s.cachedBytes), 10u64 * 4096u64, "in the dropping thread's cache, which did not flush");
   trimAll();

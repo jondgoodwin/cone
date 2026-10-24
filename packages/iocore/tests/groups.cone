@@ -88,7 +88,6 @@ fn canceller(g: CancelGroup) bool {
 struct Remote {
   pub g: CancelGroup;
   pub to: Waker;
-  pub pool: Pool;
   pub ready: Sender[u64];
 }
 
@@ -97,7 +96,7 @@ fn remote(r: Remote) u64 {
   var a = Handle.none();
   var b = Handle.none();
   a, b = pair(&mut lp);
-  lp.submitIn(Op.Recv(a, r.pool.mustTake(100usize)), Target.Post(71u64, r.to), r.g, forever());
+  lp.submitIn(Op.Recv(a, IoBuf(100usize)), Target.Post(71u64, r.to), r.g, forever());
   r.ready.send(1u64);
   var out = List[Completion].empty();
   while lp.inFlight() > 0u64 {
@@ -109,7 +108,6 @@ fn remote(r: Remote) u64 {
 
 fn main() i32 {
   {
-    let pool = Pool.make();
     var lp = Loop.mustMake();
     var out = List[Completion].empty();
     var a = Handle.none();
@@ -123,11 +121,11 @@ fn main() i32 {
     // 1. One cancel, five operations
     {
       let g = CancelGroup.make();
-      lp.submitIn(Op.Recv(a, pool.mustTake(100usize)), Target.Here(1u64), g, forever());
-      lp.submitIn(Op.Recv(c, pool.mustTake(100usize)), Target.Here(2u64), g, forever());
+      lp.submitIn(Op.Recv(a, IoBuf(100usize)), Target.Here(1u64), g, forever());
+      lp.submitIn(Op.Recv(c, IoBuf(100usize)), Target.Here(2u64), g, forever());
       lp.afterIn(Instant.now() + Duration.fromSeconds(10i64), Target.Here(3u64), g);
-      lp.submitIn(Op.Call(one, &slowWork, 100u64, pool.mustTake(100usize)), Target.Here(4u64), g, forever());
-      lp.submitIn(Op.Call(one, &slowWork, 1u64, pool.mustTake(100usize)), Target.Here(5u64), g, forever());
+      lp.submitIn(Op.Call(one, &slowWork, 100u64, IoBuf(100usize)), Target.Here(4u64), g, forever());
+      lp.submitIn(Op.Call(one, &slowWork, 1u64, IoBuf(100usize)), Target.Here(5u64), g, forever());
       lp.poll(Instant.now() + Duration.fromMillis(20i64), &mut out);
       expectUInt(u64.from(out.len()), 0u64, "all five in flight");
       expect(!g.isCancelled(), "the group live");
@@ -163,7 +161,7 @@ fn main() i32 {
       let g = CancelGroup.make();
       g.cancel();
       let before = lp.counters().atSubmit;
-      lp.submitIn(Op.Recv(a, pool.mustTake(100usize)), Target.Here(10u64), g, forever());
+      lp.submitIn(Op.Recv(a, IoBuf(100usize)), Target.Here(10u64), g, forever());
       lp.poll(Instant.now(), &mut out);
       requireUInt(u64.from(out.len()), 1u64, "answered at once");
       expectUInt(u64.from(out[0usize].status), u64.from(diag.outcomeCancelled), "Cancelled");
@@ -176,7 +174,7 @@ fn main() i32 {
     {
       let parent = CancelGroup.make();
       let child = parent.child();
-      lp.submitIn(Op.Recv(a, pool.mustTake(100usize)), Target.Here(20u64), child, forever());
+      lp.submitIn(Op.Recv(a, IoBuf(100usize)), Target.Here(20u64), child, forever());
       parent.cancel();
       expect(child.isCancelled(), "the child is cancelled with its parent");
       waitFor(&mut lp, &mut out, 1usize);
@@ -185,7 +183,7 @@ fn main() i32 {
 
       let p2 = CancelGroup.make();
       let c2 = p2.child();
-      lp.submitIn(Op.Recv(a, pool.mustTake(100usize)), Target.Here(21u64), p2, forever());
+      lp.submitIn(Op.Recv(a, IoBuf(100usize)), Target.Here(21u64), p2, forever());
       c2.cancel();
       expect(!p2.isCancelled(), "a child's cancel does not reach its parent");
       lp.poll(Instant.now() + Duration.fromMillis(20i64), &mut out);
@@ -201,7 +199,7 @@ fn main() i32 {
       let t0 = Instant.now();
       let g = CancelGroup.until(t0 + Duration.fromMillis(40i64));
       expect(g.deadline() == t0 + Duration.fromMillis(40i64), "the group's deadline");
-      lp.submitIn(Op.Recv(a, pool.mustTake(100usize)), Target.Here(30u64), g, forever());
+      lp.submitIn(Op.Recv(a, IoBuf(100usize)), Target.Here(30u64), g, forever());
       waitFor(&mut lp, &mut out, 1usize);
       expectUInt(u64.from(out[0usize].status), u64.from(diag.outcomeTimedOut), "the group's deadline: TimedOut");
       expect(out[0usize].dequeued >= t0 + Duration.fromMillis(40i64), "not before it");
@@ -214,8 +212,8 @@ fn main() i32 {
       expect(tight.deadline() == t1 + Duration.fromMillis(30i64), "a child's tighter deadline");
       expect(loose.childUntil(t1 + Duration.fromSeconds(20i64)).deadline() == loose.deadline(),
         "a child's looser deadline gives way to its parent's");
-      lp.submitIn(Op.Recv(a, pool.mustTake(100usize)), Target.Here(31u64), tight, forever());
-      lp.submitIn(Op.Recv(c, pool.mustTake(100usize)), Target.Here(32u64), loose, t1 + Duration.fromMillis(30i64));
+      lp.submitIn(Op.Recv(a, IoBuf(100usize)), Target.Here(31u64), tight, forever());
+      lp.submitIn(Op.Recv(c, IoBuf(100usize)), Target.Here(32u64), loose, t1 + Duration.fromMillis(30i64));
       waitFor(&mut lp, &mut out, 2usize);
       requireUInt(u64.from(out.len()), 2u64, "both answered");
       expect(out[0usize].status == diag.outcomeTimedOut && out[1usize].status == diag.outcomeTimedOut,
@@ -225,8 +223,8 @@ fn main() i32 {
 
       let before = lp.counters().atSubmit;
       let past = CancelGroup.until(Instant.now());
-      lp.submitIn(Op.Recv(a, pool.mustTake(100usize)), Target.Here(33u64), past, forever());
-      lp.submitBy(Op.Recv(a, pool.mustTake(100usize)), Target.Here(34u64), Instant.now());
+      lp.submitIn(Op.Recv(a, IoBuf(100usize)), Target.Here(33u64), past, forever());
+      lp.submitBy(Op.Recv(a, IoBuf(100usize)), Target.Here(34u64), Instant.now());
       lp.poll(Instant.now(), &mut out);
       requireUInt(u64.from(out.len()), 2u64, "a deadline already past: answered at once");
       expect(out[0usize].status == diag.outcomeTimedOut && out[1usize].status == diag.outcomeTimedOut, "TimedOut");
@@ -240,8 +238,8 @@ fn main() i32 {
       g.cancel();
       let s = g.shield(Instant.now() + Duration.fromSeconds(5i64));
       expect(!s.isCancelled() && s.isShield(), "a shield under a cancelled group is live");
-      lp.submitIn(Op.Recv(a, pool.mustTake(100usize)), Target.Here(40u64), s, forever());
-      var x = pool.mustTake(1usize);
+      lp.submitIn(Op.Recv(a, IoBuf(100usize)), Target.Here(40u64), s, forever());
+      var x = IoBuf(1usize);
       x.append("z");
       lp.submitIn(Op.Send(b, x), Target.Here(41u64), s, forever());
       waitFor(&mut lp, &mut out, 2usize);
@@ -249,7 +247,7 @@ fn main() i32 {
       expect(out[0usize].isDone() && out[1usize].isDone(), "both Done under the shield");
       out.clear();
       let s2 = g.shield(Instant.now() + Duration.fromMillis(20i64));
-      lp.submitIn(Op.Recv(a, pool.mustTake(100usize)), Target.Here(42u64), s2, forever());
+      lp.submitIn(Op.Recv(a, IoBuf(100usize)), Target.Here(42u64), s2, forever());
       waitFor(&mut lp, &mut out, 1usize);
       expectUInt(u64.from(out[0usize].status), u64.from(diag.outcomeTimedOut), "the shield's own deadline holds");
       out.clear();
@@ -258,7 +256,7 @@ fn main() i32 {
     // 6. Cancelled from another thread
     {
       let g = CancelGroup.make();
-      lp.submitIn(Op.Recv(a, pool.mustTake(100usize)), Target.Here(50u64), g, forever());
+      lp.submitIn(Op.Recv(a, IoBuf(100usize)), Target.Here(50u64), g, forever());
       let t = thread.start(g, &canceller);
       let t0 = Instant.now();
       lp.poll(forever(), &mut out);
@@ -272,11 +270,11 @@ fn main() i32 {
     // 7. Two loops
     {
       let g = CancelGroup.make();
-      lp.submitIn(Op.Recv(a, pool.mustTake(100usize)), Target.Here(70u64), g, forever());
+      lp.submitIn(Op.Recv(a, IoBuf(100usize)), Target.Here(70u64), g, forever());
       var tx: Sender[u64];
       var rx: Receiver[u64];
       tx, rx = Channel[u64].make();
-      let t = thread.start(Remote(g, lp.waker(), pool, tx), &remote);
+      let t = thread.start(Remote(g, lp.waker(), tx), &remote);
       rx.recv();                // its receive is in flight
       g.cancel();
       waitFor(&mut lp, &mut out, 2usize);
@@ -290,7 +288,7 @@ fn main() i32 {
     let cs = lp.counters();
     expectUInt(cs.delivered, cs.submitted, "every operation answered once");
     expectUInt(cs.inFlight, 0u64, "nothing in flight");
-    expectUInt(pool.stats().lent, 0u64, "every buffer back in the pool");
+    expectUInt(stats().lent, 0u64, "every buffer back in the pool");
   }
   trimAll();      // the pools are the process's: their idle slabs go back to the OS on request
   expectUInt(osBlocks(), 0u64, "and every block back to the OS");

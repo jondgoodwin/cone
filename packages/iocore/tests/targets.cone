@@ -90,7 +90,6 @@ fn caller(c: Caller) String {
 // A service thread that reads into main's status slots
 struct Reader {
   pub board: StatusArray;
-  pub pool: Pool;
 }
 
 fn reader(r: Reader) u64 {
@@ -103,7 +102,7 @@ fn reader(r: Reader) u64 {
   }
   var i = 0u32;
   while i < 8u32 {
-    lp.submit(Op.ReadAt(fh, u64.from(i), r.pool.mustTake(64usize)), Target.Status(u64.from(i), r.board, i));
+    lp.submit(Op.ReadAt(fh, u64.from(i), IoBuf(64usize)), Target.Status(u64.from(i), r.board, i));
     i = i + 1u32;
   }
   while lp.inFlight() > 0u64 {
@@ -114,13 +113,12 @@ fn reader(r: Reader) u64 {
 
 fn main() i32 {
   {
-    let pool = Pool.make();
     var lp = Loop.mustMake();
     var out = List[Completion].empty();
     // The file the reads read
     match lp.openFile("targets.tmp", Access.Create) {
       case let Ok(r) {
-        var b = pool.mustTake(64usize);
+        var b = IoBuf(64usize);
         b.append("abcdefghij");
         lp.submit(Op.WriteAt(r, 0u64, b), Target.Here(0u64));
         waitFor(&mut lp, &mut out, 1usize);
@@ -138,7 +136,7 @@ fn main() i32 {
       let t = thread.start(rx, &consume);
       var k = 0u64;
       while k < 10u64 {
-        lp.submit(statOp("targets.tmp", Lane.general(), pool.mustTake(64usize)), Target.Chan(k, tx.clone()));
+        lp.submit(statOp("targets.tmp", Lane.general(), IoBuf(64usize)), Target.Chan(k, tx.clone()));
         k = k + 1u64;
       }
       let before = lp.counters().handedOff;
@@ -190,13 +188,13 @@ fn main() i32 {
         let gone = rx;
       }
       let dropped = lp.counters().handedDropped;
-      lp.submit(statOp("targets.tmp", Lane.general(), pool.mustTake(64usize)), Target.Chan(7u64, tx.clone()));
+      lp.submit(statOp("targets.tmp", Lane.general(), IoBuf(64usize)), Target.Chan(7u64, tx.clone()));
       let limit2 = Instant.now() + Duration.fromSeconds(5i64);
       while lp.inFlight() > 0u64 && Instant.now() < limit2 {
         lp.poll(limit2, &mut out);
       }
       expectUInt(lp.counters().handedDropped - dropped, 1u64, "a channel whose receiver went: the answer dropped");
-      expectUInt(pool.stats().lent, 0u64, "its buffer home");
+      expectUInt(stats().lent, 0u64, "its buffer home");
     }
 
     // 3. A synchronous call through a one-shot
@@ -218,7 +216,7 @@ fn main() i32 {
             // The caller's one-shot moves into the target: swapped out of
             // the call, as Cone moves nothing out of a field
             reply <-> s.reply;
-            lp.submit(readFileOp(&s.path, 2u64, Lane.general(), pool.mustTake(64usize)),
+            lp.submit(readFileOp(&s.path, 2u64, Lane.general(), IoBuf(64usize)),
               Target.Once(1u64, reply));
             served = true;
           }
@@ -250,7 +248,7 @@ fn main() i32 {
       let board = StatusArray.make(4u32);
       expectUInt(u64.from(board.len()), 4u64, "four slots");
       lp.after(Instant.now() + Duration.fromMillis(10i64), Target.Status(1u64, board, 0u32));
-      lp.submit(readFileOp("targets.tmp", 0u64, Lane.general(), pool.mustTake(64usize)), Target.Status(2u64, board, 3u32));
+      lp.submit(readFileOp("targets.tmp", 0u64, Lane.general(), IoBuf(64usize)), Target.Status(2u64, board, 3u32));
       expect(!board.isReady(0u32) && !board.isFree(0u32), "slot 0 armed, not ready");
       expect(board.isFree(1u32), "slot 1 free");
       var got = List[Completion].empty();
@@ -270,7 +268,7 @@ fn main() i32 {
 
       // From another thread, while this one never waits
       let many = StatusArray.make(8u32);
-      let t = thread.start(Reader(many, pool), &reader);
+      let t = thread.start(Reader(many), &reader);
       var seen = 0u32;
       var text = String.empty();
       var frames = 0u32;
@@ -306,7 +304,7 @@ fn main() i32 {
     let cs = lp.counters();
     expectUInt(cs.delivered, cs.submitted, "every operation answered once");
     expectUInt(cs.inFlight, 0u64, "nothing in flight");
-    expectUInt(pool.stats().lent, 0u64, "every buffer back in the pool");
+    expectUInt(stats().lent, 0u64, "every buffer back in the pool");
   }
   trimAll();      // the pools are the process's: their idle slabs go back to the OS on request
   expectUInt(osBlocks(), 0u64, "and every block back to the OS");

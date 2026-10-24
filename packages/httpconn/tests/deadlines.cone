@@ -76,13 +76,13 @@ fn serve(drv: &mut Driver, st: &mut State, e: &mut Event) {
   st.pendAt.push(Instant.now() + Duration.fromMillis(p));
 }
 
-fn answerDue(drv: &mut Driver, st: &mut State, pool: &Pool) {
+fn answerDue(drv: &mut Driver, st: &mut State) {
   var k = 0usize;
   while k < st.pend.len() {
     if *st.pendAt[k] <= Instant.now() {
       let req = *st.pend[k];
       drv.respond(req, ResponseHead.make(200u16), BodyLength.sized(2u64));
-      var b = pool.mustTake(16usize);
+      var b = IoBuf(16usize);
       b.append("ok");
       drv.sendData(req, b);
       drv.finish(req);
@@ -97,12 +97,12 @@ fn answerDue(drv: &mut Driver, st: &mut State, pool: &Pool) {
   }
 }
 
-fn run(drv: &mut Driver, lp: &mut Loop, st: &mut State, pool: &Pool, ms: i64, tok: u64) {
+fn run(drv: &mut Driver, lp: &mut Loop, st: &mut State, ms: i64, tok: u64) {
   let until = Instant.now() + Duration.fromMillis(ms);
   var events = List[Event].empty();
   while Instant.now() < until {
     if tok != 0u64 && st.req[usize.from(tok)].finals > 0u32 {return;}
-    answerDue(drv, st, pool);
+    answerDue(drv, st);
     var wake = until;
     if st.pend.len() > 0usize {wake = Instant.now() + Duration.fromMillis(1i64);}
     drv.poll(lp, wake, &mut events);
@@ -154,11 +154,10 @@ fn getBy(drv: &mut Driver, lp: &mut Loop, conn: ConnId, target: &str, tok: u64, 
 }
 
 fn main() i32 {
-  let pool = Pool.make();
   var lp = Loop.mustMake();
   var cfg = Config.make();
   cfg.maxWaiting = 4u32;
-  var drv = Driver.make(cfg, pool);
+  var drv = Driver.make(cfg);
   var st = State(List[Slot].empty(), List[Slot].empty(), List[ReqId].empty(), List[Instant].empty());
   var i = 0usize;
   while i < slots {
@@ -183,13 +182,13 @@ fn main() i32 {
     let c = drv.connect(&mut lp, "127.0.0.1", port, Sink.Here(100u64));
     let t0 = Instant.now();
     getBy(&mut drv, &mut lp, c, "/stall", 1u64, t0 + Duration.fromMillis(50i64));
-    run(&mut drv, &mut lp, &mut st, &pool, 3000i64, 1u64);
+    run(&mut drv, &mut lp, &mut st, 3000i64, 1u64);
     let s = st.req[1usize];
     expectUInt(u64.from(s.finals), 1u64, "1: one final answer");
     expect(s.kind == EventKind.TimedOut, "1: ...TimedOut");
     let took = (s.at - t0).millis();
     expect(took >= 50i64 && took < 1000i64, "1: ...at its deadline");
-    run(&mut drv, &mut lp, &mut st, &pool, 50i64, 0u64);
+    run(&mut drv, &mut lp, &mut st, 50i64, 0u64);
     expectUInt(u64.from(st.conn[0usize].closes), 1u64, "1: the connection reset: one Closed");
     expect(!st.conn[0usize].clean, "1: ...not clean");
   }
@@ -200,7 +199,7 @@ fn main() i32 {
     let t0 = Instant.now();
     let g = CancelGroup.until(t0 + Duration.fromMillis(60i64));
     drv.requestIn(&mut lp, c, RequestHead.get("/stall", "127.0.0.1"), BodyLength.empty(), Sink.Here(2u64), g, forever());
-    run(&mut drv, &mut lp, &mut st, &pool, 3000i64, 2u64);
+    run(&mut drv, &mut lp, &mut st, 3000i64, 2u64);
     let s = st.req[2usize];
     expect(s.kind == EventKind.TimedOut, "2: TimedOut");
     let took = (s.at - t0).millis();
@@ -212,7 +211,7 @@ fn main() i32 {
     let c = drv.connect(&mut lp, "127.0.0.1", port, Sink.Here(102u64));
     let before = drv.stats().requests;
     getBy(&mut drv, &mut lp, c, "/ok/0", 3u64, Instant.now() - Duration.fromMillis(1i64));
-    run(&mut drv, &mut lp, &mut st, &pool, 3000i64, 3u64);
+    run(&mut drv, &mut lp, &mut st, 3000i64, 3u64);
     expect(st.req[3usize].kind == EventKind.TimedOut, "3: TimedOut at once");
     expectUInt(drv.stats().requests - before, 1u64, "3: ...never sent: the server read nothing");
     drv.close(&mut lp, c);
@@ -224,7 +223,7 @@ fn main() i32 {
     get(&mut drv, &mut lp, c, "/ok/150", 4u64);
     let t0 = Instant.now();
     getBy(&mut drv, &mut lp, c, "/ok/0", 5u64, t0 + Duration.fromMillis(40i64));
-    run(&mut drv, &mut lp, &mut st, &pool, 3000i64, 4u64);
+    run(&mut drv, &mut lp, &mut st, 3000i64, 4u64);
     let s5 = st.req[5usize];
     expect(s5.kind == EventKind.TimedOut, "4: the waiting one: TimedOut");
     let took = (s5.at - t0).millis();
@@ -239,7 +238,7 @@ fn main() i32 {
   {
     var c5 = Config.make();
     c5.protocol.headTimeout = Duration.fromMillis(100i64);
-    var d5 = Driver.make(c5, pool);
+    var d5 = Driver.make(c5);
     let c = d5.connect(&mut lp, "127.0.0.1", port, Sink.Here(104u64));
     let t0 = Instant.now();
     d5.request(&mut lp, c, RequestHead.get("/stall", "127.0.0.1"), BodyLength.empty(), Sink.Here(6u64));
@@ -307,7 +306,7 @@ fn main() i32 {
     }
     var c6 = Config.make();
     c6.connectTimeout = Duration.fromMillis(200i64);
-    var d6 = Driver.make(c6, pool);
+    var d6 = Driver.make(c6);
     let t0 = Instant.now();
     let c = d6.connect(&mut lp, "127.0.0.1", dead, Sink.Here(105u64));
     d6.request(&mut lp, c, RequestHead.get("/ok/0", "127.0.0.1"), BodyLength.empty(), Sink.Here(7u64));
@@ -358,15 +357,15 @@ fn main() i32 {
   {
     let c = drv.connect(&mut lp, "127.0.0.1", port, Sink.Here(106u64));
     getBy(&mut drv, &mut lp, c, "/ok/0", 8u64, Instant.now() + Duration.fromMillis(80i64));
-    run(&mut drv, &mut lp, &mut st, &pool, 3000i64, 8u64);
+    run(&mut drv, &mut lp, &mut st, 3000i64, 8u64);
     expect(st.req[8usize].kind == EventKind.Done, "7: Done");
     // Past the deadline: nothing more comes
-    run(&mut drv, &mut lp, &mut st, &pool, 150i64, 0u64);
+    run(&mut drv, &mut lp, &mut st, 150i64, 0u64);
     expectUInt(u64.from(st.req[8usize].after), 0u64, "7: ...and nothing after it");
     drv.close(&mut lp, c);
   }
 
-  run(&mut drv, &mut lp, &mut st, &pool, 200i64, 0u64);
+  run(&mut drv, &mut lp, &mut st, 200i64, 0u64);
   var k = 1usize;
   var finals = 0u64;
   var after = 0u64;
@@ -378,6 +377,6 @@ fn main() i32 {
   expectUInt(finals, 7u64, "seven requests here, seven final answers (the seventh's is counted apart)");
   expectUInt(after, 0u64, "nothing after any");
   drv.abortAll(&mut lp);
-  expectUInt(pool.stats().lent, 0u64, "every buffer back in the pool");
+  expectUInt(stats().lent, 0u64, "every buffer back in the pool");
   done()
 }

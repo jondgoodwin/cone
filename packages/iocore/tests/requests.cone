@@ -60,7 +60,6 @@ fn cancelLater(r: Request) bool {
 
 fn main() i32 {
   {
-    let pool = Pool.make();
     var lp = Loop.mustMake();
     var out = List[Completion].empty();
     var a = Handle.none();
@@ -69,7 +68,7 @@ fn main() i32 {
 
     // 1. Dropped
     {
-      let id = lp.submit(Op.Recv(a, pool.mustTake(100usize)), Target.Here(1u64));
+      let id = lp.submit(Op.Recv(a, IoBuf(100usize)), Target.Here(1u64));
       {
         let r = lp.request(id);
         expect(r.id() == id, "the request names its operation");
@@ -86,7 +85,7 @@ fn main() i32 {
 
     // 2. From another thread
     {
-      let id = lp.submit(Op.Recv(a, pool.mustTake(100usize)), Target.Here(2u64));
+      let id = lp.submit(Op.Recv(a, IoBuf(100usize)), Target.Here(2u64));
       let t = thread.start(lp.request(id), &cancelLater);
       lp.poll(forever(), &mut out);
       expect(t.join(), "both cancels reached the loop");
@@ -99,14 +98,14 @@ fn main() i32 {
 
     // 3. Detached
     {
-      let id = lp.submit(Op.Recv(a, pool.mustTake(100usize)), Target.Here(3u64));
+      let id = lp.submit(Op.Recv(a, IoBuf(100usize)), Target.Here(3u64));
       {
         var r = lp.request(id);
         r.detach();
       }
       lp.poll(Instant.now() + Duration.fromMillis(10i64), &mut out);
       expectUInt(u64.from(out.len()), 0u64, "a detached request's death cancels nothing");
-      var x = pool.mustTake(1usize);
+      var x = IoBuf(1usize);
       x.append("q");
       lp.submit(Op.Send(b, x), Target.Here(4u64));
       waitFor(&mut lp, &mut out, 2usize);
@@ -120,9 +119,9 @@ fn main() i32 {
 
     // 4. After the answer
     {
-      let id = lp.submit(Op.Recv(a, pool.mustTake(100usize)), Target.Here(5u64));
+      let id = lp.submit(Op.Recv(a, IoBuf(100usize)), Target.Here(5u64));
       let r = lp.request(id);
-      var x = pool.mustTake(1usize);
+      var x = IoBuf(1usize);
       x.append("w");
       lp.submit(Op.Send(b, x), Target.Here(6u64));
       waitFor(&mut lp, &mut out, 2usize);
@@ -135,7 +134,7 @@ fn main() i32 {
     let cs = lp.counters();
     expectUInt(cs.delivered, cs.submitted, "every operation answered once");
     expectUInt(cs.inFlight, 0u64, "nothing in flight");
-    expectUInt(pool.stats().lent, 0u64, "every buffer back in the pool");
+    expectUInt(stats().lent, 0u64, "every buffer back in the pool");
   }
   trimAll();      // the pools are the process's: their idle slabs go back to the OS on request
   expectUInt(osBlocks(), 0u64, "and every block back to the OS");

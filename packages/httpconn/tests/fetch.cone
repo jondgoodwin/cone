@@ -49,24 +49,24 @@ struct Server {
 }
 
 // The server's answer to a request, once read whole
-fn answer(drv: &mut Driver, req: ReqId, target: &Array[u8], method: Method, echo: &Array[u8], pool: &Pool) {
+fn answer(drv: &mut Driver, req: ReqId, target: &Array[u8], method: Method, echo: &Array[u8]) {
   if target == "/hello" {
     drv.respond(req, ResponseHead.make(200u16), BodyLength.sized(u64.from(helloBody().len)));
     if method != Method.Head {
-      var b = pool.mustTake(64usize);
+      var b = IoBuf(64usize);
       b.append(helloBody());
       drv.sendData(req, b);
       drv.finish(req);
     }
   } else if target == "/chunked" {
     drv.respond(req, ResponseHead.make(200u16), BodyLength.unsized());
-    var a = pool.mustTake(64usize);
+    var a = IoBuf(64usize);
     a.append("one,");
     drv.sendData(req, a);
-    var b = pool.mustTake(64usize);
+    var b = IoBuf(64usize);
     b.append("two,");
     drv.sendData(req, b);
-    var c = pool.mustTake(64usize);
+    var c = IoBuf(64usize);
     c.append("three");
     drv.sendData(req, c);
     var t = Headers.empty();
@@ -77,7 +77,7 @@ fn answer(drv: &mut Driver, req: ReqId, target: &Array[u8], method: Method, echo
   } else {
     // /echo
     drv.respond(req, ResponseHead.make(200u16), BodyLength.sized(u64.from(echo.len)));
-    var b = pool.mustTake(echo.len);
+    var b = IoBuf(echo.len);
     b.append(echo);
     drv.sendData(req, b);
     drv.finish(req);
@@ -85,9 +85,8 @@ fn answer(drv: &mut Driver, req: ReqId, target: &Array[u8], method: Method, echo
 }
 
 fn main() i32 {
-  let pool = Pool.make();
   var lp = Loop.mustMake();
-  var drv = Driver.make(Config.make(), pool);
+  var drv = Driver.make(Config.make());
   var port = 0u16;
   var listener = ListenerId.none();
   match drv.listen(&mut lp, SocketAddr.localhost(0u16), Sink.Here(tokServer)) {
@@ -150,7 +149,7 @@ fn main() i32 {
           sv.echo.appendBytes(e.buf.view());
           drv.release(e.req, e.buf.len());
         } else if e.kind == EventKind.End {
-          answer(&mut drv, svReq, svTarget.view(), svMethod, sv.echo.view(), &pool);
+          answer(&mut drv, svReq, svTarget.view(), svMethod, sv.echo.view());
         } else if e.kind == EventKind.Done {
           sv.dones = sv.dones + 1u64;
         } else if e.kind == EventKind.Failed {
@@ -177,7 +176,7 @@ fn main() i32 {
           cl.trailers = e.trailers.copy();
         } else if e.kind == EventKind.Writable {
           cl.writable = cl.writable + 1u64;
-          var b = pool.mustTake(postBody().len);
+          var b = IoBuf(postBody().len);
           b.append(postBody());
           match drv.sendData(req, b) {
             case is None[IoBuf] {}
@@ -246,6 +245,6 @@ fn main() i32 {
   expectUInt(u64.from(drv.live()), 0u64, "no connection left");
   drv.abortAll(&mut lp);
   events.clear();
-  expectUInt(pool.stats().lent, 0u64, "every buffer back in the pool");
+  expectUInt(stats().lent, 0u64, "every buffer back in the pool");
   done()
 }

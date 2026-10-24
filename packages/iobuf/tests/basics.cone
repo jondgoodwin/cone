@@ -16,9 +16,8 @@ fn aligned(b: &IoBuf) bool {
 const slab = 2097152usize;
 
 fn main() i32 {
-  let pool = Pool.make();
   {
-    var b = pool.mustTake(100usize);
+    var b = IoBuf(100usize);
     expectUInt(u64.from(b.len()), 0u64, "a new buffer is empty");
     expectUInt(u64.from(b.capacity()), 4096u64, "100 bytes come from the 4 KiB class");
     expect(aligned(&b), "4 KiB-aligned");
@@ -34,42 +33,40 @@ fn main() i32 {
     expectUInt(u64.from(b.room()), 4081u64, "the room left");
     b.clear();
     expectUInt(u64.from(b.len()), 0u64, "cleared");
-    let s = pool.stats();
+    let s = stats();
     expectUInt(s.lent, 1u64, "one buffer lent");
     expectUInt(u64.from(s.heldBytes), u64.from(slab), "one slab held from the OS, the block carved from it");
     expectUInt(u64.from(s.idleBytes), u64.from(slab) - 4096u64, "the rest of the slab idle");
     expectUInt(osBlocks(), 1u64, "one slab held");
   }
-  let s = pool.stats();
+  let s = stats();
   expectUInt(s.lent, 0u64, "its death gives it back");
   expectUInt(u64.from(s.cachedBytes), 16u64 * 4096u64, "to this thread's cache, with the 15 more the batch brought");
   {
-    let b = pool.mustTake(4096usize);
+    let b = IoBuf(4096usize);
     expectUInt(u64.from(b.capacity()), 4096u64, "exactly 4 KiB is the 4 KiB class");
-    let t = pool.stats();
+    let t = stats();
     expectUInt(t.reuses, 1u64, "the cached block is reused");
     expectUInt(t.osAllocs, 1u64, "and nothing more got from the OS");
     expectUInt(u64.from(t.cachedBytes), 15u64 * 4096u64, "out of the cache again");
   }
 
-  // The pools are the process's: a buffer outlives every handle, and a
-  // handle made anywhere is the same pools
+  // The pools are the process's: a buffer outlives the scope it was made in
   var kept = IoBuf.empty();
   expectUInt(u64.from(kept.capacity()), 0u64, "an empty buffer has no block");
   {
-    let other = Pool.make();
-    var b = other.mustTake(20000usize);
+    var b = IoBuf(20000usize);
     b.append("outlives");
     kept <-> b;
-    expectUInt(other.stats().lent, pool.stats().lent, "every handle sees the same pools");
-  }   // the handle dies here, and b, now the empty one
+    expectUInt(stats().lent, 1u64, "the one buffer lent");
+  }   // b, now the empty one, dies here
   expectStr(kept.view(), "outlives", "the buffer is still good");
   expectUInt(u64.from(kept.capacity()), 65536u64, "20000 bytes come from the 64 KiB class");
   expectUInt(osBlocks(), 2u64, "a slab each for the 4 KiB and 64 KiB blocks");
-  pool.trim();
+  trim();
   expectUInt(osBlocks(), 1u64, "trim gives back the idle slab, not the one holding a lent block");
   kept = IoBuf.empty();   // the last buffer dies
-  pool.trim();
+  trim();
   expectUInt(osBlocks(), 0u64, "and then that one");
   expectUInt(osBytes(), 0u64, "nothing held from the OS");
   done()

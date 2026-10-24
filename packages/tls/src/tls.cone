@@ -8,7 +8,6 @@
 // and 'connectSecure' makes a Conn whose bytes pass through a Stream.)
 //
 //   mod gets;
-//   import iobuf use Pool;
 //   import iocore use Loop, forever;
 //   import http use *;
 //   import httpconn use *;
@@ -16,12 +15,11 @@
 //
 //   fn main() {
 //     mut lp = Loop.mustMake();
-//     imm pool = Pool.make();
-//     mut drv = Driver.make(Config.make(), pool);
+//     mut drv = Driver.make(Config.make());
 //     match tls.Client.make(tls.ClientConfig.make()) {     // Windows' verifier, ALPN http/1.1
 //       case imm c Ok {
 //         imm conn = drv.connectWith(&mut lp, "example.com", 443u16,
-//           Uni[tls.Stream](c.stream("example.com", pool)), Sink.Here(1u64));
+//           Uni[tls.Stream](c.stream("example.com")), Sink.Here(1u64));
 //         drv.request(&mut lp, conn, RequestHead.get("/", "example.com"), BodyLength.empty(), Sink.Here(2u64));
 //         ... drv.poll(&mut lp, forever(), &mut events), as for plain HTTP ...
 //       }
@@ -34,28 +32,27 @@
 //
 //   struct TlsMaker {
 //     server tls.Server;     // tls.Server.make(tls.ServerConfig.make("cert.pem", "key.pem"))
-//     pool Pool;
-//     pub fn make(self: &mut) Uni[Layer] {Uni[tls.Stream](server.stream(pool));}
+//     pub fn make(self: &mut) Uni[Layer] {Uni[tls.Stream](server.stream());}
 //   }
-//   drv.listenWith(&mut lp, addr, Uni[TlsMaker](TlsMaker(server, pool)), Sink.Here(100u64));
+//   drv.listenWith(&mut lp, addr, Uni[TlsMaker](TlsMaker(server)), Sink.Here(100u64));
 //
 //   ClientConfig.make()  c.verify c.alpn c.minVersion c.maxVersion      (CONFIGURATION)
 //     c.resume c.backend c.verifyLane c.offline                         (RESUMPTION)
 //   ServerConfig.make(certFile, keyFile)  s.alpn s.minVersion s.maxVersion s.backend
 //   Verifier.platform()  Verifier.roots(pem)  Verifier.pinnedSha256(hex)  (VERIFIERS)
 //     Verifier.insecureDevelopmentOnly()
-//   Client.make(cfg)  c.session(serverName)  c.stream(serverName, pool)  (CONTEXTS)
+//   Client.make(cfg)  c.session(serverName)  c.stream(serverName)  (CONTEXTS)
 //     c.cachedSessions()
-//   Server.make(cfg)  s.session()  s.stream(pool)
+//   Server.make(cfg)  s.session()  s.stream()
 //   s.feed(cipher)  s.feedEnd()  s.pending()  s.transmit(out)          (SESSIONS)
 //   s.write(plain)  s.read(out)  s.canRead()  s.close()
 //   s.pollEvent()  s.isOpen()  s.isFailed()  s.peerEnded()  s.error()  s.info()
-//   s.wantsVerify()  s.verifyOp(pool)  s.verifyDone(c)  s.verifyNow()  (THE OS'S VERIFIER)
+//   s.wantsVerify()  s.verifyOp()  s.verifyDone(c)  s.verifyNow()  (THE OS'S VERIFIER)
 //   verifyWork  defaultVerifyLane()
 //   Stream: the Layer httpconn's driver takes (wireIn wireOut wireRoom    (STREAMS)
 //     plainIn plainOut pending isOpen peerEnded closeSend failed
 //     failureCode failureText wantsCall takeCall callDone describe);
-//     Stream.make(session, pool)  st.session()
+//     Stream.make(session)  st.session()
 //   TlsError: e.kind e.code e.osError e.detail e.message()             (ERRORS)
 //   TlsErrorKind; errorName(k)
 //   TlsInfo: version versionName cipher alpn resumed verifiedBy          (DIAGNOSTICS)
@@ -203,7 +200,7 @@ import libc;
 import collections use List, String;
 import sync use Arc, Mutex, Once;
 import time use Instant, Duration;
-import iobuf use IoBuf, Pool, Chain;
+import iobuf use IoBuf, Chain;
 import path use Path;
 import iocore use Op, Completion, Outcome, Lane, LaneConfig, IoError, addLane;
 

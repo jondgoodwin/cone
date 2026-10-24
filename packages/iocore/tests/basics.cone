@@ -55,7 +55,6 @@ fn matches(b: &IoBuf, seed: u8) bool {
 
 fn main() i32 {
   {
-    let pool = Pool.make();
     var lp = Loop.mustMake();
     var out = List[Completion].empty();
 
@@ -89,7 +88,7 @@ fn main() i32 {
     require(lp.isOpen(fh), "the file opened");
     var s = 0u64;
     while s < 3u64 {
-      var b = pool.mustTake(65536usize);
+      var b = IoBuf(65536usize);
       pattern(&mut b, u8.from(s + 1u64));
       lp.submit(Op.WriteAt(fh, s * 65536u64, b), Target.Here(10u64 + s));
       s = s + 1u64;
@@ -105,10 +104,10 @@ fn main() i32 {
     out.clear();
     s = 0u64;
     while s < 3u64 {
-      lp.submit(Op.ReadAt(fh, s * 65536u64, pool.mustTake(65536usize)), Target.Here(20u64 + s));
+      lp.submit(Op.ReadAt(fh, s * 65536u64, IoBuf(65536usize)), Target.Here(20u64 + s));
       s = s + 1u64;
     }
-    lp.submit(Op.ReadAt(fh, 3u64 * 65536u64, pool.mustTake(4096usize)), Target.Here(29u64));
+    lp.submit(Op.ReadAt(fh, 3u64 * 65536u64, IoBuf(4096usize)), Target.Here(29u64));
     waitFor(&mut lp, &mut out, 4usize);
     requireUInt(u64.from(out.len()), 4u64, "four reads answered");
     k = 0usize;
@@ -151,10 +150,10 @@ fn main() i32 {
     out.clear();
     require(lp.isOpen(server) && lp.isOpen(client), "both ends are handles");
 
-    var hello = pool.mustTake(5usize);
+    var hello = IoBuf(5usize);
     hello.append("hello");
     lp.submit(Op.Send(client, hello), Target.Here(40u64));
-    lp.submit(Op.Recv(server, pool.mustTake(100usize)), Target.Here(41u64));
+    lp.submit(Op.Recv(server, IoBuf(100usize)), Target.Here(41u64));
     waitFor(&mut lp, &mut out, 2usize);
     k = 0usize;
     while k < out.len() {
@@ -169,7 +168,7 @@ fn main() i32 {
     lp.submit(Op.RecvReady(client), Target.Here(50u64));
     lp.poll(Instant.now() + Duration.fromMillis(20i64), &mut out);
     expectUInt(u64.from(out.len()), 0u64, "nothing has come: RecvReady waits");
-    var world = pool.mustTake(5usize);
+    var world = IoBuf(5usize);
     world.append("world");
     lp.submit(Op.SendBytes(server, world.freeze()), Target.Here(51u64));
     waitFor(&mut lp, &mut out, 2usize);
@@ -185,20 +184,20 @@ fn main() i32 {
       k = k + 1usize;
     }
     out.clear();
-    lp.submit(Op.Recv(client, pool.mustTake(100usize)), Target.Here(52u64));
+    lp.submit(Op.Recv(client, IoBuf(100usize)), Target.Here(52u64));
     waitFor(&mut lp, &mut out, 1usize);
     expectStr(out[0usize].buf.view(), "world", "the client received world");
     out.clear();
 
     // The client closes: the server's receive sees the end of the stream
     lp.close(client);
-    lp.submit(Op.Recv(server, pool.mustTake(100usize)), Target.Here(60u64));
+    lp.submit(Op.Recv(server, IoBuf(100usize)), Target.Here(60u64));
     waitFor(&mut lp, &mut out, 1usize);
     expect(out[0usize].isDone() && out[0usize].count() == 0usize, "the end of the stream is Done(0)");
     out.clear();
 
     // 4. A handle that names nothing
-    lp.submit(Op.Recv(client, pool.mustTake(100usize)), Target.Here(70u64));
+    lp.submit(Op.Recv(client, IoBuf(100usize)), Target.Here(70u64));
     waitFor(&mut lp, &mut out, 1usize);
     expectUInt(u64.from(out[0usize].status), u64.from(diag.outcomeFailed), "a closed handle's receive fails");
     expectUInt(u64.from(out[0usize].code), u64.from(errorInvalidHandle), "...ERROR_INVALID_HANDLE");
@@ -243,7 +242,7 @@ fn main() i32 {
     expectUInt(c.delivered, c.submitted, "every operation answered");
     expectUInt(c.inFlight, 0u64, "nothing in flight");
     expectUInt(c.delivered, 22u64, "twenty-two answers in all");
-    expectUInt(pool.stats().lent, 0u64, "every buffer back in the pool");
+    expectUInt(stats().lent, 0u64, "every buffer back in the pool");
   }
   trimAll();      // the pools are the process's: their idle slabs go back to the OS on request
   expectUInt(osBlocks(), 0u64, "and every block back to the OS");

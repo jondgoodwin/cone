@@ -40,12 +40,10 @@ struct Report {
 }
 
 struct ServerArgs {
-  pub pool: Pool;
   pub portTx: Sender[u16];
 }
 
 struct ClientArgs {
-  pub pool: Pool;
   pub port: u16;
 }
 
@@ -106,7 +104,7 @@ fn serve(a: ServerArgs) Report {
   a.portTx.send(rep.ownPort);
   let total = rounds + burst;
   var out = List[Completion].empty();
-  lp.submit(Op.RecvFrom(sock, a.pool.mustTake(4096usize)), Target.Here(1u64));
+  lp.submit(Op.RecvFrom(sock, IoBuf(4096usize)), Target.Here(1u64));
   var received = 0u64;
   var answered = 0u64;
   let limit = Instant.now() + Duration.fromSeconds(15i64);
@@ -143,7 +141,7 @@ fn serve(a: ServerArgs) Report {
           }
           lp.submit(Op.SendTo(sock, c.peer, b), Target.Here(2u64));
           if received < total {
-            lp.submit(Op.RecvFrom(sock, a.pool.mustTake(4096usize)), Target.Here(1u64));
+            lp.submit(Op.RecvFrom(sock, IoBuf(4096usize)), Target.Here(1u64));
           }
         } else {
           answered = total;
@@ -160,8 +158,8 @@ fn serve(a: ServerArgs) Report {
 }
 
 // The datagram i, from sock to port, as a SendTo submitted under token tok
-fn sendDg(lp: &mut Loop, pool: &Pool, sock: Handle, port: u16, i: u64, tok: u64) {
-  var b = pool.mustTake(2048usize);
+fn sendDg(lp: &mut Loop, sock: Handle, port: u16, i: u64, tok: u64) {
+  var b = IoBuf(2048usize);
   let n = dgLen(i);
   let w = b.whole();
   var j = 0usize;
@@ -194,8 +192,8 @@ fn client(a: ClientArgs) Report {
   // 1. One at a time
   var i = 0u64;
   while i < rounds {
-    lp.submit(Op.RecvFrom(sock, a.pool.mustTake(4096usize)), Target.Here(200u64));
-    sendDg(&mut lp, &a.pool, sock, a.port, i, 100u64);
+    lp.submit(Op.RecvFrom(sock, IoBuf(4096usize)), Target.Here(200u64));
+    sendDg(&mut lp, sock, a.port, i, 100u64);
     let ks = await1(&mut lp, &mut out, 100u64);
     let kr = await1(&mut lp, &mut out, 200u64);
     if ks == notFound || kr == notFound {
@@ -213,7 +211,7 @@ fn client(a: ClientArgs) Report {
   // 2. A burst, then its answers in order
   var k = 0u64;
   while k < burst {
-    sendDg(&mut lp, &a.pool, sock, a.port, rounds + k, 300u64 + k);
+    sendDg(&mut lp, sock, a.port, rounds + k, 300u64 + k);
     k = k + 1u64;
   }
   k = 0u64;
@@ -225,7 +223,7 @@ fn client(a: ClientArgs) Report {
   out.clear();
   k = 0u64;
   while k < burst {
-    lp.submit(Op.RecvFrom(sock, a.pool.mustTake(4096usize)), Target.Here(400u64));
+    lp.submit(Op.RecvFrom(sock, IoBuf(4096usize)), Target.Here(400u64));
     let kr = await1(&mut lp, &mut out, 400u64);
     if kr == notFound {
       rep.wrong = rep.wrong + 1u64;
@@ -244,18 +242,17 @@ fn client(a: ClientArgs) Report {
 fn main() i32 {
   let total = rounds + burst;
   {
-    let pool = Pool.make();
     var portTx: Sender[u16];
     var portRx: Receiver[u16];
     portTx, portRx = Channel[u16].make();
-    let server = thread.start(ServerArgs(pool, portTx), &serve);
+    let server = thread.start(ServerArgs(portTx), &serve);
     var port = 0u16;
     match portRx.recv() {
       case let Some(p) {port = p;}
       case is None[u16] {}
     }
     require(port != 0u16, "the server is bound");
-    let cl = thread.start(ClientArgs(pool, port), &client);
+    let cl = thread.start(ClientArgs(port), &client);
     let c = cl.join();
     let s = server.join();
 
@@ -270,7 +267,7 @@ fn main() i32 {
     expectUInt(c.counters.inFlight + s.counters.inFlight, 0u64, "nothing in flight on either");
     expectUInt(c.counters.submitted, 2u64 * total, "the client: a send and a receive per datagram");
     expectUInt(s.counters.submitted, 2u64 * total, "the server: a receive and a send per datagram");
-    let st = pool.stats();
+    let st = stats();
     expectUInt(st.lent, 0u64, "every buffer back in the pool");
     expectUInt(st.refused, 0u64, "no take refused");
   }

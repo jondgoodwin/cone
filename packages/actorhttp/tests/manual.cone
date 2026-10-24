@@ -11,7 +11,7 @@ mod manual;
 import stdio use *;
 import sync use Oneshot, OneshotSender, OneshotReceiver;
 import collections use String;
-import iobuf use IoBuf, Pool;
+import iobuf use IoBuf;
 import time use Instant, Duration;
 import iocore use SocketAddr, IoError;
 import actors;
@@ -58,7 +58,6 @@ fn socketOf(r: Result[Socket, IoError]) Socket {
 
 // A server of aio's sockets: it reads one request and answers it
 actor Shop {
-  pool: Pool;
 
   pub async fn serve(self, port: OneshotSender[u16]) {
     let listener = socketOf(await aio.listen(SocketAddr.localhost(0u16)));
@@ -70,8 +69,8 @@ actor Shop {
     var tx = port;
     tx.send(p);
     let conn = socketOf(await listener.accept());
-    let request = await conn.read(pool.mustTake(4096usize));
-    var response = pool.mustTake(256usize);
+    let request = await conn.read(IoBuf(4096usize));
+    var response = IoBuf(256usize);
     response.append("HTTP/1.1 200 OK\r\nContent-Length: 11\r\nConnection: close\r\n\r\nsunny, 21 C");
     let sent = await conn.write(response);
   }
@@ -82,7 +81,7 @@ fn main() {
   var ptx: OneshotSender[u16];
   var prx: OneshotReceiver[u16];
   ptx, prx = Oneshot[u16].make();
-  let shop = Shop(Pool.make());
+  let shop = Shop();
   shop.serve(ptx);
   var port = 0u16;
   match prx.recv() {

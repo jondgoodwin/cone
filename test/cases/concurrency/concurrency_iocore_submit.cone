@@ -29,8 +29,8 @@ fn dropIt(r: Request) u64 {0u64}
 fn endIt(c: Completer) bool {var q = c; q.done(0usize)}
 fn endRef(c: &mut Completer) bool {c.done(0usize)}
 
-fn submitting(lp: &mut Loop, pool: &Pool, sock: Handle, file: Handle) {
-  var buf = pool.mustTake(4096usize);
+fn submitting(lp: &mut Loop, sock: Handle, file: Handle) {
+  var buf = IoBuf(4096usize);
   let text: &Array[u8] = "hello";
   lp.submit(Op.Send(sock, text), Target.Here(1u64));          //~ ErrorBadArray "does not match expected field's type"
   lp.submit(Op.Send(sock, "hello"), Target.Here(2u64));       //~ ErrorBadArray "does not match expected field's type"
@@ -38,14 +38,14 @@ fn submitting(lp: &mut Loop, pool: &Pool, sock: Handle, file: Handle) {
   lp.submit(Op.ReadAt(file, 0u64, buf.spare()), Target.Here(4u64));   //~ ErrorBadArray "does not match expected field's type"
   lp.submit(Op.SendBytes(sock, buf.view()), Target.Here(5u64));       //~ ErrorBadArray "does not match expected field's type"
   lp.submit(Op.Recv(sock, buf), Target.Here(6u64));
-  var out = pool.mustTake(10usize);
+  var out = IoBuf(10usize);
   out.append("bytes");
   lp.submit(Op.SendBytes(sock, out.freeze()), Target.Here(7u64));
-  var job = pool.mustTake(64usize);
+  var job = IoBuf(64usize);
   lp.submit(Op.Call(Lane.general(), &work, 0u64, &mut job), Target.Here(8u64));   //~ ErrorBadArray "does not match expected field's type"
   lp.submit(Op.Call(Lane.general(), &work, 0u64, job), Target.Here(9u64));
   // A datagram's buffer is an owner too
-  var dg = pool.mustTake(64usize);
+  var dg = IoBuf(64usize);
   lp.submit(Op.SendTo(sock, SocketAddr.localhost(9u16), text), Target.Here(12u64));   //~ ErrorBadArray "does not match expected field's type"
   lp.submit(Op.RecvFrom(sock, &mut dg), Target.Here(13u64));                          //~ ErrorBadArray "does not match expected field's type"
   lp.submit(Op.RecvFrom(sock, dg), Target.Here(14u64));
@@ -67,6 +67,5 @@ fn crossing(lp: &mut Loop, c: Completion) {
 
 fn main() {
   var lp = Loop.mustMake();
-  let pool = Pool.make();
-  submitting(&mut lp, &pool, Handle.none(), Handle.none());
+  submitting(&mut lp, Handle.none(), Handle.none());
 }

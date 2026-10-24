@@ -26,7 +26,6 @@ import diag;
 struct ServiceArgs {
   pub to: Waker;
   pub dead: Waker;
-  pub pool: Pool;
 }
 
 struct ServiceReport {
@@ -44,7 +43,7 @@ fn service(a: ServiceArgs) ServiceReport {
     case let Ok(r) {fh = r;}
     case let Error(e) {return rep;}
   }
-  var b = a.pool.mustTake(4096usize);
+  var b = IoBuf(4096usize);
   b.append("posted across threads");
   lp.submit(Op.WriteAt(fh, 0u64, b), Target.Here(0u64));
   while out.len() < 1usize {lp.poll(forever(), &mut out);}
@@ -52,8 +51,8 @@ fn service(a: ServiceArgs) ServiceReport {
   out.clear();
 
   lp.after(Instant.now() + Duration.fromMillis(5i64), Target.Post(1u64, a.to));
-  lp.submit(Op.ReadAt(fh, 0u64, a.pool.mustTake(4096usize)), Target.Post(2u64, a.to));
-  lp.submit(Op.ReadAt(fh, 0u64, a.pool.mustTake(4096usize)), Target.Post(3u64, a.dead));
+  lp.submit(Op.ReadAt(fh, 0u64, IoBuf(4096usize)), Target.Post(2u64, a.to));
+  lp.submit(Op.ReadAt(fh, 0u64, IoBuf(4096usize)), Target.Post(3u64, a.dead));
   while lp.inFlight() > 0u64 {
     lp.poll(forever(), &mut out);
     out.clear();
@@ -75,7 +74,6 @@ fn orphanWaker() Waker {
 
 fn main() i32 {
   {
-    let pool = Pool.make();
     var m = Loop.mustMake();
     var out = List[Completion].empty();
     let dead = orphanWaker();
@@ -84,7 +82,7 @@ fn main() i32 {
     expect(!dead.wake(), "a dead loop's waker says it reached nobody");
 
     // 1. Answers posted here from a service thread
-    let svc = thread.start(ServiceArgs(m.waker(), dead, pool), &service);
+    let svc = thread.start(ServiceArgs(m.waker(), dead), &service);
     let limit = Instant.now() + Duration.fromSeconds(5i64);
     while out.len() < 2usize && Instant.now() < limit {
       m.poll(limit, &mut out);
@@ -125,7 +123,7 @@ fn main() i32 {
     expect(took < Duration.fromSeconds(2i64), "and not long after");
     expectUInt(m.counters().wakes, 1u64, "one wake counted");
 
-    expectUInt(pool.stats().lent, 0u64, "every buffer back in the pool, the dropped one too");
+    expectUInt(stats().lent, 0u64, "every buffer back in the pool, the dropped one too");
   }
   trimAll();      // the pools are the process's: their idle slabs go back to the OS on request
   expectUInt(osBlocks(), 0u64, "and every block back to the OS");

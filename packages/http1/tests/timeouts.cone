@@ -28,8 +28,8 @@ fn deadline(c: &Connection) i64 {
   }
 }
 
-fn feed(c: &mut Connection, pool: &Pool, text: &Array[u8], at: Instant) {
-  var b = pool.mustTake(text.len);
+fn feed(c: &mut Connection, text: &Array[u8], at: Instant) {
+  var b = IoBuf(text.len);
   b.append(text);
   c.handleInput(b, at);
 }
@@ -90,8 +90,8 @@ fn config() Config {
   cfg
 }
 
-fn idle(pool: &Pool) {
-  var c = Connection.client(config(), *pool, ms(0i64));
+fn idle() {
+  var c = Connection.client(config(), ms(0i64));
   expectInt(deadline(&c), 11000i64, "a new connection's idle timeout");
   c.handleTimeout(ms(10999i64));
   expectStr(events(&mut c, false).view(), "paused", "not yet");
@@ -100,9 +100,9 @@ fn idle(pool: &Pool) {
   expectInt(deadline(&c), -1i64, "and no deadline after");
 }
 
-fn clientHead(pool: &Pool) {
+fn clientHead() {
   {
-    var c = Connection.client(config(), *pool, ms(0i64));
+    var c = Connection.client(config(), ms(0i64));
     c.sendRequest(RequestHead.get("/", "h"), BodyLength.empty());
     expectInt(deadline(&c), -1i64, "no deadline while the request is not yet handed over");
     drain(&mut c, ms(100i64));
@@ -114,10 +114,10 @@ fn clientHead(pool: &Pool) {
       "no head in time, and no byte of one");
   }
   {
-    var c = Connection.client(config(), *pool, ms(0i64));
+    var c = Connection.client(config(), ms(0i64));
     c.sendRequest(RequestHead.get("/", "h"), BodyLength.empty());
     drain(&mut c, ms(0i64));
-    feed(&mut c, pool, "HTTP/1.1 200 OK\r\n", ms(4000i64));
+    feed(&mut c, "HTTP/1.1 200 OK\r\n", ms(4000i64));
     expectStr(events(&mut c, false).view(), "need", "part of a head");
     expectInt(deadline(&c), 5000i64, "the head timeout is not moved by arrivals");
     c.handleTimeout(ms(5000i64));
@@ -126,15 +126,15 @@ fn clientHead(pool: &Pool) {
   }
 }
 
-fn body(pool: &Pool) {
+fn body() {
   {
-    var c = Connection.client(config(), *pool, ms(0i64));
+    var c = Connection.client(config(), ms(0i64));
     c.sendRequest(RequestHead.get("/", "h"), BodyLength.empty());
     drain(&mut c, ms(0i64));
-    feed(&mut c, pool, "HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nabc", ms(1000i64));
+    feed(&mut c, "HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nabc", ms(1000i64));
     expectStr(events(&mut c, false).view(), "response data need", "part of the body");
     expectInt(deadline(&c), 8000i64, "the body timeout runs from the last arrival");
-    feed(&mut c, pool, "def", ms(6000i64));
+    feed(&mut c, "def", ms(6000i64));
     expectStr(events(&mut c, false).view(), "data need", "more of it");
     expectInt(deadline(&c), 13000i64, "moved by each arrival");
     c.handleTimeout(ms(13000i64));
@@ -144,12 +144,12 @@ fn body(pool: &Pool) {
     // The consumer holds the credit: the body timeout waits for it
     var cfg = config();
     cfg.bodyWindow = 4usize;
-    var c = Connection.client(cfg, *pool, ms(0i64));
+    var c = Connection.client(cfg, ms(0i64));
     c.sendRequest(RequestHead.get("/", "h"), BodyLength.empty());
     drain(&mut c, ms(0i64));
-    feed(&mut c, pool, "HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\n", ms(0i64));
-    feed(&mut c, pool, "abcde", ms(1000i64));
-    feed(&mut c, pool, "fg", ms(1000i64));
+    feed(&mut c, "HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\n", ms(0i64));
+    feed(&mut c, "abcde", ms(1000i64));
+    feed(&mut c, "fg", ms(1000i64));
     expectStr(events(&mut c, true).view(), "response data paused",
       "five bytes out, unreleased, the window of 4 full: two more wait");
     expectInt(deadline(&c), -1i64, "no body timeout while the consumer holds the credit");
@@ -158,27 +158,27 @@ fn body(pool: &Pool) {
     c.release(5usize);
     expectInt(deadline(&c), 67000i64, "released: the body timeout runs again from then");
     expectStr(events(&mut c, false).view(), "data need", "the two that waited");
-    feed(&mut c, pool, "hij", ms(61000i64));
+    feed(&mut c, "hij", ms(61000i64));
     expectStr(events(&mut c, false).view(), "data end paused", "and the body completes");
   }
 }
 
-fn keptAlive(pool: &Pool) {
-  var c = Connection.client(config(), *pool, ms(0i64));
+fn keptAlive() {
+  var c = Connection.client(config(), ms(0i64));
   c.sendRequest(RequestHead.get("/", "h"), BodyLength.empty());
   drain(&mut c, ms(0i64));
-  feed(&mut c, pool, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok", ms(2000i64));
+  feed(&mut c, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok", ms(2000i64));
   expectStr(events(&mut c, false).view(), "response data end paused", "an exchange");
   expectInt(deadline(&c), 13000i64, "then the idle timeout, from the exchange's end");
   c.handleTimeout(ms(13000i64));
   expectStr(events(&mut c, false).view(), "closed", "idle too long: closed");
 }
 
-fn server(pool: &Pool) {
+fn server() {
   {
-    var c = Connection.server(config(), *pool, ms(0i64));
+    var c = Connection.server(config(), ms(0i64));
     expectInt(deadline(&c), 11000i64, "a server's new connection: the idle timeout");
-    feed(&mut c, pool, "GET / HTTP/1.1\r\n", ms(3000i64));
+    feed(&mut c, "GET / HTTP/1.1\r\n", ms(3000i64));
     expectStr(events(&mut c, false).view(), "need", "a request's first line");
     expectInt(deadline(&c), 8000i64, "the head timeout from the first byte");
     c.handleTimeout(ms(8000i64));
@@ -187,20 +187,20 @@ fn server(pool: &Pool) {
       "answered 408");
   }
   {
-    var c = Connection.server(config(), *pool, ms(0i64));
+    var c = Connection.server(config(), ms(0i64));
     c.handleTimeout(ms(11000i64));
     expectStr(events(&mut c, false).view(), "closed", "nothing came: closed");
     expectStr(drain(&mut c, ms(11000i64)).view(), "", "and nothing sent");
   }
 }
 
-fn expect100(pool: &Pool) {
+fn expect100() {
   {
-    var c = Connection.client(config(), *pool, ms(0i64));
+    var c = Connection.client(config(), ms(0i64));
     var h = RequestHead.make("PUT", "/f", "h");
     h.headers.add("Expect", "100-continue");
     c.sendRequest(h, BodyLength.sized(3u64));
-    var b = pool.mustTake(3usize);
+    var b = IoBuf(3usize);
     b.append("abc");
     c.sendData(b);
     c.finish();
@@ -212,15 +212,15 @@ fn expect100(pool: &Pool) {
     expectInt(deadline(&c), 6000i64, "then the head timeout runs");
   }
   {
-    var c = Connection.client(config(), *pool, ms(0i64));
+    var c = Connection.client(config(), ms(0i64));
     var h = RequestHead.make("PUT", "/f", "h");
     h.headers.add("Expect", "100-continue");
     c.sendRequest(h, BodyLength.unsized());
-    var b = pool.mustTake(3usize);
+    var b = IoBuf(3usize);
     b.append("abc");
     c.sendData(b);
     drain(&mut c, ms(0i64));
-    feed(&mut c, pool, "HTTP/1.1 100 Continue\r\n\r\n", ms(200i64));
+    feed(&mut c, "HTTP/1.1 100 Continue\r\n\r\n", ms(200i64));
     expectStr(events(&mut c, false).view(), "interim need", "100 Continue");
     expectInt(deadline(&c), -1i64, "the expect timeout gone; the head timeout waits for the whole request");
     c.finish();
@@ -228,15 +228,15 @@ fn expect100(pool: &Pool) {
     expectInt(deadline(&c), 5200i64, "and then the head timeout runs");
   }
   {
-    var c = Connection.client(config(), *pool, ms(0i64));
+    var c = Connection.client(config(), ms(0i64));
     var h = RequestHead.make("PUT", "/f", "h");
     h.headers.add("Expect", "100-continue");
     c.sendRequest(h, BodyLength.sized(3u64));
     drain(&mut c, ms(0i64));
-    feed(&mut c, pool, "HTTP/1.1 413 Content Too Large\r\nContent-Length: 0\r\n\r\n", ms(300i64));
+    feed(&mut c, "HTTP/1.1 413 Content Too Large\r\nContent-Length: 0\r\n\r\n", ms(300i64));
     expectStr(events(&mut c, false).view(), "response end closed",
       "a final answer first: the body is never sent, and the connection closes");
-    var b = pool.mustTake(3usize);
+    var b = IoBuf(3usize);
     b.append("abc");
     var refused = false;
     match c.sendData(b) {
@@ -250,14 +250,13 @@ fn expect100(pool: &Pool) {
 
 fn main() i32 {
   {
-    let pool = Pool.make();
-    idle(&pool);
-    clientHead(&pool);
-    body(&pool);
-    keptAlive(&pool);
-    server(&pool);
-    expect100(&pool);
-    expectUInt(pool.stats().lent, 0u64, "every buffer back in the pool");
+    idle();
+    clientHead();
+    body();
+    keptAlive();
+    server();
+    expect100();
+    expectUInt(stats().lent, 0u64, "every buffer back in the pool");
   }
   done()
 }

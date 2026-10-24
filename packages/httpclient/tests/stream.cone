@@ -44,7 +44,6 @@ const tokSrv = 100u64;
 
 struct Srv {
   pub drv: httpconn.Driver;
-  pub pool: Pool;
   pub accepted: u64;
   pub open: u64;
   pub maxOpen: u64;
@@ -63,8 +62,8 @@ struct Srv {
   pub totals: List[u64];
 }
 
-fn server(pool: Pool) Srv {
-  Srv(drv: httpconn.Driver.make(httpconn.Config.make(), pool), pool: pool, accepted: 0u64,
+fn server() Srv {
+  Srv(drv: httpconn.Driver.make(httpconn.Config.make()), accepted: 0u64,
     open: 0u64, maxOpen: 0u64, requests: 0u64, closedOnce: false, order: List[String].empty(),
     reqs: List[httpconn.ReqId].empty(), conns: List[httpconn.ConnId].empty(), methods: List[Method].empty(),
     targets: List[String].empty(), bodies: List[String].empty(), auths: List[String].empty(),
@@ -91,7 +90,7 @@ fn reply(sv: &mut Srv, req: httpconn.ReqId, head: bool, status: u16, location: &
   if location.len > 0usize {h.headers.add("Location", location);}
   sv.drv.respond(req, h, BodyLength.sized(u64.from(body.len)));
   if body.len > 0usize && !head {
-    var b = sv.pool.mustTake(body.len);
+    var b = IoBuf(body.len);
     b.append(body);
     sv.drv.sendData(req, b);
     sv.drv.finish(req);
@@ -112,7 +111,7 @@ fn pumpStream(sv: &mut Srv, j: usize) {
     let at = *sv.sent[j];
     let left = *sv.totals[j] - at;
     let n = if left < 65536u64 {usize.from(left)} else {65536usize};
-    var b = sv.pool.mustTake(n);
+    var b = IoBuf(n);
     let s = b.spare();
     var i = 0usize;
     while i < n {
@@ -204,7 +203,7 @@ fn answer(sv: &mut Srv, lp: &mut Loop, k: usize) {
     pumpStream(sv, sv.streams.len() - 1usize);
   } else if path == "/stall" {
     sv.drv.respond(req, ResponseHead.make(200u16), BodyLength.sized(1048576u64));
-    var b = sv.pool.mustTake(65536usize);
+    var b = IoBuf(65536usize);
     b.setLen(65536usize);
     sv.drv.sendData(req, b);
   } else if path == "/hang" {
@@ -415,8 +414,8 @@ fn idleFor(cl: &mut Client, sv: &mut Srv, lp: &mut Loop, d: Duration) {
 const mib = 1048576u64;
 
 // The pool's bytes lent now: both ends' buffers
-fn lent(pool: &Pool) u64 {
-  let s = pool.stats();
+fn lent() u64 {
+  let s = stats();
   u64.from(s.heldBytes - s.idleBytes)
 }
 
@@ -442,7 +441,7 @@ struct Read {
 
 // Fetch /big/n, the consumer releasing at most 'perStep' bytes a turn of
 // the loop (0: all at once): what it read
-fn readBig(cl: &mut Client, sv: &mut Srv, lp: &mut Loop, pool: &Pool, port: u16, n: u64, perStep: usize) Read {
+fn readBig(cl: &mut Client, sv: &mut Srv, lp: &mut Loop, port: u16, n: u64, perStep: usize) Read {
   var path = String.from("/big/");
   path.appendUInt(n);
   let id = cl.get(lp, url(port, path.view()).view(), Sink.Here(1u64));
@@ -476,7 +475,7 @@ fn readBig(cl: &mut Client, sv: &mut Srv, lp: &mut Loop, pool: &Pool, port: u16,
     }
     out.clear();
     if u64.from(keptBytes) > r.peakHeld {r.peakHeld = u64.from(keptBytes);}
-    let l = lent(pool);
+    let l = lent();
     if l > r.peakLent {r.peakLent = l;}
     // The slow consumer: the oldest of what it holds, perStep at a time
     var freed = 0usize;
@@ -542,22 +541,21 @@ fn chanReader(rx: Receiver[Event]) ChanRead {
 }
 
 fn main() i32 {
-  let pool = Pool.make();
   var lp = Loop.mustMake();
-  var sv = server(pool);
+  var sv = server();
   let port = listen(&mut sv, &mut lp);
   require(port != 0u16, "the server listens");
-  var cl = Client.make(Config.make(), pool);
+  var cl = Client.make(Config.make());
 
   // A 16 MiB body, released as it comes
-  let fast = readBig(&mut cl, &mut sv, &mut lp, &pool, port, 16u64 * mib, 0usize);
+  let fast = readBig(&mut cl, &mut sv, &mut lp, port, 16u64 * mib, 0usize);
   expect(fast.last == EventKind.Done && fast.finals == 1u64, "16 MiB: Done, once");
   expectUInt(fast.bytes, 16u64 * mib, "...every byte");
   expect(fast.good, "...each the right one");
   expect(fast.peakLent <= 2u64 * mib, "...the bytes lent never past 2 MiB");
 
   // A slow consumer: 16 KiB released a turn; the link slows, memory does not grow
-  let slow = readBig(&mut cl, &mut sv, &mut lp, &pool, port, 8u64 * mib, 16384usize);
+  let slow = readBig(&mut cl, &mut sv, &mut lp, port, 8u64 * mib, 16384usize);
   expect(slow.last == EventKind.Done && slow.finals == 1u64, "8 MiB to a slow consumer: Done, once");
   expectUInt(slow.bytes, 8u64 * mib, "...every byte");
   expect(slow.good, "...each the right one");
@@ -610,7 +608,7 @@ fn main() i32 {
     while (cl.live() > 0u32 || cl.held() > 0usize) && Instant.now() < giveUp {
       step(&mut cl, &mut sv, &mut lp, &mut out, giveUp);
       out.clear();
-      let l = lent(&pool);
+      let l = lent();
       if l > peak {peak = l;}
     }
     let r = reader.join();
@@ -628,6 +626,6 @@ fn main() i32 {
   cl.abortAll(&mut lp);
   idleFor(&mut cl, &mut sv, &mut lp, Duration.fromMillis(50i64));
   stopServer(&mut sv, &mut lp);
-  expectUInt(pool.stats().lent, 0u64, "every buffer back in the pool");
+  expectUInt(stats().lent, 0u64, "every buffer back in the pool");
   done()
 }

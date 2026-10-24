@@ -86,8 +86,8 @@ fn holds(b: &IoBuf, from: usize, n: usize, seed: u64) bool {
 }
 
 // Send n bytes of seed's pattern from 'from' to port, and wait for the answer
-fn sendTo(lp: &mut Loop, out: &mut List[Completion], pool: &Pool, from: Handle, port: u16, n: usize, seed: u64, tok: u64) bool {
-  var s = pool.mustTake(2048usize);
+fn sendTo(lp: &mut Loop, out: &mut List[Completion], from: Handle, port: u16, n: usize, seed: u64, tok: u64) bool {
+  var s = IoBuf(2048usize);
   fill(&mut s, n, seed);
   lp.submit(Op.SendTo(from, SocketAddr.localhost(port), s), Target.Here(tok));
   let k = await1(lp, out, tok);
@@ -97,7 +97,6 @@ fn sendTo(lp: &mut Loop, out: &mut List[Completion], pool: &Pool, from: Handle, 
 }
 
 fn main() i32 {
-  let pool = Pool.make();
   {
     var lp = Loop.mustMake();
     var out = List[Completion].empty();
@@ -110,8 +109,8 @@ fn main() i32 {
 
     // 1. A datagram and its sender
     {
-      lp.submit(Op.RecvFrom(b, pool.mustTake(4096usize)), Target.Here(2u64));
-      require(sendTo(&mut lp, &mut out, &pool, a, pb, 40usize, 1u64, 1u64), "1: the datagram is sent, whole");
+      lp.submit(Op.RecvFrom(b, IoBuf(4096usize)), Target.Here(2u64));
+      require(sendTo(&mut lp, &mut out, a, pb, 40usize, 1u64, 1u64), "1: the datagram is sent, whole");
       let k = await1(&mut lp, &mut out, 2u64);
       requireUInt(u64.from(k != notFound), 1u64, "1: the receive answers");
       let c = &mut out[k];
@@ -128,8 +127,8 @@ fn main() i32 {
 
     // 2. An empty datagram
     {
-      lp.submit(Op.RecvFrom(b, pool.mustTake(4096usize)), Target.Here(4u64));
-      require(sendTo(&mut lp, &mut out, &pool, a, pb, 0usize, 2u64, 3u64), "2: an empty datagram is sent");
+      lp.submit(Op.RecvFrom(b, IoBuf(4096usize)), Target.Here(4u64));
+      require(sendTo(&mut lp, &mut out, a, pb, 0usize, 2u64, 3u64), "2: an empty datagram is sent");
       let k = await1(&mut lp, &mut out, 4u64);
       requireUInt(u64.from(k != notFound), 1u64, "2: the receive answers");
       let c = &mut out[k];
@@ -141,13 +140,13 @@ fn main() i32 {
     // 3. A datagram longer than the room
     {
       // 100 bytes into a buffer with room for 8 after 4 already in it
-      var r = pool.mustTake(64usize);
+      var r = IoBuf(64usize);
       fill(&mut r, 4usize, 9u64);
       let cap = r.capacity();
       r.setLen(cap - 8usize);
       let held = r.len();
       lp.submit(Op.RecvFrom(b, r), Target.Here(6u64));
-      require(sendTo(&mut lp, &mut out, &pool, a, pb, 100usize, 3u64, 5u64), "3: 100 bytes are sent");
+      require(sendTo(&mut lp, &mut out, a, pb, 100usize, 3u64, 5u64), "3: 100 bytes are sent");
       let k = await1(&mut lp, &mut out, 6u64);
       requireUInt(u64.from(k != notFound), 1u64, "3: the receive answers");
       let c = &mut out[k];
@@ -158,8 +157,8 @@ fn main() i32 {
       expectUInt(u64.from(c.peer.port()), u64.from(pa), "3: the sender named");
       out.clear();
       // The cut datagram is gone: the next one is whole
-      lp.submit(Op.RecvFrom(b, pool.mustTake(4096usize)), Target.Here(8u64));
-      require(sendTo(&mut lp, &mut out, &pool, a, pb, 30usize, 4u64, 7u64), "3: another is sent");
+      lp.submit(Op.RecvFrom(b, IoBuf(4096usize)), Target.Here(8u64));
+      require(sendTo(&mut lp, &mut out, a, pb, 30usize, 4u64, 7u64), "3: another is sent");
       let k2 = await1(&mut lp, &mut out, 8u64);
       requireUInt(u64.from(k2 != notFound), 1u64, "3: and received");
       expect(out[k2].isDone() && out[k2].n == 30usize && holds(&out[k2].buf, 0usize, 30usize, 4u64),
@@ -169,7 +168,7 @@ fn main() i32 {
 
     // 4. Refusals
     {
-      var full = pool.mustTake(64usize);
+      var full = IoBuf(64usize);
       let cap = full.capacity();
       full.setLen(cap);
       lp.submit(Op.RecvFrom(b, full), Target.Here(10u64));
@@ -179,21 +178,21 @@ fn main() i32 {
       expectUInt(u64.from(out[k].buf.len()), u64.from(cap), "4: its buffer back");
       out.clear();
 
-      lp.submit(Op.Recv(b, pool.mustTake(64usize)), Target.Here(11u64));
+      lp.submit(Op.Recv(b, IoBuf(64usize)), Target.Here(11u64));
       let k1 = await1(&mut lp, &mut out, 11u64);
       requireUInt(u64.from(k1 != notFound), 1u64, "4: a stream receive on a datagram socket answers");
       expectUInt(u64.from(out[k1].code), u64.from(errorInvalidHandle), "4: it fails, ERROR_INVALID_HANDLE");
       out.clear();
 
       let listener = lp.mustListen(SocketAddr.localhost(0u16));
-      lp.submit(Op.RecvFrom(listener, pool.mustTake(64usize)), Target.Here(12u64));
+      lp.submit(Op.RecvFrom(listener, IoBuf(64usize)), Target.Here(12u64));
       let k2 = await1(&mut lp, &mut out, 12u64);
       requireUInt(u64.from(k2 != notFound), 1u64, "4: a datagram receive on a listener answers");
       expectUInt(u64.from(out[k2].code), u64.from(errorInvalidHandle), "4: it fails the same way");
       out.clear();
       lp.close(listener);
 
-      var s = pool.mustTake(64usize);
+      var s = IoBuf(64usize);
       fill(&mut s, 4usize, 1u64);
       lp.submit(Op.SendTo(listener, SocketAddr.localhost(pb), s), Target.Here(13u64));
       let k3 = await1(&mut lp, &mut out, 13u64);
@@ -203,7 +202,7 @@ fn main() i32 {
       out.clear();
 
       // A datagram too large for UDP (65,507 bytes at most over IPv4)
-      var big = pool.mustTake(70000usize);
+      var big = IoBuf(70000usize);
       fill(&mut big, 70000usize, 1u64);
       lp.submit(Op.SendTo(a, SocketAddr.localhost(pb), big), Target.Here(14u64));
       let k4 = await1(&mut lp, &mut out, 14u64);
@@ -218,7 +217,7 @@ fn main() i32 {
     {
       let t0 = Instant.now();
       let g = CancelGroup.until(t0 + Duration.fromMillis(50i64));
-      lp.submitIn(Op.RecvFrom(b, pool.mustTake(4096usize)), Target.Here(20u64), g, forever());
+      lp.submitIn(Op.RecvFrom(b, IoBuf(4096usize)), Target.Here(20u64), g, forever());
       let k = await1(&mut lp, &mut out, 20u64);
       requireUInt(u64.from(k != notFound), 1u64, "5: the receive answers");
       expectUInt(u64.from(out[k].status), u64.from(diag.outcomeTimedOut), "5: TimedOut");
@@ -228,8 +227,8 @@ fn main() i32 {
       expectUInt(u64.from(out[k].peer.port()), 0u64, "5: no sender named");
       out.clear();
       // The socket works after it
-      lp.submit(Op.RecvFrom(b, pool.mustTake(4096usize)), Target.Here(21u64));
-      require(sendTo(&mut lp, &mut out, &pool, a, pb, 12usize, 5u64, 22u64), "5: a datagram is sent after");
+      lp.submit(Op.RecvFrom(b, IoBuf(4096usize)), Target.Here(21u64));
+      require(sendTo(&mut lp, &mut out, a, pb, 12usize, 5u64, 22u64), "5: a datagram is sent after");
       let k2 = await1(&mut lp, &mut out, 21u64);
       requireUInt(u64.from(k2 != notFound), 1u64, "5: and received");
       expect(out[k2].isDone() && out[k2].n == 12usize, "5: Done after the timeout");
@@ -238,7 +237,7 @@ fn main() i32 {
 
     // 6. Cancels
     {
-      let id = lp.submit(Op.RecvFrom(b, pool.mustTake(4096usize)), Target.Here(30u64));
+      let id = lp.submit(Op.RecvFrom(b, IoBuf(4096usize)), Target.Here(30u64));
       expect(lp.cancel(id), "6: lp.cancel asks");
       let k = await1(&mut lp, &mut out, 30u64);
       requireUInt(u64.from(k != notFound), 1u64, "6: it answers");
@@ -247,8 +246,8 @@ fn main() i32 {
       out.clear();
 
       let g = CancelGroup.make();
-      lp.submitIn(Op.RecvFrom(b, pool.mustTake(4096usize)), Target.Here(31u64), g, forever());
-      lp.submitIn(Op.RecvFrom(a, pool.mustTake(4096usize)), Target.Here(32u64), g, forever());
+      lp.submitIn(Op.RecvFrom(b, IoBuf(4096usize)), Target.Here(31u64), g, forever());
+      lp.submitIn(Op.RecvFrom(a, IoBuf(4096usize)), Target.Here(32u64), g, forever());
       g.cancel();
       let k1 = await1(&mut lp, &mut out, 31u64);
       let k2 = await1(&mut lp, &mut out, 32u64);
@@ -258,7 +257,7 @@ fn main() i32 {
       expectUInt(u64.from(out[k1].buf.capacity() + out[k2].buf.capacity()), 8192u64, "6: each with its buffer");
       out.clear();
       // Submitted into the cancelled group: answered at once, never started
-      lp.submitIn(Op.RecvFrom(b, pool.mustTake(4096usize)), Target.Here(33u64), g, forever());
+      lp.submitIn(Op.RecvFrom(b, IoBuf(4096usize)), Target.Here(33u64), g, forever());
       let k4 = await1(&mut lp, &mut out, 33u64);
       requireUInt(u64.from(k4 != notFound), 1u64, "6: answered");
       expectUInt(u64.from(out[k4].status), u64.from(diag.outcomeCancelled), "6: Cancelled, never started");
@@ -266,7 +265,7 @@ fn main() i32 {
 
       // The handle's close
       let c = lp.mustBindUdp(SocketAddr.localhost(0u16));
-      lp.submit(Op.RecvFrom(c, pool.mustTake(4096usize)), Target.Here(34u64));
+      lp.submit(Op.RecvFrom(c, IoBuf(4096usize)), Target.Here(34u64));
       expect(lp.close(c), "6: the handle closes");
       let k5 = await1(&mut lp, &mut out, 34u64);
       requireUInt(u64.from(k5 != notFound), 1u64, "6: the receive on it answers");
@@ -280,11 +279,11 @@ fn main() i32 {
       let gone = lp.mustBindUdp(SocketAddr.localhost(0u16));
       let pg = portOf(&lp, gone);
       lp.close(gone);
-      require(sendTo(&mut lp, &mut out, &pool, a, pg, 20usize, 6u64, 40u64), "7: sent to a closed port: Done all the same");
+      require(sendTo(&mut lp, &mut out, a, pg, 20usize, 6u64, 40u64), "7: sent to a closed port: Done all the same");
       out.clear();
       // (the port-unreachable that comes back must not fail the next receive)
       let g = CancelGroup.until(Instant.now() + Duration.fromMillis(100i64));
-      lp.submitIn(Op.RecvFrom(a, pool.mustTake(4096usize)), Target.Here(41u64), g, forever());
+      lp.submitIn(Op.RecvFrom(a, IoBuf(4096usize)), Target.Here(41u64), g, forever());
       let k = await1(&mut lp, &mut out, 41u64);
       requireUInt(u64.from(k != notFound), 1u64, "7: the receive answers");
       expectUInt(u64.from(out[k].status), u64.from(diag.outcomeTimedOut), "7: it only timed out; it was not failed by the unreachable port");
@@ -295,13 +294,13 @@ fn main() i32 {
     {
       var i = 0u64;
       while i < 5u64 {
-        require(sendTo(&mut lp, &mut out, &pool, a, pb, 10usize + usize.from(i), 10u64 + i, 50u64 + i), "8: a datagram is sent");
+        require(sendTo(&mut lp, &mut out, a, pb, 10usize + usize.from(i), 10u64 + i, 50u64 + i), "8: a datagram is sent");
         i = i + 1u64;
       }
       out.clear();
       i = 0u64;
       while i < 5u64 {
-        lp.submit(Op.RecvFrom(b, pool.mustTake(4096usize)), Target.Here(60u64 + i));
+        lp.submit(Op.RecvFrom(b, IoBuf(4096usize)), Target.Here(60u64 + i));
         let k = await1(&mut lp, &mut out, 60u64 + i);
         requireUInt(u64.from(k != notFound), 1u64, "8: a receive answers");
         expect(out[k].isDone() && out[k].n == 10usize + usize.from(i) && holds(&out[k].buf, 0usize, 10usize + usize.from(i), 10u64 + i),
@@ -315,6 +314,6 @@ fn main() i32 {
     expectUInt(counts.submitted, counts.delivered + counts.inFlight, "every operation answered once or still in flight");
     expectUInt(lp.inFlight(), 0u64, "nothing in flight");
   }
-  expectUInt(pool.stats().lent, 0u64, "every buffer back in the pool");
+  expectUInt(stats().lent, 0u64, "every buffer back in the pool");
   done()
 }
