@@ -12,7 +12,7 @@ import testing use *;
 import thread;
 import time use Duration;
 import sync use Channel, Sender, Receiver;
-import iobuf use Pool;
+import iobuf use IoBuf;
 import iocore use SocketAddr, IoError, CancelGroup;
 import actors;
 import aio use Socket, IoLimits;
@@ -49,7 +49,6 @@ fn ended[T](r: Result[T, IoError]) u64 {
 }
 
 actor Waiter {
-  pool: Pool;
 
   // A connection whose peer is silent, then a read in g (or under a
   // deadline of 600 ms, if g is not to be used); 'ready' says it is about to
@@ -69,10 +68,10 @@ actor Waiter {
     let srv = socketOf(ac);
     ready.send(1u64);
     if useGroup {
-      let r = await srv.readIn(pool.mustTake(4096usize), IoLimits.within(g));
+      let r = await srv.readIn(IoBuf(4096usize), IoLimits.within(g));
       result.send(ended[iobuf.IoBuf](r));
     } else {
-      let r = await srv.readIn(pool.mustTake(4096usize),
+      let r = await srv.readIn(IoBuf(4096usize),
         IoLimits.until(time.Instant.now() + Duration.fromMillis(600i64)));
       result.send(ended[iobuf.IoBuf](r));
     }
@@ -91,11 +90,11 @@ fn main() i32 {
   {
     var i = 0u64;
     while i < members {
-      let w = Waiter(Pool.make());
+      let w = Waiter();
       w.hold(g, true, rtx.clone(), dtx.clone());
       i = i + 1u64;
     }
-    let outsider = Waiter(Pool.make());
+    let outsider = Waiter();
     outsider.hold(g, false, rtx.clone(), dtx.clone());
     i = 0u64;
     while i < members + 1u64 {
@@ -104,7 +103,7 @@ fn main() i32 {
     }
     thread.sleep(Duration.fromMillis(50i64));
     expect(g.cancel(), "the first cancel found the group live");
-    let late = Waiter(Pool.make());
+    let late = Waiter();
     late.hold(g, true, rtx.clone(), dtx.clone());
   }
   var cancelled = 0u64;

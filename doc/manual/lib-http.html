@@ -391,8 +391,8 @@ malformed: a header field's name has a space before its colon
 
 	<h2 id="http1">http1: HTTP/1.1 with no I/O of its own</h2>
 	<p>A <span class="pre">http1.Connection</span> is the protocol state of one TCP connection, as plain data, in
-		either role: <span class="pre">Connection.client(config, pool, now)</span> sends requests and reads
-		responses, <span class="pre">Connection.server(config, pool, now)</span> reads requests and sends
+		either role: <span class="pre">Connection.client(config, now)</span> sends requests and reads
+		responses, <span class="pre">Connection.server(config, now)</span> reads requests and sends
 		responses. It owns no socket, reads no clock and starts no thread. The program that does own the socket
 		(for a socket on a loop, <span class="pre">httpconn</span> is that program) calls it four ways:</p>
 	<ul>
@@ -484,12 +484,11 @@ fn wire(c: &amp;mut Connection, at: Instant) {
 }
 
 fn main() {
-  let pool = Pool.make();
   let now = Instant.now();
-  var server = Connection.server(Config.make(), pool, now);
+  var server = Connection.server(Config.make(), now);
 
   // Bytes arrive, as a socket would bring them
-  var arrived = pool.mustTake(256usize);
+  var arrived = IoBuf(256usize);
   arrived.append("POST /notes HTTP/1.1\r\nHost: example.com\r\nContent-Length: 5\r\n\r\nhello");
   server.handleInput(arrived, now);
   events(&amp;mut server);
@@ -498,7 +497,7 @@ fn main() {
   var head = ResponseHead.make(201u16);
   head.headers.add("Content-Type", "text/plain");
   server.sendResponse(head, BodyLength.sized(3u64));
-  var body = pool.mustTake(16usize);
+  var body = IoBuf(16usize);
   body.append("ok\n");
   server.sendData(body);
   server.finish();
@@ -507,8 +506,8 @@ fn main() {
   printStr("---\n");
 
   // A request it will not accept is refused, and the connection ends
-  var bad = Connection.server(Config.make(), pool, now);
-  var junk = pool.mustTake(256usize);
+  var bad = Connection.server(Config.make(), now);
+  var junk = IoBuf(256usize);
   junk.append("GET / HTTP/1.1\r\nHost: a\r\nHost: b\r\n\r\n");
   bad.handleInput(junk, now);
   events(&amp;mut bad);
@@ -547,9 +546,8 @@ Content-Length: 0
 		response back out. One <span class="pre">Driver</span> is all of it for one loop.</p>
 
 	<h3 id="httpconn-driver">The driver</h3>
-	<p><span class="pre">Driver.make(config, pool)</span> makes a driver. The <span class="pre">pool</span> is an
-		<span class="pre">iobuf</span> <span class="pre">Pool</span>: every body travels in an
-		<span class="pre">IoBuf</span> taken from it (<span class="pre">pool.mustTake(n)</span>, then
+	<p><span class="pre">Driver.make(config)</span> makes a driver. Every body travels in an
+		<span class="pre">IoBuf</span> from <span class="pre">iobuf</span>'s pools (<span class="pre">IoBuf(n)</span>, then
 		<span class="pre">buf.append(bytes)</span>), and a buffer a <span class="pre">Data</span> event gives the
 		program is the program's. A driver is driven by the thread that owns its loop. The simplest way is
 		<span class="pre">drv.poll(&amp;mut lp, until, &amp;mut events)</span>: it waits in the loop for at most
@@ -637,29 +635,29 @@ fn find(pending: &amp;List[Pending], req: ReqId) usize {
 }
 
 // Answer with a body that is a whole text
-fn reply(drv: &amp;mut Driver, pool: &amp;Pool, req: ReqId, status: u16, text: &amp;Array[u8]) {
+fn reply(drv: &amp;mut Driver, req: ReqId, status: u16, text: &amp;Array[u8]) {
   var head = ResponseHead.make(status);
   head.headers.add("Content-Type", "text/plain");
   drv.respond(req, head, BodyLength.sized(u64.from(text.len)));
-  var buf = pool.mustTake(text.len + 1usize);
+  var buf = IoBuf(text.len + 1usize);
   buf.append(text);
   drv.sendData(req, buf);
   drv.finish(req);
 }
 
 // The routes: a request read whole
-fn route(drv: &amp;mut Driver, pool: &amp;Pool, p: Pending) {
+fn route(drv: &amp;mut Driver, p: Pending) {
   if p.method == Method.Get &amp;&amp; p.target.view() == "/" {
-    reply(drv, pool, p.req, 200u16, "Hello from Cone.\n");
+    reply(drv, p.req, 200u16, "Hello from Cone.\n");
   } else if p.method == Method.Post &amp;&amp; p.target.view() == "/echo" {
-    reply(drv, pool, p.req, 200u16, p.body.view());
+    reply(drv, p.req, 200u16, p.body.view());
   } else {
-    reply(drv, pool, p.req, 404u16, "No such page.\n");
+    reply(drv, p.req, 404u16, "No such page.\n");
   }
 }
 
 // What the server does with one event of its own
-fn serve(drv: &amp;mut Driver, pool: &amp;Pool, pending: &amp;mut List[Pending], e: &amp;mut Event) {
+fn serve(drv: &amp;mut Driver, pending: &amp;mut List[Pending], e: &amp;mut Event) {
   if e.kind == EventKind.Request {
     pending.push(Pending(e.req, e.request.method, e.request.target.copy(), String.empty()));
   } else if e.kind == EventKind.Data {
@@ -671,7 +669,7 @@ fn serve(drv: &amp;mut Driver, pool: &amp;Pool, pending: &amp;mut List[Pending],
     if k &lt; pending.len() {
       pending.swap(k, pending.len() - 1usize);
       match pending.pop() {
-        case let Some(p) {route(drv, pool, p);}
+        case let Some(p) {route(drv, p);}
         case is None[Pending] {}
       }
     }
@@ -698,9 +696,8 @@ fn ask(drv: &amp;mut Driver, lp: &amp;mut Loop, conn: ConnId, step: u32) {
 }
 
 fn main() {
-  let pool = Pool.make();
   var lp = Loop.mustMake();
-  var drv = Driver.make(Config.make(), pool);
+  var drv = Driver.make(Config.make());
 
   // Listen on any free port of this machine
   var port = 0u16;
@@ -728,7 +725,7 @@ fn main() {
       let e = &amp;mut events[k];
       k = k + 1usize;
       if e.token == tokServer {
-        serve(&amp;mut drv, &amp;pool, &amp;mut pending, e);
+        serve(&amp;mut drv, &amp;mut pending, e);
       } else if e.token == tokReq {
         if e.kind == EventKind.Response {
           printUInt(u64.from(e.response.status));
@@ -739,7 +736,7 @@ fn main() {
           printStr(e.buf.view() as &amp;str);
           drv.release(e.req, e.buf.len());
         } else if e.kind == EventKind.Writable {
-          var buf = pool.mustTake(16usize);
+          var buf = IoBuf(16usize);
           buf.append("hello, Cone\n");
           drv.sendData(e.req, buf);
           drv.finish(e.req);
@@ -781,9 +778,9 @@ struct Sending {
 }
 
 // Send as many pieces as the connection takes now; finish when all are gone
-fn sendPieces(drv: &amp;mut Driver, pool: &amp;Pool, s: &amp;mut Sending) {
+fn sendPieces(drv: &amp;mut Driver, s: &amp;mut Sending) {
   while s.sent &lt; total {
-    var buf = pool.mustTake(piece);
+    var buf = IoBuf(piece);
     let room = buf.spare();
     var i = 0usize;
     while i &lt; piece {
@@ -806,10 +803,10 @@ if e.kind == EventKind.End {
   drv.respond(e.req, ResponseHead.make(200u16), BodyLength.sized(u64.from(total)));
   out.req = e.req;
   out.active = true;
-  sendPieces(&amp;mut drv, &amp;pool, &amp;mut out);
+  sendPieces(&amp;mut drv, &amp;mut out);
 } else if e.kind == EventKind.Writable &amp;&amp; out.active {
   writable = writable + 1u32;
-  sendPieces(&amp;mut drv, &amp;pool, &amp;mut out);
+  sendPieces(&amp;mut drv, &amp;mut out);
 }
 </pre>
 	<p>The program prints (<span class="pre">total</span> is 1048576 and <span class="pre">piece</span> 65536):</p>
@@ -938,7 +935,7 @@ if e.kind == EventKind.End {
 		Like a driver, a client belongs to one loop and the thread that polls it.</p>
 
 	<h3 id="httpclient-whole">One call: fetchWhole and getWhole</h3>
-	<p><span class="pre">Client.make(config, pool)</span> makes a client. <span class="pre">Request.get(url)</span> is a
+	<p><span class="pre">Client.make(config)</span> makes a client. <span class="pre">Request.get(url)</span> is a
 		request for a URL written as text and <span class="pre">Request.make(method, url)</span> any method's;
 		<span class="pre">Request.to(method, Url)</span> takes a parsed <span class="pre">Url</span>. A
 		<span class="pre">Request</span> has public fields to set: <span class="pre">headers</span>,
@@ -1014,7 +1011,7 @@ fn main() {
   }
 
   var lp = Loop.mustMake();
-  var client = Client.make(Config.make(), Pool.make());
+  var client = Client.make(Config.make());
 
   // One call, the whole body: up to 64 KiB of it
   let hello = client.fetchWhole(&amp;mut lp, Request.get(urlOf(port, "/").view()), 65536usize);
@@ -1161,7 +1158,7 @@ fn main() {
   var config = Config.make();
   config.maxPerOrigin = 1u32;
   var lp = Loop.mustMake();
-  var client = Client.make(config, Pool.make());
+  var client = Client.make(config);
 
   // Five requests, asked for in this order; the fourth is changed its mind about
   client.send(&amp;mut lp, getAt(port, "/background", Intent.Background), Sink.Here(1u64));
@@ -1293,22 +1290,20 @@ fn main() {
 	<p>A TLS server is made from a certificate chain and a private key in PEM files:
 		<span class="pre">tls.Server.make(tls.ServerConfig.make(&amp;certFile, &amp;keyFile))</span> gives a
 		<span class="pre">Result[Server, TlsError]</span>. A <span class="pre">Server</span> is a handle, copied to share
-		between threads. For an HTTP server, <span class="pre">server.stream(pool)</span> makes a
+		between threads. For an HTTP server, <span class="pre">server.stream()</span> makes a
 		<span class="pre">Stream</span>, a TLS session in the shape of httpconn's
 		<span class="pre">Layer</span>; the listener makes one for each connection it accepts through a
 		<span class="pre">LayerMaker</span> the program writes:</p>
 <pre>
 struct TlsMaker {
   server: tls.Server;
-  pool: Pool;
-
-  pub fn make(self: &amp;mut) Uni[httpconn.Layer] {Uni[tls.Stream](server.stream(pool))}
+  pub fn make(self: &amp;mut) Uni[httpconn.Layer] {Uni[tls.Stream](server.stream())}
 }
 
 // ... and where the plain server called drv.listen:
 match tls.Server.make(tls.ServerConfig.make(&amp;certFile, &amp;keyFile)) {
   case let Ok(tlsServer) {
-    let maker = Uni[TlsMaker](TlsMaker(tlsServer, pool));
+    let maker = Uni[TlsMaker](TlsMaker(tlsServer));
     match drv.listenWith(&amp;mut lp, SocketAddr.localhost(0u16), maker, httpconn.Sink.Here(100u64)) {
       ...
     }
@@ -1336,7 +1331,7 @@ fn main() {
   trusting.tlsConfig.verify = tls.Verifier.roots(readText("ca.pem").view());
   trusting.tlsConfig.offline = true;
   var lp = Loop.mustMake();
-  var client = httpclient.Client.make(trusting, Pool.make());
+  var client = httpclient.Client.make(trusting);
   let ok = client.fetchWhole(&amp;mut lp, httpclient.Request.get(address.view()), 4096usize);
   printStr(if ok.isOk() {"trusting client: "} else {"trusting client failed: "});
   printUInt(u64.from(ok.status));
@@ -1348,7 +1343,7 @@ fn main() {
   var asking = httpclient.Config.make();
   asking.tlsConfig.offline = true;
   var lp2 = Loop.mustMake();
-  var client2 = httpclient.Client.make(asking, Pool.make());
+  var client2 = httpclient.Client.make(asking);
   let refused = client2.fetchWhole(&amp;mut lp2, httpclient.Request.get(address.view()), 4096usize);
   printStr("asking the OS: ");
   printStr(httpclient.eventName(refused.outcome));
@@ -1430,7 +1425,7 @@ asking the OS: Failed, tls: closed: certificate untrusted (Windows error 2148204
 		<span class="pre">error()</span> say why a session failed.</li>
 	<li>When the system's verifier is to decide, the handshake stops at <span class="pre">VerifyNeeded</span>
 		(<span class="pre">s.wantsVerify()</span>): run <span class="pre">s.verifyNow()</span> where blocking is fine, or
-		give <span class="pre">s.verifyOp(&amp;pool)</span> to a loop's blocking pool and hand its completion to
+		give <span class="pre">s.verifyOp()</span> to a loop's blocking pool and hand its completion to
 		<span class="pre">s.verifyDone(&amp;mut c)</span>. A <span class="pre">Stream</span> does this through the driver.</li>
 	</ul>
 	<p>The program moves bytes between a client's session and a server's by hand:</p>
@@ -1553,8 +1548,8 @@ tls: certificate name mismatch: hostname mismatch (OpenSSL's verify result 62)
 
 	<h3 id="tls-streams">Streams</h3>
 	<p>A <span class="pre">Stream</span> is a <span class="pre">Session</span> with buffers, in the shape of
-		httpconn's <span class="pre">Layer</span>: <span class="pre">client.stream(serverName, pool)</span> and
-		<span class="pre">server.stream(pool)</span> make one, and <span class="pre">Uni[tls.Stream](...)</span>
+		httpconn's <span class="pre">Layer</span>: <span class="pre">client.stream(serverName)</span> and
+		<span class="pre">server.stream()</span> make one, and <span class="pre">Uni[tls.Stream](...)</span>
 		slots it into <span class="pre">drv.connectWith</span> or a <span class="pre">LayerMaker</span>. The protocol's
 		bytes handed to it before the handshake is done wait and go out after it. A stream that fails reports it once
 		its last bytes (an alert, usually) have gone out. <span class="pre">st.session()</span> reaches the session.</p>

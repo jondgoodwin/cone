@@ -43,7 +43,6 @@ const tokSrv = 100u64;
 
 struct Srv {
   pub drv: httpconn.Driver;
-  pub pool: Pool;
   pub accepted: u64;
   pub open: u64;
   pub maxOpen: u64;
@@ -62,8 +61,8 @@ struct Srv {
   pub totals: List[u64];
 }
 
-fn server(pool: Pool) Srv {
-  Srv(drv: httpconn.Driver.make(httpconn.Config.make(), pool), pool: pool, accepted: 0u64,
+fn server() Srv {
+  Srv(drv: httpconn.Driver.make(httpconn.Config.make()), accepted: 0u64,
     open: 0u64, maxOpen: 0u64, requests: 0u64, closedOnce: false, order: List[String].empty(),
     reqs: List[httpconn.ReqId].empty(), conns: List[httpconn.ConnId].empty(), methods: List[Method].empty(),
     targets: List[String].empty(), bodies: List[String].empty(), auths: List[String].empty(),
@@ -90,7 +89,7 @@ fn reply(sv: &mut Srv, req: httpconn.ReqId, head: bool, status: u16, location: &
   if location.len > 0usize {h.headers.add("Location", location);}
   sv.drv.respond(req, h, BodyLength.sized(u64.from(body.len)));
   if body.len > 0usize && !head {
-    var b = sv.pool.mustTake(body.len);
+    var b = IoBuf(body.len);
     b.append(body);
     sv.drv.sendData(req, b);
     sv.drv.finish(req);
@@ -111,7 +110,7 @@ fn pumpStream(sv: &mut Srv, j: usize) {
     let at = *sv.sent[j];
     let left = *sv.totals[j] - at;
     let n = if left < 65536u64 {usize.from(left)} else {65536usize};
-    var b = sv.pool.mustTake(n);
+    var b = IoBuf(n);
     let s = b.spare();
     var i = 0usize;
     while i < n {
@@ -203,7 +202,7 @@ fn answer(sv: &mut Srv, lp: &mut Loop, k: usize) {
     pumpStream(sv, sv.streams.len() - 1usize);
   } else if path == "/stall" {
     sv.drv.respond(req, ResponseHead.make(200u16), BodyLength.sized(1048576u64));
-    var b = sv.pool.mustTake(65536usize);
+    var b = IoBuf(65536usize);
     b.setLen(65536usize);
     sv.drv.sendData(req, b);
   } else if path == "/hang" {
@@ -412,13 +411,12 @@ fn idleFor(cl: &mut Client, sv: &mut Srv, lp: &mut Loop, d: Duration) {
 }
 
 fn main() i32 {
-  let pool = Pool.make();
   var lp = Loop.mustMake();
-  var sv = server(pool);
+  var sv = server();
   let port = listen(&mut sv, &mut lp);
   let port2 = listen(&mut sv, &mut lp);
   require(port != 0u16 && port2 != 0u16, "the server listens on two ports: two origins");
-  var cl = Client.make(Config.make(), pool);
+  var cl = Client.make(Config.make());
 
   // ---- Retries ----
   // A GET reset before its response: sent again on a new connection
@@ -545,6 +543,6 @@ fn main() i32 {
   cl.abortAll(&mut lp);
   idleFor(&mut cl, &mut sv, &mut lp, Duration.fromMillis(50i64));
   stopServer(&mut sv, &mut lp);
-  expectUInt(pool.stats().lent, 0u64, "every buffer back in the pool");
+  expectUInt(stats().lent, 0u64, "every buffer back in the pool");
   done()
 }

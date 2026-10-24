@@ -72,7 +72,6 @@ fn pattern(b: &mut IoBuf, seed: u8) {
 
 fn main() i32 {
   {
-    let pool = Pool.make();
     var lp = Loop.mustMake();
     var out = List[Completion].empty();
     var client = Handle.none();
@@ -81,9 +80,9 @@ fn main() i32 {
     require(lp.isOpen(client) && lp.isOpen(server), "a connected pair");
 
     // 1. Two big sends, then the reads
-    var s1 = pool.mustTake(eight);
+    var s1 = IoBuf(eight);
     pattern(&mut s1, 1u8);
-    var s2 = pool.mustTake(eight);
+    var s2 = IoBuf(eight);
     pattern(&mut s2, 2u8);
     let n1 = s1.len();
     let n2 = s2.len();
@@ -97,7 +96,7 @@ fn main() i32 {
     var intact = true;
     var sendsDone = true;
     let limit = Instant.now() + Duration.fromSeconds(30i64);
-    lp.submit(Op.Recv(server, pool.mustTake(65536usize)), Target.Here(3u64));
+    lp.submit(Op.Recv(server, IoBuf(65536usize)), Target.Here(3u64));
     while got < n1 + n2 && Instant.now() < limit {
       lp.poll(limit, &mut out);
       var k = 0usize;
@@ -113,7 +112,7 @@ fn main() i32 {
           got = got + c.count();
           if c.count() == 0usize {got = n1 + n2 + 1usize;}
           if got < n1 + n2 {
-            lp.submit(Op.Recv(server, pool.mustTake(65536usize)), Target.Here(3u64));
+            lp.submit(Op.Recv(server, IoBuf(65536usize)), Target.Here(3u64));
           }
         } else {
           if sends == 0u32 {firstSend = c.token;}
@@ -152,7 +151,7 @@ fn main() i32 {
     var blocked = OpId.none();
     var tries = 0u32;
     while blocked.isNone() && tries < 200u32 {
-      var b = pool.mustTake(1048576usize);
+      var b = IoBuf(1048576usize);
       pattern(&mut b, 3u8);
       let id = lp.submit(Op.Send(client, b), Target.Here(21u64));
       lp.poll(Instant.now() + Duration.fromMillis(20i64), &mut out);
@@ -161,10 +160,10 @@ fn main() i32 {
       tries = tries + 1u32;
     }
     expect(!blocked.isNone(), "the buffers filled: a send waits");
-    var b2 = pool.mustTake(1048576usize);
+    var b2 = IoBuf(1048576usize);
     pattern(&mut b2, 4u8);
     let behind = lp.submit(Op.Send(client, b2), Target.Here(22u64));
-    var b3 = pool.mustTake(1048576usize);
+    var b3 = IoBuf(1048576usize);
     pattern(&mut b3, 5u8);
     lp.submit(Op.Send(client, b3), Target.Here(23u64));
     expect(lp.cancel(behind), "the send behind it: its cancel is taken");
@@ -217,7 +216,7 @@ fn main() i32 {
     let c = lp.counters();
     expectUInt(c.delivered, c.submitted, "every operation answered once");
     expectUInt(c.inFlight, 0u64, "nothing in flight");
-    expectUInt(pool.stats().lent, 0u64, "every buffer back in the pool");
+    expectUInt(stats().lent, 0u64, "every buffer back in the pool");
   }
   trimAll();      // the pools are the process's: their idle slabs go back to the OS on request
   expectUInt(osBlocks(), 0u64, "and every block back to the OS");

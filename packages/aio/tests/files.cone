@@ -20,7 +20,7 @@ import stdio use *;
 import fs;
 import path use Path;
 import sync use Oneshot, OneshotSender, OneshotReceiver;
-import iobuf use IoBuf, Pool;
+import iobuf use IoBuf;
 import iocore use IoError, Access;
 import actors;
 import aio use File;
@@ -64,8 +64,8 @@ fn countOf(r: Result[usize, IoError]) u64 {
 }
 
 // A block of n bytes, byte i being i mod 251 xor seed
-fn block(pool: &Pool, n: usize, seed: u8) IoBuf {
-  var b = pool.mustTake(n);
+fn block(n: usize, seed: u8) IoBuf {
+  var b = IoBuf(n);
   let room = b.whole();
   var i = 0usize;
   while i < n {
@@ -106,11 +106,10 @@ fn bufOf(r: Result[IoBuf, IoError]) IoBuf {
 }
 
 actor Peeker {
-  pool: Pool;
 
   // Reads the first block of a file sent to it
   pub async fn peek(self, f: File, done: OneshotSender[u64]) {
-    let b = bufOf(await f.readAt(0u64, pool.mustTake(4096usize)));
+    let b = bufOf(await f.readAt(0u64, IoBuf(4096usize)));
     note("the sent file reads in the other actor", b.len() == 4096usize && isBlock(&b, 0usize, 4096usize, 11u8));
     var d = done;
     d.send(1u64);
@@ -118,7 +117,6 @@ actor Peeker {
 }
 
 actor Filer {
-  pool: Pool;
   peeker: Peeker;
 
   pub async fn run(self, done: OneshotSender[u64]) {
@@ -128,27 +126,27 @@ actor Filer {
     note("created", !f.isNone());
 
     // Three blocks, written out of order
-    num("block 2 wrote", countOf(await f.writeAt(8192u64, block(&pool, 4096usize, 33u8))));
-    num("block 0 wrote", countOf(await f.writeAt(0u64, block(&pool, 4096usize, 11u8))));
-    num("block 1 wrote", countOf(await f.writeAt(4096u64, block(&pool, 4096usize, 22u8))));
+    num("block 2 wrote", countOf(await f.writeAt(8192u64, block(4096usize, 33u8))));
+    num("block 0 wrote", countOf(await f.writeAt(0u64, block(4096usize, 11u8))));
+    num("block 1 wrote", countOf(await f.writeAt(4096u64, block(4096usize, 22u8))));
 
     // Each read back
-    let r0 = bufOf(await f.readAt(0u64, pool.mustTake(4096usize)));
+    let r0 = bufOf(await f.readAt(0u64, IoBuf(4096usize)));
     note("block 0 read back", r0.len() == 4096usize && isBlock(&r0, 0usize, 4096usize, 11u8));
-    let r1 = bufOf(await f.readAt(4096u64, pool.mustTake(4096usize)));
+    let r1 = bufOf(await f.readAt(4096u64, IoBuf(4096usize)));
     note("block 1 read back", r1.len() == 4096usize && isBlock(&r1, 0usize, 4096usize, 22u8));
-    let r2 = bufOf(await f.readAt(8192u64, pool.mustTake(4096usize)));
+    let r2 = bufOf(await f.readAt(8192u64, IoBuf(4096usize)));
     note("block 2 read back", r2.len() == 4096usize && isBlock(&r2, 0usize, 4096usize, 33u8));
 
     // The end of the file: Done, the buffer as it went
-    let cap = pool.mustTake(4096usize).capacity();
-    let eb = bufOf(await f.readAt(12288u64, pool.mustTake(4096usize)));
+    let cap = IoBuf(4096usize).capacity();
+    let eb = bufOf(await f.readAt(12288u64, IoBuf(4096usize)));
     note("read at the end: done, nothing added", eb.len() == 0usize && eb.capacity() == cap);
-    let pb = bufOf(await f.readAt(1000000u64, pool.mustTake(4096usize)));
+    let pb = bufOf(await f.readAt(1000000u64, IoBuf(4096usize)));
     note("read past the end: done, nothing added", pb.len() == 0usize && pb.capacity() == cap);
 
     // A read that crosses the end gets what is there
-    let c0 = bufOf(await f.readAt(10000u64, pool.mustTake(4096usize)));
+    let c0 = bufOf(await f.readAt(10000u64, IoBuf(4096usize)));
     num("read across the end got", u64.from(c0.len()));
     note("  and they are the bytes", c0.len() == 2288usize && isRun(&c0, 0usize, 2288usize, 1808usize, 33u8));
 
@@ -156,10 +154,10 @@ actor Filer {
     num("read with no room: error code", codeOf[IoBuf](await f.readAt(0u64, IoBuf.empty())));
 
     // Sixteen bytes over the middle of block 1 (at 4,096 + 100)
-    var patch = pool.mustTake(16usize);
+    var patch = IoBuf(16usize);
     patch.append("0123456789ABCDEF");
     num("patch wrote", countOf(await f.writeAt(4196u64, patch)));
-    let rp = bufOf(await f.readAt(4096u64, pool.mustTake(4096usize)));
+    let rp = bufOf(await f.readAt(4096u64, IoBuf(4096usize)));
     note("the patch reads back", rp.len() == 4096usize && rp.view()[100usize] == '0' && rp.view()[115usize] == 'F');
     note("  and the bytes around it are as they were", isBlock(&rp, 0usize, 100usize, 22u8)
       && rp.view()[116usize] == (u8.from(116usize % 251usize) ^ 22u8));
@@ -167,17 +165,17 @@ actor Filer {
     // Opened again, to read: what was written is there; a write to it fails
     let again = fileOf(await aio.openFile(&name, Access.Read));
     note("opened again to read", !again.isNone());
-    let k0 = bufOf(await again.readAt(0u64, pool.mustTake(4096usize)));
+    let k0 = bufOf(await again.readAt(0u64, IoBuf(4096usize)));
     note("  and what was written is there", k0.len() == 4096usize && isBlock(&k0, 0usize, 4096usize, 11u8));
-    note("  a write to it fails", countOf(await again.writeAt(0u64, block(&pool, 16usize, 5u8))) >= 1000000u64);
+    note("  a write to it fails", countOf(await again.writeAt(0u64, block(16usize, 5u8))) >= 1000000u64);
 
     // To update: the bytes are kept, a write changes only its own
     let upd = fileOf(await aio.openFile(&name, Access.Update));
     note("opened to update", !upd.isNone());
-    let u0 = bufOf(await upd.readAt(8192u64, pool.mustTake(4096usize)));
+    let u0 = bufOf(await upd.readAt(8192u64, IoBuf(4096usize)));
     note("  its bytes are kept", u0.len() == 4096usize && isBlock(&u0, 0usize, 4096usize, 33u8));
-    num("  a write of 16 bytes wrote", countOf(await upd.writeAt(0u64, block(&pool, 16usize, 44u8))));
-    let u1 = bufOf(await upd.readAt(0u64, pool.mustTake(4096usize)));
+    num("  a write of 16 bytes wrote", countOf(await upd.writeAt(0u64, block(16usize, 44u8))));
+    let u1 = bufOf(await upd.readAt(0u64, IoBuf(4096usize)));
     note("  the 16 bytes are new", isBlock(&u1, 0usize, 16usize, 44u8));
     note("  and the rest is not", u1.view()[16usize] == (u8.from(16usize % 251usize) ^ 11u8));
 
@@ -188,9 +186,9 @@ actor Filer {
     // To create: emptied, then block 0 written, and the file sent on
     let made = fileOf(await aio.openFile(&name, Access.Create));
     note("opened to create", !made.isNone());
-    let m0 = bufOf(await made.readAt(0u64, pool.mustTake(4096usize)));
+    let m0 = bufOf(await made.readAt(0u64, IoBuf(4096usize)));
     note("  it was emptied", m0.len() == 0usize);
-    num("  block 0 wrote", countOf(await made.writeAt(0u64, block(&pool, 4096usize, 11u8))));
+    num("  block 0 wrote", countOf(await made.writeAt(0u64, block(4096usize, 11u8))));
     peeker.peek(made, done);
   }
 }
@@ -201,7 +199,7 @@ fn main() {
   var rx: OneshotReceiver[u64];
   tx, rx = Oneshot[u64].make();
   {
-    let f = Filer(Pool.make(), Peeker(Pool.make()));
+    let f = Filer(Peeker());
     f.run(tx);
   }
   rx.recv();

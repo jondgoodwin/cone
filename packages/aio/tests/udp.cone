@@ -18,7 +18,7 @@ mod udp;
 
 import testing use *;
 import sync use Oneshot, OneshotSender, OneshotReceiver;
-import iobuf use IoBuf, Pool;
+import iobuf use IoBuf, stats;
 import iocore use SocketAddr, IoError, IoErrorKind;
 import time use Instant;
 import actors;
@@ -77,8 +77,8 @@ fn same(a: &Array[u8], b: &Array[u8]) bool {
 }
 
 // n bytes of the pattern 1, 2, 3, ... in a buffer of pool's
-fn datagram(pool: &Pool, n: usize) IoBuf {
-  var b = pool.mustTake(64usize);
+fn datagram(n: usize) IoBuf {
+  var b = IoBuf(64usize);
   let w = b.whole();
   var j = 0usize;
   while j < n {
@@ -90,7 +90,6 @@ fn datagram(pool: &Pool, n: usize) IoBuf {
 }
 
 actor Peer {
-  pool: Pool;
 
   pub async fn run(self, done: OneshotSender[u64]) {
     let a = udpOf(await aio.bindUdp(SocketAddr.localhost(0u16)));
@@ -101,14 +100,14 @@ actor Peer {
     let to = SocketAddr.localhost(pb);
 
     // 1. A round trip
-    var m = pool.mustTake(64usize);
+    var m = IoBuf(64usize);
     m.append("ping over udp");
     let sent = await a.sendTo(to, m);
     match sent {
       case let Ok(n) {got.sent.store(u64.from(n));}
       case let Error(e) {got.sent.store(1000000u64 + u64.from(e.code));}
     }
-    var r = await b.recvFrom(pool.mustTake(4096usize));
+    var r = await b.recvFrom(IoBuf(4096usize));
     match &mut r {
       case var &mut Ok(ok) {
         var buf = IoBuf.empty();
@@ -121,8 +120,8 @@ actor Peer {
     }
 
     // 2. An empty datagram
-    let sentEmpty = await a.sendTo(to, pool.mustTake(64usize));
-    var e0 = await b.recvFrom(pool.mustTake(4096usize));
+    let sentEmpty = await a.sendTo(to, IoBuf(64usize));
+    var e0 = await b.recvFrom(IoBuf(4096usize));
     match &mut e0 {
       case var &mut Ok(ok) {
         if ok.buf.len() == 0usize && ok.from.port() == pa {got.emptyOk.store(1u64);}
@@ -131,8 +130,8 @@ actor Peer {
     }
 
     // 3. A datagram longer than the room: the error Truncated, the buffer home
-    let sentLong = await a.sendTo(to, datagram(&pool, 40usize));
-    var small = pool.mustTake(64usize);
+    let sentLong = await a.sendTo(to, datagram(40usize));
+    var small = IoBuf(64usize);
     small.setLen(small.capacity() - 6usize);
     let cut = await b.recvFrom(small);
     match cut {
@@ -143,8 +142,8 @@ actor Peer {
       }
       else {}
     }
-    let sentNext = await a.sendTo(to, datagram(&pool, 12usize));
-    var next = await b.recvFrom(pool.mustTake(4096usize));
+    let sentNext = await a.sendTo(to, datagram(12usize));
+    var next = await b.recvFrom(IoBuf(4096usize));
     match &mut next {
       case var &mut Ok(ok) {got.whole.store(u64.from(ok.buf.len()));}
       else {}
@@ -156,7 +155,7 @@ actor Peer {
       case let Error(e) {got.noRoom.store(u64.from(e.code));}
       else {}
     }
-    let timed = await b.recvFromIn(pool.mustTake(4096usize), IoLimits.until(Instant.fromNanos(1i64)));
+    let timed = await b.recvFromIn(IoBuf(4096usize), IoLimits.until(Instant.fromNanos(1i64)));
     match timed {
       case let Error(e) {if aio.isTimedOut(e) {got.late.store(1u64);}}
       else {}
@@ -168,12 +167,11 @@ actor Peer {
 
 fn main() i32 {
   initAll();
-  let pool = Pool.make();
   var tx: OneshotSender[u64];
   var rx: OneshotReceiver[u64];
   tx, rx = Oneshot[u64].make();
   {
-    let peer = Peer(pool);
+    let peer = Peer();
     peer.run(tx);
   }
   match rx.recv() {
@@ -193,6 +191,6 @@ fn main() i32 {
   expectUInt(got.whole.load(), 12u64, "the next datagram is whole");
   expectUInt(got.noRoom.load(), 122u64, "a receive with no room fails: ERROR_INSUFFICIENT_BUFFER");
   expectUInt(got.late.load(), 1u64, "a receive whose deadline has passed answers TimedOut");
-  expectUInt(pool.stats().lent, 0u64, "every buffer came home to its pool, the truncated receive's among them");
+  expectUInt(stats().lent, 0u64, "every buffer came home to its pool, the truncated receive's among them");
   done()
 }

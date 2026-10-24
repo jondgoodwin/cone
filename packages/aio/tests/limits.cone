@@ -17,7 +17,7 @@ mod limits;
 import stdio use *;
 import time use Instant, Duration;
 import sync use Oneshot, OneshotSender, OneshotReceiver;
-import iobuf use IoBuf, Pool;
+import iobuf use IoBuf;
 import iocore use SocketAddr, IoError, CancelGroup;
 import actors;
 import aio use Socket, IoLimits;
@@ -63,7 +63,6 @@ fn note(what: &str, yes: bool) {
 }
 
 actor Prober {
-  pool: Pool;
 
   // Runs while run is paused at an await: ends the group's operations
   pub async fn stop(self, g: CancelGroup) {
@@ -86,7 +85,7 @@ actor Prober {
 
     // A group cancelled by a message, while the read is paused
     let g1 = CancelGroup.make();
-    let r1 = srv.readIn(pool.mustTake(4096usize), IoLimits.within(g1));
+    let r1 = srv.readIn(IoBuf(4096usize), IoLimits.within(g1));
     selfactor.stop(g1);
     let a1 = await r1;
     say[IoBuf]("cancel while paused", a1);
@@ -94,23 +93,23 @@ actor Prober {
     // A group cancelled before the operation starts: answered at once
     let g2 = CancelGroup.make();
     g2.cancel();
-    let a2 = await srv.readIn(pool.mustTake(4096usize), IoLimits.within(g2));
+    let a2 = await srv.readIn(IoBuf(4096usize), IoLimits.within(g2));
     say[IoBuf]("cancelled before it starts", a2);
 
     // A deadline of its own, ahead
     let t3 = Instant.now();
-    let a3 = await srv.readIn(pool.mustTake(4096usize), IoLimits.until(t3 + Duration.fromMillis(60i64)));
+    let a3 = await srv.readIn(IoBuf(4096usize), IoLimits.until(t3 + Duration.fromMillis(60i64)));
     say[IoBuf]("deadline ahead", a3);
     note("  and it had passed", waitedAtLeast(t3, 50i64));
 
     // A deadline already past: answered at once
-    let a4 = await srv.readIn(pool.mustTake(4096usize), IoLimits.until(Instant.now()));
+    let a4 = await srv.readIn(IoBuf(4096usize), IoLimits.until(Instant.now()));
     say[IoBuf]("deadline past", a4);
 
     // A group made with a deadline
     let t5 = Instant.now();
     let g5 = CancelGroup.until(t5 + Duration.fromMillis(60i64));
-    let a5 = await srv.readIn(pool.mustTake(4096usize), IoLimits.within(g5));
+    let a5 = await srv.readIn(IoBuf(4096usize), IoLimits.within(g5));
     say[IoBuf]("group with a deadline", a5);
     note("  and it had passed", waitedAtLeast(t5, 50i64));
 
@@ -118,14 +117,14 @@ actor Prober {
     let t6 = Instant.now();
     let p6 = CancelGroup.until(t6 + Duration.fromSeconds(30i64));
     let k6 = p6.childUntil(t6 + Duration.fromMillis(60i64));
-    let a6 = await srv.readIn(pool.mustTake(4096usize), IoLimits.within(k6));
+    let a6 = await srv.readIn(IoBuf(4096usize), IoLimits.within(k6));
     say[IoBuf]("child's deadline the tighter", a6);
     note("  and it had passed", waitedAtLeast(t6, 50i64));
     note("  and the parent's 30 s did not", !waitedAtLeast(t6, 5000i64));
     let t7 = Instant.now();
     let p7 = CancelGroup.until(t7 + Duration.fromMillis(60i64));
     let k7 = p7.childUntil(t7 + Duration.fromSeconds(30i64));
-    let a7 = await srv.readIn(pool.mustTake(4096usize), IoLimits.within(k7));
+    let a7 = await srv.readIn(IoBuf(4096usize), IoLimits.within(k7));
     say[IoBuf]("parent's deadline the tighter", a7);
     note("  and it had passed", waitedAtLeast(t7, 50i64));
     note("  and the child's 30 s did not", !waitedAtLeast(t7, 5000i64));
@@ -133,7 +132,7 @@ actor Prober {
     // A parent's cancel reaches its child's operation
     let p8 = CancelGroup.make();
     let k8 = p8.child();
-    let r8 = srv.readIn(pool.mustTake(4096usize), IoLimits.within(k8));
+    let r8 = srv.readIn(IoBuf(4096usize), IoLimits.within(k8));
     selfactor.stop(p8);
     let a8 = await r8;
     say[IoBuf]("parent cancelled", a8);
@@ -148,10 +147,10 @@ actor Prober {
 
     // Finished before the cancel: done, and the cancel after it does nothing
     let g11 = CancelGroup.make();
-    var hello = pool.mustTake(64usize);
+    var hello = IoBuf(64usize);
     hello.append("hi");
     let w11 = await cli.write(hello);
-    let a11 = await srv.readIn(pool.mustTake(4096usize), IoLimits.within(g11));
+    let a11 = await srv.readIn(IoBuf(4096usize), IoLimits.within(g11));
     say[IoBuf]("finished before the cancel", a11);
     note("  cancel() found the group live", g11.cancel());
     note("  and its second cancel found it cancelled already", !g11.cancel());
@@ -161,7 +160,7 @@ actor Prober {
     var sent = 0u32;
     var ended = false;
     while !ended && sent < 4096u32 {
-      var big = pool.mustTake(1048576usize);
+      var big = IoBuf(1048576usize);
       big.setLen(big.capacity());
       let w = await cli.writeIn(big, IoLimits.until(Instant.now() + Duration.fromMillis(100i64)));
       match w {
@@ -189,7 +188,7 @@ fn main() {
   var rx: OneshotReceiver[u64];
   tx, rx = Oneshot[u64].make();
   {
-    let p = Prober(Pool.make());
+    let p = Prober();
     p.run(tx);
   }
   rx.recv();

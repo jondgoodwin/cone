@@ -38,7 +38,6 @@ fn waitFor(lp: &mut Loop, out: &mut List[Completion], n: usize) {
 
 fn main() i32 {
   {
-    let pool = Pool.make();
     var lp = Loop.mustMake();
     var out = List[Completion].empty();
 
@@ -63,7 +62,7 @@ fn main() i32 {
     require(lp.isOpen(a) && lp.isOpen(b), "a connected pair");
 
     // 1. Cancelled
-    let r1 = lp.submit(Op.Recv(a, pool.mustTake(100usize)), Target.Here(10u64));
+    let r1 = lp.submit(Op.Recv(a, IoBuf(100usize)), Target.Here(10u64));
     lp.poll(Instant.now() + Duration.fromMillis(10i64), &mut out);
     expectUInt(u64.from(out.len()), 0u64, "a silent socket: nothing yet");
     expect(lp.cancel(r1), "cancel taken");
@@ -78,7 +77,7 @@ fn main() i32 {
 
     // 2. A deadline
     let t0 = Instant.now();
-    lp.submitBy(Op.Recv(a, pool.mustTake(100usize)), Target.Here(20u64), t0 + Duration.fromMillis(30i64));
+    lp.submitBy(Op.Recv(a, IoBuf(100usize)), Target.Here(20u64), t0 + Duration.fromMillis(30i64));
     waitFor(&mut lp, &mut out, 1usize);
     requireUInt(u64.from(out.len()), 1u64, "one answer");
     expectUInt(u64.from(out[0usize].status), u64.from(diag.outcomeTimedOut), "TimedOut");
@@ -86,8 +85,8 @@ fn main() i32 {
     expect(out[0usize].dequeued >= t0 + Duration.fromMillis(30i64), "not before its deadline");
     out.clear();
     // In time: Done, and the deadline dies with it
-    lp.submitBy(Op.Recv(a, pool.mustTake(100usize)), Target.Here(21u64), Instant.now() + Duration.fromMillis(30i64));
-    var one = pool.mustTake(1usize);
+    lp.submitBy(Op.Recv(a, IoBuf(100usize)), Target.Here(21u64), Instant.now() + Duration.fromMillis(30i64));
+    var one = IoBuf(1usize);
     one.append("x");
     lp.submit(Op.Send(b, one), Target.Here(22u64));
     waitFor(&mut lp, &mut out, 2usize);
@@ -108,8 +107,8 @@ fn main() i32 {
     var answers = 0u64;
     var round = 0u32;
     while round < 2000u32 {
-      let r = lp.submit(Op.Recv(a, pool.mustTake(100usize)), Target.Here(40u64));
-      var x = pool.mustTake(1usize);
+      let r = lp.submit(Op.Recv(a, IoBuf(100usize)), Target.Here(40u64));
+      var x = IoBuf(1usize);
       x.append("y");
       if round % 2u32 == 0u32 {
         lp.cancel(r);
@@ -138,7 +137,7 @@ fn main() i32 {
       // A cancelled receive took nothing: the byte waits, so take it, and
       // the next round starts clean
       if wasCancelled {
-        lp.submit(Op.Recv(a, pool.mustTake(100usize)), Target.Here(42u64));
+        lp.submit(Op.Recv(a, IoBuf(100usize)), Target.Here(42u64));
         waitFor(&mut lp, &mut out, 1usize);
         drained = drained + u64.from(out[0usize].count());
         out.clear();
@@ -152,7 +151,7 @@ fn main() i32 {
     expectUInt(drained, cancelled, "each Cancelled took nothing: its byte was still there");
 
     // 3. Closed while receiving
-    lp.submit(Op.Recv(a, pool.mustTake(100usize)), Target.Here(30u64));
+    lp.submit(Op.Recv(a, IoBuf(100usize)), Target.Here(30u64));
     lp.close(a);
     waitFor(&mut lp, &mut out, 1usize);
     requireUInt(u64.from(out.len()), 1u64, "one answer");
@@ -183,7 +182,7 @@ fn main() i32 {
     let c = lp.counters();
     expectUInt(c.delivered, c.submitted, "every operation answered once");
     expectUInt(c.inFlight, 0u64, "nothing in flight");
-    expectUInt(pool.stats().lent, 0u64, "every buffer back in the pool");
+    expectUInt(stats().lent, 0u64, "every buffer back in the pool");
   }
   trimAll();      // the pools are the process's: their idle slabs go back to the OS on request
   expectUInt(osBlocks(), 0u64, "and every block back to the OS");

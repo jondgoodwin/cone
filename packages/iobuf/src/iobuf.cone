@@ -16,18 +16,16 @@
 //   import iobuf use *;
 //
 //   fn main() {
-//     imm pool = Pool.make();                 // the process's pools; no state of its own
-//     mut buf = pool.mustTake(1500usize);     // empty, room for 4096 bytes
+//     mut buf = IoBuf(1500usize);             // empty, room for 4096 bytes, from the pools
 //     imm n = readInto(buf.spare());          // the OS fills the room...
 //     buf.setLen(n);                          // ...and says how much
 //     use(buf.view());
 //   }                                         // buf dies: its block goes back to the pools
 //
-//   Pool.make(maxBytes, keepBytes)  a handle to the pools; a bound given sets the process's (POOLS)
-//   pool.take(size)       Some IoBuf of at least size bytes, empty (always Some: see POOLS)
-//   pool.mustTake(size)   the IoBuf, or a panic at the caller's line
-//   pool.stats()          the pools' counters, a Stats
-//   pool.trim()           give every idle slab back to the OS
+//   IoBuf(size)           a buffer with room for at least size bytes, empty;
+//                         out of memory is a panic at the caller's line (POOLS)
+//   stats()               the pools' counters, a Stats
+//   trim()                give every idle slab back to the OS
 //   setLimits(maxBytes, keepBytes)  the process-wide bounds
 //   trimAll()             trim after flushing every thread's cache
 //   flushThread()         this thread's cache goes back to the stock
@@ -80,16 +78,16 @@
 //
 // IoBuf.empty() is a buffer with no block, from no pool, which does nothing
 // when it dies: what a buffer slot holds when it holds none (a read of no
-// room, the end of a stream), and the start of a buffer that 'take' or
-// 'popFront' or a refused 'push' may or may not fill in:
+// room, the end of a stream), and the start of a buffer that 'popFront' or a
+// refused 'push' may or may not fill in:
 //
 //   var b = IoBuf.empty();
-//   match pool.take(65536usize) {
+//   match chain.popFront() {
 //     case let Some(s) {b = s;}
-//     case is None[IoBuf] {...}               // never, today: see POOLS
+//     case is None[IoBuf] {...}
 //   }
 //
-// SIZE CLASSES. A take is served from the smallest class that holds it:
+// SIZE CLASSES. 'IoBuf(n)' is served from the smallest class that holds n:
 // 4 KiB, 16 KiB, 64 KiB, 256 KiB or 1 MiB, each four times the one before,
 // so a buffer is never more than four times the size asked for (a request
 // just over a class's size wastes most of the next); its capacity is the
@@ -98,15 +96,16 @@
 // bytes of plaintext) and an HTTP/1.1 request head under the usual limits;
 // 64 KiB is a socket read's usual size and the file reads the 3-D streamer
 // makes; 256 KiB and 1 MiB are large sequential file reads, where the cost of
-// each operation matters more than the memory. A take larger than 1 MiB is
+// each operation matters more than the memory. A request larger than 1 MiB is
 // 'oversize': a block of its own, rounded up to whole pages, counted against
 // the bound, never kept idle, and given back to the OS when it dies.
 //
 // POOLS. There are five pools, one per size class, and they are the
 // process's: static, set up by this module's 'init' and torn down by its
-// 'final', which runs after every module that uses them. A 'Pool' is no more
-// than a handle with the old methods, so a program that passes one around
-// still compiles, and every handle is the same pools. Each class is a stock
+// 'final', which runs after every module that uses them. Nothing holds or
+// passes them: 'IoBuf(n)' is a construction, and the type decides where its
+// block comes from, as 'List[i32](16)' does (one buffer type over the five
+// pools: the class is the size's). Each class is a stock
 // of blocks carved from 2 MiB slabs the OS gave (VirtualAlloc, mmap), with a
 // small cache of idle blocks for each thread in front of it (the mechanism is
 // blocks.cone, 'Fixed-size blocks with per-thread caches'; THE PER-THREAD
@@ -114,21 +113,21 @@
 // belong to the process:
 //
 // - 'maxBytes' (64 MiB by default) bounds what the pools hold from the OS,
-//   lent and idle together, slabs and oversize blocks. A take that would pass
-//   it first gives idle slabs of every class back to the OS and flushes the
-//   thread's cache; if that is not enough OUT OF MEMORY PANICS, for now, at
-//   the caller's line: 'take' no longer answers None, though it still returns
-//   an Option so that code written for the old pool compiles. Handling a
-//   refusal as a value is to come.
+//   lent and idle together, slabs and oversize blocks. A construction that
+//   would pass it first gives idle slabs of every class back to the OS and
+//   flushes the thread's cache; if that is not enough OUT OF MEMORY PANICS, for
+//   now, at the caller's line. Handling a refusal as a value is to come: it
+//   cannot be 'trynew IoBuf(n)', which the compiler refuses (error 1217:
+//   'trynew' takes a managed reference type, and an IoBuf is a value owning
+//   its block).
 // - 'keepBytes' (8 MiB by default) bounds the idle bytes the stock keeps: when
 //   blocks come home past it, slabs wholly idle go back to the OS, a whole slab
 //   at a time, though never below the bound.
 //
-// 'Pool.make(maxBytes, keepBytes)' with a number given sets that bound for the
-// process; the default 0 leaves it alone. 'setLimits' does the same, once,
-// at start-up.
+// 'setLimits(maxBytes, keepBytes)' sets them for the process, once, at
+// start-up; a bound of 0 leaves that one alone.
 //
-// 'pool.stats()' copies the counters out: the two bounds; the bytes held from
+// 'stats()' copies the counters out: the two bounds; the bytes held from
 // the OS, and of them the bytes idle (held and not lent: cached, idle in the
 // stock, or in a slab's part not yet used) and in threads' caches; buffers
 // lent now, ever taken, and served from the taking thread's own cache; slabs
@@ -333,7 +332,7 @@ fn pageCeil(size: usize) usize {
 }
 
 // ---------------------------------------------------------------------------
-// Pool: the handle to the process's pools
+// The pools' counters, and giving idle memory back
 // ---------------------------------------------------------------------------
 
 // The bounds' defaults are blocks.cone's: defaultMaxBytes (64 MiB held from
@@ -357,40 +356,16 @@ pub struct Stats {
   pub lentBytes: usize;    // bytes of the buffers lent now
 }
 
-// A handle to the process's pools: copied to share, between threads too (see
-// the package's header, POOLS). It holds nothing; every handle is the pools
-pub struct Pool {
-  unit: u32;
+// The counters, as they are now
+pub fn stats() Stats {
+  let s = blockStats();
+  Stats(s.maxBytes, s.keepBytes, s.heldBytes, s.idleBytes, s.lent, s.takes, s.reuses,
+    s.osAllocs, s.osFrees, 0u64, s.cachedBytes, s.stockBytes, s.slabs, s.lentBytes)
+}
 
-  // A handle. A bound given (not 0) sets that bound for the process: bytes
-  // held from the OS at most, idle bytes kept at most
-  pub fn make(maxBytes: usize = 0usize, keepBytes: usize = 0usize) Pool {
-    setLimits(maxBytes, keepBytes);
-    Pool(0u32)
-  }
-
-  // A buffer of at least size bytes, empty. Out of memory is a panic at the
-  // caller's line, so it is always Some
-  pub fn take(self: &, size: usize, file: &Array[u8] = srcFile(), line: u32 = srcLine()) Option[IoBuf] {
-    Some[IoBuf](acquire(size, file, line))
-  }
-
-  // A buffer of at least size bytes, empty
-  pub fn mustTake(self: &, size: usize, file: &Array[u8] = srcFile(), line: u32 = srcLine()) IoBuf {
-    acquire(size, file, line)
-  }
-
-  // Give every idle slab back to the OS (this thread's cache first)
-  pub fn trim(self: &) {
-    trimStock();
-  }
-
-  // The counters, as they are now
-  pub fn stats(self: &) Stats {
-    let s = blockStats();
-    Stats(s.maxBytes, s.keepBytes, s.heldBytes, s.idleBytes, s.lent, s.takes, s.reuses,
-      s.osAllocs, s.osFrees, 0u64, s.cachedBytes, s.stockBytes, s.slabs, s.lentBytes)
-  }
+// Give every idle slab back to the OS (this thread's cache first)
+pub fn trim() {
+  trimStock();
 }
 
 // A buffer of at least size bytes: from the class's cache and stock, or a
@@ -430,6 +405,15 @@ pub struct IoBuf is Move, Sendable {
   cap: usize;
   cls: u32;
   slab: *u8;       // the stock's token for its block, wanted back at its death
+
+  // A buffer with room for at least size bytes, empty: 'IoBuf(4096)'. The type
+  // decides where the block comes from: the pool of the smallest class that
+  // holds size, or a block of its own from the OS when size is over 1 MiB.
+  // Out of memory (the bound on bytes held is reached, or the OS refuses) is
+  // a panic at the caller's line
+  pub fn init(self: &new, size: usize, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
+    *self = acquire(size, file, line);
+  }
 
   // A buffer with no block: capacity 0, from no pool
   pub fn empty() IoBuf {IoBuf(null, 0usize, 0usize, 0u32, null)}

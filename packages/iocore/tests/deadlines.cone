@@ -63,7 +63,6 @@ fn pair(lp: &mut Loop) Handle, Handle {
 
 fn main() i32 {
   {
-    let pool = Pool.make();
     var lp = Loop.mustMake();
     var out = List[Completion].empty();
     var a = Handle.none();
@@ -77,7 +76,7 @@ fn main() i32 {
     // 1. With its buffer
     {
       let t0 = Instant.now();
-      lp.submitBy(Op.Recv(a, pool.mustTake(100usize)), Target.Here(1u64), t0 + Duration.fromMillis(50i64));
+      lp.submitBy(Op.Recv(a, IoBuf(100usize)), Target.Here(1u64), t0 + Duration.fromMillis(50i64));
       waitFor(&mut lp, &mut out, 1usize);
       requireUInt(u64.from(out.len()), 1u64, "one answer");
       expectUInt(u64.from(out[0usize].status), u64.from(diag.outcomeTimedOut), "TimedOut");
@@ -92,7 +91,7 @@ fn main() i32 {
     {
       lp.setGrace(Duration.zero());
       let t0 = Instant.now();
-      let id = lp.submitBy(Op.Recv(a, pool.mustTake(100usize)), Target.Here(2u64), t0 + Duration.fromMillis(20i64));
+      let id = lp.submitBy(Op.Recv(a, IoBuf(100usize)), Target.Here(2u64), t0 + Duration.fromMillis(20i64));
       waitFor(&mut lp, &mut out, 1usize);
       requireUInt(u64.from(out.len()), 1u64, "one answer");
       expectUInt(u64.from(out[0usize].status), u64.from(diag.outcomeTimedOut), "TimedOut");
@@ -109,32 +108,32 @@ fn main() i32 {
       lp.poll(Instant.now() + Duration.fromMillis(30i64), &mut out);
       expectUInt(u64.from(out.len()), 0u64, "and never answered again");
       expectUInt(lp.counters().lateReturns, lateBase, "the kernel gave the buffer back after");
-      expectUInt(pool.stats().lent, 0u64, "home to its pool");
+      expectUInt(stats().lent, 0u64, "home to its pool");
       lp.setGrace(Duration.fromMillis(1i64));
     }
 
     // 3. A job running past its deadline
     {
       let t0 = Instant.now();
-      lp.submitBy(Op.Call(one, &slowWork, 150u64, pool.mustTake(100usize)), Target.Here(3u64),
+      lp.submitBy(Op.Call(one, &slowWork, 150u64, IoBuf(100usize)), Target.Here(3u64),
         t0 + Duration.fromMillis(20i64));
       waitFor(&mut lp, &mut out, 1usize);
       requireUInt(u64.from(out.len()), 1u64, "one answer");
       expectUInt(u64.from(out[0usize].status), u64.from(diag.outcomeTimedOut), "TimedOut");
       expectUInt(u64.from(out[0usize].buf.capacity()), 0u64, "without its buffer: the job still has it");
       expect(t0.elapsed() < Duration.fromMillis(100i64), "on time, long before the job returns");
-      expectUInt(pool.stats().lent, 1u64, "its buffer still lent, to the job");
+      expectUInt(stats().lent, 1u64, "its buffer still lent, to the job");
       out.clear();
       lp.poll(Instant.now() + Duration.fromMillis(250i64), &mut out);
       expectUInt(u64.from(out.len()), 0u64, "the job returned, and nothing more was answered");
       expectUInt(lp.counters().lateReturns, lateBase + 1u64, "its buffer given back");
-      expectUInt(pool.stats().lent, 0u64, "home to its pool");
+      expectUInt(stats().lent, 0u64, "home to its pool");
     }
 
     // 4. A job still queued at its deadline
     {
-      lp.submit(Op.Call(one, &slowWork, 100u64, pool.mustTake(100usize)), Target.Here(4u64));
-      lp.submitBy(Op.Call(one, &slowWork, 0u64, pool.mustTake(100usize)), Target.Here(5u64),
+      lp.submit(Op.Call(one, &slowWork, 100u64, IoBuf(100usize)), Target.Here(4u64));
+      lp.submitBy(Op.Call(one, &slowWork, 0u64, IoBuf(100usize)), Target.Here(5u64),
         Instant.now() + Duration.fromMillis(20i64));
       waitFor(&mut lp, &mut out, 1usize);
       requireUInt(u64.from(out.len()), 1u64, "the queued one answered first");
@@ -153,7 +152,7 @@ fn main() i32 {
     let cs = lp.counters();
     expectUInt(cs.delivered, cs.submitted, "every operation answered once");
     expectUInt(cs.inFlight, 0u64, "nothing in flight");
-    expectUInt(pool.stats().lent, 0u64, "every buffer back in the pool");
+    expectUInt(stats().lent, 0u64, "every buffer back in the pool");
   }
   trimAll();      // the pools are the process's: their idle slabs go back to the OS on request
   expectUInt(osBlocks(), 0u64, "and every block back to the OS");

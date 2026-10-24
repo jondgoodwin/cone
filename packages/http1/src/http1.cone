@@ -15,7 +15,7 @@
 //   import iobuf use *;
 //   import time use Instant;
 //
-//   mut conn = Connection.client(Config.make(), pool, Instant.now());
+//   mut conn = Connection.client(Config.make(), Instant.now());
 //   conn.sendRequest(RequestHead.get("/a.bin", "example.com"), BodyLength.empty());
 //   while true {                                     // the driver's loop:
 //     send(conn.pollTransmit(now));                  // bytes to send, until empty
@@ -32,7 +32,7 @@
 //     wake at conn.pollTimeout(), then conn.handleTimeout(now);
 //   }
 //
-//   Connection.client(config, pool, now)  Connection.server(config, pool, now)
+//   Connection.client(config, now)  Connection.server(config, now)
 //   c.handleInput(buf, now)      bytes that arrived; an empty buffer is the  (THE FOUR CALLS)
 //                                end of the peer's stream
 //   c.pollTransmit(now)          the next bytes to send: an IoBuf, empty when none
@@ -187,7 +187,7 @@ mod http1;
 
 import collections use List, String;
 import time use Instant, Duration;
-import iobuf use IoBuf, Pool, Chain;
+import iobuf use IoBuf, Chain;
 import http use *;
 
 // ---------------------------------------------------------------------------
@@ -270,7 +270,6 @@ const maxCopy = 65536usize;               // the most a body buffer copied out o
 pub struct Connection is Move {
   clientRole: bool;
   cfg: Config;
-  pool: Pool;
   now: Instant;              // the time the last call brought
 
   // Reading
@@ -323,14 +322,14 @@ pub struct Connection is Move {
 
   // A client connection, idle until its first request (its idle timeout
   // running from now)
-  pub fn client(cfg: Config, pool: Pool, now: Instant) Connection {Connection.make(true, cfg, pool, now)}
+  pub fn client(cfg: Config, now: Instant) Connection {Connection.make(true, cfg, now)}
 
   // A server connection, awaiting its first request
-  pub fn server(cfg: Config, pool: Pool, now: Instant) Connection {Connection.make(false, cfg, pool, now)}
+  pub fn server(cfg: Config, now: Instant) Connection {Connection.make(false, cfg, now)}
 
-  fn make(client: bool, cfg: Config, pool: Pool, now: Instant, file: &Array[u8] = srcFile(), line: u32 = srcLine()) Connection {
+  fn make(client: bool, cfg: Config, now: Instant, file: &Array[u8] = srcFile(), line: u32 = srcLine()) Connection {
     if cfg.maxBuffered < cfg.maxHeadBytes {panic("http1: maxBuffered must hold a whole head (maxHeadBytes)", file, line);}
-    Connection(clientRole: client, cfg: cfg, pool: pool, now: now,
+    Connection(clientRole: client, cfg: cfg, now: now,
       input: Chain.make(cfg.maxBuffered), eof: false, rs: ReadState.Idle, remaining: 0u64,
       headBuf: IoBuf.empty(), headScan: 0usize, sawBytes: false, outstanding: 0usize, headInFlight: false,
       ws: WriteState.Idle, wremaining: 0u64, out: Chain.make(noBound), tail: IoBuf.empty(),
@@ -811,14 +810,7 @@ pub struct Connection is Move {
   // ends a head: the head's length then, or 0 (not all here yet, or failed)
   fn gatherHead(self: &mut) usize {
     if headBuf.capacity() == 0usize {
-      match pool.take(cfg.maxHeadBytes) {
-        case let Some(s) {headBuf = s;}
-        case is None[IoBuf] {}
-      }
-      if headBuf.capacity() == 0usize {
-        self.fail(ErrorKind.TooLarge, 503u16, "the buffer pool refused a buffer for a head");
-        return 0usize;
-      }
+      headBuf = IoBuf(cfg.maxHeadBytes);
       headScan = 0usize;
     }
     let have = headBuf.len();
@@ -1035,14 +1027,7 @@ pub struct Connection is Move {
       }
     } else {
       let want = if n > u64.from(maxCopy) {maxCopy} else {usize.from(n)};
-      match pool.take(want) {
-        case let Some(s) {buf = s;}
-        case is None[IoBuf] {}
-      }
-      if buf.capacity() == 0usize {
-        self.fail(ErrorKind.TooLarge, 503u16, "the buffer pool refused a buffer for a body");
-        return self.failedEvent();
-      }
+      buf = IoBuf(want);
       let room = buf.spare();
       let k = input.copyOut(0usize, &mut room[0usize ..< want]);
       buf.setLen(k);
@@ -1125,15 +1110,7 @@ pub struct Connection is Move {
     }
     if copied {
       // The line lies across segments: copy it out to read it
-      var tmp = IoBuf.empty();
-      match pool.take(at + 1usize) {
-        case let Some(s) {tmp = s;}
-        case is None[IoBuf] {}
-      }
-      if tmp.capacity() == 0usize {
-        self.fail(ErrorKind.TooLarge, 503u16, "the buffer pool refused a buffer for a chunk's size line");
-        return false;
-      }
+      var tmp = IoBuf(at + 1usize);
       let room = tmp.spare();
       let k = input.copyOut(0usize, &mut room[0usize ..< at]);
       tmp.setLen(k);
@@ -1249,14 +1226,7 @@ pub struct Connection is Move {
     while i < bytes.len {
       if tail.room() == 0usize {
         self.flushTail();
-        match pool.take(tailSize) {
-          case let Some(s) {tail = s;}
-          case is None[IoBuf] {}
-        }
-        if tail.capacity() == 0usize {
-          self.fail(ErrorKind.TooLarge, 0u16, "the buffer pool refused a buffer for output");
-          return;
-        }
+        tail = IoBuf(tailSize);
       }
       i = i + tail.append(&bytes[i ..< bytes.len]);
     }

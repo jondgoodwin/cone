@@ -15,8 +15,8 @@ fn aligned(b: &IoBuf) bool {
 }
 
 // The capacity a request of size bytes gets, and whether its block is aligned
-fn check(pool: &Pool, size: usize, want: u64) {
-  let b = pool.mustTake(size);
+fn check(size: usize, want: u64) {
+  let b = IoBuf(size);
   expectUInt(u64.from(b.capacity()), want, "capacity for a request");
   expect(aligned(&b), "aligned to 4 KiB");
   expect(b.capacity() % page == 0usize, "a whole number of pages");
@@ -24,23 +24,22 @@ fn check(pool: &Pool, size: usize, want: u64) {
 
 fn main() i32 {
   {
-    let pool = Pool.make();
-    check(&pool, 0usize, 4096u64);
-    check(&pool, 1usize, 4096u64);
-    check(&pool, 4096usize, 4096u64);
-    check(&pool, 4097usize, 16384u64);
-    check(&pool, 16384usize, 16384u64);
-    check(&pool, 16385usize, 65536u64);
-    check(&pool, 65536usize, 65536u64);
-    check(&pool, 65537usize, 262144u64);
-    check(&pool, 262144usize, 262144u64);
-    check(&pool, 262145usize, 1048576u64);
-    check(&pool, 1048576usize, 1048576u64);
+    check(0usize, 4096u64);
+    check(1usize, 4096u64);
+    check(4096usize, 4096u64);
+    check(4097usize, 16384u64);
+    check(16384usize, 16384u64);
+    check(16385usize, 65536u64);
+    check(65536usize, 65536u64);
+    check(65537usize, 262144u64);
+    check(262144usize, 262144u64);
+    check(262145usize, 1048576u64);
+    check(1048576usize, 1048576u64);
     // Oversize: its own block, rounded up to pages
-    check(&pool, 1048577usize, 1052672u64);
-    check(&pool, 3000000usize, 3002368u64);
+    check(1048577usize, 1052672u64);
+    check(3000000usize, 3002368u64);
 
-    let s = pool.stats();
+    let s = stats();
     expectUInt(s.takes, 13u64, "13 takes");
     expectUInt(s.lent, 0u64, "every buffer back");
     expectUInt(s.refused, 0u64, "none refused");
@@ -59,10 +58,10 @@ fn main() i32 {
     expectUInt(u64.from(classSize(0u32)), 4096u64, "class 0");
     expectUInt(u64.from(classSize(4u32)), u64.from(largestClass), "class 4 is the largest");
 
-    pool.trim();
+    trim();
     expectUInt(osBlocks(), 0u64, "trim gives every idle slab back");
     expectUInt(osBytes(), 0u64, "no bytes held from the OS");
-    expectUInt(u64.from(pool.stats().heldBytes), 0u64, "none held");
+    expectUInt(u64.from(stats().heldBytes), 0u64, "none held");
   }
   done()
 }

@@ -20,7 +20,7 @@ mod read;
 
 import testing use *;
 import sync use Oneshot, OneshotSender, OneshotReceiver;
-import iobuf use IoBuf, Pool;
+import iobuf use IoBuf;
 import iocore use SocketAddr, IoError;
 import actors;
 import aio use Socket;
@@ -73,12 +73,11 @@ fn codeOf[T](r: Result[T, IoError]) u64 {
 }
 
 actor Client {
-  pool: Pool;
 
   pub async fn dial(self, port: u16) {
     let c = await aio.connect(SocketAddr.localhost(port));
     let s = socketOf(c);
-    var b = pool.mustTake(64usize);
+    var b = IoBuf(64usize);
     b.append("hello, actor");
     let w = await s.write(b);
     match w {
@@ -89,7 +88,6 @@ actor Client {
 }
 
 actor Server {
-  pool: Pool;
 
   pub async fn serve(self, client: Client, done: OneshotSender[u64]) {
     let l = await aio.listen(SocketAddr.localhost(0u16));
@@ -108,7 +106,7 @@ actor Server {
     let conn = socketOf(ac);
     let none = await conn.read(IoBuf.empty());
     got.noRoom.store(codeOf[IoBuf](none));
-    var r = await conn.read(pool.mustTake(4096usize));
+    var r = await conn.read(IoBuf(4096usize));
     match &mut r {
       case var &mut Ok(ok) {
         var b = IoBuf.empty();
@@ -138,8 +136,8 @@ fn main() i32 {
   var rx: OneshotReceiver[u64];
   tx, rx = Oneshot[u64].make();
   {
-    let client = Client(Pool.make());
-    let server = Server(Pool.make());
+    let client = Client();
+    let server = Server();
     server.serve(client, tx);
   }
   match rx.recv() {

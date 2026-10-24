@@ -82,9 +82,8 @@ struct SrvRec {
 // The layers of a TLS listener's connections: a server session each, from one context
 struct TlsMaker {
   server: tls.Server;
-  pool: Pool;
 
-  pub fn make(self: &mut) Uni[httpconn.Layer] {Uni[tls.Stream](server.stream(pool))}
+  pub fn make(self: &mut) Uni[httpconn.Layer] {Uni[tls.Stream](server.stream())}
 }
 
 fn answerTo[R](rp: &mut actors.Reply, v: R) {
@@ -122,18 +121,18 @@ fn freeEx(srv: &mut SrvRec, slot: usize) {
 // What the driver says
 // ---------------------------------------------------------------------------
 
-fn pumpServer(srv: &mut SrvRec, lp: &mut Loop, pool: Pool) {
+fn pumpServer(srv: &mut SrvRec, lp: &mut Loop) {
   var evs = List[httpconn.Event].empty();
   srv.drv.pump(lp, &mut evs);
   var k = 0usize;
   while k < evs.len() {
     let e = &mut evs[k];
     k = k + 1usize;
-    onServerEvent(srv, lp, pool, e);
+    onServerEvent(srv, lp, e);
   }
 }
 
-fn onServerEvent(srv: &mut SrvRec, lp: &mut Loop, pool: Pool, e: &mut httpconn.Event) {
+fn onServerEvent(srv: &mut SrvRec, lp: &mut Loop, e: &mut httpconn.Event) {
   let k = e.kind;
   if k == httpconn.EventKind.Request {
     let slot = srv.exs.take(blankEx());
@@ -151,11 +150,11 @@ fn onServerEvent(srv: &mut SrvRec, lp: &mut Loop, pool: Pool, e: &mut httpconn.E
     if srv.closing {
       x.rejected = true;
       x.stage = exOut;
-      answerText(srv, pool, x, 503u16, "the server is closing", true);
+      answerText(srv, x, 503u16, "the server is closing", true);
     } else if e.body.isSized() && e.body.length > u64.from(srv.maxBody) {
       x.rejected = true;
       x.stage = exOut;
-      answerText(srv, pool, x, 413u16, "the request body is too large", true);
+      answerText(srv, x, 413u16, "the request body is too large", true);
     } else if x.head.headers.hasToken("Expect", "100-continue") {
       srv.drv.sendContinue(e.req);
     }
@@ -168,7 +167,7 @@ fn onServerEvent(srv: &mut SrvRec, lp: &mut Loop, pool: Pool, e: &mut httpconn.E
         if x.body.len() + n > srv.maxBody {
           x.rejected = true;
           x.stage = exOut;
-          answerText(srv, pool, x, 413u16, "the request body is too large", true);
+          answerText(srv, x, 413u16, "the request body is too large", true);
         } else {
           x.body.appendBytes(e.buf.view());
         }
@@ -179,13 +178,13 @@ fn onServerEvent(srv: &mut SrvRec, lp: &mut Loop, pool: Pool, e: &mut httpconn.E
     let slot = slotOfReq(srv, e.req);
     if slot < srv.exs.len() {
       let x = srv.exs.at(slot) as &ExRec;
-      if x.stage == exReading && !x.rejected {readyEx(srv, pool, slot);}
+      if x.stage == exReading && !x.rejected {readyEx(srv, slot);}
     }
   } else if k == httpconn.EventKind.Writable {
     let slot = slotOfReq(srv, e.req);
     if slot < srv.exs.len() {
       let x = srv.exs.at(slot) as &mut ExRec;
-      pumpWrites(srv, lp, pool, x);
+      pumpWrites(srv, lp, x);
     }
   } else if e.isTerminal() {
     let slot = slotOfReq(srv, e.req);
@@ -197,7 +196,7 @@ fn onServerEvent(srv: &mut SrvRec, lp: &mut Loop, pool: Pool, e: &mut httpconn.E
 
 // A request whose head and whole body are in: to the actor waiting for one,
 // else into the queue (503 if that is full)
-fn readyEx(srv: &mut SrvRec, pool: Pool, slot: usize) {
+fn readyEx(srv: &mut SrvRec, slot: usize) {
   let x = srv.exs.at(slot) as &mut ExRec;
   if srv.whead < srv.waiters.len() {
     var rp = actors.Reply();
@@ -212,7 +211,7 @@ fn readyEx(srv: &mut SrvRec, pool: Pool, slot: usize) {
   } else if srv.ready.len() - srv.rhead >= srv.maxPending {
     x.rejected = true;
     x.stage = exOut;
-    answerText(srv, pool, x, 503u16, "the server is busy", false);
+    answerText(srv, x, 503u16, "the server is busy", false);
   } else {
     x.stage = exReady;
     srv.ready.push(slot);
@@ -232,17 +231,14 @@ fn deliverEx(srv: &mut SrvRec, slot: usize, rp: actors.Reply) {
 }
 
 // The server answers a request itself, with text
-fn answerText(srv: &mut SrvRec, pool: Pool, x: &mut ExRec, status: u16, text: &str, closeAfter: bool) {
+fn answerText(srv: &mut SrvRec, x: &mut ExRec, status: u16, text: &str, closeAfter: bool) {
   var h = ResponseHead.make(status);
   h.headers.add("Content-Type", "text/plain; charset=utf-8");
   if closeAfter {h.headers.add("Connection", "close");}
   let n = text.len;
   var b = IoBuf.empty();
   if !x.isHead && n > 0usize {
-    match pool.take(n) {
-      case let Some(s) {b = s;}
-      case is None[IoBuf] {}
-    }
+    b = IoBuf(n);
   }
   let have = b.capacity() > 0usize;
   let len = if have {n} else {0usize};
@@ -290,7 +286,7 @@ fn endEx(srv: &mut SrvRec, slot: usize, done: bool) {
 
 // Write as much of x's pending body as its connection takes now, and finish
 // the body when it has all gone and 'finish' was asked
-fn pumpWrites(srv: &mut SrvRec, lp: &mut Loop, pool: Pool, x: &mut ExRec) {
+fn pumpWrites(srv: &mut SrvRec, lp: &mut Loop, x: &mut ExRec) {
   if x.over {return;}
   while x.wi < x.writes.len() {
     // The write is looked up afresh each time round: the driver's call may be
@@ -301,16 +297,7 @@ fn pumpWrites(srv: &mut SrvRec, lp: &mut Loop, pool: Pool, x: &mut ExRec) {
       if sent >= total {break;}
       let left = total - sent;
       let n = if left < sendChunk {left} else {sendChunk};
-      var b = IoBuf.empty();
-      match pool.take(n) {
-        case let Some(s) {b = s;}
-        case is None[IoBuf] {}
-      }
-      if b.capacity() == 0usize {
-        // The pool refused: the response cannot be sent, and ends
-        srv.drv.cancel(lp, x.req);
-        return;
-      }
+      var b = IoBuf(n);
       {
         // As bytes: a piece may end inside a UTF-8 character, which a 'str' slice refuses
         let all = x.writes[x.wi].data.view() as &Array[u8];
@@ -348,7 +335,7 @@ fn pumpWrites(srv: &mut SrvRec, lp: &mut Loop, pool: Pool, x: &mut ExRec) {
 }
 
 // Stop listening, refuse what waits, and let the exchanges taken go on
-fn closeServer(srv: &mut SrvRec, lp: &mut Loop, pool: Pool) {
+fn closeServer(srv: &mut SrvRec, lp: &mut Loop) {
   if srv.closing {return;}
   srv.closing = true;
   srv.drv.stopListening(lp, srv.listener);
@@ -366,7 +353,7 @@ fn closeServer(srv: &mut SrvRec, lp: &mut Loop, pool: Pool) {
     if x.stage == exReady {
       x.stage = exOut;
       x.rejected = true;
-      answerText(srv, pool, x, 503u16, "the server is closing", true);
+      answerText(srv, x, 503u16, "the server is closing", true);
     } else if x.stage == exDead {
       freeEx(srv, slot);
     }
@@ -388,7 +375,7 @@ struct ListenJob {
   fn run(self, lp: &mut Loop, sv: &mut Service) {
     let addr, cfg, var rp = self.(addr, cfg, reply);
     let conn, maxBody, maxPending, tcfg = cfg.(conn, maxBody, maxPending, tlsConfig);
-    var drv = httpconn.Driver.make(conn, sv.pool);
+    var drv = httpconn.Driver.make(conn);
     var res: Result[httpconn.ListenerId, IoError] = Error[httpconn.ListenerId, IoError](IoError.cancelled());
     var secure = false;
     match tcfg {
@@ -396,7 +383,7 @@ struct ListenJob {
         match tls.Server.make(t) {
           case let Ok(s) {
             secure = true;
-            res = drv.listenWith(lp, addr, Uni[TlsMaker](TlsMaker(s, sv.pool)), httpconn.Sink.Here(0u64));
+            res = drv.listenWith(lp, addr, Uni[TlsMaker](TlsMaker(s)), httpconn.Sink.Here(0u64));
           }
           case let Error(x) {
             answerTo[Result[Server, ServerError]](&mut rp, Error[Server, ServerError](
@@ -445,7 +432,7 @@ struct SrvRefJob {
       return;
     }
     srv.refs = srv.refs - 1u32;
-    if srv.refs == 0u32 {closeServer(srv, lp, sv.pool);}
+    if srv.refs == 0u32 {closeServer(srv, lp);}
   }
 }
 
@@ -456,7 +443,7 @@ struct SrvCloseJob {
   fn run(self: &mut, lp: &mut Loop, sv: &mut Service) {
     let k = sv.findSrv(id);
     if k >= sv.srvs.len() {return;}
-    closeServer(sv.srvAt(k) as &mut SrvRec, lp, sv.pool);
+    closeServer(sv.srvAt(k) as &mut SrvRec, lp);
   }
 }
 
@@ -550,7 +537,7 @@ struct RespondJob {
       let w = PendingWrite(body, 0usize, actors.Reply(), false);
       x.writes.push(w);
       x.finishing = true;
-      pumpWrites(s, lp, sv.pool, x);
+      pumpWrites(s, lp, x);
     }
   }
 }
@@ -601,7 +588,7 @@ struct WriteJob {
     }
     let w = PendingWrite(data, 0usize, rp, true);
     x.writes.push(w);
-    pumpWrites(s, lp, sv.pool, x);
+    pumpWrites(s, lp, x);
   }
 }
 
@@ -632,7 +619,7 @@ struct FinishJob {
     x.finishReply = rp;
     x.hasFinishReply = true;
     x.finishing = true;
-    pumpWrites(s, lp, sv.pool, x);
+    pumpWrites(s, lp, x);
   }
 }
 
@@ -654,11 +641,11 @@ struct DropExJob {
       return;
     }
     if !x.responded {
-      answerText(s, sv.pool, x, 500u16, "no response was made", false);
+      answerText(s, x, 500u16, "no response was made", false);
     } else if !x.finished && !x.finishing {
       if x.chunked {
         x.finishing = true;
-        pumpWrites(s, lp, sv.pool, x);
+        pumpWrites(s, lp, x);
       } else {
         s.drv.cancel(lp, x.req);
       }

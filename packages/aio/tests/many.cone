@@ -12,7 +12,7 @@ mod many;
 import testing use *;
 import sync use Channel, Sender, Receiver;
 import collections use List;
-import iobuf use IoBuf, Pool;
+import iobuf use IoBuf;
 import iocore use SocketAddr, IoError;
 import actors;
 import aio use Socket;
@@ -37,13 +37,12 @@ fn take[T](rx: &mut Receiver[T], dflt: T) T {
 }
 
 actor Reader {
-  pool: Pool;
 
   pub async fn join(self, port: u16, ready: Sender[u64], arrived: Sender[u64]) {
     let c = await aio.connect(SocketAddr.localhost(port));
     let s = socketOf(c);
     ready.send(1u64);
-    let r = await s.read(pool.mustTake(64usize));
+    let r = await s.read(IoBuf(64usize));
     match r {
       case let Ok(b) {
         if b.len() == 1usize {
@@ -58,7 +57,6 @@ actor Reader {
 }
 
 actor Hub {
-  pool: Pool;
   conns: List[Socket];
 
   pub async fn open(self, ports: Sender[u64]) {
@@ -82,7 +80,7 @@ actor Hub {
     var i = conns.len();
     while i > 0usize {
       i = i - 1usize;
-      var b = pool.mustTake(64usize);
+      var b = IoBuf(64usize);
       let one = [u8.from(i)];
       b.append(&one);
       let w = await conns[i].write(b);
@@ -106,13 +104,13 @@ fn main() i32 {
   var arx: Receiver[u64];
   atx, arx = Channel[u64].make();
   {
-    let hub = Hub(Pool.make(), List[Socket].empty());
+    let hub = Hub(List[Socket].empty());
     hub.open(ptx.clone());
     let port = take[u64](&mut prx, 0u64);
     require(port != 0u64, "the hub is listening");
     var i = 0u64;
     while i < readers {
-      let r = Reader(Pool.make());
+      let r = Reader();
       r.join(u16.from(port), rtx.clone(), atx.clone());
       i = i + 1u64;
     }

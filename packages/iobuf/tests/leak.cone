@@ -45,7 +45,7 @@ fn worker(j: Job) u64 {
   var k = 0u64;
   while k < perThread {
     rng = next(rng);
-    var b = Pool.make().mustTake(pick((rng >> 20u64) % 100u64));
+    var b = IoBuf(pick((rng >> 20u64) % 100u64));
     b.append("x");
     if k % 7u64 == 0u64 {
       j.tx.send(b);
@@ -73,7 +73,6 @@ fn sink(rx: Receiver[IoBuf]) u64 {
 fn main() i32 {
   initAll();
   setLimits(268435456usize, 0usize);
-  let pool = Pool.make();
   var tx: Sender[IoBuf];
   var rx: Receiver[IoBuf];
   tx, rx = Channel[IoBuf].bounded(64usize);
@@ -93,13 +92,13 @@ fn main() i32 {
   let dropped = s.join();
   expectUInt(finished, threads * perThread, "every worker finished");
   expectUInt(dropped, 8u64 * ((perThread + 6u64) / 7u64), "the sink dropped every buffer sent to it");
-  let st = pool.stats();
+  let st = stats();
   expectUInt(st.takes, threads * perThread, "every take counted");
   expectUInt(st.lent, 0u64, "every buffer home");
   expectUInt(st.refused, 0u64, "none refused");
   expect(st.cachedBytes > 0usize, "the threads that did not flush left their blocks cached, counted");
   trimAll();
-  let t = pool.stats();
+  let t = stats();
   expectUInt(u64.from(t.cachedBytes), 0u64, "every cache flushed");
   expectUInt(u64.from(t.heldBytes), 0u64, "nothing held");
   expectUInt(u64.from(t.slabs), 0u64, "no slab");

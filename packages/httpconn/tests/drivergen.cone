@@ -31,14 +31,13 @@ const tokNew = 200u64;
 const tokConn = 1u64;
 
 fn main() i32 {
-  let pool = Pool.make();
   var lp = Loop.mustMake();
 
   // The old driver listens, and dies, with its accept in flight
   var oldPort = 0u16;
   var oldToken = 0u64;
   {
-    var old = Driver.make(Config.make(), pool);
+    var old = Driver.make(Config.make());
     oldToken = old.upperToken(&mut lp, 3u8, 0u64);
     match old.listen(&mut lp, SocketAddr.localhost(0u16), Sink.Here(tokOld)) {
       case let Ok(r) {
@@ -56,11 +55,11 @@ fn main() i32 {
   {
     var i = 0u32;
     while i < 1023u32 {
-      let other = Driver.make(Config.make(), pool);
+      let other = Driver.make(Config.make());
       i = i + 1u32;
     }
   }
-  var nw = Driver.make(Config.make(), pool);
+  var nw = Driver.make(Config.make());
   require(nw.owns(oldToken), "the new driver took the dead driver's number");
   var newPort = 0u16;
   match nw.listen(&mut lp, SocketAddr.localhost(0u16), Sink.Here(tokNew)) {
@@ -76,7 +75,7 @@ fn main() i32 {
   expect(!nw.isUpperToken(oldToken), "the new driver does not take the dead driver's upper token for its own");
 
   // A client connects to the dead driver's port
-  var cli = Driver.make(Config.make(), pool);
+  var cli = Driver.make(Config.make());
   let conn = cli.connect(&mut lp, "127.0.0.1", oldPort, Sink.Here(tokConn));
 
   var claimedOld = 0u64;

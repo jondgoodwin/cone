@@ -43,8 +43,8 @@ fn pump(c: &mut Connection, s: &mut Connection) {
 // The byte at offset i of body n
 fn bodyByte(n: u64, i: u64) u8 {u8.from((n * 7u64 + i * 13u64) % 251u64)}
 
-fn fill(pool: &Pool, n: u64, len: usize) IoBuf {
-  var b = pool.mustTake(len);
+fn fill(n: u64, len: usize) IoBuf {
+  var b = IoBuf(len);
   let room = b.whole();
   var i = 0usize;
   while i < len {
@@ -66,7 +66,7 @@ struct Serving {
 // The server's side of the exchange: read the request, answer it by its
 // target: '/get/N' a sized body of N mod 300 bytes, '/echo' the body back
 // chunked, '/204' no content, HEAD the length alone, '/early' a 413 at once
-fn serve(s: &mut Connection, pool: &Pool, sv: &mut Serving) {
+fn serve(s: &mut Connection, sv: &mut Serving) {
   while true {
     match s.pollEvent() {
       case var Request(e) {
@@ -90,7 +90,7 @@ fn serve(s: &mut Connection, pool: &Pool, sv: &mut Serving) {
           s.sendResponse(ResponseHead.make(204u16), BodyLength.empty());
         } else if t == "/echo" {
           s.sendResponse(ResponseHead.make(200u16), BodyLength.unsized());
-          var b = pool.mustTake(sv.body.len() + 1usize);
+          var b = IoBuf(sv.body.len() + 1usize);
           b.append(sv.body.view());
           s.sendData(b);
           s.finish();
@@ -103,7 +103,7 @@ fn serve(s: &mut Connection, pool: &Pool, sv: &mut Serving) {
           }
           let len = usize.from(n % 300u64);
           s.sendResponse(ResponseHead.make(200u16), BodyLength.sized(u64.from(len)));
-          if len > 0usize {s.sendData(fill(pool, n, len));}
+          if len > 0usize {s.sendData(fill(n, len));}
           s.finish();
         }
       }
@@ -152,7 +152,7 @@ fn read(c: &mut Connection, g: &mut Got) {
 
 // One exchange: the request sent, both sides driven until the response is
 // whole
-fn exchange(c: &mut Connection, s: &mut Connection, pool: &Pool, sv: &mut Serving, head: RequestHead,
+fn exchange(c: &mut Connection, s: &mut Connection, sv: &mut Serving, head: RequestHead,
     body: &Array[u8], chunked: bool, g: &mut Got) {
   if chunked {
     c.sendRequest(head, BodyLength.unsized());
@@ -160,7 +160,7 @@ fn exchange(c: &mut Connection, s: &mut Connection, pool: &Pool, sv: &mut Servin
     var i = 0usize;
     while i < body.len {
       let e = if i + 100usize < body.len {i + 100usize} else {body.len};
-      var b = pool.mustTake(e - i);
+      var b = IoBuf(e - i);
       b.append(&body[i ..< e]);
       c.sendData(b);
       i = e;
@@ -172,16 +172,16 @@ fn exchange(c: &mut Connection, s: &mut Connection, pool: &Pool, sv: &mut Servin
   var rounds = 0u32;
   while !g.ended && !g.closed && rounds < 10u32 {
     pump(c, s);
-    serve(s, pool, sv);
+    serve(s, sv);
     pump(c, s);
     read(c, g);
     rounds = rounds + 1u32;
   }
 }
 
-fn reuse(pool: &Pool) {
-  var c = Connection.client(Config.make(), *pool, at());
-  var s = Connection.server(Config.make(), *pool, at());
+fn reuse() {
+  var c = Connection.client(Config.make(), at());
+  var s = Connection.server(Config.make(), at());
   var sv = Serving(String.empty(), false, String.empty(), 0u64);
   var wrong = 0u64;
   var n = 0u64;
@@ -191,7 +191,7 @@ fn reuse(pool: &Pool) {
     if kind == 0u64 || kind == 1u64 {
       var t = String.from("/get/");
       t.appendUInt(n * 37u64);
-      exchange(&mut c, &mut s, pool, &mut sv, RequestHead.get(t.view(), "h"), "", false, &mut g);
+      exchange(&mut c, &mut s, &mut sv, RequestHead.get(t.view(), "h"), "", false, &mut g);
       let want = usize.from((n * 37u64) % 300u64);
       let v = g.body.view();
       var ok = g.status == 200u16 && v.len == want;
@@ -208,13 +208,13 @@ fn reuse(pool: &Pool) {
         text.appendByte(u8.from(97u64 + (i + n) % 26u64));
         i = i + 1u64;
       }
-      exchange(&mut c, &mut s, pool, &mut sv, RequestHead.make("POST", "/echo", "h"), text.view(), true, &mut g);
+      exchange(&mut c, &mut s, &mut sv, RequestHead.make("POST", "/echo", "h"), text.view(), true, &mut g);
       if g.status != 200u16 || !g.body.equals(text.view()) {wrong = wrong + 1u64;}
     } else {
       if n % 8u64 == 3u64 {
-        exchange(&mut c, &mut s, pool, &mut sv, RequestHead.make("HEAD", "/h", "h"), "", false, &mut g);
+        exchange(&mut c, &mut s, &mut sv, RequestHead.make("HEAD", "/h", "h"), "", false, &mut g);
       } else {
-        exchange(&mut c, &mut s, pool, &mut sv, RequestHead.get("/204", "h"), "", false, &mut g);
+        exchange(&mut c, &mut s, &mut sv, RequestHead.get("/204", "h"), "", false, &mut g);
       }
       if g.body.len() != 0usize || !g.ended {wrong = wrong + 1u64;}
     }
@@ -229,15 +229,15 @@ fn reuse(pool: &Pool) {
   expect(c.bytesSent() == s.bytesReceived() && s.bytesSent() == c.bytesReceived(), "every byte sent was received");
 }
 
-fn closing(pool: &Pool) {
+fn closing() {
   {
-    var c = Connection.client(Config.make(), *pool, at());
-    var s = Connection.server(Config.make(), *pool, at());
+    var c = Connection.client(Config.make(), at());
+    var s = Connection.server(Config.make(), at());
     var sv = Serving(String.empty(), false, String.empty(), 0u64);
     var g = got();
     var h = RequestHead.get("/get/5", "h");
     h.headers.add("Connection", "close");
-    exchange(&mut c, &mut s, pool, &mut sv, h, "", false, &mut g);
+    exchange(&mut c, &mut s, &mut sv, h, "", false, &mut g);
     pump(&mut c, &mut s);
     read(&mut c, &mut g);
     expect(g.ended && g.body.len() == 5usize, "the response to 'Connection: close'");
@@ -245,11 +245,11 @@ fn closing(pool: &Pool) {
     expect(s.isClosed() && s.shouldClose(), "so does the server");
   }
   {
-    var c = Connection.client(Config.make(), *pool, at());
-    var s = Connection.server(Config.make(), *pool, at());
+    var c = Connection.client(Config.make(), at());
+    var s = Connection.server(Config.make(), at());
     var sv = Serving(String.empty(), false, String.empty(), 0u64);
     var g = got();
-    exchange(&mut c, &mut s, pool, &mut sv, RequestHead.get("/get/9", "h"), "", false, &mut g);
+    exchange(&mut c, &mut s, &mut sv, RequestHead.get("/get/9", "h"), "", false, &mut g);
     expect(c.canSendRequest(), "kept alive");
     c.handleInput(IoBuf.empty(), at());    // the server closed its end
     var g2 = got();
@@ -259,27 +259,27 @@ fn closing(pool: &Pool) {
   }
   {
     // A request whose body the server answers before reading: both close
-    var c = Connection.client(Config.make(), *pool, at());
-    var s = Connection.server(Config.make(), *pool, at());
+    var c = Connection.client(Config.make(), at());
+    var s = Connection.server(Config.make(), at());
     var sv = Serving(String.empty(), false, String.empty(), 0u64);
     var g = got();
     c.sendRequest(RequestHead.make("POST", "/early", "h"), BodyLength.sized(100000u64));
     pump(&mut c, &mut s);
-    serve(&mut s, pool, &mut sv);
+    serve(&mut s, &mut sv);
     expect(s.isClosed(), "the server answered before the body: it will close");
     pump(&mut c, &mut s);
     read(&mut c, &mut g);
     expect(g.status == 413u16 && g.ended, "the client reads the early answer");
     expect(c.isClosed(), "and closes: its body is abandoned");
     var refused = false;
-    match c.sendData(fill(pool, 0u64, 100usize)) {
+    match c.sendData(fill(0u64, 100usize)) {
       case is Some {refused = true;}
       case is None[IoBuf] {}
     }
     expect(!refused && c.queued() == 0usize, "what it still sends is dropped");
   }
   {
-    var c = Connection.client(Config.make(), *pool, at());
+    var c = Connection.client(Config.make(), at());
     c.sendRequest(RequestHead.get("/", "h"), BodyLength.empty());
     c.abort();
     var g = got();
@@ -288,16 +288,16 @@ fn closing(pool: &Pool) {
   }
 }
 
-fn watermark(pool: &Pool) {
+fn watermark() {
   var cfg = Config.make();
   cfg.writeWatermark = 10000usize;
-  var c = Connection.client(cfg, *pool, at());
+  var c = Connection.client(cfg, at());
   c.sendRequest(RequestHead.make("POST", "/up", "h"), BodyLength.unsized());
   var accepted = 0u64;
   var back = 0u64;
   var k = 0u64;
   while k < 5u64 {
-    match c.sendData(fill(pool, k, 3000usize)) {
+    match c.sendData(fill(k, 3000usize)) {
       case is Some {back = back + 1u64;}
       case is None[IoBuf] {accepted = accepted + 1u64;}
     }
@@ -315,11 +315,10 @@ fn watermark(pool: &Pool) {
 
 fn main() i32 {
   {
-    let pool = Pool.make();
-    reuse(&pool);
-    closing(&pool);
-    watermark(&pool);
-    expectUInt(pool.stats().lent, 0u64, "every buffer back in the pool");
+    reuse();
+    closing();
+    watermark();
+    expectUInt(stats().lent, 0u64, "every buffer back in the pool");
   }
   done()
 }

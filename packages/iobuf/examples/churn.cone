@@ -90,14 +90,13 @@ fn coldCrt(size: usize) u64 {
 }
 
 struct Work {
-  pub pool: Pool;
   pub tx: Sender[IoBuf];
 }
 
 fn produce(w: Work) u64 {
   var k = 0u64;
   while k < perProducer {
-    var b = w.pool.mustTake(4096usize);
+    var b = IoBuf(4096usize);
     b.append("x");
     w.tx.send(b);
     k = k + 1u64;
@@ -136,13 +135,12 @@ fn main() i32 {
   initAll();
   var ok = true;
   {
-    let pool = Pool.make();
 
     // Warm: one thread, a million take-and-drops of each size
     var t0 = nowNs();
     var i = 0u64;
     while i < cycles {
-      var b = pool.mustTake(4096usize);
+      var b = IoBuf(4096usize);
       b.append("x");
       i = i + 1u64;
     }
@@ -150,7 +148,7 @@ fn main() i32 {
     t0 = nowNs();
     i = 0u64;
     while i < cycles {
-      var b = pool.mustTake(65536usize);
+      var b = IoBuf(65536usize);
       b.append("x");
       i = i + 1u64;
     }
@@ -174,14 +172,14 @@ fn main() i32 {
     var p0: thread.Thread[u64];
     var p1: thread.Thread[u64];
     {
-      p0 = thread.start(Work(pool, tx.clone()), &produce);
-      p1 = thread.start(Work(pool, tx), &produce);
+      p0 = thread.start(Work(tx.clone()), &produce);
+      p1 = thread.start(Work(tx), &produce);
     }
     let sent = p0.join() + p1.join();
     let got = c.join();
     report("taken on two threads, dropped on a third:", nowNs() - t0, got);
 
-    let s = pool.stats();
+    let s = stats();
     printStats(s);
     let expected = 2u64 * cycles + sent;
     ok = got == sent && s.takes == expected && s.lent == 0u64 && s.refused == 0u64

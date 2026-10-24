@@ -63,20 +63,19 @@ fn finisher(rx: Receiver[Completer]) u64 {
 }
 
 // A completer of a loop that has died
-fn orphan(pool: &Pool) Completer {
+fn orphan() Completer {
   var lp = Loop.mustMake();
-  lp.external(Target.Here(0u64), pool.mustTake(10usize))
+  lp.external(Target.Here(0u64), IoBuf(10usize))
 }
 
 fn main() i32 {
   {
-    let pool = Pool.make();
     var lp = Loop.mustMake();
     var out = List[Completion].empty();
 
     // 1. Ended on another thread
     {
-      let c = lp.external(Target.Here(1u64), pool.mustTake(64usize));
+      let c = lp.external(Target.Here(1u64), IoBuf(64usize));
       expect(c.isLive(), "live");
       let id = c.id();
       let t = thread.start(c, &finishLater);
@@ -106,7 +105,7 @@ fn main() i32 {
 
     // 3. Cancelled
     {
-      var c = lp.external(Target.Here(3u64), pool.mustTake(64usize));
+      var c = lp.external(Target.Here(3u64), IoBuf(64usize));
       expect(!c.isCancelRequested(), "no cancel asked yet");
       expect(lp.cancel(c.id()), "the cancel asked");
       lp.poll(Instant.now() + Duration.fromMillis(5i64), &mut out);
@@ -121,7 +120,7 @@ fn main() i32 {
 
     // 4. A deadline missed
     {
-      var c = lp.externalIn(Target.Here(4u64), pool.mustTake(64usize), CancelGroup.make(),
+      var c = lp.externalIn(Target.Here(4u64), IoBuf(64usize), CancelGroup.make(),
         Instant.now() + Duration.fromMillis(20i64));
       waitFor(&mut lp, &mut out, 1usize);
       expectUInt(u64.from(out[0usize].status), u64.from(diag.outcomeTimedOut), "TimedOut");
@@ -139,7 +138,7 @@ fn main() i32 {
     {
       let g = CancelGroup.make();
       g.cancel();
-      var c = lp.externalIn(Target.Here(5u64), pool.mustTake(64usize), g, forever());
+      var c = lp.externalIn(Target.Here(5u64), IoBuf(64usize), g, forever());
       expect(!c.isLive(), "nothing to end");
       expect(!c.done(0usize), "ending it says false");
       lp.poll(Instant.now(), &mut out);
@@ -151,9 +150,9 @@ fn main() i32 {
 
     // 6. A loop that has died
     {
-      var c = orphan(&pool);
+      var c = orphan();
       expect(!c.done(0usize), "its loop gone: false");
-      expectUInt(pool.stats().lent, 0u64, "the buffer home");
+      expectUInt(stats().lent, 0u64, "the buffer home");
     }
 
     // 7. Twenty thousand, from another thread
@@ -200,7 +199,7 @@ fn main() i32 {
     let cs = lp.counters();
     expectUInt(cs.delivered, cs.submitted, "every operation answered once");
     expectUInt(cs.inFlight, 0u64, "nothing in flight");
-    expectUInt(pool.stats().lent, 0u64, "every buffer back in the pool");
+    expectUInt(stats().lent, 0u64, "every buffer back in the pool");
   }
   trimAll();      // the pools are the process's: their idle slabs go back to the OS on request
   expectUInt(osBlocks(), 0u64, "and every block back to the OS");

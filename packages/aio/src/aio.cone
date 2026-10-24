@@ -9,7 +9,7 @@
 // meanwhile: the actor handles its other messages.
 //
 //   mod hello;
-//   import iobuf use IoBuf, Pool;
+//   import iobuf use IoBuf;
 //   import iocore use SocketAddr, IoError;
 //   import actors;
 //   import aio use Socket;
@@ -23,11 +23,9 @@
 //   }
 //
 //   actor Client {
-//     pool Pool;
-//
 //     pub async fn send(self, port u16) {
 //       imm conn = socketOf(await aio.connect(SocketAddr.localhost(port)));
-//       mut buf = pool.mustTake(64usize);
+//       mut buf = IoBuf(64usize);
 //       buf.append("hello");
 //       imm sent = await conn.write(buf);          // pauses until all of it is sent
 //       match sent {
@@ -227,9 +225,9 @@
 // at the deadline (past iocore's 1 ms grace) and the work goes on, its answer
 // dropped. A lane whose queue is full refuses a job at once (Failed 170,
 // ERROR_BUSY). The pool's lanes: 'resolve' uses the DNS lane (2 threads), 'stat'
-// and 'run' the general lane (4 threads). Each of these takes a buffer from a
-// pool of its own (Pool.make(), made for the call) for iocore's op to carry its
-// answer in; it goes home with the answer.
+// and 'run' the general lane (4 threads). Each of these takes a buffer
+// (IoBuf(n), made for the call) for iocore's op to carry its answer in; it goes
+// home with the answer.
 //
 // 'resolve(host, port)' is iocore's 'resolveOp' (getaddrinfo, the stream socket
 // type): 'host' is a name or an address as text, and every address found is a
@@ -287,11 +285,11 @@
 //    last frees the block, by a small state word the two swap (the run's
 //    state below). A job that comes back unrun comes back with its buffer,
 //    which is how the hook knows it, so each run takes a one-byte buffer
-//    from a pool made for the call.
+//    made for the call.
 //  - A start failure is an IoError with the system's number (Windows') on both
 //    systems; iocore has one function more for it, 'systemCode', which turns an
 //    errno into that number.
-//  - 'stat' and 'resolve' take their buffer from a pool made for the call, not
+//  - 'stat' and 'resolve' make their buffer for the call, not
 //    one the caller passes; 'resolve' has the port as its second parameter
 //    with a default of 0, and gives a List, whole.
 //  - There is no 'readFile' (iocore's 'readFileOp'): a file opened with
@@ -311,7 +309,7 @@ import libc;
 import thread;
 import sync use Mutex;
 import collections use List, String;
-import iobuf use IoBuf, Pool;
+import iobuf use IoBuf;
 import time use Instant, Duration;
 import iocore use Loop, Waker, Op, Target, Sink, Completion, Handle, SocketAddr, IoError, CancelGroup, Access, Outcome, Lane, FileStat, forever, resolveOp, addressesIn, statOp, fileStatIn, systemCode, errorOperationAborted;
 import path use Path;
@@ -886,7 +884,7 @@ fn runAnswer(c: &mut Completion) Result[process.Output, IoError] {
 
 // A child process to run, started on the I/O thread's Loop: its block made
 // there, so that a job dropped unawaited has made none. The job takes a buffer
-// of one byte from a pool of its own, which it does not use: it tells the
+// of one byte, which it does not use: it tells the
 // answer whether the run was started (a job that comes back with it never ran)
 struct RunJob {
   pub isLine: bool;
@@ -905,9 +903,8 @@ struct RunJob {
     }
     mem.writeRaw[RunState](st, RunState(Atomic[u32].of(runPending()), isLine, l, a, opts, dir.copy(), noOutput()));
     let key = u64.from(st as usize);
-    let pool = Pool.make();
     let to = Target.Hook(key, Sink.make(waiting[Result[process.Output, IoError]](rp, &runAnswer)));
-    submitLimited(lp, Op.Call(Lane.general(), &runWork, key, pool.mustTake(1usize)), to, &limits);
+    submitLimited(lp, Op.Call(Lane.general(), &runWork, key, IoBuf(1usize)), to, &limits);
   }
 }
 
@@ -1180,9 +1177,8 @@ pub fn resolve(host: &str, port: u16 = 0u16) actors.Awaitable[Result[List[Socket
 // A lookup ended if lim says so: a deadline past the grace answers TimedOut
 // while the lookup goes on
 pub fn resolveIn(host: &str, port: u16, lim: IoLimits) actors.Awaitable[Result[List[SocketAddr], IoError]] {
-  let pool = Pool.make();
   opAwaitable[Result[List[SocketAddr], IoError]](
-    resolveOp(host, port, pool.mustTake(roomFor(host))), &resolveAnswer, lim)
+    resolveOp(host, port, IoBuf(roomFor(host))), &resolveAnswer, lim)
 }
 
 // A file's size, attributes and time of last write, by iocore's 'statOp' on
@@ -1194,9 +1190,8 @@ pub fn stat(path: &Path) actors.Awaitable[Result[FileStat, IoError]] {
 
 // A query ended if lim says so
 pub fn statIn(path: &Path, lim: IoLimits) actors.Awaitable[Result[FileStat, IoError]] {
-  let pool = Pool.make();
   opAwaitable[Result[FileStat, IoError]](
-    statOp(path, Lane.general(), pool.mustTake(roomFor(path.view()))), &statAnswer, lim)
+    statOp(path, Lane.general(), IoBuf(roomFor(path.view()))), &statAnswer, lim)
 }
 
 fn copyArgs(args: &Array[String]) List[String] {

@@ -120,7 +120,6 @@ struct Origin {
 // A client of HTTP and HTTPS servers on one Loop (see the package's header)
 pub struct Client {
   cfg: Config;
-  pool: Pool;
   drv: httpconn.Driver;
   tlsc: Option[tls.Client];
   tlsFailure: Failure;
@@ -150,7 +149,7 @@ pub struct Client {
   // A client whose connections take cfg's limits and buffers from pool. Its
   // TLS context is made now from cfg.tls; if that fails (a root bundle with
   // no certificate), every https fetch fails with why (Stage.Tls)
-  pub fn make(cfg: Config, pool: Pool, file: &Array[u8] = srcFile(), line: u32 = srcLine()) Client {
+  pub fn make(cfg: Config, file: &Array[u8] = srcFile(), line: u32 = srcLine()) Client {
     if cfg.maxPerOrigin == 0u32 || cfg.maxTotal == 0u32 {
       panic("httpclient: maxPerOrigin and maxTotal are at least 1", file, line);
     }
@@ -166,8 +165,8 @@ pub struct Client {
         tf = Failure.make(Stage.Tls, e.osError, ErrorKind.Unsupported, e.message().view());
       }
     }
-    let d = httpconn.Driver.make(c.conn, pool);
-    Client(cfg: c, pool: pool, drv: d, tlsc: tlsc, tlsFailure: tf,
+    let d = httpconn.Driver.make(c.conn);
+    Client(cfg: c, drv: d, tlsc: tlsc, tlsFailure: tf,
       fetchBlocks: List[*Fetch].empty(), fetchCount: 0u32, freeFetch: noEntry, liveFetches: 0u32,
       queuedN: 0u32, seq: 0u64, connBlocks: List[*PConn].empty(), connCount: 0u32, freeConn: noEntry,
       total: 0u32, origins: List[*Origin].empty(), dev: List[httpconn.Event].empty(),
@@ -954,7 +953,7 @@ pub struct Client {
     let t = tlsc;
     match t {
       case let Some(c) {
-        p.id = drv.connectWith(lp, host.view(), og.port, Uni[tls.Stream](c.stream(host.view(), pool)), sink);
+        p.id = drv.connectWith(lp, host.view(), og.port, Uni[tls.Stream](c.stream(host.view())), sink);
       }
       else {
         // No TLS context: nothing for this origin can be fetched
@@ -1095,17 +1094,7 @@ pub struct Client {
     while f.sent < f.body.len() {
       let left = f.body.len() - f.sent;
       let n = if left < sendChunk {left} else {sendChunk};
-      var b = IoBuf.empty();
-      match pool.take(n) {
-        case let Some(s) {b = s;}
-        case is None[IoBuf] {}
-      }
-      if b.capacity() == 0usize {
-        // The pool refused: the request cannot be sent
-        f.ending = endFailed;
-        drv.cancel(lp, f.req);
-        return;
-      }
+      var b = IoBuf(n);
       let all = f.body.view();
       b.append(&all[f.sent ..< f.sent + n]);
       match drv.sendData(f.req, b) {
@@ -1366,7 +1355,7 @@ pub struct Client {
 // and gone after (see the package's header, FETCHING)
 pub fn getWhole(text: &str, limit: usize) Response {
   var lp = Loop.mustMake();
-  var c = Client.make(Config.make(), Pool.make());
+  var c = Client.make(Config.make());
   var r = c.fetchWhole(&mut lp, Request.get(text), limit);
   c.abortAll(&mut lp);
   var evs = List[Event].empty();

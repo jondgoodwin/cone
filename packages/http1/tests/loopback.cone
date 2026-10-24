@@ -60,7 +60,7 @@ struct Side {
 
 // Hand the kernel what the core has to send, and a buffer to receive into
 // when the core has credit for one; close the socket once the core is done
-fn drive(lp: &mut Loop, s: &mut Side, pool: &Pool) {
+fn drive(lp: &mut Loop, s: &mut Side) {
   if s.sock.isNone() || s.sockClosed {return;}
   let now = Instant.now();
   while s.sendsOut < sendDepth {
@@ -70,7 +70,7 @@ fn drive(lp: &mut Loop, s: &mut Side, pool: &Pool) {
     s.sendsOut = s.sendsOut + 1u32;
   }
   if !s.recvOut && !s.conn.isClosed() && s.conn.readCredit() >= recvSize {
-    lp.submit(Op.Recv(s.sock, pool.mustTake(recvSize)), Target.Here(tokRecv));
+    lp.submit(Op.Recv(s.sock, IoBuf(recvSize)), Target.Here(tokRecv));
     s.recvOut = true;
   }
   if s.conn.shouldClose() && s.sendsOut == 0u32 {
@@ -140,7 +140,6 @@ struct Answer {
 }
 
 fn serve(a: ServerArgs) ServerReport {
-  let pool = Pool.make();
   var lp = Loop.mustMake();
   let listener = lp.mustListen(SocketAddr.localhost(0u16));
   var port = 0u16;
@@ -150,13 +149,13 @@ fn serve(a: ServerArgs) ServerReport {
   }
   a.portTx.send(port);
   lp.submit(Op.Accept(listener), Target.Here(tokConnect));
-  var s = Side(Handle.none(), Connection.server(Config.make(), pool, Instant.now()), false, 0u32, false);
+  var s = Side(Handle.none(), Connection.server(Config.make(), Instant.now()), false, 0u32, false);
   var ans = Answer(0u32, 0u64, 0u64, IoBuf.empty());
   var rep = ServerReport(0u64, 0u64, 0u64);
   var out = List[Completion].empty();
   while true {
-    respond(&mut s.conn, &pool, &mut ans, &mut rep);
-    drive(&mut lp, &mut s, &pool);
+    respond(&mut s.conn, &mut ans, &mut rep);
+    drive(&mut lp, &mut s);
     if finished(&s) {break;}
     settle(&mut lp, &mut s, &mut out);
   }
@@ -165,11 +164,11 @@ fn serve(a: ServerArgs) ServerReport {
 }
 
 // Act on the server's events: route each request, stream its answer
-fn respond(c: &mut Connection, pool: &Pool, ans: &mut Answer, rep: &mut ServerReport) {
+fn respond(c: &mut Connection, ans: &mut Answer, rep: &mut ServerReport) {
   // The large body goes out as the send queue has room
   if ans.route == 3u32 {
     while ans.largeOff < largeSize && c.writeRoom() >= largeChunk {
-      var b = pool.mustTake(largeChunk);
+      var b = IoBuf(largeChunk);
       let room = b.whole();
       var i = 0usize;
       while i < largeChunk {
@@ -246,7 +245,7 @@ fn respond(c: &mut Connection, pool: &Pool, ans: &mut Answer, rep: &mut ServerRe
           h.headers.add("Date", calendar.httpDate(Timestamp.now()).view());
           h.headers.add("Content-Type", "application/octet-stream");
           c.sendResponse(h, BodyLength.sized(n));
-          var b = pool.mustTake(usize.from(n));
+          var b = IoBuf(usize.from(n));
           let room = b.whole();
           var k = 0u64;
           while k < n {
@@ -296,12 +295,11 @@ struct ClientReport {
 }
 
 fn client(a: ClientArgs) ClientReport {
-  let pool = Pool.make();
   var lp = Loop.mustMake();
   var rep = ClientReport(Histogram.make(), Histogram.make(), 0u64, 0u64, 0u64, Duration.zero(),
     Duration.zero(), 0u64, 0u64, 0u64, 0usize, 0u64);
   lp.submit(Op.Connect(SocketAddr.localhost(a.port)), Target.Here(tokConnect));
-  var s = Side(Handle.none(), Connection.client(Config.make(), pool, Instant.now()), false, 0u32, false);
+  var s = Side(Handle.none(), Connection.client(Config.make(), Instant.now()), false, 0u32, false);
   var out = List[Completion].empty();
   var phase = 0u32;          // 0 GETs, 1 POSTs, 2 the large GET, 3 done
   var n = 0u64;              // requests made in this phase
@@ -340,7 +338,7 @@ fn client(a: ClientArgs) ClientReport {
               k = k + 1usize;
             }
             rep.checkTook = rep.checkTook + (Instant.now() - checkAt);
-            let held = pool.stats().lentBytes;
+            let held = stats().lentBytes;
             if held > rep.peakHeld {rep.peakHeld = held;}
           } else {
             while k < v.len {
@@ -413,7 +411,7 @@ fn client(a: ClientArgs) ClientReport {
         var at = 0u64;
         while at < len {
           let piece = if len - at < 3072u64 {len - at} else {3072u64};
-          var b = pool.mustTake(usize.from(piece));
+          var b = IoBuf(usize.from(piece));
           let room = b.whole();
           var k = 0u64;
           while k < piece {
@@ -432,7 +430,7 @@ fn client(a: ClientArgs) ClientReport {
       inFlight = true;
     }
     if phase == 3u32 && !s.conn.isClosed() {s.conn.abort();}
-    drive(&mut lp, &mut s, &pool);
+    drive(&mut lp, &mut s);
     if finished(&s) {break;}
     settle(&mut lp, &mut s, &mut out);
   }

@@ -33,7 +33,7 @@ fn pageText(target: &str) &'static Array[u8] {
 }
 
 // Answer a request read by a server's driver
-fn answer(drv: &mut Driver, e: &mut Event, pool: &Pool) {
+fn answer(drv: &mut Driver, e: &mut Event) {
   let body = pageText(e.request.target.view());
   if body.len == 0usize {
     drv.respond(e.req, ResponseHead.make(404u16), BodyLength.empty());
@@ -42,7 +42,7 @@ fn answer(drv: &mut Driver, e: &mut Event, pool: &Pool) {
   var h = ResponseHead.make(200u16);
   h.headers.add("Content-Type", "text/plain");
   drv.respond(e.req, h, BodyLength.sized(u64.from(body.len)));
-  var b = pool.mustTake(body.len);
+  var b = IoBuf(body.len);
   b.append(body);
   drv.sendData(e.req, b);
   drv.finish(e.req);
@@ -72,7 +72,7 @@ fn printTiming(t: &Timing) {
 
 // Fetch each target in turn on one connection, printing what came; the
 // driver may be serving too (serveHere)
-fn fetchAll(drv: &mut Driver, lp: &mut Loop, pool: &Pool, port: u16, targets: &Array[&str], serveHere: bool) {
+fn fetchAll(drv: &mut Driver, lp: &mut Loop, port: u16, targets: &Array[&str], serveHere: bool) {
   let conn = drv.connect(lp, "127.0.0.1", port, Sink.Here(tokConn));
   var next = 0usize;
   var inFlight = false;
@@ -93,7 +93,7 @@ fn fetchAll(drv: &mut Driver, lp: &mut Loop, pool: &Pool, port: u16, targets: &A
       let e = &mut events[k];
       k = k + 1usize;
       if e.token == tokServer {
-        if serveHere && e.kind == EventKind.Request {answer(drv, e, pool);}
+        if serveHere && e.kind == EventKind.Request {answer(drv, e);}
       } else if e.token == tokConn {
         if e.kind == EventKind.Connected {
           printStr("connected to ");
@@ -137,7 +137,7 @@ fn fetchAll(drv: &mut Driver, lp: &mut Loop, pool: &Pool, port: u16, targets: &A
     var k = 0usize;
     while k < events.len() {
       let e = &mut events[k];
-      if serveHere && e.token == tokServer && e.kind == EventKind.Request {answer(drv, e, pool);}
+      if serveHere && e.token == tokServer && e.kind == EventKind.Request {answer(drv, e);}
       k = k + 1usize;
     }
     events.clear();
@@ -156,9 +156,8 @@ struct ServerArgs {
 }
 
 fn serve(a: ServerArgs) u64 {
-  let pool = Pool.make();
   var lp = Loop.mustMake();
-  var drv = Driver.make(Config.make(), pool);
+  var drv = Driver.make(Config.make());
   a.portTx.send(listenOn(&mut drv, &mut lp));
   var events = List[Event].empty();
   var served = 0u64;
@@ -168,7 +167,7 @@ fn serve(a: ServerArgs) u64 {
     while k < events.len() {
       let e = &mut events[k];
       if e.kind == EventKind.Request {
-        answer(&mut drv, e, &pool);
+        answer(&mut drv, e);
         served = served + 1u64;
       }
       k = k + 1usize;
@@ -216,11 +215,10 @@ fn main() {
   let targets: Array[&str, 3] =["/", "/about", "/time"];
   printStr("== one thread: server and client on one Loop ==\n");
   {
-    let pool = Pool.make();
     var lp = Loop.mustMake();
-    var drv = Driver.make(Config.make(), pool);
+    var drv = Driver.make(Config.make());
     let port = listenOn(&mut drv, &mut lp);
-    fetchAll(&mut drv, &mut lp, &pool, port, &targets, true);
+    fetchAll(&mut drv, &mut lp, port, &targets, true);
     drv.abortAll(&mut lp);
   }
   printStr("== two threads: the server on its own ==\n");
@@ -235,10 +233,9 @@ fn main() {
       case let Some(p) {port = p;}
       case is None[u16] {}
     }
-    let pool = Pool.make();
     var lp = Loop.mustMake();
-    var drv = Driver.make(Config.make(), pool);
-    fetchAll(&mut drv, &mut lp, &pool, port, &targets, false);
+    var drv = Driver.make(Config.make());
+    fetchAll(&mut drv, &mut lp, port, &targets, false);
     // One more request, its events to another thread by a channel
     var tx: Sender[Event];
     var rx: Receiver[Event];

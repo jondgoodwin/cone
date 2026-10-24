@@ -65,7 +65,6 @@ const tokSrv = 100u64;
 
 struct Srv {
   pub drv: httpconn.Driver;
-  pub pool: Pool;
   pub accepted: u64;
   pub open: u64;
   pub maxOpen: u64;
@@ -84,8 +83,8 @@ struct Srv {
   pub totals: List[u64];
 }
 
-fn server(pool: Pool) Srv {
-  Srv(drv: httpconn.Driver.make(httpconn.Config.make(), pool), pool: pool, accepted: 0u64,
+fn server() Srv {
+  Srv(drv: httpconn.Driver.make(httpconn.Config.make()), accepted: 0u64,
     open: 0u64, maxOpen: 0u64, requests: 0u64, closedOnce: false, order: List[String].empty(),
     reqs: List[httpconn.ReqId].empty(), conns: List[httpconn.ConnId].empty(), methods: List[Method].empty(),
     targets: List[String].empty(), bodies: List[String].empty(), auths: List[String].empty(),
@@ -112,7 +111,7 @@ fn reply(sv: &mut Srv, req: httpconn.ReqId, head: bool, status: u16, location: &
   if location.len > 0usize {h.headers.add("Location", location);}
   sv.drv.respond(req, h, BodyLength.sized(u64.from(body.len)));
   if body.len > 0usize && !head {
-    var b = sv.pool.mustTake(body.len);
+    var b = IoBuf(body.len);
     b.append(body);
     sv.drv.sendData(req, b);
     sv.drv.finish(req);
@@ -133,7 +132,7 @@ fn pumpStream(sv: &mut Srv, j: usize) {
     let at = *sv.sent[j];
     let left = *sv.totals[j] - at;
     let n = if left < 65536u64 {usize.from(left)} else {65536usize};
-    var b = sv.pool.mustTake(n);
+    var b = IoBuf(n);
     let s = b.spare();
     var i = 0usize;
     while i < n {
@@ -225,7 +224,7 @@ fn answer(sv: &mut Srv, lp: &mut Loop, k: usize) {
     pumpStream(sv, sv.streams.len() - 1usize);
   } else if path == "/stall" {
     sv.drv.respond(req, ResponseHead.make(200u16), BodyLength.sized(1048576u64));
-    var b = sv.pool.mustTake(65536usize);
+    var b = IoBuf(65536usize);
     b.setLen(65536usize);
     sv.drv.sendData(req, b);
   } else if path == "/hang" {
@@ -586,10 +585,10 @@ fn orderSince(sv: &Srv, from: usize) String {
 
 // One run of the tier over a client with 'conns' connections to the
 // origin: what it checked
-fn run(pool: Pool, lp: &mut Loop, sv: &mut Srv, port: u16, conns: u32, exactOrder: bool) {
+fn run(lp: &mut Loop, sv: &mut Srv, port: u16, conns: u32, exactOrder: bool) {
   var cfg = Config.make();
   cfg.maxPerOrigin = conns;
-  var cl = Client.make(cfg, pool);
+  var cl = Client.make(cfg);
   var tr = tier();
   let from = sv.order.len();
   let frameEnd = Instant.now() + Duration.fromSeconds(5i64);
@@ -691,14 +690,13 @@ fn run(pool: Pool, lp: &mut Loop, sv: &mut Srv, port: u16, conns: u32, exactOrde
 }
 
 fn main() i32 {
-  let pool = Pool.make();
   var lp = Loop.mustMake();
-  var sv = server(pool);
+  var sv = server();
   let port = listen(&mut sv, &mut lp);
   require(port != 0u16, "the mock origin listens");
-  run(pool, &mut lp, &mut sv, port, 1u32, true);
-  run(pool, &mut lp, &mut sv, port, 6u32, false);
+  run(&mut lp, &mut sv, port, 1u32, true);
+  run(&mut lp, &mut sv, port, 6u32, false);
   stopServer(&mut sv, &mut lp);
-  expectUInt(pool.stats().lent, 0u64, "every buffer back in the pool");
+  expectUInt(stats().lent, 0u64, "every buffer back in the pool");
   done()
 }

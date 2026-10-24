@@ -11,7 +11,7 @@ mod endread;
 
 import stdio use *;
 import sync use Oneshot, OneshotSender, OneshotReceiver;
-import iobuf use Pool;
+import iobuf use IoBuf;
 import iocore use SocketAddr, IoError;
 import actors;
 import aio use Socket;
@@ -32,7 +32,6 @@ fn socketOf(r: Result[Socket, IoError]) Socket {
 }
 
 actor Talker {
-  pool: Pool;
 
   pub async fn talk(self, ready: OneshotSender[u64]) {
     let first = Note(1u64);
@@ -50,7 +49,7 @@ actor Talker {
     printStr("connected\n");
     var r = ready;
     r.send(1u64);
-    let got = await conn.read(pool.mustTake(4096usize));
+    let got = await conn.read(IoBuf(4096usize));
     printStr("read\n");
   }
 }
@@ -61,7 +60,7 @@ fn main() {
   var rx: OneshotReceiver[u64];
   tx, rx = Oneshot[u64].make();
   {
-    let t = Talker(Pool.make());
+    let t = Talker();
     t.talk(tx);
   }
   rx.recv();

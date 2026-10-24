@@ -45,7 +45,6 @@ const tokSrv = 100u64;
 
 struct Srv {
   pub drv: httpconn.Driver;
-  pub pool: Pool;
   pub accepted: u64;
   pub open: u64;
   pub maxOpen: u64;
@@ -64,8 +63,8 @@ struct Srv {
   pub totals: List[u64];
 }
 
-fn server(pool: Pool) Srv {
-  Srv(drv: httpconn.Driver.make(httpconn.Config.make(), pool), pool: pool, accepted: 0u64,
+fn server() Srv {
+  Srv(drv: httpconn.Driver.make(httpconn.Config.make()), accepted: 0u64,
     open: 0u64, maxOpen: 0u64, requests: 0u64, closedOnce: false, order: List[String].empty(),
     reqs: List[httpconn.ReqId].empty(), conns: List[httpconn.ConnId].empty(), methods: List[Method].empty(),
     targets: List[String].empty(), bodies: List[String].empty(), auths: List[String].empty(),
@@ -92,7 +91,7 @@ fn reply(sv: &mut Srv, req: httpconn.ReqId, head: bool, status: u16, location: &
   if location.len > 0usize {h.headers.add("Location", location);}
   sv.drv.respond(req, h, BodyLength.sized(u64.from(body.len)));
   if body.len > 0usize && !head {
-    var b = sv.pool.mustTake(body.len);
+    var b = IoBuf(body.len);
     b.append(body);
     sv.drv.sendData(req, b);
     sv.drv.finish(req);
@@ -113,7 +112,7 @@ fn pumpStream(sv: &mut Srv, j: usize) {
     let at = *sv.sent[j];
     let left = *sv.totals[j] - at;
     let n = if left < 65536u64 {usize.from(left)} else {65536usize};
-    var b = sv.pool.mustTake(n);
+    var b = IoBuf(n);
     let s = b.spare();
     var i = 0usize;
     while i < n {
@@ -205,7 +204,7 @@ fn answer(sv: &mut Srv, lp: &mut Loop, k: usize) {
     pumpStream(sv, sv.streams.len() - 1usize);
   } else if path == "/stall" {
     sv.drv.respond(req, ResponseHead.make(200u16), BodyLength.sized(1048576u64));
-    var b = sv.pool.mustTake(65536usize);
+    var b = IoBuf(65536usize);
     b.setLen(65536usize);
     sv.drv.sendData(req, b);
   } else if path == "/hang" {
@@ -433,9 +432,8 @@ fn readText(name: &str) String {
 // The listener's layers: a TLS server session each, from one context
 struct TlsMaker {
   server: tls.Server;
-  pool: Pool;
 
-  pub fn make(self: &mut) Uni[httpconn.Layer] {Uni[tls.Stream](server.stream(pool))}
+  pub fn make(self: &mut) Uni[httpconn.Layer] {Uni[tls.Stream](server.stream())}
 }
 
 fn tlsServer(cert: &str, key: &str) tls.Server {
@@ -453,7 +451,7 @@ fn tlsServer(cert: &str, key: &str) tls.Server {
 
 fn listenTls(sv: &mut Srv, lp: &mut Loop, s: tls.Server) u16 {
   var port = 0u16;
-  match sv.drv.listenWith(lp, SocketAddr.localhost(0u16), Uni[TlsMaker](TlsMaker(s, sv.pool)),
+  match sv.drv.listenWith(lp, SocketAddr.localhost(0u16), Uni[TlsMaker](TlsMaker(s)),
       httpconn.Sink.Here(tokSrv)) {
     case let Ok(r) {
       match sv.drv.localAddr(lp, r) {
@@ -503,9 +501,8 @@ fn atOnce(cl: &mut Client, sv: &mut Srv, lp: &mut Loop, port: u16, n: u32) u32 {
 }
 
 fn main() i32 {
-  let pool = Pool.make();
   var lp = Loop.mustMake();
-  var sv = server(pool);
+  var sv = server();
   let good = listenTls(&mut sv, &mut lp, tlsServer("server.pem", "server.key"));
   let untrusted = listenTls(&mut sv, &mut lp, tlsServer("untrusted.pem", "untrusted.key"));
   let plain = listen(&mut sv, &mut lp);
@@ -514,7 +511,7 @@ fn main() i32 {
   cfg.tlsConfig.verify = tls.Verifier.roots(readText("ca.pem").view());
   cfg.tlsConfig.offline = true;
   cfg.maxPerOrigin = 3u32;
-  var cl = Client.make(cfg, pool);
+  var cl = Client.make(cfg);
 
   // Five GETs one after another: one TLS connection, one handshake each side
   let t0 = tls.stats();
@@ -567,7 +564,7 @@ fn main() i32 {
   cfg1.tlsConfig.verify = tls.Verifier.roots(readText("ca.pem").view());
   cfg1.tlsConfig.offline = true;
   cfg1.maxPerOrigin = 1u32;
-  var c1 = Client.make(cfg1, pool);
+  var c1 = Client.make(cfg1);
   let a = c1.get(&mut lp, secure(untrusted, "/hello").view(), Sink.Here(3u64));
   let b = c1.get(&mut lp, secure(untrusted, "/hello").view(), Sink.Here(3u64));
   var sa = seen();
@@ -596,6 +593,6 @@ fn main() i32 {
   cl.abortAll(&mut lp);
   idleFor(&mut cl, &mut sv, &mut lp, Duration.fromMillis(50i64));
   stopServer(&mut sv, &mut lp);
-  expectUInt(pool.stats().lent, 0u64, "every buffer back in the pool");
+  expectUInt(stats().lent, 0u64, "every buffer back in the pool");
   done()
 }

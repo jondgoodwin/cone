@@ -29,7 +29,7 @@ import thread;
 import time use Instant, Duration;
 import sync use Oneshot, OneshotSender, OneshotReceiver;
 import collections use List;
-import iobuf use IoBuf, Pool;
+import iobuf use IoBuf;
 import iocore use SocketAddr, IoError, CancelGroup;
 import actors;
 import aio use Socket, IoLimits;
@@ -73,7 +73,6 @@ fn spinFor(n: u64) {
 }
 
 actor Writer {
-  pool: Pool;
   conns: List[Socket];
 
   pub async fn attach(self, s: Socket) {
@@ -82,7 +81,7 @@ actor Writer {
 
   pub async fn push(self, spin: u64) {
     spinFor(spin);
-    var b = pool.mustTake(16usize);
+    var b = IoBuf(16usize);
     let one = [7u8];
     b.append(&one);
     let w = await conns[0usize].write(b);
@@ -97,7 +96,6 @@ actor Writer {
 }
 
 actor Racer {
-  pool: Pool;
 
   pub async fn stop(self, g: CancelGroup, spin: u64) {
     spinFor(spin);
@@ -122,7 +120,7 @@ actor Racer {
     var i = 0u64;
     while i < rounds {
       let g = CancelGroup.make();
-      let rd = srv.readIn(pool.mustTake(64usize), IoLimits.within(g));
+      let rd = srv.readIn(IoBuf(64usize), IoLimits.within(g));
       let spin = ((i * 104729u64) % 211u64) * 100u64;
       if i % 2u64 == 0u64 {
         selfactor.stop(g, spin);
@@ -147,7 +145,7 @@ actor Racer {
     // Whatever the cancelled rounds left in the socket
     var more = true;
     while more && got.bytes.load() < rounds {
-      let r = await srv.readIn(pool.mustTake(64usize), IoLimits.until(Instant.now() + Duration.fromSeconds(5i64)));
+      let r = await srv.readIn(IoBuf(64usize), IoLimits.until(Instant.now() + Duration.fromSeconds(5i64)));
       match r {
         case let Ok(b) {got.bytes.add(u64.from(b.len()));}
         else {more = false;}
@@ -164,8 +162,8 @@ fn main() i32 {
   var rx: OneshotReceiver[u64];
   tx, rx = Oneshot[u64].make();
   {
-    let writer = Writer(Pool.make(), List[Socket].empty());
-    let racer = Racer(Pool.make());
+    let writer = Writer(List[Socket].empty());
+    let racer = Racer();
     racer.run(writer, tx);
   }
   match rx.recv() {

@@ -73,14 +73,14 @@ fn millis(d: Duration) {
 }
 
 // One GET on a new connection: true when it ended Done
-fn fetch(drv: &mut Driver, lp: &mut Loop, client: &tls.Client, pool: Pool, u: &Url) bool {
+fn fetch(drv: &mut Driver, lp: &mut Loop, client: &tls.Client, u: &Url) bool {
   // The host is copied: the driver holds Strings, and nothing shows the URL's is none of them
   let hostText = u.host.copy();
   let host = hostText.view();
   let started = Instant.now();
   var conn = ConnId.none();
   if u.secure {
-    conn = drv.connectWith(lp, host, u.port, Uni[tls.Stream](client.stream(host, pool)), Sink.Here(1u64));
+    conn = drv.connectWith(lp, host, u.port, Uni[tls.Stream](client.stream(host)), Sink.Here(1u64));
   } else {
     conn = drv.connect(lp, host, u.port, Sink.Here(1u64));
   }
@@ -148,19 +148,18 @@ fn main() i32 {
   }
   let u = parseUrl(args[1usize].view());
   let twice = !(args.len() > 2usize && args[2usize].view() == "--once");
-  let pool = Pool.make();
   var lp = Loop.mustMake();
-  var drv = Driver.make(Config.make(), pool);
+  var drv = Driver.make(Config.make());
   var client = tls.Client.make(tls.ClientConfig.make());
   var status = 1i32;
   match client {
     case let Ok(c) {
       printStr(tls.backendVersion());
       printStr(", the OS's verifier\n");
-      if fetch(&mut drv, &mut lp, &c, pool, &u) {status = 0i32;}
+      if fetch(&mut drv, &mut lp, &c, &u) {status = 0i32;}
       if twice && status == 0i32 {
         printStr("again, on a new connection:\n");
-        if !fetch(&mut drv, &mut lp, &c, pool, &u) {status = 1i32;}
+        if !fetch(&mut drv, &mut lp, &c, &u) {status = 1i32;}
       }
     }
     case let Error(e) {

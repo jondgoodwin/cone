@@ -27,7 +27,6 @@ const tokSrv = 100u64;
 
 struct Srv {
   pub drv: httpconn.Driver;
-  pub pool: Pool;
   pub accepted: u64;
   pub open: u64;
   pub maxOpen: u64;
@@ -38,8 +37,8 @@ struct Srv {
   pub bodies: List[String];
 }
 
-fn server(pool: Pool) Srv {
-  Srv(drv: httpconn.Driver.make(httpconn.Config.make(), pool), pool: pool, accepted: 0u64,
+fn server() Srv {
+  Srv(drv: httpconn.Driver.make(httpconn.Config.make()), accepted: 0u64,
     open: 0u64, maxOpen: 0u64, requests: 0u64, reqs: List[httpconn.ReqId].empty(),
     methods: List[Method].empty(), targets: List[String].empty(), bodies: List[String].empty())
 }
@@ -61,7 +60,7 @@ fn listen(sv: &mut Srv, lp: &mut Loop) u16 {
 fn reply(sv: &mut Srv, req: httpconn.ReqId, head: bool, status: u16, body: &Array[u8]) {
   sv.drv.respond(req, ResponseHead.make(status), BodyLength.sized(u64.from(body.len)));
   if body.len > 0usize && !head {
-    var b = sv.pool.mustTake(body.len);
+    var b = IoBuf(body.len);
     b.append(body);
     sv.drv.sendData(req, b);
     sv.drv.finish(req);
@@ -279,9 +278,8 @@ fn url(port: u16, path: &str) String {
 }
 
 fn main() i32 {
-  let pool = Pool.make();
   var lp = Loop.mustMake();
-  var sv = server(pool);
+  var sv = server();
   let port = listen(&mut sv, &mut lp);
   let port2 = listen(&mut sv, &mut lp);
   require(port != 0u16 && port2 != 0u16, "the server listens on two ports: two origins");
@@ -291,7 +289,7 @@ fn main() i32 {
   {
     var cfg = Config.make();
     cfg.maxPerOrigin = 2u32;
-    var cl = Client.make(cfg, pool);
+    var cl = Client.make(cfg);
 
     // A GET: Response, Data, End, Done, in that order
     var s = seen();
@@ -379,7 +377,7 @@ fn main() i32 {
   {
     var cfg = Config.make();
     cfg.maxQueued = 2u32;
-    var cl = Client.make(cfg, pool);
+    var cl = Client.make(cfg);
     cl.get(&mut lp, url(port, "/hello").view(), Sink.Here(1u64));
     cl.get(&mut lp, url(port, "/hello").view(), Sink.Here(1u64));
     var q = seen();
@@ -396,7 +394,7 @@ fn main() i32 {
     var cfg = Config.make();
     cfg.maxPerOrigin = 3u32;
     cfg.maxTotal = 4u32;
-    var cl = Client.make(cfg, pool);
+    var cl = Client.make(cfg);
     var k = 0u32;
     while k < 6u32 {
       cl.get(&mut lp, url(port, "/hello").view(), Sink.Here(1u64));
@@ -432,7 +430,7 @@ fn main() i32 {
 
   // ---- A connection that cannot be made fails all that wait for it ----
   {
-    var cl = Client.make(Config.make(), pool);
+    var cl = Client.make(Config.make());
     let a = cl.get(&mut lp, "http://127.0.0.1:1/a", Sink.Here(1u64));
     cl.get(&mut lp, "http://127.0.0.1:1/b", Sink.Here(1u64));
     cl.get(&mut lp, "http://127.0.0.1:1/c", Sink.Here(1u64));
@@ -450,7 +448,7 @@ fn main() i32 {
   {
     var cfg = Config.make();
     cfg.idleTimeout = Duration.fromMillis(100i64);
-    var cl = Client.make(cfg, pool);
+    var cl = Client.make(cfg);
     var s = seen();
     let i1 = cl.get(&mut lp, url(port, "/hello").view(), Sink.Here(1u64));
     finishOf(&mut cl, &mut sv, &mut lp, i1, &mut s);
@@ -469,6 +467,6 @@ fn main() i32 {
   var sevs = List[httpconn.Event].empty();
   sv.drv.pump(&mut lp, &mut sevs);
   sevs.clear();
-  expectUInt(pool.stats().lent, 0u64, "every buffer back in the pool");
+  expectUInt(stats().lent, 0u64, "every buffer back in the pool");
   done()
 }

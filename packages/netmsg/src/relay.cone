@@ -34,14 +34,13 @@ actor Relay {
   toServer: LinkConfig;
   toClient: LinkConfig;
   seed: u64;
-  pool: Pool;
   front: UdpSocket;
   legs: List[Leg];
   group: CancelGroup;
   stopped: bool;
 
   fn init(self: &new, server: SocketAddr, toServer: LinkConfig, toClient: LinkConfig, seed: u64) {
-    *self = Self(server: server, toServer: toServer, toClient: toClient, seed: seed, pool: Pool.make(),
+    *self = Self(server: server, toServer: toServer, toClient: toClient, seed: seed,
       front: UdpSocket.none(), legs: List[Leg].empty(), group: CancelGroup.make(), stopped: false);
   }
 
@@ -83,7 +82,7 @@ actor Relay {
   async fn receiveFront(self) {
     var failures = 0u32;
     while !stopped && failures <= relayMaxFailures {
-      let r = await front.recvFromIn(pool.mustTake(recvRoom), IoLimits.within(group));
+      let r = await front.recvFromIn(IoBuf(recvRoom), IoLimits.within(group));
       var client = SocketAddr.localhost(0u16);
       var data = List[u8].empty();
       var got = false;
@@ -128,7 +127,7 @@ actor Relay {
   async fn receiveLeg(self, n: usize) {
     var failures = 0u32;
     while !stopped && n < legs.len() && failures <= relayMaxFailures {
-      let r = await legs[n].up.recvFromIn(pool.mustTake(recvRoom), IoLimits.within(group));
+      let r = await legs[n].up.recvFromIn(IoBuf(recvRoom), IoLimits.within(group));
       match &r {
         case let &Ok(ok) {
           failures = 0u32;
@@ -156,7 +155,7 @@ actor Relay {
   // One datagram out of leg n: to the server (upstream) or to the client
   async fn out(self, n: usize, upstream: bool, data: List[u8]) {
     if stopped || n >= legs.len() {return;}
-    var b = pool.mustTake(max(data.len(), 1usize));
+    var b = IoBuf(max(data.len(), 1usize));
     b.append(data.view());
     if upstream {
       let r = await legs[n].up.sendTo(server, b);

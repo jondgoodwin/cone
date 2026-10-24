@@ -11,12 +11,11 @@ const sendChunk = 65536usize;         // the most one wire buffer carries
 // A TLS session as a byte-stream layer
 pub struct Stream is Move {
   s: Session;
-  pool: Pool;
   waiting: Chain;        // the protocol's bytes, until the handshake is done
   closeAsked: bool;
 
-  pub fn make(s: Session, pool: Pool) Stream {
-    Stream(s: s, pool: pool, waiting: Chain.make(0xFFFFFFFFFFFFFFFFusize), closeAsked: false)
+  pub fn make(s: Session) Stream {
+    Stream(s: s, waiting: Chain.make(0xFFFFFFFFFFFFFFFFusize), closeAsked: false)
   }
 
   // Its session: its info, its error
@@ -37,12 +36,7 @@ pub struct Stream is Move {
     self.flushWaiting();
     let n = s.pending();
     if n == 0usize {return IoBuf.empty();}
-    var b = IoBuf.empty();
-    match pool.take(if n < sendChunk {n} else {sendChunk}) {
-      case let Some(t) {b = t;}
-      case is None[IoBuf] {}
-    }
-    if b.capacity() == 0usize {return b;}
+    var b = IoBuf(if n < sendChunk {n} else {sendChunk});
     let got = s.transmit(b.spare());
     b.setLen(got);
     b
@@ -68,12 +62,7 @@ pub struct Stream is Move {
   // The next of the protocol's bytes that came, moved out; empty when none
   pub fn plainOut(self: &mut) IoBuf {
     if !s.canRead() {return IoBuf.empty();}
-    var b = IoBuf.empty();
-    match pool.take(recordPlain) {
-      case let Some(t) {b = t;}
-      case is None[IoBuf] {}
-    }
-    if b.capacity() == 0usize {return b;}
+    var b = IoBuf(recordPlain);
     let got = s.read(b.spare());
     if got == 0usize {return IoBuf.empty();}
     b.setLen(got);
@@ -130,7 +119,7 @@ pub struct Stream is Move {
   pub fn wantsCall(self: &) bool {s.wantsVerify()}
 
   // That work, as a pool operation
-  pub fn takeCall(self: &mut) Op {s.verifyOp(&pool)}
+  pub fn takeCall(self: &mut) Op {s.verifyOp()}
 
   // Its answer
   pub fn callDone(self: &mut, c: &mut Completion, now: Instant) {

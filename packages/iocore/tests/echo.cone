@@ -40,7 +40,6 @@ struct Report {
 }
 
 struct ServerArgs {
-  pub pool: Pool;
   pub portTx: Sender[u16];
 }
 
@@ -67,7 +66,7 @@ fn serve(a: ServerArgs) Report {
       if !c.isDone() {rep.notDone = rep.notDone + 1u64;}
       if c.token == 0u64 {
         conn = c.handle;
-        lp.submit(Op.Recv(conn, a.pool.mustTake(4096usize)), Target.Here(1u64));
+        lp.submit(Op.Recv(conn, IoBuf(4096usize)), Target.Here(1u64));
       } else if c.token == 1u64 {
         if c.count() == 0usize {
           open = false;
@@ -92,7 +91,6 @@ fn serve(a: ServerArgs) Report {
 }
 
 struct ClientArgs {
-  pub pool: Pool;
   pub port: u16;
 }
 
@@ -136,7 +134,7 @@ fn client(a: ClientArgs) Report {
   // Read tokens: 100 + the chunk's number
   var nextRead = 0u64;
   while nextRead < depth {
-    lp.submit(Op.ReadAt(fh, nextRead * chunk, a.pool.mustTake(usize.from(chunk))), Target.Here(100u64 + nextRead));
+    lp.submit(Op.ReadAt(fh, nextRead * chunk, IoBuf(usize.from(chunk))), Target.Here(100u64 + nextRead));
     nextRead = nextRead + 1u64;
   }
   lp.submit(Op.Connect(SocketAddr.localhost(a.port)), Target.Here(0u64));
@@ -166,7 +164,7 @@ fn client(a: ClientArgs) Report {
       } else if c.token == 0u64 {
         // Connected: the first message
         conn = c.handle;
-        var b = a.pool.mustTake(msgSize);
+        var b = IoBuf(msgSize);
         fillMsg(&mut b, 0u64);
         lp.submit(Op.Send(conn, b), Target.Here(1u64));
         sent = 1u64;
@@ -212,7 +210,7 @@ fn client(a: ClientArgs) Report {
 }
 
 // Write the file the client reads, through a loop of main's own
-fn writeFile(pool: &Pool) bool {
+fn writeFile() bool {
   var lp = Loop.mustMake();
   var fh = Handle.none();
   match lp.openFile("echo.tmp", Access.Create) {
@@ -225,7 +223,7 @@ fn writeFile(pool: &Pool) bool {
   var good = true;
   while at < fileSize || pending > 0u64 {
     while pending < 8u64 && at < fileSize {
-      var b = pool.mustTake(usize.from(chunk));
+      var b = IoBuf(usize.from(chunk));
       let room = b.whole();
       var j = 0usize;
       while j < room.len {
@@ -251,19 +249,18 @@ fn writeFile(pool: &Pool) bool {
 
 fn main() i32 {
   {
-    let pool = Pool.make();
-    require(writeFile(&pool), "the file written");
+    require(writeFile(), "the file written");
     var portTx: Sender[u16];
     var portRx: Receiver[u16];
     portTx, portRx = Channel[u16].make();
-    let server = thread.start(ServerArgs(pool, portTx), &serve);
+    let server = thread.start(ServerArgs(portTx), &serve);
     var port = 0u16;
     match portRx.recv() {
       case let Some(p) {port = p;}
       case is None[u16] {}
     }
     require(port != 0u16, "the server is listening");
-    let cl = thread.start(ClientArgs(pool, port), &client);
+    let cl = thread.start(ClientArgs(port), &client);
     let c = cl.join();
     let s = server.join();
 
@@ -276,7 +273,7 @@ fn main() i32 {
     expectUInt(s.counters.delivered, s.counters.submitted, "the server's loop: every operation answered once");
     expectUInt(c.counters.inFlight + s.counters.inFlight, 0u64, "nothing in flight on either");
     expect(c.counters.submitted >= 2u64 * messages + fileSize / chunk, "a send and a receive per message, a read per chunk");
-    let st = pool.stats();
+    let st = stats();
     expectUInt(st.lent, 0u64, "every buffer back in the pool");
     expectUInt(st.refused, 0u64, "no take refused");
   }

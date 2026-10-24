@@ -108,9 +108,8 @@ fn readText(name: &str) String {
 
 struct TlsMaker {
   server: tls.Server;
-  pool: Pool;
 
-  pub fn make(self: &mut) Uni[httpconn.Layer] {Uni[tls.Stream](server.stream(pool))}
+  pub fn make(self: &mut) Uni[httpconn.Layer] {Uni[tls.Stream](server.stream())}
 }
 
 struct ServerArgs {
@@ -133,18 +132,18 @@ fn portOf(drv: &mut httpconn.Driver, lp: &Loop, r: Result[httpconn.ListenerId, i
 }
 
 fn serveThread(a: ServerArgs) u64 {
-  let pool = Pool.make(268435456usize, 268435456usize);
+  setLimits(268435456usize, 268435456usize);
   var lp = Loop.mustMake();
   var cfg = httpconn.Config.make();
   cfg.acceptDepth = 64u32;
-  var drv = httpconn.Driver.make(cfg, pool);
+  var drv = httpconn.Driver.make(cfg);
   let plain = drv.listen(&mut lp, SocketAddr.localhost(0u16), httpconn.Sink.Here(1u64));
   a.portTx.send(portOf(&mut drv, &lp, plain));
   let serverPem = certs("server.pem");
   let serverKey = certs("server.key");
   match tls.Server.make(tls.ServerConfig.make(&serverPem, &serverKey)) {
     case let Ok(s) {
-      let secure = drv.listenWith(&mut lp, SocketAddr.localhost(0u16), Uni[TlsMaker](TlsMaker(s, pool)),
+      let secure = drv.listenWith(&mut lp, SocketAddr.localhost(0u16), Uni[TlsMaker](TlsMaker(s)),
         httpconn.Sink.Here(1u64));
       a.portTx.send(portOf(&mut drv, &lp, secure));
     }
@@ -163,7 +162,7 @@ fn serveThread(a: ServerArgs) u64 {
       let e = &mut evs[k];
       if e.kind == httpconn.EventKind.Request {
         drv.respond(e.req, ResponseHead.make(200u16), BodyLength.sized(64u64));
-        var b = pool.mustTake(64usize);
+        var b = IoBuf(64usize);
         b.setLen(64usize);
         drv.sendData(e.req, b);
         drv.finish(e.req);
@@ -263,12 +262,12 @@ fn tlsConfig() Config {
 }
 
 // A full handshake every time: each GET on a client of its own
-fn freshClients(lp: &mut Loop, pool: Pool, base: &str, n: u64) Run {
+fn freshClients(lp: &mut Loop, base: &str, n: u64) Run {
   var run = Run(n, Histogram.make(), 0u64, 0u64, Duration.zero(), 0u64, 0u64);
   let t0 = Instant.now();
   var k = 0u64;
   while k < n {
-    var cl = Client.make(tlsConfig(), pool);
+    var cl = Client.make(tlsConfig());
     let r = gets(&mut cl, lp, base, 1u64, 1u64, false);
     run.done = run.done + r.done;
     run.bad = run.bad + r.bad;
@@ -286,15 +285,15 @@ fn freshClients(lp: &mut Loop, pool: Pool, base: &str, n: u64) Run {
 // One at a time with the server on the client's own Loop and thread (its
 // driver handed its completions), to set beside httpconn's own one-thread
 // measurement: what the client adds to each request
-fn sameLoop(pool: Pool, n: u64) Run {
+fn sameLoop(n: u64) Run {
   var lp = Loop.mustMake();
-  var sdrv = httpconn.Driver.make(httpconn.Config.make(), pool);
+  var sdrv = httpconn.Driver.make(httpconn.Config.make());
   let l = sdrv.listen(&mut lp, SocketAddr.localhost(0u16), httpconn.Sink.Here(1u64));
   let port = portOf(&mut sdrv, &lp, l);
   var base = String.from("http://127.0.0.1:");
   base.appendUInt(u64.from(port));
   base.append("/x");
-  var cl = Client.make(Config.make(), pool);
+  var cl = Client.make(Config.make());
   var run = Run(n, Histogram.make(), 0u64, 0u64, Duration.zero(), 0u64, 0u64);
   var out = List[Event].empty();
   var sevs = List[httpconn.Event].empty();
@@ -327,7 +326,7 @@ fn sameLoop(pool: Pool, n: u64) Run {
       let e = &mut sevs[k];
       if e.kind == httpconn.EventKind.Request {
         sdrv.respond(e.req, ResponseHead.make(200u16), BodyLength.sized(64u64));
-        var b = pool.mustTake(64usize);
+        var b = IoBuf(64usize);
         b.setLen(64usize);
         sdrv.sendData(e.req, b);
         sdrv.finish(e.req);
@@ -383,15 +382,15 @@ fn settle(cl: &mut Client, lp: &mut Loop) {
 
 // n GETs at once, their connections then left idle in the pool: the
 // memory that took, printed
-fn fill(cl: &mut Client, lp: &mut Loop, pool: &Pool, base: &str, n: u32, label: &str) {
-  pool.trim();
+fn fill(cl: &mut Client, lp: &mut Loop, base: &str, n: u32, label: &str) {
+  trim();
   let before = privateBytes();
-  let lentBefore = pool.stats().heldBytes - pool.stats().idleBytes;
+  let lentBefore = stats().heldBytes - stats().idleBytes;
   let r = gets(cl, lp, base, u64.from(n), u64.from(n), false);
   settle(cl, lp);
-  pool.trim();
+  trim();
   let after = privateBytes();
-  let lentAfter = pool.stats().heldBytes - pool.stats().idleBytes;
+  let lentAfter = stats().heldBytes - stats().idleBytes;
   printStr(label);
   printStr(": ");
   printUInt(u64.from(cl.stats().idleNow));
@@ -409,21 +408,21 @@ fn fill(cl: &mut Client, lp: &mut Loop, pool: &Pool, base: &str, n: u32, label: 
 // Twice: first with the client's and the drivers' tables grown for them
 // (the connections' records, and the requests' for n at once), then again
 // with those tables already grown, their records reused
-fn idleMemory(lp: &mut Loop, pool: Pool, base: &str, n: u32, secure: bool) {
+fn idleMemory(lp: &mut Loop, base: &str, n: u32, secure: bool) {
   var cfg = if secure {tlsConfig()} else {Config.make()};
   cfg.maxPerOrigin = n;
   cfg.maxTotal = n;
-  var cl = Client.make(cfg, pool);
+  var cl = Client.make(cfg);
   // Warm: the pool's first blocks, a few records
   {
     var w = gets(&mut cl, lp, base, 64u64, 64u64, false);
   }
   cl.closeIdle(lp);
   settle(&mut cl, lp);
-  fill(&mut cl, lp, &pool, base, n, if secure {"TLS, tables grown for them"} else {"plain, tables grown for them"});
+  fill(&mut cl, lp, base, n, if secure {"TLS, tables grown for them"} else {"plain, tables grown for them"});
   cl.closeIdle(lp);
   settle(&mut cl, lp);
-  fill(&mut cl, lp, &pool, base, n, if secure {"TLS, tables already grown"} else {"plain, tables already grown"});
+  fill(&mut cl, lp, base, n, if secure {"TLS, tables already grown"} else {"plain, tables already grown"});
   var out = List[Event].empty();
   cl.abortAll(lp);
   cl.pump(lp, &mut out);
@@ -452,15 +451,15 @@ fn main() i32 {
   var secureUrl = String.from("https://127.0.0.1:");
   secureUrl.appendUInt(u64.from(secure));
   secureUrl.append("/x");
-  let pool = Pool.make(268435456usize, 268435456usize);
+  setLimits(268435456usize, 268435456usize);
   var lp = Loop.mustMake();
   printStr(tls.backendVersion() as &str);
   printStr("\n");
-  let one = sameLoop(pool, 20000u64);
+  let one = sameLoop(20000u64);
   report("plain, one thread (server on the client's loop), one at a time", &one);
 
   {
-    var cl = Client.make(Config.make(), pool);
+    var cl = Client.make(Config.make());
     gets(&mut cl, &mut lp, plainUrl.view(), 1000u64, 1u64, false);
     let a = gets(&mut cl, &mut lp, plainUrl.view(), 20000u64, 1u64, false);
     report("plain, warm, one at a time", &a);
@@ -471,7 +470,7 @@ fn main() i32 {
     cl.abortAll(&mut lp);
   }
   {
-    var cl = Client.make(tlsConfig(), pool);
+    var cl = Client.make(tlsConfig());
     gets(&mut cl, &mut lp, secureUrl.view(), 500u64, 1u64, false);
     let a = gets(&mut cl, &mut lp, secureUrl.view(), 20000u64, 1u64, false);
     report("TLS, warm, one at a time", &a);
@@ -481,11 +480,11 @@ fn main() i32 {
     report("TLS, cold: a new connection each, its session resumed", &c);
     cl.abortAll(&mut lp);
   }
-  let f = freshClients(&mut lp, pool, secureUrl.view(), 300u64);
+  let f = freshClients(&mut lp, secureUrl.view(), 300u64);
   report("TLS, cold: a new client each, a full handshake", &f);
 
-  idleMemory(&mut lp, pool, plainUrl.view(), 1000u32, false);
-  idleMemory(&mut lp, pool, secureUrl.view(), 200u32, true);
+  idleMemory(&mut lp, plainUrl.view(), 1000u32, false);
+  idleMemory(&mut lp, secureUrl.view(), 200u32, true);
 
   stop.store(true);
   srv.join();

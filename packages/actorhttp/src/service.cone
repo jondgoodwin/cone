@@ -119,7 +119,6 @@ const connBit = 0x100000000u64;
 // Everything the service thread keeps: its clients, its driver for the
 // connections a program makes itself, and what is awaited on those
 struct Service {
-  pool: Pool;
   clients: List[*ClientRec];
   drv: httpconn.Driver;
   conns: Slots[ConnRec];
@@ -127,9 +126,8 @@ struct Service {
   srvs: List[*SrvRec];           // the servers listening, each with a driver of its own
 
   fn make() Service {
-    let pool = Pool.make();
-    Service(pool: pool, clients: List[*ClientRec].empty(),
-      drv: httpconn.Driver.make(httpconn.Config.make(), pool), conns: Slots[ConnRec].make(),
+    Service(clients: List[*ClientRec].empty(),
+      drv: httpconn.Driver.make(httpconn.Config.make()), conns: Slots[ConnRec].make(),
       xwaits: Slots[Wait].make(), srvs: List[*SrvRec].empty())
   }
 
@@ -189,7 +187,7 @@ struct Service {
     var s = 0usize;
     while s < srvs.len() {
       let srec = self.srvAt(s) as &mut SrvRec;
-      pumpServer(srec, lp, pool);
+      pumpServer(srec, lp);
       let sw = srec.drv.wakeAt();
       if sw < limit {limit = sw;}
       s = s + 1usize;
@@ -376,17 +374,7 @@ struct Service {
     while w.sent < w.body.len() {
       let left = w.body.len() - w.sent;
       let n = if left < sendChunk {left} else {sendChunk};
-      var b = IoBuf.empty();
-      match pool.take(n) {
-        case let Some(s) {b = s;}
-        case is None[IoBuf] {}
-      }
-      if b.capacity() == 0usize {
-        // The pool refused: the request cannot be sent
-        w.tooBig = true;
-        drv.cancel(lp, w.req);
-        return;
-      }
+      var b = IoBuf(n);
       // As bytes: a piece may end inside a UTF-8 character, which a 'str' slice refuses
       let all = w.body.view() as &Array[u8];
       b.append(&all[w.sent ..< w.sent + n]);
@@ -527,7 +515,7 @@ struct CreateClientJob {
     let id, cfg, maxBody = self.(id, cfg, maxBody);
     let p = libc.malloc(mem.sizeof[ClientRec]()) as *ClientRec;
     if p as usize == 0usize {die("actorhttp: out of memory for a client");}
-    mem.writeRaw[ClientRec](p, ClientRec(id, 1u32, false, maxBody, httpclient.Client.make(cfg, sv.pool),
+    mem.writeRaw[ClientRec](p, ClientRec(id, 1u32, false, maxBody, httpclient.Client.make(cfg),
       Slots[Wait].make(), Slots[StreamRec].make()));
     sv.clients.push(p);
   }
@@ -605,7 +593,7 @@ struct ConnectJob {
     }
     match tls.Client.make(cfg) {
       case let Ok(t) {
-        c.conn = sv.drv.connectWith(lp, name.view(), port, Uni[tls.Stream](t.stream(name.view(), sv.pool)), sink);
+        c.conn = sv.drv.connectWith(lp, name.view(), port, Uni[tls.Stream](t.stream(name.view())), sink);
       }
       case let Error(x) {
         c.connecting = false;
