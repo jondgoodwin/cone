@@ -1,0 +1,291 @@
+// A read with no buffer: 's.read()' takes no IoBuf from the caller. The I/O side
+// waits for the connection with a zero-byte receive, holding nothing, and takes
+// a 4 KiB buffer (or 'readRoom''s) from the pools when bytes have come.
+//
+// A loopback pair, both ends actors. Client says its sends in order and
+// Server reads them with no buffer of its own:
+//
+//   a greeting of five bytes: one read, 4 KiB of room (the first read of a
+//     socket is a zero-byte one);
+//   10,000 bytes at once: three reads, none longer than the room;
+//   thirty small messages in a row, each read as it comes (the connection is
+//     calm: its reads take a buffer at once), then a silence: the next read
+//     began with a buffer, under a deadline of 80 ms; Client looks at the pool
+//     40 ms into it, long past the quiet time, and no byte is lent (the read
+//     gave its buffer up); it ends TimedOut at its deadline;
+//   a second read under a deadline, now on a quiet connection (it began
+//     without a buffer): TimedOut after its time;
+//   a read in a cancel group, cancelled while it waits: Cancelled;
+//   a read that waits through the rest of the silence and gets what Client
+//     sends after it;
+//   a read with 'readRoom(16384)': a 16 KiB buffer;
+//   the peer's close: a buffer of no bytes;
+//   a read on a socket that names nothing: an error.
+//
+// What each step found is kept in Got and checked by main once Server is done.
+
+mod readany;
+
+import testing use *;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import time use Duration, Instant;
+import iobuf use IoBuf;
+import iocore use SocketAddr, IoError, CancelGroup;
+import actors;
+import aio use Socket, IoLimits;
+
+struct Got {
+  pub first: Atomic[u64];        // the first read's length
+  pub firstRoom: Atomic[u64];    // and its buffer's capacity
+  pub bulkReads: Atomic[u64];    // the reads it took to get 10,000 bytes
+  pub bulkLongest: Atomic[u64];  // the longest of them
+  pub bulkBytes: Atomic[u64];
+  pub calmReads: Atomic[u64];    // thirty messages, each read whole
+  pub calmBytes: Atomic[u64];
+  pub lentDuring: Atomic[u64];   // the pool's lent bytes while Server's calm read had waited past the quiet time
+  pub afterSilence: Atomic[u64]; // what the read after the silence got
+  pub timedOut: Atomic[u64];     // 1 if a read under a deadline ended TimedOut
+  pub timedOutMs: Atomic[u64];   // after this many milliseconds
+  pub timedOutCalm: Atomic[u64]; // and the same, begun on a calm connection
+  pub timedOutCalmMs: Atomic[u64];
+  pub cancelled: Atomic[u64];    // 1 if a read in a cancelled group ended Cancelled
+  pub roomLen: Atomic[u64];
+  pub roomCap: Atomic[u64];      // the capacity of readRoom(16384)'s buffer
+  pub ended: Atomic[u64];        // 1 if the peer's close came as a buffer of no bytes
+  pub noSocket: Atomic[u64];     // 1 if a read on Socket.none() failed
+}
+
+let got: Got;
+
+fn @initpure init() {
+  got = Got(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
+
+fn socketOf(r: Result[Socket, IoError]) Socket {
+  var res = r;
+  var s = Socket.none();
+  match &mut res {
+    case var &mut Ok(ok) {s <-> *ok;}
+    else {}
+  }
+  s
+}
+
+// A buffer of n bytes, all set
+fn filled(n: usize) IoBuf {
+  var b = IoBuf(n);
+  b.setLen(n);
+  b
+}
+
+fn ms(since: Instant) u64 {
+  let n = since.elapsed().millis();
+  if n < 0i64 {0u64} else {u64.from(n)}
+}
+
+// How many bytes a read answered, or 999999 for an error
+fn lenOf(r: Result[IoBuf, IoError]) u64 {
+  match r {
+    case let Ok(b) {u64.from(b.len())}
+    else {999999u64}
+  }
+}
+
+actor Client {
+
+  pub async fn dial(self, port: u16) {
+    let c = await aio.connect(SocketAddr.localhost(port));
+    let s = socketOf(c);
+    var b = IoBuf(64usize);
+    b.append("hello");
+    let w1 = await s.write(b);
+    let pause1 = await aio.sleep(Duration.fromMillis(60i64));
+    let w2 = await s.write(filled(10000usize));
+    let pause2 = await aio.sleep(Duration.fromMillis(60i64));
+    // Thirty small messages, one at a time, as fast as they can be sent
+    var k = 0u64;
+    while k < 30u64 {
+      let w = await s.write(filled(100usize));
+      k = k + 1u64;
+    }
+    // Silence. Server's next read began calm, with a buffer; it gives it up
+    // when the quiet passes, long before this look at the pool, which finds
+    // no byte lent (nothing else here holds one)
+    let pause3 = await aio.sleep(Duration.fromMillis(40i64));
+    got.lentDuring.store(u64.from(iobuf.stats().lentBytes));
+    // Server reads under two deadlines and in a group meanwhile (220 ms)
+    let pause3b = await aio.sleep(Duration.fromMillis(300i64));
+    let w3 = await s.write(filled(50usize));
+    let pause4 = await aio.sleep(Duration.fromMillis(100i64));
+    let w4 = await s.write(filled(100usize));
+    let pause5 = await aio.sleep(Duration.fromMillis(100i64));
+    // and the peer's close
+  }
+}
+
+actor Server {
+
+  pub async fn serve(self, client: Client, done: OneshotSender[u64]) {
+    let l = await aio.listen(SocketAddr.localhost(0u16));
+    let ls = socketOf(l);
+    let a = await ls.localAddr();
+    var port = 0u16;
+    match a {
+      case let Ok(addr) {port = addr.port();}
+      else {}
+    }
+    client.dial(port);
+    let ac = await ls.accept();
+    let conn = socketOf(ac);
+
+    // The greeting
+    var r1 = await conn.read();
+    match &mut r1 {
+      case var &mut Ok(ok) {
+        var b = IoBuf.empty();
+        b <-> *ok;
+        got.first.store(u64.from(b.len()));
+        got.firstRoom.store(u64.from(b.capacity()));
+      }
+      else {}
+    }
+
+    // 10,000 bytes, in pieces no longer than the room
+    var bulk = 0u64;
+    var reads = 0u64;
+    var longest = 0u64;
+    while bulk < 10000u64 {
+      let r = await conn.read();
+      let n = lenOf(r);
+      if n == 999999u64 || n == 0u64 {bulk = 10000u64;} else {
+        bulk = bulk + n;
+        reads = reads + 1u64;
+        if n > longest {longest = n;}
+      }
+    }
+    got.bulkReads.store(reads);
+    got.bulkLongest.store(longest);
+    got.bulkBytes.store(bulk);
+
+    // Thirty messages of 100 bytes: they may arrive joined, so count bytes
+    var calm = 0u64;
+    var calmReads = 0u64;
+    while calm < 3000u64 {
+      let r = await conn.read();
+      let n = lenOf(r);
+      if n == 999999u64 || n == 0u64 {calm = 3000u64;} else {
+        calm = calm + n;
+        calmReads = calmReads + 1u64;
+      }
+    }
+    got.calmReads.store(calmReads);
+    got.calmBytes.store(calm);
+
+    // A deadline, on a connection that has just heard (calm): the read began
+    // with a buffer, gave it up at 2 ms, and ends TimedOut at the deadline
+    var t0 = Instant.now();
+    let rt = await conn.readIn(IoLimits.until(t0 + Duration.fromMillis(80i64)));
+    match rt {
+      case let Error(e) {if aio.isTimedOut(e) {got.timedOutCalm.store(1u64);}}
+      else {}
+    }
+    got.timedOutCalmMs.store(ms(t0));
+
+    // A deadline, on a connection that has been waiting for more than the
+    // quiet time (not calm): the read waits without a buffer from the start
+    t0 = Instant.now();
+    let rt2 = await conn.readIn(IoLimits.until(t0 + Duration.fromMillis(80i64)));
+    match rt2 {
+      case let Error(e) {if aio.isTimedOut(e) {got.timedOut.store(1u64);}}
+      else {}
+    }
+    got.timedOutMs.store(ms(t0));
+
+    // A group cancelled while the read waits
+    let g = CancelGroup.make();
+    selfactor.cancelLater(g);
+    let rc = await conn.readIn(IoLimits.within(g));
+    match rc {
+      case let Error(e) {if aio.isCancelled(e) {got.cancelled.store(1u64);}}
+      else {}
+    }
+
+    // A read that waits through the rest of the silence, answered by Client's
+    // 50 bytes
+    let r3 = await conn.read();
+    got.afterSilence.store(lenOf(r3));
+
+    // Room for 16 KiB
+    let rr = await conn.readRoom(16384usize);
+    match rr {
+      case let Ok(b) {
+        got.roomLen.store(u64.from(b.len()));
+        got.roomCap.store(u64.from(b.capacity()));
+      }
+      else {}
+    }
+
+    // The peer's close
+    let re = await conn.read();
+    match re {
+      case let Ok(b) {if b.len() == 0usize {got.ended.store(1u64);}}
+      else {}
+    }
+    // A socket that names nothing: the read fails at once, whichever way it began
+    let nothing = Socket.none();
+    let rn = await nothing.read();
+    match rn {
+      case is Error {got.noSocket.store(1u64);}
+      else {}
+    }
+    var d = done;
+    d.send(1u64);
+  }
+
+  pub async fn cancelLater(self, g: CancelGroup) {
+    let p = await aio.sleep(Duration.fromMillis(60i64));
+    g.cancel();
+  }
+}
+
+fn main() i32 {
+  initAll();
+  var tx: OneshotSender[u64];
+  var rx: OneshotReceiver[u64];
+  tx, rx = Oneshot[u64].make();
+  {
+    let client = Client();
+    let server = Server();
+    server.serve(client, tx);
+  }
+  match rx.recv() {
+    case is None[u64] {expect(false, "the server said it was done");}
+    else {}
+  }
+  finalAll();
+  expectUInt(got.first.load(), 5u64, "the greeting came whole");
+  expectUInt(got.firstRoom.load(), 4096u64, "in a 4 KiB buffer the I/O side took");
+  expectUInt(got.bulkBytes.load(), 10000u64, "10,000 bytes came");
+  expect(got.bulkReads.load() >= 3u64, "in at least three reads");
+  expect(got.bulkLongest.load() <= 4096u64, "none longer than the room");
+  expectUInt(got.calmBytes.load(), 3000u64, "thirty messages came");
+  expect(got.calmReads.load() >= 1u64, "and were read");
+  expectUInt(got.lentDuring.load(), 0u64, "a read that began calm holds no buffer once the quiet has passed");
+  expectUInt(got.afterSilence.load(), 50u64, "and still gets what comes after it");
+  expectUInt(got.timedOutCalm.load(), 1u64, "a read begun calm ends TimedOut at its deadline");
+  expect(got.timedOutCalmMs.load() >= 70u64 && got.timedOutCalmMs.load() < 400u64, "after its time");
+  expectUInt(got.timedOut.load(), 1u64, "and a read begun quiet does");
+  expect(got.timedOutMs.load() >= 70u64 && got.timedOutMs.load() < 400u64, "after its time");
+  expectUInt(got.cancelled.load(), 1u64, "a read in a group cancelled while it waits ends Cancelled");
+  expectUInt(got.roomLen.load(), 100u64, "readRoom took the next message");
+  expectUInt(got.roomCap.load(), 16384u64, "into a 16 KiB buffer");
+  expectUInt(got.ended.load(), 1u64, "the peer's close is a buffer of no bytes");
+  expectUInt(got.noSocket.load(), 1u64, "a read on a socket that names nothing fails");
+  let st = iobuf.stats();
+  expectUInt(st.lent, 0u64, "every buffer is home");
+  done()
+}

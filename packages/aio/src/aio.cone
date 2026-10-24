@@ -45,6 +45,10 @@
 //   s.accept()              the next connection on a listening s  Result[Socket, IoError]
 //   s.read(buf)             what arrives, appended to buf, an IoBuf moved in
 //                                                                Result[IoBuf, IoError]
+//   s.read()                what arrives, in a buffer the I/O side takes: none is
+//                           held while it waits                   Result[IoBuf, IoError]
+//   s.read(room)            the same, the buffer with room for at least 'room' bytes (a usize)
+//                                                                (READS WITH NO BUFFER)
 //   s.write(buf)            all of buf, an IoBuf moved in         Result[usize, IoError]
 //   s.localAddr()           the address s is bound to            Result[SocketAddr, IoError]
 //   aio.openFile(path, access)  a file, opened with iocore's Access   Result[File, IoError]
@@ -60,6 +64,9 @@
 //   f.readAtIn(at, buf, lim)  f.writeAtIn(at, buf, lim)
 //   u.recvFromIn(buf, lim)  u.sendToIn(addr, buf, lim)
 //                           the same eight, limited by lim, a IoLimits    (CANCEL AND DEADLINES)
+//   s.readIn(lim)  s.readIn(room, lim)
+//                           the two reads with no buffer, limited by lim
+//   aio.setReadQuiet(d)     how long a read with no buffer may hold one (2 ms)
 //   IoLimits.none()  IoLimits.until(deadline)  IoLimits.within(group)  IoLimits(group, deadline)
 //   aio.sleep(d)  aio.sleepUntil(at)   a pause of d (a Duration) / until at (an Instant)
 //                                                                Result[void, IoError]
@@ -95,6 +102,48 @@
 // success is the count written, all of the buffer, which goes home. Accept's,
 // connect's and listen's is the new Socket, which comes out of the Result by
 // matching it: 'case let Ok(s)'.
+//
+// READS WITH NO BUFFER. 's.read()' is a read whose caller holds no buffer, and
+// the connection holds none while it waits for the other end to speak: a
+// thousand idle connections pin no memory, where a thousand 'read(IoBuf(4096))'
+// pin 4 MiB (and the kernel locks the pages). The I/O side takes the buffer,
+// from the pools, when bytes have come: 4 KiB, or the room 's.read(room)' asks
+// for (a layer over aio that reads TLS records asks for 16 KiB; aio itself
+// knows nothing of TLS). It comes back in the answer as a read's does, its
+// length the bytes that arrived; at the clean end of the stream it is empty,
+// and a buffer is never taken for a failed read. A read's bytes are the same
+// either way; only when the buffer is taken differs, and so does the cost.
+//
+// Two ways to wait, and which one is chosen. WAITING WITHOUT A BUFFER is
+// iocore's Op.RecvReady, a zero-byte receive: it ends when bytes are there (or
+// the stream has ended), then a Recv with a buffer takes them. It costs a
+// second trip through the system per read (iocore measured about 4 us more a
+// round trip, 19 us against 15). WAITING WITH ONE is a Recv with a buffer
+// started at once, which is the cheaper path when bytes are already coming.
+// A read chooses by the socket's last: if its last read with no buffer was
+// answered less than 'setReadQuiet' (2 ms) after it was started, the socket is
+// CALM and this read takes a buffer at once; otherwise it waits without one. A
+// socket's first read has no last, and waits without. And a read that began
+// with a buffer and has waited the quiet time without a byte gives the buffer
+// up (the receive is ended by a deadline of the quiet time, and begun again as
+// a zero-byte one), so that a connection that was busy and has gone quiet pins
+// nothing from then on, and its next read waits without a buffer. The most
+// buffers pinned at once are those of the reads that began calm in the last
+// quiet time. The hint is kept per socket by the slot and generation of its
+// iocore handle, in a table of the I/O thread's, a few bytes a socket.
+// 'setReadQuiet' with a zero Duration makes every read wait without a buffer;
+// with a long one a socket's reads after its first take one at once.
+// 'read(buf)' is neither: the caller's buffer is in flight from the start, as
+// before.
+//
+// The reads' state lives on the I/O thread: a record for each read in flight,
+// whose address is the token of the iocore operation (answered to the I/O
+// thread itself, Target.Here, and not by a hook), advanced from one operation
+// to the next there. A read ended by a cancel, a deadline (the caller's, or
+// its group's) or its socket's closing is answered as every operation is,
+// exactly once; one still waiting when the program ends is abandoned like any
+// awaited operation (THE PROGRAM'S END). The caller's deadline bounds the
+// whole read, both of its operations.
 //
 // CANCEL AND DEADLINES. An operation is answered exactly once, as in iocore:
 // Done (the Result's success), Failed (its error, the system's code),
@@ -289,6 +338,11 @@
 //  - A start failure is an IoError with the system's number (Windows') on both
 //    systems; iocore has one function more for it, 'systemCode', which turns an
 //    errno into that number.
+//  - A read with no buffer ('read()') is two operations, a RecvReady and a Recv,
+//    advanced on the I/O thread when the first is answered to it (the loop
+//    forbids a hook to call back into the loop); the quiet time is 2 ms, the
+//    room 4 KiB, and "calm" is "the socket's last such read was answered within
+//    the quiet time" (READS WITH NO BUFFER). None of these was ruled on.
 //  - 'stat' and 'resolve' make their buffer for the call, not
 //    one the caller passes; 'resolve' has the port as its second parameter
 //    with a default of 0, and gives a List, whole.
@@ -321,6 +375,7 @@ fn @initpure init() {
   ioLock = Mutex.make();
   io = Atomic[usize].of(0usize);
   ended = Atomic[bool].of(false);
+  readQuiet = Atomic[i64].of(2000000i64);
 }
 
 // A panic, reported at the line calling 'die'
@@ -356,6 +411,8 @@ struct IoThread {
   pub waker: Waker;
   pub ready: Atomic[u32];       // 1 once the thread has put its waker here
   pub os: thread.Thread[u32];
+  pub reads: *ReadState;        // the I/O thread's, never touched by another: the reads with no buffer in flight
+  pub hints: *List[u64];        // the I/O thread's: per socket, whether its reads come quickly (READS WITH NO BUFFER)
 }
 
 // Guards the queue, 'io' and 'ended'
@@ -461,13 +518,14 @@ fn ioMain(arg: IoArg) u32 {
     let me = arg.t as *IoThread;
     var lp = Loop.mustMake();
     mem.writeRaw[Waker](&(*me).waker as *Waker, lp.waker());
+    var hints = List[u64].empty();
+    (*me).hints = &mut hints as *List[u64];
     (*me).ready.store(1u32);
     sync.futexWake(&(*me).ready);
     var out = List[Completion].empty();
     var more = true;
     while more {
       lp.poll(forever(), &mut out);
-      out.clear();
       ioLock.lock();
       let t = io.load() as *IoThread;
       var h = nullJob();
@@ -478,6 +536,8 @@ fn ioMain(arg: IoArg) u32 {
       }
       let stop = ended.load();
       ioLock.unlock();
+      // The answers that came to this thread itself: the reads with no buffer
+      readsDone(me, &mut lp, &mut out, stop);
       while h as usize != 0usize {
         let next = (*h).next;
         if stop {
@@ -490,6 +550,9 @@ fn ioMain(arg: IoArg) u32 {
       }
       more = !stop;
     }
+    // A read still waiting is abandoned, as every awaited operation is: its
+    // reply is dropped, letting go of the actor that awaits it
+    dropReads(me);
     abandoning = true;
   }
   0u32
@@ -598,15 +661,243 @@ struct OpJob[R] {
 // Start an operation on the I/O thread's Loop, in the group lim names if it
 // names one, bounded by its deadline if it has one
 fn submitLimited(lp: &mut Loop, o: Op, to: Target, lim: &IoLimits) {
+  submitLimitedBy(lp, o, to, lim, lim.deadline);
+}
+
+// The same with a deadline of the caller's choosing in place of lim's (the
+// tighter of the two, which the caller has found)
+fn submitLimitedBy(lp: &mut Loop, o: Op, to: Target, lim: &IoLimits, deadline: Instant) {
   match lim.group {
-    case let Some(g) {lp.submitIn(o, to, g, lim.deadline);}
+    case let Some(g) {lp.submitIn(o, to, g, deadline);}
     else {
-      if lim.deadline < forever() {
-        lp.submitBy(o, to, lim.deadline);
+      if deadline < forever() {
+        lp.submitBy(o, to, deadline);
       } else {
         lp.submit(o, to);
       }
     }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Reads that hold no buffer while they wait (the package's header, READS WITH
+// NO BUFFER)
+// ---------------------------------------------------------------------------
+
+// The room a read with no buffer of its own is given when it names none: the
+// pool's smallest block
+fn defaultRoom() usize {4096usize}
+
+// A read that holds a buffer gives it up if no byte has come in this long (2
+// ms by default), and waits with a zero-byte receive instead; a socket whose
+// last read came in less than this is "calm", and its next read takes a buffer
+// at once. Read by the I/O thread, set by 'setReadQuiet' (an atomic held by a
+// 'let' global, set in 'init')
+let readQuiet: Atomic[i64];
+
+fn quietNanos() i64 {readQuiet.load()}
+
+// Set how long a read with no buffer may hold one before giving it up (the
+// package's header, READS WITH NO BUFFER): zero makes every such read wait
+// with a zero-byte receive, a long time makes a socket's reads take a buffer
+// at once after its first. Affects reads started from now on
+pub fn setReadQuiet(d: Duration) {
+  readQuiet.store(d.nanos());
+}
+
+// Where a read is: a zero-byte receive is outstanding; a receive with a
+// buffer, started at once, is; the receive with a buffer that takes what the
+// zero-byte one said had come
+fn stageReady() u32 {0u32}
+fn stageStraight() u32 {1u32}
+fn stageTake() u32 {2u32}
+
+// The largest handle slot the hints keep
+fn hintBound() usize {16777216usize}
+
+// A read with no buffer, in flight on the I/O thread. Its address is the token
+// of the iocore operation it is in, which answers to the I/O thread itself
+// (Target.Here); the thread finishes or advances the read when the answer comes
+struct ReadState {
+  pub prev: *ReadState;
+  pub next: *ReadState;
+  pub reply: actors.Reply;
+  pub limits: IoLimits;
+  pub h: Handle;
+  pub room: usize;
+  pub stage: u32;
+  pub since: i64;          // the steady clock when the operation now outstanding was started
+  pub ours: bool;          // its deadline is quietNanos', tighter than the caller's
+}
+
+fn nullRead() *ReadState {null}
+
+fn linkRead(t: *IoThread, p: *ReadState) {
+  let head = (*t).reads;
+  (*p).prev = nullRead();
+  (*p).next = head;
+  if head as usize != 0usize {
+    (*head).prev = p;
+  }
+  (*t).reads = p;
+}
+
+fn unlinkRead(t: *IoThread, p: *ReadState) {
+  let before = (*p).prev;
+  let after = (*p).next;
+  if before as usize != 0usize {
+    (*before).next = after;
+  } else {
+    (*t).reads = after;
+  }
+  if after as usize != 0usize {
+    (*after).prev = before;
+  }
+}
+
+fn freeRead(p: *ReadState) {
+  mem.finalize[ReadState](p);
+  libc.free(p as *u8);
+}
+
+// The I/O thread is ending: every read still waiting is dropped, its reply
+// with it
+fn dropReads(t: *IoThread) {
+  var p = (*t).reads;
+  (*t).reads = nullRead();
+  while p as usize != 0usize {
+    let next = (*p).next;
+    freeRead(p);
+    p = next;
+  }
+}
+
+// Whether the socket's last read came in quickly (a hint, kept by the slot
+// of the loop's table the socket's handle names, and the handle's generation,
+// so that a later socket in the slot starts without one)
+fn calmHint(t: *IoThread, h: Handle) bool {
+  let slot = usize.from(h.slot());
+  let hints = (*t).hints as &mut List[u64];
+  if h.isNone() || slot >= hints.len() {
+    return false;
+  }
+  let e = *hints[slot];
+  (e >> 1u64) == u64.from(h.generation()) && (e & 1u64) == 1u64
+}
+
+fn setHint(t: *IoThread, h: Handle, calm: bool) {
+  let slot = usize.from(h.slot());
+  if h.isNone() || slot >= hintBound() {
+    return;
+  }
+  let hints = (*t).hints as &mut List[u64];
+  while hints.len() <= slot {
+    hints.push(0u64);
+  }
+  var bit = 0u64;
+  if calm {
+    bit = 1u64;
+  }
+  hints.set(slot, (u64.from(h.generation()) << 1u64) | bit);
+}
+
+// Start the read's next operation, in the stage given, on the I/O thread's
+// Loop, its answer to this thread
+fn issueRead(t: *IoThread, lp: &mut Loop, p: *ReadState, stage: u32) {
+  (*p).stage = stage;
+  (*p).ours = false;
+  let now = Instant.now();
+  (*p).since = now.nanos();
+  let to = Target.Here(u64.from(p as usize));
+  let h = (*p).h;
+  if stage == stageReady() {
+    submitLimited(lp, Op.RecvReady(h), to, &(*p).limits);
+  } else if stage == stageStraight() {
+    var until = (*p).limits.deadline;
+    let soon = now + Duration.fromNanos(quietNanos());
+    if soon < until {
+      until = soon;
+      (*p).ours = true;
+    }
+    submitLimitedBy(lp, Op.Recv(h, IoBuf((*p).room)), to, &(*p).limits, until);
+  } else {
+    submitLimited(lp, Op.Recv(h, IoBuf((*p).room)), to, &(*p).limits);
+  }
+}
+
+// An answer to one of the reads' operations, on the I/O thread
+fn readDone(t: *IoThread, lp: &mut Loop, c: Completion, stop: bool) {
+  var done = c;
+  if done.token == 0u64 {
+    return;
+  }
+  let p = usize.from(done.token) as *ReadState;
+  if stop {
+    unlinkRead(t, p);
+    freeRead(p);
+    return;
+  }
+  let stage = (*p).stage;
+  if stage == stageReady() && done.status == diag.outcomeDone {
+    // Bytes have come: take them, with a buffer made now. Came quickly or not,
+    // the socket's next read starts in the mode that suits
+    let waited = Instant.now().nanos() - (*p).since;
+    setHint(t, (*p).h, waited < quietNanos());
+    issueRead(t, lp, p, stageTake());
+    return;
+  }
+  if stage == stageStraight() {
+    if done.status == diag.outcomeTimedOut && (*p).ours {
+      // Quiet: the buffer goes home, and the read waits without one
+      setHint(t, (*p).h, false);
+      issueRead(t, lp, p, stageReady());
+      return;
+    }
+    if done.status == diag.outcomeDone {
+      setHint(t, (*p).h, true);
+    }
+  }
+  unlinkRead(t, p);
+  let v = readAnswer(&mut done);
+  var back = actors.Reply();
+  back <-> (*p).reply;
+  freeRead(p);
+  actors.answerNow[Result[IoBuf, IoError]](back, v);
+}
+
+// The answers that came to the I/O thread itself (nothing else here asks for
+// one): each is a read's
+fn readsDone(t: *IoThread, lp: &mut Loop, out: &mut List[Completion], stop: bool) {
+  var more = true;
+  while more {
+    match out.pop() {
+      case var Some(c) {readDone(t, lp, c, stop);}
+      else {more = false;}
+    }
+  }
+}
+
+// A read with no buffer, to start on the I/O thread's Loop
+struct ReadJob {
+  pub h: Handle;
+  pub room: usize;
+  pub limits: IoLimits;
+  pub reply: actors.Reply;
+
+  fn run(self, lp: &mut Loop) {
+    let h, room, limits, rp = self.(h, room, limits, reply);
+    let t = io.load() as *IoThread;
+    let p = libc.malloc(mem.sizeof[ReadState]()) as *ReadState;
+    if p as usize == 0usize {
+      die("aio: out of memory for a read");
+    }
+    mem.writeRaw[ReadState](p, ReadState(nullRead(), nullRead(), rp, limits, h, room, stageReady(), 0i64, false));
+    linkRead(t, p);
+    var first = stageReady();
+    if calmHint(t, h) {
+      first = stageStraight();
+    }
+    issueRead(t, lp, p, first);
   }
 }
 
@@ -961,13 +1252,38 @@ pub struct Socket is Move {
   // What arrives, appended to buf, which is moved in and comes back in the
   // answer; at the clean end of the stream, buf comes back as it was. A buf
   // with no room fails (ERROR_INSUFFICIENT_BUFFER, 122)
-  pub fn read(self: &, buf: IoBuf) actors.Awaitable[Result[IoBuf, IoError]] {
-    self.readIn(buf, IoLimits.none())
+  pub fn readBuf overload read(self: &, buf: IoBuf) actors.Awaitable[Result[IoBuf, IoError]] {
+    self.readBufIn(buf, IoLimits.none())
   }
 
   // A read ended if lim says so; then the buffer goes home to its pool
-  pub fn readIn(self: &, buf: IoBuf, lim: IoLimits) actors.Awaitable[Result[IoBuf, IoError]] {
+  pub fn readBufIn overload readIn(self: &, buf: IoBuf, lim: IoLimits) actors.Awaitable[Result[IoBuf, IoError]] {
     opAwaitable[Result[IoBuf, IoError]](Op.Recv(h, buf), &readAnswer, lim)
+  }
+
+  // What arrives, in a buffer the I/O side takes: the caller holds none, and
+  // none is held while the read waits for the connection to be heard from
+  // (the package's header, READS WITH NO BUFFER). The buffer is 4 KiB and
+  // comes back in the answer like a read's; at the clean end of the stream it
+  // comes back empty
+  pub fn readAny overload read(self: &) actors.Awaitable[Result[IoBuf, IoError]] {
+    self.readAnyIn(IoLimits.none())
+  }
+
+  // A read with no buffer, ended if lim says so
+  pub fn readAnyIn overload readIn(self: &, lim: IoLimits) actors.Awaitable[Result[IoBuf, IoError]] {
+    self.readRoomIn(defaultRoom(), lim)
+  }
+
+  // A read with no buffer, the buffer made with room for at least 'room'
+  // bytes (the pools' block that fits): for a layer that knows what it wants,
+  // a TLS session's record is 16 KiB
+  pub fn readRoom overload read(self: &, room: usize) actors.Awaitable[Result[IoBuf, IoError]] {
+    self.readRoomIn(room, IoLimits.none())
+  }
+
+  pub fn readRoomIn overload readIn(self: &, room: usize, lim: IoLimits) actors.Awaitable[Result[IoBuf, IoError]] {
+    awaitable[ReadJob, Result[IoBuf, IoError]](ReadJob(h, room, lim, actors.Reply()))
   }
 
   // All of buf, which is moved in and goes home once sent: the count
