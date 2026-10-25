@@ -349,7 +349,16 @@ fn waitPush(lp: &mut Loop, i: u32, side: u32) {
 fn waitUnlink(lp: &mut Loop, i: u32) {
   let r = lp.recAt(i) as &mut Rec;
   if r.side == sideNone {return;}
-  let e = lp.handles.at(r.sock.index) as &mut HEntry;
+  // A closed handle's entry is gone, and its queue went with it (close
+  // empties it first)
+  let p = lp.handles.at(r.sock.index);
+  if p as usize == 0usize {
+    r.side = sideNone;
+    r.waitNext = noEntry;
+    r.waitPrev = noEntry;
+    return;
+  }
+  let e = p as &mut HEntry;
   let prev = r.waitPrev;
   let next = r.waitNext;
   if r.side == sideRecv {
@@ -577,11 +586,14 @@ fn lxTry(lp: &mut Loop, i: u32, at: Instant) u32 {
 }
 
 // Try the operations waiting on one side of entry ei, in order, until one
-// would block
+// would block, or one closes the handle (a failed connect does: its entry is
+// then gone)
 fn lxRun(lp: &mut Loop, ei: u32, side: u32, at: Instant) {
   if isWindows() {return;}
   while true {
-    let head = if side == sideRecv {(*lp.handles.at(ei)).recvHead} else {(*lp.handles.at(ei)).sendHead};
+    let e = lp.handles.at(ei);
+    if e as usize == 0usize {break;}
+    let head = if side == sideRecv {(*e).recvHead} else {(*e).sendHead};
     if head == noEntry {break;}
     if lxTry(lp, head, at) == triedWait {break;}
   }
