@@ -1,0 +1,47 @@
+// A reply answered twice in place, by answerLentIn: the first leaves the Reply
+// spent, and the second answerLentIn panics ("actors: a reply answered twice")
+// before it takes the value. See inplacetwice, the same with answerNowIn; its
+// .exit is a panic's.
+
+mod inplacetwicelent;
+
+import stdio use *;
+import libc;
+import actors;
+
+struct Rec {
+  pub reply: actors.Reply;
+  pub v: u64;
+}
+
+fn takeU(p: *u8, to: *u8) {
+  mem.writeRaw[u64](to as *u64, mem.readRaw[u64](p as *u64));
+}
+
+fn run(ctx: *u8, rp: actors.Reply) {
+  let r = ctx as *Rec;
+  mem.writeRaw[Rec](r, Rec(rp, 5u64));
+  actors.answerLentIn[u64](&mut (*r).reply, &mut (*r).v as *u64, &takeU);
+  printStr("answered once\n");
+  actors.answerLentIn[u64](&mut (*r).reply, &mut (*r).v as *u64, &takeU);
+  printStr("not reached\n");
+}
+
+fn dropIt(ctx: *u8) {}
+
+actor Asker {
+  pub async fn go(self, place: usize) {
+    let v = await actors.Awaitable[u64].of(place as *u8, &run, &dropIt);
+    printStr("not reached either\n");
+  }
+}
+
+fn main() {
+  initAll();
+  actors.configure(actors.Options(workers: 2u32));
+  let place = libc.malloc(mem.sizeof[Rec]());
+  let a = Asker();
+  a.go(place as usize);
+  actors.waitUntilIdle();
+  printStr("not reached: main\n");
+}
