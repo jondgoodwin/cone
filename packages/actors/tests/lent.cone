@@ -1,0 +1,172 @@
+// An operation that allocates nothing: Awaitable.of, a context word and two plain
+// functions, and an answer LENT from where it was written (answerLent), which the
+// awaiting actor's worker takes out and lets go before its behaviour goes on.
+//
+// The "place" here is a block the test keeps for the operation's answer, as the aio
+// package's record keeps one for a socket's: the operation writes the answer in it,
+// answers with answerLent(rp, place, take), and 'take' moves it to the worker's
+// own place and marks the block free. What is checked:
+//
+// - a value too large for a slot (Big, 40 bytes) is lent, not boxed: the actors
+//   package allocates nothing for it (messageAllocs does not grow), and the block
+//   is free ("take") BEFORE the second half runs, so the second half may start the
+//   next operation on the same block (it does: a loop of three);
+// - a value that fits a slot (u64) is moved into the slot and the block is free at
+//   once;
+// - an Awaitable made with Awaitable.of and never awaited calls 'drop' once and
+//   never 'run';
+// - Awaitable.make, the closure form, goes on working beside it;
+// - an answer lent to a reply that wants none (a Reply() made by hand) is taken
+//   and dropped, the block free.
+
+mod lent;
+
+import stdio use *;
+import libc;
+import actors;
+
+fn say(s: &str, n: u64) {printStr(s); printStr(" "); printUInt(n); printStr("\n");}
+
+// Counts: how often 'take' freed a block, 'run' started, 'drop' was called
+let taken: Atomic[u64];
+let started: Atomic[u64];
+let dropped: Atomic[u64];
+
+fn @initpure init() {
+  taken = Atomic[u64].of(0u64);
+  started = Atomic[u64].of(0u64);
+  dropped = Atomic[u64].of(0u64);
+}
+
+struct Big {
+  pub a: u64;
+  pub b: u64;
+  pub c: u64;
+  pub d: u64;
+  pub e: u64;
+}
+
+// A value with a finalizer, to see that a lent value dropped unclaimed is finalized once
+struct Mortal is Move {
+  pub n: u64;
+  fn final(self: &uni) {say("  mortal died", n);}
+}
+
+fn takeBig(p: *u8, to: *u8) {
+  mem.writeRaw[Big](to as *Big, mem.readRaw[Big](p as *Big));
+  taken.add(1u64);
+}
+
+fn takeU(p: *u8, to: *u8) {
+  mem.writeRaw[u64](to as *u64, mem.readRaw[u64](p as *u64));
+  taken.add(1u64);
+}
+
+fn takeMortal(p: *u8, to: *u8) {
+  mem.writeRaw[Mortal](to as *Mortal, mem.readRaw[Mortal](p as *Mortal));
+  taken.add(1u64);
+}
+
+// The operation: 'ctx' is its block, a malloc'd place big enough for any of the answers
+fn startBig(ctx: *u8, rp: actors.Reply) {
+  started.add(1u64);
+  let n = started.load();
+  mem.writeRaw[Big](ctx as *Big, Big(n, n * 2u64, n * 3u64, n * 4u64, n * 5u64));
+  actors.answerLent[Big](rp, ctx as *Big, &takeBig);
+}
+
+fn startU(ctx: *u8, rp: actors.Reply) {
+  started.add(1u64);
+  mem.writeRaw[u64](ctx as *u64, 77u64);
+  actors.answerLent[u64](rp, ctx as *u64, &takeU);
+}
+
+fn dropIt(ctx: *u8) {
+  dropped.add(1u64);
+}
+
+fn bigOp(place: *u8) actors.Awaitable[Big] {actors.Awaitable[Big].of(place, &startBig, &dropIt)}
+fn uOp(place: *u8) actors.Awaitable[u64] {actors.Awaitable[u64].of(place, &startU, &dropIt)}
+
+// The closure form, beside the new one
+fn closureOp(v: u64) actors.Awaitable[u64] {
+  actors.Awaitable[u64].make(fn(rp: actors.Reply) [v] {
+    actors.answerNow[u64](rp, v);
+  })
+}
+
+fn closureBig(v: u64) actors.Awaitable[Big] {
+  actors.Awaitable[Big].make(fn(rp: actors.Reply) [v] {
+    actors.answerNow[Big](rp, Big(v, v, v, v, v));
+  })
+}
+
+actor Prober {
+  pub async fn go(self, place: usize) {
+    let p = place as *u8;
+    // A large value, lent: the block is free when the second half runs, so the
+    // loop starts the next operation on it
+    var i = 0u64;
+    while i < 3u64 {
+      let freedBefore = taken.load();
+      let v = await bigOp(p);
+      say("big: a", v.a);
+      say("big: e", v.e);
+      say("big: block free by now", taken.load() - freedBefore);
+      i = i + 1u64;
+    }
+    // The mailbox is warm now: three more lent answers allocate nothing, three
+    // closure-form answers of the same size are boxed, one allocation each
+    i = 0u64;
+    while i < 8u64 {
+      let v = await bigOp(p);
+      i = i + 1u64;
+    }
+    let before = actors.messageAllocs();
+    i = 0u64;
+    while i < 3u64 {
+      let v = await bigOp(p);
+      i = i + 1u64;
+    }
+    say("allocations for three lent answers", actors.messageAllocs() - before);
+    let beforeBoxed = actors.messageAllocs();
+    i = 0u64;
+    while i < 3u64 {
+      let v = await closureBig(i);
+      i = i + 1u64;
+    }
+    say("allocations for three boxed answers", actors.messageAllocs() - beforeBoxed);
+    // A small value: moved into the slot, the block free at once
+    let u = await uOp(p);
+    say("small", u);
+    say("small: taken in all", taken.load());
+    // The closure form
+    let c = await closureOp(5u64);
+    say("closure", c);
+    // An Awaitable made and not awaited: dropped once, never run
+    let startsBefore = started.load();
+    {
+      let unused = bigOp(p);
+    }
+    say("unawaited: dropped", dropped.load());
+    say("unawaited: started", started.load() - startsBefore);
+    say("go done", 0u64);
+  }
+}
+
+fn main() {
+  initAll();
+  let place = libc.malloc(64usize);
+  {
+    let pr = Prober();
+    pr.go(place as usize);
+  }
+  finalAll();
+  // A lent answer to a reply that wants none (made by hand, never sent): taken and dropped
+  let takenBefore = taken.load();
+  mem.writeRaw[Mortal](place as *Mortal, Mortal(4u64));
+  actors.answerLent[Mortal](actors.Reply(), place as *Mortal, &takeMortal);
+  say("unwanted: block free", taken.load() - takenBefore);
+  libc.free(place);
+  say("end", 0u64);
+}

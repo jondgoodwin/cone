@@ -299,7 +299,12 @@
 // the operation's start function (startAwait), which arranges for whatever
 // finishes the operation, on whatever thread, to write the R into it as
 // answerNow does; the reply then resumes the behaviour as any reply does. The
-// 'await''s value is the R as the operation declared it.
+// 'await''s value is the R as the operation declared it. An operation is made
+// from a closure (Awaitable.make: the closure is a block of its own) or from a
+// context word and two plain functions (Awaitable.of: nothing is allocated);
+// and an answer too large for a slot need not be boxed if the operation keeps
+// a place of its own for it: answerLent (LENT ANSWERS, below), which is how the
+// aio package answers a socket's read with no allocation at all.
 //
 // FUTURES. A call of a behaviour returning a T whose value is kept, 'imm fut =
 // peer.count()', sends the request awaited at once and gives a Future[T]: the
@@ -2289,6 +2294,13 @@ struct Put {
 }
 
 fn replyPrep(r: &Reply) Put {
+  replyPrepLent(r, null, null)
+}
+
+// The same, for a value that is already written elsewhere and stays there
+// (LENT ANSWERS, below): where the value goes in the slot is then the pair
+// 'lent' + 1 and the function that lets go of it, in place of a box
+fn replyPrepLent(r: &Reply, lent: *u8, release: *u8) Put {
   let h = r.to;
   let c = claim(h);
   var cause = 0u64;
@@ -2303,15 +2315,21 @@ fn replyPrep(r: &Reply) Put {
   if (r.meta & replyHasId) != 0u64 {kind = kind + 1u64;}
   var at = p + replyHead;
   if (r.meta & replyBoxed) != 0u64 {
-    var size = usize.from(r.meta / 8u64);
-    if size == 0usize {size = 1usize;}
-    let box = libc.malloc(size);
-    if box as usize == 0usize {
-      die("actors: out of memory for a reply");
+    if lent as usize != 0usize {
+      *(at as **u8) = ((lent as usize) + 1usize) as *u8;
+      *((at + 8usize) as **u8) = release;
+      at = lent;
+    } else {
+      var size = usize.from(r.meta / 8u64);
+      if size == 0usize {size = 1usize;}
+      let box = libc.malloc(size);
+      if box as usize == 0usize {
+        die("actors: out of memory for a reply");
+      }
+      boxAllocs.addOrdered(1u64, MemOrder.Relaxed);
+      *(at as **u8) = box;
+      at = box;
     }
-    boxAllocs.addOrdered(1u64, MemOrder.Relaxed);
-    *(at as **u8) = box;
-    at = box;
     kind = kind + 2u64;
   }
   Put(c, kind, at)
@@ -2361,6 +2379,60 @@ pub fn answerNow[R](rp: Reply, v: R) {
   r.to = null;
   replyFinish(h, p);
 }
+
+// LENT ANSWERS. A value too large for a slot is boxed: the answering side
+// allocates a box for it, writes it there, and the awaiting actor's worker
+// frees the box after the second half has taken the value. An answerer that
+// keeps a place of its own for the answer (the aio package's record of a
+// socket) lends it instead: 'answerLent(rp, p, take)' answers with a value
+// ALREADY WRITTEN at p, and nothing is allocated. 'take(p, to)' is the
+// answerer's function that MOVES the value from p to 'to' and lets go of the
+// place (the answerer's word that it is free for the next operation). The
+// awaiting actor's worker calls it as it reaches the reply, with a place of
+// its own on its stack for the value (so that the place is free again BEFORE
+// the behaviour goes on, which may start the next operation on the same
+// record), and then runs the second half on the value there. Where the value
+// would have fitted the slot, or is larger than lentMax bytes, 'take' is called
+// at once on the slot or on a box of the ordinary kind, so the answerer need
+// not know which. The slot holds p + 1 (the low bit says "lent": a box's
+// address has it clear) and the function. 'p' stays valid, and nobody else
+// touches the value, until take(p, to) has been called. A reply that wants
+// no answer, or is a future's, is handled the way answerNow handles it, the
+// value dropped or moved into the future by take.
+pub fn answerLent[R](rp: Reply, p: *R, take: &fn(p: *u8, to: *u8)) {
+  var r = rp;
+  if !wanted(&r) {
+    let tmp = libc.malloc(mem.sizeof[R]() + 16usize);
+    if tmp as usize == 0usize {
+      die("actors: out of memory for a reply");
+    }
+    take(p as *u8, tmp);
+    mem.finalize[R](tmp as *R);
+    libc.free(tmp);
+    return;
+  }
+  if r.cell as usize != 0usize {
+    take(p as *u8, r.at);
+    post(&mut r);
+    return;
+  }
+  let h = r.to;
+  if (r.meta & replyBoxed) != 0u64 && mem.sizeof[R]() <= lentMax && mem.alignof[R]() <= 8usize {
+    var tk = take;
+    let takep = mem.readRaw[*u8](&mut tk as *(*u8));
+    let put = replyPrepLent(&r, p as *u8, takep);
+    r.to = null;
+    replyFinish(h, put);
+    return;
+  }
+  let put = replyPrep(&r);
+  take(p as *u8, put.at);
+  r.to = null;
+  replyFinish(h, put);
+}
+
+// The largest value a lent answer is taken into on the worker's stack
+const lentMax = 128usize;
 
 // While a message that returns a value and holds an 'await' runs, the
 // envelope it answers waits in its actor's state, in an Answer: each seam
@@ -2467,7 +2539,12 @@ fn resumeSlot[S](st: *S, p: *u8, kind: u64) {
   var data = p + replyHead;
   let boxed = kind >= kindReply + 2u64;
   if boxed {
-    data = *(data as **u8);
+    let w = *(data as *usize);
+    if (w & 1usize) != 0usize {
+      resumeLent[S](st, p, kind, run, id);
+      return;
+    }
+    data = w as *u8;
   }
   if kind == kindReply + 1u64 || kind == kindReply + 3u64 {
     resumeId[S](&mut *st, run, id, data);
@@ -2476,6 +2553,22 @@ fn resumeSlot[S](st: *S, p: *u8, kind: u64) {
   }
   if boxed {
     libc.free(data);
+  }
+}
+
+// A reply whose value is lent (LENT ANSWERS): the value is moved into a place
+// of this stack's own and the lender's place given back, before the behaviour
+// goes on
+fn resumeLent[S](st: *S, p: *u8, kind: u64, run: *u8, id: u64) {
+  var mine = Array[u64, 16]() <- fill 0u64;
+  let w = *((p + replyHead) as *usize);
+  var f = *((p + replyHead + 8usize) as **u8);
+  let fp = mem.readRaw[&fn(p: *u8, to: *u8)](&mut f as *(&fn(p: *u8, to: *u8)));
+  fp((w - 1usize) as *u8, &mine[0usize] as *u8);
+  if kind == kindReply + 1u64 || kind == kindReply + 3u64 {
+    resumeId[S](&mut *st, run, id, &mine[0usize] as *u8);
+  } else {
+    resume[S](&mut *st, run, &mine[0usize] as *u8);
   }
 }
 
@@ -2600,7 +2693,7 @@ pub fn parkReserve(p: &mut Pending, size: usize, drop: *u8, trace: *u8) u64 {
   let id = p.free - 1usize;
   let slot = p.slots + id;
   p.free = *slot / 2usize;
-  let block = libc.malloc(recordHead + size);
+  let block = takeBlock(recordHead + size);
   if block as usize == 0usize {
     die("actors: out of memory for a continuation");
   }
@@ -2638,7 +2731,75 @@ pub fn unpark(p: &mut Pending, id: u64) *u8 {
 // A record's block, once its values are moved out: 'record' is where unpark
 // said it was
 pub fn recordFree(record: *u8) {
-  libc.free(((record as usize) - recordHead) as *u8);
+  giveBlock(((record as usize) - recordHead) as *u8);
+}
+
+// RECORD BLOCKS KEPT. Parking a continuation takes a block for its record, and
+// the reply that resumes it gives the block back: a loop of awaits would
+// allocate and free one block of the same size each time round. Each thread
+// keeps the last few blocks given back (at most blockKeep of at most
+// blockKeepBytes each, matched by exact size) and the next park of that size takes
+// one of them instead of asking the allocator. A block is the C library's, so
+// one given back on a thread other than the one that took it is kept by the
+// thread that gives it, and a block the pending table drops with its actor is
+// freed as before. The blocks kept when a thread ends are not freed (a worker
+// lives as long as the process).
+const blockKeep = 8usize;
+const blockKeepBytes = 1024usize;
+
+struct BlockKeep {
+  pub n: usize;
+  pub blocks: Array[*u8, 8];
+  pub sizes: Array[usize, 8];
+}
+
+var @threadlocal blockKept: usize = 0usize;
+
+fn keepOf() *BlockKeep {
+  var k = blockKept as *BlockKeep;
+  if k as usize == 0usize {
+    k = libc.calloc(1usize, mem.sizeof[BlockKeep]()) as *BlockKeep;
+    if k as usize == 0usize {
+      die("actors: out of memory for a continuation");
+    }
+    blockKept = k as usize;
+  }
+  k
+}
+
+// A block of 'total' bytes: a kept one of that size, else the allocator's
+fn takeBlock(total: usize) *u8 {
+  if total <= blockKeepBytes {
+    let k = keepOf();
+    var i = (*k).n;
+    while i > 0usize {
+      i = i - 1usize;
+      if (*k).sizes[i] == total {
+        let b = (*k).blocks[i];
+        let last = (*k).n - 1usize;
+        (*k).blocks[i] = (*k).blocks[last];
+        (*k).sizes[i] = (*k).sizes[last];
+        (*k).n = last;
+        return b;
+      }
+    }
+  }
+  libc.malloc(total)
+}
+
+// A record's block given back (its values moved out): kept if there is room
+fn giveBlock(block: *u8) {
+  let total = recordHead + (*recordType(block)).size;
+  if total <= blockKeepBytes {
+    let k = keepOf();
+    if (*k).n < blockKeep {
+      (*k).blocks[(*k).n] = block;
+      (*k).sizes[(*k).n] = total;
+      (*k).n = (*k).n + 1usize;
+      return;
+    }
+  }
+  libc.free(block);
 }
 
 // What an 'await' in a behaviour may wait for besides another actor's reply:
@@ -2653,17 +2814,44 @@ pub fn recordFree(record: *u8) {
 // The compiler generates the seam's call (startAwait). R is in no field: it is
 // the type the 'await' gives, which the closure promises to write
 pub struct Awaitable[R] is Move {
-  start: Uni[fn(rp: Reply)];
+  start: Option[Uni[fn(rp: Reply)]];
+  ctx: *u8;
+  run: &fn(ctx: *u8, rp: Reply);
+  drop: &fn(ctx: *u8);
 
   // An operation from the closure that starts it (a closure literal, or any
-  // callable of that signature)
+  // callable of that signature). The closure is a block of its own
   pub fn make[F: fn(rp: Reply)](start: F) Awaitable[R] {
-    Awaitable[R](Uni[fn(rp: Reply)](start))
+    Awaitable[R](Some[Uni[fn(rp: Reply)]](Uni[fn(rp: Reply)](start)), null, &noRun, &noDrop)
+  }
+
+  // An operation that allocates nothing to be an Awaitable: a context word and
+  // two plain functions. 'run(ctx, rp)' starts it, once, as the closure of
+  // 'make' would be called; 'drop(ctx)' is called instead if the Awaitable dies
+  // unawaited, so that whatever the context names is let go. A null 'ctx' is
+  // not accepted (it would say the operation had been started)
+  pub fn of(ctx: *u8, run: &fn(ctx: *u8, rp: Reply), drop: &fn(ctx: *u8)) Awaitable[R] {
+    if ctx as usize == 0usize {
+      die("actors: Awaitable.of given a null context");
+    }
+    Awaitable[R](None, ctx, run, drop)
+  }
+
+  // Dying unawaited: the context's owner is told (the closure form lets go of
+  // its closure by its own finalizer, the field above)
+  fn final(self: &uni) {
+    if ctx as usize != 0usize {
+      let f = drop;
+      f(ctx);
+    }
   }
 }
 
+fn noRun(ctx: *u8, rp: Reply) {}
+fn noDrop(ctx: *u8) {}
+
 // The seam starts what it awaits: 'a' is where the Awaitable lies, moved there
-// by the generated code, which finalizes nothing of it, so the closure is moved
+// by the generated code, which finalizes nothing of it, so the operation is moved
 // out here, called, and finalized when the call has returned. Every
 // Awaitable[R] is laid out alike, whatever its R
 pub fn startAwait(a: *u8, rp: Reply) {
@@ -2671,7 +2859,18 @@ pub fn startAwait(a: *u8, rp: Reply) {
   var r = rp;
   r.meta = r.meta | replyOp;
   opsStarted.addOrdered(1u64, MemOrder.SeqCst);
-  aw.start(r);
+  if aw.ctx as usize != 0usize {
+    // The context-word form: handed on to 'run', so that dying does not drop it
+    let c = aw.ctx;
+    let f = aw.run;
+    aw.ctx = null;
+    f(c, r);
+    return;
+  }
+  match &mut aw.start {
+    case var &mut Some(f) {(*f)(r);}
+    else {}
+  }
 }
 
 // ---------------------------------------------------------------------------

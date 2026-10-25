@@ -1,0 +1,286 @@
+// A record for each handle, a side for each direction (the package's header,
+// RECORDS). One actor holds both ends of a loopback pair and the listener, in
+// its state, and goes through:
+//
+//   1. the records: a listener, a client and an accepted socket are three
+//      records, and dropping the three frees them (the table's live count);
+//   2. the fast path: reads and writes one after another each use the record's own
+//      side: counted as fast, none as spilled;
+//   3. the fallback: an operation made and not awaited holds its side, so the
+//      next on that side takes a spill block (counted spilled), is answered all
+//      the same, and the side is free again once the held one is dropped;
+//   4. cancelling one operation: a read waiting is Cancelled by 'cancelRead',
+//      and the socket reads on afterwards; the same for a read with no buffer
+//      (waiting without a buffer, and waiting with one); a write that cannot
+//      finish (16 MiB writes to a peer that does not read, until the system's
+//      buffers are full) is Cancelled by 'cancelWrite'; a cancel with nothing in
+//      flight changes nothing;
+//   5. what is left: every buffer home, every record freed.
+//
+// What each step found is kept in Got and checked by main.
+
+mod records;
+
+import testing use *;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import time use Duration, Instant;
+import iobuf use IoBuf;
+import iocore use SocketAddr, IoError;
+import actors;
+import aio use Socket, IoLimits;
+
+struct Got {
+  pub recordsOpen: Atomic[u64];       // records after listen, connect, accept (minus the start)
+  pub fastOps: Atomic[u64];           // operations begun on a record's own side during the sequential step
+  pub spillOps: Atomic[u64];          // ...and on a spill block
+  pub seqBytes: Atomic[u64];          // the bytes the sequential step moved
+  pub heldSpilled: Atomic[u64];       // reads taken with a side held: spilled
+  pub heldBytes: Atomic[u64];         // ...and what they read
+  pub afterHeldFast: Atomic[u64];     // the read after the held one was dropped: fast
+  pub heldWriteSpilled: Atomic[u64];  // a write with the write side held: spilled
+  pub cancelRead: Atomic[u64];        // 1 if a waiting read ended Cancelled
+  pub readAfter: Atomic[u64];         // the read after it got the bytes sent
+  pub cancelAny: Atomic[u64];         // read() waiting without a buffer, Cancelled
+  pub anyAfter: Atomic[u64];
+  pub cancelStraight: Atomic[u64];    // read() waiting with a buffer (calm socket), Cancelled
+  pub straightLent: Atomic[u64];      // the pool's lent bytes just after it
+  pub cancelWrite: Atomic[u64];       // 1 if the 32 MiB write ended Cancelled
+  pub nothingToCancel: Atomic[u64];   // a cancel with nothing in flight: the next read is whole
+  pub recordsLeft: Atomic[u64];       // records after everything is dropped, over the start
+  pub lentAtEnd: Atomic[u64];
+  pub writeTries: Atomic[u64];
+}
+
+let got: Got;
+
+fn @initpure init() {
+  got = Got(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
+
+fn socketOf(r: Result[Socket, IoError]) Socket {
+  var res = r;
+  var s = Socket.none();
+  match &mut res {
+    case var &mut Ok(ok) {s <-> *ok;}
+    else {}
+  }
+  s
+}
+
+fn filled(n: usize) IoBuf {
+  var b = IoBuf(n);
+  b.setLen(n);
+  b
+}
+
+fn lenOf(r: Result[IoBuf, IoError]) u64 {
+  match r {
+    case let Ok(b) {u64.from(b.len())}
+    else {999999u64}
+  }
+}
+
+fn cancelledRead(r: Result[IoBuf, IoError]) bool {
+  match r {
+    case let Error(e) {aio.isCancelled(e)}
+    else {false}
+  }
+}
+
+actor Probe {
+  a: Socket;      // the client end
+  b: Socket;      // the accepted end
+  ls: Socket;     // the listener
+
+  pub async fn run(self, done: OneshotSender[u64]) {
+    let start = aio.opStats();
+    let l = await aio.listen(SocketAddr.localhost(0u16));
+    ls = socketOf(l);
+    let addr = await ls.localAddr();
+    var port = 0u16;
+    match addr {
+      case let Ok(x) {port = x.port();}
+      else {}
+    }
+    let c = await aio.connect(SocketAddr.localhost(port));
+    a = socketOf(c);
+    let ac = await ls.accept();
+    b = socketOf(ac);
+    got.recordsOpen.store(aio.opStats().records - start.records);
+
+    // 2. Sequential: write on a, read on b, ten times over: twenty operations
+    let s0 = aio.opStats();
+    var k = 0u64;
+    var bytes = 0u64;
+    while k < 10u64 {
+      let w = await a.write(filled(100usize));
+      let r = await b.read(IoBuf(4096usize));
+      bytes = bytes + lenOf(r);
+      k = k + 1u64;
+    }
+    let s1 = aio.opStats();
+    got.fastOps.store(s1.fast - s0.fast);
+    got.spillOps.store(s1.spilled - s0.spilled);
+    got.seqBytes.store(bytes);
+
+    // 3. Held: a read made and not awaited holds b's read side
+    {
+      let held = b.read(IoBuf(4096usize));
+      let w = await a.write(filled(60usize));
+      let before = aio.opStats();
+      let r = await b.read(IoBuf(4096usize));
+      got.heldSpilled.store(aio.opStats().spilled - before.spilled);
+      got.heldBytes.store(lenOf(r));
+    }
+    // ...dropped: the side is free again
+    {
+      let w = await a.write(filled(30usize));
+      let before = aio.opStats();
+      let r = await b.read(IoBuf(4096usize));
+      got.afterHeldFast.store(aio.opStats().fast - before.fast);
+    }
+    // A write held, too
+    {
+      let held = a.write(filled(8usize));
+      let before = aio.opStats();
+      let w = await a.write(filled(20usize));
+      got.heldWriteSpilled.store(aio.opStats().spilled - before.spilled);
+    }
+    {
+      let drained = await b.read(IoBuf(4096usize));
+    }
+
+    // 4. A read waiting, ended by cancelRead (the message runs once this read has begun)
+    selfactor.cancel(0u32);
+    let r1 = await b.read(IoBuf(4096usize));
+    if cancelledRead(r1) {got.cancelRead.store(1u64);}
+    let w2 = await a.write(filled(33usize));
+    {
+      let rb = await b.read(IoBuf(4096usize));
+      got.readAfter.store(lenOf(rb));
+    }
+
+    // A read with no buffer, waiting without one (the connection has been quiet)
+    aio.setReadQuiet(Duration.fromMillis(2i64));
+    let pause = await aio.sleep(Duration.fromMillis(10i64));
+    selfactor.cancel(0u32);
+    let r2 = await b.read();
+    if cancelledRead(r2) {got.cancelAny.store(1u64);}
+    let w3 = await a.write(filled(44usize));
+    {
+      let ra = await b.read();
+      got.anyAfter.store(lenOf(ra));
+    }
+
+    // A read with no buffer begun with one (the last came at once): quiet time long
+    aio.setReadQuiet(Duration.fromSeconds(3600i64));
+    let w4 = await a.write(filled(10usize));
+    {
+      let calm = await b.read();
+    }
+    selfactor.cancel(0u32);
+    let r3 = await b.read();
+    if cancelledRead(r3) {got.cancelStraight.store(1u64);}
+    got.straightLent.store(u64.from(iobuf.stats().lentBytes));
+    aio.setReadQuiet(Duration.fromMillis(2i64));
+
+    // A write that cannot finish: 16 MiB writes to a peer that does not read, until the
+    // system's buffers are full and one stays in flight; a cancel 100 ms after each
+    // begins ends the one that is (the others have finished by then)
+    var tries = 0u64;
+    while tries < 12u64 && got.cancelWrite.load() == 0u64 {
+      selfactor.cancelLater(1u32);
+      let w5 = await a.write(filled(16777216usize));
+      match w5 {
+        case let Error(e) {if aio.isCancelled(e) {got.cancelWrite.store(1u64);}}
+        else {}
+      }
+      tries = tries + 1u64;
+    }
+    got.writeTries.store(tries);
+    let settle = await aio.sleep(Duration.fromMillis(150i64));
+    // Nothing in flight to cancel: it is a no-op, and the next read is whole. The
+    // peer's receive buffer holds what the cancelled write got through, so read
+    // it all off first
+    var flushed = false;
+    while !flushed {
+      let rr = await b.readIn(IoBuf(65536usize), IoLimits.until(Instant.now() + Duration.fromMillis(300i64)));
+      match rr {
+        case is Error {flushed = true;}
+        else {}
+      }
+    }
+    a.cancelWrite();
+    b.cancelRead();
+    let w6 = await a.write(filled(12usize));
+    {
+      let r6 = await b.read(IoBuf(4096usize));
+      got.nothingToCancel.store(lenOf(r6));
+    }
+
+    // 5. Everything dropped: the three records go
+    a = Socket.none();
+    b = Socket.none();
+    ls = Socket.none();
+    var waited = 0u64;
+    while aio.opStats().records > start.records && waited < 2000u64 {
+      let nap = await aio.sleep(Duration.fromMillis(5i64));
+      waited = waited + 5u64;
+    }
+    got.recordsLeft.store(aio.opStats().records - start.records);
+    var d = done;
+    d.send(1u64);
+  }
+
+  // Cancel the read (0) or write (1) in flight on b (a): from another behaviour, so after
+  // the one that began it has gone to its await
+  pub async fn cancel(self, which: u32) {
+    if which == 0u32 {b.cancelRead();} else {a.cancelWrite();}
+  }
+
+  // The same after 100 ms
+  pub async fn cancelLater(self, which: u32) {
+    let nap = await aio.sleep(Duration.fromMillis(100i64));
+    if which == 0u32 {b.cancelRead();} else {a.cancelWrite();}
+  }
+}
+
+fn main() i32 {
+  initAll();
+  var tx: OneshotSender[u64];
+  var rx: OneshotReceiver[u64];
+  tx, rx = Oneshot[u64].make();
+  {
+    let p = Probe(Socket.none(), Socket.none(), Socket.none());
+    p.run(tx);
+  }
+  match rx.recv() {
+    case is None[u64] {expect(false, "the probe said it was done");}
+    else {}
+  }
+  finalAll();
+  expectUInt(got.recordsOpen.load(), 3u64, "a listener, a client and an accepted socket are three records");
+  expectUInt(got.fastOps.load(), 20u64, "twenty sequential operations each began on a record's own side");
+  expectUInt(got.spillOps.load(), 0u64, "none on a spill block");
+  expectUInt(got.seqBytes.load(), 1000u64, "and moved the bytes");
+  expectUInt(got.heldSpilled.load(), 1u64, "a read with its side held took a spill block");
+  expectUInt(got.heldBytes.load(), 60u64, "and was answered all the same");
+  expectUInt(got.afterHeldFast.load(), 1u64, "the side is free again once the held read is dropped");
+  expectUInt(got.heldWriteSpilled.load(), 1u64, "a write with its side held took a spill block");
+  expectUInt(got.cancelRead.load(), 1u64, "cancelRead ends a waiting read Cancelled");
+  expectUInt(got.readAfter.load(), 33u64, "and the next read is whole");
+  expectUInt(got.cancelAny.load(), 1u64, "and a read waiting without a buffer");
+  expectUInt(got.anyAfter.load(), 44u64, "and the next is whole");
+  expectUInt(got.cancelStraight.load(), 1u64, "and a read waiting with a buffer");
+  expectUInt(got.straightLent.load(), 0u64, "its buffer went home");
+  expectUInt(got.cancelWrite.load(), 1u64, "cancelWrite ends a write that cannot finish Cancelled");
+  expectUInt(got.nothingToCancel.load(), 12u64, "a cancel with nothing in flight changes nothing");
+  expectUInt(got.recordsLeft.load(), 0u64, "every record is freed once its socket is dropped");
+  let st = iobuf.stats();
+  expectUInt(st.lent, 0u64, "every buffer is home");
+  done()
+}

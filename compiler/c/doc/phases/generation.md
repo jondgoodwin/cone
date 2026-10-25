@@ -1607,11 +1607,15 @@ everything above holds but the request. The seam is laid out once the operand
 is made, as a seam with no envelope argument is; its envelope is made there by
 the same functions (`genlSeamReply`); and the Awaitable, moved into a slot of
 its own, is handed with the envelope to the actors package's `startAwait`,
-which calls the start function its maker stored in it. Nothing of the Awaitable
+which calls the start function its maker stored in it (a closure, or a context
+word and a function, `Awaitable.of`). Nothing of the Awaitable
 is finalized: its maker's context is the start function's from then on. The
 maker writes the answer into the envelope as `answerNow` does, from whatever
-thread finishes the operation, and the reply's dispatch calls the resume
-function. The 'await' adds nothing to the `R`.
+thread finishes the operation, or lends it (`answerLent`: the answer stays in
+a place of the maker's own until the dispatch has moved it to the worker's
+stack, just before the resume function is called, which takes it from there as
+from a box), and the reply's dispatch calls the resume function. The 'await'
+adds nothing to the `R`.
 
 **A future.** What a seam awaits may instead be a future: a value of an
 instance of the actors package's `Future[T]` (type check set

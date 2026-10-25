@@ -1,0 +1,166 @@
+// What a SlotTable does, case by case. Each expected value is worked out by
+// hand from the rules:
+// - cells are used in order 0, 1, 2, ..., and a freed cell is the next one used
+//   (the free list is last in, first out);
+// - a cell's first occupant has generation 1, each occupant after it the next
+//   number, and a Slot reaches its value only while the cell's generation is its
+//   own;
+// - the table grows by whole chunks and no value ever moves.
+
+mod basics;
+
+import testing use *;
+import slots use *;
+import collections use List;
+
+struct Pt {
+  pub x: i64;
+  pub y: i64;
+}
+
+// A value with a finalizer, counting how many have died
+let deaths: Atomic[u64];
+
+fn @initpure init() {
+  deaths = Atomic[u64].of(0u64);
+}
+
+struct Mortal is Move {
+  pub id: i64;
+
+  fn final(self: &uni) {
+    deaths.add(1u64);
+  }
+}
+
+fn addGetRemove() {
+  var t = SlotTable[Pt].make(4u32);
+  let a = t.add(Pt(1i64, 2i64));
+  let b = t.add(Pt(3i64, 4i64));
+  expectUInt(u64.from(a.index), 0u64, "first value in cell 0");
+  expectUInt(u64.from(a.gen), 1u64, "as its first occupant");
+  expectUInt(u64.from(b.index), 1u64, "second value in cell 1");
+  expectUInt(u64.from(t.len()), 2u64, "two values");
+  expectInt((*t.get(a)).x, 1i64, "get reads the value");
+  expectInt((*t.get(b)).y, 4i64, "get reads the other");
+  expect(t.remove(a), "remove answers true");
+  expectUInt(u64.from(t.len()), 1u64, "one value left");
+  expectInt((*t.get(b)).x, 3i64, "the other is untouched");
+}
+
+fn stale() {
+  var t = SlotTable[Pt].make(4u32);
+  let a = t.add(Pt(1i64, 2i64));
+  t.remove(a);
+  expect(t.get(a) as usize == 0usize, "a removed value's Slot reaches nothing");
+  expect(!t.remove(a), "removing it again answers false");
+  expectUInt(u64.from(t.len()), 0u64, "and does nothing");
+  let b = t.add(Pt(5i64, 6i64));
+  expectUInt(u64.from(b.index), 0u64, "the freed cell is the next used");
+  expectUInt(u64.from(b.gen), 2u64, "as its second occupant");
+  expect(t.get(a) as usize == 0usize, "the old Slot still reaches nothing, though the cell is live");
+  expect(t.get(b) as usize != 0usize, "the new one does");
+  expect(t.get(Slot.none()) as usize == 0usize, "none reaches nothing");
+  expect(t.get(Slot(900u32, 1u32)) as usize == 0usize, "a Slot past the table reaches nothing");
+  expect(!t.remove(Slot(900u32, 1u32)), "and removes nothing");
+  expect(t.at(0u32) as usize != 0usize, "at reaches the live cell by index alone");
+  expect(t.at(1u32) as usize == 0usize, "a free cell by index: null");
+  expect(t.at(900u32) as usize == 0usize, "past the table: null");
+}
+
+fn stable() {
+  // No value moves when the table grows: the addresses taken at the start are
+  // good after 1,000 more values
+  var t = SlotTable[Pt].make(8u32);
+  var slots = List[Slot].empty();
+  var ptrs = List[usize].empty();
+  var i = 0i64;
+  while i < 1000i64 {
+    let s = t.add(Pt(i, i * 2i64));
+    slots.push(s);
+    ptrs.push(t.get(s) as usize);
+    i = i + 1i64;
+  }
+  expectUInt(u64.from(t.len()), 1000u64, "1,000 values");
+  expectUInt(u64.from(t.bound()), 1000u64, "125 chunks of 8");
+  var same = true;
+  var k = 0usize;
+  while k < 1000usize {
+    if t.get(*slots[k]) as usize != *ptrs[k] {same = false;}
+    if (*t.get(*slots[k])).y != i64.from(k) * 2i64 {same = false;}
+    k = k + 1usize;
+  }
+  expect(same, "every value is where it was, and intact");
+}
+
+fn churn() {
+  // Add and remove in a pattern: live count and reuse hold
+  var t = SlotTable[Pt].make(16u32);
+  var live = List[Slot].empty();
+  var round = 0i64;
+  while round < 50i64 {
+    var i = 0i64;
+    while i < 40i64 {
+      live.push(t.add(Pt(round, i)));
+      i = i + 1i64;
+    }
+    var j = 0usize;
+    while j < 30usize {
+      let s = live.pop();
+      match s {
+        case let Some(x) {t.remove(x);}
+        else {}
+      }
+      j = j + 1usize;
+    }
+    round = round + 1i64;
+  }
+  expectUInt(u64.from(t.len()), 500u64, "50 rounds of +40 -30 leave 500");
+  // The most live at once was 49 rounds of +10 net, then +40 = 530: 34 chunks of 16
+  expectUInt(u64.from(t.bound()), 544u64, "held in 34 chunks of 16, enough for the peak of 530");
+  var n = 0usize;
+  var c = 0u32;
+  while usize.from(c) < t.bound() {
+    if t.isLive(c) {n = n + 1usize;}
+    c = c + 1u32;
+  }
+  expectUInt(u64.from(n), 500u64, "walking 0 ..< bound() with isLive finds each");
+}
+
+fn finalizers() {
+  let before = deaths.load();
+  {
+    var t = SlotTable[Mortal].make(4u32);
+    let a = t.add(Mortal(1i64));
+    let b = t.add(Mortal(2i64));
+    let c = t.add(Mortal(3i64));
+    t.remove(b);
+    expectUInt(deaths.load() - before, 1u64, "remove finalizes the value");
+    t.remove(b);
+    expectUInt(deaths.load() - before, 1u64, "and not twice");
+    expectInt((*t.get(c)).id, 3i64, "the others are intact");
+  }
+  expectUInt(deaths.load() - before, 3u64, "the table's death finalizes the two left");
+}
+
+fn slotAt() {
+  var t = SlotTable[Pt].make(4u32);
+  let a = t.add(Pt(1i64, 2i64));
+  expect(t.slotAt(0u32) == a, "slotAt names the live value's Slot");
+  t.remove(a);
+  expect(t.slotAt(0u32).isNone(), "and none once it is gone");
+  expect(t.removeAt(0u32) == false, "removeAt of a free cell: false");
+  let b = t.add(Pt(3i64, 4i64));
+  expect(t.removeAt(0u32), "removeAt of a live cell: true");
+  expect(t.get(b) as usize == 0usize, "and its Slot reaches nothing");
+}
+
+fn main() i32 {
+  addGetRemove();
+  stale();
+  stable();
+  churn();
+  finalizers();
+  slotAt();
+  done()
+}
