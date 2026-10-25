@@ -128,7 +128,7 @@ const keyWake = 3usize;        // a waker's wake
 const keyPost = 4usize;        // an answer posted by another loop: its block
 const keyCancel = 5usize;      // a Request's cancel: the operation's id, as the pointer
 const keyGroup = 6usize;       // a cancel group this loop has operations in was cancelled
-const keyJob = 7usize;         // a blocking-pool job has run: its JobBox
+const keyJob = 7usize;         // a job has run (a pool job, an external operation): its record
 
 const invalidHandle = 0xFFFFFFFFFFFFFFFFusize;     // INVALID_HANDLE_VALUE, INVALID_SOCKET
 const infinite = 0xFFFFFFFFu32;                     // INFINITE
@@ -343,6 +343,31 @@ fn wsaError() u32 {
 
 // s as UTF-16 ending in a 0, in a block from libc's malloc the caller frees;
 // a null pointer when s is not UTF-8
+// The same, in 'room' (of 'cap' u16s) when it fits, so that nothing is
+// allocated (the pool's work, with a room on its stack); else in a block from
+// malloc. The caller lets it go with 'unwiden'
+fn widenIn(s: &Array[u8], room: *u16, cap: usize) *u16 {
+  if isWindows() {
+    if s.len == 0usize || s.len > 0x3FFFFFFFusize {return null;}
+    let len = i32.from(s.len);
+    let n = MultiByteToWideChar(utf8Page, invalidUtf8Fails, s as *u8, len, null, 0i32);
+    if n == 0i32 {return null;}
+    let count = usize.from(n);
+    var p = room;
+    if count + 1usize > cap {p = libc.malloc((count + 1usize) * 2usize) as *u16;}
+    MultiByteToWideChar(utf8Page, invalidUtf8Fails, s as *u8, len, p, n);
+    *(p + count) = 0u16;
+    p
+  } else {
+    null
+  }
+}
+
+// What widenIn made let go: freed unless it is the room
+fn unwiden(w: *u16, room: *u16) {
+  if w as usize != room as usize {libc.free(w as *u8);}
+}
+
 fn widen(s: &Array[u8]) *u16 {
   if isWindows() {
     if s.len == 0usize || s.len > 0x3FFFFFFFusize {return null;}

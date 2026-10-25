@@ -1,0 +1,438 @@
+// A job is its record (one-record PR 2b): the pool's thread works on the
+// record in place and posts its address home, and nothing is allocated for a
+// job.
+//
+// 1. A job cancelled while queued: taken out of its lane's queue and answered
+//    Cancelled at once, its buffer back as it was, never run; the job ahead of
+//    it, running, answers how it ended, the bytes its work wrote in its
+//    record's own buffer.
+// 2. A deadline answered early while the job runs (grace 0): TimedOut at once,
+//    without the buffer, the record waiting for its job; then its late return,
+//    the record dissolved (old API). An asker's record the same: on the done
+//    list early, left; on it again late, dissolved, the work's bytes in its
+//    buffer.
+// 3. A job running when its Loop dies, then coming home: an old-API job and an
+//    asker's, both running at the death. The old API's is answered Cancelled at
+//    the death, without its buffer; the asker's answer is abandoned. Both
+//    records stay away, and keep their pools (the Loop's own, and the asker's,
+//    let go of too while its record is away), until their jobs return: each is
+//    dissolved where it comes home, its asker part dies once, every buffer is
+//    home, and the last record home frees its pool.
+// 4. An external operation's Completer outliving its Loop: answered Cancelled at
+//    the death, without its buffer; the Completer still holds the record, its
+//    cancel asked; its ending after the death is false and dissolves the
+//    record on its own thread, freeing the Loop's pool. One dropped unended on
+//    another thread does the same there.
+// 5. Allocations per job: 0, counted by the program's own malloc, calloc and
+//    realloc (each passes through a counter here to the C library's): a Call,
+//    an external operation, a name looked up, a file's metadata, a ReadAt (a
+//    job on Linux, the kernel's on Windows). A look-up's system library may
+//    allocate by itself (Linux's getaddrinfo does, through the same malloc):
+//    what it does for the same look-up made directly is subtracted.
+//
+// Then the leak check: every buffer home, and every block back to the OS.
+
+mod jobrecord;
+
+import testing use *;
+import thread;
+import libc;
+import sync use Arc, Sender, Receiver, Channel;
+import collections use List, String;
+import path use Path;
+import time use Instant, Duration;
+import iobuf use *;
+import iocore use *;
+import diag;
+
+// ---------------------------------------------------------------------------
+// The malloc counter: the program's malloc, calloc and realloc are these, which
+// count and call the C library's own
+// ---------------------------------------------------------------------------
+
+var mallocs: Atomic[u64];
+var started: Atomic[u32];
+var gate: Atomic[u32];
+
+fn @initpure init() {
+  mallocs = Atomic[u64].of(0u64);
+  started = Atomic[u32].of(0u32);
+  gate = Atomic[u32].of(0u32);
+}
+
+extern {
+  fn @c("_malloc_base") winMalloc(size: usize) *u8;
+  fn @c("_calloc_base") winCalloc(n: usize, size: usize) *u8;
+  fn @c("_realloc_base") winRealloc(p: *u8, size: usize) *u8;
+  fn @c("__libc_malloc") lxMalloc(size: usize) *u8;
+  fn @c("__libc_calloc") lxCalloc(n: usize, size: usize) *u8;
+  fn @c("__libc_realloc") lxRealloc(p: *u8, size: usize) *u8;
+  fn @c("getaddrinfo") lxGetaddrinfo(node: *u8, service: *u8, hints: *u8, res: &mut *u8) i32;
+  fn @c("freeaddrinfo") lxFreeaddrinfo(res: *u8);
+}
+
+pub fn @c("malloc") countMalloc(size: usize) *u8 {
+  mallocs.add(1u64);
+  if isWindows() {winMalloc(size)} else {lxMalloc(size)}
+}
+
+pub fn @c("calloc") countCalloc(n: usize, size: usize) *u8 {
+  mallocs.add(1u64);
+  if isWindows() {winCalloc(n, size)} else {lxCalloc(n, size)}
+}
+
+pub fn @c("realloc") countRealloc(p: *u8, size: usize) *u8 {
+  mallocs.add(1u64);
+  if isWindows() {winRealloc(p, size)} else {lxRealloc(p, size)}
+}
+
+// ---------------------------------------------------------------------------
+// Work, and waiting
+// ---------------------------------------------------------------------------
+
+// Work that says it has started, waits for the gate, and writes "ran" into its
+// buffer: Done(3)
+fn gatedWork(arg: u64, buf: &mut IoBuf) Outcome {
+  started.add(1u32);
+  let limit = Instant.now() + Duration.fromSeconds(10i64);
+  while gate.load() == 0u32 && Instant.now() < limit {
+    thread.sleep(Duration.fromMillis(1i64));
+  }
+  buf.append("ran");
+  Outcome.Done(3usize)
+}
+
+// Work that does nothing: Done(arg)
+fn quickWork(arg: u64, buf: &mut IoBuf) Outcome {Outcome.Done(usize.from(arg))}
+
+fn waitStarted(n: u32) {
+  let limit = Instant.now() + Duration.fromSeconds(5i64);
+  while started.load() < n && Instant.now() < limit {
+    thread.sleep(Duration.fromMillis(1i64));
+  }
+}
+
+fn waitFor(lp: &mut Loop, out: &mut List[Completion], n: usize) {
+  let limit = Instant.now() + Duration.fromSeconds(5i64);
+  while out.len() < n && Instant.now() < limit {
+    lp.poll(limit, out);
+  }
+}
+
+fn waitDone(lp: &mut Loop, got: &mut List[*OpCore], n: usize) {
+  let limit = Instant.now() + Duration.fromSeconds(5i64);
+  var out = List[Completion].empty();
+  while got.len() < n && Instant.now() < limit {
+    lp.poll(limit, &mut out);
+    lp.takeDone(got);
+  }
+}
+
+fn waitPools(n: u32) {
+  let limit = Instant.now() + Duration.fromSeconds(5i64);
+  while recordPools() != n && Instant.now() < limit {
+    thread.sleep(Duration.fromMillis(1i64));
+  }
+}
+
+fn bufText(b: &Option[IoBuf]) &Array[u8] {
+  match b {
+    case let &Some(x) {x.view()}
+    else {""}
+  }
+}
+
+// An asker's part that counts its deaths
+struct Mark {
+  count: Arc[imm, Atomic[u64]];
+  fn final(self: &uni) {count.add(1u64);}
+}
+
+// A loop with an external operation, gone: its Completer, which outlives it
+fn outlive(tx: Sender[Completion]) Completer {
+  var lp = Loop.mustMake();
+  lp.external(Target.Chan(5u64, tx), IoBuf(32usize))
+}
+
+// A Completer dropped, unended, on another thread
+fn dropOn(c: Completer) u64 {
+  expect(c.isLive(), "the Completer, on another thread, holds its record");
+  {
+    let gone = c;
+  }
+  iobuf.flushThread();     // the buffer it let go of, back to the stock
+  0u64
+}
+
+// The answer a channel has now, checked to be Cancelled without its buffer
+fn cancelledWithout(rx: &mut Receiver[Completion], what: &Array[u8]) {
+  match rx.tryRecv() {
+    case let Some(c) {
+      expectUInt(u64.from(c.status), u64.from(diag.outcomeCancelled), what);
+      expectUInt(u64.from(c.buf.capacity()), 0u64, "without its buffer, which the job still holds");
+    }
+    case is None[Completion] {expect(false, what);}
+  }
+}
+
+// Nothing more on the channel
+fn expectNone(rx: &mut Receiver[Completion]) {
+  match rx.tryRecv() {
+    case is None[Completion] {}
+    else {expect(false, "nothing more answered");}
+  }
+}
+
+fn main() i32 {
+  let lent0 = stats().lent;
+  let solo = addLane(LaneConfig(name: "solo", maxThreads: 1u32, idleMillis: 50u32));
+  let two = addLane(LaneConfig(name: "two", maxThreads: 2u32, idleMillis: 50u32));
+
+  // 1. A job cancelled while queued
+  {
+    var lp = Loop.mustMake();
+    var out = List[Completion].empty();
+    started.store(0u32);
+    gate.store(0u32);
+    lp.submit(Op.Call(solo, &gatedWork, 0u64, IoBuf(64usize)), Target.Here(1u64));
+    waitStarted(1u32);
+    var b = IoBuf(64usize);
+    b.append("queued");
+    let id = lp.submit(Op.Call(solo, &gatedWork, 0u64, b), Target.Here(2u64));
+    expect(lp.cancel(id), "a job still queued: its cancel asked");
+    lp.poll(Instant.now(), &mut out);
+    requireUInt(u64.from(out.len()), 1u64, "answered at once");
+    expectUInt(out[0usize].token, 2u64, "the queued one");
+    expectUInt(u64.from(out[0usize].status), u64.from(diag.outcomeCancelled), "Cancelled");
+    expectStr(out[0usize].buf.view(), "queued", "its buffer back, as it was");
+    expectUInt(solo.stats().cancelled, 1u64, "taken out of its lane's queue");
+    expectUInt(u64.from(started.load()), 1u64, "never run");
+    expect(!lp.cancel(id), "a second cancel names nothing");
+    out.clear();
+    gate.store(1u32);
+    waitFor(&mut lp, &mut out, 1usize);
+    requireUInt(u64.from(out.len()), 1u64, "the running one answered");
+    expectUInt(out[0usize].token, 1u64, "the one that ran");
+    expectUInt(u64.from(out[0usize].count()), 3u64, "Done(3)");
+    expectStr(out[0usize].buf.view(), "ran", "its work wrote into its record's own buffer");
+    out.clear();
+    expectUInt(u64.from(lp.records()), 0u64, "every record dissolved");
+  }
+
+  // 2. A deadline answered early while the job runs, then its late return
+  {
+    var lp = Loop.mustMake();
+    var out = List[Completion].empty();
+    lp.setGrace(Duration.fromNanos(0i64));
+    started.store(0u32);
+    gate.store(0u32);
+    lp.submitBy(Op.Call(solo, &gatedWork, 0u64, IoBuf(64usize)), Target.Here(3u64),
+      Instant.now() + Duration.fromMillis(20i64));
+    waitStarted(1u32);
+    waitFor(&mut lp, &mut out, 1usize);
+    requireUInt(u64.from(out.len()), 1u64, "answered at its deadline");
+    expectUInt(u64.from(out[0usize].status), u64.from(diag.outcomeTimedOut), "TimedOut");
+    expectUInt(u64.from(out[0usize].buf.capacity()), 0u64, "without its buffer, which the job holds");
+    expectUInt(u64.from(lp.records()), 1u64, "its record waits for its job");
+    expectUInt(lp.counters().promptTimeouts, 1u64, "a prompt TimedOut");
+    out.clear();
+    gate.store(1u32);
+    let limit = Instant.now() + Duration.fromSeconds(5i64);
+    while lp.counters().lateReturns == 0u64 && Instant.now() < limit {
+      lp.poll(Instant.now() + Duration.fromMillis(10i64), &mut out);
+    }
+    expectUInt(lp.counters().lateReturns, 1u64, "its late return");
+    expectUInt(u64.from(lp.records()), 0u64, "and its record dissolved, its buffer home");
+    expectUInt(u64.from(out.len()), 0u64, "nothing more answered");
+
+    // An asker's record the same
+    var pool = OpPool[u64].make();
+    started.store(0u32);
+    gate.store(0u32);
+    let r = pool.take(7u64);
+    (*r).core.kind = diag.kindCall;
+    (*r).core.lane = solo;
+    (*r).core.work = &gatedWork;
+    (*r).core.buf = Some[IoBuf](IoBuf(64usize));
+    (*r).core.deadline = Instant.now() + Duration.fromMillis(20i64);
+    lp.start(r as *OpCore);
+    waitStarted(1u32);
+    var got = List[*OpCore].empty();
+    waitDone(&mut lp, &mut got, 1usize);
+    requireUInt(u64.from(got.len()), 1u64, "on the done list at its deadline");
+    expect((*got[0usize] as &OpCore).isEarly(), "early: the job still holds it");
+    expectUInt(u64.from((*got[0usize]).status), u64.from(diag.outcomeTimedOut), "TimedOut");
+    got.clear();
+    gate.store(1u32);
+    waitDone(&mut lp, &mut got, 1usize);
+    requireUInt(u64.from(got.len()), 1u64, "on the done list again");
+    expect((*got[0usize] as &OpCore).isLate(), "late: the job has given it back");
+    let rec = pool.dissolve(*got[0usize] as *OpRec[u64]);
+    let core, ask = rec.(core, ask);
+    expectUInt(ask, 7u64, "its asker part");
+    expectStr(bufText(&core.buf), "ran", "the work's bytes, in the record's own buffer");
+    expectUInt(u64.from(pool.inUse()), 0u64, "every record free");
+  }
+
+  // 3. A job running when its Loop dies, then coming home
+  {
+    let pools0 = recordPools();
+    let count = Arc[imm, Atomic[u64]](Atomic[u64].of(0u64));
+    var tx: Sender[Completion];
+    var rx: Receiver[Completion];
+    tx, rx = Channel[Completion].make();
+    started.store(0u32);
+    gate.store(0u32);
+    {
+      var pool = OpPool[Mark].make();
+      {
+        var lp = Loop.mustMake();
+        lp.submit(Op.Call(two, &gatedWork, 0u64, IoBuf(64usize)), Target.Chan(1u64, tx.clone()));
+        let r = pool.take(Mark(count));
+        (*r).core.kind = diag.kindCall;
+        (*r).core.lane = two;
+        (*r).core.work = &gatedWork;
+        (*r).core.buf = Some[IoBuf](IoBuf(64usize));
+        lp.start(r as *OpCore);
+        waitStarted(2u32);
+        expectUInt(u64.from(recordPools()), u64.from(pools0 + 2u32), "the loop's pool and the asker's");
+        expectUInt(u64.from(two.stats().running), 2u64, "both jobs running");
+      }
+      cancelledWithout(&mut rx, "the old API's job: answered Cancelled at its loop's death");
+      expectUInt(count.load(), 0u64, "the asker's record is away: its asker part lives");
+      expectUInt(u64.from(pool.inUse()), 1u64, "and it is still taken");
+      expectUInt(u64.from(recordPools()), u64.from(pools0 + 2u32), "the loop's pool, let go, held by its record away");
+    }
+    expectUInt(u64.from(recordPools()), u64.from(pools0 + 2u32), "the asker's pool, let go too, held by its record away");
+    gate.store(1u32);
+    waitPools(pools0);
+    expectUInt(u64.from(recordPools()), u64.from(pools0), "each record dissolved where it came home, the last freeing its pool");
+    expectUInt(count.load(), 1u64, "the asker part died once");
+    expectUInt(stats().lent - lent0, 0u64, "every buffer home");
+    expectNone(&mut rx);
+  }
+
+  // 4. An external operation's Completer outliving its Loop
+  {
+    let pools0 = recordPools();
+    var tx: Sender[Completion];
+    var rx: Receiver[Completion];
+    tx, rx = Channel[Completion].make();
+    var c = outlive(tx.clone());
+    cancelledWithout(&mut rx, "an external operation: answered Cancelled at its loop's death");
+    expect(c.isLive(), "its Completer still holds its record");
+    expect(c.isCancelRequested(), "its cancel asked by the death");
+    expectUInt(u64.from(recordPools()), u64.from(pools0 + 1u32), "the loop's pool held by the record");
+    c.buf().append("late");
+    expectUInt(u64.from(c.buf().len()), 4u64, "its buffer still the Completer's to write");
+    expect(!c.done(4usize), "an ending after the death: false");
+    expect(!c.isLive(), "and it has ended");
+    expectUInt(u64.from(recordPools()), u64.from(pools0), "the record dissolved on this thread, its pool freed");
+    expectNone(&mut rx);
+    // One dropped unended, on another thread
+    let c2 = outlive(tx.clone());
+    cancelledWithout(&mut rx, "a second, answered at its loop's death");
+    let t = thread.start(c2, &dropOn);
+    _ = t.join();
+    expectUInt(u64.from(recordPools()), u64.from(pools0), "dissolved where its Completer died, its pool freed");
+    expectUInt(stats().lent - lent0, 0u64, "every buffer home");
+  }
+
+  // 5. Allocations per job
+  {
+    var lp = Loop.mustMake();
+    var out = List[Completion].empty();
+    // A file to read, of 4,096 bytes
+    var file = Handle.none();
+    match lp.openFile("jobrecord.tmp", Access.Create) {
+      case let Ok(h) {file = h;}
+      case let Error(e) {}
+    }
+    var w = IoBuf(4096usize);
+    w.setLen(4096usize);
+    lp.submit(Op.WriteAt(file, 0u64, w), Target.Here(0u64));
+    waitFor(&mut lp, &mut out, 1usize);
+    out.clear();
+    // The counter counts: a malloc of the test's own
+    var before = mallocs.load();
+    let block = libc.malloc(8usize);
+    libc.free(block);
+    expectUInt(mallocs.load() - before, 1u64, "the counter counts the program's mallocs");
+
+    // The path a statOp asks of, made once (a literal is made a Path at each call)
+    let here = Path.fromString(String.from("."));
+    // Each kind, warmed (threads started, lists and the pools grown), then 50 counted
+    var kind = 0u32;
+    while kind < 5u32 {
+      var round = 0u32;
+      var counted = 0u64;
+      while round < 2u32 {
+        var bad = 0u64;
+        before = mallocs.load();
+        var i = 0u32;
+        while i < 50u32 {
+          if kind == 0u32 {
+            lp.submit(Op.Call(Lane.general(), &quickWork, 1u64, IoBuf.empty()), Target.Here(1u64));
+          } else if kind == 1u32 {
+            var x = lp.external(Target.Here(1u64), IoBuf.empty());
+            x.done(1usize);
+          } else if kind == 2u32 {
+            lp.submit(resolveOp("127.0.0.1", 80u16, IoBuf(4096usize)), Target.Here(1u64));
+          } else if kind == 3u32 {
+            lp.submit(statOp(&here, Lane.general(), IoBuf(256usize)), Target.Here(1u64));
+          } else {
+            lp.submit(Op.ReadAt(file, 0u64, IoBuf(4096usize)), Target.Here(1u64));
+          }
+          waitFor(&mut lp, &mut out, 1usize);
+          if out.len() != 1usize || !out[0usize].isDone() {bad = bad + 1u64;}
+          out.clear();
+          i = i + 1u32;
+        }
+        counted = mallocs.load() - before;
+        expectUInt(bad, 0u64, "each answered Done");
+        round = round + 1u32;
+      }
+      // What the system's own look-up allocates, made directly as resolveWork
+      // makes it (Linux: getaddrinfo through this malloc; Windows' GetAddrInfoW
+      // allocates from the system's heap, which this counter does not see)
+      var system = 0u64;
+      if kind == 2u32 && !isWindows() {
+        var hints = Array[u32, 12]() <- fill 0u32;
+        hints[2usize] = 1u32;      // SOCK_STREAM
+        hints[3usize] = 6u32;      // IPPROTO_TCP
+        let name: &Array[u8] = "127.0.0.1";
+        var r = 0u32;
+        while r < 2u32 {
+          before = mallocs.load();
+          var i = 0u32;
+          while i < 50u32 {
+            var res = null as *u8;
+            if lxGetaddrinfo(name as *u8, null, &mut hints as *u8, &mut res) == 0i32 {lxFreeaddrinfo(res);}
+            i = i + 1u32;
+          }
+          system = mallocs.load() - before;
+          r = r + 1u32;
+        }
+      }
+      if kind == 0u32 {expectUInt(counted, 0u64, "a Call: no allocation");}
+      else if kind == 1u32 {expectUInt(counted, 0u64, "an external operation: no allocation");}
+      else if kind == 2u32 {expectUInt(counted - system, 0u64, "a name looked up: none but the system library's own");}
+      else if kind == 3u32 {expectUInt(counted, 0u64, "a file's metadata: no allocation");}
+      else {expectUInt(counted, 0u64, "a ReadAt: no allocation");}
+      kind = kind + 1u32;
+    }
+    lp.close(file);
+    expectUInt(u64.from(lp.records()), 0u64, "every record dissolved");
+  }
+
+  // The leak check: the lanes' threads gone (their caches flushed), every
+  // buffer home and every block back to the OS
+  let limit = Instant.now() + Duration.fromSeconds(5i64);
+  while (solo.stats().threads > 0u32 || two.stats().threads > 0u32) && Instant.now() < limit {
+    thread.sleep(Duration.fromMillis(5i64));
+  }
+  expectUInt(stats().lent - lent0, 0u64, "every buffer home");
+  trimAll();
+  expectUInt(osBlocks(), 0u64, "every block back to the OS");
+  done()
+}

@@ -9,19 +9,27 @@
 // length, past which a submit is refused (I9); and between 'minThreads' and
 // 'maxThreads' threads, started as jobs arrive while more are queued than
 // there are threads idle, and leaving after 'idle' with nothing to do, down
-// to 'minThreads'. A job is a JobBox, allocated by the loop at submit,
-// holding the work, its argument, its buffer, and a waker of its loop: a
-// lane's thread runs the work outside the lock, lets the box's waker go
-// (keeping a copy to post with), and posts the box to the loop's port (keyJob)
-// -- so a box in the port's queue holds no owner of the port, and a port whose
+// to 'minThreads'. A job is its RECORD, nothing more (record.cone): the
+// record's job part holds the work's outcome, its queue links, its state and
+// its cancel flag, and a waker of its loop. The lane's queue links records,
+// and its thread is handed the record's address: it runs the work on the
+// record's own buffer, in place, as the kernel does an operation, writes the
+// outcome into the record, lets the record's waker go (keeping a copy to post
+// with) and posts the record's address to the loop's port (keyJob) -- so a
+// record in the port's queue holds no owner of the port, and a port whose
 // loop has died is freed by the last waker, which takes back what is still
-// queued. The box is self-contained: a thread never touches the loop's
-// records. Its record waits for it (a job answered early, a prompt TimedOut,
-// stays until its box is home), and when it comes home the loop DISSOLVES the
-// box, its buffer going back into the record; a box owed to a loop that has
-// died is simply dropped, its buffer going home. While a job is
-// queued, the lane's lock decides between a thread taking it and the loop's
-// cancel removing it: whichever takes the lock first.
+// queued. Nothing is allocated for a job.
+//
+// While a record is away (queued, or with the lane's thread, until it is
+// posted home) its job part and its buffer are the pool's thread's; the loop
+// touches only the cancel flag, and the queue links under the lane's lock (to
+// take a job still queued back out). The lane's lock decides between a
+// thread taking a queued job and the loop's cancel removing it: whichever
+// takes the lock first. The loop does not wait for a job that is running at
+// its death: it lets the record go, and the record keeps its pool alive
+// (record.cone: one hold for each record away); when its thread finds the
+// loop gone it dissolves the record there, its buffer going home, and lets go
+// of its hold, which frees the pool if it was the last.
 //
 // The lanes live as long as the process; their threads are detached, and
 // wait on the lane's Condvar while there is nothing to do.
@@ -33,63 +41,40 @@ pub alias WorkFn = &fn(arg: u64, buf: &mut IoBuf) Outcome;
 
 fn noWork(arg: u64, buf: &mut IoBuf) Outcome {Outcome.Done(0usize)}
 
-const boxQueued = 0u32;
-const boxRunning = 1u32;
-const boxRemoved = 2u32;
-
-// One job, from its submit until its answer (see above). Plain memory from
-// libc's malloc
-struct JobBox {
-  work: WorkFn;
-  arg: u64;
-  buf: Option[IoBuf];      // the operation's buffer while the job holds it
-  waker: Option[Waker];    // let go by the thread before it posts the box
-  rec: *OpCore;            // the record it answers, which waits for it
-  lane: *LaneState;        // null for an external operation's box
-  asked: Atomic[u32];      // 1 once the loop has asked the cancel: an external completer reads it
-  state: u32;              // boxQueued, boxRunning, boxRemoved: under the lane's lock
-  status: u32;             // how the work went
-  n: usize;
-  code: u32;
-  prev: *JobBox;
-  next: *JobBox;
-  queuedAt: Instant;
-  // Linux: a file operation, run by the lane's thread on this descriptor (a
-  // duplicate of the handle's, closed with the box) at the offset 'arg'; -1
-  // for every other job
-  fd: i32;
-  write: bool;
+// Whether an operation of kind k is a job: a pool job, or an external
+// operation; on Linux a file operation too, which is a job of the pool
+// (linux.cone)
+fn jobKind(k: u32) bool {
+  k == diag.kindCall || k == diag.kindExternal
+    || (!isWindows() && (k == diag.kindReadAt || k == diag.kindWriteAt))
 }
 
-fn newBox(work: WorkFn, arg: u64, w: Waker, rec: *OpCore, lane: *LaneState, buf: Option[IoBuf]) *JobBox {
-  let b = libc.malloc(mem.sizeof[JobBox]()) as *JobBox;
-  if b as usize == 0usize {panic("iocore: out of memory for a blocking job");}
-  mem.writeRaw[JobBox](b, JobBox(work: work, arg: arg, buf: buf,
-    waker: Some[Waker](w), rec: rec, lane: lane, asked: Atomic[u32].of(0u32), state: boxQueued,
-    status: 0u32, n: 0usize, code: 0u32, prev: null, next: null, queuedAt: Instant.now(),
-    fd: 0i32 - 1i32, write: false));
-  b
+// Record p's job goes away: it is given a waker of its loop to post it home
+// with, and holds its pool (record.cone) until it is home. For an external
+// operation, whose Completer holds it from now on
+fn sendAway(p: *OpCore, w: Waker, state: u32) {
+  let r = p as &mut OpCore;
+  r.waker = Some[Waker](w);
+  r.jstatus = 0u32;
+  r.jn = 0usize;
+  r.jcode = 0u32;
+  r.jasked.store(0u32);
+  holdPool(r.home);
+  r.jstate.store(state);
 }
 
-// A box's end: its buffer goes home, its waker (if it still has one) goes,
-// and so does its file descriptor
-fn dropBox(b: *JobBox) {
-  if !isWindows() {
-    if (*b).fd >= 0i32 {sysClose((*b).fd);}
+// Record p's job is home, or was never run (taken out of its queue, or refused
+// by it): its waker, if it still has one, goes, a Linux file job's descriptor
+// is closed, and its hold on its pool goes. On the loop's thread
+fn bringHome(p: *OpCore) {
+  let r = p as &mut OpCore;
+  r.jstate.store(jobHome);
+  r.waker = None;
+  if !isWindows() && r.jfd >= 0i32 {
+    sysClose(r.jfd);
+    r.jfd = 0i32 - 1i32;
   }
-  mem.finalize[JobBox](b);
-  libc.free(b as *u8);
-}
-
-// A box come home, or taken out of its queue, dissolved: its descriptor
-// closed, its block freed, and its buffer handed back for its record
-fn dissolveBox(b: *JobBox) Option[IoBuf] {
-  if !isWindows() {
-    if (*b).fd >= 0i32 {sysClose((*b).fd);}
-  }
-  let j = mem.readRaw[JobBox](b);
-  libc.free(b as *u8);
-  j.(buf)
+  releasePool(r.home);
 }
 
 // ---------------------------------------------------------------------------
@@ -154,8 +139,8 @@ pub struct LaneStats {
 struct LaneState {
   lock: Mutex;
   ready: Condvar;          // its idle threads wait here
-  head: *JobBox;
-  tail: *JobBox;
+  head: *OpCore;           // the records queued, linked by their 'jprev' and 'jnext'
+  tail: *OpCore;
   queued: u32;
   maxQueued: u32;
   bound: u32;
@@ -286,77 +271,86 @@ fn worker(a: WorkerArg) {
       }
       continue;
     }
-    let b = s.head;
-    unlinkBox(s, b);
-    (*b).state = boxRunning;
+    let p = s.head;
+    unlinkJob(s, p);
+    (*p).jstate.store(jobRunning);
     s.running = s.running + 1u32;
-    let waited = u64.from((*b).queuedAt.elapsed().nanos());
+    let waited = u64.from((*p).submitted.elapsed().nanos());
     s.waitNs = s.waitNs + waited;
     if waited > s.maxWaitNs {s.maxWaitNs = waited;}
     s.lock.unlock();
-    runBox(b);
+    runJob(p);
     s.lock.lock();
     s.running = s.running - 1u32;
     s.ran = s.ran + 1u64;
   }
 }
 
-// Run a job and post it to its loop; drop it when its loop has gone
-fn runBox(b: *JobBox) {
-  let j = b as &mut JobBox;
-  if j.fd >= 0i32 {
-    settleBox(b, lxFileJob(j));
+// Run record p's job on the record, in place, and post it home
+fn runJob(p: *OpCore) {
+  let r = p as &mut OpCore;
+  if !isWindows() && r.jfd >= 0i32 {
+    settleJob(p, lxFileJob(r));
     return;
   }
   // Work with no buffer of its own is given an empty one, which it may fill
-  match &j.buf {
-    case is &None[IoBuf] {j.buf = Some[IoBuf](IoBuf.empty());}
+  match &r.buf {
+    case is &None[IoBuf] {r.buf = Some[IoBuf](IoBuf.empty());}
     else {}
   }
   var o = Outcome.Failed(errorInvalidParameter);
-  match &mut j.buf {
-    case var &mut Some(buf) {o = (j.work)(j.arg, buf);}
+  match &mut r.buf {
+    case var &mut Some(buf) {o = (r.work)(r.at, buf);}
     else {}
   }
-  settleBox(b, o);
+  settleJob(p, o);
 }
 
-// A box's outcome is known: post it to its loop, or drop it when its loop
-// has gone
-fn settleBox(b: *JobBox, o: Outcome) {
-  let j = b as &mut JobBox;
+// Record p's job has ended (a lane's thread, or a Completer): its outcome into
+// the record, and the record posted home; dissolved where it is when its loop
+// has let go of it (record.cone, homeDead). The record lets its waker go before
+// it is posted, so that in the port's queue it holds no owner of the port; the
+// copy kept to post with goes after
+fn settleJob(p: *OpCore, o: Outcome) {
+  let r = p as &mut OpCore;
   match o {
-    case let Done(d) {j.status = diag.outcomeDone; j.n = d.n;}
-    case let Failed(f) {j.status = diag.outcomeFailed; j.code = f.code;}
-    case is Outcome.Cancelled {j.status = diag.outcomeCancelled;}
-    case is Outcome.TimedOut {j.status = diag.outcomeTimedOut;}
+    case let Done(d) {r.jstatus = diag.outcomeDone; r.jn = d.n;}
+    case let Failed(f) {r.jstatus = diag.outcomeFailed; r.jcode = f.code;}
+    case is Outcome.Cancelled {r.jstatus = diag.outcomeCancelled;}
+    case is Outcome.TimedOut {r.jstatus = diag.outcomeTimedOut;}
   }
-  // A copy to post with (a Waker copies: another owner of the port); the
-  // box lets its own go, so that in the port's queue it holds none
-  let w = j.waker;
-  j.waker = None;
+  let w = r.waker;
+  r.waker = None;
   match w {
     case let Some(s) {
-      if !s.postJob(b) {dropBox(b);}
+      // The port refuses a packet only when its loop has gone, or (Windows)
+      // when the system has no room for one: then it is tried again, since a
+      // loop that lives still holds the record
+      while !s.postJob(p) {
+        if s.isGone() {
+          homeDead(p);
+          return;
+        }
+        thread.sleep(Duration.fromMillis(1i64));
+      }
     }
-    else {dropBox(b);}
+    else {homeDead(p);}
   }
 }
 
-// Take box b out of its lane's queue: its lock is held
-fn unlinkBox(s: &mut LaneState, b: *JobBox) {
-  let prev = (*b).prev;
-  let next = (*b).next;
-  if prev as usize == 0usize {s.head = next;} else {(*prev).next = next;}
-  if next as usize == 0usize {s.tail = prev;} else {(*next).prev = prev;}
-  (*b).prev = null;
-  (*b).next = null;
+// Take record p out of its lane's queue: its lock is held
+fn unlinkJob(s: &mut LaneState, p: *OpCore) {
+  let prev = (*p).jprev;
+  let next = (*p).jnext;
+  if prev as usize == 0usize {s.head = next;} else {(*prev).jnext = next;}
+  if next as usize == 0usize {s.tail = prev;} else {(*next).jprev = prev;}
+  (*p).jprev = null;
+  (*p).jnext = null;
   s.queued = s.queued - 1u32;
 }
 
-// Queue box b on its lane: false when the lane's queue is full (counted)
-fn enqueueBox(b: *JobBox) bool {
-  let l = (*b).lane;
+// Queue record p on lane l: false when the lane's queue is full (counted)
+fn enqueueJob(p: *OpCore, l: *LaneState) bool {
   let s = l as &mut LaneState;
   s.lock.lock();
   if s.queued >= s.bound {
@@ -364,10 +358,10 @@ fn enqueueBox(b: *JobBox) bool {
     s.lock.unlock();
     return false;
   }
-  (*b).prev = s.tail;
-  (*b).next = null;
-  if s.tail as usize == 0usize {s.head = b;} else {(*s.tail).next = b;}
-  s.tail = b;
+  (*p).jprev = s.tail;
+  (*p).jnext = null;
+  if s.tail as usize == 0usize {s.head = p;} else {(*s.tail).jnext = p;}
+  s.tail = p;
   s.queued = s.queued + 1u32;
   if s.queued > s.maxQueued {s.maxQueued = s.queued;}
   if s.idle > 0u32 {s.ready.notifyOne();}
@@ -384,16 +378,19 @@ fn enqueueBox(b: *JobBox) bool {
   true
 }
 
-// Take box b out of its lane's queue, if no thread has taken it yet: true
-// when it was taken out (it will never run)
-fn removeBox(b: *JobBox) bool {
-  if (*b).lane as usize == 0usize {return false;}
-  let s = (*b).lane as &mut LaneState;
+// Take record p out of its lane's queue, if no thread has taken it yet: true
+// when it was taken out (it will never run, and is home). False for an
+// external operation's, which no lane holds
+fn removeJob(p: *OpCore) bool {
+  if (*p).kind == diag.kindExternal {return false;}
+  let l = laneAt((*p).lane.id);
+  if l as usize == 0usize {return false;}
+  let s = l as &mut LaneState;
   s.lock.lock();
-  let queued = (*b).state == boxQueued;
+  let queued = (*p).jstate.load() == jobQueued;
   if queued {
-    unlinkBox(s, b);
-    (*b).state = boxRemoved;
+    unlinkJob(s, p);
+    (*p).jstate.store(jobHome);
     s.cancelled = s.cancelled + 1u64;
   }
   s.lock.unlock();
@@ -429,12 +426,13 @@ pub fn addressesIn(buf: &IoBuf) List[SocketAddr] {
 
 fn resolveWork(arg: u64, buf: &mut IoBuf) Outcome {
   if isWindows() {
-    let w = widen(buf.view());
+    var wide = Array[u16, 520]() <- fill 0u16;
+    let w = widenIn(buf.view(), &mut wide as *u16, 520usize);
     if w as usize == 0usize {return Outcome.Failed(errorNoUnicodeTranslation);}
     var hints = AddrInfo(0i32, 0i32, sockStream, ipprotoTcp, 0usize, null, null, null);
     var res = null as *AddrInfo;
     let rc = GetAddrInfoW(w, null, &mut hints as *AddrInfo, &mut res);
-    libc.free(w as *u8);
+    unwiden(w, &mut wide as *u16);
     if rc != 0i32 {return Outcome.Failed(u32.from(rc));}
     buf.clear();
     var count = 0usize;
@@ -492,11 +490,12 @@ pub fn fileStatIn(buf: &IoBuf) FileStat {
 
 fn statWork(arg: u64, buf: &mut IoBuf) Outcome {
   if isWindows() {
-    let w = widen(buf.view());
+    var wide = Array[u16, 520]() <- fill 0u16;
+    let w = widenIn(buf.view(), &mut wide as *u16, 520usize);
     if w as usize == 0usize {return Outcome.Failed(errorNoUnicodeTranslation);}
     var data = Array[u32, 9]() <- fill 0u32;
     let ok = GetFileAttributesExW(w, 0i32, &mut data as *u8);
-    libc.free(w as *u8);
+    unwiden(w, &mut wide as *u16);
     if ok == 0i32 {return Outcome.Failed(GetLastError());}
     buf.clear();
     buf.append(mem.sliceFromParts(&mut data as *u8, 36usize));
@@ -521,10 +520,11 @@ pub fn readFileOp(path: &Path, at: u64, lane: Lane, buf: IoBuf) Op {
 
 fn readFileWork(arg: u64, buf: &mut IoBuf) Outcome {
   if isWindows() {
-    let w = widen(buf.view());
+    var wide = Array[u16, 520]() <- fill 0u16;
+    let w = widenIn(buf.view(), &mut wide as *u16, 520usize);
     if w as usize == 0usize {return Outcome.Failed(errorNoUnicodeTranslation);}
     let h = CreateFileW(w, genericRead, shareAll, null, openExisting, 0u32, 0usize);
-    libc.free(w as *u8);
+    unwiden(w, &mut wide as *u16);
     if h == invalidHandle {return Outcome.Failed(GetLastError());}
     buf.clear();
     let room = buf.room();

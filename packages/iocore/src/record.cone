@@ -31,6 +31,15 @@
 // the three 'Here' forms. A record's 'home' names its pool's state, so a Loop
 // that dies holding an asker's record it cannot type gives it back through it
 // (dropRecord: the record dissolved and dropped, its answer abandoned).
+//
+// A pool's life. A job's record is AWAY while its job is queued or running (or
+// its Completer holds it), its job part the pool's thread's (pool.cone), and
+// the loop does not wait for it at its death. So a pool is freed by whoever
+// lets go of its last HOLD: its owner holds it until the OpPool dies, and each
+// record away holds it until it is home. The owner's death finalizes what it
+// still holds but the records away; a record away that comes home to a loop
+// that has let it go is dissolved where it is (homeDead) and lets go of its
+// hold, and the last one frees the pool.
 
 // Where a record is
 const stFree = 0u32;
@@ -108,8 +117,23 @@ pub struct OpCore {
   hnext: *OpCore = null;
   gprev: *OpCore = null;                 // the Loop's grouped list
   gnext: *OpCore = null;
-  job: *JobBox = null;                   // the box a pool's thread (or a Completer) holds
   done: usize = 0usize;                  // Linux: a send's bytes sent so far
+  // A job's part: a pool job's, or an external operation's (pool.cone). While
+  // the record is AWAY -- queued on a lane, run by the lane's thread, or held
+  // by a Completer, until it is posted home -- the pool's thread owns 'buf',
+  // 'waker', the outcome and 'jfd', and reads the request ('kind', 'at',
+  // 'work', 'lane', 'submitted'), which nobody changes then; the Loop touches
+  // only 'jasked' and, under the lane's lock, 'jprev', 'jnext' and 'jstate'
+  // (see the package's header, THE BLOCKING POOL)
+  jstate: Atomic[u32];                   // jobHome, jobQueued, jobRunning: away while queued or running
+  jasked: Atomic[u32];                   // 1 once the Loop has asked its cancel: a Completer reads it
+  jprev: *OpCore = null;                 // its lane's queue; 'jnext' is also Linux's link in the Port's queue home
+  jnext: *OpCore = null;
+  waker: Option[Waker] = None;           // its Loop's, to post it home with: let go before it is posted
+  jstatus: u32 = 0u32;                   // how the work went, until the Loop takes it home
+  jn: usize = 0usize;
+  jcode: u32 = 0u32;
+  jfd: i32 = 0i32;                       // Linux: a file job's own duplicate of its descriptor, or -1
 
   // Its id: the record's index and generation, which moves on when it is
   // dissolved (and when an early answer goes)
@@ -202,6 +226,11 @@ struct PoolHome is Sendable {
   batch: *OpCore;          // the owner thread's give-backs, not yet pushed
   batchTail: *OpCore;
   dropper: &fn(p: *OpCore);   // dissolve a record of this pool and let it go
+  // Its holds: one for its owner, until the OpPool dies, and one for each of
+  // its records AWAY (a job's, queued, running or held by a Completer, until it
+  // is home). Whoever lets go of the last frees the pool, so a record still away
+  // when its pool's owner lets go keeps the pool until it comes home
+  holds: Atomic[u32];
 
   // Its lists, changed under its lock through a shared reference
   fn lists(self: &) &mut PoolHome {
@@ -209,6 +238,14 @@ struct PoolHome is Sendable {
     p as &mut PoolHome
   }
 }
+
+// Pools of records made and not yet freed, in the process (recordPools)
+let poolsLive: Atomic[u32];
+
+// How many pools of records the process holds: made, and not yet freed. A pool
+// whose owner has let it go while a record of it is away is held until that
+// record is home (a diagnostic, for tests of a loop's death with a job running)
+pub fn recordPools() u32 {poolsLive.load()}
 
 fn nextGen(g: u32) u32 {if g == 0xFFFFFFFFu32 {1u32} else {g + 1u32}}
 
@@ -267,6 +304,58 @@ fn dropRecord[A](p: *OpCore) {
   _ = r;
 }
 
+// A job's states (the record's 'jstate'): home (or no job), on its lane's
+// queue, or with the lane's thread (or a Completer). Away while queued or running
+const jobHome = 0u32;
+const jobQueued = 1u32;
+const jobRunning = 2u32;
+
+// Whether record p is away: its job queued or running, the pool's thread's
+fn isAway(p: *OpCore) bool {
+  let s = (*p).jstate.load();
+  s == jobQueued || s == jobRunning
+}
+
+// One more hold on pool h: a record going away
+fn holdPool(h: *PoolHome) {(*h).holds.add(1u32);}
+
+// A hold on pool h let go, from any thread: the last one frees it
+fn releasePool(h: *PoolHome) {
+  if (*h).holds.sub(1u32) == 1u32 {freePool(h);}
+}
+
+// Pool h's memory freed: its chunks, its directory and its state. Nothing in it
+// is taken any more (its owner finalized what it held; the records away
+// dissolved themselves before letting go)
+fn freePool(h: *PoolHome) {
+  let st = h as &mut PoolHome;
+  let made = st.chunks.load();
+  var c = 0u32;
+  while c < made {
+    libc.free(*(st.chunkDir + usize.from(c)) as *u8);
+    c = c + 1u32;
+  }
+  libc.free(st.chunkDir as *u8);
+  mem.finalize[PoolHome](h);
+  libc.free(h as *u8);
+  poolsLive.sub(1u32);
+}
+
+// Record p, away, has come home to a Loop that has let go of its records (or
+// died): dissolved where it is, on any thread -- its answer abandoned, its
+// buffer home, a Linux file job's descriptor closed -- and its hold on its
+// pool let go, which frees the pool if it was the last
+fn homeDead(p: *OpCore) {
+  if !isWindows() && (*p).jfd >= 0i32 {
+    sysClose((*p).jfd);
+    (*p).jfd = 0i32 - 1i32;
+  }
+  let h = (*p).home;
+  let f = (*h).dropper;
+  f(p);
+  releasePool(h);
+}
+
 // The records of one asker (see above): its own A in each, which crosses
 // threads with its record, so is Sendable. Move, and Sendable on trust as its
 // state is: shared through an Arc (or held by the one thread that owns it), it
@@ -280,7 +369,8 @@ pub struct OpPool[A: Sendable] is Move, Sendable {
     let d = libc.calloc(usize.from(maxChunks), 8usize) as *usize;
     if h as usize == 0usize || d as usize == 0usize {panic("iocore: out of memory for a pool of records");}
     mem.writeRaw[PoolHome](h, PoolHome(Mutex.make(), null, d, Atomic[u32].of(0u32),
-      mem.sizeof[OpRec[A]](), Atomic[u32].of(0u32), null, null, &dropRecord[A]));
+      mem.sizeof[OpRec[A]](), Atomic[u32].of(0u32), null, null, &dropRecord[A], Atomic[u32].of(1u32)));
+    poolsLive.add(1u32);
     OpPool[A](h)
   }
 
@@ -308,7 +398,8 @@ pub struct OpPool[A: Sendable] is Move, Sendable {
     let r = p as *OpRec[A];
     mem.writeRaw[OpRec[A]](r, OpRec[A](OpCore(index: index, gen: gen, home: home, state: stTaken,
       handle: Handle.none(), deadline: forever(), work: &noWork, timer: TimerId.none(),
-      newHandle: Handle.none()), ask));
+      newHandle: Handle.none(), jstate: Atomic[u32].of(jobHome), jasked: Atomic[u32].of(0u32),
+      jfd: 0i32 - 1i32), ask));
     (home as &PoolHome).live.add(1u32);
     r
   }
@@ -363,8 +454,11 @@ pub struct OpPool[A: Sendable] is Move, Sendable {
   // Records made, free or taken
   pub fn size(self: &) u32 {(home as &PoolHome).chunks.load() * recsPerChunk}
 
-  // Its death: a record still taken is finalized whole (its buffer goes home,
-  // its asker's part dies), then the chunks go
+  // Its death, the owner letting go: a record still taken is finalized whole
+  // (its buffer goes home, its asker's part dies), but for one AWAY, which is
+  // its job's thread's (or its Completer's) and dissolves itself when it comes
+  // home; then the owner's hold goes, and the pool is freed by whoever lets go
+  // of the last hold, here or as the last record away comes home
   fn final(self: &uni) {
     let st = home as &mut PoolHome;
     let made = st.chunks.load();
@@ -374,15 +468,13 @@ pub struct OpPool[A: Sendable] is Move, Sendable {
       var j = 0u32;
       while j < recsPerChunk {
         let r = (block + usize.from(j) * st.stride) as *OpCore;
-        if (*r).state != stFree {mem.finalize[OpRec[A]](r as *OpRec[A]);}
+        // Away is asked first: a record away is not this thread's to read
+        if !isAway(r) && (*r).state != stFree {mem.finalize[OpRec[A]](r as *OpRec[A]);}
         j = j + 1u32;
       }
-      libc.free(block);
       c = c + 1u32;
     }
-    libc.free(st.chunkDir as *u8);
-    mem.finalize[PoolHome](home);
-    libc.free(home as *u8);
+    releasePool(home);
   }
 }
 
