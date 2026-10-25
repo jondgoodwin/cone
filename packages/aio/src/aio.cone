@@ -67,6 +67,10 @@
 //   s.readIn(lim)  s.readIn(room, lim)
 //                           the two reads with no buffer, limited by lim
 //   aio.setReadQuiet(d)     how long a read with no buffer may hold one (2 ms)
+//   s.cancelRead()  s.cancelWrite()   end the read (accept, receive) or the write (send) in flight
+//                           on the handle, alone (ONE OPERATION ALONE); also on a UdpSocket and a File
+//   aio.opStats()           how many operations began on a record's own side, and on a spill block;
+//                           the records open (RECORDS)
 //   IoLimits.none()  IoLimits.until(deadline)  IoLimits.within(group)  IoLimits(group, deadline)
 //   aio.sleep(d)  aio.sleepUntil(at)   a pause of d (a Duration) / until at (an Instant)
 //                                                                Result[void, IoError]
@@ -129,21 +133,25 @@
 // a zero-byte one), so that a connection that was busy and has gone quiet pins
 // nothing from then on, and its next read waits without a buffer. The most
 // buffers pinned at once are those of the reads that began calm in the last
-// quiet time. The hint is kept per socket by the slot and generation of its
-// iocore handle, in a table of the I/O thread's, a few bytes a socket.
+// quiet time. The hint is a flag in the socket's record (RECORDS), and the
+// stage the read is in is in the read side that holds it.
 // 'setReadQuiet' with a zero Duration makes every read wait without a buffer;
 // with a long one a socket's reads after its first take one at once.
 // 'read(buf)' is neither: the caller's buffer is in flight from the start, as
 // before.
 //
-// The reads' state lives on the I/O thread: a record for each read in flight,
-// whose address is the token of the iocore operation (answered to the I/O
-// thread itself, Target.Here, and not by a hook), advanced from one operation
-// to the next there. A read ended by a cancel, a deadline (the caller's, or
-// its group's) or its socket's closing is answered as every operation is,
-// exactly once; one still waiting when the program ends is abandoned like any
-// awaited operation (THE PROGRAM'S END). The caller's deadline bounds the
-// whole read, both of its operations.
+// The read is advanced on the I/O thread from one operation to the next: the
+// side keeps the OpId of the iocore operation outstanding, replacing it with
+// each new one, and the caller's deadline and group (its limits) for the whole
+// read. A receive begun with a buffer carries a deadline of the quiet time
+// when that is earlier than the caller's; when it ends TimedOut by that
+// deadline, the buffer has come back with the answer and goes home, and the
+// same side begins the read again as a zero-byte one, with the same limits. A
+// read ended by a cancel, a deadline (the caller's, or its group's) or its
+// socket's closing is answered as every operation is, exactly once; one still
+// waiting when the program ends is abandoned like any awaited operation (THE
+// PROGRAM'S END). The caller's deadline bounds the whole read, both of its
+// operations.
 //
 // CANCEL AND DEADLINES. An operation is answered exactly once, as in iocore:
 // Done (the Result's success), Failed (its error, the system's code),
@@ -167,8 +175,72 @@
 // cancel from another actor or thread may arrive before it has started: the
 // group's state, not the order of the calls, decides.
 //
-// A SOCKET is a handle on one of the I/O thread's sockets, plain data, which
-// moves (it may be sent in a message, to another actor). Dropping it closes
+// ONE OPERATION ALONE. 's.cancelRead()' and 's.cancelWrite()' (on a Socket, a
+// UdpSocket and a File) end the read, accept or receive in flight on the
+// handle's read side, or the write or send on its write side, and nothing else
+// of the handle's or of any group: the operation is answered Cancelled, with
+// its buffer given back, as a group's cancel answers it, and a read with no
+// buffer is ended whichever of its two operations it is in. They may be called
+// from any thread and are idempotent. They reach the operation on the record's
+// own side that has been STARTED (by its 'await'): there is nothing yet to end
+// in one that has only been made, or that is not on the record's side because
+// the side was busy (RECORDS, the second operation at once); a group or a
+// deadline reaches those. With no operation in flight a cancel does nothing.
+//
+// RECORDS. Each Socket, UdpSocket and File has a RECORD, made with it on the I/O
+// thread and freed when it is closed and nothing is using it. A record has two
+// SIDES, a read side and a write side (accept and a UDP receive use the read
+// side; send and a UDP send the write side). A side holds what its operation
+// needs and no more: the buffer (to send, or to read into: while the system
+// holds it, iocore does), the limits (the group and deadline), the reply to
+// wake, the iocore OpId of the operation in flight (kept, so that
+// 'cancelRead' and 'cancelWrite' can end it, and so that a read with no buffer
+// can go from one operation to the next on the same side), and, for the
+// operation's answer, a place of its own for it. An operation on a free side
+// TAKES it when the operation is made ('conn.read(buf)': a bit set in the
+// record's life word, by a compare-and-swap, from any thread) and the side is
+// the operation: it is the Awaitable's context (actors.Awaitable.of: no closure
+// is made), it is queued to the I/O thread as it is (it begins with the queue's
+// link), the I/O thread starts the iocore operation from it with a token that
+// names the record by slot and generation (an answer for a record freed and
+// reused is known and dropped), and the typed answer is written into the side's
+// place by the I/O thread. What the actor is told is that the answer is there:
+// actors.answerLent, which allocates nothing; the actor's worker moves the
+// answer out of the side into a place of its own, and gives the side back,
+// before the behaviour goes on, so that a loop of reads takes the same side
+// each time. Nothing is allocated for an operation on a record's own side:
+// none of the Awaitable's closure, the job block, the hook's closure, the
+// boxed reply, or the read's record, which an operation made before (opStats
+// counts the operations begun on a record's own side and on the fallback).
+//
+// THE SECOND OPERATION AT ONCE. A side busy (an operation made and not yet
+// answered, or only made and held, or whose answer has not been taken) cannot be
+// taken again: two reads in flight on one socket, or a read made while another
+// is held, are the fallback, as .NET's cached socket arguments are: the operation
+// gets a SPILL BLOCK, a side (and place for its answer) of its own, allocated
+// for the one operation and freed when its answer has been taken. It is correct
+// and costs one allocation; a File takes many reads at once by design, and all
+// but the first of them spill. A Socket.none() has no record, and each
+// operation on it takes a spill block, to fail as it must. Operations that make
+// a handle (listen, connect, bindUdp, openFile), a timer, a lookup, a file's
+// metadata and a child process are not on a handle's side: they are jobs with
+// their own allocations, as before, since each is one per connection or per
+// request rather than per read.
+//
+// THE RECORD'S LIFE. The record is freed by whoever finds it closed with both
+// sides idle: the I/O thread when the Socket's close job runs (the close cancels
+// every operation in flight; each still answers, Cancelled), or the thread that
+// takes the last answer out of a side, which asks the I/O thread to free it. On
+// Windows the kernel holds a closed socket's receive until its completion
+// arrives; the record, which holds no buffer the kernel uses (the buffer is
+// iocore's by then), waits for that answer all the same, since the answer is
+// written into it.
+//
+// A SOCKET is a handle on one of the I/O thread's sockets and its record: plain
+// data, which moves (it may be sent in a message, to another actor). It declares
+// itself Sendable, a promise taken on trust, for the record's address it holds:
+// the record is freed only after the Socket is dropped, and a side is used by one
+// operation at a time (RECORDS). Dropping it closes
 // the socket: its finalizer queues the close on the I/O thread, behind the
 // operations queued before it, and every operation then in flight on it is
 // cancelled (iocore's 'close'). A Socket waiting in a paused behaviour's
@@ -180,13 +252,16 @@
 // I/O (they could not: an actor's behaviour runs to its 'await' and
 // returns). An 'await' on an operation hands it to the I/O thread through a
 // QUEUE: a list of jobs under a Mutex, which the I/O thread takes whole after
-// each poll, and a Waker that ends the poll at once. The I/O thread starts
-// each operation on its Loop with a Target.Hook, iocore's target for another
-// runtime's code: when the operation's one answer comes, the hook turns it
-// into the operation's result and writes it into the reply the 'await' is
-// waiting for, which goes to the actor's mailbox as any reply does -- one
-// push, and, if the actor was idle, its scheduling. Nothing of the actor runs
-// on the I/O thread.
+// each poll, and a Waker that ends the poll at once. A socket's, UDP socket's
+// and file's operations are started on the Loop with a Target.Here: the answer
+// comes to the I/O thread's own poll, with the token that names the side, and
+// the I/O thread writes it into the side and tells the actor (RECORDS). The
+// other operations (a timer, a lookup, a connect) use a Target.Hook, iocore's
+// target for another runtime's code: when the operation's one answer comes, the
+// hook turns it into the operation's result and writes it into the reply the
+// 'await' is waiting for. Either way the reply goes to the actor's mailbox as
+// any reply does -- one push, and, if the actor was idle, its scheduling.
+// Nothing of the actor runs on the I/O thread.
 //
 // AN ACTOR'S LIFE. An operation in flight holds a count of the actor that
 // awaits it, in its reply's envelope, as a request to another actor does: the
@@ -343,6 +418,22 @@
 //    forbids a hook to call back into the loop); the quiet time is 2 ms, the
 //    room 4 KiB, and "calm" is "the socket's last such read was answered within
 //    the quiet time" (READS WITH NO BUFFER). None of these was ruled on.
+//  - A handle's operations are a RECORD's two sides, taken at the call that
+//    makes the operation, not at its 'await': an Awaitable made and held keeps
+//    its side busy, and the next operation on that side spills. The other
+//    way, taking it at the 'await', would let the buffer sit in the
+//    Awaitable, which is a context word and has no room for it.
+//  - The fallback is a spill block per operation (one allocation), not the
+//    general job path it was before: one path serves both, the answer is typed
+//    the same, and the cost of the fallback is one allocation where it was
+//    four. A single operation's cancel ('cancelRead', 'cancelWrite') reaches
+//    only an operation on a record's own side.
+//  - The record's table is the slots package's SlotTable, one thread's (the I/O
+//    thread's); its chunks are the C library's blocks, since a chunk is taken a
+//    few times in a table's life and never given back, which the iobuf
+//    package's per-thread block caches have nothing to serve.
+//  - Socket, UdpSocket and File declare themselves Sendable, a promise taken on
+//    trust, because they hold the record's address (RECORDS).
 //  - 'stat' and 'resolve' make their buffer for the call, not
 //    one the caller passes; 'resolve' has the port as its second parameter
 //    with a default of 0, and gives a List, whole.
@@ -364,8 +455,9 @@ import thread;
 import sync use Mutex;
 import collections use List, String;
 import iobuf use IoBuf;
+import slots use SlotTable, Slot;
 import time use Instant, Duration;
-import iocore use Loop, Waker, Op, Target, Sink, Completion, Handle, SocketAddr, IoError, CancelGroup, Access, Outcome, Lane, FileStat, forever, resolveOp, addressesIn, statOp, fileStatIn, systemCode, errorOperationAborted;
+import iocore use Loop, Waker, Op, OpId, Target, Sink, Completion, Handle, SocketAddr, IoError, CancelGroup, Access, Outcome, Lane, FileStat, forever, resolveOp, addressesIn, statOp, fileStatIn, systemCode, errorOperationAborted;
 import path use Path;
 import process;
 import actors;
@@ -411,8 +503,13 @@ struct IoThread {
   pub waker: Waker;
   pub ready: Atomic[u32];       // 1 once the thread has put its waker here
   pub os: thread.Thread[u32];
-  pub reads: *ReadState;        // the I/O thread's, never touched by another: the reads with no buffer in flight
-  pub hints: *List[u64];        // the I/O thread's: per socket, whether its reads come quickly (READS WITH NO BUFFER)
+  // The rest is the I/O thread's, never touched by another (RECORDS): the
+  // table of records, one per handle; the operations on a spill block in
+  // flight, as a list; and counts
+  pub recs: SlotTable[Rec];
+  pub spills: *Spill;
+  pub fast: u64;                // operations started on a record's own side
+  pub spilled: u64;             // ...and on a spill block, the side being busy
 }
 
 // Guards the queue, 'io' and 'ended'
@@ -468,6 +565,7 @@ fn dropHead(h: *JobHead) {
 // once the program is ending, the job is dropped instead
 fn enqueue(job: *u8) {
   let h = job as *JobHead;
+  (*h).next = nullJob();         // a record's job is used again and again: its link is not fresh
   ioLock.lock();
   if ended.load() {
     ioLock.unlock();
@@ -496,6 +594,19 @@ struct IoArg {
 // Start the I/O thread, under ioLock: its Loop is made on it, and its waker
 // is in place before this returns
 fn startIo() {
+  // What the records rely on: a value's owner word is the one before it, and
+  // each side's place holds the largest answer of its direction
+  var probe = blankAnsR();
+  if (&probe.v[0usize] as *u8 as usize) - (&probe as *AnsR as usize) != 8usize {
+    die("aio: an AnsR's value is not the word after its owner");
+  }
+  if mem.sizeof[SocketAddr]() > 32usize {
+    die("aio: a SocketAddr is larger than the place a send's destination waits in");
+  }
+  if mem.sizeof[Result[IoBuf, IoError]]() > 96usize || mem.sizeof[Result[Datagram, IoError]]() > 96usize
+      || mem.sizeof[Result[Socket, IoError]]() > 96usize || mem.sizeof[Result[usize, IoError]]() > 32usize {
+    die("aio: an answer is larger than the place the record keeps for it");
+  }
   let t = libc.calloc(1usize, mem.sizeof[IoThread]()) as *IoThread;
   if t as usize == 0usize {
     die("aio: out of memory for the I/O thread");
@@ -518,8 +629,8 @@ fn ioMain(arg: IoArg) u32 {
     let me = arg.t as *IoThread;
     var lp = Loop.mustMake();
     mem.writeRaw[Waker](&(*me).waker as *Waker, lp.waker());
-    var hints = List[u64].empty();
-    (*me).hints = &mut hints as *List[u64];
+    mem.writeRaw[SlotTable[Rec]](&(*me).recs as *SlotTable[Rec], SlotTable[Rec].make(64u32));
+    onIo = true;
     (*me).ready.store(1u32);
     sync.futexWake(&(*me).ready);
     var out = List[Completion].empty();
@@ -536,8 +647,8 @@ fn ioMain(arg: IoArg) u32 {
       }
       let stop = ended.load();
       ioLock.unlock();
-      // The answers that came to this thread itself: the reads with no buffer
-      readsDone(me, &mut lp, &mut out, stop);
+      // The answers that came to this thread itself: the records' operations
+      sidesDone(me, &mut lp, &mut out, stop);
       while h as usize != 0usize {
         let next = (*h).next;
         if stop {
@@ -550,10 +661,18 @@ fn ioMain(arg: IoArg) u32 {
       }
       more = !stop;
     }
-    // A read still waiting is abandoned, as every awaited operation is: its
-    // reply is dropped, letting go of the actor that awaits it
-    dropReads(me);
+    // An operation still waiting is abandoned, as every awaited operation is:
+    // its reply is dropped, letting go of the actor that awaits it
+    dropSides(me);
     abandoning = true;
+  }
+  // The table is kept as long as the process unless no record is left in it:
+  // a Socket, File or UdpSocket dropped (or a spill block's answer released)
+  // after this finds its memory still there
+  let mine = arg.t as *IoThread;
+  if (*mine).recs.len() == 0usize {
+    mem.finalize[SlotTable[Rec]](&(*mine).recs as *SlotTable[Rec]);
+    mem.writeRaw[SlotTable[Rec]](&(*mine).recs as *SlotTable[Rec], SlotTable[Rec].make(64u32));
   }
   0u32
 }
@@ -660,29 +779,48 @@ struct OpJob[R] {
 
 // Start an operation on the I/O thread's Loop, in the group lim names if it
 // names one, bounded by its deadline if it has one
-fn submitLimited(lp: &mut Loop, o: Op, to: Target, lim: &IoLimits) {
-  submitLimitedBy(lp, o, to, lim, lim.deadline);
+fn submitLimited(lp: &mut Loop, o: Op, to: Target, lim: &IoLimits) OpId {
+  submitLimitedBy(lp, o, to, lim, lim.deadline)
 }
 
 // The same with a deadline of the caller's choosing in place of lim's (the
-// tighter of the two, which the caller has found)
-fn submitLimitedBy(lp: &mut Loop, o: Op, to: Target, lim: &IoLimits, deadline: Instant) {
+// tighter of the two, which the caller has found). The operation's OpId
+fn submitLimitedBy(lp: &mut Loop, o: Op, to: Target, lim: &IoLimits, deadline: Instant) OpId {
   match lim.group {
-    case let Some(g) {lp.submitIn(o, to, g, deadline);}
+    case let Some(g) {lp.submitIn(o, to, g, deadline)}
     else {
       if deadline < forever() {
-        lp.submitBy(o, to, deadline);
+        lp.submitBy(o, to, deadline)
       } else {
-        lp.submit(o, to);
+        lp.submit(o, to)
       }
     }
   }
 }
 
 // ---------------------------------------------------------------------------
-// Reads that hold no buffer while they wait (the package's header, READS WITH
-// NO BUFFER)
+// Records: one per handle, a side for each direction (the package's header,
+// RECORDS)
 // ---------------------------------------------------------------------------
+
+// A record's life word: closed (its handle has been closed; no operation may
+// begin on it), and a busy bit for each side, set from the moment an operation
+// takes the side until the awaiting actor has taken the answer out of it. The
+// record is freed by whoever finds it closed with both sides idle
+const lifeClosed = 1u32;
+const lifeBusyRead = 2u32;
+const lifeBusyWrite = 4u32;
+const lifeBusy = 6u32;
+
+// What a side is doing: which operation, and so which typed answer
+const opRecv = 1u32;          // read(buf): Result[IoBuf, IoError]
+const opRecvAny = 2u32;       // read(), read(room): the same, with a buffer the I/O side takes
+const opAccept = 3u32;        // Result[Socket, IoError]
+const opSend = 4u32;          // write(buf): Result[usize, IoError]
+const opReadAt = 5u32;        // a file's read: Result[IoBuf, IoError]
+const opWriteAt = 6u32;       // a file's write: Result[usize, IoError]
+const opRecvFrom = 7u32;      // a datagram: Result[Datagram, IoError]
+const opSendTo = 8u32;        // Result[usize, IoError]
 
 // The room a read with no buffer of its own is given when it names none: the
 // pool's smallest block
@@ -705,200 +843,597 @@ pub fn setReadQuiet(d: Duration) {
   readQuiet.store(d.nanos());
 }
 
-// Where a read is: a zero-byte receive is outstanding; a receive with a
-// buffer, started at once, is; the receive with a buffer that takes what the
-// zero-byte one said had come
+// Where a read with no buffer is: a zero-byte receive is outstanding; a receive
+// with a buffer, started at once, is; the receive with a buffer that takes what
+// the zero-byte one said had come
 fn stageReady() u32 {0u32}
 fn stageStraight() u32 {1u32}
 fn stageTake() u32 {2u32}
 
-// The largest handle slot the hints keep
-fn hintBound() usize {16777216usize}
+// The place an answer is written in, before the awaiting actor takes it out:
+// the owning side's address first (the word before the value, which is how
+// 'releaseAns' finds its side from the value's address), then the value. The
+// read side's holds the largest answer of a read: a Datagram's Result; the
+// write side's a count's
+struct AnsR {
+  pub owner: *Side;
+  pub v: Array[u64, 12];
+}
 
-// A read with no buffer, in flight on the I/O thread. Its address is the token
-// of the iocore operation it is in, which answers to the I/O thread itself
-// (Target.Here); the thread finishes or advances the read when the answer comes
-struct ReadState {
-  pub prev: *ReadState;
-  pub next: *ReadState;
+struct AnsW {
+  pub owner: *Side;
+  pub v: Array[u64, 4];
+}
+
+fn blankAnsR() AnsR {AnsR(null, Array[u64, 12]() <- fill 0u64)}
+fn blankAnsW() AnsW {AnsW(null, Array[u64, 4]() <- fill 0u64)}
+
+// One direction of one handle: the operation now using it, whatever that
+// operation holds while it is in flight, and where its answer waits. It is a
+// job (its header first), so that the queue to the I/O thread takes it as it
+// is. Fields are written by whoever has taken the side (the busy bit), and by
+// the I/O thread while the operation is in flight, never by two at once
+struct Side {
+  pub head: JobHead;
+  pub rec: *Rec;                  // null for a spill block's
+  pub h: Handle;
   pub reply: actors.Reply;
   pub limits: IoLimits;
-  pub h: Handle;
-  pub room: usize;
-  pub stage: u32;
-  pub since: i64;          // the steady clock when the operation now outstanding was started
-  pub ours: bool;          // its deadline is quietNanos', tighter than the caller's
+  pub buf: IoBuf;                 // the buffer to send, or to read into: in flight it is iocore's
+  pub arg: u64;                   // a file operation's byte offset; a read with no buffer: the room of the one it takes
+  pub opid: OpId;                 // the iocore operation now in flight, kept for cancel
+  pub since: i64;                 // when the operation now outstanding was started (the steady clock)
+  pub ansp: *u8;                  // where its answer is written (the value after its AnsR's or AnsW's owner word)
+  pub what: u32;
+  pub stage: u32;                 // a read with no buffer: stageReady ...
+  pub write: bool;
+  pub ours: bool;                 // a read with no buffer: its deadline is quietNanos', tighter than the caller's
 }
 
-fn nullRead() *ReadState {null}
+fn blankSide() Side {
+  Side(JobHead(nullJob(), &runSide, &dropSide), null, Handle.none(), actors.Reply(), IoLimits.none(),
+    IoBuf.empty(), 0u64, OpId.none(), 0i64, null, 0u32, 0u32, false, false)
+}
 
-fn linkRead(t: *IoThread, p: *ReadState) {
-  let head = (*t).reads;
-  (*p).prev = nullRead();
-  (*p).next = head;
-  if head as usize != 0usize {
-    (*head).prev = p;
+// The record of a handle: made with it (on the I/O thread), freed when it is
+// closed and nothing is using it. It lives in a table of stable cells, found
+// by its slot and generation (the iocore operation's token) or by the address
+// a Socket, File or UdpSocket holds
+struct Rec {
+  pub life: Atomic[u32];
+  pub index: u32;
+  pub gen: u32;
+  pub calm: bool;                 // its last read with no buffer came quickly (READS WITH NO BUFFER)
+  pub rd: Side;
+  pub rdAns: AnsR;
+  pub wr: Side;
+  pub wrAns: AnsW;
+}
+
+fn blankRec() Rec {
+  Rec(Atomic[u32].of(0u32), 0u32, 0u32, false, blankSide(), blankAnsR(), blankSide(), blankAnsW())
+}
+
+// A side with no record, made for an operation when the record's own is busy,
+// or there is no record (a Socket.none()): the side, then its answer's place;
+// and, while the operation is in flight, the I/O thread's list of them
+struct Spill {
+  pub side: Side;
+  pub ans: AnsR;
+  pub prev: *Spill;
+  pub next: *Spill;
+}
+
+fn nullSide() *Side {null}
+fn nullRec() *Rec {null}
+
+// True on the I/O thread alone
+var @threadlocal onIo = false;
+
+fn tableOf(t: *IoThread) *SlotTable[Rec] {&(*t).recs as *SlotTable[Rec]}
+
+// A record for the handle just made, in the table: on the I/O thread
+fn newRec(t: *IoThread) *Rec {
+  let tb = tableOf(t) as &mut SlotTable[Rec];
+  let slot = tb.add(blankRec());
+  let r = tb.get(slot);
+  (*r).index = slot.index;
+  (*r).gen = slot.gen;
+  (*r).rd.rec = r;
+  (*r).wr.rec = r;
+  (*r).wr.write = true;
+  (*r).rd.ansp = &(*r).rdAns.v[0usize] as *u8;
+  (*r).wr.ansp = &(*r).wrAns.v[0usize] as *u8;
+  (*r).rdAns.owner = &(*r).rd as *Side;
+  (*r).wrAns.owner = &(*r).wr as *Side;
+  r
+}
+
+// A record freed: on the I/O thread. Whatever its sides still hold is let go
+fn freeRec(rec: *Rec) {
+  let t = io.load() as *IoThread;
+  let tb = tableOf(t) as &mut SlotTable[Rec];
+  tb.removeAt((*rec).index);
+}
+
+// The values the module's handles are made into, on the I/O thread
+fn newSocket(h: Handle) Socket {
+  if h.isNone() {
+    return Socket.none();
   }
-  (*t).reads = p;
+  let t = io.load() as *IoThread;
+  Socket(h, newRec(t))
 }
 
-fn unlinkRead(t: *IoThread, p: *ReadState) {
-  let before = (*p).prev;
-  let after = (*p).next;
+fn newFile(h: Handle) File {
+  if h.isNone() {
+    return File.none();
+  }
+  let t = io.load() as *IoThread;
+  File(h, newRec(t))
+}
+
+fn newUdp(h: Handle) UdpSocket {
+  if h.isNone() {
+    return UdpSocket.none();
+  }
+  let t = io.load() as *IoThread;
+  UdpSocket(h, newRec(t))
+}
+
+// The side an operation on this handle uses: the record's own for the
+// direction if it is free (taken now, by setting its busy bit), else a spill
+// block, made for the one operation (the package's header, RECORDS: the
+// fallback). The caller fills it, and the operation begins when the awaited
+// Awaitable is started
+fn beginSide(rec: *Rec, h: Handle, write: bool, what: u32) *Side {
+  if rec as usize != 0usize {
+    let bit = if write {lifeBusyWrite} else {lifeBusyRead};
+    var v = (*rec).life.load();
+    while (v & (lifeClosed | bit)) == 0u32 {
+      let seen, ok = (*rec).life.compareSwap(v, v | bit);
+      if ok {
+        var s = &(*rec).rd as *Side;
+        if write {
+          s = &(*rec).wr as *Side;
+        }
+        (*s).what = what;
+        (*s).h = h;
+        return s;
+      }
+      v = seen;
+    }
+  }
+  let blk = libc.malloc(mem.sizeof[Spill]()) as *Spill;
+  if blk as usize == 0usize {
+    die("aio: out of memory for an operation");
+  }
+  mem.writeRaw[Spill](blk, Spill(blankSide(), blankAnsR(), null, null));
+  let s = &(*blk).side as *Side;
+  (*blk).ans.owner = s;
+  (*s).ansp = &(*blk).ans.v[0usize] as *u8;
+  (*s).write = write;
+  (*s).what = what;
+  (*s).h = h;
+  s
+}
+
+// The side as an Awaitable[R]: nothing is allocated; its context word is the
+// side
+fn sideAwaitable[R](s: *Side) actors.Awaitable[R] {
+  actors.Awaitable[R].of(s as *u8, &startSide, &dropSide)
+}
+
+// The seam starts the operation: the reply its answer goes back in is written
+// into the side, which goes to the I/O thread as it is
+fn startSide(ctx: *u8, rp: actors.Reply) {
+  (*(ctx as *Side)).reply = rp;
+  enqueue(ctx);
+}
+
+// An Awaitable that dies unawaited, or a queue dropped at the program's end:
+// what the side holds is let go and the side given back
+fn dropSide(job: *u8) {
+  let s = job as *Side;
+  resetSide(s);
+  releaseSide(s);
+}
+
+// What a side holds is let go: its buffer goes home, its reply is dropped,
+// its limits forgotten
+fn resetSide(s: *Side) {
+  var b = IoBuf.empty();
+  b <-> (*s).buf;
+  var r = actors.Reply();
+  r <-> (*s).reply;
+  (*s).limits = IoLimits.none();
+  (*s).opid = OpId.none();
+}
+
+// The side is the actor's no more, answer taken or never made: its busy bit is
+// cleared, and the record freed if it is closed and the other side idle. A
+// spill block is freed. Any thread
+fn releaseSide(s: *Side) {
+  let rec = (*s).rec;
+  if rec as usize == 0usize {
+    mem.finalize[Side](s);
+    libc.free(s as *u8);
+    return;
+  }
+  let bit = if (*s).write {lifeBusyWrite} else {lifeBusyRead};
+  let old = (*rec).life.bitAnd(~bit);
+  if (old & lifeClosed) != 0u32 && (old & lifeBusy & ~bit) == 0u32 {
+    if onIo {
+      freeRec(rec);
+    } else {
+      // Both sides are idle, so the read side's job header is free to carry
+      // the record's reaping to the I/O thread
+      (*rec).rd.head.run = &runReap;
+      (*rec).rd.head.drop = &dropReap;
+      enqueue(&(*rec).rd as *u8);
+    }
+  }
+}
+
+// The awaiting actor has taken the answer from where 'deliver' put it: the
+// word before the value names its side
+fn releaseAns(p: *u8) {
+  let s = *((p - 8usize) as **Side);
+  releaseSide(s);
+}
+
+// A record found closed and idle by another thread: freed here
+fn runReap(job: *u8, lp: &mut Loop) {
+  freeRec((*(job as *Side)).rec);
+}
+
+fn dropReap(job: *u8) {}
+
+// The token of a side's iocore operations: a record's side by its slot,
+// generation and direction (so that an answer for a record freed and reused
+// is known and dropped), a spill block's by its address
+fn tokenOf(s: *Side) u64 {
+  let rec = (*s).rec;
+  if rec as usize == 0usize {
+    return u64.from(s as usize) | 2u64;
+  }
+  let dir = if (*s).write {1u64} else {0u64};
+  (u64.from((*rec).gen) << 32u64) | (u64.from((*rec).index) << 2u64) | dir
+}
+
+// The side a token names, or null if it names none (token 0, or a record gone)
+fn sideOf(t: *IoThread, token: u64) *Side {
+  if token == 0u64 {
+    return nullSide();
+  }
+  let tag = token & 3u64;
+  if tag == 2u64 {
+    return usize.from(token & ~3u64) as *Side;
+  }
+  let tb = tableOf(t) as &mut SlotTable[Rec];
+  let rec = tb.get(Slot(u32.from((token >> 2u64) & 0x3FFFFFFFu64), u32.from(token >> 32u64)));
+  if rec as usize == 0usize {
+    return nullSide();
+  }
+  if tag == 1u64 {
+    return &(*rec).wr as *Side;
+  }
+  &(*rec).rd as *Side
+}
+
+// A spill block in flight is on the I/O thread's list (a Side is the first thing
+// in its Spill)
+fn linkSpill(t: *IoThread, side: *Side) {
+  let s = side as *Spill;
+  let head = (*t).spills;
+  (*s).prev = null;
+  (*s).next = head;
+  if head as usize != 0usize {
+    (*head).prev = s;
+  }
+  (*t).spills = s;
+}
+
+fn unlinkSpill(t: *IoThread, side: *Side) {
+  let s = side as *Spill;
+  let before = (*s).prev;
+  let after = (*s).next;
   if before as usize != 0usize {
     (*before).next = after;
   } else {
-    (*t).reads = after;
+    (*t).spills = after;
   }
   if after as usize != 0usize {
     (*after).prev = before;
   }
 }
 
-fn freeRead(p: *ReadState) {
-  mem.finalize[ReadState](p);
-  libc.free(p as *u8);
-}
-
-// The I/O thread is ending: every read still waiting is dropped, its reply
-// with it
-fn dropReads(t: *IoThread) {
-  var p = (*t).reads;
-  (*t).reads = nullRead();
-  while p as usize != 0usize {
-    let next = (*p).next;
-    freeRead(p);
-    p = next;
+// The queue hands the I/O thread a side whose operation is to begin
+fn runSide(job: *u8, lp: &mut Loop) {
+  let s = job as *Side;
+  let t = io.load() as *IoThread;
+  if (*s).rec as usize == 0usize {
+    linkSpill(t, s);
+    (*t).spilled = (*t).spilled + 1u64;
+  } else {
+    (*t).fast = (*t).fast + 1u64;
+  }
+  if (*s).what == opRecvAny {
+    var first = stageReady();
+    let rec = (*s).rec;
+    if rec as usize != 0usize && (*rec).calm {
+      first = stageStraight();
+    }
+    issueStage(lp, s, first);
+  } else {
+    issuePlain(lp, s);
   }
 }
 
-// Whether the socket's last read came in quickly (a hint, kept by the slot
-// of the loop's table the socket's handle names, and the handle's generation,
-// so that a later socket in the slot starts without one)
-fn calmHint(t: *IoThread, h: Handle) bool {
-  let slot = usize.from(h.slot());
-  let hints = (*t).hints as &mut List[u64];
-  if h.isNone() || slot >= hints.len() {
-    return false;
-  }
-  let e = *hints[slot];
-  (e >> 1u64) == u64.from(h.generation()) && (e & 1u64) == 1u64
+fn takeBuf(s: *Side) IoBuf {
+  var b = IoBuf.empty();
+  b <-> (*s).buf;
+  b
 }
 
-fn setHint(t: *IoThread, h: Handle, calm: bool) {
-  let slot = usize.from(h.slot());
-  if h.isNone() || slot >= hintBound() {
-    return;
+// Start the side's operation, its answer to this thread, the iocore OpId kept
+fn issuePlain(lp: &mut Loop, s: *Side) {
+  let h = (*s).h;
+  let w = (*s).what;
+  let to = Target.Here(tokenOf(s));
+  var id = OpId.none();
+  if w == opRecv {
+    id = submitLimited(lp, Op.Recv(h, takeBuf(s)), to, &(*s).limits);
+  } else if w == opAccept {
+    id = submitLimited(lp, Op.Accept(h), to, &(*s).limits);
+  } else if w == opSend {
+    id = submitLimited(lp, Op.Send(h, takeBuf(s)), to, &(*s).limits);
+  } else if w == opReadAt {
+    id = submitLimited(lp, Op.ReadAt(h, (*s).arg, takeBuf(s)), to, &(*s).limits);
+  } else if w == opWriteAt {
+    id = submitLimited(lp, Op.WriteAt(h, (*s).arg, takeBuf(s)), to, &(*s).limits);
+  } else if w == opRecvFrom {
+    id = submitLimited(lp, Op.RecvFrom(h, takeBuf(s)), to, &(*s).limits);
+  } else {
+    // The destination was left in the place the answer will be written in
+    let dest = mem.readRaw[SocketAddr]((*s).ansp as *SocketAddr);
+    id = submitLimited(lp, Op.SendTo(h, dest, takeBuf(s)), to, &(*s).limits);
   }
-  let hints = (*t).hints as &mut List[u64];
-  while hints.len() <= slot {
-    hints.push(0u64);
-  }
-  var bit = 0u64;
-  if calm {
-    bit = 1u64;
-  }
-  hints.set(slot, (u64.from(h.generation()) << 1u64) | bit);
+  (*s).opid = id;
 }
 
-// Start the read's next operation, in the stage given, on the I/O thread's
-// Loop, its answer to this thread
-fn issueRead(t: *IoThread, lp: &mut Loop, p: *ReadState, stage: u32) {
-  (*p).stage = stage;
-  (*p).ours = false;
+// Start the next operation of a read with no buffer, in the stage given. The
+// side keeps the OpId of the one outstanding, so a cancel reaches whichever
+// stage the read is in; the caller's deadline and group bound the whole read
+// (the side's limits), and a receive begun with a buffer carries a deadline
+// of the quiet time as well, when that is the earlier
+fn issueStage(lp: &mut Loop, s: *Side, stage: u32) {
+  (*s).stage = stage;
+  (*s).ours = false;
   let now = Instant.now();
-  (*p).since = now.nanos();
-  let to = Target.Here(u64.from(p as usize));
-  let h = (*p).h;
+  (*s).since = now.nanos();
+  let to = Target.Here(tokenOf(s));
+  let h = (*s).h;
+  var id = OpId.none();
   if stage == stageReady() {
-    submitLimited(lp, Op.RecvReady(h), to, &(*p).limits);
+    id = submitLimited(lp, Op.RecvReady(h), to, &(*s).limits);
   } else if stage == stageStraight() {
-    var until = (*p).limits.deadline;
+    var until = (*s).limits.deadline;
     let soon = now + Duration.fromNanos(quietNanos());
     if soon < until {
       until = soon;
-      (*p).ours = true;
+      (*s).ours = true;
     }
-    submitLimitedBy(lp, Op.Recv(h, IoBuf((*p).room)), to, &(*p).limits, until);
+    id = submitLimitedBy(lp, Op.Recv(h, IoBuf(usize.from((*s).arg))), to, &(*s).limits, until);
   } else {
-    submitLimited(lp, Op.Recv(h, IoBuf((*p).room)), to, &(*p).limits);
+    id = submitLimited(lp, Op.Recv(h, IoBuf(usize.from((*s).arg))), to, &(*s).limits);
+  }
+  (*s).opid = id;
+}
+
+// Whether the socket's last read with no buffer came quickly: a hint, kept in
+// its record (a spill block has none: it starts without a buffer and keeps no
+// hint)
+fn isCalm(s: *Side) bool {
+  let rec = (*s).rec;
+  rec as usize != 0usize && (*rec).calm
+}
+
+fn setCalm(s: *Side, calm: bool) {
+  let rec = (*s).rec;
+  if rec as usize != 0usize {
+    (*rec).calm = calm;
   }
 }
 
-// An answer to one of the reads' operations, on the I/O thread
-fn readDone(t: *IoThread, lp: &mut Loop, c: Completion, stop: bool) {
+// An answer to one of the sides' operations, on the I/O thread
+fn sideDone(t: *IoThread, lp: &mut Loop, c: Completion, stop: bool) {
   var done = c;
-  if done.token == 0u64 {
+  let s = sideOf(t, done.token);
+  if s as usize == 0usize {
     return;
   }
-  let p = usize.from(done.token) as *ReadState;
   if stop {
-    unlinkRead(t, p);
-    freeRead(p);
+    abandonSide(t, s);
     return;
   }
-  let stage = (*p).stage;
-  if stage == stageReady() && done.status == diag.outcomeDone {
-    // Bytes have come: take them, with a buffer made now. Came quickly or not,
-    // the socket's next read starts in the mode that suits
-    let waited = Instant.now().nanos() - (*p).since;
-    setHint(t, (*p).h, waited < quietNanos());
-    issueRead(t, lp, p, stageTake());
-    return;
-  }
-  if stage == stageStraight() {
-    if done.status == diag.outcomeTimedOut && (*p).ours {
-      // Quiet: the buffer goes home, and the read waits without one
-      setHint(t, (*p).h, false);
-      issueRead(t, lp, p, stageReady());
+  if (*s).what == opRecvAny {
+    let stage = (*s).stage;
+    if stage == stageReady() && done.status == diag.outcomeDone {
+      // Bytes have come: take them, with a buffer made now. Came quickly or not,
+      // the socket's next read starts in the mode that suits
+      let waited = Instant.now().nanos() - (*s).since;
+      setCalm(s, waited < quietNanos());
+      issueStage(lp, s, stageTake());
       return;
     }
-    if done.status == diag.outcomeDone {
-      setHint(t, (*p).h, true);
+    if stage == stageStraight() {
+      if done.status == diag.outcomeTimedOut && (*s).ours {
+        // Quiet: the buffer goes home (with the answer), and the read waits
+        // without one: the same side, its OpId replaced by the new operation's
+        setCalm(s, false);
+        issueStage(lp, s, stageReady());
+        return;
+      }
+      if done.status == diag.outcomeDone {
+        setCalm(s, true);
+      }
     }
   }
-  unlinkRead(t, p);
-  let v = readAnswer(&mut done);
+  finish(t, s, &mut done);
+}
+
+// The operation is over: its typed answer is written in the side, and the
+// awaiting actor told where it is
+fn finish(t: *IoThread, s: *Side, c: &mut Completion) {
+  if (*s).rec as usize == 0usize {
+    unlinkSpill(t, s);
+  }
+  (*s).opid = OpId.none();
+  let w = (*s).what;
+  // What the answer does not hand on (a failed read's buffer, a sent buffer)
+  // goes home to its pool before the actor is told, so that the actor finds it
+  // home
+  if w == opRecv || w == opRecvAny || w == opReadAt {
+    let v = readAnswer(c);
+    letGo(c);
+    deliver[Result[IoBuf, IoError]](s, v);
+  } else if w == opAccept {
+    let v = socketAnswer(c);
+    letGo(c);
+    deliver[Result[Socket, IoError]](s, v);
+  } else if w == opRecvFrom {
+    let v = datagramAnswer(c);
+    letGo(c);
+    deliver[Result[Datagram, IoError]](s, v);
+  } else {
+    let v = writeAnswer(c);
+    letGo(c);
+    deliver[Result[usize, IoError]](s, v);
+  }
+}
+
+// The buffer an answer still holds goes home
+fn letGo(c: &mut Completion) {
+  var b = IoBuf.empty();
+  b <-> c.buf;
+}
+
+// The answer v written in the side's place for it, the reply told: the actor's
+// worker takes the value from there when it resumes and then releases the
+// side (actors.answerLent). The side is not touched after this call: the
+// answer may have been taken, and the side released, before it returns
+fn deliver[R](s: *Side, v: R) {
+  let p = (*s).ansp as *R;
+  mem.writeRaw[R](p, v);
+  (*s).limits = IoLimits.none();
   var back = actors.Reply();
-  back <-> (*p).reply;
-  freeRead(p);
-  actors.answerNow[Result[IoBuf, IoError]](back, v);
+  back <-> (*s).reply;
+  actors.answerLent[R](back, p, &takeAns[R]);
+}
+
+// The awaiting actor's worker takes the answer out of its place, into one of
+// its own, and the side is free again before the behaviour goes on
+fn takeAns[R](p: *u8, to: *u8) {
+  mem.writeRaw[R](to as *R, mem.readRaw[R](p as *R));
+  releaseAns(p);
+}
+
+// The loop is dying: this operation's answer is not delivered, and the actor
+// that awaits it is let go (its reply dropped)
+fn abandonSide(t: *IoThread, s: *Side) {
+  if (*s).rec as usize == 0usize {
+    unlinkSpill(t, s);
+  }
+  resetSide(s);
+  releaseSide(s);
 }
 
 // The answers that came to the I/O thread itself (nothing else here asks for
-// one): each is a read's
-fn readsDone(t: *IoThread, lp: &mut Loop, out: &mut List[Completion], stop: bool) {
+// one): each is a side's
+fn sidesDone(t: *IoThread, lp: &mut Loop, out: &mut List[Completion], stop: bool) {
   var more = true;
   while more {
     match out.pop() {
-      case var Some(c) {readDone(t, lp, c, stop);}
+      case var Some(c) {sideDone(t, lp, c, stop);}
       else {more = false;}
     }
   }
 }
 
-// A read with no buffer, to start on the I/O thread's Loop
-struct ReadJob {
-  pub h: Handle;
-  pub room: usize;
-  pub limits: IoLimits;
-  pub reply: actors.Reply;
-
-  fn run(self, lp: &mut Loop) {
-    let h, room, limits, rp = self.(h, room, limits, reply);
-    let t = io.load() as *IoThread;
-    let p = libc.malloc(mem.sizeof[ReadState]()) as *ReadState;
-    if p as usize == 0usize {
-      die("aio: out of memory for a read");
-    }
-    mem.writeRaw[ReadState](p, ReadState(nullRead(), nullRead(), rp, limits, h, room, stageReady(), 0i64, false));
-    linkRead(t, p);
-    var first = stageReady();
-    if calmHint(t, h) {
-      first = stageStraight();
-    }
-    issueRead(t, lp, p, first);
+// The I/O thread is ending: every operation still waiting is dropped, its
+// reply with it (letting go of the actor that awaits it)
+fn dropSides(t: *IoThread) {
+  var p = (*t).spills;
+  (*t).spills = null;
+  while p as usize != 0usize {
+    let next = (*p).next;
+    mem.finalize[Side](p as *Side);
+    libc.free(p as *u8);
+    p = next;
   }
+  let tb = tableOf(t) as &mut SlotTable[Rec];
+  var i = 0u32;
+  while usize.from(i) < tb.bound() {
+    let r = tb.at(i);
+    if r as usize != 0usize {
+      resetSide(&(*r).rd as *Side);
+      resetSide(&(*r).wr as *Side);
+    }
+    i = i + 1u32;
+  }
+}
+
+// The count of a handle's in-flight read or write, ended on its own (CANCEL
+// AND DEADLINES, a handle's single operation): the record's slot and
+// generation, so that a record freed meanwhile is known
+struct CancelJob {
+  pub slot: u32;
+  pub gen: u32;
+  pub write: bool;
+
+  fn run(self: &mut, lp: &mut Loop) {
+    let t = io.load() as *IoThread;
+    let tb = tableOf(t) as &mut SlotTable[Rec];
+    let rec = tb.get(Slot(slot, gen));
+    if rec as usize != 0usize {
+      var s = &(*rec).rd as *Side;
+      if write {
+        s = &(*rec).wr as *Side;
+      }
+      if !(*s).opid.isNone() {
+        lp.cancel((*s).opid);
+      }
+    }
+  }
+}
+
+// Ask a record's read or write in flight to end, from any thread: nothing if
+// there is none, or it has not yet reached the I/O thread
+fn cancelSide(rec: *Rec, write: bool) {
+  if rec as usize == 0usize {
+    return;
+  }
+  enqueue(newJob[CancelJob](CancelJob((*rec).index, (*rec).gen, write)));
+}
+
+// What the records have done so far (opStats)
+pub struct OpStats {
+  pub fast: u64;           // operations begun on a record's own side: nothing allocated
+  pub spilled: u64;        // ...on a spill block, the side being busy (or no record): the fallback
+  pub records: u64;        // records now in the table: one for each Socket, File and UdpSocket open
+}
+
+// Counts of the operations begun on the records' own sides and on spill
+// blocks, and the records now open: zero before the first operation is awaited
+pub fn opStats() OpStats {
+  ioLock.lock();
+  let t = io.load() as *IoThread;
+  ioLock.unlock();
+  if t as usize == 0usize {
+    return OpStats(0u64, 0u64, 0u64);
+  }
+  OpStats((*t).fast, (*t).spilled, u64.from((*t).recs.len()))
 }
 
 // The hook an operation in flight holds: a closure that keeps the reply and
@@ -950,7 +1485,7 @@ fn writeAnswer(c: &mut Completion) Result[usize, IoError] {
 
 fn socketAnswer(c: &mut Completion) Result[Socket, IoError] {
   if c.status == diag.outcomeDone {
-    return Ok[Socket, IoError](Socket(c.handle));
+    return Ok[Socket, IoError](newSocket(c.handle));
   }
   Error[Socket, IoError](endError(c))
 }
@@ -1045,7 +1580,7 @@ struct ListenJob {
   fn run(self, lp: &mut Loop) {
     let addr, rp = self.(addr, reply);
     match lp.listen(addr) {
-      case let Ok(ok) {actors.answerNow[Result[Socket, IoError]](rp, Ok[Socket, IoError](Socket(ok)));}
+      case let Ok(ok) {actors.answerNow[Result[Socket, IoError]](rp, Ok[Socket, IoError](newSocket(ok)));}
       case let Error(e) {actors.answerNow[Result[Socket, IoError]](rp, Error[Socket, IoError](e));}
     }
   }
@@ -1059,7 +1594,7 @@ struct BindUdpJob {
   fn run(self, lp: &mut Loop) {
     let addr, rp = self.(addr, reply);
     match lp.bindUdp(addr) {
-      case let Ok(ok) {actors.answerNow[Result[UdpSocket, IoError]](rp, Ok[UdpSocket, IoError](UdpSocket(ok)));}
+      case let Ok(ok) {actors.answerNow[Result[UdpSocket, IoError]](rp, Ok[UdpSocket, IoError](newUdp(ok)));}
       case let Error(e) {actors.answerNow[Result[UdpSocket, IoError]](rp, Error[UdpSocket, IoError](e));}
     }
   }
@@ -1074,7 +1609,7 @@ struct OpenFileJob {
   fn run(self, lp: &mut Loop) {
     let path, access, rp = self.(path, access, reply);
     match lp.openFile(&path, access) {
-      case let Ok(ok) {actors.answerNow[Result[File, IoError]](rp, Ok[File, IoError](File(ok)));}
+      case let Ok(ok) {actors.answerNow[Result[File, IoError]](rp, Ok[File, IoError](newFile(ok)));}
       case let Error(e) {actors.answerNow[Result[File, IoError]](rp, Error[File, IoError](e));}
     }
   }
@@ -1214,9 +1749,18 @@ struct LocalAddrJob {
 // cancelled. Nothing awaits it
 struct CloseJob {
   pub h: Handle;
+  pub rec: *Rec;
 
   fn run(self: &mut, lp: &mut Loop) {
     lp.close(h);
+    if rec as usize != 0usize {
+      // The record is freed now if no operation holds a side of it; else by
+      // whoever lets go of the last (releaseSide)
+      let old = (*rec).life.bitOr(lifeClosed);
+      if (old & lifeBusy) == 0u32 {
+        freeRec(rec);
+      }
+    }
   }
 }
 
@@ -1226,19 +1770,20 @@ struct CloseJob {
 
 // A TCP socket the I/O thread holds (the package's header, A SOCKET): it
 // moves, and dropping it closes the socket
-pub struct Socket is Move {
+pub struct Socket is Move, Sendable {
   h: Handle;
+  rec: *Rec;                // its record (RECORDS): null for a Socket naming nothing
 
   // A Socket naming nothing, which closes nothing: to swap one out of a
   // Result, or into a field before one is there
-  pub fn none() Socket {Socket(Handle.none())}
+  pub fn none() Socket {Socket(Handle.none(), nullRec())}
 
   pub fn isNone(self: &) bool {h.isNone()}
 
   // The iocore handle it names, on the I/O thread's Loop
   pub fn handle(self: &) Handle {h}
 
-  // The next connection on this listening socket
+  // The next connection on this listening socket (the listener's read side)
   pub fn accept(self: &) actors.Awaitable[Result[Socket, IoError]] {
     self.acceptIn(IoLimits.none())
   }
@@ -1246,7 +1791,9 @@ pub struct Socket is Move {
   // The next connection, ended if lim says so (the package's header, CANCEL
   // AND DEADLINES)
   pub fn acceptIn(self: &, lim: IoLimits) actors.Awaitable[Result[Socket, IoError]] {
-    opAwaitable[Result[Socket, IoError]](Op.Accept(h), &socketAnswer, lim)
+    let s = beginSide(rec, h, false, opAccept);
+    (*s).limits = lim;
+    sideAwaitable[Result[Socket, IoError]](s)
   }
 
   // What arrives, appended to buf, which is moved in and comes back in the
@@ -1258,7 +1805,11 @@ pub struct Socket is Move {
 
   // A read ended if lim says so; then the buffer goes home to its pool
   pub fn readBufIn overload readIn(self: &, buf: IoBuf, lim: IoLimits) actors.Awaitable[Result[IoBuf, IoError]] {
-    opAwaitable[Result[IoBuf, IoError]](Op.Recv(h, buf), &readAnswer, lim)
+    let s = beginSide(rec, h, false, opRecv);
+    var b = buf;
+    b <-> (*s).buf;
+    (*s).limits = lim;
+    sideAwaitable[Result[IoBuf, IoError]](s)
   }
 
   // What arrives, in a buffer the I/O side takes: the caller holds none, and
@@ -1283,7 +1834,10 @@ pub struct Socket is Move {
   }
 
   pub fn readRoomIn overload readIn(self: &, room: usize, lim: IoLimits) actors.Awaitable[Result[IoBuf, IoError]] {
-    awaitable[ReadJob, Result[IoBuf, IoError]](ReadJob(h, room, lim, actors.Reply()))
+    let s = beginSide(rec, h, false, opRecvAny);
+    (*s).arg = u64.from(room);
+    (*s).limits = lim;
+    sideAwaitable[Result[IoBuf, IoError]](s)
   }
 
   // All of buf, which is moved in and goes home once sent: the count
@@ -1293,7 +1847,26 @@ pub struct Socket is Move {
 
   // A write ended if lim says so, part of buf perhaps sent
   pub fn writeIn(self: &, buf: IoBuf, lim: IoLimits) actors.Awaitable[Result[usize, IoError]] {
-    opAwaitable[Result[usize, IoError]](Op.Send(h, buf), &writeAnswer, lim)
+    let s = beginSide(rec, h, true, opSend);
+    var b = buf;
+    b <-> (*s).buf;
+    (*s).limits = lim;
+    sideAwaitable[Result[usize, IoError]](s)
+  }
+
+  // Ask the read (or accept) in flight on this socket to end: it is answered
+  // Cancelled, as a group's cancel answers it, with the buffer given back.
+  // Reaches the operation on the socket's own read side that has been started
+  // by its 'await'; none in flight, or one not yet started, is not affected,
+  // and a second read at once (the one that took a spill block, RECORDS)
+  // cannot be reached this way. From any thread, idempotent
+  pub fn cancelRead(self: &) {
+    cancelSide(rec, false);
+  }
+
+  // The same for the write in flight
+  pub fn cancelWrite(self: &) {
+    cancelSide(rec, true);
   }
 
   // The address the socket is bound to: a listening socket's port, where the
@@ -1304,7 +1877,7 @@ pub struct Socket is Move {
 
   fn final(self: &uni) {
     if !h.isNone() {
-      enqueue(newJob[CloseJob](CloseJob(h)));
+      enqueue(newJob[CloseJob](CloseJob(h, rec)));
     }
   }
 }
@@ -1324,12 +1897,13 @@ pub struct Datagram {
 // kind of its own beside Socket and File, so that a stream operation on it, or
 // a datagram operation on a TCP socket, does not compile. It moves, and
 // dropping it closes the socket
-pub struct UdpSocket is Move {
+pub struct UdpSocket is Move, Sendable {
   h: Handle;
+  rec: *Rec;                // its record (RECORDS): null for a UdpSocket naming nothing
 
   // A UdpSocket naming nothing, which closes nothing: to swap one out of a
   // Result, or into a field before one is there
-  pub fn none() UdpSocket {UdpSocket(Handle.none())}
+  pub fn none() UdpSocket {UdpSocket(Handle.none(), nullRec())}
 
   pub fn isNone(self: &) bool {h.isNone()}
 
@@ -1348,7 +1922,11 @@ pub struct UdpSocket is Move {
 
   // A receive ended if lim says so; then the buffer goes home to its pool
   pub fn recvFromIn(self: &, buf: IoBuf, lim: IoLimits) actors.Awaitable[Result[Datagram, IoError]] {
-    opAwaitable[Result[Datagram, IoError]](Op.RecvFrom(h, buf), &datagramAnswer, lim)
+    let s = beginSide(rec, h, false, opRecvFrom);
+    var b = buf;
+    b <-> (*s).buf;
+    (*s).limits = lim;
+    sideAwaitable[Result[Datagram, IoError]](s)
   }
 
   // All of buf as one datagram to addr, buf moved in and going home once sent:
@@ -1360,7 +1938,22 @@ pub struct UdpSocket is Move {
 
   // A send ended if lim says so
   pub fn sendToIn(self: &, addr: SocketAddr, buf: IoBuf, lim: IoLimits) actors.Awaitable[Result[usize, IoError]] {
-    opAwaitable[Result[usize, IoError]](Op.SendTo(h, addr, buf), &writeAnswer, lim)
+    let s = beginSide(rec, h, true, opSendTo);
+    var b = buf;
+    b <-> (*s).buf;
+    mem.writeRaw[SocketAddr]((*s).ansp as *SocketAddr, addr);   // left in the answer's place until the send begins
+    (*s).limits = lim;
+    sideAwaitable[Result[usize, IoError]](s)
+  }
+
+  // Ask the receive in flight on this socket to end, as Socket's cancelRead
+  pub fn cancelRead(self: &) {
+    cancelSide(rec, false);
+  }
+
+  // The same for the send in flight
+  pub fn cancelWrite(self: &) {
+    cancelSide(rec, true);
   }
 
   // The address the socket is bound to: its port, where the system chose it
@@ -1370,7 +1963,7 @@ pub struct UdpSocket is Move {
 
   fn final(self: &uni) {
     if !h.isNone() {
-      enqueue(newJob[CloseJob](CloseJob(h)));
+      enqueue(newJob[CloseJob](CloseJob(h, rec)));
     }
   }
 }
@@ -1381,12 +1974,13 @@ pub struct UdpSocket is Move {
 
 // A file the I/O thread holds (the package's header, A FILE): it moves, and
 // dropping it closes the file
-pub struct File is Move {
+pub struct File is Move, Sendable {
   h: Handle;
+  rec: *Rec;                // its record (RECORDS): null for a File naming nothing
 
   // A File naming nothing, which closes nothing: to swap one out of a
   // Result, or into a field before one is there
-  pub fn none() File {File(Handle.none())}
+  pub fn none() File {File(Handle.none(), nullRec())}
 
   pub fn isNone(self: &) bool {h.isNone()}
 
@@ -1403,7 +1997,12 @@ pub struct File is Move {
 
   // A read ended if lim says so; then the buffer goes home to its pool
   pub fn readAtIn(self: &, at: u64, buf: IoBuf, lim: IoLimits) actors.Awaitable[Result[IoBuf, IoError]] {
-    opAwaitable[Result[IoBuf, IoError]](Op.ReadAt(h, at, buf), &readAnswer, lim)
+    let s = beginSide(rec, h, false, opReadAt);
+    var b = buf;
+    b <-> (*s).buf;
+    (*s).arg = at;
+    (*s).limits = lim;
+    sideAwaitable[Result[IoBuf, IoError]](s)
   }
 
   // All of buf, which is moved in and goes home once written, at byte offset
@@ -1414,12 +2013,29 @@ pub struct File is Move {
 
   // A write ended if lim says so, part of buf perhaps written
   pub fn writeAtIn(self: &, at: u64, buf: IoBuf, lim: IoLimits) actors.Awaitable[Result[usize, IoError]] {
-    opAwaitable[Result[usize, IoError]](Op.WriteAt(h, at, buf), &writeAnswer, lim)
+    let s = beginSide(rec, h, true, opWriteAt);
+    var b = buf;
+    b <-> (*s).buf;
+    (*s).arg = at;
+    (*s).limits = lim;
+    sideAwaitable[Result[usize, IoError]](s)
+  }
+
+  // Ask the read in flight on this file's read side to end, as Socket's
+  // cancelRead (a file takes many reads at once; the others took spill blocks
+  // and are reached by a group or deadline only)
+  pub fn cancelRead(self: &) {
+    cancelSide(rec, false);
+  }
+
+  // The same for the write
+  pub fn cancelWrite(self: &) {
+    cancelSide(rec, true);
   }
 
   fn final(self: &uni) {
     if !h.isNone() {
-      enqueue(newJob[CloseJob](CloseJob(h)));
+      enqueue(newJob[CloseJob](CloseJob(h, rec)));
     }
   }
 }

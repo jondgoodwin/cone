@@ -1,0 +1,217 @@
+// The slots package: a stable table of fixed-size records. A SlotTable[T] holds
+// values of one type in cells that NEVER MOVE: the table grows by whole chunks
+// of cells and never shrinks or reallocates them, so the address of a value is
+// good for as long as the value is in the table, and an outside party (the
+// kernel, another thread, a pointer in a message) may hold it. Adding a value
+// gives back a Slot: the cell's index and which occupant of it this is (its
+// generation). A Slot owns nothing, is plain data, and may be copied and kept
+// anywhere; when the value is removed, every Slot to it stops reaching
+// anything, even after another value takes the cell. Free cells are chained in
+// a free list (last freed, first reused), so adding and removing cost a few
+// stores and no allocation, except the add that needs a new chunk.
+//
+//   mod demo;
+//   import slots use *;
+//
+//   struct Conn {pub fd: i64; pub open: bool;}
+//
+//   fn demo() {
+//     var t = SlotTable[Conn].make(64u32);
+//     imm a = t.add(Conn(7i64, true));          // a Slot
+//     let p = t.get(a);                          // *Conn, or null if a's value is gone
+//     imm same = t.at(a.index);                  // by index alone, for a token that carries no generation
+//     t.remove(a);                               // the value is finalized, a stops reaching it
+//     // t.get(a) is null now, even if another add took the cell
+//   }
+//
+//   t.add(v)           move v in: its Slot
+//   t.get(s)           *T of the value s names, null if s is stale or none
+//   t.at(i)            *T of the live value in cell i, null if the cell is free or past the table
+//   t.slotAt(i)        the Slot of the live value in cell i (Slot.none() if free)
+//   t.remove(s)        finalize the value and free its cell: true; false if s was stale
+//   t.removeAt(i)      the same for whatever occupies cell i
+//   t.len()            how many values are in the table
+//   t.bound()          how many cells there are, live or free: cells 0 up to bound() are the ones to walk
+//   t.isLive(i)        whether cell i holds a value
+//
+// ONE THREAD AT A TIME. A table does no locking: the thread that owns it adds,
+// removes and looks values up; a value's address may be handed to others (that
+// is what the stable cells are for), who must not use it after the owner has
+// removed the value. The table's own death finalizes every value still in it
+// and frees the chunks.
+//
+// A value is written into its cell when it is added and finalized when it is
+// removed (its fields' own finalizers run then), so a cell holds a valid value
+// only while it is live. Cells are 16-byte aligned (malloc's), and so is the
+// value in them when T is aligned to 16 or less.
+//
+// WHAT IT IS NOT. It does not hand out raw memory by size: it is for records of
+// one type, found by number. It does not draw its chunks from the iobuf
+// package's fixed-size block pools (blocks.cone), which it was asked to
+// consider: those serve blocks that are taken and returned by many threads
+// (per-thread caches, one lock per class), and a table's chunk is taken a few
+// times in its life by one thread and is never returned, so a per-thread cache
+// has nothing to cache; and a record is found by NUMBER, so the cells of a
+// chunk must be contiguous, which a block pool's blocks are not. Chunks are the
+// C library's blocks.
+//
+// Not here: shrinking (a chunk is kept until the table dies; the high-water mark
+// of live values is what is held), iteration beyond walking 0 ..< bound() with
+// isLive(i), and sharing a table between threads.
+
+mod slots;
+
+import libc;
+import collections use List;
+
+const noCell = 0xFFFFFFFFu32;
+
+// A cell's number and which occupant of it: plain data
+pub struct Slot {
+  pub index: u32;
+  pub gen: u32;
+
+  pub fn none() Slot {Slot(noCell, 0u32)}
+  pub fn isNone(self) bool {gen == 0u32}
+  pub fn `==`(self, o: Slot) bool {index == o.index && gen == o.gen}
+  pub fn `!=`(self, o: Slot) bool {index != o.index || gen != o.gen}
+}
+
+// A cell: bookkeeping, then the value
+struct Cell[T] {
+  pub gen: u32;
+  pub next: u32;          // free: the next free cell, noCell for the last
+  pub live: u32;
+  pub pad: u32;
+  pub value: T;
+}
+
+fn nextGen(g: u32) u32 {
+  if g == 0xFFFFFFFFu32 {1u32} else {g + 1u32}
+}
+
+fn nullOf[T]() *T {null}
+
+pub struct SlotTable[T] is Move {
+  chunks: List[*Cell[T]];
+  perChunk: u32;
+  count: u32;             // cells made
+  free: u32;              // the first free cell, or noCell
+  live: u32;
+
+  // An empty table that grows perChunk cells at a time (at least 1)
+  pub fn make(perChunk: u32 = 64u32) SlotTable[T] {
+    SlotTable[T](List[*Cell[T]].empty(), if perChunk == 0u32 {1u32} else {perChunk}, 0u32, noCell, 0u32)
+  }
+
+  pub fn len(self: &) usize {usize.from(live)}
+  pub fn bound(self: &) usize {usize.from(count)}
+
+  fn cell(self: &, i: u32) *Cell[T] {
+    *chunks[usize.from(i / perChunk)] + usize.from(i % perChunk)
+  }
+
+  pub fn isLive(self: &, i: u32) bool {
+    if i >= count {return false;}
+    (*self.cell(i)).live != 0u32
+  }
+
+  // A new chunk of cells, all free, chained in index order
+  fn grow(self: &mut) {
+    let block = libc.malloc(usize.from(perChunk) * mem.sizeof[Cell[T]]()) as *Cell[T];
+    if block as usize == 0usize {
+      panic("slots: out of memory for a table chunk");
+    }
+    let base = count;
+    var j = 0u32;
+    while j < perChunk {
+      let c = block + usize.from(j);
+      (*c).gen = 1u32;
+      (*c).next = if j + 1u32 < perChunk {base + j + 1u32} else {free};
+      (*c).live = 0u32;
+      (*c).pad = 0u32;
+      j = j + 1u32;
+    }
+    chunks.push(block);
+    count = count + perChunk;
+    free = base;
+  }
+
+  // v moved into a free cell: its Slot
+  pub fn add(self: &mut, v: T) Slot {
+    if free == noCell {
+      self.grow();
+    }
+    let i = free;
+    let c = self.cell(i);
+    free = (*c).next;
+    (*c).next = noCell;
+    (*c).live = 1u32;
+    mem.writeRaw[T](&(*c).value as *T, v);
+    live = live + 1u32;
+    Slot(i, (*c).gen)
+  }
+
+  // The value s names, or null if it is gone (or s names nothing)
+  pub fn get(self: &, s: Slot) *T {
+    if s.index >= count || s.gen == 0u32 {return nullOf[T]();}
+    let c = self.cell(s.index);
+    if (*c).live == 0u32 || (*c).gen != s.gen {return nullOf[T]();}
+    &(*c).value as *T
+  }
+
+  // The live value in cell i, or null
+  pub fn at(self: &, i: u32) *T {
+    if i >= count {return nullOf[T]();}
+    let c = self.cell(i);
+    if (*c).live == 0u32 {return nullOf[T]();}
+    &(*c).value as *T
+  }
+
+  // The Slot of the live value in cell i, or Slot.none()
+  pub fn slotAt(self: &, i: u32) Slot {
+    if i >= count {return Slot.none();}
+    let c = self.cell(i);
+    if (*c).live == 0u32 {return Slot.none();}
+    Slot(i, (*c).gen)
+  }
+
+  // Finalize the value in cell i and free the cell: true if there was one
+  pub fn removeAt(self: &mut, i: u32) bool {
+    if i >= count {return false;}
+    let c = self.cell(i);
+    if (*c).live == 0u32 {return false;}
+    mem.finalize[T](&(*c).value as *T);
+    (*c).live = 0u32;
+    (*c).gen = nextGen((*c).gen);
+    (*c).next = free;
+    free = i;
+    live = live - 1u32;
+    true
+  }
+
+  // Finalize the value s names and free its cell: true; false, and nothing
+  // done, if s is stale or none
+  pub fn remove(self: &mut, s: Slot) bool {
+    if s.index >= count || s.gen == 0u32 {return false;}
+    let c = self.cell(s.index);
+    if (*c).live == 0u32 || (*c).gen != s.gen {return false;}
+    self.removeAt(s.index)
+  }
+
+  fn final(self: &uni) {
+    var i = 0u32;
+    while i < count {
+      let c = self.cell(i);
+      if (*c).live != 0u32 {
+        mem.finalize[T](&(*c).value as *T);
+      }
+      i = i + 1u32;
+    }
+    var k = 0usize;
+    while k < chunks.len() {
+      libc.free(*chunks[k] as *u8);
+      k = k + 1usize;
+    }
+  }
+}

@@ -295,11 +295,30 @@ actor Reader {
 	<p>A cancel does not undo what a write already sent, or a read already took: an operation that ended cancelled or timed
 		out may have done part of its work, and its answer does not say how much.</p>
 
+	<p>One operation can be ended alone, with no group: <span class="pre">conn.cancelRead()</span> ends the read (or
+		accept) in flight on the socket, answered Cancelled with its buffer given back, and
+		<span class="pre">conn.cancelWrite()</span> the write in flight. They work from any actor or thread, and with nothing
+		in flight they do nothing. They reach an operation that has been started by its <span class="pre">await</span> and
+		is the socket's own on its side (<a href="#await-io-records">next</a>); the same two are on a
+		<span class="pre">UdpSocket</span> and a <span class="pre">File</span>.</p>
+
 	<h3 id="await-io-sockets">Sockets</h3>
 	<p>A <span class="pre">Socket</span> moves: it may be sent in a message to another actor. Dropping it closes the
 		socket, after whatever operations were started on it before. A socket in a paused behaviour waits with the
 		behaviour, as any value does (<a href="conc-await.html#await-cross">What crosses an await</a>), so it stays open until
 		the behaviour ends.</p>
+
+	<h3 id="await-io-records">One record for each socket</h3>
+	<p>A <span class="pre">Socket</span>, a <span class="pre">UdpSocket</span> and a <span class="pre">File</span> each have
+		a record, made with it and freed when it is closed and nothing is using it, with a side for each direction: a read
+		side (a read, an accept, a datagram's receive) and a write side. An operation takes the side when it is made, keeps
+		its buffer, its limits and the place its answer is written in, and gives the side back when the awaiting behaviour
+		has taken the answer. A read or write that finds its side free allocates nothing: no closure, no job block, no
+		reply box; a loop of reads on one socket takes the same side each time. Two reads at once on one socket, or an
+		operation made and held while another is made, find the side busy and take a block of their own for that one
+		operation: correct, and one allocation. <span class="pre">aio.opStats()</span> counts how many operations began on a
+		record's own side and how many on such a block, and how many records are open. A
+		<span class="pre">File</span> takes many reads at once by design, and all but the first of them use blocks.</p>
 
 	<h3 id="await-io-readany">Reading with no buffer</h3>
 	<p><span class="pre">conn.read(buf)</span> gives the read a buffer to wait with, and a connection that is idle for

@@ -1,0 +1,210 @@
+// Sockets closed with operations in flight, single operations cancelled, reads of
+// every kind (with a buffer, with none, a spill block's), many times over, on
+// four actors at once, and then what is left is counted: every record freed,
+// every buffer home. Each round makes a loopback pair and does one of:
+//
+//   0. a read with a buffer in flight, the socket dropped (closed): Cancelled;
+//   1. the same for a read with no buffer;
+//   2. two reads at once on one socket (the second takes a spill block), the
+//      socket dropped: both fail, neither is lost;
+//   3. a 1 MiB write in flight, the socket dropped: finished or Cancelled;
+//   4. a read in flight, ended by cancelRead, then the socket dropped;
+//   5. the peer writing as the reader's socket is dropped: the read is whole or
+//      Cancelled, never anything else.
+//
+// A result of any other kind, or a buffer or record left over, is counted and
+// reported by main.
+
+mod recstress;
+
+import testing use *;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import thread;
+import time use Duration, Instant;
+import iobuf use IoBuf;
+import iocore use SocketAddr, IoError;
+import actors;
+import aio use Socket, IoLimits;
+
+const actorsN = 4u64;
+const roundsEach = 90u64;
+
+let wrong: Atomic[u64];       // a result that was none of what the round allows
+let finished: Atomic[u64];    // rounds completed
+let skipped: Atomic[u64];     // rounds that found no connection to make (the system's ports used up)
+
+fn @initpure init() {
+  wrong = Atomic[u64].of(0u64);
+  finished = Atomic[u64].of(0u64);
+  skipped = Atomic[u64].of(0u64);
+}
+
+fn socketOf(r: Result[Socket, IoError]) Socket {
+  var res = r;
+  var s = Socket.none();
+  match &mut res {
+    case var &mut Ok(ok) {s <-> *ok;}
+    else {}
+  }
+  s
+}
+
+fn filled(n: usize) IoBuf {
+  var b = IoBuf(n);
+  b.setLen(n);
+  b
+}
+
+// The read ended in an error (Cancelled or the system's, for a socket already closed)
+fn failed(r: Result[IoBuf, IoError]) bool {
+  match r {
+    case is Error {true}
+    else {false}
+  }
+}
+
+fn cancelled(r: Result[IoBuf, IoError]) bool {
+  match r {
+    case let Error(e) {aio.isCancelled(e)}
+    else {false}
+  }
+}
+
+actor Stress {
+  cur: Socket;
+
+  pub async fn run(self, n: u64, start: u64, done: OneshotSender[u64]) {
+    let l = await aio.listen(SocketAddr.localhost(0u16));
+    let ls = socketOf(l);
+    let addr = await ls.localAddr();
+    var port = 0u16;
+    match addr {
+      case let Ok(x) {port = x.port();}
+      else {}
+    }
+    var k = 0u64;
+    while k < n {
+      let c = await aio.connect(SocketAddr.localhost(port));
+      let a = socketOf(c);
+      // A connection refused (the system's ports used up by the runs before) is a
+      // round skipped, not a hang waiting for an accept
+      var ac: Result[Socket, IoError] = Error[Socket, IoError](IoError(0u32));
+      if !a.isNone() {
+        ac = await ls.acceptIn(IoLimits.until(Instant.now() + Duration.fromSeconds(5i64)));
+      }
+      let b = socketOf(ac);
+      var kind = (k + start) % 6u64;
+      if a.isNone() || b.isNone() {kind = 99u64;}
+      if kind == 99u64 {
+        skipped.add(1u64);
+      } else if kind == 0u64 {
+        let reading = a.read(IoBuf(4096usize));
+        selfactor.closeIt(a);
+        let r = await reading;
+        if !cancelled(r) {wrong.add(1u64);}
+      } else if kind == 1u64 {
+        let reading = a.read();
+        selfactor.closeIt(a);
+        let r = await reading;
+        if !cancelled(r) {wrong.add(1u64);}
+      } else if kind == 2u64 {
+        let first = a.read(IoBuf(4096usize));
+        let second = a.read(IoBuf(4096usize));
+        selfactor.closeIt(a);
+        let r2 = await second;
+        if !failed(r2) {wrong.add(1u64);}
+        let r1 = await first;
+        if !failed(r1) {wrong.add(1u64);}
+      } else if kind == 3u64 {
+        let writing = a.write(filled(1048576usize));
+        selfactor.closeIt(a);
+        let w = await writing;
+        match w {
+          case let Error(e) {if !aio.isCancelled(e) && e.code == 0u32 {wrong.add(1u64);}}
+          else {}
+        }
+      } else if kind == 4u64 {
+        cur = a;
+        let reading = cur.read(IoBuf(4096usize));
+        selfactor.cancelCur();
+        let r = await reading;
+        if !cancelled(r) {wrong.add(1u64);}
+        cur = Socket.none();
+      } else {
+        let reading = a.read();
+        selfactor.closeIt(a);
+        selfactor.send(b);
+        let r = await reading;
+        match r {
+          case let Ok(buf) {if buf.len() != 100usize {wrong.add(1u64);}}
+          case let Error(e) {if !aio.isCancelled(e) {wrong.add(1u64);}}
+        }
+      }
+      finished.add(1u64);
+      k = k + 1u64;
+    }
+    var d = done;
+    d.send(1u64);
+  }
+
+  pub async fn closeIt(self, s: Socket) {}
+
+  pub async fn cancelCur(self) {
+    cur.cancelRead();
+  }
+
+  // Writes 100 bytes on the peer's socket and lets it go
+  pub async fn send(self, s: Socket) {
+    let w = await s.write(filled(100usize));
+  }
+}
+
+fn main() i32 {
+  initAll();
+  var tx0: OneshotSender[u64];
+  var rx0: OneshotReceiver[u64];
+  tx0, rx0 = Oneshot[u64].make();
+  var tx1: OneshotSender[u64];
+  var rx1: OneshotReceiver[u64];
+  tx1, rx1 = Oneshot[u64].make();
+  var tx2: OneshotSender[u64];
+  var rx2: OneshotReceiver[u64];
+  tx2, rx2 = Oneshot[u64].make();
+  var tx3: OneshotSender[u64];
+  var rx3: OneshotReceiver[u64];
+  tx3, rx3 = Oneshot[u64].make();
+  {
+    let s0 = Stress(Socket.none());
+    s0.run(roundsEach, 0u64, tx0);
+    let s1 = Stress(Socket.none());
+    s1.run(roundsEach, 1u64, tx1);
+    let s2 = Stress(Socket.none());
+    s2.run(roundsEach, 2u64, tx2);
+    let s3 = Stress(Socket.none());
+    s3.run(roundsEach, 3u64, tx3);
+  }
+  rx0.recv();
+  rx1.recv();
+  rx2.recv();
+  rx3.recv();
+  // The sockets the actors dropped are closed on the I/O thread: give it time
+  var waited = 0i64;
+  while aio.opStats().records > 0u64 && waited < 5000i64 {
+    thread.sleep(Duration.fromMillis(10i64));
+    waited = waited + 10i64;
+  }
+  let left = aio.opStats().records;
+  let st0 = aio.opStats();
+  finalAll();
+  if skipped.load() > 0u64 {
+    // Run again after the system's TIME_WAIT sockets drain: not a failure of the code
+    return skip("the system refused connections: its ports are used up by earlier runs");
+  }
+  expectUInt(finished.load(), actorsN * roundsEach, "every round finished");
+  expectUInt(wrong.load(), 0u64, "every operation ended as its round allows");
+  expectUInt(left, 0u64, "every record is freed");
+  expect(st0.spilled > 0u64, "the rounds with two reads took spill blocks");
+  let st = iobuf.stats();
+  expectUInt(st.lent, 0u64, "every buffer is home");
+  done()
+}
