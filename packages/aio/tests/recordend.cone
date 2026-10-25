@@ -1,0 +1,186 @@
+// The program's end with records in each place (the package's header, THE
+// PROGRAM'S END). When finalAll() begins:
+//
+//   1. W1's read is in flight, the kernel holding it (its peer never sends),
+//      and W1's paused behaviour also holds a read made and never started
+//      (its record taken, not started);
+//   2. W2's sleep of an hour is in the Loop's wheel;
+//   3. W3's child process is running on a thread of the blocking pool (its
+//      record away);
+//   4. W4's read has been answered and its answer is LENT, waiting in W4's
+//      mailbox, because W4 is busy in another behaviour; nobody has taken it;
+//   5. main holds a socket, which it drops after finalAll: its close is a
+//      record queued after the end.
+//
+// What is checked: (4) is taken -- its record dissolved on W4's worker -- and
+// W4's behaviour goes on with the bytes, before the I/O ends (aio's finalizer
+// waits for W4, which is queued); (1) and (2) are abandoned when the Loop
+// dies, their records dissolved, the notes their behaviours held dropped and
+// nothing after their awaits run, the record never started dissolved with
+// the paused behaviour that held it; (3) is abandoned when the child ends,
+// its record dissolved then by the pool's thread; (5) is dissolved where it is
+// queued. At the end no record is in use and every buffer is home.
+
+mod recordend;
+
+import testing use *;
+import thread;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import time use Duration, Instant;
+import iobuf use IoBuf;
+import iocore use SocketAddr, IoError;
+import actors;
+import aio use Socket;
+
+let notes: Atomic[u64];       // the notes dropped: 1 + 2 + 4 when all three are
+let after: Atomic[u64];       // what ran after an await that must not go on: 1, 2, 4
+let got4: Atomic[u64];        // the bytes W4's lent answer held
+
+fn @initpure init() {
+  notes = Atomic[u64].of(0u64);
+  after = Atomic[u64].of(0u64);
+  got4 = Atomic[u64].of(0u64);
+}
+
+struct Note {
+  pub n: u64;
+  fn final(self: &uni) {notes.add(n);}
+}
+
+fn socketOf(r: Result[Socket, IoError]) Socket {
+  var res = r;
+  var s = Socket.none();
+  match &mut res {
+    case var &mut Ok(ok) {s <-> *ok;}
+    else {}
+  }
+  s
+}
+
+fn filled(n: usize) IoBuf {
+  var b = IoBuf(n);
+  b.setLen(n);
+  b
+}
+
+actor W1 {
+  s: Socket;
+
+  pub async fn pause(self) {
+    let keep = Note(1u64);
+    let held = s.read(IoBuf(64usize));
+    let r = await s.read(IoBuf(4096usize));
+    after.add(1u64);
+  }
+}
+
+actor W2 {
+  pub async fn pause(self) {
+    let keep = Note(2u64);
+    let r = await aio.sleep(Duration.fromSeconds(3600i64));
+    after.add(2u64);
+  }
+}
+
+actor W3 {
+  pub async fn pause(self) {
+    let keep = Note(4u64);
+    let r = await aio.runLine(if isWindows() {"ping -n 3 127.0.0.1"} else {"sleep 2"});
+    after.add(4u64);
+  }
+}
+
+actor W4 {
+  s: Socket;
+
+  pub async fn read(self) {
+    let r = await s.read(IoBuf(4096usize));
+    match r {
+      case let Ok(b) {got4.store(u64.from(b.len()));}
+      else {}
+    }
+  }
+
+  // Busy, with no await, while the read's answer waits lent in the mailbox
+  pub async fn busy(self, ready: OneshotSender[u64]) {
+    var r = ready;
+    r.send(1u64);
+    thread.sleep(Duration.fromMillis(600i64));
+  }
+}
+
+actor Setup {
+  ls: Socket;
+  a2: Socket;
+
+  pub async fn go(self, keep: OneshotSender[Socket], ready: OneshotSender[u64]) {
+    ls = socketOf(await aio.listen(SocketAddr.localhost(0u16)));
+    var port = 0u16;
+    match await ls.localAddr() {
+      case let Ok(x) {port = x.port();}
+      else {}
+    }
+    let a1 = socketOf(await aio.connect(SocketAddr.localhost(port)));
+    let b1 = socketOf(await ls.accept());
+    a2 = socketOf(await aio.connect(SocketAddr.localhost(port)));
+    let b2 = socketOf(await ls.accept());
+    // W4's bytes wait in its socket before its read begins
+    let w = await a2.write(filled(100usize));
+    let w1 = W1(b1);
+    w1.pause();
+    let w2 = W2();
+    w2.pause();
+    let w3 = W3();
+    w3.pause();
+    let w4 = W4(b2);
+    w4.read();
+    w4.busy(ready);
+    var k = keep;
+    k.send(a1);
+  }
+}
+
+fn main() i32 {
+  initAll();
+  var ktx: OneshotSender[Socket];
+  var krx: OneshotReceiver[Socket];
+  ktx, krx = Oneshot[Socket].make();
+  var rtx: OneshotSender[u64];
+  var rrx: OneshotReceiver[u64];
+  rtx, rrx = Oneshot[u64].make();
+  let base = aio.opStats();
+  {
+    let s = Setup(Socket.none(), Socket.none());
+    s.go(ktx, rtx);
+  }
+  var a1 = Socket.none();
+  match krx.recv() {
+    case var Some(x) {a1 <-> x;}
+    else {expect(false, "Setup handed over the socket");}
+  }
+  rrx.recv();
+  // W4 is busy; its read's answer is sprung, lent, meanwhile
+  thread.sleep(Duration.fromMillis(150i64));
+  let mid = aio.opStats();
+  expect(mid.inUse - base.inUse >= 5u64, "records in each place: W1's two, W2's, W3's, W4's lent one");
+  finalAll();
+  let end = aio.opStats();
+  expectUInt(got4.load(), 100u64, "the lent answer was taken and W4 went on with the bytes, before the I/O ended");
+  expect(end.takenAway - mid.takenAway >= 1u64, "its record dissolved on W4's worker");
+  expectUInt(after.load(), 0u64, "nothing after an abandoned await ran");
+  expectUInt(notes.load() & 3u64, 3u64, "W1's and W2's behaviours abandoned at the Loop's death, their notes dropped");
+  // A socket dropped after the end: its close record is dissolved where it is queued
+  a1 = Socket.none();
+  expectUInt(aio.opStats().inUse, end.inUse, "a close queued after the end is dissolved where it is queued");
+  // W3's child ends a moment later: its record, away, is dissolved then
+  let limit = Instant.now() + Duration.fromSeconds(10i64);
+  while aio.opStats().inUse > base.inUse && Instant.now() < limit {
+    thread.sleep(Duration.fromMillis(20i64));
+  }
+  expectUInt(aio.opStats().inUse - base.inUse, 0u64, "every record dissolved, the running child's when it ended");
+  expectUInt(notes.load(), 7u64, "W3's behaviour abandoned when its child ended, its note dropped");
+  expectUInt(after.load(), 0u64, "and nothing after its await ran");
+  let st = iobuf.stats();
+  expectUInt(st.lent, 0u64, "every buffer is home");
+  done()
+}

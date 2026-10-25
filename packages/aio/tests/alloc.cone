@@ -1,0 +1,345 @@
+// Allocations per operation (the package's header, ONE RECORD PER
+// OPERATION): an actor awaits each kind of operation, one at a time, and the
+// program's own malloc, calloc and realloc (each passes through a counter
+// here to the C library's, as iocore's jobrecord test does) count what every
+// thread allocates meanwhile, less the actor runtime's own for messages
+// (actors.messageAllocs). The runtime has one worker, so that its caches and
+// bufpool's are one thread's. Each kind is warmed (threads started, pools and
+// lists grown), then three rounds of 50 are counted: the fewest is the count.
+// An allocation per operation is in every round; one now and then that is no
+// operation's (a lane starting a thread) is not. What an 'await' itself costs
+// the runtime is measured the same way on an Awaitable of no I/O, answered at
+// once where it is started (the BASELINE), and taken off each kind's count: an
+// operation's count is what it allocates beyond an await's own.
+//
+// Each of these allocates nothing: read(buf), read(), read(room), write,
+// connect, recvFrom, sendTo, readAt, writeAt, sleep, stat. 'accept' allocates
+// at most one, which is iocore's for the socket it accepts (the same with
+// aio's master records); 'resolve' allocates the List it answers (and, on
+// Linux, getaddrinfo's own), and 'run' what the process package does to run a
+// child (its arguments' copies, the child, its captured output): those three
+// are counted and, run with -D ALLOC_REPORT, printed with the rest; only
+// accept's is checked, at most one. The counter counts: a malloc of the test's
+// own.
+
+mod alloc;
+
+import testing use *;
+import stdio use *;
+import libc;
+import fs;
+import path use Path;
+import collections use List, String;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import time use Duration;
+import iobuf use IoBuf;
+import iocore use SocketAddr, IoError, Access, FileStat;
+import process;
+import actors;
+import aio use Socket, UdpSocket, File;
+
+var mallocs: Atomic[u64];
+
+fn @initpure init() {
+  mallocs = Atomic[u64].of(0u64);
+  wrong = Atomic[u64].of(0u64);
+  counted = Array[u64, 15]() <- fill 0u64;
+}
+
+extern {
+  fn @c("_malloc_base") winMalloc(size: usize) *u8;
+  fn @c("_calloc_base") winCalloc(n: usize, size: usize) *u8;
+  fn @c("_realloc_base") winRealloc(p: *u8, size: usize) *u8;
+  fn @c("__libc_malloc") lxMalloc(size: usize) *u8;
+  fn @c("__libc_calloc") lxCalloc(n: usize, size: usize) *u8;
+  fn @c("__libc_realloc") lxRealloc(p: *u8, size: usize) *u8;
+}
+
+// What the program has allocated, less what the actor runtime has for its
+// messages (its mailboxes' segments, reply boxes, future waiters: actors'
+// messageAllocs), which no operation of aio's makes
+fn allocs() u64 {mallocs.load() - actors.messageAllocs()}
+
+pub fn @c("malloc") countMalloc(size: usize) *u8 {
+  mallocs.add(1u64);
+  if isWindows() {winMalloc(size)} else {lxMalloc(size)}
+}
+
+pub fn @c("calloc") countCalloc(n: usize, size: usize) *u8 {
+  mallocs.add(1u64);
+  if isWindows() {winCalloc(n, size)} else {lxCalloc(n, size)}
+}
+
+pub fn @c("realloc") countRealloc(p: *u8, size: usize) *u8 {
+  mallocs.add(1u64);
+  if isWindows() {winRealloc(p, size)} else {lxRealloc(p, size)}
+}
+
+// The kinds, in the order measured
+const kRead = 0usize;
+const kReadAny = 1usize;
+const kReadRoom = 2usize;
+const kWrite = 3usize;
+const kAccept = 4usize;
+const kConnect = 5usize;
+const kRecvFrom = 6usize;
+const kSendTo = 7usize;
+const kReadAt = 8usize;
+const kWriteAt = 9usize;
+const kSleep = 10usize;
+const kStat = 11usize;
+const kResolve = 12usize;
+const kRun = 13usize;
+const kBase = 14usize;
+const kinds = 15usize;
+
+const perRound = 50u64;
+
+fn kindName(k: usize) &str {
+  if k == kRead {return "read(buf)";}
+  if k == kReadAny {return "read()";}
+  if k == kReadRoom {return "read(room)";}
+  if k == kWrite {return "write";}
+  if k == kAccept {return "accept";}
+  if k == kConnect {return "connect";}
+  if k == kRecvFrom {return "recvFrom";}
+  if k == kSendTo {return "sendTo";}
+  if k == kReadAt {return "readAt";}
+  if k == kWriteAt {return "writeAt";}
+  if k == kSleep {return "sleep";}
+  if k == kStat {return "stat";}
+  if k == kResolve {return "resolve";}
+  if k == kBase {return "an await of no I/O (the baseline)";}
+  "run"
+}
+
+// What each kind counted (the fewest round) and how many answers were wrong
+var counted: Array[u64, 15];
+let wrong: Atomic[u64];
+
+fn socketOf(r: Result[Socket, IoError]) Socket {
+  var res = r;
+  var s = Socket.none();
+  match &mut res {
+    case var &mut Ok(ok) {s <-> *ok;}
+    else {}
+  }
+  s
+}
+
+fn udpOf(r: Result[UdpSocket, IoError]) UdpSocket {
+  var res = r;
+  var s = UdpSocket.none();
+  match &mut res {
+    case var &mut Ok(ok) {s <-> *ok;}
+    else {}
+  }
+  s
+}
+
+fn fileOf(r: Result[File, IoError]) File {
+  var res = r;
+  var f = File.none();
+  match &mut res {
+    case var &mut Ok(ok) {f <-> *ok;}
+    else {}
+  }
+  f
+}
+
+fn filled(n: usize) IoBuf {
+  var b = IoBuf(n);
+  b.setLen(n);
+  b
+}
+
+// The baseline's operation: answered at once where the 'await' starts it
+fn runNow(ctx: *u8, rp: actors.Reply) {
+  actors.answerNow[u64](rp, 1u64);
+}
+
+fn dropNow(ctx: *u8) {}
+
+fn nowOp() actors.Awaitable[u64] {actors.Awaitable[u64].of(1usize as *u8, &runNow, &dropNow)}
+
+fn isOk[T](r: &Result[T, IoError]) bool {
+  match r {
+    case is &Error {false}
+    else {true}
+  }
+}
+
+actor Counter {
+  pub async fn run(self, done: OneshotSender[u64]) {
+    let ls = socketOf(await aio.listen(SocketAddr.localhost(0u16)));
+    var port = 0u16;
+    match await ls.localAddr() {
+      case let Ok(x) {port = x.port();}
+      else {}
+    }
+    let a = socketOf(await aio.connect(SocketAddr.localhost(port)));
+    let b = socketOf(await ls.accept());
+    let u1 = udpOf(await aio.bindUdp(SocketAddr.localhost(0u16)));
+    let u2 = udpOf(await aio.bindUdp(SocketAddr.localhost(0u16)));
+    var to = SocketAddr.localhost(0u16);
+    match await u2.localAddr() {
+      case let Ok(x) {to = x;}
+      else {}
+    }
+    let name = Path.from("aioalloc.tmp");
+    let f = fileOf(await aio.openFile(&name, Access.Create));
+    let here = Path.from(".");
+    var args = List[String].empty();
+    args.push(String.from(if isWindows() {"cmd"} else {"true"}));
+    if isWindows() {
+      args.push(String.from("/c"));
+      args.push(String.from("exit"));
+    }
+    var k = kBase;
+    var left = kinds;
+    while left > 0usize {
+      var fewest = 0xFFFFFFFFu64;
+      var round = 0u32;
+      while round < 4u32 {
+        var n = 0u64;
+        var i = 0u64;
+        while i < perRound {
+          var before = 0u64;
+          if k == kRead || k == kReadAny || k == kReadRoom {
+            let w = await a.write(filled(100usize));
+            before = allocs();
+            if k == kRead {
+              let r = await b.read(IoBuf(4096usize));
+              n = n + (allocs() - before);
+              if !isOk[IoBuf](&r) {wrong.add(1u64);}
+            } else if k == kReadAny {
+              let r = await b.read();
+              n = n + (allocs() - before);
+              if !isOk[IoBuf](&r) {wrong.add(1u64);}
+            } else {
+              let r = await b.read(16384usize);
+              n = n + (allocs() - before);
+              if !isOk[IoBuf](&r) {wrong.add(1u64);}
+            }
+          } else if k == kWrite {
+            let buf = filled(100usize);
+            before = allocs();
+            let w = await a.write(buf);
+            n = n + (allocs() - before);
+            if !isOk[usize](&w) {wrong.add(1u64);}
+            let r = await b.read(IoBuf(4096usize));
+          } else if k == kAccept || k == kConnect {
+            before = allocs();
+            let c = await aio.connect(SocketAddr.localhost(port));
+            if k == kConnect {n = n + (allocs() - before);}
+            if !isOk[Socket](&c) {wrong.add(1u64);}
+            before = allocs();
+            let s = await ls.accept();
+            if k == kAccept {n = n + (allocs() - before);}
+            if !isOk[Socket](&s) {wrong.add(1u64);}
+          } else if k == kRecvFrom || k == kSendTo {
+            let buf = filled(64usize);
+            before = allocs();
+            let w = await u1.sendTo(to, buf);
+            if k == kSendTo {n = n + (allocs() - before);}
+            if !isOk[usize](&w) {wrong.add(1u64);}
+            let rb = IoBuf(4096usize);
+            before = allocs();
+            let r = await u2.recvFrom(rb);
+            if k == kRecvFrom {n = n + (allocs() - before);}
+            if !isOk[aio.Datagram](&r) {wrong.add(1u64);}
+          } else if k == kWriteAt {
+            let buf = filled(4096usize);
+            before = allocs();
+            let w = await f.writeAt(0u64, buf);
+            n = n + (allocs() - before);
+            if !isOk[usize](&w) {wrong.add(1u64);}
+          } else if k == kReadAt {
+            let buf = IoBuf(4096usize);
+            before = allocs();
+            let r = await f.readAt(0u64, buf);
+            n = n + (allocs() - before);
+            if !isOk[IoBuf](&r) {wrong.add(1u64);}
+          } else if k == kSleep {
+            before = allocs();
+            let r = await aio.sleep(Duration.fromMicros(10i64));
+            n = n + (allocs() - before);
+            if !isOk[void](&r) {wrong.add(1u64);}
+          } else if k == kStat {
+            before = allocs();
+            let r = await aio.stat(&here);
+            n = n + (allocs() - before);
+            if !isOk[FileStat](&r) {wrong.add(1u64);}
+          } else if k == kBase {
+            before = allocs();
+            let r = await nowOp();
+            n = n + (allocs() - before);
+          } else if k == kResolve {
+            before = allocs();
+            let r = await aio.resolve("127.0.0.1", 80u16);
+            n = n + (allocs() - before);
+            if !isOk[List[SocketAddr]](&r) {wrong.add(1u64);}
+          } else {
+            before = allocs();
+            let r = await aio.run(args.view());
+            n = n + (allocs() - before);
+            if !isOk[process.Output](&r) {wrong.add(1u64);}
+          }
+          i = i + 1u64;
+        }
+        if round > 0u32 && n < fewest {fewest = n;}
+        round = round + 1u32;
+      }
+      counted[k] = fewest;
+      k = (k + 1usize) % kinds;
+      left = left - 1usize;
+    }
+    var d = done;
+    d.send(1u64);
+  }
+}
+
+fn main() i32 {
+  initAll();
+  // One worker, so that each thread's caches (bufpool's, the runtime's) are
+  // warmed by the warm-up round
+  actors.configure(actors.Options(workers: 1u32));
+  var before = allocs();
+  let block = libc.malloc(8usize);
+  libc.free(block);
+  expectUInt(allocs() - before, 1u64, "the counter counts the program's mallocs");
+  var tx: OneshotSender[u64];
+  var rx: OneshotReceiver[u64];
+  tx, rx = Oneshot[u64].make();
+  {
+    let c = Counter();
+    c.run(tx);
+  }
+  match rx.recv() {
+    case is None[u64] {expect(false, "the counter said it was done");}
+    else {}
+  }
+  finalAll();
+  fs.removeFile(&Path.from("aioalloc.tmp"));
+  expectUInt(wrong.load(), 0u64, "every operation answered Ok");
+  let base = counted[kBase];
+  var k = 0usize;
+  while k < kinds {
+    let n = if k == kBase {base} else if counted[k] > base {counted[k] - base} else {0u64};
+    if isDefined("ALLOC_REPORT") {
+      printStr(kindName(k));
+      printStr(": ");
+      printUInt(n);
+      printStr(" in ");
+      printUInt(perRound);
+      printStr("\n");
+    }
+    if k == kAccept {
+      expect(n <= perRound, "accept: at most one, iocore's for the socket accepted");
+    } else if k != kResolve && k != kRun && k != kBase {
+      expectUInt(n, 0u64, kindName(k));
+    }
+    k = k + 1usize;
+  }
+  done()
+}

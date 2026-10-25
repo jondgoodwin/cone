@@ -181,7 +181,7 @@ pub struct Loop {
       events = libc.malloc(usize.from(batch) * mem.sizeof[EpollEvent]()) as *EpollEvent;
     }
     let shared = Arc[imm, Port](Port(if isWindows() {port} else {wake}, Atomic[bool].of(false),
-      Atomic[u32].of(0u32), Mutex.make(), null, null, null, null));
+      Atomic[u32].of(0u32), Mutex.make(), null, null, null, null, Atomic[u32].of(0u32)));
     Loop(
       loopId: diag.nextLoopId(), driverGen: 0u32, port: shared, portHandle: port,
       pool: OpPool[OldAsk].make(), kernelHeld: 0u32,
@@ -705,6 +705,7 @@ pub struct Loop {
       self.unlinkSide(p);
       r.state = stDone;
     }
+    r.listed = true;
     done.push(p);
   }
 
@@ -723,6 +724,7 @@ pub struct Loop {
     }
     r.late = true;
     r.state = stDone;
+    r.listed = true;
     done.push(p);
   }
 
@@ -1087,7 +1089,9 @@ pub struct Loop {
     let n = done.len();
     var k = 0usize;
     while k < n {
-      out.push(*done[k]);
+      let p = *done[k];
+      (*p).listed = false;
+      out.push(p);
       k = k + 1usize;
     }
     done.clear();

@@ -784,6 +784,12 @@ fn lxDrain(lp: &mut Loop, at: Instant, out: &mut List[Completion]) usize {
   // Cleared before the queue is taken: a poster after this writes again, and
   // one before it has its packet in the queue taken below
   lp.port.pending.store(0u32);
+  // A wake carries no packet: its word, taken after 'pending' is cleared, so
+  // a wake after this writes again
+  var n = 0usize;
+  if lp.port.wakes.swap(0u32) != 0u32 {
+    n = lp.handlePacket(keyWake, null, at, out);
+  }
   let st = lp.port.lists();
   st.lock.lock();
   var node = st.head;
@@ -793,7 +799,6 @@ fn lxDrain(lp: &mut Loop, at: Instant, out: &mut List[Completion]) usize {
   st.jobsHead = null;
   st.jobsTail = null;
   st.lock.unlock();
-  var n = 0usize;
   while node as usize != 0usize {
     let next = (*node).next;
     n = n + lp.handlePacket((*node).key, (*node).ov, at, out);

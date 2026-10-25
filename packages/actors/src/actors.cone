@@ -2441,24 +2441,38 @@ pub fn answerLent[R](rp: Reply, p: *R, take: &fn(p: *u8, to: *u8)) {
 }
 
 // answerLent for a Reply that stays where it is, left spent (ANSWERED IN
-// PLACE, above). 'take' is called as answerLent's is
+// PLACE, above). 'take' is called as answerLent's is, but always AFTER the
+// Reply is spent, and nothing here touches the Reply after 'take' has been
+// called: so 'take' may let go of the record that holds the Reply (the aio
+// package's take dissolves its record, the spent Reply with it, and makes the
+// value it writes at 'to' from the record's pieces; 'p' is then the record,
+// not a value already written). Where 'take' is called here, before the answer
+// is pushed, the operation is held counted (opHold) until the push, since the
+// Reply's drop in 'take' counts it spent
 pub fn answerLentIn[R](rp: &mut Reply, p: *R, take: &fn(p: *u8, to: *u8)) {
   notSpent(rp);
+  let op = (rp.meta & replyOp) != 0u64;
   if !wanted(rp) {
     let tmp = libc.malloc(mem.sizeof[R]() + 16usize);
     if tmp as usize == 0usize {
       die("actors: out of memory for a reply");
     }
+    spend(rp);
+    opHold(op);
     take(p as *u8, tmp);
     mem.finalize[R](tmp as *R);
     libc.free(tmp);
-    spend(rp);
+    opRelease(op);
     return;
   }
   if rp.cell as usize != 0usize {
-    take(p as *u8, rp.at);
-    post(rp);
+    let c = rp.cell;
+    let at = rp.at;
     spend(rp);
+    opHold(op);
+    take(p as *u8, at);
+    futureEnd(c, futArrived);
+    opRelease(op);
     return;
   }
   let h = rp.to;
@@ -2471,9 +2485,23 @@ pub fn answerLentIn[R](rp: &mut Reply, p: *R, take: &fn(p: *u8, to: *u8)) {
     return;
   }
   let put = replyPrep(rp);
-  take(p as *u8, put.at);
   spend(rp);
+  opHold(op);
+  take(p as *u8, put.at);
   replyFinish(h, put);
+  opRelease(op);
+}
+
+// An operation held counted over a 'take' its answerer runs before the push
+// (answerLentIn): one more started now, one more spent after the push, so the
+// counts are never equal while the Reply's drop has counted it and the answer
+// is not yet pushed
+fn opHold(op: bool) {
+  if op {opsStarted.addOrdered(1u64, MemOrder.SeqCst);}
+}
+
+fn opRelease(op: bool) {
+  if op {opSpent();}
 }
 
 // The largest value a lent answer is taken into on the worker's stack

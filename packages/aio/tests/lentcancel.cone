@@ -1,0 +1,146 @@
+// A record LENT (the package's header, ONE RECORD PER OPERATION): once an
+// answer is sprung with its record lent to the awaiting actor's 'take', the
+// Loop holds nothing of the record, so operations the Loop goes on with on the
+// same handle -- another read in flight, and a cancelRead of that direction --
+// do not find it. Holder holds the accepted end of a loopback pair; two reads
+// are in flight on it at once (two records), and then, while Holder is busy in
+// a behaviour of its own, the first read takes the 100 bytes the peer sent
+// (its answer waits, lent, in Holder's mailbox), and Holder asks cancelRead. What is checked:
+//
+// - the cancel asked one operation to end: the second read, in flight; not
+//   the first, whose record is lent;
+// - while Holder was busy both records were in use (lent, not yet taken);
+// - the first read's answer is whole (100 bytes), the second's Cancelled;
+// - both answers were taken on Holder's worker, their records dissolved
+//   there; afterwards no record is in use and every buffer is home.
+
+mod lentcancel;
+
+import testing use *;
+import thread;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import time use Duration;
+import iobuf use IoBuf;
+import iocore use SocketAddr, IoError;
+import actors;
+import aio use Socket;
+
+struct Got {
+  pub asked: Atomic[u64];       // operations the cancel asked to end
+  pub inUseBusy: Atomic[u64];   // records in use while Holder was busy, over the start
+  pub first: Atomic[u64];       // the first read's bytes, or 999999
+  pub second: Atomic[u64];      // 1 if the second read ended Cancelled
+  pub taken: Atomic[u64];       // answers taken off the I/O thread, over the start
+  pub inUseEnd: Atomic[u64];    // records in use at the end, over the start
+}
+
+let got: Got;
+
+fn @initpure init() {
+  got = Got(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(999999u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
+
+fn socketOf(r: Result[Socket, IoError]) Socket {
+  var res = r;
+  var s = Socket.none();
+  match &mut res {
+    case var &mut Ok(ok) {s <-> *ok;}
+    else {}
+  }
+  s
+}
+
+fn filled(n: usize) IoBuf {
+  var b = IoBuf(n);
+  b.setLen(n);
+  b
+}
+
+actor Holder {
+  a: Socket;
+  b: Socket;
+  base: aio.OpStats;
+
+  pub async fn start(self, done: OneshotSender[u64]) {
+    let ls = socketOf(await aio.listen(SocketAddr.localhost(0u16)));
+    var port = 0u16;
+    match await ls.localAddr() {
+      case let Ok(x) {port = x.port();}
+      else {}
+    }
+    a = socketOf(await aio.connect(SocketAddr.localhost(port)));
+    b = socketOf(await ls.accept());
+    base = aio.opStats();
+    // The peer's 100 bytes, sent before the reads begin: they wait in the
+    // socket for the first read
+    let w = await a.write(filled(100usize));
+    selfactor.first();
+    selfactor.second();
+    selfactor.busy(done);
+  }
+
+  pub async fn first(self) {
+    let r = await b.read(IoBuf(4096usize));
+    match r {
+      case let Ok(buf) {got.first.store(u64.from(buf.len()));}
+      else {}
+    }
+  }
+
+  pub async fn second(self) {
+    let r = await b.read(IoBuf(4096usize));
+    match r {
+      case let Error(e) {if aio.isCancelled(e) {got.second.store(1u64);}}
+      else {}
+    }
+  }
+
+  // Busy, with no await: the two reads have begun, the first has taken the
+  // bytes, and its answer waits, lent, in this mailbox; then the cancel. The
+  // finish is sent last, behind the two answers
+  pub async fn busy(self, done: OneshotSender[u64]) {
+    thread.sleep(Duration.fromMillis(300i64));
+    let c0 = aio.opStats().cancelsAsked;
+    b.cancelRead();
+    thread.sleep(Duration.fromMillis(200i64));
+    got.asked.store(aio.opStats().cancelsAsked - c0);
+    got.inUseBusy.store(aio.opStats().inUse - base.inUse);
+    selfactor.finish(done);
+  }
+
+  pub async fn finish(self, done: OneshotSender[u64]) {
+    let now = aio.opStats();
+    got.taken.store(now.takenAway - base.takenAway);
+    got.inUseEnd.store(now.inUse - base.inUse);
+    a = Socket.none();
+    b = Socket.none();
+    var d = done;
+    d.send(1u64);
+  }
+}
+
+fn main() i32 {
+  initAll();
+  var tx: OneshotSender[u64];
+  var rx: OneshotReceiver[u64];
+  tx, rx = Oneshot[u64].make();
+  {
+    let h = Holder(Socket.none(), Socket.none(), aio.opStats());
+    h.start(tx);
+  }
+  match rx.recv() {
+    case is None[u64] {expect(false, "Holder said it was done");}
+    else {}
+  }
+  finalAll();
+  expectUInt(got.asked.load(), 1u64, "the cancel asked one read to end: the one in flight, not the lent one");
+  expectUInt(got.inUseBusy.load(), 2u64, "both records were in use while Holder was busy: lent, not yet taken");
+  expectUInt(got.first.load(), 100u64, "the lent read's answer is whole");
+  expectUInt(got.second.load(), 1u64, "the read in flight was Cancelled");
+  expect(got.taken.load() >= 2u64, "both answers were taken on Holder's worker");
+  expectUInt(got.inUseEnd.load(), 0u64, "and their records dissolved there");
+  let st = iobuf.stats();
+  expectUInt(st.lent, 0u64, "every buffer is home");
+  done()
+}
