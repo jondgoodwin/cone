@@ -133,7 +133,7 @@ pub struct Client {
   connCount: u32;
   freeConn: u32;
   total: u32;                // connections connecting, idle or busy
-  origins: List[*Origin];
+  origins: SlotTable[Origin];    // never removed: an origin's number is its cell's
   dev: List[httpconn.Event];
   comps: List[Completion];
   ready: List[Event];        // events for this thread, until pump hands them over
@@ -169,7 +169,7 @@ pub struct Client {
     Client(cfg: c, drv: d, tlsc: tlsc, tlsFailure: tf,
       fetchBlocks: List[*Fetch].empty(), fetchCount: 0u32, freeFetch: noEntry, liveFetches: 0u32,
       queuedN: 0u32, seq: 0u64, connBlocks: List[*PConn].empty(), connCount: 0u32, freeConn: noEntry,
-      total: 0u32, origins: List[*Origin].empty(), dev: List[httpconn.Event].empty(),
+      total: 0u32, origins: SlotTable[Origin].make(8u32), dev: List[httpconn.Event].empty(),
       comps: List[Completion].empty(), ready: List[Event].empty(), heldE: List[Event].empty(),
       heldS: List[Sink].empty(), heldF: List[u32].empty(), heldG: List[u32].empty(),
       heldN: List[usize].empty(), heldQ: List[httpconn.ReqId].empty(), wantSchedule: false,
@@ -185,7 +185,7 @@ pub struct Client {
     var idle = 0u32;
     var o = 0usize;
     while o < origins.len() {
-      idle = idle + u32.from((*origins[o] as &Origin).idle.len());
+      idle = idle + u32.from((origins.at(u32.from(o)) as &Origin).idle.len());
       o = o + 1usize;
     }
     s.idleNow = idle;
@@ -221,7 +221,7 @@ pub struct Client {
     *connBlocks[usize.from(i / recsPerBlock)] + usize.from(i % recsPerBlock)
   }
 
-  fn originAt(self: &, i: u32) *Origin {*origins[usize.from(i)]}
+  fn originAt(self: &, i: u32) *Origin {origins.at(i)}
 
   fn idOf(self: &, fi: u32) FetchId {FetchId(fi, (self.fetchAt(fi) as &Fetch).gen)}
 
@@ -343,17 +343,13 @@ pub struct Client {
     let port = u.effectivePort();
     var k = 0usize;
     while k < origins.len() {
-      let og = *origins[k] as &Origin;
+      let og = origins.at(u32.from(k)) as &Origin;
       if og.port == port && og.secure == secure && og.host.view() == u.host.view() {return u32.from(k);}
       k = k + 1usize;
     }
-    let o = libc.malloc(mem.sizeof[Origin]()) as *Origin;
-    if o as usize == 0usize {panic("httpclient: out of memory for an origin");}
-    mem.writeRaw[Origin](o, Origin(key: u.origin(), secure: secure, host: u.host.copy(),
+    origins.add(Origin(key: u.origin(), secure: secure, host: u.host.copy(),
       port: u.effectivePort(), queue: List[u32].empty(), idle: List[u32].empty(), open: 0u32,
-      connecting: 0u32));
-    origins.push(o);
-    u32.from(origins.len() - 1usize)
+      connecting: 0u32)).index
   }
 
   // ---------------------------------------------------------------------------
@@ -515,7 +511,7 @@ pub struct Client {
     var n = 0u32;
     var o = 0usize;
     while o < origins.len() {
-      let og = *origins[o] as &mut Origin;
+      let og = origins.at(u32.from(o)) as &mut Origin;
       while og.idle.len() > 0usize {
         self.retire(lp, *og.idle[0usize], true);
         n = n + 1u32;
@@ -974,7 +970,7 @@ pub struct Client {
   fn closeAnIdle(self: &mut, lp: &mut Loop) bool {
     var o = 0usize;
     while o < origins.len() {
-      let og = *origins[o] as &mut Origin;
+      let og = origins.at(u32.from(o)) as &mut Origin;
       if og.queue.len() == 0usize && og.idle.len() > 0usize {
         let pc = *og.idle[0usize];
         self.retire(lp, pc, true);
@@ -1315,8 +1311,8 @@ pub struct Client {
     resp
   }
 
-  // Its death: the tables' blocks and the origins, every record's values with
-  // them. The connections are its driver's, which dies with it; the sockets
+  // Its death: the fetch and connection tables' blocks, every record's values
+  // with them (the origins' table frees its own). The connections are its driver's, which dies with it; the sockets
   // the loop's
   fn final(self: &uni) {
     var b = 0usize;
@@ -1339,13 +1335,6 @@ pub struct Client {
         j = j + 1u32;
       }
       libc.free(block as *u8);
-      b = b + 1usize;
-    }
-    b = 0usize;
-    while b < origins.len() {
-      let o = *origins[b];
-      mem.finalize[Origin](o);
-      libc.free(o as *u8);
       b = b + 1usize;
     }
   }

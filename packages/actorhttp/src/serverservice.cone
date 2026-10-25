@@ -70,7 +70,7 @@ struct SrvRec {
   maxPending: usize;
   drv: httpconn.Driver;
   listener: httpconn.ListenerId;
-  exs: Slots[ExRec];
+  exs: SlotTable[ExRec];
   byReq: Dict[u64, usize];    // a request's number to its slot
   ready: List[usize];         // slots whose request is whole and waits, from rhead on
   rhead: usize;
@@ -95,10 +95,8 @@ fn answerTo[R](rp: &mut actors.Reply, v: R) {
 // Where the live exchange is (its slot's record), or null: a record that is
 // not in use, was reused (another id) or died before an actor took it names none
 fn exOf(srv: &SrvRec, slot: u32, id: u64) *ExRec {
-  let s = usize.from(slot);
-  if s >= srv.exs.len() {return null;}
-  let x = srv.exs.at(s);
-  if (*x).used && (*x).id == id && (*x).stage != exDead {return x;}
+  let x = srv.exs.at(slot);
+  if x as usize != 0usize && (*x).used && (*x).id == id && (*x).stage != exDead {return x;}
   null
 }
 
@@ -107,14 +105,14 @@ fn slotOfReq(srv: &SrvRec, req: httpconn.ReqId) usize {
   let key = req.number();
   match srv.byReq.getCopy(&key) {
     case let Some(s) {s}
-    case is None[usize] {srv.exs.len()}
+    case is None[usize] {srv.exs.bound()}
   }
 }
 
 fn freeEx(srv: &mut SrvRec, slot: usize) {
-  let x = srv.exs.at(slot) as &mut ExRec;
+  let x = srv.exs.at(u32.from(slot)) as &mut ExRec;
   *x = blankEx();
-  srv.exs.put(slot);
+  srv.exs.removeAt(u32.from(slot));
 }
 
 // ---------------------------------------------------------------------------
@@ -135,8 +133,8 @@ fn pumpServer(srv: &mut SrvRec, lp: &mut Loop) {
 fn onServerEvent(srv: &mut SrvRec, lp: &mut Loop, e: &mut httpconn.Event) {
   let k = e.kind;
   if k == httpconn.EventKind.Request {
-    let slot = srv.exs.take(blankEx());
-    let x = srv.exs.at(slot) as &mut ExRec;
+    let slot = usize.from(srv.exs.add(blankEx()).index);
+    let x = srv.exs.at(u32.from(slot)) as &mut ExRec;
     x.used = true;
     x.id = newId();
     x.req = e.req;
@@ -161,8 +159,8 @@ fn onServerEvent(srv: &mut SrvRec, lp: &mut Loop, e: &mut httpconn.Event) {
   } else if k == httpconn.EventKind.Data {
     let n = e.buf.len();
     let slot = slotOfReq(srv, e.req);
-    if slot < srv.exs.len() {
-      let x = srv.exs.at(slot) as &mut ExRec;
+    if slot < srv.exs.bound() {
+      let x = srv.exs.at(u32.from(slot)) as &mut ExRec;
       if x.stage == exReading && !x.rejected {
         if x.body.len() + n > srv.maxBody {
           x.rejected = true;
@@ -176,19 +174,19 @@ fn onServerEvent(srv: &mut SrvRec, lp: &mut Loop, e: &mut httpconn.Event) {
     srv.drv.release(e.req, n);
   } else if k == httpconn.EventKind.End {
     let slot = slotOfReq(srv, e.req);
-    if slot < srv.exs.len() {
-      let x = srv.exs.at(slot) as &ExRec;
+    if slot < srv.exs.bound() {
+      let x = srv.exs.at(u32.from(slot)) as &ExRec;
       if x.stage == exReading && !x.rejected {readyEx(srv, slot);}
     }
   } else if k == httpconn.EventKind.Writable {
     let slot = slotOfReq(srv, e.req);
-    if slot < srv.exs.len() {
-      let x = srv.exs.at(slot) as &mut ExRec;
+    if slot < srv.exs.bound() {
+      let x = srv.exs.at(u32.from(slot)) as &mut ExRec;
       pumpWrites(srv, lp, x);
     }
   } else if e.isTerminal() {
     let slot = slotOfReq(srv, e.req);
-    if slot < srv.exs.len() {endEx(srv, slot, k == httpconn.EventKind.Done);}
+    if slot < srv.exs.bound() {endEx(srv, slot, k == httpconn.EventKind.Done);}
     let key = e.req.number();
     srv.byReq.remove(&key);
   }
@@ -197,7 +195,7 @@ fn onServerEvent(srv: &mut SrvRec, lp: &mut Loop, e: &mut httpconn.Event) {
 // A request whose head and whole body are in: to the actor waiting for one,
 // else into the queue (503 if that is full)
 fn readyEx(srv: &mut SrvRec, slot: usize) {
-  let x = srv.exs.at(slot) as &mut ExRec;
+  let x = srv.exs.at(u32.from(slot)) as &mut ExRec;
   if srv.whead < srv.waiters.len() {
     var rp = actors.Reply();
     let w = &mut srv.waiters[srv.whead];
@@ -220,7 +218,7 @@ fn readyEx(srv: &mut SrvRec, slot: usize) {
 
 // An actor has the request: its Exchange is the answer to the reply
 fn deliverEx(srv: &mut SrvRec, slot: usize, rp: actors.Reply) {
-  let x = srv.exs.at(slot) as &mut ExRec;
+  let x = srv.exs.at(u32.from(slot)) as &mut ExRec;
   x.stage = exOut;
   x.handle = true;
   var r = Request(RequestHead.empty(), String.empty(), x.peer, srv.secure);
@@ -255,7 +253,7 @@ fn answerText(srv: &mut SrvRec, x: &mut ExRec, status: u16, text: &str, closeAft
 
 // The request's final answer has come
 fn endEx(srv: &mut SrvRec, slot: usize, done: bool) {
-  let x = srv.exs.at(slot) as &mut ExRec;
+  let x = srv.exs.at(u32.from(slot)) as &mut ExRec;
   x.over = true;
   x.ok = done;
   if srv.live > 0usize {srv.live = srv.live - 1usize;}
@@ -349,7 +347,7 @@ fn closeServer(srv: &mut SrvRec, lp: &mut Loop) {
   while srv.rhead < srv.ready.len() {
     let slot = *srv.ready[srv.rhead];
     srv.rhead = srv.rhead + 1usize;
-    let x = srv.exs.at(slot) as &mut ExRec;
+    let x = srv.exs.at(u32.from(slot)) as &mut ExRec;
     if x.stage == exReady {
       x.stage = exOut;
       x.rejected = true;
@@ -402,12 +400,9 @@ struct ListenJob {
           case let Error(e) {}
         }
         let id = newId();
-        let p = libc.malloc(mem.sizeof[SrvRec]()) as *SrvRec;
-        if p as usize == 0usize {die("actorhttp: out of memory for a server");}
-        mem.writeRaw[SrvRec](p, SrvRec(id, 1u32, false, false, secure, maxBody, maxPending, drv, l,
-          Slots[ExRec].make(), Dict[u64, usize].empty(), List[usize].empty(), 0usize,
+        sv.srvs.add(SrvRec(id, 1u32, false, false, secure, maxBody, maxPending, drv, l,
+          SlotTable[ExRec].make(16u32), Dict[u64, usize].empty(), List[usize].empty(), 0usize,
           List[actors.Reply].empty(), 0usize, 0usize));
-        sv.srvs.push(p);
         answerTo[Result[Server, ServerError]](&mut rp, Ok[Server, ServerError](Server(id, bound, secure)));
       }
       case let Error(e) {
@@ -425,7 +420,7 @@ struct SrvRefJob {
 
   fn run(self: &mut, lp: &mut Loop, sv: &mut Service) {
     let k = sv.findSrv(id);
-    if k >= sv.srvs.len() {return;}
+    if k >= sv.srvs.bound() {return;}
     let srv = sv.srvAt(k) as &mut SrvRec;
     if add {
       srv.refs = srv.refs + 1u32;
@@ -442,7 +437,7 @@ struct SrvCloseJob {
 
   fn run(self: &mut, lp: &mut Loop, sv: &mut Service) {
     let k = sv.findSrv(id);
-    if k >= sv.srvs.len() {return;}
+    if k >= sv.srvs.bound() {return;}
     closeServer(sv.srvAt(k) as &mut SrvRec, lp);
   }
 }
@@ -455,7 +450,7 @@ struct NextJob {
   fn run(self, lp: &mut Loop, sv: &mut Service) {
     let id, var rp = self.(id, reply);
     let k = sv.findSrv(id);
-    if k >= sv.srvs.len() {
+    if k >= sv.srvs.bound() {
       answerTo[Result[Exchange, ServerError]](&mut rp, Error[Exchange, ServerError](ServerError.closed()));
       return;
     }
@@ -465,11 +460,11 @@ struct NextJob {
       return;
     }
     // The first request waiting that is still alive
-    var slot = srv.exs.len();
-    while srv.rhead < srv.ready.len() && slot == srv.exs.len() {
+    var slot = srv.exs.bound();
+    while srv.rhead < srv.ready.len() && slot == srv.exs.bound() {
       let s = *srv.ready[srv.rhead];
       srv.rhead = srv.rhead + 1usize;
-      let x = srv.exs.at(s) as &ExRec;
+      let x = srv.exs.at(u32.from(s)) as &ExRec;
       if x.stage == exDead {
         freeEx(srv, s);
       } else {
@@ -480,7 +475,7 @@ struct NextJob {
       srv.ready.clear();
       srv.rhead = 0usize;
     }
-    if slot < srv.exs.len() {
+    if slot < srv.exs.bound() {
       deliverEx(srv, slot, rp);
     } else {
       srv.waiters.push(rp);
@@ -496,7 +491,7 @@ struct Located {
 
 fn locate(sv: &Service, sid: u64, slot: u32, id: u64) Located {
   let k = sv.findSrv(sid);
-  if k >= sv.srvs.len() {return Located(null, null);}
+  if k >= sv.srvs.bound() {return Located(null, null);}
   let srv = sv.srvAt(k);
   Located(srv, exOf(srv as &SrvRec, slot, id))
 }

@@ -123,20 +123,18 @@ fn boxed(k: u32) bool {
     || (!isWindows() && (k == diag.kindReadAt || k == diag.kindWriteAt))
 }
 
-// What a handle is
-const hFree = 0u32;
+// What a handle is (a free cell of the handle table holds no entry at all)
 const hSocket = 1u32;
 const hListener = 2u32;
 const hFile = 3u32;
 const hDatagram = 4u32;       // a bound UDP socket
 
-// An entry of the handle table
+// An entry of the handle table (a slots.SlotTable: its cell's number and
+// generation are the Handle's)
 struct HEntry {
   pub raw: usize;          // the OS's: Windows' handle or socket, Linux's descriptor
-  pub gen: u32;
   pub kind: u32;
   pub family: u16;
-  pub nextFree: u32;
   // Linux: the operations that would block on it, receives (and accepts) and
   // sends (and a connect), as the records at each queue's ends (linux.cone)
   pub recvHead: u32;
@@ -173,8 +171,7 @@ pub struct Loop {
   cancels: List[u64];      // Linux: socket operations asked to end, answered at the next wait (linux.cone)
   heldC: List[Completion]; // answers held back by a full channel...
   heldT: List[Target];     // ...and where they go
-  handles: List[HEntry];
-  freeHandle: u32;
+  handles: SlotTable[HEntry];
   wheel: Wheel;
   expiries: List[Expiry];
   entries: *OverlappedEntry;   // Windows: what one wait takes from the port
@@ -242,7 +239,7 @@ pub struct Loop {
       grouped: 0u32, groupsDirty: false,
       decided: List[u32].empty(), cancels: List[u64].empty(),
       heldC: List[Completion].empty(), heldT: List[Target].empty(),
-      handles: List[HEntry].empty(), freeHandle: noEntry,
+      handles: SlotTable[HEntry].make(64u32),
       wheel: Wheel.make(Instant.now()), expiries: List[Expiry].empty(),
       entries: entries, events: events, timer: timer, packet: packet, associated: false,
       armedFor: Instant(), woken: false, grace: Duration.fromMillis(1i64),
@@ -379,7 +376,7 @@ pub struct Loop {
   pub fn localAddr(self: &, h: Handle) Result[SocketAddr, IoError] {
     let i = self.handleIndex(h);
     if i == noEntry {return Error[SocketAddr, IoError](IoError(errorInvalidHandle));}
-    let e = handles[usize.from(i)];
+    let e = handles.at(i) as &HEntry;
     var a = SocketAddr(Array[u8, 28]() <- fill 0u8, 28i32);
     var len = 28i32;
     if getsockname(e.raw, &mut a as *u8, &mut len) != 0i32 {
@@ -454,14 +451,10 @@ pub struct Loop {
     // queued on a file is cancelled by the pool's own record)
     lxCancelAll(self, i);
     lxCancelFiles(self, h);
-    let e = &mut handles[usize.from(i)];
+    let e = handles.at(i) as &HEntry;
     if isWindows() {CancelIoEx(e.raw, null);}
     closeRaw(e.kind, e.raw);
-    e.kind = hFree;
-    e.raw = 0usize;
-    e.gen = if e.gen == 0xFFFFFFFFu32 {1u32} else {e.gen + 1u32};
-    e.nextFree = freeHandle;
-    freeHandle = i;
+    handles.removeAt(i);
     true
   }
 
@@ -483,43 +476,23 @@ pub struct Loop {
   pub fn reset(self: &mut, h: Handle) bool {
     let i = self.handleIndex(h);
     if i == noEntry {return false;}
-    if handles[usize.from(i)].kind != hSocket {return false;}
+    if (*handles.at(i)).kind != hSocket {return false;}
     lxCancelAll(self, i);
-    let e = &mut handles[usize.from(i)];
+    let e = handles.at(i) as &HEntry;
     if isWindows() {CancelIoEx(e.raw, null);}
     resetSocket(e.raw);
-    e.kind = hFree;
-    e.raw = 0usize;
-    e.gen = if e.gen == 0xFFFFFFFFu32 {1u32} else {e.gen + 1u32};
-    e.nextFree = freeHandle;
-    freeHandle = i;
+    handles.removeAt(i);
     true
   }
 
   fn register(self: &mut, raw: usize, kind: u32, family: u16) Handle {
-    if freeHandle == noEntry {
-      handles.push(HEntry(0usize, 1u32, hFree, 0u16, noEntry, noEntry, noEntry, noEntry, noEntry));
-      freeHandle = u32.from(handles.len() - 1usize);
-    }
-    let i = freeHandle;
-    let e = &mut handles[usize.from(i)];
-    freeHandle = e.nextFree;
-    e.raw = raw;
-    e.kind = kind;
-    e.family = family;
-    e.nextFree = noEntry;
-    e.recvHead = noEntry;
-    e.recvTail = noEntry;
-    e.sendHead = noEntry;
-    e.sendTail = noEntry;
-    Handle(i, e.gen)
+    let s = handles.add(HEntry(raw, kind, family, noEntry, noEntry, noEntry, noEntry));
+    Handle(s.index, s.gen)
   }
 
   // h's entry, or noEntry if h names nothing
   fn handleIndex(self: &, h: Handle) u32 {
-    if h.index == noEntry || usize.from(h.index) >= handles.len() {return noEntry;}
-    let e = handles[usize.from(h.index)];
-    if e.gen != h.gen || e.kind == hFree {return noEntry;}
+    if handles.get(Slot(h.index, h.gen)) as usize == 0usize {return noEntry;}
     h.index
   }
 
@@ -527,7 +500,7 @@ pub struct Loop {
   fn rawOf(self: &, h: Handle, kind: u32) usize {
     let i = self.handleIndex(h);
     if i == noEntry {return invalidHandle;}
-    let e = handles[usize.from(i)];
+    let e = handles.at(i) as &HEntry;
     if e.kind != kind {return invalidHandle;}
     e.raw
   }
@@ -1142,7 +1115,7 @@ pub struct Loop {
       if acceptExAddr == 0usize {return errorInvalidParameter;}
       let li = self.handleIndex(listener);
       if li == noEntry {return errorInvalidHandle;}
-      let e = handles[usize.from(li)];
+      let e = handles.at(li) as &HEntry;
       if e.kind != hListener {return errorInvalidHandle;}
       let s = tcpSocket(e.family);
       if s == invalidHandle {return wsaError();}
@@ -1690,21 +1663,21 @@ pub struct Loop {
     // Every handle's operations cancelled, all before any is closed (a
     // socket closed first would end its peer's receive as the end of the
     // stream, not as the cancel it is), then every handle closed
-    var h = 0usize;
-    while h < handles.len() {
-      if handles[h].kind != hFree {
-        if isWindows() {CancelIoEx(handles[h].raw, null);} else {lxCancelAll(self, u32.from(h));}
+    var h = 0u32;
+    while usize.from(h) < handles.bound() {
+      if handles.isLive(h) {
+        if isWindows() {CancelIoEx((*handles.at(h)).raw, null);} else {lxCancelAll(self, h);}
       }
-      h = h + 1usize;
+      h = h + 1u32;
     }
-    h = 0usize;
-    while h < handles.len() {
-      let e = &mut handles[h];
-      if e.kind != hFree {
+    h = 0u32;
+    while usize.from(h) < handles.bound() {
+      if handles.isLive(h) {
+        let e = handles.at(h) as &HEntry;
         closeRaw(e.kind, e.raw);
-        e.kind = hFree;
+        handles.removeAt(h);
       }
-      h = h + 1usize;
+      h = h + 1u32;
     }
     // Connections still being made hold sockets of their own; timers answer
     // Cancelled; jobs still queued are taken out, and those running are left
