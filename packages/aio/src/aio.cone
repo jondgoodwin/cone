@@ -72,9 +72,9 @@
 //   aio.opStats()           the records in use and made, the operations cancelRead and cancelWrite
 //                           asked to end, the answers taken on the awaiting actor's worker, a
 //                           record's size (ONE RECORD PER OPERATION)
-//   aio.testLateQuiet(n)    TEST-ONLY, not for programs (Cone has no test-only visibility, so it is
-//                           public): the next n reads with no buffer that began with one and are
-//                           answered Done go through the bad case's late path (READS WITH NO BUFFER)
+//   aio.testLateQuiet(on)   TEST-ONLY, not for programs (Cone has no test-only visibility, so it is
+//                           public): while on, reads with no buffer that begin with one go through
+//                           the bad case's late path when answered (READS WITH NO BUFFER)
 //   IoLimits.none()  IoLimits.until(deadline)  IoLimits.within(group)  IoLimits(group, deadline)
 //   aio.sleep(d)  aio.sleepUntil(at)   a pause of d (a Duration) / until at (an Instant)
 //                                                                Result[void, IoError]
@@ -486,7 +486,6 @@ fn @initpure init() {
   poolAt = Atomic[usize].of(0usize);
   cancelsAsked = Atomic[u64].of(0u64);
   takenAway = Atomic[u64].of(0u64);
-  testLate = Atomic[u32].of(0u32);
 }
 
 // A panic, reported at the line calling 'die'
@@ -945,7 +944,11 @@ fn defaultRoom() usize {4096usize}
 // 'let' global, set in 'init')
 let readQuiet: Atomic[i64];
 
-fn quietNanos() i64 {readQuiet.load()}
+// The quiet time, in nanoseconds; a negative word is the time, less one,
+// negated, with the test's late path asked for (testLateQuiet)
+fn quietNanos() i64 {quietOf(readQuiet.load())}
+
+fn quietOf(v: i64) i64 {if v < 0i64 {0i64 - v - 1i64} else {v}}
 
 // Set how long a read with no buffer may hold one before giving it up (the
 // package's header, READS WITH NO BUFFER): zero makes every such read wait
@@ -961,6 +964,7 @@ pub fn setReadQuiet(d: Duration) {
 fn stageReady() u32 {0u32}
 fn stageStraight() u32 {1u32}
 fn stageTake() u32 {2u32}
+fn stageForced() u32 {3u32}         // stageStraight's, under the test's late path (testLateQuiet)
 
 // A sleep's time: absolute (the record's deadline) or relative (its 'arg',
 // nanoseconds from the moment the I/O thread starts it)
@@ -1025,10 +1029,14 @@ fn beginStage(lp: &mut Loop, rp: *OpRec[Ask], stage: u32) {
   } else {
     c.kind = diag.kindRecv;
     if stage == stageStraight() {
-      let soon = now + Duration.fromNanos(quietNanos());
+      let v = readQuiet.load();
+      let soon = now + Duration.fromNanos(quietOf(v));
       if soon < a.limit {
         c.deadline = soon;
         a.ours = true;
+      }
+      if v < 0i64 {
+        a.stage = stageForced();
       }
     }
   }
@@ -1069,7 +1077,8 @@ fn doneRec(lp: &mut Loop, p: *OpCore) {
   let w = (*rp).ask.what;
   // A read with no buffer begun with one, ended by its own quiet deadline: not
   // the caller's answer
-  let quiet = w == opRecvAny && (*rp).ask.stage == stageStraight() && (*rp).ask.ours;
+  let quiet = w == opRecvAny && (*rp).ask.ours
+    && ((*rp).ask.stage == stageStraight() || (*rp).ask.stage == stageForced());
   if (p as &OpCore).isEarly() {
     // The bad case: the kernel still holds the record. The actor is answered
     // TimedOut now, by a value made here, and the record is left until the
@@ -1111,15 +1120,13 @@ fn doneRec(lp: &mut Loop, p: *OpCore) {
         return;
       }
       if (*p).status == diag.outcomeDone {
-        if testLate.load() > 0u32 {
-          // A test's: this receive taken as if the kernel had held it past the
-          // grace and finished it then, with these bytes (testLateQuiet)
-          testLate.sub(1u32);
-          lateQuiet(lp, rp);
-          return;
-        }
         setCalm(lp, (*p).handle, true);
       }
+    } else if stage == stageForced() {
+      // A test's (testLateQuiet): this receive taken through the late path, as
+      // if the kernel had held it past the grace and finished it then
+      lateQuiet(lp, rp);
+      return;
     }
   }
   answerRec(rp);
@@ -1144,14 +1151,16 @@ fn lateQuiet(lp: &mut Loop, rp: *OpRec[Ask]) {
 }
 
 // TEST-ONLY, not for programs (public only because Cone has no test-only
-// visibility). The next n reads with no buffer begun with one and answered
-// Done are taken through the late path of the bad case (lateQuiet), as if the
-// kernel had held their receive past the grace of their quiet deadline and
-// finished it then. The bad case itself cannot be made to happen on purpose
-let testLate: Atomic[u32];
-
-pub fn testLateQuiet(n: u32) {
-  testLate.store(n);
+// visibility). While on, each read with no buffer begun with one is taken,
+// when it is answered, through the late path of the bad case (lateQuiet), as
+// if the kernel had held its receive past the grace of its quiet deadline and
+// finished it then. The bad case itself cannot be made to happen on purpose.
+// It costs a production read nothing: the switch is the sign of the quiet
+// time's word, which a read begun with a buffer reads anyway, and a read under
+// it has a stage of its own. setReadQuiet turns it off
+pub fn testLateQuiet(on: bool) {
+  let q = quietNanos();
+  readQuiet.store(if on {0i64 - q - 1i64} else {q});
 }
 
 // The operation is over: the reply is sprung in place, its record LENT to
