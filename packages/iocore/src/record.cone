@@ -1,0 +1,394 @@
+// One record per operation: the record a Loop works on, and the pools records
+// come from (see the package's header, RECORDS).
+//
+// How it is built. A record is an OpRec[A]: an OpCore, which is everything the
+// Loop reads and writes, first, and the asker's own part, an A, after it. The
+// OpCore begins with the OVERLAPPED the kernel holds, so the address a
+// completion hands back is the record's, whichever pool it came from. Records
+// live in chunks of 64 that never move and are never freed while their pool
+// lives, found by number through a FIXED directory of chunk addresses (4,096
+// of them: 262,144 records at most), so finding one by its index never reads a
+// list another thread may be growing; a new chunk's address is in the
+// directory before the count that makes it reachable says so.
+//
+// A free record holds no value: the pool writes a record WHOLE when it is
+// taken (mem.writeRaw, as slots does) and reads it whole when it is dissolved
+// (mem.readRaw), and the value read out is then taken apart by its owner with
+// a field list, each piece going where the ending says. What stays readable in
+// a free record is its header: its index, its generation (moved on at each
+// dissolving, so an OpId kept after it names nothing), its state (stFree) and
+// its link in the free list ('qnext', the asker's queue link while it is
+// taken). Every Move field of an OpCore is an Option (None: nothing here) and
+// the asker's A holds the rest, so a record taken holds exactly what its
+// operation owns.
+//
+// The cross-thread part. 'take' and 'dissolve' work from any thread, under
+// the pool's one lock (uncontended in the common case). The pool's OWNER
+// thread -- the one that dissolves many records in one pass, a Loop's after a
+// poll -- gives them back with 'dissolveHere', which collects them unlocked,
+// and 'flushHere' pushes what it collected under the lock once; 'takeHere'
+// takes what it collected first, without the lock. Only the owner thread calls
+// the three 'Here' forms. A record's 'home' names its pool's state, so a Loop
+// that dies holding an asker's record it cannot type gives it back through it
+// (dropRecord: the record dissolved and dropped, its answer abandoned).
+
+// Where a record is
+const stFree = 0u32;
+const stFlight = 1u32;         // the kernel, the wheel or the blocking pool holds it
+const stDecided = 2u32;        // its outcome is known; it waits in 'decided' for the end of this pass of poll
+const stAbandoned = 3u32;      // answered early (a prompt TimedOut) while the kernel or the pool still holds it
+const stTaken = 4u32;          // taken from its pool, its asker filling it; not started
+const stDone = 5u32;           // an asker's, answered: on the Loop's done list, or handed back by takeDone
+
+// What a cancel of an operation in flight should answer
+const askedNone = 0u32;
+const askedCancel = 1u32;
+const askedDeadline = 2u32;
+
+// Which list a record in flight is on (its 'side')
+const onNone = 0u32;
+const onReads = 1u32;          // its handle's reads: accept, receive, RecvFrom, ReadAt
+const onWrites = 2u32;         // its handle's writes: send, SendTo, WriteAt, Linux's connect
+const onLoop = 3u32;           // the Loop's own: no handle names it (a timer, a job, an external one, Windows' connect)
+
+const recsPerChunk = 64u32;
+const maxChunks = 4096u32;
+
+// What the Loop works on: the first part of every record (see above). The
+// request's fields are the asker's to fill before 'lp.start'; the answer is
+// read by its methods
+pub struct OpCore {
+  ov: Overlapped = Overlapped(0usize, 0usize, 0u32, 0u32, 0usize);
+  wsa: WsaBuf = WsaBuf(0u32, null);
+  flags: u32 = 0u32;
+  // The one address area an operation uses: AcceptEx's two addresses,
+  // ConnectEx's, RecvFrom's sender and SendTo's destination (a SocketAddr at
+  // its start for the last three)
+  addr: Array[u8, 96] = Array[u8, 96]() <- fill 0u8;
+  // The request
+  pub kind: u32 = 0u32;                  // diag.kindRecv, ...
+  pub handle: Handle;                    // the socket or file it names
+  pub at: u64 = 0u64;                    // ReadAt's and WriteAt's offset; a Call's argument
+  pub deadline: Instant;                 // when it answers TimedOut (forever(): never); a timer's own time
+  pub lane: Lane = Lane(0u32);           // a Call's lane and work
+  pub work: WorkFn;
+  // What the operation owns: None when absent
+  pub buf: Option[IoBuf] = None;
+  pub bytes: Option[Bytes] = None;
+  pub group: Option[CancelGroup] = None;
+  // The promise: the Loop's thread only
+  state: u32 = stFree;
+  asked: u32 = askedNone;
+  hit: bool = false;                     // its deadline has passed: the grace is running, or has run
+  lapses: bool = false;                  // a timer whose wheel entry is its group's deadline, earlier than its own time
+  early: bool = false;                   // answered TimedOut past the grace while the kernel or the pool holds it
+  late: bool = false;                    // an early one the kernel (or the pool) has now given back
+  own: bool = false;                     // the Loop's own (the old API's), not an asker's
+  inGroup: bool = false;                 // on the Loop's grouped list
+  side: u32 = onNone;                    // the list it is on while in flight
+  timer: TimerId;                        // its deadline's (or grace's) timer, or a timer's own
+  pub submitted: Instant = Instant();
+  pub dequeued: Instant = Instant();      // when the loop took it from the kernel, as a Completion's
+  gen: u32 = 1u32;
+  index: u32 = 0u32;
+  home: *PoolHome = null;
+  // The answer, as a Completion's (the asker reads them): a diag outcome
+  // number, Done's count, Failed's error number, and the socket Accept or
+  // Connect made (Handle.none() else)
+  pub status: u32 = 0u32;
+  pub n: usize = 0usize;
+  pub code: u32 = 0u32;
+  pub newHandle: Handle;
+  newSock: usize = invalidHandle;        // Accept's or Connect's new socket, until registered
+  raw: usize = 0usize;                   // the OS handle the kernel holds it on, for CancelIoEx
+  family: u16 = 0u16;                    // Accept's listener's family; Connect's
+  // Links
+  pub qnext: *OpCore = null;             // the asker's queue link while the record crosses to the Loop's thread
+  hprev: *OpCore = null;                 // its list while in flight ('side'): Linux's wait queue
+  hnext: *OpCore = null;
+  gprev: *OpCore = null;                 // the Loop's grouped list
+  gnext: *OpCore = null;
+  job: *JobBox = null;                   // the box a pool's thread (or a Completer) holds
+  done: usize = 0usize;                  // Linux: a send's bytes sent so far
+
+  // Its id: the record's index and generation, which moves on when it is
+  // dissolved (and when an early answer goes)
+  pub fn id(self: &) OpId {OpId(index, gen)}
+
+  // Done's count, or 0
+  pub fn count(self: &) usize {if status == diag.outcomeDone {n} else {0usize}}
+  pub fn isDone(self: &) bool {status == diag.outcomeDone}
+
+  pub fn outcome(self: &) Outcome {
+    if status == diag.outcomeDone {Outcome.Done(n)}
+    else if status == diag.outcomeFailed {Outcome.Failed(code)}
+    else if status == diag.outcomeCancelled {Outcome.Cancelled}
+    else {Outcome.TimedOut}
+  }
+
+  // On the done list answered TimedOut while the kernel (or the pool) still
+  // holds it: the asker answers its own, and leaves the record (see the
+  // package's header, RECORDS)
+  pub fn isEarly(self: &) bool {early && !late}
+
+  // An early one given back: the asker dissolves it, its buffer going home
+  pub fn isLate(self: &) bool {late}
+
+  // SendTo's destination, Connect's address
+  pub fn setPeer(self: &mut, a: SocketAddr) {
+    *(&mut addr as *SocketAddr) = a;
+  }
+
+  // The address the answer names: a datagram's sender or destination, a
+  // connection's; one of size 0 for the rest, and for a receive that took no
+  // datagram (a truncated one did)
+  pub fn peer(self: &) SocketAddr {
+    let a = *(&addr as *SocketAddr);
+    let named = kind == diag.kindConnect || kind == diag.kindSendTo
+      || (kind == diag.kindRecvFrom && (status == diag.outcomeDone || code == errorMsgSize));
+    if named && a.size > 0i32 {a} else {SocketAddr(Array[u8, 28]() <- fill 0u8, 0i32)}
+  }
+
+  // The buffer's bytes, its length and room: null and 0 with none
+  fn bufBase(self: &) *u8 {
+    match &buf {
+      case let &Some(b) {b.base()}
+      else {null}
+    }
+  }
+  fn bufLen(self: &) usize {
+    match &buf {
+      case let &Some(b) {b.len()}
+      else {0usize}
+    }
+  }
+  fn bufRoom(self: &) usize {
+    match &buf {
+      case let &Some(b) {b.room()}
+      else {0usize}
+    }
+  }
+
+  // n bytes the kernel wrote into the buffer's room are now its own
+  fn bufGrow(self: &mut, n: usize) {
+    match &mut buf {
+      case var &mut Some(b) {b.setLen(b.len() + n);}
+      else {}
+    }
+  }
+
+  // The SocketAddr at the address area's start
+  fn sockAddr(self: &mut) *SocketAddr {&mut addr as *SocketAddr}
+}
+
+// A record: the Loop's part, then the asker's (aio: the reply and its policy
+// state; the old API: the target and the token)
+pub struct OpRec[A] {
+  pub core: OpCore;
+  pub ask: A;
+}
+
+// A pool's state, which never moves: plain memory from libc's malloc. It
+// declares Sendable, a promise taken on trust: the free list is changed under
+// 'lock', the directory only grows (under the lock, before the count), and the
+// batch is the owner thread's alone
+struct PoolHome is Sendable {
+  lock: Mutex;
+  free: *OpCore;           // the shared free list, linked by 'qnext'
+  chunkDir: *usize;        // the fixed directory: maxChunks chunk addresses
+  chunks: Atomic[u32];     // chunks made: each one's address is in chunkDir before it counts
+  stride: usize;           // a record's size
+  live: Atomic[u32];       // records taken and not given back
+  batch: *OpCore;          // the owner thread's give-backs, not yet pushed
+  batchTail: *OpCore;
+  dropper: &fn(p: *OpCore);   // dissolve a record of this pool and let it go
+
+  // Its lists, changed under its lock through a shared reference
+  fn lists(self: &) &mut PoolHome {
+    let p = self as *PoolHome;
+    p as &mut PoolHome
+  }
+}
+
+fn nextGen(g: u32) u32 {if g == 0xFFFFFFFFu32 {1u32} else {g + 1u32}}
+
+// A chunk of free records, chained in index order onto the free list: the
+// lock is held
+fn growPool(h: *PoolHome) {
+  let st = h as &mut PoolHome;
+  let c = st.chunks.load();
+  if c >= maxChunks {panic("iocore: more than 262,144 records in one pool");}
+  let block = libc.malloc(usize.from(recsPerChunk) * st.stride);
+  if block as usize == 0usize {panic("iocore: out of memory for a chunk of records");}
+  var j = recsPerChunk;
+  while j > 0u32 {
+    j = j - 1u32;
+    let r = (block + usize.from(j) * st.stride) as *OpCore;
+    (*r).index = c * recsPerChunk + j;
+    (*r).gen = 1u32;
+    (*r).state = stFree;
+    (*r).qnext = st.free;
+    st.free = r;
+  }
+  *(st.chunkDir + usize.from(c)) = block as usize;
+  st.chunks.store(c + 1u32);
+}
+
+// A free record, off the shared list (the lock taken here)
+fn takeCell(h: *PoolHome) *OpCore {
+  let st = (h as &PoolHome).lists();
+  st.lock.lock();
+  if st.free as usize == 0usize {growPool(h);}
+  let p = st.free;
+  st.free = (*p).qnext;
+  st.lock.unlock();
+  p
+}
+
+// Record p is free again: its generation moves on, onto the shared list
+fn giveCell(h: *PoolHome, p: *OpCore) {
+  (*p).gen = nextGen((*p).gen);
+  (*p).state = stFree;
+  let st = (h as &PoolHome).lists();
+  st.lock.lock();
+  (*p).qnext = st.free;
+  st.free = p;
+  st.lock.unlock();
+  st.live.sub(1u32);
+}
+
+// The record at p, of a pool of A's, dissolved and let go from any thread:
+// what it owns dies, its asker's part with it (an answer it owed is
+// abandoned), and the record is free
+fn dropRecord[A](p: *OpCore) {
+  let h = (*p).home;
+  let r = mem.readRaw[OpRec[A]](p as *OpRec[A]);
+  giveCell(h, p);
+  _ = r;
+}
+
+// The records of one asker (see above): its own A in each, which crosses
+// threads with its record, so is Sendable. Move, and Sendable on trust as its
+// state is: shared through an Arc (or held by the one thread that owns it), it
+// may be taken from on any thread
+pub struct OpPool[A: Sendable] is Move, Sendable {
+  home: *PoolHome;
+
+  // An empty pool: it grows a chunk of 64 records at a time, to 262,144
+  pub fn make() OpPool[A] {
+    let h = libc.malloc(mem.sizeof[PoolHome]()) as *PoolHome;
+    let d = libc.calloc(usize.from(maxChunks), 8usize) as *usize;
+    if h as usize == 0usize || d as usize == 0usize {panic("iocore: out of memory for a pool of records");}
+    mem.writeRaw[PoolHome](h, PoolHome(Mutex.make(), null, d, Atomic[u32].of(0u32),
+      mem.sizeof[OpRec[A]](), Atomic[u32].of(0u32), null, null, &dropRecord[A]));
+    OpPool[A](h)
+  }
+
+  // A record, from any thread, holding ask and nothing else: its address,
+  // which is its OpCore's ('&(*p).core' or 'p as *OpCore')
+  pub fn take(self: &, ask: A) *OpRec[A] {
+    self.fill(takeCell(home), ask)
+  }
+
+  // The same on the owner thread: the records it gave back since its last
+  // flushHere come first, without the lock
+  pub fn takeHere(self: &, ask: A) *OpRec[A] {
+    let st = (home as &PoolHome).lists();
+    let p = st.batch;
+    if p as usize == 0usize {return self.fill(takeCell(home), ask);}
+    st.batch = (*p).qnext;
+    if st.batch as usize == 0usize {st.batchTail = null;}
+    self.fill(p, ask)
+  }
+
+  // The record written whole: a fresh OpCore with its index and generation
+  fn fill(self: &, p: *OpCore, ask: A) *OpRec[A] {
+    let index = (*p).index;
+    let gen = (*p).gen;
+    let r = p as *OpRec[A];
+    mem.writeRaw[OpRec[A]](r, OpRec[A](OpCore(index: index, gen: gen, home: home, state: stTaken,
+      handle: Handle.none(), deadline: forever(), work: &noWork, timer: TimerId.none(),
+      newHandle: Handle.none()), ask));
+    (home as &PoolHome).live.add(1u32);
+    r
+  }
+
+  // Record p read out whole, from any thread, and its cell free: the value,
+  // to take apart with a field list
+  pub fn dissolve(self: &, p: *OpRec[A]) OpRec[A] {
+    let r = mem.readRaw[OpRec[A]](p);
+    giveCell(home, p as *OpCore);
+    r
+  }
+
+  // The same on the owner thread: the cell waits in its batch for flushHere
+  // (or takeHere)
+  pub fn dissolveHere(self: &, p: *OpRec[A]) OpRec[A] {
+    let r = mem.readRaw[OpRec[A]](p);
+    let c = p as *OpCore;
+    (*c).gen = nextGen((*c).gen);
+    (*c).state = stFree;
+    (*c).qnext = null;
+    let st = (home as &PoolHome).lists();
+    if st.batchTail as usize == 0usize {st.batch = c;} else {(*st.batchTail).qnext = c;}
+    st.batchTail = c;
+    st.live.sub(1u32);
+    r
+  }
+
+  // The owner thread's give-backs onto the shared list, under one lock
+  pub fn flushHere(self: &) {
+    let st = (home as &PoolHome).lists();
+    if st.batch as usize == 0usize {return;}
+    st.lock.lock();
+    (*st.batchTail).qnext = st.free;
+    st.free = st.batch;
+    st.lock.unlock();
+    st.batch = null;
+    st.batchTail = null;
+  }
+
+  // Record i (taken or free), or null past the records made: by the fixed
+  // directory, from any thread
+  pub fn at(self: &, i: u32) *OpRec[A] {
+    let st = home as &PoolHome;
+    if i / recsPerChunk >= st.chunks.load() {return null;}
+    let block = *(st.chunkDir + usize.from(i / recsPerChunk)) as *u8;
+    (block + usize.from(i % recsPerChunk) * st.stride) as *OpRec[A]
+  }
+
+  // Records taken and not given back
+  pub fn inUse(self: &) u32 {(home as &PoolHome).live.load()}
+
+  // Records made, free or taken
+  pub fn size(self: &) u32 {(home as &PoolHome).chunks.load() * recsPerChunk}
+
+  // Its death: a record still taken is finalized whole (its buffer goes home,
+  // its asker's part dies), then the chunks go
+  fn final(self: &uni) {
+    let st = home as &mut PoolHome;
+    let made = st.chunks.load();
+    var c = 0u32;
+    while c < made {
+      let block = *(st.chunkDir + usize.from(c)) as *u8;
+      var j = 0u32;
+      while j < recsPerChunk {
+        let r = (block + usize.from(j) * st.stride) as *OpCore;
+        if (*r).state != stFree {mem.finalize[OpRec[A]](r as *OpRec[A]);}
+        j = j + 1u32;
+      }
+      libc.free(block);
+      c = c + 1u32;
+    }
+    libc.free(st.chunkDir as *u8);
+    mem.finalize[PoolHome](home);
+    libc.free(home as *u8);
+  }
+}
+
+// What the old API keeps with an operation: where its answer goes, and the
+// token it carries back
+struct OldAsk {
+  target: Target;
+  token: u64;
+}

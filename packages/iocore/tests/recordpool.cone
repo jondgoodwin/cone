@@ -1,0 +1,150 @@
+// An asker's pool of records (see the package's header, RECORDS), taken from
+// and given back to on several threads at once while it grows.
+//
+// 1. Four threads each take 3,000 records at once, the pool growing chunk by
+//    chunk under them: every record is a different one, found again at its
+//    index through the pool's directory, written whole with its asker part.
+// 2. The records are dissolved on other threads than took them, each giving
+//    its asker part back exactly once; then the pool's own thread takes and
+//    dissolves with the batched forms, which give back under one lock.
+// 3. A dissolved record's id names nothing: its generation has moved on.
+
+mod recordpool;
+
+import testing use *;
+import thread;
+import sync use Arc;
+import collections use List;
+import iocore use *;
+
+const perThread = 3000u32;
+
+struct Taker {
+  pool: Arc[imm, OpPool[u64]];
+  base: u64;
+}
+
+// Take perThread records, each holding base + i; their addresses
+fn takeMany(t: Taker) List[usize] {
+  var ps = List[usize].empty();
+  var i = 0u32;
+  while i < perThread {
+    let r = t.pool.take(t.base + u64.from(i));
+    ps.push(r as usize);
+    i = i + 1u32;
+  }
+  ps
+}
+
+struct Giver {
+  pool: Arc[imm, OpPool[u64]];
+  ps: List[usize];
+}
+
+// Dissolve every record: the sum of what their asker parts held
+fn giveMany(g: Giver) u64 {
+  var sum = 0u64;
+  var k = 0usize;
+  while k < g.ps.len() {
+    let rec = g.pool.dissolve(*g.ps[k] as *OpRec[u64]);
+    sum = sum + rec.ask;
+    k = k + 1usize;
+  }
+  sum
+}
+
+// The records of taker l: how many are not what they should be (one seen
+// before, not at its index, or not holding l's asker part)
+fn check(pool: &Arc[imm, OpPool[u64]], ps: &List[usize], l: u64, seen: &mut List[u8]) u32 {
+  var bad = 0u32;
+  var k = 0usize;
+  while k < ps.len() {
+    let r = *ps[k] as *OpRec[u64];
+    let index = u32.from((*r).core.id().number() & 0xFFFFFFFFu64);
+    if *seen[usize.from(index)] != 0u8 {bad = bad + 1u32;}
+    seen[usize.from(index)] = 1u8;
+    if pool.at(index) as usize != r as usize {bad = bad + 1u32;}
+    if (*r).ask != l * 1000000u64 + u64.from(k) {bad = bad + 1u32;}
+    k = k + 1usize;
+  }
+  bad
+}
+
+fn main() i32 {
+  let pool = Arc[imm, OpPool[u64]](OpPool[u64].make());
+  // 1. Four takers at once
+  var t0 = thread.start(Taker(pool, 0u64), &takeMany);
+  var t1 = thread.start(Taker(pool, 1000000u64), &takeMany);
+  var t2 = thread.start(Taker(pool, 2000000u64), &takeMany);
+  var t3 = thread.start(Taker(pool, 3000000u64), &takeMany);
+  let p0 = t0.join();
+  let p1 = t1.join();
+  let p2 = t2.join();
+  let p3 = t3.join();
+  let total = 4u32 * perThread;
+  expectUInt(u64.from(pool.inUse()), u64.from(total), "every record taken");
+  expect(pool.size() >= total, "the pool grew to hold them");
+  expectUInt(u64.from(pool.size() % 64u32), 0u64, "a chunk of 64 at a time");
+  // Each a different record, at its own index, holding what its taker wrote
+  var seen = List[u8].empty();
+  var i = 0u32;
+  while i < pool.size() {
+    seen.push(0u8);
+    i = i + 1u32;
+  }
+  var bad = 0u32;
+  bad = bad + check(&pool, &p0, 0u64, &mut seen);
+  bad = bad + check(&pool, &p1, 1u64, &mut seen);
+  bad = bad + check(&pool, &p2, 2u64, &mut seen);
+  bad = bad + check(&pool, &p3, 3u64, &mut seen);
+  expectUInt(u64.from(bad), 0u64, "each a different record, found at its index, holding its asker part");
+
+  // 3, first: an id kept, and its record
+  let keptAt = *p0[0usize];
+  let kept = (*(keptAt as *OpRec[u64])).core.id().number();
+
+  // 2. Dissolved on other threads than took them
+  var sums = 0u64;
+  var g0 = thread.start(Giver(pool, p1), &giveMany);
+  var g1 = thread.start(Giver(pool, p2), &giveMany);
+  var g2 = thread.start(Giver(pool, p3), &giveMany);
+  var g3 = thread.start(Giver(pool, p0), &giveMany);
+  sums = g0.join() + g1.join() + g2.join() + g3.join();
+  // Each asker part was given back once: the sum of 0..2999 four times, plus
+  // the bases
+  let n = u64.from(perThread);
+  let want = 4u64 * (n * (n - 1u64) / 2u64) + n * (1000000u64 + 2000000u64 + 3000000u64);
+  expectUInt(sums, want, "every asker part given back once");
+  expectUInt(u64.from(pool.inUse()), 0u64, "every record free");
+  let size = pool.size();
+
+  // The owner thread's batched forms
+  var mine = List[usize].empty();
+  var k = 0u32;
+  while k < 100u32 {
+    mine.push(pool.takeHere(u64.from(k)) as usize);
+    k = k + 1u32;
+  }
+  var sum = 0u64;
+  var m = 0usize;
+  while m < mine.len() {
+    let rec = pool.dissolveHere(*mine[m] as *OpRec[u64]);
+    sum = sum + rec.ask;
+    m = m + 1usize;
+  }
+  expectUInt(sum, 4950u64, "taken and dissolved here");
+  expectUInt(u64.from(pool.inUse()), 0u64, "free again, waiting in the batch");
+  let again = pool.takeHere(7u64);
+  expect(mine.len() > 0usize && again as usize == *mine[0usize], "takeHere takes the batch's first");
+  _ = pool.dissolveHere(again);
+  pool.flushHere();
+  let other = pool.take(9u64);
+  expect(pool.size() == size, "nothing more was made: what was given back is taken again");
+  _ = pool.dissolve(other);
+
+  // 3. The kept id names a record whose generation has moved on
+  let now = (*(keptAt as *OpRec[u64])).core.id().number();
+  expect((now & 0xFFFFFFFFu64) == (kept & 0xFFFFFFFFu64) && (now >> 32u64) != (kept >> 32u64),
+    "a dissolved record's id names nothing: the same index, its generation moved on");
+  done()
+}

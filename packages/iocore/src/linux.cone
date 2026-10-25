@@ -318,59 +318,15 @@ fn lxOpen() u32, usize, usize, usize {
 // Handle wait queues: operations that would block, in order, on a socket
 // ---------------------------------------------------------------------------
 
-const sideNone = 0u32;
-const sideRecv = 1u32;
-const sideSend = 2u32;
+// A socket's queues are its handle's two lists of records in flight (its
+// reads and its writes, loop.cone's linkSide and unlinkSide), linked by the
+// records' own pointers: a record waits at the end of its list, and readiness
+// tries the head
 
 // Whether kind k waits on its handle's queues
 fn socketKind(k: u32) bool {
   k == diag.kindConnect || k == diag.kindAccept || k == diag.kindRecv
     || k == diag.kindRecvReady || k == diag.kindSend || k == diag.kindRecvFrom || k == diag.kindSendTo
-}
-
-// Record i waits at the end of the queue of its handle's entry, for its side
-fn waitPush(lp: &mut Loop, i: u32, side: u32) {
-  let r = lp.recAt(i) as &mut Rec;
-  let e = lp.handles.at(r.sock.index) as &mut HEntry;
-  r.side = side;
-  r.waitNext = noEntry;
-  if side == sideRecv {
-    r.waitPrev = e.recvTail;
-    if e.recvTail == noEntry {e.recvHead = i;} else {(lp.recAt(e.recvTail) as &mut Rec).waitNext = i;}
-    e.recvTail = i;
-  } else {
-    r.waitPrev = e.sendTail;
-    if e.sendTail == noEntry {e.sendHead = i;} else {(lp.recAt(e.sendTail) as &mut Rec).waitNext = i;}
-    e.sendTail = i;
-  }
-}
-
-// Record i leaves the queue it waits in, if it waits in one
-fn waitUnlink(lp: &mut Loop, i: u32) {
-  let r = lp.recAt(i) as &mut Rec;
-  if r.side == sideNone {return;}
-  // A closed handle's entry is gone, and its queue went with it (close
-  // empties it first)
-  let p = lp.handles.at(r.sock.index);
-  if p as usize == 0usize {
-    r.side = sideNone;
-    r.waitNext = noEntry;
-    r.waitPrev = noEntry;
-    return;
-  }
-  let e = p as &mut HEntry;
-  let prev = r.waitPrev;
-  let next = r.waitNext;
-  if r.side == sideRecv {
-    if prev == noEntry {e.recvHead = next;} else {(lp.recAt(prev) as &mut Rec).waitNext = next;}
-    if next == noEntry {e.recvTail = prev;} else {(lp.recAt(next) as &mut Rec).waitPrev = prev;}
-  } else {
-    if prev == noEntry {e.sendHead = next;} else {(lp.recAt(prev) as &mut Rec).waitNext = next;}
-    if next == noEntry {e.sendTail = prev;} else {(lp.recAt(next) as &mut Rec).waitPrev = prev;}
-  }
-  r.side = sideNone;
-  r.waitNext = noEntry;
-  r.waitPrev = noEntry;
 }
 
 // ---------------------------------------------------------------------------
@@ -381,7 +337,7 @@ const triedDone = 0u32;       // answered (decided), and out of its queue
 const triedWait = 1u32;       // it would block: it stays where it is
 
 // The bytes a send is sending: the owned buffer's, or the shared ones'
-fn sendData(r: &mut Rec) *u8, usize {
+fn sendData(r: &mut OpCore) *u8, usize {
   match r.bytes {
     case let Some(b) {
       let v = b.view();
@@ -389,7 +345,7 @@ fn sendData(r: &mut Rec) *u8, usize {
     }
     else {}
   }
-  r.buf.base(), r.buf.len()
+  r.bufBase(), r.bufLen()
 }
 
 // A socket made, closed with the loop's entry for it: a descriptor adopted
@@ -406,34 +362,33 @@ fn lxAdopt(lp: &mut Loop, fd: usize, kind: u32, family: u16) u32, Handle {
   0u32, h
 }
 
-// Try record i's operation now. The record is the head of its queue, or has
-// just been made and is about to be put in one
-fn lxTry(lp: &mut Loop, i: u32, at: Instant) u32 {
+// Try record p's operation now. The record is the head of its queue
+fn lxTry(lp: &mut Loop, p: *OpCore, at: Instant) u32 {
   if isWindows() {return triedDone;}
-  let r = lp.recAt(i) as &mut Rec;
-  let ei = lp.handleIndex(r.sock);
+  let r = p as &mut OpCore;
+  let ei = lp.handleIndex(r.handle);
   if ei == noEntry {
-    waitUnlink(lp, i);
-    lp.decide(i, diag.outcomeFailed, 0usize, errorInvalidHandle);
+    lp.unlinkSide(p);
+    lp.decide(p, diag.outcomeFailed, 0usize, errorInvalidHandle);
     return triedDone;
   }
   let fd = fdOf((*lp.handles.at(ei)).raw);
   let k = r.kind;
   if k == diag.kindRecv {
-    var n = sysRecv(fd, r.buf.base() + r.buf.len(), r.buf.room(), 0i32);
-    while n < 0i64 && lastErrno() == eintr {n = sysRecv(fd, r.buf.base() + r.buf.len(), r.buf.room(), 0i32);}
+    var n = sysRecv(fd, r.bufBase() + r.bufLen(), r.bufRoom(), 0i32);
+    while n < 0i64 && lastErrno() == eintr {n = sysRecv(fd, r.bufBase() + r.bufLen(), r.bufRoom(), 0i32);}
     if n >= 0i64 {
       r.dequeued = at;
-      r.buf.setLen(r.buf.len() + usize.from(n));
-      waitUnlink(lp, i);
-      lp.decide(i, diag.outcomeDone, usize.from(n), 0u32);
+      r.bufGrow(usize.from(n));
+      lp.unlinkSide(p);
+      lp.decide(p, diag.outcomeDone, usize.from(n), 0u32);
       return triedDone;
     }
     let e = lastErrno();
     if e == eagain {return triedWait;}
     r.dequeued = at;
-    waitUnlink(lp, i);
-    lp.decide(i, diag.outcomeFailed, 0usize, errnoCode(e));
+    lp.unlinkSide(p);
+    lp.decide(p, diag.outcomeFailed, 0usize, errnoCode(e));
     return triedDone;
   }
   if k == diag.kindRecvReady {
@@ -443,15 +398,15 @@ fn lxTry(lp: &mut Loop, i: u32, at: Instant) u32 {
     while n < 0i64 && lastErrno() == eintr {n = sysRecv(fd, &mut probe as *u8, 1usize, msgPeek);}
     if n >= 0i64 {
       r.dequeued = at;
-      waitUnlink(lp, i);
-      lp.decide(i, diag.outcomeDone, 0usize, 0u32);
+      lp.unlinkSide(p);
+      lp.decide(p, diag.outcomeDone, 0usize, 0u32);
       return triedDone;
     }
     let e = lastErrno();
     if e == eagain {return triedWait;}
     r.dequeued = at;
-    waitUnlink(lp, i);
-    lp.decide(i, diag.outcomeFailed, 0usize, errnoCode(e));
+    lp.unlinkSide(p);
+    lp.decide(p, diag.outcomeFailed, 0usize, errnoCode(e));
     return triedDone;
   }
   if k == diag.kindSend {
@@ -470,58 +425,58 @@ fn lxTry(lp: &mut Loop, i: u32, at: Instant) u32 {
     }
     if failed == eagain {return triedWait;}
     r.dequeued = at;
-    waitUnlink(lp, i);
+    lp.unlinkSide(p);
     if failed != 0i32 {
-      lp.decide(i, diag.outcomeFailed, 0usize, errnoCode(failed));
+      lp.decide(p, diag.outcomeFailed, 0usize, errnoCode(failed));
     } else {
-      lp.decide(i, diag.outcomeDone, len, 0u32);
+      lp.decide(p, diag.outcomeDone, len, 0u32);
     }
     return triedDone;
   }
   if k == diag.kindRecvFrom {
     // One datagram. MSG_TRUNC makes the answer its whole length, so a cut one
     // is told from one that fitted exactly
-    let room = r.buf.room();
-    r.peer.size = 28i32;
-    var n = sysRecvfrom(fd, r.buf.base() + r.buf.len(), room, msgTrunc, &mut r.peer as *u8, &mut r.peer.size as *u32);
+    let room = r.bufRoom();
+    (*r.sockAddr()).size = 28i32;
+    var n = sysRecvfrom(fd, r.bufBase() + r.bufLen(), room, msgTrunc, r.sockAddr() as *u8, &mut (*r.sockAddr()).size as *u32);
     while n < 0i64 && lastErrno() == eintr {
-      r.peer.size = 28i32;
-      n = sysRecvfrom(fd, r.buf.base() + r.buf.len(), room, msgTrunc, &mut r.peer as *u8, &mut r.peer.size as *u32);
+      (*r.sockAddr()).size = 28i32;
+      n = sysRecvfrom(fd, r.bufBase() + r.bufLen(), room, msgTrunc, r.sockAddr() as *u8, &mut (*r.sockAddr()).size as *u32);
     }
     if n >= 0i64 {
       r.dequeued = at;
-      waitUnlink(lp, i);
+      lp.unlinkSide(p);
       if usize.from(n) > room {
         // The room is filled, the rest of the datagram lost: WSAEMSGSIZE, as on Windows
-        r.buf.setLen(r.buf.len() + room);
-        lp.decide(i, diag.outcomeFailed, 0usize, errorMsgSize);
+        r.bufGrow(room);
+        lp.decide(p, diag.outcomeFailed, 0usize, errorMsgSize);
       } else {
-        r.buf.setLen(r.buf.len() + usize.from(n));
-        lp.decide(i, diag.outcomeDone, usize.from(n), 0u32);
+        r.bufGrow(usize.from(n));
+        lp.decide(p, diag.outcomeDone, usize.from(n), 0u32);
       }
       return triedDone;
     }
     let e = lastErrno();
     if e == eagain {return triedWait;}
     r.dequeued = at;
-    waitUnlink(lp, i);
-    lp.decide(i, diag.outcomeFailed, 0usize, errnoCode(e));
+    lp.unlinkSide(p);
+    lp.decide(p, diag.outcomeFailed, 0usize, errnoCode(e));
     return triedDone;
   }
   if k == diag.kindSendTo {
     // One datagram, whole or not at all
-    let len = r.buf.len();
-    var n = sysSendto(fd, r.buf.base(), len, msgNoSignal, &mut r.peer as *u8, u32.from(r.peer.size));
+    let len = r.bufLen();
+    var n = sysSendto(fd, r.bufBase(), len, msgNoSignal, r.sockAddr() as *u8, u32.from((*r.sockAddr()).size));
     while n < 0i64 && lastErrno() == eintr {
-      n = sysSendto(fd, r.buf.base(), len, msgNoSignal, &mut r.peer as *u8, u32.from(r.peer.size));
+      n = sysSendto(fd, r.bufBase(), len, msgNoSignal, r.sockAddr() as *u8, u32.from((*r.sockAddr()).size));
     }
     if n < 0i64 && lastErrno() == eagain {return triedWait;}
     r.dequeued = at;
-    waitUnlink(lp, i);
+    lp.unlinkSide(p);
     if n < 0i64 {
-      lp.decide(i, diag.outcomeFailed, 0usize, errnoCode(lastErrno()));
+      lp.decide(p, diag.outcomeFailed, 0usize, errnoCode(lastErrno()));
     } else {
-      lp.decide(i, diag.outcomeDone, usize.from(n), 0u32);
+      lp.decide(p, diag.outcomeDone, usize.from(n), 0u32);
     }
     return triedDone;
   }
@@ -532,7 +487,7 @@ fn lxTry(lp: &mut Loop, i: u32, at: Instant) u32 {
     }
     if s >= 0i32 {
       r.dequeued = at;
-      waitUnlink(lp, i);
+      lp.unlinkSide(p);
       let sock = usize.from(s);
       // noDelay first, as the Windows side does for the sockets it adopts
       noDelay(sock);
@@ -540,18 +495,18 @@ fn lxTry(lp: &mut Loop, i: u32, at: Instant) u32 {
       var h = Handle.none();
       code, h = lxAdopt(lp, sock, hSocket, (*lp.handles.at(ei)).family);
       if code != 0u32 {
-        lp.decide(i, diag.outcomeFailed, 0usize, code);
+        lp.decide(p, diag.outcomeFailed, 0usize, code);
       } else {
         r.newHandle = h;
-        lp.decide(i, diag.outcomeDone, 0usize, 0u32);
+        lp.decide(p, diag.outcomeDone, 0usize, 0u32);
       }
       return triedDone;
     }
     let e = lastErrno();
     if e == eagain {return triedWait;}
     r.dequeued = at;
-    waitUnlink(lp, i);
-    lp.decide(i, diag.outcomeFailed, 0usize, errnoCode(e));
+    lp.unlinkSide(p);
+    lp.decide(p, diag.outcomeFailed, 0usize, errnoCode(e));
     return triedDone;
   }
   if k == diag.kindConnect {
@@ -570,22 +525,22 @@ fn lxTry(lp: &mut Loop, i: u32, at: Instant) u32 {
       }
     }
     r.dequeued = at;
-    waitUnlink(lp, i);
+    lp.unlinkSide(p);
     if err == 0i32 {
       noDelay(usize.from(fd));
-      r.newHandle = r.sock;
-      lp.decide(i, diag.outcomeDone, 0usize, 0u32);
+      r.newHandle = r.handle;
+      lp.decide(p, diag.outcomeDone, 0usize, 0u32);
     } else {
       // The socket was only for this connection
-      lp.close(r.sock);
-      lp.decide(i, diag.outcomeFailed, 0usize, errnoCode(err));
+      lp.close(r.handle);
+      lp.decide(p, diag.outcomeFailed, 0usize, errnoCode(err));
     }
     return triedDone;
   }
   triedDone
 }
 
-// Try the operations waiting on one side of entry ei, in order, until one
+/// Try the operations waiting on one side of entry ei, in order, until one
 // would block, or one closes the handle (a failed connect does: its entry is
 // then gone)
 fn lxRun(lp: &mut Loop, ei: u32, side: u32, at: Instant) {
@@ -593,8 +548,8 @@ fn lxRun(lp: &mut Loop, ei: u32, side: u32, at: Instant) {
   while true {
     let e = lp.handles.at(ei);
     if e as usize == 0usize {break;}
-    let head = if side == sideRecv {(*e).recvHead} else {(*e).sendHead};
-    if head == noEntry {break;}
+    let head = if side == onReads {(*e).reads} else {(*e).writes};
+    if head as usize == 0usize {break;}
     if lxTry(lp, head, at) == triedWait {break;}
   }
 }
@@ -603,73 +558,73 @@ fn lxRun(lp: &mut Loop, ei: u32, side: u32, at: Instant) {
 fn lxEvent(lp: &mut Loop, ei: u32, gen: u32, events: u32, at: Instant) {
   if isWindows() {return;}
   if lp.handles.get(Slot(ei, gen)) as usize == 0usize {return;}
-  if (events & (epollIn | epollErr | epollHup | epollRdHup)) != 0u32 {lxRun(lp, ei, sideRecv, at);}
+  if (events & (epollIn | epollErr | epollHup | epollRdHup)) != 0u32 {lxRun(lp, ei, onReads, at);}
   // The operations may have closed it (a failed connect does): look again
   if lp.handles.get(Slot(ei, gen)) as usize == 0usize {return;}
-  if (events & (epollOut | epollErr | epollHup)) != 0u32 {lxRun(lp, ei, sideSend, at);}
+  if (events & (epollOut | epollErr | epollHup)) != 0u32 {lxRun(lp, ei, onWrites, at);}
 }
 
-// Start record i's operation on its socket: it is tried at once, and waits in
+// Start record p's operation on its socket: it is tried at once, and waits in
 // its handle's queue if it would block
-fn lxQueue(lp: &mut Loop, i: u32, side: u32) u32 {
+fn lxQueue(lp: &mut Loop, p: *OpCore, side: u32) u32 {
   if isWindows() {return errorInvalidParameter;}
-  let r = lp.recAt(i) as &mut Rec;
-  let ei = lp.handleIndex(r.sock);
+  let r = p as &mut OpCore;
+  let ei = lp.handleIndex(r.handle);
   if ei == noEntry {return errorInvalidHandle;}
   r.done = 0usize;
-  waitPush(lp, i, side);
+  lp.linkSide(p, side);
   lxRun(lp, ei, side, Instant.now());
   0u32
 }
 
 // A Recv or a RecvReady
-fn lxStartRecv(lp: &mut Loop, p: *Rec, ready: bool) u32 {
+fn lxStartRecv(lp: &mut Loop, p: *OpCore, ready: bool) u32 {
   if isWindows() {return errorInvalidParameter;}
-  let r = p as &mut Rec;
-  if lp.rawOf(r.sock, hSocket) == invalidHandle {return errorInvalidHandle;}
-  if !ready && r.buf.room() == 0usize {return errorInsufficientBuffer;}
-  lxQueue(lp, r.index, sideRecv)
+  let r = p as &mut OpCore;
+  if lp.rawOf(r.handle, hSocket) == invalidHandle {return errorInvalidHandle;}
+  if !ready && r.bufRoom() == 0usize {return errorInsufficientBuffer;}
+  lxQueue(lp, p, onReads)
 }
 
 // A Send or a SendBytes
-fn lxStartSend(lp: &mut Loop, p: *Rec) u32 {
+fn lxStartSend(lp: &mut Loop, p: *OpCore) u32 {
   if isWindows() {return errorInvalidParameter;}
-  let r = p as &mut Rec;
-  if lp.rawOf(r.sock, hSocket) == invalidHandle {return errorInvalidHandle;}
-  lxQueue(lp, r.index, sideSend)
+  let r = p as &mut OpCore;
+  if lp.rawOf(r.handle, hSocket) == invalidHandle {return errorInvalidHandle;}
+  lxQueue(lp, p, onWrites)
 }
 
 // A RecvFrom
-fn lxStartRecvFrom(lp: &mut Loop, p: *Rec) u32 {
+fn lxStartRecvFrom(lp: &mut Loop, p: *OpCore) u32 {
   if isWindows() {return errorInvalidParameter;}
-  let r = p as &mut Rec;
-  if lp.rawOf(r.sock, hDatagram) == invalidHandle {return errorInvalidHandle;}
-  if r.buf.room() == 0usize {return errorInsufficientBuffer;}
-  lxQueue(lp, r.index, sideRecv)
+  let r = p as &mut OpCore;
+  if lp.rawOf(r.handle, hDatagram) == invalidHandle {return errorInvalidHandle;}
+  if r.bufRoom() == 0usize {return errorInsufficientBuffer;}
+  lxQueue(lp, p, onReads)
 }
 
 // A SendTo
-fn lxStartSendTo(lp: &mut Loop, p: *Rec) u32 {
+fn lxStartSendTo(lp: &mut Loop, p: *OpCore) u32 {
   if isWindows() {return errorInvalidParameter;}
-  let r = p as &mut Rec;
-  if lp.rawOf(r.sock, hDatagram) == invalidHandle {return errorInvalidHandle;}
-  lxQueue(lp, r.index, sideSend)
+  let r = p as &mut OpCore;
+  if lp.rawOf(r.handle, hDatagram) == invalidHandle {return errorInvalidHandle;}
+  lxQueue(lp, p, onWrites)
 }
 
-fn lxStartAccept(lp: &mut Loop, p: *Rec) u32 {
+fn lxStartAccept(lp: &mut Loop, p: *OpCore) u32 {
   if isWindows() {return errorInvalidParameter;}
-  let r = p as &mut Rec;
-  if lp.rawOf(r.sock, hListener) == invalidHandle {return errorInvalidHandle;}
-  lxQueue(lp, r.index, sideRecv)
+  let r = p as &mut OpCore;
+  if lp.rawOf(r.handle, hListener) == invalidHandle {return errorInvalidHandle;}
+  lxQueue(lp, p, onReads)
 }
 
 // A Connect: the socket is made and connected (non-blocking) before epoll
 // is told of it, so that the readiness it reports is the connection's, and
-// is a handle of the table until the operation ends; it is exposed in the
-// answer if it connects
-fn lxStartConnect(lp: &mut Loop, p: *Rec, addr: SocketAddr) u32 {
+// is a handle of the table until the operation ends (the record waits on its
+// writes); it is exposed in the answer if it connects
+fn lxStartConnect(lp: &mut Loop, p: *OpCore, addr: SocketAddr) u32 {
   if isWindows() {return errorInvalidParameter;}
-  let r = p as &mut Rec;
+  let r = p as &mut OpCore;
   let s = tcpSocket(addr.family());
   if s == invalidHandle {return wsaError();}
   var a = addr;
@@ -686,11 +641,11 @@ fn lxStartConnect(lp: &mut Loop, p: *Rec, addr: SocketAddr) u32 {
   var h = Handle.none();
   code, h = lxAdopt(lp, s, hSocket, addr.family());
   if code != 0u32 {return code;}
-  r.sock = h;
+  r.handle = h;
   r.family = addr.family();
   // Connected already, or waiting for the socket to become writable
-  waitPush(lp, r.index, sideSend);
-  if rc == 0i32 {lxRun(lp, h.index, sideSend, Instant.now());}
+  lp.linkSide(p, onWrites);
+  if rc == 0i32 {lxRun(lp, h.index, onWrites, Instant.now());}
   0u32
 }
 
@@ -701,13 +656,13 @@ fn lxStartConnect(lp: &mut Loop, p: *Rec, addr: SocketAddr) u32 {
 // A socket operation is asked to end: it is taken out of its queue and
 // answered at once, its buffer with it. A connection being made loses its
 // socket
-fn lxCancel(lp: &mut Loop, i: u32, outcome: u32) {
+fn lxCancel(lp: &mut Loop, p: *OpCore, outcome: u32) {
   if isWindows() {return;}
-  let r = lp.recAt(i) as &mut Rec;
-  waitUnlink(lp, i);
-  if r.kind == diag.kindConnect {lp.close(r.sock);}
+  let r = p as &mut OpCore;
+  lp.unlinkSide(p);
+  if r.kind == diag.kindConnect {lp.close(r.handle);}
   r.dequeued = Instant.now();
-  lp.decide(i, outcome, 0usize, 0u32);
+  lp.decide(p, outcome, 0usize, 0u32);
 }
 
 // A socket operation is asked to end, by a cancel or a deadline. What the
@@ -717,64 +672,68 @@ fn lxCancel(lp: &mut Loop, i: u32, outcome: u32) {
 // Windows. If not, the cancel has caught it: it leaves its queue, so that
 // nothing that arrives afterwards can complete it, and is answered at the
 // next wait (lxSettleCancels), so that asking again says it is still to answer
-fn lxAskCancel(lp: &mut Loop, i: u32) {
+fn lxAskCancel(lp: &mut Loop, p: *OpCore) {
   if isWindows() {return;}
-  let r = lp.recAt(i) as &mut Rec;
-  if r.side != sideNone && r.waitPrev == noEntry {
-    if lxTry(lp, i, Instant.now()) == triedDone {return;}
+  let r = p as &mut OpCore;
+  if r.side != onNone && r.hprev as usize == 0usize {
+    if lxTry(lp, p, Instant.now()) == triedDone {return;}
   }
-  waitUnlink(lp, i);
-  lp.cancels.push(lp.tokenOf(i));
+  lp.unlinkSide(p);
+  lp.cancels.push(Asked(p, r.gen));
 }
 
 // The cancels asked since the last wait are answered, after the events that
 // came with the wait (an operation they finished is Done, not Cancelled).
-// Each names its record by index and generation, so one answered meanwhile,
-// and its record reused, is not mistaken for another
+// Each names its record and the record's generation then, so one answered
+// meanwhile, and its record reused, is not mistaken for another
 fn lxSettleCancels(lp: &mut Loop) {
   if isWindows() {return;}
   var k = 0usize;
   while k < lp.cancels.len() {
-    let token = *lp.cancels[k];
+    let p = lp.cancels[k].p;
+    let gen = lp.cancels[k].gen;
     k = k + 1usize;
-    let i = u32.from(token & 0xFFFFFFFFu64);
-    let r = lp.recAt(i) as &mut Rec;
-    if r.gen != u32.from(token >> 32u64) || r.state != stFlight {continue;}
-    lxCancel(lp, i, if r.asked == askedDeadline {diag.outcomeTimedOut} else {diag.outcomeCancelled});
+    let r = p as &mut OpCore;
+    if r.gen != gen || r.state != stFlight {continue;}
+    lxCancel(lp, p, if r.asked == askedDeadline {diag.outcomeTimedOut} else {diag.outcomeCancelled});
   }
   lp.cancels.clear();
 }
 
 // The file operations in flight on file handle h are asked to end, as
 // Windows' CancelIoEx asks them: one still queued is answered Cancelled, one
-// running ends as it ends
+// running ends as it ends. They are the jobs on its lists
 fn lxCancelFiles(lp: &mut Loop, h: Handle) {
   if isWindows() {return;}
-  if (*lp.handles.at(h.index)).kind != hFile {return;}
-  var i = 0u32;
-  while i < lp.recCount {
-    let r = lp.recAt(i) as &mut Rec;
-    if r.state == stFlight && r.asked == askedNone && (r.kind == diag.kindReadAt || r.kind == diag.kindWriteAt)
-        && r.sock == h {
-      lp.askCancel(i, askedCancel);
+  let e = lp.handles.at(h.index) as &HEntry;
+  if e.kind != hFile {return;}
+  var side = 0u32;
+  while side < 2u32 {
+    var p = if side == 0u32 {e.reads} else {e.writes};
+    while p as usize != 0usize {
+      let next = (*p).hnext;
+      if (*p).state == stFlight && (*p).asked == askedNone {lp.askCancel(p, askedCancel);}
+      p = next;
     }
-    i = i + 1u32;
+    side = side + 1u32;
   }
 }
 
-// Every operation waiting on handle entry ei is answered Cancelled
+// Every socket operation waiting on handle entry ei is answered Cancelled (a
+// file's lists hold its jobs, which the pool's own records end)
 fn lxCancelAll(lp: &mut Loop, ei: u32) {
   if isWindows() {return;}
+  if (*lp.handles.at(ei)).kind == hFile {return;}
   while true {
-    let head = (*lp.handles.at(ei)).recvHead;
-    if head == noEntry {break;}
-    waitUnlink(lp, head);
+    let head = (*lp.handles.at(ei)).reads;
+    if head as usize == 0usize {break;}
+    lp.unlinkSide(head);
     lp.decide(head, diag.outcomeCancelled, 0usize, 0u32);
   }
   while true {
-    let head = (*lp.handles.at(ei)).sendHead;
-    if head == noEntry {break;}
-    waitUnlink(lp, head);
+    let head = (*lp.handles.at(ei)).writes;
+    if head as usize == 0usize {break;}
+    lp.unlinkSide(head);
     lp.decide(head, diag.outcomeCancelled, 0usize, 0u32);
   }
 }
@@ -870,25 +829,26 @@ fn lxDequeue(lp: &mut Loop, ms: u32, out: &mut List[Completion]) usize {
 // Files, as jobs of the blocking pool
 // ---------------------------------------------------------------------------
 
-// A ReadAt or WriteAt: a job on the files lane, holding a duplicate of the
-// descriptor
-fn lxStartFile(lp: &mut Loop, p: *Rec, write: bool) u32 {
+/// A ReadAt or WriteAt: a job on the files lane, holding a duplicate of the
+// descriptor. The record's buffer goes to the box whole (the record holds
+// none while the pool's thread does), and comes back when the box is
+// dissolved
+fn lxStartFile(lp: &mut Loop, p: *OpCore, write: bool) u32 {
   if isWindows() {return errorInvalidParameter;}
-  let r = p as &mut Rec;
-  let raw = lp.rawOf(r.sock, hFile);
+  let r = p as &mut OpCore;
+  let raw = lp.rawOf(r.handle, hFile);
   if raw == invalidHandle {return errorInvalidHandle;}
-  if !write && r.buf.room() == 0usize {return errorInsufficientBuffer;}
+  if !write && r.bufRoom() == 0usize {return errorInsufficientBuffer;}
   let l = laneAt(filesLane);
   if l as usize == 0usize {return errorInvalidParameter;}
   let dup = sysFcntl(fdOf(raw), fDupfdCloexec, 0i32);
   if dup < 0i32 {return errnoCode(lastErrno());}
-  let b = newBox(&noWork, r.at, Waker(lp.port), r.index, r.gen, l);
-  (b as &mut JobBox).buf <-> r.buf;
+  let buf = r.buf := None;
+  let b = newBox(&noWork, r.at, Waker(lp.port), p, l, buf);
   (*b).fd = dup;
   (*b).write = write;
   if !enqueueBox(b) {
-    r.buf <-> (b as &mut JobBox).buf;
-    dropBox(b);
+    r.buf = dissolveBox(b);
     return errorBusy;
   }
   r.job = b;
@@ -899,12 +859,24 @@ fn lxStartFile(lp: &mut Loop, p: *Rec, write: bool) u32 {
 // there is of a read (up to the buffer's room), at the offset in 'arg'
 fn lxFileJob(j: &mut JobBox) Outcome {
   if isWindows() {return Outcome.Failed(errorInvalidParameter);}
-  if j.write {
-    let len = j.buf.len();
+  let fd = j.fd;
+  let at = j.arg;
+  let write = j.write;
+  match &mut j.buf {
+    case var &mut Some(buf) {return lxFileIo(fd, at, write, buf);}
+    else {}
+  }
+  Outcome.Failed(errorInvalidParameter)
+}
+
+fn lxFileIo(fd: i32, at: u64, write: bool, buf: &mut IoBuf) Outcome {
+  if isWindows() {return Outcome.Failed(errorInvalidParameter);}
+  if write {
+    let len = buf.len();
     var done = 0usize;
     var failed = 0i32;
     while done < len && failed == 0i32 {
-      let n = sysPwrite(j.fd, j.buf.base() + done, len - done, i64.from(j.arg + u64.from(done)));
+      let n = sysPwrite(fd, buf.base() + done, len - done, i64.from(at + u64.from(done)));
       if n >= 0i64 {
         done = done + usize.from(n);
       } else {
@@ -915,13 +887,13 @@ fn lxFileJob(j: &mut JobBox) Outcome {
     if failed != 0i32 {return Outcome.Failed(errnoCode(failed));}
     return Outcome.Done(len);
   }
-  let room = j.buf.room();
-  var n = sysPread(j.fd, j.buf.base() + j.buf.len(), room, i64.from(j.arg));
+  let room = buf.room();
+  var n = sysPread(fd, buf.base() + buf.len(), room, i64.from(at));
   while n < 0i64 && lastErrno() == eintr {
-    n = sysPread(j.fd, j.buf.base() + j.buf.len(), room, i64.from(j.arg));
+    n = sysPread(fd, buf.base() + buf.len(), room, i64.from(at));
   }
   if n < 0i64 {return Outcome.Failed(errnoCode(lastErrno()));}
-  j.buf.setLen(j.buf.len() + usize.from(n));
+  buf.setLen(buf.len() + usize.from(n));
   Outcome.Done(usize.from(n))
 }
 

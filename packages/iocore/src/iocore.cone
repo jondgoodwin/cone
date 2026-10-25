@@ -21,20 +21,15 @@
 //     mut out = List[Completion].empty();
 //     while true {
 //       lp.poll(forever(), &mut out);             // waits here, and only here
-//       mut k = 0usize;
-//       while k < out.len() {
-//         imm c = &mut out[k];
+//       each c in out.drain() {                   // each answer, owned
 //         if c.token == 1u64 and c.isDone() {     // a connection: read from it
 //           lp.submit(Op.Recv(c.handle, IoBuf(4096usize)), Target.Here(2u64));
 //         }
 //         else if c.token == 2u64 and c.count() > 0usize {
-//           mut b = IoBuf.empty();
-//           b <-> c.buf;                          // the buffer, back from the kernel
-//           lp.submit(Op.Send(c.handle, b), Target.Here(3u64));   // echo it
+//           imm h, b = c.(handle, buf);           // the buffer, back from the kernel
+//           lp.submit(Op.Send(h, b), Target.Here(3u64));   // echo it
 //         }
-//         k = k + 1usize;
-//       }
-//       out.clear();                              // what is left dies: buffers go home
+//       }                                         // what is left dies: buffers go home
 //     }
 //   }
 //
@@ -55,7 +50,16 @@
 //   lp.openFile(path, access)           a file for ReadAt and WriteAt
 //   lp.close(h)  lp.localAddr(h)  lp.peerAddr(h)  lp.isOpen(h)
 //   lp.shutdown(h)  lp.reset(h)         a socket half-closed; closed with a reset
-//   lp.counters()  lp.subscribe(s)  lp.id()  lp.inFlight()      (DIAGNOSTICS)
+//   lp.counters()  lp.subscribe(s)  lp.id()  lp.inFlight()  lp.records()  lp.recordsMade()
+//                                       (DIAGNOSTICS)
+//   lp.cancelHandle(h, write)           end every read (or write) in flight on h  (CANCEL)
+//   lp.hint(h)  lp.setHint(h, v)        a handle's hint word                      (HANDLES)
+//   OpPool[A].make(): pool.take(ask) pool.takeHere(ask) pool.dissolve(p) pool.dissolveHere(p)
+//     pool.flushHere() pool.at(i) pool.inUse() pool.size()    an asker's records  (RECORDS)
+//   OpRec[A] {core, ask}  OpCore: core.kind .handle .at .deadline .buf .bytes .group .lane .work
+//     .setPeer(a) .qnext; .status .n .code .newHandle .submitted .dequeued .peer() .outcome()
+//     .count() .isDone() .isEarly() .isLate() .id()
+//   lp.start(core)  lp.takeDone(out)    an asker's record started; those answered  (RECORDS)
 //   forever()                           an 'until' that never comes
 //
 //   Op.Connect(addr)  Op.Accept(listener)                   (OPERATIONS)
@@ -200,9 +204,10 @@
 // (when poll handed it over, or the loop it was posted to took it). The
 // outcome is in plain fields ('c.status', a diag outcome number, 'c.n',
 // 'c.code'), and 'c.outcome()' gives it as the Outcome enum, to match on. A
-// buffer comes out of a Completion by a swap, 'b <-> c.buf', since Cone does
-// not yet move a value out of a field; one left in dies with it, home to its
-// pool. A Completion is Sendable: it may go to another thread.
+// buffer comes out of a Completion the code owns by a field list, 'let buf =
+// c.(buf)' (the rest of the answer goes at the end of the statement), or
+// 'let h, buf = c.(handle, buf)' for more than one; one left in dies with
+// it, home to its pool. A Completion is Sendable: it may go to another thread.
 //
 // CANCEL. 'lp.cancel(id)' asks an operation to end. It is a request: the
 // operation still answers exactly once, and its answer says how it ended --
@@ -212,11 +217,16 @@
 // once its answer is decided or for an id that names nothing. A timer
 // cancelled answers Cancelled, decided there and then (so a second cancel
 // of it says false). Closing a handle cancels everything in flight
-// on it. A job queued on the blocking pool is taken out of its queue and
+// on it; 'lp.cancelHandle(h, write)' asks every operation in flight on h in
+// one direction to end, the old API's and an asker's records alike: its reads
+// (accept, receive, RecvFrom, ReadAt) or its writes (send, SendTo, WriteAt,
+// Linux's connect; Windows' connect has no handle until it has connected),
+// each answering as a cancel's does, and says how many it asked (one asked
+// already is not asked again). A job queued on the blocking pool is taken out of its queue and
 // answered Cancelled at once, its buffer back; one running cannot be
 // stopped, and answers how it ended when it returns. An external operation's
 // Completer is told (EXTERNAL OPERATIONS). Cancel does not abandon anything:
-// what is still the kernel's stays in the in-flight table until it is not.
+// what is still the kernel's stays in its record until it is not.
 //
 // DEADLINES. A deadline is an absolute Instant, never a duration (I6):
 // 'submitBy', or the deadline of 'submitIn', whichever is tighter with the
@@ -229,8 +239,8 @@
 // the grace the loop answers TimedOut at once WITHOUT the buffer, promptly,
 // as a frame loop needs even when a read on a hung share is stuck; the
 // buffer goes home to its pool when the kernel or the job lets it go (a
-// late return, counted), and the record waits for it in the in-flight
-// table. After such a prompt TimedOut the operation's effect is unknown: a
+// late return, counted), and the record waits for it (RECORDS: for an
+// asker's record this is the one bad case). After such a prompt TimedOut the operation's effect is unknown: a
 // receive may have taken bytes, a send may have sent. If the kernel answers
 // between the loop's decision and its delivery, the kernel's own outcome is
 // the answer, buffer and all. A job still queued at its deadline is taken
@@ -306,10 +316,61 @@
 // going home; a Completer that dies without an ending ends its operation
 // Failed with ERROR_OPERATION_ABORTED, so it still answers exactly once.
 //
+// RECORDS. Every operation is ONE RECORD, which the loop owns while it works on
+// it: an OpRec[A], the loop's OpCore first (the request, what the operation
+// owns, the promise, the answer) and the asker's own A after it. The calls
+// above take records from the loop's own pool, their A the target and the
+// token, and answer each with a Completion. A layer with answers of its own
+// (the aio package) keeps a pool of its own, an OpPool[A], and starts its
+// records itself:
+//
+// - The record is the carrier. The asker takes one ('pool.take(ask)', from any
+//   thread: the pointer to a record holding ask and an OpCore with nothing in
+//   it) and fills its request: 'kind' (diag.kindRecv, ...), 'handle', 'buf'
+//   or 'bytes' (Options: None is nothing here), 'at', 'deadline' (forever()
+//   for none; a timer's own time for diag.kindTimer), 'group', 'lane' and
+//   'work' for a Call, 'setPeer(addr)' for SendTo and Connect. Only its
+//   address crosses to the loop's thread; 'qnext' is the asker's link for
+//   queueing it there.
+// - 'lp.start(core)', on the loop's thread, starts it as 'submitIn' starts an
+//   operation (its deadline the tighter of its own and its group's, cancelled
+//   at once in a cancelled group). Its answer is no Completion: the record goes
+//   on the loop's done list, and after poll 'lp.takeDone(out)' hands over each
+//   record answered since (an 8-byte pointer each). Its answer is in it, as a
+//   Completion's fields: 'status', 'n', 'code', 'newHandle', 'peer()',
+//   'outcome()', and the buffer, back in 'buf'.
+// - The asker then starts it again (a read's second stage: a buffer put in by
+//   assignment over None) or DISSOLVES it: 'pool.dissolve(p)' reads the record
+//   out whole and frees its cell, and field lists take the value apart --
+//   'let core, ask = rec.(core, ask)', 'let buf = core.(buf)' -- each piece
+//   going where the ending says. A record is dissolved once, at one moment;
+//   no piece is taken out of a record that stays alive.
+// - The one bad case: a deadline's grace runs out while the kernel still holds
+//   the record and its buffer (Windows; a Linux loop holds no socket
+//   operation's buffer in the kernel). The record is on the done list
+//   answered TimedOut and 'isEarly()': the asker answers its own then, and
+//   LEAVES the record. When the kernel gives it back it is on the done list
+//   again, 'isLate()', and the asker dissolves it, the buffer going home.
+// - A loop that dies dissolves every asker's record it still holds into its
+//   pool, after cancelling and draining it: the record's asker part dies
+//   there, so an answer it owed is abandoned. Records the asker holds (taken
+//   and not started, or handed back by takeDone) are the asker's.
+//
+// The pool keeps its records in chunks of 64 that never move, found by
+// index through a fixed directory, 262,144 at most (one more is a panic).
+// 'take' and 'dissolve' work from any thread, under the pool's one lock; the
+// pool's owner thread, which dissolves many records in one pass, uses
+// 'dissolveHere' (no lock) and pushes those back under one lock with
+// 'flushHere', and 'takeHere' takes them first. A record's index and
+// generation are its OpId ('core.id()'); the generation moves on as it is
+// dissolved, and as an early answer goes. An OpPool is Sendable, on trust:
+// share it through an Arc, or keep it for the life of the process.
+//
 // POLL. 'lp.poll(until, out)' is the only place the loop waits. It appends
 // to out every answer ready for this loop, at most a batch of 128 completions
 // taken from the kernel per wait (a budget, I16), and returns how many it
-// appended. It waits in the kernel while nothing is ready, at most until
+// appended; it returns as well, without waiting, while an asker's records
+// are on the done list (RECORDS). It waits in the kernel while nothing is ready, at most until
 // 'until', an Instant: 'poll(forever(), out)' waits as long as it takes,
 // 'poll(Instant.now(), out)' never waits (a frame's drain). It returns early,
 // with nothing, when a waker wakes it, or when it has posted answers to
@@ -342,12 +403,18 @@
 // while this side still receives -- a half-close; 'close(h)' finishes both
 // (Windows resets the connection instead when received bytes were left
 // unread); 'reset(h)' closes it abortively, the peer seeing the connection
-// reset and what was not yet sent dropped.
+// reset and what was not yet sent dropped. Each handle has a HINT WORD, a u32
+// the loop keeps for the layer that opened it and reads nothing of
+// ('lp.hint(h)', 'lp.setHint(h, v)'; 0 when it is opened, and for a handle
+// that names nothing): aio keeps a socket's read hint there.
 //
 // DIAGNOSTICS. 'lp.counters()' copies the loop's counts out, a
 // diag.Counters; submitted = delivered + in flight at every moment. With
 // 'lp.subscribe(&diag.textSubscriber)' every answer delivered prints a line,
 // its kernel and delivery latencies among it; with none, nothing prints.
+// 'lp.records()' is how many of the loop's own records are taken (in flight,
+// decided, or waiting for the kernel after an early answer), 'lp.recordsMade()'
+// how many its pool has made.
 //
 // MEASURED, release, an i7-13700HX on Windows 11 (examples/echo.cone and
 // examples/tick.cone; numbers vary run to run):
@@ -449,9 +516,9 @@ pub fn forever() Instant {Instant.fromNanos(0x7FFFFFFFFFFFFFFFi64)}
 
 const noEntry = 4294967295u32;
 
-// An operation: an entry of its loop's in-flight table, and which of the
-// entry's occupants it was (a generation), so an id kept after its answer
-// names nothing
+// An operation: its record's index in its pool, and which of the record's
+// occupants it was (a generation), so an id kept after its answer names
+// nothing
 pub struct OpId {
   index: u32;
   gen: u32;
@@ -765,13 +832,6 @@ pub struct Completion {
     diag.OpRecord(loop, id.number(), kind, status, code, u64.from(n), token,
       submitted, dequeued, delivered)
   }
-}
-
-// A Completion holding nothing, to swap one out of where it is held
-fn blankCompletion() Completion {
-  Completion(0u64, OpId.none(), 0u64, 0u32, 0u32, 0usize, 0u32, IoBuf.empty(),
-    Handle.none(), SocketAddr(Array[u8, 28]() <- fill 0u8, 0i32),
-    Instant(), Instant(), Instant())
 }
 
 // ---------------------------------------------------------------------------
