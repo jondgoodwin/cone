@@ -1570,7 +1570,7 @@ pub struct Rwcell is LockPermission {
 // not the 'RegionRef' above, a type-level region that managed references name,
 // 'Rc' and 'Uni'.)
 //
-// A region is any struct whose FIRST field is a MemRegion, filled with the three
+// A region is any struct whose FIRST field is a MemRegion, filled with the four
 // functions below, each handed the region itself as a pointer to that first
 // field (and so to the whole struct, which its functions cast back to). The
 // functions are plain function references, held in the region:
@@ -1584,9 +1584,26 @@ pub struct Rwcell is LockPermission {
 //                                       null block of 0 bytes is an allocation
 //   release(r, block, bytes)           the block, 'bytes' long, given back; a null
 //                                       block is nothing
+//   size(r, bytes, align)              the size an 'alloc' of 'bytes' bytes gives:
+//                                       'bytes' or more. A region that gives only
+//                                       what was asked answers 'bytes' (a one-line
+//                                       function of its own); one that rounds a
+//                                       request up to a size of its own answers that
 //
 // A block the region cannot give is null, as the C library's is. Calls are
-// made through 'allocate', 'resize' and 'release', the methods below.
+// made through 'allocate', 'resize', 'release' and 'sizeFor', the methods below.
+//
+// THE SIZE A REGION GIVES. A block 'alloc' made for 'bytes' bytes is 'size(bytes)'
+// bytes long, and the whole of it is the holder's to use: a collection asks
+// before it allocates and takes the room as its capacity, so a list asked for
+// 3,000 bytes in a region whose blocks are 4,096 holds 4,096 (precedent: C++23
+// 'allocate_at_least', jemalloc's 'nallocx'). The answer holds a promise the
+// region keeps: it is at least 'bytes'; it is the same for the same bytes and
+// align every time; asking again of the answer gives it back ('size(size(b)) ==
+// size(b)'); and it never falls as 'bytes' rises. The holder then hands the
+// room, or any byte count with the same answer (a whole number of elements that
+// fit in it), as the 'old' of a resize and the 'bytes' of a release, and the
+// region finds the block's size from it.
 //
 // A region VALUE, the head of 'new a[T](...)', is a value whose type is a struct
 // whose first field is a public '*MemRegion': that is the region a type declaring
@@ -1597,6 +1614,7 @@ pub struct MemRegion {
   pub allocFn: &fn(r: *MemRegion, bytes: usize, align: usize) *u8;
   pub resizeFn: &fn(r: *MemRegion, block: *u8, oldBytes: usize, newBytes: usize, align: usize) *u8;
   pub releaseFn: &fn(r: *MemRegion, block: *u8, bytes: usize);
+  pub sizeFn: &fn(r: *MemRegion, bytes: usize, align: usize) usize;
 
   pub fn allocate(self: &, bytes: usize, align: usize) *u8 inline {
     let f = allocFn;
@@ -1610,8 +1628,11 @@ pub struct MemRegion {
     let f = releaseFn;
     f(self as *MemRegion, block, bytes);
   }
+  pub fn sizeFor(self: &, bytes: usize, align: usize) usize inline {
+    let f = sizeFn;
+    f(self as *MemRegion, bytes, align)
+  }
 }
-
 // The heap's region: the one object every collection made without a region
 // points to, always there and never null. Its functions are the raw blocks
 // layer's above (conestd's heapregion.c defines it), and its blocks are

@@ -167,11 +167,23 @@ fn main() {
 
 	<h2 id="memregion">Giving a collection a region of your own</h2>
 	<p>Rarely needed, but it is how a program counts, limits or places its collections' memory. A
-		<span class="pre">MemRegion</span> (core) is three function references, <span class="pre">allocFn</span>,
-		<span class="pre">resizeFn</span> and <span class="pre">releaseFn</span>, held in a struct's first field and handed that
-		field's address: <span class="pre">allocate(bytes, align)</span> gives a block, <span class="pre">resize(block, old,
-		new, align)</span> makes it longer, in place or by copying to a new one (a null block of 0 bytes is an allocation), and
-		<span class="pre">release(block, bytes)</span> gives it back.</p>
+		<span class="pre">MemRegion</span> (core) is four function references, <span class="pre">allocFn</span>,
+		<span class="pre">resizeFn</span>, <span class="pre">releaseFn</span> and <span class="pre">sizeFn</span>, held in a
+		struct's first field and handed that field's address: <span class="pre">allocate(bytes, align)</span> gives a block,
+		<span class="pre">resize(block, old, new, align)</span> makes it longer, in place or by copying to a new one (a null
+		block of 0 bytes is an allocation), <span class="pre">release(block, bytes)</span> gives it back, and
+		<span class="pre">sizeFor(bytes, align)</span> says how much a block asked for <span class="pre">bytes</span> bytes
+		really has.</p>
+	<p id="sizefor">A region may give more than it is asked. Most give exactly what was asked, and their
+		<span class="pre">sizeFn</span> answers the <span class="pre">bytes</span> it is given; one that carves its blocks from
+		fixed sizes answers the size of the block it would give. A <span class="pre">List</span> (so a
+		<span class="pre">String</span>) and a <span class="pre">Deque</span> ask before they allocate and take all of the room as
+		their capacity, when they are made with a starting size and at each growth: in a region whose blocks are 4,096 bytes,
+		<span class="pre">List[u8](3000, r)</span> has a capacity of 4,096, and gives the block back by that size. The answer is at
+		least what was asked, is the same every time for the same request, and never falls as the request grows. A
+		<span class="pre">Dict</span>, an <span class="pre">OrderedDict</span> and a <span class="pre">Set</span> size their
+		tables as a power of two of buckets, and a <span class="pre">Pool</span> its slots as a count with a ceiling, so
+		the room a region gives them beyond that is not used.</p>
 	<p id="otherregion">Another region is the construction's last argument: <span class="pre">List[i32](100, r)</span>,
 		<span class="pre">Dict[String, i64](r)</span>, where <span class="pre">r</span> is a
 		<span class="pre">*MemRegion</span>. Every block of the collection is then the region's, and its death gives each back
@@ -185,8 +197,9 @@ import stdio use *;
 import collections use *;
 import libc;
 
-// A region is three function references held in a struct's first field.
-// This one counts what it is asked for and takes its memory from the C library.
+// A region is four function references held in a struct's first field.
+// This one counts what it is asked for and takes its memory from the C library,
+// and gives exactly what is asked.
 struct Counting {
   header: MemRegion;
   blocks: usize;
@@ -213,6 +226,10 @@ fn countRelease(r: *MemRegion, block: *u8, bytes: usize) {
   libc.free(block);
 }
 
+fn countSize(r: *MemRegion, bytes: usize, align: usize) usize {
+  bytes                                  // no rounding up
+}
+
 // A type of your own that carries a region hands it on to what it is made of:
 // its last init parameter is the region, and a construction that names none gets the heap's.
 struct Mesh is CarriesRegion {
@@ -223,7 +240,7 @@ struct Mesh is CarriesRegion {
 }
 
 fn main() i32 {
-  var counting = Counting(MemRegion(&amp;countAlloc, &amp;countResize, &amp;countRelease), 0usize, 0usize);
+  var counting = Counting(MemRegion(&amp;countAlloc, &amp;countResize, &amp;countRelease, &amp;countSize), 0usize, 0usize);
   let region = (&amp;counting) as *MemRegion;
   {
     var xs = List[i64](region);        // asks the region for nothing yet

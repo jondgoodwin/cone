@@ -82,7 +82,7 @@
 // collection: the epoch is 1, 2, 3 ... never 0), so a cycle of them ends.
 //
 // A COLLECTION'S BLOCK. The region is also a MemRegion: its first field, 'region',
-// points at the three functions (allocate, resize, release) that sit in the
+// points at the functions (allocate, resize, release, and core's exact size) that sit in the
 // actor's Header beside the rest of the region, which never moves. A type
 // declaring CarriesRegion, made in the region ('new self[List[i64]](16)'), is
 // handed that region and takes its block from it, so the block is the actor's
@@ -280,7 +280,7 @@ pub struct ActorRegion {
     if g == null {
       panic("ActorGc: out of memory for an actor's region");
     }
-    mem.writeRaw(g, ActorRegion(null, MemRegion(&blockAlloc, &blockResize, &blockRelease)));
+    mem.writeRaw(g, ActorRegion(null, MemRegion(&blockAlloc, &blockResize, &blockRelease, &blockSize)));
     (*g).region = (&mut (*g).vt) as *MemRegion;
     g
   }
@@ -774,6 +774,9 @@ fn blockResize(r: *MemRegion, block: *u8, oldBytes: usize, newBytes: usize, alig
 fn blockRelease(r: *MemRegion, block: *u8, bytes: usize) {
   blockRegion(r).blockGive(block, bytes);
 }
+
+// The actor's region gives exactly what is asked
+fn blockSize(r: *MemRegion, bytes: usize, align: usize) usize { bytes }
 
 // A message has finished: collect, if the bytes allocated since the last
 // collection exceed what survived it, and are not under the floor (or if stress
