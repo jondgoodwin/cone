@@ -251,6 +251,21 @@ fn gaiCode(rc: i32) u32 {
   else {11001u32}
 }
 
+// The same, in 'room' (of 'cap' bytes) when it fits, so that nothing is
+// allocated (the pool's work, with a room on its stack); else in a block from
+// malloc. The caller lets it go with 'uncopy'
+fn cstrIn(s: &Array[u8], room: *u8, cap: usize) *u8 {
+  if s.len + 1usize > cap {return cstrCopy(s);}
+  libc.memcpy(room, s as *u8, s.len);
+  *(room + s.len) = 0u8;
+  room
+}
+
+// What cstrIn made let go: freed unless it is the room
+fn uncopy(p: *u8, room: *u8) {
+  if p as usize != room as usize {libc.free(p);}
+}
+
 // A NUL-terminated copy of a path's bytes, in a block from libc's malloc the
 // caller frees; null when there is no room
 fn cstrCopy(s: &Array[u8]) *u8 {
@@ -772,8 +787,11 @@ fn lxDrain(lp: &mut Loop, at: Instant, out: &mut List[Completion]) usize {
   let st = lp.port.lists();
   st.lock.lock();
   var node = st.head;
+  var job = st.jobsHead;
   st.head = null;
   st.tail = null;
+  st.jobsHead = null;
+  st.jobsTail = null;
   st.lock.unlock();
   var n = 0usize;
   while node as usize != 0usize {
@@ -781,6 +799,13 @@ fn lxDrain(lp: &mut Loop, at: Instant, out: &mut List[Completion]) usize {
     n = n + lp.handlePacket((*node).key, (*node).ov, at, out);
     libc.free(node as *u8);
     node = next;
+  }
+  // The jobs' records come home, each linked by its own 'jnext' (read before
+  // the record is the loop's again)
+  while job as usize != 0usize {
+    let next = (*job).jnext;
+    lp.completeJob(job, at);
+    job = next;
   }
   n
 }
@@ -829,10 +854,10 @@ fn lxDequeue(lp: &mut Loop, ms: u32, out: &mut List[Completion]) usize {
 // Files, as jobs of the blocking pool
 // ---------------------------------------------------------------------------
 
-/// A ReadAt or WriteAt: a job on the files lane, holding a duplicate of the
-// descriptor. The record's buffer goes to the box whole (the record holds
-// none while the pool's thread does), and comes back when the box is
-// dissolved
+/// A ReadAt or WriteAt: a job on the files lane, the record holding a
+// duplicate of the descriptor ('jfd', closed when the job is home), so that
+// closing the handle while it runs is harmless. The record goes away, its
+// buffer in it, and the lane's thread reads or writes it in place (pool.cone)
 fn lxStartFile(lp: &mut Loop, p: *OpCore, write: bool) u32 {
   if isWindows() {return errorInvalidParameter;}
   let r = p as &mut OpCore;
@@ -843,26 +868,25 @@ fn lxStartFile(lp: &mut Loop, p: *OpCore, write: bool) u32 {
   if l as usize == 0usize {return errorInvalidParameter;}
   let dup = sysFcntl(fdOf(raw), fDupfdCloexec, 0i32);
   if dup < 0i32 {return errnoCode(lastErrno());}
-  let buf = r.buf := None;
-  let b = newBox(&noWork, r.at, Waker(lp.port), p, l, buf);
-  (*b).fd = dup;
-  (*b).write = write;
-  if !enqueueBox(b) {
-    r.buf = dissolveBox(b);
+  r.jfd = dup;
+  r.lane = Lane(filesLane);
+  sendAway(p, Waker(lp.port), jobQueued);
+  if !enqueueJob(p, l) {
+    bringHome(p);
     return errorBusy;
   }
-  r.job = b;
   0u32
 }
 
-// A file job, run on a thread of the pool: the whole of a write, as much as
-// there is of a read (up to the buffer's room), at the offset in 'arg'
-fn lxFileJob(j: &mut JobBox) Outcome {
+// A file job, run on a thread of the pool on its record: the whole of a
+// write, as much as there is of a read (up to the buffer's room), at the
+// record's offset
+fn lxFileJob(r: &mut OpCore) Outcome {
   if isWindows() {return Outcome.Failed(errorInvalidParameter);}
-  let fd = j.fd;
-  let at = j.arg;
-  let write = j.write;
-  match &mut j.buf {
+  let fd = r.jfd;
+  let at = r.at;
+  let write = r.kind == diag.kindWriteAt;
+  match &mut r.buf {
     case var &mut Some(buf) {return lxFileIo(fd, at, write, buf);}
     else {}
   }
@@ -903,12 +927,13 @@ fn lxFileIo(fd: i32, at: u64, write: bool, buf: &mut IoBuf) Outcome {
 
 fn lxResolve(arg: u64, buf: &mut IoBuf) Outcome {
   if isWindows() {return Outcome.Failed(errorInvalidParameter);}
-  let name = cstrCopy(buf.view());
+  var narrow = Array[u8, 1024]() <- fill 0u8;
+  let name = cstrIn(buf.view(), &mut narrow as *u8, 1024usize);
   if name as usize == 0usize {return Outcome.Failed(errorNotEnoughMemory);}
   var hints = AddrInfoLx(0i32, 0i32, sockStreamLx, 6i32, 0u32, 0u32, null, null, null);
   var res = null as *AddrInfoLx;
   let rc = sysGetaddrinfo(name, null, &mut hints as *AddrInfoLx, &mut res);
-  libc.free(name);
+  uncopy(name, &mut narrow as *u8);
   if rc != 0i32 {return Outcome.Failed(gaiCode(rc));}
   buf.clear();
   var count = 0usize;
@@ -933,19 +958,22 @@ fn lxResolve(arg: u64, buf: &mut IoBuf) Outcome {
 // high word and its low word
 fn lxStat(arg: u64, buf: &mut IoBuf) Outcome {
   if isWindows() {return Outcome.Failed(errorInvalidParameter);}
-  // The path as a C string: a String keeps its zero after its bytes (cstr, the
-  // type the posix package declares 'stat' with too: one C name, one signature)
-  var name = String.empty();
-  name.appendBytes(buf.view());
+  // The path as a C string, a NUL after its bytes (cstr, the type the posix
+  // package declares 'stat' with too: one C name, one signature), on the stack
+  // when it fits
   var k = 0usize;
   while k < buf.len() {
     if buf.view()[k] == 0u8 {return Outcome.Failed(errorInvalidParameter);}
     k = k + 1usize;
   }
+  var narrow = Array[u8, 4096]() <- fill 0u8;
+  let name = cstrIn(buf.view(), &mut narrow as *u8, 4096usize);
+  if name as usize == 0usize {return Outcome.Failed(errorNotEnoughMemory);}
   // struct stat on x86-64 is 144 bytes: st_mode at 24, st_size at 48 and
   // st_mtim at 88
   var st = Array[u64, 18]() <- fill 0u64;
-  let rc = sysStat(name.cstr(), &mut st as *u8);
+  let rc = sysStat(cstr.fromPtr(name), &mut st as *u8);
+  uncopy(name, &mut narrow as *u8);
   if rc != 0i32 {return Outcome.Failed(errnoCode(lastErrno()));}
   let mode = u32.from(st[3usize] & 0xFFFFFFFFu64);
   let size = st[6usize];
@@ -969,10 +997,11 @@ fn lxStat(arg: u64, buf: &mut IoBuf) Outcome {
 // A file opened, read from 'arg' as far as the buffer's room goes, and closed
 fn lxReadFile(arg: u64, buf: &mut IoBuf) Outcome {
   if isWindows() {return Outcome.Failed(errorInvalidParameter);}
-  let path = cstrCopy(buf.view());
+  var narrow = Array[u8, 4096]() <- fill 0u8;
+  let path = cstrIn(buf.view(), &mut narrow as *u8, 4096usize);
   if path as usize == 0usize {return Outcome.Failed(errorNotEnoughMemory);}
   let fd = sysOpen(path, oRdonly | epollCloexec, 0u32);
-  libc.free(path);
+  uncopy(path, &mut narrow as *u8);
   if fd < 0i32 {return Outcome.Failed(errnoCode(lastErrno()));}
   buf.clear();
   let room = buf.room();

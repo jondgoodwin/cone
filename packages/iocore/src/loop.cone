@@ -17,8 +17,12 @@
 // it); decided (its outcome is known, and it waits in 'decided' to be
 // answered at the end of this pass of poll); or abandoned (answered early, a
 // prompt TimedOut, while the kernel or the pool still holds it and its
-// buffer: it waits for the kernel's completion, or the job's box, and is then
-// dissolved, its buffer going home). Every answer is made in one place:
+// buffer: it waits for the kernel's completion, or for its job to come home,
+// and is then dissolved, its buffer going home). A job's record (a pool job,
+// an external operation) is AWAY from its queueing until it is posted home:
+// its job part and its buffer are the pool's thread's then (pool.cone), and
+// the loop does not wait for it at its death (it lets it go: its thread
+// dissolves it when it comes home). Every answer is made in one place:
 // 'deliver' for the old API, which DISSOLVES the record (reads it whole and
 // takes it apart with field lists) into a Completion sent where its target
 // says, and 'toDone' for an asker's, which puts the record on the done list
@@ -42,14 +46,6 @@
 // is associated again when its packet has been taken. The port's own timeout
 // is kept as a backstop (a millisecond past the instant) in case the packet
 // could not be made: then a wait may end up to a timer tick late.
-
-// Whether an operation of kind k is held in a JobBox: a pool job, or an
-// external operation; on Linux a file operation too, which is a job of the
-// pool (linux.cone)
-fn boxed(k: u32) bool {
-  k == diag.kindCall || k == diag.kindExternal
-    || (!isWindows() && (k == diag.kindReadAt || k == diag.kindWriteAt))
-}
 
 // Whether an operation of kind k is on its handle's writes (else its reads)
 fn writes(k: u32) bool {
@@ -133,7 +129,7 @@ pub struct Loop {
   associated: bool;        // the packet is associated, and not yet taken from the port; Linux: the timerfd is armed and not yet taken
   armedFor: Instant;       // the instant the timer is set for
   woken: bool;
-  dying: bool;             // its death has begun: every job's record is answered, and a box come home is dropped
+  dying: bool;             // its death has begun: a job's record come home is dissolved, its answer abandoned
   grace: Duration;         // after a deadline, how long the kernel has to give the buffer back
   stats: diag.Counters;
   sub: diag.Subscriber;
@@ -185,7 +181,7 @@ pub struct Loop {
       events = libc.malloc(usize.from(batch) * mem.sizeof[EpollEvent]()) as *EpollEvent;
     }
     let shared = Arc[imm, Port](Port(if isWindows() {port} else {wake}, Atomic[bool].of(false),
-      Atomic[u32].of(0u32), Mutex.make(), null, null));
+      Atomic[u32].of(0u32), Mutex.make(), null, null, null, null));
     Loop(
       loopId: diag.nextLoopId(), driverGen: 0u32, port: shared, portHandle: port,
       pool: OpPool[OldAsk].make(), kernelHeld: 0u32,
@@ -570,7 +566,7 @@ pub struct Loop {
     let r = p as &mut OpCore;
     if r.side != onNone {return;}
     let k = r.kind;
-    if (boxed(k) && k != diag.kindReadAt && k != diag.kindWriteAt) || (isWindows() && k == diag.kindConnect) {
+    if (jobKind(k) && k != diag.kindReadAt && k != diag.kindWriteAt) || (isWindows() && k == diag.kindConnect) {
       self.linkSide(p, onLoop);
       return;
     }
@@ -921,15 +917,14 @@ pub struct Loop {
       self.decide(p, diag.outcomeTimedOut, 0usize, 0u32);
       return Completer(null, id, Waker(port));
     }
-    // The buffer goes to the box, which the Completer holds
-    let box = newBox(&noWork, 0u64, Waker(port), p, null, Some[IoBuf](buf));
-    (*box).state = boxRunning;
-    r.job = box;
+    // The record goes away, its buffer in it: the Completer holds it
+    r.buf = Some[IoBuf](buf);
+    sendAway(p, Waker(port), jobRunning);
     self.linkSide(p, onLoop);
     if dl < forever() {
       r.timer = wheel.insert(dl, self.tokenOf(p));
     }
-    Completer(box, id, Waker(port))
+    Completer(p, id, Waker(port))
   }
 
   // The target's own part of a submit: a status slot is claimed. The target
@@ -1113,7 +1108,7 @@ pub struct Loop {
     r.newSock = invalidHandle;
     r.newHandle = Handle.none();
     r.timer = TimerId.none();
-    r.job = null;
+    r.jfd = 0i32 - 1i32;
     r.status = 0u32;
     r.n = 0usize;
     r.code = 0u32;
@@ -1415,21 +1410,18 @@ pub struct Loop {
     }
   }
 
-  // A job for the blocking pool: boxed with a waker of this loop, and queued
-  // on its lane. The record's buffer goes to the box whole (the record holds
-  // none while the pool's thread does), and comes back when the box is
-  // dissolved
+  // A job for the blocking pool: the record goes away, with a waker of this
+  // loop, queued on its lane; the lane's thread works on it, its buffer and
+  // all, where it is (pool.cone)
   fn startCall(self: &mut, p: *OpCore) u32 {
     let r = p as &mut OpCore;
     let l = laneAt(r.lane.id);
     if l as usize == 0usize {return errorInvalidParameter;}
-    let buf = r.buf := None;
-    let b = newBox(r.work, r.at, Waker(port), p, l, buf);
-    if !enqueueBox(b) {
-      r.buf = dissolveBox(b);
+    sendAway(p, Waker(port), jobQueued);
+    if !enqueueJob(p, l) {
+      bringHome(p);
       return errorBusy;
     }
-    r.job = b;
     stats.jobs = stats.jobs + 1u64;
     0u32
   }
@@ -1495,15 +1487,13 @@ pub struct Loop {
     }
     if r.asked != askedNone {return;}
     r.asked = why;
-    if r.kind == diag.kindExternal {
-      // Nothing to interrupt: its completer is told, and answers
-      if r.job as usize != 0usize {(*r.job).asked.store(1u32);}
-      return;
-    }
-    if boxed(r.kind) {
-      if r.job as usize != 0usize && removeBox(r.job) {
-        r.buf = dissolveBox(r.job);
-        r.job = null;
+    if jobKind(r.kind) {
+      // Away: the one field of its job part the loop sets. A Completer is told,
+      // and answers; a job still queued is taken back, home with its buffer,
+      // and answered now; one running answers when it returns
+      r.jasked.store(1u32);
+      if removeJob(p) {
+        bringHome(p);
         self.unlinkSide(p);
         self.decide(p, outcome, 0usize, 0u32);
       }
@@ -1603,37 +1593,33 @@ pub struct Loop {
     }
   }
 
-  // A job has come back from the pool: the box is dissolved, its record
-  // taking its buffer and its outcome; a record answered already (a prompt
-  // TimedOut) ends, the buffer going home with the box. In the loop's death
-  // every job's record is answered already, and the box is dropped
-  fn completeJob(self: &mut, b: *JobBox, at: Instant) {
-    let j = b as &mut JobBox;
-    let p = j.rec;
-    if dying || p as usize == 0usize {
-      dropBox(b);
-      return;
-    }
+  // A job's record has come home from the pool (or its Completer): its job
+  // part is the loop's again, and its outcome its answer; a record answered
+  // already (a prompt TimedOut) ends, its buffer going home. In the loop's
+  // death its answer is abandoned, and it is dissolved
+  fn completeJob(self: &mut, p: *OpCore, at: Instant) {
     let r = p as &mut OpCore;
-    if r.job != b || (r.state != stFlight && r.state != stDecided && r.state != stAbandoned) {
-      stats.lateReturns = stats.lateReturns + 1u64;
-      dropBox(b);
+    if dying {
+      // Off the loop's lists while every record on them still lives (no
+      // record away is dissolved by its thread before the port is closed)
+      self.unlinkSide(p);
+      self.unlinkGroup(p);
+      homeDead(p);
       return;
     }
-    r.job = null;
+    // Its hold goes: its pool's owner holds the pool while this loop lives
+    bringHome(p);
     if r.state == stAbandoned {
-      dropBox(b);
       self.ended(p, true);
       return;
     }
     r.dequeued = at;
-    var status = j.status;
-    let n = j.n;
-    let code = j.code;
+    var status = r.jstatus;
+    let n = r.jn;
+    let code = r.jcode;
     if status == diag.outcomeCancelled && r.asked == askedDeadline {
       status = diag.outcomeTimedOut;
     }
-    r.buf = dissolveBox(b);
     self.unlinkSide(p);
     self.decide(p, status, if status == diag.outcomeDone {n} else {0usize}, code);
   }
@@ -1828,7 +1814,7 @@ pub struct Loop {
   fn handlePacket(self: &mut, key: usize, ov: *u8, at: Instant, out: &mut List[Completion]) usize {
     var n = 0usize;
     if key == keyJob {
-      self.completeJob(ov as *JobBox, at);
+      self.completeJob(ov as *OpCore, at);
     } else if key == keyWake {
       woken = true;
       stats.wakes = stats.wakes + 1u64;
@@ -1860,9 +1846,11 @@ pub struct Loop {
 
   // Record p, in flight at the loop's death and on no handle's queue the
   // kernel drains: a timer answers Cancelled; a job still queued is taken
-  // out, its buffer back, and one running is left to its thread, which finds
-  // this loop gone and drops it; a job answered early ends with no answer;
-  // a connection being made (Windows) holds a socket of its own, cancelled
+  // back, its buffer with it, and answered Cancelled. A job running (or held by
+  // a Completer, which is told) is left to its thread: the old API's answers
+  // Cancelled now, without its buffer, and an asker's answer is abandoned; it
+  // is dissolved when it comes home, by its thread once the loop has let go of
+  // it. A connection being made (Windows) holds a socket of its own, cancelled
   fn endAtDeath(self: &mut, p: *OpCore) {
     let r = p as &mut OpCore;
     if r.state != stFlight && r.state != stAbandoned {return;}
@@ -1870,17 +1858,15 @@ pub struct Loop {
       self.decide(p, diag.outcomeCancelled, 0usize, 0u32);
       return;
     }
-    if boxed(r.kind) {
-      if r.kind == diag.kindExternal && r.job as usize != 0usize {(*r.job).asked.store(1u32);}
-      if r.job as usize != 0usize && removeBox(r.job) {
-        r.buf = dissolveBox(r.job);
-      }
-      r.job = null;
-      if r.state == stAbandoned {
-        self.ended(p, false);
-      } else {
+    if jobKind(r.kind) {
+      r.jasked.store(1u32);
+      if r.state == stFlight && removeJob(p) {
+        bringHome(p);
         self.unlinkSide(p);
         self.decide(p, diag.outcomeCancelled, 0usize, 0u32);
+      } else if r.state == stFlight && r.own {
+        self.decide(p, diag.outcomeCancelled, 0usize, 0u32);
+        r.early = true;
       }
       return;
     }
@@ -1890,7 +1876,6 @@ pub struct Loop {
   }
 
   fn final(self: &uni) {
-    port.closed.store(true);
     dying = true;
     // Every handle's operations cancelled, all before any is closed (a
     // socket closed first would end its peer's receive as the end of the
@@ -1940,6 +1925,16 @@ pub struct Loop {
     }
     // Linux: the cancels asked and not yet answered
     lxSettleCancels(self);
+    // An asker's record answered early and still on the done list is away: it
+    // is its job's thread's, and is dissolved when it comes home
+    var kept = List[*OpCore].empty();
+    var k = 0usize;
+    while k < done.len() {
+      let d = *done[k];
+      if !isAway(d) {kept.push(d);}
+      k = k + 1usize;
+    }
+    done = kept;
     // Wait until the kernel has given back every record, and deliver what
     // was owed to other loops and threads; what was owed here dies, buffers
     // going home
@@ -1957,7 +1952,7 @@ pub struct Loop {
     held.clear();
     // An asker's records the loop still holds are dissolved into their own
     // pools: their answers are abandoned, their buffers go home
-    var k = 0usize;
+    k = 0usize;
     while k < done.len() {
       let d = *done[k];
       let home = (*d).home;
@@ -1967,6 +1962,13 @@ pub struct Loop {
     }
     done.clear();
     pool.flushHere();
+    // The loop lets go of its records: from here on a job's thread that finds
+    // the port closed dissolves its record itself, and what was posted home
+    // before is dissolved now (the close and a job's post are one step under the
+    // port's lock, so none is posted after this drain). Nothing below reads a
+    // record
+    port.close();
+    port.drainDead();
     if isWindows() {
       if packet != 0usize {
         NtCancelWaitCompletionPacket(packet, 1u8);

@@ -4,23 +4,25 @@
 // under the same contract (see the package's header, EXTERNAL OPERATIONS).
 //
 // How it is built. 'lp.external' makes a record in flight, as any
-// operation's, and a JobBox (the pool's) on no lane, holding the buffer and
-// a waker of the loop; the Completer holds the box. Ending it writes the
-// outcome into the box and posts the box to the loop's port (keyJob),
-// exactly as a lane's thread posts a job that has run, so everything the
-// loop does with a job's answer -- a cancel asked while it runs, a deadline
-// and its prompt TimedOut, a box come back after its answer and dropped,
-// a loop that has died -- holds for it unchanged. The loop's cancel sets
-// the box's 'asked' flag, which the completer may read.
+// operation's, and sends it away at once as a job no lane holds (pool.cone):
+// the Completer holds the record's address, and with it the record's job part
+// and its buffer. Ending it writes the outcome into the record and posts the
+// record home (keyJob), exactly as a lane's thread posts a job that has run,
+// so everything the loop does with a job's answer -- a cancel asked while it
+// runs, a deadline and its prompt TimedOut, a record answered early and left
+// until it is home, a loop that has died -- holds for it unchanged. The loop's
+// cancel sets the record's 'jasked' flag, which the completer may read.
 
 // The other side of an external operation: whoever holds it ends the
 // operation, once, from any thread. A move type, Sendable; its death
 // without an ending ends the operation Failed, ERROR_OPERATION_ABORTED, so
 // the operation still answers exactly once. It declares Sendable, a promise
-// taken on trust, for its box's raw pointer: the box is its alone until it
-// ends the operation, but for the 'asked' flag, an atomic the loop sets
+// taken on trust, for its record's raw pointer: the record's job part and its
+// buffer are its alone until it ends the operation (the record is away, and
+// keeps its pool while it is), but for the 'jasked' flag, an atomic the loop
+// sets
 pub struct Completer is Move, Sendable {
-  box: *JobBox;
+  rec: *OpCore;
   op: OpId;
   waker: Waker;
 
@@ -30,28 +32,28 @@ pub struct Completer is Move, Sendable {
   // Whether it can still end its operation: false once it has, or when the
   // operation was answered at submit (its group cancelled, its deadline
   // past) and nothing is left to end
-  pub fn isLive(self: &) bool {box as usize != 0usize}
+  pub fn isLive(self: &) bool {rec as usize != 0usize}
 
   // Whether the operation's cancel has been asked (by lp.cancel, a Request,
   // its group, or its deadline): a watcher that can stop early ends it
   // with 'cancelled()'. The answer is still the completer's to give
   pub fn isCancelRequested(self: &) bool {
-    if box as usize == 0usize {return false;}
-    (*box).asked.load() != 0u32
+    if rec as usize == 0usize {return false;}
+    (*rec).jasked.load() != 0u32
   }
 
   // The buffer lent with the operation, to write into before ending it. A
   // panic, at the caller's line, once it has ended
   pub fn buf(self: &mut, file: &Array[u8] = srcFile(), line: u32 = srcLine()) &mut IoBuf {
-    if box as usize == 0usize {panic("iocore: Completer.buf after its operation ended", file, line);}
-    // An external operation's box always holds its buffer (IoBuf.empty()
+    if rec as usize == 0usize {panic("iocore: Completer.buf after its operation ended", file, line);}
+    // An external operation's record always holds its buffer (IoBuf.empty()
     // when it was lent none)
-    let j = box as &mut JobBox;
-    match &mut j.buf {
+    let r = rec as &mut OpCore;
+    match &mut r.buf {
       case var &mut Some(b) {return b;}
       else {}
     }
-    panic("iocore: Completer.buf of a box with no buffer", file, line)
+    panic("iocore: Completer.buf of a record with no buffer", file, line)
   }
 
   // End it Done, with a count (bytes, or any number: a fence's value)
@@ -66,19 +68,19 @@ pub struct Completer is Move, Sendable {
   // End it as o: true once the ending is on its way to the loop; false if
   // it had ended already, or the loop has gone (its buffer then goes home)
   pub fn end(self: &mut, o: Outcome) bool {
-    if box as usize == 0usize {return false;}
-    let b = box;
-    box = null;
+    if rec as usize == 0usize {return false;}
+    let p = rec;
+    rec = null;
     let alive = !waker.isGone();
-    settleBox(b, o);
+    settleJob(p, o);
     alive
   }
 
   fn final(self: &uni) {
-    if box as usize != 0usize {
-      let b = box;
-      box = null;
-      settleBox(b, Outcome.Failed(errorOperationAborted));
+    if rec as usize != 0usize {
+      let p = rec;
+      rec = null;
+      settleJob(p, Outcome.Failed(errorOperationAborted));
     }
   }
 }

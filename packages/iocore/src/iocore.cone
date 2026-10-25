@@ -51,7 +51,7 @@
 //   lp.close(h)  lp.localAddr(h)  lp.peerAddr(h)  lp.isOpen(h)
 //   lp.shutdown(h)  lp.reset(h)         a socket half-closed; closed with a reset
 //   lp.counters()  lp.subscribe(s)  lp.id()  lp.inFlight()  lp.records()  lp.recordsMade()
-//                                       (DIAGNOSTICS)
+//   recordPools()                       (DIAGNOSTICS)
 //   lp.cancelHandle(h, write)           end every read (or write) in flight on h  (CANCEL)
 //   lp.hint(h)  lp.setHint(h, v)        a handle's hint word                      (HANDLES)
 //   OpPool[A].make(): pool.take(ask) pool.takeHere(ask) pool.dissolve(p) pool.dissolveHere(p)
@@ -93,9 +93,18 @@
 // each buffer back before it frees anything (I18). Answers it owed to its own
 // thread are dropped then, their buffers going home to their pools; answers
 // owed to another loop or thread are still delivered there. A job running
-// on the pool is not waited for: its thread finds the loop gone and drops
-// it. Loops on other threads are
-// other Loops: one per driving thread.
+// on the pool (or an external operation's Completer not yet ended) is not
+// waited for: the old API's is answered Cancelled at the death, without its
+// buffer, which the job still holds; the record stays the job's, and when its
+// thread finds the loop gone it dissolves it there, the buffer going home (THE
+// BLOCKING POOL). The loop lets go of its records at the end of its death, in
+// one step under its port's lock with any job's post home, then takes what was
+// posted before: so no job's record lands in the port after that, and a job
+// whose answer goes back to its own loop (Target.Post) cannot hold the port
+// alive from inside it. A job's post that Windows refuses while its loop
+// still lives (no room for the packet) is tried again every millisecond,
+// since that loop still holds the record. Loops on other threads are other
+// Loops: one per driving thread.
 //
 // OPERATIONS. Each data-carrying operation takes an OWNER of its bytes, never
 // a borrow: an IoBuf moved in, which the kernel writes into (Recv, ReadAt, at
@@ -224,7 +233,8 @@
 // each answering as a cancel's does, and says how many it asked (one asked
 // already is not asked again). A job queued on the blocking pool is taken out of its queue and
 // answered Cancelled at once, its buffer back; one running cannot be
-// stopped, and answers how it ended when it returns. An external operation's
+// stopped, and answers how it ended when it returns (one answered early, by a
+// deadline, leaves its record to the job until then). An external operation's
 // Completer is told (EXTERNAL OPERATIONS). Cancel does not abandon anything:
 // what is still the kernel's stays in its record until it is not.
 //
@@ -301,6 +311,25 @@
 // 'lp.openFile''s. The
 // lanes and their threads live as long as the process.
 //
+// A job is its RECORD (RECORDS), and nothing is allocated for it: the record is
+// queued on its lane, and the lane's thread is handed its address, runs the
+// work on the record's own buffer where it lies, writes the outcome into the
+// record and posts its address home, as the kernel does an operation's. The
+// rule while it is AWAY, a promise the package keeps on trust (no type says
+// it): from the moment a record is queued on a lane until it is posted home,
+// the pool's thread owns the record's job part (its outcome, its waker, Linux's
+// descriptor) and its buffer, and reads its request ('work', 'at', 'lane',
+// 'kind'), which nobody changes then; the loop touches only the record's
+// cancel flag (to ask a cancel) and, under the lane's lock, its queue links and
+// job state (to take a job still queued back). An external operation's record
+// is away the same way from its start, its Completer the owner. The rest of the
+// record (its promise, its lists, its timer) stays the loop's. A record away
+// keeps its POOL alive: a pool dies when its owner has let it go and its last
+// record away is home (one count, the pool's holds), so a loop that dies with
+// a job running lets its record go, the job's thread finding the loop gone
+// dissolves it where it is, its answer abandoned and its buffer home, and the
+// last one home frees the pool.
+//
 // EXTERNAL OPERATIONS. An operation whose answer comes from outside the
 // kernel and the pool -- another thread, a GPU fence's watcher, a library
 // with callbacks of its own -- is made by 'lp.external(to, buf)' (or
@@ -314,7 +343,11 @@
 // ('isCancelRequested()'), which gives the answer; its deadline gives a
 // prompt TimedOut past the grace, and a later ending is dropped, the buffer
 // going home; a Completer that dies without an ending ends its operation
-// Failed with ERROR_OPERATION_ABORTED, so it still answers exactly once.
+// Failed with ERROR_OPERATION_ABORTED, so it still answers exactly once. The
+// Completer holds the operation's record while it is away (THE BLOCKING POOL):
+// one that outlives its loop (answered Cancelled at the death, its cancel
+// asked) still writes into 'buf()', and its ending, false then, dissolves the
+// record on its own thread.
 //
 // RECORDS. Every operation is ONE RECORD, which the loop owns while it works on
 // it: an OpRec[A], the loop's OpCore first (the request, what the operation
@@ -354,7 +387,9 @@
 // - A loop that dies dissolves every asker's record it still holds into its
 //   pool, after cancelling and draining it: the record's asker part dies
 //   there, so an answer it owed is abandoned. Records the asker holds (taken
-//   and not started, or handed back by takeDone) are the asker's.
+//   and not started, or handed back by takeDone) are the asker's. A record
+//   away with its job (THE BLOCKING POOL) is its job's: it is dissolved, its
+//   answer abandoned, when it comes home.
 //
 // The pool keeps its records in chunks of 64 that never move, found by
 // index through a fixed directory, 262,144 at most (one more is a panic).
@@ -364,7 +399,10 @@
 // 'flushHere', and 'takeHere' takes them first. A record's index and
 // generation are its OpId ('core.id()'); the generation moves on as it is
 // dissolved, and as an early answer goes. An OpPool is Sendable, on trust:
-// share it through an Arc, or keep it for the life of the process.
+// share it through an Arc, or keep it for the life of the process. Its owner
+// keeps it while a live loop holds a record of it; a record away keeps it
+// itself (THE BLOCKING POOL), so a pool let go of with records away is freed
+// when the last of them is home.
 //
 // POLL. 'lp.poll(until, out)' is the only place the loop waits. It appends
 // to out every answer ready for this loop, at most a batch of 128 completions
@@ -414,7 +452,9 @@
 // its kernel and delivery latencies among it; with none, nothing prints.
 // 'lp.records()' is how many of the loop's own records are taken (in flight,
 // decided, or waiting for the kernel after an early answer), 'lp.recordsMade()'
-// how many its pool has made.
+// how many its pool has made. 'recordPools()' is how many pools of records the
+// process holds (made, and not yet freed): a pool let go of while a record of it
+// is away is held until that record is home.
 //
 // MEASURED, release, an i7-13700HX on Windows 11 (examples/echo.cone and
 // examples/tick.cone; numbers vary run to run):
@@ -495,6 +535,7 @@ import diag;
 
 fn @initpure init() {
   groupSeq = Atomic[u64].of(0u64);
+  poolsLive = Atomic[u32].of(0u32);
   // Winsock started, and the blocking pool's default lanes made, before any
   // thread of the program can reach them
   let ws = startWinsock();
@@ -852,6 +893,10 @@ struct Port is Sendable {
   lock: Mutex;
   head: *Packet;
   tail: *Packet;
+  // Linux: the records of jobs posted home, linked by their own 'jnext' (a
+  // job's post allocates nothing), under 'lock' too
+  jobsHead: *OpCore;
+  jobsTail: *OpCore;
 
   // Its queue, changed under its lock through a shared reference
   fn lists(self: &) &mut Port {
@@ -884,9 +929,51 @@ struct Port is Sendable {
     }
   }
 
-  // The last owner has gone: answers posted since the loop died are
-  // dropped (their buffers go home), and the port closed
-  fn final(self: &uni) {
+  // A job's record posted home: false if it could not be queued (Windows:
+  // the system had no room for the packet). Linux links the record itself
+  // ... unless the loop has let go of its records: false then, and the record
+  // still the caller's. Whether it has, and the post, are one step under the
+  // port's lock, which 'close' takes to raise 'closed': so a record is either
+  // posted before the loop lets go (and its death's drain takes it) or finds it
+  // gone, never posted after the drain
+  fn sendJob(self: &, p: *OpCore) bool {
+    let st = self.lists();
+    st.lock.lock();
+    if closed.load() {
+      st.lock.unlock();
+      return false;
+    }
+    var ok = true;
+    if isWindows() {
+      ok = self.send(keyJob, p as *u8);
+    } else {
+      (*p).jnext = null;
+      if st.jobsTail as usize == 0usize {st.jobsHead = p;} else {(*st.jobsTail).jnext = p;}
+      st.jobsTail = p;
+      if pending.swap(1u32) == 0u32 {
+        var one = 1u64;
+        sysWrite(fdOf(handle), &mut one as *u8, 8usize);
+      }
+    }
+    st.lock.unlock();
+    ok
+  }
+
+  // Its loop lets go of its records: 'closed' raised under the lock a job's
+  // post takes (sendJob). The other posts (a wake, an answer, a cancel) read
+  // 'closed' without it: what one of them leaves after the drain waits for the
+  // port's own death, and holds no owner of the port
+  fn close(self: &) {
+    let st = self.lists();
+    st.lock.lock();
+    closed.store(true);
+    st.lock.unlock();
+  }
+
+  // What is queued for a loop that has let go of its records (its death has
+  // ended, or the port's own): answers posted to it are dropped (their buffers
+  // go home), and a job's record come home is dissolved (record.cone, homeDead)
+  fn drainDead(self: &) {
     if isWindows() {
       let entries = libc.malloc(64usize * mem.sizeof[OverlappedEntry]()) as *OverlappedEntry;
       while true {
@@ -901,28 +988,44 @@ struct Port is Sendable {
             mem.finalize[Completion]((*e).ov as *Completion);
             libc.free((*e).ov);
           } else if (*e).key == keyJob {
-            dropBox((*e).ov as *JobBox);
+            homeDead((*e).ov as *OpCore);
           }
           k = k + 1usize;
         }
       }
       libc.free(entries as *u8);
-      CloseHandle(handle);
     } else {
-      var node = head;
+      let st = self.lists();
+      st.lock.lock();
+      var node = st.head;
+      var job = st.jobsHead;
+      st.head = null;
+      st.tail = null;
+      st.jobsHead = null;
+      st.jobsTail = null;
+      st.lock.unlock();
       while node as usize != 0usize {
         let next = (*node).next;
         if (*node).key == keyPost {
           mem.finalize[Completion]((*node).ov as *Completion);
           libc.free((*node).ov);
-        } else if (*node).key == keyJob {
-          dropBox((*node).ov as *JobBox);
         }
         libc.free(node as *u8);
         node = next;
       }
-      sysClose(fdOf(handle));
+      while job as usize != 0usize {
+        let next = (*job).jnext;
+        homeDead(job);
+        job = next;
+      }
     }
+  }
+
+  // The last owner has gone: what was posted since the loop let go of its
+  // records is dropped (drainDead), and the port closed
+  fn final(self: &uni) {
+    self.drainDead();
+    if isWindows() {CloseHandle(handle);} else {sysClose(fdOf(handle));}
   }
 }
 
@@ -974,12 +1077,9 @@ pub struct Waker {
     port.send(keyCancel, usize.from(id.number()) as *u8)
   }
 
-  // Hand a job that has run back to its loop: false, and the box still the
-  // caller's, if the loop has gone
-  fn postJob(self: &, b: *JobBox) bool {
-    if port.closed.load() {return false;}
-    port.send(keyJob, b as *u8)
-  }
+  // Post a job's record home to its loop: false, and the record still the
+  // caller's, if the loop has let go of its records
+  fn postJob(self: &, p: *OpCore) bool {port.sendJob(p)}
 }
 
 // A handle on an operation that cancels it when the handle dies (see the
