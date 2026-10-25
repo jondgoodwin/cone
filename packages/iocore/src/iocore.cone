@@ -97,8 +97,14 @@
 // waited for: the old API's is answered Cancelled at the death, without its
 // buffer, which the job still holds; the record stays the job's, and when its
 // thread finds the loop gone it dissolves it there, the buffer going home (THE
-// BLOCKING POOL). Loops on other threads are other Loops: one per driving
-// thread.
+// BLOCKING POOL). The loop lets go of its records at the end of its death, in
+// one step under its port's lock with any job's post home, then takes what was
+// posted before: so no job's record lands in the port after that, and a job
+// whose answer goes back to its own loop (Target.Post) cannot hold the port
+// alive from inside it. A job's post that Windows refuses while its loop
+// still lives (no room for the packet) is tried again every millisecond,
+// since that loop still holds the record. Loops on other threads are other
+// Loops: one per driving thread.
 //
 // OPERATIONS. Each data-carrying operation takes an OWNER of its bytes, never
 // a borrow: an IoBuf moved in, which the kernel writes into (Recv, ReadAt, at
@@ -925,19 +931,43 @@ struct Port is Sendable {
 
   // A job's record posted home: false if it could not be queued (Windows:
   // the system had no room for the packet). Linux links the record itself
+  // ... unless the loop has let go of its records: false then, and the record
+  // still the caller's. Whether it has, and the post, are one step under the
+  // port's lock, which 'close' takes to raise 'closed': so a record is either
+  // posted before the loop lets go (and its death's drain takes it) or finds it
+  // gone, never posted after the drain
   fn sendJob(self: &, p: *OpCore) bool {
-    if isWindows() {return self.send(keyJob, p as *u8);}
-    (*p).jnext = null;
     let st = self.lists();
     st.lock.lock();
-    if st.jobsTail as usize == 0usize {st.jobsHead = p;} else {(*st.jobsTail).jnext = p;}
-    st.jobsTail = p;
-    st.lock.unlock();
-    if pending.swap(1u32) == 0u32 {
-      var one = 1u64;
-      sysWrite(fdOf(handle), &mut one as *u8, 8usize);
+    if closed.load() {
+      st.lock.unlock();
+      return false;
     }
-    true
+    var ok = true;
+    if isWindows() {
+      ok = self.send(keyJob, p as *u8);
+    } else {
+      (*p).jnext = null;
+      if st.jobsTail as usize == 0usize {st.jobsHead = p;} else {(*st.jobsTail).jnext = p;}
+      st.jobsTail = p;
+      if pending.swap(1u32) == 0u32 {
+        var one = 1u64;
+        sysWrite(fdOf(handle), &mut one as *u8, 8usize);
+      }
+    }
+    st.lock.unlock();
+    ok
+  }
+
+  // Its loop lets go of its records: 'closed' raised under the lock a job's
+  // post takes (sendJob). The other posts (a wake, an answer, a cancel) read
+  // 'closed' without it: what one of them leaves after the drain waits for the
+  // port's own death, and holds no owner of the port
+  fn close(self: &) {
+    let st = self.lists();
+    st.lock.lock();
+    closed.store(true);
+    st.lock.unlock();
   }
 
   // What is queued for a loop that has let go of its records (its death has
@@ -1049,10 +1079,7 @@ pub struct Waker {
 
   // Post a job's record home to its loop: false, and the record still the
   // caller's, if the loop has let go of its records
-  fn postJob(self: &, p: *OpCore) bool {
-    if port.closed.load() {return false;}
-    port.sendJob(p)
-  }
+  fn postJob(self: &, p: *OpCore) bool {port.sendJob(p)}
 }
 
 // A handle on an operation that cancels it when the handle dies (see the
