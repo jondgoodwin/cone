@@ -5,14 +5,19 @@
 // do not find it. Holder holds the accepted end of a loopback pair; two reads
 // are in flight on it at once (two records), and then, while Holder is busy in
 // a behaviour of its own, the first read takes the 100 bytes the peer sent
-// (its answer waits, lent, in Holder's mailbox), and Holder asks cancelRead. What is checked:
+// (its answer waits, lent, in Holder's mailbox), and Holder asks cancelRead.
+// Then two reads are in flight at once again, and one cancelRead ends both
+// (ONE DIRECTION OF A HANDLE: every read in flight on the handle). What is
+// checked:
 //
 // - the cancel asked one operation to end: the second read, in flight; not
 //   the first, whose record is lent;
 // - while Holder was busy both records were in use (lent, not yet taken);
 // - the first read's answer is whole (100 bytes), the second's Cancelled;
 // - both answers were taken on Holder's worker, their records dissolved
-//   there; afterwards no record is in use and every buffer is home.
+//   there; afterwards no record is in use;
+// - the second cancel asked both reads in flight to end, and both ended
+//   Cancelled; every buffer is home.
 
 mod lentcancel;
 
@@ -32,13 +37,17 @@ struct Got {
   pub second: Atomic[u64];      // 1 if the second read ended Cancelled
   pub taken: Atomic[u64];       // answers taken off the I/O thread, over the start
   pub inUseEnd: Atomic[u64];    // records in use at the end, over the start
+  pub askedBoth: Atomic[u64];   // operations the second cancel asked to end
+  pub bothCancelled: Atomic[u64];   // the two reads it ended, Cancelled
+  pub bothEnded: Atomic[u64];       // ...ended at all
 }
 
 let got: Got;
 
 fn @initpure init() {
   got = Got(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(999999u64), Atomic[u64].of(0u64),
-    Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64));
 }
 
 fn socketOf(r: Result[Socket, IoError]) Socket {
@@ -110,10 +119,28 @@ actor Holder {
     let now = aio.opStats();
     got.taken.store(now.takenAway - base.takenAway);
     got.inUseEnd.store(now.inUse - base.inUse);
-    a = Socket.none();
-    b = Socket.none();
+    // Two reads at once, then one cancel for both
+    selfactor.another();
+    selfactor.another();
+    selfactor.cancelBoth();
     var d = done;
     d.send(1u64);
+  }
+
+  pub async fn another(self) {
+    let r = await b.read(IoBuf(4096usize));
+    match r {
+      case let Error(e) {if aio.isCancelled(e) {got.bothCancelled.add(1u64);}}
+      else {}
+    }
+    got.bothEnded.add(1u64);
+  }
+
+  pub async fn cancelBoth(self) {
+    let c0 = aio.opStats().cancelsAsked;
+    b.cancelRead();
+    thread.sleep(Duration.fromMillis(200i64));
+    got.askedBoth.store(aio.opStats().cancelsAsked - c0);
   }
 }
 
@@ -130,6 +157,11 @@ fn main() i32 {
     case is None[u64] {expect(false, "Holder said it was done");}
     else {}
   }
+  var waited = 0u32;
+  while got.bothEnded.load() < 2u64 && waited < 500u32 {
+    thread.sleep(Duration.fromMillis(10i64));
+    waited = waited + 1u32;
+  }
   finalAll();
   expectUInt(got.asked.load(), 1u64, "the cancel asked one read to end: the one in flight, not the lent one");
   expectUInt(got.inUseBusy.load(), 2u64, "both records were in use while Holder was busy: lent, not yet taken");
@@ -137,6 +169,8 @@ fn main() i32 {
   expectUInt(got.second.load(), 1u64, "the read in flight was Cancelled");
   expect(got.taken.load() >= 2u64, "both answers were taken on Holder's worker");
   expectUInt(got.inUseEnd.load(), 0u64, "and their records dissolved there");
+  expectUInt(got.askedBoth.load(), 2u64, "one cancelRead asked both reads in flight to end");
+  expectUInt(got.bothCancelled.load(), 2u64, "and both ended Cancelled");
   let st = iobuf.stats();
   expectUInt(st.lent, 0u64, "every buffer is home");
   done()
