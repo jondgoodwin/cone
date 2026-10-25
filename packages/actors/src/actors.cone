@@ -632,24 +632,121 @@
 // with the rest of the behaviour ahead of its mailbox (parallel.cone, A
 // PARALLEL EACH IN A BEHAVIOUR).
 //
-// IDLE WORKERS spin a little, then park on the futex. A worker that finds no
-// work first tries to become a spinner (THE SPIN, below), looking again and
-// again until a few microseconds have passed; then, or at once if it could
-// not become one, it counts itself among the sleepers, looks once more, and
-// sleeps on the 'epoch' word. A
-// push to the inject queue, and a push to a worker's own queue that already
-// held another, wakes one sleeper by bumping 'epoch', unless a worker is
-// looking already: one spinning (THE SPIN, below), or one woken earlier and
-// still looking (the 'searching' flag). The one woken takes a
+// IDLE WORKERS spin a little, then park, each on a futex word of its own
+// (THE PARK WORD, below). A worker that finds no work first tries to become
+// a spinner (THE SPIN, below), looking again and again until a few
+// microseconds have passed; then, or at once if it could not become one, it
+// publishes itself a sleeper (its park word PARKED, the sleepers' count one
+// more), looks once more, and sleeps on its park word. A push to the inject
+// queue, and a push to a worker's own queue that already held another, wakes
+// one sleeper, chosen and marked (NOTIFIED) before it is woken, unless a
+// worker is looking already: one spinning (THE SPIN, below), or one woken
+// earlier and still looking (the 'searching' flag). The one woken takes a
 // share and, if more waits, wakes the next, so that a burst of work spreads
 // across the workers a worker at a time rather than waking them all. A push
 // to an empty queue of one's own wakes nobody, so two actors passing
 // messages back and forth stay on one worker. That a queue's work is never
 // left while every worker sleeps is kept by two Dekker pairings on
-// sequentially consistent operations: a sleeper counts itself and clears
+// sequentially consistent operations: a sleeper publishes itself and clears
 // 'searching', then looks; an inject push adds to the queue's length, then
 // reads the sleepers and swaps 'searching'. A worker's own queue needs no
 // such pairing: only its owner pushes to it, and the owner is awake.
+//
+// THE PARK WORD. Each worker sleeps on a word of its own ('park', on a cache
+// line of its own in the Worker), not on one word all of them share, so that
+// a worker knows when it comes back whether it was the one woken. The word is
+// RUNNING, PARKED or NOTIFIED:
+// - The worker, going to park, stores PARKED, then sets its bit in the
+//   sleepers' bitmap ('parked': 64 workers a word), then adds itself to the
+//   sleepers' count, then clears 'searching', then looks once more (anyWork),
+//   all sequentially consistent. Work seen: it clears its bit, takes itself
+//   out (a compare-and-swap PARKED to RUNNING; if a notify marked it
+//   meanwhile, the mark is its own to spend: it stores RUNNING), counts itself
+//   out of the sleepers, and goes back to the loop. No work: it sleeps,
+//   futexWait(park, PARKED).
+// - notify, after its checks (sleepers, 'spinning', 'searching'), chooses a
+//   sleeper from the bitmap: the lowest set bit (trailingZeros), from the
+//   first word up. It claims the bit (an atomic and that clears it, reading
+//   what it was: a bit another cleared first is passed over), then turns
+//   that worker's word from PARKED to NOTIFIED with a compare-and-swap, and
+//   only then wakes the word. A claimed worker whose word is not PARKED (on
+//   its way out of the park, its bit's clearing not yet seen) is passed over,
+//   and notify tries the next bit. One load finds a sleeper among 64 workers,
+//   where a scan of the park words would touch a cache line a worker (24 of
+//   them here, for each of the I/O thread's four answer pushes a round trip).
+//   The lowest bit first keeps the work on the fewest workers.
+// - The bitmap's one invariant, which no lost wake needs: a worker whose word
+//   is PARKED has its bit set. Bits are cleared only by the worker leaving
+//   the park and by a notify's claim, and a claim is followed at once by the
+//   compare-and-swap: if that turns the word to NOTIFIED the worker is no
+//   longer PARKED; if it fails the word was not PARKED then, and a worker that
+//   parks again later stores PARKED and only then sets its bit, after the
+//   claim. A stale set bit (a worker woken, its bit set again by its next
+//   park before an older claim's clearing) costs a notify one failed
+//   compare-and-swap, nothing else.
+// - WHO UNCOUNTS: the sleepers' count goes down exactly once a park, always
+//   by the worker itself as it leaves (uncount: on the look-saw-work way out,
+//   and on the chosen way out, never by a notify's claim). So the count is
+//   the workers between their count and their leaving: those with a set bit,
+//   and those whose bit a claim (or their own leaving) has cleared and that
+//   have not yet left (a stale bit belongs to one of those). A debug build
+//   asserts what can be checked of it at the two points that move it: the
+//   count never goes below 0, nor above the number of workers. (The sum
+//   itself is not asserted: it moves under the reader's feet.)
+// - THE CLAIMED-BUT-LEAVING CASE: a notify may claim the bit of a worker
+//   whose look has seen work and that is leaving, and turn its word to
+//   NOTIFIED before the worker's own compare-and-swap. The worker's then
+//   fails; the mark is its to spend: it stores RUNNING and runs (stats'
+//   marksSpent). The notify's wake lands on a word nobody waits on: it woke
+//   nobody new, and its push is served by a worker that was leaving anyway,
+//   or, if that worker takes other work, by the next notify: taking work away
+//   (foundAway) wakes another if the inject queue still holds some, which
+//   chooses a second sleeper (tests/parkleave.cone shows it). If the worker's
+//   compare-and-swap comes first, the notify's fails and it chooses the next
+//   set bit.
+// - Back from its futexWait, the worker reads its word. NOTIFIED: it was
+//   chosen; it stores RUNNING, counts itself out of the sleepers and goes back
+//   to the loop, where it looks, and finding nothing it goes to idle as any
+//   worker does (it may spin). PARKED: nobody chose it (the OS's wait returned
+//   for another reason: on Windows, WaitOnAddress may return with no wake of
+//   the word; measured at up to 16 such returns a round trip in one program).
+//   It sleeps again at once, with no spin and no look: it is still published,
+//   so every push made since is covered as before (below), and a look would
+//   only cost the time a futile spin did. The stop marks every worker
+//   NOTIFIED and wakes each one's word.
+// NO WAKE IS LOST under the park word, every case:
+// - A push before the worker publishes itself: the worker's look after
+//   publishing sees it (the look follows the publication, the push precedes
+//   notify's read of the sleepers; whichever of the two comes first in the
+//   sequentially consistent order, either notify sees the worker counted or the
+//   look sees the push).
+// - A push after the worker has published itself and looked: notify sees the
+//   count, and the bit set before it, so it goes on to choose. If this
+//   worker is chosen, its word is
+//   NOTIFIED before the wake, so a worker that has not yet called futexWait
+//   finds the word is not PARKED and the wait returns at once, and one asleep
+//   is woken by the wake that follows: the mark comes first, so neither
+//   order of the mark and the wait loses it (tests/parkwake.cone forces a
+//   mark between the look and the wait).
+// - Two notifies racing for one sleeper: the claim of its bit lets one have
+//   it; the other passes it over and chooses another, or finds none, which
+//   leaves 'searching' set (a wake that woke nobody): every worker counted
+//   among the sleepers is then
+//   chosen already (it wakes and looks), or on its way out of the park (it is
+//   awake and runs work, and parks again only after publishing and looking),
+//   and each of them clears 'searching' when it next parks or takes work away
+//   (foundAway), so a later push is not left unwoken.
+// - A chosen worker that finds no work: it was woken to look and looked;
+//   what it was woken for was taken by another (a spinner, or the pushing
+//   worker itself). It goes to idle and parks again as any worker does.
+// - A chosen worker mid-spin cannot happen: a spinner's word is RUNNING, and
+//   notify does not wake while one spins at all (THE SPIN).
+// - A worker that marks nothing: a return with the word still PARKED was no
+//   wake of ours, and sleeping again loses nothing, since the worker is still
+//   published and any push since has been, or will be, covered by a notify
+//   that marks a published worker.
+// - The stop: 'stopping' is stored before the marks, and a worker checks it
+//   after publishing (before its wait) and after every chosen return.
 //
 // THE SPIN. Parking costs a wake: the waker's futexWake, and the sleeper's
 // time to run again, measured on the 24-thread laptop (Windows) at 4 to 10 us
@@ -693,22 +790,16 @@
 //     (all sequentially consistent). If notify read 'spinning' before the
 //     spinner left it, the push came before the spinner's look after it,
 //     which sees it. Otherwise notify's reads pair with the park's as they
-//     always have: either they come after the worker's count, and the
-//     pusher bumps 'epoch' and wakes a sleeper (this worker read 'epoch'
-//     before counting itself, so its futexWait returns at once if the bump
-//     came first), or before, and then the push came before the worker's
-//     look, which sees it.
+//     always have (THE PARK WORD, NO WAKE IS LOST).
 //   - By seeing work, the push or another: it goes back to the worker's loop
 //     and takes work in the loop's order, the inject queue before any steal,
 //     exactly as a worker woken to look ('searching') does, and is covered
-//     the same way: taking work away from its own queue, foundAway wakes
-//     another if the inject queue, its own queue or a loop piece still holds
-//     work (the one exception is shared with 'searching': the inject queue's
-//     every-61st-turn take, in findWork, calls no foundAway, so what is left
-//     there waits for this worker's next turn, which is never lost, only
-//     later); a push to a worker's own queue is run by that worker in any
-//     case, being awake. A worker that saw work and then found none goes to
-//     idle again and looks again.
+//     the same way: taking work away from its own queue (the inject queue's
+//     every-61st-turn take included), foundAway wakes another if the inject
+//     queue, its own queue or a loop piece still holds work; a push to a
+//     worker's own queue is run by that worker in any case, being awake. A
+//     worker that saw work and then found none goes to idle again and looks
+//     again.
 //   A notify that found a sleeper and no spinner woke that sleeper, not a
 //   spinner: one more worker looking, never one fewer. And a spin ends: by
 //   its bound when no work comes, or by seeing work; a worker sees work only
@@ -720,7 +811,8 @@
 //   is forced by a test hook (holdNextPark, below; tests/parklook.cone).
 //
 // 'stats()' counts the spins begun, those that saw work and those that ran to
-// their bound, and the parks.
+// their bound, the parks (a worker published and asleep), and the reparks (a
+// return from the wait with the word still PARKED, slept again at once).
 //
 // QUIESCENCE is found by counting activations: an actor's time from the send
 // that made it runnable to the worker's marking it idle. Each worker counts,
@@ -3083,19 +3175,26 @@ struct Worker {
   pub ring: Array[*Header, 1024];
   pub gap4: Array[u8, 64];
   pub tasks: TaskDeque;         // the loop pieces this worker has split off (parallel.cone)
+  pub gap5: Array[u8, 64];
+  pub park: Atomic[u32];        // THE PARK WORD: parkRunning, parkParked or parkNotified, on a line of its own
+  pub gap6: Array[u8, 60];
 }
+
+// A worker's park word (THE PARK WORD, in the header)
+const parkRunning = 0u32;
+const parkParked = 1u32;
+const parkNotified = 2u32;
 
 // The runtime: its workers, the inject queue, and how workers sleep
 struct Sched {
   pub before: Array[u8, 64];
   pub sleepers: Atomic[u32];    // workers in the idle path, asleep or about to be
   pub searching: Atomic[u32];   // 1 while a woken worker looks for work
-  pub epoch: Atomic[u32];       // the futex word idle workers sleep on
   pub quiet: Atomic[u32];       // the futex word the stop sleeps on
   pub done: Atomic[u32];        // 1 once the stop has begun
   pub stopping: Atomic[u32];    // 1 once the workers are to stop
   pub spinning: Atomic[u32];    // workers in THE SPIN now, at most spinCap
-  pub gap: Array[u8, 36];
+  pub gap: Array[u8, 40];
   pub lock: sync.Mutex;         // guards the inject queue's list
   pub injectHead: *Header;
   pub injectTail: *Header;
@@ -3107,6 +3206,10 @@ struct Sched {
   pub spinCap: u32;             // how many workers may spin at once (spinMost)
   pub parkHold: u32;            // the test hook holdNextPark's state (atomic): 0 off; beside spinCap, which spin reads, so the park's look at it finds the line already read
   pub spinTicks: u64;           // THE SPIN's bound in the clock's ticks (spinMicros)
+  pub parkHoldAt: u32;          // where the test hook holds: 1 before the worker publishes itself, 4 before its look, 2 before its wait, 3 before it leaves having seen work
+  pub parkHeldIdx: u32;         // the index of the worker the test hook holds
+  pub parkedWords: u32;         // how many words the sleepers' bitmap has, 64 workers each
+  pub parked: usize;            // the sleepers' bitmap (THE PARK WORD): word i at parked + 64 i, a cache line each (atomic)
   pub workers: *Worker;
   pub threads: *thread.Thread[u32];
   pub extTasks: TaskDeque;      // the pieces of a loop begun off the workers (parallel.cone)
@@ -3343,8 +3446,43 @@ fn notify(s: *Sched) {
   if mem.atomicSwap[u32](&(*s).searching as *u32, 1u32, MemOrder.SeqCst) != 0u32 {
     return;
   }
-  mem.atomicAdd[u32](&(*s).epoch as *u32, 1u32, MemOrder.SeqCst);
-  sync.futexWake(&(*s).epoch);
+  // Choose a sleeper, mark it, then wake it (THE PARK WORD). None to be
+  // had leaves 'searching' set: every worker counted a sleeper is then chosen
+  // already or on its way out, and looks
+  var k = 0u32;
+  while k < (*s).parkedWords {
+    let wp = parkedWord(s, k);
+    var v = mem.atomicLoad[u64](wp, MemOrder.SeqCst);
+    while v != 0u64 {
+      let b = mem.trailingZeros[u64](v);
+      let bit = 1u64 << u64.from(b);
+      v = v & ~bit;
+      // Claim the bit; one another notify cleared first is passed over
+      if (mem.atomicAnd[u64](wp, ~bit, MemOrder.SeqCst) & bit) != 0u64 {
+        let i = k * 64u32 + b;
+        let w = workerAt(s, i);
+        var seen = 0u32;
+        var marked = false;
+        seen, marked = mem.atomicCompareSwap[u32](&(*w).park as *u32, parkParked, parkNotified,
+          MemOrder.SeqCst, MemOrder.SeqCst);
+        if marked {
+          sync.futexWake(&(*w).park);
+          return;
+        }
+      }
+    }
+    k = k + 1u32;
+  }
+}
+
+// Word k of the sleepers' bitmap
+fn parkedWord(s: *Sched, k: u32) *u64 {
+  ((*s).parked + usize.from(k) * 64usize) as *u64
+}
+
+// Worker w's bit in its word of the bitmap
+fn parkedBit(w: *Worker) u64 {
+  1u64 << u64.from((*w).index % 64u32)
 }
 
 // A worker found work away from its own queue: it is no longer the one
@@ -3365,6 +3503,9 @@ fn findWork(w: *Worker) *Header {
   if (*w).tick % injectEvery == 0u32 {
     let a = injectPop(s, w);
     if a as usize != 0usize {
+      // Taken away from its own queue, as any inject take: more waiting
+      // there wakes another (the header, NO WAKE IS LOST)
+      foundAway(w);
       return a;
     }
   }
@@ -3488,21 +3629,33 @@ fn spin(w: *Worker) bool {
 
 // ---- A TEST HOOK: a worker held on its way to park ----
 //
-// The next worker to leave THE SPIN for the park stops there, after the spin's
-// last look and before it counts itself a sleeper: the one place where a push
-// finds no sleeper and no spinner to wake, so that only the park's own look
-// after counting itself a sleeper takes it (NO WAKE IS LOST). For
-// tests/parklook.cone. The Sched's 'parkHold': 0 off; 1 armed; 2 a worker
-// held; 3 released. Off, it costs a park one relaxed load of a line spin has
-// just read; it is not on any send's path.
+// The next worker to leave THE SPIN for the park stops at one of three places
+// ('at'). 1, holdNextPark: after the spin's last look and before it publishes
+// itself a sleeper, the one place where a push finds no sleeper and no
+// spinner to wake, so that only the park's own look after publishing takes it
+// (tests/parklook.cone). 2: after it has published itself and looked and
+// seen nothing, before its wait, where a notify that chooses it marks it
+// before it sleeps, so that only the mark, read by the wait, takes it. 3:
+// after it has published itself and its look has seen work, before it leaves
+// (leavePark), where a notify can claim it and mark it while it is leaving.
+// 4: after it has published itself, before its look, where a notify that
+// claims it marks a worker whose look then sees work, so that it leaves
+// marked (2: tests/parkwake.cone; 4: tests/parkleave.cone). The Sched's
+// 'parkHold': 0 off; 1 armed; 2 a
+// worker held (its index in 'parkHeldIdx'); 3 released; 'parkHoldAt' says
+// where. releaseParkTo releases the held worker and arms the hook again in one
+// step, so that the same worker stops at the next place. Off, it costs a park
+// up to three relaxed loads of a line spin has just read; it is not on any
+// send's path.
 
-// Arm the hook: the next worker going to park stops before counting itself a
-// sleeper. A panic if the workers are not running
-pub fn holdNextPark() {
+// Arm the hook: the next worker going to park stops at 'at' (1 to 4,
+// above). A panic if the workers are not running
+pub fn holdNextPark(at: u32 = 1u32) {
   let s = running.load() as *Sched;
   if s as usize == 0usize {
     die("actors: holdNextPark called with no runtime running");
   }
+  mem.atomicStore[u32](&(*s).parkHoldAt as *u32, at, MemOrder.SeqCst);
   mem.atomicStore[u32](&(*s).parkHold as *u32, 1u32, MemOrder.SeqCst);
 }
 
@@ -3510,6 +3663,23 @@ pub fn holdNextPark() {
 pub fn parkHeld() bool {
   let s = running.load() as *Sched;
   s as usize != 0usize && mem.atomicLoad[u32](&(*s).parkHold as *u32, MemOrder.SeqCst) == 2u32
+}
+
+// The index of the worker held
+pub fn parkHeldWorker() u32 {
+  let s = running.load() as *Sched;
+  if s as usize == 0usize {noWorker} else {mem.atomicLoad[u32](&(*s).parkHeldIdx as *u32, MemOrder.SeqCst)}
+}
+
+// Let the held worker go on, the hook armed again for 'at': the same worker
+// stops there next, if its way passes it
+pub fn releaseParkTo(at: u32) {
+  let s = running.load() as *Sched;
+  if s as usize == 0usize {
+    return;
+  }
+  mem.atomicStore[u32](&(*s).parkHoldAt as *u32, at, MemOrder.SeqCst);
+  mem.atomicStore[u32](&(*s).parkHold as *u32, 1u32, MemOrder.SeqCst);
 }
 
 // Let the held worker go on to park, and wait until it has gone on (the hook
@@ -3526,18 +3696,43 @@ pub fn releasePark() {
   }
 }
 
-fn parkHoldHere(s: *Sched) {
+// A TEST HOOK too: wake every worker's park word without marking it, as a
+// return from the wait that nobody chose is (THE PARK WORD): an asleep
+// worker finds its word still PARKED and sleeps again at once
+// (tests/parkwake.cone)
+pub fn pokeParked() {
+  let s = running.load() as *Sched;
+  if s as usize == 0usize {
+    return;
+  }
+  var i = 0u32;
+  while i < (*s).nworkers {
+    sync.futexWake(&(*workerAt(s, i)).park);
+    i = i + 1u32;
+  }
+}
+
+fn parkHoldHere(s: *Sched, w: *Worker, at: u32) {
+  if mem.atomicLoad[u32](&(*s).parkHoldAt as *u32, MemOrder.SeqCst) != at {
+    return;
+  }
   let hp = &(*s).parkHold as *u32;
+  mem.atomicStore[u32](&(*s).parkHeldIdx as *u32, (*w).index, MemOrder.SeqCst);
   var seen = 0u32;
   var armed = false;
   seen, armed = mem.atomicCompareSwap[u32](hp, 1u32, 2u32, MemOrder.SeqCst, MemOrder.Relaxed);
   if !armed {
     return;
   }
-  while mem.atomicLoad[u32](hp, MemOrder.SeqCst) != 3u32 {
+  var st = 2u32;
+  while st == 2u32 {
     yieldProcessor();
+    st = mem.atomicLoad[u32](hp, MemOrder.SeqCst);
   }
-  mem.atomicStore[u32](hp, 0u32, MemOrder.SeqCst);
+  // Released (3): off again. Re-armed (1, releaseParkTo): left armed
+  if st == 3u32 {
+    mem.atomicStore[u32](hp, 0u32, MemOrder.SeqCst);
+  }
 }
 
 // No work was found: spin a little (spin), then sleep until woken. False once
@@ -3548,28 +3743,76 @@ fn idle(w: *Worker) bool {
     return true;
   }
   if mem.atomicLoad[u32](&(*s).parkHold as *u32, MemOrder.Relaxed) != 0u32 {
-    parkHoldHere(s);
+    parkHoldHere(s, w, 1u32);
   }
-  let epochp = &(*s).epoch as *u32;
-  let e = ld32(epochp);
+  // Publish: the park word, the bit, the count (THE PARK WORD)
+  let pk = &(*w).park as *u32;
+  let wp = parkedWord(s, (*w).index / 64u32);
+  let bit = parkedBit(w);
+  mem.atomicStore[u32](pk, parkParked, MemOrder.SeqCst);
+  mem.atomicOr[u64](wp, bit, MemOrder.SeqCst);
   let asleep = mem.atomicAdd[u32](&(*s).sleepers as *u32, 1u32, MemOrder.SeqCst) + 1u32;
+  assertDebugMsg(asleep <= (*s).nworkers, "actors: more sleepers counted than workers");
   mem.atomicStore[u32](&(*s).searching as *u32, 0u32, MemOrder.SeqCst);
+  if mem.atomicLoad[u32](&(*s).parkHold as *u32, MemOrder.Relaxed) != 0u32 {
+    parkHoldHere(s, w, 4u32);
+  }
   if anyWork(s) {
-    mem.atomicSub[u32](&(*s).sleepers as *u32, 1u32, MemOrder.SeqCst);
+    if mem.atomicLoad[u32](&(*s).parkHold as *u32, MemOrder.Relaxed) != 0u32 {
+      parkHoldHere(s, w, 3u32);
+    }
+    leavePark(s, w);
     return true;
   }
   if ld32(&(*s).stopping as *u32) != 0u32 {
-    mem.atomicSub[u32](&(*s).sleepers as *u32, 1u32, MemOrder.SeqCst);
+    leavePark(s, w);
     return false;
   }
   if asleep == (*s).nworkers && ld32(&(*s).done as *u32) != 0u32 {
     mem.atomicAdd[u32](&(*s).quiet as *u32, 1u32, MemOrder.SeqCst);
     sync.futexWake(&(*s).quiet);
   }
+  if mem.atomicLoad[u32](&(*s).parkHold as *u32, MemOrder.Relaxed) != 0u32 {
+    parkHoldHere(s, w, 2u32);
+  }
   tally(&(*(*w).stat).parks as *u64, 1u64);
-  sync.futexWait(&(*s).epoch, e);
-  mem.atomicSub[u32](&(*s).sleepers as *u32, 1u32, MemOrder.SeqCst);
+  while true {
+    sync.futexWait(&(*w).park, parkParked);
+    if mem.atomicLoad[u32](pk, MemOrder.SeqCst) != parkParked {
+      break;
+    }
+    // Back with the word still PARKED: nobody chose this worker. Sleep
+    // again at once, still published (THE PARK WORD)
+    tally(&(*(*w).stat).reparks as *u64, 1u64);
+  }
+  // Chosen (NOTIFIED): the notify cleared the bit
+  mem.atomicStore[u32](pk, parkRunning, MemOrder.SeqCst);
+  uncount(s);
   ld32(&(*s).stopping as *u32) == 0u32
+}
+
+// A published worker leaves the park without sleeping: its bit cleared, its
+// word RUNNING, its count gone. A notify that claimed it meanwhile and marked
+// it NOTIFIED (THE PARK WORD, the claimed-but-leaving case) woke nobody new:
+// the mark is this worker's to spend, and it is awake already
+fn leavePark(s: *Sched, w: *Worker) {
+  let pk = &(*w).park as *u32;
+  mem.atomicAnd[u64](parkedWord(s, (*w).index / 64u32), ~parkedBit(w), MemOrder.SeqCst);
+  var seen = 0u32;
+  var out = false;
+  seen, out = mem.atomicCompareSwap[u32](pk, parkParked, parkRunning, MemOrder.SeqCst, MemOrder.SeqCst);
+  if !out {
+    tally(&(*(*w).stat).marksSpent as *u64, 1u64);
+    mem.atomicStore[u32](pk, parkRunning, MemOrder.SeqCst);
+  }
+  uncount(s);
+}
+
+// The one decrement of the sleepers' count in a park, made by the worker
+// itself as it leaves (never by a notify): the count never goes below 0
+fn uncount(s: *Sched) {
+  let before = mem.atomicSub[u32](&(*s).sleepers as *u32, 1u32, MemOrder.SeqCst);
+  assertDebugMsg(before != 0u32, "actors: the sleepers' count went below 0");
 }
 
 // What a worker thread is handed
@@ -3660,7 +3903,9 @@ pub struct Stats {
   pub spins: u64 = 0u64;        // times an idle worker began THE SPIN (the header, IDLE WORKERS)
   pub spinsFound: u64 = 0u64;   // spins that ended by seeing work
   pub spinsOut: u64 = 0u64;     // spins that ended at their bound, the worker going on to park; spins less these two are the workers spinning now
-  pub parks: u64 = 0u64;        // times a worker slept on the futex
+  pub parks: u64 = 0u64;        // times a worker slept on its park word (THE PARK WORD)
+  pub reparks: u64 = 0u64;      // returns from that sleep with nobody having chosen the worker, which slept again at once
+  pub marksSpent: u64 = 0u64;   // times a notify chose a worker already leaving the park with work seen: it woke nobody new
 }
 
 // What configure set, read when the workers start: atomics, since 'configure'
@@ -3689,8 +3934,10 @@ struct StatSlot {
   pub spins: u64;               // spins begun (THE SPIN)
   pub spinsFound: u64;          // spins ended by seeing work
   pub spinsOut: u64;            // spins ended by their bound
-  pub parks: u64;               // sleeps on the futex
-  pub gap: Array[u8, 8];        // a slot is a cache line, so that no two workers' slots share one
+  pub parks: u64;               // sleeps on the park word
+  pub reparks: u64;             // returns from the wait unchosen, slept again at once
+  pub marksSpent: u64;          // parks left with work seen after a notify had marked the worker
+  pub gap: Array[u8, 48];       // a slot is two cache lines, so that no two workers' slots share one
 }
 
 let statSlots: Atomic[usize];   // the address of the first slot, or 0 before the workers have started
@@ -3772,6 +4019,12 @@ fn startWorkers() {
   let half = n / 2u32;
   (*s).spinCap = if half == 0u32 {1u32} else if half > spinMost {spinMost} else {half};
   (*s).spinTicks = clockFrequency() * spinMicros / 1000000u64;
+  // The sleepers' bitmap: a word for every 64 workers, a cache line each
+  (*s).parkedWords = (n + 63u32) / 64u32;
+  (*s).parked = libc.calloc(usize.from((*s).parkedWords), 64usize) as usize;
+  if (*s).parked == 0usize {
+    die("actors: out of memory for the runtime");
+  }
   (*s).workers = ws;
   (*s).threads = ts;
   statSlots.store(slots);
@@ -3883,8 +4136,16 @@ fn stopWorkers() {
   let s = running.load() as *Sched;
   quiesce(s);
   mem.atomicStore[u32](&(*s).stopping as *u32, 1u32, MemOrder.SeqCst);
-  mem.atomicAdd[u32](&(*s).epoch as *u32, 1u32, MemOrder.SeqCst);
-  sync.futexWakeAll(&(*s).epoch);
+  // Mark every worker and wake its word (THE PARK WORD): a worker asleep
+  // wakes chosen and sees 'stopping'; one not yet asleep finds its word not
+  // PARKED, or reads 'stopping' before it sleeps
+  var j = 0u32;
+  while j < (*s).nworkers {
+    let w = workerAt(s, j);
+    mem.atomicStore[u32](&(*w).park as *u32, parkNotified, MemOrder.SeqCst);
+    sync.futexWake(&(*w).park);
+    j = j + 1u32;
+  }
   var i = 0u32;
   while i < (*s).nworkers {
     let t = mem.readRaw[thread.Thread[u32]]((*s).threads + usize.from(i));
@@ -3892,6 +4153,7 @@ fn stopWorkers() {
     i = i + 1u32;
   }
   running.store(0usize);
+  libc.free((*s).parked as *u8);
   libc.free((*s).threads as *u8);
   libc.free((*s).workers as *u8);
   libc.free(s as *u8);
@@ -3918,6 +4180,8 @@ pub fn stats() Stats {
     st.spinsFound = st.spinsFound + mem.atomicLoad[u64](&(*slot).spinsFound as *u64, MemOrder.Relaxed);
     st.spinsOut = st.spinsOut + mem.atomicLoad[u64](&(*slot).spinsOut as *u64, MemOrder.Relaxed);
     st.parks = st.parks + mem.atomicLoad[u64](&(*slot).parks as *u64, MemOrder.Relaxed);
+    st.reparks = st.reparks + mem.atomicLoad[u64](&(*slot).reparks as *u64, MemOrder.Relaxed);
+    st.marksSpent = st.marksSpent + mem.atomicLoad[u64](&(*slot).marksSpent as *u64, MemOrder.Relaxed);
     i = i + 1u32;
   }
   st

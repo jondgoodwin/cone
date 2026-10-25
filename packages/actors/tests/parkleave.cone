@@ -1,0 +1,125 @@
+// The claimed-but-leaving case (THE PARK WORD, in the package's header),
+// forced, with a burst of two pushes: the second still gets a second sleeper.
+// Four workers, all parked. Ten times:
+//
+// 1. The test hook is armed at its fourth place (after the worker publishes
+//    itself, before its look), and a message wakes the lowest-numbered
+//    sleeper, L (notify takes the lowest bit); L runs it, spins, publishes
+//    itself again and is held before its look.
+// 2. Main sends X1, a message that keeps its worker 200 ms: notify claims
+//    the lowest bit again, L's, and marks L NOTIFIED. Main sends X2 at once:
+//    its notify finds 'searching' set by X1's and wakes nobody.
+// 3. L is let go: its look sees work, its compare-and-swap out of the park
+//    fails, it spends the mark (stats' marksSpent, one more: X1's notify woke
+//    nobody new), takes X1 from the inject queue, and, X2 still waiting
+//    there, its foundAway chooses a second sleeper, which runs X2 while L is
+//    still in X1.
+//
+// The checks: L was held; marksSpent grew by one; X2 ran on a worker other
+// than L, within 150 ms of L's release (well inside X1's 200 ms), while X1
+// was still running. Without foundAway's wake, X2 would wait for L to finish
+// X1.
+
+mod parkleave;
+
+import testing use *;
+import actors;
+import thread;
+import time;
+
+const rounds = 10u32;
+
+struct Flags {
+  pub x1done: Atomic[u32];     // 1 once X1 has finished
+  pub x2done: Atomic[u32];
+  pub x2worker: Atomic[u32];
+  pub x2during: Atomic[u32];   // X2 ran before X1 had finished
+  pub x2at: Atomic[u64];       // when X2 ran
+}
+
+let flags: Flags;
+
+fn @initpure init() {
+  flags = Flags(Atomic[u32].of(0u32), Atomic[u32].of(0u32), Atomic[u32].of(0u32),
+    Atomic[u32].of(0u32), Atomic[u64].of(0u64));
+}
+
+fn nowNs() u64 {u64.from(time.Instant.now().nanos())}
+
+actor Work {
+  pub async fn poke(self) {}
+
+  pub async fn slow(self) {
+    let until = nowNs() + 200000000u64;
+    while nowNs() < until {}
+    flags.x1done.store(1u32);
+  }
+
+  pub async fn quick(self) {
+    flags.x2worker.store(actors.workerIndex());
+    flags.x2during.store(1u32 - flags.x1done.load());
+    flags.x2at.store(nowNs());
+    flags.x2done.store(1u32);
+  }
+}
+
+fn pause(ms: i64) {
+  thread.sleep(time.Duration.fromMillis(ms));
+}
+
+fn main() i32 {
+  initAll();
+  actors.configure(actors.Options(workers: 4u32));
+  {
+    let a = Work();
+    let x = Work();
+    let y = Work();
+    actors.waitUntilIdle();
+    var held = 0u32;
+    var spent = 0u32;
+    var second = 0u32;
+    var prompt = 0u32;
+    var during = 0u32;
+    var r = 0u32;
+    while r < rounds {
+      pause(30i64);
+      flags.x2done.store(0u32);
+      flags.x1done.store(0u32);
+      // 1. L held after publishing itself, before its look
+      actors.holdNextPark(4u32);
+      a.poke();
+      let d0 = nowNs() + 2000000000u64;
+      while !actors.parkHeld() && nowNs() < d0 {
+        thread.yieldNow();
+      }
+      require(actors.parkHeld(), "L is held between publishing itself and its look, within 2 s");
+      held = held + 1u32;
+      let lIdx = actors.parkHeldWorker();
+      // 2. the burst: X1 claims L; X2's notify finds 'searching' set
+      let spent0 = actors.stats().marksSpent;
+      x.slow();
+      y.quick();
+      // 3. L let go
+      let t0 = nowNs();
+      actors.releasePark();
+      let deadline = t0 + 2000000000u64;
+      while flags.x2done.load() == 0u32 && nowNs() < deadline {
+        thread.yieldNow();
+      }
+      require(flags.x2done.load() == 1u32, "X2 handled within 2 s");
+      if actors.stats().marksSpent - spent0 == 1u64 {spent = spent + 1u32;}
+      if flags.x2worker.load() != lIdx {second = second + 1u32;}
+      if flags.x2at.load() - t0 < 150000000u64 {prompt = prompt + 1u32;}
+      if flags.x2during.load() == 1u32 {during = during + 1u32;}
+      actors.waitUntilIdle();
+      r = r + 1u32;
+    }
+    expectUInt(u64.from(held), u64.from(rounds), "every round held L between publishing itself and its look");
+    expectUInt(u64.from(spent), u64.from(rounds), "every round, L spent the mark of X1's notify, which claimed it while it was leaving: a notify that woke nobody new");
+    expectUInt(u64.from(second), u64.from(rounds), "every round, X2 ran on a second sleeper, not on L");
+    expectUInt(u64.from(prompt), u64.from(rounds), "every round, X2 ran within 150 ms of L's release");
+    expectUInt(u64.from(during), u64.from(rounds), "every round, X2 ran before X1 had finished");
+  }
+  finalAll();
+  done()
+}
