@@ -1549,6 +1549,20 @@ pub struct Loop {
           closesocket(r.newSock);
           r.newSock = invalidHandle;
         }
+        // An asker's record keeps what the kernel really did, for its asker to
+        // read when it is back late: a receive, read or send that finished
+        // after all is Done with its count, the bytes that came in its buffer
+        // (aio's own quiet deadline answered nobody, and must not lose them)
+        let k = r.kind;
+        if !r.own && (r.ov.internal & 0xFFFFFFFFusize) == statusSuccess
+            && (k == diag.kindRecv || k == diag.kindReadAt || k == diag.kindRecvFrom
+              || k == diag.kindSend || k == diag.kindSendTo || k == diag.kindWriteAt) {
+          let got = usize.from(bytes);
+          if k == diag.kindRecv || k == diag.kindReadAt || k == diag.kindRecvFrom {r.bufGrow(got);}
+          r.status = diag.outcomeDone;
+          r.n = got;
+          r.code = 0u32;
+        }
         self.ended(p, true);
         return;
       }

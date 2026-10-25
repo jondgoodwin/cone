@@ -72,6 +72,8 @@
 //   aio.opStats()           the records in use and made, the operations cancelRead and cancelWrite
 //                           asked to end, the answers taken on the awaiting actor's worker, a
 //                           record's size (ONE RECORD PER OPERATION)
+//   aio.testLateQuiet(n)    for tests: the next n reads with no buffer that began with one and are
+//                           answered Done go through the bad case's late path (READS WITH NO BUFFER)
 //   IoLimits.none()  IoLimits.until(deadline)  IoLimits.within(group)  IoLimits(group, deadline)
 //   aio.sleep(d)  aio.sleepUntil(at)   a pause of d (a Duration) / until at (an Instant)
 //                                                                Result[void, IoError]
@@ -152,8 +154,9 @@
 // back in the record and goes home (None over it), and the same record begins
 // the read again as a zero-byte one, with the same limits. (In the bad case,
 // that receive answered early while the kernel still holds it, nothing is
-// answered: the read goes on, the same way, when the kernel gives the record
-// back.) A
+// answered: when the kernel gives the record back, a receive it finished
+// after all is the read's answer, its bytes kept, and one it cancelled holds
+// none, and the read goes on as a zero-byte one.) A
 // read ended by a cancel, a deadline (the caller's, or its group's) or its
 // socket's closing is answered as every operation is, exactly once; one still
 // waiting when the program ends is abandoned like any awaited operation (THE
@@ -427,8 +430,9 @@
 //    out), more than 1,024 queued are refused (ERROR_BUSY).
 //  - The answer of a run (the Output) is left by the pool thread in the run's
 //    record (its run part, an Option), which waits for its job in every case,
-//    so nothing else decides who frees what. The run part is in every record
-//    of aio's (the size of the record).
+//    so nothing else decides who frees what. The run part is held out of
+//    line, by an owner of its own (one allocation more per run), so that
+//    every other record stays small.
 //  - A start failure is an IoError with the system's number (Windows') on both
 //    systems; iocore has one function more for it, 'systemCode', which turns an
 //    errno into that number.
@@ -481,6 +485,7 @@ fn @initpure init() {
   poolAt = Atomic[usize].of(0usize);
   cancelsAsked = Atomic[u64].of(0u64);
   takenAway = Atomic[u64].of(0u64);
+  testLate = Atomic[u32].of(0u32);
 }
 
 // A panic, reported at the line calling 'die'
@@ -523,7 +528,7 @@ struct Ask is Sendable {
   since: i64;                   // a read with no buffer: when its stage was started (the steady clock)
   arg: u64;                     // a read with no buffer: the room of the buffer it takes; a relative sleep's nanoseconds
   limit: Instant;               // the caller's deadline (lim's), the whole of a read with no buffer
-  run: Option[RunPart];         // a run's request, and its answer once a pool thread has run it
+  run: Option[Uni[RunPart]];    // a run's request, and its answer once a pool thread has run it: out of line
 }
 
 // A child process to run, and its answer: written by the pool's thread that
@@ -1076,11 +1081,7 @@ fn doneRec(lp: &mut Loop, p: *OpCore) {
   }
   if (p as &OpCore).isLate() {
     if quiet {
-      // The quiet read's record back from the kernel: its buffer goes home,
-      // and the read waits without one, on the same record
-      setCalm(lp, (*p).handle, false);
-      setBuf(p, None);
-      beginStage(lp, rp, stageReady());
+      lateQuiet(lp, rp);
       return;
     }
     // Answered early: dissolved now, its buffer home, the spent reply dropped
@@ -1109,11 +1110,46 @@ fn doneRec(lp: &mut Loop, p: *OpCore) {
         return;
       }
       if (*p).status == diag.outcomeDone {
+        if testLate.load() > 0u32 {
+          // A test's: this receive taken as if the kernel had held it past the
+          // grace and finished it then, with these bytes (testLateQuiet)
+          testLate.sub(1u32);
+          lateQuiet(lp, rp);
+          return;
+        }
         setCalm(lp, (*p).handle, true);
       }
     }
   }
   answerRec(rp);
+}
+
+// The quiet read's record back from the kernel late (the bad case, the read's
+// own quiet deadline, which answered nobody). Its outcome is the kernel's
+// (iocore's RECORDS): a receive that finished after all, Done, is the read's
+// answer, its bytes kept (an end of the stream, Done(0), too); one that was
+// cancelled holds no bytes: its buffer goes home, and the read waits without
+// one, on the same record
+fn lateQuiet(lp: &mut Loop, rp: *OpRec[Ask]) {
+  let p = rp as *OpCore;
+  if (*p).status == diag.outcomeDone {
+    setCalm(lp, (*p).handle, true);
+    answerRec(rp);
+    return;
+  }
+  setCalm(lp, (*p).handle, false);
+  setBuf(p, None);
+  beginStage(lp, rp, stageReady());
+}
+
+// For tests: the next n reads with no buffer begun with one and answered
+// Done are taken through the late path of the bad case (lateQuiet), as if the
+// kernel had held their receive past the grace of their quiet deadline and
+// finished it then. The bad case itself cannot be made to happen on purpose
+let testLate: Atomic[u32];
+
+pub fn testLateQuiet(n: u32) {
+  testLate.store(n);
 }
 
 // The operation is over: the reply is sprung in place, its record LENT to
@@ -1319,12 +1355,13 @@ fn takeStat(p: *u8, to: *u8) {
 // ERROR_OPERATION_ABORTED, what a run's answer says if the pool's thread left none
 fn abortedCode() u32 {errorOperationAborted}
 
-fn runAnswer(status: u32, code: u32, run: Option[RunPart]) Result[process.Output, IoError] {
+fn runAnswer(status: u32, code: u32, run: Option[Uni[RunPart]]) Result[process.Output, IoError] {
   if status != diag.outcomeDone {
     return Error[process.Output, IoError](errorOf(status, code));
   }
   match run {
-    case var Some(part) {
+    case var Some(owner) {
+      let part = *owner;
       let out = part.(out);
       match out {
         case var Some(o) {o}
@@ -1360,7 +1397,8 @@ fn runResult(r: Result[process.Output, process.ProcessError]) Result[process.Out
 fn runWork(arg: u64, buf: &mut IoBuf) Outcome {
   let rp = usize.from(arg) as *OpRec[Ask];
   match &mut (*rp).ask.run {
-    case var &mut Some(part) {
+    case var &mut Some(owner) {
+      let part = &mut **owner;
       var r: Result[process.Output, IoError];
       if part.isLine {
         r = runResult(process.runLine(part.line.view(), part.opts, &part.dir));
@@ -1905,7 +1943,7 @@ fn copyArgs(args: &Array[String]) List[String] {
 fn runAwaitable(isLine: bool, line: &str, args: List[String], opts: process.Options, dir: &Path, lim: IoLimits) actors.Awaitable[Result[process.Output, IoError]] {
   let p = takeRec(opRun, diag.kindCall, Handle.none(), lim);
   let a = &mut (*p).ask;
-  a.run = Some[RunPart](RunPart(isLine, String.from(line), args, opts, dir.copy(), None));
+  a.run = Some[Uni[RunPart]](Uni[RunPart](RunPart(isLine, String.from(line), args, opts, dir.copy(), None)));
   let c = &mut (*p).core;
   c.lane = Lane.general();
   c.work = &runWork;
