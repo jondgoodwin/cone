@@ -714,7 +714,10 @@
 //   its bound when no work comes, or by seeing work; a worker sees work only
 //   while some is queued, so a program with nothing left to run has every
 //   worker parked within the bound (tests/spinrest.cone; tests/wakestress.cone
-//   and wakestressone.cone stress the wake).
+//   and wakestressone.cone stress the wake). The narrowest window, a push
+//   between the spin's last look and the worker's count of itself as a
+//   sleeper, which finds nobody to wake and is taken only by the park's look,
+//   is forced by a test hook (holdNextPark, below; tests/parklook.cone).
 //
 // 'stats()' counts the spins begun, those that saw work and those that ran to
 // their bound, and the parks.
@@ -3102,6 +3105,7 @@ struct Sched {
   pub nworkers: u32;
   pub batch: u32;
   pub spinCap: u32;             // how many workers may spin at once (spinMost)
+  pub parkHold: u32;            // the test hook holdNextPark's state (atomic): 0 off; beside spinCap, which spin reads, so the park's look at it finds the line already read
   pub spinTicks: u64;           // THE SPIN's bound in the clock's ticks (spinMicros)
   pub workers: *Worker;
   pub threads: *thread.Thread[u32];
@@ -3482,12 +3486,69 @@ fn spin(w: *Worker) bool {
   found
 }
 
+// ---- A TEST HOOK: a worker held on its way to park ----
+//
+// The next worker to leave THE SPIN for the park stops there, after the spin's
+// last look and before it counts itself a sleeper: the one place where a push
+// finds no sleeper and no spinner to wake, so that only the park's own look
+// after counting itself a sleeper takes it (NO WAKE IS LOST). For
+// tests/parklook.cone. The Sched's 'parkHold': 0 off; 1 armed; 2 a worker
+// held; 3 released. Off, it costs a park one relaxed load of a line spin has
+// just read; it is not on any send's path.
+
+// Arm the hook: the next worker going to park stops before counting itself a
+// sleeper. A panic if the workers are not running
+pub fn holdNextPark() {
+  let s = running.load() as *Sched;
+  if s as usize == 0usize {
+    die("actors: holdNextPark called with no runtime running");
+  }
+  mem.atomicStore[u32](&(*s).parkHold as *u32, 1u32, MemOrder.SeqCst);
+}
+
+// Whether a worker is held on its way to park
+pub fn parkHeld() bool {
+  let s = running.load() as *Sched;
+  s as usize != 0usize && mem.atomicLoad[u32](&(*s).parkHold as *u32, MemOrder.SeqCst) == 2u32
+}
+
+// Let the held worker go on to park, and wait until it has gone on (the hook
+// is off again, ready to be armed)
+pub fn releasePark() {
+  let s = running.load() as *Sched;
+  if s as usize == 0usize {
+    return;
+  }
+  let hp = &(*s).parkHold as *u32;
+  mem.atomicStore[u32](hp, 3u32, MemOrder.SeqCst);
+  while mem.atomicLoad[u32](hp, MemOrder.SeqCst) != 0u32 {
+    yieldProcessor();
+  }
+}
+
+fn parkHoldHere(s: *Sched) {
+  let hp = &(*s).parkHold as *u32;
+  var seen = 0u32;
+  var armed = false;
+  seen, armed = mem.atomicCompareSwap[u32](hp, 1u32, 2u32, MemOrder.SeqCst, MemOrder.Relaxed);
+  if !armed {
+    return;
+  }
+  while mem.atomicLoad[u32](hp, MemOrder.SeqCst) != 3u32 {
+    yieldProcessor();
+  }
+  mem.atomicStore[u32](hp, 0u32, MemOrder.SeqCst);
+}
+
 // No work was found: spin a little (spin), then sleep until woken. False once
 // the runtime is stopping.
 fn idle(w: *Worker) bool {
   let s = (*w).sched;
   if spin(w) {
     return true;
+  }
+  if mem.atomicLoad[u32](&(*s).parkHold as *u32, MemOrder.Relaxed) != 0u32 {
+    parkHoldHere(s);
   }
   let epochp = &(*s).epoch as *u32;
   let e = ld32(epochp);
