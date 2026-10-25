@@ -1,0 +1,185 @@
+// wakestress.cone with ONE worker: no other sleeper is there to take up a
+// push that a worker going to sleep missed, so the one worker's own look
+// after counting itself a sleeper is all that stands between a push and a
+// lost wake (with that look taken out of idle, this test failed in one run of
+// seven, where wakestress, with four workers, passed every time). The rest is
+// wakestress's account: No wake is lost while workers spin and park (THE
+// SPIN, in the package's header). Four plain threads, not
+// workers, each send 4,000 messages (so each goes through the inject queue
+// and its notify) to their own actor in a ring of eight, with a gap between
+// sends that cycles through 0, 1, 3, 6, 9, 12, 20, 50 and 200 us: shorter
+// than the spin's bound, about it, and long enough for the workers to park.
+// A message goes 0, 1 or 2 actors further round the ring before it is
+// counted (each hop a send from a worker, onto its own queue). Every eighth
+// message its sender waits for: until every message it has sent so far is
+// counted, for at most 2 s. A lost wake, a message left queued while every
+// worker sleeps, would hold that wait past its deadline, so the checks are:
+// no wait ran past its deadline; every message counted, the last within 2 s
+// of the senders' end (both checks stop the test when they fail, rather than
+// wait for ever in finalAll); the longest any message took, from its send to
+// its count, under 1 s; and, so that both ways of waiting were taken, spins
+// that saw work, spins that ran to their bound, and parks. At the end, at
+// rest, no worker is spinning.
+
+mod wakestressone;
+
+import testing use *;
+import actors;
+import thread;
+import time;
+
+const senders = 4u32;
+const perSender = 4000u64;
+const ring = 8u64;
+
+struct Counts {
+  pub got0: Atomic[u64];
+  pub got1: Atomic[u64];
+  pub got2: Atomic[u64];
+  pub got3: Atomic[u64];
+  pub late: Atomic[u64];       // waits past their deadline
+  pub worst: Atomic[u64];      // the longest send-to-count, ns
+}
+
+let counts: Counts;
+
+fn @initpure init() {
+  counts = Counts(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
+
+fn nowNs() u64 {u64.from(time.Instant.now().nanos())}
+
+fn gotOf(from: u32) &Atomic[u64] {
+  if from == 0u32 {&counts.got0} else if from == 1u32 {&counts.got1}
+  else if from == 2u32 {&counts.got2} else {&counts.got3}
+}
+
+actor Node {
+  next: Option[Node];
+
+  fn init(self: &new) {
+    *self = Self(None[Node]);
+  }
+
+  pub async fn meet(self, n: Node) {
+    next = Some[Node](n);
+  }
+
+  pub async fn take(self, from: u32, sent: u64, hops: u32) {
+    if hops > 0u32 {
+      match next {
+        case let Some(n) {n.take(from, sent, hops - 1u32);}
+        case is None[Node] {}
+      }
+      return;
+    }
+    counts.worst.max(nowNs() - sent);
+    gotOf(from).add(1u64);
+  }
+
+  pub async fn leave(self, more: u64) {
+    if more > 0u64 {
+      match next {
+        case let Some(n) {n.leave(more - 1u64);}
+        case is None[Node] {}
+      }
+    }
+    next = None;
+  }
+}
+
+struct SendArg is Sendable {
+  pub to: Node;
+  pub from: u32;
+}
+
+fn total() u64 {
+  counts.got0.load() + counts.got1.load() + counts.got2.load() + counts.got3.load()
+}
+
+fn gapNs(k: u64) u64 {
+  let i = k % 9u64;
+  if i == 0u64 {0u64} else if i == 1u64 {1000u64} else if i == 2u64 {3000u64}
+  else if i == 3u64 {6000u64} else if i == 4u64 {9000u64} else if i == 5u64 {12000u64}
+  else if i == 6u64 {20000u64} else if i == 7u64 {50000u64} else {200000u64}
+}
+
+fn sender(arg: SendArg) u32 {
+  let got = gotOf(arg.from);
+  var k = 0u64;
+  while k < perSender {
+    let until = nowNs() + gapNs(k);
+    while nowNs() < until {}
+    arg.to.take(arg.from, nowNs(), u32.from(k % 3u64));
+    k = k + 1u64;
+    if k % 8u64 == 0u64 && counts.late.load() == 0u64 {
+      let deadline = nowNs() + 2000000000u64;
+      while got.load() < k && nowNs() < deadline {
+        thread.yieldNow();
+      }
+      if got.load() < k {
+        counts.late.add(1u64);
+      }
+    }
+  }
+  0u32
+}
+
+fn main() i32 {
+  initAll();
+  actors.configure(actors.Options(workers: 1u32));
+  {
+    // The ring, n0 to n7; each sender's own node is every second one
+    let n0 = Node();
+    let n1 = Node();
+    let n2 = Node();
+    let n3 = Node();
+    let n4 = Node();
+    let n5 = Node();
+    let n6 = Node();
+    let n7 = Node();
+    n0.meet(n1);
+    n1.meet(n2);
+    n2.meet(n3);
+    n3.meet(n4);
+    n4.meet(n5);
+    n5.meet(n6);
+    n6.meet(n7);
+    n7.meet(n0);
+    let first = n0;
+    actors.waitUntilIdle();
+
+    let t0 = thread.start[SendArg, u32](SendArg(n0, 0u32), &sender);
+    let t1 = thread.start[SendArg, u32](SendArg(n2, 1u32), &sender);
+    let t2 = thread.start[SendArg, u32](SendArg(n4, 2u32), &sender);
+    let t3 = thread.start[SendArg, u32](SendArg(n6, 3u32), &sender);
+    t0.join();
+    t1.join();
+    t2.join();
+    t3.join();
+    // Not waitUntilIdle: a lost wake would hold it for ever. The last
+    // messages, too, within 2 s
+    let deadline = nowNs() + 2000000000u64;
+    while total() < u64.from(senders) * perSender && nowNs() < deadline {
+      thread.yieldNow();
+    }
+    // A failure stops here, with no finalAll, which would wait for the
+    // message left queued
+    requireUInt(counts.late.load(), 0u64, "no sender's wait ran past its 2 s deadline: no message left while the workers slept");
+    requireUInt(total(), u64.from(senders) * perSender, "every message counted, the last within 2 s of the senders' end");
+    actors.waitUntilIdle();
+    expect(counts.worst.load() < 1000000000u64, "no message took 1 s from its send to its count");
+    let st = actors.stats();
+    expect(st.spinsFound > 0u64, "some spins saw work");
+    expect(st.spinsOut > 0u64, "some spins ran to their bound");
+    expect(st.parks > 0u64, "the workers parked");
+    thread.sleep(time.Duration.fromMillis(50i64));
+    let rest = actors.stats();
+    expectUInt(rest.spins, rest.spinsFound + rest.spinsOut, "at rest after the stress, no worker is spinning");
+
+    first.leave(ring - 1u64);
+  }
+  finalAll();
+  done()
+}
