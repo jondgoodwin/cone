@@ -304,7 +304,9 @@
 // context word and two plain functions (Awaitable.of: nothing is allocated);
 // and an answer too large for a slot need not be boxed if the operation keeps
 // a place of its own for it: answerLent (LENT ANSWERS, below), which is how the
-// aio package answers a socket's read with no allocation at all.
+// aio package answers a socket's read with no allocation at all. An operation
+// that keeps the envelope itself, in a record of its own, answers it there
+// (answerNowIn, answerLentIn: ANSWERED IN PLACE, below), which leaves it spent.
 //
 // FUTURES. A call of a behaviour returning a T whose value is kept, 'imm fut =
 // peer.count()', sends the request awaited at once and gives a Future[T]: the
@@ -2197,11 +2199,12 @@ fn traceRunEnd(h: *Header, id: u64, behaviour: u64) {
 // names no actor. A Reply with no 'to' and no 'cell' wants no answer.
 // Sendable on trust, as Mailbox is: the runtime orders every hand-off of it.
 //
-// 'meta' is the value's size in bytes, times 8, plus three flags: replyHasId
+// 'meta' is the value's size in bytes, times 16, plus four flags: replyHasId
 // (the record has an id), replyBoxed (the value is too large for a slot's
-// payload, or too finely aligned, so the answer allocates a box for it) and
+// payload, or too finely aligned, so the answer allocates a box for it),
 // replyOp (the reply of an awaited operation, counted in opsStarted until it
-// is spent).
+// is spent) and replySpent (the reply has been answered in place, ANSWERED IN
+// PLACE below: nothing else in 'meta' means anything then, except replyOp).
 pub struct Reply is Sendable {
   to: *Header = null;
   at: *u8 = null;
@@ -2230,10 +2233,11 @@ pub struct Reply is Sendable {
 const replyHasId = 1u64;
 const replyBoxed = 2u64;
 const replyOp = 4u64;
+const replySpent = 8u64;
 
 // A reply's meta, from the value's size and its flags
 fn metaOf(size: usize, flags: u64) u64 {
-  u64.from(size) * 8u64 + flags
+  u64.from(size) * 16u64 + flags
 }
 
 // Whether the reply goes anywhere: to an actor that awaits it, or into a
@@ -2320,7 +2324,7 @@ fn replyPrepLent(r: &Reply, lent: *u8, release: *u8) Put {
       *((at + 8usize) as **u8) = release;
       at = lent;
     } else {
-      var size = usize.from(r.meta / 8u64);
+      var size = usize.from(r.meta / 16u64);
       if size == 0usize {size = 1usize;}
       let box = libc.malloc(size);
       if box as usize == 0usize {
@@ -2365,19 +2369,51 @@ fn post(r: &mut Reply) {
 // request: the value goes back in the reply
 pub fn answerNow[R](rp: Reply, v: R) {
   var r = rp;
-  if !wanted(&r) {
+  answerNowIn[R](&mut r, v);
+}
+
+// ANSWERED IN PLACE. An answerer that keeps the reply where it lives, in a
+// record of its own (the aio package's record of an operation), answers it
+// there with answerNowIn or answerLentIn, which answer as answerNow and
+// answerLent do and then leave the Reply SPENT: the same Reply, no longer
+// owing anything (no actor to answer, no future to fill), whose 'final' does no
+// more than count the operation spent, if it is an operation's. It is the real
+// value after use, not a blank put in its place. A spent reply answered again
+// is a program error, a panic; one never answered is let go as before (the
+// awaiting behaviour is abandoned, a future's is told). The answerer lets the
+// Reply go whenever its record does.
+pub fn answerNowIn[R](rp: &mut Reply, v: R) {
+  notSpent(rp);
+  if !wanted(rp) {
+    spend(rp);
     return;
   }
-  if r.cell as usize != 0usize {
-    mem.writeRaw[R](r.at as *R, v);
-    post(&mut r);
+  if rp.cell as usize != 0usize {
+    mem.writeRaw[R](rp.at as *R, v);
+    post(rp);
+    spend(rp);
     return;
   }
-  let h = r.to;
-  let p = replyPrep(&r);
+  let h = rp.to;
+  let p = replyPrep(rp);
   mem.writeRaw[R](p.at as *R, v);
-  r.to = null;
+  spend(rp);
   replyFinish(h, p);
+}
+
+// A reply answered twice is a program error
+fn notSpent(r: &Reply) {
+  if (r.meta & replySpent) != 0u64 {
+    die("actors: a reply answered twice");
+  }
+}
+
+// The reply is answered: it owes nothing now, and says so (the operation flag
+// stays, for 'final' to count the operation spent)
+fn spend(r: &mut Reply) {
+  r.to = null;
+  r.cell = null;
+  r.meta = (r.meta & replyOp) | replySpent;
 }
 
 // LENT ANSWERS. A value too large for a slot is boxed: the answering side
@@ -2401,7 +2437,14 @@ pub fn answerNow[R](rp: Reply, v: R) {
 // value dropped or moved into the future by take.
 pub fn answerLent[R](rp: Reply, p: *R, take: &fn(p: *u8, to: *u8)) {
   var r = rp;
-  if !wanted(&r) {
+  answerLentIn[R](&mut r, p, take);
+}
+
+// answerLent for a Reply that stays where it is, left spent (ANSWERED IN
+// PLACE, above). 'take' is called as answerLent's is
+pub fn answerLentIn[R](rp: &mut Reply, p: *R, take: &fn(p: *u8, to: *u8)) {
+  notSpent(rp);
+  if !wanted(rp) {
     let tmp = libc.malloc(mem.sizeof[R]() + 16usize);
     if tmp as usize == 0usize {
       die("actors: out of memory for a reply");
@@ -2409,25 +2452,27 @@ pub fn answerLent[R](rp: Reply, p: *R, take: &fn(p: *u8, to: *u8)) {
     take(p as *u8, tmp);
     mem.finalize[R](tmp as *R);
     libc.free(tmp);
+    spend(rp);
     return;
   }
-  if r.cell as usize != 0usize {
-    take(p as *u8, r.at);
-    post(&mut r);
+  if rp.cell as usize != 0usize {
+    take(p as *u8, rp.at);
+    post(rp);
+    spend(rp);
     return;
   }
-  let h = r.to;
-  if (r.meta & replyBoxed) != 0u64 && mem.sizeof[R]() <= lentMax && mem.alignof[R]() <= 8usize {
+  let h = rp.to;
+  if (rp.meta & replyBoxed) != 0u64 && mem.sizeof[R]() <= lentMax && mem.alignof[R]() <= 8usize {
     var tk = take;
     let takep = mem.readRaw[*u8](&mut tk as *(*u8));
-    let put = replyPrepLent(&r, p as *u8, takep);
-    r.to = null;
+    let put = replyPrepLent(rp, p as *u8, takep);
+    spend(rp);
     replyFinish(h, put);
     return;
   }
-  let put = replyPrep(&r);
+  let put = replyPrep(rp);
   take(p as *u8, put.at);
-  r.to = null;
+  spend(rp);
   replyFinish(h, put);
 }
 
