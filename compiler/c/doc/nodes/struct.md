@@ -1273,8 +1273,8 @@ it ([flow](../phases/flow.md), "Calls"):
 `CarriesRegion` is the built-in marker of a type whose memory comes from a
 region it is handed when it is made, and keeps (a growable collection; the
 `collections` package's types and `pool`'s `Pool` declare it; names
-provisional). The region is core's `MemRegion`, three function references
-(allocate, resize, release) in a struct's first field, held as a `*MemRegion`;
+provisional). The region is core's `MemRegion`, four function references
+(allocate, resize, release, and the size an allocate gives) in a struct's first field, held as a `*MemRegion`;
 `heapRegion()`, core's, is the program's one heap region, a static object that
 conestd's `heapregion.c` defines with functions that forward to the raw blocks
 layer ([What a region is](module.md): core's `RawBlocks`, which is the C

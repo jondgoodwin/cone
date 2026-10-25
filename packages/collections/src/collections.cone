@@ -25,8 +25,9 @@
 //
 // THE REGION. Each type here declares 'CarriesRegion' (a provisional name), the
 // compiler's word for a type that gets its memory from a region it is handed
-// when it is made. The region is a '*MemRegion', core's three functions to
-// allocate, resize and release a block, held as a collection's last field
+// when it is made. The region is a '*MemRegion', core's four functions to
+// allocate, resize and release a block and to say how much room a block of a
+// given size has, held as a collection's last field
 // ('region'), and every block comes from it and goes back to it. A construction
 // that names none is handed the heap's ('heapRegion()': the raw blocks layer's
 // 'alloc', 'resize' and 'release', a static object that is never null), so 'List[i64]()' and
@@ -73,7 +74,9 @@
 // List[u8]. Nothing here is safe to change from two threads at once.
 //
 // A collection is constructed with 'new': 'List[i64]()' has no block yet,
-// 'List[i64](100)' room for exactly 100, and the values it starts with
+// 'List[i64](100)' room for at least 100 (exactly 100 in the heap's region, and in
+// any region that gives what is asked; a region that rounds a block up gives a
+// List and a Deque all of the room), and the values it starts with
 // follow '<-', each appended in turn: 'List[i64](100) <- fill 0', 'new
 // Dict[String, i64] <- String.from("a"): 1' (a dictionary's '<-' takes a key
 // and a value, and inserts them). Every collection takes a starting size the
@@ -127,6 +130,20 @@ fn blockFree[T](r: *MemRegion, block: *T, n: usize) inline {
   (r as &MemRegion).release(block as *u8, n * mem.sizeof[T]());
 }
 
+// How many values of T a block asked for n of them really holds: the region's
+// size for those bytes (core's 'MemRegion.sizeFor'; the room the block will have,
+// which an exact region makes the bytes asked for), as a whole number of values.
+// A collection that grows by capacity asks this before it allocates, and takes the
+// answer as its capacity. It is at least n, and it is the count 'blockGrow' and
+// 'blockFree' are given back: the region finds the block's size from the bytes of
+// a whole number of values that fit in its room. (List, String and Deque ask. The
+// tables of Dict, OrderedDict and Set are a power of two of buckets whose entries
+// and control bytes share one block, so the room beyond it is not theirs to use.)
+fn blockRoom[T](r: *MemRegion, n: usize) usize inline {
+  let size = mem.sizeof[T]();
+  if size == 0usize {n} else {(r as &MemRegion).sizeFor(n * size, mem.alignof[T]()) / size}
+}
+
 // Whether a region is the heap's, whose blocks the raw blocks layer gives back
 // (as an owner's death does)
 fn isHeap(r: *MemRegion) bool inline { r as usize == heapRegion() as usize }
@@ -152,13 +169,17 @@ pub struct List[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
   // which a construction that names none leaves out and is handed the heap's.
   pub fn initEmpty overload init(self: &new, region: *MemRegion) { *self = List(null, 0usize, 0usize, region); }
 
-  // An empty list whose block has room for exactly n values, 'List[i32](100)',
-  // which is what its contents' 'fill' fills: 'List[i32](100) <- fill 0'
+  // An empty list whose block has room for at least n values, 'List[i32](100)',
+  // which is what its contents' 'fill' fills: 'List[i32](100) <- fill 0'. The
+  // region is asked how much room a block of n values has before the block is
+  // made, and the list's capacity is all of it: exactly n where the region gives
+  // what is asked (the heap's does), more where the region rounds up.
   pub fn initCapacity overload init(self: &new, n: usize, region: *MemRegion) {
     *self = List(null, 0usize, 0usize, region);
     if n > 0usize {
+      let room = blockRoom[T](region, n);
       self.ptr = blockNew[T](region, n);
-      self.cap = n;
+      self.cap = room;
     }
   }
 
@@ -179,15 +200,17 @@ pub struct List[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
 
   // Make room for 'more' values beyond those it holds. A block too small is
   // replaced by one twice its size, or exactly big enough if that is more,
-  // and never smaller than 4. The block may move: every borrow into it, and
-  // every slice from 'view', is then stale.
+  // and never smaller than 4 (and the capacity is then all the room the region
+  // gave the block, which may be more). The block may move: every borrow into
+  // it, and every slice from 'view', is then stale.
   pub fn reserve(self: &mut, more: usize) {
     if used + more <= cap { return; }
     var want = cap * 2usize;
     if want < used + more { want = used + more; }
     if want < 4usize { want = 4usize; }
+    let room = blockRoom[T](region, want);
     ptr = blockGrow[T](region, ptr, cap, want);
-    cap = want;
+    cap = room;
   }
 
   // Move a value in at the end
@@ -615,12 +638,14 @@ pub struct Deque[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
   // (see List)
   pub fn initEmpty overload init(self: &new, region: *MemRegion) { *self = Deque(null, 0usize, 0usize, 0usize, region); }
 
-  // An empty deque whose block has room for exactly n values, 'Deque[i32](100)'
+  // An empty deque whose block has room for at least n values, 'Deque[i32](100)':
+  // all the room the region gives a block of n (see List)
   pub fn initCapacity overload init(self: &new, n: usize, region: *MemRegion) {
     *self = Deque(null, 0usize, 0usize, 0usize, region);
     if n > 0usize {
+      let room = blockRoom[T](region, n);
       self.ptr = blockNew[T](region, n);
-      self.cap = n;
+      self.cap = room;
     }
   }
 
@@ -747,6 +772,7 @@ pub struct Deque[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
   // it in order, the front one in slot 0. The old block holds up to two runs:
   // from 'head' to the block's end, and from its start round to the last value
   fn regrow(self: &mut, want: usize) {
+    let room = blockRoom[T](region, want);
     let fresh = blockNew[T](region, want);
     if used > 0usize {
       let firstRun = if head + used <= cap {used} else {cap - head};
@@ -756,7 +782,7 @@ pub struct Deque[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
     blockFree[T](region, ptr, cap);
     ptr = fresh;
     head = 0usize;
-    cap = want;
+    cap = room;
   }
 
   fn finalizeAll(self: &mut) {
