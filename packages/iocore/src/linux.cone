@@ -331,7 +331,7 @@ fn socketKind(k: u32) bool {
 // Record i waits at the end of the queue of its handle's entry, for its side
 fn waitPush(lp: &mut Loop, i: u32, side: u32) {
   let r = lp.recAt(i) as &mut Rec;
-  let e = &mut lp.handles[usize.from(r.sock.index)];
+  let e = lp.handles.at(r.sock.index) as &mut HEntry;
   r.side = side;
   r.waitNext = noEntry;
   if side == sideRecv {
@@ -349,7 +349,7 @@ fn waitPush(lp: &mut Loop, i: u32, side: u32) {
 fn waitUnlink(lp: &mut Loop, i: u32) {
   let r = lp.recAt(i) as &mut Rec;
   if r.side == sideNone {return;}
-  let e = &mut lp.handles[usize.from(r.sock.index)];
+  let e = lp.handles.at(r.sock.index) as &mut HEntry;
   let prev = r.waitPrev;
   let next = r.waitNext;
   if r.side == sideRecv {
@@ -408,7 +408,7 @@ fn lxTry(lp: &mut Loop, i: u32, at: Instant) u32 {
     lp.decide(i, diag.outcomeFailed, 0usize, errorInvalidHandle);
     return triedDone;
   }
-  let fd = fdOf(lp.handles[usize.from(ei)].raw);
+  let fd = fdOf((*lp.handles.at(ei)).raw);
   let k = r.kind;
   if k == diag.kindRecv {
     var n = sysRecv(fd, r.buf.base() + r.buf.len(), r.buf.room(), 0i32);
@@ -529,7 +529,7 @@ fn lxTry(lp: &mut Loop, i: u32, at: Instant) u32 {
       noDelay(sock);
       var code = 0u32;
       var h = Handle.none();
-      code, h = lxAdopt(lp, sock, hSocket, lp.handles[usize.from(ei)].family);
+      code, h = lxAdopt(lp, sock, hSocket, (*lp.handles.at(ei)).family);
       if code != 0u32 {
         lp.decide(i, diag.outcomeFailed, 0usize, code);
       } else {
@@ -581,7 +581,7 @@ fn lxTry(lp: &mut Loop, i: u32, at: Instant) u32 {
 fn lxRun(lp: &mut Loop, ei: u32, side: u32, at: Instant) {
   if isWindows() {return;}
   while true {
-    let head = if side == sideRecv {lp.handles[usize.from(ei)].recvHead} else {lp.handles[usize.from(ei)].sendHead};
+    let head = if side == sideRecv {(*lp.handles.at(ei)).recvHead} else {(*lp.handles.at(ei)).sendHead};
     if head == noEntry {break;}
     if lxTry(lp, head, at) == triedWait {break;}
   }
@@ -590,13 +590,10 @@ fn lxRun(lp: &mut Loop, ei: u32, side: u32, at: Instant) {
 // epoll says handle entry ei (generation gen) has events
 fn lxEvent(lp: &mut Loop, ei: u32, gen: u32, events: u32, at: Instant) {
   if isWindows() {return;}
-  if usize.from(ei) >= lp.handles.len() {return;}
-  let e = lp.handles[usize.from(ei)];
-  if e.gen != gen || e.kind == hFree {return;}
+  if lp.handles.get(Slot(ei, gen)) as usize == 0usize {return;}
   if (events & (epollIn | epollErr | epollHup | epollRdHup)) != 0u32 {lxRun(lp, ei, sideRecv, at);}
   // The operations may have closed it (a failed connect does): look again
-  let again = lp.handles[usize.from(ei)];
-  if again.gen != gen || again.kind == hFree {return;}
+  if lp.handles.get(Slot(ei, gen)) as usize == 0usize {return;}
   if (events & (epollOut | epollErr | epollHup)) != 0u32 {lxRun(lp, ei, sideSend, at);}
 }
 
@@ -741,7 +738,7 @@ fn lxSettleCancels(lp: &mut Loop) {
 // running ends as it ends
 fn lxCancelFiles(lp: &mut Loop, h: Handle) {
   if isWindows() {return;}
-  if lp.handles[usize.from(h.index)].kind != hFile {return;}
+  if (*lp.handles.at(h.index)).kind != hFile {return;}
   var i = 0u32;
   while i < lp.recCount {
     let r = lp.recAt(i) as &mut Rec;
@@ -757,13 +754,13 @@ fn lxCancelFiles(lp: &mut Loop, h: Handle) {
 fn lxCancelAll(lp: &mut Loop, ei: u32) {
   if isWindows() {return;}
   while true {
-    let head = lp.handles[usize.from(ei)].recvHead;
+    let head = (*lp.handles.at(ei)).recvHead;
     if head == noEntry {break;}
     waitUnlink(lp, head);
     lp.decide(head, diag.outcomeCancelled, 0usize, 0u32);
   }
   while true {
-    let head = lp.handles[usize.from(ei)].sendHead;
+    let head = (*lp.handles.at(ei)).sendHead;
     if head == noEntry {break;}
     waitUnlink(lp, head);
     lp.decide(head, diag.outcomeCancelled, 0usize, 0u32);

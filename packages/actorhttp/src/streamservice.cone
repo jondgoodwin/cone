@@ -46,17 +46,15 @@ fn blankStream() StreamRec {
 
 // Where the live stream is (its slot's record), or null
 fn streamOf(rec: &ClientRec, slot: u32, id: u64) *StreamRec {
-  let s = usize.from(slot);
-  if s >= rec.streams.len() {return null;}
-  let x = rec.streams.at(s);
-  if (*x).used && (*x).id == id {return x;}
+  let x = rec.streams.at(slot);
+  if x as usize != 0usize && (*x).used && (*x).id == id {return x;}
   null
 }
 
 fn freeStream(rec: &mut ClientRec, slot: usize) {
-  let s = rec.streams.at(slot) as &mut StreamRec;
+  let s = rec.streams.at(u32.from(slot)) as &mut StreamRec;
   *s = blankStream();
-  rec.streams.put(slot);
+  rec.streams.removeAt(u32.from(slot));
 }
 
 // A handle to a client dropped: the last one's going ends the client, every
@@ -146,7 +144,7 @@ fn serveRead(rec: &mut ClientRec, s: &mut StreamRec) {
 // A fetch event of a Wait that belongs to a stream
 fn onStreamEvent(rec: &mut ClientRec, lp: &mut Loop, e: &mut httpclient.Event, wslot: usize, w: &mut Wait) {
   let sslot = w.stream;
-  let s = rec.streams.at(sslot) as &mut StreamRec;
+  let s = rec.streams.at(u32.from(sslot)) as &mut StreamRec;
   let k = e.kind;
   if k == httpclient.EventKind.Response {
     s.status = e.response.status;
@@ -200,7 +198,7 @@ fn onStreamEvent(rec: &mut ClientRec, lp: &mut Loop, e: &mut httpclient.Event, w
     }
     serveRead(rec, s);
     clearWait(w);
-    rec.waits.put(wslot);
+    rec.waits.removeAt(u32.from(wslot));
     if s.gone {freeStream(rec, sslot);}
   }
 }
@@ -220,7 +218,7 @@ struct StreamOpenJob {
   fn run(self, lp: &mut Loop, sv: &mut Service) {
     let id, req, asEvents, var rp = self.(id, req, asEvents, reply);
     let k = sv.findClient(id);
-    if k >= sv.clients.len() {
+    if k >= sv.clients.bound() {
       if asEvents {
         answerTo[Result[EventStream, FetchError]](&mut rp, Error[EventStream, FetchError](FetchError.cancelled()));
       } else {
@@ -229,15 +227,15 @@ struct StreamOpenJob {
       return;
     }
     let rec = sv.clientAt(k) as &mut ClientRec;
-    let sslot = rec.streams.take(blankStream());
-    let s = rec.streams.at(sslot) as &mut StreamRec;
+    let sslot = usize.from(rec.streams.add(blankStream()).index);
+    let s = rec.streams.at(u32.from(sslot)) as &mut StreamRec;
     s.used = true;
     s.id = newId();
     s.asEvents = asEvents;
     s.opening = true;
     s.openReply = rp;
-    let wslot = rec.waits.take(blankWait());
-    let w = rec.waits.at(wslot) as &mut Wait;
+    let wslot = usize.from(rec.waits.add(blankWait()).index);
+    let w = rec.waits.at(u32.from(wslot)) as &mut Wait;
     w.stream = sslot;
     rec.refs = rec.refs + 1u32;
     s.fetch = rec.client.send(lp, req, httpclient.Sink.Here(u64.from(wslot)));
@@ -257,7 +255,7 @@ struct StreamReadJob {
     let client, slot, id, asEvents, var rp = self.(client, slot, id, asEvents, reply);
     let k = sv.findClient(client);
     var s = null as *StreamRec;
-    if k < sv.clients.len() {
+    if k < sv.clients.bound() {
       s = streamOf(sv.clientAt(k) as &ClientRec, slot, id);
     }
     if s as usize == 0usize {
@@ -298,7 +296,7 @@ struct StreamDropJob {
 
   fn run(self: &mut, lp: &mut Loop, sv: &mut Service) {
     let k = sv.findClient(client);
-    if k >= sv.clients.len() {return;}
+    if k >= sv.clients.bound() {return;}
     let rec = sv.clientAt(k) as &mut ClientRec;
     let s = streamOf(rec as &ClientRec, slot, id);
     if s as usize == 0usize {return;}
