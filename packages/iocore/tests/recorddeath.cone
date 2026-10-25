@@ -9,9 +9,11 @@
 // behind it; one answered and on the done list, not yet taken; and, on
 // Windows, one answered early (a deadline with no grace while the kernel held
 // it) and left by its asker, still the kernel's (Linux answers that one with
-// its buffer, and the asker dissolves it). After the death every asker part has
-// died once, the pool has nothing taken but the asker's own, and once the
-// running job's thread has let its box go every buffer is home.
+// its buffer, and the asker dissolves it). Right after the death every asker
+// part has died once but the running job's: its record is away, its job's
+// (THE BLOCKING POOL), and the pool holds it and the asker's own. Once the job
+// returns its record is dissolved where it comes home, its asker part dies,
+// and every buffer is home.
 
 mod recorddeath;
 
@@ -33,6 +35,11 @@ struct Ask {
   tag: u64;
   mark: Mark;
 }
+
+// The running job has started (its work sets it)
+var started: Atomic[u32];
+
+fn @initpure init() {started = Atomic[u32].of(0u32);}
 
 fn waitFor(lp: &mut Loop, out: &mut List[Completion], n: usize) {
   let limit = Instant.now() + Duration.fromSeconds(5i64);
@@ -76,6 +83,12 @@ fn pair(lp: &mut Loop) Handle, Handle {
 fn slowWork(arg: u64, buf: &mut IoBuf) Outcome {
   thread.sleep(Duration.fromMillis(i64.from(arg)));
   Outcome.Done(0usize)
+}
+
+// The same, saying first that it has started
+fn startedWork(arg: u64, buf: &mut IoBuf) Outcome {
+  started.store(1u32);
+  slowWork(arg, buf)
 }
 
 fn main() i32 {
@@ -125,10 +138,17 @@ fn main() i32 {
       let j1 = pool.take(Ask(5u64, Mark(count)));
       (*j1).core.kind = diag.kindCall;
       (*j1).core.lane = one;
-      (*j1).core.work = &slowWork;
+      (*j1).core.work = &startedWork;
       (*j1).core.at = 300u64;
       (*j1).core.buf = Some[IoBuf](IoBuf(100usize));
       lp.start(j1 as *OpCore);
+      // It is running before anything more happens (the lane's thread may take
+      // a while to start), so that the one behind it is the one queued
+      let ranBy = Instant.now() + Duration.fromSeconds(5i64);
+      while started.load() == 0u32 && Instant.now() < ranBy {
+        thread.sleep(Duration.fromMillis(1i64));
+      }
+      requireUInt(u64.from(started.load()), 1u64, "the first job running");
       let j2 = pool.take(Ask(6u64, Mark(count)));
       (*j2).core.kind = diag.kindCall;
       (*j2).core.lane = one;
@@ -155,13 +175,18 @@ fn main() i32 {
       expectUInt(count.load(), askerDissolved, "no asker part has died");
     }
     // The loop has died
-    expectUInt(count.load(), 6u64, "each record the loop held died once, its asker part with it");
+    expectUInt(count.load(), 5u64, "each record the loop held died once, its asker part with it, but the running job's");
+    expectUInt(u64.from(pool.inUse()), 2u64, "the running job's record is away: its asker part lives");
+    // The running job returns: its thread dissolves its record where it is
+    let homeBy = Instant.now() + Duration.fromSeconds(5i64);
+    while count.load() < 6u64 && Instant.now() < homeBy {
+      thread.sleep(Duration.fromMillis(1i64));
+    }
+    expectUInt(count.load(), 6u64, "the running job's record dissolved when it came home");
     expectUInt(u64.from(pool.inUse()), 1u64, "the asker's own is still taken");
     _ = pool.dissolve(mine);
     expectUInt(count.load(), 7u64, "and dies when its asker dissolves it");
     expectUInt(u64.from(pool.inUse()), 0u64, "every record free");
-    // The running job's thread lets its box go when the job returns
-    thread.sleep(Duration.fromMillis(500i64));
     expectUInt(stats().lent - lent0, 0u64, "every buffer home");
   }
   done()

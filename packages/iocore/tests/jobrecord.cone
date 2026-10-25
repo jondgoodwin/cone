@@ -26,7 +26,8 @@
 // 5. Allocations per job: 0, counted by the program's own malloc, calloc and
 //    realloc (each passes through a counter here to the C library's): a Call,
 //    an external operation, a name looked up, a file's metadata, a ReadAt (a
-//    job on Linux, the kernel's on Windows). A look-up's system library may
+//    job on Linux, the kernel's on Windows), the fewest of three rounds of 50
+//    (a lane starting a thread now and then is no job's). A look-up's system library may
 //    allocate by itself (Linux's getaddrinfo does, through the same malloc):
 //    what it does for the same look-up made directly is subtracted.
 //
@@ -361,13 +362,16 @@ fn main() i32 {
 
     // The path a statOp asks of, made once (a literal is made a Path at each call)
     let here = Path.fromString(String.from("."));
-    // Each kind, warmed (threads started, lists and the pools grown), then 50 counted
+    // Each kind, warmed (threads started, lists and the pools grown), then three
+    // rounds of 50 counted: the fewest is the count. An allocation per job is in
+    // every round; one now and then that is no job's (a lane starting another
+    // thread, when a job arrives before its thread is back waiting) is not
     var kind = 0u32;
     while kind < 5u32 {
       var round = 0u32;
-      var counted = 0u64;
-      while round < 2u32 {
-        var bad = 0u64;
+      var counted = 0xFFFFFFFFu64;
+      var bad = 0u64;
+      while round < 4u32 {
         before = mallocs.load();
         var i = 0u32;
         while i < 50u32 {
@@ -388,10 +392,11 @@ fn main() i32 {
           out.clear();
           i = i + 1u32;
         }
-        counted = mallocs.load() - before;
-        expectUInt(bad, 0u64, "each answered Done");
+        let n = mallocs.load() - before;
+        if round > 0u32 && n < counted {counted = n;}
         round = round + 1u32;
       }
+      expectUInt(bad, 0u64, "each answered Done");
       // What the system's own look-up allocates, made directly as resolveWork
       // makes it (Linux: getaddrinfo through this malloc; Windows' GetAddrInfoW
       // allocates from the system's heap, which this counter does not see)
@@ -401,8 +406,9 @@ fn main() i32 {
         hints[2usize] = 1u32;      // SOCK_STREAM
         hints[3usize] = 6u32;      // IPPROTO_TCP
         let name: &Array[u8] = "127.0.0.1";
+        system = 0xFFFFFFFFu64;
         var r = 0u32;
-        while r < 2u32 {
+        while r < 4u32 {
           before = mallocs.load();
           var i = 0u32;
           while i < 50u32 {
@@ -410,13 +416,14 @@ fn main() i32 {
             if lxGetaddrinfo(name as *u8, null, &mut hints as *u8, &mut res) == 0i32 {lxFreeaddrinfo(res);}
             i = i + 1u32;
           }
-          system = mallocs.load() - before;
+          let n = mallocs.load() - before;
+          if r > 0u32 && n < system {system = n;}
           r = r + 1u32;
         }
       }
       if kind == 0u32 {expectUInt(counted, 0u64, "a Call: no allocation");}
       else if kind == 1u32 {expectUInt(counted, 0u64, "an external operation: no allocation");}
-      else if kind == 2u32 {expectUInt(counted - system, 0u64, "a name looked up: none but the system library's own");}
+      else if kind == 2u32 {expectUInt(if counted > system {counted - system} else {0u64}, 0u64, "a name looked up: none but the system library's own");}
       else if kind == 3u32 {expectUInt(counted, 0u64, "a file's metadata: no allocation");}
       else {expectUInt(counted, 0u64, "a ReadAt: no allocation");}
       kind = kind + 1u32;
