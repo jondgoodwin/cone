@@ -44,7 +44,14 @@ pub struct Completer is Move, Sendable {
   // panic, at the caller's line, once it has ended
   pub fn buf(self: &mut, file: &Array[u8] = srcFile(), line: u32 = srcLine()) &mut IoBuf {
     if box as usize == 0usize {panic("iocore: Completer.buf after its operation ended", file, line);}
-    &mut (*box).buf
+    // An external operation's box always holds its buffer (IoBuf.empty()
+    // when it was lent none)
+    let j = box as &mut JobBox;
+    match &mut j.buf {
+      case var &mut Some(b) {return b;}
+      else {}
+    }
+    panic("iocore: Completer.buf of a box with no buffer", file, line)
   }
 
   // End it Done, with a count (bytes, or any number: a fence's value)

@@ -1,0 +1,328 @@
+// One record per operation, the new form (see the package's header,
+// RECORDS): an asker's own pool, records started by lp.start and handed back
+// by lp.takeDone, dissolved by their asker.
+//
+// 1. Records taken on another thread and started: a worker thread takes a
+//    receive and a send from the pool and fills them; only their addresses
+//    cross to the loop's thread, which starts them; both answer Done, the
+//    receive's buffer holding the bytes the send sent; a second thread
+//    dissolves them, every buffer home, every record free.
+// 2. The bad case: a receive on a silent socket with a deadline and no grace.
+//    Windows: it is answered TimedOut at the deadline while the kernel still
+//    holds it -- on the done list, early, its buffer still in the record; the
+//    asker answers its own and leaves it; when the kernel gives it back it is
+//    on the done list again, late, and is dissolved, its buffer home (a late
+//    return). Linux: nothing of a socket operation is the kernel's to give
+//    back, so it is answered TimedOut with its buffer, never early.
+// 3. Cancel by handle, per direction: two receives on a socket (one of the
+//    old API's, one a record) and a send too large for the socket to take
+//    while its peer reads nothing. Cancelling the reads ends both receives,
+//    Cancelled, and not the send; cancelling the writes then ends the send.
+//    A handle that names nothing has nothing to cancel. Its hint word.
+// 4. A group's cancel, from another thread, reaches an old-API receive and a
+//    record's receive in the same group alike.
+
+mod records;
+
+import testing use *;
+import thread;
+import sync use Arc;
+import collections use List;
+import time use Instant, Duration;
+import iobuf use *;
+import iocore use *;
+import diag;
+
+// What the asker keeps with each record: a tag, and a mark whose death is
+// counted (the record's asker part dying with it)
+struct Mark {
+  count: Arc[imm, Atomic[u64]];
+  fn final(self: &uni) {count.add(1u64);}
+}
+
+struct Ask {
+  tag: u64;
+  mark: Mark;
+}
+
+fn waitFor(lp: &mut Loop, out: &mut List[Completion], n: usize) {
+  let limit = Instant.now() + Duration.fromSeconds(5i64);
+  while out.len() < n && Instant.now() < limit {
+    lp.poll(limit, out);
+  }
+}
+
+// Poll until n records are back from the done list
+fn waitDone(lp: &mut Loop, got: &mut List[*OpCore], n: usize) {
+  let limit = Instant.now() + Duration.fromSeconds(5i64);
+  var out = List[Completion].empty();
+  while got.len() < n && Instant.now() < limit {
+    lp.poll(limit, &mut out);
+    lp.takeDone(got);
+  }
+}
+
+fn pair(lp: &mut Loop) Handle, Handle {
+  let listener = lp.mustListen(SocketAddr.localhost(0u16));
+  var port = 0u16;
+  match lp.localAddr(listener) {
+    case let Ok(a) {port = a.port();}
+    case let Error(e) {}
+  }
+  lp.submit(Op.Accept(listener), Target.Here(9001u64));
+  lp.submit(Op.Connect(SocketAddr.localhost(port)), Target.Here(9002u64));
+  var out = List[Completion].empty();
+  waitFor(lp, &mut out, 2usize);
+  var a = Handle.none();
+  var b = Handle.none();
+  var k = 0usize;
+  while k < out.len() {
+    if out[k].token == 9001u64 {a = out[k].handle;} else {b = out[k].handle;}
+    k = k + 1usize;
+  }
+  lp.close(listener);
+  a, b
+}
+
+// What a worker thread is handed to take records with
+struct Taker {
+  pool: Arc[imm, OpPool[Ask]];
+  count: Arc[imm, Atomic[u64]];
+  a: Handle;
+  b: Handle;
+}
+
+// On a worker: a receive on a and a send of "hello" on b, filled; their addresses
+fn takeTwo(t: Taker) List[usize] {
+  var ps = List[usize].empty();
+  let r = t.pool.take(Ask(1u64, Mark(t.count)));
+  let c = &mut (*r).core;
+  c.kind = diag.kindRecv;
+  c.handle = t.a;
+  c.buf = Some[IoBuf](IoBuf(64usize));
+  ps.push(r as usize);
+  let s = t.pool.take(Ask(2u64, Mark(t.count)));
+  let d = &mut (*s).core;
+  d.kind = diag.kindSend;
+  d.handle = t.b;
+  var hello = IoBuf(64usize);
+  hello.append("hello");
+  d.buf = Some[IoBuf](hello);
+  ps.push(s as usize);
+  ps
+}
+
+// What the dissolving thread is handed
+struct Giver {
+  pool: Arc[imm, OpPool[Ask]];
+  ps: List[usize];
+}
+
+// On another thread: each record dissolved, taken apart; the bytes the
+// receive holds, as a count of what it saw ('hello' in the receive: 1)
+fn dissolveAll(g: Giver) u64 {
+  var seen = 0u64;
+  var k = 0usize;
+  while k < g.ps.len() {
+    let rec = g.pool.dissolve(*g.ps[k] as *OpRec[Ask]);
+    let core, ask = rec.(core, ask);
+    let buf = core.(buf);
+    match buf {
+      case var Some(b) {if ask.tag == 1u64 && b.len() == 5usize && b.view()[0usize] == 104u8 {seen = seen + 1u64;}}
+      else {}
+    }
+    k = k + 1usize;
+  }
+  seen
+}
+
+fn canceller(g: CancelGroup) bool {
+  thread.sleep(Duration.fromMillis(20i64));
+  g.cancel()
+}
+
+fn main() i32 {
+  {
+    let lent0 = stats().lent;
+    let count = Arc[imm, Atomic[u64]](Atomic[u64].of(0u64));
+    let pool = Arc[imm, OpPool[Ask]](OpPool[Ask].make());
+    var lp = Loop.mustMake();
+    var out = List[Completion].empty();
+    var a = Handle.none();
+    var b = Handle.none();
+    a, b = pair(&mut lp);
+
+    // 1. Taken on another thread, started here, dissolved on a third
+    {
+      let t = thread.start(Taker(pool, count, a, b), &takeTwo);
+      let ps = t.join();
+      requireUInt(u64.from(ps.len()), 2u64, "two records taken on the worker");
+      expectUInt(u64.from(pool.inUse()), 2u64, "both taken");
+      var k = 0usize;
+      while k < ps.len() {
+        lp.start(*ps[k] as *OpCore);
+        k = k + 1usize;
+      }
+      var got = List[*OpCore].empty();
+      waitDone(&mut lp, &mut got, 2usize);
+      requireUInt(u64.from(got.len()), 2u64, "both on the done list");
+      var k2 = 0usize;
+      while k2 < got.len() {
+        let c = *got[k2] as &OpCore;
+        expectUInt(u64.from(c.status), u64.from(diag.outcomeDone), "each Done");
+        expectUInt(u64.from(c.n), 5u64, "five bytes each way");
+        k2 = k2 + 1usize;
+      }
+      var back = List[usize].empty();
+      k2 = 0usize;
+      while k2 < got.len() {
+        back.push(*got[k2] as usize);
+        k2 = k2 + 1usize;
+      }
+      let d = thread.start(Giver(pool, back), &dissolveAll);
+      expectUInt(d.join(), 1u64, "the receive held 'hello'");
+      expectUInt(u64.from(pool.inUse()), 0u64, "every record free");
+      expectUInt(count.load(), 2u64, "each asker part died once, with its record");
+      expectUInt(stats().lent - lent0, 0u64, "every buffer home");
+      expectUInt(lp.inFlight(), 0u64, "nothing in flight");
+    }
+
+    // 2. The bad case: no grace while the kernel holds a receive
+    {
+      lp.setGrace(Duration.fromNanos(0i64));
+      let late0 = lp.counters().lateReturns;
+      let r = pool.take(Ask(3u64, Mark(count)));
+      let c = &mut (*r).core;
+      c.kind = diag.kindRecv;
+      c.handle = a;
+      c.buf = Some[IoBuf](IoBuf(100usize));
+      c.deadline = Instant.now() + Duration.fromMillis(20i64);
+      lp.start(r as *OpCore);
+      var got = List[*OpCore].empty();
+      waitDone(&mut lp, &mut got, 1usize);
+      requireUInt(u64.from(got.len()), 1u64, "answered once");
+      let first = *got[0usize] as &OpCore;
+      expectUInt(u64.from(first.status), u64.from(diag.outcomeTimedOut), "TimedOut");
+      expectBool(first.isEarly(), isWindows(), "early on Windows: the kernel still holds it");
+      var held = false;
+      match &first.buf {
+        case let &Some(x) {held = true;}
+        else {}
+      }
+      expect(held, "its buffer still in the record");
+      got.clear();
+      if first.isEarly() {
+        // The asker answered its own: it leaves the record, and waits for the
+        // kernel to give it back
+        waitDone(&mut lp, &mut got, 1usize);
+      } else {
+        got.push(r as *OpCore);
+      }
+      requireUInt(u64.from(got.len()), 1u64, "one record to dissolve");
+      expectBool((*got[0usize] as &OpCore).isLate(), isWindows(), "late on Windows: the kernel gave it back");
+      _ = pool.dissolve(*got[0usize] as *OpRec[Ask]);
+      expectUInt(lp.counters().lateReturns - late0, if isWindows() {1u64} else {0u64}, "a late return on Windows");
+      expectUInt(stats().lent - lent0, 0u64, "its buffer home");
+      expectUInt(u64.from(pool.inUse()), 0u64, "the record free");
+      lp.setGrace(Duration.fromMillis(1i64));
+    }
+
+    // 3. Cancel by handle, per direction
+    {
+      lp.submit(Op.Recv(a, IoBuf(100usize)), Target.Here(31u64));
+      let r = pool.take(Ask(4u64, Mark(count)));
+      let c = &mut (*r).core;
+      c.kind = diag.kindRecv;
+      c.handle = a;
+      c.buf = Some[IoBuf](IoBuf(100usize));
+      lp.start(r as *OpCore);
+      // Sends of 1 MiB while the peer reads nothing, until one waits: the
+      // socket and its peer's window are full
+      var got = List[*OpCore].empty();
+      var s = null as *OpRec[Ask];
+      var tries = 0u32;
+      while tries < 400u32 && s as usize == 0usize {
+        let t = pool.take(Ask(5u64, Mark(count)));
+        let d = &mut (*t).core;
+        d.kind = diag.kindSend;
+        d.handle = a;
+        var chunk = IoBuf(1024usize * 1024usize);
+        chunk.setLen(1024usize * 1024usize);
+        d.buf = Some[IoBuf](chunk);
+        lp.start(t as *OpCore);
+        lp.poll(Instant.now() + Duration.fromMillis(30i64), &mut out);
+        lp.takeDone(&mut got);
+        if got.len() == 0usize {
+          s = t;
+        } else {
+          _ = pool.dissolve(t);
+          got.clear();
+        }
+        tries = tries + 1u32;
+      }
+      require(s as usize != 0usize, "a send waits");
+      count.sub(u64.from(tries - 1u32));   // the probes' asker parts, not counted below
+      expectUInt(u64.from(out.len() + got.len()), 0u64, "all three in flight");
+      expectUInt(u64.from(lp.cancelHandle(a, false)), 2u64, "the reads: both receives asked");
+      expectUInt(u64.from(lp.cancelHandle(a, false)), 0u64, "asked once only");
+      waitFor(&mut lp, &mut out, 1usize);
+      waitDone(&mut lp, &mut got, 1usize);
+      requireUInt(u64.from(out.len()), 1u64, "the old API's receive answered");
+      expectUInt(u64.from(out[0usize].status), u64.from(diag.outcomeCancelled), "Cancelled");
+      expectUInt(u64.from(out[0usize].buf.capacity()), 4096u64, "with its buffer");
+      requireUInt(u64.from(got.len()), 1u64, "the record's receive answered, and only it");
+      expect(*got[0usize] as usize == r as usize, "the receive");
+      expectUInt(u64.from((*got[0usize] as &OpCore).status), u64.from(diag.outcomeCancelled), "Cancelled");
+      _ = pool.dissolve(r);
+      got.clear();
+      out.clear();
+      expectUInt(u64.from(lp.cancelHandle(a, true)), 1u64, "the writes: the send asked");
+      waitDone(&mut lp, &mut got, 1usize);
+      requireUInt(u64.from(got.len()), 1u64, "the send answered");
+      expectUInt(u64.from((*got[0usize] as &OpCore).status), u64.from(diag.outcomeCancelled), "Cancelled");
+      _ = pool.dissolve(s);
+      expectUInt(u64.from(lp.cancelHandle(Handle.none(), false)), 0u64, "a handle that names nothing");
+      // The hint word
+      expectUInt(u64.from(lp.hint(a)), 0u64, "a hint word starts at 0");
+      expect(lp.setHint(a, 7u32), "set");
+      expectUInt(u64.from(lp.hint(a)), 7u64, "and kept");
+      expectUInt(u64.from(lp.hint(b)), 0u64, "per handle");
+    }
+
+    // 4. A group's cancel reaches both forms alike
+    {
+      // A fresh pair: the one above has bytes waiting at b
+      var e = Handle.none();
+      var f = Handle.none();
+      e, f = pair(&mut lp);
+      let g = CancelGroup.make();
+      lp.submitIn(Op.Recv(f, IoBuf(100usize)), Target.Here(41u64), g, forever());
+      let r = pool.take(Ask(6u64, Mark(count)));
+      let c = &mut (*r).core;
+      c.kind = diag.kindRecv;
+      c.handle = e;
+      c.buf = Some[IoBuf](IoBuf(100usize));
+      c.group = Some[CancelGroup](g);
+      lp.start(r as *OpCore);
+      let t = thread.start(g, &canceller);
+      var got = List[*OpCore].empty();
+      let limit = Instant.now() + Duration.fromSeconds(5i64);
+      while (out.len() < 1usize || got.len() < 1usize) && Instant.now() < limit {
+        lp.poll(limit, &mut out);
+        lp.takeDone(&mut got);
+      }
+      expect(t.join(), "the other thread's cancel was the first");
+      requireUInt(u64.from(out.len()), 1u64, "the old API's receive answered");
+      expectUInt(u64.from(out[0usize].status), u64.from(diag.outcomeCancelled), "Cancelled");
+      requireUInt(u64.from(got.len()), 1u64, "the record answered");
+      expectUInt(u64.from((*got[0usize] as &OpCore).status), u64.from(diag.outcomeCancelled), "Cancelled");
+      _ = pool.dissolve(r);
+      out.clear();
+      expectUInt(lp.counters().groupCancels, 2u64, "the group's sweep asked both");
+    }
+    expectUInt(u64.from(pool.inUse()), 0u64, "every record free at the end");
+    expectUInt(count.load(), 6u64, "and each asker part died once");
+    expectUInt(stats().lent - lent0, 0u64, "every buffer home");
+  }
+  done()
+}

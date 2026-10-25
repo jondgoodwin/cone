@@ -1,0 +1,168 @@
+// A loop that dies holding an asker's records, one in each state, cancels and
+// drains them as it does its own (tests/drop.cone), then dissolves every one
+// it still holds into the asker's pool: its asker part dies there (an answer
+// it owed is abandoned) and its buffer goes home. A record the asker holds is
+// the asker's, and is untouched.
+//
+// The states: taken and not started (the asker's); a receive the kernel holds;
+// a timer in the wheel; a job running on a one-thread lane and one queued
+// behind it; one answered and on the done list, not yet taken; and, on
+// Windows, one answered early (a deadline with no grace while the kernel held
+// it) and left by its asker, still the kernel's (Linux answers that one with
+// its buffer, and the asker dissolves it). After the death every asker part has
+// died once, the pool has nothing taken but the asker's own, and once the
+// running job's thread has let its box go every buffer is home.
+
+mod recorddeath;
+
+import testing use *;
+import thread;
+import sync use Arc;
+import collections use List;
+import time use Instant, Duration;
+import iobuf use *;
+import iocore use *;
+import diag;
+
+struct Mark {
+  count: Arc[imm, Atomic[u64]];
+  fn final(self: &uni) {count.add(1u64);}
+}
+
+struct Ask {
+  tag: u64;
+  mark: Mark;
+}
+
+fn waitFor(lp: &mut Loop, out: &mut List[Completion], n: usize) {
+  let limit = Instant.now() + Duration.fromSeconds(5i64);
+  while out.len() < n && Instant.now() < limit {
+    lp.poll(limit, out);
+  }
+}
+
+fn waitDone(lp: &mut Loop, got: &mut List[*OpCore], n: usize) {
+  let limit = Instant.now() + Duration.fromSeconds(5i64);
+  var out = List[Completion].empty();
+  while got.len() < n && Instant.now() < limit {
+    lp.poll(limit, &mut out);
+    lp.takeDone(got);
+  }
+}
+
+fn pair(lp: &mut Loop) Handle, Handle {
+  let listener = lp.mustListen(SocketAddr.localhost(0u16));
+  var port = 0u16;
+  match lp.localAddr(listener) {
+    case let Ok(a) {port = a.port();}
+    case let Error(e) {}
+  }
+  lp.submit(Op.Accept(listener), Target.Here(9001u64));
+  lp.submit(Op.Connect(SocketAddr.localhost(port)), Target.Here(9002u64));
+  var out = List[Completion].empty();
+  waitFor(lp, &mut out, 2usize);
+  var a = Handle.none();
+  var b = Handle.none();
+  var k = 0usize;
+  while k < out.len() {
+    if out[k].token == 9001u64 {a = out[k].handle;} else {b = out[k].handle;}
+    k = k + 1usize;
+  }
+  lp.close(listener);
+  a, b
+}
+
+// Work that sleeps arg milliseconds
+fn slowWork(arg: u64, buf: &mut IoBuf) Outcome {
+  thread.sleep(Duration.fromMillis(i64.from(arg)));
+  Outcome.Done(0usize)
+}
+
+fn main() i32 {
+  {
+    let lent0 = stats().lent;
+    let count = Arc[imm, Atomic[u64]](Atomic[u64].of(0u64));
+    var pool = OpPool[Ask].make();
+    let one = addLane(LaneConfig(name: "one", maxThreads: 1u32));
+    var mine = pool.take(Ask(1u64, Mark(count)));
+    (*mine).core.buf = Some[IoBuf](IoBuf(100usize));
+    var askerDissolved = 0u64;
+    {
+      var lp = Loop.mustMake();
+      var a = Handle.none();
+      var b = Handle.none();
+      a, b = pair(&mut lp);
+      // The bad case first: answered early (Windows), left by its asker
+      lp.setGrace(Duration.fromNanos(0i64));
+      let e = pool.take(Ask(2u64, Mark(count)));
+      (*e).core.kind = diag.kindRecv;
+      (*e).core.handle = a;
+      (*e).core.buf = Some[IoBuf](IoBuf(100usize));
+      (*e).core.deadline = Instant.now() + Duration.fromMillis(10i64);
+      lp.start(e as *OpCore);
+      var got = List[*OpCore].empty();
+      waitDone(&mut lp, &mut got, 1usize);
+      requireUInt(u64.from(got.len()), 1u64, "the deadline answered");
+      expectBool((*got[0usize] as &OpCore).isEarly(), isWindows(), "early on Windows, left to the kernel");
+      if !(*got[0usize] as &OpCore).isEarly() {
+        _ = pool.dissolve(*got[0usize] as *OpRec[Ask]);
+        askerDissolved = askerDissolved + 1u64;
+      }
+      got.clear();
+      lp.setGrace(Duration.fromMillis(1i64));
+      // A receive the kernel holds
+      let r = pool.take(Ask(3u64, Mark(count)));
+      (*r).core.kind = diag.kindRecv;
+      (*r).core.handle = b;
+      (*r).core.buf = Some[IoBuf](IoBuf(100usize));
+      lp.start(r as *OpCore);
+      // A timer ten seconds off
+      let t = pool.take(Ask(4u64, Mark(count)));
+      (*t).core.kind = diag.kindTimer;
+      (*t).core.deadline = Instant.now() + Duration.fromSeconds(10i64);
+      lp.start(t as *OpCore);
+      // A job running, and one queued behind it
+      let j1 = pool.take(Ask(5u64, Mark(count)));
+      (*j1).core.kind = diag.kindCall;
+      (*j1).core.lane = one;
+      (*j1).core.work = &slowWork;
+      (*j1).core.at = 300u64;
+      (*j1).core.buf = Some[IoBuf](IoBuf(100usize));
+      lp.start(j1 as *OpCore);
+      let j2 = pool.take(Ask(6u64, Mark(count)));
+      (*j2).core.kind = diag.kindCall;
+      (*j2).core.lane = one;
+      (*j2).core.work = &slowWork;
+      (*j2).core.at = 300u64;
+      (*j2).core.buf = Some[IoBuf](IoBuf(100usize));
+      lp.start(j2 as *OpCore);
+      // One answered, left on the done list: a send, on a pair of its own
+      var c = Handle.none();
+      var d = Handle.none();
+      c, d = pair(&mut lp);
+      let s = pool.take(Ask(7u64, Mark(count)));
+      (*s).core.kind = diag.kindSend;
+      (*s).core.handle = c;
+      var hi = IoBuf(16usize);
+      hi.append("hi");
+      (*s).core.buf = Some[IoBuf](hi);
+      lp.start(s as *OpCore);
+      var out = List[Completion].empty();
+      lp.poll(Instant.now() + Duration.fromMillis(50i64), &mut out);
+      expectUInt(u64.from(out.len()), 0u64, "nothing of the old API's");
+      expectUInt(lp.inFlight(), 4u64, "four in flight: the receive, the timer, the two jobs");
+      expectUInt(u64.from(pool.inUse()), 7u64 - askerDissolved, "every record taken");
+      expectUInt(count.load(), askerDissolved, "no asker part has died");
+    }
+    // The loop has died
+    expectUInt(count.load(), 6u64, "each record the loop held died once, its asker part with it");
+    expectUInt(u64.from(pool.inUse()), 1u64, "the asker's own is still taken");
+    _ = pool.dissolve(mine);
+    expectUInt(count.load(), 7u64, "and dies when its asker dissolves it");
+    expectUInt(u64.from(pool.inUse()), 0u64, "every record free");
+    // The running job's thread lets its box go when the job returns
+    thread.sleep(Duration.fromMillis(500i64));
+    expectUInt(stats().lent - lent0, 0u64, "every buffer home");
+  }
+  done()
+}

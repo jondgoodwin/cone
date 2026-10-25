@@ -11,13 +11,15 @@
 // there are threads idle, and leaving after 'idle' with nothing to do, down
 // to 'minThreads'. A job is a JobBox, allocated by the loop at submit,
 // holding the work, its argument, its buffer, and a waker of its loop: a
-// lane's thread runs the work outside the lock, takes the waker out of the
-// box, and posts the box to the loop's port (keyJob) -- so a box in the
-// port's queue holds no owner of the port, and a port whose loop has died
-// is freed by the last waker, which takes back what is still queued. The
-// box is self-contained: a thread never touches the loop's table, so a job
-// answered already (a prompt TimedOut) or owed to a loop that has died is
-// simply dropped when it comes back, its buffer going home. While a job is
+// lane's thread runs the work outside the lock, lets the box's waker go
+// (keeping a copy to post with), and posts the box to the loop's port (keyJob)
+// -- so a box in the port's queue holds no owner of the port, and a port whose
+// loop has died is freed by the last waker, which takes back what is still
+// queued. The box is self-contained: a thread never touches the loop's
+// records. Its record waits for it (a job answered early, a prompt TimedOut,
+// stays until its box is home), and when it comes home the loop DISSOLVES the
+// box, its buffer going back into the record; a box owed to a loop that has
+// died is simply dropped, its buffer going home. While a job is
 // queued, the lane's lock decides between a thread taking it and the loop's
 // cancel removing it: whichever takes the lock first.
 //
@@ -40,10 +42,9 @@ const boxRemoved = 2u32;
 struct JobBox {
   work: WorkFn;
   arg: u64;
-  buf: IoBuf;
-  waker: Option[Waker];    // taken out by the thread before it posts the box
-  rec: u32;                // the record it answers, and the record's generation
-  gen: u32;
+  buf: Option[IoBuf];      // the operation's buffer while the job holds it
+  waker: Option[Waker];    // let go by the thread before it posts the box
+  rec: *OpCore;            // the record it answers, which waits for it
   lane: *LaneState;        // null for an external operation's box
   asked: Atomic[u32];      // 1 once the loop has asked the cancel: an external completer reads it
   state: u32;              // boxQueued, boxRunning, boxRemoved: under the lane's lock
@@ -60,11 +61,11 @@ struct JobBox {
   write: bool;
 }
 
-fn newBox(work: WorkFn, arg: u64, w: Waker, rec: u32, gen: u32, lane: *LaneState) *JobBox {
+fn newBox(work: WorkFn, arg: u64, w: Waker, rec: *OpCore, lane: *LaneState, buf: Option[IoBuf]) *JobBox {
   let b = libc.malloc(mem.sizeof[JobBox]()) as *JobBox;
   if b as usize == 0usize {panic("iocore: out of memory for a blocking job");}
-  mem.writeRaw[JobBox](b, JobBox(work: work, arg: arg, buf: IoBuf.empty(),
-    waker: Some[Waker](w), rec: rec, gen: gen, lane: lane, asked: Atomic[u32].of(0u32), state: boxQueued,
+  mem.writeRaw[JobBox](b, JobBox(work: work, arg: arg, buf: buf,
+    waker: Some[Waker](w), rec: rec, lane: lane, asked: Atomic[u32].of(0u32), state: boxQueued,
     status: 0u32, n: 0usize, code: 0u32, prev: null, next: null, queuedAt: Instant.now(),
     fd: 0i32 - 1i32, write: false));
   b
@@ -78,6 +79,17 @@ fn dropBox(b: *JobBox) {
   }
   mem.finalize[JobBox](b);
   libc.free(b as *u8);
+}
+
+// A box come home, or taken out of its queue, dissolved: its descriptor
+// closed, its block freed, and its buffer handed back for its record
+fn dissolveBox(b: *JobBox) Option[IoBuf] {
+  if !isWindows() {
+    if (*b).fd >= 0i32 {sysClose((*b).fd);}
+  }
+  let j = mem.readRaw[JobBox](b);
+  libc.free(b as *u8);
+  j.(buf)
 }
 
 // ---------------------------------------------------------------------------
@@ -292,7 +304,20 @@ fn worker(a: WorkerArg) {
 // Run a job and post it to its loop; drop it when its loop has gone
 fn runBox(b: *JobBox) {
   let j = b as &mut JobBox;
-  let o = if j.fd >= 0i32 {lxFileJob(j)} else {(j.work)(j.arg, &mut j.buf)};
+  if j.fd >= 0i32 {
+    settleBox(b, lxFileJob(j));
+    return;
+  }
+  // Work with no buffer of its own is given an empty one, which it may fill
+  match &j.buf {
+    case is &None[IoBuf] {j.buf = Some[IoBuf](IoBuf.empty());}
+    else {}
+  }
+  var o = Outcome.Failed(errorInvalidParameter);
+  match &mut j.buf {
+    case var &mut Some(buf) {o = (j.work)(j.arg, buf);}
+    else {}
+  }
   settleBox(b, o);
 }
 
@@ -306,8 +331,10 @@ fn settleBox(b: *JobBox, o: Outcome) {
     case is Outcome.Cancelled {j.status = diag.outcomeCancelled;}
     case is Outcome.TimedOut {j.status = diag.outcomeTimedOut;}
   }
-  var w: Option[Waker] = None;
-  w <-> j.waker;
+  // A copy to post with (a Waker copies: another owner of the port); the
+  // box lets its own go, so that in the port's queue it holds none
+  let w = j.waker;
+  j.waker = None;
   match w {
     case let Some(s) {
       if !s.postJob(b) {dropBox(b);}
