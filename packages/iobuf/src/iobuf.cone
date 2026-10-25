@@ -16,21 +16,21 @@
 //   import iobuf use *;
 //
 //   fn main() {
-//     mut buf = IoBuf(1500usize);             // empty, room for 4096 bytes, from the pools
+//     mut buf = IoBuf(1500usize);             // empty, room for 4096 bytes, from the buffer pool
 //     imm n = readInto(buf.spare());          // the OS fills the room...
 //     buf.setLen(n);                          // ...and says how much
 //     use(buf.view());
-//   }                                         // buf dies: its block goes back to the pools
+//   }                                         // buf dies: its block goes back to the buffer pool
 //
 //   IoBuf(size)           a buffer with room for at least size bytes, empty;
-//                         out of memory is a panic at the caller's line (POOLS)
-//   stats()               the pools' counters, a Stats
+//                         out of memory is a panic at the caller's line (THE BUFFER POOL)
+//   stats()               the pool's counters, a Stats
 //   trim()                give every idle slab back to the OS
 //   setLimits(maxBytes, keepBytes)  the process-wide bounds
 //   trimAll()             trim after flushing every thread's cache
 //   flushThread()         this thread's cache goes back to the stock
 //   classSize(c), page, largestClass, classCount        (SIZE CLASSES)
-//   osBlocks(), osBytes() what the pools hold from the OS now
+//   osBlocks(), osBytes() what the pool holds from the OS now
 //
 //   IoBuf.empty()         a buffer with no block, capacity 0      (BUFFERS)
 //   b.len()  b.capacity()  b.room()  b.isEmpty()
@@ -59,13 +59,13 @@
 //   c.take(dest)          copyOut from 0 and advance
 //   c.popFront()          the first segment moved out whole
 //
-// BUFFERS. An IoBuf is a block of memory from the pools, 4 KiB-aligned and a
-// whole number of 4 KiB pages long, so a later unbuffered file read (whose
+// BUFFERS. An IoBuf is a block of memory from the buffer pool, 4 KiB-aligned and
+// a whole number of 4 KiB pages long, so a later unbuffered file read (whose
 // buffer, offset and length must be multiples of the sector size) needs a
 // flag and not a different buffer; and how many of its bytes are filled, its
 // length, from 0 to its capacity. It holds no reference into anything else,
 // so it is Sendable: it may be handed to a thread or sent over a channel, and
-// it may die on any thread. Its death gives its block back to the pools,
+// it may die on any thread. Its death gives its block back to the buffer pool,
 // from whichever thread it dies on: that is how a completion arriving on an
 // I/O thread, or an operation the in-flight table drops after a prompt
 // TimedOut, returns the buffer it carried. A buffer's methods take it by any
@@ -87,6 +87,18 @@
 //     case is None[IoBuf] {...}
 //   }
 //
+// THE BUFFER POOL. An IoBuf's block comes from the buffer pool, the bufpool
+// package's static region (core's 'MemRegion', one object for the process, as
+// the heap's is; 'bufferPool()' answers it). IoBuf draws on it as a List draws
+// on the heap's: 'IoBuf(n)' is a construction, nothing names a region, and the
+// type decides where its block comes from. IoBuf asks the region for the room
+// ('sizeFor': the capacity is all of what the region gives), allocates, and its
+// death releases the block by that capacity; it keeps no class and no token,
+// since the region finds the block's slab by its address. The same region is
+// there for anything else that takes one: 'List[u8](3000, bufferPool())' has a
+// capacity of 4,096. The pool, its slabs, its per-thread caches, its two bounds
+// and the OS calls are the bufpool package's header; what it means here:
+//
 // SIZE CLASSES. 'IoBuf(n)' is served from the smallest class that holds n:
 // 4 KiB, 16 KiB, 64 KiB, 256 KiB or 1 MiB, each four times the one before,
 // so a buffer is never more than four times the size asked for (a request
@@ -100,26 +112,16 @@
 // 'oversize': a block of its own, rounded up to whole pages, counted against
 // the bound, never kept idle, and given back to the OS when it dies.
 //
-// POOLS. There are five pools, one per size class, and they are the
-// process's: static, set up by this module's 'init' and torn down by its
-// 'final', which runs after every module that uses them. Nothing holds or
-// passes them: 'IoBuf(n)' is a construction, and the type decides where its
-// block comes from, as 'List[i32](16)' does (one buffer type over the five
-// pools: the class is the size's). Each class is a stock
-// of blocks carved from 2 MiB slabs the OS gave (VirtualAlloc, mmap), with a
-// small cache of idle blocks for each thread in front of it (the mechanism is
-// blocks.cone, 'Fixed-size blocks with per-thread caches'; THE PER-THREAD
-// CACHES below says what it means here). Two bounds, each a number of bytes,
-// belong to the process:
+// THE BOUNDS. Two, each a number of bytes, belong to the process:
 //
-// - 'maxBytes' (64 MiB by default) bounds what the pools hold from the OS,
+// - 'maxBytes' (64 MiB by default) bounds what the pool holds from the OS,
 //   lent and idle together, slabs and oversize blocks. A construction that
 //   would pass it first gives idle slabs of every class back to the OS and
-//   flushes the thread's cache; if that is not enough OUT OF MEMORY PANICS, for
-//   now, at the caller's line. Handling a refusal as a value is to come: it
-//   cannot be 'trynew IoBuf(n)', which the compiler refuses (error 1217:
-//   'trynew' takes a managed reference type, and an IoBuf is a value owning
-//   its block).
+//   flushes the thread's cache; if that is not enough the region answers a null
+//   block and IoBuf's construction PANICS, for now, at the caller's line. A
+//   refusal as a value is to come: it cannot be 'trynew IoBuf(n)', which the
+//   compiler refuses (error 1217: 'trynew' takes a managed reference type, and
+//   an IoBuf is a value owning its block).
 // - 'keepBytes' (8 MiB by default) bounds the idle bytes the stock keeps: when
 //   blocks come home past it, slabs wholly idle go back to the OS, a whole slab
 //   at a time, though never below the bound.
@@ -127,17 +129,17 @@
 // 'setLimits(maxBytes, keepBytes)' sets them for the process, once, at
 // start-up; a bound of 0 leaves that one alone.
 //
-// 'stats()' copies the counters out: the two bounds; the bytes held from
+// 'stats()' copies the pool's counters out: the two bounds; the bytes held from
 // the OS, and of them the bytes idle (held and not lent: cached, idle in the
 // stock, or in a slab's part not yet used) and in threads' caches; buffers
 // lent now, ever taken, and served from the taking thread's own cache; slabs
 // and oversize blocks got from the OS and given back; and takes refused (0:
 // they panic). Each thread counts its own takes and returns in a plain number
 // of its own, so they are exact once the threads have stopped, and a sum of
-// moments while they run. 'osBlocks()' and 'osBytes()' count what the pools
-// hold from the OS (slabs and oversize blocks), for a leak check: 0 once
-// every buffer is home and 'trimAll()' has run, which the module's 'final'
-// does.
+// moments while they run. These count every block of the pool, a List's too, not
+// IoBufs alone. 'osBlocks()' and 'osBytes()' count what the pool holds from the
+// OS (slabs and oversize blocks), for a leak check: 0 once every block is home
+// and 'trimAll()' has run, which the bufpool module's 'final' does.
 //
 // THE PER-THREAD CACHES. Each thread keeps a few idle blocks of each size
 // (up to 32 of 4 KiB, 2 of 16 KiB, 2 of 64 KiB, 1 of 256 KiB, none of 1 MiB:
@@ -153,14 +155,14 @@
 // through one '@threadlocal' pointer and kept on a registry for good: a thread
 // that ends without flushing, one the program started through the OS or a
 // worker that ends with the process, leaves its blocks in its record, counted
-// in the stats as cached and given back at 'trimAll()' and in 'final'.
+// in the stats as cached and given back at 'trimAll()' and in the pool's 'final'.
 //
 // SHARED BYTES. 'buf.freeze()' moves a filled buffer into Bytes: its bytes,
 // read-only, shared by any number of owners on any number of threads, as one
 // send fanned out to many sockets needs (the kernel only reads a send's
 // bytes). Copying Bytes makes another owner, not another copy of the bytes;
 // 'slice' is another owner of part of them. Bytes is an 'Arc[imm, IoBuf]'
-// with a range, so the block goes back to the pools once, after its last
+// with a range, so the block goes back to the buffer pool once, after its last
 // owner dies, wherever that is. Nothing can reach the buffer to write to it.
 //
 // CHAINS. A Chain is a stream's bytes as they arrived, one pooled buffer per
@@ -169,7 +171,7 @@
 // unconsumed bytes as one sequence -- finds a delimiter across segment
 // boundaries, peeks, copies bytes out -- and then says how many it has
 // consumed with 'advance'. Unconsumed bytes stay for the next look; each
-// segment wholly consumed dies at once, its block back to the pools. An HTTP/1.1
+// segment wholly consumed dies at once, its block back to the buffer pool. An HTTP/1.1
 // parser finds "\r\n\r\n", copies the head out (or reads it in place with
 // 'contiguous' when it lies in one segment), advances past it, then takes
 // the body's bytes, or moves whole segments on with 'popFront'.
@@ -180,121 +182,28 @@
 // caller answers it (HTTP's 431) or stops reading. It owns its segments and
 // is Sendable; its death gives back every segment it still holds.
 //
-// Not here yet: registration of the pools' blocks with IoRing or io_uring
-// (the plan keeps it inside the pools, unseen); a chain's writer side lending
+// Not here yet: registration of the pool's blocks with IoRing or io_uring
+// (the plan keeps it inside the pool, unseen); a chain's writer side lending
 // the room left in its last segment to the next read; a refused take as a
-// value (an out of memory panics today).
+// value (an out of memory panics today); IoBuf declaring CarriesRegion, so that
+// one could be made in a region other than the buffer pool (a construction that
+// names no region is handed the heap's, and the type cannot yet name another
+// default, so IoBuf calls the buffer pool directly).
 //
-// What depends on the OS: the slabs come from VirtualAlloc and go back with
-// VirtualFree on Windows (kernel32, on every link line), from anonymous mmap
-// and back with munmap on Linux (the C library): its only calls to the OS.
-// Everything else is plain Cone over core's 'mem' and the sync package's Arc
-// and Mutex. Slabs are page-aligned with nothing around them (an aligned 4
-// KiB block from the C heap occupies about 8 KiB of it), so 'trim' and
-// 'keepBytes' really give memory back to the OS, and registering a buffer
-// with the kernel pins whole pages. VirtualAlloc reserves address space 64
-// KiB at a time, so a block of its own would take 64 KiB of address space
-// for 4 KiB of memory; carving every small class from a 2 MiB slab avoids
-// that. A chain's segments are a ring of IoBufs in one block from the C
-// allocator, moved with core's 'mem' intrinsics, as a List's elements are.
+// What depends on the OS: nothing here. The pool's slabs come from VirtualAlloc
+// on Windows and anonymous mmap on Linux, in the bufpool package, which says how.
+// A chain's segments are a ring of IoBufs in one block from the C allocator,
+// moved with core's 'mem' intrinsics, as a List's elements are.
 
 mod iobuf;
 
 import libc;
 import sync use Arc, Mutex;
+import bufpool;
 
 // ---------------------------------------------------------------------------
-// The slabs come from the OS: VirtualAlloc and VirtualFree on Windows, mmap
-// and munmap on Linux. 'isWindows()', a constant of the compile, chooses, so
-// only the target's calls are generated; every extern is declared everywhere
-// ---------------------------------------------------------------------------
-
-extern {
-  fn @c(system) VirtualAlloc(addr: *u8, size: usize, kind: u32, protect: u32) *u8;
-  fn @c(system) VirtualFree(addr: *u8, size: usize, kind: u32) i32;
-  fn @c mmap(addr: *u8, size: usize, protect: i32, flags: i32, fd: i32, offset: i64) *u8;
-  fn @c munmap(addr: *u8, size: usize) i32;
-}
-
-const memCommit = 0x1000u32;
-const memReserve = 0x2000u32;
-const memRelease = 0x8000u32;
-const pageReadWrite = 0x04u32;
-
-// Linux: readable and writable, private and anonymous; mmap answers (void*)-1
-// when it fails
-const protReadWrite = 3i32;
-const mapPrivateAnonymous = 0x22i32;
-const mapFailed = 0xFFFFFFFFFFFFFFFFusize;
-
-// Blocks (slabs and oversize blocks) and bytes held from the OS by the
-// pools, for leak checks
-let liveBlocks: Atomic[u64];
-let liveBytes: Atomic[u64];
-
-// A slab is 2 MiB: 512 blocks of 4 KiB down to 2 of 1 MiB
-const slabBytes = 2097152usize;
-
-// How many idle blocks of each class a thread keeps
-fn cacheBlocksFor(c: u32) u32 {
-  if c == 0u32 {32u32}
-  else if c == 1u32 {2u32}
-  else if c == 2u32 {2u32}
-  else if c == 3u32 {1u32}
-  else {0u32}
-}
-
-fn @initpure init() {
-  liveBlocks = Atomic[u64].of(0u64);
-  liveBytes = Atomic[u64].of(0u64);
-  gAddr = Atomic[usize].of(0usize);
-  blocksInit();
-  var c = 0u32;
-  while c < classCount {
-    registerClass(classSize(c), slabBytes, cacheBlocksFor(c));
-    c = c + 1u32;
-  }
-}
-
-// The pools' end: every cache flushed and every slab with all its blocks home
-// given back to the OS. After every module that uses them has finalized, no
-// buffer is lent; one still lent (a leak) keeps its slab, which 'osBlocks()'
-// would show
-fn final() {
-  trimEverything();
-}
-
-pub fn osBlocks() u64 {liveBlocks.load()}
-pub fn osBytes() u64 {liveBytes.load()}
-
-fn osAlloc(size: usize) *u8 {
-  var b = null as *u8;
-  if isWindows() {
-    b = VirtualAlloc(null, size, memCommit | memReserve, pageReadWrite);
-  } else {
-    b = mmap(null, size, protReadWrite, mapPrivateAnonymous, 0i32 - 1i32, 0i64);
-    if b as usize == mapFailed {b = null;}
-  }
-  if b as usize != 0usize {
-    liveBlocks.addOrdered(1u64, MemOrder.Relaxed);
-    liveBytes.addOrdered(u64.from(size), MemOrder.Relaxed);
-  }
-  b
-}
-
-fn osFree(block: *u8, size: usize) {
-  if isWindows() {VirtualFree(block, 0usize, memRelease);} else {munmap(block, size);}
-  liveBlocks.subOrdered(1u64, MemOrder.Relaxed);
-  liveBytes.subOrdered(u64.from(size), MemOrder.Relaxed);
-}
-
-// Every thread's cache back to the stock and every idle slab back to the OS:
-// for when no other thread is taking or returning buffers (a leak check, the
-// end of a program)
-pub fn trimAll() {trimEverything();}
-
-// ---------------------------------------------------------------------------
-// Size classes
+// The pool, and its counters: the buffer pool is bufpool's. These wrappers keep
+// the names this package has always had
 // ---------------------------------------------------------------------------
 
 // A block's alignment, and the unit every capacity is a multiple of
@@ -303,42 +212,29 @@ pub const page = 4096usize;
 // The size classes, 4 KiB to 1 MiB, each four times the last; a larger
 // request is 'oversize', allocated for itself and freed when it returns
 pub const classCount = 5u32;
-const oversize = 5u32;
 
-pub fn classSize(c: u32) usize {
-  if c == 0u32 {4096usize}
-  else if c == 1u32 {16384usize}
-  else if c == 2u32 {65536usize}
-  else if c == 3u32 {262144usize}
-  else {1048576usize}
-}
+pub fn classSize(c: u32) usize {bufpool.classSize(c)}
 
 // The largest size a class holds
 pub const largestClass = 1048576usize;
 
-// The class a request of size bytes is served from, or oversize
-fn classFor(size: usize) u32 {
-  var c = 0u32;
-  while c < classCount {
-    if size <= classSize(c) {return c;}
-    c = c + 1u32;
-  }
-  oversize
-}
+// What the pool holds from the OS now, for leak checks
+pub fn osBlocks() u64 {bufpool.osBlocks()}
+pub fn osBytes() u64 {bufpool.osBytes()}
 
-// size rounded up to whole pages
-fn pageCeil(size: usize) usize {
-  (size + page - 1usize) & (0usize - page)
-}
+// Every thread's cache back to the stock and every idle slab back to the OS:
+// for when no other thread is taking or returning buffers (a leak check, the
+// end of a program)
+pub fn trimAll() {bufpool.trimEverything();}
 
-// ---------------------------------------------------------------------------
-// The pools' counters, and giving idle memory back
-// ---------------------------------------------------------------------------
+// This thread's cache back to the stock
+pub fn flushThread() {bufpool.flushThread();}
 
-// The bounds' defaults are blocks.cone's: defaultMaxBytes (64 MiB held from
-// the OS at most) and defaultKeepBytes (8 MiB of idle blocks kept)
+// The process-wide bounds, in bytes held from the OS and idle bytes kept. A
+// zero leaves the bound as it is
+pub fn setLimits(maxBytes: usize, keepBytes: usize) {bufpool.setLimits(maxBytes, keepBytes);}
 
-// The pools' counters, as 'stats' copies them out
+// The pool's counters, as 'stats' copies them out
 pub struct Stats {
   pub maxBytes: usize;     // the bound on bytes held from the OS
   pub keepBytes: usize;    // the bound on idle bytes kept
@@ -358,31 +254,24 @@ pub struct Stats {
 
 // The counters, as they are now
 pub fn stats() Stats {
-  let s = blockStats();
+  let s = bufpool.blockStats();
   Stats(s.maxBytes, s.keepBytes, s.heldBytes, s.idleBytes, s.lent, s.takes, s.reuses,
     s.osAllocs, s.osFrees, 0u64, s.cachedBytes, s.stockBytes, s.slabs, s.lentBytes)
 }
 
 // Give every idle slab back to the OS (this thread's cache first)
 pub fn trim() {
-  trimStock();
+  bufpool.trimStock();
 }
 
-// A buffer of at least size bytes: from the class's cache and stock, or a
-// block of its own when oversize
+// A buffer of at least size bytes from the buffer pool region: the room is the
+// size its size function answers (the class's, or whole pages when oversize)
 fn acquire(size: usize, file: &Array[u8], line: u32) IoBuf {
-  let c = classFor(size);
-  if c == oversize {
-    let cap = pageCeil(size);
-    let big = holdOversize(cap);
-    if big as usize == 0usize {outOfMemory(file, line);}
-    return IoBuf(big, 0usize, cap, c, null);
-  }
-  var b = null as *u8;
-  var token = null as *u8;
-  b, token = blockTake(usize.from(c));
+  let pool = bufpool.bufferPool() as &MemRegion;
+  let room = pool.sizeFor(size, page);
+  let b = pool.allocate(size, page);
   if b as usize == 0usize {outOfMemory(file, line);}
-  IoBuf(b, 0usize, classSize(c), c, token)
+  IoBuf(b, 0usize, room)
 }
 
 // Out of memory is a panic for now: the bound on bytes held from the OS is
@@ -395,19 +284,17 @@ fn outOfMemory(file: &Array[u8], line: u32) {
 // IoBuf
 // ---------------------------------------------------------------------------
 
-// A block from the pools and how many of its bytes are filled: one owner,
-// moved, never copied; its death gives the block back to the pools. It
+// A block from the buffer pool and how many of its bytes are filled: one owner,
+// moved, never copied; its death gives the block back to the pool. It
 // declares Sendable, a promise taken on trust, for its block's raw pointer:
 // the block is its alone while it lives (see the package's header, BUFFERS)
 pub struct IoBuf is Move, Sendable {
   data: *u8;
   used: usize;
   cap: usize;
-  cls: u32;
-  slab: *u8;       // the stock's token for its block, wanted back at its death
 
   // A buffer with room for at least size bytes, empty: 'IoBuf(4096)'. The type
-  // decides where the block comes from: the pool of the smallest class that
+  // decides where the block comes from: the buffer pool region, the class that
   // holds size, or a block of its own from the OS when size is over 1 MiB.
   // Out of memory (the bound on bytes held is reached, or the OS refuses) is
   // a panic at the caller's line
@@ -416,7 +303,7 @@ pub struct IoBuf is Move, Sendable {
   }
 
   // A buffer with no block: capacity 0, from no pool
-  pub fn empty() IoBuf {IoBuf(null, 0usize, 0usize, 0u32, null)}
+  pub fn empty() IoBuf {IoBuf(null, 0usize, 0usize)}
 
   pub fn len(self: &) usize {used}
   pub fn capacity(self: &) usize {cap}
@@ -453,11 +340,7 @@ pub struct IoBuf is Move, Sendable {
 
   fn final(self: &uni) {
     if data as usize != 0usize {
-      if cls == oversize {
-        releaseOversize(data, cap);
-      } else {
-        blockPut(usize.from(cls), data, slab);
-      }
+      (bufpool.bufferPool() as &MemRegion).release(data, cap);
     }
   }
 }
