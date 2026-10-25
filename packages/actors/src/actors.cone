@@ -638,8 +638,9 @@
 // not become one, it counts itself among the sleepers, looks once more, and
 // sleeps on the 'epoch' word. A
 // push to the inject queue, and a push to a worker's own queue that already
-// held another, wakes one sleeper by bumping 'epoch', unless a worker woken
-// earlier is still looking (the 'searching' flag): the one woken takes a
+// held another, wakes one sleeper by bumping 'epoch', unless a worker is
+// looking already: one spinning (THE SPIN, below), or one woken earlier and
+// still looking (the 'searching' flag). The one woken takes a
 // share and, if more waits, wakes the next, so that a burst of work spreads
 // across the workers a worker at a time rather than waking them all. A push
 // to an empty queue of one's own wakes nobody, so two actors passing
@@ -650,11 +651,12 @@
 // reads the sleepers and swaps 'searching'. A worker's own queue needs no
 // such pairing: only its owner pushes to it, and the owner is awake.
 //
-// THE SPIN. Parking costs the sleeper a wake: measured on the 24-thread
-// laptop (Windows), 4.5 to 8 us from a futexWake to the sleeper running while
-// its core is still awake, 80 to 90 us once the core has slept a millisecond.
-// Work that comes back within a few microseconds (an answer from the I/O
-// thread, the next message of a conversation) is cheaper caught by looking.
+// THE SPIN. Parking costs a wake: the waker's futexWake, and the sleeper's
+// time to run again, measured on the 24-thread laptop (Windows) at 4 to 10 us
+// (the median, with 23 threads parked on one word and one woken every 15 to
+// 200 us; 13 us at one a millisecond). Work that comes back within a few
+// microseconds (an answer from the I/O thread, the next message of a
+// conversation) is cheaper caught by looking.
 // - Where: in idle, after the worker has found no work anywhere (its own
 //   queues, the inject queue, every loop piece, every other worker's queue)
 //   and before it counts itself a sleeper.
@@ -675,24 +677,44 @@
 //   sleeper. There is no pause instruction between looks: Cone has none
 //   (neither an intrinsic nor anything in the C library), so a look is the
 //   loads and the clock's read.
-// - NO WAKE IS LOST. The spin only reads: it counts itself in 'spinning',
-//   which nothing but the cap reads, and in neither 'sleepers' nor
-//   'searching', so it changes nothing the waking side sees. A push that
-//   lands while a worker spins is either seen by a look, or not; if not, the
-//   worker leaves the spin by its bound and goes on to the park exactly as a
-//   worker that never spun: it counts itself a sleeper and clears
-//   'searching' (sequentially consistent), then looks. The pusher added to
-//   the queue, then read the sleepers and swapped 'searching' (sequentially
-//   consistent). Either the pusher's read comes after the worker's count, and
-//   the pusher bumps 'epoch' and wakes it (the worker read 'epoch' before
-//   counting itself, so its futexWait returns at once if the bump came
-//   first), or it comes before, and then the push came before the worker's
-//   look, which sees it. A notify that found a sleeper while this worker
-//   spun woke that sleeper, not this one: one more worker looking, never one
-//   fewer. And a spin ends: by its bound when no work comes, or by seeing
-//   work; a worker sees work only while some is queued, so a program with
-//   nothing left to run has every worker parked within the bound
-//   (tests/spinrest.cone; tests/wakestress.cone stresses the wake).
+// - A push while a worker spins wakes nobody (notify): the spinner will see
+//   it, and the pusher (often the I/O thread) is spared the futexWake, and no
+//   sleeper is woken to find the work gone and take a spinner's place.
+//   tokio's rule, no wake while a worker is searching, with spinners
+//   counted as searching.
+// - NO WAKE IS LOST. A spinner counts itself in 'spinning' and in neither
+//   'sleepers' nor 'searching'. A push adds to the queue (sequentially
+//   consistent), then notify reads the sleepers and 'spinning' and swaps
+//   'searching' (all sequentially consistent). A spinner leaves the spin in
+//   one of two ways, and either way the push is taken:
+//   - By its bound, not having seen the push: it takes itself out of
+//     'spinning', then goes on to the park exactly as a worker that never
+//     spun: it counts itself a sleeper and clears 'searching', then looks
+//     (all sequentially consistent). If notify read 'spinning' before the
+//     spinner left it, the push came before the spinner's look after it,
+//     which sees it. Otherwise notify's reads pair with the park's as they
+//     always have: either they come after the worker's count, and the
+//     pusher bumps 'epoch' and wakes a sleeper (this worker read 'epoch'
+//     before counting itself, so its futexWait returns at once if the bump
+//     came first), or before, and then the push came before the worker's
+//     look, which sees it.
+//   - By seeing work, the push or another: it goes back to the worker's loop
+//     and takes work in the loop's order, the inject queue before any steal,
+//     exactly as a worker woken to look ('searching') does, and is covered
+//     the same way: taking work away from its own queue, foundAway wakes
+//     another if the inject queue, its own queue or a loop piece still holds
+//     work (the one exception is shared with 'searching': the inject queue's
+//     every-61st-turn take, in findWork, calls no foundAway, so what is left
+//     there waits for this worker's next turn, which is never lost, only
+//     later); a push to a worker's own queue is run by that worker in any
+//     case, being awake. A worker that saw work and then found none goes to
+//     idle again and looks again.
+//   A notify that found a sleeper and no spinner woke that sleeper, not a
+//   spinner: one more worker looking, never one fewer. And a spin ends: by
+//   its bound when no work comes, or by seeing work; a worker sees work only
+//   while some is queued, so a program with nothing left to run has every
+//   worker parked within the bound (tests/spinrest.cone; tests/wakestress.cone
+//   and wakestressone.cone stress the wake).
 //
 // 'stats()' counts the spins begun, those that saw work and those that ran to
 // their bound, and the parks.
@@ -3305,9 +3327,13 @@ fn injectPop(s: *Sched, w: *Worker) *Header {
   first
 }
 
-// Wake one sleeping worker to look for work, unless one is looking already
+// Wake one sleeping worker to look for work, unless one is looking already:
+// a worker spinning (THE SPIN), or one woken earlier and not yet done looking
 fn notify(s: *Sched) {
   if ld32(&(*s).sleepers as *u32) == 0u32 {
+    return;
+  }
+  if ld32(&(*s).spinning as *u32) != 0u32 {
     return;
   }
   if mem.atomicSwap[u32](&(*s).searching as *u32, 1u32, MemOrder.SeqCst) != 0u32 {
@@ -3445,7 +3471,9 @@ fn spin(w: *Worker) bool {
       break;
     }
   }
-  mem.atomicSub[u32](np, 1u32, MemOrder.Release);
+  // Sequentially consistent: the pairing with notify's read of 'spinning'
+  // (the header, NO WAKE IS LOST) needs this before idle's next look
+  mem.atomicSub[u32](np, 1u32, MemOrder.SeqCst);
   if found {
     tally(&(*stat).spinsFound as *u64, 1u64);
   } else {
