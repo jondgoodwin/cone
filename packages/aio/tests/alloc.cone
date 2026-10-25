@@ -13,14 +13,12 @@
 // operation's count is what it allocates beyond an await's own.
 //
 // Each of these allocates nothing: read(buf), read(), read(room), write,
-// connect, recvFrom, sendTo, readAt, writeAt, sleep, stat. 'accept' allocates
-// at most one, which is iocore's for the socket it accepts (the same with
-// aio's master records); 'resolve' allocates the List it answers (and, on
-// Linux, getaddrinfo's own), and 'run' what the process package does to run a
-// child (its arguments' copies, the child, its captured output): those three
-// are counted and, run with -D ALLOC_REPORT, printed with the rest; only
-// accept's is checked, at most one. The counter counts: a malloc of the test's
-// own.
+// accept, connect, recvFrom, sendTo, readAt, writeAt, sleep, stat. 'resolve'
+// allocates the List it answers (and, on Linux, getaddrinfo's own), and 'run'
+// what the process package does to run a child (its arguments' copies, the
+// child, its captured output): those two are counted and, run with -D
+// ALLOC_REPORT, printed with the rest, not checked. The counter counts: a
+// malloc of the test's own.
 
 mod alloc;
 
@@ -118,33 +116,24 @@ var counted: Array[u64, 15];
 let wrong: Atomic[u64];
 
 fn socketOf(r: Result[Socket, IoError]) Socket {
-  var res = r;
-  var s = Socket.none();
-  match &mut res {
-    case var &mut Ok(ok) {s <-> *ok;}
-    else {}
+  match r {
+    case var Ok(ok) {ok}
+    else {Socket.none()}
   }
-  s
 }
 
 fn udpOf(r: Result[UdpSocket, IoError]) UdpSocket {
-  var res = r;
-  var s = UdpSocket.none();
-  match &mut res {
-    case var &mut Ok(ok) {s <-> *ok;}
-    else {}
+  match r {
+    case var Ok(ok) {ok}
+    else {UdpSocket.none()}
   }
-  s
 }
 
 fn fileOf(r: Result[File, IoError]) File {
-  var res = r;
-  var f = File.none();
-  match &mut res {
-    case var &mut Ok(ok) {f <-> *ok;}
-    else {}
+  match r {
+    case var Ok(ok) {ok}
+    else {File.none()}
   }
-  f
 }
 
 fn filled(n: usize) IoBuf {
@@ -229,10 +218,16 @@ actor Counter {
             if !isOk[usize](&w) {wrong.add(1u64);}
             let r = await b.read(IoBuf(4096usize));
           } else if k == kAccept || k == kConnect {
-            before = allocs();
-            let c = await aio.connect(SocketAddr.localhost(port));
-            if k == kConnect {n = n + (allocs() - before);}
-            if !isOk[Socket](&c) {wrong.add(1u64);}
+            // The connect's answer is dropped before the accept is awaited: held
+            // across it, it makes that await's parked record larger than the
+            // runtime keeps blocks of (actors' RECORD BLOCKS KEPT), one
+            // allocation per accept that is the runtime's, not aio's
+            {
+              before = allocs();
+              let c = await aio.connect(SocketAddr.localhost(port));
+              if k == kConnect {n = n + (allocs() - before);}
+              if !isOk[Socket](&c) {wrong.add(1u64);}
+            }
             before = allocs();
             let s = await ls.accept();
             if k == kAccept {n = n + (allocs() - before);}
@@ -334,9 +329,7 @@ fn main() i32 {
       printUInt(perRound);
       printStr("\n");
     }
-    if k == kAccept {
-      expect(n <= perRound, "accept: at most one, iocore's for the socket accepted");
-    } else if k != kResolve && k != kRun && k != kBase {
+    if k != kResolve && k != kRun && k != kBase {
       expectUInt(n, 0u64, kindName(k));
     }
     k = k + 1usize;
