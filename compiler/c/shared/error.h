@@ -103,7 +103,10 @@ enum ErrorCode {
 
     // Generics
     ErrorNoGenParms = 1061,     // Type parameter list declares no parameters
-    ErrorGenParmConstr = 1086,  // A parameter's annotation that is not built: on a generic's, one naming no trait (a value or kind parameter, or a generic trait given no type arguments); on a macro's or generic module's, any
+    ErrorGenParmConstr = 1086,  // A parameter's annotation that is not built: on a generic's, one naming no trait (a value or kind parameter, or a generic trait given no type arguments); on a generic module's, any; on a macro's type parameter, any
+    ErrorMacroParmType = 1533,  // A macro's value parameter written without a type (`macro twice[a]`): a macro parameter is always typed, `a: T` or `a: lazy T`. Only `self`, first in a macro declared in a type, is written bare. Pointed at the parameter
+    ErrorMacroSelfType = 1534,  // A macro method's `self` written with a type or `lazy` (`macro m[self: &Point]`): `self` is the receiver expression as it is, so it takes neither. Pointed at the type
+    ErrorMacroTypeArgs = 1535,  // A macro use whose brackets do not fit the macro's type parameters: none written where the macro declares some (inferring them is not built), or type arguments given to a macro that declares none (`m[i32](x)`). Pointed at the use
 
     // Iteration
     ErrorNotIterable = 1062,    // Value cannot be iterated over by 'each'
@@ -672,7 +675,7 @@ enum ErrorCode {
     // Flow typing and let-else (ir/exp/narrow.c, ir/exp/if.c)
     ErrorNarrowStale = 1460,    // A member of one variant named on a name that was narrowed to it and has since been changed: the message names the change
     ErrorNarrowLoop = 1461,     // A name narrowed to a variant from before a loop, used in the loop, which changes it later and comes back to the use
-    ErrorLetElse = 1462,        // The 'else' of 'let Ok(n) = r else ...' falls through to the binding: it must leave with 'return', 'break', 'continue' or a call that does not return
+    ErrorLetElse = 1462,        // The 'else' of 'let Ok(n) = r else ...' can fall through to the binding: every path through it must leave, by 'return', 'break', 'continue', a call that does not return, or an 'if' or 'match' with an 'else' each of whose blocks leaves. Pointed at where a path goes on
     ErrorOwnerNarrow = 1463,    // An owner ('Rc[mut, Shape]') narrowed to a variant whose value would sit at another offset in its allocation: the address would have to change
 
     // Trait patterns on a closed family (ir/exp/cast.c)
@@ -732,7 +735,7 @@ enum ErrorCode {
     // A pattern that binds names the variant and puts one name in its parentheses, after 'let' or 'var' (parser/parsefnflow.c parseBindVarDcl)
     ErrorPatBindCount = 1520,   // A variant pattern whose parentheses hold no name or several (`case let Some()`, `case let Response(head, body)`, `if let Pair(a, b) = p`): a variant takes exactly one binding name and is never read by position. To take a struct variant apart, bind it whole and name its fields. Pointed at the variant
     ErrorPatBindNested = 1521,  // A variant pattern whose parentheses hold something other than one name (`case let Some(Ok(x))`, `case let Some(3)`, `case let Wrapper(f(x))`): patterns do not nest, and a value does not go in the parentheses. Pointed at what is written in them
-    ErrorPatBindForm = 1522,    // A binding in a pattern, after `case let`, `if let`, `else if let` or a statement `let`, that is neither a variant with its one name in parentheses (`Some(n)`) nor a function's pattern (`rest using prefix("GET ")`): a name written before the variant, a variant with no parentheses, or a `let` that declares a name and then has an `else`. Pointed at what is written
+    ErrorPatBindForm = 1522,    // A binding in a pattern, after `case let`, `if let`, `else if let` or a statement `let`, that is neither a variant with its one name in parentheses (`Some(n)`) nor a function's pattern (`rest using prefix("GET ")`): a name written before the variant, a variant with no parentheses, or a `let` that declares a name, or several (`let a, b = f() else`), and then has an `else`. Pointed at what is written
     ErrorFldListForm = 1523,    // A field list, `x.(a, b)`, holding something that is not a field's name or a tuple element's number (`x.(a + 1)`, `x.()`), mixing names and numbers, or naming a tuple's element by name or a struct's field by number. Pointed at the entry
     ErrorFldListDup = 1524,     // A field list naming the same field twice (`x.(a, a)`): each field is taken once. Pointed at the second
     ErrorFldListUnknown = 1525, // A field list naming something the value has not: a name that is not a field of the struct (the message lists the fields), a field the struct holds through another, or a tuple element past the end. Pointed at the entry

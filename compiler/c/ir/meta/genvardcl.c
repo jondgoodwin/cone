@@ -32,6 +32,11 @@ void gVarDclPrint(GenVarDclNode *name) {
             inodePrintNode(*nodesp);
         }
     }
+    // A macro's value parameter, 'a: lazy T'
+    else if (name->valtype) {
+        inodeFprint((name->flags & FlagLazy) ? ": lazy " : ": ");
+        inodePrintNode(name->valtype);
+    }
 }
 
 // Perform name resolution. What the annotation names is resolved here, with

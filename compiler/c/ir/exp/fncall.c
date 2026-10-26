@@ -428,7 +428,8 @@ void fnCallNameRes(NameResState *pstate, FnCallNode **nodep) {
     // after a value it is an index, and one is, 'counts[Lamp.Red]'
     if (node->args && (node->flags & FlagIndex) && node->methfld == NULL && isNameUseNode(node->objfn)) {
         INode *calleedcl = nameUseGetDcl((NameUseNode*)node->objfn);
-        if (calleedcl && (isTypeNode(node->objfn) || genericGetInfo(calleedcl) != NULL)) {
+        if (calleedcl && (isTypeNode(node->objfn) || genericGetInfo(calleedcl) != NULL
+                || (calleedcl->tag == MacroDclTag && ((MacroDclNode*)calleedcl)->typeparms != NULL))) {
             for (nodesFor(node->args, cnt, argsp)) {
                 if ((*argsp)->tag == NameUseTag)
                     (*argsp)->flags &= ~FlagValueTermName;
@@ -3159,6 +3160,20 @@ static int fnCallMethodTypeArgs(TypeCheckState *pstate, FnCallNode **nodep) {
         member->flags |= FlagRcvChecked;
         return 0;
     }
+    // 'x.m[i32](y)': a macro method given its type arguments, declared in the
+    // receiver's type itself (one folded in from a field is not reached this way)
+    if (found && found->tag == MacroDclTag && (found->flags & FlagMethFld)
+        && iNsTypeFindFnField((INsTypeNode*)rcvtype, methfld->namesym) == found) {
+        Nodes *macrotypeargs = index->args;
+        inodeLexCopy((INode*)node, (INode*)member);
+        node->objfn = member->objfn;
+        node->methfld = (INode*)methfld;
+        if (node == index)
+            node->args = NULL;
+        node->flags &= ~FlagIndex;
+        macroMethodTypeCheck(pstate, nodep, (MacroDclNode*)found, macrotypeargs);
+        return 1;
+    }
     if (found == NULL || found->tag != FnDclTag || !(found->flags & FlagMethFld)
         || ((FnDclNode*)found)->genericinfo == NULL) {
         errorMsgNode(nodesGet(index->args, 0), ErrorNotTyped,
@@ -4137,6 +4152,15 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
         macroCallTypeCheck(pstate, nodep);
         return;
     }
+    // 'm[i32](x)': a macro given its type arguments in brackets, then its
+    // value arguments in parentheses
+    if (node->methfld == NULL && !(node->flags & (FlagIndex | FlagOperator)) && node->objfn->tag == FnCallTag
+        && (node->objfn->flags & FlagIndex) && !(node->objfn->flags & FlagRange)
+        && ((FnCallNode*)node->objfn)->methfld == NULL
+        && nameUseNames(((FnCallNode*)node->objfn)->objfn, MacroDclTag)) {
+        macroCallTypeArgsTypeCheck(pstate, nodep);
+        return;
+    }
 
     // '<-' given a list of entries, entries other than plain values, or the
     // contents of a construction becomes the applications they stand for
@@ -4249,7 +4273,7 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
                     // folded through as its self, as a folded method runs with it
                     if (folded)
                         structFoldReceiver(pstate, (StructNode*)rcvtype, membersym, &node->objfn, (INode*)node);
-                    macroMethodTypeCheck(pstate, nodep, (MacroDclNode*)found);
+                    macroMethodTypeCheck(pstate, nodep, (MacroDclNode*)found, NULL);
                     return;
                 }
                 // One method, not generic: its parameters after 'self' are

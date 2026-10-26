@@ -23,7 +23,7 @@
 //     let span = request.begin(url);            // 0 when the kind is off
 //     ...
 //     fetched.emit(body.len, Nanos(took));      // an event: values only
-//     failed.log(code, (trace.Message() <- "server said ", code));   // with a message
+//     failed.logMessage(code, (trace.Message() <- "server said ", code));   // with a message
 //     request.end(span);                        // after an 'await', on another worker: fine
 //   }
 //
@@ -39,7 +39,8 @@
 //                            types are the kind's type arguments. Made by 'make' in
 //                            the declaring module's init, and kept in a global
 //   k.emit(a, b)             MACROS on a kind, one argument per field: an event;
-//   k.log(a, b, msg)         an event with a message (a '&str', or a Message);
+//   k.log(a, b, msg)         an event with a message, a '&str';
+//   k.logMessage(a, b, msg)  one with a Message (one overloaded 'log' once macros overload);
 //   k.begin(a, b)            an interval's start, answering its id (0 when off);
 //   k.end(id)                its end. Off, none of them evaluates its arguments
 //   Info                     what every kind holds, and what a sink is shown
@@ -289,8 +290,14 @@ pub struct Kind0 {
   pub macro emit[self] {
     if on(&self.info) {fireNone(&self.info, "", srcFile(), srcLine())} else {}
   }
-  // An event with a message. Lazy under typed macros: msg
-  pub macro log[self, msg] {
+  // An event with a message, a '&str'. LATER: it and logMessage fold back into one
+  // overloaded 'log' when macro overloading is built
+  pub macro log[self, msg: lazy &str] {
+    if on(&self.info) {let m = msg; fireNone(&self.info, textOf(&m), srcFile(), srcLine())} else {}
+  }
+  // An event with a message built in place, a Message. LATER: folds back into 'log'
+  // when macro overloading is built
+  pub macro logMessage[self, msg: lazy Message] {
     if on(&self.info) {let m = msg; fireNone(&self.info, textOf(&m), srcFile(), srcLine())} else {}
   }
   // An interval's start: its id, 0 when off. Lazy under typed macros: none
@@ -298,7 +305,7 @@ pub struct Kind0 {
     if on(&self.info) {openNone(&self.info, srcFile(), srcLine())} else {0u64}
   }
   // An interval's end. Lazy under typed macros: id
-  pub macro end[self, id] {
+  pub macro end[self, id: lazy u64] {
     if on(&self.info) {closeSpan(&self.info, id, srcFile(), srcLine())} else {}
   }
 }
@@ -318,11 +325,21 @@ pub struct Kind1[A] {
   }
 
   // An event. Lazy under typed macros: a
-  pub macro emit[self, a] {
+  pub macro emit[self, a: lazy A] {
     if on(&self.info) {let v = self.values(a); fire(&self.info, &v, "", srcFile(), srcLine())} else {}
   }
-  // An event with a message. Lazy under typed macros: a, msg
-  pub macro log[self, a, msg] {
+  // An event with a message, a '&str'. LATER: it and logMessage fold back into one
+  // overloaded 'log' when macro overloading is built
+  pub macro log[self, a: lazy A, msg: lazy &str] {
+    if on(&self.info) {
+      let v = self.values(a);
+      let m = msg;
+      fire(&self.info, &v, textOf(&m), srcFile(), srcLine())
+    } else {}
+  }
+  // An event with a message built in place, a Message. LATER: folds back into 'log'
+  // when macro overloading is built
+  pub macro logMessage[self, a: lazy A, msg: lazy Message] {
     if on(&self.info) {
       let v = self.values(a);
       let m = msg;
@@ -330,11 +347,11 @@ pub struct Kind1[A] {
     } else {}
   }
   // An interval's start: its id, 0 when off. Lazy under typed macros: a
-  pub macro begin[self, a] {
+  pub macro begin[self, a: lazy A] {
     if on(&self.info) {let v = self.values(a); open(&self.info, &v, srcFile(), srcLine())} else {0u64}
   }
   // An interval's end. Lazy under typed macros: id
-  pub macro end[self, id] {
+  pub macro end[self, id: lazy u64] {
     if on(&self.info) {closeSpan(&self.info, id, srcFile(), srcLine())} else {}
   }
 }
@@ -354,11 +371,21 @@ pub struct Kind2[A, B] {
   }
 
   // An event. Lazy under typed macros: a, b
-  pub macro emit[self, a, b] {
+  pub macro emit[self, a: lazy A, b: lazy B] {
     if on(&self.info) {let v = self.values(a, b); fire(&self.info, &v, "", srcFile(), srcLine())} else {}
   }
-  // An event with a message. Lazy under typed macros: a, b, msg
-  pub macro log[self, a, b, msg] {
+  // An event with a message, a '&str'. LATER: it and logMessage fold back into one
+  // overloaded 'log' when macro overloading is built
+  pub macro log[self, a: lazy A, b: lazy B, msg: lazy &str] {
+    if on(&self.info) {
+      let v = self.values(a, b);
+      let m = msg;
+      fire(&self.info, &v, textOf(&m), srcFile(), srcLine())
+    } else {}
+  }
+  // An event with a message built in place, a Message. LATER: folds back into 'log'
+  // when macro overloading is built
+  pub macro logMessage[self, a: lazy A, b: lazy B, msg: lazy Message] {
     if on(&self.info) {
       let v = self.values(a, b);
       let m = msg;
@@ -366,11 +393,11 @@ pub struct Kind2[A, B] {
     } else {}
   }
   // An interval's start: its id, 0 when off. Lazy under typed macros: a, b
-  pub macro begin[self, a, b] {
+  pub macro begin[self, a: lazy A, b: lazy B] {
     if on(&self.info) {let v = self.values(a, b); open(&self.info, &v, srcFile(), srcLine())} else {0u64}
   }
   // An interval's end. Lazy under typed macros: id
-  pub macro end[self, id] {
+  pub macro end[self, id: lazy u64] {
     if on(&self.info) {closeSpan(&self.info, id, srcFile(), srcLine())} else {}
   }
 }
@@ -390,11 +417,21 @@ pub struct Kind3[A, B, C] {
   }
 
   // An event. Lazy under typed macros: a, b, c
-  pub macro emit[self, a, b, c] {
+  pub macro emit[self, a: lazy A, b: lazy B, c: lazy C] {
     if on(&self.info) {let v = self.values(a, b, c); fire(&self.info, &v, "", srcFile(), srcLine())} else {}
   }
-  // An event with a message. Lazy under typed macros: a, b, c, msg
-  pub macro log[self, a, b, c, msg] {
+  // An event with a message, a '&str'. LATER: it and logMessage fold back into one
+  // overloaded 'log' when macro overloading is built
+  pub macro log[self, a: lazy A, b: lazy B, c: lazy C, msg: lazy &str] {
+    if on(&self.info) {
+      let v = self.values(a, b, c);
+      let m = msg;
+      fire(&self.info, &v, textOf(&m), srcFile(), srcLine())
+    } else {}
+  }
+  // An event with a message built in place, a Message. LATER: folds back into 'log'
+  // when macro overloading is built
+  pub macro logMessage[self, a: lazy A, b: lazy B, c: lazy C, msg: lazy Message] {
     if on(&self.info) {
       let v = self.values(a, b, c);
       let m = msg;
@@ -402,11 +439,11 @@ pub struct Kind3[A, B, C] {
     } else {}
   }
   // An interval's start: its id, 0 when off. Lazy under typed macros: a, b, c
-  pub macro begin[self, a, b, c] {
+  pub macro begin[self, a: lazy A, b: lazy B, c: lazy C] {
     if on(&self.info) {let v = self.values(a, b, c); open(&self.info, &v, srcFile(), srcLine())} else {0u64}
   }
   // An interval's end. Lazy under typed macros: id
-  pub macro end[self, id] {
+  pub macro end[self, id: lazy u64] {
     if on(&self.info) {closeSpan(&self.info, id, srcFile(), srcLine())} else {}
   }
 }
@@ -426,11 +463,21 @@ pub struct Kind4[A, B, C, D] {
   }
 
   // An event. Lazy under typed macros: a, b, c, d
-  pub macro emit[self, a, b, c, d] {
+  pub macro emit[self, a: lazy A, b: lazy B, c: lazy C, d: lazy D] {
     if on(&self.info) {let v = self.values(a, b, c, d); fire(&self.info, &v, "", srcFile(), srcLine())} else {}
   }
-  // An event with a message. Lazy under typed macros: a, b, c, d, msg
-  pub macro log[self, a, b, c, d, msg] {
+  // An event with a message, a '&str'. LATER: it and logMessage fold back into one
+  // overloaded 'log' when macro overloading is built
+  pub macro log[self, a: lazy A, b: lazy B, c: lazy C, d: lazy D, msg: lazy &str] {
+    if on(&self.info) {
+      let v = self.values(a, b, c, d);
+      let m = msg;
+      fire(&self.info, &v, textOf(&m), srcFile(), srcLine())
+    } else {}
+  }
+  // An event with a message built in place, a Message. LATER: folds back into 'log'
+  // when macro overloading is built
+  pub macro logMessage[self, a: lazy A, b: lazy B, c: lazy C, d: lazy D, msg: lazy Message] {
     if on(&self.info) {
       let v = self.values(a, b, c, d);
       let m = msg;
@@ -438,11 +485,11 @@ pub struct Kind4[A, B, C, D] {
     } else {}
   }
   // An interval's start: its id, 0 when off. Lazy under typed macros: a, b, c, d
-  pub macro begin[self, a, b, c, d] {
+  pub macro begin[self, a: lazy A, b: lazy B, c: lazy C, d: lazy D] {
     if on(&self.info) {let v = self.values(a, b, c, d); open(&self.info, &v, srcFile(), srcLine())} else {0u64}
   }
   // An interval's end. Lazy under typed macros: id
-  pub macro end[self, id] {
+  pub macro end[self, id: lazy u64] {
     if on(&self.info) {closeSpan(&self.info, id, srcFile(), srcLine())} else {}
   }
 }
