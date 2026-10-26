@@ -1,0 +1,391 @@
+// An encoder and a decoder joined by in-memory queues, as two ends of an
+// HTTP/3 connection would be: field sections on numbered streams, the
+// encoder stream one way and the decoder stream the other, each delivered
+// late, in pieces cut anywhere, and the sections of different streams in
+// any order (a stream's own in order). A pseudo-random mix of fields, from
+// a fixed seed: static entries, repeated names and values, unique values,
+// long values that force eviction, sensitive fields; one to twelve fields a
+// section, some streams with a second section (trailers), some streams
+// cancelled with sections still to come. Some runs instead deliver each
+// section as soon as it is made, with both instruction streams, so nothing
+// holds an entry and the encoder's inserts evict freely (where an encoder
+// can name an entry its own insert just evicted). For each table capacity,
+// peer blocked-stream allowance and Huffman choice: every section decodes to
+// exactly the list encoded (names, values, and sensitivity: a field sent
+// sensitive, or named authorization or cookie, arrives sensitive), sections
+// that arrive before their inserts block and come back, the decoder never
+// holds more blocked streams than it allows, and once everything is
+// delivered the two tables are the same, nothing is left blocked, and every
+// section is acknowledged or cancelled.
+
+mod roundtrip;
+
+import testing use *;
+import stdio use printStr, printUInt;
+import collections use *;
+import http2 use HeaderField, isSensitiveName;
+import http3 use *;
+
+struct Rng {
+  s: u64;
+  fn next(self: &mut) u64 {
+    s = s * 6364136223846793005u64 + 1442695040888963407u64;
+    s >> 33u64
+  }
+  fn below(self: &mut, n: u64) u64 {self.next() % n}
+}
+
+let names: Array[&str, 15] = [":method", ":path", ":authority", ":scheme", ":status", "content-type",
+  "accept", "user-agent", "x-request-id", "cache-control", "custom-header-a", "custom-header-b",
+  "authorization", "cookie", "x-trace"];
+
+let values: Array[&str, 17] = ["GET", "POST", "/", "/index.html", "/api/v1/items", "text/html; charset=utf-8",
+  "application/json", "*/*", "Mozilla/5.0 (X11; Linux x86_64)", "no-cache", "200", "404", "https",
+  "www.example.com", "alpha", "beta", "gamma"];
+
+fn makeFields(rng: &mut Rng, serial: &mut u64) List[HeaderField] {
+  var out = List[HeaderField].empty();
+  let n = 1u64 + rng.below(12u64);
+  var i = 0u64;
+  while i < n {
+    let name = names[usize.from(rng.below(15u64))];
+    var value = String.empty();
+    let r = rng.below(30u64);
+    if r == 0u64 {
+      // Long: two or three of these fill a small table
+      var k = 0u64;
+      while k < 20u64 {
+        value.append("0123456789");
+        k = k + 1u64;
+      }
+      value.appendUInt(rng.below(4u64));
+    } else if r < 7u64 {
+      value.append("id-");
+      *serial = *serial + 1u64;
+      value.appendUInt(*serial);
+    } else {value.append(values[usize.from(rng.below(17u64))]);}
+    if rng.below(20u64) == 0u64 {out.push(HeaderField.secret(name, value.view()));}
+    else {out.push(HeaderField.make(name, value.view()));}
+    i = i + 1u64;
+  }
+  out
+}
+
+fn sameList(got: &Array[HeaderField], want: &Array[HeaderField]) bool {
+  if got.len != want.len {return false;}
+  var i = 0usize;
+  while i < got.len {
+    if got[i].name.view() != want[i].name.view() || got[i].value.view() != want[i].value.view() {return false;}
+    let sensitive = want[i].sensitive || isSensitiveName(want[i].name.view());
+    if got[i].sensitive != sensitive {return false;}
+    i = i + 1usize;
+  }
+  true
+}
+
+fn copyList(fields: &Array[HeaderField]) List[HeaderField] {
+  var out = List[HeaderField].empty();
+  var i = 0usize;
+  while i < fields.len {
+    out.push(HeaderField(String.from(fields[i].name.view()), String.from(fields[i].value.view()), fields[i].sensitive));
+    i = i + 1usize;
+  }
+  out
+}
+
+// A section encoded and not yet delivered
+struct Pending {
+  bytes: List[u8];
+  fields: List[HeaderField];
+}
+
+// One request stream as the test sees it
+struct Sim {
+  id: u64;
+  undelivered: Deque[Pending];          // in order
+  blockedLists: Deque[List[HeaderField]];  // what its blocked sections should decode to
+  cancelled: bool;
+}
+
+struct Totals {
+  sections: u64;
+  fields: u64;
+  plain: u64;         // bytes of names and values
+  coded: u64;         // bytes of sections
+  stream: u64;        // bytes of encoder stream
+  blocked: u64;
+  cancelled: u64;
+  mismatches: u64;
+  errors: u64;
+  maxBlocked: u64;
+}
+
+// Move the first n bytes of q to the end of out
+fn takeFront(q: &mut List[u8], n: usize, out: &mut List[u8]) {
+  var i = 0usize;
+  while i < n {
+    out.push(*q[i]);
+    i = i + 1usize;
+  }
+  let rest = q.len() - n;
+  var j = 0usize;
+  while j < rest {
+    q.set(j, *q[n + j]);
+    j = j + 1usize;
+  }
+  q.truncate(rest);
+}
+
+fn feedDecoder(dec: &mut QpackDecoder, encQ: &mut List[u8], n: usize, sims: &mut List[Sim], t: &mut Totals) {
+  var chunk = List[u8].empty();
+  takeFront(encQ, n, &mut chunk);
+  match dec.encoderInput(chunk.view()) {
+    case let Ok(c) {}
+    case let Error(e) {
+      t.errors = t.errors + 1u64;
+      expectStr(e.message().view(), "", "encoder stream");
+    }
+  }
+  drainUnblocked(dec, sims, t);
+}
+
+fn drainUnblocked(dec: &mut QpackDecoder, sims: &mut List[Sim], t: &mut Totals) {
+  while true {
+    var got = List[HeaderField].empty();
+    match dec.pollUnblocked(&mut got) {
+      case let Some(u) {
+        let id, result = u.(streamId, result);
+        var k = 0usize;
+        while sims[k].id != id {k = k + 1usize;}
+        match sims[k].blockedLists.popFront() {
+          case let Some(want) {
+            match result {
+              case let Ok(size) {if !sameList(got.view(), want.view()) {t.mismatches = t.mismatches + 1u64;}}
+              case let Error(e) {
+                t.errors = t.errors + 1u64;
+                expectStr(e.message().view(), "", "unblocked");
+              }
+            }
+          }
+          case is None[List[HeaderField]] {t.errors = t.errors + 1u64;}
+        }
+      }
+      case is None[Unblocked] {return;}
+    }
+  }
+}
+
+fn deliverSection(dec: &mut QpackDecoder, k: usize, sims: &mut List[Sim], t: &mut Totals) {
+  match sims[k].undelivered.popFront() {
+    case let Some(p) {
+      let bytes, fields = p.(bytes, fields);
+      var got = List[HeaderField].empty();
+      match dec.decode(sims[k].id, bytes.view(), &mut got) {
+        case let Ok(d) {
+          match d {
+            case let Done(x) {if !sameList(got.view(), fields.view()) {t.mismatches = t.mismatches + 1u64;}}
+            case is Blocked {
+              t.blocked = t.blocked + 1u64;
+              sims[k].blockedLists.push(fields);
+              let b = u64.from(dec.blockedStreams());
+              if b > t.maxBlocked {t.maxBlocked = b;}
+            }
+          }
+        }
+        case let Error(e) {
+          t.errors = t.errors + 1u64;
+          expectStr(e.message().view(), "", "section");
+        }
+      }
+    }
+    case is None[Pending] {}
+  }
+}
+
+fn feedEncoder(enc: &mut QpackEncoder, decQ: &mut List[u8], n: usize, t: &mut Totals) {
+  var chunk = List[u8].empty();
+  takeFront(decQ, n, &mut chunk);
+  match enc.decoderInput(chunk.view()) {
+    case let Ok(c) {}
+    case let Error(e) {
+      t.errors = t.errors + 1u64;
+      expectStr(e.message().view(), "", "decoder stream");
+    }
+  }
+}
+
+fn tableText(t: &QpackTable) String {
+  var s = String.empty();
+  var a = t.evictedCount();
+  while a < t.insertCount() {
+    s.append(t.name(a));
+    s.append("=");
+    s.appendBytes(t.value(a));
+    s.append("\n");
+    a = a + 1u64;
+  }
+  s
+}
+
+// prompt: each section is delivered as soon as it is made, the encoder
+// stream before it and the decoder stream after it, as on a quiet
+// connection, so the encoder's references are to acknowledged entries and
+// no unacknowledged section holds an entry, and its inserts evict freely;
+// otherwise all three arrive late and apart
+fn scenario(capacity: usize, blocked: usize, huffman: bool, prompt: bool, seed: u64) {
+  var cfg = QpackConfig.make();
+  cfg.maxTableCapacity = capacity;
+  cfg.blockedStreams = blocked;
+  cfg.encoderTableCapacity = capacity;
+  cfg.huffman = huffman;
+  var enc = QpackEncoder.make(&cfg);
+  var dec = QpackDecoder.make(cfg);
+  enc.peerSettings(cfg.maxTableCapacity, cfg.blockedStreams);
+  var rng = Rng(seed);
+  var serial = 0u64;
+  var sims = List[Sim].empty();
+  var encQ = List[u8].empty();
+  var decQ = List[u8].empty();
+  var t = Totals(0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
+  var step = 0u64;
+  while step < 3000u64 {
+    let r = rng.below(20u64);
+    if r < 7u64 {
+      // A new section: on a new stream, or a second on a recent one
+      var k = sims.len();
+      if sims.len() > 0usize && rng.below(4u64) == 0u64 {
+        let c = sims.len() - 1usize - usize.from(rng.below(u64.from(if sims.len() < 4usize {sims.len()} else {4usize})));
+        if !sims[c].cancelled {k = c;}
+      }
+      if k == sims.len() {sims.push(Sim(u64.from(k) * 4u64, Deque[Pending].empty(), Deque[List[HeaderField]].empty(), false));}
+      let fields = makeFields(&mut rng, &mut serial);
+      var bytes = List[u8].empty();
+      enc.encode(sims[k].id, fields.view(), &mut bytes);
+      let before = encQ.len();
+      enc.pollTransmit(&mut encQ);
+      t.sections = t.sections + 1u64;
+      t.fields = t.fields + u64.from(fields.len());
+      var i = 0usize;
+      while i < fields.len() {
+        t.plain = t.plain + u64.from(fields[i].name.len() + fields[i].value.len());
+        i = i + 1usize;
+      }
+      t.coded = t.coded + u64.from(bytes.len());
+      t.stream = t.stream + u64.from(encQ.len() - before);
+      sims[k].undelivered.push(Pending(bytes, fields));
+      if prompt {
+        feedDecoder(&mut dec, &mut encQ, encQ.len(), &mut sims, &mut t);
+        while sims[k].undelivered.len() > 0usize {deliverSection(&mut dec, k, &mut sims, &mut t);}
+        dec.pollTransmit(&mut decQ);
+        feedEncoder(&mut enc, &mut decQ, decQ.len(), &mut t);
+      }
+    } else if r < 11u64 {
+      // Some of the encoder stream, cut anywhere
+      if encQ.len() > 0usize {
+        let n = 1usize + usize.from(rng.below(u64.from(encQ.len())));
+        feedDecoder(&mut dec, &mut encQ, n, &mut sims, &mut t);
+      }
+    } else if r < 16u64 {
+      // A section, from a stream with one to deliver
+      if sims.len() > 0usize {
+        let start = usize.from(rng.below(u64.from(sims.len())));
+        var j = 0usize;
+        while j < sims.len() {
+          let k = (start + j) % sims.len();
+          if sims[k].undelivered.len() > 0usize {
+            deliverSection(&mut dec, k, &mut sims, &mut t);
+            break;
+          }
+          j = j + 1usize;
+        }
+      }
+    } else if r < 19u64 {
+      // Some of the decoder stream
+      dec.pollTransmit(&mut decQ);
+      if decQ.len() > 0usize {
+        let n = 1usize + usize.from(rng.below(u64.from(decQ.len())));
+        feedEncoder(&mut enc, &mut decQ, n, &mut t);
+      }
+    } else {
+      // Cancel a stream with something still to decode
+      if sims.len() > 0usize && rng.below(3u64) == 0u64 {
+        let k = usize.from(rng.below(u64.from(sims.len())));
+        if !sims[k].cancelled && (sims[k].undelivered.len() > 0usize || sims[k].blockedLists.len() > 0usize) {
+          dec.cancelStream(sims[k].id);
+          sims[k].cancelled = true;
+          sims[k].undelivered.clear();
+          sims[k].blockedLists.clear();
+          t.cancelled = t.cancelled + 1u64;
+        }
+      }
+    }
+    step = step + 1u64;
+  }
+  // Deliver everything left: the encoder stream, every section, then the
+  // decoder stream
+  feedDecoder(&mut dec, &mut encQ, encQ.len(), &mut sims, &mut t);
+  var k = 0usize;
+  while k < sims.len() {
+    while sims[k].undelivered.len() > 0usize {deliverSection(&mut dec, k, &mut sims, &mut t);}
+    k = k + 1usize;
+  }
+  drainUnblocked(&mut dec, &mut sims, &mut t);
+  dec.pollTransmit(&mut decQ);
+  feedEncoder(&mut enc, &mut decQ, decQ.len(), &mut t);
+
+  var label = String.from("capacity ");
+  label.appendUInt(u64.from(capacity));
+  label.append(", blocked ");
+  label.appendUInt(u64.from(blocked));
+  label.append(if huffman {", huffman"} else {", raw"});
+  if prompt {label.append(", prompt");}
+  expectUInt(t.mismatches, 0u64, label.view());
+  expectUInt(t.errors, 0u64, label.view());
+  expect(t.maxBlocked <= u64.from(blocked), label.view());
+  expectUInt(u64.from(dec.blockedStreams()), 0u64, label.view());
+  expectUInt(u64.from(enc.unacknowledgedSections()), 0u64, label.view());
+  expectUInt(enc.knownReceivedCount(), enc.dynamicTable().insertCount(), label.view());
+  expectStr(tableText(dec.dynamicTable()).view(), tableText(enc.dynamicTable()).view(), label.view());
+  expectUInt(u64.from(dec.dynamicTable().size()), u64.from(enc.dynamicTable().size()), label.view());
+  var left = 0usize;
+  k = 0usize;
+  while k < sims.len() {
+    left = left + sims[k].blockedLists.len();
+    k = k + 1usize;
+  }
+  expectUInt(u64.from(left), 0u64, label.view());
+
+  printStr(label.view());
+  printStr(": ");
+  printUInt(t.sections);
+  printStr(" sections, ");
+  printUInt(t.fields);
+  printStr(" fields, ");
+  printUInt(t.plain);
+  printStr(" bytes in ");
+  printUInt(t.coded);
+  printStr(" + ");
+  printUInt(t.stream);
+  printStr(" encoder stream; ");
+  printUInt(enc.dynamicTable().insertCount());
+  printStr(" inserts, ");
+  printUInt(t.blocked);
+  printStr(" blocked, ");
+  printUInt(t.cancelled);
+  printStr(" cancelled\n");
+}
+
+fn main() i32 {
+  scenario(0usize, 0usize, true, false, 1u64);
+  scenario(220usize, 0usize, false, false, 2u64);
+  scenario(220usize, 2usize, true, false, 3u64);
+  scenario(1024usize, 1usize, true, false, 4u64);
+  scenario(4096usize, 16usize, true, false, 5u64);
+  scenario(4096usize, 100usize, false, false, 6u64);
+  scenario(65536usize, 8usize, true, false, 7u64);
+  scenario(220usize, 0usize, false, true, 8u64);
+  scenario(512usize, 0usize, true, true, 9u64);
+  scenario(1024usize, 4usize, true, true, 10u64);
+  scenario(4096usize, 16usize, true, true, 11u64);
+  done()
+}
