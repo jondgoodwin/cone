@@ -1,0 +1,104 @@
+// An IoError's kind is the same on every system, and its code is the
+// system's own number: Windows' error number on Windows, the errno on Linux.
+// Each system's numbers for the same failure are read as the same kind; a
+// number no kind names is Other. Cancelled and TimedOut from a cancel or a
+// deadline carry code 0; Truncated, a received datagram cut to its buffer's
+// room, carries the system's number for a datagram too long (WSAEMSGSIZE,
+// EMSGSIZE). The system's own timeout is TimedOut too, and an operation the
+// system aborted (ERROR_OPERATION_ABORTED, ECANCELED) Cancelled, with its
+// number; the number for a datagram too long is Truncated only for a
+// receive. The kinds and the sorting are the ioerror package's ('osKind',
+// and 'errnoKind' for a C library errno, on the system the program runs on).
+
+mod errors;
+
+import testing use *;
+import diag;
+import iocore use IoError, answerError;
+import ioerror use IoErrorKind, errnoKind, errorKindName, osKind;
+
+// The system's number: Windows' or Linux's
+fn n(win: u32, lx: u32) u32 {if isWindows() {win} else {lx}}
+
+fn main() i32 {
+  // The system's numbers, each read as its kind
+  expect(IoError(n(2u32, 2u32)).kind() == IoErrorKind.NotFound, "not found: ERROR_FILE_NOT_FOUND, ENOENT");
+  expect(IoError(n(3u32, 2u32)).kind() == IoErrorKind.NotFound, "...and ERROR_PATH_NOT_FOUND");
+  expect(IoError(n(5u32, 13u32)).kind() == IoErrorKind.PermissionDenied, "permission denied: ERROR_ACCESS_DENIED, EACCES");
+  expect(IoError(n(80u32, 17u32)).kind() == IoErrorKind.AlreadyExists, "already exists: ERROR_FILE_EXISTS, EEXIST");
+  expect(IoError(n(145u32, 39u32)).kind() == IoErrorKind.DirectoryNotEmpty, "directory not empty: ERROR_DIR_NOT_EMPTY, ENOTEMPTY");
+  expect(IoError(n(112u32, 28u32)).kind() == IoErrorKind.StorageFull, "storage full: ERROR_DISK_FULL, ENOSPC");
+  expect(IoError(n(1225u32, 111u32)).kind() == IoErrorKind.ConnectionRefused, "connection refused: ERROR_CONNECTION_REFUSED, ECONNREFUSED");
+  expect(IoError(n(10061u32, 111u32)).kind() == IoErrorKind.ConnectionRefused, "...and WSAECONNREFUSED");
+  expect(IoError(n(64u32, 104u32)).kind() == IoErrorKind.ConnectionReset, "connection reset: ERROR_NETNAME_DELETED, ECONNRESET");
+  expect(IoError(n(10054u32, 104u32)).kind() == IoErrorKind.ConnectionReset, "...and WSAECONNRESET");
+  expect(IoError(n(1236u32, 103u32)).kind() == IoErrorKind.ConnectionAborted, "connection aborted: ERROR_CONNECTION_ABORTED, ECONNABORTED");
+  expect(IoError(n(10057u32, 107u32)).kind() == IoErrorKind.NotConnected, "not connected: WSAENOTCONN, ENOTCONN");
+  expect(IoError(n(10048u32, 98u32)).kind() == IoErrorKind.AddressInUse, "address in use: WSAEADDRINUSE, EADDRINUSE");
+  expect(IoError(n(10049u32, 99u32)).kind() == IoErrorKind.AddressNotAvailable, "address not available: WSAEADDRNOTAVAIL, EADDRNOTAVAIL");
+  expect(IoError(n(1232u32, 113u32)).kind() == IoErrorKind.HostUnreachable, "host unreachable: ERROR_HOST_UNREACHABLE, EHOSTUNREACH");
+  expect(IoError(n(1231u32, 101u32)).kind() == IoErrorKind.NetworkUnreachable, "network unreachable: ERROR_NETWORK_UNREACHABLE, ENETUNREACH");
+  expect(IoError(n(109u32, 32u32)).kind() == IoErrorKind.BrokenPipe, "broken pipe: ERROR_BROKEN_PIPE, EPIPE");
+  expect(IoError(n(1460u32, 110u32)).kind() == IoErrorKind.TimedOut, "the system's timeout: ERROR_TIMEOUT, ETIMEDOUT");
+  expect(IoError(n(121u32, 110u32)).isTimedOut(), "...and ERROR_SEM_TIMEOUT, a connect's");
+  expect(IoError(n(87u32, 22u32)).kind() == IoErrorKind.InvalidInput, "invalid input: ERROR_INVALID_PARAMETER, EINVAL");
+  expect(IoError(n(6u32, 9u32)).kind() == IoErrorKind.InvalidInput, "...a handle that names nothing: ERROR_INVALID_HANDLE, EBADF");
+  expect(IoError(n(122u32, 22u32)).kind() == IoErrorKind.InvalidInput, "...a buffer with no room: ERROR_INSUFFICIENT_BUFFER, EINVAL");
+  expect(IoError(n(170u32, 16u32)).kind() == IoErrorKind.ResourceBusy, "resource busy: ERROR_BUSY, EBUSY");
+  expect(IoError(n(8u32, 12u32)).kind() == IoErrorKind.OutOfMemory, "out of memory: ERROR_NOT_ENOUGH_MEMORY, ENOMEM");
+  expect(IoError(n(11001u32, 0xFFFFFFFEu32)).kind() == IoErrorKind.NotFound, "a host name with no address: WSAHOST_NOT_FOUND, EAI_NONAME");
+  expect(IoError(n(11002u32, 0xFFFFFFFDu32)).kind() == IoErrorKind.Other, "a lookup to try again: WSATRY_AGAIN, EAI_AGAIN: Other");
+  expect(IoError(n(31u32, 71u32)).kind() == IoErrorKind.Other, "a number no kind names is Other");
+  expect(IoError(0x800B0109u32).kind() == IoErrorKind.Other, "tls's certificate number is Other");
+
+  let os = IoError(n(5u32, 13u32));
+  expectUInt(u64.from(os.code), u64.from(n(5u32, 13u32)), "IoError(code) keeps the system's number");
+  expect(!os.isCancelled() && !os.isTimedOut() && !os.isTruncated(), "a system error is none of iocore's own");
+  expect(os.message().len() > 0usize, "and has the system's words");
+  expect(IoError(n(11001u32, 0xFFFFFFFEu32)).message().len() > 0usize, "a lookup's failure has words too");
+
+  let c = IoError.cancelled();
+  expect(c.kind() == IoErrorKind.Cancelled, "a cancelled error's kind");
+  expect(c.isCancelled() && !c.isTimedOut(), "is cancelled and not timed out");
+  expectUInt(u64.from(c.code), 0u64, "and its code is 0");
+  expect(c.message().view() == "cancelled", "and it says so");
+
+  let t = IoError.timedOut();
+  expect(t.kind() == IoErrorKind.TimedOut, "a timed-out error's kind");
+  expect(t.isTimedOut() && !t.isCancelled(), "is timed out and not cancelled");
+  expectUInt(u64.from(t.code), 0u64, "and its code is 0");
+  expect(t.message().view() == "deadline passed", "and it says so");
+
+  let u = IoError.truncated();
+  expect(u.kind() == IoErrorKind.Truncated, "a truncated error's kind");
+  expect(u.isTruncated() && !u.isCancelled() && !u.isTimedOut(), "is truncated and neither of the others");
+  expectUInt(u64.from(u.code), u64.from(n(10040u32, 90u32)), "and its code is the system's: WSAEMSGSIZE, EMSGSIZE");
+  expect(!IoError(n(10040u32, 90u32)).isTruncated(), "the system's error of that number, by itself, is not Truncated");
+
+  let a = IoError.aborted();
+  expectUInt(u64.from(a.code), u64.from(n(995u32, 125u32)), "aborted: ERROR_OPERATION_ABORTED, ECANCELED");
+  expect(a.isCancelled() && !a.isTimedOut(), "a system error numbered so is Cancelled, as a cancel is");
+  expect(osKind(n(995u32, 125u32)) == IoErrorKind.Cancelled, "ioerror's osKind sorts the system's numbers too");
+
+  // An answer that is not Done, read
+  expect(answerError(diag.kindRecv, diag.outcomeCancelled, 0u32).isCancelled(), "a Cancelled answer is Cancelled");
+  let dl = answerError(diag.kindRecv, diag.outcomeTimedOut, 0u32);
+  expect(dl.isTimedOut() && dl.code == 0u32, "a TimedOut answer is TimedOut, code 0");
+  expect(answerError(diag.kindRecvFrom, diag.outcomeFailed, n(10040u32, 90u32)).isTruncated(), "a receive's datagram too long is Truncated");
+  expect(answerError(diag.kindSendTo, diag.outcomeFailed, n(10040u32, 90u32)).kind() == IoErrorKind.Other, "a send's is Other");
+  expect(answerError(diag.kindConnect, diag.outcomeFailed, n(1225u32, 111u32)).kind() == IoErrorKind.ConnectionRefused, "a refused connect");
+
+  // The C library's errno, on this system
+  expect(errnoKind(2i32) == IoErrorKind.NotFound, "errno: ENOENT");
+  expect(errnoKind(13i32) == IoErrorKind.PermissionDenied, "errno: EACCES");
+  expect(errnoKind(17i32) == IoErrorKind.AlreadyExists, "errno: EEXIST");
+  expect(errnoKind(21i32) == IoErrorKind.IsADirectory, "errno: EISDIR");
+  expect(errnoKind(if isWindows() {41i32} else {39i32}) == IoErrorKind.DirectoryNotEmpty, "errno: ENOTEMPTY, the C library's own");
+  expect(errnoKind(if isWindows() {38i32} else {36i32}) == IoErrorKind.InvalidFilename, "errno: ENAMETOOLONG, the C library's own");
+  expect(errnoKind(if isWindows() {105i32} else {125i32}) == IoErrorKind.Cancelled, "errno: ECANCELED, the C library's own");
+
+  // A kind's words
+  expect(errorKindName(IoErrorKind.ConnectionRefused) == "connection refused", "a kind's name");
+  expect(errorKindName(IoError(n(31u32, 71u32)).kind()) == "other", "Other's name");
+  done()
+}
