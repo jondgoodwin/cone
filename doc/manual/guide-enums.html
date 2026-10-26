@@ -71,8 +71,8 @@ fn order(code: i32) Result[Drink, Fault] {
     case 1 {Ok(Drink.Espresso(Size.Small))}
     case 2 {Ok(Drink.Latte(Size.Large, 2, true))}
     case 3 {Ok(Drink.Tea(Size.Medium, 4))}
-    case 4 {Error(Fault.SoldOut)}
-    else {Error(Fault.NoSuchCode(code))}
+    case 4 {Err(Fault.SoldOut)}
+    else {Err(Fault.NoSuchCode(code))}
   }
 }
 
@@ -85,7 +85,7 @@ fn main() {
         if d is Tea {print &lt;- " (let it steep)";}
         print &lt;- "\n";
       }
-      case let Error(f) {
+      case let Err(f) {
         match f {
           case SoldOut {print &lt;- "sold out, sorry\n";}
           case let NoSuchCode(n) {print &lt;- "there is no drink ", n, "\n";}
@@ -155,7 +155,7 @@ Error 1417: This match does not cover Tea: add a case for each, or end the match
 		by its name, and a bare name is a value all by itself: <span class="pre">Size.Large</span>. Each variant's value is of its own
 		kind, a <span class="pre">Drink.Latte</span>, and it is taken wherever a Drink is wanted: by a parameter, a
 		field, or a function's result, as <span class="pre">order</span> hands its variants straight to
-		<span class="pre">Ok</span> and <span class="pre">Error</span>.</p>
+		<span class="pre">Ok</span> and <span class="pre">Err</span>.</p>
 	<p>A <span class="pre">var</span> variable given a variant is the enum, since it is there to change:
 		<span class="pre">var light = Light.Red;</span> followed by <span class="pre">light = Light.Green;</span> is fine, and
 		so is <span class="pre">var o = Some(5); o = None;</span>. A <span class="pre">let</span> variable keeps the
@@ -238,7 +238,7 @@ fn steep(d: Drink) i32 {
 		error names the variant that lacks it; there is no comparison of a struct's contents to fall back on, and
 		deriving one is still to come. A <span class="pre">match</span> recovers the variant instead. That includes
 		Option and Result, whose <span class="pre">Some</span>, <span class="pre">Ok</span> and
-		<span class="pre">Error</span> declare no <span class="pre">==</span>: two Options holding values are matched,
+		<span class="pre">Err</span> declare no <span class="pre">==</span>: two Options holding values are matched,
 		not compared, for now.</p>
 <pre>
 enum Shape {
@@ -322,15 +322,15 @@ enum Colors: u32 {
 
 	<h2 id="resultenum">Result and Option: the enums every program has</h2>
 	<p><a href="guide-functions.html#result-tour">Functions</a> introduced <span class="pre">Result</span>: a function
-		that can fail gives back <span class="pre">Ok</span> with its value or <span class="pre">Error</span> with what
+		that can fail gives back <span class="pre">Ok</span> with its value or <span class="pre">Err</span> with what
 		went wrong. Now it can be said what a Result is. The core library declares it as an ordinary enum, with two
 		variants written as types:</p>
 <pre>
-enum Result[T, E] {Ok(T); Error(E);}
+enum Result[T, E] {Ok(T); Err(E);}
 </pre>
 	<p>The <span class="pre">[T, E]</span> leave the two types open until a Result is used: a
 		<span class="pre">Result[Drink, Fault]</span> holds a Drink when it is <span class="pre">Ok</span> and a Fault
-		when it is an <span class="pre">Error</span>. Nothing else about it is special. <span class="pre">match
+		when it is an <span class="pre">Err</span>. Nothing else about it is special. <span class="pre">match
 		order(code)</span> is the match you would write for any enum, and the error can be anything, an enum of your own
 		included: <span class="pre">Fault</span> lists the ways an order can fail, and the inner match tells them
 		apart.</p>
@@ -345,7 +345,7 @@ enum Option[T] {None; Some(T);}
 
 	<h2 id="helpers">Working with an Option or a Result: the helpers</h2>
 	<p>A <span class="pre">match</span> always works, but most uses of an Option or a Result are one of a few
-		shapes: take the value out, or change it while leaving a None or an Error as it is. The core library gives both
+		shapes: take the value out, or change it while leaving a None or an Err as it is. The core library gives both
 		enums methods for those, so the shape is named instead of written out:</p>
 <pre>
 mod helpers;
@@ -356,7 +356,7 @@ fn half(n: i32) Option[i32] {
 }
 
 fn average(total: i32, count: i32) Result[i32, &amp;str] {
-  if count == 0 { return Error("there is nothing to average"); }
+  if count == 0 { return Err("there is nothing to average"); }
   Ok(total / count)
 }
 
@@ -367,7 +367,7 @@ fn main() {
   print &lt;- half(7).filter(x =&gt; *x &gt; 0) is None, "\n";            // true: 7 has no half
   match half(7).okOr("odd") {                                    // an Option made a Result
     case let Ok(h) { print &lt;- "half is ", h, "\n"; }
-    case let Error(why) { print &lt;- "no half: ", why, "\n"; }      // this one runs
+    case let Err(why) { print &lt;- "no half: ", why, "\n"; }      // this one runs
   }
 
   print &lt;- average(30, 3).map(x =&gt; x * 2).unwrap(), "\n";        // 20
@@ -381,22 +381,22 @@ fn main() {
 }
 </pre>
 	<p><b>Taking the value out.</b> <span class="pre">unwrap()</span> gives what Some or Ok holds, and
-		<span class="pre">expect("why")</span> does the same with a reason. Either one, given a None or an Error, is a
+		<span class="pre">expect("why")</span> does the same with a reason. Either one, given a None or an Err, is a
 		<a href="safe-panics.html">panic</a>, reported at the line of the call, and
 		<span class="pre">expect</span>'s reason is the panic's message. Use them where the value being missing would be
 		a bug, and a <span class="pre">match</span> where it is something the program must handle.</p>
-	<p><b>Changing what is inside.</b> Each of these takes a closure and leaves a None or an Error as it is:</p>
+	<p><b>Changing what is inside.</b> Each of these takes a closure and leaves a None or an Err as it is:</p>
 	<ul>
 		<li><span class="pre">map(f)</span>: Some or Ok of what <span class="pre">f</span> makes of the value.</li>
 		<li><span class="pre">andThen(f)</span>: what <span class="pre">f</span> answers, when <span class="pre">f</span>
 			itself answers an Option (or a Result with the same error), so a failure at either step ends the chain.</li>
 		<li><span class="pre">filter(f)</span>, an Option's: itself when <span class="pre">f</span> is true of its value
 			(given a borrow of it), else None.</li>
-		<li><span class="pre">mapError(f)</span>, a Result's: Error of what <span class="pre">f</span> makes of the error,
+		<li><span class="pre">mapError(f)</span>, a Result's: Err of what <span class="pre">f</span> makes of the error,
 			Ok left as it is.</li>
 	</ul>
 	<p><b>Turning one into the other.</b> An Option's <span class="pre">okOr(e)</span> is Ok of its value, or
-		<span class="pre">Error(e)</span> on None. A Result's <span class="pre">ok()</span> is Some of its value (the error
+		<span class="pre">Err(e)</span> on None. A Result's <span class="pre">ok()</span> is Some of its value (the error
 		is dropped), and <span class="pre">error()</span> Some of its error (the value is dropped).</p>
 	<p><b>Looking without taking.</b> <span class="pre">asRef()</span> is an Option of a borrow of the value,
 		<span class="pre">Option[&amp;T]</span> (a Result's is <span class="pre">Result[&amp;T, &amp;E]</span>), and leaves

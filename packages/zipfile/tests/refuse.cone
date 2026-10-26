@@ -16,7 +16,7 @@ fn load(name: &str) String {
   p.append(name);
   match fs.readFile(&Path.from(p.view())) {
     case let Ok(s) { s }
-    case let Error(e) {
+    case let Err(e) {
       expect(false, "a fixture is missing");
       String.empty()
     }
@@ -65,14 +65,14 @@ fn centralOf(b: &List[u8], k: usize) usize {
 fn readKind(ar: &Archive, data: &Array[u8], i: usize) Option[ErrorKind] {
   match ar.read(data, i) {
     case let Ok(got) { None[ErrorKind] }
-    case let Error(e) { Some[ErrorKind](e.kind) }
+    case let Err(e) { Some[ErrorKind](e.kind) }
   }
 }
 
 // The same through the streaming reader
 fn streamKind(ar: &Archive, data: &Array[u8], i: usize) Option[ErrorKind] {
   match ar.reader(data, i) {
-    case let Error(e) { return Some[ErrorKind](e.kind); }
+    case let Err(e) { return Some[ErrorKind](e.kind); }
     case var Ok(r) {
       var chunk = List[u8].empty();
       while true {
@@ -102,7 +102,7 @@ fn isKind(got: Option[ErrorKind], want: ErrorKind) bool {
 fn openKind(b: &Array[u8]) Option[ErrorKind] {
   match Archive.open(b) {
     case let Ok(ar) { None[ErrorKind] }
-    case let Error(e) { Some[ErrorKind](e.kind) }
+    case let Err(e) { Some[ErrorKind](e.kind) }
   }
 }
 
@@ -110,7 +110,7 @@ fn openKind(b: &Array[u8]) Option[ErrorKind] {
 fn touchAll(b: &Array[u8]) usize {
   var worked = 0usize;
   match Archive.open(b) {
-    case let Error(e) { return 0usize; }
+    case let Err(e) { return 0usize; }
     case let Ok(ar) {
       var i = 0usize;
       while i < ar.count() {
@@ -157,7 +157,7 @@ fn main() i32 {
     var b = copyOf(&basic);
     set32(&mut b, centralOf(&b, 1usize) + 20usize, 0x00FFFFFFu32);   // compressed size of lorem.txt
     match Archive.open(b.view()) {
-      case let Error(e) { expect(false, "huge compressed size: the directory still opens"); }
+      case let Err(e) { expect(false, "huge compressed size: the directory still opens"); }
       case let Ok(ar) {
         expect(isKind(readKind(&ar, b.view(), 1usize), ErrorKind.Truncated), "an entry whose data passes the end is Truncated");
         expect(isKind(streamKind(&ar, b.view(), 1usize), ErrorKind.Truncated), "the same through the reader");
@@ -200,7 +200,7 @@ fn main() i32 {
     var b = copyOf(&basic);
     set32(&mut b, centralOf(&b, 0usize) + 16usize, 0xDEADBEEFu32);
     match Archive.open(b.view()) {
-      case let Error(e) { expect(false, "bad crc: opens"); }
+      case let Err(e) { expect(false, "bad crc: opens"); }
       case let Ok(ar) {
         expect(isKind(readKind(&ar, b.view(), 0usize), ErrorKind.BadChecksum), "a wrong CRC-32 is BadChecksum");
         expect(isKind(streamKind(&ar, b.view(), 0usize), ErrorKind.BadChecksum), "a wrong CRC-32 through the reader");
@@ -210,7 +210,7 @@ fn main() i32 {
     // A flipped bit in stored data
     var c = copyOf(&basic);
     match Archive.open(c.view()) {
-      case let Error(e) { expect(false, "flip: opens"); }
+      case let Err(e) { expect(false, "flip: opens"); }
       case let Ok(ar) {
         let e = ar.entry(3usize);
         let at = usize.from(e.offset) + 30usize + e.rawName.len() + 1000usize;
@@ -218,7 +218,7 @@ fn main() i32 {
       }
     }
     match Archive.open(c.view()) {
-      case let Error(e) { expect(false, "flip: opens again"); }
+      case let Err(e) { expect(false, "flip: opens again"); }
       case let Ok(ar) {
         expect(isKind(readKind(&ar, c.view(), 3usize), ErrorKind.BadChecksum), "a flipped bit in stored data is BadChecksum");
         expect(isKind(streamKind(&ar, c.view(), 3usize), ErrorKind.BadChecksum), "and through the reader");
@@ -227,7 +227,7 @@ fn main() i32 {
     // Deflated data that is not deflate data
     var d = copyOf(&basic);
     match Archive.open(d.view()) {
-      case let Error(e) { expect(false, "garbage: opens"); }
+      case let Err(e) { expect(false, "garbage: opens"); }
       case let Ok(ar) {
         let e = ar.entry(1usize);
         let at = usize.from(e.offset) + 30usize + e.rawName.len();
@@ -236,7 +236,7 @@ fn main() i32 {
       }
     }
     match Archive.open(d.view()) {
-      case let Error(e) { expect(false, "garbage: opens again"); }
+      case let Err(e) { expect(false, "garbage: opens again"); }
       case let Ok(ar) {
         let a = readKind(&ar, d.view(), 1usize);
         expect(isKind(a, ErrorKind.BadData), "garbage for deflate data is BadData");
@@ -251,7 +251,7 @@ fn main() i32 {
     var b = copyOf(&basic);
     set32(&mut b, centralOf(&b, 1usize) + 24usize, 100u32);
     match Archive.open(b.view()) {
-      case let Error(e) { expect(false, "small size: opens"); }
+      case let Err(e) { expect(false, "small size: opens"); }
       case let Ok(ar) {
         expect(isKind(readKind(&ar, b.view(), 1usize), ErrorKind.TooLarge), "a size smaller than the data is TooLarge");
         expect(isKind(streamKind(&ar, b.view(), 1usize), ErrorKind.TooLarge), "and through the reader");
@@ -261,7 +261,7 @@ fn main() i32 {
     var c = copyOf(&basic);
     set32(&mut c, centralOf(&c, 1usize) + 24usize, 20000u32);
     match Archive.open(c.view()) {
-      case let Error(e) { expect(false, "big size: opens"); }
+      case let Err(e) { expect(false, "big size: opens"); }
       case let Ok(ar) {
         expect(isKind(readKind(&ar, c.view(), 1usize), ErrorKind.BadChecksum), "a size larger than the data is BadChecksum");
         expect(isKind(streamKind(&ar, c.view(), 1usize), ErrorKind.BadChecksum), "and through the reader");
@@ -271,7 +271,7 @@ fn main() i32 {
     var d = copyOf(&basic);
     set32(&mut d, centralOf(&d, 3usize) + 24usize, 1999u32);
     match Archive.open(d.view()) {
-      case let Error(e) { expect(false, "stored sizes: opens"); }
+      case let Err(e) { expect(false, "stored sizes: opens"); }
       case let Ok(ar) { expect(isKind(readKind(&ar, d.view(), 3usize), ErrorKind.Corrupt), "a stored entry with two sizes is Corrupt"); }
     }
     // A bomb: a megabyte of zeros deflates to about a kilobyte; the central directory claims 100 bytes
@@ -281,14 +281,14 @@ fn main() i32 {
     while z < 1048576usize { zeros.push(0u8); z += 1usize; }
     w.add("zeros.bin", zeros.view(), &EntryOptions.deflated(2i32));
     match w.bytes() {
-      case let Error(e) { expect(false, "bomb: written"); }
+      case let Err(e) { expect(false, "bomb: written"); }
       case let Ok(bytes) {
         var bomb = bytes;
         let ent = centralOf(&bomb, 0usize);
         expect(get32(&bomb, ent + 20usize) < 4000u32, "the bomb's data is small");
         set32(&mut bomb, ent + 24usize, 100u32);
         match Archive.open(bomb.view()) {
-          case let Error(e) { expect(false, "bomb: opens"); }
+          case let Err(e) { expect(false, "bomb: opens"); }
           case let Ok(ar) {
             expect(isKind(readKind(&ar, bomb.view(), 0usize), ErrorKind.TooLarge), "a bomb is TooLarge");
             expect(isKind(streamKind(&ar, bomb.view(), 0usize), ErrorKind.TooLarge), "a bomb through the reader is TooLarge");
@@ -298,7 +298,7 @@ fn main() i32 {
         var zero = copyOf2(&bomb);
         set32(&mut zero, centralOf(&zero, 0usize) + 24usize, 0u32);
         match Archive.open(zero.view()) {
-          case let Error(e) { expect(false, "bomb0: opens"); }
+          case let Err(e) { expect(false, "bomb0: opens"); }
           case let Ok(ar) {
             expect(isKind(readKind(&ar, zero.view(), 0usize), ErrorKind.TooLarge), "a bomb that claims 0 bytes is TooLarge");
             expect(isKind(streamKind(&ar, zero.view(), 0usize), ErrorKind.TooLarge), "and through the reader");
@@ -313,14 +313,14 @@ fn main() i32 {
     var b = copyOf(&basic);
     set16(&mut b, usize.from(get32(&b, centralOf(&b, 0usize) + 42usize)) + 8usize, 0u32);   // local method of hello.txt
     match Archive.open(b.view()) {
-      case let Error(e) { expect(false, "local method: opens"); }
+      case let Err(e) { expect(false, "local method: opens"); }
       case let Ok(ar) { expect(isKind(readKind(&ar, b.view(), 0usize), ErrorKind.Corrupt), "a local method that differs is Corrupt"); }
     }
     var c = copyOf(&basic);
     let at = usize.from(get32(&c, centralOf(&c, 0usize) + 42usize)) + 30usize;
     c.set(at, *c[at] ^ 0x20u8);   // 'h' of hello.txt
     match Archive.open(c.view()) {
-      case let Error(e) { expect(false, "local name: opens"); }
+      case let Err(e) { expect(false, "local name: opens"); }
       case let Ok(ar) {
         expect(isKind(readKind(&ar, c.view(), 0usize), ErrorKind.Corrupt), "a local name that differs is Corrupt");
         expect(isKind(streamKind(&ar, c.view(), 0usize), ErrorKind.Corrupt), "and through the reader");
@@ -329,7 +329,7 @@ fn main() i32 {
     var d = copyOf(&basic);
     set32(&mut d, usize.from(get32(&d, centralOf(&d, 0usize) + 42usize)), 0u32);
     match Archive.open(d.view()) {
-      case let Error(e) { expect(false, "local sig: opens"); }
+      case let Err(e) { expect(false, "local sig: opens"); }
       case let Ok(ar) { expect(isKind(readKind(&ar, d.view(), 0usize), ErrorKind.Corrupt), "a missing local header is Corrupt"); }
     }
   }
@@ -338,7 +338,7 @@ fn main() i32 {
     let stream = load("py-stream.zip");
     var b = copyOf(&stream);
     match Archive.open(b.view()) {
-      case let Error(e) { expect(false, "descriptor: opens"); }
+      case let Err(e) { expect(false, "descriptor: opens"); }
       case let Ok(ar) {
         let e = ar.entry(0usize);
         // the descriptor follows the data: signature, CRC-32, sizes
@@ -348,7 +348,7 @@ fn main() i32 {
       }
     }
     match Archive.open(b.view()) {
-      case let Error(e) { expect(false, "descriptor: opens again"); }
+      case let Err(e) { expect(false, "descriptor: opens again"); }
       case let Ok(ar) {
         expect(isKind(readKind(&ar, b.view(), 0usize), ErrorKind.Corrupt), "a data descriptor that disagrees is Corrupt");
         expect(isKind(streamKind(&ar, b.view(), 0usize), ErrorKind.Corrupt), "and through the reader");
@@ -360,7 +360,7 @@ fn main() i32 {
   // ---------------- encryption, and methods not read ----------------
   let enc = load("hand-encrypted.zip");
   match Archive.open(enc.view()) {
-    case let Error(e) { expect(false, "hand-encrypted lists"); }
+    case let Err(e) { expect(false, "hand-encrypted lists"); }
     case let Ok(ar) {
       expectUInt(u64.from(ar.count()), 2u64, "hand-encrypted: both entries are listed");
       expect(ar.entry(1usize).isEncrypted(), "hand-encrypted: the flag is seen");
@@ -368,25 +368,25 @@ fn main() i32 {
       expect(isKind(readKind(&ar, enc.view(), 1usize), ErrorKind.Encrypted), "an encrypted entry is refused (Encrypted)");
       expect(isKind(streamKind(&ar, enc.view(), 1usize), ErrorKind.Encrypted), "and through the reader");
       match ar.readNamed(enc.view(), "secret.txt") {
-        case let Error(e) { expect(e.reason.contains("encrypted"), "the reason says encrypted"); }
+        case let Err(e) { expect(e.reason.contains("encrypted"), "the reason says encrypted"); }
         case let Ok(got) { expect(false, "secret.txt reads"); }
       }
     }
   }
   let aes = load("hand-aes.zip");
   match Archive.open(aes.view()) {
-    case let Error(e) { expect(false, "hand-aes lists"); }
+    case let Err(e) { expect(false, "hand-aes lists"); }
     case let Ok(ar) { expect(isKind(readKind(&ar, aes.view(), 0usize), ErrorKind.Encrypted), "an AES entry (method 99) is Encrypted"); }
   }
   let lz = load("hand-lzma.zip");
   match Archive.open(lz.view()) {
-    case let Error(e) { expect(false, "hand-lzma lists"); }
+    case let Err(e) { expect(false, "hand-lzma lists"); }
     case let Ok(ar) {
       expect(isKind(readKind(&ar, lz.view(), 0usize), ErrorKind.Unsupported), "LZMA is Unsupported");
       expect(isKind(streamKind(&ar, lz.view(), 0usize), ErrorKind.Unsupported), "and through the reader");
       expectStr(ar.entry(0usize).methodName().view(), "lzma", "the method is named");
       match ar.read(lz.view(), 0usize) {
-        case let Error(e) { expect(e.reason.contains("only stored, deflate and zstd"), "the reason says what is read"); }
+        case let Err(e) { expect(e.reason.contains("only stored, deflate and zstd"), "the reason says what is read"); }
         case let Ok(got) { expect(false, "lzma reads"); }
       }
     }
@@ -438,10 +438,10 @@ fn ar2(basic: &String) Option[usize] {
   match Archive.open(basic.view()) {
     case let Ok(ar) {
       match ar.read(basic.view(), 99usize) {
-        case let Error(e) { if e.kind == ErrorKind.NotFound { None[usize] } else { Some[usize](0usize) } }
+        case let Err(e) { if e.kind == ErrorKind.NotFound { None[usize] } else { Some[usize](0usize) } }
         case let Ok(got) { Some[usize](1usize) }
       }
     }
-    case let Error(e) { Some[usize](2usize) }
+    case let Err(e) { Some[usize](2usize) }
   }
 }

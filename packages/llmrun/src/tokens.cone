@@ -95,10 +95,10 @@ pub fn loadTokens(model: &gguf.Model) Result[ModelTokens, String] {
         var m = String.from("llmrun: the tokenizer is '");
         m <- kind;
         m <- "'; only the byte-level BPE ('gpt2') is built here";
-        return Error[ModelTokens, String](m);
+        return Err[ModelTokens, String](m);
       }
     }
-    case is None { return Error[ModelTokens, String](String.from("llmrun: the file has no tokenizer.ggml.model")); }
+    case is None { return Err[ModelTokens, String](String.from("llmrun: the file has no tokenizer.ggml.model")); }
   }
   var pre = bpetokenize.PreTokenizer.Gpt2;
   match model.text("tokenizer.ggml.pre") {
@@ -109,7 +109,7 @@ pub fn loadTokens(model: &gguf.Model) Result[ModelTokens, String] {
           var m = String.from("llmrun: the tokenizer's pre-tokenizer is '");
           m <- name;
           m <- "', which this build does not reproduce";
-          return Error[ModelTokens, String](m);
+          return Err[ModelTokens, String](m);
         }
       }
     }
@@ -123,14 +123,14 @@ pub fn loadTokens(model: &gguf.Model) Result[ModelTokens, String] {
       while i < items.len() {
         match items.text(i) {
           case let Some(t) { tokens.push(String.from(t)); }
-          case is None { return Error[ModelTokens, String](String.from("llmrun: a token in the vocabulary is not text")); }
+          case is None { return Err[ModelTokens, String](String.from("llmrun: a token in the vocabulary is not text")); }
         }
         i = i + 1usize;
       }
       match model.list("tokenizer.ggml.token_type") {
         case let Some(types) {
           if types.len() != items.len() {
-            return Error[ModelTokens, String](String.from("llmrun: token_type and tokens differ in length"));
+            return Err[ModelTokens, String](String.from("llmrun: token_type and tokens differ in length"));
           }
           i = 0usize;
           while i < items.len() {
@@ -144,7 +144,7 @@ pub fn loadTokens(model: &gguf.Model) Result[ModelTokens, String] {
         case is None {}
       }
     }
-    case is None { return Error[ModelTokens, String](String.from("llmrun: the file has no tokenizer.ggml.tokens")); }
+    case is None { return Err[ModelTokens, String](String.from("llmrun: the file has no tokenizer.ggml.tokens")); }
   }
   var merges = List[String].empty();
   match model.list("tokenizer.ggml.merges") {
@@ -153,12 +153,12 @@ pub fn loadTokens(model: &gguf.Model) Result[ModelTokens, String] {
       while i < items.len() {
         match items.text(i) {
           case let Some(t) { merges.push(String.from(t)); }
-          case is None { return Error[ModelTokens, String](String.from("llmrun: a merge is not text")); }
+          case is None { return Err[ModelTokens, String](String.from("llmrun: a merge is not text")); }
         }
         i = i + 1usize;
       }
     }
-    case is None { return Error[ModelTokens, String](String.from("llmrun: the file has no tokenizer.ggml.merges")); }
+    case is None { return Err[ModelTokens, String](String.from("llmrun: the file has no tokenizer.ggml.merges")); }
   }
   let built = bpetokenize.Tokenizer.build(tokens.view(), merges.view(), special.view(), pre);
   match built {
@@ -178,7 +178,7 @@ pub fn loadTokens(model: &gguf.Model) Result[ModelTokens, String] {
       if endOfText != NO_TOKEN { addStop(&mut stops, endOfText); }
       Ok[ModelTokens, String](ModelTokens(tok, stops, hasChatMl, imStart, imEnd, think, thinkEnd))
     }
-    case let Error(e) { Error[ModelTokens, String](e.message()) }
+    case let Err(e) { Err[ModelTokens, String](e.message()) }
   }
 }
 

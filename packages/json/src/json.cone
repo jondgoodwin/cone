@@ -10,7 +10,7 @@
 //     var doc json.Json = json.Json.Null;
 //     match json.parse("{\"name\": \"hello\", \"size\": 12, \"tags\": [\"a\", \"b\"]}") {
 //       case let Ok(ok) { doc = ok; }                 // the tree moved out
-//       case let Error(e) {
+//       case let Err(e) {
 //         let m = e.message();                        // 'json: line 1, column 9: ...'
 //         printStr(m.view());
 //         return 1i32;
@@ -261,7 +261,7 @@ pub enum Json {
 
   // A number given as its text, which must be RFC 8259's grammar
   pub fn fromNumberText(s: &str) Result[Json, NumberError] {
-    if !isNumberText(s) { return Error[Json, NumberError](NumberError.NotANumber); }
+    if !isNumberText(s) { return Err[Json, NumberError](NumberError.NotANumber); }
     Ok[Json, NumberError](Json.Number(String.from(s)))
   }
 
@@ -399,14 +399,14 @@ pub enum Json {
   pub fn asI64(self: &Json) Result[i64, NumberError] {
     match self {
       case let Number(t) { numberI64(t.view()) }
-      else { Error[i64, NumberError](NumberError.NotANumber) }
+      else { Err[i64, NumberError](NumberError.NotANumber) }
     }
   }
 
   pub fn asU64(self: &Json) Result[u64, NumberError] {
     match self {
       case let Number(t) { numberU64(t.view()) }
-      else { Error[u64, NumberError](NumberError.NotANumber) }
+      else { Err[u64, NumberError](NumberError.NotANumber) }
     }
   }
 
@@ -414,7 +414,7 @@ pub enum Json {
   pub fn asF64(self: &Json) Result[f64, NumberError] {
     match self {
       case let Number(t) { numberF64(t.view()) }
-      else { Error[f64, NumberError](NumberError.NotANumber) }
+      else { Err[f64, NumberError](NumberError.NotANumber) }
     }
   }
 
@@ -442,7 +442,7 @@ pub enum Json {
       case let Some(v) {
         match v.asI64() {
           case let Ok(n) { Some[i64](n) }
-          case is Error { None }
+          case is Err { None }
         }
       }
       case is None { None }
@@ -454,7 +454,7 @@ pub enum Json {
       case let Some(v) {
         match v.asU64() {
           case let Ok(n) { Some[u64](n) }
-          case is Error { None }
+          case is Err { None }
         }
       }
       case is None { None }
@@ -466,7 +466,7 @@ pub enum Json {
       case let Some(v) {
         match v.asF64() {
           case let Ok(n) { Some[f64](n) }
-          case is Error { None }
+          case is Err { None }
         }
       }
       case is None { None }
@@ -505,8 +505,8 @@ pub enum Json {
     match self.get(key) {
       case let Some(v) { Ok[&Json, JsonError](v) }
       case is None {
-        if self.isObject() { Error[&Json, JsonError](memberError(key, "is missing")) }
-        else { Error[&Json, JsonError](JsonError.shape("expected an object")) }
+        if self.isObject() { Err[&Json, JsonError](memberError(key, "is missing")) }
+        else { Err[&Json, JsonError](JsonError.shape("expected an object")) }
       }
     }
   }
@@ -516,10 +516,10 @@ pub enum Json {
       case let Ok(v) {
         match v.asText() {
           case let Some(s) { Ok[String, JsonError](String.from(s)) }
-          case is None { Error[String, JsonError](memberError(key, "is not a string")) }
+          case is None { Err[String, JsonError](memberError(key, "is not a string")) }
         }
       }
-      case let Error(e) { Error[String, JsonError](e.copy()) }
+      case let Err(e) { Err[String, JsonError](e.copy()) }
     }
   }
 
@@ -528,10 +528,10 @@ pub enum Json {
       case let Ok(v) {
         match v.asBool() {
           case let Some(b) { Ok[bool, JsonError](b) }
-          case is None { Error[bool, JsonError](memberError(key, "is not true or false")) }
+          case is None { Err[bool, JsonError](memberError(key, "is not true or false")) }
         }
       }
-      case let Error(e) { Error[bool, JsonError](e.copy()) }
+      case let Err(e) { Err[bool, JsonError](e.copy()) }
     }
   }
 
@@ -540,10 +540,10 @@ pub enum Json {
       case let Ok(v) {
         match v.asI64() {
           case let Ok(n) { Ok[i64, JsonError](n) }
-          case let Error(why) { Error[i64, JsonError](numberMemberError(key, &why)) }
+          case let Err(why) { Err[i64, JsonError](numberMemberError(key, &why)) }
         }
       }
-      case let Error(e) { Error[i64, JsonError](e.copy()) }
+      case let Err(e) { Err[i64, JsonError](e.copy()) }
     }
   }
 
@@ -552,10 +552,10 @@ pub enum Json {
       case let Ok(v) {
         match v.asU64() {
           case let Ok(n) { Ok[u64, JsonError](n) }
-          case let Error(why) { Error[u64, JsonError](numberMemberError(key, &why)) }
+          case let Err(why) { Err[u64, JsonError](numberMemberError(key, &why)) }
         }
       }
-      case let Error(e) { Error[u64, JsonError](e.copy()) }
+      case let Err(e) { Err[u64, JsonError](e.copy()) }
     }
   }
 
@@ -564,10 +564,10 @@ pub enum Json {
       case let Ok(v) {
         match v.asF64() {
           case let Ok(x) { Ok[f64, JsonError](x) }
-          case let Error(why) { Error[f64, JsonError](numberMemberError(key, &why)) }
+          case let Err(why) { Err[f64, JsonError](numberMemberError(key, &why)) }
         }
       }
-      case let Error(e) { Error[f64, JsonError](e.copy()) }
+      case let Err(e) { Err[f64, JsonError](e.copy()) }
     }
   }
 
@@ -609,7 +609,7 @@ pub fn parseWith(text: &Array[u8], opts: &Options) Result[Json, JsonError] {
   while true {
     var ev: Event = Event.Done;
     match r.next() {
-      case let Error(e) { return Error[Json, JsonError](e.copy()); }
+      case let Err(e) { return Err[Json, JsonError](e.copy()); }
       case let Ok(got) { ev = got; }
     }
     if ev == Event.Done { break; }
@@ -619,7 +619,7 @@ pub fn parseWith(text: &Array[u8], opts: &Options) Result[Json, JsonError] {
         var m = String.from("the name \"");
         m.append(r.text());
         m.append("\" is already in this object");
-        return Error[Json, JsonError](errorAt(text, r.offset(), ErrorKind.DuplicateKey, m.view()));
+        return Err[Json, JsonError](errorAt(text, r.offset(), ErrorKind.DuplicateKey, m.view()));
       }
       keys.push(String.from(r.text()));
       continue;

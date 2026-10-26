@@ -17,15 +17,15 @@ fn main() i32 {
   if !fs.exists(&Path.from("C:/src/speech-models/kokoro/voices/af_heart.safetensors")) {
     return skip("the converted voices are not in C:/src/speech-models/kokoro/voices");
   }
-  let heart = match Voice.load(dir, "af_heart") { case var Ok(v) { v } case let Error(m) { print <- m.view(), "\n"; return 1i32; } };
-  let emma = match Voice.load(dir, "bf_emma") { case var Ok(v) { v } case let Error(m) { print <- m.view(), "\n"; return 1i32; } };
+  let heart = match Voice.load(dir, "af_heart") { case var Ok(v) { v } case let Err(m) { print <- m.view(), "\n"; return 1i32; } };
+  let emma = match Voice.load(dir, "bf_emma") { case var Ok(v) { v } case let Err(m) { print <- m.view(), "\n"; return 1i32; } };
   expectUInt(u64.from(heart.pack.len()), u64.from(STYLE_ROWS * STYLE_WIDTH), "a voice is 510 rows of 256");
   expectUInt(u64.from(heart.style(1usize).len), 256u64, "a style is 256 floats");
   expectBool(heart.style(0usize)[0usize] == heart.style(1usize)[0usize], true, "a string of 0 phonemes uses the row of 1");
   expectBool(heart.style(9999usize)[5usize] == heart.style(510usize)[5usize], true, "a string over 510 uses the last row");
 
   // a blend of a voice with itself is the voice
-  let same = match Voice.load(dir, "af_heart:0.3,af_heart:0.7") { case var Ok(v) { v } case let Error(m) { print <- m.view(), "\n"; return 1i32; } };
+  let same = match Voice.load(dir, "af_heart:0.3,af_heart:0.7") { case var Ok(v) { v } case let Err(m) { print <- m.view(), "\n"; return 1i32; } };
   var worst = 0.0;
   var i = 0usize;
   while i < heart.pack.len() {
@@ -36,7 +36,7 @@ fn main() i32 {
   expect(worst < 0.000001, "af_heart:0.3,af_heart:0.7 is af_heart");
 
   // a weighted blend is the weighted mean
-  let mix = match Voice.load(dir, "af_heart:0.7,bf_emma:0.3") { case var Ok(v) { v } case let Error(m) { print <- m.view(), "\n"; return 1i32; } };
+  let mix = match Voice.load(dir, "af_heart:0.7,bf_emma:0.3") { case var Ok(v) { v } case let Err(m) { print <- m.view(), "\n"; return 1i32; } };
   worst = 0.0;
   i = 0usize;
   while i < heart.pack.len() {
@@ -47,19 +47,19 @@ fn main() i32 {
   }
   expect(worst < 0.000001, "af_heart:0.7,bf_emma:0.3 is 0.7 of one and 0.3 of the other");
   // weights are divided by their sum, and the plain mean when there are none
-  let big = match Voice.load(dir, "af_heart:7,bf_emma:3") { case var Ok(v) { v } case let Error(m) { print <- m.view(), "\n"; return 1i32; } };
+  let big = match Voice.load(dir, "af_heart:7,bf_emma:3") { case var Ok(v) { v } case let Err(m) { print <- m.view(), "\n"; return 1i32; } };
   expect(libc.fabs(f64.from(*big.pack[100usize]) - f64.from(*mix.pack[100usize])) < 0.000001, "weights 7 and 3 are weights 0.7 and 0.3");
-  let mean = match Voice.load(dir, "af_heart,bf_emma") { case var Ok(v) { v } case let Error(m) { print <- m.view(), "\n"; return 1i32; } };
+  let mean = match Voice.load(dir, "af_heart,bf_emma") { case var Ok(v) { v } case let Err(m) { print <- m.view(), "\n"; return 1i32; } };
   expect(libc.fabs(f64.from(*mean.pack[100usize]) - 0.5 * (f64.from(*heart.pack[100usize]) + f64.from(*emma.pack[100usize]))) < 0.000001, "no weights is the mean");
   // refusals
   var refused = true;
-  match Voice.load(dir, "no_such_voice") { case is Ok { refused = false; } case is Error {} }
+  match Voice.load(dir, "no_such_voice") { case is Ok { refused = false; } case is Err {} }
   expectBool(refused, true, "an unknown voice is refused");
   refused = true;
-  match Voice.load(dir, "af_heart:x") { case is Ok { refused = false; } case is Error {} }
+  match Voice.load(dir, "af_heart:x") { case is Ok { refused = false; } case is Err {} }
   expectBool(refused, true, "a weight that is not a number is refused");
   refused = true;
-  match Voice.load(dir, "af_heart:0") { case is Ok { refused = false; } case is Error {} }
+  match Voice.load(dir, "af_heart:0") { case is Ok { refused = false; } case is Err {} }
   expectBool(refused, true, "weights that add to 0 are refused");
   done()
 }

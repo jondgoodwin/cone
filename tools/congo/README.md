@@ -1044,7 +1044,7 @@ its packages folder.
 
 Cone has no exceptions, so what `congo test` goes on after (a source it
 cannot scan or resolve, a compile or link that fails, no `conec` or linker)
-is answered as a value, a `Result` whose `Error` is the message `congo.py`'s
+is answered as a value, a `Result` whose `Err` is the message `congo.py`'s
 `CongoError` carries; `build` and `run` end on the first, as `congo.py` does.
 As in `congo.py`, a test's build shares one session with the package's: each
 package is compiled into the build folder once, and the linker is found once.

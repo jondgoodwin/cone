@@ -6,7 +6,7 @@ length, a JSON header, then the tensors' raw bytes. No GPU; depends on `collecti
 ```cone
 import safetensors use *;
 
-let file = match openSafetensors(&Path.from("model.safetensors")) { case var Ok(f) { f } case let Error(m) { ... } };
+let file = match openSafetensors(&Path.from("model.safetensors")) { case var Ok(f) { f } case let Err(m) { ... } };
 match file.header.find("layers.0.weight") {
   case let Some(t) { /* t.dtype, t.shape, t.rows(), t.cols(), t.begin, t.end */ }
   case is None {}

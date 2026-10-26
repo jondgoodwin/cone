@@ -18,7 +18,7 @@ fn load(name: &str) String {
   p.append(name);
   match fs.readFile(&Path.from(p.view())) {
     case let Ok(s) { s }
-    case let Error(e) {
+    case let Err(e) {
       expect(false, "a fixture is missing");
       String.empty()
     }
@@ -99,7 +99,7 @@ fn expectData(ar: &Archive, data: &Array[u8], name: &str, want: &Array[u8]) {
     case let Some(i) {
       match ar.read(data, i) {
         case let Ok(got) { expect(got.view() == want, label.view()); }
-        case let Error(e) { expect(false, why(label.view(), &e).view()); }
+        case let Err(e) { expect(false, why(label.view(), &e).view()); }
       }
     }
     case is None { expect(false, labelled("missing", name).view()); }
@@ -109,7 +109,7 @@ fn expectData(ar: &Archive, data: &Array[u8], name: &str, want: &Array[u8]) {
 // The whole entry through an EntryReader, 'piece' bytes a pull, none over the piece
 fn streamAll(ar: &Archive, data: &Array[u8], i: usize, piece: usize, pulls: &mut usize) Result[List[u8], ZipError] {
   match ar.reader(data, i) {
-    case let Error(e) { return Error[List[u8], ZipError](e); }
+    case let Err(e) { return Err[List[u8], ZipError](e); }
     case var Ok(r) {
       var all = List[u8].empty();
       var chunk = List[u8].empty();
@@ -122,7 +122,7 @@ fn streamAll(ar: &Archive, data: &Array[u8], i: usize, piece: usize, pulls: &mut
         while k < chunk.len() { all.push(*chunk[k]); k += 1usize; }
         if s == Status.Failed {
           match r.error() {
-            case let Some(e) { return Error[List[u8], ZipError](e); }
+            case let Some(e) { return Err[List[u8], ZipError](e); }
             case is None { expect(false, "a failed reader has an error"); }
           }
         }
@@ -137,7 +137,7 @@ fn streamAll(ar: &Archive, data: &Array[u8], i: usize, piece: usize, pulls: &mut
 fn kindOf(r: &Result[List[u8], ZipError]) Option[ErrorKind] {
   match r {
     case let Ok(b) { None[ErrorKind] }
-    case let Error(e) { Some[ErrorKind](e.kind) }
+    case let Err(e) { Some[ErrorKind](e.kind) }
   }
 }
 
@@ -184,7 +184,7 @@ fn reasonOf(ar: &Archive, data: &Array[u8], name: &str) String {
     case let Some(i) {
       match ar.read(data, i) {
         case let Ok(b) { String.empty() }
-        case let Error(e) { e.reason.copy() }
+        case let Err(e) { e.reason.copy() }
       }
     }
     case is None { String.empty() }
@@ -196,7 +196,7 @@ fn exists(p: &str) bool { fs.exists(&Path.from(p)) }
 fn fileIs(p: &str, want: &Array[u8]) bool {
   match fs.readFile(&Path.from(p)) {
     case let Ok(s) { s.view() == want }
-    case let Error(e) { false }
+    case let Err(e) { false }
   }
 }
 
@@ -213,7 +213,7 @@ fn main() i32 {
   // ---------------- method 93 entries of several sizes ----------------
   let basic = load("zstd-basic.zip");
   match Archive.open(basic.view()) {
-    case let Error(e) { expect(false, why("zstd-basic opens", &e).view()); }
+    case let Err(e) { expect(false, why("zstd-basic opens", &e).view()); }
     case let Ok(ar) {
       expectUInt(u64.from(ar.count()), 10u64, "zstd-basic: ten entries");
       var k = 0usize;
@@ -237,7 +237,7 @@ fn main() i32 {
       expectData(&ar, basic.view(), "flags/nosum.txt", lorem.view());
       expectData(&ar, basic.view(), "flags/flushed.txt", lorem.view());
       expectData(&ar, basic.view(), "flags/frames.txt", cat(hello.view(), lorem.view()).view());
-      expect(ar.readNamed(basic.view(), "nothing/here.txt") is Error, "a missing name is an error");
+      expect(ar.readNamed(basic.view(), "nothing/here.txt") is Err, "a missing name is an error");
 
       // ---------------- streamed, in pieces of every size ----------------
       let sizes: Array[usize, 6] = [1usize, 7usize, 4096usize, 16090usize, 65536usize, 1048576usize];
@@ -249,7 +249,7 @@ fn main() i32 {
             expect(got.view() == lorem.view(), "streamed lorem.txt, pieces of one size or another");
             expect(pulls >= (16090usize + sizes[s] - 1usize) / sizes[s], "streamed lorem.txt: at least size/piece pulls");
           }
-          case let Error(e) { expect(false, why("streamed lorem.txt", &e).view()); }
+          case let Err(e) { expect(false, why("streamed lorem.txt", &e).view()); }
         }
         s += 1usize;
       }
@@ -260,25 +260,25 @@ fn main() i32 {
           expect(got.view() == rows.view(), "streamed rows.txt in 50000-byte pieces");
           expect(rp >= 7usize, "rows.txt came out in at least 7 pulls");
         }
-        case let Error(e) { expect(false, why("streamed rows.txt", &e).view()); }
+        case let Err(e) { expect(false, why("streamed rows.txt", &e).view()); }
       }
       // The odd ones: no bytes, a skippable frame between two frames, the stream cut into flushed blocks
       var np = 0usize;
       match streamAll(&ar, basic.view(), 3usize, 10usize, &mut np) {
         case let Ok(got) { expectInt(i64.from(got.len()), 0i64, "streamed nobytes.txt: no bytes"); }
-        case let Error(e) { expect(false, why("streamed nobytes.txt", &e).view()); }
+        case let Err(e) { expect(false, why("streamed nobytes.txt", &e).view()); }
       }
       match streamAll(&ar, basic.view(), 2usize, 10usize, &mut np) {
         case let Ok(got) { expectInt(i64.from(got.len()), 0i64, "streamed empty.txt: no bytes"); }
-        case let Error(e) { expect(false, why("streamed empty.txt", &e).view()); }
+        case let Err(e) { expect(false, why("streamed empty.txt", &e).view()); }
       }
       match streamAll(&ar, basic.view(), 9usize, 333usize, &mut np) {
         case let Ok(got) { expect(got.view() == cat(hello.view(), lorem.view()).view(), "streamed frames.txt (two frames and a skippable one)"); }
-        case let Error(e) { expect(false, why("streamed frames.txt", &e).view()); }
+        case let Err(e) { expect(false, why("streamed frames.txt", &e).view()); }
       }
       match streamAll(&ar, basic.view(), 8usize, 333usize, &mut np) {
         case let Ok(got) { expect(got.view() == lorem.view(), "streamed flushed.txt (a block per 1000 bytes)"); }
-        case let Error(e) { expect(false, why("streamed flushed.txt", &e).view()); }
+        case let Err(e) { expect(false, why("streamed flushed.txt", &e).view()); }
       }
       // random access: an entry late in the archive without the others
       expectData(&ar, basic.view(), "flags/frames.txt", cat(hello.view(), lorem.view()).view());
@@ -304,10 +304,10 @@ fn main() i32 {
                 case let Ok(ba) {
                   match ba.read(b.view(), i) {
                     case let Ok(got) { if got.view() != hello.view() { expect(false, "a flipped bit gave wrong bytes"); } }
-                    case is Error { refused += 1usize; }
+                    case is Err { refused += 1usize; }
                   }
                 }
-                case is Error { expect(false, "the flipped archive no longer opens"); }
+                case is Err { expect(false, "the flipped archive no longer opens"); }
               }
               b.set(at, *b[at] ^ (1u8 << bit));
               flips += 1usize;
@@ -324,7 +324,7 @@ fn main() i32 {
       // ---------------- extraction ----------------
       clean("x-zstd-basic");
       match ar.extractAll(basic.view(), &Path.from("x-zstd-basic"), &safe) {
-        case let Error(e) { expect(false, why("extractAll", &e).view()); }
+        case let Err(e) { expect(false, why("extractAll", &e).view()); }
         case let Ok(got) {
           expectUInt(u64.from(got.files), 10u64, "extractAll: ten files");
           expectUInt(got.bytes, 13u64 + 16090u64 + 0u64 + 0u64 + 2000u64 + 3000u64 + 328890u64 + 16090u64 + 16090u64 + 16103u64,
@@ -342,7 +342,7 @@ fn main() i32 {
       clean("x-zstd-basic");
       clean("x-zstd-one");
       match ar.extractOne(basic.view(), 6usize, &Path.from("x-zstd-one"), &safe) {
-        case let Error(e) { expect(false, why("extractOne", &e).view()); }
+        case let Err(e) { expect(false, why("extractOne", &e).view()); }
         case let Ok(got) { expectUInt(got.bytes, 328890u64, "extractOne: rows.txt's bytes"); }
       }
       expect(fileIs("x-zstd-one/big/rows.txt", rows.view()), "extractOne wrote rows.txt");
@@ -354,7 +354,7 @@ fn main() i32 {
   // ---------------- stored, deflate and zstd in one archive ----------------
   let mixed = load("zstd-mixed.zip");
   match Archive.open(mixed.view()) {
-    case let Error(e) { expect(false, why("zstd-mixed opens", &e).view()); }
+    case let Err(e) { expect(false, why("zstd-mixed opens", &e).view()); }
     case let Ok(ar) {
       expectUInt(u64.from(ar.count()), 10u64, "zstd-mixed: ten entries");
       expectUInt(u64.from(ar.entry(0usize).method), 0u64, "a-stored.txt is stored");
@@ -381,10 +381,10 @@ fn main() i32 {
             case let Ok(x) {
               match b {
                 case let Ok(y) { if x.view() == y.view() { same += 1usize; } }
-                case is Error {}
+                case is Err {}
               }
             }
-            case is Error {}
+            case is Err {}
           }
         }
         i += 1usize;
@@ -392,7 +392,7 @@ fn main() i32 {
       expectUInt(u64.from(same), 9u64, "streamed and whole reads agree on all nine files");
       clean("x-zstd-mixed");
       match ar.extractAll(mixed.view(), &Path.from("x-zstd-mixed"), &safe) {
-        case let Error(e) { expect(false, why("extractAll mixed", &e).view()); }
+        case let Err(e) { expect(false, why("extractAll mixed", &e).view()); }
         case let Ok(got) {
           expectUInt(u64.from(got.files), 9u64, "extractAll mixed: nine files");
           expectUInt(u64.from(got.folders), 1u64, "extractAll mixed: one folder");
@@ -410,7 +410,7 @@ fn main() i32 {
   // ---------------- damaged entries ----------------
   let bad = load("zstd-bad.zip");
   match Archive.open(bad.view()) {
-    case let Error(e) { expect(false, why("zstd-bad opens", &e).view()); }
+    case let Err(e) { expect(false, why("zstd-bad opens", &e).view()); }
     case let Ok(ar) {
       expectData(&ar, bad.view(), "first-ok.txt", lorem.view());
       expectData(&ar, bad.view(), "last-ok.txt", hello.view());
@@ -435,7 +435,7 @@ fn main() i32 {
       clean("x-zstd-bad");
       match ar.extractAll(bad.view(), &Path.from("x-zstd-bad"), &safe) {
         case let Ok(got) { expect(false, "extractAll of a damaged archive succeeded"); }
-        case let Error(e) { expect(e.kind == ErrorKind.BadData || e.kind == ErrorKind.BadChecksum, "extractAll stops with the damage's kind"); }
+        case let Err(e) { expect(e.kind == ErrorKind.BadData || e.kind == ErrorKind.BadChecksum, "extractAll stops with the damage's kind"); }
       }
       expect(fileIs("x-zstd-bad/first-ok.txt", lorem.view()), "extraction kept the good entry before the bad one");
       expect(!exists("x-zstd-bad/flipped.txt"), "and removed the bad entry's file");
@@ -449,7 +449,7 @@ fn main() i32 {
   // capped-run with a small cap to see that nothing big is allocated.
   let win = load("zstd-window.zip");
   match Archive.open(win.view()) {
-    case let Error(e) { expect(false, why("zstd-window opens", &e).view()); }
+    case let Err(e) { expect(false, why("zstd-window opens", &e).view()); }
     case let Ok(ar) {
       expectData(&ar, win.view(), "ok.txt", hello.view());
       expectData(&ar, win.view(), "w27.txt", "hello");
@@ -461,7 +461,7 @@ fn main() i32 {
       clean("x-zstd-win");
       match ar.extractAll(win.view(), &Path.from("x-zstd-win"), &safe) {
         case let Ok(got) { expect(false, "extractAll of a window bomb succeeded"); }
-        case let Error(e) { expect(e.kind == ErrorKind.TooLarge, "extraction refuses the window (TooLarge)"); }
+        case let Err(e) { expect(e.kind == ErrorKind.TooLarge, "extraction refuses the window (TooLarge)"); }
       }
       expect(!exists("x-zstd-win/w28.txt"), "and no file is made for it");
       clean("x-zstd-win");
@@ -471,7 +471,7 @@ fn main() i32 {
   // ---------------- other methods are still refused, and the message says what is read ----------------
   let lz = load("hand-lzma.zip");
   match Archive.open(lz.view()) {
-    case let Error(e) { expect(false, "hand-lzma lists"); }
+    case let Err(e) { expect(false, "hand-lzma lists"); }
     case let Ok(ar) {
       expectRefused(&ar, lz.view(), "x.lzma", ErrorKind.Unsupported);
       expect(reasonOf(&ar, lz.view(), "x.lzma").contains("zstd"), "the Unsupported message lists zstd among the methods read");

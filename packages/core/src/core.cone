@@ -77,11 +77,11 @@ pub enum Option[T] {
     }
   }
 
-  // A Result: Ok of the value, or Error(e) on None
+  // A Result: Ok of the value, or Err(e) on None
   pub fn okOr[E](self: Option[T], e: E) Result[T, E] inline {
     match self {
       case let Some(v) { Ok[T, E](v) }
-      case is None { Error[T, E](e) }
+      case is None { Err[T, E](e) }
     }
   }
 
@@ -126,64 +126,64 @@ pub enum Option[T] {
 
 pub enum Result[T,E] {
   Ok(T);
-  Error(E);
+  Err(E);
 
   // THE HELPERS, as Option's are: each takes the whole Result, and those that take
   // 'self' by value consume it
 
-  // What Ok holds; a panic at the caller's line on an Error
+  // What Ok holds; a panic at the caller's line on an Err
   pub fn unwrap(self: Result[T, E], file: &Array[u8] = srcFile(), line: u32 = srcLine()) T inline {
     match self {
       case let Ok(v) { v }
-      case is Error { panic("unwrap of an Error", file, line) }
+      case is Err { panic("unwrap of an Error", file, line) }
     }
   }
 
-  // What Ok holds; a panic with msg at the caller's line on an Error
+  // What Ok holds; a panic with msg at the caller's line on an Err
   pub fn expect(self: Result[T, E], msg: &str, file: &Array[u8] = srcFile(), line: u32 = srcLine()) T inline {
     match self {
       case let Ok(v) { v }
-      case is Error { panic(msg, file, line) }
+      case is Err { panic(msg, file, line) }
     }
   }
 
-  // Ok of what 'f' makes of the value; an Error passes through as it is
+  // Ok of what 'f' makes of the value; an Err passes through as it is
   pub fn map[U, F: fn(x: T) U](self: Result[T, E], f: F) Result[U, E] inline {
     match self {
       case let Ok(v) { Ok[U, E](f(v)) }
-      case let Error(e) { Error[U, E](e) }
+      case let Err(e) { Err[U, E](e) }
     }
   }
 
-  // Error of what 'f' makes of the error; Ok passes through as it is
+  // Err of what 'f' makes of the error; Ok passes through as it is
   pub fn mapError[D, F: fn(x: E) D](self: Result[T, E], f: F) Result[T, D] inline {
     match self {
       case let Ok(v) { Ok[T, D](v) }
-      case let Error(e) { Error[T, D](f(e)) }
+      case let Err(e) { Err[T, D](f(e)) }
     }
   }
 
-  // What 'f' answers for the value, itself a Result; an Error passes through
+  // What 'f' answers for the value, itself a Result; an Err passes through
   pub fn andThen[U, F: fn(x: T) Result[U, E]](self: Result[T, E], f: F) Result[U, E] inline {
     match self {
       case let Ok(v) { f(v) }
-      case let Error(e) { Error[U, E](e) }
+      case let Err(e) { Err[U, E](e) }
     }
   }
 
-  // An Option of the value: Some on Ok, None on an Error (the error is dropped)
+  // An Option of the value: Some on Ok, None on an Err (the error is dropped)
   pub fn ok(self: Result[T, E]) Option[T] inline {
     match self {
       case let Ok(v) { Some[T](v) }
-      case is Error { None[T] }
+      case is Err { None[T] }
     }
   }
 
-  // An Option of the error: Some on an Error, None on Ok (the value is dropped)
+  // An Option of the error: Some on an Err, None on Ok (the value is dropped)
   pub fn error(self: Result[T, E]) Option[E] inline {
     match self {
       case is Ok { None[E] }
-      case let Error(e) { Some[E](e) }
+      case let Err(e) { Some[E](e) }
     }
   }
 
@@ -192,7 +192,7 @@ pub enum Result[T,E] {
   pub fn asRef(self: &Result[T, E]) Result[&T, &E] inline {
     match self {
       case let Ok(v) { Ok[&T, &E](v) }
-      case let Error(e) { Error[&T, &E](e) }
+      case let Err(e) { Err[&T, &E](e) }
     }
   }
 
@@ -200,22 +200,22 @@ pub enum Result[T,E] {
   pub fn asMut(self: &mut Result[T, E]) Result[&mut T, &mut E] inline {
     match self {
       case let Ok(v) { Ok[&mut T, &mut E](v) }
-      case let Error(e) { Error[&mut T, &mut E](e) }
+      case let Err(e) { Err[&mut T, &mut E](e) }
     }
   }
 
   // A Result of a Result with the same error, one level removed: what the inner one
-  // is, or the outer Error
+  // is, or the outer Err
   pub fn flatten[U](self: Result[Result[U, E], E]) Result[U, E] inline {
     match self {
       case let Ok(inner) { inner }
-      case let Error(e) { Error[U, E](e) }
+      case let Err(e) { Err[U, E](e) }
     }
   }
 }
 
 // A variant is a name of its enum, so these two statements are what make Some,
-// None, Ok and Error bare names of core. They are 'pub', and every module's
+// None, Ok and Err bare names of core. They are 'pub', and every module's
 // automatic import of core folds its public names, which carries them on into
 // every program
 pub use Option;

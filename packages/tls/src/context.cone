@@ -200,7 +200,7 @@ pub struct Client {
   // holding no certificate)
   pub fn make(cfg: ClientConfig) Result[Client, TlsError] {
     let ctx = newCtx(TLS_client_method(), cfg.minVersion, cfg.maxVersion);
-    if ctx as usize == 0usize {return Error[Client, TlsError](configError("SSL_CTX_new failed"));}
+    if ctx as usize == 0usize {return Err[Client, TlsError](configError("SSL_CTX_new failed"));}
     // Sessions are cached here, not in OpenSSL's own cache: OpenSSL hands
     // each over as it comes (see the header)
     let resume = cfg.resume && ticketSlot() >= 0i32;
@@ -223,7 +223,7 @@ pub struct Client {
       let n = loadRoots(ctx, cfg.verify.bundle.view());
       if n == 0u32 {
         SSL_CTX_free(ctx);
-        return Error[Client, TlsError](configError("the root bundle holds no certificate"));
+        return Err[Client, TlsError](configError("the root bundle holds no certificate"));
       }
     } else {
       // The OS's verifier and pinning: OpenSSL hands the chain to
@@ -287,24 +287,24 @@ pub struct Server {
   // could not be read, a key that is not the certificate's)
   pub fn make(cfg: ServerConfig) Result[Server, TlsError] {
     let ctx = newCtx(TLS_server_method(), cfg.minVersion, cfg.maxVersion);
-    if ctx as usize == 0usize {return Error[Server, TlsError](configError("SSL_CTX_new failed"));}
+    if ctx as usize == 0usize {return Err[Server, TlsError](configError("SSL_CTX_new failed"));}
     var cert = String.from(cfg.certFile.view());
     if SSL_CTX_use_certificate_chain_file(ctx, cert.cstr()) != 1i32 {
       SSL_CTX_free(ctx);
       var what = String.from("the certificate chain could not be loaded from ");
       what.append(cfg.certFile.view());
-      return Error[Server, TlsError](configError(what.view()));
+      return Err[Server, TlsError](configError(what.view()));
     }
     var key = String.from(cfg.keyFile.view());
     if SSL_CTX_use_PrivateKey_file(ctx, key.cstr(), filetypePem) != 1i32 {
       SSL_CTX_free(ctx);
       var what = String.from("the private key could not be loaded from ");
       what.append(cfg.keyFile.view());
-      return Error[Server, TlsError](configError(what.view()));
+      return Err[Server, TlsError](configError(what.view()));
     }
     if SSL_CTX_check_private_key(ctx) != 1i32 {
       SSL_CTX_free(ctx);
-      return Error[Server, TlsError](configError("the private key is not the certificate's"));
+      return Err[Server, TlsError](configError("the private key is not the certificate's"));
     }
     // The ALPN list the select callback chooses from: its length, then the
     // wire format, in memory the state frees

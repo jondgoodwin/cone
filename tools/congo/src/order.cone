@@ -41,24 +41,24 @@ fn resolveImports(reg: &Registry, p: usize, scanned: List[Module]) Result[Unit, 
     let fromGpu = mods[m].gpu && mods[m].hasParent && !mods[mods[m].parent].gpu;
     var sister = 0usize;
     if fromGpu && mods[m].hasExtends && sisterNamed(&mods, m, mods[m].extended.name.view(), &mut sister) && !mods[sister].gpu {
-      return Error[Unit, String](gpuUsesSrc(pkg, &mods[m].extended, "extends", &mods, true, sister));
+      return Err[Unit, String](gpuUsesSrc(pkg, &mods[m].extended, "extends", &mods, true, sister));
     }
     var i = 0usize;
     while i < imports.len() {
       let imp = imports[i];
       if !imp.hasName {
         let place = imp.location();
-        return Error[Unit, String](cat(place.view(), ": import ", imp.written.view(),
+        return Err[Unit, String](cat(place.view(), ": import ", imp.written.view(),
           ": a Congo build imports a package by its name, not by a path"));
       }
       else if sisterNamed(&mods, m, imp.name.view(), &mut sister) {
         // a sister, answered inside the package
         if fromGpu && !mods[sister].gpu {
-          return Error[Unit, String](gpuUsesSrc(pkg, imp, "import", &mods, true, sister));
+          return Err[Unit, String](gpuUsesSrc(pkg, imp, "import", &mods, true, sister));
         }
       }
       else if fromGpu && !imp.name.equals("core") && !reg.has(imp.name.view()) {
-        return Error[Unit, String](gpuUsesSrc(pkg, imp, "import", &mods, false, 0usize));
+        return Err[Unit, String](gpuUsesSrc(pkg, imp, "import", &mods, false, 0usize));
       }
       else if imp.name.equals("core") {
         // The prelude is loaded already; an explicit import of it names the
@@ -81,7 +81,7 @@ fn resolveImports(reg: &Registry, p: usize, scanned: List[Module]) Result[Unit, 
             if !mods[m].hasParent {
               let place = imp.location();
               let searched = reg.searched();
-              return Error[Unit, String](cat(place.view(), ": import ", imp.name.view(), ": no package named '", imp.name.view(),
+              return Err[Unit, String](cat(place.view(), ": import ", imp.name.view(), ": no package named '", imp.name.view(),
                 "' in the registries searched: ", searched.view()));
             }
           }
@@ -93,7 +93,7 @@ fn resolveImports(reg: &Registry, p: usize, scanned: List[Module]) Result[Unit, 
   }
   match checkModuleLoops(pkg, &mods, reg) {
     case is Ok {}
-    case let Error(e) { return Error[Unit, String](e.copy()); }
+    case let Err(e) { return Err[Unit, String](e.copy()); }
   }
   // Only what is compiled for the GPU has its kernels built, so only its
   // source is read past the headers: a marked package's, or its gpu/ folder's
@@ -105,7 +105,7 @@ fn resolveImports(reg: &Registry, p: usize, scanned: List[Module]) Result[Unit, 
       while f < mods[m].files.len() && !kernels {
         match holdsKernel(mods[m].files[f]) {
           case let Ok(ok) { kernels = ok; }
-          case let Error(e) { return Error[Unit, String](e.copy()); }
+          case let Err(e) { return Err[Unit, String](e.copy()); }
         }
         f = f + 1usize;
       }
@@ -220,12 +220,12 @@ struct Plan {
     var scanned = List[Module].empty();
     match scanPackage(reg.packages[p]) {
       case var Ok(ok) { scanned <-> ok; }
-      case let Error(e) { return Error[void, String](e.copy()); }
+      case let Err(e) { return Err[void, String](e.copy()); }
     }
     var unit = Unit(p, List[Module].empty(), List[usize].empty(), false, false, List[usize].empty());
     match resolveImports(reg, p, scanned) {
       case var Ok(ok) { unit <-> ok; }
-      case let Error(e) { return Error[void, String](e.copy()); }
+      case let Err(e) { return Err[void, String](e.copy()); }
     }
     units.push(unit);
     let u = units.len() - 1usize;
@@ -253,13 +253,13 @@ struct Plan {
           j = j + 1usize;
         }
         chain <- depName;
-        return Error[void, String](cat("import loop between packages: ", chain.view(), ". Imports between packages must not loop (",
+        return Err[void, String](cat("import loop between packages: ", chain.view(), ". Imports between packages must not loop (",
           text.view(), ")."));
       }
       if self.stateOf(depName) == unvisited {
         match self.visit(reg, dep) {
           case is Ok {}
-          case let Error(e) { return Error[void, String](e.copy()); }
+          case let Err(e) { return Err[void, String](e.copy()); }
         }
       }
       d = d + 1usize;
@@ -300,12 +300,12 @@ fn buildOrder(reg: &Registry, top: usize) Result[Plan, String] {
       case let Some(c) { core = c; }
       case is None {
         let searched = reg.searched();
-        return Error[Plan, String](cat("no package named 'core', the prelude, in the registries searched: ", searched.view()));
+        return Err[Plan, String](cat("no package named 'core', the prelude, in the registries searched: ", searched.view()));
       }
     }
     match plan.visit(reg, core) {
       case is Ok {}
-      case let Error(e) { return Error[Plan, String](e.copy()); }
+      case let Err(e) { return Err[Plan, String](e.copy()); }
     }
     if plan.state.contains(topName) {
       // One of core's own imports: built with what it imports, and no core
@@ -314,7 +314,7 @@ fn buildOrder(reg: &Registry, top: usize) Result[Plan, String] {
   }
   match plan.visit(reg, top) {
     case is Ok {}
-    case let Error(e) { return Error[Plan, String](e.copy()); }
+    case let Err(e) { return Err[Plan, String](e.copy()); }
   }
   Ok[Plan, String](plan)
 }

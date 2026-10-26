@@ -136,15 +136,15 @@ pub struct ChatRequest {
 pub fn httpRequest(ep: &Endpoint, req: &ChatRequest, stream: bool) Result[httpclient.Request, ChatError] {
   let why = req.problem();
   if why.len() > 0usize {
-    return Error[httpclient.Request, ChatError](ChatError.make(ChatErrorKind.Request, why));
+    return Err[httpclient.Request, ChatError](ChatError.make(ChatErrorKind.Request, why));
   }
   let tree = req.toJson(stream, ep.maxCompletionTokens);
   let body = match tree.toText() {
     case let Ok(t) {t}
-    case let Error(e) {
+    case let Err(e) {
       var d = String.from("the request cannot be written as JSON: ");
       d.append(e.reason.view());
-      return Error[httpclient.Request, ChatError](ChatError.make(ChatErrorKind.Request, d.view()));
+      return Err[httpclient.Request, ChatError](ChatError.make(ChatErrorKind.Request, d.view()));
     }
   };
   var r = httpclient.Request.make("POST", ep.url().view());
@@ -166,7 +166,7 @@ pub fn httpRequest(ep: &Endpoint, req: &ChatRequest, stream: bool) Result[httpcl
           var d = String.from("the API key in ");
           d.append(ep.keyEnv.view());
           d.append(" cannot be sent as a header field (it holds a line break or a control character)");
-          return Error[httpclient.Request, ChatError](ChatError.make(ChatErrorKind.Request, d.view()));
+          return Err[httpclient.Request, ChatError](ChatError.make(ChatErrorKind.Request, d.view()));
         }
       }
       case is None {return noKey(ep);}
@@ -180,5 +180,5 @@ fn noKey(ep: &Endpoint) Result[httpclient.Request, ChatError] {
   var d = String.from("the environment variable ");
   d.append(ep.keyEnv.view());
   d.append(" holds no API key");
-  Error[httpclient.Request, ChatError](ChatError.make(ChatErrorKind.NoKey, d.view()))
+  Err[httpclient.Request, ChatError](ChatError.make(ChatErrorKind.NoKey, d.view()))
 }

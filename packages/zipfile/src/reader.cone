@@ -119,7 +119,7 @@ fn descriptorFault(name: &str, flags: u16, crc: u32, csize: u64, size: u64, data
 //       // Done: the size and the CRC-32 matched. Failed: 'r.error()' says why; what was delivered
 //       // before the failure is data the archive held, but not yet checked.
 //     }
-//     case let Error(e) { ... }
+//     case let Err(e) { ... }
 //   }
 pub struct EntryReader {
   label: String;
@@ -314,7 +314,7 @@ pub struct EntryReader {
 // A reader for entry 'i'
 fn openEntry(ar: &Archive, data: &Array[u8], i: usize) Result[EntryReader, ZipError] {
   match locate(ar, data, i) {
-    case let Error(e) { Error[EntryReader, ZipError](e) }
+    case let Err(e) { Err[EntryReader, ZipError](e) }
     case let Ok(loc) {
       let e = ar.entry(i);
       var inf = deflate.Inflater.make(deflate.Format.Raw);
@@ -332,7 +332,7 @@ fn openEntry(ar: &Archive, data: &Array[u8], i: usize) Result[EntryReader, ZipEr
 fn readEntry(ar: &Archive, data: &Array[u8], i: usize) Result[List[u8], ZipError] {
   if i < ar.count() && ar.entry(i).method == methodZstd() { return readZstdEntry(ar, data, i); }
   match locate(ar, data, i) {
-    case let Error(e) { return Error[List[u8], ZipError](e); }
+    case let Err(e) { return Err[List[u8], ZipError](e); }
     case let Ok(loc) {
       let e = ar.entry(i);
       let from = usize.from(loc.start);
@@ -345,7 +345,7 @@ fn readEntry(ar: &Archive, data: &Array[u8], i: usize) Result[List[u8], ZipError
         let expected = if e.size == 0u64 { 1usize } else { usize.from(e.size) };
         var used = 0usize;
         match deflate.inflate(&data[from..<to], 0usize, expected, &mut used) {
-          case let Error(de) {
+          case let Err(de) {
             if de.kind == deflate.ErrorKind.TooLarge {
               return refusal[List[u8]](ErrorKind.TooLarge, loc.start,
                 about("the entry", e.name.view(), "inflates to more than its header says").view());
@@ -370,7 +370,7 @@ fn readEntry(ar: &Archive, data: &Array[u8], i: usize) Result[List[u8], ZipError
           about("the CRC-32 of the data of", e.name.view(), "does not match the entry's").view());
       }
       match descriptorFault(e.name.view(), e.flags, e.crc, e.compressedSize, e.size, data, loc.end) {
-        case let Some(fault) { return Error[List[u8], ZipError](fault); }
+        case let Some(fault) { return Err[List[u8], ZipError](fault); }
         case is None {}
       }
       return Ok[List[u8], ZipError](out);
@@ -384,7 +384,7 @@ fn readEntry(ar: &Archive, data: &Array[u8], i: usize) Result[List[u8], ZipError
 // not apply the window limit.)
 fn readZstdEntry(ar: &Archive, data: &Array[u8], i: usize) Result[List[u8], ZipError] {
   match openEntry(ar, data, i) {
-    case let Error(e) { Error[List[u8], ZipError](e) }
+    case let Err(e) { Err[List[u8], ZipError](e) }
     case var Ok(r) {
       var out = List[u8].empty();
       // Room for the size the header gives, but a header can claim anything: the list grows from there
@@ -395,7 +395,7 @@ fn readZstdEntry(ar: &Archive, data: &Array[u8], i: usize) Result[List[u8], ZipE
         if s == Status.Done { break; }
         if s == Status.Failed {
           match r.error() {
-            case let Some(fault) { return Error[List[u8], ZipError](fault); }
+            case let Some(fault) { return Err[List[u8], ZipError](fault); }
             case is None { return refusal[List[u8]](ErrorKind.BadData, 0u64, "the zstd data is bad"); }
           }
         }
