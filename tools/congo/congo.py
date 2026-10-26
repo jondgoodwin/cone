@@ -14,6 +14,8 @@
 
 build, run and test also take -D NAME or -D NAME=123 (TEMPORARY, a provisional
 mechanism whose final design is open), passed to every conec compile.
+They take --no-cache too: a compile is otherwise skipped where nothing it reads
+has changed since it last succeeded in that build folder ("The build cache").
 
 CONGO DISCOVERS, THE COMPILER IS TOLD [Jon 23 Sep 2026]. Congo walks each
 package's folders and reads each source file's header -- its leading comments,
@@ -59,6 +61,7 @@ import argparse
 import codecs
 import difflib
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -1408,11 +1411,17 @@ def warn_if_stale(conec: Path) -> None:
             return
 
 
+def conestd_path(conec: Path) -> Path:
+    """Where conestd is: the one CONESTD names, else the one built beside conec,
+    whether or not it is there."""
+    named = os.environ.get("CONESTD")
+    return Path(named) if named else conec.parent / ("conestd.lib" if IS_WINDOWS
+                                                     else "libconestd.a")
+
+
 def find_conestd(conec: Path) -> Path:
     """CONESTD names the runtime library; else it is the one built beside conec."""
-    named = os.environ.get("CONESTD")
-    path = Path(named) if named else conec.parent / ("conestd.lib" if IS_WINDOWS
-                                                     else "libconestd.a")
+    path = conestd_path(conec)
     if not path.is_file():
         raise CongoError(f"no conestd library at {path}; build it with conec, or set"
                          f" CONESTD")
@@ -1703,12 +1712,144 @@ def copy_if_changed(source: Path, target: Path) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# The build cache: a compile skipped when nothing it reads has changed
+# ---------------------------------------------------------------------------
+#
+# A compile -- a package's, from its build description, or a package's
+# kernels -- is skipped when its KEY is the one recorded beside its outputs by
+# the last compile that succeeded there, and each output is still the very
+# file that compile wrote. The key is a SHA-256 over everything conec reads or
+# is told: the content of every file it reads (the package's sources, its
+# congo.toml, the build description, each include file the description names,
+# and the prelude's source where conec loads the prelude from its package
+# search path), the content of conec itself and of conestd, conec's whole
+# command line (the mode, the -D defines and every path), and the environment
+# variables conec reads. Contents, never times. The key is written only after
+# a compile succeeds, and the one there before is removed before conec runs,
+# so a compile that fails or is killed leaves no key and is done again.
+# Linking always runs. '--no-cache' compiles everything, and records the keys
+# of what it compiled.
+
+KEY_FORMAT = "congo build key 1"
+KEY_EXT = ".key"
+# The environment variables conec reads (getenv in compiler/c): each is part
+# of every key
+CONEC_ENV = ("CONE_PACKAGES", "CONE_LLVM_OPTIONS")
+# Whether a compile whose key is unchanged is skipped: '--no-cache' says not
+USE_CACHE = [True]
+
+# conec's and conestd's content hashes, made once in a process and again only
+# where the file's size or time has changed since: conec is tens of megabytes,
+# and a folder of packages builds in many sessions. The key holds the content
+# hash, never the time
+_TOOL_HASHES: dict[str, tuple[tuple[int, int], str]] = {}
+
+
+def content_hash(path: Path) -> str:
+    """The SHA-256 of a file's content, in hex."""
+    digest = hashlib.sha256()
+    with path.open("rb") as file:
+        for chunk in iter(lambda: file.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def tool_hash(path: Path) -> str:
+    """conec's or conestd's content hash, or 'absent' where there is no file."""
+    try:
+        stat = path.stat()
+    except OSError:
+        return "absent"
+    stamp = (stat.st_size, stat.st_mtime_ns)
+    known = _TOOL_HASHES.get(str(path))
+    if known is None or known[0] != stamp:
+        known = (stamp, content_hash(path))
+        _TOOL_HASHES[str(path)] = known
+    return known[1]
+
+
+def conec_command(command: list[str]) -> list[str]:
+    """conec's command line as it is run: the -D defines put after the compiler."""
+    defines = [arg for define in DEFINES for arg in ("-D", define)]
+    return [command[0], *defines, *command[1:]]
+
+
+def key_inputs(command: list[str], env: dict[str, str],
+               files: list[tuple[str, Path]]) -> list[str]:
+    """The lines a key is the hash of: conec and conestd by content, conec's
+    whole command line, the environment it reads, and each file it reads by
+    what it is to the compile, its content and its path."""
+    conec = Path(command[0])
+    lines = [f"conec {tool_hash(conec)} {conec}"]
+    conestd = conestd_path(conec)
+    lines.append(f"conestd {tool_hash(conestd)} {conestd}")
+    lines.append("command " + json.dumps(command))
+    lines += [f"env {name}={env.get(name, '')}" for name in CONEC_ENV]
+    for kind, path in files:
+        lines.append(f"{kind} {content_hash(path) if path.is_file() else 'absent'} {path}")
+    return lines
+
+
+def key_of(inputs: list[str]) -> str:
+    return hashlib.sha256("\n".join([KEY_FORMAT, *inputs]).encode("utf-8")).hexdigest()
+
+
+def cache_fresh(key_file: Path, key: str, outputs: list[Path]) -> bool:
+    """Whether the compile a key file records can stand: the key is the same,
+    and each output is there and is the file that compile wrote."""
+    if not USE_CACHE[0]:
+        return False
+    try:
+        lines = key_file.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
+        return False
+    if lines[:2] != [KEY_FORMAT, f"key {key}"]:
+        return False
+    recorded = {}
+    for line in lines:
+        if line.startswith("output "):
+            digest, _, path = line[len("output "):].partition(" ")
+            recorded[path] = digest
+    return all(str(out) in recorded and out.is_file() and content_hash(out) == recorded[str(out)]
+               for out in outputs)
+
+
+def record_key(key_file: Path, key: str, inputs: list[str], outputs: list[Path]) -> None:
+    """Record a successful compile's key, with the inputs it was made from and
+    the hash of each output, written whole or not at all."""
+    lines = [KEY_FORMAT, f"key {key}", *inputs,
+             *(f"output {content_hash(out)} {out}" for out in outputs)]
+    partial = key_file.with_name(key_file.name + ".partial")
+    partial.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    os.replace(partial, key_file)
+
+
+def cone_sources(folder: Path) -> list[Path]:
+    """Every .cone file in a folder, at any depth, in a fixed order: more than
+    conec reads of a package it finds on its package search path, never less."""
+    if not folder.is_dir():
+        return []
+    return sorted((p for p in folder.rglob("*.cone") if p.is_file()), key=lambda p: str(p))
+
+
+def searched_sources(pkg: Package, kind: str = "searched") -> list[tuple[str, Path]]:
+    """What conec may read of a package it finds on its package search path,
+    rather than being told its files: its folder's name.cone, which the search
+    tries first, and everything in its src/ and gpu/."""
+    files = [(kind, pkg.root.parent / f"{pkg.name}.cone")]
+    for folder in ("src", GPU_FOLDER):
+        files += [(kind, p) for p in cone_sources(pkg.root / folder)]
+    return files
+
+
+# ---------------------------------------------------------------------------
 # Building
 # ---------------------------------------------------------------------------
 
 def compile_unit(conec: Path, unit: Unit, out: Path, mode: str, top: bool,
                  env: dict[str, str], packages: list[Package] = (),
-                 includes: Path | None = None, announce: bool = True) -> Path:
+                 includes: Path | None = None, announce: bool = True,
+                 prelude: list[tuple[str, Path]] | None = ()) -> Path:
     """Write the package's build description into build/<mode>/ and compile the
     package on its own. Every package but the one being built is a library;
     the one being built is what its manifest says. 'packages' is the unit's
@@ -1717,34 +1858,58 @@ def compile_unit(conec: Path, unit: Unit, out: Path, mode: str, top: bool,
     what every package compiled after it that imports it is compiled against.
     'includes' is the folder those include files are in, where it is not 'out'
     itself: a test program is compiled into a folder of its own, against the
-    include files in the package's build folder."""
+    include files in the package's build folder.
+
+    The compile is skipped where its key is unchanged (above, "The build
+    cache"). 'prelude' is what conec reads of core when it loads the prelude
+    from its package search path, for a description with no package line for
+    core; None where Congo cannot say what that is (no core in the build, so
+    no CONE_PACKAGES), and the compile is never skipped."""
     output = unit.pkg.output if top else "library"
     desc = out / f"{unit.pkg.name}.conebuild"
     desc.write_text(description(unit, mode, output, includes or out, packages),
                     encoding="utf-8")
-    # A library's include file is written afresh, so one left by an earlier
-    # build never stands in for it
-    include_for(unit.pkg, out).unlink(missing_ok=True)
+    obj = out / f"{unit.pkg.name}{OBJ_EXT}"
+    include = include_for(unit.pkg, out)
+    outputs = [obj, include] if output == "library" else [obj]
+    command = conec_command([str(conec), "-o", str(out), str(desc)])
+    files: list[tuple[str, Path]] = []
+    if not unit.pkg.lone:
+        files.append(("manifest", unit.pkg.root / MANIFEST))
+    files.append(("description", desc))
+    files += [("source", file) for module, _ in unit.tree.walk() for file in module.files]
+    imported = {dep.name: dep for dep in [*packages, *(dep for names in unit.lines.values()
+                                                       for dep in names.values())]}
+    files += [("include", include_for(dep, includes or out)) for dep in imported.values()]
+    files += prelude or []
+    inputs = key_inputs(command, env, files)
+    key = key_of(inputs)
+    key_file = out / f"{unit.pkg.name}{KEY_EXT}"
+    if prelude is not None and cache_fresh(key_file, key, outputs):
+        return obj
+    # No key stands while conec runs, so a compile that fails or is killed
+    # leaves none; and a library's include file is written afresh, so one left
+    # by an earlier build never stands in for it
+    key_file.unlink(missing_ok=True)
+    include.unlink(missing_ok=True)
     if announce:
         say("Compiling", f"{unit.pkg.label()} ({unit.pkg.root})")
-    if not run_conec([str(conec), "-o", str(out), str(desc)], env):
+    if not run_conec(command, env):
         raise CongoError(f"could not compile {unit.pkg.name} (build description:"
                          f" {desc})")
-    obj = out / f"{unit.pkg.name}{OBJ_EXT}"
     if not obj.is_file():
         raise CongoError(f"conec wrote no object at {obj}")
-    include = include_for(unit.pkg, out)
     if output == "library" and not include.is_file():
         raise CongoError(f"conec wrote no include file for {unit.pkg.name} at {include}")
+    if prelude is not None:
+        record_key(key_file, key, inputs, outputs)
     return obj
 
 
 def run_conec(command: list[str], env: dict[str, str]) -> bool:
-    """Run conec, the -D defines put after the compiler, and show what it said
-    but its closing 'Compile finished' line; whether it succeeded."""
-    defines = [arg for define in DEFINES for arg in ("-D", define)]
-    result = subprocess.run([command[0], *defines, *command[1:]], env=env,
-                            capture_output=True)
+    """Run conec, its command line as conec_command made it, and show what it
+    said but its closing 'Compile finished' line; whether it succeeded."""
+    result = subprocess.run(command, env=env, capture_output=True)
     said = utf8_text(result.stdout) + utf8_text(result.stderr)
     chatter = [line for line in said.splitlines()
                if line.strip() and not line.startswith("Compile finished")]
@@ -1936,20 +2101,41 @@ def compile_gpu(conec: Path, unit: Unit, units: dict[str, Unit], core: Package, 
     source = work / f"{module}.cone"
     source.write_text(text, encoding="utf-8")
     spv = out / f"{pkg.name}{SPV_EXT}"
-    spv.unlink(missing_ok=True)
     written = work / f"{module}{SPV_EXT}"
-    written.unlink(missing_ok=True)
-    say("Compiling", f"{pkg.label()} for the GPU ({shown_root})")
     command = [str(conec), f"--triple={GPU_TRIPLE}"]
     if mode == "debug":
         command.append("--debug")
     if folders:
         command.append("--path=" + ";".join(str(f) for f in folders))
-    if not run_conec([*command, "-o", str(work), str(source)], env):
+    command = conec_command([*command, "-o", str(work), str(source)])
+    # The key (above, "The build cache") holds what conec may read of each
+    # package it finds on its search path and compiles from source, more than
+    # it reads, never less: the gpu/ folder's modules where that is what is
+    # compiled, else the marked package's, and those of every package of the
+    # closure, core's among them
+    files: list[tuple[str, Path]] = [("manifest", pkg.root / MANIFEST), ("module", source)]
+    if unit.gpu_deps is not None:
+        files += [("searched", p) for p in cone_sources(pkg.root / GPU_FOLDER)]
+    else:
+        files += searched_sources(pkg)
+    compiled = {dep.name: dep for dep in [core, *packages] if dep.name != pkg.name}
+    for dep in compiled.values():
+        files += searched_sources(dep)
+    inputs = key_inputs(command, env, files)
+    key = key_of(inputs)
+    key_file = work / f"{module}{KEY_EXT}"
+    if cache_fresh(key_file, key, [spv]):
+        return spv
+    key_file.unlink(missing_ok=True)
+    spv.unlink(missing_ok=True)
+    written.unlink(missing_ok=True)
+    say("Compiling", f"{pkg.label()} for the GPU ({shown_root})")
+    if not run_conec(command, env):
         raise CongoError(f"could not compile {pkg.name} for the GPU ({source})")
     if not written.is_file():
         raise CongoError(f"conec wrote no SPIR-V module at {written}")
     os.replace(written, spv)
+    record_key(key_file, key, inputs, [spv])
     return spv
 
 
@@ -2046,9 +2232,21 @@ class Session:
                 continue
             into = top_out if is_top and top_out is not None else self.out
             into.mkdir(parents=True, exist_ok=True)
+            packages = closure(unit, by_name, core)
+            # A description with no package line for core (core's own, and
+            # those of what core imports) has conec load the prelude from the
+            # packages folder CONE_PACKAGES names: what it reads there is part
+            # of the key. With no core in the build there is no CONE_PACKAGES,
+            # and Congo cannot say what conec reads, so that compile is never
+            # skipped
+            if any(dep.name == PRELUDE for dep in packages):
+                prelude: list[tuple[str, Path]] | None = []
+            elif core is None:
+                prelude = None
+            else:
+                prelude = searched_sources(core, "prelude")
             obj = compile_unit(conec, unit, into, self.mode, is_top, env,
-                               closure(unit, by_name, core), self.out,
-                               announce or not is_top)
+                               packages, self.out, announce or not is_top, prelude)
             if into == self.out and (not is_top or unit.pkg.output == "library"):
                 self.objs[unit.pkg.name] = obj
             objs.append(obj)
@@ -2759,6 +2957,13 @@ def add_define_argument(parser: argparse.ArgumentParser) -> None:
                              " compile of the build (provisional)")
 
 
+def add_cache_argument(parser: argparse.ArgumentParser) -> None:
+    """'--no-cache': compile every package of the build, as if no compile
+    before had left anything (README.md, "What a build does")."""
+    parser.add_argument("--no-cache", action="store_true",
+                        help="compile everything, whatever an earlier build left")
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="congo", description="The Cone build tool.")
     sub = parser.add_subparsers(dest="command", required=True, metavar="command")
@@ -2773,6 +2978,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         p = sub.add_parser(name, help=text)
         p.add_argument("--release", action="store_true", help="an optimised build")
         add_define_argument(p)
+        add_cache_argument(p)
         if name == "run":
             p.add_argument("file", nargs="?", help="a lone .cone file, run with no manifest")
             p.epilog = "Arguments after '--' are passed to the program."
@@ -2783,6 +2989,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                       help="only the tests and examples whose file name contains this")
     test.add_argument("--release", action="store_true", help="an optimised build")
     add_define_argument(test)
+    add_cache_argument(test)
     test.add_argument("--bless", action="store_true",
                       help="write the expected output of a test that has none, from a"
                            " run; check it by hand against the source")
@@ -2825,6 +3032,7 @@ def main(argv: list[str] | None = None) -> int:
     hard_errors_to_status()
     args = parse_args(sys.argv[1:] if argv is None else argv)
     DEFINES[:] = getattr(args, "define", [])
+    USE_CACHE[0] = not getattr(args, "no_cache", False)
     try:
         return args.func(args)
     except CongoError as exc:

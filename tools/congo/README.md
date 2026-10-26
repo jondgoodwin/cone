@@ -20,6 +20,7 @@ congo test --bless         write a new test's expected output from a run
 congo clean                delete the package's build/ folder
 congo clean hello.cone     delete a lone file's build
 congo run -D FAST -D N=2   a constant for isDefined and definedInt (provisional)
+congo build --no-cache     compile everything, whatever an earlier build left
 congo publish              point an index registry at this package's current commit
 ```
 
@@ -80,7 +81,8 @@ There is no include file to write: a library's build generates it (below,
   description, and the root's name comes from the manifest, not the folder.
 - **Build output goes in the package, in `build/<mode>/`**: each package's build
   description, each package's object, each library's generated include file,
-  and the executable, `build/debug/<name>.exe`. The packages a program imports
+  each compile's key (below, "What a build does"), and the executable,
+  `build/debug/<name>.exe`. The packages a program imports
   are compiled into the program's `build/<mode>/` too, so a registry folder is
   only ever read. `congo clean` deletes the folder, include files and all.
 - **A package's example programs live in its `examples/` folder**, which no
@@ -900,11 +902,13 @@ beside the compiler's suite, `python test/run.py`, which tests the compiler.
    imports, which is where an include file's own imports are found, and, for
    `core`, where the prelude is loaded from. The package's own modules import
    only what their own lines give them. The format is the compiler's:
-   `compiler/c/doc/nodes/module.md`, "A described build".
+   `compiler/c/doc/nodes/module.md`, "A described build". **The compile is
+   skipped when its key is unchanged** (below).
 5. **Compile the kernels** of each package marked for the GPU whose source
    holds compute entry points, and of each package whose `gpu/` folder holds
    them, into `build/<mode>/<name>.spv`, once its imports are known to be
-   marked (above, "Kernels for the GPU" and "A package's gpu/ folder").
+   marked (above, "Kernels for the GPU" and "A package's gpu/ folder"),
+   skipped too when its key is unchanged.
 6. **Link** the objects, the program's first, with `conestd`, the C libraries
    the packages' `[link]` tables name, and the C runtime,
    into `build/<mode>/<name>.exe`, and copy beside it the DLLs their `[link]
@@ -912,7 +916,49 @@ beside the compiler's suite, `python test/run.py`, which tests the compiler.
    kernels. A library stops at its object, `build/<mode>/<name>.obj`, and its
    kernels.
 
-Everything is rebuilt every time.
+**A compile is skipped when nothing it reads has changed** since the last
+compile of it that succeeded in that build folder, and each of its outputs is
+still the file that compile wrote; it prints no `Compiling` line then. Each
+compile has a **key**, a SHA-256 over:
+
+- the content of every file `conec` reads: the package's source files, its
+  `congo.toml`, the build description Congo wrote for it (which names its
+  modules, its files and the include files of what it imports), and the
+  include file of every package the description names. So a change to an
+  import's interface compiles its importers again, while a change to a body
+  that leaves its include file byte for byte the same compiles the import
+  alone, and the program links its new object. Where `conec` loads the
+  prelude from its packages folder rather than from `core`'s include file
+  (`core`'s own compile, and `libc`'s), `core`'s source is read too;
+- the content of `conec` and of `conestd`, never their times: a rebuilt
+  compiler compiles everything again;
+- `conec`'s whole command line, which holds the mode, every `-D` define and
+  every path, and the environment variables `conec` reads (`CONE_PACKAGES`,
+  `CONE_LLVM_OPTIONS`).
+
+The key, the hashes it was made from and the hash of each output are written
+beside the outputs, `build/<mode>/<package>.key` (a test's or an example's in
+its own folder), only after the compile succeeds; the one there before is
+removed before `conec` starts, so a compile that fails or is killed leaves no
+key and is done again. Debug and release have folders of their own, so a
+cache each; a build with other `-D` defines compiles everything again in the
+same folder. A GPU build's key is
+`build/<mode>/gpu/<name>/<name>_gpu.key`: as `conec` finds and compiles the
+packages a kernel reaches from their source, it holds every `.cone` file in
+the `src/` and `gpu/` of each, more than `conec` reads, never less. A build
+whose order holds no `core` (`libc` built on its own) is never skipped, since
+Congo then cannot say where `conec` loads the prelude from.
+
+Linking (step 6) always runs. `congo clean` deletes the keys with the folder,
+and `--no-cache`, given to `build`, `run` or `test`, compiles everything as if
+no build had been there before, and records the keys of what it compiled. If
+a build seems to use what it should not, `--no-cache` is the check.
+
+Every cache is in a build folder: a package's `build/`, in whatever copy of
+the repository it is built, or a lone file's in the Congo home (below), which
+every copy of the repository shares for a lone file of one path; a key
+holding `conec`'s content, a compiler of another copy compiles everything
+again there.
 
 ## What Congo needs on the machine
 
@@ -994,7 +1040,14 @@ entry point read back, and the `.spv` beside an importer; `gpu/` refused its
 use of `src/` three ways, an unmarked import, a function calling itself, and
 the layout's refusals; no `.spv` without an entry point; and, where SDL3's
 `lib` folder is on `LIB`, `packages/gpupart` run on the GPU, every word
-identical).
+identical), and the build cache (exactly the compiles that read a change done
+again: a line of the program, a body of an import whose include file stays
+the same, an import's interface, a manifest, a file added; an object, an
+include file or a key gone or changed; debug, release and `-D` defines;
+`conec` and `conestd` changed where they stand; a compile that fails, and
+Congo killed while `conec` runs, leaving no key; `--no-cache`; `congo clean`;
+a test program compiled only when it changes; and a kernel compiled again when
+the source of a package it inlines changes, though its own object is not).
 Each program is compiled against the include files its packages' compiles
 generated. The test suite (`test/run.py`) does not run Congo, and does not run
 the packages' tests: `congo test` in `packages/` does.
@@ -1037,8 +1090,9 @@ examples built, a folder of packages), a marked package's kernels and a
 loop refusals, the registries (the repository's `packages/` and the machine
 config's folders, every manifest in them read and checked), the build order
 and its loop refusals, `conec`, `[link]`, the linker found through
-`vcvars64.bat`, and the program run with its exit status passed back. Like
-`congo.py`, it builds the whole of a build every time. The repository is the
+`vcvars64.bat`, and the program run with its exit status passed back. Unlike
+`congo.py`, it builds the whole of a build every time (above, "What a build
+does"). The repository is the
 nearest folder above the executable holding `packages/core`, as `conec` finds
 its packages folder.
 
@@ -1118,4 +1172,6 @@ Where it differs from `congo.py`:
   registration (an index is written by whoever can push to it); `congo update`.
 - An index on Linux with the Cone Congo, which is Windows only; `congo.py` fetches
   on any system with git.
-- Incremental builds: Congo rebuilds everything, every time.
+- Of incremental builds: a cache for each set of `-D` defines (a build with
+  other defines compiles everything again in the same folder); compiles in
+  parallel; and the Cone Congo's, which builds the whole of a build every time.
