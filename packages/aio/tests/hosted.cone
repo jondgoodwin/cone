@@ -100,9 +100,7 @@ struct AddJob {
 
 // What has been added
 struct SumJob {
-  pub reply: actors.Reply;
-  pub fn run(self, lp: &mut Loop, s: &mut Timed) {
-    let rp = self.(reply);
+  pub fn run(self, lp: &mut Loop, s: &mut Timed, rp: actors.Reply) {
     actors.answerNow[u64](rp, s.added);
   }
 }
@@ -110,9 +108,8 @@ struct SumJob {
 // Answered by a timer of the Loop's, its Completion claimed by the service
 struct LaterJob {
   pub ms: i64;
-  pub reply: actors.Reply;
-  pub fn run(self, lp: &mut Loop, s: &mut Timed) {
-    let ms, rp = self.(ms, reply);
+  pub fn run(self, lp: &mut Loop, s: &mut Timed, rp: actors.Reply) {
+    let ms = self.(ms);
     lp.after(Instant.now() + Duration.fromMillis(ms), Target.Here(tokenOf(s.id)));
     s.later = Some[actors.Reply](rp);
   }
@@ -121,9 +118,8 @@ struct LaterJob {
 // A timer that is not due before the program ends: 'ready' told once it is set
 struct KeepJob {
   pub ready: OneshotSender[u64];
-  pub reply: actors.Reply;
-  pub fn run(self, lp: &mut Loop, s: &mut Timed) {
-    let ready, rp = self.(ready, reply);
+  pub fn run(self, lp: &mut Loop, s: &mut Timed, rp: actors.Reply) {
+    let ready = self.(ready);
     lp.after(Instant.now() + Duration.fromMillis(100000i64), Target.Here(tokenOf(s.id)));
     s.later = Some[actors.Reply](rp);
     var r = ready;
@@ -134,9 +130,8 @@ struct KeepJob {
 // Answered at a turn the service asks for by its wakeAt
 struct TickJob {
   pub ms: i64;
-  pub reply: actors.Reply;
-  pub fn run(self, lp: &mut Loop, s: &mut Timed) {
-    let ms, rp = self.(ms, reply);
+  pub fn run(self, lp: &mut Loop, s: &mut Timed, rp: actors.Reply) {
+    let ms = self.(ms);
     s.due = Instant.now() + Duration.fromMillis(ms);
     s.tick = Some[actors.Reply](rp);
   }
@@ -147,19 +142,19 @@ actor Asker {
     let h = hostOf(which);
     aio.hostPost[Timed, AddJob](h, AddJob(5u64));
     aio.hostPost[Timed, AddJob](h, AddJob(7u64));
-    let n = await aio.hostAwaitable[Timed, SumJob, u64](h, SumJob(actors.Reply()));
+    let n = await aio.hostAwaitable[Timed, SumJob, u64](h, SumJob());
     var d = done;
     d.send(n);
   }
 
   pub async fn later(self, which: u64, ms: i64, done: OneshotSender[u64]) {
-    let n = await aio.hostAwaitable[Timed, LaterJob, u64](hostOf(which), LaterJob(ms, actors.Reply()));
+    let n = await aio.hostAwaitable[Timed, LaterJob, u64](hostOf(which), LaterJob(ms));
     var d = done;
     d.send(n);
   }
 
   pub async fn tick(self, which: u64, ms: i64, done: OneshotSender[u64]) {
-    let n = await aio.hostAwaitable[Timed, TickJob, u64](hostOf(which), TickJob(ms, actors.Reply()));
+    let n = await aio.hostAwaitable[Timed, TickJob, u64](hostOf(which), TickJob(ms));
     var d = done;
     d.send(n);
   }
@@ -169,12 +164,12 @@ actor Asker {
   pub async fn stuck(self, which: u64, note: u64, ready: OneshotSender[u64]) {
     let keep = Note(note);
     if which == 2u64 {
-      let pending = aio.hostAwaitable[Timed, LaterJob, u64](hostOf(which), LaterJob(100000i64, actors.Reply()));
+      let pending = aio.hostAwaitable[Timed, LaterJob, u64](hostOf(which), LaterJob(100000i64));
       var r = ready;
       r.send(1u64);
       let n = await pending;
     } else {
-      let n = await aio.hostAwaitable[Timed, KeepJob, u64](hostOf(which), KeepJob(ready, actors.Reply()));
+      let n = await aio.hostAwaitable[Timed, KeepJob, u64](hostOf(which), KeepJob(ready));
     }
     printStr("answered\n");
   }

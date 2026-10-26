@@ -22,7 +22,7 @@
 //     mut events = List[Event].empty();
 //     mut going = true;
 //     while going {
-//       client.poll(&mut lp, forever(), &mut events);     // waits in the loop, and only there
+//       client.poll(&mut lp, forever(), &uni events);     // waits in the loop, and only there
 //       mut k = 0usize;
 //       while k < events.len() {
 //         imm e = &mut events[k];
@@ -44,8 +44,8 @@
 //   c.closeIdle(lp)  c.abortAll(lp)
 //   c.poll(lp, until, events)  c.complete(lp, c)  c.pump(lp, events)  c.wakeAt()  (DRIVING)
 //   c.stats()  c.driverStats()  c.live()  c.queued()  c.held()  c.isLive(id)
-//   Config.make(): conn tlsConfig maxPerOrigin maxTotal idleTimeout maxQueued  (CONFIGURATION)
-//     maxRetries maxRedirects userAgent
+//   Config.make(): conn tlsConfig maxPerOrigin maxTotal idleTimeout maxLifetime  (CONFIGURATION)
+//     maxQueued maxRetries maxRedirects userAgent
 //   Request.get(url)  Request.make(method, url)  Request.to(method, Url)  (REQUESTS)
 //     r.url r.headers r.body r.intent r.score r.deadline r.group r.maxRedirects
 //   Intent: Urgent Visible Prefetch Background;  intentName(i)           (INTENTS)
@@ -62,7 +62,7 @@
 // driver's. It never waits: 'poll(lp, until, events)' is the loop's poll,
 // waiting at most until 'until' (and not at all while events are ready),
 // then everything the completions moved, the client's events for this
-// thread appended to 'events'. A program that also runs other work on the
+// thread appended to 'events' (lent 'uni', as httpconn's are). A program that also runs other work on the
 // loop (a server's driver of its own, its own operations) polls the loop
 // itself and hands each completion to 'complete' (true when it was the
 // client's), then calls 'pump'; its poll may wait no later than 'wakeAt()'.
@@ -98,10 +98,16 @@
 // ('https://example.com:443'): a connection that ends an exchange with both
 // sides willing to keep it is idle in its origin's pool, and the next
 // request for that origin takes it rather than a new one. At most
-// 'maxPerOrigin' connections are open to an origin (6, as browsers keep
-// over HTTP/1.1) and 'maxTotal' in all (64); an idle one is closed after
-// 'idleTimeout' (90 s, reqwest's), or when the total is reached and another
-// origin needs a connection; 'closeIdle(lp)' closes every idle one now. A
+// 'maxPerOrigin' connections are open to an origin (16: a browser's 6 is
+// politeness to home routers, and a service client would queue at its
+// seventh request) and 'maxTotal' in all (256); an idle one is closed after
+// 'idleTimeout' (50 s: below the servers it meets, 60 s for Cone's own and
+// most load balancers, so the client, not the server, ends an idle
+// connection and no request is sent on one the server is closing), or when
+// the total is reached and another origin needs a connection;
+// 'closeIdle(lp)' closes every idle one now. A connection is not given a
+// request once it has been open 'maxLifetime' (5 min): it is closed then,
+// so a DNS change or a new server behind a load balancer is seen. A
 // connection closing (its FIN sent, the server's awaited) counts toward
 // neither limit. HTTP/1.1 carries one request at a time on a connection
 // (no pipelining), so these are also the most requests under way at once.
@@ -137,14 +143,18 @@
 // while any Urgent one does for the same connections.
 //
 // RETRIES (invariant I21). A request is tried again, on another connection,
-// when its connection failed under it -- reset, closed, a receive or send
-// failed (httpconn's stages Read, Write and Closed) -- and it is known safe
-// to repeat: no byte of it reached the socket (httpconn's 'unsent'), or its
-// method is idempotent (GET, HEAD, OPTIONS, TRACE, PUT, DELETE) and no byte
-// of a response arrived ('noResponse'). At most 'maxRetries' times (2), and
-// never once its Response has gone to its sink. A connection that could not
-// be made, a TLS failure, a protocol refusal and a timeout are not retried.
-// A retried request keeps its place in the order.
+// when its connection ended under it -- reset, closed, a receive or send
+// failed (httpconn's stages Read, Write and Closed, or Http when the core's
+// failure is the connection's end, kind Closed) -- and it is known safe to
+// repeat: no byte of it reached the socket (httpconn's 'unsent'); or no
+// byte of a response arrived ('noResponse') and either its method is
+// idempotent (GET, HEAD, OPTIONS, TRACE, PUT, DELETE) or its connection was
+// a reused one, kept from an exchange before: a kept connection the server
+// closed as the request went out (the idle race) never read it, whatever
+// its method. At most 'maxRetries' times (2), and never once its Response
+// has gone to its sink. A connection that could not be made, a TLS failure,
+// a protocol refusal and a timeout are not retried. A retried request keeps
+// its place in the order.
 //
 // REDIRECTS. A response of 301, 302, 303, 307 or 308 with a Location is
 // followed, up to 'maxRedirects' (10, reqwest's) or the request's own;
@@ -312,6 +322,7 @@ pub struct Config {
   pub maxPerOrigin: u32;         // connections open to one origin
   pub maxTotal: u32;             // connections open in all
   pub idleTimeout: Duration;     // an idle pooled connection is closed after it
+  pub maxLifetime: Duration;     // a connection is given no request once open this long
   pub maxQueued: u32;            // requests waiting for a connection, in all
   pub maxRetries: u32;           // retries of one request (see RETRIES)
   pub maxRedirects: u32;         // redirects followed, unless a request says otherwise
@@ -319,9 +330,9 @@ pub struct Config {
 
   // The defaults
   pub fn make() Config {
-    Config(conn: httpconn.Config.make(), tlsConfig: tls.ClientConfig.make(), maxPerOrigin: 6u32,
-      maxTotal: 64u32, idleTimeout: Duration.fromSeconds(90i64), maxQueued: 10000u32, maxRetries: 2u32,
-      maxRedirects: 10u32, userAgent: String.from("cone-httpclient/0.1"))
+    Config(conn: httpconn.Config.make(), tlsConfig: tls.ClientConfig.make(), maxPerOrigin: 16u32,
+      maxTotal: 256u32, idleTimeout: Duration.fromSeconds(50i64), maxLifetime: Duration.fromMinutes(5i64),
+      maxQueued: 10000u32, maxRetries: 2u32, maxRedirects: 10u32, userAgent: String.from("cone-httpclient/0.1"))
   }
 }
 
@@ -343,20 +354,19 @@ pub struct Request {
   pub group: Option[CancelGroup];
   pub maxRedirects: u32;         // the most it follows; the config's unless set
   methodText: String;            // Method.Other's token
-  urlError: UrlError;            // why the URL it was made from did not parse
+  urlError: Option[UrlError];    // why the URL it was made from did not parse
 
   // A request of any method token for a URL written as text. A URL that
   // does not parse makes a request that is answered Failed (Stage.Url)
   pub fn make(method: &str, text: &str) Request {
-    var u = Url.empty();
-    var e = UrlError.none();
     match Url.parse(text) {
-      case let Ok(r) {u = r;}
-      case let Error(x) {e = x;}
+      case var Ok(u) {Request.to(method, u)}
+      case var Error(x) {
+        var r = Request.to(method, Url.empty());
+        r.urlError = Some[UrlError](x);
+        r
+      }
     }
-    var r = Request.to(method, u);
-    r.urlError = e;
-    r
   }
 
   // A GET of a URL written as text
@@ -368,7 +378,7 @@ pub struct Request {
     let o = if m == Method.Other {String.from(method)} else {String.empty()};
     Request(method: m, url: u, headers: Headers.empty(), body: String.empty(), intent: Intent.Visible,
       score: 0i64, deadline: forever(), group: None, maxRedirects: useConfig, methodText: o,
-      urlError: UrlError.none())
+      urlError: None)
   }
 
   // The method's token: 'GET', or an extension's spelling

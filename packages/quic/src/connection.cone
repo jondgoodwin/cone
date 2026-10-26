@@ -59,6 +59,7 @@ struct Box {
   oom: u32;                // a record could not be kept: the connection fails
   verdict: usize;          // the certificate's verdict, which verifyChain reads (verify.cone)
   verifyWanted: u32;       // verifyChain stopped the handshake for one
+  idEpoch: u64;            // moves on each time ngtcp2 issues or retires a connection ID of this end's
 }
 
 // What happened, once each (see the package's header, EVENTS)
@@ -207,7 +208,7 @@ pub struct Connection is Move {
     if cfg.verify.kind == tls.VerifyKind.Roots {SSL_set1_host(ssl, cname);}
     let ps = pathMake(localAddr, remoteAddr);
     var dcid = randomCid(18usize);
-    var scid = randomCid(17usize);
+    var scid = randomCid(localIdLen);
     let cb = callbacks(false);
     var settings = settingsFor(now, cfg);
     var tp = paramsFor(cfg);
@@ -260,7 +261,7 @@ pub struct Connection is Move {
     SSL_set_ex_data(ssl, appDataSlot, b);
     SSL_set_accept_state(ssl);
     let ps = pathMake(localAddr, remoteAddr);
-    var scid = randomCid(17usize);
+    var scid = randomCid(localIdLen);
     let cb = callbacks(true);
     var settings = settingsFor(now, cfg);
     var tp = paramsFor(cfg);
@@ -447,6 +448,43 @@ pub struct Connection is Move {
   // How many streams the connection holds: those not yet closed both ways,
   // or whose bytes are not all released
   pub fn openStreams(self: &) usize {streams.len()}
+
+  // Whether the connection still holds a stream's record: false once ngtcp2
+  // has closed it both ways and its owner has released every byte, or for a
+  // number it never had (the owner's sign that the stream is over)
+  pub fn hasStream(self: &, stream: i64) bool {self.streamAt(stream) as usize != 0usize}
+
+  // ---------------------------------------------------------------------------
+  // Routing (see the package's header, ROUTING)
+  // ---------------------------------------------------------------------------
+
+  // This end's connection IDs that ngtcp2 holds now (the first, and those
+  // issued since and not yet retired), each 'localIdLen' bytes, appended to
+  // out: how many. A packet from the peer carries one of them as its
+  // Destination Connection ID
+  pub fn localIds(self: &, out: &mut List[u8]) usize {
+    let n = ngtcp2_conn_get_scid(conn, null);
+    if n == 0usize {return 0usize;}
+    let ids = libc.malloc(n * mem.sizeof[Cid]()) as *Cid;
+    if ids as usize == 0usize {return 0usize;}
+    let got = ngtcp2_conn_get_scid(conn, ids);
+    var k = 0usize;
+    while k < got {
+      let c = ids + k;
+      var j = 0usize;
+      while j < (*c).datalen {
+        out.push((*c).data[j]);
+        j = j + 1usize;
+      }
+      k = k + 1usize;
+    }
+    libc.free(ids as *u8);
+    got
+  }
+
+  // A count that moves on each time this end issues or retires a connection
+  // ID: when it moves, localIds has changed
+  pub fn localIdsEpoch(self: &) u64 {(*(box as *Box)).idEpoch}
 
   // ---------------------------------------------------------------------------
   // Closing
@@ -1004,7 +1042,8 @@ fn liberrOf(n: isize) i32 {i32.from(n)}
 
 fn boxMake() *u8 {
   let b = libc.malloc(mem.sizeof[Box]());
-  *(b as *Box) = Box(ConnRef(&getConn, b), null, null, null, 0usize, 0usize, null, 0u32, 0u32, verdictNone, 0u32);
+  *(b as *Box) = Box(ConnRef(&getConn, b), null, null, null, 0usize, 0usize, null, 0u32, 0u32, verdictNone, 0u32,
+    0u64);
   b
 }
 
@@ -1102,7 +1141,7 @@ fn callbacks(server: bool) Callbacks {
     extendMaxLocalStreamsUni: &onMoreUni,
     rand: &onRand,
     getNewConnectionId: &onGetNewConnectionId,
-    removeConnectionId: null,
+    removeConnectionId: &onRemoveConnectionId,
     updateKey: &ngtcp2_crypto_update_key_cb as *u8,
     pathValidation: null,
     selectPreferredAddr: null,
@@ -1225,5 +1264,13 @@ fn @c("coneQuicGetNewConnectionId") onGetNewConnectionId(conn: *u8, cid: &mut Ci
   if RAND_bytes(&mut cid.data as *u8, i32.from(cidlen)) != 1i32 {return callbackFailure;}
   cid.datalen = cidlen;
   if RAND_bytes(token, i32.from(statelessResetTokenLen)) != 1i32 {return callbackFailure;}
+  (*(user as *Box)).idEpoch = (*(user as *Box)).idEpoch + 1u64;
+  0i32
+}
+
+// A connection ID of this end's retired: only the epoch moves (localIds reads
+// the ones left from ngtcp2)
+fn @c("coneQuicRemoveConnectionId") onRemoveConnectionId(conn: *u8, cid: &Cid, user: *u8) i32 {
+  (*(user as *Box)).idEpoch = (*(user as *Box)).idEpoch + 1u64;
   0i32
 }

@@ -26,7 +26,7 @@
 //     mut events = List[Event].empty();
 //     mut going = true;
 //     while going {
-//       drv.poll(&mut lp, forever(), &mut events);    // waits in the loop, and only there
+//       drv.poll(&mut lp, forever(), &uni events);    // waits in the loop, and only there
 //       mut k = 0usize;
 //       while k < events.len() {
 //         imm e = &mut events[k];
@@ -44,7 +44,7 @@
 //   d.connectWith(lp, host, port, layer, sink)
 //   d.listen(lp, addr, sink)  d.listenWith(lp, addr, make, sink)  d.stopListening(lp, l)
 //   d.localAddr(lp, l)  d.close(lp, conn)  d.abort(lp, conn)
-//   d.isOpen(conn)  d.isIdle(conn)  d.peer(conn)  d.layerInfo(conn)
+//   d.isOpen(conn)  d.isIdle(conn)  d.peer(conn)  d.layerInfo(conn)  d.keepAliveOf(lp, conn)
 //   d.request(lp, conn, head, body, sink)                              (REQUESTS)
 //   d.requestBy(..., deadline)  d.requestIn(..., group, deadline)
 //   d.respond(req, head, body)  d.sendInterim(req, head)  d.sendContinue(req)  (SERVING)
@@ -67,9 +67,10 @@
 // The program polls the loop as it always does and hands the driver every
 // completion: 'd.complete(lp, &mut c)' says whether it was the driver's (its
 // token is the driver's: 'd.owns(token)'), taking what it needs from it; then
-// 'd.pump(lp, &mut events)' moves every connection the completions touched
-// as far as it can go and appends the events for this thread. A loop that
-// does nothing else uses 'd.poll(lp, until, &mut events)', which does all
+// 'd.pump(lp, &uni events)' moves every connection the completions touched
+// as far as it can go and appends the events for this thread (the list is
+// lent 'uni': nothing else reaches it while the driver's own are moved into
+// it). A loop that does nothing else uses 'd.poll(lp, until, &uni events)', which does all
 // three, waiting at most until 'until' (and not at all while events are
 // ready); a completion that is not the driver's is then dropped, counted in
 // 'stats().unclaimed'. A program that also submits its own operations to
@@ -151,8 +152,8 @@
 // order per sink, not across sinks: a request's events held for a channel
 // may still be on their way after its connection's Closed has gone Here, so
 // a program drives the driver until 'held()' is 0 before it stops. An actor
-// is not a sink: the actorhttp package runs a Driver on a thread of its own and
-// answers an actor's awaited request with the whole response.
+// is not a sink: the actorhttp package runs its Drivers as a service hosted on aio's
+// I/O thread, on aio's Loop, and answers an actor's awaited request with the whole response.
 //
 // CREDIT (invariant I9: bounded memory). A connection reads only while its
 // core has room ('recvSize' at a time, one receive outstanding), and a
@@ -166,8 +167,9 @@
 // by the core's watermark: 'sendData' hands a buffer back, refused, when it
 // is reached, and Writable comes when there is room again. Nothing queues
 // without a bound: requests wait 'maxWaiting' deep, connections are at most
-// 'maxConnections' (an accept past it is not made), sends 'sendDepth' deep,
-// and a connection holds a receive buffer only while it reads a message (a
+// 'maxConnections' (an accept past it is not made), sends 'sendDepth' deep
+// (each a gathered send of what the core had ready, at most 64 buffers and
+// 256 KiB), and a connection holds a receive buffer only while it reads a message (a
 // client's response, a server's request body): otherwise, idle or answering,
 // it waits with a zero-byte receive and pins no buffer ('idleRecvReady').
 //
@@ -182,7 +184,16 @@
 // inherits as the tighter. The driver watches each such request with one
 // iocore timer in its group, so the group's cancel wakes the loop. A
 // connection's own deadlines are its core's (head, body, idle, expect:
-// http1's Config) and connectTimeout.
+// http1's Config), connectTimeout, and handshakeTimeout: a layer (TLS) not
+// open that long after the TCP connection is made or accepted fails the
+// connection (Stage.Tls, TimedOut), so a peer that takes the connection
+// and stalls the handshake is let go before the head timeout would.
+//
+// KEEPALIVE. Every socket, once connected or accepted, has TCP keepalive set
+// from 'keepAlive' (iocore's KeepAlive: 15 s idle, a probe every 15 s, 3
+// unanswered, and on Linux TCP_USER_TIMEOUT 30 s), so a peer that vanished
+// is found in under a minute rather than the OS's two hours; 'keepAliveOf'
+// reads it back.
 //
 // FAILURES. A Failed answer, and a Closed that is not clean, carry a
 // Failure: the stage it failed at (Resolve, Connect, Read, Write, Http --
@@ -253,11 +264,11 @@
 mod httpconn;
 
 import libc;
-import collections use List, String;
+import collections use List, Deque, String;
 import time use Instant, Duration;
 import sync use Sender, Mutex;
 import iobuf use IoBuf, Chain;
-import iocore use Loop, Op, Target, Completion, Outcome, Lane, Handle, OpId, SocketAddr, CancelGroup, IoError, forever, resolveOp, addressesIn;
+import iocore use Loop, Op, Target, Completion, Outcome, Lane, Handle, OpId, SocketAddr, CancelGroup, IoError, KeepAlive, forever, resolveOp, addressesIn;
 import http use *;
 import http1;
 import diag;
@@ -367,6 +378,8 @@ pub struct ListenerId {
 pub struct Config {
   pub protocol: http1.Config;
   pub connectTimeout: Duration;   // a client connection's lookup and connect, from the call
+  pub handshakeTimeout: Duration; // its layer's handshake (TLS), from the TCP connection
+  pub keepAlive: KeepAlive;       // TCP keepalive on every socket (KeepAlive.off() for none)
   pub recvSize: usize;            // each receive's buffer
   pub sendDepth: u32;             // sends in flight per connection
   pub maxConnections: u32;        // connections the driver holds at once
@@ -378,6 +391,8 @@ pub struct Config {
   // The defaults
   pub fn make() Config {
     Config(protocol: http1.Config.make(), connectTimeout: Duration.fromSeconds(10i64),
+      handshakeTimeout: Duration.fromSeconds(10i64),
+      keepAlive: KeepAlive(Duration.fromSeconds(15i64), Duration.fromSeconds(15i64), 3u32, Duration.fromSeconds(30i64)),
       recvSize: 16384usize, sendDepth: 4u32, maxConnections: 10000u32, maxWaiting: 1u32,
       lingerTimeout: Duration.fromSeconds(2i64), acceptDepth: 4u32, idleRecvReady: true)
   }

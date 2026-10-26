@@ -4,8 +4,10 @@
 // one kept-alive connection (pool reuse); a POST's body sent and echoed;
 // HEAD and 204; the refusals (a bad URL, another scheme, a full queue); the
 // per-origin limit (ten at once, two connections at most); the total
-// across two origins; the idle timeout; and a connection that cannot be
-// made failing every fetch waiting for its origin. At the end every fetch
+// across two origins; the idle timeout; a connection that cannot be made
+// failing every fetch waiting for its origin; the Config's defaults, the
+// per-origin cap of sixteen among them; and a connection past maxLifetime
+// given no more requests. At the end every fetch
 // has had exactly one final answer and every buffer is back in its pool.
 
 mod fetch;
@@ -135,10 +137,10 @@ fn serve(sv: &mut Srv, lp: &mut Loop, e: &mut httpconn.Event) {
 
 // One turn of the loop: the client's completions to it, the server's to
 // its driver; the server's events answered; the client's appended to out
-fn step(cl: &mut Client, sv: &mut Srv, lp: &mut Loop, out: &mut List[Event], until: Instant) {
+fn step(cl: &mut Client, sv: &mut Srv, lp: &mut Loop, out: &uni List[Event], until: Instant) {
   var sevs = List[httpconn.Event].empty();
   cl.pump(lp, out);
-  sv.drv.pump(lp, &mut sevs);
+  sv.drv.pump(lp, &uni sevs);
   var limit = until;
   let a = cl.wakeAt();
   if a < limit {limit = a;}
@@ -154,7 +156,7 @@ fn step(cl: &mut Client, sv: &mut Srv, lp: &mut Loop, out: &mut List[Event], unt
     k = k + 1usize;
   }
   comps.clear();
-  sv.drv.pump(lp, &mut sevs);
+  sv.drv.pump(lp, &uni sevs);
   k = 0usize;
   while k < sevs.len() {
     serve(sv, lp, &mut sevs[k]);
@@ -210,7 +212,7 @@ fn finishOf(cl: &mut Client, sv: &mut Srv, lp: &mut Loop, id: FetchId, s: &mut S
   let giveUp = Instant.now() + Duration.fromSeconds(10i64);
   let before = s.finals;
   while s.finals == before && Instant.now() < giveUp {
-    step(cl, sv, lp, &mut out, giveUp);
+    step(cl, sv, lp, &uni out, giveUp);
     var k = 0usize;
     while k < out.len() {
       let e = &mut out[k];
@@ -233,7 +235,7 @@ fn drain(cl: &mut Client, sv: &mut Srv, lp: &mut Loop, n: u64, fails: &mut List[
   var finals = 0u64;
   let giveUp = Instant.now() + Duration.fromSeconds(10i64);
   while finals < n && Instant.now() < giveUp {
-    step(cl, sv, lp, &mut out, giveUp);
+    step(cl, sv, lp, &uni out, giveUp);
     let o = cl.stats().openNow;
     if o > peakOpen {peakOpen = o;}
     var j = 0usize;
@@ -258,7 +260,7 @@ fn idleFor(cl: &mut Client, sv: &mut Srv, lp: &mut Loop, d: Duration) {
   var out = List[Event].empty();
   let until = Instant.now() + d;
   while Instant.now() < until {
-    step(cl, sv, lp, &mut out, until);
+    step(cl, sv, lp, &uni out, until);
     out.clear();
   }
 }
@@ -462,10 +464,56 @@ fn main() i32 {
     finish(&mut cl, &mut sv, &mut lp);
   }
 
+  // ---- The defaults ----
+  {
+    let d = Config.make();
+    expectUInt(u64.from(d.maxPerOrigin), 16u64, "maxPerOrigin: 16 by default");
+    expectUInt(u64.from(d.maxTotal), 256u64, "maxTotal: 256 by default");
+    expect(d.idleTimeout == Duration.fromSeconds(50i64), "idleTimeout: 50 s by default");
+    expect(d.idleTimeout < d.conn.protocol.idleTimeout, "...below a Cone server's own (60 s)");
+    expect(d.maxLifetime == Duration.fromMinutes(5i64), "maxLifetime: 5 min by default");
+    expectUInt(u64.from(d.conn.protocol.maxResponseHeadBytes), 65536u64, "a response's head: up to 64 KiB");
+    expect(d.conn.handshakeTimeout == Duration.fromSeconds(10i64), "a TLS handshake: 10 s, timed apart");
+    expectUInt(u64.from(d.conn.keepAlive.probes), 3u64, "TCP keepalive on");
+    expectUInt(u64.from(d.maxRetries), 2u64, "maxRetries: 2");
+
+    // The per-origin cap: twenty at once to one origin open sixteen
+    var cl = Client.make(Config.make());
+    var k = 0u32;
+    while k < 20u32 {
+      cl.get(&mut lp, url(port, "/hello").view(), Sink.Here(1u64));
+      k = k + 1u32;
+    }
+    expectUInt(drain(&mut cl, &mut sv, &mut lp, 20u64, &mut fails), 20u64, "twenty at once: Done");
+    expectUInt(cl.stats().connects, 16u64, "...over sixteen connections, the per-origin cap");
+    finish(&mut cl, &mut sv, &mut lp);
+  }
+
+  // ---- A connection's lifetime ----
+  {
+    var cfg = Config.make();
+    cfg.maxLifetime = Duration.fromMillis(100i64);
+    var cl = Client.make(cfg);
+    var s1 = seen();
+    let i1 = cl.get(&mut lp, url(port, "/hello").view(), Sink.Here(1u64));
+    finishOf(&mut cl, &mut sv, &mut lp, i1, &mut s1);
+    var s2 = seen();
+    let i2 = cl.get(&mut lp, url(port, "/hello").view(), Sink.Here(1u64));
+    finishOf(&mut cl, &mut sv, &mut lp, i2, &mut s2);
+    expect(s2.last == EventKind.Done && s2.timing.reused, "within its lifetime: the connection reused");
+    idleFor(&mut cl, &mut sv, &mut lp, Duration.fromMillis(200i64));
+    var s3 = seen();
+    let i3 = cl.get(&mut lp, url(port, "/hello").view(), Sink.Here(1u64));
+    finishOf(&mut cl, &mut sv, &mut lp, i3, &mut s3);
+    expect(s3.last == EventKind.Done && !s3.timing.reused, "past maxLifetime: a new connection");
+    expectUInt(cl.stats().connects, 2u64, "...two made in all");
+    finish(&mut cl, &mut sv, &mut lp);
+  }
+
   expectUInt(u64.from(fails.len()), 0u64, "no other failures");
   sv.drv.abortAll(&mut lp);
   var sevs = List[httpconn.Event].empty();
-  sv.drv.pump(&mut lp, &mut sevs);
+  sv.drv.pump(&mut lp, &uni sevs);
   sevs.clear();
   expectUInt(stats().lent, 0u64, "every buffer back in the pool");
   done()
