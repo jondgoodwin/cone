@@ -1,0 +1,198 @@
+// A '_' target in the body of a callee the reshape check reads. A borrow into a
+// list is held across each call below, so the check reads the callee's body to
+// ask whether it reshapes a 'List' the borrow may point into (shapeinfer.h). A
+// '_' takes its value and drops it at the statement's end; it names no place,
+// so it writes nothing the borrow could point into. Each callee discards: a
+// value that copies; inside a block; in a generic function; in a method of a
+// generic type; a by-value result that moves ('Option[String]'); one of two
+// values taken apart; a refused value handed back by a push, in an arm of a
+// 'match' in a loop (iocore's 'gatherSpans'); and a popped value, inside an 'if'
+// in a method whose receiver holds the borrowed list (http2's 'pushGone'). The
+// calls reshape no 'List[i64]', so each is accepted.
+// collection_flow_reshape_discard refuses a '_ =' whose call does reshape it, and
+// collection_reshape_discard_lib is a library that records its types' shapes.
+
+mod collection_reshape_discard_success;
+
+import stdio use *;
+import collections use *;
+
+fn show(label: &str, n: i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+// Holds at most 'max' Strings: a push past that hands the String back
+struct Ring {
+  q: Deque[String];
+  max: usize;
+
+  pub fn push(self: &mut, s: String) Option[String] {
+    if q.len() >= max {return Some[String](s);}
+    q.push(s);
+    None[String]
+  }
+  pub fn popFront(self: &mut) Option[String] { q.popFront() }
+  pub fn len(self: &) usize { q.len() }
+}
+
+struct Box {
+  pub items: List[i64];
+  pub names: Deque[String];
+  pub ring: Option[Ring];
+  pub n: i64;
+}
+
+fn newBox(first: i64) Box {
+  var b = Box(List[i64](), Deque[String].empty(), Some[Ring](Ring(Deque[String].empty(), 3usize)), 0);
+  b.items.push(first);
+  b.names.push(String.from("a"));
+  b.names.push(String.from("b"));
+  b.names.push(String.from("c"));
+  b
+}
+
+// A value that copies
+fn count(b: &mut Box) {
+  _ = b.items.len();
+  b.n = b.n + 1;
+}
+
+// Inside a block
+fn countInBlock(b: &mut Box) {
+  {
+    _ = b.items.len();
+  }
+  if b.n >= 0 {_ = b.items.len();}
+  b.n = b.n + 10;
+}
+
+// In a generic function
+fn countGeneric[T](b: &mut Box, v: T) T {
+  _ = b.items.len();
+  b.n = b.n + 100;
+  v
+}
+
+// A by-value result that moves: the String popped is dropped at the statement's end
+fn dropFront(b: &mut Box) {
+  _ = b.names.popFront();
+}
+
+fn split(n: i64) (i64, i64) {(n / 10, n % 10)}
+
+// One of two values taken apart
+fn keepTens(b: &mut Box) {
+  b.n, _ = split(b.n);
+}
+
+// iocore's 'gatherSpans': each String moved out of the front and back onto the end
+fn rotate(b: &mut Box) {
+  match &mut b.ring {
+    case var &mut Some(c) {
+      var k = 0usize;
+      while k < 2usize {
+        match c.popFront() {
+          case var Some(s) {
+            _ = c.push(s);
+          }
+          else {}
+        }
+        k = k + 1usize;
+      }
+    }
+    else {}
+  }
+}
+
+fn fillRing(b: &mut Box) {
+  match &mut b.ring {
+    case var &mut Some(c) {
+      _ = c.push(String.from("x"));
+      _ = c.push(String.from("y"));
+      _ = c.push(String.from("z"));
+      _ = c.push(String.from("refused"));
+    }
+    else {}
+  }
+}
+
+fn ringLen(b: &Box) i64 {
+  match &b.ring {
+    case let &Some(c) {i64.from(c.len())}
+    else {0}
+  }
+}
+
+// A method of a generic type
+struct Keep[T] {
+  pub items: List[T];
+  pub q: Deque[T];
+
+  pub fn dropOne(self: &mut) {
+    _ = q.popFront();
+  }
+}
+
+// http2's 'pushGone': a popped value discarded inside an 'if', in a method whose
+// receiver holds the borrowed list
+struct Conn {
+  pub streams: List[i64];
+  pub gone: Deque[u32];
+
+  fn pushGone(self: &mut, id: u32) {
+    gone.push(id);
+    if gone.len() > 2usize {_ = gone.popFront();}
+  }
+}
+
+fn heldAcross(x: &mut Box, y: &mut Box) i64 {
+  let e = &mut x.items[0usize];
+  count(y);
+  countInBlock(y);
+  _ = countGeneric(y, 5);
+  dropFront(y);
+  keepTens(y);
+  fillRing(y);
+  rotate(y);
+  *e
+}
+
+fn heldAcrossKeep(x: &mut Keep[i64], y: &mut Keep[i64]) i64 {
+  let e = &mut x.items[0usize];
+  y.dropOne();
+  *e
+}
+
+fn heldAcrossConn(c: &mut Conn, other: &mut Conn) i64 {
+  let s = &mut c.streams[0usize];
+  other.pushGone(1u32);
+  other.pushGone(2u32);
+  other.pushGone(3u32);
+  *s
+}
+
+fn main() {
+  var x = newBox(7);
+  var y = newBox(8);
+  show("held", heldAcross(&mut x, &mut y));
+  show("n", y.n);
+  show("names", i64.from(y.names.len()));
+  show("ring", ringLen(&y));
+
+  var kx = Keep[i64](List[i64](), Deque[i64].empty());
+  kx.items.push(11);
+  var ky = Keep[i64](List[i64](), Deque[i64].empty());
+  ky.q.push(1);
+  ky.q.push(2);
+  show("keep", heldAcrossKeep(&mut kx, &mut ky));
+  show("keep q", i64.from(ky.q.len()));
+
+  var c1 = Conn(List[i64](), Deque[u32].empty());
+  c1.streams.push(21);
+  var c2 = Conn(List[i64](), Deque[u32].empty());
+  show("conn", heldAcrossConn(&mut c1, &mut c2));
+  show("gone", i64.from(c2.gone.len()));
+}
