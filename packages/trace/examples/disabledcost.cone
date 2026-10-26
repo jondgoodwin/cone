@@ -3,12 +3,16 @@
 // is below its own, with a sink installed (the case a shipped program meets).
 // Each loop adds its counter into a sum the program prints, so neither is
 // folded away; the emit's argument is a call that would show in the sum if it
-// ran. Five rounds of each, the best taken.
+// ran. The two loops are run in turn, five rounds of each interleaved, so that
+// whatever else the machine is doing falls on both alike; pin the program to
+// one core to keep it there ('start /affinity 4' on Windows, 'taskset -c 2'
+// on Linux).
 //
 //   congo run --release packages/trace/examples/disabledcost.cone -- [count]
 //
-// Prints 'empty_ps <n>', 'disabled_ps <n>' (picoseconds a pass, the best
-// round) and 'cost_ps <n>', their difference.
+// Prints each round's picoseconds a pass ('round <r> empty_ps <n> disabled_ps
+// <n>'), the medians, and their ratio in thousandths ('ratio_milli 1000' is
+// the same time).
 
 mod disabledcost;
 
@@ -66,22 +70,31 @@ fn disabled(n: u64) u64 {
   sum
 }
 
-// Picoseconds a pass of the faster of five rounds
-fn best(n: u64, withEmit: bool, sum: &mut u64) u64 {
-  var least = 0xFFFFFFFFFFFFFFFFu64;
-  var round = 0;
-  while round < 5 {
-    let t0 = trace.ticks();
-    let s = if withEmit {disabled(n)} else {empty(n)};
-    let t1 = trace.ticks();
-    *sum = *sum + s;
-    let ps = (t1 - t0) * 1000000000000u64 / trace.clockFrequency() / n;
-    if ps < least {
-      least = ps;
+// Picoseconds a pass of one round of either loop
+fn round(n: u64, withEmit: bool, sum: &mut u64) u64 {
+  let t0 = trace.ticks();
+  let s = if withEmit {disabled(n)} else {empty(n)};
+  let t1 = trace.ticks();
+  *sum = *sum + s;
+  (t1 - t0) * 1000000000000u64 / trace.clockFrequency() / n
+}
+
+// The median of five
+fn median(a: &mut Array[u64, 5]) u64 {
+  var i = 0usize;
+  while i < 5usize {
+    var j = i + 1usize;
+    while j < 5usize {
+      if a[j] < a[i] {
+        let t = a[i];
+        a[i] = a[j];
+        a[j] = t;
+      }
+      j = j + 1usize;
     }
-    round = round + 1;
+    i = i + 1usize;
   }
-  least
+  a[2]
 }
 
 fn main(argc: i32, argv: **u8) i32 {
@@ -92,12 +105,23 @@ fn main(argc: i32, argv: **u8) i32 {
   expectInstalled(trace.install(Uni[Nowhere](0u64)));
   trace.setLevel("bench", Level.Info);      // below the kind's Debug: off
   var sum = 0u64;
-  let e = best(n, false, &mut sum);
-  let d = best(n, true, &mut sum);
+  var es = Array[u64, 5]() <- fill 0u64;
+  var ds = Array[u64, 5]() <- fill 0u64;
   print <- "count ", n, "\n";
-  print <- "empty_ps ", e, "\n";
-  print <- "disabled_ps ", d, "\n";
-  print <- "cost_ps ", if d > e {d - e} else {0u64}, "\n";
+  var r = 0usize;
+  while r < 5usize {
+    es[r] = round(n, false, &mut sum);
+    ds[r] = round(n, true, &mut sum);
+    print <- "round ", r, " empty_ps ", es[r], " disabled_ps ", ds[r], "\n";
+    r = r + 1usize;
+  }
+  let e = median(&mut es);
+  let d = median(&mut ds);
+  print <- "median_empty_ps ", e, "\n";
+  print <- "median_disabled_ps ", d, "\n";
+  print <- "ratio_milli ", d * 1000u64 / e, "\n";
+  print <- "spread_empty_ps ", es[0], "..", es[4], "\n";             // sorted: least..most
+  print <- "spread_disabled_ps ", ds[0], "..", ds[4], "\n";
   print <- "evaluated ", calls, "\n";
   print <- "checksum ", sum, "\n";
   0

@@ -15,9 +15,11 @@ congo run --release examples/disabledcost.cone -- 200000000   # a disabled emit'
 ```
 
 `awaits` runs the actors runtime: run the package's tests under the memory cap
-the actors tests use. `disabledcost` prints `key value` lines: the best of five
-rounds of a hot loop with and without a disabled `emit`, in picoseconds a pass.
-Timings on a machine other programs share are only good taken one at a time.
+the actors tests use. `disabledcost` prints `key value` lines: five
+interleaved rounds of a hot loop with and without a disabled `emit`, in
+picoseconds a pass, their medians and the ratio; pin it to one core
+(`start /affinity 4`, `taskset -c 2`). Timings on a machine other programs
+share are only good taken one at a time.
 
 ## Not here yet
 
