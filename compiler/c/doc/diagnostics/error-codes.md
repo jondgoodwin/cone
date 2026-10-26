@@ -531,9 +531,9 @@ member only one variant has, named on a name that was narrowed to it and has sin
 changed by an assignment, a writable borrow of the whole enum, a swap, a reference stored over
 or a branch that did one of these, is `ErrorNarrowStale` (type check); a name narrowed from before
 a loop, used in it, that a change later in the loop reaches by the back edge is
-`ErrorNarrowLoop`; and the `else` of `let Ok(n) = r else {...};` that falls through to the binding
-is `ErrorLetElse`. Each is reported at the use or the `else`, and the first two name the
-change. `ErrorOwnerNarrow` is an owner (`Rc[mut, Shape]`) narrowed to a variant whose value
+`ErrorNarrowLoop`; and the `else` of `let Ok(n) = r else {...};` that can fall through to the
+binding is `ErrorLetElse`, reported at the spot inside the `else` where a path goes on and
+saying what it lacks. The first two are reported at the use and name the change. `ErrorOwnerNarrow` is an owner (`Rc[mut, Shape]`) narrowed to a variant whose value
 would sit at another offset in its allocation (generation).
 
 A `parallel each` over a zip of cursors that lend from the same buffer, where the loop
