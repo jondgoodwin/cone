@@ -1,0 +1,297 @@
+// ======== Frames: HTTP/3's framing layer (RFC 9114, section 7) ========
+//
+// HTTP/3 has no frame header of its own beyond two of QUIC's
+// variable-length integers (RFC 9000, section 16): the frame's type, then
+// its payload's length, then the payload.
+//
+//   HTTP/3 Frame {                     a variable-length integer:
+//     Type (i),                          2MSB 00: 1 byte,  6 bits
+//     Length (i),                        2MSB 01: 2 bytes, 14 bits
+//     Frame Payload (..),                2MSB 10: 4 bytes, 30 bits
+//   }                                    2MSB 11: 8 bytes, 62 bits
+//
+// So a frame needs no stream number (QUIC's stream carries it), no flags and
+// no padding, and nothing joins frames together: a field section arrives in
+// one HEADERS frame. Here are the numbers RFC 9114 fixes (frame, stream and
+// setting types, error codes), the integers, a frame's head, and the
+// payloads of the control stream's frames, each checked. Which frame may
+// come where, and what each does, is the connection's.
+
+mod frames;
+
+import collections use List, String;
+import iobuf use Chain;
+
+// ---------------------------------------------------------------------------
+// Variable-length integers (RFC 9000, section 16)
+// ---------------------------------------------------------------------------
+
+// The largest: 2^62 - 1
+pub const maxVarint = 0x3FFFFFFFFFFFFFFFu64;
+
+// How many bytes v takes, written in the fewest: 1, 2, 4 or 8
+pub fn varintLen(v: u64) usize {
+  if v < 0x40u64 {1usize}
+  else if v < 0x4000u64 {2usize}
+  else if v < 0x40000000u64 {4usize}
+  else {8usize}
+}
+
+// Append v in the fewest bytes. Past maxVarint is a program error, a panic
+pub fn encodeVarint(out: &mut List[u8], v: u64) {
+  if v > maxVarint {panic("http3: a variable-length integer past 2^62-1");}
+  let n = varintLen(v);
+  let tag = if n == 1usize {0x00u8} else if n == 2usize {0x40u8} else if n == 4usize {0x80u8} else {0xC0u8};
+  var k = n;
+  while k > 0usize {
+    k = k - 1usize;
+    let b = u8.from((v >> u64.from(8usize * k)) & 0xFFu64);
+    out.push(if k == n - 1usize {b | tag} else {b});
+  }
+}
+
+// Read the integer at src[*pos] into *value, moving *pos past it: false,
+// *pos unmoved, when it is cut off. Any length is accepted for any value,
+// as RFC 9000 allows
+pub fn decodeVarint(src: &Array[u8], pos: &mut usize, value: &mut u64) bool {
+  if *pos >= src.len {return false;}
+  let n = 1usize << usize.from(src[*pos] >> 6u8);
+  if src.len - *pos < n {return false;}
+  var v = u64.from(src[*pos] & 0x3Fu8);
+  var i = 1usize;
+  while i < n {
+    v = (v << 8u64) | u64.from(src[*pos + i]);
+    i = i + 1usize;
+  }
+  *pos = *pos + n;
+  *value = v;
+  true
+}
+
+// Read the integer at offset 'at' of a Chain's unconsumed bytes into
+// *value: how many bytes it takes, or 0 when it has not all arrived
+pub fn peekVarint(c: &Chain, at: usize, value: &mut u64) usize {
+  if at >= c.len() {return 0usize;}
+  let first = c.byteAt(at);
+  let n = 1usize << usize.from(first >> 6u8);
+  if c.len() - at < n {return 0usize;}
+  var v = u64.from(first & 0x3Fu8);
+  var i = 1usize;
+  while i < n {
+    v = (v << 8u64) | u64.from(c.byteAt(at + i));
+    i = i + 1usize;
+  }
+  *value = v;
+  n
+}
+
+// ---------------------------------------------------------------------------
+// The numbers RFC 9114 fixes
+// ---------------------------------------------------------------------------
+
+// The frame types (section 7.2)
+pub const frameData = 0x0u64;
+pub const frameHeaders = 0x1u64;
+pub const frameCancelPush = 0x3u64;
+pub const frameSettings = 0x4u64;
+pub const framePushPromise = 0x5u64;
+pub const frameGoAway = 0x7u64;
+pub const frameMaxPushId = 0xDu64;
+
+// HTTP/2's frame types that HTTP/3 has no use for (section 7.2.8): PRIORITY,
+// PING, WINDOW_UPDATE and CONTINUATION. Receiving one is an error
+pub fn isHttp2FrameType(t: u64) bool {t == 0x2u64 || t == 0x6u64 || t == 0x8u64 || t == 0x9u64}
+
+// The unidirectional stream types (section 6.2; RFC 9204, section 4.2)
+pub const streamControl = 0x0u64;
+pub const streamPush = 0x1u64;
+pub const streamEncoder = 0x2u64;
+pub const streamDecoder = 0x3u64;
+
+// The SETTINGS parameters (section 7.2.4.1; RFC 9204, section 5; RFC 9220,
+// section 3; RFC 9297, section 2.1.1)
+pub const settingQpackMaxTableCapacity = 0x1u64;
+pub const settingMaxFieldSectionSize = 0x6u64;
+pub const settingQpackBlockedStreams = 0x7u64;
+pub const settingEnableConnectProtocol = 0x8u64;
+pub const settingH3Datagram = 0x33u64;
+
+// HTTP/2's SETTINGS parameters with no HTTP/3 meaning (section 7.2.4.1):
+// ENABLE_PUSH, MAX_CONCURRENT_STREAMS, INITIAL_WINDOW_SIZE and
+// MAX_FRAME_SIZE. Receiving one is an error
+pub fn isHttp2Setting(id: u64) bool {id >= 0x2u64 && id <= 0x5u64}
+
+// A reserved value (0x1f * N + 0x21): a frame type, stream type, setting or
+// error code that means nothing, sent to keep peers from choking on values
+// they do not know (sections 6.2.3, 7.2.8, 7.2.4.1, 8.1) and ignored on
+// receipt
+pub fn isReserved(v: u64) bool {v >= 0x21u64 && (v - 0x21u64) % 0x1Fu64 == 0u64}
+
+// The one reserved value this end sends: N = 1
+pub const greaseValue = 0x40u64;
+
+// The error codes (section 8.1). QPACK's, and H3_CLOSED_CRITICAL_STREAM, are
+// qpack's constants
+pub const h3NoError = 0x100u64;
+pub const h3GeneralProtocolError = 0x101u64;
+pub const h3InternalError = 0x102u64;
+pub const h3StreamCreationError = 0x103u64;
+pub const h3FrameUnexpected = 0x105u64;
+pub const h3FrameError = 0x106u64;
+pub const h3ExcessiveLoad = 0x107u64;
+pub const h3IdError = 0x108u64;
+pub const h3SettingsError = 0x109u64;
+pub const h3MissingSettings = 0x10Au64;
+pub const h3RequestRejected = 0x10Bu64;
+pub const h3RequestCancelled = 0x10Cu64;
+pub const h3RequestIncomplete = 0x10Du64;
+pub const h3MessageError = 0x10Eu64;
+pub const h3ConnectError = 0x10Fu64;
+pub const h3VersionFallback = 0x110u64;
+
+// An error code's name as the RFCs spell it: 'H3_FRAME_UNEXPECTED'; "" for
+// one they do not define (which means nothing special, section 9)
+pub fn errorName(code: u64) &str {
+  match code {
+    case 0x100u64 {"H3_NO_ERROR"}
+    case 0x101u64 {"H3_GENERAL_PROTOCOL_ERROR"}
+    case 0x102u64 {"H3_INTERNAL_ERROR"}
+    case 0x103u64 {"H3_STREAM_CREATION_ERROR"}
+    case 0x104u64 {"H3_CLOSED_CRITICAL_STREAM"}
+    case 0x105u64 {"H3_FRAME_UNEXPECTED"}
+    case 0x106u64 {"H3_FRAME_ERROR"}
+    case 0x107u64 {"H3_EXCESSIVE_LOAD"}
+    case 0x108u64 {"H3_ID_ERROR"}
+    case 0x109u64 {"H3_SETTINGS_ERROR"}
+    case 0x10Au64 {"H3_MISSING_SETTINGS"}
+    case 0x10Bu64 {"H3_REQUEST_REJECTED"}
+    case 0x10Cu64 {"H3_REQUEST_CANCELLED"}
+    case 0x10Du64 {"H3_REQUEST_INCOMPLETE"}
+    case 0x10Eu64 {"H3_MESSAGE_ERROR"}
+    case 0x10Fu64 {"H3_CONNECT_ERROR"}
+    case 0x110u64 {"H3_VERSION_FALLBACK"}
+    case 0x200u64 {"QPACK_DECOMPRESSION_FAILED"}
+    case 0x201u64 {"QPACK_ENCODER_STREAM_ERROR"}
+    case 0x202u64 {"QPACK_DECODER_STREAM_ERROR"}
+    else {""}
+  }
+}
+
+// ---------------------------------------------------------------------------
+// A frame's head
+// ---------------------------------------------------------------------------
+
+// A frame's type and its payload's length, and how many bytes the two take
+pub struct FrameHead {
+  pub kind: u64;
+  pub length: u64;
+  pub size: usize;
+}
+
+// The head of the frame at the start of a Chain's unconsumed bytes, or None
+// when it has not all arrived
+pub fn peekFrameHead(c: &Chain) Option[FrameHead] {
+  var kind = 0u64;
+  let a = peekVarint(c, 0usize, &mut kind);
+  if a == 0usize {return None;}
+  var length = 0u64;
+  let b = peekVarint(c, a, &mut length);
+  if b == 0usize {return None;}
+  Some[FrameHead](FrameHead(kind, length, a + b))
+}
+
+// Append a frame's head
+pub fn encodeFrameHead(out: &mut List[u8], kind: u64, length: u64) {
+  encodeVarint(out, kind);
+  encodeVarint(out, length);
+}
+
+// ---------------------------------------------------------------------------
+// The control stream's payloads
+// ---------------------------------------------------------------------------
+
+// A frame the RFC says to refuse: the code to close the connection with,
+// and why. Every error at the frames' level is the connection's
+pub struct FrameError {
+  pub code: u64;
+  pub detail: &'static str;
+}
+
+// What a SETTINGS frame says, each parameter at its default (section
+// 7.2.4.1) where the frame leaves it out: 'maxFieldSectionSize' is
+// unlimited then
+pub struct Settings {
+  pub qpackMaxTableCapacity: u64;
+  pub maxFieldSectionSize: u64;
+  pub qpackBlockedStreams: u64;
+  pub enableConnectProtocol: bool;
+  pub h3Datagram: bool;
+  pub unknown: usize;           // parameters this end does not know, ignored
+
+  pub fn defaults() Settings {Settings(0u64, maxVarint, 0u64, false, false, 0usize)}
+}
+
+// Read a SETTINGS frame's whole payload into s, each parameter checked: a
+// payload cut off inside a parameter is H3_FRAME_ERROR; HTTP/2's parameters,
+// one given twice, and a 0-or-1 parameter given another value are
+// H3_SETTINGS_ERROR; unknown and reserved ones are ignored
+pub fn parseSettings(p: &Array[u8], s: &mut Settings) Option[FrameError] {
+  var seen = List[u64].empty();
+  var pos = 0usize;
+  while pos < p.len {
+    var id = 0u64;
+    var v = 0u64;
+    if !decodeVarint(p, &mut pos, &mut id) || !decodeVarint(p, &mut pos, &mut v) {
+      return Some[FrameError](FrameError(h3FrameError, "a SETTINGS frame cut off inside a parameter"));
+    }
+    if isHttp2Setting(id) {return Some[FrameError](FrameError(h3SettingsError, "an HTTP/2 SETTINGS parameter"));}
+    var k = 0usize;
+    while k < seen.len() {
+      if *seen[k] == id {return Some[FrameError](FrameError(h3SettingsError, "a SETTINGS parameter given twice"));}
+      k = k + 1usize;
+    }
+    seen.push(id);
+    if id == settingQpackMaxTableCapacity {s.qpackMaxTableCapacity = v;}
+    else if id == settingMaxFieldSectionSize {s.maxFieldSectionSize = v;}
+    else if id == settingQpackBlockedStreams {s.qpackBlockedStreams = v;}
+    else if id == settingEnableConnectProtocol {
+      if v > 1u64 {return Some[FrameError](FrameError(h3SettingsError, "SETTINGS_ENABLE_CONNECT_PROTOCOL other than 0 or 1"));}
+      s.enableConnectProtocol = v == 1u64;
+    } else if id == settingH3Datagram {
+      if v > 1u64 {return Some[FrameError](FrameError(h3SettingsError, "SETTINGS_H3_DATAGRAM other than 0 or 1"));}
+      s.h3Datagram = v == 1u64;
+    } else {
+      s.unknown = s.unknown + 1usize;
+    }
+  }
+  None
+}
+
+// Append a SETTINGS frame of these (id, value) pairs
+pub fn encodeSettings(out: &mut List[u8], ids: &Array[u64], values: &Array[u64]) {
+  var payload = List[u8].empty();
+  var i = 0usize;
+  while i < ids.len {
+    encodeVarint(&mut payload, ids[i]);
+    encodeVarint(&mut payload, values[i]);
+    i = i + 1usize;
+  }
+  encodeFrameHead(out, frameSettings, u64.from(payload.len()));
+  out.appendSlice(payload.view());
+}
+
+// The one integer a GOAWAY, MAX_PUSH_ID or CANCEL_PUSH payload is (sections
+// 7.2.3, 7.2.6, 7.2.7): None when the payload is not exactly one
+pub fn parseId(p: &Array[u8]) Option[u64] {
+  var pos = 0usize;
+  var v = 0u64;
+  if !decodeVarint(p, &mut pos, &mut v) || pos != p.len {return None;}
+  Some[u64](v)
+}
+
+// Append a frame whose payload is one integer: GOAWAY, MAX_PUSH_ID or
+// CANCEL_PUSH
+pub fn encodeIdFrame(out: &mut List[u8], kind: u64, id: u64) {
+  encodeFrameHead(out, kind, u64.from(varintLen(id)));
+  encodeVarint(out, id);
+}

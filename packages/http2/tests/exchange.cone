@@ -1,0 +1,794 @@
+// A client core and a server core driven against each other in memory, every
+// byte of each one's output handed to the other's input (some of it a byte
+// at a time), on a synthetic clock:
+// - one GET, and one POST whose body and trailers cross a byte at a time;
+// - an interim response, trailers both ways, cookie crumbs joined;
+// - 50 streams at once, each POST's body echoed back as it arrives, the
+//   frames of different streams interleaved on the wire;
+// - one stalled reader: three 1 MiB downloads, one never released, which
+//   stops at its stream window while the other two finish (the
+//   connection's window is given back as data arrives);
+// - resets mid-body: a client cancelling a download, a server answering
+//   early and stopping the request's body with NO_ERROR;
+// - GOAWAY with requests in flight (a test server's: those above its last
+//   stream are refused, safe to retry, and so are the waiting ones), and a
+//   server's graceful double GOAWAY;
+// - PING, a connection error every stream hears of, and the peer's close
+//   with a stream under way.
+
+mod exchange;
+
+import testing use *;
+import collections use List, String;
+import iobuf use IoBuf, Chain;
+import time use Instant, Duration;
+import http use *;
+import http2 use *;
+
+fn at(ms: i64) Instant {Instant.fromNanos(ms * 1000000i64)}
+
+fn buf(b: &Array[u8]) IoBuf {
+  var x = IoBuf(if b.len > 0usize {b.len} else {1usize});
+  let n = x.append(b);
+  x
+}
+
+// A buffer of n bytes, byte k being pattern(seed, k)
+fn pattern(seed: u64, k: u64) u8 {u8.from((seed * 131u64 + k * 7u64 + k / 251u64) % 256u64)}
+
+fn patterned(seed: u64, from: u64, n: usize) IoBuf {
+  var x = IoBuf(if n > 0usize {n} else {1usize});
+  let room = x.spare();
+  var i = 0usize;
+  while i < n {
+    room[i] = pattern(seed, from + u64.from(i));
+    i = i + 1usize;
+  }
+  x.setLen(n);
+  x
+}
+
+fn req(method: &str, path: &str) RequestHead {
+  var h = RequestHead.make(method, path, "example.com");
+  h.scheme = String.from("https");
+  h
+}
+
+// ---------------------------------------------------------------------------
+// Moving bytes
+// ---------------------------------------------------------------------------
+
+// Hand 'to' the bytes of c, in pieces of at most 'piece' bytes
+fn feed(to: &mut Connection, c: &mut Chain, piece: usize, now: Instant) usize {
+  var total = 0usize;
+  while c.len() > 0usize && !to.isClosed() {
+    var n = c.len();
+    if n > piece {n = piece;}
+    let credit = to.readCredit();
+    if n > credit {n = credit;}
+    if n == 0usize {return total;}
+    var b = IoBuf(n);
+    let room = b.spare();
+    let k = c.copyOut(0usize, &mut room[0usize ..< n]);
+    b.setLen(k);
+    c.advance(k);
+    to.handleInput(b, now);
+    total = total + k;
+  }
+  total
+}
+
+// What 'from' has to send, handed to 'to': how many bytes
+fn pass(from: &mut Connection, to: &mut Connection, piece: usize, now: Instant) usize {
+  var out = from.pollTransmit(now);
+  feed(to, &mut out, piece, now)
+}
+
+// Both ways until nothing moves
+fn settle(a: &mut Connection, b: &mut Connection, now: Instant) {
+  var rounds = 0u32;
+  while rounds < 100000u32 {
+    let x = pass(a, b, 1048576usize, now);
+    let y = pass(b, a, 1048576usize, now);
+    if x == 0usize && y == 0usize {return;}
+    rounds = rounds + 1u32;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Events as text
+// ---------------------------------------------------------------------------
+
+fn errText(e: &HttpError) String {
+  var s = String.from(kindName(e.kind));
+  match e.code {
+    case let Some(c) {
+      s.append(" ");
+      s.append(ErrorCode.of(u32.from(c)).name());
+    }
+    case is None[u64] {}
+  }
+  if e.scope == ErrorScope.Stream {s.append(" stream");} else {s.append(" conn");}
+  if e.noResponse {s.append(" noresp");}
+  if e.isRetrySafe() {s.append(" retry");}
+  s
+}
+
+fn bodyText(b: &BodyLength, out: &mut String) {
+  if b.isEmpty() {out.append("empty");}
+  else if b.isSized() {
+    out.append("sized ");
+    out.appendUInt(b.length);
+  } else {out.append("unsized");}
+}
+
+fn fieldsText(h: &Headers, out: &mut String) {
+  var i = 0usize;
+  while i < h.len() {
+    out.append(" ");
+    out.append(h.nameAt(i));
+    out.append("=");
+    out.appendBytes(h.valueAt(i));
+    i = i + 1usize;
+  }
+}
+
+// Every event until NeedData or Closed, as text; body bytes released as
+// they come when 'release'
+fn drain(c: &mut Connection, release: bool) String {
+  var log = String.empty();
+  var going = true;
+  while going {
+    match c.pollEvent() {
+      case let NeedData(e) {going = false;}
+      case let Closed(e) {
+        log.append("closed;");
+        going = false;
+      }
+      case let Request(r) {
+        log.append("req ");
+        log.appendUInt(u64.from(r.stream));
+        log.append(" ");
+        log.append(r.head.methodName());
+        log.append(" ");
+        log.append(r.head.target.view());
+        log.append(" ");
+        bodyText(&r.body, &mut log);
+        fieldsText(&r.head.headers, &mut log);
+        log.append(";");
+      }
+      case let Response(r) {
+        log.append("resp ");
+        log.appendUInt(u64.from(r.stream));
+        log.append(" ");
+        log.appendUInt(u64.from(r.head.status));
+        log.append(" ");
+        bodyText(&r.body, &mut log);
+        fieldsText(&r.head.headers, &mut log);
+        log.append(";");
+      }
+      case let Interim(r) {
+        log.append("interim ");
+        log.appendUInt(u64.from(r.stream));
+        log.append(" ");
+        log.appendUInt(u64.from(r.head.status));
+        fieldsText(&r.head.headers, &mut log);
+        log.append(";");
+      }
+      case let Data(d) {
+        log.append("data ");
+        log.appendUInt(u64.from(d.stream));
+        log.append(" ");
+        log.appendUInt(u64.from(d.buf.len()));
+        log.append(";");
+        if release {c.release(d.stream, d.buf.len());}
+      }
+      case let End(e) {
+        log.append("end ");
+        log.appendUInt(u64.from(e.stream));
+        fieldsText(&e.trailers, &mut log);
+        log.append(";");
+      }
+      case let Reset(r) {
+        log.append("reset ");
+        log.appendUInt(u64.from(r.stream));
+        log.append(" ");
+        log.append(errText(&r.error).view());
+        log.append(";");
+      }
+      case let GoAway(g) {
+        log.append("goaway ");
+        log.appendUInt(u64.from(g.lastStream));
+        log.append(" ");
+        log.append(g.code.name());
+        log.append(";");
+      }
+      case let Pong(p) {
+        log.append("pong ");
+        log.appendUInt(p.data);
+        log.append(";");
+      }
+      case let Failed(f) {
+        log.append("failed ");
+        log.append(errText(&f.error).view());
+        log.append(";");
+      }
+    }
+  }
+  log
+}
+
+// ---------------------------------------------------------------------------
+// A test peer: frames written and read by hand
+// ---------------------------------------------------------------------------
+
+struct Peer {
+  pub w: FrameWriter;
+  pub r: FrameReader;
+  pub enc: HpackEncoder;
+  pub dec: HpackDecoder;
+  pub inbox: Chain;
+  pub skip: usize;            // the client's preface, still to skip
+}
+
+fn rawServer() Peer {
+  let fc = FrameConfig.make();
+  let hc = HpackConfig.make();
+  Peer(FrameWriter.make(&fc), FrameReader.server(fc), HpackEncoder.make(&hc), HpackDecoder.make(hc),
+    Chain.make(67108864usize), 24usize)
+}
+
+// The peer's frames so far, handed to c
+fn send(p: &mut Peer, c: &mut Connection, now: Instant) {
+  var out = p.w.take();
+  let n = feed(c, &mut out, 1048576usize, now);
+}
+
+fn block(p: &mut Peer, fields: &Array[HeaderField]) List[u8] {
+  var out = List[u8].empty();
+  p.enc.encode(fields, &mut out);
+  out
+}
+
+// What c sends, read by the peer, as text
+fn heard(p: &mut Peer, c: &mut Connection, now: Instant) String {
+  var out = c.pollTransmit(now);
+  while out.segments() > 0usize {
+    match out.popFront() {
+      case let Some(b) {
+        let over = p.inbox.push(b);
+      }
+      case is None[IoBuf] {}
+    }
+  }
+  if p.skip > 0usize && p.inbox.len() >= p.skip {
+    p.inbox.advance(p.skip);
+    p.skip = 0usize;
+  }
+  var log = String.empty();
+  var going = true;
+  while going {
+    match p.r.next(&mut p.inbox) {
+      case is NeedData {going = false;}
+      case let Failed(f) {
+        log.append("ERR ");
+        log.append(f.error.message().view());
+        log.append(";");
+        going = false;
+      }
+      case let Got(g) {frameText(p, g.frame, &mut log);}
+    }
+  }
+  log
+}
+
+fn frameText(p: &mut Peer, f: Frame, log: &mut String) {
+  match f {
+    case let Data(d) {
+      log.append("DATA ");
+      log.appendUInt(u64.from(d.stream));
+      log.append(" ");
+      log.appendUInt(u64.from(d.data.len()));
+      if d.endStream {log.append(" end");}
+    }
+    case let Headers(h) {
+      log.append("HEADERS ");
+      log.appendUInt(u64.from(h.stream));
+      if h.endStream {log.append(" end");}
+      var fields = List[HeaderField].empty();
+      match p.dec.decode(h.block.view(), &mut fields) {
+        case let Ok(n) {
+          var i = 0usize;
+          while i < fields.len() {
+            log.append(" ");
+            log.append(fields[i].name.view());
+            log.append("=");
+            log.append(fields[i].value.view());
+            i = i + 1usize;
+          }
+        }
+        case let Error(e) {log.append(" (undecodable)");}
+      }
+    }
+    case let RstStream(r) {
+      log.append("RST ");
+      log.appendUInt(u64.from(r.stream));
+      log.append(" ");
+      log.append(r.code.name());
+    }
+    case let Settings(s) {
+      log.append(if s.ack {"SETTINGS ACK"} else {"SETTINGS"});
+    }
+    case let Ping(x) {
+      log.append(if x.ack {"PING ACK "} else {"PING "});
+      log.appendUInt(x.data);
+    }
+    case let GoAway(g) {
+      log.append("GOAWAY ");
+      log.appendUInt(u64.from(g.lastStream));
+      log.append(" ");
+      log.append(g.code.name());
+    }
+    case let WindowUpdate(x) {
+      log.append("WU ");
+      log.appendUInt(u64.from(x.stream));
+    }
+    case let Priority(x) {log.append("PRIORITY");}
+    case let PushPromise(x) {log.append("PUSH_PROMISE");}
+  }
+  log.append(";");
+}
+
+fn has(log: &String, part: &str) bool {
+  let s = log.view();
+  let n = part.len();
+  if n > s.len() {return false;}
+  var i = 0usize;
+  while i + n <= s.len() {
+    var j = 0usize;
+    while j < n && s[i + j] == part[j] {j = j + 1usize;}
+    if j == n {return true;}
+    i = i + 1usize;
+  }
+  false
+}
+
+// ---------------------------------------------------------------------------
+// The scenarios
+// ---------------------------------------------------------------------------
+
+fn getOne() {
+  var c = Connection.client(Config.make(), at(0));
+  var s = Connection.server(Config.make(), at(0));
+  var h = req("GET", "/a");
+  h.headers.add("Accept", "*/*");
+  let id = c.sendRequest(h, BodyLength.empty());
+  expectUInt(u64.from(id), 1u64, "a client's first stream is 1");
+  settle(&mut c, &mut s, at(1));
+  expectStr(drain(&mut s, true).view(), "req 1 GET /a empty accept=*/*;end 1;", "the server reads the request, its name in lower case");
+  var r = ResponseHead.make(200u16);
+  r.headers.add("Content-Type", "text/plain");
+  s.sendResponse(1u32, r, BodyLength.sized(5u64));
+  expect(s.sendData(1u32, buf("hello")) is None, "the body is queued");
+  s.finish(1u32);
+  settle(&mut c, &mut s, at(2));
+  expectStr(drain(&mut c, true).view(), "resp 1 200 sized 5 content-type=text/plain content-length=5;data 1 5;end 1;", "the client reads the response, Content-Length kept as http1 keeps it");
+  expectUInt(u64.from(c.liveStreams()), 0u64, "the client's stream has left the table");
+  expectStr(drain(&mut s, true).view(), "", "the server has nothing more");
+  expectUInt(u64.from(s.liveStreams()), 0u64, "and its stream has left the table");
+  expect(!c.isClosed() && !s.isClosed(), "both connections stay open");
+  let id2 = c.sendRequest(req("GET", "/b"), BodyLength.empty());
+  expectUInt(u64.from(id2), 3u64, "the next stream is 3");
+}
+
+// A POST, its body and trailers crossing a byte at a time, both ways
+fn byteByByte() {
+  var c = Connection.client(Config.make(), at(0));
+  var s = Connection.server(Config.make(), at(0));
+  let id = c.sendRequest(req("POST", "/upload"), BodyLength.unsized());
+  expect(c.sendData(id, buf("abc")) is None, "body queued");
+  expect(c.sendData(id, buf("defg")) is None, "more body queued");
+  var t = Headers.empty();
+  t.add("x-checksum", "1234");
+  c.finishWith(id, t);
+  var rounds = 0u32;
+  while rounds < 100u32 {
+    let x = pass(&mut c, &mut s, 1usize, at(1));
+    let y = pass(&mut s, &mut c, 1usize, at(1));
+    if x == 0usize && y == 0usize {break;}
+    rounds = rounds + 1u32;
+  }
+  expectStr(drain(&mut s, true).view(), "req 1 POST /upload unsized;data 1 3;data 1 4;end 1 x-checksum=1234;", "the server reads it whole, a byte at a time");
+  s.sendResponse(1u32, ResponseHead.make(201u16), BodyLength.unsized());
+  expect(s.sendData(1u32, buf("ok")) is None, "response body queued");
+  var t2 = Headers.empty();
+  t2.add("grpc-status", "0");
+  s.finishWith(1u32, t2);
+  rounds = 0u32;
+  while rounds < 100u32 {
+    let x = pass(&mut s, &mut c, 1usize, at(2));
+    let y = pass(&mut c, &mut s, 1usize, at(2));
+    if x == 0usize && y == 0usize {break;}
+    rounds = rounds + 1u32;
+  }
+  expectStr(drain(&mut c, true).view(), "resp 1 201 unsized;data 1 2;end 1 grpc-status=0;", "the client reads it whole, a byte at a time");
+}
+
+// An interim 103, cookie crumbs joined, a HEAD's sized response with no body
+fn interimAndCookies() {
+  var c = Connection.client(Config.make(), at(0));
+  var s = Connection.server(Config.make(), at(0));
+  var h = req("GET", "/page");
+  h.headers.add("cookie", "a=1");
+  h.headers.add("cookie", "b=2");
+  let id = c.sendRequest(h, BodyLength.empty());
+  settle(&mut c, &mut s, at(1));
+  expectStr(drain(&mut s, true).view(), "req 1 GET /page empty cookie=a=1; b=2;end 1;", "cookie crumbs arrive joined with '; '");
+  var e = ResponseHead.make(103u16);
+  e.headers.add("link", "</s.css>; rel=preload");
+  s.sendInterim(1u32, e);
+  s.sendResponse(1u32, ResponseHead.make(204u16), BodyLength.empty());
+  settle(&mut c, &mut s, at(2));
+  expectStr(drain(&mut c, true).view(), "interim 1 103 link=</s.css>; rel=preload;resp 1 204 empty;end 1;", "an interim, then the final response");
+
+  let hd = c.sendRequest(req("HEAD", "/big"), BodyLength.empty());
+  settle(&mut c, &mut s, at(3));
+  expectStr(drain(&mut s, true).view(), "req 3 HEAD /big empty;end 3;", "a HEAD");
+  s.sendResponse(3u32, ResponseHead.make(200u16), BodyLength.sized(1000u64));
+  settle(&mut c, &mut s, at(4));
+  expectStr(drain(&mut c, true).view(), "resp 3 200 empty content-length=1000;end 3;", "its response has no body, its length a field");
+}
+
+// 50 streams at once: each POST's body echoed as it arrives
+fn interleaved() {
+  var c = Connection.client(Config.make(), at(0));
+  var s = Connection.server(Config.make(), at(0));
+  let streams = 50usize;
+  var sizes = List[usize].empty();
+  var got = List[List[u8]].empty();
+  var sent = List[usize].empty();
+  var k = 0usize;
+  while k < streams {
+    let n = (k * 7919usize) % 100000usize;
+    sizes.push(n);
+    got.push(List[u8].empty());
+    sent.push(0usize);
+    let id = c.sendRequest(req("POST", "/echo"), BodyLength.sized(u64.from(n)));
+    expectUInt(u64.from(id), u64.from(2usize * k + 1usize), "ids go up by two");
+    k = k + 1usize;
+  }
+  var switches = 0usize;
+  var last = 0u32;
+  var ends = 0usize;
+  var rounds = 0u32;
+  while ends < streams && rounds < 10000u32 {
+    // The client sends what each body still has, in 8 KiB pieces
+    k = 0usize;
+    while k < streams {
+      let id = u32.from(2usize * k + 1usize);
+      let left = *sizes[k] - *sent[k];
+      if left > 0usize {
+        let n = if left < 8192usize {left} else {8192usize};
+        match c.sendData(id, patterned(u64.from(k), u64.from(*sent[k]), n)) {
+          case let Some(b) {}
+          case is None[IoBuf] {
+            sent.set(k, *sent[k] + n);
+            if *sent[k] == *sizes[k] {c.finish(id);}
+          }
+        }
+      } else if *sizes[k] == 0usize {
+        c.finish(id);
+      }
+      k = k + 1usize;
+    }
+    settle(&mut c, &mut s, at(1));
+    // The server echoes
+    var going = true;
+    while going {
+      match s.pollEvent() {
+        case let Request(r) {s.sendResponse(r.stream, ResponseHead.make(200u16), BodyLength.unsized());}
+        case let Data(d) {
+          let st, b = d.(stream, buf);
+          let n = b.len();
+          match s.sendData(st, b) {
+            case let Some(back) {expect(false, "the echo's queue stays under its watermark");}
+            case is None[IoBuf] {}
+          }
+          s.release(st, n);
+        }
+        case let End(e) {s.finish(e.stream);}
+        else {going = false;}
+      }
+    }
+    settle(&mut c, &mut s, at(1));
+    // The client collects
+    going = true;
+    while going {
+      match c.pollEvent() {
+        case let Data(d) {
+          if d.stream != last {switches = switches + 1usize;}
+          last = d.stream;
+          let i = usize.from((d.stream - 1u32) / 2u32);
+          let v = d.buf.view();
+          var j = 0usize;
+          while j < v.len {
+            got[i].push(v[j]);
+            j = j + 1usize;
+          }
+          c.release(d.stream, v.len);
+        }
+        case let End(e) {ends = ends + 1usize;}
+        case let Response(r) {}
+        else {going = false;}
+      }
+    }
+    rounds = rounds + 1u32;
+  }
+  expectUInt(u64.from(ends), u64.from(streams), "every stream's echo ends");
+  var same = true;
+  k = 0usize;
+  while k < streams {
+    if got[k].len() != *sizes[k] {same = false;}
+    else {
+      var j = 0usize;
+      while j < got[k].len() {
+        if *got[k][j] != pattern(u64.from(k), u64.from(j)) {same = false;}
+        j = j + 1usize;
+      }
+    }
+    k = k + 1usize;
+  }
+  expect(same, "every byte of every echo comes back in order");
+  expect(switches > 100usize, "the streams' frames interleave on the wire");
+  expectUInt(u64.from(c.liveStreams()) + u64.from(s.liveStreams()), 0u64, "every stream has left both tables");
+}
+
+// Three 1 MiB downloads, one never released: it stops at its window, the
+// other two finish
+fn stalledReader() {
+  var c = Connection.client(Config.make(), at(0));
+  var s = Connection.server(Config.make(), at(0));
+  let size = 1048576usize;
+  var k = 0usize;
+  while k < 3usize {
+    let id = c.sendRequest(req("GET", "/big"), BodyLength.empty());
+    k = k + 1usize;
+  }
+  settle(&mut c, &mut s, at(1));
+  let reqs = drain(&mut s, true);
+  var sent = List[usize].empty();
+  k = 0usize;
+  while k < 3usize {
+    s.sendResponse(u32.from(2usize * k + 1usize), ResponseHead.make(200u16), BodyLength.sized(u64.from(size)));
+    sent.push(0usize);
+    k = k + 1usize;
+  }
+  var received = List[usize].empty();
+  received.push(0usize);
+  received.push(0usize);
+  received.push(0usize);
+  var ends = 0usize;
+  var rounds = 0u32;
+  while rounds < 2000u32 {
+    // The server writes while each stream's queue has room
+    k = 0usize;
+    while k < 3usize {
+      let id = u32.from(2usize * k + 1usize);
+      while *sent[k] < size && s.writeRoom(id) >= 16384usize {
+        let b = patterned(u64.from(k), u64.from(*sent[k]), 16384usize);
+        match s.sendData(id, b) {
+          case let Some(x) {break;}
+          case is None[IoBuf] {sent.set(k, *sent[k] + 16384usize);}
+        }
+        if *sent[k] == size {s.finish(id);}
+      }
+      k = k + 1usize;
+    }
+    settle(&mut c, &mut s, at(1));
+    var going = true;
+    var moved = false;
+    while going {
+      match c.pollEvent() {
+        case let Data(d) {
+          let i = usize.from((d.stream - 1u32) / 2u32);
+          received.set(i, *received[i] + d.buf.len());
+          if d.stream != 1u32 {c.release(d.stream, d.buf.len());}
+          moved = true;
+        }
+        case let End(e) {
+          ends = ends + 1usize;
+          moved = true;
+        }
+        case let Response(r) {moved = true;}
+        else {going = false;}
+      }
+    }
+    if !moved {break;}
+    rounds = rounds + 1u32;
+  }
+  expectUInt(u64.from(ends), 2u64, "the two released downloads finish");
+  expectUInt(u64.from(*received[1usize]), u64.from(size), "stream 3 whole");
+  expectUInt(u64.from(*received[2usize]), u64.from(size), "stream 5 whole");
+  expectUInt(u64.from(*received[0usize]), 262144u64, "stream 1 stops at its window, initialWindowSize");
+  expectUInt(u64.from(s.queued(1u32)), 262144u64, "the rest waits in the server's queue, bounded by writeWatermark");
+  expect(s.streamSendWindow(1u32) == 0i64, "its window is spent");
+  expect(c.connectionSendWindow() > 0i64 && s.connectionSendWindow() > 0i64, "neither connection window is held");
+  // Released, it goes on to the end
+  c.release(1u32, *received[0usize]);
+  rounds = 0u32;
+  while rounds < 2000u32 && ends < 3usize {
+    while *sent[0usize] < size && s.writeRoom(1u32) >= 16384usize {
+      let b = patterned(0u64, u64.from(*sent[0usize]), 16384usize);
+      match s.sendData(1u32, b) {
+        case let Some(x) {break;}
+        case is None[IoBuf] {sent.set(0usize, *sent[0usize] + 16384usize);}
+      }
+      if *sent[0usize] == size {s.finish(1u32);}
+    }
+    settle(&mut c, &mut s, at(2));
+    var going = true;
+    while going {
+      match c.pollEvent() {
+        case let Data(d) {
+          received.set(0usize, *received[0usize] + d.buf.len());
+          c.release(d.stream, d.buf.len());
+        }
+        case let End(e) {ends = ends + 1usize;}
+        else {going = false;}
+      }
+    }
+    rounds = rounds + 1u32;
+  }
+  expectUInt(u64.from(*received[0usize]), u64.from(size), "released, stream 1 finishes too");
+  expectUInt(u64.from(ends), 3u64, "all three end");
+}
+
+// A client cancels a download mid-body; a server answers a POST early and
+// stops its body
+fn resetsMidBody() {
+  var c = Connection.client(Config.make(), at(0));
+  var s = Connection.server(Config.make(), at(0));
+  let a = c.sendRequest(req("GET", "/a"), BodyLength.empty());
+  let b = c.sendRequest(req("GET", "/b"), BodyLength.empty());
+  settle(&mut c, &mut s, at(1));
+  let r1 = drain(&mut s, true);
+  s.sendResponse(1u32, ResponseHead.make(200u16), BodyLength.unsized());
+  s.sendResponse(3u32, ResponseHead.make(200u16), BodyLength.unsized());
+  expect(s.sendData(1u32, patterned(1u64, 0u64, 1000usize)) is None, "a's first part");
+  expect(s.sendData(3u32, patterned(3u64, 0u64, 1000usize)) is None, "b's first part");
+  settle(&mut c, &mut s, at(2));
+  expectStr(drain(&mut c, true).view(), "resp 1 200 unsized;resp 3 200 unsized;data 1 1000;data 3 1000;", "both under way");
+  c.cancel(1u32);
+  settle(&mut c, &mut s, at(3));
+  expectStr(drain(&mut s, true).view(), "reset 1 reset CANCEL stream;", "the server hears the cancel, stream 1 alone");
+  expect(s.sendData(1u32, patterned(1u64, 1000u64, 1000usize)) is None, "more for the cancelled stream is dropped");
+  expect(s.sendData(3u32, patterned(3u64, 1000u64, 1000usize)) is None, "b goes on");
+  s.finish(3u32);
+  s.finish(1u32);
+  settle(&mut c, &mut s, at(4));
+  expectStr(drain(&mut c, true).view(), "data 3 1000;end 3;", "the client hears nothing more of a, and b ends");
+  expectUInt(u64.from(c.liveStreams()) + u64.from(s.liveStreams()), 0u64, "both streams have left both tables");
+
+  // An early answer: 413, then RST_STREAM(NO_ERROR) stops the body
+  let p = c.sendRequest(req("POST", "/upload"), BodyLength.unsized());
+  expect(c.sendData(p, patterned(5u64, 0u64, 2000usize)) is None, "the upload begins");
+  settle(&mut c, &mut s, at(5));
+  expectStr(drain(&mut s, true).view(), "req 5 POST /upload unsized;data 5 2000;", "the server reads the start");
+  s.sendResponse(5u32, ResponseHead.make(413u16), BodyLength.empty());
+  s.reset(5u32, ErrorCode.NoError);
+  settle(&mut c, &mut s, at(6));
+  expectStr(drain(&mut c, true).view(), "resp 5 413 empty;end 5;", "the client has the whole answer, and no error");
+  expect(c.sendData(p, patterned(5u64, 2000u64, 2000usize)) is None, "the rest of the upload is dropped");
+  c.finish(p);
+  settle(&mut c, &mut s, at(7));
+  expectStr(drain(&mut s, true).view(), "", "nothing reaches the server");
+  expectUInt(u64.from(c.liveStreams()) + u64.from(s.liveStreams()), 0u64, "the stream has left both tables");
+}
+
+// A test server's GOAWAY with requests in flight: those above its last
+// stream, and those still waiting, are refused, safe to retry
+fn goAwayInFlight() {
+  var c = Connection.client(Config.make(), at(0));
+  var p = rawServer();
+  var values = List[Setting].empty();
+  values.push(Setting(settingMaxConcurrentStreams, 4u32));
+  let w0 = p.w.settings(values.view());
+  send(&mut p, &mut c, at(0));
+  var k = 0usize;
+  while k < 6usize {
+    let id = c.sendRequest(req("GET", "/x"), BodyLength.empty());
+    k = k + 1usize;
+  }
+  expectUInt(u64.from(c.queuedRequests()), 2u64, "two wait for the server's limit of four");
+  let h = heard(&mut p, &mut c, at(1));
+  expect(has(&h, "HEADERS 7 end") && !has(&h, "HEADERS 9"), "four go out");
+  let w1 = p.w.settingsAck();
+  p.w.goAway(3u32, ErrorCode.NoError, "");
+  var f = List[HeaderField].empty();
+  f.push(HeaderField.make(":status", "200"));
+  let blk = block(&mut p, f.view());
+  p.w.headers(1u32, blk.view(), true);
+  p.w.headers(3u32, blk.view(), true);
+  send(&mut p, &mut c, at(2));
+  let log = drain(&mut c, true);
+  expectStr(log.view(), "reset 5 refused NO_ERROR conn noresp retry;reset 7 refused NO_ERROR conn noresp retry;reset 9 refused NO_ERROR conn noresp retry;reset 11 refused NO_ERROR conn noresp retry;goaway 3 NO_ERROR;resp 1 200 empty;end 1;resp 3 200 empty;end 3;closed;",
+    "above the last stream and waiting: refused; at or below it: answered; then closed");
+  expect(!c.canSendRequest(), "no request after GOAWAY");
+  expect(c.shouldClose(), "and the driver may close");
+}
+
+// A server's graceful shutdown: GOAWAY with the largest id and a PING, then,
+// a round trip later, GOAWAY with the last stream; a request already on its
+// way is taken
+fn gracefulShutdown() {
+  var c = Connection.client(Config.make(), at(0));
+  var s = Connection.server(Config.make(), at(0));
+  let a = c.sendRequest(req("GET", "/a"), BodyLength.empty());
+  settle(&mut c, &mut s, at(1));
+  let r1 = drain(&mut s, true);
+  let b = c.sendRequest(req("GET", "/b"), BodyLength.empty());   // on its way
+  s.shutdown();
+  let x = pass(&mut s, &mut c, 1048576usize, at(2));           // GOAWAY 2^31-1 and PING
+  let y = pass(&mut c, &mut s, 1048576usize, at(2));           // stream 3, then the PING's answer
+  settle(&mut c, &mut s, at(2));
+  expectStr(drain(&mut c, true).view(), "goaway 2147483647 NO_ERROR;goaway 3 NO_ERROR;", "the client hears the first GOAWAY, and, its PING answered, the second, naming stream 3");
+  expect(!c.canSendRequest(), "and sends nothing new");
+  expectStr(drain(&mut s, true).view(), "req 3 GET /b empty;end 3;", "the request on its way is taken");
+  s.sendResponse(1u32, ResponseHead.make(200u16), BodyLength.empty());
+  s.sendResponse(3u32, ResponseHead.make(200u16), BodyLength.empty());
+  settle(&mut c, &mut s, at(3));
+  expectStr(drain(&mut c, true).view(), "resp 1 200 empty;end 1;resp 3 200 empty;end 3;closed;", "both answered; closed");
+  expectStr(drain(&mut s, true).view(), "closed;", "the server closes once its streams are done");
+  expect(s.shouldClose() && c.shouldClose(), "both drivers may close");
+}
+
+fn pingAndClose() {
+  var c = Connection.client(Config.make(), at(0));
+  var s = Connection.server(Config.make(), at(0));
+  expect(c.ping(42u64), "a PING goes out");
+  settle(&mut c, &mut s, at(1));
+  expectStr(drain(&mut c, true).view(), "pong 42;", "its answer comes back");
+  // The peer closes with a stream under way
+  let a = c.sendRequest(req("GET", "/a"), BodyLength.empty());
+  settle(&mut c, &mut s, at(2));
+  c.handleInput(IoBuf.empty(), at(3));
+  expectStr(drain(&mut c, true).view(), "reset 1 closed conn noresp;failed closed conn;closed;", "a close mid-stream fails the stream and the connection");
+  // A clean close between streams
+  var c2 = Connection.client(Config.make(), at(0));
+  var s2 = Connection.server(Config.make(), at(0));
+  settle(&mut c2, &mut s2, at(1));
+  c2.handleInput(IoBuf.empty(), at(2));
+  expectStr(drain(&mut c2, true).view(), "closed;", "with nothing under way, a close is clean");
+}
+
+// A connection error: GOAWAY to the peer, every stream told, then Failed
+fn connectionError() {
+  var c = Connection.client(Config.make(), at(0));
+  var p = rawServer();
+  let w0 = p.w.settings(List[Setting].empty().view());
+  send(&mut p, &mut c, at(0));
+  let a = c.sendRequest(req("GET", "/a"), BodyLength.empty());
+  let b = c.sendRequest(req("GET", "/b"), BodyLength.empty());
+  let h = heard(&mut p, &mut c, at(1));
+  let w1 = p.w.windowUpdate(9u32, 100u32);    // an idle stream: the connection's error
+  send(&mut p, &mut c, at(2));
+  expectStr(drain(&mut c, true).view(), "reset 1 malformed PROTOCOL_ERROR conn noresp;reset 3 malformed PROTOCOL_ERROR conn noresp;failed malformed PROTOCOL_ERROR conn;closed;",
+    "each stream hears of it, then the connection's failure");
+  let h2 = heard(&mut p, &mut c, at(3));
+  expect(has(&h2, "GOAWAY 0 PROTOCOL_ERROR"), "GOAWAY goes to the peer");
+  expect(c.shouldClose(), "then the driver closes");
+}
+
+fn main() i32 {
+  getOne();
+  byteByByte();
+  interimAndCookies();
+  interleaved();
+  stalledReader();
+  resetsMidBody();
+  goAwayInFlight();
+  gracefulShutdown();
+  pingAndClose();
+  connectionError();
+  done()
+}

@@ -59,7 +59,7 @@ struct Holder {
 
   pub fn turn(self: &mut, lp: &mut Loop) {
     var evs = List[httpconn.Event].empty();
-    drv.pump(lp, &mut evs);
+    drv.pump(lp, &uni evs);
     var k = 0usize;
     while k < evs.len() {
       if evs[k].kind == httpconn.EventKind.Connected {
@@ -90,10 +90,7 @@ struct Holder {
 // Listen, connect to the listener, and ask on the connection; answered when
 // the connection is made
 struct StartJob {
-  pub reply: actors.Reply;
-
-  pub fn run(self, lp: &mut Loop, s: &mut Holder) {
-    let rp = self.(reply);
+  pub fn run(self, lp: &mut Loop, s: &mut Holder, rp: actors.Reply) {
     s.ls = lp.mustListen(SocketAddr.localhost(0u16));
     var port = 0u16;
     match lp.localAddr(s.ls) {
@@ -108,10 +105,7 @@ struct StartJob {
 
 // A reply the service keeps and never answers
 struct KeepJob {
-  pub reply: actors.Reply;
-
-  pub fn run(self, lp: &mut Loop, s: &mut Holder) {
-    let rp = self.(reply);
+  pub fn run(self, lp: &mut Loop, s: &mut Holder, rp: actors.Reply) {
     s.kept = Some[actors.Reply](rp);
   }
 }
@@ -121,7 +115,7 @@ actor Starter {
     var h = one;
     if which == 2u64 {h = two;}
     if which == 3u64 {h = three;}
-    let n = await aio.hostAwaitable[Holder, StartJob, u64](h, StartJob(actors.Reply()));
+    let n = await aio.hostAwaitable[Holder, StartJob, u64](h, StartJob());
     var d = done;
     d.send(n);
   }
@@ -130,7 +124,7 @@ actor Starter {
 actor Waiter {
   pub async fn hold(self, ready: OneshotSender[u64]) {
     let keep = Note(1u64);
-    let pending = aio.hostAwaitable[Holder, KeepJob, u64](one, KeepJob(actors.Reply()));
+    let pending = aio.hostAwaitable[Holder, KeepJob, u64](one, KeepJob());
     var r = ready;
     r.send(1u64);
     let n = await pending;

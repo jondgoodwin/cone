@@ -307,10 +307,10 @@ fn serve(sv: &mut Srv, lp: &mut Loop, e: &mut httpconn.Event) {
 
 // One turn of the loop: the client's completions to it, the server's to
 // its driver; the server's events answered; the client's appended to out
-fn step(cl: &mut Client, sv: &mut Srv, lp: &mut Loop, out: &mut List[Event], until: Instant) {
+fn step(cl: &mut Client, sv: &mut Srv, lp: &mut Loop, out: &uni List[Event], until: Instant) {
   var sevs = List[httpconn.Event].empty();
   cl.pump(lp, out);
-  sv.drv.pump(lp, &mut sevs);
+  sv.drv.pump(lp, &uni sevs);
   var limit = until;
   let a = cl.wakeAt();
   if a < limit {limit = a;}
@@ -326,7 +326,7 @@ fn step(cl: &mut Client, sv: &mut Srv, lp: &mut Loop, out: &mut List[Event], unt
     k = k + 1usize;
   }
   comps.clear();
-  sv.drv.pump(lp, &mut sevs);
+  sv.drv.pump(lp, &uni sevs);
   k = 0usize;
   while k < sevs.len() {
     serve(sv, lp, &mut sevs[k]);
@@ -339,7 +339,7 @@ fn step(cl: &mut Client, sv: &mut Srv, lp: &mut Loop, out: &mut List[Event], unt
 fn stopServer(sv: &mut Srv, lp: &mut Loop) {
   sv.drv.abortAll(lp);
   var sevs = List[httpconn.Event].empty();
-  sv.drv.pump(lp, &mut sevs);
+  sv.drv.pump(lp, &uni sevs);
 }
 
 fn url(port: u16, path: &str) String {
@@ -396,7 +396,7 @@ fn finishOf(cl: &mut Client, sv: &mut Srv, lp: &mut Loop, id: FetchId, s: &mut S
   let giveUp = Instant.now() + Duration.fromSeconds(10i64);
   let before = s.finals;
   while s.finals == before && Instant.now() < giveUp {
-    step(cl, sv, lp, &mut out, giveUp);
+    step(cl, sv, lp, &uni out, giveUp);
     var k = 0usize;
     while k < out.len() {
       let e = &mut out[k];
@@ -421,7 +421,7 @@ fn idleFor(cl: &mut Client, sv: &mut Srv, lp: &mut Loop, d: Duration) {
   var out = List[Event].empty();
   let until = Instant.now() + d;
   while Instant.now() < until {
-    step(cl, sv, lp, &mut out, until);
+    step(cl, sv, lp, &uni out, until);
     var k = 0usize;
     while k < out.len() {
       let e = &mut out[k];
@@ -502,7 +502,7 @@ fn want(tr: &mut Tier, cl: &mut Client, lp: &mut Loop, port: u16, t: u32, intent
 // The frame's arrival phase: what came, within the budget
 fn arrivals(tr: &mut Tier, cl: &mut Client, sv: &mut Srv, lp: &mut Loop, budget: Duration) {
   var out = List[Event].empty();
-  step(cl, sv, lp, &mut out, Instant.now() + budget);
+  step(cl, sv, lp, &uni out, Instant.now() + budget);
   var k = 0usize;
   while k < out.len() {
     let e = &mut out[k];

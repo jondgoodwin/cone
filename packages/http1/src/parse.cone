@@ -1,16 +1,13 @@
 // ======== Reading: a head's lines, its fields, and how its body is framed ========
 //
 // Every function here reads a slice of bytes already gathered and checked
-// for bare CRs (and, in a request, LFs without their CR), and either fills what it was handed and says true,
-// or fills 'err' with the kind, the status a server answers with, and why,
-// and says false. None of them reads a byte past the slice.
+// for bare CRs (and, in a request, LFs without their CR), and gives what it
+// read, or the HttpError that refuses it: the kind, the status a server
+// answers with, and why. None of them reads a byte past the slice.
 
-// Fill err and say false
-fn bad(err: &mut HttpError, kind: ErrorKind, status: u16, why: &str) bool {
-  err.kind = kind;
-  err.status = status;
-  err.detail = String.from(why);
-  false
+// The refusal: kind, status and why, as a Result of any type
+fn bad[T](kind: ErrorKind, status: u16, why: &str) Result[T, HttpError] {
+  Error[T, HttpError](HttpError.make(kind, status, why))
 }
 
 // The first offset of byte c in s at or after from, or s.len
@@ -43,74 +40,160 @@ fn versionOf(v: &Array[u8]) u32 {
   if minor == '0' {10u32} else {11u32}
 }
 
+// A request head read whole, and how its body is framed
+struct RequestRead {
+  head: RequestHead;
+  framing: Framing;
+}
+
+// A response head read whole, and how its body is framed
+struct ResponseRead {
+  head: ResponseHead;
+  framing: Framing;
+}
+
+// A server's request head h, gathered whole: its request line, its fields
+// (its Host as the head's authority), the checks on them, and its body's
+// framing
+fn readRequest(h: &Array[u8], cfg: &Config) Result[RequestRead, HttpError] {
+  let first = lineEnd(h, 0usize);
+  if first > cfg.maxLineBytes {
+    return bad[RequestRead](ErrorKind.TooLarge, 414u16, "the request line is longer than maxLineBytes");
+  }
+  var head = match parseRequestLine(&h[0usize ..< first]) {
+    case var Ok(r) {r}
+    case var Error(e) {return Error[RequestRead, HttpError](e);}
+  };
+  let fields = match parseFields(h, lineNext(h, first), cfg, true, true) {
+    case var Ok(f) {f}
+    case var Error(e) {return Error[RequestRead, HttpError](e);}
+  };
+  let headers, host, hosts = fields.(headers, host, hosts);
+  head.headers = headers;
+  let http10 = head.version == Version.Http10;
+  if hosts > 1usize {return bad[RequestRead](ErrorKind.Malformed, 400u16, "the request has more than one Host");}
+  if hosts == 0usize && !http10 {return bad[RequestRead](ErrorKind.Malformed, 400u16, "an HTTP/1.1 request has no Host");}
+  if head.method == Method.Connect {return bad[RequestRead](ErrorKind.Unsupported, 501u16, "CONNECT is not supported");}
+  let framing = match framingOf(&head.headers, true, http10) {
+    case var Ok(f) {f}
+    case var Error(e) {return Error[RequestRead, HttpError](e);}
+  };
+  head.authority = host;
+  Ok[RequestRead, HttpError](RequestRead(head, framing))
+}
+
+// A client's response head h, gathered whole: its status line, its fields,
+// and its body's framing (an upgrade, 101, refused)
+fn readResponse(h: &Array[u8], cfg: &Config) Result[ResponseRead, HttpError] {
+  let first = lineEnd(h, 0usize);
+  if first > cfg.maxLineBytes {
+    return bad[ResponseRead](ErrorKind.TooLarge, 0u16, "the status line is longer than maxLineBytes");
+  }
+  var head = match parseStatusLine(&h[0usize ..< first]) {
+    case var Ok(r) {r}
+    case var Error(e) {return Error[ResponseRead, HttpError](e);}
+  };
+  let fields = match parseFields(h, lineNext(h, first), cfg, false, false) {
+    case var Ok(f) {f}
+    case var Error(e) {return Error[ResponseRead, HttpError](e);}
+  };
+  head.headers = fields.(headers);
+  if head.status == 101u16 {
+    return bad[ResponseRead](ErrorKind.Unsupported, 0u16, "101 Switching Protocols: upgrades are not supported");
+  }
+  let framing = match framingOf(&head.headers, false, head.version == Version.Http10) {
+    case var Ok(f) {f}
+    case var Error(e) {return Error[ResponseRead, HttpError](e);}
+  };
+  Ok[ResponseRead, HttpError](ResponseRead(head, framing))
+}
+
 // request-line = method SP request-target SP HTTP-version (RFC 9112, 3):
 // one space each, nothing else
-fn parseRequestLine(line: &Array[u8], head: &mut RequestHead, err: &mut HttpError) bool {
+fn parseRequestLine(line: &Array[u8]) Result[RequestHead, HttpError] {
   let sp1 = indexOf(line, ' ', 0usize);
-  if sp1 == line.len {return bad(err, ErrorKind.Malformed, 400u16, "the request line has no spaces");}
+  if sp1 == line.len {return bad[RequestHead](ErrorKind.Malformed, 400u16, "the request line has no spaces");}
   let method = &line[0usize ..< sp1];
-  if !isToken(method) {return bad(err, ErrorKind.Malformed, 400u16, "the method is not a token");}
+  if !isToken(method) {return bad[RequestHead](ErrorKind.Malformed, 400u16, "the method is not a token");}
   let sp2 = indexOf(line, ' ', sp1 + 1usize);
-  if sp2 == line.len {return bad(err, ErrorKind.Malformed, 400u16, "the request line has one space, not two");}
+  if sp2 == line.len {return bad[RequestHead](ErrorKind.Malformed, 400u16, "the request line has one space, not two");}
   let target = &line[sp1 + 1usize ..< sp2];
-  if target.len == 0usize {return bad(err, ErrorKind.Malformed, 400u16, "the request target is empty (two spaces together)");}
+  if target.len == 0usize {return bad[RequestHead](ErrorKind.Malformed, 400u16, "the request target is empty (two spaces together)");}
   var i = 0usize;
   while i < target.len {
     let c = target[i];
     if c <= 0x20u8 || c >= 0x7Fu8 {
-      return bad(err, ErrorKind.Malformed, 400u16, "the request target holds a space, a control character or a byte past 0x7E");
+      return bad[RequestHead](ErrorKind.Malformed, 400u16, "the request target holds a space, a control character or a byte past 0x7E");
     }
     i = i + 1usize;
   }
   let ver = versionOf(&line[sp2 + 1usize ..< line.len]);
-  if ver == 1u32 {return bad(err, ErrorKind.Malformed, 400u16, "the request line does not end in an HTTP version");}
-  if ver == 0u32 {return bad(err, ErrorKind.Unsupported, 505u16, "the request's major version is not 1");}
-  *head = RequestHead.make(method as &str, target as &str, "");
+  if ver == 1u32 {return bad[RequestHead](ErrorKind.Malformed, 400u16, "the request line does not end in an HTTP version");}
+  if ver == 0u32 {return bad[RequestHead](ErrorKind.Unsupported, 505u16, "the request's major version is not 1");}
+  var head = RequestHead.make(method as &str, target as &str, "");
   head.version = if ver == 10u32 {Version.Http10} else {Version.Http11};
-  true
+  Ok[RequestHead, HttpError](head)
 }
 
 // status-line = HTTP-version SP status-code SP [ reason-phrase ] (RFC 9112,
 // 4); a line that ends straight after the code is read too. The phrase is
 // checked and dropped
-fn parseStatusLine(line: &Array[u8], head: &mut ResponseHead, err: &mut HttpError) bool {
-  if line.len < 12usize || line[8usize] != ' ' {return bad(err, ErrorKind.Malformed, 0u16, "the status line is not 'HTTP/1.x' and a code");}
+fn parseStatusLine(line: &Array[u8]) Result[ResponseHead, HttpError] {
+  if line.len < 12usize || line[8usize] != ' ' {return bad[ResponseHead](ErrorKind.Malformed, 0u16, "the status line is not 'HTTP/1.x' and a code");}
   let ver = versionOf(&line[0usize ..< 8usize]);
-  if ver == 1u32 {return bad(err, ErrorKind.Malformed, 0u16, "the status line does not start with an HTTP version");}
-  if ver == 0u32 {return bad(err, ErrorKind.Unsupported, 0u16, "the response's major version is not 1");}
+  if ver == 1u32 {return bad[ResponseHead](ErrorKind.Malformed, 0u16, "the status line does not start with an HTTP version");}
+  if ver == 0u32 {return bad[ResponseHead](ErrorKind.Unsupported, 0u16, "the response's major version is not 1");}
   var code = 0u16;
   var i = 9usize;
   while i < 12usize {
     let c = line[i];
-    if c < '0' || c > '9' {return bad(err, ErrorKind.Malformed, 0u16, "the status code is not three digits");}
+    if c < '0' || c > '9' {return bad[ResponseHead](ErrorKind.Malformed, 0u16, "the status code is not three digits");}
     code = code * 10u16 + u16.from(c - '0');
     i = i + 1usize;
   }
-  if code < 100u16 || code > 599u16 {return bad(err, ErrorKind.Malformed, 0u16, "the status code is outside 100 to 599");}
+  if code < 100u16 || code > 599u16 {return bad[ResponseHead](ErrorKind.Malformed, 0u16, "the status code is outside 100 to 599");}
   if line.len > 12usize {
-    if line[12usize] != ' ' {return bad(err, ErrorKind.Malformed, 0u16, "the status code is not three digits");}
+    if line[12usize] != ' ' {return bad[ResponseHead](ErrorKind.Malformed, 0u16, "the status code is not three digits");}
     i = 13usize;
     while i < line.len {
       let c = line[i];
-      if !(isFieldVchar(c) || isOws(c)) {return bad(err, ErrorKind.Malformed, 0u16, "the reason phrase holds a control character");}
+      if !(isFieldVchar(c) || isOws(c)) {return bad[ResponseHead](ErrorKind.Malformed, 0u16, "the reason phrase holds a control character");}
       i = i + 1usize;
     }
   }
-  head.status = code;
+  var head = ResponseHead.make(code);
   head.version = if ver == 10u32 {Version.Http10} else {Version.Http11};
-  true
+  Ok[ResponseHead, HttpError](head)
+}
+
+// A section's field lines, read: its fields, and a request's Host (taken
+// out of them when the reader asks, and counted)
+struct FieldLines {
+  headers: Headers;
+  host: String;          // the last Host's value; empty when none came
+  hosts: usize;          // how many Host fields came
+
+  // A field read and checked: to the fields, or a request's Host apart
+  fn add(self: &mut, name: &str, value: &Array[u8], takeHost: bool) {
+    if takeHost && eqIgnoreCase(name, "Host") {
+      hosts = hosts + 1usize;
+      host = String.fromBytes(value);
+    } else {
+      headers.add(name, value);
+    }
+  }
 }
 
 // The field lines of h from offset 'from' up to the empty line that ends
-// them, added to headers. A request's Host goes to 'host' instead (counted
-// in hostCount) when takeHost is set. In a request every line is a field of
-// its own, and one starting with a space or a tab (obs-fold) is refused; in
-// a response (a client reading it, RFC 9112, 5.2) such a line continues the
-// field before it, the fold replaced by one space
-fn parseFields(h: &Array[u8], from: usize, cfg: &Config, request: bool, takeHost: bool, headers: &mut Headers,
-    host: &mut String, hostCount: &mut usize, err: &mut HttpError) bool {
+// them. A request's Host is kept apart (and counted) when takeHost is set.
+// In a request every line is a field of its own, and one starting with a
+// space or a tab (obs-fold) is refused; in a response (a client reading it,
+// RFC 9112, 5.2) such a line continues the field before it, the fold
+// replaced by one space
+fn parseFields(h: &Array[u8], from: usize, cfg: &Config, request: bool, takeHost: bool) Result[FieldLines, HttpError] {
   let status = if request {431u16} else {0u16};
   let malformed = if request {400u16} else {0u16};
+  var out = FieldLines(Headers.empty(), String.empty(), 0usize);
   var at = from;
   var n = 0usize;
   // The field read last, not yet added: its name and value in h, and its
@@ -126,13 +209,13 @@ fn parseFields(h: &Array[u8], from: usize, cfg: &Config, request: bool, takeHost
     let end = lineEnd(h, at);
     if end == at {break;}                     // the empty line
     let line = &h[at ..< end];
-    if line.len > cfg.maxLineBytes {return bad(err, ErrorKind.TooLarge, status, "a field line is longer than maxLineBytes");}
+    if line.len > cfg.maxLineBytes {return bad[FieldLines](ErrorKind.TooLarge, status, "a field line is longer than maxLineBytes");}
     if isOws(line[0usize]) {
-      if request {return bad(err, ErrorKind.Malformed, malformed, "a field line starts with a space or a tab (obs-fold)");}
-      if !pending {return bad(err, ErrorKind.Malformed, malformed, "the first field line starts with a space or a tab");}
+      if request {return bad[FieldLines](ErrorKind.Malformed, malformed, "a field line starts with a space or a tab (obs-fold)");}
+      if !pending {return bad[FieldLines](ErrorKind.Malformed, malformed, "the first field line starts with a space or a tab");}
       let more = trimOws(line);
       let whyMore = checkFieldValue(more);
-      if !whyMore.isEmpty() {return bad(err, ErrorKind.Malformed, malformed, whyMore);}
+      if !whyMore.isEmpty() {return bad[FieldLines](ErrorKind.Malformed, malformed, whyMore);}
       if !folded {
         unfolded = String.fromBytes(&h[valueAt ..< valueEnd]);
         folded = true;
@@ -145,20 +228,19 @@ fn parseFields(h: &Array[u8], from: usize, cfg: &Config, request: bool, takeHost
       continue;
     }
     if pending {
-      addField(&h[nameAt ..< nameEnd] as &str, if folded {unfolded.view()} else {&h[valueAt ..< valueEnd]},
-        takeHost, headers, host, hostCount);
+      out.add(&h[nameAt ..< nameEnd] as &str, if folded {unfolded.view()} else {&h[valueAt ..< valueEnd]}, takeHost);
       folded = false;
     }
     let colon = indexOf(line, ':', 0usize);
-    if colon == line.len {return bad(err, ErrorKind.Malformed, malformed, "a field line has no colon");}
+    if colon == line.len {return bad[FieldLines](ErrorKind.Malformed, malformed, "a field line has no colon");}
     let name = &line[0usize ..< colon] as &str;
     let whyName = checkFieldName(name);
-    if !whyName.isEmpty() {return bad(err, ErrorKind.Malformed, malformed, whyName);}
+    if !whyName.isEmpty() {return bad[FieldLines](ErrorKind.Malformed, malformed, whyName);}
     let value = trimOws(&line[colon + 1usize ..< line.len]);
     let whyValue = checkFieldValue(value);
-    if !whyValue.isEmpty() {return bad(err, ErrorKind.Malformed, malformed, whyValue);}
+    if !whyValue.isEmpty() {return bad[FieldLines](ErrorKind.Malformed, malformed, whyValue);}
     n = n + 1usize;
-    if n > cfg.maxHeaders {return bad(err, ErrorKind.TooLarge, status, "more fields than maxHeaders");}
+    if n > cfg.maxHeaders {return bad[FieldLines](ErrorKind.TooLarge, status, "more fields than maxHeaders");}
     pending = true;
     nameAt = at;
     nameEnd = at + colon;
@@ -169,20 +251,9 @@ fn parseFields(h: &Array[u8], from: usize, cfg: &Config, request: bool, takeHost
     at = lineNext(h, end);
   }
   if pending {
-    addField(&h[nameAt ..< nameEnd] as &str, if folded {unfolded.view()} else {&h[valueAt ..< valueEnd]},
-      takeHost, headers, host, hostCount);
+    out.add(&h[nameAt ..< nameEnd] as &str, if folded {unfolded.view()} else {&h[valueAt ..< valueEnd]}, takeHost);
   }
-  true
-}
-
-// A field read and checked: to headers, or a request's Host to host
-fn addField(name: &str, value: &Array[u8], takeHost: bool, headers: &mut Headers, host: &mut String, hostCount: &mut usize) {
-  if takeHost && eqIgnoreCase(name, "Host") {
-    *hostCount = *hostCount + 1usize;
-    *host = String.fromBytes(value);
-  } else {
-    headers.add(name, value);
-  }
+  Ok[FieldLines, HttpError](out)
 }
 
 // How a received message's body is framed
@@ -191,9 +262,15 @@ const frameSized = 1u32;      // Content-Length bytes
 const frameChunked = 2u32;    // the chunked coding
 const frameClose = 3u32;      // until the connection closes (a response only)
 
+// A received message's framing: its mode, and a Content-Length's bytes
+struct Framing {
+  mode: u32;
+  n: u64;
+}
+
 // A Content-Length's value: every member of every field, all the same
 // decimal number, else the message is refused (RFC 9112, 6.3, point 5)
-fn contentLength(headers: &Headers, n: &mut u64, err: &mut HttpError, malformed: u16) bool {
+fn contentLength(headers: &Headers, malformed: u16) Result[u64, HttpError] {
   var seen = false;
   var value = 0u64;
   var f = 0usize;
@@ -204,17 +281,17 @@ fn contentLength(headers: &Headers, n: &mut u64, err: &mut HttpError, malformed:
       while start <= v.len {
         let end = indexOf(v, ',', start);
         let m = trimOws(&v[start ..< end]);
-        if m.len == 0usize {return bad(err, ErrorKind.Malformed, malformed, "a Content-Length is empty");}
-        if m.len > 19usize {return bad(err, ErrorKind.Malformed, malformed, "a Content-Length has more than 19 digits");}
+        if m.len == 0usize {return bad[u64](ErrorKind.Malformed, malformed, "a Content-Length is empty");}
+        if m.len > 19usize {return bad[u64](ErrorKind.Malformed, malformed, "a Content-Length has more than 19 digits");}
         var k = 0u64;
         var i = 0usize;
         while i < m.len {
           let c = m[i];
-          if c < '0' || c > '9' {return bad(err, ErrorKind.Malformed, malformed, "a Content-Length is not a decimal number");}
+          if c < '0' || c > '9' {return bad[u64](ErrorKind.Malformed, malformed, "a Content-Length is not a decimal number");}
           k = k * 10u64 + u64.from(c - '0');
           i = i + 1usize;
         }
-        if seen && k != value {return bad(err, ErrorKind.Malformed, malformed, "Content-Length is given twice, differently");}
+        if seen && k != value {return bad[u64](ErrorKind.Malformed, malformed, "Content-Length is given twice, differently");}
         seen = true;
         value = k;
         start = end + 1usize;
@@ -222,21 +299,20 @@ fn contentLength(headers: &Headers, n: &mut u64, err: &mut HttpError, malformed:
     }
     f = f + 1usize;
   }
-  *n = value;
-  true
+  Ok[u64, HttpError](value)
 }
 
 // A received message's framing (RFC 9112, 6.3), refusing every shape a
 // message could be read two ways by: Transfer-Encoding beside
 // Content-Length, Transfer-Encoding in HTTP/1.0, chunked not last or twice,
 // any coding but chunked, and Content-Lengths that disagree
-fn framingOf(headers: &Headers, request: bool, http10: bool, mode: &mut u32, n: &mut u64, err: &mut HttpError) bool {
+fn framingOf(headers: &Headers, request: bool, http10: bool) Result[Framing, HttpError] {
   let malformed = if request {400u16} else {0u16};
   let hasTe = headers.has("Transfer-Encoding");
   let hasCl = headers.has("Content-Length");
   if hasTe {
-    if hasCl {return bad(err, ErrorKind.Malformed, malformed, "both Transfer-Encoding and Content-Length are given");}
-    if http10 {return bad(err, ErrorKind.Malformed, malformed, "an HTTP/1.0 message has a Transfer-Encoding");}
+    if hasCl {return bad[Framing](ErrorKind.Malformed, malformed, "both Transfer-Encoding and Content-Length are given");}
+    if http10 {return bad[Framing](ErrorKind.Malformed, malformed, "an HTTP/1.0 message has a Transfer-Encoding");}
     let te = headers.joined("Transfer-Encoding");
     let v = te.view();
     var chunked = 0u32;
@@ -244,34 +320,31 @@ fn framingOf(headers: &Headers, request: bool, http10: bool, mode: &mut u32, n: 
     while start <= v.len {
       let end = indexOf(v, ',', start);
       let m = trimOws(&v[start ..< end]);
-      if m.len == 0usize {return bad(err, ErrorKind.Malformed, malformed, "a Transfer-Encoding member is empty");}
+      if m.len == 0usize {return bad[Framing](ErrorKind.Malformed, malformed, "a Transfer-Encoding member is empty");}
       if eqIgnoreCase(m, "chunked") {
         chunked = chunked + 1u32;
       } else if chunked > 0u32 {
-        return bad(err, ErrorKind.Malformed, malformed, "chunked is not the last transfer coding");
+        return bad[Framing](ErrorKind.Malformed, malformed, "chunked is not the last transfer coding");
       } else {
-        return bad(err, ErrorKind.Unsupported, if request {501u16} else {0u16}, "a transfer coding other than chunked");
+        return bad[Framing](ErrorKind.Unsupported, if request {501u16} else {0u16}, "a transfer coding other than chunked");
       }
       start = end + 1usize;
     }
-    if chunked > 1u32 {return bad(err, ErrorKind.Malformed, malformed, "chunked is applied more than once");}
-    *mode = frameChunked;
-    *n = 0u64;
-    return true;
+    if chunked > 1u32 {return bad[Framing](ErrorKind.Malformed, malformed, "chunked is applied more than once");}
+    return Ok[Framing, HttpError](Framing(frameChunked, 0u64));
   }
   if hasCl {
-    if !contentLength(headers, n, err, malformed) {return false;}
-    *mode = frameSized;
-    return true;
+    return match contentLength(headers, malformed) {
+      case var Ok(n) {Ok[Framing, HttpError](Framing(frameSized, n))}
+      case var Error(e) {Error[Framing, HttpError](e)}
+    };
   }
-  *mode = if request {frameEmpty} else {frameClose};
-  *n = 0u64;
-  true
+  Ok[Framing, HttpError](Framing(if request {frameEmpty} else {frameClose}, 0u64))
 }
 
 // chunk-size [ chunk-ext ] (RFC 9112, 7.1), the line without its CRLF: the
-// size into size. An extension is checked for characters and skipped
-fn parseChunkLine(line: &Array[u8], cfg: &Config, size: &mut u64, err: &mut HttpError) bool {
+// size. An extension is checked for characters and skipped
+fn parseChunkLine(line: &Array[u8], cfg: &Config) Result[u64, HttpError] {
   var i = 0usize;
   var v = 0u64;
   while i < line.len {
@@ -281,21 +354,20 @@ fn parseChunkLine(line: &Array[u8], cfg: &Config, size: &mut u64, err: &mut Http
     else if c >= 'a' && c <= 'f' {d = u64.from(c - 'a') + 10u64;}
     else if c >= 'A' && c <= 'F' {d = u64.from(c - 'A') + 10u64;}
     else {break;}
-    if i >= cfg.maxChunkDigits {return bad(err, ErrorKind.TooLarge, 400u16, "a chunk size has more digits than maxChunkDigits");}
+    if i >= cfg.maxChunkDigits {return bad[u64](ErrorKind.TooLarge, 400u16, "a chunk size has more digits than maxChunkDigits");}
     v = (v << 4u64) | d;
     i = i + 1usize;
   }
-  if i == 0usize {return bad(err, ErrorKind.Malformed, 400u16, "a chunk size is not hexadecimal");}
+  if i == 0usize {return bad[u64](ErrorKind.Malformed, 400u16, "a chunk size is not hexadecimal");}
   if i < line.len {
     var j = i;
     while j < line.len && isOws(line[j]) {j = j + 1usize;}
-    if j == line.len || line[j] != ';' {return bad(err, ErrorKind.Malformed, 400u16, "a chunk size is followed by something not an extension");}
+    if j == line.len || line[j] != ';' {return bad[u64](ErrorKind.Malformed, 400u16, "a chunk size is followed by something not an extension");}
     while j < line.len {
       let c = line[j];
-      if !(isFieldVchar(c) || isOws(c)) {return bad(err, ErrorKind.Malformed, 400u16, "a chunk extension holds a control character");}
+      if !(isFieldVchar(c) || isOws(c)) {return bad[u64](ErrorKind.Malformed, 400u16, "a chunk extension holds a control character");}
       j = j + 1usize;
     }
   }
-  *size = v;
-  true
+  Ok[u64, HttpError](v)
 }

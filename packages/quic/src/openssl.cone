@@ -15,6 +15,10 @@
 // (tls's AlpnSelectFn, the same C signature)
 alias QuicAlpnSelectFn = &fn @c (ssl: *u8, out: &mut *u8, outLen: &mut u8, offered: *u8, offeredLen: u32, arg: *u8) i32;
 
+// OpenSSL hands a client the server's chain, in place of its own check
+// (tls's VerifyFn, the same C signature)
+alias QuicVerifyFn = &fn @c (store: *u8, arg: *u8) i32;
+
 extern {
   fn @c OpenSSL_version(t: i32) *u8;
 
@@ -25,6 +29,9 @@ extern {
   fn @c SSL_CTX_free(ctx: *u8);
   fn @c SSL_CTX_ctrl(ctx: *u8, cmd: i32, larg: i64, parg: *u8) i32;
   fn @c SSL_CTX_set_verify(ctx: *u8, mode: i32, cb: *u8);
+  fn @c SSL_CTX_set_cert_verify_callback(ctx: *u8, cb: QuicVerifyFn, arg: *u8);
+  fn @c SSL_CTX_set_num_tickets(ctx: *u8, n: usize) i32;
+  fn @c SSL_CTX_set_max_early_data(ctx: *u8, n: u32) i32;
   fn @c SSL_CTX_set_alpn_select_cb(ctx: *u8, cb: QuicAlpnSelectFn, arg: *u8);
   fn @c SSL_CTX_set_alpn_protos(ctx: *u8, protos: *u8, len: u32) i32;   // 0 is success
   fn @c SSL_CTX_get_cert_store(ctx: *u8) *u8;
@@ -49,8 +56,21 @@ extern {
   fn @c SSL_get_ex_data(ssl: *u8, idx: i32) *u8;
   fn @c SSL_select_next_proto(out: &mut *u8, outLen: &mut u8, server: *u8, serverLen: u32,
       client: *u8, clientLen: u32) i32;
+  fn @c SSL_get_error(ssl: *u8, ret: i32) i32;
+  fn @c SSL_get_peer_cert_chain(ssl: *u8) *u8;
+  fn @c SSL_get_ex_data_X509_STORE_CTX_idx() i32;
 
   // Certificates
+  fn @c X509_STORE_CTX_get_ex_data(ctx: *u8, idx: i32) *u8;
+  fn @c X509_STORE_CTX_set_error(ctx: *u8, e: i32);
+  fn @c X509_verify_cert_error_string(n: i64) *u8;
+  fn @c i2d_X509(x: *u8, out: **u8) i32;            // out null: the length only
+  fn @c X509_get_X509_PUBKEY(x: *u8) *u8;
+  fn @c i2d_X509_PUBKEY(k: *u8, out: **u8) i32;
+  fn @c OPENSSL_sk_num(sk: *u8) i32;
+  fn @c OPENSSL_sk_value(sk: *u8, i: i32) *u8;
+  fn @c EVP_sha256() *u8;
+  fn @c EVP_Digest(data: *u8, n: usize, md: *u8, size: *u32, kind: *u8, engine: *u8) i32;
   fn @c X509_free(x: *u8);
   fn @c PEM_read_bio_X509(bio: *u8, x: *u8, cb: *u8, u: *u8) *u8;
   fn @c BIO_new_mem_buf(buf: *u8, len: i32) *u8;
@@ -69,7 +89,10 @@ extern {
 const ctrlSetTlsextHostname = 55i32;
 const ctrlSetMinProtoVersion = 123i32;
 const ctrlSetMaxProtoVersion = 124i32;
+const ctrlSetRetryVerify = 136i32;         // SSL_set_retry_verify is SSL_ctrl(ssl, 136, 0, null) > 0
 const tls13Version = 0x0304i32;
+const sslErrorWantRetryVerify = 12i32;     // SSL_get_error's: the verify callback stopped the handshake
+const x509ApplicationVerification = 50i32; // X509_V_ERR_APPLICATION_VERIFICATION
 
 const verifyNone = 0i32;
 const verifyPeer = 1i32;

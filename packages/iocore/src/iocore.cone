@@ -50,6 +50,7 @@
 //   lp.openFile(path, access)           a file for ReadAt and WriteAt
 //   lp.close(h)  lp.localAddr(h)  lp.peerAddr(h)  lp.isOpen(h)
 //   lp.shutdown(h)  lp.reset(h)         a socket half-closed; closed with a reset
+//   lp.setKeepAlive(h, ka)  lp.keepAlive(h)   TCP keepalive set, and read back (KeepAlive)
 //   lp.counters()  lp.subscribe(s)  lp.id()  lp.inFlight()  lp.records()  lp.recordsMade()
 //   recordPools()                       (DIAGNOSTICS)
 //   lp.cancelHandle(h, write)           end every read (or write) in flight on h  (CANCEL)
@@ -123,6 +124,8 @@
 //   in the answer ('c.handle'). Accept(listener): the next connection on a
 //   listening socket, likewise. Every socket iocore makes has Nagle's
 //   algorithm off (TCP_NODELAY), as Go's do: a small send goes at once.
+//   TCP keepalive is the asker's to set, on a socket once connected
+//   ('setKeepAlive', a KeepAlive: httpconn sets its Config's).
 // - Recv(sock, buf): up to buf's room; Done(n), the n bytes added to its
 //   length; Done(0) is the end of the stream. A buffer with no room is
 //   refused (Failed, ERROR_INSUFFICIENT_BUFFER; Linux's EINVAL: the kind
@@ -964,6 +967,31 @@ pub struct SocketAddr {
     out.appendUInt(u64.from(self.port()));
     out
   }
+}
+
+// TCP keepalive, as Loop.setKeepAlive sets it on a connected socket: after
+// 'idle' with nothing received a probe goes, then one every 'interval', and
+// 'probes' unanswered end the connection, so a peer that vanished is found
+// in idle + probes x interval. 'userTimeout' is Linux's TCP_USER_TIMEOUT:
+// the longest sent bytes may wait unacknowledged before the connection
+// ends (Windows has no such option). Times go to the OS in whole seconds
+// (at least one), userTimeout in milliseconds; 0 probes is keepalive off
+pub struct KeepAlive {
+  pub idle: Duration;
+  pub interval: Duration;
+  pub probes: u32;
+  pub userTimeout: Duration;
+
+  // No keepalive
+  pub fn off() KeepAlive {KeepAlive(Duration.zero(), Duration.zero(), 0u32, Duration.zero())}
+
+  pub fn isOff(self: &) bool {probes == 0u32}
+}
+
+// A keepalive time in whole seconds, at least one
+fn keepSeconds(d: Duration) i32 {
+  let s = d.seconds();
+  if s < 1i64 {1i32} else if s > 0x7FFFFFFFi64 {0x7FFFFFFFi32} else {i32.from(s)}
 }
 
 // ---------------------------------------------------------------------------

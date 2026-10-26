@@ -1,15 +1,16 @@
-// A client and a server Engine in one process, in memory: each UDP payload
-// one writes is handed to the other by hand, with no socket, no network and
-// no clock (the time is advanced by the test, a millisecond a round). The
-// certificates are tls's test certificates (packages/tls/tests/certs, README
-// there): the server's for 'localhost', under the test root the client is
-// given. Checked: the handshake (TLS 1.3, ALPN h3, the certificate trusted),
-// a bidirectional stream carrying a request and a 300 KB body that the server
-// echoes back (larger than the stream's flow-control window, so it moves only
-// as each side credits what it read), a unidirectional stream from the
-// server, the connection closed by the client with an application code that
-// the server receives, and two refusals: a certificate for another name, and
-// no ALPN protocol in common.
+// A client and a server Connection in one process, in memory: each UDP
+// payload one sends is handed to the other by hand, with no socket, no
+// network and no clock (the test moves the time, a millisecond a round, and
+// to the next wake time when nothing moves). The certificates are tls's test
+// certificates (packages/tls/tests/certs, README there): the server's for
+// 'localhost', under the test root, which the client is given as its roots
+// (tls.Verifier.roots). Checked: the handshake (TLS 1.3, ALPN h3 both ways,
+// the roots verifier), a bidirectional stream carrying a request and a 300 KB
+// body that the server echoes back (larger than the stream's window, so it
+// moves only as each side releases what it read), a unidirectional stream
+// from the server, the connection closed by the client with an application
+// code that the server receives, and two refusals: a certificate for another
+// name, and no ALPN protocol in common.
 
 mod handshake;
 
@@ -18,6 +19,8 @@ import fs;
 import path use Path;
 import collections use List, String;
 import time use Instant, Duration;
+import iobuf use IoBuf;
+import tls;
 import quic;
 
 // A file of tls's test certificates: congo test runs a test in
@@ -41,37 +44,40 @@ fn readText(name: &str) String {
   String.empty()
 }
 
-fn clientTls(alpn: &str) quic.TlsContext {
-  match quic.TlsContext.client(readText("ca.pem").view(), alpn) {
+fn clientCtx() quic.Context {
+  var cfg = quic.Config.make();
+  cfg.verify = tls.Verifier.roots(readText("ca.pem").view());
+  match quic.Context.client(cfg) {
     case var Ok(r) {return r;}
     case let Error(e) {
       printStr(e.message().view());
       printStr("\n");
     }
   }
-  panic("the client's TLS context could not be made")
+  panic("the client's context could not be made")
 }
 
-fn serverTls(alpn: &str) quic.TlsContext {
+fn serverCtx(alpn: &str) quic.Context {
+  var cfg = quic.Config.make();
+  cfg.alpn = String.from(alpn);
   let cert = certs("server.pem");
   let key = certs("server.key");
-  match quic.TlsContext.server(&cert, &key, alpn) {
+  match quic.Context.server(cfg, &cert, &key) {
     case var Ok(r) {return r;}
     case let Error(e) {
       printStr(e.message().view());
       printStr("\n");
     }
   }
-  panic("the server's TLS context could not be made")
+  panic("the server's context could not be made")
 }
 
 fn clientAddr() quic.Addr {quic.Addr.v4(127u8, 0u8, 0u8, 1u8, 50000u16)}
 fn serverAddr() quic.Addr {quic.Addr.v4(127u8, 0u8, 0u8, 1u8, 4433u16)}
 
-// One side's view of the connection: what it read on each stream, and what
-// it was told
+// One side's view of the connection: what it read on each kind of stream,
+// and what it was told
 struct Side {
-  name: String;
   handshake: bool;
   closedSeen: bool;
   closedByPeer: bool;
@@ -82,90 +88,111 @@ struct Side {
   uniIn: String;            // ... on the peer's unidirectional stream
   uniFin: bool;
   peerStreams: u32;
-  echoStream: i64;          // the server's: the stream it echoes on, -1 before
-  echoed: bool;
 
-  fn make(name: &str) Side {
-    Side(String.from(name), false, false, false, false, 0u64, String.empty(), false, String.empty(),
-      false, 0u32, -1i64, false)
+  fn make() Side {
+    Side(false, false, false, false, 0u64, String.empty(), false, String.empty(), false, 0u32)
   }
 }
 
-// Take every event an Engine has. A server echoes what it reads on a
+// Take every event a Connection has. A server echoes what it reads on a
 // bidirectional stream back on it, as it reads it, and ends it when the
-// client's end comes. Every byte read is credited back at once
-fn drain(e: &mut quic.Engine, side: &mut Side) {
+// client's end comes. Every byte read is released at once
+fn drain(c: &mut quic.Connection, side: &mut Side) {
   while true {
-    match e.pollEvent() {
+    match c.pollEvent() {
       case is Nothing {return;}
       case is HandshakeDone {side.handshake = true;}
+      case is VerifyNeeded {c.verifyNow();}
       case let PeerStream(p) {side.peerStreams = side.peerStreams + 1u32;}
       case let Data(d) {
-        let stream, bytes, fin = d.(stream, bytes, fin);
-        e.consume(stream, bytes.len());
+        let stream = d.stream;
+        let fin = d.fin;
+        let n = d.buf.len();
+        c.release(stream, n);
         if (stream & 2i64) != 0i64 {
-          side.uniIn.appendBytes(bytes.view());
+          side.uniIn.appendBytes(d.buf.view());
           if fin {side.uniFin = true;}
         } else {
-          side.bidiIn.appendBytes(bytes.view());
+          side.bidiIn.appendBytes(d.buf.view());
           if fin {side.bidiFin = true;}
-          if e.isServer() {
-            side.echoStream = stream;
-            e.send(stream, bytes.view(), fin);
-            if fin {side.echoed = true;}
+          if c.isServer() {
+            c.writeBytes(stream, d.buf.view());
+            if fin {c.finish(stream);}
           }
         }
       }
       case let Reset(r) {}
-      case let StopSending(s) {}
-      case let StreamClosed(c) {}
-      case let Closed(c) {
+      case let WriteStopped(w) {}
+      case let MoreStreams(m) {}
+      case let Closed(x) {
         side.closedSeen = true;
-        side.closedByPeer = c.byPeer;
-        side.closedApp = c.app;
-        side.closedCode = c.code;
+        side.closedByPeer = x.byPeer;
+        side.closedApp = x.app;
+        side.closedCode = x.code;
       }
     }
   }
 }
 
-// Move every payload each side has for the other until neither has any,
-// a millisecond a round; the events of each side taken as they come
-fn pump(c: &mut quic.Engine, s: &mut quic.Engine, cs: &mut Side, ss: &mut Side, now: &mut Instant) u32 {
-  var buf = Array[u8, 1500]() <- fill 0u8;
+// The earlier of two wake times
+fn earliest(a: Option[Instant], b: Option[Instant]) Option[Instant] {
+  match a {
+    case let Some(x) {
+      match b {
+        case let Some(y) {return Some(if y < x {y} else {x});}
+        case is None[Instant] {return Some(x);}
+      }
+    }
+    case is None[Instant] {}
+  }
+  b
+}
+
+// Move every payload each side has for the other until neither has any and
+// neither must wake within a second; the events of each side taken as they
+// come
+fn pump(c: &mut quic.Connection, s: &mut quic.Connection, cs: &mut Side, ss: &mut Side, now: &mut Instant) {
   var rounds = 0u32;
-  var moved = true;
-  while moved && rounds < 20000u32 {
-    moved = false;
+  while rounds < 100000u32 {
+    rounds = rounds + 1u32;
+    var moved = false;
     while true {
-      let n = c.transmit(&mut buf[0usize ..< 1500usize], *now);
-      if n == 0usize {break;}
-      s.read(&buf[0usize ..< n], *now);
+      let p = c.pollTransmit(*now);
+      if p.len() == 0usize {break;}
+      s.handleInput(p.view(), *now);
       moved = true;
     }
     drain(s, ss);
     while true {
-      let n = s.transmit(&mut buf[0usize ..< 1500usize], *now);
-      if n == 0usize {break;}
-      c.read(&buf[0usize ..< n], *now);
+      let p = s.pollTransmit(*now);
+      if p.len() == 0usize {break;}
+      c.handleInput(p.view(), *now);
       moved = true;
     }
     drain(c, cs);
-    *now = *now + Duration.fromMillis(1i64);
-    rounds = rounds + 1u32;
+    if moved {
+      *now = *now + Duration.fromMillis(1i64);
+      continue;
+    }
+    var next: Option[Instant] = earliest(c.wakeAt(), s.wakeAt());
+    var t = *now;
+    match next {
+      case let Some(w) {t = w;}
+      case is None[Instant] {return;}
+    }
+    if t > *now + Duration.fromSeconds(1i64) {return;}
+    *now = if t > *now {t} else {*now + Duration.fromMillis(1i64)};
   }
-  rounds
 }
 
 // A client, its first packet, and the server it makes
-fn connect(ctls: &quic.TlsContext, stls: &quic.TlsContext, host: &str, now: Instant) (quic.Engine, quic.Engine) {
-  var c = mustClient(ctls, host, now);
-  var buf = Array[u8, 1500]() <- fill 0u8;
-  let n = c.transmit(&mut buf[0usize ..< 1500usize], now);
+fn connect(cctx: &quic.Context, sctx: &quic.Context, host: &str, now: Instant) (quic.Connection, quic.Connection) {
+  var c = mustClient(cctx, host, now);
+  let first = c.pollTransmit(now);
   printStr("client's first packet: ");
-  printStr(if n >= 1200usize {"padded to at least 1200 bytes"} else {"too short"});
+  printStr(if first.len() >= 1200usize {"padded to at least 1200 bytes"} else {"too short"});
   printStr("\n");
-  match quic.Engine.accept(stls, &buf[0usize ..< n], &serverAddr(), &clientAddr(), &quic.Params.make(), now) {
+  match quic.Connection.accept(sctx, first.view(), &serverAddr(), &clientAddr(), now) {
     case var Ok(s) {return (c, s);}
     case let Error(e) {
       printStr(e.message().view());
@@ -175,9 +202,9 @@ fn connect(ctls: &quic.TlsContext, stls: &quic.TlsContext, host: &str, now: Inst
   panic("the server could not accept the client's first packet")
 }
 
-fn mustClient(ctls: &quic.TlsContext, host: &str, now: Instant) quic.Engine {
-  match quic.Engine.client(ctls, host, &clientAddr(), &serverAddr(), &quic.Params.make(), now) {
-    case var Ok(e) {return e;}
+fn mustClient(cctx: &quic.Context, host: &str, now: Instant) quic.Connection {
+  match quic.Connection.client(cctx, host, &clientAddr(), &serverAddr(), now) {
+    case var Ok(c) {return c;}
     case let Error(err) {
       printStr(err.message().view());
       printStr("\n");
@@ -222,19 +249,19 @@ fn body() String {
 
 fn exchange() {
   printStr("-- a handshake and a stream each way\n");
-  let ctls = clientTls("h3");
-  let stls = serverTls("h3");
+  let cctx = clientCtx();
+  let sctx = serverCtx("h3");
   var now = Instant.fromNanos(1000000000i64);
-  var c, s = connect(&ctls, &stls, "localhost", now);
-  var cs = Side.make("client");
-  var ss = Side.make("server");
+  var c, s = connect(&cctx, &sctx, "localhost", now);
+  var cs = Side.make();
+  var ss = Side.make();
   pump(&mut c, &mut s, &mut cs, &mut ss, &mut now);
   line("client handshake done", yesNo(cs.handshake && c.handshakeDone()));
   line("server handshake done", yesNo(ss.handshake && s.handshakeDone()));
   line("client ALPN", c.alpn().view());
   line("server ALPN", s.alpn().view());
   line("TLS", c.tlsVersion());
-  line("server's certificate trusted", yesNo(c.verifyResult() == 0i32));
+  line("verified by", tls.verifyKindName(c.verifiedBy()));
 
   // The client's request and body, on a stream of its own
   let sent = body();
@@ -244,12 +271,14 @@ fn exchange() {
     case is None[i64] {}
   }
   lineU("client's stream", u64.from(stream as u64));
-  c.send(stream, sent.view(), true);
+  c.writeBytes(stream, sent.view());
+  c.finish(stream);
   // The server's unidirectional stream
   match s.openUni() {
     case let Some(id) {
       lineU("server's unidirectional stream", u64.from(id as u64));
-      s.send(id, "pushed by the server", true);
+      s.writeBytes(id, "pushed by the server");
+      s.finish(id);
     }
     case is None[i64] {}
   }
@@ -262,20 +291,22 @@ fn exchange() {
   line("...and its end", yesNo(cs.uniFin));
   lineU("streams the server saw opened", u64.from(ss.peerStreams));
   lineU("streams the client saw opened", u64.from(cs.peerStreams));
+  lineU("streams the client still holds", u64.from(c.openStreams()));
+  lineU("streams the server still holds", u64.from(s.openStreams()));
 
   // The client closes with an application code
-  var buf = Array[u8, 1500]() <- fill 0u8;
-  let n = c.close(&mut buf[0usize ..< 1500usize], 0x10Cu64, now);
-  s.read(&buf[0usize ..< n], now);
+  c.close(0x10Cu64);
+  let p = c.pollTransmit(now);
+  s.handleInput(p.view(), now);
   drain(&mut c, &mut cs);
   drain(&mut s, &mut ss);
   line("client closed", yesNo(c.isClosed() && cs.closedSeen && !cs.closedByPeer));
   line("server saw the peer close", yesNo(s.isClosed() && ss.closedSeen && ss.closedByPeer));
   line("...with an application code", yesNo(ss.closedApp));
   lineU("...which is", ss.closedCode);
-  match c.expiry() {
-    case let Some(t) {line("a timer after the close", "yes");}
-    case is None[Instant] {line("a timer after the close", "no");}
+  match c.wakeAt() {
+    case let Some(t) {line("a wake time after the close", "yes");}
+    case is None[Instant] {line("a wake time after the close", "no");}
   }
 }
 
@@ -283,14 +314,14 @@ fn refused(what: &str, host: &str, serverAlpn: &str) {
   printStr("-- ");
   printStr(what);
   printStr("\n");
-  let ctls = clientTls("h3");
-  let stls = serverTls(serverAlpn);
+  let cctx = clientCtx();
+  let sctx = serverCtx(serverAlpn);
   var now = Instant.fromNanos(1000000000i64);
-  var c, s = connect(&ctls, &stls, host, now);
-  var cs = Side.make("client");
-  var ss = Side.make("server");
+  var c, s = connect(&cctx, &sctx, host, now);
+  var cs = Side.make();
+  var ss = Side.make();
   pump(&mut c, &mut s, &mut cs, &mut ss, &mut now);
-  line("client handshake done", yesNo(c.handshakeDone()));
+  line("client handshake done", yesNo(cs.handshake));
   line("client closed", yesNo(c.isClosed()));
   line("server closed", yesNo(s.isClosed()));
   match c.error() {
@@ -301,10 +332,13 @@ fn refused(what: &str, host: &str, serverAlpn: &str) {
     case let Some(e) {line("server's error", e.message().view());}
     case is None[quic.QuicError] {line("server's error", "none");}
   }
-  line("server saw the peer close", yesNo(ss.closedSeen && ss.closedByPeer));
+  // Closed's code: the one the end that closed sent
+  line("server's Closed came", yesNo(ss.closedSeen));
+  line("...closed by the peer", yesNo(ss.closedByPeer));
   line("...with an application code", yesNo(ss.closedApp));
   closeCode(ss.closedCode);
-  line("client saw the peer close", yesNo(cs.closedSeen && cs.closedByPeer));
+  line("client's Closed came", yesNo(cs.closedSeen));
+  line("...closed by the peer", yesNo(cs.closedByPeer));
   closeCode(cs.closedCode);
 }
 

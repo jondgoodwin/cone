@@ -113,7 +113,6 @@ extern {
   fn @c("recvfrom") sysRecvfrom(fd: i32, buf: *u8, n: usize, flags: i32, addr: *u8, len: *u32) i64;
   fn @c("sendto") sysSendto(fd: i32, buf: *u8, n: usize, flags: i32, addr: *u8, len: u32) i64;
   fn @c("sendmsg") sysSendmsg(fd: i32, msg: *MsgHdrLx, flags: i32) i64;
-  fn @c("getsockopt") sysGetsockopt(fd: i32, level: i32, name: i32, val: *u8, len: *u32) i32;
   fn @c("open") sysOpen(path: *u8, flags: i32, mode: u32) i32;
   fn @c("fcntl") sysFcntl(fd: i32, cmd: i32, arg: i32) i32;
   fn @c("pread") sysPread(fd: i32, buf: *u8, n: usize, at: i64) i64;
@@ -149,6 +148,11 @@ const solSocketLx = 1i32;
 const soReuseAddr = 2i32;
 const soError = 4i32;
 const soLingerLx = 13i32;
+const soKeepAliveLx = 9i32;                         // SO_KEEPALIVE
+const tcpKeepIdleLx = 4i32;                         // TCP_KEEPIDLE, seconds
+const tcpKeepIntvlLx = 5i32;                        // TCP_KEEPINTVL, seconds
+const tcpKeepCntLx = 6i32;                          // TCP_KEEPCNT
+const tcpUserTimeoutLx = 18i32;                     // TCP_USER_TIMEOUT, milliseconds
 const msgNoSignal = 0x4000i32;
 const msgPeek = 2i32;
 const msgTrunc = 0x20i32;                           // recvfrom answers the datagram's whole length, even when it was cut
@@ -545,8 +549,8 @@ fn lxTry(lp: &mut Loop, p: *OpCore, at: Instant) u32 {
   if k == diag.kindConnect {
     // Writable, or failed: SO_ERROR says which. Not yet connected is no answer
     var err = 0i32;
-    var len = 4u32;
-    if sysGetsockopt(fd, solSocketLx, soError, &mut err as *u8, &mut len as *u32) != 0i32 {
+    var len = 4i32;
+    if getsockopt(usize.from(fd), solSocketLx, soError, &mut err as *u8, &mut len) != 0i32 {
       err = lastErrno();
     }
     if err == 0i32 {
