@@ -1,0 +1,40 @@
+// A '_' target writes no place, but the value it takes is still made: a call
+// whose result is discarded, and that reshapes a list, reshapes it as it would
+// with its result kept. A borrow into a 'List[i64]' is held across a call of a
+// callee that discards such a result, so the check of the call refuses it, as
+// it does any call that may reshape what the borrow points into.
+// collection_reshape_discard_success holds what is accepted: discards in a
+// callee that reshape no such list.
+
+mod collection_flow_reshape_discard;
+
+import collections use *;
+
+struct Box {
+  pub items: List[i64];
+  pub n: i64;
+}
+
+// The list's last value popped: the list shrinks
+fn dropLast(b: &mut Box) {
+  _ = b.items.pop();
+}
+
+fn pushed(l: &mut List[i64], v: i64) i64 {
+  l.push(v);
+  v
+}
+
+// The list grown, inside a block
+fn growInBlock(b: &mut Box) {
+  if b.n >= 0 {_ = pushed(&mut b.items, 3);}
+}
+
+fn heldAcross(x: &mut Box, y: &mut Box) i64 {
+  let e = &mut x.items[0usize];
+  dropLast(y);      //~ ErrorShapeReshape:11 "'dropLast' is handed something that reaches a 'List'"
+  growInBlock(y);   //~ ErrorShapeReshape:14 "'growInBlock' is handed something that reaches a 'List'"
+  *e
+}
+
+fn main() {}
