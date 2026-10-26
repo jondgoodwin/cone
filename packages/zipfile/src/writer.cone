@@ -1,0 +1,326 @@
+// ======== Writing an archive ========
+//
+// A ZipWriter is a value that holds an archive in the making. Entries are added whole ('add'); each is
+// written, local header and data, as soon as it is added, with its sizes and CRC-32 known, so no data
+// descriptor and no seeking back are needed. The bytes made are taken out with 'pull', in pieces of
+// any size, so an archive of many files can go to a file or a socket without being held whole: the
+// writer keeps what has not been pulled, and the central directory (about 60 bytes an entry), which
+// 'finish' appends with the end records. A one-call form ('bytes', 'saveTo') does it all.
+
+// The extra field of the extended timestamp (Info-ZIP): flags, then the modification time
+const unixTimeTag = 0x5455u16;
+
+pub struct ZipWriter {
+  // Bytes made and not yet dropped; those before 'outPos' have been pulled
+  out: List[u8];
+  outPos: usize;
+  // Bytes dropped from the front of 'out', so the next byte made is at 'gone + out.len()'
+  gone: u64;
+  // The central directory records, appended by 'finish'
+  central: List[u8];
+  added: u64;
+  names: Set[String];
+  crc: deflate.Crc32;
+  always64: bool;
+  comment: String;
+  finished: bool;
+
+  // An archive with nothing in it yet
+  pub fn make() ZipWriter {
+    ZipWriter(List[u8].empty(), 0usize, 0u64, List[u8].empty(), 0u64, Set[String](), deflate.Crc32.make(), false,
+      String.empty(), false)
+  }
+
+  // The archive comment (at most 65535 bytes); say it before 'finish'. False if it is too long.
+  pub fn setComment(self: &mut, text: &str) bool {
+    if text.len() > 65535usize || finished { return false; }
+    comment = String.from(text);
+    true
+  }
+
+  // With 'true', every entry and the end are written with zip64 records, whatever their sizes (this is
+  // how the zip64 readers are tested). With 'false', the default, zip64 is used where a size, an offset
+  // or the entry count needs it, and for an entry whose options ask for it.
+  pub fn setZip64(self: &mut, always: bool) { always64 = always; }
+
+  // How many entries so far
+  pub fn count(self: &) u64 { added }
+
+  // Whether 'finish' has been called
+  pub fn isFinished(self: &) bool { finished }
+
+  // Adds an entry: a name ('/' between folders; written as given, so a name that extraction would
+  // refuse is written all the same), its data, and how to write it. A name already added is refused
+  // (BadArgument), as are one that is empty or over 65535 bytes. Non-ASCII names are written as
+  // UTF-8 with flag bit 11 set.
+  pub fn add(self: &mut, name: &str, data: &Array[u8], opts: &EntryOptions) Result[void, ZipError] {
+    self.addEntry(name, data, opts, false)
+  }
+
+  // Adds a folder entry (the name gets its '/' if it lacks one)
+  pub fn addDir(self: &mut, name: &str, opts: &EntryOptions) Result[void, ZipError] {
+    var n = String.from(name);
+    if !n.endsWith("/") { n.append("/"); }
+    self.addEntry(n.view(), "", opts, true)
+  }
+
+  // Adds the file at 'path' under 'name'. Its modification time is not read; set 'opts.modified'.
+  pub fn addFile(self: &mut, name: &str, path: &Path, opts: &EntryOptions) Result[void, ZipError] {
+    match fs.mapFile(path) {
+      case let Error(fe) { Error[void, ZipError](ioFault(&fe)) }
+      case let Ok(m) { self.addEntry(name, m.view(), opts, false) }
+    }
+  }
+
+  // Adds a folder and everything below it: a folder entry for each folder, a file entry for each
+  // file, in name order, each named 'prefix' then its path below 'root' ('prefix' "" or ending in '/').
+  // The files' modification times are the files' own. Links are skipped. The folder 'root' itself gets
+  // no entry.
+  pub fn addTree(self: &mut, root: &Path, prefix: &str, opts: &EntryOptions) Result[void, ZipError] {
+    match fs.readDir(root) {
+      case let Error(fe) { return Error[void, ZipError](ioFault(&fe)); }
+      case let Ok(listed) {
+        var k = 0usize;
+        while k < listed.len() {
+          let item = listed[k];
+          var name = String.from(prefix);
+          name.append(item.name.view());
+          if item.isDir {
+            let made = self.addDir(name.view(), opts);
+            if made is Error { return made; }
+            name.append("/");
+            let below = self.addTree(&item.path, name.view(), opts);
+            if below is Error { return below; }
+          } else if item.isFile {
+            var stamp = opts.modified;
+            match fs.stat(&item.path) {
+              case let Ok(info) { stamp = info.modified.unixSeconds(); }
+              case is Error {}
+            }
+            let o = EntryOptions(opts.method, opts.level, stamp, opts.mode, opts.zip64, opts.comment.copy());
+            let made = self.addFile(name.view(), &item.path, &o);
+            if made is Error { return made; }
+          }
+          k += 1usize;
+        }
+      }
+    }
+    Ok[void, ZipError](nil)
+  }
+
+  fn addEntry(self: &mut, name: &str, data: &Array[u8], opts: &EntryOptions, folder: bool) Result[void, ZipError] {
+    if finished {
+      return refusal[void](ErrorKind.BadArgument, 0u64, "the archive is finished; nothing can be added");
+    }
+    if name.len() == 0usize || name.len() > 65535usize {
+      return refusal[void](ErrorKind.BadArgument, 0u64, "an entry's name must be 1 to 65535 bytes");
+    }
+    if opts.comment.len() > 65535usize {
+      return refusal[void](ErrorKind.BadArgument, 0u64, about("the comment of", name, "is over 65535 bytes").view());
+    }
+    if names.contains(name) {
+      return refusal[void](ErrorKind.BadArgument, 0u64, about("the name", name, "is already in the archive").view());
+    }
+    if opts.method != 0u16 && opts.method != 8u16 {
+      return refusal[void](ErrorKind.BadArgument, 0u64, about("the method of", name, "must be 0 (stored) or 8 (deflate)").view());
+    }
+    let n = u64.from(data.len);
+    // Folders and empty files are stored; a deflated entry that does not get smaller is stored
+    var method = if folder || n == 0u64 { 0u16 } else { opts.method };
+    var body = List[u8].empty();
+    if method == 8u16 {
+      body = deflate.rawDeflate(data, opts.level);
+      if u64.from(body.len()) >= n { method = 0u16; body = List[u8].empty(); }
+    }
+    let csize = if method == 8u16 { u64.from(body.len()) } else { n };
+    let sum = crc.update(0u32, data, 0usize, data.len);
+    let offset = gone + u64.from(out.len());
+    // zip64: the local header and the central record carry the sizes in an extra field
+    let wide = always64 || opts.zip64 || n >= 0xFFFFFFFFu64 || csize >= 0xFFFFFFFFu64;
+    let wideOff = always64 || offset >= 0xFFFFFFFFu64;
+    let text = !isAscii(name) || !isAscii(opts.comment.view());
+    let flags = if text { 0x0800u32 } else { 0u32 };
+    var date = 33u16;
+    var time = 0u16;
+    var stamped = false;
+    if opts.modified > 0i64 && opts.modified < 4294967296i64 {
+      let d = unixToDos(opts.modified);
+      date = d.date;
+      time = d.time;
+      stamped = true;
+    }
+    let needed = if wide || wideOff { 45u32 } else if method == 8u16 || folder { 20u32 } else { 10u32 };
+    // Local header
+    put32(&mut out, 0x04034B50u32);
+    put16(&mut out, needed);
+    put16(&mut out, flags);
+    put16(&mut out, u32.from(method));
+    put16(&mut out, u32.from(time));
+    put16(&mut out, u32.from(date));
+    put32(&mut out, sum);
+    put32(&mut out, if wide { 0xFFFFFFFFu32 } else { u32.from(csize) });
+    put32(&mut out, if wide { 0xFFFFFFFFu32 } else { u32.from(n) });
+    put16(&mut out, u32.from(name.len()));
+    put16(&mut out, (if wide { 20u32 } else { 0u32 }) + (if stamped { 9u32 } else { 0u32 }));
+    putBytes(&mut out, name);
+    if wide {
+      put16(&mut out, 1u32);
+      put16(&mut out, 16u32);
+      put64(&mut out, n);
+      put64(&mut out, csize);
+    }
+    if stamped {
+      put16(&mut out, u32.from(unixTimeTag));
+      put16(&mut out, 5u32);
+      out.push(1u8);
+      put32(&mut out, u32.from(opts.modified));
+    }
+    if method == 8u16 { putBytes(&mut out, body.view()); } else { putBytes(&mut out, data); }
+    // Central directory record
+    let mode = if opts.mode != 0u32 { opts.mode } else if folder { 493u32 } else { 420u32 };
+    let kind = if folder { 0x4000u32 } else { 0x8000u32 };
+    let attrs = ((kind | mode) << 16u32) | (if folder { 0x10u32 } else { 0u32 });
+    let zextra = (if wide { 16u32 } else { 0u32 }) + (if wideOff { 8u32 } else { 0u32 });
+    put32(&mut central, 0x02014B50u32);
+    put16(&mut central, 0x0300u32 | needed);
+    put16(&mut central, needed);
+    put16(&mut central, flags);
+    put16(&mut central, u32.from(method));
+    put16(&mut central, u32.from(time));
+    put16(&mut central, u32.from(date));
+    put32(&mut central, sum);
+    put32(&mut central, if wide { 0xFFFFFFFFu32 } else { u32.from(csize) });
+    put32(&mut central, if wide { 0xFFFFFFFFu32 } else { u32.from(n) });
+    put16(&mut central, u32.from(name.len()));
+    put16(&mut central, (if zextra > 0u32 { zextra + 4u32 } else { 0u32 }) + (if stamped { 9u32 } else { 0u32 }));
+    put16(&mut central, u32.from(opts.comment.len()));
+    put16(&mut central, 0u32);
+    put16(&mut central, 0u32);
+    put32(&mut central, attrs);
+    put32(&mut central, if wideOff { 0xFFFFFFFFu32 } else { u32.from(offset) });
+    putBytes(&mut central, name);
+    if zextra > 0u32 {
+      put16(&mut central, 1u32);
+      put16(&mut central, zextra);
+      if wide { put64(&mut central, n); put64(&mut central, csize); }
+      if wideOff { put64(&mut central, offset); }
+    }
+    if stamped {
+      put16(&mut central, u32.from(unixTimeTag));
+      put16(&mut central, 5u32);
+      central.push(1u8);
+      put32(&mut central, u32.from(opts.modified));
+    }
+    putBytes(&mut central, opts.comment.view());
+    names.insert(String.from(name));
+    added += 1u64;
+    Ok[void, ZipError](nil)
+  }
+
+  // Ends the archive: the central directory and the end records (zip64 ones when the count, a size or
+  // an offset needs them, or always if 'setZip64(true)'). Nothing can be added after. Pull the rest.
+  pub fn finish(self: &mut) Result[void, ZipError] {
+    if finished {
+      return refusal[void](ErrorKind.BadArgument, 0u64, "the archive is already finished");
+    }
+    let cdOffset = gone + u64.from(out.len());
+    let cdSize = u64.from(central.len());
+    out.reserve(central.len());
+    var c = 0usize;
+    while c < central.len() { out.push(*central[c]); c += 1usize; }
+    central.clear();
+    let total = added;
+    let wide = always64 || total >= 0xFFFFu64 || cdOffset >= 0xFFFFFFFFu64 || cdSize >= 0xFFFFFFFFu64;
+    if wide {
+      let at = gone + u64.from(out.len());
+      put32(&mut out, 0x06064B50u32);
+      put64(&mut out, 44u64);
+      put16(&mut out, 45u32);
+      put16(&mut out, 45u32);
+      put32(&mut out, 0u32);
+      put32(&mut out, 0u32);
+      put64(&mut out, total);
+      put64(&mut out, total);
+      put64(&mut out, cdSize);
+      put64(&mut out, cdOffset);
+      put32(&mut out, 0x07064B50u32);
+      put32(&mut out, 0u32);
+      put64(&mut out, at);
+      put32(&mut out, 1u32);
+    }
+    let all = always64;
+    put32(&mut out, 0x06054B50u32);
+    put16(&mut out, 0u32);
+    put16(&mut out, 0u32);
+    let c16 = if all || total >= 0xFFFFu64 { 0xFFFFu32 } else { u32.from(total) };
+    put16(&mut out, c16);
+    put16(&mut out, c16);
+    put32(&mut out, if all || cdSize >= 0xFFFFFFFFu64 { 0xFFFFFFFFu32 } else { u32.from(cdSize) });
+    put32(&mut out, if all || cdOffset >= 0xFFFFFFFFu64 { 0xFFFFFFFFu32 } else { u32.from(cdOffset) });
+    put16(&mut out, u32.from(comment.len()));
+    putBytes(&mut out, comment.view());
+    finished = true;
+    Ok[void, ZipError](nil)
+  }
+
+  // Appends at most 'max' of the bytes made since the last pull to 'dst'. NeedInput: all pulled, add
+  // another entry or 'finish'. MoreOutput: pull again. Done: finished, and every byte pulled.
+  pub fn pull(self: &mut, dst: &mut List[u8], max: usize) Status {
+    let avail = out.len() - outPos;
+    let n = if avail < max { avail } else { max };
+    dst.reserve(n);
+    var k = 0usize;
+    while k < n { dst.push(*out[outPos + k]); k += 1usize; }
+    outPos += n;
+    // Drop what is pulled when it is at least as much as what is left
+    let left = out.len() - outPos;
+    if outPos > 0usize && outPos >= left {
+      var i = 0usize;
+      while i < left { out.set(i, *out[outPos + i]); i += 1usize; }
+      out.truncate(left);
+      gone += u64.from(outPos);
+      outPos = 0usize;
+    }
+    if out.len() > outPos { Status.MoreOutput } else if finished { Status.Done } else { Status.NeedInput }
+  }
+
+  // Finishes the archive and answers all of its bytes
+  pub fn bytes(self: &mut) Result[List[u8], ZipError] {
+    if !finished {
+      let ended = self.finish();
+      match ended {
+        case let Error(e) { return Error[List[u8], ZipError](e); }
+        case is Ok {}
+      }
+    }
+    var all = List[u8].empty();
+    var s = Status.MoreOutput;
+    while s == Status.MoreOutput { s = self.pull(&mut all, 1048576usize); }
+    Ok[List[u8], ZipError](all)
+  }
+
+  // Finishes the archive and writes it to the file 'path' (made, or replaced), a megabyte at a time
+  pub fn saveTo(self: &mut, path: &Path) Result[void, ZipError] {
+    if !finished {
+      let ended = self.finish();
+      match ended {
+        case let Error(e) { return Error[void, ZipError](e); }
+        case is Ok {}
+      }
+    }
+    var piece = List[u8].empty();
+    var first = true;
+    var s = Status.MoreOutput;
+    while s == Status.MoreOutput || first {
+      piece.clear();
+      s = self.pull(&mut piece, 1048576usize);
+      let wrote = if first { fs.writeFile(path, piece.view()) } else { fs.appendFile(path, piece.view()) };
+      match wrote {
+        case let Error(fe) { return Error[void, ZipError](ioFault(&fe)); }
+        case is Ok {}
+      }
+      first = false;
+    }
+    Ok[void, ZipError](nil)
+  }
+}

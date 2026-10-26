@@ -1,0 +1,375 @@
+// Writing archives, and reading them back with the reader: every method and level, sizes from 0 to
+// 200000, UTF-8 names, times, modes, comments, zip64 (forced, per entry, and by an entry count of 70000),
+// pulling the archive out in pieces, and the refusals. The files this test saves (*.zip in its folder)
+// are what make_fixtures.py's oracle check reads with Python's zipfile and unzip, when run by hand.
+
+mod writetest;
+
+import testing use *;
+import collections use *;
+import zipfile use *;
+import deflate;
+import fs;
+import path use Path;
+
+fn why(a: &str, e: &ZipError) String {
+  var s = String.from(a);
+  s.append(": ");
+  s.append(e.reason.view());
+  s
+}
+
+// Bytes that compress (text) and bytes that do not (a generator's noise), 'n' of them
+fn texty(n: usize) List[u8] {
+  var out = List[u8].withCapacity(n);
+  var i = 0usize;
+  while out.len() < n {
+    let s = "row of text number ";
+    var k = 0usize;
+    while k < s.len() && out.len() < n { out.push(s[k]); k += 1usize; }
+    if out.len() < n { out.push(u8.from(48usize + i % 10usize)); }
+    i += 1usize;
+    if out.len() < n { out.push(10u8); }
+  }
+  out
+}
+
+fn noise(n: usize, seed: u64) List[u8] {
+  var out = List[u8].withCapacity(n);
+  var x = seed * 2862933555777941757u64 + 3037000493u64;
+  var i = 0usize;
+  while i < n {
+    x = x ^ (x << 13u64);
+    x = x ^ (x >> 7u64);
+    x = x ^ (x << 17u64);
+    out.push(u8.from(x & 255u64));
+    i += 1usize;
+  }
+  out
+}
+
+fn readBack(ar: &Archive, data: &Array[u8], name: &str, want: &Array[u8], label: &str) {
+  match ar.find(name) {
+    case let Some(i) {
+      match ar.read(data, i) {
+        case let Ok(got) { expect(got.view() == want, label); }
+        case let Error(e) { expect(false, why(label, &e).view()); }
+      }
+    }
+    case is None { expect(false, label); }
+  }
+}
+
+fn save(name: &str, b: &Array[u8]) {
+  let r = fs.writeFile(&Path.from(name), b);
+  expect(r is Ok, "saving a zip file for the oracle");
+}
+
+fn main() i32 {
+  // ---------------- round trip: every size, method and level ----------------
+  let sizes: Array[usize, 8] = [0usize, 1usize, 100usize, 4095usize, 65535usize, 65536usize, 65537usize, 200000usize];
+  var w = ZipWriter.make();
+  expect(w.setComment("a comment, with ünicode"), "a comment is taken");
+  var datas = List[List[u8]].empty();
+  var names = List[String].empty();
+  var s = 0usize;
+  while s < 8usize {
+    var m = 0usize;
+    while m < 4usize {
+      // m: stored, level 0, level 1, level 2 (deflate); half text, half noise
+      let isText = (s % 2usize) == 0usize;
+      var name = String.from(if isText { "text/" } else { "noise/" });
+      name.append(if m == 0usize { "stored" } else if m == 1usize { "l0" } else if m == 2usize { "l1" } else { "l2" });
+      name.appendUInt(u64.from(sizes[s]));
+      let body = if isText { texty(sizes[s]) } else { noise(sizes[s], u64.from(s) + 1u64) };
+      let o = if m == 0usize { EntryOptions.stored() } else { EntryOptions.deflated(i32.from(m) - 1i32) };
+      let r = w.add(name.view(), body.view(), &o);
+      expect(r is Ok, why("add", &ZipError.make(ErrorKind.BadArgument, 0u64, name.view())).view());
+      datas.push(body);
+      names.push(name);
+      m += 1usize;
+    }
+    s += 1usize;
+  }
+  // Names and metadata
+  var o = EntryOptions.plain();
+  o.modified = 1793018096i64 + 1i64;   // an odd second: DOS time cannot hold it, the extended timestamp can
+  o.mode = 0o600u32;
+  o.comment = String.from("entry comment é");
+  expect(w.add("héllo/wörld ✓.txt", "unicode\n", &o) is Ok, "add: a UTF-8 name");
+  expect(w.addDir("a/b", &EntryOptions.plain()) is Ok, "addDir adds the slash");
+  var early = EntryOptions.stored();
+  early.modified = 100i64;   // before 1980
+  expect(w.add("early.txt", "early\n", &early) is Ok, "add: a time before 1980");
+  expect(w.add("plain.txt", "default time and mode\n", &EntryOptions.plain()) is Ok, "add: defaults");
+  expectUInt(w.count(), 36u64, "the writer counts its entries");
+  match w.bytes() {
+    case let Error(e) { expect(false, why("bytes", &e).view()); }
+    case let Ok(arc) {
+      expect(w.isFinished(), "bytes finishes");
+      save("all.zip", arc.view());
+      match Archive.open(arc.view()) {
+        case let Error(e) { expect(false, why("the written archive opens", &e).view()); }
+        case let Ok(ar) {
+          expectUInt(u64.from(ar.count()), 36u64, "round trip: 36 entries");
+          expectStr(ar.comment.view(), "a comment, with ünicode", "round trip: the archive comment");
+          expect(!ar.zip64, "round trip: no zip64 records");
+          var i = 0usize;
+          while i < 32usize {
+            let e = ar.entry(i);
+            readBack(&ar, arc.view(), names[i].view(), datas[i].view(), names[i].view());
+            expectStr(e.name.view(), names[i].view(), "round trip: names in order");
+            let m = i % 4usize;
+            let isText = ((i / 4usize) % 2usize) == 0usize;
+            if m == 0usize {
+              expectUInt(u64.from(e.method), 0u64, "round trip: stored is method 0");
+            } else if datas[i].len() == 0usize {
+              expectUInt(u64.from(e.method), 0u64, "round trip: an empty entry is stored");
+            } else if !isText {
+              expectUInt(u64.from(e.method), 0u64, "round trip: noise does not deflate, so it is stored");
+            } else if m == 3usize && datas[i].len() > 100usize {
+              expectUInt(u64.from(e.method), 8u64, "round trip: text is deflated");
+              expect(e.compressedSize < e.size, "round trip: and gets smaller");
+            }
+            i += 1usize;
+          }
+          // Metadata
+          let u = ar.entry(32usize);
+          expectStr(u.name.view(), "héllo/wörld ✓.txt", "round trip: a UTF-8 name");
+          expect((u.flags & 0x800u16) != 0u16, "round trip: flag bit 11 set for it");
+          expect((ar.entry(0usize).flags & 0x800u16) == 0u16, "round trip: and not for an ASCII name");
+          expectInt(u.modified, 1793018097i64, "round trip: the extended timestamp is exact");
+          expect(u.modifiedExact, "round trip: and says so");
+          expectUInt(u64.from(u.unixMode()), 0o100600u64, "round trip: the mode");
+          expectStr(u.comment.view(), "entry comment é", "round trip: the entry comment");
+          expect(!u.isDir(), "round trip: a file");
+          let d = ar.entry(33usize);
+          expectStr(d.name.view(), "a/b/", "round trip: the folder's name");
+          expect(d.isDir(), "round trip: a folder");
+          expectUInt(u64.from(d.unixMode()), 0o040755u64, "round trip: a folder's default mode");
+          expectUInt(d.size, 0u64, "round trip: a folder has no data");
+          let ea = ar.entry(34usize);
+          expectInt(ea.modified, 100i64, "round trip: a time before 1980 is kept exact");
+          expectUInt(u64.from(ea.dosDate), 33u64, "round trip: but its DOS date is 1980-01-01");
+          let pl = ar.entry(35usize);
+          expectUInt(u64.from(pl.unixMode()), 0o100644u64, "round trip: a file's default mode");
+          expect(!pl.modifiedExact, "round trip: no time given, none exact");
+          expectInt(pl.modified, 315532800i64, "round trip: the default time is 1980-01-01");
+          readBack(&ar, arc.view(), "plain.txt", "default time and mode\n", "round trip: plain.txt");
+          readBack(&ar, arc.view(), "héllo/wörld ✓.txt", "unicode\n", "round trip: the UTF-8 entry");
+        }
+      }
+    }
+  }
+
+  // ---------------- the times DOS can hold ----------------
+  {
+    var tw = ZipWriter.make();
+    var t = EntryOptions.stored();
+    t.modified = 1793018096i64;   // 2026-10-26 12:34:56
+    expect(tw.add("t.txt", "t", &t) is Ok, "add with a time");
+    match tw.bytes() {
+      case let Error(e) { expect(false, "times: bytes"); }
+      case let Ok(b) {
+        match Archive.open(b.view()) {
+          case let Ok(ar) {
+            expectUInt(u64.from(ar.entry(0usize).dosDate), u64.from((46u32 << 9u32) | (10u32 << 5u32) | 26u32), "DOS date of 2026-10-26");
+            expectUInt(u64.from(ar.entry(0usize).dosTime), u64.from((12u32 << 11u32) | (34u32 << 5u32) | 28u32), "DOS time of 12:34:56");
+            expectInt(ar.entry(0usize).modified, 1793018096i64, "and read back");
+          }
+          case let Error(e) { expect(false, "times: opens"); }
+        }
+      }
+    }
+  }
+
+  // ---------------- pulling the archive out in pieces ----------------
+  {
+    let body = texty(30000usize);
+    let pieceSizes: Array[usize, 4] = [1usize, 13usize, 4096usize, 1048576usize];
+    var k = 0usize;
+    while k < 4usize {
+      var x = ZipWriter.make();
+      expect(x.add("one.txt", body.view(), &EntryOptions.plain()) is Ok, "pieces: add");
+      var got = List[u8].empty();
+      var st = x.pull(&mut got, pieceSizes[k]);
+      if pieceSizes[k] < 1000usize { expect(st == Status.MoreOutput, "pieces: an entry waits to be pulled"); }
+      var guard = 0usize;
+      while st == Status.MoreOutput && guard < 2000000usize { st = x.pull(&mut got, pieceSizes[k]); guard += 1usize; }
+      expect(st == Status.NeedInput, "pieces: pulled dry, the writer wants more or the end");
+      expect(x.add("two.txt", "second\n", &EntryOptions.stored()) is Ok, "pieces: add again after pulling");
+      expect(x.finish() is Ok, "pieces: finish");
+      st = Status.MoreOutput;
+      while st == Status.MoreOutput && guard < 4000000usize { st = x.pull(&mut got, pieceSizes[k]); guard += 1usize; }
+      expect(st == Status.Done, "pieces: Done after the end is pulled");
+      expect(x.pull(&mut got, 10usize) == Status.Done, "pieces: and stays Done");
+      match Archive.open(got.view()) {
+        case let Error(e) { expect(false, why("pieces: the archive opens", &e).view()); }
+        case let Ok(ar) {
+          expectUInt(u64.from(ar.count()), 2u64, "pieces: two entries");
+          readBack(&ar, got.view(), "one.txt", body.view(), "pieces: one.txt");
+          readBack(&ar, got.view(), "two.txt", "second\n", "pieces: two.txt, whose offset counts the bytes already pulled");
+        }
+      }
+      k += 1usize;
+    }
+  }
+
+  // ---------------- zip64: forced ----------------
+  {
+    var z = ZipWriter.make();
+    z.setZip64(true);
+    let body = texty(5000usize);
+    expect(z.add("a.txt", body.view(), &EntryOptions.plain()) is Ok, "zip64: add a");
+    expect(z.add("b.bin", noise(3000usize, 9u64).view(), &EntryOptions.stored()) is Ok, "zip64: add b");
+    expect(z.addDir("d", &EntryOptions.plain()) is Ok, "zip64: add a folder");
+    match z.bytes() {
+      case let Error(e) { expect(false, "zip64: bytes"); }
+      case let Ok(arc) {
+        save("zip64.zip", arc.view());
+        match Archive.open(arc.view()) {
+          case let Error(e) { expect(false, why("zip64: opens", &e).view()); }
+          case let Ok(ar) {
+            expect(ar.zip64, "zip64: the zip64 end records are seen");
+            expectUInt(u64.from(ar.count()), 3u64, "zip64: three entries");
+            readBack(&ar, arc.view(), "a.txt", body.view(), "zip64: a.txt");
+            expectUInt(ar.entry(0usize).size, 5000u64, "zip64: a size from the zip64 extra");
+            expectUInt(ar.entry(1usize).size, 3000u64, "zip64: another");
+            expect(ar.entry(1usize).offset > 0u64, "zip64: an offset from the zip64 extra");
+          }
+        }
+      }
+    }
+  }
+  // zip64: one entry asks for it
+  {
+    var z = ZipWriter.make();
+    var o2 = EntryOptions.plain();
+    o2.zip64 = true;
+    let body = texty(5000usize);
+    expect(z.add("wide.txt", body.view(), &o2) is Ok, "zip64 entry: add");
+    expect(z.add("narrow.txt", "n\n", &EntryOptions.plain()) is Ok, "zip64 entry: add the other");
+    match z.bytes() {
+      case let Error(e) { expect(false, "zip64 entry: bytes"); }
+      case let Ok(arc) {
+        save("zip64entry.zip", arc.view());
+        match Archive.open(arc.view()) {
+          case let Error(e) { expect(false, why("zip64 entry: opens", &e).view()); }
+          case let Ok(ar) {
+            expect(!ar.zip64, "zip64 entry: no zip64 end records, since none is needed");
+            readBack(&ar, arc.view(), "wide.txt", body.view(), "zip64 entry: wide.txt");
+            readBack(&ar, arc.view(), "narrow.txt", "n\n", "zip64 entry: narrow.txt");
+            expect(get16(arc.view(), 4usize) == 45u32, "zip64 entry: version needed 4.5");
+          }
+        }
+      }
+    }
+  }
+  // zip64: by the entry count (65535 and over)
+  {
+    var z = ZipWriter.make();
+    var i = 0usize;
+    var allOk = true;
+    while i < 70000usize {
+      var name = String.from("f");
+      name.appendUInt(u64.from(i));
+      if !(z.add(name.view(), "", &EntryOptions.stored()) is Ok) { allOk = false; }
+      i += 1usize;
+    }
+    expect(allOk, "many: 70000 entries are added");
+    match z.bytes() {
+      case let Error(e) { expect(false, "many: bytes"); }
+      case let Ok(arc) {
+        save("many.zip", arc.view());
+        match Archive.open(arc.view()) {
+          case let Error(e) { expect(false, why("many: opens", &e).view()); }
+          case let Ok(ar) {
+            expect(ar.zip64, "many: zip64 end records for 70000 entries");
+            expectUInt(u64.from(ar.count()), 70000u64, "many: all 70000 entries");
+            expectStr(ar.entry(69999usize).name.view(), "f69999", "many: the last one");
+            expect(ar.find("f65535") is Some, "many: lookup by name");
+            expect(ar.find("f70000") is None, "many: and a miss");
+          }
+        }
+      }
+    }
+  }
+
+  // ---------------- refusals ----------------
+  {
+    var z = ZipWriter.make();
+    expect(z.add("a.txt", "a", &EntryOptions.plain()) is Ok, "refusals: first add");
+    let dup = z.add("a.txt", "b", &EntryOptions.plain());
+    expect(dup is Error, "a duplicate name is refused");
+    match dup {
+      case let Error(e) { expect(e.kind == ErrorKind.BadArgument, "a duplicate name is BadArgument"); }
+      case is Ok {}
+    }
+    expect(z.add("", "x", &EntryOptions.plain()) is Error, "an empty name is refused");
+    var long = String.empty();
+    var k = 0usize;
+    while k < 65536usize { long.append("x"); k += 1usize; }
+    expect(z.add(long.view(), "x", &EntryOptions.plain()) is Error, "a name over 65535 bytes is refused");
+    var bad = EntryOptions.plain();
+    bad.method = 12u16;
+    expect(z.add("b.txt", "x", &bad) is Error, "a method other than 0 and 8 is refused");
+    expect(!z.setComment(long.view()), "a comment over 65535 bytes is refused");
+    expect(z.finish() is Ok, "refusals: finish");
+    expect(z.finish() is Error, "finishing twice is refused");
+    expect(z.add("c.txt", "x", &EntryOptions.plain()) is Error, "adding after finish is refused");
+    expect(!z.setComment("late"), "a comment after finish is refused");
+    match z.bytes() {
+      case let Ok(arc) {
+        match Archive.open(arc.view()) {
+          case let Ok(ar) { expectUInt(u64.from(ar.count()), 1u64, "refusals: only the good entry is in"); }
+          case let Error(e) { expect(false, "refusals: opens"); }
+        }
+      }
+      case let Error(e) { expect(false, "refusals: bytes after finish"); }
+    }
+  }
+
+  // ---------------- to a file, and from files and a folder ----------------
+  {
+    let root = Path.from("tree-src");
+    fs.removeAll(&root);
+    fs.makeDirAll(&Path.from("tree-src/sub/deeper"));
+    fs.writeFile(&Path.from("tree-src/top.txt"), "top file\n");
+    fs.writeFile(&Path.from("tree-src/sub/mid.txt"), texty(20000usize).view());
+    fs.writeFile(&Path.from("tree-src/sub/deeper/low.bin"), noise(5000usize, 3u64).view());
+    fs.makeDirAll(&Path.from("tree-src/empty"));
+    var z = ZipWriter.make();
+    let added = z.addTree(&root, "pack/", &EntryOptions.plain());
+    expect(added is Ok, "addTree");
+    expect(z.addFile("extra.txt", &Path.from("tree-src/top.txt"), &EntryOptions.stored()) is Ok, "addFile");
+    let saved = z.saveTo(&Path.from("tree.zip"));
+    expect(saved is Ok, "saveTo");
+    match fs.readFile(&Path.from("tree.zip")) {
+      case let Error(e) { expect(false, "the saved file reads"); }
+      case let Ok(file) {
+        match Archive.open(file.view()) {
+          case let Error(e) { expect(false, why("tree.zip opens", &e).view()); }
+          case let Ok(ar) {
+            expectUInt(u64.from(ar.count()), 7u64, "addTree: folders and files, then the extra");
+            expectStr(ar.entry(0usize).name.view(), "pack/empty/", "addTree: name order, folders first by name");
+            expectStr(ar.entry(1usize).name.view(), "pack/sub/", "addTree: sub");
+            expectStr(ar.entry(2usize).name.view(), "pack/sub/deeper/", "addTree: sub/deeper");
+            expectStr(ar.entry(3usize).name.view(), "pack/sub/deeper/low.bin", "addTree: low.bin");
+            expectStr(ar.entry(4usize).name.view(), "pack/sub/mid.txt", "addTree: mid.txt");
+            expectStr(ar.entry(5usize).name.view(), "pack/top.txt", "addTree: top.txt");
+            expectStr(ar.entry(6usize).name.view(), "extra.txt", "addFile: the extra");
+            readBack(&ar, file.view(), "pack/top.txt", "top file\n", "addTree: top.txt data");
+            readBack(&ar, file.view(), "pack/sub/mid.txt", texty(20000usize).view(), "addTree: mid.txt data");
+            readBack(&ar, file.view(), "pack/sub/deeper/low.bin", noise(5000usize, 3u64).view(), "addTree: low.bin data");
+            expect(ar.entry(5usize).modifiedExact, "addTree: the files' own times");
+          }
+        }
+      }
+    }
+    fs.removeAll(&root);
+  }
+
+  done()
+}
+
+fn get16(b: &Array[u8], at: usize) u32 { u32.from(b[at]) | (u32.from(b[at + 1usize]) << 8u32) }
