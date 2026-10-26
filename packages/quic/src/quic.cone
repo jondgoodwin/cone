@@ -41,7 +41,9 @@
 //   c.openBidi()  c.openUni()  c.write(stream, buf)  c.writeBytes(stream, bytes)  (STREAMS)
 //   c.finish(stream)  c.reset(stream, code)  c.stopSending(stream, code)
 //   c.release(stream, n)  c.unreleased(stream)  c.queued(stream)  c.openStreams()  (CREDIT)
+//   c.hasStream(stream)
 //   c.close(code)  c.isClosed()                                              (CLOSING)
+//   c.localIds(out)  c.localIdsEpoch()  localIdLen                           (ROUTING)
 //   c.wantsVerify()  c.verifyOp()  c.verifyDone(completion)  c.verifyNow()   (CERTIFICATES)
 //   Event: Nothing HandshakeDone VerifyNeeded PeerStream Data Reset          (EVENTS)
 //     WriteStopped MoreStreams Closed
@@ -190,6 +192,16 @@
 // MSVC 19.44 or later, WINDOWS AND LINUX below). 1.24.0 also adds a
 // recv_stop_sending callback, which would give WriteStopped the peer's code.
 //
+// ROUTING. A server's owner finds the connection a packet is for by its
+// Destination Connection ID (RFC 9000, section 5.2). Every ID this end issues
+// is 'localIdLen' (17) random bytes; 'localIds(out)' gives those ngtcp2 holds
+// now (the first, and those issued since by NEW_CONNECTION_ID and not
+// retired), and 'localIdsEpoch()' moves on each time one is issued or
+// retired, so the owner reads them again only then. A client's Initial
+// packets carry the ID the client chose, which the owner reads from the
+// first packet itself. A client's owner needs none of this: it has a socket
+// of its own.
+//
 // MIGRATION. Connection migration is off: this end announces
 // disable_active_migration, so the peer must not move the connection to
 // another address, and this end never does. The path given when the
@@ -334,6 +346,11 @@ pub struct Addr {
     s
   }
 }
+
+// The length of every connection ID this end issues (see the package's
+// header, ROUTING): a short-header packet's Destination Connection ID is
+// this many bytes after its first
+pub const localIdLen = 17usize;
 
 // ---------------------------------------------------------------------------
 // Diagnostics
