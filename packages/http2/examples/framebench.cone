@@ -1,0 +1,164 @@
+// What the frame layer costs, with no connection and no sockets: a
+// FrameWriter's frames taken as one Chain and read back by a FrameReader,
+// in batches of 64, timed apart. Run it with
+//
+//   congo run --release packages/http2/examples/framebench.cone
+//
+// Three kinds: DATA of 16 KiB (the default SETTINGS_MAX_FRAME_SIZE; the
+// writer moves the buffer in, the reader copies the data out into a buffer
+// of its own), a HEADERS of a 200-byte field block, and PING. A DATA's
+// buffer is filled before the clock starts on its batch.
+
+mod framebench;
+
+import stdio use *;
+import collections use List, String;
+import time use Instant, Duration;
+import iobuf use IoBuf, Chain;
+import http2 use *;
+
+const batch = 64u64;
+
+fn filled(n: usize) IoBuf {
+  var b = IoBuf(n);
+  let s = b.spare();
+  var i = 0usize;
+  while i < n {
+    s[i] = u8.from(i & 0xFFusize);
+    i = i + 1usize;
+  }
+  b.setLen(n);
+  b
+}
+
+fn report(what: &str, n: u64, bytes: u64, w: Duration, r: Duration) {
+  printStr(what);
+  printStr(": write ");
+  printUInt(u64.from(w.nanos()) / n);
+  printStr(" ns, read ");
+  printUInt(u64.from(r.nanos()) / n);
+  printStr(" ns a frame");
+  if bytes > 0u64 {
+    printStr(" (");
+    printUInt(bytes * 1000u64 / u64.from(w.nanos()));
+    printStr(" MB/s written, ");
+    printUInt(bytes * 1000u64 / u64.from(r.nanos()));
+    printStr(" MB/s read)");
+  }
+  printStr("\n");
+}
+
+// Read every frame of a chain; how many, and how many were wrong
+fn readAll(r: &mut FrameReader, input: &mut Chain) u64 {
+  var n = 0u64;
+  while true {
+    match r.next(input) {
+      case is NeedData {break;}
+      case let Got(g) {n = n + 1u64;}
+      case let Failed(f) {
+        printStr("WRONG: ");
+        printStr(f.error.message().view());
+        printStr("\n");
+        break;
+      }
+    }
+  }
+  n
+}
+
+fn data(total: u64) {
+  let cfg = FrameConfig.make();
+  var w = FrameWriter.make(&cfg);
+  var r = FrameReader.server(cfg);
+  var wt = Duration.fromNanos(0i64);
+  var rt = Duration.fromNanos(0i64);
+  var got = 0u64;
+  var done = 0u64;
+  while done < total {
+    var bufs = List[IoBuf].empty();
+    var i = 0u64;
+    while i < batch {
+      bufs.push(filled(16384usize));
+      i = i + 1u64;
+    }
+    let t0 = Instant.now();
+    var drain = bufs.drain();
+    while true {
+      match drain.next() {
+        case let Some(b) {w.data(1u32, b, false);}
+        case is None[IoBuf] {break;}
+      }
+    }
+    var c = w.take();
+    let t1 = Instant.now();
+    got = got + readAll(&mut r, &mut c);
+    let t2 = Instant.now();
+    wt = wt + (t1 - t0);
+    rt = rt + (t2 - t1);
+    done = done + batch;
+  }
+  if got != total {printStr("WRONG: frames lost\n");}
+  report("DATA 16 KiB", total, total * 16384u64, wt, rt);
+}
+
+fn headers(total: u64) {
+  let cfg = FrameConfig.make();
+  var w = FrameWriter.make(&cfg);
+  var r = FrameReader.server(cfg);
+  var block = List[u8].empty();
+  block.resize(200usize, 0x41u8);
+  var wt = Duration.fromNanos(0i64);
+  var rt = Duration.fromNanos(0i64);
+  var got = 0u64;
+  var done = 0u64;
+  while done < total {
+    let t0 = Instant.now();
+    var i = 0u64;
+    while i < batch {
+      w.headers(u32.from(i * 2u64 + 1u64), block.view(), true);
+      i = i + 1u64;
+    }
+    var c = w.take();
+    let t1 = Instant.now();
+    got = got + readAll(&mut r, &mut c);
+    let t2 = Instant.now();
+    wt = wt + (t1 - t0);
+    rt = rt + (t2 - t1);
+    done = done + batch;
+  }
+  if got != total {printStr("WRONG: frames lost\n");}
+  report("HEADERS 200 B", total, 0u64, wt, rt);
+}
+
+fn pings(total: u64) {
+  let cfg = FrameConfig.make();
+  var w = FrameWriter.make(&cfg);
+  var r = FrameReader.server(cfg);
+  var wt = Duration.fromNanos(0i64);
+  var rt = Duration.fromNanos(0i64);
+  var got = 0u64;
+  var done = 0u64;
+  while done < total {
+    let t0 = Instant.now();
+    var i = 0u64;
+    while i < batch {
+      _ = w.ping(done + i, false);
+      i = i + 1u64;
+    }
+    var c = w.take();
+    let t1 = Instant.now();
+    got = got + readAll(&mut r, &mut c);
+    let t2 = Instant.now();
+    wt = wt + (t1 - t0);
+    rt = rt + (t2 - t1);
+    done = done + batch;
+  }
+  if got != total {printStr("WRONG: frames lost\n");}
+  report("PING", total, 0u64, wt, rt);
+}
+
+fn main() {
+  data(64000u64);
+  headers(640000u64);
+  pings(640000u64);
+}
