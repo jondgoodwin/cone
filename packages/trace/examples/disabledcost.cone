@@ -1,0 +1,134 @@
+// What an event of a kind that is off costs: a disabled 'emit' in a hot loop
+// against the same loop without it. The kind is off because its target's level
+// is below its own, with a sink installed (the case a shipped program meets).
+// Each loop adds its counter into a sum the program prints, so neither is
+// folded away; the emit's argument is a call that would show in the sum if it
+// ran. The two loops are run in turn, five rounds of each interleaved, so that
+// whatever else the machine is doing falls on both alike; pin the program to
+// one core to keep it there ('start /affinity 4' on Windows, 'taskset -c 2'
+// on Linux).
+//
+//   congo run --release packages/trace/examples/disabledcost.cone -- [count]
+//
+// Prints each round's picoseconds a pass ('round <r> empty_ps <n> disabled_ps
+// <n>'), the medians, and their ratio in thousandths ('ratio_milli 1000' is
+// the same time).
+
+mod disabledcost;
+
+import stdio use *;
+import trace use Level, Kind1;
+
+let hot: Kind1[u64];
+
+fn @initpure init() {
+  hot = Kind1[u64].make("hot", "bench", Level.Debug, "i");
+}
+
+struct Nowhere is trace.Sink {
+  pub n: u64;
+  pub fn enabled(self: &, k: &trace.Info) bool {true}
+  pub fn record(self: &, e: &trace.Event) {}
+}
+
+var calls = 0u64;
+
+// The argument: counts if it is ever evaluated
+fn costly(i: u64) u64 {
+  calls = calls + 1u64;
+  i * 3u64
+}
+
+fn digits(p: *u8) u64 {
+  var n = 0u64;
+  var q = p;
+  while *q >= 48u8 && *q <= 57u8 {
+    n = n * 10u64 + u64.from(*q - 48u8);
+    q = q + 1usize;
+  }
+  n
+}
+
+fn empty(n: u64) u64 {
+  var sum = 0u64;
+  var i = 0u64;
+  while i < n {
+    sum = sum + (i ^ (sum >> 3u64));
+    i = i + 1u64;
+  }
+  sum
+}
+
+fn disabled(n: u64) u64 {
+  var sum = 0u64;
+  var i = 0u64;
+  while i < n {
+    sum = sum + (i ^ (sum >> 3u64));
+    hot.emit(costly(i));
+    i = i + 1u64;
+  }
+  sum
+}
+
+// Picoseconds a pass of one round of either loop
+fn round(n: u64, withEmit: bool, sum: &mut u64) u64 {
+  let t0 = trace.ticks();
+  let s = if withEmit {disabled(n)} else {empty(n)};
+  let t1 = trace.ticks();
+  *sum = *sum + s;
+  (t1 - t0) * 1000000000000u64 / trace.clockFrequency() / n
+}
+
+// The median of five
+fn median(a: &mut Array[u64, 5]) u64 {
+  var i = 0usize;
+  while i < 5usize {
+    var j = i + 1usize;
+    while j < 5usize {
+      if a[j] < a[i] {
+        let t = a[i];
+        a[i] = a[j];
+        a[j] = t;
+      }
+      j = j + 1usize;
+    }
+    i = i + 1usize;
+  }
+  a[2]
+}
+
+fn main(argc: i32, argv: **u8) i32 {
+  var n = 200000000u64;
+  if argc > 1i32 {
+    n = digits(*(argv + 1usize));
+  }
+  expectInstalled(trace.install(Uni[Nowhere](0u64)));
+  trace.setLevel("bench", Level.Info);      // below the kind's Debug: off
+  var sum = 0u64;
+  var es = Array[u64, 5]() <- fill 0u64;
+  var ds = Array[u64, 5]() <- fill 0u64;
+  print <- "count ", n, "\n";
+  var r = 0usize;
+  while r < 5usize {
+    es[r] = round(n, false, &mut sum);
+    ds[r] = round(n, true, &mut sum);
+    print <- "round ", r, " empty_ps ", es[r], " disabled_ps ", ds[r], "\n";
+    r = r + 1usize;
+  }
+  let e = median(&mut es);
+  let d = median(&mut ds);
+  print <- "median_empty_ps ", e, "\n";
+  print <- "median_disabled_ps ", d, "\n";
+  print <- "ratio_milli ", d * 1000u64 / e, "\n";
+  print <- "spread_empty_ps ", es[0], "..", es[4], "\n";             // sorted: least..most
+  print <- "spread_disabled_ps ", ds[0], "..", ds[4], "\n";
+  print <- "evaluated ", calls, "\n";
+  print <- "checksum ", sum, "\n";
+  0
+}
+
+fn expectInstalled(ok: bool) {
+  if !ok {
+    panic("disabledcost: the sink was not installed");
+  }
+}
