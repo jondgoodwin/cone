@@ -87,6 +87,10 @@ void iNsTypeAddStatic(INsTypeNode *type, VarDclNode *var) {
 // Find the named node (could be method or field)
 // Return the node, if found or NULL if not found
 INode *iNsTypeFindFnField(INsTypeNode *type, Name *name) {
+    // A member read of an instance decides first which of its members exist,
+    // where their 'where' waited on an argument's layout
+    if (type->tag == StructTag && ((StructNode*)type)->latewhere)
+        genericLateWhereNow((StructNode*)type);
     return namespaceFind(&type->namespace, name);
 }
 

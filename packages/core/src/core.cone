@@ -27,11 +27,191 @@ import libc pub use malloc;
 pub enum Option[T] {
   None;
   Some(T);
+
+  // THE HELPERS. Each takes the whole Option (its receiver names the enum), so it
+  // is called on an Option or on a Some or None alike. Those that take 'self' by
+  // value consume it: what Some holds moves into the answer. The 'is_*' tests are
+  // 'is' ('opt is Some'), and the fallbacks are '||' and '&&'
+  // (WI error-handling, issue 4).
+
+  // What Some holds; a panic at the caller's line on None
+  pub fn unwrap(self: Option[T], file: &Array[u8] = srcFile(), line: u32 = srcLine()) T inline {
+    match self {
+      case let Some(v) { v }
+      case is None { panic("unwrap of None", file, line) }
+    }
+  }
+
+  // What Some holds; a panic with msg at the caller's line on None
+  pub fn expect(self: Option[T], msg: &str, file: &Array[u8] = srcFile(), line: u32 = srcLine()) T inline {
+    match self {
+      case let Some(v) { v }
+      case is None { panic(msg, file, line) }
+    }
+  }
+
+  // Some of what 'f' makes of the value, or None
+  pub fn map[U, F: fn(x: T) U](self: Option[T], f: F) Option[U] inline {
+    match self {
+      case let Some(v) { Some[U](f(v)) }
+      case is None { None[U] }
+    }
+  }
+
+  // What 'f' answers for the value, itself an Option, or None
+  pub fn andThen[U, F: fn(x: T) Option[U]](self: Option[T], f: F) Option[U] inline {
+    match self {
+      case let Some(v) { f(v) }
+      case is None { None[U] }
+    }
+  }
+
+  // Itself when it holds a value 'f' answers true for, else None. 'f' is given a borrow
+  pub fn filter[F: fn(x: &T) bool](self: Option[T], f: F) Option[T] inline {
+    match self {
+      case let Some(v) {
+        let held = v;
+        if f(&held) { Some[T](held) } else { None[T] }
+      }
+      case is None { None[T] }
+    }
+  }
+
+  // A Result: Ok of the value, or Error(e) on None
+  pub fn okOr[E](self: Option[T], e: E) Result[T, E] inline {
+    match self {
+      case let Some(v) { Ok[T, E](v) }
+      case is None { Error[T, E](e) }
+    }
+  }
+
+  // What it held, leaving None in its place
+  pub fn take(self: &mut Option[T]) Option[T] inline {
+    var out: Option[T] = None;
+    out <-> *self;
+    out
+  }
+
+  // What it held, leaving Some(v) in its place
+  pub fn replace(self: &mut Option[T], v: T) Option[T] inline {
+    var out: Option[T] = Some[T](v);
+    out <-> *self;
+    out
+  }
+
+  // A borrowed view: Some of a borrow of the value, or None. The Option is left as it is
+  pub fn asRef(self: &Option[T]) Option[&T] inline {
+    match self {
+      case let Some(v) { Some[&T](v) }
+      case is None { None[&T] }
+    }
+  }
+
+  // A borrowed view that may change the value in place
+  pub fn asMut(self: &mut Option[T]) Option[&mut T] inline {
+    match self {
+      case let Some(v) { Some[&mut T](v) }
+      case is None { None[&mut T] }
+    }
+  }
+
+  // An Option of an Option, one level removed: what the inner one is, or None
+  pub fn flatten[U](self: Option[Option[U]]) Option[U] inline {
+    match self {
+      case let Some(inner) { inner }
+      case is None { None[U] }
+    }
+  }
 }
 
 pub enum Result[T,E] {
   Ok(T);
   Error(E);
+
+  // THE HELPERS, as Option's are: each takes the whole Result, and those that take
+  // 'self' by value consume it
+
+  // What Ok holds; a panic at the caller's line on an Error
+  pub fn unwrap(self: Result[T, E], file: &Array[u8] = srcFile(), line: u32 = srcLine()) T inline {
+    match self {
+      case let Ok(v) { v }
+      case is Error { panic("unwrap of an Error", file, line) }
+    }
+  }
+
+  // What Ok holds; a panic with msg at the caller's line on an Error
+  pub fn expect(self: Result[T, E], msg: &str, file: &Array[u8] = srcFile(), line: u32 = srcLine()) T inline {
+    match self {
+      case let Ok(v) { v }
+      case is Error { panic(msg, file, line) }
+    }
+  }
+
+  // Ok of what 'f' makes of the value; an Error passes through as it is
+  pub fn map[U, F: fn(x: T) U](self: Result[T, E], f: F) Result[U, E] inline {
+    match self {
+      case let Ok(v) { Ok[U, E](f(v)) }
+      case let Error(e) { Error[U, E](e) }
+    }
+  }
+
+  // Error of what 'f' makes of the error; Ok passes through as it is
+  pub fn mapError[D, F: fn(x: E) D](self: Result[T, E], f: F) Result[T, D] inline {
+    match self {
+      case let Ok(v) { Ok[T, D](v) }
+      case let Error(e) { Error[T, D](f(e)) }
+    }
+  }
+
+  // What 'f' answers for the value, itself a Result; an Error passes through
+  pub fn andThen[U, F: fn(x: T) Result[U, E]](self: Result[T, E], f: F) Result[U, E] inline {
+    match self {
+      case let Ok(v) { f(v) }
+      case let Error(e) { Error[U, E](e) }
+    }
+  }
+
+  // An Option of the value: Some on Ok, None on an Error (the error is dropped)
+  pub fn ok(self: Result[T, E]) Option[T] inline {
+    match self {
+      case let Ok(v) { Some[T](v) }
+      case is Error { None[T] }
+    }
+  }
+
+  // An Option of the error: Some on an Error, None on Ok (the value is dropped)
+  pub fn error(self: Result[T, E]) Option[E] inline {
+    match self {
+      case is Ok { None[E] }
+      case let Error(e) { Some[E](e) }
+    }
+  }
+
+  // A borrowed view: a Result of a borrow of the value or of the error. The Result
+  // is left as it is
+  pub fn asRef(self: &Result[T, E]) Result[&T, &E] inline {
+    match self {
+      case let Ok(v) { Ok[&T, &E](v) }
+      case let Error(e) { Error[&T, &E](e) }
+    }
+  }
+
+  // A borrowed view that may change the value or the error in place
+  pub fn asMut(self: &mut Result[T, E]) Result[&mut T, &mut E] inline {
+    match self {
+      case let Ok(v) { Ok[&mut T, &mut E](v) }
+      case let Error(e) { Error[&mut T, &mut E](e) }
+    }
+  }
+
+  // A Result of a Result with the same error, one level removed: what the inner one
+  // is, or the outer Error
+  pub fn flatten[U](self: Result[Result[U, E], E]) Result[U, E] inline {
+    match self {
+      case let Ok(inner) { inner }
+      case let Error(e) { Error[U, E](e) }
+    }
+  }
 }
 
 // A variant is a name of its enum, so these two statements are what make Some,

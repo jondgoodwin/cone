@@ -329,7 +329,7 @@ pub struct Loop {
   // The address a socket is bound to
   pub fn localAddr(self: &, h: Handle) Result[SocketAddr, IoError] {
     let i = self.handleIndex(h);
-    if i == noEntry {return Error[SocketAddr, IoError](IoError(errorInvalidHandle));}
+    if i == noEntry {return Error[SocketAddr, IoError](IoError(noSuchHandle()));}
     let e = handles.at(i) as &HEntry;
     var a = SocketAddr(Array[u8, 28]() <- fill 0u8, 28i32);
     var len = 28i32;
@@ -343,7 +343,7 @@ pub struct Loop {
   // The address of a connected socket's peer
   pub fn peerAddr(self: &, h: Handle) Result[SocketAddr, IoError] {
     let raw = self.rawOf(h, hSocket);
-    if raw == invalidHandle {return Error[SocketAddr, IoError](IoError(errorInvalidHandle));}
+    if raw == invalidHandle {return Error[SocketAddr, IoError](IoError(noSuchHandle()));}
     var a = SocketAddr(Array[u8, 28]() <- fill 0u8, 28i32);
     var len = 28i32;
     if getpeername(raw, &mut a as *u8, &mut len) != 0i32 {
@@ -354,10 +354,11 @@ pub struct Loop {
   }
 
   // TCP keepalive on a connected socket (KeepAlive says what), set now: 0,
-  // or the Windows error number of the option the OS refused
+  // or the system's error number of the option the OS refused (IoError(n)
+  // reads it); ERROR_INVALID_HANDLE (EBADF) when h is no connected socket
   pub fn setKeepAlive(self: &mut, h: Handle, ka: KeepAlive) u32 {
     let raw = self.rawOf(h, hSocket);
-    if raw == invalidHandle {return errorInvalidHandle;}
+    if raw == invalidHandle {return noSuchHandle();}
     let on = ka.probes > 0u32;
     var flag = if on {1i32} else {0i32};
     let sol = if isWindows() {solSocket} else {solSocketLx};
@@ -384,7 +385,7 @@ pub struct Loop {
   // when it is off (Windows reads userTimeout as 0: it has no such option)
   pub fn keepAlive(self: &, h: Handle) Result[KeepAlive, IoError] {
     let raw = self.rawOf(h, hSocket);
-    if raw == invalidHandle {return Error[KeepAlive, IoError](IoError(errorInvalidHandle));}
+    if raw == invalidHandle {return Error[KeepAlive, IoError](IoError(noSuchHandle()));}
     let sol = if isWindows() {solSocket} else {solSocketLx};
     let opt = if isWindows() {soKeepAlive} else {soKeepAliveLx};
     var flag = 0i32;
@@ -437,7 +438,7 @@ pub struct Loop {
     } else {
       // Not epoll's: a file is read and written by the pool's threads
       let p = cstrCopy(text);
-      if p as usize == 0usize {return Error[Handle, IoError](IoError(errorNotEnoughMemory));}
+      if p as usize == 0usize {return Error[Handle, IoError](IoError(noMemory()));}
       var flags = oRdonly;
       match access {
         case is Access.Read {}
@@ -446,7 +447,7 @@ pub struct Loop {
       }
       let fd = sysOpen(p, flags | epollCloexec, 438u32);      // 0666, less the umask
       libc.free(p);
-      if fd < 0i32 {return Error[Handle, IoError](IoError(errnoCode(lastErrno())));}
+      if fd < 0i32 {return Error[Handle, IoError](IoError(u32.from(lastErrno())));}
       Ok[Handle, IoError](self.register(usize.from(fd), hFile, 0u16))
     }
   }
@@ -490,11 +491,12 @@ pub struct Loop {
 
   // A connected socket's sending side is finished (a half-close: TCP's FIN
   // goes after what was sent): its peer's receive ends, Done(0), while this
-  // side can still receive. 0, or Winsock's error; a send submitted after
-  // it fails. ERROR_INVALID_HANDLE when h is no connected socket
+  // side can still receive. 0, or the system's error number (IoError(n)
+  // reads it); a send submitted after it fails. ERROR_INVALID_HANDLE (Linux's
+  // EBADF: InvalidInput) when h is no connected socket
   pub fn shutdown(self: &mut, h: Handle) u32 {
     let raw = self.rawOf(h, hSocket);
-    if raw == invalidHandle {return errorInvalidHandle;}
+    if raw == invalidHandle {return noSuchHandle();}
     if iocore.shutdown(raw, sdSend) != 0i32 {return wsaError();}
     0u32
   }
@@ -1287,7 +1289,7 @@ pub struct Loop {
     if k == diag.kindReadAt {return self.startFile(p, r.handle, r.at, false);}
     if k == diag.kindWriteAt {return self.startFile(p, r.handle, r.at, true);}
     if k == diag.kindCall {return self.startCall(p);}
-    errorInvalidParameter
+    badParameter()
   }
 
   // Each starts its kind of operation in record p: 0, the kernel holds it
@@ -1543,11 +1545,11 @@ pub struct Loop {
   fn startCall(self: &mut, p: *OpCore) u32 {
     let r = p as &mut OpCore;
     let l = laneAt(r.lane.id);
-    if l as usize == 0usize {return errorInvalidParameter;}
+    if l as usize == 0usize {return badParameter();}
     sendAway(p, Waker(port), jobQueued);
     if !enqueueJob(p, l) {
       bringHome(p);
-      return errorBusy;
+      return queueFull();
     }
     stats.jobs = stats.jobs + 1u64;
     0u32
@@ -1794,7 +1796,7 @@ pub struct Loop {
       r.newHandle = self.register(s, hSocket, r.family);
       0u32
     } else {
-      errorInvalidParameter
+      badParameter()
     }
   }
 

@@ -16,7 +16,8 @@ import testing use *;
 import collections use List, String;
 import time use Instant, Duration;
 import iobuf use *;
-import iocore use Loop, SocketAddr, Completion, forever;
+import iocore use Loop, SocketAddr, Completion, IoError, forever;
+import ioerror use IoErrorKind;
 import http use *;
 import httpconn;
 import httpclient use *;
@@ -204,6 +205,17 @@ fn note(cl: &mut Client, s: &mut Seen, e: &mut Event) {
       s.stage = e.failure.stage;
     }
   }
+}
+
+// The decimal number in text from byte 'at' on (0 if none)
+fn numberAt(text: &str, at: usize) u32 {
+  var v = 0u32;
+  var k = at;
+  while k < text.len() && text[k] >= '0' && text[k] <= '9' {
+    v = v * 10u32 + u32.from(text[k] - '0');
+    k = k + 1usize;
+  }
+  v
 }
 
 // Drive until fetch id has its final answer, its events noted in s
@@ -439,9 +451,12 @@ fn main() i32 {
     var fl = List[String].empty();
     expectUInt(drain(&mut cl, &mut sv, &mut lp, 3u64, &mut fl), 0u64, "three to a port no one listens on: none Done");
     expectUInt(u64.from(fl.len()), 3u64, "...all three Failed");
-    // (Windows' own words after the number are its language's)
-    expect(fl[0usize].startsWith("connect: closed: the connection could not be made (Windows error 1225: "),
-      "...connecting, refused: ERROR_CONNECTION_REFUSED");
+    // The system's own number in the message (1225 on Windows, 111 on Linux)
+    // is a refused connection's: its kind, the same on both
+    let refusedAt = "connect: closed: the connection could not be made (Windows error ";
+    expect(fl[0usize].startsWith(refusedAt)
+      && IoError(numberAt(fl[0usize].view(), refusedAt.len())).kind() == IoErrorKind.ConnectionRefused,
+      "...connecting, refused: ConnectionRefused");
     expectUInt(cl.stats().connects, 3u64, "three connections tried, one for each");
     finish(&mut cl, &mut sv, &mut lp);
   }

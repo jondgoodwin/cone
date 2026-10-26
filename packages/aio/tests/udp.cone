@@ -6,10 +6,11 @@
 //    a Datagram holding those bytes and the sender, a's address.
 // 2. An empty datagram is a datagram, not an end: Done, length 0, the sender named.
 // 3. Truncation: a datagram of 40 bytes to a receive whose buffer has 6 bytes of
-//    room fails, an Error of kind Truncated (aio.isTruncated, code 10040), and
+//    room fails, an Error of kind Truncated (aio.isTruncated; its code the
+//    system's number for a datagram too long, WSAEMSGSIZE or EMSGSIZE), and
 //    the buffer goes home to its pool: the pool's lent count is 0 at the end.
 //    The next datagram is whole.
-// 4. A receive with no room fails (ERROR_INSUFFICIENT_BUFFER, 122), and a
+// 4. A receive with no room fails (InvalidInput), and a
 //    receive with a deadline already past answers TimedOut.
 //
 // What each 'await' found is kept in Got, checked by main once Peer is done.
@@ -19,7 +20,8 @@ mod udp;
 import testing use *;
 import sync use Oneshot, OneshotSender, OneshotReceiver;
 import iobuf use IoBuf, stats;
-import iocore use SocketAddr, IoError, IoErrorKind;
+import iocore use SocketAddr, IoError;
+import ioerror use IoErrorKind;
 import time use Instant;
 import actors;
 import aio use UdpSocket, IoLimits;
@@ -137,7 +139,7 @@ actor Peer {
     match cut {
       case let Error(e) {
         if aio.isTruncated(e) && e.kind() == IoErrorKind.Truncated {got.cut.store(1u64);}
-        got.cutCode.store(u64.from(e.code));
+        if e.code == IoError.truncated().code {got.cutCode.store(1u64);}
         if !aio.isCancelled(e) && !aio.isTimedOut(e) {got.osKind.store(1u64);}
       }
       else {}
@@ -152,7 +154,7 @@ actor Peer {
     // 4. No room, and a deadline already past
     let none = await b.recvFrom(IoBuf.empty());
     match none {
-      case let Error(e) {got.noRoom.store(u64.from(e.code));}
+      case let Error(e) {if e.kind() == IoErrorKind.InvalidInput {got.noRoom.store(1u64);}}
       else {}
     }
     let timed = await b.recvFromIn(IoBuf(4096usize), IoLimits.until(Instant.fromNanos(1i64)));
@@ -186,10 +188,10 @@ fn main() i32 {
   expectUInt(got.from.load(), 1u64, "and the sender's address, a's port");
   expectUInt(got.emptyOk.load(), 1u64, "a datagram of no bytes is Done, length 0, from a: not an end");
   expectUInt(got.cut.load(), 1u64, "a datagram longer than the room is the error Truncated");
-  expectUInt(got.cutCode.load(), 10040u64, "whose code is WSAEMSGSIZE");
+  expectUInt(got.cutCode.load(), 1u64, "whose code is the system's for a datagram too long");
   expectUInt(got.osKind.load(), 1u64, "and not Cancelled or TimedOut");
   expectUInt(got.whole.load(), 12u64, "the next datagram is whole");
-  expectUInt(got.noRoom.load(), 122u64, "a receive with no room fails: ERROR_INSUFFICIENT_BUFFER");
+  expectUInt(got.noRoom.load(), 1u64, "a receive with no room fails: InvalidInput");
   expectUInt(got.late.load(), 1u64, "a receive whose deadline has passed answers TimedOut");
   expectUInt(stats().lent, 0u64, "every buffer came home to its pool, the truncated receive's among them");
   done()

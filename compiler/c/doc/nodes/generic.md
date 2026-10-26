@@ -856,7 +856,12 @@ one is said so and its signature is not spelled, since it is written in type
 parameters that are not types (spelling it was `ErrorUnreachable`, "a request for
 the name of a node that has none"). The clause is spelled with the instance's
 arguments (`Stack[i64]`), not as written. A non-generic trait's message is
-unchanged. A failed
+unchanged. A clause naming an instance of a generic enum (`where U is Opt[T]`)
+is named the same way and explained no further: an enum is closed, so a type is
+it only by being it or one of its variants, never by its methods or fields. Its
+methods are no requirements (spelling a whole-enum method, one whose receiver
+names the enum, asks a name of a node that has none, `ErrorUnreachable`), and
+its tag is no field a type could declare (`generic_typecheck_where_enum_instance`). A failed
 instance is never memoized, so each use asking for it is refused where it is.
 **An argument that is `errorType` is refused without a report.** A type
 parameter inferred from a value whose initializer was already refused
@@ -888,16 +893,36 @@ array or an instance of a generic holding one in its elements or arguments),
 when whether its
 values move is not yet known: `struct Node { kids: List[Node]; }` makes
 `List[Node]` inside Node's own layout, and `T is Copy` would be answered for a
-Node that has not yet found it moves. Then `genericAbsentMembers` does not
-decide the members with a clause (`late`, handed on as `CloneState.late`):
-`cloneStructNode` copies them and reports each beside its copy
-(`CloneState.latepairs`), and `genericClone` queues `genericLateWhere` as a
-check that reads layouts (`structDeferCheck`), which runs once no layout is in
-flight and before any member is checked. It lays out an argument no layout has
-reached, evaluates the clauses, and takes the members that fail out of the
-instance (`structRetireMember`: its member list, its namespace, its overload
-set). Nothing else reads those members in between, since members wait for the
-layouts to finish. The `is` entries are not deferred: they are the layout. A call on the instance
+Node that has not yet found it moves. Then `genericAbsentMembers` decides a
+member's clauses only as far as no type is asked what it is
+(`genericMemberWhereNow`): a clause naming a type, `K is String` or `K is
+Uni[str]`, reads no layout and is answered at once, so the member is left out or
+kept as at any other time. A clause naming a trait or a signature waits
+(`WhereLate`), unless the rest of its `||` or `&&` decides it. A member with one
+that waits is not decided (`late`, handed on as `CloneState.late`):
+`cloneStructNode` copies it and reports it beside its copy
+(`CloneState.latepairs`), and `genericClone` points the instance at what waits
+(`StructNode.latewhere`) and queues `genericLateWhere` as a check that reads
+layouts (`structDeferCheck`), which runs once no layout is in flight and before
+any member is checked. It lays out an argument no layout has reached, evaluates
+the clauses, and takes the members that fail out of the instance
+(`structRetireMember`: its member list, its namespace, its overload set).
+
+**Members are read before the queue gets there.** A body can be checked inside
+a layout in flight: deciding a bound a type fits structurally checks its methods
+(`genericDemandMatch`), and that happens wherever the instance is made — a
+field's type, a signature, a global's declared type, each held as a layout in
+flight. `g: Host[Svc]` with `S: Hosted` checks Svc's `turn` there, and a call
+in it on `Cells[Req]`, made while Req was not yet laid out, would select a
+member `V is Copy` leaves out, and check its body at Req
+(`generic_global_where_member`, `generic_field_where_member`). So a read of an
+instance's members decides them first (`genericLateWhereNow`, from
+`iNsTypeFindFnField`, `structMatches` and `genericTypeIsHow`): it lays out each
+argument no layout has reached, as the queue would, and decides them when no
+argument is still unsettled, the instance no longer pointing at what waited, so
+the queued check finds nothing to do. An argument in flight cannot be answered
+yet, and an instance's own members are not changed while it is laid out; then
+they stay undecided until the queue. The `is` entries are not deferred: they are the layout. A call on the instance
 that finds nothing asks `genericReportAbsent`, from `fnCallLowerMethod`, which
 finds the template through the instance's memo entry and reports
 `ErrorWhereAbsent` naming the unmet condition, as a requirement names it. A

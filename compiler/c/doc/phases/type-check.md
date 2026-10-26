@@ -354,9 +354,14 @@ is written, `genericMemoize` lays the arguments out first (`structTypeSettle`),
 target mode suspended (`genericConditioned`). An argument that is in flight
 cannot be laid out first, and a type that holds an instance of a generic by value
 is that argument when the instance is made from its own layout, as in `struct
-Node { kids List[Node]; }`, so a **member's** clause is not decided then: the
-member is kept, and `genericLateWhere` decides it as a check that reads layouts,
-once none is in flight (nodes/generic.md). An `is` entry's condition is part of
+Node { kids List[Node]; }`, so a **member's** clause that asks what an argument
+is — a trait, a signature — is not decided then: the member is kept, and
+`genericLateWhere` decides it as a check that reads layouts, once none is in
+flight, or sooner, when something reads the instance's members
+(`genericLateWhereNow`), since a body can be checked inside a layout (a type
+fitting a bound structurally has its methods checked there). A clause naming a
+type, `K is String`, reads no layout and is decided at once (nodes/generic.md).
+An `is` entry's condition is part of
 the layout and is decided at once. A `Sendable` clause standing
 alone is the exception: whether a type may cross threads is answered
 provisionally of one not yet laid out, noted, and judged again once every type
@@ -876,6 +881,18 @@ Kept so that reopening one is a decision rather than a rediscovery.
   target may not be laid out yet: a check reading its fields, its flags, whether
   it holds a borrow or its vtable goes through `structDeferCheck`, as each of
   section 4's table does, or reads a half-made answer that nothing reports.
+- **A body can be checked inside a layout in flight.** Layout before members
+  keeps the members queue from running while one is, but demand does not wait:
+  deciding a bound a type fits structurally checks the type's methods, bodies
+  included (`genericDemandMatch`), wherever the instance is made — a field's
+  type, a signature, a global's held declared type. So such a body can meet
+  what the queue has not reached yet. An instance's members whose `where`
+  waited are decided when something reads them (`genericLateWhereNow`), unless
+  an argument is itself in flight, when they stay undecided until the queue
+  (`generic_global_where_member`). A global read in a method its own declared
+  type's bound checks still has the generic call it was written as, since the
+  instance is stored only once its check returns: `g.at` in Svc's method, with
+  `g: Host[Svc]` and `S: Hosted`, is `ErrorNoMeth`.
 - **One declaration's error can silence another's body.** `fnDclTypeCheck` skips a
   body when the error count moved during its signature's check, and demand can
   run other declarations inside that check — a signature naming an enum lays the
@@ -929,7 +946,8 @@ Kept so that reopening one is a decision rather than a rediscovery.
 | `ir/stmt/intrinsic.c` | `invocationIsCore` | whether a type is core's `Invocation`, known by its name and its package |
 | `ir/stmt/intrinsic.c` | `intrinsicDclTypeCheck` | step 4 of section 10.3: a declared intrinsic's type argument must have a size |
 | `ir/stmt/vardcl.c` | `varDclTypeCheck` | section 10.4 |
-| `ir/stmt/module.c` | `modTypeCheck` | imports first, then the module-trait check, then declarations — section 10.5 — and last `modLifecycle` |
+| `ir/stmt/module.c` | `modTypeCheck` | imports first, then the module-trait check, then declarations — section 10.5 — then, for a `main` returning a Result, the function the entry calls in its stead (`propagateMainResult`, `ir/exp/propagate.h`), and last `modLifecycle` |
+| `ir/exp/propagate.c` | `propagateLower` | `x?`: the block the parser made, finished once `x` is checked — the test, the binding of what `Ok` or `Some` holds, and the early return of the failure, its error converted to the function's ([Block](../nodes/block.md), "Type check") |
 | `ir/stmt/module.c` | `modLifecycle`, `modGiveDrop` | once every global's type is settled: the module's `init` and `final` checked as `fn @initpure init()` and `fn final()` (`ErrorModLifecycle`), each global without a value reported where the module has no `init` (`ErrorGlobalUninit`), and the module given a pre-lowered `drop` — its `final`, then each finalizing global's drop — where a global needs it; a thread-local global is never in it, and one whose type needs finalizing is `ErrorThreadLocalFinal`. [module](../nodes/module.md), "Init and final" |
 | `ir/stmt/modtrait.c` | `modTraitCheck`, `modTraitTypeCheck` | what a conforming module has for each member of its module trait against the member's shape — one candidate of exactly the signature, or a global of the type and permission — each difference `ErrorModTraitMismatch` at the `is`; the trait's own members' signatures and globals, never a default's body, which each copy checks. [module](../nodes/module.md), "Module traits" |
 | `ir/meta/generic.c` | `genericInstantiate`, `genericInstantiateEnter` | instantiation, memoization, and the depth bound |

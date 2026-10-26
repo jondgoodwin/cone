@@ -7,7 +7,7 @@
 //     written within a minute of now;
 //   the folder it is in -- Done, a directory;
 //   a file written to again, longer (40 bytes) -- the size follows;
-//   a path that is not there -- ERROR_FILE_NOT_FOUND (2), a system failure;
+//   a path that is not there -- NotFound, a system failure;
 //   a path of 5,000 characters -- a failure of the system, not a panic, and not
 //     a truncated path read as another (the query holds the whole path);
 //   a group cancelled already -- Cancelled at once; a deadline already past --
@@ -25,6 +25,7 @@ import time use Instant, Duration, Timestamp;
 import sync use Channel, Sender, Receiver;
 import iobuf use IoBuf;
 import iocore use IoError, CancelGroup, Access, FileStat;
+import ioerror use IoErrorKind;
 import actors;
 import aio use IoLimits, File;
 
@@ -68,9 +69,10 @@ fn endedBy(r: &Result[FileStat, IoError]) u64 {
   }
 }
 
-fn codeOf(r: &Result[FileStat, IoError]) u64 {
+// 1 for a failure of the kind NotFound, else 0
+fn notFoundOf(r: &Result[FileStat, IoError]) u64 {
   match r {
-    case let &Error(e) {u64.from(e.code)}
+    case let &Error(e) {if e.kind() == IoErrorKind.NotFound {1u64} else {0u64}}
     else {0u64}
   }
 }
@@ -120,7 +122,7 @@ actor Statter {
     {
       let r = await aio.stat(&Path.from("aiostat-missing.tmp"));
       out.send(endedBy(&r));
-      out.send(codeOf(&r));
+      out.send(notFoundOf(&r));
     }
     {
       var long = String.empty();
@@ -165,7 +167,7 @@ fn main() i32 {
   expectUInt(take(&mut rx), 40u64, "...its size follows");
 
   expectUInt(take(&mut rx), 4u64, "a path that is not there: a failure of the system");
-  expectUInt(take(&mut rx), 2u64, "...ERROR_FILE_NOT_FOUND");
+  expectUInt(take(&mut rx), 1u64, "...NotFound");
 
   expectUInt(take(&mut rx), 4u64, "a path of 5,000 characters: a failure of the system");
   expectUInt(take(&mut rx), 2u64, "a group cancelled already: Cancelled");

@@ -1,0 +1,32 @@
+// Each system's own error numbers sorted into the kinds that are the same on
+// every system: the same failure, a different number on each, one kind.
+// iocore's tests/errors.cone checks the table through IoError, number by
+// number; this checks the package by itself.
+
+mod kinds;
+
+import testing use *;
+import ioerror use *;
+
+// The system's number: Windows' or Linux's
+fn n(win: u32, lx: u32) u32 {if isWindows() {win} else {lx}}
+
+fn main() i32 {
+  expect(osKind(n(2u32, 2u32)) == IoErrorKind.NotFound, "not found");
+  expect(osKind(n(1225u32, 111u32)) == IoErrorKind.ConnectionRefused, "a refused connection");
+  expect(osKind(n(64u32, 104u32)) == IoErrorKind.ConnectionReset, "a reset");
+  expect(osKind(n(995u32, 125u32)) == IoErrorKind.Cancelled, "an aborted operation is Cancelled");
+  expect(osKind(n(1460u32, 110u32)) == IoErrorKind.TimedOut, "the system's timeout");
+  expect(osKind(n(6u32, 9u32)) == IoErrorKind.InvalidInput, "a handle that names nothing");
+  expect(osKind(n(31u32, 71u32)) == IoErrorKind.Other, "a number no kind names");
+  expect(osKind(n(11001u32, gaiNumber(0i32 - 2i32))) == IoErrorKind.NotFound, "a host name with no address");
+  expectUInt(u64.from(gaiNumber(0i32 - 2i32)), 0xFFFFFFFEu64, "EAI_NONAME kept as a u32");
+  expect(gaiNumber(0i32 - 3i32) >= gaiFloor, "an EAI_ number is from gaiFloor up");
+  expectInt(i64.from(gaiOf(gaiNumber(0i32 - 5i32))), -5i64, "and comes back");
+  expect(errnoKind(2i32) == IoErrorKind.NotFound, "errno ENOENT");
+  expect(errnoKind(17i32) == IoErrorKind.AlreadyExists, "errno EEXIST");
+  expect(errnoKind(if isWindows() {41i32} else {39i32}) == IoErrorKind.DirectoryNotEmpty, "errno ENOTEMPTY, the C library's own");
+  expect(errorKindName(IoErrorKind.AddressInUse) == "address in use", "a kind's words");
+  expect(errorKindName(osKind(n(31u32, 71u32))) == "other", "Other's words");
+  done()
+}

@@ -1,0 +1,32 @@
+// CONE_TRACE with no bare level: it wins for the one target it names, set by
+// the program after the install as before it; for every other target the
+// program's default applies, and the default is Warn until the program sets
+// one.
+
+mod envorder;
+
+import testing use *;
+import env;
+import trace use Level;
+
+struct Quiet is trace.Sink {
+  pub n: u64;
+  pub fn enabled(self: &, k: &trace.Info) bool {true}
+  pub fn record(self: &, e: &trace.Event) {}
+}
+
+fn main() i32 {
+  env.set("CONE_TRACE", "h3=trace");
+  expect(trace.install(Uni[Quiet](0u64)), "the sink is installed");
+  expect(trace.levelOf("h3") == Level.Trace, "CONE_TRACE names h3");
+  expect(trace.levelOf("quic") == Level.Warn, "no default from anyone: Warn");
+
+  trace.setLevel("h3", Level.Error);
+  trace.setLevel("quic", Level.Debug);
+  expect(trace.levelOf("h3") == Level.Trace, "the program's level after install does not undo CONE_TRACE's");
+  expect(trace.levelOf("quic") == Level.Debug, "it sets a target CONE_TRACE does not name");
+
+  trace.setDefaultLevel(Level.Info);
+  expect(trace.levelOf("tls") == Level.Info, "CONE_TRACE set no default: the program's holds");
+  done()
+}
