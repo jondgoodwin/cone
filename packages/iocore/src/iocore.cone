@@ -84,10 +84,11 @@
 //     c.outcome() c.isDone() c.count() c.bufLen() c.chainBack() c.record()   (ANSWERS)
 //   Outcome.Done(n)  Outcome.Failed(code)  Outcome.Cancelled  Outcome.TimedOut
 //   SocketAddr.v4(a, b, c, d, port)  .localhost(port)  .v6(bytes, port)  .v6Localhost(port)
-//   IoError: e.code, e.message(), e.kind() (IoErrorKind: Os, Cancelled, TimedOut, Truncated),
-//     e.isCancelled() e.isTimedOut() e.isTruncated()
-//     IoError.cancelled()  IoError.timedOut()  IoError.truncated()
-//   systemCode(e)                       an errno as an IoError's number (Windows': itself)
+//   IoError: e.kind() (the ioerror package's IoErrorKind: NotFound, ConnectionRefused, ...,
+//     Cancelled, TimedOut, Truncated, Other), e.code (the system's own number), e.message(),
+//     e.isCancelled() e.isTimedOut() e.isTruncated()                       (ERRORS)
+//     IoError(code)  IoError.cancelled()  IoError.timedOut()  IoError.truncated()  IoError.aborted()
+//   c.error()  answerError(kind, status, code)   an answer that is not Done, as an IoError
 //
 // THE LOOP. A Loop is driven by one thread: that thread submits to it and
 // polls it. It is a resource: when it dies it cancels every operation still
@@ -126,7 +127,8 @@
 //   ('setKeepAlive', a KeepAlive: httpconn sets its Config's).
 // - Recv(sock, buf): up to buf's room; Done(n), the n bytes added to its
 //   length; Done(0) is the end of the stream. A buffer with no room is
-//   refused (Failed, ERROR_INSUFFICIENT_BUFFER), since a zero-byte receive
+//   refused (Failed, ERROR_INSUFFICIENT_BUFFER; Linux's EINVAL: the kind
+//   InvalidInput), since a zero-byte receive
 //   means something else:
 // - RecvReady(sock): a zero-byte receive, holding no buffer at all: Done(0)
 //   once data has arrived (or the stream has ended), for an idle connection,
@@ -152,20 +154,21 @@
 //
 // DATAGRAMS. 'lp.bindUdp(addr)' is a UDP socket bound to addr (port 0 has the
 // OS choose one; 'localAddr' tells it), a Handle of its own kind: the stream
-// operations fail on it with ERROR_INVALID_HANDLE, as the datagram ones do on a
-// TCP socket. It is not connected; each datagram names its other end.
+// operations fail on it as on a handle that names nothing (ERROR_INVALID_HANDLE,
+// EBADF: InvalidInput), as the datagram ones do on a TCP socket. It is not connected; each datagram names its other end.
 // - RecvFrom(sock, buf): ONE datagram, into buf's room (a buffer with no room
 //   is refused, as Recv's is); Done(n), the n bytes added to its length, and
 //   the sender in the answer's 'c.peer', a SocketAddr. A datagram of no bytes
 //   is Done(0): unlike a stream's, it is not an end. A datagram longer than
-//   the room is cut: Failed with WSAEMSGSIZE (10040), the same number on both
-//   systems, the room filled with its first bytes (the length says so), the
+//   the room is cut: Failed with the system's number for it (WSAEMSGSIZE,
+//   10040; Linux's EMSGSIZE, 90), which 'c.error()' reads as the kind
+//   Truncated, the room filled with its first bytes (the length says so), the
 //   sender named, the rest of that datagram lost; the next one is whole. An
 //   operation that took no datagram names no sender (an address of size 0, its
 //   port 0).
 // - SendTo(sock, addr, buf): all of buf as ONE datagram to addr; Done(n), n its
 //   bytes; 'c.peer' is addr. A datagram too large for the network is Failed
-//   with WSAEMSGSIZE too. UDP promises nothing about delivery: Done says the
+//   with the same number, of the kind Other (nothing was cut on receipt). UDP promises nothing about delivery: Done says the
 //   system took the datagram.
 // - Deadlines, cancel groups, Requests and handle close work as for TCP, the
 //   answer carrying the buffer back; a receive no datagram has met is the
@@ -221,10 +224,10 @@
 //
 // ANSWERS. Every operation gets exactly one terminal answer, a Completion
 // (I1): its OpId, its token, its kind (diag's kind numbers), its outcome --
-// Done with a count, Failed with Windows' error number (on Linux, the one
-// that names the same condition as the errno; see linux.cone), Cancelled, or
-// TimedOut -- the buffer back ('c.buf', IoBuf.empty() when it had none; a
-// SendChain's chain in 'c.bufs', None for every other operation), the
+// Done with a count, Failed with the system's own error number (Windows'
+// on Windows, the errno on Linux; 'c.error()' is it as an IoError, ERRORS),
+// Cancelled, or TimedOut -- the buffer back ('c.buf', IoBuf.empty() when it
+// had none; a SendChain's chain in 'c.bufs', None for every other operation), the
 // handle Connect or Accept made, and three instants: submitted, dequeued
 // (when the loop took it from the kernel's queue: IOCP does not say when the
 // kernel finished, so this is the earliest the loop can know; on Linux, when
@@ -236,6 +239,26 @@
 // c.(buf)' (the rest of the answer goes at the end of the statement), or
 // 'let h, buf = c.(handle, buf)' for more than one; one left in dies with
 // it, home to its pool. A Completion is Sendable: it may go to another thread.
+//
+// ERRORS. An IoError says what went wrong in two ways. Its kind, an
+// IoErrorKind of the ioerror package (a leaf the fs package shares), is the
+// same on every system: NotFound, PermissionDenied, ConnectionRefused,
+// ConnectionReset, AddressInUse, TimedOut, ... (Rust's io::ErrorKind, trimmed
+// to what the two systems give here), and Other for a number no kind names;
+// a caller matches on it ('e.kind() == IoErrorKind.ConnectionRefused', with
+// 'import ioerror use IoErrorKind'). Its code is the system's own number, kept
+// for diagnostics and the message: Windows' error number on Windows, the
+// errno on Linux, so the same failure has a different number on each (a
+// refused connection: 1225 and 111). ioerror sorts each system's numbers into
+// kinds by a table of its own (osKind). Cancelled and TimedOut from a cancel
+// or a deadline carry code 0 (the system aborting an operation,
+// ERROR_OPERATION_ABORTED or ECANCELED, is Cancelled too, with its number);
+// Truncated, a datagram cut to the room, carries the system's number for a
+// datagram too long. 'c.error()' (or 'answerError') turns an answer that is
+// not Done into its IoError; 'IoError(code)' is the system's error of a
+// number got elsewhere (the process package's, say). IoError stays here, not
+// in ioerror, because its words are the loop's system calls' (FormatMessageW,
+// strerror, gai_strerror).
 //
 // CANCEL. 'lp.cancel(id)' asks an operation to end. It is a request: the
 // operation still answers exactly once, and its answer says how it ended --
@@ -318,8 +341,8 @@
 // 256 queued) every process has; 'addLane(LaneConfig(name: ...,
 // minThreads: ..., maxThreads: ..., queueBound: ..., idleMillis: ...))' makes
 // more (64 in all), one per storage device for the file service to come. A
-// submit past a lane's bound is answered at once, Failed with ERROR_BUSY,
-// its buffer back (I9). 'l.stats()' counts its queue depth now and at most,
+// submit past a lane's bound is answered at once, Failed with ERROR_BUSY
+// (Linux's EBUSY: ResourceBusy), its buffer back (I9). 'l.stats()' counts its queue depth now and at most,
 // threads, jobs run, cancelled out of the queue and refused, and the time
 // jobs waited queued. The pool comes with three kinds of work, each an Op
 // built by a function: 'resolveOp(host, port, buf)' (DNS lane; Done(n), the
@@ -362,7 +385,8 @@
 // ('isCancelRequested()'), which gives the answer; its deadline gives a
 // prompt TimedOut past the grace, and a later ending is dropped, the buffer
 // going home; a Completer that dies without an ending ends its operation
-// Failed with ERROR_OPERATION_ABORTED, so it still answers exactly once. The
+// Failed with ERROR_OPERATION_ABORTED (Linux's ECANCELED: 'IoError.aborted()',
+// of the kind Cancelled), so it still answers exactly once. The
 // Completer holds the operation's record while it is away (THE BLOCKING POOL):
 // one that outlives its loop (answered Cancelled at the death, its cancel
 // asked) still writes into 'buf()', and its ending, false then, dissolves the
@@ -465,8 +489,9 @@
 // HANDLES. A Handle names a socket or a file the loop holds: an entry of the
 // loop's handle table and the entry's generation, plain data, copied freely.
 // A handle closed (by 'close', or the loop's death) is never reached through
-// again: an operation submitted on it fails (Failed, ERROR_INVALID_HANDLE)
-// even when Windows has given its number to something new. The loop owns
+// again: an operation submitted on it fails (Failed, ERROR_INVALID_HANDLE,
+// Linux's EBADF: InvalidInput) even when the system has given its number to
+// something new. The loop owns
 // what its handles name, and closes them all when it dies. A connected
 // socket's two directions end apart: 'shutdown(h)' finishes its sending side
 // (TCP's FIN after what was sent), so the peer's receive ends, Done(0),
@@ -565,6 +590,7 @@ import iobuf use IoBuf, Bytes, Chain;
 import path use Path;
 import timewheel use Wheel, TimerId, Expiry;
 import diag;
+import ioerror use IoErrorKind, osKind, gaiNumber, gaiOf, gaiFloor;
 
 fn @initpure init() {
   groupSeq = Atomic[u64].of(0u64);
@@ -622,58 +648,70 @@ pub struct Handle {
   pub fn `!=`(self, o: Handle) bool {index != o.index || gen != o.gen}
 }
 
-// How an IoError came to be: the system failed (Os, the default), or the
-// operation was ended by a cancel (Cancelled) or by its deadline (TimedOut),
-// or a received datagram was longer than the room that took it (Truncated)
-pub enum IoErrorKind {
-  Os,
-  Cancelled,
-  TimedOut,
-  Truncated
+// Where an IoError came from: the system (its kind read from its number), or
+// iocore's own ending of an operation
+enum ErrorSource {
+  System,
+  Cancel,
+  Deadline,
+  Cut
 }
 
-// Why something could not be done: for an Os error, Windows' error number, on
-// every system (Linux's errno is turned into the Windows number that names the
-// same condition, or, with none, is itself above 0x10000000). A Cancelled or
-// TimedOut error is no system's failure: its code is 0 and its kind says what
-// it is. A Truncated error is the system's failure with a kind of its own, so
-// that it can be told from the rest: a datagram cut to the room of the buffer
-// that took it, WSAEMSGSIZE, 10040, its code. 'IoError(code)' is an Os
-// error
+// Why something could not be done: its kind, the same on every system, and
+// 'code', the system's own number for it, kept for diagnostics: Windows'
+// error number on Windows (GetLastError's, Winsock's, or an NTSTATUS turned
+// into one), the errno on Linux (a getaddrinfo failure is its EAI_ number,
+// below 0, as a u32). 'IoError(code)' is the system's error of that number,
+// its kind read from the number when asked. A cancel's and a deadline's
+// error is no system's failure: its code is 0. A Truncated error carries the
+// system's number for a datagram too long (WSAEMSGSIZE, EMSGSIZE)
 pub struct IoError {
   pub code: u32;
-  cause: IoErrorKind = IoErrorKind.Os;
+  source: ErrorSource = ErrorSource.System;
 
-  // A received datagram cut to its buffer's room (code 10040, WSAEMSGSIZE)
-  pub fn truncated() IoError {IoError(10040u32, IoErrorKind.Truncated)}
+  // A received datagram cut to its buffer's room
+  pub fn truncated() IoError {IoError(datagramCut(), ErrorSource.Cut)}
 
   // An operation ended by a cancel
-  pub fn cancelled() IoError {IoError(0u32, IoErrorKind.Cancelled)}
+  pub fn cancelled() IoError {IoError(0u32, ErrorSource.Cancel)}
 
   // An operation ended by its deadline
-  pub fn timedOut() IoError {IoError(0u32, IoErrorKind.TimedOut)}
+  pub fn timedOut() IoError {IoError(0u32, ErrorSource.Deadline)}
 
-  // How it came to be
-  pub fn kind(self: &) IoErrorKind {cause}
+  // An operation that was given up before it could answer (a pool job's
+  // Completer that died unended, say): ERROR_OPERATION_ABORTED, ECANCELED,
+  // which are Cancelled, as iocore's own cancel is
+  pub fn aborted() IoError {IoError(abandoned())}
 
-  // Ended by a cancel
-  pub fn isCancelled(self: &) bool {cause == IoErrorKind.Cancelled}
+  // What went wrong: the ioerror package's kind, the system's number read by
+  // its osKind
+  pub fn kind(self: &) IoErrorKind {
+    if source == ErrorSource.Cancel {return IoErrorKind.Cancelled;}
+    if source == ErrorSource.Deadline {return IoErrorKind.TimedOut;}
+    if source == ErrorSource.Cut {return IoErrorKind.Truncated;}
+    osKind(code)
+  }
 
-  // Ended by its deadline
-  pub fn isTimedOut(self: &) bool {cause == IoErrorKind.TimedOut}
+  // Ended by a cancel, or aborted by the system (ERROR_OPERATION_ABORTED,
+  // ECANCELED)
+  pub fn isCancelled(self: &) bool {self.kind() == IoErrorKind.Cancelled}
+
+  // Ended by its deadline (code 0), or timed out by the system
+  pub fn isTimedOut(self: &) bool {self.kind() == IoErrorKind.TimedOut}
 
   // A datagram longer than the room that took it
-  pub fn isTruncated(self: &) bool {cause == IoErrorKind.Truncated}
+  pub fn isTruncated(self: &) bool {self.kind() == IoErrorKind.Truncated}
 
   // The OS's text for it: Windows' in English where the system has it, the
-  // C library's (strerror) on Linux; a Cancelled or TimedOut error says so
+  // C library's (strerror, gai_strerror) on Linux; a cancel's and a
+  // deadline's error says so
   pub fn message(self: &) String {
-    if cause == IoErrorKind.Cancelled {
+    if source == ErrorSource.Cancel {
       var s = String.empty();
       s.append("cancelled");
       return s;
     }
-    if cause == IoErrorKind.TimedOut {
+    if source == ErrorSource.Deadline {
       var s = String.empty();
       s.append("deadline passed");
       return s;
@@ -682,12 +720,27 @@ pub struct IoError {
   }
 }
 
-// The number an IoError carries for the error number of a system call made
-// elsewhere (the process package's, say): Windows' number as it is, and on
-// Linux the errno turned into the Windows number that names the same condition
-pub fn systemCode(e: u32) u32 {
-  if isWindows() {e} else {errnoCode(i32.from(e))}
+// The IoError an operation's answer stands for when it is not Done (kind,
+// status and code as a Completion or a record holds them): Cancelled,
+// TimedOut, a RecvFrom's datagram cut to the room (Truncated), or the
+// system's failure of that number
+pub fn answerError(kind: u32, status: u32, code: u32) IoError {
+  if status == diag.outcomeCancelled {return IoError.cancelled();}
+  if status == diag.outcomeTimedOut {return IoError.timedOut();}
+  if kind == diag.kindRecvFrom && code == datagramCut() {return IoError.truncated();}
+  IoError(code)
 }
+
+
+// The system's own number for each failure iocore finds itself, on the
+// system the program runs on (Windows' error number; Linux's errno)
+fn noSuchHandle() u32 {if isWindows() {errorInvalidHandle} else {9u32}}          // EBADF
+fn noRoom() u32 {if isWindows() {errorInsufficientBuffer} else {22u32}}          // EINVAL
+fn badParameter() u32 {if isWindows() {errorInvalidParameter} else {22u32}}      // EINVAL
+fn queueFull() u32 {if isWindows() {errorBusy} else {16u32}}                     // EBUSY
+fn noMemory() u32 {if isWindows() {errorNotEnoughMemory} else {12u32}}           // ENOMEM
+fn abandoned() u32 {if isWindows() {errorOperationAborted} else {125u32}}        // ECANCELED
+fn datagramCut() u32 {if isWindows() {errorMsgSize} else {90u32}}                // EMSGSIZE
 
 // How a file is opened
 pub enum Access {
@@ -908,7 +961,7 @@ pub struct Completion {
   pub kind: u32;           // diag.kindRecv, ...
   pub status: u32;         // diag.outcomeDone, ...
   pub n: usize;            // Done's count of bytes
-  pub code: u32;           // Failed's error number
+  pub code: u32;           // Failed's error number, the system's own (see IoError)
   pub buf: IoBuf;          // the loan back, or IoBuf.empty()
   pub bufs: Option[Uni[Chain]];  // a SendChain's chain back, every segment; None for any other operation
   pub handle: Handle;      // the socket Connect or Accept made, or Handle.none()
@@ -927,6 +980,10 @@ pub struct Completion {
     else if status == diag.outcomeCancelled {Outcome.Cancelled}
     else {Outcome.TimedOut}
   }
+
+  // The IoError it stands for when it is not Done (answerError): its kind
+  // is what a caller matches on
+  pub fn error(self: &) IoError {answerError(kind, status, code)}
 
   // The bytes the buffers it carries back hold: a SendChain's chain's, or
   // its buffer's. A send whose Done count is this sent all of it
