@@ -39,10 +39,14 @@ claim that these rule rather than describe.**
 3. **The parser desugars.** `match`, `each` over a numeric range, `while`,
    `with`, bound patterns and several prefix forms are lowered here into blocks
    and `if` chains. ▸ **Settles** that later phases never see those forms, so a
-   new sugar costs no node, no dispatch arm and no phase work. The one sugar that
-   cannot be finished here is an `each` over anything but a range: how it walks
+   new sugar costs no node, no dispatch arm and no phase work. Two sugars
+   cannot be finished here. An `each` over anything but a range: how it walks
    its source is the source's type's to say, so the parser builds a block marked
    `FlagEach` that type check finishes ([Block](../nodes/block.md), "Type check").
+   And `x?`: whether `x` is a Result or an Option, and what the function returns,
+   say what its test and early return are, so the parser builds a block marked
+   `FlagPropagate` holding `x` in a hidden variable, which type check finishes
+   (`propagateLower`, `ir/exp/propagate.h`).
    A header `if`, a trailing `if` on `break`, `continue` and `return`, and a
    loop's `else` are desugared here too, into `continue`, an `if` arm and the
    loop's exit ([Block](../nodes/block.md), "Parse").
@@ -400,7 +404,8 @@ and `@move`, since move-ness became the built-in trait `Move`, declared with
 linkage that no code asks about; a fact other code may ask about or constrain
 on is a trait** [Jon 26 Sep] — which is why `@move` went and `@opaque` stays. A `#` word is held for metaprogramming:
 `ErrorReserved`, and it is dropped with the rest of its line, so what `#if`
-was followed by is not reported again. `?.` is held for None propagation:
+was followed by is not reported again. `?.` is held [Jon 26 Oct]: a member of
+what `?` gives is written `(a?).b`, which the message says. It is
 `ErrorReserved`, and it is read as `.`. `lexScanIdent` returns 0 for a dropped
 word and `lexNextToken` scans on from where it stopped.
 `lexical_reject_unbuilt` holds all three.
@@ -730,8 +735,20 @@ construction, a temporary, which the borrow's type check refuses.
 **`await` is a prefix operator, at `parsePrefix`'s level.** `await x` waits for
 `x` in an actor's behaviour; the behaviour is cut there, a seam. Its operand is a
 prefix operand, a term with its suffixes, so `await f.get() + 1` adds to what
-the wait gives and `await` binds no looser than `-` does. It builds an
-`AwaitNode` and nothing more; where it may stand is type check's
+the wait gives and `await` binds no looser than `-` does. **The one exception
+is the suffix `?`** [Jon 26 Oct]: `await x?` is `(await x)?`. `parsePrefix`
+reads its operand with `ParseState.awaitoperand` set, which the operand's own
+`parsePrefix` takes and clears, so only a term written directly after `await`
+stops its suffixes before a `?` (`parseSuffixUntil`); the `?` and the suffixes
+after it then apply to the `AwaitNode`. A prefix operator in between takes the
+`?` after its own operand, as everywhere else: `await -x?` awaits `-(x?)`.
+Everywhere but there, `?` is a suffix like `[]`, Rust's precedence:
+`-x?` is `-(x?)`, `f()?[0]` indexes what `f()?` gives (`parsePropagate`). It is
+not a suffix where a type is read (`ParseState.intype`), whose `?` is an
+Option's prefix sugar, and `?.` never reaches it (the lexer holds it, above).
+`?` in a generator's body is refused here (`ErrorQuesReturn`): a generator's
+`return` ends its walk and it has no Result or Option of its own.
+`await` builds an `AwaitNode` and nothing more; where it may stand is type check's
 (`awaitTypeCheck`, `ErrorAwaitPlace`) and what its seam does is the loan walk's
 ([Flow](flow.md), "A seam"). `await` is a keyword, so no program may name
 anything `await`. Inside an actor's body, each function whose own body holds
@@ -1185,7 +1202,7 @@ numbers.
 | | `parseAssign` … `parseMult`, `parseCast` | the precedence cascade (section 3) |
 | | `parseRetiredInto` | the retired `into` reported, pointed at `T.from(x)` and a checked narrowing |
 | | `parsePrefix`, `parseAmper`, `parsePlus` | prefix operators, `await` among them; borrowed and region-managed references |
-| | `parseSuffix`, `parseDotCall`, `parseArgs`, `parseArg` | postfix `.`, `()`, `[]`, `++`, `--`; named values. The `.` production serves a member of a value and a path through a namespace alike; a `.` followed by `(` is a field list, `x.(a, b)`, `parseFieldList` building a `DestructNode` ([destruct](../nodes/destruct.md)). The last suffix of a term parsed outside a type is marked as a value term (`parseMarkValueTerm`), which name resolution reads to make an empty variant's name its construction |
+| | `parseSuffix`, `parseSuffixUntil`, `parsePropagate`, `parseDotCall`, `parseArgs`, `parseArg` | postfix `.`, `()`, `[]`, `++`, `--`, `?` (the block marked `FlagPropagate`); named values. The `.` production serves a member of a value and a path through a namespace alike; a `.` followed by `(` is a field list, `x.(a, b)`, `parseFieldList` building a `DestructNode` ([destruct](../nodes/destruct.md)). The last suffix of a term parsed outside a type is marked as a value term (`parseMarkValueTerm`), which name resolution reads to make an empty variant's name its construction |
 | | `parseTerm`, `parseNameUse`, `parseArrayLit` | literals, parens, blocks-as-expressions, names; a parenthesized entry list when `entryparen` says the term begins an entry |
 | | `parseAppend`, `parseEntries`, `parseEntry`, `parseContentsAfter` | the list after `<-`, its entries and their contextual words, and a construction's contents inside a comma list (section 3) |
 | `parser/parsetype.c` | `parseType`, `parseIsTypeStart` | the type dispatcher that delegates to `parsePrefix` — principle 1 — and the tokens that may begin a type |
