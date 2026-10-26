@@ -1,0 +1,188 @@
+// A link already in the destination is not written through, whether it leads somewhere or nowhere.
+// 'fs.stat' follows a link, so a link whose target is gone looks like nothing at all to it, and writing
+// "through" it would make its target: extraction looks at every name on an entry's way with 'fs.isLink',
+// which follows nothing.
+//
+// The links here are folder links: a directory junction on Windows (cmd's 'mklink /J', which needs no
+// administrator rights) and a symbolic link on POSIX ('ln -s'). The file symbolic links, which Windows
+// lets only an administrator or a developer make, are in symlinks.cone.
+//
+// What is checked: a name through a live link and through a dangling link is UnsafePath, the link's
+// target is not made or written, the refusal comes before anything is written (a good entry before the
+// bad one is not there), a folder entry and a file entry named like the link are refused, one entry of
+// an archive (extractOne) is refused alike, a link deeper in the path is found, and once the link is
+// gone the same archive extracts.
+
+mod linkstest;
+
+import testing use *;
+import collections use *;
+import zipfile use *;
+import libc;
+import fs;
+import path use Path;
+
+fn exists(p: &str) bool { fs.exists(&Path.from(p)) }
+
+fn clean(p: &str) { fs.removeAll(&Path.from(p)); }
+
+fn absolute(p: &str) Path {
+  match fs.absolute(&Path.from(p)) {
+    case let Ok(a) { a }
+    case let Error(e) { Path.from(p) }
+  }
+}
+
+// A link to a folder, both paths quoted since a path may hold a space
+fn linkToFolder(link: &Path, target: &Path) bool {
+  var command = String.empty();
+  if isWindows() {
+    var paths = String.from(link.view());
+    paths.append("\" \"");
+    paths.append(target.view());
+    paths.replaceByte('/', '\\');
+    command.append("mklink /J \"");
+    command.append(paths.view());
+    command.append("\" >nul");
+  } else {
+    command.append("ln -s '");
+    command.append(target.view());
+    command.append("' '");
+    command.append(link.view());
+    command.append("'");
+  }
+  libc.system(command.cstr()) == 0i32
+}
+
+// An archive of stored files with these names, each holding "evil"
+fn addNamed(w: &mut ZipWriter, name: &str) {
+  if name.len() == 0usize { return; }
+  if name.endsWith("/") {
+    w.addDir(name, &EntryOptions.stored());
+  } else {
+    w.add(name, "evil\n", &EntryOptions.stored());
+  }
+}
+
+fn archiveOf(a: &str, b: &str, c: &str) List[u8] {
+  var w = ZipWriter.make();
+  addNamed(&mut w, a);
+  addNamed(&mut w, b);
+  addNamed(&mut w, c);
+  match w.bytes() {
+    case let Ok(b) { b }
+    case let Error(e) { List[u8].empty() }
+  }
+}
+
+fn kindOf(data: &Array[u8], dest: &str, opts: &ExtractOptions) Option[ErrorKind] {
+  match Archive.open(data) {
+    case let Error(e) { Some[ErrorKind](e.kind) }
+    case let Ok(ar) {
+      match ar.extractAll(data, &Path.from(dest), opts) {
+        case let Ok(done) { None[ErrorKind] }
+        case let Error(e) { Some[ErrorKind](e.kind) }
+      }
+    }
+  }
+}
+
+fn oneKind(data: &Array[u8], i: usize, dest: &str, opts: &ExtractOptions) Option[ErrorKind] {
+  match Archive.open(data) {
+    case let Error(e) { Some[ErrorKind](e.kind) }
+    case let Ok(ar) {
+      match ar.extractOne(data, i, &Path.from(dest), opts) {
+        case let Ok(done) { None[ErrorKind] }
+        case let Error(e) { Some[ErrorKind](e.kind) }
+      }
+    }
+  }
+}
+
+fn isKind(got: Option[ErrorKind], want: ErrorKind) bool {
+  match got {
+    case let Some(k) { k == want }
+    case is None { false }
+  }
+}
+
+fn main() i32 {
+  let safe = ExtractOptions.safe();
+  var over = ExtractOptions.safe();
+  over.overwrite = true;
+
+  clean("lk2-dest");
+  clean("lk2-target");
+  fs.makeDirAll(&Path.from("lk2-dest/sub"));
+  fs.makeDirAll(&Path.from("lk2-target"));
+  let target = absolute("lk2-target");
+  let link = absolute("lk2-dest/inside");
+  let deep = absolute("lk2-dest/sub/inside2");
+  require(linkToFolder(&link, &target), "the test made a link in the destination");
+  require(linkToFolder(&deep, &target), "and a second one, a folder deeper");
+
+  // ---------------- a link that leads somewhere ----------------
+  expect(fs.isLink(&link), "the link is a link");
+  expect(isKind(kindOf(archiveOf("inside/evil.txt", "", "").view(), "lk2-dest", &safe), ErrorKind.UnsafePath),
+    "a name through a live link is refused");
+  expect(!exists("lk2-target/evil.txt"), "and nothing was written through it");
+  expect(isKind(kindOf(archiveOf("sub/inside2/x/evil.txt", "", "").view(), "lk2-dest", &safe), ErrorKind.UnsafePath),
+    "a name through a link in a folder below is refused");
+  expect(!exists("lk2-target/x"), "and nothing was made through it");
+
+  // ---------------- a link that leads nowhere ----------------
+  clean("lk2-target");
+  expect(!fs.isDir(&target), "the target is gone");
+  expect(fs.isLink(&link) && fs.isLink(&deep), "the links are still links, now dangling");
+
+  let through = archiveOf("inside/evil.txt", "", "");
+  expect(isKind(kindOf(through.view(), "lk2-dest", &safe), ErrorKind.UnsafePath), "a name through a dangling link is refused");
+  expect(!exists("lk2-target"), "and the link's target was not made");
+  expect(isKind(kindOf(through.view(), "lk2-dest", &over), ErrorKind.UnsafePath), "overwrite does not allow it");
+  expect(!exists("lk2-target"), "and the target was not made then either");
+  expect(isKind(kindOf(archiveOf("sub/inside2/x/evil.txt", "", "").view(), "lk2-dest", &safe), ErrorKind.UnsafePath),
+    "a name through a dangling link in a folder below is refused");
+  expect(!exists("lk2-target"), "and the target was not made from there");
+
+  // Refusing is all or nothing: the good entry before the bad one is not written either
+  let two = archiveOf("good.txt", "inside/evil.txt", "also-good.txt");
+  expect(isKind(kindOf(two.view(), "lk2-dest", &safe), ErrorKind.UnsafePath), "a good entry and then one through a dangling link: refused");
+  expect(!exists("lk2-dest/good.txt") && !exists("lk2-dest/also-good.txt"), "and the good entries were not written");
+  expect(!exists("lk2-target"), "nor the target made");
+
+  // A folder entry, and a file entry, named like the link
+  expect(isKind(kindOf(archiveOf("inside/sub/", "", "").view(), "lk2-dest", &safe), ErrorKind.UnsafePath),
+    "a folder below a dangling link is refused");
+  expect(isKind(kindOf(archiveOf("inside/", "", "").view(), "lk2-dest", &safe), ErrorKind.UnsafePath),
+    "a folder entry that is the dangling link is refused");
+  expect(!exists("lk2-target"), "and neither made the target");
+  expect(isKind(kindOf(archiveOf("inside", "", "").view(), "lk2-dest", &safe), ErrorKind.UnsafePath),
+    "a file entry named like the dangling link is refused");
+  expect(isKind(kindOf(archiveOf("inside", "", "").view(), "lk2-dest", &over), ErrorKind.UnsafePath),
+    "and with overwrite too");
+  expect(!exists("lk2-target"), "and wrote nothing through it");
+  expect(fs.isLink(&link), "the link itself was left as it was");
+
+  // One entry of an archive
+  expect(isKind(oneKind(two.view(), 1usize, "lk2-dest", &safe), ErrorKind.UnsafePath),
+    "extractOne of an entry through a dangling link is refused");
+  expect(isKind(oneKind(two.view(), 1usize, "lk2-dest", &over), ErrorKind.UnsafePath),
+    "and with overwrite");
+  expect(!exists("lk2-target"), "and made no target");
+  expect(oneKind(two.view(), 0usize, "lk2-dest", &safe) is None, "extractOne of an entry that goes elsewhere works");
+  expect(exists("lk2-dest/good.txt"), "and wrote it");
+  clean("lk2-dest/good.txt");
+
+  // ---------------- the link is removed: the same archive extracts ----------------
+  clean("lk2-dest/inside");
+  clean("lk2-dest/sub");
+  expect(!fs.isLink(&link), "the link is gone");
+  expect(kindOf(two.view(), "lk2-dest", &safe) is None, "without the link the archive extracts");
+  expect(exists("lk2-dest/inside/evil.txt") && exists("lk2-dest/good.txt"), "and its files are there, the folder made as a folder");
+  expect(!fs.isLink(&absolute("lk2-dest/inside")), "which is no link");
+  expect(!exists("lk2-target"), "and the old target is still not made");
+
+  clean("lk2-dest");
+  clean("lk2-target");
+  done()
+}
