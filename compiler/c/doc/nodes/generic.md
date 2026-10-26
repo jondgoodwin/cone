@@ -856,7 +856,12 @@ one is said so and its signature is not spelled, since it is written in type
 parameters that are not types (spelling it was `ErrorUnreachable`, "a request for
 the name of a node that has none"). The clause is spelled with the instance's
 arguments (`Stack[i64]`), not as written. A non-generic trait's message is
-unchanged. A failed
+unchanged. A clause naming an instance of a generic enum (`where U is Opt[T]`)
+is named the same way and explained no further: an enum is closed, so a type is
+it only by being it or one of its variants, never by its methods or fields. Its
+methods are no requirements (spelling a whole-enum method, one whose receiver
+names the enum, asks a name of a node that has none, `ErrorUnreachable`), and
+its tag is no field a type could declare (`generic_typecheck_where_enum_instance`). A failed
 instance is never memoized, so each use asking for it is refused where it is.
 **An argument that is `errorType` is refused without a report.** A type
 parameter inferred from a value whose initializer was already refused

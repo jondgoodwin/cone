@@ -2349,6 +2349,15 @@ static int genericRequirementsMetIn(FnCallNode *srcgencall, INode *generic, Gene
     genericClauseNameCat(isname, sizeof(isname), (CastNode*)cond, inst);
     char why[1000] = "";
     int layout = 0;
+    // An instance of a generic enum is closed: a type is it only by being it or
+    // one of its variants, never by the methods or fields it has, so the clause
+    // is named but no fit is explained (its methods are not requirements, and
+    // its tag is no field a type could declare)
+    if (inst && (inst->flags & EnumType)) {
+        errorMsgNode((INode*)srcgencall, ErrorWhereUnmet, "%s requires %s is %s, and %s is not %s.",
+            &name->namestr, &parm->namesym->namestr, isname, argname, isname);
+        return 0;
+    }
     if (trait)
         genericCondIsWhy(why, sizeof(why), arg, trait);
     else if (inst && !genericTraitIsMarker(inst))
