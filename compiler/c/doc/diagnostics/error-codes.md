@@ -787,6 +787,18 @@ neither a buffer parameter nor a fixed array is `ErrorGpuSliceOrigin`,
 generation's once everything is inlined (`genlGpuFold`), at the index that
 made it.
 
+`?` takes four codes, one per thing to fix, each reported at the `?` by type check
+(`propagateLower`): a value that is neither a Result nor an Option, a reference to one
+included, is `ErrorQuesOperand`; a function with nowhere for the failure to go (it returns
+no Result for a Result or no Option for an Option, the message naming what it returns; a
+closure whose return type is read off its returns; a generator, refused by the parser) is
+`ErrorQuesReturn`; an error the function's error type cannot take, with no `from` and no
+variant holding it, is `ErrorQuesConvert`; and one two variants hold, with no `from` to
+choose, is `ErrorQuesAmbiguous`, naming two of them. They are apart because the remedies
+are: a different value, a different function, a conversion to declare, and a choice to
+make. A `main` returning a Result whose error type has no `message()` giving text is
+`ErrorMainResult`, at the return type (`propagateMainResult`).
+
 ## The one code with no scenario
 
 `ErrorUnreachable` is reported by `errorUnreachable` and by nothing else. It

@@ -377,6 +377,11 @@ enum NodeTags {
 // whose last line has no ';' returns it (closureImplicitReturn)
 #define FlagTailSemi  0x0080        // Block: its last statement is empty, after an expression or a block-ending statement
 #define FlagTailOpen  0x0200        // Block: its last statement is an expression statement with no ';'
+// The block 'x?' is parsed to (parsePropagate): 'x' in a hidden variable, its only
+// statement. Whether 'x' is a Result or an Option, and what the function returns,
+// only type check knows, so type check builds the rest (propagateLower) once the
+// variable is checked, and clears the flag.
+#define FlagPropagate 0x0400        // Block: a '?' whose test and early return type check has yet to build
 #define FlagBreakAimed 0x0001       // Break: built with its loop in 'block', which name resolution keeps
 
 #define FlagSuffix    0x0001        // Borrow: part of a borrow chain

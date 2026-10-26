@@ -143,6 +143,13 @@ extern Name *parallelName; // "parallel"
 extern Name *splitName;    // "split"
 extern Name *someName;     // "Some"
 extern Name *noneName;     // "None"
+// What '?' asks of the value it is given and of the function it is in
+// (propagate.c): core's Result and its two variants, matched by name; and the
+// method a 'main' that returns a Result prints its error with
+extern Name *resultName;   // "Result"
+extern Name *okName;       // "Ok"
+extern Name *errorVariantName; // "Error", Result's failure
+extern Name *messageName;  // "message"
 
 // The methods a region's annotation struct may declare, which the compiler
 // calls at each reference event (ir/types/region.c), and the built-in trait

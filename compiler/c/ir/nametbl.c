@@ -245,6 +245,10 @@ void nametblInit() {
     splitName = nametblFind("split", 5);
     someName = nametblFind("Some", 4);
     noneName = nametblFind("None", 4);
+    resultName = nametblFind("Result", 6);
+    okName = nametblFind("Ok", 2);
+    errorVariantName = nametblFind("Error", 5);
+    messageName = nametblFind("message", 7);
 
     allocMethodName = nametblFind("alloc", 5);
     allocRegionMethodName = nametblFind("allocRegion", 11);

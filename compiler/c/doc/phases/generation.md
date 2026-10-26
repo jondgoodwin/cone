@@ -105,7 +105,11 @@ not a library, WebAssembly or GPU compile; not a function with a C name; with no
 parameters or two) — is therefore declared under the internal symbol
 `cone.main` (`genlGloFnName`), and is called with `argc` and `argv` if it takes
 them. `genlIsVoidMain` treats `cone.main` as it does `main`: a `main` returning
-nothing is generated returning `i32 0`. A panic ends the process through
+nothing is generated returning `i32 0`. A `main` returning a Result is called
+through the private function type check gave its module, `-mainresult`
+(`propagateMainEntry`, `ir/exp/propagate.h`), which calls it, prints a failure's
+message through conestd's `cone_mainError` and answers 1, or 0; the entry calls
+that in its place and returns what it answers. A panic ends the process through
 `abort`, and a call to C's `exit` leaves it, so neither reaches the final.
 [module](../nodes/module.md), "Init and final".
 
@@ -2372,7 +2376,7 @@ variables.
 | | `genlGpuRetypeFn`, `genlGpuPointee` | on a GPU target, after optimization, a first field's address computed from its struct's type again (for a load, a store, an address computation or an atomic), and an array's from its first element's (section 7) |
 | | `genlGpuGepChainsFn` | on a GPU target, after optimization, an address computed from another in one step, or beside it (section 7) |
 | | `genlProgram` | create the module with the target's triple and data layout, the two-pass symbols-then-implementations walk, then the entry and the stitched pair |
-| | `genlIsEntryMain`, `genlEntry` | the program's own `main` (renamed `cone.main`), and the C `main` built round it: stitched init, `cone.main`, stitched final, its result the exit status |
+| | `genlIsEntryMain`, `genlEntry` | the program's own `main` (renamed `cone.main`), and the C `main` built round it: stitched init, `cone.main` (or, for a `main` returning a Result, the `-mainresult` that calls it and prints its failure), stitched final, its result the exit status |
 | | `genlStitchFn`, `genlStitch` | the program's stitched init and final: declared by the entry or on the first call to `initAll()` or `finalAll()`, built last, every module's `init` in the module order and every finalizer in the reverse, each guarded by the `cone.live` flag |
 | | `genlInitByCtor`, `genlCtors` | a C-named module's `init` as a static constructor: `cone.ctor`, calling each such module this object generates in the module order, registered in `llvm.global_ctors` at priority 1000; the stitched init leaves those out |
 | | `genlGlobalSyms`, `genlGlobalImpl` | declare a node's symbol; emit its body |
