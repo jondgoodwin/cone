@@ -1,0 +1,320 @@
+// A link asked about without following it ('lstat', 'isLink'), a file's
+// permissions set ('chmod') and its times set ('utime').
+//
+// - lstat/isLink: a file and a folder answer as 'stat' does and are no link; a
+//   link to a folder (a directory junction on Windows, made with cmd's
+//   'mklink /J'; a symbolic link on POSIX, made with 'ln -s') is a link, neither
+//   folder nor file, while 'stat' follows it to the folder; a link whose target
+//   has been removed is still seen by 'lstat' and 'isLink', and 'stat',
+//   'exists' and 'isDir' refuse or deny it; a listing's 'isLink' agrees with
+//   'isLink'; a path nothing has fails with ENOENT, a NUL in a path with EINVAL.
+// - chmod: POSIX permission bits are read back with the posix package's 'stat'
+//   (Linux checks the exact bits; Windows only the owner's write bit, which is
+//   its read-only attribute, and that writing the file is refused while it is
+//   set); a missing file and a NUL fail as the others do.
+// - utime: the modified and access times read back from 'stat' (the modified
+//   one through fs.stat, the access one through posix.stat) for a file, a
+//   folder and, through a link, the file or folder it leads to; a time before
+//   1970 and a time with a fraction of a second (rounded down); a missing
+//   file and a NUL fail as the others do.
+//
+// It works in a folder of its own under TEMP (TMPDIR or /tmp on POSIX),
+// 'cone-fs-test-linkmodetime', which it clears if an interrupted run left it,
+// makes, and removes at the end, after checking its path as the other fs tests
+// do. What differs by system is checked the way each system does it, in the
+// same number of checks. (Running as the superuser, where permissions do not
+// stop a write, is why POSIX checks the bits and not a refused write.)
+
+mod linkmodetime;
+
+import testing use *;
+import collections use *;
+import libc;
+import posix;
+import path use Path;
+import fs;
+import time use Timestamp;
+
+fn makeRoot(name: &str) Path {
+  var variable: cstr = "TMPDIR";
+  if isWindows() { variable = "TEMP"; }
+  let temp = libc.getenv(variable);
+  require(temp != null || !isWindows(), "TEMP is set");
+  let tempPath = if temp != null {Path.from(cstr.fromPtr(temp).view())} else {Path.from("/tmp")};
+  var root = Path.from("");
+  match fs.absolute(&tempPath) {
+    case let Ok(t) { root = t.join(name); }
+    case is Error { require(false, "TEMP has an absolute path"); }
+  }
+  let up = root.parent();
+  let safe = root.isAbsolute() && root.view().endsWith(name) && up.view().len() > 3usize;
+  require(safe, "the test's folder is under TEMP");
+  root
+}
+
+fn shown(root: &Path, message: &String) String {
+  var out = message.copy();
+  out.replace(root.view(), "<root>" as &str);
+  out
+}
+
+fn messageOf[T](root: &Path, r: Result[T, fs.FsError]) String {
+  match r {
+    case let Error(e) { let m = e.message(); shown(root, &m) }
+    case is Ok { String.from("<succeeded>") }
+  }
+}
+
+fn ok[T](r: Result[T, fs.FsError], label: &Array[u8]) bool {
+  let m = messageOf("", r);
+  expectStr(m.view(), "<succeeded>", label)
+}
+
+fn failsWith[T](root: &Path, r: Result[T, fs.FsError], want: &Array[u8], label: &Array[u8]) bool {
+  let m = messageOf(root, r);
+  expectStr(m.view(), want, label)
+}
+
+// A link to a folder, as folders.cone makes one; both paths quoted since TEMP
+// may hold a space
+fn junction(link: &Path, target: &Path) bool {
+  var command = String.empty();
+  if isWindows() {
+    var paths = String.from(link.view());
+    paths.append("\" \"");
+    paths.append(target.view());
+    paths.replaceByte('/', '\\');
+    command.append("mklink /J \"");
+    command.append(paths.view());
+    command.append("\" >nul");
+  } else {
+    command.append("ln -s '");
+    command.append(target.view());
+    command.append("' '");
+    command.append(link.view());
+    command.append("'");
+  }
+  libc.system(command.cstr()) == 0i32
+}
+
+// What the posix package's stat says of a path: its mode and access time
+fn modeOf(p: &Path) u32 {
+  var c = String.from(p.view());
+  var st = posix.Stat(0u64, 0u64, 0u16, 0u32, 0u32, 0u32, 0u64, 0i64, 0i64, 0i64, 0i64);
+  require(posix.stat(c.cstr(), &mut st) == 0i32, "posix.stat of a path that is there");
+  u32.from(st.st_mode) & 0xFFFu32
+}
+
+fn accessOf(p: &Path) i64 {
+  var c = String.from(p.view());
+  var st = posix.Stat(0u64, 0u64, 0u16, 0u32, 0u32, 0u32, 0u64, 0i64, 0i64, 0i64, 0i64);
+  require(posix.stat(c.cstr(), &mut st) == 0i32, "posix.stat of a path that is there");
+  st.st_atime
+}
+
+fn modifiedOf(p: &Path) i64 {
+  match fs.stat(p) {
+    case let Ok(s) { s.modified.unixSeconds() }
+    case is Error { 0i64 - 1i64 }
+  }
+}
+
+fn links(root: &Path) {
+  let target = root.join("target");
+  let kept = root.join("target/kept.txt");
+  let link = root.join("link");
+  let file = root.join("plain.txt");
+  let missing = root.join("missing");
+  ok(fs.makeDir(&target), "make target");
+  ok(fs.writeFile(&kept, "twelve bytes"), "make a file");
+  ok(fs.writeFile(&file, "12345"), "make a plain file");
+  require(junction(&link, &target), "made a link to a folder");
+
+  // Not links
+  expect(!fs.isLink(&file), "a file is no link");
+  expect(!fs.isLink(&target), "a folder is no link");
+  expect(!fs.isLink(&missing), "nothing is no link");
+  match fs.lstat(&file) {
+    case let Ok(s) {
+      expectInt(s.size, 5, "lstat of a file: size");
+      expect(s.isFile && !s.isDir, "lstat of a file: a file");
+      expectInt(s.modified.unixSeconds() - modifiedOf(&file), 0, "lstat of a file: same time as stat");
+    }
+    case is Error { expect(false, "lstat of a file"); }
+  }
+  match fs.lstat(&target) {
+    case let Ok(s) { expect(s.isDir && !s.isFile, "lstat of a folder: a folder"); }
+    case is Error { expect(false, "lstat of a folder"); }
+  }
+
+  // A link
+  expect(fs.isLink(&link), "a link is a link");
+  match fs.lstat(&link) {
+    case let Ok(s) { expect(!s.isDir && !s.isFile, "lstat of a link: neither folder nor file"); }
+    case is Error { expect(false, "lstat of a link"); }
+  }
+  match fs.stat(&link) {
+    case let Ok(s) { expect(s.isDir, "stat follows the link to its folder"); }
+    case is Error { expect(false, "stat of a link"); }
+  }
+  let through = root.join("link/kept.txt");
+  expect(!fs.isLink(&through), "a file reached through a link is no link");
+  match fs.readDir(root) {
+    case let Ok(l) {
+      var agree = true;
+      var i = 0usize;
+      while i < l.len() {
+        let e = l[i];
+        if e.isLink != fs.isLink(&e.path) { agree = false; }
+        i = i + 1usize;
+      }
+      expect(agree, "a listing's isLink agrees with isLink");
+    }
+    case is Error { expect(false, "readDir of the root"); }
+  }
+
+  // A link whose target is gone
+  ok(fs.removeAll(&target), "remove the target");
+  expect(fs.isLink(&link), "a dangling link is still a link");
+  match fs.lstat(&link) {
+    case is Ok { expect(true, "lstat sees a dangling link"); }
+    case is Error { expect(false, "lstat of a dangling link"); }
+  }
+  // POSIX's stat follows the link and finds nothing; the Windows runtime's,
+  // finding a junction whose folder is gone, answers for the junction itself
+  if isWindows() {
+    expect(fs.exists(&link), "Windows' stat answers for a dangling junction itself");
+    expect(fs.isDir(&link), "Windows' stat calls a dangling junction a folder");
+    expect(fs.stat(&link) is Ok, "Windows' stat of a dangling junction succeeds");
+  } else {
+    expect(!fs.exists(&link), "exists follows a dangling link");
+    expect(!fs.isDir(&link), "isDir follows a dangling link");
+    failsWith(root, fs.stat(&link), "stat <root>/link: No such file or directory", "stat refuses a dangling link");
+  }
+  ok(fs.removeAll(&link), "remove the link");
+  expect(!fs.isLink(&link), "the link is gone");
+
+  failsWith(root, fs.lstat(&missing), "lstat <root>/missing: No such file or directory", "lstat of nothing");
+  let nul = Path.from("a\x00b");
+  failsWith(root, fs.lstat(&nul), "lstat a\x00b: Invalid argument", "lstat of a path holding a NUL");
+  expect(!fs.isLink(&nul), "a path holding a NUL is no link");
+}
+
+fn modes(root: &Path) {
+  let file = root.join("mode.txt");
+  ok(fs.writeFile(&file, "abc"), "make a file for chmod");
+
+  ok(fs.chmod(&file, 0x1A4u32), "chmod 0644");
+  if isWindows() {
+    expect((modeOf(&file) & 0x80u32) != 0u32, "0644 leaves the file writable");
+  } else {
+    expectInt(i64.from(modeOf(&file)), 0x1A4, "0644 is set exactly");
+  }
+  ok(fs.writeFile(&file, "abcd"), "a writable file is written");
+
+  ok(fs.chmod(&file, 0x124u32), "chmod 0444");
+  if isWindows() {
+    expect((modeOf(&file) & 0x80u32) == 0u32, "0444 makes the file read-only");
+    failsWith(root, fs.writeFile(&file, "x"), "writeFile <root>/mode.txt: Permission denied",
+      "a read-only file is refused");
+  } else {
+    expectInt(i64.from(modeOf(&file)), 0x124, "0444 is set exactly");
+    expect(true, "(the superuser may write a read-only file, so POSIX does not try)");
+  }
+
+  // Windows reads only the owner's write bit: 0o200 alone makes it writable
+  ok(fs.chmod(&file, 0x80u32), "chmod 0200");
+  if isWindows() {
+    expect((modeOf(&file) & 0x80u32) != 0u32, "0200 is writable on Windows");
+  } else {
+    expectInt(i64.from(modeOf(&file)), 0x80, "0200 is set exactly");
+  }
+  ok(fs.chmod(&file, 0x1EDu32), "chmod 0755");
+  if isWindows() {
+    expect((modeOf(&file) & 0x80u32) != 0u32, "0755 is writable on Windows");
+  } else {
+    expectInt(i64.from(modeOf(&file)), 0x1ED, "0755 is set exactly");
+  }
+  // Bits above the permissions are ignored; a folder takes a mode too
+  ok(fs.chmod(&file, 0xFFFF81A4u32), "chmod with high bits");
+  let dir = root.join("modedir");
+  ok(fs.makeDir(&dir), "make a folder");
+  ok(fs.chmod(&dir, 0x1EDu32), "chmod a folder");
+  expect(fs.isDir(&dir), "a folder is still a folder");
+  ok(fs.chmod(&file, 0x1A4u32), "chmod 0644 again");
+
+  let missing = root.join("missing");
+  failsWith(root, fs.chmod(&missing, 0x1A4u32), "chmod <root>/missing: No such file or directory",
+    "chmod of nothing");
+  let nul = Path.from("a\x00b");
+  failsWith(root, fs.chmod(&nul, 0x1A4u32), "chmod a\x00b: Invalid argument", "chmod of a path holding a NUL");
+}
+
+fn times(root: &Path) {
+  let file = root.join("time.txt");
+  ok(fs.writeFile(&file, "abc"), "make a file for utime");
+
+  ok(fs.utime(&file, Timestamp.fromUnixSeconds(1000000000i64), Timestamp.fromUnixSeconds(1500000000i64)),
+    "utime of a file");
+  expectInt(modifiedOf(&file), 1500000000, "the modified time is set");
+  expectInt(accessOf(&file), 1000000000, "the access time is set");
+  match fs.stat(&file) {
+    case let Ok(s) { expectInt(s.size, 3, "the size is untouched"); }
+    case is Error { expect(false, "stat after utime"); }
+  }
+  // A fraction of a second is kept by the system and shown rounded down
+  ok(fs.utime(&file, Timestamp.fromUnixNanos(1700000000999000000i64), Timestamp.fromUnixNanos(1700000001500000000i64)),
+    "utime with a fraction of a second");
+  expectInt(modifiedOf(&file), 1700000001, "the modified fraction is dropped");
+  expectInt(accessOf(&file), 1700000000, "the access fraction is dropped");
+  // Before 1970
+  ok(fs.utime(&file, Timestamp.fromUnixSeconds(-43200i64), Timestamp.fromUnixSeconds(-86400i64)),
+    "utime before 1970");
+  // (the Windows runtime's stat shows no time before 1970, only -1)
+  if isWindows() {
+    expect(modifiedOf(&file) != 1700000001, "a time before 1970 was set");
+  } else {
+    expectInt(modifiedOf(&file), -86400, "a modified time before 1970");
+  }
+
+  // A folder
+  let dir = root.join("timedir");
+  ok(fs.makeDir(&dir), "make a folder");
+  ok(fs.utime(&dir, Timestamp.fromUnixSeconds(1100000000i64), Timestamp.fromUnixSeconds(1200000000i64)),
+    "utime of a folder");
+  expectInt(modifiedOf(&dir), 1200000000, "a folder's modified time is set");
+
+  // Through a link, the folder it leads to
+  let link = root.join("timelink");
+  require(junction(&link, &dir), "made a link to the folder");
+  ok(fs.utime(&link, Timestamp.fromUnixSeconds(1300000000i64), Timestamp.fromUnixSeconds(1400000000i64)),
+    "utime through a link");
+  expectInt(modifiedOf(&dir), 1400000000, "the folder the link leads to has the time");
+  ok(fs.removeAll(&link), "remove the link");
+
+  // Now, back again
+  let before = Timestamp.now();
+  ok(fs.utime(&file, before, before), "utime to now");
+  let drift = modifiedOf(&file) - before.unixSeconds();
+  expect(drift >= -1i64 && drift <= 1i64, "now is now");
+
+  let missing = root.join("missing");
+  failsWith(root, fs.utime(&missing, before, before), "utime <root>/missing: No such file or directory",
+    "utime of nothing");
+  let nul = Path.from("a\x00b");
+  failsWith(root, fs.utime(&nul, before, before), "utime a\x00b: Invalid argument", "utime of a path holding a NUL");
+}
+
+fn main() i32 {
+  let root = makeRoot("cone-fs-test-linkmodetime");
+  require(fs.removeAll(&root) is Ok, "clear what an earlier run left");
+  require(fs.makeDir(&root) is Ok, "make the test's folder");
+
+  links(&root);
+  modes(&root);
+  times(&root);
+
+  ok(fs.removeAll(&root), "remove the test's folder");
+  expect(!fs.exists(&root), "the test's folder is gone");
+  done()
+}
