@@ -26,8 +26,8 @@
 //   - findFirst: the earliest by POSITION, though a later block finds a match
 //     first (a predicate that is slow for the first block); none found is None; a
 //     match at the first and at the last item; many matches; and
-//     the later blocks are given up early (the number of predicate calls is a
-//     small part of the items when the first item matches)
+//     the later blocks are given up early (when the first item matches, no block
+//     makes more than two looks' worth, 64, of predicate calls after the match)
 //   - a reduction written in an actor's behaviour
 
 mod concurrency_parallel_reduce;
@@ -359,20 +359,70 @@ fn finds() {
 
 // ---- the later blocks are given up ----
 
-struct Calls {
-  pub n: Atomic[u64];
+// What the predicate of giveUp records. 'found' is set by the matching call itself,
+// so a call that sees it set is a call made after the match; 'after' counts, for
+// each block, the calls made once it was set. Atomics, since the predicate runs on
+// several workers
+struct Gave {
+  pub found: Atomic[bool];
+  pub after: List[Atomic[u64]];
+}
+
+// The blocks findFirst cuts n items into, and how many items each holds: a block
+// holds at least 128 items, a view is cut into at most 256 blocks, and a block
+// holds n / blocks, rounded up (actors' reduce.cone, the header and 'blockLen')
+fn cutBlocks(n: usize) usize, usize {
+  var blocks = (n + 127usize) / 128usize;
+  if blocks > 256usize {
+    blocks = 256usize;
+  }
+  blocks, (n + blocks - 1usize) / blocks
 }
 
 fn giveUp() {
-  let l = counting(1000000usize);
-  let calls = Calls(Atomic[u64].of(0u64));
-  match l.parallel().findFirst(x => { calls.n.add(1u64); **x == 0i64 }) {
+  let n = 1000000usize;
+  let l = counting(n);
+  let blocks, blk = cutBlocks(n);
+  var slots = List[Atomic[u64]]();
+  var b = 0usize;
+  while b < blocks {
+    slots.push(Atomic[u64].of(0u64));
+    b = b + 1usize;
+  }
+  let gave = Gave(Atomic[bool].of(false), slots);
+  match l.parallel().findFirst(x => {
+    let at = usize.from(**x);
+    if gave.found.load() {
+      gave.after[at / blk].add(1u64);
+    }
+    if at == 0usize {
+      gave.found.store(true);
+    }
+    at == 0usize
+  }) {
     case let Some(s) { say("match at the first item", *s); }
     case is None { printStr("none\n"); }
   }
-  // The first item matches, so only the blocks already begun, up to their next look
-  // (every 32 items), ran: far fewer than a million
-  report("later blocks given up", calls.n.load() < 500000u64);
+  // The first item matches, so findFirst's promise is that a block begun after the
+  // match is skipped and one under way stops at its next look, every 32 items
+  // (actors' reduce.cone, the comments above 'findFirst' and 'parFindFirst'). So no
+  // block makes more than a look's worth of calls after the match: a look passed
+  // before the match is published lets 32 items through (31 if the block began
+  // part-way into a look), and the bound allows a second look, for one that falls in
+  // the few instructions between the predicate setting 'found' and findFirst
+  // publishing the match. Whatever the workers' timing, that holds; how many blocks
+  // began BEFORE the match does not (under load all 256 may have), and how many
+  // predicate calls there were is no better: neither is checked
+  var most = 0u64;
+  b = 0usize;
+  while b < blocks {
+    let k = gave.after[b].load();
+    if k > most {
+      most = k;
+    }
+    b = b + 1usize;
+  }
+  report("later blocks given up", most <= 64u64);
 }
 
 // ---- in an actor ----

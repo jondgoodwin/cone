@@ -1,0 +1,154 @@
+// The safe borrows of a SlotTable: borrow and borrowMut by Slot, borrowAt and
+// borrowMutAt by cell number. Each gives Some borrow of a live value and None
+// where get or at would give null: a removed value, a reused cell reached by
+// its old Slot, none, past the table. What they refuse at compile time (a
+// change of the table while a borrow is held) is pinned in the compiler suite,
+// collection_flow_reshape_slots. Expected values are worked out by hand from
+// the rules in basics.cone: cells used in order, a freed cell reused next with
+// the next generation.
+
+mod borrow;
+
+import testing use *;
+import slots use *;
+import collections use List;
+
+struct Pt {
+  pub x: i64;
+  pub y: i64;
+}
+
+// What borrow(s) reaches: its x, or -1 for None
+fn xOf(t: &SlotTable[Pt], s: Slot) i64 {
+  match t.borrow(s) {
+    case let Some(e) {e.x}
+    else {-1i64}
+  }
+}
+
+fn xAt(t: &SlotTable[Pt], i: u32) i64 {
+  match t.borrowAt(i) {
+    case let Some(e) {e.x}
+    else {-1i64}
+  }
+}
+
+// Writes x through borrowMut(s): true if there was a value to write
+fn setX(t: &mut SlotTable[Pt], s: Slot, x: i64) bool {
+  match t.borrowMut(s) {
+    case let Some(e) {e.x = x; true}
+    else {false}
+  }
+}
+
+fn setXAt(t: &mut SlotTable[Pt], i: u32, x: i64) bool {
+  match t.borrowMutAt(i) {
+    case let Some(e) {e.x = x; true}
+    else {false}
+  }
+}
+
+fn live() {
+  var t = SlotTable[Pt].make(4u32);
+  let a = t.add(Pt(1i64, 2i64));
+  let b = t.add(Pt(3i64, 4i64));
+  expectInt(xOf(&t, a), 1i64, "borrow reaches a live value");
+  expectInt(xOf(&t, b), 3i64, "and another");
+  expectInt(xAt(&t, 1u32), 3i64, "borrowAt reaches it by cell number");
+  expect(setX(&mut t, a, 10i64), "borrowMut of a live value is Some");
+  expectInt(xOf(&t, a), 10i64, "the write is in the table");
+  expectInt((*t.get(a)).x, 10i64, "where get finds it");
+  expect(setXAt(&mut t, 1u32, 30i64), "borrowMutAt of a live cell is Some");
+  expectInt(xOf(&t, b), 30i64, "the write is b's");
+  expectInt(xOf(&t, a), 10i64, "and a's is untouched");
+  match t.borrow(a) {
+    case let Some(e) {expect(e as *Pt == t.get(a), "the borrow is of the value in its cell, not a copy");}
+    else {expect(false, "borrow of a live Slot gives Some");}
+  }
+}
+
+fn removed() {
+  var t = SlotTable[Pt].make(4u32);
+  let a = t.add(Pt(1i64, 2i64));
+  t.remove(a);
+  expectInt(xOf(&t, a), -1i64, "borrow of a removed value: None");
+  expect(!setX(&mut t, a, 5i64), "borrowMut of it: None");
+  expectInt(xAt(&t, 0u32), -1i64, "borrowAt of the freed cell: None");
+  expect(!setXAt(&mut t, 0u32, 5i64), "borrowMutAt of it: None");
+  expectInt(xOf(&t, Slot.none()), -1i64, "borrow of none: None");
+  expectInt(xOf(&t, Slot(900u32, 1u32)), -1i64, "borrow past the table: None");
+  expectInt(xAt(&t, 900u32), -1i64, "borrowAt past the table: None");
+  expect(!setXAt(&mut t, 900u32, 5i64), "borrowMutAt past the table: None");
+}
+
+fn reused() {
+  var t = SlotTable[Pt].make(4u32);
+  let a = t.add(Pt(1i64, 2i64));
+  t.remove(a);
+  let b = t.add(Pt(5i64, 6i64));
+  expectUInt(u64.from(b.index), 0u64, "the freed cell is the next used");
+  expectInt(xOf(&t, a), -1i64, "borrow of the old Slot of a reused cell: None");
+  expect(!setX(&mut t, a, 7i64), "borrowMut of it: None, and nothing written");
+  expectInt(xOf(&t, b), 5i64, "the new Slot reaches the new value");
+  expectInt(xAt(&t, 0u32), 5i64, "by cell number, whoever lives there");
+  expect(setX(&mut t, b, 8i64), "borrowMut of the new Slot: Some");
+  expectInt(xAt(&t, 0u32), 8i64, "and its write is the new value's");
+  match t.take(b) {
+    case let Some(v) {expectInt(v.x, 8i64, "take moves out what was written");}
+    case is None[Pt] {expect(false, "take of a live Slot gives Some");}
+  }
+  expectInt(xOf(&t, b), -1i64, "borrow of a taken value: None");
+}
+
+fn aliases() {
+  // A '&mut' borrow is an alias loan: two may be held at once, of one value,
+  // and each sees what the other writes
+  var t = SlotTable[Pt].make(4u32);
+  let a = t.add(Pt(1i64, 2i64));
+  match t.borrowMut(a) {
+    case let Some(e) {
+      match t.borrowMutAt(a.index) {
+        case let Some(f) {
+          f.y = 20i64;
+          e.x = e.y + 1i64;
+          expectInt(f.x, 21i64, "two mutable borrows of one value alias");
+        }
+        else {expect(false, "borrowMutAt of a live cell gives Some");}
+      }
+    }
+    else {expect(false, "borrowMut of a live Slot gives Some");}
+  }
+  expectInt(xOf(&t, a), 21i64, "and the table holds what they wrote");
+}
+
+struct Bin { pub items: List[i64]; }
+
+fn aliasedPush() {
+  // A push through one loan of an element changes the element's List, not the
+  // table: the other loan, still held, sees the List's new length
+  var t = SlotTable[Bin].make(4u32);
+  let a = t.add(Bin(List[i64].empty()));
+  match t.borrowMut(a) {
+    case let Some(e) {
+      match t.borrowMut(a) {
+        case let Some(f) {
+          f.items.push(7i64);
+          f.items.push(8i64);
+          expectUInt(u64.from(e.items.len()), 2u64, "a push through one loan is seen through the other");
+          expectInt(*e.items[1usize], 8i64, "with what was pushed");
+        }
+        else {expect(false, "borrowMut of a live Slot gives Some");}
+      }
+    }
+    else {expect(false, "borrowMut of a live Slot gives Some");}
+  }
+}
+
+fn main() i32 {
+  live();
+  removed();
+  reused();
+  aliases();
+  aliasedPush();
+  done()
+}
