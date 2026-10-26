@@ -10,8 +10,8 @@
 
 // 'x?' is a suffix of a term, as in Rust: '-x?' is '-(x?)', 'f()?[0]' indexes
 // what 'f()?' gives. The one exception is 'await x?', which is '(await x)?'
-// (parsePrefix). '?.' stays held for None propagation (the lexer reports it),
-// so a member of what '?' gives is reached as '(x?).m'.
+// (parsePrefix). '?.' is held (the lexer reports it), so a member of what '?'
+// gives is reached as '(x?).m'.
 //
 // The parser makes a block marked FlagPropagate holding 'x' in a hidden
 // variable (parsePropagate), and type check finishes it (propagateLower, from
