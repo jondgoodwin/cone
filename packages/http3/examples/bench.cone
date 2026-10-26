@@ -1,0 +1,146 @@
+// What QPACK costs, with no frames and no QUIC: one encoder and one decoder,
+// the two ends of one direction of a connection, each section decoded as
+// soon as it is made, the encoder stream delivered before it and the
+// decoder stream fed back after it, so the encoder's references are
+// acknowledged as a quiet connection's would be. Run it with
+//
+//   congo run --release packages/http3/examples/bench.cone
+//
+// The lists are http2's bench's: a browser's GET (eleven fields, a cookie
+// of 96 bytes sent never-indexed, a path and a request id that change) and
+// a server's 200 (seven fields, a length that changes), 64 of each made
+// before the clock starts, then 200,000 of each through both ends. Two
+// configurations: the defaults (no dynamic table: the static table and
+// literals), and a 4 KB table with 16 blocked streams allowed. With the
+// table, the fields every list shares are inserted first, so they are the
+// oldest entries, and every section names them: none may be evicted, and
+// once the table is full the changing fields go as literals (an encoder
+// that duplicated entries about to age out would keep inserting).
+
+mod bench;
+
+import stdio use *;
+import collections use List, String;
+import time use Instant, Duration;
+import http2 use HeaderField;
+import http3 use *;
+
+fn requestList(i: u64) List[HeaderField] {
+  var f = List[HeaderField].empty();
+  var path = String.from("/tiles/7/");
+  path.appendUInt(i * 37u64 % 1000u64);
+  path.append(".bin");
+  var id = String.from("req-");
+  id.appendUInt(i * 7919u64);
+  f.push(HeaderField.make(":method", "GET"));
+  f.push(HeaderField.make(":scheme", "https"));
+  f.push(HeaderField.make(":authority", "assets.example.com"));
+  f.push(HeaderField.make(":path", path.view()));
+  f.push(HeaderField.make("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) cone-http3/0.1"));
+  f.push(HeaderField.make("accept", "application/octet-stream,*/*;q=0.8"));
+  f.push(HeaderField.make("accept-encoding", "gzip, deflate, br"));
+  f.push(HeaderField.make("accept-language", "en-US,en;q=0.9"));
+  f.push(HeaderField.make("cookie", "session=7b2f3c1d9e8a4b5c6d7e8f90a1b2c3d4; theme=dark; tz=Europe/Amsterdam; seen=1"));
+  f.push(HeaderField.make("x-request-id", id.view()));
+  f.push(HeaderField.make("cache-control", "no-cache"));
+  f
+}
+
+fn responseList(i: u64) List[HeaderField] {
+  var f = List[HeaderField].empty();
+  var len = String.empty();
+  len.appendUInt(1000u64 + i * 131u64 % 65536u64);
+  f.push(HeaderField.make(":status", "200"));
+  f.push(HeaderField.make("content-type", "application/octet-stream"));
+  f.push(HeaderField.make("content-length", len.view()));
+  f.push(HeaderField.make("date", "Mon, 26 Oct 2026 08:50:00 GMT"));
+  f.push(HeaderField.make("server", "cone"));
+  f.push(HeaderField.make("cache-control", "public, max-age=86400"));
+  f.push(HeaderField.make("etag", "\"5f3a9c\""));
+  f
+}
+
+fn run(what: &str, cfg: QpackConfig, lists: &Array[List[HeaderField]], n: u64) {
+  var enc = QpackEncoder.make(&cfg);
+  var dec = QpackDecoder.make(cfg);
+  enc.peerSettings(cfg.maxTableCapacity, cfg.blockedStreams);
+  var section = List[u8].empty();
+  var stream = List[u8].empty();
+  var got = List[HeaderField].empty();
+  var plain = 0u64;
+  var coded = 0u64;
+  var streamed = 0u64;
+  var wrong = 0u64;
+  let t0 = Instant.now();
+  var i = 0u64;
+  while i < n {
+    let l = &lists[usize.from(i % 64u64)];
+    section.clear();
+    enc.encode(i * 4u64, l.view(), &mut section);
+    stream.clear();
+    enc.pollTransmit(&mut stream);
+    if stream.len() > 0usize {
+      streamed = streamed + u64.from(stream.len());
+      match dec.encoderInput(stream.view()) {
+        case let Ok(c) {}
+        case let Error(e) {wrong = wrong + 1u64;}
+      }
+    }
+    coded = coded + u64.from(section.len());
+    got.clear();
+    match dec.decode(i * 4u64, section.view(), &mut got) {
+      case let Ok(d) {
+        match d {
+          case let Done(x) {plain = plain + u64.from(x.size);}
+          case is Blocked {wrong = wrong + 1u64;}
+        }
+      }
+      case let Error(e) {wrong = wrong + 1u64;}
+    }
+    stream.clear();
+    dec.pollTransmit(&mut stream);
+    if stream.len() > 0usize {
+      match enc.decoderInput(stream.view()) {
+        case let Ok(c) {}
+        case let Error(e) {wrong = wrong + 1u64;}
+      }
+    }
+    i = i + 1u64;
+  }
+  let took = Instant.now() - t0;
+  if wrong != 0u64 {printStr("WRONG: a section failed\n");}
+  printStr(what);
+  printStr(": ");
+  printUInt(u64.from(took.nanos()) / n);
+  printStr(" ns a list, both ends; ");
+  printUInt(plain / n);
+  printStr(" bytes of list in ");
+  printUInt(coded / n);
+  printStr(" of section (");
+  printUInt(plain * 1000u64 / u64.from(took.nanos()));
+  printStr(" MB/s); ");
+  printUInt(enc.dynamicTable().insertCount());
+  printStr(" inserts, ");
+  printUInt(streamed);
+  printStr(" bytes of encoder stream in all\n");
+}
+
+fn main() {
+  var reqs = List[List[HeaderField]].empty();
+  var resps = List[List[HeaderField]].empty();
+  var i = 0u64;
+  while i < 64u64 {
+    reqs.push(requestList(i));
+    resps.push(responseList(i));
+    i = i + 1u64;
+  }
+  let plain = QpackConfig.make();
+  var table = QpackConfig.make();
+  table.maxTableCapacity = 4096usize;
+  table.encoderTableCapacity = 4096usize;
+  table.blockedStreams = 16usize;
+  run("requests,  no table", plain, reqs.view(), 200000u64);
+  run("responses, no table", plain, resps.view(), 200000u64);
+  run("requests,  4 KB    ", table, reqs.view(), 200000u64);
+  run("responses, 4 KB    ", table, resps.view(), 200000u64);
+}

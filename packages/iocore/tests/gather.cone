@@ -1,0 +1,244 @@
+// A gather write: SendChain sends every segment of an iobuf Chain in one
+// operation, and its answer gives the whole chain back, every segment in it,
+// however it ended.
+//
+// 1. Three buffers (the first with a few bytes already consumed) in one send:
+//    Done with every byte, the peer reads them in order, and the answer holds
+//    the three segments, their bytes as they were. An empty chain is Done(0).
+// 2. 240 segments of uneven sizes, about 12 MB, to a peer that has not begun
+//    to read: more than the sockets' buffers hold, so the gather waits. On
+//    Linux sendmsg takes it in parts, each part ending inside a segment, and
+//    the send goes on from the byte it reached, 64 segments a call; on Windows
+//    one WSASend holds all 240. Then the peer reads it all: the bytes arrive in
+//    order and whole, and the gather is Done with all of them.
+// 3. Gathers with no room left, cancelled (the first of them, which has sent
+//    some, and one behind it): Cancelled, each with its whole chain back.
+
+mod gather;
+
+import testing use *;
+import collections use List;
+import time use Instant, Duration;
+import iobuf use *;
+import iocore use *;
+import diag;
+
+fn waitFor(lp: &mut Loop, out: &mut List[Completion], n: usize) {
+  let limit = Instant.now() + Duration.fromSeconds(5i64);
+  while out.len() < n && Instant.now() < limit {
+    lp.poll(limit, out);
+  }
+}
+
+fn pair(lp: &mut Loop) Handle, Handle {
+  let listener = lp.mustListen(SocketAddr.localhost(0u16));
+  var port = 0u16;
+  match lp.localAddr(listener) {
+    case let Ok(a) {port = a.port();}
+    case let Error(e) {}
+  }
+  lp.submit(Op.Accept(listener), Target.Here(9001u64));
+  lp.submit(Op.Connect(SocketAddr.localhost(port)), Target.Here(9002u64));
+  var out = List[Completion].empty();
+  waitFor(lp, &mut out, 2usize);
+  var a = Handle.none();
+  var b = Handle.none();
+  var k = 0usize;
+  while k < out.len() {
+    if out[k].token == 9001u64 {a = out[k].handle;} else {b = out[k].handle;}
+    k = k + 1usize;
+  }
+  lp.close(listener);
+  b, a
+}
+
+// The byte at stream position pos
+fn at(pos: usize) u8 {u8.from(pos % 251usize) ^ 0x5Au8}
+
+// A buffer of n bytes of the stream from position 'from'
+fn piece(from: usize, n: usize) IoBuf {
+  var b = IoBuf(n);
+  let room = b.whole();
+  var i = 0usize;
+  while i < n {
+    room[i] = at(from + i);
+    i = i + 1usize;
+  }
+  b.setLen(n);
+  b
+}
+
+// Whether chain c holds the stream's bytes from position 'from'
+fn holds(c: &Chain, from: usize) bool {
+  var i = 0usize;
+  while i < c.len() {
+    if c.byteAt(i) != at(from + i) {return false;}
+    i = i + 1usize;
+  }
+  true
+}
+
+// Read n bytes on sock, checking each against the stream from 'from'; the
+// answers of other tokens go to 'others'. How many arrived, and whether they
+// were the stream's
+fn readAll(lp: &mut Loop, sock: Handle, from: usize, n: usize, others: &mut List[Completion]) usize, bool {
+  var got = 0usize;
+  var intact = true;
+  var out = List[Completion].empty();
+  let limit = Instant.now() + Duration.fromSeconds(30i64);
+  lp.submit(Op.Recv(sock, IoBuf(65536usize)), Target.Here(3u64));
+  while got < n && Instant.now() < limit {
+    lp.poll(limit, &mut out);
+    each c in out.drain() {
+      if c.token == 3u64 {
+        let v = c.buf.view();
+        var j = 0usize;
+        while j < v.len {
+          if v[j] != at(from + got + j) {intact = false;}
+          j = j + 1usize;
+        }
+        got = got + c.count();
+        if c.count() == 0usize {got = n + 1usize;}
+        if got < n {lp.submit(Op.Recv(sock, IoBuf(65536usize)), Target.Here(3u64));}
+      } else {
+        others.push(c);
+      }
+    }
+  }
+  got, intact
+}
+
+fn main() i32 {
+  {
+    var lp = Loop.mustMake();
+    var out = List[Completion].empty();
+    var client = Handle.none();
+    var server = Handle.none();
+    client, server = pair(&mut lp);
+    require(lp.isOpen(client) && lp.isOpen(server), "a connected pair");
+
+    // 1. Three buffers in one send. The first holds 3 bytes before the
+    // stream's start, consumed: the chain's first segment begins inside it
+    var ch = Chain.make(1048576usize);
+    var first = IoBuf(64usize);
+    first.append("xyz");
+    {
+      let one = piece(0usize, 10usize);
+      first.append(one.view());
+    }
+    _ = ch.push(first);
+    ch.advance(3usize);
+    _ = ch.push(piece(10usize, 5000usize));
+    _ = ch.push(piece(5010usize, 7usize));
+    let total = ch.len();
+    expectUInt(u64.from(ch.segments()), 3u64, "three segments");
+    lp.submit(Op.SendChain(client, ch), Target.Here(1u64));
+    var sendAnswers = List[Completion].empty();
+    var got = 0usize;
+    var intact = false;
+    got, intact = readAll(&mut lp, server, 0usize, total, &mut sendAnswers);
+    expectUInt(u64.from(got), u64.from(total), "every byte of the three arrived");
+    expect(intact, "...in order, and whole");
+    if sendAnswers.len() == 0usize {waitFor(&mut lp, &mut sendAnswers, 1usize);}
+    requireUInt(u64.from(sendAnswers.len()), 1u64, "the gather answered once");
+    each c in sendAnswers.drain() {
+      expect(c.isDone(), "Done");
+      expectUInt(u64.from(c.n), u64.from(total), "with every byte");
+      expectUInt(u64.from(c.bufLen()), u64.from(total), "its buffers back hold them all (bufLen)");
+      expect(c.buf.capacity() == 0usize, "and no single buffer");
+      let back = c.chainBack();
+      expectUInt(u64.from(back.segments()), 3u64, "the chain back, three segments");
+      expectUInt(u64.from(back.len()), u64.from(total), "...holding every byte");
+      expect(holds(&back, 0usize), "...as they were");
+    }
+    lp.submit(Op.SendChain(client, Chain.make(16usize)), Target.Here(4u64));
+    waitFor(&mut lp, &mut out, 1usize);
+    requireUInt(u64.from(out.len()), 1u64, "an empty chain answered");
+    each c in out.drain() {
+      expect(c.isDone() && c.n == 0usize, "Done(0)");
+      expectUInt(u64.from(c.chainBack().segments()), 0u64, "its chain back, empty");
+    }
+
+    // 2. 240 segments, about 12 MB, to a peer that does not read yet
+    var big = Chain.make(0xFFFFFFFFusize);
+    var pos = total;
+    var i = 0usize;
+    while i < 240usize {
+      let n = 40000usize + 97usize * i;
+      _ = big.push(piece(pos, n));
+      pos = pos + n;
+      i = i + 1usize;
+    }
+    let bigLen = big.len();
+    lp.submit(Op.SendChain(client, big), Target.Here(2u64));
+    lp.poll(Instant.now() + Duration.fromMillis(50i64), &mut out);
+    each c in out.drain() {sendAnswers.push(c);}
+    got, intact = readAll(&mut lp, server, total, bigLen, &mut sendAnswers);
+    expectUInt(u64.from(got), u64.from(bigLen), "every byte of the 240 arrived");
+    expect(intact, "...in order, and whole, across every segment boundary");
+    if sendAnswers.len() == 0usize {waitFor(&mut lp, &mut sendAnswers, 1usize);}
+    requireUInt(u64.from(sendAnswers.len()), 1u64, "the gather answered once");
+    each c in sendAnswers.drain() {
+      expect(c.isDone(), "Done");
+      expectUInt(u64.from(c.n), u64.from(bigLen), "with every byte");
+      let back = c.chainBack();
+      expectUInt(u64.from(back.segments()), 240u64, "the chain back, all 240 segments");
+      expect(holds(&back, total), "...their bytes as they were");
+    }
+
+    // 3. Gathers with no room, cancelled. Nobody reads the server's end now,
+    // so gathers of four 256 KiB buffers are made until one is not answered
+    // in 20 ms: the sockets' buffers are full
+    var blocked = OpId.none();
+    var tries = 0u32;
+    while blocked.isNone() && tries < 200u32 {
+      var g = Chain.make(0xFFFFFFFFusize);
+      var j = 0usize;
+      while j < 4usize {
+        _ = g.push(piece(j, 262144usize));
+        j = j + 1usize;
+      }
+      let id = lp.submit(Op.SendChain(client, g), Target.Here(21u64));
+      lp.poll(Instant.now() + Duration.fromMillis(20i64), &mut out);
+      if out.len() == 0usize {blocked = id;}
+      out.clear();
+      tries = tries + 1u32;
+    }
+    expect(!blocked.isNone(), "the buffers filled: a gather waits");
+    var g2 = Chain.make(0xFFFFFFFFusize);
+    var j2 = 0usize;
+    while j2 < 5usize {
+      _ = g2.push(piece(j2 * 1000usize, 1000usize));
+      j2 = j2 + 1usize;
+    }
+    let behind = lp.submit(Op.SendChain(client, g2), Target.Here(22u64));
+    expect(lp.cancel(behind), "the gather behind it: its cancel is taken");
+    expect(lp.cancel(blocked), "and the first's");
+    waitFor(&mut lp, &mut out, 2usize);
+    requireUInt(u64.from(out.len()), 2u64, "two answers");
+    var cancelled = 0u32;
+    var whole = true;
+    each c in out.drain() {
+      if c.status == diag.outcomeCancelled {cancelled = cancelled + 1u32;}
+      let tok = c.token;
+      let back = c.chainBack();
+      if tok == 21u64 {
+        if back.segments() != 4usize || back.len() != 1048576usize {whole = false;}
+      } else {
+        if back.segments() != 5usize || back.len() != 5000usize || !holds(&back, 0usize) {whole = false;}
+      }
+    }
+    expectUInt(u64.from(cancelled), 2u64, "both Cancelled");
+    expect(whole, "each with its whole chain back, every segment");
+    lp.close(client);
+    lp.close(server);
+
+    let c = lp.counters();
+    expectUInt(c.delivered, c.submitted, "every operation answered once");
+    expectUInt(c.inFlight, 0u64, "nothing in flight");
+    expectUInt(stats().lent, 0u64, "every buffer back in the pool");
+  }
+  trimAll();
+  expectUInt(osBlocks(), 0u64, "and every block back to the OS");
+  done()
+}

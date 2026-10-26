@@ -1,0 +1,255 @@
+// Every HPACK bound of HpackConfig, crossed, and its value just inside:
+// - headerTableSize: a size update past it is refused once the SETTINGS is
+//   acknowledged (a decrease) or sent (an increase), and not before;
+// - encoderTableSize: the encoder's table follows the peer's
+//   SETTINGS_HEADER_TABLE_SIZE up to it and no further, with the size
+//   updates section 4.2 asks for, and indexes nothing at 0;
+// - maxHeaderListSize: a list one byte past it is refused, the connection
+//   going on; the block is decoded to its end (a malformed byte after the
+//   point it was crossed is still found), and the tables stay in step, so
+//   the next block may name an entry the refused one added;
+// - headerListAbortSize: past it decoding stops at once (a malformed byte
+//   after that point is never reached) -- the HPACK bomb, one 4 KB entry
+//   named again and again by one-byte references -- and a raw or Huffman
+//   string that would pass it is refused before it is copied whole.
+
+mod limits;
+
+import testing use *;
+import collections use *;
+import http2 use *;
+
+fn hex(b: &Array[u8]) String {
+  var s = String.empty();
+  var i = 0usize;
+  while i < b.len {
+    s.appendHex(u64.from(b[i]), 2usize);
+    i = i + 1usize;
+  }
+  s
+}
+
+fn nibble(c: u8) u8 {if c >= 'a' {c - 'a' + 10u8} else {c - '0'}}
+
+fn unhex(s: &Array[u8]) List[u8] {
+  var out = List[u8].empty();
+  var i = 0usize;
+  while i + 1usize < s.len {
+    out.push((nibble(s[i]) << 4u8) | nibble(s[i + 1usize]));
+    i = i + 2usize;
+  }
+  out
+}
+
+fn run(dec: &mut HpackDecoder, block: &Array[u8]) String {
+  var got = List[HeaderField].empty();
+  var s = String.empty();
+  match dec.decode(block, &mut got) {
+    case let Ok(size) {
+      s.append("ok ");
+      s.appendUInt(u64.from(got.len()));
+      s.append(" size ");
+      s.appendUInt(u64.from(size));
+    }
+    case let Error(e) {
+      s.append(e.message().view());
+      if !e.isConnectionError() {s.append(" (the connection goes on)");}
+    }
+  }
+  s
+}
+
+fn runHex(dec: &mut HpackDecoder, coded: &str) String {
+  let b = unhex(coded);
+  run(dec, b.view())
+}
+
+fn repeat(c: u8, n: usize) String {
+  var s = String.withCapacity(n);
+  var i = 0usize;
+  while i < n {
+    s.appendByte(c);
+    i = i + 1usize;
+  }
+  s
+}
+
+const tooLarge = "too large: the header list is past maxHeaderListSize (the connection goes on)";
+const abandoned = "abandoned: the header list is past headerListAbortSize";
+
+fn headerTableSize() {
+  // A decrease: until its ACK, the peer may still use the 4096 it began with
+  var c = HpackConfig.make();
+  c.headerTableSize = 256usize;
+  var dec = HpackDecoder.make(c);
+  dec.settingSent();
+  expectStr(runHex(&mut dec, "3fe11f").view(), "ok 0 size 0", "256 sent, not acknowledged: an update to 4096 passes");
+  dec.settingAcknowledged();
+  expectStr(runHex(&mut dec, "82").view(),
+    "malformed: a block after a smaller SETTINGS_HEADER_TABLE_SIZE does not begin with a table size update",
+    "256 acknowledged: a block without the update owed");
+  dec = HpackDecoder.make(c);
+  dec.settingSent();
+  dec.settingAcknowledged();
+  expectStr(runHex(&mut dec, "3fe101").view(), "ok 0 size 0", "256 acknowledged: an update to 256");
+  expectStr(runHex(&mut dec, "3fe201").view(), "malformed: a table size update past SETTINGS_HEADER_TABLE_SIZE",
+    "256 acknowledged: an update to 257");
+
+  // An increase: from when it is sent
+  c.headerTableSize = 8192usize;
+  dec = HpackDecoder.make(c);
+  expectStr(runHex(&mut dec, "3fe13f").view(), "malformed: a table size update past SETTINGS_HEADER_TABLE_SIZE",
+    "8192 not yet sent: an update to 8192");
+  dec = HpackDecoder.make(c);
+  dec.settingSent();
+  expectStr(runHex(&mut dec, "3fe13f").view(), "ok 0 size 0", "8192 sent: an update to 8192");
+  dec.settingAcknowledged();
+  expectStr(runHex(&mut dec, "3fe13f82").view(), "ok 1 size 42", "8192 acknowledged: an update to 8192, no update owed");
+  expectStr(runHex(&mut dec, "3fe23f").view(), "malformed: a table size update past SETTINGS_HEADER_TABLE_SIZE",
+    "8192 acknowledged: an update to 8193");
+}
+
+fn block(enc: &mut HpackEncoder) String {
+  var out = List[u8].empty();
+  enc.startBlock(&mut out);
+  hex(out.view())
+}
+
+fn encoderTableSize() {
+  var c = HpackConfig.make();
+  c.huffman = false;
+  var enc = HpackEncoder.make(&c);
+  expectStr(block(&mut enc).view(), "", "the default: nothing owed");
+  enc.setPeerTableSize(65536usize);
+  expectStr(block(&mut enc).view(), "", "the peer allows 65536: the table stays at 4096, nothing owed");
+  expectUInt(u64.from(enc.dynamicTable().maxSize()), 4096u64, "at 4096");
+  enc.setPeerTableSize(1024usize);
+  expectStr(block(&mut enc).view(), "3fe107", "the peer allows 1024: an update to it");
+  enc.setPeerTableSize(100usize);
+  enc.setPeerTableSize(4096usize);
+  expectStr(block(&mut enc).view(), "3f453fe11f", "100, then 4096, between blocks: both");
+  enc.setPeerTableSize(0usize);
+  enc.setPeerTableSize(5000usize);
+  expectStr(block(&mut enc).view(), "203fe11f", "0, then 5000 between blocks: 0, then the cap 4096");
+
+  c.encoderTableSize = 0usize;
+  enc = HpackEncoder.make(&c);
+  var fields = List[HeaderField].empty();
+  fields.push(HeaderField.make("a", "b"));
+  var out = List[u8].empty();
+  enc.encode(fields.view(), &mut out);
+  expectStr(hex(out.view()).view(), "200001610162", "a cap of 0: an update to 0, then a literal not indexed");
+  expectUInt(u64.from(enc.dynamicTable().len()), 0u64, "a cap of 0: nothing in the table");
+  enc.setPeerTableSize(65536usize);
+  expectStr(block(&mut enc).view(), "", "a cap of 0: the peer allowing more changes nothing");
+
+  c.encoderTableSize = 256usize;
+  enc = HpackEncoder.make(&c);
+  expectStr(block(&mut enc).view(), "3fe101", "a cap of 256: the first block begins at 256");
+}
+
+fn maxHeaderListSize() {
+  var c = HpackConfig.make();
+  c.huffman = false;
+  c.maxHeaderListSize = 100usize;
+  var enc = HpackEncoder.make(&c);
+  var dec = HpackDecoder.make(c);
+
+  var out = List[u8].empty();
+  var fields = List[HeaderField].empty();
+  fields.push(HeaderField.make("a", repeat('v', 67usize).view()));
+  enc.encode(fields.view(), &mut out);
+  expectStr(run(&mut dec, out.view()).view(), "ok 1 size 100", "a list of exactly 100");
+
+  // One byte past, and a field added to the table after the point it passed
+  out.clear();
+  fields.clear();
+  fields.push(HeaderField.make("b", repeat('v', 68usize).view()));
+  fields.push(HeaderField.make("y", "z"));
+  enc.encode(fields.view(), &mut out);
+  expectStr(run(&mut dec, out.view()).view(), tooLarge, "a list of 101");
+  expectUInt(u64.from(dec.dynamicTable().len()), u64.from(enc.dynamicTable().len()), "the tables in step: their lengths");
+  expectStr(dec.dynamicTable().name(0usize), "y", "the tables in step: the newest");
+  out.clear();
+  fields.clear();
+  fields.push(HeaderField.make("y", "z"));
+  enc.encode(fields.view(), &mut out);
+  expectStr(hex(out.view()).view(), "be", "the next block names the entry the refused one added");
+  expectStr(run(&mut dec, out.view()).view(), "ok 1 size 34", "...and decodes");
+
+  // Decoded to its end: a bad byte after the crossing is found
+  var bad = List[u8].empty();
+  encodeLiteral(&mut bad, Indexing.Without, 0usize, "c", repeat('v', 100usize).view(), false);
+  bad.push(0x80u8);
+  expectStr(run(&mut dec, bad.view()).view(), "malformed: an index of 0", "past the bound, then an index of 0");
+}
+
+fn headerListAbortSize() {
+  // The bomb: one 4000-byte entry, then a hundred references to it
+  var bomb = List[u8].empty();
+  encodeLiteral(&mut bomb, Indexing.Incremental, 0usize, "x", repeat('v', 4000usize).view(), false);
+  var k = 0usize;
+  while k < 100usize {
+    bomb.push(0xBEu8);
+    k = k + 1usize;
+  }
+  bomb.push(0x80u8);
+  expectUInt(u64.from(bomb.len()), 4107u64, "the bomb: 4 KB of block");
+  var dec = HpackDecoder.make(HpackConfig.make());
+  expectStr(run(&mut dec, bomb.view()).view(), abandoned, "the bomb: stopped, the index of 0 at its end never read");
+  expectStr(runHex(&mut dec, "82").view(), "malformed: an earlier block failed: the table is lost", "after the bomb");
+
+  // Four references: past maxHeaderListSize, not the abort size, so decoded
+  // to the end, where the index of 0 is
+  var small = List[u8].empty();
+  encodeLiteral(&mut small, Indexing.Incremental, 0usize, "x", repeat('v', 4000usize).view(), false);
+  small.push(0xBEu8);
+  small.push(0xBEu8);
+  small.push(0xBEu8);
+  small.push(0xBEu8);
+  var d2 = HpackDecoder.make(HpackConfig.make());
+  var copy = List[u8].empty();
+  copy.reserve(small.len());
+  var i = 0usize;
+  while i < small.len() {
+    copy.push(*small[i]);
+    i = i + 1usize;
+  }
+  expectStr(run(&mut d2, small.view()).view(), tooLarge, "five 4 KB fields: too large, decoded");
+  copy.push(0x80u8);
+  var d3 = HpackDecoder.make(HpackConfig.make());
+  expectStr(run(&mut d3, copy.view()).view(), "malformed: an index of 0", "five 4 KB fields and an index of 0: found");
+
+  // The exact edge, on smaller bounds: 200 kept going, 201 stopped
+  var c = HpackConfig.make();
+  c.maxHeaderListSize = 100usize;
+  c.headerListAbortSize = 200usize;
+  var edge = List[u8].empty();
+  encodeLiteral(&mut edge, Indexing.Without, 0usize, "a", repeat('v', 167usize).view(), false);
+  var d4 = HpackDecoder.make(c);
+  expectStr(run(&mut d4, edge.view()).view(), tooLarge, "a list of 200, the abort size");
+  edge.clear();
+  encodeLiteral(&mut edge, Indexing.Without, 0usize, "a", repeat('v', 168usize).view(), false);
+  var d5 = HpackDecoder.make(c);
+  expectStr(run(&mut d5, edge.view()).view(), abandoned, "a list of 201");
+
+  // A string past it, refused before it is copied: raw by its length,
+  // Huffman as it decodes (100,000 'a's code to 62,500 bytes)
+  var raw = List[u8].empty();
+  encodeLiteral(&mut raw, Indexing.Without, 0usize, "a", repeat('v', 70000usize).view(), false);
+  var d6 = HpackDecoder.make(HpackConfig.make());
+  expectStr(run(&mut d6, raw.view()).view(), abandoned, "a raw value of 70,000 bytes");
+  var huff = List[u8].empty();
+  encodeLiteral(&mut huff, Indexing.Without, 0usize, "a", repeat('a', 100000usize).view(), true);
+  expectUInt(u64.from(huff.len()), 62507u64, "a Huffman value of 100,000 bytes, in a block of 62,507");
+  var d7 = HpackDecoder.make(HpackConfig.make());
+  expectStr(run(&mut d7, huff.view()).view(), abandoned, "a Huffman value of 100,000 bytes");
+}
+
+fn main() i32 {
+  headerTableSize();
+  encoderTableSize();
+  maxHeaderListSize();
+  headerListAbortSize();
+  done()
+}

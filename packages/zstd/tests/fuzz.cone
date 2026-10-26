@@ -1,0 +1,202 @@
+// Damaged and made-up streams must be refused or decoded, never crash, hang
+// or leave the Decompressor in a state that does not answer. Two kinds:
+//   - every bit of every byte flipped, one at a time, in frames that carry a
+//     content checksum (handmade ones with predefined, Huffman, FSE and
+//     repeated tables; reference ones with FSE-coded Huffman weights and
+//     small blocks whose tables repeat);
+//   - pseudo-random bytes after a valid magic number and a valid frame
+//     header descriptor, 3000 of them, 1 to 400 bytes long.
+// Each is decoded in one call and streamed (997 bytes in, 4096 out at a
+// time). The answer must be Done or Failed, the same both ways (but for a
+// window over the limit, which only streaming refuses); never "stuck", and a
+// reason's offset within the input. A damaged frame with a checksum must
+// never decode to wrong bytes without failing: the flips that decode at all
+// must give the right content, and they are counted and pinned. They fall
+// where a change means nothing: the frame header descriptor's unused bit,
+// window descriptor bits that leave the window large enough, the single-
+// segment flag of a frame whose content size byte then reads as a large
+// enough window, the bits after an FSE table description in its last byte,
+// and bitstream bits whose change copies the same bytes from elsewhere (an
+// offset or a length into repeated text).
+
+mod fuzz;
+
+import testing use *;
+import collections use *;
+import zstd use *;
+import fs;
+import path use Path;
+
+fn le32(s: &String, at: usize) usize {
+  usize.from(s[at]) + usize.from(s[at + 1usize]) * 256usize + usize.from(s[at + 2usize]) * 65536usize + usize.from(s[at + 3usize]) * 16777216usize
+}
+
+// Streamed: 0 Done, 1 Failed, 2 stuck; the output in 'out'
+fn streamed(s: &Array[u8], out: &mut List[u8], maxWindow: u64) i32 {
+  var d = Decompressor.make();
+  d.setMaxWindow(maxWindow);
+  var pos = 0usize;
+  var piece = List[u8].empty();
+  if s.len == 0usize { d.finish(); }
+  while true {
+    if pos < s.len {
+      let n = if s.len - pos < 997usize {s.len - pos} else {997usize};
+      d.feed(&s[pos..<pos + n]);
+      pos += n;
+      if pos == s.len { d.finish(); }
+    }
+    var st: Status = Status.MoreOutput;
+    while st == Status.MoreOutput {
+      piece.clear();
+      st = d.pull(&mut piece, 4096usize);
+      var k = 0usize;
+      while k < piece.len() { out.push(*piece[k]); k += 1usize; }
+    }
+    if st == Status.Done { return 0; }
+    if st == Status.Failed {
+      match d.error() {
+        case let Some(e) {
+          if e.offset > u64.from(s.len) { return 3; }
+          if e.kind == ErrorKind.WindowTooLarge { return 5; }
+        }
+        else { return 4; }
+      }
+      return 1;
+    }
+    if pos >= s.len { return 2; }
+  }
+  2
+}
+
+fn copyOf(a: &Array[u8]) List[u8] {
+  var l = List[u8].withCapacity(a.len);
+  var i = 0usize;
+  while i < a.len { l.push(a[i]); i += 1usize; }
+  l
+}
+
+struct Tally {
+  runs: usize;
+  refused: usize;
+  sameBytes: usize;
+  windowOnly: usize;
+  wrongBytes: usize;
+  disagree: usize;
+}
+
+// Every bit of 's' flipped in turn
+fn flipAll(s: &Array[u8], content: &Array[u8], t: &mut Tally) {
+  var m = copyOf(s);
+  var i = 0usize;
+  while i < s.len {
+    var b = 0u32;
+    while b < 8u32 {
+      m.set(i, s[i] ^ u8.from(1u32 << b));
+      t.runs += 1usize;
+      var out = List[u8].empty();
+      let rs = streamed(m.view(), &mut out, 134217728u64);
+      var r1 = 1;
+      match decompress(m.view(), 0usize) {
+        case let Ok(got) {
+          r1 = 0;
+          if got.view() != out.view() && rs == 0 { t.disagree += 1usize; }
+        }
+        case let Error(e) {}
+      }
+      // A window over maxWindow is refused only when streaming (the one-call
+      // helpers keep the whole output, and a window is no memory bound there:
+      // they go on, and decode it or find another fault)
+      if rs == 5 { t.windowOnly += 1usize; }
+      else if rs != r1 { t.disagree += 1usize; }
+      if rs == 0 {
+        if out.view() == content { t.sameBytes += 1usize; } else { t.wrongBytes += 1usize; }
+      } else {
+        t.refused += 1usize;
+      }
+      b += 1u32;
+    }
+    m.set(i, s[i]);
+    i += 1usize;
+  }
+}
+
+fn main() i32 {
+  var t = Tally(0usize, 0usize, 0usize, 0usize, 0usize, 0usize);
+  var picked = 0usize;
+  let files: Array[&str, 2] = ["../../../../tests/data/handmade.bin", "../../../../tests/data/corpus.bin"];
+  var f = 0usize;
+  while f < 2usize {
+    match fs.readFile(&Path.from(files[f])) {
+      case let Ok(file) { picked += flipFrom(&file, &mut t); }
+      case let Error(e) { expect(false, "a data file is there"); }
+    }
+    f += 1usize;
+  }
+  expectInt(i64.from(picked), 7i64, "frames damaged");
+  expectInt(i64.from(t.disagree), 0i64, "one call and streamed agree");
+  expectInt(i64.from(t.wrongBytes), 0i64, "a damaged frame with a checksum decoded to wrong bytes");
+  expectInt(i64.from(t.sameBytes), 117i64, "flips that decode to the same bytes");
+  expectInt(i64.from(t.windowOnly), 7i64, "flips to a window over 128 MiB (refused only when streaming)");
+  expectInt(i64.from(t.refused + t.sameBytes), i64.from(t.runs), "every flip refused or harmless");
+
+  // Random bytes after a magic number and a descriptor that asks for a
+  // windowed frame, single segment, or a checksum
+  var s = 99u64;
+  var stuck = 0usize;
+  var disagree = 0usize;
+  var n = 0usize;
+  while n < 3000usize {
+    s = s * 6364136223846793005u64 + 1442695040888963407u64;
+    let len = 1usize + usize.from((s >> 33u64) % 400u64);
+    var m = List[u8].empty();
+    m.push(0x28u8); m.push(0xB5u8); m.push(0x2Fu8); m.push(0xFDu8);
+    s = s * 6364136223846793005u64 + 1442695040888963407u64;
+    m.push(u8.from((s >> 40u64) & 0x27u64));
+    var k = 0usize;
+    while k < len {
+      s = s * 6364136223846793005u64 + 1442695040888963407u64;
+      m.push(u8.from((s >> 40u64) & 255u64));
+      k += 1usize;
+    }
+    var out = List[u8].empty();
+    // (any window: the random descriptors ask for huge ones, and only
+    // what is decoded is kept)
+    let rs = streamed(m.view(), &mut out, 0xFFFFFFFFFFFFFFFFu64);
+    if rs >= 2 { stuck += 1usize; }
+    let r1 = match decompress(m.view(), 0usize) { case let Ok(got) {0} case let Error(e) {1} };
+    if r1 != rs { disagree += 1usize; }
+    n += 1usize;
+  }
+  expectInt(i64.from(stuck), 0i64, "random frames answered (Done or Failed, a reason within the input)");
+  expectInt(i64.from(disagree), 0i64, "random frames: one call and streamed agree");
+  done()
+}
+
+// The frames chosen from one data file, flipped; how many
+fn flipFrom(file: &String, t: &mut Tally) usize {
+  let count = le32(file, 0usize);
+  var at = 4usize;
+  var r = 0usize;
+  var picked = 0usize;
+  while r < count {
+    let nameLen = usize.from(file[at]);
+    let name = file.sub(at + 1usize, at + 1usize + nameLen);
+    at += 2usize + nameLen;
+    let flen = le32(file, at);
+    let s = &file.view().bytes()[at + 4usize..<at + 4usize + flen];
+    at += 4usize + flen;
+    let clen = le32(file, at);
+    let slen = le32(file, at + 12usize);
+    let content = &file.view().bytes()[at + 16usize..<at + 16usize + slen];
+    at += 16usize + slen;
+    let pick = name.equals("predefined-seqs") || name.equals("huffman-rfc-example-4streams")
+      || name.equals("fse-then-repeat") || name.equals("huffman-with-seqs") || name.equals("lits-800")
+      || name.equals("tiny9-L1") || name.equals("lits-direct-weights");
+    if pick && slen == clen {
+      flipAll(s, content, t);
+      picked += 1usize;
+    }
+    r += 1usize;
+  }
+  picked
+}

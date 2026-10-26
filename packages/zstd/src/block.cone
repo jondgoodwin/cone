@@ -1,0 +1,384 @@
+// ======== A compressed block: literals, then sequences ========
+//
+// RFC 8878 section 3.1.1.3. A compressed block is decoded whole, once all of
+// its bytes are in: its literals into a buffer, then its sequences, each
+// executed as it is decoded (copy so many literals, then a match from so far
+// back), then the literals left over. The tables and repeat offsets go on
+// from block to block within a frame ('Entropy').
+
+// What went wrong in a block; each is one ErrorKind and one sentence
+enum Fault {
+  Ok;
+  LitHeader;
+  LitSize;
+  LitStreams;
+  HuffTree;
+  NoHuffTable;
+  HuffStream;
+  SeqHeader;
+  FseTable;
+  RleSymbol;
+  NoSeqTable;
+  SeqStream;
+  LitOverrun;
+  BlockTooBig;
+  OffsetZero;
+  OffsetFar;
+}
+
+fn faultKind(f: Fault) ErrorKind {
+  if f == Fault.LitHeader || f == Fault.LitSize || f == Fault.LitStreams || f == Fault.SeqHeader
+    || f == Fault.BlockTooBig { return ErrorKind.BadBlock; }
+  if f == Fault.HuffTree || f == Fault.NoHuffTable || f == Fault.FseTable || f == Fault.RleSymbol
+    || f == Fault.NoSeqTable { return ErrorKind.BadTable; }
+  if f == Fault.OffsetZero || f == Fault.OffsetFar { return ErrorKind.BadOffset; }
+  ErrorKind.BadSequence
+}
+
+fn faultReason(f: Fault) &str {
+  if f == Fault.LitHeader { return "zstd: the literals section header is cut off or does not fit the block"; }
+  if f == Fault.LitSize { return "zstd: the literals section is larger than a block"; }
+  if f == Fault.LitStreams { return "zstd: the four literal streams' sizes do not add up"; }
+  if f == Fault.HuffTree { return "zstd: the Huffman tree description is not valid"; }
+  if f == Fault.NoHuffTable { return "zstd: treeless literals with no Huffman table before them in the frame"; }
+  if f == Fault.HuffStream { return "zstd: a literal stream does not decode to exactly its end"; }
+  if f == Fault.SeqHeader { return "zstd: the sequences section header is cut off or not valid"; }
+  if f == Fault.FseTable { return "zstd: an FSE table description is not valid"; }
+  if f == Fault.RleSymbol { return "zstd: an RLE sequence code is out of range"; }
+  if f == Fault.NoSeqTable { return "zstd: a repeated sequence table with none before it in the frame"; }
+  if f == Fault.SeqStream { return "zstd: the sequences bitstream does not decode to exactly its end"; }
+  if f == Fault.LitOverrun { return "zstd: a literal length goes past the block's literals"; }
+  if f == Fault.BlockTooBig { return "zstd: a block decodes to more than the block maximum (the window, at most 128 KiB)"; }
+  if f == Fault.OffsetZero { return "zstd: a repeat offset of 0"; }
+  if f == Fault.OffsetFar { return "zstd: a match reaches back before the window"; }
+  "zstd: no fault"
+}
+
+// The largest a block's content may be (RFC 8878 Block_Maximum_Size, 128 KiB)
+fn blockSizeMax() usize { 131072usize }
+
+// The tables and offsets that go on from block to block in a frame, and the
+// literals buffer
+struct Entropy {
+  lit: HufTable;
+  litReady: bool;
+  ll: FseTable;
+  of: FseTable;
+  ml: FseTable;
+  seqReady: bool;
+  rep1: u64;
+  rep2: u64;
+  rep3: u64;
+  norm: List[i16];
+  lits: List[u8];
+
+  fn make() Entropy {
+    Entropy(HufTable.empty(), false, FseTable.empty(), FseTable.empty(), FseTable.empty(), false,
+      1u64, 4u64, 8u64, List[i16].empty(), List[u8].empty())
+  }
+
+  // A frame's start: no tables, the first repeat offsets
+  fn reset(self: &mut) {
+    litReady = false;
+    seqReady = false;
+    rep1 = 1u64;
+    rep2 = 4u64;
+    rep3 = 8u64;
+  }
+}
+
+// Where the frame's output is: what a match may reach
+struct Reach {
+  // The window size the frame header gave
+  window: u64;
+  // Where the frame's output starts in the history (0 once trimmed past)
+  base: usize;
+  // The frame's output before this block
+  out: u64;
+  // The most a block may hold, compressed or not: the window, at most 128 KiB
+  blockMax: usize;
+}
+
+// A little-endian number of 'n' bytes (up to 8) at *src[p]
+fn leN(src: &List[u8], p: usize, n: usize) u64 {
+  var v = 0u64;
+  var i = 0usize;
+  while i < n {
+    v = v | (u64.from(*src[p + i]) << u64.from(i * 8usize));
+    i = i + 1usize;
+  }
+  v
+}
+
+// Decodes the compressed block *src[start, end), appending its content to
+// 'hist'. 'dict' is the raw-content dictionary of the frame (empty for none).
+fn decodeBlock(src: &List[u8], start: usize, end: usize, ent: &mut Entropy, hist: &mut List[u8],
+    reach: &Reach, dict: &List[u8]) Fault {
+  var p = start;
+  let f = decodeLiterals(src, &mut p, end, ent);
+  if f != Fault.Ok { return f; }
+  decodeSequences(src, p, end, ent, hist, reach, dict)
+}
+
+// The literals section at *src[*p, end) into ent.lits; *p moves past it
+fn decodeLiterals(src: &List[u8], p: &mut usize, end: usize, ent: &mut Entropy) Fault {
+  ent.lits.clear();
+  let at = *p;
+  if at >= end { return Fault.LitHeader; }
+  let b0 = *src[at];
+  let kind = b0 & 3u8;
+  let sf = (b0 >> 2u8) & 3u8;
+  if kind < 2u8 {
+    // Raw or RLE: a header of 1 to 3 bytes holding the size
+    var hs = 1usize;
+    var regen = 0usize;
+    if sf == 0u8 || sf == 2u8 {
+      regen = usize.from(b0 >> 3u8);
+    } else if sf == 1u8 {
+      if end - at < 2usize { return Fault.LitHeader; }
+      hs = 2usize;
+      regen = usize.from(b0 >> 4u8) + (usize.from(*src[at + 1usize]) << 4usize);
+    } else {
+      if end - at < 3usize { return Fault.LitHeader; }
+      hs = 3usize;
+      regen = usize.from(b0 >> 4u8) + (usize.from(*src[at + 1usize]) << 4usize) + (usize.from(*src[at + 2usize]) << 12usize);
+    }
+    if regen > blockSizeMax() { return Fault.LitSize; }
+    let q = at + hs;
+    if kind == 0u8 {
+      if end - q < regen { return Fault.LitHeader; }
+      ent.lits.reserve(regen);
+      var i = 0usize;
+      while i < regen { ent.lits.push(*src[q + i]); i = i + 1usize; }
+      *p = q + regen;
+    } else {
+      if end - q < 1usize { return Fault.LitHeader; }
+      let b = *src[q];
+      ent.lits.reserve(regen);
+      var i = 0usize;
+      while i < regen { ent.lits.push(b); i = i + 1usize; }
+      *p = q + 1usize;
+    }
+    return Fault.Ok;
+  }
+  // Huffman-coded (2) or treeless (3, the frame's last table again)
+  var hs = 3usize;
+  var sizeBits = 10usize;
+  var streams = 4usize;
+  if sf == 0u8 { streams = 1usize; }
+  else if sf == 2u8 { hs = 4usize; sizeBits = 14usize; }
+  else if sf == 3u8 { hs = 5usize; sizeBits = 18usize; }
+  if end - at < hs { return Fault.LitHeader; }
+  let h = leN(src, at, hs);
+  let mask = (1u64 << u64.from(sizeBits)) - 1u64;
+  let regen = usize.from((h >> 4u64) & mask);
+  let csize = usize.from((h >> u64.from(4usize + sizeBits)) & mask);
+  if regen > blockSizeMax() { return Fault.LitSize; }
+  let q0 = at + hs;
+  if end - q0 < csize { return Fault.LitHeader; }
+  let qend = q0 + csize;
+  var q = q0;
+  if kind == 2u8 {
+    let used = ent.lit.read(src, q, qend);
+    if used < 0i64 { return Fault.HuffTree; }
+    q = q + usize.from(used);
+    ent.litReady = true;
+  } else if !ent.litReady {
+    return Fault.NoHuffTable;
+  }
+  ent.lits.reserve(regen);
+  if streams == 1usize {
+    if !ent.lit.decodeStream(src, q, qend, regen, &mut ent.lits) { return Fault.HuffStream; }
+  } else {
+    // A jump table of three 2-byte sizes; the fourth stream is the rest
+    if qend - q < 6usize { return Fault.LitStreams; }
+    let s1 = usize.from(leN(src, q, 2usize));
+    let s2 = usize.from(leN(src, q + 2usize, 2usize));
+    let s3 = usize.from(leN(src, q + 4usize, 2usize));
+    let a = q + 6usize;
+    if qend - a < s1 + s2 + s3 { return Fault.LitStreams; }
+    let seg = (regen + 3usize) / 4usize;
+    if 3usize * seg > regen { return Fault.LitStreams; }
+    let b = a + s1;
+    let c = b + s2;
+    let d = c + s3;
+    if !ent.lit.decodeStream(src, a, b, seg, &mut ent.lits) { return Fault.HuffStream; }
+    if !ent.lit.decodeStream(src, b, c, seg, &mut ent.lits) { return Fault.HuffStream; }
+    if !ent.lit.decodeStream(src, c, d, seg, &mut ent.lits) { return Fault.HuffStream; }
+    if !ent.lit.decodeStream(src, d, qend, regen - 3usize * seg, &mut ent.lits) { return Fault.HuffStream; }
+  }
+  *p = qend;
+  Fault.Ok
+}
+
+// One of the three tables by its mode (RFC 8878 section 3.1.1.3.2.1.2) at
+// *src[*p, end); *p moves past what it took
+fn seqTable(src: &List[u8], p: &mut usize, end: usize, mode: u8, t: &mut FseTable, defaults: &Array[i16],
+    defaultLog: u32, maxSymbol: usize, maxLog: u32, norm: &mut List[i16], ready: bool) Fault {
+  if mode == 0u8 {
+    t.build(defaults, defaultLog);
+    return Fault.Ok;
+  }
+  if mode == 1u8 {
+    if *p >= end { return Fault.SeqHeader; }
+    let s = *src[*p];
+    if usize.from(s) > maxSymbol { return Fault.RleSymbol; }
+    t.rle(s);
+    *p = *p + 1usize;
+    return Fault.Ok;
+  }
+  if mode == 2u8 {
+    var log = 0u32;
+    let used = readNCount(src, *p, end, maxSymbol, maxLog, norm, &mut log);
+    if used < 0i64 { return Fault.FseTable; }
+    if !t.build(norm.view(), log) { return Fault.FseTable; }
+    *p = *p + usize.from(used);
+    return Fault.Ok;
+  }
+  if !ready { return Fault.NoSeqTable; }
+  Fault.Ok
+}
+
+// The sequences section at *src[p, end): decoded and executed into 'hist',
+// then the literals left over
+fn decodeSequences(src: &List[u8], p0: usize, end: usize, ent: &mut Entropy, hist: &mut List[u8],
+    reach: &Reach, dict: &List[u8]) Fault {
+  var p = p0;
+  let blockStart = hist.len();
+  let nlits = ent.lits.len();
+  if p >= end { return Fault.SeqHeader; }
+  let b0 = usize.from(*src[p]);
+  var nseq = 0usize;
+  if b0 == 0usize {
+    if p + 1usize != end { return Fault.SeqHeader; }
+    if nlits > reach.blockMax { return Fault.BlockTooBig; }
+    hist.reserve(nlits);
+    var i = 0usize;
+    while i < nlits { hist.push(*ent.lits[i]); i = i + 1usize; }
+    return Fault.Ok;
+  }
+  if b0 < 128usize {
+    nseq = b0;
+    p = p + 1usize;
+  } else if b0 < 255usize {
+    if end - p < 2usize { return Fault.SeqHeader; }
+    nseq = ((b0 - 128usize) << 8usize) + usize.from(*src[p + 1usize]);
+    p = p + 2usize;
+  } else {
+    if end - p < 3usize { return Fault.SeqHeader; }
+    nseq = usize.from(*src[p + 1usize]) + (usize.from(*src[p + 2usize]) << 8usize) + 0x7F00usize;
+    p = p + 3usize;
+  }
+  if p >= end { return Fault.SeqHeader; }
+  let modes = *src[p];
+  p = p + 1usize;
+  if (modes & 3u8) != 0u8 { return Fault.SeqHeader; }
+  let ready = ent.seqReady;
+  var f = seqTable(src, &mut p, end, modes >> 6u8, &mut ent.ll, &llDefault, 6u32, 35usize, 9u32, &mut ent.norm, ready);
+  if f != Fault.Ok { return f; }
+  f = seqTable(src, &mut p, end, (modes >> 4u8) & 3u8, &mut ent.of, &ofDefault, 5u32, 31usize, 8u32, &mut ent.norm, ready);
+  if f != Fault.Ok { return f; }
+  f = seqTable(src, &mut p, end, (modes >> 2u8) & 3u8, &mut ent.ml, &mlDefault, 6u32, 52usize, 9u32, &mut ent.norm, ready);
+  if f != Fault.Ok { return f; }
+  ent.seqReady = true;
+
+  var bits = match BackBits.open(src, p, end) {
+    case let Some(b) { b }
+    else { return Fault.SeqStream; }
+  };
+  var llState = bits.read(src, ent.ll.log);
+  var ofState = bits.read(src, ent.of.log);
+  var mlState = bits.read(src, ent.ml.log);
+  var r1 = ent.rep1;
+  var r2 = ent.rep2;
+  var r3 = ent.rep3;
+  var litPos = 0usize;
+  let dictLen = dict.len();
+  // The block's own output may not pass the block maximum
+  let room = reach.blockMax;
+  hist.reserve(room);
+  var i = 0usize;
+  while i < nseq {
+    let llc = *ent.ll.cells[usize.from(llState)];
+    let ofc = *ent.of.cells[usize.from(ofState)];
+    let mlc = *ent.ml.cells[usize.from(mlState)];
+    let ofCode = ofc & 0xFFu32;
+    let mlCode = usize.from(mlc & 0xFFu32);
+    let llCode = usize.from(llc & 0xFFu32);
+    let ofValue = (1u64 << u64.from(ofCode)) + u64.from(bits.read(src, ofCode));
+    let ml = usize.from(mlBase[mlCode] + bits.read(src, mlBits[mlCode]));
+    let ll = usize.from(llBase[llCode] + bits.read(src, llBits[llCode]));
+    var off = 0u64;
+    if ofValue > 3u64 {
+      off = ofValue - 3u64;
+      r3 = r2;
+      r2 = r1;
+      r1 = off;
+    } else {
+      let idx = ofValue - 1u64 + (if ll == 0usize {1u64} else {0u64});
+      if idx == 0u64 {
+        off = r1;
+      } else if idx == 1u64 {
+        off = r2;
+        r2 = r1;
+        r1 = off;
+      } else if idx == 2u64 {
+        off = r3;
+        r3 = r2;
+        r2 = r1;
+        r1 = off;
+      } else {
+        off = r1 - 1u64;
+        if off == 0u64 { return Fault.OffsetZero; }
+        r3 = r2;
+        r2 = r1;
+        r1 = off;
+      }
+    }
+    if i + 1usize < nseq {
+      llState = (llc >> 16u32) + bits.read(src, (llc >> 8u32) & 0xFFu32);
+      mlState = (mlc >> 16u32) + bits.read(src, (mlc >> 8u32) & 0xFFu32);
+      ofState = (ofc >> 16u32) + bits.read(src, (ofc >> 8u32) & 0xFFu32);
+    }
+    // Execute: the literals, then the match
+    if ll > nlits - litPos { return Fault.LitOverrun; }
+    if (hist.len() - blockStart) + ll + ml > room { return Fault.BlockTooBig; }
+    var k = 0usize;
+    while k < ll { hist.push(*ent.lits[litPos + k]); k = k + 1usize; }
+    litPos = litPos + ll;
+    // The frame's output so far, and how far back a match may reach: the
+    // window, or while the output is no longer than the window, all of it
+    // and the dictionary before it
+    let pos = reach.out + u64.from(hist.len() - blockStart);
+    var limit = if pos < reach.window {pos} else {reach.window};
+    if dictLen > 0usize && pos <= reach.window { limit = pos + u64.from(dictLen); }
+    if off > limit { return Fault.OffsetFar; }
+    if off <= pos {
+      // From the frame's own output
+      let o = usize.from(off);
+      if o > hist.len() - reach.base { return Fault.OffsetFar; }
+      var from = hist.len() - o;
+      k = 0usize;
+      while k < ml { hist.push(*hist[from]); from = from + 1usize; k = k + 1usize; }
+    } else {
+      // From the dictionary, then on into the frame's output
+      let back = usize.from(off - pos);
+      var from = dictLen - back;
+      let first = if ml < back {ml} else {back};
+      k = 0usize;
+      while k < first { hist.push(*dict[from]); from = from + 1usize; k = k + 1usize; }
+      var f2 = reach.base;
+      while k < ml { hist.push(*hist[f2]); f2 = f2 + 1usize; k = k + 1usize; }
+    }
+    i = i + 1usize;
+  }
+  if !bits.exact() { return Fault.SeqStream; }
+  ent.rep1 = r1;
+  ent.rep2 = r2;
+  ent.rep3 = r3;
+  let rest = nlits - litPos;
+  if (hist.len() - blockStart) + rest > room { return Fault.BlockTooBig; }
+  var k = litPos;
+  while k < nlits { hist.push(*ent.lits[k]); k = k + 1usize; }
+  Fault.Ok
+}

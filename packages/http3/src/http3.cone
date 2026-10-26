@@ -1,0 +1,174 @@
+// The http3 package: HTTP/3 (RFC 9114), sans-IO, in the shape of http1 and
+// http2: the protocol's state as plain data, which does no I/O, reads no
+// clock and starts no threads (invariant I13). It does not implement QUIC:
+// it sees QUIC as RFC 9114 does, numbered streams of bytes that end or are
+// reset, which something else provides. It is built in two parts, each its
+// own module: QPACK, the field compression (RFC 9204, here now); and the
+// frames and the connection, client and server, over package http's
+// message types (to come). QPACK knows nothing of frames or streams beyond
+// their numbers. It takes package http2's Huffman code, integer encoder and
+// HeaderField as they are; its static table, its integer decoder (62 bits)
+// and its strings (a prefix of 7, 5 or 3 bits) are its own.
+//
+//   mod headers;
+//   import collections use List;
+//   import http2 use HeaderField;
+//   import http3 use *;
+//
+//   // one direction's two ends; each side of a connection has both
+//   var cfg = QpackConfig.make();
+//   cfg.maxTableCapacity = 4096usize;      // what our SETTINGS advertise
+//   cfg.blockedStreams = 16usize;
+//   cfg.encoderTableCapacity = 4096usize;  // how much of the peer's we use
+//   mut enc = QpackEncoder.make(&cfg);
+//   mut dec = QpackDecoder.make(cfg);
+//   enc.peerSettings(4096usize, 16usize);  // from the peer's SETTINGS
+//
+//   enc.encode(streamId, fields.view(), &mut section);  // a HEADERS frame's payload
+//   enc.pollTransmit(&mut encoderStream);              // to the encoder stream
+//
+//   dec.encoderInput(bytes)                // encoder-stream bytes arrived
+//   match dec.decode(streamId, section.view(), &mut got) {
+//     case let Ok(d) {
+//       match d {
+//         case let Done(x) { ... got ... x.size ... }
+//         case is Blocked { ... }           // comes back from pollUnblocked
+//       }
+//     }
+//     case let Error(e) { ... e.isConnectionError() ... e.code() ... }
+//   }
+//   match dec.pollUnblocked(&mut got) {   // after encoderInput, until None
+//     case let Some(u) { ... u.streamId ... u.result ... }
+//     case is None[Unblocked] {}
+//   }
+//   dec.pollTransmit(&mut decoderStream);  // to the decoder stream
+//   enc.decoderInput(bytes)                // decoder-stream bytes arrived
+//
+//   QpackConfig.make(): the bounds, each a field to change    (QPACK BOUNDS)
+//   QpackEncoder.make(&cfg)                                   (THE ENCODER)
+//     e.peerSettings(capacity, blocked)  e.encode(streamId, fields, out)
+//     e.insert(name, value)  e.duplicate(abs)  e.pollTransmit(out)
+//     e.decoderInput(bytes)  e.decoderStreamClosed()
+//     e.dynamicTable()  e.knownReceivedCount()  e.blockingStreams()
+//     e.unacknowledgedSections()
+//   QpackDecoder.make(cfg)                                    (THE DECODER)
+//     d.decode(streamId, section, out)  d.pollUnblocked(out)  d.cancelStream(streamId)
+//     d.encoderInput(bytes)  d.encoderStreamClosed()  d.pollTransmit(out)
+//     d.dynamicTable()  d.blockedStreams()
+//   Decoded: Done(size) Blocked   Unblocked: streamId result
+//   QpackError: e.kind e.detail e.isConnectionError() e.code() e.message()  (QPACK ERRORS)
+//   QpackErrorKind: Decompression EncoderStream DecoderStream StreamClosed TooLarge
+//   h3ClosedCriticalStream qpackDecompressionFailed qpackEncoderStreamError
+//   qpackDecoderStreamError
+//   QpackTable: t.len() t.size() t.capacity() t.insertCount() t.evictedCount()  (TABLES)
+//     t.has(abs) t.name(abs) t.value(abs) t.entrySize(abs) t.find(name, value, below)
+//   staticName(i)  staticValue(i)  staticFind(name, value)  TableHit
+//   staticTableLen  entryOverhead  maxInteger
+//   decodeInteger(src, &pos, prefixBits, &value)  WireStatus: Done Short Malformed TooLong  (WIRE)
+//   encodeString(out, flags, prefixBits, s, huffman)
+//   decodeString(src, &pos, prefixBits, limit, out, &why)
+//   encodeRequiredInsertCount(ric, maxEntries)
+//   decodeRequiredInsertCount(encoded, maxEntries, insertCount)
+//   readPrefix(section, &pos, &ric, &base, maxEntries, insertCount)
+//
+// FIELDS are http2's HeaderField: a name and a value as bytes, as they
+// travel, and whether it is sensitive. As in HPACK, nothing here
+// lowercases a name or checks a field against HTTP's rules (the HTTP/3
+// layer's job, RFC 9114 section 4.2); a sensitive field (by its flag, or
+// named authorization, proxy-authorization or cookie) is sent as a literal
+// with the N bit and never inserted, and a field that arrives with the N
+// bit arrives sensitive.
+//
+// THE ENCODER. Its table starts with capacity 0, as RFC 9204 requires
+// until the peer's SETTINGS arrive; 'peerSettings' then gives it the
+// smaller of the peer's SETTINGS_QPACK_MAX_TABLE_CAPACITY and
+// encoderTableCapacity, and puts Set Dynamic Table Capacity on the encoder
+// stream. 'encode' writes one field section: a field that is a static
+// entry goes as its index; one in the dynamic table that the peer may use
+// goes as its index too; any other is inserted where it fits, and named if
+// the section may block, else sent as a literal (naming a table's entry for
+// its name where there is one). A section may block when its stream
+// already does, or fewer streams than the peer's
+// SETTINGS_QPACK_BLOCKED_STREAMS do; otherwise it names only entries the
+// peer has acknowledged.
+// Base is always the Required Insert Count, so every dynamic index is
+// pre-base. Room is made by evicting the oldest entries, never one a
+// section the peer has not acknowledged names (nor one the section being
+// built names): when room cannot be made, the field goes as a literal.
+// 'insert' adds an entry without naming it (warming the table), and
+// 'duplicate' re-adds an old one as the newest. The decoder stream's
+// instructions come in through 'decoderInput': a Section Acknowledgment
+// retires its stream's oldest section and raises the Known Received Count,
+// a Stream Cancellation retires all of a stream's, an Insert Count
+// Increment raises the count.
+//
+// THE DECODER. 'decode' takes a whole field section (the HTTP/3 layer
+// takes it whole from a HEADERS frame). A section that needs inserts not
+// yet arrived is Blocked: it is kept, and once 'encoderInput' brings the
+// inserts, 'pollUnblocked' decodes it and gives it back with its stream's
+// number. The HTTP/3 layer reads no further on a stream whose section is
+// blocked; a section it hands in behind one anyway waits behind it. A
+// section with a nonzero Required Insert Count is acknowledged once read
+// (refused for its size or not), and 'pollTransmit' then adds an Insert
+// Count Increment for inserts no acknowledgment has told of. When the
+// HTTP/3 layer gives up on a stream (it is reset, or a section on it was
+// refused), 'cancelStream' drops its blocked sections and tells the encoder
+// (unless our table's capacity is 0). The encoder stream may arrive in any
+// pieces: an instruction cut off waits for the rest, its declared lengths
+// checked first, so nothing past the table's capacity is ever buffered.
+// It refuses (as RFC 9204 does) a static index past 98; a dynamic index at
+// or past Base, at or past the Required Insert Count, or of an evicted
+// entry; a Required Insert Count out of range, or more than one past the
+// largest index the section names; a Base below 0; anything cut off; an
+// integer past 62 bits; a bad Huffman string; on the encoder stream, a
+// capacity past ours, an entry larger than the capacity, and a reference
+// past the insert count or to an evicted entry.
+//
+// QPACK BOUNDS (each a field of QpackConfig). 'maxTableCapacity' (0) is
+// the decoder's table, which the HTTP/3 layer advertises as
+// SETTINGS_QPACK_MAX_TABLE_CAPACITY; the encoder stream may not set more.
+// 'blockedStreams' (0) is how many streams may have a blocked section,
+// advertised as SETTINGS_QPACK_BLOCKED_STREAMS; one more is a connection
+// error. Both start at 0, as quiche and nghttp3 do: no table, and so no
+// coupling between streams, until a program asks for one.
+// 'maxFieldSectionSize' (16 KiB, as package http2's maxHeaderListSize) is
+// the decoded section's size, counted as SETTINGS_MAX_FIELD_SECTION_SIZE
+// counts it (each field's name and value and 32), checked as each field is
+// decoded and before it is copied (an indexed field's size from the table,
+// a string's from its declared length): past it decoding stops and the
+// section is refused TooLarge, which ends the one message. A section
+// changes no table, so stopping leaves both ends in step. A blocked section
+// longer than four times it is refused at once, since no section that long
+// can decode to fit (each line decodes to 32 bytes or more, or to a quarter
+// of its string bytes or more), and blocked sections together hold at most
+// blockedStreams x 4 x maxFieldSectionSize bytes. 'encoderTableCapacity'
+// (0) is the most of the peer's table the encoder uses; at 0 it inserts
+// nothing and sends only static indexes and literals.
+// 'maxUnacknowledgedSections' (1000) bounds the sections naming the dynamic
+// table that the peer has not acknowledged; past it the encoder names only the static
+// table, so a peer withholding acknowledgments grows nothing. 'huffman'
+// (on) Huffman-codes a string where that is shorter.
+//
+// QPACK ERRORS. A QpackError has a kind, one line of detail, and the
+// HTTP/3 code to close the connection with: Decompression
+// (QPACK_DECOMPRESSION_FAILED), EncoderStream (QPACK_ENCODER_STREAM_ERROR),
+// DecoderStream (QPACK_DECODER_STREAM_ERROR), StreamClosed
+// (H3_CLOSED_CRITICAL_STREAM: either instruction stream ended, reported by
+// 'encoderStreamClosed' and 'decoderStreamClosed'). Each ends the
+// connection, and the end that met it refuses everything after. TooLarge
+// has no code: it ends one message, as the HTTP/3 layer chooses. On any
+// error the list handed in is as it was.
+//
+// TABLES. The static table is Appendix A's 99 entries, indexed from 0. A
+// QpackTable is the dynamic table as both ends hold it: entries by
+// absolute index (0 the first ever inserted), the oldest evicted first, the
+// sum of their sizes within its capacity.
+//
+// Not here yet: the frames and the connection (the next part); an encoder
+// that leaves an often-changing field out of its table, or duplicates an
+// entry about to age out on its own (it duplicates only when asked); 0-RTT's
+// remembered SETTINGS.
+
+mod http3;
+
+pub use qpack;

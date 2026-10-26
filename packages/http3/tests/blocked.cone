@@ -1,0 +1,308 @@
+// Blocked streams (RFC 9204, section 2.1.2 and 2.2.1), both ends.
+// The decoder: a section naming an entry not yet inserted is kept and
+// comes back from pollUnblocked once a later insert arrives (even one
+// split byte by byte), and is acknowledged then; sections come back in the
+// order their inserts allow, a stream's own in arrival order (one behind a
+// blocked section waits too); a cancelled stream's blocked sections are
+// dropped and the encoder told; a section that is malformed is found when
+// it is resumed; the number of blocked streams is held to
+// SETTINGS_QPACK_BLOCKED_STREAMS (crossing it is a connection error).
+// The encoder: with the peer allowing no blocked streams it inserts but
+// sends literals until the insert is acknowledged; with one, a second
+// stream may not block while the first does; an entry an unacknowledged
+// section names is never evicted, so an insert that would need it waits.
+
+mod blocked;
+
+import testing use *;
+import collections use *;
+import http2 use HeaderField;
+import http3 use *;
+
+fn hex(b: &Array[u8]) String {
+  var s = String.empty();
+  var i = 0usize;
+  while i < b.len {
+    s.appendHex(u64.from(b[i]), 2usize);
+    i = i + 1usize;
+  }
+  s
+}
+
+fn nibble(c: u8) u8 {if c >= 'a' {c - 'a' + 10u8} else {c - '0'}}
+
+fn unhex(s: &Array[u8]) List[u8] {
+  var out = List[u8].empty();
+  var i = 0usize;
+  while i < s.len {
+    if s[i] == ' ' {
+      i = i + 1usize;
+      continue;
+    }
+    out.push((nibble(s[i]) << 4u8) | nibble(s[i + 1usize]));
+    i = i + 2usize;
+  }
+  out
+}
+
+fn show(fields: &Array[HeaderField]) String {
+  var s = String.empty();
+  var i = 0usize;
+  while i < fields.len {
+    if i > 0usize {s.append("; ");}
+    s.append(fields[i].name.view());
+    s.append("=");
+    s.append(fields[i].value.view());
+    i = i + 1usize;
+  }
+  s
+}
+
+fn fields(spec: &str) List[HeaderField] {
+  var out = List[HeaderField].empty();
+  var i = 0usize;
+  while i < spec.len() {
+    var j = i;
+    while j < spec.len() && spec[j] != '|' {j = j + 1usize;}
+    var e = i;
+    while spec[e] != '=' {e = e + 1usize;}
+    out.push(HeaderField.make(&spec[i ..< e], &spec[e + 1usize ..< j]));
+    i = j + 1usize;
+  }
+  out
+}
+
+fn config(blocked: usize) QpackConfig {
+  var c = QpackConfig.make();
+  c.maxTableCapacity = 220usize;
+  c.blockedStreams = blocked;
+  c.encoderTableCapacity = 220usize;
+  c.huffman = false;
+  c
+}
+
+fn decodeHex(dec: &mut QpackDecoder, stream: u64, coded: &str) String {
+  let b = unhex(coded);
+  var got = List[HeaderField].empty();
+  match dec.decode(stream, b.view(), &mut got) {
+    case let Ok(d) {
+      match d {
+        case let Done(x) {return show(got.view());}
+        case is Blocked {return String.from("blocked");}
+      }
+    }
+    case let Error(e) {return e.message();}
+  }
+}
+
+// What pollUnblocked gives, until None: 'stream: fields' each, joined by ' / '
+fn unblocked(dec: &mut QpackDecoder) String {
+  var s = String.empty();
+  while true {
+    var got = List[HeaderField].empty();
+    match dec.pollUnblocked(&mut got) {
+      case let Some(u) {
+        if s.len() > 0usize {s.append(" / ");}
+        let id, result = u.(streamId, result);
+        s.appendUInt(id);
+        s.append(": ");
+        match result {
+          case let Ok(size) {s.append(show(got.view()).view());}
+          case let Error(e) {s.append(e.message().view());}
+        }
+      }
+      case is None[Unblocked] {return s;}
+    }
+  }
+  s
+}
+
+fn encoderIn(dec: &mut QpackDecoder, coded: &str) String {
+  let b = unhex(coded);
+  var s = String.empty();
+  match dec.encoderInput(b.view()) {
+    case let Ok(n) {s.appendUInt(n);}
+    case let Error(e) {s.append(e.message().view());}
+  }
+  s
+}
+
+fn decoderOut(dec: &mut QpackDecoder) String {
+  var out = List[u8].empty();
+  dec.pollTransmit(&mut out);
+  hex(out.view())
+}
+
+const capacity = "3fbd01";
+const authority = "c00f7777772e6578616d706c652e636f6d";       // 0 :authority=www.example.com
+const samplePath = "c10c2f73616d706c652f70617468";             // 1 :path=/sample/path
+
+fn decoderSide() {
+  // One section waits for one insert
+  var dec = QpackDecoder.make(config(2usize));
+  expectStr(decodeHex(&mut dec, 4u64, "0200 80").view(), "blocked", "before the insert");
+  expectUInt(u64.from(dec.blockedStreams()), 1u64, "one blocked stream");
+  expectStr(unblocked(&mut dec).view(), "", "nothing yet");
+  expectStr(decoderOut(&mut dec).view(), "", "nothing to say yet");
+  encoderIn(&mut dec, capacity);
+  expectStr(unblocked(&mut dec).view(), "", "the capacity is not an insert");
+  // The insert, a byte at a time: the section comes back after the last
+  let ins = unhex(authority);
+  var i = 0usize;
+  var early = 0usize;
+  while i < ins.len() {
+    dec.encoderInput(&ins.view()[i ..< i + 1usize]);
+    i = i + 1usize;
+    if i < ins.len() {early = early + unblocked(&mut dec).len();}
+  }
+  expectUInt(u64.from(early), 0u64, "not before the insert is whole");
+  expectStr(unblocked(&mut dec).view(), "4: :authority=www.example.com", "unblocked");
+  expectUInt(u64.from(dec.blockedStreams()), 0u64, "none blocked");
+  expectStr(decoderOut(&mut dec).view(), "84", "acknowledged once decoded (no increment needed)");
+
+  // Sections come back as their inserts allow: stream 8 needs 1 insert,
+  // stream 4 two; a section behind a blocked one on its stream waits even
+  // though it names only the static table
+  var d2 = QpackDecoder.make(config(2usize));
+  expectStr(decodeHex(&mut d2, 4u64, "0300 81 80").view(), "blocked", "stream 4, two inserts");
+  expectStr(decodeHex(&mut d2, 8u64, "0200 80").view(), "blocked", "stream 8, one insert");
+  expectStr(decodeHex(&mut d2, 4u64, "0000 d1").view(), "blocked", "stream 4 again, behind");
+  expectUInt(u64.from(d2.blockedStreams()), 2u64, "two streams blocked");
+  encoderIn(&mut d2, capacity);
+  encoderIn(&mut d2, authority);
+  expectStr(unblocked(&mut d2).view(), "8: :authority=www.example.com", "stream 8 first");
+  encoderIn(&mut d2, samplePath);
+  expectStr(unblocked(&mut d2).view(), "4: :authority=www.example.com; :path=/sample/path / 4: :method=GET",
+    "then stream 4's two, in order");
+  expectStr(decoderOut(&mut d2).view(), "8884", "acknowledged in the order decoded");
+
+  // More blocked streams than SETTINGS_QPACK_BLOCKED_STREAMS (2)
+  var d3 = QpackDecoder.make(config(2usize));
+  expectStr(decodeHex(&mut d3, 4u64, "0200 80").view(), "blocked", "the first");
+  expectStr(decodeHex(&mut d3, 8u64, "0200 80").view(), "blocked", "the second");
+  expectStr(decodeHex(&mut d3, 8u64, "0200 80").view(), "blocked", "the second's next: the same stream");
+  expectStr(decodeHex(&mut d3, 12u64, "0200 80").view(),
+    "decompression failed: more blocked streams than SETTINGS_QPACK_BLOCKED_STREAMS", "a third stream");
+  // None may block at all by default
+  var d4 = QpackDecoder.make(config(0usize));
+  expectStr(decodeHex(&mut d4, 4u64, "0200 80").view(),
+    "decompression failed: more blocked streams than SETTINGS_QPACK_BLOCKED_STREAMS", "0 allowed");
+
+  // A cancelled stream: its section dropped, the encoder told, the insert
+  // then counted by an increment
+  var d5 = QpackDecoder.make(config(2usize));
+  expectStr(decodeHex(&mut d5, 4u64, "0200 80").view(), "blocked", "blocked");
+  d5.cancelStream(4u64);
+  expectUInt(u64.from(d5.blockedStreams()), 0u64, "dropped");
+  encoderIn(&mut d5, capacity);
+  encoderIn(&mut d5, authority);
+  expectStr(unblocked(&mut d5).view(), "", "nothing comes back");
+  expectStr(decoderOut(&mut d5).view(), "4401", "Stream Cancellation, then Insert Count Increment");
+
+  // A blocked section found malformed when it is resumed: a connection error
+  var d6 = QpackDecoder.make(config(2usize));
+  expectStr(decodeHex(&mut d6, 4u64, "0200 ff24").view(), "blocked", "blocked, bad inside");
+  encoderIn(&mut d6, capacity);
+  encoderIn(&mut d6, authority);
+  expectStr(unblocked(&mut d6).view(), "4: decompression failed: a static index past the table's 99 entries", "found on resuming");
+  expectStr(encoderIn(&mut d6, samplePath).view(), "decompression failed: an earlier error ended the connection", "the connection is over");
+}
+
+fn encode(enc: &mut QpackEncoder, stream: u64, spec: &str) String {
+  var out = List[u8].empty();
+  enc.encode(stream, fields(spec).view(), &mut out);
+  hex(out.view())
+}
+
+fn encoderOut(enc: &mut QpackEncoder) String {
+  var out = List[u8].empty();
+  enc.pollTransmit(&mut out);
+  hex(out.view())
+}
+
+fn decoderIn(enc: &mut QpackEncoder, coded: &str) u64 {
+  let b = unhex(coded);
+  match enc.decoderInput(b.view()) {
+    case let Ok(n) {return n;}
+    case let Error(e) {
+      expectStr(e.message().view(), "", "accepted");
+      return 0u64;
+    }
+  }
+}
+
+const customKey = "4a637573746f6d2d6b65790c637573746f6d2d76616c7565";
+const literalCustom = "2703637573746f6d2d6b65790c637573746f6d2d76616c7565";
+
+fn encoderSide() {
+  // The peer lets no stream block: insert, but send literals until the
+  // insert is acknowledged; never insert the same field twice
+  var enc = QpackEncoder.make(&config(0usize));
+  enc.peerSettings(220usize, 0usize);
+  expectStr(encoderOut(&mut enc).view(), "3fbd01", "capacity");
+  var want = String.from("0000");
+  want.append(literalCustom);
+  expectStr(encode(&mut enc, 4u64, "custom-key=custom-value").view(), want.view(), "first: a literal");
+  expectStr(encoderOut(&mut enc).view(), customKey, "inserted");
+  expectStr(encode(&mut enc, 8u64, "custom-key=custom-value").view(), want.view(), "second, unacknowledged: a literal");
+  expectStr(encoderOut(&mut enc).view(), "", "not inserted again");
+  expectUInt(u64.from(enc.unacknowledgedSections()), 0u64, "literals need no acknowledgment");
+  expectUInt(decoderIn(&mut enc, "01"), 1u64, "the insert acknowledged");
+  expectStr(encode(&mut enc, 12u64, "custom-key=custom-value").view(), "020080", "third: the entry");
+  expectUInt(u64.from(enc.blockingStreams()), 0u64, "acknowledged entries block nothing");
+
+  // The peer lets one stream block
+  var e2 = QpackEncoder.make(&config(1usize));
+  e2.peerSettings(220usize, 1usize);
+  encoderOut(&mut e2);
+  expectStr(encode(&mut e2, 4u64, "custom-key=custom-value").view(), "020080", "stream 4 blocks");
+  expectUInt(u64.from(e2.blockingStreams()), 1u64, "one blocking");
+  var lit = String.from("0000");
+  lit.append("2703637573746f6d2d6b65790b6f746865722d76616c7565");
+  expectStr(encode(&mut e2, 8u64, "custom-key=other-value").view(), lit.view(), "stream 8 may not: a literal");
+  expectStr(encode(&mut e2, 4u64, "custom-key=other-value").view(), "030080", "stream 4 may, again");
+  expectUInt(u64.from(e2.blockingStreams()), 1u64, "still one stream");
+  expectUInt(u64.from(e2.unacknowledgedSections()), 2u64, "two sections outstanding");
+  expectUInt(decoderIn(&mut e2, "84"), 1u64, "the first acknowledged");
+  expectUInt(decoderIn(&mut e2, "84"), 2u64, "the second");
+  expectUInt(u64.from(e2.blockingStreams()), 0u64, "none blocking");
+
+  // An entry an unacknowledged section names is not evicted: a 100-byte
+  // table holds one 57-byte entry, so the second insert waits for the
+  // first's section to be acknowledged
+  var cfg = config(1usize);
+  cfg.encoderTableCapacity = 100usize;
+  var e3 = QpackEncoder.make(&cfg);
+  e3.peerSettings(100usize, 1usize);
+  encoderOut(&mut e3);
+  expectStr(encode(&mut e3, 4u64, ":authority=www.example.com").view(), "020080", "stream 4 names entry 0");
+  encoderOut(&mut e3);
+  expectStr(encode(&mut e3, 8u64, ":authority=www.example.org").view(), "0000500f7777772e6578616d706c652e6f7267", "no room: a literal");
+  expectStr(encoderOut(&mut e3).view(), "", "nothing inserted");
+  expectUInt(u64.from(e3.dynamicTable().len()), 1u64, "entry 0 kept");
+  decoderIn(&mut e3, "84");
+  expectStr(encode(&mut e3, 8u64, ":authority=www.example.org").view(), "030080", "room now, and stream 8 may block: the new entry");
+  expectStr(encoderOut(&mut e3).view(), "c00f7777772e6578616d706c652e6f7267", "inserted, evicting entry 0");
+  expectUInt(e3.dynamicTable().evictedCount(), 1u64, "entry 0 evicted");
+
+  // A section that may not block, whose field's insert evicts the
+  // acknowledged entry that had its name: the literal gives the name
+  // itself (naming the evicted entry would break the peer's decoder), and
+  // the peer's decoder reads it
+  var e4 = QpackEncoder.make(&cfg);
+  var d4 = QpackDecoder.make(cfg);
+  e4.peerSettings(100usize, 0usize);
+  expect(e4.insert("custom-key", "a"), "entry 0, custom-key=a (43)");
+  expectUInt(decoderIn(&mut e4, "01"), 1u64, "acknowledged");
+  let sec = encode(&mut e4, 4u64, "custom-key=abcdefghijklmnopqr");
+  expectStr(sec.view(), "00002703637573746f6d2d6b6579126162636465666768696a6b6c6d6e6f707172", "a literal, its name given");
+  expectUInt(e4.dynamicTable().evictedCount(), 1u64, "entry 0 evicted by the insert");
+  encoderIn(&mut d4, encoderOut(&mut e4).view());
+  expectStr(decodeHex(&mut d4, 4u64, sec.view()).view(), "custom-key=abcdefghijklmnopqr", "decoded");
+}
+
+fn main() i32 {
+  decoderSide();
+  encoderSide();
+  done()
+}

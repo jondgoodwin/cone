@@ -1,0 +1,253 @@
+// RFC 9204, Appendix B, as data: its five examples (B.1 to B.5) replayed
+// through a decoder, the encoder stream and the field sections as the RFC
+// gives them, checking the fields, the dynamic table after each step, and
+// what the decoder says on its own stream. Then an encoder driven through
+// the same steps, given the RFC's decoder instructions, makes the RFC's
+// encoder stream byte for byte, and B.1's and B.4's field sections; its
+// B.2 section differs, by choice (it uses Base = Required Insert Count where
+// the RFC uses post-base indexes), and decodes to the same fields.
+
+mod rfc9204;
+
+import testing use *;
+import collections use *;
+import http2 use HeaderField;
+import http3 use *;
+
+fn hex(b: &Array[u8]) String {
+  var s = String.empty();
+  var i = 0usize;
+  while i < b.len {
+    s.appendHex(u64.from(b[i]), 2usize);
+    i = i + 1usize;
+  }
+  s
+}
+
+fn nibble(c: u8) u8 {if c >= 'a' {c - 'a' + 10u8} else {c - '0'}}
+
+// Hex to bytes; spaces are skipped, so the RFC's layout can be kept
+fn unhex(s: &Array[u8]) List[u8] {
+  var out = List[u8].empty();
+  var i = 0usize;
+  while i < s.len {
+    if s[i] == ' ' {
+      i = i + 1usize;
+      continue;
+    }
+    out.push((nibble(s[i]) << 4u8) | nibble(s[i + 1usize]));
+    i = i + 2usize;
+  }
+  out
+}
+
+// A list as 'name=value; ...'
+fn show(fields: &Array[HeaderField]) String {
+  var s = String.empty();
+  var i = 0usize;
+  while i < fields.len {
+    if i > 0usize {s.append("; ");}
+    s.append(fields[i].name.view());
+    s.append("=");
+    s.append(fields[i].value.view());
+    i = i + 1usize;
+  }
+  s
+}
+
+// The table as 'abs:name=value ...' with its size
+fn table(t: &QpackTable) String {
+  var s = String.empty();
+  var a = t.evictedCount();
+  while a < t.insertCount() {
+    s.appendUInt(a);
+    s.append(":");
+    s.append(t.name(a));
+    s.append("=");
+    s.appendBytes(t.value(a));
+    s.append(" ");
+    a = a + 1u64;
+  }
+  s.append("size ");
+  s.appendUInt(u64.from(t.size()));
+  s
+}
+
+fn decodeHex(dec: &mut QpackDecoder, stream: u64, coded: &str) String {
+  let b = unhex(coded);
+  var got = List[HeaderField].empty();
+  match dec.decode(stream, b.view(), &mut got) {
+    case let Ok(d) {
+      match d {
+        case let Done(x) {return show(got.view());}
+        case is Blocked {return String.from("blocked");}
+      }
+    }
+    case let Error(e) {return e.message();}
+  }
+}
+
+fn encoderIn(dec: &mut QpackDecoder, coded: &str) u64 {
+  let b = unhex(coded);
+  match dec.encoderInput(b.view()) {
+    case let Ok(n) {return n;}
+    case let Error(e) {
+      expectStr(e.message().view(), "", "encoder stream accepted");
+      return 0u64;
+    }
+  }
+}
+
+fn decoderOut(dec: &mut QpackDecoder) String {
+  var out = List[u8].empty();
+  dec.pollTransmit(&mut out);
+  hex(out.view())
+}
+
+fn decoderIn(enc: &mut QpackEncoder, coded: &str) u64 {
+  let b = unhex(coded);
+  match enc.decoderInput(b.view()) {
+    case let Ok(n) {return n;}
+    case let Error(e) {
+      expectStr(e.message().view(), "", "decoder stream accepted");
+      return 0u64;
+    }
+  }
+}
+
+fn encoderOut(enc: &mut QpackEncoder) String {
+  var out = List[u8].empty();
+  enc.pollTransmit(&mut out);
+  hex(out.view())
+}
+
+// A list from 'name=value|name=value', each name ending at its first '='
+fn fields(spec: &str) List[HeaderField] {
+  var out = List[HeaderField].empty();
+  var i = 0usize;
+  while i < spec.len() {
+    var j = i;
+    while j < spec.len() && spec[j] != '|' {j = j + 1usize;}
+    var e = i;
+    while spec[e] != '=' {e = e + 1usize;}
+    out.push(HeaderField.make(&spec[i ..< e], &spec[e + 1usize ..< j]));
+    i = j + 1usize;
+  }
+  out
+}
+
+fn config() QpackConfig {
+  var c = QpackConfig.make();
+  c.maxTableCapacity = 220usize;      // the RFC's: MaxEntries 6
+  c.blockedStreams = 2usize;
+  c.encoderTableCapacity = 220usize;
+  c.huffman = false;                  // the RFC's examples are raw
+  c
+}
+
+const authority = "c00f 7777 772e 6578 616d 706c 652e 636f 6d";
+const samplePath = "c10c 2f73 616d 706c 652f 7061 7468";
+const customKey = "4a63 7573 746f 6d2d 6b65 790c 6375 7374 6f6d 2d76 616c 7565";
+const customValue2 = "810d 6375 7374 6f6d 2d76 616c 7565 32";
+
+fn decoderSide() {
+  var dec = QpackDecoder.make(config());
+
+  // B.1: a literal naming the static table's :path
+  expectStr(decodeHex(&mut dec, 0u64, "0000 510b 2f69 6e64 6578 2e68 746d 6c").view(),
+    ":path=/index.html", "B.1 fields");
+  expectStr(decoderOut(&mut dec).view(), "", "B.1: nothing to acknowledge");
+
+  // B.2: the capacity set, two inserts, a section of post-base references
+  expectUInt(encoderIn(&mut dec, "3fbd01"), 0u64, "B.2 capacity");
+  expectUInt(u64.from(dec.dynamicTable().capacity()), 220u64, "B.2 capacity 220");
+  expectUInt(encoderIn(&mut dec, authority), 1u64, "B.2 first insert");
+  expectUInt(encoderIn(&mut dec, samplePath), 2u64, "B.2 second insert");
+  expectStr(table(dec.dynamicTable()).view(),
+    "0::authority=www.example.com 1::path=/sample/path size 106", "B.2 table");
+  expectStr(decodeHex(&mut dec, 4u64, "0381 10 11").view(),
+    ":authority=www.example.com; :path=/sample/path", "B.2 fields");
+  expectStr(decoderOut(&mut dec).view(), "84", "B.2 Section Acknowledgment (stream 4)");
+
+  // B.3: a speculative insert, a literal name
+  expectUInt(encoderIn(&mut dec, customKey), 3u64, "B.3 insert");
+  expectStr(table(dec.dynamicTable()).view(),
+    "0::authority=www.example.com 1::path=/sample/path 2:custom-key=custom-value size 160", "B.3 table");
+  expectStr(decoderOut(&mut dec).view(), "01", "B.3 Insert Count Increment (1)");
+
+  // B.4: a Duplicate, a section of pre-base references, the stream cancelled.
+  // This decoder acknowledges the section it read (88) before the
+  // cancellation (48); the RFC's cancels without reading it
+  expectUInt(encoderIn(&mut dec, "02"), 4u64, "B.4 duplicate");
+  expectStr(table(dec.dynamicTable()).view(),
+    "0::authority=www.example.com 1::path=/sample/path 2:custom-key=custom-value 3::authority=www.example.com size 217",
+    "B.4 table");
+  expectStr(decodeHex(&mut dec, 8u64, "0500 80 c1 81").view(),
+    ":authority=www.example.com; :path=/; custom-key=custom-value", "B.4 fields");
+  dec.cancelStream(8u64);
+  expectStr(decoderOut(&mut dec).view(), "8848", "B.4 acknowledgment, then Stream Cancellation (stream 8)");
+
+  // B.5: an insert naming a dynamic entry's name, evicting the oldest
+  expectUInt(encoderIn(&mut dec, customValue2), 5u64, "B.5 insert");
+  expectStr(table(dec.dynamicTable()).view(),
+    "1::path=/sample/path 2:custom-key=custom-value 3::authority=www.example.com 4:custom-key=custom-value2 size 215",
+    "B.5 table");
+  expectStr(decoderOut(&mut dec).view(), "01", "B.5 Insert Count Increment (1)");
+}
+
+fn encoderSide() {
+  var enc = QpackEncoder.make(&config());
+  var dec = QpackDecoder.make(config());     // reads what the encoder makes
+  var section = List[u8].empty();
+
+  // B.1: no dynamic table yet (the peer's SETTINGS have not arrived)
+  enc.encode(0u64, fields(":path=/index.html").view(), &mut section);
+  expectStr(hex(section.view()).view(), "0000510b2f696e6465782e68746d6c", "B.1 section");
+
+  // B.2: the peer's SETTINGS give a 220-byte table and room for blocking
+  enc.peerSettings(220usize, 2usize);
+  section.clear();
+  enc.encode(4u64, fields(":authority=www.example.com|:path=/sample/path").view(), &mut section);
+  let stream = encoderOut(&mut enc);
+  var want = String.from("3fbd01");
+  want.append(hex(unhex(authority).view()).view());
+  want.append(hex(unhex(samplePath).view()).view());
+  expectStr(stream.view(), want.view(), "B.2 encoder stream");
+  expectStr(hex(section.view()).view(), "03008180", "B.2 section, Base = Required Insert Count");
+  expectUInt(u64.from(enc.unacknowledgedSections()), 1u64, "B.2 one section outstanding");
+  expectUInt(u64.from(enc.blockingStreams()), 1u64, "B.2 stream 4 may block");
+  encoderIn(&mut dec, stream.view());
+  expectStr(decodeHex(&mut dec, 4u64, hex(section.view()).view()).view(),
+    ":authority=www.example.com; :path=/sample/path", "B.2 section decoded");
+  expectUInt(decoderIn(&mut enc, "84"), 2u64, "B.2 acknowledged: Known Received Count 2");
+  expectUInt(u64.from(enc.unacknowledgedSections()), 0u64, "B.2 nothing outstanding");
+
+  // B.3: a speculative insert
+  expect(enc.insert("custom-key", "custom-value"), "B.3 inserted");
+  expectStr(encoderOut(&mut enc).view(), hex(unhex(customKey).view()).view(), "B.3 encoder stream");
+  expect(!enc.insert("custom-key", "custom-value"), "B.3 not inserted twice");
+  expectUInt(decoderIn(&mut enc, "01"), 3u64, "B.3 Known Received Count 3");
+
+  // B.4: a Duplicate of entry 0, then the RFC's section
+  expect(enc.duplicate(0u64), "B.4 duplicated");
+  expectStr(encoderOut(&mut enc).view(), "02", "B.4 encoder stream");
+  section.clear();
+  enc.encode(8u64, fields(":authority=www.example.com|:path=/|custom-key=custom-value").view(), &mut section);
+  expectStr(hex(section.view()).view(), "050080c181", "B.4 section");
+  expectStr(encoderOut(&mut enc).view(), "", "B.4 no inserts");
+  expectUInt(decoderIn(&mut enc, "48"), 3u64, "B.4 Stream Cancellation (stream 8)");
+  expectUInt(u64.from(enc.unacknowledgedSections()), 0u64, "B.4 the cancelled section forgotten");
+
+  // B.5: inserting custom-key=custom-value2 names entry 2 and evicts entry 0
+  expect(enc.insert("custom-key", "custom-value2"), "B.5 inserted");
+  expectStr(encoderOut(&mut enc).view(), hex(unhex(customValue2).view()).view(), "B.5 encoder stream");
+  expectStr(table(enc.dynamicTable()).view(),
+    "1::path=/sample/path 2:custom-key=custom-value 3::authority=www.example.com 4:custom-key=custom-value2 size 215",
+    "B.5 encoder's table");
+}
+
+fn main() i32 {
+  decoderSide();
+  encoderSide();
+  done()
+}

@@ -1,0 +1,1271 @@
+// ======== QPACK: field compression for HTTP/3 (RFC 9204) ========
+//
+// QPACK is HPACK rebuilt for streams that arrive out of order. A field
+// section (one message's header or trailer fields) refers only to entries
+// the encoder has already inserted, and the inserts travel on their own
+// unidirectional stream, the encoder stream; the decoder answers on another,
+// the decoder stream. So the dynamic table changes only through that one
+// ordered stream, and a section that arrives before the inserts it needs
+// waits ("blocked") instead of being misread.
+//
+// On the wire, everything is prefix integers (section 4.1.1, HPACK's, up to
+// 62 bits) and length-prefixed strings whose Huffman flag sits just above
+// the length's prefix (section 4.1.2), so a string's prefix may be 7, 5 or
+// 3 bits:
+//
+//   encoder stream (section 4.3)          decoder stream (section 4.4)
+//     1Txxxxxx  insert, name by index       1xxxxxxx  section acknowledgment
+//     01Hxxxxx  insert, literal name        01xxxxxx  stream cancellation
+//     001xxxxx  set table capacity          00xxxxxx  insert count increment
+//     000xxxxx  duplicate
+//
+//   a field section (section 4.5): the Required Insert Count (8-bit
+//   prefix), the sign and Delta Base (7-bit), then field lines:
+//     1Txxxxxx  indexed                     01NTxxxx  literal, name by index
+//     0001xxxx  indexed, post-base          0000Nxxx  literal, post-base name
+//     001NHxxx  literal, literal name
+//
+// T says the static table (else the dynamic); N says never to index the
+// field (the HeaderField's 'sensitive'). Indexes into the dynamic table are
+// relative: to the insert count on the encoder stream, to the section's
+// Base in a section. Absolute indexes count inserts from 0, so entry i keeps
+// its number until it is evicted.
+//
+// The Huffman code and HPACK's integer encoder are package http2's, used as
+// they are; HeaderField is http2's too, so a field passes from one protocol
+// to the other unchanged. QPACK's static table (Appendix A, 99 entries) is
+// its own. The integer decoder is QPACK's own because QPACK must read 62
+// bits where HPACK stops at 32, and its string coder because the prefix
+// varies.
+
+mod qpack;
+
+import collections use List, Deque, String;
+import http2 use HeaderField, isSensitiveName, encodeInteger, huffmanEncode, huffmanEncodedLen, huffmanDecode, HuffmanStatus, huffmanWhy;
+
+// ---------------------------------------------------------------------------
+// The numbers RFC 9204 and RFC 9114 fix
+// ---------------------------------------------------------------------------
+
+// What an entry costs beyond its name and value (section 3.2.1)
+pub const entryOverhead = 32usize;
+
+// How many entries the static table holds (Appendix A)
+pub const staticTableLen = 99usize;
+
+// The largest integer QPACK reads: 62 bits (section 4.1.1)
+pub const maxInteger = 0x3FFFFFFFFFFFFFFFu64;
+
+// The error codes (RFC 9204 section 6; RFC 9114 section 8.1)
+pub const h3ClosedCriticalStream = 0x0104u64;
+pub const qpackDecompressionFailed = 0x0200u64;
+pub const qpackEncoderStreamError = 0x0201u64;
+pub const qpackDecoderStreamError = 0x0202u64;
+
+const noRef = 0xFFFFFFFFFFFFFFFFu64;       // no dynamic entry referenced yet
+
+// ---------------------------------------------------------------------------
+// Configuration
+// ---------------------------------------------------------------------------
+
+// QPACK's bounds and choices, each a field to change (see the package's
+// header, QPACK BOUNDS)
+pub struct QpackConfig {
+  pub maxTableCapacity: usize;      // the decoder's table: SETTINGS_QPACK_MAX_TABLE_CAPACITY
+  pub blockedStreams: usize;        // streams the decoder lets wait: SETTINGS_QPACK_BLOCKED_STREAMS
+  pub maxFieldSectionSize: usize;   // a decoded section past this is refused: SETTINGS_MAX_FIELD_SECTION_SIZE
+  pub encoderTableCapacity: usize;  // the most of the peer's table the encoder uses
+  pub maxUnacknowledgedSections: usize;  // past this many, the encoder names only the static table
+  pub huffman: bool;                // Huffman-code a string unless that is longer
+
+  // The defaults
+  pub fn make() QpackConfig {
+    QpackConfig(maxTableCapacity: 0usize, blockedStreams: 0usize, maxFieldSectionSize: 16384usize,
+      encoderTableCapacity: 0usize, maxUnacknowledgedSections: 1000usize, huffman: true)
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Errors
+// ---------------------------------------------------------------------------
+
+// What kind of failure (see the package's header, QPACK ERRORS)
+pub enum QpackErrorKind {
+  Decompression,  // a field section breaks RFC 9204: QPACK_DECOMPRESSION_FAILED
+  EncoderStream,  // the encoder stream does: QPACK_ENCODER_STREAM_ERROR
+  DecoderStream,  // the decoder stream does: QPACK_DECODER_STREAM_ERROR
+  StreamClosed,   // an instruction stream ended: H3_CLOSED_CRITICAL_STREAM
+  TooLarge        // a section past maxFieldSectionSize: the one message is refused
+}
+
+// Why QPACK failed
+pub struct QpackError {
+  pub kind: QpackErrorKind;
+  pub detail: String;           // what was wrong, one line
+
+  pub fn make(kind: QpackErrorKind, detail: &str) QpackError {QpackError(kind, String.from(detail))}
+
+  // Whether the connection must end. Every kind but TooLarge leaves the
+  // two ends' tables or streams out of step
+  pub fn isConnectionError(self: &) bool {kind != QpackErrorKind.TooLarge}
+
+  // The HTTP/3 error code to close the connection with; None for TooLarge,
+  // which ends one message, as the HTTP/3 layer chooses
+  pub fn code(self: &) Option[u64] {
+    if kind == QpackErrorKind.Decompression {Some[u64](qpackDecompressionFailed)}
+    else if kind == QpackErrorKind.EncoderStream {Some[u64](qpackEncoderStreamError)}
+    else if kind == QpackErrorKind.DecoderStream {Some[u64](qpackDecoderStreamError)}
+    else if kind == QpackErrorKind.StreamClosed {Some[u64](h3ClosedCriticalStream)}
+    else {None}
+  }
+
+  // 'encoder stream: an entry larger than the table's capacity'
+  pub fn message(self: &) String {
+    var out = String.from(if kind == QpackErrorKind.Decompression {"decompression failed"}
+      else if kind == QpackErrorKind.EncoderStream {"encoder stream"}
+      else if kind == QpackErrorKind.DecoderStream {"decoder stream"}
+      else if kind == QpackErrorKind.StreamClosed {"critical stream closed"} else {"too large"});
+    out.append(": ");
+    out.append(detail.view());
+    out
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Integers (section 4.1.1)
+// ---------------------------------------------------------------------------
+
+// How reading an integer or a string ended
+pub enum WireStatus {
+  Done,         // read
+  Short,        // the input ends inside it: on a stream, wait for more bytes
+  Malformed,    // past 62 bits, or a bad Huffman string
+  TooLong       // a string past the limit asked for: nothing read past its length
+}
+
+// Read an integer with an N-bit prefix (1 to 8) at src[*pos] into *value,
+// moving *pos past it. Malformed past 62 bits (which also bounds how many
+// continuation bytes are read); Short if the input ends first, *pos then
+// unspecified. Writing one is http2's encodeInteger, which takes 64 bits
+pub fn decodeInteger(src: &Array[u8], pos: &mut usize, prefixBits: u32, value: &mut u64) WireStatus {
+  if *pos >= src.len {return WireStatus.Short;}
+  let max = (1u64 << u64.from(prefixBits)) - 1u64;
+  var v = u64.from(src[*pos]) & max;
+  *pos = *pos + 1usize;
+  if v < max {
+    *value = v;
+    return WireStatus.Done;
+  }
+  var shift = 0u64;
+  while true {
+    if *pos >= src.len {return WireStatus.Short;}
+    if shift > 56u64 {return WireStatus.Malformed;}
+    let b = src[*pos];
+    *pos = *pos + 1usize;
+    v = v + (u64.from(b & 0x7Fu8) << shift);
+    if v > maxInteger {return WireStatus.Malformed;}
+    if (b & 0x80u8) == 0u8 {
+      *value = v;
+      return WireStatus.Done;
+    }
+    shift = shift + 7u64;
+  }
+  WireStatus.Malformed
+}
+
+// ---------------------------------------------------------------------------
+// Strings (section 4.1.2)
+// ---------------------------------------------------------------------------
+
+// Append s as a string literal whose length has an N-bit prefix and whose
+// Huffman flag is the bit above it, under 'flags' (the representation's own
+// high bits): Huffman-coded when 'huffman' is asked and that is no longer,
+// raw otherwise and when s is empty
+pub fn encodeString(out: &mut List[u8], flags: u8, prefixBits: u32, s: &Array[u8], huffman: bool) {
+  if huffman && s.len > 0usize {
+    let n = huffmanEncodedLen(s);
+    if n <= s.len {
+      encodeInteger(out, flags | huffmanBit(prefixBits), prefixBits, u64.from(n));
+      huffmanEncode(s, out);
+      return;
+    }
+  }
+  encodeInteger(out, flags, prefixBits, u64.from(s.len));
+  var i = 0usize;
+  while i < s.len {
+    out.push(s[i]);
+    i = i + 1usize;
+  }
+}
+
+fn huffmanBit(prefixBits: u32) u8 {u8.from(1u64 << u64.from(prefixBits))}
+
+// The fewest bytes a Huffman string of n bytes decodes to: its codes are at
+// most 30 bits, and its padding at most 7
+fn huffmanLeast(n: u64) u64 {if n == 0u64 {0u64} else {(n * 8u64 - 7u64) / 30u64}}
+
+// Read the string literal at src[*pos] (an N-bit length prefix, the Huffman
+// flag above it), moving *pos past it, and append its bytes to out, at most
+// limit of them. Its declared length is checked against limit before a byte
+// of it is read or waited for: a raw string longer than limit, or a Huffman
+// string too long to decode to limit or less, is TooLong at once. Short if
+// the input ends inside it. 'why' is set when it is Malformed
+pub fn decodeString(src: &Array[u8], pos: &mut usize, prefixBits: u32, limit: usize, out: &mut List[u8], why: &mut &str) WireStatus {
+  if *pos >= src.len {return WireStatus.Short;}
+  let huff = (src[*pos] & huffmanBit(prefixBits)) != 0u8;
+  var len = 0u64;
+  let st = decodeInteger(src, pos, prefixBits, &mut len);
+  if st != WireStatus.Done {
+    if st == WireStatus.Malformed {*why = "a string's length is past 62 bits";}
+    return st;
+  }
+  if huff {if huffmanLeast(len) > u64.from(limit) {return WireStatus.TooLong;}}
+  else {if len > u64.from(limit) {return WireStatus.TooLong;}}
+  if len > u64.from(src.len - *pos) {return WireStatus.Short;}
+  let start = *pos;
+  let n = usize.from(len);
+  *pos = start + n;
+  if !huff {
+    var i = start;
+    while i < start + n {
+      out.push(src[i]);
+      i = i + 1usize;
+    }
+    return WireStatus.Done;
+  }
+  let hs = huffmanDecode(&src[start ..< start + n], out, limit);
+  if hs == HuffmanStatus.Done {return WireStatus.Done;}
+  if hs == HuffmanStatus.TooLong {return WireStatus.TooLong;}
+  *why = huffmanWhy(hs);
+  WireStatus.Malformed
+}
+
+// Move *pos past the string literal at src[*pos] without decoding it, with
+// decodeString's checks of its declared length: Done when it is all there
+fn skipString(src: &Array[u8], pos: &mut usize, prefixBits: u32, limit: usize) WireStatus {
+  if *pos >= src.len {return WireStatus.Short;}
+  let huff = (src[*pos] & huffmanBit(prefixBits)) != 0u8;
+  var len = 0u64;
+  let st = decodeInteger(src, pos, prefixBits, &mut len);
+  if st != WireStatus.Done {return st;}
+  if huff {if huffmanLeast(len) > u64.from(limit) {return WireStatus.TooLong;}}
+  else {if len > u64.from(limit) {return WireStatus.TooLong;}}
+  if len > u64.from(src.len - *pos) {return WireStatus.Short;}
+  *pos = *pos + usize.from(len);
+  WireStatus.Done
+}
+
+// ---------------------------------------------------------------------------
+// The field section prefix (section 4.5.1)
+// ---------------------------------------------------------------------------
+
+// The Required Insert Count as a section's prefix carries it: 0, or the
+// count modulo twice the most entries the decoder's table can hold, plus 1.
+// maxEntries is the decoder's SETTINGS_QPACK_MAX_TABLE_CAPACITY over 32
+pub fn encodeRequiredInsertCount(ric: u64, maxEntries: u64) u64 {
+  if ric == 0u64 {0u64} else {(ric % (2u64 * maxEntries)) + 1u64}
+}
+
+// The Required Insert Count a prefix's encoded value stands for, given the
+// decoder's maxEntries and its table's insert count: section 4.5.1.1's
+// algorithm, or why the value is impossible
+pub fn decodeRequiredInsertCount(encoded: u64, maxEntries: u64, insertCount: u64) Result[u64, &str] {
+  if encoded == 0u64 {return Ok[u64, &str](0u64);}
+  let full = 2u64 * maxEntries;
+  if encoded > full {return Error[u64, &str]("an encoded Required Insert Count past twice the table's entries");}
+  let maxValue = insertCount + maxEntries;
+  let maxWrapped = (maxValue / full) * full;
+  var ric = maxWrapped + encoded - 1u64;
+  if ric > maxValue {
+    if ric <= full {return Error[u64, &str]("a Required Insert Count past what the table can reach");}
+    ric = ric - full;
+  }
+  if ric == 0u64 {return Error[u64, &str]("a Required Insert Count of 0 encoded as nonzero");}
+  Ok[u64, &str](ric)
+}
+
+// Read a section's prefix at section[*pos], moving *pos past it: its
+// Required Insert Count and Base, given the decoder's maxEntries and its
+// table's insert count. "" or why it is malformed
+pub fn readPrefix(section: &Array[u8], pos: &mut usize, ric: &mut u64, base: &mut u64, maxEntries: u64, insertCount: u64) &str {
+  var enc = 0u64;
+  if decodeInteger(section, pos, 8u32, &mut enc) != WireStatus.Done {return "a section's prefix is cut off or past 62 bits";}
+  match decodeRequiredInsertCount(enc, maxEntries, insertCount) {
+    case let Ok(r) {*ric = r;}
+    case let Error(e) {return e;}
+  }
+  if *pos >= section.len {return "a section's prefix is cut off";}
+  let negative = (section[*pos] & 0x80u8) != 0u8;
+  var delta = 0u64;
+  if decodeInteger(section, pos, 7u32, &mut delta) != WireStatus.Done {return "a section's prefix is cut off or past 62 bits";}
+  if negative {
+    if delta >= *ric {return "a Base below 0";}
+    *base = *ric - delta - 1u64;
+  } else {
+    if delta > maxInteger - *ric {return "a Base past 62 bits";}
+    *base = *ric + delta;
+  }
+  ""
+}
+
+// ---------------------------------------------------------------------------
+// The static table (Appendix A)
+// ---------------------------------------------------------------------------
+
+let staticNames: Array[&str, 99] = [
+  ":authority", ":path", "age", "content-disposition", "content-length", "cookie", "date", "etag",
+  "if-modified-since", "if-none-match", "last-modified", "link", "location", "referer", "set-cookie",
+  ":method", ":method", ":method", ":method", ":method", ":method", ":method", ":scheme", ":scheme",
+  ":status", ":status", ":status", ":status", ":status", "accept", "accept", "accept-encoding",
+  "accept-ranges", "access-control-allow-headers", "access-control-allow-headers",
+  "access-control-allow-origin", "cache-control", "cache-control", "cache-control", "cache-control",
+  "cache-control", "cache-control", "content-encoding", "content-encoding", "content-type",
+  "content-type", "content-type", "content-type", "content-type", "content-type", "content-type",
+  "content-type", "content-type", "content-type", "content-type", "range", "strict-transport-security",
+  "strict-transport-security", "strict-transport-security", "vary", "vary", "x-content-type-options",
+  "x-xss-protection", ":status", ":status", ":status", ":status", ":status", ":status", ":status",
+  ":status", ":status", "accept-language", "access-control-allow-credentials",
+  "access-control-allow-credentials", "access-control-allow-headers", "access-control-allow-methods",
+  "access-control-allow-methods", "access-control-allow-methods", "access-control-expose-headers",
+  "access-control-request-headers", "access-control-request-method", "access-control-request-method",
+  "alt-svc", "authorization", "content-security-policy", "early-data", "expect-ct", "forwarded",
+  "if-range", "origin", "purpose", "server", "timing-allow-origin", "upgrade-insecure-requests",
+  "user-agent", "x-forwarded-for", "x-frame-options", "x-frame-options"];
+
+let staticValues: Array[&str, 99] = [
+  "", "/", "0", "", "0", "", "", "", "", "", "", "", "", "", "",
+  "CONNECT", "DELETE", "GET", "HEAD", "OPTIONS", "POST", "PUT", "http", "https",
+  "103", "200", "304", "404", "503", "*/*", "application/dns-message", "gzip, deflate, br",
+  "bytes", "cache-control", "content-type",
+  "*", "max-age=0", "max-age=2592000", "max-age=604800", "no-cache",
+  "no-store", "public, max-age=31536000", "br", "gzip", "application/dns-message",
+  "application/javascript", "application/json", "application/x-www-form-urlencoded", "image/gif",
+  "image/jpeg", "image/png", "text/css", "text/html; charset=utf-8", "text/plain",
+  "text/plain;charset=utf-8", "bytes=0-", "max-age=31536000",
+  "max-age=31536000; includesubdomains", "max-age=31536000; includesubdomains; preload",
+  "accept-encoding", "origin", "nosniff",
+  "1; mode=block", "100", "204", "206", "302", "400", "403", "421",
+  "425", "500", "", "FALSE",
+  "TRUE", "*", "get",
+  "get, post, options", "options", "content-length",
+  "content-type", "get", "post",
+  "clear", "", "script-src 'none'; object-src 'none'; base-uri 'none'", "1", "", "",
+  "", "", "prefetch", "", "*", "1",
+  "", "", "deny", "sameorigin"];
+
+// The static table's entry at index, 0 to 98: its name and its value
+pub fn staticName(index: usize) &str {staticNames[index]}
+pub fn staticValue(index: usize) &str {staticValues[index]}
+
+// Where a field was found in a table: 'found' when its name was; 'exact'
+// when its value was too; 'index' the entry's (absolute, in the dynamic table)
+pub struct TableHit {
+  pub found: bool;
+  pub index: u64;
+  pub exact: bool;
+
+  pub fn none() TableHit {TableHit(false, 0u64, false)}
+}
+
+// The static table's entry holding this name and value, else the first
+// holding this name, else none
+pub fn staticFind(name: &Array[u8], value: &Array[u8]) TableHit {
+  var named = TableHit.none();
+  var i = 0usize;
+  while i < staticTableLen {
+    if bytesEq(staticNames[i], name) {
+      if bytesEq(staticValues[i], value) {return TableHit(true, u64.from(i), true);}
+      if !named.found {named = TableHit(true, u64.from(i), false);}
+    }
+    i = i + 1usize;
+  }
+  named
+}
+
+fn bytesEq(a: &Array[u8], b: &Array[u8]) bool {
+  if a.len != b.len {return false;}
+  var i = 0usize;
+  while i < a.len {
+    if a[i] != b[i] {return false;}
+    i = i + 1usize;
+  }
+  true
+}
+
+fn sizeOf(name: &Array[u8], value: &Array[u8]) usize {name.len + value.len + entryOverhead}
+
+fn appendBytes(out: &mut List[u8], b: &Array[u8]) {
+  var i = 0usize;
+  while i < b.len {
+    out.push(b[i]);
+    i = i + 1usize;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The dynamic table (section 3.2)
+// ---------------------------------------------------------------------------
+
+struct Entry {
+  name: String;
+  value: String;
+}
+
+// A dynamic table as both ends hold it: entries by absolute index, the
+// oldest first, the sum of their sizes never past the capacity. Only the
+// encoder stream changes it, so the two ends' copies agree at each point of
+// that stream
+pub struct QpackTable {
+  entries: Deque[Entry];    // entries[0] has absolute index 'dropped'
+  used: usize;              // the sum of the entries' sizes
+  cap: usize;               // the capacity
+  inserted: u64;            // the insert count: every entry ever added
+  dropped: u64;             // how many have been evicted
+
+  pub fn make() QpackTable {QpackTable(Deque[Entry].empty(), 0usize, 0usize, 0u64, 0u64)}
+
+  pub fn len(self: &) usize {entries.len()}
+  pub fn size(self: &) usize {used}
+  pub fn capacity(self: &) usize {cap}
+  pub fn insertCount(self: &) u64 {inserted}
+  pub fn evictedCount(self: &) u64 {dropped}
+
+  // Whether the entry of this absolute index is in the table
+  pub fn has(self: &, abs: u64) bool {abs >= dropped && abs < inserted}
+
+  // The entry of absolute index abs (which 'has'): its name and value
+  pub fn name(self: &, abs: u64) &str {entries[usize.from(abs - dropped)].name.view()}
+  pub fn value(self: &, abs: u64) &Array[u8] {entries[usize.from(abs - dropped)].value.view()}
+  pub fn entrySize(self: &, abs: u64) usize {
+    let e = entries[usize.from(abs - dropped)];
+    e.name.len() + e.value.len() + entryOverhead
+  }
+
+  // Among the entries below absolute index 'below', the newest holding this
+  // name and value, else the newest holding this name, else none
+  pub fn find(self: &, name: &Array[u8], value: &Array[u8], below: u64) TableHit {
+    var named = TableHit.none();
+    var k = entries.len();
+    while k > 0usize {
+      k = k - 1usize;
+      let abs = dropped + u64.from(k);
+      if abs < below {
+        let e = entries[k];
+        if bytesEq(e.name.view(), name) {
+          if bytesEq(e.value.view(), value) {return TableHit(true, abs, true);}
+          if !named.found {named = TableHit(true, abs, false);}
+        }
+      }
+    }
+    named
+  }
+
+  // A new capacity, evicting the oldest entries until they fit
+  fn setCapacity(self: &mut, n: usize) {
+    while used > n {self.evictOldest();}
+    cap = n;
+  }
+
+  // Add an entry, evicting the oldest to make room: false, and nothing
+  // changed, when it is larger than the capacity
+  fn add(self: &mut, name: String, value: String) bool {
+    let size = name.len() + value.len() + entryOverhead;
+    if size > cap {return false;}
+    while used + size > cap {self.evictOldest();}
+    used = used + size;
+    entries.push(Entry(name, value));
+    inserted = inserted + 1u64;
+    true
+  }
+
+  fn evictOldest(self: &mut) {
+    match entries.popFront() {
+      case let Some(e) {
+        used = used - (e.name.len() + e.value.len() + entryOverhead);
+        dropped = dropped + 1u64;
+      }
+      case is None[Entry] {used = 0usize;}
+    }
+  }
+}
+
+// Take the bytes before 'from' off the front of a stream's buffer, keeping
+// the part of an instruction not yet whole
+fn consume(buf: &mut List[u8], from: usize) {
+  let rest = buf.len() - from;
+  var i = 0usize;
+  while i < rest {
+    buf.set(i, *buf[from + i]);
+    i = i + 1usize;
+  }
+  buf.truncate(rest);
+}
+
+// ---------------------------------------------------------------------------
+// The encoder
+// ---------------------------------------------------------------------------
+
+// A field section sent with a nonzero Required Insert Count and not yet
+// acknowledged: it holds the entries from minRef on in the table
+struct Outstanding {
+  streamId: u64;
+  ric: u64;
+  minRef: u64;
+}
+
+// How a field line of a section being built refers to the tables
+enum LineKind {
+  Static,           // indexed, static
+  Dynamic,          // indexed, dynamic
+  LiteralStatic,    // literal, the static table's name
+  LiteralDynamic,   // literal, the dynamic table's name
+  Literal           // literal, a literal name
+}
+
+struct Line {
+  kind: LineKind;
+  index: u64;       // the static index or the dynamic absolute index
+  field: usize;     // which field of the list
+  never: bool;      // the N bit
+}
+
+// One end of a direction of a connection: field lists in, field sections
+// out, and its encoder stream (see the package's header, THE ENCODER)
+pub struct QpackEncoder {
+  huffman: bool;
+  want: usize;              // encoderTableCapacity
+  maxSections: usize;       // maxUnacknowledgedSections
+  peerMax: usize;           // the peer's SETTINGS_QPACK_MAX_TABLE_CAPACITY
+  peerBlocked: usize;       // the peer's SETTINGS_QPACK_BLOCKED_STREAMS
+  settled: bool;            // the peer's SETTINGS have been given
+  table: QpackTable;
+  known: u64;               // the Known Received Count
+  sections: List[Outstanding];  // in the order sent
+  pending: List[u8];        // decoder-stream bytes of an instruction not yet whole
+  toSend: List[u8];         // encoder-stream bytes not yet taken
+  plan: List[Line];         // the section being built
+  failed: bool;             // the decoder stream broke: every later input fails
+
+  // An encoder whose table is empty, of capacity 0, until the peer's
+  // SETTINGS say how large a table it has
+  pub fn make(cfg: &QpackConfig) QpackEncoder {
+    QpackEncoder(huffman: cfg.huffman, want: cfg.encoderTableCapacity,
+      maxSections: cfg.maxUnacknowledgedSections, peerMax: 0usize,
+      peerBlocked: 0usize, settled: false, table: QpackTable.make(), known: 0u64,
+      sections: List[Outstanding].empty(), pending: List[u8].empty(), toSend: List[u8].empty(),
+      plan: List[Line].empty(), failed: false)
+  }
+
+  // The peer's SETTINGS arrived: its SETTINGS_QPACK_MAX_TABLE_CAPACITY and
+  // SETTINGS_QPACK_BLOCKED_STREAMS (0 for one it left out). The table takes
+  // the smaller of that capacity and encoderTableCapacity, and the encoder
+  // stream says so. SETTINGS come once: a later call changes nothing
+  pub fn peerSettings(self: &mut, maxTableCapacity: usize, blockedStreams: usize) {
+    if settled {return;}
+    settled = true;
+    peerMax = maxTableCapacity;
+    peerBlocked = blockedStreams;
+    let c = if want < peerMax {want} else {peerMax};
+    if c > 0usize {
+      encodeInteger(&mut toSend, 0x20u8, 5u32, u64.from(c));
+      table.setCapacity(c);
+    }
+  }
+
+  // The table, as the peer's decoder holds it once the encoder stream so far
+  // arrives
+  pub fn dynamicTable(self: &) &QpackTable {&table}
+
+  // The Known Received Count: how many inserts the peer has said it has
+  pub fn knownReceivedCount(self: &) u64 {known}
+
+  // How many streams have a section the peer may still be blocked on
+  pub fn blockingStreams(self: &) usize {
+    var n = 0usize;
+    var i = 0usize;
+    while i < sections.len() {
+      let s = *sections[i];
+      if s.ric > known && !self.blockingBefore(s.streamId, i) {n = n + 1usize;}
+      i = i + 1usize;
+    }
+    n
+  }
+
+  // How many sections wait for the peer's acknowledgment
+  pub fn unacknowledgedSections(self: &) usize {sections.len()}
+
+  // Append the encoder-stream bytes not yet taken to out
+  pub fn pollTransmit(self: &mut, out: &mut List[u8]) {
+    var i = 0usize;
+    while i < toSend.len() {
+      out.push(*toSend[i]);
+      i = i + 1usize;
+    }
+    toSend.clear();
+  }
+
+  // Encode a whole field list as one field section for stream streamId,
+  // appended to out; any inserts it makes go to the encoder stream. A field
+  // that is an entry of the static table is sent as its index; one that is
+  // an entry of the dynamic table the peer may use is too; any other is
+  // inserted where it fits and referred to if the section may block, and
+  // otherwise sent as a literal naming a table's entry for the name where
+  // there is one. A sensitive field (by its flag or its name) is a literal
+  // never indexed, and is never inserted
+  pub fn encode(self: &mut, streamId: u64, fields: &Array[HeaderField], out: &mut List[u8]) {
+    plan.clear();
+    // Past maxUnacknowledgedSections the peer is not acknowledging what it
+    // reads: name only the static table, so no more sections are held
+    let dynamic = sections.len() < maxSections;
+    let mayBlock = dynamic && (self.blocking(streamId) || self.blockingStreams() < peerBlocked);
+    var refMin = noRef;
+    var refEnd = 0u64;
+    var i = 0usize;
+    while i < fields.len {
+      let name = fields[i].name.view();
+      let value = fields[i].value.view();
+      let never = fields[i].sensitive || isSensitiveName(name);
+      let usable = if mayBlock {table.insertCount()} else if dynamic {known} else {0u64};
+      let s = staticFind(name, value);
+      var kind = LineKind.Literal;
+      var index = 0u64;
+      if s.exact && !never {
+        kind = LineKind.Static;
+        index = s.index;
+      } else {
+        var d = table.find(name, value, usable);
+        if dynamic && !never && !d.exact && !table.find(name, value, table.insertCount()).exact {
+          // Not in the table at all: insert it where it fits (the new entry
+          // is usable if the section may block), and look again, since the
+          // insert may have evicted the entry found for the name
+          if self.insertField(name, value, s, refMin) {
+            d = table.find(name, value, if mayBlock {table.insertCount()} else {known});
+          }
+        }
+        if !never && d.exact {
+          kind = LineKind.Dynamic;
+          index = d.index;
+        } else if s.found {
+          kind = LineKind.LiteralStatic;
+          index = s.index;
+        } else if d.found {
+          kind = LineKind.LiteralDynamic;
+          index = d.index;
+        }
+      }
+      if kind == LineKind.Dynamic || kind == LineKind.LiteralDynamic {
+        if index < refMin {refMin = index;}
+        if index + 1u64 > refEnd {refEnd = index + 1u64;}
+      }
+      plan.push(Line(kind, index, i, never));
+      i = i + 1usize;
+    }
+    // The prefix: Base is the Required Insert Count, so every dynamic
+    // reference is relative to it, pre-base, and Delta Base is 0
+    let ric = refEnd;
+    encodeInteger(out, 0u8, 8u32, encodeRequiredInsertCount(ric, u64.from(peerMax / entryOverhead)));
+    out.push(0u8);
+    var k = 0usize;
+    while k < plan.len() {
+      let ln = *plan[k];
+      let value = fields[ln.field].value.view();
+      let n = if ln.never {0x20u8} else {0u8};
+      if ln.kind == LineKind.Static {encodeInteger(out, 0xC0u8, 6u32, ln.index);}
+      else if ln.kind == LineKind.Dynamic {encodeInteger(out, 0x80u8, 6u32, ric - 1u64 - ln.index);}
+      else {
+        if ln.kind == LineKind.LiteralStatic {encodeInteger(out, 0x50u8 | n, 4u32, ln.index);}
+        else if ln.kind == LineKind.LiteralDynamic {encodeInteger(out, 0x40u8 | n, 4u32, ric - 1u64 - ln.index);}
+        else {encodeString(out, 0x20u8 | (n >> 1u8), 3u32, fields[ln.field].name.view(), huffman);}
+        encodeString(out, 0u8, 7u32, value, huffman);
+      }
+      k = k + 1usize;
+    }
+    if ric > 0u64 {sections.push(Outstanding(streamId, ric, refMin));}
+  }
+
+  // Insert a field without referring to it (section 2.1.1.2's speculative
+  // insert, warming the table for sections to come): whether it was inserted.
+  // It is not when it is sensitive, already in the table, larger than the
+  // table, or room cannot be made without evicting an entry a section the
+  // peer has not acknowledged refers to
+  pub fn insert(self: &mut, name: &Array[u8], value: &Array[u8]) bool {
+    if isSensitiveName(name) || table.find(name, value, table.insertCount()).exact {return false;}
+    self.insertField(name, value, staticFind(name, value), noRef)
+  }
+
+  // Insert a copy of the entry of absolute index abs as the newest (section
+  // 4.3.4), so sections may go on naming it while the old one ages out:
+  // whether it was inserted, which it is not when room cannot be made
+  pub fn duplicate(self: &mut, abs: u64) bool {
+    if !table.has(abs) || !self.makeRoom(table.entrySize(abs), noRef) {return false;}
+    encodeInteger(&mut toSend, 0u8, 5u32, table.insertCount() - 1u64 - abs);
+    table.add(String.from(table.name(abs)), String.fromBytes(table.value(abs)))
+  }
+
+  // Whether an entry of this size fits once the oldest entries are evicted
+  // (which the table's add does), none of them at or past 'refMin' (the
+  // section being built refers to it) nor one an unacknowledged section
+  // refers to (section 2.1.1)
+  fn makeRoom(self: &mut, size: usize, refMin: u64) bool {
+    if size > table.capacity() {return false;}
+    var held = refMin;
+    var i = 0usize;
+    while i < sections.len() {
+      if sections[i].minRef < held {held = sections[i].minRef;}
+      i = i + 1usize;
+    }
+    var room = table.capacity() - table.size();
+    var evict = 0u64;
+    while room < size {
+      let abs = table.evictedCount() + evict;
+      if abs >= held || !table.has(abs) {return false;}
+      room = room + table.entrySize(abs);
+      evict = evict + 1u64;
+    }
+    true
+  }
+
+  // Insert a field, naming the static table's entry for its name, else the
+  // dynamic table's, else giving its name: whether there was room (see
+  // makeRoom). The table evicts as it adds, as the peer's does
+  fn insertField(self: &mut, name: &Array[u8], value: &Array[u8], s: TableHit, refMin: u64) bool {
+    if !self.makeRoom(sizeOf(name, value), refMin) {return false;}
+    let d = table.find(name, value, table.insertCount());
+    if s.found {
+      encodeInteger(&mut toSend, 0xC0u8, 6u32, s.index);
+      encodeString(&mut toSend, 0u8, 7u32, value, huffman);
+    } else if d.found {
+      encodeInteger(&mut toSend, 0x80u8, 6u32, table.insertCount() - 1u64 - d.index);
+      encodeString(&mut toSend, 0u8, 7u32, value, huffman);
+    } else {
+      encodeString(&mut toSend, 0x40u8, 5u32, name, huffman);
+      encodeString(&mut toSend, 0u8, 7u32, value, huffman);
+    }
+    table.add(String.fromBytes(name), String.fromBytes(value))
+  }
+
+  // Whether streamId has a section the peer may be blocked on
+  fn blocking(self: &, streamId: u64) bool {
+    var i = 0usize;
+    while i < sections.len() {
+      if sections[i].streamId == streamId && sections[i].ric > known {return true;}
+      i = i + 1usize;
+    }
+    false
+  }
+
+  // Whether a section before the i-th already counts streamId as blocking
+  fn blockingBefore(self: &, streamId: u64, i: usize) bool {
+    var j = 0usize;
+    while j < i {
+      if sections[j].streamId == streamId && sections[j].ric > known {return true;}
+      j = j + 1usize;
+    }
+    false
+  }
+
+  // Decoder-stream bytes arrived: apply each whole instruction (an
+  // instruction cut off waits for the rest). Ok with the Known Received
+  // Count, or why the stream is broken: a connection error
+  pub fn decoderInput(self: &mut, bytes: &Array[u8]) Result[u64, QpackError] {
+    if failed {return Error[u64, QpackError](QpackError.make(QpackErrorKind.DecoderStream, "an earlier instruction failed"));}
+    var i = 0usize;
+    while i < bytes.len {
+      pending.push(bytes[i]);
+      i = i + 1usize;
+    }
+    var pos = 0usize;
+    while pos < pending.len() {
+      let src = pending.view();
+      let b = src[pos];
+      var at = pos;
+      var v = 0u64;
+      let st = decodeInteger(src, &mut at, if (b & 0x80u8) != 0u8 {7u32} else {6u32}, &mut v);
+      if st == WireStatus.Short {break;}
+      if st == WireStatus.Malformed {return self.fail("an integer past 62 bits");}
+      pos = at;
+      if (b & 0x80u8) != 0u8 {
+        // Section Acknowledgment: the stream's oldest unacknowledged section
+        var k = 0usize;
+        while k < sections.len() && sections[k].streamId != v {k = k + 1usize;}
+        if k == sections.len() {return self.fail("a Section Acknowledgment for a stream with no section outstanding");}
+        if sections[k].ric > known {known = sections[k].ric;}
+        self.dropSections(v, true);
+      } else if (b & 0x40u8) != 0u8 {
+        // Stream Cancellation: the stream's sections will never be acknowledged
+        self.dropSections(v, false);
+      } else {
+        // Insert Count Increment
+        if v == 0u64 {return self.fail("an Insert Count Increment of 0");}
+        if v > table.insertCount() - known {return self.fail("an Insert Count Increment past the inserts sent");}
+        known = known + v;
+      }
+    }
+    consume(&mut pending, pos);
+    Ok[u64, QpackError](known)
+  }
+
+  // The decoder stream ended, which it must not before the connection does
+  // (section 4.2): the error to close the connection with
+  pub fn decoderStreamClosed(self: &mut) QpackError {
+    failed = true;
+    QpackError.make(QpackErrorKind.StreamClosed, "the decoder stream closed")
+  }
+
+  // Forget streamId's oldest outstanding section ('one'), or all of them
+  fn dropSections(self: &mut, streamId: u64, one: bool) {
+    var kept = 0usize;
+    var gone = false;
+    var i = 0usize;
+    while i < sections.len() {
+      let s = *sections[i];
+      if s.streamId == streamId && !(one && gone) {gone = true;}
+      else {
+        sections.set(kept, s);
+        kept = kept + 1usize;
+      }
+      i = i + 1usize;
+    }
+    sections.truncate(kept);
+  }
+
+  fn fail(self: &mut, why: &str) Result[u64, QpackError] {
+    failed = true;
+    Error[u64, QpackError](QpackError.make(QpackErrorKind.DecoderStream, why))
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The decoder
+// ---------------------------------------------------------------------------
+
+// What decoding a section did
+pub enum Decoded {
+  pub struct Done {pub size: usize;}    // its fields were appended; the list's size
+  pub struct Blocked {}                 // it waits for inserts: see pollUnblocked
+}
+
+// A blocked section decoded once the inserts it waited for arrived
+pub struct Unblocked {
+  pub streamId: u64;
+  pub result: Result[usize, QpackError];  // as 'decode' gives, the list's size
+}
+
+// A section waiting for inserts, kept whole, its prefix read
+struct Waiting {
+  streamId: u64;
+  ric: u64;
+  base: u64;
+  lines: usize;             // where its field lines start
+  bytes: List[u8];
+}
+
+// The other end: field sections and the encoder stream in, field lists and
+// the decoder stream out (see the package's header, THE DECODER)
+pub struct QpackDecoder {
+  cfg: QpackConfig;
+  table: QpackTable;
+  pending: List[u8];        // encoder-stream bytes of an instruction not yet whole
+  waiting: Deque[Waiting];  // blocked sections, in arrival order
+  waitingBytes: usize;      // the bytes they hold
+  acked: u64;               // the insert count our acknowledgments and increments have told
+  toSend: List[u8];         // decoder-stream bytes not yet taken
+  failed: bool;             // a connection error: every later call fails
+  name: List[u8];           // a literal's name and value as they are read
+  value: List[u8];
+
+  pub fn make(cfg: QpackConfig) QpackDecoder {
+    QpackDecoder(cfg: cfg, table: QpackTable.make(), pending: List[u8].empty(),
+      waiting: Deque[Waiting].empty(), waitingBytes: 0usize, acked: 0u64, toSend: List[u8].empty(), failed: false,
+      name: List[u8].empty(), value: List[u8].empty())
+  }
+
+  // The table, as the peer's encoder holds it
+  pub fn dynamicTable(self: &) &QpackTable {&table}
+
+  // How many streams have a blocked section
+  pub fn blockedStreams(self: &) usize {
+    var n = 0usize;
+    var i = 0usize;
+    while i < waiting.len() {
+      if !self.waitingBefore(waiting[i].streamId, i) {n = n + 1usize;}
+      i = i + 1usize;
+    }
+    n
+  }
+
+  // Append the decoder-stream bytes not yet taken to out: the Section
+  // Acknowledgments and Stream Cancellations so far, in order, then an
+  // Insert Count Increment for inserts no acknowledgment has told of
+  pub fn pollTransmit(self: &mut, out: &mut List[u8]) {
+    if table.insertCount() > acked {
+      encodeInteger(&mut toSend, 0u8, 6u32, table.insertCount() - acked);
+      acked = table.insertCount();
+    }
+    var i = 0usize;
+    while i < toSend.len() {
+      out.push(*toSend[i]);
+      i = i + 1usize;
+    }
+    toSend.clear();
+  }
+
+  // Decode a whole field section that arrived on stream streamId, appending
+  // its fields to out: Done with the list's size, Blocked when it needs
+  // inserts not yet arrived (it is kept, and comes back from pollUnblocked),
+  // or why not (see the package's header, QPACK ERRORS). On an error, out is
+  // as it was. A section behind a blocked one on the same stream waits too
+  pub fn decode(self: &mut, streamId: u64, section: &Array[u8], out: &mut List[HeaderField]) Result[Decoded, QpackError] {
+    if failed {return Error[Decoded, QpackError](self.lost());}
+    var pos = 0usize;
+    var ric = 0u64;
+    var base = 0u64;
+    let why = readPrefix(section, &mut pos, &mut ric, &mut base, u64.from(cfg.maxTableCapacity / entryOverhead), table.insertCount());
+    if why.len() > 0usize {return Error[Decoded, QpackError](self.fail(QpackErrorKind.Decompression, why));}
+    let behind = self.waitingBefore(streamId, waiting.len());
+    if ric > table.insertCount() || behind {
+      if !behind && self.blockedStreams() >= cfg.blockedStreams {
+        return Error[Decoded, QpackError](self.fail(QpackErrorKind.Decompression, "more blocked streams than SETTINGS_QPACK_BLOCKED_STREAMS"));
+      }
+      // Every field line is a byte or more, and decodes to 32 bytes or more,
+      // or to at least a quarter of its string bytes: a section this long
+      // cannot fit
+      if section.len / 4usize > cfg.maxFieldSectionSize {
+        return Error[Decoded, QpackError](QpackError.make(QpackErrorKind.TooLarge, "a blocked section too long to fit maxFieldSectionSize"));
+      }
+      // What blocked sections may hold in all: as many as may block, each
+      // the most one may be. Only sections behind another on its stream can
+      // reach it, which an HTTP/3 layer that stops reading a blocked stream
+      // never sends
+      if waitingBytes + section.len > cfg.blockedStreams * 4usize * cfg.maxFieldSectionSize {
+        return Error[Decoded, QpackError](QpackError.make(QpackErrorKind.TooLarge, "blocked sections past blockedStreams x 4 x maxFieldSectionSize bytes"));
+      }
+      var kept = List[u8].withCapacity(section.len);
+      var i = 0usize;
+      while i < section.len {
+        kept.push(section[i]);
+        i = i + 1usize;
+      }
+      waitingBytes = waitingBytes + section.len;
+      waiting.push(Waiting(streamId, ric, base, pos, kept));
+      return Ok[Decoded, QpackError](Decoded.Blocked);
+    }
+    match self.lines(streamId, section, pos, ric, base, out) {
+      case let Ok(size) {return Ok[Decoded, QpackError](Decoded.Done(size));}
+      case let Error(e) {return Error[Decoded, QpackError](e);}
+    }
+  }
+
+  // The next blocked section the inserts so far let decode, decoded, its
+  // fields appended to out; None when there is none. Call it after
+  // encoderInput until it gives None. A stream's sections come back in the
+  // order they arrived
+  pub fn pollUnblocked(self: &mut, out: &mut List[HeaderField]) Option[Unblocked] {
+    if failed {return None;}
+    var i = 0usize;
+    while i < waiting.len() {
+      if waiting[i].ric <= table.insertCount() && !self.waitingBefore(waiting[i].streamId, i) {
+        return Some[Unblocked](self.resume(i, out));
+      }
+      i = i + 1usize;
+    }
+    None
+  }
+
+  // Take the i-th waiting section out, keeping the others in order, and decode it
+  fn resume(self: &mut, i: usize, out: &mut List[HeaderField]) Unblocked {
+    let n = waiting.len();
+    var k = 0usize;
+    var taken: Option[Waiting] = None;
+    while k < n {
+      match waiting.popFront() {
+        case let Some(w) {
+          if k == i {
+            waitingBytes = waitingBytes - w.bytes.len();
+            taken = Some[Waiting](w);
+          }
+          else {waiting.push(w);}
+        }
+        case is None[Waiting] {}
+      }
+      k = k + 1usize;
+    }
+    match taken {
+      case let Some(w) {Unblocked(w.streamId, self.lines(w.streamId, w.bytes.view(), w.lines, w.ric, w.base, out))}
+      case is None[Waiting] {Unblocked(0u64, Error[usize, QpackError](QpackError.make(QpackErrorKind.Decompression, "no such section")))}
+    }
+  }
+
+  // The HTTP/3 layer gave up on stream streamId (it was reset, or reading
+  // it was abandoned) before every section on it was decoded: its blocked
+  // sections are dropped, and the encoder is told, so it stops holding the
+  // entries they name (section 4.4.2; skipped while our table's capacity is
+  // 0, since then the encoder can have named none)
+  pub fn cancelStream(self: &mut, streamId: u64) {
+    let n = waiting.len();
+    var k = 0usize;
+    while k < n {
+      match waiting.popFront() {
+        case let Some(w) {
+          if w.streamId != streamId {waiting.push(w);}
+          else {waitingBytes = waitingBytes - w.bytes.len();}
+        }
+        case is None[Waiting] {}
+      }
+      k = k + 1usize;
+    }
+    if cfg.maxTableCapacity > 0usize {encodeInteger(&mut toSend, 0x40u8, 6u32, streamId);}
+  }
+
+  // Encoder-stream bytes arrived: apply each whole instruction (an
+  // instruction cut off waits for the rest, its declared lengths checked
+  // first). Ok with the table's insert count, or why the stream is broken:
+  // a connection error. Blocked sections the inserts free come from
+  // pollUnblocked
+  pub fn encoderInput(self: &mut, bytes: &Array[u8]) Result[u64, QpackError] {
+    if failed {return Error[u64, QpackError](self.lost());}
+    var i = 0usize;
+    while i < bytes.len {
+      pending.push(bytes[i]);
+      i = i + 1usize;
+    }
+    var pos = 0usize;
+    while pos < pending.len() {
+      var end = pos;
+      let st = self.measure(pending.view(), &mut end);
+      if st == WireStatus.Short {break;}
+      if st == WireStatus.TooLong {return Error[u64, QpackError](self.fail(QpackErrorKind.EncoderStream, "an entry larger than the table's capacity"));}
+      if st == WireStatus.Malformed {return Error[u64, QpackError](self.fail(QpackErrorKind.EncoderStream, "an integer past 62 bits"));}
+      let why = self.apply(pos);
+      if why.len() > 0usize {
+        let e = QpackError.make(QpackErrorKind.EncoderStream, why);
+        failed = true;
+        return Error[u64, QpackError](e);
+      }
+      pos = end;
+    }
+    consume(&mut pending, pos);
+    Ok[u64, QpackError](table.insertCount())
+  }
+
+  // The encoder stream ended, which it must not before the connection does
+  // (section 4.2): the error to close the connection with
+  pub fn encoderStreamClosed(self: &mut) QpackError {
+    failed = true;
+    QpackError.make(QpackErrorKind.StreamClosed, "the encoder stream closed")
+  }
+
+  // Whether the instruction at src[*pos] is all there, moving *pos past it:
+  // its integers and its strings' declared lengths, read without decoding,
+  // so an instruction arriving a byte at a time costs no more than once.
+  // TooLong for a string that cannot fit the table's capacity
+  fn measure(self: &, src: &Array[u8], pos: &mut usize) WireStatus {
+    let b = src[*pos];
+    let room = if table.capacity() > entryOverhead {table.capacity() - entryOverhead} else {0usize};
+    var v = 0u64;
+    if (b & 0x80u8) != 0u8 {
+      let st = decodeInteger(src, pos, 6u32, &mut v);
+      if st != WireStatus.Done {return st;}
+      return skipString(src, pos, 7u32, room);
+    }
+    if (b & 0x40u8) != 0u8 {
+      let st = skipString(src, pos, 5u32, room);
+      if st != WireStatus.Done {return st;}
+      return skipString(src, pos, 7u32, room);
+    }
+    decodeInteger(src, pos, 5u32, &mut v)
+  }
+
+  // Apply the whole instruction at pending[pos]: "" or why it is refused
+  fn apply(self: &mut, at: usize) &str {
+    let src = pending.view();
+    var pos = at;
+    let b = src[pos];
+    var v = 0u64;
+    var why = "";
+    if (b & 0x20u8) != 0u8 && (b & 0xC0u8) == 0u8 {
+      // Set Dynamic Table Capacity
+      decodeInteger(src, &mut pos, 5u32, &mut v);
+      if v > u64.from(cfg.maxTableCapacity) {return "a table capacity past SETTINGS_QPACK_MAX_TABLE_CAPACITY";}
+      table.setCapacity(usize.from(v));
+      return "";
+    }
+    // The name and value are read into lists of their own: the checker
+    // cannot tell the decoder's scratch lists from 'pending', which src
+    // borrows
+    var name = List[u8].empty();
+    var value = List[u8].empty();
+    if (b & 0xC0u8) == 0u8 {
+      // Duplicate
+      decodeInteger(src, &mut pos, 5u32, &mut v);
+      if v >= table.insertCount() {return "a Duplicate's index past the insert count";}
+      let abs = table.insertCount() - 1u64 - v;
+      if !table.has(abs) {return "a Duplicate of an evicted entry";}
+      if !table.add(String.from(table.name(abs)), String.fromBytes(table.value(abs))) {
+        return "an entry larger than the table's capacity";
+      }
+      return "";
+    }
+    let room = if table.capacity() > entryOverhead {table.capacity() - entryOverhead} else {0usize};
+    if (b & 0x80u8) != 0u8 {
+      // Insert with Name Reference
+      decodeInteger(src, &mut pos, 6u32, &mut v);
+      if (b & 0x40u8) != 0u8 {
+        if v >= u64.from(staticTableLen) {return "a static index past the table's 99 entries";}
+        appendBytes(&mut name, staticName(usize.from(v)));
+      } else {
+        if v >= table.insertCount() {return "a name's index past the insert count";}
+        let abs = table.insertCount() - 1u64 - v;
+        if !table.has(abs) {return "a name from an evicted entry";}
+        appendBytes(&mut name, table.name(abs));
+      }
+    } else {
+      // Insert with Literal Name
+      if decodeString(src, &mut pos, 5u32, room, &mut name, &mut why) != WireStatus.Done {
+        return if why.len() > 0usize {why} else {"an entry larger than the table's capacity"};
+      }
+    }
+    if name.len() > room {return "an entry larger than the table's capacity";}
+    if decodeString(src, &mut pos, 7u32, room - name.len(), &mut value, &mut why) != WireStatus.Done {
+      return if why.len() > 0usize {why} else {"an entry larger than the table's capacity"};
+    }
+    if !table.add(String.fromBytes(name.view()), String.fromBytes(value.view())) {
+      return "an entry larger than the table's capacity";
+    }
+    ""
+  }
+
+  // Decode a section's field lines, from pos on, the prefix read: Ok with
+  // the list's size, or why not. A section with a nonzero Required Insert
+  // Count is acknowledged once read, refused for its size or not
+  fn lines(self: &mut, streamId: u64, section: &Array[u8], at: usize, ric: u64, base: u64, out: &mut List[HeaderField]) Result[usize, QpackError] {
+    let start = out.len();
+    var pos = at;
+    var total = 0usize;       // the list's size so far
+    var refEnd = 0u64;        // one past the largest dynamic index referenced
+    var why = "";
+    while pos < section.len {
+      let b = section[pos];
+      var v = 0u64;
+      var never = false;
+      var abs = noRef;        // a dynamic entry referred to, by absolute index
+      var stat = noRef;       // a static entry referred to
+      var literalName = false;
+      var indexed = false;
+      if (b & 0x80u8) != 0u8 {
+        // Indexed Field Line
+        indexed = true;
+        if decodeInteger(section, &mut pos, 6u32, &mut v) != WireStatus.Done {return self.malformed(out, start, "a field line is cut off or past 62 bits");}
+        if (b & 0x40u8) != 0u8 {stat = v;}
+        else {
+          if v >= base {return self.malformed(out, start, "a relative index at or past Base");}
+          abs = base - 1u64 - v;
+        }
+      } else if (b & 0xC0u8) == 0x40u8 {
+        // Literal Field Line with Name Reference
+        never = (b & 0x20u8) != 0u8;
+        if decodeInteger(section, &mut pos, 4u32, &mut v) != WireStatus.Done {return self.malformed(out, start, "a field line is cut off or past 62 bits");}
+        if (b & 0x10u8) != 0u8 {stat = v;}
+        else {
+          if v >= base {return self.malformed(out, start, "a relative index at or past Base");}
+          abs = base - 1u64 - v;
+        }
+      } else if (b & 0xE0u8) == 0x20u8 {
+        // Literal Field Line with Literal Name
+        never = (b & 0x10u8) != 0u8;
+        literalName = true;
+      } else if (b & 0xF0u8) == 0x10u8 {
+        // Indexed Field Line with Post-Base Index
+        indexed = true;
+        if decodeInteger(section, &mut pos, 4u32, &mut v) != WireStatus.Done {return self.malformed(out, start, "a field line is cut off or past 62 bits");}
+        abs = base + v;
+      } else {
+        // Literal Field Line with Post-Base Name Reference
+        never = (b & 0x08u8) != 0u8;
+        if decodeInteger(section, &mut pos, 3u32, &mut v) != WireStatus.Done {return self.malformed(out, start, "a field line is cut off or past 62 bits");}
+        abs = base + v;
+      }
+      if stat != noRef && stat >= u64.from(staticTableLen) {return self.malformed(out, start, "a static index past the table's 99 entries");}
+      if abs != noRef {
+        if abs >= ric {return self.malformed(out, start, "a dynamic index at or past the Required Insert Count");}
+        if !table.has(abs) {return self.malformed(out, start, "a reference to an evicted entry");}
+        if abs + 1u64 > refEnd {refEnd = abs + 1u64;}
+      }
+      if indexed {
+        // Its size is known before anything is copied
+        let size = if stat != noRef {sizeOf(staticName(usize.from(stat)), staticValue(usize.from(stat)))} else {table.entrySize(abs)};
+        total = total + size;
+        if total > cfg.maxFieldSectionSize {return self.tooLarge(streamId, ric, out, start);}
+        if stat != noRef {out.push(HeaderField.make(staticName(usize.from(stat)), staticValue(usize.from(stat))));}
+        else {out.push(HeaderField.make(table.name(abs), table.value(abs)));}
+        continue;
+      }
+      name.clear();
+      value.clear();
+      if literalName {
+        let st = decodeString(section, &mut pos, 3u32, self.budget(total), &mut name, &mut why);
+        if st == WireStatus.TooLong {return self.tooLarge(streamId, ric, out, start);}
+        if st == WireStatus.Short {return self.malformed(out, start, "a string runs past the section's end");}
+        if st == WireStatus.Malformed {return self.malformed(out, start, why);}
+      } else if stat != noRef {appendBytes(&mut name, staticName(usize.from(stat)));}
+      else {appendBytes(&mut name, table.name(abs));}
+      let st = decodeString(section, &mut pos, 7u32, self.budget(total + name.len()), &mut value, &mut why);
+      if st == WireStatus.TooLong {return self.tooLarge(streamId, ric, out, start);}
+      if st == WireStatus.Short {return self.malformed(out, start, "a string runs past the section's end");}
+      if st == WireStatus.Malformed {return self.malformed(out, start, why);}
+      total = total + sizeOf(name.view(), value.view());
+      if total > cfg.maxFieldSectionSize {return self.tooLarge(streamId, ric, out, start);}
+      out.push(HeaderField(String.fromBytes(name.view()), String.fromBytes(value.view()), never));
+    }
+    if refEnd != ric {return self.malformed(out, start, "a Required Insert Count other than one past the largest index referenced");}
+    self.acknowledge(streamId, ric);
+    Ok[usize, QpackError](total)
+  }
+
+  // How many more bytes a string may decode to before the list, at 'total'
+  // so far and with a field's 32, passes maxFieldSectionSize
+  fn budget(self: &, total: usize) usize {
+    let used = total + entryOverhead;
+    if used >= cfg.maxFieldSectionSize {0usize} else {cfg.maxFieldSectionSize - used}
+  }
+
+  // A section read (or given up for its size) with a nonzero Required
+  // Insert Count is acknowledged, which also tells the encoder we have
+  // those inserts (section 4.4.1)
+  fn acknowledge(self: &mut, streamId: u64, ric: u64) {
+    if ric == 0u64 {return;}
+    encodeInteger(&mut toSend, 0x80u8, 7u32, streamId);
+    if ric > acked {acked = ric;}
+  }
+
+  // Whether a section before the i-th waiting one is on streamId
+  fn waitingBefore(self: &, streamId: u64, i: usize) bool {
+    var j = 0usize;
+    while j < i {
+      if waiting[j].streamId == streamId {return true;}
+      j = j + 1usize;
+    }
+    false
+  }
+
+  // Refuse the section for its size: the stream's message, not the
+  // connection. Decoding stopped where the size was passed: the section
+  // changes no table, so nothing is out of step
+  fn tooLarge(self: &mut, streamId: u64, ric: u64, out: &mut List[HeaderField], start: usize) Result[usize, QpackError] {
+    out.truncate(start);
+    self.acknowledge(streamId, ric);
+    Error[usize, QpackError](QpackError.make(QpackErrorKind.TooLarge, "the field section is past maxFieldSectionSize"))
+  }
+
+  fn malformed(self: &mut, out: &mut List[HeaderField], start: usize, why: &str) Result[usize, QpackError] {
+    out.truncate(start);
+    Error[usize, QpackError](self.fail(QpackErrorKind.Decompression, why))
+  }
+
+  fn fail(self: &mut, kind: QpackErrorKind, why: &str) QpackError {
+    failed = true;
+    QpackError.make(kind, why)
+  }
+
+  fn lost(self: &) QpackError {QpackError.make(QpackErrorKind.Decompression, "an earlier error ended the connection")}
+}

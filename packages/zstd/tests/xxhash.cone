@@ -1,0 +1,85 @@
+// XXH64: known answers, and the same value however the data is cut. The
+// values were given by the reference (libzstd 1.5.7's own ZSTD_XXH64, called
+// once from Python and written here): the published check values of the empty
+// string, "a", "abc" and "123456789", and data from the generator below at
+// every length around the 32-byte stripe and its 8- and 4-byte tails, with
+// seed 0 and with a large seed.
+
+mod xxhash;
+
+import testing use *;
+import collections use *;
+import zstd use *;
+
+fn gen(n: usize, seed: u64) List[u8] {
+  var d = List[u8].empty();
+  var s = seed;
+  var i = 0usize;
+  while i < n {
+    s = s * 6364136223846793005u64 + 1442695040888963407u64;
+    d.push(u8.from((s >> 40u64) & 255u64));
+    i += 1usize;
+  }
+  d
+}
+
+fn main() i32 {
+  expectUInt(xxh64("", 0u64), 0xEF46DB3751D8E999u64, "xxh64 of nothing");
+  expectUInt(xxh64("a", 0u64), 0xD24EC4F1A98C6E5Bu64, "xxh64 of a");
+  expectUInt(xxh64("abc", 0u64), 0x44BC2CF5AD770999u64, "xxh64 of abc");
+  expectUInt(xxh64("", 1u64), 0xD5AFBA1336A3BE4Bu64, "xxh64 of nothing, seed 1");
+  expectUInt(xxh64("123456789", 0u64), 0x8CB841DB40E6AE83u64, "xxh64 of 123456789");
+
+  // Lengths around the stripe (32) and the tails (8, 4, 1)
+  let lens: Array[usize, 18] = [1usize, 3usize, 4usize, 7usize, 8usize, 9usize, 15usize, 16usize, 17usize,
+    31usize, 32usize, 33usize, 63usize, 64usize, 65usize, 100usize, 1000usize, 100000usize];
+  let want0: Array[u64, 18] = [0xCA177C5F1928B9A5u64, 0xFA7BFD2EB8BA6308u64, 0x078EFB01E99447FEu64,
+    0x625B2ECE03454FB5u64, 0x535A22C28DBCA44Cu64, 0xA2F9E9498B1C1DE3u64, 0x1DBA8C2BF1EFB817u64,
+    0x5767325D45C66F68u64, 0xDF21AB7E636AD99Cu64, 0x4864C5BCEC9F78C0u64, 0xA91315C807872F83u64,
+    0x7C8883D2C19AED42u64, 0x232920C82EC22981u64, 0xB6AA1588E8752C26u64, 0xE8BBE32104EA4B0Cu64,
+    0x32DA1205D8F27AA9u64, 0x9114BF58BE2B566Du64, 0xCB35BC837BEBB32Cu64];
+  let wantS: Array[u64, 18] = [0xBEB8F39D31D2F64Bu64, 0x2793C9ADB36A0BBCu64, 0x306B3B8565F04E76u64,
+    0xBE235525AB15A30Eu64, 0xFC519919564F2A2Fu64, 0x65F44A4A480EE393u64, 0x0004976502450201u64,
+    0x8304DBCC6B1AF16Bu64, 0x11E50F032F1B2B44u64, 0x2C216F31B9E8A235u64, 0x731FA9A0409BF5C2u64,
+    0x6139022D99F5357Eu64, 0x330B868CDC52442Du64, 0x5F97F92A1194C1D5u64, 0xC612B7AA54572180u64,
+    0xC310D5D30CC77D1Eu64, 0x4981B4F242C2082Eu64, 0x77C0EB28FCBF871Bu64];
+  let seed = 0x9E3779B97F4A7C15u64;
+  var i = 0usize;
+  var wrong = 0usize;
+  while i < 18usize {
+    let d = gen(lens[i], 7u64);
+    if xxh64(d.view(), 0u64) != want0[i] { wrong += 1usize; }
+    if xxh64(d.view(), seed) != wantS[i] { wrong += 1usize; }
+    i += 1usize;
+  }
+  expectInt(i64.from(wrong), 0i64, "xxh64 of generated data, 18 lengths, 2 seeds");
+
+  // Cut in two at every point, and in pieces of 1, 5 and 33 bytes: the same value
+  let d = gen(1000usize, 7u64);
+  wrong = 0usize;
+  var at = 0usize;
+  while at <= 1000usize {
+    var h = Xxh64.make(0u64);
+    h.update(d.view(), 0usize, at);
+    h.update(d.view(), at, 1000usize);
+    if h.digest() != 0x9114BF58BE2B566Du64 { wrong += 1usize; }
+    at += 1usize;
+  }
+  expectInt(i64.from(wrong), 0i64, "xxh64 cut in two at every point");
+  let pieces: Array[usize, 3] = [1usize, 5usize, 33usize];
+  var k = 0usize;
+  while k < 3usize {
+    var h = Xxh64.make(seed);
+    var p = 0usize;
+    while p < 1000usize {
+      let e = if p + pieces[k] < 1000usize {p + pieces[k]} else {1000usize};
+      h.update(d.view(), p, e);
+      // asking for the digest part way does not end the hash
+      if p == 500usize { expect(h.digest() != 0u64, "a digest part way"); }
+      p = e;
+    }
+    expectUInt(h.digest(), 0x4981B4F242C2082Eu64, "xxh64 in pieces");
+    k += 1usize;
+  }
+  done()
+}
