@@ -1,0 +1,322 @@
+// Every bound of QpackConfig, its default, crossed, and its value just inside:
+// - maxTableCapacity (0): the encoder stream may set the table's capacity
+//   to it and not past; with 0, a nonzero Required Insert Count is refused;
+// - blockedStreams (0): that many streams may wait for inserts, one more is
+//   a connection error;
+// - maxFieldSectionSize (16 KiB): a list exactly at it decodes, one byte
+//   past is refused (TooLarge, no code, the connection going on: the next
+//   section decodes, and a refused section that named the dynamic table is
+//   still acknowledged); an indexed field is counted before it is copied, a
+//   raw or Huffman string from its declared length before its bytes are
+//   read; a blocked section too long to fit is refused without being kept,
+//   and blocked sections together hold at most blockedStreams x 4 x
+//   maxFieldSectionSize bytes (a section behind another on its stream is
+//   refused past it);
+// - encoderTableCapacity (0): the encoder's table is the smaller of it and
+//   the peer's SETTINGS_QPACK_MAX_TABLE_CAPACITY, said on the encoder
+//   stream; at 0 nothing is inserted and every section has a Required
+//   Insert Count of 0; the peer's SETTINGS count once; an entry one byte
+//   past the table is not inserted, one that fills it is;
+// - maxUnacknowledgedSections (1000): past it the encoder names only the
+//   static table, so a peer withholding Section Acknowledgments cannot grow
+//   what the encoder holds; an acknowledgment lets it name the table again;
+// - huffman (on): strings Huffman-coded where that is shorter.
+
+mod limits;
+
+import testing use *;
+import collections use *;
+import http2 use HeaderField;
+import http3 use *;
+
+fn hex(b: &Array[u8]) String {
+  var s = String.empty();
+  var i = 0usize;
+  while i < b.len {
+    s.appendHex(u64.from(b[i]), 2usize);
+    i = i + 1usize;
+  }
+  s
+}
+
+fn nibble(c: u8) u8 {if c >= 'a' {c - 'a' + 10u8} else {c - '0'}}
+
+fn unhex(s: &Array[u8]) List[u8] {
+  var out = List[u8].empty();
+  var i = 0usize;
+  while i < s.len {
+    if s[i] == ' ' {
+      i = i + 1usize;
+      continue;
+    }
+    out.push((nibble(s[i]) << 4u8) | nibble(s[i + 1usize]));
+    i = i + 2usize;
+  }
+  out
+}
+
+fn repeat(c: u8, n: usize) String {
+  var s = String.withCapacity(n);
+  var i = 0usize;
+  while i < n {
+    s.appendByte(c);
+    i = i + 1usize;
+  }
+  s
+}
+
+fn describe(r: Result[Decoded, QpackError], got: &List[HeaderField]) String {
+  var s = String.empty();
+  match r {
+    case let Ok(d) {
+      match d {
+        case let Done(x) {
+          s.append("ok ");
+          s.appendUInt(u64.from(got.len()));
+          s.append(" size ");
+          s.appendUInt(u64.from(x.size));
+        }
+        case is Blocked {s.append("blocked");}
+      }
+    }
+    case let Error(e) {
+      s.append(e.message().view());
+      match e.code() {
+        case let Some(c) {s.append(" [code]");}
+        case is None[u64] {}
+      }
+      if !e.isConnectionError() {s.append(" (the connection goes on)");}
+      if got.len() != 0usize {s.append(" (the list was changed)");}
+    }
+  }
+  s
+}
+
+fn run(dec: &mut QpackDecoder, stream: u64, b: &Array[u8]) String {
+  var got = List[HeaderField].empty();
+  let r = dec.decode(stream, b, &mut got);
+  describe(r, &got)
+}
+
+fn runHex(dec: &mut QpackDecoder, stream: u64, coded: &str) String {
+  let b = unhex(coded);
+  run(dec, stream, b.view())
+}
+
+fn encoderIn(dec: &mut QpackDecoder, coded: &str) String {
+  let b = unhex(coded);
+  var s = String.empty();
+  match dec.encoderInput(b.view()) {
+    case let Ok(n) {
+      s.append("inserts ");
+      s.appendUInt(n);
+    }
+    case let Error(e) {s.append(e.message().view());}
+  }
+  s
+}
+
+const tooLarge = "too large: the field section is past maxFieldSectionSize (the connection goes on)";
+
+fn defaults() {
+  let c = QpackConfig.make();
+  expectUInt(u64.from(c.maxTableCapacity), 0u64, "maxTableCapacity 0");
+  expectUInt(u64.from(c.blockedStreams), 0u64, "blockedStreams 0");
+  expectUInt(u64.from(c.maxFieldSectionSize), 16384u64, "maxFieldSectionSize 16 KiB");
+  expectUInt(u64.from(c.encoderTableCapacity), 0u64, "encoderTableCapacity 0");
+  expectUInt(u64.from(c.maxUnacknowledgedSections), 1000u64, "maxUnacknowledgedSections 1000");
+  expect(c.huffman, "huffman on");
+}
+
+fn maxTableCapacity() {
+  // The default, 0: a capacity of 0 may be set, 1 may not; a nonzero
+  // Required Insert Count is refused
+  var d0 = QpackDecoder.make(QpackConfig.make());
+  expectStr(encoderIn(&mut d0, "20").view(), "inserts 0", "capacity 0 at the default");
+  expectStr(encoderIn(&mut d0, "21").view(), "encoder stream: a table capacity past SETTINGS_QPACK_MAX_TABLE_CAPACITY", "capacity 1 at the default");
+  var d1 = QpackDecoder.make(QpackConfig.make());
+  expectStr(runHex(&mut d1, 0u64, "0200 80").view(), "decompression failed: an encoded Required Insert Count past twice the table's entries [code]", "a dynamic reference at the default");
+  // 4096: 4096 may be set, 4097 may not
+  var c = QpackConfig.make();
+  c.maxTableCapacity = 4096usize;
+  var d2 = QpackDecoder.make(c);
+  expectStr(encoderIn(&mut d2, "3fe11f").view(), "inserts 0", "capacity 4096");
+  expectUInt(u64.from(d2.dynamicTable().capacity()), 4096u64, "set");
+  var d3 = QpackDecoder.make(c);
+  expectStr(encoderIn(&mut d3, "3fe21f").view(), "encoder stream: a table capacity past SETTINGS_QPACK_MAX_TABLE_CAPACITY", "capacity 4097");
+}
+
+fn blockedStreams() {
+  var c = QpackConfig.make();
+  c.maxTableCapacity = 220usize;
+  var d0 = QpackDecoder.make(c);
+  expectStr(runHex(&mut d0, 4u64, "0200 80").view(), "decompression failed: more blocked streams than SETTINGS_QPACK_BLOCKED_STREAMS [code]", "0 allowed: one refused");
+  c.blockedStreams = 3usize;
+  var d1 = QpackDecoder.make(c);
+  expectStr(runHex(&mut d1, 0u64, "0200 80").view(), "blocked", "the first of 3");
+  expectStr(runHex(&mut d1, 4u64, "0200 80").view(), "blocked", "the second");
+  expectStr(runHex(&mut d1, 8u64, "0200 80").view(), "blocked", "the third");
+  expectStr(runHex(&mut d1, 12u64, "0200 80").view(), "decompression failed: more blocked streams than SETTINGS_QPACK_BLOCKED_STREAMS [code]", "the fourth");
+}
+
+// A section of one literal (a literal name 'x', a raw value of n bytes):
+// it counts 33 + n
+fn literal(n: usize) List[u8] {
+  var cfg = QpackConfig.make();
+  cfg.huffman = false;
+  var enc = QpackEncoder.make(&cfg);
+  var fields = List[HeaderField].empty();
+  fields.push(HeaderField.make("x", repeat('v', n).view()));
+  var out = List[u8].empty();
+  enc.encode(0u64, fields.view(), &mut out);
+  out
+}
+
+fn maxFieldSectionSize() {
+  // The default, 16384: a list exactly at it, then one byte past
+  var dec = QpackDecoder.make(QpackConfig.make());
+  let at = literal(16351usize);
+  expectStr(run(&mut dec, 0u64, at.view()).view(), "ok 1 size 16384", "16384");
+  let past = literal(16352usize);
+  expectStr(run(&mut dec, 4u64, past.view()).view(), tooLarge, "16385");
+  expectStr(run(&mut dec, 8u64, at.view()).view(), "ok 1 size 16384", "the next section decodes");
+  // 100: static entries, each counted from the table before it is copied:
+  // :authority (42) + :path=/ (38) = 80, + age=0 (36) = 116
+  var c = QpackConfig.make();
+  c.maxFieldSectionSize = 100usize;
+  var d2 = QpackDecoder.make(c);
+  expectStr(runHex(&mut d2, 0u64, "0000 c0 c1").view(), "ok 2 size 80", "80");
+  expectStr(runHex(&mut d2, 4u64, "0000 c0 c1 c2").view(), tooLarge, "116");
+  // A literal of 100 exactly, and of 101
+  let l100 = literal(67usize);
+  let l101 = literal(68usize);
+  expectStr(run(&mut d2, 8u64, l100.view()).view(), "ok 1 size 100", "a literal of 100");
+  expectStr(run(&mut d2, 12u64, l101.view()).view(), tooLarge, "a literal of 101");
+  // Refused from the declared length: a raw value of 10000 bytes, and a
+  // Huffman one of 1000 (at least 266), neither of whose bytes are there
+  expectStr(runHex(&mut d2, 16u64, "0000 2178 7f914d 7676").view(), tooLarge, "a raw value declared 10000");
+  expectStr(runHex(&mut d2, 20u64, "0000 2178 ffe906 7676").view(), tooLarge, "a Huffman value declared 1000");
+  // A refused section that named the dynamic table is acknowledged: the
+  // table is in step, and the encoder can stop holding the entry
+  c.maxFieldSectionSize = 50usize;
+  c.maxTableCapacity = 220usize;
+  c.blockedStreams = 1usize;
+  var d3 = QpackDecoder.make(c);
+  encoderIn(&mut d3, "3fbd01 c00f7777772e6578616d706c652e636f6d");
+  expectStr(runHex(&mut d3, 4u64, "0200 80").view(), tooLarge, "a 57-byte entry, limit 50");
+  var said = List[u8].empty();
+  d3.pollTransmit(&mut said);
+  expectStr(hex(said.view()).view(), "84", "acknowledged");
+  // A blocked section longer than four times the limit cannot fit: refused,
+  // and not kept
+  var big = unhex("0300");
+  var i = 0usize;
+  while i < 202usize {
+    big.push(0xc0u8);
+    i = i + 1usize;
+  }
+  expectStr(run(&mut d3, 8u64, big.view()).view(), "too large: a blocked section too long to fit maxFieldSectionSize (the connection goes on)", "a blocked section of 204 bytes, limit 50");
+  expectUInt(u64.from(d3.blockedStreams()), 0u64, "not kept");
+  // One of 200 is kept: what all blocked sections may hold is
+  // blockedStreams (1) x 4 x maxFieldSectionSize (50), and it is all of it,
+  // so a section behind it on its stream, which waits too, is refused
+  big.truncate(200usize);
+  expectStr(run(&mut d3, 8u64, big.view()).view(), "blocked", "one of 200 is kept");
+  expectStr(runHex(&mut d3, 8u64, "0000 c0").view(), "too large: blocked sections past blockedStreams x 4 x maxFieldSectionSize bytes (the connection goes on)", "a section behind it, past 200 in all");
+  d3.cancelStream(8u64);
+  expectStr(run(&mut d3, 8u64, big.view()).view(), "blocked", "room again once its stream is cancelled");
+}
+
+fn encodeTo(enc: &mut QpackEncoder, spec: &str, value: &str) String {
+  var fields = List[HeaderField].empty();
+  fields.push(HeaderField.make(spec, value));
+  var out = List[u8].empty();
+  enc.encode(0u64, fields.view(), &mut out);
+  hex(out.view())
+}
+
+fn encoderStream(enc: &mut QpackEncoder) String {
+  var out = List[u8].empty();
+  enc.pollTransmit(&mut out);
+  hex(out.view())
+}
+
+fn encoderTableCapacity() {
+  // The default, 0: whatever the peer allows, nothing is inserted
+  var cfg = QpackConfig.make();
+  cfg.huffman = false;
+  var e0 = QpackEncoder.make(&cfg);
+  e0.peerSettings(4096usize, 100usize);
+  expectStr(encoderStream(&mut e0).view(), "", "no capacity sent");
+  expectStr(encodeTo(&mut e0, "custom-key", "custom-value").view(), "00002703637573746f6d2d6b65790c637573746f6d2d76616c7565", "a literal");
+  expectStr(encodeTo(&mut e0, "custom-key", "custom-value").view(), "00002703637573746f6d2d6b65790c637573746f6d2d76616c7565", "a literal again");
+  expectStr(encoderStream(&mut e0).view(), "", "nothing inserted");
+  // 300 of the peer's 4096
+  cfg.encoderTableCapacity = 300usize;
+  var e1 = QpackEncoder.make(&cfg);
+  e1.peerSettings(4096usize, 100usize);
+  expectStr(encoderStream(&mut e1).view(), "3f8d02", "capacity 300");
+  expectUInt(u64.from(e1.dynamicTable().capacity()), 300u64, "300");
+  // All of the peer's 100
+  var e2 = QpackEncoder.make(&cfg);
+  e2.peerSettings(100usize, 100usize);
+  expectStr(encoderStream(&mut e2).view(), "3f45", "capacity 100");
+  // Once: a second SETTINGS changes nothing
+  e2.peerSettings(4096usize, 100usize);
+  expectStr(encoderStream(&mut e2).view(), "", "the second SETTINGS ignored");
+  expectUInt(u64.from(e2.dynamicTable().capacity()), 100u64, "still 100");
+  // An entry of 101 does not fit 100: a literal, nothing inserted
+  let v68 = repeat('v', 68usize);
+  var lit = String.from("00002178");
+  lit.append("44");
+  lit.append(hex(v68.view()).view());
+  expectStr(encodeTo(&mut e2, "x", v68.view()).view(), lit.view(), "101: a literal");
+  expectStr(encoderStream(&mut e2).view(), "", "101 not inserted in 100");
+  // ...and 100 is
+  let v67 = repeat('v', 67usize);
+  expectStr(encodeTo(&mut e2, "x", v67.view()).view(), "020080", "100: inserted and named");
+  expectUInt(u64.from(e2.dynamicTable().size()), 100u64, "the table full");
+}
+
+fn maxUnacknowledgedSections() {
+  // 2: two sections may name the dynamic table unacknowledged; the third
+  // names only the static table (a literal); once one is acknowledged, the
+  // next may again
+  var cfg = QpackConfig.make();
+  cfg.encoderTableCapacity = 220usize;
+  cfg.maxUnacknowledgedSections = 2usize;
+  cfg.huffman = false;
+  var enc = QpackEncoder.make(&cfg);
+  enc.peerSettings(220usize, 4usize);
+  expectStr(encodeTo(&mut enc, "custom-key", "custom-value").view(), "020080", "the first");
+  expectStr(encodeTo(&mut enc, "custom-key", "custom-value").view(), "020080", "the second");
+  expectUInt(u64.from(enc.unacknowledgedSections()), 2u64, "two held");
+  expectStr(encodeTo(&mut enc, "custom-key", "custom-value").view(), "00002703637573746f6d2d6b65790c637573746f6d2d76616c7565", "the third: a literal");
+  expectUInt(u64.from(enc.unacknowledgedSections()), 2u64, "still two");
+  let ack = unhex("80");
+  match enc.decoderInput(ack.view()) {
+    case let Ok(n) {expectUInt(n, 1u64, "one acknowledged");}
+    case let Error(e) {expectStr(e.message().view(), "", "one acknowledged");}
+  }
+  expectStr(encodeTo(&mut enc, "custom-key", "custom-value").view(), "020080", "the next names the table again");
+}
+
+fn huffman() {
+  var cfg = QpackConfig.make();
+  var on = QpackEncoder.make(&cfg);
+  expectStr(encodeTo(&mut on, ":authority", "www.example.com").view(), "0000508cf1e3c2e5f23a6ba0ab90f4ff", "Huffman");
+  cfg.huffman = false;
+  var off = QpackEncoder.make(&cfg);
+  expectStr(encodeTo(&mut off, ":authority", "www.example.com").view(), "0000500f7777772e6578616d706c652e636f6d", "raw");
+}
+
+fn main() i32 {
+  defaults();
+  maxTableCapacity();
+  blockedStreams();
+  maxFieldSectionSize();
+  encoderTableCapacity();
+  maxUnacknowledgedSections();
+  huffman();
+  done()
+}
