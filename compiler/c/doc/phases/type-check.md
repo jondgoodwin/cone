@@ -229,8 +229,9 @@ written in. So demanding a type lays it out and nothing more; its members wait.
   and `structLayoutEnd`, which also keep those types on a stack, outermost
   first: what a by-value cycle is named from (section 6). A reference answers
   its own size and a function signature has none, so neither counts there; a
-  function declaration's signature is held as one by `fnDclTypeCheck`, for
-  another reason (below).
+  function declaration's signature, a variable's declared type and a type
+  alias's target are each held as one, by `fnDclTypeCheck`, `varDclTypeCheck`
+  and `aliasDclTypeCheck`, for another reason (below).
 - `structTypeCheck` lays the type out, sets `TypeChecked`, settles its drop
   function, and puts the type in the **members queue**. An enum then lays out
   each of its variants not yet begun, an extension's copies of its base's
@@ -258,7 +259,13 @@ a generic type's instance returning `Option[T]`, where that signature was the
 first to name `Option[i64]`, had its caller checked mid-signature; the call's
 type was still the unchecked `Option[T]`, and a `match` on it refused `Some`
 as a bare generic — unless a field had named `Option[i64]` first
-(`generic_signature_first`). So
+(`generic_signature_first`). A variable's declared type is held the same way
+(`varDclTypeCheck`), and so is a type alias's target (`aliasDclTypeCheck`): a
+global declared `g: Box[Svc]` above Svc lays `Box[Svc]` and Svc out, and Svc's
+method, worked from the queue, reads `g`, which must already have the instance
+rather than the generic call it was written as, or `g.post[J]` finds no generic
+method and `g.at` no field (`generic_global_method`, `generic_global_field`,
+`generic_global_module`, `generic_alias_instance`). So
 when a use that demanded a type from a function body gets control back, that
 type's members are checked — unless they were already waiting behind the ones
 being checked, which is the same state a type in flight was always in. The
@@ -799,7 +806,9 @@ elsewhere, whichever walk arrived at it.
 
 ### 10.4 Variable, field and constant
 
-1. **→** Analyze the permission, then the declared type.
+1. **→** Analyze the permission, then the declared type, held as a layout in
+   flight so that the members queue it may fill is worked only once the type is
+   on the node (rule 3; section 4, "Layout before members").
 2. If there is no initializer, the type must have been declared.
 3. **→** Analyze the initializer, coercing it to the declared type; if no type was
    declared, **the type becomes the initializer's**; a declared borrowed-reference
