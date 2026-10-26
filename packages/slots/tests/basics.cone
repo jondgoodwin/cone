@@ -155,6 +155,36 @@ fn slotAt() {
   expect(t.get(b) as usize == 0usize, "and its Slot reaches nothing");
 }
 
+fn take() {
+  // A value moved out by value: the caller owns it, so the table's finalizer
+  // does not run, the cell is free for the next add, and the Slot is stale
+  let before = deaths.load();
+  {
+    var t = SlotTable[Mortal].make(4u32);
+    let a = t.add(Mortal(1i64));
+    let b = t.add(Mortal(2i64));
+    match t.take(a) {
+      case let Some(m) {
+        expectInt(m.id, 1i64, "take gives the value back");
+        expectUInt(deaths.load() - before, 0u64, "and does not finalize it");
+      }
+      case is None[Mortal] {expect(false, "take of a live Slot gives Some");}
+    }
+    expectUInt(deaths.load() - before, 1u64, "the value taken dies with its new owner");
+    expectUInt(u64.from(t.len()), 1u64, "one value left");
+    expect(t.get(a) as usize == 0usize, "the Slot taken reaches nothing");
+    match t.take(a) {
+      case let Some(m) {expect(false, "take of a stale Slot gives None");}
+      case is None[Mortal] {expect(true, "take of a stale Slot gives None");}
+    }
+    let c = t.add(Mortal(3i64));
+    expectUInt(u64.from(c.index), 0u64, "the freed cell is the next used");
+    expectUInt(u64.from(c.gen), 2u64, "as its second occupant");
+    expectInt((*t.get(b)).id, 2i64, "the other is untouched");
+  }
+  expectUInt(deaths.load() - before, 3u64, "every value died once");
+}
+
 fn main() i32 {
   addGetRemove();
   stale();
@@ -162,5 +192,6 @@ fn main() i32 {
   churn();
   finalizers();
   slotAt();
+  take();
   done()
 }
