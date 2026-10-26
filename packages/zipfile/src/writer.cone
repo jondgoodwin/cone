@@ -247,9 +247,7 @@ pub struct ZipWriter {
     }
     let cdOffset = gone + u64.from(out.len());
     let cdSize = u64.from(central.len());
-    out.reserve(central.len());
-    var c = 0usize;
-    while c < central.len() { out.push(*central[c]); c += 1usize; }
+    out.appendSlice(central.view());
     central.clear();
     let total = added;
     let wide = always64 || total >= 0xFFFFu64 || cdOffset >= 0xFFFFFFFFu64 || cdSize >= 0xFFFFFFFFu64;
@@ -290,16 +288,23 @@ pub struct ZipWriter {
   pub fn pull(self: &mut, dst: &mut List[u8], max: usize) Status {
     let avail = out.len() - outPos;
     let n = if avail < max { avail } else { max };
-    dst.reserve(n);
-    var k = 0usize;
-    while k < n { dst.push(*out[outPos + k]); k += 1usize; }
+    // 'dst' may be, to the compiler, the very list 'out' is, so a view of 'out' cannot be lent to
+    // 'dst.appendSlice' (1339); the run goes through a list of this call's own, and is moved on whole
+    var run = List[u8].withCapacity(n);
+    run.appendSlice(&out.view()[outPos..<outPos + n]);
+    dst.appendList(run);
     outPos += n;
     // Drop what is pulled when it is at least as much as what is left
     let left = out.len() - outPos;
     if outPos > 0usize && outPos >= left {
-      var i = 0usize;
-      while i < left { out.set(i, *out[outPos + i]); i += 1usize; }
-      out.truncate(left);
+      if left == 0usize {
+        out.clear();
+      } else {
+        // What is left is moved down by building the shorter list and putting it in the old one's place
+        var rest = List[u8].withCapacity(left);
+        rest.appendSlice(&out.view()[outPos..<outPos + left]);
+        out = rest;
+      }
       gone += u64.from(outPos);
       outPos = 0usize;
     }
