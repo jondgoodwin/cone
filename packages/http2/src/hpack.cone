@@ -1,0 +1,695 @@
+// ======== HPACK: header compression for HTTP/2 (RFC 7541) ========
+//
+// A header block is a sequence of representations, each one byte's pattern
+// and what follows it (section 6):
+//
+//   1xxxxxxx  an indexed field: the static or dynamic table's entry, whole
+//   01xxxxxx  a literal, added to the dynamic table ("incremental indexing")
+//   0000xxxx  a literal, not added
+//   0001xxxx  a literal never to be added, here or by any intermediary
+//   001xxxxx  a dynamic table size update, only at the start of a block
+//
+// The numbers are prefix integers (section 5.1) and the strings length-
+// prefixed, raw or Huffman-coded (section 5.2). Every layer is a public
+// function here, used by the encoder and the decoder and usable alone (as
+// QPACK's encoder would use the integer and string coding): the integers
+// ('encodeInteger', 'decodeInteger'), the strings ('encodeString',
+// 'decodeString'), the representations ('encodeIndexed', 'encodeLiteral',
+// 'encodeSizeUpdate'), the static table ('staticName', 'staticValue',
+// 'staticFind') and the dynamic table (DynamicTable). HpackEncoder and
+// HpackDecoder are one end each of one direction of a connection: each
+// keeps a dynamic table, and the two tables stay the same only while every
+// block is encoded once and decoded once, in order.
+//
+// A field is a HeaderField: its name and value as bytes, exactly as they
+// travel, and whether it is sensitive. Nothing here lowercases a name or
+// checks a field against HTTP's rules; that is the HTTP/2 layer's job
+// (RFC 9113, section 8.2), and keeping the bytes as they are is what lets
+// an intermediary pass a field on unchanged.
+
+mod hpack;
+
+import collections use List, Deque, String;
+import huffman use *;
+
+// ---------------------------------------------------------------------------
+// The numbers RFC 7541 fixes
+// ---------------------------------------------------------------------------
+
+// SETTINGS_HEADER_TABLE_SIZE's initial value: both tables start this large
+// (RFC 9113, section 6.5.2)
+pub const defaultHeaderTableSize = 4096usize;
+
+// What an entry costs beyond its name and value (section 4.1)
+pub const entryOverhead = 32usize;
+
+// How many entries the static table holds (Appendix A)
+pub const staticTableLen = 61usize;
+
+// The largest integer read: anything an index, a length or a table size can
+// be in practice, and small enough that no sum of them overflows
+pub const maxInteger = 0xFFFFFFFFu64;
+
+// ---------------------------------------------------------------------------
+// Configuration
+// ---------------------------------------------------------------------------
+
+// HPACK's bounds and choices, each a field to change (see the package's
+// header, HPACK BOUNDS)
+pub struct HpackConfig {
+  pub headerTableSize: usize;       // the decoder's table, advertised as SETTINGS_HEADER_TABLE_SIZE
+  pub encoderTableSize: usize;      // the most the encoder's table takes, whatever the peer allows
+  pub maxHeaderListSize: usize;     // a decoded list past this is refused, decoded to keep in step
+  pub headerListAbortSize: usize;   // a decoded list past this stops decoding: a connection error
+  pub huffman: bool;                // Huffman-code a string unless that is longer
+
+  // The defaults
+  pub fn make() HpackConfig {
+    HpackConfig(headerTableSize: defaultHeaderTableSize, encoderTableSize: defaultHeaderTableSize,
+      maxHeaderListSize: 16384usize, headerListAbortSize: 65536usize, huffman: true)
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Fields
+// ---------------------------------------------------------------------------
+
+// One header field: name and value as bytes, as they travel. 'sensitive'
+// says it is sent as a never-indexed literal, which keeps it out of every
+// dynamic table it passes through (section 7.1.3); the decoder sets it on a
+// field that arrived that way, so passing it on keeps it sensitive
+pub struct HeaderField {
+  pub name: String;
+  pub value: String;
+  pub sensitive: bool;
+
+  pub fn make(name: &Array[u8], value: &Array[u8]) HeaderField {
+    HeaderField(String.fromBytes(name), String.fromBytes(value), false)
+  }
+
+  // A field never to be indexed
+  pub fn secret(name: &Array[u8], value: &Array[u8]) HeaderField {
+    HeaderField(String.fromBytes(name), String.fromBytes(value), true)
+  }
+
+  // What it counts for in a header list and a table: its name's and value's
+  // bytes and 32 (section 4.1; RFC 9113, section 6.5.2)
+  pub fn size(self: &) usize {name.len() + value.len() + entryOverhead}
+}
+
+// The size of a header list as SETTINGS_MAX_HEADER_LIST_SIZE counts it
+pub fn listSize(fields: &Array[HeaderField]) usize {
+  var n = 0usize;
+  var i = 0usize;
+  while i < fields.len {
+    n = n + fields[i].size();
+    i = i + 1usize;
+  }
+  n
+}
+
+// Whether a field of this name is always sent never-indexed, whatever its
+// HeaderField says: the credentials RFC 7541 (section 7.1.3) names, the
+// authorization headers and cookies, short ones being guessable. Compared
+// ignoring ASCII case
+pub fn isSensitiveName(name: &Array[u8]) bool {
+  eqIgnoreCase(name, "authorization") || eqIgnoreCase(name, "proxy-authorization") ||
+    eqIgnoreCase(name, "cookie")
+}
+
+fn lowerByte(c: u8) u8 {if c >= 'A' && c <= 'Z' {c + 32u8} else {c}}
+
+fn eqIgnoreCase(a: &Array[u8], b: &Array[u8]) bool {
+  if a.len != b.len {return false;}
+  var i = 0usize;
+  while i < a.len {
+    if lowerByte(a[i]) != lowerByte(b[i]) {return false;}
+    i = i + 1usize;
+  }
+  true
+}
+
+fn bytesEq(a: &Array[u8], b: &Array[u8]) bool {
+  if a.len != b.len {return false;}
+  var i = 0usize;
+  while i < a.len {
+    if a[i] != b[i] {return false;}
+    i = i + 1usize;
+  }
+  true
+}
+
+// ---------------------------------------------------------------------------
+// Errors
+// ---------------------------------------------------------------------------
+
+// What kind of failure (see the package's header, HPACK ERRORS)
+pub enum HpackErrorKind {
+  Malformed,    // the block breaks RFC 7541: COMPRESSION_ERROR, the connection ends
+  TooLarge,     // the list passed maxHeaderListSize: decoded in full, the tables in step; refuse the one message
+  Abandoned     // the list passed headerListAbortSize: decoding stopped, the tables out of step; the connection ends
+}
+
+// Why a block could not be decoded
+pub struct HpackError {
+  pub kind: HpackErrorKind;
+  pub detail: String;           // what was wrong, one line
+
+  pub fn make(kind: HpackErrorKind, detail: &str) HpackError {HpackError(kind, String.from(detail))}
+
+  // Whether the decoder's table is lost, so the connection must end
+  // (RFC 9113, section 4.3: COMPRESSION_ERROR)
+  pub fn isConnectionError(self: &) bool {kind != HpackErrorKind.TooLarge}
+
+  // 'malformed: an index of 0'
+  pub fn message(self: &) String {
+    var out = String.from(if kind == HpackErrorKind.Malformed {"malformed"}
+      else if kind == HpackErrorKind.TooLarge {"too large"} else {"abandoned"});
+    out.append(": ");
+    out.append(detail.view());
+    out
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Integers (section 5.1)
+// ---------------------------------------------------------------------------
+
+// Append value as an integer with an N-bit prefix (1 to 8): the first
+// byte's high bits are 'flags', its low prefixBits hold the value or, when
+// it does not fit, all ones and the rest follows seven bits a byte
+pub fn encodeInteger(out: &mut List[u8], flags: u8, prefixBits: u32, value: u64) {
+  let max = (1u64 << u64.from(prefixBits)) - 1u64;
+  if value < max {
+    out.push(flags | u8.from(value));
+    return;
+  }
+  out.push(flags | u8.from(max));
+  var v = value - max;
+  while v >= 128u64 {
+    out.push(u8.from(v & 0x7Fu64) | 0x80u8);
+    v = v >> 7u64;
+  }
+  out.push(u8.from(v));
+}
+
+// Read an integer with an N-bit prefix starting at src[*pos], moving *pos
+// past it: the value, or why not -- the block ends inside it, or it is past
+// maxInteger (which also bounds how many continuation bytes are read, so a
+// run of 0x80 bytes cannot go on)
+pub fn decodeInteger(src: &Array[u8], pos: &mut usize, prefixBits: u32) Result[u64, &str] {
+  if *pos >= src.len {return Error[u64, &str]("an integer is cut off by the block's end");}
+  let max = (1u64 << u64.from(prefixBits)) - 1u64;
+  var v = u64.from(src[*pos]) & max;
+  *pos = *pos + 1usize;
+  if v < max {return Ok[u64, &str](v);}
+  var shift = 0u64;
+  while true {
+    if *pos >= src.len {return Error[u64, &str]("an integer is cut off by the block's end");}
+    let b = src[*pos];
+    *pos = *pos + 1usize;
+    v = v + (u64.from(b & 0x7Fu8) << shift);
+    if v > maxInteger {return Error[u64, &str]("an integer is too large");}
+    if (b & 0x80u8) == 0u8 {return Ok[u64, &str](v);}
+    shift = shift + 7u64;
+    if shift > 28u64 {return Error[u64, &str]("an integer is too large");}
+  }
+  Ok[u64, &str](v)
+}
+
+// ---------------------------------------------------------------------------
+// Strings (section 5.2)
+// ---------------------------------------------------------------------------
+
+// Append s as a string literal: Huffman-coded when 'huffman' is asked and
+// that is no longer (as the RFC's examples choose at equal lengths), raw
+// otherwise and when s is empty
+pub fn encodeString(out: &mut List[u8], s: &Array[u8], huffman: bool) {
+  if huffman && s.len > 0usize {
+    let n = huffmanEncodedLen(s);
+    if n <= s.len {
+      encodeInteger(out, 0x80u8, 7u32, u64.from(n));
+      huffmanEncode(s, out);
+      return;
+    }
+  }
+  encodeInteger(out, 0u8, 7u32, u64.from(s.len));
+  var i = 0usize;
+  while i < s.len {
+    out.push(s[i]);
+    i = i + 1usize;
+  }
+}
+
+// How reading a string ended
+pub enum StringStatus {
+  Done,         // read, and appended
+  Malformed,    // cut off, or a bad Huffman string: see the reason
+  TooLong       // longer than the limit asked for: nothing read past its length
+}
+
+// Read the string literal at src[*pos], moving *pos past it, and append its
+// bytes to out, at most limit of them. A raw string longer than limit is
+// refused from its length alone, before a byte of it is copied; a Huffman
+// string as its decoding passes the limit. 'why' is set to the reason when
+// it is Malformed
+pub fn decodeString(src: &Array[u8], pos: &mut usize, limit: usize, out: &mut List[u8], why: &mut &str) StringStatus {
+  if *pos >= src.len {
+    *why = "a string is cut off by the block's end";
+    return StringStatus.Malformed;
+  }
+  let huff = (src[*pos] & 0x80u8) != 0u8;
+  var len = 0usize;
+  match decodeInteger(src, pos, 7u32) {
+    case let Ok(v) {len = usize.from(v);}
+    case let Error(e) {
+      *why = e;
+      return StringStatus.Malformed;
+    }
+  }
+  if len > src.len - *pos {
+    *why = "a string's length runs past the block's end";
+    return StringStatus.Malformed;
+  }
+  let start = *pos;
+  *pos = start + len;
+  if !huff {
+    if len > limit {return StringStatus.TooLong;}
+    var i = start;
+    while i < start + len {
+      out.push(src[i]);
+      i = i + 1usize;
+    }
+    return StringStatus.Done;
+  }
+  let st = huffmanDecode(&src[start ..< start + len], out, limit);
+  if st == HuffmanStatus.Done {return StringStatus.Done;}
+  if st == HuffmanStatus.TooLong {return StringStatus.TooLong;}
+  *why = huffmanWhy(st);
+  StringStatus.Malformed
+}
+
+// ---------------------------------------------------------------------------
+// Representations (section 6)
+// ---------------------------------------------------------------------------
+
+// How a literal is to be indexed (section 6.2)
+pub enum Indexing {
+  Incremental,  // 01: added to the dynamic table
+  Without,      // 0000: not added
+  Never         // 0001: not added, here or by any intermediary
+}
+
+// Append an indexed field: the entry at index, 1 to 61 the static table's,
+// 62 on the dynamic table's, newest first
+pub fn encodeIndexed(out: &mut List[u8], index: usize) {
+  encodeInteger(out, 0x80u8, 7u32, u64.from(index));
+}
+
+// Append a literal field: the name the entry at nameIndex has, or, for a
+// nameIndex of 0, the name given; then the value
+pub fn encodeLiteral(out: &mut List[u8], how: Indexing, nameIndex: usize, name: &Array[u8], value: &Array[u8], huffman: bool) {
+  if how == Indexing.Incremental {encodeInteger(out, 0x40u8, 6u32, u64.from(nameIndex));}
+  else if how == Indexing.Never {encodeInteger(out, 0x10u8, 4u32, u64.from(nameIndex));}
+  else {encodeInteger(out, 0u8, 4u32, u64.from(nameIndex));}
+  if nameIndex == 0usize {encodeString(out, name, huffman);}
+  encodeString(out, value, huffman);
+}
+
+// Append a dynamic table size update
+pub fn encodeSizeUpdate(out: &mut List[u8], size: usize) {
+  encodeInteger(out, 0x20u8, 5u32, u64.from(size));
+}
+
+// ---------------------------------------------------------------------------
+// The static table (Appendix A)
+// ---------------------------------------------------------------------------
+
+let staticNames: Array[&str, 61] = [
+  ":authority", ":method", ":method", ":path", ":path", ":scheme", ":scheme", ":status", ":status",
+  ":status", ":status", ":status", ":status", ":status", "accept-charset", "accept-encoding",
+  "accept-language", "accept-ranges", "accept", "access-control-allow-origin", "age", "allow",
+  "authorization", "cache-control", "content-disposition", "content-encoding", "content-language",
+  "content-length", "content-location", "content-range", "content-type", "cookie", "date", "etag",
+  "expect", "expires", "from", "host", "if-match", "if-modified-since", "if-none-match", "if-range",
+  "if-unmodified-since", "last-modified", "link", "location", "max-forwards", "proxy-authenticate",
+  "proxy-authorization", "range", "referer", "refresh", "retry-after", "server", "set-cookie",
+  "strict-transport-security", "transfer-encoding", "user-agent", "vary", "via", "www-authenticate"];
+
+let staticValues: Array[&str, 61] = [
+  "", "GET", "POST", "/", "/index.html", "http", "https", "200", "204", "206", "304", "400", "404", "500",
+  "", "gzip, deflate", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "",
+  "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""];
+
+// The static table's entry at index, 1 to 61: its name, and its value ("" for
+// most)
+pub fn staticName(index: usize) &str {staticNames[index - 1usize]}
+pub fn staticValue(index: usize) &str {staticValues[index - 1usize]}
+
+// Where a field was found in a table: 'index' 0 when nowhere; 'exact' when
+// the value matched too, not only the name
+pub struct TableMatch {
+  pub index: usize;
+  pub exact: bool;
+
+  pub fn none() TableMatch {TableMatch(0usize, false)}
+}
+
+// The static table's entry holding this name and value, else the first
+// holding this name, else none
+pub fn staticFind(name: &Array[u8], value: &Array[u8]) TableMatch {
+  var named = 0usize;
+  var i = 0usize;
+  while i < staticTableLen {
+    if bytesEq(staticNames[i], name) {
+      if bytesEq(staticValues[i], value) {return TableMatch(i + 1usize, true);}
+      if named == 0usize {named = i + 1usize;}
+    }
+    i = i + 1usize;
+  }
+  TableMatch(named, false)
+}
+
+// ---------------------------------------------------------------------------
+// The dynamic table (section 4)
+// ---------------------------------------------------------------------------
+
+struct Entry {
+  name: String;
+  value: String;
+}
+
+// A dynamic table: entries newest first, the sum of their sizes never past
+// its maximum size, the oldest evicted to make room
+pub struct DynamicTable {
+  entries: Deque[Entry];
+  used: usize;              // the sum of the entries' sizes
+  limit: usize;             // the maximum size
+
+  pub fn make(maxSize: usize) DynamicTable {DynamicTable(Deque[Entry].empty(), 0usize, maxSize)}
+
+  pub fn len(self: &) usize {entries.len()}
+  pub fn size(self: &) usize {used}
+  pub fn maxSize(self: &) usize {limit}
+
+  // The entry at i, 0 the newest (HPACK's index 62): its name, as http's
+  // Field gives it, and its value's bytes
+  pub fn name(self: &, i: usize) &str {entries[i].name.view()}
+  pub fn value(self: &, i: usize) &Array[u8] {entries[i].value.view()}
+  pub fn entrySize(self: &, i: usize) usize {entries[i].name.len() + entries[i].value.len() + entryOverhead}
+
+  // A new maximum size, evicting the oldest entries until they fit (section 4.3)
+  pub fn setMaxSize(self: &mut, n: usize) {
+    limit = n;
+    self.evictTo(n);
+  }
+
+  // Add an entry, evicting the oldest to make room; one larger than the
+  // maximum size empties the table and is not added (section 4.4)
+  pub fn add(self: &mut, name: String, value: String) {
+    let size = name.len() + value.len() + entryOverhead;
+    if size > limit {
+      self.evictTo(0usize);
+      return;
+    }
+    self.evictTo(limit - size);
+    entries.pushFront(Entry(name, value));
+    used = used + size;
+  }
+
+  // The entry holding this name and value, else the newest holding this
+  // name, else none; the index counts from 1, the newest
+  pub fn find(self: &, name: &Array[u8], value: &Array[u8]) TableMatch {
+    var named = 0usize;
+    var i = 0usize;
+    while i < entries.len() {
+      let e = entries[i];
+      if bytesEq(e.name.view(), name) {
+        if bytesEq(e.value.view(), value) {return TableMatch(i + 1usize, true);}
+        if named == 0usize {named = i + 1usize;}
+      }
+      i = i + 1usize;
+    }
+    TableMatch(named, false)
+  }
+
+  fn evictTo(self: &mut, room: usize) {
+    while used > room {
+      match entries.pop() {
+        case let Some(e) {used = used - (e.name.len() + e.value.len() + entryOverhead);}
+        case is None[Entry] {used = 0usize;}
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The encoder
+// ---------------------------------------------------------------------------
+
+// One end of a direction of a connection: header lists in, header blocks
+// out (see the package's header, THE ENCODER)
+pub struct HpackEncoder {
+  table: DynamicTable;
+  cap: usize;               // encoderTableSize
+  huffman: bool;
+  target: usize;            // the table's size once the pending updates are sent
+  lowest: Option[usize];    // the smallest size since the last block, when an update is owed
+
+  pub fn make(cfg: &HpackConfig) HpackEncoder {
+    let t = if cfg.encoderTableSize < defaultHeaderTableSize {cfg.encoderTableSize} else {defaultHeaderTableSize};
+    HpackEncoder(table: DynamicTable.make(defaultHeaderTableSize), cap: cfg.encoderTableSize,
+      huffman: cfg.huffman, target: t,
+      lowest: if t != defaultHeaderTableSize {Some[usize](t)} else {None})
+  }
+
+  // The peer's SETTINGS_HEADER_TABLE_SIZE arrived: the table follows it, up
+  // to encoderTableSize, and the next block says so
+  pub fn setPeerTableSize(self: &mut, n: usize) {
+    let t = if n < cap {n} else {cap};
+    target = t;
+    match lowest {
+      case let Some(l) {if t < l {lowest = Some[usize](t);}}
+      case is None[usize] {if t != table.maxSize() {lowest = Some[usize](t);}}
+    }
+  }
+
+  // The table, as the peer's decoder holds it once the blocks so far arrive
+  pub fn dynamicTable(self: &) &DynamicTable {&table}
+
+  // Encode a whole header list as one block, appended to out
+  pub fn encode(self: &mut, fields: &Array[HeaderField], out: &mut List[u8]) {
+    self.startBlock(out);
+    var i = 0usize;
+    while i < fields.len {
+      self.field(fields[i].name.view(), fields[i].value.view(), fields[i].sensitive, out);
+      i = i + 1usize;
+    }
+  }
+
+  // Begin a block: the size updates owed, if any (section 4.2: the smallest
+  // size since the last block, then the size to end at). A block built field
+  // by field begins with this
+  pub fn startBlock(self: &mut, out: &mut List[u8]) {
+    match lowest {
+      case let Some(l) {
+        if l < target {
+          encodeSizeUpdate(out, l);
+          table.setMaxSize(l);
+        }
+        encodeSizeUpdate(out, target);
+        table.setMaxSize(target);
+      }
+      case is None[usize] {}
+    }
+    lowest = None;
+  }
+
+  // Encode one field, appended to out: the table's whole entry where there
+  // is one; else a literal naming the table's entry for the name where there
+  // is one, added to the table where it fits; a sensitive field (by its flag
+  // or its name) is a never-indexed literal
+  pub fn field(self: &mut, name: &Array[u8], value: &Array[u8], sensitive: bool, out: &mut List[u8]) {
+    let m = self.find(name, value);
+    if sensitive || isSensitiveName(name) {
+      encodeLiteral(out, Indexing.Never, m.index, name, value, huffman);
+      return;
+    }
+    if m.exact {
+      encodeIndexed(out, m.index);
+      return;
+    }
+    if name.len + value.len + entryOverhead <= table.maxSize() {
+      encodeLiteral(out, Indexing.Incremental, m.index, name, value, huffman);
+      table.add(String.fromBytes(name), String.fromBytes(value));
+    } else {
+      encodeLiteral(out, Indexing.Without, m.index, name, value, huffman);
+    }
+  }
+
+  // The best entry for a field: a whole match in either table, the static
+  // first; else a name match, the static first
+  fn find(self: &, name: &Array[u8], value: &Array[u8]) TableMatch {
+    let s = staticFind(name, value);
+    if s.exact {return s;}
+    let d = table.find(name, value);
+    if d.exact {return TableMatch(d.index + staticTableLen, true);}
+    if s.index != 0usize {return s;}
+    if d.index != 0usize {return TableMatch(d.index + staticTableLen, false);}
+    TableMatch.none()
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The decoder
+// ---------------------------------------------------------------------------
+
+// The other end: header blocks in, header lists out (see the package's
+// header, THE DECODER)
+pub struct HpackDecoder {
+  cfg: HpackConfig;
+  table: DynamicTable;
+  allowed: usize;           // the largest size an update may ask for
+  updateOwed: bool;         // the next block must begin with an update (section 4.2)
+  failed: bool;             // a block failed with the table lost: every later one fails
+  name: List[u8];           // a literal's name and value as they are read
+  value: List[u8];
+
+  // A decoder whose table starts at the protocol's 4096 bytes, as the peer's
+  // encoder assumes until it reads our SETTINGS
+  pub fn make(cfg: HpackConfig) HpackDecoder {
+    HpackDecoder(cfg: cfg, table: DynamicTable.make(defaultHeaderTableSize),
+      allowed: defaultHeaderTableSize, updateOwed: false, failed: false,
+      name: List[u8].empty(), value: List[u8].empty())
+  }
+
+  // The table, as the peer's encoder holds it
+  pub fn dynamicTable(self: &) &DynamicTable {&table}
+
+  // Our SETTINGS_HEADER_TABLE_SIZE, headerTableSize, has been sent: from now
+  // on the peer may raise its table to it, since it may read the SETTINGS
+  // before we see its ACK
+  pub fn settingSent(self: &mut) {
+    if cfg.headerTableSize > allowed {allowed = cfg.headerTableSize;}
+  }
+
+  // The peer acknowledged our SETTINGS_HEADER_TABLE_SIZE: no update may pass
+  // headerTableSize from now on, and if the table is larger, the next block
+  // must begin by shrinking it
+  pub fn settingAcknowledged(self: &mut) {
+    allowed = cfg.headerTableSize;
+    if table.maxSize() > allowed {updateOwed = true;}
+  }
+
+  // Decode a whole header block, appending its fields to out: Ok with the
+  // list's size, or why not (see the package's header, HPACK ERRORS). On an
+  // error, out is as it was
+  pub fn decode(self: &mut, block: &Array[u8], out: &mut List[HeaderField]) Result[usize, HpackError] {
+    if failed {return self.refuse(out, out.len(), HpackErrorKind.Malformed, "an earlier block failed: the table is lost");}
+    let start = out.len();
+    var pos = 0usize;
+    var total = 0usize;       // the list's size so far
+    var over = false;         // past maxHeaderListSize: decoded, not kept
+    var fields = false;       // a field has been read
+    while pos < block.len {
+      let b = block[pos];
+      if (b & 0xE0u8) == 0x20u8 {
+        // A dynamic table size update: only before the first field
+        if fields {return self.refuse(out, start, HpackErrorKind.Malformed, "a table size update after a field");}
+        var n = 0usize;
+        match decodeInteger(block, &mut pos, 5u32) {
+          case let Ok(v) {n = usize.from(v);}
+          case let Error(e) {return self.refuse(out, start, HpackErrorKind.Malformed, e);}
+        }
+        if n > allowed {return self.refuse(out, start, HpackErrorKind.Malformed, "a table size update past SETTINGS_HEADER_TABLE_SIZE");}
+        table.setMaxSize(n);
+        updateOwed = false;
+        continue;
+      }
+      if updateOwed {return self.refuse(out, start, HpackErrorKind.Malformed, "a block after a smaller SETTINGS_HEADER_TABLE_SIZE does not begin with a table size update");}
+      fields = true;
+      if (b & 0x80u8) != 0u8 {
+        // An indexed field: its size is known before anything is copied
+        var index = 0usize;
+        match decodeInteger(block, &mut pos, 7u32) {
+          case let Ok(v) {index = usize.from(v);}
+          case let Error(e) {return self.refuse(out, start, HpackErrorKind.Malformed, e);}
+        }
+        if index == 0usize {return self.refuse(out, start, HpackErrorKind.Malformed, "an index of 0");}
+        if index > staticTableLen + table.len() {return self.refuse(out, start, HpackErrorKind.Malformed, "an index past the tables' ends");}
+        let size = if index <= staticTableLen {staticName(index).len() + staticValue(index).len() + entryOverhead}
+          else {table.entrySize(index - staticTableLen - 1usize)};
+        total = total + size;
+        if total > cfg.headerListAbortSize {return self.abandon(out, start);}
+        if total > cfg.maxHeaderListSize {over = true;}
+        if !over {
+          if index <= staticTableLen {out.push(HeaderField.make(staticName(index), staticValue(index)));}
+          else {
+            let i = index - staticTableLen - 1usize;
+            out.push(HeaderField.make(table.name(i), table.value(i)));
+          }
+        }
+        continue;
+      }
+      // A literal: 01 incremental (a 6-bit index), 0001 never, 0000 without (4-bit)
+      let incremental = (b & 0xC0u8) == 0x40u8;
+      let never = (b & 0xF0u8) == 0x10u8;
+      var nameIndex = 0usize;
+      match decodeInteger(block, &mut pos, if incremental {6u32} else {4u32}) {
+        case let Ok(v) {nameIndex = usize.from(v);}
+        case let Error(e) {return self.refuse(out, start, HpackErrorKind.Malformed, e);}
+      }
+      name.clear();
+      value.clear();
+      var why = "";
+      if nameIndex == 0usize {
+        let budget = self.budget(total);
+        let st = decodeString(block, &mut pos, budget, &mut name, &mut why);
+        if st == StringStatus.Malformed {return self.refuse(out, start, HpackErrorKind.Malformed, why);}
+        if st == StringStatus.TooLong {return self.abandon(out, start);}
+      } else {
+        if nameIndex > staticTableLen + table.len() {return self.refuse(out, start, HpackErrorKind.Malformed, "a name's index past the tables' ends");}
+        let nm = if nameIndex <= staticTableLen {staticName(nameIndex)} else {table.name(nameIndex - staticTableLen - 1usize)};
+        var i = 0usize;
+        while i < nm.len() {
+          name.push(nm[i]);
+          i = i + 1usize;
+        }
+      }
+      let budget = self.budget(total + name.len());
+      let st = decodeString(block, &mut pos, budget, &mut value, &mut why);
+      if st == StringStatus.Malformed {return self.refuse(out, start, HpackErrorKind.Malformed, why);}
+      if st == StringStatus.TooLong {return self.abandon(out, start);}
+      total = total + name.len() + value.len() + entryOverhead;
+      if total > cfg.headerListAbortSize {return self.abandon(out, start);}
+      if total > cfg.maxHeaderListSize {over = true;}
+      if !over {
+        out.push(HeaderField(String.fromBytes(name.view()), String.fromBytes(value.view()), never));
+      }
+      if incremental {table.add(String.fromBytes(name.view()), String.fromBytes(value.view()));}
+    }
+    if over {
+      out.truncate(start);
+      return Error[usize, HpackError](HpackError.make(HpackErrorKind.TooLarge, "the header list is past maxHeaderListSize"));
+    }
+    Ok[usize, HpackError](total)
+  }
+
+  // How many more bytes a string may decode to before the list, at 'total'
+  // so far and with a field's 32, passes headerListAbortSize
+  fn budget(self: &, total: usize) usize {
+    let used = total + entryOverhead;
+    if used >= cfg.headerListAbortSize {0usize} else {cfg.headerListAbortSize - used}
+  }
+
+  // Fail the block: out as it was, and, for a connection error, the table lost
+  fn refuse(self: &mut, out: &mut List[HeaderField], start: usize, kind: HpackErrorKind, why: &str) Result[usize, HpackError] {
+    out.truncate(start);
+    failed = true;
+    Error[usize, HpackError](HpackError.make(kind, why))
+  }
+
+  fn abandon(self: &mut, out: &mut List[HeaderField], start: usize) Result[usize, HpackError] {
+    self.refuse(out, start, HpackErrorKind.Abandoned, "the header list is past headerListAbortSize")
+  }
+}

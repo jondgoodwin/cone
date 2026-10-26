@@ -1,0 +1,120 @@
+// What HPACK costs, with no frames and no sockets: one encoder and one
+// decoder, the two ends of one direction of a connection, at the default
+// configuration (Huffman on, 4 KB tables). Run it with
+//
+//   congo run --release packages/http2/examples/bench.cone
+//
+// The lists are a browser's GET (eleven fields, a cookie of 96 bytes sent
+// never-indexed, a path and a request id that change) and a server's 200
+// (seven fields, a length that changes): 64 of each, made before the
+// clock starts, then 200,000 of each encoded and the blocks decoded, timed
+// apart. The changing fields keep the encoder adding to its table and
+// evicting from it, as a real connection does.
+
+mod bench;
+
+import stdio use *;
+import collections use List, String;
+import time use Instant, Duration;
+import http2 use *;
+
+fn requestList(i: u64) List[HeaderField] {
+  var f = List[HeaderField].empty();
+  var path = String.from("/tiles/7/");
+  path.appendUInt(i * 37u64 % 1000u64);
+  path.append(".bin");
+  var id = String.from("req-");
+  id.appendUInt(i * 7919u64);
+  f.push(HeaderField.make(":method", "GET"));
+  f.push(HeaderField.make(":scheme", "https"));
+  f.push(HeaderField.make(":authority", "assets.example.com"));
+  f.push(HeaderField.make(":path", path.view()));
+  f.push(HeaderField.make("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) cone-http2/0.1"));
+  f.push(HeaderField.make("accept", "application/octet-stream,*/*;q=0.8"));
+  f.push(HeaderField.make("accept-encoding", "gzip, deflate, br"));
+  f.push(HeaderField.make("accept-language", "en-US,en;q=0.9"));
+  f.push(HeaderField.make("cookie", "session=7b2f3c1d9e8a4b5c6d7e8f90a1b2c3d4; theme=dark; tz=Europe/Amsterdam; seen=1"));
+  f.push(HeaderField.make("x-request-id", id.view()));
+  f.push(HeaderField.make("cache-control", "no-cache"));
+  f
+}
+
+fn responseList(i: u64) List[HeaderField] {
+  var f = List[HeaderField].empty();
+  var len = String.empty();
+  len.appendUInt(1000u64 + i * 131u64 % 65536u64);
+  f.push(HeaderField.make(":status", "200"));
+  f.push(HeaderField.make("content-type", "application/octet-stream"));
+  f.push(HeaderField.make("content-length", len.view()));
+  f.push(HeaderField.make("date", "Mon, 26 Oct 2026 08:50:00 GMT"));
+  f.push(HeaderField.make("server", "cone"));
+  f.push(HeaderField.make("cache-control", "public, max-age=86400"));
+  f.push(HeaderField.make("etag", "\"5f3a9c\""));
+  f
+}
+
+fn report(what: &str, n: u64, enc: Duration, dec: Duration, plain: u64, coded: u64) {
+  printStr(what);
+  printStr(": encode ");
+  printUInt(u64.from(enc.nanos()) / n);
+  printStr(" ns, decode ");
+  printUInt(u64.from(dec.nanos()) / n);
+  printStr(" ns a list; ");
+  printUInt(plain / n);
+  printStr(" bytes of list (each field 32 more than its name and value) in ");
+  printUInt(coded / n);
+  printStr(" of block (");
+  printUInt(plain * 1000u64 / u64.from(enc.nanos()));
+  printStr(" MB/s encoded, ");
+  printUInt(plain * 1000u64 / u64.from(dec.nanos()));
+  printStr(" MB/s decoded)\n");
+}
+
+fn run(what: &str, lists: &Array[List[HeaderField]], n: u64) {
+  let cfg = HpackConfig.make();
+  var enc = HpackEncoder.make(&cfg);
+  var dec = HpackDecoder.make(cfg);
+  // The blocks are kept, so decoding is timed apart from encoding
+  var blocks = List[List[u8]].empty();
+  var plain = 0u64;
+  var coded = 0u64;
+  let t0 = Instant.now();
+  var i = 0u64;
+  while i < n {
+    let l = &lists[usize.from(i % 64u64)];
+    var b = List[u8].empty();
+    enc.encode(l.view(), &mut b);
+    coded = coded + u64.from(b.len());
+    blocks.push(b);
+    i = i + 1u64;
+  }
+  let encTook = Instant.now() - t0;
+  var got = List[HeaderField].empty();
+  var wrong = 0u64;
+  let t1 = Instant.now();
+  i = 0u64;
+  while i < n {
+    got.clear();
+    match dec.decode(blocks[usize.from(i)].view(), &mut got) {
+      case let Ok(size) {plain = plain + u64.from(size);}
+      case let Error(e) {wrong = wrong + 1u64;}
+    }
+    i = i + 1u64;
+  }
+  let decTook = Instant.now() - t1;
+  if wrong != 0u64 {printStr("WRONG: a block failed to decode\n");}
+  report(what, n, encTook, decTook, plain, coded);
+}
+
+fn main() {
+  var reqs = List[List[HeaderField]].empty();
+  var resps = List[List[HeaderField]].empty();
+  var i = 0u64;
+  while i < 64u64 {
+    reqs.push(requestList(i));
+    resps.push(responseList(i));
+    i = i + 1u64;
+  }
+  run("requests ", reqs.view(), 200000u64);
+  run("responses", resps.view(), 200000u64);
+}
