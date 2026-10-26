@@ -6,11 +6,11 @@
 // order (the blocks at 8,192, 0 and 4,096), each block a pattern of its own;
 // reads each back and compares the bytes; reads at the end of the file and past
 // it (Done, the buffer as it went), a read that crosses the end (the 2,288
-// bytes that are there), and a read with no room (122, as a socket's); patches
+// bytes that are there), and a read with no room (InvalidInput, as a socket's); patches
 // 16 bytes in the middle; then opens the file again three ways: to read (what
 // was written is there, and a write to it fails), to update (the bytes are
 // kept, and a write changes only those bytes) and to create (it is emptied). A
-// file that is not there fails to open with ERROR_FILE_NOT_FOUND (2). At the
+// file that is not there fails to open with NotFound. At the
 // end the file made last is sent in a message to another actor, Peeker, which
 // reads it: a File moves, as a Socket does. The test removes its file.
 
@@ -21,7 +21,7 @@ import fs;
 import path use Path;
 import sync use Oneshot, OneshotSender, OneshotReceiver;
 import iobuf use IoBuf;
-import iocore use IoError, Access;
+import iocore use IoError, Access, errorKindName;
 import actors;
 import aio use File;
 
@@ -47,12 +47,15 @@ fn num(what: &str, n: u64) {
   printStr("\n");
 }
 
-// The error code of a failed answer, 0 for a success
-fn codeOf[T](r: Result[T, IoError]) u64 {
+// What went wrong, for a failed answer: its kind's name; "none" for a success
+fn kindOf[T](what: &str, r: Result[T, IoError]) {
+  printStr(what);
+  printStr(": ");
   match r {
-    case let Error(e) {u64.from(e.code)}
-    else {0u64}
+    case let Error(e) {printStr(errorKindName(e.kind()));}
+    else {printStr("none");}
   }
+  printStr("\n");
 }
 
 // What a write answered: its count, or 1000000 and the error code
@@ -151,7 +154,7 @@ actor Filer {
     note("  and they are the bytes", c0.len() == 2288usize && isRun(&c0, 0usize, 2288usize, 1808usize, 33u8));
 
     // A read with no room
-    num("read with no room: error code", codeOf[IoBuf](await f.readAt(0u64, IoBuf.empty())));
+    kindOf[IoBuf]("read with no room: error", await f.readAt(0u64, IoBuf.empty()));
 
     // Sixteen bytes over the middle of block 1 (at 4,096 + 100)
     var patch = IoBuf(16usize);
@@ -181,7 +184,7 @@ actor Filer {
 
     // A file that is not there
     let missing = Path.from("aiofiles-missing.tmp");
-    num("opening a file that is not there: error code", codeOf[File](await aio.openFile(&missing, Access.Read)));
+    kindOf[File]("opening a file that is not there: error", await aio.openFile(&missing, Access.Read));
 
     // To create: emptied, then block 0 written, and the file sent on
     let made = fileOf(await aio.openFile(&name, Access.Create));

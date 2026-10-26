@@ -29,10 +29,12 @@
 // the value ('Result[void, FsError]' where there is none, its 'Ok' holding
 // 'nil'), or 'Error' with an 'FsError', which says what was being done
 // ('op', the function's name), to which path ('path', and 'other' for the
-// second path of 'rename'), and why ('code', the C library's errno, a posix
-// 'E...' constant). Its 'message()' is one line to show a person,
-// 'readFile notes.txt: No such file or directory', and 'notFound()' asks the
-// commonest question about it. A path holding a NUL byte, which C would read
+// second path of 'rename'), and why: 'kind()', iocore's IoErrorKind, the
+// same on every system (NotFound, PermissionDenied, AlreadyExists, ...), which
+// a caller matches on, and 'code', the C library's errno it was read from, a
+// posix 'E...' constant, kept for diagnostics. Its 'message()' is one line to
+// show a person, 'readFile notes.txt: No such file or directory', and
+// 'notFound()' asks the commonest question about it. A path holding a NUL byte, which C would read
 // as its end, fails with EINVAL before anything is asked of the system.
 // Cone has no '?' yet, so a caller matches each Result; a value is moved out
 // of a matched 'Ok' by binding it ('case let Ok(ok) { text = ok; }').
@@ -158,11 +160,12 @@ import collections use String, List;
 import path use Path;
 import sync;
 import time;
+import iocore use IoErrorKind, errnoKind;
 
 // -------- failure --------
 
 // Why an operation failed: what was being done, to which path, and the C
-// library's error number
+// library's error number, whose kind is the same on every system
 pub struct FsError {
   // The function that failed: "readFile", "makeDir", ...
   pub op: String;
@@ -172,6 +175,10 @@ pub struct FsError {
   pub other: Path;
   // The C library's errno: posix.ENOENT, posix.EACCES, ...
   pub code: i32;
+
+  // What went wrong, the same on every system: iocore's IoErrorKind for the
+  // errno (NotFound for ENOENT, PermissionDenied for EACCES, ...)
+  pub fn kind(self: &) IoErrorKind { errnoKind(code) }
 
   // One line for a person: 'readFile notes.txt: No such file or directory',
   // or 'rename a.txt to b.txt: File exists'
@@ -190,11 +197,12 @@ pub struct FsError {
     out
   }
 
-  // Whether it failed because nothing has that name (ENOENT)
-  pub fn notFound(self: &) bool { code == posix.ENOENT }
+  // Whether it failed because nothing has that name (NotFound: ENOENT)
+  pub fn notFound(self: &) bool { self.kind() == IoErrorKind.NotFound }
 
-  // Whether it failed because something already has that name (EEXIST)
-  pub fn alreadyExists(self: &) bool { code == posix.EEXIST }
+  // Whether it failed because something already has that name (AlreadyExists:
+  // EEXIST)
+  pub fn alreadyExists(self: &) bool { self.kind() == IoErrorKind.AlreadyExists }
 }
 
 fn failure(op: &str, p: &Path, code: i32) FsError {
@@ -837,7 +845,7 @@ pub fn removeAll(path: &Path) Result[void, FsError] {
   var st = emptyStat();
   if posix.lstat(c.cstr(), &mut st) != 0i32 {
     let code = lastErrno();
-    if code == posix.ENOENT { return succeeded(); }
+    if errnoKind(code) == IoErrorKind.NotFound { return succeeded(); }
     return fail[void]("removeAll", path, code);
   }
   removeTree(path, st.st_mode & posix.S_IFMT)
