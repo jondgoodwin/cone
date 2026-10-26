@@ -540,8 +540,20 @@ static void varDclWorkgroupCheck(TypeCheckState *pstate, INode *node, void *extr
 
 // Type check variable against its initial value
 void varDclTypeCheck(TypeCheckState *pstate, VarDclNode *name) {
+    // Rule 3: the declared type is established before anything that could read
+    // this variable is checked. Checking it can lay out a type for the first
+    // time -- the instance 'Box[Svc]' a global is declared with -- and the last
+    // layout to finish works the members queue, which could hold a method that
+    // reads this global (Svc's own, among them). Held as a layout in flight, the
+    // queue is worked only once the type is in place, so such a use reads the
+    // instance rather than the generic call it was written as. As for a
+    // function's signature (fnDclTypeCheck); see compiler/c/doc/phases/type-check.md,
+    // "Layout before members".
+    structLayoutEnter();
     itypeTypeCheck(pstate, (INode**)&name->perm);
-    if (itypeTypeCheck(pstate, &name->vtype) == 0)
+    int typed = itypeTypeCheck(pstate, &name->vtype);
+    structLayoutExit();
+    if (typed == 0)
         return;
 
     // Every function can reach a global: whether one holds a collection decides
