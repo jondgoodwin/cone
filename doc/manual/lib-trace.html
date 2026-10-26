@@ -83,8 +83,8 @@ struct Console is trace.Sink {
 }
 
 fn main() {
-  trace.setLevel("fetcher", Level.Info);      // the program's choice, before the sink
-  trace.install(Uni[Console](Level.Trace));    // CONE_TRACE, if set, replaces it
+  trace.install(Uni[Console](Level.Trace));    // errors and warnings, by default
+  trace.setLevel("fetcher", Level.Info);       // more from fetcher, unless CONE_TRACE says
   fetch("https://example.com/a", 200);
   fetch("https://example.com/b", 404);
   trace.setLevel("fetcher", Level.Debug);
@@ -104,7 +104,8 @@ info fetcher request ends #3
 </pre>
 	<p>The first fetch's <span class="pre">fetched</span> event is a Debug event of a target at Info, so it is
 		off, and its arguments were never evaluated. Run with <span class="pre">CONE_TRACE=fetcher=warn</span>, the same program
-		prints only the <span class="pre">refused</span> line until it sets the target to Debug itself.</p>
+		prints only the <span class="pre">refused</span> line: what the variable names, the program's own
+		<span class="pre">setLevel</span> calls do not undo.</p>
 
 	<h2 id="kinds">Declaring kinds</h2>
 	<p>A kind is what is known of an event before it happens: its name, its target (the package or subsystem
@@ -167,15 +168,23 @@ info fetcher request ends #3
 		<span class="pre">flush()</span>, asked by <span class="pre">trace.flush()</span> and when the program ends.
 		A sink whose answer to <span class="pre">enabled</span> changes calls <span class="pre">trace.refresh()</span>.</p>
 	<p>A kind is on when a sink is installed and wants it, and its level is no more detailed than its target's.
-		A target's level is the one <span class="pre">trace.setLevel(target, level)</span> gave it, else the default,
-		<span class="pre">trace.setDefaultLevel(level)</span>, which starts as Off. Either may be changed while
-		the program runs; <span class="pre">trace.levelOf(target)</span> answers the level now.</p>
+		With no sink installed, every kind is off. A target's level is the one
+		<span class="pre">trace.setLevel(target, level)</span> gave it, else the default,
+		<span class="pre">trace.setDefaultLevel(level)</span>, which is <span class="pre">Warn</span> until set: a
+		program that installs a sink and does nothing more sees its errors and warnings. Either may be changed while
+		the program runs, and <span class="pre">trace.levelOf(target)</span> answers the level now;
+		<span class="pre">CONE_TRACE</span>, below, overrides both.</p>
 
 	<h3 id="cone-trace">CONE_TRACE</h3>
-	<p>When the sink is installed, the <span class="pre">CONE_TRACE</span> environment variable, if it is set,
-		replaces whatever levels the program set before, so a program sets its own defaults first and installs
-		second. <span class="pre">trace.filter(spec)</span> applies the same text from code. A spec is a list of
-		directives separated by commas:</p>
+	<p>The <span class="pre">CONE_TRACE</span> environment variable is the operator's override, needing no
+		rebuild. It is read once, when the sink is installed, and it wins over the program for every target it
+		names, whether the program set that target's level before the install or after. For the targets it does not
+		name, the program's levels hold. A bare level in it is the default, over the program's default; with none,
+		the program's default holds. So a target's level is <span class="pre">CONE_TRACE</span>'s for that target,
+		else the program's for it, else <span class="pre">CONE_TRACE</span>'s default, else the program's, else
+		Warn. <span class="pre">trace.filter(spec)</span> takes the same text from code, and replaces everything
+		the program set (under <span class="pre">CONE_TRACE</span> all the same). A spec is a list of directives
+		separated by commas:</p>
 	<table border="1" cellpadding="4" cellspacing="0">
 	<tr><th>Directive</th><th>Means</th></tr>
 	<tr><td><span class="pre">info</span></td><td>the default level, for every target not named</td></tr>

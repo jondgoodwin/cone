@@ -28,8 +28,8 @@
 //   }
 //
 //   // and the program:
-//   trace.setLevel("fetcher", Level.Info);      // its own choice first,
-//   trace.install(Uni[MySink](...));            // then the sink; CONE_TRACE, if set, wins
+//   trace.install(Uni[MySink](...));            // errors and warnings, by default
+//   trace.setLevel("fetcher", Level.Info);      // CONE_TRACE wins where it names fetcher
 //
 // WHAT IT HAS
 //
@@ -50,8 +50,8 @@
 //   install(sink)            the one sink, once; with none, every event is off
 //   installPair(a, b)        or two, both receiving: the fan-out
 //   setLevel(target, level)  a target's most detailed level
-//   setDefaultLevel(level)   the level of every target not named
-//   filter(spec)             the whole filter from CONE_TRACE's grammar
+//   setDefaultLevel(level)   the level of every target not named (Warn until set)
+//   filter(spec)             all the program's levels, in CONE_TRACE's grammar
 //   levelOf(target)          the level a target has now
 //   refresh()                every kind's state worked out again
 //   setContextProvider(f)    the runtime's: who is running, and why
@@ -61,18 +61,26 @@
 //
 // LEVELS AND TARGETS. A kind has one level; a target, a name such as "actors"
 // or "httpclient", has a most detailed level wanted, by default the default
-// level, which is Off. A kind is on when a sink is installed, its level is
-// not Off and no more detailed than its target's, and a sink's 'enabled' said
-// yes. That answer is worked out for a kind when it is first emitted, and
+// level, which is Warn until set: a program that installs a sink sees its
+// errors and warnings. A kind is on when a sink is installed (with none,
+// every kind is off), its level is not Off and no more detailed than its
+// target's, and a sink's 'enabled' said yes. That answer is worked out for a kind when it is first emitted, and
 // again for every kind whenever a level, the filter, the sinks or 'refresh'
 // changes it, and kept in the kind as one byte: which sinks want it. So an
 // event of a kind that is off costs one relaxed load of that byte and a
 // compare, and 'enabled' is not asked per event: a sink whose answer changes
 // calls refresh().
 //
-// CONE_TRACE. Read once, when the sink is installed; if set, it replaces the
-// whole filter (what the program set before is dropped). Its grammar, which
-// 'filter' takes too:
+// CONE_TRACE. The operator's override, needing no rebuild: read once, when the
+// sink is installed, into a layer of the filter of its own, which wins over
+// the program's levels for the targets it names, whether the program set them
+// before the install or after. The program's levels hold for every target it
+// does not name. A bare level in it is the default, over the program's
+// default; with none, the program's default holds (Warn until set). So a
+// target's level is CONE_TRACE's for it, else the program's for it, else
+// CONE_TRACE's default, else the program's, else Warn. Its grammar, which
+// 'filter' takes too (filling the program's layer, replacing what the program
+// set before):
 //
 //   spec       = [ directive { "," directive } ]
 //   directive  = level                  the default level, for every target not named
@@ -521,11 +529,19 @@ pub trait Sink {
 const maxTargets = 32usize;
 const targetBytes = 32usize;
 
-// A target the filter names
+// A target a layer of the filter names
 struct Directive {
   len: u32;
   rank: u8;
   name: Array[u8, 32];
+}
+
+// One layer of the filter: the program's (setLevel, setDefaultLevel, filter)
+// or the operator's (CONE_TRACE). A default of noLevel is none set
+struct Layer {
+  defaultRank: u8;
+  ntargets: u32;
+  targets: Array[Directive, 32];
 }
 
 struct State {
@@ -537,9 +553,8 @@ struct State {
   // Under the lock:
   kinds: usize;                             // the kinds emitted so far, a list through Info.next
   kindCount: u32;
-  defaultRank: u8;
-  ntargets: u32;
-  targets: Array[Directive, 32];
+  program: Layer;                           // what the program set
+  operator: Layer;                          // what CONE_TRACE set, which wins
 }
 
 let theState: Atomic[usize];
@@ -555,6 +570,9 @@ fn @initpure init() {
     *(p + i) = 0u8;
     i = i + 1usize;
   }
+  let st = p as *State;
+  (*st).program.defaultRank = noLevel;
+  (*st).operator.defaultRank = noLevel;
   theState = Atomic[usize].of(p as usize);
 }
 
@@ -595,9 +613,9 @@ fn sinkAt(st: *State, i: usize) &<Sink {
   mem.readRaw[&<Sink]((&(*st).sinks as *(&<Sink)) + i)
 }
 
-// Install the program's sink: once. Then CONE_TRACE, if set, replaces the
-// filter, and every kind's state is worked out. False, and the sink dropped,
-// if a sink was installed already
+// Install the program's sink: once. Then CONE_TRACE, if set, is read into
+// the operator's layer of the filter, and every kind's state is worked out.
+// False, and the sink dropped, if a sink was installed already
 pub fn install(sink: Uni[Sink]) bool {
   let st = state();
   lock(st);
@@ -635,7 +653,7 @@ fn installed(st: *State, n: u32) {
   var spec = Array[u8, 1024]() <- fill 0u8;
   let len = readEnv(&mut spec);
   if len != noEnv {
-    applyFilter(st, mem.sliceFromParts[u8](&spec as *u8, len));
+    applyFilter(&mut (*st).operator, mem.sliceFromParts[u8](&spec as *u8, len));
   }
   refreshLocked(st);
 }
@@ -668,11 +686,11 @@ fn sameText(a: &Array[u8], p: *u8, n: usize) bool {
   true
 }
 
-// The directive naming a target, or null
-fn findTarget(st: *State, name: &Array[u8]) *Directive {
+// The directive of a layer naming a target, or null
+fn findTarget(ly: *Layer, name: &Array[u8]) *Directive {
   var i = 0usize;
-  while i < usize.from((*st).ntargets) {
-    let d = (&(*st).targets as *Directive) + i;
+  while i < usize.from((*ly).ntargets) {
+    let d = (&(*ly).targets as *Directive) + i;
     if sameText(name, &(*d).name as *u8, usize.from((*d).len)) {
       return d;
     }
@@ -681,9 +699,25 @@ fn findTarget(st: *State, name: &Array[u8]) *Directive {
   null
 }
 
+// A target's level now (under the lock): CONE_TRACE's for a target it names,
+// else the program's; for a target neither names, CONE_TRACE's default level,
+// else the program's, else Warn
 fn targetRank(st: *State, target: &str) u8 {
-  let d = findTarget(st, target);
-  if d == null {(*st).defaultRank} else {(*d).rank}
+  var d = findTarget(&mut (*st).operator, target);
+  if d != null {
+    return (*d).rank;
+  }
+  d = findTarget(&mut (*st).program, target);
+  if d != null {
+    return (*d).rank;
+  }
+  if (*st).operator.defaultRank != noLevel {
+    return (*st).operator.defaultRank;
+  }
+  if (*st).program.defaultRank != noLevel {
+    return (*st).program.defaultRank;
+  }
+  defaultRank
 }
 
 // A kind's state, from the filter and the sinks (under the lock)
@@ -741,19 +775,23 @@ pub fn refresh() {
 // Levels by target, and the filter
 // ---------------------------------------------------------------------------
 
-// Set (or add) a target's level: false if the name is empty or longer than 32
-// bytes, or 32 targets are named already
-fn setTargetLocked(st: *State, name: &Array[u8], rank: u8) bool {
+// The default level when neither the program nor CONE_TRACE sets one: Warn,
+// so that a program that installs a sink sees its errors and warnings
+const defaultRank = 2u8;
+
+// Set (or add) a target's level in a layer: false if the name is empty or
+// longer than 32 bytes, or the layer names 32 targets already
+fn setTarget(ly: *Layer, name: &Array[u8], rank: u8) bool {
   if name.len == 0usize || name.len > targetBytes {
     return false;
   }
-  var d = findTarget(st, name);
+  var d = findTarget(ly, name);
   if d == null {
-    if usize.from((*st).ntargets) >= maxTargets {
+    if usize.from((*ly).ntargets) >= maxTargets {
       return false;
     }
-    d = (&(*st).targets as *Directive) + usize.from((*st).ntargets);
-    (*st).ntargets = (*st).ntargets + 1u32;
+    d = (&(*ly).targets as *Directive) + usize.from((*ly).ntargets);
+    (*ly).ntargets = (*ly).ntargets + 1u32;
     (*d).len = u32.from(name.len);
     var i = 0usize;
     while i < name.len {
@@ -766,27 +804,29 @@ fn setTargetLocked(st: *State, name: &Array[u8], rank: u8) bool {
 }
 
 // The most detailed level a target wants: its events of a level up to this
-// one are recorded. False if the target's name is empty or longer than 32
-// bytes, or 32 targets are named already
+// one are recorded, unless CONE_TRACE names the target, which wins whenever
+// it was read. False if the target's name is empty or longer than 32 bytes,
+// or the program names 32 targets already
 pub fn setLevel(target: &str, level: Level) bool {
   let st = state();
   lock(st);
-  let ok = setTargetLocked(st, target, level.rank());
+  let ok = setTarget(&mut (*st).program, target, level.rank());
   refreshLocked(st);
   unlock(st);
   ok
 }
 
-// The level of every target not named (Off until set)
+// The level of every target not named: Warn until set. A default level in
+// CONE_TRACE wins over it
 pub fn setDefaultLevel(level: Level) {
   let st = state();
   lock(st);
-  (*st).defaultRank = level.rank();
+  (*st).program.defaultRank = level.rank();
   refreshLocked(st);
   unlock(st);
 }
 
-// The level a target has now: its own, or the default
+// The level a target has now (whether or not a sink is installed)
 pub fn levelOf(target: &str) Level {
   let st = state();
   lock(st);
@@ -858,8 +898,8 @@ fn validTarget(t: &Array[u8]) bool {
   true
 }
 
-// One directive: whether it was applied
-fn applyDirective(st: *State, d: &Array[u8]) bool {
+// One directive, into a layer: whether it was applied
+fn applyDirective(ly: *Layer, d: &Array[u8]) bool {
   var eq = 0usize;
   while eq < d.len && d[eq] != 61u8 {
     eq = eq + 1usize;
@@ -868,13 +908,13 @@ fn applyDirective(st: *State, d: &Array[u8]) bool {
     // a bare word: a level, else a target wanting everything
     let r = rankOfWord(d);
     if r != noLevel {
-      (*st).defaultRank = r;
+      (*ly).defaultRank = r;
       return true;
     }
     if !validTarget(d) {
       return false;
     }
-    return setTargetLocked(st, d, 5u8);
+    return setTarget(ly, d, 5u8);
   }
   let t = trimmed(d, 0usize, eq);
   let lv = trimmed(d, eq + 1usize, d.len);
@@ -882,13 +922,13 @@ fn applyDirective(st: *State, d: &Array[u8]) bool {
   if r == noLevel || !validTarget(t) {
     return false;
   }
-  setTargetLocked(st, t, r)
+  setTarget(ly, t, r)
 }
 
-// The whole filter from a spec (under the lock): how many directives were skipped
-fn applyFilter(st: *State, spec: &Array[u8]) u32 {
-  (*st).ntargets = 0u32;
-  (*st).defaultRank = 0u8;
+// A whole layer from a spec (under the lock): how many directives were skipped
+fn applyFilter(ly: *Layer, spec: &Array[u8]) u32 {
+  (*ly).ntargets = 0u32;
+  (*ly).defaultRank = noLevel;
   var bad = 0u32;
   var from = 0usize;
   while from <= spec.len {
@@ -897,7 +937,7 @@ fn applyFilter(st: *State, spec: &Array[u8]) u32 {
       to = to + 1usize;
     }
     let d = trimmed(spec, from, to);
-    if d.len != 0usize && !applyDirective(st, d) {
+    if d.len != 0usize && !applyDirective(ly, d) {
       bad = bad + 1u32;
     }
     from = to + 1usize;
@@ -905,13 +945,14 @@ fn applyFilter(st: *State, spec: &Array[u8]) u32 {
   bad
 }
 
-// Replace the whole filter with a spec in CONE_TRACE's grammar (the package's
-// header): every target not named, and the default, start from Off. How many
-// directives were skipped as malformed
+// Replace everything the program set with a spec in CONE_TRACE's grammar (the
+// package's header): the program's levels for the targets named, and its
+// default if the spec has a bare level (else none, so Warn). CONE_TRACE still
+// wins for what it names. How many directives were skipped as malformed
 pub fn filter(spec: &str) u32 {
   let st = state();
   lock(st);
-  let bad = applyFilter(st, spec);
+  let bad = applyFilter(&mut (*st).program, spec);
   refreshLocked(st);
   unlock(st);
   bad
