@@ -1957,6 +1957,14 @@ INode *parseExprBlock(ParseState *parse, int isloop) {
             // 'let q, r = divmod(7, 2);' declares several names and gives them their values at once
             if (lexIsToken(CommaToken) && !parse->usingdcl) {
                 parseDestructDcl(parse, blk, var);
+                // Names always take their values, so there is nothing for an 'else' to do: it is refused
+                // as it is after one name, and read past, whole
+                if (lexIsToken(ElseToken)) {
+                    errorMsgLex(ErrorPatBindForm,
+                        "A declaration of names takes no 'else': they always take their values. A binding that leaves unless it matches names the variant and puts the binding in its parentheses: 'let Some(n) = x else {...};'.");
+                    lexNextToken();
+                    parseExprBlock(parse, 0);
+                }
                 parseEndOfStatement();
                 break;
             }
