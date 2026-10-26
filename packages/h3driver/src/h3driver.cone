@@ -1,0 +1,605 @@
+// The h3driver package: HTTP/3 over real UDP. A Driver joins quic's sans-IO
+// QUIC connections and http3's sans-IO HTTP/3 connections to UDP sockets on
+// an iocore Loop, in both roles: a CLIENT connection has a UDP socket of its
+// own and sends requests over it, streaming each response back; a SERVER
+// listens on one UDP socket, accepts each connection a client's first packet
+// opens on it, and streams each request to the program and its response
+// back out. It owns every socket, every quic.Connection and the
+// http3.Connection over each, feeds QUIC the datagrams that came, HTTP/3 the
+// stream bytes QUIC delivered, QUIC what HTTP/3 writes, and the kernel the
+// datagrams QUIC makes; it wakes each connection at its wake time. It never
+// waits and starts no thread: it is a service the aio package hosts on its
+// I/O thread (aio.Hosted, by its methods), or a lone thread's loop drives.
+//
+//   mod get;
+//   import collections use List;
+//   import iocore use Loop, SocketAddr, forever;
+//   import http use *;
+//   import h3driver use *;
+//
+//   fn main() {
+//     mut lp = Loop.mustMake();
+//     mut drv = Driver.make(Config.make());
+//     imm conn = drv.connect(&mut lp, SocketAddr.v4(192u8, 0u8, 2u8, 7u8, 443u16), "example.com", 1u64)...;
+//     drv.request(&mut lp, conn, RequestHead.get("/", "example.com"), BodyLength.empty(), 2u64);
+//     mut events = List[Event].empty();
+//     while going {
+//       drv.poll(&mut lp, forever(), &mut events);     // waits in the loop, and only there
+//       ... e.kind == EventKind.Response ... e.stream ...
+//       ... EventKind.Data: e.buf ...; drv.release(e.req, e.buf.len());
+//       ... e.isTerminal(): Done, Failed or Cancelled, once per request
+//       events.clear();
+//     }
+//   }
+//
+//   Driver.make(config)                                           (THE DRIVER)
+//   d.connect(lp, addr, serverName, token)                         (CONNECTIONS)
+//   d.listen(lp, addr, certFile, keyFile, token)  d.localAddr(lp, l)  d.stopListening(lp, l)
+//   d.close(lp, conn)  d.abort(lp, conn)  d.abortAll(lp)  d.isOpen(conn)  d.peer(conn)
+//   d.request(lp, conn, head, body, token)                         (REQUESTS)
+//   d.respond(req, head, body)  d.sendInterim(req, head)            (SERVING)
+//   d.sendData(req, buf)  d.finish(req)  d.finishWith(req, trailers)   (BODIES)
+//   d.release(req, n)                                               (CREDIT)
+//   d.cancel(lp, req)                                               (CANCEL)
+//   d.turn(lp)  d.complete(lp, c)  d.wakeAt()  d.end(lp)            (HOSTING)
+//   d.takeEvents(out)  d.pump(lp, out)  d.poll(lp, until, out)
+//   d.owns(token)  d.stats()  d.live()  d.streamRecords(conn)  d.injectLoss(perMille, seed)  (DIAGNOSTICS)
+//   Event: e.kind e.token e.conn e.req e.stream, and per kind e.listener e.peer   (EVENTS)
+//     e.clean e.failure e.request e.response e.body e.buf e.trailers e.timing;  e.isTerminal()
+//   EventKind: Connected Accepted Closed Request Response Interim Data End
+//     Writable Done Failed Cancelled TimedOut;  eventName(k)
+//   Failure: f.stage f.code f.error f.unsent f.message()  Stage  stageName(s)  (FAILURES)
+//   Timing: t.submitted t.started t.firstByte t.ended
+//   ConnId ReqId ListenerId  Config  DriverStats
+//
+// THE DRIVER. One per Loop, driven by the loop's thread. It is a hosted
+// service by its methods (aio's trait Hosted): 'turn(lp)' moves every
+// connection a completion, a call or its wake time has touched as far as it
+// can go; 'complete(lp, &mut c)' takes a completion whose token is its own
+// (the driver's mark in the top byte, its number in the next; true) and
+// leaves any other (false); 'wakeAt()' is the latest the loop's poll may wait
+// (now when work or events are ready; else the earliest connection's wake
+// time); 'end(lp)' resets every connection and closes every socket, the Loop
+// still alive. Its events wait in the driver until 'takeEvents(out)' moves
+// them: the service hosting it (actorhttp's, in time) takes them in its own
+// turn, as it pumps httpconn's Drivers. 'pump(lp, out)' is turn then
+// takeEvents; 'poll(lp, until, out)' is the whole round for a thread that
+// drives nothing else: pump, poll the loop until the earlier of 'until' and
+// wakeAt, complete each answer (one not the driver's is dropped, counted),
+// pump. Several drivers may share a loop, each completion offered to one
+// after another, as aio's I/O thread offers them to its services: no two live
+// drivers have the same number (256 numbers, taken in turn).
+//
+// CONNECTIONS. 'connect(lp, addr, serverName, token)' binds a UDP socket of
+// the connection's own (127.0.0.1:0 for a loopback server, else 0.0.0.0:0)
+// and starts QUIC's handshake to addr, the server's certificate checked
+// against serverName by quic's Config.verify: its ConnId, or the Failure that
+// stopped it at once (an IPv6 address, the socket, the TLS context). Requests
+// may be made on it at once: they wait for the handshake and for the peer's
+// stream limit. 'listen(lp, addr, certFile, keyFile, token)' binds a server's
+// UDP socket and its TLS context (the certificate chain and key, PEM files).
+// Every connection's life is told: Connected (a client's) or Accepted (a
+// server's) when its handshake is done, and EXACTLY ONE Closed last, after
+// every request on it has had its final answer: 'clean' when it ended as
+// HTTP/3 meant it to (H3_NO_ERROR with nothing cut off, or QUIC's idle
+// timeout with nothing open), with the Failure when not. A client's
+// connection whose handshake fails is told Closed alone; a server's is told
+// nothing (it was never Accepted). 'close(lp, conn)' ends it gracefully: a
+// GOAWAY, what is open finishes, then CONNECTION_CLOSE with H3_NO_ERROR once
+// QUIC has delivered every byte written; 'abort(lp, conn)' closes it now,
+// every request on it Failed.
+//
+// ROUTING. A server's datagrams all come to its one socket. Each goes to its
+// connection by its Destination Connection ID (RFC 9000, section 5.2): the
+// driver keeps a Dict from every connection ID a connection answers to (the
+// one the client chose for its first packets, and every ID of the server's
+// own that quic's localIds gives; read again when localIdsEpoch moves) to the
+// connection. A long-header packet carries its ID's length; a short-header
+// one carries quic.localIdLen bytes after its first. A datagram whose ID
+// names no connection opens one when it is a client's Initial (and the
+// driver holds fewer than 'maxConnections'), else is dropped (counted:
+// unrouted; no stateless reset is sent yet). A client's datagrams go to the
+// connection its socket belongs to.
+//
+// RECEIVES. Each socket keeps 'recvDepth' receives outstanding (8: a
+// congestion window's first flight is 10 packets, and the socket's own
+// buffer holds what comes between two turns), each one datagram into a
+// buffer of quic's maxUdpPayload (the largest the peer is told this end
+// takes); each is started again as its answer is taken. Several outstanding
+// receives on one UDP socket are iocore's to fill in any order, which QUIC
+// takes as it takes the network's reordering. A datagram cut short (longer
+// than the buffer) is dropped. Batching (recvmmsg, GRO, URO) comes later, at
+// one place: the receive's completion, which would take a batch's datagrams
+// in turn where it takes one now.
+//
+// SENDS. Each datagram QUIC makes is one SendTo; at most 'sendDepth' (16)
+// are in flight per connection, and past that the connection's QUIC holds
+// what it has until one is answered (its own retransmission covers a send
+// the kernel drops). Batching (sendmmsg, GSO, USO) comes later, at the
+// transmit loop.
+//
+// WAKE TIMES. QUIC has no handleTimeout: a connection's wake time
+// (quic's wakeAt) that has come is acted on by the next pollTransmit, which
+// the driver makes at that time, input or none. Under loss ngtcp2 can keep
+// the wake time at or before now for thousands of steps, so the driver never
+// waits for a wake time that has passed: after a connection's turn, a wake
+// time at or before now, or one that comes within 'wakeStep' (1 ms) after a
+// turn its wake time asked for and that sent nothing, is moved to now +
+// wakeStep. So a connection is turned by its timer at most once a wakeStep
+// for nothing; stats() counts the turns its wake time asked for, and those
+// that sent nothing (idleWakes), which tests/loss.cone bounds. Each turn
+// looks at every connection's wake time (a timer wheel comes with many
+// connections).
+//
+// THE STREAM MAP: SIX THINGS QUIC AND HTTP/3 SEE DIFFERENTLY. Each stream's
+// state is one record in its connection's table (a SlotTable, found from
+// the stream's number by a Dict): the bytes QUIC delivered that HTTP/3 has
+// not taken, what HTTP/3 wrote before QUIC opened the stream, whether each
+// half is over, and the request on it with its sink token.
+// 1. NUMBERS. quic numbers the streams it opens (ngtcp2 does, in order);
+//    http3 picks its own (requests 0, 4, 8; its control and QPACK streams 2,
+//    6, 10 or 3, 7, 11). The driver keeps the two the SAME: it opens QUIC's
+//    streams in the order http3 numbered them (a request's when it is made,
+//    the unidirectional ones as http3 first writes them, which it does in
+//    order), one at a time from a queue per kind, and a stream http3 gave up
+//    before QUIC could open it is still opened, then reset and stopped, so no
+//    number is skipped. The map is the identity, which is what makes a GOAWAY's
+//    stream id (QUIC's number on the wire) mean the same request at both
+//    layers; a number that came out otherwise would be an internal error, and
+//    fails the connection (H3_INTERNAL_ERROR).
+// 2. THE PEER'S STREAM LIMIT. openBidi and openUni give None while the
+//    peer's MAX_STREAMS allows no more (and before the handshake has brought
+//    its limits): the stream waits in its queue, what http3 writes to it held
+//    in its record, until MoreStreams (or HandshakeDone). At most
+//    'maxWaiting' requests wait per connection; one more is Failed (stage
+//    Limit), unsent.
+// 3. TWO READ CREDITS. QUIC's stream window and http3's streamBuffer. QUIC's
+//    Data goes into the stream's record; the driver hands http3 only what its
+//    readCredit allows, and releases those bytes to QUIC (quic's release) as
+//    http3 takes them, not as they arrive. So a stalled reader holds at most
+//    QUIC's streamWindow in the driver, http3's streamBuffer in the core, and
+//    its bodyWindow out with the program, and QUIC's flow control stops the
+//    peer; the other streams go on. Bytes dropped (a reset, a stop) are
+//    released at once.
+// 4. WRITESTOPPED HAS NO CODE (ngtcp2 1.22 calls back for neither the
+//    peer's STOP_SENDING nor its own answering RESET_STREAM). The driver tells
+//    http3 'handleStopSending' with H3_NO_ERROR at a client (RFC 9114,
+//    section 4.1.1: a server that needs no more of the request; the client
+//    goes on reading the response, and a server that meant more resets its
+//    own half too, which comes as a Reset with its code), and with
+//    H3_REQUEST_CANCELLED at a server (a client that stopped reading the
+//    response has given it up: the exchange fails Reset).
+// 5. WRITTEN BYTES ARE NOT BOUNDED IN QUIC. http3 bounds what it holds
+//    (writeWatermark); the driver bounds what QUIC holds: 'sendData' hands a
+//    buffer back once the stream's bytes QUIC has not had acknowledged (or
+//    holds for a stream not yet open) reach 'sendWatermark' (256 KiB, quic's
+//    stream window at its defaults: more could not be in flight anyway), and
+//    Writable comes when there is room again in both.
+// 6. QUIC'S RESET IS ONE DIRECTION: the peer's sending half (RESET_STREAM).
+//    That is RFC 9114's "stream reset" as http3's 'handleReset' takes it: the
+//    driver passes it on, drops what the half had delivered, and leaves this
+//    end's half to http3, which resets it (H3_REQUEST_CANCELLED) when the
+//    exchange fails. A stream's record goes once QUIC no longer holds the
+//    stream (quic's hasStream: ngtcp2 closed it both ways and every byte was
+//    released) and its request has had its final answer.
+//
+// REQUESTS. 'request(lp, conn, head, body, token)' sends a request on a
+// client connection (http3's sendRequest, its stream's number in each event's
+// 'stream'): EXACTLY ONE final answer, Done, Failed or Cancelled, and nothing
+// after it. Before it: Interim (a 1xx), Response (the head), Data (the body,
+// each an IoBuf the program owns now, its bytes on loan until 'release'),
+// End (the response is whole, with its trailers), then Done. A body is sent
+// by 'sendData' and 'finish' (Writable after a refusal). A request that
+// cannot be made -- the connection closed or gone, a GOAWAY received, the
+// waiting bound reached -- is Failed at once, unsent, and its ReqId is none.
+// A response that ends while the request's own body is still being sent
+// resets that body (H3_NO_ERROR) at Done.
+//
+// SERVING. A listener's token gets Accepted for each connection, then
+// Request for each request (its head and what is known of its body), its
+// Data and End; the program answers with 'respond(req, head, body)', then
+// 'sendData' and 'finish'. A request's Done comes once its End has come and
+// QUIC has had every byte of the response acknowledged; Failed if the
+// connection or the stream ends first. 'cancel' on either side resets the
+// exchange (H3_REQUEST_CANCELLED both ways): Cancelled.
+//
+// ERRORS AND RETRIES. A Failed answer carries a Failure: its stage (Connect:
+// the socket; Read, Write: a socket's receive or send; Http: HTTP/3 refused
+// what came, one stream's error; Tls: the handshake or the certificate;
+// Closed: the connection ended; Limit: a bound), an http.HttpError (kind,
+// detail, code, scope, noResponse), and 'unsent'. When the QUIC connection
+// closes -- the peer's close, an idle timeout, this end's failure -- every
+// exchange http3 could not finish fails: one whose request never reached
+// QUIC (no byte handed to it: still waiting for the handshake or the peer's
+// stream limit) is Refused, unsent, and so retry-safe ('isRetrySafe'); one
+// that did is Closed (TimedOut after QUIC's idle timeout), unless http3's own
+// GOAWAY rule already refused it. A peer's reset fails one request (Reset;
+// Refused for H3_REQUEST_REJECTED). The QUIC error's own words are in the
+// detail.
+//
+// CERTIFICATES. A client checks the server's certificate by quic's
+// Config.verify. The OS's verifier (tls.Verifier.platform(), the default)
+// stops the handshake with VerifyNeeded; the driver submits quic's verifyOp
+// to the loop's blocking pool (its verifyLane) and hands the answer to
+// verifyDone when it comes, so the I/O thread never blocks on it, as httpconn
+// does for a TLS layer's calls. A refusal closes the connection: Closed with
+// stage Tls (Windows' error in its code).
+//
+// CREDIT AND MEMORY (invariant I9). Per stream: QUIC's streamWindow held in
+// the driver, http3's streamBuffer, its bodyWindow out with the program, and
+// on the way out sendWatermark in QUIC and writeWatermark in http3. Per
+// connection: quic's and http3's own bounds, and 'sendDepth' datagrams in
+// flight. Per socket: 'recvDepth' receive buffers. Connections:
+// 'maxConnections'.
+//
+// LOSS, FOR TESTS. 'injectLoss(perMille, seed)' drops that share of the
+// datagrams this driver would send (a fixed pseudo-random sequence from
+// seed), counted in stats().lost: QUIC must recover them.
+//
+// THE QUIC AND HTTP/3 CONFIGS. A connection's QUIC is made with Config.quic,
+// except that a server's maxStreamsBidi is http3's maxRequestStreams (http3
+// leaves QUIC's stream limit to the transport and says what to advertise).
+// ALPN is quic's ("h3").
+//
+// Not here yet: a host name looked up (connect takes an address; httpclient
+// resolves), IPv6 (quic's Addr is IPv4 only), deadlines and cancel groups on
+// requests, channel sinks (events wait for takeEvents), UDP batching
+// (recvmmsg, sendmmsg, GSO, GRO, URO, USO), connection migration, 0-RTT,
+// Retry and address validation tokens, stateless reset, qlog, ECN,
+// WebTransport, HTTPS DNS records, the HTTP/2 and HTTP/3 race, a
+// CONNECTION_CLOSE sent again when packets keep coming after it, and a
+// timer wheel for many connections' wake times. Nothing in a release imports
+// this package yet (so no release ships ngtcp2's libraries for it).
+
+mod h3driver;
+
+import libc;
+import collections use List, String, Deque, Dict;
+import time use Instant, Duration;
+import iobuf use IoBuf, Chain;
+import diag;
+import iocore use Loop, Op, Target, Completion, Handle, SocketAddr, IoError, forever;
+import slots use SlotTable, Slot;
+import http use *;
+import http3;
+import quic;
+
+fn @initpure init() {
+  numberNext = Atomic[u32].of(0u32);
+}
+
+// Driver numbers, taken in turn (see THE DRIVER): 256 of them, the byte under
+// the mark in every token
+let numberNext: Atomic[u32];
+
+const noEntry = 4294967295u32;
+
+// ---------------------------------------------------------------------------
+// Ids
+// ---------------------------------------------------------------------------
+
+// A connection: its record in its driver's table and which of that cell's
+// occupants it was, so an id kept after the connection closed names nothing
+pub struct ConnId {
+  index: u32;
+  gen: u32;
+
+  pub fn none() ConnId {ConnId(noEntry, 0u32)}
+  pub fn isNone(self) bool {gen == 0u32}
+  pub fn number(self) u64 {(u64.from(gen) << 32u64) | u64.from(index)}
+  pub fn `==`(self, o: ConnId) bool {index == o.index && gen == o.gen}
+  pub fn `!=`(self, o: ConnId) bool {index != o.index || gen != o.gen}
+}
+
+// A request: its stream's record in its connection's table, and the connection
+pub struct ReqId {
+  conn: ConnId;
+  index: u32;
+  gen: u32;
+
+  pub fn none() ReqId {ReqId(ConnId.none(), noEntry, 0u32)}
+  pub fn isNone(self) bool {gen == 0u32}
+  pub fn connId(self) ConnId {conn}
+  pub fn number(self) u64 {(u64.from(gen) << 32u64) | u64.from(index)}
+  pub fn `==`(self, o: ReqId) bool {index == o.index && gen == o.gen && conn == o.conn}
+  pub fn `!=`(self, o: ReqId) bool {index != o.index || gen != o.gen || conn != o.conn}
+}
+
+// A listening UDP socket
+pub struct ListenerId {
+  index: u32;
+  gen: u32;
+
+  pub fn none() ListenerId {ListenerId(noEntry, 0u32)}
+  pub fn isNone(self) bool {gen == 0u32}
+  pub fn `==`(self, o: ListenerId) bool {index == o.index && gen == o.gen}
+}
+
+// ---------------------------------------------------------------------------
+// Configuration
+// ---------------------------------------------------------------------------
+
+// A driver's bounds (see the package's header)
+pub struct Config {
+  pub transport: quic.Config;     // the client connections' QUIC (a server's is its listener's Context)
+  pub protocol: http3.Config;     // every connection's HTTP/3 (a server's maxRequestStreams is its Context's)
+  pub recvDepth: u32;             // receives outstanding per socket
+  pub sendDepth: u32;             // datagrams in flight to the kernel per connection
+  pub sendWatermark: u64;         // a stream's bytes QUIC holds before sendData hands a buffer back
+  pub maxConnections: u32;        // connections the driver holds at once
+  pub maxWaiting: u32;            // requests per connection waiting for the peer's stream limit
+  pub wakeStep: Duration;         // the least a passed wake time is moved on (WAKE TIMES)
+
+  // The defaults
+  pub fn make() Config {
+    Config(transport: quic.Config.make(), protocol: http3.Config.make(), recvDepth: 8u32, sendDepth: 16u32,
+      sendWatermark: 262144u64, maxConnections: 10000u32, maxWaiting: 100u32,
+      wakeStep: Duration.fromMillis(1i64))
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Failures and timing
+// ---------------------------------------------------------------------------
+
+// Where a connection or a request failed (httpconn's stages, Resolve unused)
+pub enum Stage {
+  Resolve,       // looking the host up (not here yet)
+  Connect,       // making the connection's socket
+  Read,          // a receive failed
+  Write,         // a send failed
+  Http,          // HTTP/3 refused what came, or the stream was reset
+  Tls,           // the handshake failed: a certificate refused, no protocol in common
+  Closed,        // the connection closed before the request could finish
+  Limit          // a bound refused it
+}
+
+// The name of a stage, in lower case
+pub fn stageName(s: Stage) &str {
+  if s == Stage.Resolve {"resolve"}
+  else if s == Stage.Connect {"connect"}
+  else if s == Stage.Read {"read"}
+  else if s == Stage.Write {"write"}
+  else if s == Stage.Http {"http"}
+  else if s == Stage.Tls {"tls"}
+  else if s == Stage.Closed {"closed"}
+  else {"limit"}
+}
+
+// Why a request or a connection failed (see the package's header, ERRORS
+// AND RETRIES)
+pub struct Failure {
+  pub stage: Stage;
+  pub code: u32;           // Windows' error number (the OS's verifier's, a socket's), or 0
+  pub error: HttpError;    // its kind, detail, code, scope and noResponse
+  pub unsent: bool;        // no byte of the request reached QUIC
+
+  pub fn make(stage: Stage, code: u32, kind: ErrorKind, detail: &str) Failure {
+    Failure(stage, code, HttpError.make(kind, 0u16, detail), false)
+  }
+
+  // Nothing: a connection that has not failed
+  pub fn none() Failure {Failure(Stage.Closed, 0u32, HttpError.empty(), false)}
+
+  pub fn copy(self: &) Failure {
+    Failure(stage, code, HttpError(error.kind, error.status, error.noResponse, error.detail.copy(),
+      error.code, error.scope), unsent)
+  }
+
+  // 'closed: refused: the connection closed before the request was sent'
+  pub fn message(self: &) String {
+    var out = String.from(stageName(stage));
+    out.append(": ");
+    out.append(error.message().view());
+    if code != 0u32 {
+      out.append(" (OS error ");
+      out.appendUInt(u64.from(code));
+      out.append(")");
+    }
+    out
+  }
+}
+
+// When a request reached each point: zero where it did not
+pub struct Timing {
+  pub submitted: Instant;  // asked for (a server's: its head arrived)
+  pub started: Instant;    // its stream opened in QUIC
+  pub firstByte: Instant;  // its response's head arrived
+  pub ended: Instant;      // its final answer
+
+  pub fn zero() Timing {Timing(Instant(), Instant(), Instant(), Instant())}
+}
+
+// ---------------------------------------------------------------------------
+// Events
+// ---------------------------------------------------------------------------
+
+// What an event says happened: httpconn's kinds (TimedOut is not given yet:
+// requests have no deadlines here)
+pub enum EventKind {
+  Connected,     // a client connection's handshake is done: peer
+  Accepted,      // a server connection's handshake is done: listener, peer
+  Closed,        // a connection has ended, its last event: clean, failure
+  Request,       // a server's request has arrived: request, body
+  Response,      // a client's response head: response, body
+  Interim,       // a 1xx before it: response
+  Data,          // body bytes: buf
+  End,           // the message being read is whole: trailers
+  Writable,      // a request may send body bytes again
+  Done,          // FINAL: the exchange ended as it should: timing
+  Failed,        // FINAL: failure
+  Cancelled,     // FINAL
+  TimedOut       // FINAL (not given yet)
+}
+
+// The name of an event's kind
+pub fn eventName(k: EventKind) &str {
+  if k == EventKind.Connected {"Connected"}
+  else if k == EventKind.Accepted {"Accepted"}
+  else if k == EventKind.Closed {"Closed"}
+  else if k == EventKind.Request {"Request"}
+  else if k == EventKind.Response {"Response"}
+  else if k == EventKind.Interim {"Interim"}
+  else if k == EventKind.Data {"Data"}
+  else if k == EventKind.End {"End"}
+  else if k == EventKind.Writable {"Writable"}
+  else if k == EventKind.Done {"Done"}
+  else if k == EventKind.Failed {"Failed"}
+  else if k == EventKind.Cancelled {"Cancelled"}
+  else {"TimedOut"}
+}
+
+// What happened: httpconn's Event, field for field, and the HTTP/3 stream it
+// is on. A struct, as httpconn's is, so a program reads it in place in its
+// list; the fields its kind does not fill are empty
+pub struct Event {
+  pub kind: EventKind;
+  pub token: u64;             // the token its connection, listener or request was given
+  pub conn: ConnId;           // the connection it is about
+  pub req: ReqId;             // the request it is about, or ReqId.none()
+  pub stream: u64;            // the request's stream (HTTP/3's and QUIC's number), or 0
+  pub listener: ListenerId;   // Accepted: the listener
+  pub peer: SocketAddr;       // Connected, Accepted: the other end
+  pub clean: bool;            // Closed: it ended as HTTP/3 meant it to
+  pub failure: Failure;       // Closed when not clean, Failed: why
+  pub request: RequestHead;   // Request: the head
+  pub response: ResponseHead; // Response, Interim: the head
+  pub body: BodyLength;       // Request, Response: what is known of the body
+  pub buf: IoBuf;             // Data: the bytes, the program's now
+  pub trailers: Headers;      // End: the trailer fields
+  pub timing: Timing;         // Done: when it reached each point
+
+  // An event of kind k, about conn and req, every other field empty
+  pub fn make(k: EventKind, token: u64, conn: ConnId, req: ReqId, stream: u64) Event {
+    Event(kind: k, token: token, conn: conn, req: req, stream: stream, listener: ListenerId.none(),
+      peer: SocketAddr.localhost(0u16), clean: false, failure: Failure.none(),
+      request: RequestHead.empty(), response: ResponseHead.empty(), body: BodyLength.empty(),
+      buf: IoBuf.empty(), trailers: Headers.empty(), timing: Timing.zero())
+  }
+
+  // Whether it is a request's final answer
+  pub fn isTerminal(self: &) bool {
+    kind == EventKind.Done || kind == EventKind.Failed || kind == EventKind.Cancelled ||
+      kind == EventKind.TimedOut
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Statistics
+// ---------------------------------------------------------------------------
+
+// A driver's counters, as 'stats' copies them out
+pub struct DriverStats {
+  pub connects: u64;       // client connections asked for
+  pub connected: u64;      // ...whose handshake was done
+  pub accepted: u64;       // server connections whose handshake was done
+  pub refused: u64;        // clients' first packets dropped: maxConnections reached, or refused by QUIC
+  pub closed: u64;         // connections ended
+  pub cleanCloses: u64;    // ...of them, cleanly
+  pub requests: u64;       // requests asked for, and requests read (a server's)
+  pub done: u64;           // final answers, by outcome
+  pub failed: u64;
+  pub cancelled: u64;
+  pub events: u64;         // events made
+  pub datagramsIn: u64;    // datagrams received
+  pub datagramsOut: u64;   // datagrams handed to the kernel
+  pub bytesIn: u64;
+  pub bytesOut: u64;
+  pub lost: u64;           // datagrams injectLoss dropped
+  pub unrouted: u64;       // a server's datagrams for no connection, dropped
+  pub recvFailed: u64;     // receives that failed (a datagram cut short among them)
+  pub sendFailed: u64;     // sends that failed
+  pub unclaimed: u64;      // completions poll was given that were not the driver's
+  pub turns: u64;          // connection turns
+  pub wakeTurns: u64;      // ...that a connection's wake time asked for
+  pub idleWakes: u64;      // ...of those, the ones that sent nothing
+  pub clamped: u64;        // wake times moved on to a wakeStep after the turn (WAKE TIMES)
+
+  pub fn zero() DriverStats {
+    DriverStats(0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64,
+      0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64)
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Connection IDs, as the routing table's keys
+// ---------------------------------------------------------------------------
+
+// A connection ID of at most 20 bytes (RFC 9000's most), its bytes packed
+// into three words, and its length
+struct CidKey is Hash {
+  a: u64;
+  b: u64;
+  c: u64;
+  len: u32;
+
+  pub fn `==`(self, o: CidKey) bool {a == o.a && b == o.b && c == o.c && len == o.len}
+}
+
+// The key of the n bytes at bytes[from], or None when n is past 20 or past
+// the end
+fn cidKey(bytes: &Array[u8], from: usize, n: usize) Option[CidKey] {
+  if n > 20usize || from + n > bytes.len {return None;}
+  var w = Array[u64, 3]() <- fill 0u64;
+  var k = 0usize;
+  while k < n {
+    let at = k / 8usize;
+    w[at] = (w[at] << 8u64) | u64.from(bytes[from + k]);
+    k = k + 1usize;
+  }
+  Some[CidKey](CidKey(w[0usize], w[1usize], w[2usize], u32.from(n)))
+}
+
+// A datagram's Destination Connection ID: a long header's (its length in
+// byte 5), or a short header's, quic.localIdLen bytes after its first
+fn destId(d: &Array[u8]) Option[CidKey] {
+  if d.len == 0usize {return None;}
+  if (d[0usize] & 0x80u8) != 0u8 {
+    if d.len < 6usize {return None;}
+    return cidKey(d, 6usize, usize.from(d[5usize]));
+  }
+  cidKey(d, 1usize, quic.localIdLen)
+}
+
+// Whether a datagram begins with a QUIC version 1 Initial packet: a long
+// header (and the fixed bit), type 0, version 1
+fn isInitial(d: &Array[u8]) bool {
+  d.len >= 1200usize && (d[0usize] & 0xF0u8) == 0xC0u8 && d[1usize] == 0u8 && d[2usize] == 0u8 &&
+    d[3usize] == 0u8 && d[4usize] == 1u8
+}
+
+// ---------------------------------------------------------------------------
+// Addresses
+// ---------------------------------------------------------------------------
+
+// An iocore SocketAddr as quic's Addr, IPv4 only (quic's), or None. It is
+// read from the address's text, since a SocketAddr shows no bytes
+fn quicAddr(a: &SocketAddr) Option[quic.Addr] {
+  if a.isV6() {return None;}
+  let t = a.text();
+  let v = t.view();
+  var parts = Array[u64, 5]() <- fill 0u64;
+  var k = 0usize;
+  var i = 0usize;
+  var digits = 0usize;
+  while i < v.len {
+    let ch = v[i];
+    if ch >= '0' && ch <= '9' {
+      parts[k] = parts[k] * 10u64 + (u64.from(ch) - 48u64);
+      digits = digits + 1usize;
+    } else if (ch == '.' && k < 3usize) || (ch == ':' && k == 3usize) {
+      if digits == 0usize {return None;}
+      k = k + 1usize;
+      digits = 0usize;
+    } else {
+      return None;
+    }
+    i = i + 1usize;
+  }
+  if k != 4usize || digits == 0usize || parts[0usize] > 255u64 || parts[1usize] > 255u64 ||
+      parts[2usize] > 255u64 || parts[3usize] > 255u64 || parts[4usize] > 65535u64 {
+    return None;
+  }
+  Some[quic.Addr](quic.Addr.v4(u8.from(parts[0usize]), u8.from(parts[1usize]), u8.from(parts[2usize]),
+    u8.from(parts[3usize]), u16.from(parts[4usize])))
+}

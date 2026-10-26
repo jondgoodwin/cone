@@ -1,0 +1,747 @@
+// A client Driver against a server Driver over real UDP on 127.0.0.1, both
+// on one Loop and one thread, each turned as aio's I/O thread turns a hosted
+// service (turn, complete, wakeAt). The server answers GET /get/N with N
+// bytes of a pattern, POST /post with the count and a checksum of what it
+// read, GET /reset/N with half its N bytes and then a reset, and GET /hold
+// not at all until told.
+//
+// 1. Interleaved: 40 GETs (0 to 300 KB) and 10 POSTs (0 to 120 KB) at once
+//    on one connection; every byte of every body is checked, both ways.
+// 2. A slow reader: one 400 KB response is never released while three
+//    others finish; it stops at http3's bodyWindow, then finishes once
+//    released.
+// 3. A reset mid-body: the server resets a download after half; the client
+//    cancels an upload after 40 KB; a GET beside them finishes.
+// 4. A graceful server close (GOAWAY) with three requests in flight: they
+//    finish, a request after it is refused at once (retry-safe), and both
+//    ends close cleanly.
+// 5. A server abort with four requests in flight on a server whose stream
+//    limit is 2: the two sent fail Closed, the two still waiting for the
+//    limit fail Refused, unsent and retry-safe.
+
+mod loopback;
+
+import stdio use *;
+import fs;
+import path use Path;
+import collections use List, String;
+import time use Instant, Duration;
+import iobuf use IoBuf;
+import iocore use Loop, Completion, SocketAddr, forever;
+import http use *;
+import tls;
+import quic;
+import h3driver use *;
+
+// A file of tls's test certificates: congo test runs a test in
+// build/<mode>/tests/<name>/, four folders below this package's
+fn certs(name: &str) Path {
+  var p = String.from("../../../../../tls/tests/certs/");
+  p.append(name);
+  Path.fromString(p)
+}
+
+fn readText(name: &str) String {
+  let p = certs(name);
+  match fs.readFile(&p) {
+    case var Ok(r) {return r;}
+    case let Error(e) {}
+  }
+  printStr("cannot read ");
+  printStr(p.view());
+  printStr("\n");
+  String.empty()
+}
+
+// The client's driver: the test root its only root; QUIC's idle timeout
+// idleMs when not 0
+fn clientConfig(idleMs: i64) Config {
+  var cfg = Config.make();
+  cfg.transport.verify = tls.Verifier.roots(readText("ca.pem").view());
+  if idleMs > 0i64 {cfg.transport.idleTimeout = Duration.fromMillis(idleMs);}
+  cfg
+}
+
+// The server's context: localhost's certificate, a client's request streams
+// at most 'streams' at once, QUIC's idle timeout idleMs when not 0
+fn serverCtx(streams: u64, idleMs: i64) quic.Context {
+  var q = quic.Config.make();
+  q.maxStreamsBidi = streams;
+  if idleMs > 0i64 {q.idleTimeout = Duration.fromMillis(idleMs);}
+  let cert = certs("server.pem");
+  let key = certs("server.key");
+  match quic.Context.server(q, &cert, &key) {
+    case var Ok(r) {return r;}
+    case let Error(e) {
+      printStr(e.message().view());
+      printStr("\n");
+    }
+  }
+  panic("the server's context could not be made")
+}
+
+// The body pattern: byte j of a body of 'size' bytes
+fn byteOf(size: u64, j: u64) u8 {u8.from((j * 31u64 + size * 7u64 + j / 256u64) % 251u64)}
+
+fn piece(size: u64, from: u64, n: usize) IoBuf {
+  var b = IoBuf(n);
+  let w = b.spare();
+  var k = 0usize;
+  while k < n {
+    w[k] = byteOf(size, from + u64.from(k));
+    k = k + 1usize;
+  }
+  b.setLen(n);
+  b
+}
+
+fn numberAfter(t: &str, prefix: &str) u64 {
+  var n = 0u64;
+  var k = prefix.len();
+  while k < t.len() {
+    let ch = t[k];
+    if ch < '0' || ch > '9' {break;}
+    n = n * 10u64 + (u64.from(ch) - 48u64);
+    k = k + 1usize;
+  }
+  n
+}
+
+fn startsWith(t: &str, p: &str) bool {
+  if t.len() < p.len() {return false;}
+  var k = 0usize;
+  while k < p.len() {
+    if t[k] != p[k] {return false;}
+    k = k + 1usize;
+  }
+  true
+}
+
+// ---------------------------------------------------------------------------
+// The server
+// ---------------------------------------------------------------------------
+
+const jGet = 1u32;
+const jPost = 2u32;
+const jHold = 3u32;
+const jReset = 4u32;
+
+struct Job {
+  req: ReqId;
+  kind: u32;
+  size: u64;
+  sent: u64;
+  got: u64;
+  sum: u64;
+  ended: bool;
+  finished: bool;
+  outcome: u32;          // 0 none, 1 Done, 2 Failed, 3 Cancelled
+  failText: String;
+}
+
+struct Server {
+  jobs: List[Job];
+  accepted: u64;
+  closed: u64;
+  clean: u64;
+  conn: ConnId;
+  refusedWrites: u64;
+}
+
+fn jobOf(sv: &Server, r: ReqId) usize {
+  var k = 0usize;
+  while k < sv.jobs.len() {
+    if sv.jobs[k].req == r {return k;}
+    k = k + 1usize;
+  }
+  sv.jobs.len()
+}
+
+// Send what a job's body has room for: up to 'limit' bytes in all
+fn pushBody(d: &mut Driver, j: &mut Job, limit: u64) {
+  while j.sent < limit {
+    let left = limit - j.sent;
+    let n = if left > 16384u64 {16384usize} else {usize.from(left)};
+    match d.sendData(j.req, piece(j.size, j.sent, n)) {
+      case let Some(b) {return;}
+      case is None[IoBuf] {j.sent = j.sent + u64.from(n);}
+    }
+  }
+  if j.kind == jGet && j.sent == j.size && !j.finished {
+    d.finish(j.req);
+    j.finished = true;
+  }
+}
+
+fn serverEvents(d: &mut Driver, sv: &mut Server, events: &mut List[Event]) {
+  var k = 0usize;
+  while k < events.len() {
+    let e = &mut events[k];
+    k = k + 1usize;
+    if e.kind == EventKind.Accepted {
+      sv.accepted = sv.accepted + 1u64;
+      sv.conn = e.conn;
+    } else if e.kind == EventKind.Closed {
+      sv.closed = sv.closed + 1u64;
+      if e.clean {sv.clean = sv.clean + 1u64;}
+    } else if e.kind == EventKind.Request {
+      let t = e.request.target.view();
+      var kind = jHold;
+      var size = 0u64;
+      if startsWith(t, "/get/") {
+        kind = jGet;
+        size = numberAfter(t, "/get/");
+      } else if startsWith(t, "/reset/") {
+        kind = jReset;
+        size = numberAfter(t, "/reset/");
+      } else if startsWith(t, "/post") {
+        kind = jPost;
+      }
+      sv.jobs.push(Job(e.req, kind, size, 0u64, 0u64, 0u64, false, false, 0u32, String.empty()));
+      let n = sv.jobs.len() - 1usize;
+      if kind == jGet || kind == jReset {
+        d.respond(e.req, ResponseHead.make(200u16), BodyLength.sized(size));
+        if kind == jGet {
+          pushBody(d, &mut sv.jobs[n], size);
+        } else {
+          pushBody(d, &mut sv.jobs[n], size / 2u64);
+        }
+      }
+    } else if e.kind == EventKind.Data {
+      let j = jobOf(sv, e.req);
+      let v = e.buf.view();
+      if j < sv.jobs.len() {
+        var i = 0usize;
+        while i < v.len {
+          sv.jobs[j].sum = (sv.jobs[j].sum * 31u64 + u64.from(v[i])) % 1000000007u64;
+          i = i + 1usize;
+        }
+        sv.jobs[j].got = sv.jobs[j].got + u64.from(v.len);
+      }
+      d.release(e.req, v.len);
+    } else if e.kind == EventKind.End {
+      let j = jobOf(sv, e.req);
+      if j < sv.jobs.len() {
+        sv.jobs[j].ended = true;
+        if sv.jobs[j].kind == jPost {
+          var text = String.empty();
+          text.appendUInt(sv.jobs[j].got);
+          text.append(":");
+          text.appendUInt(sv.jobs[j].sum);
+          d.respond(e.req, ResponseHead.make(200u16), BodyLength.sized(u64.from(text.len())));
+          var b = IoBuf(text.len());
+          b.append(text.view());
+          let back = d.sendData(e.req, b);
+          d.finish(e.req);
+          sv.jobs[j].finished = true;
+        }
+      }
+    } else if e.kind == EventKind.Writable {
+      let j = jobOf(sv, e.req);
+      if j < sv.jobs.len() && sv.jobs[j].kind == jGet {
+        let size = sv.jobs[j].size;
+        pushBody(d, &mut sv.jobs[j], size);
+      } else if j < sv.jobs.len() && sv.jobs[j].kind == jReset {
+        let half = sv.jobs[j].size / 2u64;
+        pushBody(d, &mut sv.jobs[j], half);
+      }
+    } else if e.isTerminal() {
+      let j = jobOf(sv, e.req);
+      if j < sv.jobs.len() {
+        sv.jobs[j].outcome = if e.kind == EventKind.Done {1u32} else if e.kind == EventKind.Failed {2u32} else {3u32};
+        if e.kind == EventKind.Failed {sv.jobs[j].failText = e.failure.message();}
+      }
+    }
+  }
+  events.clear();
+}
+
+// Answer every held request with n bytes
+fn answerHeld(d: &mut Driver, sv: &mut Server, n: u64) {
+  var k = 0usize;
+  while k < sv.jobs.len() {
+    if sv.jobs[k].kind == jHold && sv.jobs[k].outcome == 0u32 {
+      sv.jobs[k].kind = jGet;
+      sv.jobs[k].size = n;
+      d.respond(sv.jobs[k].req, ResponseHead.make(200u16), BodyLength.sized(n));
+      pushBody(d, &mut sv.jobs[k], n);
+    }
+    k = k + 1usize;
+  }
+}
+
+// The reset jobs that have sent their half: reset now
+fn resetHalves(d: &mut Driver, lp: &mut Loop, sv: &mut Server) {
+  var k = 0usize;
+  while k < sv.jobs.len() {
+    if sv.jobs[k].kind == jReset && sv.jobs[k].outcome == 0u32 && sv.jobs[k].sent >= sv.jobs[k].size / 2u64 {
+      if d.cancel(lp, sv.jobs[k].req) {sv.jobs[k].outcome = 3u32;}
+    }
+    k = k + 1usize;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The client
+// ---------------------------------------------------------------------------
+
+struct Ask {
+  req: ReqId;
+  size: u64;             // a GET's body, or a POST's
+  post: bool;
+  sent: u64;             // a POST's body bytes sent
+  cutAt: u64;            // a POST cancelled after this many (0: never)
+  got: u64;
+  good: bool;
+  text: String;          // a POST's answer
+  hold: bool;            // its bytes are not released (a slow reader)
+  unreleased: u64;
+  status: u16;
+  outcome: u32;          // 0 none, 1 Done, 2 Failed, 3 Cancelled
+  retrySafe: bool;
+  unsent: bool;
+  failText: String;
+  failHead: String;      // the failure's stage and kind
+}
+
+struct Client {
+  asks: List[Ask];
+  connected: u64;
+  closed: u64;
+  clean: u64;
+  closeText: String;
+  closeHead: String;     // the Closed failure's stage and kind
+  closeCode: u32;        // ...and the OS's code
+}
+
+fn newClient() Client {
+  Client(List[Ask].empty(), 0u64, 0u64, 0u64, String.empty(), String.empty(), 0u32)
+}
+
+// A failure's stage and kind: 'tls: refused'
+fn headOf(f: &Failure) String {
+  var s = String.from(stageName(f.stage));
+  s.append(": ");
+  s.append(kindName(f.error.kind));
+  s
+}
+
+fn askOf(cl: &Client, r: ReqId) usize {
+  var k = 0usize;
+  while k < cl.asks.len() {
+    if cl.asks[k].req == r {return k;}
+    k = k + 1usize;
+  }
+  cl.asks.len()
+}
+
+fn newAsk(req: ReqId, size: u64, post: bool) Ask {
+  Ask(req, size, post, 0u64, 0u64, 0u64, true, String.empty(), false, 0u64, 0u16, 0u32, false, false,
+    String.empty(), String.empty())
+}
+
+fn get(d: &mut Driver, lp: &mut Loop, conn: ConnId, cl: &mut Client, path: &str, size: u64) usize {
+  let r = d.request(lp, conn, RequestHead.get(path, "localhost"), BodyLength.empty(), 7u64);
+  cl.asks.push(newAsk(r, size, false));
+  cl.asks.len() - 1usize
+}
+
+fn post(d: &mut Driver, lp: &mut Loop, conn: ConnId, cl: &mut Client, size: u64, cutAt: u64) usize {
+  let r = d.request(lp, conn, RequestHead.make("POST", "/post", "localhost"), BodyLength.sized(size), 7u64);
+  var a = newAsk(r, size, true);
+  a.cutAt = cutAt;
+  cl.asks.push(a);
+  let n = cl.asks.len() - 1usize;
+  pushPost(d, lp, &mut cl.asks[n]);
+  n
+}
+
+// Send what a POST's body has room for; one with a cut stops there (and is
+// cancelled once the server has read some of it: resetMidBody)
+fn pushPost(d: &mut Driver, lp: &mut Loop, a: &mut Ask) {
+  if a.req.isNone() || a.outcome != 0u32 {return;}
+  let limit = if a.cutAt > 0u64 {a.cutAt} else {a.size};
+  while a.sent < limit {
+    let left = limit - a.sent;
+    let n = if left > 16384u64 {16384usize} else {usize.from(left)};
+    match d.sendData(a.req, piece(a.size, a.sent, n)) {
+      case let Some(b) {return;}
+      case is None[IoBuf] {a.sent = a.sent + u64.from(n);}
+    }
+  }
+  if a.cutAt == 0u64 && a.sent == a.size {
+    d.finish(a.req);
+    a.sent = a.size + 1u64;
+  }
+}
+
+fn clientEvents(d: &mut Driver, lp: &mut Loop, cl: &mut Client, events: &mut List[Event]) {
+  var k = 0usize;
+  while k < events.len() {
+    let e = &mut events[k];
+    k = k + 1usize;
+    if e.kind == EventKind.Connected {
+      cl.connected = cl.connected + 1u64;
+      continue;
+    }
+    if e.kind == EventKind.Closed {
+      cl.closed = cl.closed + 1u64;
+      if e.clean {
+        cl.clean = cl.clean + 1u64;
+      } else {
+        cl.closeText = e.failure.message();
+        cl.closeHead = headOf(&e.failure);
+        cl.closeCode = e.failure.code;
+      }
+      continue;
+    }
+    var a = askOf(cl, e.req);
+    if a >= cl.asks.len() {
+      if e.kind == EventKind.Failed && e.req.isNone() {
+        // Failed at once: the last ask made with no request
+        a = cl.asks.len() - 1usize;
+      } else {
+        continue;
+      }
+    }
+    if e.kind == EventKind.Response {
+      cl.asks[a].status = e.response.status;
+    } else if e.kind == EventKind.Data {
+      let v = e.buf.view();
+      if cl.asks[a].post {
+        cl.asks[a].text.appendBytes(v);
+      } else {
+        var i = 0usize;
+        while i < v.len {
+          if v[i] != byteOf(cl.asks[a].size, cl.asks[a].got + u64.from(i)) {cl.asks[a].good = false;}
+          i = i + 1usize;
+        }
+      }
+      cl.asks[a].got = cl.asks[a].got + u64.from(v.len);
+      if cl.asks[a].hold {
+        cl.asks[a].unreleased = cl.asks[a].unreleased + u64.from(v.len);
+      } else {
+        d.release(e.req, v.len);
+      }
+    } else if e.kind == EventKind.Writable {
+      pushPost(d, lp, &mut cl.asks[a]);
+    } else if e.isTerminal() {
+      cl.asks[a].outcome = if e.kind == EventKind.Done {1u32} else if e.kind == EventKind.Failed {2u32} else {3u32};
+      if e.kind == EventKind.Failed {
+        cl.asks[a].retrySafe = e.failure.error.isRetrySafe();
+        cl.asks[a].unsent = e.failure.unsent;
+        cl.asks[a].failText = e.failure.message();
+        cl.asks[a].failHead = headOf(&e.failure);
+      }
+    }
+  }
+  events.clear();
+}
+
+// Whether a POST's answer is its body's count and checksum
+fn postGood(a: &Ask) bool {
+  var sum = 0u64;
+  var j = 0u64;
+  while j < a.size {
+    sum = (sum * 31u64 + u64.from(byteOf(a.size, j))) % 1000000007u64;
+    j = j + 1u64;
+  }
+  var want = String.empty();
+  want.appendUInt(a.size);
+  want.append(":");
+  want.appendUInt(sum);
+  want.view() == a.text.view()
+}
+
+// ---------------------------------------------------------------------------
+// The two ends on one loop
+// ---------------------------------------------------------------------------
+
+struct World {
+  lp: Loop;
+  cli: Driver;
+  srv: Driver;
+  sv: Server;
+  cl: Client;
+  conn: ConnId;
+}
+
+fn world(streams: u64, idleMs: i64) World {
+  var lp = Loop.mustMake();
+  var srv = Driver.make(Config.make());
+  var port = 0u16;
+  match srv.listen(&mut lp, SocketAddr.localhost(0u16), serverCtx(streams, idleMs), 1u64) {
+    case let Ok(l) {
+      match srv.localAddr(&lp, l) {
+        case let Ok(a) {port = a.port();}
+        case let Error(e) {}
+      }
+    }
+    case let Error(f) {printStr(f.message().view()); printStr("\n");}
+  }
+  var cli = Driver.make(clientConfig(idleMs));
+  var conn = ConnId.none();
+  match cli.connect(&mut lp, SocketAddr.localhost(port), "localhost", 2u64) {
+    case let Ok(c) {conn = c;}
+    case let Error(f) {printStr(f.message().view()); printStr("\n");}
+  }
+  World(lp, cli, srv, Server(List[Job].empty(), 0u64, 0u64, 0u64, ConnId.none(), 0u64),
+    newClient(), conn)
+}
+
+// One pass, as aio's I/O thread makes it: each driver's turn, its events
+// handled, the loop polled until the earliest wake time (or 'until'), each
+// completion offered to one driver then the other
+fn spin(w: &mut World, until: Instant) {
+  w.cli.turn(&mut w.lp);
+  w.srv.turn(&mut w.lp);
+  var ce = List[Event].empty();
+  var se = List[Event].empty();
+  w.cli.takeEvents(&mut ce);
+  w.srv.takeEvents(&mut se);
+  let busy = ce.len() > 0usize || se.len() > 0usize;
+  clientEvents(&mut w.cli, &mut w.lp, &mut w.cl, &mut ce);
+  serverEvents(&mut w.srv, &mut w.sv, &mut se);
+  var limit = until;
+  let a = w.cli.wakeAt();
+  let b = w.srv.wakeAt();
+  if a < limit {limit = a;}
+  if b < limit {limit = b;}
+  if busy {limit = Instant();}
+  var cs = List[Completion].empty();
+  w.lp.poll(limit, &mut cs);
+  var k = 0usize;
+  while k < cs.len() {
+    if !w.cli.complete(&mut w.lp, &mut cs[k]) {
+      if !w.srv.complete(&mut w.lp, &mut cs[k]) {printStr("a completion no driver claimed\n");}
+    }
+    k = k + 1usize;
+  }
+}
+
+fn allAnswered(cl: &Client) bool {
+  var k = 0usize;
+  while k < cl.asks.len() {
+    if cl.asks[k].outcome == 0u32 {return false;}
+    k = k + 1usize;
+  }
+  true
+}
+
+// Spin until every ask has its answer, or ms pass: whether they all did
+fn settle(w: &mut World, ms: i64) bool {
+  let limit = Instant.now() + Duration.fromMillis(ms);
+  while !allAnswered(&w.cl) && Instant.now() < limit {spin(w, limit);}
+  allAnswered(&w.cl)
+}
+
+// Spin for ms
+fn spinFor(w: &mut World, ms: i64) {
+  let limit = Instant.now() + Duration.fromMillis(ms);
+  while Instant.now() < limit {spin(w, limit);}
+}
+
+fn finish(w: &mut World) {
+  w.cli.end(&mut w.lp);
+  w.srv.end(&mut w.lp);
+}
+
+fn yes(b: bool) &str {if b {"yes"} else {"no"}}
+
+fn outcomeName(o: u32) &str {
+  if o == 1u32 {"done"} else if o == 2u32 {"failed"} else if o == 3u32 {"cancelled"} else {"none"}
+}
+
+// ---------------------------------------------------------------------------
+// The cases
+// ---------------------------------------------------------------------------
+
+fn interleaved() {
+  var w = world(100u64, 0i64);
+  let sizes = [0u64, 1u64, 1000u64, 1452u64, 5000u64, 16384u64, 60000u64, 131072u64, 200000u64, 300000u64];
+  var i = 0usize;
+  while i < 40usize {
+    var path = String.from("/get/");
+    path.appendUInt(sizes[i % 10usize]);
+    get(&mut w.cli, &mut w.lp, w.conn, &mut w.cl, path.view(), sizes[i % 10usize]);
+    if i % 4usize == 0usize {
+      post(&mut w.cli, &mut w.lp, w.conn, &mut w.cl, sizes[(i / 4usize) % 10usize] * 2u64 / 5u64, 0u64);
+    }
+    i = i + 1usize;
+  }
+  let all = settle(&mut w, 30000i64);
+  var done = 0u64;
+  var good = true;
+  var k = 0usize;
+  while k < w.cl.asks.len() {
+    let a = w.cl.asks[k];
+    if a.outcome == 1u32 {done = done + 1u64;}
+    if a.status != 200u16 || !a.good {good = false;}
+    if a.post && !postGood(a) {good = false;}
+    if !a.post && a.got != a.size {good = false;}
+    k = k + 1usize;
+  }
+  printStr("interleaved: "); printUInt(u64.from(w.cl.asks.len())); printStr(" requests, ");
+  printUInt(done); printStr(" done; every byte right: "); printStr(yes(good && all)); printStr("\n");
+  // Once QUIC is done with them the request streams' records go; the
+  // control and QPACK streams' stay (three each way)
+  spinFor(&mut w, 300i64);
+  printStr("  stream records left on the client: "); printUInt(u64.from(w.cli.streamRecords(w.conn)));
+  printStr(", on the server: "); printUInt(u64.from(w.srv.streamRecords(w.sv.conn))); printStr("\n");
+  // The client closes: both ends end cleanly
+  w.cli.close(&mut w.lp, w.conn);
+  let limit = Instant.now() + Duration.fromSeconds(5i64);
+  while (w.cl.closed == 0u64 || w.sv.closed == 0u64) && Instant.now() < limit {spin(&mut w, limit);}
+  printStr("  closed: client "); printStr(if w.cl.clean == 1u64 {"clean"} else {w.cl.closeText.view()});
+  printStr(", server "); printStr(if w.sv.clean == 1u64 {"clean"} else {"not clean"}); printStr("\n");
+  let cs = w.cli.stats();
+  printStr("  client: "); printUInt(cs.connected); printStr(" connected, "); printUInt(cs.done);
+  printStr(" done, "); printUInt(cs.failed); printStr(" failed; connections left: ");
+  printUInt(u64.from(w.cli.live())); printStr("\n");
+  finish(&mut w);
+}
+
+fn slowReader() {
+  var w = world(100u64, 0i64);
+  let slow = get(&mut w.cli, &mut w.lp, w.conn, &mut w.cl, "/get/400000", 400000u64);
+  w.cl.asks[slow].hold = true;
+  get(&mut w.cli, &mut w.lp, w.conn, &mut w.cl, "/get/200000", 200000u64);
+  get(&mut w.cli, &mut w.lp, w.conn, &mut w.cl, "/get/300000", 300000u64);
+  post(&mut w.cli, &mut w.lp, w.conn, &mut w.cl, 100000u64, 0u64);
+  let limit = Instant.now() + Duration.fromSeconds(20i64);
+  while Instant.now() < limit {
+    spin(&mut w, limit);
+    var others = true;
+    var k = 1usize;
+    while k < w.cl.asks.len() {
+      if w.cl.asks[k].outcome != 1u32 {others = false;}
+      k = k + 1usize;
+    }
+    if others {break;}
+  }
+  spinFor(&mut w, 200i64);
+  let held = w.cl.asks[slow].got;
+  var others = 0u64;
+  var k = 1usize;
+  while k < w.cl.asks.len() {
+    if w.cl.asks[k].outcome == 1u32 {others = others + 1u64;}
+    k = k + 1usize;
+  }
+  printStr("slow reader: the three others done: "); printUInt(others);
+  printStr("; the slow one stopped within http3's bodyWindow (64 KiB): ");
+  printStr(yes(held > 0u64 && held <= 65536u64 && w.cl.asks[slow].outcome == 0u32)); printStr("\n");
+  // Released, it finishes
+  w.cl.asks[slow].hold = false;
+  w.cli.release(w.cl.asks[slow].req, usize.from(w.cl.asks[slow].unreleased));
+  let all = settle(&mut w, 20000i64);
+  printStr("  released: "); printStr(outcomeName(w.cl.asks[slow].outcome)); printStr(", every byte right: ");
+  printStr(yes(all && w.cl.asks[slow].good && w.cl.asks[slow].got == 400000u64)); printStr("\n");
+  finish(&mut w);
+}
+
+fn resetMidBody() {
+  var w = world(100u64, 0i64);
+  let down = get(&mut w.cli, &mut w.lp, w.conn, &mut w.cl, "/reset/200000", 200000u64);
+  let up = post(&mut w.cli, &mut w.lp, w.conn, &mut w.cl, 100000u64, 40000u64);
+  let beside = get(&mut w.cli, &mut w.lp, w.conn, &mut w.cl, "/get/50000", 50000u64);
+  let limit = Instant.now() + Duration.fromSeconds(20i64);
+  while !allAnswered(&w.cl) && Instant.now() < limit {
+    spin(&mut w, limit);
+    resetHalves(&mut w.srv, &mut w.lp, &mut w.sv);
+    // The upload is cancelled once the server has read 20 KB of it
+    var k = 0usize;
+    while k < w.sv.jobs.len() {
+      if w.sv.jobs[k].kind == jPost && w.sv.jobs[k].got >= 20000u64 && w.cl.asks[up].outcome == 0u32 {
+        if w.cli.cancel(&mut w.lp, w.cl.asks[up].req) {w.cl.asks[up].outcome = 3u32;}
+      }
+      k = k + 1usize;
+    }
+  }
+  spinFor(&mut w, 300i64);
+  printStr("reset mid-body:\n");
+  printStr("  the server's reset download: "); printStr(outcomeName(w.cl.asks[down].outcome));
+  printStr(" ("); printStr(w.cl.asks[down].failText.view()); printStr("), bytes before it right: ");
+  printStr(yes(w.cl.asks[down].good && w.cl.asks[down].got <= 100000u64)); printStr("\n");
+  printStr("  the client's cancelled upload: "); printStr(outcomeName(w.cl.asks[up].outcome)); printStr("\n");
+  var upServer = String.from("none");
+  var k = 0usize;
+  while k < w.sv.jobs.len() {
+    if w.sv.jobs[k].kind == jPost {
+      upServer = String.from(outcomeName(w.sv.jobs[k].outcome));
+      if w.sv.jobs[k].outcome == 2u32 {
+        upServer.append(" (");
+        upServer.append(w.sv.jobs[k].failText.view());
+        upServer.append(")");
+      }
+    }
+    k = k + 1usize;
+  }
+  printStr("  ...at the server: "); printStr(upServer.view()); printStr("\n");
+  printStr("  the GET beside them: "); printStr(outcomeName(w.cl.asks[beside].outcome)); printStr(", right: ");
+  printStr(yes(w.cl.asks[beside].good && w.cl.asks[beside].got == 50000u64)); printStr("\n");
+  finish(&mut w);
+}
+
+fn gracefulClose() {
+  var w = world(100u64, 0i64);
+  get(&mut w.cli, &mut w.lp, w.conn, &mut w.cl, "/hold", 30000u64);
+  get(&mut w.cli, &mut w.lp, w.conn, &mut w.cl, "/hold", 30000u64);
+  get(&mut w.cli, &mut w.lp, w.conn, &mut w.cl, "/hold", 30000u64);
+  let limit = Instant.now() + Duration.fromSeconds(10i64);
+  while w.sv.jobs.len() < 3usize && Instant.now() < limit {spin(&mut w, limit);}
+  w.srv.close(&mut w.lp, w.sv.conn);
+  spinFor(&mut w, 200i64);
+  let late = get(&mut w.cli, &mut w.lp, w.conn, &mut w.cl, "/get/10", 10u64);
+  answerHeld(&mut w.srv, &mut w.sv, 30000u64);
+  let all = settle(&mut w, 10000i64);
+  let limit2 = Instant.now() + Duration.fromSeconds(5i64);
+  while (w.cl.closed == 0u64 || w.sv.closed == 0u64) && Instant.now() < limit2 {spin(&mut w, limit2);}
+  var done = 0u64;
+  var k = 0usize;
+  while k < 3usize {
+    if w.cl.asks[k].outcome == 1u32 && w.cl.asks[k].good && w.cl.asks[k].got == 30000u64 {done = done + 1u64;}
+    k = k + 1usize;
+  }
+  printStr("graceful server close: the three in flight done: "); printUInt(done); printStr("\n");
+  printStr("  the request after the GOAWAY: "); printStr(outcomeName(w.cl.asks[late].outcome));
+  printStr(", retry-safe: "); printStr(yes(w.cl.asks[late].retrySafe)); printStr(", unsent: ");
+  printStr(yes(w.cl.asks[late].unsent)); printStr("\n");
+  printStr("  closed: client "); printStr(if w.cl.clean == 1u64 {"clean"} else {w.cl.closeText.view()});
+  printStr(", server "); printStr(if w.sv.clean == 1u64 {"clean"} else {"not clean"}); printStr("\n");
+  finish(&mut w);
+}
+
+fn serverAbort() {
+  var w = world(2u64, 0i64);
+  get(&mut w.cli, &mut w.lp, w.conn, &mut w.cl, "/hold", 0u64);
+  get(&mut w.cli, &mut w.lp, w.conn, &mut w.cl, "/hold", 0u64);
+  get(&mut w.cli, &mut w.lp, w.conn, &mut w.cl, "/hold", 0u64);
+  get(&mut w.cli, &mut w.lp, w.conn, &mut w.cl, "/hold", 0u64);
+  let limit = Instant.now() + Duration.fromSeconds(10i64);
+  while w.sv.jobs.len() < 2usize && Instant.now() < limit {spin(&mut w, limit);}
+  spinFor(&mut w, 100i64);
+  printStr("server abort: requests the server saw: "); printUInt(u64.from(w.sv.jobs.len())); printStr("\n");
+  w.srv.abort(&mut w.lp, w.sv.conn);
+  let all = settle(&mut w, 10000i64);
+  let limit2 = Instant.now() + Duration.fromSeconds(5i64);
+  while w.cl.closed == 0u64 && Instant.now() < limit2 {spin(&mut w, limit2);}
+  var k = 0usize;
+  while k < w.cl.asks.len() {
+    printStr("  request "); printUInt(u64.from(k)); printStr(": "); printStr(outcomeName(w.cl.asks[k].outcome));
+    printStr(", retry-safe "); printStr(yes(w.cl.asks[k].retrySafe)); printStr(", unsent ");
+    printStr(yes(w.cl.asks[k].unsent)); printStr("\n    "); printStr(w.cl.asks[k].failText.view());
+    printStr("\n");
+    k = k + 1usize;
+  }
+  printStr("  client closed clean: "); printStr(yes(w.cl.clean == 1u64)); printStr(", told once: ");
+  printStr(yes(w.cl.closed == 1u64)); printStr("\n");
+  finish(&mut w);
+}
+
+fn main() {
+  interleaved();
+  slowReader();
+  resetMidBody();
+  gracefulClose();
+  serverAbort();
+}

@@ -1,0 +1,1584 @@
+// The Driver: its tables, the completions it is handed, and the turn that
+// moves each connection along (see the package's header).
+//
+// How it is built. Listeners and connections are records in two SlotTables;
+// each connection's streams are records in a SlotTable of its own, found
+// from a stream's number by a Dict (the stream map: the number is HTTP/3's
+// and QUIC's alike). A ConnId or ReqId is a record's cell and generation, so
+// an id kept after its record went names nothing. Every operation the
+// driver submits carries a token: the package's mark in the top byte, the
+// driver's number in the next, then the operation's kind, and the record's
+// generation (its low 16 bits) and cell: a completion for a record that has
+// gone, or whose cell another occupies now, is the driver's (true) and is
+// dropped, its buffer going home. A completion, a call or a wake time marks
+// a connection dirty; 'turn' drives each: QUIC's events, the bytes HTTP/3 has
+// credit for, HTTP/3's events, what HTTP/3 writes, the streams QUIC may open
+// now, the datagrams QUIC makes, round after round until nothing moves. A
+// connection whose QUIC and HTTP/3 have both closed answers what is left on
+// it, sends its one Closed, and goes once its sends are answered.
+
+// A token: the mark (top byte), the driver's number (the next), the kind
+// (the next), the record's generation, low 16 bits (the next two), its cell
+// (the low three)
+const tokMark = 0x33u64;
+const markShift = 56u64;
+const numberShift = 48u64;
+const kindShift = 40u64;
+const genShift = 24u64;
+const genMask = 0xFFFFu64;
+const indexMask = 0xFFFFFFu64;
+const kRecvL = 1u64;          // a listener's receive: the listener
+const kRecvC = 2u64;          // a client connection's receive: the connection
+const kSend = 3u64;           // a connection's send: the connection
+const kVerify = 4u64;         // a client's certificate check on the blocking pool: the connection
+
+const noBound = 0xFFFFFFFFFFFFFFFFusize;   // a Chain bounded elsewhere (QUIC's window, the watermarks)
+const maxRounds = 16usize;                 // rounds of one connection's turn before it waits for the next
+const minRecvSize = 1500usize;             // a receive's buffer at the least: an Ethernet frame's payload
+const unread = 0xFFFFFFFFFFFFFFFFu64;      // a new server connection's IDs: read at once, whatever quic's epoch
+
+// A stream: one record in its connection's table (the package's header, THE
+// STREAM MAP)
+struct Strm {
+  id: u64;                  // its number: HTTP/3's and QUIC's
+  ours: bool;               // this end opened it
+  opened: bool;             // QUIC has it (a local one waits for the peer's limit)
+  inbound: Chain;           // bytes QUIC delivered that HTTP/3 has not taken
+  inFin: bool;              // QUIC's end of the peer's half came, after them
+  inDone: bool;             // the peer's half is over here: ended into HTTP/3, reset, stopped, or none
+  pendingOut: Chain;        // what HTTP/3 wrote before QUIC opened it
+  pendingFin: bool;         // ...and its end
+  pendingReset: bool;       // HTTP/3 reset it before QUIC opened it...
+  resetCode: u64;
+  pendingStop: bool;        // ...or stopped it
+  stopCode: u64;
+  finWritten: bool;         // the end of this end's half went to QUIC
+  req: bool;                // a request on it awaits its final answer
+  token: u64;               // ...and its events carry this
+  wrote: bool;              // a byte of the request reached QUIC
+  bodyOpen: bool;           // a client's: the program is still sending the request's body
+  readDone: bool;           // the message read on it is whole (End)
+  wantWritable: bool;       // sendData refused a buffer: Writable when there is room
+  timing: Timing;
+}
+
+fn newStrm(id: u64, ours: bool, opened: bool) Strm {
+  Strm(id: id, ours: ours, opened: opened, inbound: Chain.make(noBound), inFin: false,
+    inDone: false, pendingOut: Chain.make(noBound), pendingFin: false, pendingReset: false,
+    resetCode: 0u64, pendingStop: false, stopCode: 0u64, finWritten: false, req: false, token: 0u64,
+    wrote: false, bodyOpen: false, readDone: false, wantWritable: false, timing: Timing.zero())
+}
+
+// A listening UDP socket and the TLS context of its connections
+struct Lst {
+  handle: Handle;
+  ctx: quic.Context;
+  localQ: quic.Addr;
+  recvSize: usize;
+  token: u64;
+  accepting: bool;          // new connections are taken (stopListening ends it)
+  conns: u32;               // its connections, which send on its socket
+  h3cfg: http3.Config;      // its connections' HTTP/3 (maxRequestStreams the context's stream limit)
+}
+
+// A connection: its QUIC, its HTTP/3, its streams
+struct Conn {
+  server: bool;
+  token: u64;
+  listener: Slot;           // a server's listener
+  handle: Handle;           // the socket it sends on: its own (a client's) or its listener's
+  peer: SocketAddr;
+  q: quic.Connection;
+  h: http3.Connection;
+  streams: SlotTable[Strm];
+  byId: Dict[u64, Slot];    // a stream's number to its record
+  waitBidi: Deque[Slot];    // its own streams waiting for QUIC to open them, in HTTP/3's order
+  waitUni: Deque[Slot];
+  nextUni: u64;             // the number of the next unidirectional stream of its own HTTP/3 writes first
+  ids: List[CidKey];        // a server's: the keys the routing table has for it
+  idEpoch: u64;             // ...as of this localIdsEpoch
+  recvsOut: u32;            // a client's socket's receives in flight
+  sendsOut: u32;            // its datagrams in flight to the kernel
+  dirty: bool;
+  more: bool;               // its turn ran out of rounds: it goes again at the next
+  wake: Instant;            // when its QUIC is to be turned (WAKE TIMES)
+  told: bool;               // Connected or Accepted has gone
+  closeWait: bool;          // a graceful close waits for QUIC to deliver what was written
+  closeCode: u64;
+  quicClosed: bool;
+  idle: bool;               // ...by QUIC's idle timeout
+  h3Closed: bool;
+  h3Error: Option[HttpError];   // HTTP/3's failure, when it closed with one
+  ended: bool;              // its Closed has gone; it goes once its sends are answered
+}
+
+// The driver of HTTP/3 connections on one Loop (see the package's header, THE DRIVER)
+pub struct Driver {
+  tokBase: u64;
+  client: Result[quic.Context, quic.QuicError];   // every client connection's TLS context, or why there is none
+  h3cfg: http3.Config;
+  recvDepth: u32;
+  sendDepth: u32;
+  sendWatermark: u64;
+  maxConnections: u32;
+  maxWaiting: u32;
+  wakeStep: Duration;
+  listeners: SlotTable[Lst];
+  conns: SlotTable[Conn];
+  routes: Dict[CidKey, Slot];   // a server's: every connection ID to its connection
+  dirty: List[u32];
+  ready: Deque[Event];          // events, until takeEvents moves them
+  nextWake: Instant;
+  lossPerMille: u32;
+  lossState: u64;
+  st: DriverStats;
+
+  // A driver whose connections take cfg's bounds. Its client connections'
+  // TLS context is made from cfg.quic now; a failure there is every
+  // connect's answer
+  pub fn make(cfg: Config) Driver {
+    let qcfg, hcfg, recvDepth, sendDepth, sendWatermark, maxConnections, maxWaiting, wakeStep =
+      cfg.(transport, protocol, recvDepth, sendDepth, sendWatermark, maxConnections, maxWaiting, wakeStep);
+    let number = u64.from(numberNext.add(1u32) & 0xFFu32);
+    Driver(tokBase: (tokMark << markShift) | (number << numberShift),
+      client: quic.Context.client(qcfg), h3cfg: hcfg, recvDepth: recvDepth, sendDepth: sendDepth,
+      sendWatermark: sendWatermark, maxConnections: maxConnections, maxWaiting: maxWaiting,
+      wakeStep: wakeStep, listeners: SlotTable[Lst].make(4u32), conns: SlotTable[Conn].make(16u32),
+      routes: Dict[CidKey, Slot].empty(), dirty: List[u32].empty(), ready: Deque[Event].empty(),
+      nextWake: forever(), lossPerMille: 0u32, lossState: 0u64, st: DriverStats.zero())
+  }
+
+  // Its counters, as they are now
+  pub fn stats(self: &) DriverStats {st}
+
+  // Connections it holds
+  pub fn live(self: &) usize {conns.len()}
+
+  // Whether a token is one of this driver's operations
+  pub fn owns(self: &, token: u64) bool {(token >> numberShift) == (tokBase >> numberShift)}
+
+  // Drop perMille of every thousand datagrams this driver would send, by a
+  // fixed pseudo-random sequence from seed (see the package's header, LOSS)
+  pub fn injectLoss(self: &mut, perMille: u32, seed: u64) {
+    lossPerMille = perMille;
+    lossState = if seed == 0u64 {0x9E3779B97F4A7C15u64} else {seed};
+  }
+
+  fn tok(self: &, kind: u64, s: Slot) u64 {
+    tokBase | (kind << kindShift) | ((u64.from(s.gen) & genMask) << genShift) | (u64.from(s.index) & indexMask)
+  }
+
+  // ---------------------------------------------------------------------------
+  // Hosting: the four calls aio's I/O thread makes, and the events
+  // ---------------------------------------------------------------------------
+
+  // Its turn: every connection a completion or a call touched, or whose wake
+  // time has come, moved as far as it can go
+  pub fn turn(self: &mut, lp: &mut Loop) {
+    let now = Instant.now();
+    var d = 0usize;
+    while d < dirty.len() {
+      let i = *dirty[d];
+      d = d + 1usize;
+      if conns.isLive(i) {self.drive(lp, i, now, false);}
+    }
+    dirty.clear();
+    var next = forever();
+    var k = 0usize;
+    while k < conns.bound() {
+      let cell = u32.from(k);
+      k = k + 1usize;
+      if !conns.isLive(cell) {continue;}
+      let c = conns.at(cell) as &mut Conn;
+      if c.more {
+        self.drive(lp, cell, now, false);
+      } else if c.wake <= now {
+        self.drive(lp, cell, now, true);
+      }
+      if conns.isLive(cell) {
+        let c2 = conns.at(cell) as &Conn;
+        if c2.more {next = Instant();}
+        else if c2.wake < next {next = c2.wake;}
+      }
+    }
+    nextWake = next;
+  }
+
+  // A completion: true when its token is this driver's, which takes what it
+  // needs from it (a receive's datagram, a send's end, the verifier's answer)
+  pub fn complete(self: &mut, lp: &mut Loop, comp: &mut Completion) bool {
+    if !self.owns(comp.token) {return false;}
+    let kind = (comp.token >> kindShift) & 0xFFu64;
+    let cell = u32.from(comp.token & indexMask);
+    let gen = (comp.token >> genShift) & genMask;
+    let now = Instant.now();
+    if kind == kRecvL {
+      if !listeners.isLive(cell) || (u64.from(listeners.slotAt(cell).gen) & genMask) != gen {return true;}
+      let l = listeners.at(cell) as &mut Lst;
+      let cancelled = comp.status == diagCancelled();
+      if comp.isDone() {
+        st.datagramsIn = st.datagramsIn + 1u64;
+        st.bytesIn = st.bytesIn + u64.from(comp.buf.len());
+        let from = comp.peer;
+        self.route(lp, cell, datagramOf(comp), &from, now);
+      } else if !cancelled {
+        st.recvFailed = st.recvFailed + 1u64;
+      }
+      if !cancelled && lp.isOpen(l.handle) {
+        lp.submit(Op.RecvFrom(l.handle, IoBuf(l.recvSize)), Target.Here(comp.token));
+      }
+      return true;
+    }
+    if !conns.isLive(cell) || (u64.from(conns.slotAt(cell).gen) & genMask) != gen {return true;}
+    let c = conns.at(cell) as &mut Conn;
+    if kind == kRecvC {
+      c.recvsOut = c.recvsOut - 1u32;
+      let cancelled = comp.status == diagCancelled();
+      if comp.isDone() {
+        st.datagramsIn = st.datagramsIn + 1u64;
+        st.bytesIn = st.bytesIn + u64.from(comp.buf.len());
+        if !c.ended && comp.buf.len() > 0usize {
+          c.q.handleInput(datagramOf(comp), now);
+          self.markDirty(cell);
+        }
+      } else if !cancelled {
+        st.recvFailed = st.recvFailed + 1u64;
+      }
+      if !cancelled && !c.ended {
+        c.recvsOut = c.recvsOut + 1u32;
+        let size = recvSizeOf(c.q.isServer(), self.clientUdp());
+        lp.submit(Op.RecvFrom(c.handle, IoBuf(size)), Target.Here(comp.token));
+      }
+    } else if kind == kSend {
+      c.sendsOut = c.sendsOut - 1u32;
+      if !comp.isDone() && comp.status != diagCancelled() {st.sendFailed = st.sendFailed + 1u64;}
+      self.markDirty(cell);
+    } else if kind == kVerify {
+      c.q.verifyDone(comp);
+      self.markDirty(cell);
+    }
+    true
+  }
+
+  // The latest the loop's poll may wait: now while work or events are ready,
+  // else the earliest connection's wake time (forever when none has one)
+  pub fn wakeAt(self: &) Instant {
+    if dirty.len() > 0usize || ready.len() > 0usize {return Instant();}
+    nextWake
+  }
+
+  // Its end, the Loop still alive: every connection closed now (its requests
+  // Failed, its Closed told), every socket closed
+  pub fn end(self: &mut, lp: &mut Loop) {
+    self.abortAll(lp);
+    var k = 0usize;
+    while k < conns.bound() {
+      let cell = u32.from(k);
+      k = k + 1usize;
+      if conns.isLive(cell) {self.free(lp, cell);}
+    }
+    k = 0usize;
+    while k < listeners.bound() {
+      let cell = u32.from(k);
+      k = k + 1usize;
+      if listeners.isLive(cell) {
+        lp.close((listeners.at(cell) as &Lst).handle);
+        listeners.removeAt(cell);
+      }
+    }
+  }
+
+  // The events made so far, moved to out, in order: how many
+  pub fn takeEvents(self: &mut, out: &mut List[Event]) usize {
+    var n = 0usize;
+    while true {
+      match ready.popFront() {
+        case let Some(e) {out.push(e);}
+        case is None[Event] {break;}
+      }
+      n = n + 1usize;
+    }
+    n
+  }
+
+  // A turn, then the events: how many
+  pub fn pump(self: &mut, lp: &mut Loop, out: &mut List[Event]) usize {
+    self.turn(lp);
+    self.takeEvents(out)
+  }
+
+  // For a thread that drives nothing else: pump, poll the loop until the
+  // earlier of 'until' and wakeAt (not at all while events are ready), hand
+  // the driver each answer (one not its own is dropped, counted), pump
+  pub fn poll(self: &mut, lp: &mut Loop, until: Instant, out: &mut List[Event]) usize {
+    var n = self.pump(lp, out);
+    var limit = until;
+    let w = self.wakeAt();
+    if w < limit {limit = w;}
+    if n > 0usize {limit = Instant();}
+    var cs = List[Completion].empty();
+    lp.poll(limit, &mut cs);
+    var k = 0usize;
+    while k < cs.len() {
+      if !self.complete(lp, &mut cs[k]) {st.unclaimed = st.unclaimed + 1u64;}
+      k = k + 1usize;
+    }
+    n + self.pump(lp, out)
+  }
+
+  // ---------------------------------------------------------------------------
+  // Connections
+  // ---------------------------------------------------------------------------
+
+  // A client connection to addr, the server's certificate checked against
+  // serverName: its id, or why it could not be begun (see the package's
+  // header, CONNECTIONS)
+  pub fn connect(self: &mut, lp: &mut Loop, addr: SocketAddr, serverName: &str, token: u64) Result[ConnId, Failure] {
+    st.connects = st.connects + 1u64;
+    if conns.len() >= usize.from(maxConnections) {
+      return Error[ConnId, Failure](Failure.make(Stage.Limit, 0u32, ErrorKind.Refused, "maxConnections reached"));
+    }
+    var remoteQ = quic.Addr.v4(0u8, 0u8, 0u8, 0u8, 0u16);
+    match quicAddr(&addr) {
+      case let Some(a) {remoteQ = a;}
+      case is None[quic.Addr] {
+        return Error[ConnId, Failure](Failure.make(Stage.Connect, 0u32, ErrorKind.Unsupported, "only IPv4 addresses (quic's Addr)"));
+      }
+    }
+    let bindAt = if addr.isLoopback() {SocketAddr.localhost(0u16)} else {SocketAddr.v4(0u8, 0u8, 0u8, 0u8, 0u16)};
+    var handle = Handle.none();
+    match lp.bindUdp(bindAt) {
+      case let Ok(h) {handle = h;}
+      case let Error(e) {
+        return Error[ConnId, Failure](Failure.make(Stage.Connect, e.code, ErrorKind.Closed, "the connection's UDP socket could not be bound"));
+      }
+    }
+    var localQ = quic.Addr.v4(0u8, 0u8, 0u8, 0u8, 0u16);
+    match lp.localAddr(handle) {
+      case let Ok(a) {
+        match quicAddr(&a) {
+          case let Some(q) {localQ = q;}
+          case is None[quic.Addr] {}
+        }
+      }
+      case let Error(e) {}
+    }
+    let now = Instant.now();
+    match self.newClient(serverName, &localQ, &remoteQ, now) {
+      case let Ok(q) {
+        let s = conns.add(Conn(server: false, token: token, listener: Slot.none(), handle: handle, peer: addr,
+          q: q, h: http3.Connection.client(h3cfg, now), streams: SlotTable[Strm].make(16u32),
+          byId: Dict[u64, Slot].empty(), waitBidi: Deque[Slot].empty(), waitUni: Deque[Slot].empty(),
+          nextUni: 2u64, ids: List[CidKey].empty(), idEpoch: 0u64, recvsOut: 0u32, sendsOut: 0u32,
+          dirty: false, more: false, wake: forever(), told: false, closeWait: false, closeCode: 0u64,
+          quicClosed: false, idle: false, h3Closed: false, h3Error: None, ended: false));
+        let c = conns.get(s) as &mut Conn;
+        let size = recvSizeOf(false, self.clientUdp());
+        var r = 0u32;
+        while r < recvDepth {
+          lp.submit(Op.RecvFrom(handle, IoBuf(size)), Target.Here(self.tok(kRecvC, s)));
+          r = r + 1u32;
+        }
+        c.recvsOut = recvDepth;
+        self.markDirty(s.index);
+        return Ok[ConnId, Failure](ConnId(s.index, s.gen));
+      }
+      case let Error(e) {
+        lp.close(handle);
+        var f = Failure.make(Stage.Tls, e.osError, ErrorKind.Closed, e.message().view());
+        f.unsent = true;
+        return Error[ConnId, Failure](f);
+      }
+    }
+  }
+
+  // A client's QUIC connection, from the driver's client context
+  fn newClient(self: &mut, serverName: &str, localQ: &quic.Addr, remoteQ: &quic.Addr,
+      now: Instant) Result[quic.Connection, quic.QuicError] {
+    match &client {
+      case let Ok(ctx) {return quic.Connection.client(ctx, serverName, localQ, remoteQ, now);}
+      case let Error(e) {return Error[quic.Connection, quic.QuicError](e.copy());}
+    }
+  }
+
+  // The largest UDP payload a client connection takes
+  fn clientUdp(self: &) usize {
+    match &client {
+      case let Ok(ctx) {return ctx.config().maxUdpPayload;}
+      case let Error(e) {}
+    }
+    quic.defaultMaxUdpPayload
+  }
+
+  // A server's UDP socket at addr, its connections made with ctx (a server's
+  // Context: its certificate and key, and QUIC's bounds; HTTP/3's
+  // maxRequestStreams is taken from its maxStreamsBidi): its id, or why not
+  pub fn listen(self: &mut, lp: &mut Loop, addr: SocketAddr, ctx: quic.Context, token: u64) Result[ListenerId, Failure] {
+    if !ctx.isServer() {
+      return Error[ListenerId, Failure](Failure.make(Stage.Tls, 0u32, ErrorKind.Unsupported, "listen takes a server's Context"));
+    }
+    var handle = Handle.none();
+    match lp.bindUdp(addr) {
+      case let Ok(h) {handle = h;}
+      case let Error(e) {
+        return Error[ListenerId, Failure](Failure.make(Stage.Connect, e.code, ErrorKind.Closed, "the UDP socket could not be bound"));
+      }
+    }
+    var localQ = quic.Addr.v4(0u8, 0u8, 0u8, 0u8, 0u16);
+    match lp.localAddr(handle) {
+      case let Ok(a) {
+        match quicAddr(&a) {
+          case let Some(q) {localQ = q;}
+          case is None[quic.Addr] {}
+        }
+      }
+      case let Error(e) {}
+    }
+    var hc = h3cfg;
+    hc.maxRequestStreams = usize.from(ctx.config().maxStreamsBidi);
+    let size = recvSizeOf(true, ctx.config().maxUdpPayload);
+    let s = listeners.add(Lst(handle, ctx, localQ, size, token, true, 0u32, hc));
+    var r = 0u32;
+    while r < recvDepth {
+      lp.submit(Op.RecvFrom(handle, IoBuf(size)), Target.Here(self.tok(kRecvL, s)));
+      r = r + 1u32;
+    }
+    Ok[ListenerId, Failure](ListenerId(s.index, s.gen))
+  }
+
+  // A listener's address (its port, when it was bound to port 0)
+  pub fn localAddr(self: &, lp: &Loop, l: ListenerId) Result[SocketAddr, IoError] {
+    let p = listeners.get(Slot(l.index, l.gen));
+    if p as usize == 0usize {return Error[SocketAddr, IoError](IoError(6u32));}
+    lp.localAddr((*p).handle)
+  }
+
+  // Take no more connections on a listener; its socket closes once the
+  // connections on it have ended. False for a listener that has gone
+  pub fn stopListening(self: &mut, lp: &mut Loop, l: ListenerId) bool {
+    let p = listeners.get(Slot(l.index, l.gen));
+    if p as usize == 0usize {return false;}
+    (*p).accepting = false;
+    if (*p).conns == 0u32 {
+      lp.close((*p).handle);
+      listeners.removeAt(l.index);
+    }
+    true
+  }
+
+  // End a connection gracefully: a GOAWAY, what is open finishes, then the
+  // close (see CONNECTIONS). False for one that has gone
+  pub fn close(self: &mut, lp: &mut Loop, conn: ConnId) bool {
+    let c = self.connOf(conn);
+    if c as usize == 0usize || (*c).ended {return false;}
+    (*c).h.goAway();
+    self.markDirty(conn.index);
+    true
+  }
+
+  // End a connection now: every request on it Failed (Closed), the close
+  // sent with H3_NO_ERROR
+  pub fn abort(self: &mut, lp: &mut Loop, conn: ConnId) bool {
+    let c = self.connOf(conn);
+    if c as usize == 0usize || (*c).ended {return false;}
+    (*c).h.abort(http3.h3NoError);
+    self.markDirty(conn.index);
+    true
+  }
+
+  // Every connection aborted and driven to its end now
+  pub fn abortAll(self: &mut, lp: &mut Loop) {
+    let now = Instant.now();
+    var k = 0usize;
+    while k < conns.bound() {
+      let cell = u32.from(k);
+      k = k + 1usize;
+      if !conns.isLive(cell) {continue;}
+      let c = conns.at(cell) as &mut Conn;
+      if c.ended {continue;}
+      c.h.abort(http3.h3NoError);
+      // Should HTTP/3 have closed already, QUIC's close goes all the same
+      c.q.close(http3.h3NoError);
+      self.drive(lp, cell, now, false);
+      if conns.isLive(cell) {
+        let c2 = conns.at(cell) as &mut Conn;
+        if !c2.ended {
+          // QUIC had not closed (its close went, or nothing could): it ends now
+          c2.quicClosed = true;
+          c2.h3Closed = true;
+          self.endConn(lp, cell);
+        }
+      }
+    }
+  }
+
+  // Whether a connection is open: made, and not yet ended
+  pub fn isOpen(self: &, conn: ConnId) bool {
+    let c = self.connOf(conn);
+    c as usize != 0usize && !(*c).ended
+  }
+
+  // A connection's other end
+  pub fn peer(self: &, conn: ConnId) SocketAddr {
+    let c = self.connOf(conn);
+    if c as usize == 0usize {SocketAddr.localhost(0u16)} else {(*c).peer}
+  }
+
+  // The stream records a connection holds: its own and the peer's control
+  // and QPACK streams, and every request stream QUIC still holds or whose
+  // request awaits its answer (0 for one that has gone)
+  pub fn streamRecords(self: &, conn: ConnId) usize {
+    let c = self.connOf(conn);
+    if c as usize == 0usize {0usize} else {(*c).streams.len()}
+  }
+
+  fn connOf(self: &, id: ConnId) *Conn {
+    if id.isNone() {return null;}
+    conns.get(Slot(id.index, id.gen))
+  }
+
+  // ---------------------------------------------------------------------------
+  // Requests
+  // ---------------------------------------------------------------------------
+
+  // A request on a client connection, its events carrying token: its id, or
+  // ReqId.none() when it is Failed at once (see REQUESTS)
+  pub fn request(self: &mut, lp: &mut Loop, conn: ConnId, head: RequestHead, body: BodyLength, token: u64) ReqId {
+    st.requests = st.requests + 1u64;
+    let c = self.connOf(conn);
+    if c as usize == 0usize || (*c).ended || (*c).server || (*c).quicClosed {
+      self.failNow(token, conn, Stage.Closed, ErrorKind.Closed, "the connection is closed, or not a client's");
+      return ReqId.none();
+    }
+    let cr = c as &mut Conn;
+    if !cr.h.canSendRequest() {
+      self.failNow(token, conn, Stage.Closed, ErrorKind.Refused, "the connection takes no more requests (a GOAWAY, or its end)");
+      return ReqId.none();
+    }
+    if cr.waitBidi.len() >= usize.from(maxWaiting) {
+      self.failNow(token, conn, Stage.Limit, ErrorKind.Refused, "maxWaiting requests already wait for the peer's stream limit");
+      return ReqId.none();
+    }
+    let hasBody = body.isUnsized() || (body.isSized() && body.length > 0u64);
+    let id = cr.h.sendRequest(head, body);
+    var s = newStrm(id, true, false);
+    s.req = true;
+    s.token = token;
+    s.bodyOpen = hasBody;
+    s.timing.submitted = Instant.now();
+    let slot = cr.streams.add(s);
+    let previous = cr.byId.insert(id, slot);
+    cr.waitBidi.push(slot);
+    self.openWaiting(cr, true);
+    self.markDirty(conn.index);
+    ReqId(conn, slot.index, slot.gen)
+  }
+
+  // A server's response to a request: its head now, its body by sendData and
+  // finish. False when the request has gone
+  pub fn respond(self: &mut, req: ReqId, head: ResponseHead, body: BodyLength,
+      file: &Array[u8] = srcFile(), line: u32 = srcLine()) bool {
+    let c = self.connOf(req.conn);
+    let s = self.strmOf(c, req);
+    if s as usize == 0usize {return false;}
+    (*c).h.sendResponse((*s).id, head, body, file, line);
+    self.markDirty(req.conn.index);
+    true
+  }
+
+  // A server's interim response (a 1xx) before its final one
+  pub fn sendInterim(self: &mut, req: ReqId, head: ResponseHead,
+      file: &Array[u8] = srcFile(), line: u32 = srcLine()) bool {
+    let c = self.connOf(req.conn);
+    let s = self.strmOf(c, req);
+    if s as usize == 0usize {return false;}
+    (*c).h.sendInterim((*s).id, head, file, line);
+    self.markDirty(req.conn.index);
+    true
+  }
+
+  // Body bytes of a request (a client's) or a response (a server's), moved
+  // in: None once taken (or dropped, the request having gone), or Some(buf)
+  // back when the stream holds sendWatermark bytes in QUIC or writeWatermark
+  // in HTTP/3 (Writable follows when there is room)
+  pub fn sendData(self: &mut, req: ReqId, buf: IoBuf, file: &Array[u8] = srcFile(), line: u32 = srcLine()) Option[IoBuf] {
+    let cp = self.connOf(req.conn);
+    let sp = self.strmOf(cp, req);
+    if sp as usize == 0usize {return None;}
+    let c = cp as &mut Conn;
+    let s = sp as &mut Strm;
+    if self.heldInQuic(c, s) >= sendWatermark {
+      s.wantWritable = true;
+      return Some[IoBuf](buf);
+    }
+    self.markDirty(req.conn.index);
+    match c.h.sendData(s.id, buf, file, line) {
+      case let Some(b) {
+        s.wantWritable = true;
+        return Some[IoBuf](b);
+      }
+      case is None[IoBuf] {}
+    }
+    None
+  }
+
+  // The body is whole: the stream's end follows it
+  pub fn finish(self: &mut, req: ReqId, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
+    self.finishWith(req, Headers.empty(), file, line);
+  }
+
+  // The body is whole, these trailer fields follow it, and the stream ends
+  pub fn finishWith(self: &mut, req: ReqId, trailers: Headers, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
+    let c = self.connOf(req.conn);
+    let s = self.strmOf(c, req);
+    if s as usize == 0usize {return;}
+    (*s).bodyOpen = false;
+    (*c).h.finishWith((*s).id, trailers, file, line);
+    self.markDirty(req.conn.index);
+  }
+
+  // The program is done with n bytes of a request's body that Data events
+  // handed out: HTTP/3 may hand out more (see CREDIT AND MEMORY)
+  pub fn release(self: &mut, req: ReqId, n: usize) {
+    let c = self.connOf(req.conn);
+    if c as usize == 0usize {return;}
+    let s = (*c).streams.get(Slot(req.index, req.gen));
+    if s as usize == 0usize {return;}
+    (*c).h.release((*s).id, n);
+    self.markDirty(req.conn.index);
+  }
+
+  // Give a request up: its exchange is reset both ways
+  // (H3_REQUEST_CANCELLED), and it is answered Cancelled now. False when it
+  // has had its final answer
+  pub fn cancel(self: &mut, lp: &mut Loop, req: ReqId) bool {
+    let cp = self.connOf(req.conn);
+    let sp = self.strmOf(cp, req);
+    if sp as usize == 0usize {return false;}
+    let c = cp as &mut Conn;
+    let s = sp as &mut Strm;
+    c.h.reset(s.id, http3.h3RequestCancelled);
+    self.answer(c, req.conn, req.index, s, EventKind.Cancelled, Failure.none());
+    self.markDirty(req.conn.index);
+    true
+  }
+
+  // A request's stream record while its final answer is still to come, or null
+  fn strmOf(self: &, c: *Conn, req: ReqId) *Strm {
+    if c as usize == 0usize || req.isNone() {return null;}
+    let s = (*c).streams.get(Slot(req.index, req.gen));
+    if s as usize == 0usize || !(*s).req {return null;}
+    s
+  }
+
+  // The bytes of a stream QUIC holds unacknowledged, or that wait for QUIC
+  // to open it
+  fn heldInQuic(self: &, c: &Conn, s: &Strm) u64 {
+    if !s.opened {return u64.from(s.pendingOut.len());}
+    c.q.queued(s.id as i64)
+  }
+
+  // A request Failed at once, never made
+  fn failNow(self: &mut, token: u64, conn: ConnId, stage: Stage, kind: ErrorKind, detail: &str) {
+    var e = Event.make(EventKind.Failed, token, conn, ReqId.none(), 0u64);
+    e.failure = Failure.make(stage, 0u32, kind, detail);
+    e.failure.unsent = true;
+    e.failure.error.noResponse = true;
+    st.failed = st.failed + 1u64;
+    self.emit(e);
+  }
+
+  // ---------------------------------------------------------------------------
+  // A connection's turn
+  // ---------------------------------------------------------------------------
+
+  fn markDirty(self: &mut, i: u32) {
+    let c = conns.at(i) as &mut Conn;
+    if !c.dirty {
+      c.dirty = true;
+      dirty.push(i);
+    }
+  }
+
+  fn emit(self: &mut, e: Event) {
+    st.events = st.events + 1u64;
+    ready.push(e);
+  }
+
+  // Move connection i as far as it can go now; byWake: its wake time asked
+  fn drive(self: &mut, lp: &mut Loop, i: u32, now: Instant, byWake: bool) {
+    let c = conns.at(i) as &mut Conn;
+    c.dirty = false;
+    c.more = false;
+    if c.ended {
+      if c.sendsOut == 0u32 {self.free(lp, i);}
+      return;
+    }
+    st.turns = st.turns + 1u64;
+    if byWake {st.wakeTurns = st.wakeTurns + 1u64;}
+    // A wake time that has come is acted on by pollTransmit, which the
+    // transmit step makes whatever else happens
+    var sent = 0usize;
+    var rounds = 0usize;
+    while rounds < maxRounds {
+      rounds = rounds + 1usize;
+      var moved = self.quicEvents(lp, i, now);
+      if self.feed(c, now) {moved = true;}
+      if self.h3Events(i, now) {moved = true;}
+      if self.h3Transmits(c, now) {moved = true;}
+      if self.closeWhenDelivered(c) {moved = true;}
+      let n = self.transmit(lp, i, now);
+      sent = sent + n;
+      // pollTransmit acts on a wake time that has come, which may end the
+      // connection (the idle timeout) or fail a stream: its events now
+      let after = self.quicEvents(lp, i, now);
+      if !moved && n == 0usize && !after {break;}
+      if rounds == maxRounds {c.more = true;}
+    }
+    self.serverDone(i, now);
+    self.writables(i);
+    self.retire(c);
+    self.refreshIds(i);
+    if c.quicClosed && c.h3Closed {
+      self.endConn(lp, i);
+      return;
+    }
+    // Its wake time (see the package's header, WAKE TIMES)
+    var w = forever();
+    match c.q.wakeAt() {
+      case let Some(t) {w = t;}
+      case is None[Instant] {}
+    }
+    let idleTurn = byWake && sent == 0usize;
+    if idleTurn {st.idleWakes = st.idleWakes + 1u64;}
+    if w < forever() && (w <= now || (idleTurn && w < now + wakeStep)) {
+      w = now + wakeStep;
+      st.clamped = st.clamped + 1u64;
+    }
+    c.wake = w;
+  }
+
+  // QUIC's events: true when there were any
+  fn quicEvents(self: &mut, lp: &mut Loop, i: u32, now: Instant) bool {
+    let c = conns.at(i) as &mut Conn;
+    var moved = false;
+    var going = true;
+    while going {
+      match c.q.pollEvent() {
+        case is Nothing {going = false;}
+        case is HandshakeDone {
+          moved = true;
+          self.handshakeDone(i);
+          self.openWaiting(c, false);
+          self.openWaiting(c, true);
+        }
+        case is VerifyNeeded {
+          moved = true;
+          if c.q.wantsVerify() {
+            lp.submit(c.q.verifyOp(), Target.Here(self.tok(kVerify, conns.slotAt(i))));
+          }
+        }
+        case let PeerStream(p) {
+          moved = true;
+          let id = p.stream as u64;
+          match c.byId.getCopy(&id) {
+            case let Some(sl) {}
+            case is None[Slot] {
+              var s = newStrm(id, false, true);
+              // The peer's unidirectional stream: this end writes nothing on it
+              if (id & 2u64) != 0u64 {s.finWritten = true;}
+              let slot = c.streams.add(s);
+              let previous = c.byId.insert(id, slot);
+            }
+          }
+        }
+        case let Data(d) {
+          moved = true;
+          let stream, buf, fin = d.(stream, buf, fin);
+          let s = self.strmById(c, stream as u64);
+          let n = buf.len();
+          if s as usize == 0usize || (*s).inDone {
+            // A stream that is over here: its bytes dropped, their credit back
+            if n > 0usize {c.q.release(stream, n);}
+          } else {
+            match (*s).inbound.push(buf) {
+              case let Some(b) {c.q.release(stream, b.len());}
+              case is None[IoBuf] {}
+            }
+            if fin {(*s).inFin = true;}
+          }
+        }
+        case let Reset(x) {
+          moved = true;
+          let s = self.strmById(c, x.stream as u64);
+          if s as usize != 0usize {
+            self.dropInbound(c, s as &mut Strm);
+            if !(*s).inDone {
+              (*s).inDone = true;
+              c.h.handleReset((*s).id, x.code, now);
+            }
+          }
+        }
+        case let WriteStopped(x) {
+          moved = true;
+          let s = self.strmById(c, x.stream as u64);
+          if s as usize != 0usize {
+            // No code (the package's header, THE STREAM MAP, 4)
+            let code = if c.server {http3.h3RequestCancelled} else {http3.h3NoError};
+            c.h.handleStopSending((*s).id, code, now);
+          }
+        }
+        case let MoreStreams(m) {
+          moved = true;
+          self.openWaiting(c, m.bidi);
+        }
+        case let Closed(x) {
+          moved = true;
+          c.quicClosed = true;
+          c.idle = x.idle;
+          // HTTP/3 is told with an HTTP/3 code: the application's, or for the
+          // idle timeout H3_NO_ERROR (nothing open: a clean end), or for a
+          // transport's failure H3_INTERNAL_ERROR
+          let code = if x.app {x.code} else if x.idle {http3.h3NoError} else {http3.h3InternalError};
+          c.h.handleClose(code, now);
+          going = false;
+        }
+      }
+    }
+    moved
+  }
+
+  // A stream's record by its number, or null
+  fn strmById(self: &, c: &Conn, id: u64) *Strm {
+    match c.byId.getCopy(&id) {
+      case let Some(sl) {return c.streams.get(sl);}
+      case is None[Slot] {}
+    }
+    null
+  }
+
+  // What QUIC delivered on a stream and HTTP/3 has not taken, dropped, its
+  // credit given back to QUIC
+  fn dropInbound(self: &mut, c: &mut Conn, s: &mut Strm) {
+    let n = s.inbound.len();
+    if n == 0usize {return;}
+    s.inbound.advance(n);
+    c.q.release(s.id as i64, n);
+  }
+
+  // The handshake is done: Connected or Accepted, once
+  fn handshakeDone(self: &mut, i: u32) {
+    let c = conns.at(i) as &mut Conn;
+    if c.told {return;}
+    c.told = true;
+    let id = ConnId(i, conns.slotAt(i).gen);
+    var e = Event.make(if c.server {EventKind.Accepted} else {EventKind.Connected}, c.token, id, ReqId.none(), 0u64);
+    e.peer = c.peer;
+    if c.server {
+      e.listener = ListenerId(c.listener.index, c.listener.gen);
+      st.accepted = st.accepted + 1u64;
+    } else {
+      st.connected = st.connected + 1u64;
+    }
+    self.emit(e);
+  }
+
+  // The bytes HTTP/3 has credit for, from each stream's record, released to
+  // QUIC as HTTP/3 takes them (THE STREAM MAP, 3): true when any moved
+  fn feed(self: &mut, c: &mut Conn, now: Instant) bool {
+    var moved = false;
+    var k = 0usize;
+    while k < c.streams.bound() {
+      let cell = u32.from(k);
+      k = k + 1usize;
+      if c.h.isClosed() {return moved;}
+      if !c.streams.isLive(cell) {continue;}
+      let s = c.streams.at(cell) as &mut Strm;
+      while !s.inDone {
+        if s.inbound.len() == 0usize {
+          if s.inFin {
+            s.inDone = true;
+            c.h.handleStream(s.id, IoBuf.empty(), true, now);
+            moved = true;
+          }
+          break;
+        }
+        let credit = c.h.readCredit(s.id);
+        if credit == 0usize {break;}
+        let piece = takeUpTo(&mut s.inbound, credit);
+        let n = piece.len();
+        let last = s.inFin && s.inbound.len() == 0usize;
+        if last {s.inDone = true;}
+        c.h.handleStream(s.id, piece, last, now);
+        c.q.release(s.id as i64, n);
+        moved = true;
+        if c.h.isClosed() {return moved;}
+      }
+    }
+    moved
+  }
+
+  // HTTP/3's events, to the program: true when there were any
+  fn h3Events(self: &mut, i: u32, now: Instant) bool {
+    let c = conns.at(i) as &mut Conn;
+    if c.h3Closed {return false;}
+    let cid = ConnId(i, conns.slotAt(i).gen);
+    var moved = false;
+    var going = true;
+    while going {
+      match c.h.pollEvent() {
+        case is NeedData {going = false;}
+        case let Request(r) {
+          moved = true;
+          let stream, head, body = r.(stream, head, body);
+          let sp = self.strmById(c, stream);
+          if sp as usize != 0usize {
+            let s = sp as &mut Strm;
+            s.req = true;
+            s.token = c.token;
+            s.timing.submitted = now;
+            s.timing.started = now;
+            st.requests = st.requests + 1u64;
+            var e = Event.make(EventKind.Request, s.token, cid, self.reqIdOf(c, cid, stream), stream);
+            e.request = head;
+            e.body = body;
+            self.emit(e);
+          }
+        }
+        case let Response(r) {
+          moved = true;
+          let stream, head, body = r.(stream, head, body);
+          let sp = self.liveReq(c, stream);
+          if sp as usize != 0usize {
+            (*sp).timing.firstByte = now;
+            var e = Event.make(EventKind.Response, (*sp).token, cid, self.reqIdOf(c, cid, stream), stream);
+            e.response = head;
+            e.body = body;
+            self.emit(e);
+          }
+        }
+        case let Interim(r) {
+          moved = true;
+          let stream, head = r.(stream, head);
+          let sp = self.liveReq(c, stream);
+          if sp as usize != 0usize {
+            var e = Event.make(EventKind.Interim, (*sp).token, cid, self.reqIdOf(c, cid, stream), stream);
+            e.response = head;
+            self.emit(e);
+          }
+        }
+        case let Data(d) {
+          moved = true;
+          let stream, buf = d.(stream, buf);
+          let sp = self.liveReq(c, stream);
+          if sp as usize != 0usize {
+            var e = Event.make(EventKind.Data, (*sp).token, cid, self.reqIdOf(c, cid, stream), stream);
+            e.buf = buf;
+            self.emit(e);
+          } else {
+            // A request answered already (cancelled): its bytes go back
+            c.h.release(stream, buf.len());
+          }
+        }
+        case let End(x) {
+          moved = true;
+          let stream, trailers = x.(stream, trailers);
+          let sp = self.liveReq(c, stream);
+          if sp as usize != 0usize {
+            let s = sp as &mut Strm;
+            s.readDone = true;
+            var e = Event.make(EventKind.End, s.token, cid, self.reqIdOf(c, cid, stream), stream);
+            e.trailers = trailers;
+            self.emit(e);
+            if !c.server {
+              // A response whole while the request's body is still being
+              // sent: that body is reset (REQUESTS)
+              if s.bodyOpen {c.h.reset(s.id, http3.h3NoError);}
+              let sl = self.slotOf(c, stream);
+              self.answer(c, cid, sl.index, s, EventKind.Done, Failure.none());
+            }
+          }
+        }
+        case let Failed(f) {
+          moved = true;
+          let stream, error = f.(stream, error);
+          let sp = self.liveReq(c, stream);
+          if sp as usize != 0usize {
+            let s = sp as &mut Strm;
+            let failure = self.reqFailure(c, s, error);
+            let sl = self.slotOf(c, stream);
+            self.answer(c, cid, sl.index, s, EventKind.Failed, failure);
+          }
+        }
+        case let GoAway(g) {moved = true;}
+        case let Closed(x) {
+          moved = true;
+          c.h3Closed = true;
+          c.h3Error = x.(error);
+          going = false;
+        }
+      }
+    }
+    moved
+  }
+
+  // A stream's record while a request on it awaits its final answer, or null
+  fn liveReq(self: &, c: &Conn, stream: u64) *Strm {
+    let s = self.strmById(c, stream);
+    if s as usize == 0usize || !(*s).req {return null;}
+    s
+  }
+
+  fn slotOf(self: &, c: &Conn, stream: u64) Slot {
+    match c.byId.getCopy(&stream) {
+      case let Some(sl) {return sl;}
+      case is None[Slot] {}
+    }
+    Slot.none()
+  }
+
+  fn reqIdOf(self: &, c: &Conn, cid: ConnId, stream: u64) ReqId {
+    let sl = self.slotOf(c, stream);
+    ReqId(cid, sl.index, sl.gen)
+  }
+
+  // A request's final answer: its event, and the request is over (the
+  // stream's record stays until QUIC is done with the stream)
+  fn answer(self: &mut, c: &mut Conn, cid: ConnId, cell: u32, s: &mut Strm, kind: EventKind, f: Failure) {
+    if !s.req {return;}
+    s.req = false;
+    s.wantWritable = false;
+    s.timing.ended = Instant.now();
+    var e = Event.make(kind, s.token, cid, ReqId(cid, cell, c.streams.slotAt(cell).gen), s.id);
+    e.timing = s.timing;
+    if kind == EventKind.Done {st.done = st.done + 1u64;}
+    else if kind == EventKind.Cancelled {st.cancelled = st.cancelled + 1u64;}
+    else {
+      st.failed = st.failed + 1u64;
+      e.failure = f;
+    }
+    self.emit(e);
+  }
+
+  // The Failure a request is answered with, from HTTP/3's error (see the
+  // package's header, ERRORS AND RETRIES)
+  fn reqFailure(self: &, c: &Conn, s: &Strm, error: HttpError) Failure {
+    var e = error;
+    let unsent = !c.server && !s.wrote;
+    var stage = Stage.Http;
+    if e.scope == ErrorScope.Connection {
+      stage = if !c.told && !c.server {Stage.Tls} else {Stage.Closed};
+      if unsent {
+        e.kind = ErrorKind.Refused;
+        e.detail.append(": the request never reached QUIC, so it may be sent again");
+      } else if c.idle {
+        e.kind = ErrorKind.TimedOut;
+        e.detail.append(": QUIC's idle timeout passed");
+      }
+      self.quicWords(c, &mut e.detail);
+    }
+    if unsent {e.noResponse = true;}
+    var code = 0u32;
+    match c.q.error() {
+      case let Some(qe) {code = qe.osError;}
+      case is None[quic.QuicError] {}
+    }
+    Failure(stage, code, e, unsent)
+  }
+
+  // QUIC's own failure, in words, after a detail
+  fn quicWords(self: &, c: &Conn, out: &mut String) {
+    match c.q.error() {
+      case let Some(qe) {
+        out.append(" (");
+        out.append(qe.message().view());
+        out.append(")");
+      }
+      case is None[quic.QuicError] {}
+    }
+  }
+
+  // What HTTP/3 has to do to QUIC, done: true when there was any
+  fn h3Transmits(self: &mut, c: &mut Conn, now: Instant) bool {
+    var moved = false;
+    var going = true;
+    while going {
+      match c.h.pollTransmit(now) {
+        case is Nothing {going = false;}
+        case let Write(x) {
+          moved = true;
+          let stream, data, fin = x.(stream, data, fin);
+          var sp = self.strmById(c, stream);
+          if sp as usize == 0usize && (stream & 3u64) == (if c.server {3u64} else {2u64}) && stream == c.nextUni {
+            // One of this end's unidirectional streams, written first: it
+            // takes its turn to open (THE STREAM MAP, 1)
+            var s = newStrm(stream, true, false);
+            s.inDone = true;
+            let slot = c.streams.add(s);
+            let previous = c.byId.insert(stream, slot);
+            c.waitUni.push(slot);
+            c.nextUni = c.nextUni + 4u64;
+            sp = c.streams.get(slot);
+          }
+          if sp as usize != 0usize {
+            let s = sp as &mut Strm;
+            var d = data;
+            while d.len() > 0usize {
+              match d.popFront() {
+                case let Some(b) {
+                  if s.opened {
+                    let n = b.len();
+                    if c.q.write(s.id as i64, b) && n > 0usize {s.wrote = true;}
+                  } else {
+                    let back = s.pendingOut.push(b);
+                  }
+                }
+                case is None[IoBuf] {}
+              }
+            }
+            if fin {
+              if s.opened {
+                c.q.finish(s.id as i64);
+                s.finWritten = true;
+              } else {
+                s.pendingFin = true;
+              }
+            }
+            if !s.opened {self.openWaiting(c, (s.id & 2u64) == 0u64);}
+          }
+        }
+        case let Reset(x) {
+          moved = true;
+          let s = self.strmById(c, x.stream);
+          if s as usize != 0usize {
+            if (*s).opened {
+              c.q.reset(x.stream as i64, x.code);
+            } else {
+              (*s).pendingReset = true;
+              (*s).resetCode = x.code;
+              (*s).pendingOut.advance((*s).pendingOut.len());
+            }
+            (*s).finWritten = true;
+          }
+        }
+        case let StopSending(x) {
+          moved = true;
+          let s = self.strmById(c, x.stream);
+          if s as usize != 0usize {
+            if (*s).opened {
+              c.q.stopSending(x.stream as i64, x.code);
+            } else {
+              (*s).pendingStop = true;
+              (*s).stopCode = x.code;
+            }
+            self.dropInbound(c, s as &mut Strm);
+            (*s).inDone = true;
+          }
+        }
+        case let Close(x) {
+          moved = true;
+          if x.graceful {
+            // Once QUIC has delivered what was written (closeWhenDelivered)
+            c.closeWait = true;
+            c.closeCode = x.code;
+          } else {
+            c.q.close(x.code);
+          }
+          going = false;
+        }
+      }
+    }
+    moved
+  }
+
+  // Open the streams of a kind waiting for QUIC, in HTTP/3's order, while
+  // the peer allows (THE STREAM MAP, 1 and 2)
+  fn openWaiting(self: &mut, c: &mut Conn, bidi: bool) {
+    while true {
+      let slot = waitFront(c, bidi);
+      if slot.isNone() {break;}
+      let sp = c.streams.get(slot);
+      if sp as usize == 0usize {
+        waitPop(c, bidi);
+        continue;
+      }
+      let got = if bidi {c.q.openBidi()} else {c.q.openUni()};
+      var qid = -1i64;
+      match got {
+        case let Some(n) {qid = n;}
+        case is None[i64] {break;}
+      }
+      waitPop(c, bidi);
+      let s = sp as &mut Strm;
+      if qid as u64 != s.id {
+        // The numbers have parted: an internal error, which ends the connection
+        c.h.abort(http3.h3InternalError);
+        return;
+      }
+      s.opened = true;
+      s.timing.started = Instant.now();
+      while s.pendingOut.len() > 0usize {
+        match s.pendingOut.popFront() {
+          case let Some(b) {
+            let n = b.len();
+            if c.q.write(qid, b) && n > 0usize {s.wrote = true;}
+          }
+          case is None[IoBuf] {}
+        }
+      }
+      if s.pendingFin {
+        c.q.finish(qid);
+        s.finWritten = true;
+      }
+      // Given up before it opened: opened only to keep the numbers in step,
+      // and ended both ways at once
+      if s.pendingReset {c.q.reset(qid, s.resetCode);}
+      if s.pendingStop {c.q.stopSending(qid, s.stopCode);}
+    }
+  }
+
+  // A graceful close whose writes QUIC has all delivered goes now: true
+  // when it went
+  fn closeWhenDelivered(self: &mut, c: &mut Conn) bool {
+    if !c.closeWait || c.quicClosed {return false;}
+    var k = 0usize;
+    while k < c.streams.bound() {
+      let cell = u32.from(k);
+      k = k + 1usize;
+      if !c.streams.isLive(cell) {continue;}
+      let s = c.streams.at(cell) as &Strm;
+      if !s.opened || c.q.queued(s.id as i64) > 0u64 {return false;}
+    }
+    c.closeWait = false;
+    c.q.close(c.closeCode);
+    true
+  }
+
+  // QUIC's datagrams to the kernel, at most sendDepth in flight: how many it
+  // made (one injectLoss dropped counts)
+  fn transmit(self: &mut, lp: &mut Loop, i: u32, now: Instant) usize {
+    let c = conns.at(i) as &mut Conn;
+    let slot = conns.slotAt(i);
+    var n = 0usize;
+    while c.sendsOut < sendDepth {
+      let b = c.q.pollTransmit(now);
+      let len = b.len();
+      if len == 0usize {break;}
+      n = n + 1usize;
+      if self.lose() {
+        st.lost = st.lost + 1u64;
+        continue;
+      }
+      st.datagramsOut = st.datagramsOut + 1u64;
+      st.bytesOut = st.bytesOut + u64.from(len);
+      c.sendsOut = c.sendsOut + 1u32;
+      lp.submit(Op.SendTo(c.handle, c.peer, b), Target.Here(self.tok(kSend, slot)));
+    }
+    n
+  }
+
+  // Whether injectLoss drops the next datagram
+  fn lose(self: &mut) bool {
+    if lossPerMille == 0u32 {return false;}
+    // xorshift64
+    var x = lossState;
+    x = x ^ (x << 13u64);
+    x = x ^ (x >> 7u64);
+    x = x ^ (x << 17u64);
+    lossState = x;
+    (x % 1000u64) < u64.from(lossPerMille)
+  }
+
+  // A server's requests whose End has come and whose response QUIC has had
+  // acknowledged whole: Done
+  fn serverDone(self: &mut, i: u32, now: Instant) {
+    let c = conns.at(i) as &mut Conn;
+    if !c.server {return;}
+    let cid = ConnId(i, conns.slotAt(i).gen);
+    var k = 0usize;
+    while k < c.streams.bound() {
+      let cell = u32.from(k);
+      k = k + 1usize;
+      if !c.streams.isLive(cell) {continue;}
+      let s = c.streams.at(cell) as &mut Strm;
+      if s.req && s.readDone && s.finWritten && c.q.queued(s.id as i64) == 0u64 {
+        self.answer(c, cid, cell, s, EventKind.Done, Failure.none());
+      }
+    }
+  }
+
+  // Writable for each request a refusal is waiting on, once there is room
+  fn writables(self: &mut, i: u32) {
+    let c = conns.at(i) as &mut Conn;
+    let cid = ConnId(i, conns.slotAt(i).gen);
+    var k = 0usize;
+    while k < c.streams.bound() {
+      let cell = u32.from(k);
+      k = k + 1usize;
+      if !c.streams.isLive(cell) {continue;}
+      let s = c.streams.at(cell) as &mut Strm;
+      if s.req && s.wantWritable && self.heldInQuic(c, s) < sendWatermark && c.h.writeRoom(s.id) > 0usize {
+        s.wantWritable = false;
+        self.emit(Event.make(EventKind.Writable, s.token, cid, ReqId(cid, cell, c.streams.slotAt(cell).gen), s.id));
+      }
+    }
+  }
+
+  // Each stream's record whose stream QUIC no longer holds, and whose
+  // request has had its final answer, goes (THE STREAM MAP, 6)
+  fn retire(self: &mut, c: &mut Conn) {
+    var k = 0usize;
+    while k < c.streams.bound() {
+      let cell = u32.from(k);
+      k = k + 1usize;
+      if !c.streams.isLive(cell) {continue;}
+      let s = c.streams.at(cell) as &mut Strm;
+      if s.opened && !s.req && s.inbound.len() == 0usize && !c.q.hasStream(s.id as i64) {
+        let id = s.id;
+        let removed = c.byId.remove(&id);
+        c.streams.removeAt(cell);
+      }
+    }
+  }
+
+  // A server connection's routing keys, read again when its connection IDs
+  // have changed (ROUTING)
+  fn refreshIds(self: &mut, i: u32) {
+    let c = conns.at(i) as &mut Conn;
+    if !c.server || c.ended {return;}
+    let epoch = c.q.localIdsEpoch();
+    if epoch == c.idEpoch {return;}
+    c.idEpoch = epoch;
+    // The first key (the client's own choice) stays; the rest are read again
+    while c.ids.len() > 1usize {
+      match c.ids.pop() {
+        case let Some(key) {let gone = routes.remove(&key);}
+        case is None[CidKey] {}
+      }
+    }
+    var bytes = List[u8].empty();
+    let n = c.q.localIds(&mut bytes);
+    let slot = conns.slotAt(i);
+    var k = 0usize;
+    while k < n {
+      match cidKey(bytes.view(), k * quic.localIdLen, quic.localIdLen) {
+        case let Some(key) {
+          let previous = routes.insert(key, slot);
+          c.ids.push(key);
+        }
+        case is None[CidKey] {}
+      }
+      k = k + 1usize;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // A server's datagrams
+  // ---------------------------------------------------------------------------
+
+  // A datagram to listener li's socket, to the connection its Destination
+  // Connection ID names, or a new connection when it is a client's Initial
+  fn route(self: &mut, lp: &mut Loop, li: u32, d: &Array[u8], from: &SocketAddr, now: Instant) {
+    var key = CidKey(0u64, 0u64, 0u64, 0u32);
+    match destId(d) {
+      case let Some(k) {key = k;}
+      case is None[CidKey] {
+        st.unrouted = st.unrouted + 1u64;
+        return;
+      }
+    }
+    match routes.getCopy(&key) {
+      case let Some(slot) {
+        let cp = conns.get(slot);
+        if cp as usize != 0usize && !(*cp).ended {
+          (*cp).q.handleInput(d, now);
+          self.markDirty(slot.index);
+          return;
+        }
+      }
+      case is None[Slot] {}
+    }
+    let l = listeners.at(li) as &mut Lst;
+    if !isInitial(d) || !l.accepting {
+      st.unrouted = st.unrouted + 1u64;
+      return;
+    }
+    if conns.len() >= usize.from(maxConnections) {
+      st.refused = st.refused + 1u64;
+      return;
+    }
+    var peerQ = quic.Addr.v4(0u8, 0u8, 0u8, 0u8, 0u16);
+    match quicAddr(from) {
+      case let Some(a) {peerQ = a;}
+      case is None[quic.Addr] {
+        st.refused = st.refused + 1u64;
+        return;
+      }
+    }
+    match quic.Connection.accept(&l.ctx, d, &l.localQ, &peerQ, now) {
+      case let Ok(q) {
+        let s = conns.add(Conn(server: true, token: l.token, listener: listeners.slotAt(li), handle: l.handle,
+          peer: *from, q: q, h: http3.Connection.server(l.h3cfg, now), streams: SlotTable[Strm].make(16u32),
+          byId: Dict[u64, Slot].empty(), waitBidi: Deque[Slot].empty(), waitUni: Deque[Slot].empty(),
+          nextUni: 3u64, ids: List[CidKey].empty(), idEpoch: unread, recvsOut: 0u32, sendsOut: 0u32,
+          dirty: false, more: false, wake: forever(), told: false, closeWait: false, closeCode: 0u64,
+          quicClosed: false, idle: false, h3Closed: false, h3Error: None, ended: false));
+        l.conns = l.conns + 1u32;
+        let c = conns.get(s) as &mut Conn;
+        // The client's own choice of ID first: its Initials carry it until
+        // it has the server's
+        let previous = routes.insert(key, s);
+        c.ids.push(key);
+        self.refreshIds(s.index);
+        self.markDirty(s.index);
+      }
+      case let Error(e) {st.refused = st.refused + 1u64;}
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // A connection's end
+  // ---------------------------------------------------------------------------
+
+  // QUIC and HTTP/3 have both closed: every request still open is Failed,
+  // the one Closed goes, and the connection goes once its sends are answered
+  fn endConn(self: &mut, lp: &mut Loop, i: u32) {
+    let c = conns.at(i) as &mut Conn;
+    if c.ended {return;}
+    c.ended = true;
+    let cid = ConnId(i, conns.slotAt(i).gen);
+    // What the connection's end was
+    var clean = true;
+    var cf = Failure.none();
+    match &c.h3Error {
+      case let Some(e) {
+        clean = false;
+        cf = Failure(if c.told || c.server {Stage.Closed} else {Stage.Tls}, 0u32,
+          HttpError(e.kind, e.status, e.noResponse, e.detail.copy(), e.code, e.scope), false);
+      }
+      case is None[HttpError] {}
+    }
+    match c.q.error() {
+      case let Some(qe) {
+        clean = false;
+        cf = Failure.make(if c.told || c.server {Stage.Closed} else {Stage.Tls}, qe.osError, ErrorKind.Closed,
+          qe.message().view());
+      }
+      case is None[quic.QuicError] {}
+    }
+    var k = 0usize;
+    while k < c.streams.bound() {
+      let cell = u32.from(k);
+      k = k + 1usize;
+      if !c.streams.isLive(cell) {continue;}
+      let s = c.streams.at(cell) as &mut Strm;
+      if s.req {
+        let e = HttpError.coded(ErrorKind.Closed, http3.h3NoError, ErrorScope.Connection, "the connection closed");
+        let f = self.reqFailure(c, s, e);
+        self.answer(c, cid, cell, s, EventKind.Failed, f);
+      }
+    }
+    if c.told || !c.server {
+      var e = Event.make(EventKind.Closed, c.token, cid, ReqId.none(), 0u64);
+      e.peer = c.peer;
+      e.clean = clean;
+      if !clean {e.failure = cf;}
+      self.emit(e);
+    }
+    st.closed = st.closed + 1u64;
+    if clean {st.cleanCloses = st.cleanCloses + 1u64;}
+    // No datagram routes to it any more
+    while c.ids.len() > 0usize {
+      match c.ids.pop() {
+        case let Some(key) {let gone = routes.remove(&key);}
+        case is None[CidKey] {}
+      }
+    }
+    if c.sendsOut == 0u32 || c.server {self.free(lp, i);}
+  }
+
+  // Its record goes: a client's socket closes (its receives answer
+  // Cancelled, and are dropped), a server's listener loses one connection
+  fn free(self: &mut, lp: &mut Loop, i: u32) {
+    let c = conns.at(i) as &mut Conn;
+    if c.server {
+      let lp2 = listeners.get(c.listener);
+      if lp2 as usize != 0usize {
+        let l = lp2 as &mut Lst;
+        l.conns = l.conns - 1u32;
+        if !l.accepting && l.conns == 0u32 {
+          lp.close(l.handle);
+          listeners.removeAt(c.listener.index);
+        }
+      }
+    } else {
+      lp.close(c.handle);
+    }
+    while c.ids.len() > 0usize {
+      match c.ids.pop() {
+        case let Some(key) {let gone = routes.remove(&key);}
+        case is None[CidKey] {}
+      }
+    }
+    conns.removeAt(i);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+// A receive's buffer for a socket whose connections take maxUdp: at least an
+// Ethernet frame's payload
+fn recvSizeOf(server: bool, maxUdp: usize) usize {if maxUdp > minRecvSize {maxUdp} else {minRecvSize}}
+
+// The first n bytes of a chain, at most: its first buffer moved out whole
+// when it holds no more, else n bytes copied out
+fn takeUpTo(ch: &mut Chain, n: usize) IoBuf {
+  if ch.firstLen() <= n {
+    match ch.popFront() {
+      case let Some(b) {return b;}
+      case is None[IoBuf] {}
+    }
+    return IoBuf.empty();
+  }
+  var b = IoBuf(n);
+  let got = ch.take(mem.sliceFromPartsMut(b.base(), n));
+  b.setLen(got);
+  b
+}
+
+// A received datagram's bytes, lent from the completion's buffer for the
+// call they go to. Made from its parts: the checker cannot see that the
+// driver (handed alongside) reaches no Completion, so 'buf.view()' there is
+// refused (1339); the completion outlives the call, and nothing in it
+// changes the buffer
+fn datagramOf(comp: &Completion) &Array[u8] {mem.sliceFromParts(comp.buf.base(), comp.buf.len())}
+
+// iocore's outcome number for Cancelled
+fn diagCancelled() u32 {diag.outcomeCancelled}
+
+// The first of a connection's streams waiting for QUIC to open them, of a
+// kind, or Slot.none()
+fn waitFront(c: &Conn, bidi: bool) Slot {
+  if bidi {
+    match c.waitBidi.peekFront() {
+      case let Some(sl) {return *sl;}
+      case is None[&Slot] {}
+    }
+  } else {
+    match c.waitUni.peekFront() {
+      case let Some(sl) {return *sl;}
+      case is None[&Slot] {}
+    }
+  }
+  Slot.none()
+}
+
+fn waitPop(c: &mut Conn, bidi: bool) {
+  if bidi {
+    let gone = c.waitBidi.popFront();
+  } else {
+    let gone = c.waitUni.popFront();
+  }
+}
