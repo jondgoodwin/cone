@@ -1,0 +1,132 @@
+// The http2 package: HTTP/2 (RFC 9113), sans-IO, in the shape of http1: the
+// protocol's state as plain data, which does no I/O, reads no clock and
+// starts no threads (invariant I13). It is built in three parts, each its
+// own module: HPACK, the header compression (RFC 7541, here now); the
+// frames (RFC 9113, sections 4 and 6, to come); and the connection, client
+// and server, over package http's message types (to come). HPACK and its
+// Huffman code know nothing of frames or connections, and the Huffman code
+// knows nothing of HPACK, so HTTP/3's QPACK can take what it shares with
+// them.
+//
+//   mod headers;
+//   import collections use List;
+//   import http2 use *;
+//
+//   mut enc = HpackEncoder.make(&HpackConfig.make());   // one direction's two ends
+//   mut dec = HpackDecoder.make(HpackConfig.make());
+//   mut fields = List[HeaderField].empty();
+//   fields.push(HeaderField.make(":method", "GET"));
+//   fields.push(HeaderField.secret("x-api-key", "..."));  // never indexed
+//   mut block = List[u8].empty();
+//   enc.encode(fields.view(), &mut block);              // a header block
+//   mut got = List[HeaderField].empty();
+//   match dec.decode(block.view(), &mut got) {          // the same list back
+//     case let Ok(size) { ... got[0usize].name.view() ... }
+//     case let Error(e) { ... e.message() ... e.isConnectionError() ... }
+//   }
+//
+//   HpackConfig.make(): the bounds, each a field to change     (HPACK BOUNDS)
+//   HeaderField.make(name, value)  .secret(name, value)         (FIELDS)
+//     f.name  f.value  f.sensitive  f.size()
+//   listSize(fields)  isSensitiveName(name)
+//   HpackEncoder.make(&cfg)                                     (THE ENCODER)
+//     e.encode(fields, out)  e.startBlock(out)  e.field(name, value, sensitive, out)
+//     e.setPeerTableSize(n)  e.dynamicTable()
+//   HpackDecoder.make(cfg)                                      (THE DECODER)
+//     d.decode(block, out)  d.settingSent()  d.settingAcknowledged()  d.dynamicTable()
+//   HpackError: e.kind  e.detail  e.isConnectionError()  e.message()  (HPACK ERRORS)
+//   HpackErrorKind: Malformed TooLarge Abandoned
+//   DynamicTable.make(maxSize)                                  (TABLES)
+//     t.len() t.size() t.maxSize() t.name(i) t.value(i) t.entrySize(i)
+//     t.setMaxSize(n) t.add(name, value) t.find(name, value)
+//   staticName(i)  staticValue(i)  staticFind(name, value)  TableMatch
+//   staticTableLen  defaultHeaderTableSize  entryOverhead  maxInteger
+//   encodeInteger(out, flags, prefixBits, v)  decodeInteger(src, &pos, prefixBits)  (WIRE)
+//   encodeString(out, s, huffman)  decodeString(src, &pos, limit, out, &why)
+//   encodeIndexed(out, i)  encodeLiteral(out, how, nameIndex, name, value, huffman)
+//   encodeSizeUpdate(out, n)  Indexing: Incremental Without Never
+//   huffmanEncode(s, out)  huffmanEncodedLen(s)  huffmanDecode(src, out, limit)  (HUFFMAN)
+//   HuffmanStatus: Done BadPadding HasEos TooLong  huffmanWhy(status)
+//
+// FIELDS. A HeaderField is a name and a value as bytes, as they travel, and
+// whether it is sensitive. HPACK takes them as given: lowercasing names,
+// checking pseudo-header fields and refusing connection-specific ones is
+// the HTTP/2 layer's (RFC 9113, section 8.2), so an intermediary passes a
+// field on unchanged. A field sent never-indexed (section 6.2.3) arrives
+// with 'sensitive' set, and the encoder sends a sensitive field
+// never-indexed, so the flag survives every hop. The encoder also treats
+// every field named authorization, proxy-authorization or cookie as
+// sensitive, whatever its flag says (section 7.1.3).
+//
+// THE ENCODER. 'encode' writes a whole list as one block. A field whose
+// name and value are an entry of either table is sent as its index; any
+// other as a literal naming the table's entry for the name where there is
+// one, added to the dynamic table (incremental indexing) where it fits, and
+// not added where it is larger than the whole table. A string is
+// Huffman-coded unless that is longer (and 'huffman' is set). The encoder's
+// table follows the peer's SETTINGS_HEADER_TABLE_SIZE, given to
+// 'setPeerTableSize', but never grows past 'encoderTableSize'; when its size
+// changes, the next block begins with the size updates RFC 7541 asks for
+// (section 4.2: the smallest size since the last block, then the final
+// one). A block built a field at a time begins with 'startBlock'.
+//
+// THE DECODER. 'decode' takes a whole header block (the HTTP/2 layer joins
+// a HEADERS frame's fragment to its CONTINUATIONs first, bounding their
+// total) and appends its fields to a list. Its table starts at 4096 bytes,
+// as the peer's encoder assumes until it reads our SETTINGS. The driver
+// tells it two things about our SETTINGS_HEADER_TABLE_SIZE, which is
+// 'headerTableSize': 'settingSent' when it goes out (the peer may raise its
+// table to it from then on) and 'settingAcknowledged' when its ACK arrives
+// (no update may pass it from then on, and a block after a decrease must
+// begin by shrinking the table).
+// It refuses (Malformed) an index of 0 or past the tables' ends; an integer
+// cut off or past maxInteger, or with more continuation bytes than that
+// needs; a string whose length runs past the block's end; a Huffman string
+// with padding longer than 7 bits or not all ones, or holding EOS; a size
+// update after a field, past the allowed size, or missing where one is
+// owed.
+//
+// HPACK BOUNDS (each a field of HpackConfig). 'headerTableSize' (4096) is
+// the decoder's table, which the HTTP/2 layer advertises as
+// SETTINGS_HEADER_TABLE_SIZE; the decoder holds the peer to it once
+// 'settingSent' and 'settingAcknowledged' say the SETTINGS went out and
+// came back. 'encoderTableSize' (4096) is the most the
+// encoder's table takes, however much the peer allows. 'maxHeaderListSize'
+// (16 KiB) is the decoded list's size, counted as SETTINGS_MAX_HEADER_LIST_SIZE
+// counts it (each field's name and value and 32), checked as each field is
+// decoded: past it the block is still decoded to its end, so the table
+// stays in step with the peer's, but no more fields are kept, and the
+// decode fails TooLarge, which ends the one message (a server's 431).
+// 'headerListAbortSize' (64 KiB, four times that, as hyper does) bounds
+// that work: past it decoding stops at once, before the field that would
+// pass it is copied (an indexed field's size is known from the table, a raw
+// string's from its length, a Huffman string's as it decodes), and the
+// decode fails Abandoned. This is the HPACK bomb's answer: a block of
+// one-byte references to one large entry costs a byte each and expands
+// 4 KB each, so expansion, not the block's length, is what is counted.
+//
+// HPACK ERRORS. An HpackError has a kind and one line of detail. Malformed
+// and Abandoned leave the decoder's table out of step with the peer's
+// encoder, so 'isConnectionError' says the connection must end
+// (COMPRESSION_ERROR, RFC 9113 section 4.3), and the decoder refuses every
+// later block; TooLarge leaves it in step, so the connection goes on. On
+// any error the list handed in is as it was.
+//
+// TABLES. The static table is Appendix A's 61 entries; QPACK's (RFC 9204,
+// Appendix A) is a different 99, so what it shares is the shape, not the
+// data. A DynamicTable is a list of entries newest first, its size the sum
+// of their sizes, kept under its maximum by evicting the oldest; an entry
+// larger than the maximum empties it.
+//
+// HUFFMAN. RFC 7541's Appendix B code, encoded and decoded a byte at a
+// time and needing no state between strings (see huffman.cone's header).
+//
+// Not here yet: the frames and the connection (the next two parts); a
+// decoder fed a block in pieces as its frames arrive (it takes the block
+// whole); an encoder that leaves an often-changing field (a date, a path
+// with an id) out of its table to save room for fields that repeat.
+
+mod http2;
+
+pub use hpack;
+pub use huffman;

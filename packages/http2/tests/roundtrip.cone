@@ -1,0 +1,231 @@
+// Header lists through an encoder and a decoder, block after block, on one
+// connection's direction: 600 lists of random fields (names from the
+// static table and not, values of any byte from 0 to 255, some empty, some
+// of several KB that are too large to index, a tenth marked sensitive) while
+// the peer's SETTINGS_HEADER_TABLE_SIZE changes every 50 blocks (to 0, to
+// less than one large field, past the encoder's cap). After every block the
+// list must come back field for field, the sensitive flags with it, and the
+// two tables must be the same entry for entry; and no sensitive value may
+// ever sit in a table. Run twice: Huffman with a large cap, raw with the
+// default one. Then an intermediary: what one decoder gives, a second
+// encoder passes on, and the sensitive fields stay never-indexed across
+// the hop. The PRNG is fixed, so the byte counts printed are too.
+
+mod roundtrip;
+
+import testing use *;
+import stdio use printStr;
+import collections use *;
+import http2 use *;
+
+struct Rng {
+  s: u64;
+
+  fn next(self: &mut) u64 {
+    s = s ^ (s >> 12u64);
+    s = s ^ (s << 25u64);
+    s = s ^ (s >> 27u64);
+    s * 0x2545F4914F6CDD1Du64
+  }
+
+  fn below(self: &mut, n: u64) u64 {(self.next() >> 33u64) % n}
+}
+
+let names: Array[&str, 16] = [":method", ":path", ":authority", ":scheme", ":status", "accept", "user-agent",
+  "content-type", "cookie", "authorization", "x-request-id", "x-trace", "cache-control", "set-cookie",
+  "x-big", "date"];
+let common: Array[&str, 8] = ["GET", "/", "/index.html", "https", "200", "gzip, deflate", "text/html", "no-cache"];
+
+const secretMark = "secret-";
+
+fn randomValue(r: &mut Rng, out: &mut String) {
+  let kind = r.below(10u64);
+  if kind < 3u64 {
+    out.append(common[usize.from(r.below(8u64))]);
+    return;
+  }
+  var n = r.below(41u64);
+  if kind == 9u64 {n = 300u64 + r.below(5000u64);}
+  var i = 0u64;
+  while i < n {
+    let k = r.below(4u64);
+    // Mostly text, sometimes any byte at all (HPACK carries bytes)
+    out.appendByte(if k == 0u64 {u8.from(r.below(256u64))} else {u8.from(0x20u64 + r.below(95u64))});
+    i = i + 1u64;
+  }
+}
+
+fn randomList(r: &mut Rng) List[HeaderField] {
+  var fields = List[HeaderField].empty();
+  let n = 1u64 + r.below(15u64);
+  var i = 0u64;
+  while i < n {
+    var name = String.empty();
+    if r.below(5u64) == 0u64 {
+      name.append("x-custom-");
+      name.appendUInt(r.below(30u64));
+    } else {
+      name.append(names[usize.from(r.below(16u64))]);
+    }
+    var value = String.empty();
+    let secret = r.below(10u64) == 0u64;
+    if secret {
+      value.append(secretMark);
+      value.appendUInt(r.next());
+    } else {
+      randomValue(r, &mut value);
+      // keep the mark for the secrets alone
+      if startsWithMark(value.view()) {value.clear();}
+    }
+    fields.push(HeaderField(name, value, secret));
+    i = i + 1u64;
+  }
+  fields
+}
+
+fn sameTables(a: &DynamicTable, b: &DynamicTable) bool {
+  if a.len() != b.len() || a.size() != b.size() || a.maxSize() != b.maxSize() {return false;}
+  var i = 0usize;
+  while i < a.len() {
+    if !bytesEqual(a.name(i), b.name(i)) || !bytesEqual(a.value(i), b.value(i)) {return false;}
+    i = i + 1usize;
+  }
+  true
+}
+
+fn startsWithMark(v: &Array[u8]) bool {
+  v.len >= secretMark.len() && bytesEqual(&v[0usize ..< secretMark.len()], secretMark)
+}
+
+fn holdsSecret(t: &DynamicTable) bool {
+  var i = 0usize;
+  while i < t.len() {
+    if startsWithMark(t.value(i)) {return true;}
+    i = i + 1usize;
+  }
+  false
+}
+
+// Whether got is want, field for field: a field arrives sensitive when it
+// was sent so, or its name makes it so
+fn sameLists(want: &Array[HeaderField], got: &Array[HeaderField]) bool {
+  if want.len != got.len {return false;}
+  var i = 0usize;
+  while i < want.len {
+    let w = &want[i];
+    let g = &got[i];
+    if !bytesEqual(w.name.view(), g.name.view()) || !bytesEqual(w.value.view(), g.value.view()) {return false;}
+    if g.sensitive != (w.sensitive || isSensitiveName(w.name.view())) {return false;}
+    i = i + 1usize;
+  }
+  true
+}
+
+let peerSizes: Array[usize, 12] = [4096usize, 0usize, 300usize, 65536usize, 1024usize, 4096usize, 100usize,
+  2048usize, 0usize, 16384usize, 4096usize, 512usize];
+
+fn run(label: &str, huffman: bool, cap: usize) {
+  var c = HpackConfig.make();
+  c.huffman = huffman;
+  c.encoderTableSize = cap;
+  c.headerTableSize = 65536usize;
+  c.maxHeaderListSize = 1048576usize;
+  c.headerListAbortSize = 4194304usize;
+  var enc = HpackEncoder.make(&c);
+  var dec = HpackDecoder.make(c);
+  dec.settingSent();
+  dec.settingAcknowledged();
+  var r = Rng(0x9E3779B97F4A7C15u64);
+  var lists = 0u64;
+  var fieldCount = 0u64;
+  var plain = 0u64;
+  var coded = 0u64;
+  var badLists = 0u64;
+  var badTables = 0u64;
+  var secrets = 0u64;
+  var errors = 0u64;
+  var block = List[u8].empty();
+  var got = List[HeaderField].empty();
+  var b = 0usize;
+  while b < 600usize {
+    if b % 50usize == 0usize {enc.setPeerTableSize(peerSizes[(b / 50usize) % 12usize]);}
+    let fields = randomList(&mut r);
+    block.clear();
+    got.clear();
+    enc.encode(fields.view(), &mut block);
+    match dec.decode(block.view(), &mut got) {
+      case let Ok(size) {if size != listSize(fields.view()) {errors = errors + 1u64;}}
+      case let Error(e) {errors = errors + 1u64;}
+    }
+    if !sameLists(fields.view(), got.view()) {badLists = badLists + 1u64;}
+    if !sameTables(enc.dynamicTable(), dec.dynamicTable()) {badTables = badTables + 1u64;}
+    if holdsSecret(enc.dynamicTable()) {secrets = secrets + 1u64;}
+    lists = lists + 1u64;
+    fieldCount = fieldCount + u64.from(fields.len());
+    plain = plain + u64.from(listSize(fields.view())) - 32u64 * u64.from(fields.len());
+    coded = coded + u64.from(block.len());
+    b = b + 1usize;
+  }
+  var l = String.from(label);
+  l.append(": decode errors");
+  expectUInt(errors, 0u64, l.view());
+  l = String.from(label);
+  l.append(": lists not the same");
+  expectUInt(badLists, 0u64, l.view());
+  l = String.from(label);
+  l.append(": tables not the same");
+  expectUInt(badTables, 0u64, l.view());
+  l = String.from(label);
+  l.append(": a secret in a table");
+  expectUInt(secrets, 0u64, l.view());
+  var s = String.from(label);
+  s.append(": ");
+  s.appendUInt(lists);
+  s.append(" lists, ");
+  s.appendUInt(fieldCount);
+  s.append(" fields, ");
+  s.appendUInt(plain);
+  s.append(" bytes of names and values in ");
+  s.appendUInt(coded);
+  s.append(" bytes of blocks\n");
+  printStr(s.view());
+}
+
+// Through an intermediary: decode with one pair, encode again with a second
+fn hop() {
+  var c = HpackConfig.make();
+  var enc1 = HpackEncoder.make(&c);
+  var dec1 = HpackDecoder.make(c);
+  var enc2 = HpackEncoder.make(&c);
+  var dec2 = HpackDecoder.make(c);
+  var fields = List[HeaderField].empty();
+  fields.push(HeaderField.make(":method", "GET"));
+  fields.push(HeaderField.secret("x-api-key", "k1"));
+  fields.push(HeaderField.make("authorization", "Bearer t"));
+  fields.push(HeaderField.make("x-plain", "p"));
+  var b1 = List[u8].empty();
+  enc1.encode(fields.view(), &mut b1);
+  var mid = List[HeaderField].empty();
+  match dec1.decode(b1.view(), &mut mid) {
+    case let Ok(size) {}
+    case let Error(e) {expect(false, "the first hop decodes");}
+  }
+  expect(mid[1usize].sensitive && mid[2usize].sensitive && !mid[3usize].sensitive, "the first hop: the flags");
+  var b2 = List[u8].empty();
+  enc2.encode(mid.view(), &mut b2);
+  expectUInt(u64.from(enc2.dynamicTable().len()), 1u64, "the second hop's table: x-plain alone");
+  var out = List[HeaderField].empty();
+  match dec2.decode(b2.view(), &mut out) {
+    case let Ok(size) {}
+    case let Error(e) {expect(false, "the second hop decodes");}
+  }
+  expect(sameLists(fields.view(), out.view()), "the second hop: the same list, the flags kept");
+  expectUInt(u64.from(*b2[1usize] & 0xF0u8), 0x10u64, "the second hop: x-api-key sent never-indexed");
+}
+
+fn main() i32 {
+  run("huffman, cap 65536", true, 65536usize);
+  run("raw, cap 4096", false, 4096usize);
+  hop();
+  done()
+}
