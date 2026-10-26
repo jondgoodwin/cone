@@ -306,9 +306,10 @@
 // with 'maker' before running that job. 'aio.hostPost[S, J](h, job)' queues a
 // job, any thread, and wakes the thread; J has 'run(self, lp &mut Loop, s &mut
 // S)'. 'aio.hostAwaitable[S, J, R](h, job)' is the same job as an Awaitable[R]:
-// J has a field 'reply' that the 'await' puts in before the job is queued,
-// which its 'run' answers (nothing is allocated but the job's block; dropped
-// unawaited, the job is dropped). 'h.end()' ends the service now and waits
+// the 'await' writes the reply beside the job when it queues it, and J's
+// 'run(self, lp &mut Loop, s &mut S, rp actors.Reply)' answers it (the job is
+// made whole, with no reply in it; nothing is allocated but the job's block;
+// dropped unawaited, the job is dropped). 'h.end()' ends the service now and waits
 // until it has (below). A job for a service that has ended, or queued once the
 // program is ending, is dropped unrun, its body finalized: what awaits it is
 // abandoned. The S of 'hostPost' and 'hostAwaitable' is checked against the
@@ -514,7 +515,8 @@
 //    the service as its own type); a service is made on the I/O thread by the
 //    hosting package's 'maker', at its first job, not by the package; services
 //    are offered Completions and turned oldest first, and ended newest first;
-//    a job's 'reply' field is the one actorhttp's jobs already had.
+//    an awaited job's reply is handed to its 'run', written beside the job by
+//    the 'await' that starts it, so a job is never made with a blank reply.
 //  - 'stat' and 'resolve' make their buffer for the call, not
 //    one the caller passes; 'resolve' has the port as its second parameter
 //    with a default of 0, and gives a List, whole.
@@ -769,6 +771,65 @@ fn newJob[J](body: J) *u8 {
 // A job's block for the hosted service S at 'host', its body moved in
 fn newHostJob[S, J](host: *HostHead, body: J) *u8 {
   jobBlock[J](body, &runHostJob[S, J], host)
+}
+
+// An awaited hosted job: its header, the reply its answer goes back in, and
+// what it is. The reply is written by the 'await' that starts the job
+// (startHostJob): until then the field holds nothing, and nothing reads or
+// finalizes it
+struct AwaitJob[J] {
+  pub head: JobHead;
+  pub reply: actors.Reply;
+  pub body: J;
+}
+
+// An awaited job's block for the hosted service S at 'host', its body moved
+// in, its reply still to come
+fn newHostAwaitJob[S, J](host: *HostHead, body: J) *u8 {
+  let p = libc.malloc(mem.sizeof[AwaitJob[J]]()) as *AwaitJob[J];
+  if p as usize == 0usize {
+    die("aio: out of memory for an operation");
+  }
+  (*p).head = JobHead(nullJob(), &runHostAwaitJob[S, J], &dropAwaitJob[J], host);
+  mem.writeRaw[J](&(*p).body as *J, body);
+  p as *u8
+}
+
+// The seam starts an awaited hosted job: its reply is written beside its
+// body, and from then on the job dropped unrun drops the reply too
+fn startHostJob[J](ctx: *u8, rp: actors.Reply) {
+  let p = ctx as *AwaitJob[J];
+  mem.writeRaw[actors.Reply](&(*p).reply as *actors.Reply, rp);
+  (*p).head.drop = &dropStartedAwaitJob[J];
+  enqueue(ctx);
+}
+
+// On the I/O thread: an awaited hosted job, its body and reply moved out, its
+// block freed, run with the service and the reply
+fn runHostAwaitJob[S, J](job: *u8, lp: &mut Loop, at: *u8) {
+  let p = job as *AwaitJob[J];
+  var body = mem.readRaw[J](&(*p).body as *J);
+  let rp = mem.readRaw[actors.Reply](&(*p).reply as *actors.Reply);
+  libc.free(job);
+  let b = at as *HostBlock[S];
+  body.run(lp, &mut (*b).svc, rp);
+}
+
+// An awaited job dropped before its 'await' started it: its body (it has no
+// reply yet), its block freed
+fn dropAwaitJob[J](job: *u8) {
+  let p = job as *AwaitJob[J];
+  let body = mem.readRaw[J](&(*p).body as *J);
+  libc.free(job);
+}
+
+// An awaited job dropped unrun once started: its body and its reply,
+// abandoning what awaits it, its block freed
+fn dropStartedAwaitJob[J](job: *u8) {
+  let p = job as *AwaitJob[J];
+  let body = mem.readRaw[J](&(*p).body as *J);
+  let rp = mem.readRaw[actors.Reply](&(*p).reply as *actors.Reply);
+  libc.free(job);
 }
 
 fn jobBlock[J](body: J, run: &fn(job: *u8, lp: &mut Loop, at: *u8), host: *HostHead) *u8 {
@@ -1158,14 +1219,15 @@ pub fn hostPost[S, J](h: Host, body: J, file: &Array[u8] = srcFile(), line: u32 
   enqueue(newHostJob[S, J](hostBlockOf[S](h, file, line), body));
 }
 
-// A job for h's service, an S, that an actor awaits: J has a field 'reply' (an
-// actors.Reply) that the 'await' puts in before the job is queued, and its
-// 'run' answers it with an R. Nothing is allocated but the job's block;
-// dropped unawaited, the job is dropped, its reply with it. An S that is not
-// the type h was made for is a panic at the caller's line
+// A job for h's service, an S, that an actor awaits: the 'await' writes the
+// reply beside the job as it queues it, and J's 'run(self, lp &mut Loop, s
+// &mut S, rp actors.Reply)' answers it with an R. Nothing is allocated but the
+// job's block; dropped unawaited, the job is dropped; dropped once started,
+// unrun, its reply with it. An S that is not the type h was made for is a
+// panic at the caller's line
 pub fn hostAwaitable[S, J, R](h: Host, body: J, file: &Array[u8] = srcFile(), line: u32 = srcLine())
     actors.Awaitable[R] {
-  actors.Awaitable[R].of(newHostJob[S, J](hostBlockOf[S](h, file, line), body), &startJob[J], &dropJobAt)
+  actors.Awaitable[R].of(newHostAwaitJob[S, J](hostBlockOf[S](h, file, line), body), &startHostJob[J], &dropJobAt)
 }
 
 // h's block, checked to be a service of type S: its tag is S's (hostTag)

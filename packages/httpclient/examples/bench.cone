@@ -156,7 +156,7 @@ fn serveThread(a: ServerArgs) u64 {
   var evs = List[httpconn.Event].empty();
   var served = 0u64;
   while !a.stop.load() {
-    drv.poll(&mut lp, Instant.now() + Duration.fromMillis(20i64), &mut evs);
+    drv.poll(&mut lp, Instant.now() + Duration.fromMillis(20i64), &uni evs);
     var k = 0usize;
     while k < evs.len() {
       let e = &mut evs[k];
@@ -173,7 +173,7 @@ fn serveThread(a: ServerArgs) u64 {
     evs.clear();
   }
   drv.abortAll(&mut lp);
-  drv.pump(&mut lp, &mut evs);
+  drv.pump(&mut lp, &uni evs);
   served
 }
 
@@ -205,7 +205,7 @@ fn gets(cl: &mut Client, lp: &mut Loop, base: &str, n: u64, inFlight: u64, cold:
       cl.get(lp, base, Sink.Here(1u64));
       asked = asked + 1u64;
     }
-    cl.poll(lp, forever(), &mut out);
+    cl.poll(lp, forever(), &uni out);
     var k = 0usize;
     while k < out.len() {
       let e = &mut out[k];
@@ -275,7 +275,7 @@ fn freshClients(lp: &mut Loop, base: &str, n: u64) Run {
     run.sent = run.sent + r.sent;
     cl.abortAll(lp);
     var out = List[Event].empty();
-    cl.pump(lp, &mut out);
+    cl.pump(lp, &uni out);
     k = k + 1u64;
   }
   run.took = Instant.now() - t0;
@@ -306,8 +306,8 @@ fn sameLoop(n: u64) Run {
       cl.get(&mut lp, base.view(), Sink.Here(1u64));
       busy = true;
     }
-    cl.pump(&mut lp, &mut out);
-    sdrv.pump(&mut lp, &mut sevs);
+    cl.pump(&mut lp, &uni out);
+    sdrv.pump(&mut lp, &uni sevs);
     var limit = cl.wakeAt();
     let w = sdrv.wakeAt();
     if w < limit {limit = w;}
@@ -320,7 +320,7 @@ fn sameLoop(n: u64) Run {
       k = k + 1usize;
     }
     comps.clear();
-    sdrv.pump(&mut lp, &mut sevs);
+    sdrv.pump(&mut lp, &uni sevs);
     k = 0usize;
     while k < sevs.len() {
       let e = &mut sevs[k];
@@ -334,7 +334,7 @@ fn sameLoop(n: u64) Run {
       k = k + 1usize;
     }
     sevs.clear();
-    cl.pump(&mut lp, &mut out);
+    cl.pump(&mut lp, &uni out);
     k = 0usize;
     while k < out.len() {
       let e = &mut out[k];
@@ -362,8 +362,8 @@ fn sameLoop(n: u64) Run {
   run.reused = n;
   cl.abortAll(&mut lp);
   sdrv.abortAll(&mut lp);
-  cl.pump(&mut lp, &mut out);
-  sdrv.pump(&mut lp, &mut sevs);
+  cl.pump(&mut lp, &uni out);
+  sdrv.pump(&mut lp, &uni sevs);
   run
 }
 
@@ -375,7 +375,7 @@ fn settle(cl: &mut Client, lp: &mut Loop) {
   var out = List[Event].empty();
   let until = Instant.now() + Duration.fromMillis(300i64);
   while Instant.now() < until {
-    cl.poll(lp, until, &mut out);
+    cl.poll(lp, until, &uni out);
     out.clear();
   }
 }
@@ -425,7 +425,7 @@ fn idleMemory(lp: &mut Loop, base: &str, n: u32, secure: bool) {
   fill(&mut cl, lp, base, n, if secure {"TLS, tables already grown"} else {"plain, tables already grown"});
   var out = List[Event].empty();
   cl.abortAll(lp);
-  cl.pump(lp, &mut out);
+  cl.pump(lp, &uni out);
 }
 
 fn main() i32 {
