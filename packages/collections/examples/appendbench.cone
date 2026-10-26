@@ -1,0 +1,97 @@
+// Bench: what appending a slice of bytes to a List[u8] costs by 'appendSlice'
+// (one reserve and one block copy) against a loop of 'push' and the send
+// operator's 'out <- each chunk', on the real clock. A list with room for 1 MiB
+// is filled with chunks of 16 bytes, or of 4096 bytes, cleared (the block is
+// kept) and filled again, 256 times: 256 MiB appended each way, with no growth
+// and no fresh memory in the timing, so what is measured is the append. The best
+// of five runs. For each chunk size it prints nanoseconds per KiB for each, and
+// the push loop's time over appendSlice's.
+//
+// Build it optimised to measure:
+//
+//   congo run --release packages/collections/examples/appendbench.cone
+
+mod appendbench;
+
+import stdio use *;
+import time use Instant;
+import collections use *;
+
+const fillSize = 1048576usize;
+const fills = 256usize;
+
+fn pushLoop(out: &mut List[u8], chunk: &Array[u8]) {
+  var t = 0usize;
+  let times = fillSize / chunk.len;
+  while t < times {
+    var j = 0usize;
+    while j < chunk.len { out.push(chunk[j]); j = j + 1usize; }
+    t = t + 1usize;
+  }
+}
+
+fn bulk(out: &mut List[u8], chunk: &Array[u8]) {
+  var t = 0usize;
+  let times = fillSize / chunk.len;
+  while t < times { out.appendSlice(chunk); t = t + 1usize; }
+}
+
+// The send operator's own bulk form, 'out <- each chunk': the compiler's loop
+fn viaEach(out: &mut List[u8], chunk: &Array[u8]) {
+  var t = 0usize;
+  let times = fillSize / chunk.len;
+  while t < times { out <- each chunk; t = t + 1usize; }
+}
+
+// The best of five runs of one way (0 push loop, 1 appendSlice, 2 'each'), in
+// nanoseconds, and the length of the last fill
+fn best(chunk: &Array[u8], way: i32) (i64, usize) {
+  var low = 0i64 - 1i64;
+  var len = 0usize;
+  var out = List[u8].withCapacity(fillSize);
+  var run = 0usize;
+  while run < 5usize {
+    let t = Instant.now();
+    var f = 0usize;
+    while f < fills {
+      out.clear();
+      if way == 1i32 { bulk(&mut out, chunk); }
+      else if way == 2i32 { viaEach(&mut out, chunk); }
+      else { pushLoop(&mut out, chunk); }
+      f = f + 1usize;
+    }
+    let ns = t.elapsed().nanos();
+    if low < 0i64 || ns < low { low = ns; }
+    len = out.len();
+    run = run + 1usize;
+  }
+  (low, len)
+}
+
+fn report(size: usize) {
+  var chunk = List[u8].withCapacity(size);
+  var i = 0usize;
+  while i < size { chunk.push(u8.from(i % 251usize)); i = i + 1usize; }
+  let pushed = best(chunk.view(), 0i32);
+  let bulked = best(chunk.view(), 1i32);
+  let eached = best(chunk.view(), 2i32);
+  if pushed.1 != bulked.1 || pushed.1 != eached.1 { printStr("LENGTHS DIFFER\n"); }
+  let kib = i64.from(fills * fillSize / 1024usize);
+  printStr("chunk ");
+  printUInt(u64.from(size));
+  printStr(" B: push loop ");
+  printInt(pushed.0 / kib);
+  printStr(" ns/KiB, <- each ");
+  printInt(eached.0 / kib);
+  printStr(" ns/KiB, appendSlice ");
+  printInt(bulked.0 / kib);
+  printStr(" ns/KiB, push loop over appendSlice x");
+  printInt(pushed.0 / (if bulked.0 > 0i64 {bulked.0} else {1i64}));
+  printStr("\n");
+}
+
+fn main() i32 {
+  report(16usize);
+  report(4096usize);
+  0i32
+}

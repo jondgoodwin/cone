@@ -84,6 +84,7 @@ pub struct OpCore {
   // What the operation owns: None when absent
   pub buf: Option[IoBuf] = None;
   pub bytes: Option[Bytes] = None;
+  pub bufs: Option[Uni[Chain]] = None;   // a gather's buffers (SendChain): out of line, 8 bytes here
   pub group: Option[CancelGroup] = None;
   // The promise: the Loop's thread only
   state: u32 = stFree;
@@ -216,6 +217,76 @@ pub struct OpCore {
 
   // The SocketAddr at the address area's start
   fn sockAddr(self: &mut) *SocketAddr {&mut addr as *SocketAddr}
+
+  // Whether it is a gather: a send of a chain's segments
+  fn isGather(self: &) bool {
+    match &bufs {
+      case let &Some(c) {true}
+      else {false}
+    }
+  }
+
+  // The gather's bytes, and its segments: 0 with none
+  fn gatherLen(self: &) usize {
+    match &bufs {
+      case let &Some(c) {c.len()}
+      else {0usize}
+    }
+  }
+  fn gatherSegments(self: &) usize {
+    match &bufs {
+      case let &Some(c) {c.segments()}
+      else {0usize}
+    }
+  }
+
+  // The gather's bytes from offset 'from' on, as spans (each segment's
+  // address and length, the first cut at 'from'), into the 'max' spans at
+  // 'out': how many it filled. A Chain shows its bytes and its segment count
+  // but not where each segment lies, so each segment is moved out of the
+  // chain's front and back onto its end, in turn, and the chain is as it was
+  // after one round: same segments, same order, and no block moves (an
+  // IoBuf's bytes stay where they are as the IoBuf moves)
+  fn gatherSpans(self: &mut, from: usize, out: *Span, max: usize) usize {
+    var filled = 0usize;
+    match &mut bufs {
+      case var &mut Some(c) {
+        let segs = c.segments();
+        var skip = from;
+        var k = 0usize;
+        while k < segs {
+          match c.popFront() {
+            case var Some(b) {
+              let len = b.len();
+              if skip >= len {
+                skip = skip - len;
+              } else if filled < max {
+                (*(out + filled)).base = b.base() + skip;
+                (*(out + filled)).len = len - skip;
+                skip = 0usize;
+                filled = filled + 1usize;
+              }
+              // Its bytes left the chain with it, so it fits back in: never
+              // refused. (Bound to a name: '_ = c.push(b)' here meets the
+              // compiler's error 1075, a defect)
+              let refused = c.push(b);
+            }
+            else {}
+          }
+          k = k + 1usize;
+        }
+      }
+      else {}
+    }
+    filled
+  }
+}
+
+// Where some bytes lie: Linux's struct iovec on x86-64, which sendmsg takes
+// as they are; Windows' WSABUFs are made from them
+struct Span {
+  pub base: *u8;
+  pub len: usize;
 }
 
 // A record: the Loop's part, then the asker's (aio: the reply and its policy

@@ -223,6 +223,38 @@ pub struct List[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
   // 'list <- value' is 'list.push(value)'
   pub fn append overload `<-`(self: &mut, value: T) { self.push(value); }
 
+  // Add a copy of every value of src at the end, in order, with one reserve
+  // and one block copy (a memmove of the whole run), where 'push' in a loop
+  // reserves and writes one at a time. src is any slice: another list's
+  // 'view()', an array, a part of either. Only a type whose values copy can
+  // be added this way, as for 'resize'; a list of a move type takes the values
+  // of another list with 'appendList' instead. The block may move, as for
+  // 'reserve', so a borrow into this list is stale afterwards. src may not be a
+  // slice of this very list: the compiler refuses 'list.appendSlice(list.view())'
+  // (1168), since the block may move under the slice being copied.
+  pub fn appendSlice(self: &mut, src: &Array[T]) where T is Copy {
+    let n = src.len;
+    if n == 0usize { return; }
+    self.reserve(n);
+    mem.moveRaw(ptr + used, src as *T, n);
+    used = used + n;
+  }
+
+  // Move every value of another list to the end of this one, in order, with
+  // one reserve and one block move; the other list is consumed, its block
+  // given back, and no value is copied or finalized, so a move type (a list
+  // of Strings) is appended this way. A list of a copy type that is to be
+  // kept uses 'appendSlice(other.view())'.
+  pub fn appendList(self: &mut, other: List[T]) {
+    var from = other;
+    let n = from.used;
+    if n == 0usize { return; }
+    self.reserve(n);
+    mem.moveRaw(ptr + used, from.ptr, n);
+    used = used + n;
+    from.used = 0usize;
+  }
+
   // Move the last value out, or None when it is empty
   pub fn pop(self: &mut) Option[T] {
     if used == 0usize { return None; }

@@ -120,8 +120,8 @@
 // A CLIENT. 'Client.make(cfg, maxBody)' takes an httpclient.Config (its pools
 // per origin, retries, redirects and TLS settings are httpclient's) and the
 // most body bytes a response may have; past it the exchange fails at
-// Stage.Limit, as fetchWhole's does. The httpclient.Client it names lives on
-// this package's thread; the handle is plain data that moves, may be sent in a
+// Stage.Limit, as fetchWhole's does. The httpclient.Client it names lives in
+// the package's service, on aio's I/O thread; the handle is plain data that moves, may be sent in a
 // message to another actor, and 'clone' makes another that names the same
 // client, its connection pools and limits shared: any number of actors fetch
 // through one client at once. The last handle's going ends the client: every
@@ -165,36 +165,42 @@
 // group's state, not the order of the calls, decides. A client or a Conn
 // dropped while an exchange of it is in flight ends it Cancelled.
 //
-// THE SERVICE THREAD. One thread, started by the first handle made, owns an
-// iocore Loop, every client's httpclient.Client and one httpconn.Driver for
-// the connections made here; it is the one thread that touches them, as
-// iocore asks. The actors' workers never wait on I/O. An 'await' on an
-// operation hands it to the service thread through a QUEUE: a list of jobs
-// under a Mutex, which the thread takes whole each turn, and a Waker that ends
-// its poll at once, as aio's I/O thread is handed its operations. Each turn
-// the thread starts the jobs, lets every client and the driver handle what
-// completed, gathers each response's events (the status and header fields,
-// then the body's bytes, which it releases as it takes them so that the
-// connection reads on) and, at the exchange's one final event, writes the
-// answer into the reply the 'await' is waiting for, which goes to the actor's
-// mailbox as any reply does: one push, and, if the actor was idle, its
-// scheduling. Nothing of the actor runs on the service thread. An exchange in
-// flight holds a count of the actor that awaits it, in its reply's envelope,
-// as a request to another actor does: the actor lives until the answer comes.
+/// THE SERVICE THREAD is aio's I/O thread. The package's service -- every
+// client's httpclient.Client, one httpconn.Driver for the connections made
+// here, and a Driver for each server -- is a service HOSTED there (aio.cone's
+// header, HOSTED SERVICES), made by the first job queued for it, on the Loop
+// aio's own operations use; the I/O thread is the one thread that touches
+// them, as iocore asks. The actors' workers never wait on I/O. An 'await' on
+// an operation hands it to the service through aio's QUEUE for it
+// (aio.hostAwaitable; a job nothing awaits, aio.hostPost), which wakes the
+// thread. Each pass the thread offers the service the Completions its poll
+// returned (the clients and drivers take their own), runs the service's jobs,
+// which start exchanges, and gives it its turn: every client and driver is
+// pumped, each response's events gathered (the status and header fields, then
+// the body's bytes, which it releases as it takes them so that the connection
+// reads on) and, at the exchange's one final event, the answer is written into
+// the reply the 'await' is waiting for, which goes to the actor's mailbox as
+// any reply does: one push, and, if the actor was idle, its scheduling. The
+// thread polls no later than the earliest instant a client or driver wants a
+// turn. Nothing of the actor runs on the service thread. An exchange in flight
+// holds a count of the actor that awaits it, in its reply's envelope, as a
+// request to another actor does: the actor lives until the answer comes.
 //
-// This is httpclient and httpconn on their own Loop, not on aio's sockets: aio's
-// I/O thread and this one are two, each with a Loop of its own. Running these on
-// aio's sockets proper, one Loop for both, is the design's later step.
+// This is httpclient and httpconn on aio's Loop and thread, not on aio's
+// Sockets: their sockets are the drivers' own, on the same Loop.
 //
 // THE PROGRAM'S END. The package's finalizer, which finalAll() runs before
-// the actors package's, waits until no actor is queued or running (an actor
-// paused on a fetch is neither), then ends the service: it stops taking jobs,
-// and its Loop dies, which cancels every operation still in flight and closes
-// every socket. Their answers are not delivered: each paused behaviour is
-// ABANDONED, as aio's are (aio.cone's header says how): its reply's envelope is
-// dropped, an actor with nothing else holding it dies, and the values its
-// paused behaviour held are finalized; the rest of the behaviour never runs.
-// An exchange awaited after that is abandoned the same way at once.
+// aio's and the actors package's, waits until no actor is queued or running
+// (an actor paused on a fetch is neither), then ends the service (aio's
+// Host.end) and waits until it has, before the packages it uses (httpconn,
+// httpclient, tls) are finalized: on the I/O thread the jobs queued for it are
+// dropped unrun, every client, server and connection is reset with the Loop
+// still alive, and the service is dropped. Their answers are not delivered:
+// each paused behaviour is ABANDONED, as aio's are (aio.cone's header says
+// how): its reply's envelope is dropped, an actor with nothing else holding it
+// dies, and the values its paused behaviour held are finalized; the rest of
+// the behaviour never runs. An exchange awaited after that is abandoned the
+// same way at once. aio's own I/O ends after, in aio's finalizer.
 //
 // STREAMS. 'client.stream(request)' and 'client.events(request)' are answered
 // when the response's HEAD arrives (not its body) with a handle that moves, a
@@ -302,14 +308,11 @@
 
 mod actorhttp;
 
-import libc;
 import slots use SlotTable;
-import thread;
-import sync use Mutex;
 import collections use List, String, Dict;
 import iobuf use IoBuf;
 import time use Instant, Duration;
-import iocore use Loop, Waker, Completion, SocketAddr, CancelGroup, IoError, forever;
+import iocore use Loop, Completion, SocketAddr, CancelGroup, IoError, forever;
 import http use *;
 import httpconn;
 import httpclient;
@@ -319,10 +322,8 @@ import aio use IoLimits;
 import actors;
 
 fn @initpure init() {
-  svcLock = Mutex.make();
   nextId = Atomic[u64].of(0u64);
-  svc = Atomic[usize].of(0usize);
-  ended = Atomic[bool].of(false);
+  svcHost = aio.host[Service](&makeService);
 }
 
 // A panic, reported at the line calling 'die'
@@ -371,234 +372,45 @@ pub struct FetchError {
 }
 
 // ---------------------------------------------------------------------------
-// The service thread and its queue
+// The service, hosted on aio's I/O thread, and its queue
 // ---------------------------------------------------------------------------
 
-// A job's header, first in its block: the next job queued, and the functions
-// made for the job's type, which take the block
-struct JobHead {
-  pub next: *JobHead;
-  pub run: &fn(job: *u8, lp: &mut Loop, sv: &mut Service);
-  pub drop: &fn(job: *u8);
-}
-
-// A job: its header, then what it is. J has 'run(self: &mut, lp &mut Loop, sv &mut Service)'
-struct Job[J] {
-  pub head: JobHead;
-  pub body: J;
-}
-
-// The service thread, once started: its queue, under svcLock, and its loop's
-// waker, set before 'ready' and never changed. It lives as long as the
-// process, the waker with it
-struct SvcThread {
-  pub head: *JobHead;
-  pub tail: *JobHead;
-  pub waker: Waker;
-  pub ready: Atomic[u32];       // 1 once the thread has put its waker here
-  pub os: thread.Thread[u32];
-}
-
-// Guards the queue, 'svc' and 'ended'
-let svcLock: Mutex;
-
-// The service thread, or 0 before the first exchange is awaited. Read and
-// written under svcLock by any thread; an atomic held by a 'let' global, set
-// in 'init'
-let svc: Atomic[usize];
-
-// The program is ending: no job is taken from now on (under svcLock). An atomic
-// held by a 'let' global, set in 'init'
-let ended: Atomic[bool];
+// The service: hosted on aio's I/O thread (aio's HOSTED SERVICES), made
+// there by the first job queued for it. Set in 'init'; nothing but its block
+// is made, and no thread started, until a handle or an exchange queues a job
+let svcHost: aio.Host;
 
 // The ids handles carry: never 0
 let nextId: Atomic[u64];
 
 fn newId() u64 {nextId.add(1u64) + 1u64}
 
-fn nullJob() *JobHead {null}
+// The service, made on aio's I/O thread
+fn makeService() Service {Service.make()}
 
-// A job's block, its body moved in
-fn newJob[J](body: J) *u8 {
-  let p = libc.malloc(mem.sizeof[Job[J]]()) as *Job[J];
-  if p as usize == 0usize {
-    die("actorhttp: out of memory for an operation");
-  }
-  (*p).head = JobHead(nullJob(), &runJob[J], &dropJob[J]);
-  mem.writeRaw[J](&(*p).body as *J, body);
-  p as *u8
-}
-
-// On the service thread: the job's body moved out, its block freed, and run
-fn runJob[J](job: *u8, lp: &mut Loop, sv: &mut Service) {
-  let p = job as *Job[J];
-  var body = mem.readRaw[J](&(*p).body as *J);
-  libc.free(job);
-  body.run(lp, sv);
-}
-
-// A job never run: its body dropped (an exchange's reply among it,
-// abandoning what awaits it), its block freed
-fn dropJob[J](job: *u8) {
-  let p = job as *Job[J];
-  let body = mem.readRaw[J](&(*p).body as *J);
-  libc.free(job);
-}
-
-fn dropHead(h: *JobHead) {
-  let f = (*h).drop;
-  f(h as *u8);
-}
-
-// Queue a job for the service thread, starting the thread if this is the
-// first; once the program is ending, the job is dropped instead
-fn enqueue(job: *u8) {
-  let h = job as *JobHead;
-  svcLock.lock();
-  if ended.load() {
-    svcLock.unlock();
-    dropHead(h);
-    return;
-  }
-  if svc.load() == 0usize {
-    startSvc();
-  }
-  let t = svc.load() as *SvcThread;
-  if (*t).tail as usize == 0usize {
-    (*t).head = h;
-  } else {
-    (*(*t).tail).next = h;
-  }
-  (*t).tail = h;
-  svcLock.unlock();
-  (*t).waker.wake();
-}
-
-// What the service thread is handed: its SvcThread, where it puts its loop's waker
-struct SvcArg {
-  pub t: usize;
-}
-
-// Start the service thread, under svcLock: its Loop is made on it, and its
-// waker is in place before this returns
-fn startSvc() {
-  let t = libc.calloc(1usize, mem.sizeof[SvcThread]()) as *SvcThread;
-  if t as usize == 0usize {
-    die("actorhttp: out of memory for the service thread");
-  }
-  mem.writeRaw[thread.Thread[u32]](&(*t).os as *thread.Thread[u32],
-    thread.startWith(thread.Options(name: "actorhttp service"), SvcArg(t as usize), &svcMain));
-  while (*t).ready.load() == 0u32 {
-    sync.futexWait(&(*t).ready, 0u32);
-  }
-  svc.store(t as usize);
-}
-
-// The service thread: it takes the jobs queued and runs them, drives
-// everything they started, and waits in its Loop's poll for what completes (a
-// socket, a timer, a cancel group's cancel) or for the waker. Once the
-// program is ending it drops what is queued and dies: the Loop cancels every
-// operation in flight and closes every socket, and every exchange still
-// awaited is abandoned
-fn svcMain(arg: SvcArg) u32 {
-  {
-    let me = arg.t as *SvcThread;
-    var lp = Loop.mustMake();
-    mem.writeRaw[Waker](&(*me).waker as *Waker, lp.waker());
-    (*me).ready.store(1u32);
-    sync.futexWake(&(*me).ready);
-    var sv = Service.make();
-    var comps = List[Completion].empty();
-    var more = true;
-    while more {
-      svcLock.lock();
-      let t = svc.load() as *SvcThread;
-      var h = nullJob();
-      if t as usize != 0usize {
-        h = (*t).head;
-        (*t).head = nullJob();
-        (*t).tail = nullJob();
-      }
-      let stop = ended.load();
-      svcLock.unlock();
-      while h as usize != 0usize {
-        let next = (*h).next;
-        if stop {
-          dropHead(h);
-        } else {
-          let f = (*h).run;
-          f(h as *u8, &mut lp, &mut sv);
-        }
-        h = next;
-      }
-      if stop {
-        more = false;
-      } else {
-        sv.drive(&mut lp, &mut comps);
-      }
-    }
-  }
-  0u32
-}
-
-// The package's finalizer, run by finalAll() before the actors package's:
-// once no actor is queued or running, the service ends, and every behaviour
-// still paused on it is abandoned (the package's header, THE PROGRAM'S END)
+// The package's finalizer, run by finalAll() before aio's and the actors
+// package's: once no actor is queued or running, the service ends, and every
+// behaviour still paused on it is abandoned (the package's header, THE
+// PROGRAM'S END). It ends here, not in aio's finalizer, so that it ends before
+// the packages it uses (httpconn, httpclient, tls) are finalized
 fn final() {
   actors.waitQuiet();
-  svcLock.lock();
-  ended.store(true);
-  let t = svc.load() as *SvcThread;
-  svcLock.unlock();
-  if t as usize == 0usize {
-    return;
-  }
-  (*t).waker.wake();
-  let th = mem.readRaw[thread.Thread[u32]](&(*t).os as *thread.Thread[u32]);
-  th.join();
+  svcHost.end();
 }
 
 // ---------------------------------------------------------------------------
 // Awaitables
 // ---------------------------------------------------------------------------
 
-// The seam starts an operation: the reply its answer goes back in is written
-// into the job, which goes to the service thread (actors.Awaitable's closure)
-fn startJob[J](ctx: *u8, rp: actors.Reply) {
-  let p = ctx as *Job[J];
-  (*p).body.reply = rp;
-  enqueue(ctx);
-}
-
-// A job's block until the 'await' starts it: 'take' hands it on, and an
-// Awaitable that dies unawaited, its closure finalized, drops the job it still
-// holds (its body dropped, an exchange's reply among it)
-struct JobHold is Move {
-  job: *u8;
-
-  fn take(self: &mut) *u8 {
-    let j = job;
-    job = null;
-    j
-  }
-
-  fn final(self: &uni) {
-    if job as usize != 0usize {
-      dropHead(job as *JobHead);
-    }
-  }
-}
-
-// The operation awaited: its job, made now, started by the 'await'
+// The operation awaited: its job, made now, queued for the service by the
+// 'await'. J has 'run(self, lp &mut Loop, sv &mut Service)' and a 'reply'
 fn awaitable[J, R](body: J) actors.Awaitable[R] {
-  actors.Awaitable[R].make(fn(rp: actors.Reply) [var held = JobHold(newJob[J](body))] {
-    startJob[J](held.take(), rp);
-  })
+  aio.hostAwaitable[Service, J, R](svcHost, body)
 }
 
 // A job nothing awaits: it is queued at once
 fn post[J](body: J) {
-  enqueue(newJob[J](body));
+  aio.hostPost[Service, J](svcHost, body);
 }
 
 // ---------------------------------------------------------------------------
