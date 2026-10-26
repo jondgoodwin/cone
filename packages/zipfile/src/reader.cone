@@ -2,7 +2,7 @@
 //
 // The central directory says where an entry is and what it should come to; this file finds the data
 // through the entry's local header, refuses what it will not read (encrypted entries, methods other
-// than stored and deflate), and delivers it checked: its size, its CRC-32 and, when the entry has one,
+// than stored, deflate and zstd), and delivers it checked: its size, its CRC-32 and, when the entry has one,
 // its data descriptor must agree with the central directory. Reading one entry touches the central
 // directory's record for it and its own bytes, never another entry's.
 
@@ -25,12 +25,12 @@ fn locate(ar: &Archive, data: &Array[u8], i: usize) Result[Located, ZipError] {
     return refusal[Located](ErrorKind.Encrypted, e.offset,
       about("the entry", e.name.view(), "is encrypted; this package does not decrypt").view());
   }
-  if e.method != 0u16 && e.method != 8u16 {
+  if e.method != methodStored() && e.method != methodDeflate() && e.method != methodZstd() {
     var why = about("the entry", e.name.view(), "uses compression method ");
     why.appendUInt(u64.from(e.method));
     why.append(" (");
     why.append(e.methodName().view());
-    why.append("); only stored and deflate are read");
+    why.append("); only stored, deflate and zstd are read");
     return refusal[Located](ErrorKind.Unsupported, e.offset, why.view());
   }
   let dlen = u64.from(data.len);
@@ -137,6 +137,8 @@ pub struct EntryReader {
   crc: u32;
   table: deflate.Crc32;
   inf: deflate.Inflater;
+  // Method 93's decoder (unused by the other methods; making one allocates nothing)
+  zd: zstd.Decompressor;
   // All the compressed data is fed, and 'finish' has been told to the Inflater
   fedAll: bool;
   told: bool;
@@ -173,7 +175,9 @@ pub struct EntryReader {
     if done { return Status.Done; }
     let cap = if max == 0usize { 1usize } else { max };
     let before = out.len();
-    let s = if method == 0u16 { self.pullStored(data, out, cap) } else { self.pullDeflate(data, out, cap) };
+    let s = if method == methodStored() { self.pullStored(data, out, cap) }
+      else if method == methodZstd() { self.pullZstd(data, out, cap) }
+      else { self.pullDeflate(data, out, cap) };
     if out.len() > before {
       crc = table.update(crc, out.view(), before, out.len());
       got += u64.from(out.len() - before);
@@ -227,6 +231,63 @@ pub struct EntryReader {
     Status.Done
   }
 
+  // Method 93: the zstd package's Decompressor, fed the entry's bytes 64 KiB at a time. Its own limits
+  // apply as they do to any zstd stream: the output is bounded by the entry's size, and a frame that asks
+  // for a window past the Decompressor's default (128 MiB) is refused before anything of it is decoded.
+  fn pullZstd(self: &mut, data: &Array[u8], out: &mut List[u8], cap: usize) Status {
+    let before = out.len();
+    while true {
+      let produced = out.len() - before;
+      if produced >= cap { return Status.MoreOutput; }
+      let s = zd.pull(out, cap - produced);
+      if s == zstd.Status.MoreOutput { return Status.MoreOutput; }
+      if s == zstd.Status.Done { return Status.Done; }
+      if s == zstd.Status.Failed { return self.zstdFault(); }
+      // NeedInput: feed the next piece, or say there is no more
+      if fedAll {
+        if told { return self.fail(ErrorKind.BadData, "the compressed data ends before the zstd stream does"); }
+        zd.finish();
+        told = true;
+      } else {
+        let left = end - pos;
+        let n = if left < 65536u64 { usize.from(left) } else { 65536usize };
+        let from = usize.from(pos);
+        zd.feed(&data[from..<from + n]);
+        pos += u64.from(n);
+        if pos == end { fedAll = true; }
+      }
+    }
+    Status.Done
+  }
+
+  // The zstd package's failure as this package's: the output limit and the window limit are TooLarge, a
+  // frame whose content checksum fails is BadChecksum, a frame that names a dictionary is Unsupported (a
+  // zip entry has none to name), anything else is BadData
+  fn zstdFault(self: &mut) Status {
+    match zd.error() {
+      case let Some(ze) {
+        var kind = ErrorKind.BadData;
+        var why = about("the compressed data of", label.view(), "is bad: ");
+        if ze.kind == zstd.ErrorKind.TooLarge {
+          kind = ErrorKind.TooLarge;
+          why = about("the entry", label.view(), "decompresses to more than its header says: ");
+        } else if ze.kind == zstd.ErrorKind.WindowTooLarge {
+          kind = ErrorKind.TooLarge;
+          why = about("the entry", label.view(), "asks for a zstd window that is too large: ");
+        } else if ze.kind == zstd.ErrorKind.BadChecksum {
+          kind = ErrorKind.BadChecksum;
+          why = about("the zstd frame of", label.view(), "fails its own check: ");
+        } else if ze.kind == zstd.ErrorKind.NeedsDictionary {
+          kind = ErrorKind.Unsupported;
+          why = about("the entry", label.view(), "needs a zstd dictionary: ");
+        }
+        why.append(ze.reason.view());
+        self.fail(kind, why.view())
+      }
+      case is None { self.fail(ErrorKind.BadData, "the compressed data is bad") }
+    }
+  }
+
   // The end: the size and the CRC-32 must be what the central directory said, and the data
   // descriptor, if the entry has one, must agree
   fn verify(self: &mut, data: &Array[u8]) Status {
@@ -260,14 +321,18 @@ fn openEntry(ar: &Archive, data: &Array[u8], i: usize) Result[EntryReader, ZipEr
       let e = ar.entry(i);
       var inf = deflate.Inflater.make(deflate.Format.Raw);
       inf.setLimit(e.size);
+      // The output may not pass the entry's size; 0 is a real limit to a Decompressor (an empty entry)
+      var zd = zstd.Decompressor.make();
+      zd.setLimit(e.size);
       Ok[EntryReader, ZipError](EntryReader(e.name.copy(), e.method, e.flags, loc.start, loc.end, e.size, e.crc,
-        e.compressedSize, 0u64, 0u32, deflate.Crc32.make(), inf, false, false, false, None[ZipError]))
+        e.compressedSize, 0u64, 0u32, deflate.Crc32.make(), inf, zd, false, false, false, None[ZipError]))
     }
   }
 }
 
 // The whole data of entry 'i'
 fn readEntry(ar: &Archive, data: &Array[u8], i: usize) Result[List[u8], ZipError] {
+  if i < ar.count() && ar.entry(i).method == methodZstd() { return readZstdEntry(ar, data, i); }
   match locate(ar, data, i) {
     case let Error(e) { return Error[List[u8], ZipError](e); }
     case let Ok(loc) {
@@ -313,6 +378,33 @@ fn readEntry(ar: &Archive, data: &Array[u8], i: usize) Result[List[u8], ZipError
         case is None {}
       }
       return Ok[List[u8], ZipError](out);
+    }
+  }
+}
+
+// The whole data of a zstd entry (method 93). It goes through the entry's own EntryReader, a megabyte at a
+// time, so the whole-entry read and the streamed one cannot disagree: the same limits (output, window),
+// the same size and CRC-32 checks, the same data descriptor check. (A one-shot zstd.decompress would
+// not apply the window limit.)
+fn readZstdEntry(ar: &Archive, data: &Array[u8], i: usize) Result[List[u8], ZipError] {
+  match openEntry(ar, data, i) {
+    case let Error(e) { Error[List[u8], ZipError](e) }
+    case var Ok(r) {
+      var out = List[u8].empty();
+      // Room for the size the header gives, but a header can claim anything: the list grows from there
+      let want = r.size();
+      out.reserve(if want < 1048576u64 { usize.from(want) } else { 1048576usize });
+      while true {
+        let s = r.pull(data, &mut out, 1048576usize);
+        if s == Status.Done { break; }
+        if s == Status.Failed {
+          match r.error() {
+            case let Some(fault) { return Error[List[u8], ZipError](fault); }
+            case is None { return refusal[List[u8]](ErrorKind.BadData, 0u64, "the zstd data is bad"); }
+          }
+        }
+      }
+      Ok[List[u8], ZipError](out)
     }
   }
 }
