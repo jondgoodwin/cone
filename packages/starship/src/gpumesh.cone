@@ -241,10 +241,28 @@ struct ShipMesher {
     var done = List[Completion].empty();
     works.waitFor(device, ticket, &mut done);
     if done.len() != 1usize || !done[0usize].ok { return mesh.Mesh.empty(); }
-    var samples = match done.pop() {
-      case var Some(c) { c.buffersIn(sampleSlots.view()) }
+    // Taken apart: the slabs' samples go on to be meshed, and the job's other buffers are kept to the end
+    // ('spent'): a buffer's end waits for the GPU to be idle, and ending these before the meshing makes the
+    // sampling and the meshing slower (measured: 6% in all)
+    var all = match done.pop() {
+      case var Some(c) { c.(buffers) }
       case is None { List[Buffer].empty() }
     };
+    var samples = List[Buffer].withCapacity(nslabs);
+    var spent = List[Buffer].empty();
+    {
+      var slot = 0u32;
+      var next = 0usize;      // the slabs' slots are in order
+      each b in all.drain() {
+        if next < sampleSlots.len() && *sampleSlots[next] == slot {
+          samples.push(b);
+          next = next + 1usize;
+        } else {
+          spent.push(b);
+        }
+        slot = slot + 1u32;
+      }
+    }
     times.sampling = micros(t0);
 
     // Meshing: each slab its own grid, its points the whole grid's
