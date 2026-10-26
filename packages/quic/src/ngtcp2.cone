@@ -5,8 +5,9 @@
 //
 // The structs are ngtcp2's own, field for field, in its order: Cone lays a
 // struct out as C does, and each one's size is the one cl.exe gives it
-// (measured against the 1.22.1 headers; tests/binding.cone checks the sizes,
-// and what ngtcp2's defaults put in the fields this package reads). Pointers
+// (measured against the 1.22.1 headers; checkLayout in quic.cone checks the
+// sizes, and what ngtcp2's defaults put in the fields this package reads,
+// once, on the first context made). Pointers
 // to the structs ngtcp2 never asks the package to look into (a connection, an
 // AEAD, a TLS object) are '*u8'. An enum is a C int: i32. ngtcp2's timestamps
 // and durations are nanoseconds, u64.
@@ -18,9 +19,10 @@
 // so on; they are written here as that call, with these versions.
 //
 // The callbacks ngtcp2 makes into the package are listed by type below and
-// written in engine.cone; the crypto helper's own callbacks (the TLS
-// handshake, packet protection, key update) are ngtcp2's functions, put in the
-// callbacks struct by address.
+// written in connection.cone and verify.cone; the crypto helper's own
+// callbacks (packet protection, key update) are ngtcp2's functions, put in the
+// callbacks struct by address. The helper's handshake callback is wrapped by
+// the package's (verify.cone says why).
 
 const callbacksV3 = 3i32;          // NGTCP2_CALLBACKS_VERSION
 const settingsV3 = 3i32;           // NGTCP2_SETTINGS_VERSION
@@ -45,10 +47,18 @@ const errDropConn = -232i32;
 const errRetry = -231i32;
 const errIdleClose = -238i32;
 const errHandshakeTimeout = -236i32;
+const errCrypto = -213i32;             // NGTCP2_ERR_CRYPTO: the TLS stack failed (an alert, a certificate refused)
+const errWriteMore = -230i32;          // NGTCP2_ERR_WRITE_MORE: the packet has room for more streams' data
+
+// The crypto helper's two interruptions that are not failures
+// (NGTCP2_CRYPTO_OSSL_ERR_TLS_WANT_X509_LOOKUP, _WANT_CLIENT_HELLO_CB)
+const osslWantX509Lookup = -10001i32;
+const osslWantClientHelloCb = -10002i32;
 
 // Flags
 const streamDataFlagFin = 1u32;        // NGTCP2_STREAM_DATA_FLAG_FIN
 const streamCloseFlagAppErrorCodeSet = 1u32;
+const writeStreamFlagMore = 1u32;      // NGTCP2_WRITE_STREAM_FLAG_MORE
 const writeStreamFlagFin = 2u32;       // NGTCP2_WRITE_STREAM_FLAG_FIN
 
 // ngtcp2_ccerr_type
@@ -210,15 +220,16 @@ struct ConnRef {
   userData: *u8;
 }
 
-// The callbacks the package writes (engine.cone), by ngtcp2's types
+// The callbacks the package writes (connection.cone, verify.cone), by ngtcp2's types
+alias RecvCryptoDataFn = &fn @c (conn: *u8, level: i32, offset: u64, data: *u8, datalen: usize,
+    user: *u8) i32;
+alias ExtendMaxStreamsFn = &fn @c (conn: *u8, maxStreams: u64, user: *u8) i32;
 alias RecvStreamDataFn = &fn @c (conn: *u8, flags: u32, stream: i64, offset: u64, data: *u8,
     datalen: usize, user: *u8, streamUser: *u8) i32;
 alias StreamOpenFn = &fn @c (conn: *u8, stream: i64, user: *u8) i32;
 alias StreamCloseFn = &fn @c (conn: *u8, flags: u32, stream: i64, appErrorCode: u64, user: *u8,
     streamUser: *u8) i32;
 alias StreamResetFn = &fn @c (conn: *u8, stream: i64, finalSize: u64, appErrorCode: u64, user: *u8,
-    streamUser: *u8) i32;
-alias StreamStopSendingFn = &fn @c (conn: *u8, stream: i64, appErrorCode: u64, user: *u8,
     streamUser: *u8) i32;
 alias AckedStreamDataOffsetFn = &fn @c (conn: *u8, stream: i64, offset: u64, datalen: u64,
     user: *u8, streamUser: *u8) i32;
@@ -234,7 +245,7 @@ alias GetNewConnectionIdFn = &fn @c (conn: *u8, cid: &mut Cid, token: *u8, cidle
 struct Callbacks {
   clientInitial: *u8;                // ngtcp2_crypto_client_initial_cb (a client's)
   recvClientInitial: *u8;            // ngtcp2_crypto_recv_client_initial_cb (a server's)
-  recvCryptoData: *u8;               // ngtcp2_crypto_recv_crypto_data_cb
+  recvCryptoData: RecvCryptoDataFn;  // the package's, around the helper's (verify.cone)
   handshakeCompleted: HandshakeCompletedFn;
   recvVersionNegotiation: *u8;
   encrypt: *u8;                      // ngtcp2_crypto_encrypt_cb
@@ -246,8 +257,8 @@ struct Callbacks {
   streamClose: StreamCloseFn;
   recvStatelessReset: *u8;
   recvRetry: *u8;                    // ngtcp2_crypto_recv_retry_cb (a client's)
-  extendMaxLocalStreamsBidi: *u8;
-  extendMaxLocalStreamsUni: *u8;
+  extendMaxLocalStreamsBidi: ExtendMaxStreamsFn;
+  extendMaxLocalStreamsUni: ExtendMaxStreamsFn;
   rand: RandFn;
   getNewConnectionId: GetNewConnectionIdFn;
   removeConnectionId: *u8;
@@ -267,7 +278,7 @@ struct Callbacks {
   ackDatagram: *u8;
   lostDatagram: *u8;
   getPathChallengeData: *u8;         // ngtcp2_crypto_get_path_challenge_data_cb
-  streamStopSending: StreamStopSendingFn;
+  streamStopSending: *u8;            // this end's own read shutdown: not used
   versionNegotiation: *u8;           // ngtcp2_crypto_version_negotiation_cb
   recvRxKey: *u8;
   recvTxKey: *u8;
@@ -317,6 +328,8 @@ extern {
   fn @c ngtcp2_conn_shutdown_stream_read(conn: *u8, flags: u32, stream: i64, appErrorCode: u64) i32;
   fn @c ngtcp2_conn_extend_max_stream_offset(conn: *u8, stream: i64, datalen: u64) i32;
   fn @c ngtcp2_conn_extend_max_offset(conn: *u8, datalen: u64);
+  fn @c ngtcp2_conn_extend_max_streams_bidi(conn: *u8, n: usize);
+  fn @c ngtcp2_conn_extend_max_streams_uni(conn: *u8, n: usize);
   fn @c ngtcp2_conn_get_streams_bidi_left(conn: *u8) u64;
   fn @c ngtcp2_conn_get_streams_uni_left(conn: *u8) u64;
 
@@ -328,6 +341,7 @@ extern {
   fn @c ngtcp2_conn_in_draining_period(conn: *u8) i32;
   fn @c ngtcp2_conn_get_ccerr(conn: *u8) *CcErr;
   fn @c ngtcp2_conn_get_tls_alert(conn: *u8) u8;
+  fn @c ngtcp2_conn_get_tls_error(conn: *u8) i32;
   fn @c ngtcp2_conn_get_negotiated_version(conn: *u8) u32;
   fn @c ngtcp2_conn_is_server(conn: *u8) i32;
 
@@ -346,8 +360,6 @@ extern {
   // The crypto helper: the callbacks it provides, put in Callbacks by address
   fn @c ngtcp2_crypto_client_initial_cb(conn: *u8, user: *u8) i32;
   fn @c ngtcp2_crypto_recv_client_initial_cb(conn: *u8, dcid: *u8, user: *u8) i32;
-  fn @c ngtcp2_crypto_recv_crypto_data_cb(conn: *u8, level: i32, offset: u64, data: *u8,
-      datalen: usize, user: *u8) i32;
   fn @c ngtcp2_crypto_encrypt_cb(dest: *u8, aead: *u8, aeadCtx: *u8, plaintext: *u8,
       plaintextlen: usize, nonce: *u8, noncelen: usize, aad: *u8, aadlen: usize) i32;
   fn @c ngtcp2_crypto_decrypt_cb(dest: *u8, aead: *u8, aeadCtx: *u8, ciphertext: *u8,
@@ -362,6 +374,11 @@ extern {
   fn @c ngtcp2_crypto_get_path_challenge_data_cb(conn: *u8, data: *u8, user: *u8) i32;
   fn @c ngtcp2_crypto_version_negotiation_cb(conn: *u8, version: u32, clientDcid: *u8,
       user: *u8) i32;
+
+  // CRYPTO data to TLS, and the handshake driven as far as it goes: what the
+  // helper's recv_crypto_data callback does. Called again with no data, it
+  // resumes a handshake that was stopped for the certificate's verdict
+  fn @c ngtcp2_crypto_read_write_crypto_data(conn: *u8, level: i32, data: *u8, datalen: usize) i32;
 
   // The crypto helper's OpenSSL 3.5 half
   fn @c ngtcp2_crypto_ossl_init() i32;
