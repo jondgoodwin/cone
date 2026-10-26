@@ -147,7 +147,7 @@ extern Name *noneName;     // "None"
 // method a 'main' that returns a Result prints its error with
 extern Name *resultName;   // "Result"
 extern Name *okName;       // "Ok"
-extern Name *errorVariantName; // "Error", Result's failure
+extern Name *errorVariantName; // "Err", Result's failure
 extern Name *messageName;  // "message"
 
 // The methods a region's annotation struct may declare, which the compiler
