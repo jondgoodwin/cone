@@ -310,6 +310,60 @@ fn case9() {
   report("uni-in-option-array", i, mem.sizeof[One9]());
 }
 
+// 10. A same-size enum implementing the trait, one of whose variants holds a
+// sole virtual owner of it: generating the enum lays out every variant, and
+// the trait's vtable, reached from Pair's field, measures them all
+trait Show10 { pub fn show(self: &) u64; }
+enum Node10 is Show10 {
+  pub fn show(self: &) u64;
+  struct Leaf {
+    pub n: u64;
+    pub fn show(self: &) u64 {n}
+    fn final(self: &uni) { finInner = finInner + 1; }
+  }
+  struct Pair {
+    first: Guni[Show10];
+    pub fn show(self: &) u64 {first.show()}
+    fn final(self: &uni) { finOuter = finOuter + 1; }
+  }
+}
+fn case10() {
+  start();
+  var i = 0u64;
+  while i < 20u64 {
+    let q: Guni[Show10] = Guni[Node10](Node10.Pair(Guni[Node10](Node10.Leaf(1u64))));
+    i = i + q.show();
+  }
+  report("variant-uni", i, mem.sizeof[Node10]());
+}
+
+// 11. The same with a counted virtual owner in the variant, both shared
+trait Show11 { pub fn show(self: &) u64; }
+enum Node11 is Show11 {
+  pub fn show(self: &) u64;
+  struct Leaf {
+    pub n: u64;
+    pub fn show(self: &) u64 {n}
+    fn final(self: &uni) { finInner = finInner + 1; }
+  }
+  struct Pair {
+    first: Grc[mut, Show11];
+    pub fn show(self: &) u64 {first.show()}
+    fn final(self: &uni) { finOuter = finOuter + 1; }
+  }
+}
+fn case11() {
+  start();
+  var i = 0u64;
+  while i < 20u64 {
+    let inner: Grc[mut, Show11] = Grc[mut, Node11](Node11.Leaf(1u64));
+    let q: Grc[mut, Show11] = Grc[mut, Node11](Node11.Pair(inner));
+    let r = q;
+    i = i + q.show() + r.show() - 1u64;
+  }
+  report("variant-rc", i, mem.sizeof[Node11]());
+}
+
 fn main() i32 {
   case1();
   case2();
@@ -320,5 +374,7 @@ fn main() i32 {
   case7();
   case8();
   case9();
+  case10();
+  case11();
   0
 }
