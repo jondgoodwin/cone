@@ -1,0 +1,316 @@
+// A client and a server Engine in one process, in memory: each UDP payload
+// one writes is handed to the other by hand, with no socket, no network and
+// no clock (the time is advanced by the test, a millisecond a round). The
+// certificates are tls's test certificates (packages/tls/tests/certs, README
+// there): the server's for 'localhost', under the test root the client is
+// given. Checked: the handshake (TLS 1.3, ALPN h3, the certificate trusted),
+// a bidirectional stream carrying a request and a 300 KB body that the server
+// echoes back (larger than the stream's flow-control window, so it moves only
+// as each side credits what it read), a unidirectional stream from the
+// server, the connection closed by the client with an application code that
+// the server receives, and two refusals: a certificate for another name, and
+// no ALPN protocol in common.
+
+mod handshake;
+
+import stdio use *;
+import fs;
+import path use Path;
+import collections use List, String;
+import time use Instant, Duration;
+import quic;
+
+// A file of tls's test certificates: congo test runs a test in
+// build/<mode>/tests/<name>/, four folders below this package's, which sits
+// beside tls's
+fn certs(name: &str) Path {
+  var p = String.from("../../../../../tls/tests/certs/");
+  p.append(name);
+  Path.fromString(p)
+}
+
+fn readText(name: &str) String {
+  let p = certs(name);
+  match fs.readFile(&p) {
+    case var Ok(r) {return r;}
+    case let Error(e) {}
+  }
+  printStr("cannot read ");
+  printStr(p.view());
+  printStr("\n");
+  String.empty()
+}
+
+fn clientTls(alpn: &str) quic.TlsContext {
+  match quic.TlsContext.client(readText("ca.pem").view(), alpn) {
+    case var Ok(r) {return r;}
+    case let Error(e) {
+      printStr(e.message().view());
+      printStr("\n");
+    }
+  }
+  panic("the client's TLS context could not be made")
+}
+
+fn serverTls(alpn: &str) quic.TlsContext {
+  let cert = certs("server.pem");
+  let key = certs("server.key");
+  match quic.TlsContext.server(&cert, &key, alpn) {
+    case var Ok(r) {return r;}
+    case let Error(e) {
+      printStr(e.message().view());
+      printStr("\n");
+    }
+  }
+  panic("the server's TLS context could not be made")
+}
+
+fn clientAddr() quic.Addr {quic.Addr.v4(127u8, 0u8, 0u8, 1u8, 50000u16)}
+fn serverAddr() quic.Addr {quic.Addr.v4(127u8, 0u8, 0u8, 1u8, 4433u16)}
+
+// One side's view of the connection: what it read on each stream, and what
+// it was told
+struct Side {
+  name: String;
+  handshake: bool;
+  closedSeen: bool;
+  closedByPeer: bool;
+  closedApp: bool;
+  closedCode: u64;
+  bidiIn: String;           // bytes read on the bidirectional stream
+  bidiFin: bool;
+  uniIn: String;            // ... on the peer's unidirectional stream
+  uniFin: bool;
+  peerStreams: u32;
+  echoStream: i64;          // the server's: the stream it echoes on, -1 before
+  echoed: bool;
+
+  fn make(name: &str) Side {
+    Side(String.from(name), false, false, false, false, 0u64, String.empty(), false, String.empty(),
+      false, 0u32, -1i64, false)
+  }
+}
+
+// Take every event an Engine has. A server echoes what it reads on a
+// bidirectional stream back on it, as it reads it, and ends it when the
+// client's end comes. Every byte read is credited back at once
+fn drain(e: &mut quic.Engine, side: &mut Side) {
+  while true {
+    match e.pollEvent() {
+      case is Nothing {return;}
+      case is HandshakeDone {side.handshake = true;}
+      case let PeerStream(p) {side.peerStreams = side.peerStreams + 1u32;}
+      case let Data(d) {
+        let stream, bytes, fin = d.(stream, bytes, fin);
+        e.consume(stream, bytes.len());
+        if (stream & 2i64) != 0i64 {
+          side.uniIn.appendBytes(bytes.view());
+          if fin {side.uniFin = true;}
+        } else {
+          side.bidiIn.appendBytes(bytes.view());
+          if fin {side.bidiFin = true;}
+          if e.isServer() {
+            side.echoStream = stream;
+            e.send(stream, bytes.view(), fin);
+            if fin {side.echoed = true;}
+          }
+        }
+      }
+      case let Reset(r) {}
+      case let StopSending(s) {}
+      case let StreamClosed(c) {}
+      case let Closed(c) {
+        side.closedSeen = true;
+        side.closedByPeer = c.byPeer;
+        side.closedApp = c.app;
+        side.closedCode = c.code;
+      }
+    }
+  }
+}
+
+// Move every payload each side has for the other until neither has any,
+// a millisecond a round; the events of each side taken as they come
+fn pump(c: &mut quic.Engine, s: &mut quic.Engine, cs: &mut Side, ss: &mut Side, now: &mut Instant) u32 {
+  var buf = Array[u8, 1500]() <- fill 0u8;
+  var rounds = 0u32;
+  var moved = true;
+  while moved && rounds < 20000u32 {
+    moved = false;
+    while true {
+      let n = c.transmit(&mut buf[0usize ..< 1500usize], *now);
+      if n == 0usize {break;}
+      s.read(&buf[0usize ..< n], *now);
+      moved = true;
+    }
+    drain(s, ss);
+    while true {
+      let n = s.transmit(&mut buf[0usize ..< 1500usize], *now);
+      if n == 0usize {break;}
+      c.read(&buf[0usize ..< n], *now);
+      moved = true;
+    }
+    drain(c, cs);
+    *now = *now + Duration.fromMillis(1i64);
+    rounds = rounds + 1u32;
+  }
+  rounds
+}
+
+// A client, its first packet, and the server it makes
+fn connect(ctls: &quic.TlsContext, stls: &quic.TlsContext, host: &str, now: Instant) (quic.Engine, quic.Engine) {
+  var c = mustClient(ctls, host, now);
+  var buf = Array[u8, 1500]() <- fill 0u8;
+  let n = c.transmit(&mut buf[0usize ..< 1500usize], now);
+  printStr("client's first packet: ");
+  printStr(if n >= 1200usize {"padded to at least 1200 bytes"} else {"too short"});
+  printStr("\n");
+  match quic.Engine.accept(stls, &buf[0usize ..< n], &serverAddr(), &clientAddr(), &quic.Params.make(), now) {
+    case var Ok(s) {return (c, s);}
+    case let Error(e) {
+      printStr(e.message().view());
+      printStr("\n");
+    }
+  }
+  panic("the server could not accept the client's first packet")
+}
+
+fn mustClient(ctls: &quic.TlsContext, host: &str, now: Instant) quic.Engine {
+  match quic.Engine.client(ctls, host, &clientAddr(), &serverAddr(), &quic.Params.make(), now) {
+    case var Ok(e) {return e;}
+    case let Error(err) {
+      printStr(err.message().view());
+      printStr("\n");
+    }
+  }
+  panic("the client could not be made")
+}
+
+fn yesNo(b: bool) &str {if b {"yes"} else {"no"}}
+
+// A transport close code; a TLS alert's is CRYPTO_ERROR, 0x100 + the alert
+fn closeCode(code: u64) {
+  lineU("...the transport code", code);
+  if code >= 256u64 && code < 512u64 {lineU("...which is TLS alert", code - 256u64);}
+}
+
+fn line(what: &str, value: &str) {
+  printStr(what);
+  printStr(": ");
+  printStr(value);
+  printStr("\n");
+}
+
+fn lineU(what: &str, value: u64) {
+  printStr(what);
+  printStr(": ");
+  printUInt(value);
+  printStr("\n");
+}
+
+// The body: 300 KB of a pattern that shows a byte out of place
+fn body() String {
+  var s = String.from("GET /hello over quic\n");
+  var k = 0u32;
+  while s.len() < 300000usize {
+    s.appendUInt(u64.from(k));
+    s.append(" ");
+    k = k + 1u32;
+  }
+  s
+}
+
+fn exchange() {
+  printStr("-- a handshake and a stream each way\n");
+  let ctls = clientTls("h3");
+  let stls = serverTls("h3");
+  var now = Instant.fromNanos(1000000000i64);
+  var c, s = connect(&ctls, &stls, "localhost", now);
+  var cs = Side.make("client");
+  var ss = Side.make("server");
+  pump(&mut c, &mut s, &mut cs, &mut ss, &mut now);
+  line("client handshake done", yesNo(cs.handshake && c.handshakeDone()));
+  line("server handshake done", yesNo(ss.handshake && s.handshakeDone()));
+  line("client ALPN", c.alpn().view());
+  line("server ALPN", s.alpn().view());
+  line("TLS", c.tlsVersion());
+  line("server's certificate trusted", yesNo(c.verifyResult() == 0i32));
+
+  // The client's request and body, on a stream of its own
+  let sent = body();
+  var stream = -1i64;
+  match c.openBidi() {
+    case let Some(id) {stream = id;}
+    case is None[i64] {}
+  }
+  lineU("client's stream", u64.from(stream as u64));
+  c.send(stream, sent.view(), true);
+  // The server's unidirectional stream
+  match s.openUni() {
+    case let Some(id) {
+      lineU("server's unidirectional stream", u64.from(id as u64));
+      s.send(id, "pushed by the server", true);
+    }
+    case is None[i64] {}
+  }
+  pump(&mut c, &mut s, &mut cs, &mut ss, &mut now);
+  lineU("server read", u64.from(ss.bidiIn.len()));
+  line("server read it all, and its end", yesNo(ss.bidiIn.view() == sent.view() && ss.bidiFin));
+  lineU("client read back", u64.from(cs.bidiIn.len()));
+  line("the echo is the body, and ends", yesNo(cs.bidiIn.view() == sent.view() && cs.bidiFin));
+  line("client read on the server's stream", cs.uniIn.view());
+  line("...and its end", yesNo(cs.uniFin));
+  lineU("streams the server saw opened", u64.from(ss.peerStreams));
+  lineU("streams the client saw opened", u64.from(cs.peerStreams));
+
+  // The client closes with an application code
+  var buf = Array[u8, 1500]() <- fill 0u8;
+  let n = c.close(&mut buf[0usize ..< 1500usize], 0x10Cu64, now);
+  s.read(&buf[0usize ..< n], now);
+  drain(&mut c, &mut cs);
+  drain(&mut s, &mut ss);
+  line("client closed", yesNo(c.isClosed() && cs.closedSeen && !cs.closedByPeer));
+  line("server saw the peer close", yesNo(s.isClosed() && ss.closedSeen && ss.closedByPeer));
+  line("...with an application code", yesNo(ss.closedApp));
+  lineU("...which is", ss.closedCode);
+  match c.expiry() {
+    case let Some(t) {line("a timer after the close", "yes");}
+    case is None[Instant] {line("a timer after the close", "no");}
+  }
+}
+
+fn refused(what: &str, host: &str, serverAlpn: &str) {
+  printStr("-- ");
+  printStr(what);
+  printStr("\n");
+  let ctls = clientTls("h3");
+  let stls = serverTls(serverAlpn);
+  var now = Instant.fromNanos(1000000000i64);
+  var c, s = connect(&ctls, &stls, host, now);
+  var cs = Side.make("client");
+  var ss = Side.make("server");
+  pump(&mut c, &mut s, &mut cs, &mut ss, &mut now);
+  line("client handshake done", yesNo(c.handshakeDone()));
+  line("client closed", yesNo(c.isClosed()));
+  line("server closed", yesNo(s.isClosed()));
+  match c.error() {
+    case let Some(e) {line("client's error", e.message().view());}
+    case is None[quic.QuicError] {line("client's error", "none");}
+  }
+  match s.error() {
+    case let Some(e) {line("server's error", e.message().view());}
+    case is None[quic.QuicError] {line("server's error", "none");}
+  }
+  line("server saw the peer close", yesNo(ss.closedSeen && ss.closedByPeer));
+  line("...with an application code", yesNo(ss.closedApp));
+  closeCode(ss.closedCode);
+  line("client saw the peer close", yesNo(cs.closedSeen && cs.closedByPeer));
+  closeCode(cs.closedCode);
+}
+
+fn main() {
+  line("ngtcp2", quic.ngtcp2Version());
+  exchange();
+  refused("a certificate for another name", "example.com", "h3");
+  refused("no ALPN protocol in common", "localhost", "hq-interop");
+}
