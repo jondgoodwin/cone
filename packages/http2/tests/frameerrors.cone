@@ -1,0 +1,442 @@
+// Every frame-level error RFC 9113 names (sections 4.1, 4.2, 5.4 and 6),
+// each from bytes written out here as data, with the code it maps to and
+// whether it ends the stream or the connection; frame-size errors past
+// SETTINGS_MAX_FRAME_SIZE are in framelimits. A stream error leaves the
+// reader going (a PING after it is read); a connection error ends it, and
+// every later call gives the same error. The cases follow h2spec's list for
+// sections 4 to 6 where it has one (see the package's header, H2SPEC).
+
+mod frameerrors;
+
+import testing use *;
+import collections use *;
+import iobuf use IoBuf, Chain;
+import http2 use *;
+
+fn hex(b: &Array[u8]) String {
+  var s = String.empty();
+  var i = 0usize;
+  while i < b.len {
+    s.appendHex(u64.from(b[i]), 2usize);
+    i = i + 1usize;
+  }
+  s
+}
+
+fn nibble(c: u8) u8 {if c >= 'a' {c - 'a' + 10u8} else {c - '0'}}
+
+fn unhex(s: &Array[u8]) List[u8] {
+  var out = List[u8].empty();
+  var i = 0usize;
+  while i + 1usize < s.len {
+    out.push((nibble(s[i]) << 4u8) | nibble(s[i + 1usize]));
+    i = i + 2usize;
+  }
+  out
+}
+
+// Every byte a chain holds, as hex
+fn chainHex(c: &Chain) String {
+  var b = List[u8].empty();
+  b.resize(c.len(), 0u8);
+  _ = c.copyOut(0usize, b.viewMut());
+  hex(b.view())
+}
+
+fn buf(b: &Array[u8]) IoBuf {
+  var x = IoBuf(if b.len > 0usize {b.len} else {1usize});
+  _ = x.append(b);
+  x
+}
+
+fn spec(p: &PrioritySpec) String {
+  var s = String.from("dep ");
+  s.appendUInt(u64.from(p.dependency));
+  s.append(" w");
+  s.appendUInt(u64.from(p.weight));
+  if p.exclusive {s.append(" excl");}
+  s
+}
+
+fn errText(e: &FrameError) String {
+  var s = e.message();
+  if e.flowLength > 0usize {
+    s.append(" (flow ");
+    s.appendUInt(u64.from(e.flowLength));
+    s.append(")");
+  }
+  s
+}
+
+// One frame, in a line
+fn describe(f: Frame) String {
+  var s = String.empty();
+  match f {
+    case let Data(d) {
+      s.append("DATA s");
+      s.appendUInt(u64.from(d.stream));
+      if d.endStream {s.append(" end");}
+      s.append(" flow ");
+      s.appendUInt(u64.from(d.flowLength));
+      s.append(" ");
+      s.append(hex(d.data.view()).view());
+    }
+    case let Headers(h) {
+      s.append("HEADERS s");
+      s.appendUInt(u64.from(h.stream));
+      if h.endStream {s.append(" end");}
+      match h.priority {
+        case let Some(p) {
+          s.append(" (");
+          s.append(spec(&p).view());
+          s.append(")");
+        }
+        case is None[PrioritySpec] {}
+      }
+      s.append(" ");
+      s.append(hex(h.block.view()).view());
+      match h.streamError {
+        case let Some(e) {
+          s.append(" then ");
+          s.append(errText(&e).view());
+        }
+        case is None[FrameError] {}
+      }
+    }
+    case let Priority(p) {
+      s.append("PRIORITY s");
+      s.appendUInt(u64.from(p.stream));
+      s.append(" ");
+      s.append(spec(&p.spec).view());
+    }
+    case let RstStream(r) {
+      s.append("RST_STREAM s");
+      s.appendUInt(u64.from(r.stream));
+      s.append(" ");
+      s.append(r.code.name());
+      if r.code is Unknown {
+        s.append(" ");
+        s.appendUInt(u64.from(r.code.value()));
+      }
+    }
+    case let Settings(st) {
+      s.append("SETTINGS");
+      if st.ack {s.append(" ack");}
+      var i = 0usize;
+      while i < st.values.len() {
+        s.append(" ");
+        s.appendUInt(u64.from(st.values[i].id));
+        s.append("=");
+        s.appendUInt(u64.from(st.values[i].value));
+        i = i + 1usize;
+      }
+    }
+    case let PushPromise(p) {
+      s.append("PUSH_PROMISE s");
+      s.appendUInt(u64.from(p.stream));
+      s.append(" promised ");
+      s.appendUInt(u64.from(p.promised));
+      s.append(" ");
+      s.append(hex(p.block.view()).view());
+    }
+    case let Ping(p) {
+      s.append("PING");
+      if p.ack {s.append(" ack");}
+      s.append(" ");
+      s.appendHex(p.data, 16usize);
+    }
+    case let GoAway(g) {
+      s.append("GOAWAY last ");
+      s.appendUInt(u64.from(g.lastStream));
+      s.append(" ");
+      s.append(g.code.name());
+      s.append(" '");
+      s.append(String.fromBytes(g.debug.view()).view());
+      s.append("'");
+    }
+    case let WindowUpdate(w) {
+      s.append("WINDOW_UPDATE s");
+      s.appendUInt(u64.from(w.stream));
+      s.append(" +");
+      s.appendUInt(u64.from(w.increment));
+    }
+  }
+  s
+}
+
+// Feed the bytes to the reader 'piece' at a time, each piece its own
+// segment, reading after each until it needs more: what it made, one item
+// a line, ending at a connection error
+fn readIn(r: &mut FrameReader, bytes: &'b Array[u8], piece: usize) String {
+  var input = Chain.make(1048576usize);
+  var out = String.empty();
+  var at = 0usize;
+  while at < bytes.len {
+    let n = if bytes.len - at < piece {bytes.len - at} else {piece};
+    _ = input.push(buf(&bytes[at ..< at + n]));
+    at = at + n;
+    while true {
+      match r.next(&mut input) {
+        case is NeedData {break;}
+        case let Got(g) {
+          out.append(describe(g.frame).view());
+          out.append("\n");
+        }
+        case let Failed(f) {
+          out.append(errText(&f.error).view());
+          out.append("\n");
+          if f.error.isConnectionError() {return out;}
+        }
+      }
+    }
+  }
+  out
+}
+
+fn server() FrameReader {FrameReader.server(FrameConfig.make())}
+fn client() FrameReader {FrameReader.client(FrameConfig.make())}
+
+// A PING to follow a stream error, and what reading it says
+let ping = "0000080600000000000000000000000001";
+let pong = "PING 0000000000000001\n";
+
+fn srv(h: &str) String {
+  var r = server();
+  readIn(&mut r, unhex(h).view(), 1usize)
+}
+
+fn cli(h: &str) String {
+  var r = client();
+  readIn(&mut r, unhex(h).view(), 1usize)
+}
+
+fn pushCli(h: &str) String {
+  var cfg = FrameConfig.make();
+  cfg.enablePush = true;
+  var r = FrameReader.client(cfg);
+  readIn(&mut r, unhex(h).view(), 1usize)
+}
+
+fn two(a: &str, b: &str) String {
+  var s = String.from(a);
+  s.append(b);
+  s
+}
+
+fn line(s: &str) String {two(s, "\n")}
+
+fn connection(code: &str, why: &str) String {
+  var s = String.from(code);
+  s.append(" on the connection: ");
+  s.append(why);
+  s.append("\n");
+  s
+}
+
+fn data() {
+  // 6.1: DATA on stream 0; padding as long as the payload; PADDED with no
+  // room for the pad length (the stream's error: it is only DATA)
+  expectStr(srv("000000000100000000").view(),
+    connection("PROTOCOL_ERROR", "a frame that needs a stream on stream 0").view(), "6.1: DATA on stream 0");
+  expectStr(srv("000003000800000001036162").view(),
+    connection("PROTOCOL_ERROR", "a DATA frame's padding as long as its payload or longer").view(), "6.1: DATA padding too long");
+  expectStr(srv("000003000800000001ff6162").view(),
+    connection("PROTOCOL_ERROR", "a DATA frame's padding as long as its payload or longer").view(), "6.1: DATA padding of 255");
+  expectStr(srv(two("000000000800000001", ping).view()).view(),
+    two("FRAME_SIZE_ERROR on stream 1: a padded DATA frame too short to hold its pad length\n", pong).view(),
+    "6.1: DATA, PADDED with no pad length");
+}
+
+fn headers() {
+  // 6.2: HEADERS on stream 0; padding too long; too short for the pad
+  // length or the priority (all the connection's: a field block)
+  expectStr(srv("00000101050000000082").view(),
+    connection("PROTOCOL_ERROR", "a frame that needs a stream on stream 0").view(), "6.2: HEADERS on stream 0");
+  expectStr(srv("000003010c00000001058286").view(),
+    connection("PROTOCOL_ERROR", "padding longer than the frame's field block fragment leaves room for").view(),
+    "6.2: HEADERS padding too long");
+  expectStr(srv("000003012c0000000102000000").view(),
+    connection("FRAME_SIZE_ERROR", "a HEADERS frame too short to hold its priority").view(),
+    "6.2: HEADERS, PADDED and PRIORITY, too short for the priority");
+  expectStr(srv("000000010c00000001").view(),
+    connection("FRAME_SIZE_ERROR", "a padded frame too short to hold its pad length").view(),
+    "6.2: HEADERS, PADDED, empty");
+  expectStr(srv("000003012400000001000000").view(),
+    connection("FRAME_SIZE_ERROR", "a HEADERS frame too short to hold its priority").view(),
+    "6.2: HEADERS, PRIORITY, 3 bytes");
+
+  // 6.2, 6.10: a field block admits nothing but its own CONTINUATIONs
+  let interrupted = connection("PROTOCOL_ERROR", "a field block interrupted before END_HEADERS");
+  expectStr(srv("0000010100000000018200000100000000000161").view(), interrupted.view(), "6.2: DATA inside a field block");
+  expectStr(srv("0000010100000000018200000109040000000384").view(), interrupted.view(),
+    "6.10: a CONTINUATION on another stream");
+  expectStr(srv("00000101000000000182000005020000000001000000030a").view(), interrupted.view(),
+    "6.2: PRIORITY inside a field block");
+  expectStr(srv("00000101000000000182000000040000000000").view(), interrupted.view(),
+    "6.2: SETTINGS inside a field block");
+  expectStr(srv("00000101000000000182000000ff0000000001").view(), interrupted.view(),
+    "4.1: a frame of unknown type inside a field block");
+}
+
+fn priority() {
+  // 6.3: on stream 0; not 5 bytes (the stream's error); depending on itself
+  // (5.3.1, the stream's error)
+  expectStr(srv("0000050200000000000000000110").view(),
+    connection("PROTOCOL_ERROR", "a frame that needs a stream on stream 0").view(), "6.3: PRIORITY on stream 0");
+  expectStr(srv(two("00000402000000000100000003", ping).view()).view(),
+    two("FRAME_SIZE_ERROR on stream 1: a PRIORITY frame not 5 bytes long\n", pong).view(), "6.3: PRIORITY of 4 bytes");
+  expectStr(srv(two("0000060200000000010000000310ff", ping).view()).view(),
+    two("FRAME_SIZE_ERROR on stream 1: a PRIORITY frame not 5 bytes long\n", pong).view(), "6.3: PRIORITY of 6 bytes");
+  expectStr(srv(two("0000050200000000010000000110", ping).view()).view(),
+    two("PROTOCOL_ERROR on stream 1: a stream depending on itself\n", pong).view(), "5.3.1: PRIORITY depending on itself");
+}
+
+fn rstStream() {
+  // 6.4: on stream 0; not 4 bytes (the connection's)
+  expectStr(srv("00000403000000000000000008").view(),
+    connection("PROTOCOL_ERROR", "a frame that needs a stream on stream 0").view(), "6.4: RST_STREAM on stream 0");
+  expectStr(srv("000003030000000001000008").view(),
+    connection("FRAME_SIZE_ERROR", "a RST_STREAM frame not 4 bytes long").view(), "6.4: RST_STREAM of 3 bytes");
+  expectStr(srv("0000050300000000010000000800").view(),
+    connection("FRAME_SIZE_ERROR", "a RST_STREAM frame not 4 bytes long").view(), "6.4: RST_STREAM of 5 bytes");
+}
+
+fn settings() {
+  // 6.5: on a stream; ACK with a payload; not a multiple of 6
+  expectStr(srv("000000040000000001").view(),
+    connection("PROTOCOL_ERROR", "a SETTINGS, PING or GOAWAY frame on a stream").view(), "6.5: SETTINGS on stream 1");
+  expectStr(srv("000006040100000000000100001000").view(),
+    connection("FRAME_SIZE_ERROR", "a SETTINGS ACK with a payload").view(), "6.5: SETTINGS ACK with a payload");
+  expectStr(srv("000003040000000000000100").view(),
+    connection("FRAME_SIZE_ERROR", "a SETTINGS frame not a multiple of 6 bytes long").view(), "6.5: SETTINGS of 3 bytes");
+  expectStr(srv("00000704000000000000010000100000").view(),
+    connection("FRAME_SIZE_ERROR", "a SETTINGS frame not a multiple of 6 bytes long").view(), "6.5: SETTINGS of 7 bytes");
+
+  // 6.5.2: values out of range, the whole frame refused even after a good one
+  expectStr(srv("000006040000000000000200000002").view(),
+    connection("PROTOCOL_ERROR", "SETTINGS_ENABLE_PUSH other than 0 or 1").view(), "6.5.2: SETTINGS_ENABLE_PUSH 2");
+  expectStr(cli("000006040000000000000200000001").view(),
+    connection("PROTOCOL_ERROR", "SETTINGS_ENABLE_PUSH of 1 from a server").view(), "6.5.2: SETTINGS_ENABLE_PUSH 1 to a client");
+  expectStr(srv("00000c040000000000000300000064000480000000").view(),
+    connection("FLOW_CONTROL_ERROR", "SETTINGS_INITIAL_WINDOW_SIZE past 2^31-1").view(), "6.5.2: SETTINGS_INITIAL_WINDOW_SIZE 2^31");
+  expectStr(srv("000006040000000000000500003fff").view(),
+    connection("PROTOCOL_ERROR", "SETTINGS_MAX_FRAME_SIZE outside 2^14 to 2^24-1").view(), "6.5.2: SETTINGS_MAX_FRAME_SIZE 2^14-1");
+  expectStr(srv("000006040000000000000501000000").view(),
+    connection("PROTOCOL_ERROR", "SETTINGS_MAX_FRAME_SIZE outside 2^14 to 2^24-1").view(), "6.5.2: SETTINGS_MAX_FRAME_SIZE 2^24");
+  expectStr(srv("000006040000000000000800000002").view(),
+    connection("PROTOCOL_ERROR", "SETTINGS_ENABLE_CONNECT_PROTOCOL other than 0 or 1").view(), "RFC 8441: SETTINGS_ENABLE_CONNECT_PROTOCOL 2");
+  expectStr(srv("000006040000000000000900000002").view(),
+    connection("PROTOCOL_ERROR", "SETTINGS_NO_RFC7540_PRIORITIES other than 0 or 1").view(), "RFC 9218: SETTINGS_NO_RFC7540_PRIORITIES 2");
+}
+
+fn pushPromise() {
+  // 6.6, 8.4: a server never accepts one; a client only when it allows push
+  expectStr(srv("000006050400000001000000028286").view(),
+    connection("PROTOCOL_ERROR", "a PUSH_PROMISE frame from a client").view(), "8.4: PUSH_PROMISE to a server");
+  expectStr(cli("000006050400000001000000028286").view(),
+    connection("PROTOCOL_ERROR", "a PUSH_PROMISE frame with push disabled").view(), "6.6: PUSH_PROMISE with push disabled");
+  expectStr(pushCli("000006050400000000000000028286").view(),
+    connection("PROTOCOL_ERROR", "a frame that needs a stream on stream 0").view(), "6.6: PUSH_PROMISE on stream 0");
+  expectStr(pushCli("000003050400000001000000").view(),
+    connection("FRAME_SIZE_ERROR", "a PUSH_PROMISE frame too short to hold its promised stream").view(), "6.6: PUSH_PROMISE of 3 bytes");
+  expectStr(pushCli("000007050c0000000105000000028286").view(),
+    connection("PROTOCOL_ERROR", "padding longer than the frame's field block fragment leaves room for").view(),
+    "6.6: PUSH_PROMISE padding too long");
+}
+
+fn pingFrames() {
+  // 6.7: on a stream; not 8 bytes
+  expectStr(srv("0000080600000000010000000000000000").view(),
+    connection("PROTOCOL_ERROR", "a SETTINGS, PING or GOAWAY frame on a stream").view(), "6.7: PING on stream 1");
+  expectStr(srv("00000706000000000000000000000000").view(),
+    connection("FRAME_SIZE_ERROR", "a PING frame not 8 bytes long").view(), "6.7: PING of 7 bytes");
+  expectStr(srv("000009060100000000000000000000000000").view(),
+    connection("FRAME_SIZE_ERROR", "a PING frame not 8 bytes long").view(), "6.7: PING ACK of 9 bytes");
+}
+
+fn goAway() {
+  // 6.8: on a stream; shorter than 8
+  expectStr(srv("0000080700000000010000000000000000").view(),
+    connection("PROTOCOL_ERROR", "a SETTINGS, PING or GOAWAY frame on a stream").view(), "6.8: GOAWAY on stream 1");
+  expectStr(srv("00000707000000000000000000000000").view(),
+    connection("FRAME_SIZE_ERROR", "a GOAWAY frame shorter than 8 bytes").view(), "6.8: GOAWAY of 7 bytes");
+}
+
+fn windowUpdate() {
+  // 6.9: an increment of 0, the stream's error or the connection's; not 4
+  // bytes (the connection's either way); the reserved bit ignored
+  expectStr(srv(two("00000408000000000100000000", ping).view()).view(),
+    two("PROTOCOL_ERROR on stream 1: a WINDOW_UPDATE of 0\n", pong).view(), "6.9: WINDOW_UPDATE of 0 on a stream");
+  expectStr(srv(two("00000408000000000180000000", ping).view()).view(),
+    two("PROTOCOL_ERROR on stream 1: a WINDOW_UPDATE of 0\n", pong).view(), "6.9: WINDOW_UPDATE of 0 under the reserved bit");
+  expectStr(srv("00000408000000000000000000").view(),
+    connection("PROTOCOL_ERROR", "a WINDOW_UPDATE of 0 for the connection").view(), "6.9: WINDOW_UPDATE of 0 on stream 0");
+  expectStr(srv("000003080000000000000001").view(),
+    connection("FRAME_SIZE_ERROR", "a WINDOW_UPDATE frame not 4 bytes long").view(), "6.9: WINDOW_UPDATE of 3 bytes");
+  expectStr(srv("0000050800000000010000000100").view(),
+    connection("FRAME_SIZE_ERROR", "a WINDOW_UPDATE frame not 4 bytes long").view(), "6.9: WINDOW_UPDATE of 5 bytes on a stream");
+  expectStr(srv("00000408000000000180000001").view(), "WINDOW_UPDATE s1 +1\n", "6.9: the reserved bit ignored");
+}
+
+fn continuation() {
+  // 6.10: with no field block begun; after one ended; on stream 0
+  let alone = connection("PROTOCOL_ERROR", "a CONTINUATION frame not continuing a field block");
+  expectStr(srv("00000109040000000182").view(), alone.view(), "6.10: CONTINUATION alone");
+  expectStr(srv("0000010104000000018200000109040000000184").view(),
+    two("HEADERS s1 82\n", alone.view()).view(), "6.10: CONTINUATION after END_HEADERS");
+  expectStr(srv("0000010000000000016100000109040000000184").view(),
+    two("DATA s1 flow 1 61\n", alone.view()).view(), "6.10: CONTINUATION after DATA");
+  expectStr(srv("0000010100000000018200000109040000000084").view(),
+    connection("PROTOCOL_ERROR", "a field block interrupted before END_HEADERS").view(), "6.10: CONTINUATION on stream 0");
+}
+
+fn afterwards() {
+  // A connection error ends reading: every later call gives it again,
+  // whatever arrives
+  var r = server();
+  var input = Chain.make(65536usize);
+  _ = input.push(buf(unhex("000000040000000001").view()));
+  var first = String.empty();
+  match r.next(&mut input) {
+    case let Failed(f) {first = f.error.message();}
+    case is NeedData {}
+    case let Got(g) {}
+  }
+  expectStr(first.view(), "PROTOCOL_ERROR on the connection: a SETTINGS, PING or GOAWAY frame on a stream", "the first error");
+  expect(r.isFailed(), "the reader has failed");
+  _ = input.push(buf(unhex(ping).view()));
+  var again = String.empty();
+  match r.next(&mut input) {
+    case let Failed(f) {again = f.error.message();}
+    case is NeedData {}
+    case let Got(g) {}
+  }
+  expectStr(again.view(), first.view(), "the same error again, with a good frame waiting");
+
+  // A stream error does not
+  var s = server();
+  expectStr(readIn(&mut s, unhex(two("00000408000000000300000000", ping).view()).view(), 64usize).view(),
+    two("PROTOCOL_ERROR on stream 3: a WINDOW_UPDATE of 0\n", pong).view(), "a stream error, then a PING");
+  expect(!s.isFailed(), "the reader goes on after a stream error");
+
+  // The codes' names and values, and one the RFC does not name
+  expectStr(ErrorCode.EnhanceYourCalm.name(), "ENHANCE_YOUR_CALM", "a code's name");
+  expectInt(i64.from(ErrorCode.Http11Required.value()), 13i64, "HTTP_1_1_REQUIRED's value");
+  expect(ErrorCode.of(7u32) == ErrorCode.RefusedStream, "7 is REFUSED_STREAM");
+  expectInt(i64.from(ErrorCode.of(0x1234u32).value()), 0x1234i64, "an unknown code keeps its value");
+}
+
+fn main() i32 {
+  data();
+  headers();
+  priority();
+  rstStream();
+  settings();
+  pushPromise();
+  pingFrames();
+  goAway();
+  windowUpdate();
+  continuation();
+  afterwards();
+  done()
+}

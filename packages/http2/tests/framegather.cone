@@ -1,0 +1,308 @@
+// The shape of what a FrameWriter hands out: a Chain whose segments are
+// the gather list a single write sends (iocore's SendChain). A DATA
+// frame's payload is the caller's own buffer, the same block of memory, a
+// segment of its own after its header; frame headers and the small
+// payloads the writer builds (control frames, field blocks) are packed
+// together into shared buffers between the DATA payloads. Padding comes
+// after the data in the next packed buffer. A field block longer than the
+// peer's SETTINGS_MAX_FRAME_SIZE goes as HEADERS and CONTINUATIONs. Taking
+// empties the writer; an empty writer gives an empty Chain.
+
+mod framegather;
+
+import testing use *;
+import collections use *;
+import iobuf use IoBuf, Chain;
+import http2 use *;
+
+fn hex(b: &Array[u8]) String {
+  var s = String.empty();
+  var i = 0usize;
+  while i < b.len {
+    s.appendHex(u64.from(b[i]), 2usize);
+    i = i + 1usize;
+  }
+  s
+}
+
+fn nibble(c: u8) u8 {if c >= 'a' {c - 'a' + 10u8} else {c - '0'}}
+
+fn unhex(s: &Array[u8]) List[u8] {
+  var out = List[u8].empty();
+  var i = 0usize;
+  while i + 1usize < s.len {
+    out.push((nibble(s[i]) << 4u8) | nibble(s[i + 1usize]));
+    i = i + 2usize;
+  }
+  out
+}
+
+// Every byte a chain holds, as hex
+fn chainHex(c: &Chain) String {
+  var b = List[u8].empty();
+  b.resize(c.len(), 0u8);
+  _ = c.copyOut(0usize, b.viewMut());
+  hex(b.view())
+}
+
+fn buf(b: &Array[u8]) IoBuf {
+  var x = IoBuf(if b.len > 0usize {b.len} else {1usize});
+  _ = x.append(b);
+  x
+}
+
+fn spec(p: &PrioritySpec) String {
+  var s = String.from("dep ");
+  s.appendUInt(u64.from(p.dependency));
+  s.append(" w");
+  s.appendUInt(u64.from(p.weight));
+  if p.exclusive {s.append(" excl");}
+  s
+}
+
+fn errText(e: &FrameError) String {
+  var s = e.message();
+  if e.flowLength > 0usize {
+    s.append(" (flow ");
+    s.appendUInt(u64.from(e.flowLength));
+    s.append(")");
+  }
+  s
+}
+
+// One frame, in a line
+fn describe(f: Frame) String {
+  var s = String.empty();
+  match f {
+    case let Data(d) {
+      s.append("DATA s");
+      s.appendUInt(u64.from(d.stream));
+      if d.endStream {s.append(" end");}
+      s.append(" flow ");
+      s.appendUInt(u64.from(d.flowLength));
+      s.append(" ");
+      s.append(hex(d.data.view()).view());
+    }
+    case let Headers(h) {
+      s.append("HEADERS s");
+      s.appendUInt(u64.from(h.stream));
+      if h.endStream {s.append(" end");}
+      match h.priority {
+        case let Some(p) {
+          s.append(" (");
+          s.append(spec(&p).view());
+          s.append(")");
+        }
+        case is None[PrioritySpec] {}
+      }
+      s.append(" ");
+      s.append(hex(h.block.view()).view());
+      match h.streamError {
+        case let Some(e) {
+          s.append(" then ");
+          s.append(errText(&e).view());
+        }
+        case is None[FrameError] {}
+      }
+    }
+    case let Priority(p) {
+      s.append("PRIORITY s");
+      s.appendUInt(u64.from(p.stream));
+      s.append(" ");
+      s.append(spec(&p.spec).view());
+    }
+    case let RstStream(r) {
+      s.append("RST_STREAM s");
+      s.appendUInt(u64.from(r.stream));
+      s.append(" ");
+      s.append(r.code.name());
+      if r.code is Unknown {
+        s.append(" ");
+        s.appendUInt(u64.from(r.code.value()));
+      }
+    }
+    case let Settings(st) {
+      s.append("SETTINGS");
+      if st.ack {s.append(" ack");}
+      var i = 0usize;
+      while i < st.values.len() {
+        s.append(" ");
+        s.appendUInt(u64.from(st.values[i].id));
+        s.append("=");
+        s.appendUInt(u64.from(st.values[i].value));
+        i = i + 1usize;
+      }
+    }
+    case let PushPromise(p) {
+      s.append("PUSH_PROMISE s");
+      s.appendUInt(u64.from(p.stream));
+      s.append(" promised ");
+      s.appendUInt(u64.from(p.promised));
+      s.append(" ");
+      s.append(hex(p.block.view()).view());
+    }
+    case let Ping(p) {
+      s.append("PING");
+      if p.ack {s.append(" ack");}
+      s.append(" ");
+      s.appendHex(p.data, 16usize);
+    }
+    case let GoAway(g) {
+      s.append("GOAWAY last ");
+      s.appendUInt(u64.from(g.lastStream));
+      s.append(" ");
+      s.append(g.code.name());
+      s.append(" '");
+      s.append(String.fromBytes(g.debug.view()).view());
+      s.append("'");
+    }
+    case let WindowUpdate(w) {
+      s.append("WINDOW_UPDATE s");
+      s.appendUInt(u64.from(w.stream));
+      s.append(" +");
+      s.appendUInt(u64.from(w.increment));
+    }
+  }
+  s
+}
+
+// Feed the bytes to the reader 'piece' at a time, each piece its own
+// segment, reading after each until it needs more: what it made, one item
+// a line, ending at a connection error
+fn readIn(r: &mut FrameReader, bytes: &'b Array[u8], piece: usize) String {
+  var input = Chain.make(1048576usize);
+  var out = String.empty();
+  var at = 0usize;
+  while at < bytes.len {
+    let n = if bytes.len - at < piece {bytes.len - at} else {piece};
+    _ = input.push(buf(&bytes[at ..< at + n]));
+    at = at + n;
+    while true {
+      match r.next(&mut input) {
+        case is NeedData {break;}
+        case let Got(g) {
+          out.append(describe(g.frame).view());
+          out.append("\n");
+        }
+        case let Failed(f) {
+          out.append(errText(&f.error).view());
+          out.append("\n");
+          if f.error.isConnectionError() {return out;}
+        }
+      }
+    }
+  }
+  out
+}
+
+fn server() FrameReader {FrameReader.server(FrameConfig.make())}
+fn client() FrameReader {FrameReader.client(FrameConfig.make())}
+
+// The chain's segments, moved out one by one: each one's length, and
+// whether it is the buffer whose block is at 'mark'
+fn segments(c: Chain, mark: usize) String {
+  var chain = c;
+  var s = String.empty();
+  while true {
+    match chain.popFront() {
+      case let Some(b) {
+        if s.len() > 0usize {s.append(" ");}
+        s.appendUInt(u64.from(b.len()));
+        if b.base() as usize == mark {s.append("*");}
+      }
+      case is None[IoBuf] {break;}
+    }
+  }
+  s
+}
+
+fn main() i32 {
+  let cfg = FrameConfig.make();
+  var w = FrameWriter.make(&cfg);
+
+  // One DATA frame: the header packed, then the caller's buffer itself
+  var d = buf("hello");
+  let mark = d.base() as usize;
+  w.data(1u32, d, true);
+  expectInt(i64.from(w.queuedBytes()), 14i64, "14 bytes queued");
+  let c = w.take();
+  expectStr(chainHex(&c).view(), "00000500010000000168656c6c6f", "the bytes");
+  expectStr(segments(c, mark).view(), "9 5*", "a header, then the data's own buffer");
+
+  // Three: header, data, header, data, header, data; the PING before them
+  // and the WINDOW_UPDATE after packed with the headers next to them
+  var a = buf("aa");
+  let ma = a.base() as usize;
+  expect(w.ping(1u64, false), "PING queued");
+  w.data(1u32, a, false);
+  w.data(3u32, buf("bbb"), false);
+  w.data(5u32, buf("cccc"), true);
+  expect(w.windowUpdate(0u32, 9u32), "WINDOW_UPDATE queued");
+  expectStr(segments(w.take(), ma).view(), "26 2* 9 3 9 4 13", "PING and header, data, header, data, header, data, WINDOW_UPDATE");
+
+  // Control frames alone pack into one buffer
+  var values = List[Setting].empty();
+  values.push(Setting(settingMaxConcurrentStreams, 100u32));
+  expect(w.settings(values.view()) && w.settingsAck() && w.ping(2u64, true) && w.rstStream(3u32, ErrorCode.Cancel),
+    "four control frames queued");
+  w.goAway(3u32, ErrorCode.NoError, "bye");
+  expectStr(segments(w.take(), 0usize).view(), "74", "five control frames in one buffer");
+
+  // Padding: the header and pad length, the data, the padding
+  var p = buf("xyz");
+  let mp = p.base() as usize;
+  w.data(1u32, p, false, 4usize);
+  let pc = w.take();
+  expectStr(chainHex(&pc).view(), "0000080008000000010478797a00000000", "padded DATA's bytes");
+  expectStr(segments(pc, mp).view(), "10 3* 4", "header and pad length, the data, the padding");
+
+  // An empty DATA (END_STREAM alone) is its header
+  w.data(7u32, IoBuf.empty(), true);
+  expectStr(segments(w.take(), 0usize).view(), "9", "an empty DATA");
+
+  // A field block of 20000 at the default 16384: HEADERS of 16384 and a
+  // CONTINUATION of 3616, packed (the block is copied in)
+  var block = List[u8].empty();
+  block.resize(20000usize, 0x41u8);
+  w.headers(1u32, block.view(), false);
+  let hc = w.take();
+  expectInt(i64.from(hc.len()), 20018i64, "two frames' bytes");
+  expectInt(i64.from(hc.byteAt(3usize)), 1i64, "the first a HEADERS");
+  expectInt(i64.from(hc.byteAt(4usize)), 0i64, "without END_HEADERS");
+  expectInt(i64.from(hc.byteAt(9usize + 16384usize + 3usize)), 9i64, "the second a CONTINUATION");
+  expectInt(i64.from(hc.byteAt(9usize + 16384usize + 4usize)), 4i64, "with END_HEADERS");
+  expectInt(i64.from((usize.from(hc.byteAt(9usize + 16384usize + 1usize)) << 8usize) | usize.from(hc.byteAt(9usize + 16384usize + 2usize))), 3616i64, "of 3616 bytes");
+
+  // Then the writer is empty, and so is what it gives
+  expectInt(i64.from(w.queuedBytes()), 0i64, "nothing queued");
+  let e = w.take();
+  expectInt(i64.from(e.len()), 0i64, "an empty chain");
+  expectInt(i64.from(e.segments()), 0i64, "with no segments");
+
+  // What the writer gives, a reader reads: the PING, three DATA and the
+  // WINDOW_UPDATE again, across the segments as they lie
+  expect(w.ping(1u64, false), "PING queued");
+  w.data(1u32, buf("aa"), false);
+  w.data(3u32, buf("bbb"), false);
+  w.data(5u32, buf("cccc"), true);
+  expect(w.windowUpdate(0u32, 9u32), "WINDOW_UPDATE queued");
+  var input = w.take();
+  var r = server();
+  var got = String.empty();
+  while true {
+    match r.next(&mut input) {
+      case is NeedData {break;}
+      case let Got(g) {
+        got.append(describe(g.frame).view());
+        got.append("\n");
+      }
+      case let Failed(f) {
+        got.append(f.error.message().view());
+        break;
+      }
+    }
+  }
+  expectStr(got.view(), "PING 0000000000000001\nDATA s1 flow 2 6161\nDATA s3 flow 3 626262\nDATA s5 end flow 4 63636363\nWINDOW_UPDATE s0 +9\n",
+    "read back from the writer's own chain");
+  done()
+}

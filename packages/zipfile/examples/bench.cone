@@ -1,0 +1,123 @@
+// How fast the package reads and extracts, on made-up data: a few hundred files of text that compresses
+// about 8 to 1 and files of noise that does not. Informative only; it gates nothing.
+//
+//   congo run --release examples/bench.cone
+
+mod bench;
+
+import stdio use *;
+import collections use *;
+import time;
+import zipfile;
+import path use Path;
+import fs;
+
+fn texty(n: usize, seed: usize) List[u8] {
+  var out = List[u8].withCapacity(n);
+  var i = seed;
+  while out.len() < n {
+    let s = "row of text number ";
+    var k = 0usize;
+    while k < s.len() && out.len() < n { out.push(s[k]); k += 1usize; }
+    var d = i * 7919usize % 100000usize;
+    var j = 0usize;
+    while j < 5usize && out.len() < n { out.push(u8.from(48usize + d % 10usize)); d = d / 10usize; j += 1usize; }
+    if out.len() < n { out.push(10u8); }
+    i += 1usize;
+  }
+  out
+}
+
+fn noise(n: usize, seed: u64) List[u8] {
+  var out = List[u8].withCapacity(n);
+  var x = seed * 2862933555777941757u64 + 3037000493u64;
+  var i = 0usize;
+  while i < n {
+    x = x ^ (x << 13u64);
+    x = x ^ (x >> 7u64);
+    x = x ^ (x << 17u64);
+    out.push(u8.from(x & 255u64));
+    i += 1usize;
+  }
+  out
+}
+
+fn mbps(bytes: u64, d: time.Duration) f64 {
+  let secs = d.secondsF64();
+  if secs <= 0.0 { return 0.0; }
+  f64.from(bytes) / 1048576.0 / secs
+}
+
+fn main() i32 {
+  let files = 200usize;
+  let per = 1000000usize;
+  var w = zipfile.ZipWriter.make();
+  var total = 0u64;
+  var t0 = time.Instant.now();
+  var i = 0usize;
+  while i < files {
+    var name = String.from("data/file");
+    name.appendUInt(u64.from(i));
+    if i % 4usize == 3usize {
+      w.add(name.view(), noise(per, u64.from(i)).view(), &zipfile.EntryOptions.plain());
+    } else {
+      w.add(name.view(), texty(per, i).view(), &zipfile.EntryOptions.plain());
+    }
+    total += u64.from(per);
+    i += 1usize;
+  }
+  var archive = List[u8].empty();
+  match w.bytes() {
+    case let Ok(ok) { archive = ok; }
+    case let Error(e) { printStr(e.reason.view()); return 1i32; }
+  }
+  let writeTime = t0.elapsed();
+  print <- "wrote ", total / 1048576u64, " MB into ", archive.len() / 1048576usize, " MB (data generation included): ", mbps(total, writeTime), " MB/s of data\n";
+
+  match zipfile.Archive.open(archive.view()) {
+    case let Error(e) { printStr(e.reason.view()); return 1i32; }
+    case let Ok(ar) {
+      t0 = time.Instant.now();
+      var got = 0u64;
+      i = 0usize;
+      while i < ar.count() {
+        match ar.read(archive.view(), i) {
+          case let Ok(b) { got += u64.from(b.len()); }
+          case let Error(e) { printStr(e.reason.view()); return 1i32; }
+        }
+        i += 1usize;
+      }
+      print <- "read (whole entries): ", mbps(got, t0.elapsed()), " MB/s of data\n";
+
+      t0 = time.Instant.now();
+      got = 0u64;
+      i = 0usize;
+      var piece = List[u8].empty();
+      while i < ar.count() {
+        match ar.reader(archive.view(), i) {
+          case var Ok(r) {
+            var s = zipfile.Status.MoreOutput;
+            while s == zipfile.Status.MoreOutput {
+              piece.clear();
+              s = r.pull(archive.view(), &mut piece, 65536usize);
+              got += u64.from(piece.len());
+            }
+            if s != zipfile.Status.Done { return 1i32; }
+          }
+          case let Error(e) { printStr(e.reason.view()); return 1i32; }
+        }
+        i += 1usize;
+      }
+      print <- "read (streamed, 64 KiB pulls): ", mbps(got, t0.elapsed()), " MB/s of data\n";
+
+      fs.removeAll(&Path.from("bench-out"));
+      t0 = time.Instant.now();
+      match ar.extractAll(archive.view(), &Path.from("bench-out"), &zipfile.ExtractOptions.safe()) {
+        case let Ok(done) { print <- "extracted ", done.files, " files: ", mbps(done.bytes, t0.elapsed()), " MB/s of data\n"; }
+        case let Error(e) { printStr(e.reason.view()); return 1i32; }
+      }
+      fs.removeAll(&Path.from("bench-out"));
+    }
+  }
+  0i32
+}

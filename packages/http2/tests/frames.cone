@@ -1,0 +1,362 @@
+// The ten frame types (RFC 9113, section 6), each written by a FrameWriter
+// and compared byte for byte with its layout in the RFC, written out here
+// as data (the RFC gives frames no worked examples of their own), then read
+// back by a FrameReader fed the bytes whole, seven at a time and one at a
+// time. Then what the reader must take and look past: padding (DATA and
+// HEADERS), HEADERS with a priority, a field block joined from HEADERS and
+// CONTINUATIONs, PUSH_PROMISE where a client allows it, frames of unknown
+// type skipped, unknown flags and the reserved bit ignored, unknown SETTINGS
+// parameters kept for the connection to ignore, an unknown error code
+// kept, and many frames in one segment.
+
+mod frames;
+
+import testing use *;
+import collections use *;
+import iobuf use IoBuf, Chain;
+import http2 use *;
+
+fn hex(b: &Array[u8]) String {
+  var s = String.empty();
+  var i = 0usize;
+  while i < b.len {
+    s.appendHex(u64.from(b[i]), 2usize);
+    i = i + 1usize;
+  }
+  s
+}
+
+fn nibble(c: u8) u8 {if c >= 'a' {c - 'a' + 10u8} else {c - '0'}}
+
+fn unhex(s: &Array[u8]) List[u8] {
+  var out = List[u8].empty();
+  var i = 0usize;
+  while i + 1usize < s.len {
+    out.push((nibble(s[i]) << 4u8) | nibble(s[i + 1usize]));
+    i = i + 2usize;
+  }
+  out
+}
+
+// Every byte a chain holds, as hex
+fn chainHex(c: &Chain) String {
+  var b = List[u8].empty();
+  b.resize(c.len(), 0u8);
+  _ = c.copyOut(0usize, b.viewMut());
+  hex(b.view())
+}
+
+fn buf(b: &Array[u8]) IoBuf {
+  var x = IoBuf(if b.len > 0usize {b.len} else {1usize});
+  _ = x.append(b);
+  x
+}
+
+fn spec(p: &PrioritySpec) String {
+  var s = String.from("dep ");
+  s.appendUInt(u64.from(p.dependency));
+  s.append(" w");
+  s.appendUInt(u64.from(p.weight));
+  if p.exclusive {s.append(" excl");}
+  s
+}
+
+fn errText(e: &FrameError) String {
+  var s = e.message();
+  if e.flowLength > 0usize {
+    s.append(" (flow ");
+    s.appendUInt(u64.from(e.flowLength));
+    s.append(")");
+  }
+  s
+}
+
+// One frame, in a line
+fn describe(f: Frame) String {
+  var s = String.empty();
+  match f {
+    case let Data(d) {
+      s.append("DATA s");
+      s.appendUInt(u64.from(d.stream));
+      if d.endStream {s.append(" end");}
+      s.append(" flow ");
+      s.appendUInt(u64.from(d.flowLength));
+      s.append(" ");
+      s.append(hex(d.data.view()).view());
+    }
+    case let Headers(h) {
+      s.append("HEADERS s");
+      s.appendUInt(u64.from(h.stream));
+      if h.endStream {s.append(" end");}
+      match h.priority {
+        case let Some(p) {
+          s.append(" (");
+          s.append(spec(&p).view());
+          s.append(")");
+        }
+        case is None[PrioritySpec] {}
+      }
+      s.append(" ");
+      s.append(hex(h.block.view()).view());
+      match h.streamError {
+        case let Some(e) {
+          s.append(" then ");
+          s.append(errText(&e).view());
+        }
+        case is None[FrameError] {}
+      }
+    }
+    case let Priority(p) {
+      s.append("PRIORITY s");
+      s.appendUInt(u64.from(p.stream));
+      s.append(" ");
+      s.append(spec(&p.spec).view());
+    }
+    case let RstStream(r) {
+      s.append("RST_STREAM s");
+      s.appendUInt(u64.from(r.stream));
+      s.append(" ");
+      s.append(r.code.name());
+      if r.code is Unknown {
+        s.append(" ");
+        s.appendUInt(u64.from(r.code.value()));
+      }
+    }
+    case let Settings(st) {
+      s.append("SETTINGS");
+      if st.ack {s.append(" ack");}
+      var i = 0usize;
+      while i < st.values.len() {
+        s.append(" ");
+        s.appendUInt(u64.from(st.values[i].id));
+        s.append("=");
+        s.appendUInt(u64.from(st.values[i].value));
+        i = i + 1usize;
+      }
+    }
+    case let PushPromise(p) {
+      s.append("PUSH_PROMISE s");
+      s.appendUInt(u64.from(p.stream));
+      s.append(" promised ");
+      s.appendUInt(u64.from(p.promised));
+      s.append(" ");
+      s.append(hex(p.block.view()).view());
+    }
+    case let Ping(p) {
+      s.append("PING");
+      if p.ack {s.append(" ack");}
+      s.append(" ");
+      s.appendHex(p.data, 16usize);
+    }
+    case let GoAway(g) {
+      s.append("GOAWAY last ");
+      s.appendUInt(u64.from(g.lastStream));
+      s.append(" ");
+      s.append(g.code.name());
+      s.append(" '");
+      s.append(String.fromBytes(g.debug.view()).view());
+      s.append("'");
+    }
+    case let WindowUpdate(w) {
+      s.append("WINDOW_UPDATE s");
+      s.appendUInt(u64.from(w.stream));
+      s.append(" +");
+      s.appendUInt(u64.from(w.increment));
+    }
+  }
+  s
+}
+
+// Feed the bytes to the reader 'piece' at a time, each piece its own
+// segment, reading after each until it needs more: what it made, one item
+// a line, ending at a connection error
+fn readIn(r: &mut FrameReader, bytes: &'b Array[u8], piece: usize) String {
+  var input = Chain.make(1048576usize);
+  var out = String.empty();
+  var at = 0usize;
+  while at < bytes.len {
+    let n = if bytes.len - at < piece {bytes.len - at} else {piece};
+    _ = input.push(buf(&bytes[at ..< at + n]));
+    at = at + n;
+    while true {
+      match r.next(&mut input) {
+        case is NeedData {break;}
+        case let Got(g) {
+          out.append(describe(g.frame).view());
+          out.append("\n");
+        }
+        case let Failed(f) {
+          out.append(errText(&f.error).view());
+          out.append("\n");
+          if f.error.isConnectionError() {return out;}
+        }
+      }
+    }
+  }
+  out
+}
+
+fn server() FrameReader {FrameReader.server(FrameConfig.make())}
+fn client() FrameReader {FrameReader.client(FrameConfig.make())}
+
+// The bytes read back whole, seven at a time and one at a time, by a fresh
+// reader each time, all three the same
+fn readBack(client: bool, bytes: &Array[u8], want: &str, label: &str) {
+  var pieces = List[usize].empty();
+  pieces.push(bytes.len);
+  pieces.push(7usize);
+  pieces.push(1usize);
+  var i = 0usize;
+  while i < pieces.len() {
+    var r = if client {FrameReader.client(FrameConfig.make())} else {server()};
+    var l = String.from(label);
+    l.append(", in pieces of ");
+    let p = *pieces[i];
+    l.appendUInt(u64.from(p));
+    expectStr(readIn(&mut r, bytes, p).view(), want, l.view());
+    i = i + 1usize;
+  }
+}
+
+// What a writer queued, as hex, and its reading back
+fn check(w: &mut FrameWriter, wantHex: &str, client: bool, want: &str, label: &str) {
+  let c = w.take();
+  let got = chainHex(&c);
+  expectStr(got.view(), wantHex, label);
+  let bytes = unhex(got.view());
+  readBack(client, bytes.view(), want, label);
+}
+
+fn writeAndRead() {
+  let cfg = FrameConfig.make();
+
+  // DATA (section 6.1): length, type 0, flags, stream; the data
+  var w = FrameWriter.make(&cfg);
+  w.data(1u32, buf("hello"), true);
+  check(&mut w, "00000500010000000168656c6c6f", false, "DATA s1 end flow 5 68656c6c6f\n", "DATA");
+  w.data(3u32, IoBuf.empty(), true);
+  check(&mut w, "000000000100000003", false, "DATA s3 end flow 0 \n", "DATA, empty, END_STREAM");
+  // PADDED: the pad length, the data, the padding; flow control counts all
+  w.data(1u32, buf("hello"), false, 2usize);
+  check(&mut w, "0000080008000000010268656c6c6f0000", false, "DATA s1 flow 8 68656c6c6f\n", "DATA, padded");
+
+  // HEADERS (section 6.2): END_STREAM | END_HEADERS
+  w.headers(1u32, unhex("828684").view(), true);
+  check(&mut w, "000003010500000001828684", false, "HEADERS s1 end 828684\n", "HEADERS");
+  // PADDED and PRIORITY: pad length, exclusive bit and dependency, weight,
+  // fragment, padding (flags 0x2c)
+  w.headers(5u32, unhex("828684").view(), false, Some[PrioritySpec](PrioritySpec(true, 3u32, 15u8)), 3usize);
+  check(&mut w, "00000c012c0000000503800000030f828684000000", false,
+    "HEADERS s5 (dep 3 w15 excl) 828684\n", "HEADERS, padded, with a priority");
+
+  // PRIORITY (section 6.3): exclusive bit and dependency, weight
+  expect(w.priority(3u32, PrioritySpec(false, 1u32, 255u8)), "PRIORITY queued");
+  check(&mut w, "00000502000000000300000001ff", false, "PRIORITY s3 dep 1 w255\n", "PRIORITY");
+
+  // RST_STREAM (section 6.4): the error code
+  expect(w.rstStream(1u32, ErrorCode.Cancel), "RST_STREAM queued");
+  check(&mut w, "00000403000000000100000008", false, "RST_STREAM s1 CANCEL\n", "RST_STREAM");
+
+  // SETTINGS (section 6.5): six bytes a parameter, on stream 0; and its ACK
+  var values = List[Setting].empty();
+  values.push(Setting(settingMaxConcurrentStreams, 100u32));
+  values.push(Setting(settingInitialWindowSize, 65535u32));
+  values.push(Setting(settingEnablePush, 0u32));
+  expect(w.settings(values.view()), "SETTINGS queued");
+  check(&mut w, "00001204000000000000030000006400040000ffff000200000000", false,
+    "SETTINGS 3=100 4=65535 2=0\n", "SETTINGS");
+  expect(w.settingsAck(), "SETTINGS ACK queued");
+  check(&mut w, "000000040100000000", false, "SETTINGS ack\n", "SETTINGS ACK");
+
+  // PUSH_PROMISE (section 6.6): the promised stream, the fragment; read by a
+  // client that allows push
+  w.pushPromise(1u32, 2u32, unhex("8286").view());
+  let c = w.take();
+  expectStr(chainHex(&c).view(), "000006050400000001000000028286", "PUSH_PROMISE");
+  var pc = FrameConfig.make();
+  pc.enablePush = true;
+  var pr = FrameReader.client(pc);
+  expectStr(readIn(&mut pr, unhex(chainHex(&c).view()).view(), 1usize).view(),
+    "PUSH_PROMISE s1 promised 2 8286\n", "PUSH_PROMISE read by a client that allows push");
+
+  // PING (section 6.7): eight opaque bytes; and its ACK
+  expect(w.ping(0x0102030405060708u64, false), "PING queued");
+  check(&mut w, "0000080600000000000102030405060708", false, "PING 0102030405060708\n", "PING");
+  expect(w.ping(0x0102030405060708u64, true), "PING ACK queued");
+  check(&mut w, "0000080601000000000102030405060708", false, "PING ack 0102030405060708\n", "PING ACK");
+
+  // GOAWAY (section 6.8): last stream, error code, debug data
+  w.goAway(5u32, ErrorCode.ProtocolError, "oops");
+  check(&mut w, "00000c07000000000000000005000000016f6f7073", false,
+    "GOAWAY last 5 PROTOCOL_ERROR 'oops'\n", "GOAWAY");
+
+  // WINDOW_UPDATE (section 6.9): the connection's (stream 0) and a stream's
+  expect(w.windowUpdate(0u32, 1000u32), "WINDOW_UPDATE queued");
+  expect(w.windowUpdate(3u32, maxWindowSize), "WINDOW_UPDATE queued");
+  check(&mut w, "000004080000000000000003e80000040800000000037fffffff", false,
+    "WINDOW_UPDATE s0 +1000\nWINDOW_UPDATE s3 +2147483647\n", "WINDOW_UPDATE");
+
+  // CONTINUATION (section 6.10): a block longer than the peer allows a frame
+  // goes on in CONTINUATIONs, END_HEADERS on the last; read back whole
+  w.setPeerMaxFrameSize(4usize);
+  w.headers(1u32, unhex("00010203040506070809").view(), false);
+  check(&mut w, "00000401000000000100010203000004090000000001040506070000020904000000010809", false,
+    "HEADERS s1 00010203040506070809\n", "HEADERS and two CONTINUATIONs");
+}
+
+fn readOnly() {
+  // A padded HEADERS whose pad length leaves no fragment at all, and padded
+  // DATA whose padding is all its payload but the pad length
+  readBack(false, unhex("000003010d000000010200000000020008000000030100").view(), "HEADERS s1 end \nDATA s3 flow 2 \n",
+    "padding filling the frame");
+
+  // Frames of unknown type are skipped whole, whatever their flags and
+  // stream; unknown flags (0xf2 on DATA) and the reserved bit are ignored
+  readBack(false, unhex("000003ff00000000006162630000020aff80000001000000000200f2800000016869").view(),
+    "DATA s1 flow 2 6869\n", "unknown types skipped, unknown flags and the reserved bit ignored");
+
+  // An unknown SETTINGS parameter is kept, for the connection to ignore;
+  // so are the ones RFC 8441 and RFC 9218 add
+  readBack(false, unhex("00001204000000000000ff0000002a000800000001000900000001").view(),
+    "SETTINGS 255=42 8=1 9=1\n", "SETTINGS: unknown and later parameters");
+  // A server may say SETTINGS_ENABLE_PUSH 0, and a client 1
+  readBack(true, unhex("000006040000000000000200000000").view(), "SETTINGS 2=0\n", "SETTINGS_ENABLE_PUSH 0 to a client");
+  readBack(false, unhex("000006040000000000000200000001").view(), "SETTINGS 2=1\n", "SETTINGS_ENABLE_PUSH 1 to a server");
+  // SETTINGS_MAX_FRAME_SIZE and SETTINGS_INITIAL_WINDOW_SIZE at their edges
+  readBack(false, unhex("000012040000000000000500004000000500ffffff00047fffffff").view(),
+    "SETTINGS 5=16384 5=16777215 4=2147483647\n", "SETTINGS at their edges");
+
+  // An error code the RFC does not name is kept as it came
+  readBack(false, unhex("000004030000000001000000ff").view(), "RST_STREAM s1 unknown 255\n", "an unknown error code");
+  readBack(false, unhex("00000807000000000080000003000000fe").view(), "GOAWAY last 3 unknown ''\n",
+    "GOAWAY: the reserved bit dropped, an unknown code");
+
+  // A field block in three frames, the CONTINUATIONs carrying no flags but
+  // the last's END_HEADERS, and a HEADERS with a priority on its own
+  // stream: decoded all the same, then the stream's error
+  readBack(false, unhex("00000201010000000782860000010900000000078400000109040000000741").view(),
+    "HEADERS s7 end 82868441\n", "a field block in three frames");
+  readBack(false, unhex("00000701240000000300000003108286").view(),
+    "HEADERS s3 (dep 3 w16) 8286 then PROTOCOL_ERROR on stream 3: a stream depending on itself\n",
+    "HEADERS depending on its own stream");
+
+  // Several frames in one segment, read in order
+  var w = FrameWriter.make(&FrameConfig.make());
+  expect(w.settingsAck(), "queued");
+  w.headers(1u32, unhex("82").view(), false);
+  w.data(1u32, buf("ab"), false);
+  w.data(1u32, buf("cd"), true);
+  expect(w.ping(7u64, true), "queued");
+  let c = w.take();
+  let all = unhex(chainHex(&c).view());
+  var r = server();
+  expectStr(readIn(&mut r, all.view(), all.len()).view(),
+    "SETTINGS ack\nHEADERS s1 82\nDATA s1 flow 2 6162\nDATA s1 end flow 2 6364\nPING ack 0000000000000007\n",
+    "five frames in one segment");
+}
+
+fn main() i32 {
+  writeAndRead();
+  readOnly();
+  done()
+}
