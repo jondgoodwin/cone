@@ -1,0 +1,128 @@
+// Frames written field by field (tests/data/make_handmade.py made
+// tests/data/handmade.bin with its own small encoder, and checked every frame
+// against the reference, libzstd 1.5.7), each carrying one feature: raw and
+// RLE blocks (an empty one among them), raw and RLE literals with every header
+// size, Huffman literals with the weights of RFC 8878 section 4.2.1.3's own
+// example (one and four streams, then treeless), two one-bit symbols in the
+// largest size format, predefined sequences through every repeat-offset case,
+// the same block twice (offsets and tables going on), an FSE table of the
+// script's own with runs of zero counts, then repeated, a 3-byte sequence
+// count with three RLE tables, 8- and 4-byte content sizes, a window with a
+// mantissa and a match exactly at its edge, skippable frames, 200 frames in a
+// row, and empty input. Each is decompressed in one call and streamed every
+// way (pieces of 4096, 997 and 1 bytes in, 65536, 1000 and 1 out), and must
+// give exactly the content written beside it.
+
+mod handmade;
+
+import testing use *;
+import collections use *;
+import zstd use *;
+import fs;
+import path use Path;
+
+fn le32(s: &String, at: usize) usize {
+  usize.from(s[at]) + usize.from(s[at + 1usize]) * 256usize + usize.from(s[at + 2usize]) * 65536usize + usize.from(s[at + 3usize]) * 16777216usize
+}
+
+fn le64(s: &String, at: usize) u64 {
+  u64.from(le32(s, at)) | (u64.from(le32(s, at + 4usize)) << 32u64)
+}
+
+// Decompresses 's' in pieces of 'chunk' input bytes, taking 'maxPull' output
+// bytes at a time. 0 when it ends Done, else which way it went wrong.
+fn run(d: &mut Decompressor, s: &Array[u8], chunk: usize, maxPull: usize, out: &mut List[u8]) i32 {
+  var pos = 0usize;
+  var piece = List[u8].empty();
+  if s.len == 0usize { d.finish(); }
+  while true {
+    if pos < s.len {
+      let n = if s.len - pos < chunk {s.len - pos} else {chunk};
+      d.feed(&s[pos..<pos + n]);
+      pos += n;
+      if pos == s.len { d.finish(); }
+    }
+    var st: Status = Status.MoreOutput;
+    while st == Status.MoreOutput {
+      piece.clear();
+      st = d.pull(&mut piece, maxPull);
+      var k = 0usize;
+      while k < piece.len() { out.push(*piece[k]); k += 1usize; }
+      if piece.len() > maxPull { return 8; }
+    }
+    if st == Status.Done { return 0; }
+    if st == Status.Failed { return 1; }
+    if pos >= s.len { return 2; }
+  }
+  3
+}
+
+fn same(got: &Array[u8], clen: usize, chash: u64, stored: &Array[u8]) bool {
+  got.len == clen && xxh64(got, 0u64) == chash && (stored.len == 0usize || got == stored)
+}
+
+fn main() i32 {
+  match fs.readFile(&Path.from("../../../../tests/data/handmade.bin")) {
+    case let Ok(file) { checkAll(&file); }
+    case let Error(e) { expect(false, "the data file is there"); }
+  }
+  done()
+}
+
+fn checkAll(file: &String) {
+  let count = le32(file, 0usize);
+  expectInt(i64.from(count), 37i64, "frames in the file");
+  var at = 4usize;
+  var r = 0usize;
+  var streamed = 0usize;
+  var names = String.empty();
+  while r < count {
+    let nameLen = usize.from(file[at]);
+    let name = file.sub(at + 1usize, at + 1usize + nameLen);
+    at += 2usize + nameLen;
+    let flen = le32(file, at);
+    let frames = &file.view().bytes()[at + 4usize..<at + 4usize + flen];
+    at += 4usize + flen;
+    let clen = le32(file, at);
+    let chash = le64(file, at + 4usize);
+    let slen = le32(file, at + 12usize);
+    let stored = &file.view().bytes()[at + 16usize..<at + 16usize + slen];
+    at += 16usize + slen;
+
+    match decompress(frames, 0usize) {
+      case let Ok(got) {
+        if !same(got.view(), clen, chash, stored) {
+          names <- name.view();
+          names <- " (one call) ";
+        }
+      }
+      case let Error(e) {
+        names <- name.view();
+        names <- ": ";
+        names <- e.reason.view();
+        names <- "; ";
+      }
+    }
+    let chunks: Array[usize, 4] = [1073741824usize, 4096usize, 997usize, 1usize];
+    let pulls: Array[usize, 3] = [65536usize, 1000usize, 1usize];
+    var ci = 0usize;
+    while ci < 4usize {
+      var pi = 0usize;
+      while pi < 3usize {
+        var d = Decompressor.make();
+        var out = List[u8].empty();
+        let rc = run(&mut d, frames, chunks[ci], pulls[pi], &mut out);
+        streamed += 1usize;
+        if rc != 0 || !same(out.view(), clen, chash, stored) || d.totalIn() != u64.from(flen) {
+          names <- name.view();
+          names <- " (streamed) ";
+        }
+        pi += 1usize;
+      }
+      ci += 1usize;
+    }
+    r += 1usize;
+  }
+  expectStr(names.view(), "", "frames decoded wrongly");
+  expectInt(i64.from(streamed), 444i64, "streamed decodes run");
+}

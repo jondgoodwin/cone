@@ -1,0 +1,166 @@
+// ======== Huffman-coded literals ========
+//
+// RFC 8878 section 4.2. A tree is described by the weights of its symbols
+// (4 bits each, or FSE-coded), the last symbol's weight left to be worked
+// out; a weight w > 0 is a code of (maxBits + 1 - w) bits. Codes are
+// canonical with the longest first: symbols in order of weight, then of
+// value, each taking 2^(w - 1) entries of a table indexed by the next maxBits
+// bits of the backward stream. So one look decodes any symbol.
+
+// The most bits a literal's code may have (RFC 8878 section 4.2.1)
+fn maxHuffBits() u32 { 11u32 }
+
+// A Huffman decoding table: entry = symbol | (code bits << 8), indexed by the
+// next 'maxBits' bits
+struct HufTable {
+  entries: List[u16];
+  maxBits: u32;
+  // Scratch: the weights read, and where each weight's entries start
+  weights: List[u8];
+  rankStart: List[u32];
+  fse: FseTable;
+  norm: List[i16];
+
+  fn empty() HufTable {
+    HufTable(List[u16].empty(), 0u32, List[u8].empty(), List[u32].empty(), FseTable.empty(), List[i16].empty())
+  }
+
+  // Reads a Huffman tree description at *src[start, end) and builds the
+  // table. The bytes it took, or -1 when it is not valid.
+  fn read(self: &mut, src: &List[u8], start: usize, end: usize) i64 {
+    if start >= end { return -1i64; }
+    let head = usize.from(*src[start]);
+    weights.clear();
+    var used = 0usize;
+    if head >= 128usize {
+      // Direct: (head - 127) weights, two to a byte, the first in the high half
+      let count = head - 127usize;
+      let bytes = (count + 1usize) / 2usize;
+      if end - start - 1usize < bytes { return -1i64; }
+      var i = 0usize;
+      while i < count {
+        let b = *src[start + 1usize + i / 2usize];
+        weights.push(if i % 2usize == 0usize {b >> 4u8} else {b & 15u8});
+        i = i + 1usize;
+      }
+      used = 1usize + bytes;
+    } else {
+      // FSE-coded: 'head' bytes, a table description then the weights'
+      // bitstream, decoded with two states taking turns
+      if head == 0usize || end - start - 1usize < head { return -1i64; }
+      let a = start + 1usize;
+      let b = a + head;
+      var log = 0u32;
+      let nc = readNCount(src, a, b, 255usize, 6u32, &mut norm, &mut log);
+      if nc < 0i64 { return -1i64; }
+      if !fse.build(norm.view(), log) { return -1i64; }
+      var bits = match BackBits.open(src, a + usize.from(nc), b) {
+        case let Some(r) { r }
+        else { return -1i64; }
+      };
+      var s1 = bits.read(src, log);
+      var s2 = bits.read(src, log);
+      while true {
+        if weights.len() > 253usize { return -1i64; }
+        let c1 = *fse.cells[usize.from(s1)];
+        weights.push(u8.from(c1 & 0xFFu32));
+        s1 = (c1 >> 16u32) + bits.read(src, (c1 >> 8u32) & 0xFFu32);
+        if bits.overflowed() {
+          weights.push(u8.from(*fse.cells[usize.from(s2)] & 0xFFu32));
+          break;
+        }
+        if weights.len() > 253usize { return -1i64; }
+        let c2 = *fse.cells[usize.from(s2)];
+        weights.push(u8.from(c2 & 0xFFu32));
+        s2 = (c2 >> 16u32) + bits.read(src, (c2 >> 8u32) & 0xFFu32);
+        if bits.overflowed() {
+          weights.push(u8.from(*fse.cells[usize.from(s1)] & 0xFFu32));
+          break;
+        }
+      }
+      used = 1usize + head;
+    }
+    if !self.build() { return -1i64; }
+    i64.from(used)
+  }
+
+  // The table from 'weights' (all but the last symbol's). false when they
+  // do not make a code: a weight over the limit, no weight at all, a total
+  // whose remainder to a power of 2 is not one, or (as the reference
+  // decoder requires) fewer than two codes of the longest length.
+  fn build(self: &mut) bool {
+    let n = weights.len();
+    if n == 0usize || n > 255usize { return false; }
+    var total = 0u32;
+    var i = 0usize;
+    while i < n {
+      let w = u32.from(*weights[i]);
+      if w > maxHuffBits() { return false; }
+      if w > 0u32 { total = total + (1u32 << (w - 1u32)); }
+      i = i + 1usize;
+    }
+    if total == 0u32 { return false; }
+    let bits = highBit(total) + 1u32;
+    if bits > maxHuffBits() { return false; }
+    let rest = (1u32 << bits) - total;
+    if (rest & (rest - 1u32)) != 0u32 { return false; }
+    weights.push(u8.from(highBit(rest) + 1u32));
+    maxBits = bits;
+    // Where each weight's entries start: weight 1 (the longest codes) first
+    rankStart.clear();
+    var w = 0u32;
+    while w <= bits + 1u32 { rankStart.push(0u32); w = w + 1u32; }
+    i = 0usize;
+    var ones = 0u32;
+    while i <= n {
+      let wt = u32.from(*weights[i]);
+      if wt > 0u32 { rankStart.set(usize.from(wt), *rankStart[usize.from(wt)] + (1u32 << (wt - 1u32))); }
+      if wt == 1u32 { ones = ones + 1u32; }
+      i = i + 1usize;
+    }
+    if ones < 2u32 || (ones & 1u32) != 0u32 { return false; }
+    // counts to starts
+    var at = 0u32;
+    w = 1u32;
+    while w <= bits {
+      let c = *rankStart[usize.from(w)];
+      rankStart.set(usize.from(w), at);
+      at = at + c;
+      w = w + 1u32;
+    }
+    entries.clear();
+    entries.resize(1usize << usize.from(bits), 0u16);
+    i = 0usize;
+    while i <= n {
+      let wt = u32.from(*weights[i]);
+      if wt > 0u32 {
+        let len = 1u32 << (wt - 1u32);
+        let e = u16.from(i) | u16.from((bits + 1u32 - wt) << 8u32);
+        var k = *rankStart[usize.from(wt)];
+        let stop = k + len;
+        while k < stop { entries.set(usize.from(k), e); k = k + 1u32; }
+        rankStart.set(usize.from(wt), stop);
+      }
+      i = i + 1usize;
+    }
+    true
+  }
+
+  // Decodes 'count' literals from the backward stream *src[start, end),
+  // appending them to 'out'. false unless the stream is used exactly.
+  fn decodeStream(self: &, src: &List[u8], start: usize, end: usize, count: usize, out: &mut List[u8]) bool {
+    var bits = match BackBits.open(src, start, end) {
+      case let Some(r) { r }
+      else { return false; }
+    };
+    let mb = maxBits;
+    var i = 0usize;
+    while i < count {
+      let e = *entries[usize.from(bits.peek(src, mb))];
+      out.push(u8.from(e & 0xFFu16));
+      bits.skip(u32.from(e >> 8u16));
+      i = i + 1usize;
+    }
+    bits.exact()
+  }
+}

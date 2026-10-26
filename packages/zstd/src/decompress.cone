@@ -1,0 +1,37 @@
+// ======== Decompressing a whole stream at once ========
+//
+// The one-shot helpers: a stream in memory, its bytes out. Each is a
+// Decompressor run to the end of its input with the whole output kept.
+
+// Decompresses every frame of 'data' (skippable frames skipped), their
+// contents joined, as 'zstd -d' does. 'expected' is the output size if known
+// (it reserves room and bounds the output), else 0, which bounds the output
+// by 1 GiB. Every frame's checksum and declared content size are verified.
+// No input at all is no frames: an empty output.
+pub fn decompress(data: &Array[u8], expected: usize) Result[List[u8], ZstdError] {
+  runOneShot(Decompressor.make(), data, expected)
+}
+
+// The same, with a raw-content dictionary (see Decompressor.setDictionary)
+pub fn decompressWithDictionary(data: &Array[u8], dictionary: &Array[u8], expected: usize) Result[List[u8], ZstdError] {
+  var d = Decompressor.make();
+  d.setDictionary(dictionary);
+  runOneShot(d, data, expected)
+}
+
+fn runOneShot(d: Decompressor, data: &Array[u8], expected: usize) Result[List[u8], ZstdError] {
+  var run = d;
+  run.limit = if expected > 0usize {u64.from(expected)} else {defaultLimit()};
+  // Room for the expected size, but never more than 64 MiB up front: a header can claim anything
+  run.hist.reserve(if expected > 0usize {if expected < 67108864usize {expected} else {67108864usize}} else {65536usize});
+  run.feed(data);
+  run.finish();
+  let s = run.runAll();
+  if s == Status.Failed {
+    match run.error() {
+      case let Some(e) { return Error[List[u8], ZstdError](e); }
+      else {}
+    }
+  }
+  Ok[List[u8], ZstdError](run.takeOutput())
+}
