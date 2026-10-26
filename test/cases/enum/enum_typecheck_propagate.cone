@@ -1,0 +1,60 @@
+// What '?' refuses [Jon 26 Oct, error-handling issues 1 and 2]: a value that is
+// neither a Result nor an Option (a reference to one included); a function that
+// returns no Result for a Result's failure or no Option for an Option's, the message
+// naming what it returns (the manual's old "else panic" is gone: 'unwrap()' and
+// 'expect' trust a value); a closure whose return type is not written; an error the
+// function's error type cannot take (no 'from', no variant holding it); and an error
+// two variants of the function's error enum hold, with no 'from' to say which.
+// Each is reported at the '?', once: what uses the refused value says nothing more.
+// enum_parse_propagate is the refusal in a generator.
+
+mod enum_typecheck_propagate;
+
+struct A { pub x: i32; }
+struct B { pub y: i32; }
+enum Two {
+  First(A);
+  Second(A);
+}
+enum Other { One(B); }
+
+fn ra() Result[i32, A] { Ok(1) }
+fn oa() Option[i32] { Some(1) }
+
+fn notAResult(n: i32) i32 {
+  n?                           //~ ErrorQuesOperand:4 "'?' takes a Result or an Option, and this is i32"
+}
+
+fn aReference(r: &Result[i32, A]) Result[i32, A] {
+  let v = r?;                  //~ ErrorQuesOperand:12 "A reference to one is not"
+  Ok(v)
+}
+
+fn returnsANumber() i32 {
+  let v = ra()?;               //~ ErrorQuesReturn:15 "from returnsANumber, which returns i32, not a Result"
+  v
+}
+
+fn optionInResult() Result[i32, A] {
+  let v = oa()?;               //~ ErrorQuesReturn:15 "which returns Result[i32, A], not an Option"
+  Ok(v)
+}
+
+fn resultInOption() Option[i32] {
+  let v = ra()?;               //~ ErrorQuesReturn:15 "which returns Option[i32], not a Result"
+  Some(v)
+}
+
+fn inferredClosure() {
+  let f = fn() { let v = oa()?; };   //~ ErrorQuesReturn:30 "write its return type, an Option"
+}
+
+fn noConversion() Result[i32, Other] {
+  let v = ra()?;               //~ ErrorQuesConvert:15 "whose error Other cannot take it"
+  Ok(v)
+}
+
+fn twoVariants() Result[i32, Two] {
+  let v = ra()?;               //~ ErrorQuesAmbiguous:15 "(First and Second)"
+  Ok(v)
+}

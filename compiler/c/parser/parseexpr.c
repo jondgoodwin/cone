@@ -802,12 +802,43 @@ static void parseMarkValueTerm(ParseState *parse, INode *node) {
     }
 }
 
+// 'x?', with the lexer on the '?': what 'x' holds, or an early return of its
+// failure (propagate.h). The block holds 'x' in a hidden variable, and type
+// check, once it knows whether 'x' is a Result or an Option and what the
+// function returns, builds the test and the return after it (propagateLower).
+// The block is positioned on the '?', which every report about it names.
+static INode *parsePropagate(ParseState *parse, INode *node) {
+    BlockNode *blk = newBlockNode();
+    blk->flags |= FlagPropagate;
+    // A generator hands its caller items through 'yield', and its 'return' ends
+    // the walk: it has no Result or Option of its own for a '?' to return
+    if (parse->genctx)
+        errorMsgLex(ErrorQuesReturn,
+            "'?' returns a failure from the function it is in, and a generator returns nothing but its items, through 'yield'. Use 'match' or let-else here.");
+    VarDclNode *held = newVarDclFull(anonName, VarDclTag, unknownType, (INode*)immPerm, node);
+    inodeLexCopy((INode*)held, node);
+    nodesAdd(&blk->stmts, (INode*)held);
+    lexNextToken();
+    return (INode*)blk;
+}
+
 // This processes all suffix operators successively
 // Returns a node with first suffix inner-most, last is outermost.
-INode *parseSuffix(ParseState *parse, INode *node, uint16_t flags) {
+// 'awaited' stops them before a '?': the term is the operand of an 'await',
+// which the '?' follows (parsePrefix).
+static INode *parseSuffixUntil(ParseState *parse, INode *node, uint16_t flags, int awaited) {
 
     // Process as many suffixes as we have, each applying to the term before
     while (1) {
+        // '?': not where a type is read, whose '?' is an Option's sugar
+        // written before the type, nor ahead of an 'await' still to apply
+        if (lexIsToken(QuesToken) && !parse->intype && !awaited) {
+            // What '?' takes is a value: 'None[i32]?' constructs the variant
+            parseMarkValueTerm(parse, node);
+            node = parsePropagate(parse, node);
+            continue;
+        }
+
         if (lexIsToken(DotToken)) {
             node = parseDotCall(parse, node, flags);
         }
@@ -853,6 +884,10 @@ INode *parseSuffix(ParseState *parse, INode *node, uint16_t flags) {
         }
     }
     return node; // we never get here
+}
+
+INode *parseSuffix(ParseState *parse, INode *node, uint16_t flags) {
+    return parseSuffixUntil(parse, node, flags, 0);
 }
 
 // Parse a term wrapped by any suffixes.
@@ -1077,13 +1112,17 @@ INode *parsePrefix(ParseState *parse) {
     // operator is that operand's
     int entryparen = parse->entryparen;
     parse->entryparen = 0;
+    // The operand of an 'await' is this term alone: a prefix operator here
+    // takes the '?' after its own operand ('await -x?' awaits '-(x?)')
+    int awaited = parse->awaitoperand;
+    parse->awaitoperand = 0;
     switch (lex->toktype) {
 
     // '.' sugar for: this.suffixes
     case DotToken:
     {
         INode *node = parseDotCall(parse, (INode*)newNameUseNode(thisName), 0);
-        return parseSuffix(parse, node, 0);
+        return parseSuffixUntil(parse, node, 0, awaited);
     }
 
     // '*' (dereference or pointer type)
@@ -1173,21 +1212,27 @@ INode *parsePrefix(ParseState *parse) {
     }
 
     // 'await' (a seam in an actor's method): what follows is what is awaited,
-    // a prefix operand, so 'await f.get() + 1' adds to what the wait gives
+    // a prefix operand, so 'await f.get() + 1' adds to what the wait gives.
+    // A '?' after the operand applies to what the wait gives, 'await x?' being
+    // '(await x)?', and so do the suffixes after that '?' ('await x?[0]')
     case AwaitToken:
     {
         AwaitNode *node = newAwaitNode();
         if (parse->dcltexts)
             ++parse->dcltexts->awaits;
         lexNextToken();
+        parse->awaitoperand = 1;
         node->exp = parsePrefix(parse);
+        parse->awaitoperand = 0;
+        if (lexIsToken(QuesToken))
+            return parseSuffix(parse, (INode *)node, 0);
         return (INode *)node;
     }
 
     // No prefix operator: get the term with its suffixes
     default:
         parse->entryparen = entryparen;
-        return parseSuffixTerm(parse);
+        return parseSuffixUntil(parse, parseTerm(parse), 0, awaited);
     }
 }
 
