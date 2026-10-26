@@ -1,0 +1,329 @@
+// ======== Semantics: HTTP's messages as HTTP/3's field sections (RFC 9114, section 4) ========
+//
+// A field section carries a message's control data as pseudo-header fields
+// (':method', ':scheme', ':authority', ':path' of a request, ':status' of a
+// response) ahead of its header fields. Here package http's heads become
+// field lists to send, and field lists received become heads, every rule of
+// sections 4.2 and 4.3 checked: what is malformed is refused with the
+// reason, for the connection to answer as a stream error (H3_MESSAGE_ERROR,
+// section 4.1.2). The pseudo-header fields map to the head's own fields and
+// never into its Headers; a name is sent in lower case and refused in upper
+// case; cookie crumbs are joined with "; " (section 4.2.1); Content-Length
+// and Host are the core's, as in http1: a body's length travels as a
+// BodyLength, the Host as the authority.
+
+// What a field section is the head of
+enum SectionKind {Request, Response, Trailers}
+
+// Which pseudo-header fields a section has had, as bits
+const seenMethod = 1u32;
+const seenScheme = 2u32;
+const seenAuthority = 4u32;
+const seenPath = 8u32;
+const seenStatus = 16u32;
+const seenProtocol = 32u32;
+
+// A field section read: the pseudo-header fields' values, the header fields
+// checked, and what the core keeps for itself (Content-Length, Host). One
+// record, filled as the section is read and taken apart once by the reader
+// of its kind
+struct SectionFields {
+  headers: Headers;
+  method: String;
+  scheme: String;
+  authority: String;
+  path: String;
+  status: u16;
+  seen: u32;
+  length: u64;              // Content-Length's value, when 'hasLength'
+  hasLength: bool;
+  host: String;             // a request's Host, when 'hasHost'
+  hasHost: bool;
+  cookie: String;           // the cookie crumbs so far, joined
+  hasCookie: bool;
+}
+
+fn newSectionFields() SectionFields {
+  SectionFields(headers: Headers.empty(), method: String.empty(), scheme: String.empty(),
+    authority: String.empty(), path: String.empty(), status: 0u16, seen: 0u32,
+    length: 0u64, hasLength: false, host: String.empty(), hasHost: false,
+    cookie: String.empty(), hasCookie: false)
+}
+
+// Whether name is one of the fields that belong to a connection, which
+// HTTP/3 does not have (section 4.2); 'te' is checked by value apart
+fn isConnectionField(name: &Array[u8]) bool {
+  eqIgnoreCase(name, "connection") || eqIgnoreCase(name, "keep-alive") ||
+    eqIgnoreCase(name, "proxy-connection") || eqIgnoreCase(name, "transfer-encoding") ||
+    eqIgnoreCase(name, "upgrade")
+}
+
+fn hasUpper(s: &Array[u8]) bool {
+  var i = 0usize;
+  while i < s.len {
+    if s[i] >= 'A' && s[i] <= 'Z' {return true;}
+    i = i + 1usize;
+  }
+  false
+}
+
+// A decimal of 1 to 19 digits, or None
+fn decimal(s: &Array[u8]) Option[u64] {
+  if s.len == 0usize || s.len > 19usize {return None;}
+  var n = 0u64;
+  var i = 0usize;
+  while i < s.len {
+    let c = s[i];
+    if c < '0' || c > '9' {return None;}
+    n = n * 10u64 + u64.from(c - '0');
+    i = i + 1usize;
+  }
+  Some[u64](n)
+}
+
+// Read a field section's fields into f, checking them for its kind; "" when
+// they are well formed, else why not
+fn readSection(fields: &Array[HeaderField], kind: SectionKind, f: &mut SectionFields) &'static str {
+  var regular = false;
+  var i = 0usize;
+  while i < fields.len {
+    let name = fields[i].name.view();
+    let value = fields[i].value.view();
+    i = i + 1usize;
+    if name.len() > 0usize && name[0usize] == ':' {
+      // A pseudo-header field: before every header field, once each, and
+      // only those of the section's kind (section 4.3)
+      if regular {return "a pseudo-header field after a header field";}
+      if kind == SectionKind.Trailers {return "a pseudo-header field in trailers";}
+      var bit = 0u32;
+      if kind == SectionKind.Request {
+        if name == ":method" {bit = seenMethod;}
+        else if name == ":scheme" {bit = seenScheme;}
+        else if name == ":authority" {bit = seenAuthority;}
+        else if name == ":path" {bit = seenPath;}
+        else if name == ":protocol" {bit = seenProtocol;}
+        else if name == ":status" {return "a response's pseudo-header field in a request";}
+        else {return "an unknown pseudo-header field";}
+      } else {
+        if name == ":status" {bit = seenStatus;}
+        else if name == ":method" || name == ":scheme" || name == ":authority" || name == ":path" ||
+            name == ":protocol" {
+          return "a request's pseudo-header field in a response";
+        }
+        else {return "an unknown pseudo-header field";}
+      }
+      if (f.seen & bit) != 0u32 {return "a pseudo-header field given twice";}
+      f.seen = f.seen | bit;
+      if bit == seenMethod {f.method = String.fromBytes(value);}
+      else if bit == seenScheme {f.scheme = String.fromBytes(value);}
+      else if bit == seenAuthority {f.authority = String.fromBytes(value);}
+      else if bit == seenPath {f.path = String.fromBytes(value);}
+      else if bit == seenStatus {
+        match decimal(value) {
+          case let Some(n) {
+            if value.len != 3usize || n < 100u64 || n > 599u64 {return "a :status that is not three digits, 100 to 599";}
+            f.status = u16.from(n);
+          }
+          case is None[u64] {return "a :status that is not three digits, 100 to 599";}
+        }
+      }
+      continue;
+    }
+    regular = true;
+    // A header field (section 4.2): lower case, no space or tab at either
+    // end of its value, nothing that belongs to a connection
+    if hasUpper(name) {return "a field name with an upper-case letter";}
+    if value.len > 0usize && (isOws(value[0usize]) || isOws(value[value.len - 1usize])) {
+      return "a field value with a space or a tab at either end";
+    }
+    if !checkFieldName(name).isEmpty() {return "a field name that is not a token";}
+    if !checkFieldValue(value).isEmpty() {return "a field value holding a NUL, CR, LF or control character";}
+    if isConnectionField(name) {return "a connection-specific field";}
+    if name == "te" {
+      if !eqIgnoreCase(value, "trailers") {return "a TE field other than 'trailers'";}
+    }
+    if name == "content-length" {
+      if kind == SectionKind.Trailers {return "Content-Length in trailers";}
+      match decimal(value) {
+        case let Some(n) {
+          if f.hasLength && f.length != n {return "two Content-Lengths that differ";}
+          f.length = n;
+          f.hasLength = true;
+        }
+        case is None[u64] {return "a Content-Length that is not a decimal number";}
+      }
+      continue;
+    }
+    if name == "host" && kind == SectionKind.Request {
+      if f.hasHost {return "two Host fields";}
+      f.host = String.fromBytes(value);
+      f.hasHost = true;
+      continue;
+    }
+    if name == "cookie" {
+      // Crumbs joined (section 4.2.1)
+      if f.hasCookie {f.cookie.append("; ");}
+      f.cookie.appendBytes(value);
+      f.hasCookie = true;
+      continue;
+    }
+    if !f.headers.add(name, value) {return "a field Headers refuses";}
+  }
+  if f.hasCookie {
+    if !f.headers.add("cookie", f.cookie.view()) {return "a cookie Headers refuses";}
+  }
+  ""
+}
+
+// A request's section, read and checked (section 4.3.1): the head and the
+// content length it gives (when 'hasLength'). 'connect' says the method is
+// CONNECT, which this core does not support: the connection answers it 501,
+// as http1 and http2 do
+struct ReadRequest {
+  head: RequestHead;
+  length: u64;
+  hasLength: bool;
+  connect: bool;
+}
+
+fn badRequest(why: &'static str) Result[ReadRequest, &'static str] {Error[ReadRequest, &str](why)}
+
+// A request's section as a head, or why it is malformed. Extended CONNECT
+// (':protocol', RFC 9220) is refused as malformed, as http2 refuses it
+fn readRequest(fields: &Array[HeaderField]) Result[ReadRequest, &'static str] {
+  var f = newSectionFields();
+  let why = readSection(fields, SectionKind.Request, &mut f);
+  if !why.isEmpty() {return badRequest(why);}
+  let headers, method, scheme, authority, path, seen, length, hasLength, host, hasHost =
+    f.(headers, method, scheme, authority, path, seen, length, hasLength, host, hasHost);
+  if (seen & seenMethod) == 0u32 {return badRequest("a request without :method");}
+  if !isToken(method.view()) {return badRequest("a :method that is not a token");}
+  if (seen & seenProtocol) != 0u32 {return badRequest("extended CONNECT (:protocol), which is not supported");}
+  let connect = method.view() == "CONNECT";
+  if !connect {
+    if (seen & seenScheme) == 0u32 || scheme.isEmpty() {return badRequest("a request without :scheme, or with it empty");}
+    if (seen & seenPath) == 0u32 || path.isEmpty() {return badRequest("a request without :path, or with it empty");}
+    let p = path.view();
+    let star = p == "*" && method.view() == "OPTIONS";
+    if p[0usize] != '/' && !star {return badRequest("a :path that is neither absolute nor '*' for OPTIONS");}
+  }
+  var auth = authority;
+  if hasHost {
+    if (seen & seenAuthority) != 0u32 {
+      if !eqIgnoreCase(host.view(), auth.view()) {return badRequest("a Host that differs from :authority");}
+    } else {
+      auth = host;
+    }
+  }
+  // http and https have an authority, which a request must give (section 4.3.1)
+  if auth.isEmpty() && (scheme.view() == "https" || scheme.view() == "http") {
+    return badRequest("an http or https request without :authority or Host");
+  }
+  var head = RequestHead.make(method.view(), path.view(), auth.view());
+  head.scheme = scheme;
+  head.version = Version.Http3;
+  head.headers = headers;
+  Ok[ReadRequest, &str](ReadRequest(head, length, hasLength, connect))
+}
+
+// A response's section (section 4.3.2), or its interim's: the head and the
+// content length it gives (when 'hasLength')
+struct ReadResponse {
+  head: ResponseHead;
+  length: u64;
+  hasLength: bool;
+}
+
+fn badResponse(why: &'static str) Result[ReadResponse, &'static str] {Error[ReadResponse, &str](why)}
+
+// A response's section as a head, or why it is malformed
+fn readResponse(fields: &Array[HeaderField]) Result[ReadResponse, &'static str] {
+  var f = newSectionFields();
+  let why = readSection(fields, SectionKind.Response, &mut f);
+  if !why.isEmpty() {return badResponse(why);}
+  let headers, status, seen, length, hasLength = f.(headers, status, seen, length, hasLength);
+  if (seen & seenStatus) == 0u32 {return badResponse("a response without :status");}
+  if status == 101u16 {return badResponse("a 101, which HTTP/3 does not have");}
+  var head = ResponseHead.make(status);
+  head.version = Version.Http3;
+  head.headers = headers;
+  Ok[ReadResponse, &str](ReadResponse(head, length, hasLength))
+}
+
+// A trailer section as its fields, or why it is malformed
+fn readTrailers(fields: &Array[HeaderField]) Result[Headers, &'static str] {
+  var f = newSectionFields();
+  let why = readSection(fields, SectionKind.Trailers, &mut f);
+  if !why.isEmpty() {return Error[Headers, &str](why);}
+  let headers = f.(headers);
+  Ok[Headers, &str](headers)
+}
+
+// ---------------------------------------------------------------------------
+// Sending: heads as field lists
+// ---------------------------------------------------------------------------
+
+// A header field to send, its name in lower case
+fn lowerField(name: &str, value: &Array[u8]) HeaderField {
+  var n = String.from(name);
+  n.lowerAscii();
+  HeaderField(n, String.fromBytes(value), false)
+}
+
+// A head's header fields, appended to out in lower case. A field the core
+// writes itself or HTTP/3 does not have is a program error, a panic
+fn putRegular(h: &Headers, out: &mut List[HeaderField], file: &Array[u8], line: u32) {
+  var i = 0usize;
+  while i < h.len() {
+    let name = h.nameAt(i);
+    let value = h.valueAt(i);
+    if eqIgnoreCase(name, "content-length") {
+      panic("http3: Content-Length is the core's to write: say the body's length with a BodyLength", file, line);
+    }
+    if eqIgnoreCase(name, "host") {panic("http3: Host is written from the head's authority, as :authority", file, line);}
+    if isConnectionField(name) {panic("http3: a connection-specific field (Connection, Keep-Alive, Proxy-Connection, Transfer-Encoding, Upgrade), which HTTP/3 does not have", file, line);}
+    if eqIgnoreCase(name, "te") && !eqIgnoreCase(value, "trailers") {panic("http3: a TE field other than 'trailers'", file, line);}
+    out.push(lowerField(name, value));
+    i = i + 1usize;
+  }
+}
+
+fn addLength(n: u64, out: &mut List[HeaderField]) {
+  var v = String.empty();
+  v.appendUInt(n);
+  out.push(HeaderField(String.from("content-length"), v, false));
+}
+
+// A request head as its fields (section 4.3.1): the pseudo-header fields,
+// then its own, then Content-Length for a Sized body. An empty scheme is
+// 'https', HTTP/3's own. CONNECT, an empty target or authority, or a method
+// that is not a token is a program error, a panic
+fn requestFields(head: &RequestHead, body: &BodyLength, out: &mut List[HeaderField], file: &Array[u8], line: u32) {
+  let method = head.methodName();
+  if !isToken(method) {panic("http3: the request's method is not a token", file, line);}
+  if head.method == Method.Connect {panic("http3: CONNECT is not supported", file, line);}
+  if head.target.isEmpty() {panic("http3: a request needs a target (its path and query)", file, line);}
+  if head.authority.isEmpty() {panic("http3: a request needs an authority", file, line);}
+  out.push(HeaderField.make(":method", method));
+  out.push(HeaderField.make(":scheme", if head.scheme.isEmpty() {"https"} else {head.scheme.view()}));
+  out.push(HeaderField.make(":authority", head.authority.view()));
+  out.push(HeaderField.make(":path", head.target.view()));
+  putRegular(&head.headers, out, file, line);
+  if body.isSized() {addLength(body.length, out);}
+}
+
+// A response head as its fields (section 4.3.2): ':status', its own, then
+// Content-Length for a Sized body
+fn responseFields(head: &ResponseHead, body: &BodyLength, out: &mut List[HeaderField], file: &Array[u8], line: u32) {
+  var s = String.empty();
+  s.appendUInt(u64.from(head.status));
+  out.push(HeaderField(String.from(":status"), s, false));
+  putRegular(&head.headers, out, file, line);
+  if body.isSized() {addLength(body.length, out);}
+}
+
+// Trailer fields as a list: lower case, none the core writes or HTTP/3
+// does not have
+fn trailerFields(h: &Headers, out: &mut List[HeaderField], file: &Array[u8], line: u32) {
+  putRegular(h, out, file, line);
+}

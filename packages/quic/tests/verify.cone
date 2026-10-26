@@ -1,0 +1,319 @@
+// Certificates: a client checks the server's chain by its Config's
+// tls.Verifier, with tls's semantics, over a client and a server Connection
+// in memory (as tests/handshake.cone). The certificates are tls's test
+// certificates (packages/tls/tests/certs, README there).
+//
+// - The OS's verifier (tls.Verifier.platform()), the client given no roots
+//   at all, so whatever trusts the server is the operating system's store
+//   alone. As tls's tests/platform.cone does, on Linux the system's store is
+//   named by SSL_CERT_FILE, set here to the test root (tests/certs/ca.pem)
+//   before the verifier first reads it, for this process only: the
+//   verifier then accepts the server's chain for 'localhost' and for
+//   127.0.0.1, which nothing but that store trusts, and refuses a wrong name,
+//   an expired certificate and a chain from another root, each with the
+//   Windows error tls reports for it. On Windows the verifier is crypt32's,
+//   with the machine's own roots, which do not hold the test root and which
+//   no test changes: every chain is refused there, as untrusted (so this test
+//   has its own Windows output, verify.out, and Linux's, verify.linux.out).
+//   The verifier runs both ways: here, by verifyNow, and on the blocking
+//   pool, by verifyOp, its completion taken from a Loop and handed to
+//   verifyDone.
+// - The roots verifier (tls.Verifier.roots): the test root accepts the
+//   server, and refuses a chain from another root.
+// - Pinning (tls.Verifier.pinnedSha256, tests/certs/server.pin): the
+//   server's key accepted whatever name was asked for, another key refused.
+//
+// A refusal closes the connection with the TLS alert OpenSSL sends, which
+// the server hears as CRYPTO_ERROR (0x100 + the alert).
+
+mod verify;
+
+import stdio use *;
+import fs;
+import env;
+import path use Path;
+import collections use List, String;
+import time use Instant, Duration;
+import iobuf use IoBuf;
+import iocore use Loop, Target, Completion;
+import tls;
+import quic;
+
+fn certs(name: &str) Path {
+  var p = String.from("../../../../../tls/tests/certs/");
+  p.append(name);
+  Path.fromString(p)
+}
+
+fn readText(name: &str) String {
+  let p = certs(name);
+  match fs.readFile(&p) {
+    case var Ok(r) {return r;}
+    case let Error(e) {}
+  }
+  printStr("cannot read ");
+  printStr(p.view());
+  printStr("\n");
+  String.empty()
+}
+
+fn clientCtx(v: tls.Verifier) quic.Context {
+  var cfg = quic.Config.make();
+  cfg.verify = v;
+  cfg.offline = true;
+  match quic.Context.client(cfg) {
+    case var Ok(r) {return r;}
+    case let Error(e) {
+      printStr(e.message().view());
+      printStr("\n");
+    }
+  }
+  panic("the client's context could not be made")
+}
+
+fn serverCtx(cert: &str, key: &str) quic.Context {
+  let certFile = certs(cert);
+  let keyFile = certs(key);
+  match quic.Context.server(quic.Config.make(), &certFile, &keyFile) {
+    case var Ok(r) {return r;}
+    case let Error(e) {
+      printStr(e.message().view());
+      printStr("\n");
+    }
+  }
+  panic("the server's context could not be made")
+}
+
+fn clientAddr() quic.Addr {quic.Addr.v4(127u8, 0u8, 0u8, 1u8, 50000u16)}
+fn serverAddr() quic.Addr {quic.Addr.v4(127u8, 0u8, 0u8, 1u8, 4433u16)}
+
+// What a side was told
+struct Side {
+  handshake: bool;
+  verifyAsked: u32;
+  closedSeen: bool;
+  closedByPeer: bool;
+  closedCode: u64;
+  got: String;              // bytes read on any stream
+  gotFin: bool;
+
+  fn make() Side {Side(false, 0u32, false, false, 0u64, String.empty(), false)}
+}
+
+fn drain(c: &mut quic.Connection, side: &mut Side) {
+  while true {
+    match c.pollEvent() {
+      case is Nothing {return;}
+      case is HandshakeDone {side.handshake = true;}
+      case is VerifyNeeded {side.verifyAsked = side.verifyAsked + 1u32;}
+      case let PeerStream(p) {}
+      case let Data(d) {
+        side.got.appendBytes(d.buf.view());
+        if d.fin {side.gotFin = true;}
+        c.release(d.stream, d.buf.len());
+      }
+      case let Reset(r) {}
+      case let WriteStopped(w) {}
+      case let MoreStreams(m) {}
+      case let Closed(x) {
+        side.closedSeen = true;
+        side.closedByPeer = x.byPeer;
+        side.closedCode = x.code;
+      }
+    }
+  }
+}
+
+// The OS's verifier, as the client's owner runs it: here, or on the
+// blocking pool through a Loop
+fn runVerifier(c: &mut quic.Connection, lp: &mut Loop, pooled: bool) {
+  if !c.wantsVerify() {return;}
+  if !pooled {
+    c.verifyNow();
+    return;
+  }
+  lp.submit(c.verifyOp(), Target.Here(7u64));
+  var got = List[Completion].empty();
+  let giveUp = Instant.now() + Duration.fromSeconds(30i64);
+  while got.len() == 0usize && Instant.now() < giveUp {
+    lp.poll(Instant.now() + Duration.fromMillis(50i64), &mut got);
+  }
+  if got.len() == 0usize {panic("the verifier's completion never came");}
+  c.verifyDone(&mut got[0usize]);
+}
+
+fn earliest(a: Option[Instant], b: Option[Instant]) Option[Instant] {
+  match a {
+    case let Some(x) {
+      match b {
+        case let Some(y) {return Some(if y < x {y} else {x});}
+        case is None[Instant] {return Some(x);}
+      }
+    }
+    case is None[Instant] {}
+  }
+  b
+}
+
+fn pump(c: &mut quic.Connection, s: &mut quic.Connection, cs: &mut Side, ss: &mut Side, now: &mut Instant,
+    lp: &mut Loop, pooled: bool) {
+  var rounds = 0u32;
+  while rounds < 100000u32 {
+    rounds = rounds + 1u32;
+    var moved = false;
+    while true {
+      let p = c.pollTransmit(*now);
+      if p.len() == 0usize {break;}
+      s.handleInput(p.view(), *now);
+      moved = true;
+    }
+    drain(s, ss);
+    while true {
+      let p = s.pollTransmit(*now);
+      if p.len() == 0usize {break;}
+      c.handleInput(p.view(), *now);
+      moved = true;
+    }
+    drain(c, cs);
+    if c.wantsVerify() {
+      runVerifier(c, lp, pooled);
+      drain(c, cs);
+      moved = true;
+    }
+    if moved {
+      *now = *now + Duration.fromMillis(1i64);
+      continue;
+    }
+    var t = *now;
+    match earliest(c.wakeAt(), s.wakeAt()) {
+      case let Some(w) {t = w;}
+      case is None[Instant] {return;}
+    }
+    if t > *now + Duration.fromSeconds(1i64) {return;}
+    *now = if t > *now {t} else {*now + Duration.fromMillis(1i64)};
+  }
+}
+
+fn yesNo(b: bool) &str {if b {"yes"} else {"no"}}
+
+fn hex8(v: u32) String {
+  var s = String.from("0x");
+  s.appendHex(u64.from(v), 8usize);
+  s
+}
+
+// One connection: the client's verifier against a server, and what came of it
+fn attempt(label: &str, cctx: &quic.Context, sctx: &quic.Context, host: &str, lp: &mut Loop, pooled: bool) {
+  printStr("-- ");
+  printStr(label);
+  printStr("\n");
+  var now = Instant.fromNanos(1000000000i64);
+  var c = mustClient(cctx, host, now);
+  let first = c.pollTransmit(now);
+  var s = mustAccept(sctx, first.view(), now);
+  var cs = Side.make();
+  var ss = Side.make();
+  pump(&mut c, &mut s, &mut cs, &mut ss, &mut now, lp, pooled);
+  printStr("verifier: ");
+  printStr(tls.verifyKindName(c.verifiedBy()));
+  printStr(", asked for the OS's verdict: ");
+  printUInt(u64.from(cs.verifyAsked));
+  printStr("\n");
+  printStr("handshake done: client ");
+  printStr(yesNo(cs.handshake));
+  printStr(", server ");
+  printStr(yesNo(ss.handshake));
+  printStr("\n");
+  if cs.handshake {
+    // The connection carries a stream once trusted
+    match c.openBidi() {
+      case let Some(id) {
+        c.writeBytes(id, "trusted");
+        c.finish(id);
+      }
+      case is None[i64] {}
+    }
+    pump(&mut c, &mut s, &mut cs, &mut ss, &mut now, lp, pooled);
+    printStr("the server read: ");
+    printStr(ss.got.view());
+    printStr(if ss.gotFin {", and its end\n"} else {", no end\n"});
+  }
+  match c.error() {
+    case let Some(e) {
+      printStr("client's error: ");
+      printStr(e.message().view());
+      printStr("\n");
+      printStr("...Windows' error: ");
+      printStr(hex8(e.osError).view());
+      printStr("\n");
+    }
+    case is None[quic.QuicError] {printStr("client's error: none\n");}
+  }
+  if ss.closedSeen {
+    printStr("the server heard the close: code ");
+    printUInt(ss.closedCode);
+    if ss.closedCode >= 256u64 && ss.closedCode < 512u64 {
+      printStr(", TLS alert ");
+      printUInt(ss.closedCode - 256u64);
+    }
+    printStr("\n");
+  } else {
+    printStr("the server heard no close\n");
+  }
+}
+
+fn mustClient(cctx: &quic.Context, host: &str, now: Instant) quic.Connection {
+  match quic.Connection.client(cctx, host, &clientAddr(), &serverAddr(), now) {
+    case var Ok(c) {return c;}
+    case let Error(err) {
+      printStr(err.message().view());
+      printStr("\n");
+    }
+  }
+  panic("the client could not be made")
+}
+
+fn mustAccept(sctx: &quic.Context, first: &Array[u8], now: Instant) quic.Connection {
+  match quic.Connection.accept(sctx, first, &serverAddr(), &clientAddr(), now) {
+    case var Ok(s) {return s;}
+    case let Error(e) {
+      printStr(e.message().view());
+      printStr("\n");
+    }
+  }
+  panic("the server could not accept the client's first packet")
+}
+
+fn main() {
+  // On Linux the OS's store, for this process, is the test root (see the
+  // header); Windows' crypt32 ignores the variable
+  if !isWindows() {
+    let ca = certs("ca.pem");
+    env.set("SSL_CERT_FILE", ca.view());
+  }
+  var lp = Loop.mustMake();
+  let good = serverCtx("server.pem", "server.key");
+  let expired = serverCtx("expired.pem", "expired.key");
+  let other = serverCtx("untrusted.pem", "untrusted.key");
+
+  printStr("== the OS's verifier, the client given no roots\n");
+  let platform = clientCtx(tls.Verifier.platform());
+  attempt("localhost, verified here", &platform, &good, "localhost", &mut lp, false);
+  attempt("localhost, verified on the blocking pool", &platform, &good, "localhost", &mut lp, true);
+  attempt("127.0.0.1", &platform, &good, "127.0.0.1", &mut lp, false);
+  attempt("a wrong name", &platform, &good, "wrong.example", &mut lp, false);
+  attempt("an expired certificate", &platform, &expired, "localhost", &mut lp, false);
+  attempt("another root", &platform, &other, "localhost", &mut lp, false);
+
+  printStr("== the roots verifier, the test root\n");
+  let roots = clientCtx(tls.Verifier.roots(readText("ca.pem").view()));
+  attempt("localhost", &roots, &good, "localhost", &mut lp, false);
+  attempt("another root", &roots, &other, "localhost", &mut lp, false);
+
+  printStr("== pinning the server's key\n");
+  let pin = readText("server.pin");
+  let pinned = clientCtx(tls.Verifier.pinnedSha256(pin.view()));
+  attempt("the server's key", &pinned, &good, "localhost", &mut lp, false);
+  attempt("the server's key, another name asked for", &pinned, &good, "wrong.example", &mut lp, false);
+  attempt("another key", &pinned, &other, "localhost", &mut lp, false);
+}

@@ -160,7 +160,7 @@ fn note(drv: &mut Driver, lp: &mut Loop, st: &mut State, events: &mut List[Event
 // wait at most ms
 fn turn(drv: &mut Driver, lp: &mut Loop, st: &mut State, ms: i64) {
   var events = List[Event].empty();
-  drv.pump(lp, &mut events);
+  drv.pump(lp, &uni events);
   var until = Instant.now() + Duration.fromMillis(ms);
   if drv.wakeAt() < until {until = drv.wakeAt();}
   if events.len() > 0usize {until = Instant();}
@@ -174,7 +174,7 @@ fn turn(drv: &mut Driver, lp: &mut Loop, st: &mut State, ms: i64) {
     }
     k = k + 1usize;
   }
-  drv.pump(lp, &mut events);
+  drv.pump(lp, &uni events);
   note(drv, lp, st, &mut events);
 }
 
@@ -435,13 +435,13 @@ fn main() i32 {
     let b = d7.connect(&mut lp, "127.0.0.1", port, Sink.Here(106u64));
     d7.request(&mut lp, b, RequestHead.get("/ok", "127.0.0.1"), BodyLength.empty(), Sink.Here(8u64));
     var events = List[Event].empty();
-    d7.pump(&mut lp, &mut events);
+    d7.pump(&mut lp, &uni events);
     note(&mut drv, &mut lp, &mut st, &mut events);
     expect(st.conn[6usize].closes == 1u32 && st.conn[6usize].stage == Stage.Limit, "7: the second: Closed at Limit");
     expect(st.req[8usize].kind == EventKind.Failed && st.req[8usize].unsent, "7: ...its request Failed, unsent");
     expect(d7.isOpen(a) || d7.live() == 1u32, "7: the first goes on");
     d7.abortAll(&mut lp);
-    d7.pump(&mut lp, &mut events);
+    d7.pump(&mut lp, &uni events);
     events.clear();
   }
 
@@ -475,8 +475,8 @@ fn main() i32 {
     var events = List[Event].empty();
     var comps = List[Completion].empty();
     while Instant.now() < deadline + Duration.fromMillis(100i64) {
-      d8.pump(&mut lp, &mut events);
-      drv.pump(&mut lp, &mut events);
+      d8.pump(&mut lp, &uni events);
+      drv.pump(&mut lp, &uni events);
       var w = Instant.now() + Duration.fromMillis(5i64);
       if events.len() > 0usize {w = Instant();}
       lp.poll(w, &mut comps);
@@ -487,8 +487,8 @@ fn main() i32 {
         q = q + 1usize;
       }
       comps.clear();
-      d8.pump(&mut lp, &mut events);
-      drv.pump(&mut lp, &mut events);
+      d8.pump(&mut lp, &uni events);
+      drv.pump(&mut lp, &uni events);
       // The second server's requests are answered by d8
       q = 0usize;
       while q < events.len() {
@@ -517,7 +517,7 @@ fn main() i32 {
     expectUInt(d8.stats().accepted, 2u64, "8: the server accepted two");
     d8.abortAll(&mut lp);
     drv.abortAll(&mut lp);
-    d8.pump(&mut lp, &mut events);
+    d8.pump(&mut lp, &uni events);
     events.clear();
   }
 

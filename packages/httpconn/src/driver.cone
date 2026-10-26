@@ -110,10 +110,10 @@ struct Conn {
   timer: OpId;               // the core's deadline, or the linger, on the loop's timers
   timerAt: Instant;
   current: u32;              // the request under way, or noEntry
-  waiting: List[u32];        // a client's requests waiting their turn
+  waiting: Deque[Waiting];   // a client's requests waiting their turn, each with its head
   flushing: List[u32];       // a server's requests answered whole, their bytes going out
-  failed: bool;
-  failure: Failure;
+  failure: Option[Failure];  // why it failed, once it has
+  openBy: Instant;           // its layer's handshake ends by then (handshakeTimeout), or the connection does
   dirty: bool;
   held: u32;                 // its events held for a full channel
   inAtStart: u64;            // the core's bytes received when the current request started
@@ -128,7 +128,6 @@ struct Req {
   connGen: u32;
   server: bool;
   sink: Sink;
-  head: RequestHead;         // a client's, until it starts
   body: BodyLength;
   isHead: bool;              // a HEAD request: its response has no body
   watch: OpId;               // the timer for its deadline and group, or none
@@ -139,6 +138,24 @@ struct Req {
   gotResponse: bool;         // a client's response head (or an interim one) has come
   wantWritable: bool;        // tell it when it may send again
   timing: Timing;
+}
+
+// A client's request waiting its turn on a connection: its record, and the
+// head it sends when it starts
+struct Waiting {
+  req: u32;
+  head: RequestHead;
+}
+
+// An event held for a full channel: where it goes, its connection and that
+// connection's generation (noEntry for none), and the body bytes it
+// releases once taken
+struct Held {
+  e: Event;
+  sink: Sink;
+  conn: u32;
+  gen: u32;
+  credit: usize;
 }
 
 // A listening socket
@@ -169,11 +186,7 @@ pub struct Driver {
   dirty: List[u32];
   work: List[u32];
   ready: List[Event];        // events for this thread, until pump hands them over
-  heldE: List[Event];        // events held for a full channel, in order...
-  heldS: List[Sink];         // ...where each goes,
-  heldC: List[u32];          // ...its connection and generation,
-  heldG: List[u32];
-  heldN: List[usize];        // ...and the body bytes it releases once taken
+  heldEvents: List[Held];    // events held for full channels, in order
   comps: List[Completion];
   st: DriverStats;
 
@@ -185,9 +198,7 @@ pub struct Driver {
       reqBlocks: List[*Req].empty(), reqCount: 0u32, freeReq: noEntry,
       listeners: List[Lst].empty(), acceptsOut: 0u32, rearm: false,
       dirty: List[u32].empty(), work: List[u32].empty(), ready: List[Event].empty(),
-      heldE: List[Event].empty(), heldS: List[Sink].empty(), heldC: List[u32].empty(),
-      heldG: List[u32].empty(), heldN: List[usize].empty(), comps: List[Completion].empty(),
-      st: DriverStats.zero())
+      heldEvents: List[Held].empty(), comps: List[Completion].empty(), st: DriverStats.zero())
   }
 
   // Its counters, as they are now
@@ -200,7 +211,7 @@ pub struct Driver {
   // must go on being driven (poll or pump) even once every connection has
   // closed: a channel's events may be held behind a Closed that went to
   // another sink
-  pub fn held(self: &) usize {heldE.len()}
+  pub fn held(self: &) usize {heldEvents.len()}
 
   // Its configuration
   pub fn config(self: &) Config {cfg}
@@ -285,13 +296,13 @@ pub struct Driver {
       connOp: OpId.none(), callOp: OpId.none(), connectBy: Instant(), peer: SocketAddr.localhost(0u16),
       recvOut: false, readyOut: false, readyHit: false, sendsOut: 0u32, eof: false, eofFed: false,
       shut: false, closeAsked: false, timer: OpId.none(), timerAt: Instant(), current: noEntry,
-      waiting: List[u32].empty(), flushing: List[u32].empty(), failed: false, failure: Failure.none(),
+      waiting: Deque[Waiting].empty(), flushing: List[u32].empty(), failure: None, openBy: forever(),
       dirty: false, held: 0u32, inAtStart: 0u64)
   }
 
   fn blankReq(self: &, next: u32) Req {
     Req(gen: 1u32, state: rFree, nextFree: next, conn: noEntry, connGen: 0u32, server: false,
-      sink: Sink.Here(0u64), head: RequestHead.empty(), body: BodyLength.empty(), isHead: false,
+      sink: Sink.Here(0u64), body: BodyLength.empty(), isHead: false,
       watch: OpId.none(), wrote: false, responded: false, finished: false, readDone: false,
       gotResponse: false, wantWritable: false, timing: Timing.zero())
   }
@@ -340,8 +351,8 @@ pub struct Driver {
     c.current = noEntry;
     c.waiting.clear();
     c.flushing.clear();
-    c.failed = false;
-    c.failure = Failure.none();
+    c.failure = None;
+    c.openBy = forever();
     c.dirty = false;
     c.held = 0u32;
     c.inAtStart = 0u64;
@@ -360,7 +371,7 @@ pub struct Driver {
     c.addrs.clear();
     c.waiting.clear();
     c.flushing.clear();
-    c.failure = Failure.none();
+    c.failure = None;
     c.nextFree = freeConn;
     freeConn = i;
     liveConns = liveConns - 1u32;
@@ -405,7 +416,6 @@ pub struct Driver {
     r.state = rFree;
     r.gen = nextGen(r.gen);
     r.sink = Sink.Here(0u64);
-    r.head = RequestHead.empty();
     r.nextFree = freeReq;
     freeReq = ri;
   }
@@ -434,27 +444,24 @@ pub struct Driver {
     if conn != noEntry {
       let c = self.connAt(conn) as &mut Conn;
       if c.gen == gen && c.held > 0u32 {
-        self.hold(sink, conn, gen, credit, e);
+        self.hold(copySink(sink), conn, gen, credit, e);
         return;
       }
     }
-    var back = blankEvent();
-    let sent = trySink(sink, e, &mut back);
-    if sent == sinkFull {
-      self.hold(sink, conn, gen, credit, back);
-      return;
+    match trySink(sink, e) {
+      case var Full(f) {
+        self.hold(copySink(sink), conn, gen, credit, f.(e));
+        return;
+      }
+      case is Gone {st.dropped = st.dropped + 1u64;}
+      else {}
     }
-    if sent == sinkGone {st.dropped = st.dropped + 1u64;}
     self.releaseTo(conn, gen, credit);
   }
 
-  fn hold(self: &mut, sink: &mut Sink, conn: u32, gen: u32, credit: usize, e: Event) {
+  fn hold(self: &mut, sink: Sink, conn: u32, gen: u32, credit: usize, e: Event) {
     st.held = st.held + 1u64;
-    heldE.push(e);
-    heldS.push(copySink(sink));
-    heldC.push(conn);
-    heldG.push(gen);
-    heldN.push(credit);
+    heldEvents.push(Held(e, sink, conn, gen, credit));
     if conn != noEntry {
       let c = self.connAt(conn) as &mut Conn;
       if c.gen == gen {c.held = c.held + 1u32;}
@@ -473,82 +480,50 @@ pub struct Driver {
   // Try again the events held for full channels, in order: a connection's
   // later events stay behind its first still held
   fn retryHeld(self: &mut) {
-    if heldE.len() == 0usize {return;}
-    var ke = List[Event].empty();
-    var ks = List[Sink].empty();
-    var kc = List[u32].empty();
-    var kg = List[u32].empty();
-    var kn = List[usize].empty();
+    if heldEvents.len() == 0usize {return;}
+    var kept = List[Held].empty();
     var blocked = List[u64].empty();
-    var k = 0usize;
-    while k < heldE.len() {
-      var e = blankEvent();
-      let es = &mut heldE[k];
-      e <-> *es;
-      var s: Sink = Sink.Here(0u64);
-      let ss = &mut heldS[k];
-      s <-> *ss;
-      let conn = *heldC[k];
-      let gen = *heldG[k];
-      let n = *heldN[k];
-      k = k + 1usize;
-      let key = (u64.from(gen) << 32u64) | u64.from(conn);
-      var stay = false;
-      var j = 0usize;
-      while j < blocked.len() {
-        if *blocked[j] == key {stay = true;}
-        j = j + 1usize;
-      }
-      if !stay {
-        // Tried: e goes into the channel, or comes back in e2
-        var e2 = blankEvent();
-        let sent = trySink(&mut s, e, &mut e2);
-        if sent == sinkGone {st.dropped = st.dropped + 1u64;}
-        if sent != sinkFull {
-          if conn != noEntry {
-            let c = self.connAt(conn) as &mut Conn;
-            if c.gen == gen && c.held > 0u32 {
-              c.held = c.held - 1u32;
-              self.markDirty(conn);
-            }
-          }
-          self.releaseTo(conn, gen, n);
+    {
+      each h in heldEvents.drain() {
+        let e, var sink, conn, gen, credit = h.(e, sink, conn, gen, credit);
+        let key = (u64.from(gen) << 32u64) | u64.from(conn);
+        if isIn(&blocked, key) {
+          kept.push(Held(e, sink, conn, gen, credit));
           continue;
         }
-        blocked.push(key);
-        ke.push(e2);
-      } else {
-        ke.push(e);
+        // Tried: e goes into the channel, or comes back
+        match trySink(&mut sink, e) {
+          case var Full(f) {
+            blocked.push(key);
+            kept.push(Held(f.(e), sink, conn, gen, credit));
+            continue;
+          }
+          case is Gone {st.dropped = st.dropped + 1u64;}
+          else {}
+        }
+        if conn != noEntry {
+          let c = self.connAt(conn) as &mut Conn;
+          if c.gen == gen && c.held > 0u32 {
+            c.held = c.held - 1u32;
+            self.markDirty(conn);
+          }
+        }
+        self.releaseTo(conn, gen, credit);
       }
-      ks.push(s);
-      kc.push(conn);
-      kg.push(gen);
-      kn.push(n);
     }
-    heldE = ke;
-    heldS = ks;
-    heldC = kc;
-    heldG = kg;
-    heldN = kn;
+    heldEvents = kept;
   }
 
   // Events for this thread, moved to out: how many
-  fn handOver(self: &mut, out: &mut List[Event]) usize {
+  fn handOver(self: &mut, out: &uni List[Event]) usize {
     let n = ready.len();
     if n == 0usize {return 0usize;}
     if out.len() == 0usize {
+      // The two lists change places: out's emptiness is ready's next
       *out <-> ready;
       return n;
     }
-    var k = 0usize;
-    while k < n {
-      var e = blankEvent();
-      let slot = &mut ready[k];
-      e <-> *slot;
-      out.push(e);
-      k = k + 1usize;
-    }
-    ready.clear();
+    each e in ready.drain() {out.push(e);}
     n
   }
 
@@ -560,20 +535,23 @@ pub struct Driver {
   // THE DRIVER)
   pub fn wakeAt(self: &) Instant {
     if dirty.len() > 0usize || ready.len() > 0usize {return Instant();}
-    if heldE.len() > 0usize {return Instant.now() + Duration.fromNanos(heldRetryNs);}
+    if heldEvents.len() > 0usize {return Instant.now() + Duration.fromNanos(heldRetryNs);}
     forever()
   }
 
   // Poll the loop, at most until 'until' and not at all while events are
   // ready; hand the driver what completed; drive what it touched; append the
   // events for this thread to out: how many. A completion that is not the
-  // driver's is dropped (counted: stats().unclaimed)
-  pub fn poll(self: &mut, lp: &mut Loop, until: Instant, out: &mut List[Event]) usize {
+  // driver's is dropped (counted: stats().unclaimed). Nor does it wait when
+  // its first pump delivered events it held for a channel: 'held()' fell, and
+  // the program, which may be driving the driver until it is 0, must see it
+  pub fn poll(self: &mut, lp: &mut Loop, until: Instant, out: &uni List[Event]) usize {
+    let heldBefore = heldEvents.len();
     var n = self.pump(lp, out);
     var limit = until;
     let w = self.wakeAt();
     if w < limit {limit = w;}
-    if n > 0usize {limit = Instant();}
+    if n > 0usize || heldEvents.len() < heldBefore {limit = Instant();}
     var cs = List[Completion].empty();
     cs <-> comps;
     lp.poll(limit, &mut cs);
@@ -590,7 +568,7 @@ pub struct Driver {
 
   // Drive every connection a completion or a call has touched, and append
   // the events for this thread to out: how many
-  pub fn pump(self: &mut, lp: &mut Loop, out: &mut List[Event]) usize {
+  pub fn pump(self: &mut, lp: &mut Loop, out: &uni List[Event]) usize {
     self.retryHeld();
     if rearm {self.rearmAccepts(lp);}
     while dirty.len() > 0usize {
@@ -646,9 +624,8 @@ pub struct Driver {
       c.core.handleInput(IoBuf.empty(), now);
     }
     if c.layer.failed() {
-      c.failed = true;
       let text = c.layer.failureText();
-      c.failure = Failure.make(Stage.Tls, c.layer.failureCode(), ErrorKind.Closed, text.view());
+      c.failure = Some[Failure](Failure.make(Stage.Tls, c.layer.failureCode(), ErrorKind.Closed, text.view()));
       self.closeNow(lp, i, true, false);
     }
   }
@@ -664,14 +641,14 @@ pub struct Driver {
   // A client's next waiting request, when the connection is free for it
   fn startNext(self: &mut, i: u32, now: Instant) {
     let c = self.connAt(i) as &mut Conn;
-    if c.server || c.current != noEntry || c.waiting.len() == 0usize || c.failed {return;}
+    if c.server || c.current != noEntry || c.waiting.len() == 0usize || c.failure is Some {return;}
     if !c.core.canSendRequest() {return;}
-    let ri = *c.waiting[0usize];
-    removeAt(&mut c.waiting, 0usize);
+    let ri, head = match c.waiting.popFront() {
+      case var Some(w) {w.(req, head)}
+      else {return;}
+    };
     let r = self.reqAt(ri) as &mut Req;
-    var h = RequestHead.empty();
-    h <-> r.head;
-    c.core.sendRequest(h, r.body);
+    c.core.sendRequest(head, r.body);
     r.state = rActive;
     r.timing.started = now;
     c.current = ri;
@@ -755,7 +732,7 @@ pub struct Driver {
             self.emit(&mut r.sink, i, c.gen, 0usize, ev);
             if !c.server {
               c.current = noEntry;
-              self.finishReq(lp, ri, endDone, Failure.none());
+              self.finishReq(lp, ri, endDone, None);
             } else if r.finished {
               self.toFlushing(i, ri);
             }
@@ -766,8 +743,7 @@ pub struct Driver {
           // request on the connection is answered now; the connection
           // sends what the core still has (a server's error status), then
           // closes
-          c.failed = true;
-          c.failure = Failure(Stage.Http, 0u32, f.(error), false);
+          c.failure = Some[Failure](Failure(Stage.Http, 0u32, f.(error), false));
           self.answerAll(lp, i, false);
         }
       }
@@ -831,7 +807,7 @@ pub struct Driver {
     while c.flushing.len() > 0usize {
       let ri = *c.flushing[0usize];
       removeAt(&mut c.flushing, 0usize);
-      self.finishReq(lp, ri, endDone, Failure.none());
+      self.finishReq(lp, ri, endDone, None);
     }
   }
 
@@ -857,15 +833,15 @@ pub struct Driver {
   // armed then), so a deadline pushed back by every arrival costs nothing
   fn armTimer(self: &mut, lp: &mut Loop, i: u32) {
     let c = self.connAt(i) as &mut Conn;
+    var t = if c.layer.isOpen() {forever()} else {c.openBy};
     match c.core.pollTimeout() {
-      case let Some(t) {
-        if c.timer.isNone() || t < c.timerAt {
-          if !c.timer.isNone() {lp.cancel(c.timer);}
-          c.timer = lp.after(t, Target.Here(self.tok(kTimer, i, c.gen)));
-          c.timerAt = t;
-        }
-      }
+      case let Some(at) {if at < t {t = at;}}
       case is None[Instant] {}
+    }
+    if t < forever() && (c.timer.isNone() || t < c.timerAt) {
+      if !c.timer.isNone() {lp.cancel(c.timer);}
+      c.timer = lp.after(t, Target.Here(self.tok(kTimer, i, c.gen)));
+      c.timerAt = t;
     }
   }
 
@@ -936,7 +912,7 @@ pub struct Driver {
   // ---------------------------------------------------------------------------
 
   // Request ri's one final answer: sent to its sink, and the request freed
-  fn finishReq(self: &mut, lp: &mut Loop, ri: u32, how: u32, f: Failure) {
+  fn finishReq(self: &mut, lp: &mut Loop, ri: u32, how: u32, failure: Option[Failure]) {
     let r = self.reqAt(ri) as &mut Req;
     if r.state == rFree {return;}
     if !r.watch.isNone() {
@@ -960,7 +936,10 @@ pub struct Driver {
     }
     var ev = Event.make(k, r.sink.token, id.conn, id);
     ev.timing = r.timing;
-    if how == endFailed {ev.failure = f;}
+    match failure {
+      case var Some(f) {ev.failure = f;}
+      else {}
+    }
     self.emit(&mut r.sink, r.conn, r.connGen, 0usize, ev);
     self.freeReqRec(ri);
   }
@@ -969,16 +948,23 @@ pub struct Driver {
   fn failureFor(self: &, i: u32, ri: u32, waiting: bool) Failure {
     let c = self.connAt(i) as &Conn;
     let r = self.reqAt(ri) as &Req;
-    var f = Failure.none();
-    let opened = c.failed && c.failure.stage != Stage.Resolve && c.failure.stage != Stage.Connect &&
-      c.failure.stage != Stage.Limit;
-    if c.failed && !(waiting && opened) {
-      f = c.failure.copy();
-    } else if waiting {
-      f = Failure.make(Stage.Closed, 0u32, ErrorKind.Closed, "the connection closed before the request was sent");
-    } else {
-      f = Failure.make(Stage.Closed, 0u32, ErrorKind.Closed, "the connection closed before the exchange ended");
+    // The connection's own failure, unless it had opened and this request
+    // never started on it
+    var own: Option[Failure] = None;
+    match &c.failure {
+      case let &Some(cf) {
+        let opened = cf.stage != Stage.Resolve && cf.stage != Stage.Connect && cf.stage != Stage.Limit;
+        if !(waiting && opened) {own = Some[Failure](cf.copy());}
+      }
+      else {}
     }
+    var f = match own {
+      case var Some(cf) {cf}
+      else {
+        if waiting {Failure.make(Stage.Closed, 0u32, ErrorKind.Closed, "the connection closed before the request was sent")}
+        else {Failure.make(Stage.Closed, 0u32, ErrorKind.Closed, "the connection closed before the exchange ended")}
+      }
+    };
     f.unsent = waiting || !r.wrote;
     if f.stage != Stage.Http || waiting {
       f.error.noResponse = waiting || (!r.gotResponse && c.core.bytesReceived() == c.inAtStart);
@@ -994,23 +980,26 @@ pub struct Driver {
     while c.flushing.len() > 0usize {
       let ri = *c.flushing[0usize];
       removeAt(&mut c.flushing, 0usize);
-      if cancelAll {self.finishReq(lp, ri, endCancelled, Failure.none());}
-      else if sent {self.finishReq(lp, ri, endDone, Failure.none());}
-      else {self.finishReq(lp, ri, endFailed, self.failureFor(i, ri, false));}
+      if cancelAll {self.finishReq(lp, ri, endCancelled, None);}
+      else if sent {self.finishReq(lp, ri, endDone, None);}
+      else {self.finishReq(lp, ri, endFailed, Some[Failure](self.failureFor(i, ri, false)));}
     }
     if c.current != noEntry {
       let ri = c.current;
       c.current = noEntry;
       let r = self.reqAt(ri) as &Req;
-      if cancelAll {self.finishReq(lp, ri, endCancelled, Failure.none());}
-      else if r.server && r.finished && sent {self.finishReq(lp, ri, endDone, Failure.none());}
-      else {self.finishReq(lp, ri, endFailed, self.failureFor(i, ri, false));}
+      if cancelAll {self.finishReq(lp, ri, endCancelled, None);}
+      else if r.server && r.finished && sent {self.finishReq(lp, ri, endDone, None);}
+      else {self.finishReq(lp, ri, endFailed, Some[Failure](self.failureFor(i, ri, false)));}
     }
-    while c.waiting.len() > 0usize {
-      let ri = *c.waiting[0usize];
-      removeAt(&mut c.waiting, 0usize);
-      if cancelAll {self.finishReq(lp, ri, endCancelled, Failure.none());}
-      else {self.finishReq(lp, ri, endFailed, self.failureFor(i, ri, true));}
+    while true {
+      // A waiting request's head goes unsent, with its place in the queue
+      let ri = match c.waiting.popFront() {
+        case var Some(w) {w.req}
+        else {break;}
+      };
+      if cancelAll {self.finishReq(lp, ri, endCancelled, None);}
+      else {self.finishReq(lp, ri, endFailed, Some[Failure](self.failureFor(i, ri, true)));}
     }
   }
 
@@ -1038,12 +1027,15 @@ pub struct Driver {
     }
     c.core.abort();
     self.answerAll(lp, i, cancelAll);
-    let clean = !c.failed;
+    let clean = c.failure is None;
     st.closed = st.closed + 1u64;
     if clean {st.cleanCloses = st.cleanCloses + 1u64;}
     var ev = Event.make(EventKind.Closed, c.sink.token, self.connIdOf(i), ReqId.none());
     ev.clean = clean;
-    if !clean {ev.failure = c.failure.copy();}
+    match &c.failure {
+      case let &Some(f) {ev.failure = f.copy();}
+      else {}
+    }
     ev.peer = c.peer;
     self.emit(&mut c.sink, i, c.gen, 0usize, ev);
     self.freeConnRec(i);
@@ -1060,8 +1052,7 @@ pub struct Driver {
       self.closeNow(lp, i, false, false);
       return;
     }
-    c.failed = true;
-    c.failure = Failure.make(stage, code, kind, detail);
+    c.failure = Some[Failure](Failure.make(stage, code, kind, detail));
     self.closeNow(lp, i, false, false);
   }
 
@@ -1157,6 +1148,10 @@ pub struct Driver {
         // The linger is over
         self.closeNow(lp, index, false, false);
       } else if c.state == cOpen {
+        if !c.layer.isOpen() && now >= c.openBy {
+          self.failConn(lp, index, Stage.Tls, 0u32, ErrorKind.TimedOut, "no handshake within handshakeTimeout");
+          return true;
+        }
         c.core.handleTimeout(now);
         self.markDirty(index);
       }
@@ -1181,6 +1176,8 @@ pub struct Driver {
       if comp.isDone() {
         c.sock = comp.handle;
         c.state = cOpen;
+        c.openBy = now + cfg.handshakeTimeout;
+        lp.setKeepAlive(c.sock, cfg.keepAlive);
         st.connected = st.connected + 1u64;
         var ev = Event.make(EventKind.Connected, c.sink.token, self.connIdOf(index), ReqId.none());
         ev.peer = c.peer;
@@ -1296,10 +1293,9 @@ pub struct Driver {
     let ri = self.newReq();
     let r = self.reqAt(ri) as &mut Req;
     r.sink = sink;
-    r.head = head;
     r.body = body;
     r.server = false;
-    r.isHead = r.head.method == Method.Head;
+    r.isHead = head.method == Method.Head;
     r.conn = conn.index;
     r.connGen = conn.gen;
     r.timing.submitted = now;
@@ -1313,7 +1309,7 @@ pub struct Driver {
     }
     let c = self.connAt(ci) as &mut Conn;
     if c.server {panic("httpconn: request on a server's connection", file, line);}
-    if c.state == cClosing || c.failed || c.closeAsked {
+    if c.state == cClosing || c.failure is Some || c.closeAsked {
       self.refuse(lp, ri, Stage.Closed, "the connection is closing");
       return id;
     }
@@ -1332,11 +1328,11 @@ pub struct Driver {
       else {}
     }
     if cancelled {
-      self.finishReq(lp, ri, endCancelled, Failure.none());
+      self.finishReq(lp, ri, endCancelled, None);
       return id;
     }
     if dl <= now {
-      self.finishReq(lp, ri, endTimedOut, Failure.none());
+      self.finishReq(lp, ri, endTimedOut, None);
       return id;
     }
     match group {
@@ -1348,7 +1344,7 @@ pub struct Driver {
         if dl < forever() {r.watch = lp.after(dl, Target.Here(self.tok(kWatch, ri, r.gen)));}
       }
     }
-    c.waiting.push(ri);
+    c.waiting.push(Waiting(ri, head));
     self.markDirty(ci);
     id
   }
@@ -1358,7 +1354,7 @@ pub struct Driver {
     var f = Failure.make(stage, 0u32, if stage == Stage.Limit {ErrorKind.TooLarge} else {ErrorKind.Closed}, detail);
     f.unsent = true;
     f.error.noResponse = true;
-    self.finishReq(lp, ri, endFailed, f);
+    self.finishReq(lp, ri, endFailed, Some[Failure](f));
   }
 
   // ---------------------------------------------------------------------------
@@ -1443,6 +1439,8 @@ pub struct Driver {
     let i = self.newConn(true, layer, sink, now);
     let c = self.connAt(i) as &mut Conn;
     c.sock = comp.handle;
+    c.openBy = now + cfg.handshakeTimeout;
+    lp.setKeepAlive(c.sock, cfg.keepAlive);
     c.listener = ListenerId(k, gen);
     match lp.peerAddr(c.sock) {
       case let Ok(a) {c.peer = a;}
@@ -1580,21 +1578,20 @@ pub struct Driver {
     let ci = r.conn;
     let c = self.connAt(ci) as &mut Conn;
     if c.gen != r.connGen || c.state == cFree {
-      self.finishReq(lp, ri, how, Failure.none());
+      self.finishReq(lp, ri, how, None);
       return;
     }
     if r.state == rWaiting {
-      removeValue(&mut c.waiting, ri);
-      self.finishReq(lp, ri, how, Failure.none());
+      dropWaiting(&mut c.waiting, ri);
+      self.finishReq(lp, ri, how, None);
       self.markDirty(ci);
       return;
     }
     // Under way: HTTP/1.1 stops an exchange only by ending its connection
     if c.current == ri {c.current = noEntry;}
     removeValue(&mut c.flushing, ri);
-    self.finishReq(lp, ri, how, Failure.none());
-    c.failed = true;
-    c.failure = Failure.make(Stage.Closed, 0u32, ErrorKind.Closed, "the connection was reset to end a request under way");
+    self.finishReq(lp, ri, how, None);
+    c.failure = Some[Failure](Failure.make(Stage.Closed, 0u32, ErrorKind.Closed, "the connection was reset to end a request under way"));
     self.closeNow(lp, ci, true, false);
   }
 
@@ -1613,8 +1610,7 @@ pub struct Driver {
     let ci = self.connIndex(conn);
     if ci == noEntry {return false;}
     let c = self.connAt(ci) as &mut Conn;
-    c.failed = true;
-    c.failure = Failure.make(Stage.Closed, 0u32, ErrorKind.Closed, "the connection was aborted");
+    c.failure = Some[Failure](Failure.make(Stage.Closed, 0u32, ErrorKind.Closed, "the connection was aborted"));
     self.closeNow(lp, ci, true, true);
     true
   }
@@ -1647,7 +1643,7 @@ pub struct Driver {
     if ci == noEntry {return false;}
     let c = self.connAt(ci) as &Conn;
     c.state == cOpen && !c.server && c.current == noEntry && c.waiting.len() == 0usize &&
-      !c.failed && !c.closeAsked && c.core.canSendRequest()
+      c.failure is None && !c.closeAsked && c.core.canSendRequest()
   }
 
   // What a connection's layer says of itself, for diagnostics: 'plain', or a
@@ -1665,6 +1661,15 @@ pub struct Driver {
     let ci = self.connIndex(conn);
     if ci == noEntry {return SocketAddr.localhost(0u16);}
     (self.connAt(ci) as &Conn).peer
+  }
+
+  // A connection's TCP keepalive as the OS reads it back (diagnostics: the
+  // driver sets its Config's 'keepAlive' on every socket once connected or
+  // accepted)
+  pub fn keepAliveOf(self: &, lp: &Loop, conn: ConnId) Result[KeepAlive, IoError] {
+    let ci = self.connIndex(conn);
+    if ci == noEntry {return Error[KeepAlive, IoError](IoError(6u32));}
+    lp.keepAlive((self.connAt(ci) as &Conn).sock)
   }
 
   // Its death: the tables' blocks, every record's values with them. The
@@ -1701,34 +1706,49 @@ pub struct Driver {
 // Helpers
 // ---------------------------------------------------------------------------
 
-// An event holding nothing, to swap one out of where it is held
-fn blankEvent() Event {Event.make(EventKind.Writable, 0u64, ConnId.none(), ReqId.none())}
-
 // What a channel sink did with an event
-const sinkTaken = 0u32;
-const sinkFull = 1u32;      // full: the event is handed back
-const sinkGone = 2u32;      // its receiver has gone: the event is dropped
+enum Sent {
+  pub struct Taken {}
+  pub struct Full {pub e: Event;}      // full: the event, handed back
+  pub struct Gone {}                   // its receiver has gone: the event is dropped
+}
 
-// Send e on a channel sink, never waiting. A full channel hands e back in 'back'
-fn trySink(s: &mut Sink, e: Event, back: &mut Event) u32 {
-  var how = sinkTaken;
+// Send e on a channel sink, never waiting
+fn trySink(s: &mut Sink, e: Event) Sent {
   match s {
     case let &Chan(ch) {
       match ch.tx.trySend(e) {
-        case let Some(r) {
-          if ch.tx.isClosed() {
-            how = sinkGone;
-          } else {
-            *back = r;
-            how = sinkFull;
-          }
+        case var Some(r) {
+          if ch.tx.isClosed() {Sent.Gone} else {Sent.Full(r)}
         }
-        else {}
+        else {Sent.Taken}
       }
     }
-    else {}
+    else {Sent.Taken}
   }
-  how
+}
+
+// Whether v is in l
+fn isIn(l: &List[u64], v: u64) bool {
+  var j = 0usize;
+  while j < l.len() {
+    if *l[j] == v {return true;}
+    j = j + 1usize;
+  }
+  false
+}
+
+// Request ri taken out of a connection's waiting queue, its head dropped;
+// the others keep their order
+fn dropWaiting(q: &mut Deque[Waiting], ri: u32) {
+  var n = q.len();
+  while n > 0usize {
+    match q.popFront() {
+      case var Some(w) {if w.req != ri {q.push(w);}}
+      else {}
+    }
+    n = n - 1usize;
+  }
 }
 
 fn removeAt(l: &mut List[u32], k: usize) {

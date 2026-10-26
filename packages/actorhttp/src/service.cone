@@ -7,7 +7,9 @@
 // ---------------------------------------------------------------------------
 
 // An exchange awaited: the reply its answer goes back in, the response being
-// gathered, and what it needs to end it
+// gathered (empty to begin with), and what it needs to end it. It is made
+// whole when the exchange starts, and taken out of its table whole when the
+// exchange ends, its reply answered with its response
 struct Wait {
   reply: actors.Reply;
   resp: httpclient.Response;
@@ -19,28 +21,18 @@ struct Wait {
   sent: usize;                   // ...and how much of it has gone
   conn: usize;                   // a connection's request: its connection's slot
   bodyDone: bool;                // its body has been finished
-  stream: usize;                 // a stream's fetch: its slot in the client's streams, else noStream
 }
 
-fn blankWait() Wait {
-  Wait(reply: actors.Reply(), resp: httpclient.Response.blank(), tooBig: false, limit: 0usize,
+// A wait for reply, its response not begun, taking at most limit body bytes
+fn waitFor(rp: actors.Reply, limit: usize) Wait {
+  Wait(reply: rp, resp: httpclient.Response.blank(), tooBig: false, limit: limit,
     fetch: httpclient.FetchId.none(), req: httpconn.ReqId.none(), body: String.empty(), sent: 0usize,
-    conn: 0usize, bodyDone: false, stream: noStream)
+    conn: 0usize, bodyDone: false)
 }
 
-// A wait slot back to being free (its reply was moved out to answer it)
-fn clearWait(w: &mut Wait) {
-  w.tooBig = false;
-  w.limit = 0usize;
-  w.fetch = httpclient.FetchId.none();
-  w.req = httpconn.ReqId.none();
-  w.body = String.empty();
-  w.sent = 0usize;
-  w.conn = 0usize;
-  w.bodyDone = false;
-  w.stream = noStream;
-  w.resp = httpclient.Response.blank();
-}
+// A sink's token for a stream's fetch: this bit and the stream's slot. A
+// whole fetch's token is its wait slot alone
+const streamBit = 0x100000000u64;
 
 // A client the service owns: its handles counted, its fetches awaited
 struct ClientRec {
@@ -66,10 +58,6 @@ struct ConnRec {
   reply: actors.Reply;
 }
 
-fn blankConn() ConnRec {
-  ConnRec(used: false, id: 0u64, conn: httpconn.ConnId.none(), connecting: false, open: false,
-    closed: false, dropped: false, busy: 0u32, reply: actors.Reply())
-}
 
 // A sink's token for a connection's own events (Connected, Closed): this bit
 // and the connection's slot. A request's token is its exchange slot alone
@@ -262,13 +250,10 @@ struct Service {
   // awaiting it
   fn pumpConns(self: &mut, lp: &mut Loop) {
     var evs = List[httpconn.Event].empty();
-    drv.pump(lp, &mut evs);
-    var k = 0usize;
-    while k < evs.len() {
-      let e = &mut evs[k];
-      k = k + 1usize;
+    drv.pump(lp, &uni evs);
+    each e in evs.drain() {
       if (e.token & connBit) != 0u64 {
-        self.onConnEvent(lp, e);
+        self.onConnEvent(lp, &e);
       } else {
         self.onExchangeEvent(lp, e);
       }
@@ -276,7 +261,7 @@ struct Service {
   }
 
   // A connection's own event: it connected, or it is over
-  fn onConnEvent(self: &mut, lp: &mut Loop, e: &mut httpconn.Event) {
+  fn onConnEvent(self: &mut, lp: &mut Loop, e: &httpconn.Event) {
     let slot = usize.from(e.token & 0xFFFFFFFFu64);
     let c = conns.at(u32.from(slot)) as &mut ConnRec;
     let k = e.kind;
@@ -299,26 +284,19 @@ struct Service {
 
   // Connection slot k is free again
   fn freeConn(self: &mut, k: usize) {
-    let c = conns.at(u32.from(k)) as &mut ConnRec;
-    c.used = false;
-    c.id = 0u64;
-    c.conn = httpconn.ConnId.none();
-    c.connecting = false;
-    c.open = false;
-    c.closed = false;
-    c.dropped = false;
-    c.busy = 0u32;
     conns.removeAt(u32.from(k));
   }
 
-  // An event of an exchange on a connection
-  fn onExchangeEvent(self: &mut, lp: &mut Loop, e: &mut httpconn.Event) {
+  // An event of an exchange on a connection, taken by value: its head's
+  // fields go whole into the response gathered
+  fn onExchangeEvent(self: &mut, lp: &mut Loop, e: httpconn.Event) {
     let slot = usize.from(e.token);
     let w = xwaits.at(u32.from(slot)) as &mut Wait;
     let k = e.kind;
     if k == httpconn.EventKind.Response {
-      w.resp.status = e.response.status;
-      w.resp.headers <-> e.response.headers;
+      let status, headers = e.(response).(status, headers);
+      w.resp.status = status;
+      w.resp.headers = headers;
     } else if k == httpconn.EventKind.Data {
       let n = e.buf.len();
       if w.resp.body.len() + n > w.limit {
@@ -335,24 +313,28 @@ struct Service {
     } else if e.isTerminal() {
       let c = conns.at(u32.from(w.conn)) as &mut ConnRec;
       if c.busy > 0u32 {c.busy = c.busy - 1u32;}
-      w.resp.timing = httpclient.Timing(e.timing.submitted, e.timing.started, e.timing.firstByte,
+      let timing = httpclient.Timing(e.timing.submitted, e.timing.started, e.timing.firstByte,
         e.timing.ended, 1u32, 0u32, false);
-      if k == httpconn.EventKind.Done {
-        w.resp.outcome = httpclient.EventKind.Done;
-        answerResponse(w, Ok[httpclient.Response, FetchError](takeResponse(w)));
-      } else if k == httpconn.EventKind.Failed {
-        w.resp.outcome = httpclient.EventKind.Failed;
-        answerResponse(w, Error[httpclient.Response, FetchError](
-          FetchError.failed(httpclient.Failure.fromConn(&e.failure))));
-      } else if k == httpconn.EventKind.TimedOut {
-        answerResponse(w, Error[httpclient.Response, FetchError](FetchError.timedOut()));
-      } else if w.tooBig {
-        answerResponse(w, Error[httpclient.Response, FetchError](FetchError.failed(limitFailure())));
-      } else {
-        answerResponse(w, Error[httpclient.Response, FetchError](FetchError.cancelled()));
+      // The wait is over: taken out whole, its reply answered with what it gathered
+      match xwaits.take(xwaits.slotAt(u32.from(slot))) {
+        case var Some(over) {
+          let reply, var resp, tooBig = over.(reply, resp, tooBig);
+          resp.timing = timing;
+          var v: Result[httpclient.Response, FetchError] = Error[httpclient.Response, FetchError](FetchError.cancelled());
+          if k == httpconn.EventKind.Done {
+            resp.outcome = httpclient.EventKind.Done;
+            v = Ok[httpclient.Response, FetchError](resp);
+          } else if k == httpconn.EventKind.Failed {
+            v = Error[httpclient.Response, FetchError](FetchError.failed(httpclient.Failure.fromConn(&e.failure)));
+          } else if k == httpconn.EventKind.TimedOut {
+            v = Error[httpclient.Response, FetchError](FetchError.timedOut());
+          } else if tooBig {
+            v = Error[httpclient.Response, FetchError](FetchError.failed(limitFailure()));
+          }
+          actors.answerNow[Result[httpclient.Response, FetchError]](reply, v);
+        }
+        else {}
       }
-      clearWait(w);
-      xwaits.removeAt(u32.from(slot));
     }
   }
 
@@ -381,32 +363,13 @@ struct Service {
 // Answers
 // ---------------------------------------------------------------------------
 
-// A wait's reply carries v back to the actor awaiting it
-fn answer[R](w: &mut Wait, v: R) {
-  var rp = actors.Reply();
-  rp <-> w.reply;
-  actors.answerNow[R](rp, v);
-}
-
-fn answerResponse(w: &mut Wait, v: Result[httpclient.Response, FetchError]) {
-  answer[Result[httpclient.Response, FetchError]](w, v);
-}
-
-// The response a wait gathered, moved out
-fn takeResponse(w: &mut Wait) httpclient.Response {
-  var r = httpclient.Response.blank();
-  r <-> w.resp;
-  r
-}
-
 // The body bytes sent in a piece
 const sendChunk = 16384usize;
 
-// A connect's reply carries v back to the actor awaiting it
+// A connect's reply carries v back to the actor awaiting it, answered in
+// place: the reply is spent after, as the connection lives on
 fn answerConn(c: &mut ConnRec, v: Result[Conn, FetchError]) {
-  var rp = actors.Reply();
-  rp <-> c.reply;
-  actors.answerNow[Result[Conn, FetchError]](rp, v);
+  actors.answerNowIn[Result[Conn, FetchError]](&mut c.reply, v);
 }
 
 // The failure of an exchange that went over its body limit
@@ -422,27 +385,29 @@ fn limitFailure() httpclient.Failure {
 // A client's events for this turn, each to the fetch awaiting it
 fn pumpClient(rec: &mut ClientRec, lp: &mut Loop) {
   var evs = List[httpclient.Event].empty();
-  rec.client.pump(lp, &mut evs);
-  var k = 0usize;
-  while k < evs.len() {
-    let e = &mut evs[k];
-    k = k + 1usize;
-    onFetchEvent(rec, lp, e);
+  rec.client.pump(lp, &uni evs);
+  each e in evs.drain() {
+    if (e.token & streamBit) != 0u64 {
+      let sslot = usize.from(e.token & 0xFFFFFFFFu64);
+      onStreamEvent(rec, lp, e, sslot);
+    } else {
+      onFetchEvent(rec, lp, e);
+    }
   }
 }
 
-fn onFetchEvent(rec: &mut ClientRec, lp: &mut Loop, e: &mut httpclient.Event) {
+// An event of a whole fetch, taken by value: its head's fields go whole into
+// the response gathered
+fn onFetchEvent(rec: &mut ClientRec, lp: &mut Loop, e: httpclient.Event) {
   let slot = usize.from(e.token);
   let w = rec.waits.at(u32.from(slot)) as &mut Wait;
-  if w.stream != noStream {
-    onStreamEvent(rec, lp, e, slot, w);
-    return;
-  }
   let k = e.kind;
   if k == httpclient.EventKind.Response {
-    w.resp.status = e.response.status;
-    w.resp.headers <-> e.response.headers;
-    w.resp.url <-> e.url;
+    let response, url = e.(response, url);
+    let status, headers = response.(status, headers);
+    w.resp.status = status;
+    w.resp.headers = headers;
+    w.resp.url = url;
   } else if k == httpclient.EventKind.Data {
     let n = e.buf.len();
     if w.resp.body.len() + n > w.limit {
@@ -455,21 +420,26 @@ fn onFetchEvent(rec: &mut ClientRec, lp: &mut Loop, e: &mut httpclient.Event) {
     }
     rec.client.release(e.id, n);
   } else if e.isTerminal() {
-    w.resp.outcome = k;
-    w.resp.timing = e.timing;
-    if k == httpclient.EventKind.Done {
-      answerResponse(w, Ok[httpclient.Response, FetchError](takeResponse(w)));
-    } else if k == httpclient.EventKind.Failed {
-      answerResponse(w, Error[httpclient.Response, FetchError](FetchError.failed(e.failure.copy())));
-    } else if k == httpclient.EventKind.TimedOut {
-      answerResponse(w, Error[httpclient.Response, FetchError](FetchError.timedOut()));
-    } else if w.tooBig {
-      answerResponse(w, Error[httpclient.Response, FetchError](FetchError.failed(limitFailure())));
-    } else {
-      answerResponse(w, Error[httpclient.Response, FetchError](FetchError.cancelled()));
+    // The wait is over: taken out whole, its reply answered with what it gathered
+    match rec.waits.take(rec.waits.slotAt(u32.from(slot))) {
+      case var Some(over) {
+        let reply, var resp, tooBig = over.(reply, resp, tooBig);
+        resp.outcome = k;
+        resp.timing = e.timing;
+        var v: Result[httpclient.Response, FetchError] = Error[httpclient.Response, FetchError](FetchError.cancelled());
+        if k == httpclient.EventKind.Done {
+          v = Ok[httpclient.Response, FetchError](resp);
+        } else if k == httpclient.EventKind.Failed {
+          v = Error[httpclient.Response, FetchError](FetchError.failed(e.failure.copy()));
+        } else if k == httpclient.EventKind.TimedOut {
+          v = Error[httpclient.Response, FetchError](FetchError.timedOut());
+        } else if tooBig {
+          v = Error[httpclient.Response, FetchError](FetchError.failed(limitFailure()));
+        }
+        actors.answerNow[Result[httpclient.Response, FetchError]](reply, v);
+      }
+      else {}
     }
-    clearWait(w);
-    rec.waits.removeAt(u32.from(slot));
   }
 }
 
@@ -508,27 +478,23 @@ struct RefJob {
   }
 }
 
-// A fetch: the request, and the reply its response goes back in
+// A fetch: the request; its response goes back in the reply the 'await' gives
 struct FetchJob {
   pub id: u64;
   pub req: httpclient.Request;
-  pub reply: actors.Reply;
 
-  pub fn run(self, lp: &mut Loop, sv: &mut Service) {
-    let id, req, rp = self.(id, req, reply);
+  pub fn run(self, lp: &mut Loop, sv: &mut Service, rp: actors.Reply) {
+    let id, req = self.(id, req);
     let k = sv.findClient(id);
     if k >= sv.clients.bound() {
-      var w = blankWait();
-      w.reply = rp;
-      answerResponse(&mut w, Error[httpclient.Response, FetchError](FetchError.cancelled()));
+      actors.answerNow[Result[httpclient.Response, FetchError]](rp,
+        Error[httpclient.Response, FetchError](FetchError.cancelled()));
       return;
     }
     let rec = sv.clientAt(k) as &mut ClientRec;
-    let slot = usize.from(rec.waits.add(blankWait()).index);
-    let w = rec.waits.at(u32.from(slot)) as &mut Wait;
-    w.reply = rp;
-    w.limit = rec.maxBody;
-    w.fetch = rec.client.send(lp, req, httpclient.Sink.Here(u64.from(slot)));
+    let slot = usize.from(rec.waits.add(waitFor(rp, rec.maxBody)).index);
+    let fetch = rec.client.send(lp, req, httpclient.Sink.Here(u64.from(slot)));
+    (rec.waits.at(u32.from(slot)) as &mut Wait).fetch = fetch;
   }
 }
 
@@ -542,16 +508,12 @@ struct ConnectJob {
   pub port: u16;
   pub secure: bool;
   pub cfg: tls.ClientConfig;
-  pub reply: actors.Reply;
 
-  pub fn run(self, lp: &mut Loop, sv: &mut Service) {
-    let host, port, secure, cfg, rp = self.(host, port, secure, cfg, reply);
-    let slot = usize.from(sv.conns.add(blankConn()).index);
+  pub fn run(self, lp: &mut Loop, sv: &mut Service, rp: actors.Reply) {
+    let host, port, secure, cfg = self.(host, port, secure, cfg);
+    let slot = usize.from(sv.conns.add(ConnRec(used: true, id: newId(), conn: httpconn.ConnId.none(),
+      connecting: true, open: false, closed: false, dropped: false, busy: 0u32, reply: rp)).index);
     let c = sv.conns.at(u32.from(slot)) as &mut ConnRec;
-    c.used = true;
-    c.id = newId();
-    c.connecting = true;
-    c.reply = rp;
     let sink = httpconn.Sink.Here(connBit | u64.from(slot));
     // The driver is handed a copy of the host: it holds Strings, and nothing
     // shows the job's is none of them
@@ -574,31 +536,26 @@ struct ConnectJob {
   }
 }
 
-// A request on a connection: its head and whole body, its limits, and the
-// reply its response goes back in
+// A request on a connection: its head and whole body, and its limits; its
+// response goes back in the reply the 'await' gives
 struct ExchangeJob {
   pub id: u64;
   pub head: RequestHead;
   pub body: String;
   pub group: Option[CancelGroup];
   pub deadline: Instant;
-  pub reply: actors.Reply;
 
-  pub fn run(self, lp: &mut Loop, sv: &mut Service) {
-    let id, head, body, group, deadline, rp = self.(id, head, body, group, deadline, reply);
+  pub fn run(self, lp: &mut Loop, sv: &mut Service, rp: actors.Reply) {
+    let id, head, body, group, deadline = self.(id, head, body, group, deadline);
     let k = sv.findConn(id);
     if k >= sv.conns.bound() {
-      var w = blankWait();
-      w.reply = rp;
-      answerResponse(&mut w, Error[httpclient.Response, FetchError](FetchError.failed(
+      actors.answerNow[Result[httpclient.Response, FetchError]](rp, Error[httpclient.Response, FetchError](FetchError.failed(
         httpclient.Failure.make(httpclient.Stage.Closed, 0u32, ErrorKind.Closed, "the connection names nothing"))));
       return;
     }
     let c = sv.conns.at(u32.from(k)) as &mut ConnRec;
-    let slot = usize.from(sv.xwaits.add(blankWait()).index);
+    let slot = usize.from(sv.xwaits.add(waitFor(rp, defaultMaxBody)).index);
     let w = sv.xwaits.at(u32.from(slot)) as &mut Wait;
-    w.reply = rp;
-    w.limit = defaultMaxBody;
     w.conn = k;
     w.body = body;
     c.busy = c.busy + 1u32;

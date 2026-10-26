@@ -1,0 +1,175 @@
+// What the connection costs, client and server cores in memory, no sockets:
+// every byte of each one's output handed to the other's input. Run it with
+//
+//   congo run --release packages/http2/examples/connbench.cone
+//
+// Two measures: GETs with two fields, answered 200 with two fields and a
+// 100-byte body, 100 streams at a time (an exchange's cost, client and
+// server together); and one 256 MiB body through one stream in 16 KiB
+// buffers, released as it arrives (the sender's buffers go out as frames
+// without a copy; the reader copies each DATA's bytes out of what arrived).
+
+mod connbench;
+
+import stdio use *;
+import collections use List, String;
+import time use Instant, Duration;
+import iobuf use IoBuf, Chain;
+import http use *;
+import http2 use *;
+
+const exchanges = 20000u32;
+const atOnce = 100u32;
+const bigSize = 268435456usize;   // 256 MiB
+const piece = 16384usize;
+
+fn filled(n: usize) IoBuf {
+  var b = IoBuf(n);
+  let s = b.spare();
+  var i = 0usize;
+  while i < n {
+    s[i] = u8.from(i & 0xFFusize);
+    i = i + 1usize;
+  }
+  b.setLen(n);
+  b
+}
+
+fn feed(to: &mut Connection, c: &mut Chain, now: Instant) usize {
+  var total = 0usize;
+  while c.segments() > 0usize {
+    match c.popFront() {
+      case let Some(b) {
+        let n = b.len();
+        if n > 0usize {
+          if n <= to.readCredit() {to.handleInput(b, now);}
+          else {
+            printStr("WRONG: a segment past the read credit\n");
+            return total;
+          }
+        }
+        total = total + n;
+      }
+      case is None[IoBuf] {}
+    }
+  }
+  total
+}
+
+fn settle(a: &mut Connection, b: &mut Connection, now: Instant) {
+  while true {
+    var x = a.pollTransmit(now);
+    let n1 = feed(b, &mut x, now);
+    var y = b.pollTransmit(now);
+    let n2 = feed(a, &mut y, now);
+    if n1 == 0usize && n2 == 0usize {break;}
+  }
+}
+
+fn req() RequestHead {
+  var h = RequestHead.make("GET", "/tiles/7/12.bin", "example.com");
+  h.scheme = String.from("https");
+  h.headers.add("accept", "application/octet-stream");
+  h.headers.add("user-agent", "connbench");
+  h
+}
+
+fn exchangeBench() {
+  let now = Instant.now();
+  var c = Connection.client(Config.make(), now);
+  var s = Connection.server(Config.make(), now);
+  settle(&mut c, &mut s, now);
+  let body = filled(100usize);
+  var done = 0u32;
+  var sent = 0u32;
+  let start = Instant.now();
+  while done < exchanges {
+    while sent < exchanges && sent - done < atOnce {
+      let id = c.sendRequest(req(), BodyLength.empty());
+      sent = sent + 1u32;
+    }
+    settle(&mut c, &mut s, now);
+    var going = true;
+    while going {
+      match s.pollEvent() {
+        case let Request(r) {
+          var h = ResponseHead.make(200u16);
+          h.headers.add("content-type", "application/octet-stream");
+          h.headers.add("cache-control", "max-age=60");
+          s.sendResponse(r.stream, h, BodyLength.sized(100u64));
+          var b = IoBuf(100usize);
+          let k = b.append(body.view());
+          let q = s.sendData(r.stream, b);
+          s.finish(r.stream);
+        }
+        case let End(e) {}
+        else {going = false;}
+      }
+    }
+    settle(&mut c, &mut s, now);
+    going = true;
+    while going {
+      match c.pollEvent() {
+        case let Data(d) {c.release(d.stream, d.buf.len());}
+        case let End(e) {done = done + 1u32;}
+        case let Response(r) {}
+        else {going = false;}
+      }
+    }
+  }
+  let t = start.elapsed();
+  printStr("GET, 200 with a 100-byte body, 100 at a time: ");
+  printUInt(u64.from(t.nanos()) / u64.from(exchanges));
+  printStr(" ns an exchange, client and server together\n");
+}
+
+fn bodyBench() {
+  let now = Instant.now();
+  var c = Connection.client(Config.make(), now);
+  var s = Connection.server(Config.make(), now);
+  settle(&mut c, &mut s, now);
+  let id = c.sendRequest(req(), BodyLength.empty());
+  settle(&mut c, &mut s, now);
+  var going = true;
+  while going {
+    match s.pollEvent() {
+      case let Request(r) {s.sendResponse(r.stream, ResponseHead.make(200u16), BodyLength.sized(u64.from(bigSize)));}
+      case let End(e) {}
+      else {going = false;}
+    }
+  }
+  var sent = 0usize;
+  var got = 0usize;
+  var ended = false;
+  let start = Instant.now();
+  while !ended {
+    while sent < bigSize && s.writeRoom(id) >= piece {
+      let q = s.sendData(id, filled(piece));
+      sent = sent + piece;
+      if sent == bigSize {s.finish(id);}
+    }
+    settle(&mut c, &mut s, now);
+    going = true;
+    while going {
+      match c.pollEvent() {
+        case let Data(d) {
+          got = got + d.buf.len();
+          c.release(d.stream, d.buf.len());
+        }
+        case let End(e) {ended = true;}
+        case let Response(r) {}
+        else {going = false;}
+      }
+    }
+  }
+  let t = start.elapsed();
+  if got != bigSize {printStr("WRONG: the body arrived short\n");}
+  printStr("one 256 MiB body, 16 KiB buffers: ");
+  printUInt(u64.from(got) * 1000u64 / u64.from(t.nanos()));
+  printStr(" MB/s (the buffers filled inside the clock)\n");
+}
+
+fn main() {
+  exchangeBench();
+  bodyBench();
+}

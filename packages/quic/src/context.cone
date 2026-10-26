@@ -1,0 +1,204 @@
+// A Config, and the Context made from it: what one side's connections share
+// (see the package's header, CONFIG and TLS). A Context holds an OpenSSL
+// SSL_CTX for one role, TLS 1.3 only, the one ALPN protocol it offers or
+// accepts, and the Config its connections are made with. Each Connection made
+// from it makes its own SSL object, which holds its own reference on the
+// SSL_CTX (OpenSSL's way), and copies what it needs of the Config, so a
+// Context may go before the connections made from it. A server's accepted
+// protocol is copied into each connection's callback block, which OpenSSL's
+// ALPN callback reads, so no callback reaches anything of the Context's.
+
+// How a Context's connections are made (see the package's header, CONFIG)
+pub struct Config {
+  pub alpn: String;              // the one application protocol offered (client) or accepted (server)
+  pub verify: tls.Verifier;      // a client's: who decides the server is who it claims to be
+  pub offline: bool;             // a client's: the OS's verifier fetches nothing
+  pub verifyLane: Lane;          // a client's: the blocking pool's lane verifyOp runs on
+  pub streamWindow: u64;         // bytes the peer may send on a stream before this end releases more
+  pub connectionWindow: u64;     // bytes the peer may send on every stream together, in flight
+  pub maxStreamsBidi: u64;       // bidirectional streams the peer may have open
+  pub maxStreamsUni: u64;        // unidirectional streams the peer may have open
+  pub idleTimeout: Duration;     // silence that ends the connection (the smaller of both ends'); zero: none
+  pub maxUdpPayload: usize;      // the largest UDP payload sent, and the largest the peer may send (1200 at least)
+
+  // The defaults (see the package's header, CONFIG): ALPN h3, the OS's
+  // verifier, 256 KiB a stream, 16 MiB the connection, 100 bidirectional
+  // streams and 16 unidirectional, 30 s idle, 1452-byte payloads
+  pub fn make() Config {
+    Config(alpn: String.from("h3"), verify: tls.Verifier.platform(), offline: false,
+      verifyLane: tls.defaultVerifyLane(), streamWindow: defaultStreamWindow,
+      connectionWindow: defaultConnectionWindow, maxStreamsBidi: defaultMaxStreamsBidi,
+      maxStreamsUni: defaultMaxStreamsUni, idleTimeout: Duration.fromSeconds(defaultIdleSeconds),
+      maxUdpPayload: defaultMaxUdpPayload)
+  }
+}
+
+// The Config's defaults, by name (see the package's header, CONFIG)
+pub const defaultStreamWindow = 262144u64;          // 256 KiB
+pub const defaultConnectionWindow = 16777216u64;    // 16 MiB
+pub const defaultMaxStreamsBidi = 100u64;
+pub const defaultMaxStreamsUni = 16u64;
+pub const defaultIdleSeconds = 30i64;
+pub const defaultMaxUdpPayload = 1452usize;
+
+// What one side's connections share (see the header of this file)
+pub struct Context is Move {
+  ctx: *u8;
+  serverRole: bool;
+  alpn: List[u8];           // ALPN's wire format: the name after its length
+  cfg: Config;
+
+  // A client's: the server's certificate checked by cfg.verify, against the
+  // name each Connection connects to; cfg.alpn offered, and required of the
+  // server. A Roots verifier whose bundle holds no certificate is refused
+  pub fn client(cfg: Config) Result[Context, QuicError] {
+    helperReady();
+    let ctx = newCtx(TLS_client_method());
+    if ctx as usize == 0usize {return Error[Context, QuicError](tlsError("SSL_CTX_new failed"));}
+    let kind = cfg.verify.kind;
+    if kind == tls.VerifyKind.Insecure {
+      SSL_CTX_set_verify(ctx, verifyNone, null);
+    } else if kind == tls.VerifyKind.Roots {
+      // OpenSSL's own check, against these roots alone, and the name
+      SSL_CTX_set_verify(ctx, verifyPeer, null);
+      if loadRoots(ctx, cfg.verify.rootsPem()) == 0u32 {
+        SSL_CTX_free(ctx);
+        return Error[Context, QuicError](tlsError("the root bundle holds no certificate"));
+      }
+    } else {
+      // The OS's verifier and pinning: OpenSSL hands the chain to
+      // verifyChain (verify.cone), which stops the handshake until the
+      // connection has its verdict
+      SSL_CTX_set_verify(ctx, verifyPeer, null);
+      SSL_CTX_set_cert_verify_callback(ctx, &verifyChain, null);
+    }
+    let wire = alpnWire(cfg.alpn.view());
+    if wire.len() == 0usize {
+      SSL_CTX_free(ctx);
+      return Error[Context, QuicError](QuicError.make(0i32, "the ALPN protocol must be 1 to 255 bytes"));
+    }
+    let w = wire.view();
+    SSL_CTX_set_alpn_protos(ctx, &w[0usize] as *u8, u32.from(w.len));
+    Ok[Context, QuicError](Context(ctx, false, wire, checked(cfg)))
+  }
+
+  // A server's: its certificate chain and private key from PEM files;
+  // cfg.alpn the one protocol it accepts (a client offering none of it is
+  // refused with no_application_protocol). It sends no session tickets and
+  // takes no early data
+  pub fn server(cfg: Config, certFile: &Path, keyFile: &Path) Result[Context, QuicError] {
+    helperReady();
+    let ctx = newCtx(TLS_server_method());
+    if ctx as usize == 0usize {return Error[Context, QuicError](tlsError("SSL_CTX_new failed"));}
+    var cert = String.from(certFile.view());
+    if SSL_CTX_use_certificate_chain_file(ctx, cert.cstr()) != 1i32 {
+      SSL_CTX_free(ctx);
+      var what = String.from("the certificate chain could not be loaded from ");
+      what.append(certFile.view());
+      return Error[Context, QuicError](tlsError(what.view()));
+    }
+    var key = String.from(keyFile.view());
+    if SSL_CTX_use_PrivateKey_file(ctx, key.cstr(), filetypePem) != 1i32 {
+      SSL_CTX_free(ctx);
+      var what = String.from("the private key could not be loaded from ");
+      what.append(keyFile.view());
+      return Error[Context, QuicError](tlsError(what.view()));
+    }
+    if SSL_CTX_check_private_key(ctx) != 1i32 {
+      SSL_CTX_free(ctx);
+      return Error[Context, QuicError](tlsError("the private key is not the certificate's"));
+    }
+    let wire = alpnWire(cfg.alpn.view());
+    if wire.len() == 0usize {
+      SSL_CTX_free(ctx);
+      return Error[Context, QuicError](QuicError.make(0i32, "the ALPN protocol must be 1 to 255 bytes"));
+    }
+    // No 0-RTT: no early data taken, and no tickets to resume with
+    SSL_CTX_set_max_early_data(ctx, 0u32);
+    SSL_CTX_set_num_tickets(ctx, 0usize);
+    SSL_CTX_set_alpn_select_cb(ctx, &alpnSelect, null);
+    Ok[Context, QuicError](Context(ctx, true, wire, checked(cfg)))
+  }
+
+  pub fn isServer(self: &) bool {serverRole}
+
+  // The Config its connections are made with
+  pub fn config(self: &) &Config {&cfg}
+
+  fn final(self: &uni) {SSL_CTX_free(ctx);}
+}
+
+// A Config with its payload size no smaller than QUIC's least (1200)
+fn checked(cfg: Config) Config {
+  var c = cfg;
+  if c.maxUdpPayload < maxUdpPayloadSize {c.maxUdpPayload = maxUdpPayloadSize;}
+  c
+}
+
+// A context's TLS failure: what, and what OpenSSL's error queue says
+fn tlsError(what: &str) QuicError {
+  var d = String.from(what);
+  sslErrors(&mut d);
+  QuicError(0i32, 0u32, d)
+}
+
+// A new SSL_CTX, TLS 1.3 alone (RFC 9001, section 4.2)
+fn newCtx(method: *u8) *u8 {
+  ERR_clear_error();
+  let ctx = SSL_CTX_new(method);
+  if ctx as usize == 0usize {return null;}
+  SSL_CTX_ctrl(ctx, ctrlSetMinProtoVersion, i64.from(tls13Version), null);
+  SSL_CTX_ctrl(ctx, ctrlSetMaxProtoVersion, i64.from(tls13Version), null);
+  ctx
+}
+
+// ALPN's wire format for one name: its length in a byte, then the name
+fn alpnWire(name: &str) List[u8] {
+  var out = List[u8].empty();
+  if name.len() > 0usize && name.len() < 256usize {
+    out.push(u8.from(name.len()));
+    var j = 0usize;
+    while j < name.len() {
+      out.push(name[j]);
+      j = j + 1usize;
+    }
+  }
+  out
+}
+
+// The certificates of a PEM bundle into a context's store: how many
+fn loadRoots(ctx: *u8, pem: &Array[u8]) u32 {
+  if pem.len == 0usize {return 0u32;}
+  let bio = BIO_new_mem_buf(&pem[0usize] as *u8, i32.from(pem.len));
+  let store = SSL_CTX_get_cert_store(ctx);
+  var n = 0u32;
+  while true {
+    let x = PEM_read_bio_X509(bio, null, null, null);
+    if x as usize == 0usize {break;}
+    if X509_STORE_add_cert(store, x) == 1i32 {n = n + 1u32;}
+    X509_free(x);
+  }
+  BIO_free(bio);
+  // The read past the last certificate leaves "no start line" queued
+  ERR_clear_error();
+  n
+}
+
+// OpenSSL asks a server which of the protocols a client offers it speaks:
+// the one the connection's callback block holds, or a fatal
+// no_application_protocol. The block is the SSL object's app data, where the
+// crypto helper also finds the connection (ConnRef heads it)
+fn @c("coneQuicAlpnSelect") alpnSelect(ssl: *u8, out: &mut *u8, outLen: &mut u8, offered: *u8,
+    offeredLen: u32, arg: *u8) i32 {
+  let b = SSL_get_ex_data(ssl, appDataSlot) as *Box;
+  if b as usize == 0usize || (*b).alpnLen == 0u32 {return tlsextErrAlertFatal;}
+  var chosen = null as *u8;
+  var chosenLen = 0u8;
+  if SSL_select_next_proto(&mut chosen, &mut chosenLen, (*b).alpn, (*b).alpnLen, offered,
+      offeredLen) != npnNegotiated {
+    return tlsextErrAlertFatal;
+  }
+  *out = chosen;
+  *outLen = chosenLen;
+  tlsextErrOk
+}

@@ -309,7 +309,7 @@
 mod actorhttp;
 
 import slots use SlotTable;
-import collections use List, String, Dict;
+import collections use List, Deque, String, Dict;
 import iobuf use IoBuf;
 import time use Instant, Duration;
 import iocore use Loop, Completion, SocketAddr, CancelGroup, IoError, forever;
@@ -403,7 +403,8 @@ fn final() {
 // ---------------------------------------------------------------------------
 
 // The operation awaited: its job, made now, queued for the service by the
-// 'await'. J has 'run(self, lp &mut Loop, sv &mut Service)' and a 'reply'
+// 'await', which hands the job's 'run(self, lp &mut Loop, sv &mut Service,
+// rp actors.Reply)' the reply its answer goes back in
 fn awaitable[J, R](body: J) actors.Awaitable[R] {
   aio.hostAwaitable[Service, J, R](svcHost, body)
 }
@@ -480,7 +481,7 @@ pub struct Client is Move {
       else {}
     }
     if lim.deadline < r.deadline {r.deadline = lim.deadline;}
-    awaitable[FetchJob, Result[httpclient.Response, FetchError]](FetchJob(id, r, actors.Reply()))
+    awaitable[FetchJob, Result[httpclient.Response, FetchError]](FetchJob(id, r))
   }
 
   // A request whose response the actor reads as it arrives, body chunk by
@@ -495,7 +496,7 @@ pub struct Client is Move {
   pub fn streamIn(self: &, req: httpclient.Request, lim: IoLimits, file: &Array[u8] = srcFile(), line: u32 = srcLine())
       actors.Awaitable[Result[BodyStream, FetchError]] {
     let r = limitedRequest(req, lim, file, line);
-    awaitable[StreamOpenJob, Result[BodyStream, FetchError]](StreamOpenJob(id, r, false, actors.Reply()))
+    awaitable[StreamOpenJob, Result[BodyStream, FetchError]](StreamOpenJob(id, r, false))
   }
 
   // A request whose response is read as server-sent events (STREAMS): it asks
@@ -513,7 +514,7 @@ pub struct Client is Move {
     var r = limitedRequest(req, lim, file, line);
     if !r.headers.has("Accept") {r.headers.add("Accept", "text/event-stream");}
     if !r.headers.has("Cache-Control") {r.headers.add("Cache-Control", "no-cache");}
-    awaitable[StreamOpenJob, Result[EventStream, FetchError]](StreamOpenJob(id, r, true, actors.Reply()))
+    awaitable[StreamOpenJob, Result[EventStream, FetchError]](StreamOpenJob(id, r, true))
   }
 
   fn final(self: &uni) {
@@ -597,7 +598,7 @@ pub struct Conn is Move {
       actors.Awaitable[Result[httpclient.Response, FetchError]] {
     checkHead(&head, file, line);
     awaitable[ExchangeJob, Result[httpclient.Response, FetchError]](
-      ExchangeJob(id, head, body, lim.group, lim.deadline, actors.Reply()))
+      ExchangeJob(id, head, body, lim.group, lim.deadline))
   }
 
   fn final(self: &uni) {
@@ -611,12 +612,12 @@ pub struct Conn is Move {
 // httpconn's driver, bounded by its connectTimeout (10 s)
 pub fn connect(host: &str, port: u16) actors.Awaitable[Result[Conn, FetchError]] {
   awaitable[ConnectJob, Result[Conn, FetchError]](
-    ConnectJob(String.from(host), port, false, tls.ClientConfig.make(), actors.Reply()))
+    ConnectJob(String.from(host), port, false, tls.ClientConfig.make()))
 }
 
 // A connection to host:port through TLS, the server's certificate checked as
 // cfg says (the host is the name it must hold)
 pub fn connectSecure(host: &str, port: u16, cfg: tls.ClientConfig) actors.Awaitable[Result[Conn, FetchError]] {
   awaitable[ConnectJob, Result[Conn, FetchError]](
-    ConnectJob(String.from(host), port, true, cfg, actors.Reply()))
+    ConnectJob(String.from(host), port, true, cfg))
 }
