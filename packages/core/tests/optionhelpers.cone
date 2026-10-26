@@ -1,0 +1,109 @@
+// Option's helpers (WI error-handling, issue 4): unwrap, expect, map, andThen,
+// filter, okOr, take, replace, asRef, asMut and flatten, each on Some and on None.
+// The values are Logs, which say when they are finalized, so the lines pin what
+// each helper moves and what it drops as well as what it answers: a helper taking
+// the Option by value consumes it, so its value is finalized once, wherever the
+// answer ends up, and never twice. Each line was worked out by hand from the
+// source. The panics of unwrap and expect on None are the tests unwrapnone and
+// expectnone.
+
+mod optionhelpers;
+
+import stdio use *;
+
+struct Log {
+  pub n: i32;
+  fn final(self: &uni) { print <- "  final ", n, "\n"; }
+}
+
+fn some(n: i32) Option[Log] { Some[Log](Log(n)) }
+fn none() Option[Log] { None[Log] }
+
+fn isNone(o: &Option[Log]) bool { *o is None }
+
+fn main() {
+  print <- "unwrap:\n";
+  let a = some(1).unwrap();
+  print <- "  got ", a.n, "\n";
+
+  print <- "expect:\n";
+  let b = some(2).expect("there is a 2");
+  print <- "  got ", b.n, "\n";
+
+  print <- "map:\n";
+  let m = some(3).map(fn(l: Log) i32 { l.n * 10 });                 // 3 dies inside the closure
+  print <- "  got ", m.unwrap(), "\n";
+  let mn = none().map(fn(l: Log) i32 { l.n * 10 });
+  print <- "  none maps to none: ", mn is None, "\n";
+
+  print <- "andThen:\n";
+  let t = some(4).andThen(fn(l: Log) Option[i32] { Some[i32](l.n + 1) });
+  print <- "  got ", t.unwrap(), "\n";
+  let tn = some(5).andThen(fn(l: Log) Option[i32] { None[i32] });
+  print <- "  a None from f: ", tn is None, "\n";
+  let tnn = none().andThen(fn(l: Log) Option[i32] { Some[i32](l.n) });
+  print <- "  none stays none: ", tnn is None, "\n";
+
+  print <- "filter:\n";
+  let kept = some(6).filter(fn(l: &Log) bool { l.n > 5 });
+  print <- "  kept ", kept.unwrap().n, "\n";                          // dies with the statement
+  let dropped = some(7).filter(fn(l: &Log) bool { l.n > 9 });          // 7 dies in filter
+  print <- "  refused is none: ", dropped is None, "\n";
+
+  print <- "okOr:\n";
+  let ok = some(8).okOr[i32](-1);
+  match ok {
+    case let Ok(l) { print <- "  ok ", l.n, "\n"; }
+    case let Error(e) { print <- "  error ", e, "\n"; }
+  }
+  let er = none().okOr[i32](-1);
+  match er {
+    case let Ok(l) { print <- "  ok ", l.n, "\n"; }
+    case let Error(e) { print <- "  error ", e, "\n"; }
+  }
+
+  print <- "take:\n";
+  var slot = some(9);
+  let taken = slot.take();
+  print <- "  taken ", taken.unwrap().n, ", left none: ", isNone(&slot), "\n";
+  var empty = none();
+  print <- "  take of none is none: ", empty.take() is None, "\n";
+
+  print <- "replace:\n";
+  var held = some(10);
+  let old = held.replace(Log(11));
+  print <- "  old ", old.unwrap().n, "\n";
+  let older = held.replace(Log(12));                                  // 11 comes out
+  print <- "  now ", older.unwrap().n, "\n";
+  var hole = none();
+  print <- "  replace of none answers none: ", hole.replace(Log(13)) is None, "\n";
+  print <- "  and holds ", hole.asRef().unwrap().n, "\n";
+
+  print <- "asRef:\n";
+  let view = some(14);
+  match view.asRef() {
+    case let Some(r) { print <- "  sees ", r.n, "\n"; }
+    case is None { print <- "  none\n"; }
+  }
+  print <- "  still holds it: ", view is Some, "\n";
+  print <- "  of none: ", none().asRef() is None, "\n";
+
+  print <- "asMut:\n";
+  var edit = some(15);
+  match edit.asMut() {
+    case let Some(r) { r.n = 16; }
+    case is None { }
+  }
+  print <- "  now ", edit.asRef().unwrap().n, "\n";
+
+  print <- "flatten:\n";
+  let nested: Option[Option[i32]] = Some[Option[i32]](Some[i32](17));
+  let flat: Option[i32] = nested.flatten();
+  print <- "  got ", flat.unwrap(), "\n";
+  let innerNone: Option[Option[i32]] = Some[Option[i32]](None[i32]);
+  print <- "  inner none: ", innerNone.flatten[i32]() is None, "\n";
+  let outerNone: Option[Option[i32]] = None;
+  print <- "  outer none: ", outerNone.flatten[i32]() is None, "\n";
+
+  print <- "end of main:\n";
+}
