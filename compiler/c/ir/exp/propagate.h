@@ -37,7 +37,8 @@
 //   'from' is ErrorQuesAmbiguous, naming two of them;
 // - otherwise ErrorQuesConvert.
 //
-// Refused: 'x' neither a Result nor an Option (ErrorQuesOperand); a function
+// A value typed as one of the variants, 'Ok[i32, E](5)' or 'None[i32]', is held
+// as its enum. Refused: 'x' neither a Result nor an Option (ErrorQuesOperand); a function
 // returning no Result for a Result, no Option for an Option, a closure whose
 // return type is not written, a generator (ErrorQuesReturn, the last at parse).
 void propagateLower(TypeCheckState *pstate, BlockNode *blk);

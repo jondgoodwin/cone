@@ -258,6 +258,16 @@ void propagateLower(TypeCheckState *pstate, BlockNode *blk) {
         propagateFail(blk, NULL);
         return;
     }
+    // A value typed as one of the variants, 'Ok[i32, E](5)', is a Result all the
+    // same: held as its enum, which the tests and bindings are made against
+    if (type->tag == StructTag && !(type->flags & EnumType) && (type->flags & HasTagField)) {
+        StructNode *base = structBaseTraitDcl((StructNode*)type);
+        if (base != NULL && propagateKindOf((INode*)base) != PropagateNone
+            && iexpCheckedCoerceIn(pstate, (INode*)base, &held->value)) {
+            held->vtype = (INode*)base;
+            type = (INode*)base;
+        }
+    }
     char tname[200], rname[200];
     enum PropagateKind kind = propagateKindOf(type);
     if (kind == PropagateNone) {

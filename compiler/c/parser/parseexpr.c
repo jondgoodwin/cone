@@ -833,6 +833,8 @@ static INode *parseSuffixUntil(ParseState *parse, INode *node, uint16_t flags, i
         // '?': not where a type is read, whose '?' is an Option's sugar
         // written before the type, nor ahead of an 'await' still to apply
         if (lexIsToken(QuesToken) && !parse->intype && !awaited) {
+            // What '?' takes is a value: 'None[i32]?' constructs the variant
+            parseMarkValueTerm(parse, node);
             node = parsePropagate(parse, node);
             continue;
         }
