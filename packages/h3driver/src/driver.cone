@@ -205,7 +205,11 @@ pub struct Driver {
   }
 
   // A completion: true when its token is this driver's, which takes what it
-  // needs from it (a receive's datagram, a send's end, the verifier's answer)
+  // needs from it (a receive's datagram, a send's end, the verifier's answer).
+  // BATCHING (RECEIVES): a receive's answer is one datagram, routed and
+  // started again here; a batched receive (recvmmsg, GRO, URO) would route
+  // each of its datagrams in turn at the same two places (route for a
+  // listener's, handleInput for a client's) and start one batch again
   pub fn complete(self: &mut, lp: &mut Loop, comp: &mut Completion) bool {
     if !self.owns(comp.token) {return false;}
     let kind = (comp.token >> kindShift) & 0xFFu64;
@@ -1255,7 +1259,9 @@ pub struct Driver {
   }
 
   // QUIC's datagrams to the kernel, at most sendDepth in flight: how many it
-  // made (one injectLoss dropped counts)
+  // made (one injectLoss dropped counts). BATCHING (SENDS): each is one
+  // SendTo now; a batched send (sendmmsg, GSO, USO) would gather the payloads
+  // this loop takes from pollTransmit into one operation
   fn transmit(self: &mut, lp: &mut Loop, i: u32, now: Instant) usize {
     let c = conns.at(i) as &mut Conn;
     let slot = conns.slotAt(i);
