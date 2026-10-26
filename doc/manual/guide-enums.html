@@ -343,6 +343,83 @@ enum Option[T] {None; Some(T);}
 		so. Option is taught where it is first needed, in <a href="guide-dict.html#option">Dict</a>, at the first lookup
 		that may come back empty.</p>
 
+	<h2 id="helpers">Working with an Option or a Result: the helpers</h2>
+	<p>A <span class="pre">match</span> always works, but most uses of an Option or a Result are one of a few
+		shapes: take the value out, or change it while leaving a None or an Error as it is. The core library gives both
+		enums methods for those, so the shape is named instead of written out:</p>
+<pre>
+mod helpers;
+import stdio use *;
+
+fn half(n: i32) Option[i32] {
+  if n % 2 == 0 { Some(n / 2) } else { None }
+}
+
+fn average(total: i32, count: i32) Result[i32, &amp;str] {
+  if count == 0 { return Error("there is nothing to average"); }
+  Ok(total / count)
+}
+
+fn main() {
+  print &lt;- half(10).unwrap(), "\n";                              // 5
+  print &lt;- half(12).map(x =&gt; x * 3).expect("12 is even"), "\n";   // 18
+  print &lt;- half(20).andThen(&amp;half).unwrap(), "\n";               // 5: half of half
+  print &lt;- half(7).filter(x =&gt; *x &gt; 0) is None, "\n";            // true: 7 has no half
+  match half(7).okOr("odd") {                                    // an Option made a Result
+    case let Ok(h) { print &lt;- "half is ", h, "\n"; }
+    case let Error(why) { print &lt;- "no half: ", why, "\n"; }      // this one runs
+  }
+
+  print &lt;- average(30, 3).map(x =&gt; x * 2).unwrap(), "\n";        // 20
+  print &lt;- average(30, 0).ok() is None, "\n";                    // true: the error is dropped
+  print &lt;- average(30, 0).error().unwrap(), "\n";                // there is nothing to average
+  print &lt;- average(30, 0).mapError(why =&gt; why.len()).error().unwrap(), "\n";  // 27
+
+  var pending: Option[i32] = Some(4);
+  let got = pending.take();                                      // Some(4), and pending is None
+  print &lt;- got.unwrap(), " ", pending is None, "\n";             // 4 true
+}
+</pre>
+	<p><b>Taking the value out.</b> <span class="pre">unwrap()</span> gives what Some or Ok holds, and
+		<span class="pre">expect("why")</span> does the same with a reason. Either one, given a None or an Error, is a
+		<a href="safe-panics.html">panic</a>, reported at the line of the call, and
+		<span class="pre">expect</span>'s reason is the panic's message. Use them where the value being missing would be
+		a bug, and a <span class="pre">match</span> where it is something the program must handle.</p>
+	<p><b>Changing what is inside.</b> Each of these takes a closure and leaves a None or an Error as it is:</p>
+	<ul>
+		<li><span class="pre">map(f)</span>: Some or Ok of what <span class="pre">f</span> makes of the value.</li>
+		<li><span class="pre">andThen(f)</span>: what <span class="pre">f</span> answers, when <span class="pre">f</span>
+			itself answers an Option (or a Result with the same error), so a failure at either step ends the chain.</li>
+		<li><span class="pre">filter(f)</span>, an Option's: itself when <span class="pre">f</span> is true of its value
+			(given a borrow of it), else None.</li>
+		<li><span class="pre">mapError(f)</span>, a Result's: Error of what <span class="pre">f</span> makes of the error,
+			Ok left as it is.</li>
+	</ul>
+	<p><b>Turning one into the other.</b> An Option's <span class="pre">okOr(e)</span> is Ok of its value, or
+		<span class="pre">Error(e)</span> on None. A Result's <span class="pre">ok()</span> is Some of its value (the error
+		is dropped), and <span class="pre">error()</span> Some of its error (the value is dropped).</p>
+	<p><b>Looking without taking.</b> <span class="pre">asRef()</span> is an Option of a borrow of the value,
+		<span class="pre">Option[&amp;T]</span> (a Result's is <span class="pre">Result[&amp;T, &amp;E]</span>), and leaves
+		the original as it was; <span class="pre">asMut()</span> lends the value so that it can be changed in place.</p>
+	<p><b>In a variable.</b> An Option's <span class="pre">take()</span> answers what it held and leaves None in its
+		place; <span class="pre">replace(v)</span> answers what it held and leaves <span class="pre">Some(v)</span>.</p>
+	<p><b>One level less.</b> <span class="pre">flatten()</span> makes an Option of an Option into one Option, and a
+		Result of a Result with the same error into one Result. Today it cannot tell what is inside from the value
+		alone: give it a variable of the type it makes (<span class="pre">let o: Option[i32] = nested.flatten();</span>)
+		or write the inner type, <span class="pre">nested.flatten[i32]()</span>.</p>
+	<p>The helpers that take the Option or Result itself (all but <span class="pre">take</span>,
+		<span class="pre">replace</span>, <span class="pre">asRef</span> and <span class="pre">asMut</span>) consume it: a
+		value it holds moves into the answer, or is dropped. A function passed where a closure is wanted is passed by
+		reference, <span class="pre">andThen(&amp;half)</span>. A closure that gives back an Option or a Result
+		writes its result type out (<span class="pre">fn(x: i32) Option[i32] { Some(x + 1) }</span>), since
+		<span class="pre">Some(x + 1)</span> alone is a Some, not yet an Option. And a closure given to
+		<span class="pre">map</span> or <span class="pre">andThen</span> cannot yet answer a borrow, such as a
+		<span class="pre">&amp;str</span>: what a closure answers is taken to borrow from the closure itself.</p>
+	<p>Rust's <span class="pre">is_some</span> and its kin are <span class="pre">is</span> here
+		(<span class="pre">opt is Some</span>). The fallbacks, a default when there is no value or the first of two
+		that has one, are to be the operators <span class="pre">||</span> and <span class="pre">&amp;&amp;</span>, which
+		are not built yet.</p>
+
 	<p>You can now say that a value is one of several kinds, give each kind its own data, and handle every kind with
 		the compiler checking that none is missed. Next come collections, which hold as many values as a program needs,
 		and which hand you an Option when they have nothing to give.</p>
