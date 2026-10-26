@@ -1,0 +1,238 @@
+// The quic package: QUIC version 1 (RFC 9000) over ngtcp2, sans-IO. It does
+// no I/O, reads no clock and starts no thread: its owner hands it the UDP
+// payloads that came off the wire and the time, and takes back the payloads
+// to send, what happened on the connection, and when to wake it. TLS 1.3 is
+// OpenSSL 3.5's, the library package tls uses, through ngtcp2's OpenSSL crypto
+// helper (OpenSSL's own QUIC TLS interface).
+//
+// THIS IS THE BINDING (the package's first part). What is here: ngtcp2 and
+// its crypto helper bound (ngtcp2.cone), the OpenSSL the package needs
+// (openssl.cone), a QUIC TLS context (tlsctx.cone), and the Engine
+// (engine.cone): one ngtcp2 connection with its TLS session, the callbacks
+// ngtcp2 makes, and ngtcp2's calls one for one, which tests/handshake.cone
+// drives as a client and a server in one process, in memory. The package's
+// face comes next, over the Engine: a quic.Connection in the shape the http3
+// core expects (handleInput, pollTransmit, pollEvent, wakeAt; streams, read
+// credit, close with a code), its Config with named defaults, ALPN h3, and the
+// OS's certificate verifier.
+//
+//   import quic;
+//
+//   let ctls = quic.TlsContext.client(rootsPem, "h3");        // or .server(cert, key, "h3")
+//   match quic.Engine.client(&ctls, "localhost", &here, &there, &quic.Params.make(), now) {
+//     case var Ok(e) {... e.transmit(&mut buf, now) ... e.read(&pkt, now) ... e.pollEvent() ...}
+//     case let Error(err) {... err.message() ...}
+//   }
+//
+//   TlsContext.client(rootsPem, alpn)  TlsContext.server(certFile, keyFile, alpn)   (TLS)
+//   Addr.v4(a, b, c, d, port)  Params.make()                                       (SETUP)
+//   Engine.client(tls, host, localAddr, remoteAddr, params, now)                  (ENGINE)
+//   Engine.accept(tls, firstPacket, localAddr, remoteAddr, params, now)
+//   e.read(packet, now)  e.transmit(out, now)  e.expiry()  e.onExpiry(now)
+//   e.openBidi()  e.openUni()  e.send(stream, data, fin)  e.consume(stream, n)
+//   e.resetStream(stream, code)  e.close(out, code, now)
+//   e.pollEvent(): EngineEvent  e.isClosed()  e.handshakeDone()  e.error()
+//   e.alpn()  e.tlsVersion()  e.cipher()  e.verifyResult()
+//   ngtcp2Version()  backendVersion()                                             (DIAGNOSTICS)
+//
+// ENGINE. The Engine is the low-level layer: ngtcp2's own calls, made safe,
+// with no stream table and no policy of its own. The package's face is built
+// over it, and the face's PR decides whether the Engine stays public beside
+// it. 'read' takes one UDP payload; 'transmit' writes the next one to
+// send into 'out' (at least 1200 bytes) and says how long it is, 0 when there
+// is nothing: queued stream data first, a stream at a time, then what ngtcp2
+// has of its own (handshake, acknowledgements, flow control). 'send' queues
+// bytes on a stream, copied, and the Engine keeps them until the peer has
+// acknowledged them, as ngtcp2 requires (ngtcp2 retransmits from them). What
+// happened comes out of 'pollEvent', once each, in order: the handshake done,
+// a stream the peer opened, stream data (and its end), a stream reset or
+// stopped by the peer, a stream closed, the connection closed (by whom, and
+// the code). A stream's received bytes are credited back to the peer by
+// 'consume', which the owner calls as it uses them: the flow-control window
+// moves only then. 'expiry' is the time ngtcp2's next timer fires, and
+// 'onExpiry' runs it. A failure inside ngtcp2 makes the next 'transmit' write
+// the CONNECTION_CLOSE that ends the connection; 'error' says what it was.
+//
+// TLS. CERTIFICATES ARE CHECKED AGAINST PEM ROOTS ONLY, NOT BY THE
+// PLATFORM'S VERIFIER YET: a client trusts exactly the roots it is given, in
+// PEM, and checks the name it connects to (OpenSSL's own check, which tls's
+// Verifier.roots also uses). The machine's roots, revocation and enterprise
+// policy are not consulted, so the package must not be used against the open
+// internet yet. The face's first item is its own certificate-verify callback
+// reusing tls.verifyWork, with tls's semantics: the OS's chain engine by
+// default, Verifier.roots and Verifier.pinnedSha256 for development (tls's
+// own verifyChain cannot be shared as it is: it reads its verdict from the SSL
+// object's app data, which ngtcp2's crypto helper holds). A server presents a certificate chain and key from PEM
+// files. Each offers or accepts one ALPN protocol, which the handshake must
+// agree on. TLS 1.3 only, as QUIC requires. No 0-RTT, no session resumption.
+//
+// NOT HERE YET (the package's face, and later): connection migration (the
+// path is fixed for the connection's life), Retry and address validation
+// tokens, stateless reset (the reset tokens are random), datagrams, key
+// update initiated here (ngtcp2 answers the peer's), qlog, coalescing more than
+// one stream's data into a packet, and retransmitting a CONNECTION_CLOSE when
+// packets keep coming after it.
+//
+// WINDOWS AND LINUX. On Windows ngtcp2 1.22.1 is built from its signed release
+// source by tools/deps/build_ngtcp2.py with MSVC (Release, shared libraries,
+// the library and the OpenSSL crypto helper only:
+//
+//   -DCMAKE_BUILD_TYPE=Release -DENABLE_LIB_ONLY=ON -DENABLE_SHARED_LIB=ON
+//   -DENABLE_STATIC_LIB=OFF -DBUILD_TESTING=OFF -DENABLE_OPENSSL=ON
+//
+// ngtcp2-1.22.1.tar.gz, SHA-256
+// 063d80531acac0ddbbc1b9d12829a824edc2abe8dba2e632fd1ce15cfd5632f9), against
+// tls's OpenSSL 3.5.9 DLLs and their headers (tools/deps/fetch.py), into
+// deps/ngtcp2/; Congo copies its two DLLs beside each program, with OpenSSL's.
+// 1.22.1, not the latest: from 1.23.0 ngtcp2 needs MSVC 19.44 (Visual Studio
+// 2022 17.14) or later, whose C11 _Generic tells char from signed char, and the
+// MSVC this was built with is 19.42. The script's header says how to move.
+// Linux needs OpenSSL 3.5 or later, which Ubuntu 24.04 does not ship (its
+// OpenSSL is 3.0, with no QUIC TLS interface, and its ngtcp2, 0.12, has no
+// OpenSSL 3.5 helper); a build of OpenSSL 3.5 into a user prefix works. The
+// same script then builds ngtcp2 with the system's compiler against it
+// ('python3 tools/deps/build_ngtcp2.py --openssl <prefix>'), into
+// deps/ngtcp2/ ([link.linux]), with that OpenSSL's libraries beside it, and a
+// program runs with LD_LIBRARY_PATH naming that folder. So built (OpenSSL
+// 3.5.9 from its signed source, gcc 13), tests/handshake.cone passes on Ubuntu
+// 24.04, debug and release. tls stays on the system's OpenSSL 3.0, and one
+// program cannot load both, so a program on Linux does not import both
+// packages yet.
+
+mod quic;
+
+import libc;
+import collections use List, String, Deque;
+import sync use Once;
+import time use Instant, Duration;
+import path use Path;
+
+fn @initpure init() {
+  helperOnce = Once.make();
+}
+
+// ngtcp2's crypto helper prepares OpenSSL's ciphers once for the process,
+// on the first context made (optional, and recommended by ngtcp2: without it
+// each connection fetches them anew); and the binding's structs are checked
+// against the library loaded, once
+let helperOnce: Once;
+
+fn initHelper() {
+  checkLayout();
+  ngtcp2_crypto_ossl_init();
+}
+
+// The binding's structs are the sizes cl.exe and gcc give ngtcp2 1.22.1's
+// (x64, Windows and Linux alike: none holds a C 'long'), and ngtcp2's own
+// defaults land in the fields where the binding reads them. A library that
+// differs would be misread silently, so it is a panic
+fn checkLayout() {
+  if mem.sizeof[Cid]() != 32usize || mem.sizeof[PktInfo]() != 8usize || mem.sizeof[NgPath]() != 40usize
+      || mem.sizeof[PathStorage]() != 96usize || mem.sizeof[PreferredAddr]() != 96usize
+      || mem.sizeof[TransportParams]() != 344usize || mem.sizeof[Settings]() != 200usize
+      || mem.sizeof[Callbacks]() != 360usize || mem.sizeof[CcErr]() != 40usize
+      || mem.sizeof[ConnRef]() != 16usize || mem.sizeof[PktHd]() != 112usize {
+    panic("quic: the ngtcp2 binding's structs are not ngtcp2 1.22.1's sizes");
+  }
+  let s = settingsFor(Instant.fromNanos(0i64));
+  if s.initialRtt != 333000000u64 || s.maxTxUdpPayloadSize != 1452usize || s.ackThresh != 2usize {
+    panic("quic: ngtcp2's default settings are not where the binding reads them");
+  }
+  let tp = paramsFor(&Params.make());
+  if tp.maxUdpPayloadSize != 65527u64 || tp.ackDelayExponent != 3u64 || tp.maxAckDelay != 25000000u64
+      || tp.activeConnectionIdLimit != 2u64 {
+    panic("quic: ngtcp2's default transport parameters are not where the binding reads them");
+  }
+}
+
+fn helperReady() {helperOnce.callOnce(&initHelper);}
+
+// ---------------------------------------------------------------------------
+// Errors
+// ---------------------------------------------------------------------------
+
+// Why a connection could not be made, or failed
+pub struct QuicError {
+  pub code: i32;           // ngtcp2's error (negative), or 0 when the failure was not ngtcp2's
+  pub detail: String;      // what was wrong, one line
+
+  pub fn make(code: i32, detail: &str) QuicError {QuicError(code, String.from(detail))}
+
+  pub fn copy(self: &) QuicError {QuicError(code, detail.copy())}
+
+  // 'quic: the server's certificate could not be checked: ERR_INVALID_ARGUMENT'
+  pub fn message(self: &) String {
+    var out = String.from("quic: ");
+    out.append(detail.view());
+    if code != 0i32 {
+      out.append(" (");
+      out.append(ngError(code));
+      out.append(")");
+    }
+    out
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Setup
+// ---------------------------------------------------------------------------
+
+// An IPv4 or IPv6 address and a port, as the OS's sockaddr holds them: the
+// ends of a connection's path, which ngtcp2 keeps and checks every packet
+// against. The package sends nothing to it; the owner's sockets do
+pub struct Addr {
+  raw: Array[u8, 28];
+  size: u32;
+
+  // a.b.c.d:port
+  pub fn v4(a: u8, b: u8, c: u8, d: u8, port: u16) Addr {
+    var s = Addr(Array[u8, 28]() <- fill 0u8, 16u32);
+    s.raw[0usize] = 2u8;                  // AF_INET, little-endian
+    s.raw[2usize] = u8.from(port >> 8u16);
+    s.raw[3usize] = u8.from(port & 0xFFu16);
+    s.raw[4usize] = a;
+    s.raw[5usize] = b;
+    s.raw[6usize] = c;
+    s.raw[7usize] = d;
+    s
+  }
+}
+
+// The transport parameters an Engine announces: how much the peer may send
+// before this end credits more (per stream and for the connection), how many
+// streams it may open, and how long the connection may be idle
+pub struct Params {
+  pub streamWindow: u64;        // bytes, each stream: bidirectional, either side's, and unidirectional
+  pub connectionWindow: u64;    // bytes, every stream together
+  pub maxStreamsBidi: u64;      // streams the peer may open
+  pub maxStreamsUni: u64;
+  pub idleTimeout: Duration;    // zero: none
+
+  // 256 KiB a stream, 1 MiB the connection, 100 bidirectional streams and
+  // 3 unidirectional (HTTP/3's control and QPACK streams), 30 s idle
+  pub fn make() Params {
+    Params(streamWindow: 262144u64, connectionWindow: 1048576u64, maxStreamsBidi: 100u64,
+      maxStreamsUni: 3u64, idleTimeout: Duration.fromSeconds(30i64))
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Diagnostics
+// ---------------------------------------------------------------------------
+
+// The ngtcp2 library loaded: '1.22.1'
+pub fn ngtcp2Version() &str {
+  let info = ngtcp2_version(0i32);
+  if info as usize == 0usize {return "";}
+  cText(*((info + 8usize) as **u8))      // ngtcp2_info: age, version_num, version_str
+}
+
+// The OpenSSL library loaded: 'OpenSSL 3.5.9 30 Sep 2026'
+pub fn backendVersion() &str {cText(OpenSSL_version(0i32))}
+
+// A timestamp as ngtcp2 takes it: nanoseconds, from whatever origin the
+// owner's Instants have
+fn tsOf(now: Instant) u64 {
+  let n = now.nanos();
+  if n < 0i64 {0u64} else {u64.from(n as u64)}
+}

@@ -1,0 +1,159 @@
+// The streaming interface's promises, on frames built here byte by byte (raw
+// and RLE blocks need no encoder): when a pull answers NeedInput, MoreOutput
+// and Done; a pull of 0 bytes; 'finish' as the only way to know the last
+// frame was the last; 'setMultiFrame(false)' and 'takeRest'; the counters
+// ('frameCount', 'totalIn', 'totalOut'); 'error' before and after a failure;
+// skippable frames fed a byte at a time; and a frame larger than many
+// windows pulled a byte at a time, against its content.
+
+mod streaming;
+
+import testing use *;
+import collections use *;
+import zstd use *;
+
+fn put32(f: &mut List[u8], v: u32) {
+  var k = 0u32;
+  while k < 4u32 { f.push(u8.from((v >> (8u32 * k)) & 255u32)); k += 1u32; }
+}
+
+// A frame of raw blocks of at most 'piece' bytes (its window is 1 KiB, no
+// content size), with the checksum if asked
+fn rawFrame(f: &mut List[u8], content: &Array[u8], piece: usize, checksum: bool) {
+  put32(f, 0xFD2FB528u32);
+  f.push(if checksum {0x04u8} else {0x00u8});
+  f.push(0x00u8);
+  var p = 0usize;
+  while true {
+    let n = if content.len - p < piece {content.len - p} else {piece};
+    let last = if p + n == content.len {1usize} else {0usize};
+    let h = last | (n << 3usize);
+    f.push(u8.from(h & 255usize)); f.push(u8.from((h >> 8usize) & 255usize)); f.push(u8.from(h >> 16usize));
+    var k = 0usize;
+    while k < n { f.push(content[p + k]); k += 1usize; }
+    p += n;
+    if last == 1usize { break; }
+  }
+  if checksum { put32(f, u32.from(xxh64(content, 0u64) & 0xFFFFFFFFu64)); }
+}
+
+fn text(n: usize, seed: u64) List[u8] {
+  var d = List[u8].empty();
+  var s = seed;
+  while d.len() < n {
+    s = s * 6364136223846793005u64 + 1442695040888963407u64;
+    d.push(97u8 + u8.from((s >> 40u64) % 26u64));
+  }
+  d
+}
+
+fn pullAll(d: &mut Decompressor, out: &mut List[u8], max: usize) Status {
+  var st: Status = Status.MoreOutput;
+  while st == Status.MoreOutput { st = d.pull(out, max); }
+  st
+}
+
+fn main() i32 {
+  let a = text(700, 1u64);
+  let b = text(300, 2u64);
+  var two = List[u8].empty();
+  rawFrame(&mut two, a.view(), 1000usize, true);
+  let firstLen = two.len();
+  rawFrame(&mut two, b.view(), 128usize, false);
+
+  // A whole frame fed without 'finish': all of it out, then NeedInput (another frame may come)
+  var d = Decompressor.make();
+  var out = List[u8].empty();
+  expect(d.error() == None[ZstdError], "no error before a failure");
+  d.feed(&two.view()[0usize..<firstLen]);
+  expect(pullAll(&mut d, &mut out, 100usize) == Status.NeedInput, "a frame without finish: NeedInput");
+  expect(out.view() == a.view(), "its content, all of it");
+  expectUInt(u64.from(d.frameCount()), 1u64, "one frame read");
+  expect(!d.isDone(), "not done until finish");
+  d.finish();
+  expect(d.pull(&mut out, 100usize) == Status.Done, "finish: Done");
+  expect(d.isDone(), "done");
+  expectUInt(d.totalIn(), u64.from(firstLen), "totalIn");
+  expectUInt(d.totalOut(), 700u64, "totalOut");
+
+  // A pull of 0 bytes moves nothing out and says more is there
+  var z = Decompressor.make();
+  z.feed(two.view());
+  z.finish();
+  var none = List[u8].empty();
+  expect(z.pull(&mut none, 0usize) == Status.MoreOutput && none.len() == 0usize, "a pull of 0: MoreOutput, nothing");
+  expect(z.pull(&mut none, 0usize) == Status.MoreOutput && none.len() == 0usize, "and again");
+  expect(pullAll(&mut z, &mut none, 1000000usize) == Status.Done && none.len() == 1000usize, "then all of it");
+
+  // One frame only: what follows is left for takeRest
+  var o = Decompressor.make();
+  o.setMultiFrame(false);
+  o.feed(two.view());
+  o.feed("tail");
+  var first = List[u8].empty();
+  expect(o.takeRest().len() == 0usize, "no rest before done");
+  expect(pullAll(&mut o, &mut first, 64usize) == Status.Done, "one frame: Done without finish");
+  expect(first.view() == a.view(), "the first frame's content");
+  let rest = o.takeRest();
+  expectUInt(u64.from(rest.len()), u64.from(two.len() - firstLen + 4usize), "the rest: the second frame and the tail");
+  expect(rest[0usize] == 0x28u8 && rest[rest.len() - 1usize] == 0x6Cu8, "the rest's first and last bytes");
+
+  // Skippable frames among frames, fed a byte at a time, pulled 7 bytes at a time
+  var mixed = List[u8].empty();
+  put32(&mut mixed, 0x184D2A5Au32);
+  put32(&mut mixed, 5u32);
+  var k = 0usize;
+  while k < 5usize { mixed.push(0xEEu8); k += 1usize; }
+  rawFrame(&mut mixed, b.view(), 50usize, true);
+  put32(&mut mixed, 0x184D2A50u32);
+  put32(&mut mixed, 0u32);
+  rawFrame(&mut mixed, a.view(), 1000usize, false);
+  var m = Decompressor.make();
+  var got = List[u8].empty();
+  var i = 0usize;
+  var st: Status = Status.NeedInput;
+  while i < mixed.len() {
+    m.feed(&mixed.view()[i..<i + 1usize]);
+    i += 1usize;
+    if i == mixed.len() { m.finish(); }
+    st = pullAll(&mut m, &mut got, 7usize);
+    if st == Status.Failed { break; }
+  }
+  expect(st == Status.Done, "skippable frames among frames: Done");
+  expectUInt(u64.from(got.len()), 1000u64, "both frames' content");
+  expect(&got.view()[0usize..<300usize] == b.view() && &got.view()[300usize..<1000usize] == a.view(), "in order");
+  expectUInt(u64.from(m.frameCount()), 2u64, "two frames (skippable ones not counted)");
+  expectUInt(m.totalIn(), u64.from(mixed.len()), "every byte used");
+
+  // A frame of 200 KB in raw blocks of 1000 under a 1 KiB window, pulled a byte at a time
+  let big = text(200000, 3u64);
+  var bf = List[u8].empty();
+  rawFrame(&mut bf, big.view(), 1000usize, true);
+  var bd = Decompressor.make();
+  bd.feed(bf.view());
+  bd.finish();
+  var bo = List[u8].withCapacity(200000usize);
+  expect(pullAll(&mut bd, &mut bo, 1usize) == Status.Done, "a byte at a time: Done");
+  expect(bo.view() == big.view(), "a byte at a time: the content");
+
+  // A failure: error() then says why, and a pull says Failed again
+  var bad = List[u8].empty();
+  rawFrame(&mut bad, a.view(), 1000usize, true);
+  let last = bad.len() - 1usize;
+  bad.set(last, bad[last] ^ 1u8);
+  var f = Decompressor.make();
+  f.feed(bad.view());
+  f.finish();
+  var fo = List[u8].empty();
+  expect(pullAll(&mut f, &mut fo, 1000usize) == Status.Failed, "a wrong checksum: Failed");
+  match f.error() {
+    case let Some(e) {
+      expect(e.kind == ErrorKind.BadChecksum, "the kind");
+      expectStr(e.message().view(), "zstd: the content checksum does not match", "the reason");
+      expectUInt(e.offset, u64.from(bad.len() - 4usize), "the offset: the checksum's start");
+    }
+    else { expect(false, "an error after a failure"); }
+  }
+  expect(f.pull(&mut fo, 1000usize) == Status.Failed, "still Failed");
+  done()
+}

@@ -64,6 +64,7 @@
 //
 //   Op.Connect(addr)  Op.Accept(listener)                   (OPERATIONS)
 //   Op.Recv(sock, buf)  Op.RecvReady(sock)  Op.Send(sock, buf)  Op.SendBytes(sock, bytes)
+//   Op.SendChain(sock, bufs)            several buffers, one send (a gather)
 //   Op.ReadAt(file, at, buf)  Op.WriteAt(file, at, buf)
 //   Op.RecvFrom(sock, buf)  Op.SendTo(sock, addr, buf)      one datagram each  (DATAGRAMS)
 //   Op.Call(lane, work, arg, buf)       work run on the blocking pool (THE BLOCKING POOL)
@@ -78,8 +79,8 @@
 //   Request: r.cancel() r.detach() r.id()
 //   Completer: c.done(n) c.fail(code) c.cancelled() c.end(outcome) c.buf()
 //     c.isCancelRequested() c.isLive() c.id()
-//   Completion: c.id c.token c.kind c.status c.n c.code c.buf c.handle c.peer, the stamps,
-//     c.outcome() c.isDone() c.count() c.record()            (ANSWERS)
+//   Completion: c.id c.token c.kind c.status c.n c.code c.buf c.bufs c.handle c.peer, the stamps,
+//     c.outcome() c.isDone() c.count() c.bufLen() c.chainBack() c.record()   (ANSWERS)
 //   Outcome.Done(n)  Outcome.Failed(code)  Outcome.Cancelled  Outcome.TimedOut
 //   SocketAddr.v4(a, b, c, d, port)  .localhost(port)  .v6(bytes, port)  .v6Localhost(port)
 //   IoError: e.code, e.message(), e.kind() (IoErrorKind: Os, Cancelled, TimedOut, Truncated),
@@ -129,6 +130,19 @@
 //   so that thousands of them pin no memory. Then a Recv takes what came.
 // - Send(sock, buf), SendBytes(sock, bytes): all of it; Done(n), n the bytes
 //   sent.
+// - SendChain(sock, bufs): every unconsumed byte of an iobuf Chain, its
+//   segments in order, in ONE operation (a gather write: one kernel call
+//   where the socket takes it all, not one per buffer); Done(n), n the
+//   bytes sent. The answer gives the whole chain back ('c.bufs', or
+//   'c.chainBack()'), every segment in it, however it ended. Windows hands
+//   the segments to one WSASend as an array of WSABUFs (Winsock captures the
+//   array at the call, so it is built on the stack, or for more than 16
+//   segments in a block freed at once); Linux sends them with sendmsg over an
+//   iovec of at most 64 segments a call, and a send the socket takes only in
+//   part goes on from the byte it reached, across segment boundaries, as
+//   Send's does. An empty chain is Done(0). The record holds the chain out of
+//   line, 'bufs', an Option of an owning pointer (8 bytes, None for every
+//   other operation), so no other operation's record is larger for it.
 // - ReadAt(file, at, buf), WriteAt(file, at, buf): at the byte offset 'at',
 //   with no cursor shared between operations; reading past the end is
 //   Done(0).
@@ -194,8 +208,9 @@
 // the operation was started, say) finalizes the closure instead, and what the
 // closure holds is finalized with it. The closure runs inside poll, or inside
 // the loop's death, so it hands the answer on and never calls back into the
-// loop: the actor runtime's I/O thread (the aio package) turns each answer
-// into a message to the actor that awaits it.
+// loop. No package of the runtime uses it now: the actor runtime's I/O thread
+// (the aio package) keeps records of its own, starts them itself and takes
+// them back answered (RECORDS), with no Completion and no closure between.
 //
 // Each of these answers is stamped delivered when the loop hands it over,
 // and a loop whose answers all go elsewhere still sees its poll return as
@@ -205,7 +220,8 @@
 // (I1): its OpId, its token, its kind (diag's kind numbers), its outcome --
 // Done with a count, Failed with Windows' error number (on Linux, the one
 // that names the same condition as the errno; see linux.cone), Cancelled, or
-// TimedOut -- the buffer back ('c.buf', IoBuf.empty() when it had none), the
+// TimedOut -- the buffer back ('c.buf', IoBuf.empty() when it had none; a
+// SendChain's chain in 'c.bufs', None for every other operation), the
 // handle Connect or Accept made, and three instants: submitted, dequeued
 // (when the loop took it from the kernel's queue: IOCP does not say when the
 // kernel finished, so this is the earliest the loop can know; on Linux, when
@@ -359,8 +375,9 @@
 //
 // - The record is the carrier. The asker takes one ('pool.take(ask)', from any
 //   thread: the pointer to a record holding ask and an OpCore with nothing in
-//   it) and fills its request: 'kind' (diag.kindRecv, ...), 'handle', 'buf'
-//   or 'bytes' (Options: None is nothing here), 'at', 'deadline' (forever()
+//   it) and fills its request: 'kind' (diag.kindRecv, ...), 'handle', 'buf',
+//   'bytes' or 'bufs' (Options: None is nothing here; 'bufs', a Uni[Chain],
+//   makes a kindSend a gather, as SendChain is), 'at', 'deadline' (forever()
 //   for none; a timer's own time for diag.kindTimer), 'group', 'lane' and
 //   'work' for a Call, 'setPeer(addr)' for SendTo and Connect. Only its
 //   address crosses to the loop's thread; 'qnext' is the asker's link for
@@ -523,6 +540,7 @@
 // (linux.cone), epoll with an eventfd
 // (how other threads wake the loop) and a timerfd, non-blocking sockets and
 // accept4, recvfrom (with MSG_TRUNC, to tell a cut datagram) and sendto,
+// sendmsg for a gather,
 // getaddrinfo and stat on the pool's threads, and a lane of the pool
 // for ReadAt and WriteAt (pread and pwrite). All from Cone with no C between;
 // the pool's threads and locks are the thread and sync packages'. Where the
@@ -540,7 +558,7 @@ import sync use Arc, Once, Mutex, Condvar, Sender, OneshotSender;
 import collections use List, String;
 import slots use SlotTable, Slot;
 import time use Instant, Duration, Timestamp;
-import iobuf use IoBuf, Bytes;
+import iobuf use IoBuf, Bytes, Chain;
 import path use Path;
 import timewheel use Wheel, TimerId, Expiry;
 import diag;
@@ -800,6 +818,7 @@ pub enum Op {
   pub struct RecvReady {pub sock: Handle;}
   pub struct Send {pub sock: Handle; pub buf: IoBuf;}
   pub struct SendBytes {pub sock: Handle; pub bytes: Bytes;}
+  pub struct SendChain {pub sock: Handle; pub bufs: Chain;}
   pub struct ReadAt {pub file: Handle; pub at: u64; pub buf: IoBuf;}
   pub struct WriteAt {pub file: Handle; pub at: u64; pub buf: IoBuf;}
   pub struct Call {pub lane: Lane; pub work: WorkFn; pub arg: u64; pub buf: IoBuf;}
@@ -863,6 +882,7 @@ pub struct Completion {
   pub n: usize;            // Done's count of bytes
   pub code: u32;           // Failed's error number
   pub buf: IoBuf;          // the loan back, or IoBuf.empty()
+  pub bufs: Option[Uni[Chain]];  // a SendChain's chain back, every segment; None for any other operation
   pub handle: Handle;      // the socket Connect or Accept made, or Handle.none()
   pub peer: SocketAddr;    // RecvFrom's sender, SendTo's destination, Connect's address; else size 0
   pub submitted: Instant;
@@ -878,6 +898,25 @@ pub struct Completion {
     else if status == diag.outcomeFailed {Outcome.Failed(code)}
     else if status == diag.outcomeCancelled {Outcome.Cancelled}
     else {Outcome.TimedOut}
+  }
+
+  // The bytes the buffers it carries back hold: a SendChain's chain's, or
+  // its buffer's. A send whose Done count is this sent all of it
+  pub fn bufLen(self: &) usize {
+    match &bufs {
+      case let &Some(c) {c.len()}
+      else {buf.len()}
+    }
+  }
+
+  // The answer read out for a SendChain's chain, every segment in it; an
+  // empty chain for any other operation. The rest of the answer dies here
+  pub fn chainBack(self) Chain {
+    let b = self.(bufs);
+    match b {
+      case var Some(c) {*c}
+      else {Chain.make(0usize)}
+    }
   }
 
   // Its diagnostics record

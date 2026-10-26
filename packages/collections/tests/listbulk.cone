@@ -1,0 +1,125 @@
+// List's bulk append: 'appendSlice' copies a slice's values onto the end in
+// one reserve and one block copy (for a type whose values copy), and
+// 'appendList' moves another list's values on (for any type, a move type
+// included). Every expected value is worked out by hand:
+// - an empty list has no block; appending 5 gives it room for exactly 5 (the
+//   heap's region gives what is asked), and appending 6 more makes room for
+//   max(2 * 5, 11) = 11, then 3 more max(22, 14) = 22;
+// - appending nothing (an empty slice, an empty list) changes nothing, not
+//   even an empty list's lack of a block;
+// - a slice of the list's own values cannot be appended to it: the compiler
+//   refuses 'a.appendSlice(a.view())' (1168), so there is no self-append to run;
+// - 'appendList' finalizes no value, copies none and consumes its argument: the
+//   Fins' log stays empty until the list that holds them dies, 123456 for
+//   three and three.
+
+mod listbulk;
+
+import testing use *;
+import collections use *;
+
+var @threadlocal log = 0i64;
+
+struct Fin {
+  pub n: i64;
+  fn final(self: &uni) { log = log * 10i64 + n; }
+}
+
+// A point is a plain value, so it copies
+struct Pt {
+  pub x: i32;
+  pub y: i32;
+}
+
+fn bytes() {
+  var a = List[u8].empty();
+  a.appendSlice("hello");
+  expectUInt(u64.from(a.len()), 5, "five bytes appended to an empty list");
+  expectUInt(u64.from(a.capacity()), 5, "room for exactly five");
+  expectStr(a.view(), "hello", "the bytes are there");
+
+  a.appendSlice(" world");
+  expectUInt(u64.from(a.len()), 11, "six more");
+  expectUInt(u64.from(a.capacity()), 11, "grown to max(10, 11)");
+  expectStr(a.view(), "hello world", "in order after the first");
+
+  // From another list's view, and a part of one
+  var b = List[u8]() <- 33u8, 33u8, 33u8;
+  a.appendSlice(b.view());
+  expectUInt(u64.from(a.capacity()), 22, "grown to max(22, 14)");
+  expectStr(a.view(), "hello world!!!", "another list's values");
+  expectStr(b.view(), "!!!", "the source is as it was");
+  a.appendSlice("xyz".slice(1usize, 2usize));
+  expectStr(a.view(), "hello world!!!y", "a part of a slice");
+
+  // Nothing
+  var none = List[u8].empty();
+  none.appendSlice("");
+  expectUInt(u64.from(none.capacity()), 0, "an empty slice makes no block");
+  a.appendSlice("");
+  expectUInt(u64.from(a.len()), 15, "an empty slice adds nothing");
+
+  // Far past a block: 100000 bytes in four appends, compared with a push loop
+  var big = List[u8].empty();
+  var pushed = List[u8].empty();
+  var chunk = List[u8].empty();
+  var i = 0u32;
+  while i < 25000u32 { chunk.push(u8.from(i % 251u32)); i = i + 1u32; }
+  var k = 0u32;
+  while k < 4u32 { big.appendSlice(chunk.view()); k = k + 1u32; }
+  k = 0u32;
+  while k < 4u32 {
+    var j = 0usize;
+    while j < chunk.len() { pushed.push(*chunk[j]); j = j + 1usize; }
+    k = k + 1u32;
+  }
+  expectUInt(u64.from(big.len()), 100000, "four chunks");
+  expectBool(bytesEqual(big.view(), pushed.view()), true, "the same bytes as a push loop");
+}
+
+fn plainValues() {
+  var pts = List[Pt]() <- Pt(1i32, 2i32);
+  var more = List[Pt]() <- Pt(3i32, 4i32), Pt(5i32, 6i32);
+  pts.appendSlice(more.view());
+  expectUInt(u64.from(pts.len()), 3, "three points");
+  expectInt(i64.from(pts[2usize].y), 6, "the last point's y");
+  expectInt(i64.from(more[0usize].x), 3, "the source is as it was");
+}
+
+fn moved() {
+  var a = List[String]() <- String.from("a"), String.from("b");
+  var b = List[String]() <- String.from("c");
+  b.push(String.from("d"));
+  a.appendList(b);
+  expectUInt(u64.from(a.len()), 4, "four strings");
+  expectStr(a[0usize].view(), "a", "first");
+  expectStr(a[2usize].view(), "c", "the moved ones follow");
+  expectStr(a[3usize].view(), "d", "last");
+  a.appendList(List[String].empty());
+  expectUInt(u64.from(a.len()), 4, "an empty list adds nothing");
+
+  var empty = List[String].empty();
+  empty.appendList(a);
+  expectUInt(u64.from(empty.len()), 4, "onto an empty list");
+  expectStr(empty[1usize].view(), "b", "its values are the moved ones");
+}
+
+fn movedFins() {
+  log = 0i64;
+  {
+    var a = List[Fin]() <- Fin(1), Fin(2), Fin(3);
+    var b = List[Fin]() <- Fin(4), Fin(5), Fin(6);
+    a.appendList(b);
+    expectInt(log, 0, "appendList finalizes nothing");
+    expectUInt(u64.from(a.len()), 6, "six in one list");
+  }
+  expectInt(log, 123456, "each died once, in order, with the list that holds them");
+}
+
+fn main() i32 {
+  bytes();
+  plainValues();
+  moved();
+  movedFins();
+  done()
+}

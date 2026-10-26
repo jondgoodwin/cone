@@ -1,0 +1,1067 @@
+// ======== Frames: HTTP/2's framing layer (RFC 9113, sections 4 and 6) ========
+//
+// Every HTTP/2 frame is a nine-byte header and a payload (section 4.1):
+//
+//   +-----------------------------------------------+
+//   |                 Length (24)                   |
+//   +---------------+---------------+---------------+
+//   |   Type (8)    |   Flags (8)   |
+//   +-+-------------+---------------+-------------------------------+
+//   |R|                 Stream Identifier (31)                      |
+//   +=+=============================================================+
+//   |                   Frame Payload (0...)                      ...
+//   +---------------------------------------------------------------+
+//
+// A FrameReader turns the bytes that arrived, an iobuf Chain, into Frames,
+// one per call, checking each at the frame's level and naming each fault's
+// error code and scope; it joins a HEADERS (or PUSH_PROMISE) frame's field
+// block fragment to its CONTINUATIONs, bounded, so the caller sees one
+// whole field block. A FrameWriter turns frames to send into a Chain of
+// buffers for one gather write: frame headers and the small payloads it
+// builds packed into shared buffers, and each DATA payload the caller's own
+// buffer, moved in whole, never copied. Neither knows streams' states,
+// windows or SETTINGS beyond the one frame: those are the connection's.
+
+mod frames;
+
+import collections use List, String;
+import iobuf use IoBuf, Chain;
+
+// ---------------------------------------------------------------------------
+// The numbers RFC 9113 fixes
+// ---------------------------------------------------------------------------
+
+// A frame header's length (section 4.1)
+pub const frameHeaderLen = 9usize;
+
+// SETTINGS_MAX_FRAME_SIZE's initial value and smallest allowed, and its
+// largest (section 6.5.2)
+pub const defaultMaxFrameSize = 16384usize;
+pub const largestMaxFrameSize = 16777215usize;
+
+// The largest flow-control window and window increment, and the largest
+// stream identifier (sections 5.1.1, 6.9.1)
+pub const maxWindowSize = 0x7FFFFFFFu32;
+pub const maxStreamId = 0x7FFFFFFFu32;
+
+// The frame types (section 6; 6.10 for CONTINUATION)
+pub const typeData = 0x0u8;
+pub const typeHeaders = 0x1u8;
+pub const typePriority = 0x2u8;
+pub const typeRstStream = 0x3u8;
+pub const typeSettings = 0x4u8;
+pub const typePushPromise = 0x5u8;
+pub const typePing = 0x6u8;
+pub const typeGoAway = 0x7u8;
+pub const typeWindowUpdate = 0x8u8;
+pub const typeContinuation = 0x9u8;
+
+// The flags, each meaningful only for the types named
+pub const flagEndStream = 0x1u8;     // DATA, HEADERS
+pub const flagAck = 0x1u8;           // SETTINGS, PING
+pub const flagEndHeaders = 0x4u8;    // HEADERS, PUSH_PROMISE, CONTINUATION
+pub const flagPadded = 0x8u8;        // DATA, HEADERS, PUSH_PROMISE
+pub const flagPriority = 0x20u8;     // HEADERS
+
+// The SETTINGS parameters (section 6.5.2; RFC 8441, section 3; RFC 9218,
+// section 2.1)
+pub const settingHeaderTableSize = 0x1u16;
+pub const settingEnablePush = 0x2u16;
+pub const settingMaxConcurrentStreams = 0x3u16;
+pub const settingInitialWindowSize = 0x4u16;
+pub const settingMaxFrameSize = 0x5u16;
+pub const settingMaxHeaderListSize = 0x6u16;
+pub const settingEnableConnectProtocol = 0x8u16;
+pub const settingNoRfc7540Priorities = 0x9u16;
+
+// ---------------------------------------------------------------------------
+// Configuration
+// ---------------------------------------------------------------------------
+
+// The frame layer's bounds, each a field to change (see the package's
+// header, FRAME BOUNDS)
+pub struct FrameConfig {
+  pub maxFrameSize: usize;            // our SETTINGS_MAX_FRAME_SIZE: a longer frame is FRAME_SIZE_ERROR
+  pub maxHeaderBlockSize: usize;      // a field block's frames' payloads together (the CONTINUATION flood)
+  pub maxContinuations: usize;        // CONTINUATION frames in one field block
+  pub maxEmptyFrames: usize;          // empty DATA, HEADERS or CONTINUATION frames ending nothing, in a row
+  pub maxQueuedControlFrames: usize;  // control frames a FrameWriter holds untaken (the SETTINGS and PING floods)
+  pub enablePush: bool;               // a client's SETTINGS_ENABLE_PUSH: PUSH_PROMISE is refused unless set
+
+  // The defaults
+  pub fn make() FrameConfig {
+    FrameConfig(maxFrameSize: defaultMaxFrameSize, maxHeaderBlockSize: 65536usize,
+      maxContinuations: 8usize, maxEmptyFrames: 1usize, maxQueuedControlFrames: 10000usize,
+      enablePush: false)
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Error codes and frame errors
+// ---------------------------------------------------------------------------
+
+// An HTTP/2 error code (section 7). A code the RFC does not define arrives
+// as Unknown, keeping its value; it means nothing special (section 7: it
+// MAY be treated as INTERNAL_ERROR)
+pub enum ErrorCode {
+  NoError, ProtocolError, InternalError, FlowControlError, SettingsTimeout, StreamClosed,
+  FrameSizeError, RefusedStream, Cancel, CompressionError, ConnectError, EnhanceYourCalm,
+  InadequateSecurity, Http11Required, Unknown(u32);
+
+  // Its value on the wire
+  pub fn value(self: ErrorCode) u32 {
+    match self {
+      case NoError {0x0u32}
+      case ProtocolError {0x1u32}
+      case InternalError {0x2u32}
+      case FlowControlError {0x3u32}
+      case SettingsTimeout {0x4u32}
+      case StreamClosed {0x5u32}
+      case FrameSizeError {0x6u32}
+      case RefusedStream {0x7u32}
+      case Cancel {0x8u32}
+      case CompressionError {0x9u32}
+      case ConnectError {0xau32}
+      case EnhanceYourCalm {0xbu32}
+      case InadequateSecurity {0xcu32}
+      case Http11Required {0xdu32}
+      case let Unknown(v) {v}
+    }
+  }
+
+  // The code a value on the wire names
+  pub fn of(v: u32) ErrorCode {
+    match v {
+      case 0x0u32 {ErrorCode.NoError}
+      case 0x1u32 {ErrorCode.ProtocolError}
+      case 0x2u32 {ErrorCode.InternalError}
+      case 0x3u32 {ErrorCode.FlowControlError}
+      case 0x4u32 {ErrorCode.SettingsTimeout}
+      case 0x5u32 {ErrorCode.StreamClosed}
+      case 0x6u32 {ErrorCode.FrameSizeError}
+      case 0x7u32 {ErrorCode.RefusedStream}
+      case 0x8u32 {ErrorCode.Cancel}
+      case 0x9u32 {ErrorCode.CompressionError}
+      case 0xau32 {ErrorCode.ConnectError}
+      case 0xbu32 {ErrorCode.EnhanceYourCalm}
+      case 0xcu32 {ErrorCode.InadequateSecurity}
+      case 0xdu32 {ErrorCode.Http11Required}
+      else {ErrorCode.Unknown(v)}
+    }
+  }
+
+  // Its name as the RFC spells it: 'PROTOCOL_ERROR'
+  pub fn name(self: ErrorCode) &str {
+    match self {
+      case NoError {"NO_ERROR"}
+      case ProtocolError {"PROTOCOL_ERROR"}
+      case InternalError {"INTERNAL_ERROR"}
+      case FlowControlError {"FLOW_CONTROL_ERROR"}
+      case SettingsTimeout {"SETTINGS_TIMEOUT"}
+      case StreamClosed {"STREAM_CLOSED"}
+      case FrameSizeError {"FRAME_SIZE_ERROR"}
+      case RefusedStream {"REFUSED_STREAM"}
+      case Cancel {"CANCEL"}
+      case CompressionError {"COMPRESSION_ERROR"}
+      case ConnectError {"CONNECT_ERROR"}
+      case EnhanceYourCalm {"ENHANCE_YOUR_CALM"}
+      case InadequateSecurity {"INADEQUATE_SECURITY"}
+      case Http11Required {"HTTP_1_1_REQUIRED"}
+      case let Unknown(v) {"unknown"}
+    }
+  }
+}
+
+// What an error ends (section 5.4): one stream (RST_STREAM) or the whole
+// connection (GOAWAY, then close)
+pub enum Scope {Stream, Connection}
+
+// A frame the RFC says to refuse: the code to send, what it ends, the
+// frame's stream, and why (see the package's header, FRAME ERRORS)
+pub struct FrameError {
+  pub code: ErrorCode;
+  pub scope: Scope;
+  pub stream: u32;            // the frame's stream: the one a stream error resets
+  pub flowLength: usize;      // a refused DATA frame's length, still counted against the connection's window
+  pub detail: &'static str;   // what was wrong, one line
+
+  // Whether the connection must end
+  pub fn isConnectionError(self: &) bool {scope == Scope.Connection}
+
+  // 'PROTOCOL_ERROR on the connection: a DATA frame on stream 0'
+  pub fn message(self: &) String {
+    var out = String.from(code.name());
+    if code is Unknown {
+      out.append(" 0x");
+      out.appendHex(u64.from(code.value()), 1usize);
+    }
+    if scope == Scope.Connection {out.append(" on the connection: ");}
+    else {
+      out.append(" on stream ");
+      out.appendUInt(u64.from(stream));
+      out.append(": ");
+    }
+    out.append(detail);
+    out
+  }
+}
+
+fn connectionError(code: ErrorCode, stream: u32, why: &'static str) FrameError {
+  FrameError(code, Scope.Connection, stream, 0usize, why)
+}
+
+fn streamError(code: ErrorCode, stream: u32, why: &'static str) FrameError {
+  FrameError(code, Scope.Stream, stream, 0usize, why)
+}
+
+// ---------------------------------------------------------------------------
+// The frame header (section 4.1)
+// ---------------------------------------------------------------------------
+
+// A frame's nine-byte header: the payload's length, its type, its flags and
+// its stream (the reserved bit dropped)
+pub struct FrameHeader {
+  pub length: usize;
+  pub kind: u8;
+  pub flags: u8;
+  pub stream: u32;
+
+  // The header at the start of b (at least nine bytes), the reserved bit
+  // ignored, as section 4.1 asks
+  pub fn read(b: &Array[u8]) FrameHeader {
+    FrameHeader((usize.from(b[0usize]) << 16usize) | (usize.from(b[1usize]) << 8usize) | usize.from(b[2usize]),
+      b[3usize], b[4usize], readU32(b, 5usize) & maxStreamId)
+  }
+
+  // The header at the start of a Chain's unconsumed bytes (at least nine)
+  pub fn peek(c: &Chain) FrameHeader {
+    let len = (usize.from(c.byteAt(0usize)) << 16usize) | (usize.from(c.byteAt(1usize)) << 8usize) |
+      usize.from(c.byteAt(2usize));
+    let s = (u32.from(c.byteAt(5usize)) << 24u32) | (u32.from(c.byteAt(6usize)) << 16u32) |
+      (u32.from(c.byteAt(7usize)) << 8u32) | u32.from(c.byteAt(8usize));
+    FrameHeader(len, c.byteAt(3usize), c.byteAt(4usize), s & maxStreamId)
+  }
+
+  // Write it into the first nine bytes of out, the reserved bit clear
+  pub fn write(self: &, out: &mut Array[u8]) {
+    out[0usize] = u8.from((length >> 16usize) & 0xFFusize);
+    out[1usize] = u8.from((length >> 8usize) & 0xFFusize);
+    out[2usize] = u8.from(length & 0xFFusize);
+    out[3usize] = kind;
+    out[4usize] = flags;
+    writeU32(out, 5usize, stream & maxStreamId);
+  }
+
+  fn has(self: &, flag: u8) bool {(flags & flag) != 0u8}
+}
+
+fn readU16(b: &Array[u8], at: usize) u16 {
+  (u16.from(b[at]) << 8u16) | u16.from(b[at + 1usize])
+}
+
+fn readU32(b: &Array[u8], at: usize) u32 {
+  (u32.from(b[at]) << 24u32) | (u32.from(b[at + 1usize]) << 16u32) |
+    (u32.from(b[at + 2usize]) << 8u32) | u32.from(b[at + 3usize])
+}
+
+fn writeU32(b: &mut Array[u8], at: usize, v: u32) {
+  b[at] = u8.from(v >> 24u32);
+  b[at + 1usize] = u8.from((v >> 16u32) & 0xFFu32);
+  b[at + 2usize] = u8.from((v >> 8u32) & 0xFFu32);
+  b[at + 3usize] = u8.from(v & 0xFFu32);
+}
+
+// ---------------------------------------------------------------------------
+// Frames
+// ---------------------------------------------------------------------------
+
+// A stream dependency and weight (section 5.3.1 of RFC 7540, which RFC 9113
+// deprecates): parsed and passed on, for the connection to ignore. 'weight'
+// is as it travels, 0 to 255 for 1 to 256
+pub struct PrioritySpec {
+  pub exclusive: bool;
+  pub dependency: u32;
+  pub weight: u8;
+}
+
+// One SETTINGS parameter, as it travels; a SETTINGS frame's are kept in
+// order, as section 6.5.3 has them processed
+pub struct Setting {
+  pub id: u16;
+  pub value: u32;
+}
+
+// A frame as the reader hands it on (see the package's header, FRAMES).
+// CONTINUATION is never one: its fragment is joined to the HEADERS or
+// PUSH_PROMISE it continues, and that is handed on whole
+pub enum Frame {
+  // Body bytes. 'flowLength' is the whole payload's length, padding and all,
+  // which is what flow control counts (section 6.9.1)
+  pub struct Data {
+    pub stream: u32;
+    pub endStream: bool;
+    pub data: IoBuf;
+    pub flowLength: usize;
+  }
+
+  // A whole field block, for HPACK to decode. 'streamError', when set, is a
+  // stream error the frame earns (a priority naming its own stream), to be
+  // raised once the block is decoded: the block must be decoded all the
+  // same, or the peer's HPACK table and ours part (section 4.3)
+  pub struct Headers {
+    pub stream: u32;
+    pub endStream: bool;
+    pub priority: Option[PrioritySpec];
+    pub block: List[u8];
+    pub streamError: Option[FrameError];
+  }
+
+  pub struct Priority {
+    pub stream: u32;
+    pub spec: PrioritySpec;
+  }
+
+  pub struct RstStream {
+    pub stream: u32;
+    pub code: ErrorCode;
+  }
+
+  pub struct Settings {
+    pub ack: bool;
+    pub values: List[Setting];
+  }
+
+  // A server's promise of a stream it will push; refused unless a client's
+  // FrameConfig.enablePush is set
+  pub struct PushPromise {
+    pub stream: u32;
+    pub promised: u32;
+    pub block: List[u8];
+  }
+
+  // The eight opaque bytes, as one big-endian number
+  pub struct Ping {
+    pub ack: bool;
+    pub data: u64;
+  }
+
+  pub struct GoAway {
+    pub lastStream: u32;
+    pub code: ErrorCode;
+    pub debug: List[u8];
+  }
+
+  // Stream 0 is the connection's window
+  pub struct WindowUpdate {
+    pub stream: u32;
+    pub increment: u32;
+  }
+}
+
+// What the reader made of the bytes so far
+pub enum Parsed {
+  pub struct NeedData {}                    // nothing more until more bytes arrive
+  pub struct Got {pub frame: Frame;}        // the next frame
+  pub struct Failed {pub error: FrameError;}  // a frame refused: a stream error, or a connection error, which every later call repeats
+}
+
+// ---------------------------------------------------------------------------
+// Parsing one frame's payload
+// ---------------------------------------------------------------------------
+
+// Where a HEADERS or PUSH_PROMISE frame's fragment lies in its payload, and
+// what precedes it
+struct BlockStart {
+  from: usize;
+  to: usize;
+  priority: Option[PrioritySpec];
+  promised: u32;
+}
+
+// The fixed fields and padding of a HEADERS (or PUSH_PROMISE) payload p,
+// checked: a frame too short for its fields is FRAME_SIZE_ERROR, and padding
+// longer than what is left PROTOCOL_ERROR, each on the connection, a field
+// block's frame touching the connection's HPACK state (section 4.2)
+fn blockStart(h: FrameHeader, p: &'p Array[u8]) Result[BlockStart, FrameError] {
+  var at = 0usize;
+  var pad = 0usize;
+  if h.has(flagPadded) {
+    if p.len < 1usize {
+      return Error[BlockStart, FrameError](connectionError(ErrorCode.FrameSizeError, h.stream, "a padded frame too short to hold its pad length"));
+    }
+    pad = usize.from(p[0usize]);
+    at = 1usize;
+  }
+  var priority: Option[PrioritySpec] = None;
+  var promised = 0u32;
+  if h.kind == typePushPromise {
+    if p.len < at + 4usize {
+      return Error[BlockStart, FrameError](connectionError(ErrorCode.FrameSizeError, h.stream, "a PUSH_PROMISE frame too short to hold its promised stream"));
+    }
+    promised = readU32(p, at) & maxStreamId;
+    at = at + 4usize;
+  } else if h.has(flagPriority) {
+    if p.len < at + 5usize {
+      return Error[BlockStart, FrameError](connectionError(ErrorCode.FrameSizeError, h.stream, "a HEADERS frame too short to hold its priority"));
+    }
+    let d = readU32(p, at);
+    priority = Some[PrioritySpec](PrioritySpec((d & 0x80000000u32) != 0u32, d & maxStreamId, p[at + 4usize]));
+    at = at + 5usize;
+  }
+  if pad > p.len - at {
+    return Error[BlockStart, FrameError](connectionError(ErrorCode.ProtocolError, h.stream, "padding longer than the frame's field block fragment leaves room for"));
+  }
+  Ok[BlockStart, FrameError](BlockStart(at, p.len - pad, priority, promised))
+}
+
+// A SETTINGS frame's parameters, each checked (section 6.5.2; RFC 8441,
+// section 3; RFC 9218, section 2.1), appended to values
+fn parseSettings(p: &'p Array[u8], client: bool, values: &'v mut List[Setting]) Option[FrameError] {
+  var i = 0usize;
+  while i < p.len {
+    let id = readU16(p, i);
+    let v = readU32(p, i + 2usize);
+    if id == settingEnablePush {
+      if v > 1u32 {return Some[FrameError](connectionError(ErrorCode.ProtocolError, 0u32, "SETTINGS_ENABLE_PUSH other than 0 or 1"));}
+      if client && v == 1u32 {return Some[FrameError](connectionError(ErrorCode.ProtocolError, 0u32, "SETTINGS_ENABLE_PUSH of 1 from a server"));}
+    } else if id == settingInitialWindowSize {
+      if v > maxWindowSize {return Some[FrameError](connectionError(ErrorCode.FlowControlError, 0u32, "SETTINGS_INITIAL_WINDOW_SIZE past 2^31-1"));}
+    } else if id == settingMaxFrameSize {
+      if usize.from(v) < defaultMaxFrameSize || usize.from(v) > largestMaxFrameSize {
+        return Some[FrameError](connectionError(ErrorCode.ProtocolError, 0u32, "SETTINGS_MAX_FRAME_SIZE outside 2^14 to 2^24-1"));
+      }
+    } else if id == settingEnableConnectProtocol {
+      if v > 1u32 {return Some[FrameError](connectionError(ErrorCode.ProtocolError, 0u32, "SETTINGS_ENABLE_CONNECT_PROTOCOL other than 0 or 1"));}
+    } else if id == settingNoRfc7540Priorities {
+      if v > 1u32 {return Some[FrameError](connectionError(ErrorCode.ProtocolError, 0u32, "SETTINGS_NO_RFC7540_PRIORITIES other than 0 or 1"));}
+    }
+    values.push(Setting(id, v));
+    i = i + 6usize;
+  }
+  None
+}
+
+// A whole PRIORITY, RST_STREAM, SETTINGS, PING, GOAWAY or WINDOW_UPDATE
+// payload p, its length already checked
+fn parseControl(h: FrameHeader, p: &'p Array[u8], client: bool) Result[Frame, FrameError] {
+  if h.kind == typePriority {
+    let d = readU32(p, 0usize);
+    let spec = PrioritySpec((d & 0x80000000u32) != 0u32, d & maxStreamId, p[4usize]);
+    if spec.dependency == h.stream {
+      return Error[Frame, FrameError](streamError(ErrorCode.ProtocolError, h.stream, "a stream depending on itself"));
+    }
+    return Ok[Frame, FrameError](Frame.Priority(h.stream, spec));
+  }
+  if h.kind == typeRstStream {
+    return Ok[Frame, FrameError](Frame.RstStream(h.stream, ErrorCode.of(readU32(p, 0usize))));
+  }
+  if h.kind == typeSettings {
+    var values = List[Setting].empty();
+    match parseSettings(p, client, &mut values) {
+      case let Some(e) {return Error[Frame, FrameError](e);}
+      case is None[FrameError] {}
+    }
+    return Ok[Frame, FrameError](Frame.Settings(h.has(flagAck), values));
+  }
+  if h.kind == typePing {
+    let d = (u64.from(readU32(p, 0usize)) << 32u64) | u64.from(readU32(p, 4usize));
+    return Ok[Frame, FrameError](Frame.Ping(h.has(flagAck), d));
+  }
+  if h.kind == typeGoAway {
+    var debug = List[u8].empty();
+    appendBytes(&mut debug, &p[8usize ..< p.len]);
+    return Ok[Frame, FrameError](Frame.GoAway(readU32(p, 0usize) & maxStreamId, ErrorCode.of(readU32(p, 4usize)), debug));
+  }
+  // WINDOW_UPDATE (section 6.9): an increment of 0 is an error of the
+  // window it names
+  let inc = readU32(p, 0usize) & maxWindowSize;
+  if inc == 0u32 {
+    if h.stream == 0u32 {return Error[Frame, FrameError](connectionError(ErrorCode.ProtocolError, 0u32, "a WINDOW_UPDATE of 0 for the connection"));}
+    return Error[Frame, FrameError](streamError(ErrorCode.ProtocolError, h.stream, "a WINDOW_UPDATE of 0"));
+  }
+  Ok[Frame, FrameError](Frame.WindowUpdate(h.stream, inc))
+}
+
+fn appendBytes(dst: &mut List[u8], src: &Array[u8]) {
+  dst.reserve(src.len);
+  var i = 0usize;
+  while i < src.len {
+    dst.push(src[i]);
+    i = i + 1usize;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The reader
+// ---------------------------------------------------------------------------
+
+// A field block being joined: its HEADERS or PUSH_PROMISE frame's fields
+// and the fragments so far, until the frame with END_HEADERS
+struct Block {
+  stream: u32;
+  endStream: bool;
+  priority: Option[PrioritySpec];
+  push: bool;
+  promised: u32;
+  fragments: List[u8];
+  continuations: usize;
+  streamError: Option[FrameError];
+}
+
+// Bytes in, frames out, for one direction of one connection (see the
+// package's header, THE READER)
+pub struct FrameReader {
+  cfg: FrameConfig;
+  isClient: bool;
+  pending: Option[Block];     // a field block awaiting its CONTINUATIONs
+  discard: usize;             // bytes of a refused frame still to skip as they arrive
+  empties: usize;             // empty frames ending nothing, in a row
+  failed: Option[FrameError]; // the connection error that ended reading
+  scratch: List[u8];          // a frame's payload, copied out to be parsed
+
+  // A client's reader, of a server's frames
+  pub fn client(cfg: FrameConfig) FrameReader {FrameReader.make(cfg, true)}
+
+  // A server's reader, of a client's frames
+  pub fn server(cfg: FrameConfig) FrameReader {FrameReader.make(cfg, false)}
+
+  fn make(cfg: FrameConfig, client: bool) FrameReader {
+    if cfg.maxFrameSize < defaultMaxFrameSize || cfg.maxFrameSize > largestMaxFrameSize {
+      panic("http2: FrameConfig.maxFrameSize outside 2^14 to 2^24-1");
+    }
+    FrameReader(cfg: cfg, isClient: client, pending: None, discard: 0usize, empties: 0usize,
+      failed: None, scratch: List[u8].empty())
+  }
+
+  // Whether a field block has begun and its END_HEADERS not yet arrived:
+  // only a CONTINUATION on its stream may come next
+  pub fn inFieldBlock(self: &) bool {
+    match &pending {
+      case let Some(b) {true}
+      case is None[Block] {false}
+    }
+  }
+
+  // Whether a connection error has ended reading
+  pub fn isFailed(self: &) bool {
+    match failed {
+      case let Some(e) {true}
+      case is None[FrameError] {false}
+    }
+  }
+
+  // The next frame from input, consuming its bytes; NeedData when it has not
+  // all arrived (nothing is consumed but what a refused frame leaves to
+  // skip); Failed for a frame refused. The chain must be able to hold
+  // frameHeaderLen + maxFrameSize bytes
+  pub fn next(self: &mut, input: &mut Chain) Parsed {
+    match failed {
+      case let Some(e) {return Parsed.Failed(e);}
+      case is None[FrameError] {}
+    }
+    while true {
+      if discard > 0usize {
+        let n = if discard < input.len() {discard} else {input.len()};
+        input.advance(n);
+        discard = discard - n;
+        if discard > 0usize {return Parsed.NeedData;}
+      }
+      if input.len() < frameHeaderLen {return Parsed.NeedData;}
+      let h = FrameHeader.peek(input);
+
+      // A field block admits nothing but its own CONTINUATIONs (section 6.10)
+      if self.inFieldBlock() {
+        if h.kind != typeContinuation || h.stream != self.blockStream() {
+          return self.fail(connectionError(ErrorCode.ProtocolError, h.stream, "a field block interrupted before END_HEADERS"));
+        }
+      } else if h.kind == typeContinuation {
+        return self.fail(connectionError(ErrorCode.ProtocolError, h.stream, "a CONTINUATION frame not continuing a field block"));
+      }
+
+      // The stream each type must, or must not, be on (section 6)
+      let known = h.kind <= typeContinuation;
+      if known {
+        let connectionLevel = h.kind == typeSettings || h.kind == typePing || h.kind == typeGoAway;
+        if connectionLevel && h.stream != 0u32 {
+          return self.fail(connectionError(ErrorCode.ProtocolError, h.stream, "a SETTINGS, PING or GOAWAY frame on a stream"));
+        }
+        if !connectionLevel && h.kind != typeWindowUpdate && h.stream == 0u32 {
+          return self.fail(connectionError(ErrorCode.ProtocolError, 0u32, "a frame that needs a stream on stream 0"));
+        }
+      }
+
+      // Longer than we allow (section 4.2): the connection's error for a
+      // frame that could change the whole connection's state, else the
+      // stream's, its payload skipped as it arrives, never held
+      if h.length > cfg.maxFrameSize {
+        let whole = h.kind == typeHeaders || h.kind == typePushPromise || h.kind == typeContinuation ||
+          h.kind == typeSettings || h.stream == 0u32;
+        if whole {
+          return self.fail(connectionError(ErrorCode.FrameSizeError, h.stream, "a frame longer than SETTINGS_MAX_FRAME_SIZE"));
+        }
+        return self.refuse(input, h, ErrorCode.FrameSizeError, "a frame longer than SETTINGS_MAX_FRAME_SIZE");
+      }
+
+      // A frame of an unknown type is skipped (section 4.1); unknown flags
+      // and the reserved bit are ignored throughout
+      if !known {
+        input.advance(frameHeaderLen);
+        discard = h.length;
+        continue;
+      }
+
+      // What can be refused from the header alone, before the payload is
+      // waited for
+      if h.kind == typeData {
+        if h.has(flagPadded) && h.length == 0usize {
+          return self.refuse(input, h, ErrorCode.FrameSizeError, "a padded DATA frame too short to hold its pad length");
+        }
+      } else if h.kind == typePriority {
+        if h.length != 5usize {return self.refuse(input, h, ErrorCode.FrameSizeError, "a PRIORITY frame not 5 bytes long");}
+      } else if h.kind == typeRstStream {
+        if h.length != 4usize {return self.fail(connectionError(ErrorCode.FrameSizeError, h.stream, "a RST_STREAM frame not 4 bytes long"));}
+      } else if h.kind == typeSettings {
+        if h.has(flagAck) && h.length != 0usize {return self.fail(connectionError(ErrorCode.FrameSizeError, 0u32, "a SETTINGS ACK with a payload"));}
+        if h.length % 6usize != 0usize {return self.fail(connectionError(ErrorCode.FrameSizeError, 0u32, "a SETTINGS frame not a multiple of 6 bytes long"));}
+      } else if h.kind == typePing {
+        if h.length != 8usize {return self.fail(connectionError(ErrorCode.FrameSizeError, 0u32, "a PING frame not 8 bytes long"));}
+      } else if h.kind == typeGoAway {
+        if h.length < 8usize {return self.fail(connectionError(ErrorCode.FrameSizeError, 0u32, "a GOAWAY frame shorter than 8 bytes"));}
+      } else if h.kind == typeWindowUpdate {
+        if h.length != 4usize {return self.fail(connectionError(ErrorCode.FrameSizeError, h.stream, "a WINDOW_UPDATE frame not 4 bytes long"));}
+      } else if h.kind == typePushPromise {
+        // Server push is off: a client advertises SETTINGS_ENABLE_PUSH 0,
+        // and a client never pushes (sections 6.6, 8.4)
+        if !isClient {return self.fail(connectionError(ErrorCode.ProtocolError, h.stream, "a PUSH_PROMISE frame from a client"));}
+        if !cfg.enablePush {return self.fail(connectionError(ErrorCode.ProtocolError, h.stream, "a PUSH_PROMISE frame with push disabled"));}
+      }
+      // The CONTINUATION flood (2024, CERT VU#421644): a field block is
+      // bounded in frames and in bytes, refused before its next frame's
+      // payload is held
+      if h.kind == typeHeaders || h.kind == typePushPromise || h.kind == typeContinuation {
+        if h.kind == typeContinuation && self.blockContinuations() >= cfg.maxContinuations {
+          return self.fail(connectionError(ErrorCode.EnhanceYourCalm, h.stream, "more CONTINUATION frames than maxContinuations"));
+        }
+        if self.blockLen() + h.length > cfg.maxHeaderBlockSize {
+          return self.fail(connectionError(ErrorCode.EnhanceYourCalm, h.stream, "a field block longer than maxHeaderBlockSize"));
+        }
+      }
+
+      if input.len() < frameHeaderLen + h.length {return Parsed.NeedData;}
+
+      // The empty-frame flood (CVE-2019-9518): empty DATA, HEADERS and
+      // CONTINUATION frames that end nothing, in a row
+      if h.kind == typeData || h.kind == typeHeaders || h.kind == typeContinuation {
+        let ends = h.kind != typeContinuation && h.has(flagEndStream);
+        if h.length == 0usize && !ends {
+          empties = empties + 1usize;
+          if empties > cfg.maxEmptyFrames {
+            return self.fail(connectionError(ErrorCode.EnhanceYourCalm, h.stream, "more empty frames in a row than maxEmptyFrames"));
+          }
+        } else {
+          empties = 0usize;
+        }
+      }
+
+      input.advance(frameHeaderLen);
+      if h.kind == typeData {return self.data(input, h);}
+
+      // A CONTINUATION's payload is all fragment, copied straight onto the
+      // block's
+      if h.kind == typeContinuation {
+        match &mut pending {
+          case let Some(b) {
+            let old = b.fragments.len();
+            b.fragments.resize(old + h.length, 0u8);
+            _ = input.copyOut(0usize, &mut b.fragments.viewMut()[old ..< old + h.length]);
+            b.continuations = b.continuations + 1usize;
+          }
+          case is None[Block] {}
+        }
+        input.advance(h.length);
+        if !h.has(flagEndHeaders) {continue;}
+        // The block is whole: no block pending is the next state
+        var done: Option[Block] = None;
+        done <-> pending;
+        match done {
+          case let Some(b) {return Parsed.Got(blockFrame(b));}
+          case is None[Block] {return Parsed.NeedData;}
+        }
+      }
+
+      // Every other payload is copied out whole and parsed there
+      scratch.clear();
+      scratch.resize(h.length, 0u8);
+      _ = input.copyOut(0usize, scratch.viewMut());
+      input.advance(h.length);
+
+      if h.kind == typeHeaders || h.kind == typePushPromise {
+        let st = blockStart(h, scratch.view());
+        match st {
+          case let Error(e) {return self.fail(e);}
+          case let Ok(s) {
+            var fragments = List[u8].empty();
+            appendBytes(&mut fragments, &scratch.view()[s.from ..< s.to]);
+            var se: Option[FrameError] = None;
+            match s.priority {
+              case let Some(p) {
+                if p.dependency == h.stream {se = Some[FrameError](streamError(ErrorCode.ProtocolError, h.stream, "a stream depending on itself"));}
+              }
+              case is None[PrioritySpec] {}
+            }
+            let b = Block(h.stream, h.has(flagEndStream), s.priority, h.kind == typePushPromise, s.promised,
+              fragments, 0usize, se);
+            if h.has(flagEndHeaders) {return Parsed.Got(blockFrame(b));}
+            pending = Some[Block](b);
+            continue;
+          }
+        }
+      }
+      match parseControl(h, scratch.view(), isClient) {
+        case let Ok(f) {return Parsed.Got(f);}
+        case let Error(e) {
+          if e.scope == Scope.Stream {return Parsed.Failed(e);}
+          return self.fail(e);
+        }
+      }
+    }
+    Parsed.NeedData
+  }
+
+  // A whole DATA frame, its header consumed: the data copied into a buffer
+  // of its own, the padding checked and dropped (section 6.1)
+  fn data(self: &mut, input: &mut Chain, h: FrameHeader) Parsed {
+    var at = 0usize;
+    var pad = 0usize;
+    if h.has(flagPadded) {
+      pad = usize.from(input.byteAt(0usize));
+      at = 1usize;
+      if pad >= h.length {
+        input.advance(h.length);
+        return self.fail(connectionError(ErrorCode.ProtocolError, h.stream, "a DATA frame's padding as long as its payload or longer"));
+      }
+    }
+    let buf = copyOutBuf(input, at, h.length - at - pad);
+    input.advance(h.length);
+    Parsed.Got(Frame.Data(h.stream, h.has(flagEndStream), buf, h.length))
+  }
+
+  // A stream error from the frame's header alone: the header consumed and
+  // the payload skipped as it arrives. A DATA frame's length still counts
+  // against the connection's window
+  fn refuse(self: &mut, input: &mut Chain, h: FrameHeader, code: ErrorCode, why: &'static str) Parsed {
+    input.advance(frameHeaderLen);
+    discard = h.length;
+    let flow = if h.kind == typeData {h.length} else {0usize};
+    Parsed.Failed(FrameError(code, Scope.Stream, h.stream, flow, why))
+  }
+
+  // A connection error: reading ends, and every later call repeats it
+  fn fail(self: &mut, e: FrameError) Parsed {
+    failed = Some[FrameError](e);
+    Parsed.Failed(e)
+  }
+
+  fn blockStream(self: &) u32 {
+    match &pending {
+      case let Some(b) {b.stream}
+      case is None[Block] {0u32}
+    }
+  }
+
+  fn blockLen(self: &) usize {
+    match &pending {
+      case let Some(b) {b.fragments.len()}
+      case is None[Block] {0usize}
+    }
+  }
+
+  fn blockContinuations(self: &) usize {
+    match &pending {
+      case let Some(b) {b.continuations}
+      case is None[Block] {0usize}
+    }
+  }
+}
+
+// A whole field block's frame, the block taken apart once
+fn blockFrame(b: Block) Frame {
+  let stream, endStream, priority, push, promised, fragments, streamError =
+    b.(stream, endStream, priority, push, promised, fragments, streamError);
+  if push {return Frame.PushPromise(stream, promised, fragments);}
+  Frame.Headers(stream, endStream, priority, fragments, streamError)
+}
+
+// n bytes at offset 'at' of input, copied into a buffer of their own
+fn copyOutBuf(input: &Chain, at: usize, n: usize) IoBuf {
+  if n == 0usize {return IoBuf.empty();}
+  var buf = IoBuf(n);
+  let room = buf.spare();
+  let k = input.copyOut(at, &mut room[0usize ..< n]);
+  buf.setLen(k);
+  buf
+}
+
+// ---------------------------------------------------------------------------
+// The writer
+// ---------------------------------------------------------------------------
+
+const noBound = 0xFFFFFFFFFFFFFFFFusize;  // what is queued is bounded by the connection, not the chain
+const packSize = 4096usize;               // a packing buffer's room: the pool's smallest class
+
+// Frames in, buffers out, for one direction of one connection (see the
+// package's header, THE WRITER)
+pub struct FrameWriter {
+  out: Chain;                 // the buffers ready, in order
+  pack: IoBuf;                // the buffer headers and small payloads are packed into; empty when none
+  peerMax: usize;             // the peer's SETTINGS_MAX_FRAME_SIZE
+  maxControl: usize;          // maxQueuedControlFrames
+  control: usize;             // control frames queued since the last take
+
+  pub fn make(cfg: &FrameConfig) FrameWriter {
+    FrameWriter(out: Chain.make(noBound), pack: IoBuf.empty(), peerMax: defaultMaxFrameSize,
+      maxControl: cfg.maxQueuedControlFrames, control: 0usize)
+  }
+
+  // The peer's SETTINGS_MAX_FRAME_SIZE arrived (the reader has checked it)
+  pub fn setPeerMaxFrameSize(self: &mut, n: usize) {peerMax = n;}
+  pub fn peerMaxFrameSize(self: &) usize {peerMax}
+
+  // The bytes queued, and the control frames among them
+  pub fn queuedBytes(self: &) usize {out.len() + pack.len()}
+  pub fn queuedControlFrames(self: &) usize {control}
+
+  // Every buffer queued, moved out at once as a Chain, in order, for one
+  // gather write; an empty Chain when none
+  pub fn take(self: &mut) Chain {
+    self.flush();
+    // The queue is taken whole: empty is what it is next
+    var all = Chain.make(noBound);
+    all <-> out;
+    control = 0usize;
+    all
+  }
+
+  // A DATA frame: its header packed, then 'data' itself, moved in whole as a
+  // segment of its own, never copied. 'padding' (0 to 255) zero bytes after
+  // it set PADDED. The payload past the peer's SETTINGS_MAX_FRAME_SIZE is a
+  // program error (the connection sizes DATA to the windows and that), a
+  // panic
+  pub fn data(self: &mut, stream: u32, data: IoBuf, endStream: bool, padding: usize = 0usize) {
+    if stream == 0u32 {panic("http2: a DATA frame on stream 0");}
+    let over = if padding > 0usize {padding + 1usize} else {0usize};
+    if padding > 255usize || data.len() + over > peerMax {panic("http2: a DATA frame past the peer's SETTINGS_MAX_FRAME_SIZE, or padding past 255");}
+    var flags = if endStream {flagEndStream} else {0u8};
+    if padding > 0usize {flags = flags | flagPadded;}
+    self.header(data.len() + over, typeData, flags, stream);
+    if padding > 0usize {self.byte(u8.from(padding));}
+    self.segment(data);
+    self.zeros(padding);
+  }
+
+  // A HEADERS frame and as many CONTINUATIONs as the block needs at the
+  // peer's SETTINGS_MAX_FRAME_SIZE, back to back, END_HEADERS on the last.
+  // The block is copied in; 'priority' sets PRIORITY, 'padding' PADDED
+  pub fn headers(self: &mut, stream: u32, block: &Array[u8], endStream: bool,
+      priority: Option[PrioritySpec] = None, padding: usize = 0usize) {
+    if stream == 0u32 {panic("http2: a HEADERS frame on stream 0");}
+    var flags = if endStream {flagEndStream} else {0u8};
+    var over = 0usize;
+    if padding > 0usize {
+      flags = flags | flagPadded;
+      over = padding + 1usize;
+    }
+    match priority {
+      case let Some(p) {
+        flags = flags | flagPriority;
+        over = over + 5usize;
+      }
+      case is None[PrioritySpec] {}
+    }
+    if padding > 255usize || over >= peerMax {panic("http2: HEADERS padding past 255");}
+    let first = if block.len < peerMax - over {block.len} else {peerMax - over};
+    if first == block.len {flags = flags | flagEndHeaders;}
+    self.header(first + over, typeHeaders, flags, stream);
+    if padding > 0usize {self.byte(u8.from(padding));}
+    match priority {
+      case let Some(p) {
+        let d = (p.dependency & maxStreamId) | (if p.exclusive {0x80000000u32} else {0u32});
+        self.u32be(d);
+        self.byte(p.weight);
+      }
+      case is None[PrioritySpec] {}
+    }
+    self.bytes(&block[0usize ..< first]);
+    self.zeros(padding);
+    self.continuations(stream, block, first);
+  }
+
+  // A PUSH_PROMISE frame (and its CONTINUATIONs). A server of this package
+  // never pushes; it is here so a test can play a server that does
+  pub fn pushPromise(self: &mut, stream: u32, promised: u32, block: &Array[u8], padding: usize = 0usize) {
+    if stream == 0u32 {panic("http2: a PUSH_PROMISE frame on stream 0");}
+    var flags = 0u8;
+    var over = 4usize;
+    if padding > 0usize {
+      flags = flagPadded;
+      over = over + padding + 1usize;
+    }
+    if padding > 255usize || over >= peerMax {panic("http2: PUSH_PROMISE padding past 255");}
+    let first = if block.len < peerMax - over {block.len} else {peerMax - over};
+    if first == block.len {flags = flags | flagEndHeaders;}
+    self.header(first + over, typePushPromise, flags, stream);
+    if padding > 0usize {self.byte(u8.from(padding));}
+    self.u32be(promised & maxStreamId);
+    self.bytes(&block[0usize ..< first]);
+    self.zeros(padding);
+    self.continuations(stream, block, first);
+  }
+
+  // The control frames: each is refused, false and nothing queued, once
+  // maxQueuedControlFrames are queued untaken -- the peer is not reading
+  // what it asks for, and the connection ends with ENHANCE_YOUR_CALM
+
+  pub fn priority(self: &mut, stream: u32, spec: PrioritySpec) bool {
+    if !self.controlRoom() {return false;}
+    self.header(5usize, typePriority, 0u8, stream);
+    self.u32be((spec.dependency & maxStreamId) | (if spec.exclusive {0x80000000u32} else {0u32}));
+    self.byte(spec.weight);
+    true
+  }
+
+  pub fn rstStream(self: &mut, stream: u32, code: ErrorCode) bool {
+    if !self.controlRoom() {return false;}
+    self.header(4usize, typeRstStream, 0u8, stream);
+    self.u32be(code.value());
+    true
+  }
+
+  pub fn settings(self: &mut, values: &Array[Setting]) bool {
+    if !self.controlRoom() {return false;}
+    self.header(values.len * 6usize, typeSettings, 0u8, 0u32);
+    var i = 0usize;
+    while i < values.len {
+      self.byte(u8.from(values[i].id >> 8u16));
+      self.byte(u8.from(values[i].id & 0xFFu16));
+      self.u32be(values[i].value);
+      i = i + 1usize;
+    }
+    true
+  }
+
+  pub fn settingsAck(self: &mut) bool {
+    if !self.controlRoom() {return false;}
+    self.header(0usize, typeSettings, flagAck, 0u32);
+    true
+  }
+
+  pub fn ping(self: &mut, data: u64, ack: bool) bool {
+    if !self.controlRoom() {return false;}
+    self.header(8usize, typePing, if ack {flagAck} else {0u8}, 0u32);
+    self.u32be(u32.from(data >> 32u64));
+    self.u32be(u32.from(data & 0xFFFFFFFFu64));
+    true
+  }
+
+  // An increment of 0 or past 2^31-1 is a program error, a panic
+  pub fn windowUpdate(self: &mut, stream: u32, increment: u32) bool {
+    if increment == 0u32 || increment > maxWindowSize {panic("http2: a WINDOW_UPDATE increment of 0 or past 2^31-1");}
+    if !self.controlRoom() {return false;}
+    self.header(4usize, typeWindowUpdate, 0u8, stream);
+    self.u32be(increment);
+    true
+  }
+
+  // GOAWAY is never refused: it is how a flood is answered. Debug data past
+  // what one frame holds is cut short
+  pub fn goAway(self: &mut, lastStream: u32, code: ErrorCode, debug: &Array[u8]) {
+    let n = if debug.len + 8usize <= peerMax {debug.len} else {peerMax - 8usize};
+    self.header(8usize + n, typeGoAway, 0u8, 0u32);
+    self.u32be(lastStream & maxStreamId);
+    self.u32be(code.value());
+    self.bytes(&debug[0usize ..< n]);
+    control = control + 1usize;
+  }
+
+  // ---- Packing ----
+
+  fn controlRoom(self: &mut) bool {
+    if control >= maxControl {return false;}
+    control = control + 1usize;
+    true
+  }
+
+  // CONTINUATIONs for block[from..], each as long as the peer allows
+  fn continuations(self: &mut, stream: u32, block: &Array[u8], from: usize) {
+    var at = from;
+    while at < block.len {
+      let n = if block.len - at < peerMax {block.len - at} else {peerMax};
+      self.header(n, typeContinuation, if at + n == block.len {flagEndHeaders} else {0u8}, stream);
+      self.bytes(&block[at ..< at + n]);
+      at = at + n;
+    }
+  }
+
+  fn header(self: &mut, length: usize, kind: u8, flags: u8, stream: u32) {
+    self.room(frameHeaderLen);
+    let at = pack.len();
+    FrameHeader(length, kind, flags, stream).write(&mut pack.spare()[0usize ..< frameHeaderLen]);
+    pack.setLen(at + frameHeaderLen);
+  }
+
+  fn byte(self: &mut, b: u8) {
+    self.room(1usize);
+    let at = pack.len();
+    let s = pack.spare();
+    s[0usize] = b;
+    pack.setLen(at + 1usize);
+  }
+
+  fn u32be(self: &mut, v: u32) {
+    self.room(4usize);
+    let at = pack.len();
+    writeU32(pack.spare(), 0usize, v);
+    pack.setLen(at + 4usize);
+  }
+
+  fn bytes(self: &mut, b: &Array[u8]) {
+    if b.len == 0usize {return;}
+    self.room(b.len);
+    _ = pack.append(b);
+  }
+
+  fn zeros(self: &mut, n: usize) {
+    if n == 0usize {return;}
+    self.room(n);
+    let at = pack.len();
+    let s = pack.spare();
+    var i = 0usize;
+    while i < n {
+      s[i] = 0u8;
+      i = i + 1usize;
+    }
+    pack.setLen(at + n);
+  }
+
+  // A buffer of the caller's, a segment of its own after what is packed
+  fn segment(self: &mut, buf: IoBuf) {
+    self.flush();
+    _ = out.push(buf);
+  }
+
+  // Room for n more bytes in the packing buffer: when it has too little,
+  // it goes to the queue and a new one is begun
+  fn room(self: &mut, n: usize) {
+    if pack.room() >= n {return;}
+    self.flush();
+    pack = IoBuf(if n > packSize {n} else {packSize});
+  }
+
+  // The packing buffer to the queue; until the next byte, there is none
+  fn flush(self: &mut) {
+    if pack.len() == 0usize {return;}
+    var p = IoBuf.empty();
+    p <-> pack;
+    _ = out.push(p);
+  }
+}

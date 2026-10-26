@@ -1,0 +1,315 @@
+// The http2 package: HTTP/2 (RFC 9113), sans-IO, in the shape of http1: the
+// protocol's state as plain data, which does no I/O, reads no clock and
+// starts no threads (invariant I13). It is built in three parts, each its
+// own module: HPACK, the header compression (RFC 7541, here now); the
+// frames (RFC 9113, sections 4 and 6, here now); and the connection, client
+// and server, over package http's message types (to come). HPACK and its
+// Huffman code know nothing of frames or connections, and the Huffman code
+// knows nothing of HPACK, so HTTP/3's QPACK can take what it shares with
+// them. The frames know nothing of HPACK: a field block passes through them
+// as bytes.
+//
+//   mod headers;
+//   import collections use List;
+//   import http2 use *;
+//
+//   mut enc = HpackEncoder.make(&HpackConfig.make());   // one direction's two ends
+//   mut dec = HpackDecoder.make(HpackConfig.make());
+//   mut fields = List[HeaderField].empty();
+//   fields.push(HeaderField.make(":method", "GET"));
+//   fields.push(HeaderField.secret("x-api-key", "..."));  // never indexed
+//   mut block = List[u8].empty();
+//   enc.encode(fields.view(), &mut block);              // a header block
+//   mut got = List[HeaderField].empty();
+//   match dec.decode(block.view(), &mut got) {          // the same list back
+//     case let Ok(size) { ... got[0usize].name.view() ... }
+//     case let Error(e) { ... e.message() ... e.isConnectionError() ... }
+//   }
+//
+//   HpackConfig.make(): the bounds, each a field to change     (HPACK BOUNDS)
+//   HeaderField.make(name, value)  .secret(name, value)         (FIELDS)
+//     f.name  f.value  f.sensitive  f.size()
+//   listSize(fields)  isSensitiveName(name)
+//   HpackEncoder.make(&cfg)                                     (THE ENCODER)
+//     e.encode(fields, out)  e.startBlock(out)  e.field(name, value, sensitive, out)
+//     e.setPeerTableSize(n)  e.dynamicTable()
+//   HpackDecoder.make(cfg)                                      (THE DECODER)
+//     d.decode(block, out)  d.settingSent()  d.settingAcknowledged()  d.dynamicTable()
+//   HpackError: e.kind  e.detail  e.isConnectionError()  e.message()  (HPACK ERRORS)
+//   HpackErrorKind: Malformed TooLarge Abandoned
+//   DynamicTable.make(maxSize)                                  (TABLES)
+//     t.len() t.size() t.maxSize() t.name(i) t.value(i) t.entrySize(i)
+//     t.setMaxSize(n) t.add(name, value) t.find(name, value)
+//   staticName(i)  staticValue(i)  staticFind(name, value)  TableMatch
+//   staticTableLen  defaultHeaderTableSize  entryOverhead  maxInteger
+//   encodeInteger(out, flags, prefixBits, v)  decodeInteger(src, &pos, prefixBits)  (WIRE)
+//   encodeString(out, s, huffman)  decodeString(src, &pos, limit, out, &why)
+//   encodeIndexed(out, i)  encodeLiteral(out, how, nameIndex, name, value, huffman)
+//   encodeSizeUpdate(out, n)  Indexing: Incremental Without Never
+//   huffmanEncode(s, out)  huffmanEncodedLen(s)  huffmanDecode(src, out, limit)  (HUFFMAN)
+//   HuffmanStatus: Done BadPadding HasEos TooLong  huffmanWhy(status)
+//
+//   import iobuf use IoBuf, Chain;
+//
+//   mut w = FrameWriter.make(&FrameConfig.make());      // frames out...
+//   w.headers(1u32, block.view(), false);               // HEADERS (+ CONTINUATIONs)
+//   w.data(1u32, body, true);                           // the IoBuf moved in, not copied
+//   send(w.take());                                     // a Chain: one gather write
+//   mut r = FrameReader.server(FrameConfig.make());     // ...and in
+//   match r.next(&mut input) {                          // input: a Chain of what arrived
+//     case is NeedData { ... }
+//     case let Got(g) { match g.frame { case let Headers(h) { ... h.block ... } ... } }
+//     case let Failed(f) { ... f.error.code  f.error.isConnectionError() ... }
+//   }
+//
+//   FrameConfig.make(): the bounds, each a field to change       (FRAME BOUNDS)
+//   FrameReader.client(cfg)  FrameReader.server(cfg)              (THE READER)
+//     r.next(input)  r.inFieldBlock()  r.isFailed()
+//   Parsed: NeedData  Got(frame)  Failed(error)
+//   Frame: Data Headers Priority RstStream Settings PushPromise   (FRAMES)
+//     Ping GoAway WindowUpdate
+//   PrioritySpec(exclusive, dependency, weight)  Setting(id, value)
+//   FrameWriter.make(&cfg)                                        (THE WRITER)
+//     w.data(stream, buf, endStream, padding)
+//     w.headers(stream, block, endStream, priority, padding)
+//     w.pushPromise(stream, promised, block, padding)
+//     w.priority(..) w.rstStream(..) w.settings(..) w.settingsAck()  (each: bool)
+//     w.ping(data, ack) w.windowUpdate(stream, increment)
+//     w.goAway(lastStream, code, debug)
+//     w.take()  w.queuedBytes()  w.queuedControlFrames()
+//     w.setPeerMaxFrameSize(n)  w.peerMaxFrameSize()
+//   FrameError: e.code e.scope e.stream e.flowLength e.detail   (FRAME ERRORS)
+//     e.isConnectionError()  e.message()
+//   ErrorCode: NoError ProtocolError ... Http11Required Unknown(v)
+//     c.value()  ErrorCode.of(v)  c.name()
+//   Scope: Stream Connection
+//   FrameHeader(length, kind, flags, stream): .read(b) .peek(chain) h.write(out)  (WIRE)
+//   frameHeaderLen  defaultMaxFrameSize  largestMaxFrameSize  maxWindowSize
+//   maxStreamId  type*  flag*  setting*
+//
+// FIELDS. A HeaderField is a name and a value as bytes, as they travel, and
+// whether it is sensitive. HPACK takes them as given: lowercasing names,
+// checking pseudo-header fields and refusing connection-specific ones is
+// the HTTP/2 layer's (RFC 9113, section 8.2), so an intermediary passes a
+// field on unchanged. A field sent never-indexed (section 6.2.3) arrives
+// with 'sensitive' set, and the encoder sends a sensitive field
+// never-indexed, so the flag survives every hop. The encoder also treats
+// every field named authorization, proxy-authorization or cookie as
+// sensitive, whatever its flag says (section 7.1.3).
+//
+// THE ENCODER. 'encode' writes a whole list as one block. A field whose
+// name and value are an entry of either table is sent as its index; any
+// other as a literal naming the table's entry for the name where there is
+// one, added to the dynamic table (incremental indexing) where it fits, and
+// not added where it is larger than the whole table. A string is
+// Huffman-coded unless that is longer (and 'huffman' is set). The encoder's
+// table follows the peer's SETTINGS_HEADER_TABLE_SIZE, given to
+// 'setPeerTableSize', but never grows past 'encoderTableSize'; when its size
+// changes, the next block begins with the size updates RFC 7541 asks for
+// (section 4.2: the smallest size since the last block, then the final
+// one). A block built a field at a time begins with 'startBlock'.
+//
+// THE DECODER. 'decode' takes a whole header block (the HTTP/2 layer joins
+// a HEADERS frame's fragment to its CONTINUATIONs first, bounding their
+// total) and appends its fields to a list. Its table starts at 4096 bytes,
+// as the peer's encoder assumes until it reads our SETTINGS. The driver
+// tells it two things about our SETTINGS_HEADER_TABLE_SIZE, which is
+// 'headerTableSize': 'settingSent' when it goes out (the peer may raise its
+// table to it from then on) and 'settingAcknowledged' when its ACK arrives
+// (no update may pass it from then on, and a block after a decrease must
+// begin by shrinking the table).
+// It refuses (Malformed) an index of 0 or past the tables' ends; an integer
+// cut off or past maxInteger, or with more continuation bytes than that
+// needs; a string whose length runs past the block's end; a Huffman string
+// with padding longer than 7 bits or not all ones, or holding EOS; a size
+// update after a field, past the allowed size, or missing where one is
+// owed.
+//
+// HPACK BOUNDS (each a field of HpackConfig). 'headerTableSize' (4096) is
+// the decoder's table, which the HTTP/2 layer advertises as
+// SETTINGS_HEADER_TABLE_SIZE; the decoder holds the peer to it once
+// 'settingSent' and 'settingAcknowledged' say the SETTINGS went out and
+// came back. 'encoderTableSize' (4096) is the most the
+// encoder's table takes, however much the peer allows. 'maxHeaderListSize'
+// (16 KiB) is the decoded list's size, counted as SETTINGS_MAX_HEADER_LIST_SIZE
+// counts it (each field's name and value and 32), checked as each field is
+// decoded: past it the block is still decoded to its end, so the table
+// stays in step with the peer's, but no more fields are kept, and the
+// decode fails TooLarge, which ends the one message (a server's 431).
+// 'headerListAbortSize' (64 KiB, four times that, as hyper does) bounds
+// that work: past it decoding stops at once, before the field that would
+// pass it is copied (an indexed field's size is known from the table, a raw
+// string's from its length, a Huffman string's as it decodes), and the
+// decode fails Abandoned. This is the HPACK bomb's answer: a block of
+// one-byte references to one large entry costs a byte each and expands
+// 4 KB each, so expansion, not the block's length, is what is counted.
+//
+// HPACK ERRORS. An HpackError has a kind and one line of detail. Malformed
+// and Abandoned leave the decoder's table out of step with the peer's
+// encoder, so 'isConnectionError' says the connection must end
+// (COMPRESSION_ERROR, RFC 9113 section 4.3), and the decoder refuses every
+// later block; TooLarge leaves it in step, so the connection goes on. On
+// any error the list handed in is as it was.
+//
+// TABLES. The static table is Appendix A's 61 entries; QPACK's (RFC 9204,
+// Appendix A) is a different 99, so what it shares is the shape, not the
+// data. A DynamicTable is a list of entries newest first, its size the sum
+// of their sizes, kept under its maximum by evicting the oldest; an entry
+// larger than the maximum empties it.
+//
+// HUFFMAN. RFC 7541's Appendix B code, encoded and decoded a byte at a
+// time and needing no state between strings (see huffman.cone's header).
+//
+// FRAMES. A Frame is one of nine: the ten types of RFC 9113, section 6,
+// less CONTINUATION, whose fragments the reader joins to the HEADERS or
+// PUSH_PROMISE they continue, so a field block arrives whole, as HPACK's
+// decoder takes it. Each frame is checked as far as the frame alone can
+// be: its length, its stream (0 or not, as its type needs), its padding,
+// its fixed fields, a SETTINGS frame's values. What needs more than the one
+// frame is the connection's: streams' states and ids (an error on a stream
+// still idle is the connection's, section 5.1), the windows (a DATA's
+// 'flowLength', padding and all, is what they count), SETTINGS once sent
+// that may not change, the preface. PRIORITY is parsed and passed on for
+// the connection to ignore (section 5.3.2 deprecates it), and so is a
+// HEADERS frame's priority; a SETTINGS frame's parameters are kept in
+// order, unknown ones too, as section 6.5.3 has them processed (HPACK's
+// encoder must see every SETTINGS_HEADER_TABLE_SIZE, not only the last).
+// An error code the RFC does not define arrives as ErrorCode.Unknown with
+// its value.
+//
+// THE READER. 'next(input)' takes the next frame from a Chain of the bytes
+// that arrived, reading its header across the segments where it lies,
+// consuming its bytes, and gives Got(frame), NeedData (nothing is consumed
+// then), or Failed(error). It waits for a frame's whole payload, so the
+// chain must hold at least frameHeaderLen + maxFrameSize bytes. A DATA
+// frame's data is copied into an IoBuf of its own (an empty IoBuf for
+// none), its padding dropped; every other payload is copied out and parsed
+// there. A frame of unknown type is skipped as its bytes arrive, never
+// held (section 4.1, and between a field block's frames, section 6.10,
+// it is a connection error like any other); unknown flags and the reserved
+// bit are ignored. A stream error leaves the reader going: the frame is
+// consumed, or, refused at its header, skipped as it arrives. A connection
+// error ends it: every later call gives the same error. A client's reader
+// refuses SETTINGS_ENABLE_PUSH 1; a server's refuses PUSH_PROMISE, which a
+// client never sends, and so does a client's unless 'enablePush' is set
+// (server push is not supported above the frames).
+//
+// THE WRITER. A FrameWriter queues frames as the buffers one gather write
+// sends: 'take()' moves them all out as a Chain, in order, which iocore's
+// SendChain sends in one call. A DATA frame's payload is the caller's own
+// IoBuf, moved in whole as a segment of its own after its header, never
+// copied. Frame headers, the payloads the writer builds (control frames)
+// and field blocks (copied in) are packed into shared buffers of the pool's
+// smallest class between them, so N DATA frames make about 2N segments and
+// a run of control frames one. A DATA payload past the peer's
+// SETTINGS_MAX_FRAME_SIZE ('setPeerMaxFrameSize', 16384 until the peer
+// says) is a program error, a panic: the connection sizes DATA to the
+// windows and that. A field block longer than a frame goes on in
+// CONTINUATIONs, back to back. Padding, where asked (1 to 255 bytes), is
+// zeros. A WINDOW_UPDATE increment of 0 or past 2^31-1 is a program error.
+// Its bound, 'maxQueuedControlFrames', assumes the driver takes again only
+// when its last send is done, as one SendChain at a time does: then what
+// the writer holds is what the peer has not let it send.
+//
+// FRAME ERRORS. A FrameError names the code to send, its scope (a stream
+// error is RST_STREAM on that stream, a connection error GOAWAY and close,
+// section 5.4), the frame's stream, and why; 'flowLength' is a refused
+// DATA frame's length, which the connection still counts against its
+// window (section 6.9). Every error RFC 9113 names at the frame's level:
+// - FRAME_SIZE_ERROR (4.2, 6): past maxFrameSize, the stream's for DATA and
+//   unknown types on a stream, the connection's for HEADERS, PUSH_PROMISE,
+//   CONTINUATION, SETTINGS and anything on stream 0; a padded frame with no
+//   room for its pad length (DATA: the stream's; HEADERS, PUSH_PROMISE: the
+//   connection's); HEADERS too short for its priority, PUSH_PROMISE for its
+//   promised stream (the connection's); PRIORITY not 5 bytes (the
+//   stream's); RST_STREAM, WINDOW_UPDATE not 4, PING not 8, GOAWAY under 8,
+//   SETTINGS not a multiple of 6, a SETTINGS ACK not empty (the
+//   connection's).
+// - PROTOCOL_ERROR, the connection's: DATA, HEADERS, PRIORITY, RST_STREAM,
+//   PUSH_PROMISE or CONTINUATION on stream 0; SETTINGS, PING or GOAWAY on a
+//   stream; padding as long as the payload left for it or longer (6.1, 6.2,
+//   6.6); a field block interrupted by any other frame, or a CONTINUATION
+//   on another stream or with no block begun (6.10); a WINDOW_UPDATE of 0
+//   on stream 0; SETTINGS_ENABLE_PUSH not 0 or 1, or 1 to a client;
+//   SETTINGS_MAX_FRAME_SIZE outside 2^14 to 2^24-1;
+//   SETTINGS_ENABLE_CONNECT_PROTOCOL or SETTINGS_NO_RFC7540_PRIORITIES not 0
+//   or 1 (RFC 8441, RFC 9218); PUSH_PROMISE to a server, or to a client
+//   with push off (6.6, 8.4).
+// - PROTOCOL_ERROR, the stream's: a WINDOW_UPDATE of 0 on a stream (6.9);
+//   PRIORITY naming its own stream (5.3.1), and a HEADERS frame doing so,
+//   which is still handed on, its block decoded, with the error in its
+//   'streamError'.
+// - FLOW_CONTROL_ERROR, the connection's: SETTINGS_INITIAL_WINDOW_SIZE past
+//   2^31-1.
+// - ENHANCE_YOUR_CALM, the connection's: a bound below crossed.
+//
+// FRAME BOUNDS (each a field of FrameConfig; the defaults are the research
+// survey's, Question 4). 'maxFrameSize' (16384, the protocol's default) is
+// our SETTINGS_MAX_FRAME_SIZE, 2^14 to 2^24-1. 'maxHeaderBlockSize' (64
+// KiB, HpackConfig's headerListAbortSize: a block longer would decode past
+// it) bounds a field block's frames' payloads together, padding included,
+// checked at each frame's header before its payload is waited for, so the
+// CONTINUATION flood (2024, CERT VU#421644) is refused before
+// anything past the bound is held. 'maxContinuations' (8, nghttp2's) bounds
+// the frames that carry it, zero-byte CONTINUATIONs included (Netty's
+// CVE-2026-33871 let those past its size check). 'maxEmptyFrames' (1,
+// Envoy's and SwiftNIO's) bounds the empty DATA, HEADERS and CONTINUATION
+// frames that end nothing (no END_STREAM), in a row (CVE-2019-9518); a
+// frame of those types with a payload, or ending its stream, starts the
+// count again. 'maxQueuedControlFrames' (10,000: Go's, Netty's, nginx's)
+// bounds the control frames a FrameWriter holds untaken, so the SETTINGS
+// and PING floods (CVE-2019-9515, 9512), whose answers queue while the peer
+// does not read, end the connection instead: each control frame past it is
+// refused, false, and the connection answers with GOAWAY, which is never
+// refused. 'enablePush' (false) is a client's SETTINGS_ENABLE_PUSH. The
+// abuse bounds that need the connection's state are its own: rapid reset
+// (streams reset by the peer, CVE-2023-44487), MadeYouReset (streams we
+// reset), the stream limit and the windows.
+//
+// H2SPEC. h2spec's list for sections 4 to 6, from memory (h2spec was
+// neither run nor fetched: there is no server yet), followed as a
+// checklist; the frame-level cases are tests/frames, frameerrors and
+// framelimits:
+// - 4.1 unknown type, unknown flags, reserved bit: done. 4.2 DATA at
+//   SETTINGS_MAX_FRAME_SIZE, past it (DATA, HEADERS): done. 4.3 header
+//   compression errors: HPACK's (tests/malformed).
+// - 6.1 DATA on stream 0, bad padding: done; on an idle or half-closed
+//   stream: the connection's. 6.2 HEADERS on stream 0, bad padding, a field
+//   block interrupted (PRIORITY, a frame of another stream): done. 6.3
+//   PRIORITY on stream 0, of the wrong length: done. 6.4 RST_STREAM on
+//   stream 0, of the wrong length: done; on an idle stream: the
+//   connection's. 6.5 SETTINGS ACK with a payload, on a stream, of the
+//   wrong length: done. 6.5.2 SETTINGS_ENABLE_PUSH, INITIAL_WINDOW_SIZE,
+//   MAX_FRAME_SIZE out of range: done; an unknown parameter: kept, done.
+//   6.5.3 the ACK in time: the connection's. 6.7 PING on a stream, of the
+//   wrong length, its ACK: parsed, the answer the connection's. 6.8 GOAWAY
+//   on a stream: done. 6.9 WINDOW_UPDATE of 0, of the wrong length: done;
+//   6.9.1-6.9.2 the windows: the connection's. 6.10 CONTINUATION alone,
+//   after END_HEADERS, after DATA, on another stream: done.
+// - 5.1 stream states, 5.1.1 stream ids, 5.1.2 the stream limit, 5.3.1 a
+//   stream depending on itself (PRIORITY and HEADERS: done here), 5.4 error
+//   handling, 5.5 extensions (unknown types: done here), section 3's
+//   preface and section 8's messages: the connection's.
+//
+// MEASURED, release, an i7-13700HX on Windows 11, other builds running
+// beside it (examples/framebench.cone; numbers vary run to run): written,
+// taken as one Chain and read back, in batches of 64, a DATA of 16 KiB 52
+// to 54 ns to write (its buffer moved, not copied) and 191 to 197 ns to
+// read (its data copied out, cache-warm); a HEADERS of a 200-byte block 15
+// ns and 234 to 241 ns; a PING 14 ns and 41 ns.
+//
+// Not here yet: the connection (the next part); a decoder fed a block in
+// pieces as its frames arrive (it takes the block whole); an encoder that
+// leaves an often-changing field (a date, a path with an id) out of its
+// table to save room for fields that repeat; DATA read without a copy (its
+// bytes lie between frame headers in the buffers they arrived in, and a
+// Chain hands out whole segments only); a reader that takes a frame's
+// payload as it arrives instead of waiting for the whole of it; an HPACK
+// encoder writing straight into an IoBuf, so a field block is not copied
+// into the writer's buffers.
+
+mod http2;
+
+pub use hpack;
+pub use huffman;
+pub use frames;

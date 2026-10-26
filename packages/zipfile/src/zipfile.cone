@@ -1,0 +1,171 @@
+// The zipfile package: ZIP archives (PKWARE APPNOTE 6.3.10) read, written and extracted safely. Written
+// in Cone over the deflate package (method 8, and the CRC-32), the zstd package (method 93, reading) and
+// fs (files and folders), with no C library. It is named zipfile, not zip, because a module called zip cannot exist: core has a public
+// function 'zip' (the two-collection walk), and a module may not share a name with what core brings in
+// (Error 1011), while Congo makes a package's module the package's name (Error 1130).
+//
+//   mod unpack;
+//   import stdio use *;
+//   import zipfile;
+//
+//   fn main() i32 {
+//     // 'bytes' is the archive in memory (fs.readFile, or fs.mapFile for one too big to read whole)
+//     match zipfile.Archive.open(bytes) {
+//       case let Ok(ar) {
+//         match ar.readNamed(bytes, "docs/readme.txt") {              // one entry, the others untouched
+//           case let Ok(text) { ... }
+//           case let Error(e) { printStr(e.reason.view()); }
+//         }
+//         imm opts = zipfile.ExtractOptions.safe();
+//         ar.extractAll(bytes, "out", &opts);                         // every name checked first
+//       }
+//       case let Error(e) { printStr(e.reason.view()); return 1i32; }
+//     }
+//     0i32;
+//   }
+//
+// 'examples/tour.cone' writes, lists, reads, streams and extracts; 'examples/bench.cone' times them.
+//
+// WHAT IS HERE
+//
+//   READING          the archive's bytes are the caller's, lent to each call (a value cannot hold a borrow)
+//     Archive.open(data) Result[Archive, ZipError]     reads the end records and the central directory
+//       count(), entry(i) &Entry, find(name) Option[usize], comment, prefix, zip64, entries
+//       read(data, i), readNamed(data, name)           the whole entry, checked: Result[List[u8], ZipError]
+//       reader(data, i) Result[EntryReader, ZipError]  the entry in bounded pieces
+//       extractAll(data, dest, &opts), extractOne(data, i, dest, &opts)   to a folder, safely
+//     EntryReader: pull(data, &mut out, max) Status (MoreOutput, Done, Failed), error(), name(), size(),
+//       delivered(). Like an Inflater's, but the whole input is there, so NeedInput never happens.
+//     Entry: name, rawName, comment, method, flags, crc, compressedSize, size, offset, madeBy,
+//       externalAttrs, dosDate, dosTime, modified, modifiedExact; isDir(), isSymlink(), isEncrypted(),
+//       unixMode(), methodName()
+//   WRITING          entries are added whole; the bytes made come out of 'pull' in pieces of any size
+//     ZipWriter.make(), add(name, data, &opts), addDir(name, &opts), addFile(name, path, &opts),
+//       addTree(root, prefix, &opts), setComment(text), setZip64(always), finish(), pull(&mut out, max)
+//       Status (NeedInput, MoreOutput, Done), bytes() Result[List[u8], ZipError] (finish and take all),
+//       saveTo(path) (finish and write what has not been pulled), count(), isFinished()
+//     EntryOptions: method, level, modified, mode, zip64, comment; plain(), stored(), deflated(level)
+//       (method 93 is not written yet: the writer refuses it, BadArgument; see 'canWrite' in writer.cone)
+//   OPTIONS AND RESULTS
+//     ExtractOptions { overwrite, maxTotal }, safe(); Extracted { files, folders, bytes }
+//   FAILURE          ZipError { kind, offset, reason }, message(), copy(); ErrorKind: NotZip, Truncated,
+//     Corrupt, Unsupported, Encrypted, BadChecksum, BadData, TooLarge, UnsafePath, SymlinkEntry, Exists,
+//     Io, NotFound, BadArgument
+//
+// HOW AN ARCHIVE IS READ
+//
+//   From the end: the end-of-central-directory record is looked for over the last 65535 + 22 bytes, the
+//   one whose comment runs exactly to the end winning (a comment can hold bytes that look like a
+//   record), else the nearest that fits. If a field of it is saturated (0xFFFF, 0xFFFFFFFF) and the
+//   zip64 locator is there, the zip64 end record is read, and so are the zip64 extra fields of the
+//   central records (the fields whose 32-bit places are 0xFFFFFFFF, in the order the format says). Bytes
+//   in front of the archive (a self-extractor) are found by comparing where the directory ends with
+//   where its offset says it starts; every offset is then counted past them ('Archive.prefix').
+//   Only the central directory is read to open; an entry's data is touched only when it is read.
+//   An archive in several disks is refused (Unsupported).
+//   The central directory is the authority for sizes, CRC-32 and method. An entry's local header must
+//   agree with it on the method and the name (as Python's zipfile requires of the name; two readers
+//   disagreeing about what an archive says is how archives are made to hide things), and locates the
+//   data past its own name and extra field. Its sizes are not compared (a data descriptor may hold the
+//   real ones). When flag bit 3 is set, the data descriptor after the data is read in any of its four
+//   shapes (with or without the signature, 4 or 8 bytes a size) and must say what the central directory
+//   says; one that cannot be read at all is not held against the entry.
+//   Every read checks the entry's size and CRC-32 at its end, and bounds the output by the size the
+//   central directory declares (a deflate stream that goes past it fails TooLarge before the memory is
+//   used, whatever the stream's expansion). Every length and offset is checked against the archive's
+//   size before it is used, in 64 bits, so a hostile archive can be refused but not run off the end;
+//   tests/refuse.cone cuts an archive at every length and flips bits in two archives.
+//   Encrypted entries (flag bit 0 or 6, or the AES method 99) and methods other than stored, deflate
+//   and zstd are listed, and refused on reading with Encrypted or Unsupported and a reason that says so.
+//   METHOD 93 (zstd) is read through package zstd's Decompressor, fed the entry's bytes 64 KiB at a time,
+//   and a whole-entry read goes through the same streamed read, so the two cannot disagree. The zstd
+//   package's limits apply to it unchanged: the output may not pass the entry's declared size
+//   (TooLarge, as deflate's), and a frame whose header asks for a window past the zstd package's default
+//   (128 MiB) is refused before any of it is decoded (TooLarge), so an archive cannot make a reader
+//   allocate by declaring a window. A zstd frame's own content checksum, when it has one, fails as
+//   BadChecksum, as does the entry's CRC-32 for any method; a stream that is cut, damaged or followed by
+//   bytes that are not a frame is BadData. Several frames in a row, and skippable frames between them,
+//   are read as 'zstd -d' reads them; an empty entry may be an empty zstd frame (what zstd tools write)
+//   or no bytes at all. A frame that names a dictionary is Unsupported (a zip entry has none to name).
+//
+// NAMES AND TIMES
+//
+//   An entry's name is the stored bytes if they are valid UTF-8 (ASCII included, with or without flag bit
+//   11), else the bytes read as code page 437, the format's default; 'rawName' keeps the bytes. The
+//   Info-ZIP Unicode Path field is used when its CRC-32 matches the header's name. A '\' in a name is
+//   kept (Windows PowerShell 5.1's Compress-Archive writes 'dir\file.txt'); 'find' tries the name with its
+//   '/' written '\' when the exact name is not there, and extraction takes '\' for a separator.
+//   Of two entries with one name, 'find' answers the later (as Python's zipfile does).
+//   'modified' is seconds since 1970: exact UTC from the extended timestamp field when the entry has one
+//   ('modifiedExact'), else the DOS date and time read as if they were UTC (they are local time of an
+//   unrecorded zone, to two seconds, 1980 on; a zero or impossible field is the nearest real one).
+//
+// HOW AN ARCHIVE IS WRITTEN
+//
+//   Each entry is written when added, whole: local header, then data, with the sizes and CRC-32 known, so
+//   no data descriptor is written and nothing is patched. 'pull' hands out what has been made and drops
+//   it, so an archive of many files can be written to a file or socket holding one entry and the central
+//   directory (about 60 bytes an entry) at a time. Left out: adding an entry's data in pieces (a
+//   streaming Deflater cannot fall back to storing, and a local header written first cannot say whether
+//   the sizes need zip64).
+//   Method 8 uses deflate's levels 0 to 2; a deflated entry that does not come out smaller is stored
+//   instead, as are folders and empty files. A name that is not ASCII is written as UTF-8 with flag
+//   bit 11 (an entry comment too); the Unix mode goes in the high half of the external attributes with
+//   the host system 3, and an extended timestamp field carries a time given in 'modified' exactly (the
+//   DOS fields hold it to 2 seconds, clamped to 1980 through 2107). A name already added is refused
+//   (BadArgument), as is an empty one, one over 65535 bytes, and any method but 0 and 8. A name
+//   extraction would refuse is written all the same (the writer is how the tests make hostile archives).
+//   zip64 is written where something needs it: an entry of 4 GiB or more, an offset of 4 GiB or more, 65535
+//   entries or more, a directory of 4 GiB or more, and for an entry whose options say 'zip64' (its local
+//   header and central record then carry a zip64 field). 'setZip64(true)' writes it everywhere, with
+//   every field of the end record saturated, which is how the readers of zip64 are tested; the zip64
+//   archives the tests make were also read back by Python's zipfile, Info-ZIP's unzip -t and Windows'
+//   tar (bsdtar).
+//
+// EXTRACTING SAFELY (extract.cone has the whole rule)
+//
+//   An archive is data from someone else and an entry's name is a path it chooses ("zip slip"). So
+//   every entry is checked before the first byte is written, and one that fails ends the extraction
+//   with nothing made: a name that is empty, holds a NUL, is absolute ('/x', '\x'), starts with a drive
+//   letter ('C:x'), or has a '..' component (any, even one that stays inside: 'a/../b' is refused) is
+//   UnsafePath; a '\' is a separator, so '..\x' is a '..' component; a symbolic-link entry (Unix mode type
+//   0120000) is SymlinkEntry and never made; an encrypted entry or an unread method is refused. On Windows a name with
+//   a character it cannot hold (< > : " | ? * or a control), a trailing space or dot, or a device name
+//   (CON, NUL, COM1 and so on) is refused too; other systems take those names. A file already there is
+//   Exists unless 'overwrite'; a folder in a file's way always is; two entries for one file are Exists
+//   unless 'overwrite' (the later wins). A folder on a name's way, or the file itself, that is a link
+//   (a link the archive did not make) is refused, because it could lead anywhere: this is checked by
+//   listing the folder, since fs has no lstat, so a link that leads nowhere is not seen. 'maxTotal'
+//   bounds the sum of the declared sizes. An entry that fails half way (a bad CRC-32, data that does not
+//   inflate) removes its file; the files before it stay. Files are written a megabyte at a time.
+//   Not restored: permissions (the execute bit is lost), times, owners; fs can set none of them.
+//
+// SPEED. Informative, on a loaded 13th-gen Core i7-13700HX, release build, examples/bench.cone: 200
+// files of 1 MB (three quarters text that deflates about 8 to 1, a quarter noise that does not):
+// whole-entry reads about 150 MB/s of data, streaming reads in 64 KiB pulls about 120 MB/s,
+// extraction to disk about 90 MB/s. deflate's own inflate runs at 200 to 400 MB/s; what this adds is a
+// byte-at-a-time copy into the caller's list (a List has no bulk append) and the CRC-32. Not chased.
+//
+// NOT HERE: encryption (ZipCrypto, AES) and signatures; methods 9 (Deflate64), 12 (bzip2), 14 (LZMA),
+// 95 (xz), 98 (PPMd); WRITING method 93 (zstd), which waits for package zstd's compressor (reading it is
+// here); zstd dictionaries; archives in several disks; zip64 extensible data and the
+// central-directory encryption of strong encryption; entries written in pieces; setting permissions or
+// times on extracted files; updating an archive in place (read it, write another).
+//
+// Its files are one module, and only this one, the root, imports:
+//
+//   zipfile.cone     this overview
+//   types.cone       Status, ErrorKind, ZipError, Entry, ExtractOptions, Extracted, EntryOptions
+//   bytes.cone       little-endian fields, names (UTF-8 check, code page 437), the DOS clock
+//   archive.cone     Archive: the end records, zip64, the central directory
+//   reader.cone      locating an entry's data, EntryReader, whole-entry reads, data descriptors
+//   extract.cone     the safety rules and the writing of files
+//   writer.cone      ZipWriter
+
+mod zipfile;
+
+import collections use *;
+import deflate;
+import fs;
+import path use Path;
+import zstd;

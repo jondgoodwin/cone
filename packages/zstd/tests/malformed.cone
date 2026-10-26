@@ -1,0 +1,252 @@
+// Streams that are not valid must be refused, with the right kind of reason,
+// and never crash, hang or read out of bounds. tests/data/malformed.bin
+// (make_handmade.py) holds 46, each with one fault: a bad magic number,
+// garbage after a frame, a reserved bit, a window over the limit, a
+// dictionary ID, a reserved block type, blocks over the block maximum,
+// literals headers and jump tables that do not fit, Huffman weights that make
+// no code, treeless literals with no tree, streams with bits left over or too
+// few, sequence headers with reserved bits, FSE descriptions with too large an
+// accuracy log, too many symbols or cut short, an RLE code out of range, a
+// repeated table with none before it, literal lengths past the literals,
+// offsets before the start, past the window and a repeat offset of 0, a block
+// that decodes past its maximum, a wrong checksum, content sizes that do not
+// match, and cuts at every kind of place. (The reference refused every one
+// of them but the offset one past the window, which RFC 8878 makes invalid.)
+// Every stream is also fed split at EVERY offset in two pieces, and must be
+// refused the same way.
+//
+// Then: every proper prefix of some valid frames is Truncated; the output
+// limit (TooLarge, from a header's content size or from the content) and the
+// window limit (WindowTooLarge) refuse what passes them; a failed
+// Decompressor stays failed with the same reason.
+
+mod malformed;
+
+import testing use *;
+import collections use *;
+import zstd use *;
+import fs;
+import path use Path;
+
+fn le32(s: &String, at: usize) usize {
+  usize.from(s[at]) + usize.from(s[at + 1usize]) * 256usize + usize.from(s[at + 2usize]) * 65536usize + usize.from(s[at + 3usize]) * 16777216usize
+}
+
+fn kindNumber(k: ErrorKind) i32 {
+  if k == ErrorKind.BadHeader { return 1; }
+  if k == ErrorKind.WindowTooLarge { return 2; }
+  if k == ErrorKind.NeedsDictionary { return 3; }
+  if k == ErrorKind.BadBlock { return 4; }
+  if k == ErrorKind.BadTable { return 5; }
+  if k == ErrorKind.BadSequence { return 6; }
+  if k == ErrorKind.BadOffset { return 7; }
+  if k == ErrorKind.Truncated { return 8; }
+  if k == ErrorKind.BadChecksum { return 9; }
+  10
+}
+
+fn kindOf(d: &Decompressor) i32 {
+  match d.error() {
+    case let Some(e) { kindNumber(e.kind) }
+    else { 200 }
+  }
+}
+
+// Feed s[0, split) then s[split, end) (the second is skipped when split is
+// the end), finish, and pull to the end. 0 decoded to the end; 1 to 10 failed
+// with that kind (the ErrorKind's place); 100 stuck waiting for input that was
+// all given; 101 a failed Decompressor that did not stay failed the same way.
+fn outcome(s: &Array[u8], split: usize, limit: u64, maxWindow: u64) i32 {
+  var d = Decompressor.make();
+  d.setLimit(limit);
+  d.setMaxWindow(maxWindow);
+  var piece = List[u8].empty();
+  var st: Status = Status.NeedInput;
+  if split > 0usize {
+    d.feed(&s[0usize..<split]);
+    st = Status.MoreOutput;
+    while st == Status.MoreOutput { piece.clear(); st = d.pull(&mut piece, 4096usize); }
+    if st == Status.Failed { return kindOf(&d); }
+  }
+  if split < s.len { d.feed(&s[split..<s.len]); }
+  d.finish();
+  st = Status.MoreOutput;
+  while st == Status.MoreOutput { piece.clear(); st = d.pull(&mut piece, 4096usize); }
+  if st == Status.Failed {
+    let k = kindOf(&d);
+    // a failed decompressor stays failed, with the same reason
+    let again = d.pull(&mut piece, 10usize);
+    if again != Status.Failed || kindOf(&d) != k { return 101; }
+    return k;
+  }
+  if st == Status.Done { return 0; }
+  100
+}
+
+fn oneShot(s: &Array[u8]) i32 {
+  match decompress(s, 0usize) {
+    case let Ok(got) { 0 }
+    case let Error(e) { kindNumber(e.kind) }
+  }
+}
+
+fn main() i32 {
+  match fs.readFile(&Path.from("../../../../tests/data/malformed.bin")) {
+    case let Ok(file) { checkMalformed(&file); }
+    case let Error(e) { expect(false, "malformed.bin is there"); }
+  }
+  match fs.readFile(&Path.from("../../../../tests/data/handmade.bin")) {
+    case let Ok(file) { checkPrefixes(&file); }
+    case let Error(e) { expect(false, "handmade.bin is there"); }
+  }
+  checkLimits();
+  done()
+}
+
+fn checkMalformed(file: &String) {
+  let count = le32(file, 0usize);
+  expectInt(i64.from(count), 46i64, "cases in the file");
+  var at = 4usize;
+  var r = 0usize;
+  var wrong = String.empty();
+  var splits = 0usize;
+  while r < count {
+    let nameLen = usize.from(file[at]);
+    let name = file.sub(at + 1usize, at + 1usize + nameLen);
+    at += 1usize + nameLen;
+    let want = i32.from(file[at]);
+    let flen = le32(file, at + 1usize);
+    let s = &file.view().bytes()[at + 5usize..<at + 5usize + flen];
+    at += 5usize + flen;
+    let whole = outcome(s, s.len, 1073741824u64, 134217728u64);
+    // The one-call helpers keep the whole output, so a window is no memory
+    // bound there and is not refused (a raw block decodes under any window)
+    let one = oneShot(s);
+    let wantOne = if want == 2 {0} else {want};
+    if whole != want || one != wantOne {
+      wrong <- name.view();
+      wrong <- " (got ";
+      wrong <- i64.from(whole);
+      wrong <- ") ";
+    }
+    var split = 0usize;
+    var bad = 0usize;
+    while split <= s.len {
+      if outcome(s, split, 1073741824u64, 134217728u64) != want { bad += 1usize; }
+      splits += 1usize;
+      split += 1usize;
+    }
+    if bad > 0usize {
+      wrong <- name.view();
+      wrong <- " (split) ";
+    }
+    r += 1usize;
+  }
+  expectStr(wrong.view(), "", "malformed cases refused wrongly");
+  // the cases' bytes and one more each: every offset from 0 to the end
+  expectInt(i64.from(splits), 7437i64, "splits tried");
+}
+
+// Every proper prefix of a one-frame stream is cut off: Truncated, wherever
+// the cut falls (a magic number, a header, a block, a checksum)
+fn checkPrefixes(file: &String) {
+  let count = le32(file, 0usize);
+  var at = 4usize;
+  var r = 0usize;
+  var tried = 0usize;
+  var wrong = String.empty();
+  while r < count {
+    let nameLen = usize.from(file[at]);
+    let name = file.sub(at + 1usize, at + 1usize + nameLen);
+    at += 2usize + nameLen;
+    let flen = le32(file, at);
+    let s = &file.view().bytes()[at + 4usize..<at + 4usize + flen];
+    at += 4usize + flen;
+    at += 16usize + le32(file, at + 12usize);
+    let pick = name.equals("predefined-seqs") || name.equals("huffman-rfc-example-4streams")
+      || name.equals("fse-then-repeat") || name.equals("raw-blocks") || name.equals("huffman-treeless")
+      || name.equals("window-edge") || name.equals("rle-lits-3byte-4100");
+    if pick {
+      var n = 1usize;
+      while n < s.len {
+        tried += 1usize;
+        let k = outcome(&s[0usize..<n], n, 1073741824u64, 134217728u64);
+        if k != 8 || oneShot(&s[0usize..<n]) != 8 {
+          wrong <- name.view();
+          wrong <- " cut at ";
+          wrong <- i64.from(n);
+          wrong <- "; ";
+          n = s.len;
+        }
+        n += 1usize;
+      }
+    }
+    r += 1usize;
+  }
+  expectStr(wrong.view(), "", "prefixes not refused as Truncated");
+  expect(tried > 5000usize, "prefixes tried");
+}
+
+// A frame: a header with no content size (or with one), a window of 1 KiB, raw blocks of the given bytes
+fn rawFrame(content: &Array[u8], declare: bool) List[u8] {
+  var f = List[u8].empty();
+  f.push(0x28u8); f.push(0xB5u8); f.push(0x2Fu8); f.push(0xFDu8);
+  if declare {
+    f.push(0x80u8);                 // a 4-byte content size
+    f.push(0x00u8);                 // window 1 KiB
+    var k = 0usize;
+    while k < 4usize { f.push(u8.from((content.len >> (8usize * k)) & 255usize)); k += 1usize; }
+  } else {
+    f.push(0x00u8);
+    f.push(0x00u8);
+  }
+  var p = 0usize;
+  while p < content.len {
+    let n = if content.len - p < 1024usize {content.len - p} else {1024usize};
+    let last = if p + n == content.len {1usize} else {0usize};
+    let h = last | (n << 3usize);
+    f.push(u8.from(h & 255usize)); f.push(u8.from((h >> 8usize) & 255usize)); f.push(u8.from(h >> 16usize));
+    var k = 0usize;
+    while k < n { f.push(content[p + k]); k += 1usize; }
+    p += n;
+  }
+  f
+}
+
+fn checkLimits() {
+  var content = List[u8].empty();
+  var i = 0usize;
+  while i < 5000usize { content.push(u8.from(i % 251usize)); i += 1usize; }
+  let undeclared = rawFrame(content.view(), false);
+  let declared = rawFrame(content.view(), true);
+  // The limit: refused once passed (from the content), or at once (from the header)
+  expectInt(i64.from(outcome(undeclared.view(), undeclared.len(), 5000u64, 134217728u64)), 0i64, "at the limit");
+  expectInt(i64.from(outcome(undeclared.view(), undeclared.len(), 4999u64, 134217728u64)), 10i64, "past the limit");
+  expectInt(i64.from(outcome(declared.view(), declared.len(), 4999u64, 134217728u64)), 10i64, "a header past the limit");
+  var d = Decompressor.make();
+  d.setLimit(4999u64);
+  d.feed(&declared.view()[0usize..<10usize]);
+  var piece = List[u8].empty();
+  expect(d.pull(&mut piece, 100usize) == Status.Failed && piece.len() == 0usize, "refused at the header, before any output");
+  // The one-call 'expected' is the limit too
+  match decompress(undeclared.view(), 4000usize) {
+    case let Ok(got) { expect(false, "expected 4000 refuses 5000"); }
+    case let Error(e) { expectInt(i64.from(kindNumber(e.kind)), 10i64, "expected 4000 refuses 5000"); }
+  }
+  // The window limit: a 1 KiB window refused by a limit of 1023, taken by 1024
+  expectInt(i64.from(outcome(undeclared.view(), undeclared.len(), 1073741824u64, 1023u64)), 2i64, "window over maxWindow");
+  expectInt(i64.from(outcome(undeclared.view(), undeclared.len(), 1073741824u64, 1024u64)), 0i64, "window at maxWindow");
+  // The reason says what was refused and how to allow it
+  var w = Decompressor.make();
+  w.setMaxWindow(1000u64);
+  w.feed(undeclared.view());
+  w.finish();
+  expect(w.pull(&mut piece, 100usize) == Status.Failed, "window refused");
+  match w.error() {
+    case let Some(e) {
+      expectStr(e.reason.view(), "zstd: the frame's window is 1024 bytes, more than the largest allowed (1000 bytes; setMaxWindow raises it)", "the window refusal's reason");
+      expectUInt(e.offset, 4u64, "the window refusal's offset: the header's start");
+    }
+    else { expect(false, "an error"); }
+  }
+}

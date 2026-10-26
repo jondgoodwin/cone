@@ -1,0 +1,213 @@
+// ======== Status, failure, entries and options ========
+
+// What a 'pull' found. For an EntryReader and a ZipWriter alike.
+pub enum Status {
+  // A ZipWriter: everything written so far has been pulled; add another entry, or 'finish'
+  NeedInput;
+  // The limit of this pull was reached; more is ready, pull again
+  MoreOutput;
+  // The entry (or the archive being written) is complete, every byte delivered
+  Done;
+  // An EntryReader only: the entry's data is not good; 'error()' says why
+  Failed;
+}
+
+// What kind of thing went wrong
+pub enum ErrorKind {
+  // No end-of-central-directory record: these bytes are not a zip file
+  NotZip;
+  // The archive ends before a record or an entry's data does
+  Truncated;
+  // A record is not what the format says, or two records disagree
+  Corrupt;
+  // The archive is well formed but asks for something this package does not do: more than one
+  // disk, or a compression method other than stored (0), deflate (8) and zstd (93, read only)
+  Unsupported;
+  // The entry is encrypted (traditional or AES): refused, never decrypted
+  Encrypted;
+  // The entry's CRC-32 or size does not match its data
+  BadChecksum;
+  // The compressed data does not inflate (or decompress, for zstd)
+  BadData;
+  // More data than the entry's declared size, or than a limit allows (a zstd frame asking for a window
+  // past the zstd package's default limit is this too)
+  TooLarge;
+  // An entry's name would reach outside the folder it is extracted into (absolute, drive letter,
+  // '..', or through a link), or is not a name a file can have
+  UnsafePath;
+  // The entry is a symbolic link: never extracted
+  SymlinkEntry;
+  // A file or folder is already where an entry would go (and 'overwrite' is not set)
+  Exists;
+  // The file system refused (the reason carries the system's own words)
+  Io;
+  // No entry has that name
+  NotFound;
+  // The caller asked for something that cannot be written: a name too long, a duplicate name, and so on
+  BadArgument;
+}
+
+// Why an operation failed: what kind, where in the archive (a byte offset, 0 if none applies), and a
+// sentence that names the entry where there is one.
+pub struct ZipError {
+  pub kind: ErrorKind;
+  pub offset: u64;
+  pub reason: String;
+
+  pub fn make(kind: ErrorKind, offset: u64, reason: &str) ZipError {
+    ZipError(kind, offset, String.from(reason))
+  }
+
+  // The reason, as one line for a person
+  pub fn message(self: &) String { reason.copy() }
+
+  pub fn copy(self: &) ZipError {
+    ZipError(kind, offset, reason.copy())
+  }
+}
+
+fn refusal[T](kind: ErrorKind, offset: u64, reason: &str) Result[T, ZipError] {
+  Error[T, ZipError](ZipError.make(kind, offset, reason))
+}
+
+// A reason made of a sentence, an entry's name and a second sentence
+fn about(first: &str, name: &str, rest: &str) String {
+  var s = String.from(first);
+  s.append(" '");
+  s.append(name);
+  s.append("' ");
+  s.append(rest);
+  s
+}
+
+// The compression methods (APPNOTE 4.4.5) this package reads and writes, by number
+pub fn methodStored() u16 { 0u16 }
+pub fn methodDeflate() u16 { 8u16 }
+pub fn methodZstd() u16 { 93u16 }
+
+// One entry of an archive, as its central directory record describes it. Made by 'Archive.open'.
+pub struct Entry {
+  // The name as UTF-8 text: the stored bytes if they are UTF-8 (flag bit 11, or not), else read as
+  // code page 437, the format's own default. '/' separates folders; a stored '\' is kept.
+  pub name: String;
+  // The name's bytes exactly as stored
+  pub rawName: List[u8];
+  pub comment: String;
+  // 0 stored, 8 deflate, 93 zstd; others are listed but never read
+  pub method: u16;
+  // General-purpose flag bits: 0 encrypted, 3 data descriptor, 11 UTF-8 name
+  pub flags: u16;
+  // CRC-32 of the uncompressed data
+  pub crc: u32;
+  pub compressedSize: u64;
+  pub size: u64;
+  // Where the entry's local header starts in the archive bytes (a prefix before the archive is counted)
+  pub offset: u64;
+  // 'Version made by': the high byte is the host system (3 Unix, 0 DOS/FAT, 10 NTFS)
+  pub madeBy: u16;
+  pub externalAttrs: u32;
+  // The modification time as the DOS date and time fields hold it (local time, 2 s steps, 1980 on)
+  pub dosDate: u16;
+  pub dosTime: u16;
+  // The modification time in seconds since 1970: exact UTC when the entry has an extended timestamp
+  // field ('modifiedExact'), else the DOS fields read as if they were UTC
+  pub modified: i64;
+  pub modifiedExact: bool;
+
+  // The method's name for a message: 'stored', 'deflate', 'bzip2', ... or 'method 77'
+  pub fn methodName(self: &) String {
+    let m = method;
+    var s = String.empty();
+    if m == 0u16 { s.append("stored"); }
+    else if m == 8u16 { s.append("deflate"); }
+    else if m == 9u16 { s.append("deflate64"); }
+    else if m == 12u16 { s.append("bzip2"); }
+    else if m == 14u16 { s.append("lzma"); }
+    else if m == 93u16 { s.append("zstd"); }
+    else if m == 95u16 { s.append("xz"); }
+    else if m == 98u16 { s.append("ppmd"); }
+    else if m == 99u16 { s.append("aes"); }
+    else { s.append("method "); s.appendUInt(u64.from(m)); }
+    s
+  }
+
+  // A folder: its name ends in '/' (or '\')
+  pub fn isDir(self: &) bool {
+    rawName.len() > 0usize && (*rawName[rawName.len() - 1usize] == '/' || *rawName[rawName.len() - 1usize] == '\\')
+  }
+
+  // Encrypted: flag bit 0 (traditional or AES), strong encryption (bit 6), or the AES method 99
+  pub fn isEncrypted(self: &) bool {
+    (flags & 0x0041u16) != 0u16 || method == 99u16
+  }
+
+  // The Unix mode (type and permission bits) the entry's maker recorded, or 0 if it came from a system
+  // that does not record one
+  pub fn unixMode(self: &) u32 {
+    if (madeBy >> 8u16) == 3u16 { externalAttrs >> 16u32 } else { 0u32 }
+  }
+
+  // A symbolic link: Unix mode type 0120000
+  pub fn isSymlink(self: &) bool {
+    (self.unixMode() & 0xF000u32) == 0xA000u32
+  }
+
+  pub fn copy(self: &) Entry {
+    Entry(name.copy(), copyBytes(rawName.view()), comment.copy(), method, flags, crc, compressedSize, size, offset,
+      madeBy, externalAttrs, dosDate, dosTime, modified, modifiedExact)
+  }
+}
+
+fn copyBytes(a: &Array[u8]) List[u8] {
+  var out = List[u8].withCapacity(a.len);
+  var i = 0usize;
+  while i < a.len { out.push(a[i]); i += 1usize; }
+  out
+}
+
+// What to do while extracting
+pub struct ExtractOptions {
+  // Replace a file that is already there. Off: it is an Exists failure, before anything is written.
+  pub overwrite: bool;
+  // The most bytes all the entries may declare between them, 0 for no limit. Checked before anything
+  // is written.
+  pub maxTotal: u64;
+
+  // Refuse to replace, no limit
+  pub fn safe() ExtractOptions { ExtractOptions(false, 0u64) }
+}
+
+// What an extraction did
+pub struct Extracted {
+  pub files: usize;
+  pub folders: usize;
+  pub bytes: u64;
+}
+
+// How an entry is written
+pub struct EntryOptions {
+  // 0 stored, 8 deflate (a deflated entry that does not get smaller is stored instead)
+  pub method: u16;
+  // The deflate package's level: 0, 1 or 2
+  pub level: i32;
+  // Modification time, seconds since 1970 UTC; 0 writes 1980-01-01 00:00
+  pub modified: i64;
+  // Unix permission bits (0o644 is 420); 0 chooses 420 for a file and 493 (0o755) for a folder
+  pub mode: u32;
+  // Write zip64 fields for this entry even though its sizes are small
+  pub zip64: bool;
+  pub comment: String;
+
+  // Deflate at level 2, the default time and mode
+  pub fn plain() EntryOptions {
+    EntryOptions(8u16, 2i32, 0i64, 0u32, false, String.empty())
+  }
+
+  pub fn stored() EntryOptions {
+    EntryOptions(0u16, 0i32, 0i64, 0u32, false, String.empty())
+  }
+
+  pub fn deflated(level: i32) EntryOptions {
+    EntryOptions(8u16, level, 0i64, 0u32, false, String.empty())
+  }
+}

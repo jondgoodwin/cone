@@ -66,7 +66,23 @@
 // goes down into a linked folder, and 'removeAll' removes a link itself,
 // never what it leads to. On Windows a link is any reparse point: a
 // symbolic link or a directory junction, and also some cloud-storage
-// placeholders, which are then left whole.
+// placeholders, which are then left whole. 'lstat' is 'stat' without
+// following, and 'isLink(path)' asks the one question, both through the posix
+// package's 'lstat': on Windows the C runtime's '_findfirst64' (over
+// FindFirstFile) reading the reparse-point attribute, the very test a
+// listing's 'isLink' makes, so 'isLink' and a listing always agree (the
+// reparse tag, which would tell a symbolic link from a junction from a
+// placeholder, is not read, because this package calls all of them links);
+// on Linux the C library's 'lstat'.
+//
+// **Permissions and times.** 'chmod(path, mode)' sets POSIX permission bits
+// (Linux: 'chmod'). Windows has only a read-only attribute, so there 'chmod'
+// reads the owner's write bit alone (0o200): set makes the file writable,
+// clear makes it read-only (the C runtime's '_chmod'), and the other bits are
+// ignored. 'utime(path, accessed, modified)' sets the two times (Linux:
+// 'utimensat', nanoseconds kept; Windows: 'SetFileTime' on a handle opened to
+// write attributes only, 100 ns kept), as Timestamps of the time package.
+// Both follow a link, as POSIX's do.
 //
 // **Mapped files.** 'mapFile(path)' maps a whole file for reading and answers a
 // 'MappedFile': one owner, moved, whose 'view()' is the file's bytes in place
@@ -125,7 +141,10 @@
 // posix package maps those names onto the Windows C runtime, and its
 // 'opendir', 'readdir' and 'lstat' are written over the runtime's
 // '_findfirst64'. The 'path' rules it relies on are the system's own (drive
-// letters, shares and '\' on Windows). Where Windows behaves differently from
+// letters, shares and '\' on Windows). 'chmod' and 'utime' are the exceptions
+// beside 'mapFile': they call '_chmod' (the runtime's) and 'utimensat' on Linux,
+// and 'utime' kernel32 ('CreateFileW', 'SetFileTime') on Windows, converting
+// the name to UTF-16 itself. Where Windows behaves differently from
 // POSIX it is said beside the function: 'rename' replaces an existing file on
 // POSIX and is refused on Windows, a name is one name whatever its ASCII case
 // on Windows only, and 'modified' (a time.Timestamp) is in whole seconds on
@@ -289,6 +308,36 @@ pub fn isDir(path: &Path) bool { kindOf(path) == posix.S_IFDIR }
 // Whether a regular file has that name
 pub fn isFile(path: &Path) bool { kindOf(path) == posix.S_IFREG }
 
+// The size, time and kind of what a path names, NOT following a link: a link
+// is described itself. A link is neither a folder nor a file here ('isDir' and
+// 'isFile' false), as in a listing; its 'size' is the system's (on Windows 0)
+// and its 'modified' its own. Anything that is not a link answers as 'stat'
+// does. A path nothing has is refused (ENOENT). This sees a link whose target
+// is gone, which 'stat' refuses.
+pub fn lstat(path: &Path) Result[FileInfo, FsError] {
+  if hasNul(path) { return fail[FileInfo]("lstat", path, posix.EINVAL); }
+  useUtf8();
+  var c = cText(path);
+  var st = emptyStat();
+  if posix.lstat(c.cstr(), &mut st) != 0i32 { return fail[FileInfo]("lstat", path, lastErrno()); }
+  let kind = st.st_mode & posix.S_IFMT;
+  Ok[FileInfo, FsError](FileInfo(st.st_size, time.Timestamp.fromUnixSeconds(st.st_mtime),
+    kind == posix.S_IFDIR, kind == posix.S_IFREG))
+}
+
+// Whether the name itself is a link, a link whose target is gone as well as one
+// that leads somewhere (on POSIX 'exists' and 'isDir' follow the first and say
+// false; the Windows runtime's 'stat' answers for a junction whose folder is
+// gone as for the junction itself, so they say true). On POSIX a symbolic link;
+// on Windows any reparse point (a symbolic link, a directory junction, a
+// cloud-storage placeholder), the same test a listing's 'isLink' makes, so the
+// two always agree. False for anything it cannot see.
+pub fn isLink(path: &Path) bool {
+  if hasNul(path) { return false; }
+  useUtf8();
+  linkKindOf(path) == posix.S_IFLNK
+}
+
 // -------- whole files --------
 
 // The error number for a file that would not open: Windows answers EACCES
@@ -346,6 +395,128 @@ pub fn writeFile(path: &Path, data: &Array[u8]) Result[void, FsError] {
 // Add data to the end of the file, making it if it is not there
 pub fn appendFile(path: &Path, data: &Array[u8]) Result[void, FsError] {
   writeWith("appendFile", path, data, "ab")
+}
+
+// -------- modes and times --------
+
+extern {
+  // Windows: the C runtime's, and kernel32's (on every link line)
+  fn @c _chmod(path: cstr, mode: i32) i32;
+  fn @c(system) MultiByteToWideChar(page: u32, flags: u32, from: *u8, fromLen: i32, to: *u16, toLen: i32) i32;
+  fn @c(system) CreateFileW(name: *u16, access: u32, share: u32, sa: *u8, disposition: u32,
+    flags: u32, template: usize) usize;
+  fn @c(system) SetFileTime(h: usize, created: *i64, accessed: &i64, written: &i64) i32;
+  // Linux: the C library's
+  fn @c("chmod") posixChmod(path: cstr, mode: u32) i32;
+  fn @c utimensat(dirfd: i32, path: cstr, times: *i64, flags: i32) i32;
+}
+
+const modeBits = 0xFFFu32;          // the permission bits and setuid, setgid, sticky
+const ownerWrite = 0x80u32;         // 0o200, S_IWUSR; also Windows' _S_IWRITE
+const winReadable = 0x100i32;       // _S_IREAD
+const winWritable = 0x180i32;       // _S_IREAD | _S_IWRITE
+const atFdCwd = -100i32;            // AT_FDCWD
+const utf8CodePage = 65001u32;      // CP_UTF8
+const invalidUtf8Fails = 8u32;      // MB_ERR_INVALID_CHARS
+const fileWriteAttributes = 0x100u32;
+const shareAll = 7u32;              // FILE_SHARE_READ | WRITE | DELETE
+const openExisting = 3u32;
+const backupSemantics = 0x02000000u32;   // lets a folder be opened
+const invalidHandle = 0xFFFFFFFFFFFFFFFFusize;
+const ticksPerSecond = 10000000i64;      // FILETIME counts 100 ns
+const secondsTo1970 = 11644473600i64;    // from 1601-01-01, FILETIME's origin, to 1970
+
+// Set what a path names' permission bits, following a link to its target.
+// 'mode' is POSIX's: the nine permission bits (0o755 is 0x1ED) and, on POSIX,
+// setuid, setgid and sticky above them; any bit above those is ignored.
+//
+// Windows has no permission bits, only a read-only attribute, and this does not
+// pretend otherwise: the one bit it reads is the owner's write bit (0o200, 0x80).
+// Set, the file is made writable; clear, it is made read-only. Every other bit
+// of 'mode' is accepted and ignored there, so 'chmod(p, 0o644)' and
+// 'chmod(p, 0o666)' do the same, and a program that wants a file read-only everywhere
+// clears the three write bits (0o444). A file made read-only is then refused
+// by 'writeFile' (EACCES). There is no reader of the bits in this package
+// ('FileInfo' holds none); the posix package's 'stat' gives 'st_mode', which on
+// Windows has the write bit clear for a read-only file.
+pub fn chmod(path: &Path, mode: u32) Result[void, FsError] {
+  if hasNul(path) { return fail[void]("chmod", path, posix.EINVAL); }
+  useUtf8();
+  var c = cText(path);
+  let bits = mode & modeBits;
+  let failed = if isWindows() {
+    _chmod(c.cstr(), if (bits & ownerWrite) != 0u32 {winWritable} else {winReadable}) != 0i32
+  } else {
+    posixChmod(c.cstr(), bits) != 0i32
+  };
+  if failed { return fail[void]("chmod", path, lastErrno()); }
+  succeeded()
+}
+
+// Set when a file or folder was last read and last written, following a link
+// to its target. Both are Timestamps of the time package (as 'FileInfo's
+// 'modified' is), UTC; mind the order: the access time first, as POSIX's
+// 'utime' takes them. Linux keeps the nanoseconds given (the file system may round
+// them: ext4 does not, FAT does to 2 seconds); Windows keeps 100 nanoseconds,
+// rounded down. A time before 1970 is set on both, though the Windows C runtime's
+// 'stat' (so 'FileInfo.modified') shows none, only -1 second. Setting a
+// time needs ownership of the file or write access to it (EACCES or EPERM
+// otherwise); a file another program has open without sharing is refused on
+// Windows (EACCES). The change time is the system's own and is not set.
+pub fn utime(path: &Path, accessed: time.Timestamp, modified: time.Timestamp) Result[void, FsError] {
+  if hasNul(path) { return fail[void]("utime", path, posix.EINVAL); }
+  useUtf8();
+  let code = if isWindows() {setTimesWindows(path, accessed, modified)}
+    else {setTimesLinux(path, accessed, modified)};
+  if code != 0i32 { return fail[void]("utime", path, code); }
+  succeeded()
+}
+
+// The nanoseconds of a Timestamp past its whole second, 0 to 999999999, which
+// is not the remainder for a moment before 1970
+fn nanosPastSecond(t: time.Timestamp) i64 { t.unixNanos() - t.unixSeconds() * 1000000000i64 }
+
+// Linux: utimensat with the two (seconds, nanoseconds) pairs; 0 or the error number
+fn setTimesLinux(path: &Path, accessed: time.Timestamp, modified: time.Timestamp) i32 {
+  var c = cText(path);
+  var pairs = Array[i64, 4]() <- fill 0i64;
+  pairs[0usize] = accessed.unixSeconds();
+  pairs[1usize] = nanosPastSecond(accessed);
+  pairs[2usize] = modified.unixSeconds();
+  pairs[3usize] = nanosPastSecond(modified);
+  if utimensat(atFdCwd, c.cstr(), &[]pairs as *i64, 0i32) != 0i32 { return lastErrno(); }
+  0i32
+}
+
+// A Timestamp as a FILETIME, 100 ns since 1601; -1 for a moment before it
+fn fileTimeOf(t: time.Timestamp) i64 {
+  let seconds = t.unixSeconds() + secondsTo1970;
+  if seconds < 0i64 { return -1i64; }
+  seconds * ticksPerSecond + nanosPastSecond(t) / 100i64
+}
+
+// Windows: open the file for writing its attributes alone (so one that is read-only
+// or open elsewhere for reading still takes it), set the two times, close; 0 or
+// the error number. The name is converted to UTF-16 here, from UTF-8 as
+// the rest of the package reads it.
+fn setTimesWindows(path: &Path, accessed: time.Timestamp, modified: time.Timestamp) i32 {
+  let atime = fileTimeOf(accessed);
+  let mtime = fileTimeOf(modified);
+  if atime < 0i64 || mtime < 0i64 { return posix.EINVAL; }
+  var c = cText(path);
+  let n = MultiByteToWideChar(utf8CodePage, invalidUtf8Fails, c.cstr().ptr(), -1i32, null, 0i32);
+  if n <= 0i32 { return posix.EINVAL; }
+  let wide = libc.malloc(usize.from(n) * 2usize) as *u16;
+  MultiByteToWideChar(utf8CodePage, invalidUtf8Fails, c.cstr().ptr(), -1i32, wide, n);
+  let h = CreateFileW(wide, fileWriteAttributes, shareAll, null, openExisting, backupSemantics, 0usize);
+  let opened = GetLastError();
+  libc.free(wide as *u8);
+  if h == invalidHandle { return errnoOfWindows(opened); }
+  let done = SetFileTime(h, null, &atime, &mtime);
+  let code = GetLastError();
+  CloseHandle(h);
+  if done == 0i32 { return errnoOfWindows(code); }
+  0i32
 }
 
 // -------- mapped files --------
