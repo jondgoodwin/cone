@@ -21,7 +21,7 @@
 //
 // Each side's driver is the same short loop around the four calls: hand
 // the connection what each receive brought, send what pollTransmit gives (a
-// few sends in flight), receive only while readCredit allows a buffer, wait
+// gather write each, a few in flight), receive only while readCredit allows a buffer, wait
 // in the loop's poll until the connection's own deadline, and act on the
 // events. Neither core reads the clock: the drivers pass Instant.now() in.
 
@@ -78,9 +78,9 @@ fn drive(lp: &mut Loop, s: &mut Side) {
   if s.sock.isNone() || s.sockClosed {return;}
   let now = Instant.now();
   while s.sendsOut < sendDepth {
-    var b = s.conn.pollTransmit(now);
-    if b.len() == 0usize {break;}
-    lp.submit(Op.Send(s.sock, b), Target.Here(tokSend));
+    let ch = s.conn.pollTransmit(now);
+    if ch.isEmpty() {break;}
+    lp.submit(Op.SendChain(s.sock, ch), Target.Here(tokSend));
     s.sendsOut = s.sendsOut + 1u32;
   }
   if !s.recvOut && !s.conn.isClosed() && s.conn.readCredit() >= recvSize {
